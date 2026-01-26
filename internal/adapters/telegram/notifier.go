@@ -7,9 +7,11 @@ import (
 
 // Config holds Telegram adapter configuration
 type Config struct {
-	Enabled  bool   `yaml:"enabled"`
-	BotToken string `yaml:"bot_token"`
-	ChatID   string `yaml:"chat_id"`
+	Enabled    bool    `yaml:"enabled"`
+	BotToken   string  `yaml:"bot_token"`
+	ChatID     string  `yaml:"chat_id"`
+	Polling    bool    `yaml:"polling"`     // Enable inbound polling
+	AllowedIDs []int64 `yaml:"allowed_ids"` // User/chat IDs allowed to send tasks
 }
 
 // DefaultConfig returns default Telegram configuration
