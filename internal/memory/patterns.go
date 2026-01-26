@@ -212,10 +212,25 @@ func NewPatternLearner(patternStore *GlobalPatternStore, execStore *Store) *Patt
 
 // LearnFromExecution learns patterns from a completed execution
 func (l *PatternLearner) LearnFromExecution(ctx context.Context, exec *Execution) error {
-	// TODO: Implement pattern extraction from execution output
-	// This would analyze:
-	// - Code patterns used
-	// - Successful approaches
-	// - Error patterns to avoid
+	if exec.Status != "completed" && exec.Status != "failed" {
+		return nil // Only learn from finished executions
+	}
+
+	// Create an extractor to handle pattern extraction
+	extractor := NewPatternExtractor(l.store, l.execStore)
+
+	// Extract patterns from the execution
+	result, err := extractor.ExtractFromExecution(ctx, exec)
+	if err != nil {
+		return fmt.Errorf("pattern extraction failed: %w", err)
+	}
+
+	// Save extracted patterns
+	if len(result.Patterns) > 0 || len(result.AntiPatterns) > 0 {
+		if err := extractor.SaveExtractedPatterns(ctx, result); err != nil {
+			return fmt.Errorf("failed to save patterns: %w", err)
+		}
+	}
+
 	return nil
 }

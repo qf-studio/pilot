@@ -48,6 +48,7 @@ func main() {
 		newTaskCmd(),
 		newTelegramCmd(),
 		newBriefCmd(),
+		newPatternsCmd(),
 	)
 
 	if err := rootCmd.Execute(); err != nil {
@@ -782,6 +783,218 @@ Examples:
 
 	cmd.Flags().BoolVar(&now, "now", false, "Generate and send brief immediately")
 	cmd.Flags().BoolVar(&weekly, "weekly", false, "Generate weekly summary instead of daily")
+
+	return cmd
+}
+
+func newPatternsCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "patterns",
+		Short: "Manage cross-project patterns",
+		Long:  `View, search, and manage learned patterns across projects.`,
+	}
+
+	cmd.AddCommand(
+		newPatternsListCmd(),
+		newPatternsSearchCmd(),
+		newPatternsStatsCmd(),
+	)
+
+	return cmd
+}
+
+func newPatternsListCmd() *cobra.Command {
+	var (
+		limit      int
+		minConf    float64
+		patternType string
+		showAnti   bool
+	)
+
+	cmd := &cobra.Command{
+		Use:   "list",
+		Short: "List learned patterns",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			// Load config
+			configPath := cfgFile
+			if configPath == "" {
+				configPath = config.DefaultConfigPath()
+			}
+
+			cfg, err := config.Load(configPath)
+			if err != nil {
+				return fmt.Errorf("failed to load config: %w", err)
+			}
+
+			// Open store
+			store, err := memory.NewStore(cfg.Memory.Path)
+			if err != nil {
+				return fmt.Errorf("failed to open memory store: %w", err)
+			}
+			defer func() { _ = store.Close() }()
+
+			// Query patterns
+			ctx := context.Background()
+			queryService := memory.NewPatternQueryService(store)
+
+			query := &memory.PatternQuery{
+				MaxResults:    limit,
+				MinConfidence: minConf,
+				IncludeAnti:   showAnti,
+			}
+
+			if patternType != "" {
+				query.Types = []string{patternType}
+			}
+
+			result, err := queryService.Query(ctx, query)
+			if err != nil {
+				return fmt.Errorf("query failed: %w", err)
+			}
+
+			if len(result.Patterns) == 0 {
+				fmt.Println("No patterns found.")
+				return nil
+			}
+
+			fmt.Printf("Found %d patterns (showing %d):\n\n", result.TotalMatches, len(result.Patterns))
+
+			for _, p := range result.Patterns {
+				icon := "📘"
+				if p.IsAntiPattern {
+					icon = "⚠️"
+				}
+				fmt.Printf("%s %s (%.0f%% confidence)\n", icon, p.Title, p.Confidence*100)
+				fmt.Printf("   Type: %s | Uses: %d | Scope: %s\n", p.Type, p.Occurrences, p.Scope)
+				if p.Description != "" {
+					desc := p.Description
+					if len(desc) > 80 {
+						desc = desc[:77] + "..."
+					}
+					fmt.Printf("   %s\n", desc)
+				}
+				fmt.Println()
+			}
+
+			return nil
+		},
+	}
+
+	cmd.Flags().IntVar(&limit, "limit", 20, "Maximum patterns to show")
+	cmd.Flags().Float64Var(&minConf, "min-confidence", 0.5, "Minimum confidence threshold")
+	cmd.Flags().StringVar(&patternType, "type", "", "Filter by type (code, structure, workflow, error, naming)")
+	cmd.Flags().BoolVar(&showAnti, "anti", false, "Include anti-patterns")
+
+	return cmd
+}
+
+func newPatternsSearchCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "search [query]",
+		Short: "Search patterns by keyword",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			query := args[0]
+
+			// Load config
+			configPath := cfgFile
+			if configPath == "" {
+				configPath = config.DefaultConfigPath()
+			}
+
+			cfg, err := config.Load(configPath)
+			if err != nil {
+				return fmt.Errorf("failed to load config: %w", err)
+			}
+
+			// Open store
+			store, err := memory.NewStore(cfg.Memory.Path)
+			if err != nil {
+				return fmt.Errorf("failed to open memory store: %w", err)
+			}
+			defer func() { _ = store.Close() }()
+
+			// Search patterns
+			patterns, err := store.SearchCrossPatterns(query, 20)
+			if err != nil {
+				return fmt.Errorf("search failed: %w", err)
+			}
+
+			if len(patterns) == 0 {
+				fmt.Printf("No patterns found matching '%s'\n", query)
+				return nil
+			}
+
+			fmt.Printf("Found %d patterns matching '%s':\n\n", len(patterns), query)
+
+			for _, p := range patterns {
+				icon := "📘"
+				if p.IsAntiPattern {
+					icon = "⚠️"
+				}
+				fmt.Printf("%s %s (%.0f%%)\n", icon, p.Title, p.Confidence*100)
+				if p.Context != "" {
+					fmt.Printf("   Context: %s\n", p.Context)
+				}
+				fmt.Printf("   %s\n\n", p.Description)
+			}
+
+			return nil
+		},
+	}
+
+	return cmd
+}
+
+func newPatternsStatsCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "stats",
+		Short: "Show pattern statistics",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			// Load config
+			configPath := cfgFile
+			if configPath == "" {
+				configPath = config.DefaultConfigPath()
+			}
+
+			cfg, err := config.Load(configPath)
+			if err != nil {
+				return fmt.Errorf("failed to load config: %w", err)
+			}
+
+			// Open store
+			store, err := memory.NewStore(cfg.Memory.Path)
+			if err != nil {
+				return fmt.Errorf("failed to open memory store: %w", err)
+			}
+			defer func() { _ = store.Close() }()
+
+			// Get stats
+			stats, err := store.GetCrossPatternStats()
+			if err != nil {
+				return fmt.Errorf("failed to get stats: %w", err)
+			}
+
+			fmt.Println("📊 Cross-Project Pattern Statistics")
+			fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+			fmt.Printf("Total Patterns:     %d\n", stats.TotalPatterns)
+			fmt.Printf("  ├─ Patterns:      %d\n", stats.Patterns)
+			fmt.Printf("  └─ Anti-Patterns: %d\n", stats.AntiPatterns)
+			fmt.Printf("Avg Confidence:     %.1f%%\n", stats.AvgConfidence*100)
+			fmt.Printf("Total Occurrences:  %d\n", stats.TotalOccurrences)
+			fmt.Printf("Projects Using:     %d\n", stats.ProjectCount)
+			fmt.Println()
+
+			if len(stats.ByType) > 0 {
+				fmt.Println("By Type:")
+				for pType, count := range stats.ByType {
+					fmt.Printf("  %s: %d\n", pType, count)
+				}
+			}
+
+			return nil
+		},
+	}
 
 	return cmd
 }
