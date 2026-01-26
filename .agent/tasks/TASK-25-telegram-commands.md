@@ -103,6 +103,51 @@ type Handler struct {
 - [ ] `/branch feature-x` sets branch for subsequent tasks
 - [ ] `/pr` creates PR with task summary
 - [ ] Quick patterns (`07`, `status?`) work as shortcuts
+- [ ] **Task name resolution**: "task 07" shows `TASK-07: Voice Support` not `TG-xxx`
+- [ ] **Navigator phases**: Show complexity & phase (RESEARCH → IMPL → VERIFY)
+
+---
+
+## UX Improvements
+
+### Task Name Resolution
+When user says "task 07" or "Start 07":
+1. Look up `.agent/tasks/TASK-07-*.md`
+2. Extract title from `# TASK-07: Title`
+3. Display in confirmation and progress:
+
+```
+📋 Confirm Task
+
+TASK-07: Telegram Voice Support
+
+Project: /Users/.../pilot
+Execute?
+```
+
+### Navigator Phase Display
+Parse `NAVIGATOR_STATUS` from stream instead of stripping:
+
+```
+🔬 RESEARCH (25%)
+██████░░░░░░░░░░░░░░
+
+TASK-07: Voice Support
+📝 Analyzing codebase patterns...
+```
+
+Phases with emojis:
+- 🔬 RESEARCH
+- 📋 PLANNING
+- ⚙️ IMPLEMENT
+- 🧪 VERIFY
+- ✅ COMPLETE
+
+### Complexity Indicator
+Navigator emits complexity (0.1-1.0). Show as:
+- 🟢 Simple (< 0.3)
+- 🟡 Medium (0.3-0.6)
+- 🔴 Complex (> 0.6)
 
 ---
 
