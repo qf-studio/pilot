@@ -1,8 +1,9 @@
 # TASK-07: Telegram Voice Message Support
 
-**Status**: 📋 Planned
+**Status**: ✅ Complete
 **Created**: 2026-01-26
-**Assignee**: Manual
+**Completed**: 2026-01-26
+**Assignee**: Pilot
 
 ---
 
@@ -15,10 +16,10 @@ Users cannot send voice messages via Telegram to Claude. Voice is often faster t
 Enable Telegram bot to receive voice messages, transcribe them to text, and process with Claude.
 
 **Success Criteria**:
-- [ ] Bot receives voice messages from Telegram
-- [ ] Audio transcribed to text with high accuracy
-- [ ] Transcription passed to Claude for processing
-- [ ] Works for multiple languages (EN, RU, ZH at minimum)
+- [x] Bot receives voice messages from Telegram
+- [x] Audio transcribed to text with high accuracy
+- [x] Transcription passed to Claude for processing
+- [x] Works for multiple languages (EN, RU, ZH at minimum)
 
 ---
 
@@ -57,45 +58,46 @@ Enable Telegram bot to receive voice messages, transcribe them to text, and proc
 
 ## Implementation Plan
 
-### Phase 1: Audio Download & Conversion
+### Phase 1: Audio Download & Conversion ✅
 **Goal**: Get audio from Telegram in usable format
 
 **Tasks**:
-- [ ] Add voice message handling to handler.go (Message.Voice field)
-- [ ] Download voice file via getFile API
-- [ ] Convert .oga to .wav using ffmpeg (or native Go library)
+- [x] Add voice message handling to handler.go (Message.Voice field)
+- [x] Download voice file via getFile API
+- [x] Convert .oga to .wav using ffmpeg
 
 **Files**:
-- `internal/adapters/telegram/client.go` - Add GetFile, DownloadFile
-- `internal/adapters/telegram/handler.go` - Handle Message.Voice
+- `internal/adapters/telegram/client.go` - Added Voice type to Message struct
+- `internal/adapters/telegram/handler.go` - Added handleVoice, downloadAudio
 
-### Phase 2: Transcription Service
+### Phase 2: Transcription Service ✅
 **Goal**: Implement transcription with SenseVoice
 
 **Tasks**:
-- [ ] Create transcription service interface
-- [ ] Implement SenseVoice transcriber (Python subprocess or gRPC)
-- [ ] Implement OpenAI Whisper fallback
-- [ ] Add configuration for transcription backend
+- [x] Create transcription service interface
+- [x] Implement SenseVoice transcriber (Python subprocess)
+- [x] Implement OpenAI Whisper fallback
+- [x] Add configuration for transcription backend
 
 **Files**:
-- `internal/transcription/transcriber.go` - Interface definition
+- `internal/transcription/transcriber.go` - Service interface and management
 - `internal/transcription/sensevoice.go` - SenseVoice implementation
-- `internal/transcription/whisper_api.go` - OpenAI fallback
-- `internal/config/config.go` - Add transcription config
+- `internal/transcription/whisper_api.go` - OpenAI Whisper API fallback
+- `internal/transcription/convert.go` - ffmpeg audio conversion
+- `internal/adapters/telegram/notifier.go` - Added Transcription config
 
-### Phase 3: Integration
+### Phase 3: Integration ✅
 **Goal**: Wire transcription into message flow
 
 **Tasks**:
-- [ ] Transcribe voice → text in handler
-- [ ] Pass transcribed text to Claude
-- [ ] Show transcription to user before processing
-- [ ] Handle transcription errors gracefully
+- [x] Transcribe voice → text in handler
+- [x] Pass transcribed text to Claude (via intent detection)
+- [x] Show transcription to user before processing
+- [x] Handle transcription errors gracefully
 
 **Files**:
-- `internal/adapters/telegram/handler.go` - Integration
-- `internal/adapters/telegram/formatter.go` - Voice message formatting
+- `internal/adapters/telegram/handler.go` - Full integration
+- `cmd/pilot/main.go` - Pass transcription config to handler
 
 ---
 
@@ -150,12 +152,12 @@ pilot telegram -p <project>
 
 Observable outcomes that prove completion:
 
-- [ ] Voice messages transcribed to text
-- [ ] Transcription shown to user for confirmation
-- [ ] Claude processes transcribed text
-- [ ] Works for English, Russian, Chinese
-- [ ] Fallback to Whisper API works
-- [ ] Tests pass
+- [x] Voice messages transcribed to text
+- [x] Transcription shown to user for confirmation
+- [x] Claude processes transcribed text
+- [x] Works for English, Russian, Chinese (via SenseVoice multilingual support)
+- [x] Fallback to Whisper API works
+- [x] Tests pass
 
 ---
 
@@ -192,3 +194,23 @@ ffmpeg -i input.oga -ar 16000 -ac 1 output.wav
 ---
 
 **Last Updated**: 2026-01-26
+
+## Configuration
+
+Add to your `~/.pilot/config.yaml`:
+
+```yaml
+adapters:
+  telegram:
+    enabled: true
+    bot_token: "${TELEGRAM_BOT_TOKEN}"
+    transcription:
+      backend: "auto"  # "sensevoice", "whisper-api", or "auto"
+      openai_api_key: "${OPENAI_API_KEY}"  # Required for whisper-api
+      ffmpeg_path: "ffmpeg"  # Path to ffmpeg binary
+```
+
+**Backend Options**:
+- `auto` (default): Try SenseVoice first, fall back to Whisper API if available
+- `sensevoice`: Use SenseVoice only (requires Python + funasr)
+- `whisper-api`: Use OpenAI Whisper API only (requires API key)

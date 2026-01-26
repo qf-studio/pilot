@@ -3,15 +3,18 @@ package telegram
 import (
 	"context"
 	"fmt"
+
+	"github.com/alekspetrov/pilot/internal/transcription"
 )
 
 // Config holds Telegram adapter configuration
 type Config struct {
-	Enabled    bool    `yaml:"enabled"`
-	BotToken   string  `yaml:"bot_token"`
-	ChatID     string  `yaml:"chat_id"`
-	Polling    bool    `yaml:"polling"`     // Enable inbound polling
-	AllowedIDs []int64 `yaml:"allowed_ids"` // User/chat IDs allowed to send tasks
+	Enabled       bool                  `yaml:"enabled"`
+	BotToken      string                `yaml:"bot_token"`
+	ChatID        string                `yaml:"chat_id"`
+	Polling       bool                  `yaml:"polling"`       // Enable inbound polling
+	AllowedIDs    []int64               `yaml:"allowed_ids"`   // User/chat IDs allowed to send tasks
+	Transcription *transcription.Config `yaml:"transcription"` // Voice message transcription config
 }
 
 // DefaultConfig returns default Telegram configuration

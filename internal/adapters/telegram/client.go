@@ -86,7 +86,17 @@ type Message struct {
 	Date      int64        `json:"date"`
 	Text      string       `json:"text,omitempty"`
 	Photo     []*PhotoSize `json:"photo,omitempty"`
+	Voice     *Voice       `json:"voice,omitempty"`
 	Caption   string       `json:"caption,omitempty"`
+}
+
+// Voice represents a voice message
+type Voice struct {
+	FileID       string `json:"file_id"`
+	FileUniqueID string `json:"file_unique_id"`
+	Duration     int    `json:"duration"`
+	MimeType     string `json:"mime_type,omitempty"`
+	FileSize     int    `json:"file_size,omitempty"`
 }
 
 // PhotoSize represents one size of a photo or file thumbnail

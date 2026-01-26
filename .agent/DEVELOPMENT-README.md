@@ -159,10 +159,10 @@ if _, err := os.Stat(agentDir); err == nil {
 
 ### Telegram Features
 
-- **TASK-07**: Telegram Voice Support (Status: 📋 Planned)
+- **TASK-07**: Telegram Voice Support (Status: ✅ Complete)
   - File: `.agent/tasks/TASK-07-telegram-voice-support.md`
-  - Created: 2026-01-26
-  - Voice transcription via SenseVoice (15x faster than Whisper)
+  - Completed: 2026-01-26
+  - Voice transcription via SenseVoice with Whisper API fallback
 
 - **TASK-06**: Telegram Image Support (Status: ✅ Complete)
   - File: `.agent/tasks/TASK-06-telegram-image-support.md`

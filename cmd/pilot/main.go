@@ -460,9 +460,10 @@ Example:
 			}
 
 			handler := telegram.NewHandler(&telegram.HandlerConfig{
-				BotToken:    cfg.Adapters.Telegram.BotToken,
-				ProjectPath: projectPath,
-				AllowedIDs:  allowedIDs,
+				BotToken:      cfg.Adapters.Telegram.BotToken,
+				ProjectPath:   projectPath,
+				AllowedIDs:    allowedIDs,
+				Transcription: cfg.Adapters.Telegram.Transcription,
 			}, runner)
 
 			// Check for existing instance

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/alekspetrov/pilot/internal/executor"
+	"github.com/alekspetrov/pilot/internal/transcription"
 )
 
 // PendingTask represents a task awaiting confirmation
@@ -36,13 +37,15 @@ type Handler struct {
 	mu           sync.Mutex
 	stopCh       chan struct{}
 	wg           sync.WaitGroup
+	transcriber  *transcription.Service // Voice transcription service (optional)
 }
 
 // HandlerConfig holds configuration for the Telegram handler
 type HandlerConfig struct {
-	BotToken    string
-	ProjectPath string
-	AllowedIDs  []int64 // User/chat IDs allowed to send tasks
+	BotToken      string
+	ProjectPath   string
+	AllowedIDs    []int64                // User/chat IDs allowed to send tasks
+	Transcription *transcription.Config  // Voice transcription config (optional)
 }
 
 // NewHandler creates a new Telegram message handler
@@ -52,7 +55,7 @@ func NewHandler(config *HandlerConfig, runner *executor.Runner) *Handler {
 		allowedIDs[id] = true
 	}
 
-	return &Handler{
+	h := &Handler{
 		client:       NewClient(config.BotToken),
 		runner:       runner,
 		projectPath:  config.ProjectPath,
@@ -60,6 +63,19 @@ func NewHandler(config *HandlerConfig, runner *executor.Runner) *Handler {
 		pendingTasks: make(map[string]*PendingTask),
 		stopCh:       make(chan struct{}),
 	}
+
+	// Initialize transcription service if configured
+	if config.Transcription != nil {
+		svc, err := transcription.NewService(config.Transcription)
+		if err != nil {
+			log.Printf("[telegram] Warning: transcription not available: %v", err)
+		} else {
+			h.transcriber = svc
+			log.Printf("[telegram] Voice transcription enabled (backend: %s)", svc.BackendName())
+		}
+	}
+
+	return h
 }
 
 // CheckSingleton verifies no other bot instance is already running.
@@ -182,6 +198,12 @@ func (h *Handler) processUpdate(ctx context.Context, update *Update) {
 	// Handle photo messages
 	if len(msg.Photo) > 0 {
 		h.handlePhoto(ctx, chatID, msg)
+		return
+	}
+
+	// Handle voice messages
+	if msg.Voice != nil {
+		h.handleVoice(ctx, chatID, msg)
 		return
 	}
 
@@ -586,6 +608,136 @@ func (h *Handler) handlePhoto(ctx context.Context, chatID string, msg *Message) 
 
 	// Execute with image
 	h.executeImageTask(ctx, chatID, imagePath, prompt)
+}
+
+// handleVoice processes voice messages
+func (h *Handler) handleVoice(ctx context.Context, chatID string, msg *Message) {
+	// Security check: only process from allowed users/chats
+	if len(h.allowedIDs) > 0 {
+		senderID := int64(0)
+		if msg.From != nil {
+			senderID = msg.From.ID
+		}
+		if !h.allowedIDs[msg.Chat.ID] && !h.allowedIDs[senderID] {
+			log.Printf("[telegram] Ignoring voice from unauthorized chat/user: %d/%d", msg.Chat.ID, senderID)
+			return
+		}
+	}
+
+	// Check if transcription is available
+	if h.transcriber == nil {
+		log.Printf("[telegram] Voice message received but transcription not configured")
+		_, _ = h.client.SendMessage(ctx, chatID,
+			"🎤 Voice messages are not enabled. Configure transcription in your pilot config.", "")
+		return
+	}
+
+	voice := msg.Voice
+	log.Printf("[telegram] Received voice from %s: duration=%ds, mime=%s, size=%d",
+		chatID, voice.Duration, voice.MimeType, voice.FileSize)
+
+	// Send acknowledgment
+	_, _ = h.client.SendMessage(ctx, chatID, "🎤 Transcribing voice message...", "")
+
+	// Download the voice file
+	audioPath, err := h.downloadAudio(ctx, voice.FileID)
+	if err != nil {
+		log.Printf("[telegram] Failed to download voice: %v", err)
+		_, _ = h.client.SendMessage(ctx, chatID, "❌ Failed to download voice message. Please try again.", "")
+		return
+	}
+	defer func() {
+		_ = os.Remove(audioPath)
+		// Also cleanup any converted WAV file
+		transcription.CleanupWav(audioPath)
+	}()
+
+	// Transcribe the audio
+	transcribeCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+
+	result, err := h.transcriber.Transcribe(transcribeCtx, audioPath)
+	if err != nil {
+		log.Printf("[telegram] Transcription failed: %v", err)
+		_, _ = h.client.SendMessage(ctx, chatID,
+			"❌ Failed to transcribe voice message. Please try again or send as text.", "")
+		return
+	}
+
+	if result.Text == "" {
+		_, _ = h.client.SendMessage(ctx, chatID,
+			"🤷 Couldn't understand the voice message. Please try again or send as text.", "")
+		return
+	}
+
+	// Show the transcription to the user
+	langInfo := ""
+	if result.Language != "" && result.Language != "unknown" {
+		langInfo = fmt.Sprintf(" (%s)", result.Language)
+	}
+
+	transcriptMsg := fmt.Sprintf("🎤 *Transcribed%s:*\n_%s_", langInfo, escapeMarkdown(result.Text))
+	_, _ = h.client.SendMessage(ctx, chatID, transcriptMsg, "Markdown")
+
+	// Process the transcribed text as if it was typed
+	log.Printf("[telegram] Processing transcribed text: %s", truncateDescription(result.Text, 50))
+
+	// Detect intent and handle
+	text := strings.TrimSpace(result.Text)
+	intent := DetectIntent(text)
+
+	switch intent {
+	case IntentCommand:
+		h.handleCommand(ctx, chatID, text)
+	case IntentGreeting:
+		h.handleGreeting(ctx, chatID, msg.From)
+	case IntentQuestion:
+		h.handleQuestion(ctx, chatID, text)
+	case IntentTask:
+		h.handleTask(ctx, chatID, text)
+	default:
+		h.handleTask(ctx, chatID, text)
+	}
+}
+
+// downloadAudio downloads a voice file from Telegram and saves to temp file
+func (h *Handler) downloadAudio(ctx context.Context, fileID string) (string, error) {
+	// Get file path from Telegram
+	file, err := h.client.GetFile(ctx, fileID)
+	if err != nil {
+		return "", fmt.Errorf("getFile failed: %w", err)
+	}
+
+	if file.FilePath == "" {
+		return "", fmt.Errorf("file path not available")
+	}
+
+	// Download file data
+	data, err := h.client.DownloadFile(ctx, file.FilePath)
+	if err != nil {
+		return "", fmt.Errorf("download failed: %w", err)
+	}
+
+	// Determine extension from file path (usually .oga for voice)
+	ext := filepath.Ext(file.FilePath)
+	if ext == "" {
+		ext = ".oga" // Default to oga for voice messages
+	}
+
+	// Create temp file
+	tmpFile, err := os.CreateTemp("", "pilot-voice-*"+ext)
+	if err != nil {
+		return "", fmt.Errorf("failed to create temp file: %w", err)
+	}
+	defer func() { _ = tmpFile.Close() }()
+
+	// Write data
+	if _, err := tmpFile.Write(data); err != nil {
+		_ = os.Remove(tmpFile.Name())
+		return "", fmt.Errorf("failed to write temp file: %w", err)
+	}
+
+	return tmpFile.Name(), nil
 }
 
 // downloadImage downloads an image from Telegram and saves to temp file
