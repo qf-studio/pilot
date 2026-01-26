@@ -46,9 +46,32 @@ type OrchestratorConfig struct {
 
 // DailyBriefConfig holds daily brief settings
 type DailyBriefConfig struct {
-	Enabled  bool   `yaml:"enabled"`
-	Time     string `yaml:"time"`
-	Timezone string `yaml:"timezone"`
+	Enabled  bool                  `yaml:"enabled"`
+	Schedule string                `yaml:"schedule"` // Cron syntax: "0 9 * * 1-5"
+	Time     string                `yaml:"time"`     // Deprecated: use schedule
+	Timezone string                `yaml:"timezone"`
+	Channels []BriefChannelConfig  `yaml:"channels"`
+	Content  BriefContentConfig    `yaml:"content"`
+	Filters  BriefFilterConfig     `yaml:"filters"`
+}
+
+// BriefChannelConfig defines a delivery channel
+type BriefChannelConfig struct {
+	Type       string   `yaml:"type"`       // "slack", "email"
+	Channel    string   `yaml:"channel"`    // For Slack: "#channel-name"
+	Recipients []string `yaml:"recipients"` // For email
+}
+
+// BriefContentConfig controls what content is included
+type BriefContentConfig struct {
+	IncludeMetrics     bool `yaml:"include_metrics"`
+	IncludeErrors      bool `yaml:"include_errors"`
+	MaxItemsPerSection int  `yaml:"max_items_per_section"`
+}
+
+// BriefFilterConfig filters which tasks to include
+type BriefFilterConfig struct {
+	Projects []string `yaml:"projects"` // Empty = all projects
 }
 
 // MemoryConfig holds memory settings
@@ -95,8 +118,17 @@ func DefaultConfig() *Config {
 			MaxConcurrent: 2,
 			DailyBrief: &DailyBriefConfig{
 				Enabled:  false,
-				Time:     "09:00",
+				Schedule: "0 9 * * 1-5", // 9 AM weekdays
 				Timezone: "America/New_York",
+				Channels: []BriefChannelConfig{},
+				Content: BriefContentConfig{
+					IncludeMetrics:     true,
+					IncludeErrors:      true,
+					MaxItemsPerSection: 10,
+				},
+				Filters: BriefFilterConfig{
+					Projects: []string{},
+				},
 			},
 		},
 		Memory: &MemoryConfig{

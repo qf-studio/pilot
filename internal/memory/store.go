@@ -298,3 +298,174 @@ func (s *Store) GetAllProjects() ([]*Project, error) {
 
 	return projects, nil
 }
+
+// BriefQuery holds parameters for querying brief data
+type BriefQuery struct {
+	Start    time.Time
+	End      time.Time
+	Projects []string // Empty = all projects
+}
+
+// GetExecutionsInPeriod retrieves executions within a time period
+func (s *Store) GetExecutionsInPeriod(query BriefQuery) ([]*Execution, error) {
+	var rows *sql.Rows
+	var err error
+
+	if len(query.Projects) > 0 {
+		// Build placeholders for IN clause
+		placeholders := ""
+		args := make([]interface{}, 0, len(query.Projects)+2)
+		args = append(args, query.Start, query.End)
+		for i, p := range query.Projects {
+			if i > 0 {
+				placeholders += ","
+			}
+			placeholders += "?"
+			args = append(args, p)
+		}
+		rows, err = s.db.Query(`
+			SELECT id, task_id, project_path, status, output, error, duration_ms, pr_url, commit_sha, created_at, completed_at
+			FROM executions
+			WHERE created_at >= ? AND created_at < ?
+			AND project_path IN (`+placeholders+`)
+			ORDER BY created_at DESC
+		`, args...)
+	} else {
+		rows, err = s.db.Query(`
+			SELECT id, task_id, project_path, status, output, error, duration_ms, pr_url, commit_sha, created_at, completed_at
+			FROM executions
+			WHERE created_at >= ? AND created_at < ?
+			ORDER BY created_at DESC
+		`, query.Start, query.End)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var executions []*Execution
+	for rows.Next() {
+		var exec Execution
+		var completedAt sql.NullTime
+		if err := rows.Scan(&exec.ID, &exec.TaskID, &exec.ProjectPath, &exec.Status, &exec.Output, &exec.Error, &exec.DurationMs, &exec.PRUrl, &exec.CommitSHA, &exec.CreatedAt, &completedAt); err != nil {
+			return nil, err
+		}
+		if completedAt.Valid {
+			exec.CompletedAt = &completedAt.Time
+		}
+		executions = append(executions, &exec)
+	}
+
+	return executions, nil
+}
+
+// GetActiveExecutions retrieves currently running executions
+func (s *Store) GetActiveExecutions() ([]*Execution, error) {
+	rows, err := s.db.Query(`
+		SELECT id, task_id, project_path, status, output, error, duration_ms, pr_url, commit_sha, created_at, completed_at
+		FROM executions
+		WHERE status = 'running'
+		ORDER BY created_at DESC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var executions []*Execution
+	for rows.Next() {
+		var exec Execution
+		var completedAt sql.NullTime
+		if err := rows.Scan(&exec.ID, &exec.TaskID, &exec.ProjectPath, &exec.Status, &exec.Output, &exec.Error, &exec.DurationMs, &exec.PRUrl, &exec.CommitSHA, &exec.CreatedAt, &completedAt); err != nil {
+			return nil, err
+		}
+		if completedAt.Valid {
+			exec.CompletedAt = &completedAt.Time
+		}
+		executions = append(executions, &exec)
+	}
+
+	return executions, nil
+}
+
+// GetBriefMetrics calculates aggregate metrics for a time period
+func (s *Store) GetBriefMetrics(query BriefQuery) (*BriefMetricsData, error) {
+	var result BriefMetricsData
+
+	var args []interface{}
+	whereClause := "WHERE created_at >= ? AND created_at < ?"
+	args = append(args, query.Start, query.End)
+
+	if len(query.Projects) > 0 {
+		placeholders := ""
+		for i, p := range query.Projects {
+			if i > 0 {
+				placeholders += ","
+			}
+			placeholders += "?"
+			args = append(args, p)
+		}
+		whereClause += " AND project_path IN (" + placeholders + ")"
+	}
+
+	// Get counts and averages
+	row := s.db.QueryRow(`
+		SELECT
+			COUNT(*) as total,
+			COALESCE(SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END), 0) as completed,
+			COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0) as failed,
+			COALESCE(AVG(CASE WHEN status = 'completed' THEN duration_ms END), 0) as avg_duration,
+			COALESCE(SUM(CASE WHEN pr_url != '' THEN 1 ELSE 0 END), 0) as prs_created
+		FROM executions
+	`+whereClause, args...)
+
+	if err := row.Scan(&result.TotalTasks, &result.CompletedCount, &result.FailedCount, &result.AvgDurationMs, &result.PRsCreated); err != nil {
+		return nil, fmt.Errorf("failed to get metrics: %w", err)
+	}
+
+	if result.TotalTasks > 0 {
+		result.SuccessRate = float64(result.CompletedCount) / float64(result.TotalTasks)
+	}
+
+	return &result, nil
+}
+
+// BriefMetricsData holds raw metrics from the database
+type BriefMetricsData struct {
+	TotalTasks     int
+	CompletedCount int
+	FailedCount    int
+	SuccessRate    float64
+	AvgDurationMs  int64
+	PRsCreated     int
+}
+
+// GetQueuedTasks returns tasks waiting to be executed
+func (s *Store) GetQueuedTasks(limit int) ([]*Execution, error) {
+	rows, err := s.db.Query(`
+		SELECT id, task_id, project_path, status, output, error, duration_ms, pr_url, commit_sha, created_at, completed_at
+		FROM executions
+		WHERE status = 'queued' OR status = 'pending'
+		ORDER BY created_at ASC
+		LIMIT ?
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var executions []*Execution
+	for rows.Next() {
+		var exec Execution
+		var completedAt sql.NullTime
+		if err := rows.Scan(&exec.ID, &exec.TaskID, &exec.ProjectPath, &exec.Status, &exec.Output, &exec.Error, &exec.DurationMs, &exec.PRUrl, &exec.CommitSHA, &exec.CreatedAt, &completedAt); err != nil {
+			return nil, err
+		}
+		if completedAt.Valid {
+			exec.CompletedAt = &completedAt.Time
+		}
+		executions = append(executions, &exec)
+	}
+
+	return executions, nil
+}

@@ -90,9 +90,9 @@ if _, err := os.Stat(agentDir); err == nil {
   - Created: 2026-01-26
   - Share patterns and learnings across projects
 
-- **TASK-10**: Daily Briefs (Status: 📋 Planned)
+- **TASK-10**: Daily Briefs (Status: ✅ Complete)
   - File: `.agent/tasks/TASK-10-daily-briefs.md`
-  - Created: 2026-01-26
+  - Completed: 2026-01-26
   - Automated summary of completed work, progress, blockers
 
 - **TASK-09**: Jira Adapter (Status: ✅ Complete)

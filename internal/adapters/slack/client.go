@@ -41,8 +41,9 @@ type Message struct {
 
 // Block represents a Slack block
 type Block struct {
-	Type string      `json:"type"`
-	Text *TextObject `json:"text,omitempty"`
+	Type     string       `json:"type"`
+	Text     *TextObject  `json:"text,omitempty"`
+	Elements []TextObject `json:"elements,omitempty"`
 }
 
 // TextObject represents text in a block
