@@ -303,7 +303,7 @@ func TestFormatProgressUpdate(t *testing.T) {
 			phase:    "Starting",
 			progress: 0,
 			message:  "Initializing...",
-			contains: []string{"🚀", "Starting", "0%", "TG-123", "░░░░░░░░░░░░░░░░░░░░", "Initializing"},
+			contains: []string{"🚀", "Starting", "(0%)", "TG-123", "░░░░░░░░░░░░░░░░░░░░", "Initializing"},
 		},
 		{
 			name:     "exploring phase",

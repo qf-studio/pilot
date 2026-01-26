@@ -365,7 +365,7 @@ func (h *Handler) handleTask(ctx context.Context, chatID, description string) {
 // executeTask executes a confirmed task
 func (h *Handler) executeTask(ctx context.Context, chatID, taskID, description string) {
 	// Send execution started message (this will be updated with progress)
-	resp, err := h.client.SendMessage(ctx, chatID, FormatProgressUpdate(taskID, "Starting", 0, "Initializing..."), "MarkdownV2")
+	resp, err := h.client.SendMessage(ctx, chatID, FormatProgressUpdate(taskID, "Starting", 0, "Initializing..."), "Markdown")
 	if err != nil {
 		log.Printf("[telegram] Failed to send start message: %v", err)
 		// Fallback to simple message
@@ -416,7 +416,7 @@ func (h *Handler) executeTask(ctx context.Context, chatID, taskID, description s
 
 			// Send update
 			updateText := FormatProgressUpdate(taskID, phase, progress, message)
-			if err := h.client.EditMessage(ctx, chatID, progressMsgID, updateText, "MarkdownV2"); err != nil {
+			if err := h.client.EditMessage(ctx, chatID, progressMsgID, updateText, "Markdown"); err != nil {
 				log.Printf("[telegram] Failed to edit progress message: %v", err)
 			}
 		})
