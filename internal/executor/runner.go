@@ -24,6 +24,15 @@ type StreamEvent struct {
 	DurationMS    int              `json:"duration_ms,omitempty"`
 	NumTurns      int              `json:"num_turns,omitempty"`
 	ToolUseResult json.RawMessage  `json:"tool_use_result,omitempty"`
+	// Token usage (TASK-13)
+	Usage         *UsageInfo       `json:"usage,omitempty"`
+	Model         string           `json:"model,omitempty"`
+}
+
+// UsageInfo represents token usage in stream events
+type UsageInfo struct {
+	InputTokens  int64 `json:"input_tokens"`
+	OutputTokens int64 `json:"output_tokens"`
 }
 
 // AssistantMsg represents the message field in assistant events
@@ -59,6 +68,13 @@ type progressState struct {
 	navProgress  int      // Navigator-reported progress
 	exitSignal   bool     // Navigator EXIT_SIGNAL detected
 	commitSHAs   []string // Extracted commit SHAs from git output
+	// Metrics tracking (TASK-13)
+	tokensInput    int64  // Input tokens used
+	tokensOutput   int64  // Output tokens used
+	filesChanged   int    // Files modified
+	linesAdded     int    // Lines added
+	linesRemoved   int    // Lines removed
+	modelName      string // Model used
 }
 
 // Task represents a task to be executed
@@ -84,6 +100,15 @@ type ExecutionResult struct {
 	Duration  time.Duration
 	PRUrl     string
 	CommitSHA string
+	// Metrics fields (TASK-13)
+	TokensInput      int64
+	TokensOutput     int64
+	TokensTotal      int64
+	EstimatedCostUSD float64
+	FilesChanged     int
+	LinesAdded       int
+	LinesRemoved     int
+	ModelName        string
 }
 
 // ProgressCallback is called during execution with progress updates
@@ -240,6 +265,18 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 	if len(state.commitSHAs) > 0 {
 		result.CommitSHA = state.commitSHAs[len(state.commitSHAs)-1] // Use last commit
 	}
+
+	// Populate metrics from state (TASK-13)
+	result.TokensInput = state.tokensInput
+	result.TokensOutput = state.tokensOutput
+	result.TokensTotal = state.tokensInput + state.tokensOutput
+	result.FilesChanged = state.filesWrite
+	result.ModelName = state.modelName
+	if result.ModelName == "" {
+		result.ModelName = "claude-sonnet-4-5" // Default model
+	}
+	// Estimate cost based on token usage
+	result.EstimatedCostUSD = estimateCost(state.tokensInput, state.tokensOutput, result.ModelName)
 
 	if err != nil {
 		result.Success = false
@@ -417,10 +454,27 @@ func (r *Runner) parseStreamEvent(taskID, line string, state *progressState) (st
 		}
 
 	case "result":
+		// Capture final usage stats from result event
+		if event.Usage != nil {
+			state.tokensInput += event.Usage.InputTokens
+			state.tokensOutput += event.Usage.OutputTokens
+		}
+		if event.Model != "" {
+			state.modelName = event.Model
+		}
 		if event.IsError {
 			return "", event.Result
 		}
 		return event.Result, ""
+	}
+
+	// Track usage from any event with usage info
+	if event.Usage != nil {
+		state.tokensInput += event.Usage.InputTokens
+		state.tokensOutput += event.Usage.OutputTokens
+	}
+	if event.Model != "" && state.modelName == "" {
+		state.modelName = event.Model
 	}
 
 	return "", ""
@@ -826,6 +880,30 @@ func isValidSHA(s string) bool {
 		}
 	}
 	return true
+}
+
+// estimateCost calculates estimated cost from token usage (TASK-13)
+func estimateCost(inputTokens, outputTokens int64, model string) float64 {
+	// Model pricing in USD per 1M tokens
+	const (
+		sonnetInputPrice  = 3.00
+		sonnetOutputPrice = 15.00
+		opusInputPrice    = 15.00
+		opusOutputPrice   = 75.00
+	)
+
+	var inputPrice, outputPrice float64
+	if strings.Contains(strings.ToLower(model), "opus") {
+		inputPrice = opusInputPrice
+		outputPrice = opusOutputPrice
+	} else {
+		inputPrice = sonnetInputPrice
+		outputPrice = sonnetOutputPrice
+	}
+
+	inputCost := float64(inputTokens) * inputPrice / 1_000_000
+	outputCost := float64(outputTokens) * outputPrice / 1_000_000
+	return inputCost + outputCost
 }
 
 

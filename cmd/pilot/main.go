@@ -49,6 +49,7 @@ func main() {
 		newTelegramCmd(),
 		newBriefCmd(),
 		newPatternsCmd(),
+		newMetricsCmd(),
 	)
 
 	if err := rootCmd.Execute(); err != nil {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -113,6 +114,16 @@ func (s *Store) migrate() error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_executions_task ON executions(task_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_executions_project ON executions(project_path)`,
+		`CREATE INDEX IF NOT EXISTS idx_executions_created ON executions(created_at)`,
+		// Metrics columns (TASK-13)
+		`ALTER TABLE executions ADD COLUMN tokens_input INTEGER DEFAULT 0`,
+		`ALTER TABLE executions ADD COLUMN tokens_output INTEGER DEFAULT 0`,
+		`ALTER TABLE executions ADD COLUMN tokens_total INTEGER DEFAULT 0`,
+		`ALTER TABLE executions ADD COLUMN estimated_cost_usd REAL DEFAULT 0.0`,
+		`ALTER TABLE executions ADD COLUMN files_changed INTEGER DEFAULT 0`,
+		`ALTER TABLE executions ADD COLUMN lines_added INTEGER DEFAULT 0`,
+		`ALTER TABLE executions ADD COLUMN lines_removed INTEGER DEFAULT 0`,
+		`ALTER TABLE executions ADD COLUMN model_name TEXT DEFAULT 'claude-sonnet-4-5'`,
 		`CREATE INDEX IF NOT EXISTS idx_patterns_project ON patterns(project_path)`,
 		// Cross-project pattern indexes
 		`CREATE INDEX IF NOT EXISTS idx_cross_patterns_type ON cross_patterns(pattern_type)`,
@@ -123,7 +134,14 @@ func (s *Store) migrate() error {
 	}
 
 	for _, migration := range migrations {
-		if _, err := s.db.Exec(migration); err != nil {
+		_, err := s.db.Exec(migration)
+		if err != nil {
+			// Ignore "duplicate column" errors from ALTER TABLE migrations
+			// SQLite returns "duplicate column name" when column already exists
+			errStr := err.Error()
+			if strings.Contains(errStr, "duplicate column") {
+				continue
+			}
 			return fmt.Errorf("migration failed: %w", err)
 		}
 	}
@@ -149,27 +167,42 @@ type Execution struct {
 	CommitSHA   string
 	CreatedAt   time.Time
 	CompletedAt *time.Time
+	// Metrics fields (TASK-13)
+	TokensInput      int64
+	TokensOutput     int64
+	TokensTotal      int64
+	EstimatedCostUSD float64
+	FilesChanged     int
+	LinesAdded       int
+	LinesRemoved     int
+	ModelName        string
 }
 
 // SaveExecution saves an execution record
 func (s *Store) SaveExecution(exec *Execution) error {
 	_, err := s.db.Exec(`
-		INSERT INTO executions (id, task_id, project_path, status, output, error, duration_ms, pr_url, commit_sha, completed_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, exec.ID, exec.TaskID, exec.ProjectPath, exec.Status, exec.Output, exec.Error, exec.DurationMs, exec.PRUrl, exec.CommitSHA, exec.CompletedAt)
+		INSERT INTO executions (id, task_id, project_path, status, output, error, duration_ms, pr_url, commit_sha, completed_at,
+			tokens_input, tokens_output, tokens_total, estimated_cost_usd, files_changed, lines_added, lines_removed, model_name)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, exec.ID, exec.TaskID, exec.ProjectPath, exec.Status, exec.Output, exec.Error, exec.DurationMs, exec.PRUrl, exec.CommitSHA, exec.CompletedAt,
+		exec.TokensInput, exec.TokensOutput, exec.TokensTotal, exec.EstimatedCostUSD, exec.FilesChanged, exec.LinesAdded, exec.LinesRemoved, exec.ModelName)
 	return err
 }
 
 // GetExecution retrieves an execution by ID
 func (s *Store) GetExecution(id string) (*Execution, error) {
 	row := s.db.QueryRow(`
-		SELECT id, task_id, project_path, status, output, error, duration_ms, pr_url, commit_sha, created_at, completed_at
+		SELECT id, task_id, project_path, status, output, error, duration_ms, pr_url, commit_sha, created_at, completed_at,
+			COALESCE(tokens_input, 0), COALESCE(tokens_output, 0), COALESCE(tokens_total, 0),
+			COALESCE(estimated_cost_usd, 0), COALESCE(files_changed, 0), COALESCE(lines_added, 0),
+			COALESCE(lines_removed, 0), COALESCE(model_name, '')
 		FROM executions WHERE id = ?
 	`, id)
 
 	var exec Execution
 	var completedAt sql.NullTime
-	err := row.Scan(&exec.ID, &exec.TaskID, &exec.ProjectPath, &exec.Status, &exec.Output, &exec.Error, &exec.DurationMs, &exec.PRUrl, &exec.CommitSHA, &exec.CreatedAt, &completedAt)
+	err := row.Scan(&exec.ID, &exec.TaskID, &exec.ProjectPath, &exec.Status, &exec.Output, &exec.Error, &exec.DurationMs, &exec.PRUrl, &exec.CommitSHA, &exec.CreatedAt, &completedAt,
+		&exec.TokensInput, &exec.TokensOutput, &exec.TokensTotal, &exec.EstimatedCostUSD, &exec.FilesChanged, &exec.LinesAdded, &exec.LinesRemoved, &exec.ModelName)
 	if err != nil {
 		return nil, err
 	}
