@@ -24,7 +24,7 @@ var greetingPatterns = []string{
 
 // Question indicators
 var questionPatterns = []string{
-	"what is", "what are", "what's", "whats",
+	"what is", "what are", "what's", "whats", "what does", "what do",
 	"how do", "how does", "how can", "how to",
 	"where is", "where are", "where's",
 	"why is", "why are", "why does",
@@ -67,13 +67,51 @@ func DetectIntent(message string) Intent {
 		return IntentTask
 	}
 
-	// Default: if message is short and doesn't match patterns, treat as greeting
-	// If longer, treat as task
-	if len(msg) < 20 && !containsActionWord(msg) {
+	// Check for task-like references (numbers, IDs, file names)
+	if containsTaskReference(msg) {
+		return IntentTask
+	}
+
+	// Default: if message is very short AND looks like a greeting, treat as greeting
+	// Otherwise treat as task (will get confirmation anyway)
+	if len(msg) < 15 && isLikelyGreeting(msg) {
 		return IntentGreeting
 	}
 
 	return IntentTask
+}
+
+// containsTaskReference checks if message references a task, file, or specific item
+func containsTaskReference(msg string) bool {
+	// Task IDs, issue numbers, file names
+	patterns := []string{
+		`task[- ]?\d+`,      // TASK-01, task 01
+		`#\d+`,              // #123
+		`\d{2,}`,            // numbers like 04, 123
+		`\.\w{2,4}$`,        // file extensions
+		`pick|select|open|show|do|run|work on|start`,
+	}
+	for _, pattern := range patterns {
+		if matched, _ := regexp.MatchString(pattern, msg); matched {
+			return true
+		}
+	}
+	return false
+}
+
+// isLikelyGreeting checks if a short message is likely just a greeting
+func isLikelyGreeting(msg string) bool {
+	words := strings.Fields(msg)
+	if len(words) > 3 {
+		return false
+	}
+	for _, pattern := range greetingPatterns {
+		if msg == pattern || strings.HasPrefix(msg, pattern+" ") ||
+		   strings.HasPrefix(msg, pattern+"!") || strings.HasPrefix(msg, pattern+",") {
+			return true
+		}
+	}
+	return false
 }
 
 // isGreeting checks if the message is a greeting
