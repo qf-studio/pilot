@@ -11,10 +11,6 @@ import (
 
 // Styles for progress display
 var (
-	titleStyle = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(lipgloss.Color("#7C3AED"))
-
 	phaseStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#10B981"))
 

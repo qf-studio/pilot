@@ -105,5 +105,5 @@ func (r *Router) handlePing(session *Session, payload json.RawMessage) {
 		Type:    MessageTypePong,
 		Payload: payload,
 	})
-	session.Send(response)
+	_ = session.Send(response)
 }

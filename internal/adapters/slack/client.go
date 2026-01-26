@@ -87,7 +87,7 @@ func (c *Client) PostMessage(ctx context.Context, msg *Message) (*PostMessageRes
 	if err != nil {
 		return nil, fmt.Errorf("failed to post message: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -100,7 +100,7 @@ func (c *Client) PostMessage(ctx context.Context, msg *Message) (*PostMessageRes
 	}
 
 	if !result.OK {
-		return nil, fmt.Errorf("Slack API error: %s", result.Error)
+		return nil, fmt.Errorf("slack API error: %s", result.Error)
 	}
 
 	return &result, nil
@@ -137,7 +137,7 @@ func (c *Client) UpdateMessage(ctx context.Context, channel, ts string, msg *Mes
 	if err != nil {
 		return fmt.Errorf("failed to update message: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var result struct {
 		OK    bool   `json:"ok"`
@@ -149,7 +149,7 @@ func (c *Client) UpdateMessage(ctx context.Context, channel, ts string, msg *Mes
 	}
 
 	if !result.OK {
-		return fmt.Errorf("Slack API error: %s", result.Error)
+		return fmt.Errorf("slack API error: %s", result.Error)
 	}
 
 	return nil

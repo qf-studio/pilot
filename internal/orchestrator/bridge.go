@@ -49,7 +49,7 @@ func findPython() (string, error) {
 			return path, nil
 		}
 	}
-	return "", fmt.Errorf("Python not found in PATH")
+	return "", fmt.Errorf("python not found in PATH")
 }
 
 // TicketData represents ticket data for planning
@@ -174,7 +174,7 @@ func (b *Bridge) runPython(ctx context.Context, script string) (string, error) {
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("Python error: %v: %s", err, stderr.String())
+		return "", fmt.Errorf("python error: %v: %s", err, stderr.String())
 	}
 
 	return stdout.String(), nil

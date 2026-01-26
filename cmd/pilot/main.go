@@ -2,9 +2,12 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -401,6 +404,7 @@ Examples:
 
 func newTelegramCmd() *cobra.Command {
 	var projectPath string
+	var replace bool
 
 	cmd := &cobra.Command{
 		Use:   "telegram",
@@ -415,7 +419,8 @@ Commands:
   /status - Check bot status
 
 Example:
-  pilot telegram --project /path/to/project`,
+  pilot telegram --project /path/to/project
+  pilot telegram --replace  # Kill existing instance first`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Load config
 			configPath := cfgFile
@@ -430,11 +435,11 @@ Example:
 
 			// Check Telegram config
 			if cfg.Adapters.Telegram == nil || !cfg.Adapters.Telegram.Enabled {
-				return fmt.Errorf("Telegram adapter not enabled in config")
+				return fmt.Errorf("telegram adapter not enabled in config")
 			}
 
 			if cfg.Adapters.Telegram.BotToken == "" {
-				return fmt.Errorf("Telegram bot_token not configured")
+				return fmt.Errorf("telegram bot_token not configured")
 			}
 
 			// Resolve project path
@@ -442,18 +447,6 @@ Example:
 				cwd, _ := os.Getwd()
 				projectPath = cwd
 			}
-
-			banner.Print()
-
-			fmt.Println("🤖 Pilot Telegram Bot")
-			fmt.Println("───────────────────────────────────────")
-			fmt.Printf("   Project: %s\n", projectPath)
-			fmt.Printf("   Chat ID: %s\n", cfg.Adapters.Telegram.ChatID)
-			fmt.Println()
-			fmt.Println("   Listening for messages...")
-			fmt.Println("   Press Ctrl+C to stop")
-			fmt.Println("───────────────────────────────────────")
-			fmt.Println()
 
 			// Create runner and handler
 			runner := executor.NewRunner()
@@ -472,10 +465,50 @@ Example:
 				AllowedIDs:  allowedIDs,
 			}, runner)
 
-			// Start polling
+			// Check for existing instance
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 
+			if err := handler.CheckSingleton(ctx); err != nil {
+				if errors.Is(err, telegram.ErrConflict) {
+					if replace {
+						// Kill existing instance
+						fmt.Println("🔄 Stopping existing bot instance...")
+						if err := killExistingTelegramBot(); err != nil {
+							return fmt.Errorf("failed to stop existing instance: %w", err)
+						}
+						// Wait for the process to fully terminate
+						time.Sleep(500 * time.Millisecond)
+						fmt.Println("   ✓ Existing instance stopped")
+						fmt.Println()
+					} else {
+						fmt.Println()
+						fmt.Println("❌ Another bot instance is already running")
+						fmt.Println()
+						fmt.Println("   Options:")
+						fmt.Println("   • Kill it manually:  pkill -f 'pilot telegram'")
+						fmt.Println("   • Auto-replace:      pilot telegram --replace")
+						fmt.Println()
+						return fmt.Errorf("conflict: another bot instance is running")
+					}
+				} else {
+					return fmt.Errorf("singleton check failed: %w", err)
+				}
+			}
+
+			banner.Print()
+
+			fmt.Println("🤖 Pilot Telegram Bot")
+			fmt.Println("───────────────────────────────────────")
+			fmt.Printf("   Project: %s\n", projectPath)
+			fmt.Printf("   Chat ID: %s\n", cfg.Adapters.Telegram.ChatID)
+			fmt.Println()
+			fmt.Println("   Listening for messages...")
+			fmt.Println("   Press Ctrl+C to stop")
+			fmt.Println("───────────────────────────────────────")
+			fmt.Println()
+
+			// Start polling
 			handler.StartPolling(ctx)
 
 			// Wait for shutdown signal
@@ -491,8 +524,74 @@ Example:
 	}
 
 	cmd.Flags().StringVarP(&projectPath, "project", "p", "", "Project path (default: current directory)")
+	cmd.Flags().BoolVar(&replace, "replace", false, "Kill existing bot instance before starting")
 
 	return cmd
+}
+
+// killExistingTelegramBot finds and kills any running "pilot telegram" process
+func killExistingTelegramBot() error {
+	// Get current process ID to avoid killing ourselves
+	currentPID := os.Getpid()
+
+	// Find processes matching "pilot telegram"
+	// Using pgrep for cross-platform compatibility
+	out, err := exec.Command("pgrep", "-f", "pilot telegram").Output()
+	if err != nil {
+		// No process found is not an error
+		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+			return nil
+		}
+		// pgrep not available, try ps-based approach
+		return killExistingTelegramBotPS(currentPID)
+	}
+
+	// Parse PIDs and kill each one (except current)
+	pids := strings.Fields(strings.TrimSpace(string(out)))
+	for _, pidStr := range pids {
+		var pid int
+		if _, err := fmt.Sscanf(pidStr, "%d", &pid); err != nil {
+			continue
+		}
+		if pid == currentPID {
+			continue
+		}
+		// Send SIGTERM for graceful shutdown
+		proc, err := os.FindProcess(pid)
+		if err != nil {
+			continue
+		}
+		_ = proc.Signal(syscall.SIGTERM)
+	}
+
+	return nil
+}
+
+// killExistingTelegramBotPS uses ps + grep as fallback
+func killExistingTelegramBotPS(currentPID int) error {
+	// ps aux | grep "pilot telegram" | grep -v grep
+	out, err := exec.Command("sh", "-c", "ps aux | grep 'pilot telegram' | grep -v grep | awk '{print $2}'").Output()
+	if err != nil {
+		return nil // Ignore errors - process may not exist
+	}
+
+	pids := strings.Fields(strings.TrimSpace(string(out)))
+	for _, pidStr := range pids {
+		var pid int
+		if _, err := fmt.Sscanf(pidStr, "%d", &pid); err != nil {
+			continue
+		}
+		if pid == currentPID {
+			continue
+		}
+		proc, err := os.FindProcess(pid)
+		if err != nil {
+			continue
+		}
+		_ = proc.Signal(syscall.SIGTERM)
+	}
+
+	return nil
 }
 
 // parseIntID parses a string ID to int64

@@ -140,7 +140,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 // handleHealth returns server health status
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{
+	_ = json.NewEncoder(w).Encode(map[string]string{
 		"status": "healthy",
 	})
 }
@@ -148,7 +148,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 // handleStatus returns current Pilot status
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"version":  "0.1.0",
 		"running":  s.running,
 		"sessions": s.sessions.Count(),
@@ -159,7 +159,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	// TODO: Return actual tasks
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"tasks": []interface{}{},
 	})
 }

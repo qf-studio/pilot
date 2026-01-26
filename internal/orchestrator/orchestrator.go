@@ -179,7 +179,7 @@ func (o *Orchestrator) processTask(task *Task) {
 
 	// Notify Slack
 	if o.notifier != nil {
-		o.notifier.TaskStarted(o.ctx, task.ID, task.Document.Title)
+		_ = o.notifier.TaskStarted(o.ctx, task.ID, task.Document.Title)
 	}
 
 	// Execute task
@@ -197,7 +197,7 @@ func (o *Orchestrator) processTask(task *Task) {
 		log.Printf("Task execution error: %s: %v", task.ID, err)
 		o.monitor.Fail(task.ID, err.Error())
 		if o.notifier != nil {
-			o.notifier.TaskFailed(o.ctx, task.ID, task.Document.Title, err.Error())
+			_ = o.notifier.TaskFailed(o.ctx, task.ID, task.Document.Title, err.Error())
 		}
 		return
 	}
@@ -206,7 +206,7 @@ func (o *Orchestrator) processTask(task *Task) {
 		log.Printf("Task failed: %s: %s", task.ID, result.Error)
 		o.monitor.Fail(task.ID, result.Error)
 		if o.notifier != nil {
-			o.notifier.TaskFailed(o.ctx, task.ID, task.Document.Title, result.Error)
+			_ = o.notifier.TaskFailed(o.ctx, task.ID, task.Document.Title, result.Error)
 		}
 		return
 	}
@@ -216,7 +216,7 @@ func (o *Orchestrator) processTask(task *Task) {
 
 	// Notify Slack
 	if o.notifier != nil {
-		o.notifier.TaskCompleted(o.ctx, task.ID, task.Document.Title, result.PRUrl)
+		_ = o.notifier.TaskCompleted(o.ctx, task.ID, task.Document.Title, result.PRUrl)
 	}
 }
 
@@ -226,7 +226,7 @@ func (o *Orchestrator) handleProgress(taskID, phase string, progress int, messag
 
 	// Optionally notify Slack on significant progress
 	if progress > 0 && progress%25 == 0 && o.notifier != nil {
-		o.notifier.TaskProgress(o.ctx, taskID, phase, progress)
+		_ = o.notifier.TaskProgress(o.ctx, taskID, phase, progress)
 	}
 }
 

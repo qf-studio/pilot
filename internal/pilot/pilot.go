@@ -121,8 +121,8 @@ func (p *Pilot) Stop() error {
 
 	p.cancel()
 	p.orchestrator.Stop()
-	p.gateway.Shutdown()
-	p.store.Close()
+	_ = p.gateway.Shutdown()
+	_ = p.store.Close()
 	p.wg.Wait()
 
 	log.Println("Pilot stopped")

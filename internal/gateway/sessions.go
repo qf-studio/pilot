@@ -61,7 +61,7 @@ func (m *SessionManager) Remove(id string) {
 	defer m.mu.Unlock()
 
 	if session, ok := m.sessions[id]; ok {
-		session.Conn.Close()
+		_ = session.Conn.Close()
 		delete(m.sessions, id)
 	}
 }
@@ -79,7 +79,7 @@ func (m *SessionManager) Broadcast(message []byte) {
 	defer m.mu.RUnlock()
 
 	for _, session := range m.sessions {
-		session.Send(message)
+		_ = session.Send(message)
 	}
 }
 

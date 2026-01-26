@@ -148,7 +148,7 @@ func (s *Store) GetRecentExecutions(limit int) ([]*Execution, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var executions []*Execution
 	for rows.Next() {
@@ -210,7 +210,7 @@ func (s *Store) GetPatterns(projectPath string) ([]*Pattern, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var patterns []*Pattern
 	for rows.Next() {
@@ -266,7 +266,7 @@ func (s *Store) GetProject(path string) (*Project, error) {
 	}
 
 	if settingsStr != "" {
-		json.Unmarshal([]byte(settingsStr), &p.Settings)
+		_ = json.Unmarshal([]byte(settingsStr), &p.Settings)
 	}
 
 	return &p, nil
@@ -281,7 +281,7 @@ func (s *Store) GetAllProjects() ([]*Project, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 
 	var projects []*Project
 	for rows.Next() {
@@ -291,7 +291,7 @@ func (s *Store) GetAllProjects() ([]*Project, error) {
 			return nil, err
 		}
 		if settingsStr != "" {
-			json.Unmarshal([]byte(settingsStr), &p.Settings)
+			_ = json.Unmarshal([]byte(settingsStr), &p.Settings)
 		}
 		projects = append(projects, &p)
 	}
