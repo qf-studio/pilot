@@ -163,6 +163,39 @@ url := fmt.Sprintf("https://api.telegram.org/file/bot%s/%s", token, file.FilePat
 
 ---
 
+## Timeouts
+
+### Always Add Timeouts for Claude Operations
+
+```go
+// Questions: 90 seconds max
+questionCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
+defer cancel()
+result, err := h.runner.Execute(questionCtx, task)
+
+// Check for timeout
+if questionCtx.Err() == context.DeadlineExceeded {
+    // Handle timeout gracefully
+}
+```
+
+### Prompt Engineering for Speed
+
+```go
+// BAD - vague, causes extensive exploration
+prompt := "Answer this question about the codebase"
+
+// GOOD - explicit constraints
+prompt := `Answer this question. IMPORTANT:
+- Be concise
+- Limit exploration to 5-10 files max
+- If too broad, ask for clarification`
+```
+
+**Incident: 2026-01-26**: Questions like "What issues do we have?" ran forever because Claude explored the entire codebase.
+
+---
+
 ## Checklist
 
 Before shipping Telegram features:
