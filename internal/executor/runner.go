@@ -346,7 +346,8 @@ func (r *Runner) BuildPrompt(task *Task) string {
 		}
 
 		// Navigator will handle: workflow check, complexity detection, autonomous completion
-		sb.WriteString("Run until done. Use Navigator's autonomous completion protocol.\n")
+		sb.WriteString("Run until done. Use Navigator's autonomous completion protocol.\n\n")
+		sb.WriteString("CRITICAL: You MUST commit all changes before completing. A task is NOT complete until changes are committed. Use format: `type(scope): description (TASK-XX)`\n")
 	} else {
 		// Non-Navigator project: explicit instructions with strict constraints
 		sb.WriteString(fmt.Sprintf("## Task: %s\n\n", task.ID))
