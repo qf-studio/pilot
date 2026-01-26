@@ -7,6 +7,26 @@
 
 ## Markdown Formatting
 
+### Telegram Doesn't Support Tables
+
+Markdown tables render as broken text. Convert to bullet lists:
+
+```go
+// BAD - tables break in Telegram
+| Task | Status |
+|------|--------|
+| A    | Done   |
+
+// GOOD - bullet lists work
+• *A*: Done
+```
+
+Use `convertTablesToLists()` in formatter.go for automatic conversion.
+
+**Incident: 2026-01-26**: Claude's responses with tables were unreadable in Telegram.
+
+---
+
 ### Use `Markdown` NOT `MarkdownV2`
 
 **Rule**: Always use `"Markdown"` parse mode unless you have a specific need for MarkdownV2.
