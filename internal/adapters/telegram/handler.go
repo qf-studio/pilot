@@ -26,18 +26,27 @@ type PendingTask struct {
 	CreatedAt   time.Time
 }
 
+// RunningTask represents a task currently being executed
+type RunningTask struct {
+	TaskID    string
+	ChatID    string
+	StartedAt time.Time
+	Cancel    context.CancelFunc
+}
+
 // Handler processes incoming Telegram messages and executes tasks
 type Handler struct {
-	client       *Client
-	runner       *executor.Runner
-	projectPath  string
-	allowedIDs   map[int64]bool      // Allowed user/chat IDs for security
-	offset       int64               // Last processed update ID
-	pendingTasks map[string]*PendingTask // ChatID -> pending task
-	mu           sync.Mutex
-	stopCh       chan struct{}
-	wg           sync.WaitGroup
-	transcriber  *transcription.Service // Voice transcription service (optional)
+	client        *Client
+	runner        *executor.Runner
+	projectPath   string
+	allowedIDs    map[int64]bool          // Allowed user/chat IDs for security
+	offset        int64                   // Last processed update ID
+	pendingTasks  map[string]*PendingTask // ChatID -> pending task
+	runningTasks  map[string]*RunningTask // ChatID -> running task
+	mu            sync.Mutex
+	stopCh        chan struct{}
+	wg            sync.WaitGroup
+	transcriber   *transcription.Service  // Voice transcription service (optional)
 }
 
 // HandlerConfig holds configuration for the Telegram handler
@@ -61,6 +70,7 @@ func NewHandler(config *HandlerConfig, runner *executor.Runner) *Handler {
 		projectPath:  config.ProjectPath,
 		allowedIDs:   allowedIDs,
 		pendingTasks: make(map[string]*PendingTask),
+		runningTasks: make(map[string]*RunningTask),
 		stopCh:       make(chan struct{}),
 	}
 
@@ -529,26 +539,46 @@ I can help you with your codebase!
 *Commands:*
 /help - Show this message
 /status - Check bot status
+/tasks - Show task backlog
+/run <id> - Execute task directly (e.g., /run 07)
+/stop - Stop running task
 /cancel - Cancel pending task
 
-*Task flow:*
-1. You describe a task
-2. I ask for confirmation
-3. You confirm or cancel
-4. I execute and report results`
+*Quick patterns:*
+• ` + "`07`" + ` or ` + "`task 07`" + ` - Run TASK-07 directly
+• ` + "`status?`" + ` - Project status
+• ` + "`todos?`" + ` - List TODOs`
 
 		_, _ = h.client.SendMessage(ctx, chatID, helpText, "Markdown")
 
 	case "/status":
 		h.mu.Lock()
 		pending := h.pendingTasks[chatID]
+		running := h.runningTasks[chatID]
 		h.mu.Unlock()
 
 		statusText := fmt.Sprintf("✅ Pilot bot is running\n📁 Project: `%s`", h.projectPath)
+		if running != nil {
+			elapsed := time.Since(running.StartedAt).Round(time.Second)
+			statusText += fmt.Sprintf("\n\n🔄 Running: `%s` (%s)", running.TaskID, elapsed)
+		}
 		if pending != nil {
-			statusText += fmt.Sprintf("\n\n⏳ Pending task: `%s`", pending.TaskID)
+			statusText += fmt.Sprintf("\n\n⏳ Pending: `%s`", pending.TaskID)
 		}
 		_, _ = h.client.SendMessage(ctx, chatID, statusText, "Markdown")
+
+	case "/tasks", "/list":
+		h.handleTasksCommand(ctx, chatID)
+
+	case "/run":
+		if len(parts) < 2 {
+			_, _ = h.client.SendMessage(ctx, chatID, "Usage: /run <task-id>\nExample: `/run 07`", "Markdown")
+			return
+		}
+		h.handleRunCommand(ctx, chatID, parts[1])
+
+	case "/stop":
+		h.handleStopCommand(ctx, chatID)
 
 	case "/cancel":
 		h.mu.Lock()
@@ -565,6 +595,80 @@ I can help you with your codebase!
 	default:
 		_, _ = h.client.SendMessage(ctx, chatID, "Unknown command. Use /help for available commands.", "")
 	}
+}
+
+// handleTasksCommand shows the task backlog
+func (h *Handler) handleTasksCommand(ctx context.Context, chatID string) {
+	taskList := h.fastListTasks()
+	if taskList == "" {
+		_, _ = h.client.SendMessage(ctx, chatID, "📋 No tasks found in `.agent/tasks/`", "Markdown")
+		return
+	}
+	_, _ = h.client.SendMessage(ctx, chatID, "📋 *Task Backlog*\n\n"+taskList, "Markdown")
+}
+
+// handleRunCommand executes a task directly without confirmation
+func (h *Handler) handleRunCommand(ctx context.Context, chatID, taskIDInput string) {
+	// Check if already running a task
+	h.mu.Lock()
+	if running := h.runningTasks[chatID]; running != nil {
+		h.mu.Unlock()
+		elapsed := time.Since(running.StartedAt).Round(time.Second)
+		_, _ = h.client.SendMessage(ctx, chatID,
+			fmt.Sprintf("⚠️ Already running `%s` (%s)\n\nUse /stop to cancel it first.", running.TaskID, elapsed), "Markdown")
+		return
+	}
+	h.mu.Unlock()
+
+	// Resolve task ID
+	taskInfo := h.resolveTaskID(taskIDInput)
+	if taskInfo == nil {
+		_, _ = h.client.SendMessage(ctx, chatID,
+			fmt.Sprintf("❌ Task `%s` not found\n\nUse /tasks to see available tasks.", taskIDInput), "Markdown")
+		return
+	}
+
+	// Load task description
+	description := h.loadTaskDescription(taskInfo)
+	if description == "" {
+		_, _ = h.client.SendMessage(ctx, chatID,
+			fmt.Sprintf("❌ Could not load task `%s`", taskInfo.FullID), "Markdown")
+		return
+	}
+
+	// Notify user
+	_, _ = h.client.SendMessage(ctx, chatID,
+		fmt.Sprintf("🚀 *Starting task*\n\n`%s`: %s", taskInfo.FullID, taskInfo.Title), "Markdown")
+
+	// Execute directly
+	h.executeTask(ctx, chatID, taskInfo.FullID, fmt.Sprintf("## Task: %s\n\n%s", taskInfo.FullID, description))
+}
+
+// handleStopCommand stops a running task
+func (h *Handler) handleStopCommand(ctx context.Context, chatID string) {
+	h.mu.Lock()
+	running := h.runningTasks[chatID]
+	h.mu.Unlock()
+
+	if running == nil {
+		_, _ = h.client.SendMessage(ctx, chatID, "No task is currently running.", "")
+		return
+	}
+
+	// Cancel the task
+	if running.Cancel != nil {
+		running.Cancel()
+	}
+
+	// Also try to cancel via runner
+	_ = h.runner.Cancel(running.TaskID)
+
+	h.mu.Lock()
+	delete(h.runningTasks, chatID)
+	h.mu.Unlock()
+
+	_, _ = h.client.SendMessage(ctx, chatID,
+		fmt.Sprintf("🛑 Stopped task `%s`", running.TaskID), "Markdown")
 }
 
 // handlePhoto processes photo messages
@@ -861,6 +965,84 @@ func (h *Handler) executeImageTask(ctx context.Context, chatID, imagePath, promp
 	}
 
 	_, _ = h.client.SendMessage(ctx, chatID, answer, "Markdown")
+}
+
+// ============================================================================
+// Task Resolution Helpers
+// ============================================================================
+
+// TaskInfo holds resolved task information from .agent/tasks/
+type TaskInfo struct {
+	ID       string // e.g., "07"
+	FullID   string // e.g., "TASK-07"
+	Title    string // e.g., "Telegram Voice Support"
+	Status   string // e.g., "backlog", "complete"
+	FilePath string // Full path to task file
+}
+
+// resolveTaskID looks up a task number and returns task info
+// Input can be "07", "7", "TASK-07", "task 7", etc.
+func (h *Handler) resolveTaskID(input string) *TaskInfo {
+	// Normalize input - extract just the number
+	input = strings.ToLower(strings.TrimSpace(input))
+	input = strings.TrimPrefix(input, "task-")
+	input = strings.TrimPrefix(input, "task ")
+	input = strings.TrimPrefix(input, "#")
+
+	// Try to parse as number
+	num, err := strconv.Atoi(input)
+	if err != nil {
+		return nil
+	}
+
+	// Format as two-digit for file lookup
+	taskNum := fmt.Sprintf("%02d", num)
+
+	// Search for matching task file
+	tasksDir := filepath.Join(h.projectPath, ".agent", "tasks")
+	entries, err := os.ReadDir(tasksDir)
+	if err != nil {
+		return nil
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
+			continue
+		}
+
+		name := strings.ToUpper(entry.Name())
+		// Match TASK-07-*.md or TASK-7-*.md
+		if strings.HasPrefix(name, fmt.Sprintf("TASK-%s-", taskNum)) ||
+			strings.HasPrefix(name, fmt.Sprintf("TASK-%d-", num)) {
+
+			filePath := filepath.Join(tasksDir, entry.Name())
+			status, title := parseTaskFile(filePath)
+
+			return &TaskInfo{
+				ID:       taskNum,
+				FullID:   fmt.Sprintf("TASK-%s", taskNum),
+				Title:    title,
+				Status:   status,
+				FilePath: filePath,
+			}
+		}
+	}
+
+	return nil
+}
+
+// loadTaskDescription reads the full task description from the file
+func (h *Handler) loadTaskDescription(taskInfo *TaskInfo) string {
+	if taskInfo == nil || taskInfo.FilePath == "" {
+		return ""
+	}
+
+	data, err := os.ReadFile(taskInfo.FilePath)
+	if err != nil {
+		return ""
+	}
+
+	return string(data)
 }
 
 // ============================================================================
