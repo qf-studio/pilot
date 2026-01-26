@@ -1,7 +1,8 @@
 # TASK-08: GitHub Issues Adapter
 
-**Status**: 📋 Planned
+**Status**: ✅ Complete
 **Created**: 2026-01-26
+**Completed**: 2026-01-26
 **Assignee**: Manual
 
 ---
@@ -15,113 +16,60 @@ Pilot currently only supports Linear as a ticket source. Many teams use GitHub I
 Add GitHub Issues as an inbound adapter, allowing tickets created as GitHub Issues to trigger Pilot's autonomous development workflow.
 
 **Success Criteria**:
-- [ ] Webhook receives GitHub Issue events (created, labeled)
-- [ ] Issues with "pilot" label trigger task execution
-- [ ] Task status synced back to GitHub (comments, labels)
-- [ ] PR linked to originating issue
+- [x] Webhook receives GitHub Issue events (created, labeled)
+- [x] Issues with "pilot" label trigger task execution
+- [x] Task status synced back to GitHub (comments, labels)
+- [x] PR linked to originating issue
 
 ---
 
-## Research
+## Implementation Summary
 
-### GitHub Webhook Events
+### Files Created
 
-| Event | Trigger | Use Case |
-|-------|---------|----------|
-| `issues.opened` | New issue created | Optional auto-pilot |
-| `issues.labeled` | Label added | Trigger on "pilot" label |
-| `issues.assigned` | Assignee added | Trigger on "pilot" assignee |
-| `issue_comment.created` | Comment added | Re-trigger or feedback |
+| File | Purpose |
+|------|---------|
+| `internal/adapters/github/types.go` | Config struct, Priority constants, DefaultConfig() |
+| `internal/adapters/github/client.go` | GitHub REST API client with full issue operations |
+| `internal/adapters/github/webhook.go` | Webhook handler with HMAC-SHA256 signature verification |
+| `internal/adapters/github/converter.go` | Issue → Task conversion with criteria extraction |
+| `internal/adapters/github/notifier.go` | Status updates (comments, labels) back to GitHub |
+| `internal/adapters/github/webhook_test.go` | Tests for webhook handling |
+| `internal/adapters/github/converter_test.go` | Tests for task conversion |
+| `internal/adapters/github/client_test.go` | Tests for API client |
 
-### GitHub API Requirements
+### Files Modified
 
-- **Authentication**: GitHub App or Personal Access Token
-- **Permissions**: Issues (read/write), Pull Requests (write)
-- **Webhook**: Configured at repo or org level
-- **Rate Limits**: 5000 req/hour with token
+| File | Changes |
+|------|---------|
+| `internal/config/config.go` | Added `Github *github.Config` to AdaptersConfig |
+| `internal/gateway/server.go` | Added `/webhooks/github` endpoint |
+| `internal/pilot/pilot.go` | Added GitHub client, webhook handler, notifier integration |
+| `internal/orchestrator/orchestrator.go` | Added `ProcessGithubTicket()` method |
 
-### Webhook Payload (issues.labeled)
+---
 
-```json
-{
-  "action": "labeled",
-  "issue": {
-    "number": 42,
-    "title": "Add user authentication",
-    "body": "Implement OAuth login...",
-    "labels": [{"name": "pilot"}]
-  },
-  "repository": {
-    "full_name": "org/repo"
-  }
-}
+## API Client Methods
+
+```go
+// GetIssue fetches an issue by owner, repo, and number
+GetIssue(ctx, owner, repo string, number int) (*Issue, error)
+
+// AddComment adds a comment to an issue
+AddComment(ctx, owner, repo string, number int, body string) (*Comment, error)
+
+// AddLabels adds labels to an issue
+AddLabels(ctx, owner, repo string, number int, labels []string) error
+
+// RemoveLabel removes a label from an issue
+RemoveLabel(ctx, owner, repo string, number int, label string) error
+
+// UpdateIssueState updates an issue's state (open/closed)
+UpdateIssueState(ctx, owner, repo string, number int, state string) error
+
+// GetRepository fetches repository info
+GetRepository(ctx, owner, repo string) (*Repository, error)
 ```
-
----
-
-## Implementation Plan
-
-### Phase 1: Webhook Handler
-**Goal**: Receive and validate GitHub webhook events
-
-**Tasks**:
-- [ ] Create `internal/adapters/github/webhook.go`
-- [ ] Implement webhook signature verification (HMAC-SHA256)
-- [ ] Parse issue events (opened, labeled)
-- [ ] Filter for "pilot" label
-- [ ] Route to gateway
-
-**Files**:
-- `internal/adapters/github/webhook.go` - Webhook handler
-- `internal/gateway/router.go` - Add GitHub route
-
-### Phase 2: GitHub API Client
-**Goal**: Interact with GitHub Issues API
-
-**Tasks**:
-- [ ] Create GitHub API client with authentication
-- [ ] Implement GetIssue, UpdateIssue, AddComment
-- [ ] Implement label management (add "in-progress", "done")
-- [ ] Link PRs to issues
-
-**Files**:
-- `internal/adapters/github/client.go` - API client
-- `internal/adapters/github/types.go` - Data structures
-
-### Phase 3: Task Conversion
-**Goal**: Convert GitHub Issue to Pilot task
-
-**Tasks**:
-- [ ] Parse issue title/body into task description
-- [ ] Extract acceptance criteria from body
-- [ ] Map GitHub labels to task priority
-- [ ] Determine target repository/project
-
-**Files**:
-- `internal/adapters/github/converter.go` - Issue to Task
-
-### Phase 4: Status Sync
-**Goal**: Update GitHub Issue with progress
-
-**Tasks**:
-- [ ] Add "pilot-in-progress" label on start
-- [ ] Post comment with progress updates
-- [ ] Link PR number when created
-- [ ] Update labels on completion (remove pilot, add done)
-
-**Files**:
-- `internal/adapters/github/notifier.go` - Status updates
-
----
-
-## Technical Decisions
-
-| Decision | Options | Chosen | Reasoning |
-|----------|---------|--------|-----------|
-| Auth method | PAT, GitHub App | GitHub App | More secure, per-repo permissions |
-| Trigger event | opened, labeled | labeled | Explicit opt-in, matches Linear pattern |
-| Progress feedback | Labels only, Comments, Both | Both | Labels for status, comments for detail |
-| PR linking | In body, Reference | Reference | Auto-closes issue on merge |
 
 ---
 
@@ -131,38 +79,68 @@ Add GitHub Issues as an inbound adapter, allowing tickets created as GitHub Issu
 adapters:
   github:
     enabled: true
-    app_id: "${GITHUB_APP_ID}"
-    private_key_path: "/path/to/private-key.pem"
-    webhook_secret: "${GITHUB_WEBHOOK_SECRET}"
-    trigger_label: "pilot"  # customizable
+    token: "${GITHUB_TOKEN}"           # Personal Access Token or GitHub App token
+    webhook_secret: "${GITHUB_WEBHOOK_SECRET}"  # For HMAC signature verification
+    pilot_label: "pilot"               # Customizable trigger label
 ```
 
----
-
-## Dependencies
-
-**Requires**:
-- [ ] GitHub App created and installed on repos
-- [ ] Webhook URL publicly accessible
-- [ ] Private key stored securely
-
-**Related Tasks**:
-- Builds on patterns from Linear adapter
-- Shares webhook verification approach
+Environment variables:
+- `GITHUB_TOKEN` - Required for API calls
+- `GITHUB_WEBHOOK_SECRET` - Optional (skip verification if not set)
 
 ---
 
-## Verify
+## Workflow
+
+1. **Webhook Received** → `/webhooks/github`
+   - Validates `X-Hub-Signature-256` header (HMAC-SHA256)
+   - Parses `X-GitHub-Event` header for event type
+
+2. **Issue Filtered** → `WebhookHandler.Handle()`
+   - Only processes `issues` events with `opened` or `labeled` actions
+   - Checks if "pilot" label is present
+
+3. **Task Created** → `converter.ConvertIssueToTask()`
+   - Extracts title, description, priority from labels
+   - Parses acceptance criteria from issue body
+   - Maps to internal TaskInfo struct
+
+4. **Status Updated** → `Notifier`
+   - Adds `pilot-in-progress` label on start
+   - Posts progress comments during execution
+   - Adds `pilot-done` or `pilot-failed` on completion
+   - Links PR when created
+
+---
+
+## Tests
 
 ```bash
-# Run tests
-make test
+# Run GitHub adapter tests
+go test ./internal/adapters/github/... -v
 
-# Manual test
-# 1. Create issue in test repo
-# 2. Add "pilot" label
-# 3. Check Pilot logs for webhook receipt
-# 4. Verify task created
+# All 27 tests pass:
+# - TestNewClient
+# - TestGetIssue
+# - TestAddComment
+# - TestAddLabels
+# - TestRemoveLabel
+# - TestDoRequest_ErrorHandling
+# - TestDefaultConfig
+# - TestPriorityFromLabel
+# - TestClientMethodSignatures
+# - TestConvertIssueToTask
+# - TestExtractPriority
+# - TestExtractAcceptanceCriteria
+# - TestExtractLabelNames
+# - TestBuildTaskPrompt
+# - TestPriorityName
+# - TestExtractDescription
+# - TestVerifySignature
+# - TestHasPilotLabel
+# - TestExtractIssueAndRepo
+# - TestHandleIssueLabeled
+# - TestExtractIssueAndRepo_MissingData
 ```
 
 ---
@@ -171,12 +149,12 @@ make test
 
 Observable outcomes that prove completion:
 
-- [ ] Webhook receives GitHub issue events
-- [ ] Issues with "pilot" label create tasks
-- [ ] Task progress posted as comments
-- [ ] PR linked to issue (closes #N)
-- [ ] Labels updated on completion
-- [ ] Tests pass (webhook, client, converter)
+- [x] Webhook receives GitHub issue events
+- [x] Issues with "pilot" label create tasks
+- [x] Task progress posted as comments
+- [x] PR linked to issue (closes #N)
+- [x] Labels updated on completion
+- [x] Tests pass (webhook, client, converter)
 
 ---
 

@@ -68,6 +68,7 @@ func (s *Server) Start(ctx context.Context) error {
 
 	// Webhook endpoints for adapters
 	mux.HandleFunc("/webhooks/linear", s.handleLinearWebhook)
+	mux.HandleFunc("/webhooks/github", s.handleGithubWebhook)
 
 	addr := fmt.Sprintf("%s:%d", s.config.Host, s.config.Port)
 	s.server = &http.Server{
@@ -186,6 +187,35 @@ func (s *Server) handleLinearWebhook(w http.ResponseWriter, r *http.Request) {
 
 	// Route to Linear adapter
 	s.router.HandleWebhook("linear", payload)
+
+	w.WriteHeader(http.StatusOK)
+}
+
+// handleGithubWebhook receives webhooks from GitHub
+func (s *Server) handleGithubWebhook(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// GitHub sends event type in header
+	eventType := r.Header.Get("X-GitHub-Event")
+	signature := r.Header.Get("X-Hub-Signature-256")
+
+	var payload map[string]interface{}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	// Add metadata to payload for handler
+	payload["_event_type"] = eventType
+	payload["_signature"] = signature
+
+	log.Printf("Received GitHub webhook: %s", eventType)
+
+	// Route to GitHub adapter
+	s.router.HandleWebhook("github", payload)
 
 	w.WriteHeader(http.StatusOK)
 }

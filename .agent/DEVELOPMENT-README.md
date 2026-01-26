@@ -100,9 +100,9 @@ if _, err := os.Stat(agentDir); err == nil {
   - Created: 2026-01-26
   - Jira Cloud/Server integration for enterprise teams
 
-- **TASK-08**: GitHub Issues Adapter (Status: 📋 Planned)
+- **TASK-08**: GitHub Issues Adapter (Status: ✅ Complete)
   - File: `.agent/tasks/TASK-08-github-issues-adapter.md`
-  - Created: 2026-01-26
+  - Completed: 2026-01-26
   - GitHub Issues as ticket source for open-source projects
 
 ### Monitoring & Observability
@@ -164,9 +164,9 @@ if _, err := os.Stat(agentDir); err == nil {
   - Created: 2026-01-26
   - Voice transcription via SenseVoice (15x faster than Whisper)
 
-- **TASK-06**: Telegram Image Support (Status: 🚧 In Progress)
+- **TASK-06**: Telegram Image Support (Status: ✅ Complete)
   - File: `.agent/tasks/TASK-06-telegram-image-support.md`
-  - Started: 2026-01-26
+  - Completed: 2026-01-26
   - Enable image analysis via Telegram bot
 
 - **TASK-05**: Bot Singleton Detection (Status: 📋 Planned)

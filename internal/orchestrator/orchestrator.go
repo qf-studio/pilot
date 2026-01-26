@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sync"
 
+	"github.com/alekspetrov/pilot/internal/adapters/github"
 	"github.com/alekspetrov/pilot/internal/adapters/linear"
 	"github.com/alekspetrov/pilot/internal/adapters/slack"
 	"github.com/alekspetrov/pilot/internal/executor"
@@ -258,4 +259,41 @@ func extractLabelNames(labels []linear.Label) []string {
 		names[i] = label.Name
 	}
 	return names
+}
+
+// ProcessGithubTicket processes a new ticket from GitHub Issues
+func (o *Orchestrator) ProcessGithubTicket(ctx context.Context, task *github.TaskInfo, projectPath string) error {
+	// Convert GitHub task to task document via bridge
+	ticket := &TicketData{
+		ID:          task.ID,
+		Identifier:  task.ID, // GH-42 format
+		Title:       task.Title,
+		Description: task.Description,
+		Priority:    int(task.Priority),
+		Labels:      task.Labels,
+	}
+
+	doc, err := o.bridge.PlanTicket(ctx, ticket)
+	if err != nil {
+		return fmt.Errorf("failed to plan ticket: %w", err)
+	}
+
+	// Save task document
+	if err := o.saveTaskDocument(projectPath, doc); err != nil {
+		log.Printf("Warning: failed to save task document: %v", err)
+	}
+
+	// Create internal task
+	internalTask := &Task{
+		ID:          doc.ID,
+		Document:    doc,
+		ProjectPath: projectPath,
+		Branch:      fmt.Sprintf("pilot/%s", task.ID),
+		Priority:    float64(task.Priority),
+	}
+
+	// Queue task
+	o.QueueTask(internalTask)
+
+	return nil
 }
