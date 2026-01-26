@@ -28,6 +28,7 @@ if _, err := os.Stat(agentDir); err == nil {
 | This file | Every session (navigator index) |
 | `.agent/tasks/TASK-XX.md` | When working on specific task |
 | `.agent/system/ARCHITECTURE.md` | When modifying core components |
+| `.agent/sops/*.md` | Before modifying integrations (Telegram, Linear, etc.) |
 
 ## Current State
 
@@ -77,9 +78,54 @@ if _, err := os.Stat(agentDir); err == nil {
 
 ## Active Tasks
 
-- **TASK-04**: Telegram UX Improvements (Status: 🚧 In Progress)
-  - File: `.agent/tasks/TASK-04-telegram-ux.md`
+### Roadmap Features (from README)
+
+- **TASK-12**: Pilot Cloud (Hosted) (Status: 📋 Planned)
+  - File: `.agent/tasks/TASK-12-pilot-cloud.md`
+  - Created: 2026-01-26
+  - SaaS version with managed infrastructure, OAuth, usage-based billing
+
+- **TASK-11**: Cross-Project Memory (Status: 📋 Planned)
+  - File: `.agent/tasks/TASK-11-cross-project-memory.md`
+  - Created: 2026-01-26
+  - Share patterns and learnings across projects
+
+- **TASK-10**: Daily Briefs (Status: 📋 Planned)
+  - File: `.agent/tasks/TASK-10-daily-briefs.md`
+  - Created: 2026-01-26
+  - Automated summary of completed work, progress, blockers
+
+- **TASK-09**: Jira Adapter (Status: 📋 Planned)
+  - File: `.agent/tasks/TASK-09-jira-adapter.md`
+  - Created: 2026-01-26
+  - Jira Cloud/Server integration for enterprise teams
+
+- **TASK-08**: GitHub Issues Adapter (Status: 📋 Planned)
+  - File: `.agent/tasks/TASK-08-github-issues-adapter.md`
+  - Created: 2026-01-26
+  - GitHub Issues as ticket source for open-source projects
+
+### Telegram Features
+
+- **TASK-07**: Telegram Voice Support (Status: 📋 Planned)
+  - File: `.agent/tasks/TASK-07-telegram-voice-support.md`
+  - Created: 2026-01-26
+  - Voice transcription via SenseVoice (15x faster than Whisper)
+
+- **TASK-06**: Telegram Image Support (Status: 🚧 In Progress)
+  - File: `.agent/tasks/TASK-06-telegram-image-support.md`
   - Started: 2026-01-26
+  - Enable image analysis via Telegram bot
+
+- **TASK-05**: Bot Singleton Detection (Status: 📋 Planned)
+  - File: `.agent/tasks/TASK-05-bot-singleton.md`
+  - Graceful handling when another bot instance is running
+
+### Completed
+
+- **TASK-04**: Telegram UX Improvements (Status: ✅ Complete)
+  - File: `.agent/tasks/TASK-04-telegram-ux.md`
+  - Completed: 2026-01-26
 
 - **TASK-03**: Git & PR Workflow (Status: ✅ Complete)
   - File: `.agent/tasks/TASK-03-git-pr-workflow.md`

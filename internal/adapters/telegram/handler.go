@@ -365,6 +365,9 @@ func (h *Handler) handleTask(ctx context.Context, chatID, description string) {
 // executeTask executes a confirmed task
 func (h *Handler) executeTask(ctx context.Context, chatID, taskID, description string) {
 	// Send execution started message (this will be updated with progress)
+	// NOTE: Use "Markdown" not "MarkdownV2" - MarkdownV2 requires strict escaping
+	// of special chars (-, ., !, etc.) which causes silent failures. See SOP:
+	// .agent/sops/telegram-bot-development.md
 	resp, err := h.client.SendMessage(ctx, chatID, FormatProgressUpdate(taskID, "Starting", 0, "Initializing..."), "Markdown")
 	if err != nil {
 		log.Printf("[telegram] Failed to send start message: %v", err)
