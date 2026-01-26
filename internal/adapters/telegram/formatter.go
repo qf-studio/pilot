@@ -49,6 +49,56 @@ func FormatTaskStarted(taskID, description string) string {
 	)
 }
 
+// FormatProgressUpdate formats a progress update message
+func FormatProgressUpdate(taskID, phase string, progress int, message string) string {
+	// Build progress bar (20 chars)
+	filled := progress / 5 // 0-20 filled chars
+	if filled > 20 {
+		filled = 20
+	}
+	if filled < 0 {
+		filled = 0
+	}
+
+	bar := strings.Repeat("█", filled) + strings.Repeat("░", 20-filled)
+
+	// Phase emoji
+	phaseEmoji := "⏳"
+	switch phase {
+	case "Starting":
+		phaseEmoji = "🚀"
+	case "Branching":
+		phaseEmoji = "🌿"
+	case "Exploring":
+		phaseEmoji = "🔍"
+	case "Installing":
+		phaseEmoji = "📦"
+	case "Implementing":
+		phaseEmoji = "⚙️"
+	case "Testing":
+		phaseEmoji = "🧪"
+	case "Committing":
+		phaseEmoji = "💾"
+	case "Completed":
+		phaseEmoji = "✅"
+	case "Navigator":
+		phaseEmoji = "🧭"
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("%s *%s* \\(%d%%\\)\n", phaseEmoji, phase, progress))
+	sb.WriteString(fmt.Sprintf("`%s`\n\n", bar))
+	sb.WriteString(fmt.Sprintf("`%s`", taskID))
+
+	// Add activity message if present
+	if message != "" {
+		cleanMsg := truncateDescription(message, 60)
+		sb.WriteString(fmt.Sprintf("\n\n📝 %s", escapeMarkdown(cleanMsg)))
+	}
+
+	return sb.String()
+}
+
 // FormatTaskResult formats a task result message with clean output
 func FormatTaskResult(result *executor.ExecutionResult) string {
 	if result.Success {

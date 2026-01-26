@@ -109,6 +109,47 @@ type GetUpdatesResponse struct {
 	ErrorCode   int       `json:"error_code,omitempty"`
 }
 
+// ErrConflict is returned when another bot instance is already running
+var ErrConflict = fmt.Errorf("another bot instance is running")
+
+// CheckSingleton verifies no other bot instance is running by making a quick API call.
+// Returns ErrConflict if another instance is detected (409 error).
+func (c *Client) CheckSingleton(ctx context.Context) error {
+	// Use timeout=0 for immediate response (no long polling)
+	url := fmt.Sprintf("%s%s/getUpdates?timeout=0&limit=1", telegramAPIURL, c.botToken)
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("failed to check singleton: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read response: %w", err)
+	}
+
+	var result GetUpdatesResponse
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	if !result.OK {
+		// 409 = Conflict: another getUpdates is running
+		if result.ErrorCode == 409 {
+			return ErrConflict
+		}
+		return fmt.Errorf("telegram API error: %s (code: %d)", result.Description, result.ErrorCode)
+	}
+
+	return nil
+}
+
 // GetUpdates retrieves updates using long polling
 func (c *Client) GetUpdates(ctx context.Context, offset int64, timeout int) ([]*Update, error) {
 	url := fmt.Sprintf("%s%s/getUpdates?offset=%d&timeout=%d", telegramAPIURL, c.botToken, offset, timeout)
@@ -230,6 +271,58 @@ func (c *Client) SendMessageWithKeyboard(ctx context.Context, chatID, text, pars
 	}
 
 	return &result, nil
+}
+
+// EditMessage edits an existing message's text
+func (c *Client) EditMessage(ctx context.Context, chatID string, messageID int64, text, parseMode string) error {
+	type editRequest struct {
+		ChatID    string `json:"chat_id"`
+		MessageID int64  `json:"message_id"`
+		Text      string `json:"text"`
+		ParseMode string `json:"parse_mode,omitempty"`
+	}
+
+	req := editRequest{
+		ChatID:    chatID,
+		MessageID: messageID,
+		Text:      text,
+		ParseMode: parseMode,
+	}
+
+	body, err := json.Marshal(req)
+	if err != nil {
+		return fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	url := telegramAPIURL + c.botToken + "/editMessageText"
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("failed to edit message: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read response: %w", err)
+	}
+
+	var result SendMessageResponse
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	if !result.OK {
+		return fmt.Errorf("telegram API error: %s (code: %d)", result.Description, result.ErrorCode)
+	}
+
+	return nil
 }
 
 // AnswerCallback answers a callback query

@@ -58,6 +58,12 @@ func NewHandler(config *HandlerConfig, runner *executor.Runner) *Handler {
 	}
 }
 
+// CheckSingleton verifies no other bot instance is already running.
+// Returns ErrConflict if another instance is detected.
+func (h *Handler) CheckSingleton(ctx context.Context) error {
+	return h.client.CheckSingleton(ctx)
+}
+
 // StartPolling starts polling for updates in a goroutine
 func (h *Handler) StartPolling(ctx context.Context) {
 	h.wg.Add(1)
@@ -358,10 +364,18 @@ func (h *Handler) handleTask(ctx context.Context, chatID, description string) {
 
 // executeTask executes a confirmed task
 func (h *Handler) executeTask(ctx context.Context, chatID, taskID, description string) {
-	// Send execution started message
-	_, err := h.client.SendMessage(ctx, chatID, FormatTaskStarted(taskID, description), "Markdown")
+	// Send execution started message (this will be updated with progress)
+	resp, err := h.client.SendMessage(ctx, chatID, FormatProgressUpdate(taskID, "Starting", 0, "Initializing..."), "MarkdownV2")
 	if err != nil {
 		log.Printf("[telegram] Failed to send start message: %v", err)
+		// Fallback to simple message
+		_, _ = h.client.SendMessage(ctx, chatID, FormatTaskStarted(taskID, description), "Markdown")
+	}
+
+	// Track progress message ID for updates
+	var progressMsgID int64
+	if resp != nil && resp.Result != nil {
+		progressMsgID = resp.Result.MessageID
 	}
 
 	// Create task for executor
@@ -373,9 +387,47 @@ func (h *Handler) executeTask(ctx context.Context, chatID, taskID, description s
 		Verbose:     false,
 	}
 
+	// Set up progress callback with throttling
+	var lastPhase string
+	var lastProgress int
+	var lastUpdate time.Time
+
+	if progressMsgID != 0 {
+		h.runner.OnProgress(func(tid string, phase string, progress int, message string) {
+			// Only update for our task
+			if tid != taskID {
+				return
+			}
+
+			// Throttle updates: phase change OR progress change >= 15% OR 3 seconds elapsed
+			now := time.Now()
+			phaseChanged := phase != lastPhase
+			progressChanged := progress-lastProgress >= 15
+			timeElapsed := now.Sub(lastUpdate) >= 3*time.Second
+
+			if !phaseChanged && !progressChanged && !timeElapsed {
+				return
+			}
+
+			// Update tracking state
+			lastPhase = phase
+			lastProgress = progress
+			lastUpdate = now
+
+			// Send update
+			updateText := FormatProgressUpdate(taskID, phase, progress, message)
+			if err := h.client.EditMessage(ctx, chatID, progressMsgID, updateText, "MarkdownV2"); err != nil {
+				log.Printf("[telegram] Failed to edit progress message: %v", err)
+			}
+		})
+	}
+
 	// Execute task
 	log.Printf("[telegram] Executing task %s: %s", taskID, truncateDescription(description, 100))
 	result, err := h.runner.Execute(ctx, task)
+
+	// Clear progress callback
+	h.runner.OnProgress(nil)
 
 	// Send result with clean formatting
 	if err != nil {
