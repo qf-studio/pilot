@@ -336,8 +336,9 @@ func (r *Runner) BuildPrompt(task *Task) string {
 
 	// Navigator-aware prompt structure
 	if hasNavigator {
-		// Navigator handles workflow, autonomous completion, and documentation
-		sb.WriteString("Start my Navigator session.\n\n")
+		// Skip Navigator skills to avoid Claude Code bug with tool_use ID duplication
+		// Read navigator docs directly instead of invoking /nav:start skill
+		sb.WriteString("Read .agent/DEVELOPMENT-README.md to understand the project structure.\n\n")
 		sb.WriteString(fmt.Sprintf("## Task: %s\n\n", task.ID))
 		sb.WriteString(fmt.Sprintf("%s\n\n", task.Description))
 
@@ -345,10 +346,10 @@ func (r *Runner) BuildPrompt(task *Task) string {
 			sb.WriteString(fmt.Sprintf("Create branch `%s` before starting.\n\n", task.Branch))
 		}
 
-		// Navigator will handle: workflow check, complexity detection, autonomous completion
-		sb.WriteString("Run until done. Use Navigator's autonomous completion protocol.\n")
+		sb.WriteString("Work autonomously until complete. Commit when done.\n")
 	} else {
 		// Non-Navigator project: explicit instructions with strict constraints
+		sb.WriteString("CRITICAL: Do NOT call multiple tools in parallel. Call tools sequentially, one at a time. This prevents API errors.\n\n")
 		sb.WriteString(fmt.Sprintf("## Task: %s\n\n", task.ID))
 		sb.WriteString(fmt.Sprintf("%s\n\n", task.Description))
 
