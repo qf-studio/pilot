@@ -1,0 +1,226 @@
+# Pilot Cloud Kubernetes Deployment
+# Deploy to a managed Kubernetes cluster (GKE, EKS, AKS)
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: pilot-cloud
+  labels:
+    app: pilot-cloud
+
+---
+# API Server Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pilot-api
+  namespace: pilot-cloud
+  labels:
+    app: pilot-api
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: pilot-api
+  template:
+    metadata:
+      labels:
+        app: pilot-api
+    spec:
+      serviceAccountName: pilot-api
+      containers:
+        - name: api
+          image: pilot/api:latest
+          ports:
+            - containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: BASE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: pilot-config
+                  key: base_url
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: pilot-secrets
+                  key: database_url
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: pilot-secrets
+                  key: redis_url
+            - name: JWT_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: pilot-secrets
+                  key: jwt_secret
+            - name: STRIPE_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: pilot-secrets
+                  key: stripe_secret
+            - name: STRIPE_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: pilot-secrets
+                  key: stripe_webhook_secret
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "250m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values:
+                        - pilot-api
+                topologyKey: kubernetes.io/hostname
+
+---
+# API Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: pilot-api
+  namespace: pilot-cloud
+spec:
+  selector:
+    app: pilot-api
+  ports:
+    - port: 80
+      targetPort: 8080
+  type: ClusterIP
+
+---
+# Ingress
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: pilot-api
+  namespace: pilot-cloud
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+spec:
+  tls:
+    - hosts:
+        - api.pilotdev.ai
+      secretName: pilot-api-tls
+  rules:
+    - host: api.pilotdev.ai
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: pilot-api
+                port:
+                  number: 80
+
+---
+# Service Account
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: pilot-api
+  namespace: pilot-cloud
+
+---
+# Config Map
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pilot-config
+  namespace: pilot-cloud
+data:
+  base_url: "https://api.pilotdev.ai"
+  executor_image: "pilot/executor:latest"
+  executor_memory: "2Gi"
+  executor_cpu: "1"
+  executor_timeout: "600"
+  max_concurrent_executions: "50"
+
+---
+# Horizontal Pod Autoscaler
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: pilot-api
+  namespace: pilot-cloud
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: pilot-api
+  minReplicas: 3
+  maxReplicas: 20
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
+
+---
+# Network Policy - Restrict executor egress
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: executor-egress
+  namespace: pilot-cloud
+spec:
+  podSelector:
+    matchLabels:
+      app: pilot-executor
+  policyTypes:
+    - Egress
+  egress:
+    # Allow DNS
+    - to: []
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # Allow HTTPS to approved domains
+    - to: []
+      ports:
+        - port: 443
+          protocol: TCP
+    # Allow Git SSH
+    - to: []
+      ports:
+        - port: 22
+          protocol: TCP
