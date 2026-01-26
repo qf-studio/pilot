@@ -762,7 +762,19 @@ func (h *Handler) fastListTasks() string {
 		filePath := filepath.Join(tasksDir, entry.Name())
 		status, title := parseTaskFile(filePath)
 
-		taskLine := fmt.Sprintf("• `%s` %s", strings.TrimSuffix(entry.Name(), ".md"), title)
+		// Extract task ID (e.g., "TASK-06" from "TASK-06-telegram-image-support.md")
+		taskName := strings.TrimSuffix(entry.Name(), ".md")
+		taskID := taskName
+		if idx := strings.Index(taskName, "-"); idx != -1 {
+			// Find second dash for ID like "TASK-06"
+			rest := taskName[idx+1:]
+			if idx2 := strings.Index(rest, "-"); idx2 != -1 {
+				taskID = taskName[:idx+1+idx2]
+			}
+		}
+
+		// Compact format: "• TASK-06: Image Support"
+		taskLine := fmt.Sprintf("• %s: %s", taskID, title)
 
 		// Use contains for flexible status matching
 		switch {
@@ -775,41 +787,48 @@ func (h *Handler) fastListTasks() string {
 		}
 	}
 
+	if len(pending)+len(inProgress)+len(completed) == 0 {
+		return "" // No tasks found, fall back to Claude
+	}
+
 	var sb strings.Builder
 	sb.WriteString("📋 *Tasks*\n\n")
 
+	// In Progress - show all (usually few)
 	if len(inProgress) > 0 {
-		sb.WriteString("*🚧 In Progress:*\n")
+		sb.WriteString(fmt.Sprintf("🚧 *In Progress (%d):*\n", len(inProgress)))
 		for _, t := range inProgress {
 			sb.WriteString(t + "\n")
 		}
 		sb.WriteString("\n")
 	}
 
+	// Pending - show first 5 as "Up Next"
 	if len(pending) > 0 {
-		sb.WriteString("*📝 Pending:*\n")
-		for _, t := range pending {
-			sb.WriteString(t + "\n")
+		showCount := min(5, len(pending))
+		sb.WriteString(fmt.Sprintf("📝 *Up Next (%d):*\n", showCount))
+		for i := 0; i < showCount; i++ {
+			sb.WriteString(pending[i] + "\n")
+		}
+		if len(pending) > 5 {
+			sb.WriteString(fmt.Sprintf("  _+%d more planned_\n", len(pending)-5))
 		}
 		sb.WriteString("\n")
 	}
 
+	// Completed - show last 3
 	if len(completed) > 0 {
-		sb.WriteString("*✅ Completed:*\n")
-		// Show only last 5 completed
-		start := 0
-		if len(completed) > 5 {
-			start = len(completed) - 5
-			sb.WriteString(fmt.Sprintf("_(showing last 5 of %d)_\n", len(completed)))
-		}
-		for _, t := range completed[start:] {
-			sb.WriteString(t + "\n")
+		showCount := min(3, len(completed))
+		start := len(completed) - showCount
+		sb.WriteString(fmt.Sprintf("✅ *Done (%d):*\n", len(completed)))
+		for i := start; i < len(completed); i++ {
+			sb.WriteString(completed[i] + "\n")
 		}
 	}
 
-	if len(pending)+len(inProgress)+len(completed) == 0 {
-		return "" // No tasks found, fall back to Claude
-	}
+	// Summary line
+	total := len(pending) + len(inProgress) + len(completed)
+	sb.WriteString(fmt.Sprintf("\n_%d total_", total))
 
 	return sb.String()
 }
