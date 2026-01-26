@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/alekspetrov/pilot/internal/adapters/telegram"
 	"github.com/alekspetrov/pilot/internal/banner"
 	"github.com/alekspetrov/pilot/internal/config"
 	"github.com/alekspetrov/pilot/internal/executor"
@@ -38,6 +39,7 @@ func main() {
 		newInitCmd(),
 		newVersionCmd(),
 		newTaskCmd(),
+		newTelegramCmd(),
 	)
 
 	if err := rootCmd.Execute(); err != nil {
@@ -395,4 +397,112 @@ Examples:
 	cmd.Flags().BoolVar(&createPR, "create-pr", false, "Create GitHub PR after successful execution")
 
 	return cmd
+}
+
+func newTelegramCmd() *cobra.Command {
+	var projectPath string
+
+	cmd := &cobra.Command{
+		Use:   "telegram",
+		Short: "Start Telegram bot for receiving tasks",
+		Long: `Start the Telegram bot that listens for messages and executes them as tasks.
+
+Send any message to the bot and it will be executed as a Pilot task.
+The bot will reply with the task result.
+
+Commands:
+  /help   - Show help message
+  /status - Check bot status
+
+Example:
+  pilot telegram --project /path/to/project`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			// Load config
+			configPath := cfgFile
+			if configPath == "" {
+				configPath = config.DefaultConfigPath()
+			}
+
+			cfg, err := config.Load(configPath)
+			if err != nil {
+				return fmt.Errorf("failed to load config: %w", err)
+			}
+
+			// Check Telegram config
+			if cfg.Adapters.Telegram == nil || !cfg.Adapters.Telegram.Enabled {
+				return fmt.Errorf("Telegram adapter not enabled in config")
+			}
+
+			if cfg.Adapters.Telegram.BotToken == "" {
+				return fmt.Errorf("Telegram bot_token not configured")
+			}
+
+			// Resolve project path
+			if projectPath == "" {
+				cwd, _ := os.Getwd()
+				projectPath = cwd
+			}
+
+			banner.Print()
+
+			fmt.Println("🤖 Pilot Telegram Bot")
+			fmt.Println("───────────────────────────────────────")
+			fmt.Printf("   Project: %s\n", projectPath)
+			fmt.Printf("   Chat ID: %s\n", cfg.Adapters.Telegram.ChatID)
+			fmt.Println()
+			fmt.Println("   Listening for messages...")
+			fmt.Println("   Press Ctrl+C to stop")
+			fmt.Println("───────────────────────────────────────")
+			fmt.Println()
+
+			// Create runner and handler
+			runner := executor.NewRunner()
+
+			// Parse chat ID for allowed IDs
+			var allowedIDs []int64
+			if cfg.Adapters.Telegram.ChatID != "" {
+				if id, err := parseIntID(cfg.Adapters.Telegram.ChatID); err == nil {
+					allowedIDs = append(allowedIDs, id)
+				}
+			}
+
+			handler := telegram.NewHandler(&telegram.HandlerConfig{
+				BotToken:    cfg.Adapters.Telegram.BotToken,
+				ProjectPath: projectPath,
+				AllowedIDs:  allowedIDs,
+			}, runner)
+
+			// Start polling
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			handler.StartPolling(ctx)
+
+			// Wait for shutdown signal
+			sigCh := make(chan os.Signal, 1)
+			signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+
+			<-sigCh
+			fmt.Println("\n🛑 Stopping Telegram bot...")
+			handler.Stop()
+
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVarP(&projectPath, "project", "p", "", "Project path (default: current directory)")
+
+	return cmd
+}
+
+// parseIntID parses a string ID to int64
+func parseIntID(s string) (int64, error) {
+	return parseInt64(s)
+}
+
+// parseInt64 parses a string to int64
+func parseInt64(s string) (int64, error) {
+	var id int64
+	_, err := fmt.Sscanf(s, "%d", &id)
+	return id, err
 }

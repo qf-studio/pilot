@@ -77,6 +77,10 @@ if _, err := os.Stat(agentDir); err == nil {
 
 ## Active Tasks
 
+- **TASK-04**: Telegram UX Improvements (Status: 🚧 In Progress)
+  - File: `.agent/tasks/TASK-04-telegram-ux.md`
+  - Started: 2026-01-26
+
 - **TASK-03**: Git & PR Workflow (Status: ✅ Complete)
   - File: `.agent/tasks/TASK-03-git-pr-workflow.md`
   - Completed: 2026-01-26

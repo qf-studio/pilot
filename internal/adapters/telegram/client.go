@@ -32,9 +32,10 @@ func NewClient(botToken string) *Client {
 
 // SendMessageRequest represents a Telegram sendMessage request
 type SendMessageRequest struct {
-	ChatID    string `json:"chat_id"`
-	Text      string `json:"text"`
-	ParseMode string `json:"parse_mode,omitempty"`
+	ChatID      string                `json:"chat_id"`
+	Text        string                `json:"text"`
+	ParseMode   string                `json:"parse_mode,omitempty"`
+	ReplyMarkup *InlineKeyboardMarkup `json:"reply_markup,omitempty"`
 }
 
 // SendMessageResponse represents the response from sending a message
@@ -53,8 +54,28 @@ type Result struct {
 
 // Update represents a Telegram update from getUpdates
 type Update struct {
-	UpdateID int64    `json:"update_id"`
-	Message  *Message `json:"message,omitempty"`
+	UpdateID      int64          `json:"update_id"`
+	Message       *Message       `json:"message,omitempty"`
+	CallbackQuery *CallbackQuery `json:"callback_query,omitempty"`
+}
+
+// CallbackQuery represents a callback query from inline keyboard
+type CallbackQuery struct {
+	ID      string   `json:"id"`
+	From    *User    `json:"from"`
+	Message *Message `json:"message,omitempty"`
+	Data    string   `json:"data,omitempty"`
+}
+
+// InlineKeyboardMarkup represents an inline keyboard
+type InlineKeyboardMarkup struct {
+	InlineKeyboard [][]InlineKeyboardButton `json:"inline_keyboard"`
+}
+
+// InlineKeyboardButton represents a button in an inline keyboard
+type InlineKeyboardButton struct {
+	Text         string `json:"text"`
+	CallbackData string `json:"callback_data,omitempty"`
 }
 
 // Message represents a Telegram message
@@ -162,4 +183,85 @@ func (c *Client) SendMessage(ctx context.Context, chatID, text, parseMode string
 	}
 
 	return &result, nil
+}
+
+// SendMessageWithKeyboard sends a message with an inline keyboard
+func (c *Client) SendMessageWithKeyboard(ctx context.Context, chatID, text, parseMode string, keyboard [][]InlineKeyboardButton) (*SendMessageResponse, error) {
+	req := SendMessageRequest{
+		ChatID:    chatID,
+		Text:      text,
+		ParseMode: parseMode,
+		ReplyMarkup: &InlineKeyboardMarkup{
+			InlineKeyboard: keyboard,
+		},
+	}
+
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal message: %w", err)
+	}
+
+	url := telegramAPIURL + c.botToken + "/sendMessage"
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("failed to send message: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	var result SendMessageResponse
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	if !result.OK {
+		return nil, fmt.Errorf("telegram API error: %s (code: %d)", result.Description, result.ErrorCode)
+	}
+
+	return &result, nil
+}
+
+// AnswerCallback answers a callback query
+func (c *Client) AnswerCallback(ctx context.Context, callbackID, text string) error {
+	type answerRequest struct {
+		CallbackQueryID string `json:"callback_query_id"`
+		Text            string `json:"text,omitempty"`
+	}
+
+	req := answerRequest{
+		CallbackQueryID: callbackID,
+		Text:            text,
+	}
+
+	body, err := json.Marshal(req)
+	if err != nil {
+		return fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	url := telegramAPIURL + c.botToken + "/answerCallbackQuery"
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("failed to answer callback: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	return nil
 }

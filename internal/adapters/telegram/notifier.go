@@ -94,24 +94,4 @@ func generateProgressBar(progress int) string {
 	return bar
 }
 
-// escapeMarkdown escapes special characters for Telegram Markdown
-func escapeMarkdown(text string) string {
-	// In Telegram's Markdown mode, these characters need escaping: _ * [ ] ( ) ~ ` > # + - = | { } . !
-	// For basic usage, we escape the most common ones
-	replacer := map[rune]string{
-		'_': "\\_",
-		'*': "\\*",
-		'[': "\\[",
-		']': "\\]",
-		'`': "\\`",
-	}
-	result := ""
-	for _, c := range text {
-		if escaped, ok := replacer[c]; ok {
-			result += escaped
-		} else {
-			result += string(c)
-		}
-	}
-	return result
-}
+// Note: escapeMarkdown is defined in formatter.go
