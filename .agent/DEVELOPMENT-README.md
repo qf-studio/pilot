@@ -105,6 +105,58 @@ if _, err := os.Stat(agentDir); err == nil {
   - Created: 2026-01-26
   - GitHub Issues as ticket source for open-source projects
 
+### Monitoring & Observability
+
+- **TASK-13**: Execution Metrics & Analytics (Status: 📋 Planned)
+  - File: `.agent/tasks/TASK-13-execution-metrics.md`
+  - Track success rates, token usage, costs, execution times
+
+- **TASK-14**: Alerting System (Status: 📋 Planned)
+  - File: `.agent/tasks/TASK-14-alerting-system.md`
+  - Proactive notifications for stuck tasks, failures, budget exceeded
+
+- **TASK-15**: Structured Logging (Status: 📋 Planned)
+  - File: `.agent/tasks/TASK-15-structured-logging.md`
+  - JSON logs, levels, rotation, log management integration
+
+### Monetization & Enterprise
+
+- **TASK-16**: Usage Metering & Billing (Status: 📋 Planned)
+  - File: `.agent/tasks/TASK-16-usage-metering.md`
+  - Foundation for usage-based billing (tasks, tokens, compute)
+
+- **TASK-17**: Team Management (Status: 📋 Planned)
+  - File: `.agent/tasks/TASK-17-team-management.md`
+  - Multi-user support, roles, permissions, audit log
+
+- **TASK-18**: Cost Controls & Budgets (Status: 📋 Planned)
+  - File: `.agent/tasks/TASK-18-cost-controls.md`
+  - Spending limits, budget alerts, runaway task protection
+
+### Safety & Quality
+
+- **TASK-19**: Approval Workflows (Status: 📋 Planned)
+  - File: `.agent/tasks/TASK-19-approval-workflows.md`
+  - Human approval at key stages (pre-execution, pre-merge)
+
+- **TASK-20**: Quality Gates (Status: 📋 Planned)
+  - File: `.agent/tasks/TASK-20-quality-gates.md`
+  - Enforce tests, lint, coverage before PR creation
+
+### Developer Experience
+
+- **TASK-21**: Execution Replay & Debugging (Status: 📋 Planned)
+  - File: `.agent/tasks/TASK-21-execution-replay.md`
+  - Record and replay executions for debugging
+
+- **TASK-22**: Webhooks API (Status: 📋 Planned)
+  - File: `.agent/tasks/TASK-22-webhooks-api.md`
+  - Outbound webhooks for custom integrations
+
+- **TASK-23**: GitHub App Integration (Status: 📋 Planned)
+  - File: `.agent/tasks/TASK-23-github-app.md`
+  - PR comments, status checks, deep GitHub integration
+
 ### Telegram Features
 
 - **TASK-07**: Telegram Voice Support (Status: 📋 Planned)
