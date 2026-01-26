@@ -304,9 +304,7 @@ func (h *Handler) handleQuestion(ctx context.Context, chatID, question string) {
 
 	// Create a read-only prompt for Claude
 	// Be explicit about being concise to avoid extensive exploration
-	prompt := fmt.Sprintf(`CRITICAL: Do NOT call multiple tools in parallel. Call tools sequentially, one at a time.
-
-Answer this question about the codebase. DO NOT make any changes, only read and analyze.
+	prompt := fmt.Sprintf(`Answer this question about the codebase. DO NOT make any changes, only read and analyze.
 
 Question: %s
 
