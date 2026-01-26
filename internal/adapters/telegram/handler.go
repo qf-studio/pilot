@@ -764,10 +764,11 @@ func (h *Handler) fastListTasks() string {
 
 		taskLine := fmt.Sprintf("• `%s` %s", strings.TrimSuffix(entry.Name(), ".md"), title)
 
-		switch status {
-		case "complete", "completed", "done", "✅":
+		// Use contains for flexible status matching
+		switch {
+		case strings.Contains(status, "complete") || strings.Contains(status, "done") || strings.Contains(status, "✅"):
 			completed = append(completed, taskLine)
-		case "in progress", "in_progress", "🚧", "wip":
+		case strings.Contains(status, "progress") || strings.Contains(status, "🚧") || strings.Contains(status, "wip"):
 			inProgress = append(inProgress, taskLine)
 		default:
 			pending = append(pending, taskLine)

@@ -142,10 +142,21 @@ func isQuestion(msg string) bool {
 		}
 	}
 
+	// Quick-info keywords that should be treated as questions (fast-path eligible)
+	quickInfoKeywords := []string{
+		"issues", "tasks", "backlog", "todos", "fixmes",
+		"status", "progress", "state",
+	}
+	for _, keyword := range quickInfoKeywords {
+		if strings.Contains(msg, keyword) && !containsActionWord(msg) {
+			return true
+		}
+	}
+
 	// Contains question-like phrases
 	questionPhrases := []string{
 		"tell me about", "explain", "describe",
-		"show me", "list all", "find all",
+		"show me", "list all", "find all", "list",
 	}
 	for _, phrase := range questionPhrases {
 		if strings.Contains(msg, phrase) && !containsActionWord(msg) {
