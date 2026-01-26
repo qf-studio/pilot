@@ -25,7 +25,7 @@ func NewClient(botToken string) *Client {
 	return &Client{
 		botToken: botToken,
 		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout: 60 * time.Second, // Must be > long polling timeout (30s)
 		},
 	}
 }
