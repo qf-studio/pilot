@@ -276,12 +276,18 @@ func (h *Handler) handleQuestion(ctx context.Context, chatID, question string) {
 	// Send acknowledgment
 	_, _ = h.client.SendMessage(ctx, chatID, FormatQuestionAck(), "Markdown")
 
+	// Create a timeout context for questions (90 seconds max)
+	questionCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	defer cancel()
+
 	// Create a read-only prompt for Claude
+	// Be explicit about being concise to avoid extensive exploration
 	prompt := fmt.Sprintf(`Answer this question about the codebase. DO NOT make any changes, only read and analyze.
 
 Question: %s
 
-Provide a concise answer. If you need to show file paths or code, use markdown formatting.`, question)
+IMPORTANT: Be concise. Limit your exploration to 5-10 files max. Provide a brief, direct answer.
+If the question is too broad, ask for clarification instead of exploring everything.`, question)
 
 	// Create a read-only task (no branch, no PR)
 	taskID := fmt.Sprintf("Q-%d", time.Now().Unix())
@@ -293,13 +299,18 @@ Provide a concise answer. If you need to show file paths or code, use markdown f
 		Verbose:     false,
 	}
 
-	// Execute
+	// Execute with timeout context
 	log.Printf("[telegram] Answering question %s: %s", taskID, truncateDescription(question, 50))
-	result, err := h.runner.Execute(ctx, task)
+	result, err := h.runner.Execute(questionCtx, task)
 
 	if err != nil {
-		_, _ = h.client.SendMessage(ctx, chatID,
-			"❌ Sorry, I couldn't answer that question. Try rephrasing it.", "")
+		if questionCtx.Err() == context.DeadlineExceeded {
+			_, _ = h.client.SendMessage(ctx, chatID,
+				"⏱ Question timed out. Try asking something more specific.", "")
+		} else {
+			_, _ = h.client.SendMessage(ctx, chatID,
+				"❌ Sorry, I couldn't answer that question. Try rephrasing it.", "")
+		}
 		return
 	}
 
