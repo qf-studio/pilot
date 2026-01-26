@@ -288,6 +288,66 @@ func TestEscapeMarkdown(t *testing.T) {
 	}
 }
 
+func TestConvertTablesToLists(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		contains []string
+		excludes []string
+	}{
+		{
+			name: "simple table",
+			input: `Here's a table:
+| Task | Status |
+|------|--------|
+| TASK-01 | Done |
+| TASK-02 | Pending |`,
+			contains: []string{"• *TASK-01*: Done", "• *TASK-02*: Pending"},
+			excludes: []string{"|---"},
+		},
+		{
+			name: "table with description",
+			input: `| Name | Description | Priority |
+|------|-------------|----------|
+| Fix bug | Critical issue | High |`,
+			contains: []string{"• *Fix bug*: Critical issue | High"},
+		},
+		{
+			name:     "no table",
+			input:    "Just regular text\nNo tables here",
+			contains: []string{"Just regular text", "No tables here"},
+		},
+		{
+			name: "mixed content",
+			input: `## Summary
+Some text before.
+
+| Item | Value |
+|------|-------|
+| A | 1 |
+
+Some text after.`,
+			contains: []string{"## Summary", "• *A*: 1", "Some text after"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := convertTablesToLists(tt.input)
+			for _, want := range tt.contains {
+				if !strings.Contains(got, want) {
+					t.Errorf("convertTablesToLists() =\n%s\nwant to contain %q", got, want)
+				}
+			}
+			for _, exclude := range tt.excludes {
+				if strings.Contains(got, exclude) {
+					t.Errorf("convertTablesToLists() =\n%s\nshould NOT contain %q", got, exclude)
+				}
+			}
+		})
+	}
+}
+
 func TestFormatProgressUpdate(t *testing.T) {
 	tests := []struct {
 		name     string

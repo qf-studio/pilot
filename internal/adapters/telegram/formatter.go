@@ -184,12 +184,89 @@ func FormatQuestionAnswer(answer string) string {
 	// Clean any internal signals from the answer
 	cleanAnswer := cleanInternalSignals(answer)
 
+	// Convert markdown tables to lists (Telegram doesn't support tables)
+	cleanAnswer = convertTablesToLists(cleanAnswer)
+
 	// Truncate if too long for Telegram
 	if len(cleanAnswer) > 3500 {
 		cleanAnswer = cleanAnswer[:3500] + "\n\n_(truncated)_"
 	}
 
 	return cleanAnswer
+}
+
+// convertTablesToLists converts markdown tables to bullet lists
+// Telegram doesn't support table formatting
+func convertTablesToLists(text string) string {
+	lines := strings.Split(text, "\n")
+	var result []string
+	var headers []string
+	inTable := false
+
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+
+		// Detect table header row
+		if strings.HasPrefix(trimmed, "|") && strings.HasSuffix(trimmed, "|") {
+			// Check if next line is separator (|---|---|)
+			if i+1 < len(lines) {
+				nextLine := strings.TrimSpace(lines[i+1])
+				if strings.HasPrefix(nextLine, "|") && strings.Contains(nextLine, "---") {
+					// This is a header row
+					headers = parseTableRow(trimmed)
+					inTable = true
+					continue
+				}
+			}
+
+			// Check if this is separator row
+			if strings.Contains(trimmed, "---") {
+				continue
+			}
+
+			// This is a data row
+			if inTable && len(headers) > 0 {
+				cells := parseTableRow(trimmed)
+				// Format as "• Col1: Val1 | Col2: Val2" or just "• Val1 - Val2"
+				if len(cells) >= 2 {
+					if len(headers) >= 2 && headers[0] != "" {
+						// Use first column as key, rest as description
+						result = append(result, fmt.Sprintf("• *%s*: %s", cells[0], strings.Join(cells[1:], " | ")))
+					} else {
+						result = append(result, fmt.Sprintf("• %s", strings.Join(cells, " - ")))
+					}
+				} else if len(cells) == 1 {
+					result = append(result, fmt.Sprintf("• %s", cells[0]))
+				}
+				continue
+			}
+		} else {
+			// Not a table row
+			if inTable {
+				inTable = false
+				headers = nil
+			}
+			result = append(result, line)
+		}
+	}
+
+	return strings.Join(result, "\n")
+}
+
+// parseTableRow extracts cells from a markdown table row
+func parseTableRow(row string) []string {
+	// Remove leading/trailing pipes and split
+	row = strings.Trim(row, "|")
+	parts := strings.Split(row, "|")
+
+	var cells []string
+	for _, part := range parts {
+		cell := strings.TrimSpace(part)
+		if cell != "" && !strings.HasPrefix(cell, "---") {
+			cells = append(cells, cell)
+		}
+	}
+	return cells
 }
 
 // cleanInternalSignals removes internal Navigator signals from output
