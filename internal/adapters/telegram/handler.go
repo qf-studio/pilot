@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -388,9 +389,24 @@ func (h *Handler) handleTask(ctx context.Context, chatID, description string) {
 				existing.TaskID), "Markdown")
 		return
 	}
+	h.mu.Unlock()
 
-	// Generate task ID
-	taskID := fmt.Sprintf("TG-%d", time.Now().Unix())
+	// Try to resolve task ID from description (e.g., "Start task 07" → TASK-07)
+	taskID := ""
+	displayDesc := description
+	if taskInfo := h.resolveTaskFromDescription(description); taskInfo != nil {
+		taskID = taskInfo.FullID
+		displayDesc = fmt.Sprintf("%s: %s", taskInfo.FullID, taskInfo.Title)
+		// Load full task description for execution
+		if fullDesc := h.loadTaskDescription(taskInfo); fullDesc != "" {
+			description = fullDesc
+		}
+	} else {
+		// Fallback to generated ID for free-form tasks
+		taskID = fmt.Sprintf("TG-%d", time.Now().Unix())
+	}
+
+	h.mu.Lock()
 
 	// Create pending task
 	pending := &PendingTask{
@@ -403,7 +419,8 @@ func (h *Handler) handleTask(ctx context.Context, chatID, description string) {
 	h.mu.Unlock()
 
 	// Send confirmation message with inline keyboard
-	confirmMsg := FormatTaskConfirmation(taskID, description, h.projectPath)
+	// Use displayDesc for user-friendly display, description is kept for execution
+	confirmMsg := FormatTaskConfirmation(taskID, displayDesc, h.projectPath)
 
 	msgResp, err := h.client.SendMessageWithKeyboard(ctx, chatID, confirmMsg, "Markdown",
 		[][]InlineKeyboardButton{
@@ -1043,6 +1060,28 @@ func (h *Handler) loadTaskDescription(taskInfo *TaskInfo) string {
 	}
 
 	return string(data)
+}
+
+// resolveTaskFromDescription extracts task ID from descriptions like:
+// "Start task 07", "task 7", "07", "run 25", "execute task-07"
+func (h *Handler) resolveTaskFromDescription(description string) *TaskInfo {
+	desc := strings.ToLower(strings.TrimSpace(description))
+
+	// Patterns to extract task number
+	patterns := []string{
+		`(?i)(?:start|run|execute|do)\s+(?:task[- ]?)?(\d+)`,
+		`(?i)task[- ]?(\d+)`,
+		`^(\d+)$`,
+	}
+
+	for _, pattern := range patterns {
+		re := regexp.MustCompile(pattern)
+		if matches := re.FindStringSubmatch(desc); len(matches) > 1 {
+			return h.resolveTaskID(matches[1])
+		}
+	}
+
+	return nil
 }
 
 // ============================================================================
