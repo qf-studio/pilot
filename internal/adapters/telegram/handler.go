@@ -751,39 +751,35 @@ func (h *Handler) fastListTasks() string {
 		return "" // Fall back to Claude
 	}
 
-	var pending, inProgress, completed []string
+	type taskInfo struct {
+		num   string
+		title string
+	}
+	var pending, inProgress, completed []taskInfo
 
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
 			continue
 		}
 
-		// Read first few lines to get status
 		filePath := filepath.Join(tasksDir, entry.Name())
 		status, title := parseTaskFile(filePath)
 
-		// Extract task ID (e.g., "TASK-06" from "TASK-06-telegram-image-support.md")
-		taskName := strings.TrimSuffix(entry.Name(), ".md")
-		taskID := taskName
-		if idx := strings.Index(taskName, "-"); idx != -1 {
-			// Find second dash for ID like "TASK-06"
-			rest := taskName[idx+1:]
-			if idx2 := strings.Index(rest, "-"); idx2 != -1 {
-				taskID = taskName[:idx+1+idx2]
-			}
+		// Extract task number (e.g., "07" from "TASK-07-telegram-voice.md")
+		taskNum := extractTaskNumber(entry.Name())
+		if taskNum == "" {
+			continue
 		}
 
-		// Compact format: "• TASK-06: Image Support"
-		taskLine := fmt.Sprintf("• %s: %s", taskID, title)
+		info := taskInfo{num: taskNum, title: title}
 
-		// Use contains for flexible status matching
 		switch {
 		case strings.Contains(status, "complete") || strings.Contains(status, "done") || strings.Contains(status, "✅"):
-			completed = append(completed, taskLine)
+			completed = append(completed, info)
 		case strings.Contains(status, "progress") || strings.Contains(status, "🚧") || strings.Contains(status, "wip"):
-			inProgress = append(inProgress, taskLine)
+			inProgress = append(inProgress, info)
 		default:
-			pending = append(pending, taskLine)
+			pending = append(pending, info)
 		}
 	}
 
@@ -792,45 +788,81 @@ func (h *Handler) fastListTasks() string {
 	}
 
 	var sb strings.Builder
-	sb.WriteString("📋 *Tasks*\n\n")
 
-	// In Progress - show all (usually few)
+	// In Progress
 	if len(inProgress) > 0 {
-		sb.WriteString(fmt.Sprintf("🚧 *In Progress (%d):*\n", len(inProgress)))
+		sb.WriteString("*In Progress*\n")
 		for _, t := range inProgress {
-			sb.WriteString(t + "\n")
+			sb.WriteString(fmt.Sprintf("%s: %s\n", t.num, t.title))
 		}
 		sb.WriteString("\n")
 	}
 
-	// Pending - show first 5 as "Up Next"
+	// Backlog - show first 5
 	if len(pending) > 0 {
+		sb.WriteString("*Backlog*\n")
 		showCount := min(5, len(pending))
-		sb.WriteString(fmt.Sprintf("📝 *Up Next (%d):*\n", showCount))
 		for i := 0; i < showCount; i++ {
-			sb.WriteString(pending[i] + "\n")
+			sb.WriteString(fmt.Sprintf("%s: %s\n", pending[i].num, pending[i].title))
 		}
 		if len(pending) > 5 {
-			sb.WriteString(fmt.Sprintf("  _+%d more planned_\n", len(pending)-5))
+			sb.WriteString(fmt.Sprintf("_+%d more planned_\n", len(pending)-5))
 		}
 		sb.WriteString("\n")
 	}
 
-	// Completed - show last 3
+	// Recently done - show last 2
 	if len(completed) > 0 {
-		showCount := min(3, len(completed))
+		sb.WriteString("*Recently done*\n")
+		showCount := min(2, len(completed))
 		start := len(completed) - showCount
-		sb.WriteString(fmt.Sprintf("✅ *Done (%d):*\n", len(completed)))
 		for i := start; i < len(completed); i++ {
-			sb.WriteString(completed[i] + "\n")
+			sb.WriteString(fmt.Sprintf("%s: %s\n", completed[i].num, completed[i].title))
 		}
+		sb.WriteString("\n")
 	}
 
-	// Summary line
+	// Progress bar
 	total := len(pending) + len(inProgress) + len(completed)
-	sb.WriteString(fmt.Sprintf("\n_%d total_", total))
+	doneCount := len(completed)
+	percent := 0
+	if total > 0 {
+		percent = (doneCount * 100) / total
+	}
+	sb.WriteString(fmt.Sprintf("Progress: %s %d%%", makeProgressBar(percent), percent))
 
 	return sb.String()
+}
+
+// extractTaskNumber gets "07" from "TASK-07-name.md"
+func extractTaskNumber(filename string) string {
+	// Remove .md
+	name := strings.TrimSuffix(filename, ".md")
+
+	// Handle TASK-XX format
+	if strings.HasPrefix(strings.ToUpper(name), "TASK-") {
+		rest := name[5:] // After "TASK-"
+		// Find end of number
+		numEnd := 0
+		for i, c := range rest {
+			if c >= '0' && c <= '9' {
+				numEnd = i + 1
+			} else {
+				break
+			}
+		}
+		if numEnd > 0 {
+			return rest[:numEnd]
+		}
+	}
+	return ""
+}
+
+// makeProgressBar creates a text progress bar
+func makeProgressBar(percent int) string {
+	filled := percent / 5 // 20 chars total
+	empty := 20 - filled
+	return strings.Repeat("█", filled) + strings.Repeat("░", empty)
 }
 
 // parseTaskFile reads a task file and extracts status and title
