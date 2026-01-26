@@ -7,17 +7,19 @@ import (
 	"time"
 
 	"github.com/alekspetrov/pilot/internal/adapters/slack"
+	"github.com/alekspetrov/pilot/internal/adapters/telegram"
 )
 
 // DeliveryService orchestrates brief delivery to configured channels
 type DeliveryService struct {
-	config       *BriefConfig
-	slackClient  *slack.Client
-	emailSender  EmailSender
-	logger       *slog.Logger
-	slackFmt     *SlackFormatter
-	emailFmt     *EmailFormatter
-	plainFmt     *PlainTextFormatter
+	config         *BriefConfig
+	slackClient    *slack.Client
+	telegramClient *telegram.Client
+	emailSender    EmailSender
+	logger         *slog.Logger
+	slackFmt       *SlackFormatter
+	emailFmt       *EmailFormatter
+	plainFmt       *PlainTextFormatter
 }
 
 // EmailSender interface for sending emails
@@ -39,6 +41,13 @@ func WithSlackClient(client *slack.Client) DeliveryOption {
 func WithEmailSender(sender EmailSender) DeliveryOption {
 	return func(d *DeliveryService) {
 		d.emailSender = sender
+	}
+}
+
+// WithTelegramClient sets the Telegram client
+func WithTelegramClient(client *telegram.Client) DeliveryOption {
+	return func(d *DeliveryService) {
+		d.telegramClient = client
 	}
 }
 
@@ -80,6 +89,8 @@ func (d *DeliveryService) DeliverAll(ctx context.Context, brief *Brief) []Delive
 			result = d.deliverSlack(ctx, brief, channel)
 		case "email":
 			result = d.deliverEmail(ctx, brief, channel)
+		case "telegram":
+			result = d.deliverTelegram(ctx, brief, channel)
 		default:
 			result.Success = false
 			result.Error = fmt.Errorf("unsupported channel type: %s", channel.Type)
@@ -208,6 +219,103 @@ func (d *DeliveryService) deliverEmail(ctx context.Context, brief *Brief, channe
 	return result
 }
 
+// deliverTelegram sends brief to a Telegram chat
+func (d *DeliveryService) deliverTelegram(ctx context.Context, brief *Brief, channel ChannelConfig) DeliveryResult {
+	result := DeliveryResult{
+		Channel: fmt.Sprintf("telegram:%s", channel.Channel),
+		SentAt:  time.Now(),
+	}
+
+	if d.telegramClient == nil {
+		result.Success = false
+		result.Error = fmt.Errorf("telegram client not configured")
+		return result
+	}
+
+	// Format as plain text with Markdown
+	text := d.formatTelegramBrief(brief)
+
+	resp, err := d.telegramClient.SendMessage(ctx, channel.Channel, text, "Markdown")
+	if err != nil {
+		result.Success = false
+		result.Error = err
+		d.logger.Error("failed to deliver brief to Telegram",
+			"chat_id", channel.Channel,
+			"error", err,
+		)
+		return result
+	}
+
+	if resp != nil && resp.Result != nil {
+		result.MessageID = fmt.Sprintf("%d", resp.Result.MessageID)
+	}
+	result.Success = true
+	d.logger.Info("brief delivered to Telegram",
+		"chat_id", channel.Channel,
+	)
+
+	return result
+}
+
+// formatTelegramBrief formats brief for Telegram with Markdown
+func (d *DeliveryService) formatTelegramBrief(brief *Brief) string {
+	var text string
+
+	// Header
+	text = fmt.Sprintf("☀️ *Daily Brief - %s*\n\n", brief.GeneratedAt.Format("Jan 2, 2006"))
+
+	// Metrics
+	text += "📊 *Yesterday's Progress*\n"
+	text += "━━━━━━━━━━━━━━━━━━━━━\n"
+	text += fmt.Sprintf("✅ %d tasks completed\n", brief.Metrics.CompletedCount)
+	text += fmt.Sprintf("⏱ %dms avg duration\n", brief.Metrics.AvgDurationMs)
+	text += fmt.Sprintf("🔢 %s tokens used\n", formatTelegramTokens(brief.Metrics.TotalTokensUsed))
+	text += fmt.Sprintf("💰 $%.2f estimated cost\n\n", brief.Metrics.EstimatedCostUSD)
+
+	// Completed tasks
+	if len(brief.Completed) > 0 {
+		text += "*Completed:*\n"
+		for _, task := range brief.Completed {
+			text += fmt.Sprintf("• %s: %s\n", task.ID, task.Title)
+		}
+		text += "\n"
+	}
+
+	// Blocked tasks
+	if len(brief.Blocked) > 0 {
+		text += "❌ *Blocked:*\n"
+		for _, task := range brief.Blocked {
+			text += fmt.Sprintf("• %s: %s\n", task.ID, task.Title)
+		}
+		text += "\n"
+	}
+
+	// Upcoming tasks
+	if len(brief.Upcoming) > 0 {
+		text += "📋 *Today's Queue*\n"
+		text += "━━━━━━━━━━━━━━━━━━━━━\n"
+		for _, task := range brief.Upcoming {
+			text += fmt.Sprintf("• %s: %s\n", task.ID, task.Title)
+		}
+		text += "\n"
+	}
+
+	text += "Have a productive day! 🚀"
+
+	return text
+}
+
+// formatTelegramTokens formats token count for Telegram display
+func formatTelegramTokens(tokens int64) string {
+	if tokens < 1000 {
+		return fmt.Sprintf("%d", tokens)
+	}
+	if tokens < 1000000 {
+		return fmt.Sprintf("%.1fk", float64(tokens)/1000)
+	}
+	return fmt.Sprintf("%.1fM", float64(tokens)/1000000)
+}
+
 // Deliver sends brief to a specific channel by name
 func (d *DeliveryService) Deliver(ctx context.Context, brief *Brief, channelName string) (DeliveryResult, error) {
 	for _, channel := range d.config.Channels {
@@ -218,6 +326,8 @@ func (d *DeliveryService) Deliver(ctx context.Context, brief *Brief, channelName
 				return d.deliverSlack(ctx, brief, channel), nil
 			case "email":
 				return d.deliverEmail(ctx, brief, channel), nil
+			case "telegram":
+				return d.deliverTelegram(ctx, brief, channel), nil
 			default:
 				return DeliveryResult{}, fmt.Errorf("unsupported channel type: %s", channel.Type)
 			}
