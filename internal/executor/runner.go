@@ -69,9 +69,10 @@ type Task struct {
 	Priority    int
 	ProjectPath string
 	Branch      string
-	Verbose     bool // Stream Claude Code output to console
-	CreatePR    bool // Create GitHub PR after successful execution
+	Verbose     bool   // Stream Claude Code output to console
+	CreatePR    bool   // Create GitHub PR after successful execution
 	BaseBranch  string // Base branch for PR (defaults to main/master)
+	ImagePath   string // Path to image file for multimodal analysis
 }
 
 // ExecutionResult represents the result of task execution
@@ -317,6 +318,14 @@ func (r *Runner) IsRunning(taskID string) bool {
 // BuildPrompt builds the prompt for Claude Code (exported for dry-run preview)
 func (r *Runner) BuildPrompt(task *Task) string {
 	var sb strings.Builder
+
+	// Handle image analysis tasks (no Navigator overhead for simple image questions)
+	if task.ImagePath != "" {
+		sb.WriteString(fmt.Sprintf("Read and analyze the image at: %s\n\n", task.ImagePath))
+		sb.WriteString(fmt.Sprintf("%s\n\n", task.Description))
+		sb.WriteString("Respond directly with your analysis. Be concise.\n")
+		return sb.String()
+	}
 
 	// Check if project has Navigator initialized
 	agentDir := filepath.Join(task.ProjectPath, ".agent")
@@ -823,5 +832,8 @@ func isValidSHA(s string) bool {
 func (r *Runner) reportProgress(taskID, phase string, progress int, message string) {
 	if r.onProgress != nil {
 		r.onProgress(taskID, phase, progress, message)
+	} else {
+		// Debug: log when callback not set
+		fmt.Printf("[executor] Progress (no callback): %s %s %d%% - %s\n", taskID, phase, progress, message)
 	}
 }

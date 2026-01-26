@@ -80,11 +80,37 @@ type InlineKeyboardButton struct {
 
 // Message represents a Telegram message
 type Message struct {
-	MessageID int64  `json:"message_id"`
-	From      *User  `json:"from,omitempty"`
-	Chat      *Chat  `json:"chat"`
-	Date      int64  `json:"date"`
-	Text      string `json:"text,omitempty"`
+	MessageID int64        `json:"message_id"`
+	From      *User        `json:"from,omitempty"`
+	Chat      *Chat        `json:"chat"`
+	Date      int64        `json:"date"`
+	Text      string       `json:"text,omitempty"`
+	Photo     []*PhotoSize `json:"photo,omitempty"`
+	Caption   string       `json:"caption,omitempty"`
+}
+
+// PhotoSize represents one size of a photo or file thumbnail
+type PhotoSize struct {
+	FileID       string `json:"file_id"`
+	FileUniqueID string `json:"file_unique_id"`
+	Width        int    `json:"width"`
+	Height       int    `json:"height"`
+	FileSize     int    `json:"file_size,omitempty"`
+}
+
+// File represents a file ready to be downloaded
+type File struct {
+	FileID   string `json:"file_id"`
+	FilePath string `json:"file_path,omitempty"`
+	FileSize int    `json:"file_size,omitempty"`
+}
+
+// GetFileResponse represents the response from getFile API
+type GetFileResponse struct {
+	OK          bool   `json:"ok"`
+	Result      *File  `json:"result,omitempty"`
+	Description string `json:"description,omitempty"`
+	ErrorCode   int    `json:"error_code,omitempty"`
 }
 
 // User represents a Telegram user
@@ -357,4 +383,63 @@ func (c *Client) AnswerCallback(ctx context.Context, callbackID, text string) er
 	defer func() { _ = resp.Body.Close() }()
 
 	return nil
+}
+
+// GetFile retrieves file info from Telegram servers
+func (c *Client) GetFile(ctx context.Context, fileID string) (*File, error) {
+	url := fmt.Sprintf("%s%s/getFile?file_id=%s", telegramAPIURL, c.botToken, fileID)
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get file: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	var result GetFileResponse
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	if !result.OK {
+		return nil, fmt.Errorf("telegram API error: %s (code: %d)", result.Description, result.ErrorCode)
+	}
+
+	return result.Result, nil
+}
+
+// DownloadFile downloads a file from Telegram servers
+func (c *Client) DownloadFile(ctx context.Context, filePath string) ([]byte, error) {
+	url := fmt.Sprintf("https://api.telegram.org/file/bot%s/%s", c.botToken, filePath)
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("failed to download file: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("download failed with status: %d", resp.StatusCode)
+	}
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read file data: %w", err)
+	}
+
+	return data, nil
 }

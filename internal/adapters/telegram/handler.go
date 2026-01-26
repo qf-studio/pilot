@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -168,12 +170,23 @@ func (h *Handler) processUpdate(ctx context.Context, update *Update) {
 		return
 	}
 
-	if update.Message == nil || update.Message.Text == "" {
+	if update.Message == nil {
 		return
 	}
 
 	msg := update.Message
 	chatID := strconv.FormatInt(msg.Chat.ID, 10)
+
+	// Handle photo messages
+	if len(msg.Photo) > 0 {
+		h.handlePhoto(ctx, chatID, msg)
+		return
+	}
+
+	// Skip if no text
+	if msg.Text == "" {
+		return
+	}
 
 	// Security check: only process messages from allowed users/chats
 	if len(h.allowedIDs) > 0 {
@@ -390,6 +403,9 @@ func (h *Handler) executeTask(ctx context.Context, chatID, taskID, description s
 	var progressMsgID int64
 	if resp != nil && resp.Result != nil {
 		progressMsgID = resp.Result.MessageID
+		log.Printf("[telegram] Progress message ID: %d", progressMsgID)
+	} else {
+		log.Printf("[telegram] WARNING: No progress message ID - progress updates disabled")
 	}
 
 	// Create task for executor
@@ -407,11 +423,14 @@ func (h *Handler) executeTask(ctx context.Context, chatID, taskID, description s
 	var lastUpdate time.Time
 
 	if progressMsgID != 0 {
+		log.Printf("[telegram] Setting up progress callback for task %s", taskID)
 		h.runner.OnProgress(func(tid string, phase string, progress int, message string) {
 			// Only update for our task
 			if tid != taskID {
 				return
 			}
+
+			log.Printf("[telegram] Progress: %s %d%% - %s", phase, progress, message)
 
 			// Throttle updates: phase change OR progress change >= 15% OR 3 seconds elapsed
 			now := time.Now()
@@ -434,6 +453,8 @@ func (h *Handler) executeTask(ctx context.Context, chatID, taskID, description s
 				log.Printf("[telegram] Failed to edit progress message: %v", err)
 			}
 		})
+	} else {
+		log.Printf("[telegram] WARNING: Progress callback NOT set (no message ID)")
 	}
 
 	// Execute task
@@ -513,4 +534,170 @@ I can help you with your codebase!
 	default:
 		_, _ = h.client.SendMessage(ctx, chatID, "Unknown command. Use /help for available commands.", "")
 	}
+}
+
+// handlePhoto processes photo messages
+func (h *Handler) handlePhoto(ctx context.Context, chatID string, msg *Message) {
+	// Security check: only process from allowed users/chats
+	if len(h.allowedIDs) > 0 {
+		senderID := int64(0)
+		if msg.From != nil {
+			senderID = msg.From.ID
+		}
+		if !h.allowedIDs[msg.Chat.ID] && !h.allowedIDs[senderID] {
+			log.Printf("[telegram] Ignoring photo from unauthorized chat/user: %d/%d", msg.Chat.ID, senderID)
+			return
+		}
+	}
+
+	// Get the largest photo size (last in array)
+	photo := msg.Photo[len(msg.Photo)-1]
+	log.Printf("[telegram] Received photo from %s: %dx%d, size=%d", chatID, photo.Width, photo.Height, photo.FileSize)
+
+	// Send acknowledgment
+	_, _ = h.client.SendMessage(ctx, chatID, "📷 Processing image...", "")
+
+	// Download the image
+	imagePath, err := h.downloadImage(ctx, photo.FileID)
+	if err != nil {
+		log.Printf("[telegram] Failed to download image: %v", err)
+		_, _ = h.client.SendMessage(ctx, chatID, "❌ Failed to download image. Please try again.", "")
+		return
+	}
+	defer func() {
+		// Cleanup temp file after processing
+		_ = os.Remove(imagePath)
+	}()
+
+	// Build prompt with image context
+	prompt := msg.Caption
+	if prompt == "" {
+		prompt = "Analyze this image and describe what you see."
+	}
+
+	// Execute with image
+	h.executeImageTask(ctx, chatID, imagePath, prompt)
+}
+
+// downloadImage downloads an image from Telegram and saves to temp file
+func (h *Handler) downloadImage(ctx context.Context, fileID string) (string, error) {
+	// Get file path from Telegram
+	file, err := h.client.GetFile(ctx, fileID)
+	if err != nil {
+		return "", fmt.Errorf("getFile failed: %w", err)
+	}
+
+	if file.FilePath == "" {
+		return "", fmt.Errorf("file path not available")
+	}
+
+	// Download file data
+	data, err := h.client.DownloadFile(ctx, file.FilePath)
+	if err != nil {
+		return "", fmt.Errorf("download failed: %w", err)
+	}
+
+	// Determine extension from file path
+	ext := filepath.Ext(file.FilePath)
+	if ext == "" {
+		ext = ".jpg" // Default to jpg for photos
+	}
+
+	// Create temp file
+	tmpFile, err := os.CreateTemp("", "pilot-image-*"+ext)
+	if err != nil {
+		return "", fmt.Errorf("failed to create temp file: %w", err)
+	}
+	defer func() { _ = tmpFile.Close() }()
+
+	// Write data
+	if _, err := tmpFile.Write(data); err != nil {
+		_ = os.Remove(tmpFile.Name())
+		return "", fmt.Errorf("failed to write temp file: %w", err)
+	}
+
+	return tmpFile.Name(), nil
+}
+
+// executeImageTask executes a task with an image attachment
+func (h *Handler) executeImageTask(ctx context.Context, chatID, imagePath, prompt string) {
+	// Generate task ID
+	taskID := fmt.Sprintf("IMG-%d", time.Now().Unix())
+
+	// Send progress message
+	resp, err := h.client.SendMessage(ctx, chatID, FormatProgressUpdate(taskID, "Analyzing", 10, "Processing image..."), "Markdown")
+	var progressMsgID int64
+	if err == nil && resp != nil && resp.Result != nil {
+		progressMsgID = resp.Result.MessageID
+	}
+
+	// Create task with image
+	task := &executor.Task{
+		ID:          taskID,
+		Title:       "Image analysis",
+		Description: prompt,
+		ProjectPath: h.projectPath,
+		Verbose:     false,
+		ImagePath:   imagePath,
+	}
+
+	// Set up progress callback
+	var lastPhase string
+	var lastProgress int
+	var lastUpdate time.Time
+
+	if progressMsgID != 0 {
+		h.runner.OnProgress(func(tid string, phase string, progress int, message string) {
+			if tid != taskID {
+				return
+			}
+			now := time.Now()
+			phaseChanged := phase != lastPhase
+			progressChanged := progress-lastProgress >= 15
+			timeElapsed := now.Sub(lastUpdate) >= 3*time.Second
+
+			if !phaseChanged && !progressChanged && !timeElapsed {
+				return
+			}
+
+			lastPhase = phase
+			lastProgress = progress
+			lastUpdate = now
+
+			updateText := FormatProgressUpdate(taskID, phase, progress, message)
+			_ = h.client.EditMessage(ctx, chatID, progressMsgID, updateText, "Markdown")
+		})
+	}
+
+	// Execute task (90 second timeout for image analysis)
+	taskCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	defer cancel()
+
+	log.Printf("[telegram] Executing image task %s", taskID)
+	result, err := h.runner.Execute(taskCtx, task)
+
+	// Clear progress callback
+	h.runner.OnProgress(nil)
+
+	if err != nil {
+		if taskCtx.Err() == context.DeadlineExceeded {
+			_, _ = h.client.SendMessage(ctx, chatID, "⏱ Image analysis timed out. Try a simpler request.", "")
+		} else {
+			_, _ = h.client.SendMessage(ctx, chatID, fmt.Sprintf("❌ Analysis failed: %s", err.Error()), "")
+		}
+		return
+	}
+
+	// Format and send result
+	answer := result.Output
+	if answer == "" {
+		answer = "Could not analyze the image."
+	}
+
+	// Truncate if too long for Telegram
+	if len(answer) > 4000 {
+		answer = answer[:3997] + "..."
+	}
+
+	_, _ = h.client.SendMessage(ctx, chatID, answer, "Markdown")
 }
