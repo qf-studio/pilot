@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -18,14 +19,15 @@ import (
 
 // Config represents the main configuration
 type Config struct {
-	Version      string             `yaml:"version"`
-	Gateway      *gateway.Config    `yaml:"gateway"`
+	Version      string              `yaml:"version"`
+	Gateway      *gateway.Config     `yaml:"gateway"`
 	Auth         *gateway.AuthConfig `yaml:"auth"`
-	Adapters     *AdaptersConfig    `yaml:"adapters"`
+	Adapters     *AdaptersConfig     `yaml:"adapters"`
 	Orchestrator *OrchestratorConfig `yaml:"orchestrator"`
-	Memory       *MemoryConfig      `yaml:"memory"`
-	Projects     []*ProjectConfig   `yaml:"projects"`
-	Dashboard    *DashboardConfig   `yaml:"dashboard"`
+	Memory       *MemoryConfig       `yaml:"memory"`
+	Projects     []*ProjectConfig    `yaml:"projects"`
+	Dashboard    *DashboardConfig    `yaml:"dashboard"`
+	Alerts       *AlertsConfig       `yaml:"alerts"`
 }
 
 // AdaptersConfig holds adapter configurations
@@ -94,6 +96,90 @@ type DashboardConfig struct {
 	ShowLogs        bool `yaml:"show_logs"`
 }
 
+// AlertsConfig holds alerting configuration
+type AlertsConfig struct {
+	Enabled  bool                  `yaml:"enabled"`
+	Channels []AlertChannelConfig  `yaml:"channels"`
+	Rules    []AlertRuleConfig     `yaml:"rules"`
+	Defaults AlertDefaultsConfig   `yaml:"defaults"`
+}
+
+// AlertChannelConfig configures an alert channel
+type AlertChannelConfig struct {
+	Name       string   `yaml:"name"`       // Unique identifier
+	Type       string   `yaml:"type"`       // "slack", "telegram", "email", "webhook", "pagerduty"
+	Enabled    bool     `yaml:"enabled"`
+	Severities []string `yaml:"severities"` // Which severities to receive
+
+	// Channel-specific config
+	Slack     *AlertSlackConfig     `yaml:"slack,omitempty"`
+	Telegram  *AlertTelegramConfig  `yaml:"telegram,omitempty"`
+	Email     *AlertEmailConfig     `yaml:"email,omitempty"`
+	Webhook   *AlertWebhookConfig   `yaml:"webhook,omitempty"`
+	PagerDuty *AlertPagerDutyConfig `yaml:"pagerduty,omitempty"`
+}
+
+// AlertSlackConfig for Slack alerts
+type AlertSlackConfig struct {
+	Channel string `yaml:"channel"` // #channel-name
+}
+
+// AlertTelegramConfig for Telegram alerts
+type AlertTelegramConfig struct {
+	ChatID int64 `yaml:"chat_id"`
+}
+
+// AlertEmailConfig for email alerts
+type AlertEmailConfig struct {
+	To      []string `yaml:"to"`
+	Subject string   `yaml:"subject"` // Optional custom subject template
+}
+
+// AlertWebhookConfig for webhook alerts
+type AlertWebhookConfig struct {
+	URL     string            `yaml:"url"`
+	Method  string            `yaml:"method"` // POST, PUT
+	Headers map[string]string `yaml:"headers"`
+	Secret  string            `yaml:"secret"` // For HMAC signing
+}
+
+// AlertPagerDutyConfig for PagerDuty alerts
+type AlertPagerDutyConfig struct {
+	RoutingKey string `yaml:"routing_key"` // Integration key
+	ServiceID  string `yaml:"service_id"`
+}
+
+// AlertRuleConfig defines an alert rule
+type AlertRuleConfig struct {
+	Name        string                 `yaml:"name"`
+	Type        string                 `yaml:"type"` // "task_stuck", "task_failed", etc.
+	Enabled     bool                   `yaml:"enabled"`
+	Condition   AlertConditionConfig   `yaml:"condition"`
+	Severity    string                 `yaml:"severity"` // "info", "warning", "critical"
+	Channels    []string               `yaml:"channels"` // Channel names to send to
+	Cooldown    time.Duration          `yaml:"cooldown"` // Min time between alerts
+	Description string                 `yaml:"description"`
+}
+
+// AlertConditionConfig defines alert trigger conditions
+type AlertConditionConfig struct {
+	ProgressUnchangedFor time.Duration `yaml:"progress_unchanged_for"`
+	ConsecutiveFailures  int           `yaml:"consecutive_failures"`
+	DailySpendThreshold  float64       `yaml:"daily_spend_threshold"`
+	BudgetLimit          float64       `yaml:"budget_limit"`
+	UsageSpikePercent    float64       `yaml:"usage_spike_percent"`
+	Pattern              string        `yaml:"pattern"`
+	FilePattern          string        `yaml:"file_pattern"`
+	Paths                []string      `yaml:"paths"`
+}
+
+// AlertDefaultsConfig contains default alert settings
+type AlertDefaultsConfig struct {
+	Cooldown           time.Duration `yaml:"cooldown"`
+	DefaultSeverity    string        `yaml:"default_severity"`
+	SuppressDuplicates bool          `yaml:"suppress_duplicates"`
+}
+
 // DefaultConfig returns a configuration with sensible defaults
 func DefaultConfig() *Config {
 	homeDir, _ := os.UserHomeDir()
@@ -139,6 +225,80 @@ func DefaultConfig() *Config {
 		Dashboard: &DashboardConfig{
 			RefreshInterval: 1000,
 			ShowLogs:        true,
+		},
+		Alerts: &AlertsConfig{
+			Enabled:  false,
+			Channels: []AlertChannelConfig{},
+			Rules:    defaultAlertRules(),
+			Defaults: AlertDefaultsConfig{
+				Cooldown:           5 * time.Minute,
+				DefaultSeverity:    "warning",
+				SuppressDuplicates: true,
+			},
+		},
+	}
+}
+
+// defaultAlertRules returns the default alert rules
+func defaultAlertRules() []AlertRuleConfig {
+	return []AlertRuleConfig{
+		{
+			Name:    "task_stuck",
+			Type:    "task_stuck",
+			Enabled: true,
+			Condition: AlertConditionConfig{
+				ProgressUnchangedFor: 10 * time.Minute,
+			},
+			Severity:    "warning",
+			Channels:    []string{},
+			Cooldown:    15 * time.Minute,
+			Description: "Alert when a task has no progress for 10 minutes",
+		},
+		{
+			Name:    "task_failed",
+			Type:    "task_failed",
+			Enabled: true,
+			Condition:   AlertConditionConfig{},
+			Severity:    "warning",
+			Channels:    []string{},
+			Cooldown:    0,
+			Description: "Alert when a task fails",
+		},
+		{
+			Name:    "consecutive_failures",
+			Type:    "consecutive_failures",
+			Enabled: true,
+			Condition: AlertConditionConfig{
+				ConsecutiveFailures: 3,
+			},
+			Severity:    "critical",
+			Channels:    []string{},
+			Cooldown:    30 * time.Minute,
+			Description: "Alert when 3 or more consecutive tasks fail",
+		},
+		{
+			Name:    "daily_spend",
+			Type:    "daily_spend_exceeded",
+			Enabled: false,
+			Condition: AlertConditionConfig{
+				DailySpendThreshold: 50.0,
+			},
+			Severity:    "warning",
+			Channels:    []string{},
+			Cooldown:    1 * time.Hour,
+			Description: "Alert when daily spend exceeds threshold",
+		},
+		{
+			Name:    "budget_depleted",
+			Type:    "budget_depleted",
+			Enabled: false,
+			Condition: AlertConditionConfig{
+				BudgetLimit: 500.0,
+			},
+			Severity:    "critical",
+			Channels:    []string{},
+			Cooldown:    4 * time.Hour,
+			Description: "Alert when budget limit is exceeded",
 		},
 	}
 }
