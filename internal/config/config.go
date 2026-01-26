@@ -9,6 +9,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/alekspetrov/pilot/internal/adapters/github"
+	"github.com/alekspetrov/pilot/internal/adapters/jira"
 	"github.com/alekspetrov/pilot/internal/adapters/linear"
 	"github.com/alekspetrov/pilot/internal/adapters/slack"
 	"github.com/alekspetrov/pilot/internal/adapters/telegram"
@@ -33,6 +34,7 @@ type AdaptersConfig struct {
 	Slack    *slack.Config    `yaml:"slack"`
 	Telegram *telegram.Config `yaml:"telegram"`
 	Github   *github.Config   `yaml:"github"`
+	Jira     *jira.Config     `yaml:"jira"`
 }
 
 // OrchestratorConfig holds orchestrator settings
@@ -86,6 +88,7 @@ func DefaultConfig() *Config {
 			Slack:    slack.DefaultConfig(),
 			Telegram: telegram.DefaultConfig(),
 			Github:   github.DefaultConfig(),
+			Jira:     jira.DefaultConfig(),
 		},
 		Orchestrator: &OrchestratorConfig{
 			Model:         "claude-sonnet-4-20250514",

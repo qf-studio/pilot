@@ -69,6 +69,7 @@ func (s *Server) Start(ctx context.Context) error {
 	// Webhook endpoints for adapters
 	mux.HandleFunc("/webhooks/linear", s.handleLinearWebhook)
 	mux.HandleFunc("/webhooks/github", s.handleGithubWebhook)
+	mux.HandleFunc("/webhooks/jira", s.handleJiraWebhook)
 
 	addr := fmt.Sprintf("%s:%d", s.config.Host, s.config.Port)
 	s.server = &http.Server{
@@ -216,6 +217,34 @@ func (s *Server) handleGithubWebhook(w http.ResponseWriter, r *http.Request) {
 
 	// Route to GitHub adapter
 	s.router.HandleWebhook("github", payload)
+
+	w.WriteHeader(http.StatusOK)
+}
+
+// handleJiraWebhook receives webhooks from Jira
+func (s *Server) handleJiraWebhook(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Jira may send signature in header (if configured)
+	signature := r.Header.Get("X-Hub-Signature")
+
+	var payload map[string]interface{}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	// Add metadata to payload for handler
+	payload["_signature"] = signature
+
+	webhookEvent, _ := payload["webhookEvent"].(string)
+	log.Printf("Received Jira webhook: %s", webhookEvent)
+
+	// Route to Jira adapter
+	s.router.HandleWebhook("jira", payload)
 
 	w.WriteHeader(http.StatusOK)
 }
