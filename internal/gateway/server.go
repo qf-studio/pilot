@@ -4,11 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"sync"
 	"time"
 
+	"github.com/alekspetrov/pilot/internal/logging"
 	"github.com/gorilla/websocket"
 )
 
@@ -80,7 +81,7 @@ func (s *Server) Start(ctx context.Context) error {
 		IdleTimeout:  60 * time.Second,
 	}
 
-	log.Printf("Gateway starting on %s", addr)
+	logging.WithComponent("gateway").Info("Gateway starting", slog.String("addr", addr))
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -117,20 +118,20 @@ func (s *Server) Shutdown() error {
 func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	conn, err := s.upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		log.Printf("WebSocket upgrade error: %v", err)
+		logging.WithComponent("gateway").Error("WebSocket upgrade error", slog.Any("error", err))
 		return
 	}
 
 	session := s.sessions.Create(conn)
 	defer s.sessions.Remove(session.ID)
 
-	log.Printf("New WebSocket session: %s", session.ID)
+	logging.WithComponent("gateway").Info("New WebSocket session", slog.String("session_id", session.ID))
 
 	for {
 		_, message, err := conn.ReadMessage()
 		if err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-				log.Printf("WebSocket error: %v", err)
+				logging.WithComponent("gateway").Warn("WebSocket error", slog.Any("error", err))
 			}
 			break
 		}
@@ -184,7 +185,7 @@ func (s *Server) handleLinearWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("Received Linear webhook: %v", payload["type"])
+	logging.WithComponent("gateway").Info("Received Linear webhook", slog.Any("type", payload["type"]))
 
 	// Route to Linear adapter
 	s.router.HandleWebhook("linear", payload)
@@ -213,7 +214,7 @@ func (s *Server) handleGithubWebhook(w http.ResponseWriter, r *http.Request) {
 	payload["_event_type"] = eventType
 	payload["_signature"] = signature
 
-	log.Printf("Received GitHub webhook: %s", eventType)
+	logging.WithComponent("gateway").Info("Received GitHub webhook", slog.String("event_type", eventType))
 
 	// Route to GitHub adapter
 	s.router.HandleWebhook("github", payload)
@@ -241,7 +242,7 @@ func (s *Server) handleJiraWebhook(w http.ResponseWriter, r *http.Request) {
 	payload["_signature"] = signature
 
 	webhookEvent, _ := payload["webhookEvent"].(string)
-	log.Printf("Received Jira webhook: %s", webhookEvent)
+	logging.WithComponent("gateway").Info("Received Jira webhook", slog.String("event", webhookEvent))
 
 	// Route to Jira adapter
 	s.router.HandleWebhook("jira", payload)

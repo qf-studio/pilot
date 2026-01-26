@@ -6,8 +6,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"log"
+	"log/slog"
 	"strings"
+
+	"github.com/alekspetrov/pilot/internal/logging"
 )
 
 // WebhookEventType represents the type of webhook event
@@ -75,7 +77,7 @@ func (h *WebhookHandler) VerifySignature(payload []byte, signature string) bool 
 func (h *WebhookHandler) Handle(ctx context.Context, eventType string, payload map[string]interface{}) error {
 	action, _ := payload["action"].(string)
 
-	log.Printf("GitHub webhook: %s (action: %s)", eventType, action)
+	logging.WithComponent("github").Debug("GitHub webhook", slog.String("event", eventType), slog.String("action", action))
 
 	// Only process issue events
 	if eventType != "issues" {
@@ -102,7 +104,7 @@ func (h *WebhookHandler) handleIssueOpened(ctx context.Context, payload map[stri
 
 	// Check if issue has pilot label
 	if !h.hasPilotLabel(issue) {
-		log.Printf("Issue #%d does not have pilot label, skipping", issue.Number)
+		logging.WithComponent("github").Debug("Issue does not have pilot label, skipping", slog.Int("number", issue.Number))
 		return nil
 	}
 
@@ -119,7 +121,7 @@ func (h *WebhookHandler) handleIssueLabeled(ctx context.Context, payload map[str
 
 	labelName, _ := labelData["name"].(string)
 	if labelName != h.pilotLabel {
-		log.Printf("Label '%s' is not pilot label, skipping", labelName)
+		logging.WithComponent("github").Debug("Label is not pilot label, skipping", slog.String("label", labelName))
 		return nil
 	}
 
@@ -133,8 +135,10 @@ func (h *WebhookHandler) handleIssueLabeled(ctx context.Context, payload map[str
 
 // processIssue processes an issue that should be handled by Pilot
 func (h *WebhookHandler) processIssue(ctx context.Context, issue *Issue, repo *Repository) error {
-	log.Printf("Processing pilot issue: %s/%s#%d - %s",
-		repo.Owner.Login, repo.Name, issue.Number, issue.Title)
+	logging.WithComponent("github").Info("Processing pilot issue",
+		slog.String("repo", repo.FullName),
+		slog.Int("number", issue.Number),
+		slog.String("title", issue.Title))
 
 	// Fetch full issue details via API (webhook payload may be incomplete)
 	fullIssue, err := h.client.GetIssue(ctx, repo.Owner.Login, repo.Name, issue.Number)

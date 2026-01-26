@@ -15,6 +15,7 @@ import (
 	"github.com/alekspetrov/pilot/internal/adapters/slack"
 	"github.com/alekspetrov/pilot/internal/adapters/telegram"
 	"github.com/alekspetrov/pilot/internal/gateway"
+	"github.com/alekspetrov/pilot/internal/logging"
 )
 
 // Config represents the main configuration
@@ -28,6 +29,7 @@ type Config struct {
 	Projects     []*ProjectConfig    `yaml:"projects"`
 	Dashboard    *DashboardConfig    `yaml:"dashboard"`
 	Alerts       *AlertsConfig       `yaml:"alerts"`
+	Logging      *logging.Config     `yaml:"logging"`
 }
 
 // AdaptersConfig holds adapter configurations
@@ -236,6 +238,7 @@ func DefaultConfig() *Config {
 				SuppressDuplicates: true,
 			},
 		},
+		Logging: logging.DefaultConfig(),
 	}
 }
 

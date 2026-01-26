@@ -4,7 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/alekspetrov/pilot/internal/executor"
+	"github.com/alekspetrov/pilot/internal/logging"
 	"github.com/alekspetrov/pilot/internal/transcription"
 )
 
@@ -79,10 +80,10 @@ func NewHandler(config *HandlerConfig, runner *executor.Runner) *Handler {
 	if config.Transcription != nil {
 		svc, err := transcription.NewService(config.Transcription)
 		if err != nil {
-			log.Printf("[telegram] Warning: transcription not available: %v", err)
+			logging.WithComponent("telegram").Warn("Transcription not available", slog.Any("error", err))
 		} else {
 			h.transcriber = svc
-			log.Printf("[telegram] Voice transcription enabled (backend: %s)", svc.BackendName())
+			logging.WithComponent("telegram").Info("Voice transcription enabled", slog.String("backend", svc.BackendName()))
 		}
 	}
 
@@ -115,15 +116,15 @@ func (h *Handler) Stop() {
 func (h *Handler) pollLoop(ctx context.Context) {
 	defer h.wg.Done()
 
-	log.Println("[telegram] Starting poll loop...")
+	logging.WithComponent("telegram").Info("Starting poll loop")
 
 	for {
 		select {
 		case <-ctx.Done():
-			log.Println("[telegram] Context cancelled, stopping poll loop")
+			logging.WithComponent("telegram").Info("Context cancelled, stopping poll loop")
 			return
 		case <-h.stopCh:
-			log.Println("[telegram] Stop signal received, stopping poll loop")
+			logging.WithComponent("telegram").Info("Stop signal received, stopping poll loop")
 			return
 		default:
 			h.fetchAndProcess(ctx)
@@ -161,7 +162,7 @@ func (h *Handler) cleanupExpiredTasks(ctx context.Context) {
 			_, _ = h.client.SendMessage(ctx, chatID,
 				fmt.Sprintf("⏰ Task `%s` expired (no confirmation received).", task.TaskID), "Markdown")
 			delete(h.pendingTasks, chatID)
-			log.Printf("[telegram] Expired pending task %s for chat %s", task.TaskID, chatID)
+			logging.WithComponent("telegram").Debug("Expired pending task", slog.String("task_id", task.TaskID), slog.String("chat_id", chatID))
 		}
 	}
 }
@@ -173,7 +174,7 @@ func (h *Handler) fetchAndProcess(ctx context.Context) {
 	if err != nil {
 		// Don't spam logs on context cancellation
 		if ctx.Err() == nil {
-			log.Printf("[telegram] Error fetching updates: %v", err)
+			logging.WithComponent("telegram").Warn("Error fetching updates", slog.Any("error", err))
 		}
 		// Brief pause before retry on error
 		time.Sleep(time.Second)
@@ -231,7 +232,8 @@ func (h *Handler) processUpdate(ctx context.Context, update *Update) {
 		}
 
 		if !h.allowedIDs[msg.Chat.ID] && !h.allowedIDs[senderID] {
-			log.Printf("[telegram] Ignoring message from unauthorized chat/user: %d/%d", msg.Chat.ID, senderID)
+			logging.WithComponent("telegram").Debug("Ignoring message from unauthorized chat/user",
+				slog.Int64("chat_id", msg.Chat.ID), slog.Int64("sender_id", senderID))
 			return
 		}
 	}
@@ -251,7 +253,8 @@ func (h *Handler) processUpdate(ctx context.Context, update *Update) {
 
 	// Detect intent
 	intent := DetectIntent(text)
-	log.Printf("[telegram] Message from %s: %q -> Intent: %s", chatID, truncateDescription(text, 50), intent)
+	logging.WithComponent("telegram").Debug("Message received",
+		slog.String("chat_id", chatID), slog.String("intent", string(intent)))
 
 	switch intent {
 	case IntentCommand:
@@ -323,7 +326,7 @@ func (h *Handler) handleGreeting(ctx context.Context, chatID string, from *User)
 func (h *Handler) handleQuestion(ctx context.Context, chatID, question string) {
 	// Try fast path first for common questions
 	if answer := h.tryFastAnswer(question); answer != "" {
-		log.Printf("[telegram] Fast answer for: %s", truncateDescription(question, 50))
+		logging.WithComponent("telegram").Debug("Fast answer used", slog.String("chat_id", chatID))
 		_, _ = h.client.SendMessage(ctx, chatID, answer, "Markdown")
 		return
 	}
@@ -355,7 +358,7 @@ If the question is too broad, ask for clarification instead of exploring everyth
 	}
 
 	// Execute with timeout context
-	log.Printf("[telegram] Answering question %s: %s", taskID, truncateDescription(question, 50))
+	logging.WithTask(taskID).Debug("Answering question", slog.String("chat_id", chatID))
 	result, err := h.runner.Execute(questionCtx, task)
 
 	if err != nil {
@@ -431,7 +434,7 @@ func (h *Handler) handleTask(ctx context.Context, chatID, description string) {
 		})
 
 	if err != nil {
-		log.Printf("[telegram] Failed to send confirmation: %v", err)
+		logging.WithComponent("telegram").Warn("Failed to send confirmation", slog.Any("error", err))
 		// Fallback to text-based confirmation
 		_, _ = h.client.SendMessage(ctx, chatID,
 			confirmMsg+"\n\n_Reply *yes* to execute or *no* to cancel._", "Markdown")
@@ -452,7 +455,7 @@ func (h *Handler) executeTask(ctx context.Context, chatID, taskID, description s
 	// .agent/sops/telegram-bot-development.md
 	resp, err := h.client.SendMessage(ctx, chatID, FormatProgressUpdate(taskID, "Starting", 0, "Initializing..."), "Markdown")
 	if err != nil {
-		log.Printf("[telegram] Failed to send start message: %v", err)
+		logging.WithTask(taskID).Warn("Failed to send start message", slog.Any("error", err))
 		// Fallback to simple message
 		_, _ = h.client.SendMessage(ctx, chatID, FormatTaskStarted(taskID, description), "Markdown")
 	}
@@ -461,9 +464,9 @@ func (h *Handler) executeTask(ctx context.Context, chatID, taskID, description s
 	var progressMsgID int64
 	if resp != nil && resp.Result != nil {
 		progressMsgID = resp.Result.MessageID
-		log.Printf("[telegram] Progress message ID: %d", progressMsgID)
+		logging.WithTask(taskID).Debug("Progress message ready", slog.Int64("message_id", progressMsgID))
 	} else {
-		log.Printf("[telegram] WARNING: No progress message ID - progress updates disabled")
+		logging.WithTask(taskID).Warn("No progress message ID - progress updates disabled")
 	}
 
 	// Create task for executor
@@ -481,14 +484,15 @@ func (h *Handler) executeTask(ctx context.Context, chatID, taskID, description s
 	var lastUpdate time.Time
 
 	if progressMsgID != 0 {
-		log.Printf("[telegram] Setting up progress callback for task %s", taskID)
+		logging.WithTask(taskID).Debug("Setting up progress callback")
 		h.runner.OnProgress(func(tid string, phase string, progress int, message string) {
 			// Only update for our task
 			if tid != taskID {
 				return
 			}
 
-			log.Printf("[telegram] Progress: %s %d%% - %s", phase, progress, message)
+			logging.WithTask(taskID).Debug("Progress update",
+				slog.String("phase", phase), slog.Int("progress", progress))
 
 			// Throttle updates: phase change OR progress change >= 15% OR 3 seconds elapsed
 			now := time.Now()
@@ -508,15 +512,15 @@ func (h *Handler) executeTask(ctx context.Context, chatID, taskID, description s
 			// Send update
 			updateText := FormatProgressUpdate(taskID, phase, progress, message)
 			if err := h.client.EditMessage(ctx, chatID, progressMsgID, updateText, "Markdown"); err != nil {
-				log.Printf("[telegram] Failed to edit progress message: %v", err)
+				logging.WithTask(taskID).Warn("Failed to edit progress message", slog.Any("error", err))
 			}
 		})
 	} else {
-		log.Printf("[telegram] WARNING: Progress callback NOT set (no message ID)")
+		logging.WithTask(taskID).Warn("Progress callback NOT set (no message ID)")
 	}
 
 	// Execute task
-	log.Printf("[telegram] Executing task %s: %s", taskID, truncateDescription(description, 100))
+	logging.WithTask(taskID).Info("Executing task", slog.String("chat_id", chatID))
 	result, err := h.runner.Execute(ctx, task)
 
 	// Clear progress callback
@@ -697,14 +701,16 @@ func (h *Handler) handlePhoto(ctx context.Context, chatID string, msg *Message) 
 			senderID = msg.From.ID
 		}
 		if !h.allowedIDs[msg.Chat.ID] && !h.allowedIDs[senderID] {
-			log.Printf("[telegram] Ignoring photo from unauthorized chat/user: %d/%d", msg.Chat.ID, senderID)
+			logging.WithComponent("telegram").Debug("Ignoring photo from unauthorized chat/user",
+				slog.Int64("chat_id", msg.Chat.ID), slog.Int64("sender_id", senderID))
 			return
 		}
 	}
 
 	// Get the largest photo size (last in array)
 	photo := msg.Photo[len(msg.Photo)-1]
-	log.Printf("[telegram] Received photo from %s: %dx%d, size=%d", chatID, photo.Width, photo.Height, photo.FileSize)
+	logging.WithComponent("telegram").Debug("Received photo",
+		slog.String("chat_id", chatID), slog.Int("width", photo.Width), slog.Int("height", photo.Height))
 
 	// Send acknowledgment
 	_, _ = h.client.SendMessage(ctx, chatID, "📷 Processing image...", "")
@@ -712,7 +718,7 @@ func (h *Handler) handlePhoto(ctx context.Context, chatID string, msg *Message) 
 	// Download the image
 	imagePath, err := h.downloadImage(ctx, photo.FileID)
 	if err != nil {
-		log.Printf("[telegram] Failed to download image: %v", err)
+		logging.WithComponent("telegram").Warn("Failed to download image", slog.Any("error", err))
 		_, _ = h.client.SendMessage(ctx, chatID, "❌ Failed to download image. Please try again.", "")
 		return
 	}
@@ -740,22 +746,23 @@ func (h *Handler) handleVoice(ctx context.Context, chatID string, msg *Message) 
 			senderID = msg.From.ID
 		}
 		if !h.allowedIDs[msg.Chat.ID] && !h.allowedIDs[senderID] {
-			log.Printf("[telegram] Ignoring voice from unauthorized chat/user: %d/%d", msg.Chat.ID, senderID)
+			logging.WithComponent("telegram").Debug("Ignoring voice from unauthorized chat/user",
+				slog.Int64("chat_id", msg.Chat.ID), slog.Int64("sender_id", senderID))
 			return
 		}
 	}
 
 	// Check if transcription is available
 	if h.transcriber == nil {
-		log.Printf("[telegram] Voice message received but transcription not configured")
+		logging.WithComponent("telegram").Debug("Voice message received but transcription not configured")
 		_, _ = h.client.SendMessage(ctx, chatID,
 			"🎤 Voice messages are not enabled. Configure transcription in your pilot config.", "")
 		return
 	}
 
 	voice := msg.Voice
-	log.Printf("[telegram] Received voice from %s: duration=%ds, mime=%s, size=%d",
-		chatID, voice.Duration, voice.MimeType, voice.FileSize)
+	logging.WithComponent("telegram").Debug("Received voice",
+		slog.String("chat_id", chatID), slog.Int("duration", voice.Duration))
 
 	// Send acknowledgment
 	_, _ = h.client.SendMessage(ctx, chatID, "🎤 Transcribing voice message...", "")
@@ -763,7 +770,7 @@ func (h *Handler) handleVoice(ctx context.Context, chatID string, msg *Message) 
 	// Download the voice file
 	audioPath, err := h.downloadAudio(ctx, voice.FileID)
 	if err != nil {
-		log.Printf("[telegram] Failed to download voice: %v", err)
+		logging.WithComponent("telegram").Warn("Failed to download voice", slog.Any("error", err))
 		_, _ = h.client.SendMessage(ctx, chatID, "❌ Failed to download voice message. Please try again.", "")
 		return
 	}
@@ -779,7 +786,7 @@ func (h *Handler) handleVoice(ctx context.Context, chatID string, msg *Message) 
 
 	result, err := h.transcriber.Transcribe(transcribeCtx, audioPath)
 	if err != nil {
-		log.Printf("[telegram] Transcription failed: %v", err)
+		logging.WithComponent("telegram").Warn("Transcription failed", slog.Any("error", err))
 		_, _ = h.client.SendMessage(ctx, chatID,
 			"❌ Failed to transcribe voice message. Please try again or send as text.", "")
 		return
@@ -801,7 +808,7 @@ func (h *Handler) handleVoice(ctx context.Context, chatID string, msg *Message) 
 	_, _ = h.client.SendMessage(ctx, chatID, transcriptMsg, "Markdown")
 
 	// Process the transcribed text as if it was typed
-	log.Printf("[telegram] Processing transcribed text: %s", truncateDescription(result.Text, 50))
+	logging.WithComponent("telegram").Debug("Processing transcribed text", slog.String("chat_id", chatID))
 
 	// Detect intent and handle
 	text := strings.TrimSpace(result.Text)
@@ -955,7 +962,7 @@ func (h *Handler) executeImageTask(ctx context.Context, chatID, imagePath, promp
 	taskCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
 
-	log.Printf("[telegram] Executing image task %s", taskID)
+	logging.WithTask(taskID).Info("Executing image task", slog.String("chat_id", chatID))
 	result, err := h.runner.Execute(taskCtx, task)
 
 	// Clear progress callback

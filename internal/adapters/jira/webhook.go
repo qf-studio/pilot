@@ -6,8 +6,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"log"
+	"log/slog"
 	"strings"
+
+	"github.com/alekspetrov/pilot/internal/logging"
 )
 
 // WebhookEventType represents the type of webhook event
@@ -86,7 +88,7 @@ func (h *WebhookHandler) VerifySignature(payload []byte, signature string) bool 
 func (h *WebhookHandler) Handle(ctx context.Context, payload map[string]interface{}) error {
 	webhookEvent, _ := payload["webhookEvent"].(string)
 
-	log.Printf("Jira webhook: %s", webhookEvent)
+	logging.WithComponent("jira").Debug("Jira webhook", slog.String("event", webhookEvent))
 
 	switch webhookEvent {
 	case string(EventIssueCreated):
@@ -94,7 +96,7 @@ func (h *WebhookHandler) Handle(ctx context.Context, payload map[string]interfac
 	case string(EventIssueUpdated):
 		return h.handleIssueUpdated(ctx, payload)
 	default:
-		log.Printf("Ignoring Jira event: %s", webhookEvent)
+		logging.WithComponent("jira").Debug("Ignoring Jira event", slog.String("event", webhookEvent))
 		return nil
 	}
 }
@@ -108,7 +110,7 @@ func (h *WebhookHandler) handleIssueCreated(ctx context.Context, payload map[str
 
 	// Check if issue has pilot label
 	if !h.hasPilotLabel(issue) {
-		log.Printf("Issue %s does not have pilot label, skipping", issue.Key)
+		logging.WithComponent("jira").Debug("Issue does not have pilot label, skipping", slog.String("key", issue.Key))
 		return nil
 	}
 
@@ -129,7 +131,7 @@ func (h *WebhookHandler) handleIssueUpdated(ctx context.Context, payload map[str
 
 	// Verify the issue currently has the pilot label
 	if !h.hasPilotLabel(issue) {
-		log.Printf("Issue %s does not have pilot label, skipping", issue.Key)
+		logging.WithComponent("jira").Debug("Issue does not have pilot label, skipping", slog.String("key", issue.Key))
 		return nil
 	}
 
@@ -138,7 +140,7 @@ func (h *WebhookHandler) handleIssueUpdated(ctx context.Context, payload map[str
 
 // processIssue processes an issue that should be handled by Pilot
 func (h *WebhookHandler) processIssue(ctx context.Context, issue *Issue) error {
-	log.Printf("Processing pilot issue: %s - %s", issue.Key, issue.Fields.Summary)
+	logging.WithComponent("jira").Info("Processing pilot issue", slog.String("key", issue.Key), slog.String("summary", issue.Fields.Summary))
 
 	// Fetch full issue details via API (webhook payload may be incomplete)
 	fullIssue, err := h.client.GetIssue(ctx, issue.Key)

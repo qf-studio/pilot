@@ -2,7 +2,9 @@ package linear
 
 import (
 	"context"
-	"log"
+	"log/slog"
+
+	"github.com/alekspetrov/pilot/internal/logging"
 )
 
 // WebhookEventType represents the type of webhook event
@@ -51,7 +53,7 @@ func (h *WebhookHandler) Handle(ctx context.Context, payload map[string]interfac
 	action, _ := payload["action"].(string)
 	eventType, _ := payload["type"].(string)
 
-	log.Printf("Linear webhook: %s %s", action, eventType)
+	logging.WithComponent("linear").Debug("Linear webhook", slog.String("action", action), slog.String("type", eventType))
 
 	// Only process issue creation events
 	if action != "create" || eventType != "Issue" {
@@ -65,7 +67,7 @@ func (h *WebhookHandler) Handle(ctx context.Context, payload map[string]interfac
 
 	// Check if issue has pilot label
 	if !h.hasPilotLabel(data) {
-		log.Printf("Issue does not have pilot label, skipping")
+		logging.WithComponent("linear").Debug("Issue does not have pilot label, skipping")
 		return nil
 	}
 
@@ -76,7 +78,7 @@ func (h *WebhookHandler) Handle(ctx context.Context, payload map[string]interfac
 		return err
 	}
 
-	log.Printf("Processing pilot issue: %s - %s", issue.Identifier, issue.Title)
+	logging.WithComponent("linear").Info("Processing pilot issue", slog.String("identifier", issue.Identifier), slog.String("title", issue.Title))
 
 	// Call the callback
 	if h.onIssue != nil {

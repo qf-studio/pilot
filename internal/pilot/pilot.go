@@ -3,7 +3,7 @@ package pilot
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"sync"
 
 	"github.com/alekspetrov/pilot/internal/adapters/github"
@@ -11,6 +11,7 @@ import (
 	"github.com/alekspetrov/pilot/internal/adapters/slack"
 	"github.com/alekspetrov/pilot/internal/config"
 	"github.com/alekspetrov/pilot/internal/gateway"
+	"github.com/alekspetrov/pilot/internal/logging"
 	"github.com/alekspetrov/pilot/internal/memory"
 	"github.com/alekspetrov/pilot/internal/orchestrator"
 )
@@ -103,7 +104,7 @@ func New(cfg *config.Config) (*Pilot, error) {
 	if p.linearWH != nil {
 		p.gateway.Router().RegisterWebhookHandler("linear", func(payload map[string]interface{}) {
 			if err := p.linearWH.Handle(ctx, payload); err != nil {
-				log.Printf("Linear webhook error: %v", err)
+				logging.WithComponent("pilot").Error("Linear webhook error", slog.Any("error", err))
 			}
 		})
 	}
@@ -112,7 +113,7 @@ func New(cfg *config.Config) (*Pilot, error) {
 		p.gateway.Router().RegisterWebhookHandler("github", func(payload map[string]interface{}) {
 			eventType, _ := payload["_event_type"].(string)
 			if err := p.githubWH.Handle(ctx, eventType, payload); err != nil {
-				log.Printf("GitHub webhook error: %v", err)
+				logging.WithComponent("pilot").Error("GitHub webhook error", slog.Any("error", err))
 			}
 		})
 	}
@@ -122,7 +123,7 @@ func New(cfg *config.Config) (*Pilot, error) {
 
 // Start starts Pilot
 func (p *Pilot) Start() error {
-	log.Println("Starting Pilot...")
+	logging.WithComponent("pilot").Info("Starting Pilot")
 
 	// Start orchestrator
 	p.orchestrator.Start()
@@ -132,17 +133,19 @@ func (p *Pilot) Start() error {
 	go func() {
 		defer p.wg.Done()
 		if err := p.gateway.Start(p.ctx); err != nil {
-			log.Printf("Gateway error: %v", err)
+			logging.WithComponent("pilot").Error("Gateway error", slog.Any("error", err))
 		}
 	}()
 
-	log.Printf("Pilot started on %s:%d", p.config.Gateway.Host, p.config.Gateway.Port)
+	logging.WithComponent("pilot").Info("Pilot started",
+		slog.String("host", p.config.Gateway.Host),
+		slog.Int("port", p.config.Gateway.Port))
 	return nil
 }
 
 // Stop stops Pilot
 func (p *Pilot) Stop() error {
-	log.Println("Stopping Pilot...")
+	logging.WithComponent("pilot").Info("Stopping Pilot")
 
 	p.cancel()
 	p.orchestrator.Stop()
@@ -150,7 +153,7 @@ func (p *Pilot) Stop() error {
 	_ = p.store.Close()
 	p.wg.Wait()
 
-	log.Println("Pilot stopped")
+	logging.WithComponent("pilot").Info("Pilot stopped")
 	return nil
 }
 
@@ -161,7 +164,9 @@ func (p *Pilot) Wait() {
 
 // handleLinearIssue handles a new Linear issue
 func (p *Pilot) handleLinearIssue(ctx context.Context, issue *linear.Issue) error {
-	log.Printf("Received Linear issue: %s - %s", issue.Identifier, issue.Title)
+	logging.WithComponent("pilot").Info("Received Linear issue",
+		slog.String("identifier", issue.Identifier),
+		slog.String("title", issue.Title))
 
 	// Find project for this issue
 	projectPath := p.findProjectForIssue(issue)
@@ -216,7 +221,10 @@ func (p *Pilot) Router() *gateway.Router {
 
 // handleGithubIssue handles a new GitHub issue
 func (p *Pilot) handleGithubIssue(ctx context.Context, issue *github.Issue, repo *github.Repository) error {
-	log.Printf("Received GitHub issue: %s/%s#%d - %s", repo.Owner.Login, repo.Name, issue.Number, issue.Title)
+	logging.WithComponent("pilot").Info("Received GitHub issue",
+		slog.String("repo", repo.FullName),
+		slog.Int("number", issue.Number),
+		slog.String("title", issue.Title))
 
 	// Convert to task
 	task := github.ConvertIssueToTask(issue, repo)
@@ -230,7 +238,7 @@ func (p *Pilot) handleGithubIssue(ctx context.Context, issue *github.Issue, repo
 	// Notify that task has started
 	if p.githubNotify != nil {
 		if err := p.githubNotify.NotifyTaskStarted(ctx, repo.Owner.Login, repo.Name, issue.Number, task.ID); err != nil {
-			log.Printf("Failed to notify task started: %v", err)
+			logging.WithComponent("pilot").Warn("Failed to notify task started", slog.Any("error", err))
 		}
 	}
 
@@ -241,7 +249,7 @@ func (p *Pilot) handleGithubIssue(ctx context.Context, issue *github.Issue, repo
 	if p.githubNotify != nil {
 		if err != nil {
 			if notifyErr := p.githubNotify.NotifyTaskFailed(ctx, repo.Owner.Login, repo.Name, issue.Number, err.Error()); notifyErr != nil {
-				log.Printf("Failed to notify task failed: %v", notifyErr)
+				logging.WithComponent("pilot").Warn("Failed to notify task failed", slog.Any("error", notifyErr))
 			}
 		}
 		// Success notification handled by orchestrator when PR is created

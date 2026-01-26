@@ -3,7 +3,7 @@ package orchestrator
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -12,6 +12,7 @@ import (
 	"github.com/alekspetrov/pilot/internal/adapters/linear"
 	"github.com/alekspetrov/pilot/internal/adapters/slack"
 	"github.com/alekspetrov/pilot/internal/executor"
+	"github.com/alekspetrov/pilot/internal/logging"
 )
 
 // Config holds orchestrator configuration
@@ -85,7 +86,7 @@ func (o *Orchestrator) Start() {
 		go o.worker(i)
 	}
 
-	log.Printf("Orchestrator started with %d workers", maxWorkers)
+	logging.WithComponent("orchestrator").Info("Orchestrator started", slog.Int("workers", maxWorkers))
 }
 
 // Stop stops the orchestrator
@@ -93,7 +94,7 @@ func (o *Orchestrator) Stop() {
 	o.cancel()
 	close(o.taskQueue)
 	o.wg.Wait()
-	log.Println("Orchestrator stopped")
+	logging.WithComponent("orchestrator").Info("Orchestrator stopped")
 }
 
 // ProcessTicket processes a new ticket from Linear
@@ -115,7 +116,7 @@ func (o *Orchestrator) ProcessTicket(ctx context.Context, issue *linear.Issue, p
 
 	// Save task document
 	if err := o.saveTaskDocument(projectPath, doc); err != nil {
-		log.Printf("Warning: failed to save task document: %v", err)
+		logging.WithComponent("orchestrator").Warn("Failed to save task document", slog.Any("error", err))
 	}
 
 	// Create task
@@ -139,9 +140,9 @@ func (o *Orchestrator) QueueTask(task *Task) {
 
 	select {
 	case o.taskQueue <- task:
-		log.Printf("Task queued: %s", task.ID)
+		logging.WithTask(task.ID).Info("Task queued")
 	default:
-		log.Printf("Warning: task queue full, dropping task: %s", task.ID)
+		logging.WithTask(task.ID).Warn("Task queue full, dropping task")
 	}
 }
 
@@ -175,7 +176,7 @@ func (o *Orchestrator) processTask(task *Task) {
 		o.mu.Unlock()
 	}()
 
-	log.Printf("Processing task: %s - %s", task.ID, task.Document.Title)
+	logging.WithTask(task.ID).Info("Processing task", slog.String("title", task.Document.Title))
 	o.monitor.Start(task.ID)
 
 	// Notify Slack
@@ -195,7 +196,7 @@ func (o *Orchestrator) processTask(task *Task) {
 
 	result, err := o.runner.Execute(o.ctx, execTask)
 	if err != nil {
-		log.Printf("Task execution error: %s: %v", task.ID, err)
+		logging.WithTask(task.ID).Error("Task execution error", slog.Any("error", err))
 		o.monitor.Fail(task.ID, err.Error())
 		if o.notifier != nil {
 			_ = o.notifier.TaskFailed(o.ctx, task.ID, task.Document.Title, err.Error())
@@ -204,7 +205,7 @@ func (o *Orchestrator) processTask(task *Task) {
 	}
 
 	if !result.Success {
-		log.Printf("Task failed: %s: %s", task.ID, result.Error)
+		logging.WithTask(task.ID).Error("Task failed", slog.String("error", result.Error))
 		o.monitor.Fail(task.ID, result.Error)
 		if o.notifier != nil {
 			_ = o.notifier.TaskFailed(o.ctx, task.ID, task.Document.Title, result.Error)
@@ -212,7 +213,7 @@ func (o *Orchestrator) processTask(task *Task) {
 		return
 	}
 
-	log.Printf("Task completed: %s (duration: %v)", task.ID, result.Duration)
+	logging.WithTask(task.ID).Info("Task completed", slog.Duration("duration", result.Duration))
 	o.monitor.Complete(task.ID, result.PRUrl)
 
 	// Notify Slack
@@ -280,7 +281,7 @@ func (o *Orchestrator) ProcessGithubTicket(ctx context.Context, task *github.Tas
 
 	// Save task document
 	if err := o.saveTaskDocument(projectPath, doc); err != nil {
-		log.Printf("Warning: failed to save task document: %v", err)
+		logging.WithComponent("orchestrator").Warn("Failed to save task document", slog.Any("error", err))
 	}
 
 	// Create internal task

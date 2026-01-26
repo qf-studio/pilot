@@ -1,7 +1,8 @@
 # TASK-15: Structured Logging
 
-**Status**: 📋 Planned
+**Status**: ✅ Complete
 **Created**: 2026-01-26
+**Completed**: 2026-01-26
 **Category**: Logging
 
 ---
@@ -54,6 +55,31 @@ Production-grade structured logging with levels, context, and rotation.
 3. **slog** - Go 1.21+ standard library
 
 **Recommendation**: `slog` (stdlib, no dependencies)
+
+### Implementation Notes
+
+Created `internal/logging/` package with:
+- `logging.go` - Core structured logging with slog
+- `rotation.go` - File rotation support
+- `logging_test.go` - Comprehensive test coverage
+
+Key features implemented:
+- ✅ JSON and text output formats
+- ✅ Log levels (debug, info, warn, error)
+- ✅ Context propagation (task_id, component, project)
+- ✅ File rotation (size/time based)
+- ✅ Configuration integration
+
+Updated files to use structured logging:
+- `internal/gateway/server.go`
+- `internal/gateway/router.go`
+- `internal/pilot/pilot.go`
+- `internal/orchestrator/orchestrator.go`
+- `internal/adapters/linear/webhook.go`
+- `internal/adapters/github/webhook.go`
+- `internal/adapters/jira/webhook.go`
+- `internal/adapters/telegram/handler.go`
+- `internal/config/config.go`
 
 ---
 

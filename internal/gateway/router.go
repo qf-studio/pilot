@@ -2,8 +2,10 @@ package gateway
 
 import (
 	"encoding/json"
-	"log"
+	"log/slog"
 	"sync"
+
+	"github.com/alekspetrov/pilot/internal/logging"
 )
 
 // MessageType defines the type of control plane message
@@ -64,7 +66,7 @@ func (r *Router) RegisterWebhookHandler(source string, handler WebhookHandler) {
 func (r *Router) HandleMessage(session *Session, data []byte) {
 	var msg Message
 	if err := json.Unmarshal(data, &msg); err != nil {
-		log.Printf("Failed to parse message: %v", err)
+		logging.WithComponent("router").Warn("Failed to parse message", slog.Any("error", err))
 		return
 	}
 
@@ -73,7 +75,7 @@ func (r *Router) HandleMessage(session *Session, data []byte) {
 	r.mu.RUnlock()
 
 	if !ok {
-		log.Printf("No handler for message type: %s", msg.Type)
+		logging.WithComponent("router").Debug("No handler for message type", slog.String("type", string(msg.Type)))
 		return
 	}
 
@@ -89,7 +91,7 @@ func (r *Router) HandleWebhook(source string, payload map[string]interface{}) {
 	r.mu.RUnlock()
 
 	if !ok {
-		log.Printf("No handler for webhook source: %s", source)
+		logging.WithComponent("router").Debug("No handler for webhook source", slog.String("source", source))
 		return
 	}
 
