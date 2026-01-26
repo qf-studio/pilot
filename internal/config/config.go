@@ -10,6 +10,7 @@ import (
 
 	"github.com/alekspetrov/pilot/internal/adapters/linear"
 	"github.com/alekspetrov/pilot/internal/adapters/slack"
+	"github.com/alekspetrov/pilot/internal/adapters/telegram"
 	"github.com/alekspetrov/pilot/internal/gateway"
 )
 
@@ -27,8 +28,9 @@ type Config struct {
 
 // AdaptersConfig holds adapter configurations
 type AdaptersConfig struct {
-	Linear *linear.Config `yaml:"linear"`
-	Slack  *slack.Config  `yaml:"slack"`
+	Linear   *linear.Config   `yaml:"linear"`
+	Slack    *slack.Config    `yaml:"slack"`
+	Telegram *telegram.Config `yaml:"telegram"`
 }
 
 // OrchestratorConfig holds orchestrator settings
@@ -78,8 +80,9 @@ func DefaultConfig() *Config {
 			Type: gateway.AuthTypeClaudeCode,
 		},
 		Adapters: &AdaptersConfig{
-			Linear: linear.DefaultConfig(),
-			Slack:  slack.DefaultConfig(),
+			Linear:   linear.DefaultConfig(),
+			Slack:    slack.DefaultConfig(),
+			Telegram: telegram.DefaultConfig(),
 		},
 		Orchestrator: &OrchestratorConfig{
 			Model:         "claude-sonnet-4-20250514",
