@@ -1,7 +1,8 @@
 # TASK-13: Execution Metrics & Analytics
 
-**Status**: 📋 Planned
+**Status**: ✅ Complete
 **Created**: 2026-01-26
+**Completed**: 2026-01-26
 **Category**: Monitoring
 
 ---
@@ -44,28 +45,61 @@ Track and visualize execution metrics for operational awareness and cost optimiz
 
 ## Implementation
 
-### Phase 1: Data Collection
+### Phase 1: Data Collection ✅
 - Add metrics fields to ExecutionResult
 - Store in SQLite (extend memory/store.go)
 - Track tokens via Claude Code stream-json
 
-### Phase 2: CLI Dashboard
+### Phase 2: CLI Dashboard ✅
 - `pilot metrics` command
 - Show last 7 days summary
 - Success rate, avg duration, total cost
 
-### Phase 3: Export & Integration
+### Phase 3: Export & Integration ✅
 - JSON/CSV export
-- Prometheus metrics endpoint
-- Webhook for external analytics
+- (Prometheus endpoint: deferred for Phase 4)
+- (Webhook for external analytics: deferred for Phase 4)
 
 ---
 
-## Files
+## Files Changed
 
-- `internal/memory/metrics.go` - Metrics storage
-- `internal/executor/runner.go` - Token tracking
-- `cmd/pilot/metrics.go` - CLI command
+- `internal/memory/metrics.go` - NEW: Metrics types and query functions
+- `internal/memory/store.go` - Extended: Schema migration, Execution struct
+- `internal/executor/runner.go` - Extended: Token tracking, ExecutionResult metrics
+- `cmd/pilot/metrics.go` - NEW: CLI metrics command with subcommands
+
+---
+
+## CLI Commands
+
+```bash
+# Show 7-day summary
+pilot metrics summary
+
+# Show 30-day summary
+pilot metrics summary --days 30
+
+# Show daily breakdown
+pilot metrics daily
+
+# Show metrics by project
+pilot metrics projects
+
+# Export to JSON
+pilot metrics export --format json -o metrics.json
+
+# Export to CSV
+pilot metrics export --format csv -o metrics.csv
+```
+
+---
+
+## Commit
+
+```
+feat(metrics): add execution metrics and analytics (TASK-13)
+```
 
 ---
 
