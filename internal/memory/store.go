@@ -131,6 +131,24 @@ func (s *Store) migrate() error {
 		`CREATE INDEX IF NOT EXISTS idx_cross_patterns_confidence ON cross_patterns(confidence DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_pattern_projects_project ON pattern_projects(project_path)`,
 		`CREATE INDEX IF NOT EXISTS idx_pattern_feedback_pattern ON pattern_feedback(pattern_id)`,
+		// Usage metering tables (TASK-16)
+		`CREATE TABLE IF NOT EXISTS usage_events (
+			id TEXT PRIMARY KEY,
+			timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+			user_id TEXT NOT NULL,
+			project_id TEXT NOT NULL,
+			event_type TEXT NOT NULL,
+			quantity INTEGER DEFAULT 0,
+			unit_cost REAL DEFAULT 0.0,
+			total_cost REAL DEFAULT 0.0,
+			metadata TEXT,
+			execution_id TEXT
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_usage_events_user ON usage_events(user_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_usage_events_project ON usage_events(project_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_usage_events_timestamp ON usage_events(timestamp)`,
+		`CREATE INDEX IF NOT EXISTS idx_usage_events_type ON usage_events(event_type)`,
+		`CREATE INDEX IF NOT EXISTS idx_usage_events_execution ON usage_events(execution_id)`,
 	}
 
 	for _, migration := range migrations {

@@ -50,6 +50,7 @@ func main() {
 		newBriefCmd(),
 		newPatternsCmd(),
 		newMetricsCmd(),
+		newUsageCmd(),
 	)
 
 	if err := rootCmd.Execute(); err != nil {
