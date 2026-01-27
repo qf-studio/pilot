@@ -38,26 +38,29 @@ type RunningTask struct {
 
 // Handler processes incoming Telegram messages and executes tasks
 type Handler struct {
-	client            *Client
-	runner            *executor.Runner
-	projectPath       string
-	allowedIDs        map[int64]bool          // Allowed user/chat IDs for security
-	offset            int64                   // Last processed update ID
-	pendingTasks      map[string]*PendingTask // ChatID -> pending task
-	runningTasks      map[string]*RunningTask // ChatID -> running task
-	mu                sync.Mutex
-	stopCh            chan struct{}
-	wg                sync.WaitGroup
-	transcriber       *transcription.Service  // Voice transcription service (optional)
-	transcriptionErr  error                   // Error from transcription init (for guidance)
+	client           *Client
+	runner           *executor.Runner
+	projects         ProjectSource           // Project source for multi-project support
+	projectPath      string                  // Default/fallback project path
+	activeProject    map[string]string       // chatID -> projectPath (active project per chat)
+	allowedIDs       map[int64]bool          // Allowed user/chat IDs for security
+	offset           int64                   // Last processed update ID
+	pendingTasks     map[string]*PendingTask // ChatID -> pending task
+	runningTasks     map[string]*RunningTask // ChatID -> running task
+	mu               sync.Mutex
+	stopCh           chan struct{}
+	wg               sync.WaitGroup
+	transcriber      *transcription.Service // Voice transcription service (optional)
+	transcriptionErr error                  // Error from transcription init (for guidance)
 }
 
 // HandlerConfig holds configuration for the Telegram handler
 type HandlerConfig struct {
 	BotToken      string
-	ProjectPath   string
-	AllowedIDs    []int64                // User/chat IDs allowed to send tasks
-	Transcription *transcription.Config  // Voice transcription config (optional)
+	ProjectPath   string                // Default/fallback project path
+	Projects      ProjectSource         // Project source for multi-project support
+	AllowedIDs    []int64               // User/chat IDs allowed to send tasks
+	Transcription *transcription.Config // Voice transcription config (optional)
 }
 
 // NewHandler creates a new Telegram message handler
@@ -67,14 +70,24 @@ func NewHandler(config *HandlerConfig, runner *executor.Runner) *Handler {
 		allowedIDs[id] = true
 	}
 
+	// Determine default project path
+	projectPath := config.ProjectPath
+	if projectPath == "" && config.Projects != nil {
+		if defaultProj := config.Projects.GetDefaultProject(); defaultProj != nil {
+			projectPath = defaultProj.Path
+		}
+	}
+
 	h := &Handler{
-		client:       NewClient(config.BotToken),
-		runner:       runner,
-		projectPath:  config.ProjectPath,
-		allowedIDs:   allowedIDs,
-		pendingTasks: make(map[string]*PendingTask),
-		runningTasks: make(map[string]*RunningTask),
-		stopCh:       make(chan struct{}),
+		client:        NewClient(config.BotToken),
+		runner:        runner,
+		projects:      config.Projects,
+		projectPath:   projectPath,
+		activeProject: make(map[string]string),
+		allowedIDs:    allowedIDs,
+		pendingTasks:  make(map[string]*PendingTask),
+		runningTasks:  make(map[string]*RunningTask),
+		stopCh:        make(chan struct{}),
 	}
 
 	// Initialize transcription service if configured
@@ -90,6 +103,45 @@ func NewHandler(config *HandlerConfig, runner *executor.Runner) *Handler {
 	}
 
 	return h
+}
+
+// getActiveProjectPath returns the active project path for a chat
+func (h *Handler) getActiveProjectPath(chatID string) string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if path, ok := h.activeProject[chatID]; ok {
+		return path
+	}
+	return h.projectPath
+}
+
+// setActiveProject sets the active project for a chat by name
+func (h *Handler) setActiveProject(chatID, projectName string) (*ProjectInfo, error) {
+	if h.projects == nil {
+		return nil, fmt.Errorf("no projects configured")
+	}
+
+	proj := h.projects.GetProjectByName(projectName)
+	if proj == nil {
+		return nil, fmt.Errorf("project '%s' not found", projectName)
+	}
+
+	h.mu.Lock()
+	h.activeProject[chatID] = proj.Path
+	h.mu.Unlock()
+
+	return proj, nil
+}
+
+// getActiveProjectInfo returns the active project info for a chat
+func (h *Handler) getActiveProjectInfo(chatID string) *ProjectInfo {
+	if h.projects == nil {
+		return nil
+	}
+
+	path := h.getActiveProjectPath(chatID)
+	return h.projects.GetProjectByPath(path)
 }
 
 // CheckSingleton verifies no other bot instance is already running.
@@ -564,6 +616,7 @@ What I understand:
 Commands:
 /help - Show this message
 /status - Check bot status
+/voice - Setup voice transcription
 /tasks - Show task backlog
 /run <id> - Execute task directly (e.g., /run 07)
 /stop - Stop running task
@@ -616,6 +669,8 @@ Quick patterns:
 			h.mu.Unlock()
 			_, _ = h.client.SendMessage(ctx, chatID, "No pending task to cancel.", "")
 		}
+	case "/voice":
+		h.sendVoiceSetupPrompt(ctx, chatID)
 
 	default:
 		_, _ = h.client.SendMessage(ctx, chatID, "Unknown command. Use /help for available commands.", "")
@@ -1479,4 +1534,88 @@ func (h *Handler) fastGrepTodos() string {
 	}
 
 	return sb.String()
+}
+
+// sendVoiceSetupPrompt sends an interactive voice setup message with install options
+func (h *Handler) sendVoiceSetupPrompt(ctx context.Context, chatID string) {
+	status := transcription.CheckSetup(nil)
+
+	var sb strings.Builder
+	sb.WriteString("🎤 Voice transcription not available\n\n")
+
+	var buttons [][]InlineKeyboardButton
+
+	if !status.FFmpegInstalled {
+		sb.WriteString("Missing: ffmpeg (required for audio)\n")
+		if status.CanAutoInstall {
+			buttons = append(buttons, []InlineKeyboardButton{
+				{Text: "📦 Install ffmpeg", CallbackData: "voice_install_ffmpeg"},
+			})
+		} else {
+			sb.WriteString(fmt.Sprintf("→ %s\n", transcription.GetInstallInstructions()))
+		}
+	}
+
+	if !status.FunASRInstalled && !status.OpenAIKeySet {
+		sb.WriteString("\nMissing: transcription backend\n")
+		sb.WriteString("Options:\n")
+		sb.WriteString("• SenseVoice (local, free, private)\n")
+		sb.WriteString("• Whisper API (cloud, fast, paid)\n")
+		buttons = append(buttons, []InlineKeyboardButton{
+			{Text: "📦 Install SenseVoice", CallbackData: "voice_install_funasr"},
+		})
+	}
+
+	buttons = append(buttons, []InlineKeyboardButton{
+		{Text: "🔍 Check Status", CallbackData: "voice_check_status"},
+	})
+
+	if len(buttons) > 0 {
+		_, _ = h.client.SendMessageWithKeyboard(ctx, chatID, sb.String(), "", buttons)
+	} else {
+		sb.WriteString("\nRun 'pilot doctor' for full diagnostics.")
+		_, _ = h.client.SendMessage(ctx, chatID, sb.String(), "")
+	}
+}
+
+// handleVoiceInstall handles voice dependency installation
+func (h *Handler) handleVoiceInstall(ctx context.Context, chatID, component string) {
+	var msg string
+	var err error
+
+	switch component {
+	case "ffmpeg":
+		_, _ = h.client.SendMessage(ctx, chatID, "📦 Installing ffmpeg... (this may take a minute)", "")
+		err = transcription.InstallFFmpeg(ctx)
+		if err != nil {
+			msg = fmt.Sprintf("❌ ffmpeg installation failed:\n%v\n\nTry installing manually.", err)
+		} else {
+			msg = "✅ ffmpeg installed!\n\nNow you need a transcription backend."
+			buttons := [][]InlineKeyboardButton{
+				{{Text: "📦 Install SenseVoice", CallbackData: "voice_install_funasr"}},
+				{{Text: "🔍 Check Status", CallbackData: "voice_check_status"}},
+			}
+			_, _ = h.client.SendMessageWithKeyboard(ctx, chatID, msg, "", buttons)
+			return
+		}
+	case "funasr":
+		_, _ = h.client.SendMessage(ctx, chatID, "📦 Installing SenseVoice...\n\nThis may take several minutes.", "")
+		err = transcription.InstallFunASR(ctx)
+		if err != nil {
+			msg = fmt.Sprintf("❌ Installation failed:\n%v\n\nTry: pip3 install funasr torch torchaudio", err)
+		} else {
+			msg = "✅ SenseVoice installed!\n\n🔄 Restart the bot to enable voice."
+		}
+	}
+	_, _ = h.client.SendMessage(ctx, chatID, msg, "")
+}
+
+// handleVoiceStatus checks and reports voice setup status
+func (h *Handler) handleVoiceStatus(ctx context.Context, chatID string) {
+	status := transcription.CheckSetup(nil)
+	msg := transcription.FormatStatusMessage(status)
+	if len(status.Missing) == 0 && (status.FunASRInstalled || status.OpenAIKeySet) {
+		msg += "\n\n🔄 Restart the bot to enable voice."
+	}
+	_, _ = h.client.SendMessage(ctx, chatID, msg, "")
 }
