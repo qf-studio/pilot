@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "updated": "2026-01-26T12:45:00Z",
+  "updated": "2026-01-27T12:45:00Z",
   "nodes": {
     "concepts": {
       "pilot-architecture": {
@@ -119,6 +119,30 @@
         "concepts": ["executor", "navigator-integration"],
         "confidence": 0.9,
         "created": "2026-01-26"
+      },
+      "mem-008": {
+        "type": "pitfall",
+        "summary": "Task status drift: Pilot updates individual task files (TASK-XX.md) but NOT DEVELOPMENT-README.md index. Causes confusion where task files show complete but index shows planned. TASK-32 created to auto-sync.",
+        "concepts": ["navigator-integration"],
+        "confidence": 1.0,
+        "severity": "high",
+        "created": "2026-01-27",
+        "incident": "2026-01-27: TASK-05, TASK-12-16 all showed complete in task files but planned in index."
+      },
+      "mem-009": {
+        "type": "pitfall",
+        "summary": "Logging with Info level goes to stdout and breaks CLI UX (banner display). Use Debug level for operational logs in interactive commands like 'pilot telegram'.",
+        "concepts": ["pilot-architecture"],
+        "confidence": 0.95,
+        "created": "2026-01-27",
+        "files": ["internal/adapters/telegram/handler.go"]
+      },
+      "mem-010": {
+        "type": "pattern",
+        "summary": "For development builds: 'brew uninstall pilot && brew install --HEAD pilot'. The --HEAD flag builds from main branch. Regular 'brew install' uses pinned tag in formula.",
+        "concepts": ["pilot-architecture"],
+        "confidence": 1.0,
+        "created": "2026-01-27"
       }
     }
   },
