@@ -89,17 +89,15 @@ if _, err := os.Stat(agentDir); err == nil {
 
 | # | Task | File | Why |
 |---|------|------|-----|
-| 1 | **TASK-30**: Setup Wizard | `TASK-30-setup-wizard.md` | Users can't use features without knowing what's missing |
-| 2 | **TASK-20**: Quality Gates | `TASK-20-quality-gates.md` | Broken PRs destroy trust |
-| 3 | **TASK-19**: Approval Workflows | `TASK-19-approval-workflows.md` | Teams won't adopt without safety controls |
+| 1 | **TASK-20**: Quality Gates | `TASK-20-quality-gates.md` | Broken PRs destroy trust |
+| 2 | **TASK-19**: Approval Workflows | `TASK-19-approval-workflows.md` | Teams won't adopt without safety controls |
 
 ### 🟡 P2: High (Significant Value)
 
 | # | Task | File | Why |
 |---|------|------|-----|
-| 4 | **TASK-29**: Multi-Project Support | `TASK-29-multi-project-support.md` | Most devs work on multiple projects |
-| 5 | **TASK-28**: Speed Optimization | `TASK-28-speed-optimization.md` | Slow = abandoned |
-| 6 | **TASK-26**: Hot Version Upgrade | `TASK-26-hot-version-upgrade.md` | Friction-free updates |
+| 3 | **TASK-28**: Speed Optimization | `TASK-28-speed-optimization.md` | Slow = abandoned |
+| 4 | **TASK-26**: Hot Version Upgrade | `TASK-26-hot-version-upgrade.md` | Friction-free updates |
 
 ### 🟢 P3: Medium (Enterprise/Polish)
 
@@ -123,6 +121,8 @@ if _, err := os.Stat(agentDir); err == nil {
 
 ## Completed Tasks
 
+- **TASK-30**: Setup Wizard & Voice Setup ✅ 2026-01-27
+- **TASK-29**: Multi-Project Support ✅ 2026-01-27
 - **TASK-33**: Branch Workflow Fix ✅ 2026-01-27
 - **TASK-31**: PR Workflow Improvements ✅ 2026-01-27
 - **TASK-23**: GitHub App Integration (Phase 1) ✅ 2026-01-27
@@ -144,6 +144,8 @@ if _, err := os.Stat(agentDir); err == nil {
 
 ### Completed
 
+- **TASK-30**: Setup Wizard & Voice Setup ✅ 2026-01-27
+- **TASK-29**: Multi-Project Support ✅ 2026-01-27
 - **TASK-33**: Branch Workflow Fix ✅ 2026-01-27
 - **TASK-31**: PR Workflow Improvements ✅ 2026-01-27
 - **TASK-23**: GitHub App Integration (Phase 1) ✅ 2026-01-27
