@@ -183,3 +183,68 @@ func (c *Client) GetRepository(ctx context.Context, owner, repo string) (*Reposi
 	}
 	return &repository, nil
 }
+
+// CreateCommitStatus creates a status for a specific commit SHA
+// The context parameter allows multiple statuses per commit (e.g., "ci/build", "pilot/execution")
+func (c *Client) CreateCommitStatus(ctx context.Context, owner, repo, sha string, status *CommitStatus) (*CommitStatus, error) {
+	path := fmt.Sprintf("/repos/%s/%s/statuses/%s", owner, repo, sha)
+	var result CommitStatus
+	if err := c.doRequest(ctx, http.MethodPost, path, status, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// CreateCheckRun creates a check run for the GitHub Checks API
+// Requires a GitHub App token with checks:write permission
+func (c *Client) CreateCheckRun(ctx context.Context, owner, repo string, checkRun *CheckRun) (*CheckRun, error) {
+	path := fmt.Sprintf("/repos/%s/%s/check-runs", owner, repo)
+	var result CheckRun
+	if err := c.doRequest(ctx, http.MethodPost, path, checkRun, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// UpdateCheckRun updates an existing check run
+func (c *Client) UpdateCheckRun(ctx context.Context, owner, repo string, checkRunID int64, checkRun *CheckRun) (*CheckRun, error) {
+	path := fmt.Sprintf("/repos/%s/%s/check-runs/%d", owner, repo, checkRunID)
+	var result CheckRun
+	if err := c.doRequest(ctx, http.MethodPatch, path, checkRun, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// CreatePullRequest creates a new pull request
+func (c *Client) CreatePullRequest(ctx context.Context, owner, repo string, input *PullRequestInput) (*PullRequest, error) {
+	path := fmt.Sprintf("/repos/%s/%s/pulls", owner, repo)
+	var result PullRequest
+	if err := c.doRequest(ctx, http.MethodPost, path, input, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// GetPullRequest fetches a pull request by number
+func (c *Client) GetPullRequest(ctx context.Context, owner, repo string, number int) (*PullRequest, error) {
+	path := fmt.Sprintf("/repos/%s/%s/pulls/%d", owner, repo, number)
+	var result PullRequest
+	if err := c.doRequest(ctx, http.MethodGet, path, nil, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// AddPRComment adds a comment to a pull request (issue comment API)
+// For review comments on specific lines, use CreatePRReviewComment instead
+func (c *Client) AddPRComment(ctx context.Context, owner, repo string, number int, body string) (*PRComment, error) {
+	// PRs use the issues API for general comments
+	path := fmt.Sprintf("/repos/%s/%s/issues/%d/comments", owner, repo, number)
+	reqBody := map[string]string{"body": body}
+	var result PRComment
+	if err := c.doRequest(ctx, http.MethodPost, path, reqBody, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}

@@ -71,3 +71,100 @@ func PriorityName(priority Priority) string {
 		return "No Priority"
 	}
 }
+
+// CommitStatus states
+const (
+	StatusPending = "pending"
+	StatusSuccess = "success"
+	StatusFailure = "failure"
+	StatusError   = "error"
+)
+
+// CommitStatus represents a GitHub commit status
+type CommitStatus struct {
+	ID          int64  `json:"id,omitempty"`
+	State       string `json:"state"`                  // pending, success, failure, error
+	TargetURL   string `json:"target_url,omitempty"`   // URL to link to from the status
+	Description string `json:"description,omitempty"` // Short description (140 chars max)
+	Context     string `json:"context,omitempty"`      // Unique identifier for the status
+	CreatedAt   string `json:"created_at,omitempty"`
+	UpdatedAt   string `json:"updated_at,omitempty"`
+}
+
+// CheckRun conclusion values
+const (
+	ConclusionSuccess        = "success"
+	ConclusionFailure        = "failure"
+	ConclusionNeutral        = "neutral"
+	ConclusionCancelled      = "cancelled"
+	ConclusionTimedOut       = "timed_out"
+	ConclusionActionRequired = "action_required"
+	ConclusionSkipped        = "skipped"
+)
+
+// CheckRun status values
+const (
+	CheckRunQueued     = "queued"
+	CheckRunInProgress = "in_progress"
+	CheckRunCompleted  = "completed"
+)
+
+// CheckRun represents a GitHub Check Run (Checks API)
+type CheckRun struct {
+	ID          int64        `json:"id,omitempty"`
+	HeadSHA     string       `json:"head_sha"`
+	Name        string       `json:"name"`
+	Status      string       `json:"status,omitempty"`      // queued, in_progress, completed
+	Conclusion  string       `json:"conclusion,omitempty"`  // success, failure, neutral, cancelled, timed_out, action_required, skipped
+	DetailsURL  string       `json:"details_url,omitempty"` // URL for more details
+	ExternalID  string       `json:"external_id,omitempty"` // Reference for external system
+	StartedAt   string       `json:"started_at,omitempty"`
+	CompletedAt string       `json:"completed_at,omitempty"`
+	Output      *CheckOutput `json:"output,omitempty"` // Rich output for the check
+}
+
+// CheckOutput represents the output of a check run
+type CheckOutput struct {
+	Title   string `json:"title"`
+	Summary string `json:"summary"`
+	Text    string `json:"text,omitempty"`
+}
+
+// PullRequest represents a GitHub pull request
+type PullRequest struct {
+	ID        int64  `json:"id,omitempty"`
+	Number    int    `json:"number,omitempty"`
+	Title     string `json:"title"`
+	Body      string `json:"body,omitempty"`
+	State     string `json:"state,omitempty"` // open, closed
+	Head      string `json:"head"`            // Branch name or ref for the head (source)
+	Base      string `json:"base"`            // Branch name or ref for the base (target)
+	HTMLURL   string `json:"html_url,omitempty"`
+	Draft     bool   `json:"draft,omitempty"`
+	Merged    bool   `json:"merged,omitempty"`
+	Mergeable *bool  `json:"mergeable,omitempty"`
+	CreatedAt string `json:"created_at,omitempty"`
+	UpdatedAt string `json:"updated_at,omitempty"`
+	MergedAt  string `json:"merged_at,omitempty"`
+}
+
+// PullRequestInput is used for creating pull requests
+type PullRequestInput struct {
+	Title string `json:"title"`
+	Body  string `json:"body,omitempty"`
+	Head  string `json:"head"` // Branch to merge from
+	Base  string `json:"base"` // Branch to merge into
+	Draft bool   `json:"draft,omitempty"`
+}
+
+// PRComment represents a comment on a pull request
+type PRComment struct {
+	ID        int64  `json:"id,omitempty"`
+	Body      string `json:"body"`
+	Path      string `json:"path,omitempty"`      // File path for review comments
+	Position  int    `json:"position,omitempty"`  // Line position for review comments
+	CommitID  string `json:"commit_id,omitempty"` // Commit SHA for review comments
+	HTMLURL   string `json:"html_url,omitempty"`
+	CreatedAt string `json:"created_at,omitempty"`
+	UpdatedAt string `json:"updated_at,omitempty"`
+}
