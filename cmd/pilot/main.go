@@ -456,11 +456,18 @@ Example:
 				return fmt.Errorf("telegram bot_token not configured")
 			}
 
-			// Resolve project path (flag > positional arg > cwd)
+			// Resolve project path priority: flag > positional arg > config default > cwd
 			if projectPath == "" && len(args) > 0 {
 				projectPath = args[0]
 			}
 			if projectPath == "" {
+				// Try to get default from config
+				if defaultProj := cfg.GetDefaultProject(); defaultProj != nil {
+					projectPath = defaultProj.Path
+				}
+			}
+			if projectPath == "" {
+				// Fall back to current working directory
 				cwd, _ := os.Getwd()
 				projectPath = cwd
 			}
@@ -484,6 +491,7 @@ Example:
 			handler := telegram.NewHandler(&telegram.HandlerConfig{
 				BotToken:      cfg.Adapters.Telegram.BotToken,
 				ProjectPath:   projectPath,
+				Projects:      config.NewProjectSource(cfg),
 				AllowedIDs:    allowedIDs,
 				Transcription: cfg.Adapters.Telegram.Transcription,
 			}, runner)
@@ -811,10 +819,10 @@ func newPatternsCmd() *cobra.Command {
 
 func newPatternsListCmd() *cobra.Command {
 	var (
-		limit      int
-		minConf    float64
+		limit       int
+		minConf     float64
 		patternType string
-		showAnti   bool
+		showAnti    bool
 	)
 
 	cmd := &cobra.Command{

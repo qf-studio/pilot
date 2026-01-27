@@ -616,6 +616,8 @@ What I understand:
 Commands:
 /help - Show this message
 /status - Check bot status
+/projects - List configured projects
+/project <name> - Switch active project
 /voice - Setup voice transcription
 /tasks - Show task backlog
 /run <id> - Execute task directly (e.g., /run 07)
@@ -635,7 +637,8 @@ Quick patterns:
 		running := h.runningTasks[chatID]
 		h.mu.Unlock()
 
-		statusText := fmt.Sprintf("✅ Pilot bot is running\n📁 Project: %s", h.projectPath)
+		activeProjectPath := h.getActiveProjectPath(chatID)
+		statusText := fmt.Sprintf("✅ Pilot bot is running\n📁 Project: %s", activeProjectPath)
 		if running != nil {
 			elapsed := time.Since(running.StartedAt).Round(time.Second)
 			statusText += fmt.Sprintf("\n\n🔄 Running: %s (%s)", running.TaskID, elapsed)
@@ -644,6 +647,16 @@ Quick patterns:
 			statusText += fmt.Sprintf("\n\n⏳ Pending: %s", pending.TaskID)
 		}
 		_, _ = h.client.SendMessage(ctx, chatID, statusText, "")
+
+	case "/projects":
+		h.handleProjectsCommand(ctx, chatID)
+
+	case "/project":
+		if len(parts) < 2 {
+			h.handleProjectCommand(ctx, chatID, "")
+		} else {
+			h.handleProjectCommand(ctx, chatID, parts[1])
+		}
 
 	case "/tasks", "/list":
 		h.handleTasksCommand(ctx, chatID)
@@ -685,6 +698,83 @@ func (h *Handler) handleTasksCommand(ctx context.Context, chatID string) {
 		return
 	}
 	_, _ = h.client.SendMessage(ctx, chatID, "📋 Task Backlog\n\n"+taskList, "")
+}
+
+// handleProjectsCommand lists all configured projects
+func (h *Handler) handleProjectsCommand(ctx context.Context, chatID string) {
+	if h.projects == nil {
+		_, _ = h.client.SendMessage(ctx, chatID, "📁 No projects configured.\n\nAdd projects to ~/.pilot/config.yaml", "")
+		return
+	}
+
+	projects := h.projects.ListProjects()
+	if len(projects) == 0 {
+		_, _ = h.client.SendMessage(ctx, chatID, "📁 No projects configured.\n\nAdd projects to ~/.pilot/config.yaml", "")
+		return
+	}
+
+	activeProjectPath := h.getActiveProjectPath(chatID)
+
+	var sb strings.Builder
+	sb.WriteString("📁 Projects\n\n")
+
+	for _, p := range projects {
+		marker := ""
+		if p.Path == activeProjectPath {
+			marker = " ✅"
+		}
+		nav := ""
+		if p.Navigator {
+			nav = " [Navigator]"
+		}
+		sb.WriteString(fmt.Sprintf("• %s%s%s\n  %s\n\n", p.Name, marker, nav, p.Path))
+	}
+
+	sb.WriteString("Use /project <name> to switch")
+	_, _ = h.client.SendMessage(ctx, chatID, sb.String(), "")
+}
+
+// handleProjectCommand switches active project or shows current
+func (h *Handler) handleProjectCommand(ctx context.Context, chatID, projectName string) {
+	// No project name provided - show current
+	if projectName == "" {
+		activeProjectPath := h.getActiveProjectPath(chatID)
+		projInfo := h.getActiveProjectInfo(chatID)
+
+		var projName string
+		if projInfo != nil {
+			projName = projInfo.Name
+		} else {
+			projName = filepath.Base(activeProjectPath)
+		}
+
+		_, _ = h.client.SendMessage(ctx, chatID,
+			fmt.Sprintf("📁 Active project: %s\n%s\n\nUse /projects to see all", projName, activeProjectPath), "")
+		return
+	}
+
+	// Try to switch project
+	proj, err := h.setActiveProject(chatID, projectName)
+	if err != nil {
+		// Try fuzzy match
+		if h.projects != nil {
+			for _, p := range h.projects.ListProjects() {
+				if strings.Contains(strings.ToLower(p.Name), strings.ToLower(projectName)) {
+					proj, err = h.setActiveProject(chatID, p.Name)
+					break
+				}
+			}
+		}
+
+		if err != nil {
+			_, _ = h.client.SendMessage(ctx, chatID,
+				fmt.Sprintf("❌ Project '%s' not found\n\nUse /projects to see available projects", projectName), "")
+			return
+		}
+	}
+
+	_, _ = h.client.SendMessage(ctx, chatID,
+		fmt.Sprintf("✅ Switched to %s\n%s", proj.Name, proj.Path), "")
 }
 
 // handleRunCommand executes a task directly without confirmation

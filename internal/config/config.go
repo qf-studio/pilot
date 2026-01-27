@@ -23,19 +23,20 @@ import (
 
 // Config represents the main configuration
 type Config struct {
-	Version      string              `yaml:"version"`
-	Gateway      *gateway.Config     `yaml:"gateway"`
-	Auth         *gateway.AuthConfig `yaml:"auth"`
-	Adapters     *AdaptersConfig     `yaml:"adapters"`
-	Orchestrator *OrchestratorConfig `yaml:"orchestrator"`
-	Memory       *MemoryConfig       `yaml:"memory"`
-	Projects     []*ProjectConfig    `yaml:"projects"`
-	Dashboard    *DashboardConfig    `yaml:"dashboard"`
-	Alerts       *AlertsConfig       `yaml:"alerts"`
-	Budget       *budget.Config      `yaml:"budget"`
-	Logging      *logging.Config     `yaml:"logging"`
-	Approval     *approval.Config    `yaml:"approval"`
-	Quality      *quality.Config     `yaml:"quality"`
+	Version        string              `yaml:"version"`
+	Gateway        *gateway.Config     `yaml:"gateway"`
+	Auth           *gateway.AuthConfig `yaml:"auth"`
+	Adapters       *AdaptersConfig     `yaml:"adapters"`
+	Orchestrator   *OrchestratorConfig `yaml:"orchestrator"`
+	Memory         *MemoryConfig       `yaml:"memory"`
+	Projects       []*ProjectConfig    `yaml:"projects"`
+	DefaultProject string              `yaml:"default_project"`
+	Dashboard      *DashboardConfig    `yaml:"dashboard"`
+	Alerts         *AlertsConfig       `yaml:"alerts"`
+	Budget         *budget.Config      `yaml:"budget"`
+	Logging        *logging.Config     `yaml:"logging"`
+	Approval       *approval.Config    `yaml:"approval"`
+	Quality        *quality.Config     `yaml:"quality"`
 }
 
 // AdaptersConfig holds adapter configurations
@@ -56,13 +57,13 @@ type OrchestratorConfig struct {
 
 // DailyBriefConfig holds daily brief settings
 type DailyBriefConfig struct {
-	Enabled  bool                  `yaml:"enabled"`
-	Schedule string                `yaml:"schedule"` // Cron syntax: "0 9 * * 1-5"
-	Time     string                `yaml:"time"`     // Deprecated: use schedule
-	Timezone string                `yaml:"timezone"`
-	Channels []BriefChannelConfig  `yaml:"channels"`
-	Content  BriefContentConfig    `yaml:"content"`
-	Filters  BriefFilterConfig     `yaml:"filters"`
+	Enabled  bool                 `yaml:"enabled"`
+	Schedule string               `yaml:"schedule"` // Cron syntax: "0 9 * * 1-5"
+	Time     string               `yaml:"time"`     // Deprecated: use schedule
+	Timezone string               `yaml:"timezone"`
+	Channels []BriefChannelConfig `yaml:"channels"`
+	Content  BriefContentConfig   `yaml:"content"`
+	Filters  BriefFilterConfig    `yaml:"filters"`
 }
 
 // BriefChannelConfig defines a delivery channel
@@ -106,16 +107,16 @@ type DashboardConfig struct {
 
 // AlertsConfig holds alerting configuration
 type AlertsConfig struct {
-	Enabled  bool                  `yaml:"enabled"`
-	Channels []AlertChannelConfig  `yaml:"channels"`
-	Rules    []AlertRuleConfig     `yaml:"rules"`
-	Defaults AlertDefaultsConfig   `yaml:"defaults"`
+	Enabled  bool                 `yaml:"enabled"`
+	Channels []AlertChannelConfig `yaml:"channels"`
+	Rules    []AlertRuleConfig    `yaml:"rules"`
+	Defaults AlertDefaultsConfig  `yaml:"defaults"`
 }
 
 // AlertChannelConfig configures an alert channel
 type AlertChannelConfig struct {
-	Name       string   `yaml:"name"`       // Unique identifier
-	Type       string   `yaml:"type"`       // "slack", "telegram", "email", "webhook", "pagerduty"
+	Name       string   `yaml:"name"` // Unique identifier
+	Type       string   `yaml:"type"` // "slack", "telegram", "email", "webhook", "pagerduty"
 	Enabled    bool     `yaml:"enabled"`
 	Severities []string `yaml:"severities"` // Which severities to receive
 
@@ -159,14 +160,14 @@ type AlertPagerDutyConfig struct {
 
 // AlertRuleConfig defines an alert rule
 type AlertRuleConfig struct {
-	Name        string                 `yaml:"name"`
-	Type        string                 `yaml:"type"` // "task_stuck", "task_failed", etc.
-	Enabled     bool                   `yaml:"enabled"`
-	Condition   AlertConditionConfig   `yaml:"condition"`
-	Severity    string                 `yaml:"severity"` // "info", "warning", "critical"
-	Channels    []string               `yaml:"channels"` // Channel names to send to
-	Cooldown    time.Duration          `yaml:"cooldown"` // Min time between alerts
-	Description string                 `yaml:"description"`
+	Name        string               `yaml:"name"`
+	Type        string               `yaml:"type"` // "task_stuck", "task_failed", etc.
+	Enabled     bool                 `yaml:"enabled"`
+	Condition   AlertConditionConfig `yaml:"condition"`
+	Severity    string               `yaml:"severity"` // "info", "warning", "critical"
+	Channels    []string             `yaml:"channels"` // Channel names to send to
+	Cooldown    time.Duration        `yaml:"cooldown"` // Min time between alerts
+	Description string               `yaml:"description"`
 }
 
 // AlertConditionConfig defines alert trigger conditions
@@ -267,9 +268,9 @@ func defaultAlertRules() []AlertRuleConfig {
 			Description: "Alert when a task has no progress for 10 minutes",
 		},
 		{
-			Name:    "task_failed",
-			Type:    "task_failed",
-			Enabled: true,
+			Name:        "task_failed",
+			Type:        "task_failed",
+			Enabled:     true,
 			Condition:   AlertConditionConfig{},
 			Severity:    "warning",
 			Channels:    []string{},
@@ -399,6 +400,30 @@ func (c *Config) GetProject(path string) *ProjectConfig {
 		if project.Path == path {
 			return project
 		}
+	}
+	return nil
+}
+
+// GetProjectByName returns project configuration by name (case-insensitive)
+func (c *Config) GetProjectByName(name string) *ProjectConfig {
+	nameLower := strings.ToLower(name)
+	for _, project := range c.Projects {
+		if strings.ToLower(project.Name) == nameLower {
+			return project
+		}
+	}
+	return nil
+}
+
+// GetDefaultProject returns the default project configuration
+func (c *Config) GetDefaultProject() *ProjectConfig {
+	if c.DefaultProject != "" {
+		if proj := c.GetProjectByName(c.DefaultProject); proj != nil {
+			return proj
+		}
+	}
+	if len(c.Projects) > 0 {
+		return c.Projects[0]
 	}
 	return nil
 }
