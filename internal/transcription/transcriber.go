@@ -16,7 +16,7 @@ type Result struct {
 // Transcriber is the interface for speech-to-text services
 type Transcriber interface {
 	// Transcribe converts audio to text
-	// audioPath should be a path to a WAV file (16kHz, mono)
+	// audioPath can be any format supported by Whisper API (ogg, mp3, wav, etc.)
 	Transcribe(ctx context.Context, audioPath string) (*Result, error)
 
 	// Name returns the name of the transcriber
@@ -28,27 +28,22 @@ type Transcriber interface {
 
 // Config holds transcription configuration
 type Config struct {
-	Backend       string `yaml:"backend"`        // "sensevoice", "whisper-api", "auto"
-	OpenAIAPIKey  string `yaml:"openai_api_key"` // For Whisper API fallback
-	SenseVoiceBin string `yaml:"sensevoice_bin"` // Path to SenseVoice Python script
-	FFmpegPath    string `yaml:"ffmpeg_path"`    // Path to ffmpeg binary
+	Backend      string `yaml:"backend"`        // "whisper-api" or "auto"
+	OpenAIAPIKey string `yaml:"openai_api_key"` // OpenAI API key for Whisper
 }
 
 // DefaultConfig returns default transcription configuration
 func DefaultConfig() *Config {
 	return &Config{
-		Backend:       "auto",
-		FFmpegPath:    "ffmpeg",
-		SenseVoiceBin: "", // Will use bundled script
+		Backend: "auto",
 	}
 }
 
 // Service manages transcription backends
 type Service struct {
-	config     *Config
-	primary    Transcriber
-	fallback   Transcriber
-	ffmpegPath string
+	config   *Config
+	primary  Transcriber
+	fallback Transcriber
 }
 
 // NewService creates a new transcription service
@@ -58,43 +53,14 @@ func NewService(config *Config) (*Service, error) {
 	}
 
 	s := &Service{
-		config:     config,
-		ffmpegPath: config.FFmpegPath,
+		config: config,
 	}
 
-	if s.ffmpegPath == "" {
-		s.ffmpegPath = "ffmpeg"
+	// Initialize Whisper API backend
+	if config.OpenAIAPIKey == "" {
+		return nil, fmt.Errorf("OpenAI API key required for transcription (set openai_api_key in config)")
 	}
-
-	// Initialize backends based on config
-	switch config.Backend {
-	case "sensevoice":
-		s.primary = NewSenseVoice(config.SenseVoiceBin)
-		if config.OpenAIAPIKey != "" {
-			s.fallback = NewWhisperAPI(config.OpenAIAPIKey)
-		}
-	case "whisper-api":
-		if config.OpenAIAPIKey == "" {
-			return nil, fmt.Errorf("OpenAI API key required for whisper-api backend")
-		}
-		s.primary = NewWhisperAPI(config.OpenAIAPIKey)
-	case "auto":
-		// Try SenseVoice first, fall back to Whisper API
-		sv := NewSenseVoice(config.SenseVoiceBin)
-		if sv.Available() {
-			s.primary = sv
-		}
-		if config.OpenAIAPIKey != "" {
-			wa := NewWhisperAPI(config.OpenAIAPIKey)
-			if s.primary == nil {
-				s.primary = wa
-			} else {
-				s.fallback = wa
-			}
-		}
-	default:
-		return nil, fmt.Errorf("unknown transcription backend: %s", config.Backend)
-	}
+	s.primary = NewWhisperAPI(config.OpenAIAPIKey)
 
 	if s.primary == nil {
 		return nil, fmt.Errorf("no transcription backend available")
@@ -104,20 +70,14 @@ func NewService(config *Config) (*Service, error) {
 }
 
 // Transcribe transcribes audio from the given path
-// The path can be any format supported by ffmpeg; it will be converted to WAV
+// Whisper API supports: flac, mp3, mp4, mpeg, mpga, m4a, ogg, wav, webm
 func (s *Service) Transcribe(ctx context.Context, audioPath string) (*Result, error) {
-	// Convert audio to WAV format for transcription
-	wavPath, err := s.convertToWav(ctx, audioPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to convert audio: %w", err)
-	}
-
-	// Try primary transcriber
-	result, err := s.primary.Transcribe(ctx, wavPath)
+	// Try primary transcriber (sends file directly to Whisper API)
+	result, err := s.primary.Transcribe(ctx, audioPath)
 	if err != nil {
 		// Try fallback if available
 		if s.fallback != nil {
-			result, err = s.fallback.Transcribe(ctx, wavPath)
+			result, err = s.fallback.Transcribe(ctx, audioPath)
 			if err != nil {
 				return nil, fmt.Errorf("transcription failed (primary and fallback): %w", err)
 			}

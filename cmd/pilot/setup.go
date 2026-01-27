@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -50,7 +49,7 @@ Examples:
 			hasProjects := len(cfg.Projects) > 0
 			hasVoice := cfg.Adapters != nil && cfg.Adapters.Telegram != nil &&
 				cfg.Adapters.Telegram.Transcription != nil &&
-				(checkPythonModule("funasr") || cfg.Adapters.Telegram.Transcription.OpenAIAPIKey != "")
+				cfg.Adapters.Telegram.Transcription.OpenAIAPIKey != ""
 			hasBriefs := cfg.Orchestrator != nil && cfg.Orchestrator.DailyBrief != nil && cfg.Orchestrator.DailyBrief.Enabled
 			hasAlerts := cfg.Alerts != nil && cfg.Alerts.Enabled
 
@@ -294,93 +293,35 @@ func setupProjects(reader *bufio.Reader, cfg *config.Config) error {
 }
 
 func setupVoice(reader *bufio.Reader, cfg *config.Config) error {
-	// Check ffmpeg
-	hasFFmpeg := commandExists("ffmpeg")
-	if !hasFFmpeg {
-		fmt.Println("  ffmpeg not found (required for voice)")
-		fmt.Print("  Install ffmpeg now? [Y/n]: ")
-		if readYesNo(reader, true) {
-			fmt.Print("  Installing... ")
-			if err := installFFmpeg(); err != nil {
-				fmt.Println("✗")
-				fmt.Printf("  ⚠️  Install failed: %v\n", err)
-				fmt.Println("  → Install manually: brew install ffmpeg")
-			} else {
-				fmt.Println("✓")
-				hasFFmpeg = true
-			}
-		}
-	} else {
-		fmt.Println("  ✓ ffmpeg found")
-	}
-
-	if !hasFFmpeg {
-		fmt.Println("  ○ Voice transcription not available")
-		return nil
-	}
-
 	// Initialize transcription config
 	if cfg.Adapters.Telegram == nil {
 		cfg.Adapters.Telegram = telegram.DefaultConfig()
 	}
 	if cfg.Adapters.Telegram.Transcription == nil {
 		cfg.Adapters.Telegram.Transcription = &transcription.Config{
-			Backend: "auto",
+			Backend: "whisper-api",
 		}
 	}
 
-	// Check SenseVoice
-	hasFunasr := checkPythonModule("funasr")
-	if hasFunasr {
-		fmt.Println("  ✓ SenseVoice (funasr) found")
-		cfg.Adapters.Telegram.Transcription.Backend = "sensevoice"
+	// Check for existing OpenAI key
+	apiKey := cfg.Adapters.Telegram.Transcription.OpenAIAPIKey
+	if apiKey == "" {
+		apiKey = os.Getenv("OPENAI_API_KEY")
+	}
+
+	if apiKey != "" {
+		fmt.Println("  ✓ OpenAI API key found")
+		cfg.Adapters.Telegram.Transcription.OpenAIAPIKey = apiKey
+		cfg.Adapters.Telegram.Transcription.Backend = "whisper-api"
 	} else {
-		fmt.Println("  SenseVoice not installed (local, fast, free)")
-		fmt.Print("  Install now? (requires ~2GB) [y/N]: ")
-		if readYesNo(reader, false) {
-			fmt.Println("  Installing SenseVoice dependencies...")
-			if err := installSenseVoice(); err != nil {
-				fmt.Printf("  ⚠️  Install failed: %v\n", err)
-			} else {
-				fmt.Println("  ✓ SenseVoice installed")
-				cfg.Adapters.Telegram.Transcription.Backend = "sensevoice"
-				hasFunasr = true
-			}
-		}
-	}
+		fmt.Println("  Voice transcription requires OpenAI API key (Whisper)")
+		fmt.Print("  Enter OpenAI API key (or leave empty to skip): ")
+		apiKey = readLine(reader)
 
-	// Whisper API fallback
-	if !hasFunasr {
-		fmt.Print("  Set up Whisper API (OpenAI) as fallback? [Y/n]: ")
-		if readYesNo(reader, true) {
-			// Check environment first
-			apiKey := os.Getenv("OPENAI_API_KEY")
-			if apiKey != "" {
-				fmt.Println("  ✓ Using OPENAI_API_KEY from environment")
-			} else {
-				fmt.Print("  Enter OpenAI API key: ")
-				apiKey = readLine(reader)
-			}
-
-			if apiKey != "" {
-				cfg.Adapters.Telegram.Transcription.OpenAIAPIKey = apiKey
-				cfg.Adapters.Telegram.Transcription.Backend = "whisper-api"
-				fmt.Println("  ✓ Whisper API configured")
-			} else {
-				fmt.Println("  ○ No API key provided")
-			}
-		}
-	}
-
-	// Summary
-	switch cfg.Adapters.Telegram.Transcription.Backend {
-	case "sensevoice":
-		fmt.Println("  ✓ Voice transcription: SenseVoice (local)")
-	case "whisper-api":
-		fmt.Println("  ✓ Voice transcription: Whisper API")
-	case "auto":
-		if cfg.Adapters.Telegram.Transcription.OpenAIAPIKey != "" {
-			fmt.Println("  ✓ Voice transcription: auto (Whisper fallback)")
+		if apiKey != "" {
+			cfg.Adapters.Telegram.Transcription.OpenAIAPIKey = apiKey
+			cfg.Adapters.Telegram.Transcription.Backend = "whisper-api"
+			fmt.Println("  ✓ Whisper API configured")
 		} else {
 			fmt.Println("  ○ Voice transcription not configured")
 		}
@@ -500,27 +441,6 @@ func expandPath(path string) string {
 	return path
 }
 
-func commandExists(cmd string) bool {
-	_, err := exec.LookPath(cmd)
-	return err == nil
-}
-
-func checkPythonModule(module string) bool {
-	pythonPath := getPythonPath()
-	cmd := exec.Command(pythonPath, "-c", fmt.Sprintf("import %s", module))
-	return cmd.Run() == nil
-}
-
-func getPythonPath() string {
-	if home, err := os.UserHomeDir(); err == nil {
-		venvPython := filepath.Join(home, ".pilot", "venv", "bin", "python3")
-		if _, err := os.Stat(venvPython); err == nil {
-			return venvPython
-		}
-	}
-	return "python3"
-}
-
 func validateTelegramToken(token string) error {
 	// Simple validation - check format
 	if !strings.Contains(token, ":") {
@@ -530,49 +450,3 @@ func validateTelegramToken(token string) error {
 	return nil
 }
 
-func installFFmpeg() error {
-	// Try homebrew on macOS
-	cmd := exec.Command("brew", "install", "ffmpeg")
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
-}
-
-func installSenseVoice() error {
-	// Use isolated venv at ~/.pilot/venv to avoid system Python issues
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return fmt.Errorf("cannot find home directory: %w", err)
-	}
-	venvPath := filepath.Join(home, ".pilot", "venv")
-	venvPython := filepath.Join(venvPath, "bin", "python3")
-
-	// Create venv if it doesn't exist
-	if _, err := os.Stat(venvPython); os.IsNotExist(err) {
-		fmt.Println("  Creating virtual environment...")
-		var createCmd *exec.Cmd
-		if commandExists("uv") {
-			createCmd = exec.Command("uv", "venv", venvPath)
-		} else {
-			createCmd = exec.Command("python3", "-m", "venv", venvPath)
-		}
-		createCmd.Stdout = os.Stdout
-		createCmd.Stderr = os.Stderr
-		if err := createCmd.Run(); err != nil {
-			return fmt.Errorf("failed to create venv: %w", err)
-		}
-	}
-
-	// Install packages into venv
-	fmt.Println("  Installing SenseVoice (this may take a few minutes)...")
-	var installCmd *exec.Cmd
-	if commandExists("uv") {
-		installCmd = exec.Command("uv", "pip", "install", "--python", venvPython, "funasr", "torch", "torchaudio")
-	} else {
-		pipPath := filepath.Join(venvPath, "bin", "pip")
-		installCmd = exec.Command(pipPath, "install", "funasr", "torch", "torchaudio")
-	}
-	installCmd.Stdout = os.Stdout
-	installCmd.Stderr = os.Stderr
-	return installCmd.Run()
-}

@@ -22,6 +22,7 @@ import (
 	"github.com/alekspetrov/pilot/internal/executor"
 	"github.com/alekspetrov/pilot/internal/memory"
 	"github.com/alekspetrov/pilot/internal/pilot"
+	"github.com/alekspetrov/pilot/internal/replay"
 )
 
 var (
@@ -55,6 +56,7 @@ func main() {
 		newBudgetCmd(),
 		newDoctorCmd(),
 		newSetupCmd(),
+		newReplayCmd(),
 	)
 
 	if err := rootCmd.Execute(); err != nil {
@@ -508,10 +510,32 @@ Example:
 						if err := killExistingTelegramBot(); err != nil {
 							return fmt.Errorf("failed to stop existing instance: %w", err)
 						}
-						// Wait for the process to fully terminate
-						time.Sleep(500 * time.Millisecond)
-						fmt.Println("   ✓ Existing instance stopped")
-						fmt.Println()
+
+						// Retry singleton check with exponential backoff
+						// Telegram API needs time to release the connection
+						fmt.Print("   Waiting for Telegram to release connection")
+						maxRetries := 10
+						var lastErr error
+						for i := 0; i < maxRetries; i++ {
+							// Exponential backoff: 500ms, 1s, 1.5s, 2s...
+							delay := time.Duration(500+i*500) * time.Millisecond
+							time.Sleep(delay)
+							fmt.Print(".")
+
+							if err := handler.CheckSingleton(ctx); err == nil {
+								fmt.Println(" ✓")
+								fmt.Println("   ✓ Existing instance stopped")
+								fmt.Println()
+								lastErr = nil
+								break
+							} else {
+								lastErr = err
+							}
+						}
+						if lastErr != nil {
+							fmt.Println(" ✗")
+							return fmt.Errorf("timeout waiting for Telegram to release connection after %d retries", maxRetries)
+						}
 					} else {
 						fmt.Println()
 						fmt.Println("❌ Another bot instance is already running")
@@ -1009,6 +1033,406 @@ func newPatternsStatsCmd() *cobra.Command {
 			return nil
 		},
 	}
+
+	return cmd
+}
+
+// Replay commands (TASK-21)
+
+func newReplayCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "replay",
+		Short: "Replay and debug execution recordings",
+		Long:  `View, replay, and analyze execution recordings for debugging and improvement.`,
+	}
+
+	cmd.AddCommand(
+		newReplayListCmd(),
+		newReplayShowCmd(),
+		newReplayPlayCmd(),
+		newReplayAnalyzeCmd(),
+		newReplayExportCmd(),
+		newReplayDeleteCmd(),
+	)
+
+	return cmd
+}
+
+func newReplayListCmd() *cobra.Command {
+	var (
+		limit   int
+		project string
+		status  string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "list",
+		Short: "List execution recordings",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			recordingsPath := replay.DefaultRecordingsPath()
+
+			filter := &replay.RecordingFilter{
+				Limit:       limit,
+				ProjectPath: project,
+				Status:      status,
+			}
+
+			recordings, err := replay.ListRecordings(recordingsPath, filter)
+			if err != nil {
+				return fmt.Errorf("failed to list recordings: %w", err)
+			}
+
+			if len(recordings) == 0 {
+				fmt.Println("No recordings found.")
+				fmt.Println()
+				fmt.Println("💡 Recordings are created automatically when you run tasks.")
+				return nil
+			}
+
+			fmt.Println("📹 Execution Recordings")
+			fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+			fmt.Println()
+
+			for _, rec := range recordings {
+				statusIcon := "✅"
+				switch rec.Status {
+				case "failed":
+					statusIcon = "❌"
+				case "cancelled":
+					statusIcon = "⚠️"
+				}
+
+				fmt.Printf("%s %s\n", statusIcon, rec.ID)
+				fmt.Printf("   Task:     %s\n", rec.TaskID)
+				fmt.Printf("   Duration: %s | Events: %d\n", rec.Duration.Round(time.Second), rec.EventCount)
+				fmt.Printf("   Started:  %s\n", rec.StartTime.Format("2006-01-02 15:04:05"))
+				fmt.Println()
+			}
+
+			fmt.Printf("Showing %d recording(s)\n", len(recordings))
+			fmt.Println()
+			fmt.Println("💡 Use 'pilot replay show <id>' for details")
+			fmt.Println("   Use 'pilot replay play <id>' to replay")
+
+			return nil
+		},
+	}
+
+	cmd.Flags().IntVar(&limit, "limit", 10, "Maximum recordings to show")
+	cmd.Flags().StringVar(&project, "project", "", "Filter by project path")
+	cmd.Flags().StringVar(&status, "status", "", "Filter by status (completed, failed, cancelled)")
+
+	return cmd
+}
+
+func newReplayShowCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "show <recording-id>",
+		Short: "Show recording details",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			recordingID := args[0]
+			recordingsPath := replay.DefaultRecordingsPath()
+
+			recording, err := replay.LoadRecording(recordingsPath, recordingID)
+			if err != nil {
+				return fmt.Errorf("failed to load recording: %w", err)
+			}
+
+			fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+			fmt.Printf("📹 RECORDING: %s\n", recording.ID)
+			fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+			fmt.Println()
+
+			statusIcon := "✅"
+			switch recording.Status {
+			case "failed":
+				statusIcon = "❌"
+			case "cancelled":
+				statusIcon = "⚠️"
+			}
+
+			fmt.Printf("Status:   %s %s\n", statusIcon, recording.Status)
+			fmt.Printf("Task:     %s\n", recording.TaskID)
+			fmt.Printf("Project:  %s\n", recording.ProjectPath)
+			fmt.Printf("Duration: %s\n", recording.Duration.Round(time.Second))
+			fmt.Printf("Events:   %d\n", recording.EventCount)
+			fmt.Printf("Started:  %s\n", recording.StartTime.Format("2006-01-02 15:04:05"))
+			fmt.Printf("Ended:    %s\n", recording.EndTime.Format("2006-01-02 15:04:05"))
+			fmt.Println()
+
+			if recording.Metadata != nil {
+				fmt.Println("METADATA")
+				fmt.Println("───────────────────────────────────────")
+				if recording.Metadata.Branch != "" {
+					fmt.Printf("  Branch:    %s\n", recording.Metadata.Branch)
+				}
+				if recording.Metadata.CommitSHA != "" {
+					fmt.Printf("  Commit:    %s\n", recording.Metadata.CommitSHA)
+				}
+				if recording.Metadata.PRUrl != "" {
+					fmt.Printf("  PR:        %s\n", recording.Metadata.PRUrl)
+				}
+				if recording.Metadata.ModelName != "" {
+					fmt.Printf("  Model:     %s\n", recording.Metadata.ModelName)
+				}
+				fmt.Printf("  Navigator: %v\n", recording.Metadata.HasNavigator)
+				fmt.Println()
+			}
+
+			if recording.TokenUsage != nil {
+				fmt.Println("TOKEN USAGE")
+				fmt.Println("───────────────────────────────────────")
+				fmt.Printf("  Input:    %d tokens\n", recording.TokenUsage.InputTokens)
+				fmt.Printf("  Output:   %d tokens\n", recording.TokenUsage.OutputTokens)
+				fmt.Printf("  Total:    %d tokens\n", recording.TokenUsage.TotalTokens)
+				fmt.Printf("  Cost:     $%.4f\n", recording.TokenUsage.EstimatedCostUSD)
+				fmt.Println()
+			}
+
+			if len(recording.PhaseTimings) > 0 {
+				fmt.Println("PHASE TIMINGS")
+				fmt.Println("───────────────────────────────────────")
+				for _, pt := range recording.PhaseTimings {
+					pct := float64(pt.Duration) / float64(recording.Duration) * 100
+					fmt.Printf("  %-12s %8s (%5.1f%%)\n", pt.Phase+":", pt.Duration.Round(time.Second), pct)
+				}
+				fmt.Println()
+			}
+
+			fmt.Println("FILES")
+			fmt.Println("───────────────────────────────────────")
+			fmt.Printf("  Stream:   %s\n", recording.StreamPath)
+			fmt.Printf("  Summary:  %s\n", recording.SummaryPath)
+			fmt.Println()
+
+			fmt.Println("💡 Use 'pilot replay play " + recording.ID + "' to replay")
+			fmt.Println("   Use 'pilot replay analyze " + recording.ID + "' for detailed analysis")
+
+			return nil
+		},
+	}
+
+	return cmd
+}
+
+func newReplayPlayCmd() *cobra.Command {
+	var (
+		startAt int
+		stopAt  int
+		verbose bool
+	)
+
+	cmd := &cobra.Command{
+		Use:   "play <recording-id>",
+		Short: "Replay an execution recording",
+		Long: `Replay an execution recording step by step.
+
+Examples:
+  pilot replay play TG-1234567890
+  pilot replay play TG-1234567890 --start 50
+  pilot replay play TG-1234567890 --stop 100
+  pilot replay play TG-1234567890 --verbose`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			recordingID := args[0]
+			recordingsPath := replay.DefaultRecordingsPath()
+
+			recording, err := replay.LoadRecording(recordingsPath, recordingID)
+			if err != nil {
+				return fmt.Errorf("failed to load recording: %w", err)
+			}
+
+			options := &replay.ReplayOptions{
+				StartAt:     startAt,
+				StopAt:      stopAt,
+				ShowTools:   true,
+				ShowText:    true,
+				ShowResults: verbose,
+				Verbose:     verbose,
+			}
+
+			player, err := replay.NewPlayer(recording, options)
+			if err != nil {
+				return fmt.Errorf("failed to create player: %w", err)
+			}
+
+			fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+			fmt.Printf("▶️  REPLAYING: %s\n", recording.ID)
+			fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+			fmt.Printf("Task: %s | Events: %d | Duration: %s\n",
+				recording.TaskID, recording.EventCount, recording.Duration.Round(time.Second))
+			fmt.Println()
+
+			// Play with callback
+			player.OnEvent(func(event *replay.StreamEvent, index, total int) error {
+				formatted := replay.FormatEvent(event, verbose)
+				fmt.Printf("[%d/%d] %s\n", index+1, total, formatted)
+				return nil
+			})
+
+			ctx := context.Background()
+			if err := player.Play(ctx); err != nil {
+				return fmt.Errorf("replay failed: %w", err)
+			}
+
+			fmt.Println()
+			fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+			fmt.Println("⏹️  REPLAY COMPLETE")
+			fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+			return nil
+		},
+	}
+
+	cmd.Flags().IntVar(&startAt, "start", 0, "Start from event sequence number")
+	cmd.Flags().IntVar(&stopAt, "stop", 0, "Stop at event sequence number (0 = end)")
+	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Show all event details")
+
+	return cmd
+}
+
+func newReplayAnalyzeCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "analyze <recording-id>",
+		Short: "Analyze an execution recording",
+		Long:  `Generate detailed analysis of token usage, phase timing, tool usage, and errors.`,
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			recordingID := args[0]
+			recordingsPath := replay.DefaultRecordingsPath()
+
+			recording, err := replay.LoadRecording(recordingsPath, recordingID)
+			if err != nil {
+				return fmt.Errorf("failed to load recording: %w", err)
+			}
+
+			analyzer, err := replay.NewAnalyzer(recording)
+			if err != nil {
+				return fmt.Errorf("failed to create analyzer: %w", err)
+			}
+
+			report, err := analyzer.Analyze()
+			if err != nil {
+				return fmt.Errorf("analysis failed: %w", err)
+			}
+
+			fmt.Print(replay.FormatReport(report))
+
+			return nil
+		},
+	}
+
+	return cmd
+}
+
+func newReplayExportCmd() *cobra.Command {
+	var (
+		format   string
+		output   string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "export <recording-id>",
+		Short: "Export a recording for sharing",
+		Long: `Export a recording to HTML, JSON, or Markdown format.
+
+Examples:
+  pilot replay export TG-1234567890
+  pilot replay export TG-1234567890 --format json
+  pilot replay export TG-1234567890 --format html --output report.html`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			recordingID := args[0]
+			recordingsPath := replay.DefaultRecordingsPath()
+
+			recording, err := replay.LoadRecording(recordingsPath, recordingID)
+			if err != nil {
+				return fmt.Errorf("failed to load recording: %w", err)
+			}
+
+			events, err := replay.LoadStreamEvents(recording)
+			if err != nil {
+				return fmt.Errorf("failed to load events: %w", err)
+			}
+
+			var content []byte
+
+			switch format {
+			case "html":
+				html, err := replay.ExportToHTML(recording, events)
+				if err != nil {
+					return fmt.Errorf("failed to export HTML: %w", err)
+				}
+				content = []byte(html)
+			case "json":
+				content, err = replay.ExportToJSON(recording, events)
+				if err != nil {
+					return fmt.Errorf("failed to export JSON: %w", err)
+				}
+			default:
+				return fmt.Errorf("unsupported format: %s (use html or json)", format)
+			}
+
+			// Determine output path
+			if output == "" {
+				output = fmt.Sprintf("%s.%s", recordingID, format)
+			}
+
+			if err := os.WriteFile(output, content, 0644); err != nil {
+				return fmt.Errorf("failed to write file: %w", err)
+			}
+
+			fmt.Printf("✅ Exported to: %s\n", output)
+			fmt.Printf("   Format: %s | Size: %d bytes\n", format, len(content))
+
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&format, "format", "html", "Export format (html, json)")
+	cmd.Flags().StringVarP(&output, "output", "o", "", "Output file path")
+
+	return cmd
+}
+
+func newReplayDeleteCmd() *cobra.Command {
+	var force bool
+
+	cmd := &cobra.Command{
+		Use:   "delete <recording-id>",
+		Short: "Delete a recording",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			recordingID := args[0]
+			recordingsPath := replay.DefaultRecordingsPath()
+
+			// Verify recording exists
+			_, err := replay.LoadRecording(recordingsPath, recordingID)
+			if err != nil {
+				return fmt.Errorf("recording not found: %w", err)
+			}
+
+			if !force {
+				fmt.Printf("Delete recording %s? [y/N]: ", recordingID)
+				var input string
+				_, _ = fmt.Scanln(&input)
+				if strings.ToLower(input) != "y" {
+					fmt.Println("Cancelled.")
+					return nil
+				}
+			}
+
+			if err := replay.DeleteRecording(recordingsPath, recordingID); err != nil {
+				return fmt.Errorf("failed to delete: %w", err)
+			}
+
+			fmt.Printf("✅ Deleted recording: %s\n", recordingID)
+			return nil
+		},
+	}
+
+	cmd.Flags().BoolVarP(&force, "force", "f", false, "Delete without confirmation")
 
 	return cmd
 }

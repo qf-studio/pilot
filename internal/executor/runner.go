@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/alekspetrov/pilot/internal/logging"
+	"github.com/alekspetrov/pilot/internal/replay"
 )
 
 // StreamEvent represents a Claude Code stream-json event
@@ -117,18 +118,39 @@ type ProgressCallback func(taskID string, phase string, progress int, message st
 
 // Runner executes tasks using Claude Code
 type Runner struct {
-	onProgress ProgressCallback
-	mu         sync.Mutex
-	running    map[string]*exec.Cmd
-	log        *slog.Logger
+	onProgress     ProgressCallback
+	mu             sync.Mutex
+	running        map[string]*exec.Cmd
+	log            *slog.Logger
+	recordingsPath string // Path to recordings directory (empty = default)
+	enableRecording bool  // Whether to record executions
 }
 
 // NewRunner creates a new executor runner
 func NewRunner() *Runner {
 	return &Runner{
-		running: make(map[string]*exec.Cmd),
-		log:     logging.WithComponent("executor"),
+		running:         make(map[string]*exec.Cmd),
+		log:             logging.WithComponent("executor"),
+		enableRecording: true, // Recording enabled by default
 	}
+}
+
+// SetRecordingsPath sets a custom path for recordings
+func (r *Runner) SetRecordingsPath(path string) {
+	r.recordingsPath = path
+}
+
+// SetRecordingEnabled enables or disables execution recording
+func (r *Runner) SetRecordingEnabled(enabled bool) {
+	r.enableRecording = enabled
+}
+
+// getRecordingsPath returns the recordings path, using default if not set
+func (r *Runner) getRecordingsPath() string {
+	if r.recordingsPath != "" {
+		return r.recordingsPath
+	}
+	return replay.DefaultRecordingsPath()
 }
 
 // OnProgress sets the progress callback
@@ -215,6 +237,19 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 	state := &progressState{phase: "Starting"}
 	var wg sync.WaitGroup
 
+	// Initialize recorder if recording is enabled
+	var recorder *replay.Recorder
+	if r.enableRecording {
+		var recErr error
+		recorder, recErr = replay.NewRecorder(task.ID, task.ProjectPath, r.getRecordingsPath())
+		if recErr != nil {
+			log.Warn("Failed to create recorder, continuing without recording", slog.Any("error", recErr))
+		} else {
+			recorder.SetBranch(task.Branch)
+			log.Debug("Recording enabled", slog.String("recording_id", recorder.GetRecordingID()))
+		}
+	}
+
 	// Read stdout (stream-json events)
 	wg.Add(1)
 	go func() {
@@ -228,6 +263,13 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 			line := scanner.Text()
 			if task.Verbose {
 				fmt.Printf("   %s\n", line)
+			}
+
+			// Record the event
+			if recorder != nil {
+				if err := recorder.RecordEvent(line); err != nil {
+					log.Warn("Failed to record event", slog.Any("error", err))
+				}
 			}
 
 			// Parse JSON event
@@ -300,6 +342,15 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 			slog.Duration("duration", duration),
 		)
 		r.reportProgress(task.ID, "Failed", 100, result.Error)
+
+		// Finish recording with failed status
+		if recorder != nil {
+			recorder.SetModel(result.ModelName)
+			recorder.SetNavigator(state.hasNavigator)
+			if finErr := recorder.Finish("failed"); finErr != nil {
+				log.Warn("Failed to finish recording", slog.Any("error", finErr))
+			}
+		}
 	} else {
 		result.Success = true
 		log.Info("Task execution succeeded",
@@ -348,8 +399,25 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 			result.PRUrl = prURL
 			log.Info("Pull request created", slog.String("pr_url", prURL))
 			r.reportProgress(task.ID, "Completed", 100, fmt.Sprintf("PR created: %s", prURL))
+
+			// Update recording with PR info
+			if recorder != nil {
+				recorder.SetPRUrl(prURL)
+			}
 		} else {
 			r.reportProgress(task.ID, "Completed", 100, "Task completed successfully")
+		}
+
+		// Finish recording with completed status
+		if recorder != nil {
+			recorder.SetCommitSHA(result.CommitSHA)
+			recorder.SetModel(result.ModelName)
+			recorder.SetNavigator(state.hasNavigator)
+			if finErr := recorder.Finish("completed"); finErr != nil {
+				log.Warn("Failed to finish recording", slog.Any("error", finErr))
+			} else {
+				log.Info("Recording saved", slog.String("recording_id", recorder.GetRecordingID()))
+			}
 		}
 	}
 

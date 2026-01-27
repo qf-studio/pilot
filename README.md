@@ -32,7 +32,7 @@ Autonomous AI development pipeline. Receives tickets, implements features, creat
 | **Alerting** | ✅ | Task failures, cost thresholds, stuck detection |
 | **Cross-Project Memory** | ✅ | Shared context across repositories |
 | **Execution Metrics** | ✅ | Token usage, cost tracking, performance analytics |
-| **Voice Transcription** | ✅ | SenseVoice (local) + Whisper API fallback |
+| **Voice Transcription** | ✅ | Whisper API (OpenAI) |
 | **Image Analysis** | ✅ | Multimodal input via Telegram |
 | **Structured Logging** | ✅ | JSON logs with correlation IDs |
 | **Usage Metering** | ✅ | Billing foundation for Pilot Cloud |
@@ -73,7 +73,7 @@ brew reinstall pilot
 
 - Go 1.22+ (build only)
 - [Claude Code CLI](https://github.com/anthropics/claude-code) 2.1.17+
-- ffmpeg (optional, for voice)
+- OpenAI API key (optional, for voice transcription)
 
 ## Quick Start
 
@@ -270,7 +270,7 @@ internal/
 ├── logging/         Structured logging
 ├── memory/          Cross-project memory store
 ├── metrics/         Execution analytics
-└── transcription/   Voice-to-text (SenseVoice/Whisper)
+└── transcription/   Voice-to-text (Whisper API)
 ```
 
 ## Documentation

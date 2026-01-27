@@ -2,6 +2,7 @@ package approval
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 )
@@ -12,6 +13,7 @@ type mockHandler struct {
 	sentReqs    []*Request
 	respondWith *Response
 	cancelCalls []string
+	mu          sync.Mutex
 }
 
 func (m *mockHandler) Name() string {
@@ -31,8 +33,18 @@ func (m *mockHandler) SendApprovalRequest(ctx context.Context, req *Request) (<-
 }
 
 func (m *mockHandler) CancelRequest(ctx context.Context, requestID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.cancelCalls = append(m.cancelCalls, requestID)
 	return nil
+}
+
+func (m *mockHandler) getCancelCalls() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	result := make([]string, len(m.cancelCalls))
+	copy(result, m.cancelCalls)
+	return result
 }
 
 func TestManager_DisabledByDefault(t *testing.T) {
@@ -285,13 +297,14 @@ func TestManager_CancelPending(t *testing.T) {
 
 	// Verify cancel was called at least once (may be called by both CancelPending and timeout)
 	time.Sleep(50 * time.Millisecond)
-	if len(handler.cancelCalls) < 1 {
-		t.Errorf("expected at least 1 cancel call, got %d", len(handler.cancelCalls))
+	cancelCalls := handler.getCancelCalls()
+	if len(cancelCalls) < 1 {
+		t.Errorf("expected at least 1 cancel call, got %d", len(cancelCalls))
 	}
 
 	// Verify the request ID was cancelled
 	foundRequestID := false
-	for _, id := range handler.cancelCalls {
+	for _, id := range cancelCalls {
 		if id == "test-cancel" {
 			foundRequestID = true
 			break

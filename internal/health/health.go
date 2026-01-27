@@ -1,6 +1,6 @@
 // Package health provides system health checks for Pilot.
 //
-// It verifies required dependencies (Claude Code CLI, git, ffmpeg) are installed
+// It verifies required dependencies (Claude Code CLI, git) are installed
 // and checks feature availability based on configuration. The RunChecks function
 // generates a HealthReport used by the CLI status command to display system
 // readiness and configuration state.
@@ -136,49 +136,6 @@ func checkDependencies() []Check {
 		})
 	}
 
-	// Check ffmpeg (optional, for voice)
-	if version := getCommandVersion("ffmpeg", "-version"); version != "" {
-		checks = append(checks, Check{
-			Name:    "ffmpeg",
-			Status:  StatusOK,
-			Message: "installed",
-		})
-	} else {
-		checks = append(checks, Check{
-			Name:    "ffmpeg",
-			Status:  StatusWarning,
-			Message: "not found (voice transcription unavailable)",
-			Fix:     "brew install ffmpeg",
-		})
-	}
-
-	// Check Python (optional, for SenseVoice)
-	if version := getCommandVersion("python3", "--version"); version != "" {
-		// Check if funasr is installed
-		hasFunasr := checkPythonModule("funasr")
-		if hasFunasr {
-			checks = append(checks, Check{
-				Name:    "python3",
-				Status:  StatusOK,
-				Message: version + " + funasr",
-			})
-		} else {
-			checks = append(checks, Check{
-				Name:    "python3",
-				Status:  StatusWarning,
-				Message: version + " (funasr not installed)",
-				Fix:     pythonInstallHint("funasr torch torchaudio"),
-			})
-		}
-	} else {
-		checks = append(checks, Check{
-			Name:    "python3",
-			Status:  StatusWarning,
-			Message: "not found (SenseVoice unavailable)",
-			Fix:     "brew install python@3",
-		})
-	}
-
 	// Check gh CLI (optional, for PRs)
 	if version := getCommandVersion("gh", "--version"); version != "" {
 		checks = append(checks, Check{
@@ -243,13 +200,13 @@ func checkConfig(cfg *config.Config) []ConfigCheck {
 					checks = append(checks, ConfigCheck{
 						Name:    "transcription.openai_api_key",
 						Status:  StatusOK,
-						Message: "configured (voice fallback available)",
+						Message: "configured (voice enabled)",
 					})
-				} else if !commandExists("ffmpeg") {
+				} else {
 					checks = append(checks, ConfigCheck{
 						Name:    "transcription.openai_api_key",
 						Status:  StatusWarning,
-						Message: "missing (no voice fallback)",
+						Message: "missing (voice disabled)",
 						Fix:     "export OPENAI_API_KEY=\"sk-...\" or add to config",
 					})
 				}
@@ -382,9 +339,7 @@ func checkFeatures(cfg *config.Config) []FeatureStatus {
 		Status:  boolToStatus(hasClaude),
 	})
 
-	// Voice transcription
-	hasFFmpeg := commandExists("ffmpeg")
-	hasFunasr := checkPythonModule("funasr")
+	// Voice transcription (only requires OpenAI API key)
 	hasOpenAIKey := cfg.Adapters != nil &&
 		cfg.Adapters.Telegram != nil &&
 		cfg.Adapters.Telegram.Transcription != nil &&
@@ -394,35 +349,23 @@ func checkFeatures(cfg *config.Config) []FeatureStatus {
 	var voiceNote string
 	var voiceMissing []string
 	voiceEnabled := false
-	voiceDegraded := false
 
-	if hasFFmpeg {
+	if hasOpenAIKey {
 		voiceEnabled = true
-		if hasFunasr {
-			voiceStatus = StatusOK
-			voiceNote = "SenseVoice"
-		} else if hasOpenAIKey {
-			voiceStatus = StatusOK
-			voiceNote = "Whisper API"
-		} else {
-			voiceStatus = StatusWarning
-			voiceNote = "no backend configured"
-			voiceDegraded = true
-			voiceMissing = append(voiceMissing, "funasr or OPENAI_API_KEY")
-		}
+		voiceStatus = StatusOK
+		voiceNote = "Whisper API"
 	} else {
 		voiceStatus = StatusWarning
-		voiceNote = "no ffmpeg"
-		voiceMissing = append(voiceMissing, "ffmpeg")
+		voiceMissing = append(voiceMissing, "OPENAI_API_KEY")
+		voiceNote = "missing: OPENAI_API_KEY"
 	}
 
 	features = append(features, FeatureStatus{
-		Name:     "Voice",
-		Enabled:  voiceEnabled,
-		Status:   voiceStatus,
-		Note:     voiceNote,
-		Missing:  voiceMissing,
-		Degraded: voiceDegraded,
+		Name:    "Voice",
+		Enabled: voiceEnabled,
+		Status:  voiceStatus,
+		Note:    voiceNote,
+		Missing: voiceMissing,
 	})
 
 	// Daily briefs
@@ -495,24 +438,6 @@ func getCommandVersion(cmd string, args ...string) string {
 func commandExists(cmd string) bool {
 	_, err := exec.LookPath(cmd)
 	return err == nil
-}
-
-// checkPythonModule checks if a Python module is installed
-func checkPythonModule(module string) bool {
-	pythonPath := getPythonPath()
-	cmd := exec.Command(pythonPath, "-c", fmt.Sprintf("import %s", module))
-	return cmd.Run() == nil
-}
-
-// getPythonPath returns the path to Python, preferring ~/.pilot/venv if it exists
-func getPythonPath() string {
-	if home, err := os.UserHomeDir(); err == nil {
-		venvPython := filepath.Join(home, ".pilot", "venv", "bin", "python3")
-		if _, err := os.Stat(venvPython); err == nil {
-			return venvPython
-		}
-	}
-	return "python3"
 }
 
 // expandPath expands ~ to home directory
@@ -613,17 +538,6 @@ func (r *HealthReport) ReadyToStart() bool {
 		}
 	}
 	return true
-}
-
-// pythonInstallHint returns the best pip/uv install command
-func pythonInstallHint(packages string) string {
-	if commandExists("uv") {
-		return "uv pip install " + packages
-	}
-	if commandExists("pip3") {
-		return "pip3 install " + packages
-	}
-	return "pip install " + packages
 }
 
 // commandExists checks if a command is available
