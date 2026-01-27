@@ -42,55 +42,101 @@ Examples:
 			}
 
 			fmt.Println()
-			fmt.Println("Welcome to Pilot Setup!")
+			fmt.Println("Pilot Setup")
 			fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+			// Check what's already configured
+			hasTelegram := cfg.Adapters != nil && cfg.Adapters.Telegram != nil && cfg.Adapters.Telegram.BotToken != ""
+			hasProjects := len(cfg.Projects) > 0
+			hasVoice := cfg.Adapters != nil && cfg.Adapters.Telegram != nil &&
+				cfg.Adapters.Telegram.Transcription != nil &&
+				(checkPythonModule("funasr") || cfg.Adapters.Telegram.Transcription.OpenAIAPIKey != "")
+			hasBriefs := cfg.Orchestrator != nil && cfg.Orchestrator.DailyBrief != nil && cfg.Orchestrator.DailyBrief.Enabled
+			hasAlerts := cfg.Alerts != nil && cfg.Alerts.Enabled
+
+			// Show current status
+			fmt.Println()
+			fmt.Println("Current Status:")
+			printStatus("Telegram", hasTelegram)
+			printStatus("Projects", hasProjects)
+			if !skipOptional {
+				printStatus("Voice", hasVoice)
+				printStatus("Daily Briefs", hasBriefs)
+				printStatus("Alerts", hasAlerts)
+			}
 			fmt.Println()
 
-			totalSteps := 5
-			if skipOptional {
-				totalSteps = 2
+			// Check if everything is configured
+			allConfigured := hasTelegram && hasProjects
+			if !skipOptional {
+				allConfigured = allConfigured && hasVoice && hasBriefs && hasAlerts
 			}
 
-			// Step 1: Telegram Bot
-			fmt.Printf("Step 1/%d: Telegram Bot\n", totalSteps)
-			fmt.Println("─────────────────────────")
-			if err := setupTelegram(reader, cfg); err != nil {
-				return err
+			if allConfigured {
+				fmt.Println("✅ Everything is configured!")
+				fmt.Println()
+				fmt.Print("Reconfigure anyway? [y/N]: ")
+				if !readYesNo(reader, false) {
+					fmt.Println()
+					fmt.Println("Run 'pilot doctor' to verify configuration")
+					return nil
+				}
+				fmt.Println()
 			}
-			fmt.Println()
 
-			// Step 2: Projects
-			fmt.Printf("Step 2/%d: Projects\n", totalSteps)
-			fmt.Println("─────────────────────────")
-			if err := setupProjects(reader, cfg); err != nil {
-				return err
+			// Only setup unconfigured items (or all if user chose to reconfigure)
+			needsSetup := !allConfigured
+
+			// Telegram Bot
+			if needsSetup && !hasTelegram {
+				fmt.Println("Telegram Bot")
+				fmt.Println("─────────────────────────")
+				if err := setupTelegram(reader, cfg); err != nil {
+					return err
+				}
+				fmt.Println()
 			}
-			fmt.Println()
+
+			// Projects
+			if needsSetup && !hasProjects {
+				fmt.Println("Projects")
+				fmt.Println("─────────────────────────")
+				if err := setupProjects(reader, cfg); err != nil {
+					return err
+				}
+				fmt.Println()
+			}
 
 			if !skipOptional {
-				// Step 3: Voice Transcription
-				fmt.Printf("Step 3/%d: Voice Transcription\n", totalSteps)
-				fmt.Println("─────────────────────────")
-				if err := setupVoice(reader, cfg); err != nil {
-					return err
+				// Voice Transcription
+				if needsSetup && !hasVoice {
+					fmt.Println("Voice Transcription")
+					fmt.Println("─────────────────────────")
+					if err := setupVoice(reader, cfg); err != nil {
+						return err
+					}
+					fmt.Println()
 				}
-				fmt.Println()
 
-				// Step 4: Daily Briefs
-				fmt.Printf("Step 4/%d: Daily Briefs\n", totalSteps)
-				fmt.Println("─────────────────────────")
-				if err := setupBriefs(reader, cfg); err != nil {
-					return err
+				// Daily Briefs
+				if needsSetup && !hasBriefs {
+					fmt.Println("Daily Briefs")
+					fmt.Println("─────────────────────────")
+					if err := setupBriefs(reader, cfg); err != nil {
+						return err
+					}
+					fmt.Println()
 				}
-				fmt.Println()
 
-				// Step 5: Alerts
-				fmt.Printf("Step 5/%d: Alerts\n", totalSteps)
-				fmt.Println("─────────────────────────")
-				if err := setupAlerts(reader, cfg); err != nil {
-					return err
+				// Alerts
+				if needsSetup && !hasAlerts {
+					fmt.Println("Alerts")
+					fmt.Println("─────────────────────────")
+					if err := setupAlerts(reader, cfg); err != nil {
+						return err
+					}
+					fmt.Println()
 				}
-				fmt.Println()
 			}
 
 			// Save config
@@ -423,6 +469,14 @@ func setupAlerts(reader *bufio.Reader, cfg *config.Config) error {
 }
 
 // Helper functions
+
+func printStatus(name string, configured bool) {
+	if configured {
+		fmt.Printf("  ✓ %s\n", name)
+	} else {
+		fmt.Printf("  ○ %s (not configured)\n", name)
+	}
+}
 
 func readLine(reader *bufio.Reader) string {
 	line, _ := reader.ReadString('\n')
