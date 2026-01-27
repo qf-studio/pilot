@@ -126,3 +126,5 @@ Documentation in `.agent/`:
 - Wire orchestrator to gateway
 - Full Claude Code integration
 - End-to-end flow testing
+
+<!-- GitHub integration verified -->

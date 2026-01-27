@@ -96,13 +96,15 @@ if _, err := os.Stat(agentDir); err == nil {
 
 | # | Task | File | Why |
 |---|------|------|-----|
-| 3 | **TASK-28**: Speed Optimization | `TASK-28-speed-optimization.md` | Slow = abandoned |
-| 4 | **TASK-26**: Hot Version Upgrade | `TASK-26-hot-version-upgrade.md` | Friction-free updates |
+| 3 | **TASK-36**: GitHub Polling | `TASK-36-github-polling.md` | Zero-config GitHub integration |
+| 4 | **TASK-28**: Speed Optimization | `TASK-28-speed-optimization.md` | Slow = abandoned |
+| 5 | **TASK-26**: Hot Version Upgrade | `TASK-26-hot-version-upgrade.md` | Friction-free updates |
 
 ### 🟢 P3: Medium (Enterprise/Polish)
 
 | # | Task | File | Why |
 |---|------|------|-----|
+| 6 | **TASK-37**: Cloudflare Tunnel | `TASK-37-cloudflare-tunnel.md` | Permanent webhook URLs |
 | 7 | **TASK-17**: Team Management | `TASK-17-team-management.md` | Enterprise sales blocker |
 | 8 | **TASK-18**: Cost Controls | `TASK-18-cost-controls.md` | Budget protection |
 | 9 | **TASK-25**: Telegram Commands | `TASK-25-telegram-commands.md` | Power user UX |
