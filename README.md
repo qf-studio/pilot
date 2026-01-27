@@ -11,7 +11,7 @@
 
 **[Navigator](https://github.com/anthropics/navigator) guides. Pilot executes.**
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![License: BSL 1.1](https://img.shields.io/badge/License-BSL_1.1-blue.svg)](LICENSE)
 [![Go Version](https://img.shields.io/badge/Go-1.22+-blue.svg)](https://golang.org)
 [![Tests](https://img.shields.io/badge/Tests-24%20passing-green.svg)]()
 
@@ -235,7 +235,9 @@ When `navigator: true` in project config, Pilot:
 
 ## License
 
-MIT License - see [LICENSE](LICENSE)
+Business Source License 1.1 - see [LICENSE](LICENSE)
+
+**TL;DR:** Free for internal use and self-hosting. Commercial SaaS competing with Pilot Cloud requires a license. Converts to Apache 2.0 after 4 years.
 
 ## Contributing
 
