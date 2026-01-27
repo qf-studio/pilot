@@ -93,10 +93,17 @@ type MemoryConfig struct {
 
 // ProjectConfig holds project configuration
 type ProjectConfig struct {
-	Name          string `yaml:"name"`
-	Path          string `yaml:"path"`
-	Navigator     bool   `yaml:"navigator"`
-	DefaultBranch string `yaml:"default_branch"`
+	Name          string               `yaml:"name"`
+	Path          string               `yaml:"path"`
+	Navigator     bool                 `yaml:"navigator"`
+	DefaultBranch string               `yaml:"default_branch"`
+	GitHub        *ProjectGitHubConfig `yaml:"github,omitempty"`
+}
+
+// ProjectGitHubConfig holds GitHub-specific project configuration
+type ProjectGitHubConfig struct {
+	Owner string `yaml:"owner"`
+	Repo  string `yaml:"repo"`
 }
 
 // DashboardConfig holds dashboard settings

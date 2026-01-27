@@ -6,6 +6,7 @@ type Config struct {
 	Token         string `yaml:"token"`          // Personal Access Token or GitHub App token
 	WebhookSecret string `yaml:"webhook_secret"` // For HMAC signature verification
 	PilotLabel    string `yaml:"pilot_label"`
+	Repo          string `yaml:"repo"` // Default repo in "owner/repo" format
 }
 
 // DefaultConfig returns default GitHub configuration

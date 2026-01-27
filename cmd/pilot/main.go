@@ -14,6 +14,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/alekspetrov/pilot/internal/adapters/github"
 	"github.com/alekspetrov/pilot/internal/adapters/slack"
 	"github.com/alekspetrov/pilot/internal/adapters/telegram"
 	"github.com/alekspetrov/pilot/internal/banner"
@@ -48,6 +49,7 @@ func main() {
 		newVersionCmd(),
 		newTaskCmd(),
 		newTelegramCmd(),
+		newGitHubCmd(),
 		newBriefCmd(),
 		newPatternsCmd(),
 		newMetricsCmd(),
@@ -649,6 +651,220 @@ func parseInt64(s string) (int64, error) {
 	var id int64
 	_, err := fmt.Sscanf(s, "%d", &id)
 	return id, err
+}
+
+func newGitHubCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "github",
+		Short: "GitHub integration commands",
+		Long:  `Commands for working with GitHub issues and pull requests.`,
+	}
+
+	cmd.AddCommand(newGitHubRunCmd())
+	return cmd
+}
+
+func newGitHubRunCmd() *cobra.Command {
+	var projectPath string
+	var dryRun bool
+	var verbose bool
+	var createPR bool
+	var repo string
+
+	cmd := &cobra.Command{
+		Use:   "run <issue-number>",
+		Short: "Run a GitHub issue as a Pilot task",
+		Long: `Fetch a GitHub issue and execute it as a Pilot task.
+
+Examples:
+  pilot github run 8
+  pilot github run 8 --repo owner/repo
+  pilot github run 8 --create-pr
+  pilot github run 8 --dry-run`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			issueNum, err := parseInt64(args[0])
+			if err != nil {
+				return fmt.Errorf("invalid issue number: %s", args[0])
+			}
+
+			// Load config
+			// Resolve config path
+			configPath := cfgFile
+			if configPath == "" {
+				configPath = config.DefaultConfigPath()
+			}
+
+			cfg, err := config.Load(configPath)
+			if err != nil {
+				return fmt.Errorf("failed to load config: %w", err)
+			}
+
+			// Check GitHub is configured
+			if cfg.Adapters == nil || cfg.Adapters.Github == nil || !cfg.Adapters.Github.Enabled {
+				return fmt.Errorf("GitHub adapter not enabled. Run 'pilot setup' or edit ~/.pilot/config.yaml")
+			}
+
+			token := cfg.Adapters.Github.Token
+			if token == "" {
+				token = os.Getenv("GITHUB_TOKEN")
+			}
+			if token == "" {
+				return fmt.Errorf("GitHub token not configured. Set GITHUB_TOKEN env or add to config")
+			}
+
+			// Determine repo
+			if repo == "" {
+				repo = cfg.Adapters.Github.Repo
+			}
+			if repo == "" {
+				return fmt.Errorf("no repository specified. Use --repo owner/repo or set in config")
+			}
+
+			parts := strings.Split(repo, "/")
+			if len(parts) != 2 {
+				return fmt.Errorf("invalid repo format. Use owner/repo")
+			}
+			owner, repoName := parts[0], parts[1]
+
+			// Resolve project path
+			if projectPath == "" {
+				// Try to find project by repo
+				for _, p := range cfg.Projects {
+					if p.GitHub != nil && p.GitHub.Owner == owner && p.GitHub.Repo == repoName {
+						projectPath = p.Path
+						break
+					}
+				}
+				if projectPath == "" {
+					cwd, _ := os.Getwd()
+					projectPath = cwd
+				}
+			}
+
+			// Fetch issue from GitHub
+			client := github.NewClient(token)
+			ctx := context.Background()
+
+			fmt.Printf("📥 Fetching issue #%d from %s...\n", issueNum, repo)
+			issue, err := client.GetIssue(ctx, owner, repoName, int(issueNum))
+			if err != nil {
+				return fmt.Errorf("failed to fetch issue: %w", err)
+			}
+
+			banner.Print()
+
+			taskID := fmt.Sprintf("GH-%d", issueNum)
+			branchName := fmt.Sprintf("pilot/%s", taskID)
+
+			// Check for Navigator
+			hasNavigator := false
+			if _, err := os.Stat(projectPath + "/.agent"); err == nil {
+				hasNavigator = true
+			}
+
+			fmt.Println("🚀 Pilot GitHub Task Execution")
+			fmt.Println("───────────────────────────────────────")
+			fmt.Printf("   Issue:     #%d\n", issue.Number)
+			fmt.Printf("   Title:     %s\n", issue.Title)
+			fmt.Printf("   Task ID:   %s\n", taskID)
+			fmt.Printf("   Project:   %s\n", projectPath)
+			fmt.Printf("   Branch:    %s\n", branchName)
+			if createPR {
+				fmt.Printf("   Create PR: ✓ enabled\n")
+			}
+			if hasNavigator {
+				fmt.Printf("   Navigator: ✓ enabled\n")
+			}
+			fmt.Println()
+			fmt.Println("📋 Issue Body:")
+			fmt.Println("───────────────────────────────────────")
+			if issue.Body != "" {
+				fmt.Println(issue.Body)
+			} else {
+				fmt.Println("(no body)")
+			}
+			fmt.Println("───────────────────────────────────────")
+			fmt.Println()
+
+			// Build task description
+			taskDesc := fmt.Sprintf("GitHub Issue #%d: %s\n\n%s", issue.Number, issue.Title, issue.Body)
+
+			task := &executor.Task{
+				ID:          taskID,
+				Title:       issue.Title,
+				Description: taskDesc,
+				ProjectPath: projectPath,
+				Branch:      branchName,
+				Verbose:     verbose,
+				CreatePR:    createPR,
+			}
+
+			// Dry run mode
+			if dryRun {
+				fmt.Println("🧪 DRY RUN - showing what would execute:")
+				fmt.Println()
+				runner := executor.NewRunner()
+				prompt := runner.BuildPrompt(task)
+				fmt.Println("Prompt:")
+				fmt.Println("─────────────────────────────────────")
+				fmt.Println(prompt)
+				fmt.Println("─────────────────────────────────────")
+				return nil
+			}
+
+			// Add in-progress label
+			fmt.Println("🏷️  Adding in-progress label...")
+			_ = client.AddLabels(ctx, owner, repoName, int(issueNum), []string{"pilot-in-progress"})
+
+			// Execute the task
+			runner := executor.NewRunner()
+			fmt.Println()
+			fmt.Println("⏳ Executing task with Claude Code...")
+			fmt.Println()
+
+			result, err := runner.Execute(ctx, task)
+			if err != nil {
+				// Add failed label
+				_ = client.AddLabels(ctx, owner, repoName, int(issueNum), []string{"pilot-failed"})
+				_ = client.RemoveLabel(ctx, owner, repoName, int(issueNum), "pilot-in-progress")
+
+				comment := fmt.Sprintf("❌ Pilot execution failed:\n\n```\n%s\n```", err.Error())
+				_, _ = client.AddComment(ctx, owner, repoName, int(issueNum), comment)
+
+				return fmt.Errorf("task execution failed: %w", err)
+			}
+
+			// Success - update labels and add comment
+			_ = client.RemoveLabel(ctx, owner, repoName, int(issueNum), "pilot-in-progress")
+			_ = client.AddLabels(ctx, owner, repoName, int(issueNum), []string{"pilot-done"})
+
+			comment := fmt.Sprintf("✅ Pilot completed successfully!\n\n**Duration:** %s\n**Branch:** `%s`",
+				result.Duration, branchName)
+			if result.PRUrl != "" {
+				comment += fmt.Sprintf("\n**PR:** %s", result.PRUrl)
+			}
+			_, _ = client.AddComment(ctx, owner, repoName, int(issueNum), comment)
+
+			fmt.Println()
+			fmt.Println("───────────────────────────────────────")
+			fmt.Println("✅ Task completed successfully!")
+			fmt.Printf("   Duration: %s\n", result.Duration)
+			if result.PRUrl != "" {
+				fmt.Printf("   PR: %s\n", result.PRUrl)
+			}
+
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVarP(&projectPath, "project", "p", "", "Project path")
+	cmd.Flags().StringVar(&repo, "repo", "", "GitHub repository (owner/repo)")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Show what would execute without running")
+	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Verbose output")
+	cmd.Flags().BoolVar(&createPR, "create-pr", false, "Create a PR after task completion")
+
+	return cmd
 }
 
 func newBriefCmd() *cobra.Command {
