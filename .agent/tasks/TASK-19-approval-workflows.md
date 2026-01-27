@@ -1,7 +1,8 @@
 # TASK-19: Approval Workflows
 
-**Status**: 📋 Planned
+**Status**: ✅ Complete
 **Created**: 2026-01-26
+**Completed**: 2026-01-27
 **Category**: Safety / Enterprise
 
 ---
@@ -13,6 +14,70 @@ Fully autonomous execution is scary for some teams. No human checkpoint before c
 
 **Goal**:
 Optional human approval at key stages for safety and compliance.
+
+---
+
+## Implementation Summary
+
+### What Was Built
+
+Created `internal/approval/` package with:
+
+1. **Core Types** (`types.go`):
+   - `Stage` enum: `StagePreExecution`, `StagePreMerge`, `StagePostFailure`
+   - `Decision` enum: `DecisionApproved`, `DecisionRejected`, `DecisionTimeout`
+   - `Request` and `Response` structs for approval workflow
+   - `Handler` interface for channel implementations
+   - `Config` and `StageConfig` for YAML configuration
+
+2. **Approval Manager** (`manager.go`):
+   - Coordinates approval workflows across channels
+   - Handles timeouts with configurable default actions
+   - Auto-approves when stages are disabled
+   - Tracks pending requests with cancellation support
+
+3. **Telegram Handler** (`telegram.go`):
+   - Sends approval requests with inline keyboard buttons
+   - Stage-specific button labels (Execute/Cancel, Merge/Reject, Retry/Abort)
+   - Handles callbacks from button presses
+   - Updates messages with decision results
+
+4. **Configuration Integration** (`config/config.go`):
+   - Added `Approval *approval.Config` to main config
+   - Defaults: disabled, 1h timeout for pre-execution/post-failure, 24h for pre-merge
+
+### Configuration
+
+```yaml
+approval:
+  enabled: true
+  default_timeout: 1h
+  default_action: rejected  # on timeout
+
+  pre_execution:
+    enabled: true
+    timeout: 1h
+    default_action: rejected
+    approvers: ["@alice", "@bob"]
+
+  pre_merge:
+    enabled: true
+    timeout: 24h
+    default_action: rejected
+
+  post_failure:
+    enabled: false
+    timeout: 1h
+    default_action: rejected
+```
+
+### Files Created/Modified
+
+- `internal/approval/types.go` - Core types and interfaces
+- `internal/approval/manager.go` - Approval workflow coordinator
+- `internal/approval/telegram.go` - Telegram channel handler
+- `internal/approval/manager_test.go` - Unit tests (7 tests)
+- `internal/config/config.go` - Config integration
 
 ---
 
@@ -32,41 +97,7 @@ Optional human approval at key stages for safety and compliance.
 
 ---
 
-## Approval Channels
-
-1. **Telegram** - Inline buttons (existing)
-2. **Slack** - Interactive messages
-3. **GitHub** - PR review requirement
-4. **Email** - Approval links
-5. **Dashboard** - Web UI queue
-
----
-
-## Configuration
-
-```yaml
-workflows:
-  approval:
-    pre_execution:
-      enabled: true
-      approvers: ["@alice", "@bob"]
-      timeout: 1h
-      default_action: reject
-
-    pre_merge:
-      enabled: true
-      require_tests: true
-      require_review: 1
-```
-
----
-
-## Implementation
-
-### Phase 1: Telegram Approval (exists partially)
-- Extend confirmation flow
-- Add pre-merge approval
-- Timeout handling
+## Future Work
 
 ### Phase 2: Slack Approval
 - Interactive message blocks
@@ -77,6 +108,10 @@ workflows:
 - PR review as approval
 - Branch protection rules
 - Status checks
+
+### Phase 4: Additional Channels
+- Email approval links
+- Dashboard web UI queue
 
 ---
 
