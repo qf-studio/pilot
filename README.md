@@ -133,15 +133,99 @@ memory:
 
 ## CLI Reference
 
+### Core Commands
+
+#### `pilot task` - Execute tasks with Claude Code
+
+```bash
+pilot task "Add user authentication"                    # Run in current directory
+pilot task "Fix login bug" -p ~/Projects/myapp          # Specify project
+pilot task "Add feature" --create-pr                    # Auto-create GitHub PR
+pilot task "Refactor API" --verbose                     # Stream Claude output
+pilot task "Update docs" --dry-run                      # Preview without running
+pilot task "Quick fix" --no-branch                      # Skip branch creation
 ```
-pilot telegram     Start Telegram bot
-pilot start        Start gateway daemon
-pilot stop         Stop daemon
-pilot status       Show running tasks
-pilot brief        Trigger daily brief manually
-pilot doctor       Check dependencies and config
-pilot version      Show version info
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--project` | `-p` | Project path (default: current directory) |
+| `--create-pr` | | Push branch and create GitHub PR after execution |
+| `--verbose` | `-v` | Stream raw Claude Code JSON output |
+| `--dry-run` | | Show prompt without executing |
+| `--no-branch` | | Don't create a new git branch |
+
+#### `pilot telegram` - Start Telegram bot
+
+```bash
+pilot telegram                              # Start bot for current directory
+pilot telegram -p ~/Projects/myapp          # Specify project
+pilot telegram --replace                    # Kill existing instance first
 ```
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--project` | `-p` | Project path (default: current directory) |
+| `--replace` | | Kill existing bot instance before starting |
+
+#### `pilot brief` - Generate daily/weekly briefs
+
+```bash
+pilot brief                   # Show scheduler status
+pilot brief --now             # Generate and send immediately
+pilot brief --weekly          # Generate weekly summary
+```
+
+| Flag | Description |
+|------|-------------|
+| `--now` | Generate and send brief immediately |
+| `--weekly` | Generate weekly summary instead of daily |
+
+### Analytics Commands
+
+#### `pilot metrics` - Execution metrics and analytics
+
+```bash
+pilot metrics summary              # Last 7 days overview
+pilot metrics summary --days 30    # Last 30 days
+pilot metrics daily                # Daily breakdown
+pilot metrics projects             # Per-project stats
+pilot metrics export --format csv  # Export to CSV
+```
+
+#### `pilot usage` - Usage metering for billing
+
+```bash
+pilot usage summary               # Billable usage summary
+pilot usage daily                 # Daily usage breakdown
+pilot usage projects              # Per-project usage
+pilot usage events --limit 50     # Raw usage events
+pilot usage export --format json  # Export for billing
+```
+
+#### `pilot patterns` - Cross-project learned patterns
+
+```bash
+pilot patterns list               # List all patterns
+pilot patterns search "auth"      # Search by keyword
+pilot patterns stats              # Pattern statistics
+```
+
+### System Commands
+
+```bash
+pilot start        # Start gateway daemon
+pilot stop         # Stop daemon
+pilot status       # Show running tasks
+pilot init         # Initialize configuration
+pilot version      # Show version info
+```
+
+### Global Flags
+
+| Flag | Description |
+|------|-------------|
+| `--config` | Config file path (default: `~/.pilot/config.yaml`) |
+| `--help` | Show help for any command |
 
 ## Architecture
 
@@ -208,6 +292,7 @@ internal/
 - [x] Cross-project memory
 - [x] Execution metrics & logging
 - [x] Usage metering
+- [x] GitHub App integration (status checks, PR API)
 
 ### In Progress
 - [ ] Team management & permissions
@@ -218,7 +303,6 @@ internal/
 - [ ] Quality gates
 - [ ] Execution replay & debugging
 - [ ] Webhooks API
-- [ ] GitHub App integration
 - [ ] Pilot Cloud (hosted SaaS)
 
 ## License
