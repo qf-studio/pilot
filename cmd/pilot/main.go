@@ -385,6 +385,8 @@ Examples:
 				fmt.Printf("   Duration: %s\n", result.Duration.Round(time.Second))
 				if result.PRUrl != "" {
 					fmt.Printf("   PR: %s\n", result.PRUrl)
+				} else if createPR {
+					fmt.Println("   ⚠️  PR not created (check gh auth status)")
 				}
 				if result.CommitSHA != "" {
 					fmt.Printf("   Commit: %s\n", result.CommitSHA[:8])

@@ -292,6 +292,7 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 
 			// Push branch
 			if err := git.Push(ctx, task.Branch); err != nil {
+				result.Success = false
 				result.Error = fmt.Sprintf("push failed: %v", err)
 				r.reportProgress(task.ID, "PR Failed", 100, result.Error)
 				return result, nil
@@ -314,6 +315,7 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 			// Create PR
 			prURL, err := git.CreatePR(ctx, task.Title, prBody, baseBranch)
 			if err != nil {
+				result.Success = false
 				result.Error = fmt.Sprintf("PR creation failed: %v", err)
 				r.reportProgress(task.ID, "PR Failed", 100, result.Error)
 				return result, nil

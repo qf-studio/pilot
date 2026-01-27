@@ -78,6 +78,13 @@ if _, err := os.Stat(agentDir); err == nil {
 
 ## Active Tasks
 
+### Core Workflow (Priority)
+
+- **TASK-31**: PR Workflow Improvements (Status: 📋 Planned)
+  - File: `.agent/tasks/TASK-31-pr-workflow-improvements.md`
+  - Created: 2026-01-27
+  - Fix --create-pr: add git push, PR creation, return PR URL
+
 ### Roadmap Features (from README)
 
 - **TASK-12**: Pilot Cloud (Hosted) (Status: 📋 Planned)
