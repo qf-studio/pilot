@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/alekspetrov/pilot/internal/logging"
 )
 
 // StreamEvent represents a Claude Code stream-json event
@@ -117,12 +120,14 @@ type Runner struct {
 	onProgress ProgressCallback
 	mu         sync.Mutex
 	running    map[string]*exec.Cmd
+	log        *slog.Logger
 }
 
 // NewRunner creates a new executor runner
 func NewRunner() *Runner {
 	return &Runner{
 		running: make(map[string]*exec.Cmd),
+		log:     logging.WithComponent("executor"),
 	}
 }
 
@@ -134,6 +139,13 @@ func (r *Runner) OnProgress(callback ProgressCallback) {
 // Execute runs a task using Claude Code
 func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, error) {
 	start := time.Now()
+	log := r.log.With(slog.String("task_id", task.ID))
+
+	log.Info("Starting task execution",
+		slog.String("project", task.ProjectPath),
+		slog.String("branch", task.Branch),
+		slog.Bool("create_pr", task.CreatePR),
+	)
 
 	// Initialize git operations
 	git := NewGitOperations(task.ProjectPath)
@@ -192,8 +204,10 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 
 	// Start the command
 	if err := cmd.Start(); err != nil {
+		log.Error("Failed to start Claude Code", slog.Any("error", err))
 		return nil, fmt.Errorf("failed to start Claude Code: %w", err)
 	}
+	log.Debug("Claude Code process started", slog.Int("pid", cmd.Process.Pid))
 
 	// State for tracking progress and result
 	var finalResult string
@@ -281,9 +295,19 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 		if result.Error == "" {
 			result.Error = err.Error()
 		}
+		log.Error("Task execution failed",
+			slog.String("error", result.Error),
+			slog.Duration("duration", duration),
+		)
 		r.reportProgress(task.ID, "Failed", 100, result.Error)
 	} else {
 		result.Success = true
+		log.Info("Task execution succeeded",
+			slog.Duration("duration", duration),
+			slog.Int64("tokens_in", state.tokensInput),
+			slog.Int64("tokens_out", state.tokensOutput),
+			slog.Int("files_written", state.filesWrite),
+		)
 		r.reportProgress(task.ID, "Completed", 95, "Execution completed")
 
 		// Create PR if requested and we have commits
@@ -322,6 +346,7 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 			}
 
 			result.PRUrl = prURL
+			log.Info("Pull request created", slog.String("pr_url", prURL))
 			r.reportProgress(task.ID, "Completed", 100, fmt.Sprintf("PR created: %s", prURL))
 		} else {
 			r.reportProgress(task.ID, "Completed", 100, "Task completed successfully")
@@ -462,7 +487,13 @@ func (r *Runner) parseStreamEvent(taskID, line string, state *progressState) (st
 		if event.Model != "" {
 			state.modelName = event.Model
 		}
+		r.log.Debug("Stream result received",
+			slog.String("task_id", taskID),
+			slog.Bool("is_error", event.IsError),
+			slog.String("model", event.Model),
+		)
 		if event.IsError {
+			r.log.Warn("Claude Code returned error", slog.String("task_id", taskID), slog.String("error", event.Result))
 			return "", event.Result
 		}
 		return event.Result, ""
@@ -645,6 +676,12 @@ func (r *Runner) handleNavigatorPhase(taskID, phase string, state *progressState
 
 // handleToolUse processes tool usage and updates phase-based progress
 func (r *Runner) handleToolUse(taskID, toolName string, input map[string]interface{}, state *progressState) {
+	// Log tool usage at debug level
+	r.log.Debug("Tool used",
+		slog.String("task_id", taskID),
+		slog.String("tool", toolName),
+	)
+
 	var newPhase string
 	var progress int
 	var message string
@@ -912,10 +949,16 @@ func estimateCost(inputTokens, outputTokens int64, model string) float64 {
 
 // reportProgress sends a progress update
 func (r *Runner) reportProgress(taskID, phase string, progress int, message string) {
+	// Always log progress for terminal visibility
+	r.log.Info("Task progress",
+		slog.String("task_id", taskID),
+		slog.String("phase", phase),
+		slog.Int("progress", progress),
+		slog.String("message", message),
+	)
+
+	// Send to callback (e.g., Telegram) if registered
 	if r.onProgress != nil {
 		r.onProgress(taskID, phase, progress, message)
-	} else {
-		// Debug: log when callback not set
-		fmt.Printf("[executor] Progress (no callback): %s %s %d%% - %s\n", taskID, phase, progress, message)
 	}
 }
