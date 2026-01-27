@@ -51,6 +51,7 @@ func main() {
 		newPatternsCmd(),
 		newMetricsCmd(),
 		newUsageCmd(),
+		newTeamCmd(),
 	)
 
 	if err := rootCmd.Execute(); err != nil {
