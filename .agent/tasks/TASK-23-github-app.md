@@ -1,8 +1,25 @@
 # TASK-23: GitHub App Integration
 
-**Status**: 📋 Planned
+**Status**: ✅ Phase 1 Complete
 **Created**: 2026-01-26
+**Completed**: 2026-01-27 (Phase 1)
 **Category**: Integrations
+**PR**: #3
+
+---
+
+## What Was Implemented (Phase 1)
+
+**PR #3** added foundational GitHub App methods to `internal/adapters/github/`:
+
+- `CreateCommitStatus()` - Report status on commits
+- `CreateCheckRun()` / `UpdateCheckRun()` - GitHub Checks API
+- `CreatePullRequest()` / `GetPullRequest()` - PR management
+- `AddPRComment()` - Comment on PRs
+
+New types in `types.go`: `CommitStatus`, `CheckRun`, `PullRequest`, `PRComment`
+
+**+471 lines with full test coverage**
 
 ---
 
