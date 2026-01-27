@@ -1,3 +1,9 @@
+// Package health provides system health checks for Pilot.
+//
+// It verifies required dependencies (Claude Code CLI, git, ffmpeg) are installed
+// and checks feature availability based on configuration. The RunChecks function
+// generates a HealthReport used by the CLI status command to display system
+// readiness and configuration state.
 package health
 
 import (
