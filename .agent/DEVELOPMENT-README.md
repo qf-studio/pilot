@@ -177,9 +177,10 @@ if _, err := os.Stat(agentDir); err == nil {
   - Completed: 2026-01-26
   - Enable image analysis via Telegram bot
 
-- **TASK-05**: Bot Singleton Detection (Status: 📋 Planned)
+- **TASK-05**: Bot Singleton Detection (Status: ✅ Complete)
   - File: `.agent/tasks/TASK-05-bot-singleton.md`
-  - Graceful handling when another bot instance is running
+  - Completed: 2026-01-26
+  - `--replace` flag, `CheckSingleton()`, clear error messages
 
 ### Completed
 
@@ -192,6 +193,11 @@ if _, err := os.Stat(agentDir); err == nil {
   - File: `.agent/tasks/TASK-23-github-app.md`
   - Completed: 2026-01-27
   - Commit status, check runs, PR API methods (+471 lines)
+
+- **TASK-05**: Bot Singleton Detection (Status: ✅ Complete)
+  - File: `.agent/tasks/TASK-05-bot-singleton.md`
+  - Completed: 2026-01-26
+  - `--replace` flag, CheckSingleton(), clear error messages
 
 - **TASK-04**: Telegram UX Improvements (Status: ✅ Complete)
   - File: `.agent/tasks/TASK-04-telegram-ux.md`
