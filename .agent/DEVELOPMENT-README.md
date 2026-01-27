@@ -80,6 +80,11 @@ if _, err := os.Stat(agentDir); err == nil {
 
 ### Core Workflow (Priority)
 
+- **TASK-32**: Navigator Index Auto-Sync (Status: 📋 Planned)
+  - File: `.agent/tasks/TASK-32-nav-index-sync.md`
+  - Created: 2026-01-27
+  - Auto-sync task status to DEVELOPMENT-README.md after completion
+
 - **TASK-31**: PR Workflow Improvements (Status: ✅ Complete)
   - File: `.agent/tasks/TASK-31-pr-workflow-improvements.md`
   - Completed: 2026-01-27
