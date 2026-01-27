@@ -157,7 +157,7 @@ func TestFormatTaskResult(t *testing.T) {
 				Duration: 60 * time.Second,
 				PRUrl:    "https://github.com/org/repo/pull/123",
 			},
-			contains: []string{"✅", "View PR", "github.com"},
+			contains: []string{"✅", "PR:", "github.com"},
 		},
 		{
 			name: "failure result",
@@ -302,7 +302,7 @@ func TestConvertTablesToLists(t *testing.T) {
 |------|--------|
 | TASK-01 | Done |
 | TASK-02 | Pending |`,
-			contains: []string{"• *TASK-01*: Done", "• *TASK-02*: Pending"},
+			contains: []string{"• TASK-01: Done", "• TASK-02: Pending"},
 			excludes: []string{"|---"},
 		},
 		{
@@ -310,7 +310,7 @@ func TestConvertTablesToLists(t *testing.T) {
 			input: `| Name | Description | Priority |
 |------|-------------|----------|
 | Fix bug | Critical issue | High |`,
-			contains: []string{"• *Fix bug*: Critical issue | High"},
+			contains: []string{"• Fix bug: Critical issue | High"},
 		},
 		{
 			name:     "no table",
@@ -327,7 +327,7 @@ Some text before.
 | A | 1 |
 
 Some text after.`,
-			contains: []string{"## Summary", "• *A*: 1", "Some text after"},
+			contains: []string{"## Summary", "• A: 1", "Some text after"},
 		},
 	}
 

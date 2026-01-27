@@ -29,13 +29,13 @@ var internalSignals = []string{
 // FormatTaskConfirmation formats a task confirmation message
 func FormatTaskConfirmation(taskID, description, projectPath string) string {
 	return fmt.Sprintf(
-		"📋 *Confirm Task*\n\n"+
-			"`%s`\n\n"+
-			"*Task:* %s\n"+
-			"*Project:* `%s`\n\n"+
+		"📋 Confirm Task\n\n"+
+			"%s\n\n"+
+			"Task: %s\n"+
+			"Project: %s\n\n"+
 			"Execute this task?",
 		taskID,
-		escapeMarkdown(truncateDescription(description, 200)),
+		truncateDescription(description, 200),
 		projectPath,
 	)
 }
@@ -43,9 +43,9 @@ func FormatTaskConfirmation(taskID, description, projectPath string) string {
 // FormatTaskStarted formats a task started message
 func FormatTaskStarted(taskID, description string) string {
 	return fmt.Sprintf(
-		"🚀 *Executing*\n`%s`\n\n%s",
+		"🚀 Executing\n%s\n\n%s",
 		taskID,
-		escapeMarkdown(truncateDescription(description, 150)),
+		truncateDescription(description, 150),
 	)
 }
 
@@ -86,14 +86,14 @@ func FormatProgressUpdate(taskID, phase string, progress int, message string) st
 	}
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("%s *%s* (%d%%)\n", phaseEmoji, phase, progress))
-	sb.WriteString(fmt.Sprintf("`%s`\n\n", bar))
-	sb.WriteString(fmt.Sprintf("`%s`", taskID))
+	sb.WriteString(fmt.Sprintf("%s %s (%d%%)\n", phaseEmoji, phase, progress))
+	sb.WriteString(fmt.Sprintf("%s\n\n", bar))
+	sb.WriteString(fmt.Sprintf("%s", taskID))
 
 	// Add activity message if present
 	if message != "" {
 		cleanMsg := truncateDescription(message, 60)
-		sb.WriteString(fmt.Sprintf("\n\n📝 %s", escapeMarkdown(cleanMsg)))
+		sb.WriteString(fmt.Sprintf("\n\n📝 %s", cleanMsg))
 	}
 
 	return sb.String()
@@ -111,17 +111,17 @@ func FormatTaskResult(result *executor.ExecutionResult) string {
 func formatSuccessResult(result *executor.ExecutionResult) string {
 	var sb strings.Builder
 
-	sb.WriteString(fmt.Sprintf("✅ *Task completed*\n`%s`\n\n", result.TaskID))
+	sb.WriteString(fmt.Sprintf("✅ Task completed\n%s\n\n", result.TaskID))
 	sb.WriteString(fmt.Sprintf("⏱ Duration: %s\n", result.Duration.Round(time.Second)))
 
 	// Add commit SHA if present
 	if result.CommitSHA != "" {
-		sb.WriteString(fmt.Sprintf("📝 Commit: `%s`\n", result.CommitSHA[:min(8, len(result.CommitSHA))]))
+		sb.WriteString(fmt.Sprintf("📝 Commit: %s\n", result.CommitSHA[:min(8, len(result.CommitSHA))]))
 	}
 
 	// Add PR URL if present
 	if result.PRUrl != "" {
-		sb.WriteString(fmt.Sprintf("\n🔗 [View PR](%s)\n", result.PRUrl))
+		sb.WriteString(fmt.Sprintf("\n🔗 PR: %s\n", result.PRUrl))
 	}
 
 	// Clean and add output summary
@@ -130,7 +130,7 @@ func formatSuccessResult(result *executor.ExecutionResult) string {
 		// Extract key information from output
 		summary := extractSummary(cleanOutput)
 		if summary != "" {
-			sb.WriteString(fmt.Sprintf("\n📄 *Summary:*\n%s", summary))
+			sb.WriteString(fmt.Sprintf("\n📄 Summary:\n%s", summary))
 		}
 	}
 
@@ -150,7 +150,7 @@ func formatFailureResult(result *executor.ExecutionResult) string {
 	}
 
 	return fmt.Sprintf(
-		"❌ *Task failed*\n`%s`\n\n⏱ Duration: %s\n\n```\n%s\n```",
+		"❌ Task failed\n%s\n\n⏱ Duration: %s\n\n%s",
 		result.TaskID,
 		result.Duration.Round(time.Second),
 		cleanError,
@@ -166,7 +166,7 @@ func FormatGreeting(username string) string {
 	return fmt.Sprintf(
 		"👋 Hey %s! I'm Pilot bot.\n\n"+
 			"Send me a task to execute, or ask me a question about the codebase.\n\n"+
-			"*Examples:*\n"+
+			"Examples:\n"+
 			"• `Create a hello.py file`\n"+
 			"• `What files handle auth?`\n"+
 			"• `/help` for more info",
@@ -176,7 +176,7 @@ func FormatGreeting(username string) string {
 
 // FormatQuestionAck formats acknowledgment for a question
 func FormatQuestionAck() string {
-	return "🔍 *Looking into that...*"
+	return "🔍 Looking into that..."
 }
 
 // FormatQuestionAnswer formats an answer to a question
@@ -231,7 +231,7 @@ func convertTablesToLists(text string) string {
 				if len(cells) >= 2 {
 					if len(headers) >= 2 && headers[0] != "" {
 						// Use first column as key, rest as description
-						result = append(result, fmt.Sprintf("• *%s*: %s", cells[0], strings.Join(cells[1:], " | ")))
+						result = append(result, fmt.Sprintf("• %s: %s", cells[0], strings.Join(cells[1:], " | ")))
 					} else {
 						result = append(result, fmt.Sprintf("• %s", strings.Join(cells, " - ")))
 					}
@@ -328,10 +328,10 @@ func extractSummary(output string) string {
 		regex   string
 		format  string
 	}{
-		{`(?i)created?\s+["\x60]?([^"\x60\n]+\.\w+)["\x60]?`, "📁 Created: `%s`"},
-		{`(?i)modified?\s+["\x60]?([^"\x60\n]+\.\w+)["\x60]?`, "📝 Modified: `%s`"},
-		{`(?i)added?\s+["\x60]?([^"\x60\n]+\.\w+)["\x60]?`, "➕ Added: `%s`"},
-		{`(?i)deleted?\s+["\x60]?([^"\x60\n]+\.\w+)["\x60]?`, "🗑 Deleted: `%s`"},
+		{`(?i)created?\s+["\x60]?([^"\x60\n]+\.\w+)["\x60]?`, "📁 Created: %s"},
+		{`(?i)modified?\s+["\x60]?([^"\x60\n]+\.\w+)["\x60]?`, "📝 Modified: %s"},
+		{`(?i)added?\s+["\x60]?([^"\x60\n]+\.\w+)["\x60]?`, "➕ Added: %s"},
+		{`(?i)deleted?\s+["\x60]?([^"\x60\n]+\.\w+)["\x60]?`, "🗑 Deleted: %s"},
 	}
 
 	var summaryItems []string

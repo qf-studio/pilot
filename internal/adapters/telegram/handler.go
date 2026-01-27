@@ -160,7 +160,7 @@ func (h *Handler) cleanupExpiredTasks(ctx context.Context) {
 		if task.CreatedAt.Before(expiry) {
 			// Notify user that task expired
 			_, _ = h.client.SendMessage(ctx, chatID,
-				fmt.Sprintf("⏰ Task `%s` expired (no confirmation received).", task.TaskID), "Markdown")
+				fmt.Sprintf("⏰ Task %s expired (no confirmation received).", task.TaskID), "")
 			delete(h.pendingTasks, chatID)
 			logging.WithComponent("telegram").Debug("Expired pending task", slog.String("task_id", task.TaskID), slog.String("chat_id", chatID))
 		}
@@ -309,7 +309,7 @@ func (h *Handler) handleConfirmation(ctx context.Context, chatID string, confirm
 		h.executeTask(ctx, chatID, pending.TaskID, pending.Description)
 	} else {
 		_, _ = h.client.SendMessage(ctx, chatID,
-			fmt.Sprintf("❌ Task `%s` cancelled.", pending.TaskID), "Markdown")
+			fmt.Sprintf("❌ Task %s cancelled.", pending.TaskID), "")
 	}
 }
 
@@ -319,7 +319,7 @@ func (h *Handler) handleGreeting(ctx context.Context, chatID string, from *User)
 	if from != nil {
 		username = from.FirstName
 	}
-	_, _ = h.client.SendMessage(ctx, chatID, FormatGreeting(username), "Markdown")
+	_, _ = h.client.SendMessage(ctx, chatID, FormatGreeting(username), "")
 }
 
 // handleQuestion handles questions about the codebase
@@ -327,12 +327,12 @@ func (h *Handler) handleQuestion(ctx context.Context, chatID, question string) {
 	// Try fast path first for common questions
 	if answer := h.tryFastAnswer(question); answer != "" {
 		logging.WithComponent("telegram").Debug("Fast answer used", slog.String("chat_id", chatID))
-		_, _ = h.client.SendMessage(ctx, chatID, answer, "Markdown")
+		_, _ = h.client.SendMessage(ctx, chatID, answer, "")
 		return
 	}
 
 	// Send acknowledgment for slow path
-	_, _ = h.client.SendMessage(ctx, chatID, FormatQuestionAck(), "Markdown")
+	_, _ = h.client.SendMessage(ctx, chatID, FormatQuestionAck(), "")
 
 	// Create a timeout context for questions (90 seconds max)
 	questionCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
@@ -378,7 +378,7 @@ If the question is too broad, ask for clarification instead of exploring everyth
 		answer = "I couldn't find a clear answer to that question."
 	}
 
-	_, _ = h.client.SendMessage(ctx, chatID, answer, "Markdown")
+	_, _ = h.client.SendMessage(ctx, chatID, answer, "")
 }
 
 // handleTask handles task requests with confirmation
@@ -388,8 +388,8 @@ func (h *Handler) handleTask(ctx context.Context, chatID, description string) {
 	if existing, exists := h.pendingTasks[chatID]; exists {
 		h.mu.Unlock()
 		_, _ = h.client.SendMessage(ctx, chatID,
-			fmt.Sprintf("⚠️ You already have a pending task: `%s`\n\nReply *yes* to execute or *no* to cancel.",
-				existing.TaskID), "Markdown")
+			fmt.Sprintf("⚠️ You already have a pending task: %s\n\nReply yes to execute or no to cancel.",
+				existing.TaskID), "")
 		return
 	}
 	h.mu.Unlock()
@@ -425,7 +425,7 @@ func (h *Handler) handleTask(ctx context.Context, chatID, description string) {
 	// Use displayDesc for user-friendly display, description is kept for execution
 	confirmMsg := FormatTaskConfirmation(taskID, displayDesc, h.projectPath)
 
-	msgResp, err := h.client.SendMessageWithKeyboard(ctx, chatID, confirmMsg, "Markdown",
+	msgResp, err := h.client.SendMessageWithKeyboard(ctx, chatID, confirmMsg, "",
 		[][]InlineKeyboardButton{
 			{
 				{Text: "✅ Execute", CallbackData: "execute"},
@@ -437,7 +437,7 @@ func (h *Handler) handleTask(ctx context.Context, chatID, description string) {
 		logging.WithComponent("telegram").Warn("Failed to send confirmation", slog.Any("error", err))
 		// Fallback to text-based confirmation
 		_, _ = h.client.SendMessage(ctx, chatID,
-			confirmMsg+"\n\n_Reply *yes* to execute or *no* to cancel._", "Markdown")
+			confirmMsg+"\n\n_Reply yes to execute or no to cancel._", "")
 	} else if msgResp != nil && msgResp.Result != nil {
 		h.mu.Lock()
 		if p, ok := h.pendingTasks[chatID]; ok {
@@ -450,14 +450,13 @@ func (h *Handler) handleTask(ctx context.Context, chatID, description string) {
 // executeTask executes a confirmed task
 func (h *Handler) executeTask(ctx context.Context, chatID, taskID, description string) {
 	// Send execution started message (this will be updated with progress)
-	// NOTE: Use "Markdown" not "MarkdownV2" - MarkdownV2 requires strict escaping
-	// of special chars (-, ., !, etc.) which causes silent failures. See SOP:
-	// .agent/sops/telegram-bot-development.md
-	resp, err := h.client.SendMessage(ctx, chatID, FormatProgressUpdate(taskID, "Starting", 0, "Initializing..."), "Markdown")
+	// NOTE: Using plain text (no parse mode) to avoid markdown escaping issues.
+	// See SOP: .agent/sops/telegram-bot-development.md
+	resp, err := h.client.SendMessage(ctx, chatID, FormatProgressUpdate(taskID, "Starting", 0, "Initializing..."), "")
 	if err != nil {
 		logging.WithTask(taskID).Warn("Failed to send start message", slog.Any("error", err))
 		// Fallback to simple message
-		_, _ = h.client.SendMessage(ctx, chatID, FormatTaskStarted(taskID, description), "Markdown")
+		_, _ = h.client.SendMessage(ctx, chatID, FormatTaskStarted(taskID, description), "")
 	}
 
 	// Track progress message ID for updates
@@ -511,7 +510,7 @@ func (h *Handler) executeTask(ctx context.Context, chatID, taskID, description s
 
 			// Send update
 			updateText := FormatProgressUpdate(taskID, phase, progress, message)
-			if err := h.client.EditMessage(ctx, chatID, progressMsgID, updateText, "Markdown"); err != nil {
+			if err := h.client.EditMessage(ctx, chatID, progressMsgID, updateText, ""); err != nil {
 				logging.WithTask(taskID).Warn("Failed to edit progress message", slog.Any("error", err))
 			}
 		})
@@ -528,13 +527,13 @@ func (h *Handler) executeTask(ctx context.Context, chatID, taskID, description s
 
 	// Send result with clean formatting
 	if err != nil {
-		errMsg := fmt.Sprintf("❌ *Task failed*\n`%s`\n\n```\n%s\n```", taskID, err.Error())
-		_, _ = h.client.SendMessage(ctx, chatID, errMsg, "Markdown")
+		errMsg := fmt.Sprintf("❌ Task failed\n%s\n\n%s", taskID, err.Error())
+		_, _ = h.client.SendMessage(ctx, chatID, errMsg, "")
 		return
 	}
 
 	result.TaskID = taskID // Ensure TaskID is set
-	_, _ = h.client.SendMessage(ctx, chatID, FormatTaskResult(result), "Markdown")
+	_, _ = h.client.SendMessage(ctx, chatID, FormatTaskResult(result), "")
 }
 
 // handleCommand processes bot commands
@@ -548,16 +547,16 @@ func (h *Handler) handleCommand(ctx context.Context, chatID, text string) {
 
 	switch cmd {
 	case "/start", "/help":
-		helpText := `🤖 *Pilot Bot*
+		helpText := `🤖 Pilot Bot
 
 I can help you with your codebase!
 
-*What I understand:*
-• *Tasks:* "Create a file...", "Add a function...", "Fix the bug..."
-• *Questions:* "What files handle auth?", "How does X work?"
-• *Greetings:* "Hi", "Hello" - I'll greet you back
+What I understand:
+• Tasks: "Create a file...", "Add a function...", "Fix the bug..."
+• Questions: "What files handle auth?", "How does X work?"
+• Greetings: "Hi", "Hello" - I'll greet you back
 
-*Commands:*
+Commands:
 /help - Show this message
 /status - Check bot status
 /tasks - Show task backlog
@@ -565,12 +564,12 @@ I can help you with your codebase!
 /stop - Stop running task
 /cancel - Cancel pending task
 
-*Quick patterns:*
-• ` + "`07`" + ` or ` + "`task 07`" + ` - Run TASK-07 directly
-• ` + "`status?`" + ` - Project status
-• ` + "`todos?`" + ` - List TODOs`
+Quick patterns:
+• 07 or task 07 - Run TASK-07 directly
+• status? - Project status
+• todos? - List TODOs`
 
-		_, _ = h.client.SendMessage(ctx, chatID, helpText, "Markdown")
+		_, _ = h.client.SendMessage(ctx, chatID, helpText, "")
 
 	case "/status":
 		h.mu.Lock()
@@ -578,22 +577,22 @@ I can help you with your codebase!
 		running := h.runningTasks[chatID]
 		h.mu.Unlock()
 
-		statusText := fmt.Sprintf("✅ Pilot bot is running\n📁 Project: `%s`", h.projectPath)
+		statusText := fmt.Sprintf("✅ Pilot bot is running\n📁 Project: %s", h.projectPath)
 		if running != nil {
 			elapsed := time.Since(running.StartedAt).Round(time.Second)
-			statusText += fmt.Sprintf("\n\n🔄 Running: `%s` (%s)", running.TaskID, elapsed)
+			statusText += fmt.Sprintf("\n\n🔄 Running: %s (%s)", running.TaskID, elapsed)
 		}
 		if pending != nil {
-			statusText += fmt.Sprintf("\n\n⏳ Pending: `%s`", pending.TaskID)
+			statusText += fmt.Sprintf("\n\n⏳ Pending: %s", pending.TaskID)
 		}
-		_, _ = h.client.SendMessage(ctx, chatID, statusText, "Markdown")
+		_, _ = h.client.SendMessage(ctx, chatID, statusText, "")
 
 	case "/tasks", "/list":
 		h.handleTasksCommand(ctx, chatID)
 
 	case "/run":
 		if len(parts) < 2 {
-			_, _ = h.client.SendMessage(ctx, chatID, "Usage: /run <task-id>\nExample: `/run 07`", "Markdown")
+			_, _ = h.client.SendMessage(ctx, chatID, "Usage: /run <task-id>\nExample: /run 07", "")
 			return
 		}
 		h.handleRunCommand(ctx, chatID, parts[1])
@@ -607,7 +606,7 @@ I can help you with your codebase!
 			delete(h.pendingTasks, chatID)
 			h.mu.Unlock()
 			_, _ = h.client.SendMessage(ctx, chatID,
-				fmt.Sprintf("❌ Task `%s` cancelled.", pending.TaskID), "Markdown")
+				fmt.Sprintf("❌ Task %s cancelled.", pending.TaskID), "")
 		} else {
 			h.mu.Unlock()
 			_, _ = h.client.SendMessage(ctx, chatID, "No pending task to cancel.", "")
@@ -622,10 +621,10 @@ I can help you with your codebase!
 func (h *Handler) handleTasksCommand(ctx context.Context, chatID string) {
 	taskList := h.fastListTasks()
 	if taskList == "" {
-		_, _ = h.client.SendMessage(ctx, chatID, "📋 No tasks found in `.agent/tasks/`", "Markdown")
+		_, _ = h.client.SendMessage(ctx, chatID, "📋 No tasks found in .agent/tasks/", "")
 		return
 	}
-	_, _ = h.client.SendMessage(ctx, chatID, "📋 *Task Backlog*\n\n"+taskList, "Markdown")
+	_, _ = h.client.SendMessage(ctx, chatID, "📋 Task Backlog\n\n"+taskList, "")
 }
 
 // handleRunCommand executes a task directly without confirmation
@@ -636,7 +635,7 @@ func (h *Handler) handleRunCommand(ctx context.Context, chatID, taskIDInput stri
 		h.mu.Unlock()
 		elapsed := time.Since(running.StartedAt).Round(time.Second)
 		_, _ = h.client.SendMessage(ctx, chatID,
-			fmt.Sprintf("⚠️ Already running `%s` (%s)\n\nUse /stop to cancel it first.", running.TaskID, elapsed), "Markdown")
+			fmt.Sprintf("⚠️ Already running %s (%s)\n\nUse /stop to cancel it first.", running.TaskID, elapsed), "")
 		return
 	}
 	h.mu.Unlock()
@@ -645,7 +644,7 @@ func (h *Handler) handleRunCommand(ctx context.Context, chatID, taskIDInput stri
 	taskInfo := h.resolveTaskID(taskIDInput)
 	if taskInfo == nil {
 		_, _ = h.client.SendMessage(ctx, chatID,
-			fmt.Sprintf("❌ Task `%s` not found\n\nUse /tasks to see available tasks.", taskIDInput), "Markdown")
+			fmt.Sprintf("❌ Task %s not found\n\nUse /tasks to see available tasks.", taskIDInput), "")
 		return
 	}
 
@@ -653,13 +652,13 @@ func (h *Handler) handleRunCommand(ctx context.Context, chatID, taskIDInput stri
 	description := h.loadTaskDescription(taskInfo)
 	if description == "" {
 		_, _ = h.client.SendMessage(ctx, chatID,
-			fmt.Sprintf("❌ Could not load task `%s`", taskInfo.FullID), "Markdown")
+			fmt.Sprintf("❌ Could not load task %s", taskInfo.FullID), "")
 		return
 	}
 
 	// Notify user
 	_, _ = h.client.SendMessage(ctx, chatID,
-		fmt.Sprintf("🚀 *Starting task*\n\n`%s`: %s", taskInfo.FullID, taskInfo.Title), "Markdown")
+		fmt.Sprintf("🚀 Starting task\n\n%s: %s", taskInfo.FullID, taskInfo.Title), "")
 
 	// Execute directly
 	h.executeTask(ctx, chatID, taskInfo.FullID, fmt.Sprintf("## Task: %s\n\n%s", taskInfo.FullID, description))
@@ -689,7 +688,7 @@ func (h *Handler) handleStopCommand(ctx context.Context, chatID string) {
 	h.mu.Unlock()
 
 	_, _ = h.client.SendMessage(ctx, chatID,
-		fmt.Sprintf("🛑 Stopped task `%s`", running.TaskID), "Markdown")
+		fmt.Sprintf("🛑 Stopped task %s", running.TaskID), "")
 }
 
 // handlePhoto processes photo messages
@@ -804,8 +803,8 @@ func (h *Handler) handleVoice(ctx context.Context, chatID string, msg *Message) 
 		langInfo = fmt.Sprintf(" (%s)", result.Language)
 	}
 
-	transcriptMsg := fmt.Sprintf("🎤 *Transcribed%s:*\n_%s_", langInfo, escapeMarkdown(result.Text))
-	_, _ = h.client.SendMessage(ctx, chatID, transcriptMsg, "Markdown")
+	transcriptMsg := fmt.Sprintf("🎤 Transcribed%s:\n%s", langInfo, result.Text)
+	_, _ = h.client.SendMessage(ctx, chatID, transcriptMsg, "")
 
 	// Process the transcribed text as if it was typed
 	logging.WithComponent("telegram").Debug("Processing transcribed text", slog.String("chat_id", chatID))
@@ -914,7 +913,7 @@ func (h *Handler) executeImageTask(ctx context.Context, chatID, imagePath, promp
 	taskID := fmt.Sprintf("IMG-%d", time.Now().Unix())
 
 	// Send progress message
-	resp, err := h.client.SendMessage(ctx, chatID, FormatProgressUpdate(taskID, "Analyzing", 10, "Processing image..."), "Markdown")
+	resp, err := h.client.SendMessage(ctx, chatID, FormatProgressUpdate(taskID, "Analyzing", 10, "Processing image..."), "")
 	var progressMsgID int64
 	if err == nil && resp != nil && resp.Result != nil {
 		progressMsgID = resp.Result.MessageID
@@ -954,7 +953,7 @@ func (h *Handler) executeImageTask(ctx context.Context, chatID, imagePath, promp
 			lastUpdate = now
 
 			updateText := FormatProgressUpdate(taskID, phase, progress, message)
-			_ = h.client.EditMessage(ctx, chatID, progressMsgID, updateText, "Markdown")
+			_ = h.client.EditMessage(ctx, chatID, progressMsgID, updateText, "")
 		})
 	}
 
@@ -988,7 +987,7 @@ func (h *Handler) executeImageTask(ctx context.Context, chatID, imagePath, promp
 		answer = answer[:3997] + "..."
 	}
 
-	_, _ = h.client.SendMessage(ctx, chatID, answer, "Markdown")
+	_, _ = h.client.SendMessage(ctx, chatID, answer, "")
 }
 
 // ============================================================================
@@ -1171,7 +1170,7 @@ func (h *Handler) fastListTasks() string {
 
 	// In Progress
 	if len(inProgress) > 0 {
-		sb.WriteString("*In Progress*\n")
+		sb.WriteString("In Progress\n")
 		for _, t := range inProgress {
 			sb.WriteString(fmt.Sprintf("%s: %s\n", t.num, t.title))
 		}
@@ -1180,7 +1179,7 @@ func (h *Handler) fastListTasks() string {
 
 	// Backlog - show first 5
 	if len(pending) > 0 {
-		sb.WriteString("*Backlog*\n")
+		sb.WriteString("Backlog\n")
 		showCount := min(5, len(pending))
 		for i := 0; i < showCount; i++ {
 			sb.WriteString(fmt.Sprintf("%s: %s\n", pending[i].num, pending[i].title))
@@ -1193,7 +1192,7 @@ func (h *Handler) fastListTasks() string {
 
 	// Recently done - show last 2
 	if len(completed) > 0 {
-		sb.WriteString("*Recently done*\n")
+		sb.WriteString("Recently done\n")
 		showCount := min(2, len(completed))
 		start := len(completed) - showCount
 		for i := start; i < len(completed); i++ {
@@ -1402,7 +1401,7 @@ func (h *Handler) fastGrepTodos() string {
 					comment = strings.TrimPrefix(comment, "#")
 					comment = strings.TrimSpace(comment)
 
-					todos = append(todos, fmt.Sprintf("• `%s:%d` %s", relPath, lineNum, truncateDescription(comment, 60)))
+					todos = append(todos, fmt.Sprintf("• %s:%d %s", relPath, lineNum, truncateDescription(comment, 60)))
 
 					if len(todos) >= 15 {
 						return filepath.SkipAll
@@ -1425,7 +1424,7 @@ func (h *Handler) fastGrepTodos() string {
 	sort.Strings(todos)
 
 	var sb strings.Builder
-	sb.WriteString("📝 *TODOs & FIXMEs*\n\n")
+	sb.WriteString("📝 TODOs & FIXMEs\n\n")
 	for _, todo := range todos {
 		sb.WriteString(todo + "\n")
 	}
