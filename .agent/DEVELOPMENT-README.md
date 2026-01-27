@@ -76,117 +76,62 @@ if _, err := os.Stat(agentDir); err == nil {
 - [ ] End-to-end testing with real Linear webhook
 - [x] **TASK-03**: Git & PR workflow (branch, commit SHA, PR creation)
 
-## Active Tasks
+## Prioritized Backlog
 
-### Core Workflow (Priority)
+**Pick tasks in order. Higher = more user value.**
 
-- **TASK-32**: Navigator Index Auto-Sync (Status: 📋 Planned)
-  - File: `.agent/tasks/TASK-32-nav-index-sync.md`
-  - Created: 2026-01-27
-  - Auto-sync task status to DEVELOPMENT-README.md after completion
+### 🔴 P1: Critical (Blocking User Success)
 
-- **TASK-31**: PR Workflow Improvements (Status: ✅ Complete)
-  - File: `.agent/tasks/TASK-31-pr-workflow-improvements.md`
-  - Completed: 2026-01-27
-  - Fixed silent error handling in --create-pr flag (PR #4)
+| # | Task | File | Why |
+|---|------|------|-----|
+| 1 | **TASK-30**: Setup Wizard | `TASK-30-setup-wizard.md` | Users can't use features without knowing what's missing |
+| 2 | **TASK-20**: Quality Gates | `TASK-20-quality-gates.md` | Broken PRs destroy trust |
+| 3 | **TASK-19**: Approval Workflows | `TASK-19-approval-workflows.md` | Teams won't adopt without safety controls |
 
-### Roadmap Features (from README)
+### 🟡 P2: High (Significant Value)
 
-- **TASK-12**: Pilot Cloud (Hosted) (Status: ✅ Foundation Complete)
-  - File: `.agent/tasks/TASK-12-pilot-cloud.md`
-  - Completed: 2026-01-26
-  - `cloud/` directory with API, billing, sandbox infrastructure
+| # | Task | File | Why |
+|---|------|------|-----|
+| 4 | **TASK-29**: Multi-Project Support | `TASK-29-multi-project-support.md` | Most devs work on multiple projects |
+| 5 | **TASK-28**: Speed Optimization | `TASK-28-speed-optimization.md` | Slow = abandoned |
+| 6 | **TASK-26**: Hot Version Upgrade | `TASK-26-hot-version-upgrade.md` | Friction-free updates |
 
-- **TASK-11**: Cross-Project Memory (Status: ✅ Complete)
-  - File: `.agent/tasks/TASK-11-cross-project-memory.md`
-  - Completed: 2026-01-26
-  - Pattern extraction, storage, querying, cross-project sync, and learning loop
+### 🟢 P3: Medium (Enterprise/Polish)
 
-- **TASK-10**: Daily Briefs (Status: ✅ Complete)
-  - File: `.agent/tasks/TASK-10-daily-briefs.md`
-  - Completed: 2026-01-26
-  - Automated summary of completed work, progress, blockers
+| # | Task | File | Why |
+|---|------|------|-----|
+| 7 | **TASK-17**: Team Management | `TASK-17-team-management.md` | Enterprise sales blocker |
+| 8 | **TASK-18**: Cost Controls | `TASK-18-cost-controls.md` | Budget protection |
+| 9 | **TASK-25**: Telegram Commands | `TASK-25-telegram-commands.md` | Power user UX |
 
-- **TASK-09**: Jira Adapter (Status: ✅ Complete)
-  - File: `.agent/tasks/TASK-09-jira-adapter.md`
-  - Completed: 2026-01-26
-  - Jira Cloud/Server integration for enterprise teams
+### ⚪ P4: Low (Internal/Nice-to-Have)
 
-- **TASK-08**: GitHub Issues Adapter (Status: ✅ Complete)
-  - File: `.agent/tasks/TASK-08-github-issues-adapter.md`
-  - Completed: 2026-01-26
-  - GitHub Issues as ticket source for open-source projects
+| # | Task | File | Why |
+|---|------|------|-----|
+| 10 | **TASK-32**: Nav Index Sync | `TASK-32-nav-index-sync.md` | Internal workflow |
+| 11 | **TASK-21**: Execution Replay | `TASK-21-execution-replay.md` | Debug aid |
+| 12 | **TASK-22**: Webhooks API | `TASK-22-webhooks-api.md` | Integration feature |
+| 13 | **TASK-24**: Tech Debt | `TASK-24-tech-debt-cleanup.md` | Internal cleanup |
+| 14 | **TASK-27**: CLI Enhancements | `TASK-27-pilot-cli.md` | Polish |
 
-### Monitoring & Observability
+---
 
-- **TASK-13**: Execution Metrics & Analytics (Status: ✅ Complete)
-  - File: `.agent/tasks/TASK-13-execution-metrics.md`
-  - Completed: 2026-01-26
-  - `internal/memory/metrics.go` - success rates, token usage, costs
+## Completed Tasks
 
-- **TASK-14**: Alerting System (Status: ✅ Complete)
-  - File: `.agent/tasks/TASK-14-alerting-system.md`
-  - Completed: 2026-01-26
-  - `internal/alerts/` - engine, dispatcher, types
-
-- **TASK-15**: Structured Logging (Status: ✅ Complete)
-  - File: `.agent/tasks/TASK-15-structured-logging.md`
-  - Completed: 2026-01-26
-  - `internal/logging/` - JSON logs with slog
-
-### Monetization & Enterprise
-
-- **TASK-16**: Usage Metering & Billing (Status: ✅ Complete)
-  - File: `.agent/tasks/TASK-16-usage-metering.md`
-  - Completed: 2026-01-27
-  - `internal/memory/metering.go` - task/token/compute tracking
-
-- **TASK-17**: Team Management (Status: 📋 Planned)
-  - File: `.agent/tasks/TASK-17-team-management.md`
-  - Multi-user support, roles, permissions, audit log
-
-- **TASK-18**: Cost Controls & Budgets (Status: 📋 Planned)
-  - File: `.agent/tasks/TASK-18-cost-controls.md`
-  - Spending limits, budget alerts, runaway task protection
-
-### Safety & Quality
-
-- **TASK-19**: Approval Workflows (Status: 📋 Planned)
-  - File: `.agent/tasks/TASK-19-approval-workflows.md`
-  - Human approval at key stages (pre-execution, pre-merge)
-
-- **TASK-20**: Quality Gates (Status: 📋 Planned)
-  - File: `.agent/tasks/TASK-20-quality-gates.md`
-  - Enforce tests, lint, coverage before PR creation
-
-### Developer Experience
-
-- **TASK-21**: Execution Replay & Debugging (Status: 📋 Planned)
-  - File: `.agent/tasks/TASK-21-execution-replay.md`
-  - Record and replay executions for debugging
-
-- **TASK-22**: Webhooks API (Status: 📋 Planned)
-  - File: `.agent/tasks/TASK-22-webhooks-api.md`
-  - Outbound webhooks for custom integrations
-
-- **TASK-23**: GitHub App Integration (Status: ✅ Complete)
-  - File: `.agent/tasks/TASK-23-github-app.md`
-  - Completed: 2026-01-27
-  - Added CreateCommitStatus, CreateCheckRun, UpdateCheckRun, CreatePullRequest, GetPullRequest, AddPRComment (PR #3)
-
-### Telegram Features
-
-- **TASK-07**: Telegram Voice Support (Status: ✅ Complete)
-  - File: `.agent/tasks/TASK-07-telegram-voice-support.md`
-  - Completed: 2026-01-26
-  - Voice transcription via SenseVoice with Whisper API fallback
-
-- **TASK-06**: Telegram Image Support (Status: ✅ Complete)
-  - File: `.agent/tasks/TASK-06-telegram-image-support.md`
-  - Completed: 2026-01-26
-  - Enable image analysis via Telegram bot
-
-- **TASK-05**: Bot Singleton Detection (Status: ✅ Complete)
+- **TASK-31**: PR Workflow Improvements ✅ 2026-01-27
+- **TASK-23**: GitHub App Integration (Phase 1) ✅ 2026-01-27
+- **TASK-16**: Usage Metering & Billing ✅ 2026-01-27
+- **TASK-15**: Structured Logging ✅ 2026-01-26
+- **TASK-14**: Alerting System ✅ 2026-01-26
+- **TASK-13**: Execution Metrics ✅ 2026-01-26
+- **TASK-12**: Pilot Cloud (Foundation) ✅ 2026-01-26
+- **TASK-11**: Cross-Project Memory ✅ 2026-01-26
+- **TASK-10**: Daily Briefs ✅ 2026-01-26
+- **TASK-09**: Jira Adapter ✅ 2026-01-26
+- **TASK-08**: GitHub Issues Adapter ✅ 2026-01-26
+- **TASK-07**: Telegram Voice Support ✅ 2026-01-26
+- **TASK-06**: Telegram Image Support ✅ 2026-01-26
+- **TASK-05**: Bot Singleton Detection ✅ 2026-01-26
   - File: `.agent/tasks/TASK-05-bot-singleton.md`
   - Completed: 2026-01-26
   - `--replace` flag, `CheckSingleton()`, clear error messages
