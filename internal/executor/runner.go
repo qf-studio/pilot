@@ -69,12 +69,10 @@ type progressState struct {
 	exitSignal   bool     // Navigator EXIT_SIGNAL detected
 	commitSHAs   []string // Extracted commit SHAs from git output
 	// Metrics tracking (TASK-13)
-	tokensInput    int64  // Input tokens used
-	tokensOutput   int64  // Output tokens used
-	filesChanged   int    // Files modified
-	linesAdded     int    // Lines added
-	linesRemoved   int    // Lines removed
-	modelName      string // Model used
+	tokensInput  int64  // Input tokens used
+	tokensOutput int64  // Output tokens used
+	modelName    string // Model used
+	// Note: filesChanged/linesAdded/linesRemoved tracked via git diff at commit time
 }
 
 // Task represents a task to be executed
@@ -875,7 +873,10 @@ func isValidSHA(s string) bool {
 		return false
 	}
 	for _, c := range s {
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+		isDigit := c >= '0' && c <= '9'
+		isLowerHex := c >= 'a' && c <= 'f'
+		isUpperHex := c >= 'A' && c <= 'F'
+		if !isDigit && !isLowerHex && !isUpperHex {
 			return false
 		}
 	}

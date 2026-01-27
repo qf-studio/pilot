@@ -139,8 +139,8 @@ func checkFeatures(cfg *config.Config) []FeatureStatus {
 
 	// Voice transcription
 	hasFFmpeg := commandExists("ffmpeg")
-	voiceStatus := StatusDisabled
-	voiceNote := ""
+	var voiceStatus Status
+	var voiceNote string
 	if hasFFmpeg {
 		voiceStatus = StatusOK
 	} else {

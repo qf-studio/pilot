@@ -54,11 +54,14 @@ func NewLearningLoop(store *Store, extractor *PatternExtractor, config *Learning
 // RecordExecution records an execution and updates patterns accordingly
 func (l *LearningLoop) RecordExecution(ctx context.Context, exec *Execution, appliedPatterns []string) error {
 	// Determine outcome based on execution status
-	outcome := OutcomeNeutral
-	if exec.Status == "completed" {
+	var outcome FeedbackOutcome
+	switch exec.Status {
+	case "completed":
 		outcome = OutcomeSuccess
-	} else if exec.Status == "failed" {
+	case "failed":
 		outcome = OutcomeFailure
+	default:
+		outcome = OutcomeNeutral
 	}
 
 	// Record feedback for each applied pattern

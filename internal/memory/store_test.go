@@ -13,13 +13,13 @@ func TestNewStore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	store, err := NewStore(tmpDir)
 	if err != nil {
 		t.Fatalf("NewStore failed: %v", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Verify database file was created
 	dbPath := filepath.Join(tmpDir, "pilot.db")
@@ -30,10 +30,10 @@ func TestNewStore(t *testing.T) {
 
 func TestExecutionCRUD(t *testing.T) {
 	tmpDir, _ := os.MkdirTemp("", "pilot-test-*")
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	store, _ := NewStore(tmpDir)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Create
 	exec := &Execution{
@@ -70,10 +70,10 @@ func TestExecutionCRUD(t *testing.T) {
 
 func TestGetRecentExecutions(t *testing.T) {
 	tmpDir, _ := os.MkdirTemp("", "pilot-test-*")
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	store, _ := NewStore(tmpDir)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Add multiple executions
 	for i := 1; i <= 5; i++ {
@@ -83,7 +83,7 @@ func TestGetRecentExecutions(t *testing.T) {
 			ProjectPath: "/path",
 			Status:      "completed",
 		}
-		store.SaveExecution(exec)
+		_ = store.SaveExecution(exec)
 	}
 
 	recent, err := store.GetRecentExecutions(3)
@@ -98,10 +98,10 @@ func TestGetRecentExecutions(t *testing.T) {
 
 func TestPatternCRUD(t *testing.T) {
 	tmpDir, _ := os.MkdirTemp("", "pilot-test-*")
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	store, _ := NewStore(tmpDir)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	pattern := &Pattern{
 		ProjectPath: "/path/to/project",
@@ -130,10 +130,10 @@ func TestPatternCRUD(t *testing.T) {
 
 func TestProjectCRUD(t *testing.T) {
 	tmpDir, _ := os.MkdirTemp("", "pilot-test-*")
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	store, _ := NewStore(tmpDir)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	project := &Project{
 		Path:             "/path/to/project",
@@ -162,13 +162,13 @@ func TestProjectCRUD(t *testing.T) {
 
 func TestGetAllProjects(t *testing.T) {
 	tmpDir, _ := os.MkdirTemp("", "pilot-test-*")
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	store, _ := NewStore(tmpDir)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
-	store.SaveProject(&Project{Path: "/path/1", Name: "project-1"})
-	store.SaveProject(&Project{Path: "/path/2", Name: "project-2"})
+	_ = store.SaveProject(&Project{Path: "/path/1", Name: "project-1"})
+	_ = store.SaveProject(&Project{Path: "/path/2", Name: "project-2"})
 
 	projects, err := store.GetAllProjects()
 	if err != nil {

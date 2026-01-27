@@ -30,7 +30,7 @@ func TestGitOperationsInTempRepo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	ctx := context.Background()
 
@@ -42,16 +42,16 @@ func TestGitOperationsInTempRepo(t *testing.T) {
 	}
 
 	// Configure git user for commits
-	exec.CommandContext(ctx, "git", "-C", tmpDir, "config", "user.email", "test@test.com").Run()
-	exec.CommandContext(ctx, "git", "-C", tmpDir, "config", "user.name", "Test User").Run()
+	_ = exec.CommandContext(ctx, "git", "-C", tmpDir, "config", "user.email", "test@test.com").Run()
+	_ = exec.CommandContext(ctx, "git", "-C", tmpDir, "config", "user.name", "Test User").Run()
 
 	// Create initial commit
 	testFile := filepath.Join(tmpDir, "test.txt")
 	if err := os.WriteFile(testFile, []byte("initial"), 0644); err != nil {
 		t.Fatalf("failed to write test file: %v", err)
 	}
-	exec.CommandContext(ctx, "git", "-C", tmpDir, "add", ".").Run()
-	exec.CommandContext(ctx, "git", "-C", tmpDir, "commit", "-m", "initial").Run()
+	_ = exec.CommandContext(ctx, "git", "-C", tmpDir, "add", ".").Run()
+	_ = exec.CommandContext(ctx, "git", "-C", tmpDir, "commit", "-m", "initial").Run()
 
 	git := NewGitOperations(tmpDir)
 
@@ -107,7 +107,7 @@ func TestGitOperationsInTempRepo(t *testing.T) {
 		}
 
 		// Make a change
-		os.WriteFile(testFile, []byte("modified"), 0644)
+		_ = os.WriteFile(testFile, []byte("modified"), 0644)
 
 		hasChanges, err = git.HasUncommittedChanges(ctx)
 		if err != nil {
@@ -152,20 +152,20 @@ func TestBranchExists(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	ctx := context.Background()
 
 	// Initialize git repo
-	exec.CommandContext(ctx, "git", "-C", tmpDir, "init").Run()
-	exec.CommandContext(ctx, "git", "-C", tmpDir, "config", "user.email", "test@test.com").Run()
-	exec.CommandContext(ctx, "git", "-C", tmpDir, "config", "user.name", "Test User").Run()
+	_ = exec.CommandContext(ctx, "git", "-C", tmpDir, "init").Run()
+	_ = exec.CommandContext(ctx, "git", "-C", tmpDir, "config", "user.email", "test@test.com").Run()
+	_ = exec.CommandContext(ctx, "git", "-C", tmpDir, "config", "user.name", "Test User").Run()
 
 	// Create initial commit
 	testFile := filepath.Join(tmpDir, "test.txt")
-	os.WriteFile(testFile, []byte("initial"), 0644)
-	exec.CommandContext(ctx, "git", "-C", tmpDir, "add", ".").Run()
-	exec.CommandContext(ctx, "git", "-C", tmpDir, "commit", "-m", "initial").Run()
+	_ = os.WriteFile(testFile, []byte("initial"), 0644)
+	_ = exec.CommandContext(ctx, "git", "-C", tmpDir, "add", ".").Run()
+	_ = exec.CommandContext(ctx, "git", "-C", tmpDir, "commit", "-m", "initial").Run()
 
 	git := NewGitOperations(tmpDir)
 

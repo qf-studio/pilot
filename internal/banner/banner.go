@@ -110,9 +110,10 @@ func StartupTelegram(version, project, chatID string, cfg *config.Config) {
 	var enabled []string
 	var warnings []string
 	for _, f := range report.Features {
-		if f.Status == health.StatusOK {
+		switch f.Status {
+		case health.StatusOK:
 			enabled = append(enabled, f.Name)
-		} else if f.Status == health.StatusWarning {
+		case health.StatusWarning:
 			warnings = append(warnings, f.Name+"*")
 		}
 	}
