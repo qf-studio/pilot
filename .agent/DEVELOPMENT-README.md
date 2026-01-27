@@ -46,6 +46,7 @@ if _, err := os.Stat(agentDir); err == nil {
 | Orchestrator (Python) | ✅ Complete | `orchestrator/` |
 | CLI Commands | ✅ Complete | `cmd/pilot/` |
 | **Progress Display** | ✅ Complete | `internal/executor/progress.go` |
+| **Structured Logging** | ✅ Complete | `internal/executor/runner.go` |
 
 ### Week 1-2 Progress ✅
 
@@ -186,7 +187,7 @@ pilot/
 - `internal/adapters/slack/notifier.go` - Slack notifications
 
 ### Executor
-- `internal/executor/runner.go` - Claude Code process spawner with stream-json parsing
+- `internal/executor/runner.go` - Claude Code process spawner with stream-json parsing + slog logging
 - `internal/executor/progress.go` - Visual progress bar display (lipgloss)
 - `internal/executor/monitor.go` - Task state tracking
 - `internal/executor/git.go` - Git operations (planned)
