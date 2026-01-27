@@ -87,10 +87,10 @@ if _, err := os.Stat(agentDir); err == nil {
 
 ### Roadmap Features (from README)
 
-- **TASK-12**: Pilot Cloud (Hosted) (Status: 📋 Planned)
+- **TASK-12**: Pilot Cloud (Hosted) (Status: ✅ Foundation Complete)
   - File: `.agent/tasks/TASK-12-pilot-cloud.md`
-  - Created: 2026-01-26
-  - SaaS version with managed infrastructure, OAuth, usage-based billing
+  - Completed: 2026-01-26
+  - `cloud/` directory with API, billing, sandbox infrastructure
 
 - **TASK-11**: Cross-Project Memory (Status: ✅ Complete)
   - File: `.agent/tasks/TASK-11-cross-project-memory.md`
@@ -114,23 +114,27 @@ if _, err := os.Stat(agentDir); err == nil {
 
 ### Monitoring & Observability
 
-- **TASK-13**: Execution Metrics & Analytics (Status: 📋 Planned)
+- **TASK-13**: Execution Metrics & Analytics (Status: ✅ Complete)
   - File: `.agent/tasks/TASK-13-execution-metrics.md`
-  - Track success rates, token usage, costs, execution times
+  - Completed: 2026-01-26
+  - `internal/memory/metrics.go` - success rates, token usage, costs
 
-- **TASK-14**: Alerting System (Status: 📋 Planned)
+- **TASK-14**: Alerting System (Status: ✅ Complete)
   - File: `.agent/tasks/TASK-14-alerting-system.md`
-  - Proactive notifications for stuck tasks, failures, budget exceeded
+  - Completed: 2026-01-26
+  - `internal/alerts/` - engine, dispatcher, types
 
-- **TASK-15**: Structured Logging (Status: 📋 Planned)
+- **TASK-15**: Structured Logging (Status: ✅ Complete)
   - File: `.agent/tasks/TASK-15-structured-logging.md`
-  - JSON logs, levels, rotation, log management integration
+  - Completed: 2026-01-26
+  - `internal/logging/` - JSON logs with slog
 
 ### Monetization & Enterprise
 
-- **TASK-16**: Usage Metering & Billing (Status: 📋 Planned)
+- **TASK-16**: Usage Metering & Billing (Status: ✅ Complete)
   - File: `.agent/tasks/TASK-16-usage-metering.md`
-  - Foundation for usage-based billing (tasks, tokens, compute)
+  - Completed: 2026-01-27
+  - `internal/memory/metering.go` - task/token/compute tracking
 
 - **TASK-17**: Team Management (Status: 📋 Planned)
   - File: `.agent/tasks/TASK-17-team-management.md`
@@ -184,28 +188,22 @@ if _, err := os.Stat(agentDir); err == nil {
 
 ### Completed
 
-- **TASK-31**: PR Workflow Improvements (Status: ✅ Complete)
-  - File: `.agent/tasks/TASK-31-pr-workflow-improvements.md`
-  - Completed: 2026-01-27
-  - Fixed silent error handling when --create-pr fails
-
-- **TASK-23**: GitHub App Integration (Status: ✅ Complete)
-  - File: `.agent/tasks/TASK-23-github-app.md`
-  - Completed: 2026-01-27
-  - Commit status, check runs, PR API methods (+471 lines)
-
-- **TASK-05**: Bot Singleton Detection (Status: ✅ Complete)
-  - File: `.agent/tasks/TASK-05-bot-singleton.md`
-  - Completed: 2026-01-26
-  - `--replace` flag, CheckSingleton(), clear error messages
-
-- **TASK-04**: Telegram UX Improvements (Status: ✅ Complete)
-  - File: `.agent/tasks/TASK-04-telegram-ux.md`
-  - Completed: 2026-01-26
-
-- **TASK-03**: Git & PR Workflow (Status: ✅ Complete)
-  - File: `.agent/tasks/TASK-03-git-pr-workflow.md`
-  - Completed: 2026-01-26
+- **TASK-31**: PR Workflow Improvements ✅ 2026-01-27
+- **TASK-23**: GitHub App Integration (Phase 1) ✅ 2026-01-27
+- **TASK-16**: Usage Metering & Billing ✅ 2026-01-27
+- **TASK-15**: Structured Logging ✅ 2026-01-26
+- **TASK-14**: Alerting System ✅ 2026-01-26
+- **TASK-13**: Execution Metrics ✅ 2026-01-26
+- **TASK-12**: Pilot Cloud (Foundation) ✅ 2026-01-26
+- **TASK-11**: Cross-Project Memory ✅ 2026-01-26
+- **TASK-10**: Daily Briefs ✅ 2026-01-26
+- **TASK-09**: Jira Adapter ✅ 2026-01-26
+- **TASK-08**: GitHub Issues Adapter ✅ 2026-01-26
+- **TASK-07**: Telegram Voice Support ✅ 2026-01-26
+- **TASK-06**: Telegram Image Support ✅ 2026-01-26
+- **TASK-05**: Bot Singleton Detection ✅ 2026-01-26
+- **TASK-04**: Telegram UX Improvements ✅ 2026-01-26
+- **TASK-03**: Git & PR Workflow ✅ 2026-01-26
 
 ## Project Structure
 
