@@ -204,7 +204,7 @@ func commandExists(cmd string) bool {
 
 // checkPythonModule checks if a Python module is installed
 func checkPythonModule(module string) bool {
-	cmd := exec.Command("python3", "-c", fmt.Sprintf("import %s", module))
+	cmd := exec.Command(getPythonPath(), "-c", fmt.Sprintf("import %s", module))
 	return cmd.Run() == nil
 }
 

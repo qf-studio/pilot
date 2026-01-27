@@ -493,8 +493,20 @@ func commandExists(cmd string) bool {
 
 // checkPythonModule checks if a Python module is installed
 func checkPythonModule(module string) bool {
-	cmd := exec.Command("python3", "-c", fmt.Sprintf("import %s", module))
+	pythonPath := getPythonPath()
+	cmd := exec.Command(pythonPath, "-c", fmt.Sprintf("import %s", module))
 	return cmd.Run() == nil
+}
+
+// getPythonPath returns the path to Python, preferring ~/.pilot/venv if it exists
+func getPythonPath() string {
+	if home, err := os.UserHomeDir(); err == nil {
+		venvPython := filepath.Join(home, ".pilot", "venv", "bin", "python3")
+		if _, err := os.Stat(venvPython); err == nil {
+			return venvPython
+		}
+	}
+	return "python3"
 }
 
 // expandPath expands ~ to home directory

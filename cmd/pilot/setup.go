@@ -506,8 +506,19 @@ func commandExists(cmd string) bool {
 }
 
 func checkPythonModule(module string) bool {
-	cmd := exec.Command("python3", "-c", fmt.Sprintf("import %s", module))
+	pythonPath := getPythonPath()
+	cmd := exec.Command(pythonPath, "-c", fmt.Sprintf("import %s", module))
 	return cmd.Run() == nil
+}
+
+func getPythonPath() string {
+	if home, err := os.UserHomeDir(); err == nil {
+		venvPython := filepath.Join(home, ".pilot", "venv", "bin", "python3")
+		if _, err := os.Stat(venvPython); err == nil {
+			return venvPython
+		}
+	}
+	return "python3"
 }
 
 func validateTelegramToken(token string) error {
@@ -528,18 +539,40 @@ func installFFmpeg() error {
 }
 
 func installSenseVoice() error {
-	// Prefer uv (faster), fall back to pip3/pip
-	var cmd *exec.Cmd
-	if commandExists("uv") {
-		cmd = exec.Command("uv", "pip", "install", "funasr", "torch", "torchaudio")
-	} else if commandExists("pip3") {
-		cmd = exec.Command("pip3", "install", "funasr", "torch", "torchaudio")
-	} else if commandExists("pip") {
-		cmd = exec.Command("pip", "install", "funasr", "torch", "torchaudio")
-	} else {
-		return fmt.Errorf("no pip or uv found - install Python first")
+	// Use isolated venv at ~/.pilot/venv to avoid system Python issues
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("cannot find home directory: %w", err)
 	}
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
+	venvPath := filepath.Join(home, ".pilot", "venv")
+	venvPython := filepath.Join(venvPath, "bin", "python3")
+
+	// Create venv if it doesn't exist
+	if _, err := os.Stat(venvPython); os.IsNotExist(err) {
+		fmt.Println("  Creating virtual environment...")
+		var createCmd *exec.Cmd
+		if commandExists("uv") {
+			createCmd = exec.Command("uv", "venv", venvPath)
+		} else {
+			createCmd = exec.Command("python3", "-m", "venv", venvPath)
+		}
+		createCmd.Stdout = os.Stdout
+		createCmd.Stderr = os.Stderr
+		if err := createCmd.Run(); err != nil {
+			return fmt.Errorf("failed to create venv: %w", err)
+		}
+	}
+
+	// Install packages into venv
+	fmt.Println("  Installing SenseVoice (this may take a few minutes)...")
+	var installCmd *exec.Cmd
+	if commandExists("uv") {
+		installCmd = exec.Command("uv", "pip", "install", "--python", venvPython, "funasr", "torch", "torchaudio")
+	} else {
+		pipPath := filepath.Join(venvPath, "bin", "pip")
+		installCmd = exec.Command(pipPath, "install", "funasr", "torch", "torchaudio")
+	}
+	installCmd.Stdout = os.Stdout
+	installCmd.Stderr = os.Stderr
+	return installCmd.Run()
 }

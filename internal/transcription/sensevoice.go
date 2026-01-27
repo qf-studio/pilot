@@ -10,6 +10,17 @@ import (
 	"strings"
 )
 
+// getPythonPath returns the path to Python, preferring ~/.pilot/venv if it exists
+func getPythonPath() string {
+	if home, err := os.UserHomeDir(); err == nil {
+		venvPython := filepath.Join(home, ".pilot", "venv", "bin", "python3")
+		if _, err := os.Stat(venvPython); err == nil {
+			return venvPython
+		}
+	}
+	return "python3"
+}
+
 // SenseVoice implements transcription using FunASR SenseVoice model
 type SenseVoice struct {
 	scriptPath string
@@ -35,7 +46,7 @@ func (s *SenseVoice) Available() bool {
 	}
 
 	// Check if Python and funasr are available
-	cmd := exec.Command("python3", "-c", "import funasr; print('ok')")
+	cmd := exec.Command(getPythonPath(), "-c", "import funasr; print('ok')")
 	output, err := cmd.CombinedOutput()
 	available := err == nil && strings.TrimSpace(string(output)) == "ok"
 	s.available = &available
@@ -71,7 +82,7 @@ func (s *SenseVoice) Transcribe(ctx context.Context, audioPath string) (*Result,
 	}
 
 	// Run the script
-	cmd := exec.CommandContext(ctx, "python3", script, audioPath)
+	cmd := exec.CommandContext(ctx, getPythonPath(), script, audioPath)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("SenseVoice failed: %w\nOutput: %s", err, string(output))
@@ -142,7 +153,7 @@ except Exception as e:
     sys.exit(1)
 `, audioPath, audioPath)
 
-	cmd := exec.CommandContext(ctx, "python3", "-c", pythonCode)
+	cmd := exec.CommandContext(ctx, getPythonPath(), "-c", pythonCode)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("SenseVoice inline failed: %w\nOutput: %s", err, string(output))
