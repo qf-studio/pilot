@@ -450,10 +450,18 @@ Example:
 				return fmt.Errorf("telegram bot_token not configured")
 			}
 
-			// Resolve project path
+			// Resolve project path (flag > positional arg > cwd)
+			if projectPath == "" && len(args) > 0 {
+				projectPath = args[0]
+			}
 			if projectPath == "" {
 				cwd, _ := os.Getwd()
 				projectPath = cwd
+			}
+			// Expand ~ to home directory
+			if strings.HasPrefix(projectPath, "~") {
+				home, _ := os.UserHomeDir()
+				projectPath = strings.Replace(projectPath, "~", home, 1)
 			}
 
 			// Create runner and handler
