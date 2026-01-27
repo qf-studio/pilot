@@ -80,10 +80,10 @@ if _, err := os.Stat(agentDir); err == nil {
 
 ### Core Workflow (Priority)
 
-- **TASK-31**: PR Workflow Improvements (Status: 📋 Planned)
+- **TASK-31**: PR Workflow Improvements (Status: ✅ Complete)
   - File: `.agent/tasks/TASK-31-pr-workflow-improvements.md`
-  - Created: 2026-01-27
-  - Fix --create-pr: add git push, PR creation, return PR URL
+  - Completed: 2026-01-27
+  - Fixed silent error handling in --create-pr flag (PR #4)
 
 ### Roadmap Features (from README)
 
@@ -160,9 +160,10 @@ if _, err := os.Stat(agentDir); err == nil {
   - File: `.agent/tasks/TASK-22-webhooks-api.md`
   - Outbound webhooks for custom integrations
 
-- **TASK-23**: GitHub App Integration (Status: 📋 Planned)
+- **TASK-23**: GitHub App Integration (Status: ✅ Complete)
   - File: `.agent/tasks/TASK-23-github-app.md`
-  - PR comments, status checks, deep GitHub integration
+  - Completed: 2026-01-27
+  - Added CreateCommitStatus, CreateCheckRun, UpdateCheckRun, CreatePullRequest, GetPullRequest, AddPRComment (PR #3)
 
 ### Telegram Features
 
@@ -181,6 +182,16 @@ if _, err := os.Stat(agentDir); err == nil {
   - Graceful handling when another bot instance is running
 
 ### Completed
+
+- **TASK-31**: PR Workflow Improvements (Status: ✅ Complete)
+  - File: `.agent/tasks/TASK-31-pr-workflow-improvements.md`
+  - Completed: 2026-01-27
+  - Fixed silent error handling when --create-pr fails
+
+- **TASK-23**: GitHub App Integration (Status: ✅ Complete)
+  - File: `.agent/tasks/TASK-23-github-app.md`
+  - Completed: 2026-01-27
+  - Commit status, check runs, PR API methods (+471 lines)
 
 - **TASK-04**: Telegram UX Improvements (Status: ✅ Complete)
   - File: `.agent/tasks/TASK-04-telegram-ux.md`
