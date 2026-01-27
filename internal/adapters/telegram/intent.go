@@ -88,10 +88,10 @@ func DetectIntent(message string) Intent {
 func containsTaskReference(msg string) bool {
 	// Task IDs, issue numbers, file names
 	patterns := []string{
-		`task[- ]?\d+`,      // TASK-01, task 01
-		`#\d+`,              // #123
-		`\d{2,}`,            // numbers like 04, 123
-		`\.\w{2,4}$`,        // file extensions
+		`task[- ]?\d+`, // TASK-01, task 01
+		`#\d+`,         // #123
+		`\d{2,}`,       // numbers like 04, 123
+		`\.\w{2,4}$`,   // file extensions
 		`pick|select|open|show|do|run|work on|start`,
 	}
 	for _, pattern := range patterns {
@@ -110,7 +110,7 @@ func isLikelyGreeting(msg string) bool {
 	}
 	for _, pattern := range greetingPatterns {
 		if msg == pattern || strings.HasPrefix(msg, pattern+" ") ||
-		   strings.HasPrefix(msg, pattern+"!") || strings.HasPrefix(msg, pattern+",") {
+			strings.HasPrefix(msg, pattern+"!") || strings.HasPrefix(msg, pattern+",") {
 			return true
 		}
 	}

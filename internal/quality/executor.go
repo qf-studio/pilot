@@ -37,11 +37,11 @@ func NewExecutor(cfg *ExecutorConfig) *Executor {
 
 // CheckResult represents the quality gate check outcome
 type ExecutionOutcome struct {
-	Passed       bool
-	Results      *CheckResults
-	ShouldRetry  bool
+	Passed        bool
+	Results       *CheckResults
+	ShouldRetry   bool
 	RetryFeedback string // Error feedback to send to Claude for retry
-	Attempt      int
+	Attempt       int
 }
 
 // Check runs all quality gates and returns the outcome
@@ -102,12 +102,12 @@ func (e *Executor) OnProgress(callback ProgressCallback) {
 
 // GateReport generates a summary report of gate results
 type GateReport struct {
-	TaskID     string           `json:"task_id"`
-	Passed     bool             `json:"passed"`
-	Summary    string           `json:"summary"`
-	Gates      []GateReportItem `json:"gates"`
-	TotalTime  time.Duration    `json:"total_time"`
-	Attempt    int              `json:"attempt"`
+	TaskID    string           `json:"task_id"`
+	Passed    bool             `json:"passed"`
+	Summary   string           `json:"summary"`
+	Gates     []GateReportItem `json:"gates"`
+	TotalTime time.Duration    `json:"total_time"`
+	Attempt   int              `json:"attempt"`
 }
 
 // GateReportItem represents a single gate in the report

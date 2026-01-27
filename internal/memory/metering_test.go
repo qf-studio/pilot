@@ -92,12 +92,12 @@ func TestMeteringStore(t *testing.T) {
 
 	t.Run("RecordTaskUsage", func(t *testing.T) {
 		err := store.RecordTaskUsage(
-			"exec_001",  // executionID
-			"user_123",  // userID
-			"proj_456",  // projectID
-			120000,      // durationMs (2 minutes)
-			10000,       // tokensInput
-			5000,        // tokensOutput
+			"exec_001", // executionID
+			"user_123", // userID
+			"proj_456", // projectID
+			120000,     // durationMs (2 minutes)
+			10000,      // tokensInput
+			5000,       // tokensOutput
 		)
 		if err != nil {
 			t.Errorf("RecordTaskUsage() error = %v", err)

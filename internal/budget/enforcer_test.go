@@ -61,7 +61,7 @@ func TestEnforcer_CheckBudget_UnderLimits(t *testing.T) {
 		},
 	}
 	provider := &mockUsageProvider{
-		dailyCost:   10.0, // 20% of limit
+		dailyCost:   10.0,  // 20% of limit
 		monthlyCost: 100.0, // 20% of limit
 	}
 	enforcer := NewEnforcer(config, provider)

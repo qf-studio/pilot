@@ -9,12 +9,12 @@ import (
 type TaskStatus string
 
 const (
-	StatusPending    TaskStatus = "pending"
-	StatusQueued     TaskStatus = "queued"
-	StatusRunning    TaskStatus = "running"
-	StatusCompleted  TaskStatus = "completed"
-	StatusFailed     TaskStatus = "failed"
-	StatusCancelled  TaskStatus = "cancelled"
+	StatusPending   TaskStatus = "pending"
+	StatusQueued    TaskStatus = "queued"
+	StatusRunning   TaskStatus = "running"
+	StatusCompleted TaskStatus = "completed"
+	StatusFailed    TaskStatus = "failed"
+	StatusCancelled TaskStatus = "cancelled"
 )
 
 // TaskState holds the current state of a task

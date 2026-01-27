@@ -528,7 +528,17 @@ func installFFmpeg() error {
 }
 
 func installSenseVoice() error {
-	cmd := exec.Command("pip3", "install", "funasr", "torch", "torchaudio")
+	// Prefer uv (faster), fall back to pip3/pip
+	var cmd *exec.Cmd
+	if commandExists("uv") {
+		cmd = exec.Command("uv", "pip", "install", "funasr", "torch", "torchaudio")
+	} else if commandExists("pip3") {
+		cmd = exec.Command("pip3", "install", "funasr", "torch", "torchaudio")
+	} else if commandExists("pip") {
+		cmd = exec.Command("pip", "install", "funasr", "torch", "torchaudio")
+	} else {
+		return fmt.Errorf("no pip or uv found - install Python first")
+	}
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()

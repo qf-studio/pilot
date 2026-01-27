@@ -255,9 +255,9 @@ func TestEstimateProgress(t *testing.T) {
 		expected   int
 	}{
 		{"no duration", 0, 10},
-		{"short duration", 30000, 10},     // 30s
-		{"mid duration", 150000, 50},      // 2.5min -> 50%
-		{"long duration", 600000, 95},     // 10min -> capped at 95%
+		{"short duration", 30000, 10}, // 30s
+		{"mid duration", 150000, 50},  // 2.5min -> 50%
+		{"long duration", 600000, 95}, // 10min -> capped at 95%
 	}
 
 	for _, tt := range tests {

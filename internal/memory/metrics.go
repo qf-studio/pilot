@@ -65,17 +65,17 @@ type MetricsSummary struct {
 
 // DailyMetrics holds metrics aggregated by day
 type DailyMetrics struct {
-	Date             time.Time
-	ExecutionCount   int
-	SuccessCount     int
-	FailedCount      int
-	TotalDurationMs  int64
-	TotalTokens      int64
-	TotalCostUSD     float64
-	FilesChanged     int
-	LinesAdded       int
-	LinesRemoved     int
-	PRsCreated       int
+	Date            time.Time
+	ExecutionCount  int
+	SuccessCount    int
+	FailedCount     int
+	TotalDurationMs int64
+	TotalTokens     int64
+	TotalCostUSD    float64
+	FilesChanged    int
+	LinesAdded      int
+	LinesRemoved    int
+	PRsCreated      int
 }
 
 // ProjectMetrics holds metrics aggregated by project

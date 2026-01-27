@@ -161,7 +161,7 @@ func checkDependencies() []Check {
 				Name:    "python3",
 				Status:  StatusWarning,
 				Message: version + " (funasr not installed)",
-				Fix:     "pip install funasr torch torchaudio",
+				Fix:     pythonInstallHint("funasr torch torchaudio"),
 			})
 		}
 	} else {
@@ -596,3 +596,16 @@ func (r *HealthReport) ReadyToStart() bool {
 	}
 	return true
 }
+
+// pythonInstallHint returns the best pip/uv install command
+func pythonInstallHint(packages string) string {
+	if commandExists("uv") {
+		return "uv pip install " + packages
+	}
+	if commandExists("pip3") {
+		return "pip3 install " + packages
+	}
+	return "pip install " + packages
+}
+
+// commandExists checks if a command is available

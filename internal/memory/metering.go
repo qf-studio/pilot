@@ -11,11 +11,11 @@ import (
 type UsageEventType string
 
 const (
-	EventTypeTask     UsageEventType = "task"      // Task execution
-	EventTypeToken    UsageEventType = "token"     // Claude API tokens
-	EventTypeCompute  UsageEventType = "compute"   // Execution time (minutes)
-	EventTypeStorage  UsageEventType = "storage"   // Memory/logs storage
-	EventTypeAPICall  UsageEventType = "api_call"  // External API calls
+	EventTypeTask    UsageEventType = "task"     // Task execution
+	EventTypeToken   UsageEventType = "token"    // Claude API tokens
+	EventTypeCompute UsageEventType = "compute"  // Execution time (minutes)
+	EventTypeStorage UsageEventType = "storage"  // Memory/logs storage
+	EventTypeAPICall UsageEventType = "api_call" // External API calls
 )
 
 // UsageEvent represents a single billable event
@@ -34,28 +34,28 @@ type UsageEvent struct {
 
 // UsageSummary holds aggregated usage for a period
 type UsageSummary struct {
-	UserID    string    `json:"user_id"`
-	ProjectID string    `json:"project_id,omitempty"`
+	UserID      string    `json:"user_id"`
+	ProjectID   string    `json:"project_id,omitempty"`
 	PeriodStart time.Time `json:"period_start"`
 	PeriodEnd   time.Time `json:"period_end"`
 
 	// Task metrics
-	TaskCount     int64   `json:"task_count"`
-	TaskCost      float64 `json:"task_cost"`
+	TaskCount int64   `json:"task_count"`
+	TaskCost  float64 `json:"task_cost"`
 
 	// Token metrics
-	TokensInput   int64   `json:"tokens_input"`
-	TokensOutput  int64   `json:"tokens_output"`
-	TokensTotal   int64   `json:"tokens_total"`
-	TokenCost     float64 `json:"token_cost"`
+	TokensInput  int64   `json:"tokens_input"`
+	TokensOutput int64   `json:"tokens_output"`
+	TokensTotal  int64   `json:"tokens_total"`
+	TokenCost    float64 `json:"token_cost"`
 
 	// Compute metrics
 	ComputeMinutes int64   `json:"compute_minutes"`
 	ComputeCost    float64 `json:"compute_cost"`
 
 	// Storage metrics
-	StorageBytes   int64   `json:"storage_bytes"`
-	StorageCost    float64 `json:"storage_cost"`
+	StorageBytes int64   `json:"storage_bytes"`
+	StorageCost  float64 `json:"storage_cost"`
 
 	// API call metrics
 	APICallCount int64   `json:"api_call_count"`
@@ -461,9 +461,9 @@ func (s *Store) GetUsageEvents(query UsageQuery, limit int) ([]*UsageEvent, erro
 // UsageThreshold defines an alert threshold for usage
 type UsageThreshold struct {
 	UserID      string
-	MetricType  string  // "cost", "tasks", "tokens"
+	MetricType  string // "cost", "tasks", "tokens"
 	Threshold   float64
-	Period      string  // "daily", "weekly", "monthly"
+	Period      string // "daily", "weekly", "monthly"
 	LastAlerted time.Time
 }
 

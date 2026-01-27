@@ -11,13 +11,13 @@ import (
 // PatternQuery holds parameters for querying patterns
 type PatternQuery struct {
 	ProjectPath   string
-	Types         []string      // Filter by pattern types
-	IncludeGlobal bool          // Include global scope patterns
-	MinConfidence float64       // Minimum confidence threshold
-	MaxResults    int           // Maximum number of results
-	SearchTerm    string        // Optional text search
-	IncludeAnti   bool          // Include anti-patterns
-	Scope         string        // "project", "org", "global" or empty for all
+	Types         []string // Filter by pattern types
+	IncludeGlobal bool     // Include global scope patterns
+	MinConfidence float64  // Minimum confidence threshold
+	MaxResults    int      // Maximum number of results
+	SearchTerm    string   // Optional text search
+	IncludeAnti   bool     // Include anti-patterns
+	Scope         string   // "project", "org", "global" or empty for all
 }
 
 // QueryResult holds the result of a pattern query

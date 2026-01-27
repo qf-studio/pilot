@@ -41,25 +41,25 @@ type BlockedTask struct {
 
 // BriefMetrics contains aggregate metrics for the period
 type BriefMetrics struct {
-	TotalTasks        int
-	CompletedCount    int
-	FailedCount       int
-	SuccessRate       float64 // 0.0-1.0
-	AvgDurationMs     int64
-	PRsCreated        int
-	PRsMerged         int
-	TotalTokensUsed   int64
-	EstimatedCostUSD  float64
+	TotalTasks       int
+	CompletedCount   int
+	FailedCount      int
+	SuccessRate      float64 // 0.0-1.0
+	AvgDurationMs    int64
+	PRsCreated       int
+	PRsMerged        int
+	TotalTokensUsed  int64
+	EstimatedCostUSD float64
 }
 
 // BriefConfig holds configuration for brief generation
 type BriefConfig struct {
-	Enabled       bool     `yaml:"enabled"`
-	Schedule      string   `yaml:"schedule"` // Cron syntax: "0 9 * * 1-5"
-	Timezone      string   `yaml:"timezone"`
-	Channels      []ChannelConfig `yaml:"channels"`
-	Content       ContentConfig   `yaml:"content"`
-	Filters       FilterConfig    `yaml:"filters"`
+	Enabled  bool            `yaml:"enabled"`
+	Schedule string          `yaml:"schedule"` // Cron syntax: "0 9 * * 1-5"
+	Timezone string          `yaml:"timezone"`
+	Channels []ChannelConfig `yaml:"channels"`
+	Content  ContentConfig   `yaml:"content"`
+	Filters  FilterConfig    `yaml:"filters"`
 }
 
 // ChannelConfig defines a delivery channel
@@ -71,9 +71,9 @@ type ChannelConfig struct {
 
 // ContentConfig controls what content is included
 type ContentConfig struct {
-	IncludeMetrics      bool `yaml:"include_metrics"`
-	IncludeErrors       bool `yaml:"include_errors"`
-	MaxItemsPerSection  int  `yaml:"max_items_per_section"`
+	IncludeMetrics     bool `yaml:"include_metrics"`
+	IncludeErrors      bool `yaml:"include_errors"`
+	MaxItemsPerSection int  `yaml:"max_items_per_section"`
 }
 
 // FilterConfig filters which tasks to include

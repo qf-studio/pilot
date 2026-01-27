@@ -74,16 +74,16 @@ func DefaultConfig() *Config {
 
 // Status represents current budget status
 type Status struct {
-	DailySpent    float64   `json:"daily_spent"`
-	DailyLimit    float64   `json:"daily_limit"`
-	DailyPercent  float64   `json:"daily_percent"`
-	MonthlySpent  float64   `json:"monthly_spent"`
-	MonthlyLimit  float64   `json:"monthly_limit"`
-	MonthlyPercent float64  `json:"monthly_percent"`
-	IsPaused      bool      `json:"is_paused"`
-	PauseReason   string    `json:"pause_reason,omitempty"`
-	BlockedTasks  int       `json:"blocked_tasks"`
-	LastUpdated   time.Time `json:"last_updated"`
+	DailySpent     float64   `json:"daily_spent"`
+	DailyLimit     float64   `json:"daily_limit"`
+	DailyPercent   float64   `json:"daily_percent"`
+	MonthlySpent   float64   `json:"monthly_spent"`
+	MonthlyLimit   float64   `json:"monthly_limit"`
+	MonthlyPercent float64   `json:"monthly_percent"`
+	IsPaused       bool      `json:"is_paused"`
+	PauseReason    string    `json:"pause_reason,omitempty"`
+	BlockedTasks   int       `json:"blocked_tasks"`
+	LastUpdated    time.Time `json:"last_updated"`
 }
 
 // IsExceeded returns true if any limit is exceeded
@@ -98,9 +98,9 @@ func (s *Status) IsWarning(warnPercent float64) bool {
 
 // CheckResult represents the result of a budget check
 type CheckResult struct {
-	Allowed     bool   `json:"allowed"`
-	Action      Action `json:"action"`
-	Reason      string `json:"reason,omitempty"`
+	Allowed     bool    `json:"allowed"`
+	Action      Action  `json:"action"`
+	Reason      string  `json:"reason,omitempty"`
 	DailyLeft   float64 `json:"daily_left"`
 	MonthlyLeft float64 `json:"monthly_left"`
 }

@@ -16,15 +16,15 @@ type AlertType string
 
 const (
 	// Operational alerts
-	AlertTypeTaskStuck         AlertType = "task_stuck"
-	AlertTypeTaskFailed        AlertType = "task_failed"
-	AlertTypeConsecutiveFails  AlertType = "consecutive_failures"
-	AlertTypeServiceUnhealthy  AlertType = "service_unhealthy"
+	AlertTypeTaskStuck        AlertType = "task_stuck"
+	AlertTypeTaskFailed       AlertType = "task_failed"
+	AlertTypeConsecutiveFails AlertType = "consecutive_failures"
+	AlertTypeServiceUnhealthy AlertType = "service_unhealthy"
 
 	// Cost/Usage alerts
-	AlertTypeDailySpend       AlertType = "daily_spend_exceeded"
-	AlertTypeBudgetDepleted   AlertType = "budget_depleted"
-	AlertTypeUsageSpike       AlertType = "usage_spike"
+	AlertTypeDailySpend     AlertType = "daily_spend_exceeded"
+	AlertTypeBudgetDepleted AlertType = "budget_depleted"
+	AlertTypeUsageSpike     AlertType = "usage_spike"
 
 	// Security alerts
 	AlertTypeUnauthorizedAccess AlertType = "unauthorized_access"
@@ -79,10 +79,10 @@ type RuleCondition struct {
 
 // AlertConfig holds the main alerting configuration
 type AlertConfig struct {
-	Enabled  bool             `yaml:"enabled"`
-	Channels []ChannelConfig  `yaml:"channels"`
-	Rules    []AlertRule      `yaml:"rules"`
-	Defaults AlertDefaults    `yaml:"defaults"`
+	Enabled  bool            `yaml:"enabled"`
+	Channels []ChannelConfig `yaml:"channels"`
+	Rules    []AlertRule     `yaml:"rules"`
+	Defaults AlertDefaults   `yaml:"defaults"`
 }
 
 // AlertDefaults contains default settings
@@ -94,8 +94,8 @@ type AlertDefaults struct {
 
 // ChannelConfig configures an alert channel
 type ChannelConfig struct {
-	Name       string     `yaml:"name"`       // Unique identifier
-	Type       string     `yaml:"type"`       // "slack", "telegram", "email", "webhook", "pagerduty"
+	Name       string     `yaml:"name"` // Unique identifier
+	Type       string     `yaml:"type"` // "slack", "telegram", "email", "webhook", "pagerduty"
 	Enabled    bool       `yaml:"enabled"`
 	Severities []Severity `yaml:"severities"` // Which severities to receive
 
@@ -185,10 +185,10 @@ func defaultRules() []AlertRule {
 			Description: "Alert when a task has no progress for 10 minutes",
 		},
 		{
-			Name:    "task_failed",
-			Type:    AlertTypeTaskFailed,
-			Enabled: true,
-			Condition: RuleCondition{},
+			Name:        "task_failed",
+			Type:        AlertTypeTaskFailed,
+			Enabled:     true,
+			Condition:   RuleCondition{},
 			Severity:    SeverityWarning,
 			Channels:    []string{},
 			Cooldown:    0, // No cooldown for failures

@@ -9,23 +9,23 @@ import (
 
 // Errors for quality gate enforcement
 var (
-	ErrGateFailed       = errors.New("quality gate failed")
-	ErrGateTimeout      = errors.New("quality gate timed out")
-	ErrRetryExhausted   = errors.New("quality gate retries exhausted")
-	ErrGateNotFound     = errors.New("quality gate not found")
+	ErrGateFailed     = errors.New("quality gate failed")
+	ErrGateTimeout    = errors.New("quality gate timed out")
+	ErrRetryExhausted = errors.New("quality gate retries exhausted")
+	ErrGateNotFound   = errors.New("quality gate not found")
 )
 
 // GateType identifies built-in gate types
 type GateType string
 
 const (
-	GateBuild    GateType = "build"
-	GateTest     GateType = "test"
-	GateLint     GateType = "lint"
-	GateCoverage GateType = "coverage"
-	GateSecurity GateType = "security"
+	GateBuild     GateType = "build"
+	GateTest      GateType = "test"
+	GateLint      GateType = "lint"
+	GateCoverage  GateType = "coverage"
+	GateSecurity  GateType = "security"
 	GateTypeCheck GateType = "typecheck"
-	GateCustom   GateType = "custom"
+	GateCustom    GateType = "custom"
 )
 
 // GateStatus represents the current state of a gate check
@@ -45,11 +45,11 @@ type Gate struct {
 	Name        string        `yaml:"name" json:"name"`
 	Type        GateType      `yaml:"type" json:"type"`
 	Command     string        `yaml:"command" json:"command"`
-	Required    bool          `yaml:"required" json:"required"`       // Fail pipeline if gate fails
-	Timeout     time.Duration `yaml:"timeout" json:"timeout"`         // Max execution time
-	Threshold   float64       `yaml:"threshold" json:"threshold"`     // For coverage gates (percentage)
-	MaxRetries  int           `yaml:"max_retries" json:"max_retries"` // Retry count on failure
-	RetryDelay  time.Duration `yaml:"retry_delay" json:"retry_delay"` // Delay between retries
+	Required    bool          `yaml:"required" json:"required"`         // Fail pipeline if gate fails
+	Timeout     time.Duration `yaml:"timeout" json:"timeout"`           // Max execution time
+	Threshold   float64       `yaml:"threshold" json:"threshold"`       // For coverage gates (percentage)
+	MaxRetries  int           `yaml:"max_retries" json:"max_retries"`   // Retry count on failure
+	RetryDelay  time.Duration `yaml:"retry_delay" json:"retry_delay"`   // Delay between retries
 	FailureHint string        `yaml:"failure_hint" json:"failure_hint"` // Hint for Claude on failure
 }
 
@@ -81,8 +81,8 @@ type Result struct {
 	GateName    string        `json:"gate_name"`
 	Status      GateStatus    `json:"status"`
 	ExitCode    int           `json:"exit_code"`
-	Output      string        `json:"output"`      // stdout + stderr
-	Error       string        `json:"error"`       // Error message if failed
+	Output      string        `json:"output"` // stdout + stderr
+	Error       string        `json:"error"`  // Error message if failed
 	Duration    time.Duration `json:"duration"`
 	RetryCount  int           `json:"retry_count"` // How many retries were attempted
 	Coverage    float64       `json:"coverage"`    // Parsed coverage percentage (for coverage gates)
@@ -97,11 +97,11 @@ func (r *Result) Passed() bool {
 
 // CheckResults holds all gate check results for a task
 type CheckResults struct {
-	TaskID      string    `json:"task_id"`
-	AllPassed   bool      `json:"all_passed"`
-	Results     []*Result `json:"results"`
-	StartedAt   time.Time `json:"started_at"`
-	CompletedAt time.Time `json:"completed_at"`
+	TaskID      string        `json:"task_id"`
+	AllPassed   bool          `json:"all_passed"`
+	Results     []*Result     `json:"results"`
+	StartedAt   time.Time     `json:"started_at"`
+	CompletedAt time.Time     `json:"completed_at"`
 	TotalTime   time.Duration `json:"total_time"`
 }
 

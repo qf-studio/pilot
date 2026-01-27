@@ -24,18 +24,18 @@ const (
 
 // WebhookPayload represents a Jira webhook payload
 type WebhookPayload struct {
-	WebhookEvent string                 `json:"webhookEvent"`
-	Timestamp    int64                  `json:"timestamp"`
-	User         *User                  `json:"user,omitempty"`
-	Issue        *Issue                 `json:"issue,omitempty"`
-	Changelog    *Changelog             `json:"changelog,omitempty"`
-	Comment      *Comment               `json:"comment,omitempty"`
+	WebhookEvent string     `json:"webhookEvent"`
+	Timestamp    int64      `json:"timestamp"`
+	User         *User      `json:"user,omitempty"`
+	Issue        *Issue     `json:"issue,omitempty"`
+	Changelog    *Changelog `json:"changelog,omitempty"`
+	Comment      *Comment   `json:"comment,omitempty"`
 }
 
 // Changelog represents changes in a webhook event
 type Changelog struct {
-	ID    string           `json:"id"`
-	Items []ChangelogItem  `json:"items"`
+	ID    string          `json:"id"`
+	Items []ChangelogItem `json:"items"`
 }
 
 // ChangelogItem represents a single change in the changelog

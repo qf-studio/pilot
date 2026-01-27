@@ -47,9 +47,9 @@ func PriorityName(priority int) string {
 type StateType string
 
 const (
-	StateTypeBacklog    StateType = "backlog"
-	StateTypeUnstarted  StateType = "unstarted"
-	StateTypeStarted    StateType = "started"
-	StateTypeCompleted  StateType = "completed"
-	StateTypeCanceled   StateType = "canceled"
+	StateTypeBacklog   StateType = "backlog"
+	StateTypeUnstarted StateType = "unstarted"
+	StateTypeStarted   StateType = "started"
+	StateTypeCompleted StateType = "completed"
+	StateTypeCanceled  StateType = "canceled"
 )

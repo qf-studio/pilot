@@ -87,8 +87,31 @@ func InstallFFmpeg(ctx context.Context) error {
 
 // InstallFunASR attempts to install funasr and dependencies
 func InstallFunASR(ctx context.Context) error {
-	// pip works cross-platform
-	return runInstallCmd(ctx, "pip3 install funasr torch torchaudio")
+	// Prefer uv (faster), fall back to pip3
+	if commandExists("uv") {
+		return runInstallCmd(ctx, "uv pip install funasr torch torchaudio")
+	}
+	if commandExists("pip3") {
+		return runInstallCmd(ctx, "pip3 install funasr torch torchaudio")
+	}
+	if commandExists("pip") {
+		return runInstallCmd(ctx, "pip install funasr torch torchaudio")
+	}
+	return fmt.Errorf("no pip or uv found - install Python first")
+}
+
+// pythonInstallCmd returns the best available Python package installer command
+func pythonInstallCmd() string {
+	if commandExists("uv") {
+		return "uv pip install"
+	}
+	if commandExists("pip3") {
+		return "pip3 install"
+	}
+	if commandExists("pip") {
+		return "pip install"
+	}
+	return ""
 }
 
 // ffmpegInstallCmd returns the platform-specific ffmpeg install command

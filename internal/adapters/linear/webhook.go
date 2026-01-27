@@ -19,13 +19,13 @@ const (
 
 // WebhookPayload represents a Linear webhook payload
 type WebhookPayload struct {
-	Action     string                 `json:"action"`
-	Type       string                 `json:"type"`
-	Data       map[string]interface{} `json:"data"`
-	URL        string                 `json:"url"`
-	CreatedAt  string                 `json:"createdAt"`
-	WebhookID  string                 `json:"webhookId"`
-	WebhookTS  int64                  `json:"webhookTimestamp"`
+	Action    string                 `json:"action"`
+	Type      string                 `json:"type"`
+	Data      map[string]interface{} `json:"data"`
+	URL       string                 `json:"url"`
+	CreatedAt string                 `json:"createdAt"`
+	WebhookID string                 `json:"webhookId"`
+	WebhookTS int64                  `json:"webhookTimestamp"`
 }
 
 // WebhookHandler handles Linear webhooks

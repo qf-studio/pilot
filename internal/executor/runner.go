@@ -19,17 +19,17 @@ import (
 
 // StreamEvent represents a Claude Code stream-json event
 type StreamEvent struct {
-	Type          string           `json:"type"`
-	Subtype       string           `json:"subtype,omitempty"`
-	Message       *AssistantMsg    `json:"message,omitempty"`
-	Result        string           `json:"result,omitempty"`
-	IsError       bool             `json:"is_error,omitempty"`
-	DurationMS    int              `json:"duration_ms,omitempty"`
-	NumTurns      int              `json:"num_turns,omitempty"`
-	ToolUseResult json.RawMessage  `json:"tool_use_result,omitempty"`
+	Type          string          `json:"type"`
+	Subtype       string          `json:"subtype,omitempty"`
+	Message       *AssistantMsg   `json:"message,omitempty"`
+	Result        string          `json:"result,omitempty"`
+	IsError       bool            `json:"is_error,omitempty"`
+	DurationMS    int             `json:"duration_ms,omitempty"`
+	NumTurns      int             `json:"num_turns,omitempty"`
+	ToolUseResult json.RawMessage `json:"tool_use_result,omitempty"`
 	// Token usage (TASK-13)
-	Usage         *UsageInfo       `json:"usage,omitempty"`
-	Model         string           `json:"model,omitempty"`
+	Usage *UsageInfo `json:"usage,omitempty"`
+	Model string     `json:"model,omitempty"`
 }
 
 // UsageInfo represents token usage in stream events
@@ -945,7 +945,6 @@ func estimateCost(inputTokens, outputTokens int64, model string) float64 {
 	outputCost := float64(outputTokens) * outputPrice / 1_000_000
 	return inputCost + outputCost
 }
-
 
 // reportProgress sends a progress update
 func (r *Runner) reportProgress(taskID, phase string, progress int, message string) {

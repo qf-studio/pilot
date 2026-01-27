@@ -59,9 +59,9 @@ const (
 	PermViewProjects   Permission = "view_projects"   // View project status
 
 	// Task operations
-	PermCreateTasks  Permission = "create_tasks"  // Create new tasks
-	PermCancelTasks  Permission = "cancel_tasks"  // Cancel running tasks
-	PermViewTasks    Permission = "view_tasks"    // View task details
+	PermCreateTasks  Permission = "create_tasks" // Create new tasks
+	PermCancelTasks  Permission = "cancel_tasks" // Cancel running tasks
+	PermViewTasks    Permission = "view_tasks"   // View task details
 	PermViewAuditLog Permission = "view_audit_log"
 )
 

@@ -67,10 +67,10 @@ func (l *LearningLoop) RecordExecution(ctx context.Context, exec *Execution, app
 	// Record feedback for each applied pattern
 	for _, patternID := range appliedPatterns {
 		feedback := &PatternFeedback{
-			PatternID:   patternID,
-			ExecutionID: exec.ID,
-			ProjectPath: exec.ProjectPath,
-			Outcome:     string(outcome),
+			PatternID:       patternID,
+			ExecutionID:     exec.ID,
+			ProjectPath:     exec.ProjectPath,
+			Outcome:         string(outcome),
 			ConfidenceDelta: l.calculateConfidenceDelta(outcome),
 		}
 
@@ -179,15 +179,15 @@ func (l *LearningLoop) GetPatternPerformance(ctx context.Context, patternID stri
 	}
 
 	return &PatternPerformance{
-		PatternID:    patternID,
-		Title:        pattern.Title,
-		Type:         pattern.Type,
-		Confidence:   pattern.Confidence,
-		TotalUses:    totalUses,
-		SuccessCount: totalSuccess,
-		FailureCount: totalFailure,
-		SuccessRate:  successRate,
-		ProjectCount: len(links),
+		PatternID:     patternID,
+		Title:         pattern.Title,
+		Type:          pattern.Type,
+		Confidence:    pattern.Confidence,
+		TotalUses:     totalUses,
+		SuccessCount:  totalSuccess,
+		FailureCount:  totalFailure,
+		SuccessRate:   successRate,
+		ProjectCount:  len(links),
 		IsAntiPattern: pattern.IsAntiPattern,
 	}, nil
 }

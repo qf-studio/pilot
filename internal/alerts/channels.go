@@ -288,10 +288,10 @@ func (c *WebhookChannel) sign(payload []byte) string {
 
 // EmailChannel sends alerts via email
 type EmailChannel struct {
-	name      string
-	sender    EmailSender
-	to        []string
-	subject   string // Optional template
+	name    string
+	sender  EmailSender
+	to      []string
+	subject string // Optional template
 }
 
 // EmailSender interface for sending emails

@@ -14,11 +14,11 @@ import (
 type PatternType string
 
 const (
-	PatternTypeCode       PatternType = "code"
-	PatternTypeStructure  PatternType = "structure"
-	PatternTypeNaming     PatternType = "naming"
-	PatternTypeWorkflow   PatternType = "workflow"
-	PatternTypeError      PatternType = "error"
+	PatternTypeCode      PatternType = "code"
+	PatternTypeStructure PatternType = "structure"
+	PatternTypeNaming    PatternType = "naming"
+	PatternTypeWorkflow  PatternType = "workflow"
+	PatternTypeError     PatternType = "error"
 )
 
 // GlobalPattern represents a pattern that applies across projects
@@ -198,7 +198,7 @@ func (s *GlobalPatternStore) Count() int {
 
 // PatternLearner learns patterns from execution history
 type PatternLearner struct {
-	store    *GlobalPatternStore
+	store     *GlobalPatternStore
 	execStore *Store
 }
 

@@ -46,28 +46,28 @@ type OrgPatternStore struct {
 
 // AggregatedPattern represents a pattern aggregated across projects
 type AggregatedPattern struct {
-	ID           string           `json:"id"`
-	Type         string           `json:"type"`
-	Title        string           `json:"title"`
-	Description  string           `json:"description"`
-	Context      string           `json:"context"`
-	Examples     []string         `json:"examples"`
-	Confidence   float64          `json:"confidence"`
-	Occurrences  int              `json:"occurrences"`
-	ProjectCount int              `json:"project_count"`
-	Projects     []ProjectMention `json:"projects"`
-	IsAntiPattern bool            `json:"is_anti_pattern"`
-	LastSynced   time.Time        `json:"last_synced"`
-	CreatedAt    time.Time        `json:"created_at"`
-	UpdatedAt    time.Time        `json:"updated_at"`
+	ID            string           `json:"id"`
+	Type          string           `json:"type"`
+	Title         string           `json:"title"`
+	Description   string           `json:"description"`
+	Context       string           `json:"context"`
+	Examples      []string         `json:"examples"`
+	Confidence    float64          `json:"confidence"`
+	Occurrences   int              `json:"occurrences"`
+	ProjectCount  int              `json:"project_count"`
+	Projects      []ProjectMention `json:"projects"`
+	IsAntiPattern bool             `json:"is_anti_pattern"`
+	LastSynced    time.Time        `json:"last_synced"`
+	CreatedAt     time.Time        `json:"created_at"`
+	UpdatedAt     time.Time        `json:"updated_at"`
 }
 
 // ProjectMention tracks a pattern's presence in a specific project
 type ProjectMention struct {
-	ProjectPath  string    `json:"project_path"`
-	Uses         int       `json:"uses"`
-	SuccessRate  float64   `json:"success_rate"`
-	LastUsed     time.Time `json:"last_used"`
+	ProjectPath string    `json:"project_path"`
+	Uses        int       `json:"uses"`
+	SuccessRate float64   `json:"success_rate"`
+	LastUsed    time.Time `json:"last_used"`
 }
 
 // NewOrgPatternStore creates a new organization pattern store
@@ -233,8 +233,8 @@ func (ps *PatternSync) aggregatePattern(p *CrossPattern, links []*PatternProject
 	if existing.ProjectCount > 0 {
 		avgSuccessRate := totalSuccessRate / float64(existing.ProjectCount)
 		// Confidence grows with more projects and higher success rate
-		baseConfidence := 0.5 + (float64(existing.ProjectCount) * 0.05) // +5% per project
-		existing.Confidence = min(0.95, baseConfidence + (avgSuccessRate * 0.3)) // +30% max from success rate
+		baseConfidence := 0.5 + (float64(existing.ProjectCount) * 0.05)      // +5% per project
+		existing.Confidence = min(0.95, baseConfidence+(avgSuccessRate*0.3)) // +30% max from success rate
 	}
 
 	return ps.orgPatterns.Update(existing)

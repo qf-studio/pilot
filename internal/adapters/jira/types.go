@@ -95,17 +95,17 @@ type Issue struct {
 
 // Fields represents Jira issue fields
 type Fields struct {
-	Summary     string       `json:"summary"`
-	Description string       `json:"description"`
-	IssueType   IssueType    `json:"issuetype"`
-	Status      Status       `json:"status"`
+	Summary     string        `json:"summary"`
+	Description string        `json:"description"`
+	IssueType   IssueType     `json:"issuetype"`
+	Status      Status        `json:"status"`
 	Priority    *JiraPriority `json:"priority,omitempty"`
-	Labels      []string     `json:"labels"`
-	Assignee    *User        `json:"assignee,omitempty"`
-	Reporter    *User        `json:"reporter,omitempty"`
-	Project     Project      `json:"project"`
-	Created     string       `json:"created"`
-	Updated     string       `json:"updated"`
+	Labels      []string      `json:"labels"`
+	Assignee    *User         `json:"assignee,omitempty"`
+	Reporter    *User         `json:"reporter,omitempty"`
+	Project     Project       `json:"project"`
+	Created     string        `json:"created"`
+	Updated     string        `json:"updated"`
 }
 
 // IssueType represents a Jira issue type
@@ -137,9 +137,9 @@ type JiraPriority struct {
 
 // User represents a Jira user
 type User struct {
-	AccountID    string `json:"accountId,omitempty"`    // Cloud
-	Name         string `json:"name,omitempty"`         // Server
-	Key          string `json:"key,omitempty"`          // Server
+	AccountID    string `json:"accountId,omitempty"` // Cloud
+	Name         string `json:"name,omitempty"`      // Server
+	Key          string `json:"key,omitempty"`       // Server
 	EmailAddress string `json:"emailAddress,omitempty"`
 	DisplayName  string `json:"displayName"`
 }
@@ -196,6 +196,6 @@ type RemoteLinkIcon struct {
 
 // RemoteLinkStatus represents the status of a remote link
 type RemoteLinkStatus struct {
-	Resolved bool             `json:"resolved"`
-	Icon     *RemoteLinkIcon  `json:"icon,omitempty"`
+	Resolved bool            `json:"resolved"`
+	Icon     *RemoteLinkIcon `json:"icon,omitempty"`
 }

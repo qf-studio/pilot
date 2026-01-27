@@ -67,7 +67,6 @@ func TestBuildPromptNoBranch(t *testing.T) {
 	}
 }
 
-
 func TestIsRunning(t *testing.T) {
 	runner := NewRunner()
 

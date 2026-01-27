@@ -11,8 +11,8 @@ import (
 
 // PatternExtractor extracts patterns from execution results
 type PatternExtractor struct {
-	store         *GlobalPatternStore
-	execStore     *Store
+	store          *GlobalPatternStore
+	execStore      *Store
 	minOccurrences int
 	minConfidence  float64
 }
@@ -39,11 +39,11 @@ type ExtractedPattern struct {
 
 // ExtractionResult holds the result of pattern extraction
 type ExtractionResult struct {
-	ExecutionID string
-	ProjectPath string
-	Patterns    []*ExtractedPattern
+	ExecutionID  string
+	ProjectPath  string
+	Patterns     []*ExtractedPattern
 	AntiPatterns []*ExtractedPattern
-	ExtractedAt time.Time
+	ExtractedAt  time.Time
 }
 
 // ExtractFromExecution extracts patterns from a completed execution
@@ -53,11 +53,11 @@ func (e *PatternExtractor) ExtractFromExecution(ctx context.Context, exec *Execu
 	}
 
 	result := &ExtractionResult{
-		ExecutionID: exec.ID,
-		ProjectPath: exec.ProjectPath,
-		Patterns:    make([]*ExtractedPattern, 0),
+		ExecutionID:  exec.ID,
+		ProjectPath:  exec.ProjectPath,
+		Patterns:     make([]*ExtractedPattern, 0),
 		AntiPatterns: make([]*ExtractedPattern, 0),
-		ExtractedAt: time.Now(),
+		ExtractedAt:  time.Now(),
 	}
 
 	// Extract code patterns from output
@@ -83,11 +83,11 @@ func (e *PatternExtractor) extractCodePatterns(output string) []*ExtractedPatter
 
 	// Look for common successful patterns in output
 	patternMatchers := []struct {
-		regex    *regexp.Regexp
-		pType    PatternType
-		title    string
-		desc     string
-		context  string
+		regex   *regexp.Regexp
+		pType   PatternType
+		title   string
+		desc    string
+		context string
 	}{
 		{
 			regex:   regexp.MustCompile(`(?i)using\s+context\.Context\s+in\s+(\w+)`),
@@ -267,9 +267,9 @@ func (e *PatternExtractor) SaveExtractedPatterns(ctx context.Context, result *Ex
 			Confidence:  p.Confidence,
 			Projects:    []string{result.ProjectPath},
 			Metadata: map[string]interface{}{
-				"context":       p.Context,
-				"execution_id":  result.ExecutionID,
-				"extracted_at":  result.ExtractedAt,
+				"context":         p.Context,
+				"execution_id":    result.ExecutionID,
+				"extracted_at":    result.ExtractedAt,
 				"is_anti_pattern": false,
 			},
 		}
@@ -354,7 +354,7 @@ func (e *PatternExtractor) mergePattern(existing, new *GlobalPattern, projectPat
 	// Increase confidence based on multiple occurrences
 	// More projects seeing same pattern = higher confidence
 	projectCount := float64(len(existing.Projects))
-	existing.Confidence = min(0.95, 0.5 + (projectCount * 0.1))
+	existing.Confidence = min(0.95, 0.5+(projectCount*0.1))
 }
 
 // ExtractAndSave is a convenience method that extracts and saves patterns

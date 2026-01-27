@@ -158,12 +158,12 @@ func convertChannel(in ChannelConfigInput) ChannelConfig {
 
 func convertRule(in RuleConfigInput) AlertRule {
 	return AlertRule{
-		Name:     in.Name,
-		Type:     parseAlertType(in.Type),
-		Enabled:  in.Enabled,
-		Severity: parseSeverity(in.Severity),
-		Channels: in.Channels,
-		Cooldown: in.Cooldown,
+		Name:        in.Name,
+		Type:        parseAlertType(in.Type),
+		Enabled:     in.Enabled,
+		Severity:    parseSeverity(in.Severity),
+		Channels:    in.Channels,
+		Cooldown:    in.Cooldown,
 		Description: in.Description,
 		Condition: RuleCondition{
 			ProgressUnchangedFor: in.Condition.ProgressUnchangedFor,

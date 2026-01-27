@@ -325,8 +325,8 @@ func cleanInternalSignals(text string) string {
 func extractSummary(output string) string {
 	// Look for common summary patterns
 	patterns := []struct {
-		regex   string
-		format  string
+		regex  string
+		format string
 	}{
 		{`(?i)created?\s+["\x60]?([^"\x60\n]+\.\w+)["\x60]?`, "📁 Created: %s"},
 		{`(?i)modified?\s+["\x60]?([^"\x60\n]+\.\w+)["\x60]?`, "📝 Modified: %s"},

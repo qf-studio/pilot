@@ -17,11 +17,11 @@ type Engine struct {
 	logger     *slog.Logger
 
 	// State tracking
-	mu                 sync.RWMutex
-	lastAlertTimes     map[string]time.Time    // rule name -> last fired time
-	consecutiveFailures map[string]int          // project -> consecutive failure count
-	taskLastProgress   map[string]progressState // task ID -> last progress state
-	alertHistory       []AlertHistory
+	mu                  sync.RWMutex
+	lastAlertTimes      map[string]time.Time     // rule name -> last fired time
+	consecutiveFailures map[string]int           // project -> consecutive failure count
+	taskLastProgress    map[string]progressState // task ID -> last progress state
+	alertHistory        []AlertHistory
 
 	// Channels for events
 	eventCh chan Event
@@ -51,12 +51,12 @@ type Event struct {
 type EventType string
 
 const (
-	EventTypeTaskStarted    EventType = "task_started"
-	EventTypeTaskProgress   EventType = "task_progress"
-	EventTypeTaskCompleted  EventType = "task_completed"
-	EventTypeTaskFailed     EventType = "task_failed"
-	EventTypeCostUpdate     EventType = "cost_update"
-	EventTypeSecurityEvent  EventType = "security_event"
+	EventTypeTaskStarted   EventType = "task_started"
+	EventTypeTaskProgress  EventType = "task_progress"
+	EventTypeTaskCompleted EventType = "task_completed"
+	EventTypeTaskFailed    EventType = "task_failed"
+	EventTypeCostUpdate    EventType = "cost_update"
+	EventTypeSecurityEvent EventType = "security_event"
 )
 
 // EngineOption configures the Engine

@@ -45,10 +45,10 @@ func DefaultConfig() *Config {
 
 // Service manages transcription backends
 type Service struct {
-	config      *Config
-	primary     Transcriber
-	fallback    Transcriber
-	ffmpegPath  string
+	config     *Config
+	primary    Transcriber
+	fallback   Transcriber
+	ffmpegPath string
 }
 
 // NewService creates a new transcription service

@@ -62,11 +62,11 @@ type Attachment struct {
 
 // PostMessageResponse represents the response from posting a message
 type PostMessageResponse struct {
-	OK        bool   `json:"ok"`
-	TS        string `json:"ts"`
-	Channel   string `json:"channel"`
-	Error     string `json:"error,omitempty"`
-	ErrorMsg  string `json:"error_msg,omitempty"`
+	OK       bool   `json:"ok"`
+	TS       string `json:"ts"`
+	Channel  string `json:"channel"`
+	Error    string `json:"error,omitempty"`
+	ErrorMsg string `json:"error_msg,omitempty"`
 }
 
 // PostMessage posts a message to a channel
@@ -110,10 +110,10 @@ func (c *Client) PostMessage(ctx context.Context, msg *Message) (*PostMessageRes
 // UpdateMessage updates an existing message
 func (c *Client) UpdateMessage(ctx context.Context, channel, ts string, msg *Message) error {
 	payload := struct {
-		Channel string       `json:"channel"`
-		TS      string       `json:"ts"`
-		Text    string       `json:"text,omitempty"`
-		Blocks  []Block      `json:"blocks,omitempty"`
+		Channel string  `json:"channel"`
+		TS      string  `json:"ts"`
+		Text    string  `json:"text,omitempty"`
+		Blocks  []Block `json:"blocks,omitempty"`
 	}{
 		Channel: channel,
 		TS:      ts,

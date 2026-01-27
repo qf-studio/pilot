@@ -25,23 +25,23 @@ func TestCleanInternalSignals(t *testing.T) {
 			expected: "Created file.go\nModified main.go",
 		},
 		{
-			name:  "removes EXIT_SIGNAL",
-			input: "Task done\nEXIT_SIGNAL: true\nCompleted",
+			name:     "removes EXIT_SIGNAL",
+			input:    "Task done\nEXIT_SIGNAL: true\nCompleted",
 			expected: "Task done\nCompleted",
 		},
 		{
-			name:  "removes LOOP COMPLETE",
-			input: "Done\nLOOP COMPLETE\nEnd",
+			name:     "removes LOOP COMPLETE",
+			input:    "Done\nLOOP COMPLETE\nEnd",
 			expected: "Done\nEnd",
 		},
 		{
-			name:  "removes NAVIGATOR_STATUS block",
-			input: "Start\n━━━━━━━━━━\nNAVIGATOR_STATUS\nPhase: IMPL\nIteration: 2\n━━━━━━━━━━\nContinuing",
+			name:     "removes NAVIGATOR_STATUS block",
+			input:    "Start\n━━━━━━━━━━\nNAVIGATOR_STATUS\nPhase: IMPL\nIteration: 2\n━━━━━━━━━━\nContinuing",
 			expected: "Start\nContinuing",
 		},
 		{
-			name:  "removes Phase and Progress lines",
-			input: "Working\nPhase: VERIFY\nProgress: 80%\nDone",
+			name:     "removes Phase and Progress lines",
+			input:    "Working\nPhase: VERIFY\nProgress: 80%\nDone",
 			expected: "Working\nDone",
 		},
 		{

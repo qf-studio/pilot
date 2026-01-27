@@ -83,10 +83,10 @@ const (
 // CommitStatus represents a GitHub commit status
 type CommitStatus struct {
 	ID          int64  `json:"id,omitempty"`
-	State       string `json:"state"`                  // pending, success, failure, error
-	TargetURL   string `json:"target_url,omitempty"`   // URL to link to from the status
+	State       string `json:"state"`                 // pending, success, failure, error
+	TargetURL   string `json:"target_url,omitempty"`  // URL to link to from the status
 	Description string `json:"description,omitempty"` // Short description (140 chars max)
-	Context     string `json:"context,omitempty"`      // Unique identifier for the status
+	Context     string `json:"context,omitempty"`     // Unique identifier for the status
 	CreatedAt   string `json:"created_at,omitempty"`
 	UpdatedAt   string `json:"updated_at,omitempty"`
 }
