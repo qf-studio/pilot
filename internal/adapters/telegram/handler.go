@@ -38,17 +38,18 @@ type RunningTask struct {
 
 // Handler processes incoming Telegram messages and executes tasks
 type Handler struct {
-	client        *Client
-	runner        *executor.Runner
-	projectPath   string
-	allowedIDs    map[int64]bool          // Allowed user/chat IDs for security
-	offset        int64                   // Last processed update ID
-	pendingTasks  map[string]*PendingTask // ChatID -> pending task
-	runningTasks  map[string]*RunningTask // ChatID -> running task
-	mu            sync.Mutex
-	stopCh        chan struct{}
-	wg            sync.WaitGroup
-	transcriber   *transcription.Service  // Voice transcription service (optional)
+	client            *Client
+	runner            *executor.Runner
+	projectPath       string
+	allowedIDs        map[int64]bool          // Allowed user/chat IDs for security
+	offset            int64                   // Last processed update ID
+	pendingTasks      map[string]*PendingTask // ChatID -> pending task
+	runningTasks      map[string]*RunningTask // ChatID -> running task
+	mu                sync.Mutex
+	stopCh            chan struct{}
+	wg                sync.WaitGroup
+	transcriber       *transcription.Service  // Voice transcription service (optional)
+	transcriptionErr  error                   // Error from transcription init (for guidance)
 }
 
 // HandlerConfig holds configuration for the Telegram handler
@@ -80,6 +81,7 @@ func NewHandler(config *HandlerConfig, runner *executor.Runner) *Handler {
 	if config.Transcription != nil {
 		svc, err := transcription.NewService(config.Transcription)
 		if err != nil {
+			h.transcriptionErr = err
 			logging.WithComponent("telegram").Warn("Transcription not available", slog.Any("error", err))
 		} else {
 			h.transcriber = svc
@@ -757,8 +759,8 @@ func (h *Handler) handleVoice(ctx context.Context, chatID string, msg *Message) 
 	// Check if transcription is available
 	if h.transcriber == nil {
 		logging.WithComponent("telegram").Debug("Voice message received but transcription not configured")
-		_, _ = h.client.SendMessage(ctx, chatID,
-			"🎤 Voice messages are not enabled. Configure transcription in your pilot config.", "")
+		msg := h.voiceNotAvailableMessage()
+		_, _ = h.client.SendMessage(ctx, chatID, msg, "")
 		return
 	}
 
@@ -868,6 +870,43 @@ func (h *Handler) downloadAudio(ctx context.Context, fileID string) (string, err
 	}
 
 	return tmpFile.Name(), nil
+}
+
+// voiceNotAvailableMessage returns an actionable error message for voice transcription
+func (h *Handler) voiceNotAvailableMessage() string {
+	var sb strings.Builder
+	sb.WriteString("❌ Voice transcription not available\n\n")
+
+	// Check what's missing based on the error
+	if h.transcriptionErr != nil {
+		errStr := h.transcriptionErr.Error()
+		if strings.Contains(errStr, "ffmpeg") {
+			sb.WriteString("Missing: ffmpeg\n\n")
+			sb.WriteString("To enable voice messages:\n")
+			sb.WriteString("1. brew install ffmpeg\n")
+			sb.WriteString("2. Restart bot\n\n")
+			sb.WriteString("Or set OPENAI_API_KEY for cloud fallback.")
+			return sb.String()
+		}
+		if strings.Contains(errStr, "no backend") || strings.Contains(errStr, "API key") {
+			sb.WriteString("Missing: transcription backend\n\n")
+			sb.WriteString("Options:\n")
+			sb.WriteString("• pip install funasr torch torchaudio (local, free)\n")
+			sb.WriteString("• Set OPENAI_API_KEY (cloud, paid)\n\n")
+			sb.WriteString("Then restart bot.")
+			return sb.String()
+		}
+	}
+
+	// Generic guidance
+	sb.WriteString("To enable voice:\n")
+	sb.WriteString("1. Install ffmpeg: brew install ffmpeg\n")
+	sb.WriteString("2. Set up transcription backend:\n")
+	sb.WriteString("   • pip install funasr (local)\n")
+	sb.WriteString("   • or set OPENAI_API_KEY (cloud)\n")
+	sb.WriteString("3. Restart bot\n\n")
+	sb.WriteString("Run 'pilot doctor' to check setup.")
+	return sb.String()
 }
 
 // downloadImage downloads an image from Telegram and saves to temp file

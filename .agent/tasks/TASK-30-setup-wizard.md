@@ -1,8 +1,9 @@
 # TASK-30: Setup Wizard & Dependency Check
 
-**Status**: Backlog
+**Status**: Complete ✅
 **Priority**: High
 **Created**: 2026-01-27
+**Completed**: 2026-01-27
 
 ---
 
@@ -182,25 +183,25 @@ func RunAll() []Check {
 ```
 
 ### Checks to implement:
-- [ ] `claude --version`
-- [ ] `git --version`
-- [ ] `which ffmpeg`
-- [ ] `python3 -c "import funasr"`
-- [ ] Config file exists
-- [ ] Required keys set
-- [ ] Projects valid paths
-- [ ] Telegram bot token valid
+- [x] `claude --version`
+- [x] `git --version`
+- [x] `which ffmpeg`
+- [x] `python3 -c "import funasr"`
+- [x] Config file exists
+- [x] Required keys set
+- [x] Projects valid paths
+- [x] Telegram bot token valid
 
 ---
 
 ## Acceptance Criteria
 
-- [ ] `pilot doctor` shows all deps and config status
-- [ ] `pilot setup` interactive wizard works
-- [ ] `pilot telegram` shows health summary on start
-- [ ] Missing deps show fix commands
-- [ ] Features gracefully degrade with clear messaging
-- [ ] No silent failures
+- [x] `pilot doctor` shows all deps and config status
+- [x] `pilot setup` interactive wizard works
+- [x] `pilot telegram` shows health summary on start
+- [x] Missing deps show fix commands
+- [x] Features gracefully degrade with clear messaging
+- [x] No silent failures
 
 ---
 
