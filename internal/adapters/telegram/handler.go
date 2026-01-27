@@ -83,7 +83,7 @@ func NewHandler(config *HandlerConfig, runner *executor.Runner) *Handler {
 			logging.WithComponent("telegram").Warn("Transcription not available", slog.Any("error", err))
 		} else {
 			h.transcriber = svc
-			logging.WithComponent("telegram").Info("Voice transcription enabled", slog.String("backend", svc.BackendName()))
+			logging.WithComponent("telegram").Debug("Voice transcription enabled", slog.String("backend", svc.BackendName()))
 		}
 	}
 
@@ -116,15 +116,15 @@ func (h *Handler) Stop() {
 func (h *Handler) pollLoop(ctx context.Context) {
 	defer h.wg.Done()
 
-	logging.WithComponent("telegram").Info("Starting poll loop")
+	logging.WithComponent("telegram").Debug("Starting poll loop")
 
 	for {
 		select {
 		case <-ctx.Done():
-			logging.WithComponent("telegram").Info("Context cancelled, stopping poll loop")
+			logging.WithComponent("telegram").Debug("Poll loop stopped")
 			return
 		case <-h.stopCh:
-			logging.WithComponent("telegram").Info("Stop signal received, stopping poll loop")
+			logging.WithComponent("telegram").Debug("Poll loop stopped")
 			return
 		default:
 			h.fetchAndProcess(ctx)
