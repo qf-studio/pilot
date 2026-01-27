@@ -248,3 +248,50 @@ func (c *Client) AddPRComment(ctx context.Context, owner, repo string, number in
 	}
 	return &result, nil
 }
+
+// ListIssues lists issues for a repository with optional filters
+func (c *Client) ListIssues(ctx context.Context, owner, repo string, opts *ListIssuesOptions) ([]*Issue, error) {
+	path := fmt.Sprintf("/repos/%s/%s/issues?", owner, repo)
+
+	// Build query parameters
+	params := []string{}
+	if opts != nil {
+		if len(opts.Labels) > 0 {
+			for _, label := range opts.Labels {
+				params = append(params, "labels="+label)
+			}
+		}
+		if opts.State != "" {
+			params = append(params, "state="+opts.State)
+		}
+		if opts.Sort != "" {
+			params = append(params, "sort="+opts.Sort)
+		}
+		if !opts.Since.IsZero() {
+			params = append(params, "since="+opts.Since.Format(time.RFC3339))
+		}
+	}
+
+	for i, p := range params {
+		if i > 0 {
+			path += "&"
+		}
+		path += p
+	}
+
+	var issues []*Issue
+	if err := c.doRequest(ctx, http.MethodGet, path, nil, &issues); err != nil {
+		return nil, err
+	}
+	return issues, nil
+}
+
+// HasLabel checks if an issue has a specific label
+func HasLabel(issue *Issue, labelName string) bool {
+	for _, label := range issue.Labels {
+		if label.Name == labelName {
+			return true
+		}
+	}
+	return false
+}

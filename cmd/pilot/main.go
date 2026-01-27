@@ -555,7 +555,87 @@ Example:
 
 			banner.StartupTelegram(version, projectPath, cfg.Adapters.Telegram.ChatID, cfg)
 
-			// Start polling
+			// Start GitHub polling if enabled
+			var ghPoller *github.Poller
+			if cfg.Adapters.Github != nil && cfg.Adapters.Github.Enabled &&
+				cfg.Adapters.Github.Polling != nil && cfg.Adapters.Github.Polling.Enabled {
+
+				token := cfg.Adapters.Github.Token
+				if token == "" {
+					token = os.Getenv("GITHUB_TOKEN")
+				}
+
+				if token != "" && cfg.Adapters.Github.Repo != "" {
+					client := github.NewClient(token)
+					label := cfg.Adapters.Github.Polling.Label
+					if label == "" {
+						label = cfg.Adapters.Github.PilotLabel
+					}
+					interval := cfg.Adapters.Github.Polling.Interval
+					if interval == 0 {
+						interval = 30 * time.Second
+					}
+
+					var err error
+					ghPoller, err = github.NewPoller(client, cfg.Adapters.Github.Repo, label, interval,
+						github.WithOnIssue(func(issueCtx context.Context, issue *github.Issue) error {
+							// Execute issue as task via handler
+							fmt.Printf("\n📥 GitHub Issue #%d: %s\n", issue.Number, issue.Title)
+
+							// Add in-progress label
+							parts := strings.Split(cfg.Adapters.Github.Repo, "/")
+							if len(parts) == 2 {
+								_ = client.AddLabels(issueCtx, parts[0], parts[1], issue.Number, []string{github.LabelInProgress})
+							}
+
+							// Build task description
+							taskDesc := fmt.Sprintf("GitHub Issue #%d: %s\n\n%s", issue.Number, issue.Title, issue.Body)
+							taskID := fmt.Sprintf("GH-%d", issue.Number)
+							branchName := fmt.Sprintf("pilot/%s", taskID)
+
+							task := &executor.Task{
+								ID:          taskID,
+								Title:       issue.Title,
+								Description: taskDesc,
+								ProjectPath: projectPath,
+								Branch:      branchName,
+								CreatePR:    true, // Auto-create PR for GitHub issues
+							}
+
+							result, execErr := runner.Execute(issueCtx, task)
+
+							// Update issue with result
+							if len(parts) == 2 {
+								_ = client.RemoveLabel(issueCtx, parts[0], parts[1], issue.Number, github.LabelInProgress)
+
+								if execErr != nil {
+									_ = client.AddLabels(issueCtx, parts[0], parts[1], issue.Number, []string{github.LabelFailed})
+									comment := fmt.Sprintf("❌ Pilot execution failed:\n\n```\n%s\n```", execErr.Error())
+									_, _ = client.AddComment(issueCtx, parts[0], parts[1], issue.Number, comment)
+								} else {
+									_ = client.AddLabels(issueCtx, parts[0], parts[1], issue.Number, []string{github.LabelDone})
+									comment := fmt.Sprintf("✅ Pilot completed!\n\n**Duration:** %s\n**Branch:** `%s`",
+										result.Duration, branchName)
+									if result.PRUrl != "" {
+										comment += fmt.Sprintf("\n**PR:** %s", result.PRUrl)
+									}
+									_, _ = client.AddComment(issueCtx, parts[0], parts[1], issue.Number, comment)
+								}
+							}
+
+							return execErr
+						}),
+					)
+					if err != nil {
+						fmt.Printf("⚠️  GitHub polling disabled: %v\n", err)
+					} else {
+						fmt.Printf("🐙 GitHub polling enabled: %s (every %s)\n", cfg.Adapters.Github.Repo, interval)
+						go ghPoller.Start(ctx)
+					}
+				}
+			}
+
+			// Start Telegram polling
 			handler.StartPolling(ctx)
 
 			// Wait for shutdown signal
@@ -565,6 +645,9 @@ Example:
 			<-sigCh
 			fmt.Println("\n🛑 Stopping Telegram bot...")
 			handler.Stop()
+			if ghPoller != nil {
+				fmt.Println("🐙 Stopping GitHub poller...")
+			}
 
 			return nil
 		},

@@ -1,12 +1,22 @@
 package github
 
+import "time"
+
 // Config holds GitHub adapter configuration
 type Config struct {
-	Enabled       bool   `yaml:"enabled"`
-	Token         string `yaml:"token"`          // Personal Access Token or GitHub App token
-	WebhookSecret string `yaml:"webhook_secret"` // For HMAC signature verification
-	PilotLabel    string `yaml:"pilot_label"`
-	Repo          string `yaml:"repo"` // Default repo in "owner/repo" format
+	Enabled       bool           `yaml:"enabled"`
+	Token         string         `yaml:"token"`          // Personal Access Token or GitHub App token
+	WebhookSecret string         `yaml:"webhook_secret"` // For HMAC signature verification
+	PilotLabel    string         `yaml:"pilot_label"`
+	Repo          string         `yaml:"repo"`    // Default repo in "owner/repo" format
+	Polling       *PollingConfig `yaml:"polling"` // Polling configuration
+}
+
+// PollingConfig holds GitHub polling settings
+type PollingConfig struct {
+	Enabled  bool          `yaml:"enabled"`
+	Interval time.Duration `yaml:"interval"` // Poll interval (default 30s)
+	Label    string        `yaml:"label"`    // Label to watch for (default: pilot)
 }
 
 // DefaultConfig returns default GitHub configuration
@@ -14,7 +24,20 @@ func DefaultConfig() *Config {
 	return &Config{
 		Enabled:    false,
 		PilotLabel: "pilot",
+		Polling: &PollingConfig{
+			Enabled:  false,
+			Interval: 30 * time.Second,
+			Label:    "pilot",
+		},
 	}
+}
+
+// ListIssuesOptions holds options for listing issues
+type ListIssuesOptions struct {
+	Labels []string
+	State  string // open, closed, all
+	Sort   string // created, updated, comments
+	Since  time.Time
 }
 
 // Issue states
