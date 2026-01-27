@@ -40,6 +40,9 @@ var taskActionWords = []string{
 	"fix", "update", "modify", "change", "edit",
 	"delete", "remove", "refactor", "write",
 	"generate", "setup", "configure", "install",
+	// Meta-task actions (managing backlog, priorities, etc.)
+	"review", "prioritize", "reprioritize", "reorder",
+	"sort", "organize", "rank", "triage", "set priority",
 }
 
 // DetectIntent analyzes a message and returns the detected intent

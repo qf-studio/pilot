@@ -47,6 +47,14 @@ func TestDetectIntent(t *testing.T) {
 		{"task with ID", "work on TASK-04", IntentTask},
 		{"task with number", "do 04", IntentTask},
 
+		// Meta-task actions (backlog management)
+		{"meta-task review", "review tasks", IntentTask},
+		{"meta-task prioritize", "prioritize the backlog", IntentTask},
+		{"meta-task reorder", "reorder tasks by priority", IntentTask},
+		{"meta-task triage", "triage issues", IntentTask},
+		{"meta-task set priority", "set priority for tasks", IntentTask},
+		{"meta-task review with context", "review tasks, set new priority by value", IntentTask},
+
 		// Edge cases
 		{"what does question", "what does the auth module do", IntentQuestion},
 		{"ambiguous greeting", "hello world file", IntentGreeting}, // "hello" starts msg, <= 3 words
