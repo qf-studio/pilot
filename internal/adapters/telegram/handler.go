@@ -477,6 +477,7 @@ func (h *Handler) executeTask(ctx context.Context, chatID, taskID, description s
 		Verbose:     false,
 		Branch:      fmt.Sprintf("pilot/%s", taskID),
 		BaseBranch:  "main",
+		CreatePR:    true,
 	}
 
 	// Set up progress callback with throttling
@@ -931,6 +932,7 @@ func (h *Handler) executeImageTask(ctx context.Context, chatID, imagePath, promp
 		ImagePath:   imagePath,
 		Branch:      fmt.Sprintf("pilot/%s", taskID),
 		BaseBranch:  "main",
+		CreatePR:    true,
 	}
 
 	// Set up progress callback
