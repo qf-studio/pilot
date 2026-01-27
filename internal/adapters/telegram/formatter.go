@@ -88,7 +88,7 @@ func FormatProgressUpdate(taskID, phase string, progress int, message string) st
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("%s %s (%d%%)\n", phaseEmoji, phase, progress))
 	sb.WriteString(fmt.Sprintf("%s\n\n", bar))
-	sb.WriteString(fmt.Sprintf("%s", taskID))
+	sb.WriteString(taskID)
 
 	// Add activity message if present
 	if message != "" {

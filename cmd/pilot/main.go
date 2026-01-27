@@ -53,6 +53,8 @@ func main() {
 		newUsageCmd(),
 		newTeamCmd(),
 		newBudgetCmd(),
+		newDoctorCmd(),
+		newSetupCmd(),
 	)
 
 	if err := rootCmd.Execute(); err != nil {
