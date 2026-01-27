@@ -14,6 +14,7 @@ import (
 	"github.com/alekspetrov/pilot/internal/adapters/linear"
 	"github.com/alekspetrov/pilot/internal/adapters/slack"
 	"github.com/alekspetrov/pilot/internal/adapters/telegram"
+	"github.com/alekspetrov/pilot/internal/budget"
 	"github.com/alekspetrov/pilot/internal/gateway"
 	"github.com/alekspetrov/pilot/internal/logging"
 )
@@ -29,6 +30,7 @@ type Config struct {
 	Projects     []*ProjectConfig    `yaml:"projects"`
 	Dashboard    *DashboardConfig    `yaml:"dashboard"`
 	Alerts       *AlertsConfig       `yaml:"alerts"`
+	Budget       *budget.Config      `yaml:"budget"`
 	Logging      *logging.Config     `yaml:"logging"`
 }
 
@@ -238,6 +240,7 @@ func DefaultConfig() *Config {
 				SuppressDuplicates: true,
 			},
 		},
+		Budget:  budget.DefaultConfig(),
 		Logging: logging.DefaultConfig(),
 	}
 }

@@ -52,6 +52,7 @@ func main() {
 		newMetricsCmd(),
 		newUsageCmd(),
 		newTeamCmd(),
+		newBudgetCmd(),
 	)
 
 	if err := rootCmd.Execute(); err != nil {
