@@ -29,6 +29,10 @@ if _, err := os.Stat(agentDir); err == nil {
 | `.agent/tasks/TASK-XX.md` | When working on specific task |
 | `.agent/system/ARCHITECTURE.md` | When modifying core components |
 | `.agent/sops/*.md` | Before modifying integrations (Telegram, Linear, etc.) |
+| `.agent/product/AUDIENCE.md` | GTM strategy, personas, messaging |
+| `.agent/product/PRICING.md` | Tier structure, competitor comparison |
+| `.agent/product/ONBOARDING.md` | First 5-ticket experience, setup wizard |
+| `.agent/product/COMPETITIVE.md` | ClawdBot, Cursor, Copilot, Devin teardown |
 
 ## Current State
 
@@ -119,6 +123,7 @@ if _, err := os.Stat(agentDir); err == nil {
 
 ## Completed Tasks
 
+- **TASK-33**: Branch Workflow Fix ✅ 2026-01-27
 - **TASK-31**: PR Workflow Improvements ✅ 2026-01-27
 - **TASK-23**: GitHub App Integration (Phase 1) ✅ 2026-01-27
 - **TASK-16**: Usage Metering & Billing ✅ 2026-01-27
@@ -139,6 +144,7 @@ if _, err := os.Stat(agentDir); err == nil {
 
 ### Completed
 
+- **TASK-33**: Branch Workflow Fix ✅ 2026-01-27
 - **TASK-31**: PR Workflow Improvements ✅ 2026-01-27
 - **TASK-23**: GitHub App Integration (Phase 1) ✅ 2026-01-27
 - **TASK-16**: Usage Metering & Billing ✅ 2026-01-27
