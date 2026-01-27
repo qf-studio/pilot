@@ -18,6 +18,7 @@ import (
 	"github.com/alekspetrov/pilot/internal/budget"
 	"github.com/alekspetrov/pilot/internal/gateway"
 	"github.com/alekspetrov/pilot/internal/logging"
+	"github.com/alekspetrov/pilot/internal/quality"
 )
 
 // Config represents the main configuration
@@ -34,6 +35,7 @@ type Config struct {
 	Budget       *budget.Config      `yaml:"budget"`
 	Logging      *logging.Config     `yaml:"logging"`
 	Approval     *approval.Config    `yaml:"approval"`
+	Quality      *quality.Config     `yaml:"quality"`
 }
 
 // AdaptersConfig holds adapter configurations
@@ -245,6 +247,7 @@ func DefaultConfig() *Config {
 		Budget:   budget.DefaultConfig(),
 		Logging:  logging.DefaultConfig(),
 		Approval: approval.DefaultConfig(),
+		Quality:  quality.DefaultConfig(),
 	}
 }
 
