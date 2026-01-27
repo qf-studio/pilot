@@ -75,11 +75,11 @@ clean:
 	rm -rf bin/
 	rm -f coverage.out coverage.html
 
-# Install to GOPATH/bin
-install: build
-	cp bin/$(BINARY_NAME) $(GOPATH)/bin/
+# Install to ~/go/bin (or GOBIN)
+install:
+	go install $(LDFLAGS) ./cmd/pilot
 
-# Install globally
+# Install to /usr/local/bin (requires sudo)
 install-global: build
 	sudo cp bin/$(BINARY_NAME) /usr/local/bin/
 
