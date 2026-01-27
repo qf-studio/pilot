@@ -101,9 +101,11 @@ func StartupWithHealth(version string, cfg *config.Config) {
 func StartupTelegram(version, project, chatID string, cfg *config.Config) {
 	report := health.RunChecks(cfg)
 
-	// Compact header
+	// ASCII logo
+	fmt.Print(Logo)
+	fmt.Printf("   %s\n", Tagline)
+	fmt.Printf("   v%s │ Telegram Bot\n", version)
 	fmt.Println()
-	fmt.Printf("PILOT v%s │ Telegram Bot\n", version)
 	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
 	// Features inline
