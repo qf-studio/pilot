@@ -505,17 +505,7 @@ Example:
 				}
 			}
 
-			banner.Print()
-
-			fmt.Println("🤖 Pilot Telegram Bot")
-			fmt.Println("───────────────────────────────────────")
-			fmt.Printf("   Project: %s\n", projectPath)
-			fmt.Printf("   Chat ID: %s\n", cfg.Adapters.Telegram.ChatID)
-			fmt.Println()
-			fmt.Println("   Listening for messages...")
-			fmt.Println("   Press Ctrl+C to stop")
-			fmt.Println("───────────────────────────────────────")
-			fmt.Println()
+			banner.StartupTelegram(version, projectPath, cfg.Adapters.Telegram.ChatID, cfg)
 
 			// Start polling
 			handler.StartPolling(ctx)
