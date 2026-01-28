@@ -18,12 +18,25 @@ const (
 type Client struct {
 	token      string
 	httpClient *http.Client
+	baseURL    string // For testing - defaults to githubAPIURL
 }
 
 // NewClient creates a new GitHub client
 func NewClient(token string) *Client {
 	return &Client{
-		token: token,
+		token:   token,
+		baseURL: githubAPIURL,
+		httpClient: &http.Client{
+			Timeout: 30 * time.Second,
+		},
+	}
+}
+
+// NewClientWithBaseURL creates a new GitHub client with a custom base URL (for testing)
+func NewClientWithBaseURL(token, baseURL string) *Client {
+	return &Client{
+		token:   token,
+		baseURL: baseURL,
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
@@ -92,7 +105,7 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body interf
 		bodyReader = bytes.NewReader(bodyBytes)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, method, githubAPIURL+path, bodyReader)
+	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, bodyReader)
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
 	}

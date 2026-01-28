@@ -292,3 +292,305 @@ func TestDefaultConfig(t *testing.T) {
 		t.Errorf("expected output=stdout, got %s", cfg.Output)
 	}
 }
+
+func TestLogger(t *testing.T) {
+	// Initialize with known config
+	err := Init(&Config{
+		Level:  "info",
+		Format: "json",
+		Output: "stdout",
+	})
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+
+	logger := Logger()
+	if logger == nil {
+		t.Error("Logger() returned nil")
+	}
+}
+
+func TestWith(t *testing.T) {
+	var buf bytes.Buffer
+
+	handler := slog.NewJSONHandler(&buf, nil)
+	loggerMu.Lock()
+	defaultLogger = slog.New(handler)
+	loggerMu.Unlock()
+
+	With("custom_key", "custom_value").Info("test message")
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+		t.Fatalf("failed to parse JSON output: %v", err)
+	}
+
+	if result["custom_key"] != "custom_value" {
+		t.Errorf("expected custom_key='custom_value', got %v", result["custom_key"])
+	}
+}
+
+func TestWithContext(t *testing.T) {
+	tests := []struct {
+		name           string
+		setupContext   func(context.Context) context.Context
+		expectedFields map[string]string
+	}{
+		{
+			name: "with task_id only",
+			setupContext: func(ctx context.Context) context.Context {
+				return ContextWithTaskID(ctx, "TASK-001")
+			},
+			expectedFields: map[string]string{
+				"task_id": "TASK-001",
+			},
+		},
+		{
+			name: "with component only",
+			setupContext: func(ctx context.Context) context.Context {
+				return ContextWithComponent(ctx, "gateway")
+			},
+			expectedFields: map[string]string{
+				"component": "gateway",
+			},
+		},
+		{
+			name: "with project only",
+			setupContext: func(ctx context.Context) context.Context {
+				return ContextWithProject(ctx, "pilot")
+			},
+			expectedFields: map[string]string{
+				"project": "pilot",
+			},
+		},
+		{
+			name: "with all fields",
+			setupContext: func(ctx context.Context) context.Context {
+				ctx = ContextWithTaskID(ctx, "TASK-002")
+				ctx = ContextWithComponent(ctx, "executor")
+				ctx = ContextWithProject(ctx, "my-project")
+				return ctx
+			},
+			expectedFields: map[string]string{
+				"task_id":   "TASK-002",
+				"component": "executor",
+				"project":   "my-project",
+			},
+		},
+		{
+			name: "with empty context",
+			setupContext: func(ctx context.Context) context.Context {
+				return ctx
+			},
+			expectedFields: map[string]string{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+
+			handler := slog.NewJSONHandler(&buf, nil)
+			loggerMu.Lock()
+			defaultLogger = slog.New(handler)
+			loggerMu.Unlock()
+
+			ctx := tt.setupContext(context.Background())
+			WithContext(ctx).Info("test message")
+
+			var result map[string]interface{}
+			if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+				t.Fatalf("failed to parse JSON output: %v", err)
+			}
+
+			for key, expectedValue := range tt.expectedFields {
+				if result[key] != expectedValue {
+					t.Errorf("expected %s='%s', got %v", key, expectedValue, result[key])
+				}
+			}
+		})
+	}
+}
+
+func TestContextLoggingFunctions(t *testing.T) {
+	tests := []struct {
+		name    string
+		logFunc func(context.Context, string, ...any)
+		level   string
+	}{
+		{"DebugContext", DebugContext, "DEBUG"},
+		{"InfoContext", InfoContext, "INFO"},
+		{"WarnContext", WarnContext, "WARN"},
+		{"ErrorContext", ErrorContext, "ERROR"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+
+			handler := slog.NewJSONHandler(&buf, &slog.HandlerOptions{
+				Level: slog.LevelDebug,
+			})
+			loggerMu.Lock()
+			defaultLogger = slog.New(handler)
+			loggerMu.Unlock()
+
+			ctx := ContextWithTaskID(context.Background(), "TASK-CTX")
+			tt.logFunc(ctx, "context test message")
+
+			var result map[string]interface{}
+			if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+				t.Fatalf("failed to parse JSON output for %s: %v", tt.name, err)
+			}
+
+			if result["level"] != tt.level {
+				t.Errorf("expected level=%s, got %v", tt.level, result["level"])
+			}
+			if result["task_id"] != "TASK-CTX" {
+				t.Errorf("expected task_id='TASK-CTX', got %v", result["task_id"])
+			}
+		})
+	}
+}
+
+func TestInitWithDebugLevel(t *testing.T) {
+	// Test that debug level enables AddSource option
+	tmpDir := t.TempDir()
+	logFile := filepath.Join(tmpDir, "debug.log")
+
+	err := Init(&Config{
+		Level:  "debug",
+		Format: "json",
+		Output: logFile,
+	})
+	if err != nil {
+		t.Fatalf("Init failed: %v", err)
+	}
+
+	Debug("debug message with source")
+
+	content, err := os.ReadFile(logFile)
+	if err != nil {
+		t.Fatalf("failed to read log file: %v", err)
+	}
+
+	// Debug level should include source information
+	if !strings.Contains(string(content), "source") {
+		t.Errorf("expected source info in debug log, content: %s", content)
+	}
+}
+
+func TestInitWithEmptyOutput(t *testing.T) {
+	// Empty output should default to stdout
+	err := Init(&Config{
+		Level:  "info",
+		Format: "text",
+		Output: "",
+	})
+	if err != nil {
+		t.Fatalf("Init with empty output failed: %v", err)
+	}
+}
+
+func TestLogLevelsFiltering(t *testing.T) {
+	tests := []struct {
+		name          string
+		configLevel   string
+		logLevel      string
+		logFunc       func(string, ...any)
+		shouldAppear  bool
+	}{
+		{"info config allows info", "info", "INFO", Info, true},
+		{"info config allows warn", "info", "WARN", Warn, true},
+		{"info config allows error", "info", "ERROR", Error, true},
+		{"warn config blocks info", "warn", "INFO", Info, false},
+		{"warn config allows warn", "warn", "WARN", Warn, true},
+		{"error config blocks warn", "error", "WARN", Warn, false},
+		{"error config allows error", "error", "ERROR", Error, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+
+			handler := slog.NewJSONHandler(&buf, &slog.HandlerOptions{
+				Level: parseLevel(tt.configLevel),
+			})
+			loggerMu.Lock()
+			defaultLogger = slog.New(handler)
+			loggerMu.Unlock()
+
+			tt.logFunc("test message")
+
+			hasContent := buf.Len() > 0
+			if hasContent != tt.shouldAppear {
+				t.Errorf("expected message to appear: %v, but got: %v", tt.shouldAppear, hasContent)
+			}
+		})
+	}
+}
+
+func TestWithMultipleAttributes(t *testing.T) {
+	var buf bytes.Buffer
+
+	handler := slog.NewJSONHandler(&buf, nil)
+	loggerMu.Lock()
+	defaultLogger = slog.New(handler)
+	loggerMu.Unlock()
+
+	With(
+		"key1", "value1",
+		"key2", 42,
+		"key3", true,
+	).Info("multiple attributes")
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+		t.Fatalf("failed to parse JSON output: %v", err)
+	}
+
+	if result["key1"] != "value1" {
+		t.Errorf("expected key1='value1', got %v", result["key1"])
+	}
+	if result["key2"] != float64(42) {
+		t.Errorf("expected key2=42, got %v", result["key2"])
+	}
+	if result["key3"] != true {
+		t.Errorf("expected key3=true, got %v", result["key3"])
+	}
+}
+
+func TestLogLevelsWithArguments(t *testing.T) {
+	var buf bytes.Buffer
+
+	handler := slog.NewJSONHandler(&buf, &slog.HandlerOptions{
+		Level: slog.LevelDebug,
+	})
+	loggerMu.Lock()
+	defaultLogger = slog.New(handler)
+	loggerMu.Unlock()
+
+	tests := []struct {
+		logFunc func(string, ...any)
+		level   string
+	}{
+		{Debug, "DEBUG"},
+		{Info, "INFO"},
+		{Warn, "WARN"},
+		{Error, "ERROR"},
+	}
+
+	for _, tt := range tests {
+		buf.Reset()
+		tt.logFunc("test message", "extra_key", "extra_value")
+
+		var result map[string]interface{}
+		if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+			t.Fatalf("failed to parse JSON output for %s: %v", tt.level, err)
+		}
+
+		if result["extra_key"] != "extra_value" {
+			t.Errorf("expected extra_key='extra_value', got %v", result["extra_key"])
+		}
+	}
+}

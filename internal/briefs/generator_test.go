@@ -1,6 +1,7 @@
 package briefs
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -266,6 +267,245 @@ func TestEstimateProgress(t *testing.T) {
 			result := estimateProgress(exec)
 			if result != tt.expected {
 				t.Errorf("expected %d, got %d", tt.expected, result)
+			}
+		})
+	}
+}
+
+func TestNewGeneratorWithNilConfig(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	// Should use default config when nil is passed
+	generator := NewGenerator(store, nil)
+
+	if generator == nil {
+		t.Fatal("expected generator, got nil")
+	}
+
+	if generator.config == nil {
+		t.Fatal("expected default config, got nil")
+	}
+
+	// Verify default values are set
+	if generator.config.Schedule != "0 9 * * 1-5" {
+		t.Errorf("expected default schedule, got %s", generator.config.Schedule)
+	}
+}
+
+func TestGeneratorGenerateWithActiveExecutions(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	// Seed active execution
+	now := time.Now()
+	exec := &memory.Execution{
+		ID:          "exec-active",
+		TaskID:      "TASK-ACTIVE",
+		ProjectPath: "/test/project",
+		Status:      "running",
+		DurationMs:  60000, // 1 minute
+		CreatedAt:   now.Add(-5 * time.Minute),
+	}
+	if err := store.SaveExecution(exec); err != nil {
+		t.Fatalf("failed to save execution: %v", err)
+	}
+
+	config := DefaultBriefConfig()
+	generator := NewGenerator(store, config)
+
+	brief, err := generator.GenerateDaily()
+	if err != nil {
+		t.Fatalf("failed to generate brief: %v", err)
+	}
+
+	// Should have 0 completed (running is not in period query)
+	if len(brief.Completed) != 0 {
+		t.Errorf("expected 0 completed tasks, got %d", len(brief.Completed))
+	}
+}
+
+func TestGeneratorGenerateWithQueuedTasks(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	// Seed queued task
+	exec := &memory.Execution{
+		ID:          "exec-queued",
+		TaskID:      "TASK-QUEUED",
+		ProjectPath: "/test/project",
+		Status:      "queued",
+		CreatedAt:   time.Now(),
+	}
+	if err := store.SaveExecution(exec); err != nil {
+		t.Fatalf("failed to save execution: %v", err)
+	}
+
+	config := DefaultBriefConfig()
+	generator := NewGenerator(store, config)
+
+	brief, err := generator.GenerateDaily()
+	if err != nil {
+		t.Fatalf("failed to generate brief: %v", err)
+	}
+
+	// The queued task might appear in upcoming depending on store implementation
+	// Just verify no error occurs
+	if brief == nil {
+		t.Fatal("expected brief, got nil")
+	}
+}
+
+func TestGeneratorGenerateWithMaxItemsLimit(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	// Seed more tasks than MaxItemsPerSection
+	now := time.Now()
+	for i := 0; i < 15; i++ {
+		exec := &memory.Execution{
+			ID:          fmt.Sprintf("exec-%d", i),
+			TaskID:      fmt.Sprintf("TASK-%03d", i),
+			ProjectPath: "/test/project",
+			Status:      "completed",
+			CreatedAt:   now.Add(-time.Duration(i) * time.Hour),
+			CompletedAt: timePtr(now.Add(-time.Duration(i)*time.Hour + 30*time.Minute)),
+		}
+		if err := store.SaveExecution(exec); err != nil {
+			t.Fatalf("failed to save execution: %v", err)
+		}
+	}
+
+	config := DefaultBriefConfig()
+	config.Content.MaxItemsPerSection = 5
+	generator := NewGenerator(store, config)
+
+	period := BriefPeriod{
+		Start: now.Add(-24 * time.Hour),
+		End:   now.Add(time.Hour),
+	}
+
+	brief, err := generator.Generate(period)
+	if err != nil {
+		t.Fatalf("failed to generate brief: %v", err)
+	}
+
+	// Should be limited to max items
+	if len(brief.Completed) > 5 {
+		t.Errorf("expected at most 5 completed tasks, got %d", len(brief.Completed))
+	}
+}
+
+func TestGeneratorGenerateWithoutErrors(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	// Seed a failed task
+	now := time.Now()
+	exec := &memory.Execution{
+		ID:          "exec-failed",
+		TaskID:      "TASK-FAILED",
+		ProjectPath: "/test/project",
+		Status:      "failed",
+		Error:       "something went wrong",
+		CreatedAt:   now.Add(-1 * time.Hour),
+		CompletedAt: timePtr(now.Add(-30 * time.Minute)),
+	}
+	if err := store.SaveExecution(exec); err != nil {
+		t.Fatalf("failed to save execution: %v", err)
+	}
+
+	// Disable errors in config
+	config := DefaultBriefConfig()
+	config.Content.IncludeErrors = false
+	generator := NewGenerator(store, config)
+
+	period := BriefPeriod{
+		Start: now.Add(-24 * time.Hour),
+		End:   now,
+	}
+
+	brief, err := generator.Generate(period)
+	if err != nil {
+		t.Fatalf("failed to generate brief: %v", err)
+	}
+
+	// Should not include blocked tasks when errors are disabled
+	if len(brief.Blocked) != 0 {
+		t.Errorf("expected 0 blocked tasks with IncludeErrors=false, got %d", len(brief.Blocked))
+	}
+}
+
+func TestGeneratorGenerateWeeklyOnDifferentDays(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	config := DefaultBriefConfig()
+	config.Timezone = "UTC"
+	generator := NewGenerator(store, config)
+
+	brief, err := generator.GenerateWeekly()
+	if err != nil {
+		t.Fatalf("failed to generate weekly brief: %v", err)
+	}
+
+	// Period should be exactly 7 days
+	duration := brief.Period.End.Sub(brief.Period.Start)
+	if duration != 7*24*time.Hour {
+		t.Errorf("expected 7 day period, got %v", duration)
+	}
+}
+
+func TestConvertMetrics(t *testing.T) {
+	data := &memory.BriefMetricsData{
+		TotalTasks:     100,
+		CompletedCount: 85,
+		FailedCount:    15,
+		SuccessRate:    0.85,
+		AvgDurationMs:  120000,
+		PRsCreated:     50,
+	}
+
+	metrics := convertMetrics(data)
+
+	if metrics.TotalTasks != 100 {
+		t.Errorf("expected TotalTasks 100, got %d", metrics.TotalTasks)
+	}
+	if metrics.CompletedCount != 85 {
+		t.Errorf("expected CompletedCount 85, got %d", metrics.CompletedCount)
+	}
+	if metrics.FailedCount != 15 {
+		t.Errorf("expected FailedCount 15, got %d", metrics.FailedCount)
+	}
+	if metrics.SuccessRate != 0.85 {
+		t.Errorf("expected SuccessRate 0.85, got %f", metrics.SuccessRate)
+	}
+	if metrics.AvgDurationMs != 120000 {
+		t.Errorf("expected AvgDurationMs 120000, got %d", metrics.AvgDurationMs)
+	}
+	if metrics.PRsCreated != 50 {
+		t.Errorf("expected PRsCreated 50, got %d", metrics.PRsCreated)
+	}
+}
+
+func TestEstimateProgressEdgeCases(t *testing.T) {
+	tests := []struct {
+		name       string
+		durationMs int64
+		minExpect  int
+		maxExpect  int
+	}{
+		{"exactly at 5 min avg", 300000, 95, 95}, // 5 min = 100%, capped to 95%
+		{"just under cap", 280000, 90, 95},
+		{"very long running", 900000, 95, 95}, // Well over cap
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			exec := &memory.Execution{DurationMs: tt.durationMs}
+			result := estimateProgress(exec)
+			if result < tt.minExpect || result > tt.maxExpect {
+				t.Errorf("expected progress between %d-%d, got %d", tt.minExpect, tt.maxExpect, result)
 			}
 		})
 	}

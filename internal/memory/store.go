@@ -12,13 +12,17 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
-// Store provides persistent storage for Pilot
+// Store provides persistent storage for Pilot using SQLite.
+// It manages executions, patterns, projects, and cross-project learning data.
+// Store handles database migrations automatically on initialization.
 type Store struct {
 	db   *sql.DB
 	path string
 }
 
-// NewStore creates a new memory store
+// NewStore creates a new Store instance with a SQLite database at the given path.
+// It creates the data directory if it does not exist and runs database migrations.
+// Returns an error if the database cannot be opened or migrations fail.
 func NewStore(dataPath string) (*Store, error) {
 	// Ensure directory exists
 	if err := os.MkdirAll(dataPath, 0755); err != nil {
@@ -167,12 +171,13 @@ func (s *Store) migrate() error {
 	return nil
 }
 
-// Close closes the database connection
+// Close closes the database connection and releases resources.
 func (s *Store) Close() error {
 	return s.db.Close()
 }
 
-// Execution represents a task execution record
+// Execution represents a task execution record stored in the database.
+// It captures the complete execution history including status, output, metrics, and PR information.
 type Execution struct {
 	ID          string
 	TaskID      string
@@ -196,7 +201,8 @@ type Execution struct {
 	ModelName        string
 }
 
-// SaveExecution saves an execution record
+// SaveExecution saves an execution record to the database.
+// The execution ID must be unique; duplicate IDs will cause an error.
 func (s *Store) SaveExecution(exec *Execution) error {
 	_, err := s.db.Exec(`
 		INSERT INTO executions (id, task_id, project_path, status, output, error, duration_ms, pr_url, commit_sha, completed_at,
@@ -207,7 +213,8 @@ func (s *Store) SaveExecution(exec *Execution) error {
 	return err
 }
 
-// GetExecution retrieves an execution by ID
+// GetExecution retrieves an execution by its unique ID.
+// Returns sql.ErrNoRows if the execution is not found.
 func (s *Store) GetExecution(id string) (*Execution, error) {
 	row := s.db.QueryRow(`
 		SELECT id, task_id, project_path, status, output, error, duration_ms, pr_url, commit_sha, created_at, completed_at,
@@ -232,7 +239,8 @@ func (s *Store) GetExecution(id string) (*Execution, error) {
 	return &exec, nil
 }
 
-// GetRecentExecutions returns recent executions
+// GetRecentExecutions returns the most recent executions ordered by creation time.
+// The limit parameter specifies the maximum number of executions to return.
 func (s *Store) GetRecentExecutions(limit int) ([]*Execution, error) {
 	rows, err := s.db.Query(`
 		SELECT id, task_id, project_path, status, output, error, duration_ms, pr_url, commit_sha, created_at, completed_at
@@ -259,7 +267,9 @@ func (s *Store) GetRecentExecutions(limit int) ([]*Execution, error) {
 	return executions, nil
 }
 
-// Pattern represents a learned pattern
+// Pattern represents a learned pattern from project executions.
+// Patterns capture recurring code structures, workflows, or solutions
+// that can be applied to future similar tasks.
 type Pattern struct {
 	ID          int64
 	ProjectPath string
@@ -271,7 +281,8 @@ type Pattern struct {
 	UpdatedAt   time.Time
 }
 
-// SavePattern saves or updates a pattern
+// SavePattern saves a new pattern or updates an existing one.
+// If pattern.ID is zero, a new pattern is inserted; otherwise the existing pattern is updated.
 func (s *Store) SavePattern(pattern *Pattern) error {
 	if pattern.ID == 0 {
 		result, err := s.db.Exec(`
@@ -293,7 +304,9 @@ func (s *Store) SavePattern(pattern *Pattern) error {
 	return nil
 }
 
-// GetPatterns retrieves patterns for a project
+// GetPatterns retrieves patterns applicable to a project.
+// Returns both project-specific patterns and global patterns (those with no project path).
+// Results are ordered by confidence and usage count descending.
 func (s *Store) GetPatterns(projectPath string) ([]*Pattern, error) {
 	rows, err := s.db.Query(`
 		SELECT id, project_path, pattern_type, content, confidence, uses, created_at, updated_at
@@ -321,7 +334,8 @@ func (s *Store) GetPatterns(projectPath string) ([]*Pattern, error) {
 	return patterns, nil
 }
 
-// Project represents a registered project
+// Project represents a registered project in Pilot.
+// It stores project metadata, Navigator settings, and custom configuration.
 type Project struct {
 	Path             string
 	Name             string
@@ -330,7 +344,8 @@ type Project struct {
 	Settings         map[string]interface{}
 }
 
-// SaveProject saves or updates a project
+// SaveProject saves or updates a project in the database.
+// If a project with the same path exists, it is updated; otherwise a new record is created.
 func (s *Store) SaveProject(project *Project) error {
 	settings, _ := json.Marshal(project.Settings)
 	_, err := s.db.Exec(`
@@ -345,7 +360,8 @@ func (s *Store) SaveProject(project *Project) error {
 	return err
 }
 
-// GetProject retrieves a project by path
+// GetProject retrieves a project by its filesystem path.
+// Returns sql.ErrNoRows if the project is not found.
 func (s *Store) GetProject(path string) (*Project, error) {
 	row := s.db.QueryRow(`
 		SELECT path, name, navigator_enabled, last_active, settings
@@ -365,7 +381,7 @@ func (s *Store) GetProject(path string) (*Project, error) {
 	return &p, nil
 }
 
-// GetAllProjects retrieves all projects
+// GetAllProjects retrieves all registered projects ordered by last activity time.
 func (s *Store) GetAllProjects() ([]*Project, error) {
 	rows, err := s.db.Query(`
 		SELECT path, name, navigator_enabled, last_active, settings
@@ -392,14 +408,16 @@ func (s *Store) GetAllProjects() ([]*Project, error) {
 	return projects, nil
 }
 
-// BriefQuery holds parameters for querying brief data
+// BriefQuery holds parameters for querying execution data within a time period.
+// Used for generating daily briefs and reports.
 type BriefQuery struct {
 	Start    time.Time
 	End      time.Time
 	Projects []string // Empty = all projects
 }
 
-// GetExecutionsInPeriod retrieves executions within a time period
+// GetExecutionsInPeriod retrieves executions within the specified time range.
+// If query.Projects is non-empty, results are filtered to those projects only.
 func (s *Store) GetExecutionsInPeriod(query BriefQuery) ([]*Execution, error) {
 	var rows *sql.Rows
 	var err error
@@ -452,7 +470,7 @@ func (s *Store) GetExecutionsInPeriod(query BriefQuery) ([]*Execution, error) {
 	return executions, nil
 }
 
-// GetActiveExecutions retrieves currently running executions
+// GetActiveExecutions retrieves all executions with status "running".
 func (s *Store) GetActiveExecutions() ([]*Execution, error) {
 	rows, err := s.db.Query(`
 		SELECT id, task_id, project_path, status, output, error, duration_ms, pr_url, commit_sha, created_at, completed_at
@@ -481,7 +499,8 @@ func (s *Store) GetActiveExecutions() ([]*Execution, error) {
 	return executions, nil
 }
 
-// GetBriefMetrics calculates aggregate metrics for a time period
+// GetBriefMetrics calculates aggregate metrics for a time period including
+// task counts, success rates, average duration, and PR creation statistics.
 func (s *Store) GetBriefMetrics(query BriefQuery) (*BriefMetricsData, error) {
 	var result BriefMetricsData
 
@@ -523,7 +542,7 @@ func (s *Store) GetBriefMetrics(query BriefQuery) (*BriefMetricsData, error) {
 	return &result, nil
 }
 
-// BriefMetricsData holds raw metrics from the database
+// BriefMetricsData holds aggregate metrics calculated from execution data.
 type BriefMetricsData struct {
 	TotalTasks     int
 	CompletedCount int
@@ -533,7 +552,8 @@ type BriefMetricsData struct {
 	PRsCreated     int
 }
 
-// GetQueuedTasks returns tasks waiting to be executed
+// GetQueuedTasks returns tasks with status "queued" or "pending" waiting to be executed.
+// Results are ordered by creation time ascending (oldest first) up to the specified limit.
 func (s *Store) GetQueuedTasks(limit int) ([]*Execution, error) {
 	rows, err := s.db.Query(`
 		SELECT id, task_id, project_path, status, output, error, duration_ms, pr_url, commit_sha, created_at, completed_at
@@ -563,7 +583,9 @@ func (s *Store) GetQueuedTasks(limit int) ([]*Execution, error) {
 	return executions, nil
 }
 
-// CrossPattern represents a pattern that applies across projects (TASK-11)
+// CrossPattern represents a pattern that applies across multiple projects.
+// It enables knowledge sharing between projects within an organization,
+// tracking confidence based on usage outcomes.
 type CrossPattern struct {
 	ID            string
 	Type          string
@@ -579,7 +601,8 @@ type CrossPattern struct {
 	UpdatedAt     time.Time
 }
 
-// PatternProjectLink represents the relationship between a pattern and a project
+// PatternProjectLink represents the relationship between a cross-project pattern and a specific project.
+// It tracks usage statistics and success/failure counts for the pattern within that project.
 type PatternProjectLink struct {
 	PatternID    string
 	ProjectPath  string
@@ -589,7 +612,8 @@ type PatternProjectLink struct {
 	LastUsed     time.Time
 }
 
-// PatternFeedback records outcome when a pattern was applied
+// PatternFeedback records the outcome when a pattern was applied during an execution.
+// It is used to adjust pattern confidence based on real-world results.
 type PatternFeedback struct {
 	ID              int64
 	PatternID       string
@@ -600,7 +624,8 @@ type PatternFeedback struct {
 	CreatedAt       time.Time
 }
 
-// SaveCrossPattern saves or updates a cross-project pattern
+// SaveCrossPattern saves a new cross-project pattern or updates an existing one.
+// On conflict, the pattern is updated and its occurrence count is incremented.
 func (s *Store) SaveCrossPattern(pattern *CrossPattern) error {
 	examples, _ := json.Marshal(pattern.Examples)
 
@@ -619,7 +644,8 @@ func (s *Store) SaveCrossPattern(pattern *CrossPattern) error {
 	return err
 }
 
-// GetCrossPattern retrieves a cross-project pattern by ID
+// GetCrossPattern retrieves a cross-project pattern by its unique ID.
+// Returns sql.ErrNoRows if the pattern is not found.
 func (s *Store) GetCrossPattern(id string) (*CrossPattern, error) {
 	row := s.db.QueryRow(`
 		SELECT id, pattern_type, title, description, context, examples, confidence, occurrences, is_anti_pattern, scope, created_at, updated_at
@@ -639,7 +665,8 @@ func (s *Store) GetCrossPattern(id string) (*CrossPattern, error) {
 	return &p, nil
 }
 
-// GetCrossPatternsByType retrieves cross-project patterns by type
+// GetCrossPatternsByType retrieves all cross-project patterns of a specific type.
+// Results are ordered by confidence and occurrence count descending.
 func (s *Store) GetCrossPatternsByType(patternType string) ([]*CrossPattern, error) {
 	rows, err := s.db.Query(`
 		SELECT id, pattern_type, title, description, context, examples, confidence, occurrences, is_anti_pattern, scope, created_at, updated_at
@@ -655,7 +682,9 @@ func (s *Store) GetCrossPatternsByType(patternType string) ([]*CrossPattern, err
 	return s.scanCrossPatterns(rows)
 }
 
-// GetCrossPatternsForProject retrieves patterns relevant to a specific project
+// GetCrossPatternsForProject retrieves cross-project patterns relevant to a specific project.
+// This includes patterns directly linked to the project and organization-scoped patterns.
+// If includeGlobal is true, globally-scoped patterns are also included.
 func (s *Store) GetCrossPatternsForProject(projectPath string, includeGlobal bool) ([]*CrossPattern, error) {
 	query := `
 		SELECT DISTINCT cp.id, cp.pattern_type, cp.title, cp.description, cp.context, cp.examples,
@@ -679,7 +708,8 @@ func (s *Store) GetCrossPatternsForProject(projectPath string, includeGlobal boo
 	return s.scanCrossPatterns(rows)
 }
 
-// GetTopCrossPatterns retrieves the most confident patterns
+// GetTopCrossPatterns retrieves the highest-confidence cross-project patterns.
+// Only patterns with confidence at or above minConfidence are returned, up to the specified limit.
 func (s *Store) GetTopCrossPatterns(limit int, minConfidence float64) ([]*CrossPattern, error) {
 	rows, err := s.db.Query(`
 		SELECT id, pattern_type, title, description, context, examples, confidence, occurrences, is_anti_pattern, scope, created_at, updated_at
@@ -713,7 +743,8 @@ func (s *Store) scanCrossPatterns(rows *sql.Rows) ([]*CrossPattern, error) {
 	return patterns, nil
 }
 
-// LinkPatternToProject creates or updates a pattern-project relationship
+// LinkPatternToProject creates or updates a relationship between a pattern and a project.
+// If the link exists, the usage count is incremented; otherwise a new link is created.
 func (s *Store) LinkPatternToProject(patternID, projectPath string) error {
 	_, err := s.db.Exec(`
 		INSERT INTO pattern_projects (pattern_id, project_path, uses, last_used)
@@ -725,7 +756,8 @@ func (s *Store) LinkPatternToProject(patternID, projectPath string) error {
 	return err
 }
 
-// GetProjectsForPattern retrieves all projects using a pattern
+// GetProjectsForPattern retrieves all projects that use a specific pattern.
+// Results are ordered by usage count descending.
 func (s *Store) GetProjectsForPattern(patternID string) ([]*PatternProjectLink, error) {
 	rows, err := s.db.Query(`
 		SELECT pattern_id, project_path, uses, success_count, failure_count, last_used
@@ -749,7 +781,9 @@ func (s *Store) GetProjectsForPattern(patternID string) ([]*PatternProjectLink, 
 	return links, nil
 }
 
-// RecordPatternFeedback records feedback when a pattern is applied
+// RecordPatternFeedback records feedback when a pattern is applied during an execution.
+// Based on the outcome ("success", "failure", or "neutral"), it adjusts the pattern's
+// confidence score and updates project-level success/failure counts.
 func (s *Store) RecordPatternFeedback(feedback *PatternFeedback) error {
 	result, err := s.db.Exec(`
 		INSERT INTO pattern_feedback (pattern_id, execution_id, project_path, outcome, confidence_delta)
@@ -783,7 +817,8 @@ func (s *Store) RecordPatternFeedback(feedback *PatternFeedback) error {
 	return nil
 }
 
-// SearchCrossPatterns searches patterns by title or description
+// SearchCrossPatterns searches patterns by title, description, or context using substring matching.
+// Results are ordered by confidence and occurrence count descending, up to the specified limit.
 func (s *Store) SearchCrossPatterns(query string, limit int) ([]*CrossPattern, error) {
 	searchTerm := "%" + query + "%"
 	rows, err := s.db.Query(`
@@ -801,13 +836,15 @@ func (s *Store) SearchCrossPatterns(query string, limit int) ([]*CrossPattern, e
 	return s.scanCrossPatterns(rows)
 }
 
-// DeleteCrossPattern deletes a cross-project pattern
+// DeleteCrossPattern deletes a cross-project pattern by ID.
+// Related pattern_projects and pattern_feedback records are deleted via foreign key cascade.
 func (s *Store) DeleteCrossPattern(id string) error {
 	_, err := s.db.Exec(`DELETE FROM cross_patterns WHERE id = ?`, id)
 	return err
 }
 
-// GetCrossPatternStats returns statistics about cross-project patterns
+// GetCrossPatternStats returns aggregate statistics about cross-project patterns
+// including counts, average confidence, and breakdown by pattern type.
 func (s *Store) GetCrossPatternStats() (*CrossPatternStats, error) {
 	var stats CrossPatternStats
 
@@ -853,7 +890,7 @@ func (s *Store) GetCrossPatternStats() (*CrossPatternStats, error) {
 	return &stats, nil
 }
 
-// CrossPatternStats holds statistics about cross-project patterns
+// CrossPatternStats holds aggregate statistics about cross-project patterns.
 type CrossPatternStats struct {
 	TotalPatterns    int
 	Patterns         int

@@ -79,54 +79,88 @@ type progressState struct {
 	// Note: filesChanged/linesAdded/linesRemoved tracked via git diff at commit time
 }
 
-// Task represents a task to be executed
+// Task represents a task to be executed by the Runner.
+// It contains all the information needed to execute a development task
+// using Claude Code, including project context, branching options, and PR creation settings.
 type Task struct {
-	ID          string
-	Title       string
+	// ID is the unique identifier for this task (e.g., "TASK-123").
+	ID string
+	// Title is the human-readable title of the task.
+	Title string
+	// Description contains the full task description and requirements.
 	Description string
-	Priority    int
+	// Priority indicates task priority (lower numbers = higher priority).
+	Priority int
+	// ProjectPath is the absolute path to the project directory.
 	ProjectPath string
-	Branch      string
-	Verbose     bool   // Stream Claude Code output to console
-	CreatePR    bool   // Create GitHub PR after successful execution
-	BaseBranch  string // Base branch for PR (defaults to main/master)
-	ImagePath   string // Path to image file for multimodal analysis
+	// Branch is the git branch name to create for this task (optional).
+	Branch string
+	// Verbose enables streaming Claude Code output to console when true.
+	Verbose bool
+	// CreatePR enables automatic GitHub PR creation after successful execution.
+	CreatePR bool
+	// BaseBranch specifies the base branch for PR creation (defaults to main/master).
+	BaseBranch string
+	// ImagePath is the path to an image file for multimodal analysis tasks (optional).
+	ImagePath string
 }
 
-// ExecutionResult represents the result of task execution
+// ExecutionResult represents the result of task execution by the Runner.
+// It contains the execution outcome, any output or errors, and metrics
+// about resource usage including token counts and estimated costs.
 type ExecutionResult struct {
-	TaskID    string
-	Success   bool
-	Output    string
-	Error     string
-	Duration  time.Duration
-	PRUrl     string
+	// TaskID is the identifier of the executed task.
+	TaskID string
+	// Success indicates whether the task completed successfully.
+	Success bool
+	// Output contains the final output from Claude Code.
+	Output string
+	// Error contains error details if the execution failed.
+	Error string
+	// Duration is the total execution time.
+	Duration time.Duration
+	// PRUrl is the URL of the created pull request (if CreatePR was enabled).
+	PRUrl string
+	// CommitSHA is the git commit SHA of the last commit made during execution.
 	CommitSHA string
-	// Metrics fields (TASK-13)
-	TokensInput      int64
-	TokensOutput     int64
-	TokensTotal      int64
+	// TokensInput is the number of input tokens consumed.
+	TokensInput int64
+	// TokensOutput is the number of output tokens generated.
+	TokensOutput int64
+	// TokensTotal is the total token count (input + output).
+	TokensTotal int64
+	// EstimatedCostUSD is the estimated cost in USD based on token usage.
 	EstimatedCostUSD float64
-	FilesChanged     int
-	LinesAdded       int
-	LinesRemoved     int
-	ModelName        string
+	// FilesChanged is the number of files modified during execution.
+	FilesChanged int
+	// LinesAdded is the number of lines added across all changes.
+	LinesAdded int
+	// LinesRemoved is the number of lines removed across all changes.
+	LinesRemoved int
+	// ModelName is the Claude model used for execution.
+	ModelName string
 }
 
-// ProgressCallback is called during execution with progress updates
+// ProgressCallback is a function called during execution with progress updates.
+// It receives the task ID, current phase name, progress percentage (0-100),
+// and a human-readable message describing the current activity.
 type ProgressCallback func(taskID string, phase string, progress int, message string)
 
-// Runner executes tasks using Claude Code
+// Runner executes development tasks using Claude Code as the underlying AI engine.
+// It manages task lifecycle including branch creation, Claude Code invocation,
+// progress tracking, PR creation, and execution recording. Runner is safe for
+// concurrent use and tracks all running tasks for cancellation support.
 type Runner struct {
-	onProgress     ProgressCallback
-	mu             sync.Mutex
-	running        map[string]*exec.Cmd
-	log            *slog.Logger
-	recordingsPath string // Path to recordings directory (empty = default)
-	enableRecording bool  // Whether to record executions
+	onProgress      ProgressCallback
+	mu              sync.Mutex
+	running         map[string]*exec.Cmd
+	log             *slog.Logger
+	recordingsPath  string // Path to recordings directory (empty = default)
+	enableRecording bool   // Whether to record executions
 }
 
-// NewRunner creates a new executor runner
+// NewRunner creates a new Runner instance with recording enabled by default.
+// The Runner is ready to execute tasks immediately after creation.
 func NewRunner() *Runner {
 	return &Runner{
 		running:         make(map[string]*exec.Cmd),
@@ -135,12 +169,14 @@ func NewRunner() *Runner {
 	}
 }
 
-// SetRecordingsPath sets a custom path for recordings
+// SetRecordingsPath sets a custom directory path for storing execution recordings.
+// If not set, recordings are stored in the default location (~/.pilot/recordings).
 func (r *Runner) SetRecordingsPath(path string) {
 	r.recordingsPath = path
 }
 
-// SetRecordingEnabled enables or disables execution recording
+// SetRecordingEnabled enables or disables execution recording.
+// When enabled, all Claude Code stream events are captured for replay and debugging.
 func (r *Runner) SetRecordingEnabled(enabled bool) {
 	r.enableRecording = enabled
 }
@@ -153,12 +189,17 @@ func (r *Runner) getRecordingsPath() string {
 	return replay.DefaultRecordingsPath()
 }
 
-// OnProgress sets the progress callback
+// OnProgress registers a callback function to receive progress updates during task execution.
+// The callback is invoked whenever the execution phase changes or significant events occur.
 func (r *Runner) OnProgress(callback ProgressCallback) {
 	r.onProgress = callback
 }
 
-// Execute runs a task using Claude Code
+// Execute runs a task using Claude Code and returns the execution result.
+// It handles the complete task lifecycle: branch creation, prompt building,
+// Claude Code invocation, progress tracking, and optional PR creation.
+// The context can be used to cancel execution. Returns an error only for
+// setup failures; execution failures are reported in ExecutionResult.
 func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, error) {
 	start := time.Now()
 	log := r.log.With(slog.String("task_id", task.ID))
@@ -424,7 +465,8 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 	return result, nil
 }
 
-// Cancel cancels a running task
+// Cancel terminates a running task by killing its Claude Code process.
+// Returns an error if the task is not currently running.
 func (r *Runner) Cancel(taskID string) error {
 	r.mu.Lock()
 	cmd, ok := r.running[taskID]
@@ -437,7 +479,7 @@ func (r *Runner) Cancel(taskID string) error {
 	return cmd.Process.Kill()
 }
 
-// IsRunning checks if a task is running
+// IsRunning returns true if the specified task is currently being executed.
 func (r *Runner) IsRunning(taskID string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -445,7 +487,9 @@ func (r *Runner) IsRunning(taskID string) bool {
 	return ok
 }
 
-// BuildPrompt builds the prompt for Claude Code (exported for dry-run preview)
+// BuildPrompt constructs the prompt string sent to Claude Code for a task.
+// It adapts the prompt based on whether the project uses Navigator, adding
+// appropriate workflow instructions. Exported for dry-run preview functionality.
 func (r *Runner) BuildPrompt(task *Task) string {
 	var sb strings.Builder
 

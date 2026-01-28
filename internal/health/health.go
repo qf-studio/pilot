@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/alekspetrov/pilot/internal/config"
@@ -152,7 +153,47 @@ func checkDependencies() []Check {
 		})
 	}
 
+	// Check Mac sleep status (macOS only)
+	if runtime.GOOS == "darwin" {
+		checks = append(checks, checkMacSleep())
+	}
+
 	return checks
+}
+
+// checkMacSleep checks if Mac sleep is disabled for always-on operation
+func checkMacSleep() Check {
+	out, err := exec.Command("pmset", "-g", "custom").Output()
+	if err != nil {
+		return Check{
+			Name:    "sleep",
+			Status:  StatusWarning,
+			Message: "could not check",
+		}
+	}
+
+	// Look for "sleep" setting - format is "sleep		0" or "sleep		1"
+	lines := strings.Split(string(out), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "sleep") {
+			parts := strings.Fields(line)
+			if len(parts) >= 2 && parts[1] == "0" {
+				return Check{
+					Name:    "sleep",
+					Status:  StatusOK,
+					Message: "disabled (always-on)",
+				}
+			}
+		}
+	}
+
+	return Check{
+		Name:    "sleep",
+		Status:  StatusWarning,
+		Message: "enabled (Pilot may pause when idle)",
+		Fix:     "pilot setup --no-sleep",
+	}
 }
 
 // checkConfig validates configuration

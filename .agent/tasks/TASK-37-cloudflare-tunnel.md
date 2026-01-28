@@ -1,6 +1,6 @@
 # TASK-37: Cloudflare Tunnel Integration
 
-**Status**: 📋 Planned
+**Status**: ✅ Complete
 **Priority**: Medium (P3)
 **Created**: 2026-01-27
 **Depends On**: TASK-36 (polling is fallback)
@@ -147,12 +147,12 @@ pilot tunnel url
 
 ## Acceptance Criteria
 
-- [ ] `pilot setup --tunnel` configures Cloudflare Tunnel
-- [ ] Tunnel auto-starts on boot (launchd)
-- [ ] Webhook URL persisted and displayed
-- [ ] GitHub webhook auto-created
-- [ ] Falls back to polling if tunnel unavailable
-- [ ] `pilot tunnel status` shows connection state
+- [x] `pilot setup --tunnel` configures Cloudflare Tunnel
+- [x] Tunnel auto-starts on boot (launchd)
+- [x] Webhook URL persisted and displayed
+- [x] GitHub webhook auto-created (via `gh api` after setup)
+- [x] Falls back to polling if tunnel unavailable
+- [x] `pilot tunnel status` shows connection state
 
 ---
 

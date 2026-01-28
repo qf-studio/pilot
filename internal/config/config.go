@@ -19,9 +19,12 @@ import (
 	"github.com/alekspetrov/pilot/internal/gateway"
 	"github.com/alekspetrov/pilot/internal/logging"
 	"github.com/alekspetrov/pilot/internal/quality"
+	"github.com/alekspetrov/pilot/internal/tunnel"
 )
 
-// Config represents the main configuration
+// Config represents the main Pilot configuration loaded from YAML.
+// It includes settings for the gateway, adapters, orchestrator, memory, projects, and more.
+// Use Load to read from a file or DefaultConfig for sensible defaults.
 type Config struct {
 	Version        string              `yaml:"version"`
 	Gateway        *gateway.Config     `yaml:"gateway"`
@@ -37,9 +40,11 @@ type Config struct {
 	Logging        *logging.Config     `yaml:"logging"`
 	Approval       *approval.Config    `yaml:"approval"`
 	Quality        *quality.Config     `yaml:"quality"`
+	Tunnel         *tunnel.Config      `yaml:"tunnel"`
 }
 
-// AdaptersConfig holds adapter configurations
+// AdaptersConfig holds configuration for external service adapters.
+// Each adapter connects Pilot to a different service (Linear, Slack, GitHub, etc.).
 type AdaptersConfig struct {
 	Linear   *linear.Config   `yaml:"linear"`
 	Slack    *slack.Config    `yaml:"slack"`
@@ -48,14 +53,16 @@ type AdaptersConfig struct {
 	Jira     *jira.Config     `yaml:"jira"`
 }
 
-// OrchestratorConfig holds orchestrator settings
+// OrchestratorConfig holds settings for the task orchestrator including
+// the AI model to use, concurrency limits, and daily brief scheduling.
 type OrchestratorConfig struct {
 	Model         string            `yaml:"model"`
 	MaxConcurrent int               `yaml:"max_concurrent"`
 	DailyBrief    *DailyBriefConfig `yaml:"daily_brief"`
 }
 
-// DailyBriefConfig holds daily brief settings
+// DailyBriefConfig holds settings for automated daily summary reports
+// including schedule, delivery channels, and content filters.
 type DailyBriefConfig struct {
 	Enabled  bool                 `yaml:"enabled"`
 	Schedule string               `yaml:"schedule"` // Cron syntax: "0 9 * * 1-5"
@@ -66,32 +73,32 @@ type DailyBriefConfig struct {
 	Filters  BriefFilterConfig    `yaml:"filters"`
 }
 
-// BriefChannelConfig defines a delivery channel
+// BriefChannelConfig defines a delivery channel for daily briefs (Slack or email).
 type BriefChannelConfig struct {
 	Type       string   `yaml:"type"`       // "slack", "email"
 	Channel    string   `yaml:"channel"`    // For Slack: "#channel-name"
 	Recipients []string `yaml:"recipients"` // For email
 }
 
-// BriefContentConfig controls what content is included
+// BriefContentConfig controls what content is included in daily briefs.
 type BriefContentConfig struct {
 	IncludeMetrics     bool `yaml:"include_metrics"`
 	IncludeErrors      bool `yaml:"include_errors"`
 	MaxItemsPerSection int  `yaml:"max_items_per_section"`
 }
 
-// BriefFilterConfig filters which tasks to include
+// BriefFilterConfig filters which tasks to include in daily briefs.
 type BriefFilterConfig struct {
 	Projects []string `yaml:"projects"` // Empty = all projects
 }
 
-// MemoryConfig holds memory settings
+// MemoryConfig holds settings for the persistent memory/storage system.
 type MemoryConfig struct {
 	Path         string `yaml:"path"`
 	CrossProject bool   `yaml:"cross_project"`
 }
 
-// ProjectConfig holds project configuration
+// ProjectConfig holds configuration for a registered project.
 type ProjectConfig struct {
 	Name          string               `yaml:"name"`
 	Path          string               `yaml:"path"`
@@ -100,19 +107,20 @@ type ProjectConfig struct {
 	GitHub        *ProjectGitHubConfig `yaml:"github,omitempty"`
 }
 
-// ProjectGitHubConfig holds GitHub-specific project configuration
+// ProjectGitHubConfig holds GitHub-specific project configuration for PR creation and issue tracking.
 type ProjectGitHubConfig struct {
 	Owner string `yaml:"owner"`
 	Repo  string `yaml:"repo"`
 }
 
-// DashboardConfig holds dashboard settings
+// DashboardConfig holds settings for the terminal UI dashboard.
 type DashboardConfig struct {
 	RefreshInterval int  `yaml:"refresh_interval"`
 	ShowLogs        bool `yaml:"show_logs"`
 }
 
-// AlertsConfig holds alerting configuration
+// AlertsConfig holds configuration for the alerting system including
+// channels, rules, and default settings.
 type AlertsConfig struct {
 	Enabled  bool                 `yaml:"enabled"`
 	Channels []AlertChannelConfig `yaml:"channels"`
@@ -120,7 +128,8 @@ type AlertsConfig struct {
 	Defaults AlertDefaultsConfig  `yaml:"defaults"`
 }
 
-// AlertChannelConfig configures an alert channel
+// AlertChannelConfig configures a destination channel for alerts.
+// Supports Slack, Telegram, email, webhooks, and PagerDuty.
 type AlertChannelConfig struct {
 	Name       string   `yaml:"name"` // Unique identifier
 	Type       string   `yaml:"type"` // "slack", "telegram", "email", "webhook", "pagerduty"
@@ -135,23 +144,23 @@ type AlertChannelConfig struct {
 	PagerDuty *AlertPagerDutyConfig `yaml:"pagerduty,omitempty"`
 }
 
-// AlertSlackConfig for Slack alerts
+// AlertSlackConfig holds Slack-specific alert channel settings.
 type AlertSlackConfig struct {
 	Channel string `yaml:"channel"` // #channel-name
 }
 
-// AlertTelegramConfig for Telegram alerts
+// AlertTelegramConfig holds Telegram-specific alert channel settings.
 type AlertTelegramConfig struct {
 	ChatID int64 `yaml:"chat_id"`
 }
 
-// AlertEmailConfig for email alerts
+// AlertEmailConfig holds email-specific alert channel settings.
 type AlertEmailConfig struct {
 	To      []string `yaml:"to"`
 	Subject string   `yaml:"subject"` // Optional custom subject template
 }
 
-// AlertWebhookConfig for webhook alerts
+// AlertWebhookConfig holds webhook-specific alert channel settings.
 type AlertWebhookConfig struct {
 	URL     string            `yaml:"url"`
 	Method  string            `yaml:"method"` // POST, PUT
@@ -159,13 +168,13 @@ type AlertWebhookConfig struct {
 	Secret  string            `yaml:"secret"` // For HMAC signing
 }
 
-// AlertPagerDutyConfig for PagerDuty alerts
+// AlertPagerDutyConfig holds PagerDuty-specific alert channel settings.
 type AlertPagerDutyConfig struct {
 	RoutingKey string `yaml:"routing_key"` // Integration key
 	ServiceID  string `yaml:"service_id"`
 }
 
-// AlertRuleConfig defines an alert rule
+// AlertRuleConfig defines a rule that triggers alerts based on specific conditions.
 type AlertRuleConfig struct {
 	Name        string               `yaml:"name"`
 	Type        string               `yaml:"type"` // "task_stuck", "task_failed", etc.
@@ -177,7 +186,7 @@ type AlertRuleConfig struct {
 	Description string               `yaml:"description"`
 }
 
-// AlertConditionConfig defines alert trigger conditions
+// AlertConditionConfig defines the conditions that trigger an alert rule.
 type AlertConditionConfig struct {
 	ProgressUnchangedFor time.Duration `yaml:"progress_unchanged_for"`
 	ConsecutiveFailures  int           `yaml:"consecutive_failures"`
@@ -189,14 +198,16 @@ type AlertConditionConfig struct {
 	Paths                []string      `yaml:"paths"`
 }
 
-// AlertDefaultsConfig contains default alert settings
+// AlertDefaultsConfig contains default settings applied to all alert rules.
 type AlertDefaultsConfig struct {
 	Cooldown           time.Duration `yaml:"cooldown"`
 	DefaultSeverity    string        `yaml:"default_severity"`
 	SuppressDuplicates bool          `yaml:"suppress_duplicates"`
 }
 
-// DefaultConfig returns a configuration with sensible defaults
+// DefaultConfig returns a new Config instance with sensible default values.
+// The gateway binds to localhost:9090, recording is enabled, and common
+// alert rules are pre-configured but disabled.
 func DefaultConfig() *Config {
 	homeDir, _ := os.UserHomeDir()
 	return &Config{
@@ -256,6 +267,7 @@ func DefaultConfig() *Config {
 		Logging:  logging.DefaultConfig(),
 		Approval: approval.DefaultConfig(),
 		Quality:  quality.DefaultConfig(),
+		Tunnel:   tunnel.DefaultConfig(),
 	}
 }
 
@@ -323,7 +335,10 @@ func defaultAlertRules() []AlertRuleConfig {
 	}
 }
 
-// Load loads configuration from a file
+// Load reads and parses configuration from a YAML file at the given path.
+// Environment variables in the file are expanded using os.ExpandEnv syntax.
+// If the file does not exist, default configuration is returned.
+// Returns an error if the file cannot be read or parsed.
 func Load(path string) (*Config, error) {
 	config := DefaultConfig()
 
@@ -353,7 +368,8 @@ func Load(path string) (*Config, error) {
 	return config, nil
 }
 
-// Save saves configuration to a file
+// Save writes the configuration to a YAML file at the given path.
+// It creates the parent directory if it does not exist.
 func Save(config *Config, path string) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0755); err != nil {
@@ -372,7 +388,7 @@ func Save(config *Config, path string) error {
 	return nil
 }
 
-// DefaultConfigPath returns the default configuration path
+// DefaultConfigPath returns the default configuration file path (~/.pilot/config.yaml).
 func DefaultConfigPath() string {
 	homeDir, _ := os.UserHomeDir()
 	return filepath.Join(homeDir, ".pilot", "config.yaml")
@@ -387,7 +403,8 @@ func expandPath(path string) string {
 	return path
 }
 
-// Validate validates the configuration
+// Validate checks the configuration for errors and returns an error if invalid.
+// It validates required fields, port ranges, and authentication settings.
 func (c *Config) Validate() error {
 	if c.Gateway == nil {
 		return fmt.Errorf("gateway configuration is required")
@@ -401,7 +418,8 @@ func (c *Config) Validate() error {
 	return nil
 }
 
-// GetProject returns project configuration by path
+// GetProject returns the project configuration for a given filesystem path.
+// Returns nil if no project is configured for that path.
 func (c *Config) GetProject(path string) *ProjectConfig {
 	for _, project := range c.Projects {
 		if project.Path == path {
@@ -411,7 +429,8 @@ func (c *Config) GetProject(path string) *ProjectConfig {
 	return nil
 }
 
-// GetProjectByName returns project configuration by name (case-insensitive)
+// GetProjectByName returns the project configuration matching the given name.
+// The comparison is case-insensitive. Returns nil if no matching project is found.
 func (c *Config) GetProjectByName(name string) *ProjectConfig {
 	nameLower := strings.ToLower(name)
 	for _, project := range c.Projects {
@@ -422,7 +441,9 @@ func (c *Config) GetProjectByName(name string) *ProjectConfig {
 	return nil
 }
 
-// GetDefaultProject returns the default project configuration
+// GetDefaultProject returns the default project configuration.
+// It first checks the DefaultProject setting by name, then falls back to the first project.
+// Returns nil if no projects are configured.
 func (c *Config) GetDefaultProject() *ProjectConfig {
 	if c.DefaultProject != "" {
 		if proj := c.GetProjectByName(c.DefaultProject); proj != nil {

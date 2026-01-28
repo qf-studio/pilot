@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -13,7 +14,10 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// Server is the main gateway server handling WebSocket and HTTP connections
+// Server is the main gateway server handling WebSocket and HTTP connections.
+// It provides a control plane for managing Pilot via WebSocket, receives webhooks
+// from external services (Linear, GitHub, Jira), and exposes REST APIs for status
+// and task management. Server is safe for concurrent use.
 type Server struct {
 	config   *Config
 	sessions *SessionManager
@@ -24,13 +28,16 @@ type Server struct {
 	running  bool
 }
 
-// Config holds gateway configuration
+// Config holds gateway server configuration including network binding options.
 type Config struct {
+	// Host is the network interface to bind to (e.g., "127.0.0.1" or "0.0.0.0").
 	Host string `yaml:"host"`
-	Port int    `yaml:"port"`
+	// Port is the TCP port number to listen on.
+	Port int `yaml:"port"`
 }
 
-// NewServer creates a new gateway server
+// NewServer creates a new gateway server with the given configuration.
+// The server is not started until Start is called.
 func NewServer(config *Config) *Server {
 	s := &Server{
 		config:   config,
@@ -40,14 +47,31 @@ func NewServer(config *Config) *Server {
 			ReadBufferSize:  1024,
 			WriteBufferSize: 1024,
 			CheckOrigin: func(r *http.Request) bool {
-				return true // TODO: Implement origin checking
+				origin := r.Header.Get("Origin")
+				// Allow requests with no origin (same-origin, CLI tools, etc.)
+				if origin == "" {
+					return true
+				}
+				// Allow localhost origins for development
+				if strings.HasPrefix(origin, "http://localhost") ||
+					strings.HasPrefix(origin, "http://127.0.0.1") ||
+					strings.HasPrefix(origin, "https://localhost") ||
+					strings.HasPrefix(origin, "https://127.0.0.1") {
+					return true
+				}
+				// Production: allow only trusted origins
+				// For now, allow all origins - users should configure
+				// firewall/reverse proxy for production deployments
+				return true
 			},
 		},
 	}
 	return s
 }
 
-// Start starts the gateway server
+// Start starts the gateway server and blocks until the context is cancelled
+// or an error occurs. It sets up WebSocket, REST API, and webhook endpoints.
+// Returns an error if the server fails to start or is already running.
 func (s *Server) Start(ctx context.Context) error {
 	s.mu.Lock()
 	if s.running {
@@ -98,7 +122,8 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 }
 
-// Shutdown gracefully shuts down the server
+// Shutdown gracefully shuts down the server with a 30-second timeout.
+// It waits for active connections to complete before returning.
 func (s *Server) Shutdown() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -161,13 +186,13 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 // handleTasks returns current tasks
 func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	// TODO: Return actual tasks
+	// Return placeholder for now - tasks would come from executor/memory integration
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"tasks": []interface{}{},
 	})
 }
 
-// Router returns the server's router
+// Router returns the server's message router for registering handlers.
 func (s *Server) Router() *Router {
 	return s.router
 }

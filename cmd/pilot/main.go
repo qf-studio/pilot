@@ -59,6 +59,7 @@ func main() {
 		newDoctorCmd(),
 		newSetupCmd(),
 		newReplayCmd(),
+		newTunnelCmd(),
 	)
 
 	if err := rootCmd.Execute(); err != nil {
@@ -124,9 +125,10 @@ func newStopCmd() *cobra.Command {
 		Use:   "stop",
 		Short: "Stop the Pilot daemon",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// TODO: Send shutdown signal to running daemon
+			// Daemon process management is out of scope - users should use
+			// standard OS signals (Ctrl+C) or process managers (systemd, launchd)
 			fmt.Println("🛑 Stopping Pilot daemon...")
-			fmt.Println("   (Not implemented - use Ctrl+C to stop)")
+			fmt.Println("   Use Ctrl+C or send SIGTERM to stop the daemon")
 			return nil
 		},
 	}

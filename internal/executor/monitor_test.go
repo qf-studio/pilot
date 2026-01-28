@@ -157,3 +157,181 @@ func TestMonitorRemove(t *testing.T) {
 		t.Error("Task should have been removed")
 	}
 }
+
+func TestMonitorCancel(t *testing.T) {
+	monitor := NewMonitor()
+	monitor.Register("task-1", "Test Task")
+	monitor.Start("task-1")
+
+	monitor.Cancel("task-1")
+
+	state, ok := monitor.Get("task-1")
+	if !ok {
+		t.Fatal("Task should still exist after cancel")
+	}
+	if state.Status != StatusCancelled {
+		t.Errorf("Expected status cancelled, got %s", state.Status)
+	}
+	if state.Phase != "Cancelled" {
+		t.Errorf("Expected phase 'Cancelled', got '%s'", state.Phase)
+	}
+	if state.CompletedAt == nil {
+		t.Error("CompletedAt should be set on cancel")
+	}
+}
+
+func TestMonitorGetNonexistent(t *testing.T) {
+	monitor := NewMonitor()
+
+	state, ok := monitor.Get("nonexistent")
+	if ok {
+		t.Error("Should not find nonexistent task")
+	}
+	if state != nil {
+		t.Error("State should be nil for nonexistent task")
+	}
+}
+
+func TestMonitorOperationsOnNonexistent(t *testing.T) {
+	monitor := NewMonitor()
+
+	// These should not panic on nonexistent tasks
+	monitor.Start("nonexistent")
+	monitor.UpdateProgress("nonexistent", "Phase", 50, "Message")
+	monitor.Complete("nonexistent", "url")
+	monitor.Fail("nonexistent", "error")
+	monitor.Cancel("nonexistent")
+	monitor.Remove("nonexistent")
+
+	// Count should still be 0
+	if monitor.Count() != 0 {
+		t.Errorf("Count should be 0, got %d", monitor.Count())
+	}
+}
+
+func TestMonitorUpdateProgressEmptyMessage(t *testing.T) {
+	monitor := NewMonitor()
+	monitor.Register("task-1", "Test Task")
+	monitor.UpdateProgress("task-1", "Phase1", 25, "Initial message")
+
+	// Update with empty message should not overwrite existing message
+	monitor.UpdateProgress("task-1", "Phase2", 50, "")
+
+	state, _ := monitor.Get("task-1")
+	if state.Phase != "Phase2" {
+		t.Errorf("Phase should update to Phase2, got %s", state.Phase)
+	}
+	if state.Progress != 50 {
+		t.Errorf("Progress should update to 50, got %d", state.Progress)
+	}
+	if state.Message != "Initial message" {
+		t.Errorf("Empty message should not overwrite, got '%s'", state.Message)
+	}
+}
+
+func TestMonitorGetReturnsCopy(t *testing.T) {
+	monitor := NewMonitor()
+	monitor.Register("task-1", "Test Task")
+	monitor.Start("task-1")
+
+	state1, _ := monitor.Get("task-1")
+	state1.Progress = 999 // Modify the copy
+
+	state2, _ := monitor.Get("task-1")
+	if state2.Progress == 999 {
+		t.Error("Get should return a copy, not the original")
+	}
+}
+
+func TestMonitorGetRunningMultiple(t *testing.T) {
+	monitor := NewMonitor()
+	monitor.Register("task-1", "Task 1")
+	monitor.Register("task-2", "Task 2")
+	monitor.Register("task-3", "Task 3")
+
+	monitor.Start("task-1")
+	monitor.Start("task-2")
+	// task-3 remains pending
+
+	running := monitor.GetRunning()
+	if len(running) != 2 {
+		t.Errorf("Expected 2 running tasks, got %d", len(running))
+	}
+
+	// Verify both running tasks are included
+	ids := map[string]bool{}
+	for _, s := range running {
+		ids[s.ID] = true
+	}
+	if !ids["task-1"] || !ids["task-2"] {
+		t.Error("GetRunning should include task-1 and task-2")
+	}
+	if ids["task-3"] {
+		t.Error("GetRunning should not include pending task-3")
+	}
+}
+
+func TestMonitorGetRunningNoRunning(t *testing.T) {
+	monitor := NewMonitor()
+	monitor.Register("task-1", "Task 1")
+	monitor.Register("task-2", "Task 2")
+
+	running := monitor.GetRunning()
+	if len(running) != 0 {
+		t.Errorf("Expected 0 running tasks, got %d", len(running))
+	}
+}
+
+func TestTaskStatusConstants(t *testing.T) {
+	tests := []struct {
+		status   TaskStatus
+		expected string
+	}{
+		{StatusPending, "pending"},
+		{StatusQueued, "queued"},
+		{StatusRunning, "running"},
+		{StatusCompleted, "completed"},
+		{StatusFailed, "failed"},
+		{StatusCancelled, "cancelled"},
+	}
+
+	for _, tt := range tests {
+		t.Run(string(tt.status), func(t *testing.T) {
+			if string(tt.status) != tt.expected {
+				t.Errorf("status = %q, want %q", tt.status, tt.expected)
+			}
+		})
+	}
+}
+
+func TestTaskStateFields(t *testing.T) {
+	state := &TaskState{
+		ID:       "TASK-123",
+		Title:    "Test Task",
+		Status:   StatusRunning,
+		Phase:    "Implementing",
+		Progress: 50,
+		Message:  "Working on it",
+		Error:    "",
+		PRUrl:    "",
+	}
+
+	if state.ID != "TASK-123" {
+		t.Errorf("ID = %q, want TASK-123", state.ID)
+	}
+	if state.Title != "Test Task" {
+		t.Errorf("Title = %q, want Test Task", state.Title)
+	}
+	if state.Status != StatusRunning {
+		t.Errorf("Status = %v, want running", state.Status)
+	}
+	if state.Phase != "Implementing" {
+		t.Errorf("Phase = %q, want Implementing", state.Phase)
+	}
+	if state.Progress != 50 {
+		t.Errorf("Progress = %d, want 50", state.Progress)
+	}
+	if state.Message != "Working on it" {
+		t.Errorf("Message = %q, want Working on it", state.Message)
+	}
+}

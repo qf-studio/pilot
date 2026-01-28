@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/alekspetrov/pilot/internal/adapters/telegram"
@@ -13,8 +15,11 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var noSleep bool
+
 func newSetupCmd() *cobra.Command {
 	var skipOptional bool
+	var setupTunnel bool
 
 	cmd := &cobra.Command{
 		Use:   "setup",
@@ -27,11 +32,24 @@ Sets up:
   - Voice transcription
   - Daily briefs
   - Alerts
+  - Cloudflare Tunnel (with --tunnel flag)
 
 Examples:
   pilot setup              # Full interactive setup
-  pilot setup --skip-optional  # Skip optional features`,
+  pilot setup --skip-optional  # Skip optional features
+  pilot setup --tunnel     # Set up Cloudflare Tunnel for webhooks`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// If --tunnel flag, redirect to tunnel setup
+			if setupTunnel {
+				tunnelCmd := newTunnelSetupCmd()
+				return tunnelCmd.RunE(tunnelCmd, args)
+			}
+
+			// If --no-sleep flag, disable Mac sleep and exit
+			if noSleep {
+				return disableMacSleep()
+			}
+
 			reader := bufio.NewReader(os.Stdin)
 
 			// Load existing config or create new
@@ -162,8 +180,44 @@ Examples:
 	}
 
 	cmd.Flags().BoolVar(&skipOptional, "skip-optional", false, "Skip optional feature setup")
+	cmd.Flags().BoolVar(&setupTunnel, "tunnel", false, "Set up Cloudflare Tunnel for webhooks (runs pilot tunnel setup)")
+
+	cmd.Flags().BoolVar(&noSleep, "no-sleep", false, "Disable Mac sleep for always-on operation (macOS only, requires sudo)")
 
 	return cmd
+}
+
+// disableMacSleep disables system sleep on macOS for always-on operation
+func disableMacSleep() error {
+	if runtime.GOOS != "darwin" {
+		fmt.Println("⚠️  --no-sleep only works on macOS")
+		return nil
+	}
+
+	fmt.Println("🔋 Disabling Mac sleep...")
+	fmt.Println()
+	fmt.Println("This requires administrator privileges.")
+	fmt.Println("You may be prompted for your password.")
+	fmt.Println()
+
+	cmd := exec.Command("sudo", "pmset", "-a", "sleep", "0")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Stdin = os.Stdin
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to disable sleep: %w", err)
+	}
+
+	fmt.Println()
+	fmt.Println("✅ Mac sleep disabled")
+	fmt.Println()
+	fmt.Println("Your Mac will no longer sleep automatically.")
+	fmt.Println("To re-enable sleep later:")
+	fmt.Println("  sudo pmset -a sleep 1")
+	fmt.Println()
+
+	return nil
 }
 
 func setupTelegram(reader *bufio.Reader, cfg *config.Config) error {

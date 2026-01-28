@@ -332,3 +332,285 @@ func TestEmptyBriefFormatting(t *testing.T) {
 		})
 	}
 }
+
+func TestPlainTextFormatterWithLongError(t *testing.T) {
+	brief := &Brief{
+		GeneratedAt: time.Now(),
+		Period: BriefPeriod{
+			Start: time.Now().Add(-24 * time.Hour),
+			End:   time.Now(),
+		},
+		Completed:  []TaskSummary{},
+		InProgress: []TaskSummary{},
+		Blocked: []BlockedTask{
+			{
+				TaskSummary: TaskSummary{
+					ID:     "TASK-001",
+					Status: "failed",
+				},
+				// Error longer than 60 characters should be truncated
+				Error: "This is a very long error message that should be truncated because it exceeds the maximum length allowed in the plain text formatter output",
+			},
+		},
+		Upcoming: []TaskSummary{},
+		Metrics:  BriefMetrics{},
+	}
+
+	formatter := NewPlainTextFormatter()
+	text, err := formatter.Format(brief)
+	if err != nil {
+		t.Fatalf("failed to format: %v", err)
+	}
+
+	// Should contain truncated error with "..."
+	if !strings.Contains(text, "...") {
+		t.Error("expected truncated error with '...'")
+	}
+}
+
+func TestPlainTextFormatterWithMultilineError(t *testing.T) {
+	brief := &Brief{
+		GeneratedAt: time.Now(),
+		Period: BriefPeriod{
+			Start: time.Now().Add(-24 * time.Hour),
+			End:   time.Now(),
+		},
+		Completed:  []TaskSummary{},
+		InProgress: []TaskSummary{},
+		Blocked: []BlockedTask{
+			{
+				TaskSummary: TaskSummary{
+					ID:     "TASK-001",
+					Status: "failed",
+				},
+				// Multi-line error - should only show first line
+				Error: "First line of error\nSecond line\nThird line",
+			},
+		},
+		Upcoming: []TaskSummary{},
+		Metrics:  BriefMetrics{},
+	}
+
+	formatter := NewPlainTextFormatter()
+	text, err := formatter.Format(brief)
+	if err != nil {
+		t.Fatalf("failed to format: %v", err)
+	}
+
+	// Should contain first line
+	if !strings.Contains(text, "First line of error") {
+		t.Error("expected first line of error")
+	}
+}
+
+func TestSlackFormatterWithLongError(t *testing.T) {
+	brief := &Brief{
+		GeneratedAt: time.Now(),
+		Period: BriefPeriod{
+			Start: time.Now().Add(-24 * time.Hour),
+			End:   time.Now(),
+		},
+		Completed:  []TaskSummary{},
+		InProgress: []TaskSummary{},
+		Blocked: []BlockedTask{
+			{
+				TaskSummary: TaskSummary{
+					ID:     "TASK-001",
+					Status: "failed",
+				},
+				// Error longer than 80 characters should be truncated
+				Error: "This is a very long error message that should definitely be truncated because it is way too long for the Slack format",
+			},
+		},
+		Upcoming: []TaskSummary{},
+		Metrics:  BriefMetrics{},
+	}
+
+	formatter := NewSlackFormatter()
+	text, err := formatter.Format(brief)
+	if err != nil {
+		t.Fatalf("failed to format: %v", err)
+	}
+
+	// Should contain truncated error with "..."
+	if !strings.Contains(text, "...") {
+		t.Error("expected truncated error with '...'")
+	}
+}
+
+func TestSlackFormatterBlocksWithLongError(t *testing.T) {
+	brief := &Brief{
+		GeneratedAt: time.Now(),
+		Period: BriefPeriod{
+			Start: time.Now().Add(-24 * time.Hour),
+			End:   time.Now(),
+		},
+		Completed:  []TaskSummary{},
+		InProgress: []TaskSummary{},
+		Blocked: []BlockedTask{
+			{
+				TaskSummary: TaskSummary{
+					ID:     "TASK-001",
+					Status: "failed",
+				},
+				// Error longer than 50 characters should be truncated in blocks
+				Error: "This error message is longer than fifty characters and will be truncated",
+			},
+		},
+		Upcoming: []TaskSummary{},
+		Metrics:  BriefMetrics{},
+	}
+
+	formatter := NewSlackFormatter()
+	blocks := formatter.SlackBlocks(brief)
+
+	if len(blocks) == 0 {
+		t.Fatal("expected blocks, got none")
+	}
+
+	// Find the blocked section and verify truncation
+	found := false
+	for _, block := range blocks {
+		if block["type"] == "section" {
+			if text, ok := block["text"].(map[string]interface{}); ok {
+				if textStr, ok := text["text"].(string); ok {
+					if strings.Contains(textStr, "Blocked") && strings.Contains(textStr, "...") {
+						found = true
+						break
+					}
+				}
+			}
+		}
+	}
+
+	if !found {
+		t.Error("expected blocked section with truncated error")
+	}
+}
+
+func TestEmailFormatterWithLongError(t *testing.T) {
+	brief := &Brief{
+		GeneratedAt: time.Now(),
+		Period: BriefPeriod{
+			Start: time.Now().Add(-24 * time.Hour),
+			End:   time.Now(),
+		},
+		Completed:  []TaskSummary{},
+		InProgress: []TaskSummary{},
+		Blocked: []BlockedTask{
+			{
+				TaskSummary: TaskSummary{
+					ID:     "TASK-001",
+					Status: "failed",
+				},
+				// Error longer than 100 characters should be truncated
+				Error: "This is a very very very long error message that should definitely be truncated because it is much too long for the email format output display",
+			},
+		},
+		Upcoming: []TaskSummary{},
+		Metrics:  BriefMetrics{},
+	}
+
+	formatter := NewEmailFormatter()
+	text, err := formatter.Format(brief)
+	if err != nil {
+		t.Fatalf("failed to format: %v", err)
+	}
+
+	// Should contain truncated error with "..."
+	if !strings.Contains(text, "...") {
+		t.Error("expected truncated error with '...'")
+	}
+}
+
+func TestFormatDurationEdgeCases(t *testing.T) {
+	tests := []struct {
+		ms       int64
+		expected string
+	}{
+		{45000, "45s"},     // 45 seconds
+		{59000, "59s"},     // Just under a minute
+		{61000, "1m"},      // Just over a minute
+		{119000, "1m"},     // Just under 2 minutes
+		{3599000, "59m"},   // Just under an hour
+		{3601000, "1h 0m"}, // Just over an hour
+		{7200000, "2h 0m"}, // 2 hours exact
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.expected, func(t *testing.T) {
+			result := formatDuration(tt.ms)
+			if result != tt.expected {
+				t.Errorf("formatDuration(%d) = %q, want %q", tt.ms, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestSlackFormatterWithCompletedTasksNoPR(t *testing.T) {
+	brief := &Brief{
+		GeneratedAt: time.Now(),
+		Period: BriefPeriod{
+			Start: time.Now().Add(-24 * time.Hour),
+			End:   time.Now(),
+		},
+		Completed: []TaskSummary{
+			{
+				ID:         "TASK-001",
+				Title:      "Task without PR",
+				Status:     "completed",
+				PRUrl:      "", // No PR URL
+				DurationMs: 60000,
+			},
+		},
+		InProgress: []TaskSummary{},
+		Blocked:    []BlockedTask{},
+		Upcoming:   []TaskSummary{},
+		Metrics:    BriefMetrics{CompletedCount: 1, TotalTasks: 1, SuccessRate: 1.0},
+	}
+
+	formatter := NewSlackFormatter()
+	text, err := formatter.Format(brief)
+	if err != nil {
+		t.Fatalf("failed to format: %v", err)
+	}
+
+	// Should contain task ID but not PR link
+	if !strings.Contains(text, "TASK-001") {
+		t.Error("expected task ID in output")
+	}
+	if strings.Contains(text, "PR ready") {
+		t.Error("should not contain PR link for task without PR")
+	}
+}
+
+func TestSlackFormatterBlocksWithEmptySections(t *testing.T) {
+	brief := &Brief{
+		GeneratedAt: time.Now(),
+		Period: BriefPeriod{
+			Start: time.Now().Add(-24 * time.Hour),
+			End:   time.Now(),
+		},
+		Completed:  []TaskSummary{},
+		InProgress: []TaskSummary{},
+		Blocked:    []BlockedTask{}, // Empty blocked - should not have blocked section
+		Upcoming:   []TaskSummary{},
+		Metrics:    BriefMetrics{},
+	}
+
+	formatter := NewSlackFormatter()
+	blocks := formatter.SlackBlocks(brief)
+
+	// Should not have blocked section when empty
+	for _, block := range blocks {
+		if block["type"] == "section" {
+			if text, ok := block["text"].(map[string]interface{}); ok {
+				if textStr, ok := text["text"].(string); ok {
+					if strings.Contains(textStr, "Blocked") {
+						t.Error("should not have blocked section when empty")
+					}
+				}
+			}
+		}
+	}
+}

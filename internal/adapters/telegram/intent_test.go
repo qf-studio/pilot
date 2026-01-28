@@ -163,3 +163,341 @@ func TestContainsTaskReference(t *testing.T) {
 		})
 	}
 }
+
+// TestIsTask tests the isTask function
+func TestIsTask(t *testing.T) {
+	tests := []struct {
+		message  string
+		expected bool
+	}{
+		{"create a new file", true},
+		{"add authentication", true},
+		{"fix the bug", true},
+		{"update the readme", true},
+		{"implement feature x", true},
+		{"refactor the code", true},
+		{"delete old files", true},
+		{"remove unused imports", true},
+		{"please create a file", true},
+		{"can you add a test", true},
+		{"i need fix for this", true},  // "i need <action>" pattern
+		{"i want update docs", true},   // "i want <action>" pattern
+		{"hello world", false},
+		{"what is this", false},
+		{"show me the code", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.message, func(t *testing.T) {
+			got := isTask(tt.message)
+			if got != tt.expected {
+				t.Errorf("isTask(%q) = %v, want %v", tt.message, got, tt.expected)
+			}
+		})
+	}
+}
+
+// TestContainsActionWord tests action word detection
+func TestContainsActionWord(t *testing.T) {
+	tests := []struct {
+		message  string
+		expected bool
+	}{
+		// Starts with action
+		{"create file", true},
+		{"add test", true},
+		{"fix bug", true},
+		{"update docs", true},
+		{"implement feature", true},
+		{"refactor code", true},
+		{"delete file", true},
+		{"remove line", true},
+		{"generate report", true},
+		{"setup project", true},
+		{"configure settings", true},
+		{"install package", true},
+		{"write test", true},
+		{"build project", true},
+		{"make changes", true},
+		{"modify file", true},
+		{"change config", true},
+		{"edit code", true},
+		// Meta-task actions
+		{"review tasks", true},
+		{"prioritize backlog", true},
+		{"reorder items", true},
+		{"sort list", true},
+		{"organize files", true},
+		{"rank tasks", true},
+		{"triage issues", true},
+		{"set priority high", true},
+		// With prefixes
+		{"please create a file", true},
+		{"can you add a test", true},
+		{"i need fix for this", true},      // "i need <action>" pattern (no "to" between)
+		{"i want update the docs", true},   // "i want <action>" pattern (no "to" between)
+		// Non-action messages
+		{"hello", false},
+		{"what is this", false},
+		{"show me", false},
+		{"explain how", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.message, func(t *testing.T) {
+			got := containsActionWord(tt.message)
+			if got != tt.expected {
+				t.Errorf("containsActionWord(%q) = %v, want %v", tt.message, got, tt.expected)
+			}
+		})
+	}
+}
+
+// TestIsLikelyGreeting tests greeting detection for short messages
+func TestIsLikelyGreeting(t *testing.T) {
+	tests := []struct {
+		message  string
+		expected bool
+	}{
+		{"hi", true},
+		{"hello", true},
+		{"hey", true},
+		{"hi there", true},
+		{"hello!", true},
+		{"hello,", true},
+		{"good morning", true},
+		{"good afternoon", true},
+		{"good evening", true},
+		{"howdy", true},
+		{"greetings", true},
+		{"what's up", true},
+		{"whats up", true},
+		{"hola", true},
+		{"привет", true},
+		{"yo", true},
+		{"sup", true},
+		{"hello how are you today", false}, // too long
+		{"hi can you help me with this task", false}, // too long
+		{"create file", false},
+		{"fix bug", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.message, func(t *testing.T) {
+			got := isLikelyGreeting(tt.message)
+			if got != tt.expected {
+				t.Errorf("isLikelyGreeting(%q) = %v, want %v", tt.message, got, tt.expected)
+			}
+		})
+	}
+}
+
+// TestDetectIntentEdgeCases tests edge cases in intent detection
+func TestDetectIntentEdgeCases(t *testing.T) {
+	tests := []struct {
+		name     string
+		message  string
+		expected Intent
+	}{
+		// Commands always win
+		{"slash command with text", "/help me with something", IntentCommand},
+		{"slash command uppercase", "/STATUS", IntentCommand},
+
+		// Short greetings
+		{"just hi", "hi", IntentGreeting},
+		{"hi with punctuation", "hi!", IntentGreeting},
+
+		// Questions with question patterns
+		{"what with question mark", "what is this?", IntentQuestion},
+		{"how question", "how do I run tests", IntentQuestion},
+		{"where question", "where is the config", IntentQuestion},
+		{"why question", "why is this failing", IntentQuestion},
+		{"explain phrase", "explain the auth flow", IntentQuestion},
+		{"show me phrase", "show me the handlers", IntentQuestion},
+		{"list phrase", "list all endpoints", IntentQuestion},
+
+		// Questions with quick-info keywords
+		{"issues keyword", "what are the issues", IntentQuestion},
+		{"backlog keyword", "show backlog", IntentQuestion},
+		{"todos keyword", "show me the todos", IntentQuestion},
+		{"status keyword", "check status", IntentQuestion},
+
+		// Tasks with action words
+		{"create task", "create a new handler", IntentTask},
+		{"fix task", "fix the login bug", IntentTask},
+		{"add task", "add error handling", IntentTask},
+
+		// Task references
+		{"task id reference", "TASK-07", IntentTask},
+		{"number reference", "07", IntentTask},
+		{"pick command", "pick 04", IntentTask},
+
+		// Ambiguous (defaults to task)
+		{"ambiguous long", "something about the code that is unclear", IntentTask},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := DetectIntent(tt.message)
+			if got != tt.expected {
+				t.Errorf("DetectIntent(%q) = %v, want %v", tt.message, got, tt.expected)
+			}
+		})
+	}
+}
+
+// TestIntentConstants tests intent constant values
+func TestIntentConstants(t *testing.T) {
+	// Verify intent constants have expected string values
+	tests := []struct {
+		intent   Intent
+		expected string
+	}{
+		{IntentGreeting, "greeting"},
+		{IntentQuestion, "question"},
+		{IntentTask, "task"},
+		{IntentCommand, "command"},
+	}
+
+	for _, tt := range tests {
+		t.Run(string(tt.intent), func(t *testing.T) {
+			if string(tt.intent) != tt.expected {
+				t.Errorf("Intent = %q, want %q", string(tt.intent), tt.expected)
+			}
+		})
+	}
+}
+
+// TestGreetingPatterns tests that all greeting patterns are recognized
+func TestGreetingPatterns(t *testing.T) {
+	// Each pattern should be recognized as greeting when alone
+	for _, pattern := range greetingPatterns {
+		t.Run(pattern, func(t *testing.T) {
+			intent := DetectIntent(pattern)
+			if intent != IntentGreeting {
+				t.Errorf("DetectIntent(%q) = %v, want %v", pattern, intent, IntentGreeting)
+			}
+		})
+	}
+}
+
+// TestQuestionPatterns tests that question patterns work
+func TestQuestionPatterns(t *testing.T) {
+	// Each pattern should trigger question detection
+	testMessages := []string{
+		"what is the project structure?",
+		"how do I run the tests?",
+		"where is the config file?",
+		"why is this failing?",
+		"when is the release?",
+		"who is the maintainer?",
+		"can you tell me about auth?",
+		"do you know how this works?",
+		"is there a test file?",
+	}
+
+	for _, msg := range testMessages {
+		t.Run(msg, func(t *testing.T) {
+			intent := DetectIntent(msg)
+			if intent != IntentQuestion {
+				t.Errorf("DetectIntent(%q) = %v, want %v", msg, intent, IntentQuestion)
+			}
+		})
+	}
+}
+
+// TestTaskActionWords tests task action word patterns
+func TestTaskActionWords(t *testing.T) {
+	// All action words should be recognized
+	actions := []string{
+		"create", "add", "make", "build", "implement",
+		"fix", "update", "modify", "change", "edit",
+		"delete", "remove", "refactor", "write",
+		"generate", "setup", "configure", "install",
+		"review", "prioritize", "reprioritize", "reorder",
+		"sort", "organize", "rank", "triage",
+	}
+
+	for _, action := range actions {
+		t.Run(action, func(t *testing.T) {
+			msg := action + " something"
+			intent := DetectIntent(msg)
+			if intent != IntentTask {
+				t.Errorf("DetectIntent(%q) = %v, want %v", msg, intent, IntentTask)
+			}
+		})
+	}
+}
+
+// TestQuestionKeywordsWithoutActions tests question keywords
+func TestQuestionKeywordsWithoutActions(t *testing.T) {
+	tests := []struct {
+		message  string
+		expected Intent
+	}{
+		{"what are the issues", IntentQuestion},
+		{"show me the tasks", IntentQuestion},
+		{"list the backlog", IntentQuestion},
+		{"check the status", IntentQuestion},
+		{"show todos", IntentQuestion},
+		{"what are the fixmes", IntentQuestion},
+		{"tell me about the project", IntentQuestion},
+		{"describe the architecture", IntentQuestion},
+		{"find all handlers", IntentQuestion},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.message, func(t *testing.T) {
+			got := DetectIntent(tt.message)
+			if got != tt.expected {
+				t.Errorf("DetectIntent(%q) = %v, want %v", tt.message, got, tt.expected)
+			}
+		})
+	}
+}
+
+// TestShortMessages tests classification of very short messages
+func TestShortMessages(t *testing.T) {
+	tests := []struct {
+		message  string
+		expected Intent
+	}{
+		{"hi", IntentGreeting},
+		{"yo", IntentGreeting},
+		{"07", IntentTask},       // task reference
+		{"#5", IntentTask},       // issue reference
+		{"fix", IntentTask},      // action word
+		{"?", IntentQuestion},    // question mark triggers question
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.message, func(t *testing.T) {
+			got := DetectIntent(tt.message)
+			if got != tt.expected {
+				t.Errorf("DetectIntent(%q) = %v, want %v", tt.message, got, tt.expected)
+			}
+		})
+	}
+}
+
+// TestIntentStringConversion tests intent to string conversion
+func TestIntentStringConversion(t *testing.T) {
+	tests := []struct {
+		intent Intent
+		want   string
+	}{
+		{IntentGreeting, "greeting"},
+		{IntentQuestion, "question"},
+		{IntentTask, "task"},
+		{IntentCommand, "command"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.want, func(t *testing.T) {
+			got := string(tt.intent)
+			if got != tt.want {
+				t.Errorf("string(%v) = %q, want %q", tt.intent, got, tt.want)
+			}
+		})
+	}
+}

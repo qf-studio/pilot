@@ -68,10 +68,13 @@ func (s *Scheduler) Start(ctx context.Context) error {
 	s.cron.Start()
 	s.running = true
 
+	// Get next run without lock (we already hold it)
+	nextRun := s.cron.Entry(s.entryID).Next
+
 	s.logger.Info("brief scheduler started",
 		"schedule", s.config.Schedule,
 		"timezone", s.config.Timezone,
-		"next_run", s.NextRun(),
+		"next_run", nextRun,
 	)
 
 	return nil

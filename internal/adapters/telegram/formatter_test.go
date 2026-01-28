@@ -442,3 +442,595 @@ func TestFormatProgressUpdate(t *testing.T) {
 		})
 	}
 }
+
+// TestFormatProgressUpdateBranchingPhase tests branching phase emoji
+func TestFormatProgressUpdateBranchingPhase(t *testing.T) {
+	got := FormatProgressUpdate("TG-100", "Branching", 5, "Creating branch")
+	if !strings.Contains(got, "🌿") {
+		t.Errorf("FormatProgressUpdate() should contain branching emoji, got:\n%s", got)
+	}
+}
+
+// TestFormatProgressUpdateInstallingPhase tests installing phase emoji
+func TestFormatProgressUpdateInstallingPhase(t *testing.T) {
+	got := FormatProgressUpdate("TG-100", "Installing", 20, "npm install")
+	if !strings.Contains(got, "📦") {
+		t.Errorf("FormatProgressUpdate() should contain installing emoji, got:\n%s", got)
+	}
+}
+
+// TestFormatProgressUpdateNegativeProgress tests negative progress clamping
+func TestFormatProgressUpdateNegativeProgress(t *testing.T) {
+	got := FormatProgressUpdate("TG-100", "Starting", -10, "")
+	// Should have empty progress bar (all ░)
+	if !strings.Contains(got, "░░░░░░░░░░░░░░░░░░░░") {
+		t.Errorf("FormatProgressUpdate() should have empty bar for negative progress, got:\n%s", got)
+	}
+}
+
+// TestFormatTaskStarted tests task started message formatting
+func TestFormatTaskStarted(t *testing.T) {
+	tests := []struct {
+		name        string
+		taskID      string
+		description string
+		contains    []string
+	}{
+		{
+			name:        "basic task",
+			taskID:      "TASK-01",
+			description: "Create auth handler",
+			contains:    []string{"🚀", "Executing", "TASK-01", "auth handler"},
+		},
+		{
+			name:        "long description truncated",
+			taskID:      "TG-123",
+			description: strings.Repeat("a", 200),
+			contains:    []string{"TG-123", "..."},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := FormatTaskStarted(tt.taskID, tt.description)
+			for _, want := range tt.contains {
+				if !strings.Contains(got, want) {
+					t.Errorf("FormatTaskStarted() = %q, want to contain %q", got, want)
+				}
+			}
+		})
+	}
+}
+
+// TestFormatQuestionAck tests question acknowledgment
+func TestFormatQuestionAck(t *testing.T) {
+	got := FormatQuestionAck()
+	if !strings.Contains(got, "🔍") {
+		t.Errorf("FormatQuestionAck() should contain search emoji, got: %q", got)
+	}
+	if !strings.Contains(got, "Looking") {
+		t.Errorf("FormatQuestionAck() should contain 'Looking', got: %q", got)
+	}
+}
+
+// TestFormatQuestionAnswer tests question answer formatting
+func TestFormatQuestionAnswer(t *testing.T) {
+	tests := []struct {
+		name     string
+		answer   string
+		contains []string
+		excludes []string
+	}{
+		{
+			name:     "simple answer",
+			answer:   "The auth module handles user authentication.",
+			contains: []string{"auth module", "authentication"},
+		},
+		{
+			name:     "answer with internal signals cleaned",
+			answer:   "Answer here\nEXIT_SIGNAL: true\nMore text",
+			contains: []string{"Answer here", "More text"},
+			excludes: []string{"EXIT_SIGNAL"},
+		},
+		{
+			name:     "answer with table converted",
+			answer:   "Info:\n| Col1 | Col2 |\n|---|---|\n| A | B |",
+			contains: []string{"A", "B"},
+			excludes: []string{"|---|"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := FormatQuestionAnswer(tt.answer)
+			for _, want := range tt.contains {
+				if !strings.Contains(got, want) {
+					t.Errorf("FormatQuestionAnswer() = %q, want to contain %q", got, want)
+				}
+			}
+			for _, exclude := range tt.excludes {
+				if strings.Contains(got, exclude) {
+					t.Errorf("FormatQuestionAnswer() = %q, should NOT contain %q", got, exclude)
+				}
+			}
+		})
+	}
+}
+
+// TestFormatQuestionAnswerTruncation tests long answer truncation
+func TestFormatQuestionAnswerTruncation(t *testing.T) {
+	longAnswer := strings.Repeat("a", 4000)
+	got := FormatQuestionAnswer(longAnswer)
+
+	if len(got) > 3600 { // 3500 + buffer for truncation message
+		t.Errorf("FormatQuestionAnswer() length = %d, want <= 3600", len(got))
+	}
+	if !strings.Contains(got, "truncated") {
+		t.Error("FormatQuestionAnswer() should contain truncation indicator")
+	}
+}
+
+// TestParseTableRow tests table row parsing
+func TestParseTableRow(t *testing.T) {
+	tests := []struct {
+		row      string
+		expected []string
+	}{
+		{
+			row:      "| Col1 | Col2 | Col3 |",
+			expected: []string{"Col1", "Col2", "Col3"},
+		},
+		{
+			row:      "|A|B|",
+			expected: []string{"A", "B"},
+		},
+		{
+			row:      "| Single |",
+			expected: []string{"Single"},
+		},
+		{
+			row:      "| --- | --- |",
+			expected: []string{},
+		},
+		{
+			row:      "|  Spaces  |  Here  |",
+			expected: []string{"Spaces", "Here"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.row, func(t *testing.T) {
+			got := parseTableRow(tt.row)
+			if len(got) != len(tt.expected) {
+				t.Errorf("parseTableRow() len = %d, want %d", len(got), len(tt.expected))
+				return
+			}
+			for i, v := range got {
+				if v != tt.expected[i] {
+					t.Errorf("parseTableRow()[%d] = %q, want %q", i, v, tt.expected[i])
+				}
+			}
+		})
+	}
+}
+
+// TestMin tests the min helper function
+func TestMin(t *testing.T) {
+	tests := []struct {
+		a, b, expected int
+	}{
+		{1, 2, 1},
+		{2, 1, 1},
+		{0, 0, 0},
+		{-1, 1, -1},
+		{100, 50, 50},
+	}
+
+	for _, tt := range tests {
+		got := min(tt.a, tt.b)
+		if got != tt.expected {
+			t.Errorf("min(%d, %d) = %d, want %d", tt.a, tt.b, got, tt.expected)
+		}
+	}
+}
+
+// TestFormatSuccessResultWithFiles tests output with file operations
+func TestFormatSuccessResultWithFiles(t *testing.T) {
+	result := &executor.ExecutionResult{
+		TaskID:   "TASK-01",
+		Success:  true,
+		Duration: 30 * time.Second,
+		Output:   "Created `auth.go`\nModified `main.go`\nAdded `test.go`",
+	}
+
+	got := FormatTaskResult(result)
+
+	wantContains := []string{"✅", "TASK-01", "30s", "auth.go", "main.go", "test.go"}
+	for _, want := range wantContains {
+		if !strings.Contains(got, want) {
+			t.Errorf("FormatTaskResult() should contain %q, got:\n%s", want, got)
+		}
+	}
+}
+
+// TestFormatFailureResultTruncation tests error truncation
+func TestFormatFailureResultTruncation(t *testing.T) {
+	longError := strings.Repeat("error ", 100)
+	result := &executor.ExecutionResult{
+		TaskID:   "TASK-ERR",
+		Success:  false,
+		Duration: 5 * time.Second,
+		Error:    longError,
+	}
+
+	got := FormatTaskResult(result)
+
+	if len(got) > 600 { // Error truncated to 400 + metadata
+		t.Errorf("FormatTaskResult() too long: %d chars", len(got))
+	}
+	if !strings.Contains(got, "...") {
+		t.Error("FormatTaskResult() should contain truncation indicator")
+	}
+}
+
+// TestCleanInternalSignalsNavigatorBlock tests NAVIGATOR_STATUS block removal
+func TestCleanInternalSignalsNavigatorBlock(t *testing.T) {
+	input := `Start of output
+━━━━━━━━━━
+NAVIGATOR_STATUS
+Phase: IMPL
+Iteration: 2
+Progress: 50%
+━━━━━━━━━━
+End of output`
+
+	got := cleanInternalSignals(input)
+
+	if strings.Contains(got, "NAVIGATOR_STATUS") {
+		t.Error("cleanInternalSignals should remove NAVIGATOR_STATUS")
+	}
+	if strings.Contains(got, "Phase: IMPL") {
+		t.Error("cleanInternalSignals should remove Phase line")
+	}
+	if !strings.Contains(got, "Start of output") {
+		t.Error("cleanInternalSignals should keep Start of output")
+	}
+	if !strings.Contains(got, "End of output") {
+		t.Error("cleanInternalSignals should keep End of output")
+	}
+}
+
+// TestCleanInternalSignalsAllSignals tests all signal types
+func TestCleanInternalSignalsAllSignals(t *testing.T) {
+	signals := []string{
+		"EXIT_SIGNAL: true",
+		"EXIT_SIGNAL:true",
+		"LOOP COMPLETE",
+		"TASK MODE COMPLETE",
+		"Iteration: 5",
+		"Completion Indicators: done",
+		"Exit Conditions: met",
+		"State Hash: abc123",
+		"Next Action: verify",
+	}
+
+	for _, signal := range signals {
+		t.Run(signal, func(t *testing.T) {
+			input := "Before\n" + signal + "\nAfter"
+			got := cleanInternalSignals(input)
+
+			if strings.Contains(got, signal) {
+				t.Errorf("cleanInternalSignals should remove %q, got:\n%s", signal, got)
+			}
+		})
+	}
+}
+
+// TestExtractSummaryPatterns tests all extraction patterns
+func TestExtractSummaryPatterns(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		contains []string
+	}{
+		{
+			name:     "created pattern",
+			input:    "Created `newfile.go`",
+			contains: []string{"📁 Created:", "newfile.go"},
+		},
+		{
+			name:     "modified pattern",
+			input:    "Modified existing.go",
+			contains: []string{"📝 Modified:", "existing.go"},
+		},
+		{
+			name:     "added pattern",
+			input:    "Added feature.ts to the project",
+			contains: []string{"➕ Added:", "feature.ts"},
+		},
+		{
+			name:     "deleted pattern",
+			input:    "Deleted old_file.txt",
+			contains: []string{"🗑 Deleted:", "old_file.txt"},
+		},
+		{
+			name:     "multiple files",
+			input:    "Created a.go\nModified b.go\nAdded c.go",
+			contains: []string{"a.go", "b.go", "c.go"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := extractSummary(tt.input)
+			for _, want := range tt.contains {
+				if !strings.Contains(got, want) {
+					t.Errorf("extractSummary() = %q, want to contain %q", got, want)
+				}
+			}
+		})
+	}
+}
+
+// TestExtractSummaryLimit tests the 5-item limit
+func TestExtractSummaryLimit(t *testing.T) {
+	// The function extracts max 5 matches per pattern, and we have multiple patterns
+	// With only one pattern type, we get max 5 items
+	input := `Created a.go
+Created b.go
+Created c.go
+Created d.go
+Created e.go
+Created f.go
+Created g.go`
+
+	got := extractSummary(input)
+
+	// Count Created entries - should be 5 (max per pattern)
+	count := strings.Count(got, "Created:")
+	if count != 5 {
+		t.Errorf("extractSummary() has %d items, want 5", count)
+	}
+}
+
+// TestEscapeMarkdownAllChars tests all markdown special characters
+func TestEscapeMarkdownAllChars(t *testing.T) {
+	specialChars := []struct {
+		char    string
+		escaped string
+	}{
+		{"_", "\\_"},
+		{"*", "\\*"},
+		{"[", "\\["},
+		{"]", "\\]"},
+		{"(", "\\("},
+		{")", "\\)"},
+		{"~", "\\~"},
+		{">", "\\>"},
+		{"#", "\\#"},
+		{"+", "\\+"},
+		{"-", "\\-"},
+		{"=", "\\="},
+		{"|", "\\|"},
+		{"{", "\\{"},
+		{"}", "\\}"},
+		{".", "\\."},
+		{"!", "\\!"},
+	}
+
+	for _, tc := range specialChars {
+		t.Run("char_"+tc.char, func(t *testing.T) {
+			input := "text" + tc.char + "more"
+			got := escapeMarkdown(input)
+			if !strings.Contains(got, tc.escaped) {
+				t.Errorf("escapeMarkdown(%q) = %q, want to contain %q", input, got, tc.escaped)
+			}
+		})
+	}
+}
+
+// TestConvertTablesToListsComplex tests complex table scenarios
+func TestConvertTablesToListsComplex(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		contains []string
+		excludes []string
+	}{
+		{
+			name: "table with many columns",
+			input: `| Name | Status | Priority | Owner |
+|------|--------|----------|-------|
+| Task1 | Done | High | Alice |
+| Task2 | WIP | Low | Bob |`,
+			contains: []string{"Task1: Done", "Task2: WIP"},
+			excludes: []string{"|---"},
+		},
+		{
+			name: "multiple tables",
+			input: `First table:
+| A | B |
+|---|---|
+| 1 | 2 |
+
+Second table:
+| C | D |
+|---|---|
+| 3 | 4 |`,
+			contains: []string{"1", "2", "3", "4"},
+		},
+		{
+			name: "text between tables",
+			input: `Before
+| X | Y |
+|---|---|
+| a | b |
+Middle text
+| P | Q |
+|---|---|
+| c | d |
+After`,
+			contains: []string{"Before", "Middle text", "After", "a", "c"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := convertTablesToLists(tt.input)
+			for _, want := range tt.contains {
+				if !strings.Contains(got, want) {
+					t.Errorf("convertTablesToLists() should contain %q, got:\n%s", want, got)
+				}
+			}
+			for _, exclude := range tt.excludes {
+				if strings.Contains(got, exclude) {
+					t.Errorf("convertTablesToLists() should NOT contain %q, got:\n%s", exclude, got)
+				}
+			}
+		})
+	}
+}
+
+// TestFormatFailureResultEmpty tests failure with empty error
+func TestFormatFailureResultEmpty(t *testing.T) {
+	result := &executor.ExecutionResult{
+		TaskID:   "TASK-ERR",
+		Success:  false,
+		Duration: 5 * time.Second,
+		Error:    "",
+	}
+
+	got := FormatTaskResult(result)
+
+	if !strings.Contains(got, "Unknown error") {
+		t.Errorf("FormatTaskResult() should contain 'Unknown error' for empty error, got:\n%s", got)
+	}
+}
+
+// TestFormatTaskResultSuccessNoOutput tests success with no output
+func TestFormatTaskResultSuccessNoOutput(t *testing.T) {
+	result := &executor.ExecutionResult{
+		TaskID:   "TASK-01",
+		Success:  true,
+		Duration: 10 * time.Second,
+		Output:   "",
+	}
+
+	got := FormatTaskResult(result)
+
+	if !strings.Contains(got, "completed") {
+		t.Errorf("FormatTaskResult() should contain 'completed', got:\n%s", got)
+	}
+	if strings.Contains(got, "Summary") {
+		t.Error("FormatTaskResult() should not have Summary section for empty output")
+	}
+}
+
+// TestFormatTaskResultSuccessWithInternalSignals tests cleanup in success output
+func TestFormatTaskResultSuccessWithInternalSignals(t *testing.T) {
+	result := &executor.ExecutionResult{
+		TaskID:   "TASK-01",
+		Success:  true,
+		Duration: 20 * time.Second,
+		Output:   "Created file.go\nEXIT_SIGNAL: true\nLOOP COMPLETE",
+	}
+
+	got := FormatTaskResult(result)
+
+	if strings.Contains(got, "EXIT_SIGNAL") {
+		t.Error("FormatTaskResult() should clean EXIT_SIGNAL from output")
+	}
+	if strings.Contains(got, "LOOP COMPLETE") {
+		t.Error("FormatTaskResult() should clean LOOP COMPLETE from output")
+	}
+}
+
+// TestInternalSignalsArray tests the internal signals slice
+func TestInternalSignalsArray(t *testing.T) {
+	expectedSignals := []string{
+		"EXIT_SIGNAL: true",
+		"EXIT_SIGNAL:true",
+		"LOOP COMPLETE",
+		"TASK MODE COMPLETE",
+		"NAVIGATOR_STATUS",
+	}
+
+	for _, expected := range expectedSignals {
+		found := false
+		for _, signal := range internalSignals {
+			if signal == expected {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("internalSignals should contain %q", expected)
+		}
+	}
+}
+
+// TestCleanInternalSignalsWithSeparators tests separator handling
+func TestCleanInternalSignalsWithSeparators(t *testing.T) {
+	input := `Before content
+━━━━━━━━━━
+More text
+━━━━━━━━━━
+After content`
+
+	got := cleanInternalSignals(input)
+
+	// Separators should be removed
+	if strings.Contains(got, "━━━━━━━━━━") {
+		t.Errorf("cleanInternalSignals should remove separators, got:\n%s", got)
+	}
+}
+
+// TestTruncateDescriptionEdgeCases tests edge cases
+func TestTruncateDescriptionEdgeCases(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		maxLen   int
+		expected string
+	}{
+		{
+			name:     "empty string",
+			input:    "",
+			maxLen:   10,
+			expected: "",
+		},
+		{
+			name:     "only whitespace",
+			input:    "   \n\t  ",
+			maxLen:   10,
+			expected: "",
+		},
+		{
+			name:     "exactly max length",
+			input:    "12345",
+			maxLen:   5,
+			expected: "12345",
+		},
+		{
+			name:     "one char over",
+			input:    "123456",
+			maxLen:   5,
+			expected: "12...",
+		},
+		{
+			name:     "multiple newlines",
+			input:    "line1\nline2\nline3",
+			maxLen:   50,
+			expected: "line1 line2 line3",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := truncateDescription(tt.input, tt.maxLen)
+			if got != tt.expected {
+				t.Errorf("truncateDescription(%q, %d) = %q, want %q", tt.input, tt.maxLen, got, tt.expected)
+			}
+		})
+	}
+}

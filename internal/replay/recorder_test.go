@@ -270,3 +270,456 @@ func TestDefaultRecordingsPath(t *testing.T) {
 		t.Error("Default recordings path should be absolute")
 	}
 }
+
+func TestDetectPhase(t *testing.T) {
+	tmpDir := t.TempDir()
+	recorder, _ := NewRecorder("TASK-PHASE", "/test/project", tmpDir)
+	defer func() { _ = recorder.Finish("completed") }()
+
+	tests := []struct {
+		name     string
+		parsed   *ParsedEvent
+		expected string
+	}{
+		{
+			name:     "Read tool - Exploring",
+			parsed:   &ParsedEvent{ToolName: "Read"},
+			expected: "Exploring",
+		},
+		{
+			name:     "Glob tool - Exploring",
+			parsed:   &ParsedEvent{ToolName: "Glob"},
+			expected: "Exploring",
+		},
+		{
+			name:     "Grep tool - Exploring",
+			parsed:   &ParsedEvent{ToolName: "Grep"},
+			expected: "Exploring",
+		},
+		{
+			name:     "Write tool - Implementing",
+			parsed:   &ParsedEvent{ToolName: "Write"},
+			expected: "Implementing",
+		},
+		{
+			name:     "Edit tool - Implementing",
+			parsed:   &ParsedEvent{ToolName: "Edit"},
+			expected: "Implementing",
+		},
+		{
+			name:     "Bash git commit - Committing",
+			parsed:   &ParsedEvent{ToolName: "Bash", ToolInput: map[string]any{"command": "git commit -m 'message'"}},
+			expected: "Committing",
+		},
+		{
+			name:     "Bash test - Testing",
+			parsed:   &ParsedEvent{ToolName: "Bash", ToolInput: map[string]any{"command": "go test ./..."}},
+			expected: "Testing",
+		},
+		{
+			name:     "Bash other - empty",
+			parsed:   &ParsedEvent{ToolName: "Bash", ToolInput: map[string]any{"command": "ls -la"}},
+			expected: "",
+		},
+		{
+			name:     "Text with PHASE RESEARCH",
+			parsed:   &ParsedEvent{Text: "PHASE: RESEARCH starting now"},
+			expected: "Research",
+		},
+		{
+			name:     "Text with Phase Research",
+			parsed:   &ParsedEvent{Text: "Phase: Research starting now"},
+			expected: "Research",
+		},
+		{
+			name:     "Text with PHASE IMPL",
+			parsed:   &ParsedEvent{Text: "PHASE: IMPL starting now"},
+			expected: "Implementing",
+		},
+		{
+			name:     "Text with Phase Implement",
+			parsed:   &ParsedEvent{Text: "Phase: Implement starting now"},
+			expected: "Implementing",
+		},
+		{
+			name:     "Text with PHASE VERIFY",
+			parsed:   &ParsedEvent{Text: "PHASE: VERIFY starting now"},
+			expected: "Verifying",
+		},
+		{
+			name:     "Text with Phase Verify",
+			parsed:   &ParsedEvent{Text: "Phase: Verify starting now"},
+			expected: "Verifying",
+		},
+		{
+			name:     "Text with PHASE COMPLETE",
+			parsed:   &ParsedEvent{Text: "PHASE: COMPLETE starting now"},
+			expected: "Completing",
+		},
+		{
+			name:     "Text with Phase Complete",
+			parsed:   &ParsedEvent{Text: "Phase: Complete starting now"},
+			expected: "Completing",
+		},
+		{
+			name:     "Text without phase",
+			parsed:   &ParsedEvent{Text: "Just some regular text"},
+			expected: "",
+		},
+		{
+			name:     "Unknown tool",
+			parsed:   &ParsedEvent{ToolName: "CustomTool"},
+			expected: "",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result := recorder.detectPhase(tc.parsed)
+			if result != tc.expected {
+				t.Errorf("Expected phase '%s', got '%s'", tc.expected, result)
+			}
+		})
+	}
+}
+
+func TestDetectFileOp(t *testing.T) {
+	tmpDir := t.TempDir()
+	recorder, _ := NewRecorder("TASK-FILEOP", "/test/project", tmpDir)
+	defer func() { _ = recorder.Finish("completed") }()
+
+	tests := []struct {
+		toolName string
+		expected string
+	}{
+		{"Read", "read"},
+		{"Write", "create"},
+		{"Edit", "modify"},
+		{"Bash", ""},
+		{"Unknown", ""},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.toolName, func(t *testing.T) {
+			result := recorder.detectFileOp(tc.toolName)
+			if result != tc.expected {
+				t.Errorf("Expected '%s', got '%s'", tc.expected, result)
+			}
+		})
+	}
+}
+
+func TestListRecordingsWithFilters(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create recordings with different properties
+	recorder1, _ := NewRecorder("TASK-A", "/project/a", tmpDir)
+	_ = recorder1.Finish("completed")
+	time.Sleep(20 * time.Millisecond)
+
+	recorder2, _ := NewRecorder("TASK-B", "/project/b", tmpDir)
+	_ = recorder2.Finish("failed")
+	time.Sleep(20 * time.Millisecond)
+
+	recorder3, _ := NewRecorder("TASK-C", "/project/a", tmpDir)
+	_ = recorder3.Finish("completed")
+
+	// Test filter by project path
+	filter := &RecordingFilter{ProjectPath: "/project/a"}
+	recordings, err := ListRecordings(tmpDir, filter)
+	if err != nil {
+		t.Fatalf("Failed to list recordings: %v", err)
+	}
+	if len(recordings) != 2 {
+		t.Errorf("Expected 2 recordings for /project/a, got %d", len(recordings))
+	}
+
+	// Test filter by status
+	filter = &RecordingFilter{Status: "failed"}
+	recordings, err = ListRecordings(tmpDir, filter)
+	if err != nil {
+		t.Fatalf("Failed to list recordings: %v", err)
+	}
+	if len(recordings) != 1 {
+		t.Errorf("Expected 1 failed recording, got %d", len(recordings))
+	}
+
+	// Test filter by since time
+	filter = &RecordingFilter{Since: time.Now().Add(-10 * time.Millisecond)}
+	recordings, err = ListRecordings(tmpDir, filter)
+	if err != nil {
+		t.Fatalf("Failed to list recordings: %v", err)
+	}
+	// Should only get the most recent one (recorder3)
+	if len(recordings) != 1 {
+		t.Errorf("Expected 1 recent recording, got %d", len(recordings))
+	}
+}
+
+func TestListRecordingsNonExistentDir(t *testing.T) {
+	recordings, err := ListRecordings("/nonexistent/path", nil)
+	if err != nil {
+		t.Fatalf("Should return empty slice for nonexistent path, got error: %v", err)
+	}
+	if len(recordings) != 0 {
+		t.Errorf("Expected empty slice, got %d recordings", len(recordings))
+	}
+}
+
+func TestListRecordingsSkipsInvalid(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create a valid recording
+	recorder, _ := NewRecorder("TASK-VALID", "/test/project", tmpDir)
+	_ = recorder.Finish("completed")
+
+	// Create an invalid directory (not a TG- prefix)
+	_ = os.MkdirAll(filepath.Join(tmpDir, "invalid-dir"), 0755)
+
+	// Create a TG- directory without metadata.json
+	_ = os.MkdirAll(filepath.Join(tmpDir, "TG-invalid"), 0755)
+
+	// Create a TG- directory with invalid JSON
+	invalidDir := filepath.Join(tmpDir, "TG-badjson")
+	_ = os.MkdirAll(invalidDir, 0755)
+	_ = os.WriteFile(filepath.Join(invalidDir, "metadata.json"), []byte("not json"), 0644)
+
+	recordings, err := ListRecordings(tmpDir, nil)
+	if err != nil {
+		t.Fatalf("Failed to list recordings: %v", err)
+	}
+
+	// Should only get the valid recording
+	if len(recordings) != 1 {
+		t.Errorf("Expected 1 valid recording, got %d", len(recordings))
+	}
+}
+
+func TestLoadRecordingNotFound(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	_, err := LoadRecording(tmpDir, "nonexistent-id")
+	if err == nil {
+		t.Error("Expected error for nonexistent recording")
+	}
+}
+
+func TestLoadRecordingInvalidJSON(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create directory with invalid JSON
+	invalidDir := filepath.Join(tmpDir, "TG-invalid")
+	_ = os.MkdirAll(invalidDir, 0755)
+	_ = os.WriteFile(filepath.Join(invalidDir, "metadata.json"), []byte("not json"), 0644)
+
+	_, err := LoadRecording(tmpDir, "TG-invalid")
+	if err == nil {
+		t.Error("Expected error for invalid JSON")
+	}
+}
+
+func TestEstimateCostOpus(t *testing.T) {
+	tmpDir := t.TempDir()
+	recorder, _ := NewRecorder("TASK-OPUS", "/test/project", tmpDir)
+	recorder.SetModel("claude-opus-4")
+
+	// Record event with tokens
+	_ = recorder.RecordEvent(`{"type":"result","result":"done","usage":{"input_tokens":1000,"output_tokens":1000}}`)
+	_ = recorder.Finish("completed")
+
+	recording := recorder.GetRecording()
+
+	// Opus pricing: 15.00/1M input, 75.00/1M output
+	// Expected: (1000 * 15 + 1000 * 75) / 1_000_000 = 0.09
+	expectedCost := 0.09
+	if recording.TokenUsage.EstimatedCostUSD < expectedCost-0.001 || recording.TokenUsage.EstimatedCostUSD > expectedCost+0.001 {
+		t.Errorf("Expected cost ~%.4f, got %.4f", expectedCost, recording.TokenUsage.EstimatedCostUSD)
+	}
+}
+
+func TestEstimateCostSonnet(t *testing.T) {
+	tmpDir := t.TempDir()
+	recorder, _ := NewRecorder("TASK-SONNET", "/test/project", tmpDir)
+	recorder.SetModel("claude-sonnet-4")
+
+	// Record event with tokens
+	_ = recorder.RecordEvent(`{"type":"result","result":"done","usage":{"input_tokens":1000,"output_tokens":1000}}`)
+	_ = recorder.Finish("completed")
+
+	recording := recorder.GetRecording()
+
+	// Sonnet pricing: 3.00/1M input, 15.00/1M output
+	// Expected: (1000 * 3 + 1000 * 15) / 1_000_000 = 0.018
+	expectedCost := 0.018
+	if recording.TokenUsage.EstimatedCostUSD < expectedCost-0.001 || recording.TokenUsage.EstimatedCostUSD > expectedCost+0.001 {
+		t.Errorf("Expected cost ~%.4f, got %.4f", expectedCost, recording.TokenUsage.EstimatedCostUSD)
+	}
+}
+
+func TestParseEventTypes(t *testing.T) {
+	tmpDir := t.TempDir()
+	recorder, _ := NewRecorder("TASK-PARSE", "/test/project", tmpDir)
+	defer func() { _ = recorder.Finish("completed") }()
+
+	tests := []struct {
+		name        string
+		rawJSON     string
+		expectType  string
+		expectTool  string
+		expectText  string
+		expectError bool
+	}{
+		{
+			name:       "system event",
+			rawJSON:    `{"type":"system","subtype":"init"}`,
+			expectType: "system",
+		},
+		{
+			name:       "result event",
+			rawJSON:    `{"type":"result","result":"done","is_error":false}`,
+			expectType: "result",
+		},
+		{
+			name:        "result error event",
+			rawJSON:     `{"type":"result","result":"error message","is_error":true}`,
+			expectType:  "result",
+			expectError: true,
+		},
+		{
+			name:       "assistant tool use",
+			rawJSON:    `{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/test.go"}}]}}`,
+			expectType: "assistant",
+			expectTool: "Read",
+		},
+		{
+			name:       "assistant text",
+			rawJSON:    `{"type":"assistant","message":{"content":[{"type":"text","text":"Hello world"}]}}`,
+			expectType: "assistant",
+			expectText: "Hello world",
+		},
+		{
+			name:       "invalid json",
+			rawJSON:    `not valid json`,
+			expectType: "",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			parsed := recorder.parseEvent(tc.rawJSON)
+
+			if tc.expectType == "" {
+				if parsed != nil {
+					t.Errorf("Expected nil for invalid JSON")
+				}
+				return
+			}
+
+			if parsed == nil {
+				t.Fatalf("Expected parsed event, got nil")
+			}
+
+			if parsed.Type != tc.expectType {
+				t.Errorf("Expected type '%s', got '%s'", tc.expectType, parsed.Type)
+			}
+
+			if tc.expectTool != "" && parsed.ToolName != tc.expectTool {
+				t.Errorf("Expected tool '%s', got '%s'", tc.expectTool, parsed.ToolName)
+			}
+
+			if tc.expectText != "" && parsed.Text != tc.expectText {
+				t.Errorf("Expected text '%s', got '%s'", tc.expectText, parsed.Text)
+			}
+
+			if parsed.IsError != tc.expectError {
+				t.Errorf("Expected IsError=%v, got %v", tc.expectError, parsed.IsError)
+			}
+		})
+	}
+}
+
+func TestRecordEventWithPhaseChanges(t *testing.T) {
+	tmpDir := t.TempDir()
+	recorder, _ := NewRecorder("TASK-PHASECHANGE", "/test/project", tmpDir)
+
+	// Record events that trigger phase changes
+	events := []string{
+		`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/test.go"}}]}}`,
+		`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"/new.go"}}]}}`,
+		`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"go test"}}]}}`,
+		`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git commit -m 'test'"}}]}}`,
+	}
+
+	for _, e := range events {
+		_ = recorder.RecordEvent(e)
+	}
+	_ = recorder.Finish("completed")
+
+	recording := recorder.GetRecording()
+
+	// Should have phase timings
+	if len(recording.PhaseTimings) == 0 {
+		t.Error("Expected phase timings to be recorded")
+	}
+}
+
+func TestRecordEventWithFileTracking(t *testing.T) {
+	tmpDir := t.TempDir()
+	recorder, _ := NewRecorder("TASK-FILES", "/test/project", tmpDir)
+
+	events := []string{
+		`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/test/a.go"}}]}}`,
+		`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"/test/b.go"}}]}}`,
+		`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"/test/c.go"}}]}}`,
+		`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"/test/c.go"}}]}}`, // Same file again
+	}
+
+	for _, e := range events {
+		_ = recorder.RecordEvent(e)
+	}
+	_ = recorder.Finish("completed")
+
+	// Check that diffs were tracked (3 unique files)
+	if len(recorder.diffFiles) != 3 {
+		t.Errorf("Expected 3 unique files tracked, got %d", len(recorder.diffFiles))
+	}
+}
+
+func TestLoadStreamEventsEmpty(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	recorder, _ := NewRecorder("TASK-EMPTY", "/test/project", tmpDir)
+	_ = recorder.Finish("completed")
+
+	recording, _ := LoadRecording(tmpDir, recorder.GetRecordingID())
+	events, err := LoadStreamEvents(recording)
+	if err != nil {
+		t.Fatalf("Failed to load events: %v", err)
+	}
+
+	if len(events) != 0 {
+		t.Errorf("Expected 0 events, got %d", len(events))
+	}
+}
+
+func TestRecorderConcurrentAccess(t *testing.T) {
+	tmpDir := t.TempDir()
+	recorder, _ := NewRecorder("TASK-CONCURRENT", "/test/project", tmpDir)
+
+	// Concurrent metadata updates
+	done := make(chan bool)
+	for i := 0; i < 10; i++ {
+		go func(n int) {
+			recorder.SetMetadata("key", "value")
+			recorder.SetBranch("branch")
+			recorder.SetCommitSHA("sha")
+			done <- true
+		}(i)
+	}
+
+	for i := 0; i < 10; i++ {
+		<-done
+	}
+
+	_ = recorder.Finish("completed")
+}
