@@ -299,6 +299,46 @@ Required environment variables:
 
 Navigator status blocks provide real progress via `Progress: N%` field.
 
+### Execution Report (GH-49)
+
+After task completion, `pilot task` displays a structured execution report:
+
+```
+───────────────────────────────────────
+📊 EXECUTION REPORT
+───────────────────────────────────────
+Task:       GH-47
+Status:     ✅ Success
+Duration:   3m 42s
+Branch:     pilot/GH-47
+Commit:     a1b2c3d
+PR:         #48
+
+🧭 Navigator: Active
+   Mode:    nav-task
+
+📈 Phases:
+  Research     45s   (20%)
+  Implement    2m    (54%)
+  Verify       57s   (26%)
+
+📁 Files Changed:
+  M runner.go
+  A quality.go
+  M TASK-20.md
+
+💰 Tokens:
+  Input:    45k
+  Output:   12k
+  Cost:     ~$0.82
+  Model:    claude-sonnet-4-5
+───────────────────────────────────────
+```
+
+Navigator detection shown at start:
+- `🧭 Navigator: ✓ detected (.agent/ exists)` if Navigator initialized
+- `⚠️ Navigator: not found (running raw Claude Code)` otherwise
+
 ## Documentation Loading Strategy
 
 1. **Every session**: This file (2k tokens)

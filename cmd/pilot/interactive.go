@@ -167,7 +167,21 @@ func interactiveNewTask(cfg *config.Config) error {
 	runner := executor.NewRunner()
 	progress := executor.NewProgressDisplay(task.ID, taskDesc, true)
 
+	// Track Navigator mode
+	var detectedNavMode string
+
 	runner.OnProgress(func(taskID, phase string, pct int, message string) {
+		// Detect Navigator mode
+		switch phase {
+		case "Navigator", "Loop Mode", "Task Mode":
+			progress.SetNavigator(true, phase)
+			detectedNavMode = phase
+		case "Research", "Implement", "Verify":
+			if detectedNavMode == "" {
+				detectedNavMode = "nav-task"
+			}
+			progress.SetNavigator(true, detectedNavMode)
+		}
 		progress.Update(phase, pct, message)
 	})
 
@@ -175,7 +189,8 @@ func interactiveNewTask(cfg *config.Config) error {
 	fmt.Println("  Executing task with Claude Code...")
 	fmt.Println()
 
-	progress.Start()
+	// Start with Navigator check
+	progress.StartWithNavigatorCheck(projectPath)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -194,21 +209,26 @@ func interactiveNewTask(cfg *config.Config) error {
 		return err
 	}
 
-	progress.Finish(result.Success, result.Output)
-
-	fmt.Println()
-	if result.Success {
-		fmt.Println("  Task completed successfully!")
-		fmt.Printf("  Duration: %s\n", result.Duration.Round(time.Second))
-		if result.CommitSHA != "" {
-			fmt.Printf("  Commit: %s\n", result.CommitSHA[:8])
-		}
-	} else {
-		fmt.Println("  Task failed")
-		if result.Error != "" {
-			fmt.Printf("  Error: %s\n", result.Error)
-		}
+	// Build execution report
+	report := &executor.ExecutionReport{
+		TaskID:           result.TaskID,
+		TaskTitle:        taskDesc,
+		Success:          result.Success,
+		Duration:         result.Duration,
+		Branch:           task.Branch,
+		CommitSHA:        result.CommitSHA,
+		PRUrl:            result.PRUrl,
+		HasNavigator:     detectedNavMode != "",
+		NavMode:          detectedNavMode,
+		TokensInput:      result.TokensInput,
+		TokensOutput:     result.TokensOutput,
+		EstimatedCostUSD: result.EstimatedCostUSD,
+		ModelName:        result.ModelName,
+		ErrorMessage:     result.Error,
 	}
+
+	// Finish with comprehensive report
+	progress.FinishWithReport(report)
 
 	fmt.Println()
 	fmt.Print("  Press Enter to continue...")

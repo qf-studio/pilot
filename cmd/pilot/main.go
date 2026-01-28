@@ -514,8 +514,23 @@ Examples:
 			// Create progress display (disabled in verbose mode - show raw JSON instead)
 			progress := executor.NewProgressDisplay(task.ID, taskDesc, !verbose)
 
+			// Track Navigator mode detection
+			var detectedNavMode string
+
 			// Set up progress callback
 			runner.OnProgress(func(taskID, phase string, pct int, message string) {
+				// Detect Navigator mode from phase names
+				switch phase {
+				case "Navigator", "Loop Mode", "Task Mode":
+					progress.SetNavigator(true, phase)
+					detectedNavMode = phase
+				case "Research", "Implement", "Verify":
+					if detectedNavMode == "" {
+						detectedNavMode = "nav-task"
+					}
+					progress.SetNavigator(true, detectedNavMode)
+				}
+
 				if verbose {
 					// Verbose mode: simple line output
 					timestamp := time.Now().Format("15:04:05")
@@ -547,8 +562,8 @@ Examples:
 			}
 			fmt.Println()
 
-			// Start progress display
-			progress.Start()
+			// Start progress display with Navigator check
+			progress.StartWithNavigatorCheck(projectPath)
 
 			// Execute the task
 			result, err := runner.Execute(ctx, task)
@@ -556,22 +571,31 @@ Examples:
 				return fmt.Errorf("execution failed: %w", err)
 			}
 
-			// Finish progress display with result
-			progress.Finish(result.Success, result.Output)
+			// Build execution report
+			report := &executor.ExecutionReport{
+				TaskID:           result.TaskID,
+				TaskTitle:        taskDesc,
+				Success:          result.Success,
+				Duration:         result.Duration,
+				Branch:           task.Branch,
+				CommitSHA:        result.CommitSHA,
+				PRUrl:            result.PRUrl,
+				HasNavigator:     detectedNavMode != "",
+				NavMode:          detectedNavMode,
+				TokensInput:      result.TokensInput,
+				TokensOutput:     result.TokensOutput,
+				EstimatedCostUSD: result.EstimatedCostUSD,
+				ModelName:        result.ModelName,
+				ErrorMessage:     result.Error,
+			}
 
-			fmt.Println()
-			fmt.Println("───────────────────────────────────────")
+			// Finish progress display with comprehensive report
+			progress.FinishWithReport(report)
 
+			// Send alerts based on result
 			if result.Success {
-				fmt.Println("✅ Task completed successfully!")
-				fmt.Printf("   Duration: %s\n", result.Duration.Round(time.Second))
-				if result.PRUrl != "" {
-					fmt.Printf("   PR: %s\n", result.PRUrl)
-				} else if createPR {
+				if createPR && result.PRUrl == "" {
 					fmt.Println("   ⚠️  PR not created (check gh auth status)")
-				}
-				if result.CommitSHA != "" {
-					fmt.Printf("   Commit: %s\n", result.CommitSHA[:8])
 				}
 
 				// Send task completed event to alerts engine
@@ -590,12 +614,6 @@ Examples:
 					})
 				}
 			} else {
-				fmt.Println("❌ Task failed")
-				fmt.Printf("   Duration: %s\n", result.Duration.Round(time.Second))
-				if result.Error != "" {
-					fmt.Printf("   Error: %s\n", result.Error)
-				}
-
 				// Send task failed event to alerts engine
 				if alertsEngine != nil {
 					alertsEngine.ProcessEvent(alerts.Event{
