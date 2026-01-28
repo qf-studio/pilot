@@ -50,15 +50,34 @@ type TaskDisplay struct {
 	Duration string
 }
 
+// TokenUsage tracks token consumption
+type TokenUsage struct {
+	InputTokens  int
+	OutputTokens int
+	TotalTokens  int
+}
+
+// CompletedTask represents a finished task for history
+type CompletedTask struct {
+	ID          string
+	Title       string
+	Status      string // "success" or "failed"
+	Duration    string
+	CompletedAt time.Time
+}
+
 // Model is the TUI model
 type Model struct {
-	tasks        []TaskDisplay
-	logs         []string
-	width        int
-	height       int
-	showLogs     bool
-	selectedTask int
-	quitting     bool
+	tasks          []TaskDisplay
+	logs           []string
+	width          int
+	height         int
+	showLogs       bool
+	selectedTask   int
+	quitting       bool
+	tokenUsage     TokenUsage
+	completedTasks []CompletedTask
+	costPerMToken  float64 // Cost per million tokens (default Claude pricing)
 }
 
 // tickMsg is sent periodically to refresh the display
@@ -70,12 +89,20 @@ type updateTasksMsg []TaskDisplay
 // addLogMsg adds a log entry
 type addLogMsg string
 
+// updateTokensMsg updates token usage
+type updateTokensMsg TokenUsage
+
+// addCompletedTaskMsg adds a completed task to history
+type addCompletedTaskMsg CompletedTask
+
 // NewModel creates a new dashboard model
 func NewModel() Model {
 	return Model{
-		tasks:    []TaskDisplay{},
-		logs:     []string{},
-		showLogs: true,
+		tasks:          []TaskDisplay{},
+		logs:           []string{},
+		showLogs:       true,
+		completedTasks: []CompletedTask{},
+		costPerMToken:  3.0, // Default: $3 per million tokens (blended Claude rate)
 	}
 }
 
@@ -129,6 +156,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if len(m.logs) > 100 {
 			m.logs = m.logs[1:]
 		}
+
+	case updateTokensMsg:
+		m.tokenUsage = TokenUsage(msg)
+
+	case addCompletedTaskMsg:
+		m.completedTasks = append(m.completedTasks, CompletedTask(msg))
+		// Keep only last 5 completed tasks
+		if len(m.completedTasks) > 5 {
+			m.completedTasks = m.completedTasks[len(m.completedTasks)-5:]
+		}
 	}
 
 	return m, nil
@@ -147,9 +184,19 @@ func (m Model) View() string {
 	b.WriteString(header)
 	b.WriteString("\n\n")
 
+	// Token usage and cost section
+	metricsView := m.renderMetrics()
+	b.WriteString(metricsView)
+	b.WriteString("\n")
+
 	// Tasks section
 	tasksView := m.renderTasks()
 	b.WriteString(tasksView)
+	b.WriteString("\n")
+
+	// Completed tasks history
+	historyView := m.renderHistory()
+	b.WriteString(historyView)
 	b.WriteString("\n")
 
 	// Logs section (if enabled)
@@ -164,6 +211,82 @@ func (m Model) View() string {
 	b.WriteString(help)
 
 	return b.String()
+}
+
+// renderMetrics renders token usage and cost
+func (m Model) renderMetrics() string {
+	var content strings.Builder
+
+	content.WriteString("📊 Token Usage & Cost\n")
+	content.WriteString(strings.Repeat("─", 60))
+	content.WriteString("\n")
+
+	// Token counts
+	content.WriteString(fmt.Sprintf("  Input:  %8d tokens\n", m.tokenUsage.InputTokens))
+	content.WriteString(fmt.Sprintf("  Output: %8d tokens\n", m.tokenUsage.OutputTokens))
+	content.WriteString(fmt.Sprintf("  Total:  %8d tokens\n", m.tokenUsage.TotalTokens))
+	content.WriteString("\n")
+
+	// Cost calculation
+	cost := float64(m.tokenUsage.TotalTokens) / 1_000_000 * m.costPerMToken
+	costStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#10B981")).Bold(true)
+	content.WriteString(fmt.Sprintf("  Estimated Cost: %s\n", costStyle.Render(fmt.Sprintf("$%.4f", cost))))
+
+	return boxStyle.Render(content.String())
+}
+
+// renderHistory renders completed tasks history
+func (m Model) renderHistory() string {
+	var content strings.Builder
+
+	content.WriteString("📜 Recent History (Last 5)\n")
+	content.WriteString(strings.Repeat("─", 60))
+	content.WriteString("\n")
+
+	if len(m.completedTasks) == 0 {
+		content.WriteString("  No completed tasks yet\n")
+	} else {
+		for _, task := range m.completedTasks {
+			var statusIcon string
+			var statusStyle lipgloss.Style
+			if task.Status == "success" {
+				statusIcon = "✓"
+				statusStyle = statusCompletedStyle
+			} else {
+				statusIcon = "✗"
+				statusStyle = statusFailedStyle
+			}
+			status := statusStyle.Render(statusIcon)
+
+			// Format completion time
+			timeAgo := formatTimeAgo(task.CompletedAt)
+
+			content.WriteString(fmt.Sprintf("  %s %-6s %-30s %s (%s)\n",
+				status,
+				task.ID,
+				truncate(task.Title, 30),
+				task.Duration,
+				timeAgo,
+			))
+		}
+	}
+
+	return boxStyle.Render(content.String())
+}
+
+// formatTimeAgo formats a time as relative duration
+func formatTimeAgo(t time.Time) string {
+	duration := time.Since(t)
+	if duration < time.Minute {
+		return "just now"
+	} else if duration < time.Hour {
+		mins := int(duration.Minutes())
+		return fmt.Sprintf("%dm ago", mins)
+	} else if duration < 24*time.Hour {
+		hours := int(duration.Hours())
+		return fmt.Sprintf("%dh ago", hours)
+	}
+	return t.Format("Jan 2")
 }
 
 // renderTasks renders the tasks list
@@ -288,6 +411,30 @@ func UpdateTasks(tasks []TaskDisplay) tea.Cmd {
 func AddLog(log string) tea.Cmd {
 	return func() tea.Msg {
 		return addLogMsg(log)
+	}
+}
+
+// UpdateTokens sends updated token usage to the TUI
+func UpdateTokens(input, output int) tea.Cmd {
+	return func() tea.Msg {
+		return updateTokensMsg(TokenUsage{
+			InputTokens:  input,
+			OutputTokens: output,
+			TotalTokens:  input + output,
+		})
+	}
+}
+
+// AddCompletedTask sends a completed task to the TUI history
+func AddCompletedTask(id, title, status, duration string) tea.Cmd {
+	return func() tea.Msg {
+		return addCompletedTaskMsg(CompletedTask{
+			ID:          id,
+			Title:       title,
+			Status:      status,
+			Duration:    duration,
+			CompletedAt: time.Now(),
+		})
 	}
 }
 
