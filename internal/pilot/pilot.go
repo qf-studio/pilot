@@ -14,6 +14,7 @@ import (
 	"github.com/alekspetrov/pilot/internal/logging"
 	"github.com/alekspetrov/pilot/internal/memory"
 	"github.com/alekspetrov/pilot/internal/orchestrator"
+	"github.com/alekspetrov/pilot/internal/webhooks"
 )
 
 // Pilot is the main application
@@ -26,9 +27,10 @@ type Pilot struct {
 	githubClient *github.Client
 	githubWH     *github.WebhookHandler
 	githubNotify *github.Notifier
-	slackNotify  *slack.Notifier
-	store        *memory.Store
-	graph        *memory.KnowledgeGraph
+	slackNotify    *slack.Notifier
+	store          *memory.Store
+	graph          *memory.KnowledgeGraph
+	webhookManager *webhooks.Manager
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -65,6 +67,9 @@ func New(cfg *config.Config) (*Pilot, error) {
 	if cfg.Adapters.Slack != nil && cfg.Adapters.Slack.Enabled {
 		p.slackNotify = slack.NewNotifier(cfg.Adapters.Slack)
 	}
+
+	// Initialize webhook manager
+	p.webhookManager = webhooks.NewManager(cfg.Webhooks, logging.WithComponent("webhooks"))
 
 	// Initialize orchestrator
 	orchConfig := &orchestrator.Config{
@@ -202,16 +207,36 @@ func (p *Pilot) findProjectForIssue(issue *linear.Issue) string {
 
 // GetStatus returns current Pilot status
 func (p *Pilot) GetStatus() map[string]interface{} {
+	webhookDeliveries, webhookFailures, webhookRetries, lastDelivery := p.webhookManager.Stats()
 	return map[string]interface{}{
 		"running": true,
 		"tasks":   p.orchestrator.GetTaskStates(),
 		"config": map[string]interface{}{
-			"gateway": fmt.Sprintf("%s:%d", p.config.Gateway.Host, p.config.Gateway.Port),
-			"linear":  p.config.Adapters.Linear != nil && p.config.Adapters.Linear.Enabled,
-			"github":  p.config.Adapters.Github != nil && p.config.Adapters.Github.Enabled,
-			"slack":   p.config.Adapters.Slack != nil && p.config.Adapters.Slack.Enabled,
+			"gateway":  fmt.Sprintf("%s:%d", p.config.Gateway.Host, p.config.Gateway.Port),
+			"linear":   p.config.Adapters.Linear != nil && p.config.Adapters.Linear.Enabled,
+			"github":   p.config.Adapters.Github != nil && p.config.Adapters.Github.Enabled,
+			"slack":    p.config.Adapters.Slack != nil && p.config.Adapters.Slack.Enabled,
+			"webhooks": p.webhookManager.IsEnabled(),
+		},
+		"webhooks": map[string]interface{}{
+			"enabled":       p.webhookManager.IsEnabled(),
+			"endpoints":     len(p.webhookManager.ListEndpoints()),
+			"deliveries":    webhookDeliveries,
+			"failures":      webhookFailures,
+			"retries":       webhookRetries,
+			"last_delivery": lastDelivery,
 		},
 	}
+}
+
+// WebhookManager returns the webhook manager for external access
+func (p *Pilot) WebhookManager() *webhooks.Manager {
+	return p.webhookManager
+}
+
+// DispatchWebhookEvent dispatches an event to all subscribed webhook endpoints
+func (p *Pilot) DispatchWebhookEvent(ctx context.Context, event *webhooks.Event) []webhooks.DeliveryResult {
+	return p.webhookManager.Dispatch(ctx, event)
 }
 
 // Router returns the gateway router for registering handlers
