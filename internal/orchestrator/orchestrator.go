@@ -253,6 +253,12 @@ func (o *Orchestrator) GetRunningTasks() []*executor.TaskState {
 	return o.monitor.GetRunning()
 }
 
+// SetAlertProcessor sets the alert processor on the underlying runner for task lifecycle events.
+// The processor interface is satisfied by alerts.Engine.
+func (o *Orchestrator) SetAlertProcessor(processor executor.AlertEventProcessor) {
+	o.runner.SetAlertProcessor(processor)
+}
+
 // extractLabelNames extracts label names from Linear labels
 func extractLabelNames(labels []linear.Label) []string {
 	names := make([]string, len(labels))

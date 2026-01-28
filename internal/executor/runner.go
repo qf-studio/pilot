@@ -155,8 +155,9 @@ type Runner struct {
 	mu              sync.Mutex
 	running         map[string]*exec.Cmd
 	log             *slog.Logger
-	recordingsPath  string // Path to recordings directory (empty = default)
-	enableRecording bool   // Whether to record executions
+	recordingsPath  string              // Path to recordings directory (empty = default)
+	enableRecording bool                // Whether to record executions
+	alertProcessor  AlertEventProcessor // Optional alert processor for event emission
 }
 
 // NewRunner creates a new Runner instance with recording enabled by default.
@@ -179,6 +180,13 @@ func (r *Runner) SetRecordingsPath(path string) {
 // When enabled, all Claude Code stream events are captured for replay and debugging.
 func (r *Runner) SetRecordingEnabled(enabled bool) {
 	r.enableRecording = enabled
+}
+
+// SetAlertProcessor sets the alert processor for emitting task lifecycle events.
+// When set, the runner will emit events for task started, completed, and failed.
+// The processor interface is satisfied by alerts.Engine.
+func (r *Runner) SetAlertProcessor(processor AlertEventProcessor) {
+	r.alertProcessor = processor
 }
 
 // getRecordingsPath returns the recordings path, using default if not set
@@ -209,6 +217,15 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 		slog.String("branch", task.Branch),
 		slog.Bool("create_pr", task.CreatePR),
 	)
+
+	// Emit task started event
+	r.emitAlertEvent(AlertEvent{
+		Type:      AlertEventTypeTaskStarted,
+		TaskID:    task.ID,
+		TaskTitle: task.Title,
+		Project:   task.ProjectPath,
+		Timestamp: time.Now(),
+	})
 
 	// Initialize git operations
 	git := NewGitOperations(task.ProjectPath)
@@ -384,6 +401,16 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 		)
 		r.reportProgress(task.ID, "Failed", 100, result.Error)
 
+		// Emit task failed event
+		r.emitAlertEvent(AlertEvent{
+			Type:      AlertEventTypeTaskFailed,
+			TaskID:    task.ID,
+			TaskTitle: task.Title,
+			Project:   task.ProjectPath,
+			Error:     result.Error,
+			Timestamp: time.Now(),
+		})
+
 		// Finish recording with failed status
 		if recorder != nil {
 			recorder.SetModel(result.ModelName)
@@ -448,6 +475,19 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 		} else {
 			r.reportProgress(task.ID, "Completed", 100, "Task completed successfully")
 		}
+
+		// Emit task completed event
+		r.emitAlertEvent(AlertEvent{
+			Type:      AlertEventTypeTaskCompleted,
+			TaskID:    task.ID,
+			TaskTitle: task.Title,
+			Project:   task.ProjectPath,
+			Metadata: map[string]string{
+				"duration_ms": fmt.Sprintf("%d", duration.Milliseconds()),
+				"pr_url":      result.PRUrl,
+			},
+			Timestamp: time.Now(),
+		})
 
 		// Finish recording with completed status
 		if recorder != nil {
@@ -1056,6 +1096,14 @@ func estimateCost(inputTokens, outputTokens int64, model string) float64 {
 	inputCost := float64(inputTokens) * inputPrice / 1_000_000
 	outputCost := float64(outputTokens) * outputPrice / 1_000_000
 	return inputCost + outputCost
+}
+
+// emitAlertEvent sends an event to the alert processor if configured
+func (r *Runner) emitAlertEvent(event AlertEvent) {
+	if r.alertProcessor == nil {
+		return
+	}
+	r.alertProcessor.ProcessEvent(event)
 }
 
 // reportProgress sends a progress update

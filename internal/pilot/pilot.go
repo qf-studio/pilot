@@ -9,6 +9,8 @@ import (
 	"github.com/alekspetrov/pilot/internal/adapters/github"
 	"github.com/alekspetrov/pilot/internal/adapters/linear"
 	"github.com/alekspetrov/pilot/internal/adapters/slack"
+	"github.com/alekspetrov/pilot/internal/adapters/telegram"
+	"github.com/alekspetrov/pilot/internal/alerts"
 	"github.com/alekspetrov/pilot/internal/config"
 	"github.com/alekspetrov/pilot/internal/gateway"
 	"github.com/alekspetrov/pilot/internal/logging"
@@ -28,6 +30,9 @@ type Pilot struct {
 	githubWH     *github.WebhookHandler
 	githubNotify *github.Notifier
 	slackNotify    *slack.Notifier
+	slackClient    *slack.Client
+	telegramClient *telegram.Client
+	alertEngine    *alerts.Engine
 	store          *memory.Store
 	graph          *memory.KnowledgeGraph
 	webhookManager *webhooks.Manager
@@ -102,6 +107,11 @@ func New(cfg *config.Config) (*Pilot, error) {
 		p.githubNotify = github.NewNotifier(p.githubClient, cfg.Adapters.Github.PilotLabel)
 	}
 
+	// Initialize alerts engine if enabled
+	if cfg.Alerts != nil && cfg.Alerts.Enabled {
+		p.initAlerts(cfg)
+	}
+
 	// Initialize gateway
 	p.gateway = gateway.NewServer(cfg.Gateway)
 
@@ -130,6 +140,13 @@ func New(cfg *config.Config) (*Pilot, error) {
 func (p *Pilot) Start() error {
 	logging.WithComponent("pilot").Info("Starting Pilot")
 
+	// Start alerts engine if initialized
+	if p.alertEngine != nil {
+		if err := p.alertEngine.Start(p.ctx); err != nil {
+			logging.WithComponent("pilot").Warn("Failed to start alerts engine", slog.Any("error", err))
+		}
+	}
+
 	// Start orchestrator
 	p.orchestrator.Start()
 
@@ -153,6 +170,12 @@ func (p *Pilot) Stop() error {
 	logging.WithComponent("pilot").Info("Stopping Pilot")
 
 	p.cancel()
+
+	// Stop alerts engine
+	if p.alertEngine != nil {
+		p.alertEngine.Stop()
+	}
+
 	p.orchestrator.Stop()
 	_ = p.gateway.Shutdown()
 	_ = p.store.Close()
@@ -303,4 +326,143 @@ func (p *Pilot) findProjectForGithubRepo(repo *github.Repository) string {
 	}
 
 	return ""
+}
+
+// initAlerts initializes the alerts engine with configured channels
+func (p *Pilot) initAlerts(cfg *config.Config) {
+	log := logging.WithComponent("alerts")
+
+	// Convert config.AlertsConfig to alerts.AlertConfig
+	alertCfg := p.convertAlertsConfig(cfg.Alerts)
+
+	// Create dispatcher with configured channels
+	dispatcher := alerts.NewDispatcher(alertCfg, alerts.WithDispatcherLogger(log))
+
+	// Register Slack channel if configured
+	if cfg.Adapters.Slack != nil && cfg.Adapters.Slack.Enabled && cfg.Adapters.Slack.BotToken != "" {
+		p.slackClient = slack.NewClient(cfg.Adapters.Slack.BotToken)
+		for _, ch := range cfg.Alerts.Channels {
+			if ch.Type == "slack" && ch.Enabled && ch.Slack != nil {
+				slackChannel := alerts.NewSlackChannel(ch.Name, p.slackClient, ch.Slack.Channel)
+				dispatcher.RegisterChannel(slackChannel)
+				log.Info("Registered Slack alert channel",
+					slog.String("name", ch.Name),
+					slog.String("channel", ch.Slack.Channel))
+			}
+		}
+	}
+
+	// Register Telegram channel if configured
+	if cfg.Adapters.Telegram != nil && cfg.Adapters.Telegram.Enabled && cfg.Adapters.Telegram.BotToken != "" {
+		p.telegramClient = telegram.NewClient(cfg.Adapters.Telegram.BotToken)
+		for _, ch := range cfg.Alerts.Channels {
+			if ch.Type == "telegram" && ch.Enabled && ch.Telegram != nil {
+				telegramChannel := alerts.NewTelegramChannel(ch.Name, p.telegramClient, ch.Telegram.ChatID)
+				dispatcher.RegisterChannel(telegramChannel)
+				log.Info("Registered Telegram alert channel",
+					slog.String("name", ch.Name),
+					slog.Int64("chat_id", ch.Telegram.ChatID))
+			}
+		}
+	}
+
+	// Register webhook channels
+	for _, ch := range cfg.Alerts.Channels {
+		if ch.Type == "webhook" && ch.Enabled && ch.Webhook != nil {
+			webhookChannel := alerts.NewWebhookChannel(ch.Name, &alerts.WebhookChannelConfig{
+				URL:     ch.Webhook.URL,
+				Method:  ch.Webhook.Method,
+				Headers: ch.Webhook.Headers,
+				Secret:  ch.Webhook.Secret,
+			})
+			dispatcher.RegisterChannel(webhookChannel)
+			log.Info("Registered webhook alert channel",
+				slog.String("name", ch.Name),
+				slog.String("url", ch.Webhook.URL))
+		}
+	}
+
+	// Create engine with dispatcher
+	p.alertEngine = alerts.NewEngine(alertCfg,
+		alerts.WithLogger(log),
+		alerts.WithDispatcher(dispatcher),
+	)
+
+	// Wire alerts engine to executor via adapter
+	adapter := alerts.NewEngineAdapter(p.alertEngine)
+	p.orchestrator.SetAlertProcessor(adapter)
+
+	log.Info("Alerts engine initialized",
+		slog.Int("rules", len(alertCfg.Rules)),
+		slog.Int("channels", len(dispatcher.ListChannels())))
+}
+
+// convertAlertsConfig converts config.AlertsConfig to alerts.AlertConfig
+func (p *Pilot) convertAlertsConfig(cfg *config.AlertsConfig) *alerts.AlertConfig {
+	// Build channel configs
+	channels := make([]alerts.ChannelConfigInput, len(cfg.Channels))
+	for i, ch := range cfg.Channels {
+		channels[i] = alerts.ChannelConfigInput{
+			Name:       ch.Name,
+			Type:       ch.Type,
+			Enabled:    ch.Enabled,
+			Severities: ch.Severities,
+		}
+		if ch.Slack != nil {
+			channels[i].Slack = &alerts.SlackConfigInput{Channel: ch.Slack.Channel}
+		}
+		if ch.Telegram != nil {
+			channels[i].Telegram = &alerts.TelegramConfigInput{ChatID: ch.Telegram.ChatID}
+		}
+		if ch.Email != nil {
+			channels[i].Email = &alerts.EmailConfigInput{To: ch.Email.To, Subject: ch.Email.Subject}
+		}
+		if ch.Webhook != nil {
+			channels[i].Webhook = &alerts.WebhookConfigInput{
+				URL:     ch.Webhook.URL,
+				Method:  ch.Webhook.Method,
+				Headers: ch.Webhook.Headers,
+				Secret:  ch.Webhook.Secret,
+			}
+		}
+		if ch.PagerDuty != nil {
+			channels[i].PagerDuty = &alerts.PagerDutyConfigInput{
+				RoutingKey: ch.PagerDuty.RoutingKey,
+				ServiceID:  ch.PagerDuty.ServiceID,
+			}
+		}
+	}
+
+	// Build rule configs
+	rules := make([]alerts.RuleConfigInput, len(cfg.Rules))
+	for i, r := range cfg.Rules {
+		rules[i] = alerts.RuleConfigInput{
+			Name:        r.Name,
+			Type:        r.Type,
+			Enabled:     r.Enabled,
+			Severity:    r.Severity,
+			Channels:    r.Channels,
+			Cooldown:    r.Cooldown,
+			Description: r.Description,
+			Condition: alerts.ConditionConfigInput{
+				ProgressUnchangedFor: r.Condition.ProgressUnchangedFor,
+				ConsecutiveFailures:  r.Condition.ConsecutiveFailures,
+				DailySpendThreshold:  r.Condition.DailySpendThreshold,
+				BudgetLimit:          r.Condition.BudgetLimit,
+				UsageSpikePercent:    r.Condition.UsageSpikePercent,
+				Pattern:              r.Condition.Pattern,
+				FilePattern:          r.Condition.FilePattern,
+				Paths:                r.Condition.Paths,
+			},
+		}
+	}
+
+	// Build defaults
+	defaults := alerts.DefaultsConfigInput{
+		Cooldown:           cfg.Defaults.Cooldown,
+		DefaultSeverity:    cfg.Defaults.DefaultSeverity,
+		SuppressDuplicates: cfg.Defaults.SuppressDuplicates,
+	}
+
+	return alerts.FromConfigAlerts(cfg.Enabled, channels, rules, defaults)
 }
