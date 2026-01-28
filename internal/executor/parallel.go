@@ -65,9 +65,6 @@ type SubagentResult struct {
 	Duration     time.Duration
 }
 
-// ModelRouter routes tasks to appropriate models (placeholder for future implementation)
-type ModelRouter struct{}
-
 // ParallelRunner coordinates multiple subagent executions
 type ParallelRunner struct {
 	config     *ParallelConfig

@@ -130,6 +130,49 @@ type BackendConfig struct {
 
 	// OpenCode contains OpenCode specific settings
 	OpenCode *OpenCodeConfig `yaml:"opencode,omitempty"`
+
+	// ModelRouting contains model selection based on task complexity
+	ModelRouting *ModelRoutingConfig `yaml:"model_routing,omitempty"`
+
+	// Timeout contains execution timeout settings
+	Timeout *TimeoutConfig `yaml:"timeout,omitempty"`
+}
+
+// ModelRoutingConfig controls which model to use based on task complexity.
+// Enables cost optimization by using cheaper models for simple tasks.
+type ModelRoutingConfig struct {
+	// Enabled controls whether model routing is active
+	Enabled bool `yaml:"enabled"`
+
+	// Trivial is the model for trivial tasks (typos, logs, renames)
+	Trivial string `yaml:"trivial"`
+
+	// Simple is the model for simple tasks (small fixes, add field)
+	Simple string `yaml:"simple"`
+
+	// Medium is the model for standard feature work
+	Medium string `yaml:"medium"`
+
+	// Complex is the model for architectural work (refactors, migrations)
+	Complex string `yaml:"complex"`
+}
+
+// TimeoutConfig controls execution timeouts to prevent stuck tasks.
+type TimeoutConfig struct {
+	// Default is the default timeout for all tasks
+	Default string `yaml:"default"`
+
+	// Trivial is the timeout for trivial tasks (shorter)
+	Trivial string `yaml:"trivial"`
+
+	// Simple is the timeout for simple tasks
+	Simple string `yaml:"simple"`
+
+	// Medium is the timeout for medium tasks
+	Medium string `yaml:"medium"`
+
+	// Complex is the timeout for complex tasks (longer)
+	Complex string `yaml:"complex"`
 }
 
 // ClaudeCodeConfig contains Claude Code backend configuration.
@@ -173,6 +216,33 @@ func DefaultBackendConfig() *BackendConfig {
 			AutoStartServer: true,
 			ServerCommand:   "opencode serve",
 		},
+		ModelRouting: DefaultModelRoutingConfig(),
+		Timeout:      DefaultTimeoutConfig(),
+	}
+}
+
+// DefaultModelRoutingConfig returns default model routing configuration.
+// Model routing is disabled by default; when enabled, uses Haiku for trivial,
+// Sonnet for simple/medium, and Opus for complex tasks.
+func DefaultModelRoutingConfig() *ModelRoutingConfig {
+	return &ModelRoutingConfig{
+		Enabled: false,
+		Trivial: "claude-haiku",
+		Simple:  "claude-sonnet",
+		Medium:  "claude-sonnet",
+		Complex: "claude-opus",
+	}
+}
+
+// DefaultTimeoutConfig returns default timeout configuration.
+// Timeouts are calibrated to prevent stuck tasks while allowing complex work.
+func DefaultTimeoutConfig() *TimeoutConfig {
+	return &TimeoutConfig{
+		Default: "30m",
+		Trivial: "5m",
+		Simple:  "10m",
+		Medium:  "30m",
+		Complex: "60m",
 	}
 }
 

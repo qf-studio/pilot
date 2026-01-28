@@ -150,15 +150,16 @@ type ProgressCallback func(taskID string, phase string, progress int, message st
 // progress tracking, PR creation, and execution recording. Runner is safe for
 // concurrent use and tracks all running tasks for cancellation support.
 type Runner struct {
-	backend               Backend                 // AI execution backend
+	backend               Backend               // AI execution backend
 	onProgress            ProgressCallback
 	mu                    sync.Mutex
 	running               map[string]*exec.Cmd
 	log                   *slog.Logger
-	recordingsPath        string                  // Path to recordings directory (empty = default)
-	enableRecording       bool                    // Whether to record executions
-	alertProcessor        AlertEventProcessor     // Optional alert processor for event emission
-	qualityCheckerFactory QualityCheckerFactory   // Optional factory for creating quality checkers
+	recordingsPath        string                // Path to recordings directory (empty = default)
+	enableRecording       bool                  // Whether to record executions
+	alertProcessor        AlertEventProcessor   // Optional alert processor for event emission
+	qualityCheckerFactory QualityCheckerFactory // Optional factory for creating quality checkers
+	modelRouter           *ModelRouter          // Model and timeout routing based on complexity
 }
 
 // NewRunner creates a new Runner instance with Claude Code backend by default.
@@ -169,6 +170,7 @@ func NewRunner() *Runner {
 		running:         make(map[string]*exec.Cmd),
 		log:             logging.WithComponent("executor"),
 		enableRecording: true, // Recording enabled by default
+		modelRouter:     NewModelRouter(nil, nil),
 	}
 }
 
@@ -182,6 +184,7 @@ func NewRunnerWithBackend(backend Backend) *Runner {
 		running:         make(map[string]*exec.Cmd),
 		log:             logging.WithComponent("executor"),
 		enableRecording: true,
+		modelRouter:     NewModelRouter(nil, nil),
 	}
 }
 
@@ -191,7 +194,14 @@ func NewRunnerWithConfig(config *BackendConfig) (*Runner, error) {
 	if err != nil {
 		return nil, err
 	}
-	return NewRunnerWithBackend(backend), nil
+	runner := NewRunnerWithBackend(backend)
+
+	// Configure model routing and timeouts from config
+	if config != nil {
+		runner.modelRouter = NewModelRouter(config.ModelRouting, config.Timeout)
+	}
+
+	return runner, nil
 }
 
 // SetBackend changes the execution backend.
@@ -230,6 +240,11 @@ func (r *Runner) SetQualityCheckerFactory(factory QualityCheckerFactory) {
 	r.qualityCheckerFactory = factory
 }
 
+// SetModelRouter sets the model router for complexity-based model and timeout selection.
+func (r *Runner) SetModelRouter(router *ModelRouter) {
+	r.modelRouter = router
+}
+
 // getRecordingsPath returns the recordings path, using default if not set
 func (r *Runner) getRecordingsPath() string {
 	if r.recordingsPath != "" {
@@ -251,7 +266,27 @@ func (r *Runner) OnProgress(callback ProgressCallback) {
 // setup failures; execution failures are reported in ExecutionResult.
 func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, error) {
 	start := time.Now()
-	log := r.log.With(slog.String("task_id", task.ID), slog.String("backend", r.backend.Name()))
+
+	// Detect complexity for routing decisions
+	complexity := DetectComplexity(task)
+
+	// Apply timeout based on task complexity
+	timeout := r.modelRouter.SelectTimeout(task)
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	log := r.log.With(
+		slog.String("task_id", task.ID),
+		slog.String("backend", r.backend.Name()),
+		slog.String("complexity", complexity.String()),
+		slog.Duration("timeout", timeout),
+	)
+
+	// Select model if routing is enabled
+	selectedModel := r.modelRouter.SelectModel(task)
+	if selectedModel != "" {
+		log = log.With(slog.String("routed_model", selectedModel))
+	}
 
 	log.Info("Starting task execution",
 		slog.String("project", task.ProjectPath),
@@ -336,11 +371,24 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 
 	if err != nil {
 		result.Success = false
-		result.Error = err.Error()
-		log.Error("Backend execution failed",
-			slog.String("error", result.Error),
-			slog.Duration("duration", duration),
-		)
+
+		// Check if this was a timeout
+		timedOut := ctx.Err() == context.DeadlineExceeded
+		if timedOut {
+			result.Error = fmt.Sprintf("task timed out after %v", timeout)
+			log.Error("Task timed out",
+				slog.String("task_id", task.ID),
+				slog.String("complexity", complexity.String()),
+				slog.Duration("timeout", timeout),
+				slog.Duration("duration", duration),
+			)
+		} else {
+			result.Error = err.Error()
+			log.Error("Backend execution failed",
+				slog.String("error", result.Error),
+				slog.Duration("duration", duration),
+			)
+		}
 		r.reportProgress(task.ID, "Failed", 100, result.Error)
 
 		// Emit task failed event
@@ -416,11 +464,28 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 		}
 	} else {
 		result.Success = true
-		log.Info("Task execution succeeded",
-			slog.Duration("duration", duration),
-			slog.Int64("tokens_in", state.tokensInput),
-			slog.Int64("tokens_out", state.tokensOutput),
-			slog.Int("files_written", state.filesWrite),
+
+		// Log execution metrics for observability (GH-54 speed optimization)
+		metrics := NewExecutionMetrics(
+			task.ID,
+			complexity,
+			result.ModelName,
+			duration,
+			state,
+			timeout,
+			false, // not timed out
+		)
+		log.Info("Task completed",
+			slog.String("task_id", metrics.TaskID),
+			slog.String("complexity", metrics.Complexity.String()),
+			slog.String("model", metrics.Model),
+			slog.Duration("duration", metrics.Duration),
+			slog.Bool("navigator_skipped", metrics.NavigatorSkipped),
+			slog.Int64("tokens_in", metrics.TokensIn),
+			slog.Int64("tokens_out", metrics.TokensOut),
+			slog.Float64("cost_usd", metrics.EstimatedCostUSD),
+			slog.Int("files_read", metrics.FilesRead),
+			slog.Int("files_written", metrics.FilesWritten),
 		)
 		r.reportProgress(task.ID, "Completed", 90, "Execution completed")
 
