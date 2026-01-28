@@ -131,7 +131,7 @@ if _, err := os.Stat(agentDir); err == nil {
 - [x] **GH-41**: Enhanced dashboard with token usage, cost, task history
 - [x] **GH-42**: Added missing testutil constants (webhook, PagerDuty, Stripe)
 
-## Prioritized Backlog
+## Active Backlog
 
 **Pick tasks in order. Higher = more user value.**
 
@@ -139,75 +139,55 @@ if _, err := os.Stat(agentDir); err == nil {
 
 | # | Task | File | Why |
 |---|------|------|-----|
-| 1 | **TASK-20**: Quality Gates | `TASK-20-quality-gates.md` | Broken PRs destroy trust |
-| 2 | **TASK-19**: Approval Workflows | `TASK-19-approval-workflows.md` | Teams won't adopt without safety controls |
+| 1 | **TASK-18**: Cost Controls | `TASK-18-cost-controls.md` | Budget protection |
+| 2 | **TASK-45**: Wire testutil | `TASK-45-wire-testutil.md` | Test reliability |
 
 ### 🟡 P2: High (Significant Value)
 
 | # | Task | File | Why |
 |---|------|------|-----|
-| 3 | **TASK-36**: GitHub Polling | `TASK-36-github-polling.md` | Zero-config GitHub integration |
-| 4 | **TASK-28**: Speed Optimization | `TASK-28-speed-optimization.md` | Slow = abandoned |
-| 5 | **TASK-26**: Hot Version Upgrade | `TASK-26-hot-version-upgrade.md` | Friction-free updates |
+| 3 | **TASK-28**: Speed Optimization | `TASK-28-speed-optimization.md` | Slow = abandoned |
+| 4 | **TASK-26**: Hot Version Upgrade | `TASK-26-hot-version-upgrade.md` | Friction-free updates |
+| 5 | **TASK-29**: Multi-Project Support | `TASK-29-multi-project-support.md` | Scale to teams |
 
 ### 🟢 P3: Medium (Enterprise/Polish)
 
 | # | Task | File | Why |
 |---|------|------|-----|
-| 6 | **TASK-37**: Cloudflare Tunnel | `TASK-37-cloudflare-tunnel.md` | Permanent webhook URLs |
-| 7 | **TASK-17**: Team Management | `TASK-17-team-management.md` | Enterprise sales blocker |
-| 8 | **TASK-18**: Cost Controls | `TASK-18-cost-controls.md` | Budget protection |
-| 9 | **TASK-25**: Telegram Commands | `TASK-25-telegram-commands.md` | Power user UX |
+| 6 | **TASK-25**: Telegram Commands | `TASK-25-telegram-commands.md` | Power user UX |
+| 7 | **TASK-35**: Remove ffmpeg | `TASK-35-remove-ffmpeg.md` | Reduce dependencies |
+| 8 | **TASK-38**: Polling PR Config | `TASK-38-polling-pr-config.md` | GitHub workflow polish |
 
 ### ⚪ P4: Low (Internal/Nice-to-Have)
 
 | # | Task | File | Why |
 |---|------|------|-----|
-| 10 | **TASK-32**: Nav Index Sync | `TASK-32-nav-index-sync.md` | Internal workflow |
-| 11 | **TASK-21**: Execution Replay | `TASK-21-execution-replay.md` | Debug aid |
-| 12 | **TASK-22**: Webhooks API | `TASK-22-webhooks-api.md` | Integration feature |
-| 13 | **TASK-24**: Tech Debt | `TASK-24-tech-debt-cleanup.md` | Internal cleanup |
-| 14 | **TASK-27**: CLI Enhancements | `TASK-27-pilot-cli.md` | Polish |
+| 9 | **TASK-32**: Nav Index Sync | `TASK-32-nav-index-sync.md` | Internal workflow |
+| 10 | **TASK-21**: Execution Replay | `TASK-21-execution-replay.md` | Debug aid (partial impl exists) |
+| 11 | **TASK-22**: Webhooks API | `TASK-22-webhooks-api.md` | Integration feature |
+| 12 | **TASK-24**: Tech Debt | `TASK-24-tech-debt-cleanup.md` | Internal cleanup |
 
 ---
 
-## Completed Tasks
+## Completed Tasks (Archived)
 
-- **GH-46**: Task queue with per-project coordination + OpenCode backend ✅ 2026-01-28
-- **GH-42**: Missing testutil constants ✅ 2026-01-28
-- **GH-41**: Dashboard token/cost/history ✅ 2026-01-28
-- **GH-40**: `--alerts` flag for `pilot task` ✅ 2026-01-28
-- **TASK-45**: Wire testutil to all tests ✅ 2026-01-28
+33 tasks archived to `.agent/tasks/archive/`. Key milestones:
+
+- **GH-46**: Task queue with per-project coordination ✅ 2026-01-28
 - **TASK-44**: Wire dashboard TUI ✅ 2026-01-28
 - **TASK-43**: Wire alerts engine ✅ 2026-01-28
-- **TASK-42**: Local CI gate ✅ 2026-01-28
-- **TASK-41**: Test secret patterns ✅ 2026-01-28
-- **TASK-40**: Rate limit handling ✅ 2026-01-28
-- **TASK-39**: Mac sleep prevention ✅ 2026-01-28
-- **TASK-38**: Polling PR config ✅ 2026-01-28
-- **TASK-37**: Cloudflare Tunnel (partial) ✅ 2026-01-28
+- **TASK-37**: Cloudflare Tunnel ✅ 2026-01-28
 - **TASK-36**: GitHub Polling ✅ 2026-01-27
-- **TASK-35**: Remove ffmpeg ✅ 2026-01-27
-- **TASK-34**: Remove SenseVoice ✅ 2026-01-27
-- **TASK-33**: Branch Workflow Fix ✅ 2026-01-27
-- **TASK-31**: PR Workflow Improvements ✅ 2026-01-27
-- **TASK-30**: Setup Wizard & Voice Setup ✅ 2026-01-27
-- **TASK-29**: Multi-Project Support ✅ 2026-01-27
-- **TASK-23**: GitHub App Integration (Phase 1) ✅ 2026-01-27
-- **TASK-16**: Usage Metering & Billing ✅ 2026-01-27
-- **TASK-15**: Structured Logging ✅ 2026-01-26
+- **TASK-20**: Quality Gates ✅ 2026-01-27
+- **TASK-19**: Approval Workflows ✅ 2026-01-27
+- **TASK-17**: Team Management ✅ 2026-01-27
 - **TASK-14**: Alerting System ✅ 2026-01-26
-- **TASK-13**: Execution Metrics ✅ 2026-01-26
-- **TASK-12**: Pilot Cloud (Foundation) ✅ 2026-01-26
-- **TASK-11**: Cross-Project Memory ✅ 2026-01-26
 - **TASK-10**: Daily Briefs ✅ 2026-01-26
 - **TASK-09**: Jira Adapter ✅ 2026-01-26
 - **TASK-08**: GitHub Issues Adapter ✅ 2026-01-26
-- **TASK-07**: Telegram Voice Support ✅ 2026-01-26
-- **TASK-06**: Telegram Image Support ✅ 2026-01-26
-- **TASK-05**: Bot Singleton Detection ✅ 2026-01-26
-- **TASK-04**: Telegram UX Improvements ✅ 2026-01-26
 - **TASK-03**: Git & PR Workflow ✅ 2026-01-26
+
+Full archive: `.agent/tasks/archive/`
 
 ## Project Structure
 

@@ -62,6 +62,9 @@ venv/
 logs/
 .agent/.marker-log
 
+# Navigator context markers (session-specific)
+.agent/.context-markers/
+
 # Secrets
 *.pem
 *.key
