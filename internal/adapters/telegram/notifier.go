@@ -97,4 +97,44 @@ func generateProgressBar(progress int) string {
 	return bar
 }
 
+// SendBudgetWarning notifies about approaching budget limits
+func (n *Notifier) SendBudgetWarning(ctx context.Context, alertType, message string) error {
+	var icon, title string
+	switch alertType {
+	case "daily_budget_warning":
+		icon = "⚠️"
+		title = "Daily Budget Warning"
+	case "monthly_budget_warning":
+		icon = "⚠️"
+		title = "Monthly Budget Warning"
+	case "daily_budget_exceeded":
+		icon = "🚫"
+		title = "Daily Budget Exceeded"
+	case "monthly_budget_exceeded":
+		icon = "🚫"
+		title = "Monthly Budget Exceeded"
+	default:
+		icon = "💰"
+		title = "Budget Alert"
+	}
+
+	text := fmt.Sprintf("%s *%s*\n\n%s", icon, title, escapeMarkdown(message))
+	_, err := n.client.SendMessage(ctx, n.chatID, text, "Markdown")
+	return err
+}
+
+// SendBudgetPaused notifies that task execution has been paused due to budget
+func (n *Notifier) SendBudgetPaused(ctx context.Context, reason string) error {
+	text := fmt.Sprintf("🛑 *Task Execution Paused*\n\n%s\n\nNew tasks will not start until limits reset or budget is increased.", escapeMarkdown(reason))
+	_, err := n.client.SendMessage(ctx, n.chatID, text, "Markdown")
+	return err
+}
+
+// SendTaskBlocked notifies that a task was blocked due to budget limits
+func (n *Notifier) SendTaskBlocked(ctx context.Context, taskID, reason string) error {
+	text := fmt.Sprintf("⛔ *Task Blocked*\n`%s`\n\n%s", taskID, escapeMarkdown(reason))
+	_, err := n.client.SendMessage(ctx, n.chatID, text, "Markdown")
+	return err
+}
+
 // Note: escapeMarkdown is defined in formatter.go
