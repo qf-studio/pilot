@@ -52,6 +52,12 @@ const (
 	// FakePagerDutyRoutingKey is a safe test routing key for PagerDuty.
 	FakePagerDutyRoutingKey = "test-pagerduty-routing-key"
 
+	// FakePagerDutyKey is a safe test API key for PagerDuty.
+	FakePagerDutyKey = "test-pagerduty-api-key"
+
 	// FakeJiraAPIToken is a safe test API token for Jira.
 	FakeJiraAPIToken = "test-jira-api-token"
+
+	// FakeStripeKey is a safe test API key for Stripe.
+	FakeStripeKey = "test-stripe-api-key"
 )
