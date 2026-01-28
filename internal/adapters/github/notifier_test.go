@@ -7,10 +7,12 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/alekspetrov/pilot/internal/testutil"
 )
 
 func TestNewNotifier(t *testing.T) {
-	client := NewClient("test-token")
+	client := NewClient(testutil.FakeGitHubToken)
 	notifier := NewNotifier(client, "pilot")
 
 	if notifier == nil {
@@ -96,7 +98,7 @@ func TestNotifyTaskStarted(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := NewClientWithBaseURL("test-token", server.URL)
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 			notifier := NewNotifier(client, "pilot")
 
 			err := notifier.NotifyTaskStarted(context.Background(), "owner", "repo", 42, "TASK-123")
@@ -200,7 +202,7 @@ func TestNotifyProgress(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := NewClientWithBaseURL("test-token", server.URL)
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 			notifier := NewNotifier(client, "pilot")
 
 			err := notifier.NotifyProgress(context.Background(), "owner", "repo", 42, tt.phase, tt.details)
@@ -337,7 +339,7 @@ func TestNotifyTaskCompleted(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := NewClientWithBaseURL("test-token", server.URL)
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 			notifier := NewNotifier(client, "pilot")
 
 			err := notifier.NotifyTaskCompleted(context.Background(), "owner", "repo", 42, tt.prURL, tt.summary)
@@ -435,7 +437,7 @@ func TestNotifyTaskFailed(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := NewClientWithBaseURL("test-token", server.URL)
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 			notifier := NewNotifier(client, "pilot")
 
 			err := notifier.NotifyTaskFailed(context.Background(), "owner", "repo", 42, tt.reason)
@@ -499,7 +501,7 @@ func TestLinkPR(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := NewClientWithBaseURL("test-token", server.URL)
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 			notifier := NewNotifier(client, "pilot")
 
 			err := notifier.LinkPR(context.Background(), "owner", "repo", 1, tt.prNumber, tt.prURL)
@@ -542,7 +544,7 @@ func TestNotifyProgress_PhaseEmojis(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := NewClientWithBaseURL("test-token", server.URL)
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 			notifier := NewNotifier(client, "pilot")
 
 			err := notifier.NotifyProgress(context.Background(), "owner", "repo", 42, p.phase, "details")

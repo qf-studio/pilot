@@ -8,15 +8,17 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/alekspetrov/pilot/internal/testutil"
 )
 
 func TestNewClient(t *testing.T) {
-	client := NewClient("test-token")
+	client := NewClient(testutil.FakeGitHubToken)
 	if client == nil {
 		t.Fatal("NewClient returned nil")
 	}
-	if client.token != "test-token" {
-		t.Errorf("client.token = %s, want test-token", client.token)
+	if client.token != testutil.FakeGitHubToken {
+		t.Errorf("client.token = %s, want %s", client.token, testutil.FakeGitHubToken)
 	}
 	if client.baseURL != githubAPIURL {
 		t.Errorf("client.baseURL = %s, want %s", client.baseURL, githubAPIURL)
@@ -25,12 +27,12 @@ func TestNewClient(t *testing.T) {
 
 func TestNewClientWithBaseURL(t *testing.T) {
 	customURL := "https://custom.api.example.com"
-	client := NewClientWithBaseURL("test-token", customURL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, customURL)
 	if client == nil {
 		t.Fatal("NewClientWithBaseURL returned nil")
 	}
-	if client.token != "test-token" {
-		t.Errorf("client.token = %s, want test-token", client.token)
+	if client.token != testutil.FakeGitHubToken {
+		t.Errorf("client.token = %s, want %s", client.token, testutil.FakeGitHubToken)
 	}
 	if client.baseURL != customURL {
 		t.Errorf("client.baseURL = %s, want %s", client.baseURL, customURL)
@@ -79,7 +81,7 @@ func TestGetIssue(t *testing.T) {
 				if r.Method != http.MethodGet {
 					t.Errorf("expected GET, got %s", r.Method)
 				}
-				if r.Header.Get("Authorization") != "Bearer test-token" {
+				if r.Header.Get("Authorization") != "Bearer "+testutil.FakeGitHubToken {
 					t.Errorf("unexpected auth header: %s", r.Header.Get("Authorization"))
 				}
 				if r.Header.Get("Accept") != "application/vnd.github+json" {
@@ -92,7 +94,7 @@ func TestGetIssue(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := NewClientWithBaseURL("test-token", server.URL)
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 			issue, err := client.GetIssue(context.Background(), "owner", "repo", 42)
 
 			if (err != nil) != tt.wantErr {
@@ -157,7 +159,7 @@ func TestAddComment(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := NewClientWithBaseURL("test-token", server.URL)
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 			comment, err := client.AddComment(context.Background(), "owner", "repo", 42, tt.commentBody)
 
 			if (err != nil) != tt.wantErr {
@@ -218,7 +220,7 @@ func TestAddLabels(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := NewClientWithBaseURL("test-token", server.URL)
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 			err := client.AddLabels(context.Background(), "owner", "repo", 42, tt.labels)
 
 			if (err != nil) != tt.wantErr {
@@ -269,7 +271,7 @@ func TestRemoveLabel(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := NewClientWithBaseURL("test-token", server.URL)
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 			err := client.RemoveLabel(context.Background(), "owner", "repo", 42, tt.label)
 
 			if (err != nil) != tt.wantErr {
@@ -326,7 +328,7 @@ func TestUpdateIssueState(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := NewClientWithBaseURL("test-token", server.URL)
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 			err := client.UpdateIssueState(context.Background(), "owner", "repo", 42, tt.state)
 
 			if (err != nil) != tt.wantErr {
@@ -374,7 +376,7 @@ func TestGetRepository(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := NewClientWithBaseURL("test-token", server.URL)
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 			repo, err := client.GetRepository(context.Background(), "owner", "repo")
 
 			if (err != nil) != tt.wantErr {
@@ -463,7 +465,7 @@ func TestCreateCommitStatus(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := NewClientWithBaseURL("test-token", server.URL)
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 			result, err := client.CreateCommitStatus(context.Background(), "owner", "repo", "abc123def", tt.status)
 
 			if (err != nil) != tt.wantErr {
@@ -542,7 +544,7 @@ func TestCreateCheckRun(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := NewClientWithBaseURL("test-token", server.URL)
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 			result, err := client.CreateCheckRun(context.Background(), "owner", "repo", tt.checkRun)
 
 			if (err != nil) != tt.wantErr {
@@ -619,7 +621,7 @@ func TestUpdateCheckRun(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := NewClientWithBaseURL("test-token", server.URL)
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 			result, err := client.UpdateCheckRun(context.Background(), "owner", "repo", tt.checkRunID, tt.checkRun)
 
 			if (err != nil) != tt.wantErr {
@@ -709,7 +711,7 @@ func TestCreatePullRequest(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := NewClientWithBaseURL("test-token", server.URL)
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 			result, err := client.CreatePullRequest(context.Background(), "owner", "repo", tt.input)
 
 			if (err != nil) != tt.wantErr {
@@ -761,7 +763,7 @@ func TestGetPullRequest(t *testing.T) {
 				if r.URL.Path != "/repos/owner/repo/pulls/42" {
 					t.Errorf("unexpected path: %s", r.URL.Path)
 				}
-				if r.Header.Get("Authorization") != "Bearer test-token" {
+				if r.Header.Get("Authorization") != "Bearer "+testutil.FakeGitHubToken {
 					t.Errorf("unexpected auth header: %s", r.Header.Get("Authorization"))
 				}
 
@@ -770,7 +772,7 @@ func TestGetPullRequest(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := NewClientWithBaseURL("test-token", server.URL)
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 			result, err := client.GetPullRequest(context.Background(), "owner", "repo", 42)
 
 			if (err != nil) != tt.wantErr {
@@ -837,7 +839,7 @@ func TestAddPRComment(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := NewClientWithBaseURL("test-token", server.URL)
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 			result, err := client.AddPRComment(context.Background(), "owner", "repo", 42, tt.commentBody)
 
 			if (err != nil) != tt.wantErr {
@@ -923,7 +925,7 @@ func TestListIssues(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := NewClientWithBaseURL("test-token", server.URL)
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 			issues, err := client.ListIssues(context.Background(), "owner", "repo", tt.opts)
 
 			if (err != nil) != tt.wantErr {
@@ -1066,7 +1068,7 @@ func TestDoRequest_ErrorHandling(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := NewClientWithBaseURL("test-token", server.URL)
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 			_, err := client.GetIssue(context.Background(), "owner", "repo", 1)
 
 			if (err != nil) != tt.wantErr {
@@ -1086,7 +1088,7 @@ func TestDoRequest_InvalidJSON(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL("test-token", server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 	_, err := client.GetIssue(context.Background(), "owner", "repo", 1)
 
 	if err == nil {

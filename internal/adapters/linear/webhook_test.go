@@ -7,10 +7,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/alekspetrov/pilot/internal/testutil"
 )
 
 func TestNewWebhookHandler(t *testing.T) {
-	client := NewClient("test-api-key")
+	client := NewClient(testutil.FakeLinearAPIKey)
 	handler := NewWebhookHandler(client, "pilot")
 
 	if handler == nil {
@@ -28,7 +30,7 @@ func TestNewWebhookHandler(t *testing.T) {
 }
 
 func TestOnIssue(t *testing.T) {
-	client := NewClient("test-api-key")
+	client := NewClient(testutil.FakeLinearAPIKey)
 	handler := NewWebhookHandler(client, "pilot")
 
 	var callbackSet bool
@@ -123,7 +125,7 @@ func TestHandle_IssueCreated_WithPilotLabel(t *testing.T) {
 }
 
 func TestHandle_IssueCreated_NoPilotLabel(t *testing.T) {
-	client := NewClient("test-api-key")
+	client := NewClient(testutil.FakeLinearAPIKey)
 	handler := NewWebhookHandler(client, "pilot")
 
 	var callbackCalled bool
@@ -155,7 +157,7 @@ func TestHandle_IssueCreated_NoPilotLabel(t *testing.T) {
 }
 
 func TestHandle_IssueUpdated(t *testing.T) {
-	client := NewClient("test-api-key")
+	client := NewClient(testutil.FakeLinearAPIKey)
 	handler := NewWebhookHandler(client, "pilot")
 
 	var callbackCalled bool
@@ -187,7 +189,7 @@ func TestHandle_IssueUpdated(t *testing.T) {
 }
 
 func TestHandle_CommentEvent(t *testing.T) {
-	client := NewClient("test-api-key")
+	client := NewClient(testutil.FakeLinearAPIKey)
 	handler := NewWebhookHandler(client, "pilot")
 
 	var callbackCalled bool
@@ -216,7 +218,7 @@ func TestHandle_CommentEvent(t *testing.T) {
 }
 
 func TestHandle_IssueDeleted(t *testing.T) {
-	client := NewClient("test-api-key")
+	client := NewClient(testutil.FakeLinearAPIKey)
 	handler := NewWebhookHandler(client, "pilot")
 
 	var callbackCalled bool
@@ -342,7 +344,7 @@ func TestHandle_CallbackError(t *testing.T) {
 }
 
 func TestHandle_InvalidDataType(t *testing.T) {
-	client := NewClient("test-api-key")
+	client := NewClient(testutil.FakeLinearAPIKey)
 	handler := NewWebhookHandler(client, "pilot")
 
 	var callbackCalled bool
@@ -395,7 +397,7 @@ func TestHandle_MissingActionOrType(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			client := NewClient("test-api-key")
+			client := NewClient(testutil.FakeLinearAPIKey)
 			handler := NewWebhookHandler(client, "pilot")
 
 			var callbackCalled bool
@@ -477,7 +479,7 @@ func TestHasPilotLabel_WithLabels(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			client := NewClient("test-api-key")
+			client := NewClient(testutil.FakeLinearAPIKey)
 			handler := NewWebhookHandler(client, tt.pilotLabel)
 
 			got := handler.hasPilotLabel(tt.data)
@@ -521,7 +523,7 @@ func TestHasPilotLabel_WithLabelIds(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			client := NewClient("test-api-key")
+			client := NewClient(testutil.FakeLinearAPIKey)
 			handler := NewWebhookHandler(client, tt.pilotLabel)
 
 			got := handler.hasPilotLabel(tt.data)
@@ -566,7 +568,7 @@ func TestHasPilotLabel_InvalidLabelFormat(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			client := NewClient("test-api-key")
+			client := NewClient(testutil.FakeLinearAPIKey)
 			handler := NewWebhookHandler(client, "pilot")
 
 			got := handler.hasPilotLabel(tt.data)
@@ -704,6 +706,6 @@ func (h *testWebhookHandler) hasPilotLabel(data map[string]interface{}) bool {
 }
 
 func (h *testWebhookHandler) getIssue(ctx context.Context, id string) (*Issue, error) {
-	client := newTestableClient(h.serverURL, "test-api-key")
+	client := newTestableClient(h.serverURL, testutil.FakeLinearAPIKey)
 	return client.getIssue(ctx, id)
 }

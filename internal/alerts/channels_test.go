@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/alekspetrov/pilot/internal/testutil"
 )
 
 // =============================================================================
@@ -183,7 +185,7 @@ func TestWebhookChannel_Send_NetworkError(t *testing.T) {
 func TestWebhookChannel_Sign(t *testing.T) {
 	config := &WebhookChannelConfig{
 		URL:    "https://example.com",
-		Secret: "test-secret",
+		Secret: testutil.FakeWebhookSecret,
 	}
 
 	ch := NewWebhookChannel("test", config)
@@ -594,7 +596,7 @@ func TestPagerDutyChannel_Send(t *testing.T) {
 	// Create channel with mocked URL (we'll need to override the const)
 	ch := &PagerDutyChannel{
 		name:       "test-pd",
-		routingKey: "test-routing-key",
+		routingKey: testutil.FakePagerDutyRoutingKey,
 		serviceID:  "test-service-id",
 		client: &http.Client{
 			Timeout: 5 * time.Second,
@@ -603,8 +605,8 @@ func TestPagerDutyChannel_Send(t *testing.T) {
 
 	// We can't easily test this without modifying pagerDutyEventsAPI constant
 	// So we test the struct fields instead
-	if ch.routingKey != "test-routing-key" {
-		t.Errorf("expected routingKey 'test-routing-key', got '%s'", ch.routingKey)
+	if ch.routingKey != testutil.FakePagerDutyRoutingKey {
+		t.Errorf("expected routingKey %q, got '%s'", testutil.FakePagerDutyRoutingKey, ch.routingKey)
 	}
 	if ch.serviceID != "test-service-id" {
 		t.Errorf("expected serviceID 'test-service-id', got '%s'", ch.serviceID)

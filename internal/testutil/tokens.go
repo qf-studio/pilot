@@ -42,4 +42,16 @@ const (
 
 	// FakeBearerToken is a safe test bearer token.
 	FakeBearerToken = "test-bearer-token"
+
+	// FakeTelegramBotToken is a safe test token for Telegram bot authentication.
+	FakeTelegramBotToken = "test-telegram-bot-token"
+
+	// FakeWebhookSecret is a safe test secret for webhook signatures.
+	FakeWebhookSecret = "test-webhook-secret"
+
+	// FakePagerDutyRoutingKey is a safe test routing key for PagerDuty.
+	FakePagerDutyRoutingKey = "test-pagerduty-routing-key"
+
+	// FakeJiraAPIToken is a safe test API token for Jira.
+	FakeJiraAPIToken = "test-jira-api-token"
 )

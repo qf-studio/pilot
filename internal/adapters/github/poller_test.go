@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/alekspetrov/pilot/internal/testutil"
 )
 
 func TestNewPoller(t *testing.T) {
@@ -52,7 +54,7 @@ func TestNewPoller(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			client := NewClient("test-token")
+			client := NewClient(testutil.FakeGitHubToken)
 			poller, err := NewPoller(client, tt.repo, tt.label, tt.interval)
 
 			if (err != nil) != tt.wantErr {
@@ -79,7 +81,7 @@ func TestNewPoller(t *testing.T) {
 }
 
 func TestNewPoller_ParsesOwnerAndRepo(t *testing.T) {
-	client := NewClient("test-token")
+	client := NewClient(testutil.FakeGitHubToken)
 	poller, err := NewPoller(client, "myorg/myrepo", "pilot", 30*time.Second)
 
 	if err != nil {
@@ -95,7 +97,7 @@ func TestNewPoller_ParsesOwnerAndRepo(t *testing.T) {
 }
 
 func TestWithPollerLogger(t *testing.T) {
-	client := NewClient("test-token")
+	client := NewClient(testutil.FakeGitHubToken)
 
 	// Create a custom logger
 	customLogger := slog.Default()
@@ -113,7 +115,7 @@ func TestWithPollerLogger(t *testing.T) {
 }
 
 func TestWithPollerLogger_DefaultLogger(t *testing.T) {
-	client := NewClient("test-token")
+	client := NewClient(testutil.FakeGitHubToken)
 
 	// Without custom logger, should use default
 	poller, err := NewPoller(client, "owner/repo", "pilot", 30*time.Second)
@@ -127,7 +129,7 @@ func TestWithPollerLogger_DefaultLogger(t *testing.T) {
 }
 
 func TestWithOnIssue(t *testing.T) {
-	client := NewClient("test-token")
+	client := NewClient(testutil.FakeGitHubToken)
 
 	called := false
 	callback := func(ctx context.Context, issue *Issue) error {
@@ -152,7 +154,7 @@ func TestWithOnIssue(t *testing.T) {
 }
 
 func TestPoller_IsProcessed(t *testing.T) {
-	client := NewClient("test-token")
+	client := NewClient(testutil.FakeGitHubToken)
 	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second)
 
 	// Initially should not be processed
@@ -175,7 +177,7 @@ func TestPoller_IsProcessed(t *testing.T) {
 }
 
 func TestPoller_ProcessedCount(t *testing.T) {
-	client := NewClient("test-token")
+	client := NewClient(testutil.FakeGitHubToken)
 	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second)
 
 	if poller.ProcessedCount() != 0 {
@@ -201,7 +203,7 @@ func TestPoller_ProcessedCount(t *testing.T) {
 }
 
 func TestPoller_Reset(t *testing.T) {
-	client := NewClient("test-token")
+	client := NewClient(testutil.FakeGitHubToken)
 	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second)
 
 	// Mark some issues
@@ -226,7 +228,7 @@ func TestPoller_Reset(t *testing.T) {
 }
 
 func TestPoller_ConcurrentAccess(t *testing.T) {
-	client := NewClient("test-token")
+	client := NewClient(testutil.FakeGitHubToken)
 	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second)
 
 	var wg sync.WaitGroup
@@ -315,7 +317,7 @@ func TestPoller_CheckForNewIssues(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := NewClientWithBaseURL("test-token", server.URL)
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 
 			processedIssues := []*Issue{}
 			var mu sync.Mutex
@@ -348,7 +350,7 @@ func TestPoller_CheckForNewIssues_APIError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL("test-token", server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 
 	callbackCalled := false
 	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second,
@@ -378,7 +380,7 @@ func TestPoller_CheckForNewIssues_CallbackError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL("test-token", server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 
 	callCount := 0
 	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second,
@@ -415,7 +417,7 @@ func TestPoller_CheckForNewIssues_NoCallback(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL("test-token", server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 
 	// Create poller without callback
 	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second)
@@ -441,7 +443,7 @@ func TestPoller_CheckForNewIssues_SkipsAlreadyProcessed(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL("test-token", server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 
 	callCount := 0
 	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second,
@@ -463,7 +465,7 @@ func TestPoller_CheckForNewIssues_SkipsAlreadyProcessed(t *testing.T) {
 }
 
 func TestPoller_Start_CancelsOnContextDone(t *testing.T) {
-	client := NewClient("test-token")
+	client := NewClient(testutil.FakeGitHubToken)
 	poller, _ := NewPoller(client, "owner/repo", "pilot", 100*time.Millisecond)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -502,7 +504,7 @@ func TestPoller_Start_InitialCheck(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL("test-token", server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 
 	callbackCalled := make(chan struct{}, 1)
 	poller, _ := NewPoller(client, "owner/repo", "pilot", 1*time.Hour, // Long interval

@@ -7,12 +7,14 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/alekspetrov/pilot/internal/testutil"
 )
 
 // TestNewNotifier tests notifier creation
 func TestNewNotifier(t *testing.T) {
 	config := &Config{
-		BotToken: "test-token",
+		BotToken: testutil.FakeTelegramBotToken,
 		ChatID:   "123456",
 	}
 
@@ -132,7 +134,7 @@ func TestNotifierSendMessage(t *testing.T) {
 			// Note: We can't easily override the API URL in the current implementation
 			// This test verifies the method signature and basic behavior
 			notifier := NewNotifier(&Config{
-				BotToken: "test-token",
+				BotToken: testutil.FakeTelegramBotToken,
 				ChatID:   "123456",
 			})
 
@@ -169,7 +171,7 @@ func TestNotifierSendTaskStarted(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			notifier := NewNotifier(&Config{
-				BotToken: "test-token",
+				BotToken: testutil.FakeTelegramBotToken,
 				ChatID:   "123456",
 			})
 
@@ -205,7 +207,7 @@ func TestNotifierSendTaskCompleted(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			notifier := NewNotifier(&Config{
-				BotToken: "test-token",
+				BotToken: testutil.FakeTelegramBotToken,
 				ChatID:   "123456",
 			})
 
@@ -240,7 +242,7 @@ func TestNotifierSendTaskFailed(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			notifier := NewNotifier(&Config{
-				BotToken: "test-token",
+				BotToken: testutil.FakeTelegramBotToken,
 				ChatID:   "123456",
 			})
 
@@ -281,7 +283,7 @@ func TestNotifierTaskProgress(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			notifier := NewNotifier(&Config{
-				BotToken: "test-token",
+				BotToken: testutil.FakeTelegramBotToken,
 				ChatID:   "123456",
 			})
 
@@ -319,7 +321,7 @@ func TestNotifierPRReady(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			notifier := NewNotifier(&Config{
-				BotToken: "test-token",
+				BotToken: testutil.FakeTelegramBotToken,
 				ChatID:   "123456",
 			})
 

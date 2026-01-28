@@ -10,10 +10,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/alekspetrov/pilot/internal/testutil"
 )
 
 func TestNewWebhookHandler(t *testing.T) {
-	client := NewClient("test-token")
+	client := NewClient(testutil.FakeGitHubToken)
 	handler := NewWebhookHandler(client, "secret123", "pilot")
 
 	if handler == nil {
@@ -271,7 +273,7 @@ func TestHandleIssueOpened(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := NewClientWithBaseURL("test-token", server.URL)
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 			handler := NewWebhookHandler(client, "", "pilot")
 
 			processed := false
@@ -407,7 +409,7 @@ func TestHandleIssueLabeled(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := NewClientWithBaseURL("test-token", server.URL)
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 			handler := NewWebhookHandler(client, "", "pilot")
 
 			processed := false
@@ -443,7 +445,7 @@ func TestHandleIssueLabeled_CustomLabel(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL("test-token", server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 	handler := NewWebhookHandler(client, "", "ai-assist") // Custom pilot label
 
 	processed := false
@@ -506,7 +508,7 @@ func TestProcessIssue_CallbackError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL("test-token", server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 	handler := NewWebhookHandler(client, "", "pilot")
 
 	expectedErr := errors.New("callback error")
@@ -568,7 +570,7 @@ func TestProcessIssue_NoCallback(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL("test-token", server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 	handler := NewWebhookHandler(client, "", "pilot")
 	// No callback set
 
@@ -615,7 +617,7 @@ func TestProcessIssue_APIError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL("test-token", server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 	handler := NewWebhookHandler(client, "", "pilot")
 
 	handler.OnIssue(func(ctx context.Context, issue *Issue, repo *Repository) error {

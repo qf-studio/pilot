@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/alekspetrov/pilot/internal/testutil"
 )
 
 // mockTelegramServer creates a test server that captures sent messages
@@ -60,7 +62,7 @@ func TestCommandHandler_HandleHelp(t *testing.T) {
 	defer mock.close()
 
 	h := &Handler{
-		client:        NewClient("test-token"),
+		client:        NewClient(testutil.FakeTelegramBotToken),
 		pendingTasks:  make(map[string]*PendingTask),
 		runningTasks:  make(map[string]*RunningTask),
 		activeProject: make(map[string]string),
@@ -79,7 +81,7 @@ func TestCommandHandler_HandleHelp(t *testing.T) {
 // TestCommandHandler_HandleStatus tests the /status command
 func TestCommandHandler_HandleStatus(t *testing.T) {
 	h := &Handler{
-		client:        NewClient("test-token"),
+		client:        NewClient(testutil.FakeTelegramBotToken),
 		pendingTasks:  make(map[string]*PendingTask),
 		runningTasks:  make(map[string]*RunningTask),
 		activeProject: make(map[string]string),
@@ -139,7 +141,7 @@ func TestCommandHandler_HandleStatus(t *testing.T) {
 // TestCommandHandler_HandleCancel tests the /cancel command
 func TestCommandHandler_HandleCancel(t *testing.T) {
 	h := &Handler{
-		client:        NewClient("test-token"),
+		client:        NewClient(testutil.FakeTelegramBotToken),
 		pendingTasks:  make(map[string]*PendingTask),
 		runningTasks:  make(map[string]*RunningTask),
 		activeProject: make(map[string]string),
@@ -225,7 +227,7 @@ func TestCommandHandler_HandleCancel(t *testing.T) {
 // TestCommandHandler_HandleQueue tests the /queue command
 func TestCommandHandler_HandleQueue(t *testing.T) {
 	h := &Handler{
-		client:        NewClient("test-token"),
+		client:        NewClient(testutil.FakeTelegramBotToken),
 		pendingTasks:  make(map[string]*PendingTask),
 		runningTasks:  make(map[string]*RunningTask),
 		activeProject: make(map[string]string),
@@ -293,7 +295,7 @@ func TestCommandHandler_HandleProjects(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			h := &Handler{
-				client:        NewClient("test-token"),
+				client:        NewClient(testutil.FakeTelegramBotToken),
 				pendingTasks:  make(map[string]*PendingTask),
 				runningTasks:  make(map[string]*RunningTask),
 				activeProject: make(map[string]string),
@@ -318,7 +320,7 @@ func TestCommandHandler_HandleSwitch(t *testing.T) {
 	}
 
 	h := &Handler{
-		client:        NewClient("test-token"),
+		client:        NewClient(testutil.FakeTelegramBotToken),
 		pendingTasks:  make(map[string]*PendingTask),
 		runningTasks:  make(map[string]*RunningTask),
 		activeProject: make(map[string]string),
@@ -366,7 +368,7 @@ func TestCommandHandler_HandleSwitch(t *testing.T) {
 // TestCommandHandler_HandleHistory tests the /history command
 func TestCommandHandler_HandleHistory(t *testing.T) {
 	h := &Handler{
-		client:        NewClient("test-token"),
+		client:        NewClient(testutil.FakeTelegramBotToken),
 		pendingTasks:  make(map[string]*PendingTask),
 		runningTasks:  make(map[string]*RunningTask),
 		activeProject: make(map[string]string),
@@ -402,7 +404,7 @@ func TestCommandHandler_HandleHistory(t *testing.T) {
 // TestCommandHandler_HandleBudget tests the /budget command
 func TestCommandHandler_HandleBudget(t *testing.T) {
 	h := &Handler{
-		client:        NewClient("test-token"),
+		client:        NewClient(testutil.FakeTelegramBotToken),
 		pendingTasks:  make(map[string]*PendingTask),
 		runningTasks:  make(map[string]*RunningTask),
 		activeProject: make(map[string]string),
@@ -418,7 +420,7 @@ func TestCommandHandler_HandleBudget(t *testing.T) {
 // TestCommandHandler_HandleTasks tests the /tasks command
 func TestCommandHandler_HandleTasks(t *testing.T) {
 	h := &Handler{
-		client:        NewClient("test-token"),
+		client:        NewClient(testutil.FakeTelegramBotToken),
 		pendingTasks:  make(map[string]*PendingTask),
 		runningTasks:  make(map[string]*RunningTask),
 		activeProject: make(map[string]string),
@@ -434,7 +436,7 @@ func TestCommandHandler_HandleTasks(t *testing.T) {
 // TestCommandHandler_UnknownCommand tests handling of unknown commands
 func TestCommandHandler_UnknownCommand(t *testing.T) {
 	h := &Handler{
-		client:        NewClient("test-token"),
+		client:        NewClient(testutil.FakeTelegramBotToken),
 		pendingTasks:  make(map[string]*PendingTask),
 		runningTasks:  make(map[string]*RunningTask),
 		activeProject: make(map[string]string),
@@ -503,7 +505,7 @@ func TestFormatTimeAgo_OldDates(t *testing.T) {
 // TestNewCommandHandler tests command handler creation
 func TestNewCommandHandler(t *testing.T) {
 	h := &Handler{
-		client:        NewClient("test-token"),
+		client:        NewClient(testutil.FakeTelegramBotToken),
 		pendingTasks:  make(map[string]*PendingTask),
 		runningTasks:  make(map[string]*RunningTask),
 		activeProject: make(map[string]string),
@@ -549,7 +551,7 @@ func TestCommandHandler_HandleCallbackSwitch(t *testing.T) {
 	}
 
 	h := &Handler{
-		client:        NewClient("test-token"),
+		client:        NewClient(testutil.FakeTelegramBotToken),
 		pendingTasks:  make(map[string]*PendingTask),
 		runningTasks:  make(map[string]*RunningTask),
 		activeProject: make(map[string]string),
@@ -572,7 +574,7 @@ func TestCommandHandler_HandleCallbackSwitch(t *testing.T) {
 // TestCommandRouting tests that commands are routed correctly
 func TestCommandRouting(t *testing.T) {
 	h := &Handler{
-		client:        NewClient("test-token"),
+		client:        NewClient(testutil.FakeTelegramBotToken),
 		pendingTasks:  make(map[string]*PendingTask),
 		runningTasks:  make(map[string]*RunningTask),
 		activeProject: make(map[string]string),

@@ -11,6 +11,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/alekspetrov/pilot/internal/testutil"
 )
 
 // MockRunner implements a minimal executor.Runner interface for testing
@@ -47,7 +49,7 @@ func TestNewHandler(t *testing.T) {
 		{
 			name: "basic config",
 			config: &HandlerConfig{
-				BotToken:    "test-token",
+				BotToken:    testutil.FakeTelegramBotToken,
 				ProjectPath: "/test/path",
 			},
 			wantAllowIDs: 0,
@@ -55,7 +57,7 @@ func TestNewHandler(t *testing.T) {
 		{
 			name: "with allowed IDs",
 			config: &HandlerConfig{
-				BotToken:    "test-token",
+				BotToken:    testutil.FakeTelegramBotToken,
 				ProjectPath: "/test/path",
 				AllowedIDs:  []int64{123, 456, 789},
 			},
@@ -64,7 +66,7 @@ func TestNewHandler(t *testing.T) {
 		{
 			name: "empty allowed IDs",
 			config: &HandlerConfig{
-				BotToken:    "test-token",
+				BotToken:    testutil.FakeTelegramBotToken,
 				ProjectPath: "/test/path",
 				AllowedIDs:  []int64{},
 			},
@@ -794,7 +796,7 @@ func TestHandlerCheckSingleton(t *testing.T) {
 	defer server.Close()
 
 	h := &Handler{
-		client: NewClient("test-token"),
+		client: NewClient(testutil.FakeTelegramBotToken),
 	}
 
 	// The actual check will fail because it can't reach real Telegram API
@@ -1161,14 +1163,14 @@ func TestHandlerConfigStruct(t *testing.T) {
 	}
 
 	config := &HandlerConfig{
-		BotToken:    "test-token",
+		BotToken:    testutil.FakeTelegramBotToken,
 		ProjectPath: "/project/path",
 		Projects:    projects,
 		AllowedIDs:  []int64{123, 456},
 	}
 
-	if config.BotToken != "test-token" {
-		t.Errorf("BotToken = %q, want test-token", config.BotToken)
+	if config.BotToken != testutil.FakeTelegramBotToken {
+		t.Errorf("BotToken = %q, want %s", config.BotToken, testutil.FakeTelegramBotToken)
 	}
 	if config.ProjectPath != "/project/path" {
 		t.Errorf("ProjectPath = %q, want /project/path", config.ProjectPath)
@@ -1191,7 +1193,7 @@ func TestNewHandlerWithProjects(t *testing.T) {
 	}
 
 	config := &HandlerConfig{
-		BotToken: "test-token",
+		BotToken: testutil.FakeTelegramBotToken,
 		Projects: projects,
 		// Note: ProjectPath is empty, should use default from Projects
 	}
@@ -1347,7 +1349,7 @@ func TestVoiceNotAvailableMessageWithAPIKeyError(t *testing.T) {
 func TestNewHandlerWithTranscriptionError(t *testing.T) {
 	// This test verifies that handler creation works even if transcription fails
 	config := &HandlerConfig{
-		BotToken:    "test-token",
+		BotToken:    testutil.FakeTelegramBotToken,
 		ProjectPath: "/test/path",
 		// Transcription with invalid config would fail
 	}

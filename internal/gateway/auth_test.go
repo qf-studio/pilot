@@ -5,12 +5,14 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/alekspetrov/pilot/internal/testutil"
 )
 
 func TestNewAuthenticator(t *testing.T) {
 	config := &AuthConfig{
 		Type:  AuthTypeAPIToken,
-		Token: "test-token",
+		Token: testutil.FakeBearerToken,
 	}
 
 	auth := NewAuthenticator(config)
@@ -376,7 +378,7 @@ func TestTokenIsExpired(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			token := &Token{
-				Value:     "test-token",
+				Value:     testutil.FakeBearerToken,
 				ExpiresAt: tt.expiresAt,
 			}
 
@@ -448,7 +450,7 @@ func TestTokenHasScope(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			token := &Token{
-				Value:     "test-token",
+				Value:     testutil.FakeBearerToken,
 				ExpiresAt: time.Now().Add(1 * time.Hour),
 				Scopes:    tt.scopes,
 			}

@@ -10,15 +10,17 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/alekspetrov/pilot/internal/testutil"
 )
 
 func TestNewClient(t *testing.T) {
-	client := NewClient("test-api-key")
+	client := NewClient(testutil.FakeLinearAPIKey)
 	if client == nil {
 		t.Fatal("NewClient returned nil")
 	}
-	if client.apiKey != "test-api-key" {
-		t.Errorf("client.apiKey = %s, want test-api-key", client.apiKey)
+	if client.apiKey != testutil.FakeLinearAPIKey {
+		t.Errorf("client.apiKey = %s, want %s", client.apiKey, testutil.FakeLinearAPIKey)
 	}
 	if client.httpClient == nil {
 		t.Error("client.httpClient is nil")
@@ -39,8 +41,8 @@ func TestExecute_Success(t *testing.T) {
 		if r.Header.Get("Content-Type") != "application/json" {
 			t.Errorf("Content-Type = %s, want application/json", r.Header.Get("Content-Type"))
 		}
-		if r.Header.Get("Authorization") != "test-api-key" {
-			t.Errorf("Authorization = %s, want test-api-key", r.Header.Get("Authorization"))
+		if r.Header.Get("Authorization") != testutil.FakeLinearAPIKey {
+			t.Errorf("Authorization = %s, want "+testutil.FakeLinearAPIKey, r.Header.Get("Authorization"))
 		}
 
 		// Verify request body
@@ -61,7 +63,7 @@ func TestExecute_Success(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := newTestableClient(server.URL, "test-api-key")
+	client := newTestableClient(server.URL, testutil.FakeLinearAPIKey)
 
 	var result struct {
 		Viewer struct {
@@ -98,7 +100,7 @@ func TestExecute_WithVariables(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := newTestableClient(server.URL, "test-api-key")
+	client := newTestableClient(server.URL, testutil.FakeLinearAPIKey)
 
 	var result struct {
 		Issue struct {
@@ -125,7 +127,7 @@ func TestExecute_GraphQLError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := newTestableClient(server.URL, "test-api-key")
+	client := newTestableClient(server.URL, testutil.FakeLinearAPIKey)
 
 	err := client.execute(context.Background(), "query { issue(id: \"invalid\") { id } }", nil, nil)
 	if err == nil {
@@ -171,7 +173,7 @@ func TestExecute_HTTPError(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := newTestableClient(server.URL, "test-api-key")
+			client := newTestableClient(server.URL, testutil.FakeLinearAPIKey)
 
 			err := client.execute(context.Background(), "query { viewer { id } }", nil, nil)
 			if err == nil {
@@ -191,7 +193,7 @@ func TestExecute_InvalidJSON(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := newTestableClient(server.URL, "test-api-key")
+	client := newTestableClient(server.URL, testutil.FakeLinearAPIKey)
 
 	err := client.execute(context.Background(), "query { viewer { id } }", nil, nil)
 	if err == nil {
@@ -212,7 +214,7 @@ func TestExecute_NilResult(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := newTestableClient(server.URL, "test-api-key")
+	client := newTestableClient(server.URL, testutil.FakeLinearAPIKey)
 
 	// Should not error when result is nil
 	err := client.execute(context.Background(), "mutation { doSomething { success } }", nil, nil)
@@ -231,7 +233,7 @@ func TestExecute_ContextCanceled(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := newTestableClient(server.URL, "test-api-key")
+	client := newTestableClient(server.URL, testutil.FakeLinearAPIKey)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // Cancel immediately
@@ -302,7 +304,7 @@ func TestGetIssue_Success(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := newTestableClient(server.URL, "test-api-key")
+	client := newTestableClient(server.URL, testutil.FakeLinearAPIKey)
 
 	issue, err := client.getIssue(context.Background(), "issue-123")
 	if err != nil {
@@ -357,7 +359,7 @@ func TestGetIssue_NotFound(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := newTestableClient(server.URL, "test-api-key")
+	client := newTestableClient(server.URL, testutil.FakeLinearAPIKey)
 
 	_, err := client.getIssue(context.Background(), "nonexistent")
 	if err == nil {
@@ -401,7 +403,7 @@ func TestGetIssue_NullAssigneeAndProject(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := newTestableClient(server.URL, "test-api-key")
+	client := newTestableClient(server.URL, testutil.FakeLinearAPIKey)
 
 	issue, err := client.getIssue(context.Background(), "issue-123")
 	if err != nil {
@@ -450,7 +452,7 @@ func TestUpdateIssueState_Success(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := newTestableClient(server.URL, "test-api-key")
+	client := newTestableClient(server.URL, testutil.FakeLinearAPIKey)
 
 	err := client.updateIssueState(context.Background(), "issue-123", "state-456")
 	if err != nil {
@@ -470,7 +472,7 @@ func TestUpdateIssueState_Error(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := newTestableClient(server.URL, "test-api-key")
+	client := newTestableClient(server.URL, testutil.FakeLinearAPIKey)
 
 	err := client.updateIssueState(context.Background(), "issue-123", "invalid-state")
 	if err == nil {
@@ -506,7 +508,7 @@ func TestAddComment_Success(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := newTestableClient(server.URL, "test-api-key")
+	client := newTestableClient(server.URL, testutil.FakeLinearAPIKey)
 
 	err := client.addComment(context.Background(), "issue-123", "This is a test comment")
 	if err != nil {
@@ -526,7 +528,7 @@ func TestAddComment_Error(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := newTestableClient(server.URL, "test-api-key")
+	client := newTestableClient(server.URL, testutil.FakeLinearAPIKey)
 
 	err := client.addComment(context.Background(), "issue-123", "comment")
 	if err == nil {
@@ -536,7 +538,7 @@ func TestAddComment_Error(t *testing.T) {
 
 // TestClientMethodSignatures verifies all client methods have correct signatures
 func TestClientMethodSignatures(t *testing.T) {
-	client := NewClient("test-key")
+	client := NewClient(testutil.FakeLinearAPIKey)
 	ctx := context.Background()
 
 	// These verify signatures compile correctly (actual calls will fail without mock server)

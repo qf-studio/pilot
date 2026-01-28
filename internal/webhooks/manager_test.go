@@ -8,6 +8,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/alekspetrov/pilot/internal/testutil"
 )
 
 func TestManager_Dispatch_SingleEndpoint(t *testing.T) {
@@ -33,7 +35,7 @@ func TestManager_Dispatch_SingleEndpoint(t *testing.T) {
 				ID:      "ep_test",
 				Name:    "Test Endpoint",
 				URL:     server.URL,
-				Secret:  "test-secret",
+				Secret:  testutil.FakeWebhookSecret,
 				Events:  []EventType{EventTaskCompleted},
 				Enabled: true,
 			},
@@ -198,7 +200,7 @@ func TestManager_Sign(t *testing.T) {
 	payload := []byte(`{"type":"task.completed"}`)
 
 	// With secret
-	sig := manager.sign(payload, "test-secret")
+	sig := manager.sign(payload, testutil.FakeWebhookSecret)
 	if sig == "" {
 		t.Error("expected signature, got empty string")
 	}
@@ -215,7 +217,7 @@ func TestManager_Sign(t *testing.T) {
 
 func TestVerifySignature(t *testing.T) {
 	manager := NewManager(nil, nil)
-	secret := "test-secret"
+	secret := testutil.FakeWebhookSecret
 	payload := []byte(`{"type":"task.completed"}`)
 
 	// Generate signature

@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/alekspetrov/pilot/internal/testutil"
 )
 
 func TestCheckSingleton(t *testing.T) {
@@ -90,7 +92,7 @@ func TestCheckSingletonIntegration(t *testing.T) {
 	defer mockServer.Close()
 
 	// Test passes if we can create a client and the method exists
-	client := NewClient("test-token")
+	client := NewClient(testutil.FakeTelegramBotToken)
 	if client == nil {
 		t.Fatal("NewClient returned nil")
 	}
@@ -126,7 +128,7 @@ func TestNewClient(t *testing.T) {
 		},
 		{
 			name:     "simple token",
-			botToken: "test-token",
+			botToken: testutil.FakeTelegramBotToken,
 		},
 	}
 
@@ -301,7 +303,7 @@ func TestClientSendMessage(t *testing.T) {
 
 			// We can't easily redirect the client to the test server
 			// Test verifies method signature exists
-			client := NewClient("test-token")
+			client := NewClient(testutil.FakeTelegramBotToken)
 			ctx := context.Background()
 			_, _ = client.SendMessage(ctx, tt.chatID, tt.text, tt.parseMode)
 		})
@@ -344,7 +346,7 @@ func TestClientSendMessageWithKeyboard(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient("test-token")
+	client := NewClient(testutil.FakeTelegramBotToken)
 	ctx := context.Background()
 	_, _ = client.SendMessageWithKeyboard(ctx, "123456", "Choose:", "", keyboard)
 }
@@ -379,7 +381,7 @@ func TestClientEditMessage(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			client := NewClient("test-token")
+			client := NewClient(testutil.FakeTelegramBotToken)
 			ctx := context.Background()
 			// Method signature test
 			_ = client.EditMessage(ctx, tt.chatID, tt.messageID, tt.text, tt.parseMode)
@@ -408,7 +410,7 @@ func TestClientAnswerCallback(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			client := NewClient("test-token")
+			client := NewClient(testutil.FakeTelegramBotToken)
 			ctx := context.Background()
 			_ = client.AnswerCallback(ctx, tt.callbackID, tt.text)
 		})
@@ -450,7 +452,7 @@ func TestClientGetFile(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			client := NewClient("test-token")
+			client := NewClient(testutil.FakeTelegramBotToken)
 			ctx := context.Background()
 			_, _ = client.GetFile(ctx, tt.fileID)
 		})
@@ -475,7 +477,7 @@ func TestClientDownloadFile(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			client := NewClient("test-token")
+			client := NewClient(testutil.FakeTelegramBotToken)
 			ctx := context.Background()
 			_, _ = client.DownloadFile(ctx, tt.filePath)
 		})

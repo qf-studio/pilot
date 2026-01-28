@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/alekspetrov/pilot/internal/testutil"
 )
 
 // TestNewNotifier tests notifier creation
@@ -20,7 +22,7 @@ func TestNewNotifier(t *testing.T) {
 		{
 			name: "basic config",
 			config: &Config{
-				BotToken: "xoxb-test-token",
+				BotToken: testutil.FakeSlackBotToken,
 				Channel:  "#dev-notifications",
 			},
 			channel: "#dev-notifications",
@@ -28,7 +30,7 @@ func TestNewNotifier(t *testing.T) {
 		{
 			name: "empty channel defaults",
 			config: &Config{
-				BotToken: "test-token",
+				BotToken: testutil.FakeSlackBotToken,
 				Channel:  "",
 			},
 			channel: "",
@@ -36,7 +38,7 @@ func TestNewNotifier(t *testing.T) {
 		{
 			name: "custom channel",
 			config: &Config{
-				BotToken: "test-token",
+				BotToken: testutil.FakeSlackBotToken,
 				Channel:  "#custom-channel",
 			},
 			channel: "#custom-channel",
@@ -82,15 +84,15 @@ func TestDefaultConfig(t *testing.T) {
 func TestConfigFields(t *testing.T) {
 	config := &Config{
 		Enabled:  true,
-		BotToken: "test-slack-token",
+		BotToken: testutil.FakeSlackBotToken,
 		Channel:  "#pilot-notifications",
 	}
 
 	if !config.Enabled {
 		t.Error("Enabled should be true")
 	}
-	if config.BotToken != "test-slack-token" {
-		t.Errorf("BotToken = %q, want test-slack-token", config.BotToken)
+	if config.BotToken != testutil.FakeSlackBotToken {
+		t.Errorf("BotToken = %q, want %s", config.BotToken, testutil.FakeSlackBotToken)
 	}
 	if config.Channel != "#pilot-notifications" {
 		t.Errorf("Channel = %q, want #pilot-notifications", config.Channel)
@@ -275,7 +277,7 @@ func TestNotifierTaskStarted(t *testing.T) {
 
 			// Test with real notifier - method signature verification
 			notifier := NewNotifier(&Config{
-				BotToken: "test-token",
+				BotToken: testutil.FakeSlackBotToken,
 				Channel:  "#test",
 			})
 
@@ -357,7 +359,7 @@ func TestNotifierTaskProgress(t *testing.T) {
 			defer server.Close()
 
 			notifier := NewNotifier(&Config{
-				BotToken: "test-token",
+				BotToken: testutil.FakeSlackBotToken,
 				Channel:  "#test",
 			})
 
@@ -422,7 +424,7 @@ func TestNotifierTaskCompleted(t *testing.T) {
 			defer server.Close()
 
 			notifier := NewNotifier(&Config{
-				BotToken: "test-token",
+				BotToken: testutil.FakeSlackBotToken,
 				Channel:  "#test",
 			})
 
@@ -499,7 +501,7 @@ func TestNotifierTaskFailed(t *testing.T) {
 			defer server.Close()
 
 			notifier := NewNotifier(&Config{
-				BotToken: "test-token",
+				BotToken: testutil.FakeSlackBotToken,
 				Channel:  "#test",
 			})
 
@@ -589,7 +591,7 @@ func TestNotifierPRReady(t *testing.T) {
 			defer server.Close()
 
 			notifier := NewNotifier(&Config{
-				BotToken: "test-token",
+				BotToken: testutil.FakeSlackBotToken,
 				Channel:  "#test",
 			})
 
@@ -662,7 +664,7 @@ func TestNotifierMessageFormatting(t *testing.T) {
 			defer server.Close()
 
 			notifier := NewNotifier(&Config{
-				BotToken: "test-token",
+				BotToken: testutil.FakeSlackBotToken,
 				Channel:  "#test",
 			})
 
@@ -686,7 +688,7 @@ func TestNotifierMessageFormatting(t *testing.T) {
 // TestNotifierBlocksUseMarkdown tests that blocks use markdown formatting
 func TestNotifierBlocksUseMarkdown(t *testing.T) {
 	notifier := NewNotifier(&Config{
-		BotToken: "test-token",
+		BotToken: testutil.FakeSlackBotToken,
 		Channel:  "#test",
 	})
 
@@ -731,7 +733,7 @@ func TestNotifierChannelConfiguration(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			notifier := NewNotifier(&Config{
-				BotToken: "test-token",
+				BotToken: testutil.FakeSlackBotToken,
 				Channel:  tt.channel,
 			})
 

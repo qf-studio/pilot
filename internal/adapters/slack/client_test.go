@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/alekspetrov/pilot/internal/testutil"
 )
 
 // TestNewClient tests client creation
@@ -20,7 +22,7 @@ func TestNewClient(t *testing.T) {
 	}{
 		{
 			name:     "valid token",
-			botToken: "xoxb-test-fake-token-for-testing",
+			botToken: testutil.FakeSlackBotToken,
 		},
 		{
 			name:     "empty token",
@@ -28,7 +30,7 @@ func TestNewClient(t *testing.T) {
 		},
 		{
 			name:     "simple token",
-			botToken: "test-token",
+			botToken: testutil.FakeSlackBotToken,
 		},
 	}
 
@@ -224,7 +226,7 @@ func TestClientPostMessage(t *testing.T) {
 
 			// Create client pointing to test server
 			client := &Client{
-				botToken:   "test-token",
+				botToken:   testutil.FakeSlackBotToken,
 				httpClient: &http.Client{Timeout: 30 * time.Second},
 			}
 
@@ -234,7 +236,7 @@ func TestClientPostMessage(t *testing.T) {
 
 			// Create a custom client that hits our test server
 			testClient := &Client{
-				botToken:   "test-token",
+				botToken:   testutil.FakeSlackBotToken,
 				httpClient: server.Client(),
 			}
 
@@ -422,7 +424,7 @@ func TestClientUpdateMessage(t *testing.T) {
 			body, _ := json.Marshal(payload)
 			req, _ := http.NewRequestWithContext(ctx, http.MethodPost, server.URL+"/chat.update", strings.NewReader(string(body)))
 			req.Header.Set("Content-Type", "application/json")
-			req.Header.Set("Authorization", "Bearer test-token")
+			req.Header.Set("Authorization", "Bearer "+testutil.FakeSlackBotToken)
 
 			resp, err := http.DefaultClient.Do(req)
 			if err != nil {
@@ -792,7 +794,7 @@ func TestClientContextCancellation(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient("test-token")
+	client := NewClient(testutil.FakeSlackBotToken)
 	ctx, cancel := context.WithCancel(context.Background())
 
 	// Cancel immediately
@@ -953,7 +955,7 @@ func TestClientPostMessageWithMockTransport(t *testing.T) {
 			}
 
 			client := &Client{
-				botToken: "test-token",
+				botToken: testutil.FakeSlackBotToken,
 				httpClient: &http.Client{
 					Transport: transport,
 					Timeout:   30 * time.Second,
@@ -1102,7 +1104,7 @@ func TestClientUpdateMessageWithMockTransport(t *testing.T) {
 			}
 
 			client := &Client{
-				botToken: "test-token",
+				botToken: testutil.FakeSlackBotToken,
 				httpClient: &http.Client{
 					Transport: transport,
 					Timeout:   30 * time.Second,
@@ -1136,7 +1138,7 @@ func TestClientPostMessageNetworkError(t *testing.T) {
 	}
 
 	client := &Client{
-		botToken: "test-token",
+		botToken: testutil.FakeSlackBotToken,
 		httpClient: &http.Client{
 			Transport: transport,
 			Timeout:   30 * time.Second,
@@ -1164,7 +1166,7 @@ func TestClientUpdateMessageNetworkError(t *testing.T) {
 	}
 
 	client := &Client{
-		botToken: "test-token",
+		botToken: testutil.FakeSlackBotToken,
 		httpClient: &http.Client{
 			Transport: transport,
 			Timeout:   30 * time.Second,
@@ -1196,7 +1198,7 @@ func TestClientPostMessageInvalidJSON(t *testing.T) {
 	}
 
 	client := &Client{
-		botToken: "test-token",
+		botToken: testutil.FakeSlackBotToken,
 		httpClient: &http.Client{
 			Transport: transport,
 			Timeout:   30 * time.Second,
@@ -1228,7 +1230,7 @@ func TestClientUpdateMessageInvalidJSON(t *testing.T) {
 	}
 
 	client := &Client{
-		botToken: "test-token",
+		botToken: testutil.FakeSlackBotToken,
 		httpClient: &http.Client{
 			Transport: transport,
 			Timeout:   30 * time.Second,
