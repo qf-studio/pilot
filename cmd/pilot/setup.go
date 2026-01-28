@@ -270,8 +270,9 @@ func setupTelegram(reader *bufio.Reader, cfg *config.Config) error {
 		fmt.Println("✓")
 	}
 
-	// Ask for chat ID
-	fmt.Print("  Enter your Telegram chat ID (optional, for security): ")
+	// Ask for chat ID (required for bot to reply)
+	fmt.Println("  Message @userinfobot on Telegram to get your Chat ID")
+	fmt.Print("  Paste Chat ID: ")
 	chatID := readLine(reader)
 	if chatID != "" {
 		cfg.Adapters.Telegram.ChatID = chatID
