@@ -46,11 +46,13 @@ if _, err := os.Stat(agentDir); err == nil {
 | Executor (Claude Code) | ✅ Complete | `internal/executor/` |
 | Memory (SQLite) | ✅ Complete | `internal/memory/` |
 | Config System | ✅ Complete | `internal/config/` |
-| TUI Dashboard | ✅ Complete | `internal/dashboard/` |
+| TUI Dashboard | ✅ Integrated | `internal/dashboard/` → `pilot start --dashboard` |
 | Orchestrator (Python) | ✅ Complete | `orchestrator/` |
 | CLI Commands | ✅ Complete | `cmd/pilot/` |
 | **Progress Display** | ✅ Complete | `internal/executor/progress.go` |
 | **Structured Logging** | ✅ Complete | `internal/executor/runner.go` |
+| **Alerts Engine** | ✅ Integrated | `internal/alerts/` → executor + pilot |
+| **Test Utilities** | ✅ Integrated | `internal/testutil/` → all test files |
 
 ### Week 1-2 Progress ✅
 
@@ -80,6 +82,15 @@ if _, err := os.Stat(agentDir); err == nil {
 - [x] File-based progress (.agent/ writes → Checkpoint/Documenting phases)
 - [ ] End-to-end testing with real Linear webhook
 - [x] **TASK-03**: Git & PR workflow (branch, commit SHA, PR creation)
+
+### Week 7 Progress ✅
+
+- [x] **TASK-43**: Wire alerts engine to executor lifecycle events
+- [x] **TASK-44**: Wire dashboard TUI to `pilot start --dashboard`
+- [x] **TASK-45**: Wire testutil constants to all test files
+- [x] **GH-40**: Add `--alerts` flag to `pilot task` command
+- [x] **GH-41**: Enhanced dashboard with token usage, cost, task history
+- [x] **GH-42**: Added missing testutil constants (webhook, PagerDuty, Stripe)
 
 ## Prioritized Backlog
 
@@ -123,33 +134,26 @@ if _, err := os.Stat(agentDir); err == nil {
 
 ## Completed Tasks
 
-- **TASK-30**: Setup Wizard & Voice Setup ✅ 2026-01-27
-- **TASK-29**: Multi-Project Support ✅ 2026-01-27
+- **GH-46**: Task queue with per-project coordination + OpenCode backend ✅ 2026-01-28
+- **GH-42**: Missing testutil constants ✅ 2026-01-28
+- **GH-41**: Dashboard token/cost/history ✅ 2026-01-28
+- **GH-40**: `--alerts` flag for `pilot task` ✅ 2026-01-28
+- **TASK-45**: Wire testutil to all tests ✅ 2026-01-28
+- **TASK-44**: Wire dashboard TUI ✅ 2026-01-28
+- **TASK-43**: Wire alerts engine ✅ 2026-01-28
+- **TASK-42**: Local CI gate ✅ 2026-01-28
+- **TASK-41**: Test secret patterns ✅ 2026-01-28
+- **TASK-40**: Rate limit handling ✅ 2026-01-28
+- **TASK-39**: Mac sleep prevention ✅ 2026-01-28
+- **TASK-38**: Polling PR config ✅ 2026-01-28
+- **TASK-37**: Cloudflare Tunnel (partial) ✅ 2026-01-28
+- **TASK-36**: GitHub Polling ✅ 2026-01-27
+- **TASK-35**: Remove ffmpeg ✅ 2026-01-27
+- **TASK-34**: Remove SenseVoice ✅ 2026-01-27
 - **TASK-33**: Branch Workflow Fix ✅ 2026-01-27
 - **TASK-31**: PR Workflow Improvements ✅ 2026-01-27
-- **TASK-23**: GitHub App Integration (Phase 1) ✅ 2026-01-27
-- **TASK-16**: Usage Metering & Billing ✅ 2026-01-27
-- **TASK-15**: Structured Logging ✅ 2026-01-26
-- **TASK-14**: Alerting System ✅ 2026-01-26
-- **TASK-13**: Execution Metrics ✅ 2026-01-26
-- **TASK-12**: Pilot Cloud (Foundation) ✅ 2026-01-26
-- **TASK-11**: Cross-Project Memory ✅ 2026-01-26
-- **TASK-10**: Daily Briefs ✅ 2026-01-26
-- **TASK-09**: Jira Adapter ✅ 2026-01-26
-- **TASK-08**: GitHub Issues Adapter ✅ 2026-01-26
-- **TASK-07**: Telegram Voice Support ✅ 2026-01-26
-- **TASK-06**: Telegram Image Support ✅ 2026-01-26
-- **TASK-05**: Bot Singleton Detection ✅ 2026-01-26
-  - File: `.agent/tasks/TASK-05-bot-singleton.md`
-  - Completed: 2026-01-26
-  - `--replace` flag, `CheckSingleton()`, clear error messages
-
-### Completed
-
 - **TASK-30**: Setup Wizard & Voice Setup ✅ 2026-01-27
 - **TASK-29**: Multi-Project Support ✅ 2026-01-27
-- **TASK-33**: Branch Workflow Fix ✅ 2026-01-27
-- **TASK-31**: PR Workflow Improvements ✅ 2026-01-27
 - **TASK-23**: GitHub App Integration (Phase 1) ✅ 2026-01-27
 - **TASK-16**: Usage Metering & Billing ✅ 2026-01-27
 - **TASK-15**: Structured Logging ✅ 2026-01-26
@@ -173,11 +177,13 @@ pilot/
 ├── cmd/pilot/           # CLI entrypoint
 ├── internal/
 │   ├── gateway/         # WebSocket + HTTP server
-│   ├── adapters/        # Linear, Slack integrations
-│   ├── executor/        # Claude Code process management
+│   ├── adapters/        # Linear, Slack, Telegram, GitHub, Jira
+│   ├── executor/        # Claude Code process management + alerts bridge
+│   ├── alerts/          # Alert engine + dispatcher + channels
 │   ├── memory/          # SQLite + knowledge graph
 │   ├── config/          # Configuration loading
-│   └── dashboard/       # Terminal UI
+│   ├── dashboard/       # Terminal UI (bubbletea)
+│   └── testutil/        # Safe test token constants
 ├── orchestrator/        # Python LLM logic
 ├── configs/             # Example configs
 └── .agent/              # Navigator docs
@@ -198,14 +204,26 @@ pilot/
 
 ### Executor
 - `internal/executor/runner.go` - Claude Code process spawner with stream-json parsing + slog logging
+- `internal/executor/alerts.go` - AlertEventProcessor interface (avoids import cycles)
 - `internal/executor/progress.go` - Visual progress bar display (lipgloss)
 - `internal/executor/monitor.go` - Task state tracking
-- `internal/executor/git.go` - Git operations (planned)
+
+### Alerts
+- `internal/alerts/engine.go` - Event processing, rule evaluation, cooldowns
+- `internal/alerts/dispatcher.go` - Multi-channel alert dispatch
+- `internal/alerts/channels.go` - Slack, Telegram, Email, Webhook, PagerDuty
+- `internal/alerts/adapter.go` - EngineAdapter bridges executor → alerts engine
+
+### Dashboard
+- `internal/dashboard/tui.go` - Bubbletea TUI with token usage, cost, task history
 
 ### Memory
 - `internal/memory/store.go` - SQLite storage
 - `internal/memory/graph.go` - Knowledge graph
 - `internal/memory/patterns.go` - Global pattern store
+
+### Testing
+- `internal/testutil/tokens.go` - Safe fake tokens for all test files
 
 ## Development Commands
 
@@ -244,10 +262,24 @@ Required environment variables:
 - Working dir: Project path from config
 - Progress: Phase-based updates parsed from stream-json events
 - Phases: Starting → Exploring → Implementing → Testing → Committing → Completed
+- Alerts: Task lifecycle events emitted via `AlertEventProcessor` interface
 
 ### Slack
 - Notifications: Task started, progress, completed, failed
 - Handler: `internal/adapters/slack/notifier.go`
+
+## CLI Flags
+
+### `pilot start`
+- `--dashboard` - Launch TUI dashboard with live task monitoring
+- `--daemon` - Run in background
+
+### `pilot task`
+- `--verbose` - Stream raw Claude Code JSON output
+- `--create-pr` - Create GitHub PR after execution
+- `--alerts` - Enable alert engine for this task
+- `--dry-run` - Show prompt without executing
+- `--no-branch` - Run on current branch
 
 ## Progress Display
 

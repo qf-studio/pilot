@@ -16,6 +16,7 @@ import (
 	"github.com/alekspetrov/pilot/internal/adapters/telegram"
 	"github.com/alekspetrov/pilot/internal/approval"
 	"github.com/alekspetrov/pilot/internal/budget"
+	"github.com/alekspetrov/pilot/internal/executor"
 	"github.com/alekspetrov/pilot/internal/gateway"
 	"github.com/alekspetrov/pilot/internal/logging"
 	"github.com/alekspetrov/pilot/internal/quality"
@@ -27,22 +28,23 @@ import (
 // It includes settings for the gateway, adapters, orchestrator, memory, projects, and more.
 // Use Load to read from a file or DefaultConfig for sensible defaults.
 type Config struct {
-	Version        string              `yaml:"version"`
-	Gateway        *gateway.Config     `yaml:"gateway"`
-	Auth           *gateway.AuthConfig `yaml:"auth"`
-	Adapters       *AdaptersConfig     `yaml:"adapters"`
-	Orchestrator   *OrchestratorConfig `yaml:"orchestrator"`
-	Memory         *MemoryConfig       `yaml:"memory"`
-	Projects       []*ProjectConfig    `yaml:"projects"`
-	DefaultProject string              `yaml:"default_project"`
-	Dashboard      *DashboardConfig    `yaml:"dashboard"`
-	Alerts         *AlertsConfig       `yaml:"alerts"`
-	Budget         *budget.Config      `yaml:"budget"`
-	Logging        *logging.Config     `yaml:"logging"`
-	Approval       *approval.Config    `yaml:"approval"`
-	Quality        *quality.Config     `yaml:"quality"`
-	Tunnel         *tunnel.Config      `yaml:"tunnel"`
-	Webhooks       *webhooks.Config    `yaml:"webhooks"`
+	Version        string                  `yaml:"version"`
+	Gateway        *gateway.Config         `yaml:"gateway"`
+	Auth           *gateway.AuthConfig     `yaml:"auth"`
+	Adapters       *AdaptersConfig         `yaml:"adapters"`
+	Orchestrator   *OrchestratorConfig     `yaml:"orchestrator"`
+	Executor       *executor.BackendConfig `yaml:"executor"`
+	Memory         *MemoryConfig           `yaml:"memory"`
+	Projects       []*ProjectConfig        `yaml:"projects"`
+	DefaultProject string                  `yaml:"default_project"`
+	Dashboard      *DashboardConfig        `yaml:"dashboard"`
+	Alerts         *AlertsConfig           `yaml:"alerts"`
+	Budget         *budget.Config          `yaml:"budget"`
+	Logging        *logging.Config         `yaml:"logging"`
+	Approval       *approval.Config        `yaml:"approval"`
+	Quality        *quality.Config         `yaml:"quality"`
+	Tunnel         *tunnel.Config          `yaml:"tunnel"`
+	Webhooks       *webhooks.Config        `yaml:"webhooks"`
 }
 
 // AdaptersConfig holds configuration for external service adapters.
@@ -246,6 +248,7 @@ func DefaultConfig() *Config {
 				},
 			},
 		},
+		Executor: executor.DefaultBackendConfig(),
 		Memory: &MemoryConfig{
 			Path:         filepath.Join(homeDir, ".pilot", "data"),
 			CrossProject: true,

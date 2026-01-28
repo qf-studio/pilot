@@ -25,8 +25,10 @@ import (
 	"github.com/alekspetrov/pilot/internal/config"
 	"github.com/alekspetrov/pilot/internal/dashboard"
 	"github.com/alekspetrov/pilot/internal/executor"
+	"github.com/alekspetrov/pilot/internal/logging"
 	"github.com/alekspetrov/pilot/internal/memory"
 	"github.com/alekspetrov/pilot/internal/pilot"
+	"github.com/alekspetrov/pilot/internal/quality"
 	"github.com/alekspetrov/pilot/internal/replay"
 	"github.com/alekspetrov/pilot/internal/upgrade"
 )
@@ -488,6 +490,27 @@ Examples:
 			// Create the executor runner
 			runner := executor.NewRunner()
 
+			// Set up quality gates if configured
+			{
+				configPath := cfgFile
+				if configPath == "" {
+					configPath = config.DefaultConfigPath()
+				}
+				cfg, err := config.Load(configPath)
+				if err == nil && cfg.Quality != nil && cfg.Quality.Enabled {
+					runner.SetQualityCheckerFactory(func(taskID, projectPath string) executor.QualityChecker {
+						return &qualityCheckerWrapper{
+							executor: quality.NewExecutor(&quality.ExecutorConfig{
+								Config:      cfg.Quality,
+								ProjectPath: projectPath,
+								TaskID:      taskID,
+							}),
+						}
+					})
+					fmt.Println("   Quality:   ✓ gates enabled")
+				}
+			}
+
 			// Create progress display (disabled in verbose mode - show raw JSON instead)
 			progress := executor.NewProgressDisplay(task.ID, taskDesc, !verbose)
 
@@ -740,6 +763,21 @@ Example:
 
 			banner.StartupTelegram(version, projectPath, cfg.Adapters.Telegram.ChatID, cfg)
 
+			// Initialize dispatcher for task queue (GH-46)
+			var dispatcher *executor.Dispatcher
+			store, err := memory.NewStore(cfg.Memory.Path)
+			if err != nil {
+				logging.WithComponent("telegram").Warn("Failed to open memory store for dispatcher", slog.Any("error", err))
+			} else {
+				dispatcher = executor.NewDispatcher(store, runner, nil)
+				if err := dispatcher.Start(); err != nil {
+					logging.WithComponent("telegram").Warn("Failed to start dispatcher", slog.Any("error", err))
+					dispatcher = nil
+				} else {
+					logging.WithComponent("telegram").Info("Task dispatcher started")
+				}
+			}
+
 			// Start GitHub polling if enabled
 			var ghPoller *github.Poller
 			if cfg.Adapters.Github != nil && cfg.Adapters.Github.Enabled &&
@@ -764,7 +802,7 @@ Example:
 					var err error
 					ghPoller, err = github.NewPoller(client, cfg.Adapters.Github.Repo, label, interval,
 						github.WithOnIssue(func(issueCtx context.Context, issue *github.Issue) error {
-							// Execute issue as task via handler
+							// Execute issue as task via dispatcher (GH-46)
 							fmt.Printf("\n📥 GitHub Issue #%d: %s\n", issue.Number, issue.Title)
 
 							// Add in-progress label
@@ -787,7 +825,42 @@ Example:
 								CreatePR:    true, // Auto-create PR for GitHub issues
 							}
 
-							result, execErr := runner.Execute(issueCtx, task)
+							// Use dispatcher if available for per-project serialization (GH-46)
+							// Otherwise fall back to direct execution
+							var result *executor.ExecutionResult
+							var execErr error
+
+							if dispatcher != nil {
+								// Queue task and wait for completion
+								execID, qErr := dispatcher.QueueTask(issueCtx, task)
+								if qErr != nil {
+									execErr = fmt.Errorf("failed to queue task: %w", qErr)
+								} else {
+									fmt.Printf("   📋 Queued as execution %s\n", execID[:8])
+
+									// Wait for execution to complete
+									exec, waitErr := dispatcher.WaitForExecution(issueCtx, execID, time.Second)
+									if waitErr != nil {
+										execErr = fmt.Errorf("failed waiting for execution: %w", waitErr)
+									} else if exec.Status == "failed" {
+										execErr = fmt.Errorf("execution failed: %s", exec.Error)
+									} else {
+										// Build result from execution record
+										result = &executor.ExecutionResult{
+											TaskID:    task.ID,
+											Success:   exec.Status == "completed",
+											Output:    exec.Output,
+											Error:     exec.Error,
+											PRUrl:     exec.PRUrl,
+											CommitSHA: exec.CommitSHA,
+											Duration:  time.Duration(exec.DurationMs) * time.Millisecond,
+										}
+									}
+								}
+							} else {
+								// Direct execution (fallback)
+								result, execErr = runner.Execute(issueCtx, task)
+							}
 
 							// Update issue with result
 							if len(parts) == 2 {
@@ -797,7 +870,7 @@ Example:
 									_ = client.AddLabels(issueCtx, parts[0], parts[1], issue.Number, []string{github.LabelFailed})
 									comment := fmt.Sprintf("❌ Pilot execution failed:\n\n```\n%s\n```", execErr.Error())
 									_, _ = client.AddComment(issueCtx, parts[0], parts[1], issue.Number, comment)
-								} else {
+								} else if result != nil {
 									_ = client.AddLabels(issueCtx, parts[0], parts[1], issue.Number, []string{github.LabelDone})
 									comment := fmt.Sprintf("✅ Pilot completed!\n\n**Duration:** %s\n**Branch:** `%s`",
 										result.Duration, branchName)
@@ -832,6 +905,13 @@ Example:
 			handler.Stop()
 			if ghPoller != nil {
 				fmt.Println("🐙 Stopping GitHub poller...")
+			}
+			if dispatcher != nil {
+				fmt.Println("📋 Stopping task dispatcher...")
+				dispatcher.Stop()
+			}
+			if store != nil {
+				_ = store.Close()
 			}
 
 			return nil
@@ -2192,4 +2272,24 @@ func getAlertsConfig(cfg *config.Config) *alerts.AlertConfig {
 	}
 
 	return alerts.FromConfigAlerts(alertsCfg.Enabled, channels, rules, defaults)
+}
+
+// qualityCheckerWrapper adapts quality.Executor to executor.QualityChecker interface
+type qualityCheckerWrapper struct {
+	executor *quality.Executor
+}
+
+// Check implements executor.QualityChecker by delegating to quality.Executor
+// and converting the result type
+func (w *qualityCheckerWrapper) Check(ctx context.Context) (*executor.QualityOutcome, error) {
+	outcome, err := w.executor.Check(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &executor.QualityOutcome{
+		Passed:        outcome.Passed,
+		ShouldRetry:   outcome.ShouldRetry,
+		RetryFeedback: outcome.RetryFeedback,
+		Attempt:       outcome.Attempt,
+	}, nil
 }

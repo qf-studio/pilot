@@ -13,6 +13,93 @@ func TestNewRunner(t *testing.T) {
 	if runner.running == nil {
 		t.Error("running map not initialized")
 	}
+	if runner.backend == nil {
+		t.Error("backend not initialized")
+	}
+	if runner.backend.Name() != BackendTypeClaudeCode {
+		t.Errorf("default backend = %q, want %q", runner.backend.Name(), BackendTypeClaudeCode)
+	}
+}
+
+func TestNewRunnerWithBackend(t *testing.T) {
+	backend := NewOpenCodeBackend(nil)
+	runner := NewRunnerWithBackend(backend)
+
+	if runner == nil {
+		t.Fatal("NewRunnerWithBackend returned nil")
+	}
+	if runner.backend.Name() != BackendTypeOpenCode {
+		t.Errorf("backend = %q, want %q", runner.backend.Name(), BackendTypeOpenCode)
+	}
+}
+
+func TestNewRunnerWithBackendNil(t *testing.T) {
+	runner := NewRunnerWithBackend(nil)
+
+	if runner == nil {
+		t.Fatal("NewRunnerWithBackend returned nil")
+	}
+	// Should default to Claude Code
+	if runner.backend.Name() != BackendTypeClaudeCode {
+		t.Errorf("backend = %q, want %q", runner.backend.Name(), BackendTypeClaudeCode)
+	}
+}
+
+func TestNewRunnerWithConfig(t *testing.T) {
+	config := &BackendConfig{
+		Type: BackendTypeOpenCode,
+		OpenCode: &OpenCodeConfig{
+			ServerURL: "http://localhost:5000",
+		},
+	}
+
+	runner, err := NewRunnerWithConfig(config)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if runner == nil {
+		t.Fatal("NewRunnerWithConfig returned nil")
+	}
+	if runner.backend.Name() != BackendTypeOpenCode {
+		t.Errorf("backend = %q, want %q", runner.backend.Name(), BackendTypeOpenCode)
+	}
+}
+
+func TestNewRunnerWithConfigInvalid(t *testing.T) {
+	config := &BackendConfig{
+		Type: "invalid-backend",
+	}
+
+	_, err := NewRunnerWithConfig(config)
+	if err == nil {
+		t.Error("expected error for invalid backend type")
+	}
+}
+
+func TestRunnerSetBackend(t *testing.T) {
+	runner := NewRunner()
+	if runner.backend.Name() != BackendTypeClaudeCode {
+		t.Errorf("initial backend = %q, want %q", runner.backend.Name(), BackendTypeClaudeCode)
+	}
+
+	opencode := NewOpenCodeBackend(nil)
+	runner.SetBackend(opencode)
+
+	if runner.backend.Name() != BackendTypeOpenCode {
+		t.Errorf("backend after set = %q, want %q", runner.backend.Name(), BackendTypeOpenCode)
+	}
+}
+
+func TestRunnerGetBackend(t *testing.T) {
+	runner := NewRunner()
+	backend := runner.GetBackend()
+
+	if backend == nil {
+		t.Fatal("GetBackend returned nil")
+	}
+	if backend.Name() != BackendTypeClaudeCode {
+		t.Errorf("backend = %q, want %q", backend.Name(), BackendTypeClaudeCode)
+	}
 }
 
 func TestBuildPrompt(t *testing.T) {
@@ -1112,5 +1199,156 @@ func TestToolResultContentStruct(t *testing.T) {
 	}
 	if result.IsError {
 		t.Error("IsError should be false")
+	}
+}
+
+func TestProcessBackendEvent(t *testing.T) {
+	runner := NewRunner()
+
+	var lastPhase string
+	var lastMessage string
+	runner.OnProgress(func(taskID, phase string, progress int, message string) {
+		lastPhase = phase
+		lastMessage = message
+	})
+
+	tests := []struct {
+		name          string
+		event         BackendEvent
+		expectedPhase string
+		expectedMsg   string
+	}{
+		{
+			name: "init event",
+			event: BackendEvent{
+				Type:    EventTypeInit,
+				Message: "Backend initialized",
+			},
+			expectedPhase: "🚀 Started",
+			expectedMsg:   "Backend initialized",
+		},
+		{
+			name: "tool use Read",
+			event: BackendEvent{
+				Type:      EventTypeToolUse,
+				ToolName:  "Read",
+				ToolInput: map[string]interface{}{"file_path": "/test.go"},
+			},
+			expectedPhase: "Exploring",
+		},
+		{
+			name: "tool use Write",
+			event: BackendEvent{
+				Type:      EventTypeToolUse,
+				ToolName:  "Write",
+				ToolInput: map[string]interface{}{"file_path": "/output.go"},
+			},
+			expectedPhase: "Implementing",
+		},
+		{
+			name: "text with Navigator session",
+			event: BackendEvent{
+				Type:    EventTypeText,
+				Message: "Navigator Session Started\n━━━━━━━━━",
+			},
+			expectedPhase: "Navigator",
+		},
+		{
+			name: "text with EXIT_SIGNAL",
+			event: BackendEvent{
+				Type:    EventTypeText,
+				Message: "EXIT_SIGNAL: true",
+			},
+			expectedPhase: "Finishing",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			lastPhase = ""
+			lastMessage = ""
+			state := &progressState{phase: "Starting"}
+
+			runner.processBackendEvent("TASK-1", tt.event, state)
+
+			if tt.expectedPhase != "" && lastPhase != tt.expectedPhase {
+				t.Errorf("phase = %q, want %q", lastPhase, tt.expectedPhase)
+			}
+			if tt.expectedMsg != "" && lastMessage != tt.expectedMsg {
+				t.Errorf("message = %q, want %q", lastMessage, tt.expectedMsg)
+			}
+		})
+	}
+}
+
+func TestProcessBackendEventTokenTracking(t *testing.T) {
+	runner := NewRunner()
+	state := &progressState{}
+
+	// Process multiple events with token usage
+	events := []BackendEvent{
+		{Type: EventTypeText, TokensInput: 100, TokensOutput: 50},
+		{Type: EventTypeText, TokensInput: 200, TokensOutput: 100},
+		{Type: EventTypeResult, TokensInput: 50, TokensOutput: 25, Model: "claude-sonnet-4-5"},
+	}
+
+	for _, event := range events {
+		runner.processBackendEvent("TASK-1", event, state)
+	}
+
+	expectedInput := int64(350)
+	expectedOutput := int64(175)
+
+	if state.tokensInput != expectedInput {
+		t.Errorf("tokensInput = %d, want %d", state.tokensInput, expectedInput)
+	}
+	if state.tokensOutput != expectedOutput {
+		t.Errorf("tokensOutput = %d, want %d", state.tokensOutput, expectedOutput)
+	}
+	if state.modelName != "claude-sonnet-4-5" {
+		t.Errorf("modelName = %q, want claude-sonnet-4-5", state.modelName)
+	}
+}
+
+func TestProcessBackendEventToolResult(t *testing.T) {
+	runner := NewRunner()
+	state := &progressState{}
+
+	// Tool result with commit SHA
+	event := BackendEvent{
+		Type:       EventTypeToolResult,
+		ToolResult: "[main abc1234] feat: add feature",
+	}
+
+	runner.processBackendEvent("TASK-1", event, state)
+
+	if len(state.commitSHAs) != 1 {
+		t.Fatalf("commitSHAs length = %d, want 1", len(state.commitSHAs))
+	}
+	if state.commitSHAs[0] != "abc1234" {
+		t.Errorf("commitSHA = %q, want abc1234", state.commitSHAs[0])
+	}
+}
+
+func TestProcessBackendEventProgressPhase(t *testing.T) {
+	runner := NewRunner()
+
+	var lastPhase string
+	runner.OnProgress(func(taskID, phase string, progress int, message string) {
+		lastPhase = phase
+	})
+
+	state := &progressState{phase: "Starting"}
+
+	// Progress event with phase
+	event := BackendEvent{
+		Type:  EventTypeProgress,
+		Phase: "IMPL",
+	}
+
+	runner.processBackendEvent("TASK-1", event, state)
+
+	if lastPhase != "Implement" {
+		t.Errorf("phase = %q, want Implement", lastPhase)
 	}
 }

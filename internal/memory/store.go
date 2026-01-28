@@ -128,6 +128,14 @@ func (s *Store) migrate() error {
 		`ALTER TABLE executions ADD COLUMN lines_added INTEGER DEFAULT 0`,
 		`ALTER TABLE executions ADD COLUMN lines_removed INTEGER DEFAULT 0`,
 		`ALTER TABLE executions ADD COLUMN model_name TEXT DEFAULT 'claude-sonnet-4-5'`,
+		// Task queue columns for storing task details (GH-46)
+		`ALTER TABLE executions ADD COLUMN task_title TEXT`,
+		`ALTER TABLE executions ADD COLUMN task_description TEXT`,
+		`ALTER TABLE executions ADD COLUMN task_branch TEXT`,
+		`ALTER TABLE executions ADD COLUMN task_base_branch TEXT`,
+		`ALTER TABLE executions ADD COLUMN task_create_pr BOOLEAN DEFAULT FALSE`,
+		`ALTER TABLE executions ADD COLUMN task_verbose BOOLEAN DEFAULT FALSE`,
+		`CREATE INDEX IF NOT EXISTS idx_executions_status ON executions(status)`,
 		`CREATE INDEX IF NOT EXISTS idx_patterns_project ON patterns(project_path)`,
 		// Cross-project pattern indexes
 		`CREATE INDEX IF NOT EXISTS idx_cross_patterns_type ON cross_patterns(pattern_type)`,
@@ -199,6 +207,13 @@ type Execution struct {
 	LinesAdded       int
 	LinesRemoved     int
 	ModelName        string
+	// Task queue fields (GH-46) - store task details for deferred execution
+	TaskTitle       string
+	TaskDescription string
+	TaskBranch      string
+	TaskBaseBranch  string
+	TaskCreatePR    bool
+	TaskVerbose     bool
 }
 
 // SaveExecution saves an execution record to the database.
@@ -206,10 +221,12 @@ type Execution struct {
 func (s *Store) SaveExecution(exec *Execution) error {
 	_, err := s.db.Exec(`
 		INSERT INTO executions (id, task_id, project_path, status, output, error, duration_ms, pr_url, commit_sha, completed_at,
-			tokens_input, tokens_output, tokens_total, estimated_cost_usd, files_changed, lines_added, lines_removed, model_name)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			tokens_input, tokens_output, tokens_total, estimated_cost_usd, files_changed, lines_added, lines_removed, model_name,
+			task_title, task_description, task_branch, task_base_branch, task_create_pr, task_verbose)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, exec.ID, exec.TaskID, exec.ProjectPath, exec.Status, exec.Output, exec.Error, exec.DurationMs, exec.PRUrl, exec.CommitSHA, exec.CompletedAt,
-		exec.TokensInput, exec.TokensOutput, exec.TokensTotal, exec.EstimatedCostUSD, exec.FilesChanged, exec.LinesAdded, exec.LinesRemoved, exec.ModelName)
+		exec.TokensInput, exec.TokensOutput, exec.TokensTotal, exec.EstimatedCostUSD, exec.FilesChanged, exec.LinesAdded, exec.LinesRemoved, exec.ModelName,
+		exec.TaskTitle, exec.TaskDescription, exec.TaskBranch, exec.TaskBaseBranch, exec.TaskCreatePR, exec.TaskVerbose)
 	return err
 }
 
@@ -220,14 +237,17 @@ func (s *Store) GetExecution(id string) (*Execution, error) {
 		SELECT id, task_id, project_path, status, output, error, duration_ms, pr_url, commit_sha, created_at, completed_at,
 			COALESCE(tokens_input, 0), COALESCE(tokens_output, 0), COALESCE(tokens_total, 0),
 			COALESCE(estimated_cost_usd, 0), COALESCE(files_changed, 0), COALESCE(lines_added, 0),
-			COALESCE(lines_removed, 0), COALESCE(model_name, '')
+			COALESCE(lines_removed, 0), COALESCE(model_name, ''),
+			COALESCE(task_title, ''), COALESCE(task_description, ''), COALESCE(task_branch, ''),
+			COALESCE(task_base_branch, ''), COALESCE(task_create_pr, 0), COALESCE(task_verbose, 0)
 		FROM executions WHERE id = ?
 	`, id)
 
 	var exec Execution
 	var completedAt sql.NullTime
 	err := row.Scan(&exec.ID, &exec.TaskID, &exec.ProjectPath, &exec.Status, &exec.Output, &exec.Error, &exec.DurationMs, &exec.PRUrl, &exec.CommitSHA, &exec.CreatedAt, &completedAt,
-		&exec.TokensInput, &exec.TokensOutput, &exec.TokensTotal, &exec.EstimatedCostUSD, &exec.FilesChanged, &exec.LinesAdded, &exec.LinesRemoved, &exec.ModelName)
+		&exec.TokensInput, &exec.TokensOutput, &exec.TokensTotal, &exec.EstimatedCostUSD, &exec.FilesChanged, &exec.LinesAdded, &exec.LinesRemoved, &exec.ModelName,
+		&exec.TaskTitle, &exec.TaskDescription, &exec.TaskBranch, &exec.TaskBaseBranch, &exec.TaskCreatePR, &exec.TaskVerbose)
 	if err != nil {
 		return nil, err
 	}
@@ -581,6 +601,112 @@ func (s *Store) GetQueuedTasks(limit int) ([]*Execution, error) {
 	}
 
 	return executions, nil
+}
+
+// GetQueuedTasksForProject returns queued/pending tasks for a specific project.
+// Results are ordered by creation time ascending (oldest first) up to the specified limit.
+// This is used by the per-project worker to get the next task to execute.
+func (s *Store) GetQueuedTasksForProject(projectPath string, limit int) ([]*Execution, error) {
+	rows, err := s.db.Query(`
+		SELECT id, task_id, project_path, status, output, error, duration_ms, pr_url, commit_sha, created_at, completed_at,
+			COALESCE(task_title, ''), COALESCE(task_description, ''), COALESCE(task_branch, ''),
+			COALESCE(task_base_branch, ''), COALESCE(task_create_pr, 0), COALESCE(task_verbose, 0)
+		FROM executions
+		WHERE (status = 'queued' OR status = 'pending') AND project_path = ?
+		ORDER BY created_at ASC
+		LIMIT ?
+	`, projectPath, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var executions []*Execution
+	for rows.Next() {
+		var exec Execution
+		var completedAt sql.NullTime
+		if err := rows.Scan(&exec.ID, &exec.TaskID, &exec.ProjectPath, &exec.Status, &exec.Output, &exec.Error, &exec.DurationMs, &exec.PRUrl, &exec.CommitSHA, &exec.CreatedAt, &completedAt,
+			&exec.TaskTitle, &exec.TaskDescription, &exec.TaskBranch, &exec.TaskBaseBranch, &exec.TaskCreatePR, &exec.TaskVerbose); err != nil {
+			return nil, err
+		}
+		if completedAt.Valid {
+			exec.CompletedAt = &completedAt.Time
+		}
+		executions = append(executions, &exec)
+	}
+
+	return executions, nil
+}
+
+// UpdateExecutionStatus updates the status of an execution record.
+// Optionally sets the error message if provided. Also sets completed_at for terminal states.
+func (s *Store) UpdateExecutionStatus(id, status string, errorMsg ...string) error {
+	var errStr *string
+	if len(errorMsg) > 0 && errorMsg[0] != "" {
+		errStr = &errorMsg[0]
+	}
+
+	// Set completed_at for terminal states
+	if status == "completed" || status == "failed" || status == "cancelled" {
+		_, err := s.db.Exec(`
+			UPDATE executions
+			SET status = ?, error = COALESCE(?, error), completed_at = CURRENT_TIMESTAMP
+			WHERE id = ?
+		`, status, errStr, id)
+		return err
+	}
+
+	_, err := s.db.Exec(`
+		UPDATE executions
+		SET status = ?, error = COALESCE(?, error)
+		WHERE id = ?
+	`, status, errStr, id)
+	return err
+}
+
+// GetStaleRunningExecutions returns executions that have been in "running" status
+// for longer than the specified duration. Used to detect crashed workers on restart.
+func (s *Store) GetStaleRunningExecutions(staleDuration time.Duration) ([]*Execution, error) {
+	staleTime := time.Now().Add(-staleDuration)
+	rows, err := s.db.Query(`
+		SELECT id, task_id, project_path, status, output, error, duration_ms, pr_url, commit_sha, created_at, completed_at
+		FROM executions
+		WHERE status = 'running' AND created_at < ?
+		ORDER BY created_at ASC
+	`, staleTime)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var executions []*Execution
+	for rows.Next() {
+		var exec Execution
+		var completedAt sql.NullTime
+		if err := rows.Scan(&exec.ID, &exec.TaskID, &exec.ProjectPath, &exec.Status, &exec.Output, &exec.Error, &exec.DurationMs, &exec.PRUrl, &exec.CommitSHA, &exec.CreatedAt, &completedAt); err != nil {
+			return nil, err
+		}
+		if completedAt.Valid {
+			exec.CompletedAt = &completedAt.Time
+		}
+		executions = append(executions, &exec)
+	}
+
+	return executions, nil
+}
+
+// IsTaskQueued checks if a task with the given ID is already queued or running.
+// Used to prevent duplicate task submissions.
+func (s *Store) IsTaskQueued(taskID string) (bool, error) {
+	var count int
+	err := s.db.QueryRow(`
+		SELECT COUNT(*) FROM executions
+		WHERE task_id = ? AND status IN ('queued', 'pending', 'running')
+	`, taskID).Scan(&count)
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
 }
 
 // CrossPattern represents a pattern that applies across multiple projects.

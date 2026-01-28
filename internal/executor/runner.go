@@ -1,7 +1,6 @@
 package executor
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -146,28 +145,63 @@ type ExecutionResult struct {
 // and a human-readable message describing the current activity.
 type ProgressCallback func(taskID string, phase string, progress int, message string)
 
-// Runner executes development tasks using Claude Code as the underlying AI engine.
-// It manages task lifecycle including branch creation, Claude Code invocation,
+// Runner executes development tasks using an AI backend (Claude Code, OpenCode, etc.).
+// It manages task lifecycle including branch creation, AI invocation,
 // progress tracking, PR creation, and execution recording. Runner is safe for
 // concurrent use and tracks all running tasks for cancellation support.
 type Runner struct {
-	onProgress      ProgressCallback
-	mu              sync.Mutex
-	running         map[string]*exec.Cmd
-	log             *slog.Logger
-	recordingsPath  string              // Path to recordings directory (empty = default)
-	enableRecording bool                // Whether to record executions
-	alertProcessor  AlertEventProcessor // Optional alert processor for event emission
+	backend               Backend                 // AI execution backend
+	onProgress            ProgressCallback
+	mu                    sync.Mutex
+	running               map[string]*exec.Cmd
+	log                   *slog.Logger
+	recordingsPath        string                  // Path to recordings directory (empty = default)
+	enableRecording       bool                    // Whether to record executions
+	alertProcessor        AlertEventProcessor     // Optional alert processor for event emission
+	qualityCheckerFactory QualityCheckerFactory   // Optional factory for creating quality checkers
 }
 
-// NewRunner creates a new Runner instance with recording enabled by default.
+// NewRunner creates a new Runner instance with Claude Code backend by default.
 // The Runner is ready to execute tasks immediately after creation.
 func NewRunner() *Runner {
 	return &Runner{
+		backend:         NewClaudeCodeBackend(nil),
 		running:         make(map[string]*exec.Cmd),
 		log:             logging.WithComponent("executor"),
 		enableRecording: true, // Recording enabled by default
 	}
+}
+
+// NewRunnerWithBackend creates a Runner with a specific backend.
+func NewRunnerWithBackend(backend Backend) *Runner {
+	if backend == nil {
+		backend = NewClaudeCodeBackend(nil)
+	}
+	return &Runner{
+		backend:         backend,
+		running:         make(map[string]*exec.Cmd),
+		log:             logging.WithComponent("executor"),
+		enableRecording: true,
+	}
+}
+
+// NewRunnerWithConfig creates a Runner from backend configuration.
+func NewRunnerWithConfig(config *BackendConfig) (*Runner, error) {
+	backend, err := NewBackend(config)
+	if err != nil {
+		return nil, err
+	}
+	return NewRunnerWithBackend(backend), nil
+}
+
+// SetBackend changes the execution backend.
+func (r *Runner) SetBackend(backend Backend) {
+	r.backend = backend
+}
+
+// GetBackend returns the current execution backend.
+func (r *Runner) GetBackend() Backend {
+	return r.backend
 }
 
 // SetRecordingsPath sets a custom directory path for storing execution recordings.
@@ -189,6 +223,13 @@ func (r *Runner) SetAlertProcessor(processor AlertEventProcessor) {
 	r.alertProcessor = processor
 }
 
+// SetQualityCheckerFactory sets the factory for creating quality checkers.
+// The factory is called with the task ID and project path to create a checker
+// that runs quality gates (build, test, lint) before PR creation.
+func (r *Runner) SetQualityCheckerFactory(factory QualityCheckerFactory) {
+	r.qualityCheckerFactory = factory
+}
+
 // getRecordingsPath returns the recordings path, using default if not set
 func (r *Runner) getRecordingsPath() string {
 	if r.recordingsPath != "" {
@@ -203,14 +244,14 @@ func (r *Runner) OnProgress(callback ProgressCallback) {
 	r.onProgress = callback
 }
 
-// Execute runs a task using Claude Code and returns the execution result.
+// Execute runs a task using the configured backend and returns the execution result.
 // It handles the complete task lifecycle: branch creation, prompt building,
-// Claude Code invocation, progress tracking, and optional PR creation.
+// backend invocation, progress tracking, and optional PR creation.
 // The context can be used to cancel execution. Returns an error only for
 // setup failures; execution failures are reported in ExecutionResult.
 func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, error) {
 	start := time.Now()
-	log := r.log.With(slog.String("task_id", task.ID))
+	log := r.log.With(slog.String("task_id", task.ID), slog.String("backend", r.backend.Name()))
 
 	log.Info("Starting task execution",
 		slog.String("project", task.ProjectPath),
@@ -244,56 +285,11 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 		}
 	}
 
-	// Build the prompt for Claude Code
+	// Build the prompt
 	prompt := r.BuildPrompt(task)
 
-	// Create the Claude Code command with stream-json output
-	// --verbose is required for stream-json to work
-	// --dangerously-skip-permissions allows autonomous execution without approval prompts
-	cmd := exec.CommandContext(ctx, "claude", "-p", prompt,
-		"--verbose",
-		"--output-format", "stream-json",
-		"--dangerously-skip-permissions",
-	)
-	cmd.Dir = task.ProjectPath
-
-	// Track the running command
-	r.mu.Lock()
-	r.running[task.ID] = cmd
-	r.mu.Unlock()
-
-	defer func() {
-		r.mu.Lock()
-		delete(r.running, task.ID)
-		r.mu.Unlock()
-	}()
-
-	// Report start
-	r.reportProgress(task.ID, "Starting", 0, "Initializing Claude Code...")
-
-	// Create pipes for output
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, fmt.Errorf("failed to create stdout pipe: %w", err)
-	}
-
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return nil, fmt.Errorf("failed to create stderr pipe: %w", err)
-	}
-
-	// Start the command
-	if err := cmd.Start(); err != nil {
-		log.Error("Failed to start Claude Code", slog.Any("error", err))
-		return nil, fmt.Errorf("failed to start Claude Code: %w", err)
-	}
-	log.Debug("Claude Code process started", slog.Int("pid", cmd.Process.Pid))
-
-	// State for tracking progress and result
-	var finalResult string
-	var finalError string
+	// State for tracking progress
 	state := &progressState{phase: "Starting"}
-	var wg sync.WaitGroup
 
 	// Initialize recorder if recording is enabled
 	var recorder *replay.Recorder
@@ -308,93 +304,92 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 		}
 	}
 
-	// Read stdout (stream-json events)
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		scanner := bufio.NewScanner(stdout)
-		// Increase buffer size for large JSON events
-		buf := make([]byte, 0, 64*1024)
-		scanner.Buffer(buf, 1024*1024)
+	// Report start
+	backendName := r.backend.Name()
+	r.reportProgress(task.ID, "Starting", 0, fmt.Sprintf("Initializing %s...", backendName))
 
-		for scanner.Scan() {
-			line := scanner.Text()
-			if task.Verbose {
-				fmt.Printf("   %s\n", line)
-			}
-
+	// Execute via backend
+	backendResult, err := r.backend.Execute(ctx, ExecuteOptions{
+		Prompt:      prompt,
+		ProjectPath: task.ProjectPath,
+		Verbose:     task.Verbose,
+		EventHandler: func(event BackendEvent) {
 			// Record the event
 			if recorder != nil {
-				if err := recorder.RecordEvent(line); err != nil {
-					log.Warn("Failed to record event", slog.Any("error", err))
+				if recErr := recorder.RecordEvent(event.Raw); recErr != nil {
+					log.Warn("Failed to record event", slog.Any("error", recErr))
 				}
 			}
 
-			// Parse JSON event
-			result, errMsg := r.parseStreamEvent(task.ID, line, state)
-			if result != "" {
-				finalResult = result
-			}
-			if errMsg != "" {
-				finalError = errMsg
-			}
-		}
-	}()
+			// Process event for progress tracking
+			r.processBackendEvent(task.ID, event, state)
+		},
+	})
 
-	// Read stderr
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		scanner := bufio.NewScanner(stderr)
-		var errorBuilder strings.Builder
-		for scanner.Scan() {
-			line := scanner.Text()
-			errorBuilder.WriteString(line + "\n")
-			if task.Verbose {
-				fmt.Printf("   [err] %s\n", line)
-			}
-		}
-		if errorBuilder.Len() > 0 && finalError == "" {
-			finalError = errorBuilder.String()
-		}
-	}()
-
-	// Wait for output readers
-	wg.Wait()
-
-	// Wait for command to complete
-	err = cmd.Wait()
 	duration := time.Since(start)
 
+	// Build execution result
 	result := &ExecutionResult{
 		TaskID:   task.ID,
-		Output:   finalResult,
-		Error:    finalError,
 		Duration: duration,
 	}
+
+	if err != nil {
+		result.Success = false
+		result.Error = err.Error()
+		log.Error("Backend execution failed",
+			slog.String("error", result.Error),
+			slog.Duration("duration", duration),
+		)
+		r.reportProgress(task.ID, "Failed", 100, result.Error)
+
+		// Emit task failed event
+		r.emitAlertEvent(AlertEvent{
+			Type:      AlertEventTypeTaskFailed,
+			TaskID:    task.ID,
+			TaskTitle: task.Title,
+			Project:   task.ProjectPath,
+			Error:     result.Error,
+			Timestamp: time.Now(),
+		})
+
+		// Finish recording with failed status
+		if recorder != nil {
+			recorder.SetModel(state.modelName)
+			recorder.SetNavigator(state.hasNavigator)
+			if finErr := recorder.Finish("failed"); finErr != nil {
+				log.Warn("Failed to finish recording", slog.Any("error", finErr))
+			}
+		}
+		return result, nil
+	}
+
+	// Copy backend result to execution result
+	result.Success = backendResult.Success
+	result.Output = backendResult.Output
+	result.Error = backendResult.Error
+	result.TokensInput = backendResult.TokensInput
+	result.TokensOutput = backendResult.TokensOutput
+	result.TokensTotal = backendResult.TokensInput + backendResult.TokensOutput
+	result.ModelName = backendResult.Model
 
 	// Extract commit SHA from state
 	if len(state.commitSHAs) > 0 {
 		result.CommitSHA = state.commitSHAs[len(state.commitSHAs)-1] // Use last commit
 	}
 
-	// Populate metrics from state (TASK-13)
-	result.TokensInput = state.tokensInput
-	result.TokensOutput = state.tokensOutput
-	result.TokensTotal = state.tokensInput + state.tokensOutput
+	// Fill in additional metrics from state
 	result.FilesChanged = state.filesWrite
-	result.ModelName = state.modelName
+	if result.ModelName == "" {
+		result.ModelName = state.modelName
+	}
 	if result.ModelName == "" {
 		result.ModelName = "claude-sonnet-4-5" // Default model
 	}
 	// Estimate cost based on token usage
-	result.EstimatedCostUSD = estimateCost(state.tokensInput, state.tokensOutput, result.ModelName)
+	result.EstimatedCostUSD = estimateCost(result.TokensInput, result.TokensOutput, result.ModelName)
 
-	if err != nil {
-		result.Success = false
-		if result.Error == "" {
-			result.Error = err.Error()
-		}
+	if !result.Success {
 		log.Error("Task execution failed",
 			slog.String("error", result.Error),
 			slog.Duration("duration", duration),
@@ -427,7 +422,83 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 			slog.Int64("tokens_out", state.tokensOutput),
 			slog.Int("files_written", state.filesWrite),
 		)
-		r.reportProgress(task.ID, "Completed", 95, "Execution completed")
+		r.reportProgress(task.ID, "Completed", 90, "Execution completed")
+
+		// Run quality gates if configured
+		if r.qualityCheckerFactory != nil {
+			r.reportProgress(task.ID, "Quality Gates", 91, "Running quality checks...")
+
+			checker := r.qualityCheckerFactory(task.ID, task.ProjectPath)
+			outcome, qErr := checker.Check(ctx)
+			if qErr != nil {
+				log.Error("Quality gate check error", slog.Any("error", qErr))
+				result.Success = false
+				result.Error = fmt.Sprintf("quality gate error: %v", qErr)
+				r.reportProgress(task.ID, "Quality Failed", 100, result.Error)
+
+				// Emit task failed event
+				r.emitAlertEvent(AlertEvent{
+					Type:      AlertEventTypeTaskFailed,
+					TaskID:    task.ID,
+					TaskTitle: task.Title,
+					Project:   task.ProjectPath,
+					Error:     result.Error,
+					Timestamp: time.Now(),
+				})
+
+				if recorder != nil {
+					recorder.SetModel(result.ModelName)
+					recorder.SetNavigator(state.hasNavigator)
+					if finErr := recorder.Finish("failed"); finErr != nil {
+						log.Warn("Failed to finish recording", slog.Any("error", finErr))
+					}
+				}
+				return result, nil
+			}
+
+			if !outcome.Passed {
+				log.Warn("Quality gates failed",
+					slog.Bool("should_retry", outcome.ShouldRetry),
+					slog.Int("attempt", outcome.Attempt),
+				)
+
+				if outcome.ShouldRetry {
+					r.reportProgress(task.ID, "Quality Retry", 92, "Gates failed, retry feedback available")
+					// TODO: In future, could re-invoke Claude with outcome.RetryFeedback
+					// For now, just mark as failed with feedback in error
+					result.Success = false
+					result.Error = fmt.Sprintf("quality gates failed (attempt %d): %s", outcome.Attempt+1, outcome.RetryFeedback)
+				} else {
+					result.Success = false
+					result.Error = "quality gates failed, max retries exhausted"
+				}
+
+				r.reportProgress(task.ID, "Quality Failed", 100, "Quality gates did not pass")
+
+				// Emit task failed event
+				r.emitAlertEvent(AlertEvent{
+					Type:      AlertEventTypeTaskFailed,
+					TaskID:    task.ID,
+					TaskTitle: task.Title,
+					Project:   task.ProjectPath,
+					Error:     result.Error,
+					Timestamp: time.Now(),
+				})
+
+				if recorder != nil {
+					recorder.SetModel(result.ModelName)
+					recorder.SetNavigator(state.hasNavigator)
+					if finErr := recorder.Finish("failed"); finErr != nil {
+						log.Warn("Failed to finish recording", slog.Any("error", finErr))
+					}
+				}
+				return result, nil
+			}
+
+			r.reportProgress(task.ID, "Quality Passed", 94, "All quality gates passed")
+		}
+
+		r.reportProgress(task.ID, "Finalizing", 95, "Preparing for completion")
 
 		// Create PR if requested and we have commits
 		if task.CreatePR && task.Branch != "" {
@@ -661,6 +732,52 @@ func (r *Runner) parseStreamEvent(taskID, line string, state *progressState) (st
 	}
 
 	return "", ""
+}
+
+// processBackendEvent handles events from any backend and updates progress state.
+// This is the unified event handler that works with both Claude Code and OpenCode.
+func (r *Runner) processBackendEvent(taskID string, event BackendEvent, state *progressState) {
+	// Track token usage
+	state.tokensInput += event.TokensInput
+	state.tokensOutput += event.TokensOutput
+	if event.Model != "" {
+		state.modelName = event.Model
+	}
+
+	switch event.Type {
+	case EventTypeInit:
+		r.reportProgress(taskID, "🚀 Started", 5, event.Message)
+
+	case EventTypeText:
+		// Parse Navigator-specific patterns from text
+		if event.Message != "" {
+			r.parseNavigatorPatterns(taskID, event.Message, state)
+		}
+
+	case EventTypeToolUse:
+		r.handleToolUse(taskID, event.ToolName, event.ToolInput, state)
+
+	case EventTypeToolResult:
+		// Extract commit SHA from tool output
+		if event.ToolResult != "" {
+			extractCommitSHA(event.ToolResult, state)
+		}
+
+	case EventTypeResult:
+		r.log.Debug("Backend result received",
+			slog.String("task_id", taskID),
+			slog.Bool("is_error", event.IsError),
+		)
+
+	case EventTypeError:
+		r.log.Warn("Backend error", slog.String("task_id", taskID), slog.String("error", event.Message))
+
+	case EventTypeProgress:
+		// Progress events may contain phase information
+		if event.Phase != "" {
+			r.handleNavigatorPhase(taskID, event.Phase, state)
+		}
+	}
 }
 
 // parseNavigatorPatterns detects Navigator-specific progress signals from text
