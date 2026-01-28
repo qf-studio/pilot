@@ -2,6 +2,28 @@
 
 **Navigator guides. Pilot executes.**
 
+## ⚠️ WORKFLOW: Plan Here, Pilot Executes
+
+**This Claude Code session is for PLANNING ONLY.**
+
+- ✅ Research, explore codebase, read files
+- ✅ Design solutions, write plans
+- ✅ Create GitHub issues with `pilot` label
+- ✅ Review Pilot's PRs and provide feedback
+- ❌ DO NOT write code directly
+- ❌ DO NOT make commits
+- ❌ DO NOT create PRs
+
+**Pilot runs in a separate terminal** (`pilot telegram`) and picks up issues labeled `pilot`.
+
+### Workflow
+1. Plan the feature/fix in this session
+2. Create GitHub issue: `gh issue create --title "..." --label pilot --body "..."`
+3. Pilot auto-picks it up and executes
+4. Review the PR, provide feedback if needed
+
+---
+
 ## Project Overview
 
 Pilot is an autonomous AI development pipeline that:

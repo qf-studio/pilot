@@ -2,6 +2,45 @@
 
 **AI that ships your tickets.**
 
+## ⚠️ WORKFLOW: Plan Here, Pilot Executes
+
+**This Claude Code session is for PLANNING ONLY.**
+
+| Do ✅ | Don't ❌ |
+|-------|---------|
+| Research & explore codebase | Write code |
+| Design solutions & plans | Make commits |
+| Create GitHub issues (`--label pilot`) | Create PRs |
+| Review Pilot's work | Execute tasks directly |
+
+### How It Works
+```
+┌─────────────────┐     gh issue create      ┌─────────────────┐
+│  Claude Code    │ ──────────────────────► │  GitHub Issue   │
+│  (Plan & Design)│     --label pilot        │  (with pilot)   │
+└─────────────────┘                          └────────┬────────┘
+                                                      │
+                                                      ▼
+┌─────────────────┐     auto-picks up        ┌─────────────────┐
+│  Review PR      │ ◄────────────────────── │  Pilot Bot      │
+│  Give feedback  │                          │  (executes)     │
+└─────────────────┘                          └─────────────────┘
+```
+
+### Quick Commands
+```bash
+# Create ticket for Pilot
+gh issue create --title "TASK-XX: Description" --label pilot --body "Details..."
+
+# Check Pilot's queue
+gh issue list --label pilot --state open
+
+# Check what Pilot completed
+gh issue list --label pilot-done --state open
+```
+
+---
+
 ## ⚠️ CRITICAL: Core Architecture Constraint
 
 **NEVER remove Navigator integration from `internal/executor/runner.go`**
