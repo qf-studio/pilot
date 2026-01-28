@@ -19,6 +19,7 @@ import (
 	"github.com/alekspetrov/pilot/internal/adapters/github"
 	"github.com/alekspetrov/pilot/internal/adapters/slack"
 	"github.com/alekspetrov/pilot/internal/adapters/telegram"
+	"github.com/alekspetrov/pilot/internal/alerts"
 	"github.com/alekspetrov/pilot/internal/banner"
 	"github.com/alekspetrov/pilot/internal/briefs"
 	"github.com/alekspetrov/pilot/internal/config"
@@ -311,6 +312,7 @@ func newTaskCmd() *cobra.Command {
 	var noBranch bool
 	var verbose bool
 	var createPR bool
+	var enableAlerts bool
 
 	cmd := &cobra.Command{
 		Use:   "task [description]",
@@ -322,10 +324,24 @@ Examples:
   pilot task "Fix the login bug in auth.go" --project /path/to/project
   pilot task "Refactor the API handlers" --dry-run
   pilot task "Add index.py with hello world" --verbose
-  pilot task "Add new feature" --create-pr`,
+  pilot task "Add new feature" --create-pr
+  pilot task "Fix bug" --alerts`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			taskDesc := args[0]
+
+			// Create context with cancellation on SIGINT
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			// Handle Ctrl+C
+			sigCh := make(chan os.Signal, 1)
+			signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+			go func() {
+				<-sigCh
+				fmt.Println("\n\n⚠️  Cancelling task...")
+				cancel()
+			}()
 
 			banner.Print()
 
@@ -402,6 +418,73 @@ Examples:
 				return nil
 			}
 
+			// Initialize alerts engine if --alerts flag is set
+			var alertsEngine *alerts.Engine
+			if enableAlerts {
+				// Load config for alerts
+				configPath := cfgFile
+				if configPath == "" {
+					configPath = config.DefaultConfigPath()
+				}
+
+				cfg, err := config.Load(configPath)
+				if err != nil {
+					return fmt.Errorf("failed to load config for alerts: %w", err)
+				}
+
+				// Get alerts config
+				alertsCfg := getAlertsConfig(cfg)
+				if alertsCfg == nil {
+					// Use default config with alerts enabled
+					alertsCfg = alerts.DefaultConfig()
+					alertsCfg.Enabled = true
+				} else {
+					alertsCfg.Enabled = true
+				}
+
+				// Create dispatcher and register channels
+				dispatcher := alerts.NewDispatcher(alertsCfg)
+
+				// Register Slack channel if configured
+				if cfg.Adapters.Slack != nil && cfg.Adapters.Slack.Enabled && cfg.Adapters.Slack.BotToken != "" {
+					slackClient := slack.NewClient(cfg.Adapters.Slack.BotToken)
+					for _, ch := range alertsCfg.Channels {
+						if ch.Type == "slack" && ch.Slack != nil {
+							slackChannel := alerts.NewSlackChannel(ch.Name, slackClient, ch.Slack.Channel)
+							dispatcher.RegisterChannel(slackChannel)
+						}
+					}
+				}
+
+				// Register Telegram channel if configured
+				if cfg.Adapters.Telegram != nil && cfg.Adapters.Telegram.Enabled && cfg.Adapters.Telegram.BotToken != "" {
+					telegramClient := telegram.NewClient(cfg.Adapters.Telegram.BotToken)
+					for _, ch := range alertsCfg.Channels {
+						if ch.Type == "telegram" && ch.Telegram != nil {
+							telegramChannel := alerts.NewTelegramChannel(ch.Name, telegramClient, ch.Telegram.ChatID)
+							dispatcher.RegisterChannel(telegramChannel)
+						}
+					}
+				}
+
+				alertsEngine = alerts.NewEngine(alertsCfg, alerts.WithDispatcher(dispatcher))
+				if err := alertsEngine.Start(ctx); err != nil {
+					return fmt.Errorf("failed to start alerts engine: %w", err)
+				}
+				defer alertsEngine.Stop()
+
+				fmt.Printf("   Alerts:    ✓ enabled (%d channels)\n", len(dispatcher.ListChannels()))
+
+				// Send task started event
+				alertsEngine.ProcessEvent(alerts.Event{
+					Type:      alerts.EventTypeTaskStarted,
+					TaskID:    taskID,
+					TaskTitle: taskDesc,
+					Project:   projectPath,
+					Timestamp: time.Now(),
+				})
+			}
+
 			// Create the executor runner
 			runner := executor.NewRunner()
 
@@ -420,6 +503,19 @@ Examples:
 					// Normal mode: visual progress display
 					progress.Update(phase, pct, message)
 				}
+
+				// Send progress event to alerts engine
+				if alertsEngine != nil {
+					alertsEngine.ProcessEvent(alerts.Event{
+						Type:      alerts.EventTypeTaskProgress,
+						TaskID:    taskID,
+						TaskTitle: taskDesc,
+						Project:   projectPath,
+						Phase:     phase,
+						Progress:  pct,
+						Timestamp: time.Now(),
+					})
+				}
 			})
 
 			fmt.Println("⏳ Executing task with Claude Code...")
@@ -430,19 +526,6 @@ Examples:
 
 			// Start progress display
 			progress.Start()
-
-			// Create context with cancellation on SIGINT
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-
-			// Handle Ctrl+C
-			sigCh := make(chan os.Signal, 1)
-			signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-			go func() {
-				<-sigCh
-				fmt.Println("\n\n⚠️  Cancelling task...")
-				cancel()
-			}()
 
 			// Execute the task
 			result, err := runner.Execute(ctx, task)
@@ -467,11 +550,44 @@ Examples:
 				if result.CommitSHA != "" {
 					fmt.Printf("   Commit: %s\n", result.CommitSHA[:8])
 				}
+
+				// Send task completed event to alerts engine
+				if alertsEngine != nil {
+					alertsEngine.ProcessEvent(alerts.Event{
+						Type:      alerts.EventTypeTaskCompleted,
+						TaskID:    taskID,
+						TaskTitle: taskDesc,
+						Project:   projectPath,
+						Timestamp: time.Now(),
+						Metadata: map[string]string{
+							"duration":   result.Duration.String(),
+							"pr_url":     result.PRUrl,
+							"commit_sha": result.CommitSHA,
+						},
+					})
+				}
 			} else {
 				fmt.Println("❌ Task failed")
 				fmt.Printf("   Duration: %s\n", result.Duration.Round(time.Second))
 				if result.Error != "" {
 					fmt.Printf("   Error: %s\n", result.Error)
+				}
+
+				// Send task failed event to alerts engine
+				if alertsEngine != nil {
+					alertsEngine.ProcessEvent(alerts.Event{
+						Type:      alerts.EventTypeTaskFailed,
+						TaskID:    taskID,
+						TaskTitle: taskDesc,
+						Project:   projectPath,
+						Error:     result.Error,
+						Timestamp: time.Now(),
+						Metadata: map[string]string{
+							"duration": result.Duration.String(),
+						},
+					})
+					// Give time for alert to be sent before exiting
+					time.Sleep(500 * time.Millisecond)
 				}
 			}
 
@@ -484,6 +600,7 @@ Examples:
 	cmd.Flags().BoolVar(&noBranch, "no-branch", false, "Don't create a new git branch")
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Stream Claude Code output")
 	cmd.Flags().BoolVar(&createPR, "create-pr", false, "Create GitHub PR after successful execution")
+	cmd.Flags().BoolVar(&enableAlerts, "alerts", false, "Enable alerts for task execution")
 
 	return cmd
 }
@@ -1906,7 +2023,6 @@ func checkForUpdates() {
 		fmt.Println()
 	}
 }
-
 // runDashboardMode runs the TUI dashboard with live task updates
 func runDashboardMode(p *pilot.Pilot, cfg *config.Config) error {
 	// Create TUI program
@@ -2001,4 +2117,79 @@ func convertTaskStatesToDisplay(states []*executor.TaskState) []dashboard.TaskDi
 		}
 	}
 	return displays
+}
+
+// getAlertsConfig extracts alerts configuration from the main config
+func getAlertsConfig(cfg *config.Config) *alerts.AlertConfig {
+	if cfg.Alerts == nil {
+		return nil
+	}
+
+	alertsCfg := cfg.Alerts
+
+	// Convert to alerts package types
+	channels := make([]alerts.ChannelConfigInput, 0, len(alertsCfg.Channels))
+	for _, ch := range alertsCfg.Channels {
+		input := alerts.ChannelConfigInput{
+			Name:       ch.Name,
+			Type:       ch.Type,
+			Enabled:    ch.Enabled,
+			Severities: ch.Severities,
+		}
+		if ch.Slack != nil {
+			input.Slack = &alerts.SlackConfigInput{Channel: ch.Slack.Channel}
+		}
+		if ch.Telegram != nil {
+			input.Telegram = &alerts.TelegramConfigInput{ChatID: ch.Telegram.ChatID}
+		}
+		if ch.Email != nil {
+			input.Email = &alerts.EmailConfigInput{To: ch.Email.To, Subject: ch.Email.Subject}
+		}
+		if ch.Webhook != nil {
+			input.Webhook = &alerts.WebhookConfigInput{
+				URL:     ch.Webhook.URL,
+				Method:  ch.Webhook.Method,
+				Headers: ch.Webhook.Headers,
+				Secret:  ch.Webhook.Secret,
+			}
+		}
+		if ch.PagerDuty != nil {
+			input.PagerDuty = &alerts.PagerDutyConfigInput{
+				RoutingKey: ch.PagerDuty.RoutingKey,
+				ServiceID:  ch.PagerDuty.ServiceID,
+			}
+		}
+		channels = append(channels, input)
+	}
+
+	rules := make([]alerts.RuleConfigInput, 0, len(alertsCfg.Rules))
+	for _, r := range alertsCfg.Rules {
+		rules = append(rules, alerts.RuleConfigInput{
+			Name:        r.Name,
+			Type:        r.Type,
+			Enabled:     r.Enabled,
+			Severity:    r.Severity,
+			Channels:    r.Channels,
+			Cooldown:    r.Cooldown,
+			Description: r.Description,
+			Condition: alerts.ConditionConfigInput{
+				ProgressUnchangedFor: r.Condition.ProgressUnchangedFor,
+				ConsecutiveFailures:  r.Condition.ConsecutiveFailures,
+				DailySpendThreshold:  r.Condition.DailySpendThreshold,
+				BudgetLimit:          r.Condition.BudgetLimit,
+				UsageSpikePercent:    r.Condition.UsageSpikePercent,
+				Pattern:              r.Condition.Pattern,
+				FilePattern:          r.Condition.FilePattern,
+				Paths:                r.Condition.Paths,
+			},
+		})
+	}
+
+	defaults := alerts.DefaultsConfigInput{
+		Cooldown:           alertsCfg.Defaults.Cooldown,
+		DefaultSeverity:    alertsCfg.Defaults.DefaultSeverity,
+		SuppressDuplicates: alertsCfg.Defaults.SuppressDuplicates,
+	}
+
+	return alerts.FromConfigAlerts(alertsCfg.Enabled, channels, rules, defaults)
 }
