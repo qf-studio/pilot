@@ -25,6 +25,7 @@ import (
 	"github.com/alekspetrov/pilot/internal/memory"
 	"github.com/alekspetrov/pilot/internal/pilot"
 	"github.com/alekspetrov/pilot/internal/replay"
+	"github.com/alekspetrov/pilot/internal/upgrade"
 )
 
 var (
@@ -75,6 +76,7 @@ func main() {
 		newConfigCmd(),
 		newLogsCmd(),
 		newWebhooksCmd(),
+		newUpgradeCmd(),
 	)
 
 	if err := rootCmd.Execute(); err != nil {
@@ -118,6 +120,9 @@ func newStartCmd() *cobra.Command {
 			// Show startup banner
 			gateway := fmt.Sprintf("http://%s:%d", cfg.Gateway.Host, cfg.Gateway.Port)
 			banner.StartupBanner(version, gateway)
+
+			// Check for updates in background (non-blocking)
+			go checkForUpdates()
 
 			// Wait for shutdown signal
 			sigCh := make(chan os.Signal, 1)
@@ -1864,4 +1869,31 @@ func newReplayDeleteCmd() *cobra.Command {
 	cmd.Flags().BoolVarP(&force, "force", "f", false, "Delete without confirmation")
 
 	return cmd
+}
+
+// checkForUpdates checks for new versions in the background
+func checkForUpdates() {
+	if quietMode {
+		return
+	}
+
+	upgrader, err := upgrade.NewUpgrader(version)
+	if err != nil {
+		return // Silently fail
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	info, err := upgrader.CheckVersion(ctx)
+	if err != nil {
+		return // Silently fail
+	}
+
+	if info.UpdateAvail {
+		fmt.Println()
+		fmt.Printf("✨ Update available: %s → %s\n", info.Current, info.Latest)
+		fmt.Println("   Run 'pilot upgrade' to install")
+		fmt.Println()
+	}
 }
