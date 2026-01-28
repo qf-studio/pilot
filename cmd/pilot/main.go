@@ -17,6 +17,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/alekspetrov/pilot/internal/adapters/github"
+	"github.com/alekspetrov/pilot/internal/adapters/linear"
 	"github.com/alekspetrov/pilot/internal/adapters/slack"
 	"github.com/alekspetrov/pilot/internal/adapters/telegram"
 	"github.com/alekspetrov/pilot/internal/alerts"
@@ -65,7 +66,6 @@ func main() {
 		newInitCmd(),
 		newVersionCmd(),
 		newTaskCmd(),
-		newTelegramCmd(),
 		newGitHubCmd(),
 		newBriefCmd(),
 		newPatternsCmd(),
@@ -91,12 +91,34 @@ func main() {
 }
 
 func newStartCmd() *cobra.Command {
-	var daemon bool
-	var dashboardMode bool
+	var (
+		daemon        bool
+		dashboardMode bool
+		projectPath   string
+		replace       bool
+		// Input adapter flags (override config)
+		enableTelegram *bool
+		enableGithub   *bool
+		enableLinear   *bool
+		// Mode flags
+		noGateway bool // Lightweight mode: polling only, no HTTP gateway
+	)
 
 	cmd := &cobra.Command{
 		Use:   "start",
-		Short: "Start the Pilot daemon",
+		Short: "Start Pilot with config-driven inputs",
+		Long: `Start Pilot with inputs enabled based on config or flags.
+
+By default, reads enabled adapters from ~/.pilot/config.yaml.
+Use flags to override config values.
+
+Examples:
+  pilot start                          # Config-driven
+  pilot start --telegram               # Enable Telegram polling
+  pilot start --github                 # Enable GitHub polling
+  pilot start --telegram --github      # Enable both
+  pilot start --dashboard              # With TUI dashboard
+  pilot start --no-gateway             # Polling only (no HTTP server)`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Load config
 			configPath := cfgFile
@@ -109,6 +131,37 @@ func newStartCmd() *cobra.Command {
 				return fmt.Errorf("failed to load config: %w", err)
 			}
 
+			// Apply flag overrides to config
+			applyInputOverrides(cfg, enableTelegram, enableGithub, enableLinear)
+
+			// Resolve project path: flag > config default > cwd
+			if projectPath == "" {
+				if defaultProj := cfg.GetDefaultProject(); defaultProj != nil {
+					projectPath = defaultProj.Path
+				}
+			}
+			if projectPath == "" {
+				cwd, _ := os.Getwd()
+				projectPath = cwd
+			}
+			if strings.HasPrefix(projectPath, "~") {
+				home, _ := os.UserHomeDir()
+				projectPath = strings.Replace(projectPath, "~", home, 1)
+			}
+
+			// Determine mode based on what's enabled
+			hasTelegram := cfg.Adapters.Telegram != nil && cfg.Adapters.Telegram.Enabled
+			hasGithubPolling := cfg.Adapters.Github != nil && cfg.Adapters.Github.Enabled &&
+				cfg.Adapters.Github.Polling != nil && cfg.Adapters.Github.Polling.Enabled
+			hasLinear := cfg.Adapters.Linear != nil && cfg.Adapters.Linear.Enabled
+			hasJira := cfg.Adapters.Jira != nil && cfg.Adapters.Jira.Enabled
+
+			// Lightweight mode: polling only, no gateway
+			if noGateway || (!hasLinear && !hasJira && (hasTelegram || hasGithubPolling)) {
+				return runPollingMode(cfg, projectPath, replace, dashboardMode)
+			}
+
+			// Full daemon mode with gateway
 			if err := cfg.Validate(); err != nil {
 				return fmt.Errorf("invalid config: %w", err)
 			}
@@ -148,8 +201,308 @@ func newStartCmd() *cobra.Command {
 
 	cmd.Flags().BoolVarP(&daemon, "daemon", "d", false, "Run in background (daemon mode)")
 	cmd.Flags().BoolVar(&dashboardMode, "dashboard", false, "Show TUI dashboard for real-time task monitoring")
+	cmd.Flags().StringVarP(&projectPath, "project", "p", "", "Project path (default: config default or cwd)")
+	cmd.Flags().BoolVar(&replace, "replace", false, "Kill existing bot instance before starting")
+	cmd.Flags().BoolVar(&noGateway, "no-gateway", false, "Run polling adapters only (no HTTP gateway)")
+
+	// Input adapter flags - use pointers to detect if flag was set
+	cmd.Flags().Var(newOptionalBool(&enableTelegram), "telegram", "Enable Telegram polling (overrides config)")
+	cmd.Flags().Var(newOptionalBool(&enableGithub), "github", "Enable GitHub polling (overrides config)")
+	cmd.Flags().Var(newOptionalBool(&enableLinear), "linear", "Enable Linear webhooks (overrides config)")
 
 	return cmd
+}
+
+// optionalBool is a flag.Value that tracks whether a bool flag was explicitly set
+type optionalBool struct {
+	ptr **bool
+}
+
+func newOptionalBool(ptr **bool) *optionalBool {
+	return &optionalBool{ptr: ptr}
+}
+
+func (o *optionalBool) Set(s string) error {
+	v := s == "" || s == "true" || s == "1"
+	*o.ptr = &v
+	return nil
+}
+
+func (o *optionalBool) String() string {
+	if *o.ptr == nil {
+		return ""
+	}
+	if **o.ptr {
+		return "true"
+	}
+	return "false"
+}
+
+func (o *optionalBool) Type() string {
+	return "bool"
+}
+
+func (o *optionalBool) IsBoolFlag() bool {
+	return true
+}
+
+// applyInputOverrides applies CLI flag overrides to config
+func applyInputOverrides(cfg *config.Config, telegramFlag, githubFlag, linearFlag *bool) {
+	if telegramFlag != nil {
+		if cfg.Adapters.Telegram == nil {
+			cfg.Adapters.Telegram = telegram.DefaultConfig()
+		}
+		cfg.Adapters.Telegram.Enabled = *telegramFlag
+		cfg.Adapters.Telegram.Polling = *telegramFlag
+	}
+	if githubFlag != nil {
+		if cfg.Adapters.Github == nil {
+			cfg.Adapters.Github = github.DefaultConfig()
+		}
+		cfg.Adapters.Github.Enabled = *githubFlag
+		if cfg.Adapters.Github.Polling == nil {
+			cfg.Adapters.Github.Polling = &github.PollingConfig{}
+		}
+		cfg.Adapters.Github.Polling.Enabled = *githubFlag
+	}
+	if linearFlag != nil {
+		if cfg.Adapters.Linear == nil {
+			cfg.Adapters.Linear = linear.DefaultConfig()
+		}
+		cfg.Adapters.Linear.Enabled = *linearFlag
+	}
+}
+
+// runPollingMode runs lightweight polling-only mode (no HTTP gateway)
+func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMode bool) error {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Check Telegram config if enabled
+	hasTelegram := cfg.Adapters.Telegram != nil && cfg.Adapters.Telegram.Enabled
+	if hasTelegram && cfg.Adapters.Telegram.BotToken == "" {
+		return fmt.Errorf("telegram enabled but bot_token not configured")
+	}
+
+	// Create runner
+	runner := executor.NewRunner()
+
+	// Initialize Telegram handler if enabled
+	var tgHandler *telegram.Handler
+	if hasTelegram {
+		var allowedIDs []int64
+		if cfg.Adapters.Telegram.ChatID != "" {
+			if id, err := parseIntID(cfg.Adapters.Telegram.ChatID); err == nil {
+				allowedIDs = append(allowedIDs, id)
+			}
+		}
+
+		tgHandler = telegram.NewHandler(&telegram.HandlerConfig{
+			BotToken:      cfg.Adapters.Telegram.BotToken,
+			ProjectPath:   projectPath,
+			Projects:      config.NewProjectSource(cfg),
+			AllowedIDs:    allowedIDs,
+			Transcription: cfg.Adapters.Telegram.Transcription,
+		}, runner)
+
+		// Check for existing instance
+		if err := tgHandler.CheckSingleton(ctx); err != nil {
+			if errors.Is(err, telegram.ErrConflict) {
+				if replace {
+					fmt.Println("🔄 Stopping existing bot instance...")
+					if err := killExistingTelegramBot(); err != nil {
+						return fmt.Errorf("failed to stop existing instance: %w", err)
+					}
+					fmt.Print("   Waiting for Telegram to release connection")
+					maxRetries := 10
+					var lastErr error
+					for i := 0; i < maxRetries; i++ {
+						delay := time.Duration(500+i*500) * time.Millisecond
+						time.Sleep(delay)
+						fmt.Print(".")
+						if err := tgHandler.CheckSingleton(ctx); err == nil {
+							fmt.Println(" ✓")
+							fmt.Println("   ✓ Existing instance stopped")
+							fmt.Println()
+							lastErr = nil
+							break
+						} else {
+							lastErr = err
+						}
+					}
+					if lastErr != nil {
+						fmt.Println(" ✗")
+						return fmt.Errorf("timeout waiting for Telegram to release connection")
+					}
+				} else {
+					fmt.Println()
+					fmt.Println("❌ Another bot instance is already running")
+					fmt.Println()
+					fmt.Println("   Options:")
+					fmt.Println("   • Kill it manually:  pkill -f 'pilot start'")
+					fmt.Println("   • Auto-replace:      pilot start --replace")
+					fmt.Println()
+					return fmt.Errorf("conflict: another bot instance is running")
+				}
+			} else {
+				return fmt.Errorf("singleton check failed: %w", err)
+			}
+		}
+	}
+
+	// Show startup banner
+	banner.StartupTelegram(version, projectPath, cfg.Adapters.Telegram.ChatID, cfg)
+
+	// Initialize dispatcher for task queue
+	var dispatcher *executor.Dispatcher
+	store, err := memory.NewStore(cfg.Memory.Path)
+	if err != nil {
+		logging.WithComponent("start").Warn("Failed to open memory store for dispatcher", slog.Any("error", err))
+	} else {
+		dispatcher = executor.NewDispatcher(store, runner, nil)
+		if err := dispatcher.Start(); err != nil {
+			logging.WithComponent("start").Warn("Failed to start dispatcher", slog.Any("error", err))
+			dispatcher = nil
+		} else {
+			logging.WithComponent("start").Info("Task dispatcher started")
+		}
+	}
+
+	// Start GitHub polling if enabled
+	var ghPoller *github.Poller
+	if cfg.Adapters.Github != nil && cfg.Adapters.Github.Enabled &&
+		cfg.Adapters.Github.Polling != nil && cfg.Adapters.Github.Polling.Enabled {
+
+		token := cfg.Adapters.Github.Token
+		if token == "" {
+			token = os.Getenv("GITHUB_TOKEN")
+		}
+
+		if token != "" && cfg.Adapters.Github.Repo != "" {
+			client := github.NewClient(token)
+			label := cfg.Adapters.Github.Polling.Label
+			if label == "" {
+				label = cfg.Adapters.Github.PilotLabel
+			}
+			interval := cfg.Adapters.Github.Polling.Interval
+			if interval == 0 {
+				interval = 30 * time.Second
+			}
+
+			var err error
+			ghPoller, err = github.NewPoller(client, cfg.Adapters.Github.Repo, label, interval,
+				github.WithOnIssue(func(issueCtx context.Context, issue *github.Issue) error {
+					return handleGitHubIssue(issueCtx, cfg, client, issue, projectPath, dispatcher, runner)
+				}),
+			)
+			if err != nil {
+				fmt.Printf("⚠️  GitHub polling disabled: %v\n", err)
+			} else {
+				fmt.Printf("🐙 GitHub polling enabled: %s (every %s)\n", cfg.Adapters.Github.Repo, interval)
+				go ghPoller.Start(ctx)
+			}
+		}
+	}
+
+	// Start Telegram polling if enabled
+	if tgHandler != nil {
+		tgHandler.StartPolling(ctx)
+	}
+
+	// Wait for shutdown signal
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+
+	<-sigCh
+	fmt.Println("\n🛑 Shutting down...")
+	if tgHandler != nil {
+		tgHandler.Stop()
+	}
+	if ghPoller != nil {
+		fmt.Println("🐙 Stopping GitHub poller...")
+	}
+	if dispatcher != nil {
+		fmt.Println("📋 Stopping task dispatcher...")
+		dispatcher.Stop()
+	}
+	if store != nil {
+		_ = store.Close()
+	}
+
+	return nil
+}
+
+// handleGitHubIssue processes a GitHub issue picked up by the poller
+func handleGitHubIssue(ctx context.Context, cfg *config.Config, client *github.Client, issue *github.Issue, projectPath string, dispatcher *executor.Dispatcher, runner *executor.Runner) error {
+	fmt.Printf("\n📥 GitHub Issue #%d: %s\n", issue.Number, issue.Title)
+
+	parts := strings.Split(cfg.Adapters.Github.Repo, "/")
+	if len(parts) == 2 {
+		_ = client.AddLabels(ctx, parts[0], parts[1], issue.Number, []string{github.LabelInProgress})
+	}
+
+	taskDesc := fmt.Sprintf("GitHub Issue #%d: %s\n\n%s", issue.Number, issue.Title, issue.Body)
+	taskID := fmt.Sprintf("GH-%d", issue.Number)
+	branchName := fmt.Sprintf("pilot/%s", taskID)
+
+	task := &executor.Task{
+		ID:          taskID,
+		Title:       issue.Title,
+		Description: taskDesc,
+		ProjectPath: projectPath,
+		Branch:      branchName,
+		CreatePR:    true,
+	}
+
+	var result *executor.ExecutionResult
+	var execErr error
+
+	if dispatcher != nil {
+		execID, qErr := dispatcher.QueueTask(ctx, task)
+		if qErr != nil {
+			execErr = fmt.Errorf("failed to queue task: %w", qErr)
+		} else {
+			fmt.Printf("   📋 Queued as execution %s\n", execID[:8])
+			exec, waitErr := dispatcher.WaitForExecution(ctx, execID, time.Second)
+			if waitErr != nil {
+				execErr = fmt.Errorf("failed waiting for execution: %w", waitErr)
+			} else if exec.Status == "failed" {
+				execErr = fmt.Errorf("execution failed: %s", exec.Error)
+			} else {
+				result = &executor.ExecutionResult{
+					TaskID:    task.ID,
+					Success:   exec.Status == "completed",
+					Output:    exec.Output,
+					Error:     exec.Error,
+					PRUrl:     exec.PRUrl,
+					CommitSHA: exec.CommitSHA,
+					Duration:  time.Duration(exec.DurationMs) * time.Millisecond,
+				}
+			}
+		}
+	} else {
+		result, execErr = runner.Execute(ctx, task)
+	}
+
+	if len(parts) == 2 {
+		_ = client.RemoveLabel(ctx, parts[0], parts[1], issue.Number, github.LabelInProgress)
+
+		if execErr != nil {
+			_ = client.AddLabels(ctx, parts[0], parts[1], issue.Number, []string{github.LabelFailed})
+			comment := fmt.Sprintf("❌ Pilot execution failed:\n\n```\n%s\n```", execErr.Error())
+			_, _ = client.AddComment(ctx, parts[0], parts[1], issue.Number, comment)
+		} else if result != nil {
+			_ = client.AddLabels(ctx, parts[0], parts[1], issue.Number, []string{github.LabelDone})
+			comment := fmt.Sprintf("✅ Pilot completed!\n\n**Duration:** %s\n**Branch:** `%s`",
+				result.Duration, branchName)
+			if result.PRUrl != "" {
+				comment += fmt.Sprintf("\n**PR:** %s", result.PRUrl)
+			}
+			_, _ = client.AddComment(ctx, parts[0], parts[1], issue.Number, comment)
+		}
+	}
+
+	return execErr
 }
 
 func newStopCmd() *cobra.Command {
@@ -646,346 +999,47 @@ Examples:
 	return cmd
 }
 
-func newTelegramCmd() *cobra.Command {
-	var projectPath string
-	var replace bool
-
-	cmd := &cobra.Command{
-		Use:   "telegram",
-		Short: "Start Telegram bot for receiving tasks",
-		Long: `Start the Telegram bot that listens for messages and executes them as tasks.
-
-Send any message to the bot and it will be executed as a Pilot task.
-The bot will reply with the task result.
-
-Commands:
-  /help   - Show help message
-  /status - Check bot status
-
-Example:
-  pilot telegram --project /path/to/project
-  pilot telegram --replace  # Kill existing instance first`,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			// Load config
-			configPath := cfgFile
-			if configPath == "" {
-				configPath = config.DefaultConfigPath()
-			}
-
-			cfg, err := config.Load(configPath)
-			if err != nil {
-				return fmt.Errorf("failed to load config: %w", err)
-			}
-
-			// Check Telegram config
-			if cfg.Adapters.Telegram == nil || !cfg.Adapters.Telegram.Enabled {
-				return fmt.Errorf("telegram adapter not enabled in config")
-			}
-
-			if cfg.Adapters.Telegram.BotToken == "" {
-				return fmt.Errorf("telegram bot_token not configured")
-			}
-
-			// Resolve project path priority: flag > positional arg > config default > cwd
-			if projectPath == "" && len(args) > 0 {
-				projectPath = args[0]
-			}
-			if projectPath == "" {
-				// Try to get default from config
-				if defaultProj := cfg.GetDefaultProject(); defaultProj != nil {
-					projectPath = defaultProj.Path
-				}
-			}
-			if projectPath == "" {
-				// Fall back to current working directory
-				cwd, _ := os.Getwd()
-				projectPath = cwd
-			}
-			// Expand ~ to home directory
-			if strings.HasPrefix(projectPath, "~") {
-				home, _ := os.UserHomeDir()
-				projectPath = strings.Replace(projectPath, "~", home, 1)
-			}
-
-			// Create runner and handler
-			runner := executor.NewRunner()
-
-			// Parse chat ID for allowed IDs
-			var allowedIDs []int64
-			if cfg.Adapters.Telegram.ChatID != "" {
-				if id, err := parseIntID(cfg.Adapters.Telegram.ChatID); err == nil {
-					allowedIDs = append(allowedIDs, id)
-				}
-			}
-
-			handler := telegram.NewHandler(&telegram.HandlerConfig{
-				BotToken:      cfg.Adapters.Telegram.BotToken,
-				ProjectPath:   projectPath,
-				Projects:      config.NewProjectSource(cfg),
-				AllowedIDs:    allowedIDs,
-				Transcription: cfg.Adapters.Telegram.Transcription,
-			}, runner)
-
-			// Check for existing instance
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-
-			if err := handler.CheckSingleton(ctx); err != nil {
-				if errors.Is(err, telegram.ErrConflict) {
-					if replace {
-						// Kill existing instance
-						fmt.Println("🔄 Stopping existing bot instance...")
-						if err := killExistingTelegramBot(); err != nil {
-							return fmt.Errorf("failed to stop existing instance: %w", err)
-						}
-
-						// Retry singleton check with exponential backoff
-						// Telegram API needs time to release the connection
-						fmt.Print("   Waiting for Telegram to release connection")
-						maxRetries := 10
-						var lastErr error
-						for i := 0; i < maxRetries; i++ {
-							// Exponential backoff: 500ms, 1s, 1.5s, 2s...
-							delay := time.Duration(500+i*500) * time.Millisecond
-							time.Sleep(delay)
-							fmt.Print(".")
-
-							if err := handler.CheckSingleton(ctx); err == nil {
-								fmt.Println(" ✓")
-								fmt.Println("   ✓ Existing instance stopped")
-								fmt.Println()
-								lastErr = nil
-								break
-							} else {
-								lastErr = err
-							}
-						}
-						if lastErr != nil {
-							fmt.Println(" ✗")
-							return fmt.Errorf("timeout waiting for Telegram to release connection after %d retries", maxRetries)
-						}
-					} else {
-						fmt.Println()
-						fmt.Println("❌ Another bot instance is already running")
-						fmt.Println()
-						fmt.Println("   Options:")
-						fmt.Println("   • Kill it manually:  pkill -f 'pilot telegram'")
-						fmt.Println("   • Auto-replace:      pilot telegram --replace")
-						fmt.Println()
-						return fmt.Errorf("conflict: another bot instance is running")
-					}
-				} else {
-					return fmt.Errorf("singleton check failed: %w", err)
-				}
-			}
-
-			banner.StartupTelegram(version, projectPath, cfg.Adapters.Telegram.ChatID, cfg)
-
-			// Initialize dispatcher for task queue (GH-46)
-			var dispatcher *executor.Dispatcher
-			store, err := memory.NewStore(cfg.Memory.Path)
-			if err != nil {
-				logging.WithComponent("telegram").Warn("Failed to open memory store for dispatcher", slog.Any("error", err))
-			} else {
-				dispatcher = executor.NewDispatcher(store, runner, nil)
-				if err := dispatcher.Start(); err != nil {
-					logging.WithComponent("telegram").Warn("Failed to start dispatcher", slog.Any("error", err))
-					dispatcher = nil
-				} else {
-					logging.WithComponent("telegram").Info("Task dispatcher started")
-				}
-			}
-
-			// Start GitHub polling if enabled
-			var ghPoller *github.Poller
-			if cfg.Adapters.Github != nil && cfg.Adapters.Github.Enabled &&
-				cfg.Adapters.Github.Polling != nil && cfg.Adapters.Github.Polling.Enabled {
-
-				token := cfg.Adapters.Github.Token
-				if token == "" {
-					token = os.Getenv("GITHUB_TOKEN")
-				}
-
-				if token != "" && cfg.Adapters.Github.Repo != "" {
-					client := github.NewClient(token)
-					label := cfg.Adapters.Github.Polling.Label
-					if label == "" {
-						label = cfg.Adapters.Github.PilotLabel
-					}
-					interval := cfg.Adapters.Github.Polling.Interval
-					if interval == 0 {
-						interval = 30 * time.Second
-					}
-
-					var err error
-					ghPoller, err = github.NewPoller(client, cfg.Adapters.Github.Repo, label, interval,
-						github.WithOnIssue(func(issueCtx context.Context, issue *github.Issue) error {
-							// Execute issue as task via dispatcher (GH-46)
-							fmt.Printf("\n📥 GitHub Issue #%d: %s\n", issue.Number, issue.Title)
-
-							// Add in-progress label
-							parts := strings.Split(cfg.Adapters.Github.Repo, "/")
-							if len(parts) == 2 {
-								_ = client.AddLabels(issueCtx, parts[0], parts[1], issue.Number, []string{github.LabelInProgress})
-							}
-
-							// Build task description
-							taskDesc := fmt.Sprintf("GitHub Issue #%d: %s\n\n%s", issue.Number, issue.Title, issue.Body)
-							taskID := fmt.Sprintf("GH-%d", issue.Number)
-							branchName := fmt.Sprintf("pilot/%s", taskID)
-
-							task := &executor.Task{
-								ID:          taskID,
-								Title:       issue.Title,
-								Description: taskDesc,
-								ProjectPath: projectPath,
-								Branch:      branchName,
-								CreatePR:    true, // Auto-create PR for GitHub issues
-							}
-
-							// Use dispatcher if available for per-project serialization (GH-46)
-							// Otherwise fall back to direct execution
-							var result *executor.ExecutionResult
-							var execErr error
-
-							if dispatcher != nil {
-								// Queue task and wait for completion
-								execID, qErr := dispatcher.QueueTask(issueCtx, task)
-								if qErr != nil {
-									execErr = fmt.Errorf("failed to queue task: %w", qErr)
-								} else {
-									fmt.Printf("   📋 Queued as execution %s\n", execID[:8])
-
-									// Wait for execution to complete
-									exec, waitErr := dispatcher.WaitForExecution(issueCtx, execID, time.Second)
-									if waitErr != nil {
-										execErr = fmt.Errorf("failed waiting for execution: %w", waitErr)
-									} else if exec.Status == "failed" {
-										execErr = fmt.Errorf("execution failed: %s", exec.Error)
-									} else {
-										// Build result from execution record
-										result = &executor.ExecutionResult{
-											TaskID:    task.ID,
-											Success:   exec.Status == "completed",
-											Output:    exec.Output,
-											Error:     exec.Error,
-											PRUrl:     exec.PRUrl,
-											CommitSHA: exec.CommitSHA,
-											Duration:  time.Duration(exec.DurationMs) * time.Millisecond,
-										}
-									}
-								}
-							} else {
-								// Direct execution (fallback)
-								result, execErr = runner.Execute(issueCtx, task)
-							}
-
-							// Update issue with result
-							if len(parts) == 2 {
-								_ = client.RemoveLabel(issueCtx, parts[0], parts[1], issue.Number, github.LabelInProgress)
-
-								if execErr != nil {
-									_ = client.AddLabels(issueCtx, parts[0], parts[1], issue.Number, []string{github.LabelFailed})
-									comment := fmt.Sprintf("❌ Pilot execution failed:\n\n```\n%s\n```", execErr.Error())
-									_, _ = client.AddComment(issueCtx, parts[0], parts[1], issue.Number, comment)
-								} else if result != nil {
-									_ = client.AddLabels(issueCtx, parts[0], parts[1], issue.Number, []string{github.LabelDone})
-									comment := fmt.Sprintf("✅ Pilot completed!\n\n**Duration:** %s\n**Branch:** `%s`",
-										result.Duration, branchName)
-									if result.PRUrl != "" {
-										comment += fmt.Sprintf("\n**PR:** %s", result.PRUrl)
-									}
-									_, _ = client.AddComment(issueCtx, parts[0], parts[1], issue.Number, comment)
-								}
-							}
-
-							return execErr
-						}),
-					)
-					if err != nil {
-						fmt.Printf("⚠️  GitHub polling disabled: %v\n", err)
-					} else {
-						fmt.Printf("🐙 GitHub polling enabled: %s (every %s)\n", cfg.Adapters.Github.Repo, interval)
-						go ghPoller.Start(ctx)
-					}
-				}
-			}
-
-			// Start Telegram polling
-			handler.StartPolling(ctx)
-
-			// Wait for shutdown signal
-			sigCh := make(chan os.Signal, 1)
-			signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-
-			<-sigCh
-			fmt.Println("\n🛑 Stopping Telegram bot...")
-			handler.Stop()
-			if ghPoller != nil {
-				fmt.Println("🐙 Stopping GitHub poller...")
-			}
-			if dispatcher != nil {
-				fmt.Println("📋 Stopping task dispatcher...")
-				dispatcher.Stop()
-			}
-			if store != nil {
-				_ = store.Close()
-			}
-
-			return nil
-		},
-	}
-
-	cmd.Flags().StringVarP(&projectPath, "project", "p", "", "Project path (default: current directory)")
-	cmd.Flags().BoolVar(&replace, "replace", false, "Kill existing bot instance before starting")
-
-	return cmd
-}
-
-// killExistingTelegramBot finds and kills any running "pilot telegram" process
+// killExistingTelegramBot finds and kills any running pilot process with Telegram enabled
 func killExistingTelegramBot() error {
-	// Get current process ID to avoid killing ourselves
 	currentPID := os.Getpid()
 
-	// Find processes matching "pilot telegram"
-	// Using pgrep for cross-platform compatibility
-	out, err := exec.Command("pgrep", "-f", "pilot telegram").Output()
-	if err != nil {
-		// No process found is not an error
-		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
-			return nil
-		}
-		// pgrep not available, try ps-based approach
-		return killExistingTelegramBotPS(currentPID)
-	}
-
-	// Parse PIDs and kill each one (except current)
-	pids := strings.Fields(strings.TrimSpace(string(out)))
-	for _, pidStr := range pids {
-		var pid int
-		if _, err := fmt.Sscanf(pidStr, "%d", &pid); err != nil {
-			continue
-		}
-		if pid == currentPID {
-			continue
-		}
-		// Send SIGTERM for graceful shutdown
-		proc, err := os.FindProcess(pid)
+	// Find processes matching "pilot start" or "pilot telegram" (for backward compatibility)
+	patterns := []string{"pilot start", "pilot telegram"}
+	for _, pattern := range patterns {
+		out, err := exec.Command("pgrep", "-f", pattern).Output()
 		if err != nil {
-			continue
+			if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+				continue // No process found
+			}
+			// pgrep not available, try ps-based approach
+			return killExistingBotPS(currentPID, pattern)
 		}
-		_ = proc.Signal(syscall.SIGTERM)
+
+		pids := strings.Fields(strings.TrimSpace(string(out)))
+		for _, pidStr := range pids {
+			var pid int
+			if _, err := fmt.Sscanf(pidStr, "%d", &pid); err != nil {
+				continue
+			}
+			if pid == currentPID {
+				continue
+			}
+			proc, err := os.FindProcess(pid)
+			if err != nil {
+				continue
+			}
+			_ = proc.Signal(syscall.SIGTERM)
+		}
 	}
 
 	return nil
 }
 
-// killExistingTelegramBotPS uses ps + grep as fallback
-func killExistingTelegramBotPS(currentPID int) error {
-	// ps aux | grep "pilot telegram" | grep -v grep
-	out, err := exec.Command("sh", "-c", "ps aux | grep 'pilot telegram' | grep -v grep | awk '{print $2}'").Output()
+// killExistingBotPS uses ps + grep as fallback
+func killExistingBotPS(currentPID int, pattern string) error {
+	out, err := exec.Command("sh", "-c", fmt.Sprintf("ps aux | grep '%s' | grep -v grep | awk '{print $2}'", pattern)).Output()
 	if err != nil {
-		return nil // Ignore errors - process may not exist
+		return nil
 	}
 
 	pids := strings.Fields(strings.TrimSpace(string(out)))
