@@ -16,6 +16,7 @@ import (
 
 	"github.com/alekspetrov/pilot/internal/executor"
 	"github.com/alekspetrov/pilot/internal/logging"
+	"github.com/alekspetrov/pilot/internal/memory"
 	"github.com/alekspetrov/pilot/internal/transcription"
 )
 
@@ -52,6 +53,8 @@ type Handler struct {
 	wg               sync.WaitGroup
 	transcriber      *transcription.Service // Voice transcription service (optional)
 	transcriptionErr error                  // Error from transcription init (for guidance)
+	store            *memory.Store          // Memory store for history/queue/budget (optional)
+	cmdHandler       *CommandHandler        // Command handler for /commands
 }
 
 // HandlerConfig holds configuration for the Telegram handler
@@ -61,6 +64,7 @@ type HandlerConfig struct {
 	Projects      ProjectSource         // Project source for multi-project support
 	AllowedIDs    []int64               // User/chat IDs allowed to send tasks
 	Transcription *transcription.Config // Voice transcription config (optional)
+	Store         *memory.Store         // Memory store for history/queue/budget (optional)
 }
 
 // NewHandler creates a new Telegram message handler
@@ -88,7 +92,11 @@ func NewHandler(config *HandlerConfig, runner *executor.Runner) *Handler {
 		pendingTasks:  make(map[string]*PendingTask),
 		runningTasks:  make(map[string]*RunningTask),
 		stopCh:        make(chan struct{}),
+		store:         config.Store,
 	}
+
+	// Initialize command handler
+	h.cmdHandler = NewCommandHandler(h, config.Store)
 
 	// Initialize transcription service if configured
 	if config.Transcription != nil {
@@ -337,11 +345,16 @@ func (h *Handler) handleCallback(ctx context.Context, callback *CallbackQuery) {
 	// Answer callback to remove loading state
 	_ = h.client.AnswerCallback(ctx, callback.ID, "")
 
-	switch data {
-	case "execute":
+	switch {
+	case data == "execute":
 		h.handleConfirmation(ctx, chatID, true)
-	case "cancel":
+	case data == "cancel":
 		h.handleConfirmation(ctx, chatID, false)
+	case strings.HasPrefix(data, "switch_"):
+		projectName := strings.TrimPrefix(data, "switch_")
+		h.cmdHandler.HandleCallbackSwitch(ctx, chatID, projectName)
+	case data == "voice_check_status":
+		h.sendVoiceSetupPrompt(ctx, chatID)
 	}
 }
 
@@ -595,186 +608,8 @@ func (h *Handler) executeTask(ctx context.Context, chatID, taskID, description s
 
 // handleCommand processes bot commands
 func (h *Handler) handleCommand(ctx context.Context, chatID, text string) {
-	parts := strings.Fields(text)
-	if len(parts) == 0 {
-		return
-	}
-
-	cmd := strings.ToLower(parts[0])
-
-	switch cmd {
-	case "/start", "/help":
-		helpText := `🤖 Pilot Bot
-
-I can help you with your codebase!
-
-What I understand:
-• Tasks: "Create a file...", "Add a function...", "Fix the bug..."
-• Questions: "What files handle auth?", "How does X work?"
-• Greetings: "Hi", "Hello" - I'll greet you back
-
-Commands:
-/help - Show this message
-/status - Check bot status
-/projects - List configured projects
-/project <name> - Switch active project
-/voice - Setup voice transcription
-/tasks - Show task backlog
-/run <id> - Execute task directly (e.g., /run 07)
-/stop - Stop running task
-/cancel - Cancel pending task
-
-Quick patterns:
-• 07 or task 07 - Run TASK-07 directly
-• status? - Project status
-• todos? - List TODOs`
-
-		_, _ = h.client.SendMessage(ctx, chatID, helpText, "")
-
-	case "/status":
-		h.mu.Lock()
-		pending := h.pendingTasks[chatID]
-		running := h.runningTasks[chatID]
-		h.mu.Unlock()
-
-		activeProjectPath := h.getActiveProjectPath(chatID)
-		statusText := fmt.Sprintf("✅ Pilot bot is running\n📁 Project: %s", activeProjectPath)
-		if running != nil {
-			elapsed := time.Since(running.StartedAt).Round(time.Second)
-			statusText += fmt.Sprintf("\n\n🔄 Running: %s (%s)", running.TaskID, elapsed)
-		}
-		if pending != nil {
-			statusText += fmt.Sprintf("\n\n⏳ Pending: %s", pending.TaskID)
-		}
-		_, _ = h.client.SendMessage(ctx, chatID, statusText, "")
-
-	case "/projects":
-		h.handleProjectsCommand(ctx, chatID)
-
-	case "/project":
-		if len(parts) < 2 {
-			h.handleProjectCommand(ctx, chatID, "")
-		} else {
-			h.handleProjectCommand(ctx, chatID, parts[1])
-		}
-
-	case "/tasks", "/list":
-		h.handleTasksCommand(ctx, chatID)
-
-	case "/run":
-		if len(parts) < 2 {
-			_, _ = h.client.SendMessage(ctx, chatID, "Usage: /run <task-id>\nExample: /run 07", "")
-			return
-		}
-		h.handleRunCommand(ctx, chatID, parts[1])
-
-	case "/stop":
-		h.handleStopCommand(ctx, chatID)
-
-	case "/cancel":
-		h.mu.Lock()
-		if pending, exists := h.pendingTasks[chatID]; exists {
-			delete(h.pendingTasks, chatID)
-			h.mu.Unlock()
-			_, _ = h.client.SendMessage(ctx, chatID,
-				fmt.Sprintf("❌ Task %s cancelled.", pending.TaskID), "")
-		} else {
-			h.mu.Unlock()
-			_, _ = h.client.SendMessage(ctx, chatID, "No pending task to cancel.", "")
-		}
-	case "/voice":
-		h.sendVoiceSetupPrompt(ctx, chatID)
-
-	default:
-		_, _ = h.client.SendMessage(ctx, chatID, "Unknown command. Use /help for available commands.", "")
-	}
-}
-
-// handleTasksCommand shows the task backlog
-func (h *Handler) handleTasksCommand(ctx context.Context, chatID string) {
-	taskList := h.fastListTasks()
-	if taskList == "" {
-		_, _ = h.client.SendMessage(ctx, chatID, "📋 No tasks found in .agent/tasks/", "")
-		return
-	}
-	_, _ = h.client.SendMessage(ctx, chatID, "📋 Task Backlog\n\n"+taskList, "")
-}
-
-// handleProjectsCommand lists all configured projects
-func (h *Handler) handleProjectsCommand(ctx context.Context, chatID string) {
-	if h.projects == nil {
-		_, _ = h.client.SendMessage(ctx, chatID, "📁 No projects configured.\n\nAdd projects to ~/.pilot/config.yaml", "")
-		return
-	}
-
-	projects := h.projects.ListProjects()
-	if len(projects) == 0 {
-		_, _ = h.client.SendMessage(ctx, chatID, "📁 No projects configured.\n\nAdd projects to ~/.pilot/config.yaml", "")
-		return
-	}
-
-	activeProjectPath := h.getActiveProjectPath(chatID)
-
-	var sb strings.Builder
-	sb.WriteString("📁 Projects\n\n")
-
-	for _, p := range projects {
-		marker := ""
-		if p.Path == activeProjectPath {
-			marker = " ✅"
-		}
-		nav := ""
-		if p.Navigator {
-			nav = " [Navigator]"
-		}
-		sb.WriteString(fmt.Sprintf("• %s%s%s\n  %s\n\n", p.Name, marker, nav, p.Path))
-	}
-
-	sb.WriteString("Use /project <name> to switch")
-	_, _ = h.client.SendMessage(ctx, chatID, sb.String(), "")
-}
-
-// handleProjectCommand switches active project or shows current
-func (h *Handler) handleProjectCommand(ctx context.Context, chatID, projectName string) {
-	// No project name provided - show current
-	if projectName == "" {
-		activeProjectPath := h.getActiveProjectPath(chatID)
-		projInfo := h.getActiveProjectInfo(chatID)
-
-		var projName string
-		if projInfo != nil {
-			projName = projInfo.Name
-		} else {
-			projName = filepath.Base(activeProjectPath)
-		}
-
-		_, _ = h.client.SendMessage(ctx, chatID,
-			fmt.Sprintf("📁 Active project: %s\n%s\n\nUse /projects to see all", projName, activeProjectPath), "")
-		return
-	}
-
-	// Try to switch project
-	proj, err := h.setActiveProject(chatID, projectName)
-	if err != nil {
-		// Try fuzzy match
-		if h.projects != nil {
-			for _, p := range h.projects.ListProjects() {
-				if strings.Contains(strings.ToLower(p.Name), strings.ToLower(projectName)) {
-					proj, err = h.setActiveProject(chatID, p.Name)
-					break
-				}
-			}
-		}
-
-		if err != nil {
-			_, _ = h.client.SendMessage(ctx, chatID,
-				fmt.Sprintf("❌ Project '%s' not found\n\nUse /projects to see available projects", projectName), "")
-			return
-		}
-	}
-
-	_, _ = h.client.SendMessage(ctx, chatID,
-		fmt.Sprintf("✅ Switched to %s\n%s", proj.Name, proj.Path), "")
+	// Delegate to command handler
+	h.cmdHandler.HandleCommand(ctx, chatID, text)
 }
 
 // handleRunCommand executes a task directly without confirmation
@@ -812,33 +647,6 @@ func (h *Handler) handleRunCommand(ctx context.Context, chatID, taskIDInput stri
 
 	// Execute directly
 	h.executeTask(ctx, chatID, taskInfo.FullID, fmt.Sprintf("## Task: %s\n\n%s", taskInfo.FullID, description))
-}
-
-// handleStopCommand stops a running task
-func (h *Handler) handleStopCommand(ctx context.Context, chatID string) {
-	h.mu.Lock()
-	running := h.runningTasks[chatID]
-	h.mu.Unlock()
-
-	if running == nil {
-		_, _ = h.client.SendMessage(ctx, chatID, "No task is currently running.", "")
-		return
-	}
-
-	// Cancel the task
-	if running.Cancel != nil {
-		running.Cancel()
-	}
-
-	// Also try to cancel via runner
-	_ = h.runner.Cancel(running.TaskID)
-
-	h.mu.Lock()
-	delete(h.runningTasks, chatID)
-	h.mu.Unlock()
-
-	_, _ = h.client.SendMessage(ctx, chatID,
-		fmt.Sprintf("🛑 Stopped task %s", running.TaskID), "")
 }
 
 // handlePhoto processes photo messages
