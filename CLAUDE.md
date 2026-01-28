@@ -57,6 +57,30 @@ pilot/
 - **Architecture**: KISS, DRY, SOLID
 - **Testing**: Table-driven tests for Go
 
+## Test Token Guidelines
+
+When writing tests that need API tokens or secrets:
+
+- ❌ **DON'T** use realistic patterns that trigger GitHub push protection:
+  - `xoxb-123456789012-1234567890123-abcdefghij` (Slack)
+  - `sk-abcdefghijklmnopqrstuvwxyz123456` (OpenAI)
+  - `ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx` (GitHub PAT)
+  - `AKIAIOSFODNN7EXAMPLE` (AWS)
+
+- ✅ **DO** use obviously fake tokens:
+  - `test-slack-bot-token`
+  - `fake-api-key`
+  - `test-github-token`
+
+- ✅ **DO** use constants from `internal/testutil/tokens.go`:
+  ```go
+  import "github.com/anthropics/pilot/internal/testutil"
+
+  token := testutil.FakeSlackBotToken
+  ```
+
+**Why?** GitHub's push protection blocks realistic-looking secrets even in test files. 9 branches were blocked for hours due to this.
+
 ## Key Commands
 
 ```bash
@@ -65,6 +89,8 @@ make dev            # Run in dev mode
 make test           # Run tests
 make lint           # Run linter
 make fmt            # Format code
+make install-hooks  # Install git pre-commit hooks
+make check-secrets  # Check for secret patterns in tests
 ```
 
 ## Configuration

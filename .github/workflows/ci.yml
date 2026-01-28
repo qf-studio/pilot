@@ -7,6 +7,15 @@ on:
     branches: [main]
 
 jobs:
+  secret-patterns:
+    name: Check Secret Patterns
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for realistic secret patterns in tests
+        run: ./scripts/check-secret-patterns.sh
+
   test:
     runs-on: ubuntu-latest
     steps:

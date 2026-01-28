@@ -1,6 +1,6 @@
 # TASK-41: Prevent Fake Secrets in Tests from Triggering Push Protection
 
-**Status**: 📋 Planned
+**Status**: ✅ Complete
 **Priority**: High (P1)
 **Created**: 2026-01-28
 
@@ -122,12 +122,12 @@ Update existing test files to use safe tokens:
 
 ## Acceptance Criteria
 
-- [ ] Pre-commit hook blocks commits with realistic secret patterns
-- [ ] CI fails if realistic patterns found in test files
-- [ ] `internal/testutil/tokens.go` exists with safe constants
-- [ ] CLAUDE.md documents the guideline
-- [ ] `make install-hooks` installs the pre-commit hook
-- [ ] All existing tests use safe token patterns
+- [x] Pre-commit hook blocks commits with realistic secret patterns
+- [x] CI fails if realistic patterns found in test files
+- [x] `internal/testutil/tokens.go` exists with safe constants
+- [x] CLAUDE.md documents the guideline
+- [x] `make install-hooks` installs the pre-commit hook
+- [x] All existing tests use safe token patterns
 
 ---
 

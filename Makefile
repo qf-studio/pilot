@@ -1,4 +1,4 @@
-.PHONY: build run test test-e2e clean install lint fmt deps dev
+.PHONY: build run test test-e2e clean install lint fmt deps dev install-hooks check-secrets
 
 # Variables
 BINARY_NAME=pilot
@@ -95,6 +95,14 @@ mocks:
 test-orchestrator:
 	cd orchestrator && python -m pytest -v
 
+# Install git hooks (pre-commit for secret pattern detection)
+install-hooks:
+	@./scripts/install-hooks.sh
+
+# Check for realistic secret patterns in test files
+check-secrets:
+	@./scripts/check-secret-patterns.sh
+
 # Help
 help:
 	@echo "Pilot Makefile Commands:"
@@ -113,4 +121,6 @@ help:
 	@echo "  make clean          Clean build artifacts"
 	@echo "  make install        Install to GOPATH/bin"
 	@echo "  make install-global Install to /usr/local/bin"
+	@echo "  make install-hooks  Install git pre-commit hooks"
+	@echo "  make check-secrets  Check for secret patterns in tests"
 	@echo ""
