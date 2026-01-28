@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -32,14 +33,24 @@ var (
 	cfgFile   string
 )
 
+var quietMode bool
+
 func main() {
 	rootCmd := &cobra.Command{
 		Use:   "pilot",
 		Short: "AI that ships your tickets",
 		Long:  `Pilot is an autonomous AI development pipeline that receives tickets, implements features, and creates PRs.`,
+		Run: func(cmd *cobra.Command, args []string) {
+			// If no subcommand provided, enter interactive mode
+			if err := runInteractiveMode(); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+		},
 	}
 
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is ~/.pilot/config.yaml)")
+	rootCmd.PersistentFlags().BoolVarP(&quietMode, "quiet", "q", false, "Suppress non-essential output")
 
 	rootCmd.AddCommand(
 		newStartCmd(),
@@ -60,6 +71,9 @@ func main() {
 		newSetupCmd(),
 		newReplayCmd(),
 		newTunnelCmd(),
+		newCompletionCmd(),
+		newConfigCmd(),
+		newLogsCmd(),
 	)
 
 	if err := rootCmd.Execute(); err != nil {
@@ -135,7 +149,9 @@ func newStopCmd() *cobra.Command {
 }
 
 func newStatusCmd() *cobra.Command {
-	return &cobra.Command{
+	var jsonOutput bool
+
+	cmd := &cobra.Command{
 		Use:   "status",
 		Short: "Show Pilot status and running tasks",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -148,6 +164,27 @@ func newStatusCmd() *cobra.Command {
 			cfg, err := config.Load(configPath)
 			if err != nil {
 				return fmt.Errorf("failed to load config: %w", err)
+			}
+
+			if jsonOutput {
+				status := map[string]interface{}{
+					"gateway": fmt.Sprintf("http://%s:%d", cfg.Gateway.Host, cfg.Gateway.Port),
+					"adapters": map[string]bool{
+						"linear":   cfg.Adapters.Linear != nil && cfg.Adapters.Linear.Enabled,
+						"slack":    cfg.Adapters.Slack != nil && cfg.Adapters.Slack.Enabled,
+						"telegram": cfg.Adapters.Telegram != nil && cfg.Adapters.Telegram.Enabled,
+						"github":   cfg.Adapters.Github != nil && cfg.Adapters.Github.Enabled,
+						"jira":     cfg.Adapters.Jira != nil && cfg.Adapters.Jira.Enabled,
+					},
+					"projects": cfg.Projects,
+				}
+
+				data, err := json.MarshalIndent(status, "", "  ")
+				if err != nil {
+					return fmt.Errorf("failed to marshal status: %w", err)
+				}
+				fmt.Println(string(data))
+				return nil
 			}
 
 			fmt.Println("📊 Pilot Status")
@@ -166,6 +203,16 @@ func newStatusCmd() *cobra.Command {
 				fmt.Println("  ✓ Slack (enabled)")
 			} else {
 				fmt.Println("  ○ Slack (disabled)")
+			}
+			if cfg.Adapters.Telegram != nil && cfg.Adapters.Telegram.Enabled {
+				fmt.Println("  ✓ Telegram (enabled)")
+			} else {
+				fmt.Println("  ○ Telegram (disabled)")
+			}
+			if cfg.Adapters.Github != nil && cfg.Adapters.Github.Enabled {
+				fmt.Println("  ✓ GitHub (enabled)")
+			} else {
+				fmt.Println("  ○ GitHub (disabled)")
 			}
 			fmt.Println()
 
@@ -186,6 +233,10 @@ func newStatusCmd() *cobra.Command {
 			return nil
 		},
 	}
+
+	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Output as JSON")
+
+	return cmd
 }
 
 func newInitCmd() *cobra.Command {

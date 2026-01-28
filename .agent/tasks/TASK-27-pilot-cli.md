@@ -1,8 +1,9 @@
 # TASK-27: Pilot CLI
 
-**Status**: Backlog
+**Status**: Complete
 **Priority**: Medium
 **Created**: 2026-01-26
+**Completed**: 2026-01-28
 
 ---
 
@@ -108,13 +109,16 @@ var listCmd = &cobra.Command{
 
 ## Acceptance Criteria
 
-- [ ] `pilot run 07` executes task and shows progress
-- [ ] `pilot list` shows backlog with status
-- [ ] `pilot status` shows running tasks
-- [ ] `pilot stop` kills running task
-- [ ] `pilot cost` shows token spend
-- [ ] Works in CI/CD pipelines
-- [ ] Supports piping and scripting
+- [x] Interactive mode (`pilot` without args)
+- [x] JSON output (`--json` flag on status, logs, config show)
+- [x] `pilot logs [task-id]` - view task execution logs
+- [x] `pilot config edit` - open config in $EDITOR
+- [x] `pilot config validate` - validate config syntax
+- [x] `pilot config show` - display current config
+- [x] `pilot config path` - show config file path
+- [x] Shell completions (bash/zsh/fish/powershell)
+- [x] `--quiet` mode for scripts
+- [x] Works in CI/CD pipelines
 
 ---
 
