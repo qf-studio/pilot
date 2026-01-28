@@ -29,12 +29,13 @@ type Orchestrator struct {
 	monitor  *executor.Monitor
 	notifier *slack.Notifier
 
-	taskQueue chan *Task
-	running   map[string]bool
-	mu        sync.Mutex
-	wg        sync.WaitGroup
-	ctx       context.Context
-	cancel    context.CancelFunc
+	taskQueue        chan *Task
+	running          map[string]bool
+	progressCallback func(taskID, phase string, progress int, message string)
+	mu               sync.Mutex
+	wg               sync.WaitGroup
+	ctx              context.Context
+	cancel           context.CancelFunc
 }
 
 // Task represents a task to be processed
@@ -230,6 +231,21 @@ func (o *Orchestrator) handleProgress(taskID, phase string, progress int, messag
 	if progress > 0 && progress%25 == 0 && o.notifier != nil {
 		_ = o.notifier.TaskProgress(o.ctx, taskID, phase, progress)
 	}
+
+	// Forward to external callback if registered
+	o.mu.Lock()
+	cb := o.progressCallback
+	o.mu.Unlock()
+	if cb != nil {
+		cb(taskID, phase, progress, message)
+	}
+}
+
+// OnProgress registers an external callback for task progress updates
+func (o *Orchestrator) OnProgress(callback func(taskID, phase string, progress int, message string)) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.progressCallback = callback
 }
 
 // saveTaskDocument saves a task document to the project

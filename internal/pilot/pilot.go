@@ -12,6 +12,7 @@ import (
 	"github.com/alekspetrov/pilot/internal/adapters/telegram"
 	"github.com/alekspetrov/pilot/internal/alerts"
 	"github.com/alekspetrov/pilot/internal/config"
+	"github.com/alekspetrov/pilot/internal/executor"
 	"github.com/alekspetrov/pilot/internal/gateway"
 	"github.com/alekspetrov/pilot/internal/logging"
 	"github.com/alekspetrov/pilot/internal/memory"
@@ -265,6 +266,16 @@ func (p *Pilot) DispatchWebhookEvent(ctx context.Context, event *webhooks.Event)
 // Router returns the gateway router for registering handlers
 func (p *Pilot) Router() *gateway.Router {
 	return p.gateway.Router()
+}
+
+// OnProgress registers a callback for task progress updates
+func (p *Pilot) OnProgress(callback func(taskID, phase string, progress int, message string)) {
+	p.orchestrator.OnProgress(callback)
+}
+
+// GetTaskStates returns current task states from the orchestrator
+func (p *Pilot) GetTaskStates() []*executor.TaskState {
+	return p.orchestrator.GetTaskStates()
 }
 
 // handleGithubIssue handles a new GitHub issue

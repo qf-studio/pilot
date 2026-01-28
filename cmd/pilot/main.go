@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 
 	"github.com/alekspetrov/pilot/internal/adapters/github"
@@ -21,6 +22,7 @@ import (
 	"github.com/alekspetrov/pilot/internal/banner"
 	"github.com/alekspetrov/pilot/internal/briefs"
 	"github.com/alekspetrov/pilot/internal/config"
+	"github.com/alekspetrov/pilot/internal/dashboard"
 	"github.com/alekspetrov/pilot/internal/executor"
 	"github.com/alekspetrov/pilot/internal/memory"
 	"github.com/alekspetrov/pilot/internal/pilot"
@@ -87,6 +89,7 @@ func main() {
 
 func newStartCmd() *cobra.Command {
 	var daemon bool
+	var dashboardMode bool
 
 	cmd := &cobra.Command{
 		Use:   "start",
@@ -117,12 +120,17 @@ func newStartCmd() *cobra.Command {
 				return fmt.Errorf("failed to start Pilot: %w", err)
 			}
 
-			// Show startup banner
-			gateway := fmt.Sprintf("http://%s:%d", cfg.Gateway.Host, cfg.Gateway.Port)
-			banner.StartupBanner(version, gateway)
-
 			// Check for updates in background (non-blocking)
 			go checkForUpdates()
+
+			if dashboardMode {
+				// Run TUI dashboard mode
+				return runDashboardMode(p, cfg)
+			}
+
+			// Show startup banner (headless mode)
+			gatewayURL := fmt.Sprintf("http://%s:%d", cfg.Gateway.Host, cfg.Gateway.Port)
+			banner.StartupBanner(version, gatewayURL)
 
 			// Wait for shutdown signal
 			sigCh := make(chan os.Signal, 1)
@@ -136,6 +144,7 @@ func newStartCmd() *cobra.Command {
 	}
 
 	cmd.Flags().BoolVarP(&daemon, "daemon", "d", false, "Run in background (daemon mode)")
+	cmd.Flags().BoolVar(&dashboardMode, "dashboard", false, "Show TUI dashboard for real-time task monitoring")
 
 	return cmd
 }
@@ -1896,4 +1905,100 @@ func checkForUpdates() {
 		fmt.Println("   Run 'pilot upgrade' to install")
 		fmt.Println()
 	}
+}
+
+// runDashboardMode runs the TUI dashboard with live task updates
+func runDashboardMode(p *pilot.Pilot, cfg *config.Config) error {
+	// Create TUI program
+	model := dashboard.NewModel()
+	program := tea.NewProgram(model, tea.WithAltScreen())
+
+	// Set up event bridge: poll task states and send to dashboard
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Register progress callback on Pilot's orchestrator
+	p.OnProgress(func(taskID, phase string, progress int, message string) {
+		// Convert current task states to dashboard display format
+		tasks := convertTaskStatesToDisplay(p.GetTaskStates())
+		program.Send(dashboard.UpdateTasks(tasks))
+
+		// Also add progress message as log
+		logMsg := fmt.Sprintf("[%s] %s: %s (%d%%)", taskID, phase, message, progress)
+		program.Send(dashboard.AddLog(logMsg))
+	})
+
+	// Periodic refresh to catch any missed updates
+	go func() {
+		ticker := time.NewTicker(2 * time.Second)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				tasks := convertTaskStatesToDisplay(p.GetTaskStates())
+				program.Send(dashboard.UpdateTasks(tasks))
+			}
+		}
+	}()
+
+	// Handle signals for graceful shutdown
+	go func() {
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+		<-sigCh
+		cancel()
+		program.Send(tea.Quit())
+	}()
+
+	// Add startup log
+	gatewayURL := fmt.Sprintf("http://%s:%d", cfg.Gateway.Host, cfg.Gateway.Port)
+	program.Send(dashboard.AddLog(fmt.Sprintf("🚀 Pilot v%s started - Gateway: %s", version, gatewayURL)))
+
+	// Run TUI (blocks until quit)
+	if _, err := program.Run(); err != nil {
+		return fmt.Errorf("dashboard error: %w", err)
+	}
+
+	// Clean shutdown
+	return p.Stop()
+}
+
+// convertTaskStatesToDisplay converts executor TaskStates to dashboard TaskDisplay format
+func convertTaskStatesToDisplay(states []*executor.TaskState) []dashboard.TaskDisplay {
+	displays := make([]dashboard.TaskDisplay, len(states))
+	for i, state := range states {
+		var status string
+		switch state.Status {
+		case executor.StatusRunning:
+			status = "running"
+		case executor.StatusCompleted:
+			status = "completed"
+		case executor.StatusFailed:
+			status = "failed"
+		default:
+			status = "pending"
+		}
+
+		var duration string
+		if state.StartedAt != nil {
+			elapsed := time.Since(*state.StartedAt)
+			if state.CompletedAt != nil {
+				elapsed = state.CompletedAt.Sub(*state.StartedAt)
+			}
+			duration = elapsed.Round(time.Second).String()
+		}
+
+		displays[i] = dashboard.TaskDisplay{
+			ID:       state.ID,
+			Title:    state.Title,
+			Status:   status,
+			Phase:    state.Phase,
+			Progress: state.Progress,
+			Duration: duration,
+		}
+	}
+	return displays
 }
