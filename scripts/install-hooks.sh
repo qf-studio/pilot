@@ -1,5 +1,8 @@
 #!/bin/bash
 # Install git hooks for the pilot project
+# Hooks installed:
+#   - pre-commit: Secret pattern detection
+#   - pre-push: Full validation gate (build, lint, test, secrets, integration)
 
 set -e
 
@@ -88,7 +91,62 @@ EOF
 
 chmod +x "$HOOKS_DIR/pre-commit"
 
-echo "✓ Pre-commit hook installed successfully"
+echo "✓ Pre-commit hook installed"
+
+# Install pre-push hook
+cat > "$HOOKS_DIR/pre-push" << 'EOF'
+#!/bin/bash
+# Pre-push hook - runs full validation gate before push
+# This ensures CI will pass on first attempt
+
+set -e
+
+# Find the project root (where .git is)
+HOOK_DIR="$(dirname "$0")"
+PROJECT_ROOT="$(cd "$HOOK_DIR/../.." && pwd)"
+GATE_SCRIPT="$PROJECT_ROOT/scripts/pre-push-gate.sh"
+
+# Check if gate script exists
+if [ ! -x "$GATE_SCRIPT" ]; then
+    echo "⚠️  Pre-push gate script not found: $GATE_SCRIPT"
+    echo "   Run 'make install-hooks' to reinstall"
+    exit 0  # Allow push if script missing (don't block on missing script)
+fi
+
 echo ""
-echo "The hook will check for realistic-looking secrets in test files."
-echo "Use 'git commit --no-verify' to bypass (not recommended)."
+echo "🚦 Running pre-push validation gate..."
+echo ""
+
+# Run the gate
+if ! "$GATE_SCRIPT"; then
+    echo ""
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "❌ PUSH BLOCKED: Gate validation failed"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo ""
+    echo "Fix the issues above before pushing."
+    echo ""
+    echo "Quick fixes:"
+    echo "  make auto-fix     # Auto-fix common issues"
+    echo "  make gate         # Re-run gate manually"
+    echo ""
+    echo "To bypass (not recommended):"
+    echo "  git push --no-verify"
+    echo ""
+    exit 1
+fi
+
+echo ""
+echo "✅ Gate passed - proceeding with push"
+echo ""
+EOF
+
+chmod +x "$HOOKS_DIR/pre-push"
+
+echo "✓ Pre-push hook installed"
+echo ""
+echo "Hooks installed:"
+echo "  • pre-commit: Checks for realistic secrets in test files"
+echo "  • pre-push:   Runs full validation gate (build, lint, test, secrets)"
+echo ""
+echo "Use '--no-verify' to bypass hooks (not recommended)."

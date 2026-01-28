@@ -1,4 +1,4 @@
-.PHONY: build run test test-e2e clean install lint fmt deps dev install-hooks check-secrets
+.PHONY: build run test test-e2e clean install lint fmt deps dev install-hooks check-secrets gate check-integration auto-fix test-short
 
 # Variables
 BINARY_NAME=pilot
@@ -103,6 +103,22 @@ install-hooks:
 check-secrets:
 	@./scripts/check-secret-patterns.sh
 
+# Run short tests (for pre-push gate)
+test-short:
+	go test -short -race ./...
+
+# Run integration checks (orphan commands, build tags, etc.)
+check-integration:
+	@./scripts/check-integration.sh
+
+# Auto-fix common issues (formatting, imports, lint)
+auto-fix:
+	@./scripts/auto-fix.sh
+
+# Pre-push validation gate - runs all checks
+gate:
+	@./scripts/pre-push-gate.sh
+
 # Help
 help:
 	@echo "Pilot Makefile Commands:"
@@ -121,6 +137,10 @@ help:
 	@echo "  make clean          Clean build artifacts"
 	@echo "  make install        Install to GOPATH/bin"
 	@echo "  make install-global Install to /usr/local/bin"
-	@echo "  make install-hooks  Install git pre-commit hooks"
+	@echo "  make install-hooks  Install git pre-commit/pre-push hooks"
 	@echo "  make check-secrets  Check for secret patterns in tests"
+	@echo "  make check-integration  Check for orphan code"
+	@echo "  make gate           Run pre-push validation gate"
+	@echo "  make auto-fix       Auto-fix common issues"
+	@echo "  make test-short     Run tests in short mode"
 	@echo ""
