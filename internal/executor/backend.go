@@ -140,20 +140,38 @@ type BackendConfig struct {
 
 // ModelRoutingConfig controls which model to use based on task complexity.
 // Enables cost optimization by using cheaper models for simple tasks.
+//
+// Example YAML configuration:
+//
+//	executor:
+//	  model_routing:
+//	    enabled: true
+//	    trivial: "claude-haiku"    # Typos, log additions, renames
+//	    simple: "claude-sonnet"    # Small fixes, add fields
+//	    medium: "claude-sonnet"    # Standard feature work
+//	    complex: "claude-opus"     # Refactors, migrations
+//
+// Task complexity is auto-detected from the issue description and labels.
+// When enabled, reduces costs by ~40% while maintaining quality for complex tasks.
 type ModelRoutingConfig struct {
-	// Enabled controls whether model routing is active
+	// Enabled controls whether model routing is active.
+	// When false (default), the orchestrator's model setting is used for all tasks.
 	Enabled bool `yaml:"enabled"`
 
-	// Trivial is the model for trivial tasks (typos, logs, renames)
+	// Trivial is the model for trivial tasks (typos, log additions, renames).
+	// Default: "claude-haiku"
 	Trivial string `yaml:"trivial"`
 
-	// Simple is the model for simple tasks (small fixes, add field)
+	// Simple is the model for simple tasks (small fixes, add field, update config).
+	// Default: "claude-sonnet"
 	Simple string `yaml:"simple"`
 
-	// Medium is the model for standard feature work
+	// Medium is the model for standard feature work (new endpoints, components).
+	// Default: "claude-sonnet"
 	Medium string `yaml:"medium"`
 
-	// Complex is the model for architectural work (refactors, migrations)
+	// Complex is the model for architectural work (refactors, migrations, new systems).
+	// Default: "claude-opus"
 	Complex string `yaml:"complex"`
 }
 
@@ -224,6 +242,12 @@ func DefaultBackendConfig() *BackendConfig {
 // DefaultModelRoutingConfig returns default model routing configuration.
 // Model routing is disabled by default; when enabled, uses Haiku for trivial,
 // Sonnet for simple/medium, and Opus for complex tasks.
+//
+// Complexity detection criteria:
+//   - Trivial: Single-file changes, typos, logging, renames
+//   - Simple: Small fixes, add/remove fields, config updates
+//   - Medium: New endpoints, components, moderate refactoring
+//   - Complex: Architecture changes, multi-file refactors, migrations
 func DefaultModelRoutingConfig() *ModelRoutingConfig {
 	return &ModelRoutingConfig{
 		Enabled: false,

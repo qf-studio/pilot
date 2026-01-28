@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -422,6 +423,24 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("API token is required when auth type is api-token")
 	}
 	return nil
+}
+
+// CheckDeprecations logs warnings for deprecated configuration fields.
+// Call this after loading configuration to inform users of deprecated settings.
+// Returns a slice of deprecation warnings for testing purposes.
+func (c *Config) CheckDeprecations() []string {
+	var warnings []string
+
+	// Check DailyBrief.Time (deprecated in favor of Schedule)
+	if c.Orchestrator != nil && c.Orchestrator.DailyBrief != nil {
+		if c.Orchestrator.DailyBrief.Time != "" {
+			msg := "config: orchestrator.daily_brief.time is deprecated, use schedule (cron syntax) instead"
+			log.Printf("DEPRECATED: %s", msg)
+			warnings = append(warnings, msg)
+		}
+	}
+
+	return warnings
 }
 
 // GetProject returns the project configuration for a given filesystem path.
