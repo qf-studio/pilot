@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -333,8 +334,7 @@ func matchesContext(patternType, context string) bool {
 
 // contains checks if text contains a keyword (case-insensitive)
 func contains(text, keyword string) bool {
-	return len(text) >= len(keyword) && (text == keyword ||
-		len(text) > len(keyword) && (text[:len(keyword)] == keyword || text[len(text)-len(keyword):] == keyword))
+	return strings.Contains(strings.ToLower(text), strings.ToLower(keyword))
 }
 
 // ExportPatterns exports patterns to a file for sharing
