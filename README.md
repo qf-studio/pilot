@@ -26,16 +26,63 @@ Autonomous AI development pipeline. Receives tickets, implements features, creat
 | Feature | Status | Description |
 |---------|--------|-------------|
 | **Telegram Bot** | ✅ | Chat-based task execution with voice & image support |
+| **GitHub Polling** | ✅ | Auto-pick issues with `pilot` label |
 | **GitHub Adapter** | ✅ | Issues, PRs, webhooks |
 | **Jira Adapter** | ✅ | Issue sync and updates |
+| **Sequential Execution** | ✅ | Wait for PR merge before next issue |
+| **Quality Gates** | ✅ | Test/lint/build validation with retry |
+| **Model Routing** | ✅ | Haiku/Sonnet/Opus based on task complexity |
+| **Hot Upgrade** | ✅ | Self-update with `pilot upgrade` |
 | **Daily Briefs** | ✅ | Scheduled progress reports via Slack/Email/Telegram |
 | **Alerting** | ✅ | Task failures, cost thresholds, stuck detection |
 | **Cross-Project Memory** | ✅ | Shared context across repositories |
 | **Execution Metrics** | ✅ | Token usage, cost tracking, performance analytics |
+| **Cost Controls** | ✅ | Budget limits and tracking per project |
 | **Voice Transcription** | ✅ | Whisper API (OpenAI) |
 | **Image Analysis** | ✅ | Multimodal input via Telegram |
 | **Structured Logging** | ✅ | JSON logs with correlation IDs |
 | **Usage Metering** | ✅ | Billing foundation for Pilot Cloud |
+| **Navigator Integration** | ✅ | Auto-detected when `.agent/` exists |
+
+### Sequential Execution Mode
+
+Process one issue at a time, waiting for PR merge before picking up the next:
+
+```bash
+pilot start --github --sequential
+```
+
+Or configure in `~/.pilot/config.yaml`:
+
+```yaml
+orchestrator:
+  execution:
+    mode: sequential
+    wait_for_merge: true
+    poll_interval: 30s    # Check PR status every 30s
+    pr_timeout: 1h        # Give up after 1 hour
+```
+
+**Benefits:**
+- Prevents merge conflicts between concurrent PRs
+- Ensures clean git history
+- Safer for production workflows
+
+### GitHub Issue Polling
+
+Automatically pick up GitHub issues labeled with `pilot`:
+
+```bash
+pilot start --github
+```
+
+**How it works:**
+1. Polls repository every 30s for issues with `pilot` label
+2. Adds `pilot/in-progress` label when starting
+3. Creates branch `pilot/GH-{number}`
+4. Executes task with Claude Code
+5. Creates PR and adds `pilot/done` label
+6. In sequential mode, waits for PR merge before next issue
 
 ## Installation
 
@@ -81,10 +128,12 @@ brew reinstall pilot
 # 1. Initialize config
 pilot init
 
-# 2. Start Telegram bot
-pilot telegram
+# 2. Start Pilot with your preferred input
+pilot start --telegram              # Telegram bot
+pilot start --github                # GitHub issue polling
+pilot start --telegram --github     # Both
 
-# 3. Send task via Telegram
+# 3. Send task via Telegram or create GitHub issue with 'pilot' label
 "Start TASK-07"
 ```
 
@@ -104,6 +153,23 @@ adapters:
     enabled: true
     bot_token: "${TELEGRAM_BOT_TOKEN}"
     chat_id: "${TELEGRAM_CHAT_ID}"
+
+  github:
+    enabled: true
+    token: "${GITHUB_TOKEN}"
+    repo: "owner/repo"
+    pilot_label: "pilot"
+    polling:
+      enabled: true
+      interval: 30s
+      label: "pilot"
+
+orchestrator:
+  execution:
+    mode: sequential           # "sequential" or "parallel"
+    wait_for_merge: true       # Wait for PR merge before next task
+    poll_interval: 30s         # How often to check PR status
+    pr_timeout: 1h             # Max wait time for PR merge
 
 projects:
   - name: "my-project"
@@ -135,6 +201,31 @@ memory:
 
 ### Core Commands
 
+#### `pilot start` - Start Pilot with config-driven inputs
+
+```bash
+pilot start                          # Config-driven (reads ~/.pilot/config.yaml)
+pilot start --telegram               # Enable Telegram polling
+pilot start --github                 # Enable GitHub issue polling
+pilot start --telegram --github      # Enable both
+pilot start --dashboard              # With TUI dashboard
+pilot start --no-gateway             # Polling only (no HTTP server)
+pilot start --sequential             # Sequential execution mode
+pilot start --parallel               # Parallel execution mode (legacy)
+```
+
+| Flag | Description |
+|------|-------------|
+| `--telegram` | Enable Telegram polling (overrides config) |
+| `--github` | Enable GitHub issue polling (overrides config) |
+| `--linear` | Enable Linear webhooks (overrides config) |
+| `--dashboard` | Show TUI dashboard for real-time task monitoring |
+| `--no-gateway` | Run polling adapters only (no HTTP gateway) |
+| `--sequential` | Sequential execution: wait for PR merge before next issue |
+| `--parallel` | Parallel execution: process multiple issues concurrently |
+| `--project`, `-p` | Project path (default: config default or cwd) |
+| `--replace` | Kill existing bot instance before starting |
+
 #### `pilot task` - Execute tasks with Claude Code
 
 ```bash
@@ -153,19 +244,6 @@ pilot task "Quick fix" --no-branch                      # Skip branch creation
 | `--verbose` | `-v` | Stream raw Claude Code JSON output |
 | `--dry-run` | | Show prompt without executing |
 | `--no-branch` | | Don't create a new git branch |
-
-#### `pilot telegram` - Start Telegram bot
-
-```bash
-pilot telegram                              # Start bot for current directory
-pilot telegram -p ~/Projects/myapp          # Specify project
-pilot telegram --replace                    # Kill existing instance first
-```
-
-| Flag | Short | Description |
-|------|-------|-------------|
-| `--project` | `-p` | Project path (default: current directory) |
-| `--replace` | | Kill existing bot instance before starting |
 
 #### `pilot brief` - Generate daily/weekly briefs
 
@@ -210,14 +288,33 @@ pilot patterns search "auth"      # Search by keyword
 pilot patterns stats              # Pattern statistics
 ```
 
+#### `pilot upgrade` - Self-update to latest version
+
+```bash
+pilot upgrade                    # Check and upgrade
+pilot upgrade check              # Only check for updates
+pilot upgrade --force            # Skip task completion wait
+pilot upgrade --no-restart       # Don't restart after upgrade
+pilot upgrade rollback           # Restore previous version
+```
+
+| Flag | Description |
+|------|-------------|
+| `check` | Only check for available updates |
+| `rollback` | Restore the previous version from backup |
+| `--force`, `-f` | Skip waiting for running tasks |
+| `--no-restart` | Don't restart after upgrade |
+| `--yes`, `-y` | Skip confirmation prompt |
+
 ### System Commands
 
 ```bash
-pilot start        # Start gateway daemon
+pilot start        # Start Pilot with configured inputs
 pilot stop         # Stop daemon
 pilot status       # Show running tasks
 pilot init         # Initialize configuration
 pilot version      # Show version info
+pilot upgrade      # Self-update to latest version
 ```
 
 ### Global Flags
@@ -293,14 +390,19 @@ internal/
 - [x] Execution metrics & logging
 - [x] Usage metering
 - [x] GitHub App integration (status checks, PR API)
+- [x] GitHub issue polling with `pilot` label
+- [x] Sequential execution mode with PR merge waiting
+- [x] Quality gates (test/lint/build validation)
+- [x] Cost controls & budgets
+- [x] Model routing (complexity-based Haiku/Sonnet/Opus)
+- [x] Hot upgrade (`pilot upgrade`)
+- [x] Navigator auto-detection
 
 ### In Progress
 - [ ] Team management & permissions
-- [ ] Cost controls & budgets
 - [ ] Approval workflows
 
 ### Planned
-- [ ] Quality gates
 - [ ] Execution replay & debugging
 - [ ] Webhooks API
 - [ ] Pilot Cloud (hosted SaaS)
