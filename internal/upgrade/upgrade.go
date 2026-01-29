@@ -74,17 +74,44 @@ func NewUpgrader(currentVersion string) (*Upgrader, error) {
 	}
 
 	// Resolve symlinks
-	binaryPath, err = filepath.EvalSymlinks(binaryPath)
+	resolvedPath, err := filepath.EvalSymlinks(binaryPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve symlinks: %w", err)
+	}
+
+	// Detect Homebrew installation
+	if isHomebrewPath(resolvedPath) {
+		return nil, fmt.Errorf("Homebrew installation detected at %s\n\n"+
+			"Self-upgrade is not supported for Homebrew installations.\n"+
+			"Please use Homebrew to upgrade:\n\n"+
+			"  brew upgrade pilot\n\n"+
+			"Or reinstall without Homebrew:\n\n"+
+			"  brew uninstall pilot\n"+
+			"  curl -fsSL https://raw.githubusercontent.com/alekspetrov/pilot/main/install.sh | bash",
+			resolvedPath)
 	}
 
 	return &Upgrader{
 		currentVersion: currentVersion,
 		httpClient:     &http.Client{Timeout: DefaultTimeout},
-		binaryPath:     binaryPath,
-		backupPath:     binaryPath + BackupSuffix,
+		binaryPath:     resolvedPath,
+		backupPath:     resolvedPath + BackupSuffix,
 	}, nil
+}
+
+// isHomebrewPath checks if a path is inside a Homebrew installation
+func isHomebrewPath(path string) bool {
+	homebrewPrefixes := []string{
+		"/opt/homebrew/Cellar/",
+		"/usr/local/Cellar/",
+		"/home/linuxbrew/.linuxbrew/Cellar/",
+	}
+	for _, prefix := range homebrewPrefixes {
+		if strings.HasPrefix(path, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // CheckVersion checks if a newer version is available
