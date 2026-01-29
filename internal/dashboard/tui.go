@@ -108,7 +108,10 @@ func NewModel() Model {
 
 // Init initializes the model
 func (m Model) Init() tea.Cmd {
-	return tickCmd()
+	return tea.Batch(
+		tickCmd(),
+		tea.EnterAltScreen,
+	)
 }
 
 // tickCmd creates a tick command
