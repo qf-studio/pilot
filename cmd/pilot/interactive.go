@@ -394,7 +394,7 @@ func interactiveStatus(cfg *config.Config) error {
 	if cfg.Adapters.Slack != nil && cfg.Adapters.Slack.Enabled {
 		fmt.Println("    + Slack")
 	}
-	if cfg.Adapters.Github != nil && cfg.Adapters.Github.Enabled {
+	if cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.Enabled {
 		fmt.Println("    + GitHub")
 	}
 	fmt.Println()

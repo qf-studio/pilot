@@ -206,9 +206,9 @@ func newConfigValidateCmd() *cobra.Command {
 						warnings = append(warnings, "Slack enabled but bot_token not set")
 					}
 				}
-				if cfg.Adapters.Github != nil && cfg.Adapters.Github.Enabled {
+				if cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.Enabled {
 					hasAdapter = true
-					if cfg.Adapters.Github.Token == "" && os.Getenv("GITHUB_TOKEN") == "" {
+					if cfg.Adapters.GitHub.Token == "" && os.Getenv("GITHUB_TOKEN") == "" {
 						warnings = append(warnings, "GitHub enabled but token not set")
 					}
 				}

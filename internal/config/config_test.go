@@ -56,8 +56,8 @@ func TestDefaultConfig(t *testing.T) {
 		if config.Adapters.Telegram == nil {
 			t.Error("Adapters.Telegram is nil")
 		}
-		if config.Adapters.Github == nil {
-			t.Error("Adapters.Github is nil")
+		if config.Adapters.GitHub == nil {
+			t.Error("Adapters.GitHub is nil")
 		}
 		if config.Adapters.Jira == nil {
 			t.Error("Adapters.Jira is nil")

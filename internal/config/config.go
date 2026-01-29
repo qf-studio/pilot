@@ -54,7 +54,7 @@ type AdaptersConfig struct {
 	Linear   *linear.Config   `yaml:"linear"`
 	Slack    *slack.Config    `yaml:"slack"`
 	Telegram *telegram.Config `yaml:"telegram"`
-	Github   *github.Config   `yaml:"github"`
+	GitHub   *github.Config   `yaml:"github"`
 	Jira     *jira.Config     `yaml:"jira"`
 }
 
@@ -249,7 +249,7 @@ func DefaultConfig() *Config {
 			Linear:   linear.DefaultConfig(),
 			Slack:    slack.DefaultConfig(),
 			Telegram: telegram.DefaultConfig(),
-			Github:   github.DefaultConfig(),
+			GitHub:   github.DefaultConfig(),
 			Jira:     jira.DefaultConfig(),
 		},
 		Orchestrator: &OrchestratorConfig{

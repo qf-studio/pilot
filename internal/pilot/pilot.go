@@ -97,15 +97,15 @@ func New(cfg *config.Config) (*Pilot, error) {
 	}
 
 	// Initialize GitHub adapter if enabled
-	if cfg.Adapters.Github != nil && cfg.Adapters.Github.Enabled {
-		p.githubClient = github.NewClient(cfg.Adapters.Github.Token)
+	if cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.Enabled {
+		p.githubClient = github.NewClient(cfg.Adapters.GitHub.Token)
 		p.githubWH = github.NewWebhookHandler(
 			p.githubClient,
-			cfg.Adapters.Github.WebhookSecret,
-			cfg.Adapters.Github.PilotLabel,
+			cfg.Adapters.GitHub.WebhookSecret,
+			cfg.Adapters.GitHub.PilotLabel,
 		)
 		p.githubWH.OnIssue(p.handleGithubIssue)
-		p.githubNotify = github.NewNotifier(p.githubClient, cfg.Adapters.Github.PilotLabel)
+		p.githubNotify = github.NewNotifier(p.githubClient, cfg.Adapters.GitHub.PilotLabel)
 	}
 
 	// Initialize alerts engine if enabled
@@ -238,7 +238,7 @@ func (p *Pilot) GetStatus() map[string]interface{} {
 		"config": map[string]interface{}{
 			"gateway":  fmt.Sprintf("%s:%d", p.config.Gateway.Host, p.config.Gateway.Port),
 			"linear":   p.config.Adapters.Linear != nil && p.config.Adapters.Linear.Enabled,
-			"github":   p.config.Adapters.Github != nil && p.config.Adapters.Github.Enabled,
+			"github":   p.config.Adapters.GitHub != nil && p.config.Adapters.GitHub.Enabled,
 			"slack":    p.config.Adapters.Slack != nil && p.config.Adapters.Slack.Enabled,
 			"webhooks": p.webhookManager.IsEnabled(),
 		},
