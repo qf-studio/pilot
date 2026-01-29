@@ -151,7 +151,7 @@ type ProgressCallback func(taskID string, phase string, progress int, message st
 // progress tracking, PR creation, and execution recording. Runner is safe for
 // concurrent use and tracks all running tasks for cancellation support.
 type Runner struct {
-	backend               Backend               // AI execution backend
+	backend               Backend // AI execution backend
 	onProgress            ProgressCallback
 	mu                    sync.Mutex
 	running               map[string]*exec.Cmd
@@ -312,6 +312,15 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 		Timestamp: time.Now(),
 	})
 
+	// Dispatch webhook for task started
+	r.dispatchWebhook(ctx, webhooks.EventTaskStarted, webhooks.TaskStartedData{
+		TaskID:      task.ID,
+		Title:       task.Title,
+		Description: task.Description,
+		Project:     task.ProjectPath,
+		Source:      "pilot",
+	})
+
 	// Initialize git operations
 	git := NewGitOperations(task.ProjectPath)
 
@@ -410,6 +419,16 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 			Timestamp: time.Now(),
 		})
 
+		// Dispatch webhook for task failed
+		r.dispatchWebhook(ctx, webhooks.EventTaskFailed, webhooks.TaskFailedData{
+			TaskID:   task.ID,
+			Title:    task.Title,
+			Project:  task.ProjectPath,
+			Duration: duration,
+			Error:    result.Error,
+			Phase:    state.phase,
+		})
+
 		// Finish recording with failed status
 		if recorder != nil {
 			recorder.SetModel(state.modelName)
@@ -461,6 +480,16 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 			Project:   task.ProjectPath,
 			Error:     result.Error,
 			Timestamp: time.Now(),
+		})
+
+		// Dispatch webhook for task failed
+		r.dispatchWebhook(ctx, webhooks.EventTaskFailed, webhooks.TaskFailedData{
+			TaskID:   task.ID,
+			Title:    task.Title,
+			Project:  task.ProjectPath,
+			Duration: duration,
+			Error:    result.Error,
+			Phase:    state.phase,
 		})
 
 		// Finish recording with failed status
@@ -521,6 +550,16 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 						Project:   task.ProjectPath,
 						Error:     result.Error,
 						Timestamp: time.Now(),
+					})
+
+					// Dispatch webhook for task failed
+					r.dispatchWebhook(ctx, webhooks.EventTaskFailed, webhooks.TaskFailedData{
+						TaskID:   task.ID,
+						Title:    task.Title,
+						Project:  task.ProjectPath,
+						Duration: time.Since(start),
+						Error:    result.Error,
+						Phase:    "Quality Gates",
 					})
 
 					if recorder != nil {
@@ -602,6 +641,16 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 							Timestamp: time.Now(),
 						})
 
+						// Dispatch webhook for task failed
+						r.dispatchWebhook(ctx, webhooks.EventTaskFailed, webhooks.TaskFailedData{
+							TaskID:   task.ID,
+							Title:    task.Title,
+							Project:  task.ProjectPath,
+							Duration: time.Since(start),
+							Error:    result.Error,
+							Phase:    "Quality Retry",
+						})
+
 						if recorder != nil {
 							recorder.SetModel(result.ModelName)
 							recorder.SetNavigator(state.hasNavigator)
@@ -648,6 +697,16 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 					Project:   task.ProjectPath,
 					Error:     result.Error,
 					Timestamp: time.Now(),
+				})
+
+				// Dispatch webhook for task failed
+				r.dispatchWebhook(ctx, webhooks.EventTaskFailed, webhooks.TaskFailedData{
+					TaskID:   task.ID,
+					Title:    task.Title,
+					Project:  task.ProjectPath,
+					Duration: time.Since(start),
+					Error:    result.Error,
+					Phase:    "Quality Gates",
 				})
 
 				if recorder != nil {
@@ -721,6 +780,16 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 				"pr_url":      result.PRUrl,
 			},
 			Timestamp: time.Now(),
+		})
+
+		// Dispatch webhook for task completed
+		r.dispatchWebhook(ctx, webhooks.EventTaskCompleted, webhooks.TaskCompletedData{
+			TaskID:    task.ID,
+			Title:     task.Title,
+			Project:   task.ProjectPath,
+			Duration:  duration,
+			PRCreated: result.PRUrl != "",
+			PRURL:     result.PRUrl,
 		})
 
 		// Finish recording with completed status
@@ -1413,6 +1482,15 @@ func (r *Runner) emitAlertEvent(event AlertEvent) {
 		return
 	}
 	r.alertProcessor.ProcessEvent(event)
+}
+
+// dispatchWebhook sends a webhook event if webhook manager is configured
+func (r *Runner) dispatchWebhook(ctx context.Context, eventType webhooks.EventType, data any) {
+	if r.webhooks == nil {
+		return
+	}
+	event := webhooks.NewEvent(eventType, data)
+	r.webhooks.Dispatch(ctx, event)
 }
 
 // reportProgress sends a progress update
