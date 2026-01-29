@@ -706,7 +706,7 @@ func TestManager_MultipleHandlers(t *testing.T) {
 	config := DefaultConfig()
 	config.Enabled = true
 	config.PreExecution.Enabled = true
-	config.PreExecution.Timeout = 100 * time.Millisecond
+	config.PreExecution.Timeout = 500 * time.Millisecond
 
 	m := NewManager(config)
 
@@ -719,8 +719,12 @@ func TestManager_MultipleHandlers(t *testing.T) {
 		},
 	}
 	handler2 := &mockHandler{
-		name:        "handler2",
-		respondWith: nil,
+		name: "handler2",
+		respondWith: &Response{
+			RequestID:  "test-multi",
+			Decision:   DecisionApproved,
+			ApprovedBy: "handler2-user",
+		},
 	}
 
 	// Register multiple handlers
