@@ -153,6 +153,8 @@ type ProgressCallback func(taskID string, phase string, progress int, message st
 type Runner struct {
 	backend               Backend // AI execution backend
 	onProgress            ProgressCallback
+	progressCallbacks     map[string]ProgressCallback // Named callbacks for multi-listener support
+	progressMu            sync.RWMutex                // Protects progressCallbacks
 	mu                    sync.Mutex
 	running               map[string]*exec.Cmd
 	log                   *slog.Logger
@@ -168,11 +170,12 @@ type Runner struct {
 // The Runner is ready to execute tasks immediately after creation.
 func NewRunner() *Runner {
 	return &Runner{
-		backend:         NewClaudeCodeBackend(nil),
-		running:         make(map[string]*exec.Cmd),
-		log:             logging.WithComponent("executor"),
-		enableRecording: true, // Recording enabled by default
-		modelRouter:     NewModelRouter(nil, nil),
+		backend:           NewClaudeCodeBackend(nil),
+		running:           make(map[string]*exec.Cmd),
+		progressCallbacks: make(map[string]ProgressCallback),
+		log:               logging.WithComponent("executor"),
+		enableRecording:   true, // Recording enabled by default
+		modelRouter:       NewModelRouter(nil, nil),
 	}
 }
 
@@ -182,11 +185,12 @@ func NewRunnerWithBackend(backend Backend) *Runner {
 		backend = NewClaudeCodeBackend(nil)
 	}
 	return &Runner{
-		backend:         backend,
-		running:         make(map[string]*exec.Cmd),
-		log:             logging.WithComponent("executor"),
-		enableRecording: true,
-		modelRouter:     NewModelRouter(nil, nil),
+		backend:           backend,
+		running:           make(map[string]*exec.Cmd),
+		progressCallbacks: make(map[string]ProgressCallback),
+		log:               logging.WithComponent("executor"),
+		enableRecording:   true,
+		modelRouter:       NewModelRouter(nil, nil),
 	}
 }
 
@@ -264,8 +268,29 @@ func (r *Runner) getRecordingsPath() string {
 
 // OnProgress registers a callback function to receive progress updates during task execution.
 // The callback is invoked whenever the execution phase changes or significant events occur.
+// Deprecated: Use AddProgressCallback for multi-listener support. This method remains for
+// backward compatibility but will overwrite any callback set via OnProgress (not AddProgressCallback).
 func (r *Runner) OnProgress(callback ProgressCallback) {
 	r.onProgress = callback
+}
+
+// AddProgressCallback registers a named callback for progress updates.
+// Multiple callbacks can be registered with different names. Use RemoveProgressCallback
+// to unregister. This is thread-safe and works alongside the legacy OnProgress callback.
+func (r *Runner) AddProgressCallback(name string, callback ProgressCallback) {
+	r.progressMu.Lock()
+	defer r.progressMu.Unlock()
+	if r.progressCallbacks == nil {
+		r.progressCallbacks = make(map[string]ProgressCallback)
+	}
+	r.progressCallbacks[name] = callback
+}
+
+// RemoveProgressCallback removes a named callback registered via AddProgressCallback.
+func (r *Runner) RemoveProgressCallback(name string) {
+	r.progressMu.Lock()
+	defer r.progressMu.Unlock()
+	delete(r.progressCallbacks, name)
 }
 
 // EmitProgress exposes the progress callback for external callers (e.g., Dispatcher).
@@ -1526,7 +1551,7 @@ func (r *Runner) dispatchWebhook(ctx context.Context, eventType webhooks.EventTy
 	r.webhooks.Dispatch(ctx, event)
 }
 
-// reportProgress sends a progress update
+// reportProgress sends a progress update to all registered callbacks
 func (r *Runner) reportProgress(taskID, phase string, progress int, message string) {
 	// Always log progress for terminal visibility
 	r.log.Info("Task progress",
@@ -1536,9 +1561,21 @@ func (r *Runner) reportProgress(taskID, phase string, progress int, message stri
 		slog.String("message", message),
 	)
 
-	// Send to callback (e.g., Telegram) if registered
+	// Send to legacy callback (e.g., Telegram) if registered
 	if r.onProgress != nil {
 		r.onProgress(taskID, phase, progress, message)
+	}
+
+	// Send to all named callbacks (e.g., dashboard, monitors)
+	r.progressMu.RLock()
+	callbacks := make([]ProgressCallback, 0, len(r.progressCallbacks))
+	for _, cb := range r.progressCallbacks {
+		callbacks = append(callbacks, cb)
+	}
+	r.progressMu.RUnlock()
+
+	for _, cb := range callbacks {
+		cb(taskID, phase, progress, message)
 	}
 }
 

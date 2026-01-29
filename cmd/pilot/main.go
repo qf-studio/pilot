@@ -336,8 +336,10 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 			tea.WithOutput(os.Stdout),
 		)
 
-		// Wire runner progress updates to dashboard
-		runner.OnProgress(func(taskID, phase string, progress int, message string) {
+		// Wire runner progress updates to dashboard using named callback
+		// This uses AddProgressCallback instead of OnProgress to prevent Telegram handler
+		// from overwriting the dashboard callback (GH-149 fix)
+		runner.AddProgressCallback("dashboard", func(taskID, phase string, progress int, message string) {
 			monitor.UpdateProgress(taskID, phase, progress, message)
 			tasks := convertTaskStatesToDisplay(monitor.GetAll())
 			program.Send(dashboard.UpdateTasks(tasks))
