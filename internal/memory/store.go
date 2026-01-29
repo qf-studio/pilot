@@ -926,14 +926,14 @@ func (s *Store) RecordPatternFeedback(feedback *PatternFeedback) error {
 	switch feedback.Outcome {
 	case "success":
 		_, _ = s.db.Exec(`
-			UPDATE cross_patterns SET confidence = MIN(0.95, confidence + ?) WHERE id = ?
+			UPDATE cross_patterns SET confidence = min(0.95, max(0.1, confidence + ?)) WHERE id = ?
 		`, feedback.ConfidenceDelta, feedback.PatternID)
 		_, _ = s.db.Exec(`
 			UPDATE pattern_projects SET success_count = success_count + 1 WHERE pattern_id = ? AND project_path = ?
 		`, feedback.PatternID, feedback.ProjectPath)
 	case "failure":
 		_, _ = s.db.Exec(`
-			UPDATE cross_patterns SET confidence = MAX(0.1, confidence - ?) WHERE id = ?
+			UPDATE cross_patterns SET confidence = max(0.1, min(0.95, confidence - ?)) WHERE id = ?
 		`, feedback.ConfidenceDelta, feedback.PatternID)
 		_, _ = s.db.Exec(`
 			UPDATE pattern_projects SET failure_count = failure_count + 1 WHERE pattern_id = ? AND project_path = ?
