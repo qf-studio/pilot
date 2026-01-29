@@ -343,10 +343,10 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 		runner.AddProgressCallback("dashboard", func(taskID, phase string, progress int, message string) {
 			monitor.UpdateProgress(taskID, phase, progress, message)
 			tasks := convertTaskStatesToDisplay(monitor.GetAll())
-			program.Send(dashboard.UpdateTasks(tasks))
+			program.Send(dashboard.UpdateTasks(tasks)())
 
 			logMsg := fmt.Sprintf("[%s] %s: %s (%d%%)", taskID, phase, message, progress)
-			program.Send(dashboard.AddLog(logMsg))
+			program.Send(dashboard.AddLog(logMsg)())
 		})
 	}
 
@@ -551,7 +551,7 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 				case <-ticker.C:
 					if monitor != nil {
 						tasks := convertTaskStatesToDisplay(monitor.GetAll())
-						program.Send(dashboard.UpdateTasks(tasks))
+						program.Send(dashboard.UpdateTasks(tasks)())
 					}
 				}
 			}
@@ -560,14 +560,14 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 		// Add startup logs after TUI starts (Send blocks if Run hasn't been called)
 		go func() {
 			time.Sleep(100 * time.Millisecond) // Wait for Run() to start
-			program.Send(dashboard.AddLog(fmt.Sprintf("🚀 Pilot v%s started - Polling mode", version)))
+			program.Send(dashboard.AddLog(fmt.Sprintf("🚀 Pilot v%s started - Polling mode", version))())
 			if hasTelegram {
-				program.Send(dashboard.AddLog("📱 Telegram polling active"))
+				program.Send(dashboard.AddLog("📱 Telegram polling active")())
 			}
 			hasGitHubPolling := cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.Enabled &&
 				cfg.Adapters.GitHub.Polling != nil && cfg.Adapters.GitHub.Polling.Enabled
 			if hasGitHubPolling {
-				program.Send(dashboard.AddLog(fmt.Sprintf("🐙 GitHub polling: %s", cfg.Adapters.GitHub.Repo)))
+				program.Send(dashboard.AddLog(fmt.Sprintf("🐙 GitHub polling: %s", cfg.Adapters.GitHub.Repo))())
 			}
 		}()
 
@@ -719,7 +719,7 @@ func handleGitHubIssueWithMonitor(ctx context.Context, cfg *config.Config, clien
 		monitor.Start(taskID)
 	}
 	if program != nil {
-		program.Send(dashboard.AddLog(fmt.Sprintf("📥 GitHub Issue #%d: %s", issue.Number, issue.Title)))
+		program.Send(dashboard.AddLog(fmt.Sprintf("📥 GitHub Issue #%d: %s", issue.Number, issue.Title))())
 	}
 
 	err := handleGitHubIssue(ctx, cfg, client, issue, projectPath, dispatcher, runner, createPR)
@@ -739,7 +739,7 @@ func handleGitHubIssueWithMonitor(ctx context.Context, cfg *config.Config, clien
 		if err != nil {
 			status = "failed"
 		}
-		program.Send(dashboard.AddCompletedTask(taskID, issue.Title, status, ""))
+		program.Send(dashboard.AddCompletedTask(taskID, issue.Title, status, "")())
 	}
 
 	return err
@@ -756,7 +756,7 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 		monitor.Start(taskID)
 	}
 	if program != nil {
-		program.Send(dashboard.AddLog(fmt.Sprintf("📥 GitHub Issue #%d: %s", issue.Number, issue.Title)))
+		program.Send(dashboard.AddLog(fmt.Sprintf("📥 GitHub Issue #%d: %s", issue.Number, issue.Title))())
 	}
 
 	fmt.Printf("\n📥 GitHub Issue #%d: %s\n", issue.Number, issue.Title)
@@ -833,7 +833,7 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 		if result != nil {
 			duration = result.Duration.String()
 		}
-		program.Send(dashboard.AddCompletedTask(taskID, issue.Title, status, duration))
+		program.Send(dashboard.AddCompletedTask(taskID, issue.Title, status, duration)())
 	}
 
 	// Build the issue result
@@ -2621,11 +2621,11 @@ func runDashboardMode(p *pilot.Pilot, cfg *config.Config) error {
 	p.OnProgress(func(taskID, phase string, progress int, message string) {
 		// Convert current task states to dashboard display format
 		tasks := convertTaskStatesToDisplay(p.GetTaskStates())
-		program.Send(dashboard.UpdateTasks(tasks))
+		program.Send(dashboard.UpdateTasks(tasks)())
 
 		// Also add progress message as log
 		logMsg := fmt.Sprintf("[%s] %s: %s (%d%%)", taskID, phase, message, progress)
-		program.Send(dashboard.AddLog(logMsg))
+		program.Send(dashboard.AddLog(logMsg)())
 	})
 
 	// Periodic refresh to catch any missed updates
@@ -2639,7 +2639,7 @@ func runDashboardMode(p *pilot.Pilot, cfg *config.Config) error {
 				return
 			case <-ticker.C:
 				tasks := convertTaskStatesToDisplay(p.GetTaskStates())
-				program.Send(dashboard.UpdateTasks(tasks))
+				program.Send(dashboard.UpdateTasks(tasks)())
 			}
 		}
 	}()
@@ -2655,7 +2655,7 @@ func runDashboardMode(p *pilot.Pilot, cfg *config.Config) error {
 
 	// Add startup log
 	gatewayURL := fmt.Sprintf("http://%s:%d", cfg.Gateway.Host, cfg.Gateway.Port)
-	program.Send(dashboard.AddLog(fmt.Sprintf("🚀 Pilot v%s started - Gateway: %s", version, gatewayURL)))
+	program.Send(dashboard.AddLog(fmt.Sprintf("🚀 Pilot v%s started - Gateway: %s", version, gatewayURL))())
 
 	// Run TUI (blocks until quit)
 	if _, err := program.Run(); err != nil {
