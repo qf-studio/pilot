@@ -1,0 +1,88 @@
+name: CI Auto-Fix
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+
+jobs:
+  create-fix-issue:
+    if: ${{ github.event.workflow_run.conclusion == 'failure' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check if already has fix issue
+        uses: actions/github-script@v7
+        id: check-existing
+        with:
+          script: |
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: 'ci-fix',
+              state: 'open'
+            });
+            // Don't create duplicate fix issues
+            const runId = context.payload.workflow_run.id;
+            const existing = issues.data.find(i => i.body.includes(`run_id: ${runId}`));
+            return { exists: !!existing };
+
+      - name: Get failed job info
+        if: ${{ !fromJSON(steps.check-existing.outputs.result).exists }}
+        uses: actions/github-script@v7
+        id: get-failure
+        with:
+          script: |
+            const run = context.payload.workflow_run;
+            const jobs = await github.rest.actions.listJobsForWorkflowRun({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              run_id: run.id
+            });
+
+            const failedJobs = jobs.data.jobs.filter(j => j.conclusion === 'failure');
+            const jobNames = failedJobs.map(j => j.name).join(', ');
+
+            return {
+              runId: run.id,
+              runUrl: run.html_url,
+              branch: run.head_branch,
+              sha: run.head_sha.substring(0, 7),
+              jobs: jobNames
+            };
+
+      - name: Create fix issue
+        if: ${{ !fromJSON(steps.check-existing.outputs.result).exists }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const info = ${{ steps.get-failure.outputs.result }};
+
+            // Don't auto-fix on pilot branches (prevent loops)
+            if (info.branch.startsWith('pilot/')) {
+              console.log('Skipping auto-fix for pilot branch');
+              return;
+            }
+
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `CI Fix: ${info.jobs} failed on ${info.branch}`,
+              labels: ['pilot', 'ci-fix'],
+              body: `## CI Failure Auto-Fix Request
+
+**Branch:** ${info.branch}
+**Commit:** ${info.sha}
+**Failed jobs:** ${info.jobs}
+**Run:** ${info.runUrl}
+
+<!-- run_id: ${info.runId} -->
+
+---
+
+Pilot: Please analyze the CI failure logs at the run URL above and fix the issues. Focus on:
+1. Lint errors (golangci-lint)
+2. Test failures
+3. Build errors
+
+Create a PR with the fix.`
+            });
