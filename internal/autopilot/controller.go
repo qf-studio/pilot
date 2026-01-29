@@ -316,6 +316,18 @@ func (c *Controller) IsCircuitOpen() bool {
 	return c.consecutiveFailures >= c.config.MaxFailures
 }
 
+// Config returns the autopilot configuration.
+func (c *Controller) Config() *Config {
+	return c.config
+}
+
+// ConsecutiveFailures returns the current consecutive failure count.
+func (c *Controller) ConsecutiveFailures() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.consecutiveFailures
+}
+
 // Run starts the autopilot processing loop.
 // It continuously processes all active PRs until context is cancelled.
 func (c *Controller) Run(ctx context.Context) error {

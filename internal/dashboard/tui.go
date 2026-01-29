@@ -7,6 +7,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/alekspetrov/pilot/internal/autopilot"
 )
 
 // Panel width (all panels same width)
@@ -51,7 +53,89 @@ var (
 	costStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#00ff41")).
 			Bold(true)
+
+	warningStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#ffaa00"))
 )
+
+// AutopilotPanel displays autopilot status in the dashboard.
+type AutopilotPanel struct {
+	controller *autopilot.Controller
+}
+
+// NewAutopilotPanel creates an autopilot panel.
+func NewAutopilotPanel(controller *autopilot.Controller) *AutopilotPanel {
+	return &AutopilotPanel{controller: controller}
+}
+
+// View renders the autopilot panel content.
+func (p *AutopilotPanel) View() string {
+	var content strings.Builder
+	w := panelInnerWidth
+
+	if p.controller == nil {
+		content.WriteString("  Disabled")
+		return renderPanel("🤖 AUTOPILOT", content.String())
+	}
+
+	cfg := p.controller.Config()
+
+	// Environment/Mode
+	content.WriteString(dotLeader("Mode", string(cfg.Environment), w))
+	content.WriteString("\n")
+
+	// Active PRs
+	prs := p.controller.GetActivePRs()
+	if len(prs) == 0 {
+		content.WriteString(dotLeader("Active PRs", "0", w))
+	} else {
+		content.WriteString(dotLeader("Active PRs", fmt.Sprintf("%d", len(prs)), w))
+		content.WriteString("\n")
+
+		for _, pr := range prs {
+			icon := p.stageIcon(pr.Stage)
+			prLine := fmt.Sprintf("  %s #%d: %s", icon, pr.PRNumber, pr.Stage)
+			content.WriteString(prLine)
+			content.WriteString("\n")
+		}
+	}
+
+	// Circuit breaker status
+	failures := p.controller.ConsecutiveFailures()
+	if failures > 0 {
+		content.WriteString("\n")
+		failStr := fmt.Sprintf("%d/%d", failures, cfg.MaxFailures)
+		content.WriteString(dotLeaderStyled("⚠️ Failures", failStr, warningStyle, w))
+	}
+
+	return renderPanel("🤖 AUTOPILOT", content.String())
+}
+
+// stageIcon returns an emoji icon for the PR stage.
+func (p *AutopilotPanel) stageIcon(stage autopilot.PRStage) string {
+	switch stage {
+	case autopilot.StagePRCreated:
+		return "📝"
+	case autopilot.StageWaitingCI:
+		return "⏳"
+	case autopilot.StageCIPassed:
+		return "✅"
+	case autopilot.StageCIFailed:
+		return "❌"
+	case autopilot.StageAwaitApproval:
+		return "👤"
+	case autopilot.StageMerging:
+		return "🔀"
+	case autopilot.StageMerged:
+		return "✅"
+	case autopilot.StagePostMergeCI:
+		return "🚀"
+	case autopilot.StageFailed:
+		return "💥"
+	default:
+		return "❓"
+	}
+}
 
 // TaskDisplay represents a task for display
 type TaskDisplay struct {
@@ -91,6 +175,7 @@ type Model struct {
 	tokenUsage     TokenUsage
 	completedTasks []CompletedTask
 	costPerMToken  float64
+	autopilotPanel *AutopilotPanel
 }
 
 // tickMsg is sent periodically to refresh the display
@@ -116,6 +201,19 @@ func NewModel() Model {
 		showLogs:       true,
 		completedTasks: []CompletedTask{},
 		costPerMToken:  3.0,
+		autopilotPanel: NewAutopilotPanel(nil), // Disabled by default
+	}
+}
+
+// NewModelWithAutopilot creates a dashboard model with autopilot integration.
+func NewModelWithAutopilot(controller *autopilot.Controller) Model {
+	return Model{
+		tasks:          []TaskDisplay{},
+		logs:           []string{},
+		showLogs:       true,
+		completedTasks: []CompletedTask{},
+		costPerMToken:  3.0,
+		autopilotPanel: NewAutopilotPanel(controller),
 	}
 }
 
@@ -201,6 +299,10 @@ func (m Model) View() string {
 
 	// Tasks
 	b.WriteString(m.renderTasks())
+	b.WriteString("\n")
+
+	// Autopilot panel
+	b.WriteString(m.autopilotPanel.View())
 	b.WriteString("\n")
 
 	// History
@@ -548,7 +650,6 @@ func (m Model) renderLogs() string {
 
 	return renderPanel("LOGS", content.String())
 }
-
 
 // UpdateTasks sends updated tasks to the TUI
 func UpdateTasks(tasks []TaskDisplay) tea.Cmd {

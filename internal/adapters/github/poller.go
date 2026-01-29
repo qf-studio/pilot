@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/alekspetrov/pilot/internal/executor"
 	"github.com/alekspetrov/pilot/internal/logging"
 )
 
@@ -55,6 +56,9 @@ type Poller struct {
 	waitForMerge   bool
 	prTimeout      time.Duration
 	prPollInterval time.Duration
+
+	// Rate limit retry scheduler
+	scheduler *executor.Scheduler
 }
 
 // PollerOption configures a Poller
@@ -105,6 +109,12 @@ func WithOnPRCreated(fn func(prNumber int, prURL string, issueNumber int, headSH
 	}
 }
 
+// WithScheduler sets the rate limit retry scheduler
+func WithScheduler(s *executor.Scheduler) PollerOption {
+	return func(p *Poller) {
+		p.scheduler = s
+	}
+}
 // NewPoller creates a new GitHub issue poller
 func NewPoller(client *Client, repo string, label string, interval time.Duration, opts ...PollerOption) (*Poller, error) {
 	parts := strings.Split(repo, "/")
@@ -219,6 +229,27 @@ func (p *Poller) startSequential(ctx context.Context) {
 
 		result, err := p.processIssueSequential(ctx, issue)
 		if err != nil {
+			// Check if this is a rate limit error that can be retried
+			if executor.IsRateLimitError(err.Error()) {
+				rlInfo, ok := executor.ParseRateLimitError(err.Error())
+				if ok && p.scheduler != nil {
+					task := &executor.Task{
+						ID:          fmt.Sprintf("GH-%d", issue.Number),
+						Title:       issue.Title,
+						Description: issue.Body,
+						ProjectPath: "", // Will be set by retry callback
+					}
+					p.scheduler.QueueTask(task, rlInfo)
+					p.logger.Info("Task queued for retry after rate limit",
+						slog.Int("issue", issue.Number),
+						slog.Time("retry_at", rlInfo.ResetTime.Add(5*time.Minute)),
+						slog.String("reset_time", rlInfo.ResetTimeFormatted()),
+					)
+					// Don't mark as processed - will retry via scheduler
+					continue
+				}
+			}
+
 			p.logger.Error("Failed to process issue",
 				slog.Int("number", issue.Number),
 				slog.Any("error", err),
