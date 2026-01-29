@@ -284,22 +284,62 @@ func (p *Poller) startSequential(ctx context.Context) {
 			})
 
 			if err != nil {
-				p.logger.Warn("Error waiting for PR merge",
+				p.logger.Warn("Error waiting for PR merge, pausing sequential processing",
 					slog.Int("pr_number", result.PRNumber),
 					slog.Any("error", err),
 				)
-				// Continue to next issue anyway
-			} else {
-				p.logger.Info("PR merge wait completed",
+				// DON'T mark as processed - leave for retry after fix
+				time.Sleep(5 * time.Minute)
+				continue
+			}
+
+			p.logger.Info("PR merge wait completed",
+				slog.Int("pr_number", result.PRNumber),
+				slog.Bool("merged", mergeResult.Merged),
+				slog.Bool("closed", mergeResult.Closed),
+				slog.Bool("conflicting", mergeResult.Conflicting),
+				slog.Bool("timed_out", mergeResult.TimedOut),
+			)
+
+			// Check if PR has conflicts - stop processing
+			if mergeResult.Conflicting {
+				p.logger.Warn("PR has conflicts, pausing sequential processing",
 					slog.Int("pr_number", result.PRNumber),
-					slog.Bool("merged", mergeResult.Merged),
-					slog.Bool("closed", mergeResult.Closed),
-					slog.Bool("conflicting", mergeResult.Conflicting),
-					slog.Bool("timed_out", mergeResult.TimedOut),
+					slog.String("pr_url", result.PRURL),
 				)
+				// DON'T mark as processed - needs manual resolution or rebase
+				time.Sleep(5 * time.Minute)
+				continue
+			}
+
+			// Check if PR timed out
+			if mergeResult.TimedOut {
+				p.logger.Warn("PR merge timed out, pausing sequential processing",
+					slog.Int("pr_number", result.PRNumber),
+					slog.String("pr_url", result.PRURL),
+				)
+				// DON'T mark as processed - needs investigation
+				time.Sleep(5 * time.Minute)
+				continue
+			}
+
+			// Only mark as processed if actually merged
+			if mergeResult.Merged {
+				p.markProcessed(issue.Number)
+				continue
+			}
+
+			// PR was closed without merge
+			if mergeResult.Closed {
+				p.logger.Info("PR was closed without merge",
+					slog.Int("pr_number", result.PRNumber),
+				)
+				// DON'T mark as processed - issue may need re-execution
+				continue
 			}
 		}
 
+		// PR was created but we're not waiting for merge, or no PR was created
 		p.markProcessed(issue.Number)
 	}
 }
