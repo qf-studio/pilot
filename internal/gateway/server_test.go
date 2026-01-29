@@ -200,9 +200,24 @@ func TestCheckOrigin(t *testing.T) {
 			expected: true,
 		},
 		{
-			name:     "external origin (currently allowed)",
+			name:     "external origin rejected",
 			origin:   "https://example.com",
-			expected: true, // Current implementation allows all origins
+			expected: false,
+		},
+		{
+			name:     "malicious site rejected",
+			origin:   "https://evil-site.com",
+			expected: false,
+		},
+		{
+			name:     "HTTP external origin rejected",
+			origin:   "http://attacker.com",
+			expected: false,
+		},
+		{
+			name:     "localhost subdomain rejected",
+			origin:   "https://localhost.evil.com",
+			expected: false,
 		},
 	}
 
@@ -216,6 +231,46 @@ func TestCheckOrigin(t *testing.T) {
 			result := server.upgrader.CheckOrigin(req)
 			if result != tt.expected {
 				t.Errorf("CheckOrigin(%q) = %v, want %v", tt.origin, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestIsLocalhost(t *testing.T) {
+	tests := []struct {
+		name     string
+		origin   string
+		expected bool
+	}{
+		// Valid localhost origins
+		{"http localhost", "http://localhost", true},
+		{"http localhost with port", "http://localhost:3000", true},
+		{"http localhost with standard port", "http://localhost:80", true},
+		{"https localhost", "https://localhost", true},
+		{"https localhost with port", "https://localhost:443", true},
+		{"http 127.0.0.1", "http://127.0.0.1", true},
+		{"http 127.0.0.1 with port", "http://127.0.0.1:8080", true},
+		{"https 127.0.0.1", "https://127.0.0.1", true},
+		{"https 127.0.0.1 with port", "https://127.0.0.1:9000", true},
+
+		// Invalid/malicious origins
+		{"localhost subdomain attack", "https://localhost.evil.com", false},
+		{"localhost path attack", "http://localhostevil.com", false},
+		{"127.0.0.1 subdomain attack", "https://127.0.0.1.evil.com", false},
+		{"external https", "https://example.com", false},
+		{"external http", "http://attacker.com", false},
+		{"empty string", "", false},
+		{"just localhost word", "localhost", false},
+		{"localhost with path no protocol", "localhost:3000", false},
+		{"file protocol", "file://localhost", false},
+		{"ftp protocol", "ftp://localhost", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := isLocalhost(tt.origin)
+			if result != tt.expected {
+				t.Errorf("isLocalhost(%q) = %v, want %v", tt.origin, result, tt.expected)
 			}
 		})
 	}

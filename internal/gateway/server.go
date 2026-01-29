@@ -36,6 +36,31 @@ type Config struct {
 	Port int `yaml:"port"`
 }
 
+// localhostPrefixes are the allowed origin prefixes for localhost connections.
+// Origins must match exactly or be followed by a port (e.g., ":3000").
+var localhostPrefixes = []string{
+	"http://localhost",
+	"http://127.0.0.1",
+	"https://localhost",
+	"https://127.0.0.1",
+}
+
+// isLocalhost checks if the origin is a valid localhost origin.
+// Returns true for origins like "http://localhost", "http://localhost:3000",
+// but false for "http://localhost.evil.com" (subdomain attack).
+func isLocalhost(origin string) bool {
+	for _, prefix := range localhostPrefixes {
+		if origin == prefix {
+			return true
+		}
+		// Check for port suffix (must start with ":")
+		if strings.HasPrefix(origin, prefix+":") {
+			return true
+		}
+	}
+	return false
+}
+
 // NewServer creates a new gateway server with the given configuration.
 // The server is not started until Start is called.
 func NewServer(config *Config) *Server {
@@ -53,16 +78,13 @@ func NewServer(config *Config) *Server {
 					return true
 				}
 				// Allow localhost origins for development
-				if strings.HasPrefix(origin, "http://localhost") ||
-					strings.HasPrefix(origin, "http://127.0.0.1") ||
-					strings.HasPrefix(origin, "https://localhost") ||
-					strings.HasPrefix(origin, "https://127.0.0.1") {
+				// Check for exact match or with port (e.g., :3000)
+				if isLocalhost(origin) {
 					return true
 				}
-				// Production: allow only trusted origins
-				// For now, allow all origins - users should configure
-				// firewall/reverse proxy for production deployments
-				return true
+				// Reject all non-localhost origins for security
+				// External sites cannot establish WebSocket connections
+				return false
 			},
 		},
 	}
