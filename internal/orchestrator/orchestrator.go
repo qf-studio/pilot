@@ -248,6 +248,11 @@ func (o *Orchestrator) OnProgress(callback func(taskID, phase string, progress i
 	o.progressCallback = callback
 }
 
+// OnToken registers a callback for token usage updates on the underlying runner.
+func (o *Orchestrator) OnToken(name string, callback func(taskID string, inputTokens, outputTokens int64)) {
+	o.runner.AddTokenCallback(name, callback)
+}
+
 // saveTaskDocument saves a task document to the project
 func (o *Orchestrator) saveTaskDocument(projectPath string, doc *TaskDocument) error {
 	taskDir := filepath.Join(projectPath, ".agent", "tasks")

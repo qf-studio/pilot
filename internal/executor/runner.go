@@ -146,6 +146,10 @@ type ExecutionResult struct {
 // and a human-readable message describing the current activity.
 type ProgressCallback func(taskID string, phase string, progress int, message string)
 
+// TokenCallback is a function called during execution with token usage updates.
+// It receives the task ID, input tokens, and output tokens.
+type TokenCallback func(taskID string, inputTokens, outputTokens int64)
+
 // Runner executes development tasks using an AI backend (Claude Code, OpenCode, etc.).
 // It manages task lifecycle including branch creation, AI invocation,
 // progress tracking, PR creation, and execution recording. Runner is safe for
@@ -155,6 +159,8 @@ type Runner struct {
 	onProgress            ProgressCallback
 	progressCallbacks     map[string]ProgressCallback // Named callbacks for multi-listener support
 	progressMu            sync.RWMutex                // Protects progressCallbacks
+	tokenCallbacks        map[string]TokenCallback    // Named callbacks for token usage updates
+	tokenMu               sync.RWMutex                // Protects tokenCallbacks
 	mu                    sync.Mutex
 	running               map[string]*exec.Cmd
 	log                   *slog.Logger
@@ -174,6 +180,7 @@ func NewRunner() *Runner {
 		backend:           NewClaudeCodeBackend(nil),
 		running:           make(map[string]*exec.Cmd),
 		progressCallbacks: make(map[string]ProgressCallback),
+		tokenCallbacks:    make(map[string]TokenCallback),
 		log:               logging.WithComponent("executor"),
 		enableRecording:   true, // Recording enabled by default
 		modelRouter:       NewModelRouter(nil, nil),
@@ -189,6 +196,7 @@ func NewRunnerWithBackend(backend Backend) *Runner {
 		backend:           backend,
 		running:           make(map[string]*exec.Cmd),
 		progressCallbacks: make(map[string]ProgressCallback),
+		tokenCallbacks:    make(map[string]TokenCallback),
 		log:               logging.WithComponent("executor"),
 		enableRecording:   true,
 		modelRouter:       NewModelRouter(nil, nil),
@@ -292,6 +300,34 @@ func (r *Runner) RemoveProgressCallback(name string) {
 	r.progressMu.Lock()
 	defer r.progressMu.Unlock()
 	delete(r.progressCallbacks, name)
+}
+
+// AddTokenCallback registers a named callback for token usage updates.
+// Multiple callbacks can be registered with different names. Use RemoveTokenCallback
+// to unregister. This is thread-safe.
+func (r *Runner) AddTokenCallback(name string, callback TokenCallback) {
+	r.tokenMu.Lock()
+	defer r.tokenMu.Unlock()
+	if r.tokenCallbacks == nil {
+		r.tokenCallbacks = make(map[string]TokenCallback)
+	}
+	r.tokenCallbacks[name] = callback
+}
+
+// RemoveTokenCallback removes a named callback registered via AddTokenCallback.
+func (r *Runner) RemoveTokenCallback(name string) {
+	r.tokenMu.Lock()
+	defer r.tokenMu.Unlock()
+	delete(r.tokenCallbacks, name)
+}
+
+// reportTokens sends token usage updates to all registered callbacks.
+func (r *Runner) reportTokens(taskID string, inputTokens, outputTokens int64) {
+	r.tokenMu.RLock()
+	defer r.tokenMu.RUnlock()
+	for _, cb := range r.tokenCallbacks {
+		cb(taskID, inputTokens, outputTokens)
+	}
 }
 
 // SuppressProgressLogs disables slog output for progress updates.
@@ -1052,6 +1088,8 @@ func (r *Runner) parseStreamEvent(taskID, line string, state *progressState) (st
 	if event.Usage != nil {
 		state.tokensInput += event.Usage.InputTokens
 		state.tokensOutput += event.Usage.OutputTokens
+		// Report token usage to callbacks (e.g., dashboard)
+		r.reportTokens(taskID, state.tokensInput, state.tokensOutput)
 	}
 	if event.Model != "" && state.modelName == "" {
 		state.modelName = event.Model
@@ -1068,6 +1106,11 @@ func (r *Runner) processBackendEvent(taskID string, event BackendEvent, state *p
 	state.tokensOutput += event.TokensOutput
 	if event.Model != "" {
 		state.modelName = event.Model
+	}
+
+	// Report token usage to callbacks (e.g., dashboard)
+	if event.TokensInput > 0 || event.TokensOutput > 0 {
+		r.reportTokens(taskID, state.tokensInput, state.tokensOutput)
 	}
 
 	switch event.Type {

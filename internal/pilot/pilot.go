@@ -273,6 +273,11 @@ func (p *Pilot) OnProgress(callback func(taskID, phase string, progress int, mes
 	p.orchestrator.OnProgress(callback)
 }
 
+// OnToken registers a callback for token usage updates
+func (p *Pilot) OnToken(name string, callback func(taskID string, inputTokens, outputTokens int64)) {
+	p.orchestrator.OnToken(name, callback)
+}
+
 // GetTaskStates returns current task states from the orchestrator
 func (p *Pilot) GetTaskStates() []*executor.TaskState {
 	return p.orchestrator.GetTaskStates()

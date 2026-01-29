@@ -348,6 +348,11 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 			logMsg := fmt.Sprintf("[%s] %s: %s (%d%%)", taskID, phase, message, progress)
 			program.Send(dashboard.AddLog(logMsg)())
 		})
+
+		// Wire token usage updates to dashboard (GH-156 fix)
+		runner.AddTokenCallback("dashboard", func(taskID string, inputTokens, outputTokens int64) {
+			program.Send(dashboard.UpdateTokens(int(inputTokens), int(outputTokens))())
+		})
 	}
 
 	// Initialize Telegram handler if enabled
@@ -2626,6 +2631,11 @@ func runDashboardMode(p *pilot.Pilot, cfg *config.Config) error {
 		// Also add progress message as log
 		logMsg := fmt.Sprintf("[%s] %s: %s (%d%%)", taskID, phase, message, progress)
 		program.Send(dashboard.AddLog(logMsg)())
+	})
+
+	// Register token usage callback for dashboard updates (GH-156 fix)
+	p.OnToken("dashboard", func(taskID string, inputTokens, outputTokens int64) {
+		program.Send(dashboard.UpdateTokens(int(inputTokens), int(outputTokens))())
 	})
 
 	// Periodic refresh to catch any missed updates
