@@ -366,6 +366,9 @@ func Load(path string) (*Config, error) {
 		project.Path = expandPath(project.Path)
 	}
 
+	// Log deprecation warnings
+	config.CheckDeprecations()
+
 	return config, nil
 }
 
