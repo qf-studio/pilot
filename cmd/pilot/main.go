@@ -327,8 +327,9 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 	var monitor *executor.Monitor
 	var program *tea.Program
 	if dashboardMode {
-		// Suppress slog output to prevent corrupting TUI display
+		// Suppress slog output to prevent corrupting TUI display (GH-164)
 		logging.Suppress()
+		runner.SuppressProgressLogs(true)
 
 		monitor = executor.NewMonitor()
 		model := dashboard.NewModel()
@@ -2670,6 +2671,10 @@ func checkForUpdates() {
 
 // runDashboardMode runs the TUI dashboard with live task updates
 func runDashboardMode(p *pilot.Pilot, cfg *config.Config) error {
+	// Suppress slog output to prevent corrupting TUI display (GH-164)
+	logging.Suppress()
+	p.SuppressProgressLogs(true)
+
 	// Create TUI program
 	model := dashboard.NewModel()
 	program := tea.NewProgram(model, tea.WithAltScreen())

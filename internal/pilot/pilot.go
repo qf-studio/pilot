@@ -283,6 +283,12 @@ func (p *Pilot) GetTaskStates() []*executor.TaskState {
 	return p.orchestrator.GetTaskStates()
 }
 
+// SuppressProgressLogs disables slog output for progress updates.
+// Use this when a visual progress display is active to prevent log spam.
+func (p *Pilot) SuppressProgressLogs(suppress bool) {
+	p.orchestrator.SuppressProgressLogs(suppress)
+}
+
 // handleGithubIssue handles a new GitHub issue
 func (p *Pilot) handleGithubIssue(ctx context.Context, issue *github.Issue, repo *github.Repository) error {
 	logging.WithComponent("pilot").Info("Received GitHub issue",

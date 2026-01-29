@@ -280,6 +280,12 @@ func (o *Orchestrator) SetAlertProcessor(processor executor.AlertEventProcessor)
 	o.runner.SetAlertProcessor(processor)
 }
 
+// SuppressProgressLogs disables slog output for progress updates.
+// Use this when a visual progress display is active to prevent log spam.
+func (o *Orchestrator) SuppressProgressLogs(suppress bool) {
+	o.runner.SuppressProgressLogs(suppress)
+}
+
 // extractLabelNames extracts label names from Linear labels
 func extractLabelNames(labels []linear.Label) []string {
 	names := make([]string, len(labels))
