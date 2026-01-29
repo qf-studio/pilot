@@ -222,15 +222,18 @@ func (m Model) View() string {
 // renderPanel renders a panel with title in top border
 func renderPanel(title string, content string) string {
 	var b strings.Builder
+	border := borderStyle.Render
 
 	// Top border with title: ╭─ TITLE ─────...─╮
-	titlePart := fmt.Sprintf("─ %s ", title)
-	dashesNeeded := panelWidth - 2 - len(titlePart) // -2 for ╭ and ╮
-	topBorder := borderStyle.Render("╭"+titlePart+strings.Repeat("─", dashesNeeded)+"╮") + "\n"
-	b.WriteString(topBorder)
+	titlePart := "─ " + title + " "
+	dashesNeeded := panelWidth - 2 - len(titlePart)
+	b.WriteString(border("╭" + titlePart + strings.Repeat("─", dashesNeeded) + "╮"))
+	b.WriteString("\n")
 
 	// Empty line (top padding)
-	b.WriteString(borderStyle.Render("│") + strings.Repeat(" ", panelWidth-2) + borderStyle.Render("│") + "\n")
+	emptyLine := "│" + strings.Repeat(" ", panelWidth-2) + "│"
+	b.WriteString(border(emptyLine))
+	b.WriteString("\n")
 
 	// Content lines
 	lines := strings.Split(content, "\n")
@@ -238,26 +241,29 @@ func renderPanel(title string, content string) string {
 		if line == "" {
 			continue
 		}
-		// Pad line to content width
+		// Pad line to content width, then wrap with border
 		paddedLine := padRight(line, contentWidth)
-		b.WriteString(borderStyle.Render("│") + " " + paddedLine + " " + borderStyle.Render("│") + "\n")
+		b.WriteString(border("│") + " " + paddedLine + " " + border("│"))
+		b.WriteString("\n")
 	}
 
 	// Empty line (bottom padding)
-	b.WriteString(borderStyle.Render("│") + strings.Repeat(" ", panelWidth-2) + borderStyle.Render("│") + "\n")
+	b.WriteString(border(emptyLine))
+	b.WriteString("\n")
 
 	// Bottom border
-	b.WriteString(borderStyle.Render("╰" + strings.Repeat("─", panelWidth-2) + "╯"))
+	b.WriteString(border("╰" + strings.Repeat("─", panelWidth-2) + "╯"))
 
 	return b.String()
 }
 
-// padRight pads a string to the specified width
+// padRight pads a string to the specified visual width (handles ANSI codes)
 func padRight(s string, width int) string {
-	if len(s) >= width {
-		return s[:width]
+	visualWidth := lipgloss.Width(s)
+	if visualWidth >= width {
+		return s
 	}
-	return s + strings.Repeat(" ", width-len(s))
+	return s + strings.Repeat(" ", width-visualWidth)
 }
 
 // dotLeader creates a dot-leader line: "Label .............. Value"
@@ -272,6 +278,17 @@ func dotLeader(label string, value string, totalWidth int) string {
 	return prefix + strings.Repeat(".", dotsNeeded) + suffix
 }
 
+// dotLeaderStyled creates a dot-leader with styled value (calculates width before styling)
+func dotLeaderStyled(label string, value string, style lipgloss.Style, totalWidth int) string {
+	prefix := "  " + label + " "
+	suffix := " " + value
+	dotsNeeded := totalWidth - len(prefix) - len(suffix)
+	if dotsNeeded < 3 {
+		dotsNeeded = 3
+	}
+	return prefix + strings.Repeat(".", dotsNeeded) + " " + style.Render(value)
+}
+
 // renderMetrics renders token usage and cost
 func (m Model) renderMetrics() string {
 	var content strings.Builder
@@ -283,8 +300,10 @@ func (m Model) renderMetrics() string {
 	content.WriteString(dotLeader("Total", formatNumber(m.tokenUsage.TotalTokens), contentWidth))
 	content.WriteString("\n")
 
+	// Cost needs special handling - calculate dots with raw value, then style
 	cost := float64(m.tokenUsage.TotalTokens) / 1_000_000 * m.costPerMToken
-	content.WriteString(dotLeader("Est. Cost", costStyle.Render(fmt.Sprintf("$%.4f", cost)), contentWidth))
+	costValue := fmt.Sprintf("$%.4f", cost)
+	content.WriteString(dotLeaderStyled("Est. Cost", costValue, costStyle, contentWidth))
 
 	return renderPanel("TOKEN USAGE", content.String())
 }
