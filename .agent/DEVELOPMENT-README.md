@@ -67,6 +67,7 @@ if _, err := os.Stat(agentDir); err == nil {
 | This file | Every session (navigator index) |
 | `.agent/system/FEATURE-MATRIX.md` | **What's implemented vs not** |
 | `.agent/system/ARCHITECTURE.md` | System design, data flow |
+| `.agent/system/PR-CHECKLIST.md` | **Before merging any PR** |
 | `.agent/tasks/TASK-XX.md` | Active task details |
 | `.agent/sops/*.md` | Before modifying integrations |
 | `.agent/.context-markers/` | Resume after break |
