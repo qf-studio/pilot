@@ -45,10 +45,13 @@ var (
 				Foreground(lipgloss.Color("#30363d"))
 
 	helpStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#6e7681"))
+			Foreground(lipgloss.Color("#8b949e"))
 
 	dimStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#6e7681"))
+			Foreground(lipgloss.Color("#8b949e"))
+
+	labelStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#c9d1d9"))
 
 	costStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#00ff41")).
@@ -352,8 +355,8 @@ func buildTopBorder(title string) string {
 	// Characters: ╭ (1) + ─ (1) + space (1) + TITLE + space (1) + dashes + ╮ (1)
 	// Available for dashes = panelTotalWidth - 5 - len(title)
 	titleUpper := strings.ToUpper(title)
-	prefix := "╭─ " + titleUpper + " "
-	prefixWidth := lipgloss.Width(prefix)
+	prefix := "╭─ "
+	prefixWidth := lipgloss.Width(prefix + titleUpper + " ")
 
 	// Calculate dashes needed (each ─ is 1 visual char)
 	dashCount := panelTotalWidth - prefixWidth - 1 // -1 for ╮
@@ -361,8 +364,8 @@ func buildTopBorder(title string) string {
 		dashCount = 0
 	}
 
-	line := prefix + strings.Repeat("─", dashCount) + "╮"
-	return borderStyle.Render(line)
+	// Style border chars dim, title bright
+	return borderStyle.Render(prefix) + labelStyle.Render(titleUpper) + borderStyle.Render(" "+strings.Repeat("─", dashCount)+"╮")
 }
 
 // buildBottomBorder creates: ╰─────────────────────────────────────────────────╯
@@ -377,8 +380,8 @@ func buildBottomBorder() string {
 func buildEmptyLine() string {
 	// │ + spaces + │
 	spaceCount := panelTotalWidth - 2
-	line := "│" + strings.Repeat(" ", spaceCount) + "│"
-	return borderStyle.Render(line)
+	border := borderStyle.Render("│")
+	return border + strings.Repeat(" ", spaceCount) + border
 }
 
 // buildContentLine creates: │ (space) content padded/truncated (space) │
@@ -389,8 +392,9 @@ func buildContentLine(content string) string {
 	// Pad or truncate content to exact width
 	adjusted := padOrTruncate(content, contentWidth)
 
-	line := "│ " + adjusted + " │"
-	return borderStyle.Render(line)
+	// Only style borders, not content
+	border := borderStyle.Render("│")
+	return border + " " + adjusted + " " + border
 }
 
 // padOrTruncate ensures content is exactly targetWidth visual chars
