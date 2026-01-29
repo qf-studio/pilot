@@ -164,6 +164,7 @@ type Runner struct {
 	webhooks              *webhooks.Manager     // Optional webhook manager for event delivery
 	qualityCheckerFactory QualityCheckerFactory // Optional factory for creating quality checkers
 	modelRouter           *ModelRouter          // Model and timeout routing based on complexity
+	suppressProgressLogs  bool                  // Suppress slog output for progress (use when visual display is active)
 }
 
 // NewRunner creates a new Runner instance with Claude Code backend by default.
@@ -291,6 +292,12 @@ func (r *Runner) RemoveProgressCallback(name string) {
 	r.progressMu.Lock()
 	defer r.progressMu.Unlock()
 	delete(r.progressCallbacks, name)
+}
+
+// SuppressProgressLogs disables slog output for progress updates.
+// Use this when a visual progress display is active to prevent log spam.
+func (r *Runner) SuppressProgressLogs(suppress bool) {
+	r.suppressProgressLogs = suppress
 }
 
 // EmitProgress exposes the progress callback for external callers (e.g., Dispatcher).
@@ -1553,13 +1560,15 @@ func (r *Runner) dispatchWebhook(ctx context.Context, eventType webhooks.EventTy
 
 // reportProgress sends a progress update to all registered callbacks
 func (r *Runner) reportProgress(taskID, phase string, progress int, message string) {
-	// Always log progress for terminal visibility
-	r.log.Info("Task progress",
-		slog.String("task_id", taskID),
-		slog.String("phase", phase),
-		slog.Int("progress", progress),
-		slog.String("message", message),
-	)
+	// Log progress unless suppressed (e.g., when visual progress display is active)
+	if !r.suppressProgressLogs {
+		r.log.Info("Task progress",
+			slog.String("task_id", taskID),
+			slog.String("phase", phase),
+			slog.Int("progress", progress),
+			slog.String("message", message),
+		)
+	}
 
 	// Send to legacy callback (e.g., Telegram) if registered
 	if r.onProgress != nil {

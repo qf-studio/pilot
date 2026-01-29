@@ -1642,3 +1642,35 @@ func TestProgressCallbackIsolation(t *testing.T) {
 		t.Error("Named callback should still be called after OnProgress(nil)")
 	}
 }
+
+// TestSuppressProgressLogs verifies that slog output can be suppressed
+// This is the fix for GH-152: show visual progress instead of log spam
+func TestSuppressProgressLogs(t *testing.T) {
+	runner := NewRunner()
+
+	var callbackReceived bool
+	runner.OnProgress(func(taskID, phase string, progress int, message string) {
+		callbackReceived = true
+	})
+
+	// Suppress logs (simulates visual progress mode)
+	runner.SuppressProgressLogs(true)
+
+	// Emit progress - callback should still be called even when logs suppressed
+	runner.EmitProgress("TASK-TEST", "Testing", 50, "Test message")
+
+	if !callbackReceived {
+		t.Error("Callback should be called even when progress logs are suppressed")
+	}
+
+	// Verify the flag is set correctly
+	if !runner.suppressProgressLogs {
+		t.Error("suppressProgressLogs should be true after SuppressProgressLogs(true)")
+	}
+
+	// Reset suppression
+	runner.SuppressProgressLogs(false)
+	if runner.suppressProgressLogs {
+		t.Error("suppressProgressLogs should be false after SuppressProgressLogs(false)")
+	}
+}

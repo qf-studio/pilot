@@ -167,6 +167,9 @@ func interactiveNewTask(cfg *config.Config) error {
 	runner := executor.NewRunner()
 	progress := executor.NewProgressDisplay(task.ID, taskDesc, true)
 
+	// Suppress slog progress output when visual display is active
+	runner.SuppressProgressLogs(true)
+
 	// Track Navigator mode
 	var detectedNavMode string
 
