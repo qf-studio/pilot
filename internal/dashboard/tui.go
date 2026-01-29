@@ -11,7 +11,8 @@ import (
 
 // Panel width (all panels same width)
 const (
-	panelWidth   = 67 // Content width for all panels
+	panelTotalWidth = 69 // Total visual width including borders
+	panelInnerWidth = 65 // panelTotalWidth - 4 (2 borders + 2 padding spaces)
 )
 
 // Styles (Kali Linux-inspired cyber aesthetic)
@@ -218,71 +219,161 @@ func (m Model) View() string {
 	return b.String()
 }
 
-// panelStyle creates a consistent panel style
-var panelStyle = lipgloss.NewStyle().
-	Border(lipgloss.RoundedBorder()).
-	BorderForeground(lipgloss.Color("#30363d")).
-	Width(panelWidth).
-	Padding(1, 1)
-
-// renderPanel renders a panel with title in top border using lipgloss
+// renderPanel builds a panel manually with guaranteed width
+// Total width: panelTotalWidth (69 chars)
+// Structure: ╭─ TITLE ─...─╮ / │ (space) content (space) │ / ╰─...─╯
 func renderPanel(title string, content string) string {
-	// Use lipgloss to render the box
-	rendered := panelStyle.Render(content)
+	var lines []string
 
-	// Replace top border to include title
-	lines := strings.Split(rendered, "\n")
-	if len(lines) > 0 {
-		// Build new top border with title
-		// Total width = panelWidth, minus 2 for corner chars (╭╮)
-		titlePart := "─ " + title + " "
-		dashCount := panelWidth - len(titlePart) - 2
-		if dashCount < 0 {
-			dashCount = 0
-		}
-		newTop := "╭" + titlePart + strings.Repeat("─", dashCount) + "╮"
-		lines[0] = borderStyle.Render(newTop)
+	// Top border: ╭─ TITLE ─────────────────────────────────────────────────────╮
+	lines = append(lines, buildTopBorder(title))
+
+	// Empty line padding
+	lines = append(lines, buildEmptyLine())
+
+	// Content lines
+	for _, line := range strings.Split(content, "\n") {
+		lines = append(lines, buildContentLine(line))
 	}
+
+	// Empty line padding
+	lines = append(lines, buildEmptyLine())
+
+	// Bottom border
+	lines = append(lines, buildBottomBorder())
 
 	return strings.Join(lines, "\n")
 }
 
-// dotLeader creates a dot-leader line: "Label .............. Value"
+// buildTopBorder creates: ╭─ TITLE ─────...─────╮ with exact panelTotalWidth
+func buildTopBorder(title string) string {
+	// Characters: ╭ (1) + ─ (1) + space (1) + TITLE + space (1) + dashes + ╮ (1)
+	// Available for dashes = panelTotalWidth - 5 - len(title)
+	titleUpper := strings.ToUpper(title)
+	prefix := "╭─ " + titleUpper + " "
+	prefixWidth := lipgloss.Width(prefix)
+
+	// Calculate dashes needed (each ─ is 1 visual char)
+	dashCount := panelTotalWidth - prefixWidth - 1 // -1 for ╮
+	if dashCount < 0 {
+		dashCount = 0
+	}
+
+	line := prefix + strings.Repeat("─", dashCount) + "╮"
+	return borderStyle.Render(line)
+}
+
+// buildBottomBorder creates: ╰─────────────────────────────────────────────────╯
+func buildBottomBorder() string {
+	// ╰ + dashes + ╯
+	dashCount := panelTotalWidth - 2
+	line := "╰" + strings.Repeat("─", dashCount) + "╯"
+	return borderStyle.Render(line)
+}
+
+// buildEmptyLine creates: │                                                                 │
+func buildEmptyLine() string {
+	// │ + spaces + │
+	spaceCount := panelTotalWidth - 2
+	line := "│" + strings.Repeat(" ", spaceCount) + "│"
+	return borderStyle.Render(line)
+}
+
+// buildContentLine creates: │ (space) content padded/truncated (space) │
+func buildContentLine(content string) string {
+	// Available width for content = panelTotalWidth - 4 (│ + space + space + │)
+	contentWidth := panelTotalWidth - 4
+
+	// Pad or truncate content to exact width
+	adjusted := padOrTruncate(content, contentWidth)
+
+	line := "│ " + adjusted + " │"
+	return borderStyle.Render(line)
+}
+
+// padOrTruncate ensures content is exactly targetWidth visual chars
+func padOrTruncate(s string, targetWidth int) string {
+	visualWidth := lipgloss.Width(s)
+
+	if visualWidth == targetWidth {
+		return s
+	}
+
+	if visualWidth > targetWidth {
+		return truncateVisual(s, targetWidth)
+	}
+
+	// Pad with spaces
+	return s + strings.Repeat(" ", targetWidth-visualWidth)
+}
+
+// truncateVisual truncates string to targetWidth visual chars, adding "..." if needed
+func truncateVisual(s string, targetWidth int) string {
+	if targetWidth <= 3 {
+		return strings.Repeat(".", targetWidth)
+	}
+
+	// We need to truncate to targetWidth-3 and add "..."
+	result := ""
+	width := 0
+	for _, r := range s {
+		runeWidth := lipgloss.Width(string(r))
+		if width+runeWidth > targetWidth-3 {
+			break
+		}
+		result += string(r)
+		width += runeWidth
+	}
+
+	// Pad to exactly targetWidth-3 if needed (in case of wide chars)
+	for width < targetWidth-3 {
+		result += " "
+		width++
+	}
+
+	return result + "..."
+}
+
+// dotLeader creates a dot-leader line: "  Label .............. Value"
+// Uses lipgloss.Width() for accurate visual width calculation
 func dotLeader(label string, value string, totalWidth int) string {
-	// Format: "  Label " + dots + " Value"
 	prefix := "  " + label + " "
 	suffix := " " + value
-	dotsNeeded := totalWidth - len(prefix) - len(suffix)
+	prefixWidth := lipgloss.Width(prefix)
+	suffixWidth := lipgloss.Width(suffix)
+	dotsNeeded := totalWidth - prefixWidth - suffixWidth
 	if dotsNeeded < 3 {
 		dotsNeeded = 3
 	}
 	return prefix + strings.Repeat(".", dotsNeeded) + suffix
 }
 
-// dotLeaderStyled creates a dot-leader with styled value (calculates width before styling)
+// dotLeaderStyled creates a dot-leader with styled value
+// Calculates width using raw value, then applies style
 func dotLeaderStyled(label string, value string, style lipgloss.Style, totalWidth int) string {
 	prefix := "  " + label + " "
 	suffix := " " + value
-	dotsNeeded := totalWidth - len(prefix) - len(suffix)
+	prefixWidth := lipgloss.Width(prefix)
+	suffixWidth := lipgloss.Width(suffix)
+	dotsNeeded := totalWidth - prefixWidth - suffixWidth
 	if dotsNeeded < 3 {
 		dotsNeeded = 3
 	}
+	// Apply style to value only (dots and spaces remain unstyled)
 	return prefix + strings.Repeat(".", dotsNeeded) + " " + style.Render(value)
 }
 
 // renderMetrics renders token usage and cost
 func (m Model) renderMetrics() string {
 	var content strings.Builder
-	w := panelWidth - 4 // Account for padding
+	w := panelInnerWidth // Content width between borders
 
 	content.WriteString(dotLeader("Input", formatNumber(m.tokenUsage.InputTokens), w))
 	content.WriteString("\n")
 	content.WriteString(dotLeader("Output", formatNumber(m.tokenUsage.OutputTokens), w))
 	content.WriteString("\n")
-	content.WriteString(dotLeader("Total", formatNumber(m.tokenUsage.TotalTokens), w))
-	content.WriteString("\n")
 
-	// Cost needs special handling - calculate dots with raw value, then style
+	// Cost with styled value
 	cost := float64(m.tokenUsage.TotalTokens) / 1_000_000 * m.costPerMToken
 	costValue := fmt.Sprintf("$%.4f", cost)
 	content.WriteString(dotLeaderStyled("Est. Cost", costValue, costStyle, w))
@@ -364,7 +455,7 @@ func (m Model) renderTask(task TaskDisplay, selected bool) string {
 		selector,
 		status,
 		task.ID,
-		truncate(task.Title, 20),
+		truncateVisual(task.Title, 20),
 		progressBar,
 		task.Progress,
 	)
@@ -409,7 +500,7 @@ func (m Model) renderHistory() string {
 			content.WriteString(fmt.Sprintf("  %s %-7s  %-28s  %6s  %s",
 				status,
 				task.ID,
-				truncate(task.Title, 28),
+				truncateVisual(task.Title, 28),
 				task.Duration,
 				timeAgo,
 			))
@@ -437,7 +528,7 @@ func formatTimeAgo(t time.Time) string {
 // renderLogs renders the logs section
 func (m Model) renderLogs() string {
 	var content strings.Builder
-	w := panelWidth - 8 // Account for padding and indent
+	w := panelInnerWidth - 4 // Account for indent (2 spaces each side)
 
 	if len(m.logs) == 0 {
 		content.WriteString("  No logs yet")
@@ -451,20 +542,13 @@ func (m Model) renderLogs() string {
 			if i > 0 {
 				content.WriteString("\n")
 			}
-			content.WriteString("  " + truncate(log, w))
+			content.WriteString("  " + truncateVisual(log, w))
 		}
 	}
 
 	return renderPanel("LOGS", content.String())
 }
 
-// truncate truncates a string to max length
-func truncate(s string, max int) string {
-	if len(s) <= max {
-		return s
-	}
-	return s[:max-3] + "..."
-}
 
 // UpdateTasks sends updated tasks to the TUI
 func UpdateTasks(tasks []TaskDisplay) tea.Cmd {
