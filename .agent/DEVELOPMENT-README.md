@@ -96,6 +96,8 @@ if _, err := os.Stat(agentDir); err == nil {
 
 ## Current State
 
+**Current Version:** v0.3.2 (Autopilot release)
+
 **Full implementation status:** `.agent/system/FEATURE-MATRIX.md`
 
 ### Key Components
@@ -108,8 +110,26 @@ if _, err := os.Stat(agentDir); err == nil {
 | Alerts Engine | ✅ | Slack, Telegram, webhooks |
 | Quality Gates | ✅ | Test/lint/build gates with retry |
 | Task Dispatcher | ✅ | Per-project queue (GH-46) |
-| Dashboard TUI | ✅ | Token usage, cost, history |
+| Dashboard TUI | ✅ | Token usage, cost, autopilot status |
 | Hot Upgrade | ✅ | Self-update via `pilot upgrade` |
+| **Autopilot** | ✅ | CI monitor, auto-merge, feedback loop (v0.3.2) |
+
+### Autopilot Environments
+
+The `--autopilot` flag controls automation behavior, not project environments:
+
+| Flag | CI Wait | Approval | Use Case |
+|------|---------|----------|----------|
+| `dev` | Skip | No | Fast iteration, trust the bot |
+| `stage` | Yes | No | CI must pass, then auto-merge |
+| `prod` | Yes | Yes | CI + human approval required |
+
+```bash
+# Examples
+pilot start --autopilot=dev --telegram --github    # YOLO mode
+pilot start --autopilot=stage --telegram --github  # Balanced (recommended)
+pilot start --autopilot=prod --telegram --github   # Safe, manual approval
+```
 
 ### Needs Verification
 
@@ -154,6 +174,18 @@ gh pr list --author "@me" --state open
 **For accurate feature status, see:** `.agent/system/FEATURE-MATRIX.md`
 
 ---
+
+## Completed (2026-01-29)
+
+| Item | What |
+|------|------|
+| **v0.3.2** | Autopilot superfeature release |
+| GH-198 | Wire autopilot controller into polling mode |
+| GH-199 | Add Telegram notifications for autopilot events |
+| GH-200 | Unit tests for autopilot components |
+| GH-201 | Add dashboard panel for autopilot status |
+| GH-203 | Fix install.sh URL (was 404) |
+| GH-204 | Created: Improve install.sh PATH handling |
 
 ## Completed (2026-01-28)
 
@@ -237,6 +269,31 @@ make test
 make fmt
 ```
 
+## Release Workflow
+
+**Creating a new release:**
+
+```bash
+# 1. Build all platform binaries
+make build-all
+
+# 2. Create GitHub release with binaries
+gh release create v0.X.Y \
+  bin/pilot-darwin-amd64 \
+  bin/pilot-darwin-arm64 \
+  bin/pilot-linux-amd64 \
+  bin/pilot-linux-arm64 \
+  --title "v0.X.Y - Title" \
+  --notes "Release notes..."
+```
+
+**Installation:**
+```bash
+curl -fsSL https://raw.githubusercontent.com/alekspetrov/pilot/main/install.sh | bash
+```
+
+⚠️ **Known Issue (GH-204):** Install script doesn't auto-configure PATH. Users must manually add `~/.local/bin` to PATH or open new terminal after install.
+
 ## Configuration
 
 Copy `configs/pilot.example.yaml` to `~/.pilot/config.yaml`.
@@ -267,8 +324,13 @@ Required environment variables:
 ## CLI Flags
 
 ### `pilot start`
+- `--autopilot=ENV` - Enable autopilot mode: `dev`, `stage`, `prod`
 - `--dashboard` - Launch TUI dashboard with live task monitoring
+- `--telegram` - Enable Telegram polling
+- `--github` - Enable GitHub polling
 - `--daemon` - Run in background
+- `--sequential` - Wait for PR merge before next issue (default)
+- `--no-pr` - Skip PR creation
 
 ### `pilot task`
 - `--verbose` - Stream raw Claude Code JSON output
