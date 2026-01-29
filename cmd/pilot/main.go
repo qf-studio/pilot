@@ -313,7 +313,7 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 	if hasTelegram {
 		var allowedIDs []int64
 		if cfg.Adapters.Telegram.ChatID != "" {
-			if id, err := parseIntID(cfg.Adapters.Telegram.ChatID); err == nil {
+			if id, err := parseInt64(cfg.Adapters.Telegram.ChatID); err == nil {
 				allowedIDs = append(allowedIDs, id)
 			}
 		}
@@ -380,6 +380,11 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 	if err != nil {
 		logging.WithComponent("start").Warn("Failed to open memory store for dispatcher", slog.Any("error", err))
 	} else {
+		defer func() {
+			if store != nil {
+				_ = store.Close()
+			}
+		}()
 		dispatcher = executor.NewDispatcher(store, runner, nil)
 		if err := dispatcher.Start(); err != nil {
 			logging.WithComponent("start").Warn("Failed to start dispatcher", slog.Any("error", err))
@@ -488,9 +493,6 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 	if dispatcher != nil {
 		fmt.Println("📋 Stopping task dispatcher...")
 		dispatcher.Stop()
-	}
-	if store != nil {
-		_ = store.Close()
 	}
 
 	return nil
@@ -1212,11 +1214,6 @@ func killExistingBotPS(currentPID int, pattern string) error {
 	}
 
 	return nil
-}
-
-// parseIntID parses a string ID to int64
-func parseIntID(s string) (int64, error) {
-	return parseInt64(s)
 }
 
 // parseInt64 parses a string to int64
