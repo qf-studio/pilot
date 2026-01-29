@@ -538,22 +538,22 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 			}
 		}()
 
-		// Add startup log
-		program.Send(dashboard.AddLog(fmt.Sprintf("🚀 Pilot v%s started - Polling mode", version)))
-		if hasTelegram {
-			program.Send(dashboard.AddLog("📱 Telegram polling active"))
-		}
-		hasGitHubPolling := cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.Enabled &&
-			cfg.Adapters.GitHub.Polling != nil && cfg.Adapters.GitHub.Polling.Enabled
-		if hasGitHubPolling {
-			program.Send(dashboard.AddLog(fmt.Sprintf("🐙 GitHub polling: %s", cfg.Adapters.GitHub.Repo)))
-		}
+		// Add startup logs after TUI starts (Send blocks if Run hasn't been called)
+		go func() {
+			time.Sleep(100 * time.Millisecond) // Wait for Run() to start
+			program.Send(dashboard.AddLog(fmt.Sprintf("🚀 Pilot v%s started - Polling mode", version)))
+			if hasTelegram {
+				program.Send(dashboard.AddLog("📱 Telegram polling active"))
+			}
+			hasGitHubPolling := cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.Enabled &&
+				cfg.Adapters.GitHub.Polling != nil && cfg.Adapters.GitHub.Polling.Enabled
+			if hasGitHubPolling {
+				program.Send(dashboard.AddLog(fmt.Sprintf("🐙 GitHub polling: %s", cfg.Adapters.GitHub.Repo)))
+			}
+		}()
 
 		// Run TUI (blocks until quit via 'q' or Ctrl+C)
-		fmt.Println(">>> Calling program.Run()...")
-		model, err := program.Run()
-		fmt.Printf(">>> program.Run() returned: model=%v, err=%v\n", model, err)
-		if err != nil {
+		if _, err := program.Run(); err != nil {
 			cancel() // Stop goroutines
 			return fmt.Errorf("dashboard error: %w", err)
 		}
