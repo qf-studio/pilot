@@ -24,6 +24,7 @@ import (
 	"github.com/alekspetrov/pilot/internal/alerts"
 	"github.com/alekspetrov/pilot/internal/banner"
 	"github.com/alekspetrov/pilot/internal/briefs"
+	"github.com/alekspetrov/pilot/internal/budget"
 	"github.com/alekspetrov/pilot/internal/config"
 	"github.com/alekspetrov/pilot/internal/dashboard"
 	"github.com/alekspetrov/pilot/internal/executor"
@@ -1051,6 +1052,7 @@ func newTaskCmd() *cobra.Command {
 	var createPR bool
 	var noPR bool
 	var enableAlerts bool
+	var enableBudget bool
 
 	cmd := &cobra.Command{
 		Use:   "task [description]",
@@ -1180,6 +1182,58 @@ Examples:
 				fmt.Println(prompt)
 				fmt.Println("─────────────────────────────────────")
 				return nil
+			}
+
+			// Check budget before task execution if --budget flag is set
+			if enableBudget {
+				// Load config for budget
+				configPath := cfgFile
+				if configPath == "" {
+					configPath = config.DefaultConfigPath()
+				}
+
+				budgetCfg, err := config.Load(configPath)
+				if err != nil {
+					return fmt.Errorf("failed to load config for budget: %w", err)
+				}
+
+				// Get budget config or use defaults
+				budgetConfig := budgetCfg.Budget
+				if budgetConfig == nil {
+					budgetConfig = budget.DefaultConfig()
+				}
+
+				// Enable budget check even if not enabled in config (flag overrides)
+				budgetConfig.Enabled = true
+
+				// Open memory store for usage data
+				store, err := memory.NewStore(budgetCfg.Memory.Path)
+				if err != nil {
+					return fmt.Errorf("failed to open memory store for budget: %w", err)
+				}
+				defer func() { _ = store.Close() }()
+
+				// Create budget enforcer and check
+				enforcer := budget.NewEnforcer(budgetConfig, store)
+				result, err := enforcer.CheckBudget(ctx, "", "")
+				if err != nil {
+					return fmt.Errorf("budget check failed: %w", err)
+				}
+
+				if !result.Allowed {
+					fmt.Println()
+					fmt.Println("🚫 Task Blocked by Budget")
+					fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+					fmt.Printf("   Reason: %s\n", result.Reason)
+					fmt.Println()
+					fmt.Println("   Run 'pilot budget status' for details")
+					fmt.Println("   Run 'pilot budget reset' to reset daily counters")
+					fmt.Println()
+					return fmt.Errorf("task blocked by budget: %s", result.Reason)
+				}
+
+				// Show budget status
+				fmt.Printf("   Budget:    ✓ $%.2f daily / $%.2f monthly remaining\n", result.DailyLeft, result.MonthlyLeft)
 			}
 
 			// Initialize alerts engine if --alerts flag is set
@@ -1408,6 +1462,7 @@ Examples:
 	cmd.Flags().BoolVar(&createPR, "create-pr", false, "Create GitHub PR (default: true, kept for backward compatibility)")
 	cmd.Flags().BoolVar(&noPR, "no-pr", false, "Skip PR creation")
 	cmd.Flags().BoolVar(&enableAlerts, "alerts", false, "Enable alerts for task execution")
+	cmd.Flags().BoolVar(&enableBudget, "budget", false, "Enable budget enforcement for this task")
 
 	return cmd
 }
@@ -2436,8 +2491,8 @@ func newReplayAnalyzeCmd() *cobra.Command {
 
 func newReplayExportCmd() *cobra.Command {
 	var (
-		format      string
-		output      string
+		format       string
+		output       string
 		withAnalysis bool
 	)
 
@@ -2612,6 +2667,7 @@ func checkForUpdates() {
 		fmt.Println()
 	}
 }
+
 // runDashboardMode runs the TUI dashboard with live task updates
 func runDashboardMode(p *pilot.Pilot, cfg *config.Config) error {
 	// Create TUI program
