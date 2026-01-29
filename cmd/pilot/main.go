@@ -550,7 +550,10 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 		}
 
 		// Run TUI (blocks until quit via 'q' or Ctrl+C)
-		if _, err := program.Run(); err != nil {
+		fmt.Println(">>> Calling program.Run()...")
+		model, err := program.Run()
+		fmt.Printf(">>> program.Run() returned: model=%v, err=%v\n", model, err)
+		if err != nil {
 			cancel() // Stop goroutines
 			return fmt.Errorf("dashboard error: %w", err)
 		}
