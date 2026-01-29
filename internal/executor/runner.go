@@ -406,34 +406,61 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 				slog.Duration("timeout", timeout),
 				slog.Duration("duration", duration),
 			)
+			r.reportProgress(task.ID, "Timeout", 100, result.Error)
+
+			// Emit task timeout event with complexity metadata
+			r.emitAlertEvent(AlertEvent{
+				Type:      AlertEventTypeTaskTimeout,
+				TaskID:    task.ID,
+				TaskTitle: task.Title,
+				Project:   task.ProjectPath,
+				Error:     result.Error,
+				Metadata: map[string]string{
+					"complexity":  complexity.String(),
+					"timeout":     timeout.String(),
+					"duration_ms": fmt.Sprintf("%d", duration.Milliseconds()),
+				},
+				Timestamp: time.Now(),
+			})
+
+			// Dispatch webhook for task timeout
+			r.dispatchWebhook(ctx, webhooks.EventTaskTimeout, webhooks.TaskTimeoutData{
+				TaskID:     task.ID,
+				Title:      task.Title,
+				Project:    task.ProjectPath,
+				Duration:   duration,
+				Timeout:    timeout,
+				Complexity: complexity.String(),
+				Phase:      state.phase,
+			})
 		} else {
 			result.Error = err.Error()
 			log.Error("Backend execution failed",
 				slog.String("error", result.Error),
 				slog.Duration("duration", duration),
 			)
+			r.reportProgress(task.ID, "Failed", 100, result.Error)
+
+			// Emit task failed event
+			r.emitAlertEvent(AlertEvent{
+				Type:      AlertEventTypeTaskFailed,
+				TaskID:    task.ID,
+				TaskTitle: task.Title,
+				Project:   task.ProjectPath,
+				Error:     result.Error,
+				Timestamp: time.Now(),
+			})
+
+			// Dispatch webhook for task failed (non-timeout)
+			r.dispatchWebhook(ctx, webhooks.EventTaskFailed, webhooks.TaskFailedData{
+				TaskID:   task.ID,
+				Title:    task.Title,
+				Project:  task.ProjectPath,
+				Duration: duration,
+				Error:    result.Error,
+				Phase:    state.phase,
+			})
 		}
-		r.reportProgress(task.ID, "Failed", 100, result.Error)
-
-		// Emit task failed event
-		r.emitAlertEvent(AlertEvent{
-			Type:      AlertEventTypeTaskFailed,
-			TaskID:    task.ID,
-			TaskTitle: task.Title,
-			Project:   task.ProjectPath,
-			Error:     result.Error,
-			Timestamp: time.Now(),
-		})
-
-		// Dispatch webhook for task failed
-		r.dispatchWebhook(ctx, webhooks.EventTaskFailed, webhooks.TaskFailedData{
-			TaskID:   task.ID,
-			Title:    task.Title,
-			Project:  task.ProjectPath,
-			Duration: duration,
-			Error:    result.Error,
-			Phase:    state.phase,
-		})
 
 		// Finish recording with failed status
 		if recorder != nil {

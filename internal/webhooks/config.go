@@ -16,6 +16,7 @@ const (
 	EventTaskProgress  EventType = "task.progress"
 	EventTaskCompleted EventType = "task.completed"
 	EventTaskFailed    EventType = "task.failed"
+	EventTaskTimeout   EventType = "task.timeout"
 
 	// PR events
 	EventPRCreated EventType = "pr.created"
@@ -31,6 +32,7 @@ func AllEventTypes() []EventType {
 		EventTaskProgress,
 		EventTaskCompleted,
 		EventTaskFailed,
+		EventTaskTimeout,
 		EventPRCreated,
 		EventBudgetWarning,
 	}

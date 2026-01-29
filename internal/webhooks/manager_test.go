@@ -501,3 +501,82 @@ func TestManager_Dispatch_HeadersSet(t *testing.T) {
 		t.Errorf("expected X-Custom-Header custom-value, got %s", headers.Get("X-Custom-Header"))
 	}
 }
+
+func TestManager_Dispatch_TimeoutEvent(t *testing.T) {
+	// Verify task.timeout events can be dispatched and filtered
+	received := make(chan EventType, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var event Event
+		if err := json.NewDecoder(r.Body).Decode(&event); err != nil {
+			t.Errorf("failed to decode event: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		received <- event.Type
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	config := &Config{
+		Enabled: true,
+		Endpoints: []*EndpointConfig{
+			{
+				ID:      "ep_timeout",
+				Name:    "Timeout Endpoint",
+				URL:     server.URL,
+				Events:  []EventType{EventTaskTimeout}, // Subscribe only to timeout events
+				Enabled: true,
+			},
+		},
+	}
+
+	manager := NewManager(config, nil)
+	ctx := context.Background()
+
+	// Dispatch timeout event
+	event := NewEvent(EventTaskTimeout, &TaskTimeoutData{
+		TaskID:     "task-123",
+		Title:      "Test Task",
+		Project:    "test-project",
+		Duration:   5 * time.Minute,
+		Timeout:    5 * time.Minute,
+		Complexity: "medium",
+		Phase:      "Implementing",
+	})
+
+	results := manager.Dispatch(ctx, event)
+
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if !results[0].Success {
+		t.Errorf("expected success, got error: %v", results[0].Error)
+	}
+
+	// Verify event was received
+	select {
+	case evtType := <-received:
+		if evtType != EventTaskTimeout {
+			t.Errorf("expected event type %s, got %s", EventTaskTimeout, evtType)
+		}
+	case <-time.After(time.Second):
+		t.Error("timeout waiting for event")
+	}
+}
+
+func TestAllEventTypes_IncludesTimeout(t *testing.T) {
+	allTypes := AllEventTypes()
+
+	// Check that task.timeout is included
+	found := false
+	for _, et := range allTypes {
+		if et == EventTaskTimeout {
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		t.Error("AllEventTypes() should include EventTaskTimeout")
+	}
+}

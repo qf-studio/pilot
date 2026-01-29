@@ -33,4 +33,5 @@ const (
 	AlertEventTypeTaskCompleted AlertEventType = "task_completed"
 	AlertEventTypeTaskFailed    AlertEventType = "task_failed"
 	AlertEventTypeTaskRetry     AlertEventType = "task_retry"
+	AlertEventTypeTaskTimeout   AlertEventType = "task_timeout"
 )

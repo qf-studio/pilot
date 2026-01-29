@@ -9,9 +9,14 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/alekspetrov/pilot/internal/logging"
 )
+
+// GracePeriod is the time to wait after context cancellation before hard killing the process.
+// This allows the process to clean up gracefully if it responds to SIGTERM.
+const GracePeriod = 5 * time.Second
 
 // ClaudeCodeBackend implements Backend for Claude Code CLI.
 type ClaudeCodeBackend struct {
@@ -85,6 +90,9 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, opts ExecuteOptions) (*
 	var stderrOutput strings.Builder
 	var wg sync.WaitGroup
 
+	// Channel to signal command completion
+	cmdDone := make(chan struct{})
+
 	// Read stdout (stream-json events)
 	wg.Add(1)
 	go func() {
@@ -138,11 +146,60 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, opts ExecuteOptions) (*
 		}
 	}()
 
+	// Monitor context for timeout and handle hard kill
+	go func() {
+		select {
+		case <-cmdDone:
+			// Command completed normally, nothing to do
+			return
+		case <-ctx.Done():
+			// Context cancelled (timeout or explicit cancellation)
+			// exec.CommandContext will send SIGTERM/interrupt, wait grace period then SIGKILL
+			if cmd.Process == nil {
+				return
+			}
+
+			b.log.Warn("Context cancelled, waiting grace period before hard kill",
+				slog.Int("pid", cmd.Process.Pid),
+				slog.Duration("grace_period", GracePeriod),
+			)
+
+			// Wait for grace period or command to exit
+			select {
+			case <-cmdDone:
+				// Process exited gracefully after signal
+				b.log.Debug("Process exited gracefully after context cancellation",
+					slog.Int("pid", cmd.Process.Pid),
+				)
+				return
+			case <-time.After(GracePeriod):
+				// Grace period expired, hard kill
+				if cmd.Process != nil {
+					b.log.Warn("Grace period expired, sending SIGKILL",
+						slog.Int("pid", cmd.Process.Pid),
+					)
+					if err := cmd.Process.Kill(); err != nil {
+						b.log.Error("Failed to kill process",
+							slog.Int("pid", cmd.Process.Pid),
+							slog.Any("error", err),
+						)
+					} else {
+						b.log.Info("Process killed successfully",
+							slog.Int("pid", cmd.Process.Pid),
+						)
+					}
+				}
+			}
+		}
+	}()
+
 	// Wait for output readers
 	wg.Wait()
 
 	// Wait for command to complete
 	err = cmd.Wait()
+	close(cmdDone) // Signal that command is done
+
 	if err != nil {
 		result.Success = false
 		if result.Error == "" {

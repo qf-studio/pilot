@@ -58,6 +58,18 @@ type TaskFailedData struct {
 	Phase    string        `json:"phase,omitempty"`
 }
 
+// TaskTimeoutData is the payload for task.timeout events.
+// This is a specific failure case where the task exceeded its configured timeout.
+type TaskTimeoutData struct {
+	TaskID     string        `json:"task_id"`
+	Title      string        `json:"title"`
+	Project    string        `json:"project"`
+	Duration   time.Duration `json:"duration_ms"`
+	Timeout    time.Duration `json:"timeout_ms"`
+	Complexity string        `json:"complexity"` // trivial, simple, medium, complex
+	Phase      string        `json:"phase,omitempty"`
+}
+
 // PRCreatedData is the payload for pr.created events.
 type PRCreatedData struct {
 	TaskID   string `json:"task_id"`
