@@ -325,7 +325,7 @@ make lint     # golangci-lint
 make dev      # Build + run with hot reload
 ```
 
-Binary versioning: `v0.2.0-{commits}-g{sha}`
+Binary versioning: `v0.3.0-{commits}-g{sha}`
 
 ## Security Considerations
 
