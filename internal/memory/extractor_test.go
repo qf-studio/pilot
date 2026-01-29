@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -305,15 +306,91 @@ func TestExtractWorkflowPatterns(t *testing.T) {
 }
 
 func TestSaveExtractedPatterns(t *testing.T) {
-	// Skip: Production code has a deadlock bug in GlobalPatternStore.Add()
-	// The Add() method holds a write Lock then calls save() which tries RLock
-	// This test exposes the bug but we're not fixing production code here
-	t.Skip("Skipping due to known deadlock in GlobalPatternStore.Add()")
+	tmpDir, err := os.MkdirTemp("", "extractor-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	store, _ := NewStore(tmpDir)
+	defer func() { _ = store.Close() }()
+
+	patternStore, _ := NewGlobalPatternStore(tmpDir)
+	extractor := NewPatternExtractor(patternStore, store)
+	ctx := context.Background()
+
+	result := &ExtractionResult{
+		ExecutionID: "test-exec",
+		ProjectPath: "/test/project",
+		Patterns: []*ExtractedPattern{
+			{
+				Type:        PatternTypeCode,
+				Title:       "Test Pattern",
+				Description: "A test pattern",
+				Examples:    []string{"example1"},
+				Confidence:  0.8,
+				Context:     "Go code",
+			},
+		},
+		AntiPatterns: []*ExtractedPattern{
+			{
+				Type:        PatternTypeError,
+				Title:       "Nil pointer",
+				Description: "Nil pointer dereference",
+				Confidence:  0.7,
+			},
+		},
+	}
+
+	if err := extractor.SaveExtractedPatterns(ctx, result); err != nil {
+		t.Fatalf("SaveExtractedPatterns() error = %v", err)
+	}
+
+	// Verify patterns were saved (1 pattern + 1 anti-pattern)
+	if patternStore.Count() != 2 {
+		t.Errorf("PatternStore.Count() = %d, want 2", patternStore.Count())
+	}
+
+	// Verify anti-pattern has correct prefix
+	errorPatterns := patternStore.GetByType(PatternTypeError)
+	if len(errorPatterns) != 1 {
+		t.Fatalf("Expected 1 error pattern, got %d", len(errorPatterns))
+	}
+	if !strings.HasPrefix(errorPatterns[0].Title, "[ANTI]") {
+		t.Errorf("Anti-pattern title should have [ANTI] prefix, got %q", errorPatterns[0].Title)
+	}
 }
 
 func TestExtractAndSave(t *testing.T) {
-	// Skip: Production code has a deadlock bug in GlobalPatternStore.Add()
-	t.Skip("Skipping due to known deadlock in GlobalPatternStore.Add()")
+	tmpDir, err := os.MkdirTemp("", "extractor-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	store, _ := NewStore(tmpDir)
+	defer func() { _ = store.Close() }()
+
+	patternStore, _ := NewGlobalPatternStore(tmpDir)
+	extractor := NewPatternExtractor(patternStore, store)
+	ctx := context.Background()
+
+	exec := &Execution{
+		ID:          "extract-save-exec",
+		ProjectPath: "/test/project",
+		Status:      "completed",
+		Output:      "using context.Context in Handler added error handling for Validate",
+		Error:       "",
+	}
+
+	if err := extractor.ExtractAndSave(ctx, exec); err != nil {
+		t.Fatalf("ExtractAndSave() error = %v", err)
+	}
+
+	// Should have extracted at least the context pattern
+	if patternStore.Count() < 1 {
+		t.Errorf("Expected at least 1 pattern to be saved, got %d", patternStore.Count())
+	}
 }
 
 func TestExtractAndSave_NoPatterns(t *testing.T) {
@@ -424,11 +501,95 @@ func TestParseAnalysisResponse(t *testing.T) {
 }
 
 func TestMergePattern_DeduplicatesProjects(t *testing.T) {
-	// Skip: Production code has a deadlock bug in GlobalPatternStore.Add()
-	t.Skip("Skipping due to known deadlock in GlobalPatternStore.Add()")
+	tmpDir, err := os.MkdirTemp("", "extractor-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	store, _ := NewStore(tmpDir)
+	defer func() { _ = store.Close() }()
+
+	patternStore, _ := NewGlobalPatternStore(tmpDir)
+	extractor := NewPatternExtractor(patternStore, store)
+	ctx := context.Background()
+
+	// Save pattern twice from same project
+	result := &ExtractionResult{
+		ExecutionID: "test-exec",
+		ProjectPath: "/test/project",
+		Patterns: []*ExtractedPattern{
+			{Type: PatternTypeCode, Title: "Dedupe Test", Description: "Test", Confidence: 0.8},
+		},
+	}
+
+	if err := extractor.SaveExtractedPatterns(ctx, result); err != nil {
+		t.Fatalf("SaveExtractedPatterns() first call error = %v", err)
+	}
+
+	// Save again with same project
+	if err := extractor.SaveExtractedPatterns(ctx, result); err != nil {
+		t.Fatalf("SaveExtractedPatterns() second call error = %v", err)
+	}
+
+	// Should still only have 1 pattern with 1 project (deduplicated)
+	patterns := patternStore.GetByType(PatternTypeCode)
+	if len(patterns) != 1 {
+		t.Fatalf("Expected 1 pattern, got %d", len(patterns))
+	}
+
+	if len(patterns[0].Projects) != 1 {
+		t.Errorf("Expected 1 project (deduplicated), got %d", len(patterns[0].Projects))
+	}
 }
 
 func TestMergePattern_AddsNewProjects(t *testing.T) {
-	// Skip: Production code has a deadlock bug in GlobalPatternStore.Add()
-	t.Skip("Skipping due to known deadlock in GlobalPatternStore.Add()")
+	tmpDir, err := os.MkdirTemp("", "extractor-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	store, _ := NewStore(tmpDir)
+	defer func() { _ = store.Close() }()
+
+	patternStore, _ := NewGlobalPatternStore(tmpDir)
+	extractor := NewPatternExtractor(patternStore, store)
+	ctx := context.Background()
+
+	// Save pattern from first project
+	result1 := &ExtractionResult{
+		ExecutionID: "exec-1",
+		ProjectPath: "/project/one",
+		Patterns: []*ExtractedPattern{
+			{Type: PatternTypeCode, Title: "Multi-Project Pattern", Description: "Test", Confidence: 0.8},
+		},
+	}
+
+	if err := extractor.SaveExtractedPatterns(ctx, result1); err != nil {
+		t.Fatalf("SaveExtractedPatterns() first project error = %v", err)
+	}
+
+	// Save same pattern from second project
+	result2 := &ExtractionResult{
+		ExecutionID: "exec-2",
+		ProjectPath: "/project/two",
+		Patterns: []*ExtractedPattern{
+			{Type: PatternTypeCode, Title: "Multi-Project Pattern", Description: "Test", Confidence: 0.8},
+		},
+	}
+
+	if err := extractor.SaveExtractedPatterns(ctx, result2); err != nil {
+		t.Fatalf("SaveExtractedPatterns() second project error = %v", err)
+	}
+
+	// Should have 1 pattern with 2 projects
+	patterns := patternStore.GetByType(PatternTypeCode)
+	if len(patterns) != 1 {
+		t.Fatalf("Expected 1 merged pattern, got %d", len(patterns))
+	}
+
+	if len(patterns[0].Projects) != 2 {
+		t.Errorf("Expected 2 projects, got %d", len(patterns[0].Projects))
+	}
 }

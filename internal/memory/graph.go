@@ -65,14 +65,19 @@ func (kg *KnowledgeGraph) load() error {
 	return nil
 }
 
-// save persists the graph to disk
+// save persists the graph to disk (acquires read lock)
 func (kg *KnowledgeGraph) save() error {
 	kg.mu.RLock()
+	defer kg.mu.RUnlock()
+	return kg.saveUnlocked()
+}
+
+// saveUnlocked persists the graph to disk (caller must hold lock)
+func (kg *KnowledgeGraph) saveUnlocked() error {
 	nodes := make([]*GraphNode, 0, len(kg.nodes))
 	for _, node := range kg.nodes {
 		nodes = append(nodes, node)
 	}
-	kg.mu.RUnlock()
 
 	data, err := json.MarshalIndent(nodes, "", "  ")
 	if err != nil {
@@ -100,7 +105,7 @@ func (kg *KnowledgeGraph) Add(node *GraphNode) error {
 	node.UpdatedAt = now
 
 	kg.nodes[node.ID] = node
-	return kg.save()
+	return kg.saveUnlocked()
 }
 
 // Get retrieves a node by ID
@@ -172,7 +177,7 @@ func (kg *KnowledgeGraph) Remove(id string) error {
 	defer kg.mu.Unlock()
 
 	delete(kg.nodes, id)
-	return kg.save()
+	return kg.saveUnlocked()
 }
 
 // Count returns the number of nodes

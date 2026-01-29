@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -350,8 +351,34 @@ func TestSurfaceHighValuePatterns(t *testing.T) {
 }
 
 func TestLearnFromDiff(t *testing.T) {
-	// Skip: Production code has a deadlock bug in GlobalPatternStore.Add()
-	t.Skip("Skipping due to known deadlock in GlobalPatternStore.Add()")
+	tmpDir, err := os.MkdirTemp("", "feedback-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	store, _ := NewStore(tmpDir)
+	defer func() { _ = store.Close() }()
+
+	patternStore, _ := NewGlobalPatternStore(tmpDir)
+	extractor := NewPatternExtractor(patternStore, store)
+
+	loop := NewLearningLoop(store, extractor, nil)
+	ctx := context.Background()
+
+	// Provide a diff that matches pattern extraction rules
+	diff := `+ using context.Context in Handler
++ added error handling for validateInput`
+
+	err = loop.LearnFromDiff(ctx, "/test/project", diff, true)
+	if err != nil {
+		t.Fatalf("LearnFromDiff failed: %v", err)
+	}
+
+	// Should have extracted patterns from the diff
+	if patternStore.Count() < 1 {
+		t.Errorf("Expected at least 1 pattern to be extracted from diff, got %d", patternStore.Count())
+	}
 }
 
 func TestBoostPatternConfidence(t *testing.T) {
@@ -450,8 +477,40 @@ func TestFeedbackOutcomeConstants(t *testing.T) {
 }
 
 func TestRecordExecution_WithExtractor(t *testing.T) {
-	// Skip: Production code has a deadlock bug in GlobalPatternStore.Add()
-	t.Skip("Skipping due to known deadlock in GlobalPatternStore.Add()")
+	tmpDir, err := os.MkdirTemp("", "feedback-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	store, _ := NewStore(tmpDir)
+	defer func() { _ = store.Close() }()
+
+	patternStore, _ := NewGlobalPatternStore(tmpDir)
+	extractor := NewPatternExtractor(patternStore, store)
+
+	loop := NewLearningLoop(store, extractor, nil)
+	ctx := context.Background()
+
+	// Create an execution with pattern-extractable output
+	exec := &Execution{
+		ID:          "extractor-exec",
+		TaskID:      "task-1",
+		ProjectPath: "/test/project",
+		Status:      "completed",
+		Output:      "using context.Context in Handler added error handling for validateUser",
+	}
+	_ = store.SaveExecution(exec)
+
+	err = loop.RecordExecution(ctx, exec, nil)
+	if err != nil {
+		t.Fatalf("RecordExecution failed: %v", err)
+	}
+
+	// The extractor should have run and saved patterns
+	if patternStore.Count() < 1 {
+		t.Errorf("Expected at least 1 pattern from extractor, got %d", patternStore.Count())
+	}
 }
 
 func TestRecordExecution_WithMultiplePatterns(t *testing.T) {
@@ -581,8 +640,36 @@ func TestPatternPerformance_SuccessRate(t *testing.T) {
 }
 
 func TestLearnFromDiff_Failed(t *testing.T) {
-	// Skip: Production code has a deadlock bug in GlobalPatternStore.Add()
-	t.Skip("Skipping due to known deadlock in GlobalPatternStore.Add()")
+	tmpDir, err := os.MkdirTemp("", "feedback-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	store, _ := NewStore(tmpDir)
+	defer func() { _ = store.Close() }()
+
+	patternStore, _ := NewGlobalPatternStore(tmpDir)
+	extractor := NewPatternExtractor(patternStore, store)
+
+	loop := NewLearningLoop(store, extractor, nil)
+	ctx := context.Background()
+
+	// Provide a diff with error patterns for failed execution
+	diff := `- forgot to handle error
++ nil pointer dereference`
+
+	// LearnFromDiff with success=false creates a "failed" execution
+	// The extractor only works on "completed" executions, so this will error
+	err = loop.LearnFromDiff(ctx, "/test/project", diff, false)
+	if err == nil {
+		t.Error("LearnFromDiff with failed execution should return error")
+	}
+
+	// Verify the error is about execution status
+	if err != nil && !strings.Contains(err.Error(), "completed") {
+		t.Errorf("Expected error about completed executions, got: %v", err)
+	}
 }
 
 func TestApplyDecay_StalePatterns(t *testing.T) {

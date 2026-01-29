@@ -79,14 +79,19 @@ func (s *GlobalPatternStore) load() error {
 	return nil
 }
 
-// save persists patterns to disk
+// save persists patterns to disk (acquires read lock)
 func (s *GlobalPatternStore) save() error {
 	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.saveUnlocked()
+}
+
+// saveUnlocked persists patterns to disk (caller must hold lock)
+func (s *GlobalPatternStore) saveUnlocked() error {
 	patterns := make([]*GlobalPattern, 0, len(s.patterns))
 	for _, pattern := range s.patterns {
 		patterns = append(patterns, pattern)
 	}
-	s.mu.RUnlock()
 
 	data, err := json.MarshalIndent(patterns, "", "  ")
 	if err != nil {
@@ -116,7 +121,7 @@ func (s *GlobalPatternStore) Add(pattern *GlobalPattern) error {
 	pattern.UpdatedAt = now
 
 	s.patterns[pattern.ID] = pattern
-	return s.save()
+	return s.saveUnlocked()
 }
 
 // Get retrieves a pattern by ID
@@ -174,7 +179,7 @@ func (s *GlobalPatternStore) IncrementUse(id string) error {
 	if pattern, ok := s.patterns[id]; ok {
 		pattern.Uses++
 		pattern.UpdatedAt = time.Now()
-		return s.save()
+		return s.saveUnlocked()
 	}
 
 	return fmt.Errorf("pattern not found: %s", id)
@@ -186,7 +191,7 @@ func (s *GlobalPatternStore) Remove(id string) error {
 	defer s.mu.Unlock()
 
 	delete(s.patterns, id)
-	return s.save()
+	return s.saveUnlocked()
 }
 
 // Count returns the number of patterns
