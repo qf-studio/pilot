@@ -4,12 +4,13 @@ import "time"
 
 // Config holds GitHub adapter configuration
 type Config struct {
-	Enabled       bool           `yaml:"enabled"`
-	Token         string         `yaml:"token"`          // Personal Access Token or GitHub App token
-	WebhookSecret string         `yaml:"webhook_secret"` // For HMAC signature verification
-	PilotLabel    string         `yaml:"pilot_label"`
-	Repo          string         `yaml:"repo"`    // Default repo in "owner/repo" format
-	Polling       *PollingConfig `yaml:"polling"` // Polling configuration
+	Enabled           bool                     `yaml:"enabled"`
+	Token             string                   `yaml:"token"`          // Personal Access Token or GitHub App token
+	WebhookSecret     string                   `yaml:"webhook_secret"` // For HMAC signature verification
+	PilotLabel        string                   `yaml:"pilot_label"`
+	Repo              string                   `yaml:"repo"`                // Default repo in "owner/repo" format
+	Polling           *PollingConfig           `yaml:"polling"`             // Polling configuration
+	StaleLabelCleanup *StaleLabelCleanupConfig `yaml:"stale_label_cleanup"` // Auto-cleanup stale labels
 }
 
 // PollingConfig holds GitHub polling settings
@@ -17,6 +18,13 @@ type PollingConfig struct {
 	Enabled  bool          `yaml:"enabled"`
 	Interval time.Duration `yaml:"interval"` // Poll interval (default 30s)
 	Label    string        `yaml:"label"`    // Label to watch for (default: pilot)
+}
+
+// StaleLabelCleanupConfig holds settings for auto-cleanup of stale pilot-in-progress labels
+type StaleLabelCleanupConfig struct {
+	Enabled   bool          `yaml:"enabled"`
+	Interval  time.Duration `yaml:"interval"`  // How often to check for stale labels (default: 30m)
+	Threshold time.Duration `yaml:"threshold"` // How long before a label is considered stale (default: 1h)
 }
 
 // DefaultConfig returns default GitHub configuration
@@ -28,6 +36,11 @@ func DefaultConfig() *Config {
 			Enabled:  false,
 			Interval: 30 * time.Second,
 			Label:    "pilot",
+		},
+		StaleLabelCleanup: &StaleLabelCleanupConfig{
+			Enabled:   true,
+			Interval:  30 * time.Minute,
+			Threshold: 1 * time.Hour,
 		},
 	}
 }

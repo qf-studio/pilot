@@ -46,10 +46,10 @@ type Poller struct {
 	logger            *slog.Logger
 
 	// Sequential mode configuration
-	executionMode ExecutionMode
-	mergeWaiter   *MergeWaiter
-	waitForMerge  bool
-	prTimeout     time.Duration
+	executionMode  ExecutionMode
+	mergeWaiter    *MergeWaiter
+	waitForMerge   bool
+	prTimeout      time.Duration
 	prPollInterval time.Duration
 }
 

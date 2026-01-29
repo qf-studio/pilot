@@ -509,6 +509,21 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 				}
 				go ghPoller.Start(ctx)
 			}
+
+			// Start stale label cleanup if enabled
+			if cfg.Adapters.GitHub.StaleLabelCleanup != nil && cfg.Adapters.GitHub.StaleLabelCleanup.Enabled {
+				if store != nil {
+					cleaner, cleanerErr := github.NewCleaner(client, store, cfg.Adapters.GitHub.Repo, cfg.Adapters.GitHub.StaleLabelCleanup)
+					if cleanerErr != nil {
+						fmt.Printf("⚠️  Stale label cleanup disabled: %v\n", cleanerErr)
+					} else {
+						fmt.Printf("🧹 Stale label cleanup enabled (every %s, threshold: %s)\n",
+							cfg.Adapters.GitHub.StaleLabelCleanup.Interval,
+							cfg.Adapters.GitHub.StaleLabelCleanup.Threshold)
+						go cleaner.Start(ctx)
+					}
+				}
+			}
 		}
 	}
 
