@@ -43,6 +43,7 @@ Autonomous AI development pipeline. Receives tickets, implements features, creat
 | **Structured Logging** | ✅ | JSON logs with correlation IDs |
 | **Usage Metering** | ✅ | Billing foundation for Pilot Cloud |
 | **Navigator Integration** | ✅ | Auto-detected when `.agent/` exists |
+| **Multiple Backends** | ✅ | Claude Code + OpenCode support |
 
 ### Sequential Execution Mode
 
@@ -195,6 +196,12 @@ alerts:
 memory:
   path: ~/.pilot/data
   cross_project: true
+
+executor:
+  backend: claude-code          # "claude-code" (default) or "opencode"
+  opencode:
+    binary: opencode
+    model: anthropic:claude-sonnet-4-20250514
 ```
 
 ## CLI Reference
@@ -235,6 +242,7 @@ pilot task "Add feature" --create-pr                    # Auto-create GitHub PR
 pilot task "Refactor API" --verbose                     # Stream Claude output
 pilot task "Update docs" --dry-run                      # Preview without running
 pilot task "Quick fix" --no-branch                      # Skip branch creation
+pilot task "Implement feature" --backend opencode       # Use OpenCode backend
 ```
 
 | Flag | Short | Description |
@@ -244,6 +252,7 @@ pilot task "Quick fix" --no-branch                      # Skip branch creation
 | `--verbose` | `-v` | Stream raw Claude Code JSON output |
 | `--dry-run` | | Show prompt without executing |
 | `--no-branch` | | Don't create a new git branch |
+| `--backend` | | Executor backend: `claude-code` (default) or `opencode` |
 
 #### `pilot brief` - Generate daily/weekly briefs
 
