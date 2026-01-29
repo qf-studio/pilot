@@ -85,6 +85,25 @@ func TestDefaultConfig(t *testing.T) {
 		}
 	})
 
+	t.Run("Execution", func(t *testing.T) {
+		if config.Orchestrator.Execution == nil {
+			t.Fatal("Orchestrator.Execution is nil")
+		}
+		exec := config.Orchestrator.Execution
+		if exec.Mode != "sequential" {
+			t.Errorf("Execution.Mode = %q, want %q", exec.Mode, "sequential")
+		}
+		if exec.WaitForMerge != true {
+			t.Error("Execution.WaitForMerge should be true by default")
+		}
+		if exec.PollInterval != 30*time.Second {
+			t.Errorf("Execution.PollInterval = %v, want %v", exec.PollInterval, 30*time.Second)
+		}
+		if exec.PRTimeout != 1*time.Hour {
+			t.Errorf("Execution.PRTimeout = %v, want %v", exec.PRTimeout, 1*time.Hour)
+		}
+	})
+
 	t.Run("Memory", func(t *testing.T) {
 		if config.Memory == nil {
 			t.Fatal("Memory config is nil")

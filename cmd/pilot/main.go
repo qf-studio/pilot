@@ -101,7 +101,9 @@ func newStartCmd() *cobra.Command {
 		enableGithub   *bool
 		enableLinear   *bool
 		// Mode flags
-		noGateway bool // Lightweight mode: polling only, no HTTP gateway
+		noGateway  bool // Lightweight mode: polling only, no HTTP gateway
+		sequential bool // Sequential execution mode (one issue at a time)
+		parallel   bool // Parallel execution mode (legacy)
 	)
 
 	cmd := &cobra.Command{
@@ -156,6 +158,23 @@ Examples:
 			hasLinear := cfg.Adapters.Linear != nil && cfg.Adapters.Linear.Enabled
 			hasJira := cfg.Adapters.Jira != nil && cfg.Adapters.Jira.Enabled
 
+			// Apply execution mode override from CLI flags
+			if sequential && parallel {
+				return fmt.Errorf("cannot use both --sequential and --parallel flags")
+			}
+			if sequential {
+				if cfg.Orchestrator.Execution == nil {
+					cfg.Orchestrator.Execution = config.DefaultExecutionConfig()
+				}
+				cfg.Orchestrator.Execution.Mode = "sequential"
+			}
+			if parallel {
+				if cfg.Orchestrator.Execution == nil {
+					cfg.Orchestrator.Execution = config.DefaultExecutionConfig()
+				}
+				cfg.Orchestrator.Execution.Mode = "parallel"
+			}
+
 			// Lightweight mode: polling only, no gateway
 			if noGateway || (!hasLinear && !hasJira && (hasTelegram || hasGithubPolling)) {
 				return runPollingMode(cfg, projectPath, replace, dashboardMode)
@@ -204,6 +223,8 @@ Examples:
 	cmd.Flags().StringVarP(&projectPath, "project", "p", "", "Project path (default: config default or cwd)")
 	cmd.Flags().BoolVar(&replace, "replace", false, "Kill existing bot instance before starting")
 	cmd.Flags().BoolVar(&noGateway, "no-gateway", false, "Run polling adapters only (no HTTP gateway)")
+	cmd.Flags().BoolVar(&sequential, "sequential", false, "Sequential execution: wait for PR merge before next issue")
+	cmd.Flags().BoolVar(&parallel, "parallel", false, "Parallel execution: process multiple issues concurrently (legacy)")
 
 	// Input adapter flags - use pointers to detect if flag was set
 	cmd.Flags().Var(newOptionalBool(&enableTelegram), "telegram", "Enable Telegram polling (overrides config)")
@@ -389,16 +410,59 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 				interval = 30 * time.Second
 			}
 
+			// Determine execution mode from config
+			execMode := github.ExecutionModeSequential // Default to sequential
+			waitForMerge := true
+			pollInterval := 30 * time.Second
+			prTimeout := 1 * time.Hour
+
+			if cfg.Orchestrator != nil && cfg.Orchestrator.Execution != nil {
+				execCfg := cfg.Orchestrator.Execution
+				if execCfg.Mode == "parallel" {
+					execMode = github.ExecutionModeParallel
+				}
+				waitForMerge = execCfg.WaitForMerge
+				if execCfg.PollInterval > 0 {
+					pollInterval = execCfg.PollInterval
+				}
+				if execCfg.PRTimeout > 0 {
+					prTimeout = execCfg.PRTimeout
+				}
+			}
+
+			var pollerOpts []github.PollerOption
+
+			// Configure based on execution mode
+			if execMode == github.ExecutionModeSequential {
+				pollerOpts = append(pollerOpts,
+					github.WithExecutionMode(github.ExecutionModeSequential),
+					github.WithSequentialConfig(waitForMerge, pollInterval, prTimeout),
+					github.WithOnIssueWithResult(func(issueCtx context.Context, issue *github.Issue) (*github.IssueResult, error) {
+						return handleGitHubIssueWithResult(issueCtx, cfg, client, issue, projectPath, dispatcher, runner)
+					}),
+				)
+			} else {
+				pollerOpts = append(pollerOpts,
+					github.WithExecutionMode(github.ExecutionModeParallel),
+					github.WithOnIssue(func(issueCtx context.Context, issue *github.Issue) error {
+						return handleGitHubIssue(issueCtx, cfg, client, issue, projectPath, dispatcher, runner)
+					}),
+				)
+			}
+
 			var err error
-			ghPoller, err = github.NewPoller(client, cfg.Adapters.Github.Repo, label, interval,
-				github.WithOnIssue(func(issueCtx context.Context, issue *github.Issue) error {
-					return handleGitHubIssue(issueCtx, cfg, client, issue, projectPath, dispatcher, runner)
-				}),
-			)
+			ghPoller, err = github.NewPoller(client, cfg.Adapters.Github.Repo, label, interval, pollerOpts...)
 			if err != nil {
 				fmt.Printf("⚠️  GitHub polling disabled: %v\n", err)
 			} else {
-				fmt.Printf("🐙 GitHub polling enabled: %s (every %s)\n", cfg.Adapters.Github.Repo, interval)
+				modeStr := "sequential"
+				if execMode == github.ExecutionModeParallel {
+					modeStr = "parallel"
+				}
+				fmt.Printf("🐙 GitHub polling enabled: %s (every %s, mode: %s)\n", cfg.Adapters.Github.Repo, interval, modeStr)
+				if execMode == github.ExecutionModeSequential && waitForMerge {
+					fmt.Printf("   ⏳ Sequential mode: waiting for PR merge before next issue (timeout: %s)\n", prTimeout)
+				}
 				go ghPoller.Start(ctx)
 			}
 		}
@@ -503,6 +567,95 @@ func handleGitHubIssue(ctx context.Context, cfg *config.Config, client *github.C
 	}
 
 	return execErr
+}
+
+// handleGitHubIssueWithResult processes a GitHub issue and returns result with PR info
+// Used in sequential mode to enable PR merge waiting
+func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client *github.Client, issue *github.Issue, projectPath string, dispatcher *executor.Dispatcher, runner *executor.Runner) (*github.IssueResult, error) {
+	fmt.Printf("\n📥 GitHub Issue #%d: %s\n", issue.Number, issue.Title)
+
+	parts := strings.Split(cfg.Adapters.Github.Repo, "/")
+	if len(parts) == 2 {
+		_ = client.AddLabels(ctx, parts[0], parts[1], issue.Number, []string{github.LabelInProgress})
+	}
+
+	taskDesc := fmt.Sprintf("GitHub Issue #%d: %s\n\n%s", issue.Number, issue.Title, issue.Body)
+	taskID := fmt.Sprintf("GH-%d", issue.Number)
+	branchName := fmt.Sprintf("pilot/%s", taskID)
+
+	task := &executor.Task{
+		ID:          taskID,
+		Title:       issue.Title,
+		Description: taskDesc,
+		ProjectPath: projectPath,
+		Branch:      branchName,
+		CreatePR:    true,
+	}
+
+	var result *executor.ExecutionResult
+	var execErr error
+
+	if dispatcher != nil {
+		execID, qErr := dispatcher.QueueTask(ctx, task)
+		if qErr != nil {
+			execErr = fmt.Errorf("failed to queue task: %w", qErr)
+		} else {
+			fmt.Printf("   📋 Queued as execution %s\n", execID[:8])
+			exec, waitErr := dispatcher.WaitForExecution(ctx, execID, time.Second)
+			if waitErr != nil {
+				execErr = fmt.Errorf("failed waiting for execution: %w", waitErr)
+			} else if exec.Status == "failed" {
+				execErr = fmt.Errorf("execution failed: %s", exec.Error)
+			} else {
+				result = &executor.ExecutionResult{
+					TaskID:    task.ID,
+					Success:   exec.Status == "completed",
+					Output:    exec.Output,
+					Error:     exec.Error,
+					PRUrl:     exec.PRUrl,
+					CommitSHA: exec.CommitSHA,
+					Duration:  time.Duration(exec.DurationMs) * time.Millisecond,
+				}
+			}
+		}
+	} else {
+		result, execErr = runner.Execute(ctx, task)
+	}
+
+	// Build the issue result
+	issueResult := &github.IssueResult{
+		Success: execErr == nil && result != nil && result.Success,
+		Error:   execErr,
+	}
+
+	// Extract PR number from URL if we have one
+	if result != nil && result.PRUrl != "" {
+		issueResult.PRURL = result.PRUrl
+		if prNum, err := github.ExtractPRNumber(result.PRUrl); err == nil {
+			issueResult.PRNumber = prNum
+		}
+	}
+
+	// Update issue labels and add comment
+	if len(parts) == 2 {
+		_ = client.RemoveLabel(ctx, parts[0], parts[1], issue.Number, github.LabelInProgress)
+
+		if execErr != nil {
+			_ = client.AddLabels(ctx, parts[0], parts[1], issue.Number, []string{github.LabelFailed})
+			comment := fmt.Sprintf("❌ Pilot execution failed:\n\n```\n%s\n```", execErr.Error())
+			_, _ = client.AddComment(ctx, parts[0], parts[1], issue.Number, comment)
+		} else if result != nil {
+			_ = client.AddLabels(ctx, parts[0], parts[1], issue.Number, []string{github.LabelDone})
+			comment := fmt.Sprintf("✅ Pilot completed!\n\n**Duration:** %s\n**Branch:** `%s`",
+				result.Duration, branchName)
+			if result.PRUrl != "" {
+				comment += fmt.Sprintf("\n**PR:** %s", result.PRUrl)
+			}
+			_, _ = client.AddComment(ctx, parts[0], parts[1], issue.Number, comment)
+		}
+	}
+
+	return issueResult, execErr
 }
 
 func newStopCmd() *cobra.Command {

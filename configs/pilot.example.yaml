@@ -34,6 +34,14 @@ orchestrator:
   model: "claude-sonnet-4-20250514"
   max_concurrent: 2          # Max parallel tasks
 
+  # Execution mode (sequential or parallel)
+  execution:
+    mode: "sequential"         # sequential: one issue at a time, waits for PR merge
+                               # parallel: process multiple issues concurrently (legacy)
+    wait_for_merge: true       # Wait for PR merge before picking next issue
+    poll_interval: 30s         # How often to check PR status
+    pr_timeout: 1h             # Max time to wait for PR merge
+
   # Daily brief
   daily_brief:
     enabled: false
