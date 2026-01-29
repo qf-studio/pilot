@@ -1,26 +1,44 @@
 # Pilot: AI That Ships Your Tickets
 
-**Navigator guides. Pilot executes.**
+**Navigator plans. Pilot executes.**
 
-## ⚠️ WORKFLOW: Plan Here, Pilot Executes
+## ⚠️ WORKFLOW: Navigator + Pilot Pipeline
 
-**This Claude Code session is for PLANNING ONLY.**
+**This Claude Code session uses Navigator for planning, Pilot for execution.**
 
-- ✅ Research, explore codebase, read files
-- ✅ Design solutions, write plans
-- ✅ Create GitHub issues with `pilot` label
-- ✅ Review Pilot's PRs and provide feedback
-- ❌ DO NOT write code directly
-- ❌ DO NOT make commits
-- ❌ DO NOT create PRs
+| Phase | Tool | Action |
+|-------|------|--------|
+| 1. Plan | `/nav-task` | Design solution, create implementation plan |
+| 2. Execute | GitHub Issue | Create issue with `pilot` label |
+| 3. Review | PR Review | Check Pilot's PR, request changes if needed |
+| 4. Ship | Merge | Merge PR when approved |
 
-**Pilot runs in a separate terminal** (`pilot start --telegram --github`) and picks up issues labeled `pilot`.
+### Quick Commands
 
-### Workflow
-1. Plan the feature/fix in this session
-2. Create GitHub issue: `gh issue create --title "..." --label pilot --body "..."`
-3. Pilot auto-picks it up and executes
-4. Review the PR, provide feedback if needed
+```bash
+# Plan a feature (Navigator)
+/nav-task "Add rate limiting to API endpoints"
+
+# Hand off to Pilot
+gh issue create --title "Add rate limiting" --label pilot --body "..."
+
+# Check Pilot's queue
+gh issue list --label pilot --state open
+
+# Review and merge
+gh pr view <number> && gh pr merge <number>
+```
+
+### Rules
+
+- ✅ Use `/nav-task` for planning and design
+- ✅ Create GitHub issues with `pilot` label for execution
+- ✅ Review every PR before merging
+- ❌ DO NOT write code directly in this session
+- ❌ DO NOT make commits manually
+- ❌ DO NOT create PRs manually
+
+**Pilot runs in a separate terminal** (`pilot start --telegram --github`) and auto-picks issues labeled `pilot`.
 
 ---
 
@@ -131,10 +149,12 @@ Required env vars:
 
 ## Navigator Integration
 
-This project uses Navigator for context efficiency:
+This project uses Navigator for planning, Pilot for execution:
 
-```
-"Start my Navigator session"
+```bash
+/nav-start              # Start session, load context
+/nav-task "feature"     # Plan implementation
+gh issue create ...     # Hand off to Pilot
 ```
 
 Documentation in `.agent/`:
@@ -151,12 +171,12 @@ Documentation in `.agent/`:
 
 ## Development Workflow
 
-1. Load Navigator: "Start my Navigator session"
-2. Read task doc from `.agent/tasks/`
-3. Implement with tests
-4. Run `make test && make lint`
-5. Commit with conventional format
-6. Update task doc status
+1. Start Navigator: `/nav-start`
+2. Plan feature: `/nav-task "description"`
+3. Create issue: `gh issue create --title "..." --label pilot --body "..."`
+4. Wait for Pilot to execute and create PR
+5. Review PR: `gh pr view <n>`
+6. Merge when ready: `gh pr merge <n>`
 
 ## Current Status
 

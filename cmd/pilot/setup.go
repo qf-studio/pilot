@@ -504,4 +504,3 @@ func validateTelegramToken(token string) error {
 	// Could add actual API call validation here
 	return nil
 }
-

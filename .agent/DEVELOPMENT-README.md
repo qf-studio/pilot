@@ -1,43 +1,65 @@
 # Pilot Development Navigator
 
-**AI that ships your tickets.**
+**Navigator plans. Pilot executes.**
 
-## ⚠️ WORKFLOW: Plan Here, Pilot Executes
+## ⚠️ WORKFLOW: Navigator + Pilot Pipeline
 
-**This Claude Code session is for PLANNING ONLY.**
+**This session uses Navigator for planning, Pilot for execution.**
 
-| Do ✅ | Don't ❌ |
-|-------|---------|
-| Research & explore codebase | Write code |
-| Design solutions & plans | Make commits |
-| Create GitHub issues (`--label pilot`) | Create PRs |
-| Review Pilot's work | Execute tasks directly |
+### The Pipeline
 
-### How It Works
 ```
-┌─────────────────┐     gh issue create      ┌─────────────────┐
-│  Claude Code    │ ──────────────────────► │  GitHub Issue   │
-│  (Plan & Design)│     --label pilot        │  (with pilot)   │
+┌─────────────────┐                          ┌─────────────────┐
+│   /nav-task     │  ───── plan ──────────►  │  GitHub Issue   │
+│   (Navigator)   │       --label pilot      │  (with pilot)   │
 └─────────────────┘                          └────────┬────────┘
-                                                      │
-                                                      ▼
-┌─────────────────┐     auto-picks up        ┌─────────────────┐
-│  Review PR      │ ◄────────────────────── │  Pilot Bot      │
-│  Give feedback  │                          │  (executes)     │
-└─────────────────┘                          └─────────────────┘
+        ▲                                             │
+        │                                             ▼
+        │ iterate                            ┌─────────────────┐
+        │ if needed                          │   Pilot Bot     │
+        │                                    │   (executes)    │
+┌───────┴─────────┐                          └────────┬────────┘
+│   Review PR     │  ◄──── creates PR ───────────────┘
+│   Merge/Request │
+└─────────────────┘
 ```
+
+### Workflow Steps
+
+| Step | Command | Action |
+|------|---------|--------|
+| 1. Plan | `/nav-task "feature description"` | Design solution, create implementation plan |
+| 2. Execute | `gh issue create --label pilot` | Hand off to Pilot for execution |
+| 3. Review | `gh pr view <n>` | Check Pilot's PR |
+| 4. Ship | `gh pr merge <n>` | Merge when approved |
 
 ### Quick Commands
+
 ```bash
-# Create ticket for Pilot
-gh issue create --title "TASK-XX: Description" --label pilot --body "Details..."
+# Plan a feature (Navigator does the thinking)
+/nav-task "Add rate limiting to API endpoints"
+
+# Hand off to Pilot (creates issue from plan)
+gh issue create --title "Add rate limiting" --label pilot --body "..."
 
 # Check Pilot's queue
 gh issue list --label pilot --state open
 
-# Check what Pilot completed
-gh issue list --label pilot/done --state open
+# Review PR
+gh pr view <number>
+
+# Merge when ready
+gh pr merge <number>
 ```
+
+### Rules
+
+| ✅ Do | ❌ Don't |
+|-------|----------|
+| Use `/nav-task` for planning | Write code directly |
+| Create issues with `pilot` label | Make commits manually |
+| Review every PR before merging | Create PRs manually |
+| Request changes on PR if needed | Approve without review |
 
 ---
 
@@ -103,11 +125,14 @@ if _, err := os.Stat(agentDir); err == nil {
 **Source of truth: GitHub Issues with `pilot` label**
 
 ```bash
-# See current queue
+# See Pilot's queue
 gh issue list --label pilot --state open
 
 # See what's in progress
 gh issue list --label pilot-in-progress --state open
+
+# See open PRs from Pilot
+gh pr list --author "@me" --state open
 ```
 
 ### In Progress
