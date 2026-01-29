@@ -330,7 +330,7 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 
 		monitor = executor.NewMonitor()
 		model := dashboard.NewModel()
-		program = tea.NewProgram(model, tea.WithAltScreen())
+		program = tea.NewProgram(model) // Removed WithAltScreen - may not work in all terminals
 
 		// Wire runner progress updates to dashboard
 		runner.OnProgress(func(taskID, phase string, progress int, message string) {
