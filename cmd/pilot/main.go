@@ -22,6 +22,7 @@ import (
 	"github.com/alekspetrov/pilot/internal/adapters/slack"
 	"github.com/alekspetrov/pilot/internal/adapters/telegram"
 	"github.com/alekspetrov/pilot/internal/alerts"
+	"github.com/alekspetrov/pilot/internal/approval"
 	"github.com/alekspetrov/pilot/internal/autopilot"
 	"github.com/alekspetrov/pilot/internal/banner"
 	"github.com/alekspetrov/pilot/internal/briefs"
@@ -514,7 +515,39 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 				}
 			}
 
+			// Initialize autopilot controller if enabled
+			var autopilotCtrl *autopilot.Controller
+			if cfg.Orchestrator.Autopilot != nil && cfg.Orchestrator.Autopilot.Enabled {
+				// Parse owner/repo
+				repoParts := strings.Split(cfg.Adapters.GitHub.Repo, "/")
+				if len(repoParts) == 2 {
+					owner, repo := repoParts[0], repoParts[1]
+
+					// Create approval manager for prod environment gates
+					approvalMgr := approval.NewManager(nil)
+
+					autopilotCtrl = autopilot.NewController(
+						cfg.Orchestrator.Autopilot,
+						client,
+						approvalMgr,
+						owner,
+						repo,
+					)
+					logging.WithComponent("start").Info("autopilot controller initialized",
+						slog.String("owner", owner),
+						slog.String("repo", repo),
+					)
+				}
+			}
+
 			var pollerOpts []github.PollerOption
+
+			// Wire autopilot OnPRCreated callback if controller initialized
+			if autopilotCtrl != nil {
+				pollerOpts = append(pollerOpts,
+					github.WithOnPRCreated(autopilotCtrl.OnPRCreated),
+				)
+			}
 
 			// Configure based on execution mode
 			if execMode == github.ExecutionModeSequential {
@@ -548,6 +581,18 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 					fmt.Printf("   ⏳ Sequential mode: waiting for PR merge before next issue (timeout: %s)\n", prTimeout)
 				}
 				go ghPoller.Start(ctx)
+
+				// Start autopilot processing loop if controller initialized
+				if autopilotCtrl != nil {
+					fmt.Printf("🤖 Autopilot enabled: %s environment\n", cfg.Orchestrator.Autopilot.Environment)
+					go func() {
+						if err := autopilotCtrl.Run(ctx); err != nil && err != context.Canceled {
+							logging.WithComponent("autopilot").Error("autopilot controller stopped",
+								slog.Any("error", err),
+							)
+						}
+					}()
+				}
 			}
 
 			// Start stale label cleanup if enabled
@@ -879,11 +924,16 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 		Error:   execErr,
 	}
 
-	// Extract PR number from URL if we have one
-	if result != nil && result.PRUrl != "" {
-		issueResult.PRURL = result.PRUrl
-		if prNum, err := github.ExtractPRNumber(result.PRUrl); err == nil {
-			issueResult.PRNumber = prNum
+	// Extract PR number and head SHA from result if we have one
+	if result != nil {
+		if result.PRUrl != "" {
+			issueResult.PRURL = result.PRUrl
+			if prNum, err := github.ExtractPRNumber(result.PRUrl); err == nil {
+				issueResult.PRNumber = prNum
+			}
+		}
+		if result.CommitSHA != "" {
+			issueResult.HeadSHA = result.CommitSHA
 		}
 	}
 

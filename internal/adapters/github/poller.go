@@ -28,6 +28,7 @@ type IssueResult struct {
 	Success  bool
 	PRNumber int    // PR number if created
 	PRURL    string // PR URL if created
+	HeadSHA  string // Head commit SHA of the PR
 	Error    error
 }
 
@@ -43,7 +44,10 @@ type Poller struct {
 	onIssue   func(ctx context.Context, issue *Issue) error
 	// onIssueWithResult is called for sequential mode, returns PR info
 	onIssueWithResult func(ctx context.Context, issue *Issue) (*IssueResult, error)
-	logger            *slog.Logger
+	// OnPRCreated is called when a PR is created after issue processing
+	// Parameters: prNumber, prURL, issueNumber, headSHA
+	OnPRCreated func(prNumber int, prURL string, issueNumber int, headSHA string)
+	logger      *slog.Logger
 
 	// Sequential mode configuration
 	executionMode  ExecutionMode
@@ -90,6 +94,14 @@ func WithSequentialConfig(waitForMerge bool, pollInterval, timeout time.Duration
 		p.waitForMerge = waitForMerge
 		p.prPollInterval = pollInterval
 		p.prTimeout = timeout
+	}
+}
+
+// WithOnPRCreated sets the callback for PR creation events
+// The callback is invoked after a PR is successfully created for an issue
+func WithOnPRCreated(fn func(prNumber int, prURL string, issueNumber int, headSHA string)) PollerOption {
+	return func(p *Poller) {
+		p.OnPRCreated = fn
 	}
 }
 
@@ -215,6 +227,15 @@ func (p *Poller) startSequential(ctx context.Context) {
 			// The issue will have pilot-failed label
 			p.markProcessed(issue.Number)
 			continue
+		}
+
+		// Notify autopilot controller of new PR (if callback registered)
+		if result != nil && result.PRNumber > 0 && p.OnPRCreated != nil {
+			p.logger.Info("Notifying autopilot of PR creation",
+				slog.Int("pr_number", result.PRNumber),
+				slog.Int("issue_number", issue.Number),
+			)
+			p.OnPRCreated(result.PRNumber, result.PRURL, issue.Number, result.HeadSHA)
 		}
 
 		// If we created a PR and should wait for merge
