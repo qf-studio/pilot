@@ -1,0 +1,30 @@
+# Config compatible with golangci-lint v1.x (CI uses v1.64.8)
+run:
+  timeout: 5m
+
+linters:
+  enable:
+    - errcheck
+    - gosimple
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+  disable:
+    - deadcode  # deprecated
+    - varcheck  # deprecated
+
+linters-settings:
+  staticcheck:
+    checks:
+      - "all"
+      - "-SA1012"  # Allow nil context (legacy code)
+      - "-SA9003"  # Allow empty branches
+
+issues:
+  exclude-rules:
+    # Exclude unused save functions in memory package
+    - path: internal/memory/
+      linters:
+        - unused
+      text: "save"
