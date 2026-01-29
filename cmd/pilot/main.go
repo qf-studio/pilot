@@ -515,14 +515,8 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 
 	// Dashboard mode: run TUI and handle shutdown via TUI quit
 	if dashboardMode && program != nil {
-		// Handle signals for graceful shutdown
-		go func() {
-			sigCh := make(chan os.Signal, 1)
-			signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-			<-sigCh
-			cancel()
-			program.Send(tea.Quit())
-		}()
+		// Note: bubbletea handles Ctrl+C internally via KeyMsg in Update()
+		// We use tea.WithoutCatchPanics and let the TUI handle signals
 
 		// Periodic refresh to catch any missed updates
 		go func() {
@@ -553,14 +547,20 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 			program.Send(dashboard.AddLog(fmt.Sprintf("🐙 GitHub polling: %s", cfg.Adapters.GitHub.Repo)))
 		}
 
-		// Run TUI (blocks until quit)
+		// Run TUI (blocks until quit via 'q' or Ctrl+C)
 		if _, err := program.Run(); err != nil {
+			cancel() // Stop goroutines
 			return fmt.Errorf("dashboard error: %w", err)
 		}
 
-		// Clean shutdown
+		// Clean shutdown - cancel context to stop all goroutines
+		cancel()
+
 		if tgHandler != nil {
 			tgHandler.Stop()
+		}
+		if ghPoller != nil {
+			// ghPoller stops via context cancellation
 		}
 		if dispatcher != nil {
 			dispatcher.Stop()
