@@ -15,6 +15,7 @@ import (
 
 	"github.com/alekspetrov/pilot/internal/logging"
 	"github.com/alekspetrov/pilot/internal/replay"
+	"github.com/alekspetrov/pilot/internal/webhooks"
 )
 
 // StreamEvent represents a Claude Code stream-json event
@@ -158,6 +159,7 @@ type Runner struct {
 	recordingsPath        string                // Path to recordings directory (empty = default)
 	enableRecording       bool                  // Whether to record executions
 	alertProcessor        AlertEventProcessor   // Optional alert processor for event emission
+	webhooks              *webhooks.Manager     // Optional webhook manager for event delivery
 	qualityCheckerFactory QualityCheckerFactory // Optional factory for creating quality checkers
 	modelRouter           *ModelRouter          // Model and timeout routing based on complexity
 }
@@ -231,6 +233,13 @@ func (r *Runner) SetRecordingEnabled(enabled bool) {
 // The processor interface is satisfied by alerts.Engine.
 func (r *Runner) SetAlertProcessor(processor AlertEventProcessor) {
 	r.alertProcessor = processor
+}
+
+// SetWebhookManager sets the webhook manager for delivering task lifecycle events.
+// When set, the runner can dispatch webhook events for task started, progress,
+// completed, failed, and PR created events to configured endpoints.
+func (r *Runner) SetWebhookManager(mgr *webhooks.Manager) {
+	r.webhooks = mgr
 }
 
 // SetQualityCheckerFactory sets the factory for creating quality checkers.
