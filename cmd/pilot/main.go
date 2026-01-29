@@ -331,6 +331,7 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 		monitor = executor.NewMonitor()
 		model := dashboard.NewModel()
 		program = tea.NewProgram(model,
+			tea.WithAltScreen(),
 			tea.WithInput(os.Stdin),
 			tea.WithOutput(os.Stdout),
 		)
