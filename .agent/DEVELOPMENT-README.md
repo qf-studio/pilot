@@ -96,7 +96,7 @@ if _, err := os.Stat(agentDir); err == nil {
 
 ## Current State
 
-**Current Version:** v0.3.2 (Autopilot release)
+**Current Version:** v0.3.3 (Homebrew fix)
 
 **Full implementation status:** `.agent/system/FEATURE-MATRIX.md`
 
@@ -157,15 +157,12 @@ gh pr list --author "@me" --state open
 
 ### In Progress
 
-| GH# | Title | Status |
-|-----|-------|--------|
-| 54 | Speed Optimization (complexity detection, model routing, timeout) | 🔄 Pilot executing |
+_Queue empty - create issues with `pilot` label to add work._
 
 ### Backlog (Create issues as needed)
 
 | Priority | Topic | Why |
 |----------|-------|-----|
-| 🔴 P1 | Execution timeout | Prevent stuck tasks (GH-17 ran 92+ min) |
 | 🔴 P1 | Verify quality gates wiring | May not be fully wired |
 | 🟡 P2 | Cost controls | Budget protection |
 | 🟡 P2 | Approval workflows verification | Team safety |
@@ -175,17 +172,26 @@ gh pr list --author "@me" --state open
 
 ---
 
+## Completed (2026-01-30)
+
+| Item | What |
+|------|------|
+| **v0.3.3** | Homebrew formula fix release |
+| GH-185 | Fix Homebrew formula validation error |
+| GH-204 | Improve install.sh: Auto-configure PATH |
+| GH-194 | Fix: Stop sequential processing on PR conflicts |
+
 ## Completed (2026-01-29)
 
 | Item | What |
 |------|------|
 | **v0.3.2** | Autopilot superfeature release |
+| GH-54 | Speed Optimization (complexity detection, model routing, timeout) |
 | GH-198 | Wire autopilot controller into polling mode |
 | GH-199 | Add Telegram notifications for autopilot events |
 | GH-200 | Unit tests for autopilot components |
 | GH-201 | Add dashboard panel for autopilot status |
 | GH-203 | Fix install.sh URL (was 404) |
-| GH-204 | Created: Improve install.sh PATH handling |
 
 ## Completed (2026-01-28)
 
