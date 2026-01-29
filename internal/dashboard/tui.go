@@ -247,15 +247,6 @@ func renderPanel(title string, content string) string {
 	return strings.Join(lines, "\n")
 }
 
-// padRight pads a string to the specified visual width (handles ANSI codes)
-func padRight(s string, width int) string {
-	visualWidth := lipgloss.Width(s)
-	if visualWidth >= width {
-		return s
-	}
-	return s + strings.Repeat(" ", width-visualWidth)
-}
-
 // dotLeader creates a dot-leader line: "Label .............. Value"
 func dotLeader(label string, value string, totalWidth int) string {
 	// Format: "  Label " + dots + " Value"
