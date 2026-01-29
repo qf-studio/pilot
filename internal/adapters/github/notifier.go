@@ -62,11 +62,17 @@ func (n *Notifier) NotifyProgress(ctx context.Context, owner, repo string, issue
 
 // NotifyTaskCompleted posts completion comment and updates labels
 func (n *Notifier) NotifyTaskCompleted(ctx context.Context, owner, repo string, issueNum int, prURL string, summary string) error {
-	// Remove in-progress label
-	_ = n.client.RemoveLabel(ctx, owner, repo, issueNum, LabelInProgress)
+	// Remove in-progress label (best-effort, non-critical)
+	// Label may not exist if task started before labeling was added
+	if err := n.client.RemoveLabel(ctx, owner, repo, issueNum, LabelInProgress); err != nil {
+		// Log but don't fail - label removal is non-critical
+		_ = err // intentionally ignored: label may not exist
+	}
 
-	// Remove pilot trigger label
-	_ = n.client.RemoveLabel(ctx, owner, repo, issueNum, n.pilotLabel)
+	// Remove pilot trigger label (best-effort, non-critical)
+	if err := n.client.RemoveLabel(ctx, owner, repo, issueNum, n.pilotLabel); err != nil {
+		_ = err // intentionally ignored: label may not exist
+	}
 
 	// Add done label
 	if err := n.client.AddLabels(ctx, owner, repo, issueNum, []string{LabelDone}); err != nil {
@@ -98,8 +104,10 @@ func (n *Notifier) NotifyTaskCompleted(ctx context.Context, owner, repo string, 
 
 // NotifyTaskFailed posts failure comment and updates labels
 func (n *Notifier) NotifyTaskFailed(ctx context.Context, owner, repo string, issueNum int, reason string) error {
-	// Remove in-progress label
-	_ = n.client.RemoveLabel(ctx, owner, repo, issueNum, LabelInProgress)
+	// Remove in-progress label (best-effort, non-critical)
+	if err := n.client.RemoveLabel(ctx, owner, repo, issueNum, LabelInProgress); err != nil {
+		_ = err // intentionally ignored: label may not exist
+	}
 
 	// Add failed label
 	if err := n.client.AddLabels(ctx, owner, repo, issueNum, []string{LabelFailed}); err != nil {

@@ -498,13 +498,28 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 	return nil
 }
 
+// logGitHubAPIError logs GitHub API errors at warn level with context.
+// Label operations are non-critical - task execution continues even if labeling fails.
+func logGitHubAPIError(operation string, owner, repo string, issueNum int, err error) {
+	if err != nil {
+		logging.WithComponent("github").Warn("GitHub API call failed",
+			slog.String("operation", operation),
+			slog.String("repo", owner+"/"+repo),
+			slog.Int("issue", issueNum),
+			slog.Any("error", err),
+		)
+	}
+}
+
 // handleGitHubIssue processes a GitHub issue picked up by the poller
 func handleGitHubIssue(ctx context.Context, cfg *config.Config, client *github.Client, issue *github.Issue, projectPath string, dispatcher *executor.Dispatcher, runner *executor.Runner) error {
 	fmt.Printf("\n📥 GitHub Issue #%d: %s\n", issue.Number, issue.Title)
 
 	parts := strings.Split(cfg.Adapters.GitHub.Repo, "/")
 	if len(parts) == 2 {
-		_ = client.AddLabels(ctx, parts[0], parts[1], issue.Number, []string{github.LabelInProgress})
+		if err := client.AddLabels(ctx, parts[0], parts[1], issue.Number, []string{github.LabelInProgress}); err != nil {
+			logGitHubAPIError("AddLabels", parts[0], parts[1], issue.Number, err)
+		}
 	}
 
 	taskDesc := fmt.Sprintf("GitHub Issue #%d: %s\n\n%s", issue.Number, issue.Title, issue.Body)
@@ -551,20 +566,30 @@ func handleGitHubIssue(ctx context.Context, cfg *config.Config, client *github.C
 	}
 
 	if len(parts) == 2 {
-		_ = client.RemoveLabel(ctx, parts[0], parts[1], issue.Number, github.LabelInProgress)
+		if err := client.RemoveLabel(ctx, parts[0], parts[1], issue.Number, github.LabelInProgress); err != nil {
+			logGitHubAPIError("RemoveLabel", parts[0], parts[1], issue.Number, err)
+		}
 
 		if execErr != nil {
-			_ = client.AddLabels(ctx, parts[0], parts[1], issue.Number, []string{github.LabelFailed})
+			if err := client.AddLabels(ctx, parts[0], parts[1], issue.Number, []string{github.LabelFailed}); err != nil {
+				logGitHubAPIError("AddLabels", parts[0], parts[1], issue.Number, err)
+			}
 			comment := fmt.Sprintf("❌ Pilot execution failed:\n\n```\n%s\n```", execErr.Error())
-			_, _ = client.AddComment(ctx, parts[0], parts[1], issue.Number, comment)
+			if _, err := client.AddComment(ctx, parts[0], parts[1], issue.Number, comment); err != nil {
+				logGitHubAPIError("AddComment", parts[0], parts[1], issue.Number, err)
+			}
 		} else if result != nil {
-			_ = client.AddLabels(ctx, parts[0], parts[1], issue.Number, []string{github.LabelDone})
+			if err := client.AddLabels(ctx, parts[0], parts[1], issue.Number, []string{github.LabelDone}); err != nil {
+				logGitHubAPIError("AddLabels", parts[0], parts[1], issue.Number, err)
+			}
 			comment := fmt.Sprintf("✅ Pilot completed!\n\n**Duration:** %s\n**Branch:** `%s`",
 				result.Duration, branchName)
 			if result.PRUrl != "" {
 				comment += fmt.Sprintf("\n**PR:** %s", result.PRUrl)
 			}
-			_, _ = client.AddComment(ctx, parts[0], parts[1], issue.Number, comment)
+			if _, err := client.AddComment(ctx, parts[0], parts[1], issue.Number, comment); err != nil {
+				logGitHubAPIError("AddComment", parts[0], parts[1], issue.Number, err)
+			}
 		}
 	}
 
@@ -578,7 +603,9 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 
 	parts := strings.Split(cfg.Adapters.GitHub.Repo, "/")
 	if len(parts) == 2 {
-		_ = client.AddLabels(ctx, parts[0], parts[1], issue.Number, []string{github.LabelInProgress})
+		if err := client.AddLabels(ctx, parts[0], parts[1], issue.Number, []string{github.LabelInProgress}); err != nil {
+			logGitHubAPIError("AddLabels", parts[0], parts[1], issue.Number, err)
+		}
 	}
 
 	taskDesc := fmt.Sprintf("GitHub Issue #%d: %s\n\n%s", issue.Number, issue.Title, issue.Body)
@@ -640,20 +667,30 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 
 	// Update issue labels and add comment
 	if len(parts) == 2 {
-		_ = client.RemoveLabel(ctx, parts[0], parts[1], issue.Number, github.LabelInProgress)
+		if err := client.RemoveLabel(ctx, parts[0], parts[1], issue.Number, github.LabelInProgress); err != nil {
+			logGitHubAPIError("RemoveLabel", parts[0], parts[1], issue.Number, err)
+		}
 
 		if execErr != nil {
-			_ = client.AddLabels(ctx, parts[0], parts[1], issue.Number, []string{github.LabelFailed})
+			if err := client.AddLabels(ctx, parts[0], parts[1], issue.Number, []string{github.LabelFailed}); err != nil {
+				logGitHubAPIError("AddLabels", parts[0], parts[1], issue.Number, err)
+			}
 			comment := fmt.Sprintf("❌ Pilot execution failed:\n\n```\n%s\n```", execErr.Error())
-			_, _ = client.AddComment(ctx, parts[0], parts[1], issue.Number, comment)
+			if _, err := client.AddComment(ctx, parts[0], parts[1], issue.Number, comment); err != nil {
+				logGitHubAPIError("AddComment", parts[0], parts[1], issue.Number, err)
+			}
 		} else if result != nil {
-			_ = client.AddLabels(ctx, parts[0], parts[1], issue.Number, []string{github.LabelDone})
+			if err := client.AddLabels(ctx, parts[0], parts[1], issue.Number, []string{github.LabelDone}); err != nil {
+				logGitHubAPIError("AddLabels", parts[0], parts[1], issue.Number, err)
+			}
 			comment := fmt.Sprintf("✅ Pilot completed!\n\n**Duration:** %s\n**Branch:** `%s`",
 				result.Duration, branchName)
 			if result.PRUrl != "" {
 				comment += fmt.Sprintf("\n**PR:** %s", result.PRUrl)
 			}
-			_, _ = client.AddComment(ctx, parts[0], parts[1], issue.Number, comment)
+			if _, err := client.AddComment(ctx, parts[0], parts[1], issue.Number, comment); err != nil {
+				logGitHubAPIError("AddComment", parts[0], parts[1], issue.Number, err)
+			}
 		}
 	}
 
@@ -1385,7 +1422,9 @@ Examples:
 
 			// Add in-progress label
 			fmt.Println("🏷️  Adding in-progress label...")
-			_ = client.AddLabels(ctx, owner, repoName, int(issueNum), []string{"pilot-in-progress"})
+			if err := client.AddLabels(ctx, owner, repoName, int(issueNum), []string{"pilot-in-progress"}); err != nil {
+				logGitHubAPIError("AddLabels", owner, repoName, int(issueNum), err)
+			}
 
 			// Execute the task
 			runner := executor.NewRunner()
@@ -1396,25 +1435,37 @@ Examples:
 			result, err := runner.Execute(ctx, task)
 			if err != nil {
 				// Add failed label
-				_ = client.AddLabels(ctx, owner, repoName, int(issueNum), []string{"pilot-failed"})
-				_ = client.RemoveLabel(ctx, owner, repoName, int(issueNum), "pilot-in-progress")
+				if labelErr := client.AddLabels(ctx, owner, repoName, int(issueNum), []string{"pilot-failed"}); labelErr != nil {
+					logGitHubAPIError("AddLabels", owner, repoName, int(issueNum), labelErr)
+				}
+				if labelErr := client.RemoveLabel(ctx, owner, repoName, int(issueNum), "pilot-in-progress"); labelErr != nil {
+					logGitHubAPIError("RemoveLabel", owner, repoName, int(issueNum), labelErr)
+				}
 
 				comment := fmt.Sprintf("❌ Pilot execution failed:\n\n```\n%s\n```", err.Error())
-				_, _ = client.AddComment(ctx, owner, repoName, int(issueNum), comment)
+				if _, commentErr := client.AddComment(ctx, owner, repoName, int(issueNum), comment); commentErr != nil {
+					logGitHubAPIError("AddComment", owner, repoName, int(issueNum), commentErr)
+				}
 
 				return fmt.Errorf("task execution failed: %w", err)
 			}
 
 			// Success - update labels and add comment
-			_ = client.RemoveLabel(ctx, owner, repoName, int(issueNum), "pilot-in-progress")
-			_ = client.AddLabels(ctx, owner, repoName, int(issueNum), []string{"pilot-done"})
+			if err := client.RemoveLabel(ctx, owner, repoName, int(issueNum), "pilot-in-progress"); err != nil {
+				logGitHubAPIError("RemoveLabel", owner, repoName, int(issueNum), err)
+			}
+			if err := client.AddLabels(ctx, owner, repoName, int(issueNum), []string{"pilot-done"}); err != nil {
+				logGitHubAPIError("AddLabels", owner, repoName, int(issueNum), err)
+			}
 
 			comment := fmt.Sprintf("✅ Pilot completed successfully!\n\n**Duration:** %s\n**Branch:** `%s`",
 				result.Duration, branchName)
 			if result.PRUrl != "" {
 				comment += fmt.Sprintf("\n**PR:** %s", result.PRUrl)
 			}
-			_, _ = client.AddComment(ctx, owner, repoName, int(issueNum), comment)
+			if _, err := client.AddComment(ctx, owner, repoName, int(issueNum), comment); err != nil {
+				logGitHubAPIError("AddComment", owner, repoName, int(issueNum), err)
+			}
 
 			fmt.Println()
 			fmt.Println("───────────────────────────────────────")

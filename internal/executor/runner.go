@@ -529,8 +529,12 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 
 				if outcome.ShouldRetry {
 					r.reportProgress(task.ID, "Quality Retry", 92, "Gates failed, retry feedback available")
-					// TODO: In future, could re-invoke Claude with outcome.RetryFeedback
-					// For now, just mark as failed with feedback in error
+					// RetryFeedback is included in the error message for visibility.
+					// Auto-retry with re-invocation is intentionally not implemented:
+					// 1. Requires significant refactoring of the execution loop
+					// 2. Risk of infinite loops without proper circuit breakers
+					// 3. Better to surface feedback to users for manual intervention
+					// See GH-64 for discussion.
 					result.Success = false
 					result.Error = fmt.Sprintf("quality gates failed (attempt %d): %s", outcome.Attempt+1, outcome.RetryFeedback)
 				} else {
