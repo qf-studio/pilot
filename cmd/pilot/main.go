@@ -22,6 +22,7 @@ import (
 	"github.com/alekspetrov/pilot/internal/adapters/slack"
 	"github.com/alekspetrov/pilot/internal/adapters/telegram"
 	"github.com/alekspetrov/pilot/internal/alerts"
+	"github.com/alekspetrov/pilot/internal/autopilot"
 	"github.com/alekspetrov/pilot/internal/banner"
 	"github.com/alekspetrov/pilot/internal/briefs"
 	"github.com/alekspetrov/pilot/internal/budget"
@@ -103,10 +104,11 @@ func newStartCmd() *cobra.Command {
 		enableGithub   *bool
 		enableLinear   *bool
 		// Mode flags
-		noGateway  bool // Lightweight mode: polling only, no HTTP gateway
-		sequential bool // Sequential execution mode (one issue at a time)
-		parallel   bool // Parallel execution mode (legacy)
-		noPR       bool // Disable PR creation for polling mode
+		noGateway   bool   // Lightweight mode: polling only, no HTTP gateway
+		sequential  bool   // Sequential execution mode (one issue at a time)
+		parallel    bool   // Parallel execution mode (legacy)
+		noPR        bool   // Disable PR creation for polling mode
+		autopilotEnv string // Autopilot environment: dev, stage, prod
 	)
 
 	cmd := &cobra.Command{
@@ -178,6 +180,23 @@ Examples:
 				cfg.Orchestrator.Execution.Mode = "parallel"
 			}
 
+			// Override autopilot config if flag provided
+			if autopilotEnv != "" {
+				if cfg.Orchestrator.Autopilot == nil {
+					cfg.Orchestrator.Autopilot = autopilot.DefaultConfig()
+				}
+				cfg.Orchestrator.Autopilot.Enabled = true
+				cfg.Orchestrator.Autopilot.Environment = autopilot.Environment(autopilotEnv)
+
+				// Validate environment
+				switch cfg.Orchestrator.Autopilot.Environment {
+				case autopilot.EnvDev, autopilot.EnvStage, autopilot.EnvProd:
+					// valid
+				default:
+					return fmt.Errorf("invalid autopilot environment: %s (use: dev, stage, prod)", autopilotEnv)
+				}
+			}
+
 			// Lightweight mode: polling only, no gateway
 			if noGateway || (!hasLinear && !hasJira && (hasTelegram || hasGithubPolling)) {
 				return runPollingMode(cfg, projectPath, replace, dashboardMode, noPR)
@@ -229,6 +248,8 @@ Examples:
 	cmd.Flags().BoolVar(&sequential, "sequential", false, "Sequential execution: wait for PR merge before next issue")
 	cmd.Flags().BoolVar(&parallel, "parallel", false, "Parallel execution: process multiple issues concurrently (legacy)")
 	cmd.Flags().BoolVar(&noPR, "no-pr", false, "Skip PR creation (default: create PRs)")
+	cmd.Flags().StringVar(&autopilotEnv, "autopilot", "",
+		"Enable autopilot mode: dev (auto-merge), stage (CI gate), prod (approval gate)")
 
 	// Input adapter flags - use pointers to detect if flag was set
 	cmd.Flags().Var(newOptionalBool(&enableTelegram), "telegram", "Enable Telegram polling (overrides config)")
@@ -422,6 +443,15 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 
 	// Show startup banner
 	banner.StartupTelegram(version, projectPath, cfg.Adapters.Telegram.ChatID, cfg)
+
+	// Log autopilot status
+	if cfg.Orchestrator.Autopilot != nil && cfg.Orchestrator.Autopilot.Enabled {
+		logging.WithComponent("start").Info("autopilot enabled",
+			slog.String("environment", string(cfg.Orchestrator.Autopilot.Environment)),
+			slog.Bool("auto_merge", cfg.Orchestrator.Autopilot.AutoMerge),
+			slog.Bool("auto_review", cfg.Orchestrator.Autopilot.AutoReview),
+		)
+	}
 
 	// Initialize dispatcher for task queue
 	var dispatcher *executor.Dispatcher
