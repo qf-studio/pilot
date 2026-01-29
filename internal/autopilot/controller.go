@@ -316,6 +316,18 @@ func (c *Controller) IsCircuitOpen() bool {
 	return c.consecutiveFailures >= c.config.MaxFailures
 }
 
+// ConsecutiveFailures returns the current failure count for circuit breaker.
+func (c *Controller) ConsecutiveFailures() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.consecutiveFailures
+}
+
+// Config returns the autopilot configuration.
+func (c *Controller) Config() *Config {
+	return c.config
+}
+
 // Run starts the autopilot processing loop.
 // It continuously processes all active PRs until context is cancelled.
 func (c *Controller) Run(ctx context.Context) error {
