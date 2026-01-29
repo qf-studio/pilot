@@ -92,9 +92,14 @@ func Init(cfg *Config) error {
 // Use this when running in TUI dashboard mode to prevent log output from
 // corrupting the terminal display.
 func Suppress() {
+	discardLogger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
 	loggerMu.Lock()
-	defaultLogger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	defaultLogger = discardLogger
 	loggerMu.Unlock()
+
+	// Also set the global slog default to suppress any direct slog.Info() calls
+	slog.SetDefault(discardLogger)
 }
 
 // parseLevel converts a string level to slog.Level.
