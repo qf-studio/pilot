@@ -308,3 +308,60 @@ func HasLabel(issue *Issue, labelName string) bool {
 	}
 	return false
 }
+
+// MergePullRequest merges a pull request
+// method can be "merge", "squash", or "rebase" (use MergeMethod* constants)
+// commitTitle is optional - if empty, GitHub uses the default
+func (c *Client) MergePullRequest(ctx context.Context, owner, repo string, number int, method, commitTitle string) error {
+	path := fmt.Sprintf("/repos/%s/%s/pulls/%d/merge", owner, repo, number)
+
+	body := map[string]string{
+		"merge_method": method,
+	}
+	if commitTitle != "" {
+		body["commit_title"] = commitTitle
+	}
+
+	return c.doRequest(ctx, http.MethodPut, path, body, nil)
+}
+
+// GetCombinedStatus gets combined status for a commit SHA
+// Returns the combined state of all statuses for the commit
+func (c *Client) GetCombinedStatus(ctx context.Context, owner, repo, sha string) (*CombinedStatus, error) {
+	path := fmt.Sprintf("/repos/%s/%s/commits/%s/status", owner, repo, sha)
+
+	var status CombinedStatus
+	if err := c.doRequest(ctx, http.MethodGet, path, nil, &status); err != nil {
+		return nil, err
+	}
+
+	return &status, nil
+}
+
+// ListCheckRuns lists check runs for a commit SHA
+// Returns check runs from GitHub Actions and other check suites
+func (c *Client) ListCheckRuns(ctx context.Context, owner, repo, sha string) (*CheckRunsResponse, error) {
+	path := fmt.Sprintf("/repos/%s/%s/commits/%s/check-runs", owner, repo, sha)
+
+	var result CheckRunsResponse
+	if err := c.doRequest(ctx, http.MethodGet, path, nil, &result); err != nil {
+		return nil, err
+	}
+
+	return &result, nil
+}
+
+// ApprovePullRequest creates an approval review on a PR
+// body is the optional review comment
+func (c *Client) ApprovePullRequest(ctx context.Context, owner, repo string, number int, body string) error {
+	path := fmt.Sprintf("/repos/%s/%s/pulls/%d/reviews", owner, repo, number)
+
+	payload := map[string]string{
+		"event": ReviewEventApprove,
+	}
+	if body != "" {
+		payload["body"] = body
+	}
+
+	return c.doRequest(ctx, http.MethodPost, path, payload, nil)
+}

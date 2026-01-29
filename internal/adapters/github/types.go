@@ -205,3 +205,33 @@ type PRComment struct {
 	CreatedAt string `json:"created_at,omitempty"`
 	UpdatedAt string `json:"updated_at,omitempty"`
 }
+
+// CombinedStatus represents the combined status for a commit SHA
+// See: https://docs.github.com/en/rest/commits/statuses#get-the-combined-status-for-a-specific-reference
+type CombinedStatus struct {
+	State      string         `json:"state"` // pending, success, failure, error
+	Statuses   []CommitStatus `json:"statuses"`
+	SHA        string         `json:"sha"`
+	TotalCount int            `json:"total_count"`
+}
+
+// CheckRunsResponse contains check run list from GitHub Checks API
+// See: https://docs.github.com/en/rest/checks/runs#list-check-runs-for-a-git-reference
+type CheckRunsResponse struct {
+	TotalCount int        `json:"total_count"`
+	CheckRuns  []CheckRun `json:"check_runs"`
+}
+
+// Merge methods for MergePullRequest
+const (
+	MergeMethodMerge  = "merge"
+	MergeMethodSquash = "squash"
+	MergeMethodRebase = "rebase"
+)
+
+// Review events for PR reviews
+const (
+	ReviewEventApprove        = "APPROVE"
+	ReviewEventRequestChanges = "REQUEST_CHANGES"
+	ReviewEventComment        = "COMMENT"
+)

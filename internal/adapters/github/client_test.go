@@ -1229,3 +1229,385 @@ func TestLabelConstants(t *testing.T) {
 		t.Errorf("LabelFailed = %s, want 'pilot-failed'", LabelFailed)
 	}
 }
+
+func TestMergePullRequest(t *testing.T) {
+	tests := []struct {
+		name        string
+		method      string
+		commitTitle string
+		statusCode  int
+		wantErr     bool
+	}{
+		{
+			name:        "success - squash merge",
+			method:      MergeMethodSquash,
+			commitTitle: "feat: add new feature (#42)",
+			statusCode:  http.StatusOK,
+			wantErr:     false,
+		},
+		{
+			name:        "success - merge commit",
+			method:      MergeMethodMerge,
+			commitTitle: "",
+			statusCode:  http.StatusOK,
+			wantErr:     false,
+		},
+		{
+			name:        "success - rebase",
+			method:      MergeMethodRebase,
+			commitTitle: "",
+			statusCode:  http.StatusOK,
+			wantErr:     false,
+		},
+		{
+			name:        "not mergeable - conflicts",
+			method:      MergeMethodSquash,
+			commitTitle: "",
+			statusCode:  http.StatusMethodNotAllowed,
+			wantErr:     true,
+		},
+		{
+			name:        "not found",
+			method:      MergeMethodSquash,
+			commitTitle: "",
+			statusCode:  http.StatusNotFound,
+			wantErr:     true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPut {
+					t.Errorf("expected PUT, got %s", r.Method)
+				}
+				if r.URL.Path != "/repos/owner/repo/pulls/42/merge" {
+					t.Errorf("unexpected path: %s", r.URL.Path)
+				}
+
+				var body map[string]string
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Fatalf("failed to decode body: %v", err)
+				}
+
+				if body["merge_method"] != tt.method {
+					t.Errorf("unexpected merge_method: %s, want %s", body["merge_method"], tt.method)
+				}
+				if tt.commitTitle != "" && body["commit_title"] != tt.commitTitle {
+					t.Errorf("unexpected commit_title: %s, want %s", body["commit_title"], tt.commitTitle)
+				}
+
+				w.WriteHeader(tt.statusCode)
+				if tt.statusCode == http.StatusOK {
+					_, _ = w.Write([]byte(`{"sha": "abc123", "merged": true}`))
+				}
+			}))
+			defer server.Close()
+
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			err := client.MergePullRequest(context.Background(), "owner", "repo", 42, tt.method, tt.commitTitle)
+
+			if (err != nil) != tt.wantErr {
+				t.Errorf("MergePullRequest() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestGetCombinedStatus(t *testing.T) {
+	tests := []struct {
+		name       string
+		statusCode int
+		response   interface{}
+		wantErr    bool
+		wantState  string
+	}{
+		{
+			name:       "success - all passing",
+			statusCode: http.StatusOK,
+			response: CombinedStatus{
+				State:      StatusSuccess,
+				SHA:        "abc123def456",
+				TotalCount: 2,
+				Statuses: []CommitStatus{
+					{Context: "ci/build", State: StatusSuccess},
+					{Context: "ci/test", State: StatusSuccess},
+				},
+			},
+			wantErr:   false,
+			wantState: StatusSuccess,
+		},
+		{
+			name:       "success - pending",
+			statusCode: http.StatusOK,
+			response: CombinedStatus{
+				State:      StatusPending,
+				SHA:        "abc123def456",
+				TotalCount: 1,
+				Statuses: []CommitStatus{
+					{Context: "ci/build", State: StatusPending},
+				},
+			},
+			wantErr:   false,
+			wantState: StatusPending,
+		},
+		{
+			name:       "success - failure",
+			statusCode: http.StatusOK,
+			response: CombinedStatus{
+				State:      StatusFailure,
+				SHA:        "abc123def456",
+				TotalCount: 2,
+				Statuses: []CommitStatus{
+					{Context: "ci/build", State: StatusSuccess},
+					{Context: "ci/test", State: StatusFailure},
+				},
+			},
+			wantErr:   false,
+			wantState: StatusFailure,
+		},
+		{
+			name:       "success - no statuses",
+			statusCode: http.StatusOK,
+			response: CombinedStatus{
+				State:      StatusPending,
+				SHA:        "abc123def456",
+				TotalCount: 0,
+				Statuses:   []CommitStatus{},
+			},
+			wantErr:   false,
+			wantState: StatusPending,
+		},
+		{
+			name:       "not found",
+			statusCode: http.StatusNotFound,
+			response:   map[string]string{"message": "Not Found"},
+			wantErr:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet {
+					t.Errorf("expected GET, got %s", r.Method)
+				}
+				if r.URL.Path != "/repos/owner/repo/commits/abc123def456/status" {
+					t.Errorf("unexpected path: %s", r.URL.Path)
+				}
+
+				w.WriteHeader(tt.statusCode)
+				_ = json.NewEncoder(w).Encode(tt.response)
+			}))
+			defer server.Close()
+
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			status, err := client.GetCombinedStatus(context.Background(), "owner", "repo", "abc123def456")
+
+			if (err != nil) != tt.wantErr {
+				t.Errorf("GetCombinedStatus() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if !tt.wantErr && status.State != tt.wantState {
+				t.Errorf("status.State = %s, want %s", status.State, tt.wantState)
+			}
+		})
+	}
+}
+
+func TestListCheckRuns(t *testing.T) {
+	tests := []struct {
+		name       string
+		statusCode int
+		response   interface{}
+		wantErr    bool
+		wantCount  int
+	}{
+		{
+			name:       "success - multiple check runs",
+			statusCode: http.StatusOK,
+			response: CheckRunsResponse{
+				TotalCount: 3,
+				CheckRuns: []CheckRun{
+					{ID: 1, Name: "build", Status: CheckRunCompleted, Conclusion: ConclusionSuccess},
+					{ID: 2, Name: "test", Status: CheckRunCompleted, Conclusion: ConclusionSuccess},
+					{ID: 3, Name: "lint", Status: CheckRunCompleted, Conclusion: ConclusionSuccess},
+				},
+			},
+			wantErr:   false,
+			wantCount: 3,
+		},
+		{
+			name:       "success - in progress",
+			statusCode: http.StatusOK,
+			response: CheckRunsResponse{
+				TotalCount: 2,
+				CheckRuns: []CheckRun{
+					{ID: 1, Name: "build", Status: CheckRunCompleted, Conclusion: ConclusionSuccess},
+					{ID: 2, Name: "test", Status: CheckRunInProgress},
+				},
+			},
+			wantErr:   false,
+			wantCount: 2,
+		},
+		{
+			name:       "success - no check runs",
+			statusCode: http.StatusOK,
+			response: CheckRunsResponse{
+				TotalCount: 0,
+				CheckRuns:  []CheckRun{},
+			},
+			wantErr:   false,
+			wantCount: 0,
+		},
+		{
+			name:       "not found",
+			statusCode: http.StatusNotFound,
+			response:   map[string]string{"message": "Not Found"},
+			wantErr:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet {
+					t.Errorf("expected GET, got %s", r.Method)
+				}
+				if r.URL.Path != "/repos/owner/repo/commits/abc123def456/check-runs" {
+					t.Errorf("unexpected path: %s", r.URL.Path)
+				}
+				if r.Header.Get("Accept") != "application/vnd.github+json" {
+					t.Errorf("unexpected Accept header: %s", r.Header.Get("Accept"))
+				}
+
+				w.WriteHeader(tt.statusCode)
+				_ = json.NewEncoder(w).Encode(tt.response)
+			}))
+			defer server.Close()
+
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			result, err := client.ListCheckRuns(context.Background(), "owner", "repo", "abc123def456")
+
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ListCheckRuns() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if !tt.wantErr && result.TotalCount != tt.wantCount {
+				t.Errorf("result.TotalCount = %d, want %d", result.TotalCount, tt.wantCount)
+			}
+		})
+	}
+}
+
+func TestApprovePullRequest(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       string
+		statusCode int
+		wantErr    bool
+	}{
+		{
+			name:       "success - with comment",
+			body:       "LGTM! Great work.",
+			statusCode: http.StatusOK,
+			wantErr:    false,
+		},
+		{
+			name:       "success - without comment",
+			body:       "",
+			statusCode: http.StatusOK,
+			wantErr:    false,
+		},
+		{
+			name:       "not found",
+			body:       "",
+			statusCode: http.StatusNotFound,
+			wantErr:    true,
+		},
+		{
+			name:       "forbidden - no permission",
+			body:       "",
+			statusCode: http.StatusForbidden,
+			wantErr:    true,
+		},
+		{
+			name:       "conflict - already reviewed",
+			body:       "",
+			statusCode: http.StatusUnprocessableEntity,
+			wantErr:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost {
+					t.Errorf("expected POST, got %s", r.Method)
+				}
+				if r.URL.Path != "/repos/owner/repo/pulls/42/reviews" {
+					t.Errorf("unexpected path: %s", r.URL.Path)
+				}
+
+				var body map[string]string
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Fatalf("failed to decode body: %v", err)
+				}
+
+				if body["event"] != ReviewEventApprove {
+					t.Errorf("unexpected event: %s, want %s", body["event"], ReviewEventApprove)
+				}
+				if tt.body != "" && body["body"] != tt.body {
+					t.Errorf("unexpected body: %s, want %s", body["body"], tt.body)
+				}
+
+				w.WriteHeader(tt.statusCode)
+				if tt.statusCode == http.StatusOK {
+					_, _ = w.Write([]byte(`{"id": 123, "state": "APPROVED"}`))
+				}
+			}))
+			defer server.Close()
+
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			err := client.ApprovePullRequest(context.Background(), "owner", "repo", 42, tt.body)
+
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ApprovePullRequest() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestMergeMethodConstants(t *testing.T) {
+	tests := []struct {
+		constant string
+		expected string
+	}{
+		{MergeMethodMerge, "merge"},
+		{MergeMethodSquash, "squash"},
+		{MergeMethodRebase, "rebase"},
+	}
+
+	for _, tt := range tests {
+		if tt.constant != tt.expected {
+			t.Errorf("constant = %s, want %s", tt.constant, tt.expected)
+		}
+	}
+}
+
+func TestReviewEventConstants(t *testing.T) {
+	tests := []struct {
+		constant string
+		expected string
+	}{
+		{ReviewEventApprove, "APPROVE"},
+		{ReviewEventRequestChanges, "REQUEST_CHANGES"},
+		{ReviewEventComment, "COMMENT"},
+	}
+
+	for _, tt := range tests {
+		if tt.constant != tt.expected {
+			t.Errorf("constant = %s, want %s", tt.constant, tt.expected)
+		}
+	}
+}
