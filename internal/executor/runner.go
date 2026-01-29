@@ -640,6 +640,13 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 				log.Info("Recording saved", slog.String("recording_id", recorder.GetRecordingID()))
 			}
 		}
+
+		// Sync Navigator index (GH-57) - update DEVELOPMENT-README.md
+		if state.hasNavigator {
+			if syncErr := r.syncNavigatorIndex(task, "completed"); syncErr != nil {
+				log.Warn("Failed to sync Navigator index", slog.Any("error", syncErr))
+			}
+		}
 	}
 
 	return result, nil
@@ -1306,4 +1313,153 @@ func (r *Runner) reportProgress(taskID, phase string, progress int, message stri
 	if r.onProgress != nil {
 		r.onProgress(taskID, phase, progress, message)
 	}
+}
+
+// syncNavigatorIndex updates DEVELOPMENT-README.md after task completion.
+// It moves completed tasks from "In Progress" to "Completed" section.
+// Supports both TASK-XX and GH-XX formats.
+func (r *Runner) syncNavigatorIndex(task *Task, status string) error {
+	indexPath := filepath.Join(task.ProjectPath, ".agent", "DEVELOPMENT-README.md")
+
+	// Check if Navigator index exists
+	if _, err := os.Stat(indexPath); os.IsNotExist(err) {
+		r.log.Debug("Navigator index not found, skipping sync",
+			slog.String("task_id", task.ID),
+			slog.String("path", indexPath),
+		)
+		return nil
+	}
+
+	// Read current index
+	content, err := os.ReadFile(indexPath)
+	if err != nil {
+		return fmt.Errorf("failed to read navigator index: %w", err)
+	}
+
+	lines := strings.Split(string(content), "\n")
+	var result []string
+	var taskEntry string
+	var taskTitle string
+	inProgressSection := false
+	completedSection := false
+	completedInsertIdx := -1
+
+	// Extract task number for matching (handles GH-XX and TASK-XX)
+	taskNum := extractTaskNumber(task.ID)
+
+	for i, line := range lines {
+		// Track sections
+		if strings.Contains(line, "### In Progress") {
+			inProgressSection = true
+			completedSection = false
+			result = append(result, line)
+			continue
+		}
+		if strings.Contains(line, "### Backlog") || strings.Contains(line, "## Completed") {
+			inProgressSection = false
+		}
+		if strings.Contains(line, "## Completed") {
+			completedSection = true
+			result = append(result, line)
+			// Find where to insert (after the header and any date line)
+			completedInsertIdx = len(result)
+			continue
+		}
+		if completedSection && strings.HasPrefix(strings.TrimSpace(line), "| Item") {
+			// After table header in completed section
+			result = append(result, line)
+			completedInsertIdx = len(result)
+			continue
+		}
+		if completedSection && strings.HasPrefix(strings.TrimSpace(line), "|---") {
+			result = append(result, line)
+			completedInsertIdx = len(result)
+			continue
+		}
+
+		// Check if this line contains our task in the In Progress table
+		if inProgressSection && strings.Contains(line, "|") {
+			// Table row format: | GH# | Title | Status |
+			// or: | 54 | Speed Optimization ... | 🔄 Pilot executing |
+			if strings.Contains(line, task.ID) || (taskNum != "" && containsTaskNumber(line, taskNum)) {
+				// Extract title from the row
+				parts := strings.Split(line, "|")
+				if len(parts) >= 3 {
+					taskTitle = strings.TrimSpace(parts[2]) // Title is second column after GH#
+				}
+				taskEntry = line
+				// Skip this line (don't add to result) - we'll move it to completed
+				continue
+			}
+		}
+
+		result = append(result, line)
+		_ = i // suppress unused warning
+	}
+
+	// If we found a task entry to move
+	if taskEntry != "" && completedInsertIdx >= 0 {
+		// Create completed entry
+		completedEntry := fmt.Sprintf("| %s | %s |", task.ID, taskTitle)
+
+		// Insert at the right position
+		newResult := make([]string, 0, len(result)+1)
+		newResult = append(newResult, result[:completedInsertIdx]...)
+		newResult = append(newResult, completedEntry)
+		newResult = append(newResult, result[completedInsertIdx:]...)
+		result = newResult
+
+		// Write updated index
+		if err := os.WriteFile(indexPath, []byte(strings.Join(result, "\n")), 0644); err != nil {
+			return fmt.Errorf("failed to write navigator index: %w", err)
+		}
+
+		r.log.Info("Updated Navigator index",
+			slog.String("task_id", task.ID),
+			slog.String("status", status),
+			slog.String("moved_to", "Completed"),
+		)
+	} else if taskEntry != "" {
+		r.log.Debug("Task found but no Completed section to move to",
+			slog.String("task_id", task.ID),
+		)
+	} else {
+		r.log.Debug("Task not found in Navigator index In Progress section",
+			slog.String("task_id", task.ID),
+		)
+	}
+
+	return nil
+}
+
+// extractTaskNumber extracts the numeric part from task IDs like "GH-57" or "TASK-123"
+func extractTaskNumber(taskID string) string {
+	// Handle GH-XX format
+	if strings.HasPrefix(taskID, "GH-") {
+		return strings.TrimPrefix(taskID, "GH-")
+	}
+	// Handle TASK-XX format
+	if strings.HasPrefix(taskID, "TASK-") {
+		return strings.TrimPrefix(taskID, "TASK-")
+	}
+	return taskID
+}
+
+// containsTaskNumber checks if a line contains a task number in various formats
+func containsTaskNumber(line, taskNum string) bool {
+	// Check for "| 57 |" or "| GH-57 |" or "| TASK-57 |" patterns
+	patterns := []string{
+		fmt.Sprintf("| %s ", taskNum),
+		fmt.Sprintf("|%s ", taskNum),
+		fmt.Sprintf("| %s|", taskNum),
+		fmt.Sprintf("|%s|", taskNum),
+		fmt.Sprintf("GH-%s", taskNum),
+		fmt.Sprintf("TASK-%s", taskNum),
+	}
+	for _, p := range patterns {
+		if strings.Contains(line, p) {
+			return true
+		}
+	}
+	return false
 }
