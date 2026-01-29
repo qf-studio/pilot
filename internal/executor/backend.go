@@ -140,6 +140,9 @@ type BackendConfig struct {
 
 	// Timeout contains execution timeout settings
 	Timeout *TimeoutConfig `yaml:"timeout,omitempty"`
+
+	// Decompose contains auto-decomposition settings for complex tasks
+	Decompose *DecomposeConfig `yaml:"decompose,omitempty"`
 }
 
 // ModelRoutingConfig controls which model to use based on task complexity.
@@ -242,6 +245,7 @@ func DefaultBackendConfig() *BackendConfig {
 		},
 		ModelRouting: DefaultModelRoutingConfig(),
 		Timeout:      DefaultTimeoutConfig(),
+		Decompose:    DefaultDecomposeConfig(),
 	}
 }
 

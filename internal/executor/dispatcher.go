@@ -34,15 +34,16 @@ func DefaultDispatcherConfig() *DispatcherConfig {
 // Progress updates are emitted via runner.EmitProgress() so they
 // flow through the same callback path as execution progress.
 type Dispatcher struct {
-	config  *DispatcherConfig
-	store   *memory.Store
-	runner  *Runner
-	workers map[string]*ProjectWorker // key: project path
-	mu      sync.RWMutex
-	log     *slog.Logger
-	ctx     context.Context
-	cancel  context.CancelFunc
-	wg      sync.WaitGroup
+	config     *DispatcherConfig
+	store      *memory.Store
+	runner     *Runner
+	decomposer *TaskDecomposer           // Optional task decomposer
+	workers    map[string]*ProjectWorker // key: project path
+	mu         sync.RWMutex
+	log        *slog.Logger
+	ctx        context.Context
+	cancel     context.CancelFunc
+	wg         sync.WaitGroup
 }
 
 // NewDispatcher creates a new task dispatcher.
@@ -62,6 +63,13 @@ func NewDispatcher(store *memory.Store, runner *Runner, config *DispatcherConfig
 		ctx:     ctx,
 		cancel:  cancel,
 	}
+}
+
+// SetDecomposer sets the task decomposer for auto-splitting complex tasks.
+// If set, complex tasks meeting the decomposition criteria will be split
+// into subtasks before queuing.
+func (d *Dispatcher) SetDecomposer(decomposer *TaskDecomposer) {
+	d.decomposer = decomposer
 }
 
 // Start initializes the dispatcher and recovers from any stale tasks.
@@ -122,6 +130,8 @@ func (d *Dispatcher) recoverStaleTasks() error {
 
 // QueueTask adds a task to the execution queue and returns the execution ID.
 // The task will be executed by the project's worker in FIFO order.
+// If a decomposer is configured and the task is complex, it will be split
+// into subtasks that are queued instead of the parent task.
 func (d *Dispatcher) QueueTask(ctx context.Context, task *Task) (string, error) {
 	// Check for duplicate tasks
 	exists, err := d.store.IsTaskQueued(task.ID)
@@ -131,6 +141,76 @@ func (d *Dispatcher) QueueTask(ctx context.Context, task *Task) (string, error) 
 		return "", fmt.Errorf("task %s is already queued or running", task.ID)
 	}
 
+	// Try decomposition if decomposer is configured
+	if d.decomposer != nil {
+		result := d.decomposer.Decompose(task)
+		if result.Decomposed && len(result.Subtasks) > 1 {
+			return d.queueDecomposedTask(ctx, task, result)
+		}
+	}
+
+	// Queue single task
+	return d.queueSingleTask(ctx, task)
+}
+
+// queueDecomposedTask handles queuing a decomposed task and its subtasks.
+// The parent task is marked as "decomposed" and subtasks are queued in order.
+func (d *Dispatcher) queueDecomposedTask(ctx context.Context, parent *Task, result *DecomposeResult) (string, error) {
+	// Generate parent execution ID
+	parentExecID := uuid.New().String()
+
+	// Save parent as "decomposed" status
+	parentExec := &memory.Execution{
+		ID:              parentExecID,
+		TaskID:          parent.ID,
+		ProjectPath:     parent.ProjectPath,
+		Status:          "decomposed",
+		TaskTitle:       parent.Title,
+		TaskDescription: parent.Description,
+		TaskBranch:      parent.Branch,
+		TaskBaseBranch:  parent.BaseBranch,
+		TaskCreatePR:    parent.CreatePR,
+		TaskVerbose:     parent.Verbose,
+	}
+
+	if err := d.store.SaveExecution(parentExec); err != nil {
+		return "", fmt.Errorf("failed to save decomposed parent: %w", err)
+	}
+
+	d.log.Info("Task decomposed",
+		slog.String("parent_id", parent.ID),
+		slog.Int("subtask_count", len(result.Subtasks)),
+		slog.String("reason", result.Reason),
+	)
+
+	// Emit progress for parent
+	d.runner.EmitProgress(parent.ID, "Decomposed", 0,
+		fmt.Sprintf("Split into %d subtasks", len(result.Subtasks)))
+
+	// Queue each subtask
+	var lastExecID string
+	for i, subtask := range result.Subtasks {
+		execID, err := d.queueSingleTask(ctx, subtask)
+		if err != nil {
+			d.log.Error("Failed to queue subtask",
+				slog.String("subtask_id", subtask.ID),
+				slog.Int("index", i),
+				slog.Any("error", err),
+			)
+			continue
+		}
+		lastExecID = execID
+	}
+
+	// Return parent execution ID
+	if lastExecID == "" {
+		return parentExecID, nil
+	}
+	return parentExecID, nil
+}
+
+// queueSingleTask queues a single task (no decomposition).
+func (d *Dispatcher) queueSingleTask(ctx context.Context, task *Task) (string, error) {
 	// Generate execution ID
 	execID := uuid.New().String()
 
