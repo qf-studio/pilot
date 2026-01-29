@@ -6,7 +6,7 @@ set -e
 
 REPO="alekspetrov/pilot"
 BINARY_NAME="pilot"
-INSTALL_DIR="/usr/local/bin"
+INSTALL_DIR="$HOME/.local/bin"
 
 # Colors
 RED='\033[0;31m'
@@ -89,21 +89,15 @@ install() {
 
     chmod +x "$TMP_FILE"
 
-    # Install
-    info "Installing to $INSTALL_DIR..."
-
-    if [ -w "$INSTALL_DIR" ]; then
-        mv "$TMP_FILE" "$INSTALL_DIR/$BINARY_NAME"
-    else
-        sudo mv "$TMP_FILE" "$INSTALL_DIR/$BINARY_NAME"
+    # Create install directory if needed (no sudo required for ~/.local/bin)
+    if [ ! -d "$INSTALL_DIR" ]; then
+        info "Creating $INSTALL_DIR..."
+        mkdir -p "$INSTALL_DIR"
     fi
 
-    info "✅ Pilot installed successfully!"
-    echo ""
-    echo "Get started:"
-    echo "  pilot init     # Initialize configuration"
-    echo "  pilot start    # Start the daemon"
-    echo ""
+    # Install
+    info "Installing to $INSTALL_DIR..."
+    mv "$TMP_FILE" "$INSTALL_DIR/$BINARY_NAME"
 }
 
 # Check dependencies
@@ -121,15 +115,123 @@ check_dependencies() {
     fi
 }
 
+# Detect user's shell and return rc file path
+detect_shell_rc() {
+    SHELL_NAME=$(basename "$SHELL")
+
+    case "$SHELL_NAME" in
+        zsh)
+            echo "$HOME/.zshrc"
+            ;;
+        bash)
+            # Prefer .bashrc, fall back to .bash_profile on macOS
+            if [ -f "$HOME/.bashrc" ]; then
+                echo "$HOME/.bashrc"
+            else
+                echo "$HOME/.bash_profile"
+            fi
+            ;;
+        fish)
+            echo "$HOME/.config/fish/config.fish"
+            ;;
+        *)
+            # Fallback to .profile for other shells
+            echo "$HOME/.profile"
+            ;;
+    esac
+}
+
+# Configure PATH in shell rc file
+configure_path() {
+    RC_FILE=$(detect_shell_rc)
+    SHELL_NAME=$(basename "$SHELL")
+    PATH_LINE=""
+
+    # Different syntax for fish vs other shells
+    if [ "$SHELL_NAME" = "fish" ]; then
+        PATH_LINE='set -gx PATH "$HOME/.local/bin" $PATH'
+        PATH_CHECK='.local/bin'
+    else
+        PATH_LINE='export PATH="$HOME/.local/bin:$PATH"'
+        PATH_CHECK='.local/bin'
+    fi
+
+    # Check if PATH already configured
+    if [ -f "$RC_FILE" ] && grep -q "$PATH_CHECK" "$RC_FILE" 2>/dev/null; then
+        info "PATH already configured in $RC_FILE"
+        return 0
+    fi
+
+    # Create rc file directory if needed (for fish)
+    RC_DIR=$(dirname "$RC_FILE")
+    if [ ! -d "$RC_DIR" ]; then
+        mkdir -p "$RC_DIR"
+    fi
+
+    # Add PATH configuration
+    info "Adding PATH to $RC_FILE..."
+    echo "" >> "$RC_FILE"
+    echo "# Added by Pilot installer" >> "$RC_FILE"
+    echo "$PATH_LINE" >> "$RC_FILE"
+
+    PATH_CONFIGURED=true
+}
+
+# Verify installation
+verify_installation() {
+    # Add to current session PATH for verification
+    export PATH="$INSTALL_DIR:$PATH"
+
+    if command -v pilot &> /dev/null; then
+        INSTALLED_VERSION=$(pilot version 2>/dev/null || echo "unknown")
+        info "✅ Verified: pilot $INSTALLED_VERSION"
+        return 0
+    else
+        warn "Could not verify installation"
+        return 1
+    fi
+}
+
+# Print post-install instructions
+print_instructions() {
+    RC_FILE=$(detect_shell_rc)
+    SHELL_NAME=$(basename "$SHELL")
+
+    echo ""
+    info "✅ Pilot installed successfully!"
+    echo ""
+
+    if [ "$PATH_CONFIGURED" = true ]; then
+        echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo -e "${YELLOW}  PATH was updated. To use pilot now, either:${NC}"
+        echo ""
+        echo -e "    ${GREEN}1.${NC} Run: source $RC_FILE"
+        echo -e "    ${GREEN}2.${NC} Or open a new terminal"
+        echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo ""
+    fi
+
+    echo "Get started:"
+    echo "  pilot version  # Verify installation"
+    echo "  pilot init     # Initialize configuration"
+    echo "  pilot start    # Start the daemon"
+    echo ""
+}
+
 main() {
     echo "🚀 Pilot Installer"
     echo "=================="
     echo ""
 
+    PATH_CONFIGURED=false
+
     check_dependencies
     detect_platform
     get_latest_version
     install
+    configure_path
+    verify_installation
+    print_instructions
 }
 
 main "$@"
