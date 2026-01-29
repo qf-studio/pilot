@@ -17,6 +17,7 @@ import (
 	"github.com/alekspetrov/pilot/internal/adapters/telegram"
 	"github.com/alekspetrov/pilot/internal/alerts"
 	"github.com/alekspetrov/pilot/internal/approval"
+	"github.com/alekspetrov/pilot/internal/autopilot"
 	"github.com/alekspetrov/pilot/internal/budget"
 	"github.com/alekspetrov/pilot/internal/executor"
 	"github.com/alekspetrov/pilot/internal/gateway"
@@ -66,6 +67,7 @@ type OrchestratorConfig struct {
 	MaxConcurrent int               `yaml:"max_concurrent"`
 	DailyBrief    *DailyBriefConfig `yaml:"daily_brief"`
 	Execution     *ExecutionConfig  `yaml:"execution"`
+	Autopilot     *autopilot.Config `yaml:"autopilot"`
 }
 
 // ExecutionConfig holds settings for task execution mode.
@@ -242,6 +244,7 @@ func DefaultConfig() *Config {
 				},
 			},
 			Execution: DefaultExecutionConfig(),
+			Autopilot: autopilot.DefaultConfig(),
 		},
 		Executor: executor.DefaultBackendConfig(),
 		Memory: &MemoryConfig{
