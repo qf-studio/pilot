@@ -88,6 +88,15 @@ func Init(cfg *Config) error {
 	return nil
 }
 
+// Suppress redirects all logging to io.Discard, effectively silencing logs.
+// Use this when running in TUI dashboard mode to prevent log output from
+// corrupting the terminal display.
+func Suppress() {
+	loggerMu.Lock()
+	defaultLogger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	loggerMu.Unlock()
+}
+
 // parseLevel converts a string level to slog.Level.
 func parseLevel(level string) slog.Level {
 	switch level {

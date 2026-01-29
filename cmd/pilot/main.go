@@ -325,6 +325,9 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 	var monitor *executor.Monitor
 	var program *tea.Program
 	if dashboardMode {
+		// Suppress slog output to prevent corrupting TUI display
+		logging.Suppress()
+
 		monitor = executor.NewMonitor()
 		model := dashboard.NewModel()
 		program = tea.NewProgram(model, tea.WithAltScreen())
