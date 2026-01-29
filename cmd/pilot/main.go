@@ -515,8 +515,7 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 
 	// Dashboard mode: run TUI and handle shutdown via TUI quit
 	if dashboardMode && program != nil {
-		// Note: bubbletea handles Ctrl+C internally via KeyMsg in Update()
-		// We use tea.WithoutCatchPanics and let the TUI handle signals
+		fmt.Println("\n🖥️  Starting TUI dashboard...")
 
 		// Periodic refresh to catch any missed updates
 		go func() {
