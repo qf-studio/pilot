@@ -344,6 +344,32 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 	// Create runner
 	runner := executor.NewRunner()
 
+	// Create autopilot controller if enabled
+	var autopilotController *autopilot.Controller
+	if cfg.Orchestrator.Autopilot != nil && cfg.Orchestrator.Autopilot.Enabled {
+		// Need GitHub client for autopilot
+		ghToken := ""
+		if cfg.Adapters.GitHub != nil {
+			ghToken = cfg.Adapters.GitHub.Token
+			if ghToken == "" {
+				ghToken = os.Getenv("GITHUB_TOKEN")
+			}
+		}
+		if ghToken != "" && cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.Repo != "" {
+			parts := strings.SplitN(cfg.Adapters.GitHub.Repo, "/", 2)
+			if len(parts) == 2 {
+				ghClient := github.NewClient(ghToken)
+				autopilotController = autopilot.NewController(
+					cfg.Orchestrator.Autopilot,
+					ghClient,
+					nil, // approval manager (not wired yet)
+					parts[0],
+					parts[1],
+				)
+			}
+		}
+	}
+
 	// Create monitor and TUI program for dashboard mode
 	var monitor *executor.Monitor
 	var program *tea.Program
@@ -353,7 +379,12 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 		runner.SuppressProgressLogs(true)
 
 		monitor = executor.NewMonitor()
-		model := dashboard.NewModel()
+		var model dashboard.Model
+		if autopilotController != nil {
+			model = dashboard.NewModelWithAutopilot(autopilotController)
+		} else {
+			model = dashboard.NewModel()
+		}
 		program = tea.NewProgram(model,
 			tea.WithAltScreen(),
 			tea.WithInput(os.Stdin),
