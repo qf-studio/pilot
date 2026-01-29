@@ -491,54 +491,141 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 
 		// Run quality gates if configured
 		if r.qualityCheckerFactory != nil {
-			r.reportProgress(task.ID, "Quality Gates", 91, "Running quality checks...")
+			const maxAutoRetries = 2 // Circuit breaker to prevent infinite loops
 
-			checker := r.qualityCheckerFactory(task.ID, task.ProjectPath)
-			outcome, qErr := checker.Check(ctx)
-			if qErr != nil {
-				log.Error("Quality gate check error", slog.Any("error", qErr))
-				result.Success = false
-				result.Error = fmt.Sprintf("quality gate error: %v", qErr)
-				r.reportProgress(task.ID, "Quality Failed", 100, result.Error)
+			for retryAttempt := 0; retryAttempt <= maxAutoRetries; retryAttempt++ {
+				r.reportProgress(task.ID, "Quality Gates", 91, "Running quality checks...")
 
-				// Emit task failed event
-				r.emitAlertEvent(AlertEvent{
-					Type:      AlertEventTypeTaskFailed,
-					TaskID:    task.ID,
-					TaskTitle: task.Title,
-					Project:   task.ProjectPath,
-					Error:     result.Error,
-					Timestamp: time.Now(),
-				})
+				checker := r.qualityCheckerFactory(task.ID, task.ProjectPath)
+				outcome, qErr := checker.Check(ctx)
+				if qErr != nil {
+					log.Error("Quality gate check error", slog.Any("error", qErr))
+					result.Success = false
+					result.Error = fmt.Sprintf("quality gate error: %v", qErr)
+					r.reportProgress(task.ID, "Quality Failed", 100, result.Error)
 
-				if recorder != nil {
-					recorder.SetModel(result.ModelName)
-					recorder.SetNavigator(state.hasNavigator)
-					if finErr := recorder.Finish("failed"); finErr != nil {
-						log.Warn("Failed to finish recording", slog.Any("error", finErr))
+					// Emit task failed event
+					r.emitAlertEvent(AlertEvent{
+						Type:      AlertEventTypeTaskFailed,
+						TaskID:    task.ID,
+						TaskTitle: task.Title,
+						Project:   task.ProjectPath,
+						Error:     result.Error,
+						Timestamp: time.Now(),
+					})
+
+					if recorder != nil {
+						recorder.SetModel(result.ModelName)
+						recorder.SetNavigator(state.hasNavigator)
+						if finErr := recorder.Finish("failed"); finErr != nil {
+							log.Warn("Failed to finish recording", slog.Any("error", finErr))
+						}
 					}
+					return result, nil
 				}
-				return result, nil
-			}
 
-			if !outcome.Passed {
+				// Quality gates passed - exit retry loop
+				if outcome.Passed {
+					r.reportProgress(task.ID, "Quality Passed", 94, "All quality gates passed")
+					break
+				}
+
+				// Quality gates failed
 				log.Warn("Quality gates failed",
 					slog.Bool("should_retry", outcome.ShouldRetry),
 					slog.Int("attempt", outcome.Attempt),
+					slog.Int("retry_attempt", retryAttempt),
 				)
 
-				if outcome.ShouldRetry {
-					r.reportProgress(task.ID, "Quality Retry", 92, "Gates failed, retry feedback available")
-					// RetryFeedback is included in the error message for visibility.
-					// Auto-retry with re-invocation is intentionally not implemented:
-					// 1. Requires significant refactoring of the execution loop
-					// 2. Risk of infinite loops without proper circuit breakers
-					// 3. Better to surface feedback to users for manual intervention
-					// See GH-64 for discussion.
-					result.Success = false
-					result.Error = fmt.Sprintf("quality gates failed (attempt %d): %s", outcome.Attempt+1, outcome.RetryFeedback)
+				// Check if we should retry with Claude Code
+				if outcome.ShouldRetry && retryAttempt < maxAutoRetries {
+					r.reportProgress(task.ID, "Quality Retry", 92,
+						fmt.Sprintf("Fixing issues (attempt %d/%d)...", retryAttempt+1, maxAutoRetries))
+
+					// Emit retry event
+					r.emitAlertEvent(AlertEvent{
+						Type:      AlertEventTypeTaskRetry,
+						TaskID:    task.ID,
+						TaskTitle: task.Title,
+						Project:   task.ProjectPath,
+						Metadata: map[string]string{
+							"attempt":  strconv.Itoa(retryAttempt + 1),
+							"feedback": truncateText(outcome.RetryFeedback, 500),
+						},
+						Timestamp: time.Now(),
+					})
+
+					// Build retry prompt with feedback
+					retryPrompt := r.buildRetryPrompt(task, outcome.RetryFeedback, retryAttempt+1)
+
+					log.Info("Re-invoking Claude Code with retry feedback",
+						slog.String("task_id", task.ID),
+						slog.Int("retry_attempt", retryAttempt+1),
+					)
+
+					// Re-invoke backend with retry prompt
+					retryResult, retryErr := r.backend.Execute(ctx, ExecuteOptions{
+						Prompt:      retryPrompt,
+						ProjectPath: task.ProjectPath,
+						Verbose:     task.Verbose,
+						EventHandler: func(event BackendEvent) {
+							if recorder != nil {
+								if recErr := recorder.RecordEvent(event.Raw); recErr != nil {
+									log.Warn("Failed to record retry event", slog.Any("error", recErr))
+								}
+							}
+							r.processBackendEvent(task.ID, event, state)
+						},
+					})
+
+					if retryErr != nil {
+						log.Error("Retry execution failed", slog.Any("error", retryErr))
+						result.Success = false
+						result.Error = fmt.Sprintf("retry execution failed: %v", retryErr)
+						r.reportProgress(task.ID, "Retry Failed", 100, result.Error)
+
+						r.emitAlertEvent(AlertEvent{
+							Type:      AlertEventTypeTaskFailed,
+							TaskID:    task.ID,
+							TaskTitle: task.Title,
+							Project:   task.ProjectPath,
+							Error:     result.Error,
+							Timestamp: time.Now(),
+						})
+
+						if recorder != nil {
+							recorder.SetModel(result.ModelName)
+							recorder.SetNavigator(state.hasNavigator)
+							if finErr := recorder.Finish("failed"); finErr != nil {
+								log.Warn("Failed to finish recording", slog.Any("error", finErr))
+							}
+						}
+						return result, nil
+					}
+
+					// Update result with retry execution stats
+					result.TokensInput += retryResult.TokensInput
+					result.TokensOutput += retryResult.TokensOutput
+					result.TokensTotal = result.TokensInput + result.TokensOutput
+					if retryResult.Model != "" {
+						result.ModelName = retryResult.Model
+					}
+
+					// Extract new commit SHA if any
+					if len(state.commitSHAs) > 0 {
+						result.CommitSHA = state.commitSHAs[len(state.commitSHAs)-1]
+					}
+
+					// Continue to next iteration to re-check quality gates
+					r.reportProgress(task.ID, "Re-testing", 93, "Re-running quality gates...")
+					continue
+				}
+
+				// No more retries allowed - fail the task
+				result.Success = false
+				if retryAttempt >= maxAutoRetries {
+					result.Error = fmt.Sprintf("quality gates failed after %d auto-retries", maxAutoRetries)
 				} else {
-					result.Success = false
 					result.Error = "quality gates failed, max retries exhausted"
 				}
 
@@ -563,8 +650,6 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 				}
 				return result, nil
 			}
-
-			r.reportProgress(task.ID, "Quality Passed", 94, "All quality gates passed")
 		}
 
 		r.reportProgress(task.ID, "Finalizing", 95, "Preparing for completion")
@@ -734,6 +819,28 @@ func (r *Runner) BuildPrompt(task *Task) string {
 		sb.WriteString("3. Commit with format: `type(scope): description`\n")
 		sb.WriteString("\nWork autonomously. Do not ask for confirmation.\n")
 	}
+
+	return sb.String()
+}
+
+// buildRetryPrompt constructs a prompt for Claude Code to fix quality gate failures.
+// It includes the original task context and the specific error feedback to address.
+func (r *Runner) buildRetryPrompt(task *Task, feedback string, attempt int) string {
+	var sb strings.Builder
+
+	sb.WriteString(fmt.Sprintf("## Quality Gate Retry (Attempt %d)\n\n", attempt))
+	sb.WriteString("The previous implementation attempt failed quality gates. Please fix the issues below.\n\n")
+	sb.WriteString(feedback)
+	sb.WriteString("\n\n")
+	sb.WriteString("## Original Task Context\n\n")
+	sb.WriteString(fmt.Sprintf("Task: %s\n", task.ID))
+	sb.WriteString(fmt.Sprintf("Title: %s\n\n", task.Title))
+	sb.WriteString("## Instructions\n\n")
+	sb.WriteString("1. Review the error output above carefully\n")
+	sb.WriteString("2. Fix the issues in the affected files\n")
+	sb.WriteString("3. Ensure all tests pass\n")
+	sb.WriteString("4. Commit your fixes with a descriptive message\n\n")
+	sb.WriteString("Work autonomously. Do not ask for confirmation.\n")
 
 	return sb.String()
 }

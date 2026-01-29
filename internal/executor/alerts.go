@@ -32,4 +32,5 @@ const (
 	AlertEventTypeTaskProgress  AlertEventType = "task_progress"
 	AlertEventTypeTaskCompleted AlertEventType = "task_completed"
 	AlertEventTypeTaskFailed    AlertEventType = "task_failed"
+	AlertEventTypeTaskRetry     AlertEventType = "task_retry"
 )
