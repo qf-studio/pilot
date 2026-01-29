@@ -253,46 +253,43 @@ pilot/
 ### Testing
 - `internal/testutil/tokens.go` - Safe fake tokens for all test files
 
-## Development Commands
+## Development Workflow
+
+⚠️ **NEVER use local builds. Always release → upgrade.**
 
 ```bash
-# Build
-make build
-
-# Run in development
-make dev
-
 # Run tests
 make test
 
-# Format code
-make fmt
+# Format & lint
+make fmt && make lint
 ```
 
-## Release Workflow
-
-**Creating a new release:**
+## Release Workflow (Required for Every Change)
 
 ```bash
 # 1. Build all platform binaries
 make build-all
 
-# 2. Create GitHub release with binaries
+# 2. Create GitHub release
 gh release create v0.X.Y \
   bin/pilot-darwin-amd64 \
   bin/pilot-darwin-arm64 \
   bin/pilot-linux-amd64 \
   bin/pilot-linux-arm64 \
-  --title "v0.X.Y - Title" \
+  --title "v0.X.Y" \
   --notes "Release notes..."
+
+# 3. Upgrade to new version
+pilot upgrade
 ```
 
-**Installation:**
+**Fresh Install:**
 ```bash
 curl -fsSL https://raw.githubusercontent.com/alekspetrov/pilot/main/install.sh | bash
 ```
 
-⚠️ **Known Issue (GH-204):** Install script doesn't auto-configure PATH. Users must manually add `~/.local/bin` to PATH or open new terminal after install.
+⚠️ **Known Issue (GH-204):** Install script doesn't auto-configure PATH. Users must add `~/.local/bin` to PATH or open new terminal.
 
 ## Configuration
 
