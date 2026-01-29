@@ -365,3 +365,20 @@ func (c *Client) ApprovePullRequest(ctx context.Context, owner, repo string, num
 
 	return c.doRequest(ctx, http.MethodPost, path, payload, nil)
 }
+
+// IssueInput is the input for creating a new issue
+type IssueInput struct {
+	Title  string   `json:"title"`
+	Body   string   `json:"body"`
+	Labels []string `json:"labels,omitempty"`
+}
+
+// CreateIssue creates a new issue in a repository
+func (c *Client) CreateIssue(ctx context.Context, owner, repo string, input *IssueInput) (*Issue, error) {
+	path := fmt.Sprintf("/repos/%s/%s/issues", owner, repo)
+	var issue Issue
+	if err := c.doRequest(ctx, http.MethodPost, path, input, &issue); err != nil {
+		return nil, err
+	}
+	return &issue, nil
+}
