@@ -11,8 +11,7 @@ import (
 
 // Panel width (all panels same width)
 const (
-	panelWidth   = 69 // Total width including borders
-	contentWidth = 65 // Inner content width (panelWidth - 4 for borders/padding)
+	panelWidth   = 67 // Content width for all panels
 )
 
 // Styles (Kali Linux-inspired cyber aesthetic)
@@ -219,42 +218,33 @@ func (m Model) View() string {
 	return b.String()
 }
 
-// renderPanel renders a panel with title in top border
+// panelStyle creates a consistent panel style
+var panelStyle = lipgloss.NewStyle().
+	Border(lipgloss.RoundedBorder()).
+	BorderForeground(lipgloss.Color("#30363d")).
+	Width(panelWidth).
+	Padding(1, 1)
+
+// renderPanel renders a panel with title in top border using lipgloss
 func renderPanel(title string, content string) string {
-	var b strings.Builder
-	border := borderStyle.Render
+	// Use lipgloss to render the box
+	rendered := panelStyle.Render(content)
 
-	// Top border with title: ╭─ TITLE ─────...─╮
-	titlePart := "─ " + title + " "
-	dashesNeeded := panelWidth - 2 - len(titlePart)
-	b.WriteString(border("╭" + titlePart + strings.Repeat("─", dashesNeeded) + "╮"))
-	b.WriteString("\n")
-
-	// Empty line (top padding)
-	emptyLine := "│" + strings.Repeat(" ", panelWidth-2) + "│"
-	b.WriteString(border(emptyLine))
-	b.WriteString("\n")
-
-	// Content lines
-	lines := strings.Split(content, "\n")
-	for _, line := range lines {
-		if line == "" {
-			continue
+	// Replace top border to include title
+	lines := strings.Split(rendered, "\n")
+	if len(lines) > 0 {
+		// Build new top border with title
+		// Total width = panelWidth, minus 2 for corner chars (╭╮)
+		titlePart := "─ " + title + " "
+		dashCount := panelWidth - len(titlePart) - 2
+		if dashCount < 0 {
+			dashCount = 0
 		}
-		// Pad line to content width, then wrap with border
-		paddedLine := padRight(line, contentWidth)
-		b.WriteString(border("│") + " " + paddedLine + " " + border("│"))
-		b.WriteString("\n")
+		newTop := "╭" + titlePart + strings.Repeat("─", dashCount) + "╮"
+		lines[0] = borderStyle.Render(newTop)
 	}
 
-	// Empty line (bottom padding)
-	b.WriteString(border(emptyLine))
-	b.WriteString("\n")
-
-	// Bottom border
-	b.WriteString(border("╰" + strings.Repeat("─", panelWidth-2) + "╯"))
-
-	return b.String()
+	return strings.Join(lines, "\n")
 }
 
 // padRight pads a string to the specified visual width (handles ANSI codes)
@@ -292,18 +282,19 @@ func dotLeaderStyled(label string, value string, style lipgloss.Style, totalWidt
 // renderMetrics renders token usage and cost
 func (m Model) renderMetrics() string {
 	var content strings.Builder
+	w := panelWidth - 4 // Account for padding
 
-	content.WriteString(dotLeader("Input", formatNumber(m.tokenUsage.InputTokens), contentWidth))
+	content.WriteString(dotLeader("Input", formatNumber(m.tokenUsage.InputTokens), w))
 	content.WriteString("\n")
-	content.WriteString(dotLeader("Output", formatNumber(m.tokenUsage.OutputTokens), contentWidth))
+	content.WriteString(dotLeader("Output", formatNumber(m.tokenUsage.OutputTokens), w))
 	content.WriteString("\n")
-	content.WriteString(dotLeader("Total", formatNumber(m.tokenUsage.TotalTokens), contentWidth))
+	content.WriteString(dotLeader("Total", formatNumber(m.tokenUsage.TotalTokens), w))
 	content.WriteString("\n")
 
 	// Cost needs special handling - calculate dots with raw value, then style
 	cost := float64(m.tokenUsage.TotalTokens) / 1_000_000 * m.costPerMToken
 	costValue := fmt.Sprintf("$%.4f", cost)
-	content.WriteString(dotLeaderStyled("Est. Cost", costValue, costStyle, contentWidth))
+	content.WriteString(dotLeaderStyled("Est. Cost", costValue, costStyle, w))
 
 	return renderPanel("TOKEN USAGE", content.String())
 }
@@ -455,6 +446,7 @@ func formatTimeAgo(t time.Time) string {
 // renderLogs renders the logs section
 func (m Model) renderLogs() string {
 	var content strings.Builder
+	w := panelWidth - 8 // Account for padding and indent
 
 	if len(m.logs) == 0 {
 		content.WriteString("  No logs yet")
@@ -468,7 +460,7 @@ func (m Model) renderLogs() string {
 			if i > 0 {
 				content.WriteString("\n")
 			}
-			content.WriteString("  " + truncate(log, contentWidth-4))
+			content.WriteString("  " + truncate(log, w))
 		}
 	}
 
