@@ -268,6 +268,12 @@ func (r *Runner) OnProgress(callback ProgressCallback) {
 	r.onProgress = callback
 }
 
+// EmitProgress exposes the progress callback for external callers (e.g., Dispatcher).
+// This allows the dispatcher to emit progress events using the runner's registered callback.
+func (r *Runner) EmitProgress(taskID, phase string, progress int, message string) {
+	r.reportProgress(taskID, phase, progress, message)
+}
+
 // Execute runs a task using the configured backend and returns the execution result.
 // It handles the complete task lifecycle: branch creation, prompt building,
 // backend invocation, progress tracking, and optional PR creation.

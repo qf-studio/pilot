@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -30,6 +31,8 @@ func DefaultDispatcherConfig() *DispatcherConfig {
 // Dispatcher manages task queuing and per-project workers.
 // It ensures that tasks for the same project are executed serially
 // while allowing parallel execution across different projects.
+// Progress updates are emitted via runner.EmitProgress() so they
+// flow through the same callback path as execution progress.
 type Dispatcher struct {
 	config  *DispatcherConfig
 	store   *memory.Store
@@ -154,6 +157,9 @@ func (d *Dispatcher) QueueTask(ctx context.Context, task *Task) (string, error) 
 		slog.String("task_id", task.ID),
 		slog.String("project", task.ProjectPath),
 	)
+
+	// Emit progress callback for task queued
+	d.runner.EmitProgress(task.ID, "Queued", 0, fmt.Sprintf("Task queued (exec: %s)", execID[:8]))
 
 	// Ensure worker exists and signal it
 	d.ensureWorker(task.ProjectPath)
@@ -374,6 +380,9 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 			continue
 		}
 
+		// Emit progress callback for task started
+		w.runner.EmitProgress(exec.TaskID, "Running", 2, fmt.Sprintf("Worker started: %s", truncateForLog(exec.TaskTitle, 40)))
+
 		// Build task from execution record (full details stored when queued)
 		task := &Task{
 			ID:          exec.TaskID,
@@ -401,6 +410,8 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 			if err := w.store.UpdateExecutionStatus(exec.ID, "failed", execErr.Error()); err != nil {
 				w.log.Error("Failed to update status to failed", slog.Any("error", err))
 			}
+			// Emit progress callback for task failed
+			w.runner.EmitProgress(exec.TaskID, "Failed", 100, fmt.Sprintf("Execution error: %s", truncateForLog(execErr.Error(), 60)))
 		} else if !result.Success {
 			w.log.Warn("Task completed with failure",
 				slog.String("task_id", exec.TaskID),
@@ -410,6 +421,8 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 			if err := w.store.UpdateExecutionStatus(exec.ID, "failed", result.Error); err != nil {
 				w.log.Error("Failed to update status to failed", slog.Any("error", err))
 			}
+			// Emit progress callback for task failed
+			w.runner.EmitProgress(exec.TaskID, "Failed", 100, fmt.Sprintf("Task failed: %s", truncateForLog(result.Error, 60)))
 		} else {
 			w.log.Info("Task completed successfully",
 				slog.String("task_id", exec.TaskID),
@@ -419,6 +432,12 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 			if err := w.store.UpdateExecutionStatus(exec.ID, "completed"); err != nil {
 				w.log.Error("Failed to update status to completed", slog.Any("error", err))
 			}
+			// Emit progress callback for task completed
+			msg := fmt.Sprintf("Completed in %s", duration.Round(time.Second))
+			if result.PRUrl != "" {
+				msg = fmt.Sprintf("Completed with PR: %s", result.PRUrl)
+			}
+			w.runner.EmitProgress(exec.TaskID, "Completed", 100, msg)
 
 			// Update execution with result details
 			// Note: For a full implementation, we'd update more fields here
@@ -426,4 +445,15 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 
 		w.currentTaskID.Store("")
 	}
+}
+
+// truncateForLog truncates a string for log messages, removing newlines and adding ellipsis
+func truncateForLog(s string, maxLen int) string {
+	// Replace newlines with spaces
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.TrimSpace(s)
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen-3] + "..."
 }
