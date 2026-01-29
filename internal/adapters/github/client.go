@@ -382,3 +382,13 @@ func (c *Client) CreateIssue(ctx context.Context, owner, repo string, input *Iss
 	}
 	return &issue, nil
 }
+
+// GetBranch fetches information about a branch
+func (c *Client) GetBranch(ctx context.Context, owner, repo, branch string) (*Branch, error) {
+	path := fmt.Sprintf("/repos/%s/%s/branches/%s", owner, repo, branch)
+	var result Branch
+	if err := c.doRequest(ctx, http.MethodGet, path, nil, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}

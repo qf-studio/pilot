@@ -235,3 +235,21 @@ const (
 	ReviewEventRequestChanges = "REQUEST_CHANGES"
 	ReviewEventComment        = "COMMENT"
 )
+
+// Branch represents a GitHub branch
+type Branch struct {
+	Name      string       `json:"name"`
+	Commit    BranchCommit `json:"commit"`
+	Protected bool         `json:"protected"`
+}
+
+// BranchCommit contains commit info for a branch
+type BranchCommit struct {
+	SHA string `json:"sha"`
+	URL string `json:"url"`
+}
+
+// SHA returns the commit SHA for the branch
+func (b *Branch) SHA() string {
+	return b.Commit.SHA
+}
