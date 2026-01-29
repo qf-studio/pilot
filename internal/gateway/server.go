@@ -20,6 +20,7 @@ import (
 // and task management. Server is safe for concurrent use.
 type Server struct {
 	config   *Config
+	auth     *Authenticator
 	sessions *SessionManager
 	router   *Router
 	upgrader websocket.Upgrader
@@ -64,8 +65,20 @@ func isLocalhost(origin string) bool {
 // NewServer creates a new gateway server with the given configuration.
 // The server is not started until Start is called.
 func NewServer(config *Config) *Server {
+	return NewServerWithAuth(config, nil)
+}
+
+// NewServerWithAuth creates a new gateway server with the given configuration
+// and authentication config. Protected API routes will require authentication.
+func NewServerWithAuth(config *Config, authConfig *AuthConfig) *Server {
+	var auth *Authenticator
+	if authConfig != nil {
+		auth = NewAuthenticator(authConfig)
+	}
+
 	s := &Server{
 		config:   config,
+		auth:     auth,
 		sessions: NewSessionManager(),
 		router:   NewRouter(),
 		upgrader: websocket.Upgrader{
@@ -108,12 +121,22 @@ func (s *Server) Start(ctx context.Context) error {
 	// WebSocket endpoint for control plane
 	mux.HandleFunc("/ws", s.handleWebSocket)
 
-	// HTTP endpoints
+	// Public endpoints (no auth required)
 	mux.HandleFunc("/health", s.handleHealth)
-	mux.HandleFunc("/api/v1/status", s.handleStatus)
-	mux.HandleFunc("/api/v1/tasks", s.handleTasks)
 
-	// Webhook endpoints for adapters
+	// Protected API endpoints (auth required when configured)
+	apiMux := http.NewServeMux()
+	apiMux.HandleFunc("/api/v1/status", s.handleStatus)
+	apiMux.HandleFunc("/api/v1/tasks", s.handleTasks)
+
+	// Apply auth middleware to API routes
+	if s.auth != nil {
+		mux.Handle("/api/v1/", s.auth.Middleware(apiMux))
+	} else {
+		mux.Handle("/api/v1/", apiMux)
+	}
+
+	// Webhook endpoints for adapters (use signature validation, not bearer tokens)
 	mux.HandleFunc("/webhooks/linear", s.handleLinearWebhook)
 	mux.HandleFunc("/webhooks/github", s.handleGithubWebhook)
 	mux.HandleFunc("/webhooks/jira", s.handleJiraWebhook)

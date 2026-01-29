@@ -96,6 +96,25 @@ func secureCompare(a, b string) bool {
 	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }
 
+// Middleware returns an HTTP middleware that authenticates requests.
+// If authentication fails, it returns 401 Unauthorized.
+// If no auth config is provided (nil), all requests are allowed.
+func (a *Authenticator) Middleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if a == nil || a.config == nil {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		if err := a.Authenticate(r); err != nil {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
 // Token represents an authentication token
 type Token struct {
 	Value     string
