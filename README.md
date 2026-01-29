@@ -44,6 +44,7 @@ Autonomous AI development pipeline. Receives tickets, implements features, creat
 | **Usage Metering** | ✅ | Billing foundation for Pilot Cloud |
 | **Navigator Integration** | ✅ | Auto-detected when `.agent/` exists |
 | **Multiple Backends** | ✅ | Claude Code + OpenCode support |
+| **BYOK (Bring Your Own Key)** | ✅ | Use your own Anthropic API key, Bedrock, or Vertex |
 
 ### Sequential Execution Mode
 
@@ -123,6 +124,30 @@ brew reinstall pilot
 - [Claude Code CLI](https://github.com/anthropics/claude-code) 2.1.17+
 - OpenAI API key (optional, for voice transcription)
 
+### Environment Variables
+
+Pilot uses Claude Code for AI execution, which respects these environment variables:
+
+| Variable | Description |
+|----------|-------------|
+| `ANTHROPIC_API_KEY` | Custom Anthropic API key (uses your own account instead of Claude Code's) |
+| `ANTHROPIC_BASE_URL` | Custom API endpoint (for proxies or enterprise deployments) |
+| `CLAUDE_CODE_USE_BEDROCK` | Set to `1` to use AWS Bedrock instead of Anthropic API |
+| `CLAUDE_CODE_USE_VERTEX` | Set to `1` to use Google Vertex AI instead of Anthropic API |
+
+**Example: Using your own API key**
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+pilot start --telegram
+```
+
+**Example: Using AWS Bedrock**
+```bash
+export CLAUDE_CODE_USE_BEDROCK=1
+export AWS_REGION=us-east-1
+pilot start --github
+```
+
 ## Quick Start
 
 ```bash
@@ -199,6 +224,12 @@ memory:
 
 executor:
   backend: claude-code          # "claude-code" (default) or "opencode"
+  # Claude Code respects ANTHROPIC_API_KEY for BYOK (Bring Your Own Key)
+  # Set env var to use your own Anthropic account:
+  #   export ANTHROPIC_API_KEY=sk-ant-...
+  # Or use cloud providers:
+  #   export CLAUDE_CODE_USE_BEDROCK=1  # AWS Bedrock
+  #   export CLAUDE_CODE_USE_VERTEX=1   # Google Vertex AI
   opencode:
     binary: opencode
     model: anthropic:claude-sonnet-4-20250514
