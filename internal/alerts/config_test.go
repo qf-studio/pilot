@@ -94,7 +94,7 @@ func TestConvertChannel(t *testing.T) {
 				Name:    "slack-alerts",
 				Type:    "slack",
 				Enabled: true,
-				Slack: &SlackConfigInput{
+				Slack: &SlackChannelConfig{
 					Channel: "#ops-alerts",
 				},
 			},
@@ -113,7 +113,7 @@ func TestConvertChannel(t *testing.T) {
 				Name:    "telegram-alerts",
 				Type:    "telegram",
 				Enabled: true,
-				Telegram: &TelegramConfigInput{
+				Telegram: &TelegramChannelConfig{
 					ChatID: 123456789,
 				},
 			},
@@ -132,7 +132,7 @@ func TestConvertChannel(t *testing.T) {
 				Name:    "email-alerts",
 				Type:    "email",
 				Enabled: true,
-				Email: &EmailConfigInput{
+				Email: &EmailChannelConfig{
 					To:      []string{"admin@example.com", "ops@example.com"},
 					Subject: "[ALERT] {{title}}",
 				},
@@ -155,7 +155,7 @@ func TestConvertChannel(t *testing.T) {
 				Name:    "webhook-alerts",
 				Type:    "webhook",
 				Enabled: true,
-				Webhook: &WebhookConfigInput{
+				Webhook: &WebhookChannelConfig{
 					URL:    "https://hooks.example.com/alert",
 					Method: "POST",
 					Headers: map[string]string{
@@ -188,7 +188,7 @@ func TestConvertChannel(t *testing.T) {
 				Name:    "pagerduty-alerts",
 				Type:    "pagerduty",
 				Enabled: true,
-				PagerDuty: &PagerDutyConfigInput{
+				PagerDuty: &PagerDutyChannelConfig{
 					RoutingKey: "routing-key-abc",
 					ServiceID:  "service-xyz",
 				},
@@ -329,13 +329,13 @@ func TestFromConfigAlerts(t *testing.T) {
 			Type:       "slack",
 			Enabled:    true,
 			Severities: []string{"critical"},
-			Slack:      &SlackConfigInput{Channel: "#alerts"},
+			Slack:      &SlackChannelConfig{Channel: "#alerts"},
 		},
 		{
 			Name:    "webhook-channel",
 			Type:    "webhook",
 			Enabled: true,
-			Webhook: &WebhookConfigInput{URL: "https://example.com"},
+			Webhook: &WebhookChannelConfig{URL: "https://example.com"},
 		},
 	}
 

@@ -15,6 +15,7 @@ import (
 	"github.com/alekspetrov/pilot/internal/adapters/linear"
 	"github.com/alekspetrov/pilot/internal/adapters/slack"
 	"github.com/alekspetrov/pilot/internal/adapters/telegram"
+	"github.com/alekspetrov/pilot/internal/alerts"
 	"github.com/alekspetrov/pilot/internal/approval"
 	"github.com/alekspetrov/pilot/internal/budget"
 	"github.com/alekspetrov/pilot/internal/executor"
@@ -156,48 +157,19 @@ type AlertsConfig struct {
 
 // AlertChannelConfig configures a destination channel for alerts.
 // Supports Slack, Telegram, email, webhooks, and PagerDuty.
+// Channel-specific configs use types from the alerts package (single source of truth).
 type AlertChannelConfig struct {
 	Name       string   `yaml:"name"` // Unique identifier
 	Type       string   `yaml:"type"` // "slack", "telegram", "email", "webhook", "pagerduty"
 	Enabled    bool     `yaml:"enabled"`
 	Severities []string `yaml:"severities"` // Which severities to receive
 
-	// Channel-specific config
-	Slack     *AlertSlackConfig     `yaml:"slack,omitempty"`
-	Telegram  *AlertTelegramConfig  `yaml:"telegram,omitempty"`
-	Email     *AlertEmailConfig     `yaml:"email,omitempty"`
-	Webhook   *AlertWebhookConfig   `yaml:"webhook,omitempty"`
-	PagerDuty *AlertPagerDutyConfig `yaml:"pagerduty,omitempty"`
-}
-
-// AlertSlackConfig holds Slack-specific alert channel settings.
-type AlertSlackConfig struct {
-	Channel string `yaml:"channel"` // #channel-name
-}
-
-// AlertTelegramConfig holds Telegram-specific alert channel settings.
-type AlertTelegramConfig struct {
-	ChatID int64 `yaml:"chat_id"`
-}
-
-// AlertEmailConfig holds email-specific alert channel settings.
-type AlertEmailConfig struct {
-	To      []string `yaml:"to"`
-	Subject string   `yaml:"subject"` // Optional custom subject template
-}
-
-// AlertWebhookConfig holds webhook-specific alert channel settings.
-type AlertWebhookConfig struct {
-	URL     string            `yaml:"url"`
-	Method  string            `yaml:"method"` // POST, PUT
-	Headers map[string]string `yaml:"headers"`
-	Secret  string            `yaml:"secret"` // For HMAC signing
-}
-
-// AlertPagerDutyConfig holds PagerDuty-specific alert channel settings.
-type AlertPagerDutyConfig struct {
-	RoutingKey string `yaml:"routing_key"` // Integration key
-	ServiceID  string `yaml:"service_id"`
+	// Channel-specific config (types from alerts package)
+	Slack     *alerts.SlackChannelConfig     `yaml:"slack,omitempty"`
+	Telegram  *alerts.TelegramChannelConfig  `yaml:"telegram,omitempty"`
+	Email     *alerts.EmailChannelConfig     `yaml:"email,omitempty"`
+	Webhook   *alerts.WebhookChannelConfig   `yaml:"webhook,omitempty"`
+	PagerDuty *alerts.PagerDutyChannelConfig `yaml:"pagerduty,omitempty"`
 }
 
 // AlertRuleConfig defines a rule that triggers alerts based on specific conditions.
