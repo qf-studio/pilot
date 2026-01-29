@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/alekspetrov/pilot/internal/executor"
 	"github.com/alekspetrov/pilot/internal/logging"
 )
 
@@ -28,6 +29,7 @@ type IssueResult struct {
 	Success  bool
 	PRNumber int    // PR number if created
 	PRURL    string // PR URL if created
+	HeadSHA  string // Head commit SHA of the PR
 	Error    error
 }
 
@@ -43,7 +45,10 @@ type Poller struct {
 	onIssue   func(ctx context.Context, issue *Issue) error
 	// onIssueWithResult is called for sequential mode, returns PR info
 	onIssueWithResult func(ctx context.Context, issue *Issue) (*IssueResult, error)
-	logger            *slog.Logger
+	// OnPRCreated is called when a PR is created after issue processing
+	// Parameters: prNumber, prURL, issueNumber, headSHA
+	OnPRCreated func(prNumber int, prURL string, issueNumber int, headSHA string)
+	logger      *slog.Logger
 
 	// Sequential mode configuration
 	executionMode  ExecutionMode
@@ -51,6 +56,9 @@ type Poller struct {
 	waitForMerge   bool
 	prTimeout      time.Duration
 	prPollInterval time.Duration
+
+	// Rate limit retry scheduler
+	scheduler *executor.Scheduler
 }
 
 // PollerOption configures a Poller
@@ -93,6 +101,20 @@ func WithSequentialConfig(waitForMerge bool, pollInterval, timeout time.Duration
 	}
 }
 
+// WithOnPRCreated sets the callback for PR creation events
+// The callback is invoked after a PR is successfully created for an issue
+func WithOnPRCreated(fn func(prNumber int, prURL string, issueNumber int, headSHA string)) PollerOption {
+	return func(p *Poller) {
+		p.OnPRCreated = fn
+	}
+}
+
+// WithScheduler sets the rate limit retry scheduler
+func WithScheduler(s *executor.Scheduler) PollerOption {
+	return func(p *Poller) {
+		p.scheduler = s
+	}
+}
 // NewPoller creates a new GitHub issue poller
 func NewPoller(client *Client, repo string, label string, interval time.Duration, opts ...PollerOption) (*Poller, error) {
 	parts := strings.Split(repo, "/")
@@ -207,6 +229,27 @@ func (p *Poller) startSequential(ctx context.Context) {
 
 		result, err := p.processIssueSequential(ctx, issue)
 		if err != nil {
+			// Check if this is a rate limit error that can be retried
+			if executor.IsRateLimitError(err.Error()) {
+				rlInfo, ok := executor.ParseRateLimitError(err.Error())
+				if ok && p.scheduler != nil {
+					task := &executor.Task{
+						ID:          fmt.Sprintf("GH-%d", issue.Number),
+						Title:       issue.Title,
+						Description: issue.Body,
+						ProjectPath: "", // Will be set by retry callback
+					}
+					p.scheduler.QueueTask(task, rlInfo)
+					p.logger.Info("Task queued for retry after rate limit",
+						slog.Int("issue", issue.Number),
+						slog.Time("retry_at", rlInfo.ResetTime.Add(5*time.Minute)),
+						slog.String("reset_time", rlInfo.ResetTimeFormatted()),
+					)
+					// Don't mark as processed - will retry via scheduler
+					continue
+				}
+			}
+
 			p.logger.Error("Failed to process issue",
 				slog.Int("number", issue.Number),
 				slog.Any("error", err),
@@ -215,6 +258,15 @@ func (p *Poller) startSequential(ctx context.Context) {
 			// The issue will have pilot-failed label
 			p.markProcessed(issue.Number)
 			continue
+		}
+
+		// Notify autopilot controller of new PR (if callback registered)
+		if result != nil && result.PRNumber > 0 && p.OnPRCreated != nil {
+			p.logger.Info("Notifying autopilot of PR creation",
+				slog.Int("pr_number", result.PRNumber),
+				slog.Int("issue_number", issue.Number),
+			)
+			p.OnPRCreated(result.PRNumber, result.PRURL, issue.Number, result.HeadSHA)
 		}
 
 		// If we created a PR and should wait for merge
