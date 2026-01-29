@@ -1,6 +1,6 @@
 # Pilot Feature Matrix
 
-**Last Updated:** 2026-01-28 (GH-52 audit)
+**Last Updated:** 2026-01-29 (v0.3.2 Autopilot release)
 
 ## Legend
 
@@ -135,6 +135,23 @@
 | Telegram approval | ⚠️ | approval | - | - | Inline keyboards |
 | Rule-based triggers | ⚠️ | approval | - | `approval.rules[]` | Configurable |
 
+## Autopilot (v0.3.2)
+
+| Feature | Status | Package | CLI Command | Config Key | Notes |
+|---------|--------|---------|-------------|------------|-------|
+| Autopilot controller | ✅ | autopilot | `--autopilot=ENV` | - | Orchestrates PR lifecycle |
+| CI monitoring | ✅ | autopilot | - | - | Polls check status |
+| Auto-merge | ✅ | autopilot | - | - | Merges after CI/approval |
+| Feedback loop | ✅ | autopilot | - | - | Handles post-merge CI failures |
+| Telegram notifications | ✅ | autopilot | - | - | PR status updates |
+| Dashboard panel | ✅ | dashboard | `--dashboard` | - | Live autopilot status |
+| Environment gates | ✅ | autopilot | - | - | dev/stage/prod behavior |
+
+**Environments:**
+- `dev`: Skip CI, auto-merge immediately
+- `stage`: Wait for CI, then auto-merge
+- `prod`: Wait for CI + human approval
+
 ## Self-Management
 
 | Feature | Status | Package | CLI Command | Config Key | Notes |
@@ -164,8 +181,9 @@
 | Team Management | 0 | 3 | 0 | 0 |
 | Infrastructure | 0 | 4 | 0 | 0 |
 | Approval Workflows | 0 | 4 | 0 | 0 |
+| **Autopilot** | **7** | **0** | **0** | **0** |
 | Self-Management | 4 | 1 | 0 | 0 |
-| **Total** | **46** | **19** | **2** | **0** |
+| **Total** | **53** | **19** | **2** | **0** |
 
 ---
 
@@ -213,6 +231,18 @@ adapters:
 pilot start --github
 # Or combine with Telegram
 pilot start --telegram --github
+```
+
+### Autopilot Mode (v0.3.2)
+```bash
+# Fast iteration - auto-merge without CI
+pilot start --autopilot=dev --telegram --github
+
+# Balanced - wait for CI, then auto-merge
+pilot start --autopilot=stage --telegram --github --dashboard
+
+# Production - CI + manual approval required
+pilot start --autopilot=prod --telegram --github --dashboard
 ```
 
 ### Full Production Setup
