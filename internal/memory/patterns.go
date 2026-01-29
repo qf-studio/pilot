@@ -79,13 +79,6 @@ func (s *GlobalPatternStore) load() error {
 	return nil
 }
 
-// save persists patterns to disk (acquires read lock)
-func (s *GlobalPatternStore) save() error {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.saveUnlocked()
-}
-
 // saveUnlocked persists patterns to disk (caller must hold lock)
 func (s *GlobalPatternStore) saveUnlocked() error {
 	patterns := make([]*GlobalPattern, 0, len(s.patterns))

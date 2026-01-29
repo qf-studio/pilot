@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"context"
 	"os"
 	"testing"
 )
@@ -346,7 +347,7 @@ func TestPatternLearner_LearnFromExecution(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStore() error = %v", err)
 	}
-	defer memStore.Close()
+	defer func() { _ = memStore.Close() }()
 
 	learner := NewPatternLearner(patternStore, memStore)
 
@@ -356,7 +357,7 @@ func TestPatternLearner_LearnFromExecution(t *testing.T) {
 		Status: "running",
 	}
 
-	if err := learner.LearnFromExecution(nil, exec); err != nil {
+	if err := learner.LearnFromExecution(context.Background(), exec); err != nil {
 		t.Errorf("LearnFromExecution() on running exec error = %v", err)
 	}
 

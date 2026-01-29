@@ -565,9 +565,7 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 		if tgHandler != nil {
 			tgHandler.Stop()
 		}
-		if ghPoller != nil {
-			// ghPoller stops via context cancellation
-		}
+		// ghPoller stops via context cancellation (no explicit stop needed)
 		if dispatcher != nil {
 			dispatcher.Stop()
 		}

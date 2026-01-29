@@ -65,13 +65,6 @@ func (kg *KnowledgeGraph) load() error {
 	return nil
 }
 
-// save persists the graph to disk (acquires read lock)
-func (kg *KnowledgeGraph) save() error {
-	kg.mu.RLock()
-	defer kg.mu.RUnlock()
-	return kg.saveUnlocked()
-}
-
 // saveUnlocked persists the graph to disk (caller must hold lock)
 func (kg *KnowledgeGraph) saveUnlocked() error {
 	nodes := make([]*GraphNode, 0, len(kg.nodes))
