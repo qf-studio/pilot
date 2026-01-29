@@ -11,16 +11,29 @@ import (
 	"github.com/alekspetrov/pilot/internal/approval"
 )
 
+// Notifier sends autopilot notifications for PR lifecycle events.
+type Notifier interface {
+	// NotifyMerged sends notification when a PR is successfully merged.
+	NotifyMerged(ctx context.Context, prState *PRState) error
+	// NotifyCIFailed sends notification when CI checks fail.
+	NotifyCIFailed(ctx context.Context, prState *PRState, failedChecks []string) error
+	// NotifyApprovalRequired sends notification when a PR requires human approval.
+	NotifyApprovalRequired(ctx context.Context, prState *PRState) error
+	// NotifyFixIssueCreated sends notification when a fix issue is auto-created.
+	NotifyFixIssueCreated(ctx context.Context, prState *PRState, issueNumber int) error
+}
+
 // Controller orchestrates the autopilot loop for PR processing.
 // It manages the state machine: PR created → CI check → merge → post-merge CI → feedback loop.
 type Controller struct {
-	config      *Config
-	ghClient    *github.Client
-	approvalMgr *approval.Manager
-	ciMonitor   *CIMonitor
-	autoMerger  *AutoMerger
+	config       *Config
+	ghClient     *github.Client
+	approvalMgr  *approval.Manager
+	ciMonitor    *CIMonitor
+	autoMerger   *AutoMerger
 	feedbackLoop *FeedbackLoop
-	log         *slog.Logger
+	notifier     Notifier
+	log          *slog.Logger
 
 	// State tracking
 	activePRs map[int]*PRState
@@ -51,6 +64,12 @@ func NewController(cfg *Config, ghClient *github.Client, approvalMgr *approval.M
 	c.feedbackLoop = NewFeedbackLoop(ghClient, owner, repo, cfg)
 
 	return c
+}
+
+// SetNotifier sets the notifier for autopilot events.
+// This is optional; if not set, no notifications will be sent.
+func (c *Controller) SetNotifier(n Notifier) {
+	c.notifier = n
 }
 
 // OnPRCreated registers a new PR for autopilot processing.
@@ -163,6 +182,13 @@ func (c *Controller) handleCIPassed(ctx context.Context, prState *PRState) error
 	if c.config.Environment == EnvProd {
 		c.log.Info("prod mode: awaiting approval", "pr", prState.PRNumber)
 		prState.Stage = StageAwaitApproval
+
+		// Notify approval required
+		if c.notifier != nil {
+			if err := c.notifier.NotifyApprovalRequired(ctx, prState); err != nil {
+				c.log.Warn("failed to send approval notification", "error", err)
+			}
+		}
 	} else {
 		prState.Stage = StageMerging
 	}
@@ -177,9 +203,23 @@ func (c *Controller) handleCIFailed(ctx context.Context, prState *PRState) error
 		// Continue with empty list
 	}
 
+	// Notify CI failure
+	if c.notifier != nil {
+		if err := c.notifier.NotifyCIFailed(ctx, prState, failedChecks); err != nil {
+			c.log.Warn("failed to send CI failure notification", "error", err)
+		}
+	}
+
 	issueNum, err := c.feedbackLoop.CreateFailureIssue(ctx, prState, FailureCIPreMerge, failedChecks, "")
 	if err != nil {
 		return fmt.Errorf("failed to create fix issue: %w", err)
+	}
+
+	// Notify fix issue created
+	if c.notifier != nil {
+		if err := c.notifier.NotifyFixIssueCreated(ctx, prState, issueNum); err != nil {
+			c.log.Warn("failed to send fix issue notification", "error", err)
+		}
 	}
 
 	c.log.Info("created fix issue for CI failure", "pr", prState.PRNumber, "issue", issueNum)
@@ -200,6 +240,14 @@ func (c *Controller) handleAwaitApproval(ctx context.Context, prState *PRState) 
 		return err
 	}
 	prState.Stage = StageMerged
+
+	// Notify merge success after approval
+	if c.notifier != nil {
+		if err := c.notifier.NotifyMerged(ctx, prState); err != nil {
+			c.log.Warn("failed to send merge notification", "error", err)
+		}
+	}
+
 	return nil
 }
 
@@ -214,6 +262,14 @@ func (c *Controller) handleMerging(ctx context.Context, prState *PRState) error 
 
 	c.log.Info("PR merged", "pr", prState.PRNumber)
 	prState.Stage = StageMerged
+
+	// Notify merge success
+	if c.notifier != nil {
+		if err := c.notifier.NotifyMerged(ctx, prState); err != nil {
+			c.log.Warn("failed to send merge notification", "error", err)
+		}
+	}
+
 	return nil
 }
 

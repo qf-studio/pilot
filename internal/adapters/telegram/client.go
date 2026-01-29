@@ -17,6 +17,7 @@ const (
 // Client is a Telegram Bot API client
 type Client struct {
 	botToken   string
+	baseURL    string
 	httpClient *http.Client
 }
 
@@ -24,8 +25,20 @@ type Client struct {
 func NewClient(botToken string) *Client {
 	return &Client{
 		botToken: botToken,
+		baseURL:  telegramAPIURL,
 		httpClient: &http.Client{
 			Timeout: 60 * time.Second, // Must be > long polling timeout (30s)
+		},
+	}
+}
+
+// NewClientWithBaseURL creates a new Telegram client with a custom base URL (for testing)
+func NewClientWithBaseURL(botToken, baseURL string) *Client {
+	return &Client{
+		botToken: botToken,
+		baseURL:  baseURL + "/bot",
+		httpClient: &http.Client{
+			Timeout: 60 * time.Second,
 		},
 	}
 }
@@ -152,7 +165,7 @@ var ErrConflict = fmt.Errorf("another bot instance is running")
 // Returns ErrConflict if another instance is detected (409 error).
 func (c *Client) CheckSingleton(ctx context.Context) error {
 	// Use timeout=0 for immediate response (no long polling)
-	url := fmt.Sprintf("%s%s/getUpdates?timeout=0&limit=1", telegramAPIURL, c.botToken)
+	url := fmt.Sprintf("%s%s/getUpdates?timeout=0&limit=1", c.baseURL, c.botToken)
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -188,7 +201,7 @@ func (c *Client) CheckSingleton(ctx context.Context) error {
 
 // GetUpdates retrieves updates using long polling
 func (c *Client) GetUpdates(ctx context.Context, offset int64, timeout int) ([]*Update, error) {
-	url := fmt.Sprintf("%s%s/getUpdates?offset=%d&timeout=%d", telegramAPIURL, c.botToken, offset, timeout)
+	url := fmt.Sprintf("%s%s/getUpdates?offset=%d&timeout=%d", c.baseURL, c.botToken, offset, timeout)
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -231,7 +244,7 @@ func (c *Client) SendMessage(ctx context.Context, chatID, text, parseMode string
 		return nil, fmt.Errorf("failed to marshal message: %w", err)
 	}
 
-	url := telegramAPIURL + c.botToken + "/sendMessage"
+	url := c.baseURL + c.botToken + "/sendMessage"
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
@@ -278,7 +291,7 @@ func (c *Client) SendMessageWithKeyboard(ctx context.Context, chatID, text, pars
 		return nil, fmt.Errorf("failed to marshal message: %w", err)
 	}
 
-	url := telegramAPIURL + c.botToken + "/sendMessage"
+	url := c.baseURL + c.botToken + "/sendMessage"
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
@@ -330,7 +343,7 @@ func (c *Client) EditMessage(ctx context.Context, chatID string, messageID int64
 		return fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	url := telegramAPIURL + c.botToken + "/editMessageText"
+	url := c.baseURL + c.botToken + "/editMessageText"
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
@@ -378,7 +391,7 @@ func (c *Client) AnswerCallback(ctx context.Context, callbackID, text string) er
 		return fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	url := telegramAPIURL + c.botToken + "/answerCallbackQuery"
+	url := c.baseURL + c.botToken + "/answerCallbackQuery"
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
@@ -397,7 +410,7 @@ func (c *Client) AnswerCallback(ctx context.Context, callbackID, text string) er
 
 // GetFile retrieves file info from Telegram servers
 func (c *Client) GetFile(ctx context.Context, fileID string) (*File, error) {
-	url := fmt.Sprintf("%s%s/getFile?file_id=%s", telegramAPIURL, c.botToken, fileID)
+	url := fmt.Sprintf("%s%s/getFile?file_id=%s", c.baseURL, c.botToken, fileID)
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
