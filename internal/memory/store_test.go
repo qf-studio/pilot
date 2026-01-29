@@ -1,8 +1,11 @@
 package memory
 
 import (
+	"bytes"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -355,6 +358,158 @@ func TestGetActiveExecutions(t *testing.T) {
 		if e.Status != "running" {
 			t.Errorf("Active execution has status %q, want 'running'", e.Status)
 		}
+	}
+}
+
+func TestGetProject_InvalidSettingsJSON(t *testing.T) {
+	tmpDir, _ := os.MkdirTemp("", "pilot-test-*")
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	store, _ := NewStore(tmpDir)
+	defer func() { _ = store.Close() }()
+
+	// Insert project with invalid JSON settings directly into DB
+	_, err := store.db.Exec(`
+		INSERT INTO projects (path, name, navigator_enabled, settings)
+		VALUES (?, ?, ?, ?)
+	`, "/test/project", "test", true, "invalid-json{{{")
+	if err != nil {
+		t.Fatalf("failed to insert test data: %v", err)
+	}
+
+	// Capture slog output
+	var buf bytes.Buffer
+	oldLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	defer slog.SetDefault(oldLogger)
+
+	// Should not return error, but should log warning
+	project, err := store.GetProject("/test/project")
+	if err != nil {
+		t.Errorf("GetProject should not error on invalid settings JSON: %v", err)
+	}
+	if project == nil {
+		t.Fatal("project should not be nil")
+	}
+	if project.Settings != nil {
+		t.Errorf("Settings should be nil after unmarshal failure, got %v", project.Settings)
+	}
+
+	logOutput := buf.String()
+	if !strings.Contains(logOutput, "failed to unmarshal project settings") {
+		t.Errorf("expected warning log about unmarshal failure, got: %s", logOutput)
+	}
+	if !strings.Contains(logOutput, "/test/project") {
+		t.Errorf("expected project path in log, got: %s", logOutput)
+	}
+}
+
+func TestGetAllProjects_InvalidSettingsJSON(t *testing.T) {
+	tmpDir, _ := os.MkdirTemp("", "pilot-test-*")
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	store, _ := NewStore(tmpDir)
+	defer func() { _ = store.Close() }()
+
+	// Insert valid and invalid projects
+	_, _ = store.db.Exec(`INSERT INTO projects (path, name, navigator_enabled, settings) VALUES (?, ?, ?, ?)`,
+		"/valid/project", "valid", true, `{"theme":"dark"}`)
+	_, _ = store.db.Exec(`INSERT INTO projects (path, name, navigator_enabled, settings) VALUES (?, ?, ?, ?)`,
+		"/invalid/project", "invalid", true, "not-valid-json")
+
+	var buf bytes.Buffer
+	oldLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	defer slog.SetDefault(oldLogger)
+
+	projects, err := store.GetAllProjects()
+	if err != nil {
+		t.Errorf("GetAllProjects should not error: %v", err)
+	}
+	if len(projects) != 2 {
+		t.Errorf("expected 2 projects, got %d", len(projects))
+	}
+
+	logOutput := buf.String()
+	if !strings.Contains(logOutput, "failed to unmarshal project settings") {
+		t.Errorf("expected warning log, got: %s", logOutput)
+	}
+}
+
+func TestGetCrossPattern_InvalidExamplesJSON(t *testing.T) {
+	tmpDir, _ := os.MkdirTemp("", "pilot-test-*")
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	store, _ := NewStore(tmpDir)
+	defer func() { _ = store.Close() }()
+
+	// Insert pattern with invalid examples JSON
+	_, err := store.db.Exec(`
+		INSERT INTO cross_patterns (id, pattern_type, title, description, context, examples, confidence, occurrences, is_anti_pattern, scope)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, "pat-1", "testing", "Test Pattern", "desc", "ctx", "invalid[json", 0.9, 5, false, "global")
+	if err != nil {
+		t.Fatalf("failed to insert test data: %v", err)
+	}
+
+	var buf bytes.Buffer
+	oldLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	defer slog.SetDefault(oldLogger)
+
+	pattern, err := store.GetCrossPattern("pat-1")
+	if err != nil {
+		t.Errorf("GetCrossPattern should not error: %v", err)
+	}
+	if pattern == nil {
+		t.Fatal("pattern should not be nil")
+	}
+	if pattern.Examples != nil {
+		t.Errorf("Examples should be nil after unmarshal failure")
+	}
+
+	logOutput := buf.String()
+	if !strings.Contains(logOutput, "failed to unmarshal cross pattern examples") {
+		t.Errorf("expected warning log, got: %s", logOutput)
+	}
+	if !strings.Contains(logOutput, "pat-1") {
+		t.Errorf("expected pattern ID in log, got: %s", logOutput)
+	}
+}
+
+func TestScanCrossPatterns_InvalidExamplesJSON(t *testing.T) {
+	tmpDir, _ := os.MkdirTemp("", "pilot-test-*")
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	store, _ := NewStore(tmpDir)
+	defer func() { _ = store.Close() }()
+
+	// Insert patterns with valid and invalid examples
+	_, _ = store.db.Exec(`
+		INSERT INTO cross_patterns (id, pattern_type, title, description, context, examples, confidence, occurrences, is_anti_pattern, scope)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, "pat-valid", "testing", "Valid", "desc", "ctx", `["example1","example2"]`, 0.9, 3, false, "global")
+	_, _ = store.db.Exec(`
+		INSERT INTO cross_patterns (id, pattern_type, title, description, context, examples, confidence, occurrences, is_anti_pattern, scope)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, "pat-invalid", "testing", "Invalid", "desc", "ctx", "{broken", 0.8, 2, false, "global")
+
+	var buf bytes.Buffer
+	oldLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	defer slog.SetDefault(oldLogger)
+
+	patterns, err := store.GetCrossPatternsByType("testing")
+	if err != nil {
+		t.Errorf("GetCrossPatternsByType should not error: %v", err)
+	}
+	if len(patterns) != 2 {
+		t.Errorf("expected 2 patterns, got %d", len(patterns))
+	}
+
+	logOutput := buf.String()
+	if !strings.Contains(logOutput, "failed to unmarshal cross pattern examples") {
+		t.Errorf("expected warning log, got: %s", logOutput)
 	}
 }
 

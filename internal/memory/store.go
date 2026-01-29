@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -395,7 +396,11 @@ func (s *Store) GetProject(path string) (*Project, error) {
 	}
 
 	if settingsStr != "" {
-		_ = json.Unmarshal([]byte(settingsStr), &p.Settings)
+		if err := json.Unmarshal([]byte(settingsStr), &p.Settings); err != nil {
+			slog.Warn("failed to unmarshal project settings",
+				slog.String("project_path", p.Path),
+				slog.Any("error", err))
+		}
 	}
 
 	return &p, nil
@@ -420,7 +425,11 @@ func (s *Store) GetAllProjects() ([]*Project, error) {
 			return nil, err
 		}
 		if settingsStr != "" {
-			_ = json.Unmarshal([]byte(settingsStr), &p.Settings)
+			if err := json.Unmarshal([]byte(settingsStr), &p.Settings); err != nil {
+				slog.Warn("failed to unmarshal project settings",
+					slog.String("project_path", p.Path),
+					slog.Any("error", err))
+			}
 		}
 		projects = append(projects, &p)
 	}
@@ -785,7 +794,11 @@ func (s *Store) GetCrossPattern(id string) (*CrossPattern, error) {
 	}
 
 	if examplesStr != "" {
-		_ = json.Unmarshal([]byte(examplesStr), &p.Examples)
+		if err := json.Unmarshal([]byte(examplesStr), &p.Examples); err != nil {
+			slog.Warn("failed to unmarshal cross pattern examples",
+				slog.String("pattern_id", p.ID),
+				slog.Any("error", err))
+		}
 	}
 
 	return &p, nil
@@ -862,7 +875,11 @@ func (s *Store) scanCrossPatterns(rows *sql.Rows) ([]*CrossPattern, error) {
 			return nil, err
 		}
 		if examplesStr != "" {
-			_ = json.Unmarshal([]byte(examplesStr), &p.Examples)
+			if err := json.Unmarshal([]byte(examplesStr), &p.Examples); err != nil {
+				slog.Warn("failed to unmarshal cross pattern examples",
+					slog.String("pattern_id", p.ID),
+					slog.Any("error", err))
+			}
 		}
 		patterns = append(patterns, &p)
 	}

@@ -1,7 +1,10 @@
 package memory
 
 import (
+	"bytes"
+	"log/slog"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -604,5 +607,59 @@ func TestRecordTaskUsage_ZeroDuration(t *testing.T) {
 
 	if hasComputeEvent {
 		t.Error("should not record compute event when duration is zero")
+	}
+}
+
+func TestGetUsageEvents_InvalidMetadataJSON(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "metering_test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	// Insert usage event with invalid metadata JSON directly into DB
+	_, err = store.db.Exec(`
+		INSERT INTO usage_events (id, timestamp, user_id, project_id, event_type, quantity, unit_cost, total_cost, metadata, execution_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, "evt-invalid", time.Now(), "user-test", "proj-test", "task", 1.0, 0.5, 0.5, "invalid{json", "exec-1")
+	if err != nil {
+		t.Fatalf("failed to insert test data: %v", err)
+	}
+
+	// Capture slog output
+	var buf bytes.Buffer
+	oldLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	defer slog.SetDefault(oldLogger)
+
+	query := UsageQuery{
+		UserID: "user-test",
+		Start:  time.Now().Add(-1 * time.Hour),
+		End:    time.Now().Add(1 * time.Hour),
+	}
+
+	events, err := store.GetUsageEvents(query, 100)
+	if err != nil {
+		t.Errorf("GetUsageEvents should not error on invalid metadata JSON: %v", err)
+	}
+	if len(events) != 1 {
+		t.Errorf("expected 1 event, got %d", len(events))
+	}
+	if events[0].Metadata != nil {
+		t.Errorf("Metadata should be nil after unmarshal failure")
+	}
+
+	logOutput := buf.String()
+	if !strings.Contains(logOutput, "failed to unmarshal usage event metadata") {
+		t.Errorf("expected warning log about unmarshal failure, got: %s", logOutput)
+	}
+	if !strings.Contains(logOutput, "evt-invalid") {
+		t.Errorf("expected event ID in log, got: %s", logOutput)
 	}
 }

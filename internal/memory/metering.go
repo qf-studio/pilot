@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"time"
 )
 
@@ -450,7 +451,11 @@ func (s *Store) GetUsageEvents(query UsageQuery, limit int) ([]*UsageEvent, erro
 		}
 		e.EventType = UsageEventType(eventType)
 		if metadataStr != "" {
-			_ = json.Unmarshal([]byte(metadataStr), &e.Metadata)
+			if err := json.Unmarshal([]byte(metadataStr), &e.Metadata); err != nil {
+				slog.Warn("failed to unmarshal usage event metadata",
+					slog.String("event_id", e.ID),
+					slog.Any("error", err))
+			}
 		}
 		events = append(events, &e)
 	}
