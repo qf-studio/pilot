@@ -176,6 +176,9 @@ func (m Model) View() string {
 
 	var b strings.Builder
 
+	// Debug
+	b.WriteString("\n\n=== TUI VIEW RENDERING ===\n\n")
+
 	// Header
 	header := titleStyle.Render("🚀 Pilot Dashboard")
 	b.WriteString(header)
