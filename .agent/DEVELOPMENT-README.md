@@ -36,7 +36,7 @@ gh issue create --title "TASK-XX: Description" --label pilot --body "Details..."
 gh issue list --label pilot --state open
 
 # Check what Pilot completed
-gh issue list --label pilot-done --state open
+gh issue list --label pilot/done --state open
 ```
 
 ---

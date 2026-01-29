@@ -30,10 +30,10 @@
 
 | Feature | Status | Package | CLI Command | Config Key | Notes |
 |---------|--------|---------|-------------|------------|-------|
-| Telegram bot | ✅ | adapters/telegram | `pilot telegram` | `adapters.telegram` | Long-polling mode |
+| Telegram bot | ✅ | adapters/telegram | `pilot start --telegram` | `adapters.telegram` | Long-polling mode |
 | Telegram voice | ✅ | transcription | - | `adapters.telegram.transcription` | OpenAI Whisper |
 | Telegram images | ✅ | adapters/telegram | - | - | Vision support |
-| GitHub polling | ✅ | adapters/github | `pilot telegram` | `adapters.github.polling` | 30s interval |
+| GitHub polling | ✅ | adapters/github | `pilot start --github` | `adapters.github.polling` | 30s interval |
 | GitHub run issue | ✅ | adapters/github | `pilot github run` | `adapters.github` | Manual trigger |
 | Linear webhooks | ⚠️ | adapters/linear | - | `adapters.linear` | Needs gateway running |
 | Jira webhooks | ⚠️ | adapters/jira | - | `adapters.jira` | Needs gateway running |
@@ -194,7 +194,7 @@ adapters:
       openai_key: "your-openai-key"
 ```
 ```bash
-pilot telegram --project ~/code/my-project
+pilot start --telegram --project ~/code/my-project
 ```
 
 ### GitHub Polling Mode
@@ -209,8 +209,10 @@ adapters:
       label: "pilot"
 ```
 ```bash
-# Runs alongside telegram, picks up issues labeled "pilot"
-pilot telegram
+# Start with GitHub polling, picks up issues labeled "pilot"
+pilot start --github
+# Or combine with Telegram
+pilot start --telegram --github
 ```
 
 ### Full Production Setup

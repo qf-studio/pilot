@@ -15,7 +15,27 @@ auth:
 
 # Adapters
 adapters:
-  # Linear - Issue tracking
+  # Telegram - Chat-based task execution
+  telegram:
+    enabled: false
+    bot_token: "${TELEGRAM_BOT_TOKEN}"
+    chat_id: "${TELEGRAM_CHAT_ID}"    # Your user/chat ID for notifications
+    transcription:
+      provider: openai
+      openai_key: "${OPENAI_API_KEY}"  # For voice message transcription
+
+  # GitHub - Issue polling and PR creation
+  github:
+    enabled: false
+    token: "${GITHUB_TOKEN}"
+    repo: "owner/repo"                 # Repository to poll
+    pilot_label: "pilot"               # Issues with this label are picked up
+    polling:
+      enabled: true
+      interval: 30s
+      label: "pilot"
+
+  # Linear - Issue tracking (webhooks)
   linear:
     enabled: false
     api_key: "${LINEAR_API_KEY}"

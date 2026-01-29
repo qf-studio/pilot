@@ -14,7 +14,7 @@
 - ❌ DO NOT make commits
 - ❌ DO NOT create PRs
 
-**Pilot runs in a separate terminal** (`pilot telegram`) and picks up issues labeled `pilot`.
+**Pilot runs in a separate terminal** (`pilot start --telegram --github`) and picks up issues labeled `pilot`.
 
 ### Workflow
 1. Plan the feature/fix in this session
