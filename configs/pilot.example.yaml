@@ -42,6 +42,12 @@ orchestrator:
     poll_interval: 30s         # How often to check PR status
     pr_timeout: 1h             # Max time to wait for PR merge
 
+# Executor settings
+executor:
+  type: "claude-code"          # "claude-code" or "opencode"
+  auto_create_pr: true         # Create PR by default after task completion
+                               # Use --no-pr flag to disable for individual tasks
+
   # Daily brief
   daily_brief:
     enabled: false

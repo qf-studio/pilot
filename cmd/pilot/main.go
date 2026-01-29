@@ -859,6 +859,7 @@ func newTaskCmd() *cobra.Command {
 	var noBranch bool
 	var verbose bool
 	var createPR bool
+	var noPR bool
 	var enableAlerts bool
 
 	cmd := &cobra.Command{
@@ -866,12 +867,15 @@ func newTaskCmd() *cobra.Command {
 		Short: "Execute a task using Claude Code",
 		Long: `Execute a task using Claude Code with Navigator integration.
 
+PR creation is enabled by default. Use --no-pr to disable.
+
 Examples:
   pilot task "Add user authentication with JWT"
   pilot task "Fix the login bug in auth.go" --project /path/to/project
   pilot task "Refactor the API handlers" --dry-run
   pilot task "Add index.py with hello world" --verbose
-  pilot task "Add new feature" --create-pr
+  pilot task "Add new feature"                # Creates PR by default
+  pilot task "Quick fix" --no-pr              # Skip PR creation
   pilot task "Fix bug" --alerts`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -898,6 +902,27 @@ Examples:
 				projectPath = cwd
 			}
 
+			// Load config for auto_create_pr default
+			configPath := cfgFile
+			if configPath == "" {
+				configPath = config.DefaultConfigPath()
+			}
+			cfg, cfgErr := config.Load(configPath)
+
+			// Determine effective createPR value:
+			// 1. Default from config (auto_create_pr, defaults to true)
+			// 2. --no-pr flag overrides to false
+			// 3. --create-pr flag is no-op (backward compat, PR is default now)
+			effectiveCreatePR := true // Default
+			if cfgErr == nil && cfg.Executor != nil && cfg.Executor.AutoCreatePR != nil {
+				effectiveCreatePR = *cfg.Executor.AutoCreatePR
+			}
+			if noPR {
+				effectiveCreatePR = false
+			}
+			// Note: --create-pr is kept for backward compatibility but is now a no-op
+			// since PR creation is the default behavior
+
 			// Generate task ID based on timestamp
 			taskID := fmt.Sprintf("TASK-%d", time.Now().Unix()%100000)
 			branchName := fmt.Sprintf("pilot/%s", taskID)
@@ -917,8 +942,10 @@ Examples:
 			} else {
 				fmt.Printf("   Branch:    %s\n", branchName)
 			}
-			if createPR {
+			if effectiveCreatePR {
 				fmt.Printf("   Create PR: ✓ enabled\n")
+			} else {
+				fmt.Printf("   Create PR: ✗ disabled\n")
 			}
 			if hasNavigator {
 				fmt.Printf("   Navigator: ✓ enabled\n")
@@ -937,13 +964,13 @@ Examples:
 				ProjectPath: projectPath,
 				Branch:      branchName,
 				Verbose:     verbose,
-				CreatePR:    createPR,
+				CreatePR:    effectiveCreatePR,
 			}
 
 			if noBranch {
 				task.Branch = ""
-				if createPR {
-					fmt.Println("⚠️  Warning: --create-pr requires a branch. Use without --no-branch.")
+				if effectiveCreatePR {
+					fmt.Println("⚠️  Warning: PR creation requires a branch. Use --no-pr or remove --no-branch.")
 					return nil
 				}
 			}
@@ -1139,7 +1166,7 @@ Examples:
 
 			// Send alerts based on result
 			if result.Success {
-				if createPR && result.PRUrl == "" {
+				if effectiveCreatePR && result.PRUrl == "" {
 					fmt.Println("   ⚠️  PR not created (check gh auth status)")
 				}
 
@@ -1185,7 +1212,8 @@ Examples:
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Show what would be executed without running")
 	cmd.Flags().BoolVar(&noBranch, "no-branch", false, "Don't create a new git branch")
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Stream Claude Code output")
-	cmd.Flags().BoolVar(&createPR, "create-pr", false, "Create GitHub PR after successful execution")
+	cmd.Flags().BoolVar(&createPR, "create-pr", false, "Create GitHub PR (default: true, kept for backward compatibility)")
+	cmd.Flags().BoolVar(&noPR, "no-pr", false, "Skip PR creation")
 	cmd.Flags().BoolVar(&enableAlerts, "alerts", false, "Enable alerts for task execution")
 
 	return cmd
@@ -1276,6 +1304,7 @@ func newGitHubRunCmd() *cobra.Command {
 	var dryRun bool
 	var verbose bool
 	var createPR bool
+	var noPR bool
 	var repo string
 
 	cmd := &cobra.Command{
@@ -1283,10 +1312,12 @@ func newGitHubRunCmd() *cobra.Command {
 		Short: "Run a GitHub issue as a Pilot task",
 		Long: `Fetch a GitHub issue and execute it as a Pilot task.
 
+PR creation is enabled by default. Use --no-pr to disable.
+
 Examples:
   pilot github run 8
   pilot github run 8 --repo owner/repo
-  pilot github run 8 --create-pr
+  pilot github run 8 --no-pr
   pilot github run 8 --dry-run`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -1305,6 +1336,15 @@ Examples:
 			cfg, err := config.Load(configPath)
 			if err != nil {
 				return fmt.Errorf("failed to load config: %w", err)
+			}
+
+			// Determine effective createPR value from config
+			effectiveCreatePR := true // Default
+			if cfg.Executor != nil && cfg.Executor.AutoCreatePR != nil {
+				effectiveCreatePR = *cfg.Executor.AutoCreatePR
+			}
+			if noPR {
+				effectiveCreatePR = false
 			}
 
 			// Check GitHub is configured
@@ -1377,8 +1417,10 @@ Examples:
 			fmt.Printf("   Task ID:   %s\n", taskID)
 			fmt.Printf("   Project:   %s\n", projectPath)
 			fmt.Printf("   Branch:    %s\n", branchName)
-			if createPR {
+			if effectiveCreatePR {
 				fmt.Printf("   Create PR: ✓ enabled\n")
+			} else {
+				fmt.Printf("   Create PR: ✗ disabled\n")
 			}
 			if hasNavigator {
 				fmt.Printf("   Navigator: ✓ enabled\n")
@@ -1404,7 +1446,7 @@ Examples:
 				ProjectPath: projectPath,
 				Branch:      branchName,
 				Verbose:     verbose,
-				CreatePR:    createPR,
+				CreatePR:    effectiveCreatePR,
 			}
 
 			// Dry run mode
@@ -1483,7 +1525,8 @@ Examples:
 	cmd.Flags().StringVar(&repo, "repo", "", "GitHub repository (owner/repo)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Show what would execute without running")
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Verbose output")
-	cmd.Flags().BoolVar(&createPR, "create-pr", false, "Create a PR after task completion")
+	cmd.Flags().BoolVar(&createPR, "create-pr", false, "Create GitHub PR (default: true, kept for backward compatibility)")
+	cmd.Flags().BoolVar(&noPR, "no-pr", false, "Skip PR creation")
 
 	return cmd
 }

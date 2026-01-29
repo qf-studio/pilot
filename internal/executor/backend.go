@@ -125,6 +125,10 @@ type BackendConfig struct {
 	// Type specifies which backend to use ("claude-code" or "opencode")
 	Type string `yaml:"type"`
 
+	// AutoCreatePR controls whether PRs are created by default after successful execution.
+	// Default: true. Use --no-pr flag to disable for individual tasks.
+	AutoCreatePR *bool `yaml:"auto_create_pr,omitempty"`
+
 	// ClaudeCode contains Claude Code specific settings
 	ClaudeCode *ClaudeCodeConfig `yaml:"claude_code,omitempty"`
 
@@ -222,8 +226,10 @@ type OpenCodeConfig struct {
 
 // DefaultBackendConfig returns default backend configuration.
 func DefaultBackendConfig() *BackendConfig {
+	autoCreatePR := true
 	return &BackendConfig{
-		Type: "claude-code",
+		Type:         "claude-code",
+		AutoCreatePR: &autoCreatePR,
 		ClaudeCode: &ClaudeCodeConfig{
 			Command: "claude",
 		},
