@@ -104,6 +104,7 @@ func newStartCmd() *cobra.Command {
 		noGateway  bool // Lightweight mode: polling only, no HTTP gateway
 		sequential bool // Sequential execution mode (one issue at a time)
 		parallel   bool // Parallel execution mode (legacy)
+		noPR       bool // Disable PR creation for polling mode
 	)
 
 	cmd := &cobra.Command{
@@ -177,7 +178,7 @@ Examples:
 
 			// Lightweight mode: polling only, no gateway
 			if noGateway || (!hasLinear && !hasJira && (hasTelegram || hasGithubPolling)) {
-				return runPollingMode(cfg, projectPath, replace, dashboardMode)
+				return runPollingMode(cfg, projectPath, replace, dashboardMode, noPR)
 			}
 
 			// Full daemon mode with gateway
@@ -225,6 +226,7 @@ Examples:
 	cmd.Flags().BoolVar(&noGateway, "no-gateway", false, "Run polling adapters only (no HTTP gateway)")
 	cmd.Flags().BoolVar(&sequential, "sequential", false, "Sequential execution: wait for PR merge before next issue")
 	cmd.Flags().BoolVar(&parallel, "parallel", false, "Parallel execution: process multiple issues concurrently (legacy)")
+	cmd.Flags().BoolVar(&noPR, "no-pr", false, "Skip PR creation (default: create PRs)")
 
 	// Input adapter flags - use pointers to detect if flag was set
 	cmd.Flags().Var(newOptionalBool(&enableTelegram), "telegram", "Enable Telegram polling (overrides config)")
@@ -295,9 +297,20 @@ func applyInputOverrides(cfg *config.Config, telegramFlag, githubFlag, linearFla
 }
 
 // runPollingMode runs lightweight polling-only mode (no HTTP gateway)
-func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMode bool) error {
+func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMode, noPR bool) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	// Determine effective createPR value:
+	// 1. Default from config (auto_create_pr, defaults to true)
+	// 2. --no-pr flag overrides to false
+	effectiveCreatePR := true
+	if cfg.Executor != nil && cfg.Executor.AutoCreatePR != nil {
+		effectiveCreatePR = *cfg.Executor.AutoCreatePR
+	}
+	if noPR {
+		effectiveCreatePR = false
+	}
 
 	// Check Telegram config if enabled
 	hasTelegram := cfg.Adapters.Telegram != nil && cfg.Adapters.Telegram.Enabled
@@ -307,6 +320,25 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 
 	// Create runner
 	runner := executor.NewRunner()
+
+	// Create monitor and TUI program for dashboard mode
+	var monitor *executor.Monitor
+	var program *tea.Program
+	if dashboardMode {
+		monitor = executor.NewMonitor()
+		model := dashboard.NewModel()
+		program = tea.NewProgram(model, tea.WithAltScreen())
+
+		// Wire runner progress updates to dashboard
+		runner.OnProgress(func(taskID, phase string, progress int, message string) {
+			monitor.UpdateProgress(taskID, phase, progress, message)
+			tasks := convertTaskStatesToDisplay(monitor.GetAll())
+			program.Send(dashboard.UpdateTasks(tasks))
+
+			logMsg := fmt.Sprintf("[%s] %s: %s (%d%%)", taskID, phase, message, progress)
+			program.Send(dashboard.AddLog(logMsg))
+		})
+	}
 
 	// Initialize Telegram handler if enabled
 	var tgHandler *telegram.Handler
@@ -443,14 +475,14 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 					github.WithExecutionMode(github.ExecutionModeSequential),
 					github.WithSequentialConfig(waitForMerge, pollInterval, prTimeout),
 					github.WithOnIssueWithResult(func(issueCtx context.Context, issue *github.Issue) (*github.IssueResult, error) {
-						return handleGitHubIssueWithResult(issueCtx, cfg, client, issue, projectPath, dispatcher, runner)
+						return handleGitHubIssueWithResult(issueCtx, cfg, client, issue, projectPath, dispatcher, runner, monitor, program, effectiveCreatePR)
 					}),
 				)
 			} else {
 				pollerOpts = append(pollerOpts,
 					github.WithExecutionMode(github.ExecutionModeParallel),
 					github.WithOnIssue(func(issueCtx context.Context, issue *github.Issue) error {
-						return handleGitHubIssue(issueCtx, cfg, client, issue, projectPath, dispatcher, runner)
+						return handleGitHubIssueWithMonitor(issueCtx, cfg, client, issue, projectPath, dispatcher, runner, monitor, program, effectiveCreatePR)
 					}),
 				)
 			}
@@ -478,7 +510,62 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 		tgHandler.StartPolling(ctx)
 	}
 
-	// Wait for shutdown signal
+	// Dashboard mode: run TUI and handle shutdown via TUI quit
+	if dashboardMode && program != nil {
+		// Handle signals for graceful shutdown
+		go func() {
+			sigCh := make(chan os.Signal, 1)
+			signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+			<-sigCh
+			cancel()
+			program.Send(tea.Quit())
+		}()
+
+		// Periodic refresh to catch any missed updates
+		go func() {
+			ticker := time.NewTicker(2 * time.Second)
+			defer ticker.Stop()
+
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					if monitor != nil {
+						tasks := convertTaskStatesToDisplay(monitor.GetAll())
+						program.Send(dashboard.UpdateTasks(tasks))
+					}
+				}
+			}
+		}()
+
+		// Add startup log
+		program.Send(dashboard.AddLog(fmt.Sprintf("🚀 Pilot v%s started - Polling mode", version)))
+		if hasTelegram {
+			program.Send(dashboard.AddLog("📱 Telegram polling active"))
+		}
+		hasGitHubPolling := cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.Enabled &&
+			cfg.Adapters.GitHub.Polling != nil && cfg.Adapters.GitHub.Polling.Enabled
+		if hasGitHubPolling {
+			program.Send(dashboard.AddLog(fmt.Sprintf("🐙 GitHub polling: %s", cfg.Adapters.GitHub.Repo)))
+		}
+
+		// Run TUI (blocks until quit)
+		if _, err := program.Run(); err != nil {
+			return fmt.Errorf("dashboard error: %w", err)
+		}
+
+		// Clean shutdown
+		if tgHandler != nil {
+			tgHandler.Stop()
+		}
+		if dispatcher != nil {
+			dispatcher.Stop()
+		}
+		return nil
+	}
+
+	// Non-dashboard mode: wait for shutdown signal
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
@@ -512,7 +599,7 @@ func logGitHubAPIError(operation string, owner, repo string, issueNum int, err e
 }
 
 // handleGitHubIssue processes a GitHub issue picked up by the poller
-func handleGitHubIssue(ctx context.Context, cfg *config.Config, client *github.Client, issue *github.Issue, projectPath string, dispatcher *executor.Dispatcher, runner *executor.Runner) error {
+func handleGitHubIssue(ctx context.Context, cfg *config.Config, client *github.Client, issue *github.Issue, projectPath string, dispatcher *executor.Dispatcher, runner *executor.Runner, createPR bool) error {
 	fmt.Printf("\n📥 GitHub Issue #%d: %s\n", issue.Number, issue.Title)
 
 	parts := strings.Split(cfg.Adapters.GitHub.Repo, "/")
@@ -532,7 +619,7 @@ func handleGitHubIssue(ctx context.Context, cfg *config.Config, client *github.C
 		Description: taskDesc,
 		ProjectPath: projectPath,
 		Branch:      branchName,
-		CreatePR:    true,
+		CreatePR:    createPR,
 	}
 
 	var result *executor.ExecutionResult
@@ -596,9 +683,57 @@ func handleGitHubIssue(ctx context.Context, cfg *config.Config, client *github.C
 	return execErr
 }
 
+// handleGitHubIssueWithMonitor processes a GitHub issue with optional dashboard monitoring
+// Used in parallel mode when dashboard is enabled
+func handleGitHubIssueWithMonitor(ctx context.Context, cfg *config.Config, client *github.Client, issue *github.Issue, projectPath string, dispatcher *executor.Dispatcher, runner *executor.Runner, monitor *executor.Monitor, program *tea.Program, createPR bool) error {
+	taskID := fmt.Sprintf("GH-%d", issue.Number)
+
+	// Register task with monitor if in dashboard mode
+	if monitor != nil {
+		monitor.Register(taskID, issue.Title)
+		monitor.Start(taskID)
+	}
+	if program != nil {
+		program.Send(dashboard.AddLog(fmt.Sprintf("📥 GitHub Issue #%d: %s", issue.Number, issue.Title)))
+	}
+
+	err := handleGitHubIssue(ctx, cfg, client, issue, projectPath, dispatcher, runner, createPR)
+
+	// Update monitor with completion status
+	if monitor != nil {
+		if err != nil {
+			monitor.Fail(taskID, err.Error())
+		} else {
+			monitor.Complete(taskID, "")
+		}
+	}
+
+	// Add completed task to dashboard history
+	if program != nil {
+		status := "success"
+		if err != nil {
+			status = "failed"
+		}
+		program.Send(dashboard.AddCompletedTask(taskID, issue.Title, status, ""))
+	}
+
+	return err
+}
+
 // handleGitHubIssueWithResult processes a GitHub issue and returns result with PR info
 // Used in sequential mode to enable PR merge waiting
-func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client *github.Client, issue *github.Issue, projectPath string, dispatcher *executor.Dispatcher, runner *executor.Runner) (*github.IssueResult, error) {
+func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client *github.Client, issue *github.Issue, projectPath string, dispatcher *executor.Dispatcher, runner *executor.Runner, monitor *executor.Monitor, program *tea.Program, createPR bool) (*github.IssueResult, error) {
+	taskID := fmt.Sprintf("GH-%d", issue.Number)
+
+	// Register task with monitor if in dashboard mode
+	if monitor != nil {
+		monitor.Register(taskID, issue.Title)
+		monitor.Start(taskID)
+	}
+	if program != nil {
+		program.Send(dashboard.AddLog(fmt.Sprintf("📥 GitHub Issue #%d: %s", issue.Number, issue.Title)))
+	}
+
 	fmt.Printf("\n📥 GitHub Issue #%d: %s\n", issue.Number, issue.Title)
 
 	parts := strings.Split(cfg.Adapters.GitHub.Repo, "/")
@@ -609,7 +744,6 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 	}
 
 	taskDesc := fmt.Sprintf("GitHub Issue #%d: %s\n\n%s", issue.Number, issue.Title, issue.Body)
-	taskID := fmt.Sprintf("GH-%d", issue.Number)
 	branchName := fmt.Sprintf("pilot/%s", taskID)
 
 	task := &executor.Task{
@@ -618,7 +752,7 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 		Description: taskDesc,
 		ProjectPath: projectPath,
 		Branch:      branchName,
-		CreatePR:    true,
+		CreatePR:    createPR,
 	}
 
 	var result *executor.ExecutionResult
@@ -649,6 +783,32 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 		}
 	} else {
 		result, execErr = runner.Execute(ctx, task)
+	}
+
+	// Update monitor with completion status
+	prURL := ""
+	if result != nil {
+		prURL = result.PRUrl
+	}
+	if monitor != nil {
+		if execErr != nil {
+			monitor.Fail(taskID, execErr.Error())
+		} else {
+			monitor.Complete(taskID, prURL)
+		}
+	}
+
+	// Add completed task to dashboard history
+	if program != nil {
+		status := "success"
+		duration := ""
+		if execErr != nil {
+			status = "failed"
+		}
+		if result != nil {
+			duration = result.Duration.String()
+		}
+		program.Send(dashboard.AddCompletedTask(taskID, issue.Title, status, duration))
 	}
 
 	// Build the issue result
