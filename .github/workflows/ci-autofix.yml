@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: CI Status
-        run: echo "CI completed with status: ${{ github.event.workflow_run.conclusion }}"
+        run: 'echo "CI completed with status: ${{ github.event.workflow_run.conclusion }}"'
 
   create-fix-issue:
     if: ${{ github.event.workflow_run.conclusion == 'failure' }}
