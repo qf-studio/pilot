@@ -75,4 +75,10 @@ const (
 
 	// FakeGitLabWebhookSecret is a safe test secret for GitLab webhook verification.
 	FakeGitLabWebhookSecret = "test-gitlab-webhook-secret"
+
+	// FakeAzureDevOpsPAT is a safe test personal access token for Azure DevOps.
+	FakeAzureDevOpsPAT = "test-azure-devops-pat"
+
+	// FakeAzureDevOpsWebhookSecret is a safe test secret for Azure DevOps webhook verification.
+	FakeAzureDevOpsWebhookSecret = "test-azure-devops-webhook-secret"
 )

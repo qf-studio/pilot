@@ -52,6 +52,28 @@ adapters:
       interval: 30m
       threshold: 1h
 
+  # Azure DevOps - Work item polling and PR creation
+  azure_devops:
+    enabled: false
+    pat: "${AZURE_DEVOPS_PAT}"         # Personal Access Token
+    organization: "my-org"             # Azure DevOps organization
+    project: "my-project"              # Project name
+    repository: "my-repo"              # Repository name (optional, defaults to project)
+    base_url: "https://dev.azure.com"  # Or Azure DevOps Server URL
+    pilot_tag: "pilot"                 # Work items with this tag are picked up
+    webhook_secret: "${AZURE_DEVOPS_WEBHOOK_SECRET}"
+    work_item_types:                   # Which work item types to process
+      - "Bug"
+      - "Task"
+      - "User Story"
+    polling:
+      enabled: true
+      interval: 30s
+    stale_label_cleanup:
+      enabled: true
+      interval: 30m
+      threshold: 1h
+
   # Linear - Issue tracking (webhooks)
   linear:
     enabled: false

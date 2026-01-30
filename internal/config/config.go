@@ -11,6 +11,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/alekspetrov/pilot/internal/adapters/asana"
+	"github.com/alekspetrov/pilot/internal/adapters/azuredevops"
 	"github.com/alekspetrov/pilot/internal/adapters/github"
 	"github.com/alekspetrov/pilot/internal/adapters/gitlab"
 	"github.com/alekspetrov/pilot/internal/adapters/jira"
@@ -55,13 +56,14 @@ type Config struct {
 // AdaptersConfig holds configuration for external service adapters.
 // Each adapter connects Pilot to a different service (Linear, Slack, GitHub, GitLab, etc.).
 type AdaptersConfig struct {
-	Linear   *linear.Config   `yaml:"linear"`
-	Slack    *slack.Config    `yaml:"slack"`
-	Telegram *telegram.Config `yaml:"telegram"`
-	GitHub   *github.Config   `yaml:"github"`
-	GitLab   *gitlab.Config   `yaml:"gitlab"`
-	Jira     *jira.Config     `yaml:"jira"`
-	Asana    *asana.Config    `yaml:"asana"`
+	Linear      *linear.Config      `yaml:"linear"`
+	Slack       *slack.Config       `yaml:"slack"`
+	Telegram    *telegram.Config    `yaml:"telegram"`
+	GitHub      *github.Config      `yaml:"github"`
+	GitLab      *gitlab.Config      `yaml:"gitlab"`
+	AzureDevOps *azuredevops.Config `yaml:"azure_devops"`
+	Jira        *jira.Config        `yaml:"jira"`
+	Asana       *asana.Config       `yaml:"asana"`
 }
 
 // OrchestratorConfig holds settings for the task orchestrator including
@@ -224,13 +226,14 @@ func DefaultConfig() *Config {
 			Type: gateway.AuthTypeClaudeCode,
 		},
 		Adapters: &AdaptersConfig{
-			Linear:   linear.DefaultConfig(),
-			Slack:    slack.DefaultConfig(),
-			Telegram: telegram.DefaultConfig(),
-			GitHub:   github.DefaultConfig(),
-			GitLab:   gitlab.DefaultConfig(),
-			Jira:     jira.DefaultConfig(),
-			Asana:    asana.DefaultConfig(),
+			Linear:      linear.DefaultConfig(),
+			Slack:       slack.DefaultConfig(),
+			Telegram:    telegram.DefaultConfig(),
+			GitHub:      github.DefaultConfig(),
+			GitLab:      gitlab.DefaultConfig(),
+			AzureDevOps: azuredevops.DefaultConfig(),
+			Jira:        jira.DefaultConfig(),
+			Asana:       asana.DefaultConfig(),
 		},
 		Orchestrator: &OrchestratorConfig{
 			Model:         "claude-sonnet-4-20250514",
