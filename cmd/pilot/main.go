@@ -22,7 +22,6 @@ import (
 	"github.com/alekspetrov/pilot/internal/adapters/slack"
 	"github.com/alekspetrov/pilot/internal/adapters/telegram"
 	"github.com/alekspetrov/pilot/internal/alerts"
-	"github.com/alekspetrov/pilot/internal/approval"
 	"github.com/alekspetrov/pilot/internal/autopilot"
 	"github.com/alekspetrov/pilot/internal/banner"
 	"github.com/alekspetrov/pilot/internal/briefs"
@@ -632,37 +631,14 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 				}
 			}
 
-			// Initialize autopilot controller if enabled
-			var autopilotCtrl *autopilot.Controller
-			if cfg.Orchestrator.Autopilot != nil && cfg.Orchestrator.Autopilot.Enabled {
-				// Parse owner/repo
-				repoParts := strings.Split(cfg.Adapters.GitHub.Repo, "/")
-				if len(repoParts) == 2 {
-					owner, repo := repoParts[0], repoParts[1]
-
-					// Create approval manager for prod environment gates
-					approvalMgr := approval.NewManager(nil)
-
-					autopilotCtrl = autopilot.NewController(
-						cfg.Orchestrator.Autopilot,
-						client,
-						approvalMgr,
-						owner,
-						repo,
-					)
-					logging.WithComponent("start").Info("autopilot controller initialized",
-						slog.String("owner", owner),
-						slog.String("repo", repo),
-					)
-				}
-			}
-
 			var pollerOpts []github.PollerOption
 
 			// Wire autopilot OnPRCreated callback if controller initialized
-			if autopilotCtrl != nil {
+			// Note: autopilotController is created earlier (before dashboard) to ensure
+			// the same instance is used by both dashboard and GitHub poller (GH-263)
+			if autopilotController != nil {
 				pollerOpts = append(pollerOpts,
-					github.WithOnPRCreated(autopilotCtrl.OnPRCreated),
+					github.WithOnPRCreated(autopilotController.OnPRCreated),
 				)
 			}
 
@@ -749,9 +725,10 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 				go ghPoller.Start(ctx)
 
 				// Start autopilot processing loop if controller initialized
-				if autopilotCtrl != nil {
+				// Uses autopilotController (created earlier) to ensure dashboard shows scanned PRs (GH-263)
+				if autopilotController != nil {
 					// Scan for existing PRs created by Pilot before starting the loop
-					if err := autopilotCtrl.ScanExistingPRs(ctx); err != nil {
+					if err := autopilotController.ScanExistingPRs(ctx); err != nil {
 						logging.WithComponent("autopilot").Warn("failed to scan existing PRs",
 							slog.Any("error", err),
 						)
@@ -759,7 +736,7 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 
 					fmt.Printf("🤖 Autopilot enabled: %s environment\n", cfg.Orchestrator.Autopilot.Environment)
 					go func() {
-						if err := autopilotCtrl.Run(ctx); err != nil && err != context.Canceled {
+						if err := autopilotController.Run(ctx); err != nil && err != context.Canceled {
 							logging.WithComponent("autopilot").Error("autopilot controller stopped",
 								slog.Any("error", err),
 							)
