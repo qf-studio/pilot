@@ -178,8 +178,8 @@ func TestController_ProcessPR_StageEnvironment_CIPass(t *testing.T) {
 	mergeWasCalled := false
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.URL.Path == "/repos/owner/repo/commits/abc1234/check-runs":
+		switch r.URL.Path {
+		case "/repos/owner/repo/commits/abc1234/check-runs":
 			resp := github.CheckRunsResponse{
 				TotalCount: 3,
 				CheckRuns: []github.CheckRun{
@@ -190,10 +190,10 @@ func TestController_ProcessPR_StageEnvironment_CIPass(t *testing.T) {
 			}
 			w.WriteHeader(http.StatusOK)
 			_ = json.NewEncoder(w).Encode(resp)
-		case r.URL.Path == "/repos/owner/repo/pulls/42/merge":
+		case "/repos/owner/repo/pulls/42/merge":
 			mergeWasCalled = true
 			w.WriteHeader(http.StatusOK)
-		case r.URL.Path == "/repos/owner/repo/branches/main":
+		case "/repos/owner/repo/branches/main":
 			resp := github.Branch{
 				Name:   "main",
 				Commit: github.BranchCommit{SHA: "abc1234"},
@@ -470,8 +470,8 @@ func TestController_ProcessPR_FailedStageNoOp(t *testing.T) {
 func TestController_ProcessPR_ProdRequiresApproval(t *testing.T) {
 	// Test that prod goes to awaiting approval after CI passes
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.URL.Path == "/repos/owner/repo/commits/abc1234/check-runs":
+		switch r.URL.Path {
+		case "/repos/owner/repo/commits/abc1234/check-runs":
 			resp := github.CheckRunsResponse{
 				TotalCount: 3,
 				CheckRuns: []github.CheckRun{

@@ -71,10 +71,10 @@ type ProgressDisplay struct {
 	hasNavigator bool
 	navMode      string // "nav-task", "nav-loop", etc.
 	// Phase tracking for end report
-	phaseHistory  []PhaseTimestamp
-	currentPhase  *PhaseTimestamp
+	phaseHistory []PhaseTimestamp
+	currentPhase *PhaseTimestamp
 	// Files changed tracking
-	filesChanged  []string
+	filesChanged []string
 }
 
 // NewProgressDisplay creates a new progress display
@@ -303,6 +303,8 @@ type ExecutionReport struct {
 	FilesChanged     []string
 	ModelName        string
 	ErrorMessage     string
+	// QualityGates contains results from quality gate checks (GH-209)
+	QualityGates *QualityGatesResult
 }
 
 // Finish prints final status (simple version for backward compatibility)
@@ -442,6 +444,44 @@ func (p *ProgressDisplay) printExecutionReport(report *ExecutionReport, allFiles
 		fmt.Printf("🧭 %s\n", navigatorStyle.Render("Navigator: Active"))
 		if report.NavMode != "" {
 			fmt.Printf("   Mode:    %s\n", valueStyle.Render(report.NavMode))
+		}
+	}
+
+	// Quality Gates section (GH-209)
+	if report.QualityGates != nil && report.QualityGates.Enabled {
+		fmt.Println()
+		fmt.Printf("%s\n", headerStyle.Render("🔒 Quality Gates:"))
+		for _, gate := range report.QualityGates.Gates {
+			var icon string
+			var statusStyle lipgloss.Style
+			if gate.Passed {
+				icon = "✅"
+				statusStyle = successStyle
+			} else {
+				icon = "❌"
+				statusStyle = errorStyle
+			}
+
+			// Format: "  ✅ build     12s"
+			durationStr := gate.Duration.Round(time.Second).String()
+			fmt.Printf("  %s %-10s %s", icon, statusStyle.Render(gate.Name), dimStyle.Render(durationStr))
+
+			// Add retry count if any
+			if gate.RetryCount > 0 {
+				fmt.Printf(" (%d retry)", gate.RetryCount)
+			}
+			fmt.Println()
+
+			// Show error snippet for failed gates
+			if !gate.Passed && gate.Error != "" {
+				errSnippet := truncateForReport(gate.Error, 50)
+				fmt.Printf("     %s\n", errorStyle.Render(errSnippet))
+			}
+		}
+
+		// Show total retries if any
+		if report.QualityGates.TotalRetries > 0 {
+			fmt.Printf("  Retries:    %s\n", valueStyle.Render(fmt.Sprintf("%d", report.QualityGates.TotalRetries)))
 		}
 	}
 

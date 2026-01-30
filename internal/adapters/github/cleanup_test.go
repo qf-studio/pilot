@@ -18,7 +18,7 @@ import (
 
 func TestNewCleaner(t *testing.T) {
 	store := createTestStore(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	tests := []struct {
 		name    string
@@ -89,7 +89,7 @@ func TestNewCleaner(t *testing.T) {
 
 func TestNewCleaner_DefaultValues(t *testing.T) {
 	store := createTestStore(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	client := NewClient(testutil.FakeGitHubToken)
 
@@ -115,7 +115,7 @@ func TestNewCleaner_DefaultValues(t *testing.T) {
 
 func TestWithCleanerLogger(t *testing.T) {
 	store := createTestStore(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	client := NewClient(testutil.FakeGitHubToken)
 	customLogger := slog.Default()
@@ -135,7 +135,7 @@ func TestWithCleanerLogger(t *testing.T) {
 
 func TestCleaner_Cleanup_NoIssues(t *testing.T) {
 	store := createTestStore(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -158,7 +158,7 @@ func TestCleaner_Cleanup_NoIssues(t *testing.T) {
 
 func TestCleaner_Cleanup_StaleIssuesRemoved(t *testing.T) {
 	store := createTestStore(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Create stale issue (updated 2 hours ago)
 	staleTime := time.Now().Add(-2 * time.Hour)
@@ -230,7 +230,7 @@ func TestCleaner_Cleanup_StaleIssuesRemoved(t *testing.T) {
 
 func TestCleaner_Cleanup_RecentIssuesSkipped(t *testing.T) {
 	store := createTestStore(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Create recent issue (updated 30 minutes ago - under 1h threshold)
 	recentTime := time.Now().Add(-30 * time.Minute)
@@ -282,7 +282,7 @@ func TestCleaner_Cleanup_RecentIssuesSkipped(t *testing.T) {
 
 func TestCleaner_Cleanup_ActiveExecutionsSkipped(t *testing.T) {
 	store := createTestStore(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	// Create an active execution for issue 789
 	exec := &memory.Execution{
@@ -345,7 +345,7 @@ func TestCleaner_Cleanup_ActiveExecutionsSkipped(t *testing.T) {
 
 func TestCleaner_Cleanup_APIError(t *testing.T) {
 	store := createTestStore(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -367,7 +367,7 @@ func TestCleaner_Cleanup_APIError(t *testing.T) {
 
 func TestCleaner_StartStop(t *testing.T) {
 	store := createTestStore(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -408,7 +408,7 @@ func TestCleaner_StartStop(t *testing.T) {
 
 func TestCleaner_Stop(t *testing.T) {
 	store := createTestStore(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -449,7 +449,7 @@ func TestCleaner_Stop(t *testing.T) {
 
 func TestCleaner_DoubleStart(t *testing.T) {
 	store := createTestStore(t)
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -507,7 +507,7 @@ func createTestStore(t *testing.T) *memory.Store {
 
 	// Cleanup on test completion
 	t.Cleanup(func() {
-		os.RemoveAll(tmpDir)
+		_ = os.RemoveAll(tmpDir)
 	})
 
 	store, err := memory.NewStore(filepath.Join(tmpDir, "test-db"))

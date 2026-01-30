@@ -119,6 +119,11 @@ func formatSuccessResult(result *executor.ExecutionResult) string {
 		sb.WriteString(fmt.Sprintf("📝 Commit: %s\n", result.CommitSHA[:min(8, len(result.CommitSHA))]))
 	}
 
+	// Add quality gates summary (GH-209)
+	if result.QualityGates != nil && result.QualityGates.Enabled {
+		sb.WriteString(formatQualityGatesSummary(result.QualityGates))
+	}
+
 	// Add PR URL if present
 	if result.PRUrl != "" {
 		sb.WriteString(fmt.Sprintf("\n🔗 PR: %s\n", result.PRUrl))
@@ -137,8 +142,58 @@ func formatSuccessResult(result *executor.ExecutionResult) string {
 	return sb.String()
 }
 
+// formatQualityGatesSummary formats quality gate results for Telegram (GH-209)
+func formatQualityGatesSummary(qg *executor.QualityGatesResult) string {
+	if qg == nil || len(qg.Gates) == 0 {
+		return ""
+	}
+
+	var sb strings.Builder
+	sb.WriteString("\n🔒 Quality Gates: ")
+
+	// Count passed gates
+	passed := 0
+	for _, g := range qg.Gates {
+		if g.Passed {
+			passed++
+		}
+	}
+	sb.WriteString(fmt.Sprintf("%d/%d passed\n", passed, len(qg.Gates)))
+
+	// List individual gates
+	for _, gate := range qg.Gates {
+		var icon string
+		if gate.Passed {
+			icon = "✅"
+		} else {
+			icon = "❌"
+		}
+
+		durationStr := gate.Duration.Round(time.Second).String()
+		sb.WriteString(fmt.Sprintf("- %s %s (%s", gate.Name, icon, durationStr))
+
+		// Add retry count if any
+		if gate.RetryCount > 0 {
+			sb.WriteString(fmt.Sprintf(", %d retry", gate.RetryCount))
+		}
+		sb.WriteString(")\n")
+	}
+
+	return sb.String()
+}
+
 // formatFailureResult formats a failed task result
 func formatFailureResult(result *executor.ExecutionResult) string {
+	var sb strings.Builder
+
+	sb.WriteString(fmt.Sprintf("❌ Task failed\n%s\n\n", result.TaskID))
+	sb.WriteString(fmt.Sprintf("⏱ Duration: %s\n", result.Duration.Round(time.Second)))
+
+	// Add quality gates summary if available (GH-209)
+	if result.QualityGates != nil && result.QualityGates.Enabled {
+		sb.WriteString(formatQualityGatesSummary(result.QualityGates))
+	}
+
 	cleanError := cleanInternalSignals(result.Error)
 	if cleanError == "" {
 		cleanError = "Unknown error"
@@ -149,12 +204,8 @@ func formatFailureResult(result *executor.ExecutionResult) string {
 		cleanError = cleanError[:400] + "..."
 	}
 
-	return fmt.Sprintf(
-		"❌ Task failed\n%s\n\n⏱ Duration: %s\n\n%s",
-		result.TaskID,
-		result.Duration.Round(time.Second),
-		cleanError,
-	)
+	sb.WriteString(fmt.Sprintf("\n%s", cleanError))
+	return sb.String()
 }
 
 // FormatGreeting formats a greeting response

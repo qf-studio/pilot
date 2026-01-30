@@ -105,6 +105,34 @@ type Task struct {
 	ImagePath string
 }
 
+// QualityGateResult represents the result of a single quality gate check.
+type QualityGateResult struct {
+	// Name is the gate name (e.g., "build", "test", "lint")
+	Name string
+	// Passed indicates whether the gate passed
+	Passed bool
+	// Duration is how long the gate took to run
+	Duration time.Duration
+	// RetryCount is the number of retries attempted (0 if passed first try)
+	RetryCount int
+	// Error contains the error message if the gate failed
+	Error string
+}
+
+// QualityGatesResult represents the aggregate quality gate results.
+type QualityGatesResult struct {
+	// Enabled indicates whether quality gates were configured and run
+	Enabled bool
+	// AllPassed indicates whether all gates passed
+	AllPassed bool
+	// Gates contains individual gate results
+	Gates []QualityGateResult
+	// TotalDuration is the total time spent running all gates
+	TotalDuration time.Duration
+	// TotalRetries is the sum of all retry attempts across gates
+	TotalRetries int
+}
+
 // ExecutionResult represents the result of task execution by the Runner.
 // It contains the execution outcome, any output or errors, and metrics
 // about resource usage including token counts and estimated costs.
@@ -139,6 +167,8 @@ type ExecutionResult struct {
 	LinesRemoved int
 	// ModelName is the Claude model used for execution.
 	ModelName string
+	// QualityGates contains the results of quality gate checks (if enabled)
+	QualityGates *QualityGatesResult
 }
 
 // ProgressCallback is a function called during execution with progress updates.
@@ -632,6 +662,10 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 		if r.qualityCheckerFactory != nil {
 			const maxAutoRetries = 2 // Circuit breaker to prevent infinite loops
 
+			// Track quality gate results across retries (GH-209)
+			var finalOutcome *QualityOutcome
+			var totalQualityRetries int
+
 			for retryAttempt := 0; retryAttempt <= maxAutoRetries; retryAttempt++ {
 				r.reportProgress(task.ID, "Quality Gates", 91, "Running quality checks...")
 
@@ -675,9 +709,12 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 
 				// Quality gates passed - exit retry loop
 				if outcome.Passed {
+					finalOutcome = outcome
 					r.reportProgress(task.ID, "Quality Passed", 94, "All quality gates passed")
 					break
 				}
+				// Track this outcome for potential failure reporting
+				finalOutcome = outcome
 
 				// Quality gates failed
 				log.Warn("Quality gates failed",
@@ -688,6 +725,7 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 
 				// Check if we should retry with Claude Code
 				if outcome.ShouldRetry && retryAttempt < maxAutoRetries {
+					totalQualityRetries++ // Track total retries across all gates (GH-209)
 					r.reportProgress(task.ID, "Quality Retry", 92,
 						fmt.Sprintf("Fixing issues (attempt %d/%d)...", retryAttempt+1, maxAutoRetries))
 
@@ -818,6 +856,11 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 					}
 				}
 				return result, nil
+			}
+
+			// Populate quality gate results in ExecutionResult (GH-209)
+			if finalOutcome != nil {
+				result.QualityGates = r.buildQualityGatesResult(finalOutcome, totalQualityRetries)
 			}
 		}
 
@@ -1778,4 +1821,25 @@ func containsTaskNumber(line, taskNum string) bool {
 		}
 	}
 	return false
+}
+
+// buildQualityGatesResult converts QualityOutcome to QualityGatesResult for ExecutionResult (GH-209)
+func (r *Runner) buildQualityGatesResult(outcome *QualityOutcome, totalRetries int) *QualityGatesResult {
+	if outcome == nil {
+		return nil
+	}
+
+	qgResult := &QualityGatesResult{
+		Enabled:       true,
+		AllPassed:     outcome.Passed,
+		TotalDuration: outcome.TotalDuration,
+		TotalRetries:  totalRetries,
+		Gates:         make([]QualityGateResult, len(outcome.GateDetails)),
+	}
+
+	for i, detail := range outcome.GateDetails {
+		qgResult.Gates[i] = QualityGateResult(detail)
+	}
+
+	return qgResult
 }

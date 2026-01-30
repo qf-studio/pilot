@@ -81,7 +81,7 @@ func NewUpgrader(currentVersion string) (*Upgrader, error) {
 
 	// Detect Homebrew installation
 	if isHomebrewPath(resolvedPath) {
-		return nil, fmt.Errorf("Homebrew installation detected at %s\n\n"+
+		return nil, fmt.Errorf("homebrew installation detected at %s\n\n"+
 			"Self-upgrade is not supported for Homebrew installations.\n"+
 			"Please use Homebrew to upgrade:\n\n"+
 			"  brew upgrade pilot\n\n"+

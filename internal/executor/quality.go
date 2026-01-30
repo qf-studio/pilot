@@ -1,6 +1,20 @@
 package executor
 
-import "context"
+import (
+	"context"
+	"time"
+)
+
+// QualityGateDetail represents detailed information about a single gate check.
+// This is used to pass gate results from the quality package to the executor
+// without creating import cycles.
+type QualityGateDetail struct {
+	Name       string
+	Passed     bool
+	Duration   time.Duration
+	RetryCount int
+	Error      string
+}
 
 // QualityOutcome represents the result of quality gate checks.
 // This mirrors quality.ExecutionOutcome to avoid import cycles.
@@ -9,6 +23,10 @@ type QualityOutcome struct {
 	ShouldRetry   bool
 	RetryFeedback string // Error feedback to send to Claude for retry
 	Attempt       int
+	// GateDetails contains detailed results for each gate
+	GateDetails []QualityGateDetail
+	// TotalDuration is the total time spent running all gates
+	TotalDuration time.Duration
 }
 
 // QualityChecker is an interface for running quality gate checks.
