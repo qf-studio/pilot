@@ -29,13 +29,14 @@ type Orchestrator struct {
 	monitor  *executor.Monitor
 	notifier *slack.Notifier
 
-	taskQueue        chan *Task
-	running          map[string]bool
-	progressCallback func(taskID, phase string, progress int, message string)
-	mu               sync.Mutex
-	wg               sync.WaitGroup
-	ctx              context.Context
-	cancel           context.CancelFunc
+	taskQueue               chan *Task
+	running                 map[string]bool
+	progressCallback        func(taskID, phase string, progress int, message string)
+	qualityCheckerFactory   executor.QualityCheckerFactory
+	mu                      sync.Mutex
+	wg                      sync.WaitGroup
+	ctx                     context.Context
+	cancel                  context.CancelFunc
 }
 
 // Task represents a task to be processed
@@ -284,6 +285,17 @@ func (o *Orchestrator) SetAlertProcessor(processor executor.AlertEventProcessor)
 // Use this when a visual progress display is active to prevent log spam.
 func (o *Orchestrator) SuppressProgressLogs(suppress bool) {
 	o.runner.SuppressProgressLogs(suppress)
+}
+
+// SetQualityCheckerFactory sets the factory for creating quality checkers.
+// The factory is called for each task to create a task-specific quality checker.
+// Quality gates run after task execution to validate code quality before PR creation.
+func (o *Orchestrator) SetQualityCheckerFactory(factory executor.QualityCheckerFactory) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.qualityCheckerFactory = factory
+	// Also set on the runner for direct execution
+	o.runner.SetQualityCheckerFactory(factory)
 }
 
 // extractLabelNames extracts label names from Linear labels

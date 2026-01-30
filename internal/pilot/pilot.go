@@ -289,6 +289,13 @@ func (p *Pilot) SuppressProgressLogs(suppress bool) {
 	p.orchestrator.SuppressProgressLogs(suppress)
 }
 
+// SetQualityCheckerFactory sets the factory for creating quality checkers.
+// Quality gates run after task execution to validate code quality before PR creation.
+// This allows main.go to wire the factory without creating import cycles.
+func (p *Pilot) SetQualityCheckerFactory(factory executor.QualityCheckerFactory) {
+	p.orchestrator.SetQualityCheckerFactory(factory)
+}
+
 // handleGithubIssue handles a new GitHub issue
 func (p *Pilot) handleGithubIssue(ctx context.Context, issue *github.Issue, repo *github.Repository) error {
 	logging.WithComponent("pilot").Info("Received GitHub issue",

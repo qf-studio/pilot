@@ -214,6 +214,20 @@ Examples:
 				return fmt.Errorf("failed to create Pilot: %w", err)
 			}
 
+			// Set up quality gates if configured (GH-207)
+			if cfg.Quality != nil && cfg.Quality.Enabled {
+				p.SetQualityCheckerFactory(func(taskID, taskProjectPath string) executor.QualityChecker {
+					return &qualityCheckerWrapper{
+						executor: quality.NewExecutor(&quality.ExecutorConfig{
+							Config:      cfg.Quality,
+							ProjectPath: taskProjectPath,
+							TaskID:      taskID,
+						}),
+					}
+				})
+				logging.WithComponent("start").Info("quality gates enabled for webhook mode")
+			}
+
 			if err := p.Start(); err != nil {
 				return fmt.Errorf("failed to start Pilot: %w", err)
 			}
@@ -350,6 +364,20 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 
 	// Create runner
 	runner := executor.NewRunner()
+
+	// Set up quality gates if configured (GH-207)
+	if cfg.Quality != nil && cfg.Quality.Enabled {
+		runner.SetQualityCheckerFactory(func(taskID, taskProjectPath string) executor.QualityChecker {
+			return &qualityCheckerWrapper{
+				executor: quality.NewExecutor(&quality.ExecutorConfig{
+					Config:      cfg.Quality,
+					ProjectPath: taskProjectPath,
+					TaskID:      taskID,
+				}),
+			}
+		})
+		logging.WithComponent("start").Info("quality gates enabled for polling mode")
+	}
 
 	// Create autopilot controller if enabled
 	var autopilotController *autopilot.Controller
