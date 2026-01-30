@@ -60,4 +60,13 @@ const (
 
 	// FakeStripeKey is a safe test API key for Stripe.
 	FakeStripeKey = "test-stripe-api-key"
+
+	// FakeAsanaAccessToken is a safe test access token for Asana.
+	FakeAsanaAccessToken = "test-asana-access-token"
+
+	// FakeAsanaWebhookSecret is a safe test webhook secret for Asana.
+	FakeAsanaWebhookSecret = "test-asana-webhook-secret"
+
+	// FakeAsanaWorkspaceID is a safe test workspace ID for Asana.
+	FakeAsanaWorkspaceID = "1234567890"
 )

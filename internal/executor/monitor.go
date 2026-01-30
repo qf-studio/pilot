@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"sort"
 	"sync"
 	"time"
 )
@@ -143,7 +144,7 @@ func (m *Monitor) Get(taskID string) (*TaskState, bool) {
 	return &copy, true
 }
 
-// GetAll returns all task states
+// GetAll returns all task states sorted by TaskID for stable ordering
 func (m *Monitor) GetAll() []*TaskState {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -153,10 +154,16 @@ func (m *Monitor) GetAll() []*TaskState {
 		copy := *state
 		states = append(states, &copy)
 	}
+
+	// Sort by ID for stable ordering (prevents dashboard jumping)
+	sort.Slice(states, func(i, j int) bool {
+		return states[i].ID < states[j].ID
+	})
+
 	return states
 }
 
-// GetRunning returns all running tasks
+// GetRunning returns all running tasks sorted by TaskID for stable ordering
 func (m *Monitor) GetRunning() []*TaskState {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -168,6 +175,12 @@ func (m *Monitor) GetRunning() []*TaskState {
 			running = append(running, &copy)
 		}
 	}
+
+	// Sort by ID for stable ordering
+	sort.Slice(running, func(i, j int) bool {
+		return running[i].ID < running[j].ID
+	})
+
 	return running
 }
 

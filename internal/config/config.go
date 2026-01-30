@@ -10,6 +10,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/alekspetrov/pilot/internal/adapters/asana"
 	"github.com/alekspetrov/pilot/internal/adapters/github"
 	"github.com/alekspetrov/pilot/internal/adapters/jira"
 	"github.com/alekspetrov/pilot/internal/adapters/linear"
@@ -58,6 +59,7 @@ type AdaptersConfig struct {
 	Telegram *telegram.Config `yaml:"telegram"`
 	GitHub   *github.Config   `yaml:"github"`
 	Jira     *jira.Config     `yaml:"jira"`
+	Asana    *asana.Config    `yaml:"asana"`
 }
 
 // OrchestratorConfig holds settings for the task orchestrator including
@@ -225,6 +227,7 @@ func DefaultConfig() *Config {
 			Telegram: telegram.DefaultConfig(),
 			GitHub:   github.DefaultConfig(),
 			Jira:     jira.DefaultConfig(),
+			Asana:    asana.DefaultConfig(),
 		},
 		Orchestrator: &OrchestratorConfig{
 			Model:         "claude-sonnet-4-20250514",
