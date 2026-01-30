@@ -81,7 +81,7 @@ func newUpgradeCheckCmd() *cobra.Command {
 
 			fmt.Println("🔍 Version Check")
 			fmt.Println("───────────────────────────────────────")
-			fmt.Printf("   Current:  v%s\n", info.Current)
+			fmt.Printf("   Current:  %s\n", info.Current)
 			fmt.Printf("   Latest:   %s\n", info.Latest)
 			fmt.Println()
 
@@ -167,7 +167,7 @@ func runUpgradeRun(cmd *cobra.Command, args []string, force, autoRestart, skipCo
 
 	if !info.UpdateAvail {
 		fmt.Println()
-		fmt.Printf("✅ Already running the latest version (v%s)\n", info.Current)
+		fmt.Printf("✅ Already running the latest version (%s)\n", info.Current)
 		return nil
 	}
 
@@ -175,7 +175,7 @@ func runUpgradeRun(cmd *cobra.Command, args []string, force, autoRestart, skipCo
 	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	fmt.Println("🚀 Pilot Upgrade")
 	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-	fmt.Printf("   Current:  v%s\n", info.Current)
+	fmt.Printf("   Current:  %s\n", info.Current)
 	fmt.Printf("   New:      %s\n", info.Latest)
 	fmt.Println()
 
