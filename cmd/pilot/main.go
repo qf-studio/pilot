@@ -499,6 +499,9 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 	var tgHandler *telegram.Handler
 	if hasTelegram {
 		var allowedIDs []int64
+		// Include explicitly configured allowed IDs
+		allowedIDs = append(allowedIDs, cfg.Adapters.Telegram.AllowedIDs...)
+		// Also include ChatID so user can message their own bot
 		if cfg.Adapters.Telegram.ChatID != "" {
 			if id, err := parseInt64(cfg.Adapters.Telegram.ChatID); err == nil {
 				allowedIDs = append(allowedIDs, id)
