@@ -96,7 +96,7 @@ if _, err := os.Stat(agentDir); err == nil {
 
 ## Current State
 
-**Current Version:** v0.3.3 (Homebrew fix)
+**Current Version:** v0.4.1 (Autopilot PR scanning)
 
 **Full implementation status:** `.agent/system/FEATURE-MATRIX.md`
 
@@ -112,7 +112,7 @@ if _, err := os.Stat(agentDir); err == nil {
 | Task Dispatcher | ✅ | Per-project queue (GH-46) |
 | Dashboard TUI | ✅ | Token usage, cost, autopilot status |
 | Hot Upgrade | ✅ | Self-update via `pilot upgrade` |
-| **Autopilot** | ✅ | CI monitor, auto-merge, feedback loop (v0.3.2) |
+| **Autopilot** | ✅ | CI monitor, auto-merge, feedback loop, startup PR scan (v0.4.1) |
 
 ### Autopilot Environments
 
@@ -176,6 +176,15 @@ _Queue empty - create issues with `pilot` label to add work._
 
 | Item | What |
 |------|------|
+| **v0.4.1** | Autopilot PR scanning release |
+| GH-257 | Autopilot: Scan existing PRs on startup |
+| GH-249 | CI: Add iteration limit to ci-autofix workflow |
+| **v0.4.0** | Asana, Decomposition & Research release |
+| GH-248 | Warn when quality gates not configured |
+| GH-247 | Remove dev environment CI skip |
+| GH-246 | Add pre-merge CI verification |
+| GH-245 | Telegram delivery channel for briefs |
+| GH-244 | Wire brief scheduler to pilot start |
 | **v0.3.3** | Homebrew formula fix release |
 | GH-185 | Fix Homebrew formula validation error |
 | GH-204 | Improve install.sh: Auto-configure PATH |
