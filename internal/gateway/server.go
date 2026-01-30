@@ -16,7 +16,7 @@ import (
 
 // Server is the main gateway server handling WebSocket and HTTP connections.
 // It provides a control plane for managing Pilot via WebSocket, receives webhooks
-// from external services (Linear, GitHub, Jira), and exposes REST APIs for status
+// from external services (Linear, GitHub, Jira, Asana), and exposes REST APIs for status
 // and task management. Server is safe for concurrent use.
 type Server struct {
 	config   *Config
@@ -140,6 +140,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/webhooks/linear", s.handleLinearWebhook)
 	mux.HandleFunc("/webhooks/github", s.handleGithubWebhook)
 	mux.HandleFunc("/webhooks/jira", s.handleJiraWebhook)
+	mux.HandleFunc("/webhooks/asana", s.handleAsanaWebhook)
 
 	addr := fmt.Sprintf("%s:%d", s.config.Host, s.config.Port)
 	s.server = &http.Server{
@@ -316,6 +317,41 @@ func (s *Server) handleJiraWebhook(w http.ResponseWriter, r *http.Request) {
 
 	// Route to Jira adapter
 	s.router.HandleWebhook("jira", payload)
+
+	w.WriteHeader(http.StatusOK)
+}
+
+// handleAsanaWebhook receives webhooks from Asana
+func (s *Server) handleAsanaWebhook(w http.ResponseWriter, r *http.Request) {
+	// Asana webhook handshake: respond with X-Hook-Secret header
+	if hookSecret := r.Header.Get("X-Hook-Secret"); hookSecret != "" {
+		logging.WithComponent("gateway").Info("Received Asana webhook handshake")
+		w.Header().Set("X-Hook-Secret", hookSecret)
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Asana sends signature in X-Hook-Signature header
+	signature := r.Header.Get("X-Hook-Signature")
+
+	var payload map[string]interface{}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	// Add metadata to payload for handler
+	payload["_signature"] = signature
+
+	logging.WithComponent("gateway").Info("Received Asana webhook")
+
+	// Route to Asana adapter
+	s.router.HandleWebhook("asana", payload)
 
 	w.WriteHeader(http.StatusOK)
 }

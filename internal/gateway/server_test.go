@@ -901,6 +901,7 @@ func TestWebhooksDoNotRequireBearerAuth(t *testing.T) {
 		"/webhooks/linear",
 		"/webhooks/github",
 		"/webhooks/jira",
+		"/webhooks/asana",
 	}
 
 	client := &http.Client{Timeout: 5 * time.Second}
@@ -925,6 +926,113 @@ func TestWebhooksDoNotRequireBearerAuth(t *testing.T) {
 			// Should return 200 OK, not 401 Unauthorized
 			if resp.StatusCode == http.StatusUnauthorized {
 				t.Errorf("Webhook %s should not require bearer auth", endpoint)
+			}
+		})
+	}
+}
+
+func TestAsanaWebhookTableDriven(t *testing.T) {
+	config := &Config{Host: "127.0.0.1", Port: 9090}
+	server := NewServer(config)
+
+	tests := []struct {
+		name           string
+		method         string
+		payload        string
+		hookSecret     string
+		signature      string
+		expectedStatus int
+		expectedHeader string
+	}{
+		{
+			name:           "handshake returns X-Hook-Secret",
+			method:         http.MethodPost,
+			payload:        "",
+			hookSecret:     "asana-webhook-secret-123",
+			signature:      "",
+			expectedStatus: http.StatusOK,
+			expectedHeader: "asana-webhook-secret-123",
+		},
+		{
+			name:           "GET method not allowed",
+			method:         http.MethodGet,
+			payload:        "",
+			hookSecret:     "",
+			signature:      "",
+			expectedStatus: http.StatusMethodNotAllowed,
+		},
+		{
+			name:           "PUT method not allowed",
+			method:         http.MethodPut,
+			payload:        "",
+			hookSecret:     "",
+			signature:      "",
+			expectedStatus: http.StatusMethodNotAllowed,
+		},
+		{
+			name:           "DELETE method not allowed",
+			method:         http.MethodDelete,
+			payload:        "",
+			hookSecret:     "",
+			signature:      "",
+			expectedStatus: http.StatusMethodNotAllowed,
+		},
+		{
+			name:           "valid POST with task event",
+			method:         http.MethodPost,
+			payload:        `{"events": [{"action": "added", "resource": {"gid": "123", "resource_type": "task"}}]}`,
+			hookSecret:     "",
+			signature:      "sha256=abc123",
+			expectedStatus: http.StatusOK,
+		},
+		{
+			name:           "valid POST with task changed event",
+			method:         http.MethodPost,
+			payload:        `{"events": [{"action": "changed", "resource": {"gid": "456", "resource_type": "task"}}]}`,
+			hookSecret:     "",
+			signature:      "",
+			expectedStatus: http.StatusOK,
+		},
+		{
+			name:           "invalid JSON",
+			method:         http.MethodPost,
+			payload:        "not valid json",
+			hookSecret:     "",
+			signature:      "",
+			expectedStatus: http.StatusBadRequest,
+		},
+		{
+			name:           "empty payload",
+			method:         http.MethodPost,
+			payload:        "",
+			hookSecret:     "",
+			signature:      "",
+			expectedStatus: http.StatusBadRequest,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(tt.method, "/webhooks/asana", strings.NewReader(tt.payload))
+			if tt.hookSecret != "" {
+				req.Header.Set("X-Hook-Secret", tt.hookSecret)
+			}
+			if tt.signature != "" {
+				req.Header.Set("X-Hook-Signature", tt.signature)
+			}
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+
+			server.handleAsanaWebhook(w, req)
+
+			if w.Code != tt.expectedStatus {
+				t.Errorf("Expected status %d, got %d", tt.expectedStatus, w.Code)
+			}
+
+			if tt.expectedHeader != "" {
+				if got := w.Header().Get("X-Hook-Secret"); got != tt.expectedHeader {
+					t.Errorf("Expected X-Hook-Secret header %q, got %q", tt.expectedHeader, got)
+				}
 			}
 		})
 	}
