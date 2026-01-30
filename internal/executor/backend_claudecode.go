@@ -58,6 +58,13 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, opts ExecuteOptions) (*
 		"--output-format", "stream-json",
 		"--dangerously-skip-permissions",
 	}
+
+	// Add model flag if specified (model routing GH-215)
+	if opts.Model != "" {
+		args = append(args, "--model", opts.Model)
+		b.log.Info("Using routed model", slog.String("model", opts.Model))
+	}
+
 	args = append(args, b.config.ExtraArgs...)
 
 	cmd := exec.CommandContext(ctx, b.config.Command, args...)

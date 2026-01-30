@@ -31,6 +31,10 @@ type ExecuteOptions struct {
 	// Verbose enables detailed output logging
 	Verbose bool
 
+	// Model specifies the model to use for execution (e.g., "claude-haiku", "claude-opus").
+	// If empty, the backend's default model is used.
+	Model string
+
 	// EventHandler receives streaming events during execution
 	// The handler receives the raw event line from the backend
 	EventHandler func(event BackendEvent)

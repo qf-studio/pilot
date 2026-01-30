@@ -470,6 +470,7 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 		Prompt:      prompt,
 		ProjectPath: task.ProjectPath,
 		Verbose:     task.Verbose,
+		Model:       selectedModel,
 		EventHandler: func(event BackendEvent) {
 			// Record the event
 			if recorder != nil {
@@ -755,6 +756,7 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 						Prompt:      retryPrompt,
 						ProjectPath: task.ProjectPath,
 						Verbose:     task.Verbose,
+						Model:       selectedModel,
 						EventHandler: func(event BackendEvent) {
 							if recorder != nil {
 								if recErr := recorder.RecordEvent(event.Raw); recErr != nil {
