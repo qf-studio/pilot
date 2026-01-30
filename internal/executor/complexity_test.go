@@ -139,11 +139,12 @@ func TestComplexity_Methods(t *testing.T) {
 		isTrivial           bool
 		isSimple            bool
 		shouldSkipNavigator bool
+		shouldRunResearch   bool
 	}{
-		{ComplexityTrivial, true, true, true},
-		{ComplexitySimple, false, true, false},
-		{ComplexityMedium, false, false, false},
-		{ComplexityComplex, false, false, false},
+		{ComplexityTrivial, true, true, true, false},
+		{ComplexitySimple, false, true, false, false},
+		{ComplexityMedium, false, false, false, true},
+		{ComplexityComplex, false, false, false, true},
 	}
 
 	for _, tt := range tests {
@@ -156,6 +157,9 @@ func TestComplexity_Methods(t *testing.T) {
 			}
 			if got := tt.complexity.ShouldSkipNavigator(); got != tt.shouldSkipNavigator {
 				t.Errorf("ShouldSkipNavigator() = %v, want %v", got, tt.shouldSkipNavigator)
+			}
+			if got := tt.complexity.ShouldRunResearch(); got != tt.shouldRunResearch {
+				t.Errorf("ShouldRunResearch() = %v, want %v", got, tt.shouldRunResearch)
 			}
 		})
 	}

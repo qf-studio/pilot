@@ -153,3 +153,9 @@ func (c Complexity) ShouldSkipNavigator() bool {
 func (c Complexity) String() string {
 	return string(c)
 }
+
+// ShouldRunResearch returns true if parallel research phase should run.
+// Medium and complex tasks benefit from pre-execution research.
+func (c Complexity) ShouldRunResearch() bool {
+	return c == ComplexityMedium || c == ComplexityComplex
+}

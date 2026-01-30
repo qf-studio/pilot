@@ -157,6 +157,8 @@ type ExecutionResult struct {
 	TokensOutput int64
 	// TokensTotal is the total token count (input + output).
 	TokensTotal int64
+	// ResearchTokens is the number of tokens used by parallel research phase (GH-217).
+	ResearchTokens int64
 	// EstimatedCostUSD is the estimated cost in USD based on token usage.
 	EstimatedCostUSD float64
 	// FilesChanged is the number of files modified during execution.
@@ -200,6 +202,7 @@ type Runner struct {
 	webhooks              *webhooks.Manager     // Optional webhook manager for event delivery
 	qualityCheckerFactory QualityCheckerFactory // Optional factory for creating quality checkers
 	modelRouter           *ModelRouter          // Model and timeout routing based on complexity
+	parallelRunner        *ParallelRunner       // Optional parallel research runner (GH-217)
 	suppressProgressLogs  bool                  // Suppress slog output for progress (use when visual display is active)
 }
 
@@ -295,6 +298,19 @@ func (r *Runner) SetQualityCheckerFactory(factory QualityCheckerFactory) {
 // SetModelRouter sets the model router for complexity-based model and timeout selection.
 func (r *Runner) SetModelRouter(router *ModelRouter) {
 	r.modelRouter = router
+}
+
+// SetParallelRunner sets the parallel runner for research phase execution (GH-217).
+// When set and enabled, medium/complex tasks run parallel research subagents
+// before the main implementation to gather codebase context.
+func (r *Runner) SetParallelRunner(runner *ParallelRunner) {
+	r.parallelRunner = runner
+}
+
+// EnableParallelResearch creates and configures a default parallel runner.
+// This is a convenience method to enable parallel research with default settings.
+func (r *Runner) EnableParallelResearch() {
+	r.parallelRunner = NewParallelRunner(DefaultParallelConfig(), r.modelRouter)
 }
 
 // getRecordingsPath returns the recordings path, using default if not set
@@ -442,8 +458,34 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 		}
 	}
 
+	// Run parallel research phase for medium/complex tasks (GH-217)
+	var researchResult *ResearchResult
+	if r.parallelRunner != nil && complexity.ShouldRunResearch() {
+		r.reportProgress(task.ID, "Research", 10, "Running parallel research...")
+		var researchErr error
+		researchResult, researchErr = r.parallelRunner.ExecuteResearchPhase(ctx, task)
+		if researchErr != nil {
+			log.Warn("Research phase failed, continuing without research context",
+				slog.String("task_id", task.ID),
+				slog.Any("error", researchErr),
+			)
+		} else if researchResult != nil && len(researchResult.Findings) > 0 {
+			log.Info("Research phase completed",
+				slog.String("task_id", task.ID),
+				slog.Int("findings", len(researchResult.Findings)),
+				slog.Duration("duration", researchResult.Duration),
+				slog.Int64("tokens", researchResult.TotalTokens),
+			)
+		}
+	}
+
 	// Build the prompt
 	prompt := r.BuildPrompt(task)
+
+	// Append research context if available (GH-217)
+	if researchResult != nil && len(researchResult.Findings) > 0 {
+		prompt = r.appendResearchContext(prompt, researchResult)
+	}
 
 	// State for tracking progress
 	state := &progressState{phase: "Starting"}
@@ -581,6 +623,12 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 	result.TokensTotal = backendResult.TokensInput + backendResult.TokensOutput
 	result.ModelName = backendResult.Model
 
+	// Track research phase tokens (GH-217)
+	if researchResult != nil {
+		result.ResearchTokens = researchResult.TotalTokens
+		result.TokensTotal += researchResult.TotalTokens
+	}
+
 	// Extract commit SHA from state
 	if len(state.commitSHAs) > 0 {
 		result.CommitSHA = state.commitSHAs[len(state.commitSHAs)-1] // Use last commit
@@ -594,8 +642,8 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 	if result.ModelName == "" {
 		result.ModelName = "claude-sonnet-4-5" // Default model
 	}
-	// Estimate cost based on token usage
-	result.EstimatedCostUSD = estimateCost(result.TokensInput, result.TokensOutput, result.ModelName)
+	// Estimate cost based on token usage (including research tokens)
+	result.EstimatedCostUSD = estimateCost(result.TokensInput+result.ResearchTokens, result.TokensOutput, result.ModelName)
 
 	if !result.Success {
 		log.Error("Task execution failed",
@@ -1089,6 +1137,36 @@ func (r *Runner) buildRetryPrompt(task *Task, feedback string, attempt int) stri
 	sb.WriteString("3. Ensure all tests pass\n")
 	sb.WriteString("4. Commit your fixes with a descriptive message\n\n")
 	sb.WriteString("Work autonomously. Do not ask for confirmation.\n")
+
+	return sb.String()
+}
+
+// appendResearchContext adds research findings to the prompt (GH-217).
+// Research context is inserted before the task instructions to provide
+// codebase context gathered by parallel research subagents.
+func (r *Runner) appendResearchContext(prompt string, research *ResearchResult) string {
+	if research == nil || len(research.Findings) == 0 {
+		return prompt
+	}
+
+	var sb strings.Builder
+
+	// Insert research context after the task header but before instructions
+	sb.WriteString(prompt)
+	sb.WriteString("\n\n")
+	sb.WriteString("## Pre-Research Context\n\n")
+	sb.WriteString("The following context was gathered by parallel research subagents:\n\n")
+
+	for i, finding := range research.Findings {
+		// Limit individual findings to prevent prompt bloat
+		trimmed := finding
+		if len(trimmed) > 2000 {
+			trimmed = trimmed[:2000] + "\n... (truncated)"
+		}
+		sb.WriteString(fmt.Sprintf("### Research Finding %d\n\n%s\n\n", i+1, trimmed))
+	}
+
+	sb.WriteString("Use this context to inform your implementation. Do not repeat the research.\n\n")
 
 	return sb.String()
 }
