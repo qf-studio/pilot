@@ -2248,6 +2248,12 @@ Examples:
 							deliveryOpts = append(deliveryOpts, briefs.WithSlackClient(slackClient))
 						}
 
+						// Add Telegram sender if configured
+						if cfg.Adapters.Telegram != nil && cfg.Adapters.Telegram.Enabled {
+							tgClient := telegram.NewClient(cfg.Adapters.Telegram.BotToken)
+							deliveryOpts = append(deliveryOpts, briefs.WithTelegramSender(&telegramBriefAdapter{client: tgClient}))
+						}
+
 						deliveryOpts = append(deliveryOpts, briefs.WithLogger(slog.Default()))
 
 						delivery := briefs.NewDeliveryService(briefsConfig, deliveryOpts...)
