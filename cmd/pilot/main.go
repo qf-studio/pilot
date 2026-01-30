@@ -125,6 +125,7 @@ func newStartCmd() *cobra.Command {
 		sequential   bool   // Sequential execution mode (one issue at a time)
 		parallel     bool   // Parallel execution mode (legacy)
 		noPR         bool   // Disable PR creation for polling mode
+		directCommit bool   // DANGER: Push directly to main without branches or PRs
 		autopilotEnv string // Autopilot environment: dev, stage, prod
 	)
 
@@ -216,7 +217,7 @@ Examples:
 
 			// Lightweight mode: polling only, no gateway
 			if noGateway || (!hasLinear && !hasJira && (hasTelegram || hasGithubPolling)) {
-				return runPollingMode(cfg, projectPath, replace, dashboardMode, noPR)
+				return runPollingMode(cfg, projectPath, replace, dashboardMode, noPR, directCommit)
 			}
 
 			// Full daemon mode with gateway
@@ -279,6 +280,8 @@ Examples:
 	cmd.Flags().BoolVar(&sequential, "sequential", false, "Sequential execution: wait for PR merge before next issue")
 	cmd.Flags().BoolVar(&parallel, "parallel", false, "Parallel execution: process multiple issues concurrently (legacy)")
 	cmd.Flags().BoolVar(&noPR, "no-pr", false, "Skip PR creation (default: create PRs)")
+	cmd.Flags().BoolVar(&directCommit, "direct-commit", false,
+		"DANGER: Commit directly to main without branches or PRs (requires executor.direct_commit=true in config)")
 	cmd.Flags().StringVar(&autopilotEnv, "autopilot", "",
 		"Enable autopilot mode: dev (auto-merge), stage (CI gate), prod (approval gate)")
 
@@ -351,19 +354,43 @@ func applyInputOverrides(cfg *config.Config, telegramFlag, githubFlag, linearFla
 }
 
 // runPollingMode runs lightweight polling-only mode (no HTTP gateway)
-func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMode, noPR bool) error {
+func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMode, noPR, directCommit bool) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	// Determine effective createPR value:
 	// 1. Default from config (auto_create_pr, defaults to true)
 	// 2. --no-pr flag overrides to false
+	// 3. --direct-commit implies no PR
 	effectiveCreatePR := true
 	if cfg.Executor != nil && cfg.Executor.AutoCreatePR != nil {
 		effectiveCreatePR = *cfg.Executor.AutoCreatePR
 	}
 	if noPR {
 		effectiveCreatePR = false
+	}
+
+	// Determine effective directCommit value (requires double opt-in)
+	effectiveDirectCommit := false
+	if cfg.Executor != nil && cfg.Executor.DirectCommit && directCommit {
+		effectiveDirectCommit = true
+		effectiveCreatePR = false // Direct commit bypasses PR creation
+
+		// Prominent startup warning
+		fmt.Println()
+		fmt.Println("⚠️  ═══════════════════════════════════════════════════════════════")
+		fmt.Println("⚠️  WARNING: DIRECT COMMIT MODE ENABLED")
+		fmt.Println("⚠️  Changes will be pushed directly to main without branches or PRs.")
+		fmt.Println("⚠️  Ensure you have proper CI/CD and rollback procedures in place.")
+		fmt.Println("⚠️  ═══════════════════════════════════════════════════════════════")
+		fmt.Println()
+
+		logging.WithComponent("start").Warn("DIRECT COMMIT MODE ENABLED - changes push directly to main")
+	} else if directCommit && (cfg.Executor == nil || !cfg.Executor.DirectCommit) {
+		// Flag provided but config not set - warn and ignore
+		fmt.Println("⚠️  --direct-commit flag ignored: executor.direct_commit not enabled in config")
+		fmt.Println("   To enable, add 'executor.direct_commit: true' to ~/.pilot/config.yaml")
+		fmt.Println()
 	}
 
 	// Check Telegram config if enabled
@@ -668,9 +695,9 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 
 				// Re-process the issue
 				if execMode == github.ExecutionModeSequential {
-					_, err = handleGitHubIssueWithResult(retryCtx, cfg, client, issue, projectPath, dispatcher, runner, monitor, program, effectiveCreatePR)
+					_, err = handleGitHubIssueWithResult(retryCtx, cfg, client, issue, projectPath, dispatcher, runner, monitor, program, effectiveCreatePR, effectiveDirectCommit)
 				} else {
-					err = handleGitHubIssueWithMonitor(retryCtx, cfg, client, issue, projectPath, dispatcher, runner, monitor, program, effectiveCreatePR)
+					err = handleGitHubIssueWithMonitor(retryCtx, cfg, client, issue, projectPath, dispatcher, runner, monitor, program, effectiveCreatePR, effectiveDirectCommit)
 				}
 				return err
 			})
@@ -693,7 +720,7 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 					github.WithSequentialConfig(waitForMerge, pollInterval, prTimeout),
 					github.WithScheduler(rateLimitScheduler),
 					github.WithOnIssueWithResult(func(issueCtx context.Context, issue *github.Issue) (*github.IssueResult, error) {
-						return handleGitHubIssueWithResult(issueCtx, cfg, client, issue, projectPath, dispatcher, runner, monitor, program, effectiveCreatePR)
+						return handleGitHubIssueWithResult(issueCtx, cfg, client, issue, projectPath, dispatcher, runner, monitor, program, effectiveCreatePR, effectiveDirectCommit)
 					}),
 				)
 			} else {
@@ -701,7 +728,7 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 					github.WithExecutionMode(github.ExecutionModeParallel),
 					github.WithScheduler(rateLimitScheduler),
 					github.WithOnIssue(func(issueCtx context.Context, issue *github.Issue) error {
-						return handleGitHubIssueWithMonitor(issueCtx, cfg, client, issue, projectPath, dispatcher, runner, monitor, program, effectiveCreatePR)
+						return handleGitHubIssueWithMonitor(issueCtx, cfg, client, issue, projectPath, dispatcher, runner, monitor, program, effectiveCreatePR, effectiveDirectCommit)
 					}),
 				)
 			}
@@ -921,7 +948,7 @@ func logGitHubAPIError(operation string, owner, repo string, issueNum int, err e
 }
 
 // handleGitHubIssue processes a GitHub issue picked up by the poller
-func handleGitHubIssue(ctx context.Context, cfg *config.Config, client *github.Client, issue *github.Issue, projectPath string, dispatcher *executor.Dispatcher, runner *executor.Runner, createPR bool) error {
+func handleGitHubIssue(ctx context.Context, cfg *config.Config, client *github.Client, issue *github.Issue, projectPath string, dispatcher *executor.Dispatcher, runner *executor.Runner, createPR, directCommit bool) error {
 	fmt.Printf("\n📥 GitHub Issue #%d: %s\n", issue.Number, issue.Title)
 
 	parts := strings.Split(cfg.Adapters.GitHub.Repo, "/")
@@ -935,13 +962,19 @@ func handleGitHubIssue(ctx context.Context, cfg *config.Config, client *github.C
 	taskID := fmt.Sprintf("GH-%d", issue.Number)
 	branchName := fmt.Sprintf("pilot/%s", taskID)
 
+	// Direct commit mode: no branch, no PR
 	task := &executor.Task{
-		ID:          taskID,
-		Title:       issue.Title,
-		Description: taskDesc,
-		ProjectPath: projectPath,
-		Branch:      branchName,
-		CreatePR:    createPR,
+		ID:           taskID,
+		Title:        issue.Title,
+		Description:  taskDesc,
+		ProjectPath:  projectPath,
+		Branch:       branchName,
+		CreatePR:     createPR,
+		DirectCommit: directCommit,
+	}
+	if directCommit {
+		task.Branch = ""
+		task.CreatePR = false
 	}
 
 	var result *executor.ExecutionResult
@@ -1007,7 +1040,7 @@ func handleGitHubIssue(ctx context.Context, cfg *config.Config, client *github.C
 
 // handleGitHubIssueWithMonitor processes a GitHub issue with optional dashboard monitoring
 // Used in parallel mode when dashboard is enabled
-func handleGitHubIssueWithMonitor(ctx context.Context, cfg *config.Config, client *github.Client, issue *github.Issue, projectPath string, dispatcher *executor.Dispatcher, runner *executor.Runner, monitor *executor.Monitor, program *tea.Program, createPR bool) error {
+func handleGitHubIssueWithMonitor(ctx context.Context, cfg *config.Config, client *github.Client, issue *github.Issue, projectPath string, dispatcher *executor.Dispatcher, runner *executor.Runner, monitor *executor.Monitor, program *tea.Program, createPR, directCommit bool) error {
 	taskID := fmt.Sprintf("GH-%d", issue.Number)
 
 	// Register task with monitor if in dashboard mode
@@ -1019,7 +1052,7 @@ func handleGitHubIssueWithMonitor(ctx context.Context, cfg *config.Config, clien
 		program.Send(dashboard.AddLog(fmt.Sprintf("📥 GitHub Issue #%d: %s", issue.Number, issue.Title))())
 	}
 
-	err := handleGitHubIssue(ctx, cfg, client, issue, projectPath, dispatcher, runner, createPR)
+	err := handleGitHubIssue(ctx, cfg, client, issue, projectPath, dispatcher, runner, createPR, directCommit)
 
 	// Update monitor with completion status
 	if monitor != nil {
@@ -1044,7 +1077,7 @@ func handleGitHubIssueWithMonitor(ctx context.Context, cfg *config.Config, clien
 
 // handleGitHubIssueWithResult processes a GitHub issue and returns result with PR info
 // Used in sequential mode to enable PR merge waiting
-func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client *github.Client, issue *github.Issue, projectPath string, dispatcher *executor.Dispatcher, runner *executor.Runner, monitor *executor.Monitor, program *tea.Program, createPR bool) (*github.IssueResult, error) {
+func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client *github.Client, issue *github.Issue, projectPath string, dispatcher *executor.Dispatcher, runner *executor.Runner, monitor *executor.Monitor, program *tea.Program, createPR, directCommit bool) (*github.IssueResult, error) {
 	taskID := fmt.Sprintf("GH-%d", issue.Number)
 
 	// Register task with monitor if in dashboard mode
@@ -1068,13 +1101,19 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 	taskDesc := fmt.Sprintf("GitHub Issue #%d: %s\n\n%s", issue.Number, issue.Title, issue.Body)
 	branchName := fmt.Sprintf("pilot/%s", taskID)
 
+	// Direct commit mode: no branch, no PR
 	task := &executor.Task{
-		ID:          taskID,
-		Title:       issue.Title,
-		Description: taskDesc,
-		ProjectPath: projectPath,
-		Branch:      branchName,
-		CreatePR:    createPR,
+		ID:           taskID,
+		Title:        issue.Title,
+		Description:  taskDesc,
+		ProjectPath:  projectPath,
+		Branch:       branchName,
+		CreatePR:     createPR,
+		DirectCommit: directCommit,
+	}
+	if directCommit {
+		task.Branch = ""
+		task.CreatePR = false
 	}
 
 	var result *executor.ExecutionResult

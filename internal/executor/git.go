@@ -160,3 +160,29 @@ func (g *GitOperations) HasUncommittedChanges(ctx context.Context) (bool, error)
 	}
 	return len(strings.TrimSpace(string(output))) > 0, nil
 }
+
+// PushToMain pushes changes directly to the main/default branch
+func (g *GitOperations) PushToMain(ctx context.Context) error {
+	defaultBranch, err := g.GetDefaultBranch(ctx)
+	if err != nil {
+		defaultBranch = "main"
+	}
+	cmd := exec.CommandContext(ctx, "git", "push", "origin", defaultBranch)
+	cmd.Dir = g.projectPath
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to push to %s: %w: %s", defaultBranch, err, output)
+	}
+	return nil
+}
+
+// GetCurrentCommitSHA returns the SHA of the current HEAD commit
+func (g *GitOperations) GetCurrentCommitSHA(ctx context.Context) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", "rev-parse", "HEAD")
+	cmd.Dir = g.projectPath
+	output, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("failed to get current commit SHA: %w", err)
+	}
+	return strings.TrimSpace(string(output)), nil
+}

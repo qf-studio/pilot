@@ -133,6 +133,11 @@ type BackendConfig struct {
 	// Default: true. Use --no-pr flag to disable for individual tasks.
 	AutoCreatePR *bool `yaml:"auto_create_pr,omitempty"`
 
+	// DirectCommit enables committing directly to main without branches or PRs.
+	// DANGER: Requires BOTH this config option AND --direct-commit CLI flag.
+	// Intended for users who rely on manual QA instead of code review.
+	DirectCommit bool `yaml:"direct_commit,omitempty"`
+
 	// ClaudeCode contains Claude Code specific settings
 	ClaudeCode *ClaudeCodeConfig `yaml:"claude_code,omitempty"`
 
