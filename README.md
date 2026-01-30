@@ -23,28 +23,31 @@ Autonomous AI development pipeline. Receives tickets, implements features, creat
 
 ## Features
 
-| Feature | Status | Description |
-|---------|--------|-------------|
-| **Telegram Bot** | ✅ | Chat-based task execution with voice & image support |
-| **GitHub Polling** | ✅ | Auto-pick issues with `pilot` label |
-| **GitHub Adapter** | ✅ | Issues, PRs, webhooks |
-| **Jira Adapter** | ✅ | Issue sync and updates |
-| **Sequential Execution** | ✅ | Wait for PR merge before next issue |
-| **Quality Gates** | ✅ | Test/lint/build validation with retry |
-| **Model Routing** | ✅ | Haiku/Sonnet/Opus based on task complexity |
-| **Hot Upgrade** | ✅ | Self-update with `pilot upgrade` |
-| **Daily Briefs** | ✅ | Scheduled progress reports via Slack/Email/Telegram |
-| **Alerting** | ✅ | Task failures, cost thresholds, stuck detection |
-| **Cross-Project Memory** | ✅ | Shared context across repositories |
-| **Execution Metrics** | ✅ | Token usage, cost tracking, performance analytics |
-| **Cost Controls** | ✅ | Budget limits and tracking per project |
-| **Voice Transcription** | ✅ | Whisper API (OpenAI) |
-| **Image Analysis** | ✅ | Multimodal input via Telegram |
-| **Structured Logging** | ✅ | JSON logs with correlation IDs |
-| **Usage Metering** | ✅ | Billing foundation for Pilot Cloud |
-| **Navigator Integration** | ✅ | Auto-detected when `.agent/` exists |
-| **Multiple Backends** | ✅ | Claude Code + OpenCode support |
-| **BYOK (Bring Your Own Key)** | ✅ | Use your own Anthropic API key, Bedrock, or Vertex |
+| Feature | Status | Since | Description |
+|---------|--------|-------|-------------|
+| **Autopilot** | ✅ | v0.3.2 | CI monitoring, auto-merge, feedback loop (dev/stage/prod modes) |
+| **Task Decomposition** | ✅ | v0.4.0 | Complex tasks auto-split into sequential subtasks |
+| **Research Subagents** | ✅ | v0.4.0 | Haiku-powered parallel codebase exploration |
+| **Asana Adapter** | ✅ | v0.4.0 | Webhooks with HMAC verification, task sync |
+| **Execution Replay** | ✅ | v0.3.0 | Record, playback, analyze, export (HTML/JSON/Markdown) |
+| **Model Routing** | ✅ | v0.3.0 | Haiku (trivial) → Sonnet (standard) → Opus (complex) |
+| **Quality Gates** | ✅ | v0.3.0 | Test/lint/build validation with auto-retry on failure |
+| **Cost Controls** | ✅ | v0.3.0 | Budget limits with hard enforcement |
+| **Dashboard TUI** | ✅ | v0.3.0 | Live monitoring, token/cost tracking, autopilot status |
+| **Telegram Bot** | ✅ | v0.1.0 | Chat-based task execution with voice & image support |
+| **GitHub Polling** | ✅ | v0.2.0 | Auto-pick issues with `pilot` label |
+| **Jira Adapter** | ✅ | v0.2.0 | Issue sync and updates |
+| **Sequential Execution** | ✅ | v0.2.0 | Wait for PR merge before next issue |
+| **Hot Upgrade** | ✅ | v0.2.0 | Self-update with `pilot upgrade` |
+| **Daily Briefs** | ✅ | v0.2.0 | Scheduled reports via Slack/Email/Telegram |
+| **Alerting** | ✅ | v0.2.0 | Task failures, cost thresholds, stuck detection |
+| **Cross-Project Memory** | ✅ | v0.2.0 | Shared patterns and context across repositories |
+| **Navigator Integration** | ✅ | v0.2.0 | Auto-detected `.agent/`, skipped for trivial tasks (v0.4.0) |
+| **Multiple Backends** | ✅ | v0.2.0 | Claude Code + OpenCode support |
+| **BYOK** | ✅ | v0.2.0 | Bring your own Anthropic key, Bedrock, or Vertex |
+| **Voice Transcription** | ✅ | v0.1.0 | Whisper API via Telegram |
+| **Image Analysis** | ✅ | v0.1.0 | Multimodal input via Telegram |
+| **Structured Logging** | ✅ | v0.1.0 | JSON logs with correlation IDs |
 
 ### Sequential Execution Mode
 
