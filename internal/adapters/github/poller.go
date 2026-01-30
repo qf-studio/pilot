@@ -340,6 +340,16 @@ func (p *Poller) startSequential(ctx context.Context) {
 			}
 		}
 
+		// Direct commit case: no PR to wait for, proceed to next issue
+		if result != nil && result.Success && result.PRNumber == 0 {
+			p.logger.Info("Direct commit completed, proceeding to next issue",
+				slog.Int("issue_number", issue.Number),
+				slog.String("commit_sha", result.HeadSHA),
+			)
+			p.markProcessed(issue.Number)
+			continue
+		}
+
 		// PR was created but we're not waiting for merge, or no PR was created
 		p.markProcessed(issue.Number)
 	}

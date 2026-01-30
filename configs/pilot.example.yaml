@@ -67,6 +67,9 @@ executor:
   type: "claude-code"          # "claude-code" or "opencode"
   auto_create_pr: true         # Create PR by default after task completion
                                # Use --no-pr flag to disable for individual tasks
+  # direct_commit: false       # DANGER: Enable direct commit to main (requires --direct-commit flag)
+                               # When enabled with flag, skips branches and PRs, pushes directly to main
+                               # Intended for users who rely on manual QA instead of code review
 
 # Daily briefs configuration
 briefs:
