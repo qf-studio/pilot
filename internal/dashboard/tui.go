@@ -413,8 +413,15 @@ func padOrTruncate(s string, targetWidth int) string {
 	return s + strings.Repeat(" ", targetWidth-visualWidth)
 }
 
-// truncateVisual truncates string to targetWidth visual chars, adding "..." if needed
+// truncateVisual truncates string to targetWidth visual chars, adding "..." only if needed
 func truncateVisual(s string, targetWidth int) string {
+	visualWidth := lipgloss.Width(s)
+
+	// If string already fits, return as-is (no truncation needed)
+	if visualWidth <= targetWidth {
+		return s
+	}
+
 	if targetWidth <= 3 {
 		return strings.Repeat(".", targetWidth)
 	}
