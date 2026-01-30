@@ -362,13 +362,25 @@ func (u *Upgrader) createBackup() error {
 
 // installBinary installs the new binary from a downloaded file
 func (u *Upgrader) installBinary(downloadPath string) error {
+	var err error
+
 	// Check if it's a tarball
 	if strings.HasSuffix(downloadPath, ".tar.gz") || u.isTarGz(downloadPath) {
-		return u.installFromTarGz(downloadPath)
+		err = u.installFromTarGz(downloadPath)
+	} else {
+		// Direct binary
+		err = u.installDirectBinary(downloadPath)
 	}
 
-	// Direct binary
-	return u.installDirectBinary(downloadPath)
+	if err != nil {
+		return err
+	}
+
+	// Prepare binary for execution (removes quarantine, signs on macOS)
+	// Errors are non-fatal - binary may still work
+	_ = PrepareForExecution(u.binaryPath)
+
+	return nil
 }
 
 // isTarGz checks if a file is a gzipped tarball
