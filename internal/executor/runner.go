@@ -985,7 +985,8 @@ func (r *Runner) IsRunning(taskID string) bool {
 
 // BuildPrompt constructs the prompt string sent to Claude Code for a task.
 // It adapts the prompt based on whether the project uses Navigator, adding
-// appropriate workflow instructions. Exported for dry-run preview functionality.
+// appropriate workflow instructions. Trivial tasks (typos, logs, comments)
+// skip Navigator overhead for faster execution. Exported for dry-run preview.
 func (r *Runner) BuildPrompt(task *Task) string {
 	var sb strings.Builder
 
@@ -1004,8 +1005,15 @@ func (r *Runner) BuildPrompt(task *Task) string {
 		hasNavigator = true
 	}
 
-	// Navigator-aware prompt structure
-	if hasNavigator {
+	// Detect task complexity for routing decisions (GH-216)
+	complexity := DetectComplexity(task)
+
+	// Skip Navigator for trivial tasks even if .agent/ exists (GH-216)
+	// This reduces overhead for typos, logging, comments, renames, etc.
+	useNavigator := hasNavigator && !complexity.ShouldSkipNavigator()
+
+	// Navigator-aware prompt structure for medium/complex tasks
+	if useNavigator {
 		// Navigator handles workflow, autonomous completion, and documentation
 		sb.WriteString("Start my Navigator session.\n\n")
 		sb.WriteString(fmt.Sprintf("## Task: %s\n\n", task.ID))
@@ -1018,6 +1026,22 @@ func (r *Runner) BuildPrompt(task *Task) string {
 		// Navigator will handle: workflow check, complexity detection, autonomous completion
 		sb.WriteString("Run until done. Use Navigator's autonomous completion protocol.\n\n")
 		sb.WriteString("CRITICAL: You MUST commit all changes before completing. A task is NOT complete until changes are committed. Use format: `type(scope): description (TASK-XX)`\n")
+	} else if hasNavigator && complexity.ShouldSkipNavigator() {
+		// Trivial task in Navigator project - minimal prompt without Navigator overhead (GH-216)
+		sb.WriteString(fmt.Sprintf("## Task: %s\n\n", task.ID))
+		sb.WriteString(fmt.Sprintf("%s\n\n", task.Description))
+		sb.WriteString("## Instructions\n\n")
+		sb.WriteString("This is a trivial change. Execute quickly without Navigator workflow.\n\n")
+
+		if task.Branch != "" {
+			sb.WriteString(fmt.Sprintf("1. Create git branch: `%s`\n", task.Branch))
+		} else {
+			sb.WriteString("1. Work on current branch\n")
+		}
+
+		sb.WriteString("2. Make the minimal change required\n")
+		sb.WriteString("3. Commit with format: `type(scope): description`\n\n")
+		sb.WriteString("Work autonomously. Do not ask for confirmation.\n")
 	} else {
 		// Non-Navigator project: explicit instructions with strict constraints
 		sb.WriteString(fmt.Sprintf("## Task: %s\n\n", task.ID))

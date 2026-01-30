@@ -2,6 +2,7 @@ package executor
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -746,6 +747,87 @@ func TestBuildPromptImageTask(t *testing.T) {
 	}
 	if contains(prompt, "Navigator") {
 		t.Error("Image task should not include Navigator workflow")
+	}
+}
+
+func TestBuildPromptSkipsNavigatorForTrivialTasks(t *testing.T) {
+	// Create a temp directory with .agent/ to simulate Navigator project
+	tmpDir := t.TempDir()
+	agentDir := filepath.Join(tmpDir, ".agent")
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		t.Fatalf("Failed to create .agent dir: %v", err)
+	}
+
+	runner := NewRunner()
+
+	tests := []struct {
+		name           string
+		description    string
+		expectNavigator bool
+	}{
+		{
+			name:           "trivial task - fix typo",
+			description:    "Fix typo in README",
+			expectNavigator: false,
+		},
+		{
+			name:           "trivial task - add logging",
+			description:    "Add log statement to debug function",
+			expectNavigator: false,
+		},
+		{
+			name:           "trivial task - update comment",
+			description:    "Update comment in handler.go",
+			expectNavigator: false,
+		},
+		{
+			name:           "trivial task - rename variable",
+			description:    "Rename variable from foo to bar",
+			expectNavigator: false,
+		},
+		{
+			name:           "medium task - add feature",
+			description:    "Add user authentication with JWT tokens and session management",
+			expectNavigator: true,
+		},
+		{
+			name:           "complex task - refactor",
+			description:    "Refactor the authentication module to use OAuth2",
+			expectNavigator: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			task := &Task{
+				ID:          "TEST-1",
+				Title:       tc.name,
+				Description: tc.description,
+				ProjectPath: tmpDir,
+				Branch:      "test-branch",
+			}
+
+			prompt := runner.BuildPrompt(task)
+
+			hasNavigator := contains(prompt, "Start my Navigator session")
+			hasTrivialMarker := contains(prompt, "trivial change")
+
+			if tc.expectNavigator {
+				if !hasNavigator {
+					t.Errorf("Expected Navigator session for non-trivial task, got prompt: %s", prompt)
+				}
+				if hasTrivialMarker {
+					t.Errorf("Non-trivial task should not have trivial marker")
+				}
+			} else {
+				if hasNavigator {
+					t.Errorf("Trivial task should skip Navigator, got prompt: %s", prompt)
+				}
+				if !hasTrivialMarker {
+					t.Errorf("Trivial task should have trivial marker, got prompt: %s", prompt)
+				}
+			}
+		})
 	}
 }
 
