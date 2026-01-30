@@ -87,9 +87,9 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body interf
 		// Try to parse Asana error response
 		var apiResp APIResponse[interface{}]
 		if err := json.Unmarshal(respBody, &apiResp); err == nil && len(apiResp.Errors) > 0 {
-			return fmt.Errorf("Asana API error (status %d): %s", resp.StatusCode, apiResp.Errors[0].Message)
+			return fmt.Errorf("asana API error (status %d): %s", resp.StatusCode, apiResp.Errors[0].Message)
 		}
-		return fmt.Errorf("Asana API error (status %d): %s", resp.StatusCode, string(respBody))
+		return fmt.Errorf("asana API error (status %d): %s", resp.StatusCode, string(respBody))
 	}
 
 	if result != nil && len(respBody) > 0 {
