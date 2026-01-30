@@ -70,6 +70,18 @@ func (c *CommandHandler) HandleCommand(ctx context.Context, chatID, text string)
 		c.handler.sendVoiceSetupPrompt(ctx, chatID)
 	case "/brief":
 		c.handleBrief(ctx, chatID)
+	case "/nopr":
+		if len(args) > 0 {
+			c.handleNoPR(ctx, chatID, strings.Join(args, " "))
+		} else {
+			_, _ = c.handler.client.SendMessage(ctx, chatID, "Usage: /nopr <task description>\nExecutes task without creating a PR.", "")
+		}
+	case "/pr":
+		if len(args) > 0 {
+			c.handleForcePR(ctx, chatID, strings.Join(args, " "))
+		} else {
+			_, _ = c.handler.client.SendMessage(ctx, chatID, "Usage: /pr <task description>\nForces PR creation even for ephemeral-looking tasks.", "")
+		}
 	default:
 		_, _ = c.handler.client.SendMessage(ctx, chatID, "Unknown command. Use /help for available commands.", "")
 	}
@@ -96,6 +108,8 @@ I execute tasks and answer questions about your codebase.
 /tasks — Show task backlog
 /run <id> — Execute task (e.g., /run 07)
 /stop — Stop running task
+/nopr <task> — Execute without creating PR
+/pr <task> — Force PR creation
 
 *Quick Patterns*
 • 07 or task 07 — Run TASK-07
@@ -105,7 +119,9 @@ I execute tasks and answer questions about your codebase.
 *What I Understand*
 • Tasks: "Create a file...", "Add feature..."
 • Questions: "What handles auth?", "How does X work?"
-• Greetings: "Hi", "Hello"`
+• Greetings: "Hi", "Hello"
+
+_Note: Ephemeral commands (serve, run, etc.) auto-skip PR creation._`
 
 	_, _ = c.handler.client.SendMessage(ctx, chatID, helpText, "Markdown")
 }
@@ -533,4 +549,28 @@ func formatTimeAgo(t time.Time) string {
 // HandleCallbackSwitch handles project switch callbacks
 func (c *CommandHandler) HandleCallbackSwitch(ctx context.Context, chatID, projectName string) {
 	c.handleSwitch(ctx, chatID, projectName)
+}
+
+// handleNoPR executes a task without creating a PR
+func (c *CommandHandler) handleNoPR(ctx context.Context, chatID, description string) {
+	taskID := fmt.Sprintf("TG-%d", time.Now().Unix())
+	_, _ = c.handler.client.SendMessage(ctx, chatID,
+		fmt.Sprintf("🚀 Executing without PR: %s", truncateForDisplay(description, 50)), "")
+	c.handler.executeTaskWithOptions(ctx, chatID, taskID, description, false)
+}
+
+// handleForcePR executes a task and forces PR creation
+func (c *CommandHandler) handleForcePR(ctx context.Context, chatID, description string) {
+	taskID := fmt.Sprintf("TG-%d", time.Now().Unix())
+	_, _ = c.handler.client.SendMessage(ctx, chatID,
+		fmt.Sprintf("🚀 Executing with PR: %s", truncateForDisplay(description, 50)), "")
+	c.handler.executeTaskWithOptions(ctx, chatID, taskID, description, true)
+}
+
+// truncateForDisplay truncates a string for display purposes
+func truncateForDisplay(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen-3] + "..."
 }

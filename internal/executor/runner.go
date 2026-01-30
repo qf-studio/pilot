@@ -191,6 +191,7 @@ type TokenCallback func(taskID string, inputTokens, outputTokens int64)
 // concurrent use and tracks all running tasks for cancellation support.
 type Runner struct {
 	backend               Backend // AI execution backend
+	config                *BackendConfig
 	onProgress            ProgressCallback
 	progressCallbacks     map[string]ProgressCallback // Named callbacks for multi-listener support
 	progressMu            sync.RWMutex                // Protects progressCallbacks
@@ -247,6 +248,7 @@ func NewRunnerWithConfig(config *BackendConfig) (*Runner, error) {
 		return nil, err
 	}
 	runner := NewRunnerWithBackend(backend)
+	runner.config = config
 
 	// Configure model routing and timeouts from config
 	if config != nil {
@@ -259,6 +261,11 @@ func NewRunnerWithConfig(config *BackendConfig) (*Runner, error) {
 	}
 
 	return runner, nil
+}
+
+// Config returns the runner's backend configuration.
+func (r *Runner) Config() *BackendConfig {
+	return r.config
 }
 
 // SetBackend changes the execution backend.

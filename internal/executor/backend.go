@@ -138,6 +138,11 @@ type BackendConfig struct {
 	// Intended for users who rely on manual QA instead of code review.
 	DirectCommit bool `yaml:"direct_commit,omitempty"`
 
+	// DetectEphemeral enables automatic detection of ephemeral tasks (serve, run, etc.)
+	// that shouldn't create PRs. When true (default), commands like "serve the app"
+	// or "run dev server" will execute without creating a PR.
+	DetectEphemeral *bool `yaml:"detect_ephemeral,omitempty"`
+
 	// ClaudeCode contains Claude Code specific settings
 	ClaudeCode *ClaudeCodeConfig `yaml:"claude_code,omitempty"`
 
@@ -239,9 +244,11 @@ type OpenCodeConfig struct {
 // DefaultBackendConfig returns default backend configuration.
 func DefaultBackendConfig() *BackendConfig {
 	autoCreatePR := true
+	detectEphemeral := true
 	return &BackendConfig{
-		Type:         "claude-code",
-		AutoCreatePR: &autoCreatePR,
+		Type:            "claude-code",
+		AutoCreatePR:    &autoCreatePR,
+		DetectEphemeral: &detectEphemeral,
 		ClaudeCode: &ClaudeCodeConfig{
 			Command: "claude",
 		},

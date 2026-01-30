@@ -514,12 +514,36 @@ func (h *Handler) handleTask(ctx context.Context, chatID, description string) {
 	}
 }
 
-// executeTask executes a confirmed task
+// executeTask executes a confirmed task with automatic ephemeral detection
 func (h *Handler) executeTask(ctx context.Context, chatID, taskID, description string) {
+	// Determine if this is an ephemeral task (shouldn't create PR)
+	createPR := true
+
+	// Check if ephemeral detection is enabled (default: true)
+	detectEphemeral := true
+	if h.runner != nil && h.runner.Config() != nil && h.runner.Config().DetectEphemeral != nil {
+		detectEphemeral = *h.runner.Config().DetectEphemeral
+	}
+
+	if detectEphemeral && IsEphemeralTask(description) {
+		createPR = false
+		logging.WithTask(taskID).Debug("Ephemeral task detected - skipping PR creation",
+			slog.String("description", truncateDescription(description, 50)))
+	}
+
+	h.executeTaskWithOptions(ctx, chatID, taskID, description, createPR)
+}
+
+// executeTaskWithOptions executes a task with explicit PR creation control
+func (h *Handler) executeTaskWithOptions(ctx context.Context, chatID, taskID, description string, createPR bool) {
 	// Send execution started message (this will be updated with progress)
 	// NOTE: Using plain text (no parse mode) to avoid markdown escaping issues.
 	// See SOP: .agent/sops/telegram-bot-development.md
-	resp, err := h.client.SendMessage(ctx, chatID, FormatProgressUpdate(taskID, "Starting", 0, "Initializing..."), "")
+	prNote := ""
+	if !createPR {
+		prNote = " (no PR)"
+	}
+	resp, err := h.client.SendMessage(ctx, chatID, FormatProgressUpdate(taskID, "Starting"+prNote, 0, "Initializing..."), "")
 	if err != nil {
 		logging.WithTask(taskID).Warn("Failed to send start message", slog.Any("error", err))
 		// Fallback to simple message
@@ -536,15 +560,22 @@ func (h *Handler) executeTask(ctx context.Context, chatID, taskID, description s
 	}
 
 	// Create task for executor
+	branch := ""
+	baseBranch := ""
+	if createPR {
+		branch = fmt.Sprintf("pilot/%s", taskID)
+		baseBranch = "main"
+	}
+
 	task := &executor.Task{
 		ID:          taskID,
 		Title:       truncateDescription(description, 50),
 		Description: description,
 		ProjectPath: h.projectPath,
 		Verbose:     false,
-		Branch:      fmt.Sprintf("pilot/%s", taskID),
-		BaseBranch:  "main",
-		CreatePR:    true,
+		Branch:      branch,
+		BaseBranch:  baseBranch,
+		CreatePR:    createPR,
 	}
 
 	// Set up progress callback with throttling
