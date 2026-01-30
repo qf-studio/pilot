@@ -1,0 +1,79 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+          - goos: windows
+            goarch: amd64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/}
+          BINARY_NAME=pilot
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            BINARY_NAME="pilot.exe"
+          fi
+          go build -ldflags="-s -w -X main.version=${VERSION}" -o ${BINARY_NAME} ./cmd/pilot
+
+      - name: Package
+        run: |
+          ARCHIVE_NAME=pilot-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            tar -czvf ${ARCHIVE_NAME} pilot.exe
+          else
+            tar -czvf ${ARCHIVE_NAME} pilot
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pilot-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: "*.tar.gz"
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -la artifacts/
+
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
