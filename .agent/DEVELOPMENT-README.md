@@ -96,7 +96,7 @@ if _, err := os.Stat(agentDir); err == nil {
 
 ## Current State
 
-**Current Version:** v0.4.1 (Autopilot PR scanning)
+**Current Version:** v0.4.2 (macOS upgrade fix)
 
 **Full implementation status:** `.agent/system/FEATURE-MATRIX.md`
 
@@ -176,6 +176,7 @@ _Queue empty - create issues with `pilot` label to add work._
 
 | Item | What |
 |------|------|
+| **v0.4.2** | macOS upgrade fix (auto quarantine removal + signing) |
 | **v0.4.1** | Autopilot PR scanning release |
 | GH-257 | Autopilot: Scan existing PRs on startup |
 | GH-249 | CI: Add iteration limit to ci-autofix workflow |
