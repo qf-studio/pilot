@@ -69,4 +69,10 @@ const (
 
 	// FakeAsanaWorkspaceID is a safe test workspace ID for Asana.
 	FakeAsanaWorkspaceID = "1234567890"
+
+	// FakeGitLabToken is a safe test token for GitLab API authentication.
+	FakeGitLabToken = "test-gitlab-token"
+
+	// FakeGitLabWebhookSecret is a safe test secret for GitLab webhook verification.
+	FakeGitLabWebhookSecret = "test-gitlab-webhook-secret"
 )

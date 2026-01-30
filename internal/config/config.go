@@ -12,6 +12,7 @@ import (
 
 	"github.com/alekspetrov/pilot/internal/adapters/asana"
 	"github.com/alekspetrov/pilot/internal/adapters/github"
+	"github.com/alekspetrov/pilot/internal/adapters/gitlab"
 	"github.com/alekspetrov/pilot/internal/adapters/jira"
 	"github.com/alekspetrov/pilot/internal/adapters/linear"
 	"github.com/alekspetrov/pilot/internal/adapters/slack"
@@ -52,12 +53,13 @@ type Config struct {
 }
 
 // AdaptersConfig holds configuration for external service adapters.
-// Each adapter connects Pilot to a different service (Linear, Slack, GitHub, etc.).
+// Each adapter connects Pilot to a different service (Linear, Slack, GitHub, GitLab, etc.).
 type AdaptersConfig struct {
 	Linear   *linear.Config   `yaml:"linear"`
 	Slack    *slack.Config    `yaml:"slack"`
 	Telegram *telegram.Config `yaml:"telegram"`
 	GitHub   *github.Config   `yaml:"github"`
+	GitLab   *gitlab.Config   `yaml:"gitlab"`
 	Jira     *jira.Config     `yaml:"jira"`
 	Asana    *asana.Config    `yaml:"asana"`
 }
@@ -226,6 +228,7 @@ func DefaultConfig() *Config {
 			Slack:    slack.DefaultConfig(),
 			Telegram: telegram.DefaultConfig(),
 			GitHub:   github.DefaultConfig(),
+			GitLab:   gitlab.DefaultConfig(),
 			Jira:     jira.DefaultConfig(),
 			Asana:    asana.DefaultConfig(),
 		},

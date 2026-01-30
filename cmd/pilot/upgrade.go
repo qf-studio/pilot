@@ -25,15 +25,14 @@ The upgrade process:
 3. Downloads the new version
 4. Creates a backup of the current version
 5. Installs the update
-6. Automatically restarts (unless --no-restart)
 
+Your next command will use the new version automatically.
 On failure, the previous version is automatically restored.
 
 Examples:
   pilot upgrade                    # Check and upgrade
   pilot upgrade --check            # Only check for updates
   pilot upgrade --force            # Skip task completion wait
-  pilot upgrade --no-restart       # Don't restart after upgrade
   pilot upgrade rollback           # Restore previous version`,
 	}
 
@@ -46,7 +45,7 @@ Examples:
 
 	// Default subcommand is "run"
 	cmd.RunE = func(cmd *cobra.Command, args []string) error {
-		return runUpgradeRun(cmd, args, false, true, false)
+		return runUpgradeRun(cmd, args, false, false)
 	}
 
 	return cmd
@@ -116,27 +115,25 @@ func newUpgradeCheckCmd() *cobra.Command {
 
 func newUpgradeRunCmd() *cobra.Command {
 	var (
-		force     bool
-		noRestart bool
-		yes       bool
+		force bool
+		yes   bool
 	)
 
 	cmd := &cobra.Command{
 		Use:   "run",
 		Short: "Download and install the latest version",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runUpgradeRun(cmd, args, force, !noRestart, yes)
+			return runUpgradeRun(cmd, args, force, yes)
 		},
 	}
 
 	cmd.Flags().BoolVarP(&force, "force", "f", false, "Skip waiting for running tasks")
-	cmd.Flags().BoolVar(&noRestart, "no-restart", false, "Don't restart after upgrade")
 	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "Skip confirmation prompt")
 
 	return cmd
 }
 
-func runUpgradeRun(cmd *cobra.Command, args []string, force, autoRestart, skipConfirm bool) error {
+func runUpgradeRun(cmd *cobra.Command, args []string, force, skipConfirm bool) error {
 	// Create graceful upgrader (no task checker for CLI mode)
 	gracefulUpgrader, err := upgrade.NewGracefulUpgrader(version, &upgrade.NoOpTaskChecker{})
 	if err != nil {
@@ -208,7 +205,6 @@ func runUpgradeRun(cmd *cobra.Command, args []string, force, autoRestart, skipCo
 		WaitForTasks: !force,
 		TaskTimeout:  5 * time.Minute,
 		Force:        force,
-		AutoRestart:  autoRestart,
 		OnProgress: func(pct int, msg string) {
 			bar := progressBar(pct, 30)
 			fmt.Printf("\r   %s %3d%% %s", bar, pct, msg)
@@ -233,14 +229,10 @@ func runUpgradeRun(cmd *cobra.Command, args []string, force, autoRestart, skipCo
 
 	fmt.Println()
 	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-	fmt.Println("✅ Upgrade complete!")
+	fmt.Printf("✅ Upgrade complete! (%s → %s)\n", info.Current, info.Latest)
 	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-
-	if !autoRestart {
-		fmt.Println()
-		fmt.Println("Restart Pilot to use the new version:")
-		fmt.Println("   pilot start")
-	}
+	fmt.Println()
+	fmt.Println("Run any pilot command to use the new version.")
 
 	return nil
 }

@@ -3,9 +3,6 @@ package upgrade
 import (
 	"context"
 	"fmt"
-	"os"
-	"os/exec"
-	"syscall"
 	"time"
 )
 
@@ -50,9 +47,6 @@ type UpgradeOptions struct {
 	// Force skips task waiting
 	Force bool
 
-	// AutoRestart restarts the service after upgrade
-	AutoRestart bool
-
 	// OnProgress callback for progress updates
 	OnProgress func(pct int, msg string)
 }
@@ -63,7 +57,6 @@ func DefaultUpgradeOptions() *UpgradeOptions {
 		WaitForTasks: true,
 		TaskTimeout:  5 * time.Minute,
 		Force:        false,
-		AutoRestart:  true,
 	}
 }
 
@@ -128,12 +121,10 @@ func (g *GracefulUpgrader) PerformUpgrade(ctx context.Context, release *Release,
 		return fmt.Errorf("failed to save completion state: %w", err)
 	}
 
-	// Auto-restart if requested
-	if opts.AutoRestart {
-		if opts.OnProgress != nil {
-			opts.OnProgress(100, "Restarting...")
-		}
-		return g.restart()
+	// Note: No auto-restart - user's next command will use the new binary
+	// This avoids macOS Gatekeeper/codesign issues that cause restart loops (GH-272)
+	if opts.OnProgress != nil {
+		opts.OnProgress(100, "Update complete!")
 	}
 
 	return nil
@@ -192,29 +183,6 @@ func (g *GracefulUpgrader) CleanupState() error {
 // GetUpgrader returns the underlying upgrader
 func (g *GracefulUpgrader) GetUpgrader() *Upgrader {
 	return g.upgrader
-}
-
-// restart re-executes the current binary
-func (g *GracefulUpgrader) restart() error {
-	binary := g.upgrader.BinaryPath()
-	args := os.Args[1:] // Keep original arguments
-
-	// On Unix, we can use exec to replace the current process
-	if err := syscall.Exec(binary, append([]string{binary}, args...), os.Environ()); err != nil {
-		// Fallback: start new process and exit
-		cmd := exec.Command(binary, args...)
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		cmd.Stdin = os.Stdin
-
-		if err := cmd.Start(); err != nil {
-			return fmt.Errorf("failed to start new process: %w", err)
-		}
-
-		os.Exit(0)
-	}
-
-	return nil
 }
 
 // NoOpTaskChecker is a task checker that reports no running tasks

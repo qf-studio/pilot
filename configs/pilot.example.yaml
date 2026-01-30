@@ -35,6 +35,23 @@ adapters:
       interval: 30s
       label: "pilot"
 
+  # GitLab - Issue polling and MR creation
+  gitlab:
+    enabled: false
+    token: "${GITLAB_TOKEN}"
+    base_url: "https://gitlab.com"     # Or self-hosted instance URL
+    project: "namespace/project"       # Project path
+    pilot_label: "pilot"               # Issues with this label are picked up
+    webhook_secret: "${GITLAB_WEBHOOK_SECRET}"
+    polling:
+      enabled: true
+      interval: 30s
+      label: "pilot"
+    stale_label_cleanup:
+      enabled: true
+      interval: 30m
+      threshold: 1h
+
   # Linear - Issue tracking (webhooks)
   linear:
     enabled: false
