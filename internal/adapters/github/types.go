@@ -167,6 +167,12 @@ type CheckOutput struct {
 	Text    string `json:"text,omitempty"`
 }
 
+// PRRef represents a branch reference with SHA (matches GitHub API response for head/base)
+type PRRef struct {
+	Ref string `json:"ref"` // branch name
+	SHA string `json:"sha"` // commit sha
+}
+
 // PullRequest represents a GitHub pull request
 type PullRequest struct {
 	ID        int64  `json:"id,omitempty"`
@@ -174,8 +180,8 @@ type PullRequest struct {
 	Title     string `json:"title"`
 	Body      string `json:"body,omitempty"`
 	State     string `json:"state,omitempty"` // open, closed
-	Head      string `json:"head"`            // Branch name or ref for the head (source)
-	Base      string `json:"base"`            // Branch name or ref for the base (target)
+	Head      PRRef  `json:"head"`            // Head reference with branch name and SHA
+	Base      PRRef  `json:"base"`            // Base reference with branch name and SHA
 	HTMLURL   string `json:"html_url,omitempty"`
 	Draft     bool   `json:"draft,omitempty"`
 	Merged    bool   `json:"merged,omitempty"`

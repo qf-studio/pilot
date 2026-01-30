@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -376,6 +377,37 @@ func (c *Controller) ConsecutiveFailures() int {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.consecutiveFailures
+}
+
+// ScanExistingPRs scans for open PRs created by Pilot and restores their state.
+// This should be called on startup to track PRs that were created before the current session.
+func (c *Controller) ScanExistingPRs(ctx context.Context) error {
+	prs, err := c.ghClient.ListPullRequests(ctx, c.owner, c.repo, "open")
+	if err != nil {
+		return fmt.Errorf("failed to list PRs: %w", err)
+	}
+
+	restored := 0
+	for _, pr := range prs {
+		// Filter for Pilot branches (pilot/GH-*)
+		if !strings.HasPrefix(pr.Head.Ref, "pilot/GH-") {
+			continue
+		}
+
+		// Extract issue number from branch name
+		var issueNum int
+		if _, err := fmt.Sscanf(pr.Head.Ref, "pilot/GH-%d", &issueNum); err != nil {
+			c.log.Warn("failed to parse branch name", "branch", pr.Head.Ref, "error", err)
+			continue
+		}
+
+		// Register PR via existing mechanism
+		c.OnPRCreated(pr.Number, pr.HTMLURL, issueNum, pr.Head.SHA)
+		restored++
+	}
+
+	c.log.Info("restored existing PRs", "count", restored)
+	return nil
 }
 
 // Run starts the autopilot processing loop.

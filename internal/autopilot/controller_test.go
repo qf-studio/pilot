@@ -667,3 +667,114 @@ func TestController_MergeAttemptIncrement(t *testing.T) {
 		t.Errorf("MergeAttempts = %d, want 2", pr.MergeAttempts)
 	}
 }
+
+func TestController_ScanExistingPRs(t *testing.T) {
+	tests := []struct {
+		name          string
+		prs           []github.PullRequest
+		wantRestored  int
+		wantIssueNums []int
+	}{
+		{
+			name: "restores pilot PRs only",
+			prs: []github.PullRequest{
+				{Number: 1, Head: github.PRRef{Ref: "pilot/GH-100", SHA: "sha1"}, HTMLURL: "url1"},
+				{Number: 2, Head: github.PRRef{Ref: "feature/other", SHA: "sha2"}, HTMLURL: "url2"},
+				{Number: 3, Head: github.PRRef{Ref: "pilot/GH-200", SHA: "sha3"}, HTMLURL: "url3"},
+			},
+			wantRestored:  2,
+			wantIssueNums: []int{100, 200},
+		},
+		{
+			name: "no pilot PRs",
+			prs: []github.PullRequest{
+				{Number: 1, Head: github.PRRef{Ref: "feature/one", SHA: "sha1"}, HTMLURL: "url1"},
+				{Number: 2, Head: github.PRRef{Ref: "fix/two", SHA: "sha2"}, HTMLURL: "url2"},
+			},
+			wantRestored:  0,
+			wantIssueNums: []int{},
+		},
+		{
+			name:          "empty PR list",
+			prs:           []github.PullRequest{},
+			wantRestored:  0,
+			wantIssueNums: []int{},
+		},
+		{
+			name: "various pilot branch patterns",
+			prs: []github.PullRequest{
+				{Number: 1, Head: github.PRRef{Ref: "pilot/GH-1", SHA: "sha1"}, HTMLURL: "url1"},
+				{Number: 2, Head: github.PRRef{Ref: "pilot/GH-999", SHA: "sha2"}, HTMLURL: "url2"},
+				{Number: 3, Head: github.PRRef{Ref: "pilot-GH-123", SHA: "sha3"}, HTMLURL: "url3"}, // wrong pattern
+				{Number: 4, Head: github.PRRef{Ref: "pilot/gh-456", SHA: "sha4"}, HTMLURL: "url4"}, // wrong case
+			},
+			wantRestored:  2,
+			wantIssueNums: []int{1, 999},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/repos/owner/repo/pulls" {
+					// Convert to pointer slice for JSON encoding
+					prs := make([]*github.PullRequest, len(tt.prs))
+					for i := range tt.prs {
+						prs[i] = &tt.prs[i]
+					}
+					w.WriteHeader(http.StatusOK)
+					_ = json.NewEncoder(w).Encode(prs)
+					return
+				}
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer server.Close()
+
+			ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			cfg := DefaultConfig()
+
+			c := NewController(cfg, ghClient, nil, "owner", "repo")
+
+			err := c.ScanExistingPRs(context.Background())
+			if err != nil {
+				t.Fatalf("ScanExistingPRs() error = %v", err)
+			}
+
+			prs := c.GetActivePRs()
+			if len(prs) != tt.wantRestored {
+				t.Errorf("restored %d PRs, want %d", len(prs), tt.wantRestored)
+			}
+
+			// Verify issue numbers were extracted correctly
+			for _, wantIssue := range tt.wantIssueNums {
+				found := false
+				for _, pr := range prs {
+					if pr.IssueNumber == wantIssue {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Errorf("issue number %d not found in restored PRs", wantIssue)
+				}
+			}
+		})
+	}
+}
+
+func TestController_ScanExistingPRs_Error(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+
+	err := c.ScanExistingPRs(context.Background())
+	if err == nil {
+		t.Error("ScanExistingPRs() should return error on API failure")
+	}
+}

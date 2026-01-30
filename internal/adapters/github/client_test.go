@@ -701,8 +701,8 @@ func TestCreatePullRequest(t *testing.T) {
 						ID:      11111,
 						Number:  42,
 						Title:   body.Title,
-						Head:    body.Head,
-						Base:    body.Base,
+						Head:    PRRef{Ref: body.Head, SHA: "abc123"},
+						Base:    PRRef{Ref: body.Base, SHA: "def456"},
 						State:   "open",
 						HTMLURL: "https://github.com/owner/repo/pull/42",
 					}
@@ -739,8 +739,8 @@ func TestGetPullRequest(t *testing.T) {
 				ID:      11111,
 				Number:  42,
 				Title:   "Test PR",
-				Head:    "feature-branch",
-				Base:    "main",
+				Head:    PRRef{Ref: "feature-branch", SHA: "abc123"},
+				Base:    PRRef{Ref: "main", SHA: "def456"},
 				State:   "open",
 				HTMLURL: "https://github.com/owner/repo/pull/42",
 			},
@@ -1609,5 +1609,103 @@ func TestReviewEventConstants(t *testing.T) {
 		if tt.constant != tt.expected {
 			t.Errorf("constant = %s, want %s", tt.constant, tt.expected)
 		}
+	}
+}
+
+func TestListPullRequests(t *testing.T) {
+	tests := []struct {
+		name       string
+		state      string
+		statusCode int
+		response   interface{}
+		wantErr    bool
+		wantCount  int
+	}{
+		{
+			name:       "success - open PRs",
+			state:      "open",
+			statusCode: http.StatusOK,
+			response: []*PullRequest{
+				{
+					Number:  1,
+					Title:   "PR 1",
+					Head:    PRRef{Ref: "pilot/GH-100", SHA: "abc123"},
+					Base:    PRRef{Ref: "main", SHA: "def456"},
+					State:   "open",
+					HTMLURL: "https://github.com/owner/repo/pull/1",
+				},
+				{
+					Number:  2,
+					Title:   "PR 2",
+					Head:    PRRef{Ref: "pilot/GH-101", SHA: "xyz789"},
+					Base:    PRRef{Ref: "main", SHA: "def456"},
+					State:   "open",
+					HTMLURL: "https://github.com/owner/repo/pull/2",
+				},
+			},
+			wantErr:   false,
+			wantCount: 2,
+		},
+		{
+			name:       "success - no PRs",
+			state:      "open",
+			statusCode: http.StatusOK,
+			response:   []*PullRequest{},
+			wantErr:    false,
+			wantCount:  0,
+		},
+		{
+			name:       "success - closed PRs",
+			state:      "closed",
+			statusCode: http.StatusOK,
+			response: []*PullRequest{
+				{
+					Number: 3,
+					Title:  "Closed PR",
+					Head:   PRRef{Ref: "feature/old", SHA: "old123"},
+					Base:   PRRef{Ref: "main", SHA: "def456"},
+					State:  "closed",
+				},
+			},
+			wantErr:   false,
+			wantCount: 1,
+		},
+		{
+			name:       "unauthorized",
+			state:      "open",
+			statusCode: http.StatusUnauthorized,
+			response:   map[string]string{"message": "Bad credentials"},
+			wantErr:    true,
+			wantCount:  0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet {
+					t.Errorf("expected GET, got %s", r.Method)
+				}
+				expectedPath := "/repos/owner/repo/pulls"
+				if !strings.HasPrefix(r.URL.Path, expectedPath) {
+					t.Errorf("unexpected path: %s, want prefix %s", r.URL.Path, expectedPath)
+				}
+
+				w.WriteHeader(tt.statusCode)
+				_ = json.NewEncoder(w).Encode(tt.response)
+			}))
+			defer server.Close()
+
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			prs, err := client.ListPullRequests(context.Background(), "owner", "repo", tt.state)
+
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ListPullRequests() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if !tt.wantErr && len(prs) != tt.wantCount {
+				t.Errorf("ListPullRequests() returned %d PRs, want %d", len(prs), tt.wantCount)
+			}
+		})
 	}
 }

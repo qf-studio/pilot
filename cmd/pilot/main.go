@@ -723,6 +723,13 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 
 				// Start autopilot processing loop if controller initialized
 				if autopilotCtrl != nil {
+					// Scan for existing PRs created by Pilot before starting the loop
+					if err := autopilotCtrl.ScanExistingPRs(ctx); err != nil {
+						logging.WithComponent("autopilot").Warn("failed to scan existing PRs",
+							slog.Any("error", err),
+						)
+					}
+
 					fmt.Printf("🤖 Autopilot enabled: %s environment\n", cfg.Orchestrator.Autopilot.Environment)
 					go func() {
 						if err := autopilotCtrl.Run(ctx); err != nil && err != context.Canceled {

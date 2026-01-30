@@ -392,3 +392,14 @@ func (c *Client) GetBranch(ctx context.Context, owner, repo, branch string) (*Br
 	}
 	return &result, nil
 }
+
+// ListPullRequests lists pull requests for a repository
+// state can be "open", "closed", or "all"
+func (c *Client) ListPullRequests(ctx context.Context, owner, repo, state string) ([]*PullRequest, error) {
+	path := fmt.Sprintf("/repos/%s/%s/pulls?state=%s", owner, repo, state)
+	var result []*PullRequest
+	if err := c.doRequest(ctx, http.MethodGet, path, nil, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}

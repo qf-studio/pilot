@@ -23,31 +23,46 @@ Autonomous AI development pipeline. Receives tickets, implements features, creat
 
 ## Features
 
-| Feature | Status | Since | Description |
-|---------|--------|-------|-------------|
-| **Autopilot** | ✅ | v0.3.2 | CI monitoring, auto-merge, feedback loop (dev/stage/prod modes) |
-| **Task Decomposition** | ✅ | v0.4.0 | Complex tasks auto-split into sequential subtasks |
-| **Research Subagents** | ✅ | v0.4.0 | Haiku-powered parallel codebase exploration |
-| **Asana Adapter** | ✅ | v0.4.0 | Webhooks with HMAC verification, task sync |
-| **Execution Replay** | ✅ | v0.3.0 | Record, playback, analyze, export (HTML/JSON/Markdown) |
-| **Model Routing** | ✅ | v0.3.0 | Haiku (trivial) → Sonnet (standard) → Opus (complex) |
-| **Quality Gates** | ✅ | v0.3.0 | Test/lint/build validation with auto-retry on failure |
-| **Cost Controls** | ✅ | v0.3.0 | Budget limits with hard enforcement |
-| **Dashboard TUI** | ✅ | v0.3.0 | Live monitoring, token/cost tracking, autopilot status |
-| **Telegram Bot** | ✅ | v0.1.0 | Chat-based task execution with voice & image support |
-| **GitHub Polling** | ✅ | v0.2.0 | Auto-pick issues with `pilot` label |
-| **Jira Adapter** | ✅ | v0.2.0 | Issue sync and updates |
-| **Sequential Execution** | ✅ | v0.2.0 | Wait for PR merge before next issue |
-| **Hot Upgrade** | ✅ | v0.2.0 | Self-update with `pilot upgrade` |
-| **Daily Briefs** | ✅ | v0.2.0 | Scheduled reports via Slack/Email/Telegram |
-| **Alerting** | ✅ | v0.2.0 | Task failures, cost thresholds, stuck detection |
-| **Cross-Project Memory** | ✅ | v0.2.0 | Shared patterns and context across repositories |
-| **Navigator Integration** | ✅ | v0.2.0 | Auto-detected `.agent/`, skipped for trivial tasks (v0.4.0) |
-| **Multiple Backends** | ✅ | v0.2.0 | Claude Code + OpenCode support |
-| **BYOK** | ✅ | v0.2.0 | Bring your own Anthropic key, Bedrock, or Vertex |
-| **Voice Transcription** | ✅ | v0.1.0 | Whisper API via Telegram |
-| **Image Analysis** | ✅ | v0.1.0 | Multimodal input via Telegram |
-| **Structured Logging** | ✅ | v0.1.0 | JSON logs with correlation IDs |
+### Core Execution
+
+| Feature | Since | Description |
+|---------|-------|-------------|
+| Autopilot | v0.3.2 | CI monitoring, auto-merge, feedback loop (dev/stage/prod) |
+| Task Decomposition | v0.4.0 | Complex tasks auto-split into sequential subtasks |
+| Sequential Execution | v0.2.0 | Wait for PR merge before next issue |
+| Quality Gates | v0.3.0 | Test/lint/build validation with auto-retry |
+| Execution Replay | v0.3.0 | Record, playback, analyze, export (HTML/JSON/MD) |
+
+### Intelligence
+
+| Feature | Since | Description |
+|---------|-------|-------------|
+| Research Subagents | v0.4.0 | Haiku-powered parallel codebase exploration |
+| Model Routing | v0.3.0 | Haiku (trivial) → Sonnet (standard) → Opus (complex) |
+| Navigator Integration | v0.2.0 | Auto-detected `.agent/`, skipped for trivial tasks |
+| Cross-Project Memory | v0.2.0 | Shared patterns and context across repositories |
+
+### Integrations
+
+| Feature | Since | Description |
+|---------|-------|-------------|
+| Telegram Bot | v0.1.0 | Chat-based tasks with voice transcription & images |
+| GitHub Polling | v0.2.0 | Auto-pick issues with `pilot` label |
+| Asana Adapter | v0.4.0 | Webhooks with HMAC verification, task sync |
+| Jira Adapter | v0.2.0 | Issue sync and updates |
+| Daily Briefs | v0.2.0 | Scheduled reports via Slack/Email/Telegram |
+| Alerting | v0.2.0 | Task failures, cost thresholds, stuck detection |
+
+### Infrastructure
+
+| Feature | Since | Description |
+|---------|-------|-------------|
+| Dashboard TUI | v0.3.0 | Live monitoring, token/cost tracking, autopilot status |
+| Hot Upgrade | v0.2.0 | Self-update with `pilot upgrade` |
+| Cost Controls | v0.3.0 | Budget limits with hard enforcement |
+| Multiple Backends | v0.2.0 | Claude Code + OpenCode support |
+| BYOK | v0.2.0 | Bring your own Anthropic key, Bedrock, or Vertex |
+| Structured Logging | v0.1.0 | JSON logs with correlation IDs |
 
 ### Sequential Execution Mode
 
