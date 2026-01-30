@@ -740,6 +740,69 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 		tgHandler.StartPolling(ctx)
 	}
 
+	// Start brief scheduler if enabled
+	var briefScheduler *briefs.Scheduler
+	if cfg.Orchestrator.DailyBrief != nil && cfg.Orchestrator.DailyBrief.Enabled {
+		briefCfg := cfg.Orchestrator.DailyBrief
+
+		// Convert config to briefs.BriefConfig
+		briefsConfig := &briefs.BriefConfig{
+			Enabled:  briefCfg.Enabled,
+			Schedule: briefCfg.Schedule,
+			Timezone: briefCfg.Timezone,
+			Content: briefs.ContentConfig{
+				IncludeMetrics:     briefCfg.Content.IncludeMetrics,
+				IncludeErrors:      briefCfg.Content.IncludeErrors,
+				MaxItemsPerSection: briefCfg.Content.MaxItemsPerSection,
+			},
+			Filters: briefs.FilterConfig{
+				Projects: briefCfg.Filters.Projects,
+			},
+		}
+
+		// Convert channels
+		for _, ch := range briefCfg.Channels {
+			briefsConfig.Channels = append(briefsConfig.Channels, briefs.ChannelConfig{
+				Type:       ch.Type,
+				Channel:    ch.Channel,
+				Recipients: ch.Recipients,
+			})
+		}
+
+		// Create generator (requires store)
+		if store != nil {
+			generator := briefs.NewGenerator(store, briefsConfig)
+
+			// Create delivery service with available clients
+			var deliveryOpts []briefs.DeliveryOption
+			if cfg.Adapters.Slack != nil && cfg.Adapters.Slack.Enabled {
+				slackClient := slack.NewClient(cfg.Adapters.Slack.BotToken)
+				deliveryOpts = append(deliveryOpts, briefs.WithSlackClient(slackClient))
+			}
+			if cfg.Adapters.Telegram != nil && cfg.Adapters.Telegram.Enabled {
+				tgClient := telegram.NewClient(cfg.Adapters.Telegram.BotToken)
+				deliveryOpts = append(deliveryOpts, briefs.WithTelegramClient(tgClient))
+			}
+			deliveryOpts = append(deliveryOpts, briefs.WithLogger(slog.Default()))
+
+			delivery := briefs.NewDeliveryService(briefsConfig, deliveryOpts...)
+
+			// Create and start scheduler
+			briefScheduler = briefs.NewScheduler(generator, delivery, briefsConfig, slog.Default())
+			if err := briefScheduler.Start(ctx); err != nil {
+				logging.WithComponent("start").Warn("Failed to start brief scheduler", slog.Any("error", err))
+				briefScheduler = nil
+			} else {
+				logging.WithComponent("start").Info("brief scheduler started",
+					slog.String("schedule", briefCfg.Schedule),
+					slog.String("timezone", briefCfg.Timezone),
+				)
+			}
+		} else {
+			logging.WithComponent("start").Warn("Brief scheduler requires memory store, skipping")
+		}
+	}
+
 	// Dashboard mode: run TUI and handle shutdown via TUI quit
 	if dashboardMode && program != nil {
 		fmt.Println("\n🖥️  Starting TUI dashboard...")
@@ -792,6 +855,9 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 		if dispatcher != nil {
 			dispatcher.Stop()
 		}
+		if briefScheduler != nil {
+			briefScheduler.Stop()
+		}
 		return nil
 	}
 
@@ -810,6 +876,9 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 	if dispatcher != nil {
 		fmt.Println("📋 Stopping task dispatcher...")
 		dispatcher.Stop()
+	}
+	if briefScheduler != nil {
+		briefScheduler.Stop()
 	}
 
 	return nil
