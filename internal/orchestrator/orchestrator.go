@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/alekspetrov/pilot/internal/adapters/github"
+	"github.com/alekspetrov/pilot/internal/adapters/gitlab"
 	"github.com/alekspetrov/pilot/internal/adapters/linear"
 	"github.com/alekspetrov/pilot/internal/adapters/slack"
 	"github.com/alekspetrov/pilot/internal/executor"
@@ -313,6 +314,43 @@ func (o *Orchestrator) ProcessGithubTicket(ctx context.Context, task *github.Tas
 	ticket := &TicketData{
 		ID:          task.ID,
 		Identifier:  task.ID, // GH-42 format
+		Title:       task.Title,
+		Description: task.Description,
+		Priority:    int(task.Priority),
+		Labels:      task.Labels,
+	}
+
+	doc, err := o.bridge.PlanTicket(ctx, ticket)
+	if err != nil {
+		return fmt.Errorf("failed to plan ticket: %w", err)
+	}
+
+	// Save task document
+	if err := o.saveTaskDocument(projectPath, doc); err != nil {
+		logging.WithComponent("orchestrator").Warn("Failed to save task document", slog.Any("error", err))
+	}
+
+	// Create internal task
+	internalTask := &Task{
+		ID:          doc.ID,
+		Document:    doc,
+		ProjectPath: projectPath,
+		Branch:      fmt.Sprintf("pilot/%s", task.ID),
+		Priority:    float64(task.Priority),
+	}
+
+	// Queue task
+	o.QueueTask(internalTask)
+
+	return nil
+}
+
+// ProcessGitlabTicket processes a new ticket from GitLab Issues
+func (o *Orchestrator) ProcessGitlabTicket(ctx context.Context, task *gitlab.TaskInfo, projectPath string) error {
+	// Convert GitLab task to task document via bridge
+	ticket := &TicketData{
+		ID:          task.ID,
+		Identifier:  task.ID, // GL-42 format
 		Title:       task.Title,
 		Description: task.Description,
 		Priority:    int(task.Priority),

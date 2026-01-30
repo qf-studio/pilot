@@ -643,10 +643,10 @@ func TestAutoMerger_WithApprovalTimeout(t *testing.T) {
 
 func TestAutoMerger_VerifyCIBeforeMerge(t *testing.T) {
 	tests := []struct {
-		name         string
-		ciStatus     CIStatus
-		wantErr      bool
-		errContains  string
+		name        string
+		ciStatus    CIStatus
+		wantErr     bool
+		errContains string
 	}{
 		{
 			name:     "CI success - verification passes",

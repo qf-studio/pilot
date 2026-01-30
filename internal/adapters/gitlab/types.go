@@ -244,14 +244,14 @@ const (
 
 // IssueWebhookPayload represents a GitLab issue webhook event
 type IssueWebhookPayload struct {
-	ObjectKind       string             `json:"object_kind"` // "issue"
-	EventType        string             `json:"event_type"`  // "issue"
-	User             *User              `json:"user"`
-	Project          *WebhookProject    `json:"project"`
-	ObjectAttributes *IssueAttributes   `json:"object_attributes"`
-	Labels           []*WebhookLabel    `json:"labels"`
-	Changes          *IssueChanges      `json:"changes,omitempty"`
-	Assignees        []*User            `json:"assignees,omitempty"`
+	ObjectKind       string           `json:"object_kind"` // "issue"
+	EventType        string           `json:"event_type"`  // "issue"
+	User             *User            `json:"user"`
+	Project          *WebhookProject  `json:"project"`
+	ObjectAttributes *IssueAttributes `json:"object_attributes"`
+	Labels           []*WebhookLabel  `json:"labels"`
+	Changes          *IssueChanges    `json:"changes,omitempty"`
+	Assignees        []*User          `json:"assignees,omitempty"`
 }
 
 // WebhookProject contains project info in webhook payloads

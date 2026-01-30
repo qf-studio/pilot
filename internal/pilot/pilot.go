@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/alekspetrov/pilot/internal/adapters/github"
+	"github.com/alekspetrov/pilot/internal/adapters/gitlab"
 	"github.com/alekspetrov/pilot/internal/adapters/linear"
 	"github.com/alekspetrov/pilot/internal/adapters/slack"
 	"github.com/alekspetrov/pilot/internal/adapters/telegram"
@@ -30,6 +31,9 @@ type Pilot struct {
 	githubClient   *github.Client
 	githubWH       *github.WebhookHandler
 	githubNotify   *github.Notifier
+	gitlabClient   *gitlab.Client
+	gitlabWH       *gitlab.WebhookHandler
+	gitlabNotify   *gitlab.Notifier
 	slackNotify    *slack.Notifier
 	slackClient    *slack.Client
 	telegramClient *telegram.Client
@@ -108,6 +112,18 @@ func New(cfg *config.Config) (*Pilot, error) {
 		p.githubNotify = github.NewNotifier(p.githubClient, cfg.Adapters.GitHub.PilotLabel)
 	}
 
+	// Initialize GitLab adapter if enabled
+	if cfg.Adapters.GitLab != nil && cfg.Adapters.GitLab.Enabled {
+		p.gitlabClient = gitlab.NewClient(cfg.Adapters.GitLab.Token, cfg.Adapters.GitLab.Project)
+		p.gitlabWH = gitlab.NewWebhookHandler(
+			p.gitlabClient,
+			cfg.Adapters.GitLab.WebhookSecret,
+			cfg.Adapters.GitLab.PilotLabel,
+		)
+		p.gitlabWH.OnIssue(p.handleGitlabIssue)
+		p.gitlabNotify = gitlab.NewNotifier(p.gitlabClient, cfg.Adapters.GitLab.PilotLabel)
+	}
+
 	// Initialize alerts engine if enabled
 	if cfg.Alerts != nil && cfg.Alerts.Enabled {
 		p.initAlerts(cfg)
@@ -130,6 +146,30 @@ func New(cfg *config.Config) (*Pilot, error) {
 			eventType, _ := payload["_event_type"].(string)
 			if err := p.githubWH.Handle(ctx, eventType, payload); err != nil {
 				logging.WithComponent("pilot").Error("GitHub webhook error", slog.Any("error", err))
+			}
+		})
+	}
+
+	if p.gitlabWH != nil {
+		p.gateway.Router().RegisterWebhookHandler("gitlab", func(payload map[string]interface{}) {
+			eventType, _ := payload["_event_type"].(string)
+			token, _ := payload["_token"].(string)
+
+			// Verify webhook token
+			if !p.gitlabWH.VerifyToken(token) {
+				logging.WithComponent("pilot").Warn("GitLab webhook token verification failed")
+				return
+			}
+
+			// Parse the webhook payload
+			webhookPayload := p.parseGitlabWebhookPayload(payload)
+			if webhookPayload == nil {
+				logging.WithComponent("pilot").Warn("Failed to parse GitLab webhook payload")
+				return
+			}
+
+			if err := p.gitlabWH.Handle(ctx, eventType, webhookPayload); err != nil {
+				logging.WithComponent("pilot").Error("GitLab webhook error", slog.Any("error", err))
 			}
 		})
 	}
@@ -239,6 +279,7 @@ func (p *Pilot) GetStatus() map[string]interface{} {
 			"gateway":  fmt.Sprintf("%s:%d", p.config.Gateway.Host, p.config.Gateway.Port),
 			"linear":   p.config.Adapters.Linear != nil && p.config.Adapters.Linear.Enabled,
 			"github":   p.config.Adapters.GitHub != nil && p.config.Adapters.GitHub.Enabled,
+			"gitlab":   p.config.Adapters.GitLab != nil && p.config.Adapters.GitLab.Enabled,
 			"slack":    p.config.Adapters.Slack != nil && p.config.Adapters.Slack.Enabled,
 			"webhooks": p.webhookManager.IsEnabled(),
 		},
@@ -355,6 +396,182 @@ func (p *Pilot) findProjectForGithubRepo(repo *github.Repository) string {
 	}
 
 	return ""
+}
+
+// handleGitlabIssue handles a new GitLab issue
+func (p *Pilot) handleGitlabIssue(ctx context.Context, issue *gitlab.Issue, project *gitlab.Project) error {
+	logging.WithComponent("pilot").Info("Received GitLab issue",
+		slog.String("project", project.PathWithNamespace),
+		slog.Int("iid", issue.IID),
+		slog.String("title", issue.Title))
+
+	// Convert to task
+	task := gitlab.ConvertIssueToTask(issue, project)
+
+	// Find project for this GitLab project
+	projectPath := p.findProjectForGitlabProject(project)
+	if projectPath == "" {
+		return fmt.Errorf("no project configured for GitLab project %s", project.PathWithNamespace)
+	}
+
+	// Notify that task has started
+	if p.gitlabNotify != nil {
+		if err := p.gitlabNotify.NotifyTaskStarted(ctx, issue.IID, task.ID); err != nil {
+			logging.WithComponent("pilot").Warn("Failed to notify task started", slog.Any("error", err))
+		}
+	}
+
+	// Process ticket through orchestrator
+	err := p.orchestrator.ProcessGitlabTicket(ctx, task, projectPath)
+
+	// Update GitLab with result
+	if p.gitlabNotify != nil {
+		if err != nil {
+			if notifyErr := p.gitlabNotify.NotifyTaskFailed(ctx, issue.IID, err.Error()); notifyErr != nil {
+				logging.WithComponent("pilot").Warn("Failed to notify task failed", slog.Any("error", notifyErr))
+			}
+		}
+		// Success notification handled by orchestrator when MR is created
+	}
+
+	return err
+}
+
+// findProjectForGitlabProject finds the project path for a GitLab project
+func (p *Pilot) findProjectForGitlabProject(project *gitlab.Project) string {
+	// Try to match by project name or path
+	for _, proj := range p.config.Projects {
+		// Match by name
+		if project.Name == proj.Name {
+			return proj.Path
+		}
+		// Match by path with namespace (namespace/project)
+		if project.PathWithNamespace == proj.Name {
+			return proj.Path
+		}
+	}
+
+	// Return first project as fallback
+	if len(p.config.Projects) > 0 {
+		return p.config.Projects[0].Path
+	}
+
+	return ""
+}
+
+// parseGitlabWebhookPayload parses a GitLab webhook payload from a generic map
+func (p *Pilot) parseGitlabWebhookPayload(payload map[string]interface{}) *gitlab.IssueWebhookPayload {
+	result := &gitlab.IssueWebhookPayload{}
+
+	// Parse object_kind and event_type
+	if v, ok := payload["object_kind"].(string); ok {
+		result.ObjectKind = v
+	}
+	if v, ok := payload["event_type"].(string); ok {
+		result.EventType = v
+	}
+
+	// Parse project
+	if projectData, ok := payload["project"].(map[string]interface{}); ok {
+		result.Project = &gitlab.WebhookProject{}
+		if v, ok := projectData["id"].(float64); ok {
+			result.Project.ID = int(v)
+		}
+		if v, ok := projectData["name"].(string); ok {
+			result.Project.Name = v
+		}
+		if v, ok := projectData["path_with_namespace"].(string); ok {
+			result.Project.PathWithNamespace = v
+		}
+		if v, ok := projectData["web_url"].(string); ok {
+			result.Project.WebURL = v
+		}
+		if v, ok := projectData["default_branch"].(string); ok {
+			result.Project.DefaultBranch = v
+		}
+	}
+
+	// Parse object_attributes (issue details)
+	if attrs, ok := payload["object_attributes"].(map[string]interface{}); ok {
+		result.ObjectAttributes = &gitlab.IssueAttributes{}
+		if v, ok := attrs["id"].(float64); ok {
+			result.ObjectAttributes.ID = int(v)
+		}
+		if v, ok := attrs["iid"].(float64); ok {
+			result.ObjectAttributes.IID = int(v)
+		}
+		if v, ok := attrs["title"].(string); ok {
+			result.ObjectAttributes.Title = v
+		}
+		if v, ok := attrs["description"].(string); ok {
+			result.ObjectAttributes.Description = v
+		}
+		if v, ok := attrs["state"].(string); ok {
+			result.ObjectAttributes.State = v
+		}
+		if v, ok := attrs["action"].(string); ok {
+			result.ObjectAttributes.Action = v
+		}
+		if v, ok := attrs["url"].(string); ok {
+			result.ObjectAttributes.URL = v
+		}
+	}
+
+	// Parse labels
+	if labelsData, ok := payload["labels"].([]interface{}); ok {
+		for _, l := range labelsData {
+			if labelMap, ok := l.(map[string]interface{}); ok {
+				label := &gitlab.WebhookLabel{}
+				if v, ok := labelMap["id"].(float64); ok {
+					label.ID = int(v)
+				}
+				if v, ok := labelMap["title"].(string); ok {
+					label.Title = v
+				}
+				result.Labels = append(result.Labels, label)
+			}
+		}
+	}
+
+	// Parse changes (for update events)
+	if changesData, ok := payload["changes"].(map[string]interface{}); ok {
+		result.Changes = &gitlab.IssueChanges{}
+		if labelsChange, ok := changesData["labels"].(map[string]interface{}); ok {
+			result.Changes.Labels = &gitlab.LabelChange{}
+
+			if prev, ok := labelsChange["previous"].([]interface{}); ok {
+				for _, l := range prev {
+					if labelMap, ok := l.(map[string]interface{}); ok {
+						label := &gitlab.WebhookLabel{}
+						if v, ok := labelMap["id"].(float64); ok {
+							label.ID = int(v)
+						}
+						if v, ok := labelMap["title"].(string); ok {
+							label.Title = v
+						}
+						result.Changes.Labels.Previous = append(result.Changes.Labels.Previous, label)
+					}
+				}
+			}
+
+			if curr, ok := labelsChange["current"].([]interface{}); ok {
+				for _, l := range curr {
+					if labelMap, ok := l.(map[string]interface{}); ok {
+						label := &gitlab.WebhookLabel{}
+						if v, ok := labelMap["id"].(float64); ok {
+							label.ID = int(v)
+						}
+						if v, ok := labelMap["title"].(string); ok {
+							label.Title = v
+						}
+						result.Changes.Labels.Current = append(result.Changes.Labels.Current, label)
+					}
+				}
+			}
+		}
+	}
+
+	return result
 }
 
 // initAlerts initializes the alerts engine with configured channels

@@ -139,6 +139,7 @@ func (s *Server) Start(ctx context.Context) error {
 	// Webhook endpoints for adapters (use signature validation, not bearer tokens)
 	mux.HandleFunc("/webhooks/linear", s.handleLinearWebhook)
 	mux.HandleFunc("/webhooks/github", s.handleGithubWebhook)
+	mux.HandleFunc("/webhooks/gitlab", s.handleGitlabWebhook)
 	mux.HandleFunc("/webhooks/jira", s.handleJiraWebhook)
 	mux.HandleFunc("/webhooks/asana", s.handleAsanaWebhook)
 
@@ -317,6 +318,35 @@ func (s *Server) handleJiraWebhook(w http.ResponseWriter, r *http.Request) {
 
 	// Route to Jira adapter
 	s.router.HandleWebhook("jira", payload)
+
+	w.WriteHeader(http.StatusOK)
+}
+
+// handleGitlabWebhook receives webhooks from GitLab
+func (s *Server) handleGitlabWebhook(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// GitLab sends event type in header and uses simple token auth
+	eventType := r.Header.Get("X-Gitlab-Event")
+	token := r.Header.Get("X-Gitlab-Token")
+
+	var payload map[string]interface{}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	// Add metadata to payload for handler
+	payload["_event_type"] = eventType
+	payload["_token"] = token
+
+	logging.WithComponent("gateway").Info("Received GitLab webhook", slog.String("event_type", eventType))
+
+	// Route to GitLab adapter
+	s.router.HandleWebhook("gitlab", payload)
 
 	w.WriteHeader(http.StatusOK)
 }
