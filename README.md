@@ -193,6 +193,24 @@ pilot start --autopilot=stage --github
 pilot start --autopilot=prod --github
 ```
 
+### Direct Deploy (no PR)
+
+For non-developers who rely on manual QA instead of code review:
+
+```bash
+# ⚠️ Ships directly to main - no PR, no code review
+pilot start --autopilot=prod --no-pr --github
+```
+
+**Use when:**
+- You can't review code but can test functionality
+- You have a staging environment for manual QA
+- You trust Pilot + your test suite
+
+**Not recommended when:**
+- Production has no rollback mechanism
+- No QA process exists
+
 ## Telegram Integration
 
 Talk to Pilot like a junior dev:
