@@ -761,38 +761,38 @@ func TestBuildPromptSkipsNavigatorForTrivialTasks(t *testing.T) {
 	runner := NewRunner()
 
 	tests := []struct {
-		name           string
-		description    string
+		name            string
+		description     string
 		expectNavigator bool
 	}{
 		{
-			name:           "trivial task - fix typo",
-			description:    "Fix typo in README",
+			name:            "trivial task - fix typo",
+			description:     "Fix typo in README",
 			expectNavigator: false,
 		},
 		{
-			name:           "trivial task - add logging",
-			description:    "Add log statement to debug function",
+			name:            "trivial task - add logging",
+			description:     "Add log statement to debug function",
 			expectNavigator: false,
 		},
 		{
-			name:           "trivial task - update comment",
-			description:    "Update comment in handler.go",
+			name:            "trivial task - update comment",
+			description:     "Update comment in handler.go",
 			expectNavigator: false,
 		},
 		{
-			name:           "trivial task - rename variable",
-			description:    "Rename variable from foo to bar",
+			name:            "trivial task - rename variable",
+			description:     "Rename variable from foo to bar",
 			expectNavigator: false,
 		},
 		{
-			name:           "medium task - add feature",
-			description:    "Add user authentication with JWT tokens and session management",
+			name:            "medium task - add feature",
+			description:     "Add user authentication with JWT tokens and session management",
 			expectNavigator: true,
 		},
 		{
-			name:           "complex task - refactor",
-			description:    "Refactor the authentication module to use OAuth2",
+			name:            "complex task - refactor",
+			description:     "Refactor the authentication module to use OAuth2",
 			expectNavigator: true,
 		},
 	}
@@ -1754,5 +1754,104 @@ func TestSuppressProgressLogs(t *testing.T) {
 	runner.SuppressProgressLogs(false)
 	if runner.suppressProgressLogs {
 		t.Error("suppressProgressLogs should be false after SuppressProgressLogs(false)")
+	}
+}
+
+// Test decomposition wiring in runner (GH-218)
+func TestRunner_SetDecomposer(t *testing.T) {
+	runner := NewRunner()
+
+	// Initially no decomposer
+	if runner.decomposer != nil {
+		t.Error("Expected decomposer to be nil initially")
+	}
+
+	// Set decomposer
+	config := &DecomposeConfig{
+		Enabled:             true,
+		MinComplexity:       "complex",
+		MaxSubtasks:         5,
+		MinDescriptionWords: 50,
+	}
+	decomposer := NewTaskDecomposer(config)
+	runner.SetDecomposer(decomposer)
+
+	if runner.decomposer == nil {
+		t.Error("Expected decomposer to be set")
+	}
+	if runner.decomposer != decomposer {
+		t.Error("Expected decomposer to be the one we set")
+	}
+}
+
+func TestRunner_EnableDecomposition(t *testing.T) {
+	runner := NewRunner()
+
+	// Enable with nil config - should use defaults with enabled=true
+	runner.EnableDecomposition(nil)
+
+	if runner.decomposer == nil {
+		t.Error("Expected decomposer to be created")
+	}
+
+	// Enable with custom config
+	runner2 := NewRunner()
+	config := &DecomposeConfig{
+		Enabled:             true,
+		MinComplexity:       "medium",
+		MaxSubtasks:         3,
+		MinDescriptionWords: 20,
+	}
+	runner2.EnableDecomposition(config)
+
+	if runner2.decomposer == nil {
+		t.Error("Expected decomposer to be created with custom config")
+	}
+}
+
+func TestNewRunnerWithConfig_Decompose(t *testing.T) {
+	// Test that NewRunnerWithConfig wires decomposer from config
+	config := &BackendConfig{
+		Type: "claude-code",
+		ClaudeCode: &ClaudeCodeConfig{
+			Command: "claude",
+		},
+		Decompose: &DecomposeConfig{
+			Enabled:             true,
+			MinComplexity:       "complex",
+			MaxSubtasks:         5,
+			MinDescriptionWords: 50,
+		},
+	}
+
+	runner, err := NewRunnerWithConfig(config)
+	if err != nil {
+		t.Fatalf("NewRunnerWithConfig failed: %v", err)
+	}
+
+	if runner.decomposer == nil {
+		t.Error("Expected decomposer to be wired from config")
+	}
+}
+
+func TestNewRunnerWithConfig_DecomposeDisabled(t *testing.T) {
+	// Test that disabled decompose config doesn't create decomposer
+	config := &BackendConfig{
+		Type: "claude-code",
+		ClaudeCode: &ClaudeCodeConfig{
+			Command: "claude",
+		},
+		Decompose: &DecomposeConfig{
+			Enabled: false, // Disabled
+		},
+	}
+
+	runner, err := NewRunnerWithConfig(config)
+	if err != nil {
+		t.Fatalf("NewRunnerWithConfig failed: %v", err)
+	}
+
+	if runner.decomposer != nil {
+		t.Error("Expected decomposer to be nil when disabled in config")
 	}
 }

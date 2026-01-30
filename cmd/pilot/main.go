@@ -379,6 +379,17 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 		logging.WithComponent("start").Info("quality gates enabled for polling mode")
 	}
 
+	// Set up task decomposition if configured (GH-218)
+	if cfg.Executor != nil && cfg.Executor.Decompose != nil && cfg.Executor.Decompose.Enabled {
+		runner.SetDecomposer(executor.NewTaskDecomposer(cfg.Executor.Decompose))
+		logging.WithComponent("start").Info("task decomposition enabled for polling mode")
+	}
+
+	// Set up model routing if configured (GH-215)
+	if cfg.Executor != nil {
+		runner.SetModelRouter(executor.NewModelRouter(cfg.Executor.ModelRouting, cfg.Executor.Timeout))
+	}
+
 	// Create autopilot controller if enabled
 	var autopilotController *autopilot.Controller
 	if cfg.Orchestrator.Autopilot != nil && cfg.Orchestrator.Autopilot.Enabled {
@@ -1499,24 +1510,38 @@ Examples:
 			// Create the executor runner
 			runner := executor.NewRunner()
 
-			// Set up quality gates if configured
+			// Set up quality gates and decomposition if configured
 			{
 				configPath := cfgFile
 				if configPath == "" {
 					configPath = config.DefaultConfigPath()
 				}
 				cfg, err := config.Load(configPath)
-				if err == nil && cfg.Quality != nil && cfg.Quality.Enabled {
-					runner.SetQualityCheckerFactory(func(taskID, projectPath string) executor.QualityChecker {
-						return &qualityCheckerWrapper{
-							executor: quality.NewExecutor(&quality.ExecutorConfig{
-								Config:      cfg.Quality,
-								ProjectPath: projectPath,
-								TaskID:      taskID,
-							}),
-						}
-					})
-					fmt.Println("   Quality:   ✓ gates enabled")
+				if err == nil {
+					// Quality gates (GH-207)
+					if cfg.Quality != nil && cfg.Quality.Enabled {
+						runner.SetQualityCheckerFactory(func(taskID, projectPath string) executor.QualityChecker {
+							return &qualityCheckerWrapper{
+								executor: quality.NewExecutor(&quality.ExecutorConfig{
+									Config:      cfg.Quality,
+									ProjectPath: projectPath,
+									TaskID:      taskID,
+								}),
+							}
+						})
+						fmt.Println("   Quality:   ✓ gates enabled")
+					}
+
+					// Task decomposition (GH-218)
+					if cfg.Executor != nil && cfg.Executor.Decompose != nil && cfg.Executor.Decompose.Enabled {
+						runner.SetDecomposer(executor.NewTaskDecomposer(cfg.Executor.Decompose))
+						fmt.Println("   Decompose: ✓ enabled")
+					}
+
+					// Model routing (GH-215)
+					if cfg.Executor != nil {
+						runner.SetModelRouter(executor.NewModelRouter(cfg.Executor.ModelRouting, cfg.Executor.Timeout))
+					}
 				}
 			}
 
