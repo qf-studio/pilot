@@ -742,14 +742,14 @@ func TestParseTaskFileNonExistent(t *testing.T) {
 // TestVoiceNotAvailableMessage tests the voice setup error message
 func TestVoiceNotAvailableMessage(t *testing.T) {
 	tests := []struct {
-		name           string
+		name             string
 		transcriptionErr error
-		wantContains   []string
+		wantContains     []string
 	}{
 		{
-			name:           "no error set",
+			name:             "no error set",
 			transcriptionErr: nil,
-			wantContains:   []string{"Voice transcription not available", "openai_api_key"},
+			wantContains:     []string{"Voice transcription not available", "openai_api_key"},
 		},
 	}
 
@@ -937,28 +937,28 @@ func TestTryFastAnswer(t *testing.T) {
 	}
 
 	tests := []struct {
-		name     string
-		question string
+		name      string
+		question  string
 		wantEmpty bool
 	}{
 		{
-			name:     "tasks question",
-			question: "what tasks are there",
+			name:      "tasks question",
+			question:  "what tasks are there",
 			wantEmpty: true, // No tasks dir, so returns empty
 		},
 		{
-			name:     "status question",
-			question: "what is the current status",
+			name:      "status question",
+			question:  "what is the current status",
 			wantEmpty: true, // No readme, so returns empty
 		},
 		{
-			name:     "todos question",
-			question: "show me all todos",
+			name:      "todos question",
+			question:  "show me all todos",
 			wantEmpty: false, // Returns "No TODOs" message
 		},
 		{
-			name:     "unrelated question",
-			question: "how do I run tests",
+			name:      "unrelated question",
+			question:  "how do I run tests",
 			wantEmpty: true, // Falls back to Claude
 		},
 	}
@@ -1396,7 +1396,7 @@ func TestResolveTaskIDWithVariousFormats(t *testing.T) {
 		{"05", false},
 		{"task-5", false},
 		{"TASK-5", false},
-		{" 5 ", false},  // with whitespace
+		{" 5 ", false}, // with whitespace
 		{"task 5", false},
 	}
 
@@ -1451,7 +1451,7 @@ func TestResolveTaskFromDescriptionVariations(t *testing.T) {
 		{"run task 03", false},
 		{"start task-03", false},
 		{"do 3", false},
-		{"please help with something", true},  // no task reference
+		{"please help with something", true}, // no task reference
 	}
 
 	for _, tt := range tests {

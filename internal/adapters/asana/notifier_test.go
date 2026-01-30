@@ -68,7 +68,7 @@ func TestNotifyTaskStarted(t *testing.T) {
 
 func TestNotifyProgress(t *testing.T) {
 	tests := []struct {
-		phase    string
+		phase     string
 		wantEmoji string
 	}{
 		{"exploring", "🔍"},

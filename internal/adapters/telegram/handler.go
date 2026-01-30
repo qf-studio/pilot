@@ -1443,4 +1443,3 @@ func (h *Handler) sendVoiceSetupPrompt(ctx context.Context, chatID string) {
 
 	_, _ = h.client.SendMessageWithKeyboard(ctx, chatID, sb.String(), "", buttons)
 }
-

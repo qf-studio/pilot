@@ -490,9 +490,9 @@ func TestCloudflareProviderSetupLogicBranches(t *testing.T) {
 func TestCloudflareProviderStartBranches(t *testing.T) {
 	// Test Start with existing process (already running case)
 	p := &CloudflareProvider{
-		config:   &Config{},
-		url:      "https://existing.example.com",
-		logger:   slog.Default(),
+		config: &Config{},
+		url:    "https://existing.example.com",
+		logger: slog.Default(),
 	}
 
 	// Simulate already running by having URL set

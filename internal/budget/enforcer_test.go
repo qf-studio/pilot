@@ -373,39 +373,39 @@ func TestEnforcer_GetPerTaskLimits(t *testing.T) {
 
 func TestEnforcer_ResetDaily(t *testing.T) {
 	tests := []struct {
-		name             string
-		setupPause       bool
-		pauseReason      string
-		expectedResumed  bool
-		expectedBlocked  int
+		name            string
+		setupPause      bool
+		pauseReason     string
+		expectedResumed bool
+		expectedBlocked int
 	}{
 		{
-			name:             "resets blocked counter when not paused",
-			setupPause:       false,
-			pauseReason:      "",
-			expectedResumed:  true,
-			expectedBlocked:  0,
+			name:            "resets blocked counter when not paused",
+			setupPause:      false,
+			pauseReason:     "",
+			expectedResumed: true,
+			expectedBlocked: 0,
 		},
 		{
-			name:             "resumes if paused due to daily budget exceeded",
-			setupPause:       true,
-			pauseReason:      "Daily budget exceeded",
-			expectedResumed:  true,
-			expectedBlocked:  0,
+			name:            "resumes if paused due to daily budget exceeded",
+			setupPause:      true,
+			pauseReason:     "Daily budget exceeded",
+			expectedResumed: true,
+			expectedBlocked: 0,
 		},
 		{
-			name:             "stays paused if paused for other reason",
-			setupPause:       true,
-			pauseReason:      "Monthly budget exceeded",
-			expectedResumed:  false,
-			expectedBlocked:  0,
+			name:            "stays paused if paused for other reason",
+			setupPause:      true,
+			pauseReason:     "Monthly budget exceeded",
+			expectedResumed: false,
+			expectedBlocked: 0,
 		},
 		{
-			name:             "stays paused if paused manually",
-			setupPause:       true,
-			pauseReason:      "manual pause",
-			expectedResumed:  false,
-			expectedBlocked:  0,
+			name:            "stays paused if paused manually",
+			setupPause:      true,
+			pauseReason:     "manual pause",
+			expectedResumed: false,
+			expectedBlocked: 0,
 		},
 	}
 
@@ -508,11 +508,11 @@ func TestEnforcer_GetConfig(t *testing.T) {
 
 func TestEnforcer_OnAlert(t *testing.T) {
 	tests := []struct {
-		name          string
-		dailyCost     float64
-		monthlyCost   float64
-		warnPercent   float64
-		expectAlerts  []string
+		name         string
+		dailyCost    float64
+		monthlyCost  float64
+		warnPercent  float64
+		expectAlerts []string
 	}{
 		{
 			name:         "daily warning alert",

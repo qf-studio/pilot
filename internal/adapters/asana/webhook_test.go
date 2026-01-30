@@ -465,8 +465,8 @@ func TestParseEvent(t *testing.T) {
 			"resource_type": "project",
 		},
 		"change": map[string]interface{}{
-			"field":  "completed",
-			"action": "changed",
+			"field":     "completed",
+			"action":    "changed",
 			"new_value": true,
 		},
 	}

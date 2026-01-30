@@ -129,11 +129,11 @@ func TestExecutor_Check_Failing(t *testing.T) {
 
 func TestExecutor_CheckWithAttempt(t *testing.T) {
 	tests := []struct {
-		name          string
-		attempt       int
-		maxRetries    int
-		shouldRetry   bool
-		gatePasses    bool
+		name        string
+		attempt     int
+		maxRetries  int
+		shouldRetry bool
+		gatePasses  bool
 	}{
 		{
 			name:        "first attempt failure should retry",
@@ -268,12 +268,12 @@ func TestExecutor_OnProgress(t *testing.T) {
 
 func TestGenerateReport(t *testing.T) {
 	tests := []struct {
-		name           string
-		results        *CheckResults
-		attempt        int
-		expectPassed   bool
-		expectSummary  string
-		expectGateLen  int
+		name          string
+		results       *CheckResults
+		attempt       int
+		expectPassed  bool
+		expectSummary string
+		expectGateLen int
 	}{
 		{
 			name: "all passed",

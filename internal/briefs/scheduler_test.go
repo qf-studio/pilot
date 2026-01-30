@@ -37,10 +37,10 @@ func TestNewScheduler(t *testing.T) {
 	defer cleanup()
 
 	tests := []struct {
-		name     string
-		config   *BriefConfig
-		logger   *slog.Logger
-		wantTz   string
+		name   string
+		config *BriefConfig
+		logger *slog.Logger
+		wantTz string
 	}{
 		{
 			name: "valid timezone",

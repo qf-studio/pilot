@@ -180,8 +180,8 @@ func TestIsTask(t *testing.T) {
 		{"remove unused imports", true},
 		{"please create a file", true},
 		{"can you add a test", true},
-		{"i need fix for this", true},  // "i need <action>" pattern
-		{"i want update docs", true},   // "i want <action>" pattern
+		{"i need fix for this", true}, // "i need <action>" pattern
+		{"i want update docs", true},  // "i want <action>" pattern
 		{"hello world", false},
 		{"what is this", false},
 		{"show me the code", false},
@@ -234,8 +234,8 @@ func TestContainsActionWord(t *testing.T) {
 		// With prefixes
 		{"please create a file", true},
 		{"can you add a test", true},
-		{"i need fix for this", true},      // "i need <action>" pattern (no "to" between)
-		{"i want update the docs", true},   // "i want <action>" pattern (no "to" between)
+		{"i need fix for this", true},    // "i need <action>" pattern (no "to" between)
+		{"i want update the docs", true}, // "i want <action>" pattern (no "to" between)
 		// Non-action messages
 		{"hello", false},
 		{"what is this", false},
@@ -464,10 +464,10 @@ func TestShortMessages(t *testing.T) {
 	}{
 		{"hi", IntentGreeting},
 		{"yo", IntentGreeting},
-		{"07", IntentTask},       // task reference
-		{"#5", IntentTask},       // issue reference
-		{"fix", IntentTask},      // action word
-		{"?", IntentQuestion},    // question mark triggers question
+		{"07", IntentTask},    // task reference
+		{"#5", IntentTask},    // issue reference
+		{"fix", IntentTask},   // action word
+		{"?", IntentQuestion}, // question mark triggers question
 	}
 
 	for _, tt := range tests {

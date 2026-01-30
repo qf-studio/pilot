@@ -6,20 +6,20 @@ import (
 
 // Recording represents a complete execution recording
 type Recording struct {
-	ID           string         `json:"id"`
-	TaskID       string         `json:"task_id"`
-	ProjectPath  string         `json:"project_path"`
-	StartTime    time.Time      `json:"start_time"`
-	EndTime      time.Time      `json:"end_time"`
-	Duration     time.Duration  `json:"duration"`
-	Status       string         `json:"status"` // "completed", "failed", "cancelled"
-	EventCount   int            `json:"event_count"`
-	StreamPath   string         `json:"stream_path"`   // Path to .jsonl file
-	DiffsPath    string         `json:"diffs_path"`    // Path to diffs directory
-	SummaryPath  string         `json:"summary_path"`  // Path to summary.md
-	Metadata     *Metadata      `json:"metadata"`
-	TokenUsage   *TokenUsage    `json:"token_usage,omitempty"`
-	PhaseTimings []PhaseTiming  `json:"phase_timings,omitempty"`
+	ID           string        `json:"id"`
+	TaskID       string        `json:"task_id"`
+	ProjectPath  string        `json:"project_path"`
+	StartTime    time.Time     `json:"start_time"`
+	EndTime      time.Time     `json:"end_time"`
+	Duration     time.Duration `json:"duration"`
+	Status       string        `json:"status"` // "completed", "failed", "cancelled"
+	EventCount   int           `json:"event_count"`
+	StreamPath   string        `json:"stream_path"`  // Path to .jsonl file
+	DiffsPath    string        `json:"diffs_path"`   // Path to diffs directory
+	SummaryPath  string        `json:"summary_path"` // Path to summary.md
+	Metadata     *Metadata     `json:"metadata"`
+	TokenUsage   *TokenUsage   `json:"token_usage,omitempty"`
+	PhaseTimings []PhaseTiming `json:"phase_timings,omitempty"`
 }
 
 // Metadata holds task metadata for the recording
@@ -51,26 +51,26 @@ type PhaseTiming struct {
 
 // StreamEvent is a timestamped event from the execution stream
 type StreamEvent struct {
-	Timestamp time.Time       `json:"timestamp"`
-	Sequence  int             `json:"sequence"`
-	Raw       string          `json:"raw"`  // Original JSON line
-	Type      string          `json:"type"` // Parsed event type
-	Parsed    *ParsedEvent    `json:"parsed,omitempty"`
+	Timestamp time.Time    `json:"timestamp"`
+	Sequence  int          `json:"sequence"`
+	Raw       string       `json:"raw"`  // Original JSON line
+	Type      string       `json:"type"` // Parsed event type
+	Parsed    *ParsedEvent `json:"parsed,omitempty"`
 }
 
 // ParsedEvent contains structured data from stream events
 type ParsedEvent struct {
-	Type          string            `json:"type"`
-	Subtype       string            `json:"subtype,omitempty"`
-	ToolName      string            `json:"tool_name,omitempty"`
-	ToolInput     map[string]any    `json:"tool_input,omitempty"`
-	Text          string            `json:"text,omitempty"`
-	Result        string            `json:"result,omitempty"`
-	IsError       bool              `json:"is_error,omitempty"`
-	InputTokens   int64             `json:"input_tokens,omitempty"`
-	OutputTokens  int64             `json:"output_tokens,omitempty"`
-	FilePath      string            `json:"file_path,omitempty"` // For file operations
-	FileOperation string            `json:"file_operation,omitempty"` // read, write, edit
+	Type          string         `json:"type"`
+	Subtype       string         `json:"subtype,omitempty"`
+	ToolName      string         `json:"tool_name,omitempty"`
+	ToolInput     map[string]any `json:"tool_input,omitempty"`
+	Text          string         `json:"text,omitempty"`
+	Result        string         `json:"result,omitempty"`
+	IsError       bool           `json:"is_error,omitempty"`
+	InputTokens   int64          `json:"input_tokens,omitempty"`
+	OutputTokens  int64          `json:"output_tokens,omitempty"`
+	FilePath      string         `json:"file_path,omitempty"`      // For file operations
+	FileOperation string         `json:"file_operation,omitempty"` // read, write, edit
 }
 
 // FileDiff represents a file change during execution
@@ -104,12 +104,12 @@ type RecordingSummary struct {
 
 // AnalysisReport provides detailed analysis of a recording
 type AnalysisReport struct {
-	Recording      *Recording           `json:"recording"`
-	TokenBreakdown TokenBreakdown       `json:"token_breakdown"`
-	PhaseAnalysis  []PhaseAnalysis      `json:"phase_analysis"`
-	ToolUsage      []ToolUsageStats     `json:"tool_usage"`
-	Errors         []ErrorEvent         `json:"errors"`
-	DecisionPoints []DecisionPoint      `json:"decision_points"`
+	Recording      *Recording       `json:"recording"`
+	TokenBreakdown TokenBreakdown   `json:"token_breakdown"`
+	PhaseAnalysis  []PhaseAnalysis  `json:"phase_analysis"`
+	ToolUsage      []ToolUsageStats `json:"tool_usage"`
+	Errors         []ErrorEvent     `json:"errors"`
+	DecisionPoints []DecisionPoint  `json:"decision_points"`
 }
 
 // TokenBreakdown shows token usage by category
@@ -121,12 +121,12 @@ type TokenBreakdown struct {
 
 // PhaseAnalysis provides insights into each phase
 type PhaseAnalysis struct {
-	Phase        string          `json:"phase"`
-	Duration     time.Duration   `json:"duration"`
-	Percentage   float64         `json:"percentage"` // Of total time
-	EventCount   int             `json:"event_count"`
-	ToolsUsed    []string        `json:"tools_used"`
-	FilesChanged int             `json:"files_changed"`
+	Phase        string        `json:"phase"`
+	Duration     time.Duration `json:"duration"`
+	Percentage   float64       `json:"percentage"` // Of total time
+	EventCount   int           `json:"event_count"`
+	ToolsUsed    []string      `json:"tools_used"`
+	FilesChanged int           `json:"files_changed"`
 }
 
 // ToolUsageStats tracks usage of individual tools
@@ -159,13 +159,13 @@ type DecisionPoint struct {
 
 // ReplayOptions configures replay behavior
 type ReplayOptions struct {
-	StartAt     int           // Start from this event sequence
-	StopAt      int           // Stop at this event sequence (0 = end)
-	Speed       float64       // Playback speed multiplier (1.0 = real-time)
-	ShowTools   bool          // Show tool calls
-	ShowText    bool          // Show assistant text
-	ShowResults bool          // Show tool results
-	Verbose     bool          // Show all event details
+	StartAt     int     // Start from this event sequence
+	StopAt      int     // Stop at this event sequence (0 = end)
+	Speed       float64 // Playback speed multiplier (1.0 = real-time)
+	ShowTools   bool    // Show tool calls
+	ShowText    bool    // Show assistant text
+	ShowResults bool    // Show tool results
+	Verbose     bool    // Show all event details
 }
 
 // DefaultReplayOptions returns default replay options

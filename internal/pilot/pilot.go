@@ -22,14 +22,14 @@ import (
 
 // Pilot is the main application
 type Pilot struct {
-	config       *config.Config
-	gateway      *gateway.Server
-	orchestrator *orchestrator.Orchestrator
-	linearClient *linear.Client
-	linearWH     *linear.WebhookHandler
-	githubClient *github.Client
-	githubWH     *github.WebhookHandler
-	githubNotify *github.Notifier
+	config         *config.Config
+	gateway        *gateway.Server
+	orchestrator   *orchestrator.Orchestrator
+	linearClient   *linear.Client
+	linearWH       *linear.WebhookHandler
+	githubClient   *github.Client
+	githubWH       *github.WebhookHandler
+	githubNotify   *github.Notifier
 	slackNotify    *slack.Notifier
 	slackClient    *slack.Client
 	telegramClient *telegram.Client

@@ -14,8 +14,8 @@ import (
 
 // mockTelegramServer creates a test server that captures sent messages
 type mockTelegramServer struct {
-	server       *httptest.Server
-	sentMessages []string
+	server        *httptest.Server
+	sentMessages  []string
 	sentKeyboards [][]InlineKeyboardButton
 }
 
@@ -90,9 +90,9 @@ func TestCommandHandler_HandleStatus(t *testing.T) {
 	cmd := NewCommandHandler(h, nil)
 
 	tests := []struct {
-		name        string
-		setupFunc   func()
-		chatID      string
+		name      string
+		setupFunc func()
+		chatID    string
 	}{
 		{
 			name:   "no running tasks",
@@ -330,9 +330,9 @@ func TestCommandHandler_HandleSwitch(t *testing.T) {
 	cmd := NewCommandHandler(h, nil)
 
 	tests := []struct {
-		name        string
-		command     string
-		wantPath    string
+		name     string
+		command  string
+		wantPath string
 	}{
 		{
 			name:     "switch to existing project",

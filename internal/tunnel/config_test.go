@@ -60,7 +60,7 @@ func TestConfigStructValues(t *testing.T) {
 			},
 		},
 		{
-			name: "zero value config",
+			name:   "zero value config",
 			config: Config{},
 		},
 	}

@@ -692,19 +692,19 @@ func TestGetProjectByName(t *testing.T) {
 			wantNil:  false,
 		},
 		{
-			name:    "NonexistentProject",
+			name:     "NonexistentProject",
 			projName: "nonexistent",
-			wantNil: true,
+			wantNil:  true,
 		},
 		{
-			name:    "EmptyName",
+			name:     "EmptyName",
 			projName: "",
-			wantNil: true,
+			wantNil:  true,
 		},
 		{
-			name:    "PartialNameMatch",
+			name:     "PartialNameMatch",
 			projName: "My", // Should not match MyProject
-			wantNil: true,
+			wantNil:  true,
 		},
 	}
 
@@ -729,10 +729,10 @@ func TestGetProjectByName(t *testing.T) {
 
 func TestGetDefaultProject(t *testing.T) {
 	tests := []struct {
-		name           string
-		config         *Config
-		wantName       string
-		wantNil        bool
+		name     string
+		config   *Config
+		wantName string
+		wantNil  bool
 	}{
 		{
 			name: "DefaultProjectSet",

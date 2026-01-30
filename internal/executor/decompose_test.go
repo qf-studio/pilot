@@ -348,13 +348,13 @@ Step 3: Finish up`,
 			expected: 3,
 		},
 		{
-			name: "no numbered items",
-			text: "Just some plain text without numbers",
+			name:     "no numbered items",
+			text:     "Just some plain text without numbers",
 			expected: 0,
 		},
 		{
-			name: "single item",
-			text: "1. Only one item",
+			name:     "single item",
+			text:     "1. Only one item",
 			expected: 0, // Need at least 2
 		},
 	}
@@ -396,8 +396,8 @@ func TestExtractBulletPoints(t *testing.T) {
 			expected: 2, // Only uncompleted items
 		},
 		{
-			name: "no bullets",
-			text: "Just plain text",
+			name:     "no bullets",
+			text:     "Just plain text",
 			expected: 0,
 		},
 	}
@@ -433,8 +433,8 @@ func TestExtractAcceptanceCriteria(t *testing.T) {
 			expected: 2,
 		},
 		{
-			name: "no criteria",
-			text: "No acceptance criteria here",
+			name:     "no criteria",
+			text:     "No acceptance criteria here",
 			expected: 0,
 		},
 	}

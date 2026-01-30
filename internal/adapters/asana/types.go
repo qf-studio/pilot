@@ -6,10 +6,10 @@ import "time"
 // Config holds Asana adapter configuration
 type Config struct {
 	Enabled       bool   `yaml:"enabled"`
-	AccessToken   string `yaml:"access_token"`    // Personal access token or OAuth token
-	WorkspaceID   string `yaml:"workspace_id"`    // Asana workspace GID
-	WebhookSecret string `yaml:"webhook_secret"`  // For X-Hook-Secret verification
-	PilotTag      string `yaml:"pilot_tag"`       // Tag name that triggers Pilot (default: "pilot")
+	AccessToken   string `yaml:"access_token"`   // Personal access token or OAuth token
+	WorkspaceID   string `yaml:"workspace_id"`   // Asana workspace GID
+	WebhookSecret string `yaml:"webhook_secret"` // For X-Hook-Secret verification
+	PilotTag      string `yaml:"pilot_tag"`      // Tag name that triggers Pilot (default: "pilot")
 }
 
 // DefaultConfig returns default Asana configuration
@@ -66,25 +66,25 @@ func PriorityName(priority Priority) string {
 
 // Task represents an Asana task
 type Task struct {
-	GID          string     `json:"gid"`
-	Name         string     `json:"name"`
-	Notes        string     `json:"notes"`
-	HTMLNotes    string     `json:"html_notes,omitempty"`
-	Completed    bool       `json:"completed"`
-	CompletedAt  *time.Time `json:"completed_at,omitempty"`
-	Assignee     *User      `json:"assignee,omitempty"`
-	AssigneeSection *Section `json:"assignee_section,omitempty"`
-	Projects     []Project  `json:"projects,omitempty"`
-	Tags         []Tag      `json:"tags,omitempty"`
-	Workspace    *Workspace `json:"workspace,omitempty"`
-	Parent       *Task      `json:"parent,omitempty"`
-	CreatedAt    time.Time  `json:"created_at"`
-	ModifiedAt   time.Time  `json:"modified_at"`
-	DueOn        string     `json:"due_on,omitempty"`
-	DueAt        *time.Time `json:"due_at,omitempty"`
-	StartOn      string     `json:"start_on,omitempty"`
-	Permalink    string     `json:"permalink_url,omitempty"`
-	ResourceType string     `json:"resource_type"`
+	GID             string     `json:"gid"`
+	Name            string     `json:"name"`
+	Notes           string     `json:"notes"`
+	HTMLNotes       string     `json:"html_notes,omitempty"`
+	Completed       bool       `json:"completed"`
+	CompletedAt     *time.Time `json:"completed_at,omitempty"`
+	Assignee        *User      `json:"assignee,omitempty"`
+	AssigneeSection *Section   `json:"assignee_section,omitempty"`
+	Projects        []Project  `json:"projects,omitempty"`
+	Tags            []Tag      `json:"tags,omitempty"`
+	Workspace       *Workspace `json:"workspace,omitempty"`
+	Parent          *Task      `json:"parent,omitempty"`
+	CreatedAt       time.Time  `json:"created_at"`
+	ModifiedAt      time.Time  `json:"modified_at"`
+	DueOn           string     `json:"due_on,omitempty"`
+	DueAt           *time.Time `json:"due_at,omitempty"`
+	StartOn         string     `json:"start_on,omitempty"`
+	Permalink       string     `json:"permalink_url,omitempty"`
+	ResourceType    string     `json:"resource_type"`
 }
 
 // User represents an Asana user
@@ -149,8 +149,8 @@ type Attachment struct {
 
 // APIResponse wraps all Asana API responses
 type APIResponse[T any] struct {
-	Data   T           `json:"data"`
-	Errors []APIError  `json:"errors,omitempty"`
+	Data   T          `json:"data"`
+	Errors []APIError `json:"errors,omitempty"`
 }
 
 // APIError represents an Asana API error
@@ -193,12 +193,12 @@ type WebhookPayload struct {
 
 // WebhookEvent represents a single event in the webhook payload
 type WebhookEvent struct {
-	Action   string          `json:"action"`   // "added", "changed", "removed", "deleted", "undeleted"
-	User     *User           `json:"user"`     // User who triggered the event
-	Resource WebhookResource `json:"resource"` // The resource that changed
-	Parent   *WebhookResource `json:"parent,omitempty"` // Parent resource (for subtasks, stories, etc.)
-	Change   *WebhookChange  `json:"change,omitempty"` // Details about what changed
-	CreatedAt time.Time      `json:"created_at"`
+	Action    string           `json:"action"`           // "added", "changed", "removed", "deleted", "undeleted"
+	User      *User            `json:"user"`             // User who triggered the event
+	Resource  WebhookResource  `json:"resource"`         // The resource that changed
+	Parent    *WebhookResource `json:"parent,omitempty"` // Parent resource (for subtasks, stories, etc.)
+	Change    *WebhookChange   `json:"change,omitempty"` // Details about what changed
+	CreatedAt time.Time        `json:"created_at"`
 }
 
 // WebhookResource represents the resource in a webhook event
@@ -210,20 +210,20 @@ type WebhookResource struct {
 
 // WebhookChange represents what changed in an event
 type WebhookChange struct {
-	Field     string      `json:"field"`
-	Action    string      `json:"action"`
-	AddedValue  interface{} `json:"added_value,omitempty"`
+	Field        string      `json:"field"`
+	Action       string      `json:"action"`
+	AddedValue   interface{} `json:"added_value,omitempty"`
 	RemovedValue interface{} `json:"removed_value,omitempty"`
-	NewValue   interface{} `json:"new_value,omitempty"`
+	NewValue     interface{} `json:"new_value,omitempty"`
 }
 
 // WebhookRegistration represents a webhook subscription
 type WebhookRegistration struct {
-	GID        string    `json:"gid"`
-	Resource   Resource  `json:"resource"`
-	Target     string    `json:"target"`
-	Active     bool      `json:"active"`
-	CreatedAt  time.Time `json:"created_at"`
+	GID           string     `json:"gid"`
+	Resource      Resource   `json:"resource"`
+	Target        string     `json:"target"`
+	Active        bool       `json:"active"`
+	CreatedAt     time.Time  `json:"created_at"`
 	LastFailureAt *time.Time `json:"last_failure_at,omitempty"`
 	LastSuccessAt *time.Time `json:"last_success_at,omitempty"`
 }
@@ -237,7 +237,7 @@ type Resource struct {
 
 // TaskInfo represents the normalized task information for Pilot
 type TaskInfo struct {
-	ID          string   // "ASANA-{gid}"
+	ID          string // "ASANA-{gid}"
 	Title       string
 	Description string
 	Priority    Priority

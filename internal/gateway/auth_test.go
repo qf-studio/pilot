@@ -221,9 +221,9 @@ func TestIsLocalRequest(t *testing.T) {
 
 func TestExtractBearerToken(t *testing.T) {
 	tests := []struct {
-		name      string
-		header    string
-		expected  string
+		name     string
+		header   string
+		expected string
 	}{
 		{
 			name:     "valid Bearer token",

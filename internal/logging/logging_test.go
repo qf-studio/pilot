@@ -494,11 +494,11 @@ func TestInitWithEmptyOutput(t *testing.T) {
 
 func TestLogLevelsFiltering(t *testing.T) {
 	tests := []struct {
-		name          string
-		configLevel   string
-		logLevel      string
-		logFunc       func(string, ...any)
-		shouldAppear  bool
+		name         string
+		configLevel  string
+		logLevel     string
+		logFunc      func(string, ...any)
+		shouldAppear bool
 	}{
 		{"info config allows info", "info", "INFO", Info, true},
 		{"info config allows warn", "info", "WARN", Warn, true},

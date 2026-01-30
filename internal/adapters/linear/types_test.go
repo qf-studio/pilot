@@ -37,9 +37,9 @@ func TestPriorityName(t *testing.T) {
 		{PriorityHigh, "High"},
 		{PriorityMedium, "Medium"},
 		{PriorityLow, "Low"},
-		{-1, "No Priority"},    // Unknown negative
-		{5, "No Priority"},     // Unknown positive
-		{100, "No Priority"},   // Out of range
+		{-1, "No Priority"},  // Unknown negative
+		{5, "No Priority"},   // Unknown positive
+		{100, "No Priority"}, // Out of range
 	}
 
 	for _, tt := range tests {

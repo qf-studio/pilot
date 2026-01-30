@@ -16,18 +16,18 @@ import (
 
 // Recorder captures execution events for later replay
 type Recorder struct {
-	id          string
-	taskID      string
-	projectPath string
-	basePath    string // ~/.pilot/recordings
-	recording   *Recording
-	streamFile  *os.File
-	diffFiles   map[string]*FileDiff // Track file changes
-	sequence    int
+	id           string
+	taskID       string
+	projectPath  string
+	basePath     string // ~/.pilot/recordings
+	recording    *Recording
+	streamFile   *os.File
+	diffFiles    map[string]*FileDiff // Track file changes
+	sequence     int
 	currentPhase string
-	phaseStart  time.Time
-	mu          sync.Mutex
-	log         *slog.Logger
+	phaseStart   time.Time
+	mu           sync.Mutex
+	log          *slog.Logger
 }
 
 // NewRecorder creates a recorder for a task execution

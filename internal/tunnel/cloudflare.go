@@ -15,10 +15,10 @@ import (
 )
 
 const (
-	cloudflaredBin     = "cloudflared"
-	tunnelName         = "pilot-webhook"
-	defaultTunnelPort  = 9090
-	connectionTimeout  = 30 * time.Second
+	cloudflaredBin    = "cloudflared"
+	tunnelName        = "pilot-webhook"
+	defaultTunnelPort = 9090
+	connectionTimeout = 30 * time.Second
 )
 
 // CloudflareProvider implements the Cloudflare Tunnel provider

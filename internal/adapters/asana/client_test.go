@@ -53,8 +53,8 @@ func TestGetTask(t *testing.T) {
 
 		resp := APIResponse[Task]{
 			Data: Task{
-				GID:  "123456",
-				Name: "Test Task",
+				GID:   "123456",
+				Name:  "Test Task",
 				Notes: "Task description",
 			},
 		}

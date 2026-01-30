@@ -280,9 +280,9 @@ func (a *Analyzer) Analyze() (*AnalysisReport, error) {
 			ByPhase: make(map[string]TokenUsage),
 			ByTool:  make(map[string]TokenUsage),
 		},
-		PhaseAnalysis: make([]PhaseAnalysis, 0),
-		ToolUsage:     make([]ToolUsageStats, 0),
-		Errors:        make([]ErrorEvent, 0),
+		PhaseAnalysis:  make([]PhaseAnalysis, 0),
+		ToolUsage:      make([]ToolUsageStats, 0),
+		Errors:         make([]ErrorEvent, 0),
 		DecisionPoints: make([]DecisionPoint, 0),
 	}
 

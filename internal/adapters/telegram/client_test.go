@@ -227,12 +227,12 @@ func TestClientGetUpdates(t *testing.T) {
 // TestClientSendMessage tests the SendMessage method
 func TestClientSendMessage(t *testing.T) {
 	tests := []struct {
-		name       string
-		chatID     string
-		text       string
-		parseMode  string
-		response   SendMessageResponse
-		wantErr    bool
+		name      string
+		chatID    string
+		text      string
+		parseMode string
+		response  SendMessageResponse
+		wantErr   bool
 	}{
 		{
 			name:      "successful send",

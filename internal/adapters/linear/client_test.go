@@ -631,12 +631,12 @@ func (c *testableClient) execute(ctx context.Context, query string, variables ma
 // issueResponse matches the Linear GraphQL response structure
 type issueResponse struct {
 	Issue struct {
-		ID          string    `json:"id"`
-		Identifier  string    `json:"identifier"`
-		Title       string    `json:"title"`
-		Description string    `json:"description"`
-		Priority    int       `json:"priority"`
-		State       State     `json:"state"`
+		ID          string `json:"id"`
+		Identifier  string `json:"identifier"`
+		Title       string `json:"title"`
+		Description string `json:"description"`
+		Priority    int    `json:"priority"`
+		State       State  `json:"state"`
 		Labels      struct {
 			Nodes []Label `json:"nodes"`
 		} `json:"labels"`

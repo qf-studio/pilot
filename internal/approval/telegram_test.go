@@ -10,14 +10,14 @@ import (
 
 // mockTelegramClient implements TelegramClient for testing
 type mockTelegramClient struct {
-	mu              sync.Mutex
-	sentMessages    []mockSentMessage
-	editedMessages  []mockEditedMessage
-	answeredCbs     []mockAnsweredCallback
-	sendError       error
-	editError       error
-	answerError     error
-	nextMessageID   int64
+	mu             sync.Mutex
+	sentMessages   []mockSentMessage
+	editedMessages []mockEditedMessage
+	answeredCbs    []mockAnsweredCallback
+	sendError      error
+	editError      error
+	answerError    error
+	nextMessageID  int64
 }
 
 type mockSentMessage struct {
@@ -628,9 +628,9 @@ func TestTelegramHandler_FormatApprovalMessage_Stages(t *testing.T) {
 	handler := NewTelegramHandler(client, "chat123")
 
 	tests := []struct {
-		stage       Stage
-		wantIcon    string
-		wantLabel   string
+		stage     Stage
+		wantIcon  string
+		wantLabel string
 	}{
 		{StagePreExecution, "🚀", "Pre-Execution Approval"},
 		{StagePreMerge, "🔀", "Pre-Merge Approval"},
@@ -671,9 +671,9 @@ func TestTelegramHandler_FormatResponseMessage(t *testing.T) {
 	}
 
 	tests := []struct {
-		decision    Decision
-		wantIcon    string
-		wantStatus  string
+		decision   Decision
+		wantIcon   string
+		wantStatus string
 	}{
 		{DecisionApproved, "✅", "APPROVED"},
 		{DecisionRejected, "❌", "REJECTED"},

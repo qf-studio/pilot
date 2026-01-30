@@ -36,12 +36,12 @@ func (m *mockQualityChecker) callCount() int {
 
 // mockBackend implements executor.Backend for testing
 type mockBackend struct {
-	name           string
-	execResults    []*executor.BackendResult // Results to return for each Execute call
-	execIdx        int32
-	execErr        error
+	name            string
+	execResults     []*executor.BackendResult // Results to return for each Execute call
+	execIdx         int32
+	execErr         error
 	capturedPrompts []string // Capture prompts for verification
-	mu             sync.Mutex
+	mu              sync.Mutex
 }
 
 func (m *mockBackend) Name() string {

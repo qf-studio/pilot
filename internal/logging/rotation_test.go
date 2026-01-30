@@ -216,12 +216,12 @@ func TestParseSizeEdgeCases(t *testing.T) {
 		{"0", 0, false},
 		{"0KB", 0, false},
 		{"  100MB  ", 100 * 1024 * 1024, false}, // with whitespace
-		{"1gb", 1024 * 1024 * 1024, false},       // lowercase
-		{"10b", 10, false},                       // bytes lowercase
-		{"", 0, true},                            // empty string
-		{"-1", -1, false},                        // negative (parsing succeeds)
-		{"abc", 0, true},                         // non-numeric
-		{"1.5MB", 0, true},                       // float not supported
+		{"1gb", 1024 * 1024 * 1024, false},      // lowercase
+		{"10b", 10, false},                      // bytes lowercase
+		{"", 0, true},                           // empty string
+		{"-1", -1, false},                       // negative (parsing succeeds)
+		{"abc", 0, true},                        // non-numeric
+		{"1.5MB", 0, true},                      // float not supported
 	}
 
 	for _, tt := range tests {

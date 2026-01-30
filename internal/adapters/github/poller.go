@@ -115,6 +115,7 @@ func WithScheduler(s *executor.Scheduler) PollerOption {
 		p.scheduler = s
 	}
 }
+
 // NewPoller creates a new GitHub issue poller
 func NewPoller(client *Client, repo string, label string, interval time.Duration, opts ...PollerOption) (*Poller, error) {
 	parts := strings.Split(repo, "/")

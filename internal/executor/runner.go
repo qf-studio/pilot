@@ -103,6 +103,9 @@ type Task struct {
 	BaseBranch string
 	// ImagePath is the path to an image file for multimodal analysis tasks (optional).
 	ImagePath string
+	// DirectCommit enables pushing directly to main without branches or PRs.
+	// Requires executor.direct_commit=true in config AND --direct-commit flag.
+	DirectCommit bool
 }
 
 // QualityGateResult represents the result of a single quality gate check.
@@ -485,8 +488,8 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 	// Initialize git operations
 	git := NewGitOperations(task.ProjectPath)
 
-	// Create branch if specified
-	if task.Branch != "" {
+	// Create branch if specified (skip for direct commit mode)
+	if task.Branch != "" && !task.DirectCommit {
 		r.reportProgress(task.ID, "Branching", 5, fmt.Sprintf("Creating branch %s...", task.Branch))
 		if err := git.CreateBranch(ctx, task.Branch); err != nil {
 			// Check if branch already exists - try to switch to it
@@ -965,8 +968,30 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 			)
 		}
 
-		// Create PR if requested and we have commits
-		if task.CreatePR && task.Branch != "" {
+		// Handle direct commit mode: push directly to main
+		if task.DirectCommit {
+			r.reportProgress(task.ID, "Pushing", 96, "Pushing to main...")
+
+			if err := git.PushToMain(ctx); err != nil {
+				result.Success = false
+				result.Error = fmt.Sprintf("push to main failed: %v", err)
+				r.reportProgress(task.ID, "Push Failed", 100, result.Error)
+				return result, nil
+			}
+
+			// Get commit SHA for result
+			sha, _ := git.GetCurrentCommitSHA(ctx)
+			if sha != "" {
+				result.CommitSHA = sha
+			}
+
+			log.Info("Direct commit pushed to main",
+				slog.String("task_id", task.ID),
+				slog.String("commit_sha", result.CommitSHA),
+			)
+			r.reportProgress(task.ID, "Completed", 100, "Pushed directly to main")
+		} else if task.CreatePR && task.Branch != "" {
+			// Create PR if requested and we have commits
 			r.reportProgress(task.ID, "Creating PR", 96, "Pushing branch...")
 
 			// Push branch

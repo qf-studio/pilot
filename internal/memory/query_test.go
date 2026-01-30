@@ -72,9 +72,9 @@ func TestQuery_WithFilters(t *testing.T) {
 	ctx := context.Background()
 
 	tests := []struct {
-		name      string
-		query     *PatternQuery
-		wantMin   int
+		name    string
+		query   *PatternQuery
+		wantMin int
 	}{
 		{
 			name: "filter by type",

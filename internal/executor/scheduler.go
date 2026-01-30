@@ -39,10 +39,10 @@ type Scheduler struct {
 	onExpired ExpiredCallback
 	log       *slog.Logger
 
-	mu       sync.Mutex
-	running  bool
-	stopCh   chan struct{}
-	doneCh   chan struct{}
+	mu      sync.Mutex
+	running bool
+	stopCh  chan struct{}
+	doneCh  chan struct{}
 }
 
 // NewScheduler creates a new retry scheduler

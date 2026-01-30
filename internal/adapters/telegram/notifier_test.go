@@ -361,8 +361,8 @@ func TestConfigFields(t *testing.T) {
 // TestEscapeMarkdownNotifier tests markdown escaping for notifications
 func TestEscapeMarkdownNotifier(t *testing.T) {
 	tests := []struct {
-		input    string
-		wantEsc  []string // substrings that should be escaped
+		input   string
+		wantEsc []string // substrings that should be escaped
 	}{
 		{
 			input:   "hello_world",

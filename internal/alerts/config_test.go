@@ -13,8 +13,8 @@ func TestParseSeverity(t *testing.T) {
 		{"critical", SeverityCritical},
 		{"warning", SeverityWarning},
 		{"info", SeverityInfo},
-		{"unknown", SeverityWarning}, // Default
-		{"", SeverityWarning},        // Default
+		{"unknown", SeverityWarning},  // Default
+		{"", SeverityWarning},         // Default
 		{"CRITICAL", SeverityWarning}, // Case sensitive, defaults
 	}
 

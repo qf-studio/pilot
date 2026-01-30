@@ -573,9 +573,9 @@ func TestGetExecutionsInPeriod(t *testing.T) {
 	t.Logf("Total executions in DB: %d", len(allExecs))
 
 	tests := []struct {
-		name      string
-		query     BriefQuery
-		wantMin   int
+		name    string
+		query   BriefQuery
+		wantMin int
 	}{
 		{
 			name: "all projects",
@@ -671,9 +671,9 @@ func TestProjectSettings(t *testing.T) {
 
 	// Create project with complex settings
 	settings := map[string]interface{}{
-		"theme":       "dark",
-		"autoCommit":  true,
-		"maxTokens":   100000,
+		"theme":        "dark",
+		"autoCommit":   true,
+		"maxTokens":    100000,
 		"excludePaths": []interface{}{"/vendor", "/node_modules"},
 	}
 

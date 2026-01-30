@@ -70,12 +70,12 @@ func TestNewBackendFromType(t *testing.T) {
 		expectError bool
 	}{
 		{
-			name:       "claude-code",
+			name:        "claude-code",
 			backendType: BackendTypeClaudeCode,
 			expectType:  BackendTypeClaudeCode,
 		},
 		{
-			name:       "opencode",
+			name:        "opencode",
 			backendType: BackendTypeOpenCode,
 			expectType:  BackendTypeOpenCode,
 		},

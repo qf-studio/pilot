@@ -25,9 +25,9 @@ type mockProvider struct {
 	stopCalled  bool
 }
 
-func (m *mockProvider) Name() string        { return m.name }
-func (m *mockProvider) IsInstalled() bool   { return m.installed }
-func (m *mockProvider) URL() string         { return m.url }
+func (m *mockProvider) Name() string      { return m.name }
+func (m *mockProvider) IsInstalled() bool { return m.installed }
+func (m *mockProvider) URL() string       { return m.url }
 
 func (m *mockProvider) Setup(ctx context.Context) error {
 	m.setupCalled = true
@@ -61,10 +61,10 @@ func (m *mockProvider) Status(ctx context.Context) (*Status, error) {
 
 func TestNewManager(t *testing.T) {
 	tests := []struct {
-		name      string
-		config    *Config
-		wantErr   bool
-		wantProv  string
+		name     string
+		config   *Config
+		wantErr  bool
+		wantProv string
 	}{
 		{
 			name:     "nil config uses defaults",
@@ -637,11 +637,11 @@ func TestCheckCLI(t *testing.T) {
 
 func TestRunCommand(t *testing.T) {
 	tests := []struct {
-		name      string
-		cmd       string
-		args      []string
-		wantErr   bool
-		contains  string
+		name     string
+		cmd      string
+		args     []string
+		wantErr  bool
+		contains string
 	}{
 		{
 			name:     "echo hello",
