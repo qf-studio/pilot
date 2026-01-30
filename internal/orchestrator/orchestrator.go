@@ -29,14 +29,14 @@ type Orchestrator struct {
 	monitor  *executor.Monitor
 	notifier *slack.Notifier
 
-	taskQueue               chan *Task
-	running                 map[string]bool
-	progressCallback        func(taskID, phase string, progress int, message string)
-	qualityCheckerFactory   executor.QualityCheckerFactory
-	mu                      sync.Mutex
-	wg                      sync.WaitGroup
-	ctx                     context.Context
-	cancel                  context.CancelFunc
+	taskQueue             chan *Task
+	running               map[string]bool
+	progressCallback      func(taskID, phase string, progress int, message string)
+	qualityCheckerFactory executor.QualityCheckerFactory
+	mu                    sync.Mutex
+	wg                    sync.WaitGroup
+	ctx                   context.Context
+	cancel                context.CancelFunc
 }
 
 // Task represents a task to be processed
@@ -138,7 +138,7 @@ func (o *Orchestrator) ProcessTicket(ctx context.Context, issue *linear.Issue, p
 
 // QueueTask adds a task to the processing queue
 func (o *Orchestrator) QueueTask(task *Task) {
-	o.monitor.Register(task.ID, task.Document.Title)
+	o.monitor.Register(task.ID, task.Document.Title, "")
 
 	select {
 	case o.taskQueue <- task:

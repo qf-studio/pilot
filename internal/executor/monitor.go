@@ -30,6 +30,7 @@ type TaskState struct {
 	CompletedAt *time.Time
 	Error       string
 	PRUrl       string
+	IssueURL    string
 }
 
 // Monitor tracks task execution progress
@@ -46,7 +47,7 @@ func NewMonitor() *Monitor {
 }
 
 // Register registers a new task
-func (m *Monitor) Register(taskID, title string) {
+func (m *Monitor) Register(taskID, title, issueURL string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -56,6 +57,7 @@ func (m *Monitor) Register(taskID, title string) {
 		Status:   StatusPending,
 		Phase:    "Pending",
 		Progress: 0,
+		IssueURL: issueURL,
 	}
 }
 

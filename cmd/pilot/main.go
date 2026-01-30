@@ -989,7 +989,7 @@ func handleGitHubIssueWithMonitor(ctx context.Context, cfg *config.Config, clien
 
 	// Register task with monitor if in dashboard mode
 	if monitor != nil {
-		monitor.Register(taskID, issue.Title)
+		monitor.Register(taskID, issue.Title, issue.HTMLURL)
 		monitor.Start(taskID)
 	}
 	if program != nil {
@@ -1026,7 +1026,7 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 
 	// Register task with monitor if in dashboard mode
 	if monitor != nil {
-		monitor.Register(taskID, issue.Title)
+		monitor.Register(taskID, issue.Title, issue.HTMLURL)
 		monitor.Start(taskID)
 	}
 	if program != nil {
@@ -3055,6 +3055,8 @@ func convertTaskStatesToDisplay(states []*executor.TaskState) []dashboard.TaskDi
 			Phase:    state.Phase,
 			Progress: state.Progress,
 			Duration: duration,
+			IssueURL: state.IssueURL,
+			PRURL:    state.PRUrl,
 		}
 	}
 	return displays

@@ -2,6 +2,8 @@ package dashboard
 
 import (
 	"fmt"
+	"os/exec"
+	"runtime"
 	"strings"
 	"time"
 
@@ -148,6 +150,8 @@ type TaskDisplay struct {
 	Phase    string
 	Progress int
 	Duration string
+	IssueURL string
+	PRURL    string
 }
 
 // TokenUsage tracks token consumption
@@ -253,6 +257,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.selectedTask < len(m.tasks)-1 {
 				m.selectedTask++
 			}
+		case "enter":
+			if m.selectedTask >= 0 && m.selectedTask < len(m.tasks) {
+				task := m.tasks[m.selectedTask]
+				if task.IssueURL != "" {
+					_ = openBrowser(task.IssueURL)
+				}
+			}
 		}
 
 	case tea.WindowSizeMsg:
@@ -319,7 +330,7 @@ func (m Model) View() string {
 	}
 
 	// Help
-	b.WriteString(helpStyle.Render("q: quit  l: logs  j/k: select"))
+	b.WriteString(helpStyle.Render("q: quit  l: logs  j/k: select  enter: open"))
 
 	return b.String()
 }
@@ -709,4 +720,20 @@ func Run() error {
 
 	_, err := p.Run()
 	return err
+}
+
+// openBrowser opens the specified URL in the default browser
+func openBrowser(url string) error {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("open", url)
+	case "linux":
+		cmd = exec.Command("xdg-open", url)
+	case "windows":
+		cmd = exec.Command("cmd", "/c", "start", url)
+	default:
+		return fmt.Errorf("unsupported platform: %s", runtime.GOOS)
+	}
+	return cmd.Start()
 }

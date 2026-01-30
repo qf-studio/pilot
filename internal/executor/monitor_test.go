@@ -18,7 +18,7 @@ func TestNewMonitor(t *testing.T) {
 func TestMonitorRegister(t *testing.T) {
 	monitor := NewMonitor()
 
-	monitor.Register("task-1", "Test Task")
+	monitor.Register("task-1", "Test Task", "")
 
 	state, ok := monitor.Get("task-1")
 	if !ok {
@@ -37,7 +37,7 @@ func TestMonitorRegister(t *testing.T) {
 
 func TestMonitorStart(t *testing.T) {
 	monitor := NewMonitor()
-	monitor.Register("task-1", "Test Task")
+	monitor.Register("task-1", "Test Task", "")
 
 	monitor.Start("task-1")
 
@@ -52,7 +52,7 @@ func TestMonitorStart(t *testing.T) {
 
 func TestMonitorUpdateProgress(t *testing.T) {
 	monitor := NewMonitor()
-	monitor.Register("task-1", "Test Task")
+	monitor.Register("task-1", "Test Task", "")
 	monitor.Start("task-1")
 
 	monitor.UpdateProgress("task-1", "IMPL", 50, "Working...")
@@ -71,7 +71,7 @@ func TestMonitorUpdateProgress(t *testing.T) {
 
 func TestMonitorComplete(t *testing.T) {
 	monitor := NewMonitor()
-	monitor.Register("task-1", "Test Task")
+	monitor.Register("task-1", "Test Task", "")
 	monitor.Start("task-1")
 
 	monitor.Complete("task-1", "https://github.com/org/repo/pull/1")
@@ -90,7 +90,7 @@ func TestMonitorComplete(t *testing.T) {
 
 func TestMonitorFail(t *testing.T) {
 	monitor := NewMonitor()
-	monitor.Register("task-1", "Test Task")
+	monitor.Register("task-1", "Test Task", "")
 	monitor.Start("task-1")
 
 	monitor.Fail("task-1", "Something went wrong")
@@ -106,9 +106,9 @@ func TestMonitorFail(t *testing.T) {
 
 func TestMonitorGetAll(t *testing.T) {
 	monitor := NewMonitor()
-	monitor.Register("task-1", "Task 1")
-	monitor.Register("task-2", "Task 2")
-	monitor.Register("task-3", "Task 3")
+	monitor.Register("task-1", "Task 1", "")
+	monitor.Register("task-2", "Task 2", "")
+	monitor.Register("task-3", "Task 3", "")
 
 	all := monitor.GetAll()
 	if len(all) != 3 {
@@ -118,8 +118,8 @@ func TestMonitorGetAll(t *testing.T) {
 
 func TestMonitorGetRunning(t *testing.T) {
 	monitor := NewMonitor()
-	monitor.Register("task-1", "Task 1")
-	monitor.Register("task-2", "Task 2")
+	monitor.Register("task-1", "Task 1", "")
+	monitor.Register("task-2", "Task 2", "")
 	monitor.Start("task-1")
 
 	running := monitor.GetRunning()
@@ -138,8 +138,8 @@ func TestMonitorCount(t *testing.T) {
 		t.Error("Expected count 0 for empty monitor")
 	}
 
-	monitor.Register("task-1", "Task 1")
-	monitor.Register("task-2", "Task 2")
+	monitor.Register("task-1", "Task 1", "")
+	monitor.Register("task-2", "Task 2", "")
 
 	if monitor.Count() != 2 {
 		t.Errorf("Expected count 2, got %d", monitor.Count())
@@ -148,7 +148,7 @@ func TestMonitorCount(t *testing.T) {
 
 func TestMonitorRemove(t *testing.T) {
 	monitor := NewMonitor()
-	monitor.Register("task-1", "Task 1")
+	monitor.Register("task-1", "Task 1", "")
 
 	monitor.Remove("task-1")
 
@@ -160,7 +160,7 @@ func TestMonitorRemove(t *testing.T) {
 
 func TestMonitorCancel(t *testing.T) {
 	monitor := NewMonitor()
-	monitor.Register("task-1", "Test Task")
+	monitor.Register("task-1", "Test Task", "")
 	monitor.Start("task-1")
 
 	monitor.Cancel("task-1")
@@ -211,7 +211,7 @@ func TestMonitorOperationsOnNonexistent(t *testing.T) {
 
 func TestMonitorUpdateProgressEmptyMessage(t *testing.T) {
 	monitor := NewMonitor()
-	monitor.Register("task-1", "Test Task")
+	monitor.Register("task-1", "Test Task", "")
 	monitor.UpdateProgress("task-1", "Phase1", 25, "Initial message")
 
 	// Update with empty message should not overwrite existing message
@@ -231,7 +231,7 @@ func TestMonitorUpdateProgressEmptyMessage(t *testing.T) {
 
 func TestMonitorGetReturnsCopy(t *testing.T) {
 	monitor := NewMonitor()
-	monitor.Register("task-1", "Test Task")
+	monitor.Register("task-1", "Test Task", "")
 	monitor.Start("task-1")
 
 	state1, _ := monitor.Get("task-1")
@@ -245,9 +245,9 @@ func TestMonitorGetReturnsCopy(t *testing.T) {
 
 func TestMonitorGetRunningMultiple(t *testing.T) {
 	monitor := NewMonitor()
-	monitor.Register("task-1", "Task 1")
-	monitor.Register("task-2", "Task 2")
-	monitor.Register("task-3", "Task 3")
+	monitor.Register("task-1", "Task 1", "")
+	monitor.Register("task-2", "Task 2", "")
+	monitor.Register("task-3", "Task 3", "")
 
 	monitor.Start("task-1")
 	monitor.Start("task-2")
@@ -273,8 +273,8 @@ func TestMonitorGetRunningMultiple(t *testing.T) {
 
 func TestMonitorGetRunningNoRunning(t *testing.T) {
 	monitor := NewMonitor()
-	monitor.Register("task-1", "Task 1")
-	monitor.Register("task-2", "Task 2")
+	monitor.Register("task-1", "Task 1", "")
+	monitor.Register("task-2", "Task 2", "")
 
 	running := monitor.GetRunning()
 	if len(running) != 0 {
