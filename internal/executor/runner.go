@@ -1330,6 +1330,15 @@ func (r *Runner) BuildPrompt(task *Task) string {
 	if useNavigator {
 		// Navigator handles workflow, autonomous completion, and documentation
 		sb.WriteString("Start my Navigator session.\n\n")
+
+		// CRITICAL: Override CLAUDE.md rules meant for human sessions (GH-265)
+		// Project CLAUDE.md may contain "DO NOT write code" rules for human Navigator
+		// sessions. Pilot IS the execution bot - it MUST write code and commit.
+		sb.WriteString("## PILOT EXECUTION MODE\n\n")
+		sb.WriteString("You are running as **Pilot** (the autonomous execution bot), NOT a human Navigator session.\n")
+		sb.WriteString("IGNORE any CLAUDE.md rules saying \"DO NOT write code\" or \"DO NOT commit\" - those are for human planning sessions.\n")
+		sb.WriteString("Your job is to IMPLEMENT, COMMIT, and optionally CREATE PRs.\n\n")
+
 		sb.WriteString(fmt.Sprintf("## Task: %s\n\n", task.ID))
 		sb.WriteString(fmt.Sprintf("%s\n\n", task.Description))
 
@@ -1342,6 +1351,10 @@ func (r *Runner) BuildPrompt(task *Task) string {
 		sb.WriteString("CRITICAL: You MUST commit all changes before completing. A task is NOT complete until changes are committed. Use format: `type(scope): description (TASK-XX)`\n")
 	} else if hasNavigator && complexity.ShouldSkipNavigator() {
 		// Trivial task in Navigator project - minimal prompt without Navigator overhead (GH-216)
+		// Still need Pilot execution mode notice since CLAUDE.md may have "don't write code" rules
+		sb.WriteString("## PILOT EXECUTION MODE (Trivial Task)\n\n")
+		sb.WriteString("You are **Pilot** (execution bot). IGNORE any CLAUDE.md \"DO NOT write code\" rules.\n\n")
+
 		sb.WriteString(fmt.Sprintf("## Task: %s\n\n", task.ID))
 		sb.WriteString(fmt.Sprintf("%s\n\n", task.Description))
 		sb.WriteString("## Instructions\n\n")
