@@ -50,7 +50,6 @@ func (m *mockEmailSender) Send(ctx context.Context, to []string, subject, htmlBo
 	return nil
 }
 
-
 func TestNewDeliveryService(t *testing.T) {
 	config := &BriefConfig{
 		Enabled:  true,
@@ -519,7 +518,6 @@ func createSlackClientWrapper(mock *mockSlackClient) *slack.Client {
 	return nil
 }
 
-
 // Override test to work with actual mock injection
 func TestDeliveryServiceIntegrationSlack(t *testing.T) {
 	// Skip if we can't mock properly
@@ -583,9 +581,9 @@ func TestDeliveryServiceIntegrationEmail(t *testing.T) {
 func containsString(haystack, needle string) bool {
 	return len(haystack) >= len(needle) &&
 		(haystack == needle ||
-		 len(haystack) > len(needle) &&
-		 (haystack[:len(needle)] == needle ||
-		  containsString(haystack[1:], needle)))
+			len(haystack) > len(needle) &&
+				(haystack[:len(needle)] == needle ||
+					containsString(haystack[1:], needle)))
 }
 
 func TestFormatTelegramBrief(t *testing.T) {
@@ -670,11 +668,11 @@ func TestWithSlackClient(t *testing.T) {
 	}
 }
 
-func TestWithTelegramClient(t *testing.T) {
+func TestWithTelegramSender(t *testing.T) {
 	config := &BriefConfig{}
 
-	// WithTelegramClient accepts nil without panic
-	service := NewDeliveryService(config, WithTelegramClient(nil))
+	// WithTelegramSender accepts nil without panic
+	service := NewDeliveryService(config, WithTelegramSender(nil))
 	if service == nil {
 		t.Fatal("expected service, got nil")
 	}

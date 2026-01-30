@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/alekspetrov/pilot/internal/briefs"
 	"github.com/alekspetrov/pilot/internal/memory"
 )
 
@@ -67,6 +68,8 @@ func (c *CommandHandler) HandleCommand(ctx context.Context, chatID, text string)
 		c.handleStop(ctx, chatID)
 	case "/voice":
 		c.handler.sendVoiceSetupPrompt(ctx, chatID)
+	case "/brief":
+		c.handleBrief(ctx, chatID)
 	default:
 		_, _ = c.handler.client.SendMessage(ctx, chatID, "Unknown command. Use /help for available commands.", "")
 	}
@@ -86,6 +89,7 @@ I execute tasks and answer questions about your codebase.
 /switch <name> — Switch active project
 /history — Recent task history
 /budget — Show usage & costs
+/brief — Generate daily summary
 /help — This message
 
 *Task Commands*
@@ -477,6 +481,35 @@ func (c *CommandHandler) handleStop(ctx context.Context, chatID string) {
 
 	_, _ = c.handler.client.SendMessage(ctx, chatID,
 		fmt.Sprintf("🛑 Stopped task `%s`", running.TaskID), "Markdown")
+}
+
+// handleBrief generates and sends a daily brief on demand
+func (c *CommandHandler) handleBrief(ctx context.Context, chatID string) {
+	if c.store == nil {
+		_, _ = c.handler.client.SendMessage(ctx, chatID, "📋 Brief not available (no memory store)", "")
+		return
+	}
+
+	_, _ = c.handler.client.SendMessage(ctx, chatID, "📊 Generating brief...", "")
+
+	generator := briefs.NewGenerator(c.store, nil)
+	brief, err := generator.GenerateDaily()
+	if err != nil {
+		_, _ = c.handler.client.SendMessage(ctx, chatID,
+			fmt.Sprintf("❌ Failed to generate brief: %s", err.Error()), "")
+		return
+	}
+
+	// Format as plain text for Telegram
+	formatter := briefs.NewPlainTextFormatter()
+	text, err := formatter.Format(brief)
+	if err != nil {
+		_, _ = c.handler.client.SendMessage(ctx, chatID,
+			fmt.Sprintf("❌ Failed to format brief: %s", err.Error()), "")
+		return
+	}
+
+	_, _ = c.handler.client.SendMessage(ctx, chatID, text, "")
 }
 
 // formatTimeAgo formats a time as relative (e.g., "2h ago", "3d ago")

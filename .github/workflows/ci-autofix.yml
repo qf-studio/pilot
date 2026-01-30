@@ -26,8 +26,31 @@ jobs:
             const existing = issues.data.find(i => i.body.includes(`run_id: ${runId}`));
             return { exists: !!existing };
 
-      - name: Get failed job info
+      - name: Check fix attempt count
         if: ${{ !fromJSON(steps.check-existing.outputs.result).exists }}
+        id: fix-count
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: 'ci-fix',
+              state: 'all'
+            });
+            const branch = context.payload.workflow_run.head_branch;
+            const count = issues.data.filter(i =>
+              i.body?.includes(`**Branch:** ${branch}`)
+            ).length;
+            console.log(`Found ${count} existing ci-fix issues for branch: ${branch}`);
+            if (count >= 3) {
+              console.log(`⚠️ Max fix attempts (3) reached for branch ${branch}. Skipping issue creation.`);
+            }
+            core.setOutput('count', count);
+            core.setOutput('max_reached', count >= 3);
+
+      - name: Get failed job info
+        if: ${{ !fromJSON(steps.check-existing.outputs.result).exists && steps.fix-count.outputs.max_reached != 'true' }}
         uses: actions/github-script@v7
         id: get-failure
         with:
@@ -51,7 +74,7 @@ jobs:
             };
 
       - name: Create fix issue
-        if: ${{ !fromJSON(steps.check-existing.outputs.result).exists }}
+        if: ${{ !fromJSON(steps.check-existing.outputs.result).exists && steps.fix-count.outputs.max_reached != 'true' }}
         uses: actions/github-script@v7
         with:
           script: |

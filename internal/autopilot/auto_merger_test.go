@@ -18,7 +18,7 @@ func TestNewAutoMerger(t *testing.T) {
 	approvalMgr := approval.NewManager(nil)
 	cfg := DefaultConfig()
 
-	merger := NewAutoMerger(ghClient, approvalMgr, "owner", "repo", cfg)
+	merger := NewAutoMerger(ghClient, approvalMgr, nil, "owner", "repo", cfg)
 
 	if merger == nil {
 		t.Fatal("NewAutoMerger returned nil")
@@ -47,7 +47,7 @@ func TestAutoMerger_RequiresApproval(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			merger := NewAutoMerger(ghClient, nil, "owner", "repo", cfg)
+			merger := NewAutoMerger(ghClient, nil, nil, "owner", "repo", cfg)
 			got := merger.requiresApproval(tt.env)
 			if got != tt.wantAppr {
 				t.Errorf("requiresApproval(%s) = %v, want %v", tt.env, got, tt.wantAppr)
@@ -57,12 +57,13 @@ func TestAutoMerger_RequiresApproval(t *testing.T) {
 }
 
 func TestAutoMerger_ShouldWaitForCI(t *testing.T) {
+	// All environments now wait for CI to prevent broken code from merging
 	tests := []struct {
 		name     string
 		env      Environment
 		wantWait bool
 	}{
-		{"dev - no wait", EnvDev, false},
+		{"dev - wait for CI", EnvDev, true},
 		{"stage - wait for CI", EnvStage, true},
 		{"prod - wait for CI", EnvProd, true},
 	}
@@ -72,7 +73,7 @@ func TestAutoMerger_ShouldWaitForCI(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			merger := NewAutoMerger(ghClient, nil, "owner", "repo", cfg)
+			merger := NewAutoMerger(ghClient, nil, nil, "owner", "repo", cfg)
 			got := merger.ShouldWaitForCI(tt.env)
 			if got != tt.wantWait {
 				t.Errorf("ShouldWaitForCI(%s) = %v, want %v", tt.env, got, tt.wantWait)
@@ -179,7 +180,7 @@ func TestAutoMerger_CanMerge(t *testing.T) {
 
 			ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 			cfg := DefaultConfig()
-			merger := NewAutoMerger(ghClient, nil, "owner", "repo", cfg)
+			merger := NewAutoMerger(ghClient, nil, nil, "owner", "repo", cfg)
 
 			canMerge, reason, err := merger.CanMerge(context.Background(), 42)
 
@@ -224,7 +225,7 @@ func TestAutoMerger_MergePR_DevEnvironment(t *testing.T) {
 	cfg.AutoReview = true
 	cfg.MergeMethod = github.MergeMethodSquash
 
-	merger := NewAutoMerger(ghClient, nil, "owner", "repo", cfg)
+	merger := NewAutoMerger(ghClient, nil, nil, "owner", "repo", cfg)
 
 	prState := &PRState{
 		PRNumber: 42,
@@ -254,7 +255,7 @@ func TestAutoMerger_MergePR_ProdRequiresApproval(t *testing.T) {
 	cfg.Environment = EnvProd
 
 	// No approval manager configured
-	merger := NewAutoMerger(ghClient, nil, "owner", "repo", cfg)
+	merger := NewAutoMerger(ghClient, nil, nil, "owner", "repo", cfg)
 
 	prState := &PRState{
 		PRNumber: 42,
@@ -296,7 +297,7 @@ func TestAutoMerger_MergePR_ProdWithApprovalDisabled(t *testing.T) {
 	cfg.Environment = EnvProd
 	cfg.AutoReview = true
 
-	merger := NewAutoMerger(ghClient, approvalMgr, "owner", "repo", cfg)
+	merger := NewAutoMerger(ghClient, approvalMgr, nil, "owner", "repo", cfg)
 
 	prState := &PRState{
 		PRNumber: 42,
@@ -335,7 +336,7 @@ func TestAutoMerger_MergePR_DefaultMergeMethod(t *testing.T) {
 	cfg.AutoReview = false
 	cfg.MergeMethod = "" // Empty - should default to squash
 
-	merger := NewAutoMerger(ghClient, nil, "owner", "repo", cfg)
+	merger := NewAutoMerger(ghClient, nil, nil, "owner", "repo", cfg)
 
 	prState := &PRState{PRNumber: 42}
 
@@ -368,7 +369,7 @@ func TestAutoMerger_MergePR_MergeFailure(t *testing.T) {
 	cfg.Environment = EnvDev
 	cfg.AutoReview = true
 
-	merger := NewAutoMerger(ghClient, nil, "owner", "repo", cfg)
+	merger := NewAutoMerger(ghClient, nil, nil, "owner", "repo", cfg)
 
 	prState := &PRState{PRNumber: 42}
 
@@ -401,7 +402,7 @@ func TestAutoMerger_MergePR_AutoReviewFailureContinues(t *testing.T) {
 	cfg.Environment = EnvDev
 	cfg.AutoReview = true
 
-	merger := NewAutoMerger(ghClient, nil, "owner", "repo", cfg)
+	merger := NewAutoMerger(ghClient, nil, nil, "owner", "repo", cfg)
 
 	prState := &PRState{PRNumber: 42}
 
@@ -436,7 +437,7 @@ func TestAutoMerger_MergePR_StageEnvironment(t *testing.T) {
 	cfg.Environment = EnvStage
 	cfg.AutoReview = true
 
-	merger := NewAutoMerger(ghClient, nil, "owner", "repo", cfg)
+	merger := NewAutoMerger(ghClient, nil, nil, "owner", "repo", cfg)
 
 	prState := &PRState{PRNumber: 42}
 
@@ -476,7 +477,7 @@ func TestAutoMerger_ApprovePR(t *testing.T) {
 	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 	cfg := DefaultConfig()
 
-	merger := NewAutoMerger(ghClient, nil, "owner", "repo", cfg)
+	merger := NewAutoMerger(ghClient, nil, nil, "owner", "repo", cfg)
 
 	err := merger.approvePR(context.Background(), 42)
 	if err != nil {
@@ -489,7 +490,7 @@ func TestAutoMerger_RequestApproval_NoManager(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Environment = EnvProd
 
-	merger := NewAutoMerger(ghClient, nil, "owner", "repo", cfg)
+	merger := NewAutoMerger(ghClient, nil, nil, "owner", "repo", cfg)
 
 	prState := &PRState{
 		PRNumber: 42,
@@ -506,30 +507,29 @@ func TestAutoMerger_RequestApproval_NoManager(t *testing.T) {
 }
 
 func TestEnvironmentBehaviorMatrix(t *testing.T) {
-	// Verify the environment behavior matrix from the issue spec
+	// Verify the environment behavior matrix
+	// All environments now wait for CI to prevent broken code from merging
 	ghClient := github.NewClient(testutil.FakeGitHubToken)
 	cfg := DefaultConfig()
 
 	tests := []struct {
 		env              Environment
 		autoReview       bool
-		immediateCI      bool // true = no CI wait, false = wait for CI
+		waitForCI        bool // all environments now wait for CI
 		requiresApproval bool
 	}{
-		{EnvDev, true, true, false},    // dev: Auto-Review Yes, Immediate merge, No approval
-		{EnvStage, true, false, false}, // stage: Auto-Review Yes, Wait for CI, No approval
-		{EnvProd, false, false, true},  // prod: No auto-review (per matrix), Wait for CI, Requires approval
+		{EnvDev, true, true, false},   // dev: Auto-Review Yes, Wait for CI, No approval
+		{EnvStage, true, true, false}, // stage: Auto-Review Yes, Wait for CI, No approval
+		{EnvProd, false, true, true},  // prod: No auto-review, Wait for CI, Requires approval
 	}
 
 	for _, tt := range tests {
 		t.Run(string(tt.env), func(t *testing.T) {
-			merger := NewAutoMerger(ghClient, nil, "owner", "repo", cfg)
+			merger := NewAutoMerger(ghClient, nil, nil, "owner", "repo", cfg)
 
 			shouldWait := merger.ShouldWaitForCI(tt.env)
-			wantWait := !tt.immediateCI
-
-			if shouldWait != wantWait {
-				t.Errorf("ShouldWaitForCI(%s) = %v, want %v", tt.env, shouldWait, wantWait)
+			if shouldWait != tt.waitForCI {
+				t.Errorf("ShouldWaitForCI(%s) = %v, want %v", tt.env, shouldWait, tt.waitForCI)
 			}
 
 			requiresApproval := merger.requiresApproval(tt.env)
@@ -572,7 +572,7 @@ func TestAutoMerger_MergePR_AllMergeMethods(t *testing.T) {
 			cfg.AutoReview = false
 			cfg.MergeMethod = method
 
-			merger := NewAutoMerger(ghClient, nil, "owner", "repo", cfg)
+			merger := NewAutoMerger(ghClient, nil, nil, "owner", "repo", cfg)
 
 			err := merger.MergePR(context.Background(), &PRState{PRNumber: 42})
 			if err != nil {
@@ -615,7 +615,7 @@ func TestAutoMerger_CanMerge_IntegrationScenarios(t *testing.T) {
 
 			ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 			cfg := DefaultConfig()
-			merger := NewAutoMerger(ghClient, nil, "owner", "repo", cfg)
+			merger := NewAutoMerger(ghClient, nil, nil, "owner", "repo", cfg)
 
 			canMerge, _, err := merger.CanMerge(context.Background(), 42)
 			if err != nil {
@@ -634,9 +634,308 @@ func TestAutoMerger_WithApprovalTimeout(t *testing.T) {
 	cfg.ApprovalTimeout = 2 * time.Hour
 
 	ghClient := github.NewClient(testutil.FakeGitHubToken)
-	merger := NewAutoMerger(ghClient, nil, "owner", "repo", cfg)
+	merger := NewAutoMerger(ghClient, nil, nil, "owner", "repo", cfg)
 
 	if merger.config.ApprovalTimeout != 2*time.Hour {
 		t.Errorf("ApprovalTimeout = %v, want 2h", merger.config.ApprovalTimeout)
 	}
+}
+
+func TestAutoMerger_VerifyCIBeforeMerge(t *testing.T) {
+	tests := []struct {
+		name         string
+		ciStatus     CIStatus
+		wantErr      bool
+		errContains  string
+	}{
+		{
+			name:     "CI success - verification passes",
+			ciStatus: CISuccess,
+			wantErr:  false,
+		},
+		{
+			name:        "CI failure - verification fails",
+			ciStatus:    CIFailure,
+			wantErr:     true,
+			errContains: "CI checks failing",
+		},
+		{
+			name:        "CI pending - verification fails",
+			ciStatus:    CIPending,
+			wantErr:     true,
+			errContains: "CI checks still pending",
+		},
+		{
+			name:        "CI running - verification fails",
+			ciStatus:    CIRunning,
+			wantErr:     true,
+			errContains: "CI checks still pending",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create a mock server that returns check runs with the desired status
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/repos/owner/repo/commits/abc123def/check-runs" {
+					checkStatus := github.CheckRunCompleted
+					conclusion := github.ConclusionSuccess
+
+					switch tt.ciStatus {
+					case CISuccess:
+						checkStatus = github.CheckRunCompleted
+						conclusion = github.ConclusionSuccess
+					case CIFailure:
+						checkStatus = github.CheckRunCompleted
+						conclusion = github.ConclusionFailure
+					case CIPending:
+						checkStatus = github.CheckRunQueued
+						conclusion = ""
+					case CIRunning:
+						checkStatus = github.CheckRunInProgress
+						conclusion = ""
+					}
+
+					response := github.CheckRunsResponse{
+						TotalCount: 1,
+						CheckRuns: []github.CheckRun{
+							{
+								Name:       "build",
+								Status:     checkStatus,
+								Conclusion: conclusion,
+							},
+						},
+					}
+					w.WriteHeader(http.StatusOK)
+					_ = json.NewEncoder(w).Encode(response)
+				} else {
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer server.Close()
+
+			ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			cfg := DefaultConfig()
+			cfg.RequiredChecks = []string{} // Check all runs
+
+			ciMonitor := NewCIMonitor(ghClient, "owner", "repo", cfg)
+			merger := NewAutoMerger(ghClient, nil, ciMonitor, "owner", "repo", cfg)
+
+			prState := &PRState{
+				PRNumber: 42,
+				HeadSHA:  "abc123def",
+			}
+
+			err := merger.verifyCIBeforeMerge(context.Background(), prState)
+
+			if (err != nil) != tt.wantErr {
+				t.Errorf("verifyCIBeforeMerge() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+
+			if tt.wantErr && tt.errContains != "" {
+				if err == nil || !containsStr(err.Error(), tt.errContains) {
+					t.Errorf("verifyCIBeforeMerge() error = %v, want error containing %q", err, tt.errContains)
+				}
+			}
+		})
+	}
+}
+
+func TestAutoMerger_VerifyCIBeforeMerge_NoCIMonitor(t *testing.T) {
+	// When CI monitor is nil, verification should be skipped (no error)
+	ghClient := github.NewClient(testutil.FakeGitHubToken)
+	cfg := DefaultConfig()
+
+	merger := NewAutoMerger(ghClient, nil, nil, "owner", "repo", cfg)
+
+	prState := &PRState{
+		PRNumber: 42,
+		HeadSHA:  "abc123",
+	}
+
+	err := merger.verifyCIBeforeMerge(context.Background(), prState)
+	if err != nil {
+		t.Errorf("verifyCIBeforeMerge() with nil CIMonitor should not error, got %v", err)
+	}
+}
+
+func TestAutoMerger_MergePR_StageWithCIVerification(t *testing.T) {
+	// Stage environment should verify CI before merge
+	mergeWasCalled := false
+	ciCheckCalled := false
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/owner/repo/commits/abc123def/check-runs":
+			ciCheckCalled = true
+			response := github.CheckRunsResponse{
+				TotalCount: 1,
+				CheckRuns: []github.CheckRun{
+					{
+						Name:       "build",
+						Status:     github.CheckRunCompleted,
+						Conclusion: github.ConclusionSuccess,
+					},
+				},
+			}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(response)
+		case "/repos/owner/repo/pulls/42/reviews":
+			w.WriteHeader(http.StatusOK)
+		case "/repos/owner/repo/pulls/42/merge":
+			mergeWasCalled = true
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.Environment = EnvStage
+	cfg.AutoReview = true
+	cfg.RequiredChecks = []string{}
+
+	ciMonitor := NewCIMonitor(ghClient, "owner", "repo", cfg)
+	merger := NewAutoMerger(ghClient, nil, ciMonitor, "owner", "repo", cfg)
+
+	prState := &PRState{
+		PRNumber: 42,
+		HeadSHA:  "abc123def",
+	}
+
+	err := merger.MergePR(context.Background(), prState)
+	if err != nil {
+		t.Errorf("MergePR() error = %v", err)
+	}
+
+	if !ciCheckCalled {
+		t.Error("CI check should have been called for stage environment")
+	}
+	if !mergeWasCalled {
+		t.Error("merge should have been called after CI verification passed")
+	}
+}
+
+func TestAutoMerger_MergePR_StageWithCIFailure(t *testing.T) {
+	// Stage environment should block merge when CI fails
+	mergeWasCalled := false
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/owner/repo/commits/abc123def/check-runs":
+			response := github.CheckRunsResponse{
+				TotalCount: 1,
+				CheckRuns: []github.CheckRun{
+					{
+						Name:       "build",
+						Status:     github.CheckRunCompleted,
+						Conclusion: github.ConclusionFailure,
+					},
+				},
+			}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(response)
+		case "/repos/owner/repo/pulls/42/reviews":
+			w.WriteHeader(http.StatusOK)
+		case "/repos/owner/repo/pulls/42/merge":
+			mergeWasCalled = true
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.Environment = EnvStage
+	cfg.AutoReview = true
+	cfg.RequiredChecks = []string{}
+
+	ciMonitor := NewCIMonitor(ghClient, "owner", "repo", cfg)
+	merger := NewAutoMerger(ghClient, nil, ciMonitor, "owner", "repo", cfg)
+
+	prState := &PRState{
+		PRNumber: 42,
+		HeadSHA:  "abc123def",
+	}
+
+	err := merger.MergePR(context.Background(), prState)
+	if err == nil {
+		t.Error("MergePR() should fail when CI is failing")
+	}
+
+	if mergeWasCalled {
+		t.Error("merge should NOT have been called when CI is failing")
+	}
+}
+
+func TestAutoMerger_MergePR_DevWithCIVerification(t *testing.T) {
+	// Dev environment now calls CI verification like all other environments
+	ciCheckCalled := false
+	mergeWasCalled := false
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/owner/repo/commits/abc123def/check-runs":
+			ciCheckCalled = true
+			resp := github.CheckRunsResponse{
+				TotalCount: 1,
+				CheckRuns: []github.CheckRun{
+					{Name: "build", Status: github.CheckRunCompleted, Conclusion: github.ConclusionSuccess},
+				},
+			}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(resp)
+		case "/repos/owner/repo/pulls/42/merge":
+			mergeWasCalled = true
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.Environment = EnvDev
+	cfg.AutoReview = false
+	cfg.RequiredChecks = []string{"build"}
+
+	ciMonitor := NewCIMonitor(ghClient, "owner", "repo", cfg)
+	merger := NewAutoMerger(ghClient, nil, ciMonitor, "owner", "repo", cfg)
+
+	prState := &PRState{
+		PRNumber: 42,
+		HeadSHA:  "abc123def",
+	}
+
+	err := merger.MergePR(context.Background(), prState)
+	if err != nil {
+		t.Errorf("MergePR() error = %v", err)
+	}
+
+	if !ciCheckCalled {
+		t.Error("CI check should have been called for dev environment")
+	}
+	if !mergeWasCalled {
+		t.Error("merge should have been called for dev environment")
+	}
+}
+
+// containsStr is a helper to check if a string contains a substring
+func containsStr(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsSubstr(s, substr))
+}
+
+func containsSubstr(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
 }

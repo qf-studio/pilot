@@ -44,6 +44,22 @@ var (
 	cfgFile   string
 )
 
+// telegramBriefAdapter wraps telegram.Client to satisfy briefs.TelegramSender interface
+type telegramBriefAdapter struct {
+	client *telegram.Client
+}
+
+func (a *telegramBriefAdapter) SendBriefMessage(ctx context.Context, chatID, text, parseMode string) (*briefs.TelegramMessageResponse, error) {
+	resp, err := a.client.SendMessage(ctx, chatID, text, parseMode)
+	if err != nil {
+		return nil, err
+	}
+	if resp == nil || resp.Result == nil {
+		return nil, nil
+	}
+	return &briefs.TelegramMessageResponse{MessageID: resp.Result.MessageID}, nil
+}
+
 var quietMode bool
 
 func main() {
@@ -781,7 +797,7 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 			}
 			if cfg.Adapters.Telegram != nil && cfg.Adapters.Telegram.Enabled {
 				tgClient := telegram.NewClient(cfg.Adapters.Telegram.BotToken)
-				deliveryOpts = append(deliveryOpts, briefs.WithTelegramClient(tgClient))
+				deliveryOpts = append(deliveryOpts, briefs.WithTelegramSender(&telegramBriefAdapter{client: tgClient}))
 			}
 			deliveryOpts = append(deliveryOpts, briefs.WithLogger(slog.Default()))
 

@@ -105,11 +105,23 @@ func TestController_ProcessPR_NotTracked(t *testing.T) {
 }
 
 func TestController_ProcessPR_DevEnvironment(t *testing.T) {
-	// Test dev flow: PR created → CI passed (skip) → merging → merged → done
+	// Test dev flow: PR created → waiting CI → CI passed → merging → merged → done
+	// Dev now waits for CI like stage/prod, but with shorter timeout
 	mergeWasCalled := false
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/repos/owner/repo/commits/abc1234/check-runs":
+			resp := github.CheckRunsResponse{
+				TotalCount: 3,
+				CheckRuns: []github.CheckRun{
+					{Name: "build", Status: "completed", Conclusion: "success"},
+					{Name: "test", Status: "completed", Conclusion: "success"},
+					{Name: "lint", Status: "completed", Conclusion: "success"},
+				},
+			}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(resp)
 		case "/repos/owner/repo/pulls/42/merge":
 			mergeWasCalled = true
 			w.WriteHeader(http.StatusOK)
@@ -123,49 +135,62 @@ func TestController_ProcessPR_DevEnvironment(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Environment = EnvDev
 	cfg.AutoReview = false
+	cfg.CIPollInterval = 10 * time.Millisecond
+	cfg.DevCITimeout = 1 * time.Second
+	cfg.RequiredChecks = []string{"build", "test", "lint"}
 
 	c := NewController(cfg, ghClient, nil, "owner", "repo")
 	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc1234")
 
 	ctx := context.Background()
 
-	// Stage 1: PR created → CI passed (skipped in dev)
+	// Stage 1: PR created → waiting CI (dev now waits for CI)
 	err := c.ProcessPR(ctx, 42)
 	if err != nil {
 		t.Fatalf("ProcessPR stage 1 error: %v", err)
 	}
 	pr, _ := c.GetPRState(42)
-	if pr.Stage != StageCIPassed {
-		t.Errorf("after stage 1: Stage = %s, want %s", pr.Stage, StageCIPassed)
+	if pr.Stage != StageWaitingCI {
+		t.Errorf("after stage 1: Stage = %s, want %s", pr.Stage, StageWaitingCI)
 	}
 
-	// Stage 2: CI passed → merging
+	// Stage 2: waiting CI → CI passed
 	err = c.ProcessPR(ctx, 42)
 	if err != nil {
 		t.Fatalf("ProcessPR stage 2 error: %v", err)
 	}
 	pr, _ = c.GetPRState(42)
-	if pr.Stage != StageMerging {
-		t.Errorf("after stage 2: Stage = %s, want %s", pr.Stage, StageMerging)
+	if pr.Stage != StageCIPassed {
+		t.Errorf("after stage 2: Stage = %s, want %s", pr.Stage, StageCIPassed)
 	}
 
-	// Stage 3: merging → merged
+	// Stage 3: CI passed → merging
 	err = c.ProcessPR(ctx, 42)
 	if err != nil {
 		t.Fatalf("ProcessPR stage 3 error: %v", err)
+	}
+	pr, _ = c.GetPRState(42)
+	if pr.Stage != StageMerging {
+		t.Errorf("after stage 3: Stage = %s, want %s", pr.Stage, StageMerging)
+	}
+
+	// Stage 4: merging → merged
+	err = c.ProcessPR(ctx, 42)
+	if err != nil {
+		t.Fatalf("ProcessPR stage 4 error: %v", err)
 	}
 	if !mergeWasCalled {
 		t.Error("merge should have been called")
 	}
 	pr, _ = c.GetPRState(42)
 	if pr.Stage != StageMerged {
-		t.Errorf("after stage 3: Stage = %s, want %s", pr.Stage, StageMerged)
+		t.Errorf("after stage 4: Stage = %s, want %s", pr.Stage, StageMerged)
 	}
 
-	// Stage 4: merged → done (removed from tracking in dev)
+	// Stage 5: merged → done (removed from tracking in dev)
 	err = c.ProcessPR(ctx, 42)
 	if err != nil {
-		t.Fatalf("ProcessPR stage 4 error: %v", err)
+		t.Fatalf("ProcessPR stage 5 error: %v", err)
 	}
 	_, ok := c.GetPRState(42)
 	if ok {
@@ -545,7 +570,7 @@ func TestController_SuccessResetsFailureCount(t *testing.T) {
 
 	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 	cfg := DefaultConfig()
-	cfg.Environment = EnvDev
+	cfg.Environment = EnvStage // Use stage to have predictable behavior
 	cfg.MaxFailures = 5
 
 	c := NewController(cfg, ghClient, nil, "owner", "repo")
@@ -557,7 +582,7 @@ func TestController_SuccessResetsFailureCount(t *testing.T) {
 
 	c.OnPRCreated(42, "url", 10, "abc1234")
 
-	// Successful processing (dev: pr_created → ci_passed)
+	// Successful processing (pr_created → waiting_ci)
 	err := c.ProcessPR(context.Background(), 42)
 	if err != nil {
 		t.Fatalf("ProcessPR error: %v", err)
@@ -573,18 +598,31 @@ func TestController_SuccessResetsFailureCount(t *testing.T) {
 }
 
 func TestController_MergeAttemptIncrement(t *testing.T) {
-	callCount := 0
+	mergeCallCount := 0
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/repos/owner/repo/pulls/42/merge" {
-			callCount++
+		switch r.URL.Path {
+		case "/repos/owner/repo/commits/abc1234/check-runs":
+			// Return successful CI checks for pre-merge verification
+			resp := github.CheckRunsResponse{
+				TotalCount: 1,
+				CheckRuns: []github.CheckRun{
+					{Name: "build", Status: github.CheckRunCompleted, Conclusion: github.ConclusionSuccess},
+				},
+			}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(resp)
+		case "/repos/owner/repo/pulls/42/merge":
+			mergeCallCount++
 			// Fail first attempt, succeed second
-			if callCount == 1 {
+			if mergeCallCount == 1 {
 				w.WriteHeader(http.StatusInternalServerError)
 				return
 			}
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusOK)
 		}
-		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
 
@@ -592,6 +630,7 @@ func TestController_MergeAttemptIncrement(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Environment = EnvDev
 	cfg.AutoReview = false
+	cfg.RequiredChecks = []string{"build"}
 
 	c := NewController(cfg, ghClient, nil, "owner", "repo")
 
@@ -599,13 +638,14 @@ func TestController_MergeAttemptIncrement(t *testing.T) {
 	c.mu.Lock()
 	c.activePRs[42] = &PRState{
 		PRNumber: 42,
+		HeadSHA:  "abc1234",
 		Stage:    StageMerging,
 	}
 	c.mu.Unlock()
 
 	ctx := context.Background()
 
-	// First attempt fails
+	// First attempt fails (merge fails, not CI verification)
 	err := c.ProcessPR(ctx, 42)
 	if err == nil {
 		t.Error("first merge attempt should fail")

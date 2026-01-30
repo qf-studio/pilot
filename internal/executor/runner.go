@@ -957,6 +957,14 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 
 		r.reportProgress(task.ID, "Finalizing", 95, "Preparing for completion")
 
+		// Warn if PR creation requested but quality gates not configured (GH-248)
+		if task.CreatePR && r.qualityCheckerFactory == nil {
+			log.Warn("quality gates not configured - PR created without local validation",
+				slog.String("task_id", task.ID),
+				slog.String("project", task.ProjectPath),
+			)
+		}
+
 		// Create PR if requested and we have commits
 		if task.CreatePR && task.Branch != "" {
 			r.reportProgress(task.ID, "Creating PR", 96, "Pushing branch...")

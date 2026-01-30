@@ -64,8 +64,8 @@ type BriefConfig struct {
 
 // ChannelConfig defines a delivery channel
 type ChannelConfig struct {
-	Type       string   `yaml:"type"`       // "slack", "email"
-	Channel    string   `yaml:"channel"`    // For Slack: "#channel-name"
+	Type       string   `yaml:"type"`       // "slack", "email", "telegram"
+	Channel    string   `yaml:"channel"`    // For Slack: "#channel-name", For Telegram: chat_id
 	Recipients []string `yaml:"recipients"` // For email
 }
 

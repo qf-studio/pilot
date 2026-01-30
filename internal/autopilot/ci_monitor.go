@@ -21,13 +21,18 @@ type CIMonitor struct {
 }
 
 // NewCIMonitor creates a CI monitor with configuration from Config.
+// Uses DevCITimeout for dev environment, CIWaitTimeout for stage/prod.
 func NewCIMonitor(ghClient *github.Client, owner, repo string, cfg *Config) *CIMonitor {
+	timeout := cfg.CIWaitTimeout
+	if cfg.Environment == EnvDev && cfg.DevCITimeout > 0 {
+		timeout = cfg.DevCITimeout
+	}
 	return &CIMonitor{
 		ghClient:       ghClient,
 		owner:          owner,
 		repo:           repo,
 		pollInterval:   cfg.CIPollInterval,
-		waitTimeout:    cfg.CIWaitTimeout,
+		waitTimeout:    timeout,
 		requiredChecks: cfg.RequiredChecks,
 		log:            slog.Default().With("component", "ci-monitor"),
 	}
@@ -169,6 +174,12 @@ func (m *CIMonitor) mapCheckStatus(status, conclusion string) CIStatus {
 	default:
 		return CIPending
 	}
+}
+
+// GetCIStatus returns the current overall CI status for a SHA.
+// This is useful for point-in-time status checks without waiting.
+func (m *CIMonitor) GetCIStatus(ctx context.Context, sha string) (CIStatus, error) {
+	return m.checkStatus(ctx, sha)
 }
 
 // GetFailedChecks returns names of failed checks for a SHA.

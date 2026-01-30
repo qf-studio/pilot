@@ -60,7 +60,7 @@ func NewController(cfg *Config, ghClient *github.Client, approvalMgr *approval.M
 	}
 
 	c.ciMonitor = NewCIMonitor(ghClient, owner, repo, cfg)
-	c.autoMerger = NewAutoMerger(ghClient, approvalMgr, owner, repo, cfg)
+	c.autoMerger = NewAutoMerger(ghClient, approvalMgr, c.ciMonitor, owner, repo, cfg)
 	c.feedbackLoop = NewFeedbackLoop(ghClient, owner, repo, cfg)
 
 	return c
@@ -142,16 +142,10 @@ func (c *Controller) ProcessPR(ctx context.Context, prNumber int) error {
 	return err
 }
 
-// handlePRCreated starts CI monitoring or skips for dev.
+// handlePRCreated starts CI monitoring for all environments.
 func (c *Controller) handlePRCreated(ctx context.Context, prState *PRState) error {
-	if c.config.Environment == EnvDev {
-		// Dev: skip CI, go straight to merge
-		c.log.Info("dev mode: skipping CI", "pr", prState.PRNumber)
-		prState.Stage = StageCIPassed
-	} else {
-		// Stage/Prod: wait for CI
-		prState.Stage = StageWaitingCI
-	}
+	// All environments wait for CI - no skipping
+	prState.Stage = StageWaitingCI
 	return nil
 }
 

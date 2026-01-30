@@ -35,6 +35,50 @@ func TestNewCIMonitor(t *testing.T) {
 	}
 }
 
+func TestNewCIMonitor_DevCITimeout(t *testing.T) {
+	ghClient := github.NewClient(testutil.FakeGitHubToken)
+	cfg := DefaultConfig()
+	cfg.Environment = EnvDev
+	cfg.DevCITimeout = 5 * time.Minute
+	cfg.CIWaitTimeout = 30 * time.Minute
+
+	monitor := NewCIMonitor(ghClient, "owner", "repo", cfg)
+
+	if monitor == nil {
+		t.Fatal("NewCIMonitor returned nil")
+	}
+	// Dev environment should use DevCITimeout
+	if monitor.waitTimeout != cfg.DevCITimeout {
+		t.Errorf("waitTimeout = %v, want %v (DevCITimeout for dev env)", monitor.waitTimeout, cfg.DevCITimeout)
+	}
+}
+
+func TestNewCIMonitor_StageProdUseCIWaitTimeout(t *testing.T) {
+	ghClient := github.NewClient(testutil.FakeGitHubToken)
+
+	// Test stage environment
+	cfgStage := DefaultConfig()
+	cfgStage.Environment = EnvStage
+	cfgStage.DevCITimeout = 5 * time.Minute
+	cfgStage.CIWaitTimeout = 30 * time.Minute
+
+	monitorStage := NewCIMonitor(ghClient, "owner", "repo", cfgStage)
+	if monitorStage.waitTimeout != cfgStage.CIWaitTimeout {
+		t.Errorf("stage waitTimeout = %v, want %v (CIWaitTimeout)", monitorStage.waitTimeout, cfgStage.CIWaitTimeout)
+	}
+
+	// Test prod environment
+	cfgProd := DefaultConfig()
+	cfgProd.Environment = EnvProd
+	cfgProd.DevCITimeout = 5 * time.Minute
+	cfgProd.CIWaitTimeout = 30 * time.Minute
+
+	monitorProd := NewCIMonitor(ghClient, "owner", "repo", cfgProd)
+	if monitorProd.waitTimeout != cfgProd.CIWaitTimeout {
+		t.Errorf("prod waitTimeout = %v, want %v (CIWaitTimeout)", monitorProd.waitTimeout, cfgProd.CIWaitTimeout)
+	}
+}
+
 func TestCIMonitor_WaitForCI_Success(t *testing.T) {
 	// Mock GitHub client returning success after 2 polls
 	pollCount := 0
@@ -270,10 +314,10 @@ func TestCIMonitor_NoChecks(t *testing.T) {
 
 func TestCIMonitor_GetFailedChecks(t *testing.T) {
 	tests := []struct {
-		name          string
-		checkRuns     []github.CheckRun
-		wantFailed    []string
-		wantErr       bool
+		name       string
+		checkRuns  []github.CheckRun
+		wantFailed []string
+		wantErr    bool
 	}{
 		{
 			name: "multiple failures",
@@ -655,5 +699,80 @@ func TestCIMonitor_WaitForCI_RequiredCheckNotFound(t *testing.T) {
 	_, err := monitor.WaitForCI(context.Background(), "abc1234")
 	if err == nil {
 		t.Fatal("WaitForCI() should timeout when required check is missing")
+	}
+}
+
+func TestCIMonitor_GetCIStatus(t *testing.T) {
+	// Test GetCIStatus returns point-in-time status
+	tests := []struct {
+		name       string
+		checkRuns  []github.CheckRun
+		wantStatus CIStatus
+	}{
+		{
+			name: "all checks success",
+			checkRuns: []github.CheckRun{
+				{Name: "build", Status: github.CheckRunCompleted, Conclusion: github.ConclusionSuccess},
+				{Name: "test", Status: github.CheckRunCompleted, Conclusion: github.ConclusionSuccess},
+			},
+			wantStatus: CISuccess,
+		},
+		{
+			name: "one check failing",
+			checkRuns: []github.CheckRun{
+				{Name: "build", Status: github.CheckRunCompleted, Conclusion: github.ConclusionSuccess},
+				{Name: "test", Status: github.CheckRunCompleted, Conclusion: github.ConclusionFailure},
+			},
+			wantStatus: CIFailure,
+		},
+		{
+			name: "one check pending",
+			checkRuns: []github.CheckRun{
+				{Name: "build", Status: github.CheckRunCompleted, Conclusion: github.ConclusionSuccess},
+				{Name: "test", Status: github.CheckRunQueued, Conclusion: ""},
+			},
+			wantStatus: CIPending,
+		},
+		{
+			name: "one check running",
+			checkRuns: []github.CheckRun{
+				{Name: "build", Status: github.CheckRunCompleted, Conclusion: github.ConclusionSuccess},
+				{Name: "test", Status: github.CheckRunInProgress, Conclusion: ""},
+			},
+			wantStatus: CIPending, // Running maps to pending in aggregate
+		},
+		{
+			name:       "no checks",
+			checkRuns:  []github.CheckRun{},
+			wantStatus: CIPending,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				resp := github.CheckRunsResponse{
+					TotalCount: len(tt.checkRuns),
+					CheckRuns:  tt.checkRuns,
+				}
+				w.WriteHeader(http.StatusOK)
+				_ = json.NewEncoder(w).Encode(resp)
+			}))
+			defer server.Close()
+
+			ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			cfg := DefaultConfig()
+			cfg.RequiredChecks = []string{} // Check all runs
+
+			monitor := NewCIMonitor(ghClient, "owner", "repo", cfg)
+
+			status, err := monitor.GetCIStatus(context.Background(), "abc1234")
+			if err != nil {
+				t.Fatalf("GetCIStatus() error = %v", err)
+			}
+			if status != tt.wantStatus {
+				t.Errorf("GetCIStatus() status = %s, want %s", status, tt.wantStatus)
+			}
+		})
 	}
 }

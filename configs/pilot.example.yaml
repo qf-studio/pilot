@@ -68,11 +68,26 @@ executor:
   auto_create_pr: true         # Create PR by default after task completion
                                # Use --no-pr flag to disable for individual tasks
 
-  # Daily brief
-  daily_brief:
-    enabled: false
-    time: "09:00"
-    timezone: "America/New_York"
+# Daily briefs configuration
+briefs:
+  enabled: false
+  schedule: "0 9 * * 1-5"      # Cron: 9 AM weekdays
+  timezone: "America/New_York"
+  channels:
+    # Slack channel
+    - type: slack
+      channel: "#dev-updates"
+    # Telegram chat
+    - type: telegram
+      channel: "${TELEGRAM_CHAT_ID}"  # Your Telegram chat ID
+    # Email recipients
+    # - type: email
+    #   recipients:
+    #     - team@example.com
+  content:
+    include_metrics: true
+    include_errors: true
+    max_items_per_section: 10
 
 # Memory settings
 memory:

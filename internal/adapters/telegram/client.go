@@ -466,3 +466,21 @@ func (c *Client) DownloadFile(ctx context.Context, filePath string) ([]byte, err
 
 	return data, nil
 }
+
+// BriefMessageResponse is a simplified response for brief delivery
+type BriefMessageResponse struct {
+	MessageID int64
+}
+
+// SendBriefMessage sends a message and returns a simplified response for brief delivery.
+// This method satisfies the briefs.TelegramSender interface.
+func (c *Client) SendBriefMessage(ctx context.Context, chatID, text, parseMode string) (*BriefMessageResponse, error) {
+	resp, err := c.SendMessage(ctx, chatID, text, parseMode)
+	if err != nil {
+		return nil, err
+	}
+	if resp == nil || resp.Result == nil {
+		return nil, nil
+	}
+	return &BriefMessageResponse{MessageID: resp.Result.MessageID}, nil
+}

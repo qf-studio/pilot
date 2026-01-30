@@ -7,14 +7,23 @@ import (
 	"time"
 
 	"github.com/alekspetrov/pilot/internal/adapters/slack"
-	"github.com/alekspetrov/pilot/internal/adapters/telegram"
 )
+
+// TelegramMessageResponse represents the response from sending a Telegram message
+type TelegramMessageResponse struct {
+	MessageID int64
+}
+
+// TelegramSender interface for sending Telegram messages (avoids import cycle)
+type TelegramSender interface {
+	SendBriefMessage(ctx context.Context, chatID, text, parseMode string) (*TelegramMessageResponse, error)
+}
 
 // DeliveryService orchestrates brief delivery to configured channels
 type DeliveryService struct {
 	config         *BriefConfig
 	slackClient    *slack.Client
-	telegramClient *telegram.Client
+	telegramSender TelegramSender
 	emailSender    EmailSender
 	logger         *slog.Logger
 	slackFmt       *SlackFormatter
@@ -44,10 +53,10 @@ func WithEmailSender(sender EmailSender) DeliveryOption {
 	}
 }
 
-// WithTelegramClient sets the Telegram client
-func WithTelegramClient(client *telegram.Client) DeliveryOption {
+// WithTelegramSender sets the Telegram sender
+func WithTelegramSender(sender TelegramSender) DeliveryOption {
 	return func(d *DeliveryService) {
-		d.telegramClient = client
+		d.telegramSender = sender
 	}
 }
 
@@ -226,16 +235,16 @@ func (d *DeliveryService) deliverTelegram(ctx context.Context, brief *Brief, cha
 		SentAt:  time.Now(),
 	}
 
-	if d.telegramClient == nil {
+	if d.telegramSender == nil {
 		result.Success = false
-		result.Error = fmt.Errorf("telegram client not configured")
+		result.Error = fmt.Errorf("telegram sender not configured")
 		return result
 	}
 
 	// Format as plain text with Markdown
 	text := d.formatTelegramBrief(brief)
 
-	resp, err := d.telegramClient.SendMessage(ctx, channel.Channel, text, "Markdown")
+	resp, err := d.telegramSender.SendBriefMessage(ctx, channel.Channel, text, "Markdown")
 	if err != nil {
 		result.Success = false
 		result.Error = err
@@ -246,8 +255,8 @@ func (d *DeliveryService) deliverTelegram(ctx context.Context, brief *Brief, cha
 		return result
 	}
 
-	if resp != nil && resp.Result != nil {
-		result.MessageID = fmt.Sprintf("%d", resp.Result.MessageID)
+	if resp != nil {
+		result.MessageID = fmt.Sprintf("%d", resp.MessageID)
 	}
 	result.Success = true
 	d.logger.Info("brief delivered to Telegram",

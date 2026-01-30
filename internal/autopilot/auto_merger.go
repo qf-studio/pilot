@@ -17,6 +17,7 @@ import (
 type AutoMerger struct {
 	ghClient    *github.Client
 	approvalMgr *approval.Manager
+	ciMonitor   *CIMonitor
 	owner       string
 	repo        string
 	config      *Config
@@ -24,10 +25,11 @@ type AutoMerger struct {
 }
 
 // NewAutoMerger creates an auto-merger with the given configuration.
-func NewAutoMerger(ghClient *github.Client, approvalMgr *approval.Manager, owner, repo string, cfg *Config) *AutoMerger {
+func NewAutoMerger(ghClient *github.Client, approvalMgr *approval.Manager, ciMonitor *CIMonitor, owner, repo string, cfg *Config) *AutoMerger {
 	return &AutoMerger{
 		ghClient:    ghClient,
 		approvalMgr: approvalMgr,
+		ciMonitor:   ciMonitor,
 		owner:       owner,
 		repo:        repo,
 		config:      cfg,
@@ -61,6 +63,14 @@ func (m *AutoMerger) MergePR(ctx context.Context, prState *PRState) error {
 		if err := m.approvePR(ctx, prState.PRNumber); err != nil {
 			m.log.Warn("auto-review failed", "pr", prState.PRNumber, "error", err)
 			// Continue anyway - might not need review or already reviewed
+		}
+	}
+
+	// Final CI verification immediately before merge to prevent race conditions.
+	// CI status can change between initial check and merge, so we verify again.
+	if m.ShouldWaitForCI(env) {
+		if err := m.verifyCIBeforeMerge(ctx, prState); err != nil {
+			return fmt.Errorf("pre-merge CI verification failed: %w", err)
 		}
 	}
 
@@ -156,7 +166,40 @@ func (m *AutoMerger) CanMerge(ctx context.Context, prNumber int) (bool, string, 
 }
 
 // ShouldWaitForCI returns true if the environment requires CI to pass before merge.
+// All environments now wait for CI to prevent broken code from merging.
 func (m *AutoMerger) ShouldWaitForCI(env Environment) bool {
-	// Dev can merge immediately, stage and prod wait for CI
-	return env != EnvDev
+	return true
+}
+
+// verifyCIBeforeMerge performs a final CI status check immediately before merge.
+// This prevents race conditions where CI status changes between initial check and merge.
+func (m *AutoMerger) verifyCIBeforeMerge(ctx context.Context, prState *PRState) error {
+	if m.ciMonitor == nil {
+		m.log.Warn("CI monitor not configured, skipping pre-merge CI verification",
+			"pr", prState.PRNumber)
+		return nil
+	}
+
+	m.log.Info("verifying CI status before merge",
+		"pr", prState.PRNumber,
+		"sha", prState.HeadSHA)
+
+	status, err := m.ciMonitor.GetCIStatus(ctx, prState.HeadSHA)
+	if err != nil {
+		return fmt.Errorf("failed to get CI status: %w", err)
+	}
+
+	switch status {
+	case CISuccess:
+		m.log.Info("CI verification passed",
+			"pr", prState.PRNumber,
+			"status", status)
+		return nil
+	case CIFailure:
+		return fmt.Errorf("CI checks failing for SHA %s", prState.HeadSHA)
+	case CIPending, CIRunning:
+		return fmt.Errorf("CI checks still pending for SHA %s", prState.HeadSHA)
+	default:
+		return fmt.Errorf("unexpected CI status %s for SHA %s", status, prState.HeadSHA)
+	}
 }

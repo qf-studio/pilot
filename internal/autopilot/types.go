@@ -33,6 +33,8 @@ type Config struct {
 	// CI Monitoring
 	// CIWaitTimeout is the maximum time to wait for CI to complete.
 	CIWaitTimeout time.Duration `yaml:"ci_wait_timeout"`
+	// DevCITimeout is the CI timeout for dev environment (default 5m, shorter than stage/prod).
+	DevCITimeout time.Duration `yaml:"dev_ci_timeout"`
 	// CIPollInterval is how often to check CI status.
 	CIPollInterval time.Duration `yaml:"ci_poll_interval"`
 	// RequiredChecks lists CI checks that must pass before merge.
@@ -64,6 +66,7 @@ func DefaultConfig() *Config {
 		AutoMerge:        true,
 		MergeMethod:      "squash",
 		CIWaitTimeout:    30 * time.Minute,
+		DevCITimeout:     5 * time.Minute,
 		CIPollInterval:   30 * time.Second,
 		RequiredChecks:   []string{"build", "test", "lint"},
 		AutoCreateIssues: true,
