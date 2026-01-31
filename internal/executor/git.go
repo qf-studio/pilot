@@ -186,3 +186,39 @@ func (g *GitOperations) GetCurrentCommitSHA(ctx context.Context) (string, error)
 	}
 	return strings.TrimSpace(string(output)), nil
 }
+
+// Pull fetches and merges changes from remote for the specified branch
+func (g *GitOperations) Pull(ctx context.Context, branch string) error {
+	cmd := exec.CommandContext(ctx, "git", "pull", "origin", branch)
+	cmd.Dir = g.projectPath
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to pull %s: %w: %s", branch, err, output)
+	}
+	return nil
+}
+
+// SwitchToDefaultBranchAndPull switches to the default branch and pulls latest changes.
+// This ensures new branches are created from the latest default branch, not from
+// whatever branch was previously checked out (fixes GH-279).
+func (g *GitOperations) SwitchToDefaultBranchAndPull(ctx context.Context) (string, error) {
+	// Get default branch name
+	defaultBranch, err := g.GetDefaultBranch(ctx)
+	if err != nil {
+		defaultBranch = "main" // fallback
+	}
+
+	// Switch to default branch
+	if err := g.SwitchBranch(ctx, defaultBranch); err != nil {
+		return defaultBranch, fmt.Errorf("failed to switch to %s: %w", defaultBranch, err)
+	}
+
+	// Pull latest changes
+	if err := g.Pull(ctx, defaultBranch); err != nil {
+		// Pull failure is non-fatal - we can still create branch from local state
+		// This handles offline scenarios or repos without upstream configured
+		return defaultBranch, nil
+	}
+
+	return defaultBranch, nil
+}

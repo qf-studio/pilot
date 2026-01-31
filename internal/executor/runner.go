@@ -497,7 +497,20 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 
 	// Create branch if specified (skip for direct commit mode)
 	if task.Branch != "" && !task.DirectCommit {
-		r.reportProgress(task.ID, "Branching", 5, fmt.Sprintf("Creating branch %s...", task.Branch))
+		r.reportProgress(task.ID, "Branching", 3, "Switching to default branch...")
+
+		// GH-279: Always switch to default branch and pull latest before creating new branch.
+		// This prevents new branches from forking off previous pilot branches instead of main.
+		defaultBranch, err := git.SwitchToDefaultBranchAndPull(ctx)
+		if err != nil {
+			log.Warn("Failed to switch to default branch, continuing from current branch",
+				slog.String("task_id", task.ID),
+				slog.Any("error", err),
+			)
+		} else {
+			r.reportProgress(task.ID, "Branching", 5, fmt.Sprintf("On %s, creating %s...", defaultBranch, task.Branch))
+		}
+
 		if err := git.CreateBranch(ctx, task.Branch); err != nil {
 			// Check if branch already exists - try to switch to it
 			if switchErr := git.SwitchBranch(ctx, task.Branch); switchErr != nil {
@@ -1128,7 +1141,20 @@ func (r *Runner) executeDecomposedTask(ctx context.Context, parentTask *Task, su
 	// Initialize git and create branch ONCE for all subtasks
 	git := NewGitOperations(parentTask.ProjectPath)
 	if parentTask.Branch != "" {
-		r.reportProgress(parentTask.ID, "Branching", 2, fmt.Sprintf("Creating branch %s...", parentTask.Branch))
+		r.reportProgress(parentTask.ID, "Branching", 1, "Switching to default branch...")
+
+		// GH-279: Always switch to default branch and pull latest before creating new branch.
+		// This prevents new branches from forking off previous pilot branches instead of main.
+		defaultBranch, err := git.SwitchToDefaultBranchAndPull(ctx)
+		if err != nil {
+			r.log.Warn("Failed to switch to default branch, continuing from current branch",
+				slog.String("task_id", parentTask.ID),
+				slog.Any("error", err),
+			)
+		} else {
+			r.reportProgress(parentTask.ID, "Branching", 2, fmt.Sprintf("On %s, creating %s...", defaultBranch, parentTask.Branch))
+		}
+
 		if err := git.CreateBranch(ctx, parentTask.Branch); err != nil {
 			if switchErr := git.SwitchBranch(ctx, parentTask.Branch); switchErr != nil {
 				return nil, fmt.Errorf("failed to create/switch branch: %w", err)
