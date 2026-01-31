@@ -308,6 +308,7 @@ func (m Model) View() string {
 	var b strings.Builder
 
 	// Header with ASCII logo
+	b.WriteString("\n") // Top padding to match bottom spacing
 	logo := strings.TrimPrefix(banner.Logo, "\n") // Remove leading newline
 	b.WriteString(titleStyle.Render(logo))
 	b.WriteString(titleStyle.Render(fmt.Sprintf("   Pilot v%s", m.version)))
