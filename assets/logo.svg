@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 60" width="200" height="60">
+  <style>
+    .logo-text { font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace; font-weight: 700; font-size: 36px; fill: #ffffff; }
+    .tagline { font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace; font-size: 8px; fill: #888888; }
+  </style>
+  <rect width="200" height="60" fill="#0d1117"/>
+  <text x="16" y="38" class="logo-text">PILOT</text>
+  <text x="16" y="52" class="tagline">AI That Ships Your Tickets</text>
+</svg>
