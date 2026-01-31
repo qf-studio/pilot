@@ -302,7 +302,9 @@ func newOptionalBool(ptr **bool) *optionalBool {
 }
 
 func (o *optionalBool) Set(s string) error {
-	v := s == "" || s == "true" || s == "1"
+	// For boolean flags, default to true unless explicitly false
+	// This handles edge cases where flag parser passes unexpected values
+	v := s != "false" && s != "0" && s != "no"
 	*o.ptr = &v
 	return nil
 }
@@ -767,6 +769,7 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 
 	// Start Telegram polling if enabled
 	if tgHandler != nil {
+		fmt.Println("📱 Telegram polling started")
 		tgHandler.StartPolling(ctx)
 	}
 
