@@ -467,9 +467,9 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 		monitor = executor.NewMonitor()
 		var model dashboard.Model
 		if autopilotController != nil {
-			model = dashboard.NewModelWithAutopilot(autopilotController)
+			model = dashboard.NewModelWithAutopilot(version, autopilotController)
 		} else {
-			model = dashboard.NewModel()
+			model = dashboard.NewModel(version)
 		}
 		program = tea.NewProgram(model,
 			tea.WithAltScreen(),
@@ -3010,7 +3010,7 @@ func runDashboardMode(p *pilot.Pilot, cfg *config.Config) error {
 	p.SuppressProgressLogs(true)
 
 	// Create TUI program
-	model := dashboard.NewModel()
+	model := dashboard.NewModel(version)
 	program := tea.NewProgram(model, tea.WithAltScreen())
 
 	// Set up event bridge: poll task states and send to dashboard

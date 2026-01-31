@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/alekspetrov/pilot/internal/autopilot"
+	"github.com/alekspetrov/pilot/internal/banner"
 )
 
 // Panel width (all panels same width)
@@ -183,6 +184,7 @@ type Model struct {
 	completedTasks []CompletedTask
 	costPerMToken  float64
 	autopilotPanel *AutopilotPanel
+	version        string
 }
 
 // tickMsg is sent periodically to refresh the display
@@ -201,7 +203,7 @@ type updateTokensMsg TokenUsage
 type addCompletedTaskMsg CompletedTask
 
 // NewModel creates a new dashboard model
-func NewModel() Model {
+func NewModel(version string) Model {
 	return Model{
 		tasks:          []TaskDisplay{},
 		logs:           []string{},
@@ -209,11 +211,12 @@ func NewModel() Model {
 		completedTasks: []CompletedTask{},
 		costPerMToken:  3.0,
 		autopilotPanel: NewAutopilotPanel(nil), // Disabled by default
+		version:        version,
 	}
 }
 
 // NewModelWithAutopilot creates a dashboard model with autopilot integration.
-func NewModelWithAutopilot(controller *autopilot.Controller) Model {
+func NewModelWithAutopilot(version string, controller *autopilot.Controller) Model {
 	return Model{
 		tasks:          []TaskDisplay{},
 		logs:           []string{},
@@ -221,6 +224,7 @@ func NewModelWithAutopilot(controller *autopilot.Controller) Model {
 		completedTasks: []CompletedTask{},
 		costPerMToken:  3.0,
 		autopilotPanel: NewAutopilotPanel(controller),
+		version:        version,
 	}
 }
 
@@ -303,8 +307,10 @@ func (m Model) View() string {
 
 	var b strings.Builder
 
-	// Header
-	b.WriteString(titleStyle.Render("PILOT"))
+	// Header with ASCII logo
+	logo := strings.TrimPrefix(banner.Logo, "\n") // Remove leading newline
+	b.WriteString(titleStyle.Render(logo))
+	b.WriteString(titleStyle.Render(fmt.Sprintf("   Pilot v%s", m.version)))
 	b.WriteString("\n\n")
 
 	// Token usage
@@ -711,10 +717,10 @@ func AddCompletedTask(id, title, status, duration string) tea.Cmd {
 	}
 }
 
-// Run starts the TUI
-func Run() error {
+// Run starts the TUI with the given version
+func Run(version string) error {
 	p := tea.NewProgram(
-		NewModel(),
+		NewModel(version),
 		tea.WithAltScreen(),
 	)
 
