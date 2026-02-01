@@ -259,3 +259,48 @@ type BranchCommit struct {
 func (b *Branch) SHA() string {
 	return b.Commit.SHA
 }
+
+// Release represents a GitHub release
+type Release struct {
+	ID          int64     `json:"id"`
+	TagName     string    `json:"tag_name"`
+	Name        string    `json:"name"`
+	Body        string    `json:"body"`
+	Draft       bool      `json:"draft"`
+	Prerelease  bool      `json:"prerelease"`
+	HTMLURL     string    `json:"html_url"`
+	CreatedAt   time.Time `json:"created_at"`
+	PublishedAt time.Time `json:"published_at"`
+}
+
+// ReleaseInput is the input for creating a release
+type ReleaseInput struct {
+	TagName         string `json:"tag_name"`
+	TargetCommitish string `json:"target_commitish,omitempty"`
+	Name            string `json:"name,omitempty"`
+	Body            string `json:"body,omitempty"`
+	Draft           bool   `json:"draft,omitempty"`
+	Prerelease      bool   `json:"prerelease,omitempty"`
+	GenerateNotes   bool   `json:"generate_release_notes,omitempty"`
+}
+
+// Tag represents a GitHub tag
+type Tag struct {
+	Name   string `json:"name"`
+	Commit struct {
+		SHA string `json:"sha"`
+	} `json:"commit"`
+}
+
+// Commit represents a GitHub commit (for PR commit listing)
+type Commit struct {
+	SHA    string `json:"sha"`
+	Commit struct {
+		Message string `json:"message"`
+		Author  struct {
+			Name  string    `json:"name"`
+			Email string    `json:"email"`
+			Date  time.Time `json:"date"`
+		} `json:"author"`
+	} `json:"commit"`
+}

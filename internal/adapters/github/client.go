@@ -403,3 +403,69 @@ func (c *Client) ListPullRequests(ctx context.Context, owner, repo, state string
 	}
 	return result, nil
 }
+
+// CreateRelease creates a new release
+func (c *Client) CreateRelease(ctx context.Context, owner, repo string, input *ReleaseInput) (*Release, error) {
+	path := fmt.Sprintf("/repos/%s/%s/releases", owner, repo)
+	var result Release
+	if err := c.doRequest(ctx, http.MethodPost, path, input, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// GetLatestRelease gets the latest published release
+// Returns nil, nil if no releases exist
+func (c *Client) GetLatestRelease(ctx context.Context, owner, repo string) (*Release, error) {
+	path := fmt.Sprintf("/repos/%s/%s/releases/latest", owner, repo)
+	var result Release
+	if err := c.doRequest(ctx, http.MethodGet, path, nil, &result); err != nil {
+		// 404 means no releases exist - return nil, nil
+		if isNotFoundError(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &result, nil
+}
+
+// ListTags lists repository tags (newest first)
+func (c *Client) ListTags(ctx context.Context, owner, repo string, perPage int) ([]*Tag, error) {
+	path := fmt.Sprintf("/repos/%s/%s/tags?per_page=%d", owner, repo, perPage)
+	var result []*Tag
+	if err := c.doRequest(ctx, http.MethodGet, path, nil, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// GetPRCommits returns all commits in a pull request
+func (c *Client) GetPRCommits(ctx context.Context, owner, repo string, prNumber int) ([]*Commit, error) {
+	path := fmt.Sprintf("/repos/%s/%s/pulls/%d/commits?per_page=100", owner, repo, prNumber)
+	var result []*Commit
+	if err := c.doRequest(ctx, http.MethodGet, path, nil, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// CompareCommits compares two commits and returns commits between them
+func (c *Client) CompareCommits(ctx context.Context, owner, repo, base, head string) ([]*Commit, error) {
+	path := fmt.Sprintf("/repos/%s/%s/compare/%s...%s", owner, repo, base, head)
+	var result struct {
+		Commits []*Commit `json:"commits"`
+	}
+	if err := c.doRequest(ctx, http.MethodGet, path, nil, &result); err != nil {
+		return nil, err
+	}
+	return result.Commits, nil
+}
+
+// isNotFoundError checks if error is a 404 not found error
+func isNotFoundError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := err.Error()
+	return len(errStr) >= 21 && errStr[:21] == "API error (status 404"
+}
