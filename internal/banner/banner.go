@@ -31,7 +31,7 @@ func Print() {
 func PrintWithVersion(version string) {
 	fmt.Print(Logo)
 	fmt.Printf("   %s\n", Tagline)
-	fmt.Printf("   v%s\n\n", version)
+	fmt.Printf("   %s\n\n", version)
 }
 
 // PrintCompact prints a compact single-line banner
@@ -44,7 +44,7 @@ func StartupBanner(version, gateway string) {
 	fmt.Print(Logo)
 	fmt.Printf("   %s\n", Tagline)
 	fmt.Println()
-	fmt.Printf("   Version:  v%s\n", version)
+	fmt.Printf("   Version:  %s\n", version)
 	fmt.Printf("   Gateway:  %s\n", gateway)
 	fmt.Println()
 }
@@ -55,7 +55,7 @@ func StartupWithHealth(version string, cfg *config.Config) {
 
 	// Header
 	fmt.Println()
-	fmt.Printf("PILOT v%s\n", version)
+	fmt.Printf("PILOT %s\n", version)
 	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	fmt.Println()
 
@@ -104,7 +104,7 @@ func StartupTelegram(version, project, chatID string, cfg *config.Config) {
 	// ASCII logo
 	fmt.Print(Logo)
 	fmt.Printf("   %s\n", Tagline)
-	fmt.Printf("   v%s │ Telegram Bot\n", version)
+	fmt.Printf("   %s │ Telegram Bot\n", version)
 	fmt.Println()
 
 	// Health check section
@@ -209,7 +209,7 @@ func StartupServer(version, gateway string, cfg *config.Config) {
 	// Header
 	fmt.Print(Logo)
 	fmt.Printf("   %s\n", Tagline)
-	fmt.Printf("   v%s │ Server\n", version)
+	fmt.Printf("   %s │ Server\n", version)
 	fmt.Println()
 
 	// Quick health summary

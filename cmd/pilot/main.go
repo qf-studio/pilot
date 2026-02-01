@@ -861,7 +861,7 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 		// Add startup logs after TUI starts (Send blocks if Run hasn't been called)
 		go func() {
 			time.Sleep(100 * time.Millisecond) // Wait for Run() to start
-			program.Send(dashboard.AddLog(fmt.Sprintf("🚀 Pilot v%s started - Polling mode", version))())
+			program.Send(dashboard.AddLog(fmt.Sprintf("🚀 Pilot %s started - Polling mode", version))())
 			if hasTelegram {
 				program.Send(dashboard.AddLog("📱 Telegram polling active")())
 			}
@@ -1372,7 +1372,7 @@ func newVersionCmd() *cobra.Command {
 		Use:   "version",
 		Short: "Show Pilot version",
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Printf("Pilot v%s\n", version)
+			fmt.Printf("Pilot %s\n", version)
 			if buildTime != "unknown" {
 				fmt.Printf("Built: %s\n", buildTime)
 			}
@@ -3081,7 +3081,7 @@ func runDashboardMode(p *pilot.Pilot, cfg *config.Config) error {
 
 	// Add startup log
 	gatewayURL := fmt.Sprintf("http://%s:%d", cfg.Gateway.Host, cfg.Gateway.Port)
-	program.Send(dashboard.AddLog(fmt.Sprintf("🚀 Pilot v%s started - Gateway: %s", version, gatewayURL))())
+	program.Send(dashboard.AddLog(fmt.Sprintf("🚀 Pilot %s started - Gateway: %s", version, gatewayURL))())
 
 	// Run TUI (blocks until quit)
 	if _, err := program.Run(); err != nil {

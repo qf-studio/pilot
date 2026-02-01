@@ -311,7 +311,7 @@ func (m Model) View() string {
 	b.WriteString("\n") // Top padding to match bottom spacing
 	logo := strings.TrimPrefix(banner.Logo, "\n") // Remove leading newline
 	b.WriteString(titleStyle.Render(logo))
-	b.WriteString(titleStyle.Render(fmt.Sprintf("   Pilot v%s", m.version)))
+	b.WriteString(titleStyle.Render(fmt.Sprintf("   Pilot %s", m.version)))
 	b.WriteString("\n\n")
 
 	// Token usage
