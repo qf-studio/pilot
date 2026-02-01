@@ -778,3 +778,352 @@ func TestController_ScanExistingPRs_Error(t *testing.T) {
 		t.Error("ScanExistingPRs() should return error on API failure")
 	}
 }
+
+func TestController_CheckExternalMerge(t *testing.T) {
+	// Test that externally merged PRs are detected and removed
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/owner/repo/pulls/42":
+			// Return PR as merged
+			resp := github.PullRequest{
+				Number:  42,
+				State:   "closed",
+				Merged:  true,
+				HTMLURL: "https://github.com/owner/repo/pull/42",
+			}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(resp)
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.Environment = EnvDev
+	cfg.CIPollInterval = 10 * time.Millisecond
+
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc123")
+
+	// Verify PR is tracked
+	if _, ok := c.GetPRState(42); !ok {
+		t.Fatal("PR should be tracked initially")
+	}
+
+	// Process PRs - should detect external merge and remove
+	c.processAllPRs(context.Background())
+
+	// Verify PR is removed
+	if _, ok := c.GetPRState(42); ok {
+		t.Error("PR should be removed after external merge detection")
+	}
+}
+
+func TestController_CheckExternalClose(t *testing.T) {
+	// Test that externally closed (without merge) PRs are detected and removed
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/owner/repo/pulls/42":
+			// Return PR as closed but not merged
+			resp := github.PullRequest{
+				Number:  42,
+				State:   "closed",
+				Merged:  false,
+				HTMLURL: "https://github.com/owner/repo/pull/42",
+			}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(resp)
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.Environment = EnvDev
+	cfg.CIPollInterval = 10 * time.Millisecond
+
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc123")
+
+	// Verify PR is tracked
+	if _, ok := c.GetPRState(42); !ok {
+		t.Fatal("PR should be tracked initially")
+	}
+
+	// Process PRs - should detect external close and remove
+	c.processAllPRs(context.Background())
+
+	// Verify PR is removed
+	if _, ok := c.GetPRState(42); ok {
+		t.Error("PR should be removed after external close detection")
+	}
+}
+
+func TestController_CheckExternalMergeOrClose_OpenPR(t *testing.T) {
+	// Test that open PRs are processed normally
+	ciCheckCalled := false
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/owner/repo/pulls/42":
+			// Return PR as still open
+			resp := github.PullRequest{
+				Number:  42,
+				State:   "open",
+				Merged:  false,
+				HTMLURL: "https://github.com/owner/repo/pull/42",
+			}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(resp)
+		case "/repos/owner/repo/commits/abc1234567890/check-runs":
+			ciCheckCalled = true
+			resp := github.CheckRunsResponse{
+				TotalCount: 1,
+				CheckRuns: []github.CheckRun{
+					{Name: "build", Status: "completed", Conclusion: "success"},
+				},
+			}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(resp)
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.Environment = EnvDev
+	cfg.CIPollInterval = 10 * time.Millisecond
+	cfg.DevCITimeout = 1 * time.Second
+	cfg.RequiredChecks = []string{"build"}
+
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+
+	// Start at waiting CI stage
+	c.mu.Lock()
+	c.activePRs[42] = &PRState{
+		PRNumber: 42,
+		HeadSHA:  "abc1234567890",
+		Stage:    StageWaitingCI,
+	}
+	c.mu.Unlock()
+
+	// Process PRs - should check state then continue processing
+	c.processAllPRs(context.Background())
+
+	// Verify PR is still tracked
+	if _, ok := c.GetPRState(42); !ok {
+		t.Error("open PR should still be tracked")
+	}
+
+	// Verify normal processing continued (CI check was called)
+	if !ciCheckCalled {
+		t.Error("CI check should have been called for open PR")
+	}
+}
+
+func TestController_CheckExternalMerge_APIError(t *testing.T) {
+	// Test that API errors don't remove PRs but allow processing to continue
+	ciCheckCalled := false
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/owner/repo/pulls/42":
+			// Return error
+			w.WriteHeader(http.StatusInternalServerError)
+		case "/repos/owner/repo/commits/abc1234567890/check-runs":
+			ciCheckCalled = true
+			resp := github.CheckRunsResponse{
+				TotalCount: 1,
+				CheckRuns: []github.CheckRun{
+					{Name: "build", Status: "completed", Conclusion: "success"},
+				},
+			}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(resp)
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.Environment = EnvDev
+	cfg.CIPollInterval = 10 * time.Millisecond
+	cfg.DevCITimeout = 1 * time.Second
+	cfg.RequiredChecks = []string{"build"}
+
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+
+	// Start at waiting CI stage
+	c.mu.Lock()
+	c.activePRs[42] = &PRState{
+		PRNumber: 42,
+		HeadSHA:  "abc1234567890",
+		Stage:    StageWaitingCI,
+	}
+	c.mu.Unlock()
+
+	// Process PRs - should fail to check state but continue processing
+	c.processAllPRs(context.Background())
+
+	// Verify PR is still tracked (error shouldn't remove it)
+	if _, ok := c.GetPRState(42); !ok {
+		t.Error("PR should still be tracked after API error")
+	}
+
+	// Verify normal processing continued despite check failure
+	if !ciCheckCalled {
+		t.Error("CI check should have been called even after state check failed")
+	}
+}
+
+func TestController_CheckExternalMerge_WithNotifier(t *testing.T) {
+	// Test that notifier is called when external merge is detected
+	notifyMergedCalled := false
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/owner/repo/pulls/42":
+			// Return PR as merged
+			resp := github.PullRequest{
+				Number:  42,
+				State:   "closed",
+				Merged:  true,
+				HTMLURL: "https://github.com/owner/repo/pull/42",
+			}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(resp)
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.Environment = EnvDev
+	cfg.CIPollInterval = 10 * time.Millisecond
+
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+
+	// Set up mock notifier
+	mockNotifier := &mockNotifier{
+		notifyMergedFunc: func(ctx context.Context, prState *PRState) error {
+			notifyMergedCalled = true
+			if prState.PRNumber != 42 {
+				t.Errorf("notified PR number = %d, want 42", prState.PRNumber)
+			}
+			return nil
+		},
+	}
+	c.SetNotifier(mockNotifier)
+
+	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc123")
+
+	// Process PRs - should detect external merge and notify
+	c.processAllPRs(context.Background())
+
+	// Verify notifier was called
+	if !notifyMergedCalled {
+		t.Error("NotifyMerged should have been called for external merge")
+	}
+}
+
+func TestController_CheckExternalMerge_MultiplePRs(t *testing.T) {
+	// Test processing multiple PRs where some are merged externally
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/owner/repo/pulls/1":
+			// PR 1 is still open
+			resp := github.PullRequest{Number: 1, State: "open", Merged: false}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(resp)
+		case "/repos/owner/repo/pulls/2":
+			// PR 2 was merged externally
+			resp := github.PullRequest{Number: 2, State: "closed", Merged: true}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(resp)
+		case "/repos/owner/repo/pulls/3":
+			// PR 3 was closed externally
+			resp := github.PullRequest{Number: 3, State: "closed", Merged: false}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(resp)
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.Environment = EnvDev
+	cfg.CIPollInterval = 10 * time.Millisecond
+
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+
+	// Add multiple PRs
+	c.OnPRCreated(1, "url1", 10, "sha1")
+	c.OnPRCreated(2, "url2", 20, "sha2")
+	c.OnPRCreated(3, "url3", 30, "sha3")
+
+	// Process PRs
+	c.processAllPRs(context.Background())
+
+	// PR 1 should still be tracked (open)
+	if _, ok := c.GetPRState(1); !ok {
+		t.Error("PR 1 should still be tracked (open)")
+	}
+
+	// PR 2 should be removed (merged externally)
+	if _, ok := c.GetPRState(2); ok {
+		t.Error("PR 2 should be removed (merged externally)")
+	}
+
+	// PR 3 should be removed (closed externally)
+	if _, ok := c.GetPRState(3); ok {
+		t.Error("PR 3 should be removed (closed externally)")
+	}
+}
+
+// mockNotifier is a test double for the Notifier interface
+type mockNotifier struct {
+	notifyMergedFunc           func(ctx context.Context, prState *PRState) error
+	notifyCIFailedFunc         func(ctx context.Context, prState *PRState, failedChecks []string) error
+	notifyApprovalRequiredFunc func(ctx context.Context, prState *PRState) error
+	notifyFixIssueCreatedFunc  func(ctx context.Context, prState *PRState, issueNumber int) error
+}
+
+func (m *mockNotifier) NotifyMerged(ctx context.Context, prState *PRState) error {
+	if m.notifyMergedFunc != nil {
+		return m.notifyMergedFunc(ctx, prState)
+	}
+	return nil
+}
+
+func (m *mockNotifier) NotifyCIFailed(ctx context.Context, prState *PRState, failedChecks []string) error {
+	if m.notifyCIFailedFunc != nil {
+		return m.notifyCIFailedFunc(ctx, prState, failedChecks)
+	}
+	return nil
+}
+
+func (m *mockNotifier) NotifyApprovalRequired(ctx context.Context, prState *PRState) error {
+	if m.notifyApprovalRequiredFunc != nil {
+		return m.notifyApprovalRequiredFunc(ctx, prState)
+	}
+	return nil
+}
+
+func (m *mockNotifier) NotifyFixIssueCreated(ctx context.Context, prState *PRState, issueNumber int) error {
+	if m.notifyFixIssueCreatedFunc != nil {
+		return m.notifyFixIssueCreatedFunc(ctx, prState, issueNumber)
+	}
+	return nil
+}

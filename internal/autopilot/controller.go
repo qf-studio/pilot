@@ -443,10 +443,63 @@ func (c *Controller) processAllPRs(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		default:
+			// Check if PR was merged/closed externally before processing
+			if c.checkExternalMergeOrClose(ctx, pr) {
+				continue
+			}
+
 			if err := c.ProcessPR(ctx, pr.PRNumber); err != nil {
 				// Error already logged in ProcessPR
 				continue
 			}
 		}
 	}
+}
+
+// checkExternalMergeOrClose checks if a PR was merged or closed externally (by human).
+// Returns true if the PR was removed from tracking, false otherwise.
+func (c *Controller) checkExternalMergeOrClose(ctx context.Context, prState *PRState) bool {
+	ghPR, err := c.ghClient.GetPullRequest(ctx, c.owner, c.repo, prState.PRNumber)
+	if err != nil {
+		c.log.Warn("failed to check PR state", "pr", prState.PRNumber, "error", err)
+		return false
+	}
+
+	// Check if PR was merged externally
+	if ghPR.Merged {
+		c.log.Info("PR merged externally, removing from tracking", "pr", prState.PRNumber)
+		c.notifyExternalMerge(ctx, prState)
+		c.removePR(prState.PRNumber)
+		return true
+	}
+
+	// Check if PR was closed (without merge) externally
+	if ghPR.State == "closed" {
+		c.log.Info("PR closed externally, removing from tracking", "pr", prState.PRNumber)
+		c.notifyExternalClose(ctx, prState)
+		c.removePR(prState.PRNumber)
+		return true
+	}
+
+	return false
+}
+
+// notifyExternalMerge sends notification when a PR is merged externally.
+func (c *Controller) notifyExternalMerge(ctx context.Context, prState *PRState) {
+	if c.notifier == nil {
+		return
+	}
+
+	// Reuse the existing NotifyMerged notification
+	if err := c.notifier.NotifyMerged(ctx, prState); err != nil {
+		c.log.Warn("failed to send external merge notification", "pr", prState.PRNumber, "error", err)
+	}
+}
+
+// notifyExternalClose sends notification when a PR is closed externally.
+// Currently logs only; can be extended to use a specific notifier method.
+func (c *Controller) notifyExternalClose(ctx context.Context, prState *PRState) {
+	// No specific notification for closed PRs yet
+	// This is a hook for future extension
+	c.log.Info("PR closed externally without merge", "pr", prState.PRNumber, "issue", prState.IssueNumber)
 }
