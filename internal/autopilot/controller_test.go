@@ -1098,6 +1098,7 @@ type mockNotifier struct {
 	notifyCIFailedFunc         func(ctx context.Context, prState *PRState, failedChecks []string) error
 	notifyApprovalRequiredFunc func(ctx context.Context, prState *PRState) error
 	notifyFixIssueCreatedFunc  func(ctx context.Context, prState *PRState, issueNumber int) error
+	notifyReleasedFunc         func(ctx context.Context, prState *PRState, releaseURL string) error
 }
 
 func (m *mockNotifier) NotifyMerged(ctx context.Context, prState *PRState) error {
@@ -1124,6 +1125,13 @@ func (m *mockNotifier) NotifyApprovalRequired(ctx context.Context, prState *PRSt
 func (m *mockNotifier) NotifyFixIssueCreated(ctx context.Context, prState *PRState, issueNumber int) error {
 	if m.notifyFixIssueCreatedFunc != nil {
 		return m.notifyFixIssueCreatedFunc(ctx, prState, issueNumber)
+	}
+	return nil
+}
+
+func (m *mockNotifier) NotifyReleased(ctx context.Context, prState *PRState, releaseURL string) error {
+	if m.notifyReleasedFunc != nil {
+		return m.notifyReleasedFunc(ctx, prState, releaseURL)
 	}
 	return nil
 }

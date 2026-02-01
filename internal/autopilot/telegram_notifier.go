@@ -74,6 +74,34 @@ func (n *TelegramNotifier) NotifyFixIssueCreated(ctx context.Context, prState *P
 	return err
 }
 
+// NotifyReleased sends notification when a release is created.
+func (n *TelegramNotifier) NotifyReleased(ctx context.Context, prState *PRState, releaseURL string) error {
+	bumpLabel := "release"
+	switch prState.ReleaseBumpType {
+	case BumpMajor:
+		bumpLabel = "major release"
+	case BumpMinor:
+		bumpLabel = "minor release"
+	case BumpPatch:
+		bumpLabel = "patch release"
+	}
+
+	msg := fmt.Sprintf("✨ *Release %s Published*\n\n"+
+		"Version: `%s`\n"+
+		"Type: %s\n"+
+		"From PR: #%d\n\n"+
+		"[View Release](%s)",
+		escapeMarkdown(prState.ReleaseVersion),
+		prState.ReleaseVersion,
+		bumpLabel,
+		prState.PRNumber,
+		releaseURL,
+	)
+
+	_, err := n.client.SendMessage(ctx, n.chatID, msg, "Markdown")
+	return err
+}
+
 // escapeMarkdown escapes special characters for Telegram Markdown.
 func escapeMarkdown(s string) string {
 	replacer := strings.NewReplacer(

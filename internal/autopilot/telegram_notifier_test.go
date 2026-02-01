@@ -194,6 +194,79 @@ func TestTelegramNotifier_NotifyFixIssueCreated(t *testing.T) {
 	}
 }
 
+func TestTelegramNotifier_NotifyReleased(t *testing.T) {
+	tests := []struct {
+		name         string
+		bumpType     BumpType
+		wantContains []string
+	}{
+		{
+			name:     "minor release",
+			bumpType: BumpMinor,
+			wantContains: []string{
+				"✨",
+				"Published",
+				"Version:",
+				"minor release",
+				"From PR:",
+				"View Release",
+				"https://github.com/owner/repo/releases/tag/v1.2.0",
+			},
+		},
+		{
+			name:     "major release",
+			bumpType: BumpMajor,
+			wantContains: []string{
+				"major release",
+			},
+		},
+		{
+			name:     "patch release",
+			bumpType: BumpPatch,
+			wantContains: []string{
+				"patch release",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var receivedText string
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var req telegram.SendMessageRequest
+				_ = json.NewDecoder(r.Body).Decode(&req)
+				receivedText = req.Text
+
+				resp := telegram.SendMessageResponse{OK: true}
+				w.WriteHeader(http.StatusOK)
+				_ = json.NewEncoder(w).Encode(resp)
+			}))
+			defer server.Close()
+
+			client := telegram.NewClientWithBaseURL("test-token", server.URL)
+			notifier := NewTelegramNotifier(client, "123456")
+
+			prState := &PRState{
+				PRNumber:        42,
+				ReleaseVersion:  "v1.2.0",
+				ReleaseBumpType: tt.bumpType,
+			}
+
+			err := notifier.NotifyReleased(context.Background(), prState, "https://github.com/owner/repo/releases/tag/v1.2.0")
+			if err != nil {
+				t.Fatalf("NotifyReleased error: %v", err)
+			}
+
+			for _, want := range tt.wantContains {
+				if !strings.Contains(receivedText, want) {
+					t.Errorf("expected notification to contain %q, got: %s", want, receivedText)
+				}
+			}
+		})
+	}
+}
+
 func TestNewTelegramNotifier(t *testing.T) {
 	client := telegram.NewClient("test-token")
 	notifier := NewTelegramNotifier(client, "123456")
