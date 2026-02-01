@@ -9,10 +9,13 @@ import (
 type Intent string
 
 const (
-	IntentGreeting Intent = "greeting"
-	IntentQuestion Intent = "question"
-	IntentTask     Intent = "task"
 	IntentCommand  Intent = "command"
+	IntentGreeting Intent = "greeting"
+	IntentResearch Intent = "research"
+	IntentPlanning Intent = "planning"
+	IntentQuestion Intent = "question"
+	IntentChat     Intent = "chat"
+	IntentTask     Intent = "task"
 )
 
 // Common greeting patterns
@@ -34,6 +37,25 @@ var questionPatterns = []string{
 	"do you know", "is there", "are there",
 }
 
+// Research patterns - indicate research/analysis requests
+var researchPatterns = []string{
+	"research", "analyze", "review", "investigate",
+	"summarize", "compare", "evaluate", "assess",
+}
+
+// Planning patterns - indicate planning/design requests
+var planningPatterns = []string{
+	"plan", "design", "strategy", "how should we",
+	"approach for", "architect", "outline",
+}
+
+// Chat patterns - indicate conversational/opinion requests
+var chatPatterns = []string{
+	"what do you think", "opinion on", "thoughts about",
+	"do you recommend", "should i", "is it better",
+	"discuss", "let's talk about", "lets talk about",
+}
+
 // Task action words that indicate a task request
 var taskActionWords = []string{
 	"create", "add", "make", "build", "implement",
@@ -41,31 +63,49 @@ var taskActionWords = []string{
 	"delete", "remove", "refactor", "write",
 	"generate", "setup", "configure", "install",
 	// Meta-task actions (managing backlog, priorities, etc.)
-	"review", "prioritize", "reprioritize", "reorder",
+	// Note: "review" moved to researchPatterns per GH-290
+	"prioritize", "reprioritize", "reorder",
 	"sort", "organize", "rank", "triage", "set priority",
 }
 
 // DetectIntent analyzes a message and returns the detected intent
+// Priority order: Command > Greeting > Research > Planning > Question > Chat > Task
 func DetectIntent(message string) Intent {
 	// Normalize message
 	msg := strings.ToLower(strings.TrimSpace(message))
 
-	// Commands start with /
+	// 1. Commands start with /
 	if strings.HasPrefix(msg, "/") {
 		return IntentCommand
 	}
 
-	// Check for greetings (short messages that are just greetings)
+	// 2. Check for greetings (short messages that are just greetings)
 	if isGreeting(msg) {
 		return IntentGreeting
 	}
 
-	// Check for questions
+	// 3. Check for research requests (research patterns with topic/URL)
+	if isResearch(msg) {
+		return IntentResearch
+	}
+
+	// 4. Check for planning requests
+	if isPlanning(msg) {
+		return IntentPlanning
+	}
+
+	// 5. Check for chat/conversational (opinion-seeking, no action words)
+	// Checked before questions because "what do you think" starts with "what"
+	if isChat(msg) && !containsActionWord(msg) {
+		return IntentChat
+	}
+
+	// 6. Check for questions (ends with ? or question starters)
 	if isQuestion(msg) {
 		return IntentQuestion
 	}
 
-	// Check for task action words
+	// 7. Check for task action words
 	if isTask(msg) {
 		return IntentTask
 	}
@@ -175,6 +215,48 @@ func isTask(msg string) bool {
 	return containsActionWord(msg)
 }
 
+// isResearch checks if the message is a research/analysis request
+func isResearch(msg string) bool {
+	for _, pattern := range researchPatterns {
+		// Check for pattern at start or after common prefixes
+		patterns := []string{
+			"^" + pattern + "\\b",           // starts with pattern
+			"\\bplease " + pattern + "\\b",  // please + pattern
+			"\\bcan you " + pattern + "\\b", // can you + pattern
+			"\\bi need " + pattern + "\\b",  // i need + pattern
+			"\\bi want " + pattern + "\\b",  // i want + pattern
+		}
+		for _, p := range patterns {
+			if matched, _ := regexp.MatchString(p, msg); matched {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// isPlanning checks if the message is a planning/design request
+func isPlanning(msg string) bool {
+	for _, pattern := range planningPatterns {
+		// Use word boundary matching to avoid "architect" matching "architecture"
+		re := regexp.MustCompile(`\b` + regexp.QuoteMeta(pattern) + `\b`)
+		if re.MatchString(msg) {
+			return true
+		}
+	}
+	return false
+}
+
+// isChat checks if the message is conversational/opinion-seeking
+func isChat(msg string) bool {
+	for _, pattern := range chatPatterns {
+		if strings.Contains(msg, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
 // containsActionWord checks if message contains task action words
 func containsActionWord(msg string) bool {
 	for _, action := range taskActionWords {
@@ -198,14 +280,20 @@ func containsActionWord(msg string) bool {
 // IntentDescription returns a human-readable description of the intent
 func (i Intent) Description() string {
 	switch i {
-	case IntentGreeting:
-		return "Greeting"
-	case IntentQuestion:
-		return "Question"
-	case IntentTask:
-		return "Task"
 	case IntentCommand:
 		return "Command"
+	case IntentGreeting:
+		return "Greeting"
+	case IntentResearch:
+		return "Research"
+	case IntentPlanning:
+		return "Planning"
+	case IntentQuestion:
+		return "Question"
+	case IntentChat:
+		return "Chat"
+	case IntentTask:
+		return "Task"
 	default:
 		return "Unknown"
 	}

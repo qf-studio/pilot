@@ -47,13 +47,38 @@ func TestDetectIntent(t *testing.T) {
 		{"task with ID", "work on TASK-04", IntentTask},
 		{"task with number", "do 04", IntentTask},
 
-		// Meta-task actions (backlog management)
-		{"meta-task review", "review tasks", IntentTask},
-		{"meta-task prioritize", "prioritize the backlog", IntentTask},
-		{"meta-task reorder", "reorder tasks by priority", IntentTask},
-		{"meta-task triage", "triage issues", IntentTask},
-		{"meta-task set priority", "set priority for tasks", IntentTask},
-		{"meta-task review with context", "review tasks, set new priority by value", IntentTask},
+		// Research
+		{"research article", "research this article", IntentResearch},
+		{"analyze codebase", "analyze the codebase", IntentResearch},
+		{"review PR", "review PR #123", IntentResearch},
+		{"investigate issue", "investigate the memory leak", IntentResearch},
+		{"summarize doc", "summarize this document", IntentResearch},
+		{"compare options", "compare these two approaches", IntentResearch},
+		{"evaluate solution", "evaluate this solution", IntentResearch},
+		{"assess risk", "assess the security risk", IntentResearch},
+		{"please research", "please research this topic", IntentResearch},
+		{"can you analyze", "can you analyze the logs", IntentResearch},
+
+		// Planning
+		{"plan auth", "plan how to add auth", IntentPlanning},
+		{"design api", "design the API", IntentPlanning},
+		{"strategy scaling", "strategy for scaling", IntentPlanning},
+		{"how should we", "how should we handle errors", IntentPlanning},
+		{"approach for", "approach for caching", IntentPlanning},
+		{"architect system", "architect the system", IntentPlanning},
+		{"outline feature", "outline the feature", IntentPlanning},
+
+		// Chat (without ? to avoid question priority)
+		{"what do you think", "what do you think about Redis", IntentChat},
+		{"should I use", "should i use TypeScript", IntentChat},
+		{"opinion on", "opinion on microservices", IntentChat},
+		{"thoughts about", "thoughts about this approach", IntentChat},
+		{"do you recommend", "do you recommend using Go", IntentChat},
+		{"is it better", "is it better to use SQL or NoSQL", IntentChat},
+		{"discuss topic", "discuss the tradeoffs", IntentChat},
+		{"lets talk about", "lets talk about performance", IntentChat},
+		// Chat with ? still becomes chat (chat checked before question)
+		{"chat with question mark", "what do you think about Redis?", IntentChat},
 
 		// Edge cases
 		{"what does question", "what does the auth module do", IntentQuestion},
@@ -75,10 +100,13 @@ func TestIntentDescription(t *testing.T) {
 		intent   Intent
 		expected string
 	}{
-		{IntentGreeting, "Greeting"},
-		{IntentQuestion, "Question"},
-		{IntentTask, "Task"},
 		{IntentCommand, "Command"},
+		{IntentGreeting, "Greeting"},
+		{IntentResearch, "Research"},
+		{IntentPlanning, "Planning"},
+		{IntentQuestion, "Question"},
+		{IntentChat, "Chat"},
+		{IntentTask, "Task"},
 		{Intent("unknown"), "Unknown"},
 	}
 
@@ -223,7 +251,7 @@ func TestContainsActionWord(t *testing.T) {
 		{"change config", true},
 		{"edit code", true},
 		// Meta-task actions
-		{"review tasks", true},
+		// Note: "review" moved to research patterns (GH-290)
 		{"prioritize backlog", true},
 		{"reorder items", true},
 		{"sort list", true},
@@ -353,10 +381,13 @@ func TestIntentConstants(t *testing.T) {
 		intent   Intent
 		expected string
 	}{
-		{IntentGreeting, "greeting"},
-		{IntentQuestion, "question"},
-		{IntentTask, "task"},
 		{IntentCommand, "command"},
+		{IntentGreeting, "greeting"},
+		{IntentResearch, "research"},
+		{IntentPlanning, "planning"},
+		{IntentQuestion, "question"},
+		{IntentChat, "chat"},
+		{IntentTask, "task"},
 	}
 
 	for _, tt := range tests {
@@ -409,12 +440,13 @@ func TestQuestionPatterns(t *testing.T) {
 // TestTaskActionWords tests task action word patterns
 func TestTaskActionWords(t *testing.T) {
 	// All action words should be recognized
+	// Note: "review" excluded as it's now a research pattern (see TestIsResearch)
 	actions := []string{
 		"create", "add", "make", "build", "implement",
 		"fix", "update", "modify", "change", "edit",
 		"delete", "remove", "refactor", "write",
 		"generate", "setup", "configure", "install",
-		"review", "prioritize", "reprioritize", "reorder",
+		"prioritize", "reprioritize", "reorder",
 		"sort", "organize", "rank", "triage",
 	}
 
@@ -486,10 +518,13 @@ func TestIntentStringConversion(t *testing.T) {
 		intent Intent
 		want   string
 	}{
-		{IntentGreeting, "greeting"},
-		{IntentQuestion, "question"},
-		{IntentTask, "task"},
 		{IntentCommand, "command"},
+		{IntentGreeting, "greeting"},
+		{IntentResearch, "research"},
+		{IntentPlanning, "planning"},
+		{IntentQuestion, "question"},
+		{IntentChat, "chat"},
+		{IntentTask, "task"},
 	}
 
 	for _, tt := range tests {
@@ -497,6 +532,135 @@ func TestIntentStringConversion(t *testing.T) {
 			got := string(tt.intent)
 			if got != tt.want {
 				t.Errorf("string(%v) = %q, want %q", tt.intent, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestIsResearch tests research intent detection
+func TestIsResearch(t *testing.T) {
+	tests := []struct {
+		message  string
+		expected bool
+	}{
+		{"research this topic", true},
+		{"analyze the codebase", true},
+		{"review the PR", true},
+		{"investigate the bug", true},
+		{"summarize the document", true},
+		{"compare these options", true},
+		{"evaluate the solution", true},
+		{"assess the risk", true},
+		{"please research this", true},
+		{"can you analyze this", true},
+		{"i need research on this", true},
+		{"hello", false},
+		{"create a file", false},
+		{"what is this", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.message, func(t *testing.T) {
+			got := isResearch(tt.message)
+			if got != tt.expected {
+				t.Errorf("isResearch(%q) = %v, want %v", tt.message, got, tt.expected)
+			}
+		})
+	}
+}
+
+// TestIsPlanning tests planning intent detection
+func TestIsPlanning(t *testing.T) {
+	tests := []struct {
+		message  string
+		expected bool
+	}{
+		{"plan how to add auth", true},
+		{"design the API", true},
+		{"strategy for scaling", true},
+		{"how should we handle this", true},
+		{"approach for caching", true},
+		{"architect the system", true},
+		{"outline the feature", true},
+		{"hello", false},
+		{"create a file", false},
+		{"what is this", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.message, func(t *testing.T) {
+			got := isPlanning(tt.message)
+			if got != tt.expected {
+				t.Errorf("isPlanning(%q) = %v, want %v", tt.message, got, tt.expected)
+			}
+		})
+	}
+}
+
+// TestIsChat tests chat intent detection
+func TestIsChat(t *testing.T) {
+	tests := []struct {
+		message  string
+		expected bool
+	}{
+		{"what do you think about Redis", true},
+		{"opinion on microservices", true},
+		{"thoughts about this approach", true},
+		{"do you recommend Go", true},
+		{"should i use TypeScript", true},
+		{"is it better to use SQL", true},
+		{"discuss the tradeoffs", true},
+		{"let's talk about performance", true},
+		{"lets talk about caching", true},
+		{"hello", false},
+		{"create a file", false},
+		{"how do I run tests", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.message, func(t *testing.T) {
+			got := isChat(tt.message)
+			if got != tt.expected {
+				t.Errorf("isChat(%q) = %v, want %v", tt.message, got, tt.expected)
+			}
+		})
+	}
+}
+
+// TestNewIntentPriority tests that new intents have correct priority
+func TestNewIntentPriority(t *testing.T) {
+	tests := []struct {
+		name     string
+		message  string
+		expected Intent
+	}{
+		// Research takes priority over task (review is both)
+		{"research over task", "research this article", IntentResearch},
+
+		// Planning takes priority over question (even with ?)
+		{"planning over question", "how should we handle this?", IntentPlanning},
+
+		// Chat without action words stays chat (no ? mark)
+		{"chat without action", "what do you think about Go", IntentChat},
+
+		// Chat with ? still becomes chat (chat checked before question)
+		{"chat with question mark", "what do you think about Go?", IntentChat},
+
+		// Questions with ? still work
+		{"question with ?", "what is this?", IntentQuestion},
+
+		// Tasks with action words still work
+		{"task with action", "create a new file", IntentTask},
+
+		// Research with can you prefix
+		{"research with prefix", "can you analyze this code", IntentResearch},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := DetectIntent(tt.message)
+			if got != tt.expected {
+				t.Errorf("DetectIntent(%q) = %v, want %v", tt.message, got, tt.expected)
 			}
 		})
 	}
