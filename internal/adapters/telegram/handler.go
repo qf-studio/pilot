@@ -327,11 +327,15 @@ func (h *Handler) processUpdate(ctx context.Context, update *Update) {
 		h.handleQuestion(ctx, chatID, text)
 	case IntentResearch:
 		h.handleResearch(ctx, chatID, text)
+	case IntentPlanning:
+		h.handlePlanning(ctx, chatID, text)
+	case IntentChat:
+		h.handleChat(ctx, chatID, text)
 	case IntentTask:
 		h.handleTask(ctx, chatID, text)
 	default:
-		// Fallback to task
-		h.handleTask(ctx, chatID, text)
+		// Fallback to chat for conversational messages
+		h.handleChat(ctx, chatID, text)
 	}
 }
 
@@ -543,6 +547,155 @@ func (h *Handler) saveResearchFile(query, content string) {
 	_ = os.WriteFile(filePath, []byte(content), 0644)
 
 	logging.WithComponent("telegram").Debug("Saved research file", slog.String("path", filePath))
+}
+
+// handlePlanning handles planning requests
+// Explores codebase and creates implementation plan, then offers Execute/Cancel
+func (h *Handler) handlePlanning(ctx context.Context, chatID, request string) {
+	// Send acknowledgment
+	_, _ = h.client.SendMessage(ctx, chatID, "📐 Drafting plan...", "")
+
+	// Create planning task (read-only exploration)
+	taskID := fmt.Sprintf("PLAN-%d", time.Now().Unix())
+	task := &executor.Task{
+		ID:    taskID,
+		Title: "Plan: " + truncateDescription(request, 40),
+		Description: fmt.Sprintf(`Create an implementation plan for: %s
+
+Explore the codebase and propose a detailed plan. Include:
+1. Summary of approach
+2. Files to modify/create
+3. Step-by-step implementation phases
+4. Potential risks or considerations
+
+DO NOT make any code changes. Only explore and plan.`, request),
+		ProjectPath: h.getActiveProjectPath(chatID),
+		CreatePR:    false,
+	}
+
+	// Execute with timeout (2 minutes for planning)
+	planCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+
+	logging.WithTask(taskID).Info("Creating plan", slog.String("chat_id", chatID))
+	result, err := h.runner.Execute(planCtx, task)
+
+	if err != nil {
+		if planCtx.Err() == context.DeadlineExceeded {
+			_, _ = h.client.SendMessage(ctx, chatID, "⏱ Planning timed out. Try a simpler request.", "")
+		} else {
+			_, _ = h.client.SendMessage(ctx, chatID, fmt.Sprintf("❌ Planning failed: %s", err.Error()), "")
+		}
+		return
+	}
+
+	planContent := cleanInternalSignals(result.Output)
+	if planContent == "" {
+		_, _ = h.client.SendMessage(ctx, chatID, "🤷 Could not generate a plan. Try being more specific.", "")
+		return
+	}
+
+	// Store the plan as a pending task for execution
+	h.mu.Lock()
+	h.pendingTasks[chatID] = &PendingTask{
+		TaskID:      taskID,
+		Description: fmt.Sprintf("## Implementation Plan\n\n%s\n\n## Original Request\n\n%s", planContent, request),
+		ChatID:      chatID,
+		CreatedAt:   time.Now(),
+	}
+	h.mu.Unlock()
+
+	// Send plan summary with execute button
+	summary := extractPlanSummary(planContent)
+	_, _ = h.client.SendMessageWithKeyboard(ctx, chatID,
+		fmt.Sprintf("📋 Implementation Plan\n\n%s", summary), "",
+		[][]InlineKeyboardButton{
+			{
+				{Text: "✅ Execute", CallbackData: "execute"},
+				{Text: "❌ Cancel", CallbackData: "cancel"},
+			},
+		})
+}
+
+// extractPlanSummary extracts key points from a plan for display
+func extractPlanSummary(plan string) string {
+	lines := strings.Split(plan, "\n")
+	var summary []string
+	lineCount := 0
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+
+		summary = append(summary, trimmed)
+		lineCount++
+
+		if lineCount >= 20 {
+			break
+		}
+	}
+
+	result := strings.Join(summary, "\n")
+	if len(result) > 2000 {
+		result = result[:2000] + "\n\n_(truncated)_"
+	}
+
+	return result
+}
+
+// handleChat handles conversational messages
+// Responds conversationally without code execution or PR creation
+func (h *Handler) handleChat(ctx context.Context, chatID, message string) {
+	// Send typing indicator
+	_, _ = h.client.SendMessage(ctx, chatID, "💬 Thinking...", "")
+
+	// Create chat task (read-only, conversational)
+	taskID := fmt.Sprintf("CHAT-%d", time.Now().Unix())
+	task := &executor.Task{
+		ID:    taskID,
+		Title: "Chat: " + truncateDescription(message, 30),
+		Description: fmt.Sprintf(`You are Pilot, an AI assistant for the codebase at %s.
+
+The user wants to have a conversation (not execute a task).
+Respond helpfully and conversationally. You can reference project knowledge but DO NOT make code changes.
+
+Be concise - this is a chat conversation, not a report. Keep response under 500 words.
+
+User message: %s`, h.getActiveProjectPath(chatID), message),
+		ProjectPath: h.getActiveProjectPath(chatID),
+		CreatePR:    false,
+	}
+
+	// Execute with short timeout (60 seconds for chat)
+	chatCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+
+	logging.WithTask(taskID).Debug("Chat response", slog.String("chat_id", chatID))
+	result, err := h.runner.Execute(chatCtx, task)
+
+	if err != nil {
+		if chatCtx.Err() == context.DeadlineExceeded {
+			_, _ = h.client.SendMessage(ctx, chatID, "⏱ Took too long to respond. Try a simpler question.", "")
+		} else {
+			_, _ = h.client.SendMessage(ctx, chatID, "Sorry, I couldn't process that. Try rephrasing?", "")
+		}
+		return
+	}
+
+	// Clean and send response
+	response := cleanInternalSignals(result.Output)
+	if response == "" {
+		response = "I'm not sure how to respond to that. Could you rephrase?"
+	}
+
+	// Truncate if too long
+	if len(response) > 4000 {
+		response = response[:3997] + "..."
+	}
+
+	_, _ = h.client.SendMessage(ctx, chatID, response, "")
 }
 
 // handleTask handles task requests with confirmation

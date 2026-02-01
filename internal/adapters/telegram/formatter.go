@@ -215,12 +215,19 @@ func FormatGreeting(username string) string {
 		name = username
 	}
 	return fmt.Sprintf(
-		"👋 Hey %s! I'm Pilot bot.\n\n"+
-			"Send me a task to execute, or ask me a question about the codebase.\n\n"+
-			"Examples:\n"+
-			"• `Create a hello.py file`\n"+
-			"• `What files handle auth?`\n"+
-			"• `/help` for more info",
+		"👋 Hey %s! I'm Pilot.\n\n"+
+			"I can help you in different ways:\n\n"+
+			"💬 *Chat* - Ask opinions or discuss\n"+
+			"  \"What do you think about using Redis?\"\n\n"+
+			"🔍 *Questions* - Quick answers\n"+
+			"  \"What files handle auth?\"\n\n"+
+			"🔬 *Research* - Deep analysis\n"+
+			"  \"Research how caching works here\"\n\n"+
+			"📐 *Planning* - Design before building\n"+
+			"  \"Plan how to add rate limiting\"\n\n"+
+			"🚀 *Tasks* - Build features\n"+
+			"  \"Add a logout button\"\n\n"+
+			"Type /help for commands.",
 		name,
 	)
 }
