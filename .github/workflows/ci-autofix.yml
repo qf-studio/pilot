@@ -1,20 +1,11 @@
 name: CI Auto-Fix
 
 on:
-  workflow_run:
-    workflows: ["CI"]
-    types: [completed]
+  repository_dispatch:
+    types: [ci-failure]
 
 jobs:
-  # Always-run job to prevent "failed" status when CI passes
-  check-status:
-    runs-on: ubuntu-latest
-    steps:
-      - name: CI Status
-        run: 'echo "CI completed with status: ${{ github.event.workflow_run.conclusion }}"'
-
   create-fix-issue:
-    if: ${{ github.event.workflow_run.conclusion == 'failure' }}
     runs-on: ubuntu-latest
     steps:
       - name: Check if already has fix issue
@@ -28,8 +19,7 @@ jobs:
               labels: 'ci-fix',
               state: 'open'
             });
-            // Don't create duplicate fix issues
-            const runId = context.payload.workflow_run.id;
+            const runId = context.payload.client_payload.run_id;
             const existing = issues.data.find(i => i.body.includes(`run_id: ${runId}`));
             return { exists: !!existing };
 
@@ -45,13 +35,13 @@ jobs:
               labels: 'ci-fix',
               state: 'all'
             });
-            const branch = context.payload.workflow_run.head_branch;
+            const branch = context.payload.client_payload.branch;
             const count = issues.data.filter(i =>
               i.body?.includes(`**Branch:** ${branch}`)
             ).length;
             console.log(`Found ${count} existing ci-fix issues for branch: ${branch}`);
             if (count >= 3) {
-              console.log(`⚠️ Max fix attempts (3) reached for branch ${branch}. Skipping issue creation.`);
+              console.log(`Max fix attempts (3) reached for branch ${branch}. Skipping.`);
             }
             core.setOutput('count', count);
             core.setOutput('max_reached', count >= 3);
@@ -62,21 +52,21 @@ jobs:
         id: get-failure
         with:
           script: |
-            const run = context.payload.workflow_run;
+            const payload = context.payload.client_payload;
             const jobs = await github.rest.actions.listJobsForWorkflowRun({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              run_id: run.id
+              run_id: payload.run_id
             });
 
             const failedJobs = jobs.data.jobs.filter(j => j.conclusion === 'failure');
             const jobNames = failedJobs.map(j => j.name).join(', ');
 
             return {
-              runId: run.id,
-              runUrl: run.html_url,
-              branch: run.head_branch,
-              sha: run.head_sha.substring(0, 7),
+              runId: payload.run_id,
+              runUrl: payload.run_url,
+              branch: payload.branch,
+              sha: payload.sha.substring(0, 7),
               jobs: jobNames
             };
 
