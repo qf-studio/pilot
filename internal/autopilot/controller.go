@@ -24,6 +24,13 @@ type Notifier interface {
 	NotifyFixIssueCreated(ctx context.Context, prState *PRState, issueNumber int) error
 }
 
+// ReleaseNotifier extends Notifier with release notifications.
+type ReleaseNotifier interface {
+	Notifier
+	// NotifyReleased sends notification when a release is created.
+	NotifyReleased(ctx context.Context, prState *PRState, releaseURL string) error
+}
+
 // Controller orchestrates the autopilot loop for PR processing.
 // It manages the state machine: PR created → CI check → merge → post-merge CI → feedback loop.
 type Controller struct {
@@ -33,6 +40,7 @@ type Controller struct {
 	ciMonitor    *CIMonitor
 	autoMerger   *AutoMerger
 	feedbackLoop *FeedbackLoop
+	releaser     *Releaser
 	notifier     Notifier
 	log          *slog.Logger
 
@@ -63,6 +71,11 @@ func NewController(cfg *Config, ghClient *github.Client, approvalMgr *approval.M
 	c.ciMonitor = NewCIMonitor(ghClient, owner, repo, cfg)
 	c.autoMerger = NewAutoMerger(ghClient, approvalMgr, c.ciMonitor, owner, repo, cfg)
 	c.feedbackLoop = NewFeedbackLoop(ghClient, owner, repo, cfg)
+
+	// Initialize releaser if release config exists
+	if cfg.Release != nil && cfg.Release.Enabled {
+		c.releaser = NewReleaser(ghClient, owner, repo, cfg.Release)
+	}
 
 	return c
 }
@@ -127,6 +140,8 @@ func (c *Controller) ProcessPR(ctx context.Context, prNumber int) error {
 		err = c.handleMerged(ctx, prState)
 	case StagePostMergeCI:
 		err = c.handlePostMergeCI(ctx, prState)
+	case StageReleasing:
+		err = c.handleReleasing(ctx, prState)
 	case StageFailed:
 		// Terminal state - no processing
 		return nil
@@ -271,7 +286,11 @@ func (c *Controller) handleMerging(ctx context.Context, prState *PRState) error 
 // handleMerged checks post-merge CI (stage/prod).
 func (c *Controller) handleMerged(ctx context.Context, prState *PRState) error {
 	if c.config.Environment == EnvDev {
-		// Dev: done
+		// Dev: check if we should release without waiting for post-merge CI
+		if c.shouldTriggerRelease() && !c.config.Release.RequireCI {
+			prState.Stage = StageReleasing
+			return nil
+		}
 		c.log.Info("dev mode: PR complete", "pr", prState.PRNumber)
 		c.removePR(prState.PRNumber)
 		return nil
@@ -305,10 +324,17 @@ func (c *Controller) handlePostMergeCI(ctx context.Context, prState *PRState) er
 		} else {
 			c.log.Info("created fix issue for post-merge CI failure", "pr", prState.PRNumber, "issue", issueNum)
 		}
-	} else {
-		c.log.Info("post-merge CI passed", "pr", prState.PRNumber)
+		c.removePR(prState.PRNumber)
+		return nil
 	}
 
+	// CI passed - check if we should release
+	if c.shouldTriggerRelease() {
+		prState.Stage = StageReleasing
+		return nil
+	}
+
+	c.log.Info("post-merge CI passed", "pr", prState.PRNumber)
 	c.removePR(prState.PRNumber)
 	return nil
 }
@@ -320,6 +346,88 @@ func (c *Controller) getMainBranchSHA(ctx context.Context) (string, error) {
 		return "", err
 	}
 	return branch.SHA(), nil
+}
+
+// shouldTriggerRelease returns true if auto-release is configured.
+func (c *Controller) shouldTriggerRelease() bool {
+	return c.config.Release != nil &&
+		c.config.Release.Enabled &&
+		c.config.Release.Trigger == "on_merge"
+}
+
+// handleReleasing creates a release after successful merge and CI.
+func (c *Controller) handleReleasing(ctx context.Context, prState *PRState) error {
+	if c.releaser == nil {
+		c.log.Debug("releaser not configured, skipping release", "pr", prState.PRNumber)
+		c.removePR(prState.PRNumber)
+		return nil
+	}
+
+	// Get current version
+	currentVersion, err := c.releaser.GetCurrentVersion(ctx)
+	if err != nil {
+		c.log.Warn("failed to get current version, defaulting to 0.0.0", "error", err)
+		currentVersion = SemVer{}
+	}
+
+	// Get PR commits for bump detection
+	commits, err := c.ghClient.GetPRCommits(ctx, c.owner, c.repo, prState.PRNumber)
+	if err != nil {
+		return fmt.Errorf("failed to get PR commits: %w", err)
+	}
+
+	// Detect bump type from commits
+	bumpType := DetectBumpType(commits)
+	prState.ReleaseBumpType = bumpType
+
+	if !c.releaser.ShouldRelease(bumpType) {
+		c.log.Info("no release needed", "pr", prState.PRNumber, "bump", bumpType)
+		c.removePR(prState.PRNumber)
+		return nil
+	}
+
+	// Calculate new version
+	newVersion := currentVersion.Bump(bumpType)
+	prState.ReleaseVersion = newVersion.String(c.config.Release.TagPrefix)
+
+	c.log.Info("creating release",
+		"pr", prState.PRNumber,
+		"current", currentVersion.String(c.config.Release.TagPrefix),
+		"new", prState.ReleaseVersion,
+		"bump", bumpType,
+	)
+
+	// Generate changelog
+	var changelog string
+	if c.config.Release.GenerateChangelog {
+		changelog = GenerateChangelog(commits, prState.PRNumber)
+	} else {
+		changelog = fmt.Sprintf("Release from PR #%d", prState.PRNumber)
+	}
+
+	// Create release
+	release, err := c.releaser.CreateRelease(ctx, prState, newVersion, changelog)
+	if err != nil {
+		return fmt.Errorf("failed to create release: %w", err)
+	}
+
+	c.log.Info("release created",
+		"pr", prState.PRNumber,
+		"version", prState.ReleaseVersion,
+		"url", release.HTMLURL,
+	)
+
+	// Send notification
+	if c.config.Release.NotifyOnRelease && c.notifier != nil {
+		if n, ok := c.notifier.(ReleaseNotifier); ok {
+			if err := n.NotifyReleased(ctx, prState, release.HTMLURL); err != nil {
+				c.log.Warn("failed to send release notification", "error", err)
+			}
+		}
+	}
+
+	c.removePR(prState.PRNumber)
+	return nil
 }
 
 // removePR removes PR from tracking.
