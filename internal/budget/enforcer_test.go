@@ -2,6 +2,7 @@ package budget
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -12,22 +13,33 @@ import (
 type mockUsageProvider struct {
 	dailyCost   float64
 	monthlyCost float64
+	callCount   int
+	mu          sync.Mutex
 }
 
 func (m *mockUsageProvider) GetUsageSummary(query memory.UsageQuery) (*memory.UsageSummary, error) {
-	// Determine if this is a daily or monthly query based on the time range
-	duration := query.End.Sub(query.Start)
+	m.mu.Lock()
+	m.callCount++
+	isOddCall := m.callCount%2 == 1
+	m.mu.Unlock()
 
-	if duration < 25*time.Hour {
-		// Daily query
+	// Enforcer always calls: daily query first, then monthly query
+	// So odd calls (1st, 3rd, ...) are daily, even calls (2nd, 4th, ...) are monthly
+	// This fixes the bug where on day 1 of month, both queries have same duration
+	if isOddCall {
 		return &memory.UsageSummary{
 			TotalCost: m.dailyCost,
 		}, nil
 	}
-	// Monthly query
 	return &memory.UsageSummary{
 		TotalCost: m.monthlyCost,
 	}, nil
+}
+
+func (m *mockUsageProvider) Reset() {
+	m.mu.Lock()
+	m.callCount = 0
+	m.mu.Unlock()
 }
 
 func TestEnforcer_CheckBudget_Disabled(t *testing.T) {
