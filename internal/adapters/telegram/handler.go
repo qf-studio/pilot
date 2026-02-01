@@ -325,6 +325,8 @@ func (h *Handler) processUpdate(ctx context.Context, update *Update) {
 		h.handleGreeting(ctx, chatID, msg.From)
 	case IntentQuestion:
 		h.handleQuestion(ctx, chatID, text)
+	case IntentResearch:
+		h.handleResearch(ctx, chatID, text)
 	case IntentTask:
 		h.handleTask(ctx, chatID, text)
 	default:
@@ -446,6 +448,101 @@ If the question is too broad, ask for clarification instead of exploring everyth
 	}
 
 	_, _ = h.client.SendMessage(ctx, chatID, answer, "")
+}
+
+// handleResearch handles research/analysis requests
+// Executes Claude Code in read-only mode and returns analysis directly to chat
+func (h *Handler) handleResearch(ctx context.Context, chatID, query string) {
+	// Send acknowledgment
+	_, _ = h.client.SendMessage(ctx, chatID, "🔬 Researching...", "")
+
+	// Create research task (no branch, no PR)
+	taskID := fmt.Sprintf("RES-%d", time.Now().Unix())
+	task := &executor.Task{
+		ID:    taskID,
+		Title: "Research: " + truncateDescription(query, 40),
+		Description: fmt.Sprintf(`Research and analyze: %s
+
+Provide findings in a structured format with:
+- Executive summary
+- Key findings
+- Relevant code/files if applicable
+- Recommendations
+
+DO NOT make any code changes. This is a read-only research task.`, query),
+		ProjectPath: h.getActiveProjectPath(chatID),
+		CreatePR:    false,
+	}
+
+	// Execute with timeout (3 minutes for research)
+	researchCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+	defer cancel()
+
+	logging.WithTask(taskID).Info("Executing research", slog.String("chat_id", chatID), slog.String("query", truncateDescription(query, 50)))
+	result, err := h.runner.Execute(researchCtx, task)
+
+	if err != nil {
+		if researchCtx.Err() == context.DeadlineExceeded {
+			_, _ = h.client.SendMessage(ctx, chatID, "⏱ Research timed out. Try a more specific query.", "")
+		} else {
+			_, _ = h.client.SendMessage(ctx, chatID, fmt.Sprintf("❌ Research failed: %s", err.Error()), "")
+		}
+		return
+	}
+
+	// Send content to Telegram (chunked if long)
+	h.sendResearchOutput(ctx, chatID, query, result)
+}
+
+// sendResearchOutput sends research findings to Telegram, chunking if necessary
+func (h *Handler) sendResearchOutput(ctx context.Context, chatID, query string, result *executor.ExecutionResult) {
+	content := cleanInternalSignals(result.Output)
+	if content == "" {
+		_, _ = h.client.SendMessage(ctx, chatID, "🤷 No research findings to report.", "")
+		return
+	}
+
+	// Chunk content for Telegram (4096 char limit, use 3800 for safety)
+	chunks := chunkContent(content, 3800)
+
+	for i, chunk := range chunks {
+		msg := chunk
+		if len(chunks) > 1 {
+			msg = fmt.Sprintf("📄 Part %d/%d\n\n%s", i+1, len(chunks), chunk)
+		}
+		_, _ = h.client.SendMessage(ctx, chatID, msg, "")
+
+		// Small delay between chunks to avoid rate limiting
+		if i < len(chunks)-1 {
+			time.Sleep(500 * time.Millisecond)
+		}
+	}
+
+	// Optionally save to file
+	h.saveResearchFile(query, content)
+}
+
+// saveResearchFile saves research output to .agent/research/ directory
+func (h *Handler) saveResearchFile(query, content string) {
+	// Create .agent/research/ directory if it doesn't exist
+	researchDir := filepath.Join(h.projectPath, ".agent", "research")
+	if err := os.MkdirAll(researchDir, 0755); err != nil {
+		return // Silent fail for file save
+	}
+
+	// Generate filename from query
+	slug := strings.ToLower(query)
+	slug = regexp.MustCompile(`[^a-z0-9]+`).ReplaceAllString(slug, "-")
+	if len(slug) > 40 {
+		slug = slug[:40]
+	}
+	filename := fmt.Sprintf("%s-%d.md", slug, time.Now().Unix())
+
+	// Save file
+	filePath := filepath.Join(researchDir, filename)
+	_ = os.WriteFile(filePath, []byte(content), 0644)
+
+	logging.WithComponent("telegram").Debug("Saved research file", slog.String("path", filePath))
 }
 
 // handleTask handles task requests with confirmation

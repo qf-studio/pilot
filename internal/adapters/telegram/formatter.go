@@ -456,3 +456,32 @@ func truncateDescription(s string, maxLen int) string {
 	}
 	return s[:maxLen-3] + "..."
 }
+
+// chunkContent splits content into chunks of maxLen characters.
+// Tries to break at newlines for cleaner output.
+func chunkContent(content string, maxLen int) []string {
+	if len(content) <= maxLen {
+		return []string{content}
+	}
+
+	var chunks []string
+	remaining := content
+
+	for len(remaining) > 0 {
+		if len(remaining) <= maxLen {
+			chunks = append(chunks, remaining)
+			break
+		}
+
+		// Find a good break point (prefer newline)
+		breakPoint := maxLen
+		if idx := strings.LastIndex(remaining[:maxLen], "\n"); idx > maxLen/2 {
+			breakPoint = idx + 1
+		}
+
+		chunks = append(chunks, strings.TrimSpace(remaining[:breakPoint]))
+		remaining = strings.TrimSpace(remaining[breakPoint:])
+	}
+
+	return chunks
+}
