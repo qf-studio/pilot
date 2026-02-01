@@ -393,3 +393,77 @@ func TestEscapeMarkdownNotifier(t *testing.T) {
 		})
 	}
 }
+
+// TestDefaultConfigPlainTextMode tests that PlainTextMode defaults to true
+func TestDefaultConfigPlainTextMode(t *testing.T) {
+	config := DefaultConfig()
+
+	if !config.PlainTextMode {
+		t.Error("PlainTextMode should default to true for better messaging app compatibility")
+	}
+}
+
+// TestNotifierGetParseMode tests the getParseMode helper
+func TestNotifierGetParseMode(t *testing.T) {
+	tests := []struct {
+		name          string
+		plainTextMode bool
+		want          string
+	}{
+		{
+			name:          "plain text mode enabled",
+			plainTextMode: true,
+			want:          "",
+		},
+		{
+			name:          "plain text mode disabled (markdown)",
+			plainTextMode: false,
+			want:          "Markdown",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			notifier := &Notifier{
+				plainTextMode: tt.plainTextMode,
+			}
+			got := notifier.getParseMode()
+			if got != tt.want {
+				t.Errorf("getParseMode() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestNotifierPlainTextModeConfig tests that notifier correctly inherits PlainTextMode from config
+func TestNotifierPlainTextModeConfig(t *testing.T) {
+	tests := []struct {
+		name          string
+		plainTextMode bool
+	}{
+		{
+			name:          "plain text enabled",
+			plainTextMode: true,
+		},
+		{
+			name:          "plain text disabled",
+			plainTextMode: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := &Config{
+				BotToken:      testutil.FakeTelegramBotToken,
+				ChatID:        "123456",
+				PlainTextMode: tt.plainTextMode,
+			}
+
+			notifier := NewNotifier(config)
+
+			if notifier.plainTextMode != tt.plainTextMode {
+				t.Errorf("notifier.plainTextMode = %v, want %v", notifier.plainTextMode, tt.plainTextMode)
+			}
+		})
+	}
+}

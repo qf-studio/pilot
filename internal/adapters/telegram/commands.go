@@ -89,7 +89,43 @@ func (c *CommandHandler) HandleCommand(ctx context.Context, chatID, text string)
 
 // handleHelp shows comprehensive help with all commands
 func (c *CommandHandler) handleHelp(ctx context.Context, chatID string) {
-	helpText := `🤖 *Pilot Bot*
+	var helpText string
+	if c.handler.plainTextMode {
+		helpText = `🤖 Pilot Bot
+
+I execute tasks and answer questions about your codebase.
+
+Commands
+/status — Current task & queue status
+/cancel — Cancel pending/running task
+/queue — Show queued tasks
+/projects — List configured projects
+/switch <name> — Switch active project
+/history — Recent task history
+/budget — Show usage & costs
+/brief — Generate daily summary
+/help — This message
+
+Task Commands
+/tasks — Show task backlog
+/run <id> — Execute task (e.g., /run 07)
+/stop — Stop running task
+/nopr <task> — Execute without creating PR
+/pr <task> — Force PR creation
+
+Quick Patterns
+• 07 or task 07 — Run TASK-07
+• status? — Project status
+• todos? — List TODOs
+
+What I Understand
+• Tasks: "Create a file...", "Add feature..."
+• Questions: "What handles auth?", "How does X work?"
+• Greetings: "Hi", "Hello"
+
+Note: Ephemeral commands (serve, run, etc.) auto-skip PR creation.`
+	} else {
+		helpText = `🤖 *Pilot Bot*
 
 I execute tasks and answer questions about your codebase.
 
@@ -122,8 +158,9 @@ I execute tasks and answer questions about your codebase.
 • Greetings: "Hi", "Hello"
 
 _Note: Ephemeral commands (serve, run, etc.) auto-skip PR creation._`
+	}
 
-	_, _ = c.handler.client.SendMessage(ctx, chatID, helpText, "Markdown")
+	_, _ = c.handler.client.SendMessage(ctx, chatID, helpText, c.handler.getParseMode())
 }
 
 // handleStatus shows current status with running/pending/queue info
@@ -140,20 +177,35 @@ func (c *CommandHandler) handleStatus(ctx context.Context, chatID string) {
 	}
 
 	var sb strings.Builder
-	sb.WriteString("📊 *Status*\n\n")
-	sb.WriteString(fmt.Sprintf("📁 Project: %s\n", escapeMarkdown(projName)))
+	plainText := c.handler.plainTextMode
+
+	if plainText {
+		sb.WriteString("📊 Status\n\n")
+		sb.WriteString(fmt.Sprintf("📁 Project: %s\n", projName))
+	} else {
+		sb.WriteString("📊 *Status*\n\n")
+		sb.WriteString(fmt.Sprintf("📁 Project: %s\n", escapeMarkdown(projName)))
+	}
 
 	// Running task
 	if running != nil {
 		elapsed := time.Since(running.StartedAt).Round(time.Second)
-		sb.WriteString(fmt.Sprintf("\n🔄 *Running*: `%s`\n", running.TaskID))
+		if plainText {
+			sb.WriteString(fmt.Sprintf("\n🔄 Running: %s\n", running.TaskID))
+		} else {
+			sb.WriteString(fmt.Sprintf("\n🔄 *Running*: `%s`\n", running.TaskID))
+		}
 		sb.WriteString(fmt.Sprintf("   ⏱ %s\n", elapsed))
 	}
 
 	// Pending task
 	if pending != nil {
 		age := time.Since(pending.CreatedAt).Round(time.Second)
-		sb.WriteString(fmt.Sprintf("\n⏳ *Pending*: `%s`\n", pending.TaskID))
+		if plainText {
+			sb.WriteString(fmt.Sprintf("\n⏳ Pending: %s\n", pending.TaskID))
+		} else {
+			sb.WriteString(fmt.Sprintf("\n⏳ *Pending*: `%s`\n", pending.TaskID))
+		}
 		sb.WriteString(fmt.Sprintf("   Awaiting confirmation (%s)\n", age))
 	}
 
@@ -161,7 +213,11 @@ func (c *CommandHandler) handleStatus(ctx context.Context, chatID string) {
 	if c.store != nil {
 		queued, err := c.store.GetQueuedTasks(10)
 		if err == nil && len(queued) > 0 {
-			sb.WriteString(fmt.Sprintf("\n📋 *Queue*: %d task(s)\n", len(queued)))
+			if plainText {
+				sb.WriteString(fmt.Sprintf("\n📋 Queue: %d task(s)\n", len(queued)))
+			} else {
+				sb.WriteString(fmt.Sprintf("\n📋 *Queue*: %d task(s)\n", len(queued)))
+			}
 		}
 	}
 
@@ -170,7 +226,7 @@ func (c *CommandHandler) handleStatus(ctx context.Context, chatID string) {
 		sb.WriteString("\n✅ Ready for tasks")
 	}
 
-	_, _ = c.handler.client.SendMessage(ctx, chatID, sb.String(), "Markdown")
+	_, _ = c.handler.client.SendMessage(ctx, chatID, sb.String(), c.handler.getParseMode())
 }
 
 // handleCancel cancels pending or running task
@@ -240,15 +296,25 @@ func (c *CommandHandler) handleQueue(ctx context.Context, chatID string) {
 	}
 
 	var sb strings.Builder
-	sb.WriteString("📋 *Task Queue*\n\n")
+	plainText := c.handler.plainTextMode
+
+	if plainText {
+		sb.WriteString("📋 Task Queue\n\n")
+	} else {
+		sb.WriteString("📋 *Task Queue*\n\n")
+	}
 
 	for i, task := range queued {
 		age := time.Since(task.CreatedAt).Round(time.Minute)
-		sb.WriteString(fmt.Sprintf("%d. `%s`\n", i+1, task.TaskID))
+		if plainText {
+			sb.WriteString(fmt.Sprintf("%d. %s\n", i+1, task.TaskID))
+		} else {
+			sb.WriteString(fmt.Sprintf("%d. `%s`\n", i+1, task.TaskID))
+		}
 		sb.WriteString(fmt.Sprintf("   📁 %s • ⏱ %s ago\n\n", filepath.Base(task.ProjectPath), age))
 	}
 
-	_, _ = c.handler.client.SendMessage(ctx, chatID, sb.String(), "Markdown")
+	_, _ = c.handler.client.SendMessage(ctx, chatID, sb.String(), c.handler.getParseMode())
 }
 
 // handleProjects lists configured projects
@@ -267,9 +333,14 @@ func (c *CommandHandler) handleProjects(ctx context.Context, chatID string) {
 	}
 
 	activeProjectPath := c.handler.getActiveProjectPath(chatID)
+	plainText := c.handler.plainTextMode
 
 	var sb strings.Builder
-	sb.WriteString("📁 *Projects*\n\n")
+	if plainText {
+		sb.WriteString("📁 Projects\n\n")
+	} else {
+		sb.WriteString("📁 *Projects*\n\n")
+	}
 
 	// Build keyboard for quick switching
 	var keyboard [][]InlineKeyboardButton
@@ -283,8 +354,13 @@ func (c *CommandHandler) handleProjects(ctx context.Context, chatID string) {
 		if p.Navigator {
 			nav = " 🧭"
 		}
-		sb.WriteString(fmt.Sprintf("• *%s*%s%s\n", escapeMarkdown(p.Name), marker, nav))
-		sb.WriteString(fmt.Sprintf("  `%s`\n\n", p.Path))
+		if plainText {
+			sb.WriteString(fmt.Sprintf("• %s%s%s\n", p.Name, marker, nav))
+			sb.WriteString(fmt.Sprintf("  %s\n\n", p.Path))
+		} else {
+			sb.WriteString(fmt.Sprintf("• *%s*%s%s\n", escapeMarkdown(p.Name), marker, nav))
+			sb.WriteString(fmt.Sprintf("  `%s`\n\n", p.Path))
+		}
 
 		// Add keyboard button if not active
 		if p.Path != activeProjectPath {
@@ -295,9 +371,9 @@ func (c *CommandHandler) handleProjects(ctx context.Context, chatID string) {
 	}
 
 	if len(keyboard) > 0 {
-		_, _ = c.handler.client.SendMessageWithKeyboard(ctx, chatID, sb.String(), "Markdown", keyboard)
+		_, _ = c.handler.client.SendMessageWithKeyboard(ctx, chatID, sb.String(), c.handler.getParseMode(), keyboard)
 	} else {
-		_, _ = c.handler.client.SendMessage(ctx, chatID, sb.String(), "Markdown")
+		_, _ = c.handler.client.SendMessage(ctx, chatID, sb.String(), c.handler.getParseMode())
 	}
 }
 
@@ -326,8 +402,13 @@ func (c *CommandHandler) handleSwitch(ctx context.Context, chatID, projectName s
 	if proj.Navigator {
 		nav = " 🧭"
 	}
-	_, _ = c.handler.client.SendMessage(ctx, chatID,
-		fmt.Sprintf("✅ Switched to *%s*%s\n`%s`", escapeMarkdown(proj.Name), nav, proj.Path), "Markdown")
+	var text string
+	if c.handler.plainTextMode {
+		text = fmt.Sprintf("✅ Switched to %s%s\n%s", proj.Name, nav, proj.Path)
+	} else {
+		text = fmt.Sprintf("✅ Switched to *%s*%s\n`%s`", escapeMarkdown(proj.Name), nav, proj.Path)
+	}
+	_, _ = c.handler.client.SendMessage(ctx, chatID, text, c.handler.getParseMode())
 }
 
 // handleCurrentProject shows current active project
@@ -346,8 +427,13 @@ func (c *CommandHandler) handleCurrentProject(ctx context.Context, chatID string
 		projName = filepath.Base(activeProjectPath)
 	}
 
-	_, _ = c.handler.client.SendMessage(ctx, chatID,
-		fmt.Sprintf("📁 Active: *%s*%s\n`%s`\n\nUse /projects to see all", escapeMarkdown(projName), nav, activeProjectPath), "Markdown")
+	var text string
+	if c.handler.plainTextMode {
+		text = fmt.Sprintf("📁 Active: %s%s\n%s\n\nUse /projects to see all", projName, nav, activeProjectPath)
+	} else {
+		text = fmt.Sprintf("📁 Active: *%s*%s\n`%s`\n\nUse /projects to see all", escapeMarkdown(projName), nav, activeProjectPath)
+	}
+	_, _ = c.handler.client.SendMessage(ctx, chatID, text, c.handler.getParseMode())
 }
 
 // handleHistory shows recent task history
@@ -369,7 +455,13 @@ func (c *CommandHandler) handleHistory(ctx context.Context, chatID string) {
 	}
 
 	var sb strings.Builder
-	sb.WriteString("📜 *Recent Tasks*\n\n")
+	plainText := c.handler.plainTextMode
+
+	if plainText {
+		sb.WriteString("📜 Recent Tasks\n\n")
+	} else {
+		sb.WriteString("📜 *Recent Tasks*\n\n")
+	}
 
 	for _, exec := range executions {
 		// Status emoji
@@ -393,17 +485,25 @@ func (c *CommandHandler) handleHistory(ctx context.Context, chatID string) {
 		// Format time
 		age := formatTimeAgo(exec.CreatedAt)
 
-		sb.WriteString(fmt.Sprintf("%s `%s`\n", emoji, exec.TaskID))
+		if plainText {
+			sb.WriteString(fmt.Sprintf("%s %s\n", emoji, exec.TaskID))
+		} else {
+			sb.WriteString(fmt.Sprintf("%s `%s`\n", emoji, exec.TaskID))
+		}
 		sb.WriteString(fmt.Sprintf("   %s%s\n", age, duration))
 
 		// Add PR link if present
 		if exec.PRUrl != "" {
-			sb.WriteString(fmt.Sprintf("   [PR](%s)\n", exec.PRUrl))
+			if plainText {
+				sb.WriteString(fmt.Sprintf("   PR: %s\n", exec.PRUrl))
+			} else {
+				sb.WriteString(fmt.Sprintf("   [PR](%s)\n", exec.PRUrl))
+			}
 		}
 		sb.WriteString("\n")
 	}
 
-	_, _ = c.handler.client.SendMessage(ctx, chatID, sb.String(), "Markdown")
+	_, _ = c.handler.client.SendMessage(ctx, chatID, sb.String(), c.handler.getParseMode())
 }
 
 // handleBudget shows usage and costs
@@ -427,7 +527,13 @@ func (c *CommandHandler) handleBudget(ctx context.Context, chatID string) {
 	}
 
 	var sb strings.Builder
-	sb.WriteString("💰 *Usage This Month*\n\n")
+	plainText := c.handler.plainTextMode
+
+	if plainText {
+		sb.WriteString("💰 Usage This Month\n\n")
+	} else {
+		sb.WriteString("💰 *Usage This Month*\n\n")
+	}
 
 	// Task count
 	sb.WriteString(fmt.Sprintf("🎯 Tasks: %d\n", summary.TaskCount))
@@ -444,7 +550,11 @@ func (c *CommandHandler) handleBudget(ctx context.Context, chatID string) {
 	}
 
 	// Costs breakdown
-	sb.WriteString("\n*Costs*\n")
+	if plainText {
+		sb.WriteString("\nCosts\n")
+	} else {
+		sb.WriteString("\n*Costs*\n")
+	}
 	if summary.TaskCost > 0 {
 		sb.WriteString(fmt.Sprintf("• Tasks: $%.2f\n", summary.TaskCost))
 	}
@@ -456,12 +566,20 @@ func (c *CommandHandler) handleBudget(ctx context.Context, chatID string) {
 	}
 
 	// Total
-	sb.WriteString(fmt.Sprintf("\n*Total*: $%.2f\n", summary.TotalCost))
+	if plainText {
+		sb.WriteString(fmt.Sprintf("\nTotal: $%.2f\n", summary.TotalCost))
+	} else {
+		sb.WriteString(fmt.Sprintf("\n*Total*: $%.2f\n", summary.TotalCost))
+	}
 
 	// Period info
-	sb.WriteString(fmt.Sprintf("\n_Period: %s - %s_", monthStart.Format("Jan 2"), now.Format("Jan 2")))
+	if plainText {
+		sb.WriteString(fmt.Sprintf("\nPeriod: %s - %s", monthStart.Format("Jan 2"), now.Format("Jan 2")))
+	} else {
+		sb.WriteString(fmt.Sprintf("\n_Period: %s - %s_", monthStart.Format("Jan 2"), now.Format("Jan 2")))
+	}
 
-	_, _ = c.handler.client.SendMessage(ctx, chatID, sb.String(), "Markdown")
+	_, _ = c.handler.client.SendMessage(ctx, chatID, sb.String(), c.handler.getParseMode())
 }
 
 // handleTasks shows task backlog
@@ -471,7 +589,13 @@ func (c *CommandHandler) handleTasks(ctx context.Context, chatID string) {
 		_, _ = c.handler.client.SendMessage(ctx, chatID, "📋 No tasks found in .agent/tasks/", "")
 		return
 	}
-	_, _ = c.handler.client.SendMessage(ctx, chatID, "📋 *Task Backlog*\n\n"+taskList, "Markdown")
+	var text string
+	if c.handler.plainTextMode {
+		text = "📋 Task Backlog\n\n" + taskList
+	} else {
+		text = "📋 *Task Backlog*\n\n" + taskList
+	}
+	_, _ = c.handler.client.SendMessage(ctx, chatID, text, c.handler.getParseMode())
 }
 
 // handleStop stops a running task
@@ -495,8 +619,13 @@ func (c *CommandHandler) handleStop(ctx context.Context, chatID string) {
 	delete(c.handler.runningTasks, chatID)
 	c.handler.mu.Unlock()
 
-	_, _ = c.handler.client.SendMessage(ctx, chatID,
-		fmt.Sprintf("🛑 Stopped task `%s`", running.TaskID), "Markdown")
+	var text string
+	if c.handler.plainTextMode {
+		text = fmt.Sprintf("🛑 Stopped task %s", running.TaskID)
+	} else {
+		text = fmt.Sprintf("🛑 Stopped task `%s`", running.TaskID)
+	}
+	_, _ = c.handler.client.SendMessage(ctx, chatID, text, c.handler.getParseMode())
 }
 
 // handleBrief generates and sends a daily brief on demand

@@ -55,6 +55,7 @@ type Handler struct {
 	transcriptionErr error                  // Error from transcription init (for guidance)
 	store            *memory.Store          // Memory store for history/queue/budget (optional)
 	cmdHandler       *CommandHandler        // Command handler for /commands
+	plainTextMode    bool                   // Use plain text instead of Markdown
 }
 
 // HandlerConfig holds configuration for the Telegram handler
@@ -65,6 +66,7 @@ type HandlerConfig struct {
 	AllowedIDs    []int64               // User/chat IDs allowed to send tasks
 	Transcription *transcription.Config // Voice transcription config (optional)
 	Store         *memory.Store         // Memory store for history/queue/budget (optional)
+	PlainTextMode bool                  // Use plain text instead of Markdown (default: true)
 }
 
 // NewHandler creates a new Telegram message handler
@@ -93,6 +95,7 @@ func NewHandler(config *HandlerConfig, runner *executor.Runner) *Handler {
 		runningTasks:  make(map[string]*RunningTask),
 		stopCh:        make(chan struct{}),
 		store:         config.Store,
+		plainTextMode: config.PlainTextMode,
 	}
 
 	// Initialize command handler
@@ -150,6 +153,15 @@ func (h *Handler) getActiveProjectInfo(chatID string) *ProjectInfo {
 
 	path := h.getActiveProjectPath(chatID)
 	return h.projects.GetProjectByPath(path)
+}
+
+// getParseMode returns the parse mode based on plainTextMode setting.
+// Returns empty string for plain text, "Markdown" for markdown mode.
+func (h *Handler) getParseMode() string {
+	if h.plainTextMode {
+		return ""
+	}
+	return "Markdown"
 }
 
 // CheckSingleton verifies no other bot instance is already running.
