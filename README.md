@@ -49,6 +49,9 @@ Pilot picks up tickets from GitHub, Linear, Jira, or Asana—plans the implement
 └─────────────┘      └─────────────┘      └─────────────┘      └─────────────┘
 ```
 
+<img width="1920" height="1049" alt="image" src="https://github.com/user-attachments/assets/e27e14e1-3ef1-45ff-8775-1afdc233a6ac" />
+
+
 ## Install
 
 ### Homebrew (recommended)
