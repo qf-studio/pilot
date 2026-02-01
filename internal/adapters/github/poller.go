@@ -255,9 +255,8 @@ func (p *Poller) startSequential(ctx context.Context) {
 				slog.Int("number", issue.Number),
 				slog.Any("error", err),
 			)
-			// Mark as processed to avoid infinite retry loop
-			// The issue will have pilot-failed label
-			p.markProcessed(issue.Number)
+			// Don't mark as processed - the pilot-failed label is the source of truth
+			// Removing the label will make the issue retryable without restart
 			continue
 		}
 
@@ -378,7 +377,7 @@ func (p *Poller) findOldestUnprocessedIssue(ctx context.Context) (*Issue, error)
 			continue
 		}
 
-		if HasLabel(issue, LabelInProgress) || HasLabel(issue, LabelDone) {
+		if HasLabel(issue, LabelInProgress) || HasLabel(issue, LabelDone) || HasLabel(issue, LabelFailed) {
 			continue
 		}
 
@@ -438,8 +437,8 @@ func (p *Poller) checkForNewIssues(ctx context.Context) {
 			continue
 		}
 
-		// Skip if already in progress or done
-		if HasLabel(issue, LabelInProgress) || HasLabel(issue, LabelDone) {
+		// Skip if already in progress, done, or failed
+		if HasLabel(issue, LabelInProgress) || HasLabel(issue, LabelDone) || HasLabel(issue, LabelFailed) {
 			p.markProcessed(issue.Number)
 			continue
 		}
