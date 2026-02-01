@@ -162,7 +162,7 @@ You label issue "pilot"
 
 | Feature | Description |
 |---------|-------------|
-| **Telegram Bot** | Chat-based tasks with voice transcription & images |
+| **Telegram Bot** | Chat, research, planning, tasks + voice & images |
 | **GitHub Polling** | Auto-pick issues with `pilot` label |
 | **Linear/Jira/Asana** | Webhooks and task sync |
 | **Daily Briefs** | Scheduled reports via Slack/Email/Telegram |
@@ -225,12 +225,27 @@ pilot start --direct-commit --github
 
 ## Telegram Integration
 
-Talk to Pilot like a junior dev:
+Talk to Pilot naturally - it understands different interaction modes:
+
+| Mode | Example | What Happens |
+|------|---------|--------------|
+| 💬 **Chat** | "What do you think about using Redis?" | Conversational response, no code changes |
+| 🔍 **Question** | "What files handle authentication?" | Quick read-only answer |
+| 🔬 **Research** | "Research how the caching layer works" | Deep analysis sent to chat |
+| 📐 **Planning** | "Plan how to add rate limiting" | Shows plan with Execute/Cancel buttons |
+| 🚀 **Task** | "Add rate limiting to /api/users" | Confirms, then creates PR |
 
 ```
-You: "Add rate limiting to the /api/users endpoint"
-Pilot: "On it. Creating issue..."
-Pilot: "PR #142 ready for review: https://github.com/..."
+You: "Plan how to add user authentication"
+Pilot: 📐 Drafting plan...
+Pilot: 📋 Implementation Plan
+       1. Create auth middleware...
+       2. Add JWT token validation...
+       [Execute] [Cancel]
+
+You: [clicks Execute]
+Pilot: 🚀 Executing...
+Pilot: ✅ PR #142 ready: https://github.com/...
 ```
 
 Send voice messages, images, or text. Pilot understands context.
