@@ -1,6 +1,6 @@
 # Pilot Feature Matrix
 
-**Last Updated:** 2026-01-29 (v0.3.2 Autopilot release)
+**Last Updated:** 2026-02-01 (v0.6.0 Chat-like Telegram Communication)
 
 ## Legend
 
@@ -33,6 +33,9 @@
 | Telegram bot | ✅ | adapters/telegram | `pilot start --telegram` | `adapters.telegram` | Long-polling mode |
 | Telegram voice | ✅ | transcription | - | `adapters.telegram.transcription` | OpenAI Whisper |
 | Telegram images | ✅ | adapters/telegram | - | - | Vision support |
+| Telegram chat mode | ✅ | adapters/telegram | - | - | Conversational responses (v0.6.0) |
+| Telegram research | ✅ | adapters/telegram | - | - | Deep analysis to chat (v0.6.0) |
+| Telegram planning | ✅ | adapters/telegram | - | - | Plan with Execute/Cancel (v0.6.0) |
 | GitHub polling | ✅ | adapters/github | `pilot start --github` | `adapters.github.polling` | 30s interval |
 | GitHub run issue | ✅ | adapters/github | `pilot github run` | `adapters.github` | Manual trigger |
 | Linear webhooks | ⚠️ | adapters/linear | - | `adapters.linear` | Needs gateway running |

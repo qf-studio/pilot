@@ -96,7 +96,7 @@ if _, err := os.Stat(agentDir); err == nil {
 
 ## Current State
 
-**Current Version:** v0.4.2 (macOS upgrade fix)
+**Current Version:** v0.6.0 (Chat-like Telegram Communication)
 
 **Full implementation status:** `.agent/system/FEATURE-MATRIX.md`
 
@@ -105,7 +105,7 @@ if _, err := os.Stat(agentDir); err == nil {
 | Component | Status | Notes |
 |-----------|--------|-------|
 | Task Execution | ✅ | Claude Code subprocess with Navigator |
-| Telegram Bot | ✅ | Long-polling, voice, images |
+| Telegram Bot | ✅ | Long-polling, voice, images, **chat modes (v0.6.0)** |
 | GitHub Polling | ✅ | 30s interval, auto-picks `pilot` label |
 | Alerts Engine | ✅ | Slack, Telegram, webhooks |
 | Quality Gates | ✅ | Test/lint/build gates with retry |
@@ -113,6 +113,18 @@ if _, err := os.Stat(agentDir); err == nil {
 | Dashboard TUI | ✅ | Token usage, cost, autopilot status |
 | Hot Upgrade | ✅ | Self-update via `pilot upgrade` |
 | **Autopilot** | ✅ | CI monitor, auto-merge, feedback loop, startup PR scan (v0.4.1) |
+
+### Telegram Interaction Modes (v0.6.0)
+
+| Mode | Trigger | Behavior |
+|------|---------|----------|
+| 💬 **Chat** | "What do you think about..." | Conversational response, no code changes |
+| 🔍 **Questions** | "What files handle...?" | Quick read-only answers (90s timeout) |
+| 🔬 **Research** | "Research how X works" | Deep analysis, output to chat + saves to `.agent/research/` |
+| 📐 **Planning** | "Plan how to add X" | Creates plan with Execute/Cancel buttons |
+| 🚀 **Tasks** | "Add a logout button" | Confirms → executes with PR |
+
+**Default behavior**: Ambiguous messages now default to Chat mode instead of Task, preventing accidental PRs.
 
 ### Autopilot Environments
 
@@ -171,6 +183,18 @@ _Queue empty - create issues with `pilot` label to add work._
 **For accurate feature status, see:** `.agent/system/FEATURE-MATRIX.md`
 
 ---
+
+## Completed (2026-02-01)
+
+| Item | What |
+|------|------|
+| **v0.6.0** | Chat-like Telegram Communication |
+| GH-290 | Add Research, Planning, Chat intent types |
+| GH-291 | Add handleResearch() for deep analysis |
+| GH-292 | Add handlePlanning() with Execute/Cancel buttons |
+| GH-293 | Add handleChat() for conversational responses |
+| GH-294 | Update greeting to show all interaction modes |
+| GH-298 | Fix budget enforcer tests on 1st of month |
 
 ## Completed (2026-01-30)
 
