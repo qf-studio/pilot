@@ -1,0 +1,45 @@
+# Fly.io deployment configuration for Pilot
+# https://fly.io/docs/reference/configuration/
+#
+# Deploy:
+#   fly launch --no-deploy
+#   fly secrets set ANTHROPIC_API_KEY=xxx GITHUB_TOKEN=xxx
+#   fly deploy
+
+app = "pilot"
+primary_region = "iad"
+
+[build]
+image = "ghcr.io/alekspetrov/pilot:latest"
+
+[env]
+PILOT_DATA_DIR = "/data"
+
+# Persistent storage for SQLite knowledge graph
+[mounts]
+source = "pilot_data"
+destination = "/data"
+
+# Keep at least one instance running
+[[services]]
+internal_port = 9090
+protocol = "tcp"
+auto_stop_machines = false
+auto_start_machines = true
+min_machines_running = 1
+
+[[services.ports]]
+port = 9090
+handlers = ["http"]
+
+[[services.http_checks]]
+interval = "30s"
+timeout = "5s"
+path = "/health"
+
+[processes]
+app = "pilot start --telegram --github"
+
+[[vm]]
+size = "shared-cpu-1x"
+memory = "512mb"

@@ -25,7 +25,8 @@
   <a href="#quick-start">Quick Start</a> •
   <a href="#how-it-works">How It Works</a> •
   <a href="#features">Features</a> •
-  <a href="#cli-reference">CLI</a>
+  <a href="#cli-reference">CLI</a> •
+  <a href="docs/DEPLOYMENT.md">Deploy</a>
 </p>
 
 <br />

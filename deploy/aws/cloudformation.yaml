@@ -1,0 +1,236 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Pilot - AI Development Agent on AWS Fargate'
+
+Parameters:
+  AnthropicApiKey:
+    Type: String
+    NoEcho: true
+    Description: Anthropic API key for Claude
+
+  GitHubToken:
+    Type: String
+    NoEcho: true
+    Description: GitHub personal access token
+
+  TelegramBotToken:
+    Type: String
+    NoEcho: true
+    Default: ''
+    Description: Telegram bot token (optional)
+
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC for Fargate deployment
+
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Subnets for Fargate tasks
+
+  ContainerImage:
+    Type: String
+    Default: ghcr.io/alekspetrov/pilot:latest
+    Description: Container image to deploy
+
+Resources:
+  # ECS Cluster
+  Cluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: pilot-cluster
+      ClusterSettings:
+        - Name: containerInsights
+          Value: enabled
+
+  # CloudWatch Log Group
+  LogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /ecs/pilot
+      RetentionInDays: 30
+
+  # Secrets in Secrets Manager
+  AnthropicApiKeySecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: pilot/anthropic-api-key
+      SecretString: !Ref AnthropicApiKey
+
+  GitHubTokenSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: pilot/github-token
+      SecretString: !Ref GitHubToken
+
+  TelegramBotTokenSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: pilot/telegram-bot-token
+      SecretString: !Ref TelegramBotToken
+
+  # EFS File System for persistent storage
+  FileSystem:
+    Type: AWS::EFS::FileSystem
+    Properties:
+      Encrypted: true
+      PerformanceMode: generalPurpose
+      ThroughputMode: bursting
+      FileSystemTags:
+        - Key: Name
+          Value: pilot-data
+
+  MountTargetSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for EFS mount targets
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 2049
+          ToPort: 2049
+          SourceSecurityGroupId: !Ref TaskSecurityGroup
+
+  MountTarget:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref FileSystem
+      SubnetId: !Select [0, !Ref SubnetIds]
+      SecurityGroups:
+        - !Ref MountTargetSecurityGroup
+
+  # Task Execution Role
+  ExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: pilot-execution-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: SecretsAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource:
+                  - !Ref AnthropicApiKeySecret
+                  - !Ref GitHubTokenSecret
+                  - !Ref TelegramBotTokenSecret
+
+  # Task Role
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: pilot-task-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+
+  # Security Group for Tasks
+  TaskSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for Pilot tasks
+      VpcId: !Ref VpcId
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+
+  # Task Definition
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: pilot
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      Cpu: '256'
+      Memory: '512'
+      ExecutionRoleArn: !GetAtt ExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      Volumes:
+        - Name: pilot-data
+          EFSVolumeConfiguration:
+            FilesystemId: !Ref FileSystem
+            RootDirectory: /pilot
+            TransitEncryption: ENABLED
+      ContainerDefinitions:
+        - Name: pilot
+          Image: !Ref ContainerImage
+          Essential: true
+          Command:
+            - pilot
+            - start
+            - --telegram
+            - --github
+          Environment:
+            - Name: PILOT_DATA_DIR
+              Value: /data
+          Secrets:
+            - Name: ANTHROPIC_API_KEY
+              ValueFrom: !Ref AnthropicApiKeySecret
+            - Name: GITHUB_TOKEN
+              ValueFrom: !Ref GitHubTokenSecret
+            - Name: TELEGRAM_BOT_TOKEN
+              ValueFrom: !Ref TelegramBotTokenSecret
+          MountPoints:
+            - SourceVolume: pilot-data
+              ContainerPath: /data
+              ReadOnly: false
+          HealthCheck:
+            Command:
+              - CMD-SHELL
+              - curl -f http://localhost:9090/health || exit 1
+            Interval: 30
+            Timeout: 5
+            Retries: 3
+            StartPeriod: 60
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: pilot
+
+  # ECS Service
+  Service:
+    Type: AWS::ECS::Service
+    DependsOn: MountTarget
+    Properties:
+      ServiceName: pilot
+      Cluster: !Ref Cluster
+      TaskDefinition: !Ref TaskDefinition
+      DesiredCount: 1
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          SecurityGroups:
+            - !Ref TaskSecurityGroup
+          Subnets: !Ref SubnetIds
+
+Outputs:
+  ClusterArn:
+    Description: ECS Cluster ARN
+    Value: !GetAtt Cluster.Arn
+
+  ServiceArn:
+    Description: ECS Service ARN
+    Value: !Ref Service
+
+  LogGroupName:
+    Description: CloudWatch Log Group
+    Value: !Ref LogGroup

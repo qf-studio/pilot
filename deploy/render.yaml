@@ -1,0 +1,32 @@
+# Render deployment configuration for Pilot
+# https://render.com/docs/infrastructure-as-code
+#
+# Deploy:
+#   1. Connect GitHub repo to Render
+#   2. Select "Background Worker"
+#   3. Render auto-detects this file
+
+services:
+  - type: worker
+    name: pilot
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    region: oregon
+    plan: starter
+    envVars:
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: GITHUB_TOKEN
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
+      - key: PILOT_DATA_DIR
+        value: /data
+    disk:
+      name: pilot-data
+      mountPath: /data
+      sizeGB: 1
+    healthCheckPath: /health
+    autoDeploy: true

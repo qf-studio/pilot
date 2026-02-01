@@ -1,0 +1,20 @@
+# Railway deployment configuration for Pilot
+# https://docs.railway.app/reference/config-as-code
+#
+# Deploy:
+#   railway login
+#   railway init
+#   railway variables set ANTHROPIC_API_KEY=xxx GITHUB_TOKEN=xxx
+#   railway up
+
+[build]
+builder = "nixpacks"
+
+[deploy]
+startCommand = "pilot start --telegram --github"
+restartPolicyType = "always"
+healthcheckPath = "/health"
+healthcheckTimeout = 30
+
+# Railway auto-detects Go via go.mod
+# No Dockerfile needed

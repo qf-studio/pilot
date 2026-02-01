@@ -1,0 +1,69 @@
+{
+  "family": "pilot",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "256",
+  "memory": "512",
+  "executionRoleArn": "arn:aws:iam::ACCOUNT_ID:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::ACCOUNT_ID:role/pilotTaskRole",
+  "containerDefinitions": [
+    {
+      "name": "pilot",
+      "image": "ghcr.io/alekspetrov/pilot:latest",
+      "essential": true,
+      "command": ["pilot", "start", "--telegram", "--github"],
+      "environment": [
+        {
+          "name": "PILOT_DATA_DIR",
+          "value": "/data"
+        }
+      ],
+      "secrets": [
+        {
+          "name": "ANTHROPIC_API_KEY",
+          "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:pilot/anthropic-api-key"
+        },
+        {
+          "name": "GITHUB_TOKEN",
+          "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:pilot/github-token"
+        },
+        {
+          "name": "TELEGRAM_BOT_TOKEN",
+          "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:pilot/telegram-bot-token"
+        }
+      ],
+      "mountPoints": [
+        {
+          "sourceVolume": "pilot-data",
+          "containerPath": "/data",
+          "readOnly": false
+        }
+      ],
+      "healthCheck": {
+        "command": ["CMD-SHELL", "curl -f http://localhost:9090/health || exit 1"],
+        "interval": 30,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 60
+      },
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/pilot",
+          "awslogs-region": "REGION",
+          "awslogs-stream-prefix": "pilot"
+        }
+      }
+    }
+  ],
+  "volumes": [
+    {
+      "name": "pilot-data",
+      "efsVolumeConfiguration": {
+        "fileSystemId": "fs-XXXXXXXXX",
+        "rootDirectory": "/pilot",
+        "transitEncryption": "ENABLED"
+      }
+    }
+  ]
+}

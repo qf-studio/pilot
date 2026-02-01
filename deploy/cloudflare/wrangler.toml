@@ -1,0 +1,34 @@
+# Cloudflare Containers configuration for Pilot
+# https://developers.cloudflare.com/containers/
+#
+# Note: Cloudflare Containers launched June 2025, may have limitations
+#
+# Deploy:
+#   wrangler login
+#   wrangler containers deploy
+
+name = "pilot"
+compatibility_date = "2025-06-01"
+
+[containers]
+image = "ghcr.io/alekspetrov/pilot:latest"
+command = ["pilot", "start", "--telegram", "--github"]
+
+# CPU and memory allocation
+cpu = 1
+memory = "512Mi"
+
+# Keep running (not scale-to-zero)
+min_instances = 1
+max_instances = 1
+
+[containers.env]
+PILOT_DATA_DIR = "/data"
+
+# Secrets (set via wrangler secret put)
+# wrangler secret put ANTHROPIC_API_KEY
+# wrangler secret put GITHUB_TOKEN
+# wrangler secret put TELEGRAM_BOT_TOKEN
+
+[containers.volumes]
+pilot_data = "/data"
