@@ -55,6 +55,9 @@ type Config struct {
 	MaxMergesPerHour int `yaml:"max_merges_per_hour"`
 	// ApprovalTimeout is how long to wait for human approval in prod.
 	ApprovalTimeout time.Duration `yaml:"approval_timeout"`
+
+	// Release holds auto-release configuration.
+	Release *ReleaseConfig `yaml:"release"`
 }
 
 // DefaultConfig returns sensible defaults for autopilot configuration.
@@ -75,6 +78,38 @@ func DefaultConfig() *Config {
 		MaxFailures:      3,
 		MaxMergesPerHour: 10,
 		ApprovalTimeout:  1 * time.Hour,
+		Release:          nil, // Disabled by default
+	}
+}
+
+// ReleaseConfig holds configuration for automatic release creation.
+type ReleaseConfig struct {
+	// Enabled controls whether auto-release is active.
+	Enabled bool `yaml:"enabled"`
+	// Trigger determines when to release: "on_merge" or "manual".
+	Trigger string `yaml:"trigger"`
+	// VersionStrategy determines how to bump version: "conventional_commits" or "pr_labels".
+	VersionStrategy string `yaml:"version_strategy"`
+	// TagPrefix is prepended to version (default "v").
+	TagPrefix string `yaml:"tag_prefix"`
+	// GenerateChangelog enables changelog generation from commits.
+	GenerateChangelog bool `yaml:"generate_changelog"`
+	// NotifyOnRelease sends notification when release is created.
+	NotifyOnRelease bool `yaml:"notify_on_release"`
+	// RequireCI waits for post-merge CI before releasing.
+	RequireCI bool `yaml:"require_ci"`
+}
+
+// DefaultReleaseConfig returns sensible defaults for release configuration.
+func DefaultReleaseConfig() *ReleaseConfig {
+	return &ReleaseConfig{
+		Enabled:           false,
+		Trigger:           "on_merge",
+		VersionStrategy:   "conventional_commits",
+		TagPrefix:         "v",
+		GenerateChangelog: true,
+		NotifyOnRelease:   true,
+		RequireCI:         true,
 	}
 }
 
@@ -98,6 +133,8 @@ const (
 	StageMerged PRStage = "merged"
 	// StagePostMergeCI indicates post-merge CI is running on main branch.
 	StagePostMergeCI PRStage = "post_merge_ci"
+	// StageReleasing indicates the PR is triggering an automatic release.
+	StageReleasing PRStage = "releasing"
 	// StageFailed indicates the PR pipeline has failed and requires intervention.
 	StageFailed PRStage = "failed"
 )
@@ -114,6 +151,20 @@ const (
 	CISuccess CIStatus = "success"
 	// CIFailure indicates one or more CI checks have failed.
 	CIFailure CIStatus = "failure"
+)
+
+// BumpType represents semantic version bump types.
+type BumpType string
+
+const (
+	// BumpNone indicates no version bump is needed.
+	BumpNone BumpType = "none"
+	// BumpPatch indicates a patch version bump (bug fixes).
+	BumpPatch BumpType = "patch"
+	// BumpMinor indicates a minor version bump (new features).
+	BumpMinor BumpType = "minor"
+	// BumpMajor indicates a major version bump (breaking changes).
+	BumpMajor BumpType = "major"
 )
 
 // PRState tracks a PR through the autopilot pipeline.
@@ -138,4 +189,8 @@ type PRState struct {
 	Error string
 	// CreatedAt is when the PR entered the autopilot pipeline.
 	CreatedAt time.Time
+	// ReleaseVersion is the version that was released (if any).
+	ReleaseVersion string
+	// ReleaseBumpType is the detected bump type from commits.
+	ReleaseBumpType BumpType
 }
