@@ -86,13 +86,41 @@ func (g *GitOperations) CreatePR(ctx context.Context, title, body, baseBranch st
 	)
 	cmd.Dir = g.projectPath
 	output, err := cmd.CombinedOutput()
+	outputStr := string(output)
+
 	if err != nil {
+		// Check if PR already exists - gh returns exit 1 but includes URL in output
+		if strings.Contains(outputStr, "already exists") {
+			if url := extractPRURL(outputStr); url != "" {
+				return url, nil
+			}
+		}
 		return "", fmt.Errorf("failed to create PR: %w: %s", err, output)
 	}
 
 	// Extract PR URL from output
-	prURL := strings.TrimSpace(string(output))
+	prURL := strings.TrimSpace(outputStr)
 	return prURL, nil
+}
+
+// extractPRURL extracts a GitHub PR URL from text
+func extractPRURL(text string) string {
+	// Look for GitHub PR URL pattern: https://github.com/owner/repo/pull/123
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.Contains(line, "github.com") && strings.Contains(line, "/pull/") {
+			// Extract just the URL if there's other text
+			if idx := strings.Index(line, "https://"); idx >= 0 {
+				url := line[idx:]
+				// Trim any trailing text after the URL
+				if spaceIdx := strings.IndexAny(url, " \t\n"); spaceIdx > 0 {
+					url = url[:spaceIdx]
+				}
+				return url
+			}
+		}
+	}
+	return ""
 }
 
 // GetCurrentBranch returns the current branch name

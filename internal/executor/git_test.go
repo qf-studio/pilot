@@ -308,3 +308,56 @@ func TestSwitchToDefaultBranchAndPull_NewBranchFromMain(t *testing.T) {
 		t.Errorf("main branch SHA changed unexpectedly: was %s, now %s", mainSHA, currentMainSHA)
 	}
 }
+
+func TestExtractPRURL(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "simple URL",
+			input: "https://github.com/owner/repo/pull/123",
+			want:  "https://github.com/owner/repo/pull/123",
+		},
+		{
+			name:  "URL with already exists message",
+			input: "a]ready exists:\nhttps://github.com/owner/repo/pull/456\n",
+			want:  "https://github.com/owner/repo/pull/456",
+		},
+		{
+			name:  "gh CLI already exists output",
+			input: "a pull request for branch `feature` into `main` already exists:\nhttps://github.com/alekspetrov/pilot/pull/285",
+			want:  "https://github.com/alekspetrov/pilot/pull/285",
+		},
+		{
+			name:  "URL with trailing text",
+			input: "https://github.com/owner/repo/pull/789 (created)",
+			want:  "https://github.com/owner/repo/pull/789",
+		},
+		{
+			name:  "no URL",
+			input: "failed to create pull request",
+			want:  "",
+		},
+		{
+			name:  "empty string",
+			input: "",
+			want:  "",
+		},
+		{
+			name:  "github URL but not PR",
+			input: "https://github.com/owner/repo/issues/123",
+			want:  "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := extractPRURL(tt.input)
+			if got != tt.want {
+				t.Errorf("extractPRURL(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}

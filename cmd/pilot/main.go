@@ -1003,7 +1003,7 @@ func handleGitHubIssue(ctx context.Context, cfg *config.Config, client *github.C
 			if _, err := client.AddComment(ctx, parts[0], parts[1], issue.Number, comment); err != nil {
 				logGitHubAPIError("AddComment", parts[0], parts[1], issue.Number, err)
 			}
-		} else if result != nil {
+		} else if result != nil && result.Success {
 			if err := client.AddLabels(ctx, parts[0], parts[1], issue.Number, []string{github.LabelDone}); err != nil {
 				logGitHubAPIError("AddLabels", parts[0], parts[1], issue.Number, err)
 			}
@@ -1012,6 +1012,15 @@ func handleGitHubIssue(ctx context.Context, cfg *config.Config, client *github.C
 			if result.PRUrl != "" {
 				comment += fmt.Sprintf("\n**PR:** %s", result.PRUrl)
 			}
+			if _, err := client.AddComment(ctx, parts[0], parts[1], issue.Number, comment); err != nil {
+				logGitHubAPIError("AddComment", parts[0], parts[1], issue.Number, err)
+			}
+		} else if result != nil {
+			// result exists but Success is false - mark as failed
+			if err := client.AddLabels(ctx, parts[0], parts[1], issue.Number, []string{github.LabelFailed}); err != nil {
+				logGitHubAPIError("AddLabels", parts[0], parts[1], issue.Number, err)
+			}
+			comment := fmt.Sprintf("❌ Pilot execution completed but failed:\n\n```\n%s\n```", result.Error)
 			if _, err := client.AddComment(ctx, parts[0], parts[1], issue.Number, comment); err != nil {
 				logGitHubAPIError("AddComment", parts[0], parts[1], issue.Number, err)
 			}
@@ -1188,7 +1197,7 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 			if _, err := client.AddComment(ctx, parts[0], parts[1], issue.Number, comment); err != nil {
 				logGitHubAPIError("AddComment", parts[0], parts[1], issue.Number, err)
 			}
-		} else if result != nil {
+		} else if result != nil && result.Success {
 			if err := client.AddLabels(ctx, parts[0], parts[1], issue.Number, []string{github.LabelDone}); err != nil {
 				logGitHubAPIError("AddLabels", parts[0], parts[1], issue.Number, err)
 			}
@@ -1197,6 +1206,15 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 			if result.PRUrl != "" {
 				comment += fmt.Sprintf("\n**PR:** %s", result.PRUrl)
 			}
+			if _, err := client.AddComment(ctx, parts[0], parts[1], issue.Number, comment); err != nil {
+				logGitHubAPIError("AddComment", parts[0], parts[1], issue.Number, err)
+			}
+		} else if result != nil {
+			// result exists but Success is false - mark as failed
+			if err := client.AddLabels(ctx, parts[0], parts[1], issue.Number, []string{github.LabelFailed}); err != nil {
+				logGitHubAPIError("AddLabels", parts[0], parts[1], issue.Number, err)
+			}
+			comment := fmt.Sprintf("❌ Pilot execution completed but failed:\n\n```\n%s\n```", result.Error)
 			if _, err := client.AddComment(ctx, parts[0], parts[1], issue.Number, comment); err != nil {
 				logGitHubAPIError("AddComment", parts[0], parts[1], issue.Number, err)
 			}
