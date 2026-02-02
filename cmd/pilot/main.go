@@ -22,6 +22,7 @@ import (
 	"github.com/alekspetrov/pilot/internal/adapters/slack"
 	"github.com/alekspetrov/pilot/internal/adapters/telegram"
 	"github.com/alekspetrov/pilot/internal/alerts"
+	"github.com/alekspetrov/pilot/internal/approval"
 	"github.com/alekspetrov/pilot/internal/autopilot"
 	"github.com/alekspetrov/pilot/internal/banner"
 	"github.com/alekspetrov/pilot/internal/briefs"
@@ -57,6 +58,72 @@ func (a *telegramBriefAdapter) SendBriefMessage(ctx context.Context, chatID, tex
 		return nil, nil
 	}
 	return &briefs.TelegramMessageResponse{MessageID: resp.Result.MessageID}, nil
+}
+
+// telegramApprovalAdapter wraps telegram.Client to satisfy approval.TelegramClient interface
+type telegramApprovalAdapter struct {
+	client *telegram.Client
+}
+
+func (a *telegramApprovalAdapter) SendMessageWithKeyboard(ctx context.Context, chatID, text, parseMode string, keyboard [][]approval.InlineKeyboardButton) (*approval.MessageResponse, error) {
+	resp, err := a.client.SendMessageWithKeyboard(ctx, chatID, text, parseMode, convertKeyboardToTelegram(keyboard))
+	if err != nil {
+		return nil, err
+	}
+	if resp == nil {
+		return nil, nil
+	}
+	return &approval.MessageResponse{
+		Result: &approval.MessageResult{MessageID: resp.Result.MessageID},
+	}, nil
+}
+
+func (a *telegramApprovalAdapter) EditMessage(ctx context.Context, chatID string, messageID int64, text, parseMode string) error {
+	return a.client.EditMessage(ctx, chatID, messageID, text, parseMode)
+}
+
+func (a *telegramApprovalAdapter) AnswerCallback(ctx context.Context, callbackID, text string) error {
+	return a.client.AnswerCallback(ctx, callbackID, text)
+}
+
+func convertKeyboardToTelegram(keyboard [][]approval.InlineKeyboardButton) [][]telegram.InlineKeyboardButton {
+	result := make([][]telegram.InlineKeyboardButton, len(keyboard))
+	for i, row := range keyboard {
+		result[i] = make([]telegram.InlineKeyboardButton, len(row))
+		for j, btn := range row {
+			result[i][j] = telegram.InlineKeyboardButton{
+				Text:         btn.Text,
+				CallbackData: btn.CallbackData,
+			}
+		}
+	}
+	return result
+}
+
+// slackApprovalClientAdapter wraps slack.SlackClientAdapter to satisfy approval.SlackClient interface
+type slackApprovalClientAdapter struct {
+	adapter *slack.SlackClientAdapter
+}
+
+func (a *slackApprovalClientAdapter) PostInteractiveMessage(ctx context.Context, msg *approval.SlackInteractiveMessage) (*approval.SlackPostMessageResponse, error) {
+	resp, err := a.adapter.PostInteractiveMessage(ctx, &slack.SlackApprovalMessage{
+		Channel: msg.Channel,
+		Text:    msg.Text,
+		Blocks:  msg.Blocks,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &approval.SlackPostMessageResponse{
+		OK:      resp.OK,
+		TS:      resp.TS,
+		Channel: resp.Channel,
+		Error:   resp.Error,
+	}, nil
+}
+
+func (a *slackApprovalClientAdapter) UpdateInteractiveMessage(ctx context.Context, channel, ts string, blocks []interface{}, text string) error {
+	return a.adapter.UpdateInteractiveMessage(ctx, channel, ts, blocks, text)
 }
 
 var quietMode bool
@@ -450,6 +517,33 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 		runner.SetModelRouter(executor.NewModelRouter(cfg.Executor.ModelRouting, cfg.Executor.Timeout))
 	}
 
+	// Create approval manager
+	approvalMgr := approval.NewManager(cfg.Approval)
+
+	// Register Telegram approval handler if enabled
+	if cfg.Adapters.Telegram != nil && cfg.Adapters.Telegram.Enabled && cfg.Adapters.Telegram.BotToken != "" {
+		tgClient := telegram.NewClient(cfg.Adapters.Telegram.BotToken)
+		tgApprovalHandler := approval.NewTelegramHandler(&telegramApprovalAdapter{client: tgClient}, cfg.Adapters.Telegram.ChatID)
+		approvalMgr.RegisterHandler(tgApprovalHandler)
+		logging.WithComponent("start").Info("registered Telegram approval handler")
+	}
+
+	// Register Slack approval handler if enabled
+	if cfg.Adapters.Slack != nil && cfg.Adapters.Slack.Enabled && cfg.Adapters.Slack.BotToken != "" {
+		if cfg.Adapters.Slack.Approval != nil && cfg.Adapters.Slack.Approval.Enabled {
+			slackClient := slack.NewClient(cfg.Adapters.Slack.BotToken)
+			slackAdapter := slack.NewSlackClientAdapter(slackClient)
+			slackChannel := cfg.Adapters.Slack.Approval.Channel
+			if slackChannel == "" {
+				slackChannel = cfg.Adapters.Slack.Channel
+			}
+			slackApprovalHandler := approval.NewSlackHandler(&slackApprovalClientAdapter{adapter: slackAdapter}, slackChannel)
+			approvalMgr.RegisterHandler(slackApprovalHandler)
+			logging.WithComponent("start").Info("registered Slack approval handler",
+				slog.String("channel", slackChannel))
+		}
+	}
+
 	// Create autopilot controller if enabled
 	var autopilotController *autopilot.Controller
 	if cfg.Orchestrator.Autopilot != nil && cfg.Orchestrator.Autopilot.Enabled {
@@ -468,7 +562,7 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 				autopilotController = autopilot.NewController(
 					cfg.Orchestrator.Autopilot,
 					ghClient,
-					nil, // approval manager (not wired yet)
+					approvalMgr,
 					parts[0],
 					parts[1],
 				)

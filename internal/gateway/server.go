@@ -19,14 +19,15 @@ import (
 // from external services (Linear, GitHub, Jira, Asana), and exposes REST APIs for status
 // and task management. Server is safe for concurrent use.
 type Server struct {
-	config   *Config
-	auth     *Authenticator
-	sessions *SessionManager
-	router   *Router
-	upgrader websocket.Upgrader
-	server   *http.Server
-	mu       sync.RWMutex
-	running  bool
+	config         *Config
+	auth           *Authenticator
+	sessions       *SessionManager
+	router         *Router
+	upgrader       websocket.Upgrader
+	server         *http.Server
+	mu             sync.RWMutex
+	running        bool
+	customHandlers map[string]http.Handler
 }
 
 // Config holds gateway server configuration including network binding options.
@@ -77,11 +78,12 @@ func NewServerWithAuth(config *Config, authConfig *AuthConfig) *Server {
 	}
 
 	s := &Server{
-		config:   config,
-		auth:     auth,
-		sessions: NewSessionManager(),
-		router:   NewRouter(),
-		upgrader: websocket.Upgrader{
+		config:         config,
+		auth:           auth,
+		sessions:       NewSessionManager(),
+		router:         NewRouter(),
+		customHandlers: make(map[string]http.Handler),
+		upgrader:       websocket.Upgrader{
 			ReadBufferSize:  1024,
 			WriteBufferSize: 1024,
 			CheckOrigin: func(r *http.Request) bool {
@@ -143,6 +145,13 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/webhooks/jira", s.handleJiraWebhook)
 	mux.HandleFunc("/webhooks/asana", s.handleAsanaWebhook)
 
+	// Register custom handlers
+	s.mu.RLock()
+	for path, handler := range s.customHandlers {
+		mux.Handle(path, handler)
+	}
+	s.mu.RUnlock()
+
 	addr := fmt.Sprintf("%s:%d", s.config.Host, s.config.Port)
 	s.server = &http.Server{
 		Addr:         addr,
@@ -167,6 +176,14 @@ func (s *Server) Start(ctx context.Context) error {
 	case <-ctx.Done():
 		return s.Shutdown()
 	}
+}
+
+// RegisterHandler registers a custom HTTP handler for a path.
+// Must be called before Start(). The handler will be registered when the server starts.
+func (s *Server) RegisterHandler(path string, handler http.Handler) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.customHandlers[path] = handler
 }
 
 // Shutdown gracefully shuts down the server with a 30-second timeout.

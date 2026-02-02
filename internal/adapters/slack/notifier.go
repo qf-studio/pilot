@@ -7,16 +7,19 @@ import (
 
 // Config holds Slack adapter configuration
 type Config struct {
-	Enabled  bool   `yaml:"enabled"`
-	BotToken string `yaml:"bot_token"`
-	Channel  string `yaml:"channel"`
+	Enabled       bool            `yaml:"enabled"`
+	BotToken      string          `yaml:"bot_token"`
+	Channel       string          `yaml:"channel"`
+	SigningSecret string          `yaml:"signing_secret"`
+	Approval      *ApprovalConfig `yaml:"approval,omitempty"`
 }
 
 // DefaultConfig returns default Slack configuration
 func DefaultConfig() *Config {
 	return &Config{
-		Enabled: false,
-		Channel: "#dev-notifications",
+		Enabled:  false,
+		Channel:  "#dev-notifications",
+		Approval: DefaultApprovalConfig(),
 	}
 }
 

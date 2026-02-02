@@ -12,6 +12,7 @@ import (
 	"github.com/alekspetrov/pilot/internal/adapters/slack"
 	"github.com/alekspetrov/pilot/internal/adapters/telegram"
 	"github.com/alekspetrov/pilot/internal/alerts"
+	"github.com/alekspetrov/pilot/internal/approval"
 	"github.com/alekspetrov/pilot/internal/config"
 	"github.com/alekspetrov/pilot/internal/executor"
 	"github.com/alekspetrov/pilot/internal/gateway"
@@ -34,17 +35,46 @@ type Pilot struct {
 	gitlabClient   *gitlab.Client
 	gitlabWH       *gitlab.WebhookHandler
 	gitlabNotify   *gitlab.Notifier
-	slackNotify    *slack.Notifier
-	slackClient    *slack.Client
-	telegramClient *telegram.Client
-	alertEngine    *alerts.Engine
-	store          *memory.Store
-	graph          *memory.KnowledgeGraph
-	webhookManager *webhooks.Manager
+	slackNotify        *slack.Notifier
+	slackClient        *slack.Client
+	slackInteractionWH *slack.InteractionHandler
+	slackApprovalHdlr  *approval.SlackHandler
+	telegramClient     *telegram.Client
+	alertEngine        *alerts.Engine
+	store              *memory.Store
+	graph              *memory.KnowledgeGraph
+	webhookManager     *webhooks.Manager
+	approvalMgr        *approval.Manager
 
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
+}
+
+// slackApprovalClientAdapter wraps slack.SlackClientAdapter to satisfy approval.SlackClient interface
+type slackApprovalClientAdapter struct {
+	adapter *slack.SlackClientAdapter
+}
+
+func (a *slackApprovalClientAdapter) PostInteractiveMessage(ctx context.Context, msg *approval.SlackInteractiveMessage) (*approval.SlackPostMessageResponse, error) {
+	resp, err := a.adapter.PostInteractiveMessage(ctx, &slack.SlackApprovalMessage{
+		Channel: msg.Channel,
+		Text:    msg.Text,
+		Blocks:  msg.Blocks,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &approval.SlackPostMessageResponse{
+		OK:      resp.OK,
+		TS:      resp.TS,
+		Channel: resp.Channel,
+		Error:   resp.Error,
+	}, nil
+}
+
+func (a *slackApprovalClientAdapter) UpdateInteractiveMessage(ctx context.Context, channel, ts string, blocks []interface{}, text string) error {
+	return a.adapter.UpdateInteractiveMessage(ctx, channel, ts, blocks, text)
 }
 
 // New creates a new Pilot instance
@@ -73,9 +103,46 @@ func New(cfg *config.Config) (*Pilot, error) {
 	}
 	p.graph = graph
 
+	// Initialize approval manager
+	p.approvalMgr = approval.NewManager(cfg.Approval)
+
 	// Initialize Slack notifier if enabled
 	if cfg.Adapters.Slack != nil && cfg.Adapters.Slack.Enabled {
 		p.slackNotify = slack.NewNotifier(cfg.Adapters.Slack)
+
+		// Initialize Slack approval handler if enabled
+		if cfg.Adapters.Slack.Approval != nil && cfg.Adapters.Slack.Approval.Enabled {
+			p.slackClient = slack.NewClient(cfg.Adapters.Slack.BotToken)
+			slackAdapter := slack.NewSlackClientAdapter(p.slackClient)
+			approvalChannel := cfg.Adapters.Slack.Approval.Channel
+			if approvalChannel == "" {
+				approvalChannel = cfg.Adapters.Slack.Channel
+			}
+			p.slackApprovalHdlr = approval.NewSlackHandler(
+				&slackApprovalClientAdapter{adapter: slackAdapter},
+				approvalChannel,
+			)
+			p.approvalMgr.RegisterHandler(p.slackApprovalHdlr)
+			logging.WithComponent("pilot").Info("registered Slack approval handler",
+				slog.String("channel", approvalChannel))
+
+			// Set up Slack interaction webhook handler
+			signingSecret := cfg.Adapters.Slack.Approval.SigningSecret
+			if signingSecret == "" {
+				signingSecret = cfg.Adapters.Slack.SigningSecret
+			}
+			p.slackInteractionWH = slack.NewInteractionHandler(signingSecret)
+			p.slackInteractionWH.OnAction(func(action *slack.InteractionAction) bool {
+				return p.slackApprovalHdlr.HandleInteraction(
+					context.Background(),
+					action.ActionID,
+					action.Value,
+					action.UserID,
+					action.Username,
+					action.ResponseURL,
+				)
+			})
+		}
 	}
 
 	// Initialize webhook manager
@@ -172,6 +239,13 @@ func New(cfg *config.Config) (*Pilot, error) {
 				logging.WithComponent("pilot").Error("GitLab webhook error", slog.Any("error", err))
 			}
 		})
+	}
+
+	// Register Slack interaction webhook handler for approval buttons
+	if p.slackInteractionWH != nil {
+		p.gateway.RegisterHandler("/webhooks/slack/interactions", p.slackInteractionWH)
+		logging.WithComponent("pilot").Info("registered Slack interaction webhook handler",
+			slog.String("path", "/webhooks/slack/interactions"))
 	}
 
 	return p, nil
@@ -307,6 +381,11 @@ func (p *Pilot) DispatchWebhookEvent(ctx context.Context, event *webhooks.Event)
 // Router returns the gateway router for registering handlers
 func (p *Pilot) Router() *gateway.Router {
 	return p.gateway.Router()
+}
+
+// Gateway returns the gateway server for registering HTTP handlers
+func (p *Pilot) Gateway() *gateway.Server {
+	return p.gateway
 }
 
 // OnProgress registers a callback for task progress updates
