@@ -28,6 +28,7 @@ type Pilot struct {
 	orchestrator   *orchestrator.Orchestrator
 	linearClient   *linear.Client
 	linearWH       *linear.WebhookHandler
+	linearNotify   *linear.Notifier
 	githubClient   *github.Client
 	githubWH       *github.WebhookHandler
 	githubNotify   *github.Notifier
@@ -42,6 +43,10 @@ type Pilot struct {
 	graph          *memory.KnowledgeGraph
 	webhookManager *webhooks.Manager
 
+	// linearTasks maps task IDs to Linear issue IDs for completion callbacks
+	linearTasks   map[string]string
+	linearTasksMu sync.Mutex
+
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
@@ -52,9 +57,10 @@ func New(cfg *config.Config) (*Pilot, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	p := &Pilot{
-		config: cfg,
-		ctx:    ctx,
-		cancel: cancel,
+		config:      cfg,
+		ctx:         ctx,
+		cancel:      cancel,
+		linearTasks: make(map[string]string),
 	}
 
 	// Initialize memory store
@@ -93,11 +99,15 @@ func New(cfg *config.Config) (*Pilot, error) {
 	}
 	p.orchestrator = orch
 
+	// Register completion callback for platform notifications
+	p.orchestrator.OnCompletion(p.handleTaskCompletion)
+
 	// Initialize Linear adapter if enabled
 	if cfg.Adapters.Linear != nil && cfg.Adapters.Linear.Enabled {
 		p.linearClient = linear.NewClient(cfg.Adapters.Linear.APIKey)
 		p.linearWH = linear.NewWebhookHandler(p.linearClient, cfg.Adapters.Linear.PilotLabel)
 		p.linearWH.OnIssue(p.handleLinearIssue)
+		p.linearNotify = linear.NewNotifier(p.linearClient)
 	}
 
 	// Initialize GitHub adapter if enabled
@@ -243,8 +253,63 @@ func (p *Pilot) handleLinearIssue(ctx context.Context, issue *linear.Issue) erro
 		return fmt.Errorf("no project configured for issue %s", issue.Identifier)
 	}
 
+	// Track task ID -> Linear issue ID mapping for completion callback
+	// Task ID format matches bridge.go: "TASK-{identifier}"
+	taskID := fmt.Sprintf("TASK-%s", issue.Identifier)
+	p.linearTasksMu.Lock()
+	p.linearTasks[taskID] = issue.ID
+	p.linearTasksMu.Unlock()
+
+	// Notify that task has started
+	if p.linearNotify != nil {
+		if err := p.linearNotify.NotifyTaskStarted(ctx, issue.ID, taskID); err != nil {
+			logging.WithComponent("pilot").Warn("Failed to notify task started", slog.Any("error", err))
+		}
+	}
+
 	// Process ticket through orchestrator
-	return p.orchestrator.ProcessTicket(ctx, issue, projectPath)
+	err := p.orchestrator.ProcessTicket(ctx, issue, projectPath)
+
+	// Immediate errors are handled here; async completion is handled by handleTaskCompletion
+	if err != nil && p.linearNotify != nil {
+		if notifyErr := p.linearNotify.NotifyTaskFailed(ctx, issue.ID, err.Error()); notifyErr != nil {
+			logging.WithComponent("pilot").Warn("Failed to notify task failed", slog.Any("error", notifyErr))
+		}
+		// Clean up tracking on immediate error
+		p.linearTasksMu.Lock()
+		delete(p.linearTasks, taskID)
+		p.linearTasksMu.Unlock()
+	}
+
+	return err
+}
+
+// handleTaskCompletion handles task completion events from the orchestrator
+func (p *Pilot) handleTaskCompletion(taskID, prURL string, success bool, errMsg string) {
+	// Check if this is a Linear task
+	p.linearTasksMu.Lock()
+	issueID, isLinear := p.linearTasks[taskID]
+	if isLinear {
+		delete(p.linearTasks, taskID)
+	}
+	p.linearTasksMu.Unlock()
+
+	if isLinear && p.linearNotify != nil {
+		ctx := context.Background()
+		if success {
+			if err := p.linearNotify.NotifyTaskCompleted(ctx, issueID, prURL, ""); err != nil {
+				logging.WithComponent("pilot").Warn("Failed to notify Linear task completed",
+					slog.String("task_id", taskID),
+					slog.Any("error", err))
+			}
+		} else {
+			if err := p.linearNotify.NotifyTaskFailed(ctx, issueID, errMsg); err != nil {
+				logging.WithComponent("pilot").Warn("Failed to notify Linear task failed",
+					slog.String("task_id", taskID),
+					slog.Any("error", err))
+			}
+		}
+	}
 }
 
 // findProjectForIssue finds the project path for an issue
