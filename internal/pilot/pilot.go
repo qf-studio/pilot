@@ -42,6 +42,7 @@ type Pilot struct {
 	telegramClient     *telegram.Client
 	telegramHandler    *telegram.Handler  // Telegram polling handler (GH-349)
 	telegramRunner     *executor.Runner   // Runner for Telegram tasks (GH-349)
+	githubPoller       *github.Poller     // GitHub polling handler (GH-350)
 	alertEngine        *alerts.Engine
 	store              *memory.Store
 	graph              *memory.KnowledgeGraph
@@ -93,6 +94,14 @@ func WithTelegramHandler(runner *executor.Runner, projectPath string) Option {
 			// Use provided projectPath as override
 			p.config.Projects[0].Path = projectPath
 		}
+	}
+}
+
+// WithGitHubPoller enables GitHub polling in gateway mode (GH-350)
+// The poller is created externally with all necessary options and passed in.
+func WithGitHubPoller(poller *github.Poller) Option {
+	return func(p *Pilot) {
+		p.githubPoller = poller
 	}
 }
 
@@ -347,6 +356,12 @@ func (p *Pilot) Start() error {
 	if p.telegramHandler != nil {
 		p.telegramHandler.StartPolling(p.ctx)
 		logging.WithComponent("pilot").Info("Telegram polling started in gateway mode")
+	}
+
+	// Start GitHub polling if poller is initialized (GH-350)
+	if p.githubPoller != nil {
+		go p.githubPoller.Start(p.ctx)
+		logging.WithComponent("pilot").Info("GitHub polling started in gateway mode")
 	}
 
 	logging.WithComponent("pilot").Info("Pilot started",

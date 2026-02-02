@@ -336,6 +336,73 @@ Examples:
 				logging.WithComponent("start").Info("Telegram polling enabled in gateway mode")
 			}
 
+			// Enable GitHub polling in gateway mode if configured (GH-350)
+			if hasGithubPolling && cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.Enabled &&
+				cfg.Adapters.GitHub.Polling != nil && cfg.Adapters.GitHub.Polling.Enabled {
+
+				token := cfg.Adapters.GitHub.Token
+				if token == "" {
+					token = os.Getenv("GITHUB_TOKEN")
+				}
+
+				if token != "" && cfg.Adapters.GitHub.Repo != "" {
+					client := github.NewClient(token)
+					label := cfg.Adapters.GitHub.Polling.Label
+					if label == "" {
+						label = cfg.Adapters.GitHub.PilotLabel
+					}
+					interval := cfg.Adapters.GitHub.Polling.Interval
+					if interval == 0 {
+						interval = 30 * time.Second
+					}
+
+					// Determine execution mode from config
+					execMode := github.ExecutionModeSequential
+					if cfg.Orchestrator != nil && cfg.Orchestrator.Execution != nil {
+						if cfg.Orchestrator.Execution.Mode == "parallel" {
+							execMode = github.ExecutionModeParallel
+						}
+					}
+
+					var pollerOpts []github.PollerOption
+					pollerOpts = append(pollerOpts, github.WithExecutionMode(execMode))
+
+					// Note: In gateway mode, issue handling is done via webhooks, not polling callbacks
+					// The poller is only used to pick up issues that may have been missed by webhooks
+					// For now, we use a simple no-op callback since gateway mode handles issues via webhooks
+					if execMode == github.ExecutionModeSequential {
+						pollerOpts = append(pollerOpts, github.WithOnIssueWithResult(func(ctx context.Context, issue *github.Issue) (*github.IssueResult, error) {
+							logging.WithComponent("github-poller").Info("GitHub issue detected in gateway mode",
+								slog.Int("number", issue.Number),
+								slog.String("title", issue.Title),
+							)
+							// Gateway mode handles issues via webhooks - poller is supplementary
+							return nil, nil
+						}))
+					} else {
+						pollerOpts = append(pollerOpts, github.WithOnIssue(func(ctx context.Context, issue *github.Issue) error {
+							logging.WithComponent("github-poller").Info("GitHub issue detected in gateway mode",
+								slog.Int("number", issue.Number),
+								slog.String("title", issue.Title),
+							)
+							// Gateway mode handles issues via webhooks - poller is supplementary
+							return nil
+						}))
+					}
+
+					ghPoller, err := github.NewPoller(client, cfg.Adapters.GitHub.Repo, label, interval, pollerOpts...)
+					if err != nil {
+						logging.WithComponent("start").Warn("GitHub polling disabled in gateway mode", slog.Any("error", err))
+					} else {
+						pilotOpts = append(pilotOpts, pilot.WithGitHubPoller(ghPoller))
+						logging.WithComponent("start").Info("GitHub polling enabled in gateway mode",
+							slog.String("repo", cfg.Adapters.GitHub.Repo),
+							slog.Duration("interval", interval),
+						)
+					}
+				}
+			}
+
 			// Create and start Pilot
 			p, err := pilot.New(cfg, pilotOpts...)
 			if err != nil {
@@ -375,6 +442,12 @@ Examples:
 			// Show Telegram status in gateway mode (GH-349)
 			if hasTelegram && cfg.Adapters.Telegram.Polling {
 				fmt.Println("📱 Telegram polling active")
+			}
+
+			// Show GitHub status in gateway mode (GH-350)
+			if hasGithubPolling && cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.Enabled &&
+				cfg.Adapters.GitHub.Polling != nil && cfg.Adapters.GitHub.Polling.Enabled {
+				fmt.Printf("🐙 GitHub polling: %s\n", cfg.Adapters.GitHub.Repo)
 			}
 
 			// Wait for shutdown signal
