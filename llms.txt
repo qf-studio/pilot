@@ -1,0 +1,48 @@
+# Pilot
+
+> Autonomous AI development agent that converts tickets into pull requests. Label a GitHub issue with "pilot" and Pilot handles implementation, testing, and PR creation.
+
+## Quick Integration
+
+**Trigger Pilot**: Create a GitHub issue with the `pilot` label.
+
+**Issue Format**:
+```
+Title: Short description of the task
+Body:
+- What needs to be done
+- Acceptance criteria
+- Any constraints or preferences
+```
+
+**What Happens**:
+1. Pilot claims the issue (adds `pilot/in-progress` label)
+2. Creates branch `pilot/GH-{number}`
+3. Analyzes codebase and plans implementation
+4. Writes code using Claude Code
+5. Runs tests, lint, build validation
+6. Opens PR linked to issue (adds `pilot/done` label)
+7. Sends notification via Telegram/Slack
+
+**Supported Inputs**:
+- GitHub Issues (polling, `pilot` label)
+- Linear (webhooks)
+- Jira (webhooks)
+- Asana (webhooks)
+- Telegram Bot (direct messages)
+
+**Best For**: Bug fixes, small features, refactoring, tests, documentation, dependency updates.
+
+**Not Ideal For**: Large architectural changes, security-critical code, tasks requiring human judgment.
+
+## Documentation
+
+- [README](https://github.com/alekspetrov/pilot#readme): Full documentation, installation, configuration
+- [Deployment Guide](https://github.com/alekspetrov/pilot/blob/main/docs/DEPLOYMENT.md): Cloud deployment options
+- [CLI Reference](https://github.com/alekspetrov/pilot#cli-reference): All commands and flags
+
+## Optional
+
+- [Configuration](https://github.com/alekspetrov/pilot#configuration): YAML config reference
+- [Autopilot Modes](https://github.com/alekspetrov/pilot#autopilot-modes): dev/stage/prod autonomy levels
+- [Telegram Integration](https://github.com/alekspetrov/pilot#telegram-integration): Chat, voice, and image support
