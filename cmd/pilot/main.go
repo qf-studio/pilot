@@ -169,6 +169,7 @@ func main() {
 		newWebhooksCmd(),
 		newUpgradeCmd(),
 		newReleaseCmd(),
+		newAllowCmd(),
 	)
 
 	if err := rootCmd.Execute(); err != nil {
