@@ -610,11 +610,20 @@ func (m Model) renderHistory() string {
 	if len(m.completedTasks) == 0 {
 		content.WriteString("  No completed tasks yet")
 	} else {
+		// Layout: "  + GH-156  Title...                                    2m ago"
+		// Fixed parts: indent(2) + status(1) + space(1) + id(7) + space(2) + title + space(2) + timeAgo(8)
+		// Title gets remaining width: panelInnerWidth - 23
+		titleWidth := panelInnerWidth - 23
+		if titleWidth < 10 {
+			titleWidth = 10
+		}
+
 		for i, task := range m.completedTasks {
 			if i > 0 {
 				content.WriteString("\n")
 			}
 
+			// Determine status style
 			var statusIcon string
 			var style lipgloss.Style
 			if task.Status == "success" {
@@ -624,16 +633,18 @@ func (m Model) renderHistory() string {
 				statusIcon = "x"
 				style = statusFailedStyle
 			}
-			status := style.Render(statusIcon)
-			timeAgo := dimStyle.Render(formatTimeAgo(task.CompletedAt))
 
-			// Format: "  + GH-156  Title here...              5m12s   4m ago"
-			content.WriteString(fmt.Sprintf("  %s %-7s  %-28s  %6s  %s",
-				status,
+			// Get plain text values for width calculation
+			timeAgoStr := formatTimeAgo(task.CompletedAt)
+			titleStr := padOrTruncate(task.Title, titleWidth)
+
+			// Build line with styles applied to specific parts only
+			// Don't use %-Ns with styled text - ANSI codes break padding
+			content.WriteString(fmt.Sprintf("  %s %-7s  %s  %8s",
+				style.Render(statusIcon),
 				task.ID,
-				truncateVisual(task.Title, 28),
-				task.Duration,
-				timeAgo,
+				titleStr,
+				dimStyle.Render(timeAgoStr),
 			))
 		}
 	}
