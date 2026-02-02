@@ -691,6 +691,46 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 		)
 	}
 
+	// Initialize alerts engine for outbound notifications (GH-337)
+	var alertsEngine *alerts.Engine
+	alertsCfg := getAlertsConfig(cfg)
+	if alertsCfg != nil && alertsCfg.Enabled {
+		// Create dispatcher and register channels
+		alertsDispatcher := alerts.NewDispatcher(alertsCfg)
+
+		// Register Slack channel if configured
+		if cfg.Adapters.Slack != nil && cfg.Adapters.Slack.Enabled && cfg.Adapters.Slack.BotToken != "" {
+			slackClient := slack.NewClient(cfg.Adapters.Slack.BotToken)
+			for _, ch := range alertsCfg.Channels {
+				if ch.Type == "slack" && ch.Slack != nil {
+					slackChannel := alerts.NewSlackChannel(ch.Name, slackClient, ch.Slack.Channel)
+					alertsDispatcher.RegisterChannel(slackChannel)
+				}
+			}
+		}
+
+		// Register Telegram channel if configured
+		if cfg.Adapters.Telegram != nil && cfg.Adapters.Telegram.Enabled && cfg.Adapters.Telegram.BotToken != "" {
+			telegramClient := telegram.NewClient(cfg.Adapters.Telegram.BotToken)
+			for _, ch := range alertsCfg.Channels {
+				if ch.Type == "telegram" && ch.Telegram != nil {
+					telegramChannel := alerts.NewTelegramChannel(ch.Name, telegramClient, ch.Telegram.ChatID)
+					alertsDispatcher.RegisterChannel(telegramChannel)
+				}
+			}
+		}
+
+		alertsEngine = alerts.NewEngine(alertsCfg, alerts.WithDispatcher(alertsDispatcher))
+		if err := alertsEngine.Start(ctx); err != nil {
+			logging.WithComponent("start").Warn("failed to start alerts engine", slog.Any("error", err))
+			alertsEngine = nil
+		} else {
+			logging.WithComponent("start").Info("alerts engine started",
+				slog.Int("channels", len(alertsDispatcher.ListChannels())),
+			)
+		}
+	}
+
 	// Initialize dispatcher for task queue
 	var dispatcher *executor.Dispatcher
 	store, err := memory.NewStore(cfg.Memory.Path)
@@ -792,9 +832,9 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 
 				// Re-process the issue
 				if execMode == github.ExecutionModeSequential {
-					_, err = handleGitHubIssueWithResult(retryCtx, cfg, client, issue, projectPath, dispatcher, runner, monitor, program, effectiveCreatePR, effectiveDirectCommit)
+					_, err = handleGitHubIssueWithResult(retryCtx, cfg, client, issue, projectPath, dispatcher, runner, monitor, program, alertsEngine, effectiveCreatePR, effectiveDirectCommit)
 				} else {
-					err = handleGitHubIssueWithMonitor(retryCtx, cfg, client, issue, projectPath, dispatcher, runner, monitor, program, effectiveCreatePR, effectiveDirectCommit)
+					err = handleGitHubIssueWithMonitor(retryCtx, cfg, client, issue, projectPath, dispatcher, runner, monitor, program, alertsEngine, effectiveCreatePR, effectiveDirectCommit)
 				}
 				return err
 			})
@@ -817,7 +857,7 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 					github.WithSequentialConfig(waitForMerge, pollInterval, prTimeout),
 					github.WithScheduler(rateLimitScheduler),
 					github.WithOnIssueWithResult(func(issueCtx context.Context, issue *github.Issue) (*github.IssueResult, error) {
-						return handleGitHubIssueWithResult(issueCtx, cfg, client, issue, projectPath, dispatcher, runner, monitor, program, effectiveCreatePR, effectiveDirectCommit)
+						return handleGitHubIssueWithResult(issueCtx, cfg, client, issue, projectPath, dispatcher, runner, monitor, program, alertsEngine, effectiveCreatePR, effectiveDirectCommit)
 					}),
 				)
 			} else {
@@ -825,7 +865,7 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 					github.WithExecutionMode(github.ExecutionModeParallel),
 					github.WithScheduler(rateLimitScheduler),
 					github.WithOnIssue(func(issueCtx context.Context, issue *github.Issue) error {
-						return handleGitHubIssueWithMonitor(issueCtx, cfg, client, issue, projectPath, dispatcher, runner, monitor, program, effectiveCreatePR, effectiveDirectCommit)
+						return handleGitHubIssueWithMonitor(issueCtx, cfg, client, issue, projectPath, dispatcher, runner, monitor, program, alertsEngine, effectiveCreatePR, effectiveDirectCommit)
 					}),
 				)
 			}
@@ -1148,7 +1188,7 @@ func handleGitHubIssue(ctx context.Context, cfg *config.Config, client *github.C
 
 // handleGitHubIssueWithMonitor processes a GitHub issue with optional dashboard monitoring
 // Used in parallel mode when dashboard is enabled
-func handleGitHubIssueWithMonitor(ctx context.Context, cfg *config.Config, client *github.Client, issue *github.Issue, projectPath string, dispatcher *executor.Dispatcher, runner *executor.Runner, monitor *executor.Monitor, program *tea.Program, createPR, directCommit bool) error {
+func handleGitHubIssueWithMonitor(ctx context.Context, cfg *config.Config, client *github.Client, issue *github.Issue, projectPath string, dispatcher *executor.Dispatcher, runner *executor.Runner, monitor *executor.Monitor, program *tea.Program, alertsEngine *alerts.Engine, createPR, directCommit bool) error {
 	taskID := fmt.Sprintf("GH-%d", issue.Number)
 
 	// Register task with monitor if in dashboard mode
@@ -1160,6 +1200,17 @@ func handleGitHubIssueWithMonitor(ctx context.Context, cfg *config.Config, clien
 		program.Send(dashboard.AddLog(fmt.Sprintf("📥 GitHub Issue #%d: %s", issue.Number, issue.Title))())
 	}
 
+	// Emit task started event (GH-337)
+	if alertsEngine != nil {
+		alertsEngine.ProcessEvent(alerts.Event{
+			Type:      alerts.EventTypeTaskStarted,
+			TaskID:    taskID,
+			TaskTitle: issue.Title,
+			Project:   projectPath,
+			Timestamp: time.Now(),
+		})
+	}
+
 	err := handleGitHubIssue(ctx, cfg, client, issue, projectPath, dispatcher, runner, createPR, directCommit)
 
 	// Update monitor with completion status
@@ -1168,6 +1219,28 @@ func handleGitHubIssueWithMonitor(ctx context.Context, cfg *config.Config, clien
 			monitor.Fail(taskID, err.Error())
 		} else {
 			monitor.Complete(taskID, "")
+		}
+	}
+
+	// Emit task completed/failed event (GH-337)
+	if alertsEngine != nil {
+		if err != nil {
+			alertsEngine.ProcessEvent(alerts.Event{
+				Type:      alerts.EventTypeTaskFailed,
+				TaskID:    taskID,
+				TaskTitle: issue.Title,
+				Project:   projectPath,
+				Error:     err.Error(),
+				Timestamp: time.Now(),
+			})
+		} else {
+			alertsEngine.ProcessEvent(alerts.Event{
+				Type:      alerts.EventTypeTaskCompleted,
+				TaskID:    taskID,
+				TaskTitle: issue.Title,
+				Project:   projectPath,
+				Timestamp: time.Now(),
+			})
 		}
 	}
 
@@ -1185,7 +1258,7 @@ func handleGitHubIssueWithMonitor(ctx context.Context, cfg *config.Config, clien
 
 // handleGitHubIssueWithResult processes a GitHub issue and returns result with PR info
 // Used in sequential mode to enable PR merge waiting
-func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client *github.Client, issue *github.Issue, projectPath string, dispatcher *executor.Dispatcher, runner *executor.Runner, monitor *executor.Monitor, program *tea.Program, createPR, directCommit bool) (*github.IssueResult, error) {
+func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client *github.Client, issue *github.Issue, projectPath string, dispatcher *executor.Dispatcher, runner *executor.Runner, monitor *executor.Monitor, program *tea.Program, alertsEngine *alerts.Engine, createPR, directCommit bool) (*github.IssueResult, error) {
 	taskID := fmt.Sprintf("GH-%d", issue.Number)
 
 	// Register task with monitor if in dashboard mode
@@ -1195,6 +1268,17 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 	}
 	if program != nil {
 		program.Send(dashboard.AddLog(fmt.Sprintf("📥 GitHub Issue #%d: %s", issue.Number, issue.Title))())
+	}
+
+	// Emit task started event (GH-337)
+	if alertsEngine != nil {
+		alertsEngine.ProcessEvent(alerts.Event{
+			Type:      alerts.EventTypeTaskStarted,
+			TaskID:    taskID,
+			TaskTitle: issue.Title,
+			Project:   projectPath,
+			Timestamp: time.Now(),
+		})
 	}
 
 	fmt.Printf("\n📥 GitHub Issue #%d: %s\n", issue.Number, issue.Title)
@@ -1264,6 +1348,45 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 			monitor.Fail(taskID, execErr.Error())
 		} else {
 			monitor.Complete(taskID, prURL)
+		}
+	}
+
+	// Emit task completed/failed event (GH-337)
+	if alertsEngine != nil {
+		if execErr != nil {
+			alertsEngine.ProcessEvent(alerts.Event{
+				Type:      alerts.EventTypeTaskFailed,
+				TaskID:    taskID,
+				TaskTitle: issue.Title,
+				Project:   projectPath,
+				Error:     execErr.Error(),
+				Timestamp: time.Now(),
+			})
+		} else if result != nil && result.Success {
+			metadata := map[string]string{}
+			if result.PRUrl != "" {
+				metadata["pr_url"] = result.PRUrl
+			}
+			if result.Duration > 0 {
+				metadata["duration"] = result.Duration.String()
+			}
+			alertsEngine.ProcessEvent(alerts.Event{
+				Type:      alerts.EventTypeTaskCompleted,
+				TaskID:    taskID,
+				TaskTitle: issue.Title,
+				Project:   projectPath,
+				Metadata:  metadata,
+				Timestamp: time.Now(),
+			})
+		} else if result != nil {
+			alertsEngine.ProcessEvent(alerts.Event{
+				Type:      alerts.EventTypeTaskFailed,
+				TaskID:    taskID,
+				TaskTitle: issue.Title,
+				Project:   projectPath,
+				Error:     result.Error,
+				Timestamp: time.Now(),
+			})
 		}
 	}
 
