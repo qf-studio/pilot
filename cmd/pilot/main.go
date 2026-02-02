@@ -679,8 +679,10 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 		}
 	}
 
-	// Show startup banner
-	banner.StartupTelegram(version, projectPath, cfg.Adapters.Telegram.ChatID, cfg)
+	// Show startup banner (skip in dashboard mode to avoid corrupting TUI)
+	if !dashboardMode {
+		banner.StartupTelegram(version, projectPath, cfg.Adapters.Telegram.ChatID, cfg)
+	}
 
 	// Log autopilot status
 	if cfg.Orchestrator.Autopilot != nil && cfg.Orchestrator.Autopilot.Enabled {
@@ -873,15 +875,19 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 			var err error
 			ghPoller, err = github.NewPoller(client, cfg.Adapters.GitHub.Repo, label, interval, pollerOpts...)
 			if err != nil {
-				fmt.Printf("⚠️  GitHub polling disabled: %v\n", err)
+				if !dashboardMode {
+					fmt.Printf("⚠️  GitHub polling disabled: %v\n", err)
+				}
 			} else {
 				modeStr := "sequential"
 				if execMode == github.ExecutionModeParallel {
 					modeStr = "parallel"
 				}
-				fmt.Printf("🐙 GitHub polling enabled: %s (every %s, mode: %s)\n", cfg.Adapters.GitHub.Repo, interval, modeStr)
-				if execMode == github.ExecutionModeSequential && waitForMerge {
-					fmt.Printf("   ⏳ Sequential mode: waiting for PR merge before next issue (timeout: %s)\n", prTimeout)
+				if !dashboardMode {
+					fmt.Printf("🐙 GitHub polling enabled: %s (every %s, mode: %s)\n", cfg.Adapters.GitHub.Repo, interval, modeStr)
+					if execMode == github.ExecutionModeSequential && waitForMerge {
+						fmt.Printf("   ⏳ Sequential mode: waiting for PR merge before next issue (timeout: %s)\n", prTimeout)
+					}
 				}
 				go ghPoller.Start(ctx)
 
@@ -895,7 +901,9 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 						)
 					}
 
-					fmt.Printf("🤖 Autopilot enabled: %s environment\n", cfg.Orchestrator.Autopilot.Environment)
+					if !dashboardMode {
+						fmt.Printf("🤖 Autopilot enabled: %s environment\n", cfg.Orchestrator.Autopilot.Environment)
+					}
 					go func() {
 						if err := autopilotController.Run(ctx); err != nil && err != context.Canceled {
 							logging.WithComponent("autopilot").Error("autopilot controller stopped",
@@ -911,11 +919,15 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 				if store != nil {
 					cleaner, cleanerErr := github.NewCleaner(client, store, cfg.Adapters.GitHub.Repo, cfg.Adapters.GitHub.StaleLabelCleanup)
 					if cleanerErr != nil {
-						fmt.Printf("⚠️  Stale label cleanup disabled: %v\n", cleanerErr)
+						if !dashboardMode {
+							fmt.Printf("⚠️  Stale label cleanup disabled: %v\n", cleanerErr)
+						}
 					} else {
-						fmt.Printf("🧹 Stale label cleanup enabled (every %s, threshold: %s)\n",
-							cfg.Adapters.GitHub.StaleLabelCleanup.Interval,
-							cfg.Adapters.GitHub.StaleLabelCleanup.Threshold)
+						if !dashboardMode {
+							fmt.Printf("🧹 Stale label cleanup enabled (every %s, threshold: %s)\n",
+								cfg.Adapters.GitHub.StaleLabelCleanup.Interval,
+								cfg.Adapters.GitHub.StaleLabelCleanup.Threshold)
+						}
 						go cleaner.Start(ctx)
 					}
 				}
@@ -925,7 +937,9 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 
 	// Start Telegram polling if enabled
 	if tgHandler != nil {
-		fmt.Println("📱 Telegram polling started")
+		if !dashboardMode {
+			fmt.Println("📱 Telegram polling started")
+		}
 		tgHandler.StartPolling(ctx)
 	}
 
