@@ -1549,7 +1549,9 @@ func newStatusCmd() *cobra.Command {
 }
 
 func newInitCmd() *cobra.Command {
-	return &cobra.Command{
+	var force bool
+
+	cmd := &cobra.Command{
 		Use:   "init",
 		Short: "Initialize Pilot configuration",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -1557,9 +1559,17 @@ func newInitCmd() *cobra.Command {
 
 			// Check if config already exists
 			if _, err := os.Stat(configPath); err == nil {
-				fmt.Printf("Config already exists at %s\n", configPath)
-				fmt.Println("Edit it manually or delete to reinitialize.")
-				return nil
+				if force {
+					// Backup existing config
+					backupPath := configPath + ".bak"
+					if err := os.Rename(configPath, backupPath); err != nil {
+						return fmt.Errorf("failed to backup config: %w", err)
+					}
+					fmt.Printf("   📦 Backed up existing config to %s\n\n", backupPath)
+				} else {
+					// Load and display existing config summary
+					return showExistingConfigInfo(configPath)
+				}
 			}
 
 			// Create default config
@@ -1584,6 +1594,85 @@ func newInitCmd() *cobra.Command {
 			return nil
 		},
 	}
+
+	cmd.Flags().BoolVar(&force, "force", false, "Reinitialize config (backs up existing to .bak)")
+
+	return cmd
+}
+
+// showExistingConfigInfo displays a summary of the existing config and helpful options
+func showExistingConfigInfo(configPath string) error {
+	// Load existing config
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return fmt.Errorf("failed to load config: %w", err)
+	}
+
+	// Use ~ for home directory in display
+	displayPath := configPath
+	if home, err := os.UserHomeDir(); err == nil {
+		displayPath = strings.Replace(configPath, home, "~", 1)
+	}
+
+	fmt.Printf("⚠️  Config already exists: %s\n\n", displayPath)
+	fmt.Println("   Current settings:")
+
+	// Projects count
+	projectCount := len(cfg.Projects)
+	if projectCount == 0 {
+		fmt.Println("   • Projects: none configured")
+	} else if projectCount == 1 {
+		fmt.Println("   • Projects: 1 configured")
+	} else {
+		fmt.Printf("   • Projects: %d configured\n", projectCount)
+	}
+
+	// Check enabled adapters
+	if cfg.Adapters != nil {
+		if cfg.Adapters.Telegram != nil && cfg.Adapters.Telegram.Enabled {
+			fmt.Println("   • Telegram: enabled")
+		} else {
+			fmt.Println("   • Telegram: disabled")
+		}
+
+		if cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.Enabled {
+			fmt.Println("   • GitHub: enabled")
+		} else {
+			fmt.Println("   • GitHub: disabled")
+		}
+
+		if cfg.Adapters.Linear != nil && cfg.Adapters.Linear.Enabled {
+			fmt.Println("   • Linear: enabled")
+		}
+
+		if cfg.Adapters.Slack != nil && cfg.Adapters.Slack.Enabled {
+			fmt.Println("   • Slack: enabled")
+		}
+
+		if cfg.Adapters.GitLab != nil && cfg.Adapters.GitLab.Enabled {
+			fmt.Println("   • GitLab: enabled")
+		}
+
+		if cfg.Adapters.Jira != nil && cfg.Adapters.Jira.Enabled {
+			fmt.Println("   • Jira: enabled")
+		}
+
+		if cfg.Adapters.Asana != nil && cfg.Adapters.Asana.Enabled {
+			fmt.Println("   • Asana: enabled")
+		}
+
+		if cfg.Adapters.AzureDevOps != nil && cfg.Adapters.AzureDevOps.Enabled {
+			fmt.Println("   • Azure DevOps: enabled")
+		}
+	}
+
+	fmt.Println()
+	fmt.Println("   Options:")
+	fmt.Printf("   • Edit:   $EDITOR %s\n", displayPath)
+	fmt.Println("   • Reset:  pilot init --force")
+	fmt.Println("   • Start:  pilot start --help")
+
+	return nil
 }
 
 func newVersionCmd() *cobra.Command {
