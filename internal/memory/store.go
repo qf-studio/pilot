@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3"
+	_ "modernc.org/sqlite"
 )
 
 // Store provides persistent storage for Pilot using SQLite.
@@ -31,7 +31,7 @@ func NewStore(dataPath string) (*Store, error) {
 	}
 
 	dbPath := filepath.Join(dataPath, "pilot.db")
-	db, err := sql.Open("sqlite3", dbPath)
+	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}

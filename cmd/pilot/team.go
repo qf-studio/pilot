@@ -513,7 +513,7 @@ func getTeamService() (*teams.Service, func(), error) {
 		return nil, nil, fmt.Errorf("failed to create data directory: %w", err)
 	}
 
-	db, err := sql.Open("sqlite3", dbPath)
+	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to open database: %w", err)
 	}

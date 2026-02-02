@@ -288,14 +288,14 @@ func (s *Store) GetDailyUsage(query UsageQuery) ([]*DailyUsage, error) {
 
 	rows, err := s.db.Query(`
 		SELECT
-			date(timestamp) as day,
+			substr(timestamp, 1, 10) as day,
 			event_type,
 			COUNT(*) as event_count,
 			COALESCE(SUM(quantity), 0) as total_quantity,
 			COALESCE(SUM(total_cost), 0) as total_cost
 		FROM usage_events
 		`+whereClause+`
-		GROUP BY date(timestamp), event_type
+		GROUP BY substr(timestamp, 1, 10), event_type
 		ORDER BY day DESC, event_type
 	`, args...)
 	if err != nil {
