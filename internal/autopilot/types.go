@@ -183,6 +183,8 @@ type PRState struct {
 	CIStatus CIStatus
 	// LastChecked is when the PR status was last polled.
 	LastChecked time.Time
+	// CIWaitStartedAt is when CI monitoring started (for timeout tracking).
+	CIWaitStartedAt time.Time
 	// MergeAttempts counts how many times merge has been attempted.
 	MergeAttempts int
 	// Error holds the last error message if Stage is StageFailed.

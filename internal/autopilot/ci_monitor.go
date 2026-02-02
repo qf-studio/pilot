@@ -176,8 +176,16 @@ func (m *CIMonitor) mapCheckStatus(status, conclusion string) CIStatus {
 	}
 }
 
+// CheckCI checks CI status once and returns immediately.
+// This is the non-blocking alternative to WaitForCI.
+// Returns CIPending/CIRunning if checks are still running.
+func (m *CIMonitor) CheckCI(ctx context.Context, sha string) (CIStatus, error) {
+	return m.checkStatus(ctx, sha)
+}
+
 // GetCIStatus returns the current overall CI status for a SHA.
 // This is useful for point-in-time status checks without waiting.
+// Deprecated: Use CheckCI instead for clarity.
 func (m *CIMonitor) GetCIStatus(ctx context.Context, sha string) (CIStatus, error) {
 	return m.checkStatus(ctx, sha)
 }
