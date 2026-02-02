@@ -242,6 +242,25 @@ const (
 	ReviewEventComment        = "COMMENT"
 )
 
+// Review states returned by GitHub API
+const (
+	ReviewStateApproved         = "APPROVED"
+	ReviewStateChangesRequested = "CHANGES_REQUESTED"
+	ReviewStateCommented        = "COMMENTED"
+	ReviewStateDismissed        = "DISMISSED"
+	ReviewStatePending          = "PENDING"
+)
+
+// PullRequestReview represents a GitHub PR review
+type PullRequestReview struct {
+	ID          int64  `json:"id"`
+	User        User   `json:"user"`
+	Body        string `json:"body,omitempty"`
+	State       string `json:"state"` // APPROVED, CHANGES_REQUESTED, COMMENTED, DISMISSED, PENDING
+	HTMLURL     string `json:"html_url,omitempty"`
+	SubmittedAt string `json:"submitted_at,omitempty"`
+}
+
 // Branch represents a GitHub branch
 type Branch struct {
 	Name      string       `json:"name"`

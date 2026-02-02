@@ -469,3 +469,38 @@ func isNotFoundError(err error) bool {
 	errStr := err.Error()
 	return len(errStr) >= 21 && errStr[:21] == "API error (status 404"
 }
+
+// ListPullRequestReviews lists all reviews for a pull request
+func (c *Client) ListPullRequestReviews(ctx context.Context, owner, repo string, number int) ([]*PullRequestReview, error) {
+	path := fmt.Sprintf("/repos/%s/%s/pulls/%d/reviews", owner, repo, number)
+	var result []*PullRequestReview
+	if err := c.doRequest(ctx, http.MethodGet, path, nil, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// HasApprovalReview checks if a PR has at least one approval review.
+// Returns (hasApproval, approverLogin, error).
+// Only considers the latest review from each user.
+func (c *Client) HasApprovalReview(ctx context.Context, owner, repo string, number int) (bool, string, error) {
+	reviews, err := c.ListPullRequestReviews(ctx, owner, repo, number)
+	if err != nil {
+		return false, "", err
+	}
+
+	// Track latest review state per user
+	latestReviews := make(map[string]string) // user login -> state
+	for _, review := range reviews {
+		latestReviews[review.User.Login] = review.State
+	}
+
+	// Check if any user's latest review is APPROVED
+	for login, state := range latestReviews {
+		if state == ReviewStateApproved {
+			return true, login, nil
+		}
+	}
+
+	return false, "", nil
+}

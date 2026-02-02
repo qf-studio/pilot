@@ -15,12 +15,36 @@ const (
 	EnvProd Environment = "prod"
 )
 
+// ApprovalSource specifies which channel to use for approval requests.
+type ApprovalSource string
+
+const (
+	// ApprovalSourceTelegram uses Telegram for approval requests.
+	ApprovalSourceTelegram ApprovalSource = "telegram"
+	// ApprovalSourceSlack uses Slack for approval requests.
+	ApprovalSourceSlack ApprovalSource = "slack"
+	// ApprovalSourceGitHubReview uses GitHub PR reviews for approval.
+	ApprovalSourceGitHubReview ApprovalSource = "github-review"
+)
+
+// GitHubReviewConfig holds configuration for GitHub PR review approval.
+type GitHubReviewConfig struct {
+	// PollInterval is how often to poll for PR reviews (default: 30s).
+	PollInterval time.Duration `yaml:"poll_interval"`
+}
+
 // Config holds autopilot configuration for automated PR handling.
 type Config struct {
 	// Enabled controls whether autopilot mode is active.
 	Enabled bool `yaml:"enabled"`
 	// Environment determines the automation level (dev/stage/prod).
 	Environment Environment `yaml:"environment"`
+
+	// Approval
+	// ApprovalSource specifies which channel to use for approvals (telegram, slack, github-review).
+	ApprovalSource ApprovalSource `yaml:"approval_source"`
+	// GitHubReview holds configuration for GitHub PR review approval.
+	GitHubReview *GitHubReviewConfig `yaml:"github_review"`
 
 	// PR Handling
 	// AutoReview enables automatic PR review comments.
@@ -65,6 +89,10 @@ func DefaultConfig() *Config {
 	return &Config{
 		Enabled:          false,
 		Environment:      EnvStage,
+		ApprovalSource:   ApprovalSourceTelegram, // Default to Telegram for backward compatibility
+		GitHubReview: &GitHubReviewConfig{
+			PollInterval: 30 * time.Second,
+		},
 		AutoReview:       true,
 		AutoMerge:        true,
 		MergeMethod:      "squash",

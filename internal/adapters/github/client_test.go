@@ -1612,6 +1612,192 @@ func TestReviewEventConstants(t *testing.T) {
 	}
 }
 
+func TestReviewStateConstants(t *testing.T) {
+	tests := []struct {
+		constant string
+		expected string
+	}{
+		{ReviewStateApproved, "APPROVED"},
+		{ReviewStateChangesRequested, "CHANGES_REQUESTED"},
+		{ReviewStateCommented, "COMMENTED"},
+		{ReviewStateDismissed, "DISMISSED"},
+		{ReviewStatePending, "PENDING"},
+	}
+
+	for _, tt := range tests {
+		if tt.constant != tt.expected {
+			t.Errorf("constant = %s, want %s", tt.constant, tt.expected)
+		}
+	}
+}
+
+func TestListPullRequestReviews(t *testing.T) {
+	tests := []struct {
+		name       string
+		statusCode int
+		response   interface{}
+		wantErr    bool
+		wantCount  int
+	}{
+		{
+			name:       "success - multiple reviews",
+			statusCode: http.StatusOK,
+			response: []*PullRequestReview{
+				{ID: 1, User: User{Login: "alice"}, State: ReviewStateApproved},
+				{ID: 2, User: User{Login: "bob"}, State: ReviewStateCommented},
+			},
+			wantErr:   false,
+			wantCount: 2,
+		},
+		{
+			name:       "success - no reviews",
+			statusCode: http.StatusOK,
+			response:   []*PullRequestReview{},
+			wantErr:   false,
+			wantCount: 0,
+		},
+		{
+			name:       "not found",
+			statusCode: http.StatusNotFound,
+			response:   map[string]string{"message": "Not Found"},
+			wantErr:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet {
+					t.Errorf("expected GET, got %s", r.Method)
+				}
+				if r.URL.Path != "/repos/owner/repo/pulls/42/reviews" {
+					t.Errorf("unexpected path: %s", r.URL.Path)
+				}
+
+				w.WriteHeader(tt.statusCode)
+				_ = json.NewEncoder(w).Encode(tt.response)
+			}))
+			defer server.Close()
+
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			reviews, err := client.ListPullRequestReviews(context.Background(), "owner", "repo", 42)
+
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ListPullRequestReviews() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if !tt.wantErr && len(reviews) != tt.wantCount {
+				t.Errorf("ListPullRequestReviews() returned %d reviews, want %d", len(reviews), tt.wantCount)
+			}
+		})
+	}
+}
+
+func TestHasApprovalReview(t *testing.T) {
+	tests := []struct {
+		name         string
+		statusCode   int
+		response     interface{}
+		wantApproved bool
+		wantApprover string
+		wantErr      bool
+	}{
+		{
+			name:       "approved - single review",
+			statusCode: http.StatusOK,
+			response: []*PullRequestReview{
+				{ID: 1, User: User{Login: "alice"}, State: ReviewStateApproved},
+			},
+			wantApproved: true,
+			wantApprover: "alice",
+			wantErr:      false,
+		},
+		{
+			name:       "approved - multiple reviews from same user, latest is approval",
+			statusCode: http.StatusOK,
+			response: []*PullRequestReview{
+				{ID: 1, User: User{Login: "alice"}, State: ReviewStateChangesRequested},
+				{ID: 2, User: User{Login: "alice"}, State: ReviewStateApproved},
+			},
+			wantApproved: true,
+			wantApprover: "alice",
+			wantErr:      false,
+		},
+		{
+			name:       "not approved - changes requested after approval",
+			statusCode: http.StatusOK,
+			response: []*PullRequestReview{
+				{ID: 1, User: User{Login: "alice"}, State: ReviewStateApproved},
+				{ID: 2, User: User{Login: "alice"}, State: ReviewStateChangesRequested},
+			},
+			wantApproved: false,
+			wantApprover: "",
+			wantErr:      false,
+		},
+		{
+			name:       "approved - one approves, one requests changes",
+			statusCode: http.StatusOK,
+			response: []*PullRequestReview{
+				{ID: 1, User: User{Login: "alice"}, State: ReviewStateApproved},
+				{ID: 2, User: User{Login: "bob"}, State: ReviewStateChangesRequested},
+			},
+			wantApproved: true,
+			wantApprover: "alice",
+			wantErr:      false,
+		},
+		{
+			name:       "not approved - only comments",
+			statusCode: http.StatusOK,
+			response: []*PullRequestReview{
+				{ID: 1, User: User{Login: "alice"}, State: ReviewStateCommented},
+			},
+			wantApproved: false,
+			wantApprover: "",
+			wantErr:      false,
+		},
+		{
+			name:         "not approved - no reviews",
+			statusCode:   http.StatusOK,
+			response:     []*PullRequestReview{},
+			wantApproved: false,
+			wantApprover: "",
+			wantErr:      false,
+		},
+		{
+			name:       "error - not found",
+			statusCode: http.StatusNotFound,
+			response:   map[string]string{"message": "Not Found"},
+			wantErr:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tt.statusCode)
+				_ = json.NewEncoder(w).Encode(tt.response)
+			}))
+			defer server.Close()
+
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			approved, approver, err := client.HasApprovalReview(context.Background(), "owner", "repo", 42)
+
+			if (err != nil) != tt.wantErr {
+				t.Errorf("HasApprovalReview() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if !tt.wantErr {
+				if approved != tt.wantApproved {
+					t.Errorf("HasApprovalReview() approved = %v, want %v", approved, tt.wantApproved)
+				}
+				if approved && approver != tt.wantApprover {
+					t.Errorf("HasApprovalReview() approver = %s, want %s", approver, tt.wantApprover)
+				}
+			}
+		})
+	}
+}
+
 func TestListPullRequests(t *testing.T) {
 	tests := []struct {
 		name       string

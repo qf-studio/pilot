@@ -16,10 +16,12 @@ import (
 type WebhookEventType string
 
 const (
-	EventIssuesOpened  WebhookEventType = "issues.opened"
-	EventIssuesLabeled WebhookEventType = "issues.labeled"
-	EventIssuesClosed  WebhookEventType = "issues.closed"
-	EventIssueComment  WebhookEventType = "issue_comment.created"
+	EventIssuesOpened       WebhookEventType = "issues.opened"
+	EventIssuesLabeled      WebhookEventType = "issues.labeled"
+	EventIssuesClosed       WebhookEventType = "issues.closed"
+	EventIssueComment       WebhookEventType = "issue_comment.created"
+	EventPRReviewSubmitted  WebhookEventType = "pull_request_review.submitted"
+	EventPRReviewDismissed  WebhookEventType = "pull_request_review.dismissed"
 )
 
 // WebhookPayload represents a GitHub webhook payload
@@ -31,12 +33,16 @@ type WebhookPayload struct {
 	Sender     *User       `json:"sender,omitempty"`
 }
 
+// PRReviewCallback is called when a PR review event is received
+type PRReviewCallback func(ctx context.Context, prNumber int, action, state, reviewer string, repo *Repository) error
+
 // WebhookHandler handles GitHub webhooks
 type WebhookHandler struct {
 	client        *Client
 	webhookSecret string
 	pilotLabel    string
 	onIssue       func(context.Context, *Issue, *Repository) error
+	onPRReview    PRReviewCallback
 }
 
 // NewWebhookHandler creates a new webhook handler
@@ -51,6 +57,11 @@ func NewWebhookHandler(client *Client, webhookSecret, pilotLabel string) *Webhoo
 // OnIssue sets the callback for when a pilot-labeled issue is received
 func (h *WebhookHandler) OnIssue(callback func(context.Context, *Issue, *Repository) error) {
 	h.onIssue = callback
+}
+
+// OnPRReview sets the callback for when a PR review event is received
+func (h *WebhookHandler) OnPRReview(callback PRReviewCallback) {
+	h.onPRReview = callback
 }
 
 // VerifySignature verifies the GitHub webhook signature
@@ -79,20 +90,21 @@ func (h *WebhookHandler) Handle(ctx context.Context, eventType string, payload m
 
 	logging.WithComponent("github").Debug("GitHub webhook", slog.String("event", eventType), slog.String("action", action))
 
-	// Only process issue events
-	if eventType != "issues" {
-		return nil
+	switch eventType {
+	case "issues":
+		// Process issue create/labeled events
+		switch action {
+		case "opened":
+			return h.handleIssueOpened(ctx, payload)
+		case "labeled":
+			return h.handleIssueLabeled(ctx, payload)
+		}
+	case "pull_request_review":
+		// Process PR review events
+		return h.handlePRReview(ctx, payload, action)
 	}
 
-	// Process create/labeled events
-	switch action {
-	case "opened":
-		return h.handleIssueOpened(ctx, payload)
-	case "labeled":
-		return h.handleIssueLabeled(ctx, payload)
-	default:
-		return nil
-	}
+	return nil
 }
 
 // handleIssueOpened processes newly created issues
@@ -218,4 +230,53 @@ func (h *WebhookHandler) hasPilotLabel(issue *Issue) bool {
 		}
 	}
 	return false
+}
+
+// handlePRReview processes pull request review events
+func (h *WebhookHandler) handlePRReview(ctx context.Context, payload map[string]interface{}, action string) error {
+	if h.onPRReview == nil {
+		return nil
+	}
+
+	// Extract PR number
+	prData, ok := payload["pull_request"].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	prNumber := int(prData["number"].(float64))
+
+	// Extract review state
+	reviewData, ok := payload["review"].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	state, _ := reviewData["state"].(string)
+
+	// Extract reviewer
+	var reviewer string
+	if userData, ok := reviewData["user"].(map[string]interface{}); ok {
+		reviewer, _ = userData["login"].(string)
+	}
+
+	// Extract repository
+	repoData, ok := payload["repository"].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	ownerData, _ := repoData["owner"].(map[string]interface{})
+	repo := &Repository{
+		Name:     repoData["name"].(string),
+		FullName: repoData["full_name"].(string),
+		Owner: User{
+			Login: ownerData["login"].(string),
+		},
+	}
+
+	logging.WithComponent("github").Info("PR review event",
+		slog.Int("pr_number", prNumber),
+		slog.String("action", action),
+		slog.String("state", state),
+		slog.String("reviewer", reviewer))
+
+	return h.onPRReview(ctx, prNumber, action, state, reviewer, repo)
 }
