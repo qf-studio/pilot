@@ -71,13 +71,25 @@ func (h *WebhookHandler) VerifySignature(payload []byte, signature string) bool 
 		return true
 	}
 
+	return VerifyWebhookSignature(payload, signature, h.webhookSecret)
+}
+
+// VerifyWebhookSignature verifies a GitHub webhook signature against a secret.
+// This is a standalone function for use by the gateway without a WebhookHandler instance.
+// Returns true if signature is valid, false otherwise.
+func VerifyWebhookSignature(payload []byte, signature, secret string) bool {
+	if secret == "" {
+		// No secret configured, skip verification (development mode)
+		return true
+	}
+
 	if !strings.HasPrefix(signature, "sha256=") {
 		return false
 	}
 
 	expectedSig := signature[7:] // Remove "sha256=" prefix
 
-	mac := hmac.New(sha256.New, []byte(h.webhookSecret))
+	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write(payload)
 	actualSig := hex.EncodeToString(mac.Sum(nil))
 

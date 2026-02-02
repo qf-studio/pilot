@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/alekspetrov/pilot/internal/adapters/github"
 	"github.com/alekspetrov/pilot/internal/logging"
 	"github.com/gorilla/websocket"
 )
@@ -19,15 +21,16 @@ import (
 // from external services (Linear, GitHub, Jira, Asana), and exposes REST APIs for status
 // and task management. Server is safe for concurrent use.
 type Server struct {
-	config         *Config
-	auth           *Authenticator
-	sessions       *SessionManager
-	router         *Router
-	upgrader       websocket.Upgrader
-	server         *http.Server
-	mu             sync.RWMutex
-	running        bool
-	customHandlers map[string]http.Handler
+	config              *Config
+	auth                *Authenticator
+	sessions            *SessionManager
+	router              *Router
+	upgrader            websocket.Upgrader
+	server              *http.Server
+	mu                  sync.RWMutex
+	running             bool
+	customHandlers      map[string]http.Handler
+	githubWebhookSecret string // Secret for GitHub webhook signature validation
 }
 
 // Config holds gateway server configuration including network binding options.
@@ -36,6 +39,9 @@ type Config struct {
 	Host string `yaml:"host"`
 	// Port is the TCP port number to listen on.
 	Port int `yaml:"port"`
+	// GithubWebhookSecret is the secret for GitHub webhook signature validation.
+	// If set, incoming GitHub webhooks must have valid HMAC-SHA256 signatures.
+	GithubWebhookSecret string `yaml:"-"` // Set programmatically from adapters config
 }
 
 // localhostPrefixes are the allowed origin prefixes for localhost connections.
@@ -78,12 +84,13 @@ func NewServerWithAuth(config *Config, authConfig *AuthConfig) *Server {
 	}
 
 	s := &Server{
-		config:         config,
-		auth:           auth,
-		sessions:       NewSessionManager(),
-		router:         NewRouter(),
-		customHandlers: make(map[string]http.Handler),
-		upgrader:       websocket.Upgrader{
+		config:              config,
+		auth:                auth,
+		sessions:            NewSessionManager(),
+		router:              NewRouter(),
+		customHandlers:      make(map[string]http.Handler),
+		githubWebhookSecret: config.GithubWebhookSecret,
+		upgrader:            websocket.Upgrader{
 			ReadBufferSize:  1024,
 			WriteBufferSize: 1024,
 			CheckOrigin: func(r *http.Request) bool {
@@ -293,8 +300,25 @@ func (s *Server) handleGithubWebhook(w http.ResponseWriter, r *http.Request) {
 	eventType := r.Header.Get("X-GitHub-Event")
 	signature := r.Header.Get("X-Hub-Signature-256")
 
+	// Read raw body first (required for HMAC signature validation)
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "Failed to read request body", http.StatusBadRequest)
+		return
+	}
+
+	// Validate webhook signature if secret is configured
+	if s.githubWebhookSecret != "" {
+		if !github.VerifyWebhookSignature(body, signature, s.githubWebhookSecret) {
+			logging.WithComponent("gateway").Warn("GitHub webhook signature verification failed",
+				slog.String("event_type", eventType))
+			http.Error(w, "Invalid signature", http.StatusUnauthorized)
+			return
+		}
+	}
+
 	var payload map[string]interface{}
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+	if err := json.Unmarshal(body, &payload); err != nil {
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
 		return
 	}

@@ -16,6 +16,7 @@ type Config struct {
 	AllowedIDs    []int64               `yaml:"allowed_ids"`     // User/chat IDs allowed to send tasks
 	PlainTextMode bool                  `yaml:"plain_text_mode"` // Use plain text instead of Markdown (default: true for messaging apps)
 	Transcription *transcription.Config `yaml:"transcription"`   // Voice message transcription config
+	RateLimit     *RateLimitConfig      `yaml:"rate_limit"`      // Rate limiting config (optional)
 }
 
 // DefaultConfig returns default Telegram configuration

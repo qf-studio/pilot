@@ -626,7 +626,13 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 			Projects:      config.NewProjectSource(cfg),
 			AllowedIDs:    allowedIDs,
 			Transcription: cfg.Adapters.Telegram.Transcription,
+			RateLimit:     cfg.Adapters.Telegram.RateLimit,
 		}, runner)
+
+		// Security warning if no allowed IDs configured
+		if len(allowedIDs) == 0 {
+			logging.WithComponent("telegram").Warn("SECURITY: allowed_ids is empty - ALL users can interact with the bot!")
+		}
 
 		// Check for existing instance
 		if err := tgHandler.CheckSingleton(ctx); err != nil {

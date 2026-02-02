@@ -56,6 +56,7 @@ type Handler struct {
 	store            *memory.Store          // Memory store for history/queue/budget (optional)
 	cmdHandler       *CommandHandler        // Command handler for /commands
 	plainTextMode    bool                   // Use plain text instead of Markdown
+	rateLimiter      *RateLimiter           // Rate limiter for DoS protection
 }
 
 // HandlerConfig holds configuration for the Telegram handler
@@ -67,6 +68,7 @@ type HandlerConfig struct {
 	Transcription *transcription.Config // Voice transcription config (optional)
 	Store         *memory.Store         // Memory store for history/queue/budget (optional)
 	PlainTextMode bool                  // Use plain text instead of Markdown (default: true)
+	RateLimit     *RateLimitConfig      // Rate limiting config (optional)
 }
 
 // NewHandler creates a new Telegram message handler
@@ -84,6 +86,15 @@ func NewHandler(config *HandlerConfig, runner *executor.Runner) *Handler {
 		}
 	}
 
+	// Initialize rate limiter
+	var rateLimiter *RateLimiter
+	if config.RateLimit != nil {
+		rateLimiter = NewRateLimiter(config.RateLimit)
+	} else {
+		// Use defaults if not configured
+		rateLimiter = NewRateLimiter(DefaultRateLimitConfig())
+	}
+
 	h := &Handler{
 		client:        NewClient(config.BotToken),
 		runner:        runner,
@@ -96,6 +107,7 @@ func NewHandler(config *HandlerConfig, runner *executor.Runner) *Handler {
 		stopCh:        make(chan struct{}),
 		store:         config.Store,
 		plainTextMode: config.PlainTextMode,
+		rateLimiter:   rateLimiter,
 	}
 
 	// Initialize command handler
@@ -280,6 +292,15 @@ func (h *Handler) processUpdate(ctx context.Context, update *Update) {
 
 	msg := update.Message
 	chatID := strconv.FormatInt(msg.Chat.ID, 10)
+
+	// Rate limiting check for all message types
+	if h.rateLimiter != nil && !h.rateLimiter.AllowMessage(chatID) {
+		logging.WithComponent("telegram").Warn("Rate limit exceeded",
+			slog.String("chat_id", chatID), slog.String("type", "message"))
+		_, _ = h.client.SendMessage(ctx, chatID,
+			"⚠️ Rate limit exceeded. Please wait a moment before sending more messages.", "")
+		return
+	}
 
 	// Handle photo messages
 	if len(msg.Photo) > 0 {
@@ -712,6 +733,16 @@ User message: %s`, h.getActiveProjectPath(chatID), message),
 
 // handleTask handles task requests with confirmation
 func (h *Handler) handleTask(ctx context.Context, chatID, description string) {
+	// Check task rate limit
+	if h.rateLimiter != nil && !h.rateLimiter.AllowTask(chatID) {
+		remaining := h.rateLimiter.GetRemainingTasks(chatID)
+		logging.WithComponent("telegram").Warn("Task rate limit exceeded",
+			slog.String("chat_id", chatID), slog.Int("remaining", remaining))
+		_, _ = h.client.SendMessage(ctx, chatID,
+			"⚠️ Task rate limit exceeded. You've submitted too many tasks recently. Please wait before submitting more.", "")
+		return
+	}
+
 	// Check if there's already a pending task
 	h.mu.Lock()
 	if existing, exists := h.pendingTasks[chatID]; exists {

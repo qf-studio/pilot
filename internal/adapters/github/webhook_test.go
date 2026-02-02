@@ -845,6 +845,68 @@ func TestExtractIssueAndRepo(t *testing.T) {
 	}
 }
 
+func TestVerifyWebhookSignatureStandalone(t *testing.T) {
+	tests := []struct {
+		name      string
+		secret    string
+		payload   string
+		signature string
+		want      bool
+	}{
+		{
+			name:      "valid signature",
+			secret:    "mysecret",
+			payload:   `{"action":"opened"}`,
+			signature: computeHMAC("mysecret", `{"action":"opened"}`),
+			want:      true,
+		},
+		{
+			name:      "invalid signature",
+			secret:    "mysecret",
+			payload:   `{"action":"opened"}`,
+			signature: "sha256=invalid123456789",
+			want:      false,
+		},
+		{
+			name:      "empty secret - skip verification",
+			secret:    "",
+			payload:   `{"action":"opened"}`,
+			signature: "anything",
+			want:      true,
+		},
+		{
+			name:      "missing sha256 prefix",
+			secret:    "mysecret",
+			payload:   `{"action":"opened"}`,
+			signature: "abc123",
+			want:      false,
+		},
+		{
+			name:      "wrong payload",
+			secret:    "mysecret",
+			payload:   `{"action":"closed"}`,
+			signature: computeHMAC("mysecret", `{"action":"opened"}`),
+			want:      false,
+		},
+		{
+			name:      "wrong secret",
+			secret:    "wrongsecret",
+			payload:   `{"action":"opened"}`,
+			signature: computeHMAC("mysecret", `{"action":"opened"}`),
+			want:      false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := VerifyWebhookSignature([]byte(tt.payload), tt.signature, tt.secret)
+			if got != tt.want {
+				t.Errorf("VerifyWebhookSignature() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestWebhookEventTypeConstants(t *testing.T) {
 	if EventIssuesOpened != "issues.opened" {
 		t.Errorf("EventIssuesOpened = %s, want 'issues.opened'", EventIssuesOpened)

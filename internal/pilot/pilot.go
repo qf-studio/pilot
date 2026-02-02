@@ -196,8 +196,12 @@ func New(cfg *config.Config) (*Pilot, error) {
 		p.initAlerts(cfg)
 	}
 
-	// Initialize gateway
-	p.gateway = gateway.NewServer(cfg.Gateway)
+	// Initialize gateway with webhook secrets
+	gatewayCfg := cfg.Gateway
+	if cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.WebhookSecret != "" {
+		gatewayCfg.GithubWebhookSecret = cfg.Adapters.GitHub.WebhookSecret
+	}
+	p.gateway = gateway.NewServer(gatewayCfg)
 
 	// Register webhook handlers
 	if p.linearWH != nil {
