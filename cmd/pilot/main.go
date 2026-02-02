@@ -183,10 +183,10 @@ func newStartCmd() *cobra.Command {
 		dashboardMode bool
 		projectPath   string
 		replace       bool
-		// Input adapter flags (override config)
-		enableTelegram *bool
-		enableGithub   *bool
-		enableLinear   *bool
+		// Input adapter flags (override config) - use bool with "changed" check
+		enableTelegram bool
+		enableGithub   bool
+		enableLinear   bool
 		// Mode flags
 		noGateway    bool   // Lightweight mode: polling only, no HTTP gateway
 		sequential   bool   // Sequential execution mode (one issue at a time)
@@ -225,7 +225,7 @@ Examples:
 			}
 
 			// Apply flag overrides to config
-			applyInputOverrides(cfg, enableTelegram, enableGithub, enableLinear)
+			applyInputOverrides(cfg, cmd, enableTelegram, enableGithub, enableLinear)
 
 			// Resolve project path: flag > config default > cwd
 			if projectPath == "" {
@@ -367,10 +367,10 @@ Examples:
 	cmd.Flags().BoolVar(&autoRelease, "auto-release", false,
 		"Enable automatic release creation after PR merge")
 
-	// Input adapter flags - use pointers to detect if flag was set
-	cmd.Flags().Var(newOptionalBool(&enableTelegram), "telegram", "Enable Telegram polling (overrides config)")
-	cmd.Flags().Var(newOptionalBool(&enableGithub), "github", "Enable GitHub polling (overrides config)")
-	cmd.Flags().Var(newOptionalBool(&enableLinear), "linear", "Enable Linear webhooks (overrides config)")
+	// Input adapter flags - standard bool flags
+	cmd.Flags().BoolVar(&enableTelegram, "telegram", false, "Enable Telegram polling (overrides config)")
+	cmd.Flags().BoolVar(&enableGithub, "github", false, "Enable GitHub polling (overrides config)")
+	cmd.Flags().BoolVar(&enableLinear, "linear", false, "Enable Linear webhooks (overrides config)")
 
 	return cmd
 }
@@ -411,29 +411,30 @@ func (o *optionalBool) IsBoolFlag() bool {
 }
 
 // applyInputOverrides applies CLI flag overrides to config
-func applyInputOverrides(cfg *config.Config, telegramFlag, githubFlag, linearFlag *bool) {
-	if telegramFlag != nil {
+// Uses cmd.Flags().Changed() to only apply flags that were explicitly set
+func applyInputOverrides(cfg *config.Config, cmd *cobra.Command, telegramFlag, githubFlag, linearFlag bool) {
+	if cmd.Flags().Changed("telegram") {
 		if cfg.Adapters.Telegram == nil {
 			cfg.Adapters.Telegram = telegram.DefaultConfig()
 		}
-		cfg.Adapters.Telegram.Enabled = *telegramFlag
-		cfg.Adapters.Telegram.Polling = *telegramFlag
+		cfg.Adapters.Telegram.Enabled = telegramFlag
+		cfg.Adapters.Telegram.Polling = telegramFlag
 	}
-	if githubFlag != nil {
+	if cmd.Flags().Changed("github") {
 		if cfg.Adapters.GitHub == nil {
 			cfg.Adapters.GitHub = github.DefaultConfig()
 		}
-		cfg.Adapters.GitHub.Enabled = *githubFlag
+		cfg.Adapters.GitHub.Enabled = githubFlag
 		if cfg.Adapters.GitHub.Polling == nil {
 			cfg.Adapters.GitHub.Polling = &github.PollingConfig{}
 		}
-		cfg.Adapters.GitHub.Polling.Enabled = *githubFlag
+		cfg.Adapters.GitHub.Polling.Enabled = githubFlag
 	}
-	if linearFlag != nil {
+	if cmd.Flags().Changed("linear") {
 		if cfg.Adapters.Linear == nil {
 			cfg.Adapters.Linear = linear.DefaultConfig()
 		}
-		cfg.Adapters.Linear.Enabled = *linearFlag
+		cfg.Adapters.Linear.Enabled = linearFlag
 	}
 }
 
