@@ -375,41 +375,6 @@ Examples:
 	return cmd
 }
 
-// optionalBool is a flag.Value that tracks whether a bool flag was explicitly set
-type optionalBool struct {
-	ptr **bool
-}
-
-func newOptionalBool(ptr **bool) *optionalBool {
-	return &optionalBool{ptr: ptr}
-}
-
-func (o *optionalBool) Set(s string) error {
-	// For boolean flags, default to true unless explicitly false
-	// This handles edge cases where flag parser passes unexpected values
-	v := s != "false" && s != "0" && s != "no"
-	*o.ptr = &v
-	return nil
-}
-
-func (o *optionalBool) String() string {
-	if *o.ptr == nil {
-		return ""
-	}
-	if **o.ptr {
-		return "true"
-	}
-	return "false"
-}
-
-func (o *optionalBool) Type() string {
-	return "bool"
-}
-
-func (o *optionalBool) IsBoolFlag() bool {
-	return true
-}
-
 // applyInputOverrides applies CLI flag overrides to config
 // Uses cmd.Flags().Changed() to only apply flags that were explicitly set
 func applyInputOverrides(cfg *config.Config, cmd *cobra.Command, telegramFlag, githubFlag, linearFlag bool) {
