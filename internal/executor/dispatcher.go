@@ -512,15 +512,16 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 			if err := w.store.UpdateExecutionStatus(exec.ID, "completed"); err != nil {
 				w.log.Error("Failed to update status to completed", slog.Any("error", err))
 			}
+			// Update result fields (PR URL, commit SHA, duration)
+			if err := w.store.UpdateExecutionResult(exec.ID, result.PRUrl, result.CommitSHA, duration.Milliseconds()); err != nil {
+				w.log.Error("Failed to update execution result", slog.Any("error", err))
+			}
 			// Emit progress callback for task completed
 			msg := fmt.Sprintf("Completed in %s", duration.Round(time.Second))
 			if result.PRUrl != "" {
 				msg = fmt.Sprintf("Completed with PR: %s", result.PRUrl)
 			}
 			w.runner.EmitProgress(exec.TaskID, "Completed", 100, msg)
-
-			// Update execution with result details
-			// Note: For a full implementation, we'd update more fields here
 		}
 
 		w.currentTaskID.Store("")

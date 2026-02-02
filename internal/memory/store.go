@@ -673,6 +673,17 @@ func (s *Store) UpdateExecutionStatus(id, status string, errorMsg ...string) err
 	return err
 }
 
+// UpdateExecutionResult updates the result fields of an execution record.
+// Called when task execution completes successfully with PR/commit info.
+func (s *Store) UpdateExecutionResult(id string, prURL, commitSHA string, durationMs int64) error {
+	_, err := s.db.Exec(`
+		UPDATE executions
+		SET pr_url = ?, commit_sha = ?, duration_ms = ?
+		WHERE id = ?
+	`, prURL, commitSHA, durationMs, id)
+	return err
+}
+
 // GetStaleRunningExecutions returns executions that have been in "running" status
 // for longer than the specified duration. Used to detect crashed workers on restart.
 func (s *Store) GetStaleRunningExecutions(staleDuration time.Duration) ([]*Execution, error) {
