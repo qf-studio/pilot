@@ -306,13 +306,43 @@ Examples:
 				return fmt.Errorf("invalid config: %w", err)
 			}
 
+			// Build Pilot options for gateway mode (GH-349)
+			var pilotOpts []pilot.Option
+
+			// Enable Telegram polling in gateway mode if configured
+			if hasTelegram && cfg.Adapters.Telegram.Polling {
+				// Create runner for Telegram tasks
+				runner := executor.NewRunner()
+
+				// Set up quality gates on runner if configured
+				if cfg.Quality != nil && cfg.Quality.Enabled {
+					runner.SetQualityCheckerFactory(func(taskID, taskProjectPath string) executor.QualityChecker {
+						return &qualityCheckerWrapper{
+							executor: quality.NewExecutor(&quality.ExecutorConfig{
+								Config:      cfg.Quality,
+								ProjectPath: taskProjectPath,
+								TaskID:      taskID,
+							}),
+						}
+					})
+				}
+
+				// Set up model routing if configured
+				if cfg.Executor != nil {
+					runner.SetModelRouter(executor.NewModelRouter(cfg.Executor.ModelRouting, cfg.Executor.Timeout))
+				}
+
+				pilotOpts = append(pilotOpts, pilot.WithTelegramHandler(runner, projectPath))
+				logging.WithComponent("start").Info("Telegram polling enabled in gateway mode")
+			}
+
 			// Create and start Pilot
-			p, err := pilot.New(cfg)
+			p, err := pilot.New(cfg, pilotOpts...)
 			if err != nil {
 				return fmt.Errorf("failed to create Pilot: %w", err)
 			}
 
-			// Set up quality gates if configured (GH-207)
+			// Set up quality gates if configured (GH-207) - for orchestrator/webhook mode
 			if cfg.Quality != nil && cfg.Quality.Enabled {
 				p.SetQualityCheckerFactory(func(taskID, taskProjectPath string) executor.QualityChecker {
 					return &qualityCheckerWrapper{
@@ -341,6 +371,11 @@ Examples:
 			// Show startup banner (headless mode)
 			gatewayURL := fmt.Sprintf("http://%s:%d", cfg.Gateway.Host, cfg.Gateway.Port)
 			banner.StartupBanner(version, gatewayURL)
+
+			// Show Telegram status in gateway mode (GH-349)
+			if hasTelegram && cfg.Adapters.Telegram.Polling {
+				fmt.Println("📱 Telegram polling active")
+			}
 
 			// Wait for shutdown signal
 			sigCh := make(chan os.Signal, 1)

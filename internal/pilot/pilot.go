@@ -40,6 +40,8 @@ type Pilot struct {
 	slackInteractionWH *slack.InteractionHandler
 	slackApprovalHdlr  *approval.SlackHandler
 	telegramClient     *telegram.Client
+	telegramHandler    *telegram.Handler  // Telegram polling handler (GH-349)
+	telegramRunner     *executor.Runner   // Runner for Telegram tasks (GH-349)
 	alertEngine        *alerts.Engine
 	store              *memory.Store
 	graph              *memory.KnowledgeGraph
@@ -77,8 +79,25 @@ func (a *slackApprovalClientAdapter) UpdateInteractiveMessage(ctx context.Contex
 	return a.adapter.UpdateInteractiveMessage(ctx, channel, ts, blocks, text)
 }
 
+// Option is a functional option for configuring Pilot
+type Option func(*Pilot)
+
+// WithTelegramHandler enables Telegram polling in gateway mode (GH-349)
+// The runner is required to execute tasks from Telegram messages.
+func WithTelegramHandler(runner *executor.Runner, projectPath string) Option {
+	return func(p *Pilot) {
+		p.telegramRunner = runner
+		// Store projectPath in config for handler initialization
+		// This is used in the Telegram handler setup
+		if projectPath != "" && len(p.config.Projects) > 0 {
+			// Use provided projectPath as override
+			p.config.Projects[0].Path = projectPath
+		}
+	}
+}
+
 // New creates a new Pilot instance
-func New(cfg *config.Config) (*Pilot, error) {
+func New(cfg *config.Config, opts ...Option) (*Pilot, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	p := &Pilot{
@@ -252,7 +271,53 @@ func New(cfg *config.Config) (*Pilot, error) {
 			slog.String("path", "/webhooks/slack/interactions"))
 	}
 
+	// Apply functional options (GH-349)
+	for _, opt := range opts {
+		opt(p)
+	}
+
+	// Initialize Telegram handler if runner was provided via options (GH-349)
+	// This enables Telegram polling in gateway mode alongside Linear/Jira webhooks
+	if p.telegramRunner != nil && cfg.Adapters.Telegram != nil && cfg.Adapters.Telegram.Enabled && cfg.Adapters.Telegram.Polling {
+		var allowedIDs []int64
+		allowedIDs = append(allowedIDs, cfg.Adapters.Telegram.AllowedIDs...)
+		if cfg.Adapters.Telegram.ChatID != "" {
+			if id, err := parseInt64(cfg.Adapters.Telegram.ChatID); err == nil {
+				allowedIDs = append(allowedIDs, id)
+			}
+		}
+
+		// Get project path - use first project if available
+		projectPath := ""
+		if len(cfg.Projects) > 0 {
+			projectPath = cfg.Projects[0].Path
+		}
+
+		p.telegramHandler = telegram.NewHandler(&telegram.HandlerConfig{
+			BotToken:      cfg.Adapters.Telegram.BotToken,
+			ProjectPath:   projectPath,
+			Projects:      config.NewProjectSource(cfg),
+			AllowedIDs:    allowedIDs,
+			Transcription: cfg.Adapters.Telegram.Transcription,
+			RateLimit:     cfg.Adapters.Telegram.RateLimit,
+			PlainTextMode: true, // Default to plain text mode
+		}, p.telegramRunner)
+
+		if len(allowedIDs) == 0 {
+			logging.WithComponent("pilot").Warn("SECURITY: telegram allowed_ids is empty - ALL users can interact with the bot!")
+		}
+
+		logging.WithComponent("pilot").Info("Telegram handler initialized for gateway mode")
+	}
+
 	return p, nil
+}
+
+// parseInt64 parses a string to int64
+func parseInt64(s string) (int64, error) {
+	var id int64
+	_, err := fmt.Sscanf(s, "%d", &id)
+	return id, err
 }
 
 // Start starts Pilot
@@ -278,6 +343,12 @@ func (p *Pilot) Start() error {
 		}
 	}()
 
+	// Start Telegram polling if handler is initialized (GH-349)
+	if p.telegramHandler != nil {
+		p.telegramHandler.StartPolling(p.ctx)
+		logging.WithComponent("pilot").Info("Telegram polling started in gateway mode")
+	}
+
 	logging.WithComponent("pilot").Info("Pilot started",
 		slog.String("host", p.config.Gateway.Host),
 		slog.Int("port", p.config.Gateway.Port))
@@ -289,6 +360,12 @@ func (p *Pilot) Stop() error {
 	logging.WithComponent("pilot").Info("Stopping Pilot")
 
 	p.cancel()
+
+	// Stop Telegram polling if enabled (GH-349)
+	if p.telegramHandler != nil {
+		p.telegramHandler.Stop()
+		logging.WithComponent("pilot").Info("Telegram polling stopped")
+	}
 
 	// Stop alerts engine
 	if p.alertEngine != nil {
