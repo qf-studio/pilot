@@ -332,7 +332,6 @@ pilot start --telegram --github      # Enable both
 pilot start --dashboard              # With TUI dashboard
 pilot start --no-gateway             # Polling only (no HTTP server)
 pilot start --sequential             # Sequential execution mode
-pilot start --parallel               # Parallel execution mode
 pilot start --autopilot=stage        # Autopilot mode (dev/stage/prod)
 pilot start -p ~/Projects/myapp      # Specify project
 pilot start --replace                # Kill existing instance first
@@ -343,10 +342,8 @@ pilot start --replace                # Kill existing instance first
 ```bash
 pilot task "Add user authentication"                    # Run in cwd
 pilot task "Fix login bug" -p ~/Projects/myapp          # Specify project
-pilot task "Add feature" --create-pr                    # Auto-create PR
 pilot task "Refactor API" --verbose                     # Stream output
 pilot task "Update docs" --dry-run                      # Preview only
-pilot task "Quick fix" --no-branch                      # Skip branch
 pilot task "Implement feature" --backend opencode       # Use OpenCode
 ```
 

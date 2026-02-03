@@ -20,8 +20,6 @@ func TestStartCommandFlags(t *testing.T) {
 		{"replace", ""},
 		{"no-gateway", ""},
 		{"sequential", ""},
-		{"parallel", ""},
-		{"no-pr", ""},
 		{"telegram", ""},
 		{"github", ""},
 		{"linear", ""},
@@ -49,10 +47,7 @@ func TestTaskCommandFlags(t *testing.T) {
 	}{
 		{"project", "p"},
 		{"dry-run", ""},
-		{"no-branch", ""},
 		{"verbose", "v"},
-		{"create-pr", ""},
-		{"no-pr", ""},
 		{"alerts", ""},
 	}
 
@@ -80,8 +75,6 @@ func TestGitHubRunCommandFlags(t *testing.T) {
 		{"repo", ""},
 		{"dry-run", ""},
 		{"verbose", "v"},
-		{"create-pr", ""},
-		{"no-pr", ""},
 	}
 
 	for _, ef := range expectedFlags {
@@ -124,12 +117,6 @@ func TestFlagParsing(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name:    "start with no-pr",
-			cmdFunc: newStartCmd,
-			args:    []string{"--no-pr"},
-			wantErr: false,
-		},
-		{
 			name:    "start with all adapter flags",
 			cmdFunc: newStartCmd,
 			args:    []string{"--telegram=true", "--github=true", "--linear=false"},
@@ -142,12 +129,6 @@ func TestFlagParsing(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name:    "task with no-pr",
-			cmdFunc: newTaskCmd,
-			args:    []string{"--no-pr"},
-			wantErr: false,
-		},
-		{
 			name:    "task with verbose",
 			cmdFunc: newTaskCmd,
 			args:    []string{"--verbose"},
@@ -156,19 +137,13 @@ func TestFlagParsing(t *testing.T) {
 		{
 			name:    "task with all flags",
 			cmdFunc: newTaskCmd,
-			args:    []string{"--dry-run", "--no-pr", "--verbose", "--no-branch", "--alerts"},
+			args:    []string{"--dry-run", "--verbose", "--alerts"},
 			wantErr: false,
 		},
 		{
 			name:    "github run with dry-run",
 			cmdFunc: newGitHubRunCmd,
 			args:    []string{"--dry-run"},
-			wantErr: false,
-		},
-		{
-			name:    "github run with no-pr",
-			cmdFunc: newGitHubRunCmd,
-			args:    []string{"--no-pr"},
 			wantErr: false,
 		},
 		{
@@ -180,7 +155,7 @@ func TestFlagParsing(t *testing.T) {
 		{
 			name:    "github run with all flags",
 			cmdFunc: newGitHubRunCmd,
-			args:    []string{"--dry-run", "--no-pr", "--verbose", "--repo", "owner/repo"},
+			args:    []string{"--dry-run", "--verbose", "--repo", "owner/repo"},
 			wantErr: false,
 		},
 	}
@@ -193,22 +168,6 @@ func TestFlagParsing(t *testing.T) {
 				t.Errorf("ParseFlags() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
-	}
-}
-
-// TestMutuallyExclusiveFlags verifies that conflicting flags are handled
-func TestMutuallyExclusiveFlags(t *testing.T) {
-	// Note: The actual conflict checking happens in RunE, not in flag parsing
-	// This test verifies the flags exist and can be set together at parse time
-	// (the command logic handles the conflict)
-	cmd := newStartCmd()
-	cmd.SetArgs([]string{"--sequential", "--parallel"})
-
-	// The flags can be set together - the RunE function should reject this
-	// We're just testing that parsing works
-	err := cmd.ParseFlags([]string{"--sequential", "--parallel"})
-	if err != nil {
-		t.Errorf("ParseFlags() should succeed, conflict is checked in RunE: %v", err)
 	}
 }
 
@@ -230,13 +189,6 @@ func TestFlagDefaults(t *testing.T) {
 				t.Errorf("sequential default should be false, got %s", flag.DefValue)
 			}
 		}
-
-		// no-pr should default to false
-		if flag := cmd.Flags().Lookup("no-pr"); flag != nil {
-			if flag.DefValue != "false" {
-				t.Errorf("no-pr default should be false, got %s", flag.DefValue)
-			}
-		}
 	})
 
 	t.Run("task command defaults", func(t *testing.T) {
@@ -246,13 +198,6 @@ func TestFlagDefaults(t *testing.T) {
 		if flag := cmd.Flags().Lookup("dry-run"); flag != nil {
 			if flag.DefValue != "false" {
 				t.Errorf("dry-run default should be false, got %s", flag.DefValue)
-			}
-		}
-
-		// no-pr should default to false
-		if flag := cmd.Flags().Lookup("no-pr"); flag != nil {
-			if flag.DefValue != "false" {
-				t.Errorf("no-pr default should be false, got %s", flag.DefValue)
 			}
 		}
 	})
@@ -266,11 +211,40 @@ func TestFlagDefaults(t *testing.T) {
 				t.Errorf("dry-run default should be false, got %s", flag.DefValue)
 			}
 		}
+	})
+}
 
-		// no-pr should default to false
-		if flag := cmd.Flags().Lookup("no-pr"); flag != nil {
-			if flag.DefValue != "false" {
-				t.Errorf("no-pr default should be false, got %s", flag.DefValue)
+// TestRemovedFlags verifies that removed flags are no longer present
+func TestRemovedFlags(t *testing.T) {
+	t.Run("start command removed flags", func(t *testing.T) {
+		cmd := newStartCmd()
+
+		removedFlags := []string{"no-pr", "direct-commit", "parallel"}
+		for _, name := range removedFlags {
+			if flag := cmd.Flags().Lookup(name); flag != nil {
+				t.Errorf("flag --%s should be removed but still exists", name)
+			}
+		}
+	})
+
+	t.Run("task command removed flags", func(t *testing.T) {
+		cmd := newTaskCmd()
+
+		removedFlags := []string{"no-pr", "create-pr", "no-branch"}
+		for _, name := range removedFlags {
+			if flag := cmd.Flags().Lookup(name); flag != nil {
+				t.Errorf("flag --%s should be removed but still exists", name)
+			}
+		}
+	})
+
+	t.Run("github run command removed flags", func(t *testing.T) {
+		cmd := newGitHubRunCmd()
+
+		removedFlags := []string{"no-pr", "create-pr"}
+		for _, name := range removedFlags {
+			if flag := cmd.Flags().Lookup(name); flag != nil {
+				t.Errorf("flag --%s should be removed but still exists", name)
 			}
 		}
 	})

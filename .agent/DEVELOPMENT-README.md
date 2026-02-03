@@ -367,14 +367,11 @@ Required environment variables:
 - `--github` - Enable GitHub polling
 - `--daemon` - Run in background
 - `--sequential` - Wait for PR merge before next issue (default)
-- `--no-pr` - Skip PR creation
 
 ### `pilot task`
 - `--verbose` - Stream raw Claude Code JSON output
-- `--create-pr` - Create GitHub PR after execution
 - `--alerts` - Enable alert engine for this task
 - `--dry-run` - Show prompt without executing
-- `--no-branch` - Run on current branch
 
 ## Progress Display
 

@@ -191,9 +191,6 @@ func newStartCmd() *cobra.Command {
 		// Mode flags
 		noGateway    bool   // Lightweight mode: polling only, no HTTP gateway
 		sequential   bool   // Sequential execution mode (one issue at a time)
-		parallel     bool   // Parallel execution mode (legacy)
-		noPR         bool   // Disable PR creation for polling mode
-		directCommit bool   // DANGER: Push directly to main without branches or PRs
 		autopilotEnv string // Autopilot environment: dev, stage, prod
 		autoRelease  bool   // Enable auto-release after PR merge
 	)
@@ -251,20 +248,11 @@ Examples:
 			hasJira := cfg.Adapters.Jira != nil && cfg.Adapters.Jira.Enabled
 
 			// Apply execution mode override from CLI flags
-			if sequential && parallel {
-				return fmt.Errorf("cannot use both --sequential and --parallel flags")
-			}
 			if sequential {
 				if cfg.Orchestrator.Execution == nil {
 					cfg.Orchestrator.Execution = config.DefaultExecutionConfig()
 				}
 				cfg.Orchestrator.Execution.Mode = "sequential"
-			}
-			if parallel {
-				if cfg.Orchestrator.Execution == nil {
-					cfg.Orchestrator.Execution = config.DefaultExecutionConfig()
-				}
-				cfg.Orchestrator.Execution.Mode = "parallel"
 			}
 
 			// Override autopilot config if flag provided
@@ -298,7 +286,7 @@ Examples:
 
 			// Lightweight mode: polling only, no gateway
 			if noGateway || (!hasLinear && !hasJira && (hasTelegram || hasGithubPolling)) {
-				return runPollingMode(cfg, projectPath, replace, dashboardMode, noPR, directCommit)
+				return runPollingMode(cfg, projectPath, replace, dashboardMode)
 			}
 
 			// Full daemon mode with gateway
@@ -474,10 +462,6 @@ Examples:
 	cmd.Flags().BoolVar(&replace, "replace", false, "Kill existing bot instance before starting")
 	cmd.Flags().BoolVar(&noGateway, "no-gateway", false, "Run polling adapters only (no HTTP gateway)")
 	cmd.Flags().BoolVar(&sequential, "sequential", false, "Sequential execution: wait for PR merge before next issue")
-	cmd.Flags().BoolVar(&parallel, "parallel", false, "Parallel execution: process multiple issues concurrently (legacy)")
-	cmd.Flags().BoolVar(&noPR, "no-pr", false, "Skip PR creation (default: create PRs)")
-	cmd.Flags().BoolVar(&directCommit, "direct-commit", false,
-		"DANGER: Commit directly to main without branches or PRs (requires executor.direct_commit=true in config)")
 	cmd.Flags().StringVar(&autopilotEnv, "autopilot", "",
 		"Enable autopilot mode: dev (auto-merge), stage (CI gate), prod (approval gate)")
 	cmd.Flags().BoolVar(&autoRelease, "auto-release", false,
@@ -520,44 +504,9 @@ func applyInputOverrides(cfg *config.Config, cmd *cobra.Command, telegramFlag, g
 }
 
 // runPollingMode runs lightweight polling-only mode (no HTTP gateway)
-func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMode, noPR, directCommit bool) error {
+func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMode bool) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-
-	// Determine effective createPR value:
-	// 1. Default from config (auto_create_pr, defaults to true)
-	// 2. --no-pr flag overrides to false
-	// 3. --direct-commit implies no PR
-	effectiveCreatePR := true
-	if cfg.Executor != nil && cfg.Executor.AutoCreatePR != nil {
-		effectiveCreatePR = *cfg.Executor.AutoCreatePR
-	}
-	if noPR {
-		effectiveCreatePR = false
-	}
-
-	// Determine effective directCommit value (requires double opt-in)
-	effectiveDirectCommit := false
-	if cfg.Executor != nil && cfg.Executor.DirectCommit && directCommit {
-		effectiveDirectCommit = true
-		effectiveCreatePR = false // Direct commit bypasses PR creation
-
-		// Prominent startup warning
-		fmt.Println()
-		fmt.Println("⚠️  ═══════════════════════════════════════════════════════════════")
-		fmt.Println("⚠️  WARNING: DIRECT COMMIT MODE ENABLED")
-		fmt.Println("⚠️  Changes will be pushed directly to main without branches or PRs.")
-		fmt.Println("⚠️  Ensure you have proper CI/CD and rollback procedures in place.")
-		fmt.Println("⚠️  ═══════════════════════════════════════════════════════════════")
-		fmt.Println()
-
-		logging.WithComponent("start").Warn("DIRECT COMMIT MODE ENABLED - changes push directly to main")
-	} else if directCommit && (cfg.Executor == nil || !cfg.Executor.DirectCommit) {
-		// Flag provided but config not set - warn and ignore
-		fmt.Println("⚠️  --direct-commit flag ignored: executor.direct_commit not enabled in config")
-		fmt.Println("   To enable, add 'executor.direct_commit: true' to ~/.pilot/config.yaml")
-		fmt.Println()
-	}
 
 	// Check Telegram config if enabled
 	hasTelegram := cfg.Adapters.Telegram != nil && cfg.Adapters.Telegram.Enabled
@@ -916,9 +865,9 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 
 				// Re-process the issue
 				if execMode == github.ExecutionModeSequential {
-					_, err = handleGitHubIssueWithResult(retryCtx, cfg, client, issue, projectPath, dispatcher, runner, monitor, program, alertsEngine, effectiveCreatePR, effectiveDirectCommit)
+					_, err = handleGitHubIssueWithResult(retryCtx, cfg, client, issue, projectPath, dispatcher, runner, monitor, program, alertsEngine)
 				} else {
-					err = handleGitHubIssueWithMonitor(retryCtx, cfg, client, issue, projectPath, dispatcher, runner, monitor, program, alertsEngine, effectiveCreatePR, effectiveDirectCommit)
+					err = handleGitHubIssueWithMonitor(retryCtx, cfg, client, issue, projectPath, dispatcher, runner, monitor, program, alertsEngine)
 				}
 				return err
 			})
@@ -941,7 +890,7 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 					github.WithSequentialConfig(waitForMerge, pollInterval, prTimeout),
 					github.WithScheduler(rateLimitScheduler),
 					github.WithOnIssueWithResult(func(issueCtx context.Context, issue *github.Issue) (*github.IssueResult, error) {
-						return handleGitHubIssueWithResult(issueCtx, cfg, client, issue, projectPath, dispatcher, runner, monitor, program, alertsEngine, effectiveCreatePR, effectiveDirectCommit)
+						return handleGitHubIssueWithResult(issueCtx, cfg, client, issue, projectPath, dispatcher, runner, monitor, program, alertsEngine)
 					}),
 				)
 			} else {
@@ -949,7 +898,7 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 					github.WithExecutionMode(github.ExecutionModeParallel),
 					github.WithScheduler(rateLimitScheduler),
 					github.WithOnIssue(func(issueCtx context.Context, issue *github.Issue) error {
-						return handleGitHubIssueWithMonitor(issueCtx, cfg, client, issue, projectPath, dispatcher, runner, monitor, program, alertsEngine, effectiveCreatePR, effectiveDirectCommit)
+						return handleGitHubIssueWithMonitor(issueCtx, cfg, client, issue, projectPath, dispatcher, runner, monitor, program, alertsEngine)
 					}),
 				)
 			}
@@ -1183,7 +1132,7 @@ func logGitHubAPIError(operation string, owner, repo string, issueNum int, err e
 }
 
 // handleGitHubIssue processes a GitHub issue picked up by the poller
-func handleGitHubIssue(ctx context.Context, cfg *config.Config, client *github.Client, issue *github.Issue, projectPath string, dispatcher *executor.Dispatcher, runner *executor.Runner, createPR, directCommit bool) error {
+func handleGitHubIssue(ctx context.Context, cfg *config.Config, client *github.Client, issue *github.Issue, projectPath string, dispatcher *executor.Dispatcher, runner *executor.Runner) error {
 	fmt.Printf("\n📥 GitHub Issue #%d: %s\n", issue.Number, issue.Title)
 
 	parts := strings.Split(cfg.Adapters.GitHub.Repo, "/")
@@ -1197,19 +1146,14 @@ func handleGitHubIssue(ctx context.Context, cfg *config.Config, client *github.C
 	taskID := fmt.Sprintf("GH-%d", issue.Number)
 	branchName := fmt.Sprintf("pilot/%s", taskID)
 
-	// Direct commit mode: no branch, no PR
+	// Always create branches and PRs - required for autopilot workflow
 	task := &executor.Task{
-		ID:           taskID,
-		Title:        issue.Title,
-		Description:  taskDesc,
-		ProjectPath:  projectPath,
-		Branch:       branchName,
-		CreatePR:     createPR,
-		DirectCommit: directCommit,
-	}
-	if directCommit {
-		task.Branch = ""
-		task.CreatePR = false
+		ID:          taskID,
+		Title:       issue.Title,
+		Description: taskDesc,
+		ProjectPath: projectPath,
+		Branch:      branchName,
+		CreatePR:    true,
 	}
 
 	var result *executor.ExecutionResult
@@ -1298,7 +1242,7 @@ func handleGitHubIssue(ctx context.Context, cfg *config.Config, client *github.C
 
 // handleGitHubIssueWithMonitor processes a GitHub issue with optional dashboard monitoring
 // Used in parallel mode when dashboard is enabled
-func handleGitHubIssueWithMonitor(ctx context.Context, cfg *config.Config, client *github.Client, issue *github.Issue, projectPath string, dispatcher *executor.Dispatcher, runner *executor.Runner, monitor *executor.Monitor, program *tea.Program, alertsEngine *alerts.Engine, createPR, directCommit bool) error {
+func handleGitHubIssueWithMonitor(ctx context.Context, cfg *config.Config, client *github.Client, issue *github.Issue, projectPath string, dispatcher *executor.Dispatcher, runner *executor.Runner, monitor *executor.Monitor, program *tea.Program, alertsEngine *alerts.Engine) error {
 	taskID := fmt.Sprintf("GH-%d", issue.Number)
 
 	// Register task with monitor if in dashboard mode
@@ -1321,7 +1265,7 @@ func handleGitHubIssueWithMonitor(ctx context.Context, cfg *config.Config, clien
 		})
 	}
 
-	err := handleGitHubIssue(ctx, cfg, client, issue, projectPath, dispatcher, runner, createPR, directCommit)
+	err := handleGitHubIssue(ctx, cfg, client, issue, projectPath, dispatcher, runner)
 
 	// Update monitor with completion status
 	if monitor != nil {
@@ -1368,7 +1312,7 @@ func handleGitHubIssueWithMonitor(ctx context.Context, cfg *config.Config, clien
 
 // handleGitHubIssueWithResult processes a GitHub issue and returns result with PR info
 // Used in sequential mode to enable PR merge waiting
-func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client *github.Client, issue *github.Issue, projectPath string, dispatcher *executor.Dispatcher, runner *executor.Runner, monitor *executor.Monitor, program *tea.Program, alertsEngine *alerts.Engine, createPR, directCommit bool) (*github.IssueResult, error) {
+func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client *github.Client, issue *github.Issue, projectPath string, dispatcher *executor.Dispatcher, runner *executor.Runner, monitor *executor.Monitor, program *tea.Program, alertsEngine *alerts.Engine) (*github.IssueResult, error) {
 	taskID := fmt.Sprintf("GH-%d", issue.Number)
 
 	// Register task with monitor if in dashboard mode
@@ -1403,19 +1347,14 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 	taskDesc := fmt.Sprintf("GitHub Issue #%d: %s\n\n%s", issue.Number, issue.Title, issue.Body)
 	branchName := fmt.Sprintf("pilot/%s", taskID)
 
-	// Direct commit mode: no branch, no PR
+	// Always create branches and PRs - required for autopilot workflow
 	task := &executor.Task{
-		ID:           taskID,
-		Title:        issue.Title,
-		Description:  taskDesc,
-		ProjectPath:  projectPath,
-		Branch:       branchName,
-		CreatePR:     createPR,
-		DirectCommit: directCommit,
-	}
-	if directCommit {
-		task.Branch = ""
-		task.CreatePR = false
+		ID:          taskID,
+		Title:       issue.Title,
+		Description: taskDesc,
+		ProjectPath: projectPath,
+		Branch:      branchName,
+		CreatePR:    true,
 	}
 
 	var result *executor.ExecutionResult
@@ -1764,12 +1703,12 @@ func showExistingConfigInfo(configPath string) error {
 	fmt.Println("   Current settings:")
 
 	// Projects count
-	projectCount := len(cfg.Projects)
-	if projectCount == 0 {
+	switch projectCount := len(cfg.Projects); projectCount {
+	case 0:
 		fmt.Println("   • Projects: none configured")
-	} else if projectCount == 1 {
+	case 1:
 		fmt.Println("   • Projects: 1 configured")
-	} else {
+	default:
 		fmt.Printf("   • Projects: %d configured\n", projectCount)
 	}
 
@@ -1837,10 +1776,7 @@ func newVersionCmd() *cobra.Command {
 func newTaskCmd() *cobra.Command {
 	var projectPath string
 	var dryRun bool
-	var noBranch bool
 	var verbose bool
-	var createPR bool
-	var noPR bool
 	var enableAlerts bool
 	var enableBudget bool
 
@@ -1849,15 +1785,13 @@ func newTaskCmd() *cobra.Command {
 		Short: "Execute a task using Claude Code",
 		Long: `Execute a task using Claude Code with Navigator integration.
 
-PR creation is enabled by default. Use --no-pr to disable.
+PRs are always created to enable autopilot workflow.
 
 Examples:
   pilot task "Add user authentication with JWT"
   pilot task "Fix the login bug in auth.go" --project /path/to/project
   pilot task "Refactor the API handlers" --dry-run
   pilot task "Add index.py with hello world" --verbose
-  pilot task "Add new feature"                # Creates PR by default
-  pilot task "Quick fix" --no-pr              # Skip PR creation
   pilot task "Fix bug" --alerts`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -1884,27 +1818,6 @@ Examples:
 				projectPath = cwd
 			}
 
-			// Load config for auto_create_pr default
-			configPath := cfgFile
-			if configPath == "" {
-				configPath = config.DefaultConfigPath()
-			}
-			cfg, cfgErr := config.Load(configPath)
-
-			// Determine effective createPR value:
-			// 1. Default from config (auto_create_pr, defaults to true)
-			// 2. --no-pr flag overrides to false
-			// 3. --create-pr flag is no-op (backward compat, PR is default now)
-			effectiveCreatePR := true // Default
-			if cfgErr == nil && cfg.Executor != nil && cfg.Executor.AutoCreatePR != nil {
-				effectiveCreatePR = *cfg.Executor.AutoCreatePR
-			}
-			if noPR {
-				effectiveCreatePR = false
-			}
-			// Note: --create-pr is kept for backward compatibility but is now a no-op
-			// since PR creation is the default behavior
-
 			// Generate task ID based on timestamp
 			taskID := fmt.Sprintf("TASK-%d", time.Now().Unix()%100000)
 			branchName := fmt.Sprintf("pilot/%s", taskID)
@@ -1919,16 +1832,8 @@ Examples:
 			fmt.Println("───────────────────────────────────────")
 			fmt.Printf("   Task ID:   %s\n", taskID)
 			fmt.Printf("   Project:   %s\n", projectPath)
-			if noBranch {
-				fmt.Printf("   Branch:    (current)\n")
-			} else {
-				fmt.Printf("   Branch:    %s\n", branchName)
-			}
-			if effectiveCreatePR {
-				fmt.Printf("   Create PR: ✓ enabled\n")
-			} else {
-				fmt.Printf("   Create PR: ✗ disabled\n")
-			}
+			fmt.Printf("   Branch:    %s\n", branchName)
+			fmt.Printf("   Create PR: ✓ always enabled\n")
 			if hasNavigator {
 				fmt.Printf("   Navigator: ✓ enabled\n")
 			}
@@ -1939,6 +1844,7 @@ Examples:
 			fmt.Println()
 
 			// Build the task early so we can show prompt in dry-run
+			// Always create branches and PRs - required for autopilot workflow
 			task := &executor.Task{
 				ID:          taskID,
 				Title:       taskDesc,
@@ -1946,15 +1852,7 @@ Examples:
 				ProjectPath: projectPath,
 				Branch:      branchName,
 				Verbose:     verbose,
-				CreatePR:    effectiveCreatePR,
-			}
-
-			if noBranch {
-				task.Branch = ""
-				if effectiveCreatePR {
-					fmt.Println("⚠️  Warning: PR creation requires a branch. Use --no-pr or remove --no-branch.")
-					return nil
-				}
+				CreatePR:    true,
 			}
 
 			// Dry run mode - just show what would happen
@@ -2217,7 +2115,7 @@ Examples:
 
 			// Send alerts based on result
 			if result.Success {
-				if effectiveCreatePR && result.PRUrl == "" {
+				if result.PRUrl == "" {
 					fmt.Println("   ⚠️  PR not created (check gh auth status)")
 				}
 
@@ -2261,10 +2159,7 @@ Examples:
 
 	cmd.Flags().StringVarP(&projectPath, "project", "p", "", "Project path (default: current directory)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Show what would be executed without running")
-	cmd.Flags().BoolVar(&noBranch, "no-branch", false, "Don't create a new git branch")
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Stream Claude Code output")
-	cmd.Flags().BoolVar(&createPR, "create-pr", false, "Create GitHub PR (default: true, kept for backward compatibility)")
-	cmd.Flags().BoolVar(&noPR, "no-pr", false, "Skip PR creation")
 	cmd.Flags().BoolVar(&enableAlerts, "alerts", false, "Enable alerts for task execution")
 	cmd.Flags().BoolVar(&enableBudget, "budget", false, "Enable budget enforcement for this task")
 
@@ -2355,8 +2250,6 @@ func newGitHubRunCmd() *cobra.Command {
 	var projectPath string
 	var dryRun bool
 	var verbose bool
-	var createPR bool
-	var noPR bool
 	var repo string
 
 	cmd := &cobra.Command{
@@ -2364,12 +2257,11 @@ func newGitHubRunCmd() *cobra.Command {
 		Short: "Run a GitHub issue as a Pilot task",
 		Long: `Fetch a GitHub issue and execute it as a Pilot task.
 
-PR creation is enabled by default. Use --no-pr to disable.
+PRs are always created to enable autopilot workflow.
 
 Examples:
   pilot github run 8
   pilot github run 8 --repo owner/repo
-  pilot github run 8 --no-pr
   pilot github run 8 --dry-run`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -2388,15 +2280,6 @@ Examples:
 			cfg, err := config.Load(configPath)
 			if err != nil {
 				return fmt.Errorf("failed to load config: %w", err)
-			}
-
-			// Determine effective createPR value from config
-			effectiveCreatePR := true // Default
-			if cfg.Executor != nil && cfg.Executor.AutoCreatePR != nil {
-				effectiveCreatePR = *cfg.Executor.AutoCreatePR
-			}
-			if noPR {
-				effectiveCreatePR = false
 			}
 
 			// Check GitHub is configured
@@ -2469,11 +2352,7 @@ Examples:
 			fmt.Printf("   Task ID:   %s\n", taskID)
 			fmt.Printf("   Project:   %s\n", projectPath)
 			fmt.Printf("   Branch:    %s\n", branchName)
-			if effectiveCreatePR {
-				fmt.Printf("   Create PR: ✓ enabled\n")
-			} else {
-				fmt.Printf("   Create PR: ✗ disabled\n")
-			}
+			fmt.Printf("   Create PR: ✓ always enabled\n")
 			if hasNavigator {
 				fmt.Printf("   Navigator: ✓ enabled\n")
 			}
@@ -2491,6 +2370,7 @@ Examples:
 			// Build task description
 			taskDesc := fmt.Sprintf("GitHub Issue #%d: %s\n\n%s", issue.Number, issue.Title, issue.Body)
 
+			// Always create branches and PRs - required for autopilot workflow
 			task := &executor.Task{
 				ID:          taskID,
 				Title:       issue.Title,
@@ -2498,7 +2378,7 @@ Examples:
 				ProjectPath: projectPath,
 				Branch:      branchName,
 				Verbose:     verbose,
-				CreatePR:    effectiveCreatePR,
+				CreatePR:    true,
 			}
 
 			// Dry run mode
@@ -2599,8 +2479,6 @@ Examples:
 	cmd.Flags().StringVar(&repo, "repo", "", "GitHub repository (owner/repo)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Show what would execute without running")
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Verbose output")
-	cmd.Flags().BoolVar(&createPR, "create-pr", false, "Create GitHub PR (default: true, kept for backward compatibility)")
-	cmd.Flags().BoolVar(&noPR, "no-pr", false, "Skip PR creation")
 
 	return cmd
 }

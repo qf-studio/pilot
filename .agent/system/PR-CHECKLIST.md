@@ -1,6 +1,6 @@
 # PR Merge Checklist
 
-**Purpose**: Prevent incomplete merges like PR #133 where `--no-pr` flag was added to `pilot task` but not `pilot start`.
+**Purpose**: Prevent incomplete merges where changes don't propagate to all relevant commands.
 
 ## Pre-Merge Verification
 
@@ -38,7 +38,7 @@ If PR modifies core components:
 
 | Failure | Example | Prevention |
 |---------|---------|------------|
-| Flag only in one command | `--no-pr` in task but not start | Check all cmd/*.go files |
+| Flag only in one command | Missing flag in start vs task | Check all cmd/*.go files |
 | Navigator integration removed | BuildPrompt() "simplification" | Never touch runner.go Navigator block |
 | Broken TUI exit | Dashboard hangs on Ctrl+C | Always test quit path |
 | Missing help text | Flag works but --help blank | Verify cobra flag description |

@@ -197,36 +197,6 @@ pilot start --autopilot=stage --github
 pilot start --autopilot=prod --github
 ```
 
-### Direct Deploy
-
-For users who rely on manual QA instead of code review. Two modes available:
-
-**Local only (no PR):**
-```bash
-# Changes stay local - no branch, no PR, no push
-pilot start --no-pr --github
-```
-
-**Direct to main (no PR, no branch):**
-```bash
-# ⚠️ Requires double opt-in for safety
-# 1. Add to ~/.pilot/config.yaml:
-#    executor:
-#      direct_commit: true
-# 2. Use the flag:
-pilot start --direct-commit --github
-```
-
-**Use when:**
-- You can't review code but can test functionality
-- You have a staging environment for manual QA
-- You trust Pilot + your test suite + CI
-
-**Not recommended when:**
-- Production has no rollback mechanism
-- No QA process exists
-- No CI/CD pipeline to catch issues
-
 ## Telegram Integration
 
 Talk to Pilot naturally - it understands different interaction modes:
@@ -381,10 +351,7 @@ pilot start --telegram --github      # Enable both
 pilot start --dashboard              # With TUI dashboard
 pilot start --no-gateway             # Polling only (no HTTP server)
 pilot start --sequential             # Sequential execution mode
-pilot start --parallel               # Parallel execution mode
 pilot start --autopilot=stage        # Autopilot mode (dev/stage/prod)
-pilot start --no-pr                  # Skip PR creation (local only)
-pilot start --direct-commit          # Push directly to main (danger: requires config opt-in)
 pilot start -p ~/Projects/myapp      # Specify project
 pilot start --replace                # Kill existing instance first
 ```
@@ -394,10 +361,8 @@ pilot start --replace                # Kill existing instance first
 ```bash
 pilot task "Add user authentication"                    # Run in cwd
 pilot task "Fix login bug" -p ~/Projects/myapp          # Specify project
-pilot task "Add feature" --create-pr                    # Auto-create PR
 pilot task "Refactor API" --verbose                     # Stream output
 pilot task "Update docs" --dry-run                      # Preview only
-pilot task "Quick fix" --no-branch                      # Skip branch
 pilot task "Implement feature" --backend opencode       # Use OpenCode
 ```
 
