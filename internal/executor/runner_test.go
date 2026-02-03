@@ -1855,3 +1855,113 @@ func TestNewRunnerWithConfig_DecomposeDisabled(t *testing.T) {
 		t.Error("Expected decomposer to be nil when disabled in config")
 	}
 }
+
+// Test self-review prompt generation (GH-364)
+func TestBuildSelfReviewPrompt(t *testing.T) {
+	runner := NewRunner()
+
+	task := &Task{
+		ID:          "TEST-001",
+		Title:       "Test task",
+		Description: "Test description",
+		ProjectPath: "/tmp/test",
+	}
+
+	prompt := runner.buildSelfReviewPrompt(task)
+
+	// Verify key elements
+	if !strings.Contains(prompt, "Self-Review Phase") {
+		t.Error("Prompt should contain Self-Review Phase header")
+	}
+	if !strings.Contains(prompt, "git diff") {
+		t.Error("Prompt should include diff analysis")
+	}
+	if !strings.Contains(prompt, "go build") {
+		t.Error("Prompt should include build verification")
+	}
+	if !strings.Contains(prompt, "REVIEW_PASSED") {
+		t.Error("Prompt should include success signal")
+	}
+	if !strings.Contains(prompt, "REVIEW_FIXED") {
+		t.Error("Prompt should include fixed signal")
+	}
+	if !strings.Contains(prompt, "Wiring Check") {
+		t.Error("Prompt should include wiring check")
+	}
+	if !strings.Contains(prompt, "Method Existence Check") {
+		t.Error("Prompt should include method existence check")
+	}
+}
+
+// Test self-review config option (GH-364)
+func TestBackendConfig_SkipSelfReview(t *testing.T) {
+	// Default config should have SkipSelfReview as false
+	config := DefaultBackendConfig()
+	if config.SkipSelfReview {
+		t.Error("Default config should not skip self-review")
+	}
+
+	// Test with skip enabled
+	config.SkipSelfReview = true
+	if !config.SkipSelfReview {
+		t.Error("SkipSelfReview should be true when set")
+	}
+}
+
+// Test that self-review is skipped for trivial tasks (GH-364)
+func TestSelfReviewSkipsTrivialTasks(t *testing.T) {
+	// Trivial task should be skipped
+	trivialTask := &Task{
+		ID:          "TRIV-001",
+		Title:       "Fix typo in README",
+		Description: "Fix typo in README",
+		ProjectPath: "/tmp/test",
+	}
+
+	complexity := DetectComplexity(trivialTask)
+	if !complexity.ShouldSkipNavigator() {
+		t.Error("Expected trivial task to be detected as trivial")
+	}
+
+	// The self-review should skip trivial tasks without needing backend execution
+	// We can't fully test runSelfReview without mocking, but we verify the complexity check
+	if complexity != ComplexityTrivial {
+		t.Errorf("Expected complexity to be trivial, got %s", complexity)
+	}
+
+	// Non-trivial task should NOT be skipped
+	mediumTask := &Task{
+		ID:          "MED-001",
+		Title:       "Add user authentication with JWT tokens",
+		Description: "Implement user authentication flow with JWT tokens and session management",
+		ProjectPath: "/tmp/test",
+	}
+
+	mediumComplexity := DetectComplexity(mediumTask)
+	if mediumComplexity.ShouldSkipNavigator() {
+		t.Error("Expected medium complexity task to NOT skip Navigator/self-review")
+	}
+}
+
+// Test runner with SkipSelfReview config (GH-364)
+func TestNewRunnerWithConfig_SkipSelfReview(t *testing.T) {
+	config := &BackendConfig{
+		Type: "claude-code",
+		ClaudeCode: &ClaudeCodeConfig{
+			Command: "claude",
+		},
+		SkipSelfReview: true,
+	}
+
+	runner, err := NewRunnerWithConfig(config)
+	if err != nil {
+		t.Fatalf("NewRunnerWithConfig failed: %v", err)
+	}
+
+	if runner.config == nil {
+		t.Fatal("Expected runner.config to be set")
+	}
+	if !runner.config.SkipSelfReview {
+		t.Error("Expected SkipSelfReview to be true in runner config")
+	}
+}

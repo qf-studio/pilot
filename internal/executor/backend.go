@@ -143,6 +143,11 @@ type BackendConfig struct {
 	// or "run dev server" will execute without creating a PR.
 	DetectEphemeral *bool `yaml:"detect_ephemeral,omitempty"`
 
+	// SkipSelfReview disables the self-review phase before PR creation.
+	// When false (default), Pilot runs a self-review phase after quality gates pass
+	// to catch issues like unwired config, undefined methods, or incomplete implementations.
+	SkipSelfReview bool `yaml:"skip_self_review,omitempty"`
+
 	// ClaudeCode contains Claude Code specific settings
 	ClaudeCode *ClaudeCodeConfig `yaml:"claude_code,omitempty"`
 

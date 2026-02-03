@@ -848,6 +848,13 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 				if outcome.Passed {
 					finalOutcome = outcome
 					r.reportProgress(task.ID, "Quality Passed", 94, "All quality gates passed")
+
+					// Run self-review phase (GH-364)
+					if err := r.runSelfReview(ctx, task, state); err != nil {
+						log.Warn("Self-review error", slog.Any("error", err))
+						// Continue anyway - self-review is advisory
+					}
+
 					break
 				}
 				// Track this outcome for potential failure reporting
@@ -1010,6 +1017,12 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 				slog.String("task_id", task.ID),
 				slog.String("project", task.ProjectPath),
 			)
+
+			// Run self-review even without quality gates (GH-364)
+			if err := r.runSelfReview(ctx, task, state); err != nil {
+				log.Warn("Self-review error", slog.Any("error", err))
+				// Continue anyway - self-review is advisory
+			}
 		}
 
 		// Handle direct commit mode: push directly to main
@@ -1485,6 +1498,122 @@ func (r *Runner) buildRetryPrompt(task *Task, feedback string, attempt int) stri
 	sb.WriteString("3. Ensure all tests pass\n")
 	sb.WriteString("4. Commit your fixes with a descriptive message\n\n")
 	sb.WriteString("Work autonomously. Do not ask for confirmation.\n")
+
+	return sb.String()
+}
+
+// runSelfReview executes a self-review phase where Claude examines its changes.
+// This catches issues like unwired config, undefined methods, or incomplete implementations.
+// Returns nil if review passes or is skipped, error only for critical failures.
+func (r *Runner) runSelfReview(ctx context.Context, task *Task, state *progressState) error {
+	// Skip self-review if disabled in config
+	if r.config != nil && r.config.SkipSelfReview {
+		r.log.Debug("Self-review skipped (disabled in config)", slog.String("task_id", task.ID))
+		return nil
+	}
+
+	// Skip for trivial tasks - they don't need self-review
+	complexity := DetectComplexity(task)
+	if complexity.ShouldSkipNavigator() {
+		r.log.Debug("Self-review skipped (trivial task)", slog.String("task_id", task.ID))
+		return nil
+	}
+
+	r.log.Info("Running self-review phase", slog.String("task_id", task.ID))
+	r.reportProgress(task.ID, "Self-Review", 95, "Reviewing changes...")
+
+	reviewPrompt := r.buildSelfReviewPrompt(task)
+
+	// Execute self-review with shorter timeout (2 minutes)
+	reviewCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+
+	// Select model (use same routing as main execution)
+	selectedModel := r.modelRouter.SelectModel(task)
+
+	result, err := r.backend.Execute(reviewCtx, ExecuteOptions{
+		Prompt:      reviewPrompt,
+		ProjectPath: task.ProjectPath,
+		Verbose:     task.Verbose,
+		Model:       selectedModel,
+		EventHandler: func(event BackendEvent) {
+			// Track tokens from self-review
+			state.tokensInput += event.TokensInput
+			state.tokensOutput += event.TokensOutput
+			// Extract any new commit SHAs from self-review fixes
+			if event.Type == EventTypeToolResult && event.ToolResult != "" {
+				extractCommitSHA(event.ToolResult, state)
+			}
+		},
+	})
+
+	if err != nil {
+		// Self-review failure is not fatal - log and continue
+		r.log.Warn("Self-review execution failed",
+			slog.String("task_id", task.ID),
+			slog.Any("error", err),
+		)
+		return nil
+	}
+
+	// Check if review found and fixed issues
+	if strings.Contains(result.Output, "REVIEW_FIXED:") {
+		r.log.Info("Self-review fixed issues",
+			slog.String("task_id", task.ID),
+		)
+		r.reportProgress(task.ID, "Self-Review", 97, "Issues fixed during review")
+	} else if strings.Contains(result.Output, "REVIEW_PASSED") {
+		r.log.Info("Self-review passed",
+			slog.String("task_id", task.ID),
+		)
+		r.reportProgress(task.ID, "Self-Review", 97, "Review passed")
+	} else {
+		r.log.Debug("Self-review completed (no explicit signal)",
+			slog.String("task_id", task.ID),
+		)
+	}
+
+	return nil
+}
+
+// buildSelfReviewPrompt constructs the prompt for self-review phase.
+// The prompt instructs Claude to examine its changes for common issues
+// and fix them before PR creation.
+func (r *Runner) buildSelfReviewPrompt(task *Task) string {
+	var sb strings.Builder
+
+	sb.WriteString("## Self-Review Phase\n\n")
+	sb.WriteString("Review the changes you just made for completeness. Run these checks:\n\n")
+
+	sb.WriteString("### 1. Diff Analysis\n")
+	sb.WriteString("```bash\ngit diff --cached\n```\n")
+	sb.WriteString("Examine your staged changes. Look for:\n")
+	sb.WriteString("- Methods called that don't exist\n")
+	sb.WriteString("- Struct fields added but never used\n")
+	sb.WriteString("- Config fields that aren't wired through\n")
+	sb.WriteString("- Import statements for unused packages\n\n")
+
+	sb.WriteString("### 2. Build Verification\n")
+	sb.WriteString("```bash\ngo build ./...\n```\n")
+	sb.WriteString("If build fails, fix the errors.\n\n")
+
+	sb.WriteString("### 3. Wiring Check\n")
+	sb.WriteString("For any NEW struct fields you added:\n")
+	sb.WriteString("- Search for the field name in the codebase\n")
+	sb.WriteString("- Verify the field is assigned when creating the struct\n")
+	sb.WriteString("- Verify the field is used somewhere\n\n")
+
+	sb.WriteString("### 4. Method Existence Check\n")
+	sb.WriteString("For any NEW method calls you added:\n")
+	sb.WriteString("- Search for `func.*methodName` to verify the method exists\n")
+	sb.WriteString("- If method doesn't exist, implement it\n\n")
+
+	sb.WriteString("### Actions\n")
+	sb.WriteString("- If you find issues: FIX them and commit the fix\n")
+	sb.WriteString("- Output `REVIEW_FIXED: <description>` if you fixed something\n")
+	sb.WriteString("- Output `REVIEW_PASSED` if everything looks good\n\n")
+
+	sb.WriteString("Work autonomously. Fix any issues you find.\n")
 
 	return sb.String()
 }
