@@ -33,6 +33,7 @@ type Orchestrator struct {
 	taskQueue             chan *Task
 	running               map[string]bool
 	progressCallback      func(taskID, phase string, progress int, message string)
+	completionCallback    func(taskID, prURL string, success bool, errMsg string)
 	qualityCheckerFactory executor.QualityCheckerFactory
 	mu                    sync.Mutex
 	wg                    sync.WaitGroup
@@ -204,6 +205,7 @@ func (o *Orchestrator) processTask(task *Task) {
 		if o.notifier != nil {
 			_ = o.notifier.TaskFailed(o.ctx, task.ID, task.Document.Title, err.Error())
 		}
+		o.fireCompletion(task.ID, "", false, err.Error())
 		return
 	}
 
@@ -213,6 +215,7 @@ func (o *Orchestrator) processTask(task *Task) {
 		if o.notifier != nil {
 			_ = o.notifier.TaskFailed(o.ctx, task.ID, task.Document.Title, result.Error)
 		}
+		o.fireCompletion(task.ID, "", false, result.Error)
 		return
 	}
 
@@ -223,6 +226,8 @@ func (o *Orchestrator) processTask(task *Task) {
 	if o.notifier != nil {
 		_ = o.notifier.TaskCompleted(o.ctx, task.ID, task.Document.Title, result.PRUrl)
 	}
+
+	o.fireCompletion(task.ID, result.PRUrl, true, "")
 }
 
 // handleProgress handles progress updates from the executor
@@ -243,11 +248,29 @@ func (o *Orchestrator) handleProgress(taskID, phase string, progress int, messag
 	}
 }
 
+// fireCompletion calls the completion callback if registered
+func (o *Orchestrator) fireCompletion(taskID, prURL string, success bool, errMsg string) {
+	o.mu.Lock()
+	cb := o.completionCallback
+	o.mu.Unlock()
+	if cb != nil {
+		cb(taskID, prURL, success, errMsg)
+	}
+}
+
 // OnProgress registers an external callback for task progress updates
 func (o *Orchestrator) OnProgress(callback func(taskID, phase string, progress int, message string)) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.progressCallback = callback
+}
+
+// OnCompletion registers an external callback for task completion events.
+// The callback receives taskID, prURL (empty if failed), success flag, and error message (empty if success).
+func (o *Orchestrator) OnCompletion(callback func(taskID, prURL string, success bool, errMsg string)) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.completionCallback = callback
 }
 
 // OnToken registers a callback for token usage updates on the underlying runner.
