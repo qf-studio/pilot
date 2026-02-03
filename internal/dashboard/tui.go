@@ -938,22 +938,22 @@ func (m Model) renderUpdateNotification() string {
 
 	switch m.upgradeState {
 	case UpgradeStateAvailable:
-		title = "⬆️ UPDATE AVAILABLE"
-		content = fmt.Sprintf("New version: %s → %s (press 'u' to upgrade)",
+		title = "^ UPDATE"
+		content = fmt.Sprintf("%s -> %s available (press 'u' to upgrade)",
 			m.updateInfo.CurrentVersion, m.updateInfo.LatestVersion)
 
 	case UpgradeStateInProgress:
-		title = "🔄 UPGRADING"
+		title = "* UPGRADING"
 		bar := m.renderProgressBar(m.upgradeProgress, 30)
-		content = fmt.Sprintf("Upgrading to %s... %s %d%%",
+		content = fmt.Sprintf("Installing %s... %s %d%%",
 			m.updateInfo.LatestVersion, bar, m.upgradeProgress)
 
 	case UpgradeStateComplete:
-		title = "✅ UPGRADE COMPLETE"
-		content = fmt.Sprintf("Upgraded to %s - Restarting...", m.updateInfo.LatestVersion)
+		title = "+ UPGRADED"
+		content = fmt.Sprintf("Now running %s - Restarting...", m.updateInfo.LatestVersion)
 
 	case UpgradeStateFailed:
-		title = "❌ UPGRADE FAILED"
+		title = "! UPGRADE FAILED"
 		content = m.upgradeError
 
 	default:
