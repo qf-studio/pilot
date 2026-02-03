@@ -8,7 +8,7 @@ import (
 )
 
 // DefaultCheckInterval is the default interval between version checks
-const DefaultCheckInterval = 30 * time.Minute
+const DefaultCheckInterval = 5 * time.Minute
 
 // VersionChecker periodically checks for new versions in the background
 type VersionChecker struct {
