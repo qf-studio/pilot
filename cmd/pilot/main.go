@@ -306,6 +306,11 @@ Examples:
 				return fmt.Errorf("invalid config: %w", err)
 			}
 
+			// Suppress logging in dashboard mode BEFORE initialization (GH-351)
+			if dashboardMode {
+				logging.Suppress()
+			}
+
 			// Build Pilot options for gateway mode (GH-349)
 			var pilotOpts []pilot.Option
 
