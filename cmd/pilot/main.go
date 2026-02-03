@@ -314,8 +314,9 @@ Examples:
 			// Build Pilot options for gateway mode (GH-349)
 			var pilotOpts []pilot.Option
 
-			// Enable Telegram polling in gateway mode if configured
-			if hasTelegram && cfg.Adapters.Telegram.Polling {
+			// Enable Telegram polling in gateway mode only if --telegram flag was explicitly passed (GH-351)
+			telegramFlagSet := cmd.Flags().Changed("telegram")
+			if telegramFlagSet && hasTelegram && cfg.Adapters.Telegram.Polling {
 				// Create runner for Telegram tasks
 				runner := executor.NewRunner()
 
@@ -341,8 +342,9 @@ Examples:
 				logging.WithComponent("start").Info("Telegram polling enabled in gateway mode")
 			}
 
-			// Enable GitHub polling in gateway mode if configured (GH-350)
-			if hasGithubPolling && cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.Enabled &&
+			// Enable GitHub polling in gateway mode only if --github flag was explicitly passed (GH-350, GH-351)
+			githubFlagSet := cmd.Flags().Changed("github")
+			if githubFlagSet && hasGithubPolling && cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.Enabled &&
 				cfg.Adapters.GitHub.Polling != nil && cfg.Adapters.GitHub.Polling.Enabled {
 
 				token := cfg.Adapters.GitHub.Token
