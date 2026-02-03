@@ -222,8 +222,10 @@ func (u *Upgrader) BinaryPath() string {
 }
 
 // fetchLatestRelease fetches the latest release from GitHub
+// Uses /releases endpoint instead of /releases/latest to avoid GitHub API caching
+// which can return stale data for several minutes after a new release is created.
 func (u *Upgrader) fetchLatestRelease(ctx context.Context) (*Release, error) {
-	url := fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", GitHubRepo)
+	url := fmt.Sprintf("https://api.github.com/repos/%s/releases?per_page=10", GitHubRepo)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
@@ -244,12 +246,24 @@ func (u *Upgrader) fetchLatestRelease(ctx context.Context) (*Release, error) {
 		return nil, fmt.Errorf("GitHub API returned status %d", resp.StatusCode)
 	}
 
-	var release Release
-	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
-		return nil, fmt.Errorf("failed to parse release: %w", err)
+	var releases []Release
+	if err := json.NewDecoder(resp.Body).Decode(&releases); err != nil {
+		return nil, fmt.Errorf("failed to parse releases: %w", err)
 	}
 
-	return &release, nil
+	// Find first non-draft, non-prerelease release
+	for i := range releases {
+		if !releases[i].Draft && !releases[i].Prerelease {
+			return &releases[i], nil
+		}
+	}
+
+	if len(releases) == 0 {
+		return nil, fmt.Errorf("no releases found")
+	}
+
+	// Fallback to first release if all are drafts/prereleases
+	return &releases[0], nil
 }
 
 // findAsset finds the appropriate release asset for the current platform
