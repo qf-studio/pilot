@@ -601,6 +601,19 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 		}
 	}
 
+	// Initialize memory store early for dashboard persistence (GH-367)
+	store, err := memory.NewStore(cfg.Memory.Path)
+	if err != nil {
+		logging.WithComponent("start").Warn("Failed to open memory store", slog.Any("error", err))
+		store = nil
+	} else {
+		defer func() {
+			if store != nil {
+				_ = store.Close()
+			}
+		}()
+	}
+
 	// Create monitor and TUI program for dashboard mode
 	var monitor *executor.Monitor
 	var program *tea.Program
@@ -610,7 +623,7 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 
 		monitor = executor.NewMonitor()
 		upgradeRequestCh = make(chan struct{}, 1)
-		model := dashboard.NewModelWithOptions(version, nil, autopilotController, upgradeRequestCh)
+		model := dashboard.NewModelWithOptions(version, store, autopilotController, upgradeRequestCh)
 		program = tea.NewProgram(model,
 			tea.WithAltScreen(),
 			tea.WithInput(os.Stdin),
@@ -762,17 +775,9 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 		}
 	}
 
-	// Initialize dispatcher for task queue
+	// Initialize dispatcher for task queue (uses store created earlier)
 	var dispatcher *executor.Dispatcher
-	store, err := memory.NewStore(cfg.Memory.Path)
-	if err != nil {
-		logging.WithComponent("start").Warn("Failed to open memory store for dispatcher", slog.Any("error", err))
-	} else {
-		defer func() {
-			if store != nil {
-				_ = store.Close()
-			}
-		}()
+	if store != nil {
 		dispatcher = executor.NewDispatcher(store, runner, nil)
 		if err := dispatcher.Start(); err != nil {
 			logging.WithComponent("start").Warn("Failed to start dispatcher", slog.Any("error", err))
