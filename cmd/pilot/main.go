@@ -604,16 +604,13 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 	// Create monitor and TUI program for dashboard mode
 	var monitor *executor.Monitor
 	var program *tea.Program
+	var upgradeRequestCh chan struct{} // Channel for hot upgrade requests (GH-369)
 	if dashboardMode {
 		runner.SuppressProgressLogs(true)
 
 		monitor = executor.NewMonitor()
-		var model dashboard.Model
-		if autopilotController != nil {
-			model = dashboard.NewModelWithAutopilot(version, autopilotController)
-		} else {
-			model = dashboard.NewModel(version)
-		}
+		upgradeRequestCh = make(chan struct{}, 1)
+		model := dashboard.NewModelWithOptions(version, nil, autopilotController, upgradeRequestCh)
 		program = tea.NewProgram(model,
 			tea.WithAltScreen(),
 			tea.WithInput(os.Stdin),
@@ -1042,6 +1039,60 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 	if dashboardMode && program != nil {
 		fmt.Println("\n🖥️  Starting TUI dashboard...")
 
+		// Start background version checker for hot reload (GH-369)
+		versionChecker := upgrade.NewVersionChecker(version, upgrade.DefaultCheckInterval)
+		versionChecker.OnUpdate(func(info *upgrade.VersionInfo) {
+			program.Send(dashboard.NotifyUpdateAvailable(info.Current, info.Latest, info.ReleaseNotes)())
+			program.Send(dashboard.AddLog(fmt.Sprintf("⬆️ Update available: %s → %s", info.Current, info.Latest))())
+		})
+		versionChecker.Start(ctx)
+		defer versionChecker.Stop()
+
+		// Set up hot upgrade goroutine - listens for upgrade requests from 'u' key press
+		// The channel is created above and passed to the dashboard model
+		go func() {
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-upgradeRequestCh:
+					info := versionChecker.GetLatestInfo()
+					if info == nil || !info.UpdateAvail || info.LatestRelease == nil {
+						program.Send(dashboard.NotifyUpgradeComplete(false, "No update available")())
+						continue
+					}
+
+					// Perform hot upgrade
+					// Pass nil TaskChecker - the upgrade will proceed immediately
+					// In future, we could implement TaskChecker on Runner to wait for tasks
+					hotUpgrader, err := upgrade.NewHotUpgrader(version, nil)
+					if err != nil {
+						program.Send(dashboard.NotifyUpgradeComplete(false, err.Error())())
+						program.Send(dashboard.AddLog(fmt.Sprintf("❌ Upgrade failed: %v", err))())
+						continue
+					}
+
+					upgradeCfg := &upgrade.HotUpgradeConfig{
+						WaitForTasks: true,
+						TaskTimeout:  2 * time.Minute,
+						OnProgress: func(pct int, msg string) {
+							program.Send(dashboard.NotifyUpgradeProgress(pct, msg)())
+						},
+						FlushSession: func() error {
+							// Future: flush session state to SQLite here
+							return nil
+						},
+					}
+
+					if err := hotUpgrader.PerformHotUpgrade(ctx, info.LatestRelease, upgradeCfg); err != nil {
+						program.Send(dashboard.NotifyUpgradeComplete(false, err.Error())())
+						program.Send(dashboard.AddLog(fmt.Sprintf("❌ Upgrade failed: %v", err))())
+					}
+					// If upgrade succeeds, the process is replaced and this line is never reached
+				}
+			}
+		}()
+
 		// Periodic refresh to catch any missed updates
 		go func() {
 			ticker := time.NewTicker(2 * time.Second)
@@ -1072,9 +1123,20 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 			if hasGitHubPolling {
 				program.Send(dashboard.AddLog(fmt.Sprintf("🐙 GitHub polling: %s", cfg.Adapters.GitHub.Repo))())
 			}
+
+			// Check for restart marker (set by hot upgrade)
+			if os.Getenv("PILOT_RESTARTED") == "1" {
+				prevVersion := os.Getenv("PILOT_PREVIOUS_VERSION")
+				if prevVersion != "" {
+					program.Send(dashboard.AddLog(fmt.Sprintf("✅ Upgraded from %s to %s", prevVersion, version))())
+				} else {
+					program.Send(dashboard.AddLog("✅ Pilot restarted successfully")())
+				}
+			}
 		}()
 
 		// Run TUI (blocks until quit via 'q' or Ctrl+C)
+		// Note: The upgrade callback is handled via upgradeRequestCh above
 		if _, err := program.Run(); err != nil {
 			cancel() // Stop goroutines
 			return fmt.Errorf("dashboard error: %w", err)

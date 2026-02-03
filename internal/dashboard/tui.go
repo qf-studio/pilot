@@ -173,6 +173,24 @@ type CompletedTask struct {
 	CompletedAt time.Time
 }
 
+// UpdateInfo contains information about an available update
+type UpdateInfo struct {
+	CurrentVersion string
+	LatestVersion  string
+	ReleaseNotes   string
+}
+
+// UpgradeState tracks the current upgrade status
+type UpgradeState int
+
+const (
+	UpgradeStateNone UpgradeState = iota
+	UpgradeStateAvailable
+	UpgradeStateInProgress
+	UpgradeStateComplete
+	UpgradeStateFailed
+)
+
 // Model is the TUI model
 type Model struct {
 	tasks          []TaskDisplay
@@ -189,6 +207,14 @@ type Model struct {
 	version        string
 	store          *memory.Store   // SQLite persistence (GH-367)
 	sessionID      string          // Current session ID for persistence
+
+	// Upgrade state
+	updateInfo      *UpdateInfo
+	upgradeState    UpgradeState
+	upgradeProgress int
+	upgradeMessage  string
+	upgradeError    string
+	upgradeCh       chan<- struct{} // Channel to trigger upgrade (write-only)
 }
 
 // tickMsg is sent periodically to refresh the display
@@ -205,6 +231,21 @@ type updateTokensMsg TokenUsage
 
 // addCompletedTaskMsg adds a completed task to history
 type addCompletedTaskMsg CompletedTask
+
+// updateAvailableMsg signals that an update is available
+type updateAvailableMsg UpdateInfo
+
+// upgradeProgressMsg updates the upgrade progress
+type upgradeProgressMsg struct {
+	Progress int
+	Message  string
+}
+
+// upgradeCompleteMsg signals upgrade completion
+type upgradeCompleteMsg struct {
+	Success bool
+	Error   string
+}
 
 // NewModel creates a new dashboard model
 func NewModel(version string) Model {
@@ -324,6 +365,23 @@ func (m *Model) persistTokenUsage(inputDelta, outputDelta int) {
 	}
 }
 
+// NewModelWithOptions creates a dashboard model with all options including upgrade support.
+func NewModelWithOptions(version string, store *memory.Store, controller *autopilot.Controller, upgradeCh chan<- struct{}) Model {
+	m := Model{
+		tasks:          []TaskDisplay{},
+		logs:           []string{},
+		showLogs:       true,
+		completedTasks: []CompletedTask{},
+		costPerMToken:  3.0,
+		autopilotPanel: NewAutopilotPanel(controller),
+		version:        version,
+		store:          store,
+		upgradeCh:      upgradeCh,
+	}
+	m.hydrateFromStore()
+	return m
+}
+
 // Init initializes the model
 func (m Model) Init() tea.Cmd {
 	return tea.Batch(
@@ -364,6 +422,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					_ = openBrowser(task.IssueURL)
 				}
 			}
+		case "u":
+			// Trigger upgrade if update is available and not already upgrading
+			if m.updateInfo != nil && m.upgradeState == UpgradeStateAvailable && m.upgradeCh != nil {
+				m.upgradeState = UpgradeStateInProgress
+				m.upgradeProgress = 0
+				m.upgradeMessage = "Starting upgrade..."
+				// Non-blocking send to upgrade channel
+				select {
+				case m.upgradeCh <- struct{}{}:
+				default:
+				}
+			}
 		}
 
 	case tea.WindowSizeMsg:
@@ -394,6 +464,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if len(m.completedTasks) > 5 {
 			m.completedTasks = m.completedTasks[len(m.completedTasks)-5:]
 		}
+
+	case updateAvailableMsg:
+		m.updateInfo = &UpdateInfo{
+			CurrentVersion: msg.CurrentVersion,
+			LatestVersion:  msg.LatestVersion,
+			ReleaseNotes:   msg.ReleaseNotes,
+		}
+		m.upgradeState = UpgradeStateAvailable
+
+	case upgradeProgressMsg:
+		m.upgradeProgress = msg.Progress
+		m.upgradeMessage = msg.Message
+
+	case upgradeCompleteMsg:
+		if msg.Success {
+			m.upgradeState = UpgradeStateComplete
+			m.upgradeMessage = "Upgrade complete! Restarting..."
+		} else {
+			m.upgradeState = UpgradeStateFailed
+			m.upgradeError = msg.Error
+			m.upgradeMessage = "Upgrade failed"
+		}
 	}
 
 	return m, nil
@@ -412,7 +504,13 @@ func (m Model) View() string {
 	logo := strings.TrimPrefix(banner.Logo, "\n") // Remove leading newline
 	b.WriteString(titleStyle.Render(logo))
 	b.WriteString(titleStyle.Render(fmt.Sprintf("   Pilot %s", m.version)))
-	b.WriteString("\n\n")
+	b.WriteString("\n")
+
+	// Update notification (if available)
+	if m.updateInfo != nil {
+		b.WriteString(m.renderUpdateNotification())
+	}
+	b.WriteString("\n")
 
 	// Token usage
 	b.WriteString(m.renderMetrics())
@@ -437,7 +535,11 @@ func (m Model) View() string {
 	}
 
 	// Help
-	b.WriteString(helpStyle.Render("q: quit  l: logs  j/k: select  enter: open"))
+	helpText := "q: quit  l: logs  j/k: select  enter: open"
+	if m.updateInfo != nil && m.upgradeState == UpgradeStateAvailable {
+		helpText += "  u: upgrade"
+	}
+	b.WriteString(helpStyle.Render(helpText))
 
 	return b.String()
 }
@@ -826,6 +928,67 @@ func AddCompletedTask(id, title, status, duration string) tea.Cmd {
 			Duration:    duration,
 			CompletedAt: time.Now(),
 		})
+	}
+}
+
+// renderUpdateNotification renders the update notification bar
+func (m Model) renderUpdateNotification() string {
+	switch m.upgradeState {
+	case UpgradeStateAvailable:
+		return warningStyle.Render(fmt.Sprintf("   ⬆️ Update available: %s → %s (press 'u' to upgrade)",
+			m.updateInfo.CurrentVersion, m.updateInfo.LatestVersion))
+
+	case UpgradeStateInProgress:
+		// Show progress bar during upgrade
+		bar := m.renderProgressBar(m.upgradeProgress, 20)
+		return warningStyle.Render(fmt.Sprintf("   🔄 Upgrading to %s... %s %d%%",
+			m.updateInfo.LatestVersion, bar, m.upgradeProgress))
+
+	case UpgradeStateComplete:
+		return statusCompletedStyle.Render(fmt.Sprintf("   ✅ Upgraded to %s - Restarting...",
+			m.updateInfo.LatestVersion))
+
+	case UpgradeStateFailed:
+		return statusFailedStyle.Render(fmt.Sprintf("   ❌ Upgrade failed: %s", m.upgradeError))
+
+	default:
+		return ""
+	}
+}
+
+// SetUpgradeChannel sets the channel used to trigger upgrades
+func (m *Model) SetUpgradeChannel(ch chan<- struct{}) {
+	m.upgradeCh = ch
+}
+
+// NotifyUpdateAvailable sends an update available message to the TUI
+func NotifyUpdateAvailable(current, latest, releaseNotes string) tea.Cmd {
+	return func() tea.Msg {
+		return updateAvailableMsg{
+			CurrentVersion: current,
+			LatestVersion:  latest,
+			ReleaseNotes:   releaseNotes,
+		}
+	}
+}
+
+// NotifyUpgradeProgress sends an upgrade progress update to the TUI
+func NotifyUpgradeProgress(progress int, message string) tea.Cmd {
+	return func() tea.Msg {
+		return upgradeProgressMsg{
+			Progress: progress,
+			Message:  message,
+		}
+	}
+}
+
+// NotifyUpgradeComplete sends an upgrade completion message to the TUI
+func NotifyUpgradeComplete(success bool, err string) tea.Cmd {
+	return func() tea.Msg {
+		return upgradeCompleteMsg{
+			Success: success,
+			Error:   err,
+		}
 	}
 }
 
