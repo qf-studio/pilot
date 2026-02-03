@@ -3501,12 +3501,16 @@ func runDashboardMode(p *pilot.Pilot, cfg *config.Config) error {
 		program.Send(tea.Quit())
 	}()
 
-	// Add startup log
+	// Add startup log AFTER program starts (GH-351: Send blocks if called before Run)
 	gatewayURL := fmt.Sprintf("http://%s:%d", cfg.Gateway.Host, cfg.Gateway.Port)
-	program.Send(dashboard.AddLog(fmt.Sprintf("🚀 Pilot %s started - Gateway: %s", version, gatewayURL))())
+	go func() {
+		time.Sleep(100 * time.Millisecond) // Wait for program.Run() to start
+		program.Send(dashboard.AddLog(fmt.Sprintf("🚀 Pilot %s started - Gateway: %s", version, gatewayURL))())
+	}()
 
 	// Run TUI (blocks until quit)
-	if _, err := program.Run(); err != nil {
+	_, err := program.Run()
+	if err != nil {
 		return fmt.Errorf("dashboard error: %w", err)
 	}
 
