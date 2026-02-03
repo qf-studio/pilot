@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/alekspetrov/pilot/internal/logging"
+	"github.com/alekspetrov/pilot/internal/quality"
 	"github.com/alekspetrov/pilot/internal/replay"
 	"github.com/alekspetrov/pilot/internal/webhooks"
 )
@@ -770,6 +771,29 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 			slog.Int("files_written", metrics.FilesWritten),
 		)
 		r.reportProgress(task.ID, "Completed", 90, "Execution completed")
+
+		// Auto-enable minimal build gate if not configured (GH-363)
+		// This ensures broken code never becomes a PR, even without explicit quality config
+		if r.qualityCheckerFactory == nil {
+			buildCmd := quality.DetectBuildCommand(task.ProjectPath)
+			if buildCmd != "" {
+				log.Info("Auto-enabling build gate (no quality config)",
+					slog.String("command", buildCmd),
+				)
+
+				// Create minimal quality checker with auto-detected build command
+				minimalConfig := quality.MinimalBuildGate()
+				minimalConfig.Gates[0].Command = buildCmd
+
+				r.qualityCheckerFactory = func(taskID, projectPath string) QualityChecker {
+					return &simpleQualityChecker{
+						config:      minimalConfig,
+						projectPath: projectPath,
+						taskID:      taskID,
+					}
+				}
+			}
+		}
 
 		// Run quality gates if configured
 		if r.qualityCheckerFactory != nil {
@@ -2270,4 +2294,47 @@ func (r *Runner) buildQualityGatesResult(outcome *QualityOutcome, totalRetries i
 	}
 
 	return qgResult
+}
+
+// simpleQualityChecker is a minimal quality checker for auto-enabled build gates (GH-363).
+// Used when quality gates aren't explicitly configured but we still want basic build verification.
+type simpleQualityChecker struct {
+	config      *quality.Config
+	projectPath string
+	taskID      string
+}
+
+// Check runs the build gate and returns the outcome.
+func (c *simpleQualityChecker) Check(ctx context.Context) (*QualityOutcome, error) {
+	runner := quality.NewRunner(c.config, c.projectPath)
+
+	results, err := runner.RunAll(ctx, c.taskID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Convert to QualityOutcome
+	outcome := &QualityOutcome{
+		Passed:        results.AllPassed,
+		ShouldRetry:   !results.AllPassed && c.config.OnFailure.Action == quality.ActionRetry,
+		TotalDuration: results.TotalTime,
+		GateDetails:   make([]QualityGateDetail, 0, len(results.Results)),
+	}
+
+	// Build retry feedback if failed
+	if !results.AllPassed {
+		outcome.RetryFeedback = quality.FormatErrorFeedback(results)
+	}
+
+	for _, r := range results.Results {
+		outcome.GateDetails = append(outcome.GateDetails, QualityGateDetail{
+			Name:       r.GateName,
+			Passed:     r.Status == quality.StatusPassed,
+			Duration:   r.Duration,
+			RetryCount: r.RetryCount,
+			Error:      r.Error,
+		})
+	}
+
+	return outcome, nil
 }

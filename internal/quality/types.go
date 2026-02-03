@@ -4,6 +4,8 @@ package quality
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"time"
 )
 
@@ -215,4 +217,63 @@ func (c *Config) Validate() error {
 		}
 	}
 	return nil
+}
+
+// MinimalBuildGate returns a minimal quality gate config with just build verification.
+// Used when quality gates are not explicitly configured but we still want basic safety.
+// The build command should be set via DetectBuildCommand() based on project type.
+func MinimalBuildGate() *Config {
+	return &Config{
+		Enabled: true,
+		Gates: []*Gate{
+			{
+				Name:        "build",
+				Type:        GateBuild,
+				Command:     "go build ./...", // Default for Go projects, override via DetectBuildCommand
+				Required:    true,
+				Timeout:     3 * time.Minute,
+				MaxRetries:  1, // Single retry for build fixes
+				RetryDelay:  3 * time.Second,
+				FailureHint: "Fix compilation errors in the changed files",
+			},
+		},
+		OnFailure: FailureConfig{
+			Action:     ActionRetry,
+			MaxRetries: 1, // Single retry for build fixes
+		},
+	}
+}
+
+// DetectBuildCommand returns appropriate build command for the project.
+// Checks for common project indicators and returns the build command.
+// Returns empty string if project type cannot be detected.
+func DetectBuildCommand(projectPath string) string {
+	// Check for Go project
+	if fileExists(filepath.Join(projectPath, "go.mod")) {
+		return "go build ./..."
+	}
+	// Check for Node.js project with TypeScript
+	if fileExists(filepath.Join(projectPath, "package.json")) {
+		if fileExists(filepath.Join(projectPath, "tsconfig.json")) {
+			return "npm run build || npx tsc --noEmit"
+		}
+		return "npm run build --if-present"
+	}
+	// Check for Rust project
+	if fileExists(filepath.Join(projectPath, "Cargo.toml")) {
+		return "cargo check"
+	}
+	// Check for Python project
+	if fileExists(filepath.Join(projectPath, "pyproject.toml")) || fileExists(filepath.Join(projectPath, "setup.py")) {
+		// Basic syntax check for Python files
+		return "python -m py_compile $(find . -name '*.py' -not -path './venv/*' -not -path './.venv/*' 2>/dev/null | head -100)"
+	}
+	// No build command detected
+	return ""
+}
+
+// fileExists checks if a file or directory exists at the given path.
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }
