@@ -2,6 +2,7 @@ package dashboard
 
 import (
 	"fmt"
+	"log/slog"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/alekspetrov/pilot/internal/autopilot"
 	"github.com/alekspetrov/pilot/internal/banner"
+	"github.com/alekspetrov/pilot/internal/memory"
 )
 
 // Panel width (all panels same width)
@@ -185,6 +187,8 @@ type Model struct {
 	costPerMToken  float64
 	autopilotPanel *AutopilotPanel
 	version        string
+	store          *memory.Store   // SQLite persistence (GH-367)
+	sessionID      string          // Current session ID for persistence
 }
 
 // tickMsg is sent periodically to refresh the display
@@ -215,6 +219,23 @@ func NewModel(version string) Model {
 	}
 }
 
+// NewModelWithStore creates a dashboard model with SQLite persistence.
+// Hydrates token usage and task history from the store on startup.
+func NewModelWithStore(version string, store *memory.Store) Model {
+	m := Model{
+		tasks:          []TaskDisplay{},
+		logs:           []string{},
+		showLogs:       true,
+		completedTasks: []CompletedTask{},
+		costPerMToken:  3.0,
+		autopilotPanel: NewAutopilotPanel(nil),
+		version:        version,
+		store:          store,
+	}
+	m.hydrateFromStore()
+	return m
+}
+
 // NewModelWithAutopilot creates a dashboard model with autopilot integration.
 func NewModelWithAutopilot(version string, controller *autopilot.Controller) Model {
 	return Model{
@@ -225,6 +246,81 @@ func NewModelWithAutopilot(version string, controller *autopilot.Controller) Mod
 		costPerMToken:  3.0,
 		autopilotPanel: NewAutopilotPanel(controller),
 		version:        version,
+	}
+}
+
+// NewModelWithStoreAndAutopilot creates a fully-featured dashboard model.
+func NewModelWithStoreAndAutopilot(version string, store *memory.Store, controller *autopilot.Controller) Model {
+	m := Model{
+		tasks:          []TaskDisplay{},
+		logs:           []string{},
+		showLogs:       true,
+		completedTasks: []CompletedTask{},
+		costPerMToken:  3.0,
+		autopilotPanel: NewAutopilotPanel(controller),
+		version:        version,
+		store:          store,
+	}
+	m.hydrateFromStore()
+	return m
+}
+
+// hydrateFromStore loads persisted state from SQLite.
+func (m *Model) hydrateFromStore() {
+	if m.store == nil {
+		return
+	}
+
+	// Get or create today's session
+	session, err := m.store.GetOrCreateDailySession()
+	if err != nil {
+		slog.Warn("failed to get/create session", slog.Any("error", err))
+	} else {
+		m.sessionID = session.ID
+		m.tokenUsage = TokenUsage{
+			InputTokens:  session.TotalInputTokens,
+			OutputTokens: session.TotalOutputTokens,
+			TotalTokens:  session.TotalInputTokens + session.TotalOutputTokens,
+		}
+	}
+
+	// Load recent executions as completed tasks
+	executions, err := m.store.GetRecentExecutions(20)
+	if err != nil {
+		slog.Warn("failed to load recent executions", slog.Any("error", err))
+		return
+	}
+
+	// Convert executions to completed tasks (most recent 5 for history panel)
+	for i, exec := range executions {
+		if i >= 5 {
+			break
+		}
+		status := "success"
+		if exec.Status == "failed" {
+			status = "failed"
+		}
+		completedAt := exec.CreatedAt
+		if exec.CompletedAt != nil {
+			completedAt = *exec.CompletedAt
+		}
+		m.completedTasks = append(m.completedTasks, CompletedTask{
+			ID:          exec.TaskID,
+			Title:       exec.TaskTitle,
+			Status:      status,
+			Duration:    fmt.Sprintf("%dms", exec.DurationMs),
+			CompletedAt: completedAt,
+		})
+	}
+}
+
+// persistTokenUsage saves token usage to the current session.
+func (m *Model) persistTokenUsage(inputDelta, outputDelta int) {
+	if m.store == nil || m.sessionID == "" {
+		return
+	}
+	if err := m.store.UpdateSessionTokens(m.sessionID, inputDelta, outputDelta); err != nil {
+		slog.Warn("failed to persist token usage", slog.Any("error", err))
 	}
 }
 
@@ -287,7 +383,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case updateTokensMsg:
+		// Calculate delta and persist
+		inputDelta := msg.InputTokens - m.tokenUsage.InputTokens
+		outputDelta := msg.OutputTokens - m.tokenUsage.OutputTokens
 		m.tokenUsage = TokenUsage(msg)
+		m.persistTokenUsage(inputDelta, outputDelta)
 
 	case addCompletedTaskMsg:
 		m.completedTasks = append(m.completedTasks, CompletedTask(msg))
