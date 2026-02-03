@@ -1254,16 +1254,30 @@ func handleGitHubIssue(ctx context.Context, cfg *config.Config, client *github.C
 				logGitHubAPIError("AddComment", parts[0], parts[1], issue.Number, err)
 			}
 		} else if result != nil && result.Success {
-			if err := client.AddLabels(ctx, parts[0], parts[1], issue.Number, []string{github.LabelDone}); err != nil {
-				logGitHubAPIError("AddLabels", parts[0], parts[1], issue.Number, err)
-			}
-			comment := fmt.Sprintf("✅ Pilot completed!\n\n**Duration:** %s\n**Branch:** `%s`",
-				result.Duration, branchName)
-			if result.PRUrl != "" {
-				comment += fmt.Sprintf("\n**PR:** %s", result.PRUrl)
-			}
-			if _, err := client.AddComment(ctx, parts[0], parts[1], issue.Number, comment); err != nil {
-				logGitHubAPIError("AddComment", parts[0], parts[1], issue.Number, err)
+			// Validate deliverables before marking as done
+			if result.CommitSHA == "" && result.PRUrl == "" {
+				// No commits and no PR - mark as failed
+				if err := client.AddLabels(ctx, parts[0], parts[1], issue.Number, []string{github.LabelFailed}); err != nil {
+					logGitHubAPIError("AddLabels", parts[0], parts[1], issue.Number, err)
+				}
+				comment := fmt.Sprintf("⚠️ Pilot execution completed but no changes were made.\n\n**Duration:** %s\n**Branch:** `%s`\n\nNo commits or PR were created. The task may need clarification or manual intervention.",
+					result.Duration, branchName)
+				if _, err := client.AddComment(ctx, parts[0], parts[1], issue.Number, comment); err != nil {
+					logGitHubAPIError("AddComment", parts[0], parts[1], issue.Number, err)
+				}
+			} else {
+				// Has deliverables - mark as done
+				if err := client.AddLabels(ctx, parts[0], parts[1], issue.Number, []string{github.LabelDone}); err != nil {
+					logGitHubAPIError("AddLabels", parts[0], parts[1], issue.Number, err)
+				}
+				comment := fmt.Sprintf("✅ Pilot completed!\n\n**Duration:** %s\n**Branch:** `%s`",
+					result.Duration, branchName)
+				if result.PRUrl != "" {
+					comment += fmt.Sprintf("\n**PR:** %s", result.PRUrl)
+				}
+				if _, err := client.AddComment(ctx, parts[0], parts[1], issue.Number, comment); err != nil {
+					logGitHubAPIError("AddComment", parts[0], parts[1], issue.Number, err)
+				}
 			}
 		} else if result != nil {
 			// result exists but Success is false - mark as failed
@@ -1531,16 +1545,32 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 				logGitHubAPIError("AddComment", parts[0], parts[1], issue.Number, err)
 			}
 		} else if result != nil && result.Success {
-			if err := client.AddLabels(ctx, parts[0], parts[1], issue.Number, []string{github.LabelDone}); err != nil {
-				logGitHubAPIError("AddLabels", parts[0], parts[1], issue.Number, err)
-			}
-			comment := fmt.Sprintf("✅ Pilot completed!\n\n**Duration:** %s\n**Branch:** `%s`",
-				result.Duration, branchName)
-			if result.PRUrl != "" {
-				comment += fmt.Sprintf("\n**PR:** %s", result.PRUrl)
-			}
-			if _, err := client.AddComment(ctx, parts[0], parts[1], issue.Number, comment); err != nil {
-				logGitHubAPIError("AddComment", parts[0], parts[1], issue.Number, err)
+			// Validate deliverables before marking as done
+			if result.CommitSHA == "" && result.PRUrl == "" {
+				// No commits and no PR - mark as failed
+				if err := client.AddLabels(ctx, parts[0], parts[1], issue.Number, []string{github.LabelFailed}); err != nil {
+					logGitHubAPIError("AddLabels", parts[0], parts[1], issue.Number, err)
+				}
+				comment := fmt.Sprintf("⚠️ Pilot execution completed but no changes were made.\n\n**Duration:** %s\n**Branch:** `%s`\n\nNo commits or PR were created. The task may need clarification or manual intervention.",
+					result.Duration, branchName)
+				if _, err := client.AddComment(ctx, parts[0], parts[1], issue.Number, comment); err != nil {
+					logGitHubAPIError("AddComment", parts[0], parts[1], issue.Number, err)
+				}
+				// Update issueResult to reflect failure
+				issueResult.Success = false
+			} else {
+				// Has deliverables - mark as done
+				if err := client.AddLabels(ctx, parts[0], parts[1], issue.Number, []string{github.LabelDone}); err != nil {
+					logGitHubAPIError("AddLabels", parts[0], parts[1], issue.Number, err)
+				}
+				comment := fmt.Sprintf("✅ Pilot completed!\n\n**Duration:** %s\n**Branch:** `%s`",
+					result.Duration, branchName)
+				if result.PRUrl != "" {
+					comment += fmt.Sprintf("\n**PR:** %s", result.PRUrl)
+				}
+				if _, err := client.AddComment(ctx, parts[0], parts[1], issue.Number, comment); err != nil {
+					logGitHubAPIError("AddComment", parts[0], parts[1], issue.Number, err)
+				}
 			}
 		} else if result != nil {
 			// result exists but Success is false - mark as failed
@@ -2512,10 +2542,32 @@ Examples:
 				return fmt.Errorf("task execution failed: %w", err)
 			}
 
-			// Success - update labels and add comment
+			// Remove in-progress label
 			if err := client.RemoveLabel(ctx, owner, repoName, int(issueNum), "pilot-in-progress"); err != nil {
 				logGitHubAPIError("RemoveLabel", owner, repoName, int(issueNum), err)
 			}
+
+			// Validate deliverables - execution succeeded but did it produce anything?
+			if result.CommitSHA == "" && result.PRUrl == "" {
+				// No commits and no PR - mark as failed
+				if err := client.AddLabels(ctx, owner, repoName, int(issueNum), []string{"pilot-failed"}); err != nil {
+					logGitHubAPIError("AddLabels", owner, repoName, int(issueNum), err)
+				}
+
+				comment := fmt.Sprintf("⚠️ Pilot execution completed but no changes were made.\n\n**Duration:** %s\n**Branch:** `%s`\n\nNo commits or PR were created. The task may need clarification or manual intervention.",
+					result.Duration, branchName)
+				if _, err := client.AddComment(ctx, owner, repoName, int(issueNum), comment); err != nil {
+					logGitHubAPIError("AddComment", owner, repoName, int(issueNum), err)
+				}
+
+				fmt.Println()
+				fmt.Println("───────────────────────────────────────")
+				fmt.Println("⚠️  Task completed but no changes made")
+				fmt.Printf("   Duration: %s\n", result.Duration)
+				return fmt.Errorf("execution completed but no commits or PR created")
+			}
+
+			// Success with deliverables - add done label
 			if err := client.AddLabels(ctx, owner, repoName, int(issueNum), []string{"pilot-done"}); err != nil {
 				logGitHubAPIError("AddLabels", owner, repoName, int(issueNum), err)
 			}
