@@ -83,7 +83,7 @@ func (p *AutopilotPanel) View() string {
 
 	if p.controller == nil {
 		content.WriteString("  Disabled")
-		return renderPanel("🤖 AUTOPILOT", content.String())
+		return renderPanel("AUTOPILOT", content.String())
 	}
 
 	cfg := p.controller.Config()
@@ -116,7 +116,7 @@ func (p *AutopilotPanel) View() string {
 		content.WriteString(dotLeaderStyled("⚠️ Failures", failStr, warningStyle, w))
 	}
 
-	return renderPanel("🤖 AUTOPILOT", content.String())
+	return renderPanel("AUTOPILOT", content.String())
 }
 
 // stageIcon returns an emoji icon for the PR stage.
