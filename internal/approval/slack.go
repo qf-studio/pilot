@@ -41,16 +41,16 @@ type SlackTextObject struct {
 
 // SlackButtonElement represents an interactive button in Slack
 type SlackButtonElement struct {
-	Type     string          `json:"type"`
+	Type     string           `json:"type"`
 	Text     *SlackTextObject `json:"text"`
-	ActionID string          `json:"action_id"`
-	Value    string          `json:"value,omitempty"`
-	Style    string          `json:"style,omitempty"` // "primary" or "danger"
+	ActionID string           `json:"action_id"`
+	Value    string           `json:"value,omitempty"`
+	Style    string           `json:"style,omitempty"` // "primary" or "danger"
 }
 
 // SlackSectionBlock represents a section block
 type SlackSectionBlock struct {
-	Type string          `json:"type"`
+	Type string           `json:"type"`
 	Text *SlackTextObject `json:"text,omitempty"`
 }
 

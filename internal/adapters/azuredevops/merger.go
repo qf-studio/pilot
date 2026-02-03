@@ -56,9 +56,9 @@ func NewMergeWaiter(client *Client, config *MergeWaiterConfig) *MergeWaiter {
 
 // Common errors
 var (
-	ErrPRAbandoned    = errors.New("PR was abandoned without merging")
-	ErrPRConflict     = errors.New("PR has merge conflicts")
-	ErrMergeTimeout   = errors.New("timed out waiting for PR merge")
+	ErrPRAbandoned  = errors.New("PR was abandoned without merging")
+	ErrPRConflict   = errors.New("PR has merge conflicts")
+	ErrMergeTimeout = errors.New("timed out waiting for PR merge")
 )
 
 // WaitForMerge polls the PR status until it's merged, abandoned, or times out

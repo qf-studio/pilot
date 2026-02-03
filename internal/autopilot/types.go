@@ -87,9 +87,9 @@ type Config struct {
 // DefaultConfig returns sensible defaults for autopilot configuration.
 func DefaultConfig() *Config {
 	return &Config{
-		Enabled:          false,
-		Environment:      EnvStage,
-		ApprovalSource:   ApprovalSourceTelegram, // Default to Telegram for backward compatibility
+		Enabled:        false,
+		Environment:    EnvStage,
+		ApprovalSource: ApprovalSourceTelegram, // Default to Telegram for backward compatibility
 		GitHubReview: &GitHubReviewConfig{
 			PollInterval: 30 * time.Second,
 		},

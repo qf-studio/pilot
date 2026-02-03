@@ -64,6 +64,13 @@ var (
 
 	warningStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#ffaa00"))
+
+	orangeBorderStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#ffaa00"))
+
+	orangeLabelStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("#ffaa00"))
 )
 
 // AutopilotPanel displays autopilot status in the dashboard.
@@ -205,8 +212,8 @@ type Model struct {
 	costPerMToken  float64
 	autopilotPanel *AutopilotPanel
 	version        string
-	store          *memory.Store   // SQLite persistence (GH-367)
-	sessionID      string          // Current session ID for persistence
+	store          *memory.Store // SQLite persistence (GH-367)
+	sessionID      string        // Current session ID for persistence
 
 	// Upgrade state
 	updateInfo      *UpdateInfo
@@ -500,7 +507,7 @@ func (m Model) View() string {
 	var b strings.Builder
 
 	// Header with ASCII logo
-	b.WriteString("\n") // Top padding to match bottom spacing
+	b.WriteString("\n")                           // Top padding to match bottom spacing
 	logo := strings.TrimPrefix(banner.Logo, "\n") // Remove leading newline
 	b.WriteString(titleStyle.Render(logo))
 	b.WriteString(titleStyle.Render(fmt.Sprintf("   Pilot %s", m.version)))
@@ -610,6 +617,66 @@ func buildContentLine(content string) string {
 
 	// Only style borders, not content
 	border := borderStyle.Render("│")
+	return border + " " + adjusted + " " + border
+}
+
+// renderOrangePanel renders a panel with orange borders and title (for update notifications)
+func renderOrangePanel(title string, content string) string {
+	var lines []string
+
+	// Top border
+	lines = append(lines, buildOrangeTopBorder(title))
+
+	// Empty line padding
+	lines = append(lines, buildOrangeEmptyLine())
+
+	// Content lines
+	for _, line := range strings.Split(content, "\n") {
+		lines = append(lines, buildOrangeContentLine(line))
+	}
+
+	// Empty line padding
+	lines = append(lines, buildOrangeEmptyLine())
+
+	// Bottom border
+	lines = append(lines, buildOrangeBottomBorder())
+
+	return strings.Join(lines, "\n")
+}
+
+// buildOrangeTopBorder creates orange top border: ╭─ TITLE ─────...─────╮
+func buildOrangeTopBorder(title string) string {
+	titleUpper := strings.ToUpper(title)
+	prefix := "╭─ "
+	prefixWidth := lipgloss.Width(prefix + titleUpper + " ")
+
+	dashCount := panelTotalWidth - prefixWidth - 1
+	if dashCount < 0 {
+		dashCount = 0
+	}
+
+	return orangeBorderStyle.Render(prefix) + orangeLabelStyle.Render(titleUpper) + orangeBorderStyle.Render(" "+strings.Repeat("─", dashCount)+"╮")
+}
+
+// buildOrangeBottomBorder creates orange bottom border: ╰─────────────────────────────────────────────────╯
+func buildOrangeBottomBorder() string {
+	dashCount := panelTotalWidth - 2
+	line := "╰" + strings.Repeat("─", dashCount) + "╯"
+	return orangeBorderStyle.Render(line)
+}
+
+// buildOrangeEmptyLine creates orange bordered empty line: │                                                                 │
+func buildOrangeEmptyLine() string {
+	spaceCount := panelTotalWidth - 2
+	border := orangeBorderStyle.Render("│")
+	return border + strings.Repeat(" ", spaceCount) + border
+}
+
+// buildOrangeContentLine creates orange bordered content line: │ (space) content padded/truncated (space) │
+func buildOrangeContentLine(content string) string {
+	contentWidth := panelTotalWidth - 4
+	adjusted := padOrTruncate(content, contentWidth)
+	border := orangeBorderStyle.Render("│")
 	return border + " " + adjusted + " " + border
 }
 
@@ -959,7 +1026,7 @@ func (m Model) renderUpdateNotification() string {
 		return ""
 	}
 
-	result := renderPanel(title, content.String())
+	result := renderOrangePanel(title, content.String())
 	if hint != "" {
 		// Right-align hint under panel
 		hintLine := fmt.Sprintf("%*s", panelTotalWidth, hint)

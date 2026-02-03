@@ -5,14 +5,14 @@ import "time"
 // Config holds Azure DevOps adapter configuration
 type Config struct {
 	Enabled           bool                     `yaml:"enabled"`
-	PAT               string                   `yaml:"pat"`              // Personal Access Token
-	Organization      string                   `yaml:"organization"`     // Azure DevOps org name
-	Project           string                   `yaml:"project"`          // Project name
-	Repository        string                   `yaml:"repository"`       // Repository name (optional, defaults to project)
-	BaseURL           string                   `yaml:"base_url"`         // Default: https://dev.azure.com
-	WebhookSecret     string                   `yaml:"webhook_secret"`   // For basic auth on webhook endpoint
-	PilotTag          string                   `yaml:"pilot_tag"`        // Tag to watch (Azure uses tags, not labels)
-	WorkItemTypes     []string                 `yaml:"work_item_types"`  // e.g., ["Bug", "Task", "User Story"]
+	PAT               string                   `yaml:"pat"`             // Personal Access Token
+	Organization      string                   `yaml:"organization"`    // Azure DevOps org name
+	Project           string                   `yaml:"project"`         // Project name
+	Repository        string                   `yaml:"repository"`      // Repository name (optional, defaults to project)
+	BaseURL           string                   `yaml:"base_url"`        // Default: https://dev.azure.com
+	WebhookSecret     string                   `yaml:"webhook_secret"`  // For basic auth on webhook endpoint
+	PilotTag          string                   `yaml:"pilot_tag"`       // Tag to watch (Azure uses tags, not labels)
+	WorkItemTypes     []string                 `yaml:"work_item_types"` // e.g., ["Bug", "Task", "User Story"]
 	Polling           *PollingConfig           `yaml:"polling"`
 	StaleLabelCleanup *StaleLabelCleanupConfig `yaml:"stale_label_cleanup"`
 }
@@ -232,20 +232,20 @@ func (w *WorkItem) GetWebURL(baseURL, organization, project string) string {
 
 // PullRequest represents an Azure DevOps pull request
 type PullRequest struct {
-	PullRequestID int       `json:"pullRequestId"`
-	Title         string    `json:"title"`
-	Description   string    `json:"description"`
-	Status        string    `json:"status"` // active, completed, abandoned
-	SourceRefName string    `json:"sourceRefName"`
-	TargetRefName string    `json:"targetRefName"`
-	MergeStatus   string    `json:"mergeStatus"`
-	IsDraft       bool      `json:"isDraft"`
-	CreationDate  time.Time `json:"creationDate"`
-	ClosedDate    time.Time `json:"closedDate,omitempty"`
-	URL           string    `json:"url"`
-	Repository    *GitRepo  `json:"repository,omitempty"`
-	CreatedBy     *Identity `json:"createdBy,omitempty"`
-	MergeID       string    `json:"mergeId,omitempty"`
+	PullRequestID         int           `json:"pullRequestId"`
+	Title                 string        `json:"title"`
+	Description           string        `json:"description"`
+	Status                string        `json:"status"` // active, completed, abandoned
+	SourceRefName         string        `json:"sourceRefName"`
+	TargetRefName         string        `json:"targetRefName"`
+	MergeStatus           string        `json:"mergeStatus"`
+	IsDraft               bool          `json:"isDraft"`
+	CreationDate          time.Time     `json:"creationDate"`
+	ClosedDate            time.Time     `json:"closedDate,omitempty"`
+	URL                   string        `json:"url"`
+	Repository            *GitRepo      `json:"repository,omitempty"`
+	CreatedBy             *Identity     `json:"createdBy,omitempty"`
+	MergeID               string        `json:"mergeId,omitempty"`
 	LastMergeSourceCommit *GitCommitRef `json:"lastMergeSourceCommit,omitempty"`
 }
 
@@ -305,20 +305,20 @@ type GitRefUpdate struct {
 
 // Comment represents a work item comment
 type Comment struct {
-	ID        int       `json:"id"`
-	Text      string    `json:"text"`
-	CreatedBy *Identity `json:"createdBy,omitempty"`
-	CreatedDate time.Time `json:"createdDate"`
+	ID           int       `json:"id"`
+	Text         string    `json:"text"`
+	CreatedBy    *Identity `json:"createdBy,omitempty"`
+	CreatedDate  time.Time `json:"createdDate"`
 	ModifiedDate time.Time `json:"modifiedDate,omitempty"`
 }
 
 // WIQLQueryResult represents the result of a WIQL query
 type WIQLQueryResult struct {
-	QueryType        string              `json:"queryType"`
-	QueryResultType  string              `json:"queryResultType"`
-	AsOf             time.Time           `json:"asOf"`
-	Columns          []WIQLColumn        `json:"columns"`
-	WorkItems        []WIQLWorkItemRef   `json:"workItems"`
+	QueryType         string                 `json:"queryType"`
+	QueryResultType   string                 `json:"queryResultType"`
+	AsOf              time.Time              `json:"asOf"`
+	Columns           []WIQLColumn           `json:"columns"`
+	WorkItems         []WIQLWorkItemRef      `json:"workItems"`
 	WorkItemRelations []WIQLWorkItemRelation `json:"workItemRelations,omitempty"`
 }
 
@@ -346,17 +346,17 @@ type WIQLWorkItemRelation struct {
 
 // WebhookPayload is the base webhook payload from Azure DevOps
 type WebhookPayload struct {
-	SubscriptionID string                 `json:"subscriptionId"`
-	NotificationID int                    `json:"notificationId"`
-	ID             string                 `json:"id"`
-	EventType      string                 `json:"eventType"`
-	PublisherID    string                 `json:"publisherId"`
-	Message        *WebhookMessage        `json:"message,omitempty"`
-	DetailedMessage *WebhookMessage       `json:"detailedMessage,omitempty"`
-	Resource       map[string]interface{} `json:"resource"`
-	ResourceVersion string                `json:"resourceVersion"`
+	SubscriptionID     string                      `json:"subscriptionId"`
+	NotificationID     int                         `json:"notificationId"`
+	ID                 string                      `json:"id"`
+	EventType          string                      `json:"eventType"`
+	PublisherID        string                      `json:"publisherId"`
+	Message            *WebhookMessage             `json:"message,omitempty"`
+	DetailedMessage    *WebhookMessage             `json:"detailedMessage,omitempty"`
+	Resource           map[string]interface{}      `json:"resource"`
+	ResourceVersion    string                      `json:"resourceVersion"`
 	ResourceContainers map[string]WebhookContainer `json:"resourceContainers"`
-	CreatedDate    time.Time              `json:"createdDate"`
+	CreatedDate        time.Time                   `json:"createdDate"`
 }
 
 // WebhookMessage contains the message text for webhooks
@@ -374,14 +374,14 @@ type WebhookContainer struct {
 
 // WorkItemWebhookResource is the resource payload for work item webhooks
 type WorkItemWebhookResource struct {
-	ID           int                    `json:"id"`
-	WorkItemID   int                    `json:"workItemId,omitempty"`
-	Rev          int                    `json:"rev"`
-	RevisedBy    *Identity              `json:"revisedBy,omitempty"`
-	RevisedDate  time.Time              `json:"revisedDate"`
-	Fields       map[string]interface{} `json:"fields"`
-	URL          string                 `json:"url"`
-	Revision     *WorkItemRevision      `json:"revision,omitempty"`
+	ID          int                    `json:"id"`
+	WorkItemID  int                    `json:"workItemId,omitempty"`
+	Rev         int                    `json:"rev"`
+	RevisedBy   *Identity              `json:"revisedBy,omitempty"`
+	RevisedDate time.Time              `json:"revisedDate"`
+	Fields      map[string]interface{} `json:"fields"`
+	URL         string                 `json:"url"`
+	Revision    *WorkItemRevision      `json:"revision,omitempty"`
 }
 
 // WorkItemRevision represents a work item revision in webhook payload
@@ -394,13 +394,13 @@ type WorkItemRevision struct {
 
 // Webhook event types
 const (
-	WebhookEventWorkItemCreated = "workitem.created"
-	WebhookEventWorkItemUpdated = "workitem.updated"
-	WebhookEventWorkItemDeleted = "workitem.deleted"
+	WebhookEventWorkItemCreated  = "workitem.created"
+	WebhookEventWorkItemUpdated  = "workitem.updated"
+	WebhookEventWorkItemDeleted  = "workitem.deleted"
 	WebhookEventWorkItemRestored = "workitem.restored"
-	WebhookEventPRCreated       = "git.pullrequest.created"
-	WebhookEventPRUpdated       = "git.pullrequest.updated"
-	WebhookEventPRMerged        = "git.pullrequest.merged"
+	WebhookEventPRCreated        = "git.pullrequest.created"
+	WebhookEventPRUpdated        = "git.pullrequest.updated"
+	WebhookEventPRMerged         = "git.pullrequest.merged"
 )
 
 // Helper functions

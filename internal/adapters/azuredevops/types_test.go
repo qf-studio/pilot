@@ -89,14 +89,14 @@ func TestWorkItemMethods(t *testing.T) {
 		ID:  42,
 		Rev: 3,
 		Fields: map[string]interface{}{
-			"System.Title":                  "Test Work Item",
-			"System.Description":            "<p>HTML Description</p>",
-			"System.State":                  StateActive,
-			"System.WorkItemType":           "Bug",
-			"System.Tags":                   "tag1; tag2",
+			"System.Title":                   "Test Work Item",
+			"System.Description":             "<p>HTML Description</p>",
+			"System.State":                   StateActive,
+			"System.WorkItemType":            "Bug",
+			"System.Tags":                    "tag1; tag2",
 			"Microsoft.VSTS.Common.Priority": float64(1),
-			"System.CreatedDate":            "2024-06-15T10:00:00Z",
-			"System.ChangedDate":            "2024-06-16T12:00:00Z",
+			"System.CreatedDate":             "2024-06-15T10:00:00Z",
+			"System.ChangedDate":             "2024-06-16T12:00:00Z",
 		},
 	}
 

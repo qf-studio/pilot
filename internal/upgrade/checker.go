@@ -16,13 +16,13 @@ type VersionChecker struct {
 	checkInterval  time.Duration
 	onUpdate       func(info *VersionInfo)
 
-	mu           sync.RWMutex
-	latestInfo   *VersionInfo
-	lastCheck    time.Time
-	isRunning    bool
-	stopCh       chan struct{}
-	isHomebrew   bool
-	homebrewErr  error
+	mu          sync.RWMutex
+	latestInfo  *VersionInfo
+	lastCheck   time.Time
+	isRunning   bool
+	stopCh      chan struct{}
+	isHomebrew  bool
+	homebrewErr error
 }
 
 // NewVersionChecker creates a new VersionChecker instance

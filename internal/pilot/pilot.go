@@ -24,26 +24,26 @@ import (
 
 // Pilot is the main application
 type Pilot struct {
-	config         *config.Config
-	gateway        *gateway.Server
-	orchestrator   *orchestrator.Orchestrator
-	linearClient   *linear.Client
-	linearWH       *linear.WebhookHandler
-	linearNotify   *linear.Notifier
-	githubClient   *github.Client
-	githubWH       *github.WebhookHandler
-	githubNotify   *github.Notifier
-	gitlabClient   *gitlab.Client
-	gitlabWH       *gitlab.WebhookHandler
-	gitlabNotify   *gitlab.Notifier
+	config             *config.Config
+	gateway            *gateway.Server
+	orchestrator       *orchestrator.Orchestrator
+	linearClient       *linear.Client
+	linearWH           *linear.WebhookHandler
+	linearNotify       *linear.Notifier
+	githubClient       *github.Client
+	githubWH           *github.WebhookHandler
+	githubNotify       *github.Notifier
+	gitlabClient       *gitlab.Client
+	gitlabWH           *gitlab.WebhookHandler
+	gitlabNotify       *gitlab.Notifier
 	slackNotify        *slack.Notifier
 	slackClient        *slack.Client
 	slackInteractionWH *slack.InteractionHandler
 	slackApprovalHdlr  *approval.SlackHandler
 	telegramClient     *telegram.Client
-	telegramHandler    *telegram.Handler  // Telegram polling handler (GH-349)
-	telegramRunner     *executor.Runner   // Runner for Telegram tasks (GH-349)
-	githubPoller       *github.Poller     // GitHub polling handler (GH-350)
+	telegramHandler    *telegram.Handler // Telegram polling handler (GH-349)
+	telegramRunner     *executor.Runner  // Runner for Telegram tasks (GH-349)
+	githubPoller       *github.Poller    // GitHub polling handler (GH-350)
 	alertEngine        *alerts.Engine
 	store              *memory.Store
 	graph              *memory.KnowledgeGraph

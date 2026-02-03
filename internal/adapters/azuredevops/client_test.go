@@ -343,14 +343,14 @@ func TestWorkItemHelpers(t *testing.T) {
 	wi := &WorkItem{
 		ID: 123,
 		Fields: map[string]interface{}{
-			"System.Title":                  "Test Title",
-			"System.Description":            "Test Description",
-			"System.State":                  "Active",
-			"System.WorkItemType":           "Bug",
-			"System.Tags":                   "tag1; tag2; pilot",
+			"System.Title":                   "Test Title",
+			"System.Description":             "Test Description",
+			"System.State":                   "Active",
+			"System.WorkItemType":            "Bug",
+			"System.Tags":                    "tag1; tag2; pilot",
 			"Microsoft.VSTS.Common.Priority": float64(2),
-			"System.CreatedDate":            "2024-01-15T10:30:00Z",
-			"System.ChangedDate":            "2024-01-16T15:45:00Z",
+			"System.CreatedDate":             "2024-01-15T10:30:00Z",
+			"System.ChangedDate":             "2024-01-16T15:45:00Z",
 		},
 	}
 

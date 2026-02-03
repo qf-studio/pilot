@@ -15,9 +15,9 @@ import (
 )
 
 const (
-	defaultBaseURL     = "https://dev.azure.com"
-	apiVersion         = "7.1"
-	apiVersionPreview  = "7.1-preview"
+	defaultBaseURL    = "https://dev.azure.com"
+	apiVersion        = "7.1"
+	apiVersionPreview = "7.1-preview"
 )
 
 // Client is an Azure DevOps API client
@@ -245,8 +245,8 @@ func (c *Client) GetWorkItems(ctx context.Context, ids []int) ([]*WorkItem, erro
 		)
 
 		var result struct {
-			Count     int         `json:"count"`
-			Value     []*WorkItem `json:"value"`
+			Count int         `json:"count"`
+			Value []*WorkItem `json:"value"`
 		}
 		if err := c.doRequest(ctx, http.MethodGet, path, nil, &result); err != nil {
 			return nil, err
@@ -589,7 +589,7 @@ func (c *Client) CompletePullRequest(ctx context.Context, id int, deleteSourceBr
 	)
 
 	reqBody := map[string]interface{}{
-		"status":                   PRStateCompleted,
+		"status": PRStateCompleted,
 		"lastMergeSourceCommit": map[string]string{
 			"commitId": pr.LastMergeSourceCommit.CommitID,
 		},

@@ -16,12 +16,12 @@ import (
 type WebhookEventType string
 
 const (
-	EventIssuesOpened       WebhookEventType = "issues.opened"
-	EventIssuesLabeled      WebhookEventType = "issues.labeled"
-	EventIssuesClosed       WebhookEventType = "issues.closed"
-	EventIssueComment       WebhookEventType = "issue_comment.created"
-	EventPRReviewSubmitted  WebhookEventType = "pull_request_review.submitted"
-	EventPRReviewDismissed  WebhookEventType = "pull_request_review.dismissed"
+	EventIssuesOpened      WebhookEventType = "issues.opened"
+	EventIssuesLabeled     WebhookEventType = "issues.labeled"
+	EventIssuesClosed      WebhookEventType = "issues.closed"
+	EventIssueComment      WebhookEventType = "issue_comment.created"
+	EventPRReviewSubmitted WebhookEventType = "pull_request_review.submitted"
+	EventPRReviewDismissed WebhookEventType = "pull_request_review.dismissed"
 )
 
 // WebhookPayload represents a GitHub webhook payload

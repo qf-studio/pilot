@@ -127,7 +127,7 @@ func TestPollerFindOldestUnprocessedWorkItem(t *testing.T) {
 				Count: 3,
 				Value: []*WorkItem{
 					{
-						ID:     1,
+						ID: 1,
 						Fields: map[string]interface{}{
 							"System.Title":       "First (oldest)",
 							"System.CreatedDate": "2024-01-01T10:00:00Z",
@@ -135,7 +135,7 @@ func TestPollerFindOldestUnprocessedWorkItem(t *testing.T) {
 						},
 					},
 					{
-						ID:     2,
+						ID: 2,
 						Fields: map[string]interface{}{
 							"System.Title":       "Second",
 							"System.CreatedDate": "2024-01-02T10:00:00Z",
@@ -143,7 +143,7 @@ func TestPollerFindOldestUnprocessedWorkItem(t *testing.T) {
 						},
 					},
 					{
-						ID:     3,
+						ID: 3,
 						Fields: map[string]interface{}{
 							"System.Title":       "Third",
 							"System.CreatedDate": "2024-01-03T10:00:00Z",

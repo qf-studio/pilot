@@ -33,12 +33,12 @@ type WorkItemResult struct {
 
 // Poller polls Azure DevOps for work items with a specific tag
 type Poller struct {
-	client    *Client
-	tag       string
-	interval  time.Duration
-	processed map[int]bool
-	mu        sync.RWMutex
-	onWorkItem   func(ctx context.Context, wi *WorkItem) error
+	client     *Client
+	tag        string
+	interval   time.Duration
+	processed  map[int]bool
+	mu         sync.RWMutex
+	onWorkItem func(ctx context.Context, wi *WorkItem) error
 	// onWorkItemWithResult is called for sequential mode, returns PR info
 	onWorkItemWithResult func(ctx context.Context, wi *WorkItem) (*WorkItemResult, error)
 	// OnPRCreated is called when a PR is created after work item processing

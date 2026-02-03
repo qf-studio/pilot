@@ -12,34 +12,34 @@ import (
 
 func TestWebhookHandlerVerifySecret(t *testing.T) {
 	tests := []struct {
-		name           string
+		name             string
 		configuredSecret string
-		providedSecret string
-		expected       bool
+		providedSecret   string
+		expected         bool
 	}{
 		{
-			name:           "no secret configured",
+			name:             "no secret configured",
 			configuredSecret: "",
-			providedSecret: "anything",
-			expected:       true,
+			providedSecret:   "anything",
+			expected:         true,
 		},
 		{
-			name:           "correct secret",
+			name:             "correct secret",
 			configuredSecret: "my-secret",
-			providedSecret: "my-secret",
-			expected:       true,
+			providedSecret:   "my-secret",
+			expected:         true,
 		},
 		{
-			name:           "wrong secret",
+			name:             "wrong secret",
 			configuredSecret: "my-secret",
-			providedSecret: "wrong-secret",
-			expected:       false,
+			providedSecret:   "wrong-secret",
+			expected:         false,
 		},
 		{
-			name:           "empty provided secret",
+			name:             "empty provided secret",
 			configuredSecret: "my-secret",
-			providedSecret: "",
-			expected:       false,
+			providedSecret:   "",
+			expected:         false,
 		},
 	}
 

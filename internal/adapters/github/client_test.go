@@ -1653,8 +1653,8 @@ func TestListPullRequestReviews(t *testing.T) {
 			name:       "success - no reviews",
 			statusCode: http.StatusOK,
 			response:   []*PullRequestReview{},
-			wantErr:   false,
-			wantCount: 0,
+			wantErr:    false,
+			wantCount:  0,
 		},
 		{
 			name:       "not found",

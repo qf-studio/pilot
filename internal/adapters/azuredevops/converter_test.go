@@ -10,9 +10,9 @@ func TestConvertWorkItemToTask(t *testing.T) {
 		ID:  123,
 		Rev: 1,
 		Fields: map[string]interface{}{
-			"System.Title":                  "Fix login bug",
-			"System.Description":            "Users cannot login when...",
-			"System.Tags":                   "pilot; bug; frontend",
+			"System.Title":                   "Fix login bug",
+			"System.Description":             "Users cannot login when...",
+			"System.Tags":                    "pilot; bug; frontend",
 			"Microsoft.VSTS.Common.Priority": float64(2),
 		},
 	}

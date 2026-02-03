@@ -175,9 +175,9 @@ func (c *Client) UpdateMessage(ctx context.Context, channel, ts string, msg *Mes
 
 // InteractiveMessage represents a message with interactive buttons
 type InteractiveMessage struct {
-	Channel string         `json:"channel"`
-	Text    string         `json:"text,omitempty"`
-	Blocks  []interface{}  `json:"blocks,omitempty"`
+	Channel string        `json:"channel"`
+	Text    string        `json:"text,omitempty"`
+	Blocks  []interface{} `json:"blocks,omitempty"`
 }
 
 // PostInteractiveMessage posts a message with interactive buttons to a channel

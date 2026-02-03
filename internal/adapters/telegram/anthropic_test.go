@@ -210,7 +210,7 @@ func TestAnthropicClientClassifyRequestBody(t *testing.T) {
 	client := &AnthropicClient{
 		apiKey: "test-api-key",
 		httpClient: &http.Client{
-			Timeout: 5 * time.Second,
+			Timeout:   5 * time.Second,
 			Transport: &redirectTransport{serverURL: server.URL},
 		},
 		model: "claude-3-5-haiku-20241022",
