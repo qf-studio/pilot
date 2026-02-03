@@ -36,6 +36,11 @@ func NewStore(dataPath string) (*Store, error) {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
 
+	// Enable WAL mode and busy timeout for better concurrency
+	if _, err := db.Exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;"); err != nil {
+		return nil, fmt.Errorf("failed to set database pragmas: %w", err)
+	}
+
 	store := &Store{
 		db:   db,
 		path: dataPath,
