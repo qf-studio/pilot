@@ -931,29 +931,36 @@ func AddCompletedTask(id, title, status, duration string) tea.Cmd {
 	}
 }
 
-// renderUpdateNotification renders the update notification bar
+// renderUpdateNotification renders the update notification panel
 func (m Model) renderUpdateNotification() string {
+	var content string
+	var title string
+
 	switch m.upgradeState {
 	case UpgradeStateAvailable:
-		return warningStyle.Render(fmt.Sprintf("   ⬆️ Update available: %s → %s (press 'u' to upgrade)",
-			m.updateInfo.CurrentVersion, m.updateInfo.LatestVersion))
+		title = "⬆️ UPDATE AVAILABLE"
+		content = fmt.Sprintf("New version: %s → %s (press 'u' to upgrade)",
+			m.updateInfo.CurrentVersion, m.updateInfo.LatestVersion)
 
 	case UpgradeStateInProgress:
-		// Show progress bar during upgrade
-		bar := m.renderProgressBar(m.upgradeProgress, 20)
-		return warningStyle.Render(fmt.Sprintf("   🔄 Upgrading to %s... %s %d%%",
-			m.updateInfo.LatestVersion, bar, m.upgradeProgress))
+		title = "🔄 UPGRADING"
+		bar := m.renderProgressBar(m.upgradeProgress, 30)
+		content = fmt.Sprintf("Upgrading to %s... %s %d%%",
+			m.updateInfo.LatestVersion, bar, m.upgradeProgress)
 
 	case UpgradeStateComplete:
-		return statusCompletedStyle.Render(fmt.Sprintf("   ✅ Upgraded to %s - Restarting...",
-			m.updateInfo.LatestVersion))
+		title = "✅ UPGRADE COMPLETE"
+		content = fmt.Sprintf("Upgraded to %s - Restarting...", m.updateInfo.LatestVersion)
 
 	case UpgradeStateFailed:
-		return statusFailedStyle.Render(fmt.Sprintf("   ❌ Upgrade failed: %s", m.upgradeError))
+		title = "❌ UPGRADE FAILED"
+		content = m.upgradeError
 
 	default:
 		return ""
 	}
+
+	return renderPanel(title, content)
 }
 
 // SetUpgradeChannel sets the channel used to trigger upgrades
