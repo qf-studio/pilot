@@ -320,7 +320,6 @@ func New(cfg *config.Config, opts ...Option) (*Pilot, error) {
 			Transcription: cfg.Adapters.Telegram.Transcription,
 			RateLimit:     cfg.Adapters.Telegram.RateLimit,
 			PlainTextMode: true, // Default to plain text mode
-			LLMClassifier: cfg.Adapters.Telegram.LLMClassifier,
 		}, p.telegramRunner)
 
 		if len(allowedIDs) == 0 {

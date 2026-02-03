@@ -709,7 +709,6 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 			AllowedIDs:    allowedIDs,
 			Transcription: cfg.Adapters.Telegram.Transcription,
 			RateLimit:     cfg.Adapters.Telegram.RateLimit,
-			LLMClassifier: cfg.Adapters.Telegram.LLMClassifier,
 		}, runner)
 
 		// Security warning if no allowed IDs configured

@@ -184,12 +184,6 @@ _Queue empty - create issues with `pilot` label to add work._
 
 ---
 
-## Completed (2026-02-03)
-
-| Item | What |
-|------|------|
-| GH-356 | LLM-based intent classification for Telegram |
-
 ## Completed (2026-02-01)
 
 | Item | What |
