@@ -1,0 +1,52 @@
+name: Sync Docs Version
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync-version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Get release version
+        id: version
+        run: echo "VERSION=${{ github.event.release.tag_name }}" >> $GITHUB_OUTPUT
+
+      - name: Run version sync script
+        run: ./scripts/docs-version-sync.sh ${{ steps.version.outputs.VERSION }}
+
+      - name: Check for changes
+        id: changes
+        run: |
+          if git diff --quiet; then
+            echo "changed=false" >> $GITHUB_OUTPUT
+          else
+            echo "changed=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create Pull Request
+        if: steps.changes.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "docs: sync version to ${{ steps.version.outputs.VERSION }}"
+          title: "docs: sync version to ${{ steps.version.outputs.VERSION }}"
+          body: |
+            Automated PR to update version references in Navigator docs after release.
+
+            Updated files:
+            - `.agent/DEVELOPMENT-README.md`
+            - `.agent/system/FEATURE-MATRIX.md`
+
+            Created by docs-version-sync workflow.
+          branch: docs/version-sync-${{ steps.version.outputs.VERSION }}
+          base: main
+          labels: documentation
