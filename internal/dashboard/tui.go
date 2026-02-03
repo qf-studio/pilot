@@ -535,11 +535,7 @@ func (m Model) View() string {
 	}
 
 	// Help
-	helpText := "q: quit  l: logs  j/k: select  enter: open"
-	if m.updateInfo != nil && m.upgradeState == UpgradeStateAvailable {
-		helpText += "  u: upgrade"
-	}
-	b.WriteString(helpStyle.Render(helpText))
+	b.WriteString(helpStyle.Render("q: quit  l: logs  j/k: select  enter: open"))
 
 	return b.String()
 }
@@ -933,34 +929,54 @@ func AddCompletedTask(id, title, status, duration string) tea.Cmd {
 
 // renderUpdateNotification renders the update notification panel
 func (m Model) renderUpdateNotification() string {
-	var content string
+	var content strings.Builder
 	var title string
+	var hint string
 
 	switch m.upgradeState {
 	case UpgradeStateAvailable:
 		title = "^ UPDATE"
-		content = fmt.Sprintf("%s -> %s available (press 'u' to upgrade)",
-			m.updateInfo.CurrentVersion, m.updateInfo.LatestVersion)
+		// Left: version info, Right: will be hint below panel
+		leftText := fmt.Sprintf("%s -> %s available", m.updateInfo.CurrentVersion, m.updateInfo.LatestVersion)
+		rightText := ""
+		content.WriteString(formatPanelRow(leftText, rightText))
+		hint = "u: upgrade"
 
 	case UpgradeStateInProgress:
 		title = "* UPGRADING"
 		bar := m.renderProgressBar(m.upgradeProgress, 30)
-		content = fmt.Sprintf("Installing %s... %s %d%%",
-			m.updateInfo.LatestVersion, bar, m.upgradeProgress)
+		content.WriteString(fmt.Sprintf("  Installing %s... %s %d%%", m.updateInfo.LatestVersion, bar, m.upgradeProgress))
 
 	case UpgradeStateComplete:
 		title = "+ UPGRADED"
-		content = fmt.Sprintf("Now running %s - Restarting...", m.updateInfo.LatestVersion)
+		content.WriteString(fmt.Sprintf("  Now running %s - Restarting...", m.updateInfo.LatestVersion))
 
 	case UpgradeStateFailed:
 		title = "! UPGRADE FAILED"
-		content = m.upgradeError
+		content.WriteString("  " + m.upgradeError)
 
 	default:
 		return ""
 	}
 
-	return renderPanel(title, content)
+	result := renderPanel(title, content.String())
+	if hint != "" {
+		// Right-align hint under panel
+		hintLine := fmt.Sprintf("%*s", panelTotalWidth, hint)
+		result += "\n" + dimStyle.Render(hintLine)
+	}
+	return result
+}
+
+// formatPanelRow creates a full-width row with left and right aligned text
+func formatPanelRow(left, right string) string {
+	leftWidth := lipgloss.Width(left)
+	rightWidth := lipgloss.Width(right)
+	padding := panelInnerWidth - leftWidth - rightWidth - 4 // 4 for indent
+	if padding < 1 {
+		padding = 1
+	}
+	return fmt.Sprintf("  %s%s%s", left, strings.Repeat(" ", padding), right)
 }
 
 // SetUpgradeChannel sets the channel used to trigger upgrades
