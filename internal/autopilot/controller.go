@@ -164,14 +164,37 @@ func (c *Controller) ProcessPR(ctx context.Context, prNumber int) error {
 func (c *Controller) handlePRCreated(ctx context.Context, prState *PRState) error {
 	// All environments wait for CI - no skipping
 	prState.Stage = StageWaitingCI
+	prState.CIWaitStartedAt = time.Now()
 	return nil
 }
 
-// handleWaitingCI polls CI status until complete.
+// handleWaitingCI checks CI status once (non-blocking) and updates state.
+// Uses CheckCI instead of WaitForCI to prevent blocking the processing loop.
 func (c *Controller) handleWaitingCI(ctx context.Context, prState *PRState) error {
-	status, err := c.ciMonitor.WaitForCI(ctx, prState.HeadSHA)
+	// Initialize CIWaitStartedAt if not set (backwards compatibility)
+	if prState.CIWaitStartedAt.IsZero() {
+		prState.CIWaitStartedAt = time.Now()
+	}
+
+	// Check for CI timeout
+	ciTimeout := c.config.CIWaitTimeout
+	if c.config.Environment == EnvDev && c.config.DevCITimeout > 0 {
+		ciTimeout = c.config.DevCITimeout
+	}
+
+	if time.Since(prState.CIWaitStartedAt) > ciTimeout {
+		c.log.Warn("CI timeout", "pr", prState.PRNumber, "waited", time.Since(prState.CIWaitStartedAt))
+		prState.Stage = StageFailed
+		prState.Error = fmt.Sprintf("CI timeout after %v", ciTimeout)
+		return nil
+	}
+
+	// Non-blocking CI status check
+	status, err := c.ciMonitor.CheckCI(ctx, prState.HeadSHA)
 	if err != nil {
-		return err
+		c.log.Warn("CI status check failed", "pr", prState.PRNumber, "error", err)
+		// Don't fail the PR on transient errors, will retry next poll cycle
+		return nil
 	}
 
 	prState.CIStatus = status
@@ -184,6 +207,9 @@ func (c *Controller) handleWaitingCI(ctx context.Context, prState *PRState) erro
 	case CIFailure:
 		c.log.Warn("CI failed", "pr", prState.PRNumber)
 		prState.Stage = StageCIFailed
+	case CIPending, CIRunning:
+		// Stay in StageWaitingCI, will be checked next poll cycle
+		c.log.Debug("CI still running", "pr", prState.PRNumber, "status", status)
 	}
 
 	return nil
