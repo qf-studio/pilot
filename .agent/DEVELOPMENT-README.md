@@ -96,7 +96,7 @@ if _, err := os.Stat(agentDir); err == nil {
 
 ## Current State
 
-**Current Version:** v0.6.0 (Chat-like Telegram Communication)
+**Current Version:** v0.13.2
 
 **Full implementation status:** `.agent/system/FEATURE-MATRIX.md`
 
@@ -105,14 +105,17 @@ if _, err := os.Stat(agentDir); err == nil {
 | Component | Status | Notes |
 |-----------|--------|-------|
 | Task Execution | ✅ | Claude Code subprocess with Navigator |
-| Telegram Bot | ✅ | Long-polling, voice, images, **chat modes (v0.6.0)** |
+| Telegram Bot | ✅ | Long-polling, voice, images, chat modes |
 | GitHub Polling | ✅ | 30s interval, auto-picks `pilot` label |
 | Alerts Engine | ✅ | Slack, Telegram, webhooks |
 | Quality Gates | ✅ | Test/lint/build gates with retry |
-| Task Dispatcher | ✅ | Per-project queue (GH-46) |
-| Dashboard TUI | ✅ | Token usage, cost, autopilot status |
-| Hot Upgrade | ✅ | Self-update via `pilot upgrade` |
-| **Autopilot** | ✅ | CI monitor, auto-merge, feedback loop, startup PR scan (v0.4.1) |
+| Task Dispatcher | ✅ | Per-project queue |
+| Dashboard TUI | ✅ | Token usage, cost, autopilot, **SQLite persistence (v0.13.1)** |
+| Hot Upgrade | ✅ | Self-update via `pilot upgrade` or **dashboard 'u' key (v0.13.0)** |
+| **Autopilot** | ✅ | CI monitor, auto-merge, feedback loop, startup PR scan |
+| **LLM Intent** | ✅ | Claude Haiku intent classification **(v0.13.0)** |
+| **Self-Review** | ✅ | Auto code review before PR **(v0.13.0)** |
+| **Auto Build Gate** | ✅ | Minimal build gate when none configured **(v0.13.0)** |
 
 ### Telegram Interaction Modes (v0.6.0)
 
@@ -183,6 +186,25 @@ _Queue empty - create issues with `pilot` label to add work._
 **For accurate feature status, see:** `.agent/system/FEATURE-MATRIX.md`
 
 ---
+
+## Completed (2026-02-03)
+
+| Item | What |
+|------|------|
+| **v0.13.2** | Config documentation (LLM classifier, rate limit) |
+| **v0.13.1** | Dashboard SQLite persistence fix |
+| **v0.13.0** | Major feature release |
+| GH-358 | LLM-based intent classification (Claude Haiku) |
+| GH-359 | GoReleaser + auto-changelog |
+| GH-360 | Docs version sync script |
+| GH-361 | MkDocs documentation site |
+| GH-362 | Pre-commit verification instructions |
+| GH-363 | Auto-enable build gate |
+| GH-364 | Self-review phase before PR |
+| GH-366 | Nextra documentation site |
+| GH-369 | Hot reload on release update |
+| GH-372 | Remove deprecated CLI flags |
+| - | SQLite WAL mode for concurrent access |
 
 ## Completed (2026-02-01)
 
