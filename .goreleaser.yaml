@@ -1,0 +1,90 @@
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+# GoReleaser configuration for Pilot
+# https://goreleaser.com
+
+version: 2
+
+project_name: pilot
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: pilot
+    main: ./cmd/pilot
+    binary: pilot
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.buildTime={{.Date}}
+
+archives:
+  - id: default
+    name_template: "{{ .ProjectName }}-{{ .Os }}-{{ .Arch }}"
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    files:
+      - README.md
+      - LICENSE*
+
+checksum:
+  name_template: 'checksums.txt'
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-snapshot"
+
+changelog:
+  sort: asc
+  use: github
+  groups:
+    - title: '🚀 Features'
+      regexp: '^.*?feat(\(.+\))?!?:.+$'
+      order: 0
+    - title: '🐛 Bug Fixes'
+      regexp: '^.*?fix(\(.+\))?!?:.+$'
+      order: 1
+    - title: '♻️ Refactoring'
+      regexp: '^.*?refactor(\(.+\))?!?:.+$'
+      order: 2
+    - title: '📚 Documentation'
+      regexp: '^.*?docs(\(.+\))?!?:.+$'
+      order: 3
+    - title: '🔧 Maintenance'
+      regexp: '^.*?chore(\(.+\))?!?:.+$'
+      order: 4
+    - title: 'Other'
+      order: 999
+  filters:
+    exclude:
+      - '^docs:'
+      - '^chore:'
+      - '^test:'
+      - '^ci:'
+      - Merge pull request
+      - Merge branch
+
+release:
+  github:
+    owner: alekspetrov
+    name: pilot
+  draft: false
+  prerelease: auto
+  mode: append
+  name_template: "{{.ProjectName}} v{{.Version}}"
