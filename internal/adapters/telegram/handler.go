@@ -57,6 +57,8 @@ type Handler struct {
 	cmdHandler       *CommandHandler        // Command handler for /commands
 	plainTextMode    bool                   // Use plain text instead of Markdown
 	rateLimiter      *RateLimiter           // Rate limiter for DoS protection
+	conversations    *ConversationStore     // Conversation history per chat
+	classifier       *LLMClassifier         // LLM-based intent classifier (optional)
 }
 
 // HandlerConfig holds configuration for the Telegram handler
@@ -69,6 +71,7 @@ type HandlerConfig struct {
 	Store         *memory.Store         // Memory store for history/queue/budget (optional)
 	PlainTextMode bool                  // Use plain text instead of Markdown (default: true)
 	RateLimit     *RateLimitConfig      // Rate limiting config (optional)
+	LLMClassifier *LLMClassifierConfig  // LLM-based intent classification config (optional)
 }
 
 // NewHandler creates a new Telegram message handler
@@ -95,6 +98,22 @@ func NewHandler(config *HandlerConfig, runner *executor.Runner) *Handler {
 		rateLimiter = NewRateLimiter(DefaultRateLimitConfig())
 	}
 
+	// Initialize conversation store
+	var convStoreCfg *ConversationStoreConfig
+	if config.LLMClassifier != nil {
+		convStoreCfg = &ConversationStoreConfig{
+			MaxSize: config.LLMClassifier.MaxHistory,
+			TTL:     config.LLMClassifier.HistoryTTL,
+		}
+	}
+	conversations := NewConversationStore(convStoreCfg)
+
+	// Initialize LLM classifier if configured
+	var classifier *LLMClassifier
+	if config.LLMClassifier != nil && config.LLMClassifier.Enabled {
+		classifier = NewLLMClassifier(config.LLMClassifier)
+	}
+
 	h := &Handler{
 		client:        NewClient(config.BotToken),
 		runner:        runner,
@@ -108,6 +127,8 @@ func NewHandler(config *HandlerConfig, runner *executor.Runner) *Handler {
 		store:         config.Store,
 		plainTextMode: config.PlainTextMode,
 		rateLimiter:   rateLimiter,
+		conversations: conversations,
+		classifier:    classifier,
 	}
 
 	// Initialize command handler
@@ -192,10 +213,14 @@ func (h *Handler) StartPolling(ctx context.Context) {
 	go h.cleanupLoop(ctx)
 }
 
-// Stop gracefully stops the polling loop
+// Stop gracefully stops the polling loop and cleanup goroutines
 func (h *Handler) Stop() {
 	close(h.stopCh)
 	h.wg.Wait()
+	// Stop conversation store cleanup goroutine
+	if h.conversations != nil {
+		h.conversations.Stop()
+	}
 }
 
 // pollLoop continuously polls for updates
@@ -346,8 +371,37 @@ func (h *Handler) processUpdate(ctx context.Context, update *Update) {
 		return
 	}
 
-	// Detect intent
-	intent := DetectIntent(text)
+	// Classify intent - use LLM if available, otherwise regex fallback
+	var intent Intent
+	var taskContext string
+
+	if h.classifier != nil && h.classifier.IsEnabled() {
+		// Get conversation history for context
+		history := h.conversations.GetHistory(chatID)
+
+		// Classify with LLM
+		result, err := h.classifier.Classify(ctx, text, history)
+		if err != nil {
+			logging.WithComponent("telegram").Debug("LLM classification failed, using regex fallback",
+				slog.String("chat_id", chatID), slog.Any("error", err))
+			intent = DetectIntent(text)
+		} else {
+			intent = result.Intent
+			taskContext = result.TaskSummary
+			logging.WithComponent("telegram").Debug("LLM classification",
+				slog.String("chat_id", chatID),
+				slog.String("intent", string(intent)),
+				slog.Float64("confidence", result.Confidence),
+				slog.String("reasoning", result.Reasoning))
+		}
+	} else {
+		// Regex fallback
+		intent = DetectIntent(text)
+	}
+
+	// Store user message in conversation history
+	h.conversations.AddUserMessage(chatID, text, intent)
+
 	logging.WithComponent("telegram").Debug("Message received",
 		slog.String("chat_id", chatID), slog.String("intent", string(intent)))
 
@@ -355,20 +409,20 @@ func (h *Handler) processUpdate(ctx context.Context, update *Update) {
 	case IntentCommand:
 		h.handleCommand(ctx, chatID, text)
 	case IntentGreeting:
-		h.handleGreeting(ctx, chatID, msg.From)
+		h.handleGreetingWithHistory(ctx, chatID, msg.From)
 	case IntentQuestion:
-		h.handleQuestion(ctx, chatID, text)
+		h.handleQuestionWithHistory(ctx, chatID, text)
 	case IntentResearch:
-		h.handleResearch(ctx, chatID, text)
+		h.handleResearchWithHistory(ctx, chatID, text)
 	case IntentPlanning:
-		h.handlePlanning(ctx, chatID, text)
+		h.handlePlanningWithHistory(ctx, chatID, text)
 	case IntentChat:
-		h.handleChat(ctx, chatID, text)
+		h.handleChatWithHistory(ctx, chatID, text)
 	case IntentTask:
-		h.handleTask(ctx, chatID, text)
+		h.handleTaskWithContext(ctx, chatID, text, taskContext)
 	default:
 		// Fallback to chat for conversational messages
-		h.handleChat(ctx, chatID, text)
+		h.handleChatWithHistory(ctx, chatID, text)
 	}
 }
 
@@ -729,6 +783,50 @@ User message: %s`, h.getActiveProjectPath(chatID), message),
 	}
 
 	_, _ = h.client.SendMessage(ctx, chatID, response, "")
+}
+
+// handleGreetingWithHistory wraps handleGreeting with conversation history tracking
+func (h *Handler) handleGreetingWithHistory(ctx context.Context, chatID string, from *User) {
+	h.handleGreeting(ctx, chatID, from)
+	// Store a generic greeting response in history
+	h.conversations.AddAssistantMessage(chatID, FormatGreeting(""))
+}
+
+// handleQuestionWithHistory wraps handleQuestion with conversation history tracking
+func (h *Handler) handleQuestionWithHistory(ctx context.Context, chatID, question string) {
+	// For questions, we run the handler and capture the response type
+	// Since handleQuestion sends its own messages, we track a summary
+	h.handleQuestion(ctx, chatID, question)
+	h.conversations.AddAssistantMessage(chatID, "[Answered question about: "+truncateDescription(question, 50)+"]")
+}
+
+// handleResearchWithHistory wraps handleResearch with conversation history tracking
+func (h *Handler) handleResearchWithHistory(ctx context.Context, chatID, query string) {
+	h.handleResearch(ctx, chatID, query)
+	h.conversations.AddAssistantMessage(chatID, "[Research completed: "+truncateDescription(query, 50)+"]")
+}
+
+// handlePlanningWithHistory wraps handlePlanning with conversation history tracking
+func (h *Handler) handlePlanningWithHistory(ctx context.Context, chatID, request string) {
+	h.handlePlanning(ctx, chatID, request)
+	h.conversations.AddAssistantMessage(chatID, "[Plan created for: "+truncateDescription(request, 50)+"]")
+}
+
+// handleChatWithHistory wraps handleChat with conversation history tracking
+func (h *Handler) handleChatWithHistory(ctx context.Context, chatID, message string) {
+	h.handleChat(ctx, chatID, message)
+	h.conversations.AddAssistantMessage(chatID, "[Chat response to: "+truncateDescription(message, 50)+"]")
+}
+
+// handleTaskWithContext handles task requests with conversation context
+func (h *Handler) handleTaskWithContext(ctx context.Context, chatID, description, taskContext string) {
+	// If we have task context from LLM classification, use it
+	if taskContext != "" {
+		// Append context to description for better task execution
+		description = fmt.Sprintf("%s\n\n## Conversation Context\n%s", description, taskContext)
+	}
+	h.handleTask(ctx, chatID, description)
+	h.conversations.AddAssistantMessage(chatID, "[Task created: "+truncateDescription(description, 50)+"]")
 }
 
 // handleTask handles task requests with confirmation

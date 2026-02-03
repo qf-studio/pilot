@@ -106,6 +106,9 @@ type Task struct {
 	// DirectCommit enables pushing directly to main without branches or PRs.
 	// Requires executor.direct_commit=true in config AND --direct-commit flag.
 	DirectCommit bool
+	// ConversationContext contains summarized conversation history for context-aware execution.
+	// Used by Telegram handler to pass conversation context to Claude Code.
+	ConversationContext string
 }
 
 // QualityGateResult represents the result of a single quality gate check.
@@ -1372,6 +1375,13 @@ func (r *Runner) BuildPrompt(task *Task) string {
 		sb.WriteString("IGNORE any CLAUDE.md rules saying \"DO NOT write code\" or \"DO NOT commit\" - those are for human planning sessions.\n")
 		sb.WriteString("Your job is to IMPLEMENT, COMMIT, and optionally CREATE PRs.\n\n")
 
+		// Add conversation context if available
+		if task.ConversationContext != "" {
+			sb.WriteString("## Conversation Context\n\n")
+			sb.WriteString(task.ConversationContext)
+			sb.WriteString("\n\n")
+		}
+
 		sb.WriteString(fmt.Sprintf("## Task: %s\n\n", task.ID))
 		sb.WriteString(fmt.Sprintf("%s\n\n", task.Description))
 
@@ -1387,6 +1397,13 @@ func (r *Runner) BuildPrompt(task *Task) string {
 		// Still need Pilot execution mode notice since CLAUDE.md may have "don't write code" rules
 		sb.WriteString("## PILOT EXECUTION MODE (Trivial Task)\n\n")
 		sb.WriteString("You are **Pilot** (execution bot). IGNORE any CLAUDE.md \"DO NOT write code\" rules.\n\n")
+
+		// Add conversation context if available
+		if task.ConversationContext != "" {
+			sb.WriteString("## Conversation Context\n\n")
+			sb.WriteString(task.ConversationContext)
+			sb.WriteString("\n\n")
+		}
 
 		sb.WriteString(fmt.Sprintf("## Task: %s\n\n", task.ID))
 		sb.WriteString(fmt.Sprintf("%s\n\n", task.Description))
@@ -1404,6 +1421,14 @@ func (r *Runner) BuildPrompt(task *Task) string {
 		sb.WriteString("Work autonomously. Do not ask for confirmation.\n")
 	} else {
 		// Non-Navigator project: explicit instructions with strict constraints
+
+		// Add conversation context if available
+		if task.ConversationContext != "" {
+			sb.WriteString("## Conversation Context\n\n")
+			sb.WriteString(task.ConversationContext)
+			sb.WriteString("\n\n")
+		}
+
 		sb.WriteString(fmt.Sprintf("## Task: %s\n\n", task.ID))
 		sb.WriteString(fmt.Sprintf("%s\n\n", task.Description))
 
