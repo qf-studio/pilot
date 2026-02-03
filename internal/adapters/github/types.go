@@ -9,6 +9,7 @@ type Config struct {
 	WebhookSecret     string                   `yaml:"webhook_secret"` // For HMAC signature verification
 	PilotLabel        string                   `yaml:"pilot_label"`
 	Repo              string                   `yaml:"repo"`                // Default repo in "owner/repo" format
+	ProjectPath       string                   `yaml:"project_path"`        // Required project path - must match repo (GH-386)
 	Polling           *PollingConfig           `yaml:"polling"`             // Polling configuration
 	StaleLabelCleanup *StaleLabelCleanupConfig `yaml:"stale_label_cleanup"` // Auto-cleanup stale labels
 }

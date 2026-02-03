@@ -107,6 +107,10 @@ type Task struct {
 	// DirectCommit enables pushing directly to main without branches or PRs.
 	// Requires executor.direct_commit=true in config AND --direct-commit flag.
 	DirectCommit bool
+	// SourceRepo is the source repository in "owner/repo" format (GH-386).
+	// Used for cross-project execution validation to prevent issues from one repo
+	// being executed against a different project.
+	SourceRepo string
 }
 
 // QualityGateResult represents the result of a single quality gate check.
@@ -433,6 +437,17 @@ func (r *Runner) EmitProgress(taskID, phase string, progress int, message string
 // creates a PR, accumulating all changes from previous subtasks.
 func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, error) {
 	start := time.Now()
+
+	// GH-386: Validate source repo matches project path to prevent cross-project execution
+	if task.SourceRepo != "" && task.ProjectPath != "" {
+		if err := ValidateRepoProjectMatch(task.SourceRepo, task.ProjectPath); err != nil {
+			return &ExecutionResult{
+				TaskID:  task.ID,
+				Success: false,
+				Error:   fmt.Sprintf("cross-project execution blocked: %v", err),
+			}, fmt.Errorf("cross-project execution blocked: %w", err)
+		}
+	}
 
 	// Detect complexity for routing decisions
 	complexity := DetectComplexity(task)
@@ -2466,4 +2481,39 @@ func (c *simpleQualityChecker) Check(ctx context.Context) (*QualityOutcome, erro
 	}
 
 	return outcome, nil
+}
+
+// ExtractRepoName extracts the repository name from "owner/repo" format.
+// Returns just the repo part (e.g., "pilot" from "alekspetrov/pilot").
+func ExtractRepoName(repo string) string {
+	parts := strings.Split(repo, "/")
+	if len(parts) == 2 {
+		return parts[1]
+	}
+	return repo
+}
+
+// ValidateRepoProjectMatch validates that a source repo matches the project path.
+// This is a defense against cross-project execution (GH-386).
+// Returns an error if there's a mismatch between repo name and project directory name.
+func ValidateRepoProjectMatch(sourceRepo, projectPath string) error {
+	if sourceRepo == "" || projectPath == "" {
+		return nil // Nothing to validate
+	}
+
+	repoName := ExtractRepoName(sourceRepo)
+	projectDir := filepath.Base(projectPath)
+
+	// Normalize for comparison (case-insensitive)
+	repoName = strings.ToLower(repoName)
+	projectDir = strings.ToLower(projectDir)
+
+	if repoName != projectDir {
+		return fmt.Errorf(
+			"repo/project mismatch: issue from '%s' but executing in '%s' (expected project directory '%s')",
+			sourceRepo, projectPath, repoName,
+		)
+	}
+
+	return nil
 }

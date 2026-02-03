@@ -1965,3 +1965,131 @@ func TestNewRunnerWithConfig_SkipSelfReview(t *testing.T) {
 		t.Error("Expected SkipSelfReview to be true in runner config")
 	}
 }
+
+// Test ExtractRepoName function (GH-386)
+func TestExtractRepoName(t *testing.T) {
+	tests := []struct {
+		repo     string
+		expected string
+	}{
+		{"alekspetrov/pilot", "pilot"},
+		{"org/my-repo", "my-repo"},
+		{"company/complex.repo.name", "complex.repo.name"},
+		{"pilot", "pilot"}, // Already just repo name
+		{"", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.repo, func(t *testing.T) {
+			result := ExtractRepoName(tt.repo)
+			if result != tt.expected {
+				t.Errorf("ExtractRepoName(%q) = %q, want %q", tt.repo, result, tt.expected)
+			}
+		})
+	}
+}
+
+// Test ValidateRepoProjectMatch function (GH-386)
+func TestValidateRepoProjectMatch(t *testing.T) {
+	tests := []struct {
+		name        string
+		sourceRepo  string
+		projectPath string
+		wantErr     bool
+	}{
+		{
+			name:        "matching repo and project",
+			sourceRepo:  "alekspetrov/pilot",
+			projectPath: "/Users/test/Projects/pilot",
+			wantErr:     false,
+		},
+		{
+			name:        "matching with different case",
+			sourceRepo:  "alekspetrov/Pilot",
+			projectPath: "/Users/test/Projects/pilot",
+			wantErr:     false,
+		},
+		{
+			name:        "mismatched repo and project",
+			sourceRepo:  "alekspetrov/pilot",
+			projectPath: "/Users/test/Projects/bostonteamgroup",
+			wantErr:     true,
+		},
+		{
+			name:        "empty source repo",
+			sourceRepo:  "",
+			projectPath: "/Users/test/Projects/pilot",
+			wantErr:     false, // No validation needed
+		},
+		{
+			name:        "empty project path",
+			sourceRepo:  "alekspetrov/pilot",
+			projectPath: "",
+			wantErr:     false, // No validation needed
+		},
+		{
+			name:        "both empty",
+			sourceRepo:  "",
+			projectPath: "",
+			wantErr:     false,
+		},
+		{
+			name:        "similar but not matching",
+			sourceRepo:  "org/pilot-dev",
+			projectPath: "/Projects/pilot",
+			wantErr:     true,
+		},
+		{
+			name:        "repo name with special chars",
+			sourceRepo:  "org/my-awesome-project",
+			projectPath: "/home/user/my-awesome-project",
+			wantErr:     false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateRepoProjectMatch(tt.sourceRepo, tt.projectPath)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ValidateRepoProjectMatch(%q, %q) error = %v, wantErr %v",
+					tt.sourceRepo, tt.projectPath, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+// Test that Task struct has SourceRepo field (GH-386)
+func TestTaskStructSourceRepo(t *testing.T) {
+	task := &Task{
+		ID:          "GH-386",
+		Title:       "Cross-project defense",
+		Description: "Prevent cross-project execution",
+		ProjectPath: "/Users/test/Projects/pilot",
+		Branch:      "pilot/GH-386",
+		CreatePR:    true,
+		SourceRepo:  "alekspetrov/pilot",
+	}
+
+	if task.SourceRepo != "alekspetrov/pilot" {
+		t.Errorf("SourceRepo = %q, want alekspetrov/pilot", task.SourceRepo)
+	}
+}
+
+// Test mismatch error message format (GH-386)
+func TestValidateRepoProjectMatchErrorMessage(t *testing.T) {
+	err := ValidateRepoProjectMatch("alekspetrov/pilot", "/Projects/wrong-project")
+	if err == nil {
+		t.Fatal("Expected error for mismatched repo/project")
+	}
+
+	errMsg := err.Error()
+	if !strings.Contains(errMsg, "alekspetrov/pilot") {
+		t.Error("Error message should contain source repo")
+	}
+	if !strings.Contains(errMsg, "wrong-project") {
+		t.Error("Error message should contain project path")
+	}
+	if !strings.Contains(errMsg, "pilot") {
+		t.Error("Error message should contain expected project name")
+	}
+}

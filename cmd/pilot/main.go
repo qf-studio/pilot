@@ -798,6 +798,17 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 		}
 
 		if token != "" && cfg.Adapters.GitHub.Repo != "" {
+			// GH-386: Validate repo/project match at startup to prevent cross-project execution
+			if err := executor.ValidateRepoProjectMatch(cfg.Adapters.GitHub.Repo, projectPath); err != nil {
+				logging.WithComponent("github").Warn("repo/project mismatch detected - issues may execute against wrong project",
+					slog.String("repo", cfg.Adapters.GitHub.Repo),
+					slog.String("project_path", projectPath),
+					slog.String("expected_project", executor.ExtractRepoName(cfg.Adapters.GitHub.Repo)),
+				)
+				// In strict mode, we could return an error here:
+				// return fmt.Errorf("repo/project mismatch: %w", err)
+			}
+
 			client := github.NewClient(token)
 			label := cfg.Adapters.GitHub.Polling.Label
 			if label == "" {
@@ -1201,9 +1212,22 @@ func logGitHubAPIError(operation string, owner, repo string, issueNum int, err e
 
 // handleGitHubIssue processes a GitHub issue picked up by the poller
 func handleGitHubIssue(ctx context.Context, cfg *config.Config, client *github.Client, issue *github.Issue, projectPath string, dispatcher *executor.Dispatcher, runner *executor.Runner) error {
+	sourceRepo := cfg.Adapters.GitHub.Repo
+
+	// GH-386: Pre-execution validation - fail fast if repo doesn't match project
+	if err := executor.ValidateRepoProjectMatch(sourceRepo, projectPath); err != nil {
+		logging.WithComponent("github").Error("cross-project execution blocked",
+			slog.Any("error", err),
+			slog.Int("issue_number", issue.Number),
+			slog.String("repo", sourceRepo),
+			slog.String("project_path", projectPath),
+		)
+		return fmt.Errorf("cross-project execution blocked: %w", err)
+	}
+
 	fmt.Printf("\n📥 GitHub Issue #%d: %s\n", issue.Number, issue.Title)
 
-	parts := strings.Split(cfg.Adapters.GitHub.Repo, "/")
+	parts := strings.Split(sourceRepo, "/")
 	if len(parts) == 2 {
 		if err := client.AddLabels(ctx, parts[0], parts[1], issue.Number, []string{github.LabelInProgress}); err != nil {
 			logGitHubAPIError("AddLabels", parts[0], parts[1], issue.Number, err)
@@ -1215,6 +1239,7 @@ func handleGitHubIssue(ctx context.Context, cfg *config.Config, client *github.C
 	branchName := fmt.Sprintf("pilot/%s", taskID)
 
 	// Always create branches and PRs - required for autopilot workflow
+	// GH-386: Include SourceRepo for cross-project validation in executor
 	task := &executor.Task{
 		ID:          taskID,
 		Title:       issue.Title,
@@ -1222,6 +1247,7 @@ func handleGitHubIssue(ctx context.Context, cfg *config.Config, client *github.C
 		ProjectPath: projectPath,
 		Branch:      branchName,
 		CreatePR:    true,
+		SourceRepo:  sourceRepo,
 	}
 
 	var result *executor.ExecutionResult
@@ -1382,6 +1408,22 @@ func handleGitHubIssueWithMonitor(ctx context.Context, cfg *config.Config, clien
 // Used in sequential mode to enable PR merge waiting
 func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client *github.Client, issue *github.Issue, projectPath string, dispatcher *executor.Dispatcher, runner *executor.Runner, monitor *executor.Monitor, program *tea.Program, alertsEngine *alerts.Engine) (*github.IssueResult, error) {
 	taskID := fmt.Sprintf("GH-%d", issue.Number)
+	sourceRepo := cfg.Adapters.GitHub.Repo
+
+	// GH-386: Pre-execution validation - fail fast if repo doesn't match project
+	if err := executor.ValidateRepoProjectMatch(sourceRepo, projectPath); err != nil {
+		logging.WithComponent("github").Error("cross-project execution blocked",
+			slog.Any("error", err),
+			slog.Int("issue_number", issue.Number),
+			slog.String("repo", sourceRepo),
+			slog.String("project_path", projectPath),
+		)
+		wrappedErr := fmt.Errorf("cross-project execution blocked: %w", err)
+		return &github.IssueResult{
+			Success: false,
+			Error:   wrappedErr,
+		}, wrappedErr
+	}
 
 	// Register task with monitor if in dashboard mode
 	if monitor != nil {
@@ -1405,7 +1447,7 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 
 	fmt.Printf("\n📥 GitHub Issue #%d: %s\n", issue.Number, issue.Title)
 
-	parts := strings.Split(cfg.Adapters.GitHub.Repo, "/")
+	parts := strings.Split(sourceRepo, "/")
 	if len(parts) == 2 {
 		if err := client.AddLabels(ctx, parts[0], parts[1], issue.Number, []string{github.LabelInProgress}); err != nil {
 			logGitHubAPIError("AddLabels", parts[0], parts[1], issue.Number, err)
@@ -1416,6 +1458,7 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 	branchName := fmt.Sprintf("pilot/%s", taskID)
 
 	// Always create branches and PRs - required for autopilot workflow
+	// GH-386: Include SourceRepo for cross-project validation in executor
 	task := &executor.Task{
 		ID:          taskID,
 		Title:       issue.Title,
@@ -1423,6 +1466,7 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 		ProjectPath: projectPath,
 		Branch:      branchName,
 		CreatePR:    true,
+		SourceRepo:  sourceRepo,
 	}
 
 	var result *executor.ExecutionResult
