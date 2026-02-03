@@ -1381,6 +1381,16 @@ func (r *Runner) BuildPrompt(task *Task) string {
 
 		// Navigator will handle: workflow check, complexity detection, autonomous completion
 		sb.WriteString("Run until done. Use Navigator's autonomous completion protocol.\n\n")
+
+		// Pre-commit verification checklist (GH-359)
+		sb.WriteString("## Pre-Commit Verification\n\n")
+		sb.WriteString("BEFORE committing, verify:\n")
+		sb.WriteString("1. **Build passes**: Run `go build ./...` (or equivalent for the project)\n")
+		sb.WriteString("2. **Config wiring**: Any new config struct fields must flow from yaml → main.go → handler\n")
+		sb.WriteString("3. **Methods exist**: Any method calls you added must have implementations\n")
+		sb.WriteString("4. **Tests pass**: Run `go test ./...` for changed packages\n\n")
+		sb.WriteString("If any verification fails, fix it before committing.\n\n")
+
 		sb.WriteString("CRITICAL: You MUST commit all changes before completing. A task is NOT complete until changes are committed. Use format: `type(scope): description (TASK-XX)`\n")
 	} else if hasNavigator && complexity.ShouldSkipNavigator() {
 		// Trivial task in Navigator project - minimal prompt without Navigator overhead (GH-216)
@@ -1400,7 +1410,8 @@ func (r *Runner) BuildPrompt(task *Task) string {
 		}
 
 		sb.WriteString("2. Make the minimal change required\n")
-		sb.WriteString("3. Commit with format: `type(scope): description`\n\n")
+		sb.WriteString("3. Verify build passes before committing\n")
+		sb.WriteString("4. Commit with format: `type(scope): description`\n\n")
 		sb.WriteString("Work autonomously. Do not ask for confirmation.\n")
 	} else {
 		// Non-Navigator project: explicit instructions with strict constraints
@@ -1424,7 +1435,8 @@ func (r *Runner) BuildPrompt(task *Task) string {
 		}
 
 		sb.WriteString("2. Implement EXACTLY what is requested - nothing more, nothing less\n")
-		sb.WriteString("3. Commit with format: `type(scope): description`\n")
+		sb.WriteString("3. Before committing, verify: build passes, tests pass, no undefined methods\n")
+		sb.WriteString("4. Commit with format: `type(scope): description`\n")
 		sb.WriteString("\nWork autonomously. Do not ask for confirmation.\n")
 	}
 
