@@ -1,0 +1,39 @@
+import { Callout } from 'nextra/components'
+
+# Why Navigator?
+
+<Callout type="warning" emoji="⚠️">
+  Pilot without Navigator is just another Claude Code wrapper with zero value.
+</Callout>
+
+## The Problem
+
+Raw Claude Code sessions have critical limitations:
+
+| Issue | Impact |
+|-------|--------|
+| Loads entire codebase | ~150k tokens consumed immediately |
+| Short sessions | Exhausted after 5-7 exchanges |
+| No memory | Repeated explanations every session |
+| Context waste | 92% of loaded context unused |
+
+## The Navigator Solution
+
+Navigator provides **context engineering** - loading only what's needed, when it's needed.
+
+| Metric | Without Navigator | With Navigator |
+|--------|-------------------|----------------|
+| Token usage | ~150,000 | ~12,000 |
+| Session length | 5-7 exchanges | 20+ exchanges |
+| Context efficiency | 8% | **92%** |
+| Knowledge persistence | ❌ None | ✅ Graph-based |
+
+## How Pilot Uses Navigator
+
+When Pilot detects a `.agent/` directory in your project, it automatically:
+
+1. Starts a Navigator session
+2. Loads only the index document (~2k tokens)
+3. Lazy-loads additional docs as needed
+4. Captures decisions in the knowledge graph
+5. Preserves context across tasks

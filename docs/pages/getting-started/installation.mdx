@@ -1,0 +1,30 @@
+# Installation
+
+## Quick Install (Recommended)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/alekspetrov/pilot/main/install.sh | bash
+```
+
+## Homebrew (macOS)
+
+```bash
+brew tap alekspetrov/pilot
+brew install pilot
+```
+
+## From Source
+
+```bash
+git clone https://github.com/alekspetrov/pilot.git
+cd pilot
+make build
+./bin/pilot --version
+```
+
+## Verify Installation
+
+```bash
+pilot --version
+pilot doctor  # Check dependencies
+```

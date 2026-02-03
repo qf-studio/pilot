@@ -1,0 +1,140 @@
+# CLI Commands
+
+## pilot start
+
+Start Pilot in polling mode.
+
+```bash
+pilot start [flags]
+```
+
+### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--telegram` | Enable Telegram bot |
+| `--github` | Enable GitHub issue polling |
+| `--autopilot=ENV` | Enable autopilot: `dev`, `stage`, `prod` |
+| `--dashboard` | Show TUI dashboard |
+
+### Examples
+
+```bash
+# Basic: Telegram + GitHub
+pilot start --telegram --github
+
+# With autopilot (auto-merge after CI)
+pilot start --telegram --github --autopilot=stage
+
+# With dashboard
+pilot start --telegram --github --dashboard
+```
+
+## pilot task
+
+Execute a single task.
+
+```bash
+pilot task "description" [flags]
+```
+
+### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--create-pr` | Create GitHub PR after execution |
+| `--dry-run` | Show prompt without executing |
+| `--verbose` | Stream raw Claude output |
+
+### Examples
+
+```bash
+# Quick local execution
+pilot task "Fix the typo in README.md"
+
+# Create PR after completion
+pilot task "Add rate limiting" --create-pr
+
+# Preview what will happen
+pilot task "Refactor auth module" --dry-run
+```
+
+## pilot upgrade
+
+Self-update to latest version.
+
+```bash
+pilot upgrade
+```
+
+### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--check` | Check for updates without installing |
+| `--version=X.Y.Z` | Install specific version |
+
+## pilot init
+
+Initialize Pilot configuration.
+
+```bash
+pilot init
+```
+
+Creates `~/.pilot/config.yaml` with interactive prompts.
+
+## pilot doctor
+
+Check Pilot configuration and dependencies.
+
+```bash
+pilot doctor [flags]
+```
+
+### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--navigator` | Also check Navigator setup |
+| `--fix` | Attempt to fix issues |
+
+## pilot logs
+
+View Pilot logs.
+
+```bash
+pilot logs [flags]
+```
+
+### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--follow` | Stream logs in real-time |
+| `--tail=N` | Show last N lines |
+| `--autopilot` | Filter to autopilot events |
+
+## pilot rollback
+
+Revert changes made by Pilot.
+
+```bash
+pilot rollback [flags]
+```
+
+### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--last` | Revert the most recent merge |
+| `--pr=N` | Revert specific PR |
+
+## pilot navigator
+
+Navigator-related commands.
+
+```bash
+pilot navigator init    # Initialize .agent/ directory
+pilot navigator status  # Show Navigator status
+```

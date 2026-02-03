@@ -1,0 +1,87 @@
+# GitHub Integration
+
+Pilot monitors GitHub issues and automatically implements tasks.
+
+## Setup
+
+### 1. Create a Personal Access Token
+
+1. Go to GitHub Settings → Developer Settings → Personal Access Tokens
+2. Create a token with these scopes:
+   - `repo` (full access)
+   - `workflow` (if using GitHub Actions)
+
+### 2. Configure Pilot
+
+```yaml
+# ~/.pilot/config.yaml
+github:
+  token: ${GITHUB_TOKEN}
+  poll_interval: 30s
+  labels:
+    - pilot
+```
+
+### 3. Start Pilot
+
+```bash
+pilot start --github
+```
+
+## Creating Tasks
+
+Label any issue with `pilot` to queue it for execution:
+
+```bash
+gh issue create \
+  --title "Add user authentication" \
+  --label pilot \
+  --body "Implement JWT-based authentication with refresh tokens"
+```
+
+## Issue Format
+
+For best results, structure issues like this:
+
+```markdown
+## Description
+[What needs to be done]
+
+## Requirements
+- [ ] Requirement 1
+- [ ] Requirement 2
+
+## Context
+[Any relevant context or links]
+
+## Acceptance Criteria
+- [ ] Tests pass
+- [ ] Documentation updated
+```
+
+## Pull Request Flow
+
+When Pilot completes a task:
+
+1. Creates a new branch: `pilot/GH-{issue-number}`
+2. Commits changes with conventional commit messages
+3. Creates a PR linked to the issue
+4. Adds a summary comment on the issue
+
+## Labels
+
+| Label | Behavior |
+|-------|----------|
+| `pilot` | Queue for execution |
+| `pilot:urgent` | Process before other tasks |
+| `pilot:hold` | Skip this issue |
+
+## Webhooks (Advanced)
+
+For real-time processing, configure a webhook:
+
+```bash
+pilot webhook setup --github
+```
+
+This eliminates polling delay for instant task pickup.

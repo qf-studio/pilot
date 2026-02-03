@@ -1,0 +1,98 @@
+# Navigator Best Practices
+
+Maximize efficiency with these proven patterns.
+
+## Document Structure
+
+### Keep Index Lightweight
+
+```markdown
+# Project Index (~500 words max)
+
+## Quick Links
+[Link to detailed docs, don't inline content]
+
+## Key Decisions
+[Brief summary, details in linked docs]
+```
+
+### Use Lazy Loading
+
+```markdown
+<!-- Good: Reference, don't inline -->
+See [Authentication Flow](system/auth.md) for details.
+
+<!-- Bad: Inline everything -->
+## Authentication Flow
+[500 lines of documentation...]
+```
+
+## Task Documentation
+
+### Before Starting
+
+```bash
+/nav-task "Add user authentication"
+```
+
+This creates a task plan in `.agent/tasks/` with:
+- Requirements analysis
+- Implementation steps
+- Affected files
+- Test plan
+
+### After Completion
+
+Archive the task with learnings:
+
+```bash
+/nav-task archive
+```
+
+## Knowledge Graph
+
+### Capture Decisions
+
+When making non-obvious choices:
+
+```bash
+/nav-graph add decision "Use JWT over sessions for stateless scaling"
+```
+
+### Document Pitfalls
+
+When encountering issues:
+
+```bash
+/nav-graph add pitfall "GitHub API rate limits during CI - use conditional requests"
+```
+
+## Session Management
+
+### Use Markers
+
+Before risky changes:
+
+```bash
+/nav-marker "Before auth refactor"
+```
+
+### Compact Regularly
+
+After completing tasks:
+
+```bash
+/nav-compact
+```
+
+This clears context while preserving knowledge in the graph.
+
+## Anti-Patterns
+
+| Don't | Do Instead |
+|-------|------------|
+| Load all docs at session start | Use lazy loading |
+| Inline large code blocks in docs | Reference file paths |
+| Skip task documentation | Always create task plans |
+| Ignore knowledge graph | Capture decisions and pitfalls |
+| Let context grow unbounded | Compact after each task |

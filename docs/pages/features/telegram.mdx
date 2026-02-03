@@ -1,0 +1,77 @@
+# Telegram Bot
+
+Control Pilot and receive notifications via Telegram.
+
+## Setup
+
+### 1. Create a Bot
+
+1. Message [@BotFather](https://t.me/botfather) on Telegram
+2. Send `/newbot` and follow the prompts
+3. Copy the bot token
+
+### 2. Configure Pilot
+
+```yaml
+# ~/.pilot/config.yaml
+telegram:
+  bot_token: ${TELEGRAM_BOT_TOKEN}
+  allowed_users:
+    - 123456789  # Your Telegram user ID
+```
+
+### 3. Get Your User ID
+
+Message [@userinfobot](https://t.me/userinfobot) to get your Telegram user ID.
+
+### 4. Start Pilot
+
+```bash
+pilot start --telegram --github
+```
+
+## Commands
+
+| Command | Description |
+|---------|-------------|
+| `/status` | Show Pilot status and queue |
+| `/task "desc"` | Create a new task |
+| `/pause` | Pause task processing |
+| `/resume` | Resume task processing |
+| `/logs` | Show recent logs |
+
+## Notifications
+
+Pilot sends Telegram messages for:
+
+- **Task Started**: When execution begins
+- **PR Created**: With link to review
+- **Task Completed**: Summary of changes
+- **Errors**: If execution fails
+
+## Example Flow
+
+```
+You: /task "Add rate limiting to API"
+
+Pilot: ✅ Task created: GH-123
+       Starting execution...
+
+Pilot: 🔄 Executing task GH-123
+       - Analyzing requirements
+       - Planning implementation
+
+Pilot: 🎉 PR created: #456
+       https://github.com/you/repo/pull/456
+
+       Changes:
+       - Added rate limiter middleware
+       - Updated API routes
+       - Added tests
+```
+
+## Security
+
+- Only `allowed_users` can interact with the bot
+- Bot token should be kept secret
+- Use environment variables for tokens

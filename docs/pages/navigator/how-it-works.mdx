@@ -1,0 +1,64 @@
+# How Navigator Works
+
+Navigator is a context engineering system that dramatically improves Claude Code's efficiency.
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────┐
+│                    Pilot Process                     │
+├─────────────────────────────────────────────────────┤
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐ │
+│  │  Navigator  │──│   Claude    │──│   Executor  │ │
+│  │   Engine    │  │    Code     │  │             │ │
+│  └─────────────┘  └─────────────┘  └─────────────┘ │
+│         │                                           │
+│         ▼                                           │
+│  ┌─────────────────────────────────────────────┐   │
+│  │              .agent/ Directory               │   │
+│  │  ┌─────────┐ ┌─────────┐ ┌─────────────┐   │   │
+│  │  │  Index  │ │  Tasks  │ │  Knowledge  │   │   │
+│  │  │   Doc   │ │   Docs  │ │    Graph    │   │   │
+│  │  └─────────┘ └─────────┘ └─────────────┘   │   │
+│  └─────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────┘
+```
+
+## Lazy Loading
+
+Instead of loading everything at once:
+
+1. **Start**: Load only `DEVELOPMENT-README.md` (~2k tokens)
+2. **On Demand**: Load specific docs when referenced
+3. **Cache**: Keep frequently accessed docs in memory
+4. **Prune**: Remove unused docs after task completion
+
+## Knowledge Graph
+
+Navigator maintains a knowledge graph that captures:
+
+- **Decisions**: Why certain approaches were chosen
+- **Patterns**: Reusable solutions discovered during development
+- **Pitfalls**: Problems to avoid in future tasks
+- **Dependencies**: Relationships between components
+
+## Session Markers
+
+Navigator uses markers to:
+
+1. **Save Progress**: Create checkpoints before risky changes
+2. **Resume Work**: Continue from where you left off
+3. **Share Context**: Transfer knowledge between sessions
+
+## Integration with Pilot
+
+When Pilot picks up a task:
+
+```
+1. Check for .agent/ directory
+2. If found → Start Navigator session
+3. Load index + task-specific docs
+4. Execute with full context awareness
+5. Update knowledge graph with learnings
+6. Create PR with context-aware description
+```

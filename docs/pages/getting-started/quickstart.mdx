@@ -1,0 +1,52 @@
+# Quick Start
+
+Get Pilot running in under 5 minutes.
+
+## Prerequisites
+
+- GitHub account with a repository
+- Telegram account (optional, for notifications)
+- Claude API key
+
+## Step 1: Configure
+
+```bash
+pilot init
+```
+
+This creates `~/.pilot/config.yaml` with your settings.
+
+## Step 2: Set Environment Variables
+
+```bash
+export ANTHROPIC_API_KEY="your-claude-api-key"
+export GITHUB_TOKEN="your-github-token"
+export TELEGRAM_BOT_TOKEN="your-telegram-bot-token"  # Optional
+```
+
+## Step 3: Start Pilot
+
+```bash
+# Basic mode - GitHub polling only
+pilot start --github
+
+# With Telegram notifications
+pilot start --github --telegram
+
+# With TUI dashboard
+pilot start --github --telegram --dashboard
+```
+
+## Step 4: Create Your First Task
+
+Label any GitHub issue with `pilot` and watch it get implemented automatically.
+
+```bash
+gh issue create --title "Add hello world endpoint" --label pilot --body "Create a /hello endpoint that returns 'Hello, World!'"
+```
+
+## Next Steps
+
+- [Configure Pilot](/getting-started/configuration)
+- [Learn about Navigator integration](/navigator)
+- [Explore CLI commands](/cli/commands)

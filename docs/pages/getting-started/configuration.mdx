@@ -1,0 +1,64 @@
+# Configuration
+
+Pilot uses a YAML configuration file at `~/.pilot/config.yaml`.
+
+## Configuration File
+
+```yaml
+# ~/.pilot/config.yaml
+
+# GitHub settings
+github:
+  token: ${GITHUB_TOKEN}
+  poll_interval: 30s
+  labels:
+    - pilot
+
+# Telegram settings (optional)
+telegram:
+  bot_token: ${TELEGRAM_BOT_TOKEN}
+  allowed_users:
+    - your_telegram_id
+
+# Claude settings
+claude:
+  api_key: ${ANTHROPIC_API_KEY}
+  model: claude-sonnet-4-20250514
+
+# Autopilot settings
+autopilot:
+  enabled: false
+  environment: dev  # dev, stage, prod
+  auto_merge: false
+  require_ci: true
+
+# Navigator settings
+navigator:
+  enabled: true
+  lazy_load: true
+  knowledge_graph: true
+```
+
+## Environment Variables
+
+| Variable | Description | Required |
+|----------|-------------|----------|
+| `ANTHROPIC_API_KEY` | Claude API key | Yes |
+| `GITHUB_TOKEN` | GitHub personal access token | Yes |
+| `TELEGRAM_BOT_TOKEN` | Telegram bot token | No |
+
+## Initialize Configuration
+
+```bash
+pilot init
+```
+
+This creates a default configuration file with prompts for required values.
+
+## Validate Configuration
+
+```bash
+pilot doctor
+```
+
+This checks all settings and verifies connectivity to external services.

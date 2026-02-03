@@ -1,0 +1,27 @@
+# Pilot
+
+**AI that ships your tickets** - powered by Navigator.
+
+## What is Pilot?
+
+Pilot is an autonomous AI development pipeline that:
+- Receives tickets from GitHub Issues (Linear/Jira coming soon)
+- Plans and executes implementation using Claude Code + Navigator
+- Creates PRs with full context
+- Learns patterns across projects
+
+## Quick Start
+
+```bash
+# Install
+curl -fsSL https://raw.githubusercontent.com/alekspetrov/pilot/main/install.sh | bash
+
+# Start with Telegram + GitHub
+pilot start --telegram --github
+```
+
+## Why Navigator?
+
+Pilot's secret weapon is **Navigator integration**. Without Navigator, Pilot would be just another Claude Code wrapper.
+
+[Learn more about Navigator →](/navigator)

@@ -1,0 +1,70 @@
+# Navigator Setup
+
+Set up Navigator in your project to enable context-aware execution.
+
+## Initialize Navigator
+
+```bash
+# In your project root
+pilot navigator init
+```
+
+This creates the `.agent/` directory structure:
+
+```
+.agent/
+├── DEVELOPMENT-README.md    # Index document (loaded first)
+├── tasks/                   # Task implementation plans
+├── system/                  # Architecture documentation
+├── memories/                # Knowledge graph entries
+└── sops/                    # Standard Operating Procedures
+```
+
+## Configure CLAUDE.md
+
+Add Navigator instructions to your project's `CLAUDE.md`:
+
+```markdown
+# Project Name
+
+## Navigator Integration
+
+This project uses Navigator for context management.
+
+### Quick Commands
+- `/nav-start` - Start session
+- `/nav-task "description"` - Plan new task
+- `/nav-compact` - Clear context when done
+
+### Documentation
+See `.agent/DEVELOPMENT-README.md` for project index.
+```
+
+## Write the Index Document
+
+Create `.agent/DEVELOPMENT-README.md`:
+
+```markdown
+# Project Index
+
+## Quick Links
+- [Architecture](system/architecture.md)
+- [API Reference](system/api.md)
+
+## Active Tasks
+- [Feature X](tasks/feature-x.md)
+
+## Patterns
+- [Error Handling](system/patterns/error-handling.md)
+```
+
+## Verify Setup
+
+```bash
+pilot doctor --navigator
+```
+
+This verifies:
+- `.agent/` directory exists
+- Index document is valid
+- CLAUDE.md references Navigator

@@ -1,0 +1,93 @@
+import { Callout } from 'nextra/components'
+
+# Autopilot Mode
+
+Fully autonomous operation with automatic PR merging.
+
+<Callout type="error" emoji="🚨">
+  Autopilot can merge code without human review. Use with caution.
+</Callout>
+
+## Environments
+
+| Environment | Auto-merge | CI Required | Use Case |
+|-------------|------------|-------------|----------|
+| `dev` | After CI passes | Yes | Personal projects |
+| `stage` | After CI + delay | Yes | Team staging |
+| `prod` | Never | Yes | Production (review required) |
+
+## Configuration
+
+```yaml
+# ~/.pilot/config.yaml
+autopilot:
+  enabled: true
+  environment: stage
+  auto_merge: true
+  require_ci: true
+  merge_delay: 5m  # Wait before merging (stage only)
+  protected_branches:
+    - main
+    - production
+```
+
+## Usage
+
+```bash
+# Development - fast iteration
+pilot start --github --autopilot=dev
+
+# Staging - with safety delay
+pilot start --github --autopilot=stage
+
+# Production - no auto-merge
+pilot start --github --autopilot=prod
+```
+
+## Safety Features
+
+### CI Requirement
+
+Autopilot always waits for CI to pass:
+
+```
+Task → PR → CI Running → CI Passes → Merge
+                      ↘ CI Fails → Notify, No Merge
+```
+
+### Merge Delay (Stage)
+
+In `stage` mode, there's a configurable delay:
+
+```
+CI Passes → 5min delay → Check for comments → Merge
+                       ↘ Comments found → Notify, No Merge
+```
+
+### Protected Branches
+
+Direct pushes to protected branches are blocked. Autopilot always creates PRs.
+
+## Monitoring
+
+Track autopilot activity:
+
+```bash
+# View recent autopilot actions
+pilot logs --autopilot
+
+# Dashboard with real-time updates
+pilot start --github --autopilot=dev --dashboard
+```
+
+## Rollback
+
+If autopilot merges something problematic:
+
+```bash
+# Revert the last autopilot merge
+pilot rollback --last
+
+# Revert a specific PR
+pilot rollback --pr 123
+```
