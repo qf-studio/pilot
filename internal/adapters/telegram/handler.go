@@ -39,24 +39,26 @@ type RunningTask struct {
 
 // Handler processes incoming Telegram messages and executes tasks
 type Handler struct {
-	client           *Client
-	runner           *executor.Runner
-	projects         ProjectSource           // Project source for multi-project support
-	projectPath      string                  // Default/fallback project path
-	activeProject    map[string]string       // chatID -> projectPath (active project per chat)
-	allowedIDs       map[int64]bool          // Allowed user/chat IDs for security
-	offset           int64                   // Last processed update ID
-	pendingTasks     map[string]*PendingTask // ChatID -> pending task
-	runningTasks     map[string]*RunningTask // ChatID -> running task
-	mu               sync.Mutex
-	stopCh           chan struct{}
-	wg               sync.WaitGroup
-	transcriber      *transcription.Service // Voice transcription service (optional)
-	transcriptionErr error                  // Error from transcription init (for guidance)
-	store            *memory.Store          // Memory store for history/queue/budget (optional)
-	cmdHandler       *CommandHandler        // Command handler for /commands
-	plainTextMode    bool                   // Use plain text instead of Markdown
-	rateLimiter      *RateLimiter           // Rate limiter for DoS protection
+	client            *Client
+	runner            *executor.Runner
+	projects          ProjectSource           // Project source for multi-project support
+	projectPath       string                  // Default/fallback project path
+	activeProject     map[string]string       // chatID -> projectPath (active project per chat)
+	allowedIDs        map[int64]bool          // Allowed user/chat IDs for security
+	offset            int64                   // Last processed update ID
+	pendingTasks      map[string]*PendingTask // ChatID -> pending task
+	runningTasks      map[string]*RunningTask // ChatID -> running task
+	mu                sync.Mutex
+	stopCh            chan struct{}
+	wg                sync.WaitGroup
+	transcriber       *transcription.Service // Voice transcription service (optional)
+	transcriptionErr  error                  // Error from transcription init (for guidance)
+	store             *memory.Store          // Memory store for history/queue/budget (optional)
+	cmdHandler        *CommandHandler        // Command handler for /commands
+	plainTextMode     bool                   // Use plain text instead of Markdown
+	rateLimiter       *RateLimiter           // Rate limiter for DoS protection
+	llmClassifier     *AnthropicClient       // LLM intent classifier (optional)
+	conversationStore *ConversationStore     // Conversation history per chat (optional)
 }
 
 // HandlerConfig holds configuration for the Telegram handler
@@ -69,6 +71,7 @@ type HandlerConfig struct {
 	Store         *memory.Store         // Memory store for history/queue/budget (optional)
 	PlainTextMode bool                  // Use plain text instead of Markdown (default: true)
 	RateLimit     *RateLimitConfig      // Rate limiting config (optional)
+	LLMClassifier *LLMClassifierConfig  // LLM intent classification config (optional)
 }
 
 // NewHandler creates a new Telegram message handler
@@ -122,6 +125,33 @@ func NewHandler(config *HandlerConfig, runner *executor.Runner) *Handler {
 		} else {
 			h.transcriber = svc
 			logging.WithComponent("telegram").Debug("Voice transcription enabled", slog.String("backend", svc.BackendName()))
+		}
+	}
+
+	// Initialize LLM classifier if configured
+	if config.LLMClassifier != nil && config.LLMClassifier.Enabled {
+		apiKey := config.LLMClassifier.APIKey
+		if apiKey == "" {
+			apiKey = os.Getenv("ANTHROPIC_API_KEY")
+		}
+		if apiKey != "" {
+			h.llmClassifier = NewAnthropicClient(apiKey)
+
+			// Set up conversation store with defaults
+			historySize := 10
+			if config.LLMClassifier.HistorySize > 0 {
+				historySize = config.LLMClassifier.HistorySize
+			}
+			historyTTL := 30 * time.Minute
+			if config.LLMClassifier.HistoryTTL > 0 {
+				historyTTL = config.LLMClassifier.HistoryTTL
+			}
+			h.conversationStore = NewConversationStore(historySize, historyTTL)
+
+			logging.WithComponent("telegram").Info("LLM intent classifier enabled",
+				slog.String("model", "claude-3-5-haiku"))
+		} else {
+			logging.WithComponent("telegram").Warn("LLM classifier enabled but no API key found")
 		}
 	}
 
@@ -346,10 +376,15 @@ func (h *Handler) processUpdate(ctx context.Context, update *Update) {
 		return
 	}
 
-	// Detect intent
-	intent := DetectIntent(text)
+	// Detect intent (uses LLM if available, regex fallback)
+	intent := h.detectIntentWithLLM(ctx, chatID, text)
 	logging.WithComponent("telegram").Debug("Message received",
 		slog.String("chat_id", chatID), slog.String("intent", string(intent)))
+
+	// Record user message in conversation history
+	if h.conversationStore != nil {
+		h.conversationStore.Add(chatID, "user", text)
+	}
 
 	switch intent {
 	case IntentCommand:
@@ -370,6 +405,43 @@ func (h *Handler) processUpdate(ctx context.Context, update *Update) {
 		// Fallback to chat for conversational messages
 		h.handleChat(ctx, chatID, text)
 	}
+}
+
+// detectIntentWithLLM uses LLM classification with regex fallback
+func (h *Handler) detectIntentWithLLM(ctx context.Context, chatID, text string) Intent {
+	// If LLM classifier not available, use regex
+	if h.llmClassifier == nil {
+		return DetectIntent(text)
+	}
+
+	// Fast path: commands always use regex
+	if strings.HasPrefix(text, "/") {
+		return IntentCommand
+	}
+
+	// Try LLM classification with timeout
+	classifyCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+
+	// Get conversation history
+	var history []ConversationMessage
+	if h.conversationStore != nil {
+		history = h.conversationStore.Get(chatID)
+	}
+
+	intent, err := h.llmClassifier.Classify(classifyCtx, history, text)
+	if err != nil {
+		logging.WithComponent("telegram").Debug("LLM classification failed, using regex",
+			slog.Any("error", err))
+		return DetectIntent(text)
+	}
+
+	logging.WithComponent("telegram").Debug("LLM classified intent",
+		slog.String("chat_id", chatID),
+		slog.String("intent", string(intent)),
+		slog.String("text", truncateDescription(text, 50)))
+
+	return intent
 }
 
 // handleCallback processes callback queries from inline keyboards
@@ -729,6 +801,11 @@ User message: %s`, h.getActiveProjectPath(chatID), message),
 	}
 
 	_, _ = h.client.SendMessage(ctx, chatID, response, "")
+
+	// Record assistant response in conversation history
+	if h.conversationStore != nil {
+		h.conversationStore.Add(chatID, "assistant", truncateDescription(response, 500))
+	}
 }
 
 // handleTask handles task requests with confirmation
@@ -1089,9 +1166,14 @@ func (h *Handler) handleVoice(ctx context.Context, chatID string, msg *Message) 
 	// Process the transcribed text as if it was typed
 	logging.WithComponent("telegram").Debug("Processing transcribed text", slog.String("chat_id", chatID))
 
-	// Detect intent and handle
+	// Detect intent and handle (uses LLM if available)
 	text := strings.TrimSpace(result.Text)
-	intent := DetectIntent(text)
+	intent := h.detectIntentWithLLM(ctx, chatID, text)
+
+	// Record transcribed message in conversation history
+	if h.conversationStore != nil {
+		h.conversationStore.Add(chatID, "user", text)
+	}
 
 	switch intent {
 	case IntentCommand:
@@ -1100,10 +1182,16 @@ func (h *Handler) handleVoice(ctx context.Context, chatID string, msg *Message) 
 		h.handleGreeting(ctx, chatID, msg.From)
 	case IntentQuestion:
 		h.handleQuestion(ctx, chatID, text)
+	case IntentResearch:
+		h.handleResearch(ctx, chatID, text)
+	case IntentPlanning:
+		h.handlePlanning(ctx, chatID, text)
+	case IntentChat:
+		h.handleChat(ctx, chatID, text)
 	case IntentTask:
 		h.handleTask(ctx, chatID, text)
 	default:
-		h.handleTask(ctx, chatID, text)
+		h.handleChat(ctx, chatID, text) // Default to chat, not task
 	}
 }
 

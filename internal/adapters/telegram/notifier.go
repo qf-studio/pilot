@@ -3,6 +3,7 @@ package telegram
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/alekspetrov/pilot/internal/transcription"
 )
@@ -17,6 +18,16 @@ type Config struct {
 	PlainTextMode bool                  `yaml:"plain_text_mode"` // Use plain text instead of Markdown (default: true for messaging apps)
 	Transcription *transcription.Config `yaml:"transcription"`   // Voice message transcription config
 	RateLimit     *RateLimitConfig      `yaml:"rate_limit"`      // Rate limiting config (optional)
+	LLMClassifier *LLMClassifierConfig  `yaml:"llm_classifier"`  // LLM intent classification config (optional)
+}
+
+// LLMClassifierConfig configures LLM-based intent classification
+type LLMClassifierConfig struct {
+	Enabled        bool          `yaml:"enabled"`         // Enable LLM classification (default: false)
+	APIKey         string        `yaml:"api_key"`         // Anthropic API key (falls back to ANTHROPIC_API_KEY env)
+	TimeoutSeconds int           `yaml:"timeout_seconds"` // Timeout for classification (default: 2)
+	HistorySize    int           `yaml:"history_size"`    // Messages to keep per chat (default: 10)
+	HistoryTTL     time.Duration `yaml:"history_ttl"`     // TTL for conversation history (default: 30m)
 }
 
 // DefaultConfig returns default Telegram configuration
