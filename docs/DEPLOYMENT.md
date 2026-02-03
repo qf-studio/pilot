@@ -402,6 +402,6 @@ Pilot typically uses 50-200MB. If higher:
 
 ## Next Steps
 
-- [Configuration Guide](../README.md#configuration)
-- [CLI Reference](../README.md#cli-reference)
-- [Telegram Setup](./TELEGRAM.md)
+- [Configuration Guide](getting-started/config.md)
+- [CLI Reference](cli/commands.md)
+- [Telegram Setup](features/telegram.md)
