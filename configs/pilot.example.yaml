@@ -26,7 +26,7 @@ adapters:
     # LLM-based intent classification (uses Claude Haiku for accurate intent detection)
     llm_classifier:
       enabled: false                   # Enable for better intent detection vs regex
-      api_key: "${ANTHROPIC_API_KEY}"  # Falls back to env var if not set
+      # api_key: ""                    # Optional - uses ANTHROPIC_API_KEY env var if not set
       timeout_seconds: 2               # Max time for classification
       history_size: 10                 # Messages to keep per chat for context
       history_ttl: 30m                 # TTL for conversation history
