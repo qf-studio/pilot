@@ -785,6 +785,62 @@ func TestIsEphemeralTaskPatterns(t *testing.T) {
 	}
 }
 
+// TestIsClearQuestion tests the isClearQuestion function for LLM pre-check (GH-382)
+func TestIsClearQuestion(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected bool
+	}{
+		// Should be clear questions - ends with ?
+		{"What's in roadmap?", true},
+		{"What's in the backlog?", true},
+		{"How does auth work?", true},
+		{"Where is the config file?", true},
+		{"Why is this failing?", true},
+		{"Can you explain the architecture?", true},
+
+		// Should be clear questions - question starters (no ?)
+		{"What's in roadmap", true},
+		{"What is in the backlog", true},
+		{"How does the auth system work", true},
+		{"How do I run tests", true},
+		{"How can I debug this", true},
+		{"Where is the config", true},
+		{"Where are the tests", true},
+		{"Why is this failing", true},
+		{"Why are we using Go", true},
+		{"Why does it crash", true},
+		{"When is the release", true},
+		{"When does it deploy", true},
+		{"When will it be ready", true},
+		{"Who is the maintainer", true},
+		{"Who are the contributors", true},
+		{"Which library should I use", true},
+		{"Can you explain the flow", true},
+		{"Could you explain the architecture", true},
+
+		// Should NOT be clear questions (need LLM)
+		{"Add a logout button", false},
+		{"Fix the auth bug", false},
+		{"What do you think about adding X", false}, // chat, not question
+		{"Create a new endpoint", false},
+		{"Implement feature X", false},
+		{"Hello", false},
+		{"Hi there", false},
+		{"Research authentication methods", false},
+		{"Plan the migration", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := isClearQuestion(tt.input)
+			if got != tt.expected {
+				t.Errorf("isClearQuestion(%q) = %v, want %v", tt.input, got, tt.expected)
+			}
+		})
+	}
+}
+
 // TestContainsModificationIntent tests modification intent detection
 func TestContainsModificationIntent(t *testing.T) {
 	tests := []struct {

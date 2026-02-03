@@ -419,6 +419,12 @@ func (h *Handler) detectIntentWithLLM(ctx context.Context, chatID, text string) 
 		return IntentCommand
 	}
 
+	// Fast path: clear question patterns don't need LLM verification
+	// Prevents Haiku from misclassifying "What's in roadmap" as Task
+	if isClearQuestion(text) {
+		return IntentQuestion
+	}
+
 	// Try LLM classification with timeout
 	classifyCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()

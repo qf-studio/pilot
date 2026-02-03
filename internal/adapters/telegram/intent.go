@@ -277,6 +277,38 @@ func containsActionWord(msg string) bool {
 	return false
 }
 
+// isClearQuestion checks if message is unambiguously a question.
+// These patterns are high-confidence and don't need LLM verification.
+// Used as pre-check before LLM classification to avoid false Task classifications.
+func isClearQuestion(msg string) bool {
+	lower := strings.ToLower(strings.TrimSpace(msg))
+
+	// Ends with question mark - very clear signal
+	if strings.HasSuffix(lower, "?") {
+		return true
+	}
+
+	// Clear question starters that rarely indicate tasks
+	clearPatterns := []string{
+		"what's in", "what is in", "whats in",
+		"what's the", "what is the", "whats the",
+		"how does", "how do", "how can",
+		"where is", "where are", "where's",
+		"why is", "why are", "why does",
+		"when is", "when does", "when will",
+		"who is", "who are",
+		"which", "can you explain", "could you explain",
+	}
+
+	for _, pattern := range clearPatterns {
+		if strings.HasPrefix(lower, pattern) {
+			return true
+		}
+	}
+
+	return false
+}
+
 // IntentDescription returns a human-readable description of the intent
 func (i Intent) Description() string {
 	switch i {
