@@ -282,7 +282,9 @@ func (s *Store) GetExecution(id string) (*Execution, error) {
 // The limit parameter specifies the maximum number of executions to return.
 func (s *Store) GetRecentExecutions(limit int) ([]*Execution, error) {
 	rows, err := s.db.Query(`
-		SELECT id, task_id, project_path, status, output, error, duration_ms, pr_url, commit_sha, created_at, completed_at
+		SELECT id, task_id, project_path, status, output, error, duration_ms, pr_url, commit_sha, created_at, completed_at,
+			COALESCE(task_title, ''), COALESCE(task_description, ''), COALESCE(task_branch, ''),
+			COALESCE(task_base_branch, ''), COALESCE(task_create_pr, 0), COALESCE(task_verbose, 0)
 		FROM executions ORDER BY created_at DESC LIMIT ?
 	`, limit)
 	if err != nil {
@@ -294,7 +296,8 @@ func (s *Store) GetRecentExecutions(limit int) ([]*Execution, error) {
 	for rows.Next() {
 		var exec Execution
 		var completedAt sql.NullTime
-		if err := rows.Scan(&exec.ID, &exec.TaskID, &exec.ProjectPath, &exec.Status, &exec.Output, &exec.Error, &exec.DurationMs, &exec.PRUrl, &exec.CommitSHA, &exec.CreatedAt, &completedAt); err != nil {
+		if err := rows.Scan(&exec.ID, &exec.TaskID, &exec.ProjectPath, &exec.Status, &exec.Output, &exec.Error, &exec.DurationMs, &exec.PRUrl, &exec.CommitSHA, &exec.CreatedAt, &completedAt,
+			&exec.TaskTitle, &exec.TaskDescription, &exec.TaskBranch, &exec.TaskBaseBranch, &exec.TaskCreatePR, &exec.TaskVerbose); err != nil {
 			return nil, err
 		}
 		if completedAt.Valid {
