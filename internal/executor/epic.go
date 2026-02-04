@@ -370,9 +370,11 @@ func (r *Runner) ExecuteSubIssues(ctx context.Context, parent *Task, issues []Cr
 	startMsg := fmt.Sprintf("🚀 Starting sequential execution of %d sub-issues", total)
 	if err := r.UpdateIssueProgress(ctx, projectPath, parent.ID, startMsg); err != nil {
 		r.log.Warn("Failed to update parent progress", "error", err)
+		// Non-fatal, continue execution
 	}
 
 	for i, issue := range issues {
+		// Check context cancellation
 		select {
 		case <-ctx.Done():
 			return fmt.Errorf("execution cancelled: %w", ctx.Err())
@@ -426,6 +428,7 @@ func (r *Runner) ExecuteSubIssues(ctx context.Context, parent *Task, issues []Cr
 		}
 		if err := r.CloseIssueWithComment(ctx, projectPath, fmt.Sprintf("%d", issue.Number), closeComment); err != nil {
 			r.log.Warn("Failed to close sub-issue", "issue", issue.Number, "error", err)
+			// Non-fatal, continue
 		}
 
 		r.log.Info("Sub-issue completed",
@@ -436,11 +439,12 @@ func (r *Runner) ExecuteSubIssues(ctx context.Context, parent *Task, issues []Cr
 	}
 
 	// All done - update and close parent
-	completeMsg := fmt.Sprintf("✅ Completed: %d/%d sub-issues done", total, total)
+	completeMsg := fmt.Sprintf("✅ Completed: %d/%d sub-issues done\n\nAll sub-tasks executed successfully.", total, total)
 	_ = r.UpdateIssueProgress(ctx, projectPath, parent.ID, completeMsg)
 
 	if err := r.CloseIssueWithComment(ctx, projectPath, parent.ID, "All sub-issues completed successfully."); err != nil {
 		r.log.Warn("Failed to close parent issue", "error", err)
+		// Non-fatal
 	}
 
 	r.log.Info("Epic execution completed",
