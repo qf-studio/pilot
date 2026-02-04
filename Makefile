@@ -134,8 +134,9 @@ endif
 		echo "❌ Error: Must be on main branch to release."; \
 		exit 1; \
 	fi
-	@echo "📌 Creating git tag v$(V)..."
+	@echo "📌 Creating and pushing git tag v$(V)..."
 	git tag v$(V)
+	git push origin v$(V)
 	@echo "🔨 Building binaries..."
 	$(MAKE) build-all VERSION=v$(V)
 	@echo "📦 Creating GitHub release..."
