@@ -485,7 +485,7 @@ func (s *Store) GetExecutionsInPeriod(query BriefQuery) ([]*Execution, error) {
 			args = append(args, p)
 		}
 		rows, err = s.db.Query(`
-			SELECT id, task_id, project_path, status, output, error, duration_ms, pr_url, commit_sha, created_at, completed_at
+			SELECT id, task_id, project_path, status, output, error, duration_ms, pr_url, commit_sha, created_at, completed_at, COALESCE(task_title, '')
 			FROM executions
 			WHERE created_at >= ? AND created_at < ?
 			AND project_path IN (`+placeholders+`)
@@ -493,7 +493,7 @@ func (s *Store) GetExecutionsInPeriod(query BriefQuery) ([]*Execution, error) {
 		`, args...)
 	} else {
 		rows, err = s.db.Query(`
-			SELECT id, task_id, project_path, status, output, error, duration_ms, pr_url, commit_sha, created_at, completed_at
+			SELECT id, task_id, project_path, status, output, error, duration_ms, pr_url, commit_sha, created_at, completed_at, COALESCE(task_title, '')
 			FROM executions
 			WHERE created_at >= ? AND created_at < ?
 			ORDER BY created_at DESC
@@ -508,7 +508,7 @@ func (s *Store) GetExecutionsInPeriod(query BriefQuery) ([]*Execution, error) {
 	for rows.Next() {
 		var exec Execution
 		var completedAt sql.NullTime
-		if err := rows.Scan(&exec.ID, &exec.TaskID, &exec.ProjectPath, &exec.Status, &exec.Output, &exec.Error, &exec.DurationMs, &exec.PRUrl, &exec.CommitSHA, &exec.CreatedAt, &completedAt); err != nil {
+		if err := rows.Scan(&exec.ID, &exec.TaskID, &exec.ProjectPath, &exec.Status, &exec.Output, &exec.Error, &exec.DurationMs, &exec.PRUrl, &exec.CommitSHA, &exec.CreatedAt, &completedAt, &exec.TaskTitle); err != nil {
 			return nil, err
 		}
 		if completedAt.Valid {
@@ -577,11 +577,13 @@ func (s *Store) GetBriefMetrics(query BriefQuery) (*BriefMetricsData, error) {
 			COALESCE(SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END), 0) as completed,
 			COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0) as failed,
 			CAST(COALESCE(AVG(CASE WHEN status = 'completed' THEN duration_ms END), 0) AS INTEGER) as avg_duration,
-			COALESCE(SUM(CASE WHEN pr_url != '' THEN 1 ELSE 0 END), 0) as prs_created
+			COALESCE(SUM(CASE WHEN pr_url != '' THEN 1 ELSE 0 END), 0) as prs_created,
+			COALESCE(SUM(tokens_total), 0) as total_tokens,
+			COALESCE(SUM(estimated_cost_usd), 0) as total_cost
 		FROM executions
 	`+whereClause, args...)
 
-	if err := row.Scan(&result.TotalTasks, &result.CompletedCount, &result.FailedCount, &result.AvgDurationMs, &result.PRsCreated); err != nil {
+	if err := row.Scan(&result.TotalTasks, &result.CompletedCount, &result.FailedCount, &result.AvgDurationMs, &result.PRsCreated, &result.TotalTokensUsed, &result.EstimatedCostUSD); err != nil {
 		return nil, fmt.Errorf("failed to get metrics: %w", err)
 	}
 
@@ -594,12 +596,14 @@ func (s *Store) GetBriefMetrics(query BriefQuery) (*BriefMetricsData, error) {
 
 // BriefMetricsData holds aggregate metrics calculated from execution data.
 type BriefMetricsData struct {
-	TotalTasks     int
-	CompletedCount int
-	FailedCount    int
-	SuccessRate    float64
-	AvgDurationMs  int64
-	PRsCreated     int
+	TotalTasks       int
+	CompletedCount   int
+	FailedCount      int
+	SuccessRate      float64
+	AvgDurationMs    int64
+	PRsCreated       int
+	TotalTokensUsed  int64
+	EstimatedCostUSD float64
 }
 
 // GetQueuedTasks returns tasks with status "queued" or "pending" waiting to be executed.

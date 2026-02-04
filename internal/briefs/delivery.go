@@ -277,7 +277,7 @@ func (d *DeliveryService) formatTelegramBrief(brief *Brief) string {
 	text += "📊 *Yesterday's Progress*\n"
 	text += "━━━━━━━━━━━━━━━━━━━━━\n"
 	text += fmt.Sprintf("✅ %d tasks completed\n", brief.Metrics.CompletedCount)
-	text += fmt.Sprintf("⏱ %dms avg duration\n", brief.Metrics.AvgDurationMs)
+	text += fmt.Sprintf("⏱ %s avg duration\n", formatDuration(brief.Metrics.AvgDurationMs))
 	text += fmt.Sprintf("🔢 %s tokens used\n", formatTelegramTokens(brief.Metrics.TotalTokensUsed))
 	text += fmt.Sprintf("💰 $%.2f estimated cost\n\n", brief.Metrics.EstimatedCostUSD)
 

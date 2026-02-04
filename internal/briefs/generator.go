@@ -85,9 +85,13 @@ func (g *Generator) Generate(period BriefPeriod) (*Brief, error) {
 
 	// Categorize executions
 	for _, exec := range executions {
+		title := exec.TaskTitle
+		if title == "" {
+			title = exec.TaskID // Fallback to task ID if no title
+		}
 		summary := TaskSummary{
 			ID:          exec.TaskID,
-			Title:       exec.TaskID, // Use task ID as title fallback
+			Title:       title,
 			ProjectPath: exec.ProjectPath,
 			Status:      exec.Status,
 			PRUrl:       exec.PRUrl,
@@ -182,12 +186,14 @@ func (g *Generator) GenerateWeekly() (*Brief, error) {
 // convertMetrics converts database metrics to brief metrics
 func convertMetrics(data *memory.BriefMetricsData) BriefMetrics {
 	return BriefMetrics{
-		TotalTasks:     data.TotalTasks,
-		CompletedCount: data.CompletedCount,
-		FailedCount:    data.FailedCount,
-		SuccessRate:    data.SuccessRate,
-		AvgDurationMs:  data.AvgDurationMs,
-		PRsCreated:     data.PRsCreated,
+		TotalTasks:       data.TotalTasks,
+		CompletedCount:   data.CompletedCount,
+		FailedCount:      data.FailedCount,
+		SuccessRate:      data.SuccessRate,
+		AvgDurationMs:    data.AvgDurationMs,
+		PRsCreated:       data.PRsCreated,
+		TotalTokensUsed:  data.TotalTokensUsed,
+		EstimatedCostUSD: data.EstimatedCostUSD,
 	}
 }
 
