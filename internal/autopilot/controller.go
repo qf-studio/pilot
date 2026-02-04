@@ -621,6 +621,127 @@ func (c *Controller) ScanExistingPRs(ctx context.Context) error {
 	return nil
 }
 
+// ScanRecentlyMergedPRs scans for Pilot PRs that were merged while Pilot was offline.
+// This catches PRs that need release triggering but were merged externally.
+// Called on startup after ScanExistingPRs.
+func (c *Controller) ScanRecentlyMergedPRs(ctx context.Context) error {
+	// Skip if auto-release is not enabled
+	if !c.shouldTriggerRelease() {
+		c.log.Debug("skipping merged PR scan: auto-release not enabled")
+		return nil
+	}
+
+	scanWindow := c.config.MergedPRScanWindow
+	if scanWindow == 0 {
+		scanWindow = 30 * time.Minute // Default fallback
+	}
+
+	c.log.Info("scanning for recently merged Pilot PRs",
+		"owner", c.owner,
+		"repo", c.repo,
+		"window", scanWindow,
+	)
+
+	// List closed PRs
+	prs, err := c.ghClient.ListPullRequests(ctx, c.owner, c.repo, "closed")
+	if err != nil {
+		return fmt.Errorf("failed to list closed PRs: %w", err)
+	}
+
+	c.log.Debug("found closed PRs", "total", len(prs))
+
+	// Get recent releases to check for existing releases
+	releases, err := c.ghClient.ListReleases(ctx, c.owner, c.repo, 20)
+	if err != nil {
+		c.log.Warn("failed to list releases, continuing without release check", "error", err)
+		releases = nil
+	}
+
+	// Build set of release target commits for quick lookup
+	releasedCommits := make(map[string]bool)
+	for _, rel := range releases {
+		if rel.TargetCommitish != "" {
+			releasedCommits[rel.TargetCommitish] = true
+		}
+	}
+
+	cutoff := time.Now().Add(-scanWindow)
+	triggered := 0
+
+	for _, pr := range prs {
+		// Filter for Pilot branches (pilot/GH-* or pilot/*)
+		if !strings.HasPrefix(pr.Head.Ref, "pilot/") {
+			continue
+		}
+
+		// Must be merged (not just closed)
+		if !pr.Merged {
+			continue
+		}
+
+		// Check if merged within scan window
+		// MergedAt is RFC3339 format string
+		if pr.MergedAt == "" {
+			continue
+		}
+		mergedAt, err := time.Parse(time.RFC3339, pr.MergedAt)
+		if err != nil {
+			c.log.Warn("failed to parse MergedAt", "pr", pr.Number, "merged_at", pr.MergedAt, "error", err)
+			continue
+		}
+		if mergedAt.Before(cutoff) {
+			continue
+		}
+
+		// Skip if release already exists for this merge commit
+		if pr.MergeCommitSHA != "" && releasedCommits[pr.MergeCommitSHA] {
+			c.log.Debug("skipping PR: release already exists",
+				"pr", pr.Number,
+				"merge_sha", ShortSHA(pr.MergeCommitSHA),
+			)
+			continue
+		}
+
+		// Extract issue number from branch name (optional)
+		var issueNum int
+		if strings.HasPrefix(pr.Head.Ref, "pilot/GH-") {
+			_, _ = fmt.Sscanf(pr.Head.Ref, "pilot/GH-%d", &issueNum)
+		}
+
+		c.log.Info("found merged Pilot PR needing release",
+			"pr", pr.Number,
+			"branch", pr.Head.Ref,
+			"merged_at", mergedAt,
+			"merge_sha", ShortSHA(pr.MergeCommitSHA),
+		)
+
+		// Create PR state and trigger release
+		prState := &PRState{
+			PRNumber:    pr.Number,
+			PRURL:       pr.HTMLURL,
+			IssueNumber: issueNum,
+			HeadSHA:     pr.MergeCommitSHA,
+			Stage:       StageReleasing,
+			CIStatus:    CISuccess, // Assume CI passed if merged
+			CreatedAt:   time.Now(),
+		}
+
+		// Register and trigger release
+		c.mu.Lock()
+		c.activePRs[pr.Number] = prState
+		c.mu.Unlock()
+
+		triggered++
+	}
+
+	c.log.Info("completed merged PR scan",
+		"triggered", triggered,
+		"window", scanWindow,
+	)
+
+	return nil
+}
+
 // Run starts the autopilot processing loop.
 // It continuously processes all active PRs until context is cancelled.
 func (c *Controller) Run(ctx context.Context) error {

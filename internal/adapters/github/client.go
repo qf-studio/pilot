@@ -429,6 +429,16 @@ func (c *Client) GetLatestRelease(ctx context.Context, owner, repo string) (*Rel
 	return &result, nil
 }
 
+// ListReleases lists releases for a repository (newest first)
+func (c *Client) ListReleases(ctx context.Context, owner, repo string, perPage int) ([]*Release, error) {
+	path := fmt.Sprintf("/repos/%s/%s/releases?per_page=%d", owner, repo, perPage)
+	var result []*Release
+	if err := c.doRequest(ctx, http.MethodGet, path, nil, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
 // ListTags lists repository tags (newest first)
 func (c *Client) ListTags(ctx context.Context, owner, repo string, perPage int) ([]*Tag, error) {
 	path := fmt.Sprintf("/repos/%s/%s/tags?per_page=%d", owner, repo, perPage)

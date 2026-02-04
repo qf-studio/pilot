@@ -82,6 +82,10 @@ type Config struct {
 
 	// Release holds auto-release configuration.
 	Release *ReleaseConfig `yaml:"release"`
+
+	// MergedPRScanWindow is how far back to look for merged PRs on startup (default: 30m).
+	// This catches PRs that were merged while Pilot was offline.
+	MergedPRScanWindow time.Duration `yaml:"merged_pr_scan_window"`
 }
 
 // DefaultConfig returns sensible defaults for autopilot configuration.
@@ -93,20 +97,21 @@ func DefaultConfig() *Config {
 		GitHubReview: &GitHubReviewConfig{
 			PollInterval: 30 * time.Second,
 		},
-		AutoReview:       true,
-		AutoMerge:        true,
-		MergeMethod:      "squash",
-		CIWaitTimeout:    30 * time.Minute,
-		DevCITimeout:     5 * time.Minute,
-		CIPollInterval:   30 * time.Second,
-		RequiredChecks:   []string{"build", "test", "lint"},
-		AutoCreateIssues: true,
-		IssueLabels:      []string{"pilot", "autopilot-fix"},
-		NotifyOnFailure:  true,
-		MaxFailures:      3,
-		MaxMergesPerHour: 10,
-		ApprovalTimeout:  1 * time.Hour,
-		Release:          nil, // Disabled by default
+		AutoReview:         true,
+		AutoMerge:          true,
+		MergeMethod:        "squash",
+		CIWaitTimeout:      30 * time.Minute,
+		DevCITimeout:       5 * time.Minute,
+		CIPollInterval:     30 * time.Second,
+		RequiredChecks:     []string{"build", "test", "lint"},
+		AutoCreateIssues:   true,
+		IssueLabels:        []string{"pilot", "autopilot-fix"},
+		NotifyOnFailure:    true,
+		MaxFailures:        3,
+		MaxMergesPerHour:   10,
+		ApprovalTimeout:    1 * time.Hour,
+		Release:            nil, // Disabled by default
+		MergedPRScanWindow: 30 * time.Minute,
 	}
 }
 

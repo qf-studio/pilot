@@ -619,6 +619,13 @@ Examples:
 								)
 							}
 
+							// Scan for recently merged PRs that may need release (GH-416)
+							if scanErr := gwAutopilotController.ScanRecentlyMergedPRs(ctx); scanErr != nil {
+								logging.WithComponent("autopilot").Warn("failed to scan merged PRs",
+									slog.Any("error", scanErr),
+								)
+							}
+
 							logging.WithComponent("start").Info("autopilot enabled in gateway mode",
 								slog.String("environment", string(cfg.Orchestrator.Autopilot.Environment)),
 							)
@@ -1229,6 +1236,13 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 					// Scan for existing PRs created by Pilot before starting the loop
 					if err := autopilotController.ScanExistingPRs(ctx); err != nil {
 						logging.WithComponent("autopilot").Warn("failed to scan existing PRs",
+							slog.Any("error", err),
+						)
+					}
+
+					// Scan for recently merged PRs that may need release (GH-416)
+					if err := autopilotController.ScanRecentlyMergedPRs(ctx); err != nil {
+						logging.WithComponent("autopilot").Warn("failed to scan merged PRs",
 							slog.Any("error", err),
 						)
 					}
