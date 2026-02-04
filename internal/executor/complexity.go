@@ -88,16 +88,17 @@ var complexPatterns = []string{
 	"cross-cutting",
 }
 
-// epicPatterns indicate tasks too large for a single execution cycle.
-var epicPatterns = []string{
-	"epic",
-	"roadmap",
-	"multi-phase",
-	"milestone",
-}
-
 // epicTagRegex matches [epic] tag in title.
 var epicTagRegex = regexp.MustCompile(`(?i)\[epic\]`)
+
+// codeBlockRegex matches fenced code blocks (```...``` or ~~~...~~~).
+var codeBlockRegex = regexp.MustCompile("(?s)```.*?```|~~~.*?~~~")
+
+// filePathRegex matches file paths like path/to/file.go or ./file.py.
+var filePathRegex = regexp.MustCompile(`(?:^|[\s\x60])([./]*[\w-]+/)*[\w-]+\.(go|py|js|ts|tsx|jsx|rs|rb|java|c|cpp|h|hpp|yaml|yml|json|md|txt|sh|bash)(?:[\s\x60]|$)`)
+
+// wordBoundaryEpicRegex matches "epic" as a standalone word, not as part of identifiers.
+var wordBoundaryEpicRegex = regexp.MustCompile(`(?i)\b(epic|roadmap|multi-phase|milestone)\b`)
 
 // numberedPhaseRegex matches explicit phase markers like "Phase 1", "Stage 1", etc.
 // Does NOT match simple numbered lists (1., 2.) as those are common in task descriptions.
@@ -144,8 +145,9 @@ func DetectComplexity(task *Task) Complexity {
 		}
 	}
 
-	// Heuristics based on description length
-	wordCount := len(strings.Fields(desc))
+	// Heuristics based on description length (strip code blocks to get actual prose length)
+	cleanDesc := stripCodeBlocks(desc)
+	wordCount := len(strings.Fields(cleanDesc))
 
 	// Very short descriptions are likely simple tasks
 	if wordCount < 10 {
@@ -161,6 +163,16 @@ func DetectComplexity(task *Task) Complexity {
 	return ComplexityComplex
 }
 
+// stripCodeBlocks removes fenced code blocks from text to avoid false pattern matches.
+func stripCodeBlocks(text string) string {
+	return codeBlockRegex.ReplaceAllString(text, " ")
+}
+
+// stripFilePaths removes file path references from text to avoid false pattern matches.
+func stripFilePaths(text string) string {
+	return filePathRegex.ReplaceAllString(text, " ")
+}
+
 // detectEpic checks if a task matches epic patterns.
 // Returns true if any epic indicator is found.
 func detectEpic(title, description, combined string) bool {
@@ -169,31 +181,37 @@ func detectEpic(title, description, combined string) bool {
 		return true
 	}
 
-	// Check for epic keywords
-	for _, pattern := range epicPatterns {
-		if strings.Contains(combined, pattern) {
-			return true
-		}
+	// Preprocess: strip code blocks and file paths to avoid false matches
+	// on identifiers like "EpicPlan" or file names like "epic.go"
+	cleanCombined := stripCodeBlocks(combined)
+	cleanCombined = stripFilePaths(cleanCombined)
+
+	// Check for epic keywords using word boundary matching
+	if wordBoundaryEpicRegex.MatchString(cleanCombined) {
+		return true
 	}
 
+	// Preprocess description for structural checks
+	cleanDescription := stripCodeBlocks(description)
+
 	// Check for 5+ checkboxes (acceptance criteria)
-	checkboxMatches := checkboxRegex.FindAllString(description, -1)
+	checkboxMatches := checkboxRegex.FindAllString(cleanDescription, -1)
 	if len(checkboxMatches) >= 5 {
 		return true
 	}
 
 	// Check for 3+ numbered phases/sections
-	phaseMatches := numberedPhaseRegex.FindAllString(description, -1)
+	phaseMatches := numberedPhaseRegex.FindAllString(cleanDescription, -1)
 	if len(phaseMatches) >= 3 {
 		return true
 	}
 
 	// Check for long description with structural markers
-	wordCount := len(strings.Fields(description))
-	hasStructuralMarkers := strings.Contains(description, "##") ||
-		strings.Contains(description, "phase") ||
-		strings.Contains(description, "stage") ||
-		strings.Contains(description, "step")
+	wordCount := len(strings.Fields(cleanDescription))
+	hasStructuralMarkers := strings.Contains(cleanDescription, "##") ||
+		strings.Contains(strings.ToLower(cleanDescription), "phase") ||
+		strings.Contains(strings.ToLower(cleanDescription), "stage") ||
+		strings.Contains(strings.ToLower(cleanDescription), "step")
 	if wordCount > 200 && hasStructuralMarkers {
 		return true
 	}

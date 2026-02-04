@@ -148,6 +148,33 @@ Regular sync meetings with stakeholders will be necessary to ensure alignment on
 			expected: ComplexityEpic,
 		},
 
+		// False positive prevention - file paths and code blocks
+		{
+			name:     "file path with epic should not trigger",
+			task:     &Task{Title: "Add method to epic.go", Description: "Add CreateSubIssues method to internal/executor/epic.go"},
+			expected: ComplexitySimple,
+		},
+		{
+			name:     "code block with EpicPlan should not trigger",
+			task:     &Task{Description: "Add this code:\n```go\nfunc (r *Runner) Method(plan *EpicPlan) error {\n    return nil\n}\n```"},
+			expected: ComplexitySimple,
+		},
+		{
+			name:     "identifier PlanEpic should not trigger",
+			task:     &Task{Description: "Call the `PlanEpic` method after detection"},
+			expected: ComplexitySimple,
+		},
+		{
+			name:     "actual epic keyword should still trigger",
+			task:     &Task{Description: "This is an epic task spanning multiple sprints"},
+			expected: ComplexityEpic,
+		},
+		{
+			name:     "epic in prose triggers but not in file path",
+			task:     &Task{Description: "This epic feature requires changes to epic.go"},
+			expected: ComplexityEpic,
+		},
+
 		// Complex cases
 		{
 			name:     "refactor",
