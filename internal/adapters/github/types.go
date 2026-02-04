@@ -185,8 +185,9 @@ type PullRequest struct {
 	Base      PRRef  `json:"base"`            // Base reference with branch name and SHA
 	HTMLURL   string `json:"html_url,omitempty"`
 	Draft     bool   `json:"draft,omitempty"`
-	Merged    bool   `json:"merged,omitempty"`
-	Mergeable *bool  `json:"mergeable,omitempty"`
+	Merged         bool   `json:"merged,omitempty"`
+	MergeCommitSHA string `json:"merge_commit_sha,omitempty"`
+	Mergeable      *bool  `json:"mergeable,omitempty"`
 	CreatedAt string `json:"created_at,omitempty"`
 	UpdatedAt string `json:"updated_at,omitempty"`
 	MergedAt  string `json:"merged_at,omitempty"`

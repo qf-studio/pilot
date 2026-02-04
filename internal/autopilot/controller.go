@@ -690,8 +690,20 @@ func (c *Controller) checkExternalMergeOrClose(ctx context.Context, prState *PRS
 
 	// Check if PR was merged externally
 	if ghPR.Merged {
-		c.log.Info("PR merged externally, removing from tracking", "pr", prState.PRNumber)
+		c.log.Info("PR merged externally", "pr", prState.PRNumber)
 		c.notifyExternalMerge(ctx, prState)
+
+		// GH-411: Trigger release for externally merged PRs if auto-release is enabled
+		if c.shouldTriggerRelease() && prState.Stage != StageReleasing {
+			c.log.Info("triggering release for externally merged PR", "pr", prState.PRNumber)
+			// Update SHA to merge commit if available
+			if ghPR.MergeCommitSHA != "" {
+				prState.HeadSHA = ghPR.MergeCommitSHA
+			}
+			prState.Stage = StageReleasing
+			return false // Continue processing to handle release
+		}
+
 		c.removePR(prState.PRNumber)
 		return true
 	}
