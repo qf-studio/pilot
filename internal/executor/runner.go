@@ -179,6 +179,10 @@ type ExecutionResult struct {
 	ModelName string
 	// QualityGates contains the results of quality gate checks (if enabled)
 	QualityGates *QualityGatesResult
+	// IsEpic indicates this result is from epic planning (not execution)
+	IsEpic bool
+	// EpicPlan contains the planning result for epic tasks (GH-405)
+	EpicPlan *EpicPlan
 }
 
 // ProgressCallback is a function called during execution with progress updates.
@@ -451,6 +455,37 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 
 	// Detect complexity for routing decisions
 	complexity := DetectComplexity(task)
+
+	// GH-405: Epic tasks trigger planning mode instead of execution
+	if complexity.IsEpic() {
+		r.log.Info("Epic task detected, running planning mode",
+			slog.String("task_id", task.ID),
+			slog.String("title", task.Title),
+		)
+		r.reportProgress(task.ID, "Planning", 10, "Running epic planning...")
+
+		plan, err := r.PlanEpic(ctx, task)
+		if err != nil {
+			return &ExecutionResult{
+				TaskID:   task.ID,
+				Success:  false,
+				Error:    fmt.Sprintf("epic planning failed: %v", err),
+				Duration: time.Since(start),
+				IsEpic:   true,
+			}, nil
+		}
+
+		r.reportProgress(task.ID, "Planning", 100, fmt.Sprintf("Epic planned: %d subtasks", len(plan.Subtasks)))
+
+		return &ExecutionResult{
+			TaskID:   task.ID,
+			Success:  true,
+			Output:   plan.PlanOutput,
+			Duration: time.Since(start),
+			IsEpic:   true,
+			EpicPlan: plan,
+		}, nil
+	}
 
 	// Check for task decomposition (GH-218)
 	// Decomposition happens before timeout setup because subtasks have their own timeouts
