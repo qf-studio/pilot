@@ -56,15 +56,15 @@ func (r *Runner) PlanEpic(ctx context.Context, task *Task) (*EpicPlan, error) {
 		claudeCmd = r.config.ClaudeCode.Command
 	}
 
-	// Run Claude Code with --plan flag
+	// Run Claude Code with --print flag for planning
 	args := []string{"--print", "-p", prompt}
 
-	// If working in a project directory, set it
-	if task.ProjectPath != "" {
-		args = append([]string{"--cwd", task.ProjectPath}, args...)
-	}
-
 	cmd := exec.CommandContext(ctx, claudeCmd, args...)
+
+	// Set working directory if specified
+	if task.ProjectPath != "" {
+		cmd.Dir = task.ProjectPath
+	}
 
 	// Capture output
 	var stdout, stderr bytes.Buffer
