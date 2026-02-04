@@ -245,8 +245,6 @@ Examples:
 			hasTelegram := cfg.Adapters.Telegram != nil && cfg.Adapters.Telegram.Enabled
 			hasGithubPolling := cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.Enabled &&
 				cfg.Adapters.GitHub.Polling != nil && cfg.Adapters.GitHub.Polling.Enabled
-			hasLinear := cfg.Adapters.Linear != nil && cfg.Adapters.Linear.Enabled
-			hasJira := cfg.Adapters.Jira != nil && cfg.Adapters.Jira.Enabled
 
 			// Apply execution mode override from CLI flags
 			if sequential {
@@ -285,8 +283,19 @@ Examples:
 				cfg.Orchestrator.Autopilot.Release.Enabled = true
 			}
 
-			// Lightweight mode: polling only, no gateway
-			if noGateway || (!hasLinear && !hasJira && (hasTelegram || hasGithubPolling)) {
+			// GH-394: Polling mode is the default when any polling adapter is enabled.
+			// Previously, having linear.enabled=true would force gateway mode even when
+			// only using GitHub/Telegram polling. Now polling adapters work independently.
+			//
+			// Mode selection:
+			// - noGateway flag: always use polling mode (user override)
+			// - Polling adapters enabled: use polling mode (Telegram, GitHub)
+			// - Only webhook adapters (Linear, Jira): use gateway mode
+			//
+			// Note: Linear/Jira webhooks require gateway but don't block polling adapters.
+			// When both are needed, gateway starts in background within polling mode.
+			hasPollingAdapter := hasTelegram || hasGithubPolling
+			if noGateway || hasPollingAdapter {
 				return runPollingMode(cfg, projectPath, replace, dashboardMode)
 			}
 
