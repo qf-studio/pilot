@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -191,8 +193,13 @@ func runUpgradeRun(cmd *cobra.Command, args []string, force, skipConfirm bool) e
 	// Confirm unless -y flag
 	if !skipConfirm {
 		fmt.Print("Proceed with upgrade? [y/N]: ")
-		var input string
-		_, _ = fmt.Scanln(&input)
+		reader := bufio.NewReader(os.Stdin)
+		input, err := reader.ReadString('\n')
+		if err != nil {
+			fmt.Println("\nUpgrade cancelled (input error).")
+			return nil
+		}
+		input = strings.TrimSpace(input)
 		if input != "y" && input != "Y" {
 			fmt.Println("Upgrade cancelled.")
 			return nil
