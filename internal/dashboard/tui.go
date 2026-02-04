@@ -99,6 +99,14 @@ func (p *AutopilotPanel) View() string {
 	content.WriteString(dotLeader("Mode", string(cfg.Environment), w))
 	content.WriteString("\n")
 
+	// Release status
+	if cfg.Release != nil && cfg.Release.Enabled {
+		content.WriteString(dotLeader("Auto-release", "enabled", w))
+	} else {
+		content.WriteString(dotLeader("Auto-release", "disabled", w))
+	}
+	content.WriteString("\n")
+
 	// Active PRs
 	prs := p.controller.GetActivePRs()
 	if len(prs) == 0 {
@@ -109,9 +117,25 @@ func (p *AutopilotPanel) View() string {
 
 		for _, pr := range prs {
 			icon := p.stageIcon(pr.Stage)
-			prLine := fmt.Sprintf("  %s #%d: %s", icon, pr.PRNumber, pr.Stage)
+			// Show PR number and stage with time in stage
+			timeInStage := p.formatDuration(time.Since(pr.CreatedAt))
+			prLine := fmt.Sprintf("  %s #%d: %s (%s)", icon, pr.PRNumber, pr.Stage, timeInStage)
 			content.WriteString(prLine)
 			content.WriteString("\n")
+
+			// Show CI status if waiting for CI
+			if pr.Stage == autopilot.StageWaitingCI {
+				ciLine := fmt.Sprintf("     CI: %s", pr.CIStatus)
+				content.WriteString(ciLine)
+				content.WriteString("\n")
+			}
+
+			// Show error if in failed state
+			if pr.Stage == autopilot.StageFailed && pr.Error != "" {
+				errLine := fmt.Sprintf("     Error: %s", truncateString(pr.Error, 30))
+				content.WriteString(errLine)
+				content.WriteString("\n")
+			}
 		}
 	}
 
@@ -124,6 +148,30 @@ func (p *AutopilotPanel) View() string {
 	}
 
 	return renderPanel("AUTOPILOT", content.String())
+}
+
+// formatDuration formats a duration for display (e.g., "2m", "1h30m").
+func (p *AutopilotPanel) formatDuration(d time.Duration) string {
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	if d < time.Hour {
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	}
+	hours := int(d.Hours())
+	mins := int(d.Minutes()) % 60
+	if mins == 0 {
+		return fmt.Sprintf("%dh", hours)
+	}
+	return fmt.Sprintf("%dh%dm", hours, mins)
+}
+
+// truncateString truncates a string to maxLen, adding "..." if truncated.
+func truncateString(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen-3] + "..."
 }
 
 // stageIcon returns an emoji icon for the PR stage.

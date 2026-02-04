@@ -195,6 +195,14 @@ const (
 	BumpMajor BumpType = "major"
 )
 
+// ShortSHA returns a short version of a SHA, safely handling short strings.
+func ShortSHA(sha string) string {
+	if len(sha) <= 7 {
+		return sha
+	}
+	return sha[:7]
+}
+
 // PRState tracks a PR through the autopilot pipeline.
 type PRState struct {
 	// PRNumber is the GitHub PR number.

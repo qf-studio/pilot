@@ -42,10 +42,13 @@ func NewAutoMerger(ghClient *github.Client, approvalMgr *approval.Manager, ciMon
 func (m *AutoMerger) MergePR(ctx context.Context, prState *PRState) error {
 	env := m.config.Environment
 
-	m.log.Info("attempting merge",
+	m.log.Info("MergePR: starting merge process",
 		"pr", prState.PRNumber,
 		"env", env,
-		"method", m.config.MergeMethod)
+		"method", m.config.MergeMethod,
+		"auto_review", m.config.AutoReview,
+		"sha", ShortSHA(prState.HeadSHA),
+	)
 
 	// Check if approval required (prod only)
 	if m.requiresApproval(env) {
@@ -180,24 +183,37 @@ func (m *AutoMerger) verifyCIBeforeMerge(ctx context.Context, prState *PRState) 
 		return nil
 	}
 
-	m.log.Info("verifying CI status before merge",
+	m.log.Debug("verifyCIBeforeMerge: checking CI status",
 		"pr", prState.PRNumber,
-		"sha", prState.HeadSHA)
+		"sha", ShortSHA(prState.HeadSHA))
 
 	status, err := m.ciMonitor.GetCIStatus(ctx, prState.HeadSHA)
 	if err != nil {
+		m.log.Error("verifyCIBeforeMerge: failed to get CI status",
+			"pr", prState.PRNumber,
+			"error", err)
 		return fmt.Errorf("failed to get CI status: %w", err)
 	}
 
+	m.log.Debug("verifyCIBeforeMerge: CI status retrieved",
+		"pr", prState.PRNumber,
+		"status", status)
+
 	switch status {
 	case CISuccess:
-		m.log.Info("CI verification passed",
+		m.log.Info("verifyCIBeforeMerge: CI passed",
 			"pr", prState.PRNumber,
 			"status", status)
 		return nil
 	case CIFailure:
+		m.log.Warn("verifyCIBeforeMerge: CI failed",
+			"pr", prState.PRNumber,
+			"sha", ShortSHA(prState.HeadSHA))
 		return fmt.Errorf("CI checks failing for SHA %s", prState.HeadSHA)
 	case CIPending, CIRunning:
+		m.log.Debug("verifyCIBeforeMerge: CI still running",
+			"pr", prState.PRNumber,
+			"status", status)
 		return fmt.Errorf("CI checks still pending for SHA %s", prState.HeadSHA)
 	default:
 		return fmt.Errorf("unexpected CI status %s for SHA %s", status, prState.HeadSHA)

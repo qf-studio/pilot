@@ -103,7 +103,14 @@ func (c *Controller) OnPRCreated(prNumber int, prURL string, issueNumber int, he
 		CreatedAt:   time.Now(),
 	}
 
-	c.log.Info("PR registered for autopilot", "pr", prNumber)
+	c.log.Info("PR registered for autopilot",
+		"pr", prNumber,
+		"url", prURL,
+		"issue", issueNumber,
+		"sha", ShortSHA(headSHA),
+		"stage", StagePRCreated,
+		"env", c.config.Environment,
+	)
 }
 
 // ProcessPR processes a single PR through the state machine.
@@ -123,6 +130,7 @@ func (c *Controller) ProcessPR(ctx context.Context, prNumber int) error {
 		return fmt.Errorf("circuit breaker: too many consecutive failures (%d)", c.consecutiveFailures)
 	}
 
+	previousStage := prState.Stage
 	var err error
 
 	switch prState.Stage {
@@ -149,6 +157,16 @@ func (c *Controller) ProcessPR(ctx context.Context, prNumber int) error {
 		return nil
 	}
 
+	// Log stage transitions
+	if prState.Stage != previousStage {
+		c.log.Info("PR stage transition",
+			"pr", prNumber,
+			"from", previousStage,
+			"to", prState.Stage,
+			"env", c.config.Environment,
+		)
+	}
+
 	if err != nil {
 		c.consecutiveFailures++
 		prState.Error = err.Error()
@@ -162,6 +180,10 @@ func (c *Controller) ProcessPR(ctx context.Context, prNumber int) error {
 
 // handlePRCreated starts CI monitoring for all environments.
 func (c *Controller) handlePRCreated(ctx context.Context, prState *PRState) error {
+	c.log.Debug("handlePRCreated: starting CI monitoring",
+		"pr", prState.PRNumber,
+		"sha", ShortSHA(prState.HeadSHA),
+	)
 	// All environments wait for CI - no skipping
 	prState.Stage = StageWaitingCI
 	prState.CIWaitStartedAt = time.Now()
@@ -217,6 +239,12 @@ func (c *Controller) handleWaitingCI(ctx context.Context, prState *PRState) erro
 
 // handleCIPassed proceeds to merge (with approval for prod).
 func (c *Controller) handleCIPassed(ctx context.Context, prState *PRState) error {
+	c.log.Info("handleCIPassed: CI passed, determining next stage",
+		"pr", prState.PRNumber,
+		"env", c.config.Environment,
+		"auto_merge", c.config.AutoMerge,
+	)
+
 	if c.config.Environment == EnvProd {
 		c.log.Info("prod mode: awaiting approval", "pr", prState.PRNumber)
 		prState.Stage = StageAwaitApproval
@@ -228,6 +256,10 @@ func (c *Controller) handleCIPassed(ctx context.Context, prState *PRState) error
 			}
 		}
 	} else {
+		c.log.Info("dev/stage mode: proceeding to merge",
+			"pr", prState.PRNumber,
+			"env", c.config.Environment,
+		)
 		prState.Stage = StageMerging
 	}
 	return nil
@@ -293,12 +325,23 @@ func (c *Controller) handleAwaitApproval(ctx context.Context, prState *PRState) 
 func (c *Controller) handleMerging(ctx context.Context, prState *PRState) error {
 	prState.MergeAttempts++
 
+	c.log.Info("handleMerging: attempting merge",
+		"pr", prState.PRNumber,
+		"attempt", prState.MergeAttempts,
+		"method", c.config.MergeMethod,
+	)
+
 	err := c.autoMerger.MergePR(ctx, prState)
 	if err != nil {
+		c.log.Error("handleMerging: merge failed",
+			"pr", prState.PRNumber,
+			"attempt", prState.MergeAttempts,
+			"error", err,
+		)
 		return fmt.Errorf("merge attempt %d failed: %w", prState.MergeAttempts, err)
 	}
 
-	c.log.Info("PR merged", "pr", prState.PRNumber)
+	c.log.Info("PR merged successfully", "pr", prState.PRNumber)
 	prState.Stage = StageMerged
 
 	// Notify merge success
@@ -313,9 +356,18 @@ func (c *Controller) handleMerging(ctx context.Context, prState *PRState) error 
 
 // handleMerged checks post-merge CI (stage/prod).
 func (c *Controller) handleMerged(ctx context.Context, prState *PRState) error {
+	c.log.Info("handleMerged: PR merged, checking next steps",
+		"pr", prState.PRNumber,
+		"env", c.config.Environment,
+		"should_release", c.shouldTriggerRelease(),
+	)
+
 	if c.config.Environment == EnvDev {
 		// Dev: check if we should release without waiting for post-merge CI
 		if c.shouldTriggerRelease() && !c.config.Release.RequireCI {
+			c.log.Info("dev mode: proceeding to release (no post-merge CI required)",
+				"pr", prState.PRNumber,
+			)
 			prState.Stage = StageReleasing
 			return nil
 		}
@@ -323,7 +375,12 @@ func (c *Controller) handleMerged(ctx context.Context, prState *PRState) error {
 		c.removePR(prState.PRNumber)
 		return nil
 	}
-	c.log.Info("waiting for post-merge CI", "pr", prState.PRNumber)
+
+	// Stage/Prod: wait for post-merge CI
+	c.log.Info("stage/prod mode: waiting for post-merge CI",
+		"pr", prState.PRNumber,
+		"env", c.config.Environment,
+	)
 	prState.Stage = StagePostMergeCI
 	return nil
 }
@@ -518,15 +575,26 @@ func (c *Controller) ConsecutiveFailures() int {
 // ScanExistingPRs scans for open PRs created by Pilot and restores their state.
 // This should be called on startup to track PRs that were created before the current session.
 func (c *Controller) ScanExistingPRs(ctx context.Context) error {
+	c.log.Info("scanning for existing Pilot PRs",
+		"owner", c.owner,
+		"repo", c.repo,
+	)
+
 	prs, err := c.ghClient.ListPullRequests(ctx, c.owner, c.repo, "open")
 	if err != nil {
 		return fmt.Errorf("failed to list PRs: %w", err)
 	}
 
+	c.log.Debug("found open PRs", "total", len(prs))
+
 	restored := 0
 	for _, pr := range prs {
 		// Filter for Pilot branches (pilot/GH-*)
 		if !strings.HasPrefix(pr.Head.Ref, "pilot/GH-") {
+			c.log.Debug("skipping non-Pilot PR",
+				"pr", pr.Number,
+				"branch", pr.Head.Ref,
+			)
 			continue
 		}
 
@@ -537,19 +605,32 @@ func (c *Controller) ScanExistingPRs(ctx context.Context) error {
 			continue
 		}
 
+		c.log.Info("restoring Pilot PR for tracking",
+			"pr", pr.Number,
+			"branch", pr.Head.Ref,
+			"sha", ShortSHA(pr.Head.SHA),
+			"issue", issueNum,
+		)
+
 		// Register PR via existing mechanism
 		c.OnPRCreated(pr.Number, pr.HTMLURL, issueNum, pr.Head.SHA)
 		restored++
 	}
 
-	c.log.Info("restored existing PRs", "count", restored)
+	c.log.Info("completed PR scan", "restored", restored, "env", c.config.Environment)
 	return nil
 }
 
 // Run starts the autopilot processing loop.
 // It continuously processes all active PRs until context is cancelled.
 func (c *Controller) Run(ctx context.Context) error {
-	c.log.Info("autopilot controller started", "env", c.config.Environment)
+	c.log.Info("autopilot controller started",
+		"env", c.config.Environment,
+		"poll_interval", c.config.CIPollInterval,
+		"ci_timeout", c.config.CIWaitTimeout,
+		"auto_merge", c.config.AutoMerge,
+		"release_enabled", c.config.Release != nil && c.config.Release.Enabled,
+	)
 
 	ticker := time.NewTicker(c.config.CIPollInterval)
 	defer ticker.Stop()
@@ -572,13 +653,19 @@ func (c *Controller) processAllPRs(ctx context.Context) {
 		return
 	}
 
-	c.log.Debug("processing PRs", "count", len(prs))
+	c.log.Info("processing active PRs", "count", len(prs))
 
 	for _, pr := range prs {
 		select {
 		case <-ctx.Done():
 			return
 		default:
+			c.log.Debug("checking PR",
+				"pr", pr.PRNumber,
+				"stage", pr.Stage,
+				"ci_status", pr.CIStatus,
+			)
+
 			// Check if PR was merged/closed externally before processing
 			if c.checkExternalMergeOrClose(ctx, pr) {
 				continue

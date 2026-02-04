@@ -171,6 +171,7 @@ func main() {
 		newReleaseCmd(),
 		newAllowCmd(),
 		newProjectCmd(),
+		newAutopilotCmd(),
 	)
 
 	if err := rootCmd.Execute(); err != nil {
@@ -4419,6 +4420,118 @@ Examples:
 	cmd.Flags().StringVar(&bump, "bump", "", "Force bump type: patch, minor, major")
 	cmd.Flags().BoolVar(&draft, "draft", false, "Create release as draft")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Show what would be released without creating")
+
+	return cmd
+}
+
+func newAutopilotCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "autopilot",
+		Short: "Autopilot commands for PR lifecycle management",
+		Long:  `Commands for viewing and managing autopilot PR tracking and automation.`,
+	}
+
+	cmd.AddCommand(newAutopilotStatusCmd())
+	return cmd
+}
+
+func newAutopilotStatusCmd() *cobra.Command {
+	var jsonOutput bool
+
+	cmd := &cobra.Command{
+		Use:   "status",
+		Short: "Show tracked PRs and their current stage",
+		Long: `Display autopilot status including:
+- Tracked PRs and their lifecycle stage
+- Time in current stage
+- CI status for each PR
+- Release configuration status
+
+This command queries the running Pilot instance for autopilot state.
+Note: Pilot must be running with --autopilot flag for this to work.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			// Load config
+			configPath := cfgFile
+			if configPath == "" {
+				configPath = config.DefaultConfigPath()
+			}
+
+			cfg, err := config.Load(configPath)
+			if err != nil {
+				return fmt.Errorf("failed to load config: %w", err)
+			}
+
+			// Check if autopilot is configured
+			if cfg.Orchestrator == nil || cfg.Orchestrator.Autopilot == nil || !cfg.Orchestrator.Autopilot.Enabled {
+				if jsonOutput {
+					data := map[string]interface{}{
+						"enabled": false,
+						"error":   "autopilot not enabled in config",
+					}
+					out, _ := json.MarshalIndent(data, "", "  ")
+					fmt.Println(string(out))
+					return nil
+				}
+				fmt.Println("⚠️  Autopilot is not enabled in configuration")
+				fmt.Println("   Start Pilot with --autopilot=<env> to enable autopilot mode")
+				return nil
+			}
+
+			autopilotCfg := cfg.Orchestrator.Autopilot
+
+			if jsonOutput {
+				data := map[string]interface{}{
+					"enabled":     true,
+					"environment": autopilotCfg.Environment,
+					"auto_merge":  autopilotCfg.AutoMerge,
+					"auto_review": autopilotCfg.AutoReview,
+					"release": map[string]interface{}{
+						"enabled":   autopilotCfg.Release != nil && autopilotCfg.Release.Enabled,
+						"trigger":   func() string { if autopilotCfg.Release != nil { return autopilotCfg.Release.Trigger }; return "" }(),
+						"requireCI": func() bool { if autopilotCfg.Release != nil { return autopilotCfg.Release.RequireCI }; return false }(),
+					},
+					"ci_wait_timeout": autopilotCfg.CIWaitTimeout.String(),
+					"max_failures":    autopilotCfg.MaxFailures,
+					"note":            "For live PR tracking, check the dashboard or logs. This shows config only.",
+				}
+				out, _ := json.MarshalIndent(data, "", "  ")
+				fmt.Println(string(out))
+				return nil
+			}
+
+			fmt.Println("🤖 Autopilot Status")
+			fmt.Println("───────────────────────────────────────")
+			fmt.Printf("Environment: %s\n", autopilotCfg.Environment)
+			fmt.Println()
+
+			fmt.Println("Configuration:")
+			fmt.Printf("  Auto Merge:     %v\n", autopilotCfg.AutoMerge)
+			fmt.Printf("  Auto Review:    %v\n", autopilotCfg.AutoReview)
+			fmt.Printf("  Merge Method:   %s\n", autopilotCfg.MergeMethod)
+			fmt.Printf("  CI Timeout:     %s\n", autopilotCfg.CIWaitTimeout)
+			fmt.Printf("  Max Failures:   %d\n", autopilotCfg.MaxFailures)
+			fmt.Println()
+
+			fmt.Println("Release:")
+			if autopilotCfg.Release != nil && autopilotCfg.Release.Enabled {
+				fmt.Printf("  Enabled:        true\n")
+				fmt.Printf("  Trigger:        %s\n", autopilotCfg.Release.Trigger)
+				fmt.Printf("  Require CI:     %v\n", autopilotCfg.Release.RequireCI)
+				fmt.Printf("  Tag Prefix:     %s\n", autopilotCfg.Release.TagPrefix)
+			} else {
+				fmt.Printf("  Enabled:        false\n")
+			}
+			fmt.Println()
+
+			fmt.Println("ℹ️  For live PR tracking, check:")
+			fmt.Println("   • Dashboard: pilot start --dashboard --autopilot=<env>")
+			fmt.Println("   • Logs: pilot logs --follow")
+
+			return nil
+		},
+	}
+
+	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Output as JSON")
 
 	return cmd
 }

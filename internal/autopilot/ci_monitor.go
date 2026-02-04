@@ -47,7 +47,7 @@ func (m *CIMonitor) WaitForCI(ctx context.Context, sha string) (CIStatus, error)
 	defer ticker.Stop()
 
 	// Log initial status
-	m.log.Info("waiting for CI", "sha", sha[:7], "timeout", m.waitTimeout, "required_checks", m.requiredChecks)
+	m.log.Info("waiting for CI", "sha", ShortSHA(sha), "timeout", m.waitTimeout, "required_checks", m.requiredChecks)
 
 	for {
 		select {
@@ -64,7 +64,7 @@ func (m *CIMonitor) WaitForCI(ctx context.Context, sha string) (CIStatus, error)
 				continue
 			}
 
-			m.log.Info("CI status", "sha", sha[:7], "status", status)
+			m.log.Info("CI status", "sha", ShortSHA(sha), "status", status)
 
 			if status == CISuccess || status == CIFailure {
 				return status, nil
@@ -180,7 +180,21 @@ func (m *CIMonitor) mapCheckStatus(status, conclusion string) CIStatus {
 // This is the non-blocking alternative to WaitForCI.
 // Returns CIPending/CIRunning if checks are still running.
 func (m *CIMonitor) CheckCI(ctx context.Context, sha string) (CIStatus, error) {
-	return m.checkStatus(ctx, sha)
+	status, err := m.checkStatus(ctx, sha)
+	if err != nil {
+		m.log.Debug("CheckCI: status check failed",
+			"sha", ShortSHA(sha),
+			"error", err,
+		)
+		return status, err
+	}
+
+	m.log.Debug("CheckCI: status check complete",
+		"sha", ShortSHA(sha),
+		"status", status,
+		"required_checks", m.requiredChecks,
+	)
+	return status, nil
 }
 
 // GetCIStatus returns the current overall CI status for a SHA.
