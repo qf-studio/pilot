@@ -232,3 +232,187 @@ func (c *Client) AddComment(ctx context.Context, issueID, body string) error {
 		"body":    body,
 	}, nil)
 }
+
+// ListIssuesOptions configures issue listing
+type ListIssuesOptions struct {
+	TeamID     string
+	Label      string
+	ProjectIDs []string
+	States     []string // e.g., ["backlog", "unstarted", "started"]
+}
+
+// ListIssues fetches issues matching the filter criteria
+func (c *Client) ListIssues(ctx context.Context, opts *ListIssuesOptions) ([]*Issue, error) {
+	query := `
+		query ListIssues($teamId: String!, $label: String!, $states: [String!]) {
+			issues(
+				filter: {
+					team: { key: { eq: $teamId } }
+					labels: { name: { eq: $label } }
+					state: { type: { in: $states } }
+				}
+				first: 50
+				orderBy: createdAt
+			) {
+				nodes {
+					id
+					identifier
+					title
+					description
+					priority
+					state { id name type }
+					labels { nodes { id name } }
+					assignee { id name email }
+					project { id name }
+					team { id name key }
+					createdAt
+					updatedAt
+				}
+			}
+		}
+	`
+
+	states := opts.States
+	if len(states) == 0 {
+		states = []string{"backlog", "unstarted", "started"}
+	}
+
+	variables := map[string]interface{}{
+		"teamId": opts.TeamID,
+		"label":  opts.Label,
+		"states": states,
+	}
+
+	var result struct {
+		Issues struct {
+			Nodes []*issueListItem `json:"nodes"`
+		} `json:"issues"`
+	}
+
+	if err := c.Execute(ctx, query, variables, &result); err != nil {
+		return nil, err
+	}
+
+	// Convert responses to Issue objects
+	issues := make([]*Issue, 0, len(result.Issues.Nodes))
+	for _, resp := range result.Issues.Nodes {
+		issue := resp.toIssue()
+		// Filter by project if specified
+		if len(opts.ProjectIDs) > 0 {
+			if issue.Project == nil || !containsString(opts.ProjectIDs, issue.Project.ID) {
+				continue
+			}
+		}
+		issues = append(issues, issue)
+	}
+
+	return issues, nil
+}
+
+// issueListItem is the raw GraphQL response for an issue (labels have nested nodes)
+type issueListItem struct {
+	ID          string    `json:"id"`
+	Identifier  string    `json:"identifier"`
+	Title       string    `json:"title"`
+	Description string    `json:"description"`
+	Priority    int       `json:"priority"`
+	State       State     `json:"state"`
+	Labels      struct {
+		Nodes []Label `json:"nodes"`
+	} `json:"labels"`
+	Assignee  *User     `json:"assignee"`
+	Project   *Project  `json:"project"`
+	Team      Team      `json:"team"`
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+// toIssue converts the response to an Issue
+func (r *issueListItem) toIssue() *Issue {
+	return &Issue{
+		ID:          r.ID,
+		Identifier:  r.Identifier,
+		Title:       r.Title,
+		Description: r.Description,
+		Priority:    r.Priority,
+		State:       r.State,
+		Labels:      r.Labels.Nodes,
+		Assignee:    r.Assignee,
+		Project:     r.Project,
+		Team:        r.Team,
+		CreatedAt:   r.CreatedAt,
+		UpdatedAt:   r.UpdatedAt,
+	}
+}
+
+// containsString checks if a slice contains a string
+func containsString(slice []string, item string) bool {
+	for _, s := range slice {
+		if s == item {
+			return true
+		}
+	}
+	return false
+}
+
+// AddLabel adds a label to an issue
+func (c *Client) AddLabel(ctx context.Context, issueID, labelID string) error {
+	mutation := `
+		mutation AddLabel($issueId: String!, $labelId: String!) {
+			issueAddLabel(id: $issueId, labelId: $labelId) {
+				success
+			}
+		}
+	`
+	return c.Execute(ctx, mutation, map[string]interface{}{
+		"issueId": issueID,
+		"labelId": labelID,
+	}, nil)
+}
+
+// RemoveLabel removes a label from an issue
+func (c *Client) RemoveLabel(ctx context.Context, issueID, labelID string) error {
+	mutation := `
+		mutation RemoveLabel($issueId: String!, $labelId: String!) {
+			issueRemoveLabel(id: $issueId, labelId: $labelId) {
+				success
+			}
+		}
+	`
+	return c.Execute(ctx, mutation, map[string]interface{}{
+		"issueId": issueID,
+		"labelId": labelID,
+	}, nil)
+}
+
+// GetLabelByName fetches a label ID by name for a team
+func (c *Client) GetLabelByName(ctx context.Context, teamID, labelName string) (string, error) {
+	query := `
+		query GetLabel($teamId: String!, $name: String!) {
+			issueLabels(filter: { team: { key: { eq: $teamId } }, name: { eq: $name } }) {
+				nodes { id name }
+			}
+		}
+	`
+	var result struct {
+		IssueLabels struct {
+			Nodes []struct {
+				ID   string `json:"id"`
+				Name string `json:"name"`
+			} `json:"nodes"`
+		} `json:"issueLabels"`
+	}
+
+	if err := c.Execute(ctx, query, map[string]interface{}{
+		"teamId": teamID,
+		"name":   labelName,
+	}, &result); err != nil {
+		return "", err
+	}
+
+	if len(result.IssueLabels.Nodes) == 0 {
+		return "", fmt.Errorf("label %q not found in team %s", labelName, teamID)
+	}
+
+	return result.IssueLabels.Nodes[0].ID, nil
+}

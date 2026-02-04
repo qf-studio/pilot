@@ -1,5 +1,7 @@
 package linear
 
+import "time"
+
 // Config holds Linear adapter configuration
 type Config struct {
 	Enabled    bool               `yaml:"enabled"`
@@ -11,6 +13,15 @@ type Config struct {
 	AutoAssign bool     `yaml:"auto_assign"`
 	PilotLabel string   `yaml:"pilot_label,omitempty"`
 	ProjectIDs []string `yaml:"project_ids,omitempty"` // Filter issues by project ID(s)
+
+	// Polling configuration
+	Polling *PollingConfig `yaml:"polling,omitempty"`
+}
+
+// PollingConfig holds polling configuration for Linear adapter
+type PollingConfig struct {
+	Enabled  bool          `yaml:"enabled"`
+	Interval time.Duration `yaml:"interval"`
 }
 
 // WorkspaceConfig holds configuration for a single Linear workspace
@@ -22,6 +33,9 @@ type WorkspaceConfig struct {
 	ProjectIDs []string `yaml:"project_ids,omitempty"`
 	Projects   []string `yaml:"projects"` // Pilot project names
 	AutoAssign bool     `yaml:"auto_assign"`
+
+	// Polling configuration (workspace-level override)
+	Polling *PollingConfig `yaml:"polling,omitempty"`
 }
 
 // GetWorkspaces returns all configured workspaces.
@@ -98,6 +112,10 @@ func DefaultConfig() *Config {
 		Enabled:    false,
 		PilotLabel: "pilot",
 		AutoAssign: true,
+		Polling: &PollingConfig{
+			Enabled:  true,
+			Interval: 30 * time.Second,
+		},
 	}
 }
 

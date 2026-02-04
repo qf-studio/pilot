@@ -633,6 +633,48 @@ Examples:
 				}
 			}
 
+			// Enable Linear polling in gateway mode if configured (GH-393)
+			if cfg.Adapters.Linear != nil && cfg.Adapters.Linear.Enabled &&
+				cfg.Adapters.Linear.Polling != nil && cfg.Adapters.Linear.Polling.Enabled {
+
+				workspaces := cfg.Adapters.Linear.GetWorkspaces()
+				for _, ws := range workspaces {
+					// Determine interval: workspace override > global > default
+					interval := 30 * time.Second
+					if ws.Polling != nil && ws.Polling.Interval > 0 {
+						interval = ws.Polling.Interval
+					} else if cfg.Adapters.Linear.Polling.Interval > 0 {
+						interval = cfg.Adapters.Linear.Polling.Interval
+					}
+
+					// Check if workspace polling is explicitly disabled
+					if ws.Polling != nil && !ws.Polling.Enabled {
+						continue
+					}
+
+					linearClient := linear.NewClient(ws.APIKey)
+					linearPoller := linear.NewPoller(linearClient, ws, interval,
+						linear.WithOnLinearIssue(func(issueCtx context.Context, issue *linear.Issue) (*linear.IssueResult, error) {
+							return handleLinearIssueWithResult(issueCtx, cfg, linearClient, issue, projectPath, gwDispatcher, gwRunner, gwMonitor, gwProgram, gwAlertsEngine)
+						}),
+					)
+
+					logging.WithComponent("start").Info("Linear polling enabled in gateway mode",
+						slog.String("workspace", ws.Name),
+						slog.String("team", ws.TeamID),
+						slog.Duration("interval", interval),
+					)
+					go func(p *linear.Poller, name string) {
+						if err := p.Start(context.Background()); err != nil {
+							logging.WithComponent("linear").Error("Linear poller failed",
+								slog.String("workspace", name),
+								slog.Any("error", err),
+							)
+						}
+					}(linearPoller, ws.Name)
+				}
+			}
+
 			// Create and start Pilot
 			p, err := pilot.New(cfg, pilotOpts...)
 			if err != nil {
@@ -678,6 +720,15 @@ Examples:
 			if hasGithubPolling && cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.Enabled &&
 				cfg.Adapters.GitHub.Polling != nil && cfg.Adapters.GitHub.Polling.Enabled {
 				fmt.Printf("🐙 GitHub polling: %s\n", cfg.Adapters.GitHub.Repo)
+			}
+
+			// Show Linear status in gateway mode (GH-393)
+			if cfg.Adapters.Linear != nil && cfg.Adapters.Linear.Enabled &&
+				cfg.Adapters.Linear.Polling != nil && cfg.Adapters.Linear.Polling.Enabled {
+				workspaces := cfg.Adapters.Linear.GetWorkspaces()
+				for _, ws := range workspaces {
+					fmt.Printf("📊 Linear polling: %s/%s\n", ws.Name, ws.TeamID)
+				}
 			}
 
 			// Wait for shutdown signal
@@ -1215,6 +1266,46 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 		}
 	}
 
+	// Start Linear polling if enabled (GH-393)
+	if cfg.Adapters.Linear != nil && cfg.Adapters.Linear.Enabled &&
+		cfg.Adapters.Linear.Polling != nil && cfg.Adapters.Linear.Polling.Enabled {
+
+		workspaces := cfg.Adapters.Linear.GetWorkspaces()
+		for _, ws := range workspaces {
+			// Determine interval: workspace override > global > default
+			interval := 30 * time.Second
+			if ws.Polling != nil && ws.Polling.Interval > 0 {
+				interval = ws.Polling.Interval
+			} else if cfg.Adapters.Linear.Polling.Interval > 0 {
+				interval = cfg.Adapters.Linear.Polling.Interval
+			}
+
+			// Check if workspace polling is explicitly disabled
+			if ws.Polling != nil && !ws.Polling.Enabled {
+				continue
+			}
+
+			linearClient := linear.NewClient(ws.APIKey)
+			linearPoller := linear.NewPoller(linearClient, ws, interval,
+				linear.WithOnLinearIssue(func(issueCtx context.Context, issue *linear.Issue) (*linear.IssueResult, error) {
+					return handleLinearIssueWithResult(issueCtx, cfg, linearClient, issue, projectPath, dispatcher, runner, monitor, program, alertsEngine)
+				}),
+			)
+
+			if !dashboardMode {
+				fmt.Printf("📊 Linear polling enabled: %s/%s (every %s)\n", ws.Name, ws.TeamID, interval)
+			}
+			go func(p *linear.Poller, name string) {
+				if err := p.Start(ctx); err != nil {
+					logging.WithComponent("linear").Error("Linear poller failed",
+						slog.String("workspace", name),
+						slog.Any("error", err),
+					)
+				}
+			}(linearPoller, ws.Name)
+		}
+	}
+
 	// Start Telegram polling if enabled
 	if tgHandler != nil {
 		if !dashboardMode {
@@ -1373,6 +1464,14 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 				cfg.Adapters.GitHub.Polling != nil && cfg.Adapters.GitHub.Polling.Enabled
 			if hasGitHubPolling {
 				program.Send(dashboard.AddLog(fmt.Sprintf("🐙 GitHub polling: %s", cfg.Adapters.GitHub.Repo))())
+			}
+			hasLinearPolling := cfg.Adapters.Linear != nil && cfg.Adapters.Linear.Enabled &&
+				cfg.Adapters.Linear.Polling != nil && cfg.Adapters.Linear.Polling.Enabled
+			if hasLinearPolling {
+				workspaces := cfg.Adapters.Linear.GetWorkspaces()
+				for _, ws := range workspaces {
+					program.Send(dashboard.AddLog(fmt.Sprintf("📊 Linear polling: %s/%s", ws.Name, ws.TeamID))())
+				}
 			}
 
 			// Check for restart marker (set by hot upgrade)
@@ -1869,6 +1968,199 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 			if _, err := client.AddComment(ctx, parts[0], parts[1], issue.Number, comment); err != nil {
 				logGitHubAPIError("AddComment", parts[0], parts[1], issue.Number, err)
 			}
+		}
+	}
+
+	return issueResult, execErr
+}
+
+// handleLinearIssueWithResult processes a Linear issue picked up by the poller (GH-393)
+func handleLinearIssueWithResult(ctx context.Context, cfg *config.Config, client *linear.Client, issue *linear.Issue, projectPath string, dispatcher *executor.Dispatcher, runner *executor.Runner, monitor *executor.Monitor, program *tea.Program, alertsEngine *alerts.Engine) (*linear.IssueResult, error) {
+	taskID := issue.Identifier // e.g., "APP-123"
+
+	// Register task with monitor if in dashboard mode
+	if monitor != nil {
+		issueURL := fmt.Sprintf("https://linear.app/issue/%s", issue.Identifier)
+		monitor.Register(taskID, issue.Title, issueURL)
+		monitor.Start(taskID)
+	}
+	if program != nil {
+		program.Send(dashboard.AddLog(fmt.Sprintf("📊 Linear Issue %s: %s", issue.Identifier, issue.Title))())
+	}
+
+	// Emit task started event (GH-337)
+	if alertsEngine != nil {
+		alertsEngine.ProcessEvent(alerts.Event{
+			Type:      alerts.EventTypeTaskStarted,
+			TaskID:    taskID,
+			TaskTitle: issue.Title,
+			Project:   projectPath,
+			Timestamp: time.Now(),
+		})
+	}
+
+	fmt.Printf("\n📊 Linear Issue %s: %s\n", issue.Identifier, issue.Title)
+
+	taskDesc := fmt.Sprintf("Linear Issue %s: %s\n\n%s", issue.Identifier, issue.Title, issue.Description)
+	branchName := fmt.Sprintf("pilot/%s", taskID)
+
+	task := &executor.Task{
+		ID:          taskID,
+		Title:       issue.Title,
+		Description: taskDesc,
+		ProjectPath: projectPath,
+		Branch:      branchName,
+		CreatePR:    true,
+	}
+
+	var result *executor.ExecutionResult
+	var execErr error
+
+	if dispatcher != nil {
+		execID, qErr := dispatcher.QueueTask(ctx, task)
+		if qErr != nil {
+			execErr = fmt.Errorf("failed to queue task: %w", qErr)
+		} else {
+			fmt.Printf("   📋 Queued as execution %s\n", execID[:8])
+			exec, waitErr := dispatcher.WaitForExecution(ctx, execID, time.Second)
+			if waitErr != nil {
+				execErr = fmt.Errorf("failed waiting for execution: %w", waitErr)
+			} else if exec.Status == "failed" {
+				execErr = fmt.Errorf("execution failed: %s", exec.Error)
+			} else {
+				result = &executor.ExecutionResult{
+					TaskID:    task.ID,
+					Success:   exec.Status == "completed",
+					Output:    exec.Output,
+					Error:     exec.Error,
+					PRUrl:     exec.PRUrl,
+					CommitSHA: exec.CommitSHA,
+					Duration:  time.Duration(exec.DurationMs) * time.Millisecond,
+				}
+			}
+		}
+	} else {
+		result, execErr = runner.Execute(ctx, task)
+	}
+
+	// Update monitor with completion status
+	prURL := ""
+	if result != nil {
+		prURL = result.PRUrl
+	}
+	if monitor != nil {
+		if execErr != nil {
+			monitor.Fail(taskID, execErr.Error())
+		} else {
+			monitor.Complete(taskID, prURL)
+		}
+	}
+
+	// Emit task completed/failed event (GH-337)
+	if alertsEngine != nil {
+		if execErr != nil {
+			alertsEngine.ProcessEvent(alerts.Event{
+				Type:      alerts.EventTypeTaskFailed,
+				TaskID:    taskID,
+				TaskTitle: issue.Title,
+				Project:   projectPath,
+				Error:     execErr.Error(),
+				Timestamp: time.Now(),
+			})
+		} else if result != nil && result.Success {
+			metadata := map[string]string{}
+			if result.PRUrl != "" {
+				metadata["pr_url"] = result.PRUrl
+			}
+			if result.Duration > 0 {
+				metadata["duration"] = result.Duration.String()
+			}
+			alertsEngine.ProcessEvent(alerts.Event{
+				Type:      alerts.EventTypeTaskCompleted,
+				TaskID:    taskID,
+				TaskTitle: issue.Title,
+				Project:   projectPath,
+				Metadata:  metadata,
+				Timestamp: time.Now(),
+			})
+		} else if result != nil {
+			alertsEngine.ProcessEvent(alerts.Event{
+				Type:      alerts.EventTypeTaskFailed,
+				TaskID:    taskID,
+				TaskTitle: issue.Title,
+				Project:   projectPath,
+				Error:     result.Error,
+				Timestamp: time.Now(),
+			})
+		}
+	}
+
+	// Add completed task to dashboard history
+	if program != nil {
+		status := "success"
+		duration := ""
+		if execErr != nil {
+			status = "failed"
+		} else if result != nil {
+			duration = result.Duration.String()
+		}
+		program.Send(dashboard.AddCompletedTask(taskID, issue.Title, status, duration)())
+	}
+
+	// Build issue result
+	issueResult := &linear.IssueResult{
+		Success: execErr == nil && result != nil && result.Success,
+	}
+	if result != nil {
+		if result.PRUrl != "" {
+			issueResult.PRURL = result.PRUrl
+			if prNum, err := github.ExtractPRNumber(result.PRUrl); err == nil {
+				issueResult.PRNumber = prNum
+			}
+		}
+	}
+
+	// Add comment to Linear issue
+	if execErr != nil {
+		comment := fmt.Sprintf("❌ Pilot execution failed:\n\n```\n%s\n```", execErr.Error())
+		if err := client.AddComment(ctx, issue.ID, comment); err != nil {
+			logging.WithComponent("linear").Warn("Failed to add comment",
+				slog.String("issue", issue.Identifier),
+				slog.Any("error", err),
+			)
+		}
+	} else if result != nil && result.Success {
+		// Validate deliverables before marking as done
+		if result.CommitSHA == "" && result.PRUrl == "" {
+			comment := fmt.Sprintf("⚠️ Pilot execution completed but no changes were made.\n\n**Duration:** %s\n**Branch:** `%s`\n\nNo commits or PR were created. The task may need clarification or manual intervention.",
+				result.Duration, branchName)
+			if err := client.AddComment(ctx, issue.ID, comment); err != nil {
+				logging.WithComponent("linear").Warn("Failed to add comment",
+					slog.String("issue", issue.Identifier),
+					slog.Any("error", err),
+				)
+			}
+			issueResult.Success = false
+		} else {
+			comment := fmt.Sprintf("✅ Pilot completed!\n\n**Duration:** %s\n**Branch:** `%s`",
+				result.Duration, branchName)
+			if result.PRUrl != "" {
+				comment += fmt.Sprintf("\n**PR:** %s", result.PRUrl)
+			}
+			if err := client.AddComment(ctx, issue.ID, comment); err != nil {
+				logging.WithComponent("linear").Warn("Failed to add comment",
+					slog.String("issue", issue.Identifier),
+					slog.Any("error", err),
+				)
+			}
+		}
+	} else if result != nil {
+		comment := fmt.Sprintf("❌ Pilot execution completed but failed:\n\n```\n%s\n```", result.Error)
+		if err := client.AddComment(ctx, issue.ID, comment); err != nil {
+			logging.WithComponent("linear").Warn("Failed to add comment",
+				slog.String("issue", issue.Identifier),
+				slog.Any("error", err),
+			)
 		}
 	}
 
