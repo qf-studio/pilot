@@ -94,7 +94,7 @@ func TestPlainTextFormatter(t *testing.T) {
 		"IN PROGRESS (1)",
 		"TASK-003",
 		"65%",
-		"BLOCKED (1)",
+		"FAILED (1)",
 		"TASK-004",
 		"auth_test.go:42",
 		"UPCOMING (1)",

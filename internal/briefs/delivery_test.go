@@ -610,7 +610,7 @@ func TestFormatTelegramBrief(t *testing.T) {
 		"Completed:",
 		"TASK-001",
 		"TASK-002",
-		"Blocked:",
+		"Failed:",
 		"TASK-004",
 		"Queue",
 		"TASK-005",

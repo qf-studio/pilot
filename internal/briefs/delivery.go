@@ -290,9 +290,9 @@ func (d *DeliveryService) formatTelegramBrief(brief *Brief) string {
 		text += "\n"
 	}
 
-	// Blocked tasks
+	// Failed tasks
 	if len(brief.Blocked) > 0 {
-		text += "❌ *Blocked:*\n"
+		text += "❌ *Failed:*\n"
 		for _, task := range brief.Blocked {
 			text += fmt.Sprintf("• %s: %s\n", task.ID, task.Title)
 		}

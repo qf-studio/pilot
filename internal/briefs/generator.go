@@ -83,7 +83,15 @@ func (g *Generator) Generate(period BriefPeriod) (*Brief, error) {
 		Metrics:     convertMetrics(metricsData),
 	}
 
-	// Categorize executions
+	// First pass: collect completed task IDs to filter out retried failures
+	completedTaskIDs := make(map[string]bool)
+	for _, exec := range executions {
+		if exec.Status == "completed" {
+			completedTaskIDs[exec.TaskID] = true
+		}
+	}
+
+	// Second pass: categorize executions
 	for _, exec := range executions {
 		title := exec.TaskTitle
 		if title == "" {
@@ -105,6 +113,10 @@ func (g *Generator) Generate(period BriefPeriod) (*Brief, error) {
 				brief.Completed = append(brief.Completed, summary)
 			}
 		case "failed":
+			// Skip failures for tasks that were later completed successfully
+			if completedTaskIDs[exec.TaskID] {
+				continue
+			}
 			if g.config.Content.IncludeErrors && len(brief.Blocked) < g.config.Content.MaxItemsPerSection {
 				blocked := BlockedTask{
 					TaskSummary: summary,

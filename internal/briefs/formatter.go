@@ -56,7 +56,7 @@ func (f *PlainTextFormatter) Format(brief *Brief) (string, error) {
 
 	// Blocked
 	if len(brief.Blocked) > 0 {
-		sb.WriteString(fmt.Sprintf("BLOCKED (%d)\n", len(brief.Blocked)))
+		sb.WriteString(fmt.Sprintf("FAILED (%d)\n", len(brief.Blocked)))
 		sb.WriteString(strings.Repeat("-", 30) + "\n")
 		for _, task := range brief.Blocked {
 			sb.WriteString(fmt.Sprintf("  • %s\n", task.ID))
