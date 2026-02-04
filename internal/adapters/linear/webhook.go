@@ -32,14 +32,16 @@ type WebhookPayload struct {
 type WebhookHandler struct {
 	client     *Client
 	pilotLabel string
+	projectIDs []string
 	onIssue    func(context.Context, *Issue) error
 }
 
 // NewWebhookHandler creates a new webhook handler
-func NewWebhookHandler(client *Client, pilotLabel string) *WebhookHandler {
+func NewWebhookHandler(client *Client, pilotLabel string, projectIDs []string) *WebhookHandler {
 	return &WebhookHandler{
 		client:     client,
 		pilotLabel: pilotLabel,
+		projectIDs: projectIDs,
 	}
 }
 
@@ -78,6 +80,18 @@ func (h *WebhookHandler) Handle(ctx context.Context, payload map[string]interfac
 		return err
 	}
 
+	// Check project filter if configured
+	if !h.isAllowedProject(issue) {
+		projectName := "none"
+		if issue.Project != nil {
+			projectName = issue.Project.Name
+		}
+		logging.WithComponent("linear").Debug("Issue not in allowed project, skipping",
+			slog.String("identifier", issue.Identifier),
+			slog.String("project", projectName))
+		return nil
+	}
+
 	logging.WithComponent("linear").Info("Processing pilot issue", slog.String("identifier", issue.Identifier), slog.String("title", issue.Title))
 
 	// Call the callback
@@ -86,6 +100,28 @@ func (h *WebhookHandler) Handle(ctx context.Context, payload map[string]interfac
 	}
 
 	return nil
+}
+
+// isAllowedProject checks if the issue belongs to an allowed project
+func (h *WebhookHandler) isAllowedProject(issue *Issue) bool {
+	// If no project filter configured, allow all projects
+	if len(h.projectIDs) == 0 {
+		return true
+	}
+
+	// Issue must have a project when filter is active
+	if issue.Project == nil {
+		return false
+	}
+
+	// Check if issue's project is in allowed list
+	for _, pid := range h.projectIDs {
+		if issue.Project.ID == pid {
+			return true
+		}
+	}
+
+	return false
 }
 
 // hasPilotLabel checks if the issue has the pilot label

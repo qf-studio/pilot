@@ -2,11 +2,12 @@ package linear
 
 // Config holds Linear adapter configuration
 type Config struct {
-	Enabled    bool   `yaml:"enabled"`
-	APIKey     string `yaml:"api_key"`
-	TeamID     string `yaml:"team_id"`
-	AutoAssign bool   `yaml:"auto_assign"`
-	PilotLabel string `yaml:"pilot_label"`
+	Enabled    bool     `yaml:"enabled"`
+	APIKey     string   `yaml:"api_key"`
+	TeamID     string   `yaml:"team_id"`
+	AutoAssign bool     `yaml:"auto_assign"`
+	PilotLabel string   `yaml:"pilot_label"`
+	ProjectIDs []string `yaml:"project_ids,omitempty"` // Filter issues by project ID(s)
 }
 
 // DefaultConfig returns default Linear configuration

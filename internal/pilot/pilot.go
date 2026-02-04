@@ -200,7 +200,7 @@ func New(cfg *config.Config, opts ...Option) (*Pilot, error) {
 	// Initialize Linear adapter if enabled
 	if cfg.Adapters.Linear != nil && cfg.Adapters.Linear.Enabled {
 		p.linearClient = linear.NewClient(cfg.Adapters.Linear.APIKey)
-		p.linearWH = linear.NewWebhookHandler(p.linearClient, cfg.Adapters.Linear.PilotLabel)
+		p.linearWH = linear.NewWebhookHandler(p.linearClient, cfg.Adapters.Linear.PilotLabel, cfg.Adapters.Linear.ProjectIDs)
 		p.linearWH.OnIssue(p.handleLinearIssue)
 		p.linearNotify = linear.NewNotifier(p.linearClient)
 	}
