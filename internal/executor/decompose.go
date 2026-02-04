@@ -119,7 +119,12 @@ func (d *TaskDecomposer) Decompose(task *Task) *DecomposeResult {
 }
 
 // shouldDecompose checks if the complexity meets the threshold.
+// Epic tasks are always decomposable since they're too large for single execution.
 func (d *TaskDecomposer) shouldDecompose(complexity Complexity) bool {
+	// Epic tasks should always be decomposed
+	if complexity == ComplexityEpic {
+		return true
+	}
 	switch d.config.MinComplexity {
 	case "complex":
 		return complexity == ComplexityComplex
@@ -362,6 +367,10 @@ func ShouldDecompose(task *Task, config *DecomposeConfig) bool {
 	}
 
 	complexity := DetectComplexity(task)
+	// Epic tasks always need decomposition
+	if complexity == ComplexityEpic {
+		return true
+	}
 	if complexity != ComplexityComplex {
 		return false
 	}

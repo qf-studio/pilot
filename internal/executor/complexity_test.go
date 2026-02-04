@@ -59,6 +59,95 @@ func TestDetectComplexity(t *testing.T) {
 			expected: ComplexitySimple,
 		},
 
+		// Epic cases
+		{
+			name:     "epic tag in title",
+			task:     &Task{Title: "[epic] Implement new authentication system", Description: "Multi-phase auth rewrite"},
+			expected: ComplexityEpic,
+		},
+		{
+			name:     "epic keyword in description",
+			task:     &Task{Description: "This is an epic task that spans multiple sprints"},
+			expected: ComplexityEpic,
+		},
+		{
+			name:     "roadmap keyword",
+			task:     &Task{Description: "Implement the roadmap for Q2 features"},
+			expected: ComplexityEpic,
+		},
+		{
+			name:     "multi-phase keyword",
+			task:     &Task{Description: "This is a multi-phase implementation"},
+			expected: ComplexityEpic,
+		},
+		{
+			name:     "milestone keyword",
+			task:     &Task{Description: "Complete milestone 3 with all features"},
+			expected: ComplexityEpic,
+		},
+		{
+			name: "5+ checkboxes",
+			task: &Task{Description: `Implement user management:
+- [ ] Create user model
+- [ ] Add user API endpoints
+- [ ] Implement user validation
+- [ ] Add user permissions
+- [ ] Create user tests
+- [ ] Add user documentation`},
+			expected: ComplexityEpic,
+		},
+		{
+			name: "3+ numbered phases",
+			task: &Task{Description: `Implementation plan:
+Phase 1: Design the database schema
+Phase 2: Implement the API layer
+Phase 3: Create the frontend components
+Phase 4: Add integration tests`},
+			expected: ComplexityEpic,
+		},
+		{
+			name: "phase keyword sections",
+			task: &Task{Description: `Implementation:
+Phase 1: Setup
+Phase 2: Core logic
+Phase 3: Testing`},
+			expected: ComplexityEpic,
+		},
+		{
+			name: "200+ words with structural markers",
+			task: &Task{Description: `## Overview
+This is a comprehensive implementation that requires significant planning and coordination across multiple teams.
+The feature spans multiple components and requires careful consideration of the existing architecture patterns.
+We need to ensure backward compatibility while introducing the new functionality in a phased approach.
+The project involves frontend, backend, database, and infrastructure changes that must be carefully orchestrated.
+Each phase builds on the previous one and has its own set of deliverables and acceptance criteria to meet.
+
+## Phase 1: Foundation
+Set up the basic infrastructure and data models needed for the feature implementation.
+This includes database migrations for new tables and columns, API scaffolding with proper versioning,
+and initial frontend components with placeholder data. We also need to configure the CI/CD pipeline
+to support the new deployment requirements and set up monitoring dashboards for the new services.
+
+## Phase 2: Core Implementation
+Build out the main business logic and user-facing features with full functionality.
+This is the bulk of the work and requires coordination across teams including frontend, backend, and QA.
+We need to implement the core algorithms, integrate with external services, handle edge cases,
+and ensure the system performs well under expected load. Documentation should be written in parallel.
+
+## Phase 3: Polish and Testing
+Add comprehensive tests including unit tests, integration tests, and end-to-end tests.
+Fix edge cases discovered during testing and polish the user experience based on feedback.
+This phase ensures production readiness and documentation completeness before the final release.
+We need to conduct load testing, security review, and accessibility audit before going live.
+
+The implementation should follow our established patterns and coding standards for consistency.
+We need to coordinate with the design team for the UI components and the platform team for infrastructure.
+Performance testing will be critical given the expected load on this feature during peak hours.
+We should also plan for graceful degradation and proper error handling throughout the system.
+Regular sync meetings with stakeholders will be necessary to ensure alignment on priorities and timeline.`},
+			expected: ComplexityEpic,
+		},
+
 		// Complex cases
 		{
 			name:     "refactor",
@@ -138,13 +227,15 @@ func TestComplexity_Methods(t *testing.T) {
 		complexity          Complexity
 		isTrivial           bool
 		isSimple            bool
+		isEpic              bool
 		shouldSkipNavigator bool
 		shouldRunResearch   bool
 	}{
-		{ComplexityTrivial, true, true, true, false},
-		{ComplexitySimple, false, true, false, false},
-		{ComplexityMedium, false, false, false, true},
-		{ComplexityComplex, false, false, false, true},
+		{ComplexityTrivial, true, true, false, true, false},
+		{ComplexitySimple, false, true, false, false, false},
+		{ComplexityMedium, false, false, false, false, true},
+		{ComplexityComplex, false, false, false, false, true},
+		{ComplexityEpic, false, false, true, false, false},
 	}
 
 	for _, tt := range tests {
@@ -154,6 +245,9 @@ func TestComplexity_Methods(t *testing.T) {
 			}
 			if got := tt.complexity.IsSimple(); got != tt.isSimple {
 				t.Errorf("IsSimple() = %v, want %v", got, tt.isSimple)
+			}
+			if got := tt.complexity.IsEpic(); got != tt.isEpic {
+				t.Errorf("IsEpic() = %v, want %v", got, tt.isEpic)
 			}
 			if got := tt.complexity.ShouldSkipNavigator(); got != tt.shouldSkipNavigator {
 				t.Errorf("ShouldSkipNavigator() = %v, want %v", got, tt.shouldSkipNavigator)
@@ -174,6 +268,7 @@ func TestComplexity_String(t *testing.T) {
 		{ComplexitySimple, "simple"},
 		{ComplexityMedium, "medium"},
 		{ComplexityComplex, "complex"},
+		{ComplexityEpic, "epic"},
 	}
 
 	for _, tt := range tests {

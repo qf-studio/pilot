@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"regexp"
 	"strings"
 )
 
@@ -24,6 +25,10 @@ const (
 	// ComplexityComplex is for architectural changes: refactors, migrations, system redesigns.
 	// Uses full Navigator workflow with the most capable model.
 	ComplexityComplex Complexity = "complex"
+
+	// ComplexityEpic is for tasks too large for a single execution cycle.
+	// These should be broken into multiple sub-tasks or phases.
+	ComplexityEpic Complexity = "epic"
 )
 
 // trivialPatterns are exact or partial matches indicating trivial tasks.
@@ -83,6 +88,24 @@ var complexPatterns = []string{
 	"cross-cutting",
 }
 
+// epicPatterns indicate tasks too large for a single execution cycle.
+var epicPatterns = []string{
+	"epic",
+	"roadmap",
+	"multi-phase",
+	"milestone",
+}
+
+// epicTagRegex matches [epic] tag in title.
+var epicTagRegex = regexp.MustCompile(`(?i)\[epic\]`)
+
+// numberedPhaseRegex matches explicit phase markers like "Phase 1", "Stage 1", etc.
+// Does NOT match simple numbered lists (1., 2.) as those are common in task descriptions.
+var numberedPhaseRegex = regexp.MustCompile(`(?mi)^(?:##\s*)?(?:phase|stage|part|milestone)\s+\d+`)
+
+// checkboxRegex matches markdown checkboxes "- [ ]" or "- [x]".
+var checkboxRegex = regexp.MustCompile(`(?m)^[\s]*-\s*\[[x ]\]`)
+
 // DetectComplexity analyzes a task and returns its estimated complexity.
 // The detection uses pattern matching on the description and heuristics
 // like word count to estimate task complexity.
@@ -95,7 +118,12 @@ func DetectComplexity(task *Task) Complexity {
 	title := strings.ToLower(task.Title)
 	combined := desc + " " + title
 
-	// Check trivial patterns first (fastest path)
+	// Check epic patterns first (these are too large for single execution)
+	if detectEpic(task.Title, task.Description, combined) {
+		return ComplexityEpic
+	}
+
+	// Check trivial patterns (fastest path for small changes)
 	for _, pattern := range trivialPatterns {
 		if strings.Contains(combined, pattern) {
 			return ComplexityTrivial
@@ -133,6 +161,46 @@ func DetectComplexity(task *Task) Complexity {
 	return ComplexityComplex
 }
 
+// detectEpic checks if a task matches epic patterns.
+// Returns true if any epic indicator is found.
+func detectEpic(title, description, combined string) bool {
+	// Check for [epic] tag in title
+	if epicTagRegex.MatchString(title) {
+		return true
+	}
+
+	// Check for epic keywords
+	for _, pattern := range epicPatterns {
+		if strings.Contains(combined, pattern) {
+			return true
+		}
+	}
+
+	// Check for 5+ checkboxes (acceptance criteria)
+	checkboxMatches := checkboxRegex.FindAllString(description, -1)
+	if len(checkboxMatches) >= 5 {
+		return true
+	}
+
+	// Check for 3+ numbered phases/sections
+	phaseMatches := numberedPhaseRegex.FindAllString(description, -1)
+	if len(phaseMatches) >= 3 {
+		return true
+	}
+
+	// Check for long description with structural markers
+	wordCount := len(strings.Fields(description))
+	hasStructuralMarkers := strings.Contains(description, "##") ||
+		strings.Contains(description, "phase") ||
+		strings.Contains(description, "stage") ||
+		strings.Contains(description, "step")
+	if wordCount > 200 && hasStructuralMarkers {
+		return true
+	}
+
+	return false
+}
+
 // IsTrivial returns true if the task complexity is trivial.
 func (c Complexity) IsTrivial() bool {
 	return c == ComplexityTrivial
@@ -158,4 +226,9 @@ func (c Complexity) String() string {
 // Medium and complex tasks benefit from pre-execution research.
 func (c Complexity) ShouldRunResearch() bool {
 	return c == ComplexityMedium || c == ComplexityComplex
+}
+
+// IsEpic returns true if the task complexity is epic.
+func (c Complexity) IsEpic() bool {
+	return c == ComplexityEpic
 }
