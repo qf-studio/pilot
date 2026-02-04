@@ -232,3 +232,61 @@ func TestExecuteEpicTriggersPlanningMode(t *testing.T) {
 	}
 }
 
+func TestParseIssueNumber(t *testing.T) {
+	tests := []struct {
+		name     string
+		url      string
+		expected int
+	}{
+		{
+			name:     "standard github issue url",
+			url:      "https://github.com/anthropics/pilot/issues/123",
+			expected: 123,
+		},
+		{
+			name:     "github enterprise url",
+			url:      "https://github.example.com/org/repo/issues/456",
+			expected: 456,
+		},
+		{
+			name:     "url with trailing newline",
+			url:      "https://github.com/owner/repo/issues/789\n",
+			expected: 789,
+		},
+		{
+			name:     "large issue number",
+			url:      "https://github.com/owner/repo/issues/99999",
+			expected: 99999,
+		},
+		{
+			name:     "empty string",
+			url:      "",
+			expected: 0,
+		},
+		{
+			name:     "invalid url - no issues path",
+			url:      "https://github.com/owner/repo/pull/123",
+			expected: 0,
+		},
+		{
+			name:     "invalid url - no number",
+			url:      "https://github.com/owner/repo/issues/",
+			expected: 0,
+		},
+		{
+			name:     "plain text",
+			url:      "not a url at all",
+			expected: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := parseIssueNumber(tt.url)
+			if result != tt.expected {
+				t.Errorf("parseIssueNumber(%q) = %d, want %d", tt.url, result, tt.expected)
+			}
+		})
+	}
+}
+

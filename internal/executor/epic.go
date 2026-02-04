@@ -41,6 +41,18 @@ type PlannedSubtask struct {
 	DependsOn []int
 }
 
+// CreatedIssue represents a GitHub issue created from a planned subtask.
+type CreatedIssue struct {
+	// Number is the GitHub issue number
+	Number int
+
+	// URL is the full GitHub issue URL
+	URL string
+
+	// Subtask is the planned subtask this issue was created from
+	Subtask PlannedSubtask
+}
+
 // numberedListRegex matches numbered patterns: "1. ", "1) ", "Step 1:", "Phase 1:", etc.
 var numberedListRegex = regexp.MustCompile(`(?mi)^(?:\s*)(?:step|phase|task)?\s*(\d+)[.):]\s*(.+)`)
 
@@ -219,4 +231,84 @@ func finalizeSubtask(subtask *PlannedSubtask, lines []string) {
 		// Prepend inline description to accumulated lines
 		subtask.Description = subtask.Description + "\n" + accumulated
 	}
+}
+
+// issueNumberRegex extracts the issue number from a GitHub issue URL.
+// Matches patterns like: https://github.com/owner/repo/issues/123
+var issueNumberRegex = regexp.MustCompile(`/issues/(\d+)`)
+
+// parseIssueNumber extracts the issue number from a GitHub issue URL.
+// Returns 0 if no issue number is found.
+func parseIssueNumber(url string) int {
+	matches := issueNumberRegex.FindStringSubmatch(url)
+	if len(matches) < 2 {
+		return 0
+	}
+	var num int
+	_, _ = fmt.Sscanf(matches[1], "%d", &num)
+	return num
+}
+
+// CreateSubIssues creates GitHub issues from the planned subtasks.
+// Returns a slice of CreatedIssue with the issue numbers and URLs.
+func (r *Runner) CreateSubIssues(ctx context.Context, plan *EpicPlan) ([]CreatedIssue, error) {
+	if plan == nil || len(plan.Subtasks) == 0 {
+		return nil, fmt.Errorf("plan has no subtasks to create issues from")
+	}
+
+	var created []CreatedIssue
+
+	for _, subtask := range plan.Subtasks {
+		// Build the issue body
+		body := subtask.Description
+		if plan.ParentTask != nil && plan.ParentTask.ID != "" {
+			body = fmt.Sprintf("Parent: %s\n\n%s", plan.ParentTask.ID, body)
+		}
+
+		// Create issue using gh CLI
+		args := []string{
+			"issue", "create",
+			"--title", subtask.Title,
+			"--body", body,
+		}
+
+		cmd := exec.CommandContext(ctx, "gh", args...)
+
+		// Set working directory if parent task has a project path
+		if plan.ParentTask != nil && plan.ParentTask.ProjectPath != "" {
+			cmd.Dir = plan.ParentTask.ProjectPath
+		}
+
+		var stdout, stderr bytes.Buffer
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+
+		r.log.Debug("Creating GitHub issue",
+			"subtask_order", subtask.Order,
+			"title", subtask.Title,
+		)
+
+		if err := cmd.Run(); err != nil {
+			return created, fmt.Errorf("failed to create issue for subtask %d: %w (stderr: %s)",
+				subtask.Order, err, stderr.String())
+		}
+
+		// gh issue create outputs the issue URL on success
+		issueURL := strings.TrimSpace(stdout.String())
+		issueNumber := parseIssueNumber(issueURL)
+
+		created = append(created, CreatedIssue{
+			Number:  issueNumber,
+			URL:     issueURL,
+			Subtask: subtask,
+		})
+
+		r.log.Info("Created GitHub issue",
+			"subtask_order", subtask.Order,
+			"issue_number", issueNumber,
+			"url", issueURL,
+		)
+	}
+
+	return created, nil
 }
