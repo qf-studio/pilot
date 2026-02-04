@@ -211,10 +211,33 @@ func (c *Controller) handleWaitingCI(ctx context.Context, prState *PRState) erro
 		return nil
 	}
 
+	// GH-419: Refresh HeadSHA from GitHub if empty or stale.
+	// Self-review or other post-creation commits can change the HEAD,
+	// and OnPRCreated may have been called with an empty CommitSHA.
+	sha := prState.HeadSHA
+	if sha == "" {
+		ghPR, err := c.ghClient.GetPullRequest(ctx, c.owner, c.repo, prState.PRNumber)
+		if err != nil {
+			c.log.Warn("failed to fetch PR head SHA", "pr", prState.PRNumber, "error", err)
+			return nil // Retry next cycle
+		}
+		if ghPR.Head.SHA != "" {
+			c.log.Info("refreshed empty HeadSHA from GitHub",
+				"pr", prState.PRNumber,
+				"sha", ShortSHA(ghPR.Head.SHA),
+			)
+			prState.HeadSHA = ghPR.Head.SHA
+			sha = ghPR.Head.SHA
+		} else {
+			c.log.Warn("GitHub returned empty SHA for PR", "pr", prState.PRNumber)
+			return nil // Retry next cycle
+		}
+	}
+
 	// Non-blocking CI status check
-	status, err := c.ciMonitor.CheckCI(ctx, prState.HeadSHA)
+	status, err := c.ciMonitor.CheckCI(ctx, sha)
 	if err != nil {
-		c.log.Warn("CI status check failed", "pr", prState.PRNumber, "error", err)
+		c.log.Warn("CI status check failed", "pr", prState.PRNumber, "sha", ShortSHA(sha), "error", err)
 		// Don't fail the PR on transient errors, will retry next poll cycle
 		return nil
 	}
@@ -222,12 +245,18 @@ func (c *Controller) handleWaitingCI(ctx context.Context, prState *PRState) erro
 	prState.CIStatus = status
 	prState.LastChecked = time.Now()
 
+	c.log.Debug("CI status check result",
+		"pr", prState.PRNumber,
+		"sha", ShortSHA(sha),
+		"status", status,
+	)
+
 	switch status {
 	case CISuccess:
-		c.log.Info("CI passed", "pr", prState.PRNumber)
+		c.log.Info("CI passed", "pr", prState.PRNumber, "sha", ShortSHA(sha))
 		prState.Stage = StageCIPassed
 	case CIFailure:
-		c.log.Warn("CI failed", "pr", prState.PRNumber)
+		c.log.Warn("CI failed", "pr", prState.PRNumber, "sha", ShortSHA(sha))
 		prState.Stage = StageCIFailed
 	case CIPending, CIRunning:
 		// Stay in StageWaitingCI, will be checked next poll cycle

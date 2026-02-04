@@ -86,7 +86,7 @@ func TestDetectComplexity(t *testing.T) {
 			expected: ComplexityEpic,
 		},
 		{
-			name: "5+ checkboxes",
+			name: "5+ checkboxes alone is NOT epic",
 			task: &Task{Description: `Implement user management:
 - [ ] Create user model
 - [ ] Add user API endpoints
@@ -94,6 +94,29 @@ func TestDetectComplexity(t *testing.T) {
 - [ ] Add user permissions
 - [ ] Create user tests
 - [ ] Add user documentation`},
+			expected: ComplexityMedium,
+		},
+		{
+			name: "5+ checkboxes with 200+ words IS epic",
+			task: &Task{Description: `## Overview
+This comprehensive feature requires implementing a full user management system with proper authentication,
+authorization, and data validation. The system must integrate with our existing auth provider and support
+role-based access control across all API endpoints. We need to ensure backward compatibility with the
+current user model while adding new fields and capabilities. The implementation spans multiple layers
+of the application including the database schema, API layer, business logic, and frontend components.
+Each component must be properly tested with both unit and integration tests to ensure reliability.
+The migration path from the old system must be carefully planned to avoid any downtime or data loss.
+Performance testing is required to validate that the new system handles our expected load of concurrent users.
+Additionally we need to set up proper monitoring and alerting for the new components to ensure we catch
+any issues early. The deployment strategy should include feature flags to allow gradual rollout and quick
+rollback if needed. Security review is mandatory before the feature goes live in production environments.
+
+- [ ] Create user model with proper validations
+- [ ] Add user API endpoints with auth middleware
+- [ ] Implement role-based permission system
+- [ ] Add comprehensive test coverage
+- [ ] Create user documentation and API docs
+- [ ] Set up monitoring and alerting`},
 			expected: ComplexityEpic,
 		},
 		{

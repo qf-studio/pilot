@@ -194,25 +194,28 @@ func detectEpic(title, description, combined string) bool {
 	// Preprocess description for structural checks
 	cleanDescription := stripCodeBlocks(description)
 
-	// Check for 5+ checkboxes (acceptance criteria)
-	checkboxMatches := checkboxRegex.FindAllString(cleanDescription, -1)
-	if len(checkboxMatches) >= 5 {
-		return true
-	}
-
-	// Check for 3+ numbered phases/sections
-	phaseMatches := numberedPhaseRegex.FindAllString(cleanDescription, -1)
-	if len(phaseMatches) >= 3 {
-		return true
-	}
-
-	// Check for long description with structural markers
+	// Collect signals - no single signal triggers epic alone (except [epic] tag and keywords above)
+	checkboxCount := len(checkboxRegex.FindAllString(cleanDescription, -1))
+	phaseCount := len(numberedPhaseRegex.FindAllString(cleanDescription, -1))
 	wordCount := len(strings.Fields(cleanDescription))
 	hasStructuralMarkers := strings.Contains(cleanDescription, "##") ||
 		strings.Contains(strings.ToLower(cleanDescription), "phase") ||
 		strings.Contains(strings.ToLower(cleanDescription), "stage") ||
 		strings.Contains(strings.ToLower(cleanDescription), "step")
-	if wordCount > 200 && hasStructuralMarkers {
+
+	// Combination rules: multiple signals required
+	// 3+ phases is a strong signal on its own
+	if phaseCount >= 3 {
+		return true
+	}
+
+	// 5+ checkboxes only triggers with another signal
+	if checkboxCount >= 5 && (wordCount > 200 || phaseCount >= 2) {
+		return true
+	}
+
+	// Long description with structural markers
+	if wordCount > 200 && hasStructuralMarkers && (checkboxCount >= 3 || phaseCount >= 1) {
 		return true
 	}
 
