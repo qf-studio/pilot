@@ -303,15 +303,30 @@ Examples:
 			// Build Pilot options for gateway mode (GH-349)
 			var pilotOpts []pilot.Option
 
-			// Enable Telegram polling in gateway mode only if --telegram flag was explicitly passed (GH-351)
+			// GH-392: Create shared infrastructure for polling adapters in gateway mode
+			// This allows GitHub polling to work alongside Linear/Jira webhooks
 			telegramFlagSet := cmd.Flags().Changed("telegram")
-			if telegramFlagSet && hasTelegram && cfg.Adapters.Telegram.Polling {
-				// Create runner for Telegram tasks
-				runner := executor.NewRunner()
+			githubFlagSet := cmd.Flags().Changed("github")
+			needsPollingInfra := (telegramFlagSet && hasTelegram && cfg.Adapters.Telegram.Polling) ||
+				(githubFlagSet && hasGithubPolling && cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.Enabled &&
+					cfg.Adapters.GitHub.Polling != nil && cfg.Adapters.GitHub.Polling.Enabled)
+
+			// Shared infrastructure for polling adapters
+			var gwRunner *executor.Runner
+			var gwStore *memory.Store
+			var gwDispatcher *executor.Dispatcher
+			var gwMonitor *executor.Monitor
+			var gwProgram *tea.Program
+			var gwAutopilotController *autopilot.Controller
+			var gwAlertsEngine *alerts.Engine
+
+			if needsPollingInfra {
+				// Create shared runner
+				gwRunner = executor.NewRunner()
 
 				// Set up quality gates on runner if configured
 				if cfg.Quality != nil && cfg.Quality.Enabled {
-					runner.SetQualityCheckerFactory(func(taskID, taskProjectPath string) executor.QualityChecker {
+					gwRunner.SetQualityCheckerFactory(func(taskID, taskProjectPath string) executor.QualityChecker {
 						return &qualityCheckerWrapper{
 							executor: quality.NewExecutor(&quality.ExecutorConfig{
 								Config:      cfg.Quality,
@@ -322,17 +337,150 @@ Examples:
 					})
 				}
 
-				// Set up model routing if configured
-				if cfg.Executor != nil {
-					runner.SetModelRouter(executor.NewModelRouter(cfg.Executor.ModelRouting, cfg.Executor.Timeout))
+				// Set up task decomposition if configured
+				if cfg.Executor != nil && cfg.Executor.Decompose != nil && cfg.Executor.Decompose.Enabled {
+					gwRunner.SetDecomposer(executor.NewTaskDecomposer(cfg.Executor.Decompose))
 				}
 
-				pilotOpts = append(pilotOpts, pilot.WithTelegramHandler(runner, projectPath))
+				// Set up model routing if configured
+				if cfg.Executor != nil {
+					gwRunner.SetModelRouter(executor.NewModelRouter(cfg.Executor.ModelRouting, cfg.Executor.Timeout))
+				}
+
+				// Create memory store for dispatcher
+				var storeErr error
+				gwStore, storeErr = memory.NewStore(cfg.Memory.Path)
+				if storeErr != nil {
+					logging.WithComponent("start").Warn("Failed to open memory store for gateway polling", slog.Any("error", storeErr))
+				}
+
+				// Create dispatcher if store available
+				if gwStore != nil {
+					gwDispatcher = executor.NewDispatcher(gwStore, gwRunner, nil)
+					if dispErr := gwDispatcher.Start(); dispErr != nil {
+						logging.WithComponent("start").Warn("Failed to start dispatcher for gateway polling", slog.Any("error", dispErr))
+						gwDispatcher = nil
+					}
+				}
+
+				// Create approval manager for autopilot
+				approvalMgr := approval.NewManager(cfg.Approval)
+
+				// Register Telegram approval handler if enabled
+				if cfg.Adapters.Telegram != nil && cfg.Adapters.Telegram.Enabled && cfg.Adapters.Telegram.BotToken != "" {
+					tgClient := telegram.NewClient(cfg.Adapters.Telegram.BotToken)
+					tgApprovalHandler := approval.NewTelegramHandler(&telegramApprovalAdapter{client: tgClient}, cfg.Adapters.Telegram.ChatID)
+					approvalMgr.RegisterHandler(tgApprovalHandler)
+				}
+
+				// Register Slack approval handler if enabled
+				if cfg.Adapters.Slack != nil && cfg.Adapters.Slack.Enabled && cfg.Adapters.Slack.BotToken != "" {
+					if cfg.Adapters.Slack.Approval != nil && cfg.Adapters.Slack.Approval.Enabled {
+						slackClient := slack.NewClient(cfg.Adapters.Slack.BotToken)
+						slackAdapter := slack.NewSlackClientAdapter(slackClient)
+						slackChannel := cfg.Adapters.Slack.Approval.Channel
+						if slackChannel == "" {
+							slackChannel = cfg.Adapters.Slack.Channel
+						}
+						slackApprovalHandler := approval.NewSlackHandler(&slackApprovalClientAdapter{adapter: slackAdapter}, slackChannel)
+						approvalMgr.RegisterHandler(slackApprovalHandler)
+					}
+				}
+
+				// Create autopilot controller if enabled
+				if cfg.Orchestrator.Autopilot != nil && cfg.Orchestrator.Autopilot.Enabled {
+					ghToken := ""
+					if cfg.Adapters.GitHub != nil {
+						ghToken = cfg.Adapters.GitHub.Token
+						if ghToken == "" {
+							ghToken = os.Getenv("GITHUB_TOKEN")
+						}
+					}
+					if ghToken != "" && cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.Repo != "" {
+						parts := strings.SplitN(cfg.Adapters.GitHub.Repo, "/", 2)
+						if len(parts) == 2 {
+							ghClient := github.NewClient(ghToken)
+							gwAutopilotController = autopilot.NewController(
+								cfg.Orchestrator.Autopilot,
+								ghClient,
+								approvalMgr,
+								parts[0],
+								parts[1],
+							)
+						}
+					}
+				}
+
+				// Create alerts engine if configured
+				alertsCfg := getAlertsConfig(cfg)
+				if alertsCfg != nil && alertsCfg.Enabled {
+					alertsDispatcher := alerts.NewDispatcher(alertsCfg)
+
+					// Register Slack channel if configured
+					if cfg.Adapters.Slack != nil && cfg.Adapters.Slack.Enabled && cfg.Adapters.Slack.BotToken != "" {
+						slackClient := slack.NewClient(cfg.Adapters.Slack.BotToken)
+						for _, ch := range alertsCfg.Channels {
+							if ch.Type == "slack" && ch.Slack != nil {
+								slackChannel := alerts.NewSlackChannel(ch.Name, slackClient, ch.Slack.Channel)
+								alertsDispatcher.RegisterChannel(slackChannel)
+							}
+						}
+					}
+
+					// Register Telegram channel if configured
+					if cfg.Adapters.Telegram != nil && cfg.Adapters.Telegram.Enabled && cfg.Adapters.Telegram.BotToken != "" {
+						telegramClient := telegram.NewClient(cfg.Adapters.Telegram.BotToken)
+						for _, ch := range alertsCfg.Channels {
+							if ch.Type == "telegram" && ch.Telegram != nil {
+								telegramChannel := alerts.NewTelegramChannel(ch.Name, telegramClient, ch.Telegram.ChatID)
+								alertsDispatcher.RegisterChannel(telegramChannel)
+							}
+						}
+					}
+
+					ctx := context.Background()
+					gwAlertsEngine = alerts.NewEngine(alertsCfg, alerts.WithDispatcher(alertsDispatcher))
+					if alertErr := gwAlertsEngine.Start(ctx); alertErr != nil {
+						logging.WithComponent("start").Warn("failed to start alerts engine for gateway polling", slog.Any("error", alertErr))
+						gwAlertsEngine = nil
+					}
+				}
+
+				// Create monitor and TUI program for dashboard mode
+				if dashboardMode {
+					gwRunner.SuppressProgressLogs(true)
+					gwMonitor = executor.NewMonitor()
+					model := dashboard.NewModelWithOptions(version, gwStore, gwAutopilotController, nil)
+					gwProgram = tea.NewProgram(model,
+						tea.WithAltScreen(),
+						tea.WithInput(os.Stdin),
+						tea.WithOutput(os.Stdout),
+					)
+
+					// Wire runner progress updates to dashboard
+					gwRunner.AddProgressCallback("dashboard", func(taskID, phase string, progress int, message string) {
+						gwMonitor.UpdateProgress(taskID, phase, progress, message)
+						tasks := convertTaskStatesToDisplay(gwMonitor.GetAll())
+						gwProgram.Send(dashboard.UpdateTasks(tasks)())
+						logMsg := fmt.Sprintf("[%s] %s: %s (%d%%)", taskID, phase, message, progress)
+						gwProgram.Send(dashboard.AddLog(logMsg)())
+					})
+
+					// Wire token usage updates to dashboard
+					gwRunner.AddTokenCallback("dashboard", func(taskID string, inputTokens, outputTokens int64) {
+						gwProgram.Send(dashboard.UpdateTokens(int(inputTokens), int(outputTokens))())
+					})
+				}
+			}
+
+			// Enable Telegram polling in gateway mode only if --telegram flag was explicitly passed (GH-351)
+			if telegramFlagSet && hasTelegram && cfg.Adapters.Telegram.Polling {
+				pilotOpts = append(pilotOpts, pilot.WithTelegramHandler(gwRunner, projectPath))
 				logging.WithComponent("start").Info("Telegram polling enabled in gateway mode")
 			}
 
 			// Enable GitHub polling in gateway mode only if --github flag was explicitly passed (GH-350, GH-351)
-			githubFlagSet := cmd.Flags().Changed("github")
+			// GH-392: Now actually processes issues instead of no-op
 			if githubFlagSet && hasGithubPolling && cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.Enabled &&
 				cfg.Adapters.GitHub.Polling != nil && cfg.Adapters.GitHub.Polling.Enabled {
 
@@ -354,36 +502,90 @@ Examples:
 
 					// Determine execution mode from config
 					execMode := github.ExecutionModeSequential
+					waitForMerge := true
+					pollInterval := 30 * time.Second
+					prTimeout := 1 * time.Hour
+
 					if cfg.Orchestrator != nil && cfg.Orchestrator.Execution != nil {
-						if cfg.Orchestrator.Execution.Mode == "parallel" {
+						execCfg := cfg.Orchestrator.Execution
+						if execCfg.Mode == "parallel" {
 							execMode = github.ExecutionModeParallel
+						}
+						waitForMerge = execCfg.WaitForMerge
+						if execCfg.PollInterval > 0 {
+							pollInterval = execCfg.PollInterval
+						}
+						if execCfg.PRTimeout > 0 {
+							prTimeout = execCfg.PRTimeout
 						}
 					}
 
 					var pollerOpts []github.PollerOption
 					pollerOpts = append(pollerOpts, github.WithExecutionMode(execMode))
 
-					// Note: In gateway mode, issue handling is done via webhooks, not polling callbacks
-					// The poller is only used to pick up issues that may have been missed by webhooks
-					// For now, we use a simple no-op callback since gateway mode handles issues via webhooks
+					// Wire autopilot OnPRCreated callback if controller initialized
+					if gwAutopilotController != nil {
+						pollerOpts = append(pollerOpts, github.WithOnPRCreated(gwAutopilotController.OnPRCreated))
+					}
+
+					// Create rate limit retry scheduler
+					repoParts := strings.Split(cfg.Adapters.GitHub.Repo, "/")
+					if len(repoParts) != 2 {
+						return fmt.Errorf("invalid repo format: %s", cfg.Adapters.GitHub.Repo)
+					}
+					repoOwner, repoName := repoParts[0], repoParts[1]
+
+					rateLimitScheduler := executor.NewScheduler(executor.DefaultSchedulerConfig(), nil)
+					rateLimitScheduler.SetRetryCallback(func(retryCtx context.Context, pendingTask *executor.PendingTask) error {
+						var issueNum int
+						if _, err := fmt.Sscanf(pendingTask.Task.ID, "GH-%d", &issueNum); err != nil {
+							return fmt.Errorf("invalid task ID format: %s", pendingTask.Task.ID)
+						}
+
+						issue, err := client.GetIssue(retryCtx, repoOwner, repoName, issueNum)
+						if err != nil {
+							return fmt.Errorf("failed to fetch issue for retry: %w", err)
+						}
+
+						logging.WithComponent("scheduler").Info("Retrying rate-limited issue",
+							slog.Int("issue", issueNum),
+							slog.Int("attempt", pendingTask.Attempts),
+						)
+
+						if execMode == github.ExecutionModeSequential {
+							_, err = handleGitHubIssueWithResult(retryCtx, cfg, client, issue, projectPath, gwDispatcher, gwRunner, gwMonitor, gwProgram, gwAlertsEngine)
+						} else {
+							err = handleGitHubIssueWithMonitor(retryCtx, cfg, client, issue, projectPath, gwDispatcher, gwRunner, gwMonitor, gwProgram, gwAlertsEngine)
+						}
+						return err
+					})
+					rateLimitScheduler.SetExpiredCallback(func(expiredCtx context.Context, pendingTask *executor.PendingTask) {
+						logging.WithComponent("scheduler").Error("Task exceeded max retry attempts",
+							slog.String("task_id", pendingTask.Task.ID),
+							slog.Int("attempts", pendingTask.Attempts),
+						)
+					})
+					ctx := context.Background()
+					if schErr := rateLimitScheduler.Start(ctx); schErr != nil {
+						logging.WithComponent("start").Warn("Failed to start rate limit scheduler", slog.Any("error", schErr))
+					}
+
+					// GH-392: Configure with actual issue processing callbacks (same as polling mode)
 					if execMode == github.ExecutionModeSequential {
-						pollerOpts = append(pollerOpts, github.WithOnIssueWithResult(func(ctx context.Context, issue *github.Issue) (*github.IssueResult, error) {
-							logging.WithComponent("github-poller").Info("GitHub issue detected in gateway mode",
-								slog.Int("number", issue.Number),
-								slog.String("title", issue.Title),
-							)
-							// Gateway mode handles issues via webhooks - poller is supplementary
-							return nil, nil
-						}))
+						pollerOpts = append(pollerOpts,
+							github.WithSequentialConfig(waitForMerge, pollInterval, prTimeout),
+							github.WithScheduler(rateLimitScheduler),
+							github.WithOnIssueWithResult(func(issueCtx context.Context, issue *github.Issue) (*github.IssueResult, error) {
+								return handleGitHubIssueWithResult(issueCtx, cfg, client, issue, projectPath, gwDispatcher, gwRunner, gwMonitor, gwProgram, gwAlertsEngine)
+							}),
+						)
 					} else {
-						pollerOpts = append(pollerOpts, github.WithOnIssue(func(ctx context.Context, issue *github.Issue) error {
-							logging.WithComponent("github-poller").Info("GitHub issue detected in gateway mode",
-								slog.Int("number", issue.Number),
-								slog.String("title", issue.Title),
-							)
-							// Gateway mode handles issues via webhooks - poller is supplementary
-							return nil
-						}))
+						pollerOpts = append(pollerOpts,
+							github.WithScheduler(rateLimitScheduler),
+							github.WithOnIssue(func(issueCtx context.Context, issue *github.Issue) error {
+								return handleGitHubIssueWithMonitor(issueCtx, cfg, client, issue, projectPath, gwDispatcher, gwRunner, gwMonitor, gwProgram, gwAlertsEngine)
+							}),
+						)
 					}
 
 					ghPoller, err := github.NewPoller(client, cfg.Adapters.GitHub.Repo, label, interval, pollerOpts...)
@@ -394,7 +596,30 @@ Examples:
 						logging.WithComponent("start").Info("GitHub polling enabled in gateway mode",
 							slog.String("repo", cfg.Adapters.GitHub.Repo),
 							slog.Duration("interval", interval),
+							slog.String("mode", string(execMode)),
 						)
+
+						// Start autopilot processing loop if controller initialized
+						if gwAutopilotController != nil {
+							ctx := context.Background()
+							// Scan for existing PRs created by Pilot
+							if scanErr := gwAutopilotController.ScanExistingPRs(ctx); scanErr != nil {
+								logging.WithComponent("autopilot").Warn("failed to scan existing PRs",
+									slog.Any("error", scanErr),
+								)
+							}
+
+							logging.WithComponent("start").Info("autopilot enabled in gateway mode",
+								slog.String("environment", string(cfg.Orchestrator.Autopilot.Environment)),
+							)
+							go func() {
+								if runErr := gwAutopilotController.Run(ctx); runErr != nil && runErr != context.Canceled {
+									logging.WithComponent("autopilot").Error("autopilot controller stopped",
+										slog.Any("error", runErr),
+									)
+								}
+							}()
+						}
 					}
 				}
 			}
