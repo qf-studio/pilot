@@ -576,7 +576,7 @@ func (s *Store) GetBriefMetrics(query BriefQuery) (*BriefMetricsData, error) {
 			COUNT(*) as total,
 			COALESCE(SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END), 0) as completed,
 			COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0) as failed,
-			COALESCE(AVG(CASE WHEN status = 'completed' THEN duration_ms END), 0) as avg_duration,
+			CAST(COALESCE(AVG(CASE WHEN status = 'completed' THEN duration_ms END), 0) AS INTEGER) as avg_duration,
 			COALESCE(SUM(CASE WHEN pr_url != '' THEN 1 ELSE 0 END), 0) as prs_created
 		FROM executions
 	`+whereClause, args...)

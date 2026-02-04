@@ -179,7 +179,7 @@ func (s *Store) GetMetricsSummary(query MetricsQuery) (*MetricsSummary, error) {
 			COALESCE(SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END), 0) as completed,
 			COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0) as failed,
 			COALESCE(SUM(duration_ms), 0) as total_duration,
-			COALESCE(AVG(CASE WHEN status = 'completed' THEN duration_ms END), 0) as avg_duration,
+			CAST(COALESCE(AVG(CASE WHEN status = 'completed' THEN duration_ms END), 0) AS INTEGER) as avg_duration,
 			COALESCE(MIN(CASE WHEN status = 'completed' THEN duration_ms END), 0) as min_duration,
 			COALESCE(MAX(CASE WHEN status = 'completed' THEN duration_ms END), 0) as max_duration,
 			COALESCE(SUM(tokens_input), 0) as total_input,
