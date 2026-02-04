@@ -1,4 +1,4 @@
-.PHONY: build run test test-e2e clean install lint fmt deps dev install-hooks check-secrets gate check-integration auto-fix test-short
+.PHONY: build run test test-e2e clean install lint fmt deps dev install-hooks check-secrets gate check-integration auto-fix test-short release
 
 # Variables
 BINARY_NAME=pilot
@@ -119,6 +119,36 @@ auto-fix:
 gate:
 	@./scripts/pre-push-gate.sh
 
+# Release - creates tag, builds, and publishes to GitHub
+# Usage: make release V=0.14.6 NOTES="Release notes here"
+release:
+ifndef V
+	$(error V is required. Usage: make release V=0.14.6 NOTES="Release notes")
+endif
+	@echo "🚀 Creating release v$(V)..."
+	@if [ -n "$$(git status --porcelain)" ]; then \
+		echo "❌ Error: Working directory not clean. Commit or stash changes first."; \
+		exit 1; \
+	fi
+	@if [ "$$(git branch --show-current)" != "main" ]; then \
+		echo "❌ Error: Must be on main branch to release."; \
+		exit 1; \
+	fi
+	@echo "📌 Creating git tag v$(V)..."
+	git tag v$(V)
+	@echo "🔨 Building binaries..."
+	$(MAKE) build-all VERSION=v$(V)
+	@echo "📦 Creating GitHub release..."
+	gh release create v$(V) \
+		bin/$(BINARY_NAME)-darwin-amd64 \
+		bin/$(BINARY_NAME)-darwin-arm64 \
+		bin/$(BINARY_NAME)-linux-amd64 \
+		bin/$(BINARY_NAME)-linux-arm64 \
+		--title "pilot v$(V)" \
+		--notes "$(if $(NOTES),$(NOTES),Release v$(V))"
+	@echo "✅ Released v$(V)"
+	@echo "   Run 'pilot upgrade' to update"
+
 # Help
 help:
 	@echo "Pilot Makefile Commands:"
@@ -143,4 +173,5 @@ help:
 	@echo "  make gate           Run pre-push validation gate"
 	@echo "  make auto-fix       Auto-fix common issues"
 	@echo "  make test-short     Run tests in short mode"
+	@echo "  make release        Create release (V=0.x.x required)"
 	@echo ""
