@@ -48,7 +48,7 @@ for file in "${FILES[@]}"; do
         fi
 
         echo "  Updated $file"
-        ((updated++))
+        ((++updated))
     else
         echo "  Skipped $file (not found)"
     fi
