@@ -27,9 +27,10 @@ type Pilot struct {
 	config             *config.Config
 	gateway            *gateway.Server
 	orchestrator       *orchestrator.Orchestrator
-	linearClient       *linear.Client
-	linearWH           *linear.WebhookHandler
-	linearNotify       *linear.Notifier
+	linearMultiWH      *linear.MultiWorkspaceHandler // Multi-workspace handler (GH-391)
+	linearClient       *linear.Client                // Legacy single-workspace client
+	linearWH           *linear.WebhookHandler        // Legacy single-workspace handler
+	linearNotify       *linear.Notifier              // Legacy single-workspace notifier
 	githubClient       *github.Client
 	githubWH           *github.WebhookHandler
 	githubNotify       *github.Notifier
@@ -51,7 +52,7 @@ type Pilot struct {
 	approvalMgr        *approval.Manager
 
 	// linearTasks maps task IDs to Linear issue IDs for completion callbacks
-	linearTasks   map[string]string
+	linearTasks   map[string]linearTaskInfo
 	linearTasksMu sync.Mutex
 
 	ctx    context.Context
@@ -83,6 +84,12 @@ func (a *slackApprovalClientAdapter) PostInteractiveMessage(ctx context.Context,
 
 func (a *slackApprovalClientAdapter) UpdateInteractiveMessage(ctx context.Context, channel, ts string, blocks []interface{}, text string) error {
 	return a.adapter.UpdateInteractiveMessage(ctx, channel, ts, blocks, text)
+}
+
+// linearTaskInfo tracks Linear issue info for completion callbacks (GH-391)
+type linearTaskInfo struct {
+	IssueID       string
+	WorkspaceName string // Empty for legacy single-workspace mode
 }
 
 // Option is a functional option for configuring Pilot
@@ -118,7 +125,7 @@ func New(cfg *config.Config, opts ...Option) (*Pilot, error) {
 		config:      cfg,
 		ctx:         ctx,
 		cancel:      cancel,
-		linearTasks: make(map[string]string),
+		linearTasks: make(map[string]linearTaskInfo),
 	}
 
 	// Initialize memory store
@@ -197,12 +204,31 @@ func New(cfg *config.Config, opts ...Option) (*Pilot, error) {
 	// Register completion callback for platform notifications
 	p.orchestrator.OnCompletion(p.handleTaskCompletion)
 
-	// Initialize Linear adapter if enabled
+	// Initialize Linear adapter if enabled (GH-391: multi-workspace support)
 	if cfg.Adapters.Linear != nil && cfg.Adapters.Linear.Enabled {
-		p.linearClient = linear.NewClient(cfg.Adapters.Linear.APIKey)
-		p.linearWH = linear.NewWebhookHandler(p.linearClient, cfg.Adapters.Linear.PilotLabel, cfg.Adapters.Linear.ProjectIDs)
-		p.linearWH.OnIssue(p.handleLinearIssue)
-		p.linearNotify = linear.NewNotifier(p.linearClient)
+		workspaces := cfg.Adapters.Linear.GetWorkspaces()
+		if len(workspaces) > 1 || (len(workspaces) == 1 && len(cfg.Adapters.Linear.Workspaces) > 0) {
+			// Multi-workspace mode
+			multiWH, err := linear.NewMultiWorkspaceHandler(cfg.Adapters.Linear)
+			if err != nil {
+				cancel()
+				return nil, fmt.Errorf("failed to create Linear multi-workspace handler: %w", err)
+			}
+			p.linearMultiWH = multiWH
+			p.linearMultiWH.OnIssue(p.handleLinearIssueMultiWorkspace)
+			logging.WithComponent("pilot").Info("Linear multi-workspace mode enabled",
+				slog.Int("workspaces", p.linearMultiWH.WorkspaceCount()))
+		} else {
+			// Legacy single-workspace mode
+			p.linearClient = linear.NewClient(cfg.Adapters.Linear.APIKey)
+			pilotLabel := cfg.Adapters.Linear.PilotLabel
+			if pilotLabel == "" {
+				pilotLabel = "pilot"
+			}
+			p.linearWH = linear.NewWebhookHandler(p.linearClient, pilotLabel, cfg.Adapters.Linear.ProjectIDs)
+			p.linearWH.OnIssue(p.handleLinearIssue)
+			p.linearNotify = linear.NewNotifier(p.linearClient)
+		}
 	}
 
 	// Initialize GitHub adapter if enabled
@@ -242,7 +268,15 @@ func New(cfg *config.Config, opts ...Option) (*Pilot, error) {
 	p.gateway = gateway.NewServer(gatewayCfg)
 
 	// Register webhook handlers
-	if p.linearWH != nil {
+	if p.linearMultiWH != nil {
+		// Multi-workspace mode (GH-391)
+		p.gateway.Router().RegisterWebhookHandler("linear", func(payload map[string]interface{}) {
+			if err := p.linearMultiWH.Handle(ctx, payload); err != nil {
+				logging.WithComponent("pilot").Error("Linear webhook error", slog.Any("error", err))
+			}
+		})
+	} else if p.linearWH != nil {
+		// Legacy single-workspace mode
 		p.gateway.Router().RegisterWebhookHandler("linear", func(payload map[string]interface{}) {
 			if err := p.linearWH.Handle(ctx, payload); err != nil {
 				logging.WithComponent("pilot").Error("Linear webhook error", slog.Any("error", err))
@@ -411,7 +445,7 @@ func (p *Pilot) Wait() {
 	p.wg.Wait()
 }
 
-// handleLinearIssue handles a new Linear issue
+// handleLinearIssue handles a new Linear issue (legacy single-workspace mode)
 func (p *Pilot) handleLinearIssue(ctx context.Context, issue *linear.Issue) error {
 	logging.WithComponent("pilot").Info("Received Linear issue",
 		slog.String("identifier", issue.Identifier),
@@ -427,7 +461,7 @@ func (p *Pilot) handleLinearIssue(ctx context.Context, issue *linear.Issue) erro
 	// Task ID format matches bridge.go: "TASK-{identifier}"
 	taskID := fmt.Sprintf("TASK-%s", issue.Identifier)
 	p.linearTasksMu.Lock()
-	p.linearTasks[taskID] = issue.ID
+	p.linearTasks[taskID] = linearTaskInfo{IssueID: issue.ID, WorkspaceName: ""}
 	p.linearTasksMu.Unlock()
 
 	// Notify that task has started
@@ -454,30 +488,111 @@ func (p *Pilot) handleLinearIssue(ctx context.Context, issue *linear.Issue) erro
 	return err
 }
 
+// handleLinearIssueMultiWorkspace handles a new Linear issue in multi-workspace mode (GH-391)
+func (p *Pilot) handleLinearIssueMultiWorkspace(ctx context.Context, issue *linear.Issue, workspaceName string) error {
+	logging.WithComponent("pilot").Info("Received Linear issue",
+		slog.String("identifier", issue.Identifier),
+		slog.String("title", issue.Title),
+		slog.String("workspace", workspaceName))
+
+	// Get workspace handler for project resolution and notifications
+	ws := p.linearMultiWH.GetWorkspace(workspaceName)
+	if ws == nil {
+		return fmt.Errorf("workspace %s not found", workspaceName)
+	}
+
+	// Find project for this issue - first try workspace-specific mapping
+	var projectPath string
+	pilotProject := ws.ResolvePilotProject(issue)
+	if pilotProject != "" {
+		// Look up the Pilot project config by name
+		if proj := p.config.GetProjectByName(pilotProject); proj != nil {
+			projectPath = proj.Path
+		}
+	}
+
+	// Fall back to generic matching
+	if projectPath == "" {
+		projectPath = p.findProjectForIssue(issue)
+	}
+
+	if projectPath == "" {
+		return fmt.Errorf("no project configured for issue %s in workspace %s", issue.Identifier, workspaceName)
+	}
+
+	// Track task ID -> Linear issue ID + workspace mapping for completion callback
+	taskID := fmt.Sprintf("TASK-%s", issue.Identifier)
+	p.linearTasksMu.Lock()
+	p.linearTasks[taskID] = linearTaskInfo{IssueID: issue.ID, WorkspaceName: workspaceName}
+	p.linearTasksMu.Unlock()
+
+	// Notify that task has started
+	notifier := ws.Notifier()
+	if notifier != nil {
+		if err := notifier.NotifyTaskStarted(ctx, issue.ID, taskID); err != nil {
+			logging.WithComponent("pilot").Warn("Failed to notify task started", slog.Any("error", err))
+		}
+	}
+
+	// Process ticket through orchestrator
+	err := p.orchestrator.ProcessTicket(ctx, issue, projectPath)
+
+	// Immediate errors are handled here; async completion is handled by handleTaskCompletion
+	if err != nil && notifier != nil {
+		if notifyErr := notifier.NotifyTaskFailed(ctx, issue.ID, err.Error()); notifyErr != nil {
+			logging.WithComponent("pilot").Warn("Failed to notify task failed", slog.Any("error", notifyErr))
+		}
+		// Clean up tracking on immediate error
+		p.linearTasksMu.Lock()
+		delete(p.linearTasks, taskID)
+		p.linearTasksMu.Unlock()
+	}
+
+	return err
+}
+
 // handleTaskCompletion handles task completion events from the orchestrator
 func (p *Pilot) handleTaskCompletion(taskID, prURL string, success bool, errMsg string) {
 	// Check if this is a Linear task
 	p.linearTasksMu.Lock()
-	issueID, isLinear := p.linearTasks[taskID]
+	taskInfo, isLinear := p.linearTasks[taskID]
 	if isLinear {
 		delete(p.linearTasks, taskID)
 	}
 	p.linearTasksMu.Unlock()
 
-	if isLinear && p.linearNotify != nil {
-		ctx := context.Background()
-		if success {
-			if err := p.linearNotify.NotifyTaskCompleted(ctx, issueID, prURL, ""); err != nil {
-				logging.WithComponent("pilot").Warn("Failed to notify Linear task completed",
-					slog.String("task_id", taskID),
-					slog.Any("error", err))
-			}
-		} else {
-			if err := p.linearNotify.NotifyTaskFailed(ctx, issueID, errMsg); err != nil {
-				logging.WithComponent("pilot").Warn("Failed to notify Linear task failed",
-					slog.String("task_id", taskID),
-					slog.Any("error", err))
-			}
+	if !isLinear {
+		return
+	}
+
+	ctx := context.Background()
+
+	// Get the appropriate notifier (GH-391: multi-workspace support)
+	var notifier *linear.Notifier
+	if taskInfo.WorkspaceName != "" && p.linearMultiWH != nil {
+		notifier = p.linearMultiWH.GetNotifier(taskInfo.WorkspaceName)
+	} else if p.linearNotify != nil {
+		notifier = p.linearNotify
+	}
+
+	if notifier == nil {
+		logging.WithComponent("pilot").Warn("No notifier found for Linear task",
+			slog.String("task_id", taskID),
+			slog.String("workspace", taskInfo.WorkspaceName))
+		return
+	}
+
+	if success {
+		if err := notifier.NotifyTaskCompleted(ctx, taskInfo.IssueID, prURL, ""); err != nil {
+			logging.WithComponent("pilot").Warn("Failed to notify Linear task completed",
+				slog.String("task_id", taskID),
+				slog.Any("error", err))
+		}
+	} else {
+		if err := notifier.NotifyTaskFailed(ctx, taskInfo.IssueID, errMsg); err != nil {
+			logging.WithComponent("pilot").Warn("Failed to notify Linear task failed",
+				slog.String("task_id", taskID),
+				slog.Any("error", err))
 		}
 	}
 }
@@ -507,16 +622,25 @@ func (p *Pilot) findProjectForIssue(issue *linear.Issue) string {
 // GetStatus returns current Pilot status
 func (p *Pilot) GetStatus() map[string]interface{} {
 	webhookDeliveries, webhookFailures, webhookRetries, lastDelivery := p.webhookManager.Stats()
+
+	// Build Linear status (GH-391: multi-workspace support)
+	linearStatus := p.config.Adapters.Linear != nil && p.config.Adapters.Linear.Enabled
+	var linearWorkspaces []string
+	if p.linearMultiWH != nil {
+		linearWorkspaces = p.linearMultiWH.ListWorkspaces()
+	}
+
 	return map[string]interface{}{
 		"running": true,
 		"tasks":   p.orchestrator.GetTaskStates(),
 		"config": map[string]interface{}{
-			"gateway":  fmt.Sprintf("%s:%d", p.config.Gateway.Host, p.config.Gateway.Port),
-			"linear":   p.config.Adapters.Linear != nil && p.config.Adapters.Linear.Enabled,
-			"github":   p.config.Adapters.GitHub != nil && p.config.Adapters.GitHub.Enabled,
-			"gitlab":   p.config.Adapters.GitLab != nil && p.config.Adapters.GitLab.Enabled,
-			"slack":    p.config.Adapters.Slack != nil && p.config.Adapters.Slack.Enabled,
-			"webhooks": p.webhookManager.IsEnabled(),
+			"gateway":           fmt.Sprintf("%s:%d", p.config.Gateway.Host, p.config.Gateway.Port),
+			"linear":            linearStatus,
+			"linear_workspaces": linearWorkspaces,
+			"github":            p.config.Adapters.GitHub != nil && p.config.Adapters.GitHub.Enabled,
+			"gitlab":            p.config.Adapters.GitLab != nil && p.config.Adapters.GitLab.Enabled,
+			"slack":             p.config.Adapters.Slack != nil && p.config.Adapters.Slack.Enabled,
+			"webhooks":          p.webhookManager.IsEnabled(),
 		},
 		"webhooks": map[string]interface{}{
 			"enabled":       p.webhookManager.IsEnabled(),
