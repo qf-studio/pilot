@@ -475,12 +475,43 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 			}, nil
 		}
 
-		r.reportProgress(task.ID, "Planning", 100, fmt.Sprintf("Epic planned: %d subtasks", len(plan.Subtasks)))
+		r.reportProgress(task.ID, "Planning", 30, fmt.Sprintf("Epic planned: %d subtasks", len(plan.Subtasks)))
+
+		// GH-412: Create sub-issues from the plan
+		r.reportProgress(task.ID, "Creating Issues", 40, "Creating GitHub sub-issues...")
+
+		issues, err := r.CreateSubIssues(ctx, plan)
+		if err != nil {
+			return &ExecutionResult{
+				TaskID:   task.ID,
+				Success:  false,
+				Error:    fmt.Sprintf("failed to create sub-issues: %v", err),
+				Duration: time.Since(start),
+				IsEpic:   true,
+				EpicPlan: plan,
+			}, nil
+		}
+
+		r.reportProgress(task.ID, "Executing", 50, fmt.Sprintf("Executing %d sub-issues sequentially...", len(issues)))
+
+		// GH-412: Execute sub-issues sequentially
+		if err := r.ExecuteSubIssues(ctx, task, issues); err != nil {
+			return &ExecutionResult{
+				TaskID:   task.ID,
+				Success:  false,
+				Error:    fmt.Sprintf("sub-issue execution failed: %v", err),
+				Duration: time.Since(start),
+				IsEpic:   true,
+				EpicPlan: plan,
+			}, nil
+		}
+
+		r.reportProgress(task.ID, "Complete", 100, "Epic completed successfully")
 
 		return &ExecutionResult{
 			TaskID:   task.ID,
 			Success:  true,
-			Output:   plan.PlanOutput,
+			Output:   fmt.Sprintf("Epic completed: %d sub-issues executed", len(issues)),
 			Duration: time.Since(start),
 			IsEpic:   true,
 			EpicPlan: plan,
