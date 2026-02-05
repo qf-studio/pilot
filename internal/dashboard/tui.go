@@ -3,6 +3,7 @@ package dashboard
 import (
 	"fmt"
 	"log/slog"
+	"math"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -21,6 +22,26 @@ const (
 	panelTotalWidth = 69 // Total visual width including borders
 	panelInnerWidth = 65 // panelTotalWidth - 4 (2 borders + 2 padding spaces)
 )
+
+// Metrics card dimensions
+const (
+	cardWidth      = 21 // 21*3 + 3*2 = 69 = panelTotalWidth
+	cardInnerWidth = 17 // cardWidth - 4 (border + padding)
+	cardGap        = 3  // space between cards
+)
+
+// sparkBlocks maps normalized levels (0-8) to Unicode block elements for sparkline rendering.
+var sparkBlocks = []rune{' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'}
+
+// MetricsCardData holds aggregated metrics for the dashboard metrics cards.
+type MetricsCardData struct {
+	TotalTokens, InputTokens, OutputTokens int
+	TotalCostUSD, CostPerTask              float64
+	TotalTasks, Succeeded, Failed          int
+	TokenHistory []int64   // 7 days
+	CostHistory  []float64 // 7 days
+	TaskHistory  []int     // 7 days
+}
 
 // Styles (Kali Linux-inspired cyber aesthetic)
 var (
@@ -263,6 +284,10 @@ type Model struct {
 	store          *memory.Store // SQLite persistence (GH-367)
 	sessionID      string        // Current session ID for persistence
 
+	// Metrics cards
+	metricsCard   MetricsCardData
+	sparklineTick bool
+
 	// Upgrade state
 	updateInfo      *UpdateInfo
 	upgradeState    UpgradeState
@@ -496,6 +521,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 
 	case tickMsg:
+		m.sparklineTick = !m.sparklineTick
 		return m, tickCmd()
 
 	case updateTasksMsg:
@@ -519,6 +545,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if len(m.completedTasks) > 5 {
 			m.completedTasks = m.completedTasks[len(m.completedTasks)-5:]
 		}
+
+	case updateMetricsCardMsg:
+		m.metricsCard = MetricsCardData(msg)
 
 	case updateAvailableMsg:
 		m.updateInfo = &UpdateInfo{
@@ -807,6 +836,106 @@ func dotLeaderStyled(label string, value string, style lipgloss.Style, totalWidt
 	return prefix + strings.Repeat(".", dotsNeeded) + " " + style.Render(value)
 }
 
+// formatCompact formats a number in compact form: 0, 999, 1.0K, 57.3K, 1.2M.
+func formatCompact(n int) string {
+	if n < 1000 {
+		return fmt.Sprintf("%d", n)
+	}
+	if n < 1_000_000 {
+		return fmt.Sprintf("%.1fK", float64(n)/1000)
+	}
+	return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
+}
+
+// normalizeToSparkline scales float64 values to 0-8 range for sparkline rendering.
+// Left-pads with zeros if fewer values than width. Each returned int maps to a sparkBlocks index.
+func normalizeToSparkline(values []float64, width int) []int {
+	result := make([]int, width)
+	if len(values) == 0 {
+		return result
+	}
+
+	// Left-pad: place values at the right end
+	offset := width - len(values)
+	if offset < 0 {
+		// More values than width — take the last `width` values
+		values = values[len(values)-width:]
+		offset = 0
+	}
+
+	// Find min/max for scaling
+	minVal := values[0]
+	maxVal := values[0]
+	for _, v := range values[1:] {
+		if v < minVal {
+			minVal = v
+		}
+		if v > maxVal {
+			maxVal = v
+		}
+	}
+
+	span := maxVal - minVal
+	for i, v := range values {
+		if span == 0 {
+			// All values identical → place at midpoint
+			result[offset+i] = 4
+		} else {
+			// Scale to 0-8
+			normalized := (v - minVal) / span * 8
+			level := int(math.Round(normalized))
+			if level < 0 {
+				level = 0
+			}
+			if level > 8 {
+				level = 8
+			}
+			result[offset+i] = level
+		}
+	}
+
+	return result
+}
+
+// renderSparkline maps int levels to sparkBlocks rune chars.
+// Appends pulsing indicator (•) when pulsing=true, space otherwise.
+// Total visual width equals cardInnerWidth (17 chars).
+func renderSparkline(levels []int, pulsing bool) string {
+	var b strings.Builder
+	// sparkline data chars = cardInnerWidth - 1 (for pulsing indicator)
+	dataWidth := cardInnerWidth - 1
+
+	// Render levels (take last dataWidth values, or pad left)
+	start := 0
+	if len(levels) > dataWidth {
+		start = len(levels) - dataWidth
+	}
+
+	// Left-pad if needed
+	for i := 0; i < dataWidth-len(levels)+start; i++ {
+		b.WriteRune(sparkBlocks[0])
+	}
+
+	for i := start; i < len(levels); i++ {
+		idx := levels[i]
+		if idx < 0 {
+			idx = 0
+		}
+		if idx >= len(sparkBlocks) {
+			idx = len(sparkBlocks) - 1
+		}
+		b.WriteRune(sparkBlocks[idx])
+	}
+
+	if pulsing {
+		b.WriteRune('•')
+	} else {
+		b.WriteRune(' ')
+	}
+
+	return b.String()
+}
+
 // renderMetrics renders token usage and cost
 func (m Model) renderMetrics() string {
 	var content strings.Builder
@@ -1002,6 +1131,16 @@ func (m Model) renderLogs() string {
 	}
 
 	return renderPanel("LOGS", content.String())
+}
+
+// updateMetricsCardMsg updates the metrics card data
+type updateMetricsCardMsg MetricsCardData
+
+// UpdateMetricsCard sends updated metrics card data to the TUI
+func UpdateMetricsCard(data MetricsCardData) tea.Cmd {
+	return func() tea.Msg {
+		return updateMetricsCardMsg(data)
+	}
 }
 
 // UpdateTasks sends updated tasks to the TUI
