@@ -1637,14 +1637,16 @@ func (r *Runner) runSelfReview(ctx context.Context, task *Task, state *progressS
 	reviewCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 
-	// Select model (use same routing as main execution)
+	// Select model and effort (use same routing as main execution)
 	selectedModel := r.modelRouter.SelectModel(task)
+	selectedEffort := r.modelRouter.SelectEffort(task)
 
 	result, err := r.backend.Execute(reviewCtx, ExecuteOptions{
 		Prompt:      reviewPrompt,
 		ProjectPath: task.ProjectPath,
 		Verbose:     task.Verbose,
 		Model:       selectedModel,
+		Effort:      selectedEffort,
 		EventHandler: func(event BackendEvent) {
 			// Track tokens from self-review
 			state.tokensInput += event.TokensInput
