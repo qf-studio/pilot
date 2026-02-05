@@ -87,6 +87,9 @@ Respond with JSON only: {"intent": "...", "confidence": 0.0-1.0}`
 		"max_tokens": 100,
 		"system":     systemPrompt,
 		"messages":   apiMessages,
+		"output_config": map[string]interface{}{
+			"effort": "low", // Fast classification, minimize token spend
+		},
 	}
 
 	jsonBody, err := json.Marshal(requestBody)
