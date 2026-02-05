@@ -211,27 +211,37 @@ func (c *Controller) handleWaitingCI(ctx context.Context, prState *PRState) erro
 		return nil
 	}
 
-	// GH-419: Refresh HeadSHA from GitHub if empty or stale.
+	// GH-419, GH-457: Always refresh HeadSHA from GitHub before checking CI.
 	// Self-review or other post-creation commits can change the HEAD,
-	// and OnPRCreated may have been called with an empty CommitSHA.
+	// and OnPRCreated may have been called with an empty or stale CommitSHA.
+	// The previous fix (GH-419) only handled empty SHA; stale non-empty SHAs
+	// caused autopilot to query CI for the wrong commit indefinitely.
 	sha := prState.HeadSHA
-	if sha == "" {
-		ghPR, err := c.ghClient.GetPullRequest(ctx, c.owner, c.repo, prState.PRNumber)
-		if err != nil {
-			c.log.Warn("failed to fetch PR head SHA", "pr", prState.PRNumber, "error", err)
-			return nil // Retry next cycle
+	ghPR, err := c.ghClient.GetPullRequest(ctx, c.owner, c.repo, prState.PRNumber)
+	if err != nil {
+		c.log.Warn("failed to fetch PR head SHA", "pr", prState.PRNumber, "error", err)
+		if sha == "" {
+			return nil // Can't check CI without SHA, retry next cycle
 		}
-		if ghPR.Head.SHA != "" {
+		// Fall through with existing SHA if we have one
+	} else if ghPR.Head.SHA != "" {
+		if sha != "" && sha != ghPR.Head.SHA {
+			c.log.Info("refreshed stale HeadSHA from GitHub",
+				"pr", prState.PRNumber,
+				"old", ShortSHA(sha),
+				"new", ShortSHA(ghPR.Head.SHA),
+			)
+		} else if sha == "" {
 			c.log.Info("refreshed empty HeadSHA from GitHub",
 				"pr", prState.PRNumber,
 				"sha", ShortSHA(ghPR.Head.SHA),
 			)
-			prState.HeadSHA = ghPR.Head.SHA
-			sha = ghPR.Head.SHA
-		} else {
-			c.log.Warn("GitHub returned empty SHA for PR", "pr", prState.PRNumber)
-			return nil // Retry next cycle
 		}
+		prState.HeadSHA = ghPR.Head.SHA
+		sha = ghPR.Head.SHA
+	} else if sha == "" {
+		c.log.Warn("GitHub returned empty SHA for PR", "pr", prState.PRNumber)
+		return nil // Retry next cycle
 	}
 
 	// Non-blocking CI status check

@@ -1140,6 +1140,26 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 				return result, nil
 			}
 
+			// GH-457: Use actual pushed HEAD as CommitSHA source of truth.
+			// Self-review or quality retries may push new commits after
+			// result.CommitSHA was captured, causing autopilot to check CI
+			// against a stale SHA.
+			if pushedSHA, pushErr := git.GetCurrentCommitSHA(ctx); pushErr == nil && pushedSHA != "" {
+				if result.CommitSHA != "" && result.CommitSHA != pushedSHA {
+					log.Info("CommitSHA updated after push (post-execution commits detected)",
+						slog.String("task_id", task.ID),
+						slog.String("old_sha", result.CommitSHA[:min(7, len(result.CommitSHA))]),
+						slog.String("pushed_sha", pushedSHA[:min(7, len(pushedSHA))]),
+					)
+				}
+				result.CommitSHA = pushedSHA
+			} else if pushErr != nil {
+				log.Warn("Failed to get pushed HEAD SHA, using tracked SHA",
+					slog.String("task_id", task.ID),
+					slog.Any("error", pushErr),
+				)
+			}
+
 			r.reportProgress(task.ID, "Creating PR", 98, "Creating pull request...")
 
 			// Determine base branch
