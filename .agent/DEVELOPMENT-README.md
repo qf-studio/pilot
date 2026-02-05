@@ -96,7 +96,7 @@ if _, err := os.Stat(agentDir); err == nil {
 
 ## Current State
 
-**Current Version:** v0.19.1
+**Current Version:** v0.20.0
 
 **Full implementation status:** `.agent/system/FEATURE-MATRIX.md`
 
@@ -113,9 +113,10 @@ if _, err := os.Stat(agentDir); err == nil {
 | Dashboard TUI | ✅ | Sparkline cards, muted palette, SQLite persistence **(v0.19.0)** |
 | Hot Upgrade | ✅ | Self-update via `pilot upgrade` or dashboard 'u' key, `syscall.Exec` restart |
 | **Autopilot** | ✅ | CI monitor, auto-merge, feedback loop, **CI fix on original branch (v0.19.1)** |
-| **LLM Intent** | ✅ | Claude Haiku intent classification |
+| **LLM Intent** | ✅ | Claude Haiku intent classification, low effort |
 | **Self-Review** | ✅ | Auto code review before PR |
 | **Auto Build Gate** | ✅ | Minimal build gate when none configured |
+| **Effort Routing** | ✅ | Map task complexity to reasoning depth **(v0.20.0)** |
 | **Release Packaging** | ✅ | `make package` with COPYFILE_DISABLE, checksums **(v0.18.1)** |
 
 ### Telegram Interaction Modes (v0.6.0)
@@ -194,6 +195,8 @@ _Queue empty - create issues with `pilot` label to add work._
 
 | Item | What |
 |------|------|
+| **v0.20.0** | Default model → Opus 4.6, effort routing, dashboard card padding |
+| **v0.19.2** | Dashboard: remove card gaps, rename TASKS → QUEUE |
 | **v0.19.1** | Autopilot CI fix targets original branch via metadata (GH-489) |
 | **v0.19.0** | Dashboard polish: muted colors, tighter card gap, sparkline baseline fix |
 | **v0.18.1** | Release packaging fix: `make package` with COPYFILE_DISABLE |
