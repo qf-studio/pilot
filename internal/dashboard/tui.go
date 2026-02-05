@@ -26,7 +26,7 @@ const (
 // Metrics card dimensions
 const (
 	cardWidth      = 23 // 23*3 = 69 = panelTotalWidth (no gaps)
-	cardInnerWidth = 19 // cardWidth - 4 (border + padding)
+	cardInnerWidth = 17 // cardWidth - 6 (border + 2-char padding each side)
 	cardGap        = 0  // no gap — cards fill full panel width
 )
 
@@ -1037,11 +1037,11 @@ func miniCardEmptyLine() string {
 	return border + strings.Repeat(" ", cardWidth-2) + border
 }
 
-// miniCardContentLine returns a bordered content line with 1-char padding each side.
+// miniCardContentLine returns a bordered content line with 2-char padding each side.
 func miniCardContentLine(content string) string {
 	adjusted := padOrTruncate(content, cardInnerWidth)
 	border := borderStyle.Render("│")
-	return border + " " + adjusted + " " + border
+	return border + "  " + adjusted + "  " + border
 }
 
 // miniCardHeaderLine returns a header with TITLE left-aligned and VALUE right-aligned.
