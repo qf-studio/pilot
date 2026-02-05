@@ -355,7 +355,7 @@ Examples:
 
 				// Set up model routing if configured
 				if cfg.Executor != nil {
-					gwRunner.SetModelRouter(executor.NewModelRouter(cfg.Executor.ModelRouting, cfg.Executor.Timeout))
+					gwRunner.SetModelRouter(executor.NewModelRouterWithEffort(cfg.Executor.ModelRouting, cfg.Executor.Timeout, cfg.Executor.EffortRouting))
 				}
 
 				// Create memory store for dispatcher
@@ -840,7 +840,7 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 
 	// Set up model routing if configured (GH-215)
 	if cfg.Executor != nil {
-		runner.SetModelRouter(executor.NewModelRouter(cfg.Executor.ModelRouting, cfg.Executor.Timeout))
+		runner.SetModelRouter(executor.NewModelRouterWithEffort(cfg.Executor.ModelRouting, cfg.Executor.Timeout, cfg.Executor.EffortRouting))
 	}
 
 	// Create approval manager
@@ -2705,7 +2705,7 @@ Examples:
 
 					// Model routing (GH-215)
 					if cfg.Executor != nil {
-						runner.SetModelRouter(executor.NewModelRouter(cfg.Executor.ModelRouting, cfg.Executor.Timeout))
+						runner.SetModelRouter(executor.NewModelRouterWithEffort(cfg.Executor.ModelRouting, cfg.Executor.Timeout, cfg.Executor.EffortRouting))
 					}
 				}
 			}
