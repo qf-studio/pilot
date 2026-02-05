@@ -412,27 +412,50 @@ func (m *Model) hydrateFromStore() {
 		return
 	}
 
-	// Convert executions to completed tasks (most recent 5 for history panel)
+	// Initialize metrics card from session token data
+	m.metricsCard.TotalTokens = m.tokenUsage.TotalTokens
+	m.metricsCard.InputTokens = m.tokenUsage.InputTokens
+	m.metricsCard.OutputTokens = m.tokenUsage.OutputTokens
+	m.metricsCard.TotalCostUSD = memory.EstimateCost(
+		int64(m.tokenUsage.InputTokens),
+		int64(m.tokenUsage.OutputTokens),
+		memory.DefaultModel,
+	)
+
+	// Count completed/failed tasks from executions and populate history panel
 	for i, exec := range executions {
-		if i >= 5 {
-			break
-		}
 		status := "success"
 		if exec.Status == "failed" {
 			status = "failed"
+			m.metricsCard.Failed++
+		} else {
+			m.metricsCard.Succeeded++
 		}
-		completedAt := exec.CreatedAt
-		if exec.CompletedAt != nil {
-			completedAt = *exec.CompletedAt
+		m.metricsCard.TotalTasks++
+
+		// Most recent 5 for history panel
+		if i < 5 {
+			completedAt := exec.CreatedAt
+			if exec.CompletedAt != nil {
+				completedAt = *exec.CompletedAt
+			}
+			m.completedTasks = append(m.completedTasks, CompletedTask{
+				ID:          exec.TaskID,
+				Title:       exec.TaskTitle,
+				Status:      status,
+				Duration:    fmt.Sprintf("%dms", exec.DurationMs),
+				CompletedAt: completedAt,
+			})
 		}
-		m.completedTasks = append(m.completedTasks, CompletedTask{
-			ID:          exec.TaskID,
-			Title:       exec.TaskTitle,
-			Status:      status,
-			Duration:    fmt.Sprintf("%dms", exec.DurationMs),
-			CompletedAt: completedAt,
-		})
 	}
+
+	// Compute cost per task
+	if m.metricsCard.TotalTasks > 0 {
+		m.metricsCard.CostPerTask = m.metricsCard.TotalCostUSD / float64(m.metricsCard.TotalTasks)
+	}
+
+	// Load sparkline history
+	m.loadMetricsHistory()
 }
 
 // persistTokenUsage saves token usage to the current session.
@@ -442,6 +465,42 @@ func (m *Model) persistTokenUsage(inputDelta, outputDelta int) {
 	}
 	if err := m.store.UpdateSessionTokens(m.sessionID, inputDelta, outputDelta); err != nil {
 		slog.Warn("failed to persist token usage", slog.Any("error", err))
+	}
+}
+
+// loadMetricsHistory queries daily metrics for the past 7 days and populates sparkline history arrays.
+func (m *Model) loadMetricsHistory() {
+	if m.store == nil {
+		return
+	}
+	now := time.Now()
+	query := memory.MetricsQuery{
+		Start: now.AddDate(0, 0, -7),
+		End:   now,
+	}
+	dailyMetrics, err := m.store.GetDailyMetrics(query)
+	if err != nil {
+		slog.Warn("failed to load metrics history", slog.Any("error", err))
+		return
+	}
+
+	// Build date→metrics map (GetDailyMetrics returns DESC order)
+	byDate := make(map[string]*memory.DailyMetrics, len(dailyMetrics))
+	for _, dm := range dailyMetrics {
+		byDate[dm.Date.Format("2006-01-02")] = dm
+	}
+
+	// Fill 7-day arrays oldest→newest (left→right in sparkline)
+	m.metricsCard.TokenHistory = make([]int64, 7)
+	m.metricsCard.CostHistory = make([]float64, 7)
+	m.metricsCard.TaskHistory = make([]int, 7)
+	for i := 0; i < 7; i++ {
+		day := now.AddDate(0, 0, -6+i).Format("2006-01-02")
+		if dm, ok := byDate[day]; ok {
+			m.metricsCard.TokenHistory[i] = dm.TotalTokens
+			m.metricsCard.CostHistory[i] = dm.TotalCostUSD
+			m.metricsCard.TaskHistory[i] = dm.ExecutionCount
+		}
 	}
 }
 
@@ -540,10 +599,34 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.tokenUsage = TokenUsage(msg)
 		m.persistTokenUsage(inputDelta, outputDelta)
 
+		// Sync metrics card with latest token data
+		m.metricsCard.TotalTokens = m.tokenUsage.TotalTokens
+		m.metricsCard.InputTokens = m.tokenUsage.InputTokens
+		m.metricsCard.OutputTokens = m.tokenUsage.OutputTokens
+		m.metricsCard.TotalCostUSD = memory.EstimateCost(
+			int64(m.tokenUsage.InputTokens),
+			int64(m.tokenUsage.OutputTokens),
+			memory.DefaultModel,
+		)
+		if m.metricsCard.TotalTasks > 0 {
+			m.metricsCard.CostPerTask = m.metricsCard.TotalCostUSD / float64(m.metricsCard.TotalTasks)
+		}
+
 	case addCompletedTaskMsg:
 		m.completedTasks = append(m.completedTasks, CompletedTask(msg))
 		if len(m.completedTasks) > 5 {
 			m.completedTasks = m.completedTasks[len(m.completedTasks)-5:]
+		}
+
+		// Update metrics card task counters
+		m.metricsCard.TotalTasks++
+		if CompletedTask(msg).Status == "success" {
+			m.metricsCard.Succeeded++
+		} else {
+			m.metricsCard.Failed++
+		}
+		if m.metricsCard.TotalTasks > 0 {
+			m.metricsCard.CostPerTask = m.metricsCard.TotalCostUSD / float64(m.metricsCard.TotalTasks)
 		}
 
 	case updateMetricsCardMsg:
@@ -596,8 +679,8 @@ func (m Model) View() string {
 	}
 	b.WriteString("\n")
 
-	// Token usage
-	b.WriteString(m.renderMetrics())
+	// Metrics cards (tokens, cost, tasks)
+	b.WriteString(m.renderMetricsCards())
 	b.WriteString("\n")
 
 	// Tasks
@@ -1038,43 +1121,6 @@ func (m Model) renderMetricsCards() string {
 	gap := strings.Repeat(" ", cardGap)
 	return lipgloss.JoinHorizontal(lipgloss.Top,
 		m.renderTokenCard(), gap, m.renderCostCard(), gap, m.renderTaskCard())
-}
-
-// renderMetrics renders token usage and cost
-func (m Model) renderMetrics() string {
-	var content strings.Builder
-	w := panelInnerWidth // Content width between borders
-
-	content.WriteString(dotLeader("Input", formatNumber(m.tokenUsage.InputTokens), w))
-	content.WriteString("\n")
-	content.WriteString(dotLeader("Output", formatNumber(m.tokenUsage.OutputTokens), w))
-	content.WriteString("\n")
-
-	// Cost with styled value
-	cost := float64(m.tokenUsage.TotalTokens) / 1_000_000 * m.costPerMToken
-	costValue := fmt.Sprintf("$%.4f", cost)
-	content.WriteString(dotLeaderStyled("Est. Cost", costValue, costStyle, w))
-
-	return renderPanel("TOKEN USAGE", content.String())
-}
-
-// formatNumber formats an integer with comma separators
-func formatNumber(n int) string {
-	if n == 0 {
-		return "0"
-	}
-
-	str := fmt.Sprintf("%d", n)
-	var result strings.Builder
-
-	for i, c := range str {
-		if i > 0 && (len(str)-i)%3 == 0 {
-			result.WriteRune(',')
-		}
-		result.WriteRune(c)
-	}
-
-	return result.String()
 }
 
 // renderTasks renders the tasks list
