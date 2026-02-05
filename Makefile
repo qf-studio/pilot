@@ -1,4 +1,4 @@
-.PHONY: build run test test-e2e clean install lint fmt deps dev install-hooks check-secrets gate check-integration auto-fix test-short release
+.PHONY: build run test test-e2e clean install lint fmt deps dev install-hooks check-secrets gate check-integration auto-fix test-short package release
 
 # Variables
 BINARY_NAME=pilot
@@ -21,6 +21,19 @@ build-all:
 	GOOS=darwin GOARCH=arm64 go build $(LDFLAGS) -o bin/$(BINARY_NAME)-darwin-arm64 ./cmd/pilot
 	GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o bin/$(BINARY_NAME)-linux-amd64 ./cmd/pilot
 	GOOS=linux GOARCH=arm64 go build $(LDFLAGS) -o bin/$(BINARY_NAME)-linux-arm64 ./cmd/pilot
+
+# Package binaries into tar.gz archives for release
+# Binary inside tar is named "pilot" (not pilot-darwin-arm64) to match upgrade code.
+# COPYFILE_DISABLE=1 prevents macOS tar from adding ._* resource fork entries.
+package: build-all
+	@echo "📦 Packaging binaries..."
+	@for arch in darwin-amd64 darwin-arm64 linux-amd64 linux-arm64; do \
+		cp bin/$(BINARY_NAME)-$$arch bin/$(BINARY_NAME) && \
+		COPYFILE_DISABLE=1 tar czf bin/$(BINARY_NAME)-$$arch.tar.gz -C bin $(BINARY_NAME) && \
+		rm bin/$(BINARY_NAME); \
+	done
+	@shasum -a 256 bin/*.tar.gz > bin/checksums.txt
+	@echo "✅ Packages created"
 
 # Run the daemon
 run: build
@@ -119,7 +132,7 @@ auto-fix:
 gate:
 	@./scripts/pre-push-gate.sh
 
-# Release - creates tag, builds, and publishes to GitHub
+# Release - creates tag, builds, packages, and publishes to GitHub
 # Usage: make release V=0.14.6 NOTES="Release notes here"
 release:
 ifndef V
@@ -137,14 +150,15 @@ endif
 	@echo "📌 Creating and pushing git tag v$(V)..."
 	git tag v$(V)
 	git push origin v$(V)
-	@echo "🔨 Building binaries..."
-	$(MAKE) build-all VERSION=v$(V)
+	@echo "🔨 Building and packaging binaries..."
+	$(MAKE) package VERSION=v$(V)
 	@echo "📦 Creating GitHub release..."
 	gh release create v$(V) \
-		bin/$(BINARY_NAME)-darwin-amd64 \
-		bin/$(BINARY_NAME)-darwin-arm64 \
-		bin/$(BINARY_NAME)-linux-amd64 \
-		bin/$(BINARY_NAME)-linux-arm64 \
+		bin/$(BINARY_NAME)-darwin-amd64.tar.gz \
+		bin/$(BINARY_NAME)-darwin-arm64.tar.gz \
+		bin/$(BINARY_NAME)-linux-amd64.tar.gz \
+		bin/$(BINARY_NAME)-linux-arm64.tar.gz \
+		bin/checksums.txt \
 		--title "pilot v$(V)" \
 		--notes "$(if $(NOTES),$(NOTES),Release v$(V))"
 	@echo "✅ Released v$(V)"
@@ -174,5 +188,6 @@ help:
 	@echo "  make gate           Run pre-push validation gate"
 	@echo "  make auto-fix       Auto-fix common issues"
 	@echo "  make test-short     Run tests in short mode"
+	@echo "  make package        Package binaries into tar.gz archives"
 	@echo "  make release        Create release (V=0.x.x required)"
 	@echo ""
