@@ -936,6 +936,110 @@ func renderSparkline(levels []int, pulsing bool) string {
 	return b.String()
 }
 
+// --- Mini-card builder helpers ---
+
+// miniCardEmptyLine returns a bordered empty line at exact cardWidth (21 chars).
+func miniCardEmptyLine() string {
+	border := borderStyle.Render("│")
+	return border + strings.Repeat(" ", cardWidth-2) + border
+}
+
+// miniCardContentLine returns a bordered content line with 1-char padding each side.
+func miniCardContentLine(content string) string {
+	adjusted := padOrTruncate(content, cardInnerWidth)
+	border := borderStyle.Render("│")
+	return border + " " + adjusted + " " + border
+}
+
+// miniCardHeaderLine returns a header with TITLE left-aligned and VALUE right-aligned.
+func miniCardHeaderLine(title, value string) string {
+	styledTitle := titleStyle.Render(strings.ToUpper(title))
+	titleWidth := lipgloss.Width(styledTitle)
+	valueWidth := lipgloss.Width(value)
+	gap := cardInnerWidth - titleWidth - valueWidth
+	if gap < 1 {
+		gap = 1
+	}
+	return styledTitle + strings.Repeat(" ", gap) + value
+}
+
+// buildMiniCard assembles a full bordered mini-card.
+func buildMiniCard(title, value, detail1, detail2, sparkline string) string {
+	dashCount := cardWidth - 2
+	top := borderStyle.Render("╭" + strings.Repeat("─", dashCount) + "╮")
+	bottom := borderStyle.Render("╰" + strings.Repeat("─", dashCount) + "╯")
+
+	lines := []string{
+		top,
+		miniCardEmptyLine(),
+		miniCardContentLine(miniCardHeaderLine(title, value)),
+		miniCardEmptyLine(),
+		miniCardContentLine(detail1),
+		miniCardContentLine(detail2),
+		miniCardEmptyLine(),
+		miniCardContentLine(sparkline),
+		miniCardEmptyLine(),
+		bottom,
+	}
+	return strings.Join(lines, "\n")
+}
+
+// --- Card renderers ---
+
+// renderTokenCard renders the TOKENS mini-card.
+func (m Model) renderTokenCard() string {
+	value := titleStyle.Render(formatCompact(m.metricsCard.TotalTokens))
+	detail1 := dimStyle.Render(fmt.Sprintf("↑ %s input", formatCompact(m.metricsCard.InputTokens)))
+	detail2 := dimStyle.Render(fmt.Sprintf("↓ %s output", formatCompact(m.metricsCard.OutputTokens)))
+
+	// Convert int64 history to float64
+	floats := make([]float64, len(m.metricsCard.TokenHistory))
+	for i, v := range m.metricsCard.TokenHistory {
+		floats[i] = float64(v)
+	}
+	levels := normalizeToSparkline(floats, cardInnerWidth-1)
+	spark := statusRunningStyle.Render(renderSparkline(levels, m.sparklineTick))
+
+	return buildMiniCard("tokens", value, detail1, detail2, spark)
+}
+
+// renderCostCard renders the COST mini-card.
+func (m Model) renderCostCard() string {
+	value := costStyle.Render(fmt.Sprintf("$%.2f", m.metricsCard.TotalCostUSD))
+	costPerTask := m.metricsCard.CostPerTask
+	detail1 := dimStyle.Render(fmt.Sprintf("~$%.2f/task", costPerTask))
+	detail2 := ""
+
+	levels := normalizeToSparkline(m.metricsCard.CostHistory, cardInnerWidth-1)
+	spark := statusRunningStyle.Render(renderSparkline(levels, m.sparklineTick))
+
+	return buildMiniCard("cost", value, detail1, detail2, spark)
+}
+
+// renderTaskCard renders the TASKS mini-card.
+func (m Model) renderTaskCard() string {
+	value := fmt.Sprintf("%d", m.metricsCard.TotalTasks)
+	detail1 := statusCompletedStyle.Render(fmt.Sprintf("✓ %d succeeded", m.metricsCard.Succeeded))
+	detail2 := statusFailedStyle.Render(fmt.Sprintf("✗ %d failed", m.metricsCard.Failed))
+
+	// Convert int history to float64
+	floats := make([]float64, len(m.metricsCard.TaskHistory))
+	for i, v := range m.metricsCard.TaskHistory {
+		floats[i] = float64(v)
+	}
+	levels := normalizeToSparkline(floats, cardInnerWidth-1)
+	spark := statusRunningStyle.Render(renderSparkline(levels, m.sparklineTick))
+
+	return buildMiniCard("tasks", value, detail1, detail2, spark)
+}
+
+// renderMetricsCards renders all three mini-cards side by side.
+func (m Model) renderMetricsCards() string {
+	gap := strings.Repeat(" ", cardGap)
+	return lipgloss.JoinHorizontal(lipgloss.Top,
+		m.renderTokenCard(), gap, m.renderCostCard(), gap, m.renderTaskCard())
+}
+
 // renderMetrics renders token usage and cost
 func (m Model) renderMetrics() string {
 	var content strings.Builder

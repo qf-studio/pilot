@@ -1,8 +1,11 @@
 package dashboard
 
 import (
+	"strings"
 	"testing"
 	"unicode/utf8"
+
+	"github.com/charmbracelet/lipgloss"
 )
 
 func TestFormatCompact(t *testing.T) {
@@ -126,5 +129,78 @@ func TestRenderSparkline(t *testing.T) {
 				t.Errorf("pulsing=false but last rune = %q, want ' '", lastRune)
 			}
 		})
+	}
+}
+
+func TestBuildMiniCard(t *testing.T) {
+	card := buildMiniCard("TEST", "42", "detail one", "detail two", "▁▂▃▄▅▆▇█▁▂▃▄▅▆▇█•")
+
+	lines := strings.Split(card, "\n")
+	for i, line := range lines {
+		w := lipgloss.Width(line)
+		if w != cardWidth {
+			t.Errorf("line %d visual width = %d, want %d: %q", i, w, cardWidth, line)
+		}
+	}
+
+	// Check border characters present
+	if !strings.Contains(card, "╭") {
+		t.Error("missing top-left border ╭")
+	}
+	if !strings.Contains(card, "╰") {
+		t.Error("missing bottom-left border ╰")
+	}
+	if !strings.Contains(card, "│") {
+		t.Error("missing side border │")
+	}
+}
+
+func TestRenderMetricsCards(t *testing.T) {
+	m := NewModel("test")
+	m.metricsCard = MetricsCardData{
+		TotalTokens:  50000,
+		InputTokens:  30000,
+		OutputTokens: 20000,
+		TotalCostUSD: 1.50,
+		CostPerTask:  0.25,
+		TotalTasks:   10,
+		Succeeded:    8,
+		Failed:       2,
+		TokenHistory: []int64{100, 200, 300, 400, 500, 600, 700},
+		CostHistory:  []float64{0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7},
+		TaskHistory:  []int{1, 2, 3, 2, 1, 3, 2},
+	}
+
+	output := m.renderMetricsCards()
+
+	if !strings.Contains(output, "TOKENS") {
+		t.Error("output missing TOKENS card")
+	}
+	if !strings.Contains(output, "COST") {
+		t.Error("output missing COST card")
+	}
+	if !strings.Contains(output, "TASKS") {
+		t.Error("output missing TASKS card")
+	}
+}
+
+func TestRenderMetricsCards_ZeroState(t *testing.T) {
+	m := NewModel("test")
+	// metricsCard is zero-value MetricsCardData
+
+	// Must not panic
+	output := m.renderMetricsCards()
+
+	if output == "" {
+		t.Error("zero-state renderMetricsCards returned empty string")
+	}
+	if !strings.Contains(output, "TOKENS") {
+		t.Error("zero-state output missing TOKENS card")
+	}
+	if !strings.Contains(output, "COST") {
+		t.Error("zero-state output missing COST card")
+	}
+	if !strings.Contains(output, "TASKS") {
+		t.Error("zero-state output missing TASKS card")
 	}
 }
