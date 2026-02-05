@@ -786,7 +786,7 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 		result.ModelName = state.modelName
 	}
 	if result.ModelName == "" {
-		result.ModelName = "claude-sonnet-4-5" // Default model
+		result.ModelName = "claude-opus-4-6" // Default model
 	}
 	// Estimate cost based on token usage (including research tokens)
 	result.EstimatedCostUSD = estimateCost(result.TokensInput+result.ResearchTokens, result.TokensOutput, result.ModelName)
@@ -2291,15 +2291,24 @@ func estimateCost(inputTokens, outputTokens int64, model string) float64 {
 	const (
 		sonnetInputPrice  = 3.00
 		sonnetOutputPrice = 15.00
-		opusInputPrice    = 15.00
-		opusOutputPrice   = 75.00
+		// Opus 4.6 pricing ($5/$25 per 1M tokens)
+		opusInputPrice  = 5.00
+		opusOutputPrice = 25.00
+		// Legacy Opus 4.5 pricing
+		opus45InputPrice  = 15.00
+		opus45OutputPrice = 75.00
 	)
 
 	var inputPrice, outputPrice float64
-	if strings.Contains(strings.ToLower(model), "opus") {
+	modelLower := strings.ToLower(model)
+	switch {
+	case model == "claude-opus-4-5":
+		inputPrice = opus45InputPrice
+		outputPrice = opus45OutputPrice
+	case strings.Contains(modelLower, "opus"):
 		inputPrice = opusInputPrice
 		outputPrice = opusOutputPrice
-	} else {
+	default:
 		inputPrice = sonnetInputPrice
 		outputPrice = sonnetOutputPrice
 	}

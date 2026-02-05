@@ -35,6 +35,11 @@ type ExecuteOptions struct {
 	// If empty, the backend's default model is used.
 	Model string
 
+	// Effort specifies the effort level for execution (e.g., "low", "medium", "high", "max").
+	// If empty, the backend's default effort is used (high).
+	// Maps to Claude API output_config.effort or Claude Code --effort flag.
+	Effort string
+
 	// EventHandler receives streaming events during execution
 	// The handler receives the raw event line from the backend
 	EventHandler func(event BackendEvent)
@@ -160,6 +165,9 @@ type BackendConfig struct {
 	// Timeout contains execution timeout settings
 	Timeout *TimeoutConfig `yaml:"timeout,omitempty"`
 
+	// EffortRouting contains effort level selection based on task complexity
+	EffortRouting *EffortRoutingConfig `yaml:"effort_routing,omitempty"`
+
 	// Decompose contains auto-decomposition settings for complex tasks
 	Decompose *DecomposeConfig `yaml:"decompose,omitempty"`
 }
@@ -219,6 +227,37 @@ type TimeoutConfig struct {
 	Complex string `yaml:"complex"`
 }
 
+// EffortRoutingConfig controls the effort level based on task complexity.
+// Effort controls how many tokens Claude uses when responding — trading off
+// between thoroughness and efficiency. Works with Claude API output_config.effort.
+//
+// Example YAML configuration:
+//
+//	executor:
+//	  effort_routing:
+//	    enabled: true
+//	    trivial: "low"     # Fast, minimal token spend
+//	    simple: "medium"   # Balanced
+//	    medium: "high"     # Standard (default behavior)
+//	    complex: "max"     # Deepest reasoning (Opus 4.6 only)
+type EffortRoutingConfig struct {
+	// Enabled controls whether effort routing is active.
+	// When false (default), effort is not set (uses model default of "high").
+	Enabled bool `yaml:"enabled"`
+
+	// Trivial effort for trivial tasks. Default: "low"
+	Trivial string `yaml:"trivial"`
+
+	// Simple effort for simple tasks. Default: "medium"
+	Simple string `yaml:"simple"`
+
+	// Medium effort for standard tasks. Default: "high"
+	Medium string `yaml:"medium"`
+
+	// Complex effort for architectural work. Default: "max"
+	Complex string `yaml:"complex"`
+}
+
 // ClaudeCodeConfig contains Claude Code backend configuration.
 type ClaudeCodeConfig struct {
 	// Command is the path to the claude CLI (default: "claude")
@@ -264,15 +303,17 @@ func DefaultBackendConfig() *BackendConfig {
 			AutoStartServer: true,
 			ServerCommand:   "opencode serve",
 		},
-		ModelRouting: DefaultModelRoutingConfig(),
-		Timeout:      DefaultTimeoutConfig(),
-		Decompose:    DefaultDecomposeConfig(),
+		ModelRouting:  DefaultModelRoutingConfig(),
+		Timeout:       DefaultTimeoutConfig(),
+		EffortRouting: DefaultEffortRoutingConfig(),
+		Decompose:     DefaultDecomposeConfig(),
 	}
 }
 
 // DefaultModelRoutingConfig returns default model routing configuration.
-// Model routing is disabled by default; when enabled, uses Haiku for trivial,
-// Sonnet for simple/medium, and Opus for complex tasks.
+// Model routing is disabled by default; when enabled, uses Haiku for trivial
+// tasks (speed) and Opus 4.6 for simple/medium/complex tasks (same price as
+// Sonnet but higher capability).
 //
 // Complexity detection criteria:
 //   - Trivial: Single-file changes, typos, logging, renames
@@ -283,9 +324,22 @@ func DefaultModelRoutingConfig() *ModelRoutingConfig {
 	return &ModelRoutingConfig{
 		Enabled: false,
 		Trivial: "claude-haiku",
-		Simple:  "claude-sonnet",
-		Medium:  "claude-sonnet",
-		Complex: "claude-opus",
+		Simple:  "claude-opus-4-6",
+		Medium:  "claude-opus-4-6",
+		Complex: "claude-opus-4-6",
+	}
+}
+
+// DefaultEffortRoutingConfig returns default effort routing configuration.
+// Effort routing is disabled by default; when enabled, maps task complexity
+// to Claude API effort levels for optimal cost/quality trade-off.
+func DefaultEffortRoutingConfig() *EffortRoutingConfig {
+	return &EffortRoutingConfig{
+		Enabled: false,
+		Trivial: "low",
+		Simple:  "medium",
+		Medium:  "high",
+		Complex: "max",
 	}
 }
 

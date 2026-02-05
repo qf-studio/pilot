@@ -23,7 +23,7 @@ func NewAnthropicClient(apiKey string) *AnthropicClient {
 		httpClient: &http.Client{
 			Timeout: 5 * time.Second, // Fast timeout for classification
 		},
-		model: "claude-3-5-haiku-20241022",
+		model: "claude-haiku-4-5-20251001",
 	}
 }
 

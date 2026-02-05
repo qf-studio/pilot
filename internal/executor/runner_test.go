@@ -663,7 +663,23 @@ func TestEstimateCost(t *testing.T) {
 			maxCost:      15.1,
 		},
 		{
-			name:         "opus 1M input tokens",
+			name:         "opus 4.6 1M input tokens",
+			inputTokens:  1000000,
+			outputTokens: 0,
+			model:        "claude-opus-4-6",
+			minCost:      4.9,
+			maxCost:      5.1,
+		},
+		{
+			name:         "opus 4.6 1M output tokens",
+			inputTokens:  0,
+			outputTokens: 1000000,
+			model:        "claude-opus-4-6",
+			minCost:      24.9,
+			maxCost:      25.1,
+		},
+		{
+			name:         "legacy opus 4.5 1M input tokens",
 			inputTokens:  1000000,
 			outputTokens: 0,
 			model:        "claude-opus-4-5",
@@ -671,7 +687,7 @@ func TestEstimateCost(t *testing.T) {
 			maxCost:      15.1,
 		},
 		{
-			name:         "opus 1M output tokens",
+			name:         "legacy opus 4.5 1M output tokens",
 			inputTokens:  0,
 			outputTokens: 1000000,
 			model:        "claude-opus-4-5",
@@ -687,12 +703,12 @@ func TestEstimateCost(t *testing.T) {
 			maxCost:      1.1, // 0.3 + 0.75
 		},
 		{
-			name:         "case insensitive opus",
+			name:         "case insensitive opus uses 4.6 pricing",
 			inputTokens:  1000000,
 			outputTokens: 0,
-			model:        "Claude-OPUS-4-5",
-			minCost:      14.9,
-			maxCost:      15.1,
+			model:        "Claude-OPUS-4-6",
+			minCost:      4.9,
+			maxCost:      5.1,
 		},
 	}
 

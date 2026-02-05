@@ -41,7 +41,7 @@ class Task:
 class TaskPlanner:
     """Converts tickets into structured task documents."""
 
-    def __init__(self, model: str = "claude-sonnet-4-20250514"):
+    def __init__(self, model: str = "claude-opus-4-6"):
         self.model = model
 
     def plan_from_ticket(self, ticket: Ticket) -> Task:

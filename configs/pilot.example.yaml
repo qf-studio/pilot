@@ -102,7 +102,7 @@ adapters:
 
 # Orchestrator settings
 orchestrator:
-  model: "claude-sonnet-4-20250514"
+  model: "claude-opus-4-6"
   max_concurrent: 2          # Max parallel tasks
 
   # Execution mode (sequential or parallel)
