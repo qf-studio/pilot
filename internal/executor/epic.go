@@ -99,8 +99,8 @@ func (r *Runner) PlanEpic(ctx context.Context, task *Task) (*EpicPlan, error) {
 		return nil, fmt.Errorf("claude planning returned empty output")
 	}
 
-	// Parse subtasks from output
-	subtasks := parseSubtasks(output)
+	// Parse subtasks from output (Haiku API with regex fallback)
+	subtasks := parseSubtasksWithFallback(r.subtaskParser, output)
 	if len(subtasks) == 0 {
 		return nil, fmt.Errorf("no subtasks found in planning output")
 	}
