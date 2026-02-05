@@ -53,8 +53,9 @@ type CreatedIssue struct {
 	Subtask PlannedSubtask
 }
 
-// numberedListRegex matches numbered patterns: "1. ", "1) ", "Step 1:", "Phase 1:", etc.
-var numberedListRegex = regexp.MustCompile(`(?mi)^(?:\s*)(?:step|phase|task)?\s*(\d+)[.):]\s*(.+)`)
+// numberedListRegex matches numbered patterns: "1. ", "1) ", "Step 1:", "Phase 1:", "**1.", etc.
+// Allows optional markdown bold markers (**) before the number.
+var numberedListRegex = regexp.MustCompile(`(?mi)^(?:\s*)(?:\*{0,2})(?:step|phase|task)?\s*(\d+)[.):]\s*(.+)`)
 
 // PlanEpic runs Claude Code in planning mode to break an epic into subtasks.
 // Returns an EpicPlan with 3-5 sequential subtasks.

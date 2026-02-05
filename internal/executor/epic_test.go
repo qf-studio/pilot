@@ -93,6 +93,19 @@ just plain paragraphs`,
 			},
 		},
 		{
+			name: "bold-wrapped numbers from Claude output",
+			output: `Based on the codebase analysis, here are the subtasks:
+
+**1. Add parent_task_id to database schema** - Create migration and update store
+**2. Wire parent context through dispatcher** - Pass parent ID to sub-issues
+**3. Update dashboard rendering** - Group sub-issues under parent in history`,
+			expected: []PlannedSubtask{
+				{Title: "Add parent_task_id to database schema", Description: "Create migration and update store", Order: 1},
+				{Title: "Wire parent context through dispatcher", Description: "Pass parent ID to sub-issues", Order: 2},
+				{Title: "Update dashboard rendering", Description: "Group sub-issues under parent in history", Order: 3},
+			},
+		},
+		{
 			name: "duplicate order numbers filtered",
 			output: `1. First task - Description
 1. Duplicate first - Should be ignored
