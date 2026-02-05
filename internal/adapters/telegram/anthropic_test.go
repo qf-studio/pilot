@@ -18,8 +18,8 @@ func TestNewAnthropicClient(t *testing.T) {
 	if client.apiKey != "test-api-key" {
 		t.Errorf("apiKey = %q, want %q", client.apiKey, "test-api-key")
 	}
-	if client.model != "claude-3-5-haiku-20241022" {
-		t.Errorf("model = %q, want %q", client.model, "claude-3-5-haiku-20241022")
+	if client.model != "claude-haiku-4-5-20251001" {
+		t.Errorf("model = %q, want %q", client.model, "claude-haiku-4-5-20251001")
 	}
 	if client.httpClient == nil {
 		t.Error("httpClient is nil")
@@ -136,7 +136,7 @@ func TestAnthropicClientClassify(t *testing.T) {
 			client := &AnthropicClient{
 				apiKey:     "test-api-key",
 				httpClient: server.Client(),
-				model:      "claude-3-5-haiku-20241022",
+				model:      "claude-haiku-4-5-20251001",
 			}
 
 			// Override the API URL by using a custom transport
@@ -213,7 +213,7 @@ func TestAnthropicClientClassifyRequestBody(t *testing.T) {
 			Timeout:   5 * time.Second,
 			Transport: &redirectTransport{serverURL: server.URL},
 		},
-		model: "claude-3-5-haiku-20241022",
+		model: "claude-haiku-4-5-20251001",
 	}
 
 	ctx := context.Background()
@@ -227,8 +227,8 @@ func TestAnthropicClientClassifyRequestBody(t *testing.T) {
 	}
 
 	// Verify request body structure
-	if receivedBody["model"] != "claude-3-5-haiku-20241022" {
-		t.Errorf("model = %v, want %v", receivedBody["model"], "claude-3-5-haiku-20241022")
+	if receivedBody["model"] != "claude-haiku-4-5-20251001" {
+		t.Errorf("model = %v, want %v", receivedBody["model"], "claude-haiku-4-5-20251001")
 	}
 	if receivedBody["max_tokens"] != float64(100) {
 		t.Errorf("max_tokens = %v, want %v", receivedBody["max_tokens"], 100)
@@ -237,6 +237,15 @@ func TestAnthropicClientClassifyRequestBody(t *testing.T) {
 	// Verify system prompt exists
 	if receivedBody["system"] == nil || receivedBody["system"] == "" {
 		t.Error("system prompt is missing")
+	}
+
+	// Verify effort is set to "low" for fast classification
+	outputConfig, ok := receivedBody["output_config"].(map[string]interface{})
+	if !ok {
+		t.Fatal("output_config is missing or not an object")
+	}
+	if outputConfig["effort"] != "low" {
+		t.Errorf("effort = %v, want %v", outputConfig["effort"], "low")
 	}
 
 	// Verify messages array
@@ -284,7 +293,7 @@ func TestAnthropicClientHistoryLimit(t *testing.T) {
 			Timeout:   5 * time.Second,
 			Transport: &redirectTransport{serverURL: server.URL},
 		},
-		model: "claude-3-5-haiku-20241022",
+		model: "claude-haiku-4-5-20251001",
 	}
 
 	// Create history with more than 5 messages
