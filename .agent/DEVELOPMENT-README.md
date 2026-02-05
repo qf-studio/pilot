@@ -96,7 +96,7 @@ if _, err := os.Stat(agentDir); err == nil {
 
 ## Current State
 
-**Current Version:** v0.13.2
+**Current Version:** v0.19.1
 
 **Full implementation status:** `.agent/system/FEATURE-MATRIX.md`
 
@@ -110,12 +110,13 @@ if _, err := os.Stat(agentDir); err == nil {
 | Alerts Engine | ✅ | Slack, Telegram, webhooks |
 | Quality Gates | ✅ | Test/lint/build gates with retry |
 | Task Dispatcher | ✅ | Per-project queue |
-| Dashboard TUI | ✅ | Token usage, cost, autopilot, **SQLite persistence (v0.13.1)** |
-| Hot Upgrade | ✅ | Self-update via `pilot upgrade` or **dashboard 'u' key (v0.13.0)** |
-| **Autopilot** | ✅ | CI monitor, auto-merge, feedback loop, startup PR scan |
-| **LLM Intent** | ✅ | Claude Haiku intent classification **(v0.13.0)** |
-| **Self-Review** | ✅ | Auto code review before PR **(v0.13.0)** |
-| **Auto Build Gate** | ✅ | Minimal build gate when none configured **(v0.13.0)** |
+| Dashboard TUI | ✅ | Sparkline cards, muted palette, SQLite persistence **(v0.19.0)** |
+| Hot Upgrade | ✅ | Self-update via `pilot upgrade` or dashboard 'u' key, `syscall.Exec` restart |
+| **Autopilot** | ✅ | CI monitor, auto-merge, feedback loop, **CI fix on original branch (v0.19.1)** |
+| **LLM Intent** | ✅ | Claude Haiku intent classification |
+| **Self-Review** | ✅ | Auto code review before PR |
+| **Auto Build Gate** | ✅ | Minimal build gate when none configured |
+| **Release Packaging** | ✅ | `make package` with COPYFILE_DISABLE, checksums **(v0.18.1)** |
 
 ### Telegram Interaction Modes (v0.6.0)
 
@@ -179,13 +180,32 @@ _Queue empty - create issues with `pilot` label to add work._
 | Priority | Topic | Why |
 |----------|-------|-----|
 | 🔴 P1 | Verify quality gates wiring | May not be fully wired |
+| 🔴 P1 | Fix GoReleaser/manual release conflict | CI Release workflow fails when assets exist |
 | 🟡 P2 | Cost controls | Budget protection |
 | 🟡 P2 | Approval workflows verification | Team safety |
+| 🟡 P2 | Autopilot auto-merge stall investigation | HeadSHA fix landed but merge still not happening |
 | 🟢 P3 | Telegram commands | Power user UX |
 
 **For accurate feature status, see:** `.agent/system/FEATURE-MATRIX.md`
 
 ---
+
+## Completed (2026-02-05)
+
+| Item | What |
+|------|------|
+| **v0.19.1** | Autopilot CI fix targets original branch via metadata (GH-489) |
+| **v0.19.0** | Dashboard polish: muted colors, tighter card gap, sparkline baseline fix |
+| **v0.18.1** | Release packaging fix: `make package` with COPYFILE_DISABLE |
+| **v0.18.0** | Dashboard cards, data wiring, autopilot stale SHA fix |
+| GH-489 | Embed branch metadata in CI fix issues, parse in poller |
+| GH-471 | Dashboard: reduce card gap, fix sparkline flat-line, mute colors |
+| GH-468 | Makefile: package tar.gz with COPYFILE_DISABLE + checksums |
+| GH-465 | Close failed PR to unblock sequential poller |
+| GH-464 | Fix CI failure from PR #463 (unused formatNumber) |
+| GH-459 | Wire data loading, update handlers, replace renderMetrics |
+| GH-458 | Mini-card builder + 3 card renderers |
+| GH-457 | Always refresh HeadSHA from GitHub before CI check |
 
 ## Completed (2026-02-03)
 

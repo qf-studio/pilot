@@ -185,7 +185,7 @@ func TestRenderMetricsCards(t *testing.T) {
 	if !strings.Contains(output, "COST") {
 		t.Error("output missing COST card")
 	}
-	if !strings.Contains(output, "TASKS") {
+	if !strings.Contains(output, "QUEUE") {
 		t.Error("output missing TASKS card")
 	}
 }
@@ -206,7 +206,7 @@ func TestRenderMetricsCards_ZeroState(t *testing.T) {
 	if !strings.Contains(output, "COST") {
 		t.Error("zero-state output missing COST card")
 	}
-	if !strings.Contains(output, "TASKS") {
+	if !strings.Contains(output, "QUEUE") {
 		t.Error("zero-state output missing TASKS card")
 	}
 }

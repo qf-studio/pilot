@@ -25,9 +25,9 @@ const (
 
 // Metrics card dimensions
 const (
-	cardWidth      = 21 // 21*3 + 1*2 = 65 ≤ panelTotalWidth
-	cardInnerWidth = 17 // cardWidth - 4 (border + padding)
-	cardGap        = 1  // space between cards
+	cardWidth      = 23 // 23*3 = 69 = panelTotalWidth (no gaps)
+	cardInnerWidth = 19 // cardWidth - 4 (border + padding)
+	cardGap        = 0  // no gap — cards fill full panel width
 )
 
 // sparkBlocks maps normalized levels (0-8) to Unicode block elements for sparkline rendering.
@@ -1109,7 +1109,7 @@ func (m Model) renderCostCard() string {
 	return buildMiniCard("cost", value, detail1, detail2, spark)
 }
 
-// renderTaskCard renders the TASKS mini-card.
+// renderTaskCard renders the QUEUE mini-card.
 func (m Model) renderTaskCard() string {
 	value := fmt.Sprintf("%d", m.metricsCard.TotalTasks)
 	detail1 := statusCompletedStyle.Render(fmt.Sprintf("✓ %d succeeded", m.metricsCard.Succeeded))
@@ -1123,7 +1123,7 @@ func (m Model) renderTaskCard() string {
 	levels := normalizeToSparkline(floats, cardInnerWidth-1)
 	spark := statusRunningStyle.Render(renderSparkline(levels, m.sparklineTick))
 
-	return buildMiniCard("tasks", value, detail1, detail2, spark)
+	return buildMiniCard("queue", value, detail1, detail2, spark)
 }
 
 // renderMetricsCards renders all three mini-cards side by side.
@@ -1148,7 +1148,7 @@ func (m Model) renderTasks() string {
 		}
 	}
 
-	return renderPanel("TASKS", content.String())
+	return renderPanel("QUEUE", content.String())
 }
 
 // renderTask renders a single task
