@@ -309,8 +309,9 @@ func TestController_ProcessPR_StageEnvironment_CIPass(t *testing.T) {
 }
 
 func TestController_ProcessPR_CIFailure(t *testing.T) {
-	// Test CI failure creates fix issue
+	// Test CI failure creates fix issue and closes the failed PR
 	issueCreated := false
+	prClosed := false
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -330,6 +331,10 @@ func TestController_ProcessPR_CIFailure(t *testing.T) {
 			resp := github.Issue{Number: 100}
 			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(resp)
+		case r.URL.Path == "/repos/owner/repo/pulls/42" && r.Method == "PATCH":
+			// PR close request — verify it's called after CI failure
+			prClosed = true
+			w.WriteHeader(http.StatusOK)
 		default:
 			w.WriteHeader(http.StatusOK)
 		}
@@ -364,13 +369,16 @@ func TestController_ProcessPR_CIFailure(t *testing.T) {
 		t.Errorf("after stage 2: Stage = %s, want %s", pr.Stage, StageCIFailed)
 	}
 
-	// Stage 3: CI failed → create fix issue → failed
+	// Stage 3: CI failed → create fix issue → close PR → failed
 	err = c.ProcessPR(ctx, 42)
 	if err != nil {
 		t.Fatalf("ProcessPR stage 3 error: %v", err)
 	}
 	if !issueCreated {
 		t.Error("fix issue should have been created")
+	}
+	if !prClosed {
+		t.Error("failed PR should have been closed on GitHub to unblock sequential poller")
 	}
 	pr, _ = c.GetPRState(42)
 	if pr.Stage != StageFailed {

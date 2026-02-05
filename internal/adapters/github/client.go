@@ -249,6 +249,14 @@ func (c *Client) GetPullRequest(ctx context.Context, owner, repo string, number 
 	return &result, nil
 }
 
+// ClosePullRequest closes a pull request without merging.
+// Used by autopilot to close failed PRs so the sequential poller can unblock.
+func (c *Client) ClosePullRequest(ctx context.Context, owner, repo string, number int) error {
+	path := fmt.Sprintf("/repos/%s/%s/pulls/%d", owner, repo, number)
+	payload := map[string]string{"state": "closed"}
+	return c.doRequest(ctx, http.MethodPatch, path, payload, nil)
+}
+
 // AddPRComment adds a comment to a pull request (issue comment API)
 // For review comments on specific lines, use CreatePRReviewComment instead
 func (c *Client) AddPRComment(ctx context.Context, owner, repo string, number int, body string) (*PRComment, error) {

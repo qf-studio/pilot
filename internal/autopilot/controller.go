@@ -332,6 +332,17 @@ func (c *Controller) handleCIFailed(ctx context.Context, prState *PRState) error
 	}
 
 	c.log.Info("created fix issue for CI failure", "pr", prState.PRNumber, "issue", issueNum)
+
+	// Close the failed PR on GitHub so the sequential poller's merge waiter
+	// can unblock and pick up the fix issue. Without this, the poller stays
+	// blocked in WaitWithCallback() waiting for a PR that will never merge.
+	if err := c.ghClient.ClosePullRequest(ctx, c.owner, c.repo, prState.PRNumber); err != nil {
+		c.log.Warn("failed to close failed PR", "pr", prState.PRNumber, "error", err)
+		// Non-fatal: merge waiter will eventually timeout
+	} else {
+		c.log.Info("closed failed PR", "pr", prState.PRNumber, "fix_issue", issueNum)
+	}
+
 	prState.Stage = StageFailed
 	return nil
 }
