@@ -249,3 +249,51 @@ func TestRemovedFlags(t *testing.T) {
 		}
 	})
 }
+
+func TestParseAutopilotBranch(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "valid metadata",
+			body: "Some body text\n\n<!-- autopilot-meta branch:pilot/GH-123 -->\n",
+			want: "pilot/GH-123",
+		},
+		{
+			name: "metadata with context",
+			body: "# Fix\n\n## Context\n- **PR**: #42\n- **Branch**: pilot/GH-99\n\n---\n\n<!-- autopilot-meta branch:pilot/GH-99 -->\n",
+			want: "pilot/GH-99",
+		},
+		{
+			name: "no metadata",
+			body: "Some body text without metadata",
+			want: "",
+		},
+		{
+			name: "empty body",
+			body: "",
+			want: "",
+		},
+		{
+			name: "malformed metadata - missing branch",
+			body: "<!-- autopilot-meta -->",
+			want: "",
+		},
+		{
+			name: "malformed metadata - no closing",
+			body: "<!-- autopilot-meta branch:pilot/GH-123",
+			want: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parseAutopilotBranch(tt.body)
+			if got != tt.want {
+				t.Errorf("parseAutopilotBranch() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

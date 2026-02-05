@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"regexp"
 	"strings"
 	"syscall"
 	"time"
@@ -1559,6 +1560,16 @@ func logGitHubAPIError(operation string, owner, repo string, issueNum int, err e
 	}
 }
 
+// parseAutopilotBranch extracts the target branch from an autopilot-fix issue's metadata comment.
+// Returns empty string if no metadata found.
+func parseAutopilotBranch(body string) string {
+	re := regexp.MustCompile(`<!-- autopilot-meta branch:(\S+) -->`)
+	if m := re.FindStringSubmatch(body); len(m) > 1 {
+		return m[1]
+	}
+	return ""
+}
+
 // handleGitHubIssue processes a GitHub issue picked up by the poller
 func handleGitHubIssue(ctx context.Context, cfg *config.Config, client *github.Client, issue *github.Issue, projectPath string, dispatcher *executor.Dispatcher, runner *executor.Runner) error {
 	sourceRepo := cfg.Adapters.GitHub.Repo
@@ -1805,6 +1816,21 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 
 	taskDesc := fmt.Sprintf("GitHub Issue #%d: %s\n\n%s", issue.Number, issue.Title, issue.Body)
 	branchName := fmt.Sprintf("pilot/%s", taskID)
+
+	// GH-489: For autopilot-fix issues, reuse the original branch so the fix
+	// lands on the same branch as the failed PR (not a new branch).
+	for _, label := range issue.Labels {
+		if label.Name == "autopilot-fix" {
+			if parsed := parseAutopilotBranch(issue.Body); parsed != "" {
+				branchName = parsed
+				slog.Info("using original branch from autopilot-fix metadata",
+					slog.String("branch", branchName),
+					slog.Int("issue", issue.Number),
+				)
+			}
+			break
+		}
+	}
 
 	// Always create branches and PRs - required for autopilot workflow
 	// GH-386: Include SourceRepo for cross-project validation in executor
