@@ -4,11 +4,12 @@ import (
 	"time"
 )
 
-// ModelRouter selects the appropriate model and timeout based on task complexity.
-// It uses configuration to map complexity levels to model names and timeout durations.
+// ModelRouter selects the appropriate model, timeout, and effort level based on task complexity.
+// It uses configuration to map complexity levels to model names, timeout durations, and effort levels.
 type ModelRouter struct {
 	modelConfig   *ModelRoutingConfig
 	timeoutConfig *TimeoutConfig
+	effortConfig  *EffortRoutingConfig
 }
 
 // NewModelRouter creates a new ModelRouter with the given configuration.
@@ -24,6 +25,16 @@ func NewModelRouter(modelConfig *ModelRoutingConfig, timeoutConfig *TimeoutConfi
 		modelConfig:   modelConfig,
 		timeoutConfig: timeoutConfig,
 	}
+}
+
+// NewModelRouterWithEffort creates a ModelRouter with effort routing support.
+func NewModelRouterWithEffort(modelConfig *ModelRoutingConfig, timeoutConfig *TimeoutConfig, effortConfig *EffortRoutingConfig) *ModelRouter {
+	router := NewModelRouter(modelConfig, timeoutConfig)
+	if effortConfig == nil {
+		effortConfig = DefaultEffortRoutingConfig()
+	}
+	router.effortConfig = effortConfig
+	return router
 }
 
 // SelectModel returns the appropriate model name for a task based on its complexity.
@@ -103,4 +114,40 @@ func (r *ModelRouter) GetTimeoutForComplexity(complexity Complexity) time.Durati
 // IsRoutingEnabled returns true if model routing is enabled.
 func (r *ModelRouter) IsRoutingEnabled() bool {
 	return r.modelConfig != nil && r.modelConfig.Enabled
+}
+
+// SelectEffort returns the appropriate effort level for a task based on its complexity.
+// If effort routing is disabled, returns empty string (use model default).
+func (r *ModelRouter) SelectEffort(task *Task) string {
+	if r.effortConfig == nil || !r.effortConfig.Enabled {
+		return ""
+	}
+
+	complexity := DetectComplexity(task)
+	return r.GetEffortForComplexity(complexity)
+}
+
+// GetEffortForComplexity returns the effort level for a given complexity level.
+func (r *ModelRouter) GetEffortForComplexity(complexity Complexity) string {
+	if r.effortConfig == nil {
+		return ""
+	}
+
+	switch complexity {
+	case ComplexityTrivial:
+		return r.effortConfig.Trivial
+	case ComplexitySimple:
+		return r.effortConfig.Simple
+	case ComplexityMedium:
+		return r.effortConfig.Medium
+	case ComplexityComplex:
+		return r.effortConfig.Complex
+	default:
+		return r.effortConfig.Medium
+	}
+}
+
+// IsEffortRoutingEnabled returns true if effort routing is enabled.
+func (r *ModelRouter) IsEffortRoutingEnabled() bool {
+	return r.effortConfig != nil && r.effortConfig.Enabled
 }
