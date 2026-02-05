@@ -550,6 +550,12 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 		log = log.With(slog.String("routed_model", selectedModel))
 	}
 
+	// Select effort if routing is enabled
+	selectedEffort := r.modelRouter.SelectEffort(task)
+	if selectedEffort != "" {
+		log = log.With(slog.String("routed_effort", selectedEffort))
+	}
+
 	log.Info("Starting task execution",
 		slog.String("project", task.ProjectPath),
 		slog.String("branch", task.Branch),
@@ -659,6 +665,7 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 		ProjectPath: task.ProjectPath,
 		Verbose:     task.Verbose,
 		Model:       selectedModel,
+		Effort:      selectedEffort,
 		EventHandler: func(event BackendEvent) {
 			// Record the event
 			if recorder != nil {
@@ -981,6 +988,7 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 						ProjectPath: task.ProjectPath,
 						Verbose:     task.Verbose,
 						Model:       selectedModel,
+						Effort:      selectedEffort,
 						EventHandler: func(event BackendEvent) {
 							if recorder != nil {
 								if recErr := recorder.RecordEvent(event.Raw); recErr != nil {
