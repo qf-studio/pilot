@@ -259,9 +259,9 @@ func NewRunnerWithConfig(config *BackendConfig) (*Runner, error) {
 	runner := NewRunnerWithBackend(backend)
 	runner.config = config
 
-	// Configure model routing and timeouts from config
+	// Configure model routing, timeouts, and effort from config
 	if config != nil {
-		runner.modelRouter = NewModelRouter(config.ModelRouting, config.Timeout)
+		runner.modelRouter = NewModelRouterWithEffort(config.ModelRouting, config.Timeout, config.EffortRouting)
 
 		// Configure task decomposition (GH-218)
 		if config.Decompose != nil && config.Decompose.Enabled {
