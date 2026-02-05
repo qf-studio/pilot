@@ -4133,16 +4133,17 @@ func runDashboardMode(p *pilot.Pilot, cfg *config.Config) error {
 
 // convertTaskStatesToDisplay converts executor TaskStates to dashboard TaskDisplay format
 func convertTaskStatesToDisplay(states []*executor.TaskState) []dashboard.TaskDisplay {
-	displays := make([]dashboard.TaskDisplay, len(states))
-	for i, state := range states {
+	var displays []dashboard.TaskDisplay
+	for _, state := range states {
+		// Skip completed/failed tasks — they appear in HISTORY, not QUEUE
+		if state.Status == executor.StatusCompleted || state.Status == executor.StatusFailed {
+			continue
+		}
+
 		var status string
 		switch state.Status {
 		case executor.StatusRunning:
 			status = "running"
-		case executor.StatusCompleted:
-			status = "completed"
-		case executor.StatusFailed:
-			status = "failed"
 		default:
 			status = "pending"
 		}
@@ -4150,13 +4151,10 @@ func convertTaskStatesToDisplay(states []*executor.TaskState) []dashboard.TaskDi
 		var duration string
 		if state.StartedAt != nil {
 			elapsed := time.Since(*state.StartedAt)
-			if state.CompletedAt != nil {
-				elapsed = state.CompletedAt.Sub(*state.StartedAt)
-			}
 			duration = elapsed.Round(time.Second).String()
 		}
 
-		displays[i] = dashboard.TaskDisplay{
+		displays = append(displays, dashboard.TaskDisplay{
 			ID:       state.ID,
 			Title:    state.Title,
 			Status:   status,
@@ -4165,7 +4163,7 @@ func convertTaskStatesToDisplay(states []*executor.TaskState) []dashboard.TaskDi
 			Duration: duration,
 			IssueURL: state.IssueURL,
 			PRURL:    state.PRUrl,
-		}
+		})
 	}
 	return displays
 }
