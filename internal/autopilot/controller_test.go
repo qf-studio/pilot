@@ -46,7 +46,7 @@ func TestController_OnPRCreated(t *testing.T) {
 
 	c := NewController(cfg, ghClient, nil, "owner", "repo")
 
-	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc123")
+	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc123", "pilot/GH-10")
 
 	prs := c.GetActivePRs()
 	if len(prs) != 1 {
@@ -76,7 +76,7 @@ func TestController_GetPRState(t *testing.T) {
 	cfg := DefaultConfig()
 
 	c := NewController(cfg, ghClient, nil, "owner", "repo")
-	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc123")
+	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc123", "pilot/GH-10")
 
 	pr, ok := c.GetPRState(42)
 	if !ok {
@@ -140,7 +140,7 @@ func TestController_ProcessPR_DevEnvironment(t *testing.T) {
 	cfg.RequiredChecks = []string{"build", "test", "lint"}
 
 	c := NewController(cfg, ghClient, nil, "owner", "repo")
-	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc1234")
+	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc1234", "pilot/GH-10")
 
 	ctx := context.Background()
 
@@ -240,7 +240,7 @@ func TestController_ProcessPR_StageEnvironment_CIPass(t *testing.T) {
 	cfg.RequiredChecks = []string{"build", "test", "lint"}
 
 	c := NewController(cfg, ghClient, nil, "owner", "repo")
-	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc1234")
+	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc1234", "pilot/GH-10")
 
 	ctx := context.Background()
 
@@ -349,7 +349,7 @@ func TestController_ProcessPR_CIFailure(t *testing.T) {
 	cfg.RequiredChecks = []string{"build", "test", "lint"}
 
 	c := NewController(cfg, ghClient, nil, "owner", "repo")
-	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc1234")
+	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc1234", "pilot/GH-10")
 
 	ctx := context.Background()
 
@@ -457,9 +457,9 @@ func TestController_MultiplePRs(t *testing.T) {
 	c := NewController(cfg, ghClient, nil, "owner", "repo")
 
 	// Add multiple PRs
-	c.OnPRCreated(1, "url1", 10, "sha1")
-	c.OnPRCreated(2, "url2", 20, "sha2")
-	c.OnPRCreated(3, "url3", 30, "sha3")
+	c.OnPRCreated(1, "url1", 10, "sha1", "pilot/GH-10")
+	c.OnPRCreated(2, "url2", 20, "sha2", "pilot/GH-20")
+	c.OnPRCreated(3, "url3", 30, "sha3", "pilot/GH-30")
 
 	prs := c.GetActivePRs()
 	if len(prs) != 3 {
@@ -529,7 +529,7 @@ func TestController_ProcessPR_ProdRequiresApproval(t *testing.T) {
 	cfg.RequiredChecks = []string{"build", "test", "lint"}
 
 	c := NewController(cfg, ghClient, nil, "owner", "repo")
-	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc1234")
+	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc1234", "pilot/GH-10")
 
 	ctx := context.Background()
 
@@ -553,7 +553,7 @@ func TestController_RemovePR(t *testing.T) {
 	cfg := DefaultConfig()
 
 	c := NewController(cfg, ghClient, nil, "owner", "repo")
-	c.OnPRCreated(42, "url", 10, "sha")
+	c.OnPRCreated(42, "url", 10, "sha", "pilot/GH-10")
 
 	// Verify exists
 	if _, ok := c.GetPRState(42); !ok {
@@ -588,7 +588,7 @@ func TestController_SuccessResetsFailureCount(t *testing.T) {
 	c.consecutiveFailures = 2
 	c.mu.Unlock()
 
-	c.OnPRCreated(42, "url", 10, "abc1234")
+	c.OnPRCreated(42, "url", 10, "abc1234", "pilot/GH-10")
 
 	// Successful processing (pr_created → waiting_ci)
 	err := c.ProcessPR(context.Background(), 42)
@@ -813,7 +813,7 @@ func TestController_CheckExternalMerge(t *testing.T) {
 	cfg.CIPollInterval = 10 * time.Millisecond
 
 	c := NewController(cfg, ghClient, nil, "owner", "repo")
-	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc123")
+	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc123", "pilot/GH-10")
 
 	// Verify PR is tracked
 	if _, ok := c.GetPRState(42); !ok {
@@ -855,7 +855,7 @@ func TestController_CheckExternalClose(t *testing.T) {
 	cfg.CIPollInterval = 10 * time.Millisecond
 
 	c := NewController(cfg, ghClient, nil, "owner", "repo")
-	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc123")
+	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc123", "pilot/GH-10")
 
 	// Verify PR is tracked
 	if _, ok := c.GetPRState(42); !ok {
@@ -1033,7 +1033,7 @@ func TestController_CheckExternalMerge_WithNotifier(t *testing.T) {
 	}
 	c.SetNotifier(mockNotifier)
 
-	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc123")
+	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc123", "pilot/GH-10")
 
 	// Process PRs - should detect external merge and notify
 	c.processAllPRs(context.Background())
@@ -1077,9 +1077,9 @@ func TestController_CheckExternalMerge_MultiplePRs(t *testing.T) {
 	c := NewController(cfg, ghClient, nil, "owner", "repo")
 
 	// Add multiple PRs
-	c.OnPRCreated(1, "url1", 10, "sha1")
-	c.OnPRCreated(2, "url2", 20, "sha2")
-	c.OnPRCreated(3, "url3", 30, "sha3")
+	c.OnPRCreated(1, "url1", 10, "sha1", "pilot/GH-10")
+	c.OnPRCreated(2, "url2", 20, "sha2", "pilot/GH-20")
+	c.OnPRCreated(3, "url3", 30, "sha3", "pilot/GH-30")
 
 	// Process PRs
 	c.processAllPRs(context.Background())
@@ -1197,7 +1197,7 @@ func TestController_ProcessPR_RefreshesStaleHeadSHA(t *testing.T) {
 	c := NewController(cfg, ghClient, nil, "owner", "repo")
 
 	// Register PR with stale SHA (simulates self-review changing HEAD)
-	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, staleSHA)
+	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, staleSHA, "pilot/GH-10")
 
 	ctx := context.Background()
 

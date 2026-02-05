@@ -24,11 +24,12 @@ const (
 
 // WorkItemResult is returned by the work item handler with PR information
 type WorkItemResult struct {
-	Success  bool
-	PRNumber int    // PR ID if created
-	PRURL    string // PR URL if created
-	HeadSHA  string // Head commit SHA of the PR
-	Error    error
+	Success    bool
+	PRNumber   int    // PR ID if created
+	PRURL      string // PR URL if created
+	HeadSHA    string // Head commit SHA of the PR
+	BranchName string // Head branch name (e.g. "pilot/GH-123")
+	Error      error
 }
 
 // Poller polls Azure DevOps for work items with a specific tag
@@ -42,8 +43,8 @@ type Poller struct {
 	// onWorkItemWithResult is called for sequential mode, returns PR info
 	onWorkItemWithResult func(ctx context.Context, wi *WorkItem) (*WorkItemResult, error)
 	// OnPRCreated is called when a PR is created after work item processing
-	// Parameters: prID, prURL, workItemID, headSHA
-	OnPRCreated func(prID int, prURL string, workItemID int, headSHA string)
+	// Parameters: prID, prURL, workItemID, headSHA, branchName
+	OnPRCreated func(prID int, prURL string, workItemID int, headSHA string, branchName string)
 	logger      *slog.Logger
 
 	// Work item filtering
@@ -98,7 +99,7 @@ func WithSequentialConfig(waitForMerge bool, pollInterval, timeout time.Duration
 }
 
 // WithOnPRCreated sets the callback for PR creation events
-func WithOnPRCreated(fn func(prID int, prURL string, workItemID int, headSHA string)) PollerOption {
+func WithOnPRCreated(fn func(prID int, prURL string, workItemID int, headSHA string, branchName string)) PollerOption {
 	return func(p *Poller) {
 		p.OnPRCreated = fn
 	}
@@ -233,8 +234,9 @@ func (p *Poller) startSequential(ctx context.Context) {
 			p.logger.Info("Notifying autopilot of PR creation",
 				slog.Int("pr_id", result.PRNumber),
 				slog.Int("work_item_id", wi.ID),
+				slog.String("branch", result.BranchName),
 			)
-			p.OnPRCreated(result.PRNumber, result.PRURL, wi.ID, result.HeadSHA)
+			p.OnPRCreated(result.PRNumber, result.PRURL, wi.ID, result.HeadSHA, result.BranchName)
 		}
 
 		// If we created a PR and should wait for merge

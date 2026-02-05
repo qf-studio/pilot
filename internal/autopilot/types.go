@@ -216,6 +216,8 @@ type PRState struct {
 	PRURL string
 	// IssueNumber is the linked issue number (if any).
 	IssueNumber int
+	// BranchName is the head branch of the PR (e.g. "pilot/GH-123").
+	BranchName string
 	// HeadSHA is the commit SHA at the head of the PR.
 	HeadSHA string
 	// Stage is the current stage in the PR lifecycle.

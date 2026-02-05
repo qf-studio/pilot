@@ -1915,8 +1915,9 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 
 	// Build the issue result
 	issueResult := &github.IssueResult{
-		Success: execErr == nil && result != nil && result.Success,
-		Error:   execErr,
+		Success:    execErr == nil && result != nil && result.Success,
+		BranchName: branchName,
+		Error:      execErr,
 	}
 
 	// Extract PR number and head SHA from result if we have one

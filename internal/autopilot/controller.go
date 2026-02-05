@@ -89,7 +89,7 @@ func (c *Controller) SetNotifier(n Notifier) {
 }
 
 // OnPRCreated registers a new PR for autopilot processing.
-func (c *Controller) OnPRCreated(prNumber int, prURL string, issueNumber int, headSHA string) {
+func (c *Controller) OnPRCreated(prNumber int, prURL string, issueNumber int, headSHA string, branchName string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -97,6 +97,7 @@ func (c *Controller) OnPRCreated(prNumber int, prURL string, issueNumber int, he
 		PRNumber:    prNumber,
 		PRURL:       prURL,
 		IssueNumber: issueNumber,
+		BranchName:  branchName,
 		HeadSHA:     headSHA,
 		Stage:       StagePRCreated,
 		CIStatus:    CIPending,
@@ -107,6 +108,7 @@ func (c *Controller) OnPRCreated(prNumber int, prURL string, issueNumber int, he
 		"pr", prNumber,
 		"url", prURL,
 		"issue", issueNumber,
+		"branch", branchName,
 		"sha", ShortSHA(headSHA),
 		"stage", StagePRCreated,
 		"env", c.config.Environment,
@@ -663,7 +665,7 @@ func (c *Controller) ScanExistingPRs(ctx context.Context) error {
 		)
 
 		// Register PR via existing mechanism
-		c.OnPRCreated(pr.Number, pr.HTMLURL, issueNum, pr.Head.SHA)
+		c.OnPRCreated(pr.Number, pr.HTMLURL, issueNum, pr.Head.SHA, pr.Head.Ref)
 		restored++
 	}
 
@@ -770,6 +772,7 @@ func (c *Controller) ScanRecentlyMergedPRs(ctx context.Context) error {
 			PRNumber:    pr.Number,
 			PRURL:       pr.HTMLURL,
 			IssueNumber: issueNum,
+			BranchName:  pr.Head.Ref,
 			HeadSHA:     pr.MergeCommitSHA,
 			Stage:       StageReleasing,
 			CIStatus:    CISuccess, // Assume CI passed if merged

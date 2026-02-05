@@ -51,22 +51,28 @@ func TestNormalizeToSparkline(t *testing.T) {
 			want:   []int{0, 0, 0, 0, 0, 0, 4},
 		},
 		{
-			name:   "all same values map to midpoint",
+			name:   "all zeros map to baseline",
+			values: []float64{0, 0, 0, 0, 0, 0, 0},
+			width:  7,
+			want:   []int{1, 1, 1, 1, 1, 1, 1},
+		},
+		{
+			name:   "all same non-zero values map to midpoint",
 			values: []float64{5, 5, 5, 5, 5, 5, 5},
 			width:  7,
 			want:   []int{4, 4, 4, 4, 4, 4, 4},
 		},
 		{
-			name:   "ascending values span full range",
+			name:   "ascending values span 1-8 with zero baseline",
 			values: []float64{0, 1, 2, 3, 4, 5, 6, 7, 8},
 			width:  9,
-			want:   []int{0, 1, 2, 3, 4, 5, 6, 7, 8},
+			want:   []int{1, 2, 3, 4, 5, 5, 6, 7, 8},
 		},
 		{
 			name:   "fewer values than width left-pads with zeros",
 			values: []float64{0, 100},
 			width:  5,
-			want:   []int{0, 0, 0, 0, 8},
+			want:   []int{0, 0, 0, 1, 8},
 		},
 	}
 

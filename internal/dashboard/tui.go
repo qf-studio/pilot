@@ -25,9 +25,9 @@ const (
 
 // Metrics card dimensions
 const (
-	cardWidth      = 21 // 21*3 + 3*2 = 69 = panelTotalWidth
+	cardWidth      = 21 // 21*3 + 1*2 = 65 ≤ panelTotalWidth
 	cardInnerWidth = 17 // cardWidth - 4 (border + padding)
-	cardGap        = 3  // space between cards
+	cardGap        = 1  // space between cards
 )
 
 // sparkBlocks maps normalized levels (0-8) to Unicode block elements for sparkline rendering.
@@ -43,32 +43,32 @@ type MetricsCardData struct {
 	TaskHistory  []int     // 7 days
 }
 
-// Styles (Kali Linux-inspired cyber aesthetic)
+// Styles (muted terminal aesthetic)
 var (
 	titleStyle = lipgloss.NewStyle().
 			Bold(true).
-			Foreground(lipgloss.Color("#00d4ff"))
+			Foreground(lipgloss.Color("#7eb8da")) // steel blue
 
 	borderStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#30363d"))
+			Foreground(lipgloss.Color("#3d4450")) // slate
 
 	statusRunningStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#00d4ff"))
+				Foreground(lipgloss.Color("#7eb8da")) // steel blue
 
 	statusPendingStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("#6e7681"))
 
 	statusFailedStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#ff0055"))
+				Foreground(lipgloss.Color("#d48a8a")) // dusty rose
 
 	statusCompletedStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#00ff41"))
+				Foreground(lipgloss.Color("#7ec699")) // sage green
 
 	progressBarStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#00d4ff"))
+				Foreground(lipgloss.Color("#7eb8da")) // steel blue
 
 	progressEmptyStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#30363d"))
+				Foreground(lipgloss.Color("#3d4450")) // slate
 
 	helpStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#8b949e"))
@@ -80,18 +80,18 @@ var (
 			Foreground(lipgloss.Color("#c9d1d9"))
 
 	costStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#00ff41")).
+			Foreground(lipgloss.Color("#7ec699")). // sage green
 			Bold(true)
 
 	warningStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#ffaa00"))
+			Foreground(lipgloss.Color("#d4a054")) // amber
 
 	orangeBorderStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#ffaa00"))
+				Foreground(lipgloss.Color("#d4a054")) // amber
 
 	orangeLabelStyle = lipgloss.NewStyle().
 				Bold(true).
-				Foreground(lipgloss.Color("#ffaa00"))
+				Foreground(lipgloss.Color("#d4a054")) // amber
 )
 
 // AutopilotPanel displays autopilot status in the dashboard.
@@ -959,22 +959,32 @@ func normalizeToSparkline(values []float64, width int) []int {
 	}
 
 	span := maxVal - minVal
-	for i, v := range values {
-		if span == 0 {
-			// All values identical → place at midpoint
-			result[offset+i] = 4
-		} else {
-			// Scale to 0-8
-			normalized := (v - minVal) / span * 8
-			level := int(math.Round(normalized))
-			if level < 0 {
-				level = 0
-			}
-			if level > 8 {
-				level = 8
-			}
+	if span == 0 {
+		// All values identical
+		level := 1 // baseline for all-zero
+		if values[0] > 0 {
+			level = 4 // midpoint for uniform non-zero
+		}
+		for i := range values {
 			result[offset+i] = level
 		}
+		return result
+	}
+
+	for i, v := range values {
+		// Scale to 1-8 (reserve 0 for padding, 1 = visible baseline)
+		normalized := (v - minVal) / span * 7
+		level := int(math.Round(normalized)) + 1
+		if v == 0 {
+			level = 1 // visible baseline for zero values
+		}
+		if level < 1 {
+			level = 1
+		}
+		if level > 8 {
+			level = 8
+		}
+		result[offset+i] = level
 	}
 
 	return result

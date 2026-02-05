@@ -24,11 +24,12 @@ const (
 
 // IssueResult is returned by the issue handler with MR information
 type IssueResult struct {
-	Success  bool
-	MRNumber int    // MR IID if created
-	MRURL    string // MR URL if created
-	HeadSHA  string // Head commit SHA of the MR
-	Error    error
+	Success    bool
+	MRNumber   int    // MR IID if created
+	MRURL      string // MR URL if created
+	HeadSHA    string // Head commit SHA of the MR
+	BranchName string // Head branch name (e.g. "pilot/GH-123")
+	Error      error
 }
 
 // Poller polls GitLab for issues with a specific label
@@ -42,8 +43,8 @@ type Poller struct {
 	// onIssueWithResult is called for sequential mode, returns MR info
 	onIssueWithResult func(ctx context.Context, issue *Issue) (*IssueResult, error)
 	// OnMRCreated is called when an MR is created after issue processing
-	// Parameters: mrIID, mrURL, issueIID, headSHA
-	OnMRCreated func(mrIID int, mrURL string, issueIID int, headSHA string)
+	// Parameters: mrIID, mrURL, issueIID, headSHA, branchName
+	OnMRCreated func(mrIID int, mrURL string, issueIID int, headSHA string, branchName string)
 	logger      *slog.Logger
 
 	// Sequential mode configuration
@@ -95,7 +96,7 @@ func WithSequentialConfig(waitForMerge bool, pollInterval, timeout time.Duration
 }
 
 // WithOnMRCreated sets the callback for MR creation events
-func WithOnMRCreated(fn func(mrIID int, mrURL string, issueIID int, headSHA string)) PollerOption {
+func WithOnMRCreated(fn func(mrIID int, mrURL string, issueIID int, headSHA string, branchName string)) PollerOption {
 	return func(p *Poller) {
 		p.OnMRCreated = fn
 	}
@@ -222,8 +223,9 @@ func (p *Poller) startSequential(ctx context.Context) {
 			p.logger.Info("Notifying autopilot of MR creation",
 				slog.Int("mr_iid", result.MRNumber),
 				slog.Int("issue_iid", issue.IID),
+				slog.String("branch", result.BranchName),
 			)
-			p.OnMRCreated(result.MRNumber, result.MRURL, issue.IID, result.HeadSHA)
+			p.OnMRCreated(result.MRNumber, result.MRURL, issue.IID, result.HeadSHA, result.BranchName)
 		}
 
 		// If we created an MR and should wait for merge
