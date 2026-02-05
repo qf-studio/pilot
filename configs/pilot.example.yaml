@@ -122,6 +122,14 @@ executor:
                                # When enabled with flag, skips branches and PRs, pushes directly to main
                                # Intended for users who rely on manual QA instead of code review
 
+  # Effort routing (Opus 4.6) - controls how thoroughly Claude reasons per complexity
+  # effort_routing:
+  #   enabled: true
+  #   trivial: "low"             # Fast, minimal token spend
+  #   simple: "medium"           # Balanced
+  #   medium: "high"             # Standard (default behavior)
+  #   complex: "max"             # Deepest reasoning (Opus 4.6 only)
+
 # Daily briefs configuration
 briefs:
   enabled: false
