@@ -66,23 +66,34 @@ func TestDetectComplexity(t *testing.T) {
 			expected: ComplexityEpic,
 		},
 		{
-			name:     "epic keyword in description",
+			name:     "epic keyword alone is NOT epic",
 			task:     &Task{Description: "This is an epic task that spans multiple sprints"},
-			expected: ComplexityEpic,
+			expected: ComplexitySimple,
 		},
 		{
-			name:     "roadmap keyword",
+			name:     "roadmap keyword alone is NOT epic",
 			task:     &Task{Description: "Implement the roadmap for Q2 features"},
-			expected: ComplexityEpic,
+			expected: ComplexitySimple,
 		},
 		{
-			name:     "multi-phase keyword",
+			name:     "multi-phase keyword alone is NOT epic",
 			task:     &Task{Description: "This is a multi-phase implementation"},
-			expected: ComplexityEpic,
+			expected: ComplexitySimple,
 		},
 		{
-			name:     "milestone keyword",
+			name:     "milestone keyword alone is NOT epic",
 			task:     &Task{Description: "Complete milestone 3 with all features"},
+			expected: ComplexitySimple,
+		},
+		{
+			name: "epic keyword with structural signals IS epic",
+			task: &Task{Description: `This epic feature requires a full implementation plan.
+We need to handle multiple components across the codebase with careful coordination.
+The implementation spans several areas and requires thorough testing and validation.
+Each component needs proper error handling, logging, and documentation updates.
+- [ ] Setup infrastructure
+- [ ] Core implementation
+- [ ] Integration tests`},
 			expected: ComplexityEpic,
 		},
 		{
@@ -188,14 +199,14 @@ Regular sync meetings with stakeholders will be necessary to ensure alignment on
 			expected: ComplexitySimple,
 		},
 		{
-			name:     "actual epic keyword should still trigger",
+			name:     "epic keyword alone no longer triggers",
 			task:     &Task{Description: "This is an epic task spanning multiple sprints"},
-			expected: ComplexityEpic,
+			expected: ComplexitySimple,
 		},
 		{
-			name:     "epic in prose triggers but not in file path",
+			name:     "epic in prose without signals is not epic",
 			task:     &Task{Description: "This epic feature requires changes to epic.go"},
-			expected: ComplexityEpic,
+			expected: ComplexitySimple,
 		},
 
 		// Complex cases

@@ -270,6 +270,7 @@ func (r *Runner) CreateSubIssues(ctx context.Context, plan *EpicPlan) ([]Created
 			"issue", "create",
 			"--title", subtask.Title,
 			"--body", body,
+			"--label", "pilot",
 		}
 
 		cmd := exec.CommandContext(ctx, "gh", args...)

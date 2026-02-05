@@ -186,15 +186,11 @@ func detectEpic(title, description, combined string) bool {
 	cleanCombined := stripCodeBlocks(combined)
 	cleanCombined = stripFilePaths(cleanCombined)
 
-	// Check for epic keywords using word boundary matching
-	if wordBoundaryEpicRegex.MatchString(cleanCombined) {
-		return true
-	}
-
 	// Preprocess description for structural checks
 	cleanDescription := stripCodeBlocks(description)
 
-	// Collect signals - no single signal triggers epic alone (except [epic] tag and keywords above)
+	// Collect signals - no single signal triggers epic alone (except [epic] tag above)
+	hasEpicKeywords := wordBoundaryEpicRegex.MatchString(cleanCombined)
 	checkboxCount := len(checkboxRegex.FindAllString(cleanDescription, -1))
 	phaseCount := len(numberedPhaseRegex.FindAllString(cleanDescription, -1))
 	wordCount := len(strings.Fields(cleanDescription))
@@ -206,6 +202,11 @@ func detectEpic(title, description, combined string) bool {
 	// Combination rules: multiple signals required
 	// 3+ phases is a strong signal on its own
 	if phaseCount >= 3 {
+		return true
+	}
+
+	// Epic keywords require at least one structural signal to confirm
+	if hasEpicKeywords && (phaseCount >= 2 || checkboxCount >= 3 || wordCount > 100) {
 		return true
 	}
 
