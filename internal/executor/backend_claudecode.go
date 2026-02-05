@@ -65,6 +65,13 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, opts ExecuteOptions) (*
 		b.log.Info("Using routed model", slog.String("model", opts.Model))
 	}
 
+	// Add effort flag if specified (effort routing, Opus 4.6)
+	// Note: Claude Code CLI may not support --effort yet; this is future-proofed.
+	if opts.Effort != "" {
+		args = append(args, "--effort", opts.Effort)
+		b.log.Info("Using routed effort", slog.String("effort", opts.Effort))
+	}
+
 	args = append(args, b.config.ExtraArgs...)
 
 	cmd := exec.CommandContext(ctx, b.config.Command, args...)
