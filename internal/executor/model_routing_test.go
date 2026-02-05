@@ -195,6 +195,107 @@ func TestModelRouter_GetModelForComplexity(t *testing.T) {
 	}
 }
 
+func TestModelRouter_SelectEffort(t *testing.T) {
+	tests := []struct {
+		name     string
+		config   *EffortRoutingConfig
+		task     *Task
+		expected string
+	}{
+		{
+			name:     "effort routing disabled returns empty",
+			config:   &EffortRoutingConfig{Enabled: false, Trivial: "low"},
+			task:     &Task{Description: "Fix typo"},
+			expected: "",
+		},
+		{
+			name: "trivial task returns low",
+			config: &EffortRoutingConfig{
+				Enabled: true,
+				Trivial: "low",
+				Simple:  "medium",
+				Medium:  "high",
+				Complex: "max",
+			},
+			task:     &Task{Description: "Fix typo in README"},
+			expected: "low",
+		},
+		{
+			name: "complex task returns max",
+			config: &EffortRoutingConfig{
+				Enabled: true,
+				Trivial: "low",
+				Simple:  "medium",
+				Medium:  "high",
+				Complex: "max",
+			},
+			task:     &Task{Description: "Refactor the authentication system"},
+			expected: "max",
+		},
+		{
+			name:     "nil config returns empty",
+			config:   nil,
+			task:     &Task{Description: "Any task"},
+			expected: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			router := NewModelRouterWithEffort(nil, nil, tt.config)
+			got := router.SelectEffort(tt.task)
+			if got != tt.expected {
+				t.Errorf("SelectEffort() = %v, want %v", got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestModelRouter_GetEffortForComplexity(t *testing.T) {
+	config := &EffortRoutingConfig{
+		Enabled: true,
+		Trivial: "low",
+		Simple:  "medium",
+		Medium:  "high",
+		Complex: "max",
+	}
+	router := NewModelRouterWithEffort(nil, nil, config)
+
+	tests := []struct {
+		complexity Complexity
+		expected   string
+	}{
+		{ComplexityTrivial, "low"},
+		{ComplexitySimple, "medium"},
+		{ComplexityMedium, "high"},
+		{ComplexityComplex, "max"},
+		{Complexity("unknown"), "high"}, // Default to medium complexity
+	}
+
+	for _, tt := range tests {
+		t.Run(string(tt.complexity), func(t *testing.T) {
+			got := router.GetEffortForComplexity(tt.complexity)
+			if got != tt.expected {
+				t.Errorf("GetEffortForComplexity(%s) = %v, want %v", tt.complexity, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestModelRouter_IsEffortRoutingEnabled(t *testing.T) {
+	// Disabled by default
+	router := NewModelRouter(nil, nil)
+	if router.IsEffortRoutingEnabled() {
+		t.Error("Expected effort routing to be disabled by default")
+	}
+
+	// Enabled with config
+	router = NewModelRouterWithEffort(nil, nil, &EffortRoutingConfig{Enabled: true, Trivial: "low"})
+	if !router.IsEffortRoutingEnabled() {
+		t.Error("Expected effort routing to be enabled")
+	}
+}
+
 func TestModelRouter_GetTimeoutForComplexity(t *testing.T) {
 	config := &TimeoutConfig{
 		Default: "30m",
