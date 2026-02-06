@@ -510,16 +510,61 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 			}, nil
 		}
 
-		r.reportProgress(task.ID, "Complete", 100, "Epic completed successfully")
-
-		return &ExecutionResult{
+		// GH-539: Epic sub-executions may have created commits on the branch.
+		// Push branch and create PR to propagate deliverables.
+		epicResult := &ExecutionResult{
 			TaskID:   task.ID,
 			Success:  true,
 			Output:   fmt.Sprintf("Epic completed: %d sub-issues executed", len(issues)),
 			Duration: time.Since(start),
 			IsEpic:   true,
 			EpicPlan: plan,
-		}, nil
+		}
+
+		if task.CreatePR && task.Branch != "" {
+			epicGit := NewGitOperations(task.ProjectPath)
+
+			r.reportProgress(task.ID, "Creating PR", 96, "Pushing epic branch...")
+
+			if err := epicGit.Push(ctx, task.Branch); err != nil {
+				r.log.Warn("Epic branch push failed",
+					slog.String("task_id", task.ID),
+					slog.String("branch", task.Branch),
+					slog.Any("error", err),
+				)
+				// Don't fail the epic — sub-issues may have their own PRs
+			} else {
+				// Get commit SHA
+				if sha, shaErr := epicGit.GetCurrentCommitSHA(ctx); shaErr == nil && sha != "" {
+					epicResult.CommitSHA = sha
+				}
+
+				// Determine base branch
+				baseBranch := task.BaseBranch
+				if baseBranch == "" {
+					baseBranch, _ = epicGit.GetDefaultBranch(ctx)
+					if baseBranch == "" {
+						baseBranch = "main"
+					}
+				}
+
+				// Create PR
+				prBody := fmt.Sprintf("## Summary\n\nAutomated PR created by Pilot for epic task %s.\n\n## Changes\n\n%s", task.ID, task.Description)
+				prURL, prErr := epicGit.CreatePR(ctx, task.Title, prBody, baseBranch)
+				if prErr != nil {
+					r.log.Warn("Epic PR creation failed",
+						slog.String("task_id", task.ID),
+						slog.Any("error", prErr),
+					)
+				} else {
+					epicResult.PRUrl = prURL
+					r.log.Info("Epic PR created", slog.String("pr_url", prURL))
+				}
+			}
+		}
+
+		r.reportProgress(task.ID, "Complete", 100, "Epic completed successfully")
+		return epicResult, nil
 	}
 
 	// Check for task decomposition (GH-218)

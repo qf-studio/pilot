@@ -200,23 +200,23 @@ func detectEpic(title, description, combined string) bool {
 		strings.Contains(strings.ToLower(cleanDescription), "step")
 
 	// Combination rules: multiple signals required
-	// 3+ phases is a strong signal on its own
-	if phaseCount >= 3 {
+	// 5+ phases is a strong signal on its own (3 phases is a normal implementation plan)
+	if phaseCount >= 5 {
 		return true
 	}
 
-	// Epic keywords require at least one structural signal to confirm
-	if hasEpicKeywords && (phaseCount >= 2 || checkboxCount >= 3 || wordCount > 100) {
+	// Epic keywords require strong structural signals to confirm
+	if hasEpicKeywords && (phaseCount >= 3 || checkboxCount >= 5 || wordCount > 200) {
 		return true
 	}
 
-	// 5+ checkboxes only triggers with another signal
-	if checkboxCount >= 5 && (wordCount > 200 || phaseCount >= 2) {
+	// Many checkboxes only triggers with another signal
+	if checkboxCount >= 7 && (wordCount > 200 || phaseCount >= 3) {
 		return true
 	}
 
 	// Long description with structural markers
-	if wordCount > 200 && hasStructuralMarkers && (checkboxCount >= 3 || phaseCount >= 1) {
+	if wordCount > 300 && hasStructuralMarkers && (checkboxCount >= 5 || phaseCount >= 2) {
 		return true
 	}
 

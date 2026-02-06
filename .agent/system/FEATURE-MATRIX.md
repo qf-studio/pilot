@@ -1,6 +1,6 @@
 # Pilot Feature Matrix
 
-**Last Updated:** 2026-02-06 (v0.21.2)
+**Last Updated:** 2026-02-06 (v0.21.2, backlog audit)
 
 ## Legend
 
@@ -138,10 +138,11 @@
 
 | Feature | Status | Package | CLI Command | Config Key | Notes |
 |---------|--------|---------|-------------|------------|-------|
-| Budget tracking | ⚠️ | budget | `pilot budget` | `budget` | View only |
-| Daily limits | 🚧 | budget | - | `budget.daily_limit` | Config exists |
-| Task limits | 🚧 | budget | - | `budget.per_task_limit` | Config exists |
-| Alerts on overspend | ⚠️ | alerts | - | `alerts.rules[].type=budget` | Rule type exists |
+| Budget tracking | ✅ | budget | `pilot budget` | `budget` | View daily/monthly usage via memory store |
+| Daily/monthly limits | ✅ | budget | `pilot task --budget` | `budget.daily_limit` | Enforcer blocks tasks when exceeded |
+| Per-task limits | ⚠️ | budget | - | `budget.per_task` | TaskLimiter exists, not wired to executor stream |
+| Budget in polling mode | ⚠️ | budget | - | - | `pilot start` doesn't check budget before picking issues |
+| Alerts on overspend | ✅ | alerts | - | `alerts.rules[].type=budget` | Enforcer fires alert callbacks at thresholds |
 
 ## Team Management
 
@@ -165,9 +166,9 @@
 
 | Feature | Status | Package | CLI Command | Config Key | Notes |
 |---------|--------|---------|-------------|------------|-------|
-| Approval engine | ⚠️ | approval | - | `approval` | Implemented |
-| Slack approval | ⚠️ | approval | - | - | Button interactions |
-| Telegram approval | ⚠️ | approval | - | - | Inline keyboards |
+| Approval engine | ✅ | approval | `--autopilot=prod` | `approval` | Wired to autopilot controller |
+| Slack approval | ✅ | approval | - | `adapters.slack.approval` | Interactive messages, registered in main.go |
+| Telegram approval | ✅ | approval | - | - | Inline keyboards, registered in main.go |
 | Rule-based triggers | ⚠️ | approval | - | `approval.rules[]` | Configurable |
 
 ## Autopilot (v0.19.1)
@@ -217,13 +218,13 @@
 | Dashboard | 8 | 0 | 0 | 0 |
 | Replay & Debug | 6 | 0 | 0 | 0 |
 | Reports & Briefs | 4 | 0 | 0 | 0 |
-| Cost Controls | 0 | 2 | 2 | 0 |
+| Cost Controls | 3 | 2 | 0 | 0 |
 | Team Management | 0 | 3 | 0 | 0 |
 | Infrastructure | 1 | 4 | 0 | 0 |
-| Approval Workflows | 0 | 4 | 0 | 0 |
+| Approval Workflows | 3 | 1 | 0 | 0 |
 | Autopilot | 9 | 0 | 0 | 0 |
 | Self-Management | 5 | 1 | 0 | 0 |
-| **Total** | **81** | **19** | **2** | **0** |
+| **Total** | **87** | **16** | **0** | **0** |
 
 ---
 

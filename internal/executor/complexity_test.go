@@ -86,18 +86,28 @@ func TestDetectComplexity(t *testing.T) {
 			expected: ComplexitySimple,
 		},
 		{
-			name: "epic keyword with structural signals IS epic",
+			name: "epic keyword with many structural signals IS epic",
 			task: &Task{Description: `This epic feature requires a full implementation plan.
 We need to handle multiple components across the codebase with careful coordination.
 The implementation spans several areas and requires thorough testing and validation.
 Each component needs proper error handling, logging, and documentation updates.
+We need to ensure backward compatibility while introducing the new functionality.
+The system must integrate with our existing providers and support all edge cases.
+Performance testing is required to validate the system handles expected load.
+The deployment strategy should include feature flags for gradual rollout.
+Security review is mandatory before the feature goes live in production.
+Additionally we need proper monitoring and alerting for all new components.
+The migration path must be carefully planned to avoid downtime or data loss.
+Each component must be properly tested with both unit and integration tests.
 - [ ] Setup infrastructure
 - [ ] Core implementation
-- [ ] Integration tests`},
+- [ ] Integration tests
+- [ ] Performance testing
+- [ ] Security review`},
 			expected: ComplexityEpic,
 		},
 		{
-			name: "5+ checkboxes alone is NOT epic",
+			name: "6 checkboxes alone is NOT epic",
 			task: &Task{Description: `Implement user management:
 - [ ] Create user model
 - [ ] Add user API endpoints
@@ -108,7 +118,7 @@ Each component needs proper error handling, logging, and documentation updates.
 			expected: ComplexityMedium,
 		},
 		{
-			name: "5+ checkboxes with 200+ words IS epic",
+			name: "7+ checkboxes with 200+ words IS epic",
 			task: &Task{Description: `## Overview
 This comprehensive feature requires implementing a full user management system with proper authentication,
 authorization, and data validation. The system must integrate with our existing auth provider and support
@@ -127,28 +137,47 @@ rollback if needed. Security review is mandatory before the feature goes live in
 - [ ] Implement role-based permission system
 - [ ] Add comprehensive test coverage
 - [ ] Create user documentation and API docs
-- [ ] Set up monitoring and alerting`},
+- [ ] Set up monitoring and alerting
+- [ ] Performance and load testing`},
 			expected: ComplexityEpic,
 		},
 		{
-			name: "3+ numbered phases",
+			name: "3 phases is NOT epic (normal implementation plan)",
+			task: &Task{Description: `Implementation plan:
+Phase 1: Design the database schema
+Phase 2: Implement the API layer
+Phase 3: Add integration tests`},
+			expected: ComplexityComplex,
+		},
+		{
+			name: "4 phases is NOT epic",
 			task: &Task{Description: `Implementation plan:
 Phase 1: Design the database schema
 Phase 2: Implement the API layer
 Phase 3: Create the frontend components
 Phase 4: Add integration tests`},
+			expected: ComplexityComplex,
+		},
+		{
+			name: "5+ phases IS epic",
+			task: &Task{Description: `Implementation plan:
+Phase 1: Design the database schema
+Phase 2: Implement the API layer
+Phase 3: Create the frontend components
+Phase 4: Add integration tests
+Phase 5: Deploy and monitor`},
 			expected: ComplexityEpic,
 		},
 		{
-			name: "phase keyword sections",
+			name: "3 phase sections with short text is NOT epic",
 			task: &Task{Description: `Implementation:
 Phase 1: Setup
 Phase 2: Core logic
 Phase 3: Testing`},
-			expected: ComplexityEpic,
+			expected: ComplexityMedium,
 		},
 		{
-			name: "200+ words with structural markers",
+			name: "300+ words with structural markers and phases IS epic",
 			task: &Task{Description: `## Overview
 This is a comprehensive implementation that requires significant planning and coordination across multiple teams.
 The feature spans multiple components and requires careful consideration of the existing architecture patterns.
@@ -161,12 +190,14 @@ Set up the basic infrastructure and data models needed for the feature implement
 This includes database migrations for new tables and columns, API scaffolding with proper versioning,
 and initial frontend components with placeholder data. We also need to configure the CI/CD pipeline
 to support the new deployment requirements and set up monitoring dashboards for the new services.
+The foundation must be rock-solid as everything else builds on top of it going forward.
 
 ## Phase 2: Core Implementation
 Build out the main business logic and user-facing features with full functionality.
 This is the bulk of the work and requires coordination across teams including frontend, backend, and QA.
 We need to implement the core algorithms, integrate with external services, handle edge cases,
 and ensure the system performs well under expected load. Documentation should be written in parallel.
+Performance benchmarks need to be established early to catch regressions during development cycles.
 
 ## Phase 3: Polish and Testing
 Add comprehensive tests including unit tests, integration tests, and end-to-end tests.
@@ -178,7 +209,12 @@ The implementation should follow our established patterns and coding standards f
 We need to coordinate with the design team for the UI components and the platform team for infrastructure.
 Performance testing will be critical given the expected load on this feature during peak hours.
 We should also plan for graceful degradation and proper error handling throughout the system.
-Regular sync meetings with stakeholders will be necessary to ensure alignment on priorities and timeline.`},
+Regular sync meetings with stakeholders will be necessary to ensure alignment on priorities and timeline.
+- [ ] Foundation setup complete
+- [ ] Core implementation done
+- [ ] All tests passing
+- [ ] Security review passed
+- [ ] Performance benchmarks met`},
 			expected: ComplexityEpic,
 		},
 

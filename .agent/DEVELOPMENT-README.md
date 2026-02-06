@@ -118,6 +118,9 @@ if _, err := os.Stat(agentDir); err == nil {
 | **Auto Build Gate** | ✅ | Minimal build gate when none configured |
 | **Effort Routing** | ✅ | Map task complexity to reasoning depth **(v0.20.0)** |
 | **Release Packaging** | ✅ | `make package` with COPYFILE_DISABLE, checksums **(v0.18.1)** |
+| **Docs Site** | ✅ | Nextra v2, GitLab sync, Docker deploy **(2026-02-06)** |
+| **QuantFlow Landing** | ✅ | `/pilot` case study page on quantflow.studio **(2026-02-06)** |
+| **CONTRIBUTING.md** | ✅ | Dev setup, code standards, BSL 1.1 note **(2026-02-06)** |
 
 ### Telegram Interaction Modes (v0.6.0)
 
@@ -180,16 +183,24 @@ _Queue empty - create issues with `pilot` label to add work._
 
 | Priority | Topic | Why |
 |----------|-------|-----|
-| 🔴 P1 | Verify quality gates wiring | May not be fully wired |
-| 🔴 P1 | Fix GoReleaser/manual release conflict | CI Release workflow fails when assets exist |
-| 🟡 P2 | Cost controls | Budget protection |
-| 🟡 P2 | Approval workflows verification | Team safety |
-| 🟡 P2 | Autopilot auto-merge stall investigation | HeadSHA fix landed but merge still not happening |
-| 🟢 P3 | Telegram commands | Power user UX |
+| _(none)_ | | |
+| 🟡 P2 | Cost controls: wire TaskLimiter into executor + budget check in polling mode | Core enforcer works for `pilot task --budget` |
+| ~~P2~~ | ~~Approval workflows~~ | Fully wired: manager + Telegram/Slack/GitHub handlers + autopilot prod gate |
 
 **For accurate feature status, see:** `.agent/system/FEATURE-MATRIX.md`
 
 ---
+
+## Completed (2026-02-06)
+
+| Item | What |
+|------|------|
+| Docs site | Nextra v2 complete rewrite: homepage, why-pilot vision doc, quickstart guide |
+| QuantFlow landing | `/pilot` case study page with 10 sections, added to case-studies-config |
+| GitLab sync | GitHub Action syncs `docs/` → `quant-flow/pilot-docs` GitLab repo on merge |
+| Docker deploy | Dockerfile + `.gitlab-ci.yml` for VPS deployment at `pilot.quantflow.studio` |
+| CONTRIBUTING.md | Dev setup, code standards, PR process, BSL 1.1 contributor note |
+| FUNDING.yml | GitHub Sponsors button enabled |
 
 ## Completed (2026-02-05)
 
