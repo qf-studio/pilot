@@ -1,0 +1,320 @@
+import { Callout } from 'nextra/components'
+
+# Complexity Detection & Model Routing
+
+Pilot classifies every incoming task by complexity before execution begins. This classification drives three routing decisions: which model handles the task, how long it's allowed to run, and how much reasoning effort the model applies. The result is lower cost for simple work and deeper reasoning for architectural changes — automatically, with no manual intervention.
+
+## The Five Complexity Levels
+
+Every task maps to one of five levels. Detection runs against the combined issue title and description.
+
+| Level | Description | Example Tasks |
+|-------|-------------|---------------|
+| **Trivial** | Minimal, mechanical changes | Fix typo, add log line, rename variable, bump version, lint fix |
+| **Simple** | Small focused changes | Add field, minor fix, update config, add test case |
+| **Medium** | Standard feature work | New endpoint, component, integration, moderate changes |
+| **Complex** | Architectural changes | Refactor, migration, redesign, multi-file restructure |
+| **Epic** | Too large for a single PR | Multi-phase projects, roadmaps, system overhauls |
+
+## How Detection Works
+
+Detection runs in `DetectComplexity()` and follows a strict priority order:
+
+```
+1. Epic check     → Is this too large for one execution cycle?
+2. Trivial match  → Does it match a trivial keyword pattern?
+3. Complex match  → Does it match an architectural keyword pattern?
+4. Simple match   → Does it match a small-change keyword pattern?
+5. Word count     → Fall back to description length heuristics
+```
+
+### Pattern Matching
+
+Each level has a set of keyword patterns matched against the lowercased title + description:
+
+**Trivial patterns** — mechanical changes that need minimal reasoning:
+```
+fix typo, typo, add log, add logging, update comment, fix comment,
+rename variable, rename function, rename, remove unused, delete unused,
+bump version, update version, fix import, add import, fix whitespace,
+formatting, lint fix
+```
+
+**Simple patterns** — small but require some thought:
+```
+add field, add property, add parameter, add argument, small fix,
+minor fix, quick fix, update config, change config, update constant,
+add constant, add test case, fix test
+```
+
+**Complex patterns** — architectural consideration required:
+```
+refactor, rewrite, redesign, migrate, migration, architecture,
+restructure, overhaul, system, database schema, api design,
+multi-file, cross-cutting
+```
+
+### Word Count Fallback
+
+When no keyword patterns match, the description length (with code blocks stripped) determines complexity:
+
+| Word Count | Classification |
+|------------|----------------|
+| < 10 words | Simple |
+| 10–49 words | Medium |
+| ≥ 50 words | Complex |
+
+<Callout type="info">
+Code blocks are stripped before word counting to avoid inflated counts from embedded snippets. A 200-word description with a 500-line code sample is classified by the 200 prose words, not 700 total.
+</Callout>
+
+## Epic Detection
+
+Epic detection uses **combination rules** — no single signal (except `[epic]` tag) triggers epic mode alone. This prevents false positives from normal implementation plans that happen to mention phases.
+
+### Signals Collected
+
+| Signal | How It's Measured |
+|--------|-------------------|
+| `[epic]` tag | Regex match in title |
+| Phase count | Headers matching `Phase N`, `Stage N`, `Part N`, `Milestone N` |
+| Checkbox count | Markdown checkboxes `- [ ]` or `- [x]` |
+| Word count | Prose words after stripping code blocks |
+| Epic keywords | Standalone words: `epic`, `roadmap`, `multi-phase`, `milestone` |
+| Structural markers | Presence of `##` headers, `phase`/`stage`/`step` in text |
+
+### Combination Rules
+
+```
+[epic] tag                                          → always epic
+5+ phases                                           → epic
+epic keywords + (3+ phases OR 5+ checkboxes OR 200+ words) → epic
+7+ checkboxes + (200+ words OR 3+ phases)           → epic
+300+ words + structural markers + (5+ checkboxes OR 2+ phases) → epic
+```
+
+<Callout type="warning">
+Three phases alone is **not** epic — that's a normal implementation plan. The threshold is 5+ phases as a standalone signal, or 3+ phases combined with other structural indicators.
+</Callout>
+
+### What Happens When Epic Triggers
+
+1. Pilot sends the full issue to Claude for planning
+2. The response is parsed into 3–5 sequential subtasks
+3. Child issues are created on GitHub, each labeled `pilot`
+4. Parent issue moves to `pilot-in-progress`
+5. The poller picks up subtasks sequentially
+
+## Routing Tables
+
+### Model Routing
+
+Maps complexity to the AI model used for execution.
+
+| Complexity | Default Model | Pricing (input/output) | Rationale |
+|------------|---------------|------------------------|-----------|
+| Trivial | `claude-haiku` | $0.80 / $4 per 1M tokens | Speed over depth — mechanical changes don't need reasoning |
+| Simple | `claude-opus-4-6` | $5 / $25 per 1M tokens | Full capability at Sonnet pricing |
+| Medium | `claude-opus-4-6` | $5 / $25 per 1M tokens | Standard feature work needs solid reasoning |
+| Complex | `claude-opus-4-6` | $5 / $25 per 1M tokens | Architectural work gets the most capable model |
+
+<Callout type="info">
+Opus 4.6 replaced Sonnet as the default for simple/medium/complex tasks. Same pricing ($5/$25 per 1M tokens) but higher capability. Epic tasks are decomposed before execution, so each subtask routes independently.
+</Callout>
+
+### Timeout Routing
+
+Prevents stuck tasks from running indefinitely. Calibrated per complexity level.
+
+| Complexity | Default Timeout | Purpose |
+|------------|----------------|---------|
+| Trivial | 5 minutes | Typo fixes shouldn't take longer |
+| Simple | 10 minutes | Small changes with room for quality gates |
+| Medium | 30 minutes | Standard feature work including research phase |
+| Complex | 60 minutes | Architectural changes with full Navigator workflow |
+| Fallback | 30 minutes | Used when timeout config is missing or parse fails |
+
+### Effort Routing
+
+Controls how many tokens Claude uses when responding — the depth of reasoning applied to the task.
+
+| Complexity | Effort Level | Behavior |
+|------------|-------------|----------|
+| Trivial | `low` | Minimal tokens, fast responses — no deep analysis needed |
+| Simple | `medium` | Balanced — enough reasoning for focused fixes |
+| Medium | `high` | Standard Claude behavior — full reasoning chain |
+| Complex | `max` | Deepest reasoning available — exhaustive analysis before acting |
+
+Effort maps to Claude API's `output_config.effort` parameter or the `--effort` flag in Claude Code.
+
+## Cost Examples
+
+Real-world cost estimates based on typical token consumption per complexity level:
+
+| Complexity | Typical Tokens (in/out) | Estimated Cost | Example Task |
+|------------|------------------------|----------------|--------------|
+| Trivial | ~2K / ~500 | **~$0.02** | Fix typo in README |
+| Simple | ~15K / ~5K | **~$0.20** | Add a config field with validation |
+| Medium | ~50K / ~20K | **~$0.75** | New API endpoint with tests |
+| Complex | ~100K / ~50K | **~$1.50–$3.00** | Refactor authentication system |
+| Epic (per subtask) | ~50K / ~20K | **~$0.75 each** | Phase of a multi-part migration |
+
+<Callout type="info">
+These are estimates. Actual costs depend on codebase size (more context = more input tokens), quality gate retries, and self-review passes. Enable budget limits to cap per-task spending.
+</Callout>
+
+## Behavioral Routing
+
+Beyond model and timeout, complexity drives execution behavior:
+
+| Behavior | Trivial | Simple | Medium | Complex | Epic |
+|----------|---------|--------|--------|---------|------|
+| Navigator injection | Skip | Full | Full | Full | N/A (decomposed) |
+| Research phase | Skip | Skip | Run | Run | N/A |
+| Self-review | Run | Run | Run | Run | Per subtask |
+| Quality gates | Run | Run | Run | Run | Per subtask |
+| Task decomposition | No | No | No | If enabled | Always |
+
+**Navigator injection**: Trivial tasks skip `Start my Navigator session.` to avoid ~30s overhead on a task that takes 60s total.
+
+**Research phase**: Medium and complex tasks run a parallel research phase before implementation, giving Claude codebase context before writing code.
+
+## Configuration
+
+All routing is configured under the `executor` key in `~/.pilot/config.yaml`.
+
+### Model Routing
+
+```yaml
+executor:
+  model_routing:
+    enabled: true                  # false by default
+    trivial: "claude-haiku"        # fastest, cheapest
+    simple: "claude-opus-4-6"      # full capability
+    medium: "claude-opus-4-6"
+    complex: "claude-opus-4-6"
+```
+
+When `enabled: false` (default), all tasks use the backend's default model — no routing occurs.
+
+### Timeout Configuration
+
+```yaml
+executor:
+  timeout:
+    default: "30m"     # fallback for unknown complexity
+    trivial: "5m"
+    simple: "10m"
+    medium: "30m"
+    complex: "60m"
+```
+
+Timeouts are always active (no `enabled` flag). Values use Go duration format (`5m`, `1h`, `30s`).
+
+### Effort Routing
+
+```yaml
+executor:
+  effort_routing:
+    enabled: true        # false by default
+    trivial: "low"       # minimal token spend
+    simple: "medium"     # balanced
+    medium: "high"       # standard (Claude default)
+    complex: "max"       # deepest reasoning
+```
+
+When `enabled: false`, effort is not set and Claude uses its default (`high`).
+
+### Task Decomposition
+
+```yaml
+executor:
+  decompose:
+    enabled: false                # opt-in
+    min_complexity: "complex"     # minimum level to trigger
+    max_subtasks: 5               # range: 2–10
+    min_description_words: 50     # short descriptions don't decompose
+```
+
+Decomposition is separate from epic detection. Epics always decompose. This config controls whether `complex` tasks are also automatically split.
+
+<Callout type="warning">
+Model routing and effort routing are both **disabled by default**. Enable them explicitly to benefit from cost optimization. Without routing, every task uses the same model and effort level regardless of complexity.
+</Callout>
+
+### Full Example
+
+```yaml
+executor:
+  model_routing:
+    enabled: true
+    trivial: "claude-haiku"
+    simple: "claude-opus-4-6"
+    medium: "claude-opus-4-6"
+    complex: "claude-opus-4-6"
+
+  timeout:
+    default: "30m"
+    trivial: "5m"
+    simple: "10m"
+    medium: "30m"
+    complex: "60m"
+
+  effort_routing:
+    enabled: true
+    trivial: "low"
+    simple: "medium"
+    medium: "high"
+    complex: "max"
+
+  decompose:
+    enabled: true
+    min_complexity: "complex"
+    max_subtasks: 5
+    min_description_words: 50
+```
+
+## How It Flows Together
+
+```
+Issue arrives
+     │
+     ▼
+┌─────────────────────┐
+│  DetectComplexity()  │  Pattern match → word count fallback
+└──────────┬──────────┘
+           │
+     ┌─────┴──────┐
+     │  Epic?      │──── Yes ──→ PlanEpic() → CreateSubIssues() → stop
+     └─────┬──────┘
+           │ No
+     ┌─────┴──────┐
+     │ Decompose? │──── Yes ──→ Split into subtasks → execute each
+     └─────┬──────┘
+           │ No
+     ┌─────┴──────────────┐
+     │ ModelRouter         │
+     │  .SelectModel()     │──→ "claude-haiku" or "claude-opus-4-6"
+     │  .SelectTimeout()   │──→ 5m / 10m / 30m / 60m
+     │  .SelectEffort()    │──→ "low" / "medium" / "high" / "max"
+     └──────────┬─────────┘
+                │
+     ┌──────────▼─────────┐
+     │ Execute with        │
+     │ selected params     │  model, timeout, effort applied
+     └──────────┬─────────┘
+                │
+     ┌──────────▼─────────┐
+     │ Quality Gates       │  build → test → lint → coverage
+     │ + Self Review       │
+     └──────────┬─────────┘
+                │
+     ┌──────────▼─────────┐
+     │ Push + Create PR    │
+     └────────────────────┘
+```
+
+## What's Next
+
+- **[Architecture](/concepts/architecture)** — Full system architecture and autopilot state machine
+- **[Autopilot Mode](/features/autopilot)** — CI monitoring, auto-merge, and feedback loops
