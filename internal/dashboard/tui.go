@@ -247,6 +247,11 @@ type CompletedTask struct {
 	Status      string // "success" or "failed"
 	Duration    string
 	CompletedAt time.Time
+	ParentID    string   // Parent issue ID for sub-issues (e.g. "GH-498")
+	SubIssues   []string // Sub-issue IDs for epics (e.g. ["GH-501", "GH-502"])
+	TotalSubs   int      // Total number of sub-issues (epic tracking)
+	DoneSubs    int      // Number of completed sub-issues (epic tracking)
+	IsEpic      bool     // Whether this task was decomposed into sub-issues
 }
 
 // UpdateInfo contains information about an available update
@@ -1337,8 +1342,10 @@ func UpdateTokens(input, output int) tea.Cmd {
 	}
 }
 
-// AddCompletedTask sends a completed task to the TUI history
-func AddCompletedTask(id, title, status, duration string) tea.Cmd {
+// AddCompletedTask sends a completed task to the TUI history.
+// parentID is the parent issue ID for sub-issues (empty string if none).
+// isEpic indicates whether the task was decomposed into sub-issues.
+func AddCompletedTask(id, title, status, duration string, parentID string, isEpic bool) tea.Cmd {
 	return func() tea.Msg {
 		return addCompletedTaskMsg(CompletedTask{
 			ID:          id,
@@ -1346,6 +1353,8 @@ func AddCompletedTask(id, title, status, duration string) tea.Cmd {
 			Status:      status,
 			Duration:    duration,
 			CompletedAt: time.Now(),
+			ParentID:    parentID,
+			IsEpic:      isEpic,
 		})
 	}
 }

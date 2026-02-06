@@ -1892,7 +1892,7 @@ func handleGitHubIssueWithMonitor(ctx context.Context, cfg *config.Config, clien
 		if err != nil {
 			status = "failed"
 		}
-		program.Send(dashboard.AddCompletedTask(taskID, issue.Title, status, "")())
+		program.Send(dashboard.AddCompletedTask(taskID, issue.Title, status, "", "", false)())
 	}
 
 	return err
@@ -2123,7 +2123,7 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 		if result != nil {
 			duration = result.Duration.String()
 		}
-		program.Send(dashboard.AddCompletedTask(taskID, issue.Title, status, duration)())
+		program.Send(dashboard.AddCompletedTask(taskID, issue.Title, status, duration, "", false)())
 	}
 
 	// Build the issue result
@@ -2369,7 +2369,7 @@ func handleLinearIssueWithResult(ctx context.Context, cfg *config.Config, client
 		} else if result != nil {
 			duration = result.Duration.String()
 		}
-		program.Send(dashboard.AddCompletedTask(taskID, issue.Title, status, duration)())
+		program.Send(dashboard.AddCompletedTask(taskID, issue.Title, status, duration, "", false)())
 	}
 
 	// Build issue result
