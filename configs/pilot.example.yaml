@@ -12,7 +12,7 @@ gateway:
 auth:
   type: "claude-code"  # "claude-code" (local) or "api-token" (remote)
   # token: "sk-ant-..."  # Required if type is "api-token"
-  # ANTHROPIC_API_KEY env var is required for Claude API access (all modes)
+  # ANTHROPIC_API_KEY env var enables Claude API features (Haiku subtask parsing, etc.)
 
 # Adapters
 adapters:

@@ -54,8 +54,10 @@ type CreatedIssue struct {
 }
 
 // numberedListRegex matches numbered patterns: "1. ", "1) ", "Step 1:", "Phase 1:", "**1.", etc.
-// Allows optional markdown bold markers (**) before the number.
-// Used by parseSubtasks to extract numbered items from planning output.
+// Allows optional markdown bold markers (**) before the number (GH-490 fix).
+// Used by parseSubtasks as the regex fallback in the parsing pipeline:
+//
+//	PlanEpic → parseSubtasksWithFallback → SubtaskParser (Haiku API) → parseSubtasks (regex)
 var numberedListRegex = regexp.MustCompile(`(?mi)^(?:\s*)(?:\*{0,2})(?:step|phase|task)?\s*(\d+)[.):]\s*(.+)`)
 
 // PlanEpic runs Claude Code in planning mode to break an epic into subtasks.
@@ -100,7 +102,8 @@ func (r *Runner) PlanEpic(ctx context.Context, task *Task) (*EpicPlan, error) {
 		return nil, fmt.Errorf("claude planning returned empty output")
 	}
 
-	// Parse subtasks from output (Haiku API with regex fallback)
+	// Parse subtasks: tries Haiku structured extraction first, falls back to regex.
+	// See parseSubtasksWithFallback in subtask_parser.go for the fallback chain.
 	subtasks := parseSubtasksWithFallback(r.subtaskParser, output)
 	if len(subtasks) == 0 {
 		return nil, fmt.Errorf("no subtasks found in planning output")
@@ -142,8 +145,9 @@ func buildPlanningPrompt(task *Task) string {
 	return sb.String()
 }
 
-// parseSubtasks extracts subtasks from Claude's planning output.
-// Looks for numbered patterns: "1. Title - Description" or "Step 1: Title"
+// parseSubtasks extracts subtasks from Claude's planning output using regex.
+// This is the fallback parser when Haiku API is unavailable (see subtask_parser.go).
+// Looks for numbered patterns: "1. Title - Description", "Step 1: Title", "**1. Title**"
 func parseSubtasks(output string) []PlannedSubtask {
 	var subtasks []PlannedSubtask
 	seenOrders := make(map[int]bool)

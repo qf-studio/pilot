@@ -217,7 +217,7 @@ type Runner struct {
 	modelRouter           *ModelRouter          // Model and timeout routing based on complexity
 	parallelRunner        *ParallelRunner       // Optional parallel research runner (GH-217)
 	decomposer            *TaskDecomposer       // Optional task decomposer for complex tasks (GH-218)
-	subtaskParser         *SubtaskParser        // Optional Haiku-based subtask parser for epic planning (GH-501)
+	subtaskParser         *SubtaskParser        // Haiku-based subtask parser; nil falls back to regex (GH-501)
 	suppressProgressLogs  bool                  // Suppress slog output for progress (use when visual display is active)
 }
 
@@ -270,7 +270,7 @@ func NewRunnerWithConfig(config *BackendConfig) (*Runner, error) {
 		}
 	}
 
-	// Initialize Haiku subtask parser (GH-501)
+	// Initialize Haiku subtask parser; nil if ANTHROPIC_API_KEY unset (GH-501)
 	runner.subtaskParser = NewSubtaskParser(runner.log)
 
 	return runner, nil

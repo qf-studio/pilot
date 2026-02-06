@@ -12,7 +12,9 @@ import (
 )
 
 // SubtaskParser extracts subtasks from planning output using the Anthropic Haiku API.
-// Falls back to regex parsing when the API is unavailable or fails.
+// Part of the epic planning pipeline: PlanEpic → parseSubtasksWithFallback → SubtaskParser.
+// When the API is unavailable or fails, parseSubtasksWithFallback falls back to
+// regex-based parseSubtasks() in epic.go.
 type SubtaskParser struct {
 	apiKey     string
 	baseURL    string // Base URL for API (default: https://api.anthropic.com)
@@ -153,8 +155,9 @@ Example response:
 	return result, nil
 }
 
-// parseSubtasksWithFallback tries Haiku structured extraction first,
-// falls back to regex parsing if the API is unavailable or fails.
+// parseSubtasksWithFallback is the primary entry point for subtask extraction.
+// Tries Haiku structured extraction first (SubtaskParser.Parse), then falls back
+// to regex-based parseSubtasks() in epic.go if the API is unavailable or fails.
 func parseSubtasksWithFallback(parser *SubtaskParser, output string) []PlannedSubtask {
 	if parser != nil {
 		subtasks, err := parser.Parse(context.Background(), output)
