@@ -122,6 +122,54 @@ just plain paragraphs`,
 				{Title: "Second task", Description: "Description", Order: 2},
 			},
 		},
+		{
+			name: "markdown heading with numbered items",
+			output: `Here's the plan:
+
+### 1. Set up database schema - Create migration files
+### 2. Implement auth service - Build JWT-based authentication
+### 3. Add API endpoints - Create login and logout routes`,
+			expected: []PlannedSubtask{
+				{Title: "Set up database schema", Description: "Create migration files", Order: 1},
+				{Title: "Implement auth service", Description: "Build JWT-based authentication", Order: 2},
+				{Title: "Add API endpoints", Description: "Create login and logout routes", Order: 3},
+			},
+		},
+		{
+			name: "dash bullet with numbered items",
+			output: `Implementation steps:
+- 1. Create database migration
+- 2. Implement repository layer
+- 3. Add service methods`,
+			expected: []PlannedSubtask{
+				{Title: "Create database migration", Description: "", Order: 1},
+				{Title: "Implement repository layer", Description: "", Order: 2},
+				{Title: "Add service methods", Description: "", Order: 3},
+			},
+		},
+		{
+			name: "dash bullet with bold numbers",
+			output: `Tasks:
+- **1. Add migration** - Schema changes for user tables
+- **2. Build API layer** - REST endpoints with validation
+- **3. Add frontend** - React forms and state management`,
+			expected: []PlannedSubtask{
+				{Title: "Add migration", Description: "Schema changes for user tables", Order: 1},
+				{Title: "Build API layer", Description: "REST endpoints with validation", Order: 2},
+				{Title: "Add frontend", Description: "React forms and state management", Order: 3},
+			},
+		},
+		{
+			name: "h2 heading with step prefix",
+			output: `## Step 1: Initialize project
+## Step 2: Add core functionality
+## Step 3: Write tests`,
+			expected: []PlannedSubtask{
+				{Title: "Initialize project", Description: "", Order: 1},
+				{Title: "Add core functionality", Description: "", Order: 2},
+				{Title: "Write tests", Description: "", Order: 3},
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -478,6 +526,22 @@ Step 3: Add tests`,
 4) Write tests`,
 			expectedCount:  4,
 			expectedTitles: []string{"Initialize project", "Add dependencies", "Implement feature", "Write tests"},
+		},
+		{
+			name: "markdown heading format (GH-542)",
+			output: `### 1. Create database migration - Schema changes
+### 2. Build API layer - REST endpoints
+### 3. Add frontend components - React forms`,
+			expectedCount:  3,
+			expectedTitles: []string{"Create database migration", "Build API layer", "Add frontend components"},
+		},
+		{
+			name: "dash bullet format (GH-542)",
+			output: `- **1. Add migration** - Schema changes
+- **2. Build API** - REST endpoints
+- **3. Add frontend** - React forms`,
+			expectedCount:  3,
+			expectedTitles: []string{"Add migration", "Build API", "Add frontend"},
 		},
 	}
 

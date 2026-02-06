@@ -80,16 +80,13 @@ Example response:
 
 	requestBody := map[string]interface{}{
 		"model":      p.model,
-		"max_tokens": 1000,
+		"max_tokens": 4096,
 		"system":     systemPrompt,
 		"messages": []map[string]string{
 			{
 				"role":    "user",
 				"content": output,
 			},
-		},
-		"output_config": map[string]interface{}{
-			"effort": "low",
 		},
 	}
 

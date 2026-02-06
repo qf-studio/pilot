@@ -55,10 +55,12 @@ type CreatedIssue struct {
 
 // numberedListRegex matches numbered patterns: "1. ", "1) ", "Step 1:", "Phase 1:", "**1.", etc.
 // Allows optional markdown bold markers (**) before the number (GH-490 fix).
+// Also handles markdown heading prefixes (### 1.), dash/asterisk bullets (- 1., * 1.),
+// and combinations like "- **1. Title**" or "### Step 1: Title" (GH-542 fix).
 // Used by parseSubtasks as the regex fallback in the parsing pipeline:
 //
 //	PlanEpic → parseSubtasksWithFallback → SubtaskParser (Haiku API) → parseSubtasks (regex)
-var numberedListRegex = regexp.MustCompile(`(?mi)^(?:\s*)(?:\*{0,2})(?:step|phase|task)?\s*(\d+)[.):]\s*(.+)`)
+var numberedListRegex = regexp.MustCompile(`(?mi)^(?:\s*)(?:#{1,6}\s+)?(?:[-*]\s+)?(?:\*{0,2})(?:step|phase|task)?\s*(\d+)[.):]\s*(.+)`)
 
 // PlanEpic runs Claude Code in planning mode to break an epic into subtasks.
 // Returns an EpicPlan with 3-5 sequential subtasks.
