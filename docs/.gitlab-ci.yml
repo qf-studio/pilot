@@ -1,50 +1,43 @@
+image: docker:latest
+
 stages:
   - build
-  - deploy
-
-variables:
-  DOCKER_IMAGE: $CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA
-  DOCKER_IMAGE_LATEST: $CI_REGISTRY_IMAGE:latest
+  - deploy-prod
 
 build:
   stage: build
-  image: docker:24-dind
-  services:
-    - docker:24-dind
-  before_script:
-    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $CI_REGISTRY
+  tags:
+    - devops
   script:
-    - docker build -t $DOCKER_IMAGE -t $DOCKER_IMAGE_LATEST .
-    - docker push $DOCKER_IMAGE
-    - docker push $DOCKER_IMAGE_LATEST
-  only:
-    - main
-
-deploy:
-  stage: deploy
-  image: alpine:latest
-  before_script:
-    - apk add --no-cache openssh-client
-    - eval $(ssh-agent -s)
-    - echo "$SSH_PRIVATE_KEY" | tr -d '\r' | ssh-add -
-    - mkdir -p ~/.ssh
-    - echo "$SSH_KNOWN_HOSTS" >> ~/.ssh/known_hosts
-  script:
+    - echo "${CI_REGISTRY_PASSWORD}" | docker login -u "${CI_REGISTRY_USER}" "${CI_REGISTRY}" --password-stdin
     - |
-      ssh $DEPLOY_USER@$DEPLOY_HOST "
-        docker login -u gitlab-ci-token -p $CI_REGISTRY_PASSWORD $CI_REGISTRY &&
-        docker pull $DOCKER_IMAGE_LATEST &&
-        docker stop pilot-docs 2>/dev/null || true &&
-        docker rm pilot-docs 2>/dev/null || true &&
-        docker run -d \
-          --name pilot-docs \
-          --restart unless-stopped \
-          -p 127.0.0.1:3100:3000 \
-          $DOCKER_IMAGE_LATEST
-      "
-  only:
-    - main
-  when: manual
-  environment:
-    name: production
-    url: https://pilot.quantflow.studio
+      docker build \
+        --no-cache \
+        -t "${CI_REGISTRY_IMAGE}:${CI_COMMIT_REF_NAME}" \
+        .
+    - docker push "${CI_REGISTRY_IMAGE}:${CI_COMMIT_REF_NAME}"
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      when: never
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: on_success
+    - if: '$CI_COMMIT_TAG =~ /^prod-[0-9]+\.[0-9]+\.[0-9]+$/'
+      when: on_success
+
+.deployment: &deployment
+  script:
+    - docker compose -f docker-compose.prod.yml pull
+    - docker compose -f docker-compose.prod.yml up -d --force-recreate
+
+deploy-prod:
+  stage: deploy-prod
+  before_script:
+    - echo "${CI_REGISTRY_PASSWORD}" | docker login -u "${CI_REGISTRY_USER}" "${CI_REGISTRY}" --password-stdin
+  tags:
+    - devops
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      when: never
+    - if: '$CI_COMMIT_TAG =~ /^prod-[0-9]+\.[0-9]+\.[0-9]+$/'
+      when: on_success
+  <<: *deployment

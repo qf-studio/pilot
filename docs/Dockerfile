@@ -1,19 +1,19 @@
-FROM node:18-alpine AS base
+FROM oven/bun:1-alpine AS base
 
-# Install dependencies only when needed
+# Install dependencies
 FROM base AS deps
 WORKDIR /app
-COPY package.json package-lock.json* ./
-RUN npm ci --only=production
+COPY package.json bun.lock* ./
+RUN bun install --frozen-lockfile --production
 
-# Rebuild the source code only when needed
+# Build the source
 FROM base AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
-RUN npm run build
+RUN bun run build
 
-# Production image, copy all the files and run next
+# Production image
 FROM base AS runner
 WORKDIR /app
 
@@ -31,4 +31,4 @@ USER nextjs
 
 EXPOSE 3000
 
-CMD ["node", "server.js"]
+CMD ["bun", "server.js"]

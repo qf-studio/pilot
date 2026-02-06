@@ -4,3 +4,11 @@ out/
 .vercel
 .env
 .env.local
+
+# misc
+.DS_Store
+*.pem
+
+.idea
+.vscode/*
+!.vscode/extentions.json

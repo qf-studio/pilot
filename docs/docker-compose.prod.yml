@@ -1,0 +1,22 @@
+version: '3.8'
+
+services:
+  pilot-docs:
+    image: "${CI_REGISTRY_IMAGE}:${CI_COMMIT_REF_NAME}"
+    restart: unless-stopped
+    container_name: pilot-docs
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.quantflow-landing.rule=Host(`pilot.quantflow.studio`)"
+      - "traefik.http.routers.quantflow-landing.entrypoints=websecure"
+      - "traefik.http.routers.quantflow-landing.tls=true"
+      - "traefik.docker.network=balancer"
+    expose:
+      - 3000
+    networks:
+      - balancer
+
+networks:
+  balancer:
+    external: true
+    name: balancer
