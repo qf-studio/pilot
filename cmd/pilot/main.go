@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"regexp"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -490,6 +491,50 @@ Examples:
 				logging.WithComponent("start").Info("Telegram polling enabled in gateway mode")
 			}
 
+			// GH-539: Create budget enforcer for gateway mode
+			var gwEnforcer *budget.Enforcer
+			if cfg.Budget != nil && cfg.Budget.Enabled && gwStore != nil {
+				gwEnforcer = budget.NewEnforcer(cfg.Budget, gwStore)
+				if gwAlertsEngine != nil {
+					gwEnforcer.OnAlert(func(alertType, message, severity string) {
+						gwAlertsEngine.ProcessEvent(alerts.Event{
+							Type:      alerts.EventTypeBudgetWarning,
+							Error:     message,
+							Metadata:  map[string]string{"alert_type": alertType, "severity": severity},
+							Timestamp: time.Now(),
+						})
+					})
+				}
+				logging.WithComponent("start").Info("budget enforcement enabled (gateway mode)",
+					slog.Float64("daily_limit", cfg.Budget.DailyLimit),
+					slog.Float64("monthly_limit", cfg.Budget.MonthlyLimit),
+				)
+
+				// GH-539: Wire per-task token/duration limits into executor stream (gateway mode)
+				maxTokens, maxDuration := gwEnforcer.GetPerTaskLimits()
+				if gwRunner != nil && (maxTokens > 0 || maxDuration > 0) {
+					var gwTaskLimiters sync.Map
+					gwRunner.SetTokenLimitCheck(func(taskID string, deltaInput, deltaOutput int64) bool {
+						val, _ := gwTaskLimiters.LoadOrStore(taskID, budget.NewTaskLimiter(maxTokens, maxDuration))
+						limiter := val.(*budget.TaskLimiter)
+						totalDelta := deltaInput + deltaOutput
+						if totalDelta > 0 {
+							if !limiter.AddTokens(totalDelta) {
+								return false
+							}
+						}
+						if !limiter.CheckDuration() {
+							return false
+						}
+						return true
+					})
+					logging.WithComponent("start").Info("per-task budget limits enabled (gateway mode)",
+						slog.Int64("max_tokens", maxTokens),
+						slog.Duration("max_duration", maxDuration),
+					)
+				}
+			}
+
 			// Enable GitHub polling in gateway mode only if --github flag was explicitly passed (GH-350, GH-351)
 			// GH-392: Now actually processes issues instead of no-op
 			if githubFlagSet && hasGithubPolling && cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.Enabled &&
@@ -564,9 +609,9 @@ Examples:
 						)
 
 						if execMode == github.ExecutionModeSequential {
-							_, err = handleGitHubIssueWithResult(retryCtx, cfg, client, issue, projectPath, gwDispatcher, gwRunner, gwMonitor, gwProgram, gwAlertsEngine)
+							_, err = handleGitHubIssueWithResult(retryCtx, cfg, client, issue, projectPath, gwDispatcher, gwRunner, gwMonitor, gwProgram, gwAlertsEngine, gwEnforcer)
 						} else {
-							err = handleGitHubIssueWithMonitor(retryCtx, cfg, client, issue, projectPath, gwDispatcher, gwRunner, gwMonitor, gwProgram, gwAlertsEngine)
+							err = handleGitHubIssueWithMonitor(retryCtx, cfg, client, issue, projectPath, gwDispatcher, gwRunner, gwMonitor, gwProgram, gwAlertsEngine, gwEnforcer)
 						}
 						return err
 					})
@@ -587,14 +632,14 @@ Examples:
 							github.WithSequentialConfig(waitForMerge, pollInterval, prTimeout),
 							github.WithScheduler(rateLimitScheduler),
 							github.WithOnIssueWithResult(func(issueCtx context.Context, issue *github.Issue) (*github.IssueResult, error) {
-								return handleGitHubIssueWithResult(issueCtx, cfg, client, issue, projectPath, gwDispatcher, gwRunner, gwMonitor, gwProgram, gwAlertsEngine)
+								return handleGitHubIssueWithResult(issueCtx, cfg, client, issue, projectPath, gwDispatcher, gwRunner, gwMonitor, gwProgram, gwAlertsEngine, gwEnforcer)
 							}),
 						)
 					} else {
 						pollerOpts = append(pollerOpts,
 							github.WithScheduler(rateLimitScheduler),
 							github.WithOnIssue(func(issueCtx context.Context, issue *github.Issue) error {
-								return handleGitHubIssueWithMonitor(issueCtx, cfg, client, issue, projectPath, gwDispatcher, gwRunner, gwMonitor, gwProgram, gwAlertsEngine)
+								return handleGitHubIssueWithMonitor(issueCtx, cfg, client, issue, projectPath, gwDispatcher, gwRunner, gwMonitor, gwProgram, gwAlertsEngine, gwEnforcer)
 							}),
 						)
 					}
@@ -664,7 +709,7 @@ Examples:
 					linearClient := linear.NewClient(ws.APIKey)
 					linearPoller := linear.NewPoller(linearClient, ws, interval,
 						linear.WithOnLinearIssue(func(issueCtx context.Context, issue *linear.Issue) (*linear.IssueResult, error) {
-							return handleLinearIssueWithResult(issueCtx, cfg, linearClient, issue, projectPath, gwDispatcher, gwRunner, gwMonitor, gwProgram, gwAlertsEngine)
+							return handleLinearIssueWithResult(issueCtx, cfg, linearClient, issue, projectPath, gwDispatcher, gwRunner, gwMonitor, gwProgram, gwAlertsEngine, gwEnforcer)
 						}),
 					)
 
@@ -1082,6 +1127,62 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 		}
 	}
 
+	// GH-539: Create budget enforcer if configured
+	var enforcer *budget.Enforcer
+	if cfg.Budget != nil && cfg.Budget.Enabled && store != nil {
+		enforcer = budget.NewEnforcer(cfg.Budget, store)
+		// Wire alert callback to alerts engine
+		if alertsEngine != nil {
+			enforcer.OnAlert(func(alertType, message, severity string) {
+				alertsEngine.ProcessEvent(alerts.Event{
+					Type:      alerts.EventTypeBudgetWarning,
+					Error:     message,
+					Metadata:  map[string]string{"alert_type": alertType, "severity": severity},
+					Timestamp: time.Now(),
+				})
+			})
+		}
+		logging.WithComponent("start").Info("budget enforcement enabled",
+			slog.Float64("daily_limit", cfg.Budget.DailyLimit),
+			slog.Float64("monthly_limit", cfg.Budget.MonthlyLimit),
+		)
+
+		// GH-539: Wire per-task token/duration limits into executor stream
+		maxTokens, maxDuration := enforcer.GetPerTaskLimits()
+		if maxTokens > 0 || maxDuration > 0 {
+			var taskLimiters sync.Map // map[taskID]*budget.TaskLimiter
+			runner.SetTokenLimitCheck(func(taskID string, deltaInput, deltaOutput int64) bool {
+				// Get or create limiter for this task
+				val, _ := taskLimiters.LoadOrStore(taskID, budget.NewTaskLimiter(maxTokens, maxDuration))
+				limiter := val.(*budget.TaskLimiter)
+
+				// Feed token deltas into the limiter
+				totalDelta := deltaInput + deltaOutput
+				if totalDelta > 0 {
+					if !limiter.AddTokens(totalDelta) {
+						return false
+					}
+				}
+
+				// Also check duration on every event
+				if !limiter.CheckDuration() {
+					return false
+				}
+
+				return true
+			})
+			logging.WithComponent("start").Info("per-task budget limits enabled",
+				slog.Int64("max_tokens", maxTokens),
+				slog.Duration("max_duration", maxDuration),
+			)
+		}
+
+		if !dashboardMode {
+			fmt.Printf("💰 Budget enforcement enabled: $%.2f/day, $%.2f/month\n",
+				cfg.Budget.DailyLimit, cfg.Budget.MonthlyLimit)
+		}
+	}
+
 	// Start GitHub polling if enabled
 	var ghPoller *github.Poller
 	if cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.Enabled &&
@@ -1174,9 +1275,9 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 
 				// Re-process the issue
 				if execMode == github.ExecutionModeSequential {
-					_, err = handleGitHubIssueWithResult(retryCtx, cfg, client, issue, projectPath, dispatcher, runner, monitor, program, alertsEngine)
+					_, err = handleGitHubIssueWithResult(retryCtx, cfg, client, issue, projectPath, dispatcher, runner, monitor, program, alertsEngine, enforcer)
 				} else {
-					err = handleGitHubIssueWithMonitor(retryCtx, cfg, client, issue, projectPath, dispatcher, runner, monitor, program, alertsEngine)
+					err = handleGitHubIssueWithMonitor(retryCtx, cfg, client, issue, projectPath, dispatcher, runner, monitor, program, alertsEngine, enforcer)
 				}
 				return err
 			})
@@ -1199,7 +1300,7 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 					github.WithSequentialConfig(waitForMerge, pollInterval, prTimeout),
 					github.WithScheduler(rateLimitScheduler),
 					github.WithOnIssueWithResult(func(issueCtx context.Context, issue *github.Issue) (*github.IssueResult, error) {
-						return handleGitHubIssueWithResult(issueCtx, cfg, client, issue, projectPath, dispatcher, runner, monitor, program, alertsEngine)
+						return handleGitHubIssueWithResult(issueCtx, cfg, client, issue, projectPath, dispatcher, runner, monitor, program, alertsEngine, enforcer)
 					}),
 				)
 			} else {
@@ -1207,7 +1308,7 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 					github.WithExecutionMode(github.ExecutionModeParallel),
 					github.WithScheduler(rateLimitScheduler),
 					github.WithOnIssue(func(issueCtx context.Context, issue *github.Issue) error {
-						return handleGitHubIssueWithMonitor(issueCtx, cfg, client, issue, projectPath, dispatcher, runner, monitor, program, alertsEngine)
+						return handleGitHubIssueWithMonitor(issueCtx, cfg, client, issue, projectPath, dispatcher, runner, monitor, program, alertsEngine, enforcer)
 					}),
 				)
 			}
@@ -1304,7 +1405,7 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 			linearClient := linear.NewClient(ws.APIKey)
 			linearPoller := linear.NewPoller(linearClient, ws, interval,
 				linear.WithOnLinearIssue(func(issueCtx context.Context, issue *linear.Issue) (*linear.IssueResult, error) {
-					return handleLinearIssueWithResult(issueCtx, cfg, linearClient, issue, projectPath, dispatcher, runner, monitor, program, alertsEngine)
+					return handleLinearIssueWithResult(issueCtx, cfg, linearClient, issue, projectPath, dispatcher, runner, monitor, program, alertsEngine, enforcer)
 				}),
 			)
 
@@ -1696,7 +1797,7 @@ func handleGitHubIssue(ctx context.Context, cfg *config.Config, client *github.C
 
 // handleGitHubIssueWithMonitor processes a GitHub issue with optional dashboard monitoring
 // Used in parallel mode when dashboard is enabled
-func handleGitHubIssueWithMonitor(ctx context.Context, cfg *config.Config, client *github.Client, issue *github.Issue, projectPath string, dispatcher *executor.Dispatcher, runner *executor.Runner, monitor *executor.Monitor, program *tea.Program, alertsEngine *alerts.Engine) error {
+func handleGitHubIssueWithMonitor(ctx context.Context, cfg *config.Config, client *github.Client, issue *github.Issue, projectPath string, dispatcher *executor.Dispatcher, runner *executor.Runner, monitor *executor.Monitor, program *tea.Program, alertsEngine *alerts.Engine, enforcer *budget.Enforcer) error {
 	taskID := fmt.Sprintf("GH-%d", issue.Number)
 
 	// Register task with monitor if in dashboard mode
@@ -1717,6 +1818,39 @@ func handleGitHubIssueWithMonitor(ctx context.Context, cfg *config.Config, clien
 			Project:   projectPath,
 			Timestamp: time.Now(),
 		})
+	}
+
+	// GH-539: Pre-execution budget check — block task if daily/monthly limits exceeded
+	if enforcer != nil {
+		checkResult, budgetErr := enforcer.CheckBudget(ctx, "", "")
+		if budgetErr != nil {
+			logging.WithComponent("budget").Warn("budget check failed, allowing task (fail-open)",
+				slog.String("task_id", taskID),
+				slog.Any("error", budgetErr),
+			)
+		} else if !checkResult.Allowed {
+			logging.WithComponent("budget").Warn("task blocked by budget enforcement",
+				slog.String("task_id", taskID),
+				slog.String("reason", checkResult.Reason),
+				slog.String("action", string(checkResult.Action)),
+			)
+			if alertsEngine != nil {
+				alertsEngine.ProcessEvent(alerts.Event{
+					Type:      alerts.EventTypeBudgetExceeded,
+					TaskID:    taskID,
+					TaskTitle: issue.Title,
+					Project:   projectPath,
+					Error:     checkResult.Reason,
+					Metadata: map[string]string{
+						"daily_left":   fmt.Sprintf("%.2f", checkResult.DailyLeft),
+						"monthly_left": fmt.Sprintf("%.2f", checkResult.MonthlyLeft),
+						"action":       string(checkResult.Action),
+					},
+					Timestamp: time.Now(),
+				})
+			}
+			return fmt.Errorf("budget enforcement: %s", checkResult.Reason)
+		}
 	}
 
 	err := handleGitHubIssue(ctx, cfg, client, issue, projectPath, dispatcher, runner)
@@ -1766,7 +1900,7 @@ func handleGitHubIssueWithMonitor(ctx context.Context, cfg *config.Config, clien
 
 // handleGitHubIssueWithResult processes a GitHub issue and returns result with PR info
 // Used in sequential mode to enable PR merge waiting
-func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client *github.Client, issue *github.Issue, projectPath string, dispatcher *executor.Dispatcher, runner *executor.Runner, monitor *executor.Monitor, program *tea.Program, alertsEngine *alerts.Engine) (*github.IssueResult, error) {
+func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client *github.Client, issue *github.Issue, projectPath string, dispatcher *executor.Dispatcher, runner *executor.Runner, monitor *executor.Monitor, program *tea.Program, alertsEngine *alerts.Engine, enforcer *budget.Enforcer) (*github.IssueResult, error) {
 	taskID := fmt.Sprintf("GH-%d", issue.Number)
 	sourceRepo := cfg.Adapters.GitHub.Repo
 
@@ -1803,6 +1937,59 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 			Project:   projectPath,
 			Timestamp: time.Now(),
 		})
+	}
+
+	// GH-539: Pre-execution budget check — block task if daily/monthly limits exceeded
+	if enforcer != nil {
+		checkResult, budgetErr := enforcer.CheckBudget(ctx, "", "")
+		if budgetErr != nil {
+			logging.WithComponent("budget").Warn("budget check failed, allowing task (fail-open)",
+				slog.String("task_id", taskID),
+				slog.Any("error", budgetErr),
+			)
+		} else if !checkResult.Allowed {
+			logging.WithComponent("budget").Warn("task blocked by budget enforcement",
+				slog.String("task_id", taskID),
+				slog.String("reason", checkResult.Reason),
+				slog.String("action", string(checkResult.Action)),
+			)
+
+			// Emit budget exceeded alert
+			if alertsEngine != nil {
+				alertsEngine.ProcessEvent(alerts.Event{
+					Type:      alerts.EventTypeBudgetExceeded,
+					TaskID:    taskID,
+					TaskTitle: issue.Title,
+					Project:   projectPath,
+					Error:     checkResult.Reason,
+					Metadata: map[string]string{
+						"daily_left":   fmt.Sprintf("%.2f", checkResult.DailyLeft),
+						"monthly_left": fmt.Sprintf("%.2f", checkResult.MonthlyLeft),
+						"action":       string(checkResult.Action),
+					},
+					Timestamp: time.Now(),
+				})
+			}
+
+			// Comment on the GitHub issue and label as failed
+			parts := strings.Split(sourceRepo, "/")
+			if len(parts) == 2 {
+				comment := fmt.Sprintf("⛔ **Budget Limit Exceeded**\n\n%s\n\nDaily remaining: $%.2f\nMonthly remaining: $%.2f\n\nThis task has been skipped. Resume execution after adjusting budget limits or waiting for the next billing period.",
+					checkResult.Reason, checkResult.DailyLeft, checkResult.MonthlyLeft)
+				if _, err := client.AddComment(ctx, parts[0], parts[1], issue.Number, comment); err != nil {
+					logGitHubAPIError("AddComment", parts[0], parts[1], issue.Number, err)
+				}
+				if err := client.AddLabels(ctx, parts[0], parts[1], issue.Number, []string{github.LabelFailed}); err != nil {
+					logGitHubAPIError("AddLabels", parts[0], parts[1], issue.Number, err)
+				}
+			}
+
+			budgetExceededErr := fmt.Errorf("budget enforcement: %s", checkResult.Reason)
+			return &github.IssueResult{
+				Success: false,
+				Error:   budgetExceededErr,
+			}, budgetExceededErr
+		}
 	}
 
 	fmt.Printf("\n📥 GitHub Issue #%d: %s\n", issue.Number, issue.Title)
@@ -2017,7 +2204,7 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 }
 
 // handleLinearIssueWithResult processes a Linear issue picked up by the poller (GH-393)
-func handleLinearIssueWithResult(ctx context.Context, cfg *config.Config, client *linear.Client, issue *linear.Issue, projectPath string, dispatcher *executor.Dispatcher, runner *executor.Runner, monitor *executor.Monitor, program *tea.Program, alertsEngine *alerts.Engine) (*linear.IssueResult, error) {
+func handleLinearIssueWithResult(ctx context.Context, cfg *config.Config, client *linear.Client, issue *linear.Issue, projectPath string, dispatcher *executor.Dispatcher, runner *executor.Runner, monitor *executor.Monitor, program *tea.Program, alertsEngine *alerts.Engine, enforcer *budget.Enforcer) (*linear.IssueResult, error) {
 	taskID := issue.Identifier // e.g., "APP-123"
 
 	// Register task with monitor if in dashboard mode
@@ -2039,6 +2226,42 @@ func handleLinearIssueWithResult(ctx context.Context, cfg *config.Config, client
 			Project:   projectPath,
 			Timestamp: time.Now(),
 		})
+	}
+
+	// GH-539: Pre-execution budget check
+	if enforcer != nil {
+		checkResult, budgetErr := enforcer.CheckBudget(ctx, "", "")
+		if budgetErr != nil {
+			logging.WithComponent("budget").Warn("budget check failed, allowing task (fail-open)",
+				slog.String("task_id", taskID),
+				slog.Any("error", budgetErr),
+			)
+		} else if !checkResult.Allowed {
+			logging.WithComponent("budget").Warn("task blocked by budget enforcement",
+				slog.String("task_id", taskID),
+				slog.String("reason", checkResult.Reason),
+			)
+			if alertsEngine != nil {
+				alertsEngine.ProcessEvent(alerts.Event{
+					Type:      alerts.EventTypeBudgetExceeded,
+					TaskID:    taskID,
+					TaskTitle: issue.Title,
+					Project:   projectPath,
+					Error:     checkResult.Reason,
+					Metadata: map[string]string{
+						"daily_left":   fmt.Sprintf("%.2f", checkResult.DailyLeft),
+						"monthly_left": fmt.Sprintf("%.2f", checkResult.MonthlyLeft),
+						"action":       string(checkResult.Action),
+					},
+					Timestamp: time.Now(),
+				})
+			}
+			budgetExceededErr := fmt.Errorf("budget enforcement: %s", checkResult.Reason)
+			return &linear.IssueResult{
+				Success: false,
+				Error:   budgetExceededErr,
+			}, budgetExceededErr
+		}
 	}
 
 	fmt.Printf("\n📊 Linear Issue %s: %s\n", issue.Identifier, issue.Title)
@@ -2706,6 +2929,28 @@ Examples:
 					// Model routing (GH-215)
 					if cfg.Executor != nil {
 						runner.SetModelRouter(executor.NewModelRouterWithEffort(cfg.Executor.ModelRouting, cfg.Executor.Timeout, cfg.Executor.EffortRouting))
+					}
+
+					// GH-539: Wire per-task budget limits if configured
+					if cfg.Budget != nil && cfg.Budget.Enabled {
+						maxTokens := cfg.Budget.PerTask.MaxTokens
+						maxDuration := cfg.Budget.PerTask.MaxDuration
+						if maxTokens > 0 || maxDuration > 0 {
+							limiter := budget.NewTaskLimiter(maxTokens, maxDuration)
+							runner.SetTokenLimitCheck(func(_ string, deltaInput, deltaOutput int64) bool {
+								totalDelta := deltaInput + deltaOutput
+								if totalDelta > 0 {
+									if !limiter.AddTokens(totalDelta) {
+										return false
+									}
+								}
+								if !limiter.CheckDuration() {
+									return false
+								}
+								return true
+							})
+							fmt.Printf("   Per-task:  ✓ max %d tokens, %v duration\n", maxTokens, maxDuration)
+						}
 					}
 				}
 			}

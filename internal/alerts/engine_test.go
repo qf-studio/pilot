@@ -840,6 +840,123 @@ func TestEngine_CostUpdate_BudgetDepleted(t *testing.T) {
 	}
 }
 
+// GH-539: Test that EventTypeBudgetExceeded routes through cost update rules
+func TestEngine_BudgetExceeded_RoutesToCostRules(t *testing.T) {
+	config := &AlertConfig{
+		Enabled: true,
+		Channels: []ChannelConfig{
+			{Name: "test-channel", Type: "webhook", Enabled: true},
+		},
+		Rules: []AlertRule{
+			{
+				Name:    "budget_depleted",
+				Type:    AlertTypeBudgetDepleted,
+				Enabled: true,
+				Condition: RuleCondition{
+					BudgetLimit: 500.0,
+				},
+				Severity: SeverityCritical,
+				Channels: []string{"test-channel"},
+				Cooldown: 0,
+			},
+		},
+	}
+
+	mockCh := newMockChannel("test-channel", "webhook")
+	dispatcher := NewDispatcher(config)
+	dispatcher.RegisterChannel(mockCh)
+
+	engine := NewEngine(config, WithDispatcher(dispatcher))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	_ = engine.Start(ctx)
+
+	// Budget exceeded event should be routed through handleBudgetEvent → handleCostUpdate
+	engine.ProcessEvent(Event{
+		Type:   EventTypeBudgetExceeded,
+		TaskID: "GH-100",
+		Error:  "Daily budget exceeded: $55.00 / $50.00",
+		Metadata: map[string]string{
+			"daily_spend": "55.00",
+			"total_spend": "600.00",
+			"daily_left":  "0.00",
+			"monthly_left": "0.00",
+			"action":      "stop",
+		},
+		Timestamp: time.Now(),
+	})
+
+	time.Sleep(100 * time.Millisecond)
+
+	alerts := mockCh.getAlerts()
+	if len(alerts) != 1 {
+		t.Errorf("expected 1 budget depleted alert from BudgetExceeded event, got %d", len(alerts))
+		return
+	}
+
+	if alerts[0].Type != AlertTypeBudgetDepleted {
+		t.Errorf("expected alert type %s, got %s", AlertTypeBudgetDepleted, alerts[0].Type)
+	}
+}
+
+// GH-539: Test that EventTypeBudgetWarning routes through cost update rules
+func TestEngine_BudgetWarning_RoutesToCostRules(t *testing.T) {
+	config := &AlertConfig{
+		Enabled: true,
+		Channels: []ChannelConfig{
+			{Name: "test-channel", Type: "webhook", Enabled: true},
+		},
+		Rules: []AlertRule{
+			{
+				Name:    "daily_spend_alert",
+				Type:    AlertTypeDailySpend,
+				Enabled: true,
+				Condition: RuleCondition{
+					DailySpendThreshold: 40.0,
+				},
+				Severity: SeverityWarning,
+				Channels: []string{"test-channel"},
+				Cooldown: 0,
+			},
+		},
+	}
+
+	mockCh := newMockChannel("test-channel", "webhook")
+	dispatcher := NewDispatcher(config)
+	dispatcher.RegisterChannel(mockCh)
+
+	engine := NewEngine(config, WithDispatcher(dispatcher))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	_ = engine.Start(ctx)
+
+	// Budget warning event should route to daily spend rule
+	engine.ProcessEvent(Event{
+		Type:   EventTypeBudgetWarning,
+		Error:  "Daily budget at 90%: $45.00 / $50.00",
+		Metadata: map[string]string{
+			"daily_spend":  "45.00",
+			"alert_type":   "daily_budget_warning",
+			"severity":     "warning",
+		},
+		Timestamp: time.Now(),
+	})
+
+	time.Sleep(100 * time.Millisecond)
+
+	alerts := mockCh.getAlerts()
+	if len(alerts) != 1 {
+		t.Errorf("expected 1 daily spend alert from BudgetWarning event, got %d", len(alerts))
+		return
+	}
+
+	if alerts[0].Type != AlertTypeDailySpend {
+		t.Errorf("expected alert type %s, got %s", AlertTypeDailySpend, alerts[0].Type)
+	}
+}
+
 func TestEngine_SecurityEvent(t *testing.T) {
 	tests := []struct {
 		name      string

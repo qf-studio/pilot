@@ -55,8 +55,10 @@ const (
 	EventTypeTaskProgress  EventType = "task_progress"
 	EventTypeTaskCompleted EventType = "task_completed"
 	EventTypeTaskFailed    EventType = "task_failed"
-	EventTypeCostUpdate    EventType = "cost_update"
-	EventTypeSecurityEvent EventType = "security_event"
+	EventTypeCostUpdate      EventType = "cost_update"
+	EventTypeSecurityEvent   EventType = "security_event"
+	EventTypeBudgetExceeded  EventType = "budget_exceeded"
+	EventTypeBudgetWarning   EventType = "budget_warning"
 )
 
 // EngineOption configures the Engine
@@ -167,6 +169,8 @@ func (e *Engine) handleEvent(ctx context.Context, event Event) {
 		e.handleCostUpdate(ctx, event)
 	case EventTypeSecurityEvent:
 		e.handleSecurityEvent(ctx, event)
+	case EventTypeBudgetExceeded, EventTypeBudgetWarning:
+		e.handleBudgetEvent(ctx, event)
 	}
 }
 
@@ -266,6 +270,12 @@ func (e *Engine) handleCostUpdate(ctx context.Context, event Event) {
 			}
 		}
 	}
+}
+
+func (e *Engine) handleBudgetEvent(ctx context.Context, event Event) {
+	// Route budget events through cost update handler so existing
+	// AlertTypeDailySpend / AlertTypeBudgetDepleted rules fire
+	e.handleCostUpdate(ctx, event)
 }
 
 func (e *Engine) handleSecurityEvent(ctx context.Context, event Event) {

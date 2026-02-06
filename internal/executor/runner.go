@@ -78,6 +78,10 @@ type progressState struct {
 	tokensOutput int64  // Output tokens used
 	modelName    string // Model used
 	// Note: filesChanged/linesAdded/linesRemoved tracked via git diff at commit time
+	// Budget enforcement (GH-539)
+	budgetExceeded bool               // Set when per-task token/duration limit is exceeded
+	budgetReason   string             // Human-readable reason for budget cancellation
+	budgetCancel   context.CancelFunc // Cancel function to terminate execution on budget breach
 }
 
 // Task represents a task to be executed by the Runner.
@@ -194,6 +198,11 @@ type ProgressCallback func(taskID string, phase string, progress int, message st
 // It receives the task ID, input tokens, and output tokens.
 type TokenCallback func(taskID string, inputTokens, outputTokens int64)
 
+// TokenLimitCallback is called during execution with per-event token deltas.
+// It returns true if execution should continue, false if the per-task token/duration
+// limit has been exceeded and execution should be cancelled.
+type TokenLimitCallback func(taskID string, deltaInput, deltaOutput int64) bool
+
 // Runner executes development tasks using an AI backend (Claude Code, OpenCode, etc.).
 // It manages task lifecycle including branch creation, AI invocation,
 // progress tracking, PR creation, and execution recording. Runner is safe for
@@ -219,6 +228,7 @@ type Runner struct {
 	decomposer            *TaskDecomposer       // Optional task decomposer for complex tasks (GH-218)
 	subtaskParser         *SubtaskParser        // Haiku-based subtask parser; nil falls back to regex (GH-501)
 	suppressProgressLogs  bool                  // Suppress slog output for progress (use when visual display is active)
+	tokenLimitCheck       TokenLimitCallback    // Optional per-task token/duration limit check (GH-539)
 }
 
 // NewRunner creates a new Runner instance with Claude Code backend by default.
@@ -357,6 +367,14 @@ func (r *Runner) EnableDecomposition(config *DecomposeConfig) {
 		config.Enabled = true // Enable by default when called explicitly
 	}
 	r.decomposer = NewTaskDecomposer(config)
+}
+
+// SetTokenLimitCheck sets the per-task token/duration limit callback (GH-539).
+// When set, the callback is invoked on each stream event with cumulative token counts.
+// If the callback returns false, the execution context is cancelled and the task
+// terminates with a budget-exceeded error.
+func (r *Runner) SetTokenLimitCheck(cb TokenLimitCallback) {
+	r.tokenLimitCheck = cb
 }
 
 // getRecordingsPath returns the recordings path, using default if not set
@@ -689,7 +707,7 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 	}
 
 	// State for tracking progress
-	state := &progressState{phase: "Starting"}
+	state := &progressState{phase: "Starting", budgetCancel: cancel}
 
 	// Initialize recorder if recording is enabled
 	var recorder *replay.Recorder
@@ -738,6 +756,51 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 
 	if err != nil {
 		result.Success = false
+
+		// GH-539: Check if this was a per-task budget limit breach
+		if state.budgetExceeded {
+			result.Error = fmt.Sprintf("per-task budget limit exceeded: %s", state.budgetReason)
+			result.TokensInput = state.tokensInput
+			result.TokensOutput = state.tokensOutput
+			result.TokensTotal = state.tokensInput + state.tokensOutput
+			result.ModelName = state.modelName
+			if result.ModelName == "" {
+				result.ModelName = "claude-opus-4-6"
+			}
+			result.EstimatedCostUSD = estimateCost(result.TokensInput, result.TokensOutput, result.ModelName)
+			log.Warn("Task cancelled due to per-task budget limit",
+				slog.String("task_id", task.ID),
+				slog.String("reason", state.budgetReason),
+				slog.Int64("input_tokens", state.tokensInput),
+				slog.Int64("output_tokens", state.tokensOutput),
+				slog.Duration("duration", duration),
+			)
+			r.reportProgress(task.ID, "Budget Exceeded", 100, result.Error)
+
+			// Emit budget exceeded alert event
+			r.emitAlertEvent(AlertEvent{
+				Type:      AlertEventTypeTaskFailed,
+				TaskID:    task.ID,
+				TaskTitle: task.Title,
+				Project:   task.ProjectPath,
+				Error:     result.Error,
+				Metadata: map[string]string{
+					"reason":        "budget_exceeded",
+					"input_tokens":  fmt.Sprintf("%d", state.tokensInput),
+					"output_tokens": fmt.Sprintf("%d", state.tokensOutput),
+				},
+				Timestamp: time.Now(),
+			})
+
+			if recorder != nil {
+				recorder.SetModel(state.modelName)
+				recorder.SetNavigator(state.hasNavigator)
+				if finErr := recorder.Finish("budget_exceeded"); finErr != nil {
+					log.Warn("Failed to finish recording", slog.Any("error", finErr))
+				}
+			}
+			return result, nil
+		}
 
 		// Check if this was a timeout
 		timedOut := ctx.Err() == context.DeadlineExceeded
@@ -1895,6 +1958,24 @@ func (r *Runner) processBackendEvent(taskID string, event BackendEvent, state *p
 	// Report token usage to callbacks (e.g., dashboard)
 	if event.TokensInput > 0 || event.TokensOutput > 0 {
 		r.reportTokens(taskID, state.tokensInput, state.tokensOutput)
+	}
+
+	// GH-539: Check per-task token/duration limit on each event
+	if r.tokenLimitCheck != nil && !state.budgetExceeded {
+		if !r.tokenLimitCheck(taskID, event.TokensInput, event.TokensOutput) {
+			state.budgetExceeded = true
+			state.budgetReason = fmt.Sprintf("per-task limit exceeded at %d input + %d output tokens",
+				state.tokensInput, state.tokensOutput)
+			r.log.Warn("Per-task budget limit exceeded, cancelling execution",
+				slog.String("task_id", taskID),
+				slog.Int64("input_tokens", state.tokensInput),
+				slog.Int64("output_tokens", state.tokensOutput),
+			)
+			if state.budgetCancel != nil {
+				state.budgetCancel()
+			}
+			return // Skip further event processing
+		}
 	}
 
 	switch event.Type {
