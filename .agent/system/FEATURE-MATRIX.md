@@ -1,6 +1,6 @@
 # Pilot Feature Matrix
 
-**Last Updated:** 2026-02-01 (v0.6.0 Chat-like Telegram Communication)
+**Last Updated:** 2026-02-06 (v0.6.0 Chat-like Telegram Communication)
 
 ## Legend
 
