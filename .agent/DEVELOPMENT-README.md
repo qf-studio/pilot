@@ -96,7 +96,7 @@ if _, err := os.Stat(agentDir); err == nil {
 
 ## Current State
 
-**Current Version:** v0.21.2
+**Current Version:** v0.21.3
 
 **Full implementation status:** `.agent/system/FEATURE-MATRIX.md`
 
