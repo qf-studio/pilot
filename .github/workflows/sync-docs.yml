@@ -3,7 +3,9 @@ name: Sync Docs to GitLab
 on:
   push:
     branches: [main]
-    paths: ['docs/**']
+    paths:
+      - 'docs/**'
+      - '.github/workflows/sync-docs.yml'
 
 jobs:
   sync:
