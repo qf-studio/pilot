@@ -25,11 +25,22 @@ jobs:
 
       - name: Sync docs/ to GitLab
         run: |
-          cd docs
-          git init -b main
+          WORK=$(mktemp -d)
+          git clone git@gitlab.com:quant-flow/pilot-docs.git "$WORK"
+
+          # Remove old content (except .git), copy fresh docs
+          find "$WORK" -mindepth 1 -maxdepth 1 ! -name '.git' -exec rm -rf {} +
+          cp -a docs/. "$WORK"/
+
+          cd "$WORK"
           git config user.name "Pilot CI"
           git config user.email "ci@quantflow.studio"
-          git remote add gitlab git@gitlab.com:quant-flow/pilot-docs.git
           git add -A
-          git commit -m "sync: docs from pilot@${GITHUB_SHA::7}"
-          git push gitlab main --force
+
+          # Only push if there are changes
+          if git diff --cached --quiet; then
+            echo "No changes to sync"
+          else
+            git commit -m "sync: docs from pilot@${GITHUB_SHA::7}"
+            git push origin main
+          fi
