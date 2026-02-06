@@ -21,6 +21,7 @@
 </p>
 
 <p align="center">
+  <a href="https://pilot.quantflow.studio">Docs</a> •
   <a href="#install">Install</a> •
   <a href="#quick-start">Quick Start</a> •
   <a href="#how-it-works">How It Works</a> •

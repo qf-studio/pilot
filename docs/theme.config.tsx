@@ -28,6 +28,7 @@ const config: DocsThemeConfig = {
       <meta name="description" content="Pilot documentation — autonomous AI development pipeline that turns tickets into pull requests" />
       <meta name="og:title" content="Pilot Docs — AI That Ships Your Tickets" />
       <meta name="og:description" content="Autonomous AI development pipeline. Label a ticket, get a PR. Self-hosted, source-available." />
+      <meta name="og:url" content="https://pilot.quantflow.studio" />
     </>
   ),
   banner: {
