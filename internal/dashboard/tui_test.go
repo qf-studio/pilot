@@ -1,6 +1,7 @@
 package dashboard
 
 import (
+	"fmt"
 	"math"
 	"os"
 	"strings"
@@ -375,5 +376,130 @@ func TestUpdateTokensMsg_AddsToLifetimeTotals(t *testing.T) {
 	}
 	if model.metricsCard.TotalTokens != 18000 {
 		t.Errorf("TotalTokens = %d, want 18000", model.metricsCard.TotalTokens)
+	}
+}
+
+func TestAddCompletedTask_NewFieldsStored(t *testing.T) {
+	m := NewModel("test")
+
+	// Send a completed task with parentID and isEpic=false (sub-issue)
+	msg := addCompletedTaskMsg(CompletedTask{
+		ID:       "GH-575",
+		Title:    "Sub-issue task",
+		Status:   "success",
+		Duration: "30s",
+		ParentID: "GH-498",
+		IsEpic:   false,
+	})
+	updated, _ := m.Update(msg)
+	model := updated.(Model)
+
+	if len(model.completedTasks) != 1 {
+		t.Fatalf("completedTasks len = %d, want 1", len(model.completedTasks))
+	}
+	task := model.completedTasks[0]
+	if task.ParentID != "GH-498" {
+		t.Errorf("ParentID = %q, want %q", task.ParentID, "GH-498")
+	}
+	if task.IsEpic {
+		t.Error("IsEpic = true, want false")
+	}
+
+	// Send an epic task with SubIssues, TotalSubs, DoneSubs
+	epicMsg := addCompletedTaskMsg(CompletedTask{
+		ID:        "GH-498",
+		Title:     "Epic decomposition task",
+		Status:    "success",
+		Duration:  "5m",
+		IsEpic:    true,
+		SubIssues: []string{"GH-575", "GH-576", "GH-577"},
+		TotalSubs: 3,
+		DoneSubs:  2,
+	})
+	updated, _ = model.Update(epicMsg)
+	model = updated.(Model)
+
+	if len(model.completedTasks) != 2 {
+		t.Fatalf("completedTasks len = %d, want 2", len(model.completedTasks))
+	}
+	epic := model.completedTasks[1]
+	if !epic.IsEpic {
+		t.Error("IsEpic = false, want true")
+	}
+	if epic.TotalSubs != 3 {
+		t.Errorf("TotalSubs = %d, want 3", epic.TotalSubs)
+	}
+	if epic.DoneSubs != 2 {
+		t.Errorf("DoneSubs = %d, want 2", epic.DoneSubs)
+	}
+	if len(epic.SubIssues) != 3 {
+		t.Fatalf("SubIssues len = %d, want 3", len(epic.SubIssues))
+	}
+	if epic.SubIssues[0] != "GH-575" || epic.SubIssues[1] != "GH-576" || epic.SubIssues[2] != "GH-577" {
+		t.Errorf("SubIssues = %v, want [GH-575 GH-576 GH-577]", epic.SubIssues)
+	}
+}
+
+func TestAddCompletedTask_BackwardCompatEmpty(t *testing.T) {
+	m := NewModel("test")
+
+	// Simulate the backward-compatible call (parentID="", isEpic=false)
+	cmd := AddCompletedTask("GH-100", "Simple task", "success", "10s", "", false)
+	msg := cmd().(addCompletedTaskMsg)
+	updated, _ := m.Update(msg)
+	model := updated.(Model)
+
+	if len(model.completedTasks) != 1 {
+		t.Fatalf("completedTasks len = %d, want 1", len(model.completedTasks))
+	}
+	task := model.completedTasks[0]
+	if task.ParentID != "" {
+		t.Errorf("ParentID = %q, want empty", task.ParentID)
+	}
+	if task.IsEpic {
+		t.Error("IsEpic = true, want false")
+	}
+	if task.TotalSubs != 0 {
+		t.Errorf("TotalSubs = %d, want 0", task.TotalSubs)
+	}
+	if task.DoneSubs != 0 {
+		t.Errorf("DoneSubs = %d, want 0", task.DoneSubs)
+	}
+	if task.SubIssues != nil {
+		t.Errorf("SubIssues = %v, want nil", task.SubIssues)
+	}
+}
+
+func TestAddCompletedTask_HistoryCapAt5(t *testing.T) {
+	m := NewModel("test")
+
+	// Add 6 tasks — history should keep only the last 5
+	for i := 0; i < 6; i++ {
+		msg := addCompletedTaskMsg(CompletedTask{
+			ID:       fmt.Sprintf("GH-%d", i+1),
+			Title:    fmt.Sprintf("Task %d", i+1),
+			Status:   "success",
+			ParentID: "GH-0",
+			IsEpic:   i == 5, // last one is an epic
+		})
+		updated, _ := m.Update(msg)
+		m = updated.(Model)
+	}
+
+	if len(m.completedTasks) != 5 {
+		t.Fatalf("completedTasks len = %d, want 5", len(m.completedTasks))
+	}
+
+	// First task (GH-1) should have been evicted; GH-2 is now first
+	if m.completedTasks[0].ID != "GH-2" {
+		t.Errorf("first task ID = %q, want %q", m.completedTasks[0].ID, "GH-2")
+	}
+	// Last task should be the epic
+	last := m.completedTasks[4]
+	if !last.IsEpic {
+		t.Error("last task IsEpic = false, want true")
+	}
+	if last.ParentID != "GH-0" {
+		t.Errorf("last task ParentID = %q, want %q", last.ParentID, "GH-0")
 	}
 }
