@@ -148,7 +148,8 @@ You label issue "pilot"
 | Feature | Description |
 |---------|-------------|
 | **Autopilot** | CI monitoring, auto-merge, feedback loop (dev/stage/prod modes) |
-| **Task Decomposition** | Complex tasks auto-split into sequential subtasks |
+| **Epic Decomposition** | Complex tasks auto-split into sequential subtasks via Haiku API |
+| **Self-Review** | Auto code review before PR push catches issues early |
 | **Sequential Execution** | Wait for PR merge before next issue (prevents conflicts) |
 | **Quality Gates** | Test/lint/build validation with auto-retry |
 | **Execution Replay** | Record, playback, analyze, export (HTML/JSON/MD) |
@@ -157,8 +158,9 @@ You label issue "pilot"
 
 | Feature | Description |
 |---------|-------------|
+| **Model Routing** | Haiku (trivial) → Opus 4.6 (standard/complex), auto-detected |
+| **Effort Routing** | Maps task complexity to Claude thinking depth |
 | **Research Subagents** | Haiku-powered parallel codebase exploration |
-| **Model Routing** | Haiku (trivial) → Sonnet (standard) → Opus (complex) |
 | **Navigator Integration** | Auto-detected `.agent/`, skipped for trivial tasks |
 | **Cross-Project Memory** | Shared patterns and context across repositories |
 
@@ -168,6 +170,7 @@ You label issue "pilot"
 |---------|-------------|
 | **Telegram Bot** | Chat, research, planning, tasks + voice & images |
 | **GitHub Polling** | Auto-pick issues with `pilot` label |
+| **GitLab / Azure DevOps** | Full polling + webhook adapters |
 | **Linear/Jira/Asana** | Webhooks and task sync |
 | **Daily Briefs** | Scheduled reports via Slack/Email/Telegram |
 | **Alerting** | Task failures, cost thresholds, stuck detection |
@@ -176,8 +179,9 @@ You label issue "pilot"
 
 | Feature | Description |
 |---------|-------------|
-| **Dashboard TUI** | Live monitoring, token/cost tracking, autopilot status |
-| **Hot Upgrade** | Self-update with `pilot upgrade` |
+| **Dashboard TUI** | Sparkline metrics cards, queue depth, autopilot status |
+| **Persistent Metrics** | Token/cost/task counts survive restarts via SQLite |
+| **Hot Upgrade** | Self-update with `pilot upgrade` or `u` key in dashboard |
 | **Cost Controls** | Budget limits with hard enforcement |
 | **Multiple Backends** | Claude Code + OpenCode support |
 | **BYOK** | Bring your own Anthropic key, Bedrock, or Vertex |
