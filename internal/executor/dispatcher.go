@@ -524,6 +524,24 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 			w.runner.EmitProgress(exec.TaskID, "Completed", 100, msg)
 		}
 
+		// Persist execution metrics (tokens, cost, code changes) so they survive restarts.
+		// This is needed for GetLifetimeTokens() to return real data (GH-533).
+		if result != nil {
+			if err := w.store.SaveExecutionMetrics(&memory.ExecutionMetrics{
+				ExecutionID:      exec.ID,
+				TokensInput:      result.TokensInput,
+				TokensOutput:     result.TokensOutput,
+				TokensTotal:      result.TokensTotal,
+				EstimatedCostUSD: result.EstimatedCostUSD,
+				FilesChanged:     result.FilesChanged,
+				LinesAdded:       result.LinesAdded,
+				LinesRemoved:     result.LinesRemoved,
+				ModelName:        result.ModelName,
+			}); err != nil {
+				w.log.Error("Failed to save execution metrics", slog.Any("error", err))
+			}
+		}
+
 		w.currentTaskID.Store("")
 	}
 }

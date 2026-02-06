@@ -412,41 +412,49 @@ func (m *Model) hydrateFromStore() {
 		return
 	}
 
-	// Initialize metrics card from session token data
-	m.metricsCard.TotalTokens = m.tokenUsage.TotalTokens
-	m.metricsCard.InputTokens = m.tokenUsage.InputTokens
-	m.metricsCard.OutputTokens = m.tokenUsage.OutputTokens
-	m.metricsCard.TotalCostUSD = memory.EstimateCost(
-		int64(m.tokenUsage.InputTokens),
-		int64(m.tokenUsage.OutputTokens),
-		memory.DefaultModel,
-	)
+	// Initialize metrics card from lifetime execution data (survives restarts).
+	// Session tokens only track the current process; executions table has the real totals.
+	lifetime, err := m.store.GetLifetimeTokens()
+	if err != nil {
+		slog.Warn("failed to load lifetime tokens", slog.Any("error", err))
+	} else {
+		m.metricsCard.TotalTokens = int(lifetime.TotalTokens)
+		m.metricsCard.InputTokens = int(lifetime.InputTokens)
+		m.metricsCard.OutputTokens = int(lifetime.OutputTokens)
+		m.metricsCard.TotalCostUSD = lifetime.TotalCostUSD
+	}
 
-	// Count completed/failed tasks from executions and populate history panel
+	// Initialize task counts from lifetime data (survives restarts).
+	// Previous code sampled from GetRecentExecutions(20), showing only last 20 results.
+	taskCounts, err := m.store.GetLifetimeTaskCounts()
+	if err != nil {
+		slog.Warn("failed to load lifetime task counts", slog.Any("error", err))
+	} else {
+		m.metricsCard.TotalTasks = taskCounts.Total
+		m.metricsCard.Succeeded = taskCounts.Succeeded
+		m.metricsCard.Failed = taskCounts.Failed
+	}
+
+	// Populate history panel from recent executions (most recent 5)
 	for i, exec := range executions {
+		if i >= 5 {
+			break
+		}
 		status := "success"
 		if exec.Status == "failed" {
 			status = "failed"
-			m.metricsCard.Failed++
-		} else {
-			m.metricsCard.Succeeded++
 		}
-		m.metricsCard.TotalTasks++
-
-		// Most recent 5 for history panel
-		if i < 5 {
-			completedAt := exec.CreatedAt
-			if exec.CompletedAt != nil {
-				completedAt = *exec.CompletedAt
-			}
-			m.completedTasks = append(m.completedTasks, CompletedTask{
-				ID:          exec.TaskID,
-				Title:       exec.TaskTitle,
-				Status:      status,
-				Duration:    fmt.Sprintf("%dms", exec.DurationMs),
-				CompletedAt: completedAt,
-			})
+		completedAt := exec.CreatedAt
+		if exec.CompletedAt != nil {
+			completedAt = *exec.CompletedAt
 		}
+		m.completedTasks = append(m.completedTasks, CompletedTask{
+			ID:          exec.TaskID,
+			Title:       exec.TaskTitle,
+			Status:      status,
+			Duration:    fmt.Sprintf("%dms", exec.DurationMs),
+			CompletedAt: completedAt,
+		})
 	}
 
 	// Compute cost per task
@@ -593,19 +601,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case updateTokensMsg:
-		// Calculate delta and persist
+		// Calculate delta and persist to session
 		inputDelta := msg.InputTokens - m.tokenUsage.InputTokens
 		outputDelta := msg.OutputTokens - m.tokenUsage.OutputTokens
 		m.tokenUsage = TokenUsage(msg)
 		m.persistTokenUsage(inputDelta, outputDelta)
 
-		// Sync metrics card with latest token data
-		m.metricsCard.TotalTokens = m.tokenUsage.TotalTokens
-		m.metricsCard.InputTokens = m.tokenUsage.InputTokens
-		m.metricsCard.OutputTokens = m.tokenUsage.OutputTokens
-		m.metricsCard.TotalCostUSD = memory.EstimateCost(
-			int64(m.tokenUsage.InputTokens),
-			int64(m.tokenUsage.OutputTokens),
+		// Add deltas to lifetime metrics card totals (not replace with session values)
+		m.metricsCard.InputTokens += inputDelta
+		m.metricsCard.OutputTokens += outputDelta
+		m.metricsCard.TotalTokens += inputDelta + outputDelta
+		m.metricsCard.TotalCostUSD += memory.EstimateCost(
+			int64(inputDelta),
+			int64(outputDelta),
 			memory.DefaultModel,
 		)
 		if m.metricsCard.TotalTasks > 0 {
@@ -1110,8 +1118,9 @@ func (m Model) renderCostCard() string {
 }
 
 // renderTaskCard renders the QUEUE mini-card.
+// Value shows current queue depth (pending + running), not lifetime totals.
 func (m Model) renderTaskCard() string {
-	value := fmt.Sprintf("%d", m.metricsCard.TotalTasks)
+	value := fmt.Sprintf("%d", len(m.tasks))
 	detail1 := statusCompletedStyle.Render(fmt.Sprintf("✓ %d succeeded", m.metricsCard.Succeeded))
 	detail2 := statusFailedStyle.Render(fmt.Sprintf("✗ %d failed", m.metricsCard.Failed))
 

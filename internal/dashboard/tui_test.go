@@ -1,11 +1,15 @@
 package dashboard
 
 import (
+	"math"
+	"os"
 	"strings"
 	"testing"
 	"unicode/utf8"
 
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/alekspetrov/pilot/internal/memory"
 )
 
 func TestFormatCompact(t *testing.T) {
@@ -208,5 +212,168 @@ func TestRenderMetricsCards_ZeroState(t *testing.T) {
 	}
 	if !strings.Contains(output, "QUEUE") {
 		t.Error("zero-state output missing TASKS card")
+	}
+}
+
+func TestRenderTaskCard_ShowsQueueDepth(t *testing.T) {
+	m := NewModel("test")
+	// Simulate 10 lifetime tasks (succeeded + failed) in metrics
+	m.metricsCard.TotalTasks = 10
+	m.metricsCard.Succeeded = 8
+	m.metricsCard.Failed = 2
+
+	// Simulate 2 active tasks in queue (pending/running)
+	m.tasks = []TaskDisplay{
+		{ID: "1", Title: "Task A", Status: "running"},
+		{ID: "2", Title: "Task B", Status: "pending"},
+	}
+
+	output := m.renderTaskCard()
+
+	// QUEUE card value must show current queue depth (2), not lifetime total (10)
+	if !strings.Contains(output, "QUEUE") {
+		t.Error("output missing QUEUE header")
+	}
+	// The main value "2" should appear (queue depth)
+	if !strings.Contains(output, "2") {
+		t.Error("QUEUE card should show current queue depth of 2")
+	}
+	// Lifetime total "10" should NOT appear as the main value
+	if strings.Contains(output, "10") {
+		t.Error("QUEUE card should not show lifetime total (10)")
+	}
+	// Succeeded/failed detail lines should still be present
+	if !strings.Contains(output, "8 succeeded") {
+		t.Error("QUEUE card missing succeeded count")
+	}
+	if !strings.Contains(output, "2 failed") {
+		t.Error("QUEUE card missing failed count")
+	}
+}
+
+func TestRenderTaskCard_EmptyQueue(t *testing.T) {
+	m := NewModel("test")
+	// Historical tasks exist but queue is empty
+	m.metricsCard.TotalTasks = 5
+	m.metricsCard.Succeeded = 3
+	m.metricsCard.Failed = 2
+	m.tasks = nil
+
+	output := m.renderTaskCard()
+
+	// Should show 0 for empty queue, not 5 (lifetime total)
+	if strings.Contains(output, "5") {
+		t.Error("QUEUE card should show 0, not lifetime total (5)")
+	}
+}
+
+func TestHydrateFromStore_LifetimeTokens(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "pilot-dash-test-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	store, err := memory.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	// Insert executions with known token/cost data across "multiple days"
+	execs := []struct {
+		id     string
+		input  int64
+		output int64
+		cost   float64
+	}{
+		{"exec-1", 10000, 5000, 0.50},
+		{"exec-2", 20000, 10000, 1.00},
+		{"exec-3", 30000, 15000, 1.50},
+	}
+	for _, e := range execs {
+		if err := store.SaveExecution(&memory.Execution{
+			ID:          e.id,
+			TaskID:      "TASK-" + e.id,
+			ProjectPath: "/test",
+			Status:      "completed",
+		}); err != nil {
+			t.Fatalf("SaveExecution %s: %v", e.id, err)
+		}
+		if err := store.SaveExecutionMetrics(&memory.ExecutionMetrics{
+			ExecutionID:      e.id,
+			TokensInput:      e.input,
+			TokensOutput:     e.output,
+			TokensTotal:      e.input + e.output,
+			EstimatedCostUSD: e.cost,
+		}); err != nil {
+			t.Fatalf("SaveExecutionMetrics %s: %v", e.id, err)
+		}
+	}
+
+	// Create model — simulates a fresh restart (new session, empty token usage)
+	m := NewModelWithStore("test", store)
+
+	// Metrics card should reflect lifetime totals from executions, not session (zero)
+	wantInput := 60000
+	wantOutput := 30000
+	wantTotal := 90000
+	wantCost := 3.00
+
+	if m.metricsCard.InputTokens != wantInput {
+		t.Errorf("InputTokens = %d, want %d", m.metricsCard.InputTokens, wantInput)
+	}
+	if m.metricsCard.OutputTokens != wantOutput {
+		t.Errorf("OutputTokens = %d, want %d", m.metricsCard.OutputTokens, wantOutput)
+	}
+	if m.metricsCard.TotalTokens != wantTotal {
+		t.Errorf("TotalTokens = %d, want %d", m.metricsCard.TotalTokens, wantTotal)
+	}
+	if math.Abs(m.metricsCard.TotalCostUSD-wantCost) > 0.001 {
+		t.Errorf("TotalCostUSD = %.4f, want %.4f", m.metricsCard.TotalCostUSD, wantCost)
+	}
+}
+
+func TestUpdateTokensMsg_AddsToLifetimeTotals(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "pilot-dash-test-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	store, err := memory.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	// Seed with historical execution data
+	if err := store.SaveExecution(&memory.Execution{
+		ID: "exec-old", TaskID: "TASK-OLD", ProjectPath: "/test", Status: "completed",
+	}); err != nil {
+		t.Fatalf("SaveExecution: %v", err)
+	}
+	if err := store.SaveExecutionMetrics(&memory.ExecutionMetrics{
+		ExecutionID: "exec-old", TokensInput: 10000, TokensOutput: 5000,
+		TokensTotal: 15000, EstimatedCostUSD: 1.00,
+	}); err != nil {
+		t.Fatalf("SaveExecutionMetrics: %v", err)
+	}
+
+	m := NewModelWithStore("test", store)
+
+	// Simulate a token update from a running execution (cumulative: 2000 in, 1000 out)
+	updated, _ := m.Update(updateTokensMsg{InputTokens: 2000, OutputTokens: 1000, TotalTokens: 3000})
+	model := updated.(Model)
+
+	// metricsCard should be lifetime (10000+2000=12000 input, 5000+1000=6000 output)
+	if model.metricsCard.InputTokens != 12000 {
+		t.Errorf("InputTokens = %d, want 12000", model.metricsCard.InputTokens)
+	}
+	if model.metricsCard.OutputTokens != 6000 {
+		t.Errorf("OutputTokens = %d, want 6000", model.metricsCard.OutputTokens)
+	}
+	if model.metricsCard.TotalTokens != 18000 {
+		t.Errorf("TotalTokens = %d, want 18000", model.metricsCard.TotalTokens)
 	}
 }

@@ -1161,6 +1161,58 @@ func (s *Store) UpdateSessionTaskCount(sessionID string, completed, failed int) 
 	return err
 }
 
+// LifetimeTokens holds cumulative token and cost totals from all executions.
+type LifetimeTokens struct {
+	InputTokens  int64
+	OutputTokens int64
+	TotalTokens  int64
+	TotalCostUSD float64
+}
+
+// GetLifetimeTokens returns cumulative token usage and cost across all executions.
+// Unlike session-scoped data, this survives restarts by querying the executions table directly.
+func (s *Store) GetLifetimeTokens() (*LifetimeTokens, error) {
+	row := s.db.QueryRow(`
+		SELECT
+			COALESCE(SUM(tokens_input), 0),
+			COALESCE(SUM(tokens_output), 0),
+			COALESCE(SUM(tokens_total), 0),
+			COALESCE(SUM(estimated_cost_usd), 0)
+		FROM executions
+	`)
+
+	var lt LifetimeTokens
+	if err := row.Scan(&lt.InputTokens, &lt.OutputTokens, &lt.TotalTokens, &lt.TotalCostUSD); err != nil {
+		return nil, fmt.Errorf("failed to get lifetime tokens: %w", err)
+	}
+	return &lt, nil
+}
+
+// LifetimeTaskCounts holds cumulative succeeded/failed counts from all executions.
+type LifetimeTaskCounts struct {
+	Total     int
+	Succeeded int
+	Failed    int
+}
+
+// GetLifetimeTaskCounts returns cumulative task counts across all executions.
+// Parallels GetLifetimeTokens — survives restarts by querying executions table directly.
+func (s *Store) GetLifetimeTaskCounts() (*LifetimeTaskCounts, error) {
+	row := s.db.QueryRow(`
+		SELECT
+			COUNT(*),
+			COALESCE(SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0)
+		FROM executions
+	`)
+
+	var tc LifetimeTaskCounts
+	if err := row.Scan(&tc.Total, &tc.Succeeded, &tc.Failed); err != nil {
+		return nil, fmt.Errorf("failed to get lifetime task counts: %w", err)
+	}
+	return &tc, nil
+}
+
 // EndSession marks a session as ended.
 func (s *Store) EndSession(sessionID string) error {
 	_, err := s.db.Exec(`
