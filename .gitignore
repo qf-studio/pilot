@@ -69,3 +69,6 @@ logs/
 *.pem
 *.key
 secrets/
+
+# Nested git repo (docs has its own GitLab repo)
+docs/.git

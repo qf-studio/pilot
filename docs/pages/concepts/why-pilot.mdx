@@ -1,0 +1,150 @@
+import { Callout } from 'nextra/components'
+
+# Why Pilot
+
+## The Shift From AI-Assisted to AI-Autonomous
+
+Most AI development tools today are **assistive** — they help you write code faster while you sit in the driver's seat. Autocomplete, chat-based suggestions, inline edits. You still manage every step: opening files, reading context, typing prompts, reviewing output, committing changes, creating PRs.
+
+Pilot takes a different approach. It's **autonomous**. You describe what needs to happen in a ticket. Pilot handles planning, implementation, testing, and PR creation. You review the result like you'd review any team member's pull request.
+
+This is not about replacing engineers. It's about removing engineers from work that doesn't need their judgment — CRUD endpoints, test coverage, documentation updates, bug fixes with clear repro steps. The predictable, well-defined work that fills backlogs everywhere.
+
+## The Problem With Current AI Tools
+
+### Chatbots need constant prompting
+
+Tools like ChatGPT, Claude chat, or Claude Code wrappers (ClawdBot, Melbot) require you to describe what you want, review the output, refine your prompt, review again. The feedback loop is faster than writing code manually, but you're still in the loop for every iteration. Token costs are unpredictable because conversations are open-ended.
+
+### Editors need you at the keyboard
+
+Cursor, GitHub Copilot, and similar IDE integrations make you faster at the keyboard. But you need to be at the keyboard. File-level context means the AI sees what you're editing, not your project's architecture, conventions, or SOPs. There's no memory across sessions or projects.
+
+### Cloud agents are black boxes
+
+Devin and similar cloud-based agents promise full autonomy, but at a cost. Your code runs on someone else's infrastructure. You can't inspect how decisions are made. Pricing is enterprise-only. The security model requires trusting a third party with your entire codebase.
+
+## Where Pilot Sits
+
+```
+                    Autonomous
+                        ↑
+                        |
+           Pilot        |        Devin
+           ●            |        ●
+                        |
+    ←───────────────────┼───────────────────→
+    Self-hosted         |              Cloud
+                        |
+           Copilot      |       Cursor
+           ●            |        ●
+                        |
+                        ↓
+                    Assistant
+```
+
+Pilot occupies a unique position: **autonomous and self-hosted**. No other tool in the market combines ticket-driven autonomous execution with full self-hosting capability.
+
+## What Makes Pilot Different
+
+### 1. Ticket-driven, not prompt-driven
+
+You already write tickets for your team. Pilot reads the same tickets. No new workflow to learn. No prompt engineering. No special syntax. Write the ticket like you would for a junior developer, label it `pilot`, and the work gets done.
+
+### 2. Navigator integration
+
+This is Pilot's core differentiator. [Navigator](https://github.com/anthropics/claude-code-plugins) is a Claude Code plugin that provides deep codebase understanding through strategic documentation loading. It reduces token usage by 92% (from 150k to 12k tokens per session) while giving Pilot knowledge of your:
+
+- **Architecture** — System design, data flows, component relationships
+- **Patterns** — How you structure code, naming conventions, file organization
+- **SOPs** — Standard operating procedures for common tasks
+- **Cross-project memory** — Patterns learned across multiple repositories
+
+Without Navigator, Pilot would generate generic code. With Navigator, it generates code that follows your established conventions.
+
+### 3. Autopilot feedback loop
+
+Most AI tools stop at code generation. Pilot manages the full PR lifecycle:
+
+```
+Ticket → Plan → Implement → Test → PR → CI Monitor → Merge
+                                            ↓
+                                        CI Fails
+                                            ↓
+                                    Create Fix Issue
+                                            ↓
+                                    Fix on Same Branch
+                                            ↓
+                                        New PR → CI
+```
+
+When CI fails, Pilot doesn't wait for human intervention. It analyzes the failure, creates a fix issue targeting the original branch, and iterates. Three environment modes control how much autonomy Pilot has:
+
+| Mode | CI Wait | Auto-Merge | Use Case |
+|------|---------|------------|----------|
+| `dev` | Skip | Yes | Personal projects, fast iteration |
+| `stage` | Required | Yes | Team staging, balanced safety |
+| `prod` | Required | No (human approval) | Production, maximum control |
+
+### 4. Multi-mode Telegram interface
+
+Pilot's Telegram bot isn't just a notification channel. It's a full development interface with five interaction modes:
+
+- **Chat** — Conversational discussion about your codebase
+- **Research** — Deep analysis that saves findings to your project
+- **Planning** — Design features with Execute/Cancel approval buttons
+- **Questions** — Quick read-only answers about your code
+- **Tasks** — Full implementation with PR creation
+
+The bot classifies your intent automatically. Saying "what files handle authentication?" triggers a quick answer. Saying "add rate limiting to the API" triggers a task with confirmation.
+
+### 5. Complexity-aware routing
+
+Not every ticket needs the same level of AI reasoning. Pilot classifies ticket complexity and routes accordingly:
+
+| Complexity | Model | Navigator | Example |
+|------------|-------|-----------|---------|
+| Trivial | Haiku (fast, cheap) | Skipped | Fix typo, rename variable |
+| Simple | Opus 4.6 | Active | Add endpoint, write test |
+| Medium | Opus 4.6 | Active | Feature with multiple files |
+| Complex | Opus 4.6 (deep) | Active | Cross-cutting change |
+| Epic | Opus 4.6 | Active | Decomposed into subtasks |
+
+This means trivial tickets cost cents and complete in seconds, while complex tickets get the reasoning depth they need.
+
+## Feature Comparison
+
+| Capability | Pilot | Cursor | Copilot | Devin | DIY Claude Code |
+|-----------|-------|--------|---------|-------|-----------------|
+| Autonomous execution | Yes | No | No | Yes | Manual |
+| Ticket integration | GitHub, Linear, Jira, Asana | No | Partial | Yes | Manual |
+| Codebase context | Navigator (deep) | File-level | File-level | Proprietary | Manual CLAUDE.md |
+| Cross-project memory | Yes | No | No | Unknown | No |
+| Self-hosted | Yes | Desktop app | No | No | Yes |
+| Source-available | Yes (BSL 1.1) | No | No | No | N/A |
+| PR output | Yes | No | Workspace (beta) | Yes | Manual |
+| CI feedback loop | Yes | No | No | No | No |
+| Model routing | Haiku + Opus | Fixed | Fixed | Fixed | Manual |
+| Cost control | Budget limits | Per-seat | Per-seat | Per-seat | Manual |
+
+## What Pilot Is Not
+
+<Callout type="info">
+Pilot augments engineers. It does not replace them.
+</Callout>
+
+**Not for architecture decisions.** Pilot executes well-defined work. It doesn't make architectural tradeoffs, choose between database designs, or decide on authentication strategies. Those decisions require engineering judgment and context that comes from understanding business requirements.
+
+**Not for novel algorithms.** If the task requires research, experimentation, or creative problem-solving, a human engineer is better suited. Pilot works best when the pattern is established and the implementation is bounded.
+
+**Not for security-critical code.** Authentication flows, encryption, access control — these need careful human review regardless of who writes them. Pilot can write tests for security code, but shouldn't be the primary author.
+
+**Not a silver bullet.** Pilot handles the 60% of tickets that are predictable and well-defined. The other 40% still need your team. The value is in freeing your engineers to focus on that 40%.
+
+## The Vision
+
+Software development has a massive efficiency problem. Engineers spend significant time on work that is well-defined, bounded, and follows established patterns. This work is important — it keeps products running, users happy, and backlogs manageable — but it doesn't require the creative problem-solving that engineers are uniquely good at.
+
+Pilot's vision is to handle that predictable work automatically, with the same quality standards your team maintains, while keeping engineers in control through the PR review process. Not replacing engineers. Redirecting them to the work that matters.
+
+The ticket system is the interface because it's already where work gets defined. The PR is the output because it's already where code gets reviewed. No new tools to learn. No new workflows to adopt. Label a ticket, review a PR. That's it.

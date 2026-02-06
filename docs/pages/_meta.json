@@ -1,7 +1,9 @@
 {
   "index": "Introduction",
   "getting-started": "Getting Started",
-  "navigator": "Navigator Integration",
+  "concepts": "Concepts",
   "features": "Features",
-  "cli": "CLI Reference"
+  "navigator": "Navigator Integration",
+  "cli": "CLI Reference",
+  "community": "Community"
 }

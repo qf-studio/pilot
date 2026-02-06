@@ -1,52 +1,189 @@
-# Quick Start
+import { Callout, Steps, Tabs } from 'nextra/components'
 
-Get Pilot running in under 5 minutes.
+# Quick Start: Your First PR in 15 Minutes
 
-## Prerequisites
+This guide walks you through installing Pilot, configuring it for your repository, and getting your first automatically-generated pull request.
 
-- GitHub account with a repository
-- Telegram account (optional, for notifications)
-- Claude API key
+<Callout type="info">
+**Prerequisites:** A GitHub repository, a GitHub personal access token, and an Anthropic API key. Optionally, a Telegram bot token for the chat interface.
+</Callout>
 
-## Step 1: Configure
+## Install
+
+<Tabs items={['Homebrew (recommended)', 'Go Install', 'From Source']}>
+  <Tabs.Tab>
+```bash
+brew tap alekspetrov/pilot
+brew install pilot
+```
+  </Tabs.Tab>
+  <Tabs.Tab>
+```bash
+go install github.com/alekspetrov/pilot/cmd/pilot@latest
+```
+  </Tabs.Tab>
+  <Tabs.Tab>
+```bash
+git clone https://github.com/alekspetrov/pilot
+cd pilot
+make build
+sudo make install-global
+```
+  </Tabs.Tab>
+</Tabs>
+
+Verify the installation:
+
+```bash
+pilot --version
+# pilot version v0.21.2
+```
+
+## Configure
+
+<Steps>
+
+### Run the setup wizard
 
 ```bash
 pilot init
 ```
 
-This creates `~/.pilot/config.yaml` with your settings.
+This creates `~/.pilot/config.yaml` with your project settings. The wizard walks you through selecting your ticket source, notification channels, and project paths.
 
-## Step 2: Set Environment Variables
-
-```bash
-export ANTHROPIC_API_KEY="your-claude-api-key"
-export GITHUB_TOKEN="your-github-token"
-export TELEGRAM_BOT_TOKEN="your-telegram-bot-token"  # Optional
-```
-
-## Step 3: Start Pilot
+### Set environment variables
 
 ```bash
-# Basic mode - GitHub polling only
-pilot start --github
+# Required
+export ANTHROPIC_API_KEY="your-anthropic-api-key"
+export GITHUB_TOKEN="your-github-personal-access-token"
 
-# With Telegram notifications
-pilot start --github --telegram
-
-# With TUI dashboard
-pilot start --github --telegram --dashboard
+# Optional: Telegram bot
+export TELEGRAM_BOT_TOKEN="your-telegram-bot-token"
 ```
 
-## Step 4: Create Your First Task
+<Callout type="warning">
+Your GitHub token needs `repo` scope for reading issues and creating PRs. Create one at [github.com/settings/tokens](https://github.com/settings/tokens).
+</Callout>
 
-Label any GitHub issue with `pilot` and watch it get implemented automatically.
+### Start Pilot
 
 ```bash
-gh issue create --title "Add hello world endpoint" --label pilot --body "Create a /hello endpoint that returns 'Hello, World!'"
+# GitHub polling with dashboard
+pilot start --github --dashboard
+
+# Or with Telegram + autopilot
+pilot start --github --telegram --autopilot=stage --dashboard
 ```
+
+You should see the dashboard appear:
+
+```
+┌─ PILOT ─────────────────────────────────────────┐
+│  Status: Running    Mode: GitHub Polling          │
+│  Queue: 0 tasks     Uptime: 12s                  │
+│                                                   │
+│  Waiting for issues labeled "pilot"...            │
+└───────────────────────────────────────────────────┘
+```
+
+</Steps>
+
+## Create Your First Ticket
+
+Open a new terminal and create a GitHub issue:
+
+```bash
+gh issue create \
+  --title "Add health check endpoint" \
+  --label pilot \
+  --body "Create a GET /health endpoint that returns JSON with status ok and the current server timestamp. Add a test."
+```
+
+<Callout type="info">
+No `gh` CLI? Create the issue directly on GitHub. The key is the `pilot` label — that's what triggers Pilot to pick it up.
+</Callout>
+
+Within 30 seconds, Pilot detects the issue and starts working. The dashboard updates in real-time:
+
+```
+⏳ Processing: Add health check endpoint
+
+   Implementing   [████████████░░░░░░░░] 60%  GH-12  32s
+
+   [14:35:15] Started Navigator session
+   [14:35:18] Analyzing codebase patterns...
+   [14:35:25] Creating health endpoint
+   [14:35:40] Adding route
+   [14:35:55] Writing tests...
+
+✅ PR created: github.com/you/your-repo/pull/13
+```
+
+## Review and Merge
+
+Pilot creates a PR with:
+- Implementation following your codebase patterns
+- Tests matching your existing test structure
+- A clear PR description linking back to the issue
+
+Review it like any team member's code:
+
+```bash
+gh pr view 13
+gh pr diff 13
+```
+
+If it looks good, merge it:
+
+```bash
+gh pr merge 13
+```
+
+If you're running with `--autopilot=stage`, Pilot monitors CI automatically and merges once tests pass — no manual merge needed.
+
+---
+
+## Suggested Starter Tickets
+
+These are well-scoped tasks that work reliably as first tickets:
+
+| Ticket | Why it works |
+|--------|-------------|
+| "Add health check endpoint" | Simple, bounded, easy to verify |
+| "Write tests for UserService" | Clear scope, follows existing test patterns |
+| "Add loading spinner to Button component" | Small UI change with clear output |
+| "Update README with setup instructions" | Documentation, low risk |
+| "Add input validation to create endpoint" | Well-defined rules, testable |
+
+<Callout type="warning">
+**Avoid for first tickets:** Architecture changes, multi-service refactors, or tasks that require decisions about tradeoffs. Start with bounded, well-defined work to build confidence in the output quality.
+</Callout>
+
+## Troubleshooting
+
+### Pilot doesn't pick up my issue
+
+- Check the issue has the `pilot` label (exact match, case-sensitive)
+- Verify `GITHUB_TOKEN` is set and has `repo` scope
+- Confirm the repository matches your `config.yaml` project path
+- Check logs: `pilot start --github --dashboard` shows polling activity
+
+### PR quality is low
+
+- Initialize Navigator in your project: `claude /nav-init` (inside Claude Code)
+- Add a `CLAUDE.md` file with your code standards
+- Write more detailed ticket descriptions — treat them like you're briefing a junior developer
+
+### Token costs seem high
+
+- Navigator reduces token usage by 92% — make sure it's initialized
+- Check complexity routing: trivial tasks should use Haiku, not Opus
+- Set budget limits in `config.yaml` under `executor.budget`
 
 ## Next Steps
 
-- [Configure Pilot](/getting-started/configuration)
-- [Learn about Navigator integration](/navigator)
-- [Explore CLI commands](/cli/commands)
+- [Configuration reference](/getting-started/configuration) — Full config.yaml options
+- [Autopilot modes](/features/autopilot) — Dev, stage, and prod environments
+- [Telegram bot](/features/telegram) — Chat, research, plan, and execute from Telegram
+- [Why Pilot](/concepts/why-pilot) — The vision behind autonomous development

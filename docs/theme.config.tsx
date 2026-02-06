@@ -2,13 +2,20 @@ import React from 'react'
 import { DocsThemeConfig } from 'nextra-theme-docs'
 
 const config: DocsThemeConfig = {
-  logo: <span style={{ fontWeight: 800 }}>🚀 Pilot</span>,
+  logo: <span style={{ fontWeight: 800 }}>Pilot</span>,
   project: {
     link: 'https://github.com/alekspetrov/pilot',
   },
   docsRepositoryBase: 'https://github.com/alekspetrov/pilot/tree/main/docs',
   footer: {
-    text: 'Pilot - AI that ships your tickets',
+    text: (
+      <span>
+        Pilot — AI that ships your tickets. Built by{' '}
+        <a href="https://quantflow.studio" target="_blank" rel="noopener noreferrer">
+          QuantFlow Studio
+        </a>
+      </span>
+    ),
   },
   useNextSeoProps() {
     return {
@@ -18,16 +25,30 @@ const config: DocsThemeConfig = {
   head: (
     <>
       <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-      <meta name="description" content="Pilot - AI that ships your tickets, powered by Navigator" />
+      <meta name="description" content="Pilot documentation — autonomous AI development pipeline that turns tickets into pull requests" />
+      <meta name="og:title" content="Pilot Docs — AI That Ships Your Tickets" />
+      <meta name="og:description" content="Autonomous AI development pipeline. Label a ticket, get a PR. Self-hosted, source-available." />
     </>
   ),
+  banner: {
+    key: 'pilot-v021',
+    text: (
+      <a href="https://github.com/alekspetrov/pilot/releases" target="_blank" rel="noopener noreferrer">
+        Pilot v0.21 is out — autopilot CI loop, model routing, epic decomposition. Read the changelog →
+      </a>
+    ),
+  },
   primaryHue: 220,
   sidebar: {
-    defaultMenuCollapseLevel: 1,
+    defaultMenuCollapseLevel: 2,
     toggleButton: true,
   },
   toc: {
     backToTop: true,
+  },
+  navigation: {
+    prev: true,
+    next: true,
   },
 }
 

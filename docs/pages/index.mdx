@@ -1,27 +1,120 @@
-# Pilot
+```
+   ██████╗ ██╗██╗      ██████╗ ████████╗
+   ██╔══██╗██║██║     ██╔═══██╗╚══██╔══╝
+   ██████╔╝██║██║     ██║   ██║   ██║
+   ██╔═══╝ ██║██║     ██║   ██║   ██║
+   ██║     ██║███████╗╚██████╔╝   ██║
+   ╚═╝     ╚═╝╚══════╝ ╚═════╝    ╚═╝
+```
 
-**AI that ships your tickets** - powered by Navigator.
+**AI that ships your tickets while you focus on architecture.**
 
-## What is Pilot?
+Pilot is an autonomous development pipeline. It picks up tickets from GitHub Issues, Linear, Jira, or Asana — plans the implementation using your codebase context, writes code with Claude Code, runs quality gates, and opens a pull request. You review and merge.
 
-Pilot is an autonomous AI development pipeline that:
-- Receives tickets from GitHub Issues (Linear/Jira coming soon)
-- Plans and executes implementation using Claude Code + Navigator
-- Creates PRs with full context
-- Learns patterns across projects
+```
+┌─────────────┐      ┌─────────────┐      ┌─────────────┐      ┌─────────────┐
+│   Ticket    │ ───▶ │   Pilot     │ ───▶ │   Review    │ ───▶ │   Ship      │
+│  (GitHub)   │      │  (AI + Nav) │      │   (You)     │      │  (Merge)    │
+└─────────────┘      └─────────────┘      └─────────────┘      └─────────────┘
+```
+
+No prompting. No babysitting. Label a ticket, get a PR.
+
+---
 
 ## Quick Start
 
 ```bash
 # Install
-curl -fsSL https://raw.githubusercontent.com/alekspetrov/pilot/main/install.sh | bash
+brew tap alekspetrov/pilot && brew install pilot
 
-# Start with Telegram + GitHub
-pilot start --telegram --github
+# Configure
+pilot init
+
+# Set your API keys
+export ANTHROPIC_API_KEY="your-key"
+export GITHUB_TOKEN="your-token"
+
+# Start Pilot
+pilot start --github --dashboard
 ```
 
-## Why Navigator?
+Then label any GitHub issue with `pilot`. Pilot picks it up within 30 seconds.
 
-Pilot's secret weapon is **Navigator integration**. Without Navigator, Pilot would be just another Claude Code wrapper.
+[Full installation guide →](/getting-started/installation)
 
-[Learn more about Navigator →](/navigator)
+---
+
+## What Makes Pilot Different
+
+### Ticket-driven, not prompt-driven
+
+Other AI tools need you in the loop — typing prompts, reviewing suggestions, copy-pasting code. Pilot works from your existing ticket system. Write the ticket like you would for a junior developer. Pilot handles the rest.
+
+### Navigator intelligence
+
+Without Navigator, Pilot would be another Claude Code wrapper. [Navigator](https://github.com/anthropics/claude-code-plugins) gives Pilot deep codebase understanding through strategic documentation loading — reducing token usage by 92% while following your established patterns, SOPs, and conventions.
+
+### Autopilot CI loop
+
+Pilot doesn't stop at creating a PR. In autopilot mode, it monitors CI, auto-merges when tests pass, and automatically creates fix issues when CI fails — targeting the original branch for fast iteration. Three modes: `dev` (fast), `stage` (CI required), `prod` (human approval required).
+
+### Self-hosted
+
+Single Go binary. Runs on your infrastructure. Your secrets never leave your environment. Bring your own Anthropic API key, or route through AWS Bedrock or Google Vertex.
+
+---
+
+## Core Features
+
+| Feature | Description |
+|---------|-------------|
+| **GitHub Polling** | Monitors issues labeled `pilot` every 30 seconds |
+| **Telegram Bot** | Chat, research, plan, and execute tasks from Telegram |
+| **Autopilot** | CI monitoring, auto-merge, failure feedback loop |
+| **Quality Gates** | Test, lint, and build gates with automatic retry |
+| **Self-Review** | Code review runs before PR push |
+| **Epic Decomposition** | Complex tickets automatically split into subtasks |
+| **Model Routing** | Trivial tasks use fast models, complex tasks use deep reasoning |
+| **Dashboard** | Terminal UI with token usage, costs, and task history |
+| **Multi-Source** | GitHub, Linear, Jira, Asana, GitLab, Azure DevOps |
+| **Notifications** | Slack, Telegram, email, webhooks, PagerDuty |
+
+[Explore all features →](/features/autopilot)
+
+---
+
+## Who It's For
+
+**Solo developers** — Handle your backlog of boring tickets while you build features. Wake up to PRs ready for review.
+
+**Team leads** — Turn 47 tickets into 47 PRs. Review them like any team member's code. No new tool to learn — your team just labels issues.
+
+**Organizations** — Codify engineering standards with Navigator. Every PR follows your patterns, across every team. Self-hosted for security. PR review for control.
+
+---
+
+## Ideal Tasks
+
+Pilot works best on well-defined, bounded work:
+
+- CRUD endpoints and React components
+- Test coverage for existing code
+- Documentation and README updates
+- Bug fixes with clear reproduction steps
+- Dependency updates and security patches
+- Database migrations with straightforward schema changes
+
+Not for: architecture decisions, novel algorithms, or anything requiring engineering judgment. Pilot augments your team — it doesn't replace it.
+
+---
+
+## Open Development
+
+Pilot is source-available under [BSL 1.1](https://github.com/alekspetrov/pilot/blob/main/LICENSE). Free for internal use and self-hosting. Inspect the code, audit what it does, contribute improvements.
+
+- [GitHub Repository](https://github.com/alekspetrov/pilot)
+- [Contributing Guide](https://github.com/alekspetrov/pilot/blob/main/CONTRIBUTING.md)
+- [Report an Issue](https://github.com/alekspetrov/pilot/issues)
+- Built by [QuantFlow Studio](https://quantflow.studio)
+- [Documentation](https://pilot.quantflow.studio)

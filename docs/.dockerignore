@@ -1,0 +1,8 @@
+node_modules
+.next
+.git
+.gitignore
+Dockerfile
+.dockerignore
+.gitlab-ci.yml
+README.md
