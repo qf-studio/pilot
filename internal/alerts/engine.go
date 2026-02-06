@@ -51,14 +51,14 @@ type Event struct {
 type EventType string
 
 const (
-	EventTypeTaskStarted   EventType = "task_started"
-	EventTypeTaskProgress  EventType = "task_progress"
-	EventTypeTaskCompleted EventType = "task_completed"
-	EventTypeTaskFailed    EventType = "task_failed"
-	EventTypeCostUpdate      EventType = "cost_update"
-	EventTypeSecurityEvent   EventType = "security_event"
-	EventTypeBudgetExceeded  EventType = "budget_exceeded"
-	EventTypeBudgetWarning   EventType = "budget_warning"
+	EventTypeTaskStarted    EventType = "task_started"
+	EventTypeTaskProgress   EventType = "task_progress"
+	EventTypeTaskCompleted  EventType = "task_completed"
+	EventTypeTaskFailed     EventType = "task_failed"
+	EventTypeCostUpdate     EventType = "cost_update"
+	EventTypeSecurityEvent  EventType = "security_event"
+	EventTypeBudgetExceeded EventType = "budget_exceeded"
+	EventTypeBudgetWarning  EventType = "budget_warning"
 )
 
 // EngineOption configures the Engine
