@@ -24,7 +24,7 @@ jobs:
       - name: Sync docs/ to GitLab
         run: |
           cd docs
-          git init
+          git init -b main
           git config user.name "Pilot CI"
           git config user.email "ci@quantflow.studio"
           git remote add gitlab git@gitlab.com:quant-flow/pilot-docs.git
