@@ -1,98 +1,203 @@
-# Navigator Best Practices
+import { Callout } from 'nextra/components'
 
-Maximize efficiency with these proven patterns.
+# Best Practices
 
-## Document Structure
+Proven patterns for getting the most out of Navigator with Pilot. These practices
+are derived from real-world usage across 500+ autonomous task executions.
 
-### Keep Index Lightweight
+## Index Document Design
 
-```markdown
-# Project Index (~500 words max)
+The index document (`DEVELOPMENT-README.md`) is loaded every session. Its size directly
+impacts token budget for the rest of the conversation.
 
-## Quick Links
-[Link to detailed docs, don't inline content]
-
-## Key Decisions
-[Brief summary, details in linked docs]
-```
-
-### Use Lazy Loading
+### Keep It Under 500 Words
 
 ```markdown
-<!-- Good: Reference, don't inline -->
-See [Authentication Flow](system/auth.md) for details.
+# Project — Development Navigator
 
-<!-- Bad: Inline everything -->
-## Authentication Flow
-[500 lines of documentation...]
+## Quick Navigation
+| Document | When to Read |
+|----------|-------------|
+| This file | Every session |
+| system/ARCHITECTURE.md | System design |
+| tasks/TASK-XX.md | Active task |
+
+## Current State
+Version: v2.1.0
+[Brief component status table]
+
+## Project Structure
+[Compact tree, 10-15 lines max]
 ```
 
-## Task Documentation
+### Link, Don't Inline
 
-### Before Starting
+Reference detailed docs instead of embedding them in the index:
 
-```bash
-/nav-task "Add user authentication"
+```markdown
+## Authentication
+See [system/auth.md](system/auth.md) for the full auth flow.
+Key decision: JWT over sessions (see memories/decisions.md).
 ```
 
-This creates a task plan in `.agent/tasks/` with:
-- Requirements analysis
-- Implementation steps
-- Affected files
-- Test plan
+Not:
 
-### After Completion
-
-Archive the task with learnings:
-
-```bash
-/nav-task archive
+```markdown
+## Authentication
+[300 lines of auth documentation that loads every single session...]
 ```
 
-## Knowledge Graph
+<Callout type="warning">
+  Every word in the index costs tokens on every task. A 2,000-word index wastes
+  ~8,000 tokens per session compared to a 500-word version.
+</Callout>
 
-### Capture Decisions
+## Lazy Loading Strategy
 
-When making non-obvious choices:
+### Tier Your Documentation
 
-```bash
-/nav-graph add decision "Use JWT over sessions for stateless scaling"
+Organize docs by access frequency:
+
+| Tier | Files | Access Pattern |
+|------|-------|---------------|
+| **Hot** | Index, active task doc | Every session |
+| **Warm** | Architecture, feature matrix | Referenced tasks |
+| **Cold** | SOPs, archived tasks | Specific workflows |
+| **Frozen** | Old task archives | Never loaded |
+
+### Write Self-Contained Task Docs
+
+Each task document should include everything needed for that task:
+
+```markdown
+# TASK-42: Add Rate Limiting
+
+## Context
+API currently has no rate limiting. See ARCHITECTURE.md for endpoint list.
+
+## Implementation
+1. Add middleware in `src/api/middleware/`
+2. Configure limits in `config.yaml`
+3. Add Redis counter (or in-memory for dev)
+
+## Affected Files
+- src/api/middleware/rate-limit.ts (new)
+- src/api/server.ts (wire middleware)
+- config/default.yaml (add limits section)
+
+## Test Plan
+- Unit: middleware returns 429 after limit
+- Integration: concurrent requests hit limit
 ```
 
-### Document Pitfalls
+This way, Navigator loads the index + one task doc and has full context (~5k tokens total).
 
-When encountering issues:
+## Knowledge Graph Usage
 
-```bash
-/nav-graph add pitfall "GitHub API rate limits during CI - use conditional requests"
+### Capture Decisions When They're Made
+
+Non-obvious technical decisions should be recorded immediately:
+
+- Why a specific library was chosen over alternatives
+- Why an approach was rejected
+- Trade-offs that were consciously accepted
+
+Navigator captures these automatically during `/nav-task archive`, but you can also
+trigger manual capture via `/nav-graph`.
+
+### Document Pitfalls After Every Bug
+
+When you hit an unexpected issue, record it. Future tasks in the same area will
+surface the pitfall automatically:
+
 ```
+Pitfall: macOS tar adds ._* resource forks
+Context: Release packaging (GH-468)
+Fix: COPYFILE_DISABLE=1 in Makefile
+```
+
+### Review the Graph Periodically
+
+The knowledge graph grows over time. Periodically review entries to:
+- Remove outdated decisions (superseded by later work)
+- Merge duplicate patterns
+- Verify pitfalls are still relevant
 
 ## Session Management
 
-### Use Markers
+### Create Markers Before Risky Changes
 
-Before risky changes:
+Before refactors, dependency upgrades, or architectural changes:
 
-```bash
-/nav-marker "Before auth refactor"
+```
+/nav-marker "Before auth system refactor"
 ```
 
-### Compact Regularly
+This creates a checkpoint in `.context-markers/` that you can resume from
+if the change goes wrong.
 
-After completing tasks:
+### Compact After Each Task
 
-```bash
+After completing a task, clear the conversation context:
+
+```
 /nav-compact
 ```
 
-This clears context while preserving knowledge in the graph.
+This preserves knowledge in the graph while freeing context window tokens
+for the next task. Without compaction, context accumulates and efficiency drops.
+
+### Use Loop Mode for Multi-Step Work
+
+For tasks requiring iteration (implement → test → fix → test), use loop mode:
+
+```
+/nav-loop "Implement and verify rate limiting"
+```
+
+Loop mode runs Navigator in phases (Research → Implement → Verify) with
+automatic completion detection. It prevents premature task completion.
+
+## Documentation Loading Budget
+
+Target these token budgets per session type:
+
+| Session Type | Target Budget | What to Load |
+|-------------|---------------|-------------|
+| Simple fix | ~4,000 tokens | Index + task doc |
+| Feature work | ~8,000 tokens | Index + task + feature matrix |
+| Architecture change | ~12,000 tokens | Index + task + architecture + SOPs |
+| Full exploration | ~15,000 tokens | Index + multiple system docs |
+
+If you consistently exceed 15k tokens in documentation, your index is too large
+or your docs need restructuring.
 
 ## Anti-Patterns
 
-| Don't | Do Instead |
-|-------|------------|
-| Load all docs at session start | Use lazy loading |
-| Inline large code blocks in docs | Reference file paths |
-| Skip task documentation | Always create task plans |
-| Ignore knowledge graph | Capture decisions and pitfalls |
-| Let context grow unbounded | Compact after each task |
+| Anti-Pattern | Problem | Correct Approach |
+|-------------|---------|-----------------|
+| Inline everything in index | 150k tokens per session, exhausted in 5 exchanges | Link to detailed docs, keep index under 500 words |
+| Skip task documentation | No context for future tasks, repeated discovery | Always create task docs with `/nav-task` |
+| Ignore knowledge graph | Known pitfalls rediscovered, decisions forgotten | Let Navigator capture automatically, review monthly |
+| Let context grow unbounded | Token efficiency drops below 50% after 10+ exchanges | Compact after each task with `/nav-compact` |
+| Load all docs at session start | Wastes 40k+ tokens before any work begins | Use lazy loading — load on demand only |
+| Large code blocks in docs | Each block costs 100-500 tokens every load | Reference file paths instead: `see src/api/auth.ts:45` |
+| Manual context markers | Inconsistent format, missed metadata | Use `/nav-marker` — auto-formats with timestamp and state |
+| No architecture docs | Every task requires full codebase exploration | Write `ARCHITECTURE.md` once, update incrementally |
+| Monolithic task docs | Single 2000-word task doc loaded for unrelated tasks | One file per task, archive when done |
+| Skipping workflow check | Tasks jump to implementation without planning | Navigator enforces this — don't override |
+
+## Project-Specific Tips
+
+### For Pilot Itself
+
+Pilot's own `.agent/` directory follows these practices:
+
+- **Index** (`DEVELOPMENT-README.md`): ~520 words, includes component status table
+- **System docs**: Architecture, feature matrix, PR checklist — loaded on demand
+- **Task docs**: One per GitHub issue, archived after merge
+- **Context markers**: Created before major refactors (e.g., `2026-01-26-1405_navigator-deep-integration-complete.md`)
+- **Loading budget**: ~12k tokens including index + one task doc + feature matrix
+
+This keeps Pilot's autonomous execution under 12k tokens per session while maintaining
+full project awareness across 87+ implemented features.

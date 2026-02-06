@@ -1,39 +1,128 @@
 import { Callout } from 'nextra/components'
 
-# Why Navigator?
+# Navigator Integration
 
-<Callout type="warning" emoji="⚠️">
-  Pilot without Navigator is just another Claude Code wrapper with zero value.
+Navigator is a context engineering plugin for Claude Code that transforms raw AI sessions
+into structured, efficient workflows. Pilot auto-detects Navigator and uses it to
+dramatically reduce token waste while maintaining full project awareness.
+
+<Callout type="info">
+  Pilot without Navigator is just another Claude Code wrapper.
+  Navigator is what makes Pilot's autonomous execution efficient and context-aware.
 </Callout>
 
-## The Problem
+## The Problem with Raw Claude Code
 
-Raw Claude Code sessions have critical limitations:
+Every Claude Code session starts from scratch. Without context engineering, the AI loads
+entire codebases, burns through tokens, and loses track of decisions between sessions.
 
 | Issue | Impact |
 |-------|--------|
-| Loads entire codebase | ~150k tokens consumed immediately |
-| Short sessions | Exhausted after 5-7 exchanges |
-| No memory | Repeated explanations every session |
-| Context waste | 92% of loaded context unused |
+| Loads entire codebase on start | ~150,000 tokens consumed immediately |
+| Short productive sessions | Exhausted after 5-7 exchanges |
+| No persistent memory | Repeated explanations every session |
+| Context waste | 92% of loaded context goes unused |
 
-## The Navigator Solution
+## Navigator's Solution: Context Engineering
 
-Navigator provides **context engineering** - loading only what's needed, when it's needed.
+Navigator provides structured documentation loading, knowledge persistence, and session
+management — reducing token usage by **12x** while extending productive session length by **4x**.
 
-| Metric | Without Navigator | With Navigator |
-|--------|-------------------|----------------|
-| Token usage | ~150,000 | ~12,000 |
-| Session length | 5-7 exchanges | 20+ exchanges |
-| Context efficiency | 8% | **92%** |
-| Knowledge persistence | ❌ None | ✅ Graph-based |
+| Metric | Without Navigator | With Navigator | Improvement |
+|--------|-------------------|----------------|-------------|
+| Token usage per session | ~150,000 | ~12,000 | **12x reduction** |
+| Productive exchanges | 5-7 | 20+ | **4x longer** |
+| Context efficiency | 8% | 92% | **11.5x better** |
+| Knowledge persistence | None | Graph-based | Decisions survive sessions |
+| Session continuity | Start over | Resume from markers | Zero ramp-up time |
 
 ## How Pilot Uses Navigator
 
-When Pilot detects a `.agent/` directory in your project, it automatically:
+When Pilot detects a `.agent/` directory in your project, it automatically prefixes
+every Claude Code execution with `"Start my Navigator session"`:
 
-1. Starts a Navigator session
-2. Loads only the index document (~2k tokens)
-3. Lazy-loads additional docs as needed
-4. Captures decisions in the knowledge graph
-5. Preserves context across tasks
+```go
+// internal/executor/runner.go — BuildPrompt()
+if _, err := os.Stat(filepath.Join(task.ProjectPath, ".agent")); err == nil {
+    sb.WriteString("Start my Navigator session.\n\n")
+}
+```
+
+This triggers Navigator to:
+
+1. **Load the index** — Only `DEVELOPMENT-README.md` (~2k tokens), not the entire codebase
+2. **Lazy-load on demand** — Additional docs loaded only when referenced
+3. **Capture decisions** — Non-obvious choices stored in the knowledge graph
+4. **Preserve context** — Session markers enable resume without ramp-up
+
+## Key Capabilities
+
+### Lazy Loading Architecture
+
+Instead of dumping everything into context at once, Navigator uses a tiered loading strategy:
+
+| Tier | What Loads | When | Token Cost |
+|------|-----------|------|------------|
+| Always | `DEVELOPMENT-README.md` (index) | Session start | ~2,000 |
+| On demand | Task docs, architecture docs | Referenced in conversation | ~3,000 |
+| Rare | Full system docs, SOPs | Architecture changes | ~5,000 |
+| Never | Archived tasks, old context | N/A | 0 |
+
+**Total per session: ~12k tokens** vs 50k+ loading everything.
+
+### Knowledge Graph
+
+Navigator maintains a persistent knowledge graph across sessions:
+
+- **Decisions** — Why certain approaches were chosen (`"Use JWT over sessions for stateless scaling"`)
+- **Patterns** — Reusable solutions discovered during development
+- **Pitfalls** — Problems to avoid (`"GitHub API rate limits during CI — use conditional requests"`)
+- **Dependencies** — Relationships between components and files
+
+### Session Markers
+
+Context save points that preserve state before breaks, risky changes, or context compaction:
+
+- **Save progress** — Create checkpoints before destructive operations
+- **Resume work** — Continue from where you left off with full context
+- **Share context** — Transfer knowledge between sessions via `.agent/.context-markers/`
+
+### Workflow Enforcement
+
+Navigator enforces structured execution with mandatory workflow checks:
+
+```
+WORKFLOW CHECK
+Loop trigger: [YES/NO]
+Complexity: [0.X]
+Mode: [LOOP/TASK/DIRECT]
+```
+
+This routes tasks through the appropriate execution mode — loop mode for iterative work,
+task mode for planned features, or direct mode for simple changes.
+
+## Navigator in the Execution Report
+
+After every task, Pilot shows Navigator status in the execution report:
+
+```
+📊 EXECUTION REPORT
+───────────────────────
+🧭 Navigator: Active
+   Mode:    nav-task
+
+📈 Phases:
+  Research     45s   (20%)
+  Implement    2m    (54%)
+  Verify       57s   (26%)
+
+💰 Tokens:
+  Input:    45k
+  Output:   12k
+  Cost:     ~$0.82
+```
+
+If Navigator is not detected:
+```
+⚠️ Navigator: not found (running raw Claude Code)
+```

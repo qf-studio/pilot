@@ -1,70 +1,231 @@
-# Navigator Setup
+import { Callout, Steps } from 'nextra/components'
 
-Set up Navigator in your project to enable context-aware execution.
+# Setting Up Navigator
 
-## Initialize Navigator
+Navigator activates automatically when Pilot detects a `.agent/` directory in your project.
+This page covers how to initialize Navigator, structure your documentation, and verify
+the integration.
+
+<Callout type="info">
+  Navigator is a Claude Code plugin installed separately. Pilot only needs the `.agent/`
+  directory — it handles the rest automatically.
+</Callout>
+
+## Prerequisites
+
+- **Pilot** installed and configured (`pilot doctor` passes)
+- **Claude Code** installed with Navigator plugin
+- A project repository with at least one commit
+
+## Initialize the `.agent/` Directory
+
+<Steps>
+
+### Create the directory structure
 
 ```bash
-# In your project root
-pilot navigator init
+mkdir -p .agent/system .agent/tasks .agent/memories .agent/sops .agent/.context-markers
 ```
 
-This creates the `.agent/` directory structure:
+This creates the standard Navigator layout:
 
 ```
 .agent/
-├── DEVELOPMENT-README.md    # Index document (loaded first)
-├── tasks/                   # Task implementation plans
-├── system/                  # Architecture documentation
-├── memories/                # Knowledge graph entries
-└── sops/                    # Standard Operating Procedures
+├── DEVELOPMENT-README.md     # Index document (loaded every session)
+├── system/                    # Architecture and system docs
+│   ├── ARCHITECTURE.md        # System design, data flow
+│   ├── FEATURE-MATRIX.md      # What's implemented vs planned
+│   └── PR-CHECKLIST.md        # Pre-merge verification
+├── tasks/                     # Task implementation plans
+│   └── archive/               # Completed task docs
+├── memories/                  # Knowledge graph entries
+├── sops/                      # Standard Operating Procedures
+└── .context-markers/          # Session save points
 ```
 
-## Configure CLAUDE.md
+### Write the index document
 
-Add Navigator instructions to your project's `CLAUDE.md`:
+Create `.agent/DEVELOPMENT-README.md` — this is the only file Navigator loads at session
+start. Keep it under **500 words** (~2k tokens).
 
 ```markdown
-# Project Name
+# Project Name — Development Navigator
 
+## Quick Navigation
+
+| Document | When to Read |
+|----------|-------------|
+| This file | Every session (auto-loaded) |
+| `system/ARCHITECTURE.md` | System design, data flow |
+| `system/FEATURE-MATRIX.md` | What's implemented vs not |
+| `tasks/TASK-XX.md` | Active task details |
+
+## Current State
+
+**Version:** v1.0.0
+
+### Key Components
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| API Server | Working | Express + TypeScript |
+| Database | Working | PostgreSQL + Prisma |
+| Auth | In Progress | JWT-based |
+
+## Project Structure
+
+\`\`\`
+project/
+├── src/
+│   ├── api/          # Route handlers
+│   ├── services/     # Business logic
+│   └── models/       # Database models
+├── tests/
+└── .agent/           # Navigator docs
+\`\`\`
+
+## Active Work
+
+_See GitHub Issues with `pilot` label for current queue._
+```
+
+### Configure CLAUDE.md
+
+Add Navigator instructions to your project's `CLAUDE.md` so Claude Code knows
+to use it:
+
+```markdown
 ## Navigator Integration
 
 This project uses Navigator for context management.
+Documentation lives in `.agent/`.
 
 ### Quick Commands
-- `/nav-start` - Start session
-- `/nav-task "description"` - Plan new task
-- `/nav-compact` - Clear context when done
-
-### Documentation
-See `.agent/DEVELOPMENT-README.md` for project index.
+- `/nav-start` — Start or resume Navigator session
+- `/nav-task "description"` — Plan a new task
+- `/nav-compact` — Clear context when done with a task
 ```
 
-## Write the Index Document
+### Verify the setup
 
-Create `.agent/DEVELOPMENT-README.md`:
-
-```markdown
-# Project Index
-
-## Quick Links
-- [Architecture](system/architecture.md)
-- [API Reference](system/api.md)
-
-## Active Tasks
-- [Feature X](tasks/feature-x.md)
-
-## Patterns
-- [Error Handling](system/patterns/error-handling.md)
-```
-
-## Verify Setup
+Run Pilot to confirm Navigator detection:
 
 ```bash
-pilot doctor --navigator
+pilot task --dry-run "Test Navigator detection"
 ```
 
-This verifies:
-- `.agent/` directory exists
-- Index document is valid
-- CLAUDE.md references Navigator
+The output should include:
+
+```
+🧭 Navigator: ✓ detected (.agent/ exists)
+```
+
+If you see `⚠️ Navigator: not found`, check that `.agent/DEVELOPMENT-README.md` exists.
+
+</Steps>
+
+## Directory Reference
+
+### `DEVELOPMENT-README.md` (Required)
+
+The index document. Loaded every session. Contains:
+- Quick navigation table linking to other docs
+- Current project state and version
+- Key component status
+- Project structure overview
+- Active work references
+
+**Target size:** Under 500 words (~2,000 tokens).
+
+### `system/` (Recommended)
+
+Architecture and system-level documentation:
+
+| File | Purpose |
+|------|---------|
+| `ARCHITECTURE.md` | System design, data flow, package map |
+| `FEATURE-MATRIX.md` | Implementation status of all features |
+| `PR-CHECKLIST.md` | Pre-merge verification steps |
+
+These are loaded on demand when tasks touch architecture.
+
+### `tasks/` (Recommended)
+
+Task implementation plans created by `/nav-task`. Each task gets a markdown file with:
+- Requirements analysis
+- Implementation steps
+- Affected files
+- Test plan
+- Post-completion archive with learnings
+
+Completed tasks move to `tasks/archive/`.
+
+### `memories/` (Optional)
+
+Knowledge graph entries — decisions, patterns, and pitfalls captured during development.
+Navigator creates and queries these automatically.
+
+### `sops/` (Optional)
+
+Standard Operating Procedures for recurring workflows:
+- Release process
+- Integration testing
+- Deployment steps
+
+### `.context-markers/` (Auto-managed)
+
+Session save points created by Navigator. Do not manually edit these files.
+Format: `YYYY-MM-DD-HHMM_description.md`
+
+### `.nav-config.json` (Optional)
+
+Navigator configuration overrides:
+
+```json
+{
+  "version": "6.1.0",
+  "features": {
+    "knowledge_graph": true,
+    "user_profile": true,
+    "loop_mode": true
+  }
+}
+```
+
+### `.user-profile.json` (Auto-managed)
+
+User preferences learned by Navigator's bilateral modeling system:
+
+```json
+{
+  "verbosity": "concise",
+  "confirmation_threshold": "low",
+  "framework_preferences": ["Go", "TypeScript"],
+  "correction_patterns": []
+}
+```
+
+## Configuration in `config.yaml`
+
+Enable Navigator per project in your Pilot configuration:
+
+```yaml
+# ~/.pilot/config.yaml
+projects:
+  - name: "my-project"
+    path: "/path/to/project"
+    navigator: true    # Pilot checks for .agent/ before each task
+```
+
+When `navigator: true`, Pilot will prefix Claude Code prompts with
+`"Start my Navigator session"` if `.agent/` exists in the project path.
+
+## Troubleshooting
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| `Navigator: not found` in output | Missing `.agent/` directory | Run `mkdir -p .agent` and create index |
+| Navigator loads but burns tokens | Index document too large | Keep `DEVELOPMENT-README.md` under 500 words |
+| Knowledge graph empty | No memories captured yet | Memories accumulate automatically over tasks |
+| Context markers missing | First session | Markers created when using `/nav-marker` or `/nav-compact` |
+| Phase progress stuck | Navigator signals not detected | Verify Claude Code has Navigator plugin installed |
