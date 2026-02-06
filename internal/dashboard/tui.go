@@ -1219,53 +1219,248 @@ func (m Model) renderProgressBar(progress int, width int) string {
 	return "[" + bar + "]"
 }
 
-// renderHistory renders completed tasks history
+// historyGroup represents a top-level entry in the HISTORY panel.
+// It is either a standalone task, an active epic (expanded with sub-issues),
+// or a completed epic (collapsed to one line).
+type historyGroup struct {
+	Task      CompletedTask   // The top-level task (standalone or epic parent)
+	SubIssues []CompletedTask // Sub-issues (only populated for epics)
+}
+
+// groupedHistory transforms the flat completedTasks slice into groups.
+// Sub-issues (ParentID != "") are absorbed under their parent epic.
+// Standalone tasks and epics without children in the list pass through as-is.
+func (m Model) groupedHistory() []historyGroup {
+	// Build lookup: ParentID → children
+	childrenOf := make(map[string][]CompletedTask)
+	parentIDs := make(map[string]bool)
+	for _, t := range m.completedTasks {
+		if t.ParentID != "" {
+			childrenOf[t.ParentID] = append(childrenOf[t.ParentID], t)
+		}
+		if t.IsEpic {
+			parentIDs[t.ID] = true
+		}
+	}
+
+	var groups []historyGroup
+	seen := make(map[string]bool)
+
+	for _, t := range m.completedTasks {
+		if seen[t.ID] {
+			continue
+		}
+		// Skip sub-issues whose parent is present in the list
+		if t.ParentID != "" && parentIDs[t.ParentID] {
+			continue
+		}
+		seen[t.ID] = true
+
+		g := historyGroup{Task: t}
+		if t.IsEpic {
+			g.SubIssues = childrenOf[t.ID]
+		}
+		groups = append(groups, g)
+	}
+	return groups
+}
+
+// renderEpicProgressBar renders a compact progress bar: [##--]
+// innerWidth chars inside brackets, '#' for done, '-' for remaining.
+func renderEpicProgressBar(done, total, innerWidth int) string {
+	if total <= 0 {
+		return "[" + strings.Repeat("-", innerWidth) + "]"
+	}
+	filled := done * innerWidth / total
+	if filled > innerWidth {
+		filled = innerWidth
+	}
+	empty := innerWidth - filled
+	return "[" + strings.Repeat("#", filled) + strings.Repeat("-", empty) + "]"
+}
+
+// renderHistory renders completed tasks history with epic-aware grouping.
+// Active epics show expanded with sub-issue tree; completed epics collapse to one line.
 func (m Model) renderHistory() string {
 	var content strings.Builder
 
 	if len(m.completedTasks) == 0 {
 		content.WriteString("  No completed tasks yet")
-	} else {
-		// Layout: "  + GH-156  Title...                                    2m ago"
-		// Fixed parts: indent(2) + status(1) + space(1) + id(7) + space(2) + title + space(2) + timeAgo(8)
-		// Title gets remaining width: panelInnerWidth - 23
-		titleWidth := panelInnerWidth - 23
-		if titleWidth < 10 {
-			titleWidth = 10
-		}
+		return renderPanel("HISTORY", content.String())
+	}
 
-		for i, task := range m.completedTasks {
-			if i > 0 {
+	groups := m.groupedHistory()
+	first := true
+
+	for _, g := range groups {
+		if g.Task.IsEpic {
+			isActive := g.Task.DoneSubs < g.Task.TotalSubs
+			if isActive {
+				// Active epic: expanded with progress bar and sub-issues
+				if !first {
+					content.WriteString("\n")
+				}
+				first = false
+				content.WriteString(renderActiveEpicLine(g.Task))
+				for _, sub := range g.SubIssues {
+					content.WriteString("\n")
+					content.WriteString(renderSubIssueLine(sub))
+				}
+			} else {
+				// Completed epic: collapsed single line with [N/N]
+				if !first {
+					content.WriteString("\n")
+				}
+				first = false
+				content.WriteString(renderCompletedEpicLine(g.Task))
+			}
+		} else {
+			// Standalone task: same as before
+			if !first {
 				content.WriteString("\n")
 			}
-
-			// Determine status style
-			var statusIcon string
-			var style lipgloss.Style
-			if task.Status == "success" {
-				statusIcon = "+"
-				style = statusCompletedStyle
-			} else {
-				statusIcon = "x"
-				style = statusFailedStyle
-			}
-
-			// Get plain text values for width calculation
-			timeAgoStr := formatTimeAgo(task.CompletedAt)
-			titleStr := padOrTruncate(task.Title, titleWidth)
-
-			// Build line with styles applied to specific parts only
-			// Don't use %-Ns with styled text - ANSI codes break padding
-			content.WriteString(fmt.Sprintf("  %s %-7s  %s  %8s",
-				style.Render(statusIcon),
-				task.ID,
-				titleStr,
-				dimStyle.Render(timeAgoStr),
-			))
+			first = false
+			content.WriteString(renderStandaloneLine(g.Task))
 		}
 	}
 
 	return renderPanel("HISTORY", content.String())
+}
+
+// renderStandaloneLine renders a standalone (non-epic) task line.
+// Layout: "  + GH-156  Title...                                    2m ago"
+// indent(2) + icon(1) + space(1) + id(7) + space(2) + title + space(2) + timeAgo(8) = 65
+func renderStandaloneLine(task CompletedTask) string {
+	const titleWidth = panelInnerWidth - 23 // 42 chars
+	icon, style := statusIconStyle(task.Status)
+	timeAgoStr := formatTimeAgo(task.CompletedAt)
+	titleStr := padOrTruncate(task.Title, titleWidth)
+
+	return fmt.Sprintf("  %s %-7s  %s  %8s",
+		style.Render(icon),
+		task.ID,
+		titleStr,
+		dimStyle.Render(timeAgoStr),
+	)
+}
+
+// renderActiveEpicLine renders the parent line for an active epic.
+// Layout: "  * GH-491  Title...              [##--] 2/3   3m"
+// indent(2) + icon(1) + space(1) + id(7) + space(2) + title + space(2) + [####](6) + space(1) + counts(N/M max 5) + space(3) + time(2) = 65
+// Right side: progress(6) + space(1) + counts(5) + space(3) + time(4) = 19
+// Title = 65 - 2 - 1 - 1 - 7 - 2 - 2 - 19 = 31
+func renderActiveEpicLine(task CompletedTask) string {
+	const progressInnerWidth = 4
+	const rightWidth = 19 // [####] N/M   Xm (fixed right-side block)
+	const titleWidth = panelInnerWidth - 23 - rightWidth + 8
+	// Recalculate: total = indent(2)+icon(1)+sp(1)+id(7)+sp(2)+title+sp(2)+right(rightWidth) = 65
+	// title = 65 - 2 - 1 - 1 - 7 - 2 - 2 - rightWidth = 65 - 15 - rightWidth
+	// Let's be precise:
+	// indent(2) + icon(1) + sp(1) + id(7) + sp(2) + title + sp(1) + progress(6) + sp(1) + counts + sp(1) + time
+	// We need the right side to fit. Let's use fixed columns:
+
+	bar := renderEpicProgressBar(task.DoneSubs, task.TotalSubs, progressInnerWidth)
+	counts := fmt.Sprintf("%d/%d", task.DoneSubs, task.TotalSubs)
+	timeStr := task.Duration
+	if timeStr == "" {
+		timeStr = formatTimeAgo(task.CompletedAt)
+	}
+
+	// Right part: " [##--] 2/3   3m" — build with fixed width
+	// bar(6) + sp(1) + counts(padded to 5) + sp(1) + time(padded to 5)
+	rightPart := fmt.Sprintf(" %s %-5s %5s", bar, counts, timeStr)
+	rightLen := len(rightPart) // plain ASCII, no ANSI
+
+	// Title gets whatever remains
+	tWidth := panelInnerWidth - 2 - 1 - 1 - 7 - 2 - rightLen
+	if tWidth < 10 {
+		tWidth = 10
+	}
+
+	titleStr := padOrTruncate(task.Title, tWidth)
+
+	return fmt.Sprintf("  %s %-7s  %s%s",
+		warningStyle.Render("*"),
+		task.ID,
+		titleStr,
+		rightPart,
+	)
+}
+
+// renderCompletedEpicLine renders a collapsed completed epic.
+// Layout: "  + GH-385  Epic: Roadmap workflow            [5/5]    12m ago"
+// Same base layout as standalone but with [N/N] replacing part of title space.
+func renderCompletedEpicLine(task CompletedTask) string {
+	counts := fmt.Sprintf("[%d/%d]", task.DoneSubs, task.TotalSubs)
+	timeAgoStr := formatTimeAgo(task.CompletedAt)
+
+	// Right part: " [N/N]    Xm ago"
+	rightPart := fmt.Sprintf(" %s  %8s", counts, timeAgoStr)
+	rightLen := len(rightPart)
+
+	// Title = panelInnerWidth - indent(2) - icon(1) - sp(1) - id(7) - sp(2) - rightLen
+	tWidth := panelInnerWidth - 2 - 1 - 1 - 7 - 2 - rightLen
+	if tWidth < 10 {
+		tWidth = 10
+	}
+
+	icon, style := statusIconStyle(task.Status)
+	titleStr := padOrTruncate(task.Title, tWidth)
+
+	return fmt.Sprintf("  %s %-7s  %s%s",
+		style.Render(icon),
+		task.ID,
+		titleStr,
+		dimStyle.Render(rightPart),
+	)
+}
+
+// renderSubIssueLine renders an indented sub-issue line under an active epic.
+// Layout: "    + GH-492  Flip the default                          2m ago"
+// indent(4) + icon(1) + sp(1) + id(7) + sp(2) + title + sp(2) + timeAgo(8) = 65
+// Title = 65 - 4 - 1 - 1 - 7 - 2 - 2 - 8 = 40
+func renderSubIssueLine(task CompletedTask) string {
+	const titleWidth = panelInnerWidth - 25 // 40 chars (extra 2 indent vs standalone)
+	icon, style := subIssueIconStyle(task.Status)
+
+	var timeStr string
+	switch task.Status {
+	case "pending":
+		timeStr = "--"
+	case "running":
+		timeStr = "now"
+	default:
+		timeStr = formatTimeAgo(task.CompletedAt)
+	}
+
+	titleStr := padOrTruncate(task.Title, titleWidth)
+
+	return fmt.Sprintf("    %s %-7s  %s  %8s",
+		style.Render(icon),
+		task.ID,
+		titleStr,
+		dimStyle.Render(timeStr),
+	)
+}
+
+// statusIconStyle returns the icon and style for a task status (top-level tasks).
+func statusIconStyle(status string) (string, lipgloss.Style) {
+	switch status {
+	case "success":
+		return "+", statusCompletedStyle
+	case "failed":
+		return "x", statusFailedStyle
+	case "running":
+		return "~", statusRunningStyle
+	default:
+		return ".", statusPendingStyle
+	}
+}
+
+// subIssueIconStyle returns the icon and style for a sub-issue status.
+// Uses the same mapping but included for clarity/future divergence.
+func subIssueIconStyle(status string) (string, lipgloss.Style) {
+	return statusIconStyle(status)
 }
 
 // formatTimeAgo formats a time as relative duration
