@@ -13,7 +13,9 @@ build:
     - |
       docker build \
         --no-cache \
+        --build-arg NODE_ENV=production \
         -t "${CI_REGISTRY_IMAGE}:${CI_COMMIT_REF_NAME}" \
+        -f docker/Dockerfile \
         .
     - docker push "${CI_REGISTRY_IMAGE}:${CI_COMMIT_REF_NAME}"
   rules:

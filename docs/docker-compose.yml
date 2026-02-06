@@ -1,0 +1,18 @@
+version: '3.8'
+
+services:
+  pilot-docs:
+    image: pilot-docs
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    restart: unless-stopped
+    container_name: pilot-docs
+    ports:
+      - "3000:3000"
+    networks:
+      - quantflow
+
+networks:
+  quantflow:
+    driver: bridge

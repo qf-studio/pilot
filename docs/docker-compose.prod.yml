@@ -7,12 +7,14 @@ services:
     container_name: pilot-docs
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.quantflow-landing.rule=Host(`pilot.quantflow.studio`)"
-      - "traefik.http.routers.quantflow-landing.entrypoints=websecure"
-      - "traefik.http.routers.quantflow-landing.tls=true"
+      - "traefik.http.routers.pilot-docs.rule=Host(`pilot.quantflow.studio`)"
+      - "traefik.http.routers.pilot-docs.entrypoints=websecure"
+      - "traefik.http.routers.pilot-docs.tls=true"
       - "traefik.docker.network=balancer"
     expose:
       - 3000
+    volumes:
+      - /data/quantflow/pilot_cache:/app/.next/cache
     networks:
       - balancer
 

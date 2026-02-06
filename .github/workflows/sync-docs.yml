@@ -28,9 +28,23 @@ jobs:
           WORK=$(mktemp -d)
           git clone git@gitlab.com:quant-flow/pilot-docs.git "$WORK"
 
+          # Preserve GitLab CI infrastructure files that may have been
+          # modified directly on GitLab (router names, Dockerfile path, etc.)
+          BACKUP=$(mktemp -d)
+          for f in .gitlab-ci.yml docker-compose.prod.yml docker-compose.yml; do
+            [ -f "$WORK/$f" ] && cp "$WORK/$f" "$BACKUP/$f"
+          done
+          [ -d "$WORK/docker" ] && cp -a "$WORK/docker" "$BACKUP/docker"
+
           # Remove old content (except .git), copy fresh docs
           find "$WORK" -mindepth 1 -maxdepth 1 ! -name '.git' -exec rm -rf {} +
           cp -a docs/. "$WORK"/
+
+          # Restore GitLab CI infrastructure files (GitLab version wins)
+          for f in .gitlab-ci.yml docker-compose.prod.yml docker-compose.yml; do
+            [ -f "$BACKUP/$f" ] && cp "$BACKUP/$f" "$WORK/$f"
+          done
+          [ -d "$BACKUP/docker" ] && cp -a "$BACKUP/docker" "$WORK/docker"
 
           cd "$WORK"
           git config user.name "Pilot CI"
