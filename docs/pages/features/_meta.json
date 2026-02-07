@@ -3,5 +3,6 @@
   "github": "GitHub Integration",
   "autopilot": "Autopilot Mode",
   "autopilot-environments": "Autopilot Environments",
-  "approval-workflows": "Approval Workflows"
+  "approval-workflows": "Approval Workflows",
+  "hot-upgrade": "Hot Upgrade"
 }

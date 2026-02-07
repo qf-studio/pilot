@@ -32,10 +32,10 @@ const config: DocsThemeConfig = {
     </>
   ),
   banner: {
-    key: 'pilot-v021',
+    key: 'pilot-v023',
     text: (
       <a href="https://github.com/alekspetrov/pilot/releases" target="_blank" rel="noopener noreferrer">
-        Pilot v0.21 is out — autopilot CI loop, model routing, epic decomposition. Read the changelog →
+        Pilot v0.23 — hot-upgrade, epic sub-issue PRs, GitLab support, multi-platform docs. Read the changelog →
       </a>
     ),
   },

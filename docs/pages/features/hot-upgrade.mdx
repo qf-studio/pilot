@@ -1,0 +1,83 @@
+import { Callout } from 'nextra/components'
+
+# Hot Upgrade
+
+Pilot can update itself without downtime. The upgrade mechanism depends on how you run Pilot.
+
+{/* ILLUSTRATION: Upgrade flow — version check → download → replace → restart */}
+
+## Daemon Mode (Zero-Downtime)
+
+When running `pilot start` with the dashboard, Pilot checks for new versions every 5 minutes in the background.
+
+When an update is available:
+1. The dashboard shows **"Update available"** notification
+2. Press **`u`** to trigger the upgrade
+3. Pilot waits for any running tasks to complete (up to 2 minutes)
+4. Downloads the new binary
+5. Creates a backup of the current binary
+6. Replaces the binary in-place
+7. Uses `syscall.Exec` to replace the running process — same PID, no reconnection needed
+
+The dashboard and all state (SQLite) persist across the upgrade. From the outside, nothing changes — the process continues with the new version.
+
+<Callout type="info">
+This is a true in-process replacement. The operating system swaps the process image atomically. Telegram connections, GitHub polling, and dashboard state all resume instantly.
+</Callout>
+
+## CLI Upgrade
+
+Outside of daemon mode, use the `pilot upgrade` command:
+
+```bash
+# Check for updates
+pilot upgrade check
+
+# Download and install latest version
+pilot upgrade
+
+# Skip confirmation prompt
+pilot upgrade --yes
+
+# Force upgrade even if tasks are running
+pilot upgrade --force
+```
+
+After a CLI upgrade, your next `pilot` command uses the new binary automatically. No restart needed.
+
+## Rollback
+
+If an upgrade causes issues, rollback to the previous version:
+
+```bash
+pilot upgrade rollback
+```
+
+This restores the backup created during the upgrade. Backups are stored alongside the binary with a `.backup` suffix.
+
+## Homebrew Limitation
+
+<Callout type="warning">
+**Homebrew installations cannot use `pilot upgrade` or hot-upgrade.** Homebrew manages the binary location (`/opt/homebrew/Cellar/...`), and Pilot detects this and blocks self-update to avoid conflicts with Homebrew's package management.
+
+For Homebrew users:
+```bash
+brew upgrade pilot
+```
+
+To switch to self-managed installation (enables hot-upgrade):
+```bash
+brew uninstall pilot
+curl -fsSL https://raw.githubusercontent.com/alekspetrov/pilot/main/install.sh | bash
+```
+</Callout>
+
+## How It Works
+
+| Method | Binary Location | Upgrade Command | Zero-Downtime | Auto-Check |
+|--------|----------------|-----------------|---------------|------------|
+| **curl install** | `~/.local/bin/pilot` | `pilot upgrade` or press `u` | Yes (daemon mode) | Every 5 min |
+| **From source** | Custom path | `pilot upgrade` or press `u` | Yes (daemon mode) | Every 5 min |
+| **Homebrew** | `/opt/homebrew/Cellar/...` | `brew upgrade pilot` | No | No |
+
+The version checker fetches the latest release from the GitHub Releases API. It compares semantic versions to determine if an update is available and includes release notes in the dashboard notification.

@@ -5,20 +5,40 @@ import { Callout, Tabs } from 'nextra/components'
 Pilot uses a YAML configuration file at `~/.pilot/config.yaml`. All settings support environment variable expansion with `${VAR_NAME}` syntax.
 
 ```bash
-# Create default config
-pilot init
+# Interactive setup wizard — creates config.yaml
+pilot setup
 
-# Validate config and connectivity
+# Validate config and dependencies
 pilot doctor
 ```
+
+## Authentication
+
+Pilot delegates AI execution to **Claude Code**, which manages its own authentication. Pilot itself does **not** require an Anthropic API key to function.
+
+| Component | Auth Method | Required |
+|-----------|------------|----------|
+| **Claude Code** (execution engine) | Claude subscription login **or** `ANTHROPIC_API_KEY` | Yes — one or the other |
+| **GitHub** | `GITHUB_TOKEN` env var or `adapters.github.token` in config | Yes, if using GitHub |
+| **GitLab** | `GITLAB_TOKEN` env var or `adapters.gitlab.token` in config | Yes, if using GitLab |
+| **Telegram** | `TELEGRAM_BOT_TOKEN` env var or config | No |
+| **LLM classifier** (smart intent routing) | `ANTHROPIC_API_KEY` env var | No — falls back to keyword matching |
+| **Epic decomposition** (Haiku subtask parser) | `ANTHROPIC_API_KEY` env var | No — falls back to regex parser |
+
+<Callout type="info">
+**Most users don't need `ANTHROPIC_API_KEY` at all.** If you're logged into Claude Code with a Claude subscription, Pilot works out of the box. The API key is only needed for optional internal features (LLM classifier, structured subtask parsing) that have simpler fallbacks.
+</Callout>
 
 ## Environment Variables
 
 | Variable | Description | Required |
 |----------|-------------|----------|
-| `ANTHROPIC_API_KEY` | Claude API key for LLM execution | Yes |
-| `GITHUB_TOKEN` | GitHub personal access token (or use config) | Yes |
+| `GITHUB_TOKEN` | GitHub personal access token (`repo` + `workflow` scopes) | If using GitHub |
+| `GITLAB_TOKEN` | GitLab personal or project access token | If using GitLab |
 | `TELEGRAM_BOT_TOKEN` | Telegram bot token for chat interface | No |
+| `ANTHROPIC_API_KEY` | Enables LLM intent classifier and structured subtask parsing | No |
+| `OPENAI_API_KEY` | Enables Whisper voice transcription in Telegram | No |
+| `SLACK_BOT_TOKEN` | Slack bot token for notifications | No |
 
 <Callout type="info">
 Use `${VAR_NAME}` in any string field to reference environment variables. Pilot expands them at load time. Paths starting with `~` are expanded to your home directory.

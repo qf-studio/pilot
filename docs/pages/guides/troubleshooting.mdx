@@ -1,0 +1,198 @@
+import { Callout } from 'nextra/components'
+
+# Troubleshooting
+
+Common issues and how to fix them. Start with `pilot doctor` — it catches most configuration problems.
+
+```bash
+pilot doctor
+```
+
+---
+
+## Installation Issues
+
+### "pilot: command not found"
+
+The binary isn't in your PATH.
+
+```bash
+# Check if it's installed
+ls ~/.local/bin/pilot
+
+# Add to PATH (add to your shell rc file)
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+If installed via Homebrew, it should be in PATH automatically. Try opening a new terminal.
+
+### "permission denied" when running pilot
+
+```bash
+chmod +x ~/.local/bin/pilot
+```
+
+On macOS, you may also need to remove the quarantine attribute:
+
+```bash
+xattr -d com.apple.quarantine ~/.local/bin/pilot
+```
+
+---
+
+## Claude Code Issues
+
+### "claude: command not found"
+
+Claude Code isn't installed or isn't in PATH.
+
+```bash
+npm install -g @anthropic-ai/claude-code
+```
+
+Verify: `claude --version`
+
+### Claude Code authentication errors
+
+If using a Claude subscription:
+
+```bash
+claude login
+```
+
+If using an API key:
+
+```bash
+export ANTHROPIC_API_KEY="your-key"
+```
+
+<Callout type="info">
+Pilot delegates all AI execution to Claude Code. If `claude -p "hello"` works in your terminal, Pilot will work too.
+</Callout>
+
+---
+
+## Issue Detection
+
+### Pilot doesn't pick up my issue
+
+1. **Check the label** — must be exactly `pilot` (case-sensitive, no spaces)
+2. **Check polling is enabled** — verify config:
+   ```yaml
+   adapters:
+     github:  # or gitlab
+       polling:
+         enabled: true
+         interval: 30s
+   ```
+3. **Check the token** — `GITHUB_TOKEN` must have `repo` scope
+4. **Check the repo** — `adapters.github.repo` must match `owner/repo` exactly
+5. **Check the project path** — `project_path` must point to a valid local clone
+
+### Issues are picked up but nothing happens
+
+- Check `pilot start` output for errors
+- The issue may have been processed before — Pilot adds `pilot-in-progress` label
+- Stale `pilot-in-progress` labels block re-processing. Remove them manually or wait for stale cleanup (default: 1 hour)
+
+---
+
+## PR Issues
+
+### PR creation fails
+
+- **GitHub**: Token needs `repo` scope. Check with `gh auth status`
+- **GitLab**: Token needs `api`, `read_repository`, `write_repository` scopes
+- **Branch conflicts**: If the branch already exists, Pilot may fail to push. Delete stale branches: `git push origin --delete pilot/issue-name`
+
+### PR quality is low
+
+1. **Initialize Navigator** — run `claude /nav-init` inside Claude Code in your project
+2. **Add CLAUDE.md** — describe your code standards, patterns, and conventions
+3. **Write better tickets** — treat them like briefings for a junior developer. Include context, requirements, and expected behavior
+4. **Configure quality gates** — auto-detected or in config. Failed gates get retried with error feedback
+
+---
+
+## Upgrade Issues
+
+### "Homebrew installation detected"
+
+`pilot upgrade` is blocked for Homebrew installs. Use:
+
+```bash
+brew upgrade pilot
+```
+
+Or switch to self-managed installation:
+
+```bash
+brew uninstall pilot
+curl -fsSL https://raw.githubusercontent.com/alekspetrov/pilot/main/install.sh | bash
+```
+
+### Upgrade failed / binary corrupted
+
+```bash
+pilot upgrade rollback
+```
+
+This restores the backup created during the upgrade.
+
+---
+
+## Performance
+
+### Token costs seem high
+
+- **Navigator** reduces token usage by ~92% — make sure `.agent/` is initialized in your project
+- **Model routing** — enable to route trivial tasks to Haiku instead of Opus:
+  ```yaml
+  executor:
+    model_routing:
+      enabled: true
+      trivial: "claude-haiku"
+  ```
+- **Budget limits** — set daily/monthly caps to prevent runaway spend:
+  ```yaml
+  budget:
+    enabled: true
+    daily_limit: 50.00
+  ```
+
+### Tasks take too long
+
+- Check `executor.timeout.default` — default is 30 minutes
+- Complex tasks may benefit from epic decomposition:
+  ```yaml
+  executor:
+    decompose:
+      enabled: true
+  ```
+- Use the dashboard (`pilot start --dashboard`) to monitor progress in real-time
+
+---
+
+## Dashboard
+
+### Dashboard doesn't show updates
+
+- Make sure you're running with `--dashboard` flag
+- Refresh interval is configurable: `dashboard.refresh_interval: 1000` (ms)
+- SQLite WAL mode should handle concurrent access — if issues persist, check file permissions on `~/.pilot/data/`
+
+### Dashboard shows "Update available" but won't upgrade
+
+- Press `u` to trigger the upgrade
+- If tasks are running, Pilot waits up to 2 minutes for them to complete
+- Homebrew installs can't self-upgrade — see Upgrade Issues above
+
+---
+
+## Getting Help
+
+If none of the above resolves your issue:
+
+1. Check existing issues: [github.com/alekspetrov/pilot/issues](https://github.com/alekspetrov/pilot/issues)
+2. Run with debug logging: set `logging.level: "debug"` in config
+3. Open a new issue with `pilot doctor` output and relevant logs

@@ -4,8 +4,8 @@ import { Callout } from 'nextra/components'
 
 Pilot connects to Jira Cloud and Jira Server to receive issues and post status updates. When an issue is labeled with the pilot tag, Pilot implements it and links the resulting PR back to the Jira issue.
 
-<Callout type="warning">
-The Jira adapter is implemented but **not yet fully wired** into the Pilot execution pipeline. Webhook handling and API operations work, but end-to-end issue processing requires additional startup wiring. Track progress in the project roadmap.
+<Callout type="info">
+The Jira adapter supports webhook handling and API operations. For polling-based intake (like GitHub and GitLab), configure polling in `config.yaml`. Webhook mode requires a publicly accessible endpoint — see [Tunnel](/getting-started/configuration#tunnel) for local development.
 </Callout>
 
 ## Setup

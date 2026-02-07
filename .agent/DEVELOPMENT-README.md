@@ -96,7 +96,7 @@ if _, err := os.Stat(agentDir); err == nil {
 
 ## Current State
 
-**Current Version:** v0.23.1
+**Current Version:** v0.23.3
 
 **Full implementation status:** `.agent/system/FEATURE-MATRIX.md`
 
@@ -112,13 +112,13 @@ if _, err := os.Stat(agentDir); err == nil {
 | Task Dispatcher | ✅ | Per-project queue |
 | Dashboard TUI | ✅ | Sparkline cards, muted palette, SQLite persistence, **epic-aware HISTORY (v0.22.1)** |
 | Hot Upgrade | ✅ | Self-update via `pilot upgrade` or dashboard 'u' key, `syscall.Exec` restart |
-| **Autopilot** | ✅ | CI monitor, auto-merge, feedback loop, **sub-issue PR wiring (v0.23.1)** |
+| **Autopilot** | ✅ | CI monitor, auto-merge, feedback loop, **sub-issue PR wiring (v0.23.1)**, **CommitSHA fallback (v0.23.3)** |
 | **LLM Intent** | ✅ | Claude Haiku intent classification, low effort |
 | **Self-Review** | ✅ | Auto code review before PR |
 | **Auto Build Gate** | ✅ | Minimal build gate when none configured |
 | **Effort Routing** | ✅ | Map task complexity to reasoning depth **(v0.20.0)** |
 | **Release Packaging** | ✅ | `make package` with COPYFILE_DISABLE, checksums **(v0.18.1)** |
-| **Docs Site** | ✅ | Nextra v2, GitLab sync, Docker deploy **(2026-02-06)** |
+| **Docs Site** | ✅ | Nextra v2, GitLab sync, **auto-deploy via prod tag (v0.23.2)** |
 | **QuantFlow Landing** | ✅ | `/pilot` case study page on quantflow.studio **(2026-02-06)** |
 | **CONTRIBUTING.md** | ✅ | Dev setup, code standards, BSL 1.1 note **(2026-02-06)** |
 
@@ -195,8 +195,16 @@ _Queue empty - create issues with `pilot` label to add work._
 
 | Item | What |
 |------|------|
+| **v0.23.3** | fix(executor): CommitSHA git fallback — recover SHA when output parsing misses it |
+| **v0.23.2** | Docs: config reference (1511 lines), integrations pages, auto-deploy, community page |
 | **v0.23.1** | fix(autopilot): wire sub-issue PR callback for epic execution (GH-588) |
 | **v0.22.1** | Dashboard epic-aware HISTORY panel, docs pages (why-pilot, how-it-works, model-routing, navigator, approvals) |
+| GH-620 | CountNewCommits() + fallback in runner.go — prevents "no changes" false failures |
+| GH-616 | Integration docs: Linear, GitLab, Slack, Jira (680 lines, never committed) |
+| GH-610 | Fix sync-docs.yml nested docker dir bug + integrations nav |
+| GH-611 | Auto-trigger GitLab deploy via prod-{version} tag |
+| GH-617 | Config reference, autopilot environments guide, internal ref cleanup |
+| GH-618 | Community page with license summary |
 | GH-588 | Epic sub-issue PRs now registered with autopilot controller for CI monitoring + auto-merge |
 | GH-498 | Epic-aware HISTORY: CompletedTask extended, groupedHistory(), renderHistory() with progress bars |
 

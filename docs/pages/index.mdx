@@ -9,12 +9,14 @@
 
 **AI that ships your tickets while you focus on architecture.**
 
-Pilot is an autonomous development pipeline. It picks up tickets from GitHub Issues, Linear, Jira, or Asana — plans the implementation using your codebase context, writes code with Claude Code, runs quality gates, and opens a pull request. You review and merge.
+Pilot is an autonomous development pipeline. It picks up tickets from GitHub Issues, GitLab Issues, Linear, Jira, or Asana — plans the implementation using your codebase context, writes code with Claude Code, runs quality gates, and opens a pull request. You review and merge.
+
+{/* ILLUSTRATION: Hero — Ticket → Pilot → PR flow diagram */}
 
 ```
 ┌─────────────┐      ┌─────────────┐      ┌─────────────┐      ┌─────────────┐
 │   Ticket    │ ───▶ │   Pilot     │ ───▶ │   Review    │ ───▶ │   Ship      │
-│  (GitHub)   │      │  (AI + Nav) │      │   (You)     │      │  (Merge)    │
+│ (GitHub/GL) │      │  (AI + Nav) │      │   (You)     │      │  (Merge)    │
 └─────────────┘      └─────────────┘      └─────────────┘      └─────────────┘
 ```
 
@@ -26,22 +28,23 @@ No prompting. No babysitting. Label a ticket, get a PR.
 
 ```bash
 # Install
-brew tap alekspetrov/pilot && brew install pilot
+curl -fsSL https://raw.githubusercontent.com/alekspetrov/pilot/main/install.sh | bash
 
 # Configure
-pilot init
+pilot setup
 
-# Set your API keys
-export ANTHROPIC_API_KEY="your-key"
-export GITHUB_TOKEN="your-token"
+# Set your Git token (GitHub or GitLab)
+export GITHUB_TOKEN="your-token"   # or GITLAB_TOKEN
 
 # Start Pilot
-pilot start --github --dashboard
+pilot start --github --dashboard   # or --gitlab
 ```
 
-Then label any GitHub issue with `pilot`. Pilot picks it up within 30 seconds.
+Then label any issue with `pilot`. Pilot picks it up within 30 seconds.
 
-[Full installation guide →](/getting-started/installation)
+Works with your **Claude subscription** (Pro/Max) or Anthropic API key. No separate API key required if you're already logged into Claude Code.
+
+[Full getting started guide →](/getting-started/prerequisites)
 
 ---
 
@@ -59,9 +62,9 @@ Without Navigator, Pilot would be another Claude Code wrapper. [Navigator](/navi
 
 Pilot doesn't stop at creating a PR. In autopilot mode, it monitors CI, auto-merges when tests pass, and automatically creates fix issues when CI fails — targeting the original branch for fast iteration. Three modes: `dev` (fast), `stage` (CI required), `prod` (human approval required).
 
-### Self-hosted
+### Self-hosted, self-updating
 
-Single Go binary. Runs on your infrastructure. Your secrets never leave your environment. Bring your own Anthropic API key, or route through AWS Bedrock or Google Vertex.
+Single Go binary. Runs on your infrastructure. Your secrets never leave your environment. [Hot-upgrades](/features/hot-upgrade) itself without downtime — press `u` in the dashboard and the binary replaces itself in-place.
 
 ---
 
@@ -69,15 +72,15 @@ Single Go binary. Runs on your infrastructure. Your secrets never leave your env
 
 | Feature | Description |
 |---------|-------------|
-| **GitHub Polling** | Monitors issues labeled `pilot` every 30 seconds |
-| **Telegram Bot** | Chat, research, plan, and execute tasks from Telegram |
+| **Multi-Platform** | GitHub, GitLab, Linear, Jira, Asana, Azure DevOps |
 | **Autopilot** | CI monitoring, auto-merge, failure feedback loop |
+| **Telegram Bot** | Chat, research, plan, and execute tasks from mobile |
 | **Quality Gates** | Test, lint, and build gates with automatic retry |
 | **Self-Review** | Code review runs before PR push |
 | **Epic Decomposition** | Complex tickets automatically split into subtasks |
 | **Model Routing** | Trivial tasks use fast models, complex tasks use deep reasoning |
 | **Dashboard** | Terminal UI with token usage, costs, and task history |
-| **Multi-Source** | GitHub, Linear, Jira, Asana, GitLab, Azure DevOps |
+| **Hot Upgrade** | Self-update without downtime, in-process binary replacement |
 | **Notifications** | Slack, Telegram, email, webhooks, PagerDuty |
 
 [Explore all features →](/features/autopilot)
@@ -117,4 +120,3 @@ Pilot is source-available under [BSL 1.1](https://github.com/alekspetrov/pilot/b
 - [Contributing Guide](https://github.com/alekspetrov/pilot/blob/main/CONTRIBUTING.md)
 - [Report an Issue](https://github.com/alekspetrov/pilot/issues)
 - Built by [QuantFlow Studio](https://quantflow.studio)
-- [Documentation](https://pilot.quantflow.studio)

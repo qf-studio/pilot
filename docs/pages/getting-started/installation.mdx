@@ -1,30 +1,71 @@
+import { Callout, Tabs } from 'nextra/components'
+
 # Installation
 
-## Quick Install (Recommended)
+Pilot is a single Go binary. Install it, run `pilot doctor`, and you're ready.
+
+{/* ILLUSTRATION: Installation methods comparison — curl vs brew vs source */}
+
+## Recommended: Quick Install
+
+The install script downloads the latest release for your platform and installs to `~/.local/bin/pilot`.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/alekspetrov/pilot/main/install.sh | bash
 ```
 
-## Homebrew (macOS)
+This method supports **hot-upgrade** — Pilot can update itself in-place without manual intervention. When running in daemon mode (`pilot start`), press `u` in the dashboard to upgrade without downtime. See [Hot Upgrade](/features/hot-upgrade) for details.
+
+<Callout type="info">
+The script auto-detects your OS (macOS/Linux) and architecture (amd64/arm64). It also adds `~/.local/bin` to your PATH if needed.
+</Callout>
+
+## Alternative: Homebrew
 
 ```bash
 brew tap alekspetrov/pilot
 brew install pilot
 ```
 
-## From Source
+<Callout type="warning">
+Homebrew installations **cannot** use `pilot upgrade` or hot-upgrade. Homebrew manages the binary location, so self-update is blocked. Use `brew upgrade pilot` instead. If you want Pilot's built-in upgrade flow, use the curl install above.
+</Callout>
+
+## Alternative: From Source
 
 ```bash
 git clone https://github.com/alekspetrov/pilot.git
 cd pilot
 make build
-./bin/pilot --version
+# Binary at ./bin/pilot — copy to your PATH
+cp ./bin/pilot ~/.local/bin/pilot
 ```
 
 ## Verify Installation
 
 ```bash
 pilot --version
-pilot doctor  # Check dependencies
+# pilot version v0.23.3
 ```
+
+Run the health check to verify all dependencies:
+
+```bash
+pilot doctor
+```
+
+`pilot doctor` checks for:
+- **Claude Code** — CLI installed and accessible
+- **Git** — version control available
+- **gh** (optional) — GitHub CLI for PR management
+- **Configuration** — config file exists and is valid
+- **Tokens** — required environment variables are set
+
+<Callout type="info">
+If `pilot doctor` reports issues, see [Troubleshooting](/guides/troubleshooting) for common fixes.
+</Callout>
+
+## Next Steps
+
+- [Prerequisites](/getting-started/prerequisites) — Set up Claude Code and Git hosting tokens
+- [Quick Start](/getting-started/quickstart) — Get your first PR in 10 minutes

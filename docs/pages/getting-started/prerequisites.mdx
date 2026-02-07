@@ -1,0 +1,129 @@
+import { Callout, Tabs } from 'nextra/components'
+
+# Prerequisites
+
+Before installing Pilot, you need two things: **Claude Code** for AI execution and a **Git hosting account** for issue tracking and PRs.
+
+{/* ILLUSTRATION: Prerequisites overview — Claude Code + Git host logos */}
+
+---
+
+## Claude Code
+
+Pilot uses [Claude Code](https://docs.anthropic.com/en/docs/claude-code) as its execution engine. Claude Code is Anthropic's CLI tool for AI-powered development — Pilot orchestrates it as a subprocess.
+
+```bash
+npm install -g @anthropic-ai/claude-code
+```
+
+After installing, authenticate Claude Code using one of two methods:
+
+<Tabs items={['Claude Subscription (recommended)', 'Anthropic API Key']}>
+  <Tabs.Tab>
+### Claude Subscription
+
+If you have a **Claude Pro** ($20/mo) or **Claude Max** ($100–200/mo) subscription, Claude Code authenticates through your subscription. No API key needed.
+
+```bash
+# Log in with your Claude account
+claude login
+```
+
+This is the simplest setup — your subscription covers all Claude Code usage. Pilot invokes Claude Code as a subprocess and inherits your authentication automatically.
+
+<Callout type="info">
+Claude Max plans include higher rate limits and longer context windows, which benefit complex tasks. Pro works fine for most use cases.
+</Callout>
+  </Tabs.Tab>
+  <Tabs.Tab>
+### Anthropic API Key
+
+For pay-per-use pricing or enterprise deployments, set the `ANTHROPIC_API_KEY` environment variable. Claude Code picks it up automatically.
+
+```bash
+export ANTHROPIC_API_KEY="your-anthropic-api-key"
+```
+
+Get an API key from [console.anthropic.com](https://console.anthropic.com). Pricing is per-token (input + output) with no monthly commitment.
+
+<Callout type="info">
+Pilot also uses `ANTHROPIC_API_KEY` directly for two optional internal features: the LLM intent classifier (Haiku) for smarter Telegram message routing, and structured subtask parsing for epic decomposition. These features gracefully degrade to simpler alternatives when no API key is set.
+</Callout>
+  </Tabs.Tab>
+</Tabs>
+
+---
+
+## Git Hosting
+
+Pilot needs access to a Git repository to poll issues and create pull requests. Both GitHub and GitLab are supported as first-class platforms.
+
+<Tabs items={['GitHub', 'GitLab']}>
+  <Tabs.Tab>
+### GitHub
+
+Create a **Personal Access Token** (classic) at [github.com/settings/tokens](https://github.com/settings/tokens) with these scopes:
+
+- `repo` — full repository access (issues, PRs, code)
+- `workflow` — trigger GitHub Actions (if using CI)
+
+```bash
+export GITHUB_TOKEN="your-github-pat"
+```
+
+<Callout type="warning">
+Fine-grained tokens work too, but require explicit permissions for each repository. Classic tokens are simpler for getting started.
+</Callout>
+  </Tabs.Tab>
+  <Tabs.Tab>
+### GitLab
+
+Create a **Personal Access Token** at `Settings → Access Tokens` with these scopes:
+
+- `api` — full API access
+- `read_repository` — clone and read code
+- `write_repository` — push branches and create MRs
+
+```bash
+export GITLAB_TOKEN="your-gitlab-pat"
+```
+
+For **self-hosted GitLab**, use a Project Access Token instead for better security isolation. Configure the instance URL in `config.yaml`:
+
+```yaml
+adapters:
+  gitlab:
+    base_url: "https://gitlab.yourcompany.com"
+```
+  </Tabs.Tab>
+</Tabs>
+
+---
+
+## Optional Integrations
+
+These are not required to get started but extend Pilot's capabilities:
+
+| Integration | What It Does | Setup |
+|-------------|-------------|-------|
+| **Telegram** | Chat interface — send tasks, get notifications, approve merges | Create bot via [@BotFather](https://t.me/botfather), set `TELEGRAM_BOT_TOKEN` |
+| **Slack** | Notifications for task progress, completions, and failures | Create Slack app, set `SLACK_BOT_TOKEN` |
+| **Linear** | Poll Linear issues instead of (or alongside) GitHub Issues | Set `LINEAR_API_KEY` |
+| **Jira** | Poll Jira issues for task intake | Set `JIRA_API_TOKEN` |
+
+See [Integrations](/integrations/linear) for detailed setup guides.
+
+---
+
+## Checklist
+
+Before proceeding to [Installation](/getting-started/installation):
+
+- [ ] Claude Code installed (`claude --version` outputs a version)
+- [ ] Claude Code authenticated (subscription login or API key set)
+- [ ] Git host token created and exported (`GITHUB_TOKEN` or `GITLAB_TOKEN`)
+- [ ] Repository exists with at least one commit
+
+<Callout type="info">
+Run `pilot doctor` after installation to verify all prerequisites are met. It checks for Claude Code, Git, token configuration, and optional dependencies.
+</Callout>
