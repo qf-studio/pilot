@@ -1,5 +1,6 @@
 {
   "telegram": "Telegram Bot",
   "github": "GitHub Integration",
-  "autopilot": "Autopilot Mode"
+  "autopilot": "Autopilot Mode",
+  "approval-workflows": "Approval Workflows"
 }
