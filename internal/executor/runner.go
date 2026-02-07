@@ -203,9 +203,9 @@ type TokenCallback func(taskID string, inputTokens, outputTokens int64)
 // limit has been exceeded and execution should be cancelled.
 type TokenLimitCallback func(taskID string, deltaInput, deltaOutput int64) bool
 
-// SubIssuePRCreatedCallback is called when a sub-issue's execution creates a PR.
-// The signature matches Controller.OnPRCreated exactly so it can be passed directly.
-type SubIssuePRCreatedCallback func(prNumber int, prURL string, issueNumber int, headSHA string, branchName string)
+// SubIssuePRCallback is called when a sub-issue PR is created during epic execution.
+// Signature matches Controller.OnPRCreated so it can be wired directly.
+type SubIssuePRCallback func(prNumber int, prURL string, issueNumber int, headSHA string, branchName string)
 
 // Runner executes development tasks using an AI backend (Claude Code, OpenCode, etc.).
 // It manages task lifecycle including branch creation, AI invocation,
@@ -232,8 +232,9 @@ type Runner struct {
 	decomposer            *TaskDecomposer       // Optional task decomposer for complex tasks (GH-218)
 	subtaskParser         *SubtaskParser        // Haiku-based subtask parser; nil falls back to regex (GH-501)
 	suppressProgressLogs  bool                  // Suppress slog output for progress (use when visual display is active)
-	tokenLimitCheck       TokenLimitCallback         // Optional per-task token/duration limit check (GH-539)
-	onSubIssuePRCreated   SubIssuePRCreatedCallback  // Optional callback when sub-issue PR is created (GH-593)
+	tokenLimitCheck       TokenLimitCallback    // Optional per-task token/duration limit check (GH-539)
+	onSubIssuePRCreated   SubIssuePRCallback    // Optional callback when a sub-issue PR is created (GH-596)
+	executeFunc           func(ctx context.Context, task *Task) (*ExecutionResult, error) // Internal override for testing
 }
 
 // NewRunner creates a new Runner instance with Claude Code backend by default.
@@ -382,11 +383,11 @@ func (r *Runner) SetTokenLimitCheck(cb TokenLimitCallback) {
 	r.tokenLimitCheck = cb
 }
 
-// SetOnSubIssuePRCreated sets the callback invoked when a sub-issue execution
-// creates a PR. The signature matches Controller.OnPRCreated so it can be
-// passed directly (GH-593).
-func (r *Runner) SetOnSubIssuePRCreated(cb SubIssuePRCreatedCallback) {
-	r.onSubIssuePRCreated = cb
+// SetOnSubIssuePRCreated sets the callback invoked when a sub-issue PR is created
+// during epic execution (GH-588). This allows the autopilot controller to track
+// each sub-issue PR individually for CI monitoring and auto-merge.
+func (r *Runner) SetOnSubIssuePRCreated(fn SubIssuePRCallback) {
+	r.onSubIssuePRCreated = fn
 }
 
 // getRecordingsPath returns the recordings path, using default if not set
@@ -442,6 +443,7 @@ func (r *Runner) RemoveTokenCallback(name string) {
 	defer r.tokenMu.Unlock()
 	delete(r.tokenCallbacks, name)
 }
+
 
 // reportTokens sends token usage updates to all registered callbacks.
 func (r *Runner) reportTokens(taskID string, inputTokens, outputTokens int64) {
