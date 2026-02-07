@@ -309,6 +309,72 @@ func TestSwitchToDefaultBranchAndPull_NewBranchFromMain(t *testing.T) {
 	}
 }
 
+func TestCountNewCommits(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	tmpDir, err := os.MkdirTemp("", "pilot-git-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	ctx := context.Background()
+
+	// Initialize git repo with initial commit
+	_ = exec.CommandContext(ctx, "git", "-C", tmpDir, "init").Run()
+	_ = exec.CommandContext(ctx, "git", "-C", tmpDir, "config", "user.email", "test@test.com").Run()
+	_ = exec.CommandContext(ctx, "git", "-C", tmpDir, "config", "user.name", "Test User").Run()
+	_ = os.WriteFile(filepath.Join(tmpDir, "test.txt"), []byte("initial"), 0644)
+	_ = exec.CommandContext(ctx, "git", "-C", tmpDir, "add", ".").Run()
+	_ = exec.CommandContext(ctx, "git", "-C", tmpDir, "commit", "-m", "initial").Run()
+
+	git := NewGitOperations(tmpDir)
+	defaultBranch, _ := git.GetCurrentBranch(ctx)
+
+	// Create feature branch
+	_ = git.CreateBranch(ctx, "pilot/GH-99")
+
+	t.Run("zero commits on new branch", func(t *testing.T) {
+		count, err := git.CountNewCommits(ctx, defaultBranch)
+		if err != nil {
+			t.Fatalf("CountNewCommits failed: %v", err)
+		}
+		if count != 0 {
+			t.Errorf("count = %d, want 0", count)
+		}
+	})
+
+	t.Run("one commit on branch", func(t *testing.T) {
+		_ = os.WriteFile(filepath.Join(tmpDir, "feature.txt"), []byte("feature"), 0644)
+		_, _ = git.Commit(ctx, "feat: add feature")
+
+		count, err := git.CountNewCommits(ctx, defaultBranch)
+		if err != nil {
+			t.Fatalf("CountNewCommits failed: %v", err)
+		}
+		if count != 1 {
+			t.Errorf("count = %d, want 1", count)
+		}
+	})
+
+	t.Run("multiple commits on branch", func(t *testing.T) {
+		_ = os.WriteFile(filepath.Join(tmpDir, "feature2.txt"), []byte("feature2"), 0644)
+		_, _ = git.Commit(ctx, "feat: add feature2")
+		_ = os.WriteFile(filepath.Join(tmpDir, "feature3.txt"), []byte("feature3"), 0644)
+		_, _ = git.Commit(ctx, "feat: add feature3")
+
+		count, err := git.CountNewCommits(ctx, defaultBranch)
+		if err != nil {
+			t.Fatalf("CountNewCommits failed: %v", err)
+		}
+		if count != 3 {
+			t.Errorf("count = %d, want 3", count)
+		}
+	})
+}
+
 func TestExtractPRURL(t *testing.T) {
 	tests := []struct {
 		name  string

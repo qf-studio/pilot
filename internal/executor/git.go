@@ -204,6 +204,24 @@ func (g *GitOperations) PushToMain(ctx context.Context) error {
 	return nil
 }
 
+// CountNewCommits returns the number of commits on the current branch
+// that are not on the base branch. Uses `git rev-list --count base..HEAD`.
+// Returns 0 if the base branch doesn't exist or there are no new commits.
+func (g *GitOperations) CountNewCommits(ctx context.Context, baseBranch string) (int, error) {
+	cmd := exec.CommandContext(ctx, "git", "rev-list", "--count", baseBranch+"..HEAD")
+	cmd.Dir = g.projectPath
+	output, err := cmd.Output()
+	if err != nil {
+		return 0, fmt.Errorf("failed to count new commits: %w", err)
+	}
+	countStr := strings.TrimSpace(string(output))
+	var count int
+	if _, parseErr := fmt.Sscanf(countStr, "%d", &count); parseErr != nil {
+		return 0, fmt.Errorf("failed to parse commit count %q: %w", countStr, parseErr)
+	}
+	return count, nil
+}
+
 // GetCurrentCommitSHA returns the SHA of the current HEAD commit
 func (g *GitOperations) GetCurrentCommitSHA(ctx context.Context) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", "rev-parse", "HEAD")

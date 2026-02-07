@@ -908,9 +908,32 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 		result.TokensTotal += researchResult.TotalTokens
 	}
 
-	// Extract commit SHA from state
+	// Extract commit SHA from state (parsed from Claude Code output)
 	if len(state.commitSHAs) > 0 {
 		result.CommitSHA = state.commitSHAs[len(state.commitSHAs)-1] // Use last commit
+	}
+
+	// Fallback: if output parsing missed the commit SHA, ask git directly.
+	// This handles cases where Claude's git commit output format doesn't match
+	// the extractCommitSHA() pattern (e.g. different flags, localized output).
+	if result.CommitSHA == "" && task.Branch != "" && result.Success {
+		baseBranch := task.BaseBranch
+		if baseBranch == "" {
+			baseBranch, _ = git.GetDefaultBranch(ctx)
+			if baseBranch == "" {
+				baseBranch = "main"
+			}
+		}
+		if commitCount, countErr := git.CountNewCommits(ctx, baseBranch); countErr == nil && commitCount > 0 {
+			if sha, shaErr := git.GetCurrentCommitSHA(ctx); shaErr == nil && sha != "" {
+				log.Info("CommitSHA recovered via git (output parsing missed it)",
+					slog.String("task_id", task.ID),
+					slog.String("sha", sha[:min(7, len(sha))]),
+					slog.Int("new_commits", commitCount),
+				)
+				result.CommitSHA = sha
+			}
+		}
 	}
 
 	// Fill in additional metrics from state
