@@ -582,6 +582,8 @@ Examples:
 					// Wire autopilot OnPRCreated callback if controller initialized
 					if gwAutopilotController != nil {
 						pollerOpts = append(pollerOpts, github.WithOnPRCreated(gwAutopilotController.OnPRCreated))
+						// Wire sub-issue PR callback so epic sub-PRs are tracked by autopilot (GH-594)
+						gwRunner.SetOnSubIssuePRCreated(gwAutopilotController.OnPRCreated)
 					}
 
 					// Create rate limit retry scheduler
@@ -1244,6 +1246,8 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 				pollerOpts = append(pollerOpts,
 					github.WithOnPRCreated(autopilotController.OnPRCreated),
 				)
+				// Wire sub-issue PR callback so epic sub-PRs are tracked by autopilot (GH-594)
+				runner.SetOnSubIssuePRCreated(autopilotController.OnPRCreated)
 			}
 
 			// Create rate limit retry scheduler

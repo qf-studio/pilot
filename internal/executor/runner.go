@@ -204,8 +204,8 @@ type TokenCallback func(taskID string, inputTokens, outputTokens int64)
 type TokenLimitCallback func(taskID string, deltaInput, deltaOutput int64) bool
 
 // SubIssuePRCallback is called when a sub-issue PR is created during epic execution.
-// It receives the parent task ID, sub-issue number, PR number, commit SHA, and branch name.
-type SubIssuePRCallback func(parentTaskID string, issueNumber int, prNumber int, commitSHA string, branchName string)
+// Signature matches Controller.OnPRCreated so it can be wired directly.
+type SubIssuePRCallback func(prNumber int, prURL string, issueNumber int, headSHA string, branchName string)
 
 // Runner executes development tasks using an AI backend (Claude Code, OpenCode, etc.).
 // It manages task lifecycle including branch creation, AI invocation,
@@ -383,6 +383,13 @@ func (r *Runner) SetTokenLimitCheck(cb TokenLimitCallback) {
 	r.tokenLimitCheck = cb
 }
 
+// SetOnSubIssuePRCreated sets the callback invoked when a sub-issue PR is created
+// during epic execution (GH-588). This allows the autopilot controller to track
+// each sub-issue PR individually for CI monitoring and auto-merge.
+func (r *Runner) SetOnSubIssuePRCreated(fn SubIssuePRCallback) {
+	r.onSubIssuePRCreated = fn
+}
+
 // getRecordingsPath returns the recordings path, using default if not set
 func (r *Runner) getRecordingsPath() string {
 	if r.recordingsPath != "" {
@@ -437,12 +444,6 @@ func (r *Runner) RemoveTokenCallback(name string) {
 	delete(r.tokenCallbacks, name)
 }
 
-// OnSubIssuePRCreated registers a callback that fires when a sub-issue PR is created
-// during epic execution. The callback receives the parent task ID, sub-issue number,
-// PR number, commit SHA, and branch name.
-func (r *Runner) OnSubIssuePRCreated(callback SubIssuePRCallback) {
-	r.onSubIssuePRCreated = callback
-}
 
 // reportTokens sends token usage updates to all registered callbacks.
 func (r *Runner) reportTokens(taskID string, inputTokens, outputTokens int64) {

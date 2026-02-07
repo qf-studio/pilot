@@ -246,6 +246,7 @@ func finalizeSubtask(subtask *PlannedSubtask, lines []string) {
 // Matches patterns like: https://github.com/owner/repo/issues/123
 var issueNumberRegex = regexp.MustCompile(`/issues/(\d+)`)
 
+
 // parseIssueNumber extracts the issue number from a GitHub issue URL.
 // Returns 0 if no issue number is found.
 func parseIssueNumber(url string) int {
@@ -277,7 +278,6 @@ func parsePRNumberFromURL(url string) int {
 	}
 	return n
 }
-
 // CreateSubIssues creates GitHub issues from the planned subtasks.
 // Returns a slice of CreatedIssue with the issue numbers and URLs.
 func (r *Runner) CreateSubIssues(ctx context.Context, plan *EpicPlan) ([]CreatedIssue, error) {
@@ -455,10 +455,14 @@ func (r *Runner) ExecuteSubIssues(ctx context.Context, parent *Task, issues []Cr
 			return fmt.Errorf("sub-issue %d failed: %s", issue.Number, result.Error)
 		}
 
-		// Fire sub-issue PR callback if registered (GH-596)
-		if r.onSubIssuePRCreated != nil && result.PRUrl != "" {
-			prNumber := parsePRNumberFromURL(result.PRUrl)
-			r.onSubIssuePRCreated(parent.ID, issue.Number, prNumber, result.CommitSHA, subTask.Branch)
+		// Register sub-issue PR with autopilot controller (GH-596)
+		if result.PRUrl != "" && r.onSubIssuePRCreated != nil {
+			if prNum := parsePRNumberFromURL(result.PRUrl); prNum > 0 {
+				r.onSubIssuePRCreated(prNum, result.PRUrl, issue.Number, result.CommitSHA, subTask.Branch)
+			} else {
+				r.log.Warn("Failed to extract PR number from sub-issue PR URL",
+					"pr_url", result.PRUrl)
+			}
 		}
 
 		// Close completed sub-issue

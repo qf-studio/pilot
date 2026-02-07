@@ -12,11 +12,11 @@ import (
 
 // subIssuePRCall records a single invocation of the SubIssuePRCallback.
 type subIssuePRCall struct {
-	ParentTaskID string
-	IssueNumber  int
-	PRNumber     int
-	CommitSHA    string
-	BranchName   string
+	PRNumber    int
+	PRURL       string
+	IssueNumber int
+	CommitSHA   string
+	BranchName  string
 }
 
 // newTestRunnerWithExecFunc creates a Runner that uses the given function
@@ -88,15 +88,15 @@ func TestExecuteSubIssues_CallbackFiresForEachPR(t *testing.T) {
 	// Register callback and collect invocations
 	var mu sync.Mutex
 	var calls []subIssuePRCall
-	runner.OnSubIssuePRCreated(func(parentTaskID string, issueNumber, prNumber int, commitSHA, branchName string) {
+	runner.SetOnSubIssuePRCreated(func(prNumber int, prURL string, issueNumber int, commitSHA, branchName string) {
 		mu.Lock()
 		defer mu.Unlock()
 		calls = append(calls, subIssuePRCall{
-			ParentTaskID: parentTaskID,
-			IssueNumber:  issueNumber,
-			PRNumber:     prNumber,
-			CommitSHA:    commitSHA,
-			BranchName:   branchName,
+			PRNumber:    prNumber,
+			PRURL:       prURL,
+			IssueNumber: issueNumber,
+			CommitSHA:   commitSHA,
+			BranchName:  branchName,
 		})
 	})
 
@@ -117,14 +117,14 @@ func TestExecuteSubIssues_CallbackFiresForEachPR(t *testing.T) {
 
 	// Verify each callback invocation
 	for i, call := range calls {
-		if call.ParentTaskID != "GH-50" {
-			t.Errorf("call[%d].ParentTaskID = %q, want %q", i, call.ParentTaskID, "GH-50")
+		if call.PRNumber != expectedPRs[i].prNumber {
+			t.Errorf("call[%d].PRNumber = %d, want %d", i, call.PRNumber, expectedPRs[i].prNumber)
+		}
+		if call.PRURL != expectedPRs[i].prURL {
+			t.Errorf("call[%d].PRURL = %q, want %q", i, call.PRURL, expectedPRs[i].prURL)
 		}
 		if call.IssueNumber != subIssues[i].Number {
 			t.Errorf("call[%d].IssueNumber = %d, want %d", i, call.IssueNumber, subIssues[i].Number)
-		}
-		if call.PRNumber != expectedPRs[i].prNumber {
-			t.Errorf("call[%d].PRNumber = %d, want %d", i, call.PRNumber, expectedPRs[i].prNumber)
 		}
 		if call.CommitSHA != expectedPRs[i].commitSHA {
 			t.Errorf("call[%d].CommitSHA = %q, want %q", i, call.CommitSHA, expectedPRs[i].commitSHA)
@@ -185,7 +185,7 @@ func TestExecuteSubIssues_CallbackNotFiredOnNoPRUrl(t *testing.T) {
 	runner := newTestRunnerWithExecFunc(execFn)
 
 	callbackFired := false
-	runner.OnSubIssuePRCreated(func(parentTaskID string, issueNumber, prNumber int, commitSHA, branchName string) {
+	runner.SetOnSubIssuePRCreated(func(prNumber int, prURL string, issueNumber int, commitSHA, branchName string) {
 		callbackFired = true
 	})
 
@@ -235,13 +235,13 @@ func TestExecuteSubIssues_CallbackNotFiredOnFailure(t *testing.T) {
 	runner := newTestRunnerWithExecFunc(execFn)
 
 	var calls []subIssuePRCall
-	runner.OnSubIssuePRCreated(func(parentTaskID string, issueNumber, prNumber int, commitSHA, branchName string) {
+	runner.SetOnSubIssuePRCreated(func(prNumber int, prURL string, issueNumber int, commitSHA, branchName string) {
 		calls = append(calls, subIssuePRCall{
-			ParentTaskID: parentTaskID,
-			IssueNumber:  issueNumber,
-			PRNumber:     prNumber,
-			CommitSHA:    commitSHA,
-			BranchName:   branchName,
+			PRNumber:    prNumber,
+			PRURL:       prURL,
+			IssueNumber: issueNumber,
+			CommitSHA:   commitSHA,
+			BranchName:  branchName,
 		})
 	})
 
@@ -281,7 +281,7 @@ func TestExecuteSubIssues_CallbackNotFiredOnExecError(t *testing.T) {
 	runner := newTestRunnerWithExecFunc(execFn)
 
 	callbackFired := false
-	runner.OnSubIssuePRCreated(func(parentTaskID string, issueNumber, prNumber int, commitSHA, branchName string) {
+	runner.SetOnSubIssuePRCreated(func(prNumber int, prURL string, issueNumber int, commitSHA, branchName string) {
 		callbackFired = true
 	})
 
