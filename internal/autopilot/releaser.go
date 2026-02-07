@@ -254,25 +254,19 @@ func GenerateChangelog(commits []*github.Commit, prNumber int) string {
 	return strings.Join(sections, "\n\n")
 }
 
-// CreateRelease creates a new GitHub release.
-func (r *Releaser) CreateRelease(ctx context.Context, prState *PRState, newVersion SemVer, changelog string) (*github.Release, error) {
+// CreateTag creates a lightweight git tag for the new version.
+// The actual GitHub Release (with binary assets) is created by GoReleaser CI
+// which triggers on tag push. This avoids the conflict where both Pilot and
+// GoReleaser try to create the same release.
+func (r *Releaser) CreateTag(ctx context.Context, prState *PRState, newVersion SemVer) (string, error) {
 	tagName := newVersion.String(r.config.TagPrefix)
+	sha := prState.HeadSHA
 
-	input := &github.ReleaseInput{
-		TagName:         tagName,
-		TargetCommitish: "main", // Release from main after merge
-		Name:            tagName,
-		Body:            changelog,
-		Draft:           false,
-		Prerelease:      false,
+	if err := r.ghClient.CreateGitTag(ctx, r.owner, r.repo, tagName, sha); err != nil {
+		return "", fmt.Errorf("failed to create tag %s: %w", tagName, err)
 	}
 
-	release, err := r.ghClient.CreateRelease(ctx, r.owner, r.repo, input)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create release: %w", err)
-	}
-
-	return release, nil
+	return tagName, nil
 }
 
 // ShouldRelease determines if a release should be created based on config and bump type.

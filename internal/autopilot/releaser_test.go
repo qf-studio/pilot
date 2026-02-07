@@ -469,18 +469,18 @@ func TestReleaser_GetCurrentVersion(t *testing.T) {
 	}
 }
 
-func TestReleaser_CreateRelease(t *testing.T) {
+func TestReleaser_CreateTag(t *testing.T) {
 	var capturedBody map[string]interface{}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/repos/owner/repo/releases" && r.Method == "POST" {
+		if r.URL.Path == "/repos/owner/repo/git/refs" && r.Method == "POST" {
 			_ = json.NewDecoder(r.Body).Decode(&capturedBody)
+			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
-				"id":       123,
-				"tag_name": capturedBody["tag_name"],
-				"name":     capturedBody["name"],
-				"body":     capturedBody["body"],
-				"html_url": "https://github.com/owner/repo/releases/tag/v1.0.0",
+				"ref": capturedBody["ref"],
+				"object": map[string]string{
+					"sha": "abc123",
+				},
 			})
 			return
 		}
@@ -496,25 +496,24 @@ func TestReleaser_CreateRelease(t *testing.T) {
 	}
 	r := NewReleaser(client, "owner", "repo", config)
 
-	prState := &PRState{PRNumber: 42}
+	prState := &PRState{PRNumber: 42, HeadSHA: "abc123"}
 	newVersion := SemVer{Major: 1, Minor: 0, Patch: 0}
-	changelog := "## Features\n- New feature"
 
-	release, err := r.CreateRelease(context.Background(), prState, newVersion, changelog)
+	tagName, err := r.CreateTag(context.Background(), prState, newVersion)
 	if err != nil {
-		t.Fatalf("CreateRelease() error = %v", err)
+		t.Fatalf("CreateTag() error = %v", err)
 	}
 
-	if release == nil {
-		t.Fatal("CreateRelease() returned nil release")
+	if tagName != "v1.0.0" {
+		t.Errorf("CreateTag() = %v, want v1.0.0", tagName)
 	}
 
-	if release.TagName != "v1.0.0" {
-		t.Errorf("CreateRelease() tag = %v, want v1.0.0", release.TagName)
+	if capturedBody["ref"] != "refs/tags/v1.0.0" {
+		t.Errorf("CreateTag() ref = %v, want refs/tags/v1.0.0", capturedBody["ref"])
 	}
 
-	if capturedBody["target_commitish"] != "main" {
-		t.Errorf("CreateRelease() target = %v, want main", capturedBody["target_commitish"])
+	if capturedBody["sha"] != "abc123" {
+		t.Errorf("CreateTag() sha = %v, want abc123", capturedBody["sha"])
 	}
 }
 

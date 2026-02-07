@@ -1775,11 +1775,7 @@ func handleGitHubIssue(ctx context.Context, cfg *config.Config, client *github.C
 				if err := client.AddLabels(ctx, parts[0], parts[1], issue.Number, []string{github.LabelDone}); err != nil {
 					logGitHubAPIError("AddLabels", parts[0], parts[1], issue.Number, err)
 				}
-				comment := fmt.Sprintf("✅ Pilot completed!\n\n**Duration:** %s\n**Branch:** `%s`",
-					result.Duration, branchName)
-				if result.PRUrl != "" {
-					comment += fmt.Sprintf("\n**PR:** %s", result.PRUrl)
-				}
+				comment := buildExecutionComment(result, branchName)
 				if _, err := client.AddComment(ctx, parts[0], parts[1], issue.Number, comment); err != nil {
 					logGitHubAPIError("AddComment", parts[0], parts[1], issue.Number, err)
 				}
@@ -1789,7 +1785,7 @@ func handleGitHubIssue(ctx context.Context, cfg *config.Config, client *github.C
 			if err := client.AddLabels(ctx, parts[0], parts[1], issue.Number, []string{github.LabelFailed}); err != nil {
 				logGitHubAPIError("AddLabels", parts[0], parts[1], issue.Number, err)
 			}
-			comment := fmt.Sprintf("❌ Pilot execution completed but failed:\n\n```\n%s\n```", result.Error)
+			comment := buildFailureComment(result)
 			if _, err := client.AddComment(ctx, parts[0], parts[1], issue.Number, comment); err != nil {
 				logGitHubAPIError("AddComment", parts[0], parts[1], issue.Number, err)
 			}
@@ -2183,11 +2179,7 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 				if err := client.AddLabels(ctx, parts[0], parts[1], issue.Number, []string{github.LabelDone}); err != nil {
 					logGitHubAPIError("AddLabels", parts[0], parts[1], issue.Number, err)
 				}
-				comment := fmt.Sprintf("✅ Pilot completed!\n\n**Duration:** %s\n**Branch:** `%s`",
-					result.Duration, branchName)
-				if result.PRUrl != "" {
-					comment += fmt.Sprintf("\n**PR:** %s", result.PRUrl)
-				}
+				comment := buildExecutionComment(result, branchName)
 				if _, err := client.AddComment(ctx, parts[0], parts[1], issue.Number, comment); err != nil {
 					logGitHubAPIError("AddComment", parts[0], parts[1], issue.Number, err)
 				}
@@ -2197,7 +2189,7 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 			if err := client.AddLabels(ctx, parts[0], parts[1], issue.Number, []string{github.LabelFailed}); err != nil {
 				logGitHubAPIError("AddLabels", parts[0], parts[1], issue.Number, err)
 			}
-			comment := fmt.Sprintf("❌ Pilot execution completed but failed:\n\n```\n%s\n```", result.Error)
+			comment := buildFailureComment(result)
 			if _, err := client.AddComment(ctx, parts[0], parts[1], issue.Number, comment); err != nil {
 				logGitHubAPIError("AddComment", parts[0], parts[1], issue.Number, err)
 			}
@@ -2411,11 +2403,7 @@ func handleLinearIssueWithResult(ctx context.Context, cfg *config.Config, client
 			}
 			issueResult.Success = false
 		} else {
-			comment := fmt.Sprintf("✅ Pilot completed!\n\n**Duration:** %s\n**Branch:** `%s`",
-				result.Duration, branchName)
-			if result.PRUrl != "" {
-				comment += fmt.Sprintf("\n**PR:** %s", result.PRUrl)
-			}
+			comment := buildExecutionComment(result, branchName)
 			if err := client.AddComment(ctx, issue.ID, comment); err != nil {
 				logging.WithComponent("linear").Warn("Failed to add comment",
 					slog.String("issue", issue.Identifier),
@@ -2424,7 +2412,7 @@ func handleLinearIssueWithResult(ctx context.Context, cfg *config.Config, client
 			}
 		}
 	} else if result != nil {
-		comment := fmt.Sprintf("❌ Pilot execution completed but failed:\n\n```\n%s\n```", result.Error)
+		comment := buildFailureComment(result)
 		if err := client.AddComment(ctx, issue.ID, comment); err != nil {
 			logging.WithComponent("linear").Warn("Failed to add comment",
 				slog.String("issue", issue.Identifier),
@@ -3384,11 +3372,7 @@ Examples:
 				logGitHubAPIError("AddLabels", owner, repoName, int(issueNum), err)
 			}
 
-			comment := fmt.Sprintf("✅ Pilot completed successfully!\n\n**Duration:** %s\n**Branch:** `%s`",
-				result.Duration, branchName)
-			if result.PRUrl != "" {
-				comment += fmt.Sprintf("\n**PR:** %s", result.PRUrl)
-			}
+			comment := buildExecutionComment(result, branchName)
 			if _, err := client.AddComment(ctx, owner, repoName, int(issueNum), comment); err != nil {
 				logGitHubAPIError("AddComment", owner, repoName, int(issueNum), err)
 			}
@@ -4822,4 +4806,93 @@ Note: Pilot must be running with --autopilot flag for this to work.`,
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Output as JSON")
 
 	return cmd
+}
+
+// buildExecutionComment formats a rich markdown comment from execution results.
+func buildExecutionComment(result *executor.ExecutionResult, branchName string) string {
+	var sb strings.Builder
+
+	sb.WriteString("✅ Pilot completed!\n\n")
+	sb.WriteString("| Metric | Value |\n")
+	sb.WriteString("|--------|-------|\n")
+
+	// Duration (always present)
+	sb.WriteString(fmt.Sprintf("| Duration | %s |\n", result.Duration.Round(time.Second)))
+
+	// Model
+	if result.ModelName != "" {
+		sb.WriteString(fmt.Sprintf("| Model | `%s` |\n", result.ModelName))
+	}
+
+	// Tokens
+	if result.TokensTotal > 0 {
+		sb.WriteString(fmt.Sprintf("| Tokens | %s (↑%s ↓%s) |\n",
+			formatTokenCountComment(result.TokensTotal),
+			formatTokenCountComment(result.TokensInput),
+			formatTokenCountComment(result.TokensOutput),
+		))
+	}
+
+	// Cost
+	if result.EstimatedCostUSD > 0 {
+		sb.WriteString(fmt.Sprintf("| Cost | ~$%.2f |\n", result.EstimatedCostUSD))
+	}
+
+	// Files changed
+	if result.FilesChanged > 0 || result.LinesAdded > 0 || result.LinesRemoved > 0 {
+		sb.WriteString(fmt.Sprintf("| Files | %d changed (+%d -%d) |\n",
+			result.FilesChanged, result.LinesAdded, result.LinesRemoved))
+	}
+
+	// Branch
+	if branchName != "" {
+		sb.WriteString(fmt.Sprintf("| Branch | `%s` |\n", branchName))
+	}
+
+	// PR
+	if result.PRUrl != "" {
+		sb.WriteString(fmt.Sprintf("| PR | %s |\n", result.PRUrl))
+	}
+
+	// Intent warning (from intent judge, GH-624)
+	if result.IntentWarning != "" {
+		sb.WriteString(fmt.Sprintf("\n⚠️ **Intent Warning:** %s\n", result.IntentWarning))
+	}
+
+	return sb.String()
+}
+
+// buildFailureComment formats a comment for failed executions.
+func buildFailureComment(result *executor.ExecutionResult) string {
+	var sb strings.Builder
+	sb.WriteString("❌ Pilot execution failed\n\n")
+	if result != nil && result.Error != "" {
+		sb.WriteString("<details>\n<summary>Error details</summary>\n\n")
+		sb.WriteString(fmt.Sprintf("```\n%s\n```\n", result.Error))
+		sb.WriteString("</details>\n")
+	}
+	if result != nil {
+		if result.Duration > 0 {
+			sb.WriteString(fmt.Sprintf("\n**Duration:** %s", result.Duration.Round(time.Second)))
+		}
+		if result.ModelName != "" {
+			sb.WriteString(fmt.Sprintf(" | **Model:** `%s`", result.ModelName))
+		}
+		if result.EstimatedCostUSD > 0 {
+			sb.WriteString(fmt.Sprintf(" | **Cost:** ~$%.2f", result.EstimatedCostUSD))
+		}
+		sb.WriteString("\n")
+	}
+	return sb.String()
+}
+
+// formatTokenCountComment formats a token count for display in comments.
+func formatTokenCountComment(tokens int64) string {
+	if tokens >= 1000000 {
+		return fmt.Sprintf("%.1fM", float64(tokens)/1000000)
+	}
+	if tokens >= 1000 {
+		return fmt.Sprintf("%.1fK", float64(tokens)/1000)
+	}
+	return fmt.Sprintf("%d", tokens)
 }

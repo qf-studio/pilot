@@ -422,6 +422,18 @@ func (c *Client) CreateRelease(ctx context.Context, owner, repo string, input *R
 	return &result, nil
 }
 
+// CreateGitTag creates a lightweight git tag via the GitHub API.
+// This creates only the tag ref, not a GitHub Release — letting GoReleaser
+// handle the full release creation with binary assets on tag push.
+func (c *Client) CreateGitTag(ctx context.Context, owner, repo, tag, sha string) error {
+	path := fmt.Sprintf("/repos/%s/%s/git/refs", owner, repo)
+	body := map[string]string{
+		"ref": "refs/tags/" + tag,
+		"sha": sha,
+	}
+	return c.doRequest(ctx, http.MethodPost, path, body, nil)
+}
+
 // GetLatestRelease gets the latest published release
 // Returns nil, nil if no releases exist
 func (c *Client) GetLatestRelease(ctx context.Context, owner, repo string) (*Release, error) {

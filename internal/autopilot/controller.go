@@ -534,30 +534,23 @@ func (c *Controller) handleReleasing(ctx context.Context, prState *PRState) erro
 		"bump", bumpType,
 	)
 
-	// Generate changelog
-	var changelog string
-	if c.config.Release.GenerateChangelog {
-		changelog = GenerateChangelog(commits, prState.PRNumber)
-	} else {
-		changelog = fmt.Sprintf("Release from PR #%d", prState.PRNumber)
-	}
-
-	// Create release
-	release, err := c.releaser.CreateRelease(ctx, prState, newVersion, changelog)
+	// Create git tag only — GoReleaser CI handles the full release with binaries
+	tagName, err := c.releaser.CreateTag(ctx, prState, newVersion)
 	if err != nil {
-		return fmt.Errorf("failed to create release: %w", err)
+		return fmt.Errorf("failed to create tag: %w", err)
 	}
 
-	c.log.Info("release created",
+	releaseURL := fmt.Sprintf("https://github.com/%s/%s/releases/tag/%s", c.owner, c.repo, tagName)
+	c.log.Info("tag created (GoReleaser will create release)",
 		"pr", prState.PRNumber,
 		"version", prState.ReleaseVersion,
-		"url", release.HTMLURL,
+		"tag", tagName,
 	)
 
 	// Send notification
 	if c.config.Release.NotifyOnRelease && c.notifier != nil {
 		if n, ok := c.notifier.(ReleaseNotifier); ok {
-			if err := n.NotifyReleased(ctx, prState, release.HTMLURL); err != nil {
+			if err := n.NotifyReleased(ctx, prState, releaseURL); err != nil {
 				c.log.Warn("failed to send release notification", "error", err)
 			}
 		}
