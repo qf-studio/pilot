@@ -1,64 +1,207 @@
+import { Callout } from 'nextra/components'
+
 # How Navigator Works
 
-Navigator is a context engineering system that dramatically improves Claude Code's efficiency.
+Navigator is a Claude Code plugin that provides context engineering — structured loading,
+persistent memory, and workflow enforcement. This page explains the architecture and
+integration mechanics.
 
-## Architecture
+## Architecture Overview
 
 ```
-┌─────────────────────────────────────────────────────┐
-│                    Pilot Process                     │
-├─────────────────────────────────────────────────────┤
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐ │
-│  │  Navigator  │──│   Claude    │──│   Executor  │ │
-│  │   Engine    │  │    Code     │  │             │ │
-│  └─────────────┘  └─────────────┘  └─────────────┘ │
-│         │                                           │
-│         ▼                                           │
-│  ┌─────────────────────────────────────────────┐   │
-│  │              .agent/ Directory               │   │
-│  │  ┌─────────┐ ┌─────────┐ ┌─────────────┐   │   │
-│  │  │  Index  │ │  Tasks  │ │  Knowledge  │   │   │
-│  │  │   Doc   │ │   Docs  │ │    Graph    │   │   │
-│  │  └─────────┘ └─────────┘ └─────────────┘   │   │
-│  └─────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│                      Pilot Process                          │
+│                                                             │
+│  ┌──────────┐    ┌──────────────┐    ┌──────────────────┐  │
+│  │ Executor │───▶│  Claude Code  │───▶│  Navigator Plugin │  │
+│  │runner.go │    │  subprocess   │    │  (auto-detected)  │  │
+│  └──────────┘    └──────────────┘    └────────┬─────────┘  │
+│                                               │             │
+│                                               ▼             │
+│                        ┌──────────────────────────────┐     │
+│                        │       .agent/ Directory       │     │
+│                        │                              │     │
+│                        │  DEVELOPMENT-README.md       │     │
+│                        │  system/ARCHITECTURE.md      │     │
+│                        │  system/FEATURE-MATRIX.md    │     │
+│                        │  tasks/*.md                  │     │
+│                        │  memories/*.md               │     │
+│                        │  sops/*.md                   │     │
+│                        │  .context-markers/*.md       │     │
+│                        │  .nav-config.json            │     │
+│                        │  .user-profile.json          │     │
+│                        └──────────────────────────────┘     │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-## Lazy Loading
+## Integration Flow
 
-Instead of loading everything at once:
+When Pilot picks up a task (from GitHub, Telegram, or CLI), execution follows this path:
 
-1. **Start**: Load only `DEVELOPMENT-README.md` (~2k tokens)
-2. **On Demand**: Load specific docs when referenced
-3. **Cache**: Keep frequently accessed docs in memory
-4. **Prune**: Remove unused docs after task completion
+### 1. Detection
+
+Pilot's executor checks for Navigator during prompt construction:
+
+```go
+// internal/executor/runner.go — BuildPrompt()
+agentDir := filepath.Join(task.ProjectPath, ".agent")
+if _, err := os.Stat(agentDir); err == nil {
+    sb.WriteString("Start my Navigator session.\n\n")
+}
+```
+
+If `.agent/` exists, the prompt is prefixed with `"Start my Navigator session"`.
+This triggers the Navigator plugin to activate inside Claude Code.
+
+### 2. Session Initialization
+
+Navigator performs these steps on activation:
+
+1. **Load index** — Reads `DEVELOPMENT-README.md` (~2k tokens)
+2. **Check context markers** — Looks for active markers in `.context-markers/`
+3. **Load knowledge graph** — Surfaces relevant memories for the current task
+4. **Load user profile** — Applies preferences from `.user-profile.json`
+5. **Run workflow check** — Determines execution mode (loop/task/direct)
+
+### 3. Lazy Loading
+
+Navigator never loads all documentation at once. Instead, it uses a demand-driven strategy:
+
+```
+Session Start
+    │
+    ▼
+Load Index (~2k tokens)
+    │
+    ├─── Task references architecture? ──▶ Load ARCHITECTURE.md (~5k)
+    │
+    ├─── Task involves specific feature? ──▶ Load relevant task doc (~3k)
+    │
+    ├─── Task touches integration? ──▶ Load relevant SOP (~2k)
+    │
+    └─── Otherwise ──▶ Proceed with index only
+```
+
+**Token budget per session:**
+
+| Load Tier | Documents | Tokens |
+|-----------|-----------|--------|
+| Index only | `DEVELOPMENT-README.md` | ~2,000 |
+| + Task context | Task doc + feature matrix | ~5,000 |
+| + Architecture | System docs + SOPs | ~12,000 |
+| Full load (never) | Everything in `.agent/` | ~50,000+ |
+
+### 4. Execution Phases
+
+Navigator structures work into observable phases that Pilot tracks for progress display:
+
+| Phase | Navigator Signal | Pilot Progress |
+|-------|-----------------|----------------|
+| Navigator Start | `Navigator Session Started` | 10% |
+| Workflow Check | `WORKFLOW CHECK` | 12% |
+| Task Mode | `TASK MODE ACTIVATED` | 15% |
+| Loop Mode | `nav-loop` skill detected | 20% |
+| Research | `PHASE: → RESEARCH` | 25% |
+| Implementation | `PHASE: → IMPL` | 50% |
+| Verification | `PHASE: → VERIFY` | 80% |
+| Checkpoint | `.context-markers/` write | 88% |
+| Completing | `EXIT_SIGNAL: true` | 92% |
+| Complete | `LOOP COMPLETE` or `TASK MODE COMPLETE` | 95% |
+
+Pilot detects these signals from Claude Code's `stream-json` output and updates the
+progress bar in real time.
+
+### 5. Knowledge Capture
+
+During execution, Navigator automatically captures:
+
+- **Technical decisions** — Extracted from conversation and stored as decision memories
+- **Task artifacts** — Implementation plans, file change lists, test results
+- **Concept indexing** — Creates nodes in the knowledge graph linking tasks, files, and patterns
+
+After task completion, Navigator syncs new knowledge to `.agent/memories/`.
+
+### 6. Session Markers
+
+At key points during execution, Navigator creates context markers — save points
+in `.agent/.context-markers/` that capture:
+
+- Current task state
+- Decisions made so far
+- Files modified
+- Outstanding work items
+
+These markers enable:
+- **Resume after break** — Pick up exactly where you left off
+- **Context compaction** — Clear conversation memory while preserving knowledge
+- **Cross-session continuity** — New sessions read markers to understand prior work
 
 ## Knowledge Graph
 
-Navigator maintains a knowledge graph that captures:
+The knowledge graph is a persistent store that survives across sessions and tasks.
 
-- **Decisions**: Why certain approaches were chosen
-- **Patterns**: Reusable solutions discovered during development
-- **Pitfalls**: Problems to avoid in future tasks
-- **Dependencies**: Relationships between components
+### Node Types
 
-## Session Markers
+| Type | Example | Created When |
+|------|---------|-------------|
+| Task | `GH-489: CI fix on wrong branch` | Task started |
+| Decision | `Use JWT over sessions for stateless scaling` | Non-obvious choice made |
+| Pattern | `Table-driven tests for Go` | Reusable solution discovered |
+| Pitfall | `macOS tar adds resource forks` | Bug encountered |
+| Concept | `Autopilot state machine` | Architecture referenced |
 
-Navigator uses markers to:
+### How It's Used
 
-1. **Save Progress**: Create checkpoints before risky changes
-2. **Resume Work**: Continue from where you left off
-3. **Share Context**: Transfer knowledge between sessions
+When a new task starts, Navigator queries the graph for:
+- **Related decisions** — What was decided previously about this area?
+- **Known pitfalls** — What went wrong last time?
+- **Relevant patterns** — What approaches worked before?
 
-## Integration with Pilot
+This eliminates repeated discovery and prevents known mistakes.
 
-When Pilot picks up a task:
+## Workflow Enforcement
+
+Navigator enforces a mandatory workflow check before every task:
 
 ```
-1. Check for .agent/ directory
-2. If found → Start Navigator session
-3. Load index + task-specific docs
-4. Execute with full context awareness
-5. Update knowledge graph with learnings
-6. Create PR with context-aware description
+WORKFLOW CHECK
+Loop trigger: YES
+Complexity: 0.7
+Mode: LOOP
 ```
+
+<Callout type="info">
+  The workflow check prevents Claude Code from diving into implementation without
+  proper planning. It routes tasks through the right execution mode based on complexity.
+</Callout>
+
+### Execution Modes
+
+| Mode | When Used | Behavior |
+|------|-----------|----------|
+| **Direct** | Simple, single-step changes | Execute immediately, no loop |
+| **Task** | Planned features with clear scope | Create plan → execute → verify |
+| **Loop** | Iterative work, multi-step tasks | Run phases until completion signal |
+
+## Progress Detection in Pilot
+
+Pilot's executor parses Navigator signals from the Claude Code stream:
+
+```go
+// internal/executor/runner.go — phase detection
+switch {
+case strings.Contains(text, "Navigator Session Started"):
+    phase = "navigator"
+case strings.Contains(text, "TASK MODE ACTIVATED"):
+    phase = "task-mode"
+case strings.Contains(text, "PHASE: → RESEARCH"):
+    phase = "research"
+case strings.Contains(text, "PHASE: → IMPL"):
+    phase = "implementing"
+case strings.Contains(text, "PHASE: → VERIFY"):
+    phase = "verifying"
+}
+```
+
+This gives operators real-time visibility into what Navigator is doing inside the
+Claude Code subprocess.

@@ -1,6 +1,6 @@
 {
-  "index": "Why Navigator",
-  "how-it-works": "How It Works",
-  "setup": "Setup",
+  "index": "Overview",
+  "how-it-works": "Architecture",
+  "setup": "Setup Guide",
   "best-practices": "Best Practices"
 }
