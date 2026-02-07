@@ -1351,8 +1351,6 @@ func renderStandaloneLine(task CompletedTask) string {
 // Title = 65 - 2 - 1 - 1 - 7 - 2 - 2 - 19 = 31
 func renderActiveEpicLine(task CompletedTask) string {
 	const progressInnerWidth = 4
-	const rightWidth = 19 // [####] N/M   Xm (fixed right-side block)
-	const titleWidth = panelInnerWidth - 23 - rightWidth + 8
 	// Recalculate: total = indent(2)+icon(1)+sp(1)+id(7)+sp(2)+title+sp(2)+right(rightWidth) = 65
 	// title = 65 - 2 - 1 - 1 - 7 - 2 - 2 - rightWidth = 65 - 15 - rightWidth
 	// Let's be precise:
