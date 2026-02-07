@@ -233,6 +233,18 @@ func (g *GitOperations) GetCurrentCommitSHA(ctx context.Context) (string, error)
 	return strings.TrimSpace(string(output)), nil
 }
 
+// GetDiff returns the diff between the base branch and HEAD.
+// Uses three-dot notation (base...HEAD) to show changes on the current branch.
+func (g *GitOperations) GetDiff(ctx context.Context, baseBranch string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", "diff", baseBranch+"...HEAD")
+	cmd.Dir = g.projectPath
+	output, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("git diff failed: %w", err)
+	}
+	return string(output), nil
+}
+
 // Pull fetches and merges changes from remote for the specified branch
 func (g *GitOperations) Pull(ctx context.Context, branch string) error {
 	cmd := exec.CommandContext(ctx, "git", "pull", "origin", branch)

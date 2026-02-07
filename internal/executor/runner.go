@@ -78,6 +78,8 @@ type progressState struct {
 	tokensOutput int64  // Output tokens used
 	modelName    string // Model used
 	// Note: filesChanged/linesAdded/linesRemoved tracked via git diff at commit time
+	// Intent judge retry tracking (GH-624)
+	intentRetried bool // Set after first intent retry to prevent infinite loops
 	// Budget enforcement (GH-539)
 	budgetExceeded bool               // Set when per-task token/duration limit is exceeded
 	budgetReason   string             // Human-readable reason for budget cancellation
@@ -187,6 +189,9 @@ type ExecutionResult struct {
 	IsEpic bool
 	// EpicPlan contains the planning result for epic tasks (GH-405)
 	EpicPlan *EpicPlan
+	// IntentWarning contains the reason if the intent judge flagged a mismatch.
+	// When set, the PR was created despite intent misalignment (after retry failed).
+	IntentWarning string
 }
 
 // ProgressCallback is a function called during execution with progress updates.
@@ -234,6 +239,7 @@ type Runner struct {
 	suppressProgressLogs  bool                  // Suppress slog output for progress (use when visual display is active)
 	tokenLimitCheck       TokenLimitCallback    // Optional per-task token/duration limit check (GH-539)
 	onSubIssuePRCreated   SubIssuePRCallback    // Optional callback when a sub-issue PR is created (GH-596)
+	intentJudge           *IntentJudge          // Optional intent judge for diff-vs-ticket alignment (GH-624)
 	executeFunc           func(ctx context.Context, task *Task) (*ExecutionResult, error) // Internal override for testing
 }
 
@@ -288,6 +294,17 @@ func NewRunnerWithConfig(config *BackendConfig) (*Runner, error) {
 
 	// Initialize Haiku subtask parser; nil if ANTHROPIC_API_KEY unset (GH-501)
 	runner.subtaskParser = NewSubtaskParser(runner.log)
+
+	// Initialize intent judge for diff-vs-ticket alignment (GH-624)
+	if config != nil && config.IntentJudge != nil && (config.IntentJudge.Enabled == nil || *config.IntentJudge.Enabled) {
+		apiKey := os.Getenv("ANTHROPIC_API_KEY")
+		if apiKey != "" {
+			runner.intentJudge = NewIntentJudge(apiKey)
+			if config.IntentJudge.Model != "" {
+				runner.intentJudge.model = config.IntentJudge.Model
+			}
+		}
+	}
 
 	return runner, nil
 }
@@ -388,6 +405,11 @@ func (r *Runner) SetTokenLimitCheck(cb TokenLimitCallback) {
 // each sub-issue PR individually for CI monitoring and auto-merge.
 func (r *Runner) SetOnSubIssuePRCreated(fn SubIssuePRCallback) {
 	r.onSubIssuePRCreated = fn
+}
+
+// SetIntentJudge sets the intent judge for diff-vs-ticket alignment verification (GH-624).
+func (r *Runner) SetIntentJudge(judge *IntentJudge) {
+	r.intentJudge = judge
 }
 
 // getRecordingsPath returns the recordings path, using default if not set
@@ -1260,6 +1282,86 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 			if err := r.runSelfReview(ctx, task, state); err != nil {
 				log.Warn("Self-review error", slog.Any("error", err))
 				// Continue anyway - self-review is advisory
+			}
+		}
+
+		// Intent judge: verify diff aligns with issue intent (GH-624, industry pattern from Spotify)
+		if r.intentJudge != nil && task.CreatePR && !task.DirectCommit && task.Branch != "" {
+			baseBranch := task.BaseBranch
+			if baseBranch == "" {
+				baseBranch, _ = git.GetDefaultBranch(ctx)
+				if baseBranch == "" {
+					baseBranch = "main"
+				}
+			}
+
+			diff, diffErr := git.GetDiff(ctx, baseBranch)
+			if diffErr != nil {
+				log.Warn("Intent judge skipped: failed to get diff",
+					slog.String("task_id", task.ID),
+					slog.Any("error", diffErr),
+				)
+			} else if diff != "" {
+				r.reportProgress(task.ID, "Intent Check", 96, "Verifying diff matches intent...")
+
+				verdict, judgeErr := r.intentJudge.Judge(ctx, task.Title, task.Description, diff)
+				if judgeErr != nil {
+					log.Warn("Intent judge error (continuing to PR)",
+						slog.String("task_id", task.ID),
+						slog.Any("error", judgeErr),
+					)
+				} else if !verdict.Passed {
+					log.Warn("Intent judge vetoed diff",
+						slog.String("task_id", task.ID),
+						slog.String("reason", verdict.Reason),
+						slog.Float64("confidence", verdict.Confidence),
+					)
+
+					if !state.intentRetried {
+						state.intentRetried = true
+						r.reportProgress(task.ID, "Intent Retry", 80, "Retrying with intent feedback...")
+
+						retryPrompt := fmt.Sprintf(
+							"## Intent Alignment Retry\n\nThe intent judge flagged the previous implementation:\n\n**Reason:** %s\n\nPlease fix the issues above. Focus on implementing exactly what the issue asks for.\n\n## Original Task: %s\n\n%s",
+							verdict.Reason, task.Title, task.Description,
+						)
+
+						_, retryErr := r.backend.Execute(ctx, ExecuteOptions{
+							Prompt:      retryPrompt,
+							ProjectPath: task.ProjectPath,
+							Verbose:     task.Verbose,
+							Model:       selectedModel,
+							Effort:      selectedEffort,
+							EventHandler: func(event BackendEvent) {
+								state.tokensInput += event.TokensInput
+								state.tokensOutput += event.TokensOutput
+								if event.Type == EventTypeToolResult && event.ToolResult != "" {
+									extractCommitSHA(event.ToolResult, state)
+								}
+							},
+						})
+
+						if retryErr == nil {
+							// Update result tokens
+							result.TokensInput = state.tokensInput
+							result.TokensOutput = state.tokensOutput
+							result.TokensTotal = state.tokensInput + state.tokensOutput
+
+							// Re-judge the new diff
+							newDiff, _ := git.GetDiff(ctx, baseBranch)
+							if newDiff != "" {
+								v2, _ := r.intentJudge.Judge(ctx, task.Title, task.Description, newDiff)
+								if v2 != nil && !v2.Passed {
+									result.IntentWarning = v2.Reason
+								}
+							}
+						} else {
+							result.IntentWarning = verdict.Reason
+						}
+					} else {
+						result.IntentWarning = verdict.Reason
+					}
+				}
 			}
 		}
 
