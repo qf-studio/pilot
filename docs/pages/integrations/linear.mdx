@@ -1,0 +1,225 @@
+import { Callout } from 'nextra/components'
+
+# Linear Integration
+
+Pilot monitors your Linear workspace for issues with a specific label and automatically implements them, creating pull requests and posting status updates back to Linear.
+
+## Setup
+
+### 1. Create a Linear API Key
+
+1. Go to **Linear** → **Settings** → **API** → **Personal API keys**
+2. Click **Create key**
+3. Copy the key — you won't see it again
+
+<Callout type="warning">
+Use a dedicated service account for production. Personal API keys are scoped to the user who created them.
+</Callout>
+
+### 2. Find Your Team ID
+
+Your team ID is the short prefix on your issues (e.g., `APP` for `APP-42`).
+
+### 3. Configure Pilot
+
+Add the Linear section to your config file:
+
+```yaml
+# ~/.pilot/config.yaml
+linear:
+  enabled: true
+  workspaces:
+    - name: my-team
+      api_key: ${LINEAR_API_KEY}
+      team_id: APP
+      pilot_label: pilot
+      auto_assign: true
+```
+
+### 4. Create the `pilot` Label in Linear
+
+In your Linear workspace, create a label called `pilot` (or whatever you set in `pilot_label`). Pilot also uses these status labels automatically:
+
+| Label | Purpose |
+|-------|---------|
+| `pilot` | Triggers Pilot to pick up the issue |
+| `pilot-in-progress` | Applied while Pilot is working |
+| `pilot-done` | Applied after successful completion |
+| `pilot-failed` | Applied if execution fails |
+
+## Configuration
+
+### Multi-Workspace Setup
+
+Pilot can monitor multiple Linear workspaces simultaneously. Each workspace has its own API key, team, and label configuration:
+
+```yaml
+linear:
+  enabled: true
+  polling:
+    enabled: true
+    interval: 30s
+  workspaces:
+    - name: frontend
+      api_key: ${LINEAR_API_KEY_FRONTEND}
+      team_id: FE
+      pilot_label: pilot
+      project_ids:
+        - "project-uuid-1"
+      projects:
+        - web-app
+      auto_assign: true
+
+    - name: backend
+      api_key: ${LINEAR_API_KEY_BACKEND}
+      team_id: BE
+      pilot_label: pilot
+      projects:
+        - api-server
+      auto_assign: false
+      polling:
+        enabled: true
+        interval: 60s
+```
+
+### Configuration Reference
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `false` | Enable the Linear adapter |
+| `workspaces` | array | — | List of workspace configurations |
+| `polling.enabled` | bool | `true` | Enable polling for new issues |
+| `polling.interval` | duration | `30s` | How often to check for new issues |
+
+#### Workspace Fields
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `name` | string | required | Identifier for this workspace |
+| `api_key` | string | required | Linear API key |
+| `team_id` | string | required | Linear team key (e.g., `APP`) |
+| `pilot_label` | string | `"pilot"` | Label that triggers Pilot |
+| `project_ids` | string[] | — | Filter by Linear project IDs |
+| `projects` | string[] | — | Pilot project names to map to |
+| `auto_assign` | bool | `false` | Auto-assign issues to the API key owner |
+| `polling.enabled` | bool | inherited | Override top-level polling |
+| `polling.interval` | duration | inherited | Override top-level interval |
+
+### Legacy Single-Workspace Config
+
+For backward compatibility, you can use the flat configuration format:
+
+```yaml
+linear:
+  enabled: true
+  api_key: ${LINEAR_API_KEY}
+  team_id: APP
+  pilot_label: pilot
+  project_ids:
+    - "project-uuid-1"
+  auto_assign: true
+  polling:
+    enabled: true
+    interval: 30s
+```
+
+This is internally converted to a single workspace named `"default"`.
+
+<Callout type="info">
+If both `workspaces` and top-level `api_key` are set, the `workspaces` array takes precedence.
+</Callout>
+
+## Polling
+
+When polling is enabled, Pilot periodically queries Linear for issues matching:
+
+- **Team**: matches the configured `team_id`
+- **Label**: has the `pilot_label` (default: `pilot`)
+- **State**: is in `backlog`, `unstarted`, or `started`
+
+Issues are processed oldest-first (by creation date). Each workspace can override the polling interval.
+
+### Project Filtering
+
+If `project_ids` is set, only issues belonging to those Linear projects are picked up. Issues without a project are skipped.
+
+## Webhooks
+
+Pilot also supports real-time issue detection via Linear webhooks.
+
+### Setting Up Webhooks
+
+1. Configure your webhook URL in Linear: **Settings** → **API** → **Webhooks**
+2. Set the URL to your Pilot instance: `https://your-pilot.example.com/webhooks/linear`
+3. Select **Issues** as the resource type
+
+### Supported Events
+
+| Event | Behavior |
+|-------|----------|
+| `Issue.create` | If the new issue has the pilot label, Pilot processes it |
+| `Issue.update` | Ignored |
+| `Issue.delete` | Ignored |
+
+### Multi-Workspace Webhook Routing
+
+When using multiple workspaces, Pilot routes incoming webhooks to the correct workspace handler based on the `team.id` field in the payload. If the team ID is missing, Pilot falls back to trying each workspace handler in sequence.
+
+## Issue States and Priority
+
+### State Types
+
+Pilot filters issues by state type during polling:
+
+| State Type | Description | Polled |
+|------------|-------------|--------|
+| `backlog` | In the backlog | Yes |
+| `unstarted` | Not yet started | Yes |
+| `started` | In progress | Yes |
+| `completed` | Done | No |
+| `canceled` | Canceled | No |
+
+### Priority Levels
+
+Linear priorities map directly to Pilot's priority system:
+
+| Linear Priority | Value | Pilot Priority |
+|----------------|-------|---------------|
+| Urgent | 1 | Urgent |
+| High | 2 | High |
+| Medium | 3 | Medium |
+| Low | 4 | Low |
+| No Priority | 0 | None |
+
+## Status Notifications
+
+Pilot posts comments on Linear issues as it works:
+
+| Phase | Emoji | Example |
+|-------|-------|---------|
+| Started | 🤖 | "Pilot started working on this issue" |
+| Exploring | 🔍 | "Exploring codebase..." |
+| Implementing | 🔨 | "Implementing changes..." |
+| Testing | 🧪 | "Running tests..." |
+| Reviewing | 📝 | "Reviewing code..." |
+| Waiting | ⏳ | "Waiting for CI..." |
+| Completed | ✅ | "Successfully completed — PR #42" |
+| Failed | ❌ | "Failed: test suite errors" |
+
+## Project Mapping
+
+Map Linear projects to Pilot projects to control which codebase Pilot works in:
+
+```yaml
+workspaces:
+  - name: appbooster
+    team_id: APP
+    project_ids:
+      - "linear-project-uuid-abc"
+      - "linear-project-uuid-def"
+    projects:
+      - aso-generator
+      - pilot
+```
+
+When a Linear issue belongs to `linear-project-uuid-abc`, Pilot resolves it to the `aso-generator` project. If only one Pilot project is mapped, all issues from that workspace use it.

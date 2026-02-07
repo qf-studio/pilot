@@ -1,0 +1,151 @@
+import { Callout } from 'nextra/components'
+
+# Slack Integration
+
+Pilot sends real-time notifications to Slack channels as it works on issues. It supports progress updates, PR-ready alerts, failure reports, and interactive approval workflows.
+
+## Setup
+
+### 1. Create a Slack App
+
+1. Go to [api.slack.com/apps](https://api.slack.com/apps) → **Create New App**
+2. Choose **From scratch**, name it "Pilot", and select your workspace
+3. Under **OAuth & Permissions**, add these bot token scopes:
+   - `chat:write` — post messages
+   - `chat:write.public` — post to channels without joining
+
+### 2. Install and Get Tokens
+
+1. Click **Install to Workspace** and authorize
+2. Copy the **Bot User OAuth Token** (`xoxb-...`)
+3. Under **Basic Information**, copy the **Signing Secret**
+
+### 3. Configure Pilot
+
+```yaml
+# ~/.pilot/config.yaml
+slack:
+  enabled: true
+  bot_token: ${SLACK_BOT_TOKEN}
+  channel: "#dev-notifications"
+  signing_secret: ${SLACK_SIGNING_SECRET}
+```
+
+### 4. Invite the Bot
+
+Invite the Pilot bot to your notification channel:
+
+```
+/invite @Pilot
+```
+
+## Configuration Reference
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `false` | Enable Slack notifications |
+| `bot_token` | string | required | Slack bot OAuth token (`xoxb-...`) |
+| `channel` | string | `"#dev-notifications"` | Default notification channel |
+| `signing_secret` | string | — | Slack signing secret for webhook verification |
+| `approval.enabled` | bool | `false` | Enable interactive approval workflows |
+| `approval.channel` | string | `"#pilot-approvals"` | Channel for approval requests |
+| `approval.signing_secret` | string | — | Signing secret for approval webhooks |
+
+### Channel Formats
+
+Pilot accepts several channel identifier formats:
+
+| Format | Example |
+|--------|---------|
+| Channel with `#` | `#dev-notifications` |
+| Channel without `#` | `general` |
+| Channel ID | `C1234567890` |
+| DM channel ID | `D1234567890` |
+
+## Notification Types
+
+Pilot sends Block Kit-formatted messages to your Slack channel at each phase of execution:
+
+| Event | Emoji | Color | Description |
+|-------|-------|-------|-------------|
+| Task started | 🚀 | — | Pilot began working on an issue |
+| Progress update | ⏳ | — | Status update with progress bar (0–100%) |
+| Task completed | ✅ | `good` (green) | Issue resolved, optional PR link |
+| Task failed | ❌ | `danger` (red) | Error details in code block |
+| PR ready | 🔔 | indigo | PR ready for review with file count |
+
+### Progress Bar
+
+Progress updates include a visual progress bar:
+
+```
+⏳ Implementing changes...
+[████████░░] 80%
+```
+
+The bar uses 10 segments with `█` (filled) and `░` (empty) characters.
+
+## Approval Workflows
+
+Pilot can request human approval before executing, merging, or retrying via interactive Slack buttons.
+
+### Enable Approvals
+
+```yaml
+slack:
+  enabled: true
+  bot_token: ${SLACK_BOT_TOKEN}
+  channel: "#dev-notifications"
+  signing_secret: ${SLACK_SIGNING_SECRET}
+  approval:
+    enabled: true
+    channel: "#pilot-approvals"
+```
+
+### Set Up Interactive Endpoint
+
+1. In your Slack app, go to **Interactivity & Shortcuts**
+2. Enable interactivity
+3. Set the request URL to `https://your-pilot.example.com/slack/interactions`
+
+### Approval Stages
+
+| Stage | Buttons | When |
+|-------|---------|------|
+| Pre-Execution | ✅ Execute / ❌ Cancel | Before Pilot starts implementing |
+| Pre-Merge | ✅ Merge / ❌ Reject | Before merging a PR |
+| Post-Failure | 🔄 Retry / ⏹ Abort | After an execution failure |
+
+Each approval message includes context (PR URL, error details, timeout countdown) and updates in-place when a decision is made, showing who approved or rejected.
+
+### Webhook Security
+
+Approval webhooks use HMAC-SHA256 signature verification with a 5-minute timestamp window to prevent replay attacks.
+
+## Daily Briefs
+
+Pilot can send daily or weekly summary digests to Slack channels.
+
+### Configure Briefs
+
+```yaml
+daily_brief:
+  enabled: true
+  schedule: "0 9 * * 1-5"     # 9 AM weekdays
+  timezone: "America/New_York"
+  channels:
+    - type: slack
+      channel: "#team-updates"
+  content:
+    include_metrics: true
+    include_errors: true
+    max_items_per_section: 10
+```
+
+### Brief Content
+
+Briefs summarize Pilot activity for the configured period:
+- Issues processed and their outcomes
+- PRs created and merged
+- Errors and failures
+- Execution metrics

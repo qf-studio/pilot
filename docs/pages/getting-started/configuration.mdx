@@ -1,64 +1,1075 @@
+import { Callout, Tabs } from 'nextra/components'
+
 # Configuration
 
-Pilot uses a YAML configuration file at `~/.pilot/config.yaml`.
+Pilot uses a YAML configuration file at `~/.pilot/config.yaml`. All settings support environment variable expansion with `${VAR_NAME}` syntax.
 
-## Configuration File
+```bash
+# Create default config
+pilot init
 
-```yaml
-# ~/.pilot/config.yaml
-
-# GitHub settings
-github:
-  token: ${GITHUB_TOKEN}
-  poll_interval: 30s
-  labels:
-    - pilot
-
-# Telegram settings (optional)
-telegram:
-  bot_token: ${TELEGRAM_BOT_TOKEN}
-  allowed_users:
-    - your_telegram_id
-
-# Claude settings
-claude:
-  api_key: ${ANTHROPIC_API_KEY}
-  model: claude-opus-4-6
-
-# Autopilot settings
-autopilot:
-  enabled: false
-  environment: dev  # dev, stage, prod
-  auto_merge: false
-  require_ci: true
-
-# Navigator settings
-navigator:
-  enabled: true
-  lazy_load: true
-  knowledge_graph: true
+# Validate config and connectivity
+pilot doctor
 ```
 
 ## Environment Variables
 
 | Variable | Description | Required |
 |----------|-------------|----------|
-| `ANTHROPIC_API_KEY` | Claude API key | Yes |
-| `GITHUB_TOKEN` | GitHub personal access token | Yes |
-| `TELEGRAM_BOT_TOKEN` | Telegram bot token | No |
+| `ANTHROPIC_API_KEY` | Claude API key for LLM execution | Yes |
+| `GITHUB_TOKEN` | GitHub personal access token (or use config) | Yes |
+| `TELEGRAM_BOT_TOKEN` | Telegram bot token for chat interface | No |
 
-## Initialize Configuration
+<Callout type="info">
+Use `${VAR_NAME}` in any string field to reference environment variables. Pilot expands them at load time. Paths starting with `~` are expanded to your home directory.
+</Callout>
 
-```bash
-pilot init
+---
+
+## GitHub
+
+Connects Pilot to your GitHub repository for issue polling and PR management.
+
+```yaml
+adapters:
+  github:
+    enabled: true
+    token: ${GITHUB_TOKEN}
+    repo: "owner/repo"                    # owner/repo format
+    project_path: "/path/to/local/repo"   # must match repo
+    webhook_secret: ""                     # for HMAC verification (webhooks mode)
+    pilot_label: "pilot"                   # label that triggers Pilot
+
+    polling:
+      enabled: true                       # poll for issues (vs webhooks)
+      interval: 30s
+      label: "pilot"
+
+    stale_label_cleanup:
+      enabled: true                       # auto-remove stale pilot-in-progress labels
+      interval: 30m
+      threshold: 1h                       # label age before cleanup
 ```
 
-This creates a default configuration file with prompts for required values.
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `false` | Enable GitHub adapter |
+| `token` | string | — | PAT or GitHub App token |
+| `repo` | string | — | Repository in `owner/repo` format |
+| `project_path` | string | — | Local filesystem path to the repo |
+| `webhook_secret` | string | — | HMAC secret for webhook verification |
+| `pilot_label` | string | `"pilot"` | Label that marks issues for Pilot |
+| `polling.enabled` | bool | `false` | Enable issue polling (alternative to webhooks) |
+| `polling.interval` | duration | `30s` | How often to poll for new issues |
+| `polling.label` | string | `"pilot"` | Label to filter when polling |
+| `stale_label_cleanup.enabled` | bool | `true` | Auto-remove stale `pilot-in-progress` labels |
+| `stale_label_cleanup.interval` | duration | `30m` | Cleanup check interval |
+| `stale_label_cleanup.threshold` | duration | `1h` | How old a label must be to be considered stale |
 
-## Validate Configuration
+---
 
-```bash
-pilot doctor
+## Telegram
+
+Chat interface for sending tasks, receiving notifications, and approving actions.
+
+```yaml
+adapters:
+  telegram:
+    enabled: true
+    bot_token: ${TELEGRAM_BOT_TOKEN}
+    chat_id: "123456789"
+    allowed_ids:
+      - 123456789                         # your Telegram user/chat ID
+    project_path: "/path/to/default/repo"
+    polling: true                          # enable inbound message polling
+    plain_text_mode: true                  # plain text instead of Markdown
+
+    transcription:
+      backend: "auto"                     # "whisper-api" or "auto"
+      openai_api_key: ${OPENAI_API_KEY}
+
+    rate_limit:
+      enabled: true
+      messages_per_minute: 20
+      tasks_per_hour: 10
+      burst_size: 5
+
+    llm_classifier:
+      enabled: false
+      api_key: ${ANTHROPIC_API_KEY}       # falls back to env var
+      timeout_seconds: 2
+      history_size: 10
+      history_ttl: 30m
 ```
 
-This checks all settings and verifies connectivity to external services.
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `false` | Enable Telegram adapter |
+| `bot_token` | string | — | Telegram bot token from @BotFather |
+| `chat_id` | string | — | Default chat ID for outbound notifications |
+| `allowed_ids` | []int64 | — | User/chat IDs authorized to send tasks |
+| `project_path` | string | — | Default project path for tasks sent via Telegram |
+| `polling` | bool | `false` | Enable inbound message polling |
+| `plain_text_mode` | bool | `true` | Use plain text instead of Markdown formatting |
+| `transcription.backend` | string | `"auto"` | Voice transcription backend: `whisper-api` or `auto` |
+| `transcription.openai_api_key` | string | — | OpenAI API key for Whisper transcription |
+| `rate_limit.enabled` | bool | `true` | Enable per-user rate limiting |
+| `rate_limit.messages_per_minute` | int | `20` | Max messages per minute per user |
+| `rate_limit.tasks_per_hour` | int | `10` | Max task executions per hour per user |
+| `rate_limit.burst_size` | int | `5` | Burst allowance above rate limit |
+| `llm_classifier.enabled` | bool | `false` | Enable LLM-based intent classification |
+| `llm_classifier.api_key` | string | — | Anthropic API key (falls back to `ANTHROPIC_API_KEY`) |
+| `llm_classifier.timeout_seconds` | int | `2` | Classification timeout in seconds |
+| `llm_classifier.history_size` | int | `10` | Messages to keep per chat for context |
+| `llm_classifier.history_ttl` | duration | `30m` | TTL for conversation history |
+
+<Callout type="warning">
+Always set `allowed_ids` to restrict who can trigger Pilot via Telegram. Without it, anyone who discovers your bot can submit tasks.
+</Callout>
+
+---
+
+## Executor
+
+Controls how Pilot runs Claude Code (or OpenCode) to execute tasks.
+
+```yaml
+executor:
+  type: "claude-code"                     # "claude-code" or "opencode"
+  auto_create_pr: true
+  direct_commit: false                    # commit directly to branch without PR
+  detect_ephemeral: true                  # detect and skip ephemeral changes
+  skip_self_review: false                 # skip self-review step
+
+  claude_code:
+    command: "claude"                     # path to claude CLI
+    extra_args: []                        # additional CLI arguments
+
+  model_routing:
+    enabled: false
+    trivial: "claude-haiku"
+    simple: "claude-opus-4-6"
+    medium: "claude-opus-4-6"
+    complex: "claude-opus-4-6"
+
+  effort_routing:
+    enabled: false
+    trivial: "low"
+    simple: "medium"
+    medium: "high"
+    complex: "max"
+
+  timeout:
+    default: "30m"
+    trivial: "5m"
+    simple: "10m"
+    medium: "30m"
+    complex: "60m"
+
+  decompose:
+    enabled: false
+    min_complexity: "complex"             # only decompose complex tasks
+    max_subtasks: 5                       # 2-10 range
+    min_description_words: 50             # skip short descriptions
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `type` | string | `"claude-code"` | Backend type: `claude-code` or `opencode` |
+| `auto_create_pr` | bool | `true` | Automatically create PRs after execution |
+| `direct_commit` | bool | `false` | Commit directly without PR |
+| `detect_ephemeral` | bool | `true` | Detect and skip ephemeral file changes |
+| `skip_self_review` | bool | `false` | Skip the self-review step |
+| `claude_code.command` | string | `"claude"` | Path to the Claude CLI binary |
+| `claude_code.extra_args` | []string | `[]` | Additional CLI arguments |
+| `model_routing.enabled` | bool | `false` | Route tasks to different models by complexity |
+| `model_routing.trivial` | string | `"claude-haiku"` | Model for trivial tasks |
+| `model_routing.simple` | string | `"claude-opus-4-6"` | Model for simple tasks |
+| `model_routing.medium` | string | `"claude-opus-4-6"` | Model for medium tasks |
+| `model_routing.complex` | string | `"claude-opus-4-6"` | Model for complex tasks |
+| `effort_routing.enabled` | bool | `false` | Route thinking effort by complexity |
+| `effort_routing.trivial` | string | `"low"` | Effort for trivial tasks |
+| `effort_routing.simple` | string | `"medium"` | Effort for simple tasks |
+| `effort_routing.medium` | string | `"high"` | Effort for medium tasks |
+| `effort_routing.complex` | string | `"max"` | Effort for complex tasks |
+| `timeout.default` | duration | `30m` | Default execution timeout |
+| `timeout.trivial` | duration | `5m` | Timeout for trivial tasks |
+| `timeout.simple` | duration | `10m` | Timeout for simple tasks |
+| `timeout.medium` | duration | `30m` | Timeout for medium tasks |
+| `timeout.complex` | duration | `60m` | Timeout for complex tasks |
+| `decompose.enabled` | bool | `false` | Auto-decompose complex tasks into subtasks |
+| `decompose.min_complexity` | string | `"complex"` | Minimum complexity to trigger decomposition |
+| `decompose.max_subtasks` | int | `5` | Maximum subtasks created (2-10) |
+| `decompose.min_description_words` | int | `50` | Minimum description words to decompose |
+
+<Tabs items={['Claude Code', 'OpenCode']}>
+  <Tabs.Tab>
+```yaml
+executor:
+  type: "claude-code"
+  claude_code:
+    command: "claude"
+    extra_args: ["--verbose"]
+```
+  </Tabs.Tab>
+  <Tabs.Tab>
+```yaml
+executor:
+  type: "opencode"
+  opencode:
+    server_url: "http://127.0.0.1:4096"
+    model: "anthropic/claude-sonnet-4"
+    provider: "anthropic"
+    auto_start_server: false
+    server_command: "opencode serve"
+```
+  </Tabs.Tab>
+</Tabs>
+
+**OpenCode backend fields**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `opencode.server_url` | string | `"http://127.0.0.1:4096"` | OpenCode server URL |
+| `opencode.model` | string | `"anthropic/claude-sonnet-4"` | Model identifier in `provider/model` format |
+| `opencode.provider` | string | `"anthropic"` | LLM provider name |
+| `opencode.auto_start_server` | bool | `true` | Auto-start OpenCode server if not running |
+| `opencode.server_command` | string | `"opencode serve"` | Command to start the server |
+
+---
+
+## Autopilot
+
+Autonomous PR lifecycle management — review, CI monitoring, merge, and release.
+
+```yaml
+orchestrator:
+  autopilot:
+    enabled: false
+    environment: "stage"                  # dev, stage, prod
+    approval_source: "telegram"           # telegram, slack, github-review
+
+    auto_review: true                     # self-review before PR
+    auto_merge: true                      # merge after CI passes
+    merge_method: "squash"                # squash, merge, rebase
+
+    ci_wait_timeout: 30m
+    dev_ci_timeout: 5m                    # shorter timeout for dev env
+    ci_poll_interval: 30s
+    required_checks:
+      - build
+      - test
+      - lint
+
+    auto_create_issues: true              # create fix issues on CI failure
+    issue_labels:
+      - pilot
+      - autopilot-fix
+    notify_on_failure: true
+    max_failures: 3                       # max fix attempts before giving up
+    max_merges_per_hour: 10               # rate limit merges
+    approval_timeout: 1h
+    merged_pr_scan_window: 30m            # scan for recently merged PRs
+
+    github_review:
+      poll_interval: 30s                  # poll for GitHub review decisions
+
+    release:
+      enabled: false
+      trigger: "on_merge"
+      version_strategy: "conventional_commits"
+      tag_prefix: "v"
+      generate_changelog: true
+      notify_on_release: true
+      require_ci: true
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `false` | Enable autopilot mode |
+| `environment` | string | `"stage"` | Environment: `dev`, `stage`, `prod` |
+| `approval_source` | string | `"telegram"` | Where to get approvals: `telegram`, `slack`, `github-review` |
+| `auto_review` | bool | `true` | Run self-review before creating PR |
+| `auto_merge` | bool | `true` | Auto-merge after CI passes |
+| `merge_method` | string | `"squash"` | Git merge strategy |
+| `ci_wait_timeout` | duration | `30m` | Max time to wait for CI |
+| `dev_ci_timeout` | duration | `5m` | CI timeout in dev environment |
+| `ci_poll_interval` | duration | `30s` | CI status polling interval |
+| `required_checks` | []string | `["build","test","lint"]` | CI checks that must pass |
+| `auto_create_issues` | bool | `true` | Create fix issues when CI fails |
+| `issue_labels` | []string | `["pilot","autopilot-fix"]` | Labels for auto-created fix issues |
+| `notify_on_failure` | bool | `true` | Send notification on failure |
+| `max_failures` | int | `3` | Max fix attempts before stopping |
+| `max_merges_per_hour` | int | `10` | Rate limit on merges |
+| `approval_timeout` | duration | `1h` | Time before approval request expires |
+| `merged_pr_scan_window` | duration | `30m` | Window to scan for recently merged PRs |
+| `release.enabled` | bool | `false` | Auto-create releases on merge |
+| `release.trigger` | string | `"on_merge"` | When to trigger release |
+| `release.version_strategy` | string | `"conventional_commits"` | How to determine version bump |
+| `release.tag_prefix` | string | `"v"` | Git tag prefix |
+| `release.generate_changelog` | bool | `true` | Auto-generate changelog |
+| `release.require_ci` | bool | `true` | Require CI pass before release |
+
+---
+
+## Quality
+
+Quality gates run before PR creation. Failed gates trigger retries or block the PR.
+
+```yaml
+quality:
+  enabled: true
+  gates:
+    - name: build
+      type: build
+      command: "make build"
+      required: true
+      timeout: 5m
+      max_retries: 2
+      failure_hint: "Check compilation errors"
+
+    - name: test
+      type: test
+      command: "make test"
+      required: true
+      timeout: 10m
+      max_retries: 2
+
+    - name: lint
+      type: lint
+      command: "make lint"
+      required: false
+      timeout: 2m
+      max_retries: 1
+
+    - name: coverage
+      type: coverage
+      command: "make coverage"
+      threshold: 80.0                     # minimum coverage percentage
+      required: false
+      timeout: 10m
+
+  on_failure:
+    action: "retry"                       # retry, fail, warn
+    max_retries: 3
+    notify_on:
+      - failed
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `false` | Enable quality gates |
+| `gates[].name` | string | — | Gate identifier |
+| `gates[].type` | string | — | Gate type: `build`, `test`, `lint`, `coverage`, `security`, `typecheck`, `custom` |
+| `gates[].command` | string | — | Shell command to run |
+| `gates[].required` | bool | `false` | Block PR if gate fails |
+| `gates[].timeout` | duration | varies | Max execution time |
+| `gates[].threshold` | float64 | — | Minimum threshold (coverage gates) |
+| `gates[].max_retries` | int | `0` | Retry count on failure |
+| `gates[].retry_delay` | duration | `0` | Delay between retries |
+| `gates[].failure_hint` | string | — | Hint message shown on failure |
+| `on_failure.action` | string | `"retry"` | Default action: `retry`, `fail`, `warn` |
+| `on_failure.max_retries` | int | — | Global retry limit |
+| `on_failure.notify_on` | []string | — | Statuses that trigger notifications |
+
+---
+
+## Budget
+
+Cost controls for API usage. Prevents runaway spending.
+
+```yaml
+budget:
+  enabled: true
+  daily_limit: 50.00                      # USD
+  monthly_limit: 500.00                   # USD
+
+  per_task:
+    max_tokens: 100000
+    max_duration: 30m
+
+  on_exceed:
+    daily: "pause"                        # pause new tasks, finish current
+    monthly: "stop"                       # terminate immediately
+    per_task: "stop"
+
+  thresholds:
+    warn_percent: 80                      # warn at 80% of limit
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `false` | Enable budget tracking |
+| `daily_limit` | float64 | `50.00` | Daily spend limit (USD) |
+| `monthly_limit` | float64 | `500.00` | Monthly spend limit (USD) |
+| `per_task.max_tokens` | int64 | `100000` | Max tokens per task |
+| `per_task.max_duration` | duration | `30m` | Max time per task |
+| `on_exceed.daily` | string | `"pause"` | Action when daily limit hit: `warn`, `pause`, `stop` |
+| `on_exceed.monthly` | string | `"stop"` | Action when monthly limit hit |
+| `on_exceed.per_task` | string | `"stop"` | Action when per-task limit hit |
+| `thresholds.warn_percent` | float64 | `80` | Warning threshold as percentage |
+
+---
+
+## Orchestrator
+
+Controls task execution strategy and scheduling.
+
+```yaml
+orchestrator:
+  model: "claude-sonnet-4-20250514"       # default model for planning
+  max_concurrent: 2                       # max parallel tasks
+
+  execution:
+    mode: "sequential"                    # sequential or parallel
+    wait_for_merge: true                  # wait for PR merge before next task
+    poll_interval: 30s
+    pr_timeout: 1h                        # max wait for PR merge
+
+  daily_brief:
+    enabled: false
+    schedule: "0 9 * * 1-5"              # cron: 9 AM weekdays
+    timezone: "America/New_York"
+    channels:
+      - type: slack
+        channel: "#dev-updates"
+    content:
+      include_metrics: true
+      include_errors: true
+      max_items_per_section: 10
+    filters:
+      projects: []                        # empty = all projects
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `model` | string | `"claude-sonnet-4-20250514"` | Default model for planning |
+| `max_concurrent` | int | `2` | Max parallel task executions |
+| `execution.mode` | string | `"sequential"` | `sequential` or `parallel` |
+| `execution.wait_for_merge` | bool | `true` | Wait for PR merge before next task |
+| `execution.poll_interval` | duration | `30s` | PR status poll interval |
+| `execution.pr_timeout` | duration | `1h` | Max wait for PR merge |
+| `daily_brief.enabled` | bool | `false` | Enable daily summary |
+| `daily_brief.schedule` | string | `"0 9 * * 1-5"` | Cron schedule (5-field cron syntax) |
+| `daily_brief.timezone` | string | `"America/New_York"` | IANA timezone for schedule |
+| `daily_brief.channels[].type` | string | — | Delivery channel: `slack`, `telegram`, `email` |
+| `daily_brief.channels[].channel` | string | — | Channel name or ID (e.g. `#dev-updates`) |
+| `daily_brief.channels[].recipients` | []string | — | Email recipients (for email type) |
+| `daily_brief.content.include_metrics` | bool | `true` | Include task/cost metrics in brief |
+| `daily_brief.content.include_errors` | bool | `true` | Include error summaries |
+| `daily_brief.content.max_items_per_section` | int | `10` | Max items per brief section |
+| `daily_brief.filters.projects` | []string | `[]` | Project name filter (empty = all projects) |
+
+---
+
+## Alerts
+
+Configurable alerting for operational events, cost, and security.
+
+```yaml
+alerts:
+  enabled: true
+  defaults:
+    cooldown: 5m
+    default_severity: "warning"
+    suppress_duplicates: true
+
+  channels:
+    - name: slack-ops
+      type: slack
+      enabled: true
+      severities: [warning, critical]
+      slack:
+        channel: "#pilot-alerts"
+
+    - name: telegram-admin
+      type: telegram
+      enabled: true
+      severities: [critical]
+      telegram:
+        chat_id: 123456789
+
+    - name: pagerduty
+      type: pagerduty
+      enabled: false
+      severities: [critical]
+      pagerduty:
+        routing_key: "${PAGERDUTY_KEY}"
+
+  rules:
+    - name: task_stuck
+      type: task_stuck
+      enabled: true
+      severity: warning
+      channels: [slack-ops]
+      condition:
+        progress_unchanged_for: 10m
+
+    - name: consecutive_failures
+      type: consecutive_failures
+      enabled: true
+      severity: critical
+      channels: [slack-ops, telegram-admin]
+      cooldown: 30m
+      condition:
+        consecutive_failures: 3
+
+    - name: daily_spend
+      type: daily_spend_exceeded
+      enabled: false
+      severity: warning
+      channels: [slack-ops]
+      condition:
+        daily_spend_threshold: 50.0
+```
+
+**Defaults**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `false` | Enable alerting system |
+| `defaults.cooldown` | duration | `5m` | Minimum time between duplicate alerts |
+| `defaults.default_severity` | string | `"warning"` | Severity when rule doesn't specify one |
+| `defaults.suppress_duplicates` | bool | `true` | Prevent repeated alerts for the same event |
+
+**Channel configuration**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `channels[].name` | string | — | Unique channel identifier |
+| `channels[].type` | string | — | Channel type: `slack`, `telegram`, `email`, `webhook`, `pagerduty` |
+| `channels[].enabled` | bool | `false` | Enable this channel |
+| `channels[].severities` | []string | — | Severity levels routed here: `info`, `warning`, `critical` |
+| `channels[].slack.channel` | string | — | Slack channel name (e.g. `#pilot-alerts`) |
+| `channels[].telegram.chat_id` | int64 | — | Telegram chat/user ID |
+| `channels[].email.to` | []string | — | Recipient email addresses |
+| `channels[].email.subject` | string | — | Custom subject template (optional) |
+| `channels[].webhook.url` | string | — | Webhook endpoint URL |
+| `channels[].webhook.method` | string | `"POST"` | HTTP method: `POST`, `PUT` |
+| `channels[].webhook.headers` | map | — | Custom HTTP headers |
+| `channels[].webhook.secret` | string | — | HMAC signing secret |
+| `channels[].pagerduty.routing_key` | string | — | PagerDuty integration/routing key |
+| `channels[].pagerduty.service_id` | string | — | PagerDuty service ID |
+
+**Rule configuration**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `rules[].name` | string | — | Unique rule identifier |
+| `rules[].type` | string | — | Alert type (see supported types below) |
+| `rules[].enabled` | bool | `false` | Enable this rule |
+| `rules[].severity` | string | `"warning"` | Severity: `info`, `warning`, `critical` |
+| `rules[].channels` | []string | — | Channel names to route this alert to |
+| `rules[].cooldown` | duration | `5m` | Override default cooldown for this rule |
+| `rules[].description` | string | — | Human-readable rule description |
+| `rules[].condition.progress_unchanged_for` | duration | — | Trigger when task has no progress for this long |
+| `rules[].condition.consecutive_failures` | int | — | Trigger after N consecutive task failures |
+| `rules[].condition.daily_spend_threshold` | float64 | — | Trigger when daily spend exceeds this USD amount |
+| `rules[].condition.budget_limit` | float64 | — | Trigger when total budget reaches this USD limit |
+| `rules[].condition.usage_spike_percent` | float64 | — | Trigger on usage spike exceeding this percentage |
+| `rules[].condition.pattern` | string | — | Regex pattern to match (security rules) |
+| `rules[].condition.file_pattern` | string | — | File glob pattern (sensitive file rules) |
+| `rules[].condition.paths` | []string | — | File paths to monitor |
+
+**Supported alert types:** `task_stuck`, `task_failed`, `consecutive_failures`, `service_unhealthy`, `daily_spend_exceeded`, `budget_depleted`, `usage_spike`, `unauthorized_access`, `sensitive_file_modified`, `unusual_pattern`
+
+**Built-in rules** (pre-configured in defaults):
+
+| Rule | Type | Default State | Severity | Condition |
+|------|------|---------------|----------|-----------|
+| `task_stuck` | task_stuck | enabled | warning | No progress for 10m, cooldown 15m |
+| `task_failed` | task_failed | enabled | warning | Any task failure, no cooldown |
+| `consecutive_failures` | consecutive_failures | enabled | critical | 3 failures in a row, cooldown 30m |
+| `daily_spend` | daily_spend_exceeded | disabled | warning | Daily spend > $50, cooldown 1h |
+| `budget_depleted` | budget_depleted | disabled | critical | Budget > $500, cooldown 4h |
+
+---
+
+## Approval
+
+Multi-stage approval workflow for task execution and merging.
+
+```yaml
+approval:
+  enabled: false
+  default_timeout: 1h
+  default_action: "rejected"              # action on timeout
+
+  pre_execution:
+    enabled: false
+    approvers: ["@admin"]
+    timeout: 1h
+    default_action: "rejected"
+    require_all: false                    # any one approver suffices
+
+  pre_merge:
+    enabled: false
+    approvers: ["@lead"]
+    timeout: 24h
+    default_action: "rejected"
+    require_all: false
+
+  post_failure:
+    enabled: false
+    approvers: ["@admin"]
+    timeout: 1h
+    default_action: "rejected"
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `false` | Enable approval workflow |
+| `default_timeout` | duration | `1h` | Default timeout for approval requests |
+| `default_action` | string | `"rejected"` | Action on timeout: `approved`, `rejected` |
+| `pre_execution.enabled` | bool | `false` | Require approval before task execution |
+| `pre_merge.enabled` | bool | `false` | Require approval before PR merge |
+| `post_failure.enabled` | bool | `false` | Require approval to retry after failure |
+| `*.approvers` | []string | — | User IDs or handles who can approve |
+| `*.timeout` | duration | varies | Timeout per stage |
+| `*.require_all` | bool | `false` | Require all approvers (vs any one) |
+
+---
+
+## Logging
+
+Configure log output format and rotation.
+
+```yaml
+logging:
+  level: "info"                           # debug, info, warn, error
+  format: "text"                          # text, json
+  output: "stdout"                        # stdout, stderr, or file path
+
+  rotation:
+    max_size: "100MB"
+    max_age: "7d"
+    max_backups: 5
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `level` | string | `"info"` | Log level: `debug`, `info`, `warn`, `error` |
+| `format` | string | `"text"` | Output format: `text`, `json` |
+| `output` | string | `"stdout"` | Destination: `stdout`, `stderr`, or file path |
+| `rotation.max_size` | string | — | Max log file size before rotation |
+| `rotation.max_age` | string | — | Max age before deletion |
+| `rotation.max_backups` | int | — | Max rotated files to keep |
+
+---
+
+## Tunnel
+
+Expose your local Pilot instance to the internet for webhooks.
+
+```yaml
+tunnel:
+  enabled: false
+  provider: "cloudflare"                  # cloudflare, ngrok, manual
+  domain: ""                              # custom domain (optional)
+  port: 9090                              # local port to tunnel
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `false` | Enable tunnel |
+| `provider` | string | `"cloudflare"` | Tunnel provider: `cloudflare`, `ngrok`, `manual` |
+| `domain` | string | — | Custom domain for tunnel |
+| `port` | int | `9090` | Local port to expose |
+
+---
+
+## Webhooks
+
+Outbound webhooks for integrating Pilot events with external systems.
+
+```yaml
+webhooks:
+  enabled: true
+  defaults:
+    timeout: 30s
+    retry:
+      max_attempts: 3
+      initial_delay: 1s
+      max_delay: 60s
+      multiplier: 2.0
+
+  endpoints:
+    - name: "ci-notify"
+      url: "https://example.com/webhook"
+      secret: "${WEBHOOK_SECRET}"         # HMAC-SHA256 signing
+      enabled: true
+      timeout: 30s
+      events:
+        - task.completed
+        - task.failed
+        - pr.created
+      headers:
+        X-Custom-Header: "value"
+      retry:
+        max_attempts: 3
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `false` | Enable outbound webhooks |
+| `defaults.timeout` | duration | `30s` | Default HTTP timeout for webhook calls |
+| `defaults.retry.max_attempts` | int | `3` | Default max retry attempts |
+| `defaults.retry.initial_delay` | duration | `1s` | Delay before first retry |
+| `defaults.retry.max_delay` | duration | `60s` | Maximum backoff delay |
+| `defaults.retry.multiplier` | float64 | `2.0` | Exponential backoff multiplier |
+
+**Endpoint configuration**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `endpoints[].name` | string | — | Unique endpoint identifier |
+| `endpoints[].url` | string | — | Webhook delivery URL |
+| `endpoints[].secret` | string | — | HMAC-SHA256 signing secret |
+| `endpoints[].enabled` | bool | `false` | Enable this endpoint |
+| `endpoints[].timeout` | duration | `30s` | Override default timeout |
+| `endpoints[].events` | []string | — | Events to deliver (see supported list) |
+| `endpoints[].headers` | map | — | Custom HTTP headers to include |
+| `endpoints[].retry.max_attempts` | int | `3` | Override default retry count |
+| `endpoints[].retry.initial_delay` | duration | `1s` | Override retry initial delay |
+| `endpoints[].retry.max_delay` | duration | `60s` | Override retry max delay |
+| `endpoints[].retry.multiplier` | float64 | `2.0` | Override backoff multiplier |
+
+**Supported events:** `task.started`, `task.progress`, `task.completed`, `task.failed`, `task.timeout`, `pr.created`, `budget.warning`
+
+---
+
+## Gateway
+
+Internal HTTP/WebSocket server configuration.
+
+```yaml
+gateway:
+  host: "127.0.0.1"
+  port: 9090
+
+auth:
+  type: "claude-code"                     # claude-code or api-token
+  token: ""                               # required if type is api-token
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `host` | string | `"127.0.0.1"` | Bind address for the HTTP/WebSocket server |
+| `port` | int | `9090` | Port number (1–65535) |
+| `auth.type` | string | `"claude-code"` | Auth mode: `claude-code` (built-in) or `api-token` |
+| `auth.token` | string | — | Bearer token, required when `auth.type` is `api-token` |
+
+---
+
+## Other Adapters
+
+### Linear
+
+```yaml
+adapters:
+  linear:
+    enabled: false
+    api_key: ${LINEAR_API_KEY}
+    team_id: "TEAM_ID"
+    pilot_label: "pilot"
+    auto_assign: true
+    polling:
+      enabled: true
+      interval: 30s
+    # Multi-workspace support
+    workspaces:
+      - name: "main"
+        api_key: ${LINEAR_API_KEY}
+        team_id: "TEAM_ID"
+        pilot_label: "pilot"
+        projects: ["my-project"]
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `false` | Enable Linear adapter |
+| `api_key` | string | — | Linear API key (legacy single-workspace) |
+| `team_id` | string | — | Linear team ID (legacy single-workspace) |
+| `pilot_label` | string | `"pilot"` | Label that marks issues for Pilot |
+| `auto_assign` | bool | `false` | Auto-assign issues to Pilot |
+| `project_ids` | []string | — | Filter to specific Linear project IDs |
+| `polling.enabled` | bool | `false` | Enable issue polling |
+| `polling.interval` | duration | `30s` | Polling interval |
+| `workspaces[].name` | string | — | Workspace identifier |
+| `workspaces[].api_key` | string | — | API key for this workspace |
+| `workspaces[].team_id` | string | — | Team ID in this workspace |
+| `workspaces[].pilot_label` | string | `"pilot"` | Label for this workspace |
+| `workspaces[].projects` | []string | — | Project filter for this workspace |
+| `workspaces[].auto_assign` | bool | `false` | Auto-assign in this workspace |
+
+### GitLab
+
+```yaml
+adapters:
+  gitlab:
+    enabled: false
+    token: ${GITLAB_TOKEN}
+    base_url: "https://gitlab.com"        # self-hosted URL
+    project: "namespace/project"
+    webhook_secret: ""
+    pilot_label: "pilot"
+    polling:
+      enabled: false
+      interval: 30s
+    stale_label_cleanup:
+      enabled: true
+      interval: 30m
+      threshold: 1h
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `false` | Enable GitLab adapter |
+| `token` | string | — | GitLab personal or project access token |
+| `base_url` | string | `"https://gitlab.com"` | GitLab instance URL (for self-hosted) |
+| `project` | string | — | Project in `namespace/project` format |
+| `webhook_secret` | string | — | HMAC secret for webhook verification |
+| `pilot_label` | string | `"pilot"` | Label that marks issues for Pilot |
+| `polling.enabled` | bool | `false` | Enable issue polling |
+| `polling.interval` | duration | `30s` | Polling interval |
+| `polling.label` | string | `"pilot"` | Label to filter when polling |
+| `stale_label_cleanup.enabled` | bool | `true` | Auto-remove stale in-progress labels |
+| `stale_label_cleanup.interval` | duration | `30m` | Cleanup check interval |
+| `stale_label_cleanup.threshold` | duration | `1h` | Label age before cleanup |
+
+### Slack
+
+```yaml
+adapters:
+  slack:
+    enabled: false
+    bot_token: ${SLACK_BOT_TOKEN}
+    channel: "#pilot-updates"
+    signing_secret: ""
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `false` | Enable Slack adapter |
+| `bot_token` | string | — | Slack bot token (`xoxb-...`) |
+| `channel` | string | — | Default notification channel |
+| `signing_secret` | string | — | Slack signing secret for webhook verification |
+
+### Jira
+
+```yaml
+adapters:
+  jira:
+    enabled: false
+    platform: "cloud"                     # cloud or server
+    base_url: "https://myorg.atlassian.net"
+    username: "bot@example.com"
+    api_token: ${JIRA_API_TOKEN}
+    webhook_secret: ""
+    pilot_label: "pilot"
+    transitions:
+      in_progress: "In Progress"
+      done: "Done"
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `false` | Enable Jira adapter |
+| `platform` | string | `"cloud"` | Jira platform: `cloud` or `server` |
+| `base_url` | string | — | Jira instance URL |
+| `username` | string | — | Jira username or email |
+| `api_token` | string | — | Jira API token |
+| `webhook_secret` | string | — | Webhook verification secret |
+| `pilot_label` | string | `"pilot"` | Label that marks issues for Pilot |
+| `transitions.in_progress` | string | — | Jira transition name for "In Progress" |
+| `transitions.done` | string | — | Jira transition name for "Done" |
+
+### Asana
+
+```yaml
+adapters:
+  asana:
+    enabled: false
+    access_token: ${ASANA_ACCESS_TOKEN}
+    workspace_id: "1234567890"
+    webhook_secret: ""
+    pilot_tag: "pilot"
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `false` | Enable Asana adapter |
+| `access_token` | string | — | Asana personal access token |
+| `workspace_id` | string | — | Asana workspace ID |
+| `webhook_secret` | string | — | Webhook verification secret |
+| `pilot_tag` | string | `"pilot"` | Tag that marks tasks for Pilot |
+
+### Azure DevOps
+
+```yaml
+adapters:
+  azure_devops:
+    enabled: false
+    pat: ${AZURE_DEVOPS_PAT}
+    organization: "myorg"
+    project: "MyProject"
+    repository: "myrepo"
+    base_url: "https://dev.azure.com"
+    pilot_tag: "pilot"
+    work_item_types:
+      - "User Story"
+      - "Bug"
+    polling:
+      enabled: true
+      interval: 30s
+    stale_label_cleanup:
+      enabled: true
+      interval: 30m
+      threshold: 1h
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `false` | Enable Azure DevOps adapter |
+| `pat` | string | — | Personal access token |
+| `organization` | string | — | Azure DevOps organization name |
+| `project` | string | — | Project name |
+| `repository` | string | — | Repository name |
+| `base_url` | string | `"https://dev.azure.com"` | Azure DevOps instance URL |
+| `webhook_secret` | string | — | Webhook verification secret |
+| `pilot_tag` | string | `"pilot"` | Tag that marks work items for Pilot |
+| `work_item_types` | []string | — | Work item types to process (e.g. `User Story`, `Bug`) |
+| `polling.enabled` | bool | `false` | Enable work item polling |
+| `polling.interval` | duration | `30s` | Polling interval |
+| `stale_label_cleanup.enabled` | bool | `true` | Auto-remove stale in-progress tags |
+| `stale_label_cleanup.interval` | duration | `30m` | Cleanup check interval |
+| `stale_label_cleanup.threshold` | duration | `1h` | Tag age before cleanup |
+
+---
+
+## Projects
+
+Multi-project configuration for managing multiple repositories.
+
+```yaml
+projects:
+  - name: "backend"
+    path: "/path/to/backend"
+    default_branch: "main"
+    navigator: true
+    github:
+      owner: "myorg"
+      repo: "backend"
+
+  - name: "frontend"
+    path: "/path/to/frontend"
+    default_branch: "main"
+
+default_project: "backend"
+
+memory:
+  path: "~/.pilot/data"
+  cross_project: true                     # share memory across projects
+```
+
+**Project fields**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `projects[].name` | string | — | Unique project name (used in CLI and logs) |
+| `projects[].path` | string | — | Absolute filesystem path to the repository |
+| `projects[].default_branch` | string | `"main"` | Default git branch for PRs |
+| `projects[].navigator` | bool | `false` | Enable Navigator integration for this project |
+| `projects[].github.owner` | string | — | GitHub organization or user |
+| `projects[].github.repo` | string | — | GitHub repository name |
+| `default_project` | string | — | Name of the project used when none is specified |
+
+**Memory**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `memory.path` | string | `"~/.pilot/data"` | Storage directory for SQLite and knowledge graph |
+| `memory.cross_project` | bool | `true` | Share learned patterns across all projects |
+
+**Dashboard**
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `dashboard.refresh_interval` | int | `1000` | TUI refresh interval in milliseconds |
+| `dashboard.show_logs` | bool | `true` | Show execution logs panel in dashboard |
+
+---
+
+## Full Example
+
+<Callout type="info">
+This is a production-ready configuration. Adjust values for your environment — start with `environment: dev` and `auto_merge: false` until you're comfortable with the workflow.
+</Callout>
+
+```yaml
+version: "1.0"
+
+adapters:
+  github:
+    enabled: true
+    token: ${GITHUB_TOKEN}
+    repo: "myorg/myapp"
+    project_path: "~/Projects/myapp"
+    pilot_label: "pilot"
+    polling:
+      enabled: true
+      interval: 30s
+
+  telegram:
+    bot_token: ${TELEGRAM_BOT_TOKEN}
+    allowed_ids: [123456789]
+    project_path: "~/Projects/myapp"
+
+executor:
+  type: "claude-code"
+  model_routing:
+    enabled: true
+    trivial: "claude-haiku"
+    simple: "claude-opus-4-6"
+    medium: "claude-opus-4-6"
+    complex: "claude-opus-4-6"
+  timeout:
+    default: "30m"
+    complex: "60m"
+
+orchestrator:
+  max_concurrent: 2
+  execution:
+    mode: "sequential"
+    wait_for_merge: true
+  autopilot:
+    enabled: true
+    environment: "dev"
+    auto_merge: false
+    max_failures: 3
+
+quality:
+  enabled: true
+  gates:
+    - name: build
+      type: build
+      command: "make build"
+      required: true
+      timeout: 5m
+    - name: test
+      type: test
+      command: "make test"
+      required: true
+      timeout: 10m
+
+budget:
+  enabled: true
+  daily_limit: 50.00
+  monthly_limit: 500.00
+  thresholds:
+    warn_percent: 80
+
+logging:
+  level: "info"
+  format: "text"
+```

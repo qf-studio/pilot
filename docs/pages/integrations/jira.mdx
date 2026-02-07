@@ -1,0 +1,137 @@
+import { Callout } from 'nextra/components'
+
+# Jira Integration
+
+Pilot connects to Jira Cloud and Jira Server to receive issues and post status updates. When an issue is labeled with the pilot tag, Pilot implements it and links the resulting PR back to the Jira issue.
+
+<Callout type="warning">
+The Jira adapter is implemented but **not yet fully wired** into the Pilot execution pipeline. Webhook handling and API operations work, but end-to-end issue processing requires additional startup wiring. Track progress in the project roadmap.
+</Callout>
+
+## Setup
+
+### 1. Create a Jira API Token
+
+**Jira Cloud:**
+1. Go to [id.atlassian.com/manage-profile/security/api-tokens](https://id.atlassian.com/manage-profile/security/api-tokens)
+2. Click **Create API token**
+3. Copy the token
+
+**Jira Server:**
+1. Go to **Profile** → **Personal Access Tokens**
+2. Create a new token
+
+### 2. Configure Pilot
+
+```yaml
+# ~/.pilot/config.yaml
+jira:
+  enabled: true
+  platform: cloud            # "cloud" or "server"
+  base_url: https://your-company.atlassian.net
+  username: pilot@company.com
+  api_token: ${JIRA_API_TOKEN}
+  pilot_label: pilot
+  transitions:
+    in_progress: "21"        # Jira transition ID
+    done: "31"               # Jira transition ID
+```
+
+<Callout type="info">
+For Jira Cloud, `username` is your email address. For Jira Server, it's your login username.
+</Callout>
+
+## Configuration Reference
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `false` | Enable the Jira adapter |
+| `platform` | string | `"cloud"` | `"cloud"` or `"server"` |
+| `base_url` | string | required | Jira instance URL |
+| `username` | string | required | Email (Cloud) or username (Server) |
+| `api_token` | string | required | API token |
+| `webhook_secret` | string | — | HMAC secret for webhook signature verification |
+| `pilot_label` | string | `"pilot"` | Label that triggers Pilot |
+| `transitions.in_progress` | string | — | Jira transition ID for "In Progress" |
+| `transitions.done` | string | — | Jira transition ID for "Done" |
+
+### Finding Transition IDs
+
+Transition IDs vary by project and workflow. To find yours:
+
+```bash
+curl -u user@example.com:$JIRA_API_TOKEN \
+  https://your-company.atlassian.net/rest/api/3/issue/PROJ-1/transitions
+```
+
+If transition IDs are not configured, Pilot falls back to matching by status name ("In Progress", "Done").
+
+## Webhooks
+
+### Setting Up Jira Webhooks
+
+1. Go to **Jira** → **Settings** → **System** → **Webhooks**
+2. Create a new webhook pointing to `https://your-pilot.example.com/webhooks/jira`
+3. Select events: **Issue created**, **Issue updated**
+
+### Supported Events
+
+| Event | Behavior |
+|-------|----------|
+| `jira:issue_created` | Process if issue has pilot label |
+| `jira:issue_updated` | Process if pilot label was just added (changelog detection) |
+| `comment_created` | Ignored |
+
+### Webhook Security
+
+Jira webhooks are verified using HMAC-SHA256 signatures via the `X-Hub-Signature` header. If `webhook_secret` is not set, all webhooks are accepted.
+
+## API Differences: Cloud vs Server
+
+| Aspect | Jira Cloud | Jira Server |
+|--------|-----------|-------------|
+| API version | REST API v3 | REST API v2 |
+| Auth | Basic (email:token) | Basic (username:token) |
+| Description format | ADF (Atlassian Document Format) | Plain text / HTML |
+| Comment format | ADF | Plain text |
+
+Pilot automatically detects the platform from configuration and uses the correct API version and content format.
+
+## Issue Type Mapping
+
+### Priority Mapping
+
+| Jira Priority | Value | Pilot Priority |
+|--------------|-------|---------------|
+| Highest / Blocker / Critical | 1 | Urgent |
+| High / Major | 2 | High |
+| Medium | 3 | Medium |
+| Low / Minor | 4 | Low |
+| Lowest / Trivial | 5 | Lowest |
+
+### Task Conversion
+
+Jira issues are converted to Pilot tasks with the following mapping:
+
+| Jira Field | Pilot Field | Format |
+|-----------|-------------|--------|
+| Issue key | Task ID | `JIRA-{key}` (e.g., `JIRA-PROJ-42`) |
+| Summary | Title | Direct |
+| Description | Description | Cleaned text (ADF extracted for Cloud) |
+| Priority | Priority | Mapped (see table above) |
+| Labels | Labels | Filtered (excludes `pilot` and priority labels) |
+| Project key | ProjectKey | Direct |
+
+## Status Transitions
+
+Pilot updates Jira issue status as it works:
+
+| Phase | Action |
+|-------|--------|
+| Started | Transitions to "In Progress" (by ID or name fallback) |
+| Completed | Transitions to "Done" + adds PR as remote link |
+| Failed | Posts failure comment (no state change) |
+
+### PR Linking
+
+When Pilot creates a PR, it adds a **remote link** to the Jira issue pointing to the GitHub/GitLab PR URL, visible in the issue's "Links" section.

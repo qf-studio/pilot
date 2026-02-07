@@ -1,0 +1,167 @@
+import { Callout } from 'nextra/components'
+
+# GitLab Integration
+
+Pilot integrates with GitLab to receive issues and create merge requests. It supports both GitLab.com and self-hosted GitLab instances.
+
+## Setup
+
+### 1. Create a GitLab Token
+
+1. Go to **GitLab** → **Preferences** → **Access Tokens**
+2. Create a **Personal Access Token** or **Project Access Token** with scopes:
+   - `api` — full API access
+   - `read_repository` / `write_repository` — for git operations
+
+<Callout type="info">
+For self-hosted GitLab, use a Project Access Token scoped to the target project for better security isolation.
+</Callout>
+
+### 2. Configure Pilot
+
+```yaml
+# ~/.pilot/config.yaml
+gitlab:
+  enabled: true
+  token: ${GITLAB_TOKEN}
+  base_url: https://gitlab.com
+  project: my-group/my-project
+  pilot_label: pilot
+  polling:
+    enabled: true
+    interval: 30s
+    label: pilot
+```
+
+### 3. Create the `pilot` Label
+
+In your GitLab project, go to **Issues** → **Labels** and create a `pilot` label.
+
+## Configuration Reference
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `false` | Enable the GitLab adapter |
+| `token` | string | required | Personal or Project Access Token |
+| `base_url` | string | `"https://gitlab.com"` | GitLab instance URL |
+| `project` | string | required | Project path (`namespace/project`) |
+| `webhook_secret` | string | — | Token for webhook verification |
+| `pilot_label` | string | `"pilot"` | Label that triggers Pilot |
+| `polling.enabled` | bool | `false` | Enable polling for new issues |
+| `polling.interval` | duration | `30s` | Polling interval |
+| `polling.label` | string | `"pilot"` | Label to filter issues by |
+| `stale_label_cleanup.enabled` | bool | `true` | Clean up orphaned `pilot-in-progress` labels |
+| `stale_label_cleanup.interval` | duration | `30m` | How often to check for stale labels |
+| `stale_label_cleanup.threshold` | duration | `1h` | Age after which a label is considered stale |
+
+## Polling Mode
+
+When polling is enabled, Pilot periodically lists open issues with the pilot label, sorted by creation date (oldest first). Issues with `pilot-in-progress` or `pilot-done` labels are skipped.
+
+### Sequential Execution
+
+By default, Pilot processes one issue at a time in sequential mode:
+
+1. Find the oldest unprocessed issue with the `pilot` label
+2. Execute the implementation
+3. Create a merge request
+4. Wait for the MR to be merged
+5. Move to the next issue
+
+If the MR has conflicts or times out, Pilot pauses for 5 minutes before retrying.
+
+## Webhook Mode
+
+For real-time issue detection, configure a GitLab webhook:
+
+1. Go to your project → **Settings** → **Webhooks**
+2. Set the URL to `https://your-pilot.example.com/webhooks/gitlab`
+3. Set the **Secret token** to match your `webhook_secret` config
+4. Enable **Issues events**
+
+### Signature Validation
+
+GitLab webhooks use a simple token comparison via the `X-Gitlab-Token` header. This differs from GitHub's HMAC-SHA256 signature approach.
+
+```yaml
+gitlab:
+  webhook_secret: ${GITLAB_WEBHOOK_SECRET}
+```
+
+If `webhook_secret` is empty, all incoming webhooks are accepted (development mode only).
+
+### Supported Events
+
+| Event | Trigger | Behavior |
+|-------|---------|----------|
+| Issue opened | New issue with pilot label | Pilot processes the issue |
+| Issue updated | Pilot label added to existing issue | Pilot processes the issue |
+
+## Merge Request Management
+
+When Pilot completes work on an issue, it creates a merge request in your GitLab project.
+
+### MR Options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| Remove source branch | No | Delete branch after merge |
+| Squash commits | No | Squash into single commit on merge |
+
+### Merge Waiting
+
+In sequential mode, Pilot waits for the MR to be merged before processing the next issue. It polls MR status every 30 seconds with a 1-hour timeout.
+
+| MR State | Pilot Behavior |
+|----------|----------------|
+| Merged | Marks issue complete, processes next |
+| Closed | Does not mark as processed (may need re-execution) |
+| Conflicts | Pauses 5 minutes, retries |
+| Timeout | Pauses 5 minutes, retries |
+
+## CI Status Tracking
+
+Pilot monitors GitLab pipeline status on merge requests:
+
+| Pipeline Status | Description |
+|----------------|-------------|
+| `pending` | Pipeline queued |
+| `running` | Pipeline executing |
+| `success` | All jobs passed |
+| `failed` | One or more jobs failed |
+| `canceled` | Pipeline was canceled |
+| `skipped` | Pipeline was skipped |
+| `manual` | Waiting for manual trigger |
+
+## Stale Label Cleanup
+
+Pilot automatically removes orphaned `pilot-in-progress` labels from issues that are no longer being actively processed. This prevents issues from getting stuck if Pilot restarts during execution.
+
+The cleaner runs every 30 minutes (configurable) and removes the label if:
+- No active Pilot execution exists for the issue
+- The label was last updated more than 1 hour ago (configurable)
+
+A comment is posted to the issue explaining the cleanup.
+
+## Labels
+
+| Label | Purpose |
+|-------|---------|
+| `pilot` | Triggers Pilot to pick up the issue |
+| `pilot-in-progress` | Applied while Pilot is working |
+| `pilot-done` | Applied after successful completion |
+| `pilot-failed` | Applied if execution fails |
+
+## Differences from GitHub
+
+| Aspect | GitLab | GitHub |
+|--------|--------|--------|
+| Auth header | `PRIVATE-TOKEN` | `Authorization: Bearer` |
+| Webhook security | Simple token (`X-Gitlab-Token`) | HMAC-SHA256 (`X-Hub-Signature-256`) |
+| Issue states | `opened` / `closed` | `open` / `closed` |
+| PR terminology | Merge Request (MR) | Pull Request (PR) |
+| Label operations | Fetch → merge → PUT (full array) | Direct add/remove endpoints |
+| Priority labels | `priority::high` (scoped) | `priority:high` |
+| CI model | Single pipeline with status | Commit statuses + check runs |
+| Merge strategies | `squash` boolean only | `merge` / `squash` / `rebase` |
+| Task ID format | `GL-{iid}` | `GH-{number}` |
