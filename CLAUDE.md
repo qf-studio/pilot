@@ -67,9 +67,9 @@ make dev
 
 ```
 Gateway (Go)      → WebSocket control plane + HTTP webhooks
-Adapters          → Linear (inbound), Slack (outbound)
-Orchestrator (Py) → LLM-powered task planning
-Executor          → Claude Code process management
+Adapters          → Telegram, GitHub, GitLab, Azure DevOps, Linear, Jira, Slack
+Executor          → Claude Code process management + Navigator integration
+Autopilot         → CI monitoring, auto-merge, feedback loop, release pipeline
 Memory            → SQLite + knowledge graph
 Dashboard         → Terminal UI (bubbletea)
 ```
@@ -81,12 +81,15 @@ pilot/
 ├── cmd/pilot/           # CLI entrypoint
 ├── internal/
 │   ├── gateway/         # WebSocket + HTTP server
-│   ├── adapters/        # Linear, Slack
-│   ├── executor/        # Claude Code runner
-│   ├── memory/          # SQLite + knowledge
+│   ├── adapters/        # Telegram, GitHub, GitLab, AzureDevOps, Linear, Jira, Slack
+│   ├── executor/        # Claude Code runner + intent judge
+│   ├── autopilot/       # CI monitor, auto-merge, release pipeline
+│   ├── alerts/          # Alert engine + multi-channel dispatch
+│   ├── memory/          # SQLite + knowledge graph
 │   ├── config/          # YAML config
-│   └── dashboard/       # TUI
-├── orchestrator/        # Python LLM logic
+│   ├── dashboard/       # TUI (bubbletea)
+│   └── testutil/        # Safe test token constants
+├── docs/                # Nextra v2 documentation site
 └── .agent/              # Navigator docs
 ```
 
@@ -180,19 +183,20 @@ Documentation in `.agent/`:
 
 ## Current Status
 
-**Week 1-2 Complete**:
-- ✅ Gateway (WebSocket + HTTP)
-- ✅ Linear adapter
-- ✅ Slack adapter
-- ✅ Executor foundation
-- ✅ Memory system
-- ✅ Config system
-- ✅ TUI dashboard
-- ✅ CLI commands
+**Version:** v0.24.1 | **91 features implemented** | **16 wired but untested**
 
-**Next (Week 3-4)**:
-- Wire orchestrator to gateway
-- Full Claude Code integration
-- End-to-end flow testing
+**Core:**
+- ✅ Task execution with Navigator integration
+- ✅ Autopilot: CI monitor, auto-merge, feedback loop, tag-only release
+- ✅ Intent judge in execution pipeline
+- ✅ Rich PR comments with execution metrics
+- ✅ Epic decomposition with sub-issue PR wiring
+- ✅ Self-review, quality gates, effort routing
+
+**Adapters:** Telegram (voice, images, 5 modes), GitHub, GitLab, Azure DevOps, Linear, Jira, Slack
+
+**Dashboard:** Sparkline cards, SQLite persistence, epic-aware history, hot upgrade
+
+**Docs:** Nextra v2 at pilot.quantflow.studio, auto-deploy via GitLab CI
 
 <!-- GitHub integration verified -->

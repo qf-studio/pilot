@@ -1,6 +1,6 @@
 # Pilot Feature Matrix
 
-**Last Updated:** 2026-02-07 (v0.21.2, backlog audit)
+**Last Updated:** 2026-02-07 (v0.24.1)
 
 ## Legend
 
@@ -22,6 +22,7 @@
 | PR creation | ✅ | executor | `--create-pr` | - | Via `gh pr create` |
 | Progress display | ✅ | executor | - | - | Lipgloss visual bar |
 | Navigator detection | ✅ | executor | - | - | Auto-prefix if `.agent/` exists |
+| AGENTS.md loading | ✅ | executor | - | - | LoadAgentsFile reads project AGENTS.md (v0.24.1) |
 | Dry run mode | ✅ | executor | `--dry-run` | - | Show prompt only |
 | Verbose output | ✅ | executor | `--verbose` | - | Stream raw JSON |
 | Task dispatcher | ✅ | executor | - | - | Per-project queue (GH-46) |
@@ -39,6 +40,7 @@
 | Model routing | ✅ | executor | - | - | Haiku (trivial), Opus 4.6 (all others) (v0.20.0) |
 | Effort routing | ✅ | executor | - | - | Map complexity to Claude thinking depth (v0.20.0) |
 | LLM intent classification | ✅ | adapters/telegram | - | - | Pattern-based intent detection for Telegram messages |
+| Intent judge (pipeline) | ✅ | executor | - | - | Wired into execution pipeline for task classification (v0.24.0) |
 | Research subagents | ✅ | executor | - | - | Haiku-powered parallel codebase exploration |
 
 ## Input Adapters
@@ -65,6 +67,7 @@
 | Slack notifications | ✅ | adapters/slack | - | `adapters.slack` | Task updates |
 | Telegram replies | ✅ | adapters/telegram | - | - | Auto in telegram mode |
 | GitHub comments | ✅ | adapters/github | - | - | PR/issue updates |
+| Rich PR comments | ✅ | main | - | - | Execution metrics (duration, tokens, cost, model) in PR comments (v0.24.1) |
 | Outbound webhooks | ⚠️ | webhooks | `pilot webhooks` | `webhooks` | Config exists |
 
 ## Alerts & Monitoring
@@ -184,6 +187,7 @@
 | Telegram notifications | ✅ | autopilot | - | - | PR status updates |
 | Dashboard panel | ✅ | dashboard | `--dashboard` | - | Live autopilot status |
 | Environment gates | ✅ | autopilot | - | - | dev/stage/prod behavior |
+| Tag-only release | ✅ | autopilot | - | - | CreateTag() → GoReleaser handles full release (v0.24.1) |
 
 **Environments:**
 - `dev`: Skip CI, auto-merge immediately
@@ -208,10 +212,10 @@
 
 | Category | ✅ Working | ⚠️ Implemented | 🚧 Partial | ❌ Missing |
 |----------|-----------|----------------|-----------|-----------|
-| Core Execution | 13 | 0 | 0 | 0 |
-| Intelligence | 5 | 0 | 0 | 0 |
+| Core Execution | 14 | 0 | 0 | 0 |
+| Intelligence | 6 | 0 | 0 | 0 |
 | Input Adapters | 10 | 2 | 0 | 0 |
-| Output/Notifications | 3 | 1 | 0 | 0 |
+| Output/Notifications | 4 | 1 | 0 | 0 |
 | Alerts & Monitoring | 6 | 2 | 0 | 0 |
 | Quality Gates | 5 | 0 | 0 | 0 |
 | Memory & Learning | 6 | 0 | 0 | 0 |
@@ -222,9 +226,9 @@
 | Team Management | 0 | 3 | 0 | 0 |
 | Infrastructure | 1 | 4 | 0 | 0 |
 | Approval Workflows | 3 | 1 | 0 | 0 |
-| Autopilot | 9 | 0 | 0 | 0 |
+| Autopilot | 10 | 0 | 0 | 0 |
 | Self-Management | 5 | 1 | 0 | 0 |
-| **Total** | **87** | **16** | **0** | **0** |
+| **Total** | **91** | **16** | **0** | **0** |
 
 ---
 
