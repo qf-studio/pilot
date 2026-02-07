@@ -229,6 +229,7 @@ type Runner struct {
 	subtaskParser         *SubtaskParser        // Haiku-based subtask parser; nil falls back to regex (GH-501)
 	suppressProgressLogs  bool                  // Suppress slog output for progress (use when visual display is active)
 	tokenLimitCheck       TokenLimitCallback    // Optional per-task token/duration limit check (GH-539)
+	onSubIssuePRCreated   func(prNumber int, prURL string, issueNumber int, headSHA string, branchName string) // Callback when a sub-issue PR is created during epic execution (GH-594)
 }
 
 // NewRunner creates a new Runner instance with Claude Code backend by default.
@@ -375,6 +376,13 @@ func (r *Runner) EnableDecomposition(config *DecomposeConfig) {
 // terminates with a budget-exceeded error.
 func (r *Runner) SetTokenLimitCheck(cb TokenLimitCallback) {
 	r.tokenLimitCheck = cb
+}
+
+// SetOnSubIssuePRCreated sets the callback invoked when a sub-issue PR is created
+// during epic execution (GH-594). This allows the autopilot controller to track
+// each sub-issue PR individually for CI monitoring and auto-merge.
+func (r *Runner) SetOnSubIssuePRCreated(fn func(prNumber int, prURL string, issueNumber int, headSHA string, branchName string)) {
+	r.onSubIssuePRCreated = fn
 }
 
 // getRecordingsPath returns the recordings path, using default if not set

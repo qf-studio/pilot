@@ -245,10 +245,26 @@ func finalizeSubtask(subtask *PlannedSubtask, lines []string) {
 // Matches patterns like: https://github.com/owner/repo/issues/123
 var issueNumberRegex = regexp.MustCompile(`/issues/(\d+)`)
 
+// prNumberRegex extracts the PR number from a GitHub PR URL.
+// Matches patterns like: https://github.com/owner/repo/pull/123 or /pulls/123
+var prNumberRegex = regexp.MustCompile(`/pulls?/(\d+)`)
+
 // parseIssueNumber extracts the issue number from a GitHub issue URL.
 // Returns 0 if no issue number is found.
 func parseIssueNumber(url string) int {
 	matches := issueNumberRegex.FindStringSubmatch(url)
+	if len(matches) < 2 {
+		return 0
+	}
+	var num int
+	_, _ = fmt.Sscanf(matches[1], "%d", &num)
+	return num
+}
+
+// parsePRNumber extracts the PR number from a GitHub PR URL.
+// Returns 0 if no PR number is found.
+func parsePRNumber(url string) int {
+	matches := prNumberRegex.FindStringSubmatch(url)
 	if len(matches) < 2 {
 		return 0
 	}
@@ -438,6 +454,16 @@ func (r *Runner) ExecuteSubIssues(ctx context.Context, parent *Task, issues []Cr
 		if err := r.CloseIssueWithComment(ctx, projectPath, fmt.Sprintf("%d", issue.Number), closeComment); err != nil {
 			r.log.Warn("Failed to close sub-issue", "issue", issue.Number, "error", err)
 			// Non-fatal, continue
+		}
+
+		// Register sub-issue PR with autopilot controller (GH-594)
+		if result.PRUrl != "" && r.onSubIssuePRCreated != nil {
+			if prNum := parsePRNumber(result.PRUrl); prNum > 0 {
+				r.onSubIssuePRCreated(prNum, result.PRUrl, issue.Number, result.CommitSHA, subTask.Branch)
+			} else {
+				r.log.Warn("Failed to extract PR number from sub-issue PR URL",
+					"pr_url", result.PRUrl)
+			}
 		}
 
 		r.log.Info("Sub-issue completed",
