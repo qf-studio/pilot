@@ -314,47 +314,290 @@ orchestrator:
 
 ## Quality
 
-Quality gates run before PR creation. Failed gates trigger retries or block the PR.
+Quality gates run **after** Pilot implements changes but **before** creating a PR. Each gate executes a shell command in the project directory. If a required gate fails, Pilot retries the implementation with the error output as feedback — the LLM sees what broke and fixes it.
 
+### How Quality Gates Work
+
+```
+Implementation complete
+  → Run gates in order: build → test → lint → coverage → ...
+  → All required gates pass? → Create PR
+  → Required gate fails?
+      → retry (default): feed error to LLM, re-implement, re-run gates
+      → fail: stop immediately, mark task as failed
+      → warn: log warning, create PR anyway
+```
+
+<Callout type="info">
+Even without explicit configuration, Pilot auto-detects your project type and runs a **minimal build gate** to catch compilation errors. Set `quality.enabled: true` to configure the full pipeline.
+</Callout>
+
+### Auto-Detection
+
+When quality gates are not explicitly configured, Pilot detects your project type by checking for marker files and applies a minimal build check:
+
+| Project Type | Marker File | Auto-Detected Command |
+|-------------|-------------|----------------------|
+| Go | `go.mod` | `go build ./...` |
+| Node.js (TypeScript) | `package.json` + `tsconfig.json` | `npm run build \|\| npx tsc --noEmit` |
+| Node.js (JavaScript) | `package.json` | `npm run build --if-present` |
+| Rust | `Cargo.toml` | `cargo check` |
+| Python | `pyproject.toml` or `setup.py` | `python -m py_compile` on changed files |
+
+To disable auto-detection, set `quality.enabled: false` explicitly.
+
+### Gate Types
+
+Seven built-in gate types with sensible default timeouts:
+
+| Type | Default Timeout | Purpose |
+|------|----------------|---------|
+| `build` | 5m | Compilation / build step |
+| `test` | 10m | Test suite execution |
+| `lint` | 2m | Static analysis and formatting |
+| `coverage` | 10m | Code coverage with threshold enforcement |
+| `security` | 5m | Security scanning (e.g. `gosec`, `npm audit`) |
+| `typecheck` | 3m | Type checking (e.g. `tsc --noEmit`, `mypy`) |
+| `custom` | 5m | Any arbitrary command |
+
+### Project-Specific Examples
+
+<Tabs items={['Go', 'Node.js / TypeScript', 'Python', 'Rust']}>
+  <Tabs.Tab>
 ```yaml
 quality:
   enabled: true
   gates:
     - name: build
       type: build
-      command: "make build"
+      command: "go build ./..."
       required: true
       timeout: 5m
       max_retries: 2
-      failure_hint: "Check compilation errors"
+      failure_hint: "Fix compilation errors in the changed files"
 
     - name: test
       type: test
-      command: "make test"
+      command: "go test ./... -count=1"
       required: true
       timeout: 10m
       max_retries: 2
+      failure_hint: "Fix failing tests or update test expectations"
 
     - name: lint
       type: lint
-      command: "make lint"
+      command: "golangci-lint run ./..."
       required: false
-      timeout: 2m
+      timeout: 3m
       max_retries: 1
+      failure_hint: "Fix linting errors: formatting, unused imports, etc."
+
+    - name: vet
+      type: custom
+      command: "go vet ./..."
+      required: true
+      timeout: 2m
+      failure_hint: "Fix go vet issues"
 
     - name: coverage
       type: coverage
-      command: "make coverage"
-      threshold: 80.0                     # minimum coverage percentage
+      command: "go test ./... -coverprofile=coverage.out && go tool cover -func=coverage.out"
+      threshold: 70.0
+      required: false
+      timeout: 10m
+```
+  </Tabs.Tab>
+  <Tabs.Tab>
+```yaml
+quality:
+  enabled: true
+  gates:
+    - name: typecheck
+      type: typecheck
+      command: "npx tsc --noEmit"
+      required: true
+      timeout: 3m
+      max_retries: 2
+      failure_hint: "Fix TypeScript type errors"
+
+    - name: build
+      type: build
+      command: "npm run build"
+      required: true
+      timeout: 5m
+      max_retries: 1
+      failure_hint: "Fix build errors"
+
+    - name: test
+      type: test
+      command: "npm test -- --watchAll=false"
+      required: true
+      timeout: 10m
+      max_retries: 2
+      failure_hint: "Fix failing tests or update snapshots"
+
+    - name: lint
+      type: lint
+      command: "npx eslint . --max-warnings 0"
+      required: false
+      timeout: 2m
+      max_retries: 1
+      failure_hint: "Fix ESLint warnings and errors"
+
+    - name: coverage
+      type: coverage
+      command: "npm test -- --coverage --watchAll=false"
+      threshold: 80.0
+      required: false
+      timeout: 10m
+```
+
+<Callout type="warning">
+For monorepos using Turborepo or Nx, prefix commands with the workspace runner: `npx turbo build` or `npx nx run-many --target=build`.
+</Callout>
+  </Tabs.Tab>
+  <Tabs.Tab>
+```yaml
+quality:
+  enabled: true
+  gates:
+    - name: typecheck
+      type: typecheck
+      command: "mypy src/"
+      required: false
+      timeout: 3m
+      failure_hint: "Fix type annotation errors"
+
+    - name: test
+      type: test
+      command: "pytest -x --tb=short"
+      required: true
+      timeout: 10m
+      max_retries: 2
+      failure_hint: "Fix failing tests"
+
+    - name: lint
+      type: lint
+      command: "ruff check . && ruff format --check ."
+      required: false
+      timeout: 2m
+      max_retries: 1
+      failure_hint: "Run 'ruff format .' to fix formatting"
+
+    - name: coverage
+      type: coverage
+      command: "pytest --cov=src --cov-report=term-missing"
+      threshold: 75.0
       required: false
       timeout: 10m
 
-  on_failure:
-    action: "retry"                       # retry, fail, warn
-    max_retries: 3
-    notify_on:
-      - failed
+    - name: security
+      type: security
+      command: "bandit -r src/ -ll"
+      required: false
+      timeout: 3m
+      failure_hint: "Fix security issues flagged by bandit"
 ```
+  </Tabs.Tab>
+  <Tabs.Tab>
+```yaml
+quality:
+  enabled: true
+  gates:
+    - name: build
+      type: build
+      command: "cargo check"
+      required: true
+      timeout: 10m
+      max_retries: 2
+      failure_hint: "Fix compilation errors"
+
+    - name: test
+      type: test
+      command: "cargo test"
+      required: true
+      timeout: 15m
+      max_retries: 2
+      failure_hint: "Fix failing tests"
+
+    - name: lint
+      type: lint
+      command: "cargo clippy -- -D warnings"
+      required: false
+      timeout: 5m
+      max_retries: 1
+      failure_hint: "Fix clippy warnings"
+
+    - name: format
+      type: custom
+      command: "cargo fmt -- --check"
+      required: false
+      timeout: 1m
+      failure_hint: "Run 'cargo fmt' to fix formatting"
+```
+  </Tabs.Tab>
+</Tabs>
+
+### Coverage Thresholds
+
+Coverage gates parse output from common test runners to extract a percentage value. Supported output formats:
+
+| Runner | Output Pattern | Example |
+|--------|---------------|---------|
+| Go | `coverage: X.X% of statements` | `coverage: 85.3% of statements` |
+| Jest / NYC | `Statements : X.X%` or `Lines : X.X%` | `Statements   : 92.1%` |
+| pytest-cov | `TOTAL ... X%` | `TOTAL    450    38    92%` |
+
+Set `threshold` on a coverage gate to enforce a minimum:
+
+```yaml
+    - name: coverage
+      type: coverage
+      command: "go test ./... -coverprofile=c.out && go tool cover -func=c.out"
+      threshold: 80.0          # fail if coverage drops below 80%
+      required: true           # block PR creation
+      timeout: 10m
+```
+
+<Callout type="info">
+When a coverage gate is `required: false`, Pilot logs a warning if coverage is below the threshold but still creates the PR. Set `required: true` to enforce it as a hard gate.
+</Callout>
+
+### Failure Handling
+
+The `on_failure` block defines global behavior when any required gate fails:
+
+```yaml
+quality:
+  on_failure:
+    action: "retry"          # retry | fail | warn
+    max_retries: 3           # global retry limit across all gates
+    notify_on:
+      - failed               # send notification on these statuses
+```
+
+| Action | Behavior |
+|--------|----------|
+| `retry` | Feed the error output back to the LLM, re-implement, re-run all gates. Default. |
+| `fail` | Stop immediately. Mark the task as failed. Useful for CI-only validation. |
+| `warn` | Log the failure as a warning. Continue to PR creation. |
+
+**Per-gate retries** (`max_retries` on individual gates) control how many times a single gate retries before reporting failure. **Global retries** (`on_failure.max_retries`) control how many full implementation cycles run. These compose: a gate with `max_retries: 2` inside a pipeline with `on_failure.max_retries: 3` can attempt the gate up to 2×3 = 6 times total.
+
+### Failure Hints
+
+The `failure_hint` field on each gate is passed to the LLM as context when a gate fails. Write hints that help the AI fix the issue:
+
+```yaml
+    - name: lint
+      type: lint
+      command: "golangci-lint run ./..."
+      failure_hint: "Fix linting errors. Common issues: unused imports, missing error checks, formatting."
+```
+
+Good hints are specific and actionable. Bad hints are vague ("fix the errors").
+
+### Option Reference
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -363,51 +606,243 @@ quality:
 | `gates[].type` | string | — | Gate type: `build`, `test`, `lint`, `coverage`, `security`, `typecheck`, `custom` |
 | `gates[].command` | string | — | Shell command to run |
 | `gates[].required` | bool | `false` | Block PR if gate fails |
-| `gates[].timeout` | duration | varies | Max execution time |
+| `gates[].timeout` | duration | varies | Max execution time (see gate type defaults above) |
 | `gates[].threshold` | float64 | — | Minimum threshold (coverage gates) |
-| `gates[].max_retries` | int | `0` | Retry count on failure |
+| `gates[].max_retries` | int | `0` | Retry count per gate on failure |
 | `gates[].retry_delay` | duration | `0` | Delay between retries |
-| `gates[].failure_hint` | string | — | Hint message shown on failure |
+| `gates[].failure_hint` | string | — | Context message passed to LLM on failure |
 | `on_failure.action` | string | `"retry"` | Default action: `retry`, `fail`, `warn` |
-| `on_failure.max_retries` | int | — | Global retry limit |
-| `on_failure.notify_on` | []string | — | Statuses that trigger notifications |
+| `on_failure.max_retries` | int | — | Global retry limit (full re-implementation cycles) |
+| `on_failure.notify_on` | []string | — | Statuses that trigger notifications: `failed`, `passed`, `skipped` |
 
 ---
 
 ## Budget
 
-Cost controls for API usage. Prevents runaway spending.
+Cost controls for API usage. Prevents runaway spending by enforcing daily, monthly, and per-task limits with configurable enforcement actions.
+
+<Callout type="info">
+Budget enforcement is **disabled by default**. Enable it explicitly with `budget.enabled: true`. When disabled, Pilot tracks no costs and applies no limits.
+</Callout>
+
+### How Budget Enforcement Works
+
+```
+┌─────────────┐     ┌──────────────┐     ┌───────────────┐     ┌──────────┐
+│ New task     │────▶│ Check budget │────▶│ Within limits? │────▶│ Execute  │
+│ arrives      │     │ (enforcer)   │     │                │     │ task     │
+└─────────────┘     └──────────────┘     └───────┬────────┘     └────┬─────┘
+                                                 │ No                │
+                                          ┌──────▼──────┐     ┌─────▼──────┐
+                                          │ Apply action │     │ Track cost │
+                                          │ warn/pause/  │     │ per event  │
+                                          │ stop         │     └────────────┘
+                                          └─────────────┘
+```
+
+Budget checks run **before** each task starts. The enforcer queries accumulated spend from the metering database, compares against configured limits, and applies the configured action if a limit is exceeded. If the usage provider returns an error, the enforcer **fails open** — the task is allowed to proceed (logged as a warning).
+
+### Minimal Configuration
 
 ```yaml
 budget:
   enabled: true
-  daily_limit: 50.00                      # USD
-  monthly_limit: 500.00                   # USD
+  daily_limit: 50.00
+  monthly_limit: 500.00
+```
+
+This enables budget tracking with sensible defaults for per-task limits and enforcement actions.
+
+### Full Configuration
+
+```yaml
+budget:
+  enabled: true
+  daily_limit: 50.00                      # USD per day
+  monthly_limit: 500.00                   # USD per month
 
   per_task:
-    max_tokens: 100000
-    max_duration: 30m
+    max_tokens: 100000                    # hard cap per task execution
+    max_duration: 30m                     # context timeout per task
 
   on_exceed:
     daily: "pause"                        # pause new tasks, finish current
     monthly: "stop"                       # terminate immediately
-    per_task: "stop"
+    per_task: "stop"                      # kill task that exceeds
 
   thresholds:
-    warn_percent: 80                      # warn at 80% of limit
+    warn_percent: 80                      # alert at 80% of any limit
 ```
+
+### Option Reference
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `enabled` | bool | `false` | Enable budget tracking |
-| `daily_limit` | float64 | `50.00` | Daily spend limit (USD) |
-| `monthly_limit` | float64 | `500.00` | Monthly spend limit (USD) |
-| `per_task.max_tokens` | int64 | `100000` | Max tokens per task |
-| `per_task.max_duration` | duration | `30m` | Max time per task |
-| `on_exceed.daily` | string | `"pause"` | Action when daily limit hit: `warn`, `pause`, `stop` |
-| `on_exceed.monthly` | string | `"stop"` | Action when monthly limit hit |
-| `on_exceed.per_task` | string | `"stop"` | Action when per-task limit hit |
-| `thresholds.warn_percent` | float64 | `80` | Warning threshold as percentage |
+| `enabled` | bool | `false` | Enable budget tracking and enforcement |
+| `daily_limit` | float64 | `50.00` | Maximum daily spend in USD. Resets at midnight local time |
+| `monthly_limit` | float64 | `500.00` | Maximum monthly spend in USD. Resets on the 1st of each month |
+| `per_task.max_tokens` | int64 | `100000` | Maximum tokens (input + output) a single task may consume |
+| `per_task.max_duration` | duration | `30m` | Maximum wall-clock time for a single task. Creates a context deadline |
+| `on_exceed.daily` | string | `"pause"` | Action when daily limit is hit: `warn`, `pause`, `stop` |
+| `on_exceed.monthly` | string | `"stop"` | Action when monthly limit is hit: `warn`, `pause`, `stop` |
+| `on_exceed.per_task` | string | `"stop"` | Action when per-task limit is hit: `warn`, `pause`, `stop` |
+| `thresholds.warn_percent` | float64 | `80` | Percentage of any limit that triggers a warning alert |
+
+### Per-Task Limits
+
+Per-task limits protect against individual runaway executions — a single complex issue consuming your entire daily budget.
+
+**Token limit** (`per_task.max_tokens`): Tracks cumulative input + output tokens during task execution. When exceeded, the task is terminated based on `on_exceed.per_task`.
+
+**Duration limit** (`per_task.max_duration`): Creates a Go context with a deadline. When the deadline expires, the executor's context is cancelled and the task stops gracefully.
+
+<Tabs items={['Conservative', 'Standard', 'Generous']}>
+  <Tabs.Tab>
+```yaml
+# Small tasks, tight control
+per_task:
+  max_tokens: 50000          # ~$0.25 per task
+  max_duration: 15m
+```
+  </Tabs.Tab>
+  <Tabs.Tab>
+```yaml
+# Default — handles most issues
+per_task:
+  max_tokens: 100000         # ~$0.50 per task
+  max_duration: 30m
+```
+  </Tabs.Tab>
+  <Tabs.Tab>
+```yaml
+# Complex tasks, multi-file changes
+per_task:
+  max_tokens: 500000         # ~$2.50 per task
+  max_duration: 1h
+```
+  </Tabs.Tab>
+</Tabs>
+
+<Callout type="warning">
+Setting `max_tokens: 0` or `max_duration: 0` disables that specific per-task limit. The task will run without that constraint (other limits still apply).
+</Callout>
+
+### Daily and Monthly Caps
+
+Daily and monthly caps control aggregate spend across all tasks.
+
+- **Daily limit** resets at **midnight local time**. If Pilot was paused due to a daily limit, it automatically resumes at the next reset.
+- **Monthly limit** resets on the **1st of each month**. Monthly pauses do NOT auto-resume — use `pilot budget reset --confirm` or wait for the new month.
+
+```yaml
+budget:
+  daily_limit: 25.00          # $25/day
+  monthly_limit: 200.00       # $200/month — ~8 working days
+```
+
+The enforcer checks **monthly limits first** (more severe), then daily limits. This means a monthly `stop` action takes priority over a daily `pause`.
+
+### Enforcement Actions: Warn, Pause, Stop
+
+Each limit boundary has an independently configurable action:
+
+| Action | Behavior | Current Task | New Tasks | Auto-Resume |
+|--------|----------|-------------|-----------|-------------|
+| `warn` | Log warning + fire alert | Continues | Allowed | N/A |
+| `pause` | Block new tasks | Finishes normally | Blocked (queued) | Yes, at next daily reset |
+| `stop` | Terminate immediately | Killed | Blocked | No — manual reset required |
+
+**Recommended configurations by use case:**
+
+<Tabs items={['Solo Developer', 'Team / Staging', 'Production']}>
+  <Tabs.Tab>
+```yaml
+# Solo: catch runaway tasks, don't lose work
+on_exceed:
+  daily: "warn"              # just notify, keep working
+  monthly: "pause"           # stop new tasks at month cap
+  per_task: "stop"           # kill individual runaway tasks
+```
+  </Tabs.Tab>
+  <Tabs.Tab>
+```yaml
+# Team: strict daily, hard monthly
+on_exceed:
+  daily: "pause"             # pause at daily cap
+  monthly: "stop"            # hard stop at monthly cap
+  per_task: "stop"           # kill runaway tasks
+```
+  </Tabs.Tab>
+  <Tabs.Tab>
+```yaml
+# Production: hard limits everywhere
+on_exceed:
+  daily: "stop"
+  monthly: "stop"
+  per_task: "stop"
+```
+  </Tabs.Tab>
+</Tabs>
+
+### Warning Thresholds and Alerts
+
+The `warn_percent` threshold fires alerts **before** a limit is exceeded. Alerts are delivered through your configured alert channels (Slack, Telegram, email, PagerDuty — see [Alerts](#alerts)).
+
+```yaml
+thresholds:
+  warn_percent: 80            # alert at 80% of daily or monthly limit
+```
+
+Alert types fired by the budget enforcer:
+
+| Alert Type | Severity | Trigger |
+|------------|----------|---------|
+| `daily_budget_warning` | `warning` | Daily spend reaches `warn_percent` |
+| `monthly_budget_warning` | `warning` | Monthly spend reaches `warn_percent` |
+| `daily_budget_exceeded` | `critical` | Daily spend reaches 100% |
+| `monthly_budget_exceeded` | `critical` | Monthly spend reaches 100% |
+
+### Cost Tracking Model
+
+Pilot tracks five event types that contribute to spend calculations:
+
+| Event Type | Unit | Rate | Description |
+|------------|------|------|-------------|
+| `task` | per execution | $1.00 | Flat fee per task execution |
+| `token` | per 1M tokens | $3.60 input / $18.00 output | Claude API tokens (Sonnet pricing + 20% margin) |
+| `compute` | per minute | $0.01 | Execution wall-clock time |
+| `storage` | per GB/month | $0.10 | Memory and log storage |
+| `api_call` | per call | $0.001 | External API calls (GitHub, Linear, etc.) |
+
+<Callout type="info">
+Token pricing includes a 20% platform margin over base Claude API rates. Opus 4.6 pricing ($5/$25 per 1M tokens) is tracked separately for tasks routed to Opus.
+</Callout>
+
+### CLI Commands
+
+Monitor and manage budget from the command line:
+
+```bash
+# View current spend vs limits with progress bars
+pilot budget status
+
+# View budget configuration and YAML template
+pilot budget config
+
+# Reset blocked tasks counter and resume daily-paused execution
+pilot budget reset --confirm
+```
+
+`pilot budget status` displays color-coded progress bars:
+- **White**: Under 80% of limit
+- **Yellow**: 80-99% of limit (warning zone)
+- **Red**: 100%+ (limit exceeded)
+
+The status also shows paused/blocked indicators and per-task enforcement settings.
+
+<Callout type="warning">
+`pilot budget reset` only clears the blocked tasks counter and resumes execution paused by **daily** limits. Monthly limit pauses require waiting for the new month or updating `monthly_limit` in config.
+</Callout>
 
 ---
 

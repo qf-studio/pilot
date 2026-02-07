@@ -1,0 +1,302 @@
+import { Callout, Tabs } from 'nextra/components'
+
+# Autopilot Environments
+
+Pilot's autopilot mode operates in three environments — `dev`, `stage`, and `prod` — each with different levels of automation, safety checks, and approval requirements. Choose the environment that matches your risk tolerance and workflow.
+
+## Environment Overview
+
+| | `dev` | `stage` | `prod` |
+|--|-------|---------|--------|
+| **Auto-merge** | Immediate after CI | After CI + delay | Never (manual approval) |
+| **CI required** | Yes | Yes | Yes |
+| **Human approval** | No | No | Yes |
+| **Self-review** | Yes | Yes | No |
+| **CI timeout** | 5 min (fast fail) | 30 min | 30 min |
+| **Post-merge CI** | Optional | Required | Required |
+| **Release without CI** | Allowed | No | No |
+| **Use case** | Solo projects, prototypes | Team staging, shared repos | Production deployments |
+
+---
+
+## Development (`dev`)
+
+The fastest path from issue to merged PR. Pilot executes the task, runs quality gates, creates a PR, waits for CI, and merges immediately on success.
+
+```bash
+pilot start --github --autopilot=dev
+```
+
+### Behavior
+
+```
+Issue → Implement → Quality Gates → PR → CI (5m timeout)
+                                          ↓ pass
+                                        Merge → Release (optional, no post-merge CI needed)
+                                          ↓ fail
+                                        Create fix issue → retry (up to max_failures)
+```
+
+- **CI timeout**: Uses `dev_ci_timeout` (default 5m) instead of `ci_wait_timeout` (30m). Fast feedback — if CI hasn't completed in 5 minutes, something is wrong.
+- **No approval gate**: PRs merge as soon as CI passes. No human in the loop.
+- **Release shortcut**: If auto-release is enabled with `require_ci: false`, releases happen immediately after merge without waiting for post-merge CI.
+- **Self-review enabled**: Pilot reviews its own diff before pushing, catching obvious issues.
+
+### Recommended Configuration
+
+```yaml
+orchestrator:
+  autopilot:
+    enabled: true
+    environment: "dev"
+    auto_merge: true
+    merge_method: "squash"
+    dev_ci_timeout: 5m
+    ci_poll_interval: 15s        # poll faster for quick feedback
+    max_failures: 3              # retry CI fixes up to 3 times
+    max_merges_per_hour: 20      # higher limit for rapid iteration
+    required_checks:
+      - build
+      - test
+```
+
+### When to Use
+
+- Personal projects where you're the only contributor
+- Prototyping and experimentation branches
+- Repositories with fast CI pipelines (< 5 min)
+- Internal tools with low blast radius
+- Hackathons and spike work
+
+<Callout type="warning">
+  `dev` mode merges without human review. Only use this on repositories where you trust Pilot's output and have CI coverage to catch regressions.
+</Callout>
+
+---
+
+## Staging (`stage`)
+
+Balanced automation with safety margins. Pilot creates PRs and merges after CI passes, but adds delays and monitoring to catch issues before they compound.
+
+```bash
+pilot start --github --autopilot=stage
+```
+
+### Behavior
+
+```
+Issue → Implement → Quality Gates → PR → CI (30m timeout)
+                                          ↓ pass
+                                        Wait for post-merge CI
+                                          ↓ pass
+                                        Release (if enabled)
+                                          ↓ fail
+                                        Create fix issue → retry
+```
+
+- **Standard CI timeout**: Uses `ci_wait_timeout` (default 30m) — accommodates slower integration test suites.
+- **No approval gate**: Like `dev`, PRs merge after CI without human approval. The key difference is timing and monitoring.
+- **Post-merge CI required**: After merge, Pilot monitors the main branch CI before proceeding to release. This catches issues that only appear on the target branch.
+- **Release requires CI**: Auto-release only triggers after post-merge CI confirms the main branch is green.
+- **Self-review enabled**: Pilot reviews its own changes before creating the PR.
+
+### Recommended Configuration
+
+```yaml
+orchestrator:
+  autopilot:
+    enabled: true
+    environment: "stage"
+    auto_merge: true
+    merge_method: "squash"
+    ci_wait_timeout: 30m
+    ci_poll_interval: 30s
+    max_failures: 3
+    max_merges_per_hour: 10      # moderate rate limit
+    required_checks:
+      - build
+      - test
+      - lint
+    release:
+      enabled: true
+      trigger: "on_merge"
+      version_strategy: "conventional_commits"
+      require_ci: true           # wait for post-merge CI
+```
+
+### When to Use
+
+- Team projects with shared staging branches
+- Repositories with integration tests that take 10-30 minutes
+- Projects where multiple Pilot instances might run concurrently
+- Pre-production environments feeding into manual prod deploys
+- Open-source projects where you review PRs asynchronously
+
+<Callout type="info">
+  `stage` is the **default environment**. If you don't specify `--autopilot=dev` or `--autopilot=prod`, Pilot uses `stage` behavior.
+</Callout>
+
+---
+
+## Production (`prod`)
+
+Maximum safety. Pilot creates PRs but requires explicit human approval before merging. Use this when deploying directly to production or when regulatory/compliance requirements demand a human in the loop.
+
+```bash
+pilot start --github --autopilot=prod
+```
+
+### Behavior
+
+```
+Issue → Implement → Quality Gates → PR → CI (30m timeout)
+                                          ↓ pass
+                                        Request Approval (Telegram/Slack/GitHub Review)
+                                          ↓ approved
+                                        Merge → Post-merge CI → Release (if enabled)
+                                          ↓ denied / timeout
+                                        Notify, do not merge
+```
+
+- **Human approval required**: After CI passes, Pilot sends an approval request via the configured `approval_source` (Telegram, Slack, or GitHub PR review). The PR will not merge until a human approves.
+- **Approval timeout**: If no response within `approval_timeout` (default 1h), the request expires and Pilot notifies the team.
+- **No self-review**: Pilot skips self-review in prod mode — the human reviewer serves as the quality gate.
+- **Post-merge CI + release**: Same as `stage` — releases only happen after post-merge CI passes.
+
+### Recommended Configuration
+
+```yaml
+orchestrator:
+  autopilot:
+    enabled: true
+    environment: "prod"
+    approval_source: "github-review"  # or "telegram", "slack"
+    approval_timeout: 2h
+    auto_merge: true                  # merge after approval
+    merge_method: "squash"
+    ci_wait_timeout: 30m
+    max_failures: 2                   # fewer retries — fail fast
+    max_merges_per_hour: 5            # conservative rate limit
+    required_checks:
+      - build
+      - test
+      - lint
+      - security                      # add security scanning
+    github_review:
+      poll_interval: 30s
+    release:
+      enabled: true
+      trigger: "on_merge"
+      version_strategy: "conventional_commits"
+      require_ci: true
+      notify_on_release: true
+```
+
+### Approval Sources
+
+Pilot supports three channels for approval requests in `prod` mode:
+
+| Source | Config Value | How It Works |
+|--------|-------------|-------------|
+| **Telegram** | `"telegram"` | Sends approval message to your Telegram bot. Reply to approve/deny. |
+| **Slack** | `"slack"` | Posts in configured Slack channel with approve/deny buttons. |
+| **GitHub Review** | `"github-review"` | Requests a PR review on GitHub. Approve the review to merge. |
+
+```yaml
+# Telegram approval
+approval_source: "telegram"
+
+# Slack approval
+approval_source: "slack"
+
+# GitHub PR review approval (polls for review status)
+approval_source: "github-review"
+github_review:
+  poll_interval: 30s
+```
+
+### When to Use
+
+- Production deployments with real users
+- Regulated environments requiring audit trails
+- Shared repositories where PRs need team review
+- Projects with compliance requirements (SOC2, HIPAA)
+- Any repository where an unreviewed merge could cause an outage
+
+<Callout type="error" emoji="🔒">
+  Even in `prod` mode, Pilot creates the implementation and PR autonomously. The human gate is **only at the merge step**. Review PRs carefully — Pilot's code passes CI but may not match your architectural preferences.
+</Callout>
+
+---
+
+## Environment Comparison Matrix
+
+### PR Lifecycle by Environment
+
+| Stage | `dev` | `stage` | `prod` |
+|-------|-------|---------|--------|
+| Implementation | Autonomous | Autonomous | Autonomous |
+| Quality gates | Run | Run | Run |
+| Self-review | Yes | Yes | **No** |
+| PR creation | Automatic | Automatic | Automatic |
+| CI monitoring | 5m timeout | 30m timeout | 30m timeout |
+| CI failure handling | Auto-fix issue | Auto-fix issue | Auto-fix issue |
+| Merge approval | None | None | **Required** |
+| Post-merge CI | Optional | Required | Required |
+| Auto-release | Immediate | After post-merge CI | After post-merge CI |
+
+### Safety Controls
+
+| Control | `dev` | `stage` | `prod` |
+|---------|-------|---------|--------|
+| `max_failures` (default) | 3 | 3 | 3 |
+| `max_merges_per_hour` (default) | 10 | 10 | 10 |
+| Circuit breaker | Yes | Yes | Yes |
+| Failure notifications | Yes | Yes | Yes |
+| Rate limiting | Yes | Yes | Yes |
+
+All three environments share the same circuit breaker and rate limiting. If Pilot hits `max_failures` consecutive failures, it pauses and notifies. The `max_merges_per_hour` limit prevents runaway automation in any environment.
+
+---
+
+## CLI Override
+
+The `--autopilot` flag overrides the YAML `environment` setting:
+
+```bash
+# Config says stage, but run as dev for this session
+pilot start --github --autopilot=dev
+
+# Config says dev, but run as prod for a careful deploy
+pilot start --github --autopilot=prod
+```
+
+This is useful for temporarily changing behavior without editing `config.yaml` — for example, running in `prod` mode for a high-risk release, then switching back to `stage` for normal work.
+
+---
+
+## Migration Between Environments
+
+### Promoting from `dev` → `stage`
+
+When your project grows from solo to team:
+
+1. Set `environment: "stage"` in config
+2. Add `lint` to `required_checks` — dev often skips linting for speed
+3. Lower `max_merges_per_hour` to avoid flooding the team with PRs
+4. Enable `release.require_ci: true` for safer releases
+
+### Promoting from `stage` → `prod`
+
+When you're deploying to production:
+
+1. Set `environment: "prod"`
+2. Configure `approval_source` (Telegram, Slack, or GitHub review)
+3. Add `security` to `required_checks`
+4. Lower `max_failures` to fail fast on production issues
+5. Set `approval_timeout` to match your team's review SLA
+6. Consider adding `notify_on_release: true` for visibility
+
+<Callout type="info">
+  You can run multiple Pilot instances with different environments. For example, run `--autopilot=dev` for feature branches and `--autopilot=prod` for the `main` branch by using separate config files or CLI overrides.
+</Callout>

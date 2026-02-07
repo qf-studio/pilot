@@ -2,5 +2,6 @@
   "telegram": "Telegram Bot",
   "github": "GitHub Integration",
   "autopilot": "Autopilot Mode",
+  "autopilot-environments": "Autopilot Environments",
   "approval-workflows": "Approval Workflows"
 }
