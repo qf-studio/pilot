@@ -203,6 +203,10 @@ type TokenCallback func(taskID string, inputTokens, outputTokens int64)
 // limit has been exceeded and execution should be cancelled.
 type TokenLimitCallback func(taskID string, deltaInput, deltaOutput int64) bool
 
+// SubIssuePRCreatedCallback is called when a sub-issue's execution creates a PR.
+// The signature matches Controller.OnPRCreated exactly so it can be passed directly.
+type SubIssuePRCreatedCallback func(prNumber int, prURL string, issueNumber int, headSHA string, branchName string)
+
 // Runner executes development tasks using an AI backend (Claude Code, OpenCode, etc.).
 // It manages task lifecycle including branch creation, AI invocation,
 // progress tracking, PR creation, and execution recording. Runner is safe for
@@ -228,7 +232,8 @@ type Runner struct {
 	decomposer            *TaskDecomposer       // Optional task decomposer for complex tasks (GH-218)
 	subtaskParser         *SubtaskParser        // Haiku-based subtask parser; nil falls back to regex (GH-501)
 	suppressProgressLogs  bool                  // Suppress slog output for progress (use when visual display is active)
-	tokenLimitCheck       TokenLimitCallback    // Optional per-task token/duration limit check (GH-539)
+	tokenLimitCheck       TokenLimitCallback         // Optional per-task token/duration limit check (GH-539)
+	onSubIssuePRCreated   SubIssuePRCreatedCallback  // Optional callback when sub-issue PR is created (GH-593)
 }
 
 // NewRunner creates a new Runner instance with Claude Code backend by default.
@@ -375,6 +380,13 @@ func (r *Runner) EnableDecomposition(config *DecomposeConfig) {
 // terminates with a budget-exceeded error.
 func (r *Runner) SetTokenLimitCheck(cb TokenLimitCallback) {
 	r.tokenLimitCheck = cb
+}
+
+// SetOnSubIssuePRCreated sets the callback invoked when a sub-issue execution
+// creates a PR. The signature matches Controller.OnPRCreated so it can be
+// passed directly (GH-593).
+func (r *Runner) SetOnSubIssuePRCreated(cb SubIssuePRCreatedCallback) {
+	r.onSubIssuePRCreated = cb
 }
 
 // getRecordingsPath returns the recordings path, using default if not set
