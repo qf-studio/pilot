@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os/exec"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -257,6 +258,26 @@ func parseIssueNumber(url string) int {
 	return num
 }
 
+// parsePRNumberFromURL extracts a PR number from a GitHub PR URL.
+// Returns 0 if the URL doesn't contain a valid PR number.
+func parsePRNumberFromURL(url string) int {
+	// Match /pull/123 at the end of the URL
+	idx := strings.LastIndex(url, "/pull/")
+	if idx < 0 {
+		return 0
+	}
+	numStr := strings.TrimSpace(url[idx+len("/pull/"):])
+	// Strip any trailing path segments
+	if slashIdx := strings.Index(numStr, "/"); slashIdx >= 0 {
+		numStr = numStr[:slashIdx]
+	}
+	n, err := strconv.Atoi(numStr)
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
 // CreateSubIssues creates GitHub issues from the planned subtasks.
 // Returns a slice of CreatedIssue with the issue numbers and URLs.
 func (r *Runner) CreateSubIssues(ctx context.Context, plan *EpicPlan) ([]CreatedIssue, error) {
@@ -414,8 +435,12 @@ func (r *Runner) ExecuteSubIssues(ctx context.Context, parent *Task, issues []Cr
 			"total", total,
 		)
 
-		// Execute the sub-task
-		result, err := r.Execute(ctx, subTask)
+		// Execute the sub-task (use override if set, for testing)
+		execFn := r.Execute
+		if r.executeFunc != nil {
+			execFn = r.executeFunc
+		}
+		result, err := execFn(ctx, subTask)
 		if err != nil {
 			failMsg := fmt.Sprintf("❌ Failed on %d/%d: %s - Error: %v",
 				i+1, total, issue.Subtask.Title, err)
@@ -428,6 +453,12 @@ func (r *Runner) ExecuteSubIssues(ctx context.Context, parent *Task, issues []Cr
 				i+1, total, issue.Subtask.Title, result.Error)
 			_ = r.UpdateIssueProgress(ctx, projectPath, parent.ID, failMsg)
 			return fmt.Errorf("sub-issue %d failed: %s", issue.Number, result.Error)
+		}
+
+		// Fire sub-issue PR callback if registered (GH-596)
+		if r.onSubIssuePRCreated != nil && result.PRUrl != "" {
+			prNumber := parsePRNumberFromURL(result.PRUrl)
+			r.onSubIssuePRCreated(parent.ID, issue.Number, prNumber, result.CommitSHA, subTask.Branch)
 		}
 
 		// Close completed sub-issue

@@ -203,6 +203,10 @@ type TokenCallback func(taskID string, inputTokens, outputTokens int64)
 // limit has been exceeded and execution should be cancelled.
 type TokenLimitCallback func(taskID string, deltaInput, deltaOutput int64) bool
 
+// SubIssuePRCallback is called when a sub-issue PR is created during epic execution.
+// It receives the parent task ID, sub-issue number, PR number, commit SHA, and branch name.
+type SubIssuePRCallback func(parentTaskID string, issueNumber int, prNumber int, commitSHA string, branchName string)
+
 // Runner executes development tasks using an AI backend (Claude Code, OpenCode, etc.).
 // It manages task lifecycle including branch creation, AI invocation,
 // progress tracking, PR creation, and execution recording. Runner is safe for
@@ -229,6 +233,8 @@ type Runner struct {
 	subtaskParser         *SubtaskParser        // Haiku-based subtask parser; nil falls back to regex (GH-501)
 	suppressProgressLogs  bool                  // Suppress slog output for progress (use when visual display is active)
 	tokenLimitCheck       TokenLimitCallback    // Optional per-task token/duration limit check (GH-539)
+	onSubIssuePRCreated   SubIssuePRCallback    // Optional callback when a sub-issue PR is created (GH-596)
+	executeFunc           func(ctx context.Context, task *Task) (*ExecutionResult, error) // Internal override for testing
 }
 
 // NewRunner creates a new Runner instance with Claude Code backend by default.
@@ -429,6 +435,13 @@ func (r *Runner) RemoveTokenCallback(name string) {
 	r.tokenMu.Lock()
 	defer r.tokenMu.Unlock()
 	delete(r.tokenCallbacks, name)
+}
+
+// OnSubIssuePRCreated registers a callback that fires when a sub-issue PR is created
+// during epic execution. The callback receives the parent task ID, sub-issue number,
+// PR number, commit SHA, and branch name.
+func (r *Runner) OnSubIssuePRCreated(callback SubIssuePRCallback) {
+	r.onSubIssuePRCreated = callback
 }
 
 // reportTokens sends token usage updates to all registered callbacks.
