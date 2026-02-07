@@ -40,11 +40,15 @@ jobs:
           find "$WORK" -mindepth 1 -maxdepth 1 ! -name '.git' -exec rm -rf {} +
           cp -a docs/. "$WORK"/
 
+          # Remove dirs that should never be synced to GitLab
+          rm -rf "$WORK/.next" "$WORK/node_modules" "$WORK/.idea" "$WORK/~"
+
           # Restore GitLab CI infrastructure files (GitLab version wins)
           for f in .gitlab-ci.yml docker-compose.prod.yml docker-compose.yml; do
             [ -f "$BACKUP/$f" ] && cp "$BACKUP/$f" "$WORK/$f"
           done
-          [ -d "$BACKUP/docker" ] && cp -a "$BACKUP/docker" "$WORK/docker"
+          # Remove first to prevent cp -a nesting into existing dir
+          [ -d "$BACKUP/docker" ] && rm -rf "$WORK/docker" && cp -a "$BACKUP/docker" "$WORK/docker"
 
           cd "$WORK"
           git config user.name "Pilot CI"

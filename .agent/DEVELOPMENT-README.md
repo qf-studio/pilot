@@ -110,9 +110,9 @@ if _, err := os.Stat(agentDir); err == nil {
 | Alerts Engine | ✅ | Slack, Telegram, webhooks |
 | Quality Gates | ✅ | Test/lint/build gates with retry |
 | Task Dispatcher | ✅ | Per-project queue |
-| Dashboard TUI | ✅ | Sparkline cards, muted palette, SQLite persistence **(v0.19.0)** |
+| Dashboard TUI | ✅ | Sparkline cards, muted palette, SQLite persistence, **epic-aware HISTORY (v0.22.1)** |
 | Hot Upgrade | ✅ | Self-update via `pilot upgrade` or dashboard 'u' key, `syscall.Exec` restart |
-| **Autopilot** | ✅ | CI monitor, auto-merge, feedback loop, **CI fix on original branch (v0.19.1)** |
+| **Autopilot** | ✅ | CI monitor, auto-merge, feedback loop, **sub-issue PR wiring (v0.23.1)** |
 | **LLM Intent** | ✅ | Claude Haiku intent classification, low effort |
 | **Self-Review** | ✅ | Auto code review before PR |
 | **Auto Build Gate** | ✅ | Minimal build gate when none configured |
@@ -183,13 +183,22 @@ _Queue empty - create issues with `pilot` label to add work._
 
 | Priority | Topic | Why |
 |----------|-------|-----|
-| _(none)_ | | |
-| 🟡 P2 | Cost controls: wire TaskLimiter into executor + budget check in polling mode | Core enforcer works for `pilot task --budget` |
+| ~~P2~~ | ~~Cost controls~~ | Wired in v0.21.3 (GH-539) |
 | ~~P2~~ | ~~Approval workflows~~ | Fully wired: manager + Telegram/Slack/GitHub handlers + autopilot prod gate |
+| 🟡 P2 | Docs v2: Nextra 4 migration | Attempted, failed — docs still on Nextra v2 |
 
 **For accurate feature status, see:** `.agent/system/FEATURE-MATRIX.md`
 
 ---
+
+## Completed (2026-02-07)
+
+| Item | What |
+|------|------|
+| **v0.23.1** | fix(autopilot): wire sub-issue PR callback for epic execution (GH-588) |
+| **v0.22.1** | Dashboard epic-aware HISTORY panel, docs pages (why-pilot, how-it-works, model-routing, navigator, approvals) |
+| GH-588 | Epic sub-issue PRs now registered with autopilot controller for CI monitoring + auto-merge |
+| GH-498 | Epic-aware HISTORY: CompletedTask extended, groupedHistory(), renderHistory() with progress bars |
 
 ## Completed (2026-02-06)
 
