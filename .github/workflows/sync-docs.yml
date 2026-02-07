@@ -61,4 +61,12 @@ jobs:
           else
             git commit -m "sync: docs from pilot@${GITHUB_SHA::7}"
             git push origin main
+
+            # Auto-trigger GitLab deploy by pushing a prod tag
+            VERSION=$(git -C "$GITHUB_WORKSPACE" describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')
+            if [ -n "$VERSION" ]; then
+              git tag -f "prod-${VERSION}"
+              git push origin "prod-${VERSION}" --force
+              echo "Tagged prod-${VERSION} to trigger deploy"
+            fi
           fi
