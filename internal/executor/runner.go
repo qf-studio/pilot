@@ -86,16 +86,6 @@ type progressState struct {
 	budgetCancel   context.CancelFunc // Cancel function to terminate execution on budget breach
 }
 
-// TeamChecker validates team permissions before task execution.
-// When set on a Runner, it enforces role-based access control on every Execute() call.
-// The interface uses string-typed permissions so the executor package doesn't depend on teams.
-type TeamChecker interface {
-	// CheckPermission verifies a member has a specific permission (e.g., "execute_tasks").
-	CheckPermission(memberID string, perm string) error
-	// CheckProjectAccess verifies a member can perform an action on a specific project.
-	CheckProjectAccess(memberID, projectPath string, requiredPerm string) error
-}
-
 // Task represents a task to be executed by the Runner.
 // It contains all the information needed to execute a development task
 // using Claude Code, including project context, branching options, and PR creation settings.
@@ -431,11 +421,6 @@ func (r *Runner) SetOnSubIssuePRCreated(fn SubIssuePRCallback) {
 // SetIntentJudge sets the intent judge for diff-vs-ticket alignment verification (GH-624).
 func (r *Runner) SetIntentJudge(judge *IntentJudge) {
 	r.intentJudge = judge
-}
-
-// SetTeamChecker sets the team RBAC checker for permission verification before task execution (GH-633).
-func (r *Runner) SetTeamChecker(checker TeamChecker) {
-	r.teamChecker = checker
 }
 
 // getRecordingsPath returns the recordings path, using default if not set

@@ -1,11 +1,11 @@
 package executor
 
-// TeamChecker is an interface for checking team-level permissions before task execution.
-// This interface is satisfied by an adapter wrapping teams.Service, allowing the executor
-// to enforce team RBAC without importing the teams package directly (avoiding import cycles).
+// TeamChecker validates team permissions before task execution.
+// When set on a Runner, it enforces role-based access control on every Execute() call.
+// The interface uses string-typed permissions so the executor package doesn't depend on teams.
 type TeamChecker interface {
-	// CanExecute checks whether the given team member is allowed to execute a task
-	// on the specified project. Returns nil if allowed, or an error describing the
-	// denial reason (e.g. permission denied, member not found, project not allowed).
-	CanExecute(memberID, projectPath string) error
+	// CheckPermission verifies a member has a specific permission (e.g., "execute_tasks").
+	CheckPermission(memberID string, perm string) error
+	// CheckProjectAccess verifies a member can perform an action on a specific project.
+	CheckProjectAccess(memberID, projectPath string, requiredPerm string) error
 }
