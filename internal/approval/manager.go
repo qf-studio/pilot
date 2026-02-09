@@ -28,17 +28,27 @@ type pendingRequest struct {
 	CancelFn   context.CancelFunc
 }
 
-// NewManager creates a new approval manager
+// NewManager creates a new approval manager.
+// If the config contains rules, a RuleEvaluator is automatically initialized.
 func NewManager(config *Config) *Manager {
 	if config == nil {
 		config = DefaultConfig()
 	}
-	return &Manager{
+	m := &Manager{
 		config:   config,
 		handlers: make(map[string]Handler),
 		pending:  make(map[string]*pendingRequest),
 		log:      logging.WithComponent("approval"),
 	}
+
+	// Wire rule evaluator from config rules
+	if len(config.Rules) > 0 {
+		m.ruleEvaluator = NewRuleEvaluator(config.Rules)
+		m.log.Info("Initialized rule evaluator",
+			slog.Int("rule_count", len(config.Rules)))
+	}
+
+	return m
 }
 
 // RegisterHandler registers an approval handler for a channel
