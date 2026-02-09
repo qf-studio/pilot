@@ -46,8 +46,9 @@ type Pilot struct {
 	slackInteractionWH *slack.InteractionHandler
 	slackApprovalHdlr  *approval.SlackHandler
 	telegramClient     *telegram.Client
-	telegramHandler    *telegram.Handler // Telegram polling handler (GH-349)
-	telegramRunner     *executor.Runner  // Runner for Telegram tasks (GH-349)
+	telegramHandler        *telegram.Handler        // Telegram polling handler (GH-349)
+	telegramRunner         *executor.Runner         // Runner for Telegram tasks (GH-349)
+	telegramMemberResolver telegram.MemberResolver   // Team member resolver for Telegram RBAC (GH-634)
 	githubPoller       *github.Poller    // GitHub polling handler (GH-350)
 	alertEngine        *alerts.Engine
 	teamsService       *teams.Service   // Teams RBAC service (GH-633)
@@ -111,6 +112,13 @@ func WithTelegramHandler(runner *executor.Runner, projectPath string) Option {
 			// Use provided projectPath as override
 			p.config.Projects[0].Path = projectPath
 		}
+	}
+}
+
+// WithTelegramMemberResolver sets the team member resolver for Telegram RBAC (GH-634).
+func WithTelegramMemberResolver(resolver telegram.MemberResolver) Option {
+	return func(p *Pilot) {
+		p.telegramMemberResolver = resolver
 	}
 }
 
@@ -396,13 +404,14 @@ func New(cfg *config.Config, opts ...Option) (*Pilot, error) {
 		}
 
 		p.telegramHandler = telegram.NewHandler(&telegram.HandlerConfig{
-			BotToken:      cfg.Adapters.Telegram.BotToken,
-			ProjectPath:   projectPath,
-			Projects:      config.NewProjectSource(cfg),
-			AllowedIDs:    allowedIDs,
-			Transcription: cfg.Adapters.Telegram.Transcription,
-			RateLimit:     cfg.Adapters.Telegram.RateLimit,
-			PlainTextMode: true, // Default to plain text mode
+			BotToken:       cfg.Adapters.Telegram.BotToken,
+			ProjectPath:    projectPath,
+			Projects:       config.NewProjectSource(cfg),
+			AllowedIDs:     allowedIDs,
+			Transcription:  cfg.Adapters.Telegram.Transcription,
+			RateLimit:      cfg.Adapters.Telegram.RateLimit,
+			PlainTextMode:  true, // Default to plain text mode
+			MemberResolver: p.telegramMemberResolver, // GH-634: Telegram user → team member RBAC
 		}, p.telegramRunner)
 
 		if len(allowedIDs) == 0 {

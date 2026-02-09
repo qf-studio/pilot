@@ -2264,3 +2264,142 @@ func TestValidateRepoProjectMatchErrorMessage(t *testing.T) {
 		t.Error("Error message should contain expected project name")
 	}
 }
+
+// =============================================================================
+// TeamChecker Permission Tests (GH-634)
+// =============================================================================
+
+// mockTeamChecker implements TeamChecker for testing
+type mockTeamChecker struct {
+	permErr    error  // Error to return from CheckPermission
+	accessErr  error  // Error to return from CheckProjectAccess
+	lastPerm   string // Last permission checked
+	lastMember string // Last member ID checked
+}
+
+func (m *mockTeamChecker) CheckPermission(memberID string, perm string) error {
+	m.lastMember = memberID
+	m.lastPerm = perm
+	return m.permErr
+}
+
+func (m *mockTeamChecker) CheckProjectAccess(memberID, projectPath string, requiredPerm string) error {
+	m.lastMember = memberID
+	m.lastPerm = requiredPerm
+	return m.accessErr
+}
+
+func TestRunner_SetTeamChecker(t *testing.T) {
+	runner := NewRunner()
+	if runner.teamChecker != nil {
+		t.Error("teamChecker should be nil by default")
+	}
+
+	checker := &mockTeamChecker{}
+	runner.SetTeamChecker(checker)
+
+	if runner.teamChecker == nil {
+		t.Error("teamChecker should be set after SetTeamChecker")
+	}
+}
+
+func TestRunner_Execute_NoTeamChecker_Allowed(t *testing.T) {
+	// Without TeamChecker, execution should proceed past permission check.
+	// It will fail later (no project dir, etc.) but NOT on permission.
+	runner := NewRunner()
+
+	task := &Task{
+		ID:          "test-1",
+		Title:       "Test task",
+		Description: "Test",
+		ProjectPath: "/tmp/test-no-checker",
+		MemberID:    "member-123", // MemberID set but no checker
+	}
+
+	_, err := runner.Execute(t.Context(), task)
+	if err != nil && strings.Contains(err.Error(), "permission") {
+		t.Errorf("should not fail on permission without TeamChecker: %v", err)
+	}
+}
+
+func TestRunner_Execute_TeamChecker_Denied(t *testing.T) {
+	runner := NewRunner()
+	checker := &mockTeamChecker{
+		accessErr: os.ErrPermission,
+	}
+	runner.SetTeamChecker(checker)
+
+	task := &Task{
+		ID:          "test-denied",
+		Title:       "Test task",
+		Description: "Test",
+		ProjectPath: "/tmp/test",
+		MemberID:    "viewer-member",
+	}
+
+	result, err := runner.Execute(t.Context(), task)
+
+	// Should return permission error
+	if err == nil {
+		t.Fatal("expected error for denied permission")
+	}
+	if !strings.Contains(err.Error(), "permission check failed") {
+		t.Errorf("error should mention permission check: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result even on permission failure")
+	}
+	if result.Success {
+		t.Error("result should not be successful on permission denial")
+	}
+	if !strings.Contains(result.Error, "permission denied") {
+		t.Errorf("result error should mention permission denied: %s", result.Error)
+	}
+
+	// Verify the checker was called with correct args
+	if checker.lastMember != "viewer-member" {
+		t.Errorf("checker got memberID %q, want %q", checker.lastMember, "viewer-member")
+	}
+	if checker.lastPerm != "execute_tasks" {
+		t.Errorf("checker got perm %q, want %q", checker.lastPerm, "execute_tasks")
+	}
+}
+
+func TestRunner_Execute_TeamChecker_NoMemberID_Skipped(t *testing.T) {
+	// When MemberID is empty, permission check should be skipped
+	runner := NewRunner()
+	checker := &mockTeamChecker{
+		accessErr: os.ErrPermission, // Would fail if called
+	}
+	runner.SetTeamChecker(checker)
+
+	task := &Task{
+		ID:          "test-no-member",
+		Title:       "Test task",
+		Description: "Test",
+		ProjectPath: "/tmp/test",
+		MemberID:    "", // Empty MemberID
+	}
+
+	// Should NOT fail on permission (checker should not be called)
+	_, err := runner.Execute(t.Context(), task)
+	if err != nil && strings.Contains(err.Error(), "permission") {
+		t.Errorf("should skip permission check when MemberID is empty: %v", err)
+	}
+
+	// Verify checker was NOT called
+	if checker.lastMember != "" {
+		t.Errorf("checker should not have been called, but got memberID %q", checker.lastMember)
+	}
+}
+
+func TestTask_MemberID_Field(t *testing.T) {
+	task := &Task{
+		ID:       "test-1",
+		MemberID: "member-abc",
+	}
+
+	if task.MemberID != "member-abc" {
+		t.Errorf("got MemberID %q, want %q", task.MemberID, "member-abc")
+	}
+}

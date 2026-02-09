@@ -117,6 +117,9 @@ type Task struct {
 	// Used for cross-project execution validation to prevent issues from one repo
 	// being executed against a different project.
 	SourceRepo string
+	// MemberID is the team member ID for permission checks (GH-634).
+	// When set and a TeamChecker is configured, the runner enforces RBAC before execution.
+	MemberID string
 }
 
 // QualityGateResult represents the result of a single quality gate check.
@@ -376,6 +379,13 @@ func (r *Runner) EnableParallelResearch() {
 	r.parallelRunner = NewParallelRunner(DefaultParallelConfig(), r.modelRouter)
 }
 
+// SetTeamChecker sets the team permission checker for RBAC enforcement (GH-634).
+// When set, Execute() validates that Task.MemberID has the required permissions
+// before proceeding. If not set, all tasks are allowed (backward compatible).
+func (r *Runner) SetTeamChecker(tc TeamChecker) {
+	r.teamChecker = tc
+}
+
 // SetDecomposer sets the task decomposer for auto-splitting complex tasks (GH-218).
 // When set and enabled, complex tasks are decomposed into subtasks that run sequentially,
 // with only the final subtask creating a PR.
@@ -411,11 +421,6 @@ func (r *Runner) SetOnSubIssuePRCreated(fn SubIssuePRCallback) {
 // SetIntentJudge sets the intent judge for diff-vs-ticket alignment verification (GH-624).
 func (r *Runner) SetIntentJudge(judge *IntentJudge) {
 	r.intentJudge = judge
-}
-
-// SetTeamChecker sets the team RBAC checker for permission verification before task execution (GH-633).
-func (r *Runner) SetTeamChecker(checker TeamChecker) {
-	r.teamChecker = checker
 }
 
 // getRecordingsPath returns the recordings path, using default if not set
@@ -514,6 +519,17 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 				Success: false,
 				Error:   fmt.Sprintf("cross-project execution blocked: %v", err),
 			}, fmt.Errorf("cross-project execution blocked: %w", err)
+		}
+	}
+
+	// GH-634: Enforce team permissions before execution
+	if r.teamChecker != nil && task.MemberID != "" {
+		if err := r.teamChecker.CheckProjectAccess(task.MemberID, task.ProjectPath, "execute_tasks"); err != nil {
+			return &ExecutionResult{
+				TaskID:  task.ID,
+				Success: false,
+				Error:   fmt.Sprintf("permission denied: %v", err),
+			}, fmt.Errorf("permission check failed: %w", err)
 		}
 	}
 
