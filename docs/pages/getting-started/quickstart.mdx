@@ -146,25 +146,26 @@ gh issue create \
 ```
   </Tabs.Tab>
   <Tabs.Tab>
-Go to your repository → **Issues** → **New Issue**:
-- **Title**: Add health check endpoint
-- **Labels**: `pilot` (create the label first if it doesn't exist)
-- **Body**: Create a GET /health endpoint that returns JSON with status: ok and the current server timestamp. Add a test.
+    Go to your repository → **Issues** → **New Issue**.
+    Set **Title** to `Add health check endpoint`,
+    add the `pilot` label (create it first if it doesn't exist),
+    and set **Body** to: `Create a GET /health endpoint that returns JSON with status: ok and the current server timestamp. Add a test.`
   </Tabs.Tab>
   <Tabs.Tab>
-Go to your project → **Issues** → **New Issue**:
-- **Title**: Add health check endpoint
-- **Labels**: `pilot` (create the label first if it doesn't exist)
-- **Description**: Create a GET /health endpoint that returns JSON with status: ok and the current server timestamp. Add a test.
+    Go to your project → **Issues** → **New Issue**.
+    Set **Title** to `Add health check endpoint`,
+    add the `pilot` label (create it first if it doesn't exist),
+    and set **Description** to: `Create a GET /health endpoint that returns JSON with status: ok and the current server timestamp. Add a test.`
 
-Or use the GitLab API:
-```bash
-curl --request POST \
-  --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
-  --header "Content-Type: application/json" \
-  --data '{"title": "Add health check endpoint", "labels": "pilot", "description": "Create a GET /health endpoint that returns JSON with status: ok and the current server timestamp. Add a test."}' \
-  "https://gitlab.com/api/v4/projects/YOUR_PROJECT_ID/issues"
-```
+    Or use the GitLab API:
+
+    ```bash
+    curl --request POST \
+      --header "PRIVATE-TOKEN: $GITLAB_TOKEN" \
+      --header "Content-Type: application/json" \
+      --data '{"title": "Add health check endpoint", "labels": "pilot", "description": "Create a GET /health endpoint..."}' \
+      "https://gitlab.com/api/v4/projects/YOUR_PROJECT_ID/issues"
+    ```
   </Tabs.Tab>
 </Tabs>
 
