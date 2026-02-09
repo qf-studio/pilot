@@ -40,10 +40,10 @@ const config: DocsThemeConfig = {
     </>
   ),
   banner: {
-    key: 'pilot-v024',
+    key: 'pilot-v025',
     text: (
       <a href="https://github.com/alekspetrov/pilot/releases" target="_blank" rel="noopener noreferrer">
-        Pilot v0.24 — intent judge, rich PR comments, AGENTS.md support. Read the changelog →
+        Pilot v0.25 — email &amp; PagerDuty alerts, Jira webhooks, outbound webhooks. Read the changelog →
       </a>
     ),
   },

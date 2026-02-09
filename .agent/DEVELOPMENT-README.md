@@ -96,7 +96,7 @@ if _, err := os.Stat(agentDir); err == nil {
 
 ## Current State
 
-**Current Version:** v0.24.1 | **103 features working** | **4 unwired**
+**Current Version:** v0.25.0 | **103 features working** | **4 unwired**
 
 **Full implementation status:** `.agent/system/FEATURE-MATRIX.md`
 
@@ -123,6 +123,12 @@ if _, err := os.Stat(agentDir); err == nil {
 | **Docs Site** | ✅ | Nextra v2 (pinned), GitLab sync, **auto-deploy via prod tag, OG metas + preview image (v0.24.1)** |
 | **QuantFlow Landing** | ✅ | `/pilot` case study page on quantflow.studio **(2026-02-06)** |
 | **CONTRIBUTING.md** | ✅ | Dev setup, code standards, BSL 1.1 note **(2026-02-06)** |
+| **Email Alerts** | ✅ | SMTP sender with TLS, configurable templates **(v0.25.0)** |
+| **PagerDuty Alerts** | ✅ | Events API v2 integration **(v0.25.0)** |
+| **Jira Webhooks** | ✅ | Inbound webhook handler **(v0.25.0)** |
+| **Outbound Webhooks** | ✅ | Configurable HTTP webhooks with HMAC signing **(v0.25.0)** |
+| **Tunnel Flag** | ✅ | `--tunnel` for webhook development **(v0.25.0)** |
+| **Health Tests** | ✅ | 32 unit tests for health subsystem **(v0.25.0)** |
 
 ### Telegram Interaction Modes (v0.6.0)
 
@@ -204,6 +210,7 @@ _Queue empty - create issues with `pilot` label to add work._
 | Docs | Banner updated to v0.24 |
 | CI fix | Docs sync: decouple deploy tag from content diff, delete+recreate prod tag |
 | Housekeeping | Closed GH-625, GH-626, stale docs PRs #628/#630/#631 |
+| **v0.25.0** | Release: email + PagerDuty alerts, Jira webhooks, outbound webhooks, tunnel flag, 32 health tests |
 
 ## Completed (2026-02-07)
 
