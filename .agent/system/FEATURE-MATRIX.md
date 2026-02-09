@@ -57,8 +57,8 @@
 | GitHub run issue | ✅ | adapters/github | `pilot github run` | `adapters.github` | Manual trigger |
 | GitLab polling | ✅ | adapters/gitlab | `pilot start --gitlab` | `adapters.gitlab` | Full adapter with webhook support |
 | Azure DevOps | ✅ | adapters/azuredevops | `pilot start --azuredevops` | `adapters.azuredevops` | Full adapter with webhook support |
-| Linear webhooks | ⚠️ | adapters/linear | - | `adapters.linear` | Needs gateway running |
-| Jira webhooks | ⚠️ | adapters/jira | - | `adapters.jira` | Needs gateway running |
+| Linear webhooks | ✅ | adapters/linear | - | `adapters.linear` | Wired in pilot.go, gateway route + handler registered |
+| Jira webhooks | ✅ | adapters/jira | - | `adapters.jira` | Wired in pilot.go, gateway route + handler + orchestrator |
 
 ## Output/Notifications
 
@@ -68,7 +68,7 @@
 | Telegram replies | ✅ | adapters/telegram | - | - | Auto in telegram mode |
 | GitHub comments | ✅ | adapters/github | - | - | PR/issue updates |
 | Rich PR comments | ✅ | main | - | - | Execution metrics (duration, tokens, cost, model) in PR comments (v0.24.1) |
-| Outbound webhooks | ⚠️ | webhooks | `pilot webhooks` | `webhooks` | Config exists |
+| Outbound webhooks | ✅ | webhooks | `pilot webhooks` | `webhooks` | Dispatches task.started/completed/failed/progress events |
 
 ## Alerts & Monitoring
 
@@ -159,7 +159,7 @@
 
 | Feature | Status | Package | CLI Command | Config Key | Notes |
 |---------|--------|---------|-------------|------------|-------|
-| Cloudflare tunnel | ⚠️ | tunnel | `pilot tunnel` | `tunnel` | For webhook ingress |
+| Cloudflare tunnel | ✅ | tunnel | `pilot start --tunnel` | `tunnel` | Auto-start tunnel, prints webhook URLs |
 | Gateway HTTP | ✅ | gateway | `pilot start` | `gateway` | Internal server, wired in main.go |
 | Gateway WebSocket | ✅ | gateway | - | - | Session management active in gateway |
 | Health checks | ✅ | health | `pilot doctor` | - | System validation, 32 unit tests |
@@ -214,8 +214,8 @@
 |----------|-----------|----------------|-----------|-----------|
 | Core Execution | 14 | 0 | 0 | 0 |
 | Intelligence | 6 | 0 | 0 | 0 |
-| Input Adapters | 10 | 2 | 0 | 0 |
-| Output/Notifications | 4 | 1 | 0 | 0 |
+| Input Adapters | 12 | 0 | 0 | 0 |
+| Output/Notifications | 5 | 0 | 0 | 0 |
 | Alerts & Monitoring | 6 | 2 | 0 | 0 |
 | Quality Gates | 5 | 0 | 0 | 0 |
 | Memory & Learning | 6 | 0 | 0 | 0 |
@@ -224,11 +224,11 @@
 | Reports & Briefs | 4 | 0 | 0 | 0 |
 | Cost Controls | 5 | 0 | 0 | 0 |
 | Team Management | 0 | 3 | 0 | 0 |
-| Infrastructure | 4 | 1 | 0 | 0 |
+| Infrastructure | 5 | 0 | 0 | 0 |
 | Approval Workflows | 3 | 1 | 0 | 0 |
 | Autopilot | 10 | 0 | 0 | 0 |
 | Self-Management | 6 | 0 | 0 | 0 |
-| **Total** | **97** | **10** | **0** | **0** |
+| **Total** | **101** | **6** | **0** | **0** |
 
 ---
 

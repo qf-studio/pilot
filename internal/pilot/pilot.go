@@ -8,6 +8,7 @@ import (
 
 	"github.com/alekspetrov/pilot/internal/adapters/github"
 	"github.com/alekspetrov/pilot/internal/adapters/gitlab"
+	"github.com/alekspetrov/pilot/internal/adapters/jira"
 	"github.com/alekspetrov/pilot/internal/adapters/linear"
 	"github.com/alekspetrov/pilot/internal/adapters/slack"
 	"github.com/alekspetrov/pilot/internal/adapters/telegram"
@@ -37,6 +38,8 @@ type Pilot struct {
 	gitlabClient       *gitlab.Client
 	gitlabWH           *gitlab.WebhookHandler
 	gitlabNotify       *gitlab.Notifier
+	jiraClient         *jira.Client
+	jiraWH             *jira.WebhookHandler
 	slackNotify        *slack.Notifier
 	slackClient        *slack.Client
 	slackInteractionWH *slack.InteractionHandler
@@ -201,8 +204,20 @@ func New(cfg *config.Config, opts ...Option) (*Pilot, error) {
 	}
 	p.orchestrator = orch
 
-	// Register completion callback for platform notifications
+	// Register completion callback for platform notifications + outbound webhooks
 	p.orchestrator.OnCompletion(p.handleTaskCompletion)
+
+	// Register progress callback for outbound webhooks
+	p.orchestrator.OnProgress(func(taskID, phase string, progress int, message string) {
+		if p.webhookManager.IsEnabled() {
+			p.webhookManager.Dispatch(ctx, webhooks.NewEvent(webhooks.EventTaskProgress, &webhooks.TaskProgressData{
+				TaskID:   taskID,
+				Phase:    phase,
+				Progress: float64(progress),
+				Message:  message,
+			}))
+		}
+	})
 
 	// Initialize Linear adapter if enabled (GH-391: multi-workspace support)
 	if cfg.Adapters.Linear != nil && cfg.Adapters.Linear.Enabled {
@@ -253,6 +268,22 @@ func New(cfg *config.Config, opts ...Option) (*Pilot, error) {
 		)
 		p.gitlabWH.OnIssue(p.handleGitlabIssue)
 		p.gitlabNotify = gitlab.NewNotifier(p.gitlabClient, cfg.Adapters.GitLab.PilotLabel)
+	}
+
+	// Initialize Jira adapter if enabled
+	if cfg.Adapters.Jira != nil && cfg.Adapters.Jira.Enabled {
+		p.jiraClient = jira.NewClient(
+			cfg.Adapters.Jira.BaseURL,
+			cfg.Adapters.Jira.Username,
+			cfg.Adapters.Jira.APIToken,
+			cfg.Adapters.Jira.Platform,
+		)
+		pilotLabel := cfg.Adapters.Jira.PilotLabel
+		if pilotLabel == "" {
+			pilotLabel = "pilot"
+		}
+		p.jiraWH = jira.NewWebhookHandler(p.jiraClient, cfg.Adapters.Jira.WebhookSecret, pilotLabel)
+		p.jiraWH.OnIssue(p.handleJiraIssue)
 	}
 
 	// Initialize alerts engine if enabled
@@ -313,6 +344,14 @@ func New(cfg *config.Config, opts ...Option) (*Pilot, error) {
 
 			if err := p.gitlabWH.Handle(ctx, eventType, webhookPayload); err != nil {
 				logging.WithComponent("pilot").Error("GitLab webhook error", slog.Any("error", err))
+			}
+		})
+	}
+
+	if p.jiraWH != nil {
+		p.gateway.Router().RegisterWebhookHandler("jira", func(payload map[string]interface{}) {
+			if err := p.jiraWH.Handle(ctx, payload); err != nil {
+				logging.WithComponent("pilot").Error("Jira webhook error", slog.Any("error", err))
 			}
 		})
 	}
@@ -464,6 +503,13 @@ func (p *Pilot) handleLinearIssue(ctx context.Context, issue *linear.Issue) erro
 	p.linearTasks[taskID] = linearTaskInfo{IssueID: issue.ID, WorkspaceName: ""}
 	p.linearTasksMu.Unlock()
 
+	// Dispatch outbound webhook
+	if p.webhookManager.IsEnabled() {
+		p.webhookManager.Dispatch(ctx, webhooks.NewEvent(webhooks.EventTaskStarted, &webhooks.TaskStartedData{
+			TaskID: taskID, Title: issue.Title, Project: projectPath, Source: "linear", SourceID: issue.Identifier,
+		}))
+	}
+
 	// Notify that task has started
 	if p.linearNotify != nil {
 		if err := p.linearNotify.NotifyTaskStarted(ctx, issue.ID, taskID); err != nil {
@@ -553,6 +599,23 @@ func (p *Pilot) handleLinearIssueMultiWorkspace(ctx context.Context, issue *line
 
 // handleTaskCompletion handles task completion events from the orchestrator
 func (p *Pilot) handleTaskCompletion(taskID, prURL string, success bool, errMsg string) {
+	// Dispatch outbound webhook
+	if p.webhookManager.IsEnabled() {
+		ctx := context.Background()
+		if success {
+			p.webhookManager.Dispatch(ctx, webhooks.NewEvent(webhooks.EventTaskCompleted, &webhooks.TaskCompletedData{
+				TaskID:    taskID,
+				PRCreated: prURL != "",
+				PRURL:     prURL,
+			}))
+		} else {
+			p.webhookManager.Dispatch(ctx, webhooks.NewEvent(webhooks.EventTaskFailed, &webhooks.TaskFailedData{
+				TaskID: taskID,
+				Error:  errMsg,
+			}))
+		}
+	}
+
 	// Check if this is a Linear task
 	p.linearTasksMu.Lock()
 	taskInfo, isLinear := p.linearTasks[taskID]
@@ -750,6 +813,41 @@ func (p *Pilot) findProjectForGithubRepo(repo *github.Repository) string {
 		}
 		// Match by full name (org/repo)
 		if repo.FullName == proj.Name {
+			return proj.Path
+		}
+	}
+
+	// Return first project as fallback
+	if len(p.config.Projects) > 0 {
+		return p.config.Projects[0].Path
+	}
+
+	return ""
+}
+
+// handleJiraIssue handles a new Jira issue
+func (p *Pilot) handleJiraIssue(ctx context.Context, issue *jira.Issue) error {
+	logging.WithComponent("pilot").Info("Received Jira issue",
+		slog.String("key", issue.Key),
+		slog.String("summary", issue.Fields.Summary))
+
+	// Convert to task
+	task := jira.ConvertIssueToTask(issue, p.config.Adapters.Jira.BaseURL)
+
+	// Find project for this Jira project
+	projectPath := p.findProjectForJiraProject(issue.Fields.Project.Key)
+	if projectPath == "" {
+		return fmt.Errorf("no project configured for Jira project %s", issue.Fields.Project.Key)
+	}
+
+	// Process ticket through orchestrator
+	return p.orchestrator.ProcessJiraTicket(ctx, task, projectPath)
+}
+
+// findProjectForJiraProject finds the project path for a Jira project key
+func (p *Pilot) findProjectForJiraProject(projectKey string) string {
+	for _, proj := range p.config.Projects {
+		if proj.Name == projectKey {
 			return proj.Path
 		}
 	}

@@ -10,6 +10,7 @@ import (
 
 	"github.com/alekspetrov/pilot/internal/adapters/github"
 	"github.com/alekspetrov/pilot/internal/adapters/gitlab"
+	"github.com/alekspetrov/pilot/internal/adapters/jira"
 	"github.com/alekspetrov/pilot/internal/adapters/linear"
 	"github.com/alekspetrov/pilot/internal/adapters/slack"
 	"github.com/alekspetrov/pilot/internal/executor"
@@ -396,6 +397,43 @@ func (o *Orchestrator) ProcessGitlabTicket(ctx context.Context, task *gitlab.Tas
 		Document:    doc,
 		ProjectPath: projectPath,
 		Branch:      fmt.Sprintf("pilot/%s", task.ID),
+		Priority:    float64(task.Priority),
+	}
+
+	// Queue task
+	o.QueueTask(internalTask)
+
+	return nil
+}
+
+// ProcessJiraTicket processes a new ticket from Jira
+func (o *Orchestrator) ProcessJiraTicket(ctx context.Context, task *jira.TaskInfo, projectPath string) error {
+	// Convert Jira task to task document via bridge
+	ticket := &TicketData{
+		ID:          task.ID,
+		Identifier:  task.IssueKey, // PROJ-123 format
+		Title:       task.Title,
+		Description: task.Description,
+		Priority:    int(task.Priority),
+		Labels:      task.Labels,
+	}
+
+	doc, err := o.bridge.PlanTicket(ctx, ticket)
+	if err != nil {
+		return fmt.Errorf("failed to plan ticket: %w", err)
+	}
+
+	// Save task document
+	if err := o.saveTaskDocument(projectPath, doc); err != nil {
+		logging.WithComponent("orchestrator").Warn("Failed to save task document", slog.Any("error", err))
+	}
+
+	// Create internal task
+	internalTask := &Task{
+		ID:          doc.ID,
+		Document:    doc,
+		ProjectPath: projectPath,
+		Branch:      fmt.Sprintf("pilot/%s", task.IssueKey),
 		Priority:    float64(task.Priority),
 	}
 

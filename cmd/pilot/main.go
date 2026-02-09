@@ -37,6 +37,7 @@ import (
 	"github.com/alekspetrov/pilot/internal/pilot"
 	"github.com/alekspetrov/pilot/internal/quality"
 	"github.com/alekspetrov/pilot/internal/replay"
+	"github.com/alekspetrov/pilot/internal/tunnel"
 	"github.com/alekspetrov/pilot/internal/upgrade"
 )
 
@@ -197,6 +198,7 @@ func newStartCmd() *cobra.Command {
 		sequential   bool   // Sequential execution mode (one issue at a time)
 		autopilotEnv string // Autopilot environment: dev, stage, prod
 		autoRelease  bool   // Enable auto-release after PR merge
+		enableTunnel bool   // Enable public tunnel (Cloudflare/ngrok)
 	)
 
 	cmd := &cobra.Command{
@@ -227,7 +229,7 @@ Examples:
 			}
 
 			// Apply flag overrides to config
-			applyInputOverrides(cfg, cmd, enableTelegram, enableGithub, enableLinear)
+			applyInputOverrides(cfg, cmd, enableTelegram, enableGithub, enableLinear, enableTunnel)
 
 			// Resolve project path: flag > config default > cwd
 			if projectPath == "" {
@@ -755,6 +757,25 @@ Examples:
 				return fmt.Errorf("failed to start Pilot: %w", err)
 			}
 
+			// Start tunnel if enabled
+			if cfg.Tunnel != nil && cfg.Tunnel.Enabled {
+				if cfg.Tunnel.Port == 0 {
+					cfg.Tunnel.Port = cfg.Gateway.Port
+				}
+				tunnelMgr, tunnelErr := tunnel.NewManager(cfg.Tunnel, logging.WithComponent("tunnel"))
+				if tunnelErr != nil {
+					logging.WithComponent("start").Warn("failed to create tunnel", slog.Any("error", tunnelErr))
+				} else if setupErr := tunnelMgr.Setup(context.Background()); setupErr != nil {
+					logging.WithComponent("start").Warn("tunnel setup failed", slog.Any("error", setupErr))
+				} else if publicURL, startErr := tunnelMgr.Start(context.Background()); startErr != nil {
+					logging.WithComponent("start").Warn("failed to start tunnel", slog.Any("error", startErr))
+				} else {
+					fmt.Printf("🌐 Public tunnel: %s\n", publicURL)
+					fmt.Printf("   Webhooks: %s/webhooks/{linear,github,gitlab,jira}\n", publicURL)
+					defer tunnelMgr.Stop() //nolint:errcheck
+				}
+			}
+
 			// Check for updates in background (non-blocking)
 			go checkForUpdates()
 
@@ -813,13 +834,14 @@ Examples:
 	cmd.Flags().BoolVar(&enableTelegram, "telegram", false, "Enable Telegram polling (overrides config)")
 	cmd.Flags().BoolVar(&enableGithub, "github", false, "Enable GitHub polling (overrides config)")
 	cmd.Flags().BoolVar(&enableLinear, "linear", false, "Enable Linear webhooks (overrides config)")
+	cmd.Flags().BoolVar(&enableTunnel, "tunnel", false, "Enable public tunnel for webhook ingress (Cloudflare/ngrok)")
 
 	return cmd
 }
 
 // applyInputOverrides applies CLI flag overrides to config
 // Uses cmd.Flags().Changed() to only apply flags that were explicitly set
-func applyInputOverrides(cfg *config.Config, cmd *cobra.Command, telegramFlag, githubFlag, linearFlag bool) {
+func applyInputOverrides(cfg *config.Config, cmd *cobra.Command, telegramFlag, githubFlag, linearFlag, tunnelFlag bool) {
 	if cmd.Flags().Changed("telegram") {
 		if cfg.Adapters.Telegram == nil {
 			cfg.Adapters.Telegram = telegram.DefaultConfig()
@@ -842,6 +864,12 @@ func applyInputOverrides(cfg *config.Config, cmd *cobra.Command, telegramFlag, g
 			cfg.Adapters.Linear = linear.DefaultConfig()
 		}
 		cfg.Adapters.Linear.Enabled = linearFlag
+	}
+	if cmd.Flags().Changed("tunnel") {
+		if cfg.Tunnel == nil {
+			cfg.Tunnel = tunnel.DefaultConfig()
+		}
+		cfg.Tunnel.Enabled = tunnelFlag
 	}
 }
 
