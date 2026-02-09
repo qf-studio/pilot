@@ -77,9 +77,9 @@
 | Alert engine | ✅ | alerts | `pilot task --alerts` | `alerts.enabled` | Event-based |
 | Slack alerts | ✅ | alerts | - | `alerts.channels[].type=slack` | - |
 | Telegram alerts | ✅ | alerts | - | `alerts.channels[].type=telegram` | - |
-| Email alerts | ⚠️ | alerts | - | `alerts.channels[].type=email` | Implemented, untested |
+| Email alerts | ✅ | alerts | - | `alerts.channels[].type=email` | SMTP sender + wired to dispatcher |
 | Webhook alerts | ✅ | alerts | - | `alerts.channels[].type=webhook` | - |
-| PagerDuty alerts | ⚠️ | alerts | - | `alerts.channels[].type=pagerduty` | Implemented, untested |
+| PagerDuty alerts | ✅ | alerts | - | `alerts.channels[].type=pagerduty` | Wired to dispatcher, HTTP-verified tests |
 | Custom rules | ✅ | alerts | - | `alerts.rules[]` | Configurable conditions |
 | Cooldown periods | ✅ | alerts | - | `alerts.defaults.cooldown` | Avoid spam |
 
@@ -216,7 +216,7 @@
 | Intelligence | 6 | 0 | 0 | 0 |
 | Input Adapters | 12 | 0 | 0 | 0 |
 | Output/Notifications | 5 | 0 | 0 | 0 |
-| Alerts & Monitoring | 6 | 2 | 0 | 0 |
+| Alerts & Monitoring | 8 | 0 | 0 | 0 |
 | Quality Gates | 5 | 0 | 0 | 0 |
 | Memory & Learning | 6 | 0 | 0 | 0 |
 | Dashboard | 8 | 0 | 0 | 0 |
@@ -228,7 +228,7 @@
 | Approval Workflows | 3 | 1 | 0 | 0 |
 | Autopilot | 10 | 0 | 0 | 0 |
 | Self-Management | 6 | 0 | 0 | 0 |
-| **Total** | **101** | **6** | **0** | **0** |
+| **Total** | **103** | **4** | **0** | **0** |
 
 ---
 

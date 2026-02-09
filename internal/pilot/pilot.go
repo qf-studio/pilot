@@ -1090,6 +1090,34 @@ func (p *Pilot) initAlerts(cfg *config.Config) {
 		}
 	}
 
+	// Register email channels
+	for _, ch := range cfg.Alerts.Channels {
+		if ch.Type == "email" && ch.Enabled && ch.Email != nil && ch.Email.SMTPHost != "" {
+			sender := alerts.NewSMTPSender(
+				ch.Email.SMTPHost,
+				ch.Email.SMTPPort,
+				ch.Email.From,
+				ch.Email.Username,
+				ch.Email.Password,
+			)
+			emailChannel := alerts.NewEmailChannel(ch.Name, sender, ch.Email)
+			dispatcher.RegisterChannel(emailChannel)
+			log.Info("Registered email alert channel",
+				slog.String("name", ch.Name),
+				slog.Int("recipients", len(ch.Email.To)))
+		}
+	}
+
+	// Register PagerDuty channels
+	for _, ch := range cfg.Alerts.Channels {
+		if ch.Type == "pagerduty" && ch.Enabled && ch.PagerDuty != nil {
+			pdChannel := alerts.NewPagerDutyChannel(ch.Name, ch.PagerDuty)
+			dispatcher.RegisterChannel(pdChannel)
+			log.Info("Registered PagerDuty alert channel",
+				slog.String("name", ch.Name))
+		}
+	}
+
 	// Create engine with dispatcher
 	p.alertEngine = alerts.NewEngine(alertCfg,
 		alerts.WithLogger(log),

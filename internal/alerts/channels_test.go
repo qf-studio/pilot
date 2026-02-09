@@ -2,6 +2,8 @@ package alerts
 
 import (
 	"context"
+	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -585,32 +587,87 @@ func TestPagerDutyChannel_Name(t *testing.T) {
 }
 
 func TestPagerDutyChannel_Send(t *testing.T) {
-	var receivedRequest *http.Request
+	var receivedBody map[string]interface{}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		receivedRequest = r
+		if r.Method != http.MethodPost {
+			t.Errorf("expected POST, got %s", r.Method)
+		}
+		if r.Header.Get("Content-Type") != "application/json" {
+			t.Errorf("expected Content-Type application/json, got %s", r.Header.Get("Content-Type"))
+		}
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &receivedBody)
 		w.WriteHeader(http.StatusAccepted)
 	}))
 	defer server.Close()
 
-	// Create channel with mocked URL (we'll need to override the const)
 	ch := &PagerDutyChannel{
 		name:       "test-pd",
 		routingKey: testutil.FakePagerDutyRoutingKey,
 		serviceID:  "test-service-id",
+		baseURL:    server.URL,
 		client: &http.Client{
 			Timeout: 5 * time.Second,
 		},
 	}
 
-	// We can't easily test this without modifying pagerDutyEventsAPI constant
-	// So we test the struct fields instead
-	if ch.routingKey != testutil.FakePagerDutyRoutingKey {
-		t.Errorf("expected routingKey %q, got '%s'", testutil.FakePagerDutyRoutingKey, ch.routingKey)
-	}
-	if ch.serviceID != "test-service-id" {
-		t.Errorf("expected serviceID 'test-service-id', got '%s'", ch.serviceID)
+	alert := &Alert{
+		Title:       "Test Alert",
+		Message:     "Something broke",
+		Severity:    SeverityCritical,
+		Type:        AlertTypeTaskFailed,
+		Source:      "test-project",
+		ProjectPath: "/path/to/project",
+		CreatedAt:   time.Now(),
+		Metadata:    map[string]string{"task_id": "TASK-42"},
 	}
 
-	_ = receivedRequest // Suppress unused variable warning
+	err := ch.Send(context.Background(), alert)
+	if err != nil {
+		t.Fatalf("Send() error: %v", err)
+	}
+
+	// Verify request body
+	if receivedBody["routing_key"] != testutil.FakePagerDutyRoutingKey {
+		t.Errorf("routing_key = %v, want %q", receivedBody["routing_key"], testutil.FakePagerDutyRoutingKey)
+	}
+	if receivedBody["event_action"] != "trigger" {
+		t.Errorf("event_action = %v, want 'trigger'", receivedBody["event_action"])
+	}
+
+	payload, ok := receivedBody["payload"].(map[string]interface{})
+	if !ok {
+		t.Fatal("payload missing or wrong type")
+	}
+	if payload["severity"] != "critical" {
+		t.Errorf("severity = %v, want 'critical'", payload["severity"])
+	}
+	if payload["component"] != "pilot" {
+		t.Errorf("component = %v, want 'pilot'", payload["component"])
+	}
+}
+
+func TestPagerDutyChannel_Send_Error(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer server.Close()
+
+	ch := &PagerDutyChannel{
+		name:       "test-pd",
+		routingKey: testutil.FakePagerDutyRoutingKey,
+		baseURL:    server.URL,
+		client:     &http.Client{Timeout: 5 * time.Second},
+	}
+
+	err := ch.Send(context.Background(), &Alert{
+		Title:     "Test",
+		Message:   "fail",
+		Severity:  SeverityWarning,
+		CreatedAt: time.Now(),
+	})
+	if err == nil {
+		t.Fatal("expected error for 403 response")
+	}
 }

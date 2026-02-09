@@ -407,6 +407,7 @@ type PagerDutyChannel struct {
 	routingKey string
 	serviceID  string
 	client     *http.Client
+	baseURL    string // Override for testing; defaults to PagerDuty Events API
 }
 
 const pagerDutyEventsAPI = "https://events.pagerduty.com/v2/enqueue"
@@ -458,7 +459,11 @@ func (c *PagerDutyChannel) Send(ctx context.Context, alert *Alert) error {
 		return fmt.Errorf("failed to marshal PagerDuty event: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, pagerDutyEventsAPI, bytes.NewReader(payload))
+	apiURL := pagerDutyEventsAPI
+	if c.baseURL != "" {
+		apiURL = c.baseURL
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(payload))
 	if err != nil {
 		return fmt.Errorf("failed to create PagerDuty request: %w", err)
 	}

@@ -119,8 +119,13 @@ type TelegramChannelConfig struct {
 
 // EmailChannelConfig for email alerts
 type EmailChannelConfig struct {
-	To      []string `yaml:"to"`
-	Subject string   `yaml:"subject"` // Optional custom subject template
+	To       []string `yaml:"to"`
+	Subject  string   `yaml:"subject"` // Optional custom subject template
+	SMTPHost string   `yaml:"smtp_host"`
+	SMTPPort int      `yaml:"smtp_port"`
+	From     string   `yaml:"from"`
+	Username string   `yaml:"username"`
+	Password string   `yaml:"password"`
 }
 
 // WebhookChannelConfig for webhook alerts
