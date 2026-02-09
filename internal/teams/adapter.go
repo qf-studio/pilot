@@ -23,3 +23,9 @@ func (a *ServiceAdapter) CheckPermission(memberID string, perm string) error {
 func (a *ServiceAdapter) CheckProjectAccess(memberID, projectPath string, requiredPerm string) error {
 	return a.service.CheckProjectAccess(memberID, projectPath, Permission(requiredPerm))
 }
+
+// ResolveGitHubIdentity resolves a GitHub username and/or email to a team member ID (GH-634).
+// Returns ("", nil) when no matching member is found.
+func (a *ServiceAdapter) ResolveGitHubIdentity(ghUser, email string) (string, error) {
+	return a.service.ResolveGitHubIdentity(ghUser, email)
+}

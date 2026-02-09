@@ -198,6 +198,11 @@ func (s *Store) migrate() error {
 	return nil
 }
 
+// DB returns the underlying *sql.DB for sharing with other packages (e.g., teams store).
+func (s *Store) DB() *sql.DB {
+	return s.db
+}
+
 // Close closes the database connection and releases resources.
 func (s *Store) Close() error {
 	return s.db.Close()

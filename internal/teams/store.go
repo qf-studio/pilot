@@ -65,8 +65,11 @@ func (s *Store) migrate() error {
 			PRIMARY KEY (team_id, project_path),
 			FOREIGN KEY (team_id) REFERENCES teams(id) ON DELETE CASCADE
 		)`,
+		// GH-634: Add github_user column for GitHub identity mapping
+		`ALTER TABLE team_members ADD COLUMN github_user TEXT`,
 		`CREATE INDEX IF NOT EXISTS idx_team_members_team ON team_members(team_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_team_members_email ON team_members(email)`,
+		`CREATE INDEX IF NOT EXISTS idx_team_members_github_user ON team_members(github_user)`,
 		`CREATE INDEX IF NOT EXISTS idx_team_audit_log_team ON team_audit_log(team_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_team_audit_log_created ON team_audit_log(created_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_team_audit_log_actor ON team_audit_log(actor_id)`,
@@ -191,36 +194,47 @@ func (s *Store) ListTeams() ([]*Team, error) {
 func (s *Store) AddMember(member *Member) error {
 	projects, _ := json.Marshal(member.Projects)
 	_, err := s.db.Exec(`
-		INSERT INTO team_members (id, team_id, email, name, role, projects, joined_at, invited_by)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-	`, member.ID, member.TeamID, member.Email, member.Name, string(member.Role), string(projects), member.JoinedAt, member.InvitedBy)
+		INSERT INTO team_members (id, team_id, email, name, github_user, role, projects, joined_at, invited_by)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, member.ID, member.TeamID, member.Email, member.Name, member.GitHubUser, string(member.Role), string(projects), member.JoinedAt, member.InvitedBy)
 	return err
 }
 
+// memberColumns is the standard set of columns selected from team_members.
+const memberColumns = `id, team_id, email, name, github_user, role, projects, joined_at, invited_by`
+
 // GetMember retrieves a member by ID
 func (s *Store) GetMember(id string) (*Member, error) {
-	row := s.db.QueryRow(`
-		SELECT id, team_id, email, name, role, projects, joined_at, invited_by
-		FROM team_members WHERE id = ?
-	`, id)
+	row := s.db.QueryRow(`SELECT `+memberColumns+` FROM team_members WHERE id = ?`, id)
 	return s.scanMember(row)
 }
 
 // GetMemberByEmail retrieves a member by email within a team
 func (s *Store) GetMemberByEmail(teamID, email string) (*Member, error) {
-	row := s.db.QueryRow(`
-		SELECT id, team_id, email, name, role, projects, joined_at, invited_by
-		FROM team_members WHERE team_id = ? AND email = ?
-	`, teamID, email)
+	row := s.db.QueryRow(`SELECT `+memberColumns+` FROM team_members WHERE team_id = ? AND email = ?`, teamID, email)
 	return s.scanMember(row)
+}
+
+// GetMemberByGitHubUser retrieves a member by GitHub username within a team (GH-634).
+func (s *Store) GetMemberByGitHubUser(teamID, ghUser string) (*Member, error) {
+	row := s.db.QueryRow(`SELECT `+memberColumns+` FROM team_members WHERE team_id = ? AND github_user = ?`, teamID, ghUser)
+	return s.scanMember(row)
+}
+
+// GetMembersByGitHubUser retrieves all memberships for a GitHub username (across teams) (GH-634).
+func (s *Store) GetMembersByGitHubUser(ghUser string) ([]*Member, error) {
+	rows, err := s.db.Query(`SELECT `+memberColumns+` FROM team_members WHERE github_user = ?`, ghUser)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	return s.scanMembers(rows)
 }
 
 // GetMembersByEmail retrieves all memberships for an email (across teams)
 func (s *Store) GetMembersByEmail(email string) ([]*Member, error) {
-	rows, err := s.db.Query(`
-		SELECT id, team_id, email, name, role, projects, joined_at, invited_by
-		FROM team_members WHERE email = ?
-	`, email)
+	rows, err := s.db.Query(`SELECT `+memberColumns+` FROM team_members WHERE email = ?`, email)
 	if err != nil {
 		return nil, err
 	}
@@ -231,11 +245,7 @@ func (s *Store) GetMembersByEmail(email string) ([]*Member, error) {
 
 // ListMembers retrieves all members of a team
 func (s *Store) ListMembers(teamID string) ([]*Member, error) {
-	rows, err := s.db.Query(`
-		SELECT id, team_id, email, name, role, projects, joined_at, invited_by
-		FROM team_members WHERE team_id = ?
-		ORDER BY role, email
-	`, teamID)
+	rows, err := s.db.Query(`SELECT `+memberColumns+` FROM team_members WHERE team_id = ? ORDER BY role, email`, teamID)
 	if err != nil {
 		return nil, err
 	}
@@ -248,9 +258,9 @@ func (s *Store) ListMembers(teamID string) ([]*Member, error) {
 func (s *Store) UpdateMember(member *Member) error {
 	projects, _ := json.Marshal(member.Projects)
 	_, err := s.db.Exec(`
-		UPDATE team_members SET name = ?, role = ?, projects = ?
+		UPDATE team_members SET name = ?, github_user = ?, role = ?, projects = ?
 		WHERE id = ?
-	`, member.Name, string(member.Role), string(projects), member.ID)
+	`, member.Name, member.GitHubUser, string(member.Role), string(projects), member.ID)
 	return err
 }
 
@@ -272,10 +282,10 @@ func (s *Store) CountMembersByRole(teamID string, role Role) (int, error) {
 // scanMember scans a single member row
 func (s *Store) scanMember(row *sql.Row) (*Member, error) {
 	var member Member
-	var name, projects, invitedBy sql.NullString
+	var name, ghUser, projects, invitedBy sql.NullString
 	var roleStr string
 
-	if err := row.Scan(&member.ID, &member.TeamID, &member.Email, &name, &roleStr, &projects, &member.JoinedAt, &invitedBy); err != nil {
+	if err := row.Scan(&member.ID, &member.TeamID, &member.Email, &name, &ghUser, &roleStr, &projects, &member.JoinedAt, &invitedBy); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
@@ -285,6 +295,9 @@ func (s *Store) scanMember(row *sql.Row) (*Member, error) {
 	member.Role = Role(roleStr)
 	if name.Valid {
 		member.Name = name.String
+	}
+	if ghUser.Valid {
+		member.GitHubUser = ghUser.String
 	}
 	if invitedBy.Valid {
 		member.InvitedBy = invitedBy.String
@@ -301,16 +314,19 @@ func (s *Store) scanMembers(rows *sql.Rows) ([]*Member, error) {
 	var members []*Member
 	for rows.Next() {
 		var member Member
-		var name, projects, invitedBy sql.NullString
+		var name, ghUser, projects, invitedBy sql.NullString
 		var roleStr string
 
-		if err := rows.Scan(&member.ID, &member.TeamID, &member.Email, &name, &roleStr, &projects, &member.JoinedAt, &invitedBy); err != nil {
+		if err := rows.Scan(&member.ID, &member.TeamID, &member.Email, &name, &ghUser, &roleStr, &projects, &member.JoinedAt, &invitedBy); err != nil {
 			return nil, err
 		}
 
 		member.Role = Role(roleStr)
 		if name.Valid {
 			member.Name = name.String
+		}
+		if ghUser.Valid {
+			member.GitHubUser = ghUser.String
 		}
 		if invitedBy.Valid {
 			member.InvitedBy = invitedBy.String

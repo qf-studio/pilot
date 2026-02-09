@@ -298,6 +298,41 @@ func (s *Service) GetMemberByEmail(teamID, email string) (*Member, error) {
 	return s.store.GetMemberByEmail(teamID, email)
 }
 
+// GetMemberByGitHubUser retrieves a member by GitHub username in a team (GH-634).
+func (s *Service) GetMemberByGitHubUser(teamID, ghUser string) (*Member, error) {
+	return s.store.GetMemberByGitHubUser(teamID, ghUser)
+}
+
+// ResolveGitHubIdentity resolves a GitHub username (and optional email) to a member ID
+// across all teams. It tries GitHub username first, then falls back to email (GH-634).
+// Returns ("", nil) when no matching member is found — callers should treat this as
+// "no RBAC enforcement" rather than an error.
+func (s *Service) ResolveGitHubIdentity(ghUser, email string) (string, error) {
+	// Try GitHub username first (most reliable mapping)
+	if ghUser != "" {
+		members, err := s.store.GetMembersByGitHubUser(ghUser)
+		if err != nil {
+			return "", fmt.Errorf("lookup by github user %q: %w", ghUser, err)
+		}
+		if len(members) > 0 {
+			return members[0].ID, nil
+		}
+	}
+
+	// Fall back to email
+	if email != "" {
+		members, err := s.store.GetMembersByEmail(email)
+		if err != nil {
+			return "", fmt.Errorf("lookup by email %q: %w", email, err)
+		}
+		if len(members) > 0 {
+			return members[0].ID, nil
+		}
+	}
+
+	return "", nil
+}
+
 // ListMembers lists all members of a team
 func (s *Service) ListMembers(teamID string) ([]*Member, error) {
 	return s.store.ListMembers(teamID)

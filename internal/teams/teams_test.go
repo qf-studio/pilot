@@ -2089,3 +2089,259 @@ func TestStore_MemberWithName(t *testing.T) {
 		t.Errorf("after update: got name %q, want %q", got.Name, "Jane Doe")
 	}
 }
+
+// GH-634: Tests for GitHub username identity mapping
+
+func TestStore_MemberWithGitHubUser(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	store, err := NewStore(db)
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+
+	team, _ := NewTeam("Test Team", "owner@example.com")
+	_ = store.CreateTeam(team)
+
+	member := NewMember(team.ID, "dev@example.com", RoleDeveloper, "")
+	member.GitHubUser = "octocat"
+
+	if err := store.AddMember(member); err != nil {
+		t.Fatalf("AddMember failed: %v", err)
+	}
+
+	// Verify persisted via GetMember
+	got, err := store.GetMember(member.ID)
+	if err != nil {
+		t.Fatalf("GetMember failed: %v", err)
+	}
+	if got.GitHubUser != "octocat" {
+		t.Errorf("got GitHubUser %q, want %q", got.GitHubUser, "octocat")
+	}
+
+	// Update GitHub username
+	got.GitHubUser = "octocat-v2"
+	if err := store.UpdateMember(got); err != nil {
+		t.Fatalf("UpdateMember failed: %v", err)
+	}
+
+	got, _ = store.GetMember(member.ID)
+	if got.GitHubUser != "octocat-v2" {
+		t.Errorf("after update: got GitHubUser %q, want %q", got.GitHubUser, "octocat-v2")
+	}
+}
+
+func TestStore_GetMemberByGitHubUser(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	store, err := NewStore(db)
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+
+	team, _ := NewTeam("Test Team", "owner@example.com")
+	_ = store.CreateTeam(team)
+
+	member := NewMember(team.ID, "dev@example.com", RoleDeveloper, "")
+	member.GitHubUser = "octocat"
+	_ = store.AddMember(member)
+
+	// Found
+	got, err := store.GetMemberByGitHubUser(team.ID, "octocat")
+	if err != nil {
+		t.Fatalf("GetMemberByGitHubUser failed: %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected member, got nil")
+	}
+	if got.ID != member.ID {
+		t.Errorf("got member ID %q, want %q", got.ID, member.ID)
+	}
+
+	// Not found — wrong team
+	got, err = store.GetMemberByGitHubUser("wrong-team", "octocat")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != nil {
+		t.Errorf("expected nil, got member %q", got.ID)
+	}
+
+	// Not found — wrong username
+	got, err = store.GetMemberByGitHubUser(team.ID, "nonexistent")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != nil {
+		t.Errorf("expected nil, got member %q", got.ID)
+	}
+}
+
+func TestStore_GetMembersByGitHubUser(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	store, err := NewStore(db)
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+
+	// Two teams, same GitHub user
+	team1, _ := NewTeam("Team A", "owner1@example.com")
+	team2, _ := NewTeam("Team B", "owner2@example.com")
+	_ = store.CreateTeam(team1)
+	_ = store.CreateTeam(team2)
+
+	m1 := NewMember(team1.ID, "dev@example.com", RoleDeveloper, "")
+	m1.GitHubUser = "octocat"
+	_ = store.AddMember(m1)
+
+	m2 := NewMember(team2.ID, "dev@example.com", RoleDeveloper, "")
+	m2.GitHubUser = "octocat"
+	_ = store.AddMember(m2)
+
+	members, err := store.GetMembersByGitHubUser("octocat")
+	if err != nil {
+		t.Fatalf("GetMembersByGitHubUser failed: %v", err)
+	}
+	if len(members) != 2 {
+		t.Errorf("got %d members, want 2", len(members))
+	}
+
+	// No matches
+	members, err = store.GetMembersByGitHubUser("nonexistent")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(members) != 0 {
+		t.Errorf("got %d members, want 0", len(members))
+	}
+}
+
+func TestService_ResolveGitHubIdentity(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	store, err := NewStore(db)
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+	svc := NewService(store)
+
+	team, owner, err := svc.CreateTeam("Test Team", "owner@example.com")
+	if err != nil {
+		t.Fatalf("CreateTeam failed: %v", err)
+	}
+
+	// Add a member with GitHub username
+	dev, err := svc.AddMember(team.ID, owner.ID, "dev@example.com", RoleDeveloper, nil)
+	if err != nil {
+		t.Fatalf("AddMember failed: %v", err)
+	}
+	dev.GitHubUser = "octocat"
+	if err := store.UpdateMember(dev); err != nil {
+		t.Fatalf("UpdateMember failed: %v", err)
+	}
+
+	tests := []struct {
+		name     string
+		ghUser   string
+		email    string
+		wantID   string
+		wantErr  bool
+	}{
+		{
+			name:   "resolve by GitHub username",
+			ghUser: "octocat",
+			email:  "",
+			wantID: dev.ID,
+		},
+		{
+			name:   "resolve by email fallback",
+			ghUser: "unknown-user",
+			email:  "dev@example.com",
+			wantID: dev.ID,
+		},
+		{
+			name:   "GitHub username takes priority over email",
+			ghUser: "octocat",
+			email:  "wrong@example.com",
+			wantID: dev.ID,
+		},
+		{
+			name:   "no match returns empty",
+			ghUser: "unknown-user",
+			email:  "unknown@example.com",
+			wantID: "",
+		},
+		{
+			name:   "empty inputs return empty",
+			ghUser: "",
+			email:  "",
+			wantID: "",
+		},
+		{
+			name:   "resolve owner by email",
+			ghUser: "",
+			email:  "owner@example.com",
+			wantID: owner.ID,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := svc.ResolveGitHubIdentity(tt.ghUser, tt.email)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("err = %v, wantErr = %v", err, tt.wantErr)
+			}
+			if got != tt.wantID {
+				t.Errorf("got memberID %q, want %q", got, tt.wantID)
+			}
+		})
+	}
+}
+
+func TestService_GetMemberByGitHubUser(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	store, err := NewStore(db)
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+	svc := NewService(store)
+
+	team, owner, err := svc.CreateTeam("Test Team", "owner@example.com")
+	if err != nil {
+		t.Fatalf("CreateTeam failed: %v", err)
+	}
+
+	dev, err := svc.AddMember(team.ID, owner.ID, "dev@example.com", RoleDeveloper, nil)
+	if err != nil {
+		t.Fatalf("AddMember failed: %v", err)
+	}
+	dev.GitHubUser = "octocat"
+	_ = store.UpdateMember(dev)
+
+	got, err := svc.GetMemberByGitHubUser(team.ID, "octocat")
+	if err != nil {
+		t.Fatalf("GetMemberByGitHubUser failed: %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected member, got nil")
+	}
+	if got.ID != dev.ID {
+		t.Errorf("got member %q, want %q", got.ID, dev.ID)
+	}
+
+	// Not found
+	got, err = svc.GetMemberByGitHubUser(team.ID, "nobody")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != nil {
+		t.Errorf("expected nil for unknown user, got %q", got.ID)
+	}
+}

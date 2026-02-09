@@ -45,9 +45,10 @@ import (
 )
 
 var (
-	version   = "0.3.0"
-	buildTime = "unknown"
-	cfgFile   string
+	version     = "0.3.0"
+	buildTime   = "unknown"
+	cfgFile     string
+	teamAdapter *teams.ServiceAdapter // Global team adapter for RBAC lookups (GH-634)
 )
 
 // telegramBriefAdapter wraps telegram.Client to satisfy briefs.TelegramSender interface
@@ -383,6 +384,19 @@ Examples:
 					if dispErr := gwDispatcher.Start(); dispErr != nil {
 						logging.WithComponent("start").Warn("Failed to start dispatcher for gateway polling", slog.Any("error", dispErr))
 						gwDispatcher = nil
+					}
+				}
+
+				// GH-634: Initialize teams service for RBAC enforcement in gateway mode
+				if gwStore != nil {
+					teamStore, teamErr := teams.NewStore(gwStore.DB())
+					if teamErr != nil {
+						logging.WithComponent("teams").Warn("Failed to initialize team store for gateway", slog.Any("error", teamErr))
+					} else {
+						teamSvc := teams.NewService(teamStore)
+						teamAdapter = teams.NewServiceAdapter(teamSvc)
+						gwRunner.SetTeamChecker(teamAdapter)
+						logging.WithComponent("teams").Info("team RBAC enforcement enabled for gateway mode")
 					}
 				}
 
@@ -1031,6 +1045,19 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 				_ = store.Close()
 			}
 		}()
+	}
+
+	// GH-634: Initialize teams service for RBAC enforcement
+	if store != nil {
+		teamStore, teamErr := teams.NewStore(store.DB())
+		if teamErr != nil {
+			logging.WithComponent("teams").Warn("Failed to initialize team store", slog.Any("error", teamErr))
+		} else {
+			teamSvc := teams.NewService(teamStore)
+			teamAdapter = teams.NewServiceAdapter(teamSvc)
+			runner.SetTeamChecker(teamAdapter)
+			logging.WithComponent("teams").Info("team RBAC enforcement enabled for polling mode")
+		}
 	}
 
 	// Create monitor and TUI program for dashboard mode
@@ -1753,6 +1780,30 @@ func parseAutopilotBranch(body string) string {
 }
 
 // handleGitHubIssue processes a GitHub issue picked up by the poller
+// resolveGitHubMemberID maps a GitHub issue author to a team member ID (GH-634).
+// Uses the global teamAdapter (set at startup). Returns "" if no adapter is configured
+// or no matching member is found — callers treat "" as "skip RBAC".
+func resolveGitHubMemberID(issue *github.Issue) string {
+	if teamAdapter == nil {
+		return ""
+	}
+	memberID, err := teamAdapter.ResolveGitHubIdentity(issue.User.Login, issue.User.Email)
+	if err != nil {
+		logging.WithComponent("teams").Warn("failed to resolve GitHub identity",
+			slog.String("github_user", issue.User.Login),
+			slog.Any("error", err),
+		)
+		return ""
+	}
+	if memberID != "" {
+		logging.WithComponent("teams").Info("resolved GitHub user to team member",
+			slog.String("github_user", issue.User.Login),
+			slog.String("member_id", memberID),
+		)
+	}
+	return memberID
+}
+
 func handleGitHubIssue(ctx context.Context, cfg *config.Config, client *github.Client, issue *github.Issue, projectPath string, dispatcher *executor.Dispatcher, runner *executor.Runner) error {
 	sourceRepo := cfg.Adapters.GitHub.Repo
 
@@ -1790,6 +1841,7 @@ func handleGitHubIssue(ctx context.Context, cfg *config.Config, client *github.C
 		Branch:      branchName,
 		CreatePR:    true,
 		SourceRepo:  sourceRepo,
+		MemberID:    resolveGitHubMemberID(issue), // GH-634: RBAC lookup
 	}
 
 	var result *executor.ExecutionResult
@@ -2106,6 +2158,7 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 		Branch:      branchName,
 		CreatePR:    true,
 		SourceRepo:  sourceRepo,
+		MemberID:    resolveGitHubMemberID(issue), // GH-634: RBAC lookup
 	}
 
 	var result *executor.ExecutionResult
