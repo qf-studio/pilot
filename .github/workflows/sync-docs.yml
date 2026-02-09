@@ -55,20 +55,20 @@ jobs:
           git config user.email "ci@quantflow.studio"
           git add -A
 
-          # Only push if there are changes
+          # Push content if there are changes
           if git diff --cached --quiet; then
             echo "No changes to sync"
           else
             git commit -m "sync: docs from pilot@${GITHUB_SHA::7}"
             git push origin main
+          fi
 
-            # Auto-trigger GitLab deploy by pushing a prod tag
-            # Use timestamp suffix so each sync gets a unique tag (avoids protected tag conflicts)
-            VERSION=$(git -C "$GITHUB_WORKSPACE" describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')
-            if [ -n "$VERSION" ]; then
-              DEPLOY_TAG="prod-${VERSION}-$(date +%Y%m%d%H%M%S)"
-              git tag "$DEPLOY_TAG"
-              git push origin "$DEPLOY_TAG"
-              echo "Tagged ${DEPLOY_TAG} to trigger deploy"
-            fi
+          # Always trigger GitLab deploy via unique prod tag
+          # (decoupled from content diff — handles retries after tag-only failures)
+          VERSION=$(git -C "$GITHUB_WORKSPACE" describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')
+          if [ -n "$VERSION" ]; then
+            DEPLOY_TAG="prod-${VERSION}-$(date +%Y%m%d%H%M%S)"
+            git tag "$DEPLOY_TAG"
+            git push origin "$DEPLOY_TAG"
+            echo "Tagged ${DEPLOY_TAG} to trigger deploy"
           fi
