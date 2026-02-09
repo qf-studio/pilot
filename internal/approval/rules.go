@@ -70,6 +70,8 @@ func (re *RuleEvaluator) matches(rule *Rule, ctx RuleContext) bool {
 		return re.matchSpendThreshold(rule, ctx)
 	case ConditionFilePattern:
 		return re.matchFilePattern(rule, ctx)
+	case ConditionComplexity:
+		return re.matchComplexity(rule, ctx)
 	default:
 		re.log.Warn("unknown condition type",
 			slog.String("rule", rule.Name),
@@ -93,6 +95,40 @@ func (re *RuleEvaluator) matchSpendThreshold(rule *Rule, ctx RuleContext) bool {
 		return false
 	}
 	return ctx.TotalSpendCents >= rule.Condition.Threshold
+}
+
+// complexityOrder defines the hierarchy of complexity levels (lower index = simpler).
+var complexityOrder = map[string]int{
+	"trivial": 0,
+	"simple":  1,
+	"medium":  2,
+	"complex": 3,
+	"epic":    4,
+}
+
+// matchComplexity returns true when the task's complexity equals or exceeds the threshold.
+// The condition's Pattern field holds the minimum complexity level (e.g., "complex").
+func (re *RuleEvaluator) matchComplexity(rule *Rule, ctx RuleContext) bool {
+	if rule.Condition.Pattern == "" || ctx.Complexity == "" {
+		return false
+	}
+	thresholdLevel, ok := complexityOrder[rule.Condition.Pattern]
+	if !ok {
+		re.log.Warn("unknown complexity threshold",
+			slog.String("rule", rule.Name),
+			slog.String("threshold", rule.Condition.Pattern),
+		)
+		return false
+	}
+	actualLevel, ok := complexityOrder[ctx.Complexity]
+	if !ok {
+		re.log.Warn("unknown task complexity",
+			slog.String("rule", rule.Name),
+			slog.String("complexity", ctx.Complexity),
+		)
+		return false
+	}
+	return actualLevel >= thresholdLevel
 }
 
 // matchFilePattern returns true when any changed file matches the glob pattern.

@@ -799,6 +799,265 @@ func TestManager_FilePattern_RuleTriggered_StageDisabled(t *testing.T) {
 	}
 }
 
+func TestRuleEvaluator_Complexity_Matches(t *testing.T) {
+	rules := []Rule{
+		{
+			Name:    "complex-gate",
+			Enabled: true,
+			Stage:   StagePreExecution,
+			Condition: Condition{
+				Type:    ConditionComplexity,
+				Pattern: "complex", // Trigger at complex or above
+			},
+		},
+	}
+
+	re := NewRuleEvaluator(rules)
+
+	tests := []struct {
+		name       string
+		complexity string
+		wantNil    bool
+	}{
+		{"empty complexity", "", true},
+		{"trivial below threshold", "trivial", true},
+		{"simple below threshold", "simple", true},
+		{"medium below threshold", "medium", true},
+		{"complex at threshold", "complex", false},
+		{"epic above threshold", "epic", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := RuleContext{
+				TaskID:     "TASK-01",
+				Complexity: tt.complexity,
+			}
+			result := re.Evaluate(ctx)
+			if tt.wantNil && result != nil {
+				t.Errorf("expected nil, got rule %q", result.Name)
+			}
+			if !tt.wantNil && result == nil {
+				t.Error("expected matching rule, got nil")
+			}
+		})
+	}
+}
+
+func TestRuleEvaluator_Complexity_AllLevels(t *testing.T) {
+	// Test each level as threshold — everything at or above matches
+	levels := []string{"trivial", "simple", "medium", "complex", "epic"}
+
+	for i, threshold := range levels {
+		rules := []Rule{
+			{
+				Name:    "level-gate",
+				Enabled: true,
+				Stage:   StagePreExecution,
+				Condition: Condition{
+					Type:    ConditionComplexity,
+					Pattern: threshold,
+				},
+			},
+		}
+
+		re := NewRuleEvaluator(rules)
+
+		for j, actual := range levels {
+			ctx := RuleContext{TaskID: "TASK-01", Complexity: actual}
+			result := re.Evaluate(ctx)
+			shouldMatch := j >= i
+
+			if shouldMatch && result == nil {
+				t.Errorf("threshold=%s actual=%s: expected match, got nil", threshold, actual)
+			}
+			if !shouldMatch && result != nil {
+				t.Errorf("threshold=%s actual=%s: expected nil, got match", threshold, actual)
+			}
+		}
+	}
+}
+
+func TestRuleEvaluator_Complexity_EmptyPattern(t *testing.T) {
+	rules := []Rule{
+		{
+			Name:    "empty-complexity",
+			Enabled: true,
+			Stage:   StagePreExecution,
+			Condition: Condition{
+				Type:    ConditionComplexity,
+				Pattern: "",
+			},
+		},
+	}
+
+	re := NewRuleEvaluator(rules)
+	result := re.Evaluate(RuleContext{Complexity: "complex"})
+	if result != nil {
+		t.Errorf("expected nil for empty pattern, got rule %q", result.Name)
+	}
+}
+
+func TestRuleEvaluator_Complexity_UnknownThreshold(t *testing.T) {
+	rules := []Rule{
+		{
+			Name:    "bad-threshold",
+			Enabled: true,
+			Stage:   StagePreExecution,
+			Condition: Condition{
+				Type:    ConditionComplexity,
+				Pattern: "impossible",
+			},
+		},
+	}
+
+	re := NewRuleEvaluator(rules)
+	result := re.Evaluate(RuleContext{Complexity: "complex"})
+	if result != nil {
+		t.Errorf("expected nil for unknown threshold, got rule %q", result.Name)
+	}
+}
+
+func TestRuleEvaluator_Complexity_UnknownActual(t *testing.T) {
+	rules := []Rule{
+		{
+			Name:    "valid-threshold",
+			Enabled: true,
+			Stage:   StagePreExecution,
+			Condition: Condition{
+				Type:    ConditionComplexity,
+				Pattern: "medium",
+			},
+		},
+	}
+
+	re := NewRuleEvaluator(rules)
+	result := re.Evaluate(RuleContext{Complexity: "unknown_level"})
+	if result != nil {
+		t.Errorf("expected nil for unknown actual complexity, got rule %q", result.Name)
+	}
+}
+
+func TestRuleEvaluator_Complexity_DisabledSkipped(t *testing.T) {
+	rules := []Rule{
+		{
+			Name:    "disabled-complexity",
+			Enabled: false,
+			Stage:   StagePreExecution,
+			Condition: Condition{
+				Type:    ConditionComplexity,
+				Pattern: "trivial",
+			},
+		},
+	}
+
+	re := NewRuleEvaluator(rules)
+	result := re.Evaluate(RuleContext{Complexity: "epic"})
+	if result != nil {
+		t.Error("disabled rule should not match")
+	}
+}
+
+func TestManager_Complexity_RuleTriggered_StageDisabled(t *testing.T) {
+	config := DefaultConfig()
+	config.Enabled = true
+	config.PreExecution.Enabled = false
+	config.PreExecution.Timeout = 100 * time.Millisecond
+	config.Rules = []Rule{
+		{
+			Name:    "complexity-gate",
+			Enabled: true,
+			Stage:   StagePreExecution,
+			Condition: Condition{
+				Type:    ConditionComplexity,
+				Pattern: "complex",
+			},
+		},
+	}
+
+	m := NewManager(config)
+	m.SetRuleEvaluator(NewRuleEvaluator(config.Rules))
+
+	handler := &mockHandler{
+		name: "test",
+		respondWith: &Response{
+			RequestID:  "complexity-triggered",
+			Decision:   DecisionApproved,
+			ApprovedBy: "architect",
+		},
+	}
+	m.RegisterHandler(handler)
+
+	req := &Request{
+		ID:     "complexity-triggered",
+		TaskID: "TASK-01",
+		Stage:  StagePreExecution,
+		Title:  "Architecture refactor",
+		Metadata: map[string]interface{}{
+			"complexity": "complex",
+		},
+		CreatedAt: time.Now(),
+	}
+
+	resp, err := m.RequestApproval(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if resp.Decision != DecisionApproved {
+		t.Errorf("expected approved from handler, got %s", resp.Decision)
+	}
+	if resp.ApprovedBy != "architect" {
+		t.Errorf("expected architect, got %s", resp.ApprovedBy)
+	}
+	if len(handler.sentReqs) != 1 {
+		t.Errorf("expected handler to receive request, got %d", len(handler.sentReqs))
+	}
+}
+
+func TestManager_Complexity_BelowThreshold_AutoApproves(t *testing.T) {
+	config := DefaultConfig()
+	config.Enabled = true
+	config.PreExecution.Enabled = false
+	config.Rules = []Rule{
+		{
+			Name:    "complexity-gate",
+			Enabled: true,
+			Stage:   StagePreExecution,
+			Condition: Condition{
+				Type:    ConditionComplexity,
+				Pattern: "complex",
+			},
+		},
+	}
+
+	m := NewManager(config)
+	m.SetRuleEvaluator(NewRuleEvaluator(config.Rules))
+
+	req := &Request{
+		ID:     "complexity-below",
+		TaskID: "TASK-02",
+		Stage:  StagePreExecution,
+		Title:  "Simple fix",
+		Metadata: map[string]interface{}{
+			"complexity": "simple",
+		},
+		CreatedAt: time.Now(),
+	}
+
+	resp, err := m.RequestApproval(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if resp.Decision != DecisionApproved {
+		t.Errorf("expected auto-approve, got %s", resp.Decision)
+	}
+	if resp.ApprovedBy != "system" {
+		t.Errorf("expected system, got %s", resp.ApprovedBy)
+	}
+}
+
 func TestManager_FilePattern_NoMatch_AutoApproves(t *testing.T) {
 	config := DefaultConfig()
 	config.Enabled = true
