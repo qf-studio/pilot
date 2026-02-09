@@ -592,3 +592,252 @@ func TestManager_ShouldRequireApproval_NoEvaluator(t *testing.T) {
 		t.Error("expected nil without evaluator")
 	}
 }
+
+func TestRuleEvaluator_FilePattern_Matches(t *testing.T) {
+	rules := []Rule{
+		{
+			Name:    "infra-guard",
+			Enabled: true,
+			Stage:   StagePreMerge,
+			Condition: Condition{
+				Type:    ConditionFilePattern,
+				Pattern: "*.tf",
+			},
+		},
+	}
+
+	re := NewRuleEvaluator(rules)
+
+	tests := []struct {
+		name    string
+		files   []string
+		wantNil bool
+	}{
+		{"no files", nil, true},
+		{"no match", []string{"main.go", "readme.md"}, true},
+		{"single match", []string{"main.tf"}, false},
+		{"match among others", []string{"main.go", "infra.tf", "readme.md"}, false},
+		{"multiple matches", []string{"main.tf", "vars.tf"}, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := RuleContext{
+				TaskID:       "TASK-01",
+				ChangedFiles: tt.files,
+			}
+			result := re.Evaluate(ctx)
+			if tt.wantNil && result != nil {
+				t.Errorf("expected nil, got rule %q", result.Name)
+			}
+			if !tt.wantNil && result == nil {
+				t.Error("expected matching rule, got nil")
+			}
+		})
+	}
+}
+
+func TestRuleEvaluator_FilePattern_EmptyPattern(t *testing.T) {
+	rules := []Rule{
+		{
+			Name:    "empty-pattern",
+			Enabled: true,
+			Stage:   StagePreMerge,
+			Condition: Condition{
+				Type:    ConditionFilePattern,
+				Pattern: "",
+			},
+		},
+	}
+
+	re := NewRuleEvaluator(rules)
+	result := re.Evaluate(RuleContext{ChangedFiles: []string{"anything.go"}})
+	if result != nil {
+		t.Errorf("expected nil for empty pattern, got rule %q", result.Name)
+	}
+}
+
+func TestRuleEvaluator_FilePattern_DisabledSkipped(t *testing.T) {
+	rules := []Rule{
+		{
+			Name:    "disabled-file",
+			Enabled: false,
+			Stage:   StagePreMerge,
+			Condition: Condition{
+				Type:    ConditionFilePattern,
+				Pattern: "*.tf",
+			},
+		},
+	}
+
+	re := NewRuleEvaluator(rules)
+	result := re.Evaluate(RuleContext{ChangedFiles: []string{"main.tf"}})
+	if result != nil {
+		t.Error("disabled rule should not match")
+	}
+}
+
+func TestRuleEvaluator_FilePattern_GlobPatterns(t *testing.T) {
+	tests := []struct {
+		name    string
+		pattern string
+		file    string
+		wantNil bool
+	}{
+		{"star wildcard", "*.go", "main.go", false},
+		{"star no match", "*.go", "main.rs", true},
+		{"question mark", "test?.go", "test1.go", false},
+		{"question mark no match", "test?.go", "test12.go", true},
+		{"character class", "[Mm]akefile", "Makefile", false},
+		{"character class lower", "[Mm]akefile", "makefile", false},
+		{"character class no match", "[Mm]akefile", "xakefile", true},
+		{"exact match", "Dockerfile", "Dockerfile", false},
+		{"exact no match", "Dockerfile", "Makefile", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rules := []Rule{
+				{
+					Name:    "test-rule",
+					Enabled: true,
+					Stage:   StagePreMerge,
+					Condition: Condition{
+						Type:    ConditionFilePattern,
+						Pattern: tt.pattern,
+					},
+				},
+			}
+
+			re := NewRuleEvaluator(rules)
+			ctx := RuleContext{ChangedFiles: []string{tt.file}}
+			result := re.Evaluate(ctx)
+			if tt.wantNil && result != nil {
+				t.Errorf("expected nil, got rule %q", result.Name)
+			}
+			if !tt.wantNil && result == nil {
+				t.Error("expected matching rule, got nil")
+			}
+		})
+	}
+}
+
+func TestRuleEvaluator_FilePattern_InvalidPattern(t *testing.T) {
+	rules := []Rule{
+		{
+			Name:    "bad-pattern",
+			Enabled: true,
+			Stage:   StagePreMerge,
+			Condition: Condition{
+				Type:    ConditionFilePattern,
+				Pattern: "[invalid", // Unclosed bracket
+			},
+		},
+	}
+
+	re := NewRuleEvaluator(rules)
+	result := re.Evaluate(RuleContext{ChangedFiles: []string{"anything.go"}})
+	if result != nil {
+		t.Errorf("expected nil for invalid pattern, got rule %q", result.Name)
+	}
+}
+
+func TestManager_FilePattern_RuleTriggered_StageDisabled(t *testing.T) {
+	config := DefaultConfig()
+	config.Enabled = true
+	config.PreMerge.Enabled = false // Stage disabled
+	config.PreMerge.Timeout = 100 * time.Millisecond
+	config.Rules = []Rule{
+		{
+			Name:    "infra-guard",
+			Enabled: true,
+			Stage:   StagePreMerge,
+			Condition: Condition{
+				Type:    ConditionFilePattern,
+				Pattern: "*.tf",
+			},
+		},
+	}
+
+	m := NewManager(config)
+	m.SetRuleEvaluator(NewRuleEvaluator(config.Rules))
+
+	handler := &mockHandler{
+		name: "test",
+		respondWith: &Response{
+			RequestID:  "file-triggered",
+			Decision:   DecisionApproved,
+			ApprovedBy: "infra-reviewer",
+		},
+	}
+	m.RegisterHandler(handler)
+
+	req := &Request{
+		ID:     "file-triggered",
+		TaskID: "TASK-01",
+		Stage:  StagePreMerge,
+		Title:  "Terraform changes",
+		Metadata: map[string]interface{}{
+			"changed_files": []string{"main.tf", "variables.tf"},
+		},
+		CreatedAt: time.Now(),
+	}
+
+	resp, err := m.RequestApproval(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if resp.Decision != DecisionApproved {
+		t.Errorf("expected approved from handler, got %s", resp.Decision)
+	}
+	if resp.ApprovedBy != "infra-reviewer" {
+		t.Errorf("expected infra-reviewer, got %s", resp.ApprovedBy)
+	}
+	if len(handler.sentReqs) != 1 {
+		t.Errorf("expected handler to receive request, got %d", len(handler.sentReqs))
+	}
+}
+
+func TestManager_FilePattern_NoMatch_AutoApproves(t *testing.T) {
+	config := DefaultConfig()
+	config.Enabled = true
+	config.PreMerge.Enabled = false
+	config.Rules = []Rule{
+		{
+			Name:    "infra-guard",
+			Enabled: true,
+			Stage:   StagePreMerge,
+			Condition: Condition{
+				Type:    ConditionFilePattern,
+				Pattern: "*.tf",
+			},
+		},
+	}
+
+	m := NewManager(config)
+	m.SetRuleEvaluator(NewRuleEvaluator(config.Rules))
+
+	req := &Request{
+		ID:     "file-no-match",
+		TaskID: "TASK-02",
+		Stage:  StagePreMerge,
+		Title:  "Go changes only",
+		Metadata: map[string]interface{}{
+			"changed_files": []string{"main.go", "handler.go"},
+		},
+		CreatedAt: time.Now(),
+	}
+
+	resp, err := m.RequestApproval(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if resp.Decision != DecisionApproved {
+		t.Errorf("expected auto-approve, got %s", resp.Decision)
+	}
+	if resp.ApprovedBy != "system" {
+		t.Errorf("expected system, got %s", resp.ApprovedBy)
+	}
+}

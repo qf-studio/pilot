@@ -2,6 +2,7 @@ package approval
 
 import (
 	"log/slog"
+	"path/filepath"
 
 	"github.com/alekspetrov/pilot/internal/logging"
 )
@@ -67,6 +68,8 @@ func (re *RuleEvaluator) matches(rule *Rule, ctx RuleContext) bool {
 		return re.matchConsecutiveFailures(rule, ctx)
 	case ConditionSpendThreshold:
 		return re.matchSpendThreshold(rule, ctx)
+	case ConditionFilePattern:
+		return re.matchFilePattern(rule, ctx)
 	default:
 		re.log.Warn("unknown condition type",
 			slog.String("rule", rule.Name),
@@ -90,4 +93,30 @@ func (re *RuleEvaluator) matchSpendThreshold(rule *Rule, ctx RuleContext) bool {
 		return false
 	}
 	return ctx.TotalSpendCents >= rule.Condition.Threshold
+}
+
+// matchFilePattern returns true when any changed file matches the glob pattern.
+// Uses filepath.Match for glob matching (supports *, ?, []).
+func (re *RuleEvaluator) matchFilePattern(rule *Rule, ctx RuleContext) bool {
+	if rule.Condition.Pattern == "" {
+		return false
+	}
+	if len(ctx.ChangedFiles) == 0 {
+		return false
+	}
+	for _, file := range ctx.ChangedFiles {
+		matched, err := filepath.Match(rule.Condition.Pattern, file)
+		if err != nil {
+			re.log.Warn("invalid file pattern",
+				slog.String("rule", rule.Name),
+				slog.String("pattern", rule.Condition.Pattern),
+				slog.String("error", err.Error()),
+			)
+			return false
+		}
+		if matched {
+			return true
+		}
+	}
+	return false
 }
