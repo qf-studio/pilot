@@ -240,6 +240,7 @@ type Runner struct {
 	tokenLimitCheck       TokenLimitCallback    // Optional per-task token/duration limit check (GH-539)
 	onSubIssuePRCreated   SubIssuePRCallback    // Optional callback when a sub-issue PR is created (GH-596)
 	intentJudge           *IntentJudge          // Optional intent judge for diff-vs-ticket alignment (GH-624)
+	teamChecker           TeamChecker           // Optional team RBAC checker (GH-633)
 	executeFunc           func(ctx context.Context, task *Task) (*ExecutionResult, error) // Internal override for testing
 }
 
@@ -410,6 +411,11 @@ func (r *Runner) SetOnSubIssuePRCreated(fn SubIssuePRCallback) {
 // SetIntentJudge sets the intent judge for diff-vs-ticket alignment verification (GH-624).
 func (r *Runner) SetIntentJudge(judge *IntentJudge) {
 	r.intentJudge = judge
+}
+
+// SetTeamChecker sets the team RBAC checker for permission verification before task execution (GH-633).
+func (r *Runner) SetTeamChecker(checker TeamChecker) {
+	r.teamChecker = checker
 }
 
 // getRecordingsPath returns the recordings path, using default if not set

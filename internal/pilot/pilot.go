@@ -20,6 +20,7 @@ import (
 	"github.com/alekspetrov/pilot/internal/logging"
 	"github.com/alekspetrov/pilot/internal/memory"
 	"github.com/alekspetrov/pilot/internal/orchestrator"
+	"github.com/alekspetrov/pilot/internal/teams"
 	"github.com/alekspetrov/pilot/internal/webhooks"
 )
 
@@ -49,6 +50,7 @@ type Pilot struct {
 	telegramRunner     *executor.Runner  // Runner for Telegram tasks (GH-349)
 	githubPoller       *github.Poller    // GitHub polling handler (GH-350)
 	alertEngine        *alerts.Engine
+	teamsService       *teams.Service   // Teams RBAC service (GH-633)
 	store              *memory.Store
 	graph              *memory.KnowledgeGraph
 	webhookManager     *webhooks.Manager
@@ -117,6 +119,14 @@ func WithTelegramHandler(runner *executor.Runner, projectPath string) Option {
 func WithGitHubPoller(poller *github.Poller) Option {
 	return func(p *Pilot) {
 		p.githubPoller = poller
+	}
+}
+
+// WithTeamsService enables team-scoped execution (GH-633)
+// When set, Pilot uses team RBAC for permission checks and audit logging.
+func WithTeamsService(svc *teams.Service) Option {
+	return func(p *Pilot) {
+		p.teamsService = svc
 	}
 }
 
@@ -734,6 +744,12 @@ func (p *Pilot) Router() *gateway.Router {
 // Gateway returns the gateway server for registering HTTP handlers
 func (p *Pilot) Gateway() *gateway.Server {
 	return p.gateway
+}
+
+// TeamsService returns the teams service for RBAC (GH-633)
+// Returns nil if --team was not provided.
+func (p *Pilot) TeamsService() *teams.Service {
+	return p.teamsService
 }
 
 // OnProgress registers a callback for task progress updates
