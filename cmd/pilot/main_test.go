@@ -30,6 +30,8 @@ func TestStartCommandFlags(t *testing.T) {
 		{"telegram", ""},
 		{"github", ""},
 		{"linear", ""},
+		{"team", ""},
+		{"team-member", ""},
 	}
 
 	for _, ef := range expectedFlags {
@@ -56,6 +58,8 @@ func TestTaskCommandFlags(t *testing.T) {
 		{"dry-run", ""},
 		{"verbose", "v"},
 		{"alerts", ""},
+		{"team", ""},
+		{"team-member", ""},
 	}
 
 	for _, ef := range expectedFlags {
@@ -82,6 +86,8 @@ func TestGitHubRunCommandFlags(t *testing.T) {
 		{"repo", ""},
 		{"dry-run", ""},
 		{"verbose", "v"},
+		{"team", ""},
+		{"team-member", ""},
 	}
 
 	for _, ef := range expectedFlags {
@@ -622,4 +628,89 @@ func TestWireProjectAccessChecker_ViewerDenied(t *testing.T) {
 		t.Fatal("expected non-nil cleanup — checker should be wired even for viewer")
 	}
 	defer cleanup()
+}
+
+// =============================================================================
+// GH-635: applyTeamOverrides tests
+// =============================================================================
+
+func TestApplyTeamOverrides_NotChanged(t *testing.T) {
+	cfg := &config.Config{}
+	cmd := &cobra.Command{}
+	cmd.Flags().String("team", "", "")
+	cmd.Flags().String("team-member", "", "")
+
+	applyTeamOverrides(cfg, cmd, "my-team", "dev@test.com")
+
+	if cfg.Team != nil {
+		t.Error("expected Team to remain nil when --team flag not changed")
+	}
+}
+
+func TestApplyTeamOverrides_TeamFlagSet(t *testing.T) {
+	cfg := &config.Config{}
+	cmd := &cobra.Command{}
+	cmd.Flags().String("team", "", "")
+	cmd.Flags().String("team-member", "", "")
+	_ = cmd.Flags().Set("team", "my-team")
+
+	applyTeamOverrides(cfg, cmd, "my-team", "")
+
+	if cfg.Team == nil {
+		t.Fatal("expected Team to be created")
+	}
+	if !cfg.Team.Enabled {
+		t.Error("expected Team.Enabled to be true")
+	}
+	if cfg.Team.TeamID != "my-team" {
+		t.Errorf("expected TeamID 'my-team', got %q", cfg.Team.TeamID)
+	}
+}
+
+func TestApplyTeamOverrides_BothFlagsSet(t *testing.T) {
+	cfg := &config.Config{}
+	cmd := &cobra.Command{}
+	cmd.Flags().String("team", "", "")
+	cmd.Flags().String("team-member", "", "")
+	_ = cmd.Flags().Set("team", "my-team")
+	_ = cmd.Flags().Set("team-member", "dev@test.com")
+
+	applyTeamOverrides(cfg, cmd, "my-team", "dev@test.com")
+
+	if cfg.Team == nil {
+		t.Fatal("expected Team to be created")
+	}
+	if cfg.Team.TeamID != "my-team" {
+		t.Errorf("expected TeamID 'my-team', got %q", cfg.Team.TeamID)
+	}
+	if cfg.Team.MemberEmail != "dev@test.com" {
+		t.Errorf("expected MemberEmail 'dev@test.com', got %q", cfg.Team.MemberEmail)
+	}
+}
+
+func TestApplyTeamOverrides_OverridesExistingConfig(t *testing.T) {
+	cfg := &config.Config{
+		Team: &config.TeamConfig{
+			Enabled:     false,
+			TeamID:      "old-team",
+			MemberEmail: "old@test.com",
+		},
+	}
+	cmd := &cobra.Command{}
+	cmd.Flags().String("team", "", "")
+	cmd.Flags().String("team-member", "", "")
+	_ = cmd.Flags().Set("team", "new-team")
+
+	applyTeamOverrides(cfg, cmd, "new-team", "")
+
+	if !cfg.Team.Enabled {
+		t.Error("expected Team.Enabled to be true after override")
+	}
+	if cfg.Team.TeamID != "new-team" {
+		t.Errorf("expected TeamID 'new-team', got %q", cfg.Team.TeamID)
+	}
+	// MemberEmail should be preserved from existing config when --team-member not set
+	if cfg.Team.MemberEmail != "old@test.com" {
+		t.Errorf("expected MemberEmail preserved as 'old@test.com', got %q", cfg.Team.MemberEmail)
+	}
 }

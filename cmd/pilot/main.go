@@ -274,6 +274,7 @@ func newStartCmd() *cobra.Command {
 		autoRelease  bool   // Enable auto-release after PR merge
 		enableTunnel bool   // Enable public tunnel (Cloudflare/ngrok)
 		teamID       string // Optional team ID for scoping execution
+		teamMember   string // Member email for project access scoping
 	)
 
 	cmd := &cobra.Command{
@@ -310,6 +311,9 @@ Examples:
 			if teamID != "" {
 				cfg.TeamID = teamID
 			}
+
+			// Apply team flag overrides (GH-635)
+			applyTeamOverrides(cfg, cmd, teamID, teamMember)
 
 			// Resolve project path: flag > config default > cwd
 			if projectPath == "" {
@@ -976,7 +980,8 @@ Examples:
 	cmd.Flags().BoolVar(&enableGithub, "github", false, "Enable GitHub polling (overrides config)")
 	cmd.Flags().BoolVar(&enableLinear, "linear", false, "Enable Linear webhooks (overrides config)")
 	cmd.Flags().BoolVar(&enableTunnel, "tunnel", false, "Enable public tunnel for webhook ingress (Cloudflare/ngrok)")
-	cmd.Flags().StringVar(&teamID, "team", "", "Team ID for scoping execution (optional)")
+	cmd.Flags().StringVar(&teamID, "team", "", "Team ID or name for project access scoping (overrides config)")
+	cmd.Flags().StringVar(&teamMember, "team-member", "", "Member email for team access scoping (overrides config)")
 
 	return cmd
 }
@@ -1012,6 +1017,22 @@ func applyInputOverrides(cfg *config.Config, cmd *cobra.Command, telegramFlag, g
 			cfg.Tunnel = tunnel.DefaultConfig()
 		}
 		cfg.Tunnel.Enabled = tunnelFlag
+	}
+}
+
+// applyTeamOverrides applies --team and --team-member CLI flag overrides to config (GH-635).
+// When --team is set, enables team-based project access scoping.
+func applyTeamOverrides(cfg *config.Config, cmd *cobra.Command, teamID, teamMember string) {
+	if !cmd.Flags().Changed("team") {
+		return
+	}
+	if cfg.Team == nil {
+		cfg.Team = &config.TeamConfig{}
+	}
+	cfg.Team.Enabled = true
+	cfg.Team.TeamID = teamID
+	if cmd.Flags().Changed("team-member") {
+		cfg.Team.MemberEmail = teamMember
 	}
 }
 
@@ -2894,6 +2915,8 @@ func newTaskCmd() *cobra.Command {
 	var verbose bool
 	var enableAlerts bool
 	var enableBudget bool
+	var teamID string     // GH-635: team project access scoping
+	var teamMember string // GH-635: member email for access scoping
 
 	cmd := &cobra.Command{
 		Use:   "task [description]",
@@ -3117,6 +3140,9 @@ Examples:
 				}
 				cfg, err := config.Load(configPath)
 				if err == nil {
+					// Apply team flag overrides (GH-635)
+					applyTeamOverrides(cfg, cmd, teamID, teamMember)
+
 					// Quality gates (GH-207)
 					if cfg.Quality != nil && cfg.Quality.Enabled {
 						runner.SetQualityCheckerFactory(func(taskID, projectPath string) executor.QualityChecker {
@@ -3305,6 +3331,8 @@ Examples:
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Stream Claude Code output")
 	cmd.Flags().BoolVar(&enableAlerts, "alerts", false, "Enable alerts for task execution")
 	cmd.Flags().BoolVar(&enableBudget, "budget", false, "Enable budget enforcement for this task")
+	cmd.Flags().StringVar(&teamID, "team", "", "Team ID or name for project access scoping (overrides config)")
+	cmd.Flags().StringVar(&teamMember, "team-member", "", "Member email for team access scoping (overrides config)")
 
 	return cmd
 }
@@ -3394,6 +3422,8 @@ func newGitHubRunCmd() *cobra.Command {
 	var dryRun bool
 	var verbose bool
 	var repo string
+	var teamID string     // GH-635: team project access scoping
+	var teamMember string // GH-635: member email for access scoping
 
 	cmd := &cobra.Command{
 		Use:   "run <issue-number>",
@@ -3424,6 +3454,9 @@ Examples:
 			if err != nil {
 				return fmt.Errorf("failed to load config: %w", err)
 			}
+
+			// Apply team flag overrides (GH-635)
+			applyTeamOverrides(cfg, cmd, teamID, teamMember)
 
 			// Check GitHub is configured
 			if cfg.Adapters == nil || cfg.Adapters.GitHub == nil || !cfg.Adapters.GitHub.Enabled {
@@ -3545,6 +3578,13 @@ Examples:
 
 			// Execute the task
 			runner := executor.NewRunner()
+
+			// Team project access checker (GH-635)
+			if ghTeamCleanup := wireProjectAccessChecker(runner, cfg); ghTeamCleanup != nil {
+				defer ghTeamCleanup()
+				fmt.Printf("   Team:      ✓ project access scoping enabled\n")
+			}
+
 			fmt.Println()
 			fmt.Println("⏳ Executing task with Claude Code...")
 			fmt.Println()
@@ -3618,6 +3658,8 @@ Examples:
 	cmd.Flags().StringVar(&repo, "repo", "", "GitHub repository (owner/repo)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Show what would execute without running")
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Verbose output")
+	cmd.Flags().StringVar(&teamID, "team", "", "Team ID or name for project access scoping (overrides config)")
+	cmd.Flags().StringVar(&teamMember, "team-member", "", "Member email for team access scoping (overrides config)")
 
 	return cmd
 }
