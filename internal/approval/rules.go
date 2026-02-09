@@ -65,6 +65,8 @@ func (re *RuleEvaluator) matches(rule *Rule, ctx RuleContext) bool {
 	switch rule.Condition.Type {
 	case ConditionConsecutiveFailures:
 		return re.matchConsecutiveFailures(rule, ctx)
+	case ConditionSpendThreshold:
+		return re.matchSpendThreshold(rule, ctx)
 	default:
 		re.log.Warn("unknown condition type",
 			slog.String("rule", rule.Name),
@@ -80,4 +82,12 @@ func (re *RuleEvaluator) matchConsecutiveFailures(rule *Rule, ctx RuleContext) b
 		return false
 	}
 	return ctx.ConsecutiveFailures >= rule.Condition.Threshold
+}
+
+// matchSpendThreshold returns true when total spend in cents meets or exceeds the threshold
+func (re *RuleEvaluator) matchSpendThreshold(rule *Rule, ctx RuleContext) bool {
+	if rule.Condition.Threshold <= 0 {
+		return false
+	}
+	return ctx.TotalSpendCents >= rule.Condition.Threshold
 }

@@ -149,6 +149,190 @@ func TestRuleEvaluator_UnknownConditionType(t *testing.T) {
 	}
 }
 
+func TestRuleEvaluator_SpendThreshold_Matches(t *testing.T) {
+	rules := []Rule{
+		{
+			Name:    "spend-5000",
+			Enabled: true,
+			Stage:   StagePreExecution,
+			Condition: Condition{
+				Type:      ConditionSpendThreshold,
+				Threshold: 5000, // $50.00
+			},
+		},
+	}
+
+	re := NewRuleEvaluator(rules)
+
+	tests := []struct {
+		name    string
+		spend   int
+		wantNil bool
+	}{
+		{"zero spend", 0, true},
+		{"below threshold", 4999, true},
+		{"at threshold", 5000, false},
+		{"above threshold", 10000, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := RuleContext{
+				TaskID:          "TASK-01",
+				TotalSpendCents: tt.spend,
+			}
+			result := re.Evaluate(ctx)
+			if tt.wantNil && result != nil {
+				t.Errorf("expected nil, got rule %q", result.Name)
+			}
+			if !tt.wantNil && result == nil {
+				t.Error("expected matching rule, got nil")
+			}
+		})
+	}
+}
+
+func TestRuleEvaluator_SpendThreshold_ZeroThreshold(t *testing.T) {
+	rules := []Rule{
+		{
+			Name:    "bad-spend-threshold",
+			Enabled: true,
+			Stage:   StagePreExecution,
+			Condition: Condition{
+				Type:      ConditionSpendThreshold,
+				Threshold: 0, // Invalid — should never match
+			},
+		},
+	}
+
+	re := NewRuleEvaluator(rules)
+	result := re.Evaluate(RuleContext{TotalSpendCents: 99999})
+	if result != nil {
+		t.Errorf("expected nil for zero threshold, got rule %q", result.Name)
+	}
+}
+
+func TestRuleEvaluator_SpendThreshold_DisabledSkipped(t *testing.T) {
+	rules := []Rule{
+		{
+			Name:    "disabled-spend",
+			Enabled: false,
+			Stage:   StagePreExecution,
+			Condition: Condition{
+				Type:      ConditionSpendThreshold,
+				Threshold: 100,
+			},
+		},
+	}
+
+	re := NewRuleEvaluator(rules)
+	result := re.Evaluate(RuleContext{TotalSpendCents: 50000})
+	if result != nil {
+		t.Error("disabled rule should not match")
+	}
+}
+
+func TestManager_SpendThreshold_RuleTriggered_StageDisabled(t *testing.T) {
+	config := DefaultConfig()
+	config.Enabled = true
+	config.PreExecution.Enabled = false // Stage disabled
+	config.PreExecution.Timeout = 100 * time.Millisecond
+	config.Rules = []Rule{
+		{
+			Name:    "spend-gate",
+			Enabled: true,
+			Stage:   StagePreExecution,
+			Condition: Condition{
+				Type:      ConditionSpendThreshold,
+				Threshold: 5000,
+			},
+		},
+	}
+
+	m := NewManager(config)
+	m.SetRuleEvaluator(NewRuleEvaluator(config.Rules))
+
+	handler := &mockHandler{
+		name: "test",
+		respondWith: &Response{
+			RequestID:  "spend-triggered",
+			Decision:   DecisionApproved,
+			ApprovedBy: "reviewer",
+		},
+	}
+	m.RegisterHandler(handler)
+
+	req := &Request{
+		ID:     "spend-triggered",
+		TaskID: "TASK-01",
+		Stage:  StagePreExecution,
+		Title:  "Expensive task",
+		Metadata: map[string]interface{}{
+			"total_spend_cents": 7500, // Exceeds threshold of 5000
+		},
+		CreatedAt: time.Now(),
+	}
+
+	resp, err := m.RequestApproval(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should NOT auto-approve — rule triggered
+	if resp.Decision != DecisionApproved {
+		t.Errorf("expected approved from handler, got %s", resp.Decision)
+	}
+	if resp.ApprovedBy != "reviewer" {
+		t.Errorf("expected reviewer, got %s", resp.ApprovedBy)
+	}
+	if len(handler.sentReqs) != 1 {
+		t.Errorf("expected handler to receive request, got %d", len(handler.sentReqs))
+	}
+}
+
+func TestManager_SpendThreshold_BelowThreshold_AutoApproves(t *testing.T) {
+	config := DefaultConfig()
+	config.Enabled = true
+	config.PreExecution.Enabled = false
+	config.Rules = []Rule{
+		{
+			Name:    "spend-gate",
+			Enabled: true,
+			Stage:   StagePreExecution,
+			Condition: Condition{
+				Type:      ConditionSpendThreshold,
+				Threshold: 5000,
+			},
+		},
+	}
+
+	m := NewManager(config)
+	m.SetRuleEvaluator(NewRuleEvaluator(config.Rules))
+
+	req := &Request{
+		ID:     "spend-below",
+		TaskID: "TASK-02",
+		Stage:  StagePreExecution,
+		Title:  "Cheap task",
+		Metadata: map[string]interface{}{
+			"total_spend_cents": 1000, // Below threshold
+		},
+		CreatedAt: time.Now(),
+	}
+
+	resp, err := m.RequestApproval(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if resp.Decision != DecisionApproved {
+		t.Errorf("expected auto-approve, got %s", resp.Decision)
+	}
+	if resp.ApprovedBy != "system" {
+		t.Errorf("expected system, got %s", resp.ApprovedBy)
+	}
+}
+
 func TestRuleEvaluator_EvaluateForStage_Filters(t *testing.T) {
 	rules := []Rule{
 		{
