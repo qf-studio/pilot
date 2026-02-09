@@ -237,7 +237,7 @@ Real-time visibility into what Pilot is doing:
 ```
 ┌─ Pilot Dashboard ─────────────────────────────────────────┐
 │                                                           │
-│  Status: ● Running    Autopilot: stage    Queue: 3       │
+│  Status: ● Running    Autopilot: stage    Queue: 3        │
 │                                                           │
 │  Current Task                                             │
 │  ├─ GH-156: Add user authentication                       │
@@ -245,14 +245,14 @@ Real-time visibility into what Pilot is doing:
 │  └─ Duration: 2m 34s                                      │
 │                                                           │
 │  Token Usage          Cost                                │
-│  ├─ Input:  124k      Today:    $4.82                    │
-│  ├─ Output:  31k      This Week: $28.40                  │
-│  └─ Total:  155k      Budget:    $100.00                 │
+│  ├─ Input:  124k      Today:    $4.82                     │
+│  ├─ Output:  31k      This Week: $28.40                   │
+│  └─ Total:  155k      Budget:    $100.00                  │
 │                                                           │
 │  Recent Tasks                                             │
-│  ├─ ✅ GH-155  Fix login redirect      1m 12s   $0.45   │
-│  ├─ ✅ GH-154  Add dark mode toggle    3m 45s   $1.20   │
-│  └─ ✅ GH-153  Update dependencies     0m 34s   $0.15   │
+│  ├─ ✅ GH-155  Fix login redirect      1m 12s   $0.45     │ 
+│  ├─ ✅ GH-154  Add dark mode toggle    3m 45s   $1.20     │
+│  └─ ✅ GH-153  Update dependencies     0m 34s   $0.15     │
 │                                                           │
 └───────────────────────────────────────────────────────────┘
 ```
