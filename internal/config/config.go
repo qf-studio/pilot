@@ -52,6 +52,15 @@ type Config struct {
 	Tunnel         *tunnel.Config          `yaml:"tunnel"`
 	Webhooks       *webhooks.Config        `yaml:"webhooks"`
 	TeamID         string                  `yaml:"team_id"` // Optional team ID for scoping execution
+	Team           *TeamConfig             `yaml:"team"`
+}
+
+// TeamConfig holds settings for team-based project access control (GH-635).
+// When configured, task execution is scoped to the member's allowed projects.
+type TeamConfig struct {
+	Enabled     bool   `yaml:"enabled"`
+	TeamID      string `yaml:"team_id"`      // Team ID or name to scope execution
+	MemberEmail string `yaml:"member_email"` // Email of the member executing tasks
 }
 
 // AdaptersConfig holds configuration for external service adapters.

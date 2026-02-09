@@ -1134,3 +1134,86 @@ orchestrator:
 		t.Errorf("Expected 1 deprecation warning, got %d", len(warnings))
 	}
 }
+
+func TestLoadTeamConfig(t *testing.T) {
+	t.Run("team config from YAML", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		configPath := filepath.Join(tmpDir, "config.yaml")
+
+		configContent := `
+version: "1.0"
+team:
+  enabled: true
+  team_id: "my-team"
+  member_email: "dev@example.com"
+`
+		if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+			t.Fatalf("Failed to write test config: %v", err)
+		}
+
+		cfg, err := Load(configPath)
+		if err != nil {
+			t.Fatalf("Load failed: %v", err)
+		}
+
+		if cfg.Team == nil {
+			t.Fatal("Team config should not be nil")
+		}
+		if !cfg.Team.Enabled {
+			t.Error("Team.Enabled should be true")
+		}
+		if cfg.Team.TeamID != "my-team" {
+			t.Errorf("Team.TeamID = %q, want %q", cfg.Team.TeamID, "my-team")
+		}
+		if cfg.Team.MemberEmail != "dev@example.com" {
+			t.Errorf("Team.MemberEmail = %q, want %q", cfg.Team.MemberEmail, "dev@example.com")
+		}
+	})
+
+	t.Run("team config absent defaults to nil", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		configPath := filepath.Join(tmpDir, "config.yaml")
+
+		configContent := `version: "1.0"`
+		if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+			t.Fatalf("Failed to write test config: %v", err)
+		}
+
+		cfg, err := Load(configPath)
+		if err != nil {
+			t.Fatalf("Load failed: %v", err)
+		}
+
+		if cfg.Team != nil {
+			t.Errorf("Team config should be nil when not configured, got %+v", cfg.Team)
+		}
+	})
+
+	t.Run("team config disabled", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		configPath := filepath.Join(tmpDir, "config.yaml")
+
+		configContent := `
+version: "1.0"
+team:
+  enabled: false
+  team_id: "my-team"
+  member_email: "dev@example.com"
+`
+		if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+			t.Fatalf("Failed to write test config: %v", err)
+		}
+
+		cfg, err := Load(configPath)
+		if err != nil {
+			t.Fatalf("Load failed: %v", err)
+		}
+
+		if cfg.Team == nil {
+			t.Fatal("Team config should not be nil")
+		}
+		if cfg.Team.Enabled {
+			t.Error("Team.Enabled should be false")
+		}
+	})
+}
