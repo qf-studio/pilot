@@ -74,6 +74,9 @@ type Config struct {
 	PreMerge     *StageConfig `yaml:"pre_merge"`
 	PostFailure  *StageConfig `yaml:"post_failure"`
 
+	// Rule-based conditional triggers
+	Rules []Rule `yaml:"rules"`
+
 	// Default timeout for all stages (can be overridden per-stage)
 	DefaultTimeout time.Duration `yaml:"default_timeout"`
 
@@ -88,6 +91,30 @@ type StageConfig struct {
 	Timeout       time.Duration `yaml:"timeout"`        // Timeout for this stage
 	DefaultAction Decision      `yaml:"default_action"` // Action on timeout
 	RequireAll    bool          `yaml:"require_all"`    // Require all approvers (vs any one)
+}
+
+// Rule defines a conditional approval trigger
+type Rule struct {
+	Name      string    `yaml:"name"`
+	Condition Condition `yaml:"condition"`
+	Stage     Stage     `yaml:"stage"`   // Which stage to trigger
+	Enabled   bool      `yaml:"enabled"`
+}
+
+// Condition defines the trigger condition for a rule
+type Condition struct {
+	Type      string `yaml:"type"`      // "consecutive_failures", "spend_threshold", "file_pattern", "complexity"
+	Threshold int    `yaml:"threshold"` // Numeric threshold (e.g., 3 failures, 5000 cents)
+	Pattern   string `yaml:"pattern"`   // For file_pattern type
+}
+
+// RuleContext provides runtime context for rule evaluation
+type RuleContext struct {
+	TaskID              string
+	ConsecutiveFailures int
+	TotalSpendCents     int
+	ChangedFiles        []string
+	Complexity          string // "trivial", "simple", "medium", "complex"
 }
 
 // DefaultConfig returns default approval configuration (disabled by default)

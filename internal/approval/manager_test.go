@@ -789,3 +789,478 @@ func TestStage_String(t *testing.T) {
 		}
 	}
 }
+
+// --- Integration tests: rule evaluation wired into manager ---
+
+func TestManager_NewManager_WiresRulesFromConfig(t *testing.T) {
+	config := DefaultConfig()
+	config.Enabled = true
+	config.Rules = []Rule{
+		{
+			Name:      "fail-gate",
+			Condition: Condition{Type: ConditionConsecutiveFailures, Threshold: 3},
+			Stage:     StagePreExecution,
+			Enabled:   true,
+		},
+	}
+
+	m := NewManager(config)
+
+	// RuleEvaluator should be set automatically
+	if m.ruleEvaluator == nil {
+		t.Fatal("expected rule evaluator to be initialized from config rules")
+	}
+}
+
+func TestManager_NewManager_NoRules_NoEvaluator(t *testing.T) {
+	config := DefaultConfig()
+	config.Enabled = true
+	// No rules
+
+	m := NewManager(config)
+
+	if m.ruleEvaluator != nil {
+		t.Error("expected no rule evaluator when config has no rules")
+	}
+}
+
+func TestManager_RuleTrigger_ConsecutiveFailures(t *testing.T) {
+	config := DefaultConfig()
+	config.Enabled = true
+	// Stage disabled — rules should still trigger approval
+	config.PreExecution.Enabled = false
+	config.PreExecution.Timeout = 100 * time.Millisecond
+	config.Rules = []Rule{
+		{
+			Name:      "fail-gate",
+			Condition: Condition{Type: ConditionConsecutiveFailures, Threshold: 3},
+			Stage:     StagePreExecution,
+			Enabled:   true,
+		},
+	}
+
+	m := NewManager(config)
+
+	handler := &mockHandler{
+		name: "test",
+		respondWith: &Response{
+			RequestID:  "rule-trigger-1",
+			Decision:   DecisionApproved,
+			ApprovedBy: "admin",
+		},
+	}
+	m.RegisterHandler(handler)
+
+	req := &Request{
+		ID:     "rule-trigger-1",
+		TaskID: "TASK-01",
+		Stage:  StagePreExecution,
+		Title:  "Deploy with failures",
+		Metadata: map[string]interface{}{
+			"consecutive_failures": 5,
+		},
+		CreatedAt: time.Now(),
+	}
+
+	resp, err := m.RequestApproval(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Rule matched → should have sent to handler, not auto-approved
+	if len(handler.sentReqs) != 1 {
+		t.Fatalf("expected 1 request sent to handler (rule triggered), got %d", len(handler.sentReqs))
+	}
+
+	if resp.Decision != DecisionApproved {
+		t.Errorf("expected approved from handler, got %s", resp.Decision)
+	}
+	if resp.ApprovedBy != "admin" {
+		t.Errorf("expected admin, got %s", resp.ApprovedBy)
+	}
+}
+
+func TestManager_RuleTrigger_NoMatch_AutoApproves(t *testing.T) {
+	config := DefaultConfig()
+	config.Enabled = true
+	config.PreExecution.Enabled = false
+	config.Rules = []Rule{
+		{
+			Name:      "fail-gate",
+			Condition: Condition{Type: ConditionConsecutiveFailures, Threshold: 3},
+			Stage:     StagePreExecution,
+			Enabled:   true,
+		},
+	}
+
+	m := NewManager(config)
+
+	handler := &mockHandler{
+		name: "test",
+		respondWith: &Response{
+			RequestID:  "no-match",
+			Decision:   DecisionApproved,
+			ApprovedBy: "admin",
+		},
+	}
+	m.RegisterHandler(handler)
+
+	req := &Request{
+		ID:     "no-match",
+		TaskID: "TASK-01",
+		Stage:  StagePreExecution,
+		Title:  "Safe task",
+		Metadata: map[string]interface{}{
+			"consecutive_failures": 1, // Below threshold
+		},
+		CreatedAt: time.Now(),
+	}
+
+	resp, err := m.RequestApproval(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// No rule matched → auto-approve, handler NOT called
+	if len(handler.sentReqs) != 0 {
+		t.Errorf("expected 0 requests sent (auto-approve), got %d", len(handler.sentReqs))
+	}
+
+	if resp.Decision != DecisionApproved {
+		t.Errorf("expected auto-approve, got %s", resp.Decision)
+	}
+	if resp.ApprovedBy != "system" {
+		t.Errorf("expected system, got %s", resp.ApprovedBy)
+	}
+}
+
+func TestManager_RuleTrigger_SpendThreshold(t *testing.T) {
+	config := DefaultConfig()
+	config.Enabled = true
+	config.PreExecution.Enabled = false
+	config.PreExecution.Timeout = 100 * time.Millisecond
+	config.Rules = []Rule{
+		{
+			Name:      "budget-gate",
+			Condition: Condition{Type: ConditionSpendThreshold, Threshold: 5000},
+			Stage:     StagePreExecution,
+			Enabled:   true,
+		},
+	}
+
+	m := NewManager(config)
+
+	handler := &mockHandler{
+		name: "test",
+		respondWith: &Response{
+			RequestID:  "spend-trigger",
+			Decision:   DecisionRejected,
+			ApprovedBy: "finance",
+		},
+	}
+	m.RegisterHandler(handler)
+
+	req := &Request{
+		ID:     "spend-trigger",
+		TaskID: "TASK-02",
+		Stage:  StagePreExecution,
+		Title:  "Expensive task",
+		Metadata: map[string]interface{}{
+			"total_spend_cents": 7500, // $75 > $50 threshold
+		},
+		CreatedAt: time.Now(),
+	}
+
+	resp, err := m.RequestApproval(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(handler.sentReqs) != 1 {
+		t.Fatalf("expected 1 request (spend rule triggered), got %d", len(handler.sentReqs))
+	}
+	if resp.Decision != DecisionRejected {
+		t.Errorf("expected rejected, got %s", resp.Decision)
+	}
+}
+
+func TestManager_RuleTrigger_FilePattern(t *testing.T) {
+	config := DefaultConfig()
+	config.Enabled = true
+	config.PreMerge.Enabled = false
+	config.PreMerge.Timeout = 100 * time.Millisecond
+	config.Rules = []Rule{
+		{
+			Name:      "infra-gate",
+			Condition: Condition{Type: ConditionFilePattern, Pattern: "*.tf"},
+			Stage:     StagePreMerge,
+			Enabled:   true,
+		},
+	}
+
+	m := NewManager(config)
+
+	handler := &mockHandler{
+		name: "test",
+		respondWith: &Response{
+			RequestID:  "file-trigger",
+			Decision:   DecisionApproved,
+			ApprovedBy: "infra-team",
+		},
+	}
+	m.RegisterHandler(handler)
+
+	req := &Request{
+		ID:     "file-trigger",
+		TaskID: "TASK-03",
+		Stage:  StagePreMerge,
+		Title:  "Terraform change",
+		Metadata: map[string]interface{}{
+			"changed_files": []string{"main.go", "infra.tf"},
+		},
+		CreatedAt: time.Now(),
+	}
+
+	resp, err := m.RequestApproval(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(handler.sentReqs) != 1 {
+		t.Fatalf("expected 1 request (file pattern rule triggered), got %d", len(handler.sentReqs))
+	}
+	if resp.Decision != DecisionApproved {
+		t.Errorf("expected approved, got %s", resp.Decision)
+	}
+}
+
+func TestManager_RuleTrigger_Complexity(t *testing.T) {
+	config := DefaultConfig()
+	config.Enabled = true
+	config.PreExecution.Enabled = false
+	config.PreExecution.Timeout = 100 * time.Millisecond
+	config.Rules = []Rule{
+		{
+			Name:      "complexity-gate",
+			Condition: Condition{Type: ConditionComplexity, Pattern: "complex"},
+			Stage:     StagePreExecution,
+			Enabled:   true,
+		},
+	}
+
+	m := NewManager(config)
+
+	handler := &mockHandler{
+		name: "test",
+		respondWith: &Response{
+			RequestID:  "complexity-trigger",
+			Decision:   DecisionApproved,
+			ApprovedBy: "architect",
+		},
+	}
+	m.RegisterHandler(handler)
+
+	req := &Request{
+		ID:     "complexity-trigger",
+		TaskID: "TASK-04",
+		Stage:  StagePreExecution,
+		Title:  "Epic task",
+		Metadata: map[string]interface{}{
+			"complexity": "epic", // epic >= complex threshold
+		},
+		CreatedAt: time.Now(),
+	}
+
+	resp, err := m.RequestApproval(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(handler.sentReqs) != 1 {
+		t.Fatalf("expected 1 request (complexity rule triggered), got %d", len(handler.sentReqs))
+	}
+	if resp.Decision != DecisionApproved {
+		t.Errorf("expected approved, got %s", resp.Decision)
+	}
+}
+
+func TestManager_RuleTrigger_WrongStage_NoMatch(t *testing.T) {
+	config := DefaultConfig()
+	config.Enabled = true
+	config.PreExecution.Enabled = false
+	config.Rules = []Rule{
+		{
+			Name:      "fail-gate",
+			Condition: Condition{Type: ConditionConsecutiveFailures, Threshold: 3},
+			Stage:     StagePreMerge, // Rule is for pre_merge
+			Enabled:   true,
+		},
+	}
+
+	m := NewManager(config)
+
+	handler := &mockHandler{name: "test"}
+	m.RegisterHandler(handler)
+
+	req := &Request{
+		ID:     "wrong-stage",
+		TaskID: "TASK-05",
+		Stage:  StagePreExecution, // Request is for pre_execution
+		Title:  "Task",
+		Metadata: map[string]interface{}{
+			"consecutive_failures": 5, // Would match if stage were right
+		},
+		CreatedAt: time.Now(),
+	}
+
+	resp, err := m.RequestApproval(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Stage mismatch → no rule triggers → auto-approve
+	if len(handler.sentReqs) != 0 {
+		t.Errorf("expected 0 requests (stage mismatch), got %d", len(handler.sentReqs))
+	}
+	if resp.Decision != DecisionApproved {
+		t.Errorf("expected auto-approve, got %s", resp.Decision)
+	}
+}
+
+func TestManager_RuleTrigger_DisabledRule_Skipped(t *testing.T) {
+	config := DefaultConfig()
+	config.Enabled = true
+	config.PreExecution.Enabled = false
+	config.Rules = []Rule{
+		{
+			Name:      "disabled-gate",
+			Condition: Condition{Type: ConditionConsecutiveFailures, Threshold: 1},
+			Stage:     StagePreExecution,
+			Enabled:   false, // Disabled
+		},
+	}
+
+	m := NewManager(config)
+
+	handler := &mockHandler{name: "test"}
+	m.RegisterHandler(handler)
+
+	req := &Request{
+		ID:     "disabled-rule",
+		TaskID: "TASK-06",
+		Stage:  StagePreExecution,
+		Title:  "Task",
+		Metadata: map[string]interface{}{
+			"consecutive_failures": 10,
+		},
+		CreatedAt: time.Now(),
+	}
+
+	resp, err := m.RequestApproval(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Disabled rule → no trigger → auto-approve
+	if len(handler.sentReqs) != 0 {
+		t.Errorf("expected 0 requests (rule disabled), got %d", len(handler.sentReqs))
+	}
+	if resp.Decision != DecisionApproved {
+		t.Errorf("expected auto-approve, got %s", resp.Decision)
+	}
+}
+
+func TestManager_ShouldRequireApproval_WithConfigRules(t *testing.T) {
+	config := DefaultConfig()
+	config.Enabled = true
+	config.Rules = []Rule{
+		{
+			Name:      "spend-gate",
+			Condition: Condition{Type: ConditionSpendThreshold, Threshold: 1000},
+			Stage:     StagePreExecution,
+			Enabled:   true,
+		},
+	}
+
+	m := NewManager(config)
+
+	// Should match
+	rule := m.ShouldRequireApproval(RuleContext{
+		TaskID:          "TASK-01",
+		TotalSpendCents: 2000,
+	})
+	if rule == nil {
+		t.Fatal("expected matching rule")
+	}
+	if rule.Name != "spend-gate" {
+		t.Errorf("expected spend-gate, got %s", rule.Name)
+	}
+
+	// Should not match
+	rule = m.ShouldRequireApproval(RuleContext{
+		TaskID:          "TASK-02",
+		TotalSpendCents: 500,
+	})
+	if rule != nil {
+		t.Errorf("expected no match, got rule %s", rule.Name)
+	}
+}
+
+func TestManager_RuleTrigger_MultipleRules_FirstMatchWins(t *testing.T) {
+	config := DefaultConfig()
+	config.Enabled = true
+	config.PreExecution.Enabled = false
+	config.PreExecution.Timeout = 100 * time.Millisecond
+	config.Rules = []Rule{
+		{
+			Name:      "spend-gate",
+			Condition: Condition{Type: ConditionSpendThreshold, Threshold: 1000},
+			Stage:     StagePreExecution,
+			Enabled:   true,
+		},
+		{
+			Name:      "fail-gate",
+			Condition: Condition{Type: ConditionConsecutiveFailures, Threshold: 2},
+			Stage:     StagePreExecution,
+			Enabled:   true,
+		},
+	}
+
+	m := NewManager(config)
+
+	handler := &mockHandler{
+		name: "test",
+		respondWith: &Response{
+			RequestID:  "multi-rule",
+			Decision:   DecisionApproved,
+			ApprovedBy: "admin",
+		},
+	}
+	m.RegisterHandler(handler)
+
+	// Both rules match — metadata exceeds both thresholds
+	req := &Request{
+		ID:     "multi-rule",
+		TaskID: "TASK-07",
+		Stage:  StagePreExecution,
+		Title:  "Task",
+		Metadata: map[string]interface{}{
+			"total_spend_cents":    2000,
+			"consecutive_failures": 5,
+		},
+		CreatedAt: time.Now(),
+	}
+
+	resp, err := m.RequestApproval(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should trigger (first match wins, handler called once)
+	if len(handler.sentReqs) != 1 {
+		t.Fatalf("expected 1 request, got %d", len(handler.sentReqs))
+	}
+	if resp.Decision != DecisionApproved {
+		t.Errorf("expected approved, got %s", resp.Decision)
+	}
+}
