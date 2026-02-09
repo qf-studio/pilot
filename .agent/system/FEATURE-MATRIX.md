@@ -143,8 +143,8 @@
 |---------|--------|---------|-------------|------------|-------|
 | Budget tracking | ✅ | budget | `pilot budget` | `budget` | View daily/monthly usage via memory store |
 | Daily/monthly limits | ✅ | budget | `pilot task --budget` | `budget.daily_limit` | Enforcer blocks tasks when exceeded |
-| Per-task limits | ⚠️ | budget | - | `budget.per_task` | TaskLimiter exists, not wired to executor stream |
-| Budget in polling mode | ⚠️ | budget | - | - | `pilot start` doesn't check budget before picking issues |
+| Per-task limits | ✅ | budget | - | `budget.per_task` | TaskLimiter wired to executor in main.go (v0.24.1) |
+| Budget in polling mode | ✅ | budget | - | - | Enforcer checks budget before picking issues in GitHub/Linear pollers |
 | Alerts on overspend | ✅ | alerts | - | `alerts.rules[].type=budget` | Enforcer fires alert callbacks at thresholds |
 
 ## Team Management
@@ -160,9 +160,9 @@
 | Feature | Status | Package | CLI Command | Config Key | Notes |
 |---------|--------|---------|-------------|------------|-------|
 | Cloudflare tunnel | ⚠️ | tunnel | `pilot tunnel` | `tunnel` | For webhook ingress |
-| Gateway HTTP | ⚠️ | gateway | `pilot start` | `gateway` | Internal server |
-| Gateway WebSocket | ⚠️ | gateway | - | - | Real-time events |
-| Health checks | ⚠️ | health | `pilot doctor` | - | System validation |
+| Gateway HTTP | ✅ | gateway | `pilot start` | `gateway` | Internal server, wired in main.go |
+| Gateway WebSocket | ✅ | gateway | - | - | Session management active in gateway |
+| Health checks | ✅ | health | `pilot doctor` | - | System validation, 32 unit tests |
 | OpenCode backend | ✅ | executor | `--backend opencode` | `executor.backend` | HTTP/SSE alternative to Claude Code |
 
 ## Approval Workflows
@@ -204,7 +204,7 @@
 | Config init | ✅ | config | `pilot init` | - | Creates default |
 | Setup wizard | ✅ | main | `pilot setup` | - | Interactive config |
 | Shell completion | ✅ | main | `pilot completion` | - | bash/zsh/fish |
-| Doctor check | ⚠️ | health | `pilot doctor` | - | System health |
+| Doctor check | ✅ | health | `pilot doctor` | - | System health, wired in main.go |
 
 ---
 
@@ -222,13 +222,13 @@
 | Dashboard | 8 | 0 | 0 | 0 |
 | Replay & Debug | 6 | 0 | 0 | 0 |
 | Reports & Briefs | 4 | 0 | 0 | 0 |
-| Cost Controls | 3 | 2 | 0 | 0 |
+| Cost Controls | 5 | 0 | 0 | 0 |
 | Team Management | 0 | 3 | 0 | 0 |
-| Infrastructure | 1 | 4 | 0 | 0 |
+| Infrastructure | 4 | 1 | 0 | 0 |
 | Approval Workflows | 3 | 1 | 0 | 0 |
 | Autopilot | 10 | 0 | 0 | 0 |
-| Self-Management | 5 | 1 | 0 | 0 |
-| **Total** | **91** | **16** | **0** | **0** |
+| Self-Management | 6 | 0 | 0 | 0 |
+| **Total** | **97** | **10** | **0** | **0** |
 
 ---
 
