@@ -133,6 +133,76 @@ func (a *slackApprovalClientAdapter) UpdateInteractiveMessage(ctx context.Contex
 	return a.adapter.UpdateInteractiveMessage(ctx, channel, ts, blocks, text)
 }
 
+// wireProjectAccessChecker creates and wires a team-based project access checker on the runner (GH-635).
+// It opens the teams DB, resolves the configured member, and returns a cleanup function.
+// Returns nil cleanup if team config is absent or disabled.
+func wireProjectAccessChecker(runner *executor.Runner, cfg *config.Config) func() {
+	if cfg.Team == nil || !cfg.Team.Enabled {
+		return nil
+	}
+
+	if cfg.Team.TeamID == "" || cfg.Team.MemberEmail == "" {
+		logging.WithComponent("teams").Warn("team config enabled but team_id or member_email not set, skipping project access check")
+		return nil
+	}
+
+	if cfg.Memory == nil || cfg.Memory.Path == "" {
+		logging.WithComponent("teams").Warn("memory path not configured, skipping project access check")
+		return nil
+	}
+
+	// Open teams DB (same pilot.db used by memory store)
+	dbPath := cfg.Memory.Path + "/pilot.db"
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		logging.WithComponent("teams").Warn("failed to open teams DB", slog.Any("error", err))
+		return nil
+	}
+
+	store, err := teams.NewStore(db)
+	if err != nil {
+		_ = db.Close()
+		logging.WithComponent("teams").Warn("failed to create teams store", slog.Any("error", err))
+		return nil
+	}
+
+	service := teams.NewService(store)
+
+	// Resolve team
+	team, err := service.GetTeamByName(cfg.Team.TeamID)
+	if err != nil || team == nil {
+		// Try by ID
+		team, err = service.GetTeam(cfg.Team.TeamID)
+	}
+	if err != nil || team == nil {
+		_ = db.Close()
+		logging.WithComponent("teams").Warn("team not found, skipping project access check",
+			slog.String("team", cfg.Team.TeamID))
+		return nil
+	}
+
+	// Resolve member
+	member, err := service.GetMemberByEmail(team.ID, cfg.Team.MemberEmail)
+	if err != nil || member == nil {
+		_ = db.Close()
+		logging.WithComponent("teams").Warn("member not found in team, skipping project access check",
+			slog.String("email", cfg.Team.MemberEmail),
+			slog.String("team", team.Name))
+		return nil
+	}
+
+	// Wire the checker via ServiceAdapter (GH-634 TeamChecker interface)
+	adapter := teams.NewServiceAdapter(service)
+	runner.SetTeamChecker(adapter)
+
+	logging.WithComponent("teams").Info("project access checker enabled",
+		slog.String("team", team.Name),
+		slog.String("member", member.Email),
+		slog.String("role", string(member.Role)))
+
+	return func() { _ = db.Close() }
+}
+
 var quietMode bool
 
 func main() {
@@ -369,6 +439,11 @@ Examples:
 				// Set up model routing if configured
 				if cfg.Executor != nil {
 					gwRunner.SetModelRouter(executor.NewModelRouterWithEffort(cfg.Executor.ModelRouting, cfg.Executor.Timeout, cfg.Executor.EffortRouting))
+				}
+
+				// Set up team project access checker if configured (GH-635)
+				if gwTeamCleanup := wireProjectAccessChecker(gwRunner, cfg); gwTeamCleanup != nil {
+					defer gwTeamCleanup()
 				}
 
 				// Create memory store for dispatcher
@@ -983,6 +1058,11 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 	// Set up model routing if configured (GH-215)
 	if cfg.Executor != nil {
 		runner.SetModelRouter(executor.NewModelRouterWithEffort(cfg.Executor.ModelRouting, cfg.Executor.Timeout, cfg.Executor.EffortRouting))
+	}
+
+	// Set up team project access checker if configured (GH-635)
+	if teamCleanup := wireProjectAccessChecker(runner, cfg); teamCleanup != nil {
+		defer teamCleanup()
 	}
 
 	// Create approval manager
@@ -3082,6 +3162,12 @@ Examples:
 							})
 							fmt.Printf("   Per-task:  ✓ max %d tokens, %v duration\n", maxTokens, maxDuration)
 						}
+					}
+
+					// Team project access checker (GH-635)
+					if runTeamCleanup := wireProjectAccessChecker(runner, cfg); runTeamCleanup != nil {
+						defer runTeamCleanup()
+						fmt.Println("   Team:      ✓ project access scoping enabled")
 					}
 				}
 			}
