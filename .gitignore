@@ -70,5 +70,14 @@ logs/
 *.key
 secrets/
 
+# Build artifacts
+.next/
+docs/public/_pagefind/
+docs/tsconfig.tsbuildinfo
+Library/
+
+# Research output (local to user)
+.agent/research/
+
 # Nested git repo (docs has its own GitLab repo)
 docs/.git
