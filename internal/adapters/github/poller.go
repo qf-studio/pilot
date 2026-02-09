@@ -60,6 +60,11 @@ type Poller struct {
 
 	// Rate limit retry scheduler
 	scheduler *executor.Scheduler
+
+	// Parallel mode configuration
+	maxConcurrent int
+	semaphore     chan struct{}
+	activeWg      sync.WaitGroup
 }
 
 // PollerOption configures a Poller
@@ -117,6 +122,16 @@ func WithScheduler(s *executor.Scheduler) PollerOption {
 	}
 }
 
+// WithMaxConcurrent sets the maximum number of parallel issue executions
+func WithMaxConcurrent(n int) PollerOption {
+	return func(p *Poller) {
+		if n < 1 {
+			n = 1
+		}
+		p.maxConcurrent = n
+	}
+}
+
 // NewPoller creates a new GitHub issue poller
 func NewPoller(client *Client, repo string, label string, interval time.Duration, opts ...PollerOption) (*Poller, error) {
 	parts := strings.Split(repo, "/")
@@ -150,6 +165,12 @@ func NewPoller(client *Client, repo string, label string, interval time.Duration
 		})
 	}
 
+	// Initialize parallel semaphore
+	if p.maxConcurrent < 1 {
+		p.maxConcurrent = 2 // default
+	}
+	p.semaphore = make(chan struct{}, p.maxConcurrent)
+
 	return p, nil
 }
 
@@ -169,8 +190,12 @@ func (p *Poller) Start(ctx context.Context) {
 	}
 }
 
-// startParallel runs the legacy parallel execution mode
+// startParallel runs concurrent issue execution with a semaphore limiter
 func (p *Poller) startParallel(ctx context.Context) {
+	p.logger.Info("Running in parallel mode",
+		slog.Int("max_concurrent", p.maxConcurrent),
+	)
+
 	// Do an initial check immediately
 	p.checkForNewIssues(ctx)
 
@@ -180,7 +205,9 @@ func (p *Poller) startParallel(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			p.logger.Info("GitHub poller stopped")
+			p.logger.Info("Parallel poller stopping, waiting for active tasks...")
+			p.activeWg.Wait()
+			p.logger.Info("Parallel poller stopped")
 			return
 		case <-ticker.C:
 			p.checkForNewIssues(ctx)
@@ -417,12 +444,12 @@ func (p *Poller) processIssueSequential(ctx context.Context, issue *Issue) (*Iss
 	return nil, fmt.Errorf("no issue handler configured")
 }
 
-// checkForNewIssues fetches issues and processes new ones (parallel mode)
+// checkForNewIssues fetches issues and dispatches new ones concurrently (parallel mode)
 func (p *Poller) checkForNewIssues(ctx context.Context) {
 	issues, err := p.client.ListIssues(ctx, p.owner, p.repo, &ListIssuesOptions{
 		Labels: []string{p.label},
 		State:  StateOpen,
-		Sort:   "updated",
+		Sort:   "created",
 	})
 	if err != nil {
 		p.logger.Warn("Failed to fetch issues", slog.Any("error", err))
@@ -445,24 +472,49 @@ func (p *Poller) checkForNewIssues(ctx context.Context) {
 			continue
 		}
 
-		// Process the issue
-		p.logger.Info("Found new issue",
+		// Mark processed immediately to prevent duplicate dispatch on next tick
+		p.markProcessed(issue.Number)
+
+		// Acquire semaphore slot (blocks if max_concurrent reached)
+		select {
+		case <-ctx.Done():
+			return
+		case p.semaphore <- struct{}{}:
+		}
+
+		p.logger.Info("Dispatching issue for parallel execution",
 			slog.Int("number", issue.Number),
 			slog.String("title", issue.Title),
 		)
 
-		if p.onIssue != nil {
-			if err := p.onIssue(ctx, issue); err != nil {
-				p.logger.Error("Failed to process issue",
-					slog.Int("number", issue.Number),
-					slog.Any("error", err),
-				)
-				// Don't mark as processed so we can retry
-				continue
-			}
-		}
+		p.activeWg.Add(1)
+		go func(issue *Issue) {
+			defer p.activeWg.Done()
+			defer func() { <-p.semaphore }() // release slot
 
-		p.markProcessed(issue.Number)
+			if p.onIssueWithResult != nil {
+				result, err := p.onIssueWithResult(ctx, issue)
+				if err != nil {
+					p.logger.Error("Failed to process issue",
+						slog.Int("number", issue.Number),
+						slog.Any("error", err),
+					)
+					return
+				}
+
+				// Notify autopilot controller of new PR
+				if result != nil && result.PRNumber > 0 && p.OnPRCreated != nil {
+					p.OnPRCreated(result.PRNumber, result.PRURL, issue.Number, result.HeadSHA, result.BranchName)
+				}
+			} else if p.onIssue != nil {
+				if err := p.onIssue(ctx, issue); err != nil {
+					p.logger.Error("Failed to process issue",
+						slog.Int("number", issue.Number),
+						slog.Any("error", err),
+					)
+				}
+			}
+		}(issue)
 	}
 }
 
@@ -471,6 +523,12 @@ func (p *Poller) markProcessed(number int) {
 	p.mu.Lock()
 	p.processed[number] = true
 	p.mu.Unlock()
+}
+
+// WaitForActive waits for all active parallel goroutines to finish.
+// Used in tests to synchronize after checkForNewIssues.
+func (p *Poller) WaitForActive() {
+	p.activeWg.Wait()
 }
 
 // IsProcessed checks if an issue has been processed

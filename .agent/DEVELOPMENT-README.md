@@ -96,7 +96,7 @@ if _, err := os.Stat(agentDir); err == nil {
 
 ## Current State
 
-**Current Version:** v0.25.0 | **107 features working** | **0 unwired**
+**Current Version:** v0.26.1 | **107 features working** | **0 unwired**
 
 **Full implementation status:** `.agent/system/FEATURE-MATRIX.md`
 
@@ -106,8 +106,9 @@ if _, err := os.Stat(agentDir); err == nil {
 |-----------|--------|-------|
 | Task Execution | ✅ | Claude Code subprocess with Navigator |
 | Telegram Bot | ✅ | Long-polling, voice, images, chat modes |
-| GitHub Polling | ✅ | 30s interval, auto-picks `pilot` label |
-| Alerts Engine | ✅ | Slack, Telegram, webhooks |
+| GitHub Polling | ✅ | 30s interval, auto-picks `pilot` label, **real parallel execution (v0.26.1+)** |
+| Alerts Engine | ✅ | Slack, Telegram, Email, Webhook, PagerDuty **(all wired v0.26.1)** |
+| **Slack Notifications** | ✅ | Task lifecycle + alerts to #engineering **(v0.26.1)** |
 | Quality Gates | ✅ | Test/lint/build gates with retry |
 | Task Dispatcher | ✅ | Per-project queue |
 | Dashboard TUI | ✅ | Sparkline cards, muted palette, SQLite persistence, **epic-aware HISTORY (v0.22.1)** |
@@ -185,7 +186,18 @@ gh pr list --author "@me" --state open
 
 ### In Progress
 
-_Queue empty - create issues with `pilot` label to add work._
+| Issue | What | Status |
+|-------|------|--------|
+| GH-642 | Slack Socket Mode WebSocket client | Pilot executing |
+| GH-643 | Slack config + `--slack` CLI flag | Queued (parallel) |
+| GH-644 | Extract shared intent package | Queued (parallel) |
+| GH-650 | Slack handler with 5 interaction modes | Blocked by 642+644 |
+| GH-651 | Slack MemberResolver RBAC | Blocked by 650 |
+| GH-652 | Wire Slack into pilot.go + main.go | Blocked by all above |
+| GH-663 | Rate-limit detection + auto-retry | Queued |
+| GH-664 | `no-decompose` label + threshold fix | Queued |
+| GH-665 | LLM-based complexity detection (Haiku) | Queued |
+| GH-671 | Fix stale `pilot-failed` blocking queue | Queued |
 
 ### Backlog (Create issues as needed)
 
@@ -194,12 +206,26 @@ _Queue empty - create issues with `pilot` label to add work._
 | ~~P2~~ | ~~Cost controls~~ | Wired in v0.21.3 (GH-539) |
 | ~~P2~~ | ~~Approval workflows~~ | Fully wired: manager + Telegram/Slack/GitHub handlers + autopilot prod gate |
 | 🟡 P2 | Docs v2: Nextra 4 migration | Attempted, failed — docs still on Nextra v2 |
+| 🟡 P3 | Docs refresh for 107 features | Teams RBAC, approval rules not documented |
 
 **For accurate feature status, see:** `.agent/system/FEATURE-MATRIX.md`
 
 ---
 
-## Completed (2026-02-09)
+## Completed (2026-02-09, session 2)
+
+| Item | What |
+|------|------|
+| **Slack connected** | Bot verified, 5 notification samples sent to #engineering, config updated |
+| **v0.26.1** | Release: wire Email/Webhook/PagerDuty alert channels into all 3 dispatcher blocks |
+| **Release notes** | Curated notes for v0.25.0, v0.26.0, v0.26.1 |
+| **Parallel execution** | Fixed `checkForNewIssues()` — was synchronous, now uses goroutines + semaphore (`max_concurrent`) |
+| **6 Slack issues** | GH-642–652: full Slack bidirectional communication plan (Socket Mode + 5 interaction modes) |
+| **3 stability issues** | GH-663 (rate-limit retry), GH-664 (no-decompose label), GH-665 (LLM complexity) |
+| **GH-671** | Fix stale `pilot-failed` label blocking poller queue |
+| Cleanup | Closed 5 junk sub-issues + 5 junk PRs from decomposition cascade |
+
+## Completed (2026-02-09, session 1)
 
 | Item | What |
 |------|------|
@@ -211,6 +237,7 @@ _Queue empty - create issues with `pilot` label to add work._
 | CI fix | Docs sync: decouple deploy tag from content diff, delete+recreate prod tag |
 | Housekeeping | Closed GH-625, GH-626, stale docs PRs #628/#630/#631 |
 | **v0.25.0** | Release: email + PagerDuty alerts, Jira webhooks, outbound webhooks, tunnel flag, 32 health tests |
+| **v0.26.0** | Release: teams RBAC, rule-based approvals, 107/107 features |
 
 ## Completed (2026-02-07)
 

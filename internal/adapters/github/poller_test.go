@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -336,9 +337,13 @@ func TestPoller_CheckForNewIssues(t *testing.T) {
 
 			// Call checkForNewIssues directly
 			poller.checkForNewIssues(context.Background())
+			poller.WaitForActive()
 
-			if len(processedIssues) != tt.expectedProcessed {
-				t.Errorf("processed %d issues, want %d", len(processedIssues), tt.expectedProcessed)
+			mu.Lock()
+			got := len(processedIssues)
+			mu.Unlock()
+			if got != tt.expectedProcessed {
+				t.Errorf("processed %d issues, want %d", got, tt.expectedProcessed)
 			}
 		})
 	}
@@ -382,27 +387,28 @@ func TestPoller_CheckForNewIssues_CallbackError(t *testing.T) {
 
 	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 
-	callCount := 0
+	var callCount int32
 	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second,
 		WithOnIssue(func(ctx context.Context, issue *Issue) error {
-			callCount++
+			atomic.AddInt32(&callCount, 1)
 			return errors.New("callback error")
 		}),
 	)
 
 	poller.checkForNewIssues(context.Background())
+	poller.WaitForActive()
 
 	// Both issues should be attempted (callback is called for both)
-	if callCount != 2 {
-		t.Errorf("callback called %d times, want 2", callCount)
+	if got := atomic.LoadInt32(&callCount); got != 2 {
+		t.Errorf("callback called %d times, want 2", got)
 	}
 
-	// Issues should NOT be marked as processed when callback fails
-	if poller.IsProcessed(1) {
-		t.Error("issue 1 should not be marked as processed after callback error")
+	// In parallel mode, issues are pre-marked to prevent duplicate dispatch
+	if !poller.IsProcessed(1) {
+		t.Error("issue 1 should be marked as processed (pre-marked in parallel mode)")
 	}
-	if poller.IsProcessed(2) {
-		t.Error("issue 2 should not be marked as processed after callback error")
+	if !poller.IsProcessed(2) {
+		t.Error("issue 2 should be marked as processed (pre-marked in parallel mode)")
 	}
 }
 
@@ -424,6 +430,7 @@ func TestPoller_CheckForNewIssues_NoCallback(t *testing.T) {
 
 	// Should not panic
 	poller.checkForNewIssues(context.Background())
+	poller.WaitForActive()
 
 	// Issue should be marked as processed even without callback
 	if !poller.IsProcessed(1) {
@@ -445,10 +452,10 @@ func TestPoller_CheckForNewIssues_SkipsAlreadyProcessed(t *testing.T) {
 
 	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 
-	callCount := 0
+	var callCount int32
 	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second,
 		WithOnIssue(func(ctx context.Context, issue *Issue) error {
-			callCount++
+			atomic.AddInt32(&callCount, 1)
 			return nil
 		}),
 	)
@@ -457,10 +464,11 @@ func TestPoller_CheckForNewIssues_SkipsAlreadyProcessed(t *testing.T) {
 	poller.markProcessed(1)
 
 	poller.checkForNewIssues(context.Background())
+	poller.WaitForActive()
 
 	// Only issue 2 should trigger callback
-	if callCount != 1 {
-		t.Errorf("callback called %d times, want 1 (only for unprocessed issue)", callCount)
+	if got := atomic.LoadInt32(&callCount); got != 1 {
+		t.Errorf("callback called %d times, want 1 (only for unprocessed issue)", got)
 	}
 }
 

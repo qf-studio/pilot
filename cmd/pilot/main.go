@@ -748,8 +748,9 @@ Examples:
 					} else {
 						pollerOpts = append(pollerOpts,
 							github.WithScheduler(rateLimitScheduler),
-							github.WithOnIssue(func(issueCtx context.Context, issue *github.Issue) error {
-								return handleGitHubIssueWithMonitor(issueCtx, cfg, client, issue, projectPath, gwDispatcher, gwRunner, gwMonitor, gwProgram, gwAlertsEngine, gwEnforcer)
+							github.WithMaxConcurrent(cfg.Orchestrator.MaxConcurrent),
+							github.WithOnIssueWithResult(func(issueCtx context.Context, issue *github.Issue) (*github.IssueResult, error) {
+								return handleGitHubIssueWithResult(issueCtx, cfg, client, issue, projectPath, gwDispatcher, gwRunner, gwMonitor, gwProgram, gwAlertsEngine, gwEnforcer)
 							}),
 						)
 					}
@@ -1525,8 +1526,9 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 				pollerOpts = append(pollerOpts,
 					github.WithExecutionMode(github.ExecutionModeParallel),
 					github.WithScheduler(rateLimitScheduler),
-					github.WithOnIssue(func(issueCtx context.Context, issue *github.Issue) error {
-						return handleGitHubIssueWithMonitor(issueCtx, cfg, client, issue, projectPath, dispatcher, runner, monitor, program, alertsEngine, enforcer)
+					github.WithMaxConcurrent(cfg.Orchestrator.MaxConcurrent),
+					github.WithOnIssueWithResult(func(issueCtx context.Context, issue *github.Issue) (*github.IssueResult, error) {
+						return handleGitHubIssueWithResult(issueCtx, cfg, client, issue, projectPath, dispatcher, runner, monitor, program, alertsEngine, enforcer)
 					}),
 				)
 			}
