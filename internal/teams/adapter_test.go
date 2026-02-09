@@ -108,6 +108,45 @@ func TestNewServiceAdapter(t *testing.T) {
 	}
 }
 
+func TestServiceAdapter_ResolveTelegramIdentity(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	store, _ := NewStore(db)
+	service := NewService(store)
+	adapter := NewServiceAdapter(service)
+
+	team, owner, _ := service.CreateTeam("Test Team", "owner@example.com")
+	dev, _ := service.AddMember(team.ID, owner.ID, "dev@example.com", RoleDeveloper, nil)
+	dev.TelegramID = 123456789
+	_ = store.UpdateMember(dev)
+
+	tests := []struct {
+		name       string
+		telegramID int64
+		email      string
+		wantID     string
+	}{
+		{"by telegram ID", 123456789, "", dev.ID},
+		{"by email fallback", 0, "dev@example.com", dev.ID},
+		{"telegram ID priority", 123456789, "wrong@example.com", dev.ID},
+		{"no match", 999999, "unknown@example.com", ""},
+		{"zero ID empty email", 0, "", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := adapter.ResolveTelegramIdentity(tt.telegramID, tt.email)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tt.wantID {
+				t.Errorf("got %q, want %q", got, tt.wantID)
+			}
+		})
+	}
+}
+
 func TestServiceAdapter_ResolveGitHubIdentity(t *testing.T) {
 	db, cleanup := setupTestDB(t)
 	defer cleanup()

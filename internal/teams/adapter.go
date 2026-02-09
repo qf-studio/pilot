@@ -29,3 +29,9 @@ func (a *ServiceAdapter) CheckProjectAccess(memberID, projectPath string, requir
 func (a *ServiceAdapter) ResolveGitHubIdentity(ghUser, email string) (string, error) {
 	return a.service.ResolveGitHubIdentity(ghUser, email)
 }
+
+// ResolveTelegramIdentity resolves a Telegram user ID and/or email to a team member ID (GH-634).
+// Returns ("", nil) when no matching member is found.
+func (a *ServiceAdapter) ResolveTelegramIdentity(telegramID int64, email string) (string, error) {
+	return a.service.ResolveTelegramIdentity(telegramID, email)
+}

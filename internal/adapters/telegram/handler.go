@@ -20,12 +20,21 @@ import (
 	"github.com/alekspetrov/pilot/internal/transcription"
 )
 
+// MemberResolver resolves a Telegram user to a team member ID for RBAC (GH-634).
+// Decoupled from teams package to avoid import cycles.
+type MemberResolver interface {
+	// ResolveTelegramIdentity maps a Telegram user ID and/or email to a member ID.
+	// Returns ("", nil) when no match is found (= skip RBAC).
+	ResolveTelegramIdentity(telegramID int64, email string) (string, error)
+}
+
 // PendingTask represents a task awaiting confirmation
 type PendingTask struct {
 	TaskID      string
 	Description string
 	ChatID      string
 	MessageID   int64
+	SenderID    int64 // Telegram user ID of the sender for RBAC (GH-634)
 	CreatedAt   time.Time
 }
 
@@ -59,6 +68,8 @@ type Handler struct {
 	rateLimiter       *RateLimiter           // Rate limiter for DoS protection
 	llmClassifier     *AnthropicClient       // LLM intent classifier (optional)
 	conversationStore *ConversationStore     // Conversation history per chat (optional)
+	memberResolver    MemberResolver         // Team member resolver for RBAC (optional, GH-634)
+	lastSender        map[string]int64       // chatID -> last sender Telegram user ID (GH-634)
 }
 
 // HandlerConfig holds configuration for the Telegram handler
@@ -71,7 +82,8 @@ type HandlerConfig struct {
 	Store         *memory.Store         // Memory store for history/queue/budget (optional)
 	PlainTextMode bool                  // Use plain text instead of Markdown (default: true)
 	RateLimit     *RateLimitConfig      // Rate limiting config (optional)
-	LLMClassifier *LLMClassifierConfig  // LLM intent classification config (optional)
+	LLMClassifier  *LLMClassifierConfig  // LLM intent classification config (optional)
+	MemberResolver MemberResolver        // Team member resolver for RBAC (optional, GH-634)
 }
 
 // NewHandler creates a new Telegram message handler
@@ -108,9 +120,11 @@ func NewHandler(config *HandlerConfig, runner *executor.Runner) *Handler {
 		pendingTasks:  make(map[string]*PendingTask),
 		runningTasks:  make(map[string]*RunningTask),
 		stopCh:        make(chan struct{}),
-		store:         config.Store,
-		plainTextMode: config.PlainTextMode,
-		rateLimiter:   rateLimiter,
+		store:          config.Store,
+		plainTextMode:  config.PlainTextMode,
+		rateLimiter:    rateLimiter,
+		memberResolver: config.MemberResolver,
+		lastSender:     make(map[string]int64),
 	}
 
 	// Initialize command handler
@@ -323,6 +337,13 @@ func (h *Handler) processUpdate(ctx context.Context, update *Update) {
 	msg := update.Message
 	chatID := strconv.FormatInt(msg.Chat.ID, 10)
 
+	// Track sender for RBAC resolution (GH-634)
+	if msg.From != nil && msg.From.ID != 0 {
+		h.mu.Lock()
+		h.lastSender[chatID] = msg.From.ID
+		h.mu.Unlock()
+	}
+
 	// Rate limiting check for all message types
 	if h.rateLimiter != nil && !h.rateLimiter.AllowMessage(chatID) {
 		logging.WithComponent("telegram").Warn("Rate limit exceeded",
@@ -458,6 +479,13 @@ func (h *Handler) handleCallback(ctx context.Context, callback *CallbackQuery) {
 
 	chatID := strconv.FormatInt(callback.Message.Chat.ID, 10)
 	data := callback.Data
+
+	// Track sender from callback for RBAC resolution (GH-634)
+	if callback.From != nil && callback.From.ID != 0 {
+		h.mu.Lock()
+		h.lastSender[chatID] = callback.From.ID
+		h.mu.Unlock()
+	}
 
 	// Answer callback to remove loading state
 	_ = h.client.AnswerCallback(ctx, callback.ID, "")
@@ -910,6 +938,38 @@ func (h *Handler) executeTask(ctx context.Context, chatID, taskID, description s
 	h.executeTaskWithOptions(ctx, chatID, taskID, description, createPR)
 }
 
+// resolveMemberID resolves the current Telegram sender to a team member ID (GH-634).
+// Returns "" if no resolver is configured or no match is found.
+func (h *Handler) resolveMemberID(chatID string) string {
+	if h.memberResolver == nil {
+		return ""
+	}
+
+	h.mu.Lock()
+	senderID := h.lastSender[chatID]
+	h.mu.Unlock()
+
+	if senderID == 0 {
+		return ""
+	}
+
+	memberID, err := h.memberResolver.ResolveTelegramIdentity(senderID, "")
+	if err != nil {
+		logging.WithComponent("telegram").Warn("failed to resolve Telegram identity",
+			slog.Int64("telegram_id", senderID),
+			slog.Any("error", err))
+		return ""
+	}
+
+	if memberID != "" {
+		logging.WithComponent("telegram").Debug("resolved Telegram user to team member",
+			slog.Int64("telegram_id", senderID),
+			slog.String("member_id", memberID))
+	}
+
+	return memberID
+}
+
 // executeTaskWithOptions executes a task with explicit PR creation control
 func (h *Handler) executeTaskWithOptions(ctx context.Context, chatID, taskID, description string, createPR bool) {
 	// Send execution started message (this will be updated with progress)
@@ -952,6 +1012,7 @@ func (h *Handler) executeTaskWithOptions(ctx context.Context, chatID, taskID, de
 		Branch:      branch,
 		BaseBranch:  baseBranch,
 		CreatePR:    createPR,
+		MemberID:    h.resolveMemberID(chatID), // GH-634: RBAC lookup
 	}
 
 	// Set up progress callback with throttling

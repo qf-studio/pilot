@@ -513,6 +513,10 @@ Examples:
 			// Enable Telegram polling in gateway mode only if --telegram flag was explicitly passed (GH-351)
 			if telegramFlagSet && hasTelegram && cfg.Adapters.Telegram.Polling {
 				pilotOpts = append(pilotOpts, pilot.WithTelegramHandler(gwRunner, projectPath))
+				// GH-634: Wire team member resolver for Telegram RBAC in gateway mode
+				if teamAdapter != nil {
+					pilotOpts = append(pilotOpts, pilot.WithTelegramMemberResolver(teamAdapter))
+				}
 				logging.WithComponent("start").Info("Telegram polling enabled in gateway mode")
 			}
 
@@ -1107,7 +1111,7 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 			}
 		}
 
-		tgHandler = telegram.NewHandler(&telegram.HandlerConfig{
+		tgConfig := &telegram.HandlerConfig{
 			BotToken:      cfg.Adapters.Telegram.BotToken,
 			ProjectPath:   projectPath,
 			Projects:      config.NewProjectSource(cfg),
@@ -1115,7 +1119,12 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 			Transcription: cfg.Adapters.Telegram.Transcription,
 			RateLimit:     cfg.Adapters.Telegram.RateLimit,
 			LLMClassifier: cfg.Adapters.Telegram.LLMClassifier,
-		}, runner)
+		}
+		// GH-634: Wire team member resolver if available (avoid nil interface trap)
+		if teamAdapter != nil {
+			tgConfig.MemberResolver = teamAdapter
+		}
+		tgHandler = telegram.NewHandler(tgConfig, runner)
 
 		// Security warning if no allowed IDs configured
 		if len(allowedIDs) == 0 {

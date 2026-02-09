@@ -2303,6 +2303,228 @@ func TestService_ResolveGitHubIdentity(t *testing.T) {
 	}
 }
 
+// GH-634: Tests for Telegram user ID identity mapping
+
+func TestStore_MemberWithTelegramID(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	store, err := NewStore(db)
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+
+	team, _ := NewTeam("Test Team", "owner@example.com")
+	_ = store.CreateTeam(team)
+
+	member := NewMember(team.ID, "dev@example.com", RoleDeveloper, "")
+	member.TelegramID = 123456789
+
+	if err := store.AddMember(member); err != nil {
+		t.Fatalf("AddMember failed: %v", err)
+	}
+
+	// Verify persisted via GetMember
+	got, err := store.GetMember(member.ID)
+	if err != nil {
+		t.Fatalf("GetMember failed: %v", err)
+	}
+	if got.TelegramID != 123456789 {
+		t.Errorf("got TelegramID %d, want 123456789", got.TelegramID)
+	}
+
+	// Update Telegram ID
+	got.TelegramID = 987654321
+	if err := store.UpdateMember(got); err != nil {
+		t.Fatalf("UpdateMember failed: %v", err)
+	}
+
+	got, _ = store.GetMember(member.ID)
+	if got.TelegramID != 987654321 {
+		t.Errorf("after update: got TelegramID %d, want 987654321", got.TelegramID)
+	}
+}
+
+func TestStore_GetMemberByTelegramID(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	store, err := NewStore(db)
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+
+	team, _ := NewTeam("Test Team", "owner@example.com")
+	_ = store.CreateTeam(team)
+
+	member := NewMember(team.ID, "dev@example.com", RoleDeveloper, "")
+	member.TelegramID = 123456789
+	_ = store.AddMember(member)
+
+	// Found
+	got, err := store.GetMemberByTelegramID(team.ID, 123456789)
+	if err != nil {
+		t.Fatalf("GetMemberByTelegramID failed: %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected member, got nil")
+	}
+	if got.ID != member.ID {
+		t.Errorf("got member ID %q, want %q", got.ID, member.ID)
+	}
+
+	// Not found — wrong team
+	got, err = store.GetMemberByTelegramID("wrong-team", 123456789)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != nil {
+		t.Errorf("expected nil, got member %q", got.ID)
+	}
+
+	// Not found — wrong ID
+	got, err = store.GetMemberByTelegramID(team.ID, 999)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != nil {
+		t.Errorf("expected nil, got member %q", got.ID)
+	}
+}
+
+func TestStore_GetMembersByTelegramID(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	store, err := NewStore(db)
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+
+	// Two teams, same Telegram user ID
+	team1, _ := NewTeam("Team A", "owner1@example.com")
+	team2, _ := NewTeam("Team B", "owner2@example.com")
+	_ = store.CreateTeam(team1)
+	_ = store.CreateTeam(team2)
+
+	m1 := NewMember(team1.ID, "dev@example.com", RoleDeveloper, "")
+	m1.TelegramID = 123456789
+	_ = store.AddMember(m1)
+
+	m2 := NewMember(team2.ID, "dev@example.com", RoleDeveloper, "")
+	m2.TelegramID = 123456789
+	_ = store.AddMember(m2)
+
+	members, err := store.GetMembersByTelegramID(123456789)
+	if err != nil {
+		t.Fatalf("GetMembersByTelegramID failed: %v", err)
+	}
+	if len(members) != 2 {
+		t.Errorf("got %d members, want 2", len(members))
+	}
+
+	// No matches
+	members, err = store.GetMembersByTelegramID(999)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(members) != 0 {
+		t.Errorf("got %d members, want 0", len(members))
+	}
+
+	// Zero ID returns no results (filtered by telegram_id != 0)
+	members, err = store.GetMembersByTelegramID(0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(members) != 0 {
+		t.Errorf("got %d members for ID 0, want 0", len(members))
+	}
+}
+
+func TestService_ResolveTelegramIdentity(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	store, err := NewStore(db)
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+	svc := NewService(store)
+
+	team, owner, err := svc.CreateTeam("Test Team", "owner@example.com")
+	if err != nil {
+		t.Fatalf("CreateTeam failed: %v", err)
+	}
+
+	// Add a member with Telegram ID
+	dev, err := svc.AddMember(team.ID, owner.ID, "dev@example.com", RoleDeveloper, nil)
+	if err != nil {
+		t.Fatalf("AddMember failed: %v", err)
+	}
+	dev.TelegramID = 123456789
+	if err := store.UpdateMember(dev); err != nil {
+		t.Fatalf("UpdateMember failed: %v", err)
+	}
+
+	tests := []struct {
+		name       string
+		telegramID int64
+		email      string
+		wantID     string
+		wantErr    bool
+	}{
+		{
+			name:       "resolve by Telegram ID",
+			telegramID: 123456789,
+			email:      "",
+			wantID:     dev.ID,
+		},
+		{
+			name:       "resolve by email fallback",
+			telegramID: 0,
+			email:      "dev@example.com",
+			wantID:     dev.ID,
+		},
+		{
+			name:       "Telegram ID takes priority over email",
+			telegramID: 123456789,
+			email:      "wrong@example.com",
+			wantID:     dev.ID,
+		},
+		{
+			name:       "no match returns empty",
+			telegramID: 999,
+			email:      "unknown@example.com",
+			wantID:     "",
+		},
+		{
+			name:       "zero ID empty email returns empty",
+			telegramID: 0,
+			email:      "",
+			wantID:     "",
+		},
+		{
+			name:       "resolve owner by email",
+			telegramID: 0,
+			email:      "owner@example.com",
+			wantID:     owner.ID,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := svc.ResolveTelegramIdentity(tt.telegramID, tt.email)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("err = %v, wantErr = %v", err, tt.wantErr)
+			}
+			if got != tt.wantID {
+				t.Errorf("got memberID %q, want %q", got, tt.wantID)
+			}
+		})
+	}
+}
+
 func TestService_GetMemberByGitHubUser(t *testing.T) {
 	db, cleanup := setupTestDB(t)
 	defer cleanup()
