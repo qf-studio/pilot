@@ -51,6 +51,7 @@ type Config struct {
 	Quality        *quality.Config         `yaml:"quality"`
 	Tunnel         *tunnel.Config          `yaml:"tunnel"`
 	Webhooks       *webhooks.Config        `yaml:"webhooks"`
+	TeamID         string                  `yaml:"team_id"` // Optional team ID for scoping execution
 }
 
 // AdaptersConfig holds configuration for external service adapters.

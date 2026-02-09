@@ -199,6 +199,7 @@ func newStartCmd() *cobra.Command {
 		autopilotEnv string // Autopilot environment: dev, stage, prod
 		autoRelease  bool   // Enable auto-release after PR merge
 		enableTunnel bool   // Enable public tunnel (Cloudflare/ngrok)
+		teamID       string // Optional team ID for scoping execution
 	)
 
 	cmd := &cobra.Command{
@@ -230,6 +231,11 @@ Examples:
 
 			// Apply flag overrides to config
 			applyInputOverrides(cfg, cmd, enableTelegram, enableGithub, enableLinear, enableTunnel)
+
+			// Apply team ID override if flag provided
+			if teamID != "" {
+				cfg.TeamID = teamID
+			}
 
 			// Resolve project path: flag > config default > cwd
 			if projectPath == "" {
@@ -835,6 +841,7 @@ Examples:
 	cmd.Flags().BoolVar(&enableGithub, "github", false, "Enable GitHub polling (overrides config)")
 	cmd.Flags().BoolVar(&enableLinear, "linear", false, "Enable Linear webhooks (overrides config)")
 	cmd.Flags().BoolVar(&enableTunnel, "tunnel", false, "Enable public tunnel for webhook ingress (Cloudflare/ngrok)")
+	cmd.Flags().StringVar(&teamID, "team", "", "Team ID for scoping execution (optional)")
 
 	return cmd
 }
