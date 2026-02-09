@@ -120,7 +120,7 @@ if _, err := os.Stat(agentDir); err == nil {
 | **Auto Build Gate** | ✅ | Minimal build gate when none configured |
 | **Effort Routing** | ✅ | Map task complexity to reasoning depth **(v0.20.0)** |
 | **Release Pipeline** | ✅ | Tag-only → GoReleaser CI builds + uploads binaries **(v0.24.1)** |
-| **Docs Site** | ✅ | Nextra v2, GitLab sync, **auto-deploy via prod tag (v0.23.2)** |
+| **Docs Site** | ✅ | Nextra v2 (pinned), GitLab sync, **auto-deploy via prod tag, OG metas + preview image (v0.24.1)** |
 | **QuantFlow Landing** | ✅ | `/pilot` case study page on quantflow.studio **(2026-02-06)** |
 | **CONTRIBUTING.md** | ✅ | Dev setup, code standards, BSL 1.1 note **(2026-02-06)** |
 
@@ -192,6 +192,18 @@ _Queue empty - create issues with `pilot` label to add work._
 **For accurate feature status, see:** `.agent/system/FEATURE-MATRIX.md`
 
 ---
+
+## Completed (2026-02-09)
+
+| Item | What |
+|------|------|
+| Docs fix | Pin Nextra v2 deps (~2.13.0, ~14.2.0) — caret range resolved to v4, broke build |
+| Docs fix | Fix MDX list-in-JSX compile error in quickstart.mdx |
+| Docs | Dashboard preview screenshot on homepage |
+| Docs | OG metas: og:image, twitter:card summary_large_image, fix property= attrs |
+| Docs | Banner updated to v0.24 |
+| CI fix | Docs sync: decouple deploy tag from content diff, delete+recreate prod tag |
+| Housekeeping | Closed GH-625, GH-626, stale docs PRs #628/#630/#631 |
 
 ## Completed (2026-02-07)
 
