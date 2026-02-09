@@ -12,11 +12,12 @@ import (
 
 // Manager coordinates approval workflows across multiple channels
 type Manager struct {
-	config   *Config
-	handlers map[string]Handler // Channel name -> handler
-	pending  map[string]*pendingRequest
-	mu       sync.RWMutex
-	log      *slog.Logger
+	config        *Config
+	handlers      map[string]Handler // Channel name -> handler
+	pending       map[string]*pendingRequest
+	ruleEvaluator *RuleEvaluator
+	mu            sync.RWMutex
+	log           *slog.Logger
 }
 
 // pendingRequest tracks an active approval request
@@ -71,27 +72,54 @@ func (m *Manager) IsStageEnabled(stage Stage) bool {
 	}
 }
 
+// SetRuleEvaluator configures rule-based approval triggers
+func (m *Manager) SetRuleEvaluator(re *RuleEvaluator) {
+	m.ruleEvaluator = re
+}
+
+// ShouldRequireApproval checks if any rule requires approval for the given context.
+// Returns the matching rule or nil if no rule triggers.
+func (m *Manager) ShouldRequireApproval(ruleCtx RuleContext) *Rule {
+	if m.ruleEvaluator == nil {
+		return nil
+	}
+	return m.ruleEvaluator.Evaluate(ruleCtx)
+}
+
 // RequestApproval sends an approval request and waits for response
 // Returns the decision and any error
 func (m *Manager) RequestApproval(ctx context.Context, req *Request) (*Response, error) {
 	if !m.IsStageEnabled(req.Stage) {
-		// Stage not enabled, auto-approve
-		m.log.Debug("Auto-approving (stage disabled)",
-			slog.String("task_id", req.TaskID),
-			slog.String("stage", string(req.Stage)))
-		return &Response{
-			RequestID:   req.ID,
-			Decision:    DecisionApproved,
-			ApprovedBy:  "system",
-			Comment:     "Auto-approved: stage not enabled",
-			RespondedAt: time.Now(),
-		}, nil
+		// Check rule-based triggers before auto-approving
+		if rule := m.checkRuleTriggers(req); rule != nil {
+			m.log.Info("Rule-triggered approval required",
+				slog.String("rule", rule.Name),
+				slog.String("task_id", req.TaskID),
+				slog.String("stage", string(req.Stage)))
+			// Fall through to normal approval flow
+		} else {
+			// Stage not enabled and no rule triggered, auto-approve
+			m.log.Debug("Auto-approving (stage disabled)",
+				slog.String("task_id", req.TaskID),
+				slog.String("stage", string(req.Stage)))
+			return &Response{
+				RequestID:   req.ID,
+				Decision:    DecisionApproved,
+				ApprovedBy:  "system",
+				Comment:     "Auto-approved: stage not enabled",
+				RespondedAt: time.Now(),
+			}, nil
+		}
 	}
 
-	// Get stage config
+	// Get stage config (use defaults if rule-triggered but no stage config exists)
 	stageConfig := m.getStageConfig(req.Stage)
 	if stageConfig == nil {
-		return nil, fmt.Errorf("no configuration for stage %s", req.Stage)
+		stageConfig = &StageConfig{
+			Enabled:       false,
+			Timeout:       m.config.DefaultTimeout,
+			DefaultAction: m.config.DefaultAction,
+		}
 	}
 
 	// Set expiration based on stage timeout
@@ -204,6 +232,46 @@ func (m *Manager) getStageConfig(stage Stage) *StageConfig {
 	default:
 		return nil
 	}
+}
+
+// checkRuleTriggers evaluates rule-based triggers from request metadata.
+// Returns the matching rule or nil.
+func (m *Manager) checkRuleTriggers(req *Request) *Rule {
+	if m.ruleEvaluator == nil || req.Metadata == nil {
+		return nil
+	}
+
+	// Build rule context from request metadata
+	ruleCtx := RuleContext{
+		TaskID: req.TaskID,
+	}
+
+	if v, ok := req.Metadata["consecutive_failures"]; ok {
+		if n, ok := v.(int); ok {
+			ruleCtx.ConsecutiveFailures = n
+		}
+	}
+
+	if v, ok := req.Metadata["total_spend_cents"]; ok {
+		if n, ok := v.(int); ok {
+			ruleCtx.TotalSpendCents = n
+		}
+	}
+
+	if v, ok := req.Metadata["complexity"]; ok {
+		if s, ok := v.(string); ok {
+			ruleCtx.Complexity = s
+		}
+	}
+
+	if v, ok := req.Metadata["changed_files"]; ok {
+		if files, ok := v.([]string); ok {
+			ruleCtx.ChangedFiles = files
+		}
+	}
+
+	// Only evaluate rules for the request's stage
+	return m.ruleEvaluator.EvaluateForStage(ruleCtx, req.Stage)
 }
 
 // CancelPending cancels all pending approval requests for a task
