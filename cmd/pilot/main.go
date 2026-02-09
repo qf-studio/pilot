@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -37,6 +39,7 @@ import (
 	"github.com/alekspetrov/pilot/internal/pilot"
 	"github.com/alekspetrov/pilot/internal/quality"
 	"github.com/alekspetrov/pilot/internal/replay"
+	"github.com/alekspetrov/pilot/internal/teams"
 	"github.com/alekspetrov/pilot/internal/tunnel"
 	"github.com/alekspetrov/pilot/internal/upgrade"
 )
@@ -739,6 +742,40 @@ Examples:
 				}
 			}
 
+			// Wire teams service if --team flag provided (GH-633)
+			var teamsDB *sql.DB
+			if cfg.TeamID != "" {
+				dbPath := filepath.Join(cfg.Memory.Path, "pilot.db")
+				teamsDB, err = sql.Open("sqlite", dbPath)
+				if err != nil {
+					return fmt.Errorf("failed to open teams database: %w", err)
+				}
+				teamsStore, storeErr := teams.NewStore(teamsDB)
+				if storeErr != nil {
+					_ = teamsDB.Close()
+					return fmt.Errorf("failed to create teams store: %w", storeErr)
+				}
+				teamsSvc := teams.NewService(teamsStore)
+
+				// Verify team exists
+				team, teamErr := teamsSvc.GetTeam(cfg.TeamID)
+				if teamErr != nil || team == nil {
+					// Try by name
+					team, teamErr = teamsSvc.GetTeamByName(cfg.TeamID)
+					if teamErr != nil || team == nil {
+						_ = teamsDB.Close()
+						return fmt.Errorf("team %q not found — create it with: pilot team create <name> --owner <email>", cfg.TeamID)
+					}
+					// Resolve name to ID
+					cfg.TeamID = team.ID
+				}
+
+				pilotOpts = append(pilotOpts, pilot.WithTeamsService(teamsSvc))
+				logging.WithComponent("start").Info("teams service initialized",
+					slog.String("team_id", team.ID),
+					slog.String("team_name", team.Name))
+			}
+
 			// Create and start Pilot
 			p, err := pilot.New(cfg, pilotOpts...)
 			if err != nil {
@@ -820,6 +857,11 @@ Examples:
 
 			<-sigCh
 			fmt.Println("\n🛑 Shutting down...")
+
+			// Close teams DB if opened (GH-633)
+			if teamsDB != nil {
+				_ = teamsDB.Close()
+			}
 
 			return p.Stop()
 		},
