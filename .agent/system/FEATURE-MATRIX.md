@@ -151,9 +151,9 @@
 
 | Feature | Status | Package | CLI Command | Config Key | Notes |
 |---------|--------|---------|-------------|------------|-------|
-| Team CRUD | ⚠️ | teams | `pilot team` | `teams` | Basic ops |
-| Permissions | ⚠️ | teams | - | `teams[].permissions` | Config exists |
-| Project mapping | ⚠️ | teams | - | `teams[].projects` | Config exists |
+| Team CRUD | ✅ | teams | `pilot team` | `teams` | Wired to Pilot struct + `--team` flag (GH-633) |
+| Permissions | ✅ | teams | `--team` | `team.enabled` | Pre-execution RBAC check in Runner (GH-634) |
+| Project mapping | ✅ | teams | `--team-member` | `team.member_email` | Project access validation in poller + CLI (GH-635) |
 
 ## Infrastructure
 
@@ -172,7 +172,7 @@
 | Approval engine | ✅ | approval | `--autopilot=prod` | `approval` | Wired to autopilot controller |
 | Slack approval | ✅ | approval | - | `adapters.slack.approval` | Interactive messages, registered in main.go |
 | Telegram approval | ✅ | approval | - | - | Inline keyboards, registered in main.go |
-| Rule-based triggers | ⚠️ | approval | - | `approval.rules[]` | Configurable |
+| Rule-based triggers | ✅ | approval | - | `approval.rules[]` | RuleEvaluator with 4 matchers wired into Manager (GH-636) |
 
 ## Autopilot (v0.19.1)
 
@@ -223,12 +223,12 @@
 | Replay & Debug | 6 | 0 | 0 | 0 |
 | Reports & Briefs | 4 | 0 | 0 | 0 |
 | Cost Controls | 5 | 0 | 0 | 0 |
-| Team Management | 0 | 3 | 0 | 0 |
+| Team Management | 3 | 0 | 0 | 0 |
 | Infrastructure | 5 | 0 | 0 | 0 |
-| Approval Workflows | 3 | 1 | 0 | 0 |
+| Approval Workflows | 4 | 0 | 0 | 0 |
 | Autopilot | 10 | 0 | 0 | 0 |
 | Self-Management | 6 | 0 | 0 | 0 |
-| **Total** | **103** | **4** | **0** | **0** |
+| **Total** | **107** | **0** | **0** | **0** |
 
 ---
 
