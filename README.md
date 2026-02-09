@@ -51,7 +51,8 @@ Pilot picks up tickets from GitHub, Linear, Jira, or Asana—plans the implement
 └─────────────┘      └─────────────┘      └─────────────┘      └─────────────┘
 ```
 
-<img width="1920" height="1049" alt="image" src="https://github.com/user-attachments/assets/e27e14e1-3ef1-45ff-8775-1afdc233a6ac" />
+<img width="1758" height="1124" alt="pilot-preview-screenshot" src="https://github.com/user-attachments/assets/faaff57a-a23e-4cee-a08a-b9fa08ae135d" />
+
 
 
 ## Install
