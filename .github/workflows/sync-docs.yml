@@ -63,10 +63,12 @@ jobs:
             git push origin main
 
             # Auto-trigger GitLab deploy by pushing a prod tag
+            # Use timestamp suffix so each sync gets a unique tag (avoids protected tag conflicts)
             VERSION=$(git -C "$GITHUB_WORKSPACE" describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')
             if [ -n "$VERSION" ]; then
-              git tag -f "prod-${VERSION}"
-              git push origin "prod-${VERSION}" --force
-              echo "Tagged prod-${VERSION} to trigger deploy"
+              DEPLOY_TAG="prod-${VERSION}-$(date +%Y%m%d%H%M%S)"
+              git tag "$DEPLOY_TAG"
+              git push origin "$DEPLOY_TAG"
+              echo "Tagged ${DEPLOY_TAG} to trigger deploy"
             fi
           fi
