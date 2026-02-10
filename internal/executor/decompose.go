@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"context"
 	"regexp"
 	"strconv"
 	"strings"
@@ -47,9 +48,13 @@ type DecomposeResult struct {
 	Reason string
 }
 
+// NoDecomposeLabel is the GitHub label that bypasses decomposition entirely (GH-664).
+const NoDecomposeLabel = "no-decompose"
+
 // TaskDecomposer handles breaking complex tasks into smaller subtasks.
 type TaskDecomposer struct {
-	config *DecomposeConfig
+	config     *DecomposeConfig
+	classifier *ComplexityClassifier // Optional LLM classifier (GH-727); nil = use heuristic
 }
 
 // NewTaskDecomposer creates a decomposer with the given configuration.
@@ -60,10 +65,21 @@ func NewTaskDecomposer(config *DecomposeConfig) *TaskDecomposer {
 	return &TaskDecomposer{config: config}
 }
 
+// SetClassifier attaches an LLM complexity classifier to the decomposer (GH-727).
+// When set, the classifier is used instead of the word-count heuristic.
+func (d *TaskDecomposer) SetClassifier(c *ComplexityClassifier) {
+	d.classifier = c
+}
+
 // Decompose analyzes a task and potentially splits it into subtasks.
 // Returns the original task wrapped in DecomposeResult if decomposition
 // is not triggered or not applicable.
 func (d *TaskDecomposer) Decompose(task *Task) *DecomposeResult {
+	return d.DecomposeWithContext(context.Background(), task)
+}
+
+// DecomposeWithContext is like Decompose but accepts a context for the LLM call.
+func (d *TaskDecomposer) DecomposeWithContext(ctx context.Context, task *Task) *DecomposeResult {
 	if task == nil {
 		return &DecomposeResult{
 			Decomposed: false,
@@ -81,8 +97,23 @@ func (d *TaskDecomposer) Decompose(task *Task) *DecomposeResult {
 		}
 	}
 
-	// Check complexity threshold
-	complexity := DetectComplexity(task)
+	// GH-664: Skip decomposition entirely if task has no-decompose label
+	if HasLabel(task, NoDecomposeLabel) {
+		return &DecomposeResult{
+			Decomposed: false,
+			Subtasks:   []*Task{task},
+			Reason:     "skipped: no-decompose label",
+		}
+	}
+
+	// GH-727: Use LLM classifier if available, otherwise fall back to heuristic
+	var complexity Complexity
+	if d.classifier != nil {
+		complexity = d.classifier.Classify(ctx, task)
+	} else {
+		complexity = DetectComplexity(task)
+	}
+
 	if !d.shouldDecompose(complexity) {
 		return &DecomposeResult{
 			Decomposed: false,

@@ -1984,6 +1984,19 @@ func resolveGitHubMemberID(issue *github.Issue) string {
 	return memberID
 }
 
+// extractGitHubLabelNames returns label name strings from a GitHub issue (GH-727).
+// Used to flow labels into executor.Task for decomposition/complexity decisions.
+func extractGitHubLabelNames(issue *github.Issue) []string {
+	if issue == nil || len(issue.Labels) == 0 {
+		return nil
+	}
+	names := make([]string, len(issue.Labels))
+	for i, l := range issue.Labels {
+		names[i] = l.Name
+	}
+	return names
+}
+
 func handleGitHubIssue(ctx context.Context, cfg *config.Config, client *github.Client, issue *github.Issue, projectPath string, dispatcher *executor.Dispatcher, runner *executor.Runner) error {
 	sourceRepo := cfg.Adapters.GitHub.Repo
 
@@ -2022,6 +2035,7 @@ func handleGitHubIssue(ctx context.Context, cfg *config.Config, client *github.C
 		CreatePR:    true,
 		SourceRepo:  sourceRepo,
 		MemberID:    resolveGitHubMemberID(issue), // GH-634: RBAC lookup
+		Labels:      extractGitHubLabelNames(issue),  // GH-727: flow labels for complexity classifier
 	}
 
 	var result *executor.ExecutionResult
@@ -2339,6 +2353,7 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 		CreatePR:    true,
 		SourceRepo:  sourceRepo,
 		MemberID:    resolveGitHubMemberID(issue), // GH-634: RBAC lookup
+		Labels:      extractGitHubLabelNames(issue),  // GH-727: flow labels for complexity classifier
 	}
 
 	var result *executor.ExecutionResult
@@ -3625,6 +3640,7 @@ Examples:
 				Branch:      branchName,
 				Verbose:     verbose,
 				CreatePR:    true,
+				Labels:      extractGitHubLabelNames(issue), // GH-727: flow labels for complexity classifier
 			}
 
 			// Dry run mode
