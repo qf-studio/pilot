@@ -30,6 +30,7 @@ func TestStartCommandFlags(t *testing.T) {
 		{"telegram", ""},
 		{"github", ""},
 		{"linear", ""},
+		{"slack", ""},
 		{"team", ""},
 		{"team-member", ""},
 	}
@@ -132,7 +133,7 @@ func TestFlagParsing(t *testing.T) {
 		{
 			name:    "start with all adapter flags",
 			cmdFunc: newStartCmd,
-			args:    []string{"--telegram=true", "--github=true", "--linear=false"},
+			args:    []string{"--telegram=true", "--github=true", "--linear=false", "--slack=true"},
 			wantErr: false,
 		},
 		{
@@ -714,3 +715,154 @@ func TestApplyTeamOverrides_OverridesExistingConfig(t *testing.T) {
 		t.Errorf("expected MemberEmail preserved as 'old@test.com', got %q", cfg.Team.MemberEmail)
 	}
 }
+
+// =============================================================================
+// GH-711: applyInputOverrides tests
+// =============================================================================
+
+func TestApplyInputOverrides(t *testing.T) {
+	tests := []struct {
+		name          string
+		setFlags      map[string]string // flags to mark as "changed"
+		telegram      bool
+		github        bool
+		linear        bool
+		slack         bool
+		tunnel        bool
+		checkTelegram *bool // expected Telegram.Enabled (nil = skip check)
+		checkGitHub   *bool
+		checkLinear   *bool
+		checkSlack    *bool
+		checkSocket   *bool // expected Slack.SocketMode
+		checkTunnel   *bool
+	}{
+		{
+			name:     "no flags changed — config untouched",
+			setFlags: map[string]string{},
+		},
+		{
+			name:          "slack flag enables slack and socket mode",
+			setFlags:      map[string]string{"slack": "true"},
+			slack:         true,
+			checkSlack:    boolPtr(true),
+			checkSocket:   boolPtr(true),
+		},
+		{
+			name:          "slack flag false disables slack and socket mode",
+			setFlags:      map[string]string{"slack": "false"},
+			slack:         false,
+			checkSlack:    boolPtr(false),
+			checkSocket:   boolPtr(false),
+		},
+		{
+			name:          "telegram flag enables telegram",
+			setFlags:      map[string]string{"telegram": "true"},
+			telegram:      true,
+			checkTelegram: boolPtr(true),
+		},
+		{
+			name:          "github flag enables github polling",
+			setFlags:      map[string]string{"github": "true"},
+			github:        true,
+			checkGitHub:   boolPtr(true),
+		},
+		{
+			name:          "linear flag enables linear",
+			setFlags:      map[string]string{"linear": "true"},
+			linear:        true,
+			checkLinear:   boolPtr(true),
+		},
+		{
+			name:          "tunnel flag enables tunnel",
+			setFlags:      map[string]string{"tunnel": "true"},
+			tunnel:        true,
+			checkTunnel:   boolPtr(true),
+		},
+		{
+			name:     "multiple flags at once",
+			setFlags: map[string]string{"slack": "true", "telegram": "true", "github": "true"},
+			slack:    true, telegram: true, github: true,
+			checkSlack:    boolPtr(true),
+			checkSocket:   boolPtr(true),
+			checkTelegram: boolPtr(true),
+			checkGitHub:   boolPtr(true),
+		},
+		{
+			name:          "slack on nil config creates default",
+			setFlags:      map[string]string{"slack": "true"},
+			slack:         true,
+			checkSlack:    boolPtr(true),
+			checkSocket:   boolPtr(true),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &config.Config{Adapters: &config.AdaptersConfig{}}
+			cmd := &cobra.Command{}
+			// Register all flags so Changed() works
+			cmd.Flags().Bool("telegram", false, "")
+			cmd.Flags().Bool("github", false, "")
+			cmd.Flags().Bool("linear", false, "")
+			cmd.Flags().Bool("slack", false, "")
+			cmd.Flags().Bool("tunnel", false, "")
+
+			for k, v := range tt.setFlags {
+				_ = cmd.Flags().Set(k, v)
+			}
+
+			applyInputOverrides(cfg, cmd, tt.telegram, tt.github, tt.linear, tt.slack, tt.tunnel)
+
+			if tt.checkTelegram != nil {
+				if cfg.Adapters.Telegram == nil {
+					t.Fatal("expected Telegram config to be created")
+				}
+				if cfg.Adapters.Telegram.Enabled != *tt.checkTelegram {
+					t.Errorf("Telegram.Enabled = %v, want %v", cfg.Adapters.Telegram.Enabled, *tt.checkTelegram)
+				}
+			}
+			if tt.checkGitHub != nil {
+				if cfg.Adapters.GitHub == nil {
+					t.Fatal("expected GitHub config to be created")
+				}
+				if cfg.Adapters.GitHub.Enabled != *tt.checkGitHub {
+					t.Errorf("GitHub.Enabled = %v, want %v", cfg.Adapters.GitHub.Enabled, *tt.checkGitHub)
+				}
+			}
+			if tt.checkLinear != nil {
+				if cfg.Adapters.Linear == nil {
+					t.Fatal("expected Linear config to be created")
+				}
+				if cfg.Adapters.Linear.Enabled != *tt.checkLinear {
+					t.Errorf("Linear.Enabled = %v, want %v", cfg.Adapters.Linear.Enabled, *tt.checkLinear)
+				}
+			}
+			if tt.checkSlack != nil {
+				if cfg.Adapters.Slack == nil {
+					t.Fatal("expected Slack config to be created")
+				}
+				if cfg.Adapters.Slack.Enabled != *tt.checkSlack {
+					t.Errorf("Slack.Enabled = %v, want %v", cfg.Adapters.Slack.Enabled, *tt.checkSlack)
+				}
+			}
+			if tt.checkSocket != nil {
+				if cfg.Adapters.Slack == nil {
+					t.Fatal("expected Slack config to be created for SocketMode check")
+				}
+				if cfg.Adapters.Slack.SocketMode != *tt.checkSocket {
+					t.Errorf("Slack.SocketMode = %v, want %v", cfg.Adapters.Slack.SocketMode, *tt.checkSocket)
+				}
+			}
+			if tt.checkTunnel != nil {
+				if cfg.Tunnel == nil {
+					t.Fatal("expected Tunnel config to be created")
+				}
+				if cfg.Tunnel.Enabled != *tt.checkTunnel {
+					t.Errorf("Tunnel.Enabled = %v, want %v", cfg.Tunnel.Enabled, *tt.checkTunnel)
+				}
+			}
+		})
+	}
+}
+
+func boolPtr(b bool) *bool { return &b }
