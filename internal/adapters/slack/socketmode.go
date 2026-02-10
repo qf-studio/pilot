@@ -265,9 +265,9 @@ func (s *SocketModeClient) runConnection(ctx context.Context, wssURL string, out
 	}
 }
 
-// parseRawEvent converts a RawSocketEvent into a SocketEvent.
+// parseRawEvent converts a SocketModeEvent into a SocketEvent.
 // Only events_api envelopes produce SocketEvents; other types return nil.
-func (s *SocketModeClient) parseRawEvent(raw RawSocketEvent) (*SocketEvent, error) {
+func (s *SocketModeClient) parseRawEvent(raw SocketModeEvent) (*SocketEvent, error) {
 	if raw.Type != SocketEventMessage {
 		// Interactive, slash_commands, etc. — not yet mapped to SocketEvent.
 		return nil, nil

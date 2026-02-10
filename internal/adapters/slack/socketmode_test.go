@@ -588,7 +588,7 @@ func TestParseRawEvent_NonEventsAPI(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			evt, err := client.parseRawEvent(RawSocketEvent{
+			evt, err := client.parseRawEvent(SocketModeEvent{
 				Type:       tt.rawType,
 				EnvelopeID: "test-001",
 				Payload:    json.RawMessage(`{}`),
