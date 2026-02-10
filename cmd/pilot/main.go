@@ -267,6 +267,7 @@ func newStartCmd() *cobra.Command {
 		enableTelegram bool
 		enableGithub   bool
 		enableLinear   bool
+		enableSlack    bool
 		// Mode flags
 		noGateway    bool   // Lightweight mode: polling only, no HTTP gateway
 		sequential   bool   // Sequential execution mode (one issue at a time)
@@ -289,6 +290,7 @@ Examples:
   pilot start                          # Config-driven
   pilot start --telegram               # Enable Telegram polling
   pilot start --github                 # Enable GitHub polling
+  pilot start --slack                  # Enable Slack Socket Mode
   pilot start --telegram --github      # Enable both
   pilot start --dashboard              # With TUI dashboard
   pilot start --no-gateway             # Polling only (no HTTP server)`,
@@ -305,7 +307,7 @@ Examples:
 			}
 
 			// Apply flag overrides to config
-			applyInputOverrides(cfg, cmd, enableTelegram, enableGithub, enableLinear, enableTunnel)
+			applyInputOverrides(cfg, cmd, enableTelegram, enableGithub, enableLinear, enableSlack, enableTunnel)
 
 			// Apply team ID override if flag provided
 			if teamID != "" {
@@ -986,6 +988,7 @@ Examples:
 	cmd.Flags().BoolVar(&enableTelegram, "telegram", false, "Enable Telegram polling (overrides config)")
 	cmd.Flags().BoolVar(&enableGithub, "github", false, "Enable GitHub polling (overrides config)")
 	cmd.Flags().BoolVar(&enableLinear, "linear", false, "Enable Linear webhooks (overrides config)")
+	cmd.Flags().BoolVar(&enableSlack, "slack", false, "Enable Slack Socket Mode (overrides config)")
 	cmd.Flags().BoolVar(&enableTunnel, "tunnel", false, "Enable public tunnel for webhook ingress (Cloudflare/ngrok)")
 	cmd.Flags().StringVar(&teamID, "team", "", "Team ID or name for project access scoping (overrides config)")
 	cmd.Flags().StringVar(&teamMember, "team-member", "", "Member email for team access scoping (overrides config)")
@@ -995,7 +998,7 @@ Examples:
 
 // applyInputOverrides applies CLI flag overrides to config
 // Uses cmd.Flags().Changed() to only apply flags that were explicitly set
-func applyInputOverrides(cfg *config.Config, cmd *cobra.Command, telegramFlag, githubFlag, linearFlag, tunnelFlag bool) {
+func applyInputOverrides(cfg *config.Config, cmd *cobra.Command, telegramFlag, githubFlag, linearFlag, slackFlag, tunnelFlag bool) {
 	if cmd.Flags().Changed("telegram") {
 		if cfg.Adapters.Telegram == nil {
 			cfg.Adapters.Telegram = telegram.DefaultConfig()
@@ -1018,6 +1021,13 @@ func applyInputOverrides(cfg *config.Config, cmd *cobra.Command, telegramFlag, g
 			cfg.Adapters.Linear = linear.DefaultConfig()
 		}
 		cfg.Adapters.Linear.Enabled = linearFlag
+	}
+	if cmd.Flags().Changed("slack") {
+		if cfg.Adapters.Slack == nil {
+			cfg.Adapters.Slack = slack.DefaultConfig()
+		}
+		cfg.Adapters.Slack.Enabled = slackFlag
+		cfg.Adapters.Slack.SocketMode = slackFlag
 	}
 	if cmd.Flags().Changed("tunnel") {
 		if cfg.Tunnel == nil {
