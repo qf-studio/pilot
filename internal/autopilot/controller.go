@@ -276,11 +276,23 @@ func (c *Controller) ProcessPR(ctx context.Context, prNumber int) error {
 }
 
 // handlePRCreated starts CI monitoring for all environments.
+// Also checks for merge conflicts immediately (race condition with concurrent merges).
 func (c *Controller) handlePRCreated(ctx context.Context, prState *PRState) error {
 	c.log.Debug("handlePRCreated: starting CI monitoring",
 		"pr", prState.PRNumber,
 		"sha", ShortSHA(prState.HeadSHA),
 	)
+
+	// GH-724: Check for merge conflicts immediately after PR creation.
+	// Concurrent merges can make a PR conflicting before CI even starts.
+	ghPR, err := c.ghClient.GetPullRequest(ctx, c.owner, c.repo, prState.PRNumber)
+	if err != nil {
+		c.log.Warn("failed to check PR mergeable state on creation", "pr", prState.PRNumber, "error", err)
+		// Non-fatal: proceed to CI wait, conflict will be caught there
+	} else if c.isMergeConflict(ghPR) {
+		return c.handleMergeConflict(ctx, prState)
+	}
+
 	// All environments wait for CI - no skipping
 	prState.Stage = StageWaitingCI
 	prState.CIWaitStartedAt = time.Now()
@@ -339,6 +351,12 @@ func (c *Controller) handleWaitingCI(ctx context.Context, prState *PRState) erro
 	} else if sha == "" {
 		c.log.Warn("GitHub returned empty SHA for PR", "pr", prState.PRNumber)
 		return nil // Retry next cycle
+	}
+
+	// GH-724: Check for merge conflicts before waiting for CI.
+	// Conflicting PRs will never have CI run, so waiting is pointless.
+	if ghPR != nil && c.isMergeConflict(ghPR) {
+		return c.handleMergeConflict(ctx, prState)
 	}
 
 	// Non-blocking CI status check
@@ -652,6 +670,57 @@ func (c *Controller) handleReleasing(ctx context.Context, prState *PRState) erro
 	}
 
 	c.removePR(prState.PRNumber)
+	return nil
+}
+
+// isMergeConflict returns true if the PR has merge conflicts.
+// GitHub's mergeable field is computed asynchronously, so:
+//   - nil means GitHub hasn't computed it yet (not a conflict)
+//   - false means conflicts exist
+//   - true means no conflicts
+//
+// We also check mergeable_state for "dirty" which explicitly means conflicts.
+func (c *Controller) isMergeConflict(pr *github.PullRequest) bool {
+	// Check mergeable_state first (more specific)
+	if pr.MergeableState == "dirty" {
+		return true
+	}
+	// Fallback to mergeable bool
+	if pr.Mergeable != nil && !*pr.Mergeable {
+		return true
+	}
+	return false
+}
+
+// handleMergeConflict closes a conflicting PR, comments, and returns the issue to the queue.
+// The issue will be re-picked by the poller and re-executed from updated main.
+func (c *Controller) handleMergeConflict(ctx context.Context, prState *PRState) error {
+	c.log.Warn("merge conflict detected",
+		"pr", prState.PRNumber,
+		"issue", prState.IssueNumber,
+		"branch", prState.BranchName,
+	)
+
+	// Add comment explaining the closure
+	comment := "Merge conflict detected. Closing PR so the issue can be re-executed from updated main."
+	if _, err := c.ghClient.AddPRComment(ctx, c.owner, c.repo, prState.PRNumber, comment); err != nil {
+		c.log.Warn("failed to comment on conflicting PR", "pr", prState.PRNumber, "error", err)
+	}
+
+	// Close the PR
+	if err := c.ghClient.ClosePullRequest(ctx, c.owner, c.repo, prState.PRNumber); err != nil {
+		c.log.Warn("failed to close conflicting PR", "pr", prState.PRNumber, "error", err)
+	}
+
+	// Remove pilot-in-progress label from the issue so poller can re-pick it
+	if prState.IssueNumber > 0 {
+		if err := c.ghClient.RemoveLabel(ctx, c.owner, c.repo, prState.IssueNumber, github.LabelInProgress); err != nil {
+			c.log.Warn("failed to remove in-progress label", "issue", prState.IssueNumber, "error", err)
+		}
+	}
+
+	prState.Stage = StageFailed
+	prState.Error = "merge conflict with base branch"
 	return nil
 }
 
