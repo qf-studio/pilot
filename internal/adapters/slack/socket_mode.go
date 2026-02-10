@@ -21,10 +21,10 @@ const (
 	SocketEventDisconnect  SocketEventType = "disconnect"
 )
 
-// RawSocketEvent is emitted on the events channel for each envelope received
-// from the Slack Socket Mode WebSocket connection. It carries the raw payload
-// before higher-level parsing into a SocketEvent (see events.go).
-type RawSocketEvent struct {
+// SocketModeEvent is emitted on the events channel for each envelope received
+// from the Slack Socket Mode WebSocket connection.
+// This is distinct from SocketEvent (events.go) which is the parsed event struct.
+type SocketModeEvent struct {
 	Type       SocketEventType
 	EnvelopeID string
 	Payload    json.RawMessage // raw inner payload for caller to decode
@@ -45,10 +45,10 @@ type envelopeAck struct {
 }
 
 // SocketModeHandler manages a Slack Socket Mode WebSocket connection.
-// It reads envelopes, acknowledges them, and emits RawSocketEvents on a channel.
+// It reads envelopes, acknowledges them, and emits SocketModeEvents on a channel.
 type SocketModeHandler struct {
 	conn   *websocket.Conn
-	events chan RawSocketEvent
+	events chan SocketModeEvent
 	done   chan struct{}
 	once   sync.Once
 	log    *slog.Logger
@@ -62,8 +62,8 @@ type SocketModeHandler struct {
 // NewSocketModeHandler wraps an established WebSocket connection and returns
 // the handler plus the channel that will receive parsed events.
 // Call Run() to start the read loop.
-func NewSocketModeHandler(conn *websocket.Conn) (*SocketModeHandler, <-chan RawSocketEvent) {
-	ch := make(chan RawSocketEvent, 64)
+func NewSocketModeHandler(conn *websocket.Conn) (*SocketModeHandler, <-chan SocketModeEvent) {
+	ch := make(chan SocketModeEvent, 64)
 	h := &SocketModeHandler{
 		conn:         conn,
 		events:       ch,
@@ -188,7 +188,7 @@ func (h *SocketModeHandler) handleRawMessage(data []byte) {
 		}
 		h.log.Info("disconnect envelope received", slog.String("reason", reason))
 
-		h.emit(RawSocketEvent{
+		h.emit(SocketModeEvent{
 			Type:       SocketEventDisconnect,
 			EnvelopeID: env.EnvelopeID,
 			Payload:    data, // full envelope so caller can inspect reason
@@ -204,7 +204,7 @@ func (h *SocketModeHandler) handleRawMessage(data []byte) {
 		return
 	}
 
-	h.emit(RawSocketEvent{
+	h.emit(SocketModeEvent{
 		Type:       evtType,
 		EnvelopeID: env.EnvelopeID,
 		Payload:    env.Payload,
@@ -220,7 +220,7 @@ func (h *SocketModeHandler) acknowledge(envelopeID string) error {
 	return h.conn.WriteMessage(websocket.TextMessage, data)
 }
 
-func (h *SocketModeHandler) emit(evt RawSocketEvent) {
+func (h *SocketModeHandler) emit(evt SocketModeEvent) {
 	select {
 	case h.events <- evt:
 	default:
