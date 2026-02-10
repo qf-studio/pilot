@@ -78,6 +78,15 @@ func TestDefaultConfig(t *testing.T) {
 	if config.BotToken != "" {
 		t.Errorf("BotToken = %q, want empty string", config.BotToken)
 	}
+	if config.SocketMode {
+		t.Error("SocketMode should be false by default")
+	}
+	if config.AllowedUsers == nil || len(config.AllowedUsers) != 0 {
+		t.Errorf("AllowedUsers = %v, want empty slice", config.AllowedUsers)
+	}
+	if config.AllowedChannels == nil || len(config.AllowedChannels) != 0 {
+		t.Errorf("AllowedChannels = %v, want empty slice", config.AllowedChannels)
+	}
 }
 
 // TestConfigFields tests that config has expected fields
