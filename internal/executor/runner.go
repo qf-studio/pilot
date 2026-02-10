@@ -120,6 +120,9 @@ type Task struct {
 	// MemberID is the team member ID for permission checks (GH-634).
 	// When set and a TeamChecker is configured, the runner enforces RBAC before execution.
 	MemberID string
+	// Labels contains issue labels (e.g., "no-decompose", "pilot").
+	// Flows from GitHub/Linear adapter → executor for decomposition decisions (GH-727).
+	Labels []string
 }
 
 // QualityGateResult represents the result of a single quality gate check.
@@ -293,6 +296,12 @@ func NewRunnerWithConfig(config *BackendConfig) (*Runner, error) {
 		// Configure task decomposition (GH-218)
 		if config.Decompose != nil && config.Decompose.Enabled {
 			runner.decomposer = NewTaskDecomposer(config.Decompose)
+
+			// GH-727: Attach LLM complexity classifier if API key available
+			apiKey := os.Getenv("ANTHROPIC_API_KEY")
+			if classifier := NewComplexityClassifier(apiKey); classifier != nil {
+				runner.decomposer.SetClassifier(classifier)
+			}
 		}
 	}
 
