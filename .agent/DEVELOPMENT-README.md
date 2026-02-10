@@ -96,7 +96,7 @@ if _, err := os.Stat(agentDir); err == nil {
 
 ## Current State
 
-**Current Version:** v0.29.0 | **107 features working** | **0 unwired**
+**Current Version:** v0.30.1 | **107 features working** | **0 unwired**
 
 **Full implementation status:** `.agent/system/FEATURE-MATRIX.md`
 
@@ -114,7 +114,9 @@ if _, err := os.Stat(agentDir); err == nil {
 | Task Dispatcher | Done | Per-project queue |
 | Dashboard TUI | Done | Sparkline cards, muted palette, SQLite persistence, epic-aware HISTORY |
 | Hot Upgrade | Done | Self-update via `pilot upgrade` or dashboard 'u' key |
-| Autopilot | Done | CI monitor, auto-merge, feedback loop, tag-only release (v0.24.1) |
+| Autopilot | Done | CI monitor, auto-merge, feedback loop, tag-only release, SQLite state (v0.30.0) |
+| Conflict Detection | Done | Detect merge conflicts before CI wait (v0.30.0) |
+| LLM Complexity | Done | Haiku-based task complexity classifier (v0.30.0) |
 | LLM Intent Judge | Done | Intent classification in execution pipeline (v0.24.0) |
 | Rich PR Comments | Done | Execution metrics (duration, tokens, cost) in PR comments |
 | Self-Review | Done | Auto code review before PR |
@@ -228,11 +230,15 @@ Goal: Raise autonomous reliability from 3/10 to 8/10. Three phases:
 
 | Item | What |
 |------|------|
+| **v0.30.1** | Fix undefined RawSocketEvent build error |
+| **v0.30.0** | SQLite state persistence (GH-726), LLM complexity classifier (GH-727), merge conflict detection (GH-724) |
 | **v0.29.0** | Socket Mode Listen() with auto-reconnect on SocketModeClient |
 | **v0.28.0** | `--slack` CLI flag, app_token validation, Socket Mode handler tests |
 | **v0.27.0** | Parallel execution, Socket Mode core (OpenConnection, events, handler), config fields |
-| PR cleanup | Closed 3 superseded PRs (#712, #713, #729), merged 3 (#717, #730, #732) |
-| Issue cleanup | Closed 11 Slack sub-issues (GH-704-716), all resolved or superseded |
+| Dashboard | Human-readable autopilot labels, ASCII indicators instead of emojis |
+| Model | Reverted default from Opus 4.6 to Opus 4.5 |
+| PR cleanup | Merged #733, #737, #739, #740; closed 4 conflicting PRs |
+| Issue cleanup | Closed decomposition artifacts (GH-763-768) |
 
 ### 2026-02-09
 
