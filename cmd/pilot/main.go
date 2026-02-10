@@ -315,6 +315,12 @@ Examples:
 			// Apply team flag overrides (GH-635)
 			applyTeamOverrides(cfg, cmd, teamID, teamMember)
 
+			// GH-710: Validate Slack Socket Mode config — degrade gracefully if app_token missing
+			if cfg.Adapters.Slack != nil && cfg.Adapters.Slack.SocketMode && cfg.Adapters.Slack.AppToken == "" {
+				logging.WithComponent("slack").Warn("socket_mode enabled but app_token not configured, skipping Slack Socket Mode")
+				cfg.Adapters.Slack.SocketMode = false
+			}
+
 			// Resolve project path: flag > config default > cwd
 			if projectPath == "" {
 				if defaultProj := cfg.GetDefaultProject(); defaultProj != nil {
@@ -1046,6 +1052,12 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 	hasTelegram := cfg.Adapters.Telegram != nil && cfg.Adapters.Telegram.Enabled
 	if hasTelegram && cfg.Adapters.Telegram.BotToken == "" {
 		return fmt.Errorf("telegram enabled but bot_token not configured")
+	}
+
+	// GH-710: Validate Slack Socket Mode config — degrade gracefully if app_token missing
+	if cfg.Adapters.Slack != nil && cfg.Adapters.Slack.SocketMode && cfg.Adapters.Slack.AppToken == "" {
+		logging.WithComponent("slack").Warn("socket_mode enabled but app_token not configured, skipping Slack Socket Mode")
+		cfg.Adapters.Slack.SocketMode = false
 	}
 
 	// Suppress logging BEFORE creating runner in dashboard mode (GH-190)
