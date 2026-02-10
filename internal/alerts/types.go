@@ -30,6 +30,12 @@ const (
 	AlertTypeUnauthorizedAccess AlertType = "unauthorized_access"
 	AlertTypeSensitiveFile      AlertType = "sensitive_file_modified"
 	AlertTypeUnusualPattern     AlertType = "unusual_pattern"
+
+	// Autopilot health alerts (GH-728)
+	AlertTypeFailedQueueHigh    AlertType = "failed_queue_high"
+	AlertTypeCircuitBreakerTrip AlertType = "circuit_breaker_trip"
+	AlertTypeAPIErrorRateHigh   AlertType = "api_error_rate_high"
+	AlertTypePRStuckWaitingCI   AlertType = "pr_stuck_waiting_ci"
 )
 
 // Alert represents an alert event
@@ -75,6 +81,11 @@ type RuleCondition struct {
 	Pattern     string   `yaml:"pattern"`      // Regex pattern
 	FilePattern string   `yaml:"file_pattern"` // Glob pattern for files
 	Paths       []string `yaml:"paths"`        // Specific paths to watch
+
+	// Autopilot health conditions (GH-728)
+	FailedQueueThreshold int           `yaml:"failed_queue_threshold"` // Max failed issues
+	APIErrorRatePerMin   float64       `yaml:"api_error_rate_per_min"` // Errors/min threshold
+	PRStuckTimeout       time.Duration `yaml:"pr_stuck_timeout"`       // Max time in waiting_ci
 }
 
 // AlertConfig holds the main alerting configuration
@@ -234,6 +245,55 @@ func defaultRules() []AlertRule {
 			Channels:    []string{},
 			Cooldown:    4 * time.Hour,
 			Description: "Alert when budget limit is exceeded",
+		},
+		// Autopilot health rules (GH-728)
+		{
+			Name:    "failed_queue_high",
+			Type:    AlertTypeFailedQueueHigh,
+			Enabled: true,
+			Condition: RuleCondition{
+				FailedQueueThreshold: 5,
+			},
+			Severity:    SeverityWarning,
+			Channels:    []string{},
+			Cooldown:    30 * time.Minute,
+			Description: "Alert when failed issue queue exceeds threshold",
+		},
+		{
+			Name:    "circuit_breaker_trip",
+			Type:    AlertTypeCircuitBreakerTrip,
+			Enabled: true,
+			Condition: RuleCondition{
+				ConsecutiveFailures: 1, // Any trip
+			},
+			Severity:    SeverityCritical,
+			Channels:    []string{},
+			Cooldown:    30 * time.Minute,
+			Description: "Alert when autopilot circuit breaker trips",
+		},
+		{
+			Name:    "api_error_rate_high",
+			Type:    AlertTypeAPIErrorRateHigh,
+			Enabled: true,
+			Condition: RuleCondition{
+				APIErrorRatePerMin: 10.0,
+			},
+			Severity:    SeverityWarning,
+			Channels:    []string{},
+			Cooldown:    15 * time.Minute,
+			Description: "Alert when API error rate exceeds 10/min",
+		},
+		{
+			Name:    "pr_stuck_waiting_ci",
+			Type:    AlertTypePRStuckWaitingCI,
+			Enabled: true,
+			Condition: RuleCondition{
+				PRStuckTimeout: 15 * time.Minute,
+			},
+			Severity:    SeverityInfo,
+			Channels:    []string{},
+			Cooldown:    15 * time.Minute,
+			Description: "Alert when a PR is stuck in waiting_ci for too long",
 		},
 	}
 }

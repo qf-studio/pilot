@@ -56,6 +56,9 @@ type Controller struct {
 	// Circuit breaker
 	consecutiveFailures int
 
+	// Metrics
+	metrics *Metrics
+
 	// Owner and repo for GitHub operations
 	owner string
 	repo  string
@@ -70,6 +73,7 @@ func NewController(cfg *Config, ghClient *github.Client, approvalMgr *approval.M
 		owner:       owner,
 		repo:        repo,
 		activePRs:   make(map[int]*PRState),
+		metrics:     NewMetrics(),
 		log:         slog.Default().With("component", "autopilot"),
 	}
 
@@ -220,6 +224,7 @@ func (c *Controller) ProcessPR(ctx context.Context, prNumber int) error {
 	// Circuit breaker check
 	if c.consecutiveFailures >= c.config.MaxFailures {
 		c.log.Warn("circuit breaker open", "failures", c.consecutiveFailures)
+		c.metrics.RecordCircuitBreakerTrip()
 		return fmt.Errorf("circuit breaker: too many consecutive failures (%d)", c.consecutiveFailures)
 	}
 
@@ -380,9 +385,15 @@ func (c *Controller) handleWaitingCI(ctx context.Context, prState *PRState) erro
 	case CISuccess:
 		c.log.Info("CI passed", "pr", prState.PRNumber, "sha", ShortSHA(sha))
 		prState.Stage = StageCIPassed
+		if !prState.CIWaitStartedAt.IsZero() {
+			c.metrics.RecordCIWaitDuration(time.Since(prState.CIWaitStartedAt))
+		}
 	case CIFailure:
 		c.log.Warn("CI failed", "pr", prState.PRNumber, "sha", ShortSHA(sha))
 		prState.Stage = StageCIFailed
+		if !prState.CIWaitStartedAt.IsZero() {
+			c.metrics.RecordCIWaitDuration(time.Since(prState.CIWaitStartedAt))
+		}
 	case CIPending, CIRunning:
 		// Stay in StageWaitingCI, will be checked next poll cycle
 		c.log.Debug("CI still running", "pr", prState.PRNumber, "status", status)
@@ -459,6 +470,7 @@ func (c *Controller) handleCIFailed(ctx context.Context, prState *PRState) error
 	}
 
 	prState.Stage = StageFailed
+	c.metrics.RecordPRFailed()
 	return nil
 }
 
@@ -508,6 +520,8 @@ func (c *Controller) handleMerging(ctx context.Context, prState *PRState) error 
 
 	c.log.Info("PR merged successfully", "pr", prState.PRNumber)
 	prState.Stage = StageMerged
+	c.metrics.RecordPRMerged()
+	c.metrics.RecordPRTimeToMerge(time.Since(prState.CreatedAt))
 
 	// Notify merge success
 	if c.notifier != nil {
@@ -783,6 +797,11 @@ func (c *Controller) ConsecutiveFailures() int {
 	return c.consecutiveFailures
 }
 
+// Metrics returns the autopilot metrics collector.
+func (c *Controller) Metrics() *Metrics {
+	return c.metrics
+}
+
 // ScanExistingPRs scans for open PRs created by Pilot and restores their state.
 // This should be called on startup to track PRs that were created before the current session.
 func (c *Controller) ScanExistingPRs(ctx context.Context) error {
@@ -983,6 +1002,10 @@ func (c *Controller) Run(ctx context.Context) error {
 // processAllPRs processes all active PRs in one iteration.
 func (c *Controller) processAllPRs(ctx context.Context) {
 	prs := c.GetActivePRs()
+
+	// Update active PR gauges every tick
+	c.metrics.UpdateActivePRs(prs)
+
 	if len(prs) == 0 {
 		return
 	}

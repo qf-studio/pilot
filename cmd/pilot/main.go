@@ -1647,6 +1647,18 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 							)
 						}
 					}()
+
+					// Start metrics alerter (GH-728): bridges metrics → alerts engine
+					if alertsEngine != nil {
+						metricsAlerter := autopilot.NewMetricsAlerter(autopilotController, alertsEngine)
+						go metricsAlerter.Run(ctx)
+					}
+
+					// Start metrics persister (GH-728): snapshots → SQLite
+					if store != nil {
+						metricsPersister := autopilot.NewMetricsPersister(autopilotController, store)
+						go metricsPersister.Run(ctx)
+					}
 				}
 			}
 

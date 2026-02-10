@@ -252,6 +252,110 @@ func (p *AutopilotPanel) stageLabel(stage autopilot.PRStage) string {
 	}
 }
 
+// HealthPanel displays autopilot health metrics in the dashboard.
+type HealthPanel struct {
+	controller *autopilot.Controller
+}
+
+// NewHealthPanel creates a health metrics panel.
+func NewHealthPanel(controller *autopilot.Controller) *HealthPanel {
+	return &HealthPanel{controller: controller}
+}
+
+// View renders the health metrics panel.
+func (p *HealthPanel) View() string {
+	var content strings.Builder
+	w := panelInnerWidth
+
+	if p.controller == nil || p.controller.Metrics() == nil {
+		content.WriteString("  No metrics available")
+		return renderPanel("HEALTH", content.String())
+	}
+
+	snap := p.controller.Metrics().Snapshot()
+
+	// Success rate
+	successPct := fmt.Sprintf("%.0f%%", snap.SuccessRate*100)
+	if snap.TotalIssuesProcessed() == 0 {
+		successPct = "—"
+	}
+	style := statusCompletedStyle
+	if snap.SuccessRate < 0.5 && snap.TotalIssuesProcessed() > 0 {
+		style = statusFailedStyle
+	} else if snap.SuccessRate < 0.8 && snap.TotalIssuesProcessed() > 0 {
+		style = warningStyle
+	}
+	content.WriteString(dotLeaderStyled("Success rate", successPct, style, w))
+	content.WriteString("\n")
+
+	// PRs: merged / failed / conflicting
+	prSummary := fmt.Sprintf("%d merged  %d failed  %d conflict",
+		snap.PRsMerged, snap.PRsFailed, snap.PRsConflicting)
+	content.WriteString(dotLeader("PRs", prSummary, w))
+	content.WriteString("\n")
+
+	// Queue depths
+	queueStr := fmt.Sprintf("%d pending  %d failed", snap.QueueDepth, snap.FailedQueueDepth)
+	if snap.FailedQueueDepth > 5 {
+		content.WriteString(dotLeaderStyled("Queue", queueStr, warningStyle, w))
+	} else {
+		content.WriteString(dotLeader("Queue", queueStr, w))
+	}
+	content.WriteString("\n")
+
+	// API error rate
+	errRateStr := fmt.Sprintf("%.1f/min", snap.APIErrorRate)
+	if snap.APIErrorRate >= 10 {
+		content.WriteString(dotLeaderStyled("API errors", errRateStr, statusFailedStyle, w))
+	} else if snap.APIErrorRate >= 1 {
+		content.WriteString(dotLeaderStyled("API errors", errRateStr, warningStyle, w))
+	} else {
+		content.WriteString(dotLeader("API errors", errRateStr, w))
+	}
+	content.WriteString("\n")
+
+	// Circuit breaker
+	cbStr := fmt.Sprintf("%d trips", snap.CircuitBreakerTrips)
+	if snap.CircuitBreakerTrips > 0 {
+		content.WriteString(dotLeaderStyled("CB trips", cbStr, statusFailedStyle, w))
+	} else {
+		content.WriteString(dotLeader("CB trips", cbStr, w))
+	}
+	content.WriteString("\n")
+
+	// Avg timings
+	if snap.AvgCIWaitDuration > 0 {
+		content.WriteString(dotLeader("Avg CI wait", formatDurationCompact(snap.AvgCIWaitDuration), w))
+		content.WriteString("\n")
+	}
+	if snap.AvgPRTimeToMerge > 0 {
+		content.WriteString(dotLeader("Avg merge time", formatDurationCompact(snap.AvgPRTimeToMerge), w))
+	}
+
+	return renderPanel("HEALTH", content.String())
+}
+
+// formatDurationCompact formats a duration compactly (e.g., "2m30s", "1h5m").
+func formatDurationCompact(d time.Duration) string {
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	if d < time.Hour {
+		m := int(d.Minutes())
+		s := int(d.Seconds()) % 60
+		if s == 0 {
+			return fmt.Sprintf("%dm", m)
+		}
+		return fmt.Sprintf("%dm%ds", m, s)
+	}
+	h := int(d.Hours())
+	m := int(d.Minutes()) % 60
+	if m == 0 {
+		return fmt.Sprintf("%dh", h)
+	}
+	return fmt.Sprintf("%dh%dm", h, m)
+}
+
 // TaskDisplay represents a task for display
 type TaskDisplay struct {
 	ID       string
@@ -316,6 +420,7 @@ type Model struct {
 	completedTasks []CompletedTask
 	costPerMToken  float64
 	autopilotPanel *AutopilotPanel
+	healthPanel    *HealthPanel
 	version        string
 	store          *memory.Store // SQLite persistence (GH-367)
 	sessionID      string        // Current session ID for persistence
@@ -372,6 +477,7 @@ func NewModel(version string) Model {
 		completedTasks: []CompletedTask{},
 		costPerMToken:  3.0,
 		autopilotPanel: NewAutopilotPanel(nil), // Disabled by default
+		healthPanel:    NewHealthPanel(nil),
 		version:        version,
 	}
 }
@@ -386,6 +492,7 @@ func NewModelWithStore(version string, store *memory.Store) Model {
 		completedTasks: []CompletedTask{},
 		costPerMToken:  3.0,
 		autopilotPanel: NewAutopilotPanel(nil),
+		healthPanel:    NewHealthPanel(nil),
 		version:        version,
 		store:          store,
 	}
@@ -402,6 +509,7 @@ func NewModelWithAutopilot(version string, controller *autopilot.Controller) Mod
 		completedTasks: []CompletedTask{},
 		costPerMToken:  3.0,
 		autopilotPanel: NewAutopilotPanel(controller),
+		healthPanel:    NewHealthPanel(controller),
 		version:        version,
 	}
 }
@@ -415,6 +523,7 @@ func NewModelWithStoreAndAutopilot(version string, store *memory.Store, controll
 		completedTasks: []CompletedTask{},
 		costPerMToken:  3.0,
 		autopilotPanel: NewAutopilotPanel(controller),
+		healthPanel:    NewHealthPanel(controller),
 		version:        version,
 		store:          store,
 	}
@@ -557,6 +666,7 @@ func NewModelWithOptions(version string, store *memory.Store, controller *autopi
 		completedTasks: []CompletedTask{},
 		costPerMToken:  3.0,
 		autopilotPanel: NewAutopilotPanel(controller),
+		healthPanel:    NewHealthPanel(controller),
 		version:        version,
 		store:          store,
 		upgradeCh:      upgradeCh,
@@ -734,6 +844,12 @@ func (m Model) View() string {
 	// Autopilot panel
 	b.WriteString(m.autopilotPanel.View())
 	b.WriteString("\n")
+
+	// Health metrics panel (GH-728)
+	if m.healthPanel != nil {
+		b.WriteString(m.healthPanel.View())
+		b.WriteString("\n")
+	}
 
 	// History
 	b.WriteString(m.renderHistory())

@@ -59,6 +59,9 @@ const (
 	EventTypeSecurityEvent  EventType = "security_event"
 	EventTypeBudgetExceeded EventType = "budget_exceeded"
 	EventTypeBudgetWarning  EventType = "budget_warning"
+
+	// Autopilot health events (GH-728)
+	EventTypeAutopilotMetrics EventType = "autopilot_metrics"
 )
 
 // EngineOption configures the Engine
@@ -171,6 +174,8 @@ func (e *Engine) handleEvent(ctx context.Context, event Event) {
 		e.handleSecurityEvent(ctx, event)
 	case EventTypeBudgetExceeded, EventTypeBudgetWarning:
 		e.handleBudgetEvent(ctx, event)
+	case EventTypeAutopilotMetrics:
+		e.handleAutopilotMetrics(ctx, event)
 	}
 }
 
@@ -494,4 +499,76 @@ func (e *Engine) UpdateConfig(config *AlertConfig) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.config = config
+}
+
+// handleAutopilotMetrics evaluates autopilot health metrics against alert rules.
+// Metadata keys: "failed_queue_depth", "circuit_breaker_trips", "api_error_rate",
+// "pr_stuck_count", "pr_max_wait_minutes".
+func (e *Engine) handleAutopilotMetrics(ctx context.Context, event Event) {
+	failedQueueDepth := 0
+	if v, ok := event.Metadata["failed_queue_depth"]; ok {
+		_, _ = fmt.Sscanf(v, "%d", &failedQueueDepth)
+	}
+
+	cbTrips := 0
+	if v, ok := event.Metadata["circuit_breaker_trips"]; ok {
+		_, _ = fmt.Sscanf(v, "%d", &cbTrips)
+	}
+
+	apiErrorRate := 0.0
+	if v, ok := event.Metadata["api_error_rate"]; ok {
+		_, _ = fmt.Sscanf(v, "%f", &apiErrorRate)
+	}
+
+	prStuckCount := 0
+	if v, ok := event.Metadata["pr_stuck_count"]; ok {
+		_, _ = fmt.Sscanf(v, "%d", &prStuckCount)
+	}
+
+	prMaxWaitMin := 0.0
+	if v, ok := event.Metadata["pr_max_wait_minutes"]; ok {
+		_, _ = fmt.Sscanf(v, "%f", &prMaxWaitMin)
+	}
+
+	for _, rule := range e.config.Rules {
+		if !rule.Enabled {
+			continue
+		}
+
+		switch rule.Type {
+		case AlertTypeFailedQueueHigh:
+			threshold := rule.Condition.FailedQueueThreshold
+			if threshold > 0 && failedQueueDepth >= threshold && e.shouldFire(rule) {
+				alert := e.createAlert(rule, event,
+					fmt.Sprintf("Failed issue queue depth %d exceeds threshold %d",
+						failedQueueDepth, threshold))
+				e.fireAlert(ctx, rule, alert)
+			}
+
+		case AlertTypeCircuitBreakerTrip:
+			if cbTrips > 0 && e.shouldFire(rule) {
+				alert := e.createAlert(rule, event,
+					fmt.Sprintf("Autopilot circuit breaker tripped (%d trips)", cbTrips))
+				e.fireAlert(ctx, rule, alert)
+			}
+
+		case AlertTypeAPIErrorRateHigh:
+			threshold := rule.Condition.APIErrorRatePerMin
+			if threshold > 0 && apiErrorRate >= threshold && e.shouldFire(rule) {
+				alert := e.createAlert(rule, event,
+					fmt.Sprintf("API error rate %.1f/min exceeds threshold %.1f/min",
+						apiErrorRate, threshold))
+				e.fireAlert(ctx, rule, alert)
+			}
+
+		case AlertTypePRStuckWaitingCI:
+			timeout := rule.Condition.PRStuckTimeout
+			if timeout > 0 && prStuckCount > 0 && prMaxWaitMin >= timeout.Minutes() && e.shouldFire(rule) {
+				alert := e.createAlert(rule, event,
+					fmt.Sprintf("%d PR(s) stuck in waiting_ci for %.0f+ minutes",
+						prStuckCount, prMaxWaitMin))
+				e.fireAlert(ctx, rule, alert)
+			}
+		}
+	}
 }

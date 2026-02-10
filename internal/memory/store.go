@@ -180,6 +180,28 @@ func (s *Store) migrate() error {
 			tasks_failed INTEGER DEFAULT 0
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_sessions_date ON sessions(date)`,
+		// Autopilot metrics snapshots (GH-728)
+		`CREATE TABLE IF NOT EXISTS autopilot_metrics (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			snapshot_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			issues_success INTEGER DEFAULT 0,
+			issues_failed INTEGER DEFAULT 0,
+			issues_rate_limited INTEGER DEFAULT 0,
+			prs_merged INTEGER DEFAULT 0,
+			prs_failed INTEGER DEFAULT 0,
+			prs_conflicting INTEGER DEFAULT 0,
+			circuit_breaker_trips INTEGER DEFAULT 0,
+			api_errors_total INTEGER DEFAULT 0,
+			api_error_rate REAL DEFAULT 0.0,
+			queue_depth INTEGER DEFAULT 0,
+			failed_queue_depth INTEGER DEFAULT 0,
+			active_prs INTEGER DEFAULT 0,
+			success_rate REAL DEFAULT 0.0,
+			avg_ci_wait_ms INTEGER DEFAULT 0,
+			avg_merge_time_ms INTEGER DEFAULT 0,
+			avg_execution_ms INTEGER DEFAULT 0
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_autopilot_metrics_at ON autopilot_metrics(snapshot_at)`,
 	}
 
 	for _, migration := range migrations {
@@ -1224,4 +1246,88 @@ func (s *Store) EndSession(sessionID string) error {
 		UPDATE sessions SET ended_at = CURRENT_TIMESTAMP WHERE id = ?
 	`, sessionID)
 	return err
+}
+
+// AutopilotMetricsRow represents a persisted autopilot metrics snapshot.
+type AutopilotMetricsRow struct {
+	ID                  int64
+	SnapshotAt          time.Time
+	IssuesSuccess       int
+	IssuesFailed        int
+	IssuesRateLimited   int
+	PRsMerged           int
+	PRsFailed           int
+	PRsConflicting      int
+	CircuitBreakerTrips int
+	APIErrorsTotal      int
+	APIErrorRate        float64
+	QueueDepth          int
+	FailedQueueDepth    int
+	ActivePRs           int
+	SuccessRate         float64
+	AvgCIWaitMs         int64
+	AvgMergeTimeMs      int64
+	AvgExecutionMs      int64
+}
+
+// SaveAutopilotMetrics persists an autopilot metrics snapshot to SQLite.
+func (s *Store) SaveAutopilotMetrics(row *AutopilotMetricsRow) error {
+	_, err := s.db.Exec(`
+		INSERT INTO autopilot_metrics (
+			snapshot_at, issues_success, issues_failed, issues_rate_limited,
+			prs_merged, prs_failed, prs_conflicting, circuit_breaker_trips,
+			api_errors_total, api_error_rate, queue_depth, failed_queue_depth,
+			active_prs, success_rate, avg_ci_wait_ms, avg_merge_time_ms, avg_execution_ms
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`,
+		row.SnapshotAt,
+		row.IssuesSuccess, row.IssuesFailed, row.IssuesRateLimited,
+		row.PRsMerged, row.PRsFailed, row.PRsConflicting,
+		row.CircuitBreakerTrips, row.APIErrorsTotal, row.APIErrorRate,
+		row.QueueDepth, row.FailedQueueDepth, row.ActivePRs,
+		row.SuccessRate, row.AvgCIWaitMs, row.AvgMergeTimeMs, row.AvgExecutionMs,
+	)
+	return err
+}
+
+// GetRecentAutopilotMetrics returns the most recent metrics snapshots.
+func (s *Store) GetRecentAutopilotMetrics(limit int) ([]*AutopilotMetricsRow, error) {
+	rows, err := s.db.Query(`
+		SELECT id, snapshot_at, issues_success, issues_failed, issues_rate_limited,
+			prs_merged, prs_failed, prs_conflicting, circuit_breaker_trips,
+			api_errors_total, api_error_rate, queue_depth, failed_queue_depth,
+			active_prs, success_rate, avg_ci_wait_ms, avg_merge_time_ms, avg_execution_ms
+		FROM autopilot_metrics
+		ORDER BY snapshot_at DESC
+		LIMIT ?
+	`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query autopilot metrics: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var result []*AutopilotMetricsRow
+	for rows.Next() {
+		r := &AutopilotMetricsRow{}
+		if err := rows.Scan(
+			&r.ID, &r.SnapshotAt, &r.IssuesSuccess, &r.IssuesFailed, &r.IssuesRateLimited,
+			&r.PRsMerged, &r.PRsFailed, &r.PRsConflicting, &r.CircuitBreakerTrips,
+			&r.APIErrorsTotal, &r.APIErrorRate, &r.QueueDepth, &r.FailedQueueDepth,
+			&r.ActivePRs, &r.SuccessRate, &r.AvgCIWaitMs, &r.AvgMergeTimeMs, &r.AvgExecutionMs,
+		); err != nil {
+			return nil, fmt.Errorf("failed to scan autopilot metrics: %w", err)
+		}
+		result = append(result, r)
+	}
+	return result, rows.Err()
+}
+
+// PruneAutopilotMetrics deletes snapshots older than the given duration.
+func (s *Store) PruneAutopilotMetrics(olderThan time.Duration) (int64, error) {
+	cutoff := time.Now().Add(-olderThan)
+	result, err := s.db.Exec(`DELETE FROM autopilot_metrics WHERE snapshot_at < ?`, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }

@@ -51,6 +51,11 @@ func TestDefaultRules(t *testing.T) {
 		AlertTypeConsecutiveFails: {"consecutive_failures", true},
 		AlertTypeDailySpend:       {"daily_spend", false},
 		AlertTypeBudgetDepleted:   {"budget_depleted", false},
+		// Autopilot health rules (GH-728)
+		AlertTypeFailedQueueHigh:    {"failed_queue_high", true},
+		AlertTypeCircuitBreakerTrip: {"circuit_breaker_trip", true},
+		AlertTypeAPIErrorRateHigh:   {"api_error_rate_high", true},
+		AlertTypePRStuckWaitingCI:   {"pr_stuck_waiting_ci", true},
 	}
 
 	if len(rules) != len(expectedRules) {
