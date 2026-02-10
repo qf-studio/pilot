@@ -2525,6 +2525,85 @@ func TestService_ResolveTelegramIdentity(t *testing.T) {
 	}
 }
 
+func TestService_ResolveSlackIdentity(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	store, err := NewStore(db)
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+	svc := NewService(store)
+
+	team, owner, err := svc.CreateTeam("Test Team", "owner@example.com")
+	if err != nil {
+		t.Fatalf("CreateTeam failed: %v", err)
+	}
+
+	// Add a member
+	dev, err := svc.AddMember(team.ID, owner.ID, "dev@example.com", RoleDeveloper, nil)
+	if err != nil {
+		t.Fatalf("AddMember failed: %v", err)
+	}
+
+	tests := []struct {
+		name        string
+		slackUserID string
+		email       string
+		wantID      string
+		wantErr     bool
+	}{
+		{
+			name:        "resolve by email",
+			slackUserID: "",
+			email:       "dev@example.com",
+			wantID:      dev.ID,
+		},
+		{
+			name:        "slackUserID ignored for now, email resolves",
+			slackUserID: "U12345678",
+			email:       "dev@example.com",
+			wantID:      dev.ID,
+		},
+		{
+			name:        "slackUserID alone does not resolve (not implemented yet)",
+			slackUserID: "U12345678",
+			email:       "",
+			wantID:      "",
+		},
+		{
+			name:        "no match returns empty",
+			slackUserID: "",
+			email:       "unknown@example.com",
+			wantID:      "",
+		},
+		{
+			name:        "empty inputs returns empty",
+			slackUserID: "",
+			email:       "",
+			wantID:      "",
+		},
+		{
+			name:        "resolve owner by email",
+			slackUserID: "",
+			email:       "owner@example.com",
+			wantID:      owner.ID,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := svc.ResolveSlackIdentity(tt.slackUserID, tt.email)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("err = %v, wantErr = %v", err, tt.wantErr)
+			}
+			if got != tt.wantID {
+				t.Errorf("got memberID %q, want %q", got, tt.wantID)
+			}
+		})
+	}
+}
+
 func TestService_GetMemberByGitHubUser(t *testing.T) {
 	db, cleanup := setupTestDB(t)
 	defer cleanup()

@@ -35,3 +35,9 @@ func (a *ServiceAdapter) ResolveGitHubIdentity(ghUser, email string) (string, er
 func (a *ServiceAdapter) ResolveTelegramIdentity(telegramID int64, email string) (string, error) {
 	return a.service.ResolveTelegramIdentity(telegramID, email)
 }
+
+// ResolveSlackIdentity resolves a Slack user ID and/or email to a team member ID (GH-784).
+// Returns ("", nil) when no matching member is found.
+func (a *ServiceAdapter) ResolveSlackIdentity(slackUserID, email string) (string, error) {
+	return a.service.ResolveSlackIdentity(slackUserID, email)
+}

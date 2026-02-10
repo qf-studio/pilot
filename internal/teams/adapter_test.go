@@ -185,3 +185,40 @@ func TestServiceAdapter_ResolveGitHubIdentity(t *testing.T) {
 		})
 	}
 }
+
+func TestServiceAdapter_ResolveSlackIdentity(t *testing.T) {
+	db, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	store, _ := NewStore(db)
+	service := NewService(store)
+	adapter := NewServiceAdapter(service)
+
+	team, owner, _ := service.CreateTeam("Test Team", "owner@example.com")
+	dev, _ := service.AddMember(team.ID, owner.ID, "dev@example.com", RoleDeveloper, nil)
+
+	tests := []struct {
+		name        string
+		slackUserID string
+		email       string
+		wantID      string
+	}{
+		{"by email", "", "dev@example.com", dev.ID},
+		{"slackUserID with email", "U12345678", "dev@example.com", dev.ID},
+		{"slackUserID alone (not implemented)", "U12345678", "", ""},
+		{"no match", "", "unknown@example.com", ""},
+		{"empty inputs", "", "", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := adapter.ResolveSlackIdentity(tt.slackUserID, tt.email)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tt.wantID {
+				t.Errorf("got %q, want %q", got, tt.wantID)
+			}
+		})
+	}
+}
