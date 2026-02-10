@@ -424,6 +424,7 @@ Examples:
 			var gwMonitor *executor.Monitor
 			var gwProgram *tea.Program
 			var gwAutopilotController *autopilot.Controller
+			var gwAutopilotStateStore *autopilot.StateStore
 			var gwAlertsEngine *alerts.Engine
 
 			if needsPollingInfra {
@@ -531,6 +532,23 @@ Examples:
 								parts[0],
 								parts[1],
 							)
+						}
+					}
+				}
+
+				// GH-726: Initialize autopilot state store for gateway mode
+				if gwStore != nil && gwAutopilotController != nil {
+					var gwStoreErr error
+					gwAutopilotStateStore, gwStoreErr = autopilot.NewStateStore(gwStore.DB())
+					if gwStoreErr != nil {
+						logging.WithComponent("autopilot").Warn("Failed to initialize state store (gateway)", slog.Any("error", gwStoreErr))
+					} else {
+						gwAutopilotController.SetStateStore(gwAutopilotStateStore)
+						restored, restoreErr := gwAutopilotController.RestoreState()
+						if restoreErr != nil {
+							logging.WithComponent("autopilot").Warn("Failed to restore state from SQLite (gateway)", slog.Any("error", restoreErr))
+						} else if restored > 0 {
+							logging.WithComponent("autopilot").Info("Restored autopilot PR states from SQLite (gateway)", slog.Int("count", restored))
 						}
 					}
 				}
@@ -700,6 +718,11 @@ Examples:
 						pollerOpts = append(pollerOpts, github.WithOnPRCreated(gwAutopilotController.OnPRCreated))
 						// Wire sub-issue PR callback so epic sub-PRs are tracked by autopilot (GH-594)
 						gwRunner.SetOnSubIssuePRCreated(gwAutopilotController.OnPRCreated)
+					}
+
+					// GH-726: Wire processed issue persistence for gateway poller
+					if gwAutopilotStateStore != nil {
+						pollerOpts = append(pollerOpts, github.WithProcessedStore(gwAutopilotStateStore))
 					}
 
 					// Create rate limit retry scheduler
@@ -1175,6 +1198,24 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 		}()
 	}
 
+	// GH-726: Initialize autopilot state store for crash recovery
+	var autopilotStateStore *autopilot.StateStore
+	if store != nil && autopilotController != nil {
+		var storeErr error
+		autopilotStateStore, storeErr = autopilot.NewStateStore(store.DB())
+		if storeErr != nil {
+			logging.WithComponent("autopilot").Warn("Failed to initialize state store", slog.Any("error", storeErr))
+		} else {
+			autopilotController.SetStateStore(autopilotStateStore)
+			restored, restoreErr := autopilotController.RestoreState()
+			if restoreErr != nil {
+				logging.WithComponent("autopilot").Warn("Failed to restore state from SQLite", slog.Any("error", restoreErr))
+			} else if restored > 0 {
+				logging.WithComponent("autopilot").Info("Restored autopilot PR states from SQLite", slog.Int("count", restored))
+			}
+		}
+	}
+
 	// GH-634: Initialize teams service for RBAC enforcement
 	if store != nil {
 		teamStore, teamErr := teams.NewStore(store.DB())
@@ -1485,6 +1526,11 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 				)
 				// Wire sub-issue PR callback so epic sub-PRs are tracked by autopilot (GH-594)
 				runner.SetOnSubIssuePRCreated(autopilotController.OnPRCreated)
+			}
+
+			// GH-726: Wire processed issue persistence if state store available
+			if autopilotStateStore != nil {
+				pollerOpts = append(pollerOpts, github.WithProcessedStore(autopilotStateStore))
 			}
 
 			// Create rate limit retry scheduler

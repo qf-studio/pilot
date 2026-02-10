@@ -50,6 +50,9 @@ type Controller struct {
 	activePRs map[int]*PRState
 	mu        sync.RWMutex
 
+	// Persistent state store (optional, nil = in-memory only)
+	stateStore *StateStore
+
 	// Circuit breaker
 	consecutiveFailures int
 
@@ -88,12 +91,96 @@ func (c *Controller) SetNotifier(n Notifier) {
 	c.notifier = n
 }
 
+// SetStateStore sets the persistent state store for crash recovery.
+// If set, all state transitions are persisted to SQLite.
+func (c *Controller) SetStateStore(store *StateStore) {
+	c.stateStore = store
+}
+
+// persistPRState saves a PR state to the store if available.
+func (c *Controller) persistPRState(prState *PRState) {
+	if c.stateStore == nil {
+		return
+	}
+	if err := c.stateStore.SavePRState(prState); err != nil {
+		c.log.Warn("failed to persist PR state", "pr", prState.PRNumber, "error", err)
+	}
+}
+
+// persistRemovePR removes a PR state from the store if available.
+func (c *Controller) persistRemovePR(prNumber int) {
+	if c.stateStore == nil {
+		return
+	}
+	if err := c.stateStore.RemovePRState(prNumber); err != nil {
+		c.log.Warn("failed to remove persisted PR state", "pr", prNumber, "error", err)
+	}
+}
+
+// persistCircuitBreaker saves circuit breaker state to the store if available.
+func (c *Controller) persistCircuitBreaker() {
+	if c.stateStore == nil {
+		return
+	}
+	if err := c.stateStore.SaveMetadata("consecutive_failures", fmt.Sprintf("%d", c.consecutiveFailures)); err != nil {
+		c.log.Warn("failed to persist circuit breaker state", "error", err)
+	}
+}
+
+// RestoreState loads PR states and circuit breaker from the persistent store.
+// If state is found in the store, ScanExistingPRs is unnecessary.
+// Returns the number of restored PRs.
+func (c *Controller) RestoreState() (int, error) {
+	if c.stateStore == nil {
+		return 0, nil
+	}
+
+	// Restore PR states
+	states, err := c.stateStore.LoadAllPRStates()
+	if err != nil {
+		return 0, fmt.Errorf("failed to load PR states: %w", err)
+	}
+
+	c.mu.Lock()
+	for _, pr := range states {
+		// Skip terminal states — they shouldn't be active
+		if pr.Stage == StageFailed {
+			continue
+		}
+		c.activePRs[pr.PRNumber] = pr
+	}
+	c.mu.Unlock()
+
+	// Restore circuit breaker
+	cbStr, err := c.stateStore.GetMetadata("consecutive_failures")
+	if err != nil {
+		c.log.Warn("failed to load circuit breaker state", "error", err)
+	} else if cbStr != "" {
+		var failures int
+		if _, err := fmt.Sscanf(cbStr, "%d", &failures); err == nil {
+			c.mu.Lock()
+			c.consecutiveFailures = failures
+			c.mu.Unlock()
+		}
+	}
+
+	restored := len(states)
+	if restored > 0 {
+		c.log.Info("restored autopilot state from SQLite",
+			"pr_states", restored,
+			"circuit_breaker_failures", c.consecutiveFailures,
+		)
+	}
+
+	return restored, nil
+}
+
 // OnPRCreated registers a new PR for autopilot processing.
 func (c *Controller) OnPRCreated(prNumber int, prURL string, issueNumber int, headSHA string, branchName string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	c.activePRs[prNumber] = &PRState{
+	prState := &PRState{
 		PRNumber:    prNumber,
 		PRURL:       prURL,
 		IssueNumber: issueNumber,
@@ -103,6 +190,10 @@ func (c *Controller) OnPRCreated(prNumber int, prURL string, issueNumber int, he
 		CIStatus:    CIPending,
 		CreatedAt:   time.Now(),
 	}
+	c.activePRs[prNumber] = prState
+
+	// Persist to SQLite (outside lock is fine, persist is idempotent)
+	c.persistPRState(prState)
 
 	c.log.Info("PR registered for autopilot",
 		"pr", prNumber,
@@ -173,9 +264,13 @@ func (c *Controller) ProcessPR(ctx context.Context, prNumber int) error {
 		c.consecutiveFailures++
 		prState.Error = err.Error()
 		c.log.Error("autopilot stage failed", "pr", prNumber, "stage", prState.Stage, "error", err)
+		c.persistCircuitBreaker()
 	} else {
 		c.consecutiveFailures = 0
 	}
+
+	// Persist state after every processing cycle (covers transitions and updated fields)
+	c.persistPRState(prState)
 
 	return err
 }
@@ -565,6 +660,7 @@ func (c *Controller) removePR(prNumber int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	delete(c.activePRs, prNumber)
+	c.persistRemovePR(prNumber)
 	c.log.Info("PR removed from tracking", "pr", prNumber)
 }
 
@@ -595,6 +691,7 @@ func (c *Controller) ResetCircuitBreaker() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.consecutiveFailures = 0
+	c.persistCircuitBreaker()
 	c.log.Info("circuit breaker reset")
 }
 
@@ -776,6 +873,7 @@ func (c *Controller) ScanRecentlyMergedPRs(ctx context.Context) error {
 		c.mu.Lock()
 		c.activePRs[pr.Number] = prState
 		c.mu.Unlock()
+		c.persistPRState(prState)
 
 		triggered++
 	}
@@ -868,6 +966,7 @@ func (c *Controller) checkExternalMergeOrClose(ctx context.Context, prState *PRS
 				prState.HeadSHA = ghPR.MergeCommitSHA
 			}
 			prState.Stage = StageReleasing
+			c.persistPRState(prState)
 			return false // Continue processing to handle release
 		}
 
