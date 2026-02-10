@@ -24,6 +24,14 @@ const (
 	ExecutionModeParallel ExecutionMode = "parallel"
 )
 
+// ProcessedStore persists which issues have been processed across restarts.
+// Implemented by autopilot.StateStore to avoid circular imports.
+type ProcessedStore interface {
+	MarkIssueProcessed(issueNumber int, result string) error
+	IsIssueProcessed(issueNumber int) (bool, error)
+	LoadProcessedIssues() (map[int]bool, error)
+}
+
 // IssueResult is returned by the issue handler with PR information
 type IssueResult struct {
 	Success    bool
@@ -65,6 +73,9 @@ type Poller struct {
 	maxConcurrent int
 	semaphore     chan struct{}
 	activeWg      sync.WaitGroup
+
+	// Persistent processed store (optional)
+	processedStore ProcessedStore
 }
 
 // PollerOption configures a Poller
@@ -122,6 +133,14 @@ func WithScheduler(s *executor.Scheduler) PollerOption {
 	}
 }
 
+// WithProcessedStore sets the persistent store for processed issue tracking.
+// On startup, processed issues are loaded from the store to prevent re-processing.
+func WithProcessedStore(store ProcessedStore) PollerOption {
+	return func(p *Poller) {
+		p.processedStore = store
+	}
+}
+
 // WithMaxConcurrent sets the maximum number of parallel issue executions
 func WithMaxConcurrent(n int) PollerOption {
 	return func(p *Poller) {
@@ -163,6 +182,21 @@ func NewPoller(client *Client, repo string, label string, interval time.Duration
 			PollInterval: p.prPollInterval,
 			Timeout:      p.prTimeout,
 		})
+	}
+
+	// Load processed issues from persistent store if available
+	if p.processedStore != nil {
+		loaded, err := p.processedStore.LoadProcessedIssues()
+		if err != nil {
+			p.logger.Warn("Failed to load processed issues from store", slog.Any("error", err))
+		} else if len(loaded) > 0 {
+			p.mu.Lock()
+			for num := range loaded {
+				p.processed[num] = true
+			}
+			p.mu.Unlock()
+			p.logger.Info("Loaded processed issues from store", slog.Int("count", len(loaded)))
+		}
 	}
 
 	// Initialize parallel semaphore
@@ -523,6 +557,13 @@ func (p *Poller) markProcessed(number int) {
 	p.mu.Lock()
 	p.processed[number] = true
 	p.mu.Unlock()
+
+	// Persist to store if available
+	if p.processedStore != nil {
+		if err := p.processedStore.MarkIssueProcessed(number, "processed"); err != nil {
+			p.logger.Warn("Failed to persist processed issue", slog.Int("issue", number), slog.Any("error", err))
+		}
+	}
 }
 
 // WaitForActive waits for all active parallel goroutines to finish.
