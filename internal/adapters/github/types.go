@@ -188,6 +188,7 @@ type PullRequest struct {
 	Merged         bool   `json:"merged,omitempty"`
 	MergeCommitSHA string `json:"merge_commit_sha,omitempty"`
 	Mergeable      *bool  `json:"mergeable,omitempty"`
+	MergeableState string `json:"mergeable_state,omitempty"` // clean, dirty, unstable, blocked, unknown
 	CreatedAt string `json:"created_at,omitempty"`
 	UpdatedAt string `json:"updated_at,omitempty"`
 	MergedAt  string `json:"merged_at,omitempty"`
