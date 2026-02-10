@@ -118,7 +118,7 @@ const (
 	Sonnet35OutputPricePerMillion = SonnetOutputPricePerMillion
 
 	// Default model
-	DefaultModel = "claude-opus-4-6"
+	DefaultModel = "claude-opus-4-5"
 )
 
 // EstimateCost calculates estimated cost from token usage

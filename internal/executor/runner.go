@@ -823,7 +823,7 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 			result.TokensTotal = state.tokensInput + state.tokensOutput
 			result.ModelName = state.modelName
 			if result.ModelName == "" {
-				result.ModelName = "claude-opus-4-6"
+				result.ModelName = "claude-opus-4-5"
 			}
 			result.EstimatedCostUSD = estimateCost(result.TokensInput, result.TokensOutput, result.ModelName)
 			log.Warn("Task cancelled due to per-task budget limit",
@@ -986,7 +986,7 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 		result.ModelName = state.modelName
 	}
 	if result.ModelName == "" {
-		result.ModelName = "claude-opus-4-6" // Default model
+		result.ModelName = "claude-opus-4-5" // Default model
 	}
 	// Estimate cost based on token usage (including research tokens)
 	result.EstimatedCostUSD = estimateCost(result.TokensInput+result.ResearchTokens, result.TokensOutput, result.ModelName)
@@ -2592,7 +2592,7 @@ func estimateCost(inputTokens, outputTokens int64, model string) float64 {
 	const (
 		sonnetInputPrice  = 3.00
 		sonnetOutputPrice = 15.00
-		// Opus 4.6 pricing ($5/$25 per 1M tokens)
+		// Opus 4.5 pricing ($15/$75 per 1M tokens)
 		opusInputPrice  = 5.00
 		opusOutputPrice = 25.00
 		// Legacy Opus 4.5 pricing

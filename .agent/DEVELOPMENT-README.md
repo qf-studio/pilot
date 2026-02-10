@@ -2,7 +2,7 @@
 
 **Navigator plans. Pilot executes.**
 
-## ⚠️ WORKFLOW: Navigator + Pilot Pipeline
+## WORKFLOW: Navigator + Pilot Pipeline
 
 **This session uses Navigator for planning, Pilot for execution.**
 
@@ -54,8 +54,8 @@ gh pr merge <number>
 
 ### Rules
 
-| ✅ Do | ❌ Don't |
-|-------|----------|
+| Do | Don't |
+|----|-------|
 | Use `/nav-task` for planning | Write code directly |
 | Create issues with `pilot` label | Make commits manually |
 | Review every PR before merging | Create PRs manually |
@@ -63,7 +63,7 @@ gh pr merge <number>
 
 ---
 
-## ⚠️ CRITICAL: Core Architecture Constraint
+## CRITICAL: Core Architecture Constraint
 
 **NEVER remove Navigator integration from `internal/executor/runner.go`**
 
@@ -73,7 +73,7 @@ The `BuildPrompt()` function MUST include `"Start my Navigator session"` prefix 
 // Check if project has Navigator initialized
 agentDir := filepath.Join(task.ProjectPath, ".agent")
 if _, err := os.Stat(agentDir); err == nil {
-    sb.WriteString("Start my Navigator session.\n\n")  // ← NEVER REMOVE
+    sb.WriteString("Start my Navigator session.\n\n")  // <- NEVER REMOVE
 }
 ```
 
@@ -87,16 +87,16 @@ if _, err := os.Stat(agentDir); err == nil {
 |----------|--------------|
 | CLAUDE.md | Every session (auto-loaded) |
 | This file | Every session (navigator index) |
-| `.agent/system/FEATURE-MATRIX.md` | **What's implemented vs not** |
+| `.agent/system/FEATURE-MATRIX.md` | What's implemented vs not |
 | `.agent/system/ARCHITECTURE.md` | System design, data flow |
-| `.agent/system/PR-CHECKLIST.md` | **Before merging any PR** |
+| `.agent/system/PR-CHECKLIST.md` | Before merging any PR |
 | `.agent/tasks/TASK-XX.md` | Active task details |
 | `.agent/sops/*.md` | Before modifying integrations |
 | `.agent/.context-markers/` | Resume after break |
 
 ## Current State
 
-**Current Version:** v0.26.1 | **107 features working** | **0 unwired**
+**Current Version:** v0.29.0 | **107 features working** | **0 unwired**
 
 **Full implementation status:** `.agent/system/FEATURE-MATRIX.md`
 
@@ -104,42 +104,37 @@ if _, err := os.Stat(agentDir); err == nil {
 
 | Component | Status | Notes |
 |-----------|--------|-------|
-| Task Execution | ✅ | Claude Code subprocess with Navigator |
-| Telegram Bot | ✅ | Long-polling, voice, images, chat modes |
-| GitHub Polling | ✅ | 30s interval, auto-picks `pilot` label, **real parallel execution (v0.26.1+)** |
-| Alerts Engine | ✅ | Slack, Telegram, Email, Webhook, PagerDuty **(all wired v0.26.1)** |
-| **Slack Notifications** | ✅ | Task lifecycle + alerts to #engineering **(v0.26.1)** |
-| Quality Gates | ✅ | Test/lint/build gates with retry |
-| Task Dispatcher | ✅ | Per-project queue |
-| Dashboard TUI | ✅ | Sparkline cards, muted palette, SQLite persistence, **epic-aware HISTORY (v0.22.1)** |
-| Hot Upgrade | ✅ | Self-update via `pilot upgrade` or dashboard 'u' key, `syscall.Exec` restart |
-| **Autopilot** | ✅ | CI monitor, auto-merge, feedback loop, **tag-only release (v0.24.1)** |
-| **LLM Intent Judge** | ✅ | Intent classification in execution pipeline **(v0.24.0)** |
-| **Rich PR Comments** | ✅ | Execution metrics (duration, tokens, cost) in PR comments **(v0.24.1)** |
-| **AGENTS.md Support** | ✅ | LoadAgentsFile reads project AGENTS.md **(v0.24.1)** |
-| **Self-Review** | ✅ | Auto code review before PR |
-| **Auto Build Gate** | ✅ | Minimal build gate when none configured |
-| **Effort Routing** | ✅ | Map task complexity to reasoning depth **(v0.20.0)** |
-| **Release Pipeline** | ✅ | Tag-only → GoReleaser CI builds + uploads binaries **(v0.24.1)** |
-| **Docs Site** | ✅ | Nextra v2 (pinned), GitLab sync, **auto-deploy via prod tag, OG metas + preview image (v0.24.1)** |
-| **QuantFlow Landing** | ✅ | `/pilot` case study page on quantflow.studio **(2026-02-06)** |
-| **CONTRIBUTING.md** | ✅ | Dev setup, code standards, BSL 1.1 note **(2026-02-06)** |
-| **Email Alerts** | ✅ | SMTP sender with TLS, configurable templates **(v0.25.0)** |
-| **PagerDuty Alerts** | ✅ | Events API v2 integration **(v0.25.0)** |
-| **Jira Webhooks** | ✅ | Inbound webhook handler **(v0.25.0)** |
-| **Outbound Webhooks** | ✅ | Configurable HTTP webhooks with HMAC signing **(v0.25.0)** |
-| **Tunnel Flag** | ✅ | `--tunnel` for webhook development **(v0.25.0)** |
-| **Health Tests** | ✅ | 32 unit tests for health subsystem **(v0.25.0)** |
+| Task Execution | Done | Claude Code subprocess with Navigator |
+| Telegram Bot | Done | Long-polling, voice, images, chat modes |
+| GitHub Polling | Done | 30s interval, auto-picks `pilot` label, parallel execution (v0.26.1+) |
+| Alerts Engine | Done | Slack, Telegram, Email, Webhook, PagerDuty (all wired v0.26.1) |
+| Slack Notifications | Done | Task lifecycle + alerts to #engineering (v0.26.1) |
+| Slack Socket Mode | Done | OpenConnection, Listen with auto-reconnect, event parsing (v0.29.0) |
+| Quality Gates | Done | Test/lint/build gates with retry |
+| Task Dispatcher | Done | Per-project queue |
+| Dashboard TUI | Done | Sparkline cards, muted palette, SQLite persistence, epic-aware HISTORY |
+| Hot Upgrade | Done | Self-update via `pilot upgrade` or dashboard 'u' key |
+| Autopilot | Done | CI monitor, auto-merge, feedback loop, tag-only release (v0.24.1) |
+| LLM Intent Judge | Done | Intent classification in execution pipeline (v0.24.0) |
+| Rich PR Comments | Done | Execution metrics (duration, tokens, cost) in PR comments |
+| Self-Review | Done | Auto code review before PR |
+| Effort Routing | Done | Map task complexity to reasoning depth (v0.20.0) |
+| Release Pipeline | Done | Tag-only, GoReleaser CI builds + uploads binaries |
+| Docs Site | Done | Nextra v2 (pinned), GitLab sync, auto-deploy via prod tag |
+| Email Alerts | Done | SMTP sender with TLS, configurable templates (v0.25.0) |
+| PagerDuty Alerts | Done | Events API v2 integration (v0.25.0) |
+| Jira Webhooks | Done | Inbound webhook handler (v0.25.0) |
+| Outbound Webhooks | Done | Configurable HTTP webhooks with HMAC signing (v0.25.0) |
 
 ### Telegram Interaction Modes (v0.6.0)
 
 | Mode | Trigger | Behavior |
 |------|---------|----------|
-| 💬 **Chat** | "What do you think about..." | Conversational response, no code changes |
-| 🔍 **Questions** | "What files handle...?" | Quick read-only answers (90s timeout) |
-| 🔬 **Research** | "Research how X works" | Deep analysis, output to chat + saves to `.agent/research/` |
-| 📐 **Planning** | "Plan how to add X" | Creates plan with Execute/Cancel buttons |
-| 🚀 **Tasks** | "Add a logout button" | Confirms → executes with PR |
+| Chat | "What do you think about..." | Conversational response, no code changes |
+| Questions | "What files handle...?" | Quick read-only answers (90s timeout) |
+| Research | "Research how X works" | Deep analysis, output to chat + saves to `.agent/research/` |
+| Planning | "Plan how to add X" | Creates plan with Execute/Cancel buttons |
+| Tasks | "Add a logout button" | Confirms, executes with PR |
 
 **Default behavior**: Ambiguous messages now default to Chat mode instead of Task, preventing accidental PRs.
 
@@ -154,7 +149,6 @@ The `--autopilot` flag controls automation behavior, not project environments:
 | `prod` | Yes | Yes | CI + human approval required |
 
 ```bash
-# Examples
 pilot start --autopilot=dev --telegram --github    # YOLO mode
 pilot start --autopilot=stage --telegram --github  # Balanced (recommended)
 pilot start --autopilot=prod --telegram --github   # Safe, manual approval
@@ -169,200 +163,129 @@ pilot start --autopilot=prod --telegram --github   # Safe, manual approval
 | Email Alerts | Implemented, untested |
 | PagerDuty | Implemented, untested |
 
+---
+
 ## Active Work
 
 **Source of truth: GitHub Issues with `pilot` label**
 
 ```bash
-# See Pilot's queue
 gh issue list --label pilot --state open
-
-# See what's in progress
 gh issue list --label pilot-in-progress --state open
-
-# See open PRs from Pilot
-gh pr list --author "@me" --state open
+gh pr list --state open
 ```
 
-### In Progress
+### Stability Plan (Priority)
+
+**Full plan: `.agent/tasks/STABILITY-PLAN.md`**
+
+Goal: Raise autonomous reliability from 3/10 to 8/10. Three phases:
+
+**Phase 1 — Stop the Bleeding (P0):**
+| Issue | Fix | Key File |
+|-------|-----|----------|
+| GH-718 | Clean stale `pilot-failed` labels + clear processed map | `cleanup.go`, `poller.go` |
+| GH-719 | Per-PR circuit breaker (not global) | `controller.go` |
+| GH-720 | Retry with backoff on GitHub API calls | new `retry.go` |
+| GH-721 | Hard fail on branch switch failure | `runner.go` |
+| GH-722 | Detect rate limits, retry with backoff | `runner.go`, `main.go` |
+
+**Phase 2 — Prevent Cascading Failures (P1):**
+| Issue | Fix | Key File |
+|-------|-----|----------|
+| GH-723 | Sequential sub-issue execution (merge-then-next) | `epic.go` |
+| GH-724 | Detect merge conflicts before CI wait | `controller.go` |
+| GH-725 | Auto-rebase PRs on simple conflicts | `controller.go` |
+
+**Phase 3 — Resilience (P2):**
+| Issue | Fix | Key File |
+|-------|-----|----------|
+| GH-726 | Persist autopilot state to SQLite | new `state_store.go` |
+| GH-727 | LLM complexity classifier (supersedes GH-665) | `decomposer.go` |
+| GH-728 | Failure metrics + alerting dashboard | new `metrics.go` |
+
+### Slack Socket Mode (Remaining)
 
 | Issue | What | Status |
 |-------|------|--------|
-| GH-642 | Slack Socket Mode WebSocket client | Pilot executing |
-| GH-643 | Slack config + `--slack` CLI flag | Queued (parallel) |
-| GH-644 | Extract shared intent package | Queued (parallel) |
-| GH-650 | Slack handler with 5 interaction modes | Blocked by 642+644 |
+| GH-644 | Extract shared intent package | Queued |
+| GH-650 | Slack handler with 5 interaction modes | Blocked by 644 |
 | GH-651 | Slack MemberResolver RBAC | Blocked by 650 |
 | GH-652 | Wire Slack into pilot.go + main.go | Blocked by all above |
-| GH-663 | Rate-limit detection + auto-retry | Queued |
-| GH-664 | `no-decompose` label + threshold fix | Queued |
-| GH-665 | LLM-based complexity detection (Haiku) | Queued |
-| GH-671 | Fix stale `pilot-failed` blocking queue | Queued |
 
-### Backlog (Create issues as needed)
+### Backlog
 
 | Priority | Topic | Why |
 |----------|-------|-----|
-| ~~P2~~ | ~~Cost controls~~ | Wired in v0.21.3 (GH-539) |
-| ~~P2~~ | ~~Approval workflows~~ | Fully wired: manager + Telegram/Slack/GitHub handlers + autopilot prod gate |
-| 🟡 P2 | Docs v2: Nextra 4 migration | Attempted, failed — docs still on Nextra v2 |
-| 🟡 P3 | Docs refresh for 107 features | Teams RBAC, approval rules not documented |
-
-**For accurate feature status, see:** `.agent/system/FEATURE-MATRIX.md`
+| P2 | Docs v2: Nextra 4 migration | Attempted, failed — docs still on Nextra v2 |
+| P3 | Docs refresh for 107 features | Teams RBAC, approval rules not documented |
 
 ---
 
-## Completed (2026-02-09, session 2)
+## Completed Log
+
+### 2026-02-10
+
+| Item | What |
+|------|------|
+| **v0.29.0** | Socket Mode Listen() with auto-reconnect on SocketModeClient |
+| **v0.28.0** | `--slack` CLI flag, app_token validation, Socket Mode handler tests |
+| **v0.27.0** | Parallel execution, Socket Mode core (OpenConnection, events, handler), config fields |
+| PR cleanup | Closed 3 superseded PRs (#712, #713, #729), merged 3 (#717, #730, #732) |
+| Issue cleanup | Closed 11 Slack sub-issues (GH-704-716), all resolved or superseded |
+
+### 2026-02-09
 
 | Item | What |
 |------|------|
 | **Slack connected** | Bot verified, 5 notification samples sent to #engineering, config updated |
-| **v0.26.1** | Release: wire Email/Webhook/PagerDuty alert channels into all 3 dispatcher blocks |
-| **Release notes** | Curated notes for v0.25.0, v0.26.0, v0.26.1 |
-| **Parallel execution** | Fixed `checkForNewIssues()` — was synchronous, now uses goroutines + semaphore (`max_concurrent`) |
-| **6 Slack issues** | GH-642–652: full Slack bidirectional communication plan (Socket Mode + 5 interaction modes) |
-| **3 stability issues** | GH-663 (rate-limit retry), GH-664 (no-decompose label), GH-665 (LLM complexity) |
-| **GH-671** | Fix stale `pilot-failed` label blocking poller queue |
-| Cleanup | Closed 5 junk sub-issues + 5 junk PRs from decomposition cascade |
+| **v0.26.1** | Wire Email/Webhook/PagerDuty alert channels into all 3 dispatcher blocks |
+| **Parallel execution** | Fixed `checkForNewIssues()` — was synchronous, now goroutines + semaphore |
+| **Stability plan** | 11 issues (GH-718-728) across 3 phases for reliability 3/10 to 8/10 |
+| **v0.26.0** | Teams RBAC, rule-based approvals, 107/107 features |
+| **v0.25.0** | Email + PagerDuty alerts, Jira webhooks, outbound webhooks, tunnel flag, 32 health tests |
+| Docs fixes | Pin Nextra v2 deps, fix MDX compile error, OG metas, deploy tag decoupling |
 
-## Completed (2026-02-09, session 1)
-
-| Item | What |
-|------|------|
-| Docs fix | Pin Nextra v2 deps (~2.13.0, ~14.2.0) — caret range resolved to v4, broke build |
-| Docs fix | Fix MDX list-in-JSX compile error in quickstart.mdx |
-| Docs | Dashboard preview screenshot on homepage |
-| Docs | OG metas: og:image, twitter:card summary_large_image, fix property= attrs |
-| Docs | Banner updated to v0.24 |
-| CI fix | Docs sync: decouple deploy tag from content diff, delete+recreate prod tag |
-| Housekeeping | Closed GH-625, GH-626, stale docs PRs #628/#630/#631 |
-| **v0.25.0** | Release: email + PagerDuty alerts, Jira webhooks, outbound webhooks, tunnel flag, 32 health tests |
-| **v0.26.0** | Release: teams RBAC, rule-based approvals, 107/107 features |
-
-## Completed (2026-02-07)
+### 2026-02-07
 
 | Item | What |
 |------|------|
 | **v0.24.1** | Rich PR comments with execution metrics + fix autopilot release conflict (tag-only) |
 | **v0.24.0** | Wire intent judge into execution pipeline (GH-624) |
-| GH-626 | PR comments include duration, token count, cost, model used |
-| GH-625 | LoadAgentsFile — read AGENTS.md from project directory |
-| GH-624 | Intent judge wired into executor pipeline for task classification |
-| **v0.23.3** | fix(executor): CommitSHA git fallback — recover SHA when output parsing misses it |
+| **v0.23.3** | CommitSHA git fallback — recover SHA when output parsing misses it |
 | **v0.23.2** | Docs: config reference (1511 lines), integrations pages, auto-deploy, community page |
-| **v0.23.1** | fix(autopilot): wire sub-issue PR callback for epic execution (GH-588) |
-| **v0.22.1** | Dashboard epic-aware HISTORY panel, docs pages (why-pilot, how-it-works, model-routing, navigator, approvals) |
-| GH-620 | CountNewCommits() + fallback in runner.go — prevents "no changes" false failures |
-| GH-616 | Integration docs: Linear, GitLab, Slack, Jira (680 lines, never committed) |
-| GH-610 | Fix sync-docs.yml nested docker dir bug + integrations nav |
-| GH-611 | Auto-trigger GitLab deploy via prod-{version} tag |
-| GH-617 | Config reference, autopilot environments guide, internal ref cleanup |
-| GH-618 | Community page with license summary |
-| GH-588 | Epic sub-issue PRs now registered with autopilot controller for CI monitoring + auto-merge |
-| GH-498 | Epic-aware HISTORY: CompletedTask extended, groupedHistory(), renderHistory() with progress bars |
+| **v0.23.1** | Wire sub-issue PR callback for epic execution (GH-588) |
+| **v0.22.1** | Dashboard epic-aware HISTORY panel |
 
-## Completed (2026-02-06)
+### 2026-02-06
 
 | Item | What |
 |------|------|
 | Docs site | Nextra v2 complete rewrite: homepage, why-pilot vision doc, quickstart guide |
-| QuantFlow landing | `/pilot` case study page with 10 sections, added to case-studies-config |
-| GitLab sync | GitHub Action syncs `docs/` → `quant-flow/pilot-docs` GitLab repo on merge |
-| Docker deploy | Dockerfile + `.gitlab-ci.yml` for VPS deployment at `pilot.quantflow.studio` |
-| CONTRIBUTING.md | Dev setup, code standards, PR process, BSL 1.1 contributor note |
-| FUNDING.yml | GitHub Sponsors button enabled |
+| QuantFlow landing | `/pilot` case study page, added to case-studies-config |
+| GitLab sync | GitHub Action syncs `docs/` to `quant-flow/pilot-docs` GitLab repo on merge |
+| CONTRIBUTING.md | Dev setup, code standards, PR process, BSL 1.1 note |
 
-## Completed (2026-02-05)
+### 2026-02-05
 
 | Item | What |
 |------|------|
-| **v0.20.0** | Default model → Opus 4.6, effort routing, dashboard card padding |
-| **v0.19.2** | Dashboard: remove card gaps, rename TASKS → QUEUE |
-| **v0.19.1** | Autopilot CI fix targets original branch via metadata (GH-489) |
-| **v0.19.0** | Dashboard polish: muted colors, tighter card gap, sparkline baseline fix |
-| **v0.18.1** | Release packaging fix: `make package` with COPYFILE_DISABLE |
+| **v0.20.0** | Default model to Opus 4.6, effort routing, dashboard card padding |
+| **v0.19.x** | Dashboard polish, autopilot CI fix targets original branch, release packaging fix |
 | **v0.18.0** | Dashboard cards, data wiring, autopilot stale SHA fix |
-| GH-489 | Embed branch metadata in CI fix issues, parse in poller |
-| GH-471 | Dashboard: reduce card gap, fix sparkline flat-line, mute colors |
-| GH-468 | Makefile: package tar.gz with COPYFILE_DISABLE + checksums |
-| GH-465 | Close failed PR to unblock sequential poller |
-| GH-464 | Fix CI failure from PR #463 (unused formatNumber) |
-| GH-459 | Wire data loading, update handlers, replace renderMetrics |
-| GH-458 | Mini-card builder + 3 card renderers |
-| GH-457 | Always refresh HeadSHA from GitHub before CI check |
 
-## Completed (2026-02-03)
+### 2026-02-03 and earlier
 
 | Item | What |
 |------|------|
-| **v0.13.2** | Config documentation (LLM classifier, rate limit) |
-| **v0.13.1** | Dashboard SQLite persistence fix |
-| **v0.13.0** | Major feature release |
-| GH-358 | LLM-based intent classification (Claude Haiku) |
-| GH-359 | GoReleaser + auto-changelog |
-| GH-360 | Docs version sync script |
-| GH-361 | MkDocs documentation site |
-| GH-362 | Pre-commit verification instructions |
-| GH-363 | Auto-enable build gate |
-| GH-364 | Self-review phase before PR |
-| GH-366 | Nextra documentation site |
-| GH-369 | Hot reload on release update |
-| GH-372 | Remove deprecated CLI flags |
-| - | SQLite WAL mode for concurrent access |
-
-## Completed (2026-02-01)
-
-| Item | What |
-|------|------|
-| **v0.6.0** | Chat-like Telegram Communication |
-| GH-290 | Add Research, Planning, Chat intent types |
-| GH-291 | Add handleResearch() for deep analysis |
-| GH-292 | Add handlePlanning() with Execute/Cancel buttons |
-| GH-293 | Add handleChat() for conversational responses |
-| GH-294 | Update greeting to show all interaction modes |
-| GH-298 | Fix budget enforcer tests on 1st of month |
-
-## Completed (2026-01-30)
-
-| Item | What |
-|------|------|
-| **v0.4.2** | macOS upgrade fix (auto quarantine removal + signing) |
-| **v0.4.1** | Autopilot PR scanning release |
-| GH-257 | Autopilot: Scan existing PRs on startup |
-| GH-249 | CI: Add iteration limit to ci-autofix workflow |
-| **v0.4.0** | Asana, Decomposition & Research release |
-| GH-248 | Warn when quality gates not configured |
-| GH-247 | Remove dev environment CI skip |
-| GH-246 | Add pre-merge CI verification |
-| GH-245 | Telegram delivery channel for briefs |
-| GH-244 | Wire brief scheduler to pilot start |
-| **v0.3.3** | Homebrew formula fix release |
-| GH-185 | Fix Homebrew formula validation error |
-| GH-204 | Improve install.sh: Auto-configure PATH |
-| GH-194 | Fix: Stop sequential processing on PR conflicts |
-
-## Completed (2026-01-29)
-
-| Item | What |
-|------|------|
-| **v0.3.2** | Autopilot superfeature release |
-| GH-54 | Speed Optimization (complexity detection, model routing, timeout) |
-| GH-198 | Wire autopilot controller into polling mode |
-| GH-199 | Add Telegram notifications for autopilot events |
-| GH-200 | Unit tests for autopilot components |
-| GH-201 | Add dashboard panel for autopilot status |
-| GH-203 | Fix install.sh URL (was 404) |
-
-## Completed (2026-01-28)
-
-| Item | What |
-|------|------|
-| GH-52 | Full codebase audit → FEATURE-MATRIX.md, ARCHITECTURE.md |
-| GH-51 | Cleanup → 40+ TASK files archived |
-| GH-46 | Task queue with per-project coordination |
-| Workflow | Plan-only mode established |
+| **v0.13.x** | LLM intent classification, GoReleaser, self-review, hot reload, SQLite WAL |
+| **v0.6.0** | Chat-like Telegram Communication (5 interaction modes) |
+| **v0.4.x** | Autopilot PR scanning, macOS upgrade fix, Asana + decomposition |
+| **v0.3.x** | Autopilot superfeature, Homebrew formula, install.sh fixes |
 
 Full archive: `.agent/tasks/archive/`
+
+---
 
 ## Project Structure
 
@@ -395,6 +318,8 @@ pilot/
 - `internal/adapters/linear/client.go` - Linear GraphQL client
 - `internal/adapters/linear/webhook.go` - Webhook handler
 - `internal/adapters/slack/notifier.go` - Slack notifications
+- `internal/adapters/slack/socketmode.go` - Socket Mode client + Listen()
+- `internal/adapters/slack/events.go` - Event types + envelope parsing
 
 ### Executor
 - `internal/executor/runner.go` - Claude Code process spawner with stream-json parsing + slog logging
@@ -406,7 +331,7 @@ pilot/
 - `internal/alerts/engine.go` - Event processing, rule evaluation, cooldowns
 - `internal/alerts/dispatcher.go` - Multi-channel alert dispatch
 - `internal/alerts/channels.go` - Slack, Telegram, Email, Webhook, PagerDuty
-- `internal/alerts/adapter.go` - EngineAdapter bridges executor → alerts engine
+- `internal/alerts/adapter.go` - EngineAdapter bridges executor to alerts engine
 
 ### Dashboard
 - `internal/dashboard/tui.go` - Bubbletea TUI with token usage, cost, task history
@@ -421,32 +346,20 @@ pilot/
 
 ## Development Workflow
 
-⚠️ **NEVER use local builds. Always release → upgrade.**
+**NEVER use local builds. Always release then upgrade.**
 
 ```bash
-# Run tests
 make test
-
-# Format & lint
 make fmt && make lint
 ```
 
-## Release Workflow (Required for Every Change)
+## Release Workflow
 
 ```bash
-# 1. Build all platform binaries
-make build-all
+# Tag-only: GoReleaser CI handles the rest
+git tag v0.X.Y && git push origin v0.X.Y
 
-# 2. Create GitHub release
-gh release create v0.X.Y \
-  bin/pilot-darwin-amd64 \
-  bin/pilot-darwin-arm64 \
-  bin/pilot-linux-amd64 \
-  bin/pilot-linux-arm64 \
-  --title "v0.X.Y" \
-  --notes "Release notes..."
-
-# 3. Upgrade to new version
+# Upgrade to new version
 pilot upgrade
 ```
 
@@ -455,7 +368,7 @@ pilot upgrade
 curl -fsSL https://raw.githubusercontent.com/alekspetrov/pilot/main/install.sh | bash
 ```
 
-⚠️ **Known Issue (GH-204):** Install script doesn't auto-configure PATH. Users must add `~/.local/bin` to PATH or open new terminal.
+**Known Issue (GH-204):** Install script doesn't auto-configure PATH. Users must add `~/.local/bin` to PATH or open new terminal.
 
 ## Configuration
 
@@ -477,12 +390,13 @@ Required environment variables:
 - Command: `claude -p "prompt" --verbose --output-format stream-json --dangerously-skip-permissions`
 - Working dir: Project path from config
 - Progress: Phase-based updates parsed from stream-json events
-- Phases: Starting → Exploring → Implementing → Testing → Committing → Completed
+- Phases: Starting, Exploring, Implementing, Testing, Committing, Completed
 - Alerts: Task lifecycle events emitted via `AlertEventProcessor` interface
 
 ### Slack
 - Notifications: Task started, progress, completed, failed
 - Handler: `internal/adapters/slack/notifier.go`
+- Socket Mode: `internal/adapters/slack/socketmode.go` — Listen() with auto-reconnect
 
 ## CLI Flags
 
@@ -491,6 +405,7 @@ Required environment variables:
 - `--dashboard` - Launch TUI dashboard with live task monitoring
 - `--telegram` - Enable Telegram polling
 - `--github` - Enable GitHub polling
+- `--slack` - Enable Slack Socket Mode
 - `--daemon` - Run in background
 - `--sequential` - Wait for PR merge before next issue (default)
 
@@ -504,9 +419,9 @@ Required environment variables:
 `pilot task` shows real-time visual progress:
 
 ```
-⏳ Executing task with Claude Code...
+Executing task with Claude Code...
 
-   Implementing   [████████████░░░░░░░░] 60%  TASK-34473  45s
+   Implementing   [============........] 60%  TASK-34473  45s
 
    [14:35:15] Claude Code initialized
    [14:35:18] Analyzing codebase...
@@ -514,8 +429,8 @@ Required environment variables:
    [14:35:40] Installing dependencies...
    [14:35:55] Committing changes...
 
-───────────────────────────────────────
-✅ Task completed successfully!
+---
+Task completed successfully!
    Duration: 52s
 ```
 
@@ -538,54 +453,54 @@ Required environment variables:
 | Analyzing | `WORKFLOW CHECK` | 12% |
 | Task Mode | `TASK MODE ACTIVATED` | 15% |
 | Loop Mode | `nav-loop` skill | 20% |
-| Research | `PHASE: → RESEARCH` | 25% |
-| Implement | `PHASE: → IMPL` | 50% |
-| Verify | `PHASE: → VERIFY` | 80% |
+| Research | `PHASE: -> RESEARCH` | 25% |
+| Implement | `PHASE: -> IMPL` | 50% |
+| Verify | `PHASE: -> VERIFY` | 80% |
 | Checkpoint | `.agent/.context-markers/` write | 88% |
 | Completing | `EXIT_SIGNAL: true` | 92% |
 | Complete | `LOOP COMPLETE` / `TASK MODE COMPLETE` | 95% |
 
 Navigator status blocks provide real progress via `Progress: N%` field.
 
-### Execution Report (GH-49)
+### Execution Report
 
 After task completion, `pilot task` displays a structured execution report:
 
 ```
-───────────────────────────────────────
-📊 EXECUTION REPORT
-───────────────────────────────────────
+---
+EXECUTION REPORT
+---
 Task:       GH-47
-Status:     ✅ Success
+Status:     Success
 Duration:   3m 42s
 Branch:     pilot/GH-47
 Commit:     a1b2c3d
 PR:         #48
 
-🧭 Navigator: Active
+Navigator: Active
    Mode:    nav-task
 
-📈 Phases:
+Phases:
   Research     45s   (20%)
   Implement    2m    (54%)
   Verify       57s   (26%)
 
-📁 Files Changed:
+Files Changed:
   M runner.go
   A quality.go
   M TASK-20.md
 
-💰 Tokens:
+Tokens:
   Input:    45k
   Output:   12k
   Cost:     ~$0.82
-  Model:    claude-sonnet-4-5
-───────────────────────────────────────
+  Model:    claude-opus-4-6
+---
 ```
 
 Navigator detection shown at start:
-- `🧭 Navigator: ✓ detected (.agent/ exists)` if Navigator initialized
-- `⚠️ Navigator: not found (running raw Claude Code)` otherwise
+- `Navigator: detected (.agent/ exists)` if Navigator initialized
+- `Navigator: not found (running raw Claude Code)` otherwise
 
 ## Documentation Loading Strategy
 

@@ -242,7 +242,7 @@ type TimeoutConfig struct {
 //	    trivial: "low"     # Fast, minimal token spend
 //	    simple: "medium"   # Balanced
 //	    medium: "high"     # Standard (default behavior)
-//	    complex: "max"     # Deepest reasoning (Opus 4.6 only)
+//	    complex: "max"     # Deepest reasoning
 type EffortRoutingConfig struct {
 	// Enabled controls whether effort routing is active.
 	// When false (default), effort is not set (uses model default of "high").
@@ -349,8 +349,8 @@ func DefaultBackendConfig() *BackendConfig {
 
 // DefaultModelRoutingConfig returns default model routing configuration.
 // Model routing is disabled by default; when enabled, uses Haiku for trivial
-// tasks (speed) and Opus 4.6 for simple/medium/complex tasks (same price as
-// Sonnet but higher capability).
+// tasks (speed) and Opus 4.5 for simple/medium/complex tasks (highest
+// capability).
 //
 // Complexity detection criteria:
 //   - Trivial: Single-file changes, typos, logging, renames
@@ -361,9 +361,9 @@ func DefaultModelRoutingConfig() *ModelRoutingConfig {
 	return &ModelRoutingConfig{
 		Enabled: false,
 		Trivial: "claude-haiku",
-		Simple:  "claude-opus-4-6",
-		Medium:  "claude-opus-4-6",
-		Complex: "claude-opus-4-6",
+		Simple:  "claude-opus-4-5",
+		Medium:  "claude-opus-4-5",
+		Complex: "claude-opus-4-5",
 	}
 }
 

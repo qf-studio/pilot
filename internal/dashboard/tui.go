@@ -138,9 +138,10 @@ func (p *AutopilotPanel) View() string {
 
 		for _, pr := range prs {
 			icon := p.stageIcon(pr.Stage)
+			label := p.stageLabel(pr.Stage)
 			// Show PR number and stage with time in stage
 			timeInStage := p.formatDuration(time.Since(pr.CreatedAt))
-			prLine := fmt.Sprintf("  %s #%d: %s (%s)", icon, pr.PRNumber, pr.Stage, timeInStage)
+			prLine := fmt.Sprintf("  %s #%d: %s (%s)", icon, pr.PRNumber, label, timeInStage)
 			content.WriteString(prLine)
 			content.WriteString("\n")
 
@@ -165,7 +166,7 @@ func (p *AutopilotPanel) View() string {
 	if failures > 0 {
 		content.WriteString("\n")
 		failStr := fmt.Sprintf("%d/%d", failures, cfg.MaxFailures)
-		content.WriteString(dotLeaderStyled("⚠️ Failures", failStr, warningStyle, w))
+		content.WriteString(dotLeaderStyled("Failures", failStr, warningStyle, w))
 	}
 
 	return renderPanel("AUTOPILOT", content.String())
@@ -195,29 +196,59 @@ func truncateString(s string, maxLen int) string {
 	return s[:maxLen-3] + "..."
 }
 
-// stageIcon returns an emoji icon for the PR stage.
+// stageIcon returns an ASCII indicator for the PR stage.
 func (p *AutopilotPanel) stageIcon(stage autopilot.PRStage) string {
 	switch stage {
 	case autopilot.StagePRCreated:
-		return "📝"
+		return "+"
 	case autopilot.StageWaitingCI:
-		return "⏳"
+		return "~"
 	case autopilot.StageCIPassed:
-		return "✅"
+		return "*"
 	case autopilot.StageCIFailed:
-		return "❌"
+		return "x"
 	case autopilot.StageAwaitApproval:
-		return "👤"
+		return "?"
 	case autopilot.StageMerging:
-		return "🔀"
+		return ">"
 	case autopilot.StageMerged:
-		return "✅"
+		return "*"
 	case autopilot.StagePostMergeCI:
-		return "🚀"
+		return "~"
+	case autopilot.StageReleasing:
+		return "^"
 	case autopilot.StageFailed:
-		return "💥"
+		return "!"
 	default:
-		return "❓"
+		return "-"
+	}
+}
+
+// stageLabel returns a human-readable label for the PR stage.
+func (p *AutopilotPanel) stageLabel(stage autopilot.PRStage) string {
+	switch stage {
+	case autopilot.StagePRCreated:
+		return "PR Created"
+	case autopilot.StageWaitingCI:
+		return "Waiting CI"
+	case autopilot.StageCIPassed:
+		return "CI Passed"
+	case autopilot.StageCIFailed:
+		return "CI Failed"
+	case autopilot.StageAwaitApproval:
+		return "Awaiting Approval"
+	case autopilot.StageMerging:
+		return "Merging"
+	case autopilot.StageMerged:
+		return "Merged"
+	case autopilot.StagePostMergeCI:
+		return "Post-Merge CI"
+	case autopilot.StageReleasing:
+		return "Releasing"
+	case autopilot.StageFailed:
+		return "Failed"
+	default:
+		return string(stage)
 	}
 }
 
