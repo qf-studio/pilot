@@ -24,16 +24,17 @@ type Settings struct {
 
 // Member represents a team member
 type Member struct {
-	ID         string    `json:"id" yaml:"id"`
-	TeamID     string    `json:"team_id" yaml:"team_id"`
-	Email      string    `json:"email" yaml:"email"`
-	Name       string    `json:"name,omitempty" yaml:"name,omitempty"`
-	GitHubUser string    `json:"github_user,omitempty" yaml:"github_user,omitempty"` // GitHub username for identity mapping (GH-634)
-	TelegramID int64     `json:"telegram_id,omitempty" yaml:"telegram_id,omitempty"` // Telegram user ID for identity mapping (GH-634)
-	Role       Role      `json:"role" yaml:"role"`
-	Projects   []string  `json:"projects,omitempty" yaml:"projects,omitempty"` // Empty = all projects
-	JoinedAt   time.Time `json:"joined_at" yaml:"joined_at"`
-	InvitedBy  string    `json:"invited_by,omitempty" yaml:"invited_by,omitempty"`
+	ID          string    `json:"id" yaml:"id"`
+	TeamID      string    `json:"team_id" yaml:"team_id"`
+	Email       string    `json:"email" yaml:"email"`
+	Name        string    `json:"name,omitempty" yaml:"name,omitempty"`
+	GitHubUser  string    `json:"github_user,omitempty" yaml:"github_user,omitempty"`   // GitHub username for identity mapping (GH-634)
+	TelegramID  int64     `json:"telegram_id,omitempty" yaml:"telegram_id,omitempty"`   // Telegram user ID for identity mapping (GH-634)
+	SlackUserID string    `json:"slack_user_id,omitempty" yaml:"slack_user_id,omitempty"` // Slack user ID for identity mapping (GH-783)
+	Role        Role      `json:"role" yaml:"role"`
+	Projects    []string  `json:"projects,omitempty" yaml:"projects,omitempty"` // Empty = all projects
+	JoinedAt    time.Time `json:"joined_at" yaml:"joined_at"`
+	InvitedBy   string    `json:"invited_by,omitempty" yaml:"invited_by,omitempty"`
 }
 
 // Role defines permission levels within a team

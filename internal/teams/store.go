@@ -73,6 +73,9 @@ func (s *Store) migrate() error {
 		`CREATE INDEX IF NOT EXISTS idx_team_members_email ON team_members(email)`,
 		`CREATE INDEX IF NOT EXISTS idx_team_members_github_user ON team_members(github_user)`,
 		`CREATE INDEX IF NOT EXISTS idx_team_members_telegram_id ON team_members(telegram_id)`,
+		// GH-783: Add slack_user_id column for Slack identity mapping
+		`ALTER TABLE team_members ADD COLUMN slack_user_id TEXT`,
+		`CREATE INDEX IF NOT EXISTS idx_team_members_slack_user_id ON team_members(slack_user_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_team_audit_log_team ON team_audit_log(team_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_team_audit_log_created ON team_audit_log(created_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_team_audit_log_actor ON team_audit_log(actor_id)`,
@@ -197,14 +200,14 @@ func (s *Store) ListTeams() ([]*Team, error) {
 func (s *Store) AddMember(member *Member) error {
 	projects, _ := json.Marshal(member.Projects)
 	_, err := s.db.Exec(`
-		INSERT INTO team_members (id, team_id, email, name, github_user, telegram_id, role, projects, joined_at, invited_by)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, member.ID, member.TeamID, member.Email, member.Name, member.GitHubUser, member.TelegramID, string(member.Role), string(projects), member.JoinedAt, member.InvitedBy)
+		INSERT INTO team_members (id, team_id, email, name, github_user, telegram_id, slack_user_id, role, projects, joined_at, invited_by)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, member.ID, member.TeamID, member.Email, member.Name, member.GitHubUser, member.TelegramID, member.SlackUserID, string(member.Role), string(projects), member.JoinedAt, member.InvitedBy)
 	return err
 }
 
 // memberColumns is the standard set of columns selected from team_members.
-const memberColumns = `id, team_id, email, name, github_user, telegram_id, role, projects, joined_at, invited_by`
+const memberColumns = `id, team_id, email, name, github_user, telegram_id, slack_user_id, role, projects, joined_at, invited_by`
 
 // GetMember retrieves a member by ID
 func (s *Store) GetMember(id string) (*Member, error) {
@@ -252,6 +255,23 @@ func (s *Store) GetMembersByTelegramID(telegramID int64) ([]*Member, error) {
 	return s.scanMembers(rows)
 }
 
+// GetMemberBySlackUserID retrieves a member by Slack user ID within a team (GH-783).
+func (s *Store) GetMemberBySlackUserID(teamID, slackUserID string) (*Member, error) {
+	row := s.db.QueryRow(`SELECT `+memberColumns+` FROM team_members WHERE team_id = ? AND slack_user_id = ?`, teamID, slackUserID)
+	return s.scanMember(row)
+}
+
+// GetMembersBySlackUserID retrieves all memberships for a Slack user ID (across teams) (GH-783).
+func (s *Store) GetMembersBySlackUserID(slackUserID string) ([]*Member, error) {
+	rows, err := s.db.Query(`SELECT `+memberColumns+` FROM team_members WHERE slack_user_id = ? AND slack_user_id != ''`, slackUserID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	return s.scanMembers(rows)
+}
+
 // GetMembersByEmail retrieves all memberships for an email (across teams)
 func (s *Store) GetMembersByEmail(email string) ([]*Member, error) {
 	rows, err := s.db.Query(`SELECT `+memberColumns+` FROM team_members WHERE email = ?`, email)
@@ -278,9 +298,9 @@ func (s *Store) ListMembers(teamID string) ([]*Member, error) {
 func (s *Store) UpdateMember(member *Member) error {
 	projects, _ := json.Marshal(member.Projects)
 	_, err := s.db.Exec(`
-		UPDATE team_members SET name = ?, github_user = ?, telegram_id = ?, role = ?, projects = ?
+		UPDATE team_members SET name = ?, github_user = ?, telegram_id = ?, slack_user_id = ?, role = ?, projects = ?
 		WHERE id = ?
-	`, member.Name, member.GitHubUser, member.TelegramID, string(member.Role), string(projects), member.ID)
+	`, member.Name, member.GitHubUser, member.TelegramID, member.SlackUserID, string(member.Role), string(projects), member.ID)
 	return err
 }
 
@@ -302,11 +322,11 @@ func (s *Store) CountMembersByRole(teamID string, role Role) (int, error) {
 // scanMember scans a single member row
 func (s *Store) scanMember(row *sql.Row) (*Member, error) {
 	var member Member
-	var name, ghUser, projects, invitedBy sql.NullString
+	var name, ghUser, slackUserID, projects, invitedBy sql.NullString
 	var telegramID sql.NullInt64
 	var roleStr string
 
-	if err := row.Scan(&member.ID, &member.TeamID, &member.Email, &name, &ghUser, &telegramID, &roleStr, &projects, &member.JoinedAt, &invitedBy); err != nil {
+	if err := row.Scan(&member.ID, &member.TeamID, &member.Email, &name, &ghUser, &telegramID, &slackUserID, &roleStr, &projects, &member.JoinedAt, &invitedBy); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
@@ -323,6 +343,9 @@ func (s *Store) scanMember(row *sql.Row) (*Member, error) {
 	if telegramID.Valid {
 		member.TelegramID = telegramID.Int64
 	}
+	if slackUserID.Valid {
+		member.SlackUserID = slackUserID.String
+	}
 	if invitedBy.Valid {
 		member.InvitedBy = invitedBy.String
 	}
@@ -338,11 +361,11 @@ func (s *Store) scanMembers(rows *sql.Rows) ([]*Member, error) {
 	var members []*Member
 	for rows.Next() {
 		var member Member
-		var name, ghUser, projects, invitedBy sql.NullString
+		var name, ghUser, slackUserID, projects, invitedBy sql.NullString
 		var telegramID sql.NullInt64
 		var roleStr string
 
-		if err := rows.Scan(&member.ID, &member.TeamID, &member.Email, &name, &ghUser, &telegramID, &roleStr, &projects, &member.JoinedAt, &invitedBy); err != nil {
+		if err := rows.Scan(&member.ID, &member.TeamID, &member.Email, &name, &ghUser, &telegramID, &slackUserID, &roleStr, &projects, &member.JoinedAt, &invitedBy); err != nil {
 			return nil, err
 		}
 
@@ -355,6 +378,9 @@ func (s *Store) scanMembers(rows *sql.Rows) ([]*Member, error) {
 		}
 		if telegramID.Valid {
 			member.TelegramID = telegramID.Int64
+		}
+		if slackUserID.Valid {
+			member.SlackUserID = slackUserID.String
 		}
 		if invitedBy.Valid {
 			member.InvitedBy = invitedBy.String
