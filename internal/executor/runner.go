@@ -2012,6 +2012,28 @@ func (r *Runner) buildSelfReviewPrompt(task *Task) string {
 	sb.WriteString("- Search for `func.*methodName` to verify the method exists\n")
 	sb.WriteString("- If method doesn't exist, implement it\n\n")
 
+	// GH-652 fix: Check that files mentioned in issue were actually modified
+	sb.WriteString("### 5. Issue-to-Changes Alignment Check\n")
+	sb.WriteString("Compare the issue title/body with your actual changes:\n\n")
+	sb.WriteString("**Issue Title:** " + task.Title + "\n\n")
+	if task.Description != "" {
+		// Truncate long descriptions to avoid prompt bloat
+		desc := task.Description
+		if len(desc) > 500 {
+			desc = desc[:500] + "..."
+		}
+		sb.WriteString("**Issue Description (excerpt):** " + desc + "\n\n")
+	}
+	sb.WriteString("Run:\n")
+	sb.WriteString("```bash\ngit diff --name-only HEAD~1\n```\n\n")
+	sb.WriteString("Check for MISMATCHES:\n")
+	sb.WriteString("- If the issue title mentions specific files (e.g., 'wire X into main.go'), verify those files appear in the diff\n")
+	sb.WriteString("- If issue says 'and main.go' but main.go has NO changes, THIS IS INCOMPLETE\n")
+	sb.WriteString("- Common patterns: 'wire into X', 'add to Y', 'modify Z' — the named files MUST be modified\n\n")
+	sb.WriteString("If files mentioned in the issue are NOT in the diff:\n")
+	sb.WriteString("- Output `INCOMPLETE: Issue mentions <file> but it was not modified`\n")
+	sb.WriteString("- FIX the issue by making the required changes to those files\n\n")
+
 	sb.WriteString("### Actions\n")
 	sb.WriteString("- If you find issues: FIX them and commit the fix\n")
 	sb.WriteString("- Output `REVIEW_FIXED: <description>` if you fixed something\n")
