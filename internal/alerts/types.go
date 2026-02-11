@@ -39,6 +39,9 @@ const (
 
 	// Deadlock detection (GH-849)
 	AlertTypeDeadlock AlertType = "deadlock"
+
+	// Escalation alerts (GH-848)
+	AlertTypeEscalation AlertType = "escalation"
 )
 
 // Alert represents an alert event
@@ -92,6 +95,9 @@ type RuleCondition struct {
 
 	// Deadlock detection (GH-849)
 	DeadlockTimeout time.Duration `yaml:"deadlock_timeout"` // Max time with no state transitions
+
+	// Escalation conditions (GH-848)
+	EscalationRetries int `yaml:"escalation_retries"` // Failures before escalation (default 3)
 }
 
 // AlertConfig holds the main alerting configuration
@@ -313,6 +319,19 @@ func defaultRules() []AlertRule {
 			Channels:    []string{},
 			Cooldown:    1 * time.Hour,
 			Description: "Alert when autopilot has no state transitions for 1 hour",
+		},
+		// Escalation rule (GH-848)
+		{
+			Name:    "escalation",
+			Type:    AlertTypeEscalation,
+			Enabled: true,
+			Condition: RuleCondition{
+				EscalationRetries: 3,
+			},
+			Severity:    SeverityCritical,
+			Channels:    []string{}, // Will route to PagerDuty channels by severity
+			Cooldown:    1 * time.Hour,
+			Description: "Escalate to PagerDuty after repeated failures for the same source",
 		},
 	}
 }

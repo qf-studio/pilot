@@ -1890,3 +1890,485 @@ func TestEngine_ProcessEvent_QueueFull(t *testing.T) {
 
 	// Should not panic - events beyond capacity are dropped
 }
+
+// =============================================================================
+// Escalation Tests (GH-848)
+// =============================================================================
+
+func TestEngine_Escalation_AfterThreeFailures(t *testing.T) {
+	config := &AlertConfig{
+		Enabled: true,
+		Channels: []ChannelConfig{
+			{
+				Name:       "pagerduty",
+				Type:       "pagerduty",
+				Enabled:    true,
+				Severities: []Severity{SeverityCritical},
+			},
+		},
+		Rules: []AlertRule{
+			{
+				Name:    "escalation",
+				Type:    AlertTypeEscalation,
+				Enabled: true,
+				Condition: RuleCondition{
+					EscalationRetries: 3,
+				},
+				Severity:    SeverityCritical,
+				Channels:    []string{"pagerduty"},
+				Cooldown:    0,
+				Description: "Escalate after repeated failures",
+			},
+		},
+	}
+
+	mockCh := newMockChannel("pagerduty", "pagerduty")
+	dispatcher := NewDispatcher(config)
+	dispatcher.RegisterChannel(mockCh)
+
+	engine := NewEngine(config, WithDispatcher(dispatcher))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	_ = engine.Start(ctx)
+
+	source := "issue:GH-123"
+
+	// Send 3 failures for the same source
+	for i := 1; i <= 3; i++ {
+		engine.ProcessEvent(Event{
+			Type:      EventTypeTaskFailed,
+			TaskID:    "TASK-" + string(rune('0'+i)),
+			Project:   "/test/project",
+			Error:     "test error",
+			Metadata:  map[string]string{"source": source},
+			Timestamp: time.Now(),
+		})
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	alerts := mockCh.getAlerts()
+	if len(alerts) != 1 {
+		t.Errorf("expected 1 escalation alert, got %d", len(alerts))
+		return
+	}
+
+	alert := alerts[0]
+	if alert.Type != AlertTypeEscalation {
+		t.Errorf("expected alert type %s, got %s", AlertTypeEscalation, alert.Type)
+	}
+	if alert.Severity != SeverityCritical {
+		t.Errorf("expected severity %s, got %s", SeverityCritical, alert.Severity)
+	}
+	if alert.Source != source {
+		t.Errorf("expected source %s, got %s", source, alert.Source)
+	}
+	if alert.Metadata["retry_count"] != "3" {
+		t.Errorf("expected retry_count=3 in metadata, got %s", alert.Metadata["retry_count"])
+	}
+}
+
+func TestEngine_Escalation_NoEscalationBeforeThreshold(t *testing.T) {
+	config := &AlertConfig{
+		Enabled: true,
+		Channels: []ChannelConfig{
+			{
+				Name:       "pagerduty",
+				Type:       "pagerduty",
+				Enabled:    true,
+				Severities: []Severity{SeverityCritical},
+			},
+		},
+		Rules: []AlertRule{
+			{
+				Name:    "escalation",
+				Type:    AlertTypeEscalation,
+				Enabled: true,
+				Condition: RuleCondition{
+					EscalationRetries: 3,
+				},
+				Severity:    SeverityCritical,
+				Channels:    []string{"pagerduty"},
+				Cooldown:    0,
+				Description: "Escalate after repeated failures",
+			},
+		},
+	}
+
+	mockCh := newMockChannel("pagerduty", "pagerduty")
+	dispatcher := NewDispatcher(config)
+	dispatcher.RegisterChannel(mockCh)
+
+	engine := NewEngine(config, WithDispatcher(dispatcher))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	_ = engine.Start(ctx)
+
+	source := "issue:GH-456"
+
+	// Send only 2 failures (below threshold)
+	for i := 1; i <= 2; i++ {
+		engine.ProcessEvent(Event{
+			Type:      EventTypeTaskFailed,
+			TaskID:    "TASK-" + string(rune('0'+i)),
+			Project:   "/test/project",
+			Error:     "test error",
+			Metadata:  map[string]string{"source": source},
+			Timestamp: time.Now(),
+		})
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	alerts := mockCh.getAlerts()
+	if len(alerts) != 0 {
+		t.Errorf("expected 0 escalation alerts (below threshold), got %d", len(alerts))
+	}
+}
+
+func TestEngine_Escalation_ResetOnSuccess(t *testing.T) {
+	config := &AlertConfig{
+		Enabled: true,
+		Channels: []ChannelConfig{
+			{
+				Name:       "pagerduty",
+				Type:       "pagerduty",
+				Enabled:    true,
+				Severities: []Severity{SeverityCritical},
+			},
+		},
+		Rules: []AlertRule{
+			{
+				Name:    "escalation",
+				Type:    AlertTypeEscalation,
+				Enabled: true,
+				Condition: RuleCondition{
+					EscalationRetries: 3,
+				},
+				Severity:    SeverityCritical,
+				Channels:    []string{"pagerduty"},
+				Cooldown:    0,
+				Description: "Escalate after repeated failures",
+			},
+		},
+	}
+
+	mockCh := newMockChannel("pagerduty", "pagerduty")
+	dispatcher := NewDispatcher(config)
+	dispatcher.RegisterChannel(mockCh)
+
+	engine := NewEngine(config, WithDispatcher(dispatcher))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	_ = engine.Start(ctx)
+
+	source := "issue:GH-789"
+
+	// Send 2 failures
+	for i := 1; i <= 2; i++ {
+		engine.ProcessEvent(Event{
+			Type:      EventTypeTaskFailed,
+			TaskID:    "TASK-" + string(rune('0'+i)),
+			Project:   "/test/project",
+			Error:     "test error",
+			Metadata:  map[string]string{"source": source},
+			Timestamp: time.Now(),
+		})
+	}
+	time.Sleep(50 * time.Millisecond)
+
+	// Send success - should reset counter
+	engine.ProcessEvent(Event{
+		Type:      EventTypeTaskCompleted,
+		TaskID:    "TASK-3",
+		Project:   "/test/project",
+		Metadata:  map[string]string{"source": source},
+		Timestamp: time.Now(),
+	})
+	time.Sleep(50 * time.Millisecond)
+
+	// Send 2 more failures - should not escalate (counter was reset)
+	for i := 4; i <= 5; i++ {
+		engine.ProcessEvent(Event{
+			Type:      EventTypeTaskFailed,
+			TaskID:    "TASK-" + string(rune('0'+i)),
+			Project:   "/test/project",
+			Error:     "test error",
+			Metadata:  map[string]string{"source": source},
+			Timestamp: time.Now(),
+		})
+	}
+	time.Sleep(100 * time.Millisecond)
+
+	alerts := mockCh.getAlerts()
+	if len(alerts) != 0 {
+		t.Errorf("expected 0 escalation alerts (success reset counter), got %d", len(alerts))
+	}
+}
+
+func TestEngine_Escalation_DifferentSourcesTrackedSeparately(t *testing.T) {
+	config := &AlertConfig{
+		Enabled: true,
+		Channels: []ChannelConfig{
+			{
+				Name:       "pagerduty",
+				Type:       "pagerduty",
+				Enabled:    true,
+				Severities: []Severity{SeverityCritical},
+			},
+		},
+		Rules: []AlertRule{
+			{
+				Name:    "escalation",
+				Type:    AlertTypeEscalation,
+				Enabled: true,
+				Condition: RuleCondition{
+					EscalationRetries: 3,
+				},
+				Severity:    SeverityCritical,
+				Channels:    []string{"pagerduty"},
+				Cooldown:    0,
+				Description: "Escalate after repeated failures",
+			},
+		},
+	}
+
+	mockCh := newMockChannel("pagerduty", "pagerduty")
+	dispatcher := NewDispatcher(config)
+	dispatcher.RegisterChannel(mockCh)
+
+	engine := NewEngine(config, WithDispatcher(dispatcher))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	_ = engine.Start(ctx)
+
+	// Send 2 failures for source A
+	for i := 1; i <= 2; i++ {
+		engine.ProcessEvent(Event{
+			Type:      EventTypeTaskFailed,
+			TaskID:    "TASK-A-" + string(rune('0'+i)),
+			Project:   "/test/project",
+			Error:     "error A",
+			Metadata:  map[string]string{"source": "issue:A"},
+			Timestamp: time.Now(),
+		})
+	}
+
+	// Send 2 failures for source B
+	for i := 1; i <= 2; i++ {
+		engine.ProcessEvent(Event{
+			Type:      EventTypeTaskFailed,
+			TaskID:    "TASK-B-" + string(rune('0'+i)),
+			Project:   "/test/project",
+			Error:     "error B",
+			Metadata:  map[string]string{"source": "issue:B"},
+			Timestamp: time.Now(),
+		})
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	// Neither should have escalated (both at 2 failures)
+	alerts := mockCh.getAlerts()
+	if len(alerts) != 0 {
+		t.Errorf("expected 0 escalation alerts (neither source at threshold), got %d", len(alerts))
+	}
+
+	// Third failure for source A - should escalate
+	engine.ProcessEvent(Event{
+		Type:      EventTypeTaskFailed,
+		TaskID:    "TASK-A-3",
+		Project:   "/test/project",
+		Error:     "error A",
+		Metadata:  map[string]string{"source": "issue:A"},
+		Timestamp: time.Now(),
+	})
+
+	time.Sleep(100 * time.Millisecond)
+
+	alerts = mockCh.getAlerts()
+	if len(alerts) != 1 {
+		t.Errorf("expected 1 escalation alert for source A, got %d", len(alerts))
+		return
+	}
+
+	if alerts[0].Source != "issue:A" {
+		t.Errorf("expected source issue:A, got %s", alerts[0].Source)
+	}
+}
+
+func TestEngine_Escalation_DefaultThreshold(t *testing.T) {
+	config := &AlertConfig{
+		Enabled: true,
+		Channels: []ChannelConfig{
+			{
+				Name:       "pagerduty",
+				Type:       "pagerduty",
+				Enabled:    true,
+				Severities: []Severity{SeverityCritical},
+			},
+		},
+		Rules: []AlertRule{
+			{
+				Name:    "escalation",
+				Type:    AlertTypeEscalation,
+				Enabled: true,
+				Condition: RuleCondition{
+					EscalationRetries: 0, // Zero - should use default of 3
+				},
+				Severity:    SeverityCritical,
+				Channels:    []string{"pagerduty"},
+				Cooldown:    0,
+				Description: "Escalate after repeated failures",
+			},
+		},
+	}
+
+	mockCh := newMockChannel("pagerduty", "pagerduty")
+	dispatcher := NewDispatcher(config)
+	dispatcher.RegisterChannel(mockCh)
+
+	engine := NewEngine(config, WithDispatcher(dispatcher))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	_ = engine.Start(ctx)
+
+	source := "issue:GH-DEFAULT"
+
+	// Send 3 failures (default threshold)
+	for i := 1; i <= 3; i++ {
+		engine.ProcessEvent(Event{
+			Type:      EventTypeTaskFailed,
+			TaskID:    "TASK-" + string(rune('0'+i)),
+			Project:   "/test/project",
+			Error:     "test error",
+			Metadata:  map[string]string{"source": source},
+			Timestamp: time.Now(),
+		})
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	alerts := mockCh.getAlerts()
+	if len(alerts) != 1 {
+		t.Errorf("expected 1 escalation alert with default threshold, got %d", len(alerts))
+	}
+}
+
+func TestEngine_Escalation_FallbackToTaskIDAsSource(t *testing.T) {
+	config := &AlertConfig{
+		Enabled: true,
+		Channels: []ChannelConfig{
+			{
+				Name:       "pagerduty",
+				Type:       "pagerduty",
+				Enabled:    true,
+				Severities: []Severity{SeverityCritical},
+			},
+		},
+		Rules: []AlertRule{
+			{
+				Name:    "escalation",
+				Type:    AlertTypeEscalation,
+				Enabled: true,
+				Condition: RuleCondition{
+					EscalationRetries: 3,
+				},
+				Severity:    SeverityCritical,
+				Channels:    []string{"pagerduty"},
+				Cooldown:    0,
+				Description: "Escalate after repeated failures",
+			},
+		},
+	}
+
+	mockCh := newMockChannel("pagerduty", "pagerduty")
+	dispatcher := NewDispatcher(config)
+	dispatcher.RegisterChannel(mockCh)
+
+	engine := NewEngine(config, WithDispatcher(dispatcher))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	_ = engine.Start(ctx)
+
+	// Send 3 failures with same TaskID but no explicit source in metadata
+	taskID := "TASK-SAME"
+	for i := 1; i <= 3; i++ {
+		engine.ProcessEvent(Event{
+			Type:      EventTypeTaskFailed,
+			TaskID:    taskID,
+			Project:   "/test/project",
+			Error:     "test error",
+			Timestamp: time.Now(),
+		})
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	alerts := mockCh.getAlerts()
+	if len(alerts) != 1 {
+		t.Errorf("expected 1 escalation alert using TaskID as source, got %d", len(alerts))
+		return
+	}
+
+	if alerts[0].Source != taskID {
+		t.Errorf("expected source %s (TaskID fallback), got %s", taskID, alerts[0].Source)
+	}
+}
+
+func TestEngine_CreateEscalationAlert(t *testing.T) {
+	config := &AlertConfig{Enabled: true}
+	engine := NewEngine(config)
+
+	rule := AlertRule{
+		Type:        AlertTypeEscalation,
+		Severity:    SeverityCritical,
+		Description: "Escalation alert",
+	}
+
+	event := Event{
+		TaskID:  "TASK-123",
+		Project: "/my/project",
+		Error:   "original error message",
+		Metadata: map[string]string{
+			"custom": "value",
+		},
+	}
+
+	alert := engine.createEscalationAlert(rule, event, "issue:GH-123", 3)
+
+	if alert.ID == "" {
+		t.Error("expected non-empty alert ID")
+	}
+	if alert.Type != AlertTypeEscalation {
+		t.Errorf("expected type %s, got %s", AlertTypeEscalation, alert.Type)
+	}
+	if alert.Severity != SeverityCritical {
+		t.Errorf("expected severity %s, got %s", SeverityCritical, alert.Severity)
+	}
+	if alert.Source != "issue:GH-123" {
+		t.Errorf("expected source 'issue:GH-123', got '%s'", alert.Source)
+	}
+	if alert.Metadata["retry_count"] != "3" {
+		t.Errorf("expected retry_count=3, got %s", alert.Metadata["retry_count"])
+	}
+	if alert.Metadata["escalation_source"] != "issue:GH-123" {
+		t.Errorf("expected escalation_source=issue:GH-123, got %s", alert.Metadata["escalation_source"])
+	}
+	if alert.Metadata["custom"] != "value" {
+		t.Errorf("expected custom=value (preserved from event), got %s", alert.Metadata["custom"])
+	}
+	if alert.ProjectPath != "/my/project" {
+		t.Errorf("expected project path '/my/project', got '%s'", alert.ProjectPath)
+	}
+}

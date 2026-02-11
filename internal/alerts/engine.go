@@ -22,6 +22,7 @@ type Engine struct {
 	consecutiveFailures map[string]int           // project -> consecutive failure count
 	taskLastProgress    map[string]progressState // task ID -> last progress state
 	alertHistory        []AlertHistory
+	retryTracker        map[string]int // source (issue/PR) -> consecutive failure count (GH-848)
 
 	// Channels for events
 	eventCh chan Event
@@ -90,6 +91,7 @@ func NewEngine(config *AlertConfig, opts ...EngineOption) *Engine {
 		consecutiveFailures: make(map[string]int),
 		taskLastProgress:    make(map[string]progressState),
 		alertHistory:        make([]AlertHistory, 0),
+		retryTracker:        make(map[string]int),
 		eventCh:             make(chan Event, 100),
 		done:                make(chan struct{}),
 	}
@@ -205,18 +207,37 @@ func (e *Engine) handleTaskProgress(event Event) {
 }
 
 func (e *Engine) handleTaskCompleted(ctx context.Context, event Event) {
+	// Determine source for retry tracking (GH-848)
+	source := event.TaskID
+	if s, ok := event.Metadata["source"]; ok && s != "" {
+		source = s
+	}
+
 	e.mu.Lock()
 	// Reset consecutive failures on success
 	e.consecutiveFailures[event.Project] = 0
 	delete(e.taskLastProgress, event.TaskID)
+	// Reset per-source retry counter on success (GH-848)
+	delete(e.retryTracker, source)
 	e.mu.Unlock()
 }
 
 func (e *Engine) handleTaskFailed(ctx context.Context, event Event) {
+	// Determine source for retry tracking (GH-848)
+	// Source can be passed in Metadata["source"] or default to TaskID
+	source := event.TaskID
+	if s, ok := event.Metadata["source"]; ok && s != "" {
+		source = s
+	}
+
 	e.mu.Lock()
 	delete(e.taskLastProgress, event.TaskID)
 	e.consecutiveFailures[event.Project]++
 	failCount := e.consecutiveFailures[event.Project]
+
+	// Track per-source retries (GH-848)
+	e.retryTracker[source]++
+	retryCount := e.retryTracker[source]
 	e.mu.Unlock()
 
 	// Check task_failed rule
@@ -236,6 +257,17 @@ func (e *Engine) handleTaskFailed(ctx context.Context, event Event) {
 			if failCount >= rule.Condition.ConsecutiveFailures && e.shouldFire(rule) {
 				alert := e.createAlert(rule, event,
 					fmt.Sprintf("%d consecutive task failures in project %s", failCount, event.Project))
+				e.fireAlert(ctx, rule, alert)
+			}
+
+		case AlertTypeEscalation:
+			// Escalate to PagerDuty after N consecutive failures for the same source (GH-848)
+			threshold := rule.Condition.EscalationRetries
+			if threshold == 0 {
+				threshold = 3 // Default
+			}
+			if retryCount >= threshold && e.shouldFire(rule) {
+				alert := e.createEscalationAlert(rule, event, source, retryCount)
 				e.fireAlert(ctx, rule, alert)
 			}
 		}
@@ -394,6 +426,28 @@ func (e *Engine) createAlert(rule AlertRule, event Event, message string) *Alert
 		Source:      source,
 		ProjectPath: event.Project,
 		Metadata:    event.Metadata,
+		CreatedAt:   time.Now(),
+	}
+}
+
+// createEscalationAlert creates an escalation alert for PagerDuty incident creation (GH-848)
+func (e *Engine) createEscalationAlert(rule AlertRule, event Event, source string, retryCount int) *Alert {
+	metadata := make(map[string]string)
+	for k, v := range event.Metadata {
+		metadata[k] = v
+	}
+	metadata["retry_count"] = fmt.Sprintf("%d", retryCount)
+	metadata["escalation_source"] = source
+
+	return &Alert{
+		ID:          uuid.New().String(),
+		Type:        AlertTypeEscalation,
+		Severity:    SeverityCritical,
+		Title:       "Escalation: Repeated failures require human intervention",
+		Message:     fmt.Sprintf("Source %s has failed %d consecutive times. Last error: %s", source, retryCount, event.Error),
+		Source:      source,
+		ProjectPath: event.Project,
+		Metadata:    metadata,
 		CreatedAt:   time.Now(),
 	}
 }

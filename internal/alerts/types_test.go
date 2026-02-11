@@ -58,6 +58,8 @@ func TestDefaultRules(t *testing.T) {
 		AlertTypePRStuckWaitingCI:   {"pr_stuck_waiting_ci", true},
 		// Deadlock detection (GH-849)
 		AlertTypeDeadlock: {"autopilot_deadlock", true},
+		// Escalation (GH-848)
+		AlertTypeEscalation: {"escalation", true},
 	}
 
 	if len(rules) != len(expectedRules) {
