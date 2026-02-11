@@ -277,7 +277,6 @@ orchestrator:
     dev_ci_timeout: 5m                    # shorter timeout for dev env
     ci_poll_interval: 30s
     required_checks:
-      - build
       - test
       - lint
 
@@ -315,7 +314,7 @@ orchestrator:
 | `ci_wait_timeout` | duration | `30m` | Max time to wait for CI |
 | `dev_ci_timeout` | duration | `5m` | CI timeout in dev environment |
 | `ci_poll_interval` | duration | `30s` | CI status polling interval |
-| `required_checks` | []string | `["build","test","lint"]` | CI checks that must pass |
+| `required_checks` | []string | `["test","lint"]` | CI checks that must pass |
 | `auto_create_issues` | bool | `true` | Create fix issues when CI fails |
 | `issue_labels` | []string | `["pilot","autopilot-fix"]` | Labels for auto-created fix issues |
 | `notify_on_failure` | bool | `true` | Send notification on failure |

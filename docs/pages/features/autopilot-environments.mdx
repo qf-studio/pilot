@@ -56,7 +56,6 @@ orchestrator:
     max_failures: 3              # retry CI fixes up to 3 times
     max_merges_per_hour: 20      # higher limit for rapid iteration
     required_checks:
-      - build
       - test
 ```
 
@@ -114,7 +113,6 @@ orchestrator:
     max_failures: 3
     max_merges_per_hour: 10      # moderate rate limit
     required_checks:
-      - build
       - test
       - lint
     release:
@@ -178,7 +176,6 @@ orchestrator:
     max_failures: 2                   # fewer retries — fail fast
     max_merges_per_hour: 5            # conservative rate limit
     required_checks:
-      - build
       - test
       - lint
       - security                      # add security scanning

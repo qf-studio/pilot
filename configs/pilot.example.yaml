@@ -165,6 +165,18 @@ projects:
     navigator: true           # Use Navigator for context efficiency
     default_branch: "main"
 
+# Autopilot settings
+autopilot:
+  enabled: false
+  environment: "stage"         # dev, stage, prod
+  auto_merge: true
+  merge_method: "squash"
+  ci_wait_timeout: 30m
+  ci_poll_interval: 30s
+  required_checks:             # CI checks that must pass before merge
+    - test
+    - lint
+
 # Dashboard settings
 dashboard:
   refresh_interval: 1000     # ms
