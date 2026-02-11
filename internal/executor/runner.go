@@ -542,6 +542,14 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 		}
 	}
 
+	// Auto-init Navigator if configured and missing
+	if r.config != nil && r.config.Navigator != nil && r.config.Navigator.AutoInit {
+		if err := r.maybeInitNavigator(task.ProjectPath); err != nil {
+			r.log.Warn("Navigator auto-init failed", slog.Any("error", err))
+			// Continue without Navigator - graceful degradation
+		}
+	}
+
 	// Detect complexity for routing decisions
 	complexity := DetectComplexity(task)
 
@@ -2710,6 +2718,25 @@ func (r *Runner) reportProgress(taskID, phase string, progress int, message stri
 	for _, cb := range callbacks {
 		cb(taskID, phase, progress, message)
 	}
+}
+
+// maybeInitNavigator initializes Navigator structure if not present.
+// This enables auto-init for projects that don't have .agent/ yet.
+func (r *Runner) maybeInitNavigator(projectPath string) error {
+	initializer, err := NewNavigatorInitializer(r.log)
+	if err != nil {
+		return fmt.Errorf("failed to create navigator initializer: %w", err)
+	}
+
+	if initializer.IsInitialized(projectPath) {
+		return nil
+	}
+
+	r.log.Info("Auto-initializing Navigator for project",
+		slog.String("path", projectPath),
+	)
+
+	return initializer.Initialize(projectPath)
 }
 
 // syncNavigatorIndex updates DEVELOPMENT-README.md after task completion.

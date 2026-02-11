@@ -173,6 +173,9 @@ type BackendConfig struct {
 
 	// IntentJudge contains intent alignment settings for diff-vs-ticket verification
 	IntentJudge *IntentJudgeConfig `yaml:"intent_judge,omitempty"`
+
+	// Navigator contains Navigator auto-init settings
+	Navigator *NavigatorConfig `yaml:"navigator,omitempty"`
 }
 
 // ModelRoutingConfig controls which model to use based on task complexity.
@@ -344,6 +347,7 @@ func DefaultBackendConfig() *BackendConfig {
 		EffortRouting: DefaultEffortRoutingConfig(),
 		Decompose:     DefaultDecomposeConfig(),
 		IntentJudge:   DefaultIntentJudgeConfig(),
+		Navigator:     DefaultNavigatorConfig(),
 	}
 }
 
