@@ -55,14 +55,37 @@ func (ma *MetricsAlerter) evaluate() {
 	// Calculate stuck PRs (in waiting_ci)
 	var prStuckCount int
 	var prMaxWaitMin float64
+	var lastStuckPR *PRState
 
-	for _, pr := range ma.controller.GetActivePRs() {
+	activePRs := ma.controller.GetActivePRs()
+	for _, pr := range activePRs {
 		if pr.Stage == StageWaitingCI && !pr.CIWaitStartedAt.IsZero() {
 			waitMin := time.Since(pr.CIWaitStartedAt).Minutes()
 			prStuckCount++
 			if waitMin > prMaxWaitMin {
 				prMaxWaitMin = waitMin
+				lastStuckPR = pr
 			}
+		}
+	}
+
+	// GH-849: Deadlock detection - time since last progress
+	lastProgressAt := ma.controller.GetLastProgressAt()
+	noProgressMin := time.Since(lastProgressAt).Minutes()
+	deadlockAlertSent := ma.controller.IsDeadlockAlertSent()
+
+	// Find the last known state for deadlock context
+	lastKnownState := ""
+	lastKnownPR := 0
+	if lastStuckPR != nil {
+		lastKnownState = string(lastStuckPR.Stage)
+		lastKnownPR = lastStuckPR.PRNumber
+	} else if len(activePRs) > 0 {
+		// Pick any active PR for context
+		for _, pr := range activePRs {
+			lastKnownState = string(pr.Stage)
+			lastKnownPR = pr.PRNumber
+			break
 		}
 	}
 
@@ -80,9 +103,21 @@ func (ma *MetricsAlerter) evaluate() {
 			"success_rate":          fmt.Sprintf("%.2f", snap.SuccessRate),
 			"total_active_prs":      fmt.Sprintf("%d", snap.TotalActivePRs),
 			"queue_depth":           fmt.Sprintf("%d", snap.QueueDepth),
+			// GH-849: Deadlock detection metadata
+			"no_progress_minutes":   fmt.Sprintf("%.1f", noProgressMin),
+			"deadlock_alert_sent":   fmt.Sprintf("%t", deadlockAlertSent),
+			"last_known_state":      lastKnownState,
+			"last_known_pr":         fmt.Sprintf("%d", lastKnownPR),
 		},
 		Timestamp: time.Now(),
 	}
 
 	ma.engine.ProcessEvent(event)
+
+	// GH-849: Mark deadlock alert as sent if we're in deadlock state.
+	// This prevents repeated alerts until progress resumes.
+	// Default threshold is 1 hour (60 minutes).
+	if noProgressMin >= 60 && !deadlockAlertSent && len(activePRs) > 0 {
+		ma.controller.MarkDeadlockAlertSent()
+	}
 }

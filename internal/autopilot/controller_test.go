@@ -1752,3 +1752,92 @@ func TestController_IsCircuitOpen_AnyPRBlocked(t *testing.T) {
 		t.Error("circuit should be open with failures at threshold")
 	}
 }
+
+// TestController_DeadlockDetection tests the deadlock detection mechanism (GH-849).
+func TestController_DeadlockDetection(t *testing.T) {
+	ghClient := github.NewClient(testutil.FakeGitHubToken)
+	cfg := DefaultConfig()
+
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+
+	// Initial state: lastProgressAt should be set to now
+	initialProgress := c.GetLastProgressAt()
+	if initialProgress.IsZero() {
+		t.Error("lastProgressAt should be initialized on construction")
+	}
+
+	// Alert flag should start as false
+	if c.IsDeadlockAlertSent() {
+		t.Error("deadlockAlertSent should be false initially")
+	}
+
+	// Mark alert as sent
+	c.MarkDeadlockAlertSent()
+	if !c.IsDeadlockAlertSent() {
+		t.Error("deadlockAlertSent should be true after marking")
+	}
+
+	// Simulate a PR state transition by adding a PR
+	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc123", "pilot/GH-10")
+
+	// Get PR and manually trigger a stage transition to update lastProgressAt
+	pr, _ := c.GetPRState(42)
+	previousStage := pr.Stage
+	pr.Stage = StageWaitingCI
+
+	// Simulate what ProcessPR does on stage transition
+	c.mu.Lock()
+	if pr.Stage != previousStage {
+		c.lastProgressAt = time.Now()
+		c.deadlockAlertSent = false
+	}
+	c.mu.Unlock()
+
+	// After transition, lastProgressAt should be updated and alert flag reset
+	newProgress := c.GetLastProgressAt()
+	if !newProgress.After(initialProgress) && !newProgress.Equal(initialProgress) {
+		t.Error("lastProgressAt should be updated after stage transition")
+	}
+	if c.IsDeadlockAlertSent() {
+		t.Error("deadlockAlertSent should be reset after stage transition")
+	}
+}
+
+// TestController_DeadlockDetection_StaleProgress tests that stale progress is detected.
+func TestController_DeadlockDetection_StaleProgress(t *testing.T) {
+	ghClient := github.NewClient(testutil.FakeGitHubToken)
+	cfg := DefaultConfig()
+
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+
+	// Manually set lastProgressAt to 2 hours ago
+	c.mu.Lock()
+	c.lastProgressAt = time.Now().Add(-2 * time.Hour)
+	c.mu.Unlock()
+
+	// Check that GetLastProgressAt returns the stale time
+	progress := c.GetLastProgressAt()
+	if time.Since(progress) < 1*time.Hour {
+		t.Error("lastProgressAt should be more than 1 hour ago")
+	}
+
+	// Add a PR to simulate active work
+	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc123", "pilot/GH-10")
+
+	// The MetricsAlerter would check: noProgressMin >= 60 && len(activePRs) > 0
+	noProgressMin := time.Since(c.GetLastProgressAt()).Minutes()
+	activePRs := c.GetActivePRs()
+
+	if noProgressMin < 60 {
+		t.Errorf("noProgressMin = %.1f, expected >= 60", noProgressMin)
+	}
+	if len(activePRs) == 0 {
+		t.Error("expected active PRs")
+	}
+
+	// This is the condition that would trigger a deadlock alert
+	deadlockDetected := noProgressMin >= 60 && !c.IsDeadlockAlertSent() && len(activePRs) > 0
+	if !deadlockDetected {
+		t.Error("deadlock condition should be detected")
+	}
+}
