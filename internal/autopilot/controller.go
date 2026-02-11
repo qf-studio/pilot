@@ -64,6 +64,11 @@ type Controller struct {
 	// A failure on one PR does not block other PRs.
 	prFailures map[int]*prFailureState
 
+	// Deadlock detection (GH-849): track last time any PR made progress.
+	// If no state transitions occur for 1h, fire a deadlock alert.
+	lastProgressAt    time.Time
+	deadlockAlertSent bool
+
 	// Metrics
 	metrics *Metrics
 
@@ -75,15 +80,16 @@ type Controller struct {
 // NewController creates an autopilot controller with all required components.
 func NewController(cfg *Config, ghClient *github.Client, approvalMgr *approval.Manager, owner, repo string) *Controller {
 	c := &Controller{
-		config:      cfg,
-		ghClient:    ghClient,
-		approvalMgr: approvalMgr,
-		owner:       owner,
-		repo:        repo,
-		activePRs:   make(map[int]*PRState),
-		prFailures:  make(map[int]*prFailureState),
-		metrics:     NewMetrics(),
-		log:         slog.Default().With("component", "autopilot"),
+		config:         cfg,
+		ghClient:       ghClient,
+		approvalMgr:    approvalMgr,
+		owner:          owner,
+		repo:           repo,
+		activePRs:      make(map[int]*PRState),
+		prFailures:     make(map[int]*prFailureState),
+		lastProgressAt: time.Now(), // Initialize to now to avoid false alarm on startup
+		metrics:        NewMetrics(),
+		log:            slog.Default().With("component", "autopilot"),
 	}
 
 	c.ciMonitor = NewCIMonitor(ghClient, owner, repo, cfg)
@@ -273,7 +279,7 @@ func (c *Controller) ProcessPR(ctx context.Context, prNumber int) error {
 		return nil
 	}
 
-	// Log stage transitions
+	// Log stage transitions and update progress timestamp for deadlock detection
 	if prState.Stage != previousStage {
 		c.log.Info("PR stage transition",
 			"pr", prNumber,
@@ -281,6 +287,12 @@ func (c *Controller) ProcessPR(ctx context.Context, prNumber int) error {
 			"to", prState.Stage,
 			"env", c.config.Environment,
 		)
+
+		// GH-849: Update lastProgressAt and reset deadlock alert flag
+		c.mu.Lock()
+		c.lastProgressAt = time.Now()
+		c.deadlockAlertSent = false
+		c.mu.Unlock()
 	}
 
 	if err != nil {
@@ -980,6 +992,30 @@ func (c *Controller) TotalFailures() int {
 // Metrics returns the autopilot metrics collector.
 func (c *Controller) Metrics() *Metrics {
 	return c.metrics
+}
+
+// GetLastProgressAt returns the timestamp of the last PR state transition.
+// Used by MetricsAlerter for deadlock detection (GH-849).
+func (c *Controller) GetLastProgressAt() time.Time {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.lastProgressAt
+}
+
+// IsDeadlockAlertSent returns whether a deadlock alert has been sent since the last progress.
+// Used by MetricsAlerter to avoid alert spam (GH-849).
+func (c *Controller) IsDeadlockAlertSent() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.deadlockAlertSent
+}
+
+// MarkDeadlockAlertSent marks that a deadlock alert has been sent.
+// Called by MetricsAlerter after firing a deadlock alert (GH-849).
+func (c *Controller) MarkDeadlockAlertSent() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.deadlockAlertSent = true
 }
 
 // ScanExistingPRs scans for open PRs created by Pilot and restores their state.

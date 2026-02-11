@@ -36,6 +36,9 @@ const (
 	AlertTypeCircuitBreakerTrip AlertType = "circuit_breaker_trip"
 	AlertTypeAPIErrorRateHigh   AlertType = "api_error_rate_high"
 	AlertTypePRStuckWaitingCI   AlertType = "pr_stuck_waiting_ci"
+
+	// Deadlock detection (GH-849)
+	AlertTypeDeadlock AlertType = "deadlock"
 )
 
 // Alert represents an alert event
@@ -86,6 +89,9 @@ type RuleCondition struct {
 	FailedQueueThreshold int           `yaml:"failed_queue_threshold"` // Max failed issues
 	APIErrorRatePerMin   float64       `yaml:"api_error_rate_per_min"` // Errors/min threshold
 	PRStuckTimeout       time.Duration `yaml:"pr_stuck_timeout"`       // Max time in waiting_ci
+
+	// Deadlock detection (GH-849)
+	DeadlockTimeout time.Duration `yaml:"deadlock_timeout"` // Max time with no state transitions
 }
 
 // AlertConfig holds the main alerting configuration
@@ -294,6 +300,19 @@ func defaultRules() []AlertRule {
 			Channels:    []string{},
 			Cooldown:    15 * time.Minute,
 			Description: "Alert when a PR is stuck in waiting_ci for too long",
+		},
+		// Deadlock detection (GH-849)
+		{
+			Name:    "autopilot_deadlock",
+			Type:    AlertTypeDeadlock,
+			Enabled: true,
+			Condition: RuleCondition{
+				DeadlockTimeout: 1 * time.Hour,
+			},
+			Severity:    SeverityCritical,
+			Channels:    []string{},
+			Cooldown:    1 * time.Hour,
+			Description: "Alert when autopilot has no state transitions for 1 hour",
 		},
 	}
 }

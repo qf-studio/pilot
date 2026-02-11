@@ -569,6 +569,41 @@ func (e *Engine) handleAutopilotMetrics(ctx context.Context, event Event) {
 						prStuckCount, prMaxWaitMin))
 				e.fireAlert(ctx, rule, alert)
 			}
+
+		// GH-849: Deadlock detection
+		case AlertTypeDeadlock:
+			timeout := rule.Condition.DeadlockTimeout
+			if timeout == 0 {
+				timeout = 1 * time.Hour // Default to 1 hour
+			}
+
+			noProgressMin := 0.0
+			if v, ok := event.Metadata["no_progress_minutes"]; ok {
+				_, _ = fmt.Sscanf(v, "%f", &noProgressMin)
+			}
+
+			deadlockAlertSent := false
+			if v, ok := event.Metadata["deadlock_alert_sent"]; ok {
+				deadlockAlertSent = v == "true"
+			}
+
+			// Only fire if:
+			// 1. No progress for longer than timeout
+			// 2. We haven't already sent an alert for this stall
+			// 3. Rule cooldown allows firing
+			if noProgressMin >= timeout.Minutes() && !deadlockAlertSent && e.shouldFire(rule) {
+				lastState := event.Metadata["last_known_state"]
+				lastPR := event.Metadata["last_known_pr"]
+
+				message := fmt.Sprintf("No state transitions in %.0f minutes.", noProgressMin)
+				if lastState != "" && lastPR != "0" {
+					message = fmt.Sprintf("No state transitions in %.0f minutes. Last: %s for PR #%s",
+						noProgressMin, lastState, lastPR)
+				}
+
+				alert := e.createAlert(rule, event, message)
+				e.fireAlert(ctx, rule, alert)
+			}
 		}
 	}
 }

@@ -56,6 +56,8 @@ func TestDefaultRules(t *testing.T) {
 		AlertTypeCircuitBreakerTrip: {"circuit_breaker_trip", true},
 		AlertTypeAPIErrorRateHigh:   {"api_error_rate_high", true},
 		AlertTypePRStuckWaitingCI:   {"pr_stuck_waiting_ci", true},
+		// Deadlock detection (GH-849)
+		AlertTypeDeadlock: {"autopilot_deadlock", true},
 	}
 
 	if len(rules) != len(expectedRules) {
