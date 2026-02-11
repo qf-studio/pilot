@@ -1985,7 +1985,6 @@ func parseAutopilotBranch(body string) string {
 	return ""
 }
 
-// handleGitHubIssue processes a GitHub issue picked up by the poller
 // resolveGitHubMemberID maps a GitHub issue author to a team member ID (GH-634).
 // Uses the global teamAdapter (set at startup). Returns "" if no adapter is configured
 // or no matching member is found — callers treat "" as "skip RBAC".
