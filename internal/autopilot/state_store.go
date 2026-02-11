@@ -200,6 +200,13 @@ func (s *StateStore) MarkIssueProcessed(issueNumber int, result string) error {
 	return err
 }
 
+// UnmarkIssueProcessed removes an issue from the processed table.
+// Used when pilot-failed label is removed to allow retry.
+func (s *StateStore) UnmarkIssueProcessed(issueNumber int) error {
+	_, err := s.db.Exec(`DELETE FROM autopilot_processed WHERE issue_number = ?`, issueNumber)
+	return err
+}
+
 // IsIssueProcessed checks if an issue has been previously processed.
 func (s *StateStore) IsIssueProcessed(issueNumber int) (bool, error) {
 	var count int

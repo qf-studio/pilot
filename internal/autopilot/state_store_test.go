@@ -217,6 +217,23 @@ func TestStateStore_ProcessedIssues(t *testing.T) {
 	if len(all) != 1 {
 		t.Errorf("got %d processed after idempotent mark, want 1", len(all))
 	}
+
+	// Unmark processed (for retry when pilot-failed label removed)
+	if err := store.UnmarkIssueProcessed(100); err != nil {
+		t.Fatalf("UnmarkIssueProcessed failed: %v", err)
+	}
+	processed, err = store.IsIssueProcessed(100)
+	if err != nil {
+		t.Fatalf("IsIssueProcessed after unmark failed: %v", err)
+	}
+	if processed {
+		t.Error("issue should not be processed after unmarking")
+	}
+
+	// Unmark non-existent issue should not error
+	if err := store.UnmarkIssueProcessed(999); err != nil {
+		t.Fatalf("UnmarkIssueProcessed for non-existent issue failed: %v", err)
+	}
 }
 
 func TestStateStore_Metadata(t *testing.T) {

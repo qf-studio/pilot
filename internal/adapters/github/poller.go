@@ -28,6 +28,7 @@ const (
 // Implemented by autopilot.StateStore to avoid circular imports.
 type ProcessedStore interface {
 	MarkIssueProcessed(issueNumber int, result string) error
+	UnmarkIssueProcessed(issueNumber int) error
 	IsIssueProcessed(issueNumber int) (bool, error)
 	LoadProcessedIssues() (map[int]bool, error)
 }
@@ -449,6 +450,14 @@ func (p *Poller) findOldestUnprocessedIssue(ctx context.Context) (*Issue, error)
 			p.mu.Lock()
 			delete(p.processed, issue.Number)
 			p.mu.Unlock()
+			// Also clear from persistent store
+			if p.processedStore != nil {
+				if err := p.processedStore.UnmarkIssueProcessed(issue.Number); err != nil {
+					p.logger.Warn("Failed to unmark issue in store",
+						slog.Int("number", issue.Number),
+						slog.Any("error", err))
+				}
+			}
 		}
 
 		candidates = append(candidates, issue)
@@ -498,16 +507,7 @@ func (p *Poller) checkForNewIssues(ctx context.Context) {
 	}
 
 	for _, issue := range issues {
-		// Skip if already processed
-		p.mu.RLock()
-		processed := p.processed[issue.Number]
-		p.mu.RUnlock()
-
-		if processed {
-			continue
-		}
-
-		// Skip if already in progress or failed (don't mark processed - allows retry when label removed)
+		// Skip if already in progress or failed (check before processed to allow retry)
 		if HasLabel(issue, LabelInProgress) || HasLabel(issue, LabelFailed) {
 			continue
 		}
@@ -516,6 +516,27 @@ func (p *Poller) checkForNewIssues(ctx context.Context) {
 		if HasLabel(issue, LabelDone) {
 			p.markProcessed(issue.Number)
 			continue
+		}
+
+		// Check if already processed
+		p.mu.RLock()
+		processed := p.processed[issue.Number]
+		p.mu.RUnlock()
+
+		// If processed but no status labels, allow retry (pilot-failed was removed)
+		if processed {
+			p.logger.Info("Issue was processed but status labels removed, allowing retry",
+				slog.Int("number", issue.Number))
+			p.mu.Lock()
+			delete(p.processed, issue.Number)
+			p.mu.Unlock()
+			if p.processedStore != nil {
+				if err := p.processedStore.UnmarkIssueProcessed(issue.Number); err != nil {
+					p.logger.Warn("Failed to unmark issue in store",
+						slog.Int("number", issue.Number),
+						slog.Any("error", err))
+				}
+			}
 		}
 
 		// Mark processed immediately to prevent duplicate dispatch on next tick

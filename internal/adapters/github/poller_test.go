@@ -439,8 +439,10 @@ func TestPoller_CheckForNewIssues_NoCallback(t *testing.T) {
 }
 
 func TestPoller_CheckForNewIssues_SkipsAlreadyProcessed(t *testing.T) {
+	// Issue 1 has pilot-failed so should be skipped
+	// Issue 2 has only pilot so should be processed
 	issues := []*Issue{
-		{Number: 1, Title: "Issue 1", Labels: []Label{{Name: "pilot"}}},
+		{Number: 1, Title: "Issue 1", Labels: []Label{{Name: "pilot"}, {Name: "pilot-failed"}}},
 		{Number: 2, Title: "Issue 2", Labels: []Label{{Name: "pilot"}}},
 	}
 
@@ -460,15 +462,46 @@ func TestPoller_CheckForNewIssues_SkipsAlreadyProcessed(t *testing.T) {
 		}),
 	)
 
-	// Pre-mark issue 1 as processed
+	poller.checkForNewIssues(context.Background())
+	poller.WaitForActive()
+
+	// Only issue 2 should trigger callback (issue 1 has pilot-failed)
+	if got := atomic.LoadInt32(&callCount); got != 1 {
+		t.Errorf("callback called %d times, want 1 (issue with status labels should be skipped)", got)
+	}
+}
+
+func TestPoller_CheckForNewIssues_AllowsRetryWhenLabelsRemoved(t *testing.T) {
+	// Issue was processed before but pilot-failed was removed
+	issues := []*Issue{
+		{Number: 1, Title: "Issue 1", Labels: []Label{{Name: "pilot"}}},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(issues)
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+
+	var callCount int32
+	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second,
+		WithOnIssue(func(ctx context.Context, issue *Issue) error {
+			atomic.AddInt32(&callCount, 1)
+			return nil
+		}),
+	)
+
+	// Pre-mark as processed (simulating previous failed attempt)
 	poller.markProcessed(1)
 
 	poller.checkForNewIssues(context.Background())
 	poller.WaitForActive()
 
-	// Only issue 2 should trigger callback
+	// Should retry since labels were removed
 	if got := atomic.LoadInt32(&callCount); got != 1 {
-		t.Errorf("callback called %d times, want 1 (only for unprocessed issue)", got)
+		t.Errorf("callback called %d times, want 1 (should retry after labels removed)", got)
 	}
 }
 
