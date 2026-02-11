@@ -342,6 +342,7 @@ Examples:
 			hasTelegram := cfg.Adapters.Telegram != nil && cfg.Adapters.Telegram.Enabled
 			hasGithubPolling := cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.Enabled &&
 				cfg.Adapters.GitHub.Polling != nil && cfg.Adapters.GitHub.Polling.Enabled
+			hasSlack := cfg.Adapters.Slack != nil && cfg.Adapters.Slack.Enabled && cfg.Adapters.Slack.SocketMode
 
 			// Apply execution mode override from CLI flags
 			if sequential {
@@ -413,9 +414,11 @@ Examples:
 			// This allows GitHub polling to work alongside Linear/Jira webhooks
 			telegramFlagSet := cmd.Flags().Changed("telegram")
 			githubFlagSet := cmd.Flags().Changed("github")
+			slackFlagSet := cmd.Flags().Changed("slack")
 			needsPollingInfra := (telegramFlagSet && hasTelegram && cfg.Adapters.Telegram.Polling) ||
 				(githubFlagSet && hasGithubPolling && cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.Enabled &&
-					cfg.Adapters.GitHub.Polling != nil && cfg.Adapters.GitHub.Polling.Enabled)
+					cfg.Adapters.GitHub.Polling != nil && cfg.Adapters.GitHub.Polling.Enabled) ||
+				(slackFlagSet && hasSlack)
 
 			// Shared infrastructure for polling adapters
 			var gwRunner *executor.Runner
@@ -623,6 +626,16 @@ Examples:
 					pilotOpts = append(pilotOpts, pilot.WithTelegramMemberResolver(teamAdapter))
 				}
 				logging.WithComponent("start").Info("Telegram polling enabled in gateway mode")
+			}
+
+			// Enable Slack Socket Mode in gateway mode only if --slack flag was explicitly passed (GH-652)
+			if slackFlagSet && hasSlack {
+				pilotOpts = append(pilotOpts, pilot.WithSlackHandler(gwRunner, projectPath))
+				// GH-786: Wire team member resolver for Slack RBAC in gateway mode
+				if teamAdapter != nil {
+					pilotOpts = append(pilotOpts, pilot.WithSlackMemberResolver(teamAdapter))
+				}
+				logging.WithComponent("start").Info("Slack Socket Mode enabled in gateway mode")
 			}
 
 			// GH-539: Create budget enforcer for gateway mode
@@ -976,6 +989,11 @@ Examples:
 			if hasGithubPolling && cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.Enabled &&
 				cfg.Adapters.GitHub.Polling != nil && cfg.Adapters.GitHub.Polling.Enabled {
 				fmt.Printf("🐙 GitHub polling: %s\n", cfg.Adapters.GitHub.Repo)
+			}
+
+			// Show Slack status in gateway mode (GH-652)
+			if hasSlack {
+				fmt.Println("💬 Slack Socket Mode active")
 			}
 
 			// Show Linear status in gateway mode (GH-393)
