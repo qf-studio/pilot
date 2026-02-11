@@ -494,6 +494,175 @@ func TestStaleLabelCleanupConfig_InDefaultConfig(t *testing.T) {
 	if cfg.StaleLabelCleanup.Threshold != 1*time.Hour {
 		t.Errorf("StaleLabelCleanup.Threshold = %v, want 1h", cfg.StaleLabelCleanup.Threshold)
 	}
+
+	if cfg.StaleLabelCleanup.FailedThreshold != 24*time.Hour {
+		t.Errorf("StaleLabelCleanup.FailedThreshold = %v, want 24h", cfg.StaleLabelCleanup.FailedThreshold)
+	}
+}
+
+func TestCleaner_Cleanup_StaleFailedLabelsRemoved(t *testing.T) {
+	store := createTestStore(t)
+	defer func() { _ = store.Close() }()
+
+	// Create stale failed issue (updated 25 hours ago - over 24h threshold)
+	staleTime := time.Now().Add(-25 * time.Hour)
+	// Note: ListIssues does post-fetch filtering (client filters by label after API call)
+	// So we return all issues with any label, and the client filters by label name
+	allIssues := []*Issue{
+		{
+			Number:    456,
+			Title:     "Stale Failed Issue",
+			Labels:    []Label{{Name: LabelFailed}},
+			UpdatedAt: staleTime,
+		},
+	}
+
+	var removeLabelCalled bool
+	var addCommentCalled bool
+	var onFailedCleanedCalled bool
+	var cleanedIssueNumber int
+	var mu sync.Mutex
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+
+		w.Header().Set("Content-Type", "application/json")
+
+		// List issues endpoint - return all issues (client filters by label)
+		if r.Method == http.MethodGet && r.URL.Path == "/repos/owner/repo/issues" {
+			_ = json.NewEncoder(w).Encode(allIssues)
+			return
+		}
+
+		// Remove label endpoint
+		if r.Method == http.MethodDelete && r.URL.Path == "/repos/owner/repo/issues/456/labels/"+LabelFailed {
+			removeLabelCalled = true
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		// Add comment endpoint
+		if r.Method == http.MethodPost && r.URL.Path == "/repos/owner/repo/issues/456/comments" {
+			addCommentCalled = true
+			_ = json.NewEncoder(w).Encode(&Comment{ID: 1, Body: "cleanup"})
+			return
+		}
+
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cleaner, _ := NewCleaner(client, store, "owner/repo", &StaleLabelCleanupConfig{
+		Enabled:         true,
+		Interval:        30 * time.Minute,
+		Threshold:       1 * time.Hour,
+		FailedThreshold: 24 * time.Hour,
+	}, WithOnFailedCleaned(func(issueNumber int) {
+		mu.Lock()
+		onFailedCleanedCalled = true
+		cleanedIssueNumber = issueNumber
+		mu.Unlock()
+	}))
+
+	err := cleaner.Cleanup(context.Background())
+	if err != nil {
+		t.Errorf("Cleanup() error = %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if !removeLabelCalled {
+		t.Error("RemoveLabel should have been called for stale failed issue")
+	}
+	if !addCommentCalled {
+		t.Error("AddComment should have been called for stale failed issue")
+	}
+	if !onFailedCleanedCalled {
+		t.Error("OnFailedCleaned callback should have been called")
+	}
+	if cleanedIssueNumber != 456 {
+		t.Errorf("OnFailedCleaned called with issue %d, want 456", cleanedIssueNumber)
+	}
+}
+
+func TestCleaner_Cleanup_RecentFailedIssuesSkipped(t *testing.T) {
+	store := createTestStore(t)
+	defer func() { _ = store.Close() }()
+
+	// Create recent failed issue (updated 12 hours ago - under 24h threshold)
+	recentTime := time.Now().Add(-12 * time.Hour)
+	allIssues := []*Issue{
+		{
+			Number:    789,
+			Title:     "Recent Failed Issue",
+			Labels:    []Label{{Name: LabelFailed}},
+			UpdatedAt: recentTime,
+		},
+	}
+
+	removeLabelCalled := false
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		// List issues endpoint - return all issues (client filters by label)
+		if r.Method == http.MethodGet && r.URL.Path == "/repos/owner/repo/issues" {
+			_ = json.NewEncoder(w).Encode(allIssues)
+			return
+		}
+
+		// Remove label endpoint - should not be called
+		if r.Method == http.MethodDelete {
+			removeLabelCalled = true
+		}
+
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cleaner, _ := NewCleaner(client, store, "owner/repo", &StaleLabelCleanupConfig{
+		Enabled:         true,
+		Interval:        30 * time.Minute,
+		Threshold:       1 * time.Hour,
+		FailedThreshold: 24 * time.Hour,
+	})
+
+	err := cleaner.Cleanup(context.Background())
+	if err != nil {
+		t.Errorf("Cleanup() error = %v", err)
+	}
+
+	if removeLabelCalled {
+		t.Error("RemoveLabel should NOT have been called for recent failed issue")
+	}
+}
+
+func TestCleaner_FailedThreshold_DefaultValue(t *testing.T) {
+	store := createTestStore(t)
+	defer func() { _ = store.Close() }()
+
+	client := NewClient(testutil.FakeGitHubToken)
+
+	// Test with zero FailedThreshold - should default to 24h
+	config := &StaleLabelCleanupConfig{
+		Enabled:         true,
+		Interval:        30 * time.Minute,
+		Threshold:       1 * time.Hour,
+		FailedThreshold: 0, // Should default to 24h
+	}
+
+	cleaner, err := NewCleaner(client, store, "owner/repo", config)
+	if err != nil {
+		t.Fatalf("NewCleaner() error = %v", err)
+	}
+
+	if cleaner.failedThreshold != 24*time.Hour {
+		t.Errorf("cleaner.failedThreshold = %v, want 24h", cleaner.failedThreshold)
+	}
 }
 
 // Helper function to create a test memory store

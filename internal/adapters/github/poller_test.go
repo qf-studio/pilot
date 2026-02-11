@@ -228,6 +228,37 @@ func TestPoller_Reset(t *testing.T) {
 	}
 }
 
+func TestPoller_ClearProcessed(t *testing.T) {
+	client := NewClient(testutil.FakeGitHubToken)
+	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second)
+
+	// Mark some issues as processed
+	poller.markProcessed(1)
+	poller.markProcessed(2)
+	poller.markProcessed(3)
+
+	if poller.ProcessedCount() != 3 {
+		t.Errorf("ProcessedCount() = %d, want 3", poller.ProcessedCount())
+	}
+
+	// Clear single issue
+	poller.ClearProcessed(2)
+
+	if poller.ProcessedCount() != 2 {
+		t.Errorf("ProcessedCount() after clear = %d, want 2", poller.ProcessedCount())
+	}
+
+	if poller.IsProcessed(2) {
+		t.Error("issue 2 should not be processed after ClearProcessed")
+	}
+	if !poller.IsProcessed(1) {
+		t.Error("issue 1 should still be processed")
+	}
+	if !poller.IsProcessed(3) {
+		t.Error("issue 3 should still be processed")
+	}
+}
+
 func TestPoller_ConcurrentAccess(t *testing.T) {
 	client := NewClient(testutil.FakeGitHubToken)
 	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second)

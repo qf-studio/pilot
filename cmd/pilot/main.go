@@ -1697,16 +1697,24 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 			// Start stale label cleanup if enabled
 			if cfg.Adapters.GitHub.StaleLabelCleanup != nil && cfg.Adapters.GitHub.StaleLabelCleanup.Enabled {
 				if store != nil {
-					cleaner, cleanerErr := github.NewCleaner(client, store, cfg.Adapters.GitHub.Repo, cfg.Adapters.GitHub.StaleLabelCleanup)
+					// Wire callback to clear processed map when pilot-failed labels are removed
+					cleanerOpts := []github.CleanerOption{}
+					if ghPoller != nil {
+						cleanerOpts = append(cleanerOpts, github.WithOnFailedCleaned(func(issueNumber int) {
+							ghPoller.ClearProcessed(issueNumber)
+						}))
+					}
+					cleaner, cleanerErr := github.NewCleaner(client, store, cfg.Adapters.GitHub.Repo, cfg.Adapters.GitHub.StaleLabelCleanup, cleanerOpts...)
 					if cleanerErr != nil {
 						if !dashboardMode {
 							fmt.Printf("⚠️  Stale label cleanup disabled: %v\n", cleanerErr)
 						}
 					} else {
 						if !dashboardMode {
-							fmt.Printf("🧹 Stale label cleanup enabled (every %s, threshold: %s)\n",
+							fmt.Printf("🧹 Stale label cleanup enabled (every %s, in-progress: %s, failed: %s)\n",
 								cfg.Adapters.GitHub.StaleLabelCleanup.Interval,
-								cfg.Adapters.GitHub.StaleLabelCleanup.Threshold)
+								cfg.Adapters.GitHub.StaleLabelCleanup.Threshold,
+								cfg.Adapters.GitHub.StaleLabelCleanup.FailedThreshold)
 						}
 						go cleaner.Start(ctx)
 					}

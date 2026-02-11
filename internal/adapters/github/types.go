@@ -21,11 +21,12 @@ type PollingConfig struct {
 	Label    string        `yaml:"label"`    // Label to watch for (default: pilot)
 }
 
-// StaleLabelCleanupConfig holds settings for auto-cleanup of stale pilot-in-progress labels
+// StaleLabelCleanupConfig holds settings for auto-cleanup of stale pilot labels
 type StaleLabelCleanupConfig struct {
-	Enabled   bool          `yaml:"enabled"`
-	Interval  time.Duration `yaml:"interval"`  // How often to check for stale labels (default: 30m)
-	Threshold time.Duration `yaml:"threshold"` // How long before a label is considered stale (default: 1h)
+	Enabled         bool          `yaml:"enabled"`
+	Interval        time.Duration `yaml:"interval"`         // How often to check for stale labels (default: 30m)
+	Threshold       time.Duration `yaml:"threshold"`        // How long before pilot-in-progress is stale (default: 1h)
+	FailedThreshold time.Duration `yaml:"failed_threshold"` // How long before pilot-failed is stale (default: 24h)
 }
 
 // DefaultConfig returns default GitHub configuration
@@ -39,9 +40,10 @@ func DefaultConfig() *Config {
 			Label:    "pilot",
 		},
 		StaleLabelCleanup: &StaleLabelCleanupConfig{
-			Enabled:   true,
-			Interval:  30 * time.Minute,
-			Threshold: 1 * time.Hour,
+			Enabled:         true,
+			Interval:        30 * time.Minute,
+			Threshold:       1 * time.Hour,
+			FailedThreshold: 24 * time.Hour,
 		},
 	}
 }

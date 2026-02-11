@@ -626,6 +626,27 @@ func (p *Poller) Reset() {
 	p.mu.Unlock()
 }
 
+// ClearProcessed removes a single issue from the processed map.
+// Used by the stale label cleaner when removing pilot-failed labels
+// to allow the issue to be retried without restarting Pilot.
+func (p *Poller) ClearProcessed(number int) {
+	p.mu.Lock()
+	delete(p.processed, number)
+	p.mu.Unlock()
+
+	// Also clear from persistent store
+	if p.processedStore != nil {
+		if err := p.processedStore.UnmarkIssueProcessed(number); err != nil {
+			p.logger.Warn("Failed to unmark issue in store",
+				slog.Int("number", number),
+				slog.Any("error", err))
+		}
+	}
+
+	p.logger.Debug("Cleared issue from processed map",
+		slog.Int("number", number))
+}
+
 // ExtractPRNumber extracts PR number from a GitHub PR URL
 // e.g., "https://github.com/owner/repo/pull/123" -> 123
 func ExtractPRNumber(prURL string) (int, error) {
