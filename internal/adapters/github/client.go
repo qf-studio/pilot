@@ -273,18 +273,18 @@ func (c *Client) AddPRComment(ctx context.Context, owner, repo string, number in
 }
 
 // ListIssues lists issues for a repository with optional filters
+// Note: Labels are filtered case-insensitively in Go code after fetching,
+// because GitHub API label queries are case-sensitive.
 func (c *Client) ListIssues(ctx context.Context, owner, repo string, opts *ListIssuesOptions) ([]*Issue, error) {
 	path := fmt.Sprintf("/repos/%s/%s/issues?", owner, repo)
 
 	// Build query parameters
+	// Note: We intentionally skip passing labels to the API because GitHub's
+	// label query is case-sensitive. Instead, we filter in code after fetching.
 	params := []string{}
+	var filterLabels []string
 	if opts != nil {
-		if len(opts.Labels) > 0 {
-			for _, label := range opts.Labels {
-				// GitHub API is case-sensitive for label queries, normalize to lowercase
-				params = append(params, "labels="+strings.ToLower(label))
-			}
-		}
+		filterLabels = opts.Labels // Save for post-fetch filtering
 		if opts.State != "" {
 			params = append(params, "state="+opts.State)
 		}
@@ -307,6 +307,25 @@ func (c *Client) ListIssues(ctx context.Context, owner, repo string, opts *ListI
 	if err := c.doRequest(ctx, http.MethodGet, path, nil, &issues); err != nil {
 		return nil, err
 	}
+
+	// Filter by labels case-insensitively
+	if len(filterLabels) > 0 {
+		var filtered []*Issue
+		for _, issue := range issues {
+			hasAllLabels := true
+			for _, wantLabel := range filterLabels {
+				if !HasLabel(issue, wantLabel) {
+					hasAllLabels = false
+					break
+				}
+			}
+			if hasAllLabels {
+				filtered = append(filtered, issue)
+			}
+		}
+		return filtered, nil
+	}
+
 	return issues, nil
 }
 

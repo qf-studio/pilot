@@ -941,23 +941,25 @@ func TestListIssues(t *testing.T) {
 			},
 			statusCode: http.StatusOK,
 			response: []*Issue{
-				{Number: 1, Title: "Issue 1"},
+				{Number: 1, Title: "Issue 1", Labels: []Label{{Name: "pilot"}, {Name: "bug"}}},
+				{Number: 2, Title: "Issue 2", Labels: []Label{{Name: "pilot"}}}, // missing bug, won't match
 			},
 			wantErr:   false,
-			wantCount: 1,
+			wantCount: 1, // Only issue 1 has both labels
 		},
 		{
-			name: "labels normalized to lowercase in API query",
+			name: "labels filtered case-insensitively in code",
 			opts: &ListIssuesOptions{
-				Labels: []string{"Pilot", "BUG"},
+				Labels: []string{"pilot"},
 				State:  StateOpen,
 			},
 			statusCode: http.StatusOK,
 			response: []*Issue{
-				{Number: 1, Title: "Issue 1"},
+				{Number: 1, Title: "Issue 1", Labels: []Label{{Name: "Pilot"}}}, // uppercase
+				{Number: 2, Title: "Issue 2", Labels: []Label{{Name: "bug"}}},   // no match
 			},
 			wantErr:   false,
-			wantCount: 1,
+			wantCount: 1, // Only issue 1 matches (Pilot == pilot case-insensitive)
 		},
 		{
 			name: "success - with since",
@@ -1012,30 +1014,45 @@ func TestListIssues(t *testing.T) {
 	}
 }
 
-func TestListIssues_LabelsNormalizedToLowercase(t *testing.T) {
+func TestListIssues_LabelsFilteredCaseInsensitively(t *testing.T) {
 	var receivedPath string
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		receivedPath = r.URL.String()
 		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode([]*Issue{})
+		// Return issues with various label cases
+		_ = json.NewEncoder(w).Encode([]*Issue{
+			{Number: 1, Title: "Has pilot lowercase", Labels: []Label{{Name: "pilot"}}},
+			{Number: 2, Title: "Has Pilot uppercase", Labels: []Label{{Name: "Pilot"}}},
+			{Number: 3, Title: "Has PILOT all caps", Labels: []Label{{Name: "PILOT"}}},
+			{Number: 4, Title: "No pilot label", Labels: []Label{{Name: "bug"}}},
+		})
 	}))
 	defer server.Close()
 
 	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
-	_, _ = client.ListIssues(context.Background(), "owner", "repo", &ListIssuesOptions{
-		Labels: []string{"Pilot", "BUG"},
+	issues, err := client.ListIssues(context.Background(), "owner", "repo", &ListIssuesOptions{
+		Labels: []string{"Pilot"}, // Request with mixed case
 	})
+	if err != nil {
+		t.Fatalf("ListIssues() error = %v", err)
+	}
 
-	// Verify labels are lowercased in the API request
-	if !strings.Contains(receivedPath, "labels=pilot") {
-		t.Errorf("expected labels=pilot in URL, got: %s", receivedPath)
+	// Verify labels are NOT passed to API (filtered in code instead)
+	if strings.Contains(receivedPath, "labels=") {
+		t.Errorf("labels should not be in API query (filtered in code), got: %s", receivedPath)
 	}
-	if !strings.Contains(receivedPath, "labels=bug") {
-		t.Errorf("expected labels=bug in URL, got: %s", receivedPath)
+
+	// Should return 3 issues (all with pilot/Pilot/PILOT label, excluding the one with only "bug")
+	if len(issues) != 3 {
+		t.Errorf("expected 3 issues with pilot label (case-insensitive), got %d", len(issues))
 	}
-	if strings.Contains(receivedPath, "labels=Pilot") || strings.Contains(receivedPath, "labels=BUG") {
-		t.Errorf("labels should be lowercased, got: %s", receivedPath)
+
+	// Verify the correct issues were returned
+	for _, issue := range issues {
+		if issue.Number == 4 {
+			t.Errorf("issue #4 should not be returned (has 'bug' not 'pilot')")
+		}
 	}
 }
 
