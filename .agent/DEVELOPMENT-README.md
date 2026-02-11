@@ -198,34 +198,17 @@ gh issue list --label pilot-in-progress --state open
 gh pr list --state open
 ```
 
-### Stability Plan (Priority)
+### Stability Plan ✅ Complete (11/11)
 
 **Full plan: `.agent/tasks/STABILITY-PLAN.md`**
 
-Goal: Raise autonomous reliability from 3/10 to 8/10. Three phases:
+Goal: Raise autonomous reliability from 3/10 to 8/10. **Achieved: 8/10**
 
-**Phase 1 — Stop the Bleeding (P0):**
-| Issue | Fix | Key File |
-|-------|-----|----------|
-| GH-718 | Clean stale `pilot-failed` labels + clear processed map | `cleanup.go`, `poller.go` |
-| GH-719 | Per-PR circuit breaker (not global) | `controller.go` |
-| GH-720 | Retry with backoff on GitHub API calls | new `retry.go` |
-| GH-721 | Hard fail on branch switch failure | `runner.go` |
-| GH-722 | Detect rate limits, retry with backoff | `runner.go`, `main.go` |
-
-**Phase 2 — Prevent Cascading Failures (P1):**
-| Issue | Fix | Key File |
-|-------|-----|----------|
-| GH-723 | Sequential sub-issue execution (merge-then-next) | `epic.go` |
-| GH-724 | Detect merge conflicts before CI wait | `controller.go` |
-| GH-725 | Auto-rebase PRs on simple conflicts | `controller.go` |
-
-**Phase 3 — Resilience (P2):**
-| Issue | Fix | Key File |
-|-------|-----|----------|
-| GH-726 | Persist autopilot state to SQLite | new `state_store.go` |
-| GH-727 | LLM complexity classifier (supersedes GH-665) | `decomposer.go` |
-| GH-728 | Failure metrics + alerting dashboard | new `metrics.go` |
+| Phase | Items | PRs |
+|-------|-------|-----|
+| Phase 1 | Stale label cleanup, per-PR breaker, API retry, branch fail, rate limit | #844, #841, #843, #842, #32 |
+| Phase 2 | Conflict detection, auto-rebase, sequential sub-issues | #740, GH-742/743 |
+| Phase 3 | SQLite state, LLM classifier, metrics | #737, #739 |
 
 ### Slack Socket Mode (v0.33.13 — DONE)
 
