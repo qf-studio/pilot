@@ -427,3 +427,58 @@ func TestExtractPRURL(t *testing.T) {
 		})
 	}
 }
+
+// TestSwitchToDefaultBranchAndPull_FailsOnNonGitDir validates that
+// SwitchToDefaultBranchAndPull returns an error for non-git directories.
+// GH-836: This error MUST cause execution to abort (hard fail) rather than
+// continuing on the wrong branch which corrupts PRs.
+func TestSwitchToDefaultBranchAndPull_FailsOnNonGitDir(t *testing.T) {
+	// Create temp directory without git init
+	tmpDir, err := os.MkdirTemp("", "pilot-git-test-nogit-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	ctx := context.Background()
+	git := NewGitOperations(tmpDir)
+
+	// SwitchToDefaultBranchAndPull should fail on non-git directory
+	_, err = git.SwitchToDefaultBranchAndPull(ctx)
+	if err == nil {
+		t.Error("SwitchToDefaultBranchAndPull should fail on non-git directory")
+	}
+}
+
+// TestSwitchBranch_FailsOnNonExistentBranch validates that
+// SwitchBranch returns an error for non-existent branches.
+// GH-836: This error MUST cause execution to abort when branch doesn't exist.
+func TestSwitchBranch_FailsOnNonExistentBranch(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	tmpDir, err := os.MkdirTemp("", "pilot-git-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	ctx := context.Background()
+
+	// Initialize git repo with initial commit
+	_ = exec.CommandContext(ctx, "git", "-C", tmpDir, "init").Run()
+	_ = exec.CommandContext(ctx, "git", "-C", tmpDir, "config", "user.email", "test@test.com").Run()
+	_ = exec.CommandContext(ctx, "git", "-C", tmpDir, "config", "user.name", "Test User").Run()
+	_ = os.WriteFile(filepath.Join(tmpDir, "test.txt"), []byte("initial"), 0644)
+	_ = exec.CommandContext(ctx, "git", "-C", tmpDir, "add", ".").Run()
+	_ = exec.CommandContext(ctx, "git", "-C", tmpDir, "commit", "-m", "initial").Run()
+
+	git := NewGitOperations(tmpDir)
+
+	// SwitchBranch should fail on non-existent branch
+	err = git.SwitchBranch(ctx, "nonexistent-branch-xyz123")
+	if err == nil {
+		t.Error("SwitchBranch should fail on non-existent branch")
+	}
+}
