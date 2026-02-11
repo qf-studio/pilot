@@ -627,9 +627,9 @@ func TestController_MergeAttemptIncrement(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(resp)
 		case "/repos/owner/repo/pulls/42/merge":
 			mergeCallCount++
-			// Fail first attempt, succeed second
+			// Fail first ProcessPR call (use 422 which is non-retryable), succeed second
 			if mergeCallCount == 1 {
-				w.WriteHeader(http.StatusInternalServerError)
+				w.WriteHeader(http.StatusUnprocessableEntity)
 				return
 			}
 			w.WriteHeader(http.StatusOK)

@@ -154,39 +154,47 @@ func (c *Client) GetIssue(ctx context.Context, owner, repo string, number int) (
 
 // AddComment adds a comment to an issue
 func (c *Client) AddComment(ctx context.Context, owner, repo string, number int, body string) (*Comment, error) {
-	path := fmt.Sprintf("/repos/%s/%s/issues/%d/comments", owner, repo, number)
-	reqBody := map[string]string{"body": body}
-	var comment Comment
-	if err := c.doRequest(ctx, http.MethodPost, path, reqBody, &comment); err != nil {
-		return nil, err
-	}
-	return &comment, nil
+	return WithRetry(ctx, func() (*Comment, error) {
+		path := fmt.Sprintf("/repos/%s/%s/issues/%d/comments", owner, repo, number)
+		reqBody := map[string]string{"body": body}
+		var comment Comment
+		if err := c.doRequest(ctx, http.MethodPost, path, reqBody, &comment); err != nil {
+			return nil, err
+		}
+		return &comment, nil
+	}, DefaultRetryOptions())
 }
 
 // AddLabels adds labels to an issue
 func (c *Client) AddLabels(ctx context.Context, owner, repo string, number int, labels []string) error {
-	path := fmt.Sprintf("/repos/%s/%s/issues/%d/labels", owner, repo, number)
-	reqBody := map[string][]string{"labels": labels}
-	return c.doRequest(ctx, http.MethodPost, path, reqBody, nil)
+	return WithRetryVoid(ctx, func() error {
+		path := fmt.Sprintf("/repos/%s/%s/issues/%d/labels", owner, repo, number)
+		reqBody := map[string][]string{"labels": labels}
+		return c.doRequest(ctx, http.MethodPost, path, reqBody, nil)
+	}, DefaultRetryOptions())
 }
 
 // RemoveLabel removes a label from an issue
 func (c *Client) RemoveLabel(ctx context.Context, owner, repo string, number int, label string) error {
-	// GitHub API is case-sensitive for label names in URL path, normalize to lowercase
-	path := fmt.Sprintf("/repos/%s/%s/issues/%d/labels/%s", owner, repo, number, strings.ToLower(label))
-	err := c.doRequest(ctx, http.MethodDelete, path, nil, nil)
-	// 404 is OK - label might not exist
-	if err != nil && err.Error() != "API error (status 404): " {
-		return err
-	}
-	return nil
+	return WithRetryVoid(ctx, func() error {
+		// GitHub API is case-sensitive for label names in URL path, normalize to lowercase
+		path := fmt.Sprintf("/repos/%s/%s/issues/%d/labels/%s", owner, repo, number, strings.ToLower(label))
+		err := c.doRequest(ctx, http.MethodDelete, path, nil, nil)
+		// 404 is OK - label might not exist
+		if err != nil && err.Error() != "API error (status 404): " {
+			return err
+		}
+		return nil
+	}, DefaultRetryOptions())
 }
 
 // UpdateIssueState updates an issue's state (open/closed)
 func (c *Client) UpdateIssueState(ctx context.Context, owner, repo string, number int, state string) error {
-	path := fmt.Sprintf("/repos/%s/%s/issues/%d", owner, repo, number)
-	reqBody := map[string]string{"state": state}
-	return c.doRequest(ctx, http.MethodPatch, path, reqBody, nil)
+	return WithRetryVoid(ctx, func() error {
+		path := fmt.Sprintf("/repos/%s/%s/issues/%d", owner, repo, number)
+		reqBody := map[string]string{"state": state}
+		return c.doRequest(ctx, http.MethodPatch, path, reqBody, nil)
+	}, DefaultRetryOptions())
 }
 
 // GetRepository fetches repository info
@@ -202,43 +210,51 @@ func (c *Client) GetRepository(ctx context.Context, owner, repo string) (*Reposi
 // CreateCommitStatus creates a status for a specific commit SHA
 // The context parameter allows multiple statuses per commit (e.g., "ci/build", "pilot/execution")
 func (c *Client) CreateCommitStatus(ctx context.Context, owner, repo, sha string, status *CommitStatus) (*CommitStatus, error) {
-	path := fmt.Sprintf("/repos/%s/%s/statuses/%s", owner, repo, sha)
-	var result CommitStatus
-	if err := c.doRequest(ctx, http.MethodPost, path, status, &result); err != nil {
-		return nil, err
-	}
-	return &result, nil
+	return WithRetry(ctx, func() (*CommitStatus, error) {
+		path := fmt.Sprintf("/repos/%s/%s/statuses/%s", owner, repo, sha)
+		var result CommitStatus
+		if err := c.doRequest(ctx, http.MethodPost, path, status, &result); err != nil {
+			return nil, err
+		}
+		return &result, nil
+	}, DefaultRetryOptions())
 }
 
 // CreateCheckRun creates a check run for the GitHub Checks API
 // Requires a GitHub App token with checks:write permission
 func (c *Client) CreateCheckRun(ctx context.Context, owner, repo string, checkRun *CheckRun) (*CheckRun, error) {
-	path := fmt.Sprintf("/repos/%s/%s/check-runs", owner, repo)
-	var result CheckRun
-	if err := c.doRequest(ctx, http.MethodPost, path, checkRun, &result); err != nil {
-		return nil, err
-	}
-	return &result, nil
+	return WithRetry(ctx, func() (*CheckRun, error) {
+		path := fmt.Sprintf("/repos/%s/%s/check-runs", owner, repo)
+		var result CheckRun
+		if err := c.doRequest(ctx, http.MethodPost, path, checkRun, &result); err != nil {
+			return nil, err
+		}
+		return &result, nil
+	}, DefaultRetryOptions())
 }
 
 // UpdateCheckRun updates an existing check run
 func (c *Client) UpdateCheckRun(ctx context.Context, owner, repo string, checkRunID int64, checkRun *CheckRun) (*CheckRun, error) {
-	path := fmt.Sprintf("/repos/%s/%s/check-runs/%d", owner, repo, checkRunID)
-	var result CheckRun
-	if err := c.doRequest(ctx, http.MethodPatch, path, checkRun, &result); err != nil {
-		return nil, err
-	}
-	return &result, nil
+	return WithRetry(ctx, func() (*CheckRun, error) {
+		path := fmt.Sprintf("/repos/%s/%s/check-runs/%d", owner, repo, checkRunID)
+		var result CheckRun
+		if err := c.doRequest(ctx, http.MethodPatch, path, checkRun, &result); err != nil {
+			return nil, err
+		}
+		return &result, nil
+	}, DefaultRetryOptions())
 }
 
 // CreatePullRequest creates a new pull request
 func (c *Client) CreatePullRequest(ctx context.Context, owner, repo string, input *PullRequestInput) (*PullRequest, error) {
-	path := fmt.Sprintf("/repos/%s/%s/pulls", owner, repo)
-	var result PullRequest
-	if err := c.doRequest(ctx, http.MethodPost, path, input, &result); err != nil {
-		return nil, err
-	}
-	return &result, nil
+	return WithRetry(ctx, func() (*PullRequest, error) {
+		path := fmt.Sprintf("/repos/%s/%s/pulls", owner, repo)
+		var result PullRequest
+		if err := c.doRequest(ctx, http.MethodPost, path, input, &result); err != nil {
+			return nil, err
+		}
+		return &result, nil
+	}, DefaultRetryOptions())
 }
 
 // GetPullRequest fetches a pull request by number
@@ -254,22 +270,26 @@ func (c *Client) GetPullRequest(ctx context.Context, owner, repo string, number 
 // ClosePullRequest closes a pull request without merging.
 // Used by autopilot to close failed PRs so the sequential poller can unblock.
 func (c *Client) ClosePullRequest(ctx context.Context, owner, repo string, number int) error {
-	path := fmt.Sprintf("/repos/%s/%s/pulls/%d", owner, repo, number)
-	payload := map[string]string{"state": "closed"}
-	return c.doRequest(ctx, http.MethodPatch, path, payload, nil)
+	return WithRetryVoid(ctx, func() error {
+		path := fmt.Sprintf("/repos/%s/%s/pulls/%d", owner, repo, number)
+		payload := map[string]string{"state": "closed"}
+		return c.doRequest(ctx, http.MethodPatch, path, payload, nil)
+	}, DefaultRetryOptions())
 }
 
 // AddPRComment adds a comment to a pull request (issue comment API)
 // For review comments on specific lines, use CreatePRReviewComment instead
 func (c *Client) AddPRComment(ctx context.Context, owner, repo string, number int, body string) (*PRComment, error) {
-	// PRs use the issues API for general comments
-	path := fmt.Sprintf("/repos/%s/%s/issues/%d/comments", owner, repo, number)
-	reqBody := map[string]string{"body": body}
-	var result PRComment
-	if err := c.doRequest(ctx, http.MethodPost, path, reqBody, &result); err != nil {
-		return nil, err
-	}
-	return &result, nil
+	return WithRetry(ctx, func() (*PRComment, error) {
+		// PRs use the issues API for general comments
+		path := fmt.Sprintf("/repos/%s/%s/issues/%d/comments", owner, repo, number)
+		reqBody := map[string]string{"body": body}
+		var result PRComment
+		if err := c.doRequest(ctx, http.MethodPost, path, reqBody, &result); err != nil {
+			return nil, err
+		}
+		return &result, nil
+	}, DefaultRetryOptions())
 }
 
 // ListIssues lists issues for a repository with optional filters
@@ -343,16 +363,18 @@ func HasLabel(issue *Issue, labelName string) bool {
 // method can be "merge", "squash", or "rebase" (use MergeMethod* constants)
 // commitTitle is optional - if empty, GitHub uses the default
 func (c *Client) MergePullRequest(ctx context.Context, owner, repo string, number int, method, commitTitle string) error {
-	path := fmt.Sprintf("/repos/%s/%s/pulls/%d/merge", owner, repo, number)
+	return WithRetryVoid(ctx, func() error {
+		path := fmt.Sprintf("/repos/%s/%s/pulls/%d/merge", owner, repo, number)
 
-	body := map[string]string{
-		"merge_method": method,
-	}
-	if commitTitle != "" {
-		body["commit_title"] = commitTitle
-	}
+		body := map[string]string{
+			"merge_method": method,
+		}
+		if commitTitle != "" {
+			body["commit_title"] = commitTitle
+		}
 
-	return c.doRequest(ctx, http.MethodPut, path, body, nil)
+		return c.doRequest(ctx, http.MethodPut, path, body, nil)
+	}, DefaultRetryOptions())
 }
 
 // GetCombinedStatus gets combined status for a commit SHA
@@ -384,16 +406,18 @@ func (c *Client) ListCheckRuns(ctx context.Context, owner, repo, sha string) (*C
 // ApprovePullRequest creates an approval review on a PR
 // body is the optional review comment
 func (c *Client) ApprovePullRequest(ctx context.Context, owner, repo string, number int, body string) error {
-	path := fmt.Sprintf("/repos/%s/%s/pulls/%d/reviews", owner, repo, number)
+	return WithRetryVoid(ctx, func() error {
+		path := fmt.Sprintf("/repos/%s/%s/pulls/%d/reviews", owner, repo, number)
 
-	payload := map[string]string{
-		"event": ReviewEventApprove,
-	}
-	if body != "" {
-		payload["body"] = body
-	}
+		payload := map[string]string{
+			"event": ReviewEventApprove,
+		}
+		if body != "" {
+			payload["body"] = body
+		}
 
-	return c.doRequest(ctx, http.MethodPost, path, payload, nil)
+		return c.doRequest(ctx, http.MethodPost, path, payload, nil)
+	}, DefaultRetryOptions())
 }
 
 // IssueInput is the input for creating a new issue
@@ -405,12 +429,14 @@ type IssueInput struct {
 
 // CreateIssue creates a new issue in a repository
 func (c *Client) CreateIssue(ctx context.Context, owner, repo string, input *IssueInput) (*Issue, error) {
-	path := fmt.Sprintf("/repos/%s/%s/issues", owner, repo)
-	var issue Issue
-	if err := c.doRequest(ctx, http.MethodPost, path, input, &issue); err != nil {
-		return nil, err
-	}
-	return &issue, nil
+	return WithRetry(ctx, func() (*Issue, error) {
+		path := fmt.Sprintf("/repos/%s/%s/issues", owner, repo)
+		var issue Issue
+		if err := c.doRequest(ctx, http.MethodPost, path, input, &issue); err != nil {
+			return nil, err
+		}
+		return &issue, nil
+	}, DefaultRetryOptions())
 }
 
 // GetBranch fetches information about a branch
@@ -436,24 +462,28 @@ func (c *Client) ListPullRequests(ctx context.Context, owner, repo, state string
 
 // CreateRelease creates a new release
 func (c *Client) CreateRelease(ctx context.Context, owner, repo string, input *ReleaseInput) (*Release, error) {
-	path := fmt.Sprintf("/repos/%s/%s/releases", owner, repo)
-	var result Release
-	if err := c.doRequest(ctx, http.MethodPost, path, input, &result); err != nil {
-		return nil, err
-	}
-	return &result, nil
+	return WithRetry(ctx, func() (*Release, error) {
+		path := fmt.Sprintf("/repos/%s/%s/releases", owner, repo)
+		var result Release
+		if err := c.doRequest(ctx, http.MethodPost, path, input, &result); err != nil {
+			return nil, err
+		}
+		return &result, nil
+	}, DefaultRetryOptions())
 }
 
 // CreateGitTag creates a lightweight git tag via the GitHub API.
 // This creates only the tag ref, not a GitHub Release — letting GoReleaser
 // handle the full release creation with binary assets on tag push.
 func (c *Client) CreateGitTag(ctx context.Context, owner, repo, tag, sha string) error {
-	path := fmt.Sprintf("/repos/%s/%s/git/refs", owner, repo)
-	body := map[string]string{
-		"ref": "refs/tags/" + tag,
-		"sha": sha,
-	}
-	return c.doRequest(ctx, http.MethodPost, path, body, nil)
+	return WithRetryVoid(ctx, func() error {
+		path := fmt.Sprintf("/repos/%s/%s/git/refs", owner, repo)
+		body := map[string]string{
+			"ref": "refs/tags/" + tag,
+			"sha": sha,
+		}
+		return c.doRequest(ctx, http.MethodPost, path, body, nil)
+	}, DefaultRetryOptions())
 }
 
 // GetLatestRelease gets the latest published release
