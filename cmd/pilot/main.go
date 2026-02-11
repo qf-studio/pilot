@@ -3523,6 +3523,8 @@ Examples:
 			if err := client.AddLabels(ctx, owner, repoName, int(issueNum), []string{"pilot-done"}); err != nil {
 				logGitHubAPIError("AddLabels", owner, repoName, int(issueNum), err)
 			}
+			// Remove pilot-failed if present (may exist from previous failed attempt)
+			_ = client.RemoveLabel(ctx, owner, repoName, int(issueNum), "pilot-failed")
 
 			comment := buildExecutionComment(result, branchName)
 			if _, err := client.AddComment(ctx, owner, repoName, int(issueNum), comment); err != nil {

@@ -612,8 +612,9 @@ func TestSequentialEpicFlow_ContextDeadline(t *testing.T) {
 		Title: "[epic] Timeout test",
 	}
 
-	// Use a deadline that expires after the first sub-issue completes
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	// Use a deadline that expires after the first sub-issue completes.
+	// Use 500ms to account for race detector overhead and slow CI runners.
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 
 	execCount := 0
@@ -628,8 +629,8 @@ func TestSequentialEpicFlow_ContextDeadline(t *testing.T) {
 				CommitSHA: "sha-0",
 			}, nil
 		}
-		// Simulate slow execution that will exceed deadline
-		time.Sleep(100 * time.Millisecond)
+		// Simulate slow execution that will exceed deadline (600ms > 500ms timeout)
+		time.Sleep(600 * time.Millisecond)
 		return &ExecutionResult{
 			TaskID:    task.ID,
 			Success:   true,
