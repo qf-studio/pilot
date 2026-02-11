@@ -670,10 +670,10 @@ func TestPoller_FindOldestUnprocessedIssue(t *testing.T) {
 	}
 }
 
-func TestPoller_FindOldestUnprocessedIssue_SkipsProcessed(t *testing.T) {
+func TestPoller_FindOldestUnprocessedIssue_SkipsProcessedWithDoneLabel(t *testing.T) {
 	now := time.Now()
 	issues := []*Issue{
-		{Number: 1, Title: "Oldest", Labels: []Label{{Name: "pilot"}}, CreatedAt: now.Add(-2 * time.Hour)},
+		{Number: 1, Title: "Oldest Done", Labels: []Label{{Name: "pilot"}, {Name: LabelDone}}, CreatedAt: now.Add(-2 * time.Hour)},
 		{Number: 2, Title: "Second", Labels: []Label{{Name: "pilot"}}, CreatedAt: now.Add(-1 * time.Hour)},
 	}
 
@@ -686,9 +686,6 @@ func TestPoller_FindOldestUnprocessedIssue_SkipsProcessed(t *testing.T) {
 	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second)
 
-	// Mark oldest as processed
-	poller.markProcessed(1)
-
 	issue, err := poller.findOldestUnprocessedIssue(context.Background())
 
 	if err != nil {
@@ -698,7 +695,44 @@ func TestPoller_FindOldestUnprocessedIssue_SkipsProcessed(t *testing.T) {
 		t.Fatal("issue should not be nil")
 	}
 	if issue.Number != 2 {
-		t.Errorf("found issue #%d, want #2 (next oldest after processed)", issue.Number)
+		t.Errorf("found issue #%d, want #2 (oldest without status label)", issue.Number)
+	}
+}
+
+func TestPoller_FindOldestUnprocessedIssue_AllowsRetryWhenFailedLabelRemoved(t *testing.T) {
+	now := time.Now()
+	issues := []*Issue{
+		{Number: 1, Title: "Was Failed", Labels: []Label{{Name: "pilot"}}, CreatedAt: now.Add(-2 * time.Hour)},
+		{Number: 2, Title: "Second", Labels: []Label{{Name: "pilot"}}, CreatedAt: now.Add(-1 * time.Hour)},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(issues)
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second)
+
+	// Simulate: issue was processed (failed) but pilot-failed label was removed
+	poller.markProcessed(1)
+
+	issue, err := poller.findOldestUnprocessedIssue(context.Background())
+
+	if err != nil {
+		t.Fatalf("findOldestUnprocessedIssue() error = %v", err)
+	}
+	if issue == nil {
+		t.Fatal("issue should not be nil - should allow retry")
+	}
+	// Should return #1 because pilot-failed was removed, allowing retry
+	if issue.Number != 1 {
+		t.Errorf("found issue #%d, want #1 (should retry after pilot-failed removed)", issue.Number)
+	}
+	// Verify it was removed from processed map
+	if poller.IsProcessed(1) {
+		t.Error("issue #1 should no longer be marked as processed")
 	}
 }
 

@@ -432,16 +432,23 @@ func (p *Poller) findOldestUnprocessedIssue(ctx context.Context) (*Issue, error)
 	// Filter out already processed and in-progress issues
 	var candidates []*Issue
 	for _, issue := range issues {
+		// Skip if has status labels
+		if HasLabel(issue, LabelInProgress) || HasLabel(issue, LabelDone) || HasLabel(issue, LabelFailed) {
+			continue
+		}
+
+		// Check if previously processed
 		p.mu.RLock()
 		processed := p.processed[issue.Number]
 		p.mu.RUnlock()
 
+		// If processed but no status labels, allow retry (pilot-failed was removed)
 		if processed {
-			continue
-		}
-
-		if HasLabel(issue, LabelInProgress) || HasLabel(issue, LabelDone) || HasLabel(issue, LabelFailed) {
-			continue
+			p.logger.Info("Issue was processed but status labels removed, allowing retry",
+				slog.Int("number", issue.Number))
+			p.mu.Lock()
+			delete(p.processed, issue.Number)
+			p.mu.Unlock()
 		}
 
 		candidates = append(candidates, issue)
@@ -500,8 +507,13 @@ func (p *Poller) checkForNewIssues(ctx context.Context) {
 			continue
 		}
 
-		// Skip if already in progress, done, or failed
-		if HasLabel(issue, LabelInProgress) || HasLabel(issue, LabelDone) || HasLabel(issue, LabelFailed) {
+		// Skip if already in progress or failed (don't mark processed - allows retry when label removed)
+		if HasLabel(issue, LabelInProgress) || HasLabel(issue, LabelFailed) {
+			continue
+		}
+
+		// Skip and mark done issues as permanently processed
+		if HasLabel(issue, LabelDone) {
 			p.markProcessed(issue.Number)
 			continue
 		}
