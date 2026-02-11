@@ -263,7 +263,8 @@ func TestRemoveLabel(t *testing.T) {
 				if r.Method != http.MethodDelete {
 					t.Errorf("expected DELETE, got %s", r.Method)
 				}
-				expectedPath := "/repos/owner/repo/issues/42/labels/" + tt.label
+				// Labels are normalized to lowercase in URL path
+				expectedPath := "/repos/owner/repo/issues/42/labels/" + strings.ToLower(tt.label)
 				if r.URL.Path != expectedPath {
 					t.Errorf("unexpected path: %s, want %s", r.URL.Path, expectedPath)
 				}
@@ -278,6 +279,24 @@ func TestRemoveLabel(t *testing.T) {
 				t.Errorf("RemoveLabel() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestRemoveLabel_NormalizesToLowercase(t *testing.T) {
+	var receivedPath string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedPath = r.URL.Path
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	_ = client.RemoveLabel(context.Background(), "owner", "repo", 42, "Pilot-Failed")
+
+	expectedPath := "/repos/owner/repo/issues/42/labels/pilot-failed"
+	if receivedPath != expectedPath {
+		t.Errorf("expected label to be lowercased in path, got: %s, want: %s", receivedPath, expectedPath)
 	}
 }
 
@@ -928,6 +947,19 @@ func TestListIssues(t *testing.T) {
 			wantCount: 1,
 		},
 		{
+			name: "labels normalized to lowercase in API query",
+			opts: &ListIssuesOptions{
+				Labels: []string{"Pilot", "BUG"},
+				State:  StateOpen,
+			},
+			statusCode: http.StatusOK,
+			response: []*Issue{
+				{Number: 1, Title: "Issue 1"},
+			},
+			wantErr:   false,
+			wantCount: 1,
+		},
+		{
 			name: "success - with since",
 			opts: &ListIssuesOptions{
 				Since: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
@@ -977,6 +1009,33 @@ func TestListIssues(t *testing.T) {
 				t.Errorf("ListIssues() returned %d issues, want %d", len(issues), tt.wantCount)
 			}
 		})
+	}
+}
+
+func TestListIssues_LabelsNormalizedToLowercase(t *testing.T) {
+	var receivedPath string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedPath = r.URL.String()
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode([]*Issue{})
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	_, _ = client.ListIssues(context.Background(), "owner", "repo", &ListIssuesOptions{
+		Labels: []string{"Pilot", "BUG"},
+	})
+
+	// Verify labels are lowercased in the API request
+	if !strings.Contains(receivedPath, "labels=pilot") {
+		t.Errorf("expected labels=pilot in URL, got: %s", receivedPath)
+	}
+	if !strings.Contains(receivedPath, "labels=bug") {
+		t.Errorf("expected labels=bug in URL, got: %s", receivedPath)
+	}
+	if strings.Contains(receivedPath, "labels=Pilot") || strings.Contains(receivedPath, "labels=BUG") {
+		t.Errorf("labels should be lowercased, got: %s", receivedPath)
 	}
 }
 

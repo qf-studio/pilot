@@ -172,7 +172,8 @@ func (c *Client) AddLabels(ctx context.Context, owner, repo string, number int, 
 
 // RemoveLabel removes a label from an issue
 func (c *Client) RemoveLabel(ctx context.Context, owner, repo string, number int, label string) error {
-	path := fmt.Sprintf("/repos/%s/%s/issues/%d/labels/%s", owner, repo, number, label)
+	// GitHub API is case-sensitive for label names in URL path, normalize to lowercase
+	path := fmt.Sprintf("/repos/%s/%s/issues/%d/labels/%s", owner, repo, number, strings.ToLower(label))
 	err := c.doRequest(ctx, http.MethodDelete, path, nil, nil)
 	// 404 is OK - label might not exist
 	if err != nil && err.Error() != "API error (status 404): " {
@@ -280,7 +281,8 @@ func (c *Client) ListIssues(ctx context.Context, owner, repo string, opts *ListI
 	if opts != nil {
 		if len(opts.Labels) > 0 {
 			for _, label := range opts.Labels {
-				params = append(params, "labels="+label)
+				// GitHub API is case-sensitive for label queries, normalize to lowercase
+				params = append(params, "labels="+strings.ToLower(label))
 			}
 		}
 		if opts.State != "" {
