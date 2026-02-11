@@ -63,21 +63,38 @@ gh pr merge <number>
 
 ---
 
-## CRITICAL: Core Architecture Constraint
+## CRITICAL: Core Architecture Constraints
+
+### 1. Navigator Integration (runner.go)
 
 **NEVER remove Navigator integration from `internal/executor/runner.go`**
 
-The `BuildPrompt()` function MUST include `"Start my Navigator session"` prefix when `.agent/` exists. This is Pilot's core value proposition:
+The `BuildPrompt()` function MUST invoke `/nav-loop` mode when `.agent/` exists. This is Pilot's core value proposition:
 
 ```go
-// Check if project has Navigator initialized
-agentDir := filepath.Join(task.ProjectPath, ".agent")
-if _, err := os.Stat(agentDir); err == nil {
-    sb.WriteString("Start my Navigator session.\n\n")  // <- NEVER REMOVE
+// Navigator-aware prompt structure for medium/complex tasks
+if useNavigator {
+    sb.WriteString("Use /nav-loop mode for this task.\n\n")  // <- NEVER REMOVE
+    // ... PILOT EXECUTION MODE override for CLAUDE.md rules
 }
 ```
 
-**Incident 2026-01-26**: This was accidentally removed during "simplification" refactor. Pilot without Navigator = just another Claude Code wrapper with zero value.
+**Incident 2026-01-26**: Navigator prefix was accidentally removed during "simplification" refactor. Pilot without Navigator = just another Claude Code wrapper with zero value.
+
+### 2. Navigator Auto-Init (v0.33.16+)
+
+Navigator is now auto-initialized for projects without `.agent/`. In `runner.go Execute()`:
+
+```go
+// Auto-init Navigator if configured and missing
+if r.config.Navigator.AutoInit && !initialized {
+    r.maybeInitNavigator(task.ProjectPath)  // Creates .agent/ from templates
+}
+```
+
+**Key files**: `internal/executor/navigator.go`, `internal/executor/templates/`
+
+Disable via config: `executor.navigator.auto_init: false`
 
 ---
 
@@ -96,7 +113,7 @@ if _, err := os.Stat(agentDir); err == nil {
 
 ## Current State
 
-**Current Version:** v0.33.3 | **107 features working** | **0 unwired**
+**Current Version:** v0.33.16 | **111 features working** | **0 unwired**
 
 **Full implementation status:** `.agent/system/FEATURE-MATRIX.md`
 
@@ -127,6 +144,10 @@ if _, err := os.Stat(agentDir); err == nil {
 | PagerDuty Alerts | Done | Events API v2 integration (v0.25.0) |
 | Jira Webhooks | Done | Inbound webhook handler (v0.25.0) |
 | Outbound Webhooks | Done | Configurable HTTP webhooks with HMAC signing (v0.25.0) |
+| Slack Socket Mode | Done | Full inbound handler wired into main.go lifecycle (v0.33.13) |
+| Self-Review Alignment | Done | Verifies files in issue title were actually modified (v0.33.14) |
+| Nav-Loop Execution | Done | Explicit /nav-loop mode for structured autonomous work (v0.33.15) |
+| Navigator Auto-Init | Done | Auto-creates .agent/ on first task execution (v0.33.16) |
 
 ### Telegram Interaction Modes (v0.6.0)
 
@@ -206,14 +227,16 @@ Goal: Raise autonomous reliability from 3/10 to 8/10. Three phases:
 | GH-727 | LLM complexity classifier (supersedes GH-665) | `decomposer.go` |
 | GH-728 | Failure metrics + alerting dashboard | new `metrics.go` |
 
-### Slack Socket Mode (Remaining)
+### Slack Socket Mode (v0.33.13 — DONE)
 
 | Issue | What | Status |
 |-------|------|--------|
 | GH-644 | Extract shared intent package | Queued |
-| GH-650 | Slack handler with 5 interaction modes | Blocked by 644 |
-| GH-651 | Slack MemberResolver RBAC | Blocked by 650 |
-| GH-652 | Wire Slack into pilot.go + main.go | Blocked by all above |
+| GH-650 | Slack handler with 5 interaction modes | Done (PR #831) |
+| GH-651 | Slack MemberResolver RBAC | Queued |
+| GH-652 | Wire Slack into pilot.go + main.go | **Done (v0.33.13)** — `--slack` flag works |
+
+**Usage**: `pilot start --slack` enables Socket Mode. Requires `app_token` in config.
 
 ### Backlog
 
@@ -230,9 +253,14 @@ Goal: Raise autonomous reliability from 3/10 to 8/10. Three phases:
 
 | Item | What |
 |------|------|
+| **v0.33.16** | Navigator auto-init — creates `.agent/` automatically on first task execution |
+| **v0.33.15** | Explicit `/nav-loop` mode for structured autonomous execution with NAVIGATOR_STATUS |
+| **v0.33.14** | Self-review alignment check — verifies files in issue title were actually modified |
+| **v0.33.13** | Slack Socket Mode wired into main.go — `--slack` flag now works |
 | **v0.33.3** | Case-insensitive label matching — `Pilot` and `pilot` now work the same |
 | **v0.33.2** | Allow retry when `pilot-failed` label is removed (poller no longer marks failed as processed) |
 | Issue cleanup | Closed 9 `pilot-done` issues, 2 stale CI fix issues |
+| Reliability | 4 fixes addressing incomplete wiring pattern (GH-652 lesson learned) |
 
 ### 2026-02-10
 
