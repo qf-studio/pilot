@@ -48,8 +48,11 @@ type Pilot struct {
 	telegramClient     *telegram.Client
 	telegramHandler        *telegram.Handler        // Telegram polling handler (GH-349)
 	telegramRunner         *executor.Runner         // Runner for Telegram tasks (GH-349)
-	telegramMemberResolver telegram.MemberResolver   // Team member resolver for Telegram RBAC (GH-634)
-	githubPoller       *github.Poller    // GitHub polling handler (GH-350)
+	telegramMemberResolver telegram.MemberResolver  // Team member resolver for Telegram RBAC (GH-634)
+	slackHandler           *slack.Handler           // Slack Socket Mode handler (GH-652)
+	slackRunner            *executor.Runner         // Runner for Slack tasks (GH-652)
+	slackMemberResolver    slack.MemberResolver     // Team member resolver for Slack RBAC (GH-786)
+	githubPoller           *github.Poller           // GitHub polling handler (GH-350)
 	alertEngine        *alerts.Engine
 	teamsService       *teams.Service   // Teams RBAC service (GH-633)
 	store              *memory.Store
@@ -135,6 +138,27 @@ func WithGitHubPoller(poller *github.Poller) Option {
 func WithTeamsService(svc *teams.Service) Option {
 	return func(p *Pilot) {
 		p.teamsService = svc
+	}
+}
+
+// WithSlackHandler enables Slack Socket Mode in gateway mode (GH-652)
+// The runner is required to execute tasks from Slack messages.
+func WithSlackHandler(runner *executor.Runner, projectPath string) Option {
+	return func(p *Pilot) {
+		p.slackRunner = runner
+		// Store projectPath in config for handler initialization
+		// This is used in the Slack handler setup
+		if projectPath != "" && len(p.config.Projects) > 0 {
+			// Use provided projectPath as override
+			p.config.Projects[0].Path = projectPath
+		}
+	}
+}
+
+// WithSlackMemberResolver sets the team member resolver for Slack RBAC (GH-786).
+func WithSlackMemberResolver(resolver slack.MemberResolver) Option {
+	return func(p *Pilot) {
+		p.slackMemberResolver = resolver
 	}
 }
 
@@ -421,6 +445,32 @@ func New(cfg *config.Config, opts ...Option) (*Pilot, error) {
 		logging.WithComponent("pilot").Info("Telegram handler initialized for gateway mode")
 	}
 
+	// Initialize Slack handler if runner was provided via options (GH-652)
+	// This enables Slack Socket Mode in gateway mode alongside other adapters
+	if p.slackRunner != nil && cfg.Adapters.Slack != nil && cfg.Adapters.Slack.Enabled && cfg.Adapters.Slack.SocketMode {
+		// Get project path - use first project if available
+		projectPath := ""
+		if len(cfg.Projects) > 0 {
+			projectPath = cfg.Projects[0].Path
+		}
+
+		p.slackHandler = slack.NewHandler(&slack.HandlerConfig{
+			AppToken:        cfg.Adapters.Slack.AppToken,
+			BotToken:        cfg.Adapters.Slack.BotToken,
+			ProjectPath:     projectPath,
+			Projects:        config.NewSlackProjectSource(cfg),
+			AllowedChannels: cfg.Adapters.Slack.AllowedChannels,
+			AllowedUsers:    cfg.Adapters.Slack.AllowedUsers,
+			MemberResolver:  p.slackMemberResolver, // GH-786: Slack user → team member RBAC
+		}, p.slackRunner)
+
+		if len(cfg.Adapters.Slack.AllowedChannels) == 0 && len(cfg.Adapters.Slack.AllowedUsers) == 0 {
+			logging.WithComponent("pilot").Warn("SECURITY: slack allowed_channels and allowed_users are empty - ALL users can interact with the bot!")
+		}
+
+		logging.WithComponent("pilot").Info("Slack handler initialized for gateway mode")
+	}
+
 	return p, nil
 }
 
@@ -466,6 +516,18 @@ func (p *Pilot) Start() error {
 		logging.WithComponent("pilot").Info("GitHub polling started in gateway mode")
 	}
 
+	// Start Slack Socket Mode if handler is initialized (GH-652)
+	if p.slackHandler != nil {
+		p.wg.Add(1)
+		go func() {
+			defer p.wg.Done()
+			if err := p.slackHandler.StartListening(p.ctx); err != nil {
+				logging.WithComponent("pilot").Error("Slack Socket Mode error", slog.Any("error", err))
+			}
+		}()
+		logging.WithComponent("pilot").Info("Slack Socket Mode started in gateway mode")
+	}
+
 	logging.WithComponent("pilot").Info("Pilot started",
 		slog.String("host", p.config.Gateway.Host),
 		slog.Int("port", p.config.Gateway.Port))
@@ -482,6 +544,12 @@ func (p *Pilot) Stop() error {
 	if p.telegramHandler != nil {
 		p.telegramHandler.Stop()
 		logging.WithComponent("pilot").Info("Telegram polling stopped")
+	}
+
+	// Stop Slack Socket Mode if enabled (GH-652)
+	if p.slackHandler != nil {
+		p.slackHandler.Stop()
+		logging.WithComponent("pilot").Info("Slack Socket Mode stopped")
 	}
 
 	// Stop alerts engine
