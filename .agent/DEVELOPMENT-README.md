@@ -113,7 +113,7 @@ Disable via config: `executor.navigator.auto_init: false`
 
 ## Current State
 
-**Current Version:** v0.33.16 | **111 features working** | **0 unwired**
+**Current Version:** v0.34.1 | **115 features working** | **0 unwired**
 
 **Full implementation status:** `.agent/system/FEATURE-MATRIX.md`
 
@@ -148,6 +148,10 @@ Disable via config: `executor.navigator.auto_init: false`
 | Self-Review Alignment | Done | Verifies files in issue title were actually modified (v0.33.14) |
 | Nav-Loop Execution | Done | Explicit /nav-loop mode for structured autonomous work (v0.33.15) |
 | Navigator Auto-Init | Done | Auto-creates .agent/ on first task execution (v0.33.16) |
+| Stale Label Cleanup | Done | Cleans `pilot-failed` labels, allows retry (v0.34.0) |
+| Per-PR Circuit Breaker | Done | Independent failure tracking per PR (v0.34.0) |
+| GitHub API Retry | Done | Exponential backoff on transient failures (v0.34.0) |
+| Branch Switch Hard Fail | Done | Abort execution on checkout failure (v0.34.0) |
 
 ### Telegram Interaction Modes (v0.6.0)
 
@@ -244,6 +248,9 @@ Goal: Raise autonomous reliability from 3/10 to 8/10. **Achieved: 8/10**
 | **v0.33.2** | Allow retry when `pilot-failed` label is removed (poller no longer marks failed as processed) |
 | Issue cleanup | Closed 9 `pilot-done` issues, 2 stale CI fix issues |
 | Reliability | 4 fixes addressing incomplete wiring pattern (GH-652 lesson learned) |
+| **v0.34.0** | Stability Plan complete (11/11) — 4 final features merged |
+| **v0.34.1** | Stale `pilot-failed` cleanup (PR #844), per-PR circuit breaker (PR #841), API retry (PR #843), branch hard fail (PR #842) |
+| Stability | Target reliability 8/10 achieved — Pilot can run 24h+ unattended |
 
 ### 2026-02-10
 
