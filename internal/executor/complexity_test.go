@@ -118,7 +118,7 @@ Each component must be properly tested with both unit and integration tests.
 			expected: ComplexityMedium,
 		},
 		{
-			name: "7+ checkboxes with 200+ words IS epic",
+			name: "7 checkboxes with 200+ words is NOT epic (threshold raised to 15)",
 			task: &Task{Description: `## Overview
 This comprehensive feature requires implementing a full user management system with proper authentication,
 authorization, and data validation. The system must integrate with our existing auth provider and support
@@ -139,7 +139,7 @@ rollback if needed. Security review is mandatory before the feature goes live in
 - [ ] Create user documentation and API docs
 - [ ] Set up monitoring and alerting
 - [ ] Performance and load testing`},
-			expected: ComplexityEpic,
+			expected: ComplexityComplex, // Long description → complex, but not epic with only 7 checkboxes
 		},
 		{
 			name: "3 phases is NOT epic (normal implementation plan)",

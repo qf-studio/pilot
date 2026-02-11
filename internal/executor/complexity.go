@@ -211,7 +211,8 @@ func detectEpic(title, description, combined string) bool {
 	}
 
 	// Many checkboxes only triggers with another signal
-	if checkboxCount >= 7 && (wordCount > 200 || phaseCount >= 3) {
+	// Raised from 7 to 15 to avoid false positives on acceptance criteria sections
+	if checkboxCount >= 15 && (wordCount > 200 || phaseCount >= 3) {
 		return true
 	}
 

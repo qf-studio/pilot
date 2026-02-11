@@ -545,8 +545,17 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 	// Detect complexity for routing decisions
 	complexity := DetectComplexity(task)
 
+	// GH-664: Skip epic mode if task has no-decompose label
+	hasNoDecompose := false
+	for _, label := range task.Labels {
+		if strings.EqualFold(label, NoDecomposeLabel) {
+			hasNoDecompose = true
+			break
+		}
+	}
+
 	// GH-405: Epic tasks trigger planning mode instead of execution
-	if complexity.IsEpic() {
+	if complexity.IsEpic() && !hasNoDecompose {
 		r.log.Info("Epic task detected, running planning mode",
 			slog.String("task_id", task.ID),
 			slog.String("title", task.Title),
