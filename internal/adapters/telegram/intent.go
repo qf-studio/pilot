@@ -18,17 +18,14 @@ const (
 	IntentTask     = intent.IntentTask
 )
 
-// DetectIntent re-exports intent.DetectIntent for backward compatibility
-func DetectIntent(message string) Intent {
-	return intent.DetectIntent(message)
-}
+// DetectIntent re-exports intent.DetectIntent for backward compatibility.
+// Use type alias (Option A from GH-644 spec).
+var DetectIntent = intent.DetectIntent
 
-// IsEphemeralTask re-exports intent.IsEphemeralTask for backward compatibility
-func IsEphemeralTask(description string) bool {
-	return intent.IsEphemeralTask(description)
-}
+// IsEphemeralTask re-exports intent.IsEphemeralTask for backward compatibility.
+// Use type alias (Option A from GH-644 spec).
+var IsEphemeralTask = intent.IsEphemeralTask
 
-// isClearQuestion wraps intent.IsClearQuestion for internal use in handler.go
-func isClearQuestion(msg string) bool {
-	return intent.IsClearQuestion(msg)
-}
+// IsClearQuestion re-exports intent.IsClearQuestion for backward compatibility.
+// Use type alias (Option A from GH-644 spec).
+var IsClearQuestion = intent.IsClearQuestion

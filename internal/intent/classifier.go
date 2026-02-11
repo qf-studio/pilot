@@ -9,19 +9,6 @@ import (
 	"time"
 )
 
-// Intent represents the detected intent of a message
-type Intent string
-
-const (
-	IntentCommand  Intent = "command"
-	IntentGreeting Intent = "greeting"
-	IntentResearch Intent = "research"
-	IntentPlanning Intent = "planning"
-	IntentQuestion Intent = "question"
-	IntentChat     Intent = "chat"
-	IntentTask     Intent = "task"
-)
-
 // ConversationMessage represents a message in the conversation
 type ConversationMessage struct {
 	Role    string `json:"role"` // "user" or "assistant"
