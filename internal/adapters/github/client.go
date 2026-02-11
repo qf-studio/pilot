@@ -469,6 +469,21 @@ func (c *Client) ListTags(ctx context.Context, owner, repo string, perPage int) 
 	return result, nil
 }
 
+// GetTagForSHA returns the tag name if a tag exists at the given SHA, or empty string if none.
+// Used to detect if a commit has already been tagged (race condition prevention).
+func (c *Client) GetTagForSHA(ctx context.Context, owner, repo, sha string) (string, error) {
+	tags, err := c.ListTags(ctx, owner, repo, 20)
+	if err != nil {
+		return "", err
+	}
+	for _, tag := range tags {
+		if tag.Commit.SHA == sha {
+			return tag.Name, nil
+		}
+	}
+	return "", nil
+}
+
 // GetPRCommits returns all commits in a pull request
 func (c *Client) GetPRCommits(ctx context.Context, owner, repo string, prNumber int) ([]*Commit, error) {
 	path := fmt.Sprintf("/repos/%s/%s/pulls/%d/commits?per_page=100", owner, repo, prNumber)

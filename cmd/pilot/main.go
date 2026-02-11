@@ -749,11 +749,18 @@ Examples:
 							slog.Int("attempt", pendingTask.Attempts),
 						)
 
+						var result *github.IssueResult
 						if execMode == github.ExecutionModeSequential {
-							_, err = handleGitHubIssueWithResult(retryCtx, cfg, client, issue, projectPath, gwDispatcher, gwRunner, gwMonitor, gwProgram, gwAlertsEngine, gwEnforcer)
+							result, err = handleGitHubIssueWithResult(retryCtx, cfg, client, issue, projectPath, gwDispatcher, gwRunner, gwMonitor, gwProgram, gwAlertsEngine, gwEnforcer)
 						} else {
-							err = handleGitHubIssueWithMonitor(retryCtx, cfg, client, issue, projectPath, gwDispatcher, gwRunner, gwMonitor, gwProgram, gwAlertsEngine, gwEnforcer)
+							result, err = handleGitHubIssueWithResult(retryCtx, cfg, client, issue, projectPath, gwDispatcher, gwRunner, gwMonitor, gwProgram, gwAlertsEngine, gwEnforcer)
 						}
+
+						// GH-797: Call OnPRCreated for retried issues so autopilot tracks their PRs
+						if result != nil && result.PRNumber > 0 && gwAutopilotController != nil {
+							gwAutopilotController.OnPRCreated(result.PRNumber, result.PRURL, issue.Number, result.HeadSHA, result.BranchName)
+						}
+
 						return err
 					})
 					rateLimitScheduler.SetExpiredCallback(func(expiredCtx context.Context, pendingTask *executor.PendingTask) {
@@ -1561,11 +1568,18 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 				)
 
 				// Re-process the issue
+				var result *github.IssueResult
 				if execMode == github.ExecutionModeSequential {
-					_, err = handleGitHubIssueWithResult(retryCtx, cfg, client, issue, projectPath, dispatcher, runner, monitor, program, alertsEngine, enforcer)
+					result, err = handleGitHubIssueWithResult(retryCtx, cfg, client, issue, projectPath, dispatcher, runner, monitor, program, alertsEngine, enforcer)
 				} else {
-					err = handleGitHubIssueWithMonitor(retryCtx, cfg, client, issue, projectPath, dispatcher, runner, monitor, program, alertsEngine, enforcer)
+					result, err = handleGitHubIssueWithResult(retryCtx, cfg, client, issue, projectPath, dispatcher, runner, monitor, program, alertsEngine, enforcer)
 				}
+
+				// GH-797: Call OnPRCreated for retried issues so autopilot tracks their PRs
+				if result != nil && result.PRNumber > 0 && autopilotController != nil {
+					autopilotController.OnPRCreated(result.PRNumber, result.PRURL, issue.Number, result.HeadSHA, result.BranchName)
+				}
+
 				return err
 			})
 			rateLimitScheduler.SetExpiredCallback(func(expiredCtx context.Context, pendingTask *executor.PendingTask) {
@@ -2007,230 +2021,6 @@ func extractGitHubLabelNames(issue *github.Issue) []string {
 		names[i] = l.Name
 	}
 	return names
-}
-
-func handleGitHubIssue(ctx context.Context, cfg *config.Config, client *github.Client, issue *github.Issue, projectPath string, dispatcher *executor.Dispatcher, runner *executor.Runner) error {
-	sourceRepo := cfg.Adapters.GitHub.Repo
-
-	// GH-386: Pre-execution validation - fail fast if repo doesn't match project
-	if err := executor.ValidateRepoProjectMatch(sourceRepo, projectPath); err != nil {
-		logging.WithComponent("github").Error("cross-project execution blocked",
-			slog.Any("error", err),
-			slog.Int("issue_number", issue.Number),
-			slog.String("repo", sourceRepo),
-			slog.String("project_path", projectPath),
-		)
-		return fmt.Errorf("cross-project execution blocked: %w", err)
-	}
-
-	fmt.Printf("\n📥 GitHub Issue #%d: %s\n", issue.Number, issue.Title)
-
-	parts := strings.Split(sourceRepo, "/")
-	if len(parts) == 2 {
-		if err := client.AddLabels(ctx, parts[0], parts[1], issue.Number, []string{github.LabelInProgress}); err != nil {
-			logGitHubAPIError("AddLabels", parts[0], parts[1], issue.Number, err)
-		}
-	}
-
-	taskDesc := fmt.Sprintf("GitHub Issue #%d: %s\n\n%s", issue.Number, issue.Title, issue.Body)
-	taskID := fmt.Sprintf("GH-%d", issue.Number)
-	branchName := fmt.Sprintf("pilot/%s", taskID)
-
-	// Always create branches and PRs - required for autopilot workflow
-	// GH-386: Include SourceRepo for cross-project validation in executor
-	task := &executor.Task{
-		ID:          taskID,
-		Title:       issue.Title,
-		Description: taskDesc,
-		ProjectPath: projectPath,
-		Branch:      branchName,
-		CreatePR:    true,
-		SourceRepo:  sourceRepo,
-		MemberID:    resolveGitHubMemberID(issue), // GH-634: RBAC lookup
-		Labels:      extractGitHubLabelNames(issue),  // GH-727: flow labels for complexity classifier
-	}
-
-	var result *executor.ExecutionResult
-	var execErr error
-
-	if dispatcher != nil {
-		execID, qErr := dispatcher.QueueTask(ctx, task)
-		if qErr != nil {
-			execErr = fmt.Errorf("failed to queue task: %w", qErr)
-		} else {
-			fmt.Printf("   📋 Queued as execution %s\n", execID[:8])
-			exec, waitErr := dispatcher.WaitForExecution(ctx, execID, time.Second)
-			if waitErr != nil {
-				execErr = fmt.Errorf("failed waiting for execution: %w", waitErr)
-			} else if exec.Status == "failed" {
-				execErr = fmt.Errorf("execution failed: %s", exec.Error)
-			} else {
-				result = &executor.ExecutionResult{
-					TaskID:    task.ID,
-					Success:   exec.Status == "completed",
-					Output:    exec.Output,
-					Error:     exec.Error,
-					PRUrl:     exec.PRUrl,
-					CommitSHA: exec.CommitSHA,
-					Duration:  time.Duration(exec.DurationMs) * time.Millisecond,
-				}
-			}
-		}
-	} else {
-		result, execErr = runner.Execute(ctx, task)
-	}
-
-	if len(parts) == 2 {
-		if err := client.RemoveLabel(ctx, parts[0], parts[1], issue.Number, github.LabelInProgress); err != nil {
-			logGitHubAPIError("RemoveLabel", parts[0], parts[1], issue.Number, err)
-		}
-
-		if execErr != nil {
-			if err := client.AddLabels(ctx, parts[0], parts[1], issue.Number, []string{github.LabelFailed}); err != nil {
-				logGitHubAPIError("AddLabels", parts[0], parts[1], issue.Number, err)
-			}
-			comment := fmt.Sprintf("❌ Pilot execution failed:\n\n```\n%s\n```", execErr.Error())
-			if _, err := client.AddComment(ctx, parts[0], parts[1], issue.Number, comment); err != nil {
-				logGitHubAPIError("AddComment", parts[0], parts[1], issue.Number, err)
-			}
-		} else if result != nil && result.Success {
-			// Validate deliverables before marking as done
-			if result.CommitSHA == "" && result.PRUrl == "" {
-				// No commits and no PR - mark as failed
-				if err := client.AddLabels(ctx, parts[0], parts[1], issue.Number, []string{github.LabelFailed}); err != nil {
-					logGitHubAPIError("AddLabels", parts[0], parts[1], issue.Number, err)
-				}
-				comment := fmt.Sprintf("⚠️ Pilot execution completed but no changes were made.\n\n**Duration:** %s\n**Branch:** `%s`\n\nNo commits or PR were created. The task may need clarification or manual intervention.",
-					result.Duration, branchName)
-				if _, err := client.AddComment(ctx, parts[0], parts[1], issue.Number, comment); err != nil {
-					logGitHubAPIError("AddComment", parts[0], parts[1], issue.Number, err)
-				}
-			} else {
-				// Has deliverables - mark as done
-				if err := client.AddLabels(ctx, parts[0], parts[1], issue.Number, []string{github.LabelDone}); err != nil {
-					logGitHubAPIError("AddLabels", parts[0], parts[1], issue.Number, err)
-				}
-				comment := buildExecutionComment(result, branchName)
-				if _, err := client.AddComment(ctx, parts[0], parts[1], issue.Number, comment); err != nil {
-					logGitHubAPIError("AddComment", parts[0], parts[1], issue.Number, err)
-				}
-			}
-		} else if result != nil {
-			// result exists but Success is false - mark as failed
-			if err := client.AddLabels(ctx, parts[0], parts[1], issue.Number, []string{github.LabelFailed}); err != nil {
-				logGitHubAPIError("AddLabels", parts[0], parts[1], issue.Number, err)
-			}
-			comment := buildFailureComment(result)
-			if _, err := client.AddComment(ctx, parts[0], parts[1], issue.Number, comment); err != nil {
-				logGitHubAPIError("AddComment", parts[0], parts[1], issue.Number, err)
-			}
-		}
-	}
-
-	return execErr
-}
-
-// handleGitHubIssueWithMonitor processes a GitHub issue with optional dashboard monitoring
-// Used in parallel mode when dashboard is enabled
-func handleGitHubIssueWithMonitor(ctx context.Context, cfg *config.Config, client *github.Client, issue *github.Issue, projectPath string, dispatcher *executor.Dispatcher, runner *executor.Runner, monitor *executor.Monitor, program *tea.Program, alertsEngine *alerts.Engine, enforcer *budget.Enforcer) error {
-	taskID := fmt.Sprintf("GH-%d", issue.Number)
-
-	// Register task with monitor if in dashboard mode
-	if monitor != nil {
-		monitor.Register(taskID, issue.Title, issue.HTMLURL)
-		monitor.Start(taskID)
-	}
-	if program != nil {
-		program.Send(dashboard.AddLog(fmt.Sprintf("📥 GitHub Issue #%d: %s", issue.Number, issue.Title))())
-	}
-
-	// Emit task started event (GH-337)
-	if alertsEngine != nil {
-		alertsEngine.ProcessEvent(alerts.Event{
-			Type:      alerts.EventTypeTaskStarted,
-			TaskID:    taskID,
-			TaskTitle: issue.Title,
-			Project:   projectPath,
-			Timestamp: time.Now(),
-		})
-	}
-
-	// GH-539: Pre-execution budget check — block task if daily/monthly limits exceeded
-	if enforcer != nil {
-		checkResult, budgetErr := enforcer.CheckBudget(ctx, "", "")
-		if budgetErr != nil {
-			logging.WithComponent("budget").Warn("budget check failed, allowing task (fail-open)",
-				slog.String("task_id", taskID),
-				slog.Any("error", budgetErr),
-			)
-		} else if !checkResult.Allowed {
-			logging.WithComponent("budget").Warn("task blocked by budget enforcement",
-				slog.String("task_id", taskID),
-				slog.String("reason", checkResult.Reason),
-				slog.String("action", string(checkResult.Action)),
-			)
-			if alertsEngine != nil {
-				alertsEngine.ProcessEvent(alerts.Event{
-					Type:      alerts.EventTypeBudgetExceeded,
-					TaskID:    taskID,
-					TaskTitle: issue.Title,
-					Project:   projectPath,
-					Error:     checkResult.Reason,
-					Metadata: map[string]string{
-						"daily_left":   fmt.Sprintf("%.2f", checkResult.DailyLeft),
-						"monthly_left": fmt.Sprintf("%.2f", checkResult.MonthlyLeft),
-						"action":       string(checkResult.Action),
-					},
-					Timestamp: time.Now(),
-				})
-			}
-			return fmt.Errorf("budget enforcement: %s", checkResult.Reason)
-		}
-	}
-
-	err := handleGitHubIssue(ctx, cfg, client, issue, projectPath, dispatcher, runner)
-
-	// Update monitor with completion status
-	if monitor != nil {
-		if err != nil {
-			monitor.Fail(taskID, err.Error())
-		} else {
-			monitor.Complete(taskID, "")
-		}
-	}
-
-	// Emit task completed/failed event (GH-337)
-	if alertsEngine != nil {
-		if err != nil {
-			alertsEngine.ProcessEvent(alerts.Event{
-				Type:      alerts.EventTypeTaskFailed,
-				TaskID:    taskID,
-				TaskTitle: issue.Title,
-				Project:   projectPath,
-				Error:     err.Error(),
-				Timestamp: time.Now(),
-			})
-		} else {
-			alertsEngine.ProcessEvent(alerts.Event{
-				Type:      alerts.EventTypeTaskCompleted,
-				TaskID:    taskID,
-				TaskTitle: issue.Title,
-				Project:   projectPath,
-				Timestamp: time.Now(),
-			})
-		}
-	}
-
-	// Add completed task to dashboard history
-	if program != nil {
-		status := "success"
-		if err != nil {
-			status = "failed"
-		}
-		program.Send(dashboard.AddCompletedTask(taskID, issue.Title, status, "", "", false)())
-	}
-
-	return err
 }
 
 // handleGitHubIssueWithResult processes a GitHub issue and returns result with PR info

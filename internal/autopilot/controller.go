@@ -627,6 +627,24 @@ func (c *Controller) handleReleasing(ctx context.Context, prState *PRState) erro
 		return nil
 	}
 
+	// Race condition guard: Check if this commit already has a tag.
+	// When multiple PRs merge rapidly, each triggers handleReleasing but only
+	// the first should create a tag. Subsequent PRs will see their merge commit
+	// is already tagged (by an earlier release) and skip.
+	existingTag, err := c.ghClient.GetTagForSHA(ctx, c.owner, c.repo, prState.HeadSHA)
+	if err != nil {
+		c.log.Warn("failed to check existing tags", "error", err)
+		// Continue anyway - worst case we get a duplicate tag error
+	} else if existingTag != "" {
+		c.log.Info("commit already tagged, skipping release",
+			"pr", prState.PRNumber,
+			"sha", ShortSHA(prState.HeadSHA),
+			"tag", existingTag,
+		)
+		c.removePR(prState.PRNumber)
+		return nil
+	}
+
 	// Get current version
 	currentVersion, err := c.releaser.GetCurrentVersion(ctx)
 	if err != nil {

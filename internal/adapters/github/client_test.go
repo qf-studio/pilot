@@ -1936,3 +1936,88 @@ func TestListPullRequests(t *testing.T) {
 		})
 	}
 }
+
+func TestGetTagForSHA(t *testing.T) {
+	tests := []struct {
+		name       string
+		sha        string
+		tags       []*Tag
+		wantTag    string
+		statusCode int
+		wantErr    bool
+	}{
+		{
+			name: "found tag",
+			sha:  "abc123",
+			tags: []*Tag{
+				{Name: "v1.0.0", Commit: struct {
+					SHA string `json:"sha"`
+				}{SHA: "def456"}},
+				{Name: "v1.0.1", Commit: struct {
+					SHA string `json:"sha"`
+				}{SHA: "abc123"}},
+			},
+			wantTag:    "v1.0.1",
+			statusCode: http.StatusOK,
+			wantErr:    false,
+		},
+		{
+			name: "no matching tag",
+			sha:  "abc123",
+			tags: []*Tag{
+				{Name: "v1.0.0", Commit: struct {
+					SHA string `json:"sha"`
+				}{SHA: "def456"}},
+			},
+			wantTag:    "",
+			statusCode: http.StatusOK,
+			wantErr:    false,
+		},
+		{
+			name:       "empty tags",
+			sha:        "abc123",
+			tags:       []*Tag{},
+			wantTag:    "",
+			statusCode: http.StatusOK,
+			wantErr:    false,
+		},
+		{
+			name:       "api error",
+			sha:        "abc123",
+			tags:       nil,
+			wantTag:    "",
+			statusCode: http.StatusInternalServerError,
+			wantErr:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet {
+					t.Errorf("expected GET, got %s", r.Method)
+				}
+				if !strings.HasPrefix(r.URL.Path, "/repos/owner/repo/tags") {
+					t.Errorf("unexpected path: %s", r.URL.Path)
+				}
+
+				w.WriteHeader(tt.statusCode)
+				if tt.statusCode == http.StatusOK {
+					_ = json.NewEncoder(w).Encode(tt.tags)
+				}
+			}))
+			defer server.Close()
+
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			tagName, err := client.GetTagForSHA(context.Background(), "owner", "repo", tt.sha)
+
+			if (err != nil) != tt.wantErr {
+				t.Errorf("GetTagForSHA() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if tagName != tt.wantTag {
+				t.Errorf("GetTagForSHA() = %q, want %q", tagName, tt.wantTag)
+			}
+		})
+	}
+}
