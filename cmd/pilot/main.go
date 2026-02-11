@@ -1763,6 +1763,32 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 		tgHandler.StartPolling(ctx)
 	}
 
+	// Start Slack Socket Mode if enabled (GH-652: wire into polling mode)
+	var slackHandler *slack.Handler
+	if cfg.Adapters.Slack != nil && cfg.Adapters.Slack.Enabled && cfg.Adapters.Slack.SocketMode &&
+		cfg.Adapters.Slack.AppToken != "" && cfg.Adapters.Slack.BotToken != "" {
+		slackHandler = slack.NewHandler(&slack.HandlerConfig{
+			AppToken:        cfg.Adapters.Slack.AppToken,
+			BotToken:        cfg.Adapters.Slack.BotToken,
+			ProjectPath:     projectPath,
+			Projects:        config.NewSlackProjectSource(cfg),
+			AllowedChannels: cfg.Adapters.Slack.AllowedChannels,
+			AllowedUsers:    cfg.Adapters.Slack.AllowedUsers,
+			MemberResolver:  teamAdapter,
+		}, runner)
+
+		go func() {
+			if err := slackHandler.StartListening(ctx); err != nil {
+				logging.WithComponent("slack").Error("Slack Socket Mode error", slog.Any("error", err))
+			}
+		}()
+
+		if !dashboardMode {
+			fmt.Println("💬 Slack Socket Mode started")
+		}
+		logging.WithComponent("start").Info("Slack Socket Mode started in polling mode")
+	}
+
 	// Start brief scheduler if enabled
 	var briefScheduler *briefs.Scheduler
 	if cfg.Orchestrator.DailyBrief != nil && cfg.Orchestrator.DailyBrief.Enabled {
