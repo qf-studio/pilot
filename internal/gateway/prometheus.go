@@ -138,33 +138,33 @@ func (e *PrometheusExporter) WritePrometheus(w io.Writer) error {
 
 // writeHelp writes a HELP line for a metric.
 func writeHelp(w io.Writer, name, help string) {
-	fmt.Fprintf(w, "# HELP %s %s\n", name, help)
+	_, _ = fmt.Fprintf(w, "# HELP %s %s\n", name, help)
 }
 
 // writeType writes a TYPE line for a metric.
 func writeType(w io.Writer, name, metricType string) {
-	fmt.Fprintf(w, "# TYPE %s %s\n", name, metricType)
+	_, _ = fmt.Fprintf(w, "# TYPE %s %s\n", name, metricType)
 }
 
 // writeCounter writes a counter metric line.
 func writeCounter(w io.Writer, name string, value int64, labelPairs ...string) {
 	if len(labelPairs) == 0 {
-		fmt.Fprintf(w, "%s %d\n", name, value)
+		_, _ = fmt.Fprintf(w, "%s %d\n", name, value)
 		return
 	}
 	labels := formatLabels(labelPairs)
-	fmt.Fprintf(w, "%s{%s} %d\n", name, labels, value)
+	_, _ = fmt.Fprintf(w, "%s{%s} %d\n", name, labels, value)
 }
 
 // writeGauge writes a gauge metric line.
 func writeGauge(w io.Writer, name string, value float64) {
-	fmt.Fprintf(w, "%s %g\n", name, value)
+	_, _ = fmt.Fprintf(w, "%s %g\n", name, value)
 }
 
 // writeGaugeLabeled writes a gauge metric with labels.
 func writeGaugeLabeled(w io.Writer, name string, value float64, labelPairs ...string) {
 	labels := formatLabels(labelPairs)
-	fmt.Fprintf(w, "%s{%s} %g\n", name, labels, value)
+	_, _ = fmt.Fprintf(w, "%s{%s} %g\n", name, labels, value)
 }
 
 // writeHistogram writes a histogram metric with buckets.
@@ -194,14 +194,14 @@ func writeHistogram(w io.Writer, name, help string, samples []time.Duration, buc
 				bucketCount++
 			}
 		}
-		fmt.Fprintf(w, "%s_bucket{le=\"%g\"} %d\n", name, bucket, bucketCount)
+		_, _ = fmt.Fprintf(w, "%s_bucket{le=\"%g\"} %d\n", name, bucket, bucketCount)
 	}
 	// +Inf bucket
-	fmt.Fprintf(w, "%s_bucket{le=\"+Inf\"} %d\n", name, count)
+	_, _ = fmt.Fprintf(w, "%s_bucket{le=\"+Inf\"} %d\n", name, count)
 
 	// Sum and count
-	fmt.Fprintf(w, "%s_sum %g\n", name, sum)
-	fmt.Fprintf(w, "%s_count %d\n", name, count)
+	_, _ = fmt.Fprintf(w, "%s_sum %g\n", name, sum)
+	_, _ = fmt.Fprintf(w, "%s_count %d\n", name, count)
 }
 
 // formatLabels formats label key-value pairs for Prometheus output.
