@@ -14,9 +14,10 @@ type contextKey string
 
 const (
 	// Context keys for log fields
-	taskIDKey    contextKey = "task_id"
-	componentKey contextKey = "component"
-	projectKey   contextKey = "project"
+	taskIDKey        contextKey = "task_id"
+	componentKey     contextKey = "component"
+	projectKey       contextKey = "project"
+	correlationIDKey contextKey = "correlation_id"
 )
 
 var (
@@ -151,6 +152,11 @@ func WithTask(taskID string) *slog.Logger {
 	return Logger().With(slog.String("task_id", taskID))
 }
 
+// WithCorrelationID returns a logger with a correlation ID for request tracing.
+func WithCorrelationID(correlationID string) *slog.Logger {
+	return Logger().With(slog.String("correlation_id", correlationID))
+}
+
 // WithContext returns a logger with values from context.
 func WithContext(ctx context.Context) *slog.Logger {
 	logger := Logger()
@@ -163,6 +169,9 @@ func WithContext(ctx context.Context) *slog.Logger {
 	}
 	if project := ctx.Value(projectKey); project != nil {
 		logger = logger.With(slog.String("project", project.(string)))
+	}
+	if correlationID := ctx.Value(correlationIDKey); correlationID != nil {
+		logger = logger.With(slog.String("correlation_id", correlationID.(string)))
 	}
 
 	return logger
@@ -181,6 +190,11 @@ func ContextWithComponent(ctx context.Context, component string) context.Context
 // ContextWithProject adds a project name to the context.
 func ContextWithProject(ctx context.Context, project string) context.Context {
 	return context.WithValue(ctx, projectKey, project)
+}
+
+// ContextWithCorrelationID adds a correlation ID to the context for request tracing.
+func ContextWithCorrelationID(ctx context.Context, correlationID string) context.Context {
+	return context.WithValue(ctx, correlationIDKey, correlationID)
 }
 
 // Convenience functions that use the default logger

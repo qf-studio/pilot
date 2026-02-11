@@ -218,6 +218,53 @@ func TestWithTask(t *testing.T) {
 	}
 }
 
+func TestWithCorrelationID(t *testing.T) {
+	var buf bytes.Buffer
+
+	handler := slog.NewJSONHandler(&buf, nil)
+	loggerMu.Lock()
+	defaultLogger = slog.New(handler)
+	loggerMu.Unlock()
+
+	WithCorrelationID("abc-123-def").Info("request started")
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+		t.Fatalf("failed to parse JSON output: %v", err)
+	}
+
+	if result["correlation_id"] != "abc-123-def" {
+		t.Errorf("expected correlation_id='abc-123-def', got %v", result["correlation_id"])
+	}
+}
+
+func TestContextWithCorrelationID(t *testing.T) {
+	var buf bytes.Buffer
+
+	handler := slog.NewJSONHandler(&buf, nil)
+	loggerMu.Lock()
+	defaultLogger = slog.New(handler)
+	loggerMu.Unlock()
+
+	ctx := context.Background()
+	ctx = ContextWithCorrelationID(ctx, "req-789")
+	ctx = ContextWithTaskID(ctx, "TASK-001")
+
+	WithContext(ctx).Info("processing request")
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+		t.Fatalf("failed to parse JSON output: %v", err)
+	}
+
+	if result["correlation_id"] != "req-789" {
+		t.Errorf("expected correlation_id='req-789', got %v", result["correlation_id"])
+	}
+	if result["task_id"] != "TASK-001" {
+		t.Errorf("expected task_id='TASK-001', got %v", result["task_id"])
+	}
+}
+
 func TestLogLevels(t *testing.T) {
 	var buf bytes.Buffer
 
