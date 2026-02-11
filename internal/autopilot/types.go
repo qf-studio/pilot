@@ -62,7 +62,10 @@ type Config struct {
 	// CIPollInterval is how often to check CI status.
 	CIPollInterval time.Duration `yaml:"ci_poll_interval"`
 	// RequiredChecks lists CI checks that must pass before merge.
+	// Deprecated: Use CIChecks.Required instead.
 	RequiredChecks []string `yaml:"required_checks"`
+	// CIChecks holds CI check discovery configuration.
+	CIChecks *CIChecksConfig `yaml:"ci_checks"`
 
 	// Feedback Loop
 	// AutoCreateIssues enables automatic issue creation for CI failures.
@@ -91,6 +94,21 @@ type Config struct {
 	MergedPRScanWindow time.Duration `yaml:"merged_pr_scan_window"`
 }
 
+// CIChecksConfig holds configuration for CI check monitoring.
+type CIChecksConfig struct {
+	// Mode: "auto" (discover from API) or "manual" (use Required list).
+	Mode string `yaml:"mode"`
+
+	// Exclude lists check names to ignore in auto mode (supports glob patterns).
+	Exclude []string `yaml:"exclude"`
+
+	// Required lists check names for manual mode.
+	Required []string `yaml:"required"`
+
+	// DiscoveryGracePeriod: how long to wait for checks to appear (default 60s).
+	DiscoveryGracePeriod time.Duration `yaml:"discovery_grace_period"`
+}
+
 // DefaultConfig returns sensible defaults for autopilot configuration.
 func DefaultConfig() *Config {
 	return &Config{
@@ -106,7 +124,13 @@ func DefaultConfig() *Config {
 		CIWaitTimeout:      30 * time.Minute,
 		DevCITimeout:       5 * time.Minute,
 		CIPollInterval:     30 * time.Second,
-		RequiredChecks:     []string{"build", "test", "lint"},
+		RequiredChecks: nil, // Deprecated, use CIChecks
+		CIChecks: &CIChecksConfig{
+			Mode:                 "auto",
+			Exclude:              []string{},
+			Required:             []string{},
+			DiscoveryGracePeriod: 60 * time.Second,
+		},
 		AutoCreateIssues:    true,
 		IssueLabels:         []string{"pilot", "autopilot-fix"},
 		NotifyOnFailure:     true,
@@ -242,4 +266,6 @@ type PRState struct {
 	ReleaseVersion string
 	// ReleaseBumpType is the detected bump type from commits.
 	ReleaseBumpType BumpType
+	// DiscoveredChecks holds check names found in auto mode.
+	DiscoveredChecks []string
 }
