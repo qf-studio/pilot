@@ -7,14 +7,34 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/alekspetrov/pilot/internal/adapters/github"
 	"github.com/alekspetrov/pilot/internal/logging"
 	"github.com/gorilla/websocket"
 )
+
+// ReadinessChecker is an interface for components that can report their readiness.
+// Implement this interface to register health checks with the gateway server.
+type ReadinessChecker interface {
+	// Name returns a unique identifier for this checker.
+	Name() string
+	// Ready returns true if the component is ready to accept traffic.
+	Ready() bool
+}
+
+// livenessState tracks metrics for liveness checks.
+type livenessState struct {
+	panicCount      atomic.Int64
+	lastPanicTime   atomic.Int64 // Unix timestamp
+	lastHeartbeat   atomic.Int64 // Unix timestamp
+	maxGoroutines   int
+	panicWindowSecs int64
+}
 
 // Server is the main gateway server handling WebSocket and HTTP connections.
 // It provides a control plane for managing Pilot via WebSocket, receives webhooks
@@ -31,6 +51,8 @@ type Server struct {
 	running             bool
 	customHandlers      map[string]http.Handler
 	githubWebhookSecret string // Secret for GitHub webhook signature validation
+	readinessCheckers   []ReadinessChecker
+	liveness            *livenessState
 }
 
 // Config holds gateway server configuration including network binding options.
@@ -90,6 +112,11 @@ func NewServerWithAuth(config *Config, authConfig *AuthConfig) *Server {
 		router:              NewRouter(),
 		customHandlers:      make(map[string]http.Handler),
 		githubWebhookSecret: config.GithubWebhookSecret,
+		readinessCheckers:   make([]ReadinessChecker, 0),
+		liveness: &livenessState{
+			maxGoroutines:   1000,
+			panicWindowSecs: 300, // 5 minutes
+		},
 		upgrader: websocket.Upgrader{
 			ReadBufferSize:  1024,
 			WriteBufferSize: 1024,
@@ -110,6 +137,8 @@ func NewServerWithAuth(config *Config, authConfig *AuthConfig) *Server {
 			},
 		},
 	}
+	// Initialize heartbeat
+	s.liveness.lastHeartbeat.Store(time.Now().Unix())
 	return s
 }
 
@@ -132,6 +161,8 @@ func (s *Server) Start(ctx context.Context) error {
 
 	// Public endpoints (no auth required)
 	mux.HandleFunc("/health", s.handleHealth)
+	mux.HandleFunc("/ready", s.handleReady)
+	mux.HandleFunc("/live", s.handleLive)
 
 	// Protected API endpoints (auth required when configured)
 	apiMux := http.NewServeMux()
@@ -242,6 +273,118 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]string{
 		"status": "healthy",
 	})
+}
+
+// handleReady returns readiness status for Kubernetes readiness probes.
+// Returns 200 when all registered readiness checks pass, 503 otherwise.
+func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	// Update heartbeat to show main loop is responsive
+	s.liveness.lastHeartbeat.Store(time.Now().Unix())
+
+	checks := make(map[string]bool)
+	allReady := true
+
+	s.mu.RLock()
+	for _, checker := range s.readinessCheckers {
+		ready := checker.Ready()
+		checks[checker.Name()] = ready
+		if !ready {
+			allReady = false
+		}
+	}
+	s.mu.RUnlock()
+
+	response := map[string]interface{}{
+		"ready":  allReady,
+		"checks": checks,
+	}
+
+	if !allReady {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}
+	_ = json.NewEncoder(w).Encode(response)
+}
+
+// handleLive returns liveness status for Kubernetes liveness probes.
+// Returns 200 when the process is alive and not deadlocked, 503 otherwise.
+func (s *Server) handleLive(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	checks := make(map[string]interface{})
+	alive := true
+
+	// Check 1: Goroutine count
+	goroutineCount := runtime.NumGoroutine()
+	goroutineOK := goroutineCount < s.liveness.maxGoroutines
+	checks["goroutines"] = map[string]interface{}{
+		"count": goroutineCount,
+		"max":   s.liveness.maxGoroutines,
+		"ok":    goroutineOK,
+	}
+	if !goroutineOK {
+		alive = false
+	}
+
+	// Check 2: Recent panics
+	now := time.Now().Unix()
+	panicCount := s.liveness.panicCount.Load()
+	lastPanic := s.liveness.lastPanicTime.Load()
+	recentPanics := lastPanic > 0 && (now-lastPanic) < s.liveness.panicWindowSecs
+	panicOK := !recentPanics
+	checks["panics"] = map[string]interface{}{
+		"count":          panicCount,
+		"recent":         recentPanics,
+		"window_seconds": s.liveness.panicWindowSecs,
+		"ok":             panicOK,
+	}
+	if !panicOK {
+		alive = false
+	}
+
+	// Check 3: Main loop responsiveness (heartbeat freshness)
+	lastHeartbeat := s.liveness.lastHeartbeat.Load()
+	heartbeatAge := now - lastHeartbeat
+	heartbeatOK := heartbeatAge < 60 // Less than 60 seconds old
+	checks["heartbeat"] = map[string]interface{}{
+		"last_seconds_ago": heartbeatAge,
+		"ok":               heartbeatOK,
+	}
+	if !heartbeatOK {
+		alive = false
+	}
+
+	response := map[string]interface{}{
+		"alive":  alive,
+		"checks": checks,
+	}
+
+	if !alive {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}
+	_ = json.NewEncoder(w).Encode(response)
+}
+
+// RegisterReadinessChecker adds a readiness checker to the server.
+// Readiness checks are evaluated when /ready endpoint is called.
+func (s *Server) RegisterReadinessChecker(checker ReadinessChecker) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.readinessCheckers = append(s.readinessCheckers, checker)
+}
+
+// RecordPanic records a panic event for liveness tracking.
+// Call this from panic recovery handlers to track system health.
+func (s *Server) RecordPanic() {
+	s.liveness.panicCount.Add(1)
+	s.liveness.lastPanicTime.Store(time.Now().Unix())
+}
+
+// Heartbeat updates the heartbeat timestamp to show the main loop is responsive.
+// Call this periodically from long-running loops.
+func (s *Server) Heartbeat() {
+	s.liveness.lastHeartbeat.Store(time.Now().Unix())
 }
 
 // handleStatus returns current Pilot status
