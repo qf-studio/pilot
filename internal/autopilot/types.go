@@ -75,6 +75,9 @@ type Config struct {
 	// Safety
 	// MaxFailures is the circuit breaker threshold before pausing autopilot.
 	MaxFailures int `yaml:"max_failures"`
+	// FailureResetTimeout is how long after the last failure before the per-PR counter resets.
+	// Default: 30 minutes.
+	FailureResetTimeout time.Duration `yaml:"failure_reset_timeout"`
 	// MaxMergesPerHour limits merge rate to prevent runaway automation.
 	MaxMergesPerHour int `yaml:"max_merges_per_hour"`
 	// ApprovalTimeout is how long to wait for human approval in prod.
@@ -104,14 +107,15 @@ func DefaultConfig() *Config {
 		DevCITimeout:       5 * time.Minute,
 		CIPollInterval:     30 * time.Second,
 		RequiredChecks:     []string{"build", "test", "lint"},
-		AutoCreateIssues:   true,
-		IssueLabels:        []string{"pilot", "autopilot-fix"},
-		NotifyOnFailure:    true,
-		MaxFailures:        3,
-		MaxMergesPerHour:   10,
-		ApprovalTimeout:    1 * time.Hour,
-		Release:            nil, // Disabled by default
-		MergedPRScanWindow: 30 * time.Minute,
+		AutoCreateIssues:    true,
+		IssueLabels:         []string{"pilot", "autopilot-fix"},
+		NotifyOnFailure:     true,
+		MaxFailures:         3,
+		FailureResetTimeout: 30 * time.Minute,
+		MaxMergesPerHour:    10,
+		ApprovalTimeout:     1 * time.Hour,
+		Release:             nil, // Disabled by default
+		MergedPRScanWindow:  30 * time.Minute,
 	}
 }
 

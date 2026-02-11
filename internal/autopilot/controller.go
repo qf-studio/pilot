@@ -12,6 +12,13 @@ import (
 	"github.com/alekspetrov/pilot/internal/approval"
 )
 
+// prFailureState tracks per-PR circuit breaker state.
+// Each PR has independent failure tracking so one bad PR doesn't block others.
+type prFailureState struct {
+	FailureCount    int       // Number of consecutive failures for this PR
+	LastFailureTime time.Time // When the last failure occurred (for timeout reset)
+}
+
 // Notifier sends autopilot notifications for PR lifecycle events.
 type Notifier interface {
 	// NotifyMerged sends notification when a PR is successfully merged.
@@ -53,8 +60,9 @@ type Controller struct {
 	// Persistent state store (optional, nil = in-memory only)
 	stateStore *StateStore
 
-	// Circuit breaker
-	consecutiveFailures int
+	// Per-PR circuit breaker: each PR has independent failure tracking.
+	// A failure on one PR does not block other PRs.
+	prFailures map[int]*prFailureState
 
 	// Metrics
 	metrics *Metrics
@@ -73,6 +81,7 @@ func NewController(cfg *Config, ghClient *github.Client, approvalMgr *approval.M
 		owner:       owner,
 		repo:        repo,
 		activePRs:   make(map[int]*PRState),
+		prFailures:  make(map[int]*prFailureState),
 		metrics:     NewMetrics(),
 		log:         slog.Default().With("component", "autopilot"),
 	}
@@ -121,17 +130,27 @@ func (c *Controller) persistRemovePR(prNumber int) {
 	}
 }
 
-// persistCircuitBreaker saves circuit breaker state to the store if available.
-func (c *Controller) persistCircuitBreaker() {
+// persistPRFailures saves per-PR failure state to the store if available.
+func (c *Controller) persistPRFailures(prNumber int, state *prFailureState) {
 	if c.stateStore == nil {
 		return
 	}
-	if err := c.stateStore.SaveMetadata("consecutive_failures", fmt.Sprintf("%d", c.consecutiveFailures)); err != nil {
-		c.log.Warn("failed to persist circuit breaker state", "error", err)
+	if err := c.stateStore.SavePRFailures(prNumber, state.FailureCount, state.LastFailureTime); err != nil {
+		c.log.Warn("failed to persist PR failure state", "pr", prNumber, "error", err)
 	}
 }
 
-// RestoreState loads PR states and circuit breaker from the persistent store.
+// removePRFailures removes per-PR failure state from the store if available.
+func (c *Controller) removePRFailures(prNumber int) {
+	if c.stateStore == nil {
+		return
+	}
+	if err := c.stateStore.RemovePRFailures(prNumber); err != nil {
+		c.log.Warn("failed to remove PR failure state", "pr", prNumber, "error", err)
+	}
+}
+
+// RestoreState loads PR states and per-PR failures from the persistent store.
 // If state is found in the store, ScanExistingPRs is unnecessary.
 // Returns the number of restored PRs.
 func (c *Controller) RestoreState() (int, error) {
@@ -155,24 +174,23 @@ func (c *Controller) RestoreState() (int, error) {
 	}
 	c.mu.Unlock()
 
-	// Restore circuit breaker
-	cbStr, err := c.stateStore.GetMetadata("consecutive_failures")
+	// Restore per-PR failures
+	prFailures, err := c.stateStore.LoadAllPRFailures()
 	if err != nil {
-		c.log.Warn("failed to load circuit breaker state", "error", err)
-	} else if cbStr != "" {
-		var failures int
-		if _, err := fmt.Sscanf(cbStr, "%d", &failures); err == nil {
-			c.mu.Lock()
-			c.consecutiveFailures = failures
-			c.mu.Unlock()
+		c.log.Warn("failed to load per-PR failure states", "error", err)
+	} else {
+		c.mu.Lock()
+		for prNum, state := range prFailures {
+			c.prFailures[prNum] = state
 		}
+		c.mu.Unlock()
 	}
 
 	restored := len(states)
 	if restored > 0 {
 		c.log.Info("restored autopilot state from SQLite",
 			"pr_states", restored,
-			"circuit_breaker_failures", c.consecutiveFailures,
+			"pr_failures", len(prFailures),
 		)
 	}
 
@@ -221,11 +239,11 @@ func (c *Controller) ProcessPR(ctx context.Context, prNumber int) error {
 		return fmt.Errorf("PR %d not tracked", prNumber)
 	}
 
-	// Circuit breaker check
-	if c.consecutiveFailures >= c.config.MaxFailures {
-		c.log.Warn("circuit breaker open", "failures", c.consecutiveFailures)
+	// Per-PR circuit breaker check
+	if c.isPRCircuitOpen(prNumber) {
+		c.log.Warn("per-PR circuit breaker open", "pr", prNumber)
 		c.metrics.RecordCircuitBreakerTrip()
-		return fmt.Errorf("circuit breaker: too many consecutive failures (%d)", c.consecutiveFailures)
+		return fmt.Errorf("circuit breaker: PR %d has too many consecutive failures", prNumber)
 	}
 
 	previousStage := prState.Stage
@@ -266,12 +284,11 @@ func (c *Controller) ProcessPR(ctx context.Context, prNumber int) error {
 	}
 
 	if err != nil {
-		c.consecutiveFailures++
+		c.recordPRFailure(prNumber)
 		prState.Error = err.Error()
 		c.log.Error("autopilot stage failed", "pr", prNumber, "stage", prState.Stage, "error", err)
-		c.persistCircuitBreaker()
 	} else {
-		c.consecutiveFailures = 0
+		c.resetPRFailures(prNumber)
 	}
 
 	// Persist state after every processing cycle (covers transitions and updated fields)
@@ -759,9 +776,12 @@ func (c *Controller) handleMergeConflict(ctx context.Context, prState *PRState) 
 // removePR removes PR from tracking.
 func (c *Controller) removePR(prNumber int) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	delete(c.activePRs, prNumber)
+	delete(c.prFailures, prNumber)
+	c.mu.Unlock()
+
 	c.persistRemovePR(prNumber)
+	c.removePRFailures(prNumber)
 	c.log.Info("PR removed from tracking", "pr", prNumber)
 }
 
@@ -786,21 +806,136 @@ func (c *Controller) GetPRState(prNumber int) (*PRState, bool) {
 	return pr, ok
 }
 
-// ResetCircuitBreaker resets the consecutive failure counter.
+// isPRCircuitOpen checks if the per-PR circuit breaker is open.
+// A PR's circuit breaker opens when it has >= MaxFailures consecutive failures.
+// The counter auto-resets after FailureResetTimeout since the last failure.
+func (c *Controller) isPRCircuitOpen(prNumber int) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	state, ok := c.prFailures[prNumber]
+	if !ok {
+		return false
+	}
+
+	// Auto-reset after timeout
+	resetTimeout := c.config.FailureResetTimeout
+	if resetTimeout == 0 {
+		resetTimeout = 30 * time.Minute // Default fallback
+	}
+	if time.Since(state.LastFailureTime) > resetTimeout {
+		return false
+	}
+
+	return state.FailureCount >= c.config.MaxFailures
+}
+
+// recordPRFailure increments the failure counter for a specific PR.
+func (c *Controller) recordPRFailure(prNumber int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	state, ok := c.prFailures[prNumber]
+	if !ok {
+		state = &prFailureState{}
+		c.prFailures[prNumber] = state
+	}
+
+	// Check if we should reset due to timeout before incrementing
+	resetTimeout := c.config.FailureResetTimeout
+	if resetTimeout == 0 {
+		resetTimeout = 30 * time.Minute
+	}
+	if !state.LastFailureTime.IsZero() && time.Since(state.LastFailureTime) > resetTimeout {
+		state.FailureCount = 0
+	}
+
+	state.FailureCount++
+	state.LastFailureTime = time.Now()
+
+	c.log.Debug("recorded PR failure",
+		"pr", prNumber,
+		"failures", state.FailureCount,
+		"max", c.config.MaxFailures,
+	)
+
+	// Persist outside lock
+	go c.persistPRFailures(prNumber, state)
+}
+
+// resetPRFailures clears the failure counter for a specific PR after success.
+func (c *Controller) resetPRFailures(prNumber int) {
+	c.mu.Lock()
+	state, hadFailures := c.prFailures[prNumber]
+	if hadFailures && state.FailureCount > 0 {
+		delete(c.prFailures, prNumber)
+	}
+	c.mu.Unlock()
+
+	if hadFailures && state.FailureCount > 0 {
+		c.log.Debug("reset PR failure counter after success", "pr", prNumber)
+		c.removePRFailures(prNumber)
+	}
+}
+
+// ResetCircuitBreaker resets the failure counter for all PRs.
 // Call this after manual intervention or system recovery.
 func (c *Controller) ResetCircuitBreaker() {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.consecutiveFailures = 0
-	c.persistCircuitBreaker()
-	c.log.Info("circuit breaker reset")
+	prNumbers := make([]int, 0, len(c.prFailures))
+	for prNum := range c.prFailures {
+		prNumbers = append(prNumbers, prNum)
+	}
+	c.prFailures = make(map[int]*prFailureState)
+	c.mu.Unlock()
+
+	// Persist removal of all failures
+	for _, prNum := range prNumbers {
+		c.removePRFailures(prNum)
+	}
+	c.log.Info("circuit breaker reset for all PRs", "count", len(prNumbers))
 }
 
-// IsCircuitOpen returns true if the circuit breaker has tripped.
+// ResetPRCircuitBreaker resets the failure counter for a specific PR.
+// Use this when manually recovering a single PR.
+func (c *Controller) ResetPRCircuitBreaker(prNumber int) {
+	c.mu.Lock()
+	_, hadFailures := c.prFailures[prNumber]
+	delete(c.prFailures, prNumber)
+	c.mu.Unlock()
+
+	if hadFailures {
+		c.removePRFailures(prNumber)
+		c.log.Info("circuit breaker reset for PR", "pr", prNumber)
+	}
+}
+
+// IsCircuitOpen returns true if any PR has an open circuit breaker.
+// For per-PR tracking, this checks if any PR is blocked.
 func (c *Controller) IsCircuitOpen() bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return c.consecutiveFailures >= c.config.MaxFailures
+
+	resetTimeout := c.config.FailureResetTimeout
+	if resetTimeout == 0 {
+		resetTimeout = 30 * time.Minute
+	}
+
+	for _, state := range c.prFailures {
+		// Skip if timeout has passed
+		if time.Since(state.LastFailureTime) > resetTimeout {
+			continue
+		}
+		if state.FailureCount >= c.config.MaxFailures {
+			return true
+		}
+	}
+	return false
+}
+
+// IsPRCircuitOpen returns true if a specific PR's circuit breaker is open.
+func (c *Controller) IsPRCircuitOpen(prNumber int) bool {
+	return c.isPRCircuitOpen(prNumber)
 }
 
 // Config returns the autopilot configuration.
@@ -808,11 +943,38 @@ func (c *Controller) Config() *Config {
 	return c.config
 }
 
-// ConsecutiveFailures returns the current consecutive failure count.
-func (c *Controller) ConsecutiveFailures() int {
+// GetPRFailures returns the current failure count for a specific PR.
+func (c *Controller) GetPRFailures(prNumber int) int {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return c.consecutiveFailures
+
+	state, ok := c.prFailures[prNumber]
+	if !ok {
+		return 0
+	}
+	return state.FailureCount
+}
+
+// TotalFailures returns the sum of all active per-PR failure counts.
+// Used for dashboard display. Only counts failures within the reset timeout.
+func (c *Controller) TotalFailures() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	resetTimeout := c.config.FailureResetTimeout
+	if resetTimeout == 0 {
+		resetTimeout = 30 * time.Minute
+	}
+
+	total := 0
+	for _, state := range c.prFailures {
+		// Skip expired failures
+		if time.Since(state.LastFailureTime) > resetTimeout {
+			continue
+		}
+		total += state.FailureCount
+	}
+	return total
 }
 
 // Metrics returns the autopilot metrics collector.

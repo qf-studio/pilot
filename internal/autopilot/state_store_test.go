@@ -431,11 +431,6 @@ func TestController_RestoreState(t *testing.T) {
 	if ok {
 		t.Error("PR 44 (failed) should not be in active PRs")
 	}
-
-	// Circuit breaker restored
-	if c.ConsecutiveFailures() != 2 {
-		t.Errorf("consecutiveFailures = %d, want 2", c.ConsecutiveFailures())
-	}
 }
 
 func TestController_OnPRCreated_PersistsToStore(t *testing.T) {
@@ -526,5 +521,116 @@ func TestStateStore_MigrateIdempotent(t *testing.T) {
 	// Running migrate again should not fail
 	if err := store.migrate(); err != nil {
 		t.Fatalf("second migration failed: %v", err)
+	}
+}
+
+// GH-834: Test per-PR failure persistence.
+func TestStateStore_PRFailures(t *testing.T) {
+	store := newTestStateStore(t)
+
+	// Save failure state
+	failureTime := time.Now().Truncate(time.Second)
+	if err := store.SavePRFailures(42, 3, failureTime); err != nil {
+		t.Fatalf("SavePRFailures failed: %v", err)
+	}
+
+	// Load and verify
+	failures, err := store.LoadAllPRFailures()
+	if err != nil {
+		t.Fatalf("LoadAllPRFailures failed: %v", err)
+	}
+	if len(failures) != 1 {
+		t.Fatalf("got %d failures, want 1", len(failures))
+	}
+	if failures[42] == nil {
+		t.Fatal("PR 42 not in failures map")
+	}
+	if failures[42].FailureCount != 3 {
+		t.Errorf("FailureCount = %d, want 3", failures[42].FailureCount)
+	}
+
+	// Update failure state
+	if err := store.SavePRFailures(42, 5, time.Now()); err != nil {
+		t.Fatalf("SavePRFailures update failed: %v", err)
+	}
+	failures, _ = store.LoadAllPRFailures()
+	if failures[42].FailureCount != 5 {
+		t.Errorf("FailureCount after update = %d, want 5", failures[42].FailureCount)
+	}
+
+	// Remove failure state
+	if err := store.RemovePRFailures(42); err != nil {
+		t.Fatalf("RemovePRFailures failed: %v", err)
+	}
+	failures, _ = store.LoadAllPRFailures()
+	if len(failures) != 0 {
+		t.Errorf("got %d failures after remove, want 0", len(failures))
+	}
+}
+
+// GH-834: Test that RestoreState loads per-PR failures.
+func TestController_RestoreState_LoadsPRFailures(t *testing.T) {
+	store := newTestStateStore(t)
+
+	// Pre-populate with PR state and failure state
+	pr := &PRState{
+		PRNumber:   42,
+		PRURL:      "https://github.com/owner/repo/pull/42",
+		BranchName: "pilot/GH-10",
+		Stage:      StageWaitingCI,
+		CIStatus:   CIRunning,
+		CreatedAt:  time.Now(),
+	}
+	if err := store.SavePRState(pr); err != nil {
+		t.Fatalf("SavePRState failed: %v", err)
+	}
+	if err := store.SavePRFailures(42, 2, time.Now()); err != nil {
+		t.Fatalf("SavePRFailures failed: %v", err)
+	}
+
+	// Create controller and restore
+	cfg := DefaultConfig()
+	cfg.MaxFailures = 3
+	c := NewController(cfg, nil, nil, "owner", "repo")
+	c.SetStateStore(store)
+
+	if _, err := c.RestoreState(); err != nil {
+		t.Fatalf("RestoreState failed: %v", err)
+	}
+
+	// Verify failure count restored
+	if c.GetPRFailures(42) != 2 {
+		t.Errorf("GetPRFailures(42) = %d, want 2", c.GetPRFailures(42))
+	}
+}
+
+// GH-834: Test that removePR also removes failure state.
+func TestController_RemovePR_RemovesFailures(t *testing.T) {
+	store := newTestStateStore(t)
+
+	cfg := DefaultConfig()
+	c := NewController(cfg, nil, nil, "owner", "repo")
+	c.SetStateStore(store)
+
+	// Create PR and add failure state
+	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc123", "pilot/GH-10")
+	c.mu.Lock()
+	c.prFailures[42] = &prFailureState{FailureCount: 2, LastFailureTime: time.Now()}
+	c.mu.Unlock()
+	c.persistPRFailures(42, c.prFailures[42])
+
+	// Verify failure state persisted
+	failures, _ := store.LoadAllPRFailures()
+	if len(failures) != 1 {
+		t.Fatalf("expected 1 failure record, got %d", len(failures))
+	}
+
+	// Remove PR
+	c.removePR(42)
+
+	// Verify failure state also removed
+	failures, _ = store.LoadAllPRFailures()
+	if len(failures) != 0 {
+		t.Errorf("expected 0 failure records after removePR, got %d", len(failures))
 	}
 }

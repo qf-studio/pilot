@@ -387,7 +387,7 @@ func TestController_ProcessPR_CIFailure(t *testing.T) {
 }
 
 func TestController_CircuitBreaker(t *testing.T) {
-	// Test circuit breaker trips after max failures
+	// Test per-PR circuit breaker trips after max failures for that specific PR
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Always return error to trigger failures
 		w.WriteHeader(http.StatusInternalServerError)
@@ -416,14 +416,15 @@ func TestController_CircuitBreaker(t *testing.T) {
 		_ = c.ProcessPR(ctx, 42)
 	}
 
-	if !c.IsCircuitOpen() {
-		t.Error("circuit breaker should be open after max failures")
+	// Per-PR circuit breaker should be open for PR 42
+	if !c.IsPRCircuitOpen(42) {
+		t.Error("per-PR circuit breaker should be open for PR 42 after max failures")
 	}
 
-	// Next call should be blocked
+	// Next call for PR 42 should be blocked
 	err := c.ProcessPR(ctx, 42)
 	if err == nil {
-		t.Error("ProcessPR should fail when circuit breaker is open")
+		t.Error("ProcessPR should fail when per-PR circuit breaker is open")
 	}
 }
 
@@ -434,19 +435,26 @@ func TestController_ResetCircuitBreaker(t *testing.T) {
 
 	c := NewController(cfg, ghClient, nil, "owner", "repo")
 
-	// Set failures
+	// Set per-PR failures
 	c.mu.Lock()
-	c.consecutiveFailures = 5
+	c.prFailures[42] = &prFailureState{FailureCount: 5, LastFailureTime: time.Now()}
+	c.prFailures[43] = &prFailureState{FailureCount: 3, LastFailureTime: time.Now()}
 	c.mu.Unlock()
 
-	if !c.IsCircuitOpen() {
-		t.Error("circuit should be open")
+	if !c.IsPRCircuitOpen(42) {
+		t.Error("circuit should be open for PR 42")
+	}
+	if !c.IsPRCircuitOpen(43) {
+		t.Error("circuit should be open for PR 43")
 	}
 
 	c.ResetCircuitBreaker()
 
-	if c.IsCircuitOpen() {
-		t.Error("circuit should be closed after reset")
+	if c.IsPRCircuitOpen(42) {
+		t.Error("circuit should be closed for PR 42 after reset")
+	}
+	if c.IsPRCircuitOpen(43) {
+		t.Error("circuit should be closed for PR 43 after reset")
 	}
 }
 
@@ -570,7 +578,7 @@ func TestController_RemovePR(t *testing.T) {
 }
 
 func TestController_SuccessResetsFailureCount(t *testing.T) {
-	// Successful processing should reset consecutive failures
+	// Successful processing should reset per-PR failures
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -583,12 +591,12 @@ func TestController_SuccessResetsFailureCount(t *testing.T) {
 
 	c := NewController(cfg, ghClient, nil, "owner", "repo")
 
-	// Set some failures
-	c.mu.Lock()
-	c.consecutiveFailures = 2
-	c.mu.Unlock()
-
 	c.OnPRCreated(42, "url", 10, "abc1234", "pilot/GH-10")
+
+	// Set some failures for this specific PR
+	c.mu.Lock()
+	c.prFailures[42] = &prFailureState{FailureCount: 2, LastFailureTime: time.Now()}
+	c.mu.Unlock()
 
 	// Successful processing (pr_created → waiting_ci)
 	err := c.ProcessPR(context.Background(), 42)
@@ -596,12 +604,9 @@ func TestController_SuccessResetsFailureCount(t *testing.T) {
 		t.Fatalf("ProcessPR error: %v", err)
 	}
 
-	c.mu.RLock()
-	failures := c.consecutiveFailures
-	c.mu.RUnlock()
-
+	failures := c.GetPRFailures(42)
 	if failures != 0 {
-		t.Errorf("consecutiveFailures = %d, want 0 after successful processing", failures)
+		t.Errorf("PR failures = %d, want 0 after successful processing", failures)
 	}
 }
 
@@ -1559,5 +1564,191 @@ func TestController_ProcessPR_MergeableFalse_DetectsConflict(t *testing.T) {
 	}
 	if !prClosed {
 		t.Error("conflicting PR should have been closed")
+	}
+}
+
+// GH-834: Test that per-PR circuit breaker doesn't block other PRs.
+func TestController_PerPRCircuitBreaker_DoesNotBlockOtherPRs(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/owner/repo/pulls/42/merge":
+			// Always fail merge for PR 42
+			w.WriteHeader(http.StatusInternalServerError)
+		case "/repos/owner/repo/pulls/43/merge":
+			// Always succeed for PR 43
+			w.WriteHeader(http.StatusOK)
+		case "/repos/owner/repo/commits/sha42/check-runs":
+			resp := github.CheckRunsResponse{
+				TotalCount: 1,
+				CheckRuns:  []github.CheckRun{{Name: "build", Status: "completed", Conclusion: "success"}},
+			}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(resp)
+		case "/repos/owner/repo/commits/sha43/check-runs":
+			resp := github.CheckRunsResponse{
+				TotalCount: 1,
+				CheckRuns:  []github.CheckRun{{Name: "build", Status: "completed", Conclusion: "success"}},
+			}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(resp)
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.Environment = EnvDev
+	cfg.MaxFailures = 2
+	cfg.RequiredChecks = []string{"build"}
+
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+
+	// Set up PR 42 at merging stage (will fail)
+	c.mu.Lock()
+	c.activePRs[42] = &PRState{PRNumber: 42, HeadSHA: "sha42", Stage: StageMerging}
+	c.activePRs[43] = &PRState{PRNumber: 43, HeadSHA: "sha43", Stage: StageMerging}
+	c.mu.Unlock()
+
+	ctx := context.Background()
+
+	// Cause failures on PR 42 until circuit opens
+	for i := 0; i < 2; i++ {
+		_ = c.ProcessPR(ctx, 42)
+	}
+
+	// PR 42's circuit should be open
+	if !c.IsPRCircuitOpen(42) {
+		t.Error("PR 42's circuit breaker should be open")
+	}
+
+	// PR 43's circuit should NOT be open
+	if c.IsPRCircuitOpen(43) {
+		t.Error("PR 43's circuit breaker should NOT be open (independent of PR 42)")
+	}
+
+	// PR 43 should still be processable
+	err := c.ProcessPR(ctx, 43)
+	if err != nil {
+		t.Errorf("PR 43 should be processable despite PR 42's failures: %v", err)
+	}
+
+	// PR 42 should be blocked
+	err = c.ProcessPR(ctx, 42)
+	if err == nil {
+		t.Error("PR 42 should be blocked by its per-PR circuit breaker")
+	}
+}
+
+// GH-834: Test that per-PR circuit breaker resets after timeout.
+func TestController_PerPRCircuitBreaker_ResetsAfterTimeout(t *testing.T) {
+	ghClient := github.NewClient(testutil.FakeGitHubToken)
+	cfg := DefaultConfig()
+	cfg.MaxFailures = 2
+	cfg.FailureResetTimeout = 50 * time.Millisecond // Short timeout for testing
+
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+
+	// Set up failure state with old timestamp
+	c.mu.Lock()
+	c.prFailures[42] = &prFailureState{
+		FailureCount:    5,
+		LastFailureTime: time.Now().Add(-100 * time.Millisecond), // Older than timeout
+	}
+	c.activePRs[42] = &PRState{PRNumber: 42, Stage: StagePRCreated}
+	c.mu.Unlock()
+
+	// Circuit should be closed because timeout has passed
+	if c.IsPRCircuitOpen(42) {
+		t.Error("circuit should be closed after timeout passed")
+	}
+}
+
+// GH-834: Test ResetPRCircuitBreaker for single PR.
+func TestController_ResetPRCircuitBreaker(t *testing.T) {
+	ghClient := github.NewClient(testutil.FakeGitHubToken)
+	cfg := DefaultConfig()
+	cfg.MaxFailures = 2
+
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+
+	// Set up failure state for multiple PRs
+	c.mu.Lock()
+	c.prFailures[42] = &prFailureState{FailureCount: 5, LastFailureTime: time.Now()}
+	c.prFailures[43] = &prFailureState{FailureCount: 5, LastFailureTime: time.Now()}
+	c.mu.Unlock()
+
+	// Both should be open
+	if !c.IsPRCircuitOpen(42) {
+		t.Error("PR 42 circuit should be open")
+	}
+	if !c.IsPRCircuitOpen(43) {
+		t.Error("PR 43 circuit should be open")
+	}
+
+	// Reset only PR 42
+	c.ResetPRCircuitBreaker(42)
+
+	// PR 42 should be closed, PR 43 still open
+	if c.IsPRCircuitOpen(42) {
+		t.Error("PR 42 circuit should be closed after reset")
+	}
+	if !c.IsPRCircuitOpen(43) {
+		t.Error("PR 43 circuit should still be open")
+	}
+}
+
+// GH-834: Test GetPRFailures returns correct count.
+func TestController_GetPRFailures(t *testing.T) {
+	ghClient := github.NewClient(testutil.FakeGitHubToken)
+	cfg := DefaultConfig()
+
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+
+	// Initially zero
+	if c.GetPRFailures(42) != 0 {
+		t.Error("initial failures should be 0")
+	}
+
+	// Set failures
+	c.mu.Lock()
+	c.prFailures[42] = &prFailureState{FailureCount: 3, LastFailureTime: time.Now()}
+	c.mu.Unlock()
+
+	if c.GetPRFailures(42) != 3 {
+		t.Errorf("failures = %d, want 3", c.GetPRFailures(42))
+	}
+}
+
+// GH-834: Test that IsCircuitOpen returns true only when at least one PR is blocked.
+func TestController_IsCircuitOpen_AnyPRBlocked(t *testing.T) {
+	ghClient := github.NewClient(testutil.FakeGitHubToken)
+	cfg := DefaultConfig()
+	cfg.MaxFailures = 3
+
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+
+	// No failures — circuit closed
+	if c.IsCircuitOpen() {
+		t.Error("circuit should be closed with no failures")
+	}
+
+	// Add failures below threshold
+	c.mu.Lock()
+	c.prFailures[42] = &prFailureState{FailureCount: 2, LastFailureTime: time.Now()}
+	c.mu.Unlock()
+
+	if c.IsCircuitOpen() {
+		t.Error("circuit should be closed with failures below threshold")
+	}
+
+	// Add failures at threshold
+	c.mu.Lock()
+	c.prFailures[42].FailureCount = 3
+	c.mu.Unlock()
+
+	if !c.IsCircuitOpen() {
+		t.Error("circuit should be open with failures at threshold")
 	}
 }

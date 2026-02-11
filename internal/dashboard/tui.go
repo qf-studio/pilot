@@ -161,8 +161,8 @@ func (p *AutopilotPanel) View() string {
 		}
 	}
 
-	// Circuit breaker status
-	failures := p.controller.ConsecutiveFailures()
+	// Circuit breaker status (sum of all per-PR failures)
+	failures := p.controller.TotalFailures()
 	if failures > 0 {
 		content.WriteString("\n")
 		failStr := fmt.Sprintf("%d/%d", failures, cfg.MaxFailures)

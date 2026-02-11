@@ -68,6 +68,11 @@ func (s *StateStore) migrate() error {
 			value TEXT NOT NULL DEFAULT '',
 			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		)`,
+		`CREATE TABLE IF NOT EXISTS autopilot_pr_failures (
+			pr_number INTEGER PRIMARY KEY,
+			failure_count INTEGER NOT NULL DEFAULT 0,
+			last_failure_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)`,
 	}
 
 	for _, m := range migrations {
@@ -257,6 +262,52 @@ func (s *StateStore) GetMetadata(key string) (string, error) {
 		return "", nil
 	}
 	return value, err
+}
+
+// SavePRFailures persists the per-PR failure state.
+func (s *StateStore) SavePRFailures(prNumber, failureCount int, lastFailureTime time.Time) error {
+	_, err := s.db.Exec(`
+		INSERT INTO autopilot_pr_failures (pr_number, failure_count, last_failure_time)
+		VALUES (?, ?, ?)
+		ON CONFLICT(pr_number) DO UPDATE SET
+			failure_count = excluded.failure_count,
+			last_failure_time = excluded.last_failure_time
+	`, prNumber, failureCount, lastFailureTime)
+	return err
+}
+
+// RemovePRFailures removes per-PR failure state.
+func (s *StateStore) RemovePRFailures(prNumber int) error {
+	_, err := s.db.Exec(`DELETE FROM autopilot_pr_failures WHERE pr_number = ?`, prNumber)
+	return err
+}
+
+// LoadAllPRFailures loads all per-PR failure states.
+func (s *StateStore) LoadAllPRFailures() (map[int]*prFailureState, error) {
+	rows, err := s.db.Query(`
+		SELECT pr_number, failure_count, last_failure_time
+		FROM autopilot_pr_failures
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	failures := make(map[int]*prFailureState)
+	for rows.Next() {
+		var prNumber, failureCount int
+		var lastFailureTime time.Time
+
+		if err := rows.Scan(&prNumber, &failureCount, &lastFailureTime); err != nil {
+			return nil, err
+		}
+
+		failures[prNumber] = &prFailureState{
+			FailureCount:    failureCount,
+			LastFailureTime: lastFailureTime,
+		}
+	}
+	return failures, nil
 }
 
 // PurgeOldProcessedIssues removes processed issue records older than the given duration.
