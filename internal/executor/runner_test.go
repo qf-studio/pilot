@@ -825,7 +825,7 @@ func TestBuildPromptSkipsNavigatorForTrivialTasks(t *testing.T) {
 
 			prompt := runner.BuildPrompt(task)
 
-			hasNavigator := contains(prompt, "Start my Navigator session")
+			hasNavigator := contains(prompt, "Use /nav-loop mode for this task")
 			hasTrivialMarker := contains(prompt, "trivial change")
 
 			if tc.expectNavigator {
