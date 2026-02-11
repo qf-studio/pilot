@@ -11,22 +11,22 @@ type Metrics struct {
 	mu sync.RWMutex
 
 	// Counters
-	IssuesProcessed   map[string]int64 // result → count (success, failed, rate_limited)
-	PRsMerged         int64
-	PRsFailed         int64
-	PRsConflicting    int64
+	IssuesProcessed     map[string]int64 // result → count (success, failed, rate_limited)
+	PRsMerged           int64
+	PRsFailed           int64
+	PRsConflicting      int64
 	CircuitBreakerTrips int64
-	APIErrors         map[string]int64 // endpoint → count
-	LabelCleanups     map[string]int64 // label → count
+	APIErrors           map[string]int64 // endpoint → count
+	LabelCleanups       map[string]int64 // label → count
 
 	// Gauges (point-in-time values)
-	ActivePRsByStage  map[PRStage]int
-	QueueDepth        int // issues with `pilot` label, no `pilot-in-progress`
-	FailedQueueDepth  int // issues with `pilot-failed`
+	ActivePRsByStage map[PRStage]int
+	QueueDepth       int // issues with `pilot` label, no `pilot-in-progress`
+	FailedQueueDepth int // issues with `pilot-failed`
 
 	// Histograms (stored as recent samples for summary stats)
-	PRTimeToMerge     []time.Duration
-	CIWaitDurations   []time.Duration
+	PRTimeToMerge      []time.Duration
+	CIWaitDurations    []time.Duration
 	ExecutionDurations []time.Duration
 
 	// Timestamps for rate calculation
@@ -175,22 +175,22 @@ func (m *Metrics) Snapshot() MetricsSnapshot {
 	defer m.mu.RUnlock()
 
 	snap := MetricsSnapshot{
-		IssuesProcessed:     copyStringIntMap(m.IssuesProcessed),
-		PRsMerged:           m.PRsMerged,
-		PRsFailed:           m.PRsFailed,
-		PRsConflicting:      m.PRsConflicting,
-		CircuitBreakerTrips: m.CircuitBreakerTrips,
-		APIErrors:           copyStringIntMap(m.APIErrors),
-		LabelCleanups:       copyStringIntMap(m.LabelCleanups),
-		ActivePRsByStage:    copyStageIntMap(m.ActivePRsByStage),
-		QueueDepth:          m.QueueDepth,
-		FailedQueueDepth:    m.FailedQueueDepth,
-		TotalActivePRs:      sumStageMap(m.ActivePRsByStage),
-		AvgPRTimeToMerge:    avgDuration(m.PRTimeToMerge),
-		AvgCIWaitDuration:   avgDuration(m.CIWaitDurations),
+		IssuesProcessed:      copyStringIntMap(m.IssuesProcessed),
+		PRsMerged:            m.PRsMerged,
+		PRsFailed:            m.PRsFailed,
+		PRsConflicting:       m.PRsConflicting,
+		CircuitBreakerTrips:  m.CircuitBreakerTrips,
+		APIErrors:            copyStringIntMap(m.APIErrors),
+		LabelCleanups:        copyStringIntMap(m.LabelCleanups),
+		ActivePRsByStage:     copyStageIntMap(m.ActivePRsByStage),
+		QueueDepth:           m.QueueDepth,
+		FailedQueueDepth:     m.FailedQueueDepth,
+		TotalActivePRs:       sumStageMap(m.ActivePRsByStage),
+		AvgPRTimeToMerge:     avgDuration(m.PRTimeToMerge),
+		AvgCIWaitDuration:    avgDuration(m.CIWaitDurations),
 		AvgExecutionDuration: avgDuration(m.ExecutionDurations),
 		APIErrorRate:         m.apiErrorRate(),
-		SnapshotAt:          time.Now(),
+		SnapshotAt:           time.Now(),
 	}
 
 	// Calculate success rate
@@ -252,6 +252,34 @@ func (s MetricsSnapshot) TotalIssuesProcessed() int64 {
 		total += v
 	}
 	return total
+}
+
+// HistogramData contains raw duration samples for histogram computation.
+type HistogramData struct {
+	PRTimeToMerge      []time.Duration
+	CIWaitDurations    []time.Duration
+	ExecutionDurations []time.Duration
+}
+
+// HistogramSnapshot returns a copy of raw histogram samples.
+func (m *Metrics) HistogramSnapshot() HistogramData {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	return HistogramData{
+		PRTimeToMerge:      copyDurations(m.PRTimeToMerge),
+		CIWaitDurations:    copyDurations(m.CIWaitDurations),
+		ExecutionDurations: copyDurations(m.ExecutionDurations),
+	}
+}
+
+func copyDurations(src []time.Duration) []time.Duration {
+	if src == nil {
+		return nil
+	}
+	dst := make([]time.Duration, len(src))
+	copy(dst, src)
+	return dst
 }
 
 // --- helpers ---
