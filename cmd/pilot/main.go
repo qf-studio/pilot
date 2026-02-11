@@ -276,6 +276,7 @@ func newStartCmd() *cobra.Command {
 		enableTunnel bool   // Enable public tunnel (Cloudflare/ngrok)
 		teamID       string // Optional team ID for scoping execution
 		teamMember   string // Member email for project access scoping
+		logFormat    string // Log output format: text or json (GH-847)
 	)
 
 	cmd := &cobra.Command{
@@ -316,6 +317,20 @@ Examples:
 
 			// Apply team flag overrides (GH-635)
 			applyTeamOverrides(cfg, cmd, teamID, teamMember)
+
+			// Initialize logging with config (GH-847)
+			// Apply log-format flag override if set
+			if cmd.Flags().Changed("log-format") {
+				if cfg.Logging == nil {
+					cfg.Logging = logging.DefaultConfig()
+				}
+				cfg.Logging.Format = logFormat
+			}
+			if cfg.Logging != nil {
+				if err := logging.Init(cfg.Logging); err != nil {
+					return fmt.Errorf("failed to initialize logging: %w", err)
+				}
+			}
 
 			// GH-710: Validate Slack Socket Mode config — degrade gracefully if app_token missing
 			if cfg.Adapters.Slack != nil && cfg.Adapters.Slack.SocketMode && cfg.Adapters.Slack.AppToken == "" {
@@ -1040,6 +1055,7 @@ Examples:
 	cmd.Flags().BoolVar(&enableTunnel, "tunnel", false, "Enable public tunnel for webhook ingress (Cloudflare/ngrok)")
 	cmd.Flags().StringVar(&teamID, "team", "", "Team ID or name for project access scoping (overrides config)")
 	cmd.Flags().StringVar(&teamMember, "team-member", "", "Member email for team access scoping (overrides config)")
+	cmd.Flags().StringVar(&logFormat, "log-format", "text", "Log output format: text or json (for log aggregation systems)")
 
 	return cmd
 }
