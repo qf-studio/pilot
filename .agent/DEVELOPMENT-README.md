@@ -96,7 +96,7 @@ if _, err := os.Stat(agentDir); err == nil {
 
 ## Current State
 
-**Current Version:** v0.30.1 | **107 features working** | **0 unwired**
+**Current Version:** v0.33.3 | **107 features working** | **0 unwired**
 
 **Full implementation status:** `.agent/system/FEATURE-MATRIX.md`
 
@@ -225,6 +225,14 @@ Goal: Raise autonomous reliability from 3/10 to 8/10. Three phases:
 ---
 
 ## Completed Log
+
+### 2026-02-11
+
+| Item | What |
+|------|------|
+| **v0.33.3** | Case-insensitive label matching — `Pilot` and `pilot` now work the same |
+| **v0.33.2** | Allow retry when `pilot-failed` label is removed (poller no longer marks failed as processed) |
+| Issue cleanup | Closed 9 `pilot-done` issues, 2 stale CI fix issues |
 
 ### 2026-02-10
 
