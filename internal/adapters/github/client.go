@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -307,10 +308,10 @@ func (c *Client) ListIssues(ctx context.Context, owner, repo string, opts *ListI
 	return issues, nil
 }
 
-// HasLabel checks if an issue has a specific label
+// HasLabel checks if an issue has a specific label (case-insensitive)
 func HasLabel(issue *Issue, labelName string) bool {
 	for _, label := range issue.Labels {
-		if label.Name == labelName {
+		if strings.EqualFold(label.Name, labelName) {
 			return true
 		}
 	}

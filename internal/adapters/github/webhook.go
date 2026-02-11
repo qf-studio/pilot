@@ -144,7 +144,7 @@ func (h *WebhookHandler) handleIssueLabeled(ctx context.Context, payload map[str
 	}
 
 	labelName, _ := labelData["name"].(string)
-	if labelName != h.pilotLabel {
+	if !strings.EqualFold(labelName, h.pilotLabel) {
 		logging.WithComponent("github").Debug("Label is not pilot label, skipping", slog.String("label", labelName))
 		return nil
 	}
@@ -234,10 +234,10 @@ func (h *WebhookHandler) extractIssueAndRepo(payload map[string]interface{}) (*I
 	return issue, repo, nil
 }
 
-// hasPilotLabel checks if the issue has the pilot label
+// hasPilotLabel checks if the issue has the pilot label (case-insensitive)
 func (h *WebhookHandler) hasPilotLabel(issue *Issue) bool {
 	for _, label := range issue.Labels {
-		if label.Name == h.pilotLabel {
+		if strings.EqualFold(label.Name, h.pilotLabel) {
 			return true
 		}
 	}

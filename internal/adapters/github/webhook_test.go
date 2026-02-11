@@ -700,12 +700,12 @@ func TestHasPilotLabel(t *testing.T) {
 			want: true,
 		},
 		{
-			name:       "case sensitive - no match",
+			name:       "case insensitive - matches",
 			pilotLabel: "pilot",
 			labels: []Label{
 				{Name: "Pilot"},
 			},
-			want: false,
+			want: true,
 		},
 	}
 

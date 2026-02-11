@@ -1036,14 +1036,14 @@ func TestHasLabel(t *testing.T) {
 			want:      false,
 		},
 		{
-			name: "case sensitive",
+			name: "case insensitive",
 			issue: &Issue{
 				Labels: []Label{
 					{Name: "Pilot"},
 				},
 			},
 			labelName: "pilot",
-			want:      false,
+			want:      true,
 		},
 	}
 
