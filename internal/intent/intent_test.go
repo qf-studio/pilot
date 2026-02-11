@@ -1,4 +1,4 @@
-package telegram
+package intent
 
 import (
 	"testing"
@@ -137,9 +137,9 @@ func TestIsGreeting(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.message, func(t *testing.T) {
-			got := isGreeting(tt.message)
+			got := IsGreeting(tt.message)
 			if got != tt.expected {
-				t.Errorf("isGreeting(%q) = %v, want %v", tt.message, got, tt.expected)
+				t.Errorf("IsGreeting(%q) = %v, want %v", tt.message, got, tt.expected)
 			}
 		})
 	}
@@ -161,9 +161,9 @@ func TestIsQuestion(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.message, func(t *testing.T) {
-			got := isQuestion(tt.message)
+			got := IsQuestion(tt.message)
 			if got != tt.expected {
-				t.Errorf("isQuestion(%q) = %v, want %v", tt.message, got, tt.expected)
+				t.Errorf("IsQuestion(%q) = %v, want %v", tt.message, got, tt.expected)
 			}
 		})
 	}
@@ -184,15 +184,15 @@ func TestContainsTaskReference(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.message, func(t *testing.T) {
-			got := containsTaskReference(tt.message)
+			got := ContainsTaskReference(tt.message)
 			if got != tt.expected {
-				t.Errorf("containsTaskReference(%q) = %v, want %v", tt.message, got, tt.expected)
+				t.Errorf("ContainsTaskReference(%q) = %v, want %v", tt.message, got, tt.expected)
 			}
 		})
 	}
 }
 
-// TestIsTask tests the isTask function
+// TestIsTask tests the IsTask function
 func TestIsTask(t *testing.T) {
 	tests := []struct {
 		message  string
@@ -217,9 +217,9 @@ func TestIsTask(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.message, func(t *testing.T) {
-			got := isTask(tt.message)
+			got := IsTask(tt.message)
 			if got != tt.expected {
-				t.Errorf("isTask(%q) = %v, want %v", tt.message, got, tt.expected)
+				t.Errorf("IsTask(%q) = %v, want %v", tt.message, got, tt.expected)
 			}
 		})
 	}
@@ -273,9 +273,9 @@ func TestContainsActionWord(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.message, func(t *testing.T) {
-			got := containsActionWord(tt.message)
+			got := ContainsActionWord(tt.message)
 			if got != tt.expected {
-				t.Errorf("containsActionWord(%q) = %v, want %v", tt.message, got, tt.expected)
+				t.Errorf("ContainsActionWord(%q) = %v, want %v", tt.message, got, tt.expected)
 			}
 		})
 	}
@@ -312,9 +312,9 @@ func TestIsLikelyGreeting(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.message, func(t *testing.T) {
-			got := isLikelyGreeting(tt.message)
+			got := IsLikelyGreeting(tt.message)
 			if got != tt.expected {
-				t.Errorf("isLikelyGreeting(%q) = %v, want %v", tt.message, got, tt.expected)
+				t.Errorf("IsLikelyGreeting(%q) = %v, want %v", tt.message, got, tt.expected)
 			}
 		})
 	}
@@ -402,7 +402,12 @@ func TestIntentConstants(t *testing.T) {
 // TestGreetingPatterns tests that all greeting patterns are recognized
 func TestGreetingPatterns(t *testing.T) {
 	// Each pattern should be recognized as greeting when alone
-	for _, pattern := range greetingPatterns {
+	patterns := []string{
+		"hi", "hello", "hey", "hola", "привет", "yo", "sup",
+		"good morning", "good afternoon", "good evening",
+		"howdy", "greetings", "what's up", "whats up",
+	}
+	for _, pattern := range patterns {
 		t.Run(pattern, func(t *testing.T) {
 			intent := DetectIntent(pattern)
 			if intent != IntentGreeting {
@@ -561,9 +566,9 @@ func TestIsResearch(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.message, func(t *testing.T) {
-			got := isResearch(tt.message)
+			got := IsResearch(tt.message)
 			if got != tt.expected {
-				t.Errorf("isResearch(%q) = %v, want %v", tt.message, got, tt.expected)
+				t.Errorf("IsResearch(%q) = %v, want %v", tt.message, got, tt.expected)
 			}
 		})
 	}
@@ -589,9 +594,9 @@ func TestIsPlanning(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.message, func(t *testing.T) {
-			got := isPlanning(tt.message)
+			got := IsPlanning(tt.message)
 			if got != tt.expected {
-				t.Errorf("isPlanning(%q) = %v, want %v", tt.message, got, tt.expected)
+				t.Errorf("IsPlanning(%q) = %v, want %v", tt.message, got, tt.expected)
 			}
 		})
 	}
@@ -619,9 +624,9 @@ func TestIsChat(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.message, func(t *testing.T) {
-			got := isChat(tt.message)
+			got := IsChat(tt.message)
 			if got != tt.expected {
-				t.Errorf("isChat(%q) = %v, want %v", tt.message, got, tt.expected)
+				t.Errorf("IsChat(%q) = %v, want %v", tt.message, got, tt.expected)
 			}
 		})
 	}
@@ -785,7 +790,7 @@ func TestIsEphemeralTaskPatterns(t *testing.T) {
 	}
 }
 
-// TestIsClearQuestion tests the isClearQuestion function for LLM pre-check (GH-382)
+// TestIsClearQuestion tests the IsClearQuestion function for LLM pre-check (GH-382)
 func TestIsClearQuestion(t *testing.T) {
 	tests := []struct {
 		input    string
@@ -833,9 +838,9 @@ func TestIsClearQuestion(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
-			got := isClearQuestion(tt.input)
+			got := IsClearQuestion(tt.input)
 			if got != tt.expected {
-				t.Errorf("isClearQuestion(%q) = %v, want %v", tt.input, got, tt.expected)
+				t.Errorf("IsClearQuestion(%q) = %v, want %v", tt.input, got, tt.expected)
 			}
 		})
 	}
@@ -864,9 +869,9 @@ func TestContainsModificationIntent(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.description, func(t *testing.T) {
-			got := containsModificationIntent(tt.description)
+			got := ContainsModificationIntent(tt.description)
 			if got != tt.expected {
-				t.Errorf("containsModificationIntent(%q) = %v, want %v", tt.description, got, tt.expected)
+				t.Errorf("ContainsModificationIntent(%q) = %v, want %v", tt.description, got, tt.expected)
 			}
 		})
 	}
