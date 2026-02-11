@@ -1,4 +1,4 @@
-package telegram
+package intent
 
 import (
 	"context"
