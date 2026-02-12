@@ -113,7 +113,7 @@ Disable via config: `executor.navigator.auto_init: false`
 
 ## Current State
 
-**Current Version:** v0.41.0 | **119 features working** | **0 unwired**
+**Current Version:** v0.51.0 | **121 features working** | **0 unwired**
 
 **Full implementation status:** `.agent/system/FEATURE-MATRIX.md`
 
@@ -156,6 +156,8 @@ Disable via config: `executor.navigator.auto_init: false`
 | K8s Health Probes | Done | `/ready` and `/live` endpoints for Kubernetes (v0.37.0) |
 | Prometheus Metrics | Done | `/metrics` endpoint for observability (v0.37.0) |
 | JSON Structured Logging | Done | Optional JSON log output mode (v0.38.0) |
+| Smart Retry | Done | Error-type-specific retry with backoff (v0.51.0) |
+| Acceptance Criteria | Done | Extract and include in prompts (v0.51.0) |
 
 ### Telegram Interaction Modes (v0.6.0)
 
@@ -244,6 +246,8 @@ Goal: Raise autonomous reliability from 3/10 to 8/10. **Achieved: 8/10**
 
 | Item | What |
 |------|------|
+| **v0.51.0** | Smart retry by error type (rate_limit, api_error, timeout) + acceptance criteria in prompts |
+| **v0.48.0** | Phase 1 reliability: config validation, stale branch detection, preflight checks, error classification |
 | **v0.41.0** | CI auto-discovery — detect check names from GitHub API, no manual config needed |
 | **v0.40.0** | Controller wiring for CI auto-discovery |
 | **v0.39.0** | CIChecksConfig struct, example config updates |
