@@ -63,6 +63,9 @@ const (
 
 	// Autopilot health events (GH-728)
 	EventTypeAutopilotMetrics EventType = "autopilot_metrics"
+
+	// Escalation events (GH-885)
+	EventTypeEscalation EventType = "escalation"
 )
 
 // EngineOption configures the Engine
@@ -178,6 +181,8 @@ func (e *Engine) handleEvent(ctx context.Context, event Event) {
 		e.handleBudgetEvent(ctx, event)
 	case EventTypeAutopilotMetrics:
 		e.handleAutopilotMetrics(ctx, event)
+	case EventTypeEscalation:
+		e.handleEscalation(ctx, event)
 	}
 }
 
@@ -659,5 +664,34 @@ func (e *Engine) handleAutopilotMetrics(ctx context.Context, event Event) {
 				e.fireAlert(ctx, rule, alert)
 			}
 		}
+	}
+}
+
+// handleEscalation processes escalation events (GH-885).
+// These are critical alerts that should route to PagerDuty.
+func (e *Engine) handleEscalation(ctx context.Context, event Event) {
+	for _, rule := range e.config.Rules {
+		if !rule.Enabled || rule.Type != AlertTypeEscalation {
+			continue
+		}
+
+		if !e.shouldFire(rule) {
+			continue
+		}
+
+		tripsInHour := event.Metadata["trips_in_hour"]
+		threshold := event.Metadata["escalation_threshold"]
+		lastPR := event.Metadata["last_pr"]
+		lastReason := event.Metadata["last_reason"]
+
+		message := fmt.Sprintf(
+			"Circuit breaker escalation: %s trips in 1 hour (threshold: %s). Last: PR #%s - %s",
+			tripsInHour, threshold, lastPR, lastReason,
+		)
+
+		alert := e.createAlert(rule, event, message)
+		// Force critical severity for escalations
+		alert.Severity = SeverityCritical
+		e.fireAlert(ctx, rule, alert)
 	}
 }
