@@ -119,7 +119,7 @@ func TestBuildPrompt(t *testing.T) {
 		Branch:      "pilot/TASK-123",
 	}
 
-	prompt := runner.BuildPrompt(task)
+	prompt := runner.BuildPrompt(task, task.ProjectPath)
 
 	if prompt == "" {
 		t.Error("buildPrompt returned empty string")
@@ -150,7 +150,7 @@ func TestBuildPromptNoBranch(t *testing.T) {
 		Branch:      "", // No branch
 	}
 
-	prompt := runner.BuildPrompt(task)
+	prompt := runner.BuildPrompt(task, task.ProjectPath)
 
 	if !contains(prompt, "current branch") {
 		t.Error("Prompt should mention current branch when Branch is empty")
@@ -756,7 +756,7 @@ func TestBuildPromptImageTask(t *testing.T) {
 		ImagePath:   "/path/to/screenshot.png",
 	}
 
-	prompt := runner.BuildPrompt(task)
+	prompt := runner.BuildPrompt(task, task.ProjectPath)
 
 	if !contains(prompt, "/path/to/screenshot.png") {
 		t.Error("Image task prompt should contain image path")
@@ -826,7 +826,7 @@ func TestBuildPromptSkipsNavigatorForTrivialTasks(t *testing.T) {
 				Branch:      "test-branch",
 			}
 
-			prompt := runner.BuildPrompt(task)
+			prompt := runner.BuildPrompt(task, task.ProjectPath)
 
 			hasNavigator := contains(prompt, "Use /nav-loop mode for this task")
 			hasTrivialMarker := contains(prompt, "trivial change")

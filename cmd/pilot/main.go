@@ -3605,7 +3605,7 @@ Examples:
 				fmt.Println("─────────────────────────────────────")
 				// Build actual prompt using a temporary runner
 				runner := executor.NewRunner()
-				prompt := runner.BuildPrompt(task)
+				prompt := runner.BuildPrompt(task, task.ProjectPath)
 				fmt.Println(prompt)
 				fmt.Println("─────────────────────────────────────")
 				return nil
@@ -4164,7 +4164,7 @@ Examples:
 				fmt.Println("🧪 DRY RUN - showing what would execute:")
 				fmt.Println()
 				runner := executor.NewRunner()
-				prompt := runner.BuildPrompt(task)
+				prompt := runner.BuildPrompt(task, task.ProjectPath)
 				fmt.Println("Prompt:")
 				fmt.Println("─────────────────────────────────────")
 				fmt.Println(prompt)

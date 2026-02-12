@@ -193,6 +193,12 @@ type BackendConfig struct {
 	// Navigator contains Navigator auto-init settings
 	Navigator *NavigatorConfig `yaml:"navigator,omitempty"`
 
+	// UseWorktree enables git worktree isolation for execution.
+	// When true, Pilot creates a temporary worktree for each task, allowing
+	// execution even when the user has uncommitted changes in their working directory.
+	// Default: false (opt-in feature)
+	UseWorktree bool `yaml:"use_worktree,omitempty"`
+
 	// Retry contains error-type-specific retry strategies (GH-920)
 	Retry *RetryConfig `yaml:"retry,omitempty"`
 

@@ -558,10 +558,64 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 		}
 	}
 
+	// GH-936: Create isolated worktree if configured
+	// This allows execution even when user has uncommitted changes in their working directory
+	executionPath := task.ProjectPath
+	var cleanupWorktree func()
+
+	if r.config != nil && r.config.UseWorktree && task.Branch != "" && !task.DirectCommit {
+		r.log.Info("Creating isolated worktree for execution",
+			slog.String("task_id", task.ID),
+			slog.String("branch", task.Branch),
+		)
+		r.reportProgress(task.ID, "Worktree", 1, "Creating isolated worktree...")
+
+		worktreePath, cleanup, err := CreateWorktreeWithBranch(
+			ctx, task.ProjectPath, task.ID, task.Branch, "")
+		if err != nil {
+			r.log.Error("Failed to create worktree",
+				slog.String("task_id", task.ID),
+				slog.Any("error", err),
+			)
+			return &ExecutionResult{
+				TaskID:  task.ID,
+				Success: false,
+				Error:   fmt.Sprintf("failed to create worktree: %v", err),
+			}, fmt.Errorf("worktree creation failed: %w", err)
+		}
+		cleanupWorktree = cleanup
+		executionPath = worktreePath
+
+		// Copy Navigator config to worktree (handles untracked .agent/ content)
+		if err := EnsureNavigatorInWorktree(task.ProjectPath, worktreePath); err != nil {
+			cleanup()
+			r.log.Error("Failed to copy Navigator to worktree",
+				slog.String("task_id", task.ID),
+				slog.Any("error", err),
+			)
+			return &ExecutionResult{
+				TaskID:  task.ID,
+				Success: false,
+				Error:   fmt.Sprintf("failed to setup navigator in worktree: %v", err),
+			}, fmt.Errorf("navigator worktree setup failed: %w", err)
+		}
+
+		r.log.Info("Using isolated worktree",
+			slog.String("task_id", task.ID),
+			slog.String("worktree", worktreePath),
+		)
+		r.reportProgress(task.ID, "Worktree", 2, "Worktree ready")
+	}
+
+	// Ensure worktree cleanup on exit (handles panic, early return, success)
+	if cleanupWorktree != nil {
+		defer cleanupWorktree()
+	}
+
 	// GH-915: Run pre-flight checks to catch environmental issues early
 	// Skip when using mock backends in tests (skipPreflightChecks flag)
 	if !r.skipPreflightChecks {
-		if err := RunPreflightChecks(ctx, task.ProjectPath); err != nil {
+		if err := RunPreflightChecks(ctx, executionPath); err != nil {
 			r.log.Warn("Pre-flight check failed",
 				slog.String("task_id", task.ID),
 				slog.Any("error", err),
@@ -575,8 +629,9 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 	}
 
 	// Auto-init Navigator if configured and missing
+	// Use executionPath to check/init in worktree if worktree isolation is active
 	if r.config != nil && r.config.Navigator != nil && r.config.Navigator.AutoInit {
-		if err := r.maybeInitNavigator(task.ProjectPath); err != nil {
+		if err := r.maybeInitNavigator(executionPath); err != nil {
 			r.log.Warn("Navigator auto-init failed", slog.Any("error", err))
 			// Continue without Navigator - graceful degradation
 		}
@@ -764,11 +819,13 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 		Source:      "pilot",
 	})
 
-	// Initialize git operations
-	git := NewGitOperations(task.ProjectPath)
+	// Initialize git operations in execution path (worktree or original)
+	git := NewGitOperations(executionPath)
 
-	// Create branch if specified (skip for direct commit mode)
-	if task.Branch != "" && !task.DirectCommit {
+	// Create branch if specified (skip for direct commit mode and worktree mode)
+	// When using worktree, CreateWorktreeWithBranch already created the branch
+	useWorktree := r.config != nil && r.config.UseWorktree && task.Branch != "" && !task.DirectCommit
+	if task.Branch != "" && !task.DirectCommit && !useWorktree {
 		r.reportProgress(task.ID, "Branching", 3, "Switching to default branch...")
 
 		// GH-279: Always switch to default branch and pull latest before creating new branch.
@@ -843,7 +900,7 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 	}
 
 	// Build the prompt
-	prompt := r.BuildPrompt(task)
+	prompt := r.BuildPrompt(task, executionPath)
 
 	// Append research context if available (GH-217)
 	if researchResult != nil && len(researchResult.Findings) > 0 {
@@ -876,7 +933,7 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 	watchdogTimeout := 2 * timeout
 	backendResult, err := r.backend.Execute(ctx, ExecuteOptions{
 		Prompt:          prompt,
-		ProjectPath:     task.ProjectPath,
+		ProjectPath:     executionPath, // Use worktree path if active
 		Verbose:         task.Verbose,
 		Model:           selectedModel,
 		Effort:          selectedEffort,
@@ -1428,7 +1485,7 @@ The previous execution completed but made no code changes. This task requires ac
 		// Auto-enable minimal build gate if not configured (GH-363)
 		// This ensures broken code never becomes a PR, even without explicit quality config
 		if r.qualityCheckerFactory == nil {
-			buildCmd := quality.DetectBuildCommand(task.ProjectPath)
+			buildCmd := quality.DetectBuildCommand(executionPath)
 			if buildCmd != "" {
 				log.Info("Auto-enabling build gate (no quality config)",
 					slog.String("command", buildCmd),
@@ -1459,7 +1516,7 @@ The previous execution completed but made no code changes. This task requires ac
 			for retryAttempt := 0; retryAttempt <= maxAutoRetries; retryAttempt++ {
 				r.reportProgress(task.ID, "Quality Gates", 91, "Running quality checks...")
 
-				checker := r.qualityCheckerFactory(task.ID, task.ProjectPath)
+				checker := r.qualityCheckerFactory(task.ID, executionPath)
 				outcome, qErr := checker.Check(ctx)
 				if qErr != nil {
 					log.Error("Quality gate check error", slog.Any("error", qErr))
@@ -2211,7 +2268,9 @@ func (r *Runner) IsRunning(taskID string) bool {
 // It adapts the prompt based on whether the project uses Navigator, adding
 // appropriate workflow instructions. Trivial tasks (typos, logs, comments)
 // skip Navigator overhead for faster execution. Exported for dry-run preview.
-func (r *Runner) BuildPrompt(task *Task) string {
+// BuildPrompt constructs the prompt for Claude Code execution.
+// executionPath may differ from task.ProjectPath when using worktree isolation.
+func (r *Runner) BuildPrompt(task *Task, executionPath string) string {
 	var sb strings.Builder
 
 	// Handle image analysis tasks (no Navigator overhead for simple image questions)
@@ -2222,8 +2281,8 @@ func (r *Runner) BuildPrompt(task *Task) string {
 		return sb.String()
 	}
 
-	// Check if project has Navigator initialized
-	agentDir := filepath.Join(task.ProjectPath, ".agent")
+	// Check if project has Navigator initialized (use executionPath for worktree support)
+	agentDir := filepath.Join(executionPath, ".agent")
 	hasNavigator := false
 	if _, err := os.Stat(agentDir); err == nil {
 		hasNavigator = true

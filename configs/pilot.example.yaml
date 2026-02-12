@@ -123,6 +123,11 @@ executor:
                                # When enabled with flag, skips branches and PRs, pushes directly to main
                                # Intended for users who rely on manual QA instead of code review
 
+  # Worktree isolation - execute tasks in temporary git worktree
+  # use_worktree: false        # When true, creates isolated worktree per task
+                               # Allows execution even with uncommitted changes in working directory
+                               # Useful when Pilot runs in same repo as your development work
+
   # Effort routing (Opus 4.6) - controls how thoroughly Claude reasons per complexity
   # effort_routing:
   #   enabled: true
