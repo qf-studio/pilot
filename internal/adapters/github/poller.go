@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/alekspetrov/pilot/internal/executor"
@@ -74,6 +75,8 @@ type Poller struct {
 	maxConcurrent int
 	semaphore     chan struct{}
 	activeWg      sync.WaitGroup
+	stopping      atomic.Bool
+	wgMu          sync.Mutex // protects stopping + activeWg Add/Wait coordination
 
 	// Persistent processed store (optional)
 	processedStore ProcessedStore
@@ -241,6 +244,9 @@ func (p *Poller) startParallel(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			p.logger.Info("Parallel poller stopping, waiting for active tasks...")
+			p.wgMu.Lock()
+			p.stopping.Store(true)
+			p.wgMu.Unlock()
 			p.activeWg.Wait()
 			p.logger.Info("Parallel poller stopped")
 			return
@@ -574,7 +580,15 @@ func (p *Poller) checkForNewIssues(ctx context.Context) {
 			slog.String("title", issue.Title),
 		)
 
+		// Use mutex to coordinate stopping flag check with WaitGroup Add
+		p.wgMu.Lock()
+		if p.stopping.Load() {
+			p.wgMu.Unlock()
+			<-p.semaphore // release slot we acquired
+			return
+		}
 		p.activeWg.Add(1)
+		p.wgMu.Unlock()
 		go func(issue *Issue) {
 			defer p.activeWg.Done()
 			defer func() { <-p.semaphore }() // release slot
@@ -622,6 +636,9 @@ func (p *Poller) markProcessed(number int) {
 // WaitForActive waits for all active parallel goroutines to finish.
 // Used in tests to synchronize after checkForNewIssues.
 func (p *Poller) WaitForActive() {
+	p.wgMu.Lock()
+	p.stopping.Store(true)
+	p.wgMu.Unlock()
 	p.activeWg.Wait()
 }
 
