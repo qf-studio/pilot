@@ -2494,6 +2494,11 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 				if err := client.AddLabels(ctx, parts[0], parts[1], issue.Number, []string{github.LabelDone}); err != nil {
 					logGitHubAPIError("AddLabels", parts[0], parts[1], issue.Number, err)
 				}
+				// Close issue so dependent issues can proceed (GH-933)
+				// Dependency resolution checks issue.State, not labels
+				if err := client.UpdateIssueState(ctx, parts[0], parts[1], issue.Number, "closed"); err != nil {
+					logGitHubAPIError("UpdateIssueState", parts[0], parts[1], issue.Number, err)
+				}
 				comment := buildExecutionComment(result, branchName)
 				if _, err := client.AddComment(ctx, parts[0], parts[1], issue.Number, comment); err != nil {
 					logGitHubAPIError("AddComment", parts[0], parts[1], issue.Number, err)
