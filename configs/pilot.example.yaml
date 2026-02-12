@@ -131,6 +131,23 @@ executor:
   #   medium: "high"             # Standard (default behavior)
   #   complex: "max"             # Deepest reasoning (Opus 4.6 only)
 
+  # Smart retry (GH-920) - retry on transient errors with backoff
+  # retry:
+  #   enabled: true
+  #   rate_limit:                 # Rate limit errors (429, quota exceeded)
+  #     max_attempts: 3
+  #     initial_backoff: 30s      # 30s, 60s, 120s
+  #     backoff_multiplier: 2.0
+  #   api_error:                  # API errors (auth, server errors)
+  #     max_attempts: 3
+  #     initial_backoff: 5s       # 5s, 10s, 20s
+  #     backoff_multiplier: 2.0
+  #   timeout:                    # Timeout errors
+  #     max_attempts: 2           # Retry once
+  #     extend_timeout: true      # Use 1.5x original timeout on retry
+  #     timeout_multiplier: 1.5
+  # Note: invalid_config errors always fail fast (no retry)
+
 # Daily briefs configuration
 briefs:
   enabled: false

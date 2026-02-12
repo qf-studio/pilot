@@ -192,6 +192,9 @@ type BackendConfig struct {
 
 	// Navigator contains Navigator auto-init settings
 	Navigator *NavigatorConfig `yaml:"navigator,omitempty"`
+
+	// Retry contains error-type-specific retry strategies (GH-920)
+	Retry *RetryConfig `yaml:"retry,omitempty"`
 }
 
 // ModelRoutingConfig controls which model to use based on task complexity.
@@ -364,6 +367,7 @@ func DefaultBackendConfig() *BackendConfig {
 		Decompose:     DefaultDecomposeConfig(),
 		IntentJudge:   DefaultIntentJudgeConfig(),
 		Navigator:     DefaultNavigatorConfig(),
+		Retry:         DefaultRetryConfig(),
 	}
 }
 

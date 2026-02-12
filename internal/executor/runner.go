@@ -85,6 +85,8 @@ type progressState struct {
 	budgetExceeded bool               // Set when per-task token/duration limit is exceeded
 	budgetReason   string             // Human-readable reason for budget cancellation
 	budgetCancel   context.CancelFunc // Cancel function to terminate execution on budget breach
+	// Smart retry tracking (GH-920)
+	smartRetryAttempt int // Current retry attempt for error-based retries
 }
 
 // Task represents a task to be executed by the Runner.
@@ -250,6 +252,7 @@ type Runner struct {
 	teamChecker           TeamChecker           // Optional team RBAC checker (GH-633)
 	executeFunc           func(ctx context.Context, task *Task) (*ExecutionResult, error) // Internal override for testing
 	skipPreflightChecks   bool                  // Skip preflight checks (for testing with mock backends)
+	retrier               *Retrier              // Optional smart retry handler (GH-920)
 }
 
 // NewRunner creates a new Runner instance with Claude Code backend by default.
@@ -317,6 +320,11 @@ func NewRunnerWithConfig(config *BackendConfig) (*Runner, error) {
 				runner.intentJudge.model = config.IntentJudge.Model
 			}
 		}
+	}
+
+	// Initialize smart retrier (GH-920)
+	if config != nil && config.Retry != nil {
+		runner.retrier = NewRetrier(config.Retry)
 	}
 
 	return runner, nil
@@ -1063,6 +1071,73 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 				r.reportProgress(task.ID, "Failed", 100, result.Error)
 			}
 
+			// GH-920: Check for smart retry before emitting alerts
+			// Note: state.smartRetryAttempt tracks retry attempts for this error path
+			if r.retrier != nil {
+				decision := r.retrier.Evaluate(err, state.smartRetryAttempt, timeout)
+				if decision.ShouldRetry {
+					state.smartRetryAttempt++
+					log.Info("Smart retry triggered",
+						slog.String("task_id", task.ID),
+						slog.String("error_category", errorCategory),
+						slog.Int("attempt", state.smartRetryAttempt),
+						slog.Duration("backoff", decision.BackoffDuration),
+					)
+					r.reportProgress(task.ID, "Retrying", 50, fmt.Sprintf("Waiting %v before retry (attempt %d)...", decision.BackoffDuration, state.smartRetryAttempt))
+
+					// Sleep for backoff duration
+					if sleepErr := r.retrier.Sleep(ctx, decision.BackoffDuration); sleepErr != nil {
+						log.Warn("Retry sleep interrupted", slog.Any("error", sleepErr))
+						// Fall through to emit alerts
+					} else {
+						// Re-execute with potentially extended timeout
+						retryTimeout := timeout
+						if decision.ExtendedTimeout > 0 {
+							retryTimeout = decision.ExtendedTimeout
+						}
+						retryCtx, retryCancel := context.WithTimeout(context.Background(), retryTimeout)
+
+						r.reportProgress(task.ID, "Re-executing", 55, fmt.Sprintf("Retry attempt %d with %v timeout...", state.smartRetryAttempt, retryTimeout))
+
+						retryResult, retryErr := r.backend.Execute(retryCtx, ExecuteOptions{
+							Prompt:          prompt,
+							ProjectPath:     task.ProjectPath,
+							Verbose:         task.Verbose,
+							Model:           selectedModel,
+							Effort:          selectedEffort,
+							WatchdogTimeout: 2 * retryTimeout,
+							EventHandler: func(event BackendEvent) {
+								if recorder != nil {
+									_ = recorder.RecordEvent(event.Raw)
+								}
+								r.processBackendEvent(task.ID, event, state)
+							},
+						})
+						retryCancel()
+
+						if retryErr == nil && retryResult != nil && retryResult.Success {
+							// Retry succeeded! Update backendResult and continue
+							log.Info("Smart retry succeeded",
+								slog.String("task_id", task.ID),
+								slog.Int("attempt", state.smartRetryAttempt),
+							)
+							r.reportProgress(task.ID, "Retry Success", 90, "Retry completed successfully")
+
+							// Update results from retry
+							backendResult = retryResult
+							err = nil
+							goto retrySucceeded
+						}
+						// Retry failed, continue to emit alerts
+						log.Warn("Smart retry failed",
+							slog.String("task_id", task.ID),
+							slog.Int("attempt", state.smartRetryAttempt),
+							slog.Any("error", retryErr),
+						)
+					}
+				}
+			}
+
 			// GH-917-5: Include stderr in alert metadata for debugging
 			metadata := map[string]string{
 				"error_category": errorCategory,
@@ -1104,6 +1179,7 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 		return result, nil
 	}
 
+retrySucceeded:
 	// Copy backend result to execution result
 	result.Success = backendResult.Success
 	result.Output = backendResult.Output
