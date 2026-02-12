@@ -148,6 +148,20 @@ executor:
   #     timeout_multiplier: 1.5
   # Note: invalid_config errors always fail fast (no retry)
 
+  # Stagnation detection (GH-925) - detect and recover from stuck tasks
+  # stagnation:
+  #   enabled: true
+  #   warn_timeout: 10m           # Warn after 10 minutes
+  #   pause_timeout: 20m          # Pause after 20 minutes
+  #   abort_timeout: 30m          # Abort after 30 minutes
+  #   warn_at_iteration: 8        # Warn after 8 Claude turns
+  #   pause_at_iteration: 12      # Pause after 12 turns
+  #   abort_at_iteration: 15      # Abort after 15 turns
+  #   state_history_size: 5       # Track last 5 states for loop detection
+  #   identical_states_threshold: 3  # 3 identical states = loop detected
+  #   grace_period: 30s           # Grace period before killing
+  #   commit_partial_work: true   # Save partial progress before abort
+
 # Daily briefs configuration
 briefs:
   enabled: false

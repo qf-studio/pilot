@@ -38,7 +38,12 @@ const (
 	AlertEventTypeWatchdogKill     AlertEventType = "watchdog_kill"
 
 	// GH-917: Specific error types for better classification
-	AlertEventTypeRateLimit    AlertEventType = "rate_limit"
-	AlertEventTypeConfigError  AlertEventType = "config_error"
-	AlertEventTypeAPIError     AlertEventType = "api_error"
+	AlertEventTypeRateLimit   AlertEventType = "rate_limit"
+	AlertEventTypeConfigError AlertEventType = "config_error"
+	AlertEventTypeAPIError    AlertEventType = "api_error"
+
+	// GH-925: Stagnation detection alerts
+	AlertEventTypeStagnationWarn  AlertEventType = "stagnation_warn"
+	AlertEventTypeStagnationPause AlertEventType = "stagnation_pause"
+	AlertEventTypeStagnationAbort AlertEventType = "stagnation_abort"
 )

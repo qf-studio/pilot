@@ -195,6 +195,9 @@ type BackendConfig struct {
 
 	// Retry contains error-type-specific retry strategies (GH-920)
 	Retry *RetryConfig `yaml:"retry,omitempty"`
+
+	// Stagnation contains stagnation detection settings (GH-925)
+	Stagnation *StagnationConfig `yaml:"stagnation,omitempty"`
 }
 
 // ModelRoutingConfig controls which model to use based on task complexity.
@@ -368,6 +371,7 @@ func DefaultBackendConfig() *BackendConfig {
 		IntentJudge:   DefaultIntentJudgeConfig(),
 		Navigator:     DefaultNavigatorConfig(),
 		Retry:         DefaultRetryConfig(),
+		Stagnation:    DefaultStagnationConfig(),
 	}
 }
 
@@ -413,6 +417,61 @@ func DefaultTimeoutConfig() *TimeoutConfig {
 		Simple:  "10m",
 		Medium:  "30m",
 		Complex: "60m",
+	}
+}
+
+// StagnationConfig controls stagnation detection and recovery (GH-925).
+// Detects when tasks are stuck in loops, making no progress, or spinning.
+//
+// Example YAML configuration:
+//
+//	executor:
+//	  stagnation:
+//	    enabled: true
+//	    warn_timeout: 10m
+//	    pause_timeout: 20m
+//	    abort_timeout: 30m
+//	    warn_at_iteration: 8
+//	    abort_at_iteration: 15
+//	    commit_partial_work: true
+type StagnationConfig struct {
+	// Enabled controls whether stagnation detection is active.
+	// Default: false (disabled by default).
+	Enabled bool `yaml:"enabled"`
+
+	// Timeout thresholds - absolute time since task start
+	WarnTimeout  time.Duration `yaml:"warn_timeout"`
+	PauseTimeout time.Duration `yaml:"pause_timeout"`
+	AbortTimeout time.Duration `yaml:"abort_timeout"`
+
+	// Iteration limits - Claude Code turn count
+	WarnAtIteration  int `yaml:"warn_at_iteration"`
+	PauseAtIteration int `yaml:"pause_at_iteration"`
+	AbortAtIteration int `yaml:"abort_at_iteration"`
+
+	// Loop detection - detect identical states
+	StateHistorySize         int `yaml:"state_history_size"`
+	IdenticalStatesThreshold int `yaml:"identical_states_threshold"`
+
+	// Recovery settings
+	GracePeriod       time.Duration `yaml:"grace_period"`
+	CommitPartialWork bool          `yaml:"commit_partial_work"`
+}
+
+// DefaultStagnationConfig returns default stagnation detection settings.
+func DefaultStagnationConfig() *StagnationConfig {
+	return &StagnationConfig{
+		Enabled:                  false, // Disabled by default
+		WarnTimeout:              10 * time.Minute,
+		PauseTimeout:             20 * time.Minute,
+		AbortTimeout:             30 * time.Minute,
+		WarnAtIteration:          8,
+		PauseAtIteration:         12,
+		AbortAtIteration:         15,
+		StateHistorySize:         5,
+		IdenticalStatesThreshold: 3,
+		GracePeriod:              30 * time.Second,
+		CommitPartialWork:        true,
 	}
 }
 
