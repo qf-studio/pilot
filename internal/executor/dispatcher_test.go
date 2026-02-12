@@ -195,6 +195,7 @@ func TestDispatcher_MultipleProjects(t *testing.T) {
 	ctx := context.Background()
 
 	// Queue tasks for different projects
+	// Add small delays between queuing to avoid SQLite BUSY errors under race detector
 	projects := []string{"/tmp/project-a", "/tmp/project-b", "/tmp/project-c"}
 	for i, proj := range projects {
 		task := &Task{
@@ -208,6 +209,8 @@ func TestDispatcher_MultipleProjects(t *testing.T) {
 		if err != nil {
 			t.Fatalf("failed to queue task %d: %v", i, err)
 		}
+		// Small delay to let SQLite WAL settle between rapid queue operations
+		time.Sleep(50 * time.Millisecond)
 	}
 
 	// Give workers time to start
