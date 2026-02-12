@@ -126,6 +126,9 @@ type Task struct {
 	// Labels contains issue labels (e.g., "no-decompose", "pilot").
 	// Flows from GitHub/Linear adapter → executor for decomposition decisions (GH-727).
 	Labels []string
+	// AcceptanceCriteria contains extracted acceptance criteria from the issue body (GH-920).
+	// When present, included in the prompt and verified before commit.
+	AcceptanceCriteria []string
 }
 
 // QualityGateResult represents the result of a single quality gate check.
@@ -2250,6 +2253,16 @@ func (r *Runner) BuildPrompt(task *Task) string {
 		sb.WriteString(fmt.Sprintf("## Task: %s\n\n", task.ID))
 		sb.WriteString(fmt.Sprintf("%s\n\n", task.Description))
 
+		// Include acceptance criteria if present (GH-920)
+		if len(task.AcceptanceCriteria) > 0 {
+			sb.WriteString("## Acceptance Criteria\n\n")
+			sb.WriteString("IMPORTANT: Verify ALL criteria are met before committing:\n")
+			for i, criterion := range task.AcceptanceCriteria {
+				sb.WriteString(fmt.Sprintf("%d. [ ] %s\n", i+1, criterion))
+			}
+			sb.WriteString("\n")
+		}
+
 		if task.Branch != "" {
 			sb.WriteString(fmt.Sprintf("Create branch `%s` before starting.\n\n", task.Branch))
 		}
@@ -2260,14 +2273,17 @@ func (r *Runner) BuildPrompt(task *Task) string {
 		sb.WriteString("- Output NAVIGATOR_STATUS blocks for progress tracking\n")
 		sb.WriteString("- Set EXIT_SIGNAL: true when task is fully complete\n\n")
 
-		// Pre-commit verification checklist (GH-359)
+		// Pre-commit verification checklist (GH-359, GH-920)
 		sb.WriteString("## Pre-Commit Verification\n\n")
 		sb.WriteString("BEFORE committing, verify:\n")
 		sb.WriteString("1. **Build passes**: Run `go build ./...` (or equivalent for the project)\n")
 		sb.WriteString("2. **Config wiring**: Any new config struct fields must flow from yaml → main.go → handler\n")
 		sb.WriteString("3. **Methods exist**: Any method calls you added must have implementations\n")
-		sb.WriteString("4. **Tests pass**: Run `go test ./...` for changed packages\n\n")
-		sb.WriteString("If any verification fails, fix it before committing.\n\n")
+		sb.WriteString("4. **Tests pass**: Run `go test ./...` for changed packages\n")
+		if len(task.AcceptanceCriteria) > 0 {
+			sb.WriteString("5. **Acceptance criteria**: Verify ALL criteria listed above are satisfied\n")
+		}
+		sb.WriteString("\nIf any verification fails, fix it before committing.\n\n")
 
 		sb.WriteString("CRITICAL: You MUST commit all changes before completing. A task is NOT complete until changes are committed. Use format: `type(scope): description (TASK-XX)`\n")
 	} else if hasNavigator && complexity.ShouldSkipNavigator() {
@@ -2278,6 +2294,16 @@ func (r *Runner) BuildPrompt(task *Task) string {
 
 		sb.WriteString(fmt.Sprintf("## Task: %s\n\n", task.ID))
 		sb.WriteString(fmt.Sprintf("%s\n\n", task.Description))
+
+		// Include acceptance criteria if present (GH-920)
+		if len(task.AcceptanceCriteria) > 0 {
+			sb.WriteString("## Acceptance Criteria\n\n")
+			for i, criterion := range task.AcceptanceCriteria {
+				sb.WriteString(fmt.Sprintf("%d. [ ] %s\n", i+1, criterion))
+			}
+			sb.WriteString("\n")
+		}
+
 		sb.WriteString("## Instructions\n\n")
 		sb.WriteString("This is a trivial change. Execute quickly without Navigator workflow.\n\n")
 
@@ -2295,6 +2321,15 @@ func (r *Runner) BuildPrompt(task *Task) string {
 		// Non-Navigator project: explicit instructions with strict constraints
 		sb.WriteString(fmt.Sprintf("## Task: %s\n\n", task.ID))
 		sb.WriteString(fmt.Sprintf("%s\n\n", task.Description))
+
+		// Include acceptance criteria if present (GH-920)
+		if len(task.AcceptanceCriteria) > 0 {
+			sb.WriteString("## Acceptance Criteria\n\n")
+			for i, criterion := range task.AcceptanceCriteria {
+				sb.WriteString(fmt.Sprintf("%d. [ ] %s\n", i+1, criterion))
+			}
+			sb.WriteString("\n")
+		}
 
 		sb.WriteString("## Constraints\n\n")
 		sb.WriteString("- ONLY create files explicitly mentioned in the task\n")

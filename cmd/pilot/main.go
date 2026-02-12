@@ -2332,16 +2332,18 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 
 	// Always create branches and PRs - required for autopilot workflow
 	// GH-386: Include SourceRepo for cross-project validation in executor
+	// GH-920: Extract acceptance criteria for prompt inclusion
 	task := &executor.Task{
-		ID:          taskID,
-		Title:       issue.Title,
-		Description: taskDesc,
-		ProjectPath: projectPath,
-		Branch:      branchName,
-		CreatePR:    true,
-		SourceRepo:  sourceRepo,
-		MemberID:    resolveGitHubMemberID(issue), // GH-634: RBAC lookup
-		Labels:      extractGitHubLabelNames(issue),  // GH-727: flow labels for complexity classifier
+		ID:                 taskID,
+		Title:              issue.Title,
+		Description:        taskDesc,
+		ProjectPath:        projectPath,
+		Branch:             branchName,
+		CreatePR:           true,
+		SourceRepo:         sourceRepo,
+		MemberID:           resolveGitHubMemberID(issue),           // GH-634: RBAC lookup
+		Labels:             extractGitHubLabelNames(issue),         // GH-727: flow labels for complexity classifier
+		AcceptanceCriteria: github.ExtractAcceptanceCriteria(issue.Body), // GH-920: acceptance criteria in prompts
 	}
 
 	var result *executor.ExecutionResult
@@ -2578,13 +2580,15 @@ func handleLinearIssueWithResult(ctx context.Context, cfg *config.Config, client
 	taskDesc := fmt.Sprintf("Linear Issue %s: %s\n\n%s", issue.Identifier, issue.Title, issue.Description)
 	branchName := fmt.Sprintf("pilot/%s", taskID)
 
+	// GH-920: Extract acceptance criteria from Linear issue description
 	task := &executor.Task{
-		ID:          taskID,
-		Title:       issue.Title,
-		Description: taskDesc,
-		ProjectPath: projectPath,
-		Branch:      branchName,
-		CreatePR:    true,
+		ID:                 taskID,
+		Title:              issue.Title,
+		Description:        taskDesc,
+		ProjectPath:        projectPath,
+		Branch:             branchName,
+		CreatePR:           true,
+		AcceptanceCriteria: github.ExtractAcceptanceCriteria(issue.Description),
 	}
 
 	var result *executor.ExecutionResult
