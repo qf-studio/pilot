@@ -113,7 +113,7 @@ Disable via config: `executor.navigator.auto_init: false`
 
 ## Current State
 
-**Current Version:** v0.51.0 | **121 features working** | **0 unwired**
+**Current Version:** v0.54.0 | **123 features working** | **0 unwired**
 
 **Full implementation status:** `.agent/system/FEATURE-MATRIX.md`
 
@@ -158,6 +158,8 @@ Disable via config: `executor.navigator.auto_init: false`
 | JSON Structured Logging | Done | Optional JSON log output mode (v0.38.0) |
 | Smart Retry | Done | Error-type-specific retry with backoff (v0.51.0) |
 | Acceptance Criteria | Done | Extract and include in prompts (v0.51.0) |
+| Worktree Isolation | Done | Execute in git worktree, allows uncommitted changes (v0.53.2) |
+| Multi-Repo Polling | Done | Poll issues from all projects with GitHub config (v0.54.0) |
 
 ### Telegram Interaction Modes (v0.6.0)
 
