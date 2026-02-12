@@ -42,6 +42,9 @@ const (
 
 	// Escalation alerts (GH-848)
 	AlertTypeEscalation AlertType = "escalation"
+
+	// Heartbeat timeout (GH-884)
+	AlertTypeHeartbeatTimeout AlertType = "heartbeat_timeout"
 )
 
 // Alert represents an alert event

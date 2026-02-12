@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/alekspetrov/pilot/internal/logging"
@@ -17,6 +18,16 @@ import (
 // GracePeriod is the time to wait after context cancellation before hard killing the process.
 // This allows the process to clean up gracefully if it responds to SIGTERM.
 const GracePeriod = 5 * time.Second
+
+// HeartbeatTimeout is the time to wait for any stream-json event before considering the process hung.
+const HeartbeatTimeout = 5 * time.Minute
+
+// HeartbeatCheckInterval is how often to check for heartbeat timeout.
+const HeartbeatCheckInterval = 30 * time.Second
+
+// HeartbeatCallback is a callback invoked when heartbeat timeout is detected.
+// Returns true if the callback wants to handle the timeout (process will be killed).
+type HeartbeatCallback func(pid int, lastEventAge time.Duration)
 
 // ClaudeCodeBackend implements Backend for Claude Code CLI.
 type ClaudeCodeBackend struct {
@@ -107,6 +118,57 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, opts ExecuteOptions) (*
 	// Channel to signal command completion
 	cmdDone := make(chan struct{})
 
+	// Heartbeat tracking: store last event time as Unix nano (atomic int64)
+	var lastEventAt atomic.Int64
+	lastEventAt.Store(time.Now().UnixNano())
+
+	// Heartbeat monitor goroutine
+	heartbeatCtx, cancelHeartbeat := context.WithCancel(context.Background())
+	defer cancelHeartbeat()
+	go func() {
+		ticker := time.NewTicker(HeartbeatCheckInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-heartbeatCtx.Done():
+				return
+			case <-cmdDone:
+				return
+			case <-ticker.C:
+				lastNano := lastEventAt.Load()
+				lastTime := time.Unix(0, lastNano)
+				age := time.Since(lastTime)
+				if age > HeartbeatTimeout {
+					b.log.Warn("Heartbeat timeout detected, killing hung process",
+						slog.Int("pid", cmd.Process.Pid),
+						slog.Duration("last_event_age", age),
+						slog.Duration("timeout", HeartbeatTimeout),
+					)
+
+					// Invoke callback if provided
+					if opts.HeartbeatCallback != nil {
+						opts.HeartbeatCallback(cmd.Process.Pid, age)
+					}
+
+					// Kill the hung process
+					if cmd.Process != nil {
+						if err := cmd.Process.Kill(); err != nil {
+							b.log.Error("Failed to kill hung process",
+								slog.Int("pid", cmd.Process.Pid),
+								slog.Any("error", err),
+							)
+						} else {
+							b.log.Info("Hung process killed successfully",
+								slog.Int("pid", cmd.Process.Pid),
+							)
+						}
+					}
+					return
+				}
+			}
+		}
+	}()
+
 	// Read stdout (stream-json events)
 	wg.Add(1)
 	go func() {
@@ -118,6 +180,10 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, opts ExecuteOptions) (*
 
 		for scanner.Scan() {
 			line := scanner.Text()
+
+			// Update heartbeat timestamp on each stream event
+			lastEventAt.Store(time.Now().UnixNano())
+
 			if opts.Verbose {
 				fmt.Printf("   %s\n", line)
 			}

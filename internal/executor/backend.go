@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"time"
 )
 
 // Backend defines the interface for AI execution backends.
@@ -43,6 +44,11 @@ type ExecuteOptions struct {
 	// EventHandler receives streaming events during execution
 	// The handler receives the raw event line from the backend
 	EventHandler func(event BackendEvent)
+
+	// HeartbeatCallback is invoked when subprocess heartbeat timeout is detected.
+	// The callback receives the process PID and the time since the last event.
+	// After callback invocation, the process will be killed.
+	HeartbeatCallback func(pid int, lastEventAge time.Duration)
 }
 
 // BackendEvent represents a streaming event from the backend.

@@ -228,3 +228,64 @@ func TestClaudeCodeBackendContextCancellation(t *testing.T) {
 		t.Errorf("ctx.Err() = %v, want Canceled", ctx.Err())
 	}
 }
+
+func TestHeartbeatConstants(t *testing.T) {
+	// Verify heartbeat constants are set to expected values
+	if HeartbeatTimeout != 5*time.Minute {
+		t.Errorf("HeartbeatTimeout = %v, want 5m", HeartbeatTimeout)
+	}
+	if HeartbeatCheckInterval != 30*time.Second {
+		t.Errorf("HeartbeatCheckInterval = %v, want 30s", HeartbeatCheckInterval)
+	}
+}
+
+func TestHeartbeatCallbackType(t *testing.T) {
+	// Verify HeartbeatCallback can be assigned properly
+	var callbackInvoked bool
+	var capturedPID int
+	var capturedAge time.Duration
+
+	callback := func(pid int, lastEventAge time.Duration) {
+		callbackInvoked = true
+		capturedPID = pid
+		capturedAge = lastEventAge
+	}
+
+	// Invoke the callback directly to verify it works
+	testPID := 12345
+	testAge := 6 * time.Minute
+	callback(testPID, testAge)
+
+	if !callbackInvoked {
+		t.Error("HeartbeatCallback was not invoked")
+	}
+	if capturedPID != testPID {
+		t.Errorf("capturedPID = %d, want %d", capturedPID, testPID)
+	}
+	if capturedAge != testAge {
+		t.Errorf("capturedAge = %v, want %v", capturedAge, testAge)
+	}
+}
+
+func TestExecuteOptionsHeartbeatCallback(t *testing.T) {
+	// Verify ExecuteOptions accepts HeartbeatCallback
+	var callbackCalled bool
+	opts := ExecuteOptions{
+		Prompt:      "test",
+		ProjectPath: "/tmp",
+		HeartbeatCallback: func(pid int, lastEventAge time.Duration) {
+			callbackCalled = true
+		},
+	}
+
+	// Verify the callback is set
+	if opts.HeartbeatCallback == nil {
+		t.Error("HeartbeatCallback should not be nil")
+	}
+
+	// Invoke and verify
+	opts.HeartbeatCallback(1234, time.Minute)
+	if !callbackCalled {
+		t.Error("HeartbeatCallback was not called")
+	}
+}

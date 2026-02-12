@@ -28,10 +28,11 @@ type AlertEvent struct {
 type AlertEventType string
 
 const (
-	AlertEventTypeTaskStarted   AlertEventType = "task_started"
-	AlertEventTypeTaskProgress  AlertEventType = "task_progress"
-	AlertEventTypeTaskCompleted AlertEventType = "task_completed"
-	AlertEventTypeTaskFailed    AlertEventType = "task_failed"
-	AlertEventTypeTaskRetry     AlertEventType = "task_retry"
-	AlertEventTypeTaskTimeout   AlertEventType = "task_timeout"
+	AlertEventTypeTaskStarted      AlertEventType = "task_started"
+	AlertEventTypeTaskProgress     AlertEventType = "task_progress"
+	AlertEventTypeTaskCompleted    AlertEventType = "task_completed"
+	AlertEventTypeTaskFailed       AlertEventType = "task_failed"
+	AlertEventTypeTaskRetry        AlertEventType = "task_retry"
+	AlertEventTypeTaskTimeout      AlertEventType = "task_timeout"
+	AlertEventTypeHeartbeatTimeout AlertEventType = "heartbeat_timeout"
 )
