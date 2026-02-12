@@ -173,9 +173,20 @@ autopilot:
   merge_method: "squash"
   ci_wait_timeout: 30m
   ci_poll_interval: 30s
-  required_checks:             # CI checks that must pass before merge
-    - test
-    - lint
+
+  # CI Check Discovery (v0.34+)
+  ci_checks:
+    mode: auto                    # auto | manual (default: auto)
+    exclude:                      # Check names to ignore in auto mode
+      - "codecov/*"              # Glob patterns supported
+      - "*-optional"
+    # required: []                # Only used in manual mode
+    discovery_grace_period: 60s   # Wait for CI to start
+
+  # Legacy (deprecated - use ci_checks.required instead)
+  # required_checks:
+  #   - test
+  #   - lint
 
 # Dashboard settings
 dashboard:
