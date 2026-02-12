@@ -412,6 +412,57 @@ func TestClassifyClaudeCodeError(t *testing.T) {
 	}
 }
 
+func TestParseClaudeCodeError(t *testing.T) {
+	tests := []struct {
+		name       string
+		stderr     string
+		expectType ClaudeCodeErrorType
+	}{
+		{
+			name:       "rate limit error",
+			stderr:     "Error: You've hit your limit · resets 6am (Europe/Podgorica)",
+			expectType: ErrorTypeRateLimit,
+		},
+		{
+			name:       "invalid config error",
+			stderr:     `Error: Effort level "max" is not available for Claude.ai subscribers`,
+			expectType: ErrorTypeInvalidConfig,
+		},
+		{
+			name:       "api error",
+			stderr:     "Error: Authentication failed. Please check your API key.",
+			expectType: ErrorTypeAPIError,
+		},
+		{
+			name:       "timeout error",
+			stderr:     "signal: killed",
+			expectType: ErrorTypeTimeout,
+		},
+		{
+			name:       "unknown error",
+			stderr:     "Something completely unexpected happened",
+			expectType: ErrorTypeUnknown,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := parseClaudeCodeError(tt.stderr, nil)
+			ccErr, ok := err.(*ClaudeCodeError)
+			if !ok {
+				t.Errorf("parseClaudeCodeError() did not return *ClaudeCodeError, got %T", err)
+				return
+			}
+			if ccErr.Type != tt.expectType {
+				t.Errorf("parseClaudeCodeError() type = %q, want %q", ccErr.Type, tt.expectType)
+			}
+			if tt.stderr != "" && ccErr.Stderr != tt.stderr {
+				t.Errorf("parseClaudeCodeError() stderr = %q, want %q", ccErr.Stderr, tt.stderr)
+			}
+		})
+	}
+}
+
 func TestClaudeCodeError_Error(t *testing.T) {
 	t.Run("with stderr", func(t *testing.T) {
 		err := &ClaudeCodeError{

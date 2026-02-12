@@ -36,4 +36,9 @@ const (
 	AlertEventTypeTaskTimeout      AlertEventType = "task_timeout"
 	AlertEventTypeHeartbeatTimeout AlertEventType = "heartbeat_timeout"
 	AlertEventTypeWatchdogKill     AlertEventType = "watchdog_kill"
+
+	// GH-917: Specific error types for better classification
+	AlertEventTypeRateLimit    AlertEventType = "rate_limit"
+	AlertEventTypeConfigError  AlertEventType = "config_error"
+	AlertEventTypeAPIError     AlertEventType = "api_error"
 )

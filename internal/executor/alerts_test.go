@@ -16,6 +16,9 @@ func TestAlertEventTypes(t *testing.T) {
 		AlertEventTypeTaskTimeout,
 		AlertEventTypeHeartbeatTimeout,
 		AlertEventTypeWatchdogKill,
+		AlertEventTypeRateLimit,
+		AlertEventTypeConfigError,
+		AlertEventTypeAPIError,
 	}
 
 	expectedValues := []string{
@@ -27,6 +30,9 @@ func TestAlertEventTypes(t *testing.T) {
 		"task_timeout",
 		"heartbeat_timeout",
 		"watchdog_kill",
+		"rate_limit",
+		"config_error",
+		"api_error",
 	}
 
 	for i, et := range eventTypes {

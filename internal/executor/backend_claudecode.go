@@ -123,6 +123,12 @@ func classifyClaudeCodeError(stderr string, originalErr error) *ClaudeCodeError 
 	}
 }
 
+// parseClaudeCodeError examines stderr output to classify the error.
+// This function matches the specification in GH-917 and returns error interface.
+func parseClaudeCodeError(stderr string, originalErr error) error {
+	return classifyClaudeCodeError(stderr, originalErr)
+}
+
 // ClaudeCodeBackend implements Backend for Claude Code CLI.
 type ClaudeCodeBackend struct {
 	config *ClaudeCodeConfig
@@ -418,7 +424,7 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, opts ExecuteOptions) (*
 
 		// GH-917: Classify the error for better handling
 		stderr := stderrOutput.String()
-		ccErr := classifyClaudeCodeError(stderr, err)
+		ccErr := parseClaudeCodeError(stderr, err).(*ClaudeCodeError)
 
 		b.log.Warn("Claude Code execution failed",
 			slog.String("error_type", string(ccErr.Type)),
