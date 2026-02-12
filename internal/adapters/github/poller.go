@@ -419,7 +419,7 @@ func (p *Poller) startSequential(ctx context.Context) {
 }
 
 // findOldestUnprocessedIssue finds the oldest issue with the pilot label
-// that hasn't been processed yet
+// that hasn't been processed yet and has no pending dependencies.
 func (p *Poller) findOldestUnprocessedIssue(ctx context.Context) (*Issue, error) {
 	issues, err := p.client.ListIssues(ctx, p.owner, p.repo, &ListIssuesOptions{
 		Labels: []string{p.label},
@@ -472,7 +472,19 @@ func (p *Poller) findOldestUnprocessedIssue(ctx context.Context) (*Issue, error)
 		return candidates[i].CreatedAt.Before(candidates[j].CreatedAt)
 	})
 
-	return candidates[0], nil
+	// Find the oldest issue without pending dependencies
+	for _, candidate := range candidates {
+		if !p.hasPendingDependencies(ctx, candidate) {
+			return candidate, nil
+		}
+		p.logger.Info("Skipping issue with pending dependencies",
+			slog.Int("number", candidate.Number),
+			slog.String("title", candidate.Title),
+		)
+	}
+
+	// All candidates have pending dependencies
+	return nil, nil
 }
 
 // processIssueSequential processes a single issue and returns PR info
@@ -537,6 +549,14 @@ func (p *Poller) checkForNewIssues(ctx context.Context) {
 						slog.Any("error", err))
 				}
 			}
+		}
+
+		// Skip issues with pending dependencies
+		if p.hasPendingDependencies(ctx, issue) {
+			p.logger.Debug("Skipping issue with pending dependencies in parallel mode",
+				slog.Int("number", issue.Number),
+			)
+			continue
 		}
 
 		// Mark processed immediately to prevent duplicate dispatch on next tick
@@ -667,4 +687,81 @@ func ExtractPRNumber(prURL string) (int, error) {
 	}
 
 	return num, nil
+}
+
+// dependencyRegex matches common dependency patterns in issue bodies:
+// - "Depends on: #123"
+// - "Depends on #123"
+// - "## Depends on: #123"
+// - "Blocked by: #123"
+// - "Blocked by #123"
+// - "Requires: #123"
+// - "Requires #123"
+var dependencyRegex = regexp.MustCompile(`(?i)(?:depends\s+on|blocked\s+by|requires):?\s*#(\d+)`)
+
+// ParseDependencies extracts issue numbers that this issue depends on from the body.
+// It looks for patterns like "Depends on: #123", "Blocked by: #456", etc.
+func ParseDependencies(body string) []int {
+	if body == "" {
+		return nil
+	}
+
+	matches := dependencyRegex.FindAllStringSubmatch(body, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+
+	// Use a map to deduplicate
+	seen := make(map[int]bool)
+	var deps []int
+
+	for _, match := range matches {
+		if len(match) < 2 {
+			continue
+		}
+		var num int
+		if _, err := fmt.Sscanf(match[1], "%d", &num); err != nil {
+			continue
+		}
+		if num > 0 && !seen[num] {
+			seen[num] = true
+			deps = append(deps, num)
+		}
+	}
+
+	return deps
+}
+
+// hasPendingDependencies checks if any of the issue's dependencies are still open.
+// Returns true if the issue has open dependencies and should be skipped.
+func (p *Poller) hasPendingDependencies(ctx context.Context, issue *Issue) bool {
+	deps := ParseDependencies(issue.Body)
+	if len(deps) == 0 {
+		return false
+	}
+
+	for _, depNum := range deps {
+		depIssue, err := p.client.GetIssue(ctx, p.owner, p.repo, depNum)
+		if err != nil {
+			// If we can't fetch the dependency, log and assume it's still pending
+			// to be safe (don't execute if we can't verify)
+			p.logger.Warn("Failed to fetch dependency issue",
+				slog.Int("issue", issue.Number),
+				slog.Int("dependency", depNum),
+				slog.Any("error", err),
+			)
+			return true
+		}
+
+		// Check if dependency is still open
+		if depIssue.State == "open" {
+			p.logger.Debug("Issue has open dependency, skipping",
+				slog.Int("issue", issue.Number),
+				slog.Int("dependency", depNum),
+			)
+			return true
+		}
+	}
+
+	return false
 }
