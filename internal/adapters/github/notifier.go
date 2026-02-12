@@ -79,6 +79,12 @@ func (n *Notifier) NotifyTaskCompleted(ctx context.Context, owner, repo string, 
 		return fmt.Errorf("failed to add done label: %w", err)
 	}
 
+	// Close the issue so dependent issues can proceed
+	// (dependency resolution checks issue.State, not labels)
+	if err := n.client.UpdateIssueState(ctx, owner, repo, issueNum, "closed"); err != nil {
+		return fmt.Errorf("failed to close issue: %w", err)
+	}
+
 	// Post completion comment
 	var comment strings.Builder
 	comment.WriteString("✅ **Pilot completed this task!**\n\n")
@@ -93,7 +99,7 @@ func (n *Notifier) NotifyTaskCompleted(ctx context.Context, owner, repo string, 
 		comment.WriteString("\n\n")
 	}
 
-	comment.WriteString("_This issue will be closed when the PR is merged._")
+	comment.WriteString("_Issue closed. PR awaiting review._")
 
 	if _, err := n.client.AddComment(ctx, owner, repo, issueNum, comment.String()); err != nil {
 		return fmt.Errorf("failed to add completion comment: %w", err)
