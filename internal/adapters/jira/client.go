@@ -208,3 +208,61 @@ func (c *Client) GetProject(ctx context.Context, projectKey string) (*Project, e
 	}
 	return &project, nil
 }
+
+// SearchResponse represents the response from the search API
+type SearchResponse struct {
+	Issues     []*Issue `json:"issues"`
+	Total      int      `json:"total"`
+	StartAt    int      `json:"startAt"`
+	MaxResults int      `json:"maxResults"`
+}
+
+// SearchIssues searches for issues using JQL
+func (c *Client) SearchIssues(ctx context.Context, jql string, maxResults int) ([]*Issue, error) {
+	if maxResults <= 0 {
+		maxResults = 50
+	}
+
+	path := fmt.Sprintf("/search?jql=%s&maxResults=%d", strings.ReplaceAll(jql, " ", "+"), maxResults)
+	var resp SearchResponse
+	if err := c.doRequest(ctx, http.MethodGet, path, nil, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Issues, nil
+}
+
+// AddLabel adds a label to an issue
+func (c *Client) AddLabel(ctx context.Context, issueKey, label string) error {
+	path := fmt.Sprintf("/issue/%s", issueKey)
+	reqBody := map[string]interface{}{
+		"update": map[string]interface{}{
+			"labels": []map[string]interface{}{
+				{"add": label},
+			},
+		},
+	}
+	return c.doRequest(ctx, http.MethodPut, path, reqBody, nil)
+}
+
+// RemoveLabel removes a label from an issue
+func (c *Client) RemoveLabel(ctx context.Context, issueKey, label string) error {
+	path := fmt.Sprintf("/issue/%s", issueKey)
+	reqBody := map[string]interface{}{
+		"update": map[string]interface{}{
+			"labels": []map[string]interface{}{
+				{"remove": label},
+			},
+		},
+	}
+	return c.doRequest(ctx, http.MethodPut, path, reqBody, nil)
+}
+
+// HasLabel checks if an issue has a specific label (case-insensitive)
+func (c *Client) HasLabel(issue *Issue, label string) bool {
+	for _, l := range issue.Fields.Labels {
+		if strings.EqualFold(l, label) {
+			return true
+		}
+	}
+	return false
+}

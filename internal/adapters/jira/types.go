@@ -1,18 +1,30 @@
 package jira
 
+import "time"
+
 // Config holds Jira adapter configuration
 type Config struct {
 	Enabled       bool   `yaml:"enabled"`
-	Platform      string `yaml:"platform"`       // "cloud" or "server"
-	BaseURL       string `yaml:"base_url"`       // e.g., "https://company.atlassian.net"
-	Username      string `yaml:"username"`       // Email for Cloud, username for Server
-	APIToken      string `yaml:"api_token"`      // API token (both Cloud and Server)
-	WebhookSecret string `yaml:"webhook_secret"` // For HMAC signature verification
-	PilotLabel    string `yaml:"pilot_label"`
+	Platform      string `yaml:"platform,omitempty"`       // "cloud" or "server"
+	BaseURL       string `yaml:"base_url,omitempty"`       // e.g., "https://company.atlassian.net"
+	Username      string `yaml:"username,omitempty"`       // Email for Cloud, username for Server
+	APIToken      string `yaml:"api_token,omitempty"`      // API token (both Cloud and Server)
+	WebhookSecret string `yaml:"webhook_secret,omitempty"` // For HMAC signature verification
+	PilotLabel    string `yaml:"pilot_label,omitempty"`
+	ProjectKey    string `yaml:"project_key,omitempty"` // Optional project filter (e.g., "PROJ")
 	Transitions   struct {
-		InProgress string `yaml:"in_progress"` // Jira transition ID
-		Done       string `yaml:"done"`        // Jira transition ID
-	} `yaml:"transitions"`
+		InProgress string `yaml:"in_progress,omitempty"` // Jira transition ID
+		Done       string `yaml:"done,omitempty"`        // Jira transition ID
+	} `yaml:"transitions,omitempty"`
+
+	// Polling configuration
+	Polling *PollingConfig `yaml:"polling,omitempty"`
+}
+
+// PollingConfig holds polling configuration for Jira adapter
+type PollingConfig struct {
+	Enabled  bool          `yaml:"enabled"`
+	Interval time.Duration `yaml:"interval"`
 }
 
 // DefaultConfig returns default Jira configuration

@@ -58,6 +58,9 @@ const (
 	// FakeJiraAPIToken is a safe test API token for Jira.
 	FakeJiraAPIToken = "test-jira-api-token"
 
+	// FakeJiraUsername is a safe test username/email for Jira.
+	FakeJiraUsername = "test@example.com"
+
 	// FakeStripeKey is a safe test API key for Stripe.
 	FakeStripeKey = "test-stripe-api-key"
 
