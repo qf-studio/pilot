@@ -1,10 +1,13 @@
 package executor
 
 import (
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestNewRunner(t *testing.T) {
@@ -2401,5 +2404,109 @@ func TestTask_MemberID_Field(t *testing.T) {
 
 	if task.MemberID != "member-abc" {
 		t.Errorf("got MemberID %q, want %q", task.MemberID, "member-abc")
+	}
+}
+
+// =============================================================================
+// CancelAll Tests (GH-883)
+// =============================================================================
+
+func TestRunner_CancelAll_Empty(t *testing.T) {
+	runner := NewRunner()
+
+	// CancelAll on empty running map should not panic
+	runner.CancelAll()
+
+	// Verify no tasks are running
+	if len(runner.running) != 0 {
+		t.Errorf("expected empty running map, got %d entries", len(runner.running))
+	}
+}
+
+func TestRunner_CancelAll_WithProcesses(t *testing.T) {
+	runner := NewRunner()
+
+	// Create a long-running process (sleep)
+	cmd := exec.Command("sleep", "60")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("failed to start test process: %v", err)
+	}
+
+	// Add it to the running map
+	runner.mu.Lock()
+	runner.running["test-task-1"] = cmd
+	runner.mu.Unlock()
+
+	// Verify process is running
+	if cmd.Process == nil {
+		t.Fatal("expected process to be started")
+	}
+
+	// CancelAll should signal the process
+	runner.CancelAll()
+
+	// Wait a bit for SIGTERM to take effect
+	done := make(chan error, 1)
+	go func() {
+		done <- cmd.Wait()
+	}()
+
+	select {
+	case err := <-done:
+		// Process should have been terminated
+		if err == nil {
+			t.Error("expected process to be killed with error")
+		}
+	case <-time.After(2 * time.Second):
+		// Force kill if still running (shouldn't happen)
+		_ = cmd.Process.Kill()
+		t.Error("process did not terminate after SIGTERM within timeout")
+	}
+}
+
+func TestRunner_CancelAll_MultipleTasks(t *testing.T) {
+	runner := NewRunner()
+
+	// Start multiple sleep processes
+	var cmds []*exec.Cmd
+	for i := 0; i < 3; i++ {
+		cmd := exec.Command("sleep", "60")
+		if err := cmd.Start(); err != nil {
+			t.Fatalf("failed to start test process %d: %v", i, err)
+		}
+		cmds = append(cmds, cmd)
+
+		runner.mu.Lock()
+		runner.running[fmt.Sprintf("test-task-%d", i)] = cmd
+		runner.mu.Unlock()
+	}
+
+	// Verify all are in the map
+	runner.mu.Lock()
+	count := len(runner.running)
+	runner.mu.Unlock()
+	if count != 3 {
+		t.Fatalf("expected 3 running tasks, got %d", count)
+	}
+
+	// CancelAll should signal all processes
+	runner.CancelAll()
+
+	// Wait for all processes to terminate
+	for i, cmd := range cmds {
+		done := make(chan error, 1)
+		go func(c *exec.Cmd) {
+			done <- c.Wait()
+		}(cmd)
+
+		select {
+		case err := <-done:
+			if err == nil {
+				t.Errorf("expected process %d to be killed with error", i)
+			}
+		case <-time.After(2 * time.Second):
+			_ = cmd.Process.Kill()
+			t.Errorf("process %d did not terminate after SIGTERM within timeout", i)
+		}
 	}
 }

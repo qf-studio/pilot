@@ -2002,6 +2002,9 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 		// Clean shutdown - cancel context to stop all goroutines
 		cancel()
 
+		// Terminate all running subprocesses (GH-883)
+		runner.CancelAll()
+
 		if tgHandler != nil {
 			tgHandler.Stop()
 		}
@@ -2021,6 +2024,10 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 
 	<-sigCh
 	fmt.Println("\n🛑 Shutting down...")
+
+	// Terminate all running subprocesses (GH-883)
+	runner.CancelAll()
+
 	if tgHandler != nil {
 		tgHandler.Stop()
 	}

@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/alekspetrov/pilot/internal/logging"
@@ -1761,6 +1762,57 @@ func (r *Runner) Cancel(taskID string) error {
 	}
 
 	return cmd.Process.Kill()
+}
+
+// CancelAll terminates all running subprocesses gracefully.
+// It sends SIGTERM to allow processes to clean up, then forcefully kills
+// any remaining processes after a 10-second grace period.
+// This is called during graceful shutdown to prevent orphaned Claude Code processes.
+func (r *Runner) CancelAll() {
+	r.mu.Lock()
+	// Copy running map to avoid holding lock during signals
+	toCancel := make(map[string]*exec.Cmd, len(r.running))
+	for id, cmd := range r.running {
+		toCancel[id] = cmd
+	}
+	r.mu.Unlock()
+
+	if len(toCancel) == 0 {
+		return
+	}
+
+	r.log.Info("Cancelling all running tasks", slog.Int("count", len(toCancel)))
+
+	// Send SIGTERM to all processes for graceful shutdown
+	for id, cmd := range toCancel {
+		if cmd.Process != nil {
+			if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+				r.log.Debug("Failed to send SIGTERM", slog.String("task_id", id), slog.Any("error", err))
+			} else {
+				r.log.Debug("Sent SIGTERM to process", slog.String("task_id", id), slog.Int("pid", cmd.Process.Pid))
+			}
+		}
+	}
+
+	// Wait 10s, then SIGKILL any remaining
+	time.AfterFunc(10*time.Second, func() {
+		r.mu.Lock()
+		remaining := make(map[string]*exec.Cmd, len(r.running))
+		for id, cmd := range r.running {
+			remaining[id] = cmd
+		}
+		r.mu.Unlock()
+
+		for id, cmd := range remaining {
+			if cmd.Process != nil {
+				if err := cmd.Process.Kill(); err != nil {
+					r.log.Debug("Failed to kill process", slog.String("task_id", id), slog.Any("error", err))
+				} else {
+					r.log.Info("Force killed process after grace period", slog.String("task_id", id), slog.Int("pid", cmd.Process.Pid))
+				}
+			}
+		}
+	})
 }
 
 // IsRunning returns true if the specified task is currently being executed.

@@ -98,6 +98,8 @@ func (o *Orchestrator) Start() {
 func (o *Orchestrator) Stop() {
 	o.cancel()
 	close(o.taskQueue)
+	// Terminate all running subprocesses (GH-883)
+	o.runner.CancelAll()
 	o.wg.Wait()
 	logging.WithComponent("orchestrator").Info("Orchestrator stopped")
 }
