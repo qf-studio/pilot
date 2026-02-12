@@ -768,6 +768,7 @@ Examples:
 						return fmt.Errorf("invalid repo format: %s", cfg.Adapters.GitHub.Repo)
 					}
 					repoOwner, repoName := repoParts[0], repoParts[1]
+					gwSourceRepo := cfg.Adapters.GitHub.Repo // GH-929: Capture for closure
 
 					rateLimitScheduler := executor.NewScheduler(executor.DefaultSchedulerConfig(), nil)
 					rateLimitScheduler.SetRetryCallback(func(retryCtx context.Context, pendingTask *executor.PendingTask) error {
@@ -788,9 +789,9 @@ Examples:
 
 						var result *github.IssueResult
 						if execMode == github.ExecutionModeSequential {
-							result, err = handleGitHubIssueWithResult(retryCtx, cfg, client, issue, projectPath, gwDispatcher, gwRunner, gwMonitor, gwProgram, gwAlertsEngine, gwEnforcer)
+							result, err = handleGitHubIssueWithResult(retryCtx, cfg, client, issue, projectPath, gwSourceRepo, gwDispatcher, gwRunner, gwMonitor, gwProgram, gwAlertsEngine, gwEnforcer)
 						} else {
-							result, err = handleGitHubIssueWithResult(retryCtx, cfg, client, issue, projectPath, gwDispatcher, gwRunner, gwMonitor, gwProgram, gwAlertsEngine, gwEnforcer)
+							result, err = handleGitHubIssueWithResult(retryCtx, cfg, client, issue, projectPath, gwSourceRepo, gwDispatcher, gwRunner, gwMonitor, gwProgram, gwAlertsEngine, gwEnforcer)
 						}
 
 						// GH-797: Call OnPRCreated for retried issues so autopilot tracks their PRs
@@ -817,7 +818,7 @@ Examples:
 							github.WithSequentialConfig(waitForMerge, pollInterval, prTimeout),
 							github.WithScheduler(rateLimitScheduler),
 							github.WithOnIssueWithResult(func(issueCtx context.Context, issue *github.Issue) (*github.IssueResult, error) {
-								return handleGitHubIssueWithResult(issueCtx, cfg, client, issue, projectPath, gwDispatcher, gwRunner, gwMonitor, gwProgram, gwAlertsEngine, gwEnforcer)
+								return handleGitHubIssueWithResult(issueCtx, cfg, client, issue, projectPath, gwSourceRepo, gwDispatcher, gwRunner, gwMonitor, gwProgram, gwAlertsEngine, gwEnforcer)
 							}),
 						)
 					} else {
@@ -825,7 +826,7 @@ Examples:
 							github.WithScheduler(rateLimitScheduler),
 							github.WithMaxConcurrent(cfg.Orchestrator.MaxConcurrent),
 							github.WithOnIssueWithResult(func(issueCtx context.Context, issue *github.Issue) (*github.IssueResult, error) {
-								return handleGitHubIssueWithResult(issueCtx, cfg, client, issue, projectPath, gwDispatcher, gwRunner, gwMonitor, gwProgram, gwAlertsEngine, gwEnforcer)
+								return handleGitHubIssueWithResult(issueCtx, cfg, client, issue, projectPath, gwSourceRepo, gwDispatcher, gwRunner, gwMonitor, gwProgram, gwAlertsEngine, gwEnforcer)
 							}),
 						)
 					}
@@ -1279,8 +1280,9 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 		}
 	}
 
-	// Create autopilot controller if enabled
-	var autopilotController *autopilot.Controller
+	// GH-929: Create autopilot controllers map (one per repo) if enabled
+	autopilotControllers := make(map[string]*autopilot.Controller)
+	var autopilotController *autopilot.Controller // Default controller for backwards compat
 	if cfg.Orchestrator.Autopilot != nil && cfg.Orchestrator.Autopilot.Enabled {
 		// Need GitHub client for autopilot
 		ghToken := ""
@@ -1290,16 +1292,45 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 				ghToken = os.Getenv("GITHUB_TOKEN")
 			}
 		}
-		if ghToken != "" && cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.Repo != "" {
-			parts := strings.SplitN(cfg.Adapters.GitHub.Repo, "/", 2)
-			if len(parts) == 2 {
-				ghClient := github.NewClient(ghToken)
-				autopilotController = autopilot.NewController(
+		if ghToken != "" {
+			ghClient := github.NewClient(ghToken)
+
+			// Create controller for default repo (adapters.github.repo)
+			if cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.Repo != "" {
+				parts := strings.SplitN(cfg.Adapters.GitHub.Repo, "/", 2)
+				if len(parts) == 2 {
+					controller := autopilot.NewController(
+						cfg.Orchestrator.Autopilot,
+						ghClient,
+						approvalMgr,
+						parts[0],
+						parts[1],
+					)
+					autopilotControllers[cfg.Adapters.GitHub.Repo] = controller
+					autopilotController = controller // Default for backwards compat
+				}
+			}
+
+			// GH-929: Create controllers for each project with GitHub config
+			for _, proj := range cfg.Projects {
+				if proj.GitHub == nil || proj.GitHub.Owner == "" || proj.GitHub.Repo == "" {
+					continue
+				}
+				repoFullName := fmt.Sprintf("%s/%s", proj.GitHub.Owner, proj.GitHub.Repo)
+				if _, exists := autopilotControllers[repoFullName]; exists {
+					continue // Skip duplicates
+				}
+				controller := autopilot.NewController(
 					cfg.Orchestrator.Autopilot,
 					ghClient,
 					approvalMgr,
-					parts[0],
-					parts[1],
+					proj.GitHub.Owner,
+					proj.GitHub.Repo,
+				)
+				autopilotControllers[repoFullName] = controller
+				logging.WithComponent("autopilot").Info("created controller for project",
+					slog.String("project", proj.Name),
+					slog.String("repo", repoFullName),
 				)
 			}
 		}
@@ -1320,18 +1351,25 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 
 	// GH-726: Initialize autopilot state store for crash recovery
 	var autopilotStateStore *autopilot.StateStore
-	if store != nil && autopilotController != nil {
+	if store != nil && len(autopilotControllers) > 0 {
 		var storeErr error
 		autopilotStateStore, storeErr = autopilot.NewStateStore(store.DB())
 		if storeErr != nil {
 			logging.WithComponent("autopilot").Warn("Failed to initialize state store", slog.Any("error", storeErr))
 		} else {
-			autopilotController.SetStateStore(autopilotStateStore)
-			restored, restoreErr := autopilotController.RestoreState()
-			if restoreErr != nil {
-				logging.WithComponent("autopilot").Warn("Failed to restore state from SQLite", slog.Any("error", restoreErr))
-			} else if restored > 0 {
-				logging.WithComponent("autopilot").Info("Restored autopilot PR states from SQLite", slog.Int("count", restored))
+			// GH-929: Wire state store to all controllers
+			for repoName, controller := range autopilotControllers {
+				controller.SetStateStore(autopilotStateStore)
+				restored, restoreErr := controller.RestoreState()
+				if restoreErr != nil {
+					logging.WithComponent("autopilot").Warn("Failed to restore state from SQLite",
+						slog.String("repo", repoName),
+						slog.Any("error", restoreErr))
+				} else if restored > 0 {
+					logging.WithComponent("autopilot").Info("Restored autopilot PR states from SQLite",
+						slog.String("repo", repoName),
+						slog.Int("count", restored))
+				}
 			}
 		}
 	}
@@ -1583,8 +1621,10 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 		}
 	}
 
-	// Start GitHub polling if enabled
-	var ghPoller *github.Poller
+	// GH-929: Start GitHub polling for multiple repos if enabled
+	var ghPollers []*github.Poller
+	polledRepos := make(map[string]bool) // Track repos already polled to avoid duplicates
+
 	if cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.Enabled &&
 		cfg.Adapters.GitHub.Polling != nil && cfg.Adapters.GitHub.Polling.Enabled {
 
@@ -1593,18 +1633,7 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 			token = os.Getenv("GITHUB_TOKEN")
 		}
 
-		if token != "" && cfg.Adapters.GitHub.Repo != "" {
-			// GH-386: Validate repo/project match at startup to prevent cross-project execution
-			if err := executor.ValidateRepoProjectMatch(cfg.Adapters.GitHub.Repo, projectPath); err != nil {
-				logging.WithComponent("github").Warn("repo/project mismatch detected - issues may execute against wrong project",
-					slog.String("repo", cfg.Adapters.GitHub.Repo),
-					slog.String("project_path", projectPath),
-					slog.String("expected_project", executor.ExtractRepoName(cfg.Adapters.GitHub.Repo)),
-				)
-				// In strict mode, we could return an error here:
-				// return fmt.Errorf("repo/project mismatch: %w", err)
-			}
-
+		if token != "" {
 			client := github.NewClient(token)
 			label := cfg.Adapters.GitHub.Polling.Label
 			if label == "" {
@@ -1635,168 +1664,228 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 				}
 			}
 
-			var pollerOpts []github.PollerOption
-
-			// Wire autopilot OnPRCreated callback if controller initialized
-			// Note: autopilotController is created earlier (before dashboard) to ensure
-			// the same instance is used by both dashboard and GitHub poller (GH-263)
-			if autopilotController != nil {
-				pollerOpts = append(pollerOpts,
-					github.WithOnPRCreated(autopilotController.OnPRCreated),
-				)
-				// Wire sub-issue PR callback so epic sub-PRs are tracked by autopilot (GH-594)
-				runner.SetOnSubIssuePRCreated(autopilotController.OnPRCreated)
+			modeStr := "sequential"
+			if execMode == github.ExecutionModeParallel {
+				modeStr = "parallel"
 			}
 
-			// GH-726: Wire processed issue persistence if state store available
-			if autopilotStateStore != nil {
-				pollerOpts = append(pollerOpts, github.WithProcessedStore(autopilotStateStore))
-			}
+			// Helper to create poller for a repo with its project path
+			createPollerForRepo := func(repoFullName, projPath string) (*github.Poller, error) {
+				repoParts := strings.Split(repoFullName, "/")
+				if len(repoParts) != 2 {
+					return nil, fmt.Errorf("invalid repo format: %s", repoFullName)
+				}
+				repoOwner, repoName := repoParts[0], repoParts[1]
 
-			// Create rate limit retry scheduler
-			// Parse owner/repo for GetIssue calls
-			repoParts := strings.Split(cfg.Adapters.GitHub.Repo, "/")
-			if len(repoParts) != 2 {
-				return fmt.Errorf("invalid repo format: %s", cfg.Adapters.GitHub.Repo)
-			}
-			repoOwner, repoName := repoParts[0], repoParts[1]
-
-			rateLimitScheduler := executor.NewScheduler(executor.DefaultSchedulerConfig(), nil)
-			rateLimitScheduler.SetRetryCallback(func(retryCtx context.Context, pendingTask *executor.PendingTask) error {
-				// Extract issue number from task ID (format: "GH-123")
-				var issueNum int
-				if _, err := fmt.Sscanf(pendingTask.Task.ID, "GH-%d", &issueNum); err != nil {
-					return fmt.Errorf("invalid task ID format: %s", pendingTask.Task.ID)
+				// GH-386: Validate repo/project match at startup
+				if err := executor.ValidateRepoProjectMatch(repoFullName, projPath); err != nil {
+					logging.WithComponent("github").Warn("repo/project mismatch detected",
+						slog.String("repo", repoFullName),
+						slog.String("project_path", projPath),
+						slog.String("expected_project", executor.ExtractRepoName(repoFullName)),
+					)
 				}
 
-				// Fetch the issue again to get current state
-				issue, err := client.GetIssue(retryCtx, repoOwner, repoName, issueNum)
-				if err != nil {
-					return fmt.Errorf("failed to fetch issue for retry: %w", err)
+				var pollerOpts []github.PollerOption
+
+				// Wire autopilot callback to the correct controller for this repo
+				controller := autopilotControllers[repoFullName]
+				if controller != nil {
+					pollerOpts = append(pollerOpts,
+						github.WithOnPRCreated(controller.OnPRCreated),
+					)
 				}
 
-				logging.WithComponent("scheduler").Info("Retrying rate-limited issue",
-					slog.Int("issue", issueNum),
-					slog.Int("attempt", pendingTask.Attempts),
-				)
+				// GH-726: Wire processed issue persistence
+				if autopilotStateStore != nil {
+					pollerOpts = append(pollerOpts, github.WithProcessedStore(autopilotStateStore))
+				}
 
-				// Re-process the issue
-				var result *github.IssueResult
+				// Capture variables for closures
+				sourceRepo := repoFullName
+				projPathCapture := projPath
+				controllerCapture := controller
+
+				// Create rate limit retry scheduler for this repo
+				rateLimitScheduler := executor.NewScheduler(executor.DefaultSchedulerConfig(), nil)
+				rateLimitScheduler.SetRetryCallback(func(retryCtx context.Context, pendingTask *executor.PendingTask) error {
+					var issueNum int
+					if _, err := fmt.Sscanf(pendingTask.Task.ID, "GH-%d", &issueNum); err != nil {
+						return fmt.Errorf("invalid task ID format: %s", pendingTask.Task.ID)
+					}
+
+					issue, err := client.GetIssue(retryCtx, repoOwner, repoName, issueNum)
+					if err != nil {
+						return fmt.Errorf("failed to fetch issue for retry: %w", err)
+					}
+
+					logging.WithComponent("scheduler").Info("Retrying rate-limited issue",
+						slog.String("repo", sourceRepo),
+						slog.Int("issue", issueNum),
+						slog.Int("attempt", pendingTask.Attempts),
+					)
+
+					result, err := handleGitHubIssueWithResult(retryCtx, cfg, client, issue, projPathCapture, sourceRepo, dispatcher, runner, monitor, program, alertsEngine, enforcer)
+
+					if result != nil && result.PRNumber > 0 && controllerCapture != nil {
+						controllerCapture.OnPRCreated(result.PRNumber, result.PRURL, issue.Number, result.HeadSHA, result.BranchName)
+					}
+
+					return err
+				})
+				rateLimitScheduler.SetExpiredCallback(func(expiredCtx context.Context, pendingTask *executor.PendingTask) {
+					logging.WithComponent("scheduler").Error("Task exceeded max retry attempts",
+						slog.String("task_id", pendingTask.Task.ID),
+						slog.Int("attempts", pendingTask.Attempts),
+					)
+				})
+				if err := rateLimitScheduler.Start(ctx); err != nil {
+					logging.WithComponent("start").Warn("Failed to start rate limit scheduler",
+						slog.String("repo", repoFullName),
+						slog.Any("error", err))
+				}
+
+				// Configure based on execution mode
 				if execMode == github.ExecutionModeSequential {
-					result, err = handleGitHubIssueWithResult(retryCtx, cfg, client, issue, projectPath, dispatcher, runner, monitor, program, alertsEngine, enforcer)
+					pollerOpts = append(pollerOpts,
+						github.WithExecutionMode(github.ExecutionModeSequential),
+						github.WithSequentialConfig(waitForMerge, pollInterval, prTimeout),
+						github.WithScheduler(rateLimitScheduler),
+						github.WithOnIssueWithResult(func(issueCtx context.Context, issue *github.Issue) (*github.IssueResult, error) {
+							return handleGitHubIssueWithResult(issueCtx, cfg, client, issue, projPathCapture, sourceRepo, dispatcher, runner, monitor, program, alertsEngine, enforcer)
+						}),
+					)
 				} else {
-					result, err = handleGitHubIssueWithResult(retryCtx, cfg, client, issue, projectPath, dispatcher, runner, monitor, program, alertsEngine, enforcer)
+					pollerOpts = append(pollerOpts,
+						github.WithExecutionMode(github.ExecutionModeParallel),
+						github.WithScheduler(rateLimitScheduler),
+						github.WithMaxConcurrent(cfg.Orchestrator.MaxConcurrent),
+						github.WithOnIssueWithResult(func(issueCtx context.Context, issue *github.Issue) (*github.IssueResult, error) {
+							return handleGitHubIssueWithResult(issueCtx, cfg, client, issue, projPathCapture, sourceRepo, dispatcher, runner, monitor, program, alertsEngine, enforcer)
+						}),
+					)
 				}
 
-				// GH-797: Call OnPRCreated for retried issues so autopilot tracks their PRs
-				if result != nil && result.PRNumber > 0 && autopilotController != nil {
-					autopilotController.OnPRCreated(result.PRNumber, result.PRURL, issue.Number, result.HeadSHA, result.BranchName)
-				}
-
-				return err
-			})
-			rateLimitScheduler.SetExpiredCallback(func(expiredCtx context.Context, pendingTask *executor.PendingTask) {
-				logging.WithComponent("scheduler").Error("Task exceeded max retry attempts",
-					slog.String("task_id", pendingTask.Task.ID),
-					slog.Int("attempts", pendingTask.Attempts),
-				)
-			})
-			if err := rateLimitScheduler.Start(ctx); err != nil {
-				logging.WithComponent("start").Warn("Failed to start rate limit scheduler", slog.Any("error", err))
-			} else {
-				logging.WithComponent("start").Info("Rate limit retry scheduler started")
+				return github.NewPoller(client, repoFullName, label, interval, pollerOpts...)
 			}
 
-			// Configure based on execution mode
-			if execMode == github.ExecutionModeSequential {
-				pollerOpts = append(pollerOpts,
-					github.WithExecutionMode(github.ExecutionModeSequential),
-					github.WithSequentialConfig(waitForMerge, pollInterval, prTimeout),
-					github.WithScheduler(rateLimitScheduler),
-					github.WithOnIssueWithResult(func(issueCtx context.Context, issue *github.Issue) (*github.IssueResult, error) {
-						return handleGitHubIssueWithResult(issueCtx, cfg, client, issue, projectPath, dispatcher, runner, monitor, program, alertsEngine, enforcer)
-					}),
-				)
-			} else {
-				pollerOpts = append(pollerOpts,
-					github.WithExecutionMode(github.ExecutionModeParallel),
-					github.WithScheduler(rateLimitScheduler),
-					github.WithMaxConcurrent(cfg.Orchestrator.MaxConcurrent),
-					github.WithOnIssueWithResult(func(issueCtx context.Context, issue *github.Issue) (*github.IssueResult, error) {
-						return handleGitHubIssueWithResult(issueCtx, cfg, client, issue, projectPath, dispatcher, runner, monitor, program, alertsEngine, enforcer)
-					}),
-				)
-			}
-
-			var err error
-			ghPoller, err = github.NewPoller(client, cfg.Adapters.GitHub.Repo, label, interval, pollerOpts...)
-			if err != nil {
-				if !dashboardMode {
-					fmt.Printf("⚠️  GitHub polling disabled: %v\n", err)
-				}
-			} else {
-				modeStr := "sequential"
-				if execMode == github.ExecutionModeParallel {
-					modeStr = "parallel"
-				}
-				if !dashboardMode {
-					fmt.Printf("🐙 GitHub polling enabled: %s (every %s, mode: %s)\n", cfg.Adapters.GitHub.Repo, interval, modeStr)
-					if execMode == github.ExecutionModeSequential && waitForMerge {
-						fmt.Printf("   ⏳ Sequential mode: waiting for PR merge before next issue (timeout: %s)\n", prTimeout)
-					}
-				}
-				go ghPoller.Start(ctx)
-
-				// Start autopilot processing loop if controller initialized
-				// Uses autopilotController (created earlier) to ensure dashboard shows scanned PRs (GH-263)
-				if autopilotController != nil {
-					// Scan for existing PRs created by Pilot before starting the loop
-					if err := autopilotController.ScanExistingPRs(ctx); err != nil {
-						logging.WithComponent("autopilot").Warn("failed to scan existing PRs",
-							slog.Any("error", err),
-						)
-					}
-
-					// Scan for recently merged PRs that may need release (GH-416)
-					if err := autopilotController.ScanRecentlyMergedPRs(ctx); err != nil {
-						logging.WithComponent("autopilot").Warn("failed to scan merged PRs",
-							slog.Any("error", err),
-						)
-					}
-
+			// Create poller for default repo (adapters.github.repo)
+			if cfg.Adapters.GitHub.Repo != "" {
+				polledRepos[cfg.Adapters.GitHub.Repo] = true
+				poller, err := createPollerForRepo(cfg.Adapters.GitHub.Repo, projectPath)
+				if err != nil {
 					if !dashboardMode {
-						fmt.Printf("🤖 Autopilot enabled: %s environment\n", cfg.Orchestrator.Autopilot.Environment)
+						fmt.Printf("⚠️  GitHub polling disabled for %s: %v\n", cfg.Adapters.GitHub.Repo, err)
 					}
-					go func() {
-						if err := autopilotController.Run(ctx); err != nil && err != context.Canceled {
+				} else {
+					ghPollers = append(ghPollers, poller)
+					if !dashboardMode {
+						fmt.Printf("🐙 GitHub polling enabled: %s (every %s, mode: %s)\n", cfg.Adapters.GitHub.Repo, interval, modeStr)
+					}
+				}
+			}
+
+			// GH-929: Create pollers for each project with GitHub config
+			for _, proj := range cfg.Projects {
+				if proj.GitHub == nil || proj.GitHub.Owner == "" || proj.GitHub.Repo == "" {
+					continue
+				}
+				repoFullName := fmt.Sprintf("%s/%s", proj.GitHub.Owner, proj.GitHub.Repo)
+				if polledRepos[repoFullName] {
+					continue // Skip duplicates
+				}
+				polledRepos[repoFullName] = true
+
+				projPath := proj.Path
+				if projPath == "" {
+					projPath = projectPath // Fall back to default project path
+				}
+
+				poller, err := createPollerForRepo(repoFullName, projPath)
+				if err != nil {
+					logging.WithComponent("github").Warn("Failed to create poller for project",
+						slog.String("project", proj.Name),
+						slog.String("repo", repoFullName),
+						slog.Any("error", err))
+					continue
+				}
+				ghPollers = append(ghPollers, poller)
+				if !dashboardMode {
+					fmt.Printf("🐙 GitHub polling enabled: %s (project: %s, every %s, mode: %s)\n", repoFullName, proj.Name, interval, modeStr)
+				}
+			}
+
+			// Start all pollers
+			for _, poller := range ghPollers {
+				go poller.Start(ctx)
+			}
+
+			if len(ghPollers) > 0 {
+				if !dashboardMode && execMode == github.ExecutionModeSequential && waitForMerge {
+					fmt.Printf("   ⏳ Sequential mode: waiting for PR merge before next issue (timeout: %s)\n", prTimeout)
+				}
+
+				// Start autopilot processing loops for all controllers
+				for repoName, controller := range autopilotControllers {
+					// Scan for existing PRs
+					if err := controller.ScanExistingPRs(ctx); err != nil {
+						logging.WithComponent("autopilot").Warn("failed to scan existing PRs",
+							slog.String("repo", repoName),
+							slog.Any("error", err),
+						)
+					}
+
+					// Scan for recently merged PRs (GH-416)
+					if err := controller.ScanRecentlyMergedPRs(ctx); err != nil {
+						logging.WithComponent("autopilot").Warn("failed to scan merged PRs",
+							slog.String("repo", repoName),
+							slog.Any("error", err),
+						)
+					}
+
+					// Start controller run loop
+					go func(c *autopilot.Controller, repo string) {
+						if err := c.Run(ctx); err != nil && err != context.Canceled {
 							logging.WithComponent("autopilot").Error("autopilot controller stopped",
+								slog.String("repo", repo),
 								slog.Any("error", err),
 							)
 						}
-					}()
+					}(controller, repoName)
+				}
 
-					// Start metrics alerter (GH-728): bridges metrics → alerts engine
-					if alertsEngine != nil {
-						metricsAlerter := autopilot.NewMetricsAlerter(autopilotController, alertsEngine)
-						go metricsAlerter.Run(ctx)
-					}
+				if len(autopilotControllers) > 0 && !dashboardMode {
+					fmt.Printf("🤖 Autopilot enabled: %s environment (%d repos)\n", cfg.Orchestrator.Autopilot.Environment, len(autopilotControllers))
+				}
 
-					// Start metrics persister (GH-728): snapshots → SQLite
-					if store != nil {
-						metricsPersister := autopilot.NewMetricsPersister(autopilotController, store)
-						go metricsPersister.Run(ctx)
-					}
+				// Start metrics alerter for default controller (GH-728)
+				if alertsEngine != nil && autopilotController != nil {
+					metricsAlerter := autopilot.NewMetricsAlerter(autopilotController, alertsEngine)
+					go metricsAlerter.Run(ctx)
+				}
+
+				// Start metrics persister for default controller (GH-728)
+				if store != nil && autopilotController != nil {
+					metricsPersister := autopilot.NewMetricsPersister(autopilotController, store)
+					go metricsPersister.Run(ctx)
+				}
+
+				// Wire sub-issue PR callback for default controller (GH-594)
+				if autopilotController != nil {
+					runner.SetOnSubIssuePRCreated(autopilotController.OnPRCreated)
 				}
 			}
 
-			// Start stale label cleanup if enabled
-			if cfg.Adapters.GitHub.StaleLabelCleanup != nil && cfg.Adapters.GitHub.StaleLabelCleanup.Enabled {
+			// Start stale label cleanup for default repo if enabled
+			if cfg.Adapters.GitHub.Repo != "" && cfg.Adapters.GitHub.StaleLabelCleanup != nil && cfg.Adapters.GitHub.StaleLabelCleanup.Enabled {
 				if store != nil {
-					// Wire callback to clear processed map when pilot-failed labels are removed
 					cleanerOpts := []github.CleanerOption{}
-					if ghPoller != nil {
+					// Wire callback to clear processed map when pilot-failed labels are removed
+					if len(ghPollers) > 0 {
 						cleanerOpts = append(cleanerOpts, github.WithOnFailedCleaned(func(issueNumber int) {
-							ghPoller.ClearProcessed(issueNumber)
+							for _, p := range ghPollers {
+								p.ClearProcessed(issueNumber)
+							}
 						}))
 					}
 					cleaner, cleanerErr := github.NewCleaner(client, store, cfg.Adapters.GitHub.Repo, cfg.Adapters.GitHub.StaleLabelCleanup, cleanerOpts...)
@@ -2135,8 +2224,8 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 	if tgHandler != nil {
 		tgHandler.Stop()
 	}
-	if ghPoller != nil {
-		fmt.Println("🐙 Stopping GitHub poller...")
+	if len(ghPollers) > 0 {
+		fmt.Printf("🐙 Stopping GitHub pollers (%d)...\n", len(ghPollers))
 	}
 	if dispatcher != nil {
 		fmt.Println("📋 Stopping task dispatcher...")
@@ -2211,9 +2300,9 @@ func extractGitHubLabelNames(issue *github.Issue) []string {
 
 // handleGitHubIssueWithResult processes a GitHub issue and returns result with PR info
 // Used in sequential mode to enable PR merge waiting
-func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client *github.Client, issue *github.Issue, projectPath string, dispatcher *executor.Dispatcher, runner *executor.Runner, monitor *executor.Monitor, program *tea.Program, alertsEngine *alerts.Engine, enforcer *budget.Enforcer) (*github.IssueResult, error) {
+// sourceRepo is the "owner/repo" string that the issue came from (GH-929)
+func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client *github.Client, issue *github.Issue, projectPath string, sourceRepo string, dispatcher *executor.Dispatcher, runner *executor.Runner, monitor *executor.Monitor, program *tea.Program, alertsEngine *alerts.Engine, enforcer *budget.Enforcer) (*github.IssueResult, error) {
 	taskID := fmt.Sprintf("GH-%d", issue.Number)
-	sourceRepo := cfg.Adapters.GitHub.Repo
 
 	// GH-386: Pre-execution validation - fail fast if repo doesn't match project
 	if err := executor.ValidateRepoProjectMatch(sourceRepo, projectPath); err != nil {
