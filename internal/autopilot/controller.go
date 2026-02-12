@@ -550,6 +550,14 @@ func (c *Controller) handleMerging(ctx context.Context, prState *PRState) error 
 			"attempt", prState.MergeAttempts,
 			"error", err,
 		)
+
+		// GH-880: Check if merge failed due to conflict.
+		// If so, close PR and clear pilot-in-progress so issue can be retried.
+		ghPR, ghErr := c.ghClient.GetPullRequest(ctx, c.owner, c.repo, prState.PRNumber)
+		if ghErr == nil && c.isMergeConflict(ghPR) {
+			return c.handleMergeConflict(ctx, prState)
+		}
+
 		return fmt.Errorf("merge attempt %d failed: %w", prState.MergeAttempts, err)
 	}
 
