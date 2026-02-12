@@ -58,10 +58,17 @@ test-coverage:
 	go test -v -race -coverprofile=coverage.out ./...
 	go tool cover -html=coverage.out -o coverage.html
 
-# Run end-to-end tests
+# Run end-to-end tests (Go-based workflow tests + shell tests)
 test-e2e: build
-	@echo "Running E2E tests..."
+	@echo "Running E2E workflow tests..."
+	go test -v -count=1 -timeout 60s ./e2e/...
+	@echo "Running E2E shell tests..."
 	./scripts/test-e2e.sh
+
+# Run only Go-based E2E workflow tests (faster, no external deps)
+test-e2e-go:
+	@echo "Running E2E workflow tests..."
+	go test -v -count=1 -timeout 60s ./e2e/...
 
 # Run end-to-end tests with live Claude Code execution
 test-e2e-live: build
@@ -185,7 +192,8 @@ help:
 	@echo "  make deps           Install dependencies"
 	@echo "  make test           Run unit tests"
 	@echo "  make test-coverage  Run tests with coverage"
-	@echo "  make test-e2e       Run end-to-end tests"
+	@echo "  make test-e2e       Run end-to-end tests (Go + shell)"
+	@echo "  make test-e2e-go    Run Go-based E2E workflow tests"
 	@echo "  make test-e2e-live  Run E2E tests with live Claude"
 	@echo "  make lint           Run linter"
 	@echo "  make fmt            Format code"
