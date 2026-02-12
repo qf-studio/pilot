@@ -332,6 +332,13 @@ Examples:
 				}
 			}
 
+			// GH-879: Log config reload on hot upgrade
+			// After syscall.Exec, the new binary starts fresh and re-reads config from disk
+			if os.Getenv("PILOT_RESTARTED") == "1" {
+				logging.WithComponent("config").Info("config reloaded from disk after hot upgrade",
+					"path", configPath)
+			}
+
 			// GH-710: Validate Slack Socket Mode config — degrade gracefully if app_token missing
 			if cfg.Adapters.Slack != nil && cfg.Adapters.Slack.SocketMode && cfg.Adapters.Slack.AppToken == "" {
 				logging.WithComponent("slack").Warn("socket_mode enabled but app_token not configured, skipping Slack Socket Mode")
@@ -1974,12 +1981,13 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 			}
 
 			// Check for restart marker (set by hot upgrade)
+			// GH-879: Config is automatically reloaded because syscall.Exec starts a fresh process
 			if os.Getenv("PILOT_RESTARTED") == "1" {
 				prevVersion := os.Getenv("PILOT_PREVIOUS_VERSION")
 				if prevVersion != "" {
-					program.Send(dashboard.AddLog(fmt.Sprintf("✅ Upgraded from %s to %s", prevVersion, version))())
+					program.Send(dashboard.AddLog(fmt.Sprintf("✅ Upgraded from %s to %s (config reloaded)", prevVersion, version))())
 				} else {
-					program.Send(dashboard.AddLog("✅ Pilot restarted successfully")())
+					program.Send(dashboard.AddLog("✅ Pilot restarted (config reloaded)")())
 				}
 			}
 		}()

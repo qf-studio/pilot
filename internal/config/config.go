@@ -420,6 +420,21 @@ func DefaultConfigPath() string {
 	return filepath.Join(homeDir, ".pilot", "config.yaml")
 }
 
+// Reload re-reads configuration from the given path and updates the receiver in-place.
+// This is useful for hot-reloading config without process restart (e.g., on SIGHUP).
+// GH-879: Added to support config reload after hot upgrade.
+func (c *Config) Reload(path string) error {
+	newCfg, err := Load(path)
+	if err != nil {
+		return fmt.Errorf("failed to reload config: %w", err)
+	}
+
+	// Update all fields in-place
+	*c = *newCfg
+
+	return nil
+}
+
 // expandPath expands ~ to home directory
 func expandPath(path string) string {
 	if strings.HasPrefix(path, "~") {
