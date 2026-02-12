@@ -113,7 +113,7 @@ Disable via config: `executor.navigator.auto_init: false`
 
 ## Current State
 
-**Current Version:** v0.34.1 | **115 features working** | **0 unwired**
+**Current Version:** v0.41.0 | **119 features working** | **0 unwired**
 
 **Full implementation status:** `.agent/system/FEATURE-MATRIX.md`
 
@@ -152,6 +152,10 @@ Disable via config: `executor.navigator.auto_init: false`
 | Per-PR Circuit Breaker | Done | Independent failure tracking per PR (v0.34.0) |
 | GitHub API Retry | Done | Exponential backoff on transient failures (v0.34.0) |
 | Branch Switch Hard Fail | Done | Abort execution on checkout failure (v0.34.0) |
+| CI Auto-Discovery | Done | Auto-detect CI check names from GitHub API (v0.41.0) |
+| K8s Health Probes | Done | `/ready` and `/live` endpoints for Kubernetes (v0.37.0) |
+| Prometheus Metrics | Done | `/metrics` endpoint for observability (v0.37.0) |
+| JSON Structured Logging | Done | Optional JSON log output mode (v0.38.0) |
 
 ### Telegram Interaction Modes (v0.6.0)
 
@@ -235,6 +239,17 @@ Goal: Raise autonomous reliability from 3/10 to 8/10. **Achieved: 8/10**
 ---
 
 ## Completed Log
+
+### 2026-02-12
+
+| Item | What |
+|------|------|
+| **v0.41.0** | CI auto-discovery — detect check names from GitHub API, no manual config needed |
+| **v0.40.0** | Controller wiring for CI auto-discovery |
+| **v0.39.0** | CIChecksConfig struct, example config updates |
+| **v0.38.0** | JSON structured logging, PagerDuty escalation, deadlock detector |
+| **v0.37.0** | K8s health probes (`/ready`, `/live`), Prometheus `/metrics`, config fix |
+| Bug fixes | Hot upgrade doesn't reload config, stale `pilot-in-progress` labels, dependency ordering |
 
 ### 2026-02-11
 
