@@ -21,6 +21,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 
+	"github.com/alekspetrov/pilot/internal/adapters/asana"
 	"github.com/alekspetrov/pilot/internal/adapters/github"
 	"github.com/alekspetrov/pilot/internal/adapters/jira"
 	"github.com/alekspetrov/pilot/internal/adapters/linear"
@@ -950,6 +951,40 @@ Examples:
 				}(jiraPoller)
 			}
 
+			// Enable Asana polling in gateway mode if configured (GH-906)
+			if cfg.Adapters.Asana != nil && cfg.Adapters.Asana.Enabled &&
+				cfg.Adapters.Asana.Polling != nil && cfg.Adapters.Asana.Polling.Enabled {
+
+				// Determine interval
+				interval := 30 * time.Second
+				if cfg.Adapters.Asana.Polling.Interval > 0 {
+					interval = cfg.Adapters.Asana.Polling.Interval
+				}
+
+				asanaClient := asana.NewClient(
+					cfg.Adapters.Asana.AccessToken,
+					cfg.Adapters.Asana.WorkspaceID,
+				)
+				asanaPoller := asana.NewPoller(asanaClient, cfg.Adapters.Asana, interval,
+					asana.WithOnAsanaTask(func(taskCtx context.Context, task *asana.Task) (*asana.TaskResult, error) {
+						return handleAsanaTaskWithResult(taskCtx, cfg, asanaClient, task, projectPath, gwDispatcher, gwRunner, gwMonitor, gwProgram, gwAlertsEngine, gwEnforcer)
+					}),
+				)
+
+				logging.WithComponent("start").Info("Asana polling enabled in gateway mode",
+					slog.String("workspace", cfg.Adapters.Asana.WorkspaceID),
+					slog.String("tag", cfg.Adapters.Asana.PilotTag),
+					slog.Duration("interval", interval),
+				)
+				go func(p *asana.Poller) {
+					if err := p.Start(context.Background()); err != nil {
+						logging.WithComponent("asana").Error("Asana poller failed",
+							slog.Any("error", err),
+						)
+					}
+				}(asanaPoller)
+			}
+
 			// Wire teams service if --team flag provided (GH-633)
 			var teamsDB *sql.DB
 			if cfg.TeamID != "" {
@@ -1821,6 +1856,38 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 				}
 			}(linearPoller, ws.Name)
 		}
+	}
+
+	// Start Asana polling if enabled (GH-906)
+	if cfg.Adapters.Asana != nil && cfg.Adapters.Asana.Enabled &&
+		cfg.Adapters.Asana.Polling != nil && cfg.Adapters.Asana.Polling.Enabled {
+
+		// Determine interval
+		interval := 30 * time.Second
+		if cfg.Adapters.Asana.Polling.Interval > 0 {
+			interval = cfg.Adapters.Asana.Polling.Interval
+		}
+
+		asanaClient := asana.NewClient(
+			cfg.Adapters.Asana.AccessToken,
+			cfg.Adapters.Asana.WorkspaceID,
+		)
+		asanaPoller := asana.NewPoller(asanaClient, cfg.Adapters.Asana, interval,
+			asana.WithOnAsanaTask(func(taskCtx context.Context, task *asana.Task) (*asana.TaskResult, error) {
+				return handleAsanaTaskWithResult(taskCtx, cfg, asanaClient, task, projectPath, dispatcher, runner, monitor, program, alertsEngine, enforcer)
+			}),
+		)
+
+		if !dashboardMode {
+			fmt.Printf("📦 Asana polling enabled: workspace %s (every %s)\n", cfg.Adapters.Asana.WorkspaceID, interval)
+		}
+		go func(p *asana.Poller) {
+			if err := p.Start(ctx); err != nil {
+				logging.WithComponent("asana").Error("Asana poller failed",
+					slog.Any("error", err),
+				)
+			}
+		}(asanaPoller)
 	}
 
 	// Start Telegram polling if enabled
@@ -2915,6 +2982,268 @@ func buildJiraExecutionComment(result *executor.ExecutionResult, branchName stri
 
 // buildJiraFailureComment creates a comment for failed Jira execution
 func buildJiraFailureComment(result *executor.ExecutionResult) string {
+	var parts []string
+	parts = append(parts, "❌ Pilot execution failed")
+	parts = append(parts, "")
+	if result.Error != "" {
+		parts = append(parts, fmt.Sprintf("Error: %s", result.Error))
+	}
+	if result.Duration > 0 {
+		parts = append(parts, fmt.Sprintf("Duration: %s", result.Duration))
+	}
+	return strings.Join(parts, "\n")
+}
+
+// handleAsanaTaskWithResult processes an Asana task picked up by the poller (GH-906)
+func handleAsanaTaskWithResult(ctx context.Context, cfg *config.Config, client *asana.Client, task *asana.Task, projectPath string, dispatcher *executor.Dispatcher, runner *executor.Runner, monitor *executor.Monitor, program *tea.Program, alertsEngine *alerts.Engine, enforcer *budget.Enforcer) (*asana.TaskResult, error) {
+	taskID := "ASANA-" + task.GID
+
+	// Get task URL
+	taskURL := task.Permalink
+	if taskURL == "" {
+		taskURL = "https://app.asana.com/0/0/" + task.GID
+	}
+
+	// Register task with monitor if in dashboard mode
+	if monitor != nil {
+		monitor.Register(taskID, task.Name, taskURL)
+		monitor.Start(taskID)
+	}
+	if program != nil {
+		program.Send(dashboard.AddLog(fmt.Sprintf("📦 Asana Task %s: %s", task.GID, task.Name))())
+	}
+
+	// Emit task started event (GH-337)
+	if alertsEngine != nil {
+		alertsEngine.ProcessEvent(alerts.Event{
+			Type:      alerts.EventTypeTaskStarted,
+			TaskID:    taskID,
+			TaskTitle: task.Name,
+			Project:   projectPath,
+			Timestamp: time.Now(),
+		})
+	}
+
+	// GH-539: Pre-execution budget check
+	if enforcer != nil {
+		checkResult, budgetErr := enforcer.CheckBudget(ctx, "", "")
+		if budgetErr != nil {
+			logging.WithComponent("budget").Warn("budget check failed, allowing task (fail-open)",
+				slog.String("task_id", taskID),
+				slog.Any("error", budgetErr),
+			)
+		} else if !checkResult.Allowed {
+			logging.WithComponent("budget").Warn("task blocked by budget enforcement",
+				slog.String("task_id", taskID),
+				slog.String("reason", checkResult.Reason),
+			)
+			if alertsEngine != nil {
+				alertsEngine.ProcessEvent(alerts.Event{
+					Type:      alerts.EventTypeBudgetExceeded,
+					TaskID:    taskID,
+					TaskTitle: task.Name,
+					Project:   projectPath,
+					Error:     checkResult.Reason,
+					Metadata: map[string]string{
+						"daily_left":   fmt.Sprintf("%.2f", checkResult.DailyLeft),
+						"monthly_left": fmt.Sprintf("%.2f", checkResult.MonthlyLeft),
+						"action":       string(checkResult.Action),
+					},
+					Timestamp: time.Now(),
+				})
+			}
+			budgetExceededErr := fmt.Errorf("budget enforcement: %s", checkResult.Reason)
+			return &asana.TaskResult{
+				Success: false,
+				Error:   budgetExceededErr,
+			}, budgetExceededErr
+		}
+	}
+
+	fmt.Printf("\n📦 Asana Task %s: %s\n", task.GID, task.Name)
+
+	taskDesc := fmt.Sprintf("Asana Task %s: %s\n\n%s", task.GID, task.Name, task.Notes)
+	branchName := fmt.Sprintf("pilot/%s", taskID)
+
+	execTask := &executor.Task{
+		ID:          taskID,
+		Title:       task.Name,
+		Description: taskDesc,
+		ProjectPath: projectPath,
+		Branch:      branchName,
+		CreatePR:    true,
+	}
+
+	var result *executor.ExecutionResult
+	var execErr error
+
+	if dispatcher != nil {
+		execID, qErr := dispatcher.QueueTask(ctx, execTask)
+		if qErr != nil {
+			execErr = fmt.Errorf("failed to queue task: %w", qErr)
+		} else {
+			fmt.Printf("   📋 Queued as execution %s\n", execID[:8])
+			exec, waitErr := dispatcher.WaitForExecution(ctx, execID, time.Second)
+			if waitErr != nil {
+				execErr = fmt.Errorf("failed waiting for execution: %w", waitErr)
+			} else if exec.Status == "failed" {
+				execErr = fmt.Errorf("execution failed: %s", exec.Error)
+			} else {
+				result = &executor.ExecutionResult{
+					TaskID:    execTask.ID,
+					Success:   exec.Status == "completed",
+					Output:    exec.Output,
+					Error:     exec.Error,
+					PRUrl:     exec.PRUrl,
+					CommitSHA: exec.CommitSHA,
+					Duration:  time.Duration(exec.DurationMs) * time.Millisecond,
+				}
+			}
+		}
+	} else {
+		result, execErr = runner.Execute(ctx, execTask)
+	}
+
+	// Update monitor with completion status
+	prURL := ""
+	if result != nil {
+		prURL = result.PRUrl
+	}
+	if monitor != nil {
+		if execErr != nil {
+			monitor.Fail(taskID, execErr.Error())
+		} else {
+			monitor.Complete(taskID, prURL)
+		}
+	}
+
+	// Emit task completed/failed event (GH-337)
+	if alertsEngine != nil {
+		if execErr != nil {
+			alertsEngine.ProcessEvent(alerts.Event{
+				Type:      alerts.EventTypeTaskFailed,
+				TaskID:    taskID,
+				TaskTitle: task.Name,
+				Project:   projectPath,
+				Error:     execErr.Error(),
+				Timestamp: time.Now(),
+			})
+		} else if result != nil && result.Success {
+			metadata := map[string]string{}
+			if result.PRUrl != "" {
+				metadata["pr_url"] = result.PRUrl
+			}
+			if result.Duration > 0 {
+				metadata["duration"] = result.Duration.String()
+			}
+			alertsEngine.ProcessEvent(alerts.Event{
+				Type:      alerts.EventTypeTaskCompleted,
+				TaskID:    taskID,
+				TaskTitle: task.Name,
+				Project:   projectPath,
+				Metadata:  metadata,
+				Timestamp: time.Now(),
+			})
+		} else if result != nil {
+			alertsEngine.ProcessEvent(alerts.Event{
+				Type:      alerts.EventTypeTaskFailed,
+				TaskID:    taskID,
+				TaskTitle: task.Name,
+				Project:   projectPath,
+				Error:     result.Error,
+				Timestamp: time.Now(),
+			})
+		}
+	}
+
+	// Add completed task to dashboard history
+	if program != nil {
+		status := "success"
+		duration := ""
+		if execErr != nil {
+			status = "failed"
+		} else if result != nil {
+			duration = result.Duration.String()
+		}
+		program.Send(dashboard.AddCompletedTask(taskID, task.Name, status, duration, "", false)())
+	}
+
+	// Build task result
+	taskResult := &asana.TaskResult{
+		Success: execErr == nil && result != nil && result.Success,
+	}
+	if result != nil {
+		if result.PRUrl != "" {
+			taskResult.PRURL = result.PRUrl
+			if prNum, err := github.ExtractPRNumber(result.PRUrl); err == nil {
+				taskResult.PRNumber = prNum
+			}
+		}
+	}
+
+	// Add comment to Asana task
+	if execErr != nil {
+		comment := fmt.Sprintf("❌ Pilot execution failed:\n\n%s", execErr.Error())
+		if _, err := client.AddComment(ctx, task.GID, comment); err != nil {
+			logging.WithComponent("asana").Warn("Failed to add comment",
+				slog.String("task", task.GID),
+				slog.Any("error", err),
+			)
+		}
+	} else if result != nil && result.Success {
+		// Validate deliverables before marking as done
+		if result.CommitSHA == "" && result.PRUrl == "" {
+			comment := fmt.Sprintf("⚠️ Pilot execution completed but no changes were made.\n\nDuration: %s\nBranch: %s\n\nNo commits or PR were created. The task may need clarification or manual intervention.",
+				result.Duration, branchName)
+			if _, err := client.AddComment(ctx, task.GID, comment); err != nil {
+				logging.WithComponent("asana").Warn("Failed to add comment",
+					slog.String("task", task.GID),
+					slog.Any("error", err),
+				)
+			}
+			taskResult.Success = false
+		} else {
+			comment := buildAsanaExecutionComment(result, branchName)
+			if _, err := client.AddComment(ctx, task.GID, comment); err != nil {
+				logging.WithComponent("asana").Warn("Failed to add comment",
+					slog.String("task", task.GID),
+					slog.Any("error", err),
+				)
+			}
+		}
+	} else if result != nil {
+		comment := buildAsanaFailureComment(result)
+		if _, err := client.AddComment(ctx, task.GID, comment); err != nil {
+			logging.WithComponent("asana").Warn("Failed to add comment",
+				slog.String("task", task.GID),
+				slog.Any("error", err),
+			)
+		}
+	}
+
+	return taskResult, execErr
+}
+
+// buildAsanaExecutionComment creates a comment for successful Asana execution
+func buildAsanaExecutionComment(result *executor.ExecutionResult, branchName string) string {
+	var parts []string
+	parts = append(parts, "✅ Pilot execution completed successfully!")
+	parts = append(parts, "")
+
+	if result.PRUrl != "" {
+		parts = append(parts, fmt.Sprintf("Pull Request: %s", result.PRUrl))
+	}
+	if result.CommitSHA != "" {
+		parts = append(parts, fmt.Sprintf("Commit: %s", result.CommitSHA[:min(8, len(result.CommitSHA))]))
+	}
+	parts = append(parts, fmt.Sprintf("Branch: %s", branchName))
+	parts = append(parts, fmt.Sprintf("Duration: %s", result.Duration))
+
+	return strings.Join(parts, "\n")
+}
+
+// buildAsanaFailureComment creates a comment for failed Asana execution
+func buildAsanaFailureComment(result *executor.ExecutionResult) string {
 	var parts []string
 	parts = append(parts, "❌ Pilot execution failed")
 	parts = append(parts, "")

@@ -10,6 +10,15 @@ type Config struct {
 	WorkspaceID   string `yaml:"workspace_id"`   // Asana workspace GID
 	WebhookSecret string `yaml:"webhook_secret"` // For X-Hook-Secret verification
 	PilotTag      string `yaml:"pilot_tag"`      // Tag name that triggers Pilot (default: "pilot")
+
+	// Polling configuration
+	Polling *PollingConfig `yaml:"polling,omitempty"`
+}
+
+// PollingConfig holds polling configuration for Asana adapter
+type PollingConfig struct {
+	Enabled  bool          `yaml:"enabled"`
+	Interval time.Duration `yaml:"interval,omitempty"`
 }
 
 // DefaultConfig returns default Asana configuration

@@ -300,6 +300,27 @@ func (c *Client) GetTasksByTag(ctx context.Context, tagGID string) ([]Task, erro
 	return resp.Data, nil
 }
 
+// GetActiveTasksByTag fetches non-completed tasks with a specific tag.
+// This method queries tasks by tag and filters out completed ones.
+func (c *Client) GetActiveTasksByTag(ctx context.Context, tagGID string) ([]Task, error) {
+	// Get tasks by tag with additional fields for filtering
+	path := fmt.Sprintf("/tags/%s/tasks?opt_fields=gid,name,notes,completed,completed_at,tags,tags.name,created_at,modified_at,permalink_url", tagGID)
+	var resp PagedResponse[Task]
+	if err := c.doRequest(ctx, http.MethodGet, path, nil, &resp); err != nil {
+		return nil, err
+	}
+
+	// Filter out completed tasks
+	var activeTasks []Task
+	for _, task := range resp.Data {
+		if !task.Completed {
+			activeTasks = append(activeTasks, task)
+		}
+	}
+
+	return activeTasks, nil
+}
+
 // Ping checks if the Asana API is accessible and the token is valid
 func (c *Client) Ping(ctx context.Context) error {
 	_, err := c.GetWorkspace(ctx)
