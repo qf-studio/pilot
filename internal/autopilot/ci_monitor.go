@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"sync"
 	"time"
 
 	"github.com/alekspetrov/pilot/internal/adapters/github"
@@ -19,10 +18,6 @@ type CIMonitor struct {
 	waitTimeout    time.Duration
 	requiredChecks []string
 	log            *slog.Logger
-
-	// Discovery state for auto mode
-	discoveredChecks map[string][]string // sha -> check names
-	mu               sync.RWMutex
 }
 
 // NewCIMonitor creates a CI monitor with configuration from Config.
@@ -33,14 +28,13 @@ func NewCIMonitor(ghClient *github.Client, owner, repo string, cfg *Config) *CIM
 		timeout = cfg.DevCITimeout
 	}
 	return &CIMonitor{
-		ghClient:         ghClient,
-		owner:            owner,
-		repo:             repo,
-		pollInterval:     cfg.CIPollInterval,
-		waitTimeout:      timeout,
-		requiredChecks:   cfg.RequiredChecks,
-		discoveredChecks: make(map[string][]string),
-		log:              slog.Default().With("component", "ci-monitor"),
+		ghClient:       ghClient,
+		owner:          owner,
+		repo:           repo,
+		pollInterval:   cfg.CIPollInterval,
+		waitTimeout:    timeout,
+		requiredChecks: cfg.RequiredChecks,
+		log:            slog.Default().With("component", "ci-monitor"),
 	}
 }
 
@@ -85,22 +79,6 @@ func (m *CIMonitor) checkStatus(ctx context.Context, sha string) (CIStatus, erro
 	checkRuns, err := m.ghClient.ListCheckRuns(ctx, m.owner, m.repo, sha)
 	if err != nil {
 		return CIPending, err
-	}
-
-	// Store discovered check names for later retrieval
-	if len(checkRuns.CheckRuns) > 0 {
-		m.mu.RLock()
-		_, hasDiscovered := m.discoveredChecks[sha]
-		m.mu.RUnlock()
-
-		if !hasDiscovered {
-			names := make([]string, 0, len(checkRuns.CheckRuns))
-			for _, run := range checkRuns.CheckRuns {
-				names = append(names, run.Name)
-			}
-			m.SetDiscoveredChecks(sha, names)
-			m.log.Debug("discovered CI checks", "sha", ShortSHA(sha), "checks", names)
-		}
 	}
 
 	// If no required checks configured, check all runs
@@ -256,28 +234,4 @@ func (m *CIMonitor) GetCheckStatus(ctx context.Context, sha, checkName string) (
 	}
 
 	return CIPending, nil
-}
-
-// GetDiscoveredChecks returns the check names discovered for a SHA.
-// Returns nil if no checks have been discovered yet.
-func (m *CIMonitor) GetDiscoveredChecks(sha string) []string {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.discoveredChecks[sha]
-}
-
-// SetDiscoveredChecks stores discovered check names for a SHA.
-// Called during CI status checks when checks are first seen.
-func (m *CIMonitor) SetDiscoveredChecks(sha string, checks []string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.discoveredChecks[sha] = checks
-}
-
-// ClearDiscovery removes discovery state for a SHA.
-// Should be called when a PR is removed from tracking.
-func (m *CIMonitor) ClearDiscovery(sha string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	delete(m.discoveredChecks, sha)
 }
