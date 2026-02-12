@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"path"
 	"sync"
 	"time"
 
@@ -20,26 +21,64 @@ type CIMonitor struct {
 	requiredChecks []string
 	log            *slog.Logger
 
+	// CI checks configuration (auto-discovery)
+	ciChecks *CIChecksConfig
+
 	// Discovery state for auto mode
-	discoveredChecks map[string][]string // sha -> check names
+	discoveredChecks map[string][]string  // sha -> check names
+	discoveryStart   map[string]time.Time // sha -> when discovery started
 	mu               sync.RWMutex
 }
 
 // NewCIMonitor creates a CI monitor with configuration from Config.
 // Uses DevCITimeout for dev environment, CIWaitTimeout for stage/prod.
+// Handles both legacy RequiredChecks and new CIChecks configuration.
 func NewCIMonitor(ghClient *github.Client, owner, repo string, cfg *Config) *CIMonitor {
 	timeout := cfg.CIWaitTimeout
 	if cfg.Environment == EnvDev && cfg.DevCITimeout > 0 {
 		timeout = cfg.DevCITimeout
 	}
+
+	// Determine CI checks configuration
+	var ciChecks *CIChecksConfig
+	var requiredChecks []string
+
+	if cfg.CIChecks != nil {
+		ciChecks = cfg.CIChecks
+		// If manual mode, use the Required list
+		if ciChecks.Mode == "manual" && len(ciChecks.Required) > 0 {
+			requiredChecks = ciChecks.Required
+		}
+	} else if len(cfg.RequiredChecks) > 0 {
+		// Legacy: if RequiredChecks is set, use manual mode
+		ciChecks = &CIChecksConfig{
+			Mode:     "manual",
+			Required: cfg.RequiredChecks,
+		}
+		requiredChecks = cfg.RequiredChecks
+	} else {
+		// Default: auto mode
+		ciChecks = &CIChecksConfig{
+			Mode:                 "auto",
+			DiscoveryGracePeriod: 60 * time.Second,
+		}
+	}
+
+	// Ensure grace period has a default
+	if ciChecks.DiscoveryGracePeriod == 0 {
+		ciChecks.DiscoveryGracePeriod = 60 * time.Second
+	}
+
 	return &CIMonitor{
 		ghClient:         ghClient,
 		owner:            owner,
 		repo:             repo,
 		pollInterval:     cfg.CIPollInterval,
 		waitTimeout:      timeout,
-		requiredChecks:   cfg.RequiredChecks,
+		requiredChecks:   requiredChecks,
+		ciChecks:         ciChecks,
 		discoveredChecks: make(map[string][]string),
+		discoveryStart:   make(map[string]time.Time),
 		log:              slog.Default().With("component", "ci-monitor"),
 	}
 }
@@ -87,7 +126,7 @@ func (m *CIMonitor) checkStatus(ctx context.Context, sha string) (CIStatus, erro
 		return CIPending, err
 	}
 
-	// Store discovered check names for later retrieval
+	// Store discovered check names for later retrieval (filtered by exclusions in auto mode)
 	if len(checkRuns.CheckRuns) > 0 {
 		m.mu.RLock()
 		_, hasDiscovered := m.discoveredChecks[sha]
@@ -96,14 +135,25 @@ func (m *CIMonitor) checkStatus(ctx context.Context, sha string) (CIStatus, erro
 		if !hasDiscovered {
 			names := make([]string, 0, len(checkRuns.CheckRuns))
 			for _, run := range checkRuns.CheckRuns {
+				// In auto mode, filter out excluded checks
+				if m.ciChecks != nil && m.ciChecks.Mode == "auto" && m.matchesExclude(run.Name) {
+					continue
+				}
 				names = append(names, run.Name)
 			}
-			m.SetDiscoveredChecks(sha, names)
-			m.log.Debug("discovered CI checks", "sha", ShortSHA(sha), "checks", names)
+			if len(names) > 0 {
+				m.SetDiscoveredChecks(sha, names)
+				m.log.Info("discovered CI checks", "sha", ShortSHA(sha), "checks", names, "mode", m.ciChecks.Mode)
+			}
 		}
 	}
 
-	// If no required checks configured, check all runs
+	// Auto mode: use discovered checks with exclusions and grace period
+	if m.ciChecks != nil && m.ciChecks.Mode == "auto" {
+		return m.checkAutoDiscoveredRuns(sha, checkRuns)
+	}
+
+	// Manual mode: If no required checks configured, check all runs
 	if len(m.requiredChecks) == 0 {
 		return m.checkAllRuns(checkRuns), nil
 	}
@@ -151,6 +201,100 @@ func (m *CIMonitor) checkAllRuns(checkRuns *github.CheckRunsResponse) CIStatus {
 		return CIPending
 	}
 	return CISuccess
+}
+
+// checkAutoDiscoveredRuns checks CI status in auto mode with exclusion filtering.
+// It waits during the grace period if no checks are found yet.
+func (m *CIMonitor) checkAutoDiscoveredRuns(sha string, checkRuns *github.CheckRunsResponse) (CIStatus, error) {
+	// Filter checks by exclusion patterns
+	var filteredRuns []github.CheckRun
+	for _, run := range checkRuns.CheckRuns {
+		if !m.matchesExclude(run.Name) {
+			filteredRuns = append(filteredRuns, run)
+		}
+	}
+
+	// Handle grace period for check discovery
+	if len(filteredRuns) == 0 {
+		m.mu.Lock()
+		startTime, exists := m.discoveryStart[sha]
+		if !exists {
+			// First check: start the grace period
+			m.discoveryStart[sha] = time.Now()
+			m.mu.Unlock()
+			m.log.Debug("no CI checks found, starting grace period",
+				"sha", ShortSHA(sha),
+				"grace_period", m.ciChecks.DiscoveryGracePeriod,
+			)
+			return CIPending, nil
+		}
+		m.mu.Unlock()
+
+		// Check if grace period has expired
+		elapsed := time.Since(startTime)
+		if elapsed < m.ciChecks.DiscoveryGracePeriod {
+			m.log.Debug("waiting for CI checks during grace period",
+				"sha", ShortSHA(sha),
+				"elapsed", elapsed,
+				"remaining", m.ciChecks.DiscoveryGracePeriod-elapsed,
+			)
+			return CIPending, nil
+		}
+
+		// Grace period expired with no checks - treat as success (no CI configured)
+		m.log.Info("grace period expired with no CI checks, treating as success",
+			"sha", ShortSHA(sha),
+			"grace_period", m.ciChecks.DiscoveryGracePeriod,
+		)
+		return CISuccess, nil
+	}
+
+	// Clear discovery start since we found checks
+	m.mu.Lock()
+	delete(m.discoveryStart, sha)
+	m.mu.Unlock()
+
+	// Aggregate status from filtered runs
+	hasFailure := false
+	hasPending := false
+
+	for _, run := range filteredRuns {
+		status := m.mapCheckStatus(run.Status, run.Conclusion)
+		switch status {
+		case CIFailure:
+			hasFailure = true
+		case CIPending, CIRunning:
+			hasPending = true
+		}
+	}
+
+	if hasFailure {
+		return CIFailure, nil
+	}
+	if hasPending {
+		return CIPending, nil
+	}
+	return CISuccess, nil
+}
+
+// matchesExclude checks if a check name matches any exclusion pattern.
+// Supports glob patterns using path.Match (e.g., "codecov/*", "*.optional").
+func (m *CIMonitor) matchesExclude(name string) bool {
+	if m.ciChecks == nil || len(m.ciChecks.Exclude) == 0 {
+		return false
+	}
+
+	for _, pattern := range m.ciChecks.Exclude {
+		// Try exact match first
+		if pattern == name {
+			return true
+		}
+		// Try glob match
+		if matched, err := path.Match(pattern, name); err == nil && matched {
+			return true
+		}
+	}
+	return false
 }
 
 // aggregateStatus determines overall status from individual check statuses.
@@ -280,4 +424,5 @@ func (m *CIMonitor) ClearDiscovery(sha string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.discoveredChecks, sha)
+	delete(m.discoveryStart, sha)
 }
