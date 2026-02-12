@@ -344,3 +344,96 @@ func TestExecuteOptionsWatchdogCallback(t *testing.T) {
 		t.Error("WatchdogCallback was not called")
 	}
 }
+
+func TestClassifyClaudeCodeError(t *testing.T) {
+	tests := []struct {
+		name       string
+		stderr     string
+		expectType ClaudeCodeErrorType
+	}{
+		{
+			name:       "rate limit - hit your limit",
+			stderr:     "Error: You've hit your limit · resets 6am (Europe/Podgorica)",
+			expectType: ErrorTypeRateLimit,
+		},
+		{
+			name:       "rate limit - rate limit",
+			stderr:     "Error: Rate limit exceeded, try again later",
+			expectType: ErrorTypeRateLimit,
+		},
+		{
+			name:       "invalid config - effort level",
+			stderr:     `Error: Effort level "max" is not available for Claude.ai subscribers`,
+			expectType: ErrorTypeInvalidConfig,
+		},
+		{
+			name:       "invalid config - requires verbose",
+			stderr:     "Error: When using --print, --output-format=stream-json requires --verbose",
+			expectType: ErrorTypeInvalidConfig,
+		},
+		{
+			name:       "api error - authentication",
+			stderr:     "Error: Authentication failed. Please check your API key.",
+			expectType: ErrorTypeAPIError,
+		},
+		{
+			name:       "api error - 401",
+			stderr:     "HTTP 401: Unauthorized",
+			expectType: ErrorTypeAPIError,
+		},
+		{
+			name:       "timeout - killed",
+			stderr:     "signal: killed",
+			expectType: ErrorTypeTimeout,
+		},
+		{
+			name:       "unknown error",
+			stderr:     "Some random error message",
+			expectType: ErrorTypeUnknown,
+		},
+		{
+			name:       "empty stderr",
+			stderr:     "",
+			expectType: ErrorTypeUnknown,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := classifyClaudeCodeError(tt.stderr, nil)
+			if err.Type != tt.expectType {
+				t.Errorf("classifyClaudeCodeError() type = %q, want %q", err.Type, tt.expectType)
+			}
+			// Verify stderr is captured
+			if tt.stderr != "" && err.Stderr != tt.stderr {
+				t.Errorf("classifyClaudeCodeError() stderr = %q, want %q", err.Stderr, tt.stderr)
+			}
+		})
+	}
+}
+
+func TestClaudeCodeError_Error(t *testing.T) {
+	t.Run("with stderr", func(t *testing.T) {
+		err := &ClaudeCodeError{
+			Type:    ErrorTypeRateLimit,
+			Message: "Rate limit hit",
+			Stderr:  "detailed stderr",
+		}
+		errStr := err.Error()
+		if errStr != "rate_limit: Rate limit hit (stderr: detailed stderr)" {
+			t.Errorf("Error() = %q, unexpected format", errStr)
+		}
+	})
+
+	t.Run("without stderr", func(t *testing.T) {
+		err := &ClaudeCodeError{
+			Type:    ErrorTypeUnknown,
+			Message: "Unknown error",
+			Stderr:  "",
+		}
+		errStr := err.Error()
+		if errStr != "unknown: Unknown error" {
+			t.Errorf("Error() = %q, unexpected format", errStr)
+		}
+	})
+}

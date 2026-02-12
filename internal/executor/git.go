@@ -280,3 +280,48 @@ func (g *GitOperations) SwitchToDefaultBranchAndPull(ctx context.Context) (strin
 
 	return defaultBranch, nil
 }
+
+// CommitsBehindMain returns how many commits the given branch is behind origin/main.
+// Returns 0 if the branch is up-to-date or ahead.
+// GH-912: Used to detect stale branches that need to be recreated.
+func (g *GitOperations) CommitsBehindMain(ctx context.Context, branchName string) (int, error) {
+	// First fetch to ensure we have latest remote state
+	fetchCmd := exec.CommandContext(ctx, "git", "fetch", "origin")
+	fetchCmd.Dir = g.projectPath
+	_ = fetchCmd.Run() // Ignore fetch errors - might be offline
+
+	// Get default branch
+	defaultBranch, err := g.GetDefaultBranch(ctx)
+	if err != nil {
+		defaultBranch = "main"
+	}
+
+	// Count commits that are in origin/main but not in the branch
+	// git rev-list --count <branch>..origin/main
+	cmd := exec.CommandContext(ctx, "git", "rev-list", "--count", branchName+"..origin/"+defaultBranch)
+	cmd.Dir = g.projectPath
+	output, err := cmd.Output()
+	if err != nil {
+		return 0, fmt.Errorf("failed to count commits behind: %w", err)
+	}
+
+	countStr := strings.TrimSpace(string(output))
+	var count int
+	if _, parseErr := fmt.Sscanf(countStr, "%d", &count); parseErr != nil {
+		return 0, fmt.Errorf("failed to parse count %q: %w", countStr, parseErr)
+	}
+
+	return count, nil
+}
+
+// DeleteBranch deletes a local branch.
+// GH-912: Used to remove stale branches before recreating them fresh from main.
+func (g *GitOperations) DeleteBranch(ctx context.Context, branchName string) error {
+	cmd := exec.CommandContext(ctx, "git", "branch", "-D", branchName)
+	cmd.Dir = g.projectPath
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to delete branch: %w: %s", err, output)
+	}
+	return nil
+}

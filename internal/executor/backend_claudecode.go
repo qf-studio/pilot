@@ -29,6 +29,100 @@ const HeartbeatCheckInterval = 30 * time.Second
 // Returns true if the callback wants to handle the timeout (process will be killed).
 type HeartbeatCallback func(pid int, lastEventAge time.Duration)
 
+// ClaudeCodeErrorType categorizes different types of Claude Code failures.
+// GH-917: Better error classification enables smarter retry decisions.
+type ClaudeCodeErrorType string
+
+const (
+	// ErrorTypeRateLimit indicates Claude Code hit a rate limit
+	ErrorTypeRateLimit ClaudeCodeErrorType = "rate_limit"
+	// ErrorTypeInvalidConfig indicates invalid configuration (e.g., --effort max)
+	ErrorTypeInvalidConfig ClaudeCodeErrorType = "invalid_config"
+	// ErrorTypeAPIError indicates Claude API errors (auth, server errors)
+	ErrorTypeAPIError ClaudeCodeErrorType = "api_error"
+	// ErrorTypeTimeout indicates the process was killed due to timeout
+	ErrorTypeTimeout ClaudeCodeErrorType = "timeout"
+	// ErrorTypeUnknown indicates an unclassified error
+	ErrorTypeUnknown ClaudeCodeErrorType = "unknown"
+)
+
+// ClaudeCodeError represents a classified error from Claude Code.
+type ClaudeCodeError struct {
+	Type    ClaudeCodeErrorType
+	Message string
+	Stderr  string
+}
+
+func (e *ClaudeCodeError) Error() string {
+	if e.Stderr != "" {
+		return fmt.Sprintf("%s: %s (stderr: %s)", e.Type, e.Message, e.Stderr)
+	}
+	return fmt.Sprintf("%s: %s", e.Type, e.Message)
+}
+
+// classifyClaudeCodeError examines stderr output to classify the error.
+func classifyClaudeCodeError(stderr string, originalErr error) *ClaudeCodeError {
+	stderrLower := strings.ToLower(stderr)
+
+	// Rate limit detection
+	if strings.Contains(stderrLower, "hit your limit") ||
+		strings.Contains(stderrLower, "rate limit") ||
+		strings.Contains(stderrLower, "resets") && strings.Contains(stderrLower, "limit") {
+		return &ClaudeCodeError{
+			Type:    ErrorTypeRateLimit,
+			Message: "Claude Code rate limit reached",
+			Stderr:  strings.TrimSpace(stderr),
+		}
+	}
+
+	// Invalid config detection (effort level, model, etc.)
+	if strings.Contains(stderrLower, "effort level") ||
+		strings.Contains(stderrLower, "is not available") ||
+		strings.Contains(stderrLower, "invalid model") ||
+		strings.Contains(stderrLower, "requires --verbose") {
+		return &ClaudeCodeError{
+			Type:    ErrorTypeInvalidConfig,
+			Message: "Invalid Claude Code configuration",
+			Stderr:  strings.TrimSpace(stderr),
+		}
+	}
+
+	// API errors
+	if strings.Contains(stderrLower, "api error") ||
+		strings.Contains(stderrLower, "authentication") ||
+		strings.Contains(stderrLower, "unauthorized") ||
+		strings.Contains(stderrLower, "403") ||
+		strings.Contains(stderrLower, "401") {
+		return &ClaudeCodeError{
+			Type:    ErrorTypeAPIError,
+			Message: "Claude API error",
+			Stderr:  strings.TrimSpace(stderr),
+		}
+	}
+
+	// Timeout/killed
+	if strings.Contains(stderrLower, "killed") ||
+		strings.Contains(stderrLower, "signal") ||
+		strings.Contains(stderrLower, "timeout") {
+		return &ClaudeCodeError{
+			Type:    ErrorTypeTimeout,
+			Message: "Process killed or timed out",
+			Stderr:  strings.TrimSpace(stderr),
+		}
+	}
+
+	// Unknown error
+	msg := "Unknown error"
+	if originalErr != nil {
+		msg = originalErr.Error()
+	}
+	return &ClaudeCodeError{
+		Type:    ErrorTypeUnknown,
+		Message: msg,
+		Stderr:  strings.TrimSpace(stderr),
+	}
+}
+
 // ClaudeCodeBackend implements Backend for Claude Code CLI.
 type ClaudeCodeBackend struct {
 	config *ClaudeCodeConfig
@@ -321,16 +415,27 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, opts ExecuteOptions) (*
 
 	if err != nil {
 		result.Success = false
+
+		// GH-917: Classify the error for better handling
+		stderr := stderrOutput.String()
+		ccErr := classifyClaudeCodeError(stderr, err)
+
+		b.log.Warn("Claude Code execution failed",
+			slog.String("error_type", string(ccErr.Type)),
+			slog.String("message", ccErr.Message),
+			slog.String("stderr", ccErr.Stderr),
+		)
+
+		// Store classified error info in result
 		if result.Error == "" {
-			result.Error = err.Error()
+			result.Error = ccErr.Error()
 		}
-		if stderrOutput.Len() > 0 && result.Error == "" {
-			result.Error = stderrOutput.String()
-		}
-	} else {
-		result.Success = true
+
+		// Return classified error for upstream handling
+		return result, ccErr
 	}
 
+	result.Success = true
 	return result, nil
 }
 

@@ -391,6 +391,11 @@ func Load(path string) (*Config, error) {
 	// Log deprecation warnings
 	config.CheckDeprecations()
 
+	// Validate configuration (GH-914)
+	if err := config.Validate(); err != nil {
+		return nil, err
+	}
+
 	return config, nil
 }
 
@@ -444,8 +449,17 @@ func expandPath(path string) string {
 	return path
 }
 
+// validEffortLevels are the effort levels supported by Claude Code CLI.
+// Note: "max" is NOT supported for Claude.ai subscribers.
+var validEffortLevels = map[string]bool{
+	"low":    true,
+	"medium": true,
+	"high":   true,
+	"":       true, // Empty uses default
+}
+
 // Validate checks the configuration for errors and returns an error if invalid.
-// It validates required fields, port ranges, and authentication settings.
+// It validates required fields, port ranges, authentication settings, and routing config.
 func (c *Config) Validate() error {
 	if c.Gateway == nil {
 		return fmt.Errorf("gateway configuration is required")
@@ -456,6 +470,37 @@ func (c *Config) Validate() error {
 	if c.Auth != nil && c.Auth.Type == gateway.AuthTypeAPIToken && c.Auth.Token == "" {
 		return fmt.Errorf("API token is required when auth type is api-token")
 	}
+
+	// GH-914: Validate effort routing if enabled
+	if c.Executor != nil && c.Executor.EffortRouting != nil && c.Executor.EffortRouting.Enabled {
+		levels := map[string]string{
+			"trivial": c.Executor.EffortRouting.Trivial,
+			"simple":  c.Executor.EffortRouting.Simple,
+			"medium":  c.Executor.EffortRouting.Medium,
+			"complex": c.Executor.EffortRouting.Complex,
+		}
+		for name, value := range levels {
+			normalized := strings.ToLower(strings.TrimSpace(value))
+			if !validEffortLevels[normalized] {
+				return fmt.Errorf("invalid effort_routing.%s: %q (must be low, medium, or high; 'max' is not supported by Claude Code)", name, value)
+			}
+		}
+	}
+
+	// Validate default project exists if specified
+	if c.DefaultProject != "" && len(c.Projects) > 0 {
+		found := false
+		for _, p := range c.Projects {
+			if p.Name == c.DefaultProject {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("default_project %q not found in projects list", c.DefaultProject)
+		}
+	}
+
 	return nil
 }
 

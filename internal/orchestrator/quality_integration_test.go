@@ -2,6 +2,9 @@ package orchestrator
 
 import (
 	"context"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -10,6 +13,32 @@ import (
 
 	"github.com/alekspetrov/pilot/internal/executor"
 )
+
+// setupTestGitRepo creates a temporary git repository for testing.
+// The repo is initialized with a single commit so pre-flight checks pass.
+func setupTestGitRepo(t *testing.T) string {
+	t.Helper()
+	tmpDir := t.TempDir()
+
+	// Initialize git repo
+	if err := exec.Command("git", "init", tmpDir).Run(); err != nil {
+		t.Fatalf("failed to init git repo: %v", err)
+	}
+
+	// Configure git user for commits
+	_ = exec.Command("git", "-C", tmpDir, "config", "user.email", "test@test.com").Run()
+	_ = exec.Command("git", "-C", tmpDir, "config", "user.name", "Test User").Run()
+
+	// Create initial commit so the repo is in a clean state
+	testFile := filepath.Join(tmpDir, "README.md")
+	if err := os.WriteFile(testFile, []byte("# Test Repo"), 0644); err != nil {
+		t.Fatalf("failed to write test file: %v", err)
+	}
+	_ = exec.Command("git", "-C", tmpDir, "add", ".").Run()
+	_ = exec.Command("git", "-C", tmpDir, "commit", "-m", "initial commit").Run()
+
+	return tmpDir
+}
 
 // mockQualityChecker implements executor.QualityChecker for testing
 type mockQualityChecker struct {
@@ -113,19 +142,20 @@ func TestQualityGatesHappyPath(t *testing.T) {
 
 	// Create runner with mock backend
 	runner := executor.NewRunnerWithBackend(backend)
-	runner.SetRecordingEnabled(false) // Disable recording for tests
+	runner.SetRecordingEnabled(false)    // Disable recording for tests
+	runner.SetSkipPreflightChecks(true)  // Skip preflight checks (no Claude CLI in CI)
 
 	// Set quality checker factory
 	runner.SetQualityCheckerFactory(func(taskID, projectPath string) executor.QualityChecker {
 		return qualityChecker
 	})
 
-	// Create task
+	// Create task with a proper git repo so pre-flight checks pass
 	task := &executor.Task{
 		ID:          "TEST-001",
 		Title:       "Test happy path",
 		Description: "Test that quality gates pass",
-		ProjectPath: t.TempDir(),
+		ProjectPath: setupTestGitRepo(t),
 	}
 
 	// Execute task
@@ -200,6 +230,7 @@ func TestQualityGatesRetrySuccess(t *testing.T) {
 	// Create runner with mock backend
 	runner := executor.NewRunnerWithBackend(backend)
 	runner.SetRecordingEnabled(false)
+	runner.SetSkipPreflightChecks(true)  // Skip preflight checks (no Claude CLI in CI)
 
 	runner.SetQualityCheckerFactory(func(taskID, projectPath string) executor.QualityChecker {
 		return qualityChecker
@@ -209,7 +240,7 @@ func TestQualityGatesRetrySuccess(t *testing.T) {
 		ID:          "TEST-002",
 		Title:       "Test retry success",
 		Description: "Test that retry fixes quality gate failure",
-		ProjectPath: t.TempDir(),
+		ProjectPath: setupTestGitRepo(t),
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -260,6 +291,7 @@ func TestQualityGatesMaxRetriesExhausted(t *testing.T) {
 
 	runner := executor.NewRunnerWithBackend(backend)
 	runner.SetRecordingEnabled(false)
+	runner.SetSkipPreflightChecks(true)  // Skip preflight checks (no Claude CLI in CI)
 
 	runner.SetQualityCheckerFactory(func(taskID, projectPath string) executor.QualityChecker {
 		return qualityChecker
@@ -269,7 +301,7 @@ func TestQualityGatesMaxRetriesExhausted(t *testing.T) {
 		ID:          "TEST-003",
 		Title:       "Test max retries",
 		Description: "Test that task fails after max retries",
-		ProjectPath: t.TempDir(),
+		ProjectPath: setupTestGitRepo(t),
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -323,6 +355,7 @@ func TestQualityGatesDisabled(t *testing.T) {
 	// Create runner WITHOUT setting quality checker factory
 	runner := executor.NewRunnerWithBackend(backend)
 	runner.SetRecordingEnabled(false)
+	runner.SetSkipPreflightChecks(true)  // Skip preflight checks (no Claude CLI in CI)
 
 	// No quality checker factory set - gates should be skipped
 
@@ -330,7 +363,7 @@ func TestQualityGatesDisabled(t *testing.T) {
 		ID:          "TEST-004",
 		Title:       "Test disabled gates",
 		Description: "Test that quality gates are skipped when disabled",
-		ProjectPath: t.TempDir(),
+		ProjectPath: setupTestGitRepo(t),
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -374,6 +407,7 @@ func TestQualityGatesNoRetryOnNoShouldRetry(t *testing.T) {
 
 	runner := executor.NewRunnerWithBackend(backend)
 	runner.SetRecordingEnabled(false)
+	runner.SetSkipPreflightChecks(true)  // Skip preflight checks (no Claude CLI in CI)
 
 	runner.SetQualityCheckerFactory(func(taskID, projectPath string) executor.QualityChecker {
 		return qualityChecker
@@ -383,7 +417,7 @@ func TestQualityGatesNoRetryOnNoShouldRetry(t *testing.T) {
 		ID:          "TEST-005",
 		Title:       "Test no retry when ShouldRetry=false",
 		Description: "Test that task fails immediately when ShouldRetry is false",
-		ProjectPath: t.TempDir(),
+		ProjectPath: setupTestGitRepo(t),
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -500,6 +534,7 @@ func TestQualityGatesRetryFeedbackPropagation(t *testing.T) {
 
 	runner := executor.NewRunnerWithBackend(backend)
 	runner.SetRecordingEnabled(false)
+	runner.SetSkipPreflightChecks(true)  // Skip preflight checks (no Claude CLI in CI)
 
 	runner.SetQualityCheckerFactory(func(taskID, projectPath string) executor.QualityChecker {
 		return qualityChecker
@@ -509,7 +544,7 @@ func TestQualityGatesRetryFeedbackPropagation(t *testing.T) {
 		ID:          "TEST-006",
 		Title:       "Test retry feedback",
 		Description: "Original task description",
-		ProjectPath: t.TempDir(),
+		ProjectPath: setupTestGitRepo(t),
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

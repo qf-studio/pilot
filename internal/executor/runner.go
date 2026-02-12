@@ -249,6 +249,7 @@ type Runner struct {
 	intentJudge           *IntentJudge          // Optional intent judge for diff-vs-ticket alignment (GH-624)
 	teamChecker           TeamChecker           // Optional team RBAC checker (GH-633)
 	executeFunc           func(ctx context.Context, task *Task) (*ExecutionResult, error) // Internal override for testing
+	skipPreflightChecks   bool                  // Skip preflight checks (for testing with mock backends)
 }
 
 // NewRunner creates a new Runner instance with Claude Code backend by default.
@@ -346,6 +347,11 @@ func (r *Runner) SetRecordingsPath(path string) {
 // When enabled, all Claude Code stream events are captured for replay and debugging.
 func (r *Runner) SetRecordingEnabled(enabled bool) {
 	r.enableRecording = enabled
+}
+
+// SetSkipPreflightChecks disables preflight checks (for testing with mock backends).
+func (r *Runner) SetSkipPreflightChecks(skip bool) {
+	r.skipPreflightChecks = skip
 }
 
 // SetAlertProcessor sets the alert processor for emitting task lifecycle events.
@@ -538,6 +544,22 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 				Success: false,
 				Error:   fmt.Sprintf("permission denied: %v", err),
 			}, fmt.Errorf("permission check failed: %w", err)
+		}
+	}
+
+	// GH-915: Run pre-flight checks to catch environmental issues early
+	// Skip when using mock backends in tests (skipPreflightChecks flag)
+	if !r.skipPreflightChecks {
+		if err := RunPreflightChecks(ctx, task.ProjectPath); err != nil {
+			r.log.Warn("Pre-flight check failed",
+				slog.String("task_id", task.ID),
+				slog.Any("error", err),
+			)
+			return &ExecutionResult{
+				TaskID:  task.ID,
+				Success: false,
+				Error:   fmt.Sprintf("pre-flight check failed: %v", err),
+			}, fmt.Errorf("pre-flight check failed: %w", err)
 		}
 	}
 
@@ -748,11 +770,41 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 		r.reportProgress(task.ID, "Branching", 5, fmt.Sprintf("On %s, creating %s...", defaultBranch, task.Branch))
 
 		if err := git.CreateBranch(ctx, task.Branch); err != nil {
-			// Check if branch already exists - try to switch to it
-			if switchErr := git.SwitchBranch(ctx, task.Branch); switchErr != nil {
-				return nil, fmt.Errorf("failed to create/switch branch: %w", err)
+			// Branch already exists - check if it's stale (GH-912)
+			behindCount, behindErr := git.CommitsBehindMain(ctx, task.Branch)
+			if behindErr != nil {
+				log.Warn("Failed to check if branch is behind main",
+					slog.String("branch", task.Branch),
+					slog.Any("error", behindErr),
+				)
 			}
-			r.reportProgress(task.ID, "Branching", 8, fmt.Sprintf("Switched to existing branch %s", task.Branch))
+
+			if behindCount > 0 {
+				// Branch is stale - delete and recreate from main
+				log.Info("Stale branch detected, recreating from main",
+					slog.String("branch", task.Branch),
+					slog.Int("commits_behind", behindCount),
+				)
+				r.reportProgress(task.ID, "Branching", 6, fmt.Sprintf("Stale branch %s (%d behind), recreating...", task.Branch, behindCount))
+
+				if delErr := git.DeleteBranch(ctx, task.Branch); delErr != nil {
+					log.Warn("Failed to delete stale branch",
+						slog.String("branch", task.Branch),
+						slog.Any("error", delErr),
+					)
+				}
+				// Create fresh branch from main
+				if createErr := git.CreateBranch(ctx, task.Branch); createErr != nil {
+					return nil, fmt.Errorf("failed to recreate branch after stale detection: %w", createErr)
+				}
+				r.reportProgress(task.ID, "Branching", 8, fmt.Sprintf("Recreated fresh branch %s", task.Branch))
+			} else {
+				// Branch exists and is not stale - switch to it
+				if switchErr := git.SwitchBranch(ctx, task.Branch); switchErr != nil {
+					return nil, fmt.Errorf("failed to create/switch branch: %w", err)
+				}
+				r.reportProgress(task.ID, "Branching", 8, fmt.Sprintf("Switched to existing branch %s", task.Branch))
+			}
 		} else {
 			r.reportProgress(task.ID, "Branching", 8, fmt.Sprintf("Created branch %s", task.Branch))
 		}
@@ -1103,6 +1155,132 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 			slog.Int("files_written", metrics.FilesWritten),
 		)
 		r.reportProgress(task.ID, "Completed", 90, "Execution completed")
+
+		// No-commit detection and retry (GH-916)
+		// ~10% of failures are "No commits between main and pilot/GH-XXX"
+		// Claude runs successfully but makes no actual changes, then PR creation fails.
+		if task.CreatePR && !task.DirectCommit && task.Branch != "" {
+			baseBranch := task.BaseBranch
+			if baseBranch == "" {
+				baseBranch, _ = git.GetDefaultBranch(ctx)
+				if baseBranch == "" {
+					baseBranch = "main"
+				}
+			}
+
+			commitCount, countErr := git.CountNewCommits(ctx, baseBranch)
+			if countErr != nil {
+				log.Warn("Failed to count commits for no-commit check",
+					slog.String("task_id", task.ID),
+					slog.Any("error", countErr),
+				)
+			} else if commitCount == 0 {
+				log.Warn("Claude made no commits, retrying with explicit instruction",
+					slog.String("task_id", task.ID),
+					slog.String("branch", task.Branch),
+				)
+				r.reportProgress(task.ID, "Retry", 91, "No commits detected, retrying...")
+
+				// Build retry prompt with explicit instruction
+				retryPrompt := fmt.Sprintf(`## Retry: No Changes Detected
+
+The previous execution completed but made no code changes. This task requires actual implementation.
+
+**Original Task:** %s
+
+**Instructions:**
+1. Read the task requirements carefully
+2. Implement the required changes
+3. Create at least one commit with your changes
+4. Do NOT just analyze or plan - actually write and commit code
+
+%s`, task.Title, task.Description)
+
+				// Execute retry
+				retryResult, retryErr := r.backend.Execute(ctx, ExecuteOptions{
+					Prompt:          retryPrompt,
+					ProjectPath:     task.ProjectPath,
+					Verbose:         task.Verbose,
+					Model:           selectedModel,
+					Effort:          selectedEffort,
+					WatchdogTimeout: watchdogTimeout,
+					EventHandler: func(event BackendEvent) {
+						// Track tokens from retry
+						state.tokensInput += event.TokensInput
+						state.tokensOutput += event.TokensOutput
+						// Extract any commit SHAs from retry
+						if event.Type == EventTypeToolResult && event.ToolResult != "" {
+							extractCommitSHA(event.ToolResult, state)
+						}
+						if recorder != nil {
+							if recErr := recorder.RecordEvent(event.Raw); recErr != nil {
+								log.Warn("Failed to record retry event", slog.Any("error", recErr))
+							}
+						}
+					},
+				})
+
+				// Update result with retry tokens
+				if retryResult != nil {
+					result.TokensInput += retryResult.TokensInput
+					result.TokensOutput += retryResult.TokensOutput
+					result.TokensTotal = result.TokensInput + result.TokensOutput
+				}
+
+				// Check again after retry
+				commitCount, _ = git.CountNewCommits(ctx, baseBranch)
+				if commitCount == 0 {
+					result.Success = false
+					result.Error = "Claude completed but made no code changes after retry"
+					log.Error("No commits after retry",
+						slog.String("task_id", task.ID),
+					)
+					r.reportProgress(task.ID, "Failed", 100, result.Error)
+
+					// Emit task failed event
+					r.emitAlertEvent(AlertEvent{
+						Type:      AlertEventTypeTaskFailed,
+						TaskID:    task.ID,
+						TaskTitle: task.Title,
+						Project:   task.ProjectPath,
+						Error:     result.Error,
+						Metadata: map[string]string{
+							"reason": "no_commits_after_retry",
+						},
+						Timestamp: time.Now(),
+					})
+
+					// Finish recording with failed status
+					if recorder != nil {
+						recorder.SetModel(result.ModelName)
+						recorder.SetNavigator(state.hasNavigator)
+						if finErr := recorder.Finish("no_commits"); finErr != nil {
+							log.Warn("Failed to finish recording", slog.Any("error", finErr))
+						}
+					}
+					return result, nil
+				} else if retryErr != nil {
+					log.Warn("Retry execution error (but commits exist)",
+						slog.String("task_id", task.ID),
+						slog.Any("error", retryErr),
+						slog.Int("commit_count", commitCount),
+					)
+				}
+
+				log.Info("Retry successful - commits detected",
+					slog.String("task_id", task.ID),
+					slog.Int("commit_count", commitCount),
+				)
+				r.reportProgress(task.ID, "Retry Success", 92, fmt.Sprintf("Retry successful: %d commits", commitCount))
+
+				// Update commit SHA from retry if state captured it
+				if len(state.commitSHAs) > 0 {
+					result.CommitSHA = state.commitSHAs[len(state.commitSHAs)-1]
+				} else if sha, shaErr := git.GetCurrentCommitSHA(ctx); shaErr == nil {
+					result.CommitSHA = sha
+				}
+			}
+		}
 
 		// Auto-enable minimal build gate if not configured (GH-363)
 		// This ensures broken code never becomes a PR, even without explicit quality config
