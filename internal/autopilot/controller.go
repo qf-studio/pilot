@@ -401,6 +401,12 @@ func (c *Controller) handleWaitingCI(ctx context.Context, prState *PRState) erro
 		return nil
 	}
 
+	// GH-862: Capture discovered checks for PR state (only once, when first seen)
+	if discovered := c.ciMonitor.GetDiscoveredChecks(sha); len(discovered) > 0 && len(prState.DiscoveredChecks) == 0 {
+		prState.DiscoveredChecks = discovered
+		c.log.Info("CI checks discovered", "pr", prState.PRNumber, "checks", discovered)
+	}
+
 	prState.CIStatus = status
 	prState.LastChecked = time.Now()
 
@@ -788,7 +794,14 @@ func (c *Controller) handleMergeConflict(ctx context.Context, prState *PRState) 
 // removePR removes PR from tracking.
 func (c *Controller) removePR(prNumber int) {
 	c.mu.Lock()
-	delete(c.activePRs, prNumber)
+	prState, ok := c.activePRs[prNumber]
+	if ok {
+		// GH-862: Clean up discovery state for this PR's SHA
+		if prState.HeadSHA != "" {
+			c.ciMonitor.ClearDiscovery(prState.HeadSHA)
+		}
+		delete(c.activePRs, prNumber)
+	}
 	delete(c.prFailures, prNumber)
 	c.mu.Unlock()
 
