@@ -298,11 +298,9 @@ func NewRunnerWithConfig(config *BackendConfig) (*Runner, error) {
 		if config.Decompose != nil && config.Decompose.Enabled {
 			runner.decomposer = NewTaskDecomposer(config.Decompose)
 
-			// GH-727: Attach LLM complexity classifier if API key available
-			apiKey := os.Getenv("ANTHROPIC_API_KEY")
-			if classifier := NewComplexityClassifier(apiKey); classifier != nil {
-				runner.decomposer.SetClassifier(classifier)
-			}
+			// GH-727, GH-868: Attach LLM complexity classifier using Claude Code subprocess
+			// No ANTHROPIC_API_KEY needed - uses existing Claude Code subscription
+			runner.decomposer.SetClassifier(NewComplexityClassifier())
 		}
 	}
 

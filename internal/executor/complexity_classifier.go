@@ -1,12 +1,11 @@
 package executor
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"net/http"
+	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -14,15 +13,20 @@ import (
 	"github.com/alekspetrov/pilot/internal/logging"
 )
 
-// ComplexityClassifier uses an LLM (Haiku) to classify task complexity
-// instead of word-count heuristics. Falls back to heuristic on API failure.
+// ComplexityClassifier uses Claude Code (Haiku model) to classify task complexity
+// instead of word-count heuristics. Falls back to heuristic on subprocess failure.
 // Caches results per task ID to avoid re-classification on retries.
+//
+// GH-868: Now uses `claude --print` subprocess instead of direct API calls,
+// leveraging the user's existing Claude Code subscription (no ANTHROPIC_API_KEY needed).
 type ComplexityClassifier struct {
-	apiKey     string
-	apiURL     string
-	model      string
-	httpClient *http.Client
-	log        *slog.Logger
+	model   string
+	timeout time.Duration
+	log     *slog.Logger
+
+	// cmdRunner is the function that executes the claude command.
+	// Can be overridden for testing.
+	cmdRunner func(ctx context.Context, args ...string) ([]byte, error)
 
 	mu    sync.Mutex
 	cache map[string]Complexity // task ID → cached classification
@@ -48,37 +52,35 @@ IMPORTANT: A detailed issue with clear step-by-step instructions is NOT complex 
 Respond with ONLY a JSON object (no markdown, no explanation):
 {"complexity": "TRIVIAL|SIMPLE|MEDIUM|COMPLEX|EPIC", "reason": "brief one-sentence explanation"}`
 
-// NewComplexityClassifier creates a classifier that calls the Anthropic API.
-// Returns nil if apiKey is empty (caller should fall back to heuristic).
-func NewComplexityClassifier(apiKey string) *ComplexityClassifier {
-	if apiKey == "" {
-		return nil
+// NewComplexityClassifier creates a classifier that uses `claude --print` subprocess.
+// Uses the user's existing Claude Code subscription - no separate API key needed.
+func NewComplexityClassifier() *ComplexityClassifier {
+	c := &ComplexityClassifier{
+		model:   "claude-haiku-4-5-20251001",
+		timeout: 30 * time.Second,
+		log:     logging.WithComponent("complexity-classifier"),
+		cache:   make(map[string]Complexity),
 	}
-	return &ComplexityClassifier{
-		apiKey: apiKey,
-		apiURL: "https://api.anthropic.com/v1/messages",
-		model:  "claude-haiku-4-5-20251001",
-		httpClient: &http.Client{
-			Timeout: 10 * time.Second,
-		},
-		log:   logging.WithComponent("complexity-classifier"),
-		cache: make(map[string]Complexity),
-	}
-}
-
-// newComplexityClassifierWithURL creates a classifier with a custom API URL for testing.
-func newComplexityClassifierWithURL(apiKey, url string) *ComplexityClassifier {
-	c := NewComplexityClassifier(apiKey)
-	if c == nil {
-		return nil
-	}
-	c.apiURL = url
+	c.cmdRunner = c.defaultCmdRunner
 	return c
 }
 
-// Classify determines task complexity using the LLM.
+// defaultCmdRunner executes the claude command.
+func (c *ComplexityClassifier) defaultCmdRunner(ctx context.Context, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, "claude", args...)
+	return cmd.Output()
+}
+
+// newComplexityClassifierWithRunner creates a classifier with a custom command runner for testing.
+func newComplexityClassifierWithRunner(runner func(ctx context.Context, args ...string) ([]byte, error)) *ComplexityClassifier {
+	c := NewComplexityClassifier()
+	c.cmdRunner = runner
+	return c
+}
+
+// Classify determines task complexity using Claude Code subprocess.
 // Returns cached result if available for the given task ID.
-// Falls back to heuristic-based DetectComplexity on any API error.
+// Falls back to heuristic-based DetectComplexity on subprocess failure.
 func (c *ComplexityClassifier) Classify(ctx context.Context, task *Task) Complexity {
 	if task == nil {
 		return ComplexityMedium
@@ -95,8 +97,8 @@ func (c *ComplexityClassifier) Classify(ctx context.Context, task *Task) Complex
 		c.mu.Unlock()
 	}
 
-	// Call LLM
-	result, err := c.callAPI(ctx, task)
+	// Call Claude Code subprocess
+	result, err := c.classify(ctx, task)
 	if err != nil {
 		c.log.Warn("LLM classification failed, falling back to heuristic",
 			slog.String("task_id", task.ID),
@@ -120,8 +122,8 @@ func (c *ComplexityClassifier) Classify(ctx context.Context, task *Task) Complex
 	return result
 }
 
-// callAPI makes the Haiku API call and parses the response.
-func (c *ComplexityClassifier) callAPI(ctx context.Context, task *Task) (Complexity, error) {
+// classify calls Claude Code subprocess with Haiku model and parses the response.
+func (c *ComplexityClassifier) classify(ctx context.Context, task *Task) (Complexity, error) {
 	userContent := fmt.Sprintf("## Issue Title\n%s\n\n## Issue Description\n%s", task.Title, task.Description)
 
 	// Truncate to avoid token overflow (description can be very long)
@@ -130,48 +132,31 @@ func (c *ComplexityClassifier) callAPI(ctx context.Context, task *Task) (Complex
 		userContent = userContent[:maxChars] + "\n...[truncated]"
 	}
 
-	reqBody := haikuRequest{
-		Model:     c.model,
-		MaxTokens: 256,
-		System:    complexityClassifierSystemPrompt,
-		Messages: []haikuMessage{
-			{Role: "user", Content: userContent},
-		},
+	// Build prompt with system instructions embedded
+	prompt := fmt.Sprintf("%s\n\n---\n\n%s", complexityClassifierSystemPrompt, userContent)
+
+	// Add timeout to context
+	ctx, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
+
+	// Call claude --print with Haiku model
+	args := []string{
+		"--print",
+		"-p", prompt,
+		"--model", c.model,
+		"--output-format", "text",
 	}
 
-	jsonData, err := json.Marshal(reqBody)
+	output, err := c.cmdRunner(ctx, args...)
 	if err != nil {
-		return "", fmt.Errorf("marshal request: %w", err)
+		return "", fmt.Errorf("claude command failed: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.apiURL, bytes.NewReader(jsonData))
-	if err != nil {
-		return "", fmt.Errorf("create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-api-key", c.apiKey)
-	req.Header.Set("anthropic-version", "2023-06-01")
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("API request failed: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("API returned status %d", resp.StatusCode)
+	if len(output) == 0 {
+		return "", fmt.Errorf("empty response from claude")
 	}
 
-	var apiResp haikuResponse
-	if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
-		return "", fmt.Errorf("decode response: %w", err)
-	}
-
-	if len(apiResp.Content) == 0 || apiResp.Content[0].Text == "" {
-		return "", fmt.Errorf("empty response from API")
-	}
-
-	return parseClassificationResponse(apiResp.Content[0].Text)
+	return parseClassificationResponse(string(output))
 }
 
 // parseClassificationResponse extracts complexity from the LLM's JSON response.

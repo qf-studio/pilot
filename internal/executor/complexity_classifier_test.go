@@ -2,37 +2,26 @@ package executor
 
 import (
 	"context"
-	"encoding/json"
-	"net/http"
-	"net/http/httptest"
+	"errors"
 	"testing"
 )
 
-// mockHaikuServer creates a test server that returns a canned classification response.
-func mockHaikuServer(complexity, reason string) *httptest.Server {
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		resp := map[string]interface{}{
-			"content": []map[string]string{
-				{"text": `{"complexity":"` + complexity + `","reason":"` + reason + `"}`},
-			},
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(resp)
-	}))
+// mockClaudeRunner creates a test runner that returns canned classification JSON.
+func mockClaudeRunner(complexity, reason string) func(ctx context.Context, args ...string) ([]byte, error) {
+	return func(ctx context.Context, args ...string) ([]byte, error) {
+		return []byte(`{"complexity":"` + complexity + `","reason":"` + reason + `"}`), nil
+	}
 }
 
-// mockHaikuServerError creates a test server that returns an error status.
-func mockHaikuServerError(status int) *httptest.Server {
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(status)
-	}))
+// mockClaudeRunnerError creates a test runner that returns an error.
+func mockClaudeRunnerError(err error) func(ctx context.Context, args ...string) ([]byte, error) {
+	return func(ctx context.Context, args ...string) ([]byte, error) {
+		return nil, err
+	}
 }
 
 func TestComplexityClassifier_SimpleTask(t *testing.T) {
-	server := mockHaikuServer("SIMPLE", "Single field addition")
-	defer server.Close()
-
-	classifier := newComplexityClassifierWithURL("test-api-key", server.URL)
+	classifier := newComplexityClassifierWithRunner(mockClaudeRunner("SIMPLE", "Single field addition"))
 	task := &Task{
 		ID:          "GH-100",
 		Title:       "Add email field to user struct",
@@ -47,10 +36,7 @@ func TestComplexityClassifier_SimpleTask(t *testing.T) {
 
 func TestComplexityClassifier_MediumDetailedTask(t *testing.T) {
 	// This is the key test: a detailed but well-scoped issue should be MEDIUM, not COMPLEX
-	server := mockHaikuServer("MEDIUM", "Detailed instructions but single-scope feature")
-	defer server.Close()
-
-	classifier := newComplexityClassifierWithURL("test-api-key", server.URL)
+	classifier := newComplexityClassifierWithRunner(mockClaudeRunner("MEDIUM", "Detailed instructions but single-scope feature"))
 	task := &Task{
 		ID:    "GH-200",
 		Title: "Add webhook endpoint with retry logic",
@@ -73,10 +59,7 @@ Follow the patterns in internal/api/handlers.go.`,
 }
 
 func TestComplexityClassifier_ComplexTask(t *testing.T) {
-	server := mockHaikuServer("COMPLEX", "Requires architectural changes across multiple systems")
-	defer server.Close()
-
-	classifier := newComplexityClassifierWithURL("test-api-key", server.URL)
+	classifier := newComplexityClassifierWithRunner(mockClaudeRunner("COMPLEX", "Requires architectural changes across multiple systems"))
 	task := &Task{
 		ID:          "GH-300",
 		Title:       "Migrate authentication from sessions to JWT",
@@ -91,26 +74,19 @@ func TestComplexityClassifier_ComplexTask(t *testing.T) {
 
 func TestComplexityClassifier_CachesResult(t *testing.T) {
 	callCount := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	runner := func(ctx context.Context, args ...string) ([]byte, error) {
 		callCount++
-		resp := map[string]interface{}{
-			"content": []map[string]string{
-				{"text": `{"complexity":"MEDIUM","reason":"standard work"}`},
-			},
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(resp)
-	}))
-	defer server.Close()
+		return []byte(`{"complexity":"MEDIUM","reason":"standard work"}`), nil
+	}
 
-	classifier := newComplexityClassifierWithURL("test-api-key", server.URL)
+	classifier := newComplexityClassifierWithRunner(runner)
 	task := &Task{
 		ID:          "GH-400",
 		Title:       "Add logging",
 		Description: "Add structured logging to the API layer",
 	}
 
-	// First call hits API
+	// First call hits subprocess
 	result1 := classifier.Classify(context.Background(), task)
 	// Second call should use cache
 	result2 := classifier.Classify(context.Background(), task)
@@ -119,15 +95,12 @@ func TestComplexityClassifier_CachesResult(t *testing.T) {
 		t.Errorf("cached result differs: %s vs %s", result1, result2)
 	}
 	if callCount != 1 {
-		t.Errorf("expected 1 API call (cached), got %d", callCount)
+		t.Errorf("expected 1 subprocess call (cached), got %d", callCount)
 	}
 }
 
 func TestComplexityClassifier_FallsBackOnError(t *testing.T) {
-	server := mockHaikuServerError(http.StatusInternalServerError)
-	defer server.Close()
-
-	classifier := newComplexityClassifierWithURL("test-api-key", server.URL)
+	classifier := newComplexityClassifierWithRunner(mockClaudeRunnerError(errors.New("subprocess failed")))
 	task := &Task{
 		ID:          "GH-500",
 		Title:       "Fix typo in README",
@@ -142,20 +115,21 @@ func TestComplexityClassifier_FallsBackOnError(t *testing.T) {
 }
 
 func TestComplexityClassifier_NilTask(t *testing.T) {
-	server := mockHaikuServer("MEDIUM", "n/a")
-	defer server.Close()
-
-	classifier := newComplexityClassifierWithURL("test-api-key", server.URL)
+	classifier := newComplexityClassifierWithRunner(mockClaudeRunner("MEDIUM", "n/a"))
 	result := classifier.Classify(context.Background(), nil)
 	if result != ComplexityMedium {
 		t.Errorf("expected MEDIUM for nil task, got %s", result)
 	}
 }
 
-func TestComplexityClassifier_NilAPIKey(t *testing.T) {
-	classifier := NewComplexityClassifier("")
-	if classifier != nil {
-		t.Error("expected nil classifier for empty API key")
+func TestNewComplexityClassifier(t *testing.T) {
+	// No API key needed anymore - uses Claude Code subscription
+	classifier := NewComplexityClassifier()
+	if classifier == nil {
+		t.Fatal("expected non-nil classifier")
+	}
+	if classifier.model != "claude-haiku-4-5-20251001" {
+		t.Errorf("expected haiku model, got %s", classifier.model)
 	}
 }
 
@@ -298,9 +272,6 @@ func TestDecomposer_NoDecomposeLabel(t *testing.T) {
 
 func TestDecomposer_WithLLMClassifier(t *testing.T) {
 	// LLM says MEDIUM → should NOT decompose (threshold is complex)
-	server := mockHaikuServer("MEDIUM", "well-scoped feature with clear instructions")
-	defer server.Close()
-
 	config := &DecomposeConfig{
 		Enabled:             true,
 		MinComplexity:       "complex",
@@ -308,7 +279,7 @@ func TestDecomposer_WithLLMClassifier(t *testing.T) {
 		MinDescriptionWords: 10,
 	}
 	decomposer := NewTaskDecomposer(config)
-	classifier := newComplexityClassifierWithURL("test-api-key", server.URL)
+	classifier := newComplexityClassifierWithRunner(mockClaudeRunner("MEDIUM", "well-scoped feature with clear instructions"))
 	decomposer.SetClassifier(classifier)
 
 	// This task has numbered steps and "refactor" keyword — heuristic would say COMPLEX
@@ -337,9 +308,6 @@ Follow existing patterns in internal/webhooks/handler.go.`,
 
 func TestDecomposer_LLMClassifierFallback(t *testing.T) {
 	// LLM returns error → falls back to heuristic
-	server := mockHaikuServerError(http.StatusInternalServerError)
-	defer server.Close()
-
 	config := &DecomposeConfig{
 		Enabled:             true,
 		MinComplexity:       "complex",
@@ -347,7 +315,7 @@ func TestDecomposer_LLMClassifierFallback(t *testing.T) {
 		MinDescriptionWords: 10,
 	}
 	decomposer := NewTaskDecomposer(config)
-	classifier := newComplexityClassifierWithURL("test-api-key", server.URL)
+	classifier := newComplexityClassifierWithRunner(mockClaudeRunnerError(errors.New("subprocess failed")))
 	decomposer.SetClassifier(classifier)
 
 	// This task has "refactor" keyword → heuristic says COMPLEX → should decompose
