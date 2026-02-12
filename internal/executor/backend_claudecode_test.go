@@ -289,3 +289,58 @@ func TestExecuteOptionsHeartbeatCallback(t *testing.T) {
 		t.Error("HeartbeatCallback was not called")
 	}
 }
+
+func TestWatchdogCallbackType(t *testing.T) {
+	// Verify WatchdogCallback can be assigned properly (GH-882)
+	var callbackInvoked bool
+	var capturedPID int
+	var capturedTimeout time.Duration
+
+	callback := func(pid int, watchdogTimeout time.Duration) {
+		callbackInvoked = true
+		capturedPID = pid
+		capturedTimeout = watchdogTimeout
+	}
+
+	testPID := 5678
+	testTimeout := 10 * time.Minute
+
+	callback(testPID, testTimeout)
+
+	if !callbackInvoked {
+		t.Error("WatchdogCallback was not invoked")
+	}
+	if capturedPID != testPID {
+		t.Errorf("capturedPID = %d, want %d", capturedPID, testPID)
+	}
+	if capturedTimeout != testTimeout {
+		t.Errorf("capturedTimeout = %v, want %v", capturedTimeout, testTimeout)
+	}
+}
+
+func TestExecuteOptionsWatchdogCallback(t *testing.T) {
+	// Verify ExecuteOptions accepts WatchdogCallback (GH-882)
+	var callbackCalled bool
+	opts := ExecuteOptions{
+		Prompt:          "test",
+		ProjectPath:     "/tmp",
+		WatchdogTimeout: 30 * time.Minute,
+		WatchdogCallback: func(pid int, watchdogTimeout time.Duration) {
+			callbackCalled = true
+		},
+	}
+
+	// Verify the callback and timeout are set
+	if opts.WatchdogCallback == nil {
+		t.Error("WatchdogCallback should not be nil")
+	}
+	if opts.WatchdogTimeout != 30*time.Minute {
+		t.Errorf("WatchdogTimeout = %v, want 30m", opts.WatchdogTimeout)
+	}
+
+	// Invoke and verify
+	opts.WatchdogCallback(1234, opts.WatchdogTimeout)
+	if !callbackCalled {
+		t.Error("WatchdogCallback was not called")
+	}
+}

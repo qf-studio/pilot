@@ -35,4 +35,5 @@ const (
 	AlertEventTypeTaskRetry        AlertEventType = "task_retry"
 	AlertEventTypeTaskTimeout      AlertEventType = "task_timeout"
 	AlertEventTypeHeartbeatTimeout AlertEventType = "heartbeat_timeout"
+	AlertEventTypeWatchdogKill     AlertEventType = "watchdog_kill"
 )

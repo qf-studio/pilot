@@ -809,13 +809,41 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 	backendName := r.backend.Name()
 	r.reportProgress(task.ID, "Starting", 0, fmt.Sprintf("Initializing %s...", backendName))
 
-	// Execute via backend
+	// Execute via backend with watchdog (GH-882)
+	// Watchdog kills subprocess after 2x timeout as a safety net for processes
+	// that ignore context cancellation.
+	watchdogTimeout := 2 * timeout
 	backendResult, err := r.backend.Execute(ctx, ExecuteOptions{
-		Prompt:      prompt,
-		ProjectPath: task.ProjectPath,
-		Verbose:     task.Verbose,
-		Model:       selectedModel,
-		Effort:      selectedEffort,
+		Prompt:          prompt,
+		ProjectPath:     task.ProjectPath,
+		Verbose:         task.Verbose,
+		Model:           selectedModel,
+		Effort:          selectedEffort,
+		WatchdogTimeout: watchdogTimeout,
+		WatchdogCallback: func(pid int, watchdogDuration time.Duration) {
+			log.Warn("Watchdog killed subprocess",
+				slog.Int("pid", pid),
+				slog.Duration("watchdog_timeout", watchdogDuration),
+				slog.Duration("configured_timeout", timeout),
+			)
+			r.reportProgress(task.ID, "Watchdog Kill", 100, fmt.Sprintf("Process killed by watchdog after %v (2x timeout)", watchdogDuration))
+
+			// Emit watchdog kill alert
+			r.emitAlertEvent(AlertEvent{
+				Type:      AlertEventTypeWatchdogKill,
+				TaskID:    task.ID,
+				TaskTitle: task.Title,
+				Project:   task.ProjectPath,
+				Error:     fmt.Sprintf("subprocess killed by watchdog after %v", watchdogDuration),
+				Metadata: map[string]string{
+					"pid":               fmt.Sprintf("%d", pid),
+					"watchdog_timeout":  watchdogDuration.String(),
+					"configured_timeout": timeout.String(),
+					"complexity":        complexity.String(),
+				},
+				Timestamp: time.Now(),
+			})
+		},
 		EventHandler: func(event BackendEvent) {
 			// Record the event
 			if recorder != nil {

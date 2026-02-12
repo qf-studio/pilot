@@ -169,6 +169,45 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, opts ExecuteOptions) (*
 		}
 	}()
 
+	// Watchdog goroutine: hard kill after absolute timeout (GH-882)
+	// This is a safety net for processes that ignore context cancellation.
+	if opts.WatchdogTimeout > 0 {
+		go func() {
+			select {
+			case <-cmdDone:
+				// Command completed normally, watchdog not needed
+				return
+			case <-time.After(opts.WatchdogTimeout):
+				// Watchdog timeout expired, forcibly kill the process
+				if cmd.Process == nil {
+					return
+				}
+
+				b.log.Warn("Watchdog timeout expired, forcibly killing subprocess",
+					slog.Int("pid", cmd.Process.Pid),
+					slog.Duration("watchdog_timeout", opts.WatchdogTimeout),
+				)
+
+				// Invoke callback before killing (allows alert emission)
+				if opts.WatchdogCallback != nil {
+					opts.WatchdogCallback(cmd.Process.Pid, opts.WatchdogTimeout)
+				}
+
+				// Kill the process
+				if err := cmd.Process.Kill(); err != nil {
+					b.log.Error("Watchdog failed to kill process",
+						slog.Int("pid", cmd.Process.Pid),
+						slog.Any("error", err),
+					)
+				} else {
+					b.log.Info("Watchdog killed process successfully",
+						slog.Int("pid", cmd.Process.Pid),
+					)
+				}
+			}
+		}()
+	}
+
 	// Read stdout (stream-json events)
 	wg.Add(1)
 	go func() {

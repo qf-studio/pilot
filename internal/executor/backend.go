@@ -49,6 +49,16 @@ type ExecuteOptions struct {
 	// The callback receives the process PID and the time since the last event.
 	// After callback invocation, the process will be killed.
 	HeartbeatCallback func(pid int, lastEventAge time.Duration)
+
+	// WatchdogTimeout is the absolute time limit after which the subprocess will be
+	// forcibly killed. This is a safety net for processes that ignore context cancellation.
+	// When set (> 0), a watchdog goroutine will kill the process after this duration.
+	WatchdogTimeout time.Duration
+
+	// WatchdogCallback is invoked when the watchdog kills a subprocess.
+	// The callback receives the process PID and the watchdog timeout duration.
+	// Called BEFORE the process is killed, allowing for alert emission.
+	WatchdogCallback func(pid int, watchdogTimeout time.Duration)
 }
 
 // BackendEvent represents a streaming event from the backend.
