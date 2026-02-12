@@ -1,4 +1,4 @@
-.PHONY: build run test test-e2e clean install lint fmt deps dev install-hooks check-secrets gate check-integration auto-fix test-short package release
+.PHONY: build run test test-e2e clean install lint fmt deps dev install-hooks check-secrets gate check-integration auto-fix test-short test-integration package release
 
 # Variables
 BINARY_NAME=pilot
@@ -120,6 +120,10 @@ check-secrets:
 test-short:
 	go test -short -race ./...
 
+# Run integration tests (build tag separated from unit tests)
+test-integration:
+	go test -v -race -tags=integration ./...
+
 # Run integration checks (orphan commands, build tags, etc.)
 check-integration:
 	@./scripts/check-integration.sh
@@ -188,6 +192,7 @@ help:
 	@echo "  make gate           Run pre-push validation gate"
 	@echo "  make auto-fix       Auto-fix common issues"
 	@echo "  make test-short     Run tests in short mode"
+	@echo "  make test-integration Run integration tests"
 	@echo "  make package        Package binaries into tar.gz archives"
 	@echo "  make release        Create release (V=0.x.x required)"
 	@echo ""
