@@ -202,6 +202,16 @@ func (s *Store) migrate() error {
 			avg_execution_ms INTEGER DEFAULT 0
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_autopilot_metrics_at ON autopilot_metrics(snapshot_at)`,
+		// Brief history tracking (GH-1081)
+		`CREATE TABLE IF NOT EXISTS brief_history (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			sent_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			channel TEXT NOT NULL,
+			brief_type TEXT NOT NULL DEFAULT 'daily',
+			recipient TEXT
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_brief_history_sent_at ON brief_history(sent_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_brief_history_channel ON brief_history(channel)`,
 	}
 
 	for _, migration := range migrations {
@@ -1330,4 +1340,49 @@ func (s *Store) PruneAutopilotMetrics(olderThan time.Duration) (int64, error) {
 		return 0, err
 	}
 	return result.RowsAffected()
+}
+
+// BriefRecord represents a record of a brief that was sent.
+type BriefRecord struct {
+	ID        int64
+	SentAt    time.Time
+	Channel   string // e.g., "telegram", "slack", "email"
+	BriefType string // e.g., "daily", "weekly"
+	Recipient string // optional recipient identifier
+}
+
+// RecordBriefSent records that a brief was sent to a channel.
+func (s *Store) RecordBriefSent(record *BriefRecord) error {
+	result, err := s.db.Exec(`
+		INSERT INTO brief_history (sent_at, channel, brief_type, recipient)
+		VALUES (?, ?, ?, ?)
+	`, record.SentAt, record.Channel, record.BriefType, record.Recipient)
+	if err != nil {
+		return err
+	}
+	id, _ := result.LastInsertId()
+	record.ID = id
+	return nil
+}
+
+// GetLastBriefSent returns the most recent brief record for a given channel.
+// Returns nil if no brief has been sent to the channel.
+func (s *Store) GetLastBriefSent(channel string) (*BriefRecord, error) {
+	row := s.db.QueryRow(`
+		SELECT id, sent_at, channel, brief_type, COALESCE(recipient, '')
+		FROM brief_history
+		WHERE channel = ?
+		ORDER BY sent_at DESC
+		LIMIT 1
+	`, channel)
+
+	var record BriefRecord
+	err := row.Scan(&record.ID, &record.SentAt, &record.Channel, &record.BriefType, &record.Recipient)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &record, nil
 }
