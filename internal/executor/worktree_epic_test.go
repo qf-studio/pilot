@@ -3,7 +3,6 @@ package executor
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -391,7 +390,4 @@ func writeMockScriptWithPathCapture(t *testing.T, path, output string, exitCode 
 	}
 }
 
-// testLogger returns a minimal logger for testing.
-func testLogger() *slog.Logger {
-	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
-}
+// testLogger is defined in epic_worktree_integration_test.go

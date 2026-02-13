@@ -169,9 +169,21 @@ func (m *WorktreeManager) CreateWorktreeWithBranch(ctx context.Context, taskID, 
 		baseRef = baseBranch
 	}
 
-	// Create worktree with a new branch
-	// git worktree add -b <branch> <path> <base>
-	cmd := exec.CommandContext(ctx, "git", "worktree", "add", "-b", branchName, worktreePath, baseRef)
+	// Check if branch already exists
+	checkCmd := exec.CommandContext(ctx, "git", "rev-parse", "--verify", branchName)
+	checkCmd.Dir = m.repoPath
+	branchExists := checkCmd.Run() == nil
+
+	var cmd *exec.Cmd
+	if branchExists {
+		// Branch exists - checkout existing branch into worktree
+		// git worktree add <path> <branch>
+		cmd = exec.CommandContext(ctx, "git", "worktree", "add", worktreePath, branchName)
+	} else {
+		// Branch doesn't exist - create new branch from base
+		// git worktree add -b <branch> <path> <base>
+		cmd = exec.CommandContext(ctx, "git", "worktree", "add", "-b", branchName, worktreePath, baseRef)
+	}
 	cmd.Dir = m.repoPath
 	output, err := cmd.CombinedOutput()
 	if err != nil {
