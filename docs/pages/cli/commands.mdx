@@ -74,15 +74,194 @@ pilot upgrade
 | `--check` | Check for updates without installing |
 | `--version=X.Y.Z` | Install specific version |
 
+## pilot stop
+
+Stop a running Pilot daemon.
+
+```bash
+pilot stop
+```
+
+Signals to stop the Pilot daemon process. For processes started with `pilot start`, use Ctrl+C or send SIGTERM/SIGINT signals.
+
+### Examples
+
+```bash
+# Stop the daemon (shows guidance)
+pilot stop
+
+# Alternative: send SIGTERM to running process
+pkill -TERM pilot
+
+# Alternative: use Ctrl+C in the terminal running Pilot
+```
+
+## pilot status
+
+Show Pilot status and running configuration.
+
+```bash
+pilot status [flags]
+```
+
+### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--json` | Output status as JSON |
+
+### Examples
+
+```bash
+# Show human-readable status
+pilot status
+
+# Get status as JSON (for scripting)
+pilot status --json
+
+# Check status in CI/CD pipeline
+pilot status --json | jq '.adapters.github'
+```
+
+## pilot version
+
+Show Pilot version information.
+
+```bash
+pilot version
+```
+
+Displays the current Pilot version and build timestamp.
+
+### Examples
+
+```bash
+# Show version
+pilot version
+
+# Check version before upgrade
+pilot version && pilot upgrade --check
+```
+
 ## pilot init
 
 Initialize Pilot configuration.
 
 ```bash
-pilot init
+pilot init [flags]
 ```
 
-Creates `~/.pilot/config.yaml` with interactive prompts.
+Creates `~/.pilot/config.yaml` with default settings. If a config already exists, shows current settings and available options.
+
+### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--force` | Reinitialize config (backs up existing to `.bak`) |
+
+### Examples
+
+```bash
+# Initialize new config
+pilot init
+
+# Reinitialize (creates backup)
+pilot init --force
+
+# Initialize then customize
+pilot init && $EDITOR ~/.pilot/config.yaml
+```
+
+## pilot setup
+
+Interactive setup wizard for configuring Pilot.
+
+```bash
+pilot setup [flags]
+```
+
+Guides you through configuring:
+- Telegram bot connection
+- Project paths
+- Voice transcription (OpenAI Whisper)
+- Daily briefs
+- Alerts
+- Cloudflare Tunnel (with `--tunnel`)
+
+### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--skip-optional` | Skip optional features (voice, briefs, alerts) |
+| `--tunnel` | Set up Cloudflare Tunnel for webhooks |
+| `--no-sleep` | Disable Mac sleep for always-on operation (macOS only, requires sudo) |
+
+### Examples
+
+```bash
+# Full interactive setup
+pilot setup
+
+# Quick setup (essentials only)
+pilot setup --skip-optional
+
+# Set up webhook tunnel
+pilot setup --tunnel
+
+# Configure Mac for always-on server
+pilot setup --no-sleep
+```
+
+## pilot completion
+
+Generate shell completion scripts for Pilot.
+
+```bash
+pilot completion [bash|zsh|fish|powershell]
+```
+
+### Examples
+
+**Bash:**
+```bash
+# Load completions for current session
+source <(pilot completion bash)
+
+# Install permanently (Linux)
+pilot completion bash > /etc/bash_completion.d/pilot
+
+# Install permanently (macOS with Homebrew)
+pilot completion bash > $(brew --prefix)/etc/bash_completion.d/pilot
+```
+
+**Zsh:**
+```bash
+# Enable completion (add to ~/.zshrc if not already)
+echo "autoload -U compinit; compinit" >> ~/.zshrc
+
+# Install completions
+pilot completion zsh > "${fpath[1]}/_pilot"
+
+# Restart shell to apply
+```
+
+**Fish:**
+```bash
+# Load for current session
+pilot completion fish | source
+
+# Install permanently
+pilot completion fish > ~/.config/fish/completions/pilot.fish
+```
+
+**PowerShell:**
+```powershell
+# Load for current session
+pilot completion powershell | Out-String | Invoke-Expression
+
+# Generate file to source from profile
+pilot completion powershell > pilot.ps1
+```
 
 ## pilot doctor
 
