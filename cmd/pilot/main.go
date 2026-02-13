@@ -4627,6 +4627,8 @@ func newPatternsCmd() *cobra.Command {
 		newPatternsListCmd(),
 		newPatternsSearchCmd(),
 		newPatternsStatsCmd(),
+		newPatternsApplyCmd(),
+		newPatternsIgnoreCmd(),
 	)
 
 	return cmd
@@ -4824,6 +4826,150 @@ func newPatternsStatsCmd() *cobra.Command {
 			return nil
 		},
 	}
+
+	return cmd
+}
+
+func newPatternsApplyCmd() *cobra.Command {
+	var projectPath string
+
+	cmd := &cobra.Command{
+		Use:   "apply <pattern-id>",
+		Short: "Apply a pattern to a project",
+		Long:  `Link a pattern to a project so it will be considered during task execution.`,
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			patternID := args[0]
+
+			// Resolve project path
+			if projectPath == "" {
+				cwd, err := os.Getwd()
+				if err != nil {
+					return fmt.Errorf("failed to get current directory: %w", err)
+				}
+				projectPath = cwd
+			}
+
+			// Load config
+			configPath := cfgFile
+			if configPath == "" {
+				configPath = config.DefaultConfigPath()
+			}
+
+			cfg, err := config.Load(configPath)
+			if err != nil {
+				return fmt.Errorf("failed to load config: %w", err)
+			}
+
+			// Open store
+			store, err := memory.NewStore(cfg.Memory.Path)
+			if err != nil {
+				return fmt.Errorf("failed to open memory store: %w", err)
+			}
+			defer func() { _ = store.Close() }()
+
+			// Verify pattern exists
+			pattern, err := store.GetCrossPattern(patternID)
+			if err != nil {
+				return fmt.Errorf("pattern not found: %w", err)
+			}
+
+			// Link pattern to project
+			if err := store.LinkPatternToProject(patternID, projectPath); err != nil {
+				return fmt.Errorf("failed to apply pattern: %w", err)
+			}
+
+			fmt.Printf("✅ Applied pattern to project:\n")
+			fmt.Printf("   Pattern: %s\n", pattern.Title)
+			fmt.Printf("   Type:    %s\n", pattern.Type)
+			fmt.Printf("   Project: %s\n", shortenPath(projectPath))
+
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVarP(&projectPath, "project", "p", "", "Project path (default: current directory)")
+
+	return cmd
+}
+
+func newPatternsIgnoreCmd() *cobra.Command {
+	var (
+		projectPath string
+		global      bool
+	)
+
+	cmd := &cobra.Command{
+		Use:   "ignore <pattern-id>",
+		Short: "Ignore a pattern",
+		Long: `Mark a pattern as ignored. By default, ignores for the current project only.
+Use --global to ignore across all projects (deletes the pattern).`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			patternID := args[0]
+
+			// Load config
+			configPath := cfgFile
+			if configPath == "" {
+				configPath = config.DefaultConfigPath()
+			}
+
+			cfg, err := config.Load(configPath)
+			if err != nil {
+				return fmt.Errorf("failed to load config: %w", err)
+			}
+
+			// Open store
+			store, err := memory.NewStore(cfg.Memory.Path)
+			if err != nil {
+				return fmt.Errorf("failed to open memory store: %w", err)
+			}
+			defer func() { _ = store.Close() }()
+
+			// Verify pattern exists
+			pattern, err := store.GetCrossPattern(patternID)
+			if err != nil {
+				return fmt.Errorf("pattern not found: %w", err)
+			}
+
+			if global {
+				// Delete the pattern entirely
+				if err := store.DeleteCrossPattern(patternID); err != nil {
+					return fmt.Errorf("failed to delete pattern: %w", err)
+				}
+				fmt.Printf("✅ Deleted pattern globally:\n")
+				fmt.Printf("   Pattern: %s\n", pattern.Title)
+				fmt.Printf("   Type:    %s\n", pattern.Type)
+			} else {
+				// Record negative feedback for this project
+				if projectPath == "" {
+					cwd, err := os.Getwd()
+					if err != nil {
+						return fmt.Errorf("failed to get current directory: %w", err)
+					}
+					projectPath = cwd
+				}
+
+				feedback := &memory.PatternFeedback{
+					PatternID:       patternID,
+					ProjectPath:     projectPath,
+					Outcome:         "ignored",
+					ConfidenceDelta: -0.1, // Reduce confidence for ignored patterns
+				}
+				if err := store.RecordPatternFeedback(feedback); err != nil {
+					return fmt.Errorf("failed to record ignore: %w", err)
+				}
+				fmt.Printf("✅ Ignored pattern for project:\n")
+				fmt.Printf("   Pattern: %s\n", pattern.Title)
+				fmt.Printf("   Project: %s\n", shortenPath(projectPath))
+			}
+
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVarP(&projectPath, "project", "p", "", "Project path (default: current directory)")
+	cmd.Flags().BoolVar(&global, "global", false, "Ignore globally (deletes the pattern)")
 
 	return cmd
 }
