@@ -214,6 +214,10 @@ type BackendConfig struct {
 
 	// Stagnation contains stagnation detection settings (GH-925)
 	Stagnation *StagnationConfig `yaml:"stagnation,omitempty"`
+
+	// Simplification contains code simplification settings (GH-995)
+	// When enabled, Pilot auto-simplifies code after implementation for clarity.
+	Simplification *SimplifyConfig `yaml:"simplification,omitempty"`
 }
 
 // ModelRoutingConfig controls which model to use based on task complexity.
@@ -423,9 +427,10 @@ func DefaultBackendConfig() *BackendConfig {
 		EffortClassifier: DefaultEffortClassifierConfig(),
 		Decompose:        DefaultDecomposeConfig(),
 		IntentJudge:   DefaultIntentJudgeConfig(),
-		Navigator:     DefaultNavigatorConfig(),
-		Retry:         DefaultRetryConfig(),
-		Stagnation:    DefaultStagnationConfig(),
+		Navigator:      DefaultNavigatorConfig(),
+		Retry:          DefaultRetryConfig(),
+		Stagnation:     DefaultStagnationConfig(),
+		Simplification: DefaultSimplifyConfig(),
 	}
 }
 

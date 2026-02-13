@@ -1648,6 +1648,18 @@ The previous execution completed but made no code changes. This task requires ac
 					finalOutcome = outcome
 					r.reportProgress(task.ID, "Quality Passed", 94, "All quality gates passed")
 
+					// Run simplification phase if enabled (GH-995)
+					if r.config.Simplification != nil && r.config.Simplification.Enabled {
+						r.reportProgress(task.ID, "Simplifying", 95, "Simplifying code...")
+						simplified, simplifyErr := SimplifyModifiedFiles(executionPath, r.config.Simplification)
+						if simplifyErr != nil {
+							log.Warn("Simplification error", slog.Any("error", simplifyErr))
+							// Continue anyway - simplification is advisory
+						} else if len(simplified) > 0 {
+							log.Info("Simplified files", slog.Int("count", len(simplified)), slog.Any("files", simplified))
+						}
+					}
+
 					// Run self-review phase (GH-364)
 					if err := r.runSelfReview(ctx, task, state); err != nil {
 						log.Warn("Self-review error", slog.Any("error", err))
