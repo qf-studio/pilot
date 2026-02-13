@@ -580,6 +580,15 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 	executionPath := task.ProjectPath
 	var cleanupWorktree func()
 
+	// Debug: log worktree condition state
+	r.log.Info("Worktree condition check",
+		slog.Bool("allowWorktree", allowWorktree),
+		slog.Bool("configNotNil", r.config != nil),
+		slog.Bool("useWorktree", r.config != nil && r.config.UseWorktree),
+		slog.String("branch", task.Branch),
+		slog.Bool("directCommit", task.DirectCommit),
+	)
+
 	if allowWorktree && r.config != nil && r.config.UseWorktree && task.Branch != "" && !task.DirectCommit {
 		r.log.Info("Creating isolated worktree for execution",
 			slog.String("task_id", task.ID),

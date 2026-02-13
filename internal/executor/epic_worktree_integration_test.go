@@ -95,7 +95,7 @@ func TestEpicWorktreeIsolation(t *testing.T) {
 	}
 
 	// Execute sub-issues (this is what happens inside executeWithOptions for epics)
-	err := runner.ExecuteSubIssues(ctx, parent, subIssues)
+	err := runner.ExecuteSubIssues(ctx, parent, subIssues, localRepo)
 	if err != nil {
 		t.Fatalf("ExecuteSubIssues failed: %v", err)
 	}
@@ -183,7 +183,7 @@ func TestEpicWorktreeIsolation_ExecuteWithOptionsTracking(t *testing.T) {
 		ProjectPath: localRepo,
 	}
 
-	err := runner.ExecuteSubIssues(ctx, parent, subIssues)
+	err := runner.ExecuteSubIssues(ctx, parent, subIssues, localRepo)
 	if err != nil {
 		t.Fatalf("ExecuteSubIssues failed: %v", err)
 	}
@@ -269,7 +269,7 @@ func TestEpicWorktreeCleanup(t *testing.T) {
 		ProjectPath: worktreePath, // Use worktree path
 	}
 
-	err = runner.ExecuteSubIssues(ctx, parent, subIssues)
+	err = runner.ExecuteSubIssues(ctx, parent, subIssues, worktreePath)
 	if err != nil {
 		t.Fatalf("ExecuteSubIssues failed: %v", err)
 	}
@@ -353,7 +353,7 @@ func TestNoRecursiveWorktreeInDecomposedTasks(t *testing.T) {
 		ProjectPath: localRepo, // NOT a worktree path
 	}
 
-	err := runner.ExecuteSubIssues(ctx, parent, subIssues)
+	err := runner.ExecuteSubIssues(ctx, parent, subIssues, localRepo)
 	if err != nil {
 		t.Fatalf("ExecuteSubIssues failed: %v", err)
 	}
@@ -441,7 +441,7 @@ func TestWorktreeIsolationWithNavigatorCopy(t *testing.T) {
 		ProjectPath: result.Path, // Use worktree path
 	}
 
-	err = runner.ExecuteSubIssues(ctx, parent, subIssues)
+	err = runner.ExecuteSubIssues(ctx, parent, subIssues, result.Path)
 	if err != nil {
 		t.Fatalf("ExecuteSubIssues failed: %v", err)
 	}

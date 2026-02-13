@@ -134,6 +134,85 @@ Pilot is a Go-based autonomous AI development pipeline that:
 | `testutil` | Test utilities | Test-only, not runtime |
 | `transcription` | Voice → text (OpenAI) | Used by telegram adapter |
 
+## Worktree Isolation + Epic Interaction
+
+**GH-945 (v0.53-v0.56)**: Worktree isolation enables task execution in isolated git worktrees, preventing conflicts with user's uncommitted changes.
+
+### Epic + Worktree Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     Epic Execution Flow                         │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  1. Epic detected (>5 phases, structural signals)               │
+│                      │                                          │
+│                      ▼                                          │
+│  2. Create worktree (if UseWorktree=true)                       │
+│     ┌────────────────────────────────────┐                      │
+│     │ git worktree add /tmp/pilot-wt-... │                      │
+│     │ Copy .agent/ to worktree           │ ← Navigator copied   │
+│     └────────────────────────────────────┘                      │
+│                      │                                          │
+│                      ▼                                          │
+│  3. Plan decomposition in worktree                              │
+│                      │                                          │
+│                      ▼                                          │
+│  4. Create sub-issues (GH API)                                  │
+│                      │                                          │
+│                      ▼                                          │
+│  5. Execute sub-issues SEQUENTIALLY                             │
+│     ┌─────────────────────────────────────────────────────┐    │
+│     │  Sub-issue 1 → allowWorktree=false (no nesting)     │    │
+│     │       │                                              │    │
+│     │       ▼ uses parent's executionPath                  │    │
+│     │  Sub-issue 2 → allowWorktree=false                   │    │
+│     │       │                                              │    │
+│     │       ▼                                              │    │
+│     │  Sub-issue N → allowWorktree=false                   │    │
+│     └─────────────────────────────────────────────────────┘    │
+│                      │                                          │
+│                      ▼                                          │
+│  6. Cleanup worktree (deferred)                                 │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Key Design Decisions
+
+1. **No Nested Worktrees**: Sub-issues execute with `allowWorktree=false` to prevent recursive worktree creation. The parent's `executionPath` is passed through.
+
+2. **Navigator Preservation**: `EnsureNavigatorInWorktree()` copies `.agent/` including untracked content (research notes, context markers, SOPs).
+
+3. **Sequential Sub-Issue Execution**: Sub-issues run serially to avoid branch conflicts. Each sub-issue creates its own branch from the worktree's state.
+
+4. **Quality Gates in Worktree**: Gates execute in the worktree context via `executionPath` parameter, ensuring tests/lint run against isolated changes.
+
+5. **Cleanup Guarantees**: Deferred cleanup runs even on panic. Orphan scan on startup handles crashed processes.
+
+### Configuration
+
+```yaml
+executor:
+  use_worktree: true  # Enable isolation (default: false)
+```
+
+### Key Files
+
+| File | Purpose |
+|------|---------|
+| `internal/executor/worktree.go` | `WorktreeManager`, `CreateWorktreeWithBranch()` |
+| `internal/executor/runner.go` | `executeWithOptions()`, `Execute()` integration |
+| `internal/executor/epic.go` | `ExecuteSubIssues()` with `executionPath` param |
+| `internal/executor/epic_worktree_integration_test.go` | Integration tests |
+
+### Concurrent Epic Execution
+
+Multiple epics can run concurrently with worktree isolation:
+- Each epic gets unique worktree path (`/tmp/pilot-worktree-<task>-<timestamp>`)
+- `WorktreeManager.ActiveCount()` tracks active worktrees
+- Thread-safe via mutex in worktree manager
+
 ## Key Integration Points
 
 ### Claude Code Integration
