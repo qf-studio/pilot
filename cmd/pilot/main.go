@@ -480,6 +480,16 @@ Examples:
 					defer gwTeamCleanup()
 				}
 
+				// GH-962: Clean up orphaned worktree directories from previous crashed executions
+				if cfg.Executor != nil && cfg.Executor.UseWorktree {
+					if err := executor.CleanupOrphanedWorktrees(context.Background(), projectPath); err != nil {
+						// Log the cleanup but don't fail startup - this is best-effort cleanup
+						logging.WithComponent("start").Info("worktree cleanup completed", slog.String("result", err.Error()))
+					} else {
+						logging.WithComponent("start").Debug("worktree cleanup scan completed, no orphans found")
+					}
+				}
+
 				// Create memory store for dispatcher
 				var storeErr error
 				gwStore, storeErr = memory.NewStore(cfg.Memory.Path)
@@ -1237,6 +1247,16 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 	// Set up team project access checker if configured (GH-635)
 	if teamCleanup := wireProjectAccessChecker(runner, cfg); teamCleanup != nil {
 		defer teamCleanup()
+	}
+
+	// GH-962: Clean up orphaned worktree directories from previous crashed executions
+	if cfg.Executor != nil && cfg.Executor.UseWorktree {
+		if err := executor.CleanupOrphanedWorktrees(ctx, projectPath); err != nil {
+			// Log the cleanup but don't fail startup - this is best-effort cleanup
+			logging.WithComponent("start").Info("worktree cleanup completed", slog.String("result", err.Error()))
+		} else {
+			logging.WithComponent("start").Debug("worktree cleanup scan completed, no orphans found")
+		}
 	}
 
 	// Create approval manager
@@ -3824,6 +3844,14 @@ Examples:
 				return fmt.Errorf("failed to create executor runner: %w", runnerErr)
 			}
 
+			// GH-962: Clean up orphaned worktree directories from previous crashed executions
+			if cfg.Executor != nil && cfg.Executor.UseWorktree {
+				if err := executor.CleanupOrphanedWorktrees(ctx, projectPath); err != nil {
+					// Log the cleanup but don't fail startup - this is best-effort cleanup
+					fmt.Printf("   Worktree:  ✓ cleanup completed (%s)\n", err.Error())
+				}
+			}
+
 			// Quality gates (GH-207)
 			if cfg.Quality != nil && cfg.Quality.Enabled {
 				runner.SetQualityCheckerFactory(func(taskID, projectPath string) executor.QualityChecker {
@@ -4254,6 +4282,13 @@ Examples:
 			runner, runnerErr := executor.NewRunnerWithConfig(cfg.Executor)
 			if runnerErr != nil {
 				return fmt.Errorf("failed to create executor runner: %w", runnerErr)
+			}
+
+			// GH-962: Clean up orphaned worktree directories from previous crashed executions
+			if cfg.Executor != nil && cfg.Executor.UseWorktree {
+				if err := executor.CleanupOrphanedWorktrees(ctx, projectPath); err != nil {
+					fmt.Printf("🧹 Worktree cleanup completed (%s)\n", err.Error())
+				}
 			}
 
 			// Team project access checker (GH-635)

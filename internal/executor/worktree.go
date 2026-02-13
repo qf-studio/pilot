@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -380,5 +381,99 @@ func EnsureNavigatorInWorktree(sourceRepo, worktreePath string) error {
 
 	// No .agent/ exists - will be initialized by runner.maybeInitNavigator()
 	// Return nil here to let the normal init flow handle it
+	return nil
+}
+
+// CleanupOrphanedWorktrees scans for orphaned pilot worktree directories and removes them.
+// This handles cases where Pilot crashed before proper cleanup, leaving stale worktrees.
+//
+// GH-962: During normal operation, worktrees are cleaned up by deferred functions.
+// However, if Pilot crashes mid-execution, the worktrees remain as orphans in /tmp/.
+// This function provides startup cleanup to remove these stale directories.
+//
+// Strategy:
+// 1. Scan /tmp/ for directories matching "pilot-worktree-*" pattern
+// 2. Check if each directory is a valid git worktree
+// 3. Use `git worktree prune` to remove stale references
+// 4. Remove orphaned directories from filesystem
+//
+// This function is safe to call at startup and will not affect active worktrees
+// managed by running Pilot instances (they maintain their tracking maps).
+func CleanupOrphanedWorktrees(ctx context.Context, repoPath string) error {
+	tmpDir := os.TempDir()
+	entries, err := os.ReadDir(tmpDir)
+	if err != nil {
+		return fmt.Errorf("failed to read temp directory %s: %w", tmpDir, err)
+	}
+
+	orphanCount := 0
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+
+		// Check if this looks like a pilot worktree
+		name := entry.Name()
+		if !strings.HasPrefix(name, "pilot-worktree-") {
+			continue
+		}
+
+		worktreePath := filepath.Join(tmpDir, name)
+
+		// Check if this is still a valid worktree by checking if .git file exists
+		gitFile := filepath.Join(worktreePath, ".git")
+		if _, err := os.Stat(gitFile); err != nil {
+			// .git file doesn't exist - this is an orphaned directory
+			// Remove it directly
+			if removeErr := os.RemoveAll(worktreePath); removeErr == nil {
+				orphanCount++
+			}
+			continue
+		}
+
+		// Directory has .git file - check if it's actually connected to our repo
+		// Read the .git file to see if it points to our repository
+		gitContent, err := os.ReadFile(gitFile)
+		if err != nil {
+			continue
+		}
+
+		// .git file contains: "gitdir: /path/to/repo/.git/worktrees/name"
+		gitdirLine := strings.TrimSpace(string(gitContent))
+		if !strings.HasPrefix(gitdirLine, "gitdir: ") {
+			continue
+		}
+
+		gitdir := strings.TrimPrefix(gitdirLine, "gitdir: ")
+
+		// Check if the gitdir points to our repository's worktree area
+		expectedPrefix := filepath.Join(repoPath, ".git", "worktrees")
+		if !strings.HasPrefix(gitdir, expectedPrefix) {
+			continue
+		}
+
+		// This is a worktree for our repository but may be stale
+		// Check if the worktree directory referenced in .git still exists
+		if _, err := os.Stat(gitdir); err != nil {
+			// Gitdir doesn't exist - this worktree is orphaned
+			if removeErr := os.RemoveAll(worktreePath); removeErr == nil {
+				orphanCount++
+			}
+		}
+	}
+
+	// Run git worktree prune to clean up any stale references in .git/worktrees/
+	// This removes references to worktrees that no longer exist on disk
+	if repoPath != "" {
+		pruneCmd := exec.CommandContext(ctx, "git", "worktree", "prune", "-v")
+		pruneCmd.Dir = repoPath
+		// Ignore errors - prune is best-effort cleanup
+		_ = pruneCmd.Run()
+	}
+
+	if orphanCount > 0 {
+		return fmt.Errorf("cleaned up %d orphaned pilot worktree directories", orphanCount)
+	}
+
 	return nil
 }

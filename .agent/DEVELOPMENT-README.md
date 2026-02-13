@@ -113,7 +113,7 @@ Disable via config: `executor.navigator.auto_init: false`
 
 ## Current State
 
-**Current Version:** v0.55.0 | **125 features working** | **0 unwired**
+**Current Version:** v0.56.0 | **125 features working** | **0 unwired**
 
 **Full implementation status:** `.agent/system/FEATURE-MATRIX.md`
 
@@ -160,8 +160,8 @@ Disable via config: `executor.navigator.auto_init: false`
 | Acceptance Criteria | Done | Extract and include in prompts (v0.51.0) |
 | Worktree Isolation | Done | Execute in git worktree, allows uncommitted changes (v0.53.2) |
 | Multi-Repo Polling | Done | Poll issues from all projects with GitHub config (v0.54.0) |
-| Signal Parser v2 | Done | JSON pilot-signal blocks with validation (v0.55.0) |
-| Stagnation Monitor | Done | State hash tracking, escalation: warn → pause → abort (v0.55.0) |
+| Signal Parser v2 | Done | JSON pilot-signal blocks with validation (v0.56.0) |
+| Stagnation Monitor | Done | State hash tracking, escalation: warn → pause → abort (v0.56.0) |
 
 ### Telegram Interaction Modes (v0.6.0)
 

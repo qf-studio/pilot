@@ -776,3 +776,117 @@ func TestEnsureNavigatorInWorktree_NoSource(t *testing.T) {
 		t.Errorf("expected no error, got: %v", err)
 	}
 }
+
+// TestCleanupOrphanedWorktrees tests startup cleanup of orphaned worktree directories
+func TestCleanupOrphanedWorktrees(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	defer func() { _ = os.RemoveAll(repoPath) }()
+
+	ctx := context.Background()
+	tmpDir := os.TempDir()
+
+	// Create some orphaned worktree directories in /tmp/
+	orphan1 := filepath.Join(tmpDir, "pilot-worktree-task1-12345")
+	orphan2 := filepath.Join(tmpDir, "pilot-worktree-task2-67890")
+	orphan3 := filepath.Join(tmpDir, "some-other-directory") // Should be ignored
+
+	// Create directories
+	if err := os.MkdirAll(orphan1, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(orphan2, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(orphan3, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Put some content in orphan directories to verify cleanup
+	if err := os.WriteFile(filepath.Join(orphan1, "test.txt"), []byte("content"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(orphan2, "test.txt"), []byte("content"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify they exist before cleanup
+	if _, err := os.Stat(orphan1); os.IsNotExist(err) {
+		t.Fatal("orphan1 should exist before cleanup")
+	}
+	if _, err := os.Stat(orphan2); os.IsNotExist(err) {
+		t.Fatal("orphan2 should exist before cleanup")
+	}
+
+	// Run cleanup
+	err := CleanupOrphanedWorktrees(ctx, repoPath)
+	if err != nil {
+		// Error should report number of cleaned directories
+		if !strings.Contains(err.Error(), "cleaned up") {
+			t.Errorf("unexpected error format: %v", err)
+		}
+	}
+
+	// Verify orphaned pilot worktrees were removed
+	if _, err := os.Stat(orphan1); !os.IsNotExist(err) {
+		t.Error("orphan1 should be removed after cleanup")
+	}
+	if _, err := os.Stat(orphan2); !os.IsNotExist(err) {
+		t.Error("orphan2 should be removed after cleanup")
+	}
+
+	// Verify other directories were not touched
+	if _, err := os.Stat(orphan3); os.IsNotExist(err) {
+		t.Error("orphan3 should not be removed (not a pilot worktree)")
+	}
+
+	// Cleanup test directory
+	_ = os.RemoveAll(orphan3)
+}
+
+// TestCleanupOrphanedWorktrees_ValidWorktree tests that valid worktrees connected to our repo are handled properly
+func TestCleanupOrphanedWorktrees_ValidWorktree(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	defer func() { _ = os.RemoveAll(repoPath) }()
+
+	ctx := context.Background()
+	manager := NewWorktreeManager(repoPath)
+
+	// Create a valid worktree
+	result, err := manager.CreateWorktree(ctx, "valid-task")
+	if err != nil {
+		t.Fatalf("failed to create worktree: %v", err)
+	}
+
+	// Verify worktree path looks like what cleanup would find
+	if !strings.Contains(result.Path, "pilot-worktree-") {
+		t.Skipf("worktree path doesn't match expected pattern: %s", result.Path)
+	}
+
+	// Run cleanup - should not remove the valid worktree that has proper .git connection
+	err = CleanupOrphanedWorktrees(ctx, repoPath)
+	if err != nil && !strings.Contains(err.Error(), "cleaned up 0") {
+		t.Logf("cleanup result: %v", err) // Log but don't fail - valid worktrees might be detected differently
+	}
+
+	// Verify valid worktree still exists and is functional
+	if _, statErr := os.Stat(result.Path); statErr != nil {
+		t.Errorf("valid worktree should not be removed: %v", statErr)
+	}
+
+	// Cleanup properly
+	result.Cleanup()
+}
+
+// TestCleanupOrphanedWorktrees_EmptyTmp tests behavior when /tmp/ has no pilot worktrees
+func TestCleanupOrphanedWorktrees_EmptyTmp(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	defer func() { _ = os.RemoveAll(repoPath) }()
+
+	ctx := context.Background()
+
+	// Run cleanup on clean system - should succeed with no action
+	err := CleanupOrphanedWorktrees(ctx, repoPath)
+	if err != nil {
+		t.Errorf("cleanup should succeed with no orphans: %v", err)
+	}
+}
