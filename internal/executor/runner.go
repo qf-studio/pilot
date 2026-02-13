@@ -295,6 +295,16 @@ func NewRunnerWithBackend(backend Backend) *Runner {
 
 // NewRunnerWithConfig creates a Runner from backend configuration.
 func NewRunnerWithConfig(config *BackendConfig) (*Runner, error) {
+	// Ensure we have a valid config (GH-956: nil config breaks worktree)
+	if config == nil {
+		slog.Warn("NewRunnerWithConfig called with nil config, using defaults")
+		config = DefaultBackendConfig()
+	} else {
+		slog.Info("NewRunnerWithConfig",
+			slog.Bool("use_worktree", config.UseWorktree),
+			slog.String("type", config.Type),
+		)
+	}
 	backend, err := NewBackend(config)
 	if err != nil {
 		return nil, err
