@@ -169,6 +169,10 @@ func (m *WorktreeManager) CreateWorktreeWithBranch(ctx context.Context, taskID, 
 		baseRef = baseBranch
 	}
 
+	// GH-963: Clean up any stale worktree for this branch before creating.
+	// This handles retries where previous cleanup failed to fully remove the worktree reference.
+	m.cleanupStaleWorktreeForBranch(ctx, branchName)
+
 	// Check if branch already exists
 	checkCmd := exec.CommandContext(ctx, "git", "rev-parse", "--verify", branchName)
 	checkCmd.Dir = m.repoPath
@@ -219,6 +223,66 @@ func (m *WorktreeManager) cleanupWorktreeAndBranch(taskID, worktreePath, branchN
 	// Use -D to force delete even if not merged
 	deleteCmd := exec.Command("git", "-C", m.repoPath, "branch", "-D", branchName)
 	_ = deleteCmd.Run() // Ignore error - branch may have been pushed and deleted elsewhere
+}
+
+// cleanupStaleWorktreeForBranch removes any stale worktree reference for the given branch.
+// GH-963: When a task fails and Pilot retries, the worktree cleanup may have failed to fully
+// remove the reference in .git/worktrees/. This leaves git thinking the branch is still in use
+// by another worktree, causing "is already used by worktree" errors on retry.
+//
+// This function is best-effort: errors are ignored since we're just trying to clean up
+// stale state before creating a new worktree.
+func (m *WorktreeManager) cleanupStaleWorktreeForBranch(ctx context.Context, branchName string) {
+	// Get list of all worktrees in porcelain format
+	listCmd := exec.CommandContext(ctx, "git", "worktree", "list", "--porcelain")
+	listCmd.Dir = m.repoPath
+	output, err := listCmd.Output()
+	if err != nil {
+		return // Ignore - best effort cleanup
+	}
+
+	// Parse output to find worktree using this branch
+	// Porcelain format:
+	//   worktree /path/to/worktree
+	//   HEAD abc123def456...
+	//   branch refs/heads/pilot/GH-963
+	//   <blank line>
+	//   worktree /path/to/another
+	//   ...
+	lines := strings.Split(string(output), "\n")
+	var staleWorktreePath string
+	targetBranch := "branch refs/heads/" + branchName
+
+	for i, line := range lines {
+		if strings.TrimSpace(line) == targetBranch {
+			// Found the branch - now find the worktree path (should be a few lines before)
+			for j := i - 1; j >= 0; j-- {
+				if strings.HasPrefix(lines[j], "worktree ") {
+					staleWorktreePath = strings.TrimPrefix(lines[j], "worktree ")
+					break
+				}
+			}
+			break
+		}
+	}
+
+	if staleWorktreePath == "" || staleWorktreePath == m.repoPath {
+		// No stale worktree found, or it's the main repo (don't remove that!)
+		return
+	}
+
+	// Found a stale worktree - remove it
+	removeCmd := exec.CommandContext(ctx, "git", "worktree", "remove", "--force", staleWorktreePath)
+	removeCmd.Dir = m.repoPath
+	_ = removeCmd.Run() // Ignore error - may already be partially removed
+
+	// Belt and suspenders: also remove the directory if it still exists
+	_ = os.RemoveAll(staleWorktreePath)
+
+	// Prune to clean up any remaining references in .git/worktrees/
+	pruneCmd := exec.CommandContext(ctx, "git", "worktree", "prune")
+	pruneCmd.Dir = m.repoPath
+	_ = pruneCmd.Run()
 }
 
 // VerifyRemoteAccess checks that the worktree can access the remote.

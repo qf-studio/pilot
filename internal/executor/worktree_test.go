@@ -890,3 +890,97 @@ func TestCleanupOrphanedWorktrees_EmptyTmp(t *testing.T) {
 		t.Errorf("cleanup should succeed with no orphans: %v", err)
 	}
 }
+
+// TestCreateWorktreeWithBranch_StaleWorktreeCleanup tests GH-963 fix:
+// when a previous worktree cleanup failed, retry should succeed by cleaning stale refs.
+func TestCreateWorktreeWithBranch_StaleWorktreeCleanup(t *testing.T) {
+	localRepo, remoteRepo := setupTestRepoWithRemote(t)
+	defer func() { _ = os.RemoveAll(localRepo) }()
+	defer func() { _ = os.RemoveAll(remoteRepo) }()
+
+	ctx := context.Background()
+	manager := NewWorktreeManager(localRepo)
+
+	branchName := "pilot/GH-963-test"
+
+	// Step 1: Create a worktree normally
+	result1, err := manager.CreateWorktreeWithBranch(ctx, "GH-963-first", branchName, "main")
+	if err != nil {
+		t.Fatalf("first CreateWorktreeWithBranch failed: %v", err)
+	}
+
+	// Step 2: Simulate crash - remove directory but leave git worktree reference
+	// This simulates what happens when cleanup fails to fully remove the worktree
+	worktreePath := result1.Path
+	_ = os.RemoveAll(worktreePath) // Remove the directory
+
+	// Don't call result1.Cleanup() - we're simulating a crash where cleanup wasn't called
+
+	// Step 3: Try to create another worktree with the same branch name
+	// Without GH-963 fix, this would fail with "is already used by worktree"
+	result2, err := manager.CreateWorktreeWithBranch(ctx, "GH-963-retry", branchName, "main")
+	if err != nil {
+		t.Fatalf("retry CreateWorktreeWithBranch failed (GH-963 not fixed): %v", err)
+	}
+	defer result2.Cleanup()
+
+	// Verify the new worktree was created successfully
+	if _, err := os.Stat(result2.Path); os.IsNotExist(err) {
+		t.Error("retry worktree directory was not created")
+	}
+
+	// Verify we're on the correct branch
+	branchCmd := exec.Command("git", "-C", result2.Path, "branch", "--show-current")
+	output, err := branchCmd.Output()
+	if err != nil {
+		t.Fatalf("failed to get current branch: %v", err)
+	}
+	currentBranch := strings.TrimSpace(string(output))
+	if currentBranch != branchName {
+		t.Errorf("expected branch %q, got %q", branchName, currentBranch)
+	}
+}
+
+// TestCreateWorktreeWithBranch_ExistingBranchStaleWorktree tests GH-963 fix
+// when branch exists but is associated with a stale worktree.
+func TestCreateWorktreeWithBranch_ExistingBranchStaleWorktree(t *testing.T) {
+	localRepo, remoteRepo := setupTestRepoWithRemote(t)
+	defer func() { _ = os.RemoveAll(localRepo) }()
+	defer func() { _ = os.RemoveAll(remoteRepo) }()
+
+	ctx := context.Background()
+	manager := NewWorktreeManager(localRepo)
+
+	branchName := "pilot/GH-963-existing"
+
+	// Step 1: Create worktree with branch
+	result1, err := manager.CreateWorktreeWithBranch(ctx, "GH-963-orig", branchName, "main")
+	if err != nil {
+		t.Fatalf("first CreateWorktreeWithBranch failed: %v", err)
+	}
+
+	// Step 2: Make a commit so the branch has work
+	testFile := filepath.Join(result1.Path, "test.txt")
+	if err := os.WriteFile(testFile, []byte("work in progress"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	_ = exec.Command("git", "-C", result1.Path, "add", ".").Run()
+	_ = exec.Command("git", "-C", result1.Path, "commit", "-m", "test").Run()
+
+	// Step 3: Simulate crash - only remove directory, leave branch and worktree ref
+	_ = os.RemoveAll(result1.Path)
+
+	// Step 4: Retry should clean up stale worktree and reuse existing branch
+	result2, err := manager.CreateWorktreeWithBranch(ctx, "GH-963-retry", branchName, "main")
+	if err != nil {
+		t.Fatalf("retry with existing branch failed (GH-963): %v", err)
+	}
+	defer result2.Cleanup()
+
+	// Verify on correct branch
+	branchCmd := exec.Command("git", "-C", result2.Path, "branch", "--show-current")
+	output, _ := branchCmd.Output()
+	if strings.TrimSpace(string(output)) != branchName {
+		t.Errorf("expected branch %q, got %q", branchName, string(output))
+	}
+}
