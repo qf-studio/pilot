@@ -113,7 +113,7 @@ Disable via config: `executor.navigator.auto_init: false`
 
 ## Current State
 
-**Current Version:** v0.61.0 | **132 features working** | **5 unwired (Nav port scaffolding, GH-1026)**
+**Current Version:** v0.63.0 | **133 features working** | **5 unwired (Nav port scaffolding, GH-1026)**
 
 **Full implementation status:** `.agent/system/FEATURE-MATRIX.md`
 
@@ -245,6 +245,16 @@ Goal: Raise autonomous reliability from 3/10 to 8/10. **Achieved: 8/10**
 ---
 
 ## Completed Log
+
+### 2026-02-13
+
+| Item | What |
+|------|------|
+| **v0.63.0** | Fix monotonic progress — dashboard no longer jumps backwards (90%→85%→95%) |
+| **v0.61.0** | Pricing fix ($5/$25 not $15/$75), LLM effort classifier, knowledge store, drift detection, simplify.go, workflow enforcement |
+| **v0.60.0** | Preflight skip `git_clean` when worktree enabled (GH-1002) |
+| Nav port | TASK-01 scaffolding complete (8/8 files), wiring pending (GH-1026) |
+| Cleanup | Closed 4 stuck `pilot-failed` issues, resolved serial conflict cascade |
 
 ### 2026-02-12
 
