@@ -1267,7 +1267,7 @@ func (m Model) renderTask(task TaskDisplay, selected bool, queueOffset int) stri
 	case "done":
 		icon = "✓"
 		stateLabel = "done"
-		meta = " done"
+		meta = extractPRNumber(task.PRURL)
 		iconStyle = statusDoneStyle
 		barStyle = progressBarDoneStyle
 	case "running":
@@ -1279,18 +1279,18 @@ func (m Model) renderTask(task TaskDisplay, selected bool, queueOffset int) stri
 	case "queued":
 		icon = "◌"
 		stateLabel = "queued"
-		meta = "queue"
+		meta = fmt.Sprintf("  #%d", queueOffset+1)
 		iconStyle = statusQueuedStyle
 	case "failed":
 		icon = "✗"
 		stateLabel = "failed"
-		meta = " fail"
+		meta = truncateVisual(task.Phase, 5)
 		iconStyle = statusFailedStyle
 		barStyle = progressBarFailedStyle
 	default: // pending
 		icon = "·"
 		stateLabel = "pending"
-		meta = " wait"
+		meta = ""
 		iconStyle = statusPendingStyle
 	}
 
@@ -1407,6 +1407,21 @@ func (m Model) renderShimmerBar(width, offset int) string {
 	}
 	result.WriteString("]")
 	return result.String()
+}
+
+// extractPRNumber extracts "#1234" from a GitHub PR URL like "https://github.com/owner/repo/pull/1234".
+// Returns empty string if URL is empty or doesn't match.
+func extractPRNumber(prURL string) string {
+	if prURL == "" {
+		return ""
+	}
+	// Find last "/" and extract number after it
+	idx := strings.LastIndex(prURL, "/")
+	if idx >= 0 && idx < len(prURL)-1 {
+		num := prURL[idx+1:]
+		return fmt.Sprintf("#%s", num)
+	}
+	return ""
 }
 
 // historyGroup represents a top-level entry in the HISTORY panel.
