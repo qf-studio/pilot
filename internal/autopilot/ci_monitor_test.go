@@ -837,7 +837,7 @@ func TestCIMonitor_AutoDiscovery_WithExclusions(t *testing.T) {
 			CheckRuns: []github.CheckRun{
 				{Name: "build", Status: github.CheckRunCompleted, Conclusion: github.ConclusionSuccess},
 				{Name: "test", Status: github.CheckRunCompleted, Conclusion: github.ConclusionSuccess},
-				{Name: "codecov/patch", Status: github.CheckRunCompleted, Conclusion: github.ConclusionFailure}, // Should be excluded
+				{Name: "codecov/patch", Status: github.CheckRunCompleted, Conclusion: github.ConclusionFailure},     // Should be excluded
 				{Name: "coverage-optional", Status: github.CheckRunCompleted, Conclusion: github.ConclusionFailure}, // Should be excluded
 			},
 		}
@@ -881,9 +881,9 @@ func TestCIMonitor_matchesExclude_GlobPatterns(t *testing.T) {
 	cfg.CIChecks = &CIChecksConfig{
 		Mode: "auto",
 		Exclude: []string{
-			"codecov/*",      // Glob pattern
-			"*-optional",     // Glob pattern
-			"skip-me",        // Exact match
+			"codecov/*",       // Glob pattern
+			"*-optional",      // Glob pattern
+			"skip-me",         // Exact match
 			"prefix-*-suffix", // Complex glob
 		},
 	}
@@ -891,15 +891,15 @@ func TestCIMonitor_matchesExclude_GlobPatterns(t *testing.T) {
 	monitor := NewCIMonitor(ghClient, "owner", "repo", cfg)
 
 	tests := []struct {
-		name    string
-		want    bool
+		name string
+		want bool
 	}{
 		{"codecov/patch", true},
 		{"codecov/project", true},
-		{"codecov", false},        // No glob match
+		{"codecov", false}, // No glob match
 		{"test-optional", true},
-		{"optional", false},       // Doesn't match *-optional
-		{"skip-me", true},         // Exact match
+		{"optional", false}, // Doesn't match *-optional
+		{"skip-me", true},   // Exact match
 		{"skip-me-too", false},
 		{"prefix-x-suffix", true},
 		{"prefix--suffix", true},

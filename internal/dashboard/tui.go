@@ -39,9 +39,9 @@ type MetricsCardData struct {
 	TotalTokens, InputTokens, OutputTokens int
 	TotalCostUSD, CostPerTask              float64
 	TotalTasks, Succeeded, Failed          int
-	TokenHistory []int64   // 7 days
-	CostHistory  []float64 // 7 days
-	TaskHistory  []int     // 7 days
+	TokenHistory                           []int64   // 7 days
+	CostHistory                            []float64 // 7 days
+	TaskHistory                            []int     // 7 days
 }
 
 // Styles (muted terminal aesthetic)
@@ -69,7 +69,7 @@ var (
 				Foreground(lipgloss.Color("#8b949e")) // mid gray
 
 	statusDoneStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#7ec699")) // sage green (same as completed)
+			Foreground(lipgloss.Color("#7ec699")) // sage green (same as completed)
 
 	progressBarStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("#7eb8da")) // steel blue
@@ -84,10 +84,10 @@ var (
 				Foreground(lipgloss.Color("#d48a8a")) // dusty rose for failed bars
 
 	shimmerDimStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#3d4450")) // slate
+			Foreground(lipgloss.Color("#3d4450")) // slate
 
 	shimmerMidStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("#6e7681")) // between slate and mid gray
+			Foreground(lipgloss.Color("#6e7681")) // between slate and mid gray
 
 	shimmerBrightStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("#8b949e")) // mid gray
@@ -1258,7 +1258,8 @@ func (m Model) renderTasks() string {
 // renderTask renders a single task row with state-aware icons, bars, and meta.
 //
 // Layout (65 inner chars):
-//   sel(2) + icon+state(8) + space(1) + id(7) + space(1) + title(20) + gap(2) + bar(16) + gap(1) + meta(5)
+//
+//	sel(2) + icon+state(8) + space(1) + id(7) + space(1) + title(20) + gap(2) + bar(16) + gap(1) + meta(5)
 func (m Model) renderTask(task TaskDisplay, selected bool, queueOffset int) string {
 	var icon, stateLabel, meta string
 	var iconStyle, barStyle lipgloss.Style

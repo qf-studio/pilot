@@ -2246,11 +2246,11 @@ func TestService_ResolveGitHubIdentity(t *testing.T) {
 	}
 
 	tests := []struct {
-		name     string
-		ghUser   string
-		email    string
-		wantID   string
-		wantErr  bool
+		name    string
+		ghUser  string
+		email   string
+		wantID  string
+		wantErr bool
 	}{
 		{
 			name:   "resolve by GitHub username",

@@ -74,14 +74,14 @@ type Handler struct {
 
 // HandlerConfig holds configuration for the Telegram handler
 type HandlerConfig struct {
-	BotToken      string
-	ProjectPath   string                // Default/fallback project path
-	Projects      ProjectSource         // Project source for multi-project support
-	AllowedIDs    []int64               // User/chat IDs allowed to send tasks
-	Transcription *transcription.Config // Voice transcription config (optional)
-	Store         *memory.Store         // Memory store for history/queue/budget (optional)
-	PlainTextMode bool                  // Use plain text instead of Markdown (default: true)
-	RateLimit     *RateLimitConfig      // Rate limiting config (optional)
+	BotToken       string
+	ProjectPath    string                // Default/fallback project path
+	Projects       ProjectSource         // Project source for multi-project support
+	AllowedIDs     []int64               // User/chat IDs allowed to send tasks
+	Transcription  *transcription.Config // Voice transcription config (optional)
+	Store          *memory.Store         // Memory store for history/queue/budget (optional)
+	PlainTextMode  bool                  // Use plain text instead of Markdown (default: true)
+	RateLimit      *RateLimitConfig      // Rate limiting config (optional)
 	LLMClassifier  *LLMClassifierConfig  // LLM intent classification config (optional)
 	MemberResolver MemberResolver        // Team member resolver for RBAC (optional, GH-634)
 }
@@ -111,15 +111,15 @@ func NewHandler(config *HandlerConfig, runner *executor.Runner) *Handler {
 	}
 
 	h := &Handler{
-		client:        NewClient(config.BotToken),
-		runner:        runner,
-		projects:      config.Projects,
-		projectPath:   projectPath,
-		activeProject: make(map[string]string),
-		allowedIDs:    allowedIDs,
-		pendingTasks:  make(map[string]*PendingTask),
-		runningTasks:  make(map[string]*RunningTask),
-		stopCh:        make(chan struct{}),
+		client:         NewClient(config.BotToken),
+		runner:         runner,
+		projects:       config.Projects,
+		projectPath:    projectPath,
+		activeProject:  make(map[string]string),
+		allowedIDs:     allowedIDs,
+		pendingTasks:   make(map[string]*PendingTask),
+		runningTasks:   make(map[string]*RunningTask),
+		stopCh:         make(chan struct{}),
 		store:          config.Store,
 		plainTextMode:  config.PlainTextMode,
 		rateLimiter:    rateLimiter,

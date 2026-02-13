@@ -283,7 +283,7 @@ func TestMemory_RepeatedStartStop(t *testing.T) {
 	}
 
 	const (
-		numCycles     = 10
+		numCycles      = 10
 		issuesPerCycle = 10
 	)
 

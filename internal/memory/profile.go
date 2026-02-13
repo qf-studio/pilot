@@ -17,8 +17,8 @@ type UserProfile struct {
 	Verbosity string `json:"verbosity,omitempty"` // "concise" or "detailed"
 
 	// Code preferences
-	Frameworks   []string          `json:"frameworks,omitempty"`   // e.g., ["gin", "gorm"]
-	Conventions  map[string]string `json:"conventions,omitempty"`  // e.g., {"indent": "tabs"}
+	Frameworks   []string          `json:"frameworks,omitempty"`    // e.g., ["gin", "gorm"]
+	Conventions  map[string]string `json:"conventions,omitempty"`   // e.g., {"indent": "tabs"}
 	CodePatterns []string          `json:"code_patterns,omitempty"` // e.g., ["early_returns"]
 
 	// Corrections learned from user feedback

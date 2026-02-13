@@ -247,7 +247,6 @@ func finalizeSubtask(subtask *PlannedSubtask, lines []string) {
 // Matches patterns like: https://github.com/owner/repo/issues/123
 var issueNumberRegex = regexp.MustCompile(`/issues/(\d+)`)
 
-
 // parseIssueNumber extracts the issue number from a GitHub issue URL.
 // Returns 0 if no issue number is found.
 func parseIssueNumber(url string) int {
@@ -279,6 +278,7 @@ func parsePRNumberFromURL(url string) int {
 	}
 	return n
 }
+
 // CreateSubIssues creates GitHub issues from the planned subtasks.
 // Returns a slice of CreatedIssue with the issue numbers and URLs.
 // executionPath may differ from task.ProjectPath when using worktree isolation (GH-968).

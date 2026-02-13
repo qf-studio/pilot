@@ -7,12 +7,12 @@ import (
 
 func TestParseEnvelope(t *testing.T) {
 	tests := []struct {
-		name         string
-		input        string
-		wantID       string
-		wantEvent    *SocketEvent
-		wantErr      bool
-		errContains  string
+		name        string
+		input       string
+		wantID      string
+		wantEvent   *SocketEvent
+		wantErr     bool
+		errContains string
 	}{
 		{
 			name: "message event",
@@ -389,10 +389,10 @@ func TestSocketEventIsBotMessage(t *testing.T) {
 
 func TestSocketEventIsFromBot(t *testing.T) {
 	tests := []struct {
-		name   string
-		event  SocketEvent
-		botID  string
-		want   bool
+		name  string
+		event SocketEvent
+		botID string
+		want  bool
 	}{
 		{
 			name:  "matches own bot ID",

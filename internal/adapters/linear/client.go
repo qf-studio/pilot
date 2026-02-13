@@ -311,12 +311,12 @@ func (c *Client) ListIssues(ctx context.Context, opts *ListIssuesOptions) ([]*Is
 
 // issueListItem is the raw GraphQL response for an issue (labels have nested nodes)
 type issueListItem struct {
-	ID          string    `json:"id"`
-	Identifier  string    `json:"identifier"`
-	Title       string    `json:"title"`
-	Description string    `json:"description"`
-	Priority    int       `json:"priority"`
-	State       State     `json:"state"`
+	ID          string `json:"id"`
+	Identifier  string `json:"identifier"`
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	Priority    int    `json:"priority"`
+	State       State  `json:"state"`
 	Labels      struct {
 		Nodes []Label `json:"nodes"`
 	} `json:"labels"`

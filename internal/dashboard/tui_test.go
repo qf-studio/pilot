@@ -596,10 +596,10 @@ func TestRenderHistory_ActiveEpicWithMixedStates(t *testing.T) {
 			ParentID:    "GH-491",
 		},
 		{
-			ID:          "GH-494",
-			Title:       "Update documentation",
-			Status:      "pending",
-			ParentID:    "GH-491",
+			ID:       "GH-494",
+			Title:    "Update documentation",
+			Status:   "pending",
+			ParentID: "GH-491",
 		},
 		{
 			ID:          "GH-495",

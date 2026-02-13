@@ -179,22 +179,22 @@ type PRRef struct {
 
 // PullRequest represents a GitHub pull request
 type PullRequest struct {
-	ID        int64  `json:"id,omitempty"`
-	Number    int    `json:"number,omitempty"`
-	Title     string `json:"title"`
-	Body      string `json:"body,omitempty"`
-	State     string `json:"state,omitempty"` // open, closed
-	Head      PRRef  `json:"head"`            // Head reference with branch name and SHA
-	Base      PRRef  `json:"base"`            // Base reference with branch name and SHA
-	HTMLURL   string `json:"html_url,omitempty"`
-	Draft     bool   `json:"draft,omitempty"`
+	ID             int64  `json:"id,omitempty"`
+	Number         int    `json:"number,omitempty"`
+	Title          string `json:"title"`
+	Body           string `json:"body,omitempty"`
+	State          string `json:"state,omitempty"` // open, closed
+	Head           PRRef  `json:"head"`            // Head reference with branch name and SHA
+	Base           PRRef  `json:"base"`            // Base reference with branch name and SHA
+	HTMLURL        string `json:"html_url,omitempty"`
+	Draft          bool   `json:"draft,omitempty"`
 	Merged         bool   `json:"merged,omitempty"`
 	MergeCommitSHA string `json:"merge_commit_sha,omitempty"`
 	Mergeable      *bool  `json:"mergeable,omitempty"`
 	MergeableState string `json:"mergeable_state,omitempty"` // clean, dirty, unstable, blocked, unknown
-	CreatedAt string `json:"created_at,omitempty"`
-	UpdatedAt string `json:"updated_at,omitempty"`
-	MergedAt  string `json:"merged_at,omitempty"`
+	CreatedAt      string `json:"created_at,omitempty"`
+	UpdatedAt      string `json:"updated_at,omitempty"`
+	MergedAt       string `json:"merged_at,omitempty"`
 }
 
 // PullRequestInput is used for creating pull requests

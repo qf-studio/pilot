@@ -240,30 +240,30 @@ type Runner struct {
 	mu                    sync.Mutex
 	running               map[string]*exec.Cmd
 	log                   *slog.Logger
-	recordingsPath        string                // Path to recordings directory (empty = default)
-	enableRecording       bool                  // Whether to record executions
-	alertProcessor        AlertEventProcessor   // Optional alert processor for event emission
-	webhooks              *webhooks.Manager     // Optional webhook manager for event delivery
-	qualityCheckerFactory QualityCheckerFactory // Optional factory for creating quality checkers
-	modelRouter           *ModelRouter          // Model and timeout routing based on complexity
-	parallelRunner        *ParallelRunner       // Optional parallel research runner (GH-217)
-	decomposer            *TaskDecomposer       // Optional task decomposer for complex tasks (GH-218)
-	subtaskParser         *SubtaskParser        // Haiku-based subtask parser; nil falls back to regex (GH-501)
-	suppressProgressLogs  bool                  // Suppress slog output for progress (use when visual display is active)
-	tokenLimitCheck       TokenLimitCallback    // Optional per-task token/duration limit check (GH-539)
-	onSubIssuePRCreated   SubIssuePRCallback    // Optional callback when a sub-issue PR is created (GH-596)
-	intentJudge           *IntentJudge          // Optional intent judge for diff-vs-ticket alignment (GH-624)
-	teamChecker           TeamChecker           // Optional team RBAC checker (GH-633)
+	recordingsPath        string                                                          // Path to recordings directory (empty = default)
+	enableRecording       bool                                                            // Whether to record executions
+	alertProcessor        AlertEventProcessor                                             // Optional alert processor for event emission
+	webhooks              *webhooks.Manager                                               // Optional webhook manager for event delivery
+	qualityCheckerFactory QualityCheckerFactory                                           // Optional factory for creating quality checkers
+	modelRouter           *ModelRouter                                                    // Model and timeout routing based on complexity
+	parallelRunner        *ParallelRunner                                                 // Optional parallel research runner (GH-217)
+	decomposer            *TaskDecomposer                                                 // Optional task decomposer for complex tasks (GH-218)
+	subtaskParser         *SubtaskParser                                                  // Haiku-based subtask parser; nil falls back to regex (GH-501)
+	suppressProgressLogs  bool                                                            // Suppress slog output for progress (use when visual display is active)
+	tokenLimitCheck       TokenLimitCallback                                              // Optional per-task token/duration limit check (GH-539)
+	onSubIssuePRCreated   SubIssuePRCallback                                              // Optional callback when a sub-issue PR is created (GH-596)
+	intentJudge           *IntentJudge                                                    // Optional intent judge for diff-vs-ticket alignment (GH-624)
+	teamChecker           TeamChecker                                                     // Optional team RBAC checker (GH-633)
 	executeFunc           func(ctx context.Context, task *Task) (*ExecutionResult, error) // Internal override for testing
-	skipPreflightChecks   bool                  // Skip preflight checks (for testing with mock backends)
-	retrier               *Retrier              // Optional smart retry handler (GH-920)
-	signalParser          *SignalParser         // Structured signal parser v2 for progress extraction (GH-960)
-	knowledge             *memory.KnowledgeStore  // Optional knowledge store for experiential memories (GH-994)
-	profileManager        *memory.ProfileManager  // Optional profile manager for user preferences (GH-994)
-	driftDetector         *DriftDetector          // Optional drift detector for collaboration drift (GH-997)
-	monitor               *Monitor                  // Optional monitor for state transitions (queued→running)
-	taskProgress          map[string]int            // Per-task progress high-water mark (monotonic enforcement)
-	taskProgressMu        sync.RWMutex              // Protects taskProgress
+	skipPreflightChecks   bool                                                            // Skip preflight checks (for testing with mock backends)
+	retrier               *Retrier                                                        // Optional smart retry handler (GH-920)
+	signalParser          *SignalParser                                                   // Structured signal parser v2 for progress extraction (GH-960)
+	knowledge             *memory.KnowledgeStore                                          // Optional knowledge store for experiential memories (GH-994)
+	profileManager        *memory.ProfileManager                                          // Optional profile manager for user preferences (GH-994)
+	driftDetector         *DriftDetector                                                  // Optional drift detector for collaboration drift (GH-997)
+	monitor               *Monitor                                                        // Optional monitor for state transitions (queued→running)
+	taskProgress          map[string]int                                                  // Per-task progress high-water mark (monotonic enforcement)
+	taskProgressMu        sync.RWMutex                                                    // Protects taskProgress
 }
 
 // NewRunner creates a new Runner instance with Claude Code backend by default.
@@ -585,7 +585,6 @@ func (r *Runner) RemoveTokenCallback(name string) {
 	defer r.tokenMu.Unlock()
 	delete(r.tokenCallbacks, name)
 }
-
 
 // reportTokens sends token usage updates to all registered callbacks.
 func (r *Runner) reportTokens(taskID string, inputTokens, outputTokens int64) {
@@ -1071,10 +1070,10 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 				Project:   task.ProjectPath,
 				Error:     fmt.Sprintf("subprocess killed by watchdog after %v", watchdogDuration),
 				Metadata: map[string]string{
-					"pid":               fmt.Sprintf("%d", pid),
-					"watchdog_timeout":  watchdogDuration.String(),
+					"pid":                fmt.Sprintf("%d", pid),
+					"watchdog_timeout":   watchdogDuration.String(),
 					"configured_timeout": timeout.String(),
-					"complexity":        complexity.String(),
+					"complexity":         complexity.String(),
 				},
 				Timestamp: time.Now(),
 			})

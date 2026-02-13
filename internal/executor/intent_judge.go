@@ -52,10 +52,10 @@ func newIntentJudgeWithURL(apiKey, url string) *IntentJudge {
 }
 
 var (
-	verdictPassRegex      = regexp.MustCompile(`VERDICT:\s*PASS`)
-	verdictFailRegex      = regexp.MustCompile(`VERDICT:\s*FAIL`)
-	confidenceRegex       = regexp.MustCompile(`CONFIDENCE:\s*([0-9]*\.?[0-9]+)`)
-	maxDiffCharsDefault   = 8000
+	verdictPassRegex    = regexp.MustCompile(`VERDICT:\s*PASS`)
+	verdictFailRegex    = regexp.MustCompile(`VERDICT:\s*FAIL`)
+	confidenceRegex     = regexp.MustCompile(`CONFIDENCE:\s*([0-9]*\.?[0-9]+)`)
+	maxDiffCharsDefault = 8000
 )
 
 const intentJudgeSystemPrompt = `You are a code review judge. Compare the git diff against the original issue title and description. Determine if the diff implements what was requested.

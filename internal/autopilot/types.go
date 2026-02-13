@@ -118,12 +118,12 @@ func DefaultConfig() *Config {
 		GitHubReview: &GitHubReviewConfig{
 			PollInterval: 30 * time.Second,
 		},
-		AutoReview:         true,
-		AutoMerge:          true,
-		MergeMethod:        "squash",
-		CIWaitTimeout:      30 * time.Minute,
-		DevCITimeout:       5 * time.Minute,
-		CIPollInterval:     30 * time.Second,
+		AutoReview:     true,
+		AutoMerge:      true,
+		MergeMethod:    "squash",
+		CIWaitTimeout:  30 * time.Minute,
+		DevCITimeout:   5 * time.Minute,
+		CIPollInterval: 30 * time.Second,
 		RequiredChecks: nil, // Deprecated, use CIChecks
 		CIChecks: &CIChecksConfig{
 			Mode:                 "auto",

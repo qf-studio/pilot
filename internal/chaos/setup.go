@@ -16,9 +16,9 @@ import (
 
 // Common errors for chaos testing
 var (
-	ErrInjectedFault    = errors.New("injected fault")
-	ErrInjectedTimeout  = errors.New("injected timeout")
-	ErrInjected500      = errors.New("injected server error")
+	ErrInjectedFault     = errors.New("injected fault")
+	ErrInjectedTimeout   = errors.New("injected timeout")
+	ErrInjected500       = errors.New("injected server error")
 	ErrInjectedRateLimit = errors.New("injected rate limit")
 )
 
@@ -71,12 +71,12 @@ func DefaultFaultConfig() *FaultConfig {
 
 // FaultInjector manages fault injection state
 type FaultInjector struct {
-	config     *FaultConfig
-	mu         sync.RWMutex
-	callCount  atomic.Int64
-	failCount  atomic.Int64
-	enabled    atomic.Bool
-	rng        *rand.Rand
+	config    *FaultConfig
+	mu        sync.RWMutex
+	callCount atomic.Int64
+	failCount atomic.Int64
+	enabled   atomic.Bool
+	rng       *rand.Rand
 }
 
 // NewFaultInjector creates a new fault injector
@@ -289,13 +289,13 @@ func (s *ChaosHTTPServer) Injector() *FaultInjector {
 
 // ProcessWatchdog monitors a process and kills it if it hangs
 type ProcessWatchdog struct {
-	timeout   time.Duration
+	timeout       time.Duration
 	checkInterval time.Duration
-	onTimeout func(ctx context.Context) error
-	cancel    context.CancelFunc
-	done      chan struct{}
-	mu        sync.Mutex
-	running   bool
+	onTimeout     func(ctx context.Context) error
+	cancel        context.CancelFunc
+	done          chan struct{}
+	mu            sync.Mutex
+	running       bool
 }
 
 // NewProcessWatchdog creates a watchdog with the given timeout
@@ -368,11 +368,11 @@ func (w *ProcessWatchdog) Reset(ctx context.Context) {
 
 // SQLiteLockSimulator simulates database lock contention
 type SQLiteLockSimulator struct {
-	mu            sync.Mutex
-	lockDuration  time.Duration
-	locked        atomic.Bool
-	waiters       atomic.Int64
-	maxWaitTime   time.Duration
+	mu           sync.Mutex
+	lockDuration time.Duration
+	locked       atomic.Bool
+	waiters      atomic.Int64
+	maxWaitTime  time.Duration
 }
 
 // NewSQLiteLockSimulator creates a lock simulator

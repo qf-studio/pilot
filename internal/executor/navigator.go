@@ -252,14 +252,14 @@ func (n *NavigatorInitializer) customizeTemplate(content string, info *ProjectIn
 // createNavConfig creates the .nav-config.json file.
 func (n *NavigatorInitializer) createNavConfig(agentDir string, info *ProjectInfo) error {
 	config := map[string]interface{}{
-		"version":            "6.1.0",
-		"project_name":       info.Name,
-		"tech_stack":         info.TechStack,
-		"project_management": "github", // Pilot uses GitHub by default
-		"task_prefix":        "GH",
-		"team_chat":          "none",
+		"version":             "6.1.0",
+		"project_name":        info.Name,
+		"tech_stack":          info.TechStack,
+		"project_management":  "github", // Pilot uses GitHub by default
+		"task_prefix":         "GH",
+		"team_chat":           "none",
 		"auto_load_navigator": true,
-		"compact_strategy":   "conservative",
+		"compact_strategy":    "conservative",
 		"auto_update": map[string]interface{}{
 			"enabled":              true,
 			"check_interval_hours": 1,

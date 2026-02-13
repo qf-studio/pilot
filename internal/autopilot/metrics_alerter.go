@@ -182,10 +182,10 @@ func (ma *MetricsAlerter) evaluate() {
 			"total_active_prs":      fmt.Sprintf("%d", snap.TotalActivePRs),
 			"queue_depth":           fmt.Sprintf("%d", snap.QueueDepth),
 			// GH-849: Deadlock detection metadata
-			"no_progress_minutes":   fmt.Sprintf("%.1f", noProgressMin),
-			"deadlock_alert_sent":   fmt.Sprintf("%t", deadlockAlertSent),
-			"last_known_state":      lastKnownState,
-			"last_known_pr":         fmt.Sprintf("%d", lastKnownPR),
+			"no_progress_minutes": fmt.Sprintf("%.1f", noProgressMin),
+			"deadlock_alert_sent": fmt.Sprintf("%t", deadlockAlertSent),
+			"last_known_state":    lastKnownState,
+			"last_known_pr":       fmt.Sprintf("%d", lastKnownPR),
 		},
 		Timestamp: time.Now(),
 	}

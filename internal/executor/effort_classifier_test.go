@@ -55,8 +55,8 @@ func TestEffortClassifier_MediumEffort(t *testing.T) {
 func TestEffortClassifier_HighEffort(t *testing.T) {
 	classifier := newEffortClassifierWithRunner(mockEffortRunner("high", "Security-sensitive with multiple considerations"))
 	task := &Task{
-		ID:    "GH-300",
-		Title: "Fix authentication bypass vulnerability",
+		ID:          "GH-300",
+		Title:       "Fix authentication bypass vulnerability",
 		Description: "There's a subtle bug in the session validation that allows bypassing auth under certain conditions. Need to investigate the root cause and fix without breaking existing sessions.",
 	}
 

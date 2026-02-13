@@ -93,7 +93,7 @@ just plain paragraphs`,
 			expected: nil,
 		},
 		{
-			name: "single item",
+			name:   "single item",
 			output: `1. The only task - Do everything in one go`,
 			expected: []PlannedSubtask{
 				{Title: "The only task", Description: "Do everything in one go", Order: 1},
@@ -209,9 +209,9 @@ just plain paragraphs`,
 
 func TestSplitTitleDescription(t *testing.T) {
 	tests := []struct {
-		input       string
-		wantTitle   string
-		wantDesc    string
+		input     string
+		wantTitle string
+		wantDesc  string
 	}{
 		{"**Title** - Description", "Title", "Description"},
 		{"Title - Description", "Title", "Description"},
@@ -788,4 +788,3 @@ func TestParseIssueNumber(t *testing.T) {
 		})
 	}
 }
-

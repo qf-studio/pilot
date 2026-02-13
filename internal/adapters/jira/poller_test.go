@@ -154,9 +154,9 @@ func TestPollerBuildJQL(t *testing.T) {
 	client := NewClient("https://example.atlassian.net", testutil.FakeJiraUsername, testutil.FakeJiraAPIToken, PlatformCloud)
 
 	tests := []struct {
-		name       string
-		config     *Config
-		wantJQL    string
+		name    string
+		config  *Config
+		wantJQL string
 	}{
 		{
 			name: "label only",

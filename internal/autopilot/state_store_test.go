@@ -348,34 +348,34 @@ func TestController_RestoreState(t *testing.T) {
 
 	// Pre-populate store with PR states
 	pr1 := &PRState{
-		PRNumber:   42,
-		PRURL:      "https://github.com/owner/repo/pull/42",
+		PRNumber:    42,
+		PRURL:       "https://github.com/owner/repo/pull/42",
 		IssueNumber: 10,
-		BranchName: "pilot/GH-10",
-		HeadSHA:    "abc123",
-		Stage:      StageWaitingCI,
-		CIStatus:   CIRunning,
-		CreatedAt:  time.Now(),
+		BranchName:  "pilot/GH-10",
+		HeadSHA:     "abc123",
+		Stage:       StageWaitingCI,
+		CIStatus:    CIRunning,
+		CreatedAt:   time.Now(),
 	}
 	pr2 := &PRState{
-		PRNumber:   43,
-		PRURL:      "https://github.com/owner/repo/pull/43",
+		PRNumber:    43,
+		PRURL:       "https://github.com/owner/repo/pull/43",
 		IssueNumber: 11,
-		BranchName: "pilot/GH-11",
-		HeadSHA:    "def456",
-		Stage:      StageCIPassed,
-		CIStatus:   CISuccess,
-		CreatedAt:  time.Now(),
+		BranchName:  "pilot/GH-11",
+		HeadSHA:     "def456",
+		Stage:       StageCIPassed,
+		CIStatus:    CISuccess,
+		CreatedAt:   time.Now(),
 	}
 	// Failed PR should NOT be restored as active
 	pr3 := &PRState{
-		PRNumber:   44,
-		PRURL:      "https://github.com/owner/repo/pull/44",
+		PRNumber:    44,
+		PRURL:       "https://github.com/owner/repo/pull/44",
 		IssueNumber: 12,
-		BranchName: "pilot/GH-12",
-		Stage:      StageFailed,
-		CIStatus:   CIFailure,
-		CreatedAt:  time.Now(),
+		BranchName:  "pilot/GH-12",
+		Stage:       StageFailed,
+		CIStatus:    CIFailure,
+		CreatedAt:   time.Now(),
 	}
 
 	for _, pr := range []*PRState{pr1, pr2, pr3} {

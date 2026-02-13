@@ -97,7 +97,7 @@ type StageConfig struct {
 type Rule struct {
 	Name      string    `yaml:"name"`
 	Condition Condition `yaml:"condition"`
-	Stage     Stage     `yaml:"stage"`   // Which stage to trigger
+	Stage     Stage     `yaml:"stage"` // Which stage to trigger
 	Enabled   bool      `yaml:"enabled"`
 }
 

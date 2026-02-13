@@ -199,28 +199,28 @@ func TestWorktreePathIntegration(t *testing.T) {
 // TestWorktreeVsOriginalDetection compares DetectBuildCommand results between worktree and original repo
 func TestWorktreeVsOriginalDetection(t *testing.T) {
 	testCases := []struct {
-		name         string
-		configFile   string
+		name          string
+		configFile    string
 		configContent string
-		expectedCmd  string
+		expectedCmd   string
 	}{
 		{
-			name:         "Go project",
-			configFile:   "go.mod",
+			name:          "Go project",
+			configFile:    "go.mod",
 			configContent: "module github.com/test/project\n\ngo 1.24\n",
-			expectedCmd:  "go build ./...",
+			expectedCmd:   "go build ./...",
 		},
 		{
-			name:         "Node.js with TypeScript",
-			configFile:   "package.json",
+			name:          "Node.js with TypeScript",
+			configFile:    "package.json",
 			configContent: `{"name": "test", "dependencies": {}}`,
-			expectedCmd:  "npm run build || npx tsc --noEmit",
+			expectedCmd:   "npm run build || npx tsc --noEmit",
 		},
 		{
-			name:         "Rust project",
-			configFile:   "Cargo.toml",
+			name:          "Rust project",
+			configFile:    "Cargo.toml",
 			configContent: "[package]\nname = \"test\"\nversion = \"0.1.0\"\n",
-			expectedCmd:  "cargo check",
+			expectedCmd:   "cargo check",
 		},
 	}
 

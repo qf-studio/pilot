@@ -54,22 +54,22 @@ type socketEnvelope struct {
 
 // eventsAPIPayload wraps the Events API callback inside a Socket Mode envelope.
 type eventsAPIPayload struct {
-	Token  string         `json:"token"`
-	TeamID string         `json:"team_id"`
+	Token  string          `json:"token"`
+	TeamID string          `json:"team_id"`
 	Event  json.RawMessage `json:"event"`
-	Type   string         `json:"type"` // "event_callback"
+	Type   string          `json:"type"` // "event_callback"
 }
 
 // innerEvent is the raw event object inside eventsAPIPayload.Event.
 type innerEvent struct {
-	Type      string     `json:"type"`
-	Channel   string     `json:"channel"`
-	User      string     `json:"user"`
-	Text      string     `json:"text"`
-	ThreadTS  string     `json:"thread_ts,omitempty"`
-	TS        string     `json:"ts"`
-	BotID     string     `json:"bot_id,omitempty"`
-	Files     []SlackFile `json:"files,omitempty"`
+	Type     string      `json:"type"`
+	Channel  string      `json:"channel"`
+	User     string      `json:"user"`
+	Text     string      `json:"text"`
+	ThreadTS string      `json:"thread_ts,omitempty"`
+	TS       string      `json:"ts"`
+	BotID    string      `json:"bot_id,omitempty"`
+	Files    []SlackFile `json:"files,omitempty"`
 }
 
 // botMentionRegex matches <@UBOTID> patterns in Slack message text.

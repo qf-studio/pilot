@@ -33,10 +33,10 @@ func NewHaikuParser(apiKey string) *HaikuParser {
 
 // haikuRequest is the Anthropic Messages API request body.
 type haikuRequest struct {
-	Model     string            `json:"model"`
-	MaxTokens int               `json:"max_tokens"`
-	System    string            `json:"system"`
-	Messages  []haikuMessage    `json:"messages"`
+	Model     string         `json:"model"`
+	MaxTokens int            `json:"max_tokens"`
+	System    string         `json:"system"`
+	Messages  []haikuMessage `json:"messages"`
 }
 
 // haikuMessage is a single message in the API request.

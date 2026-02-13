@@ -878,11 +878,11 @@ func TestEngine_BudgetExceeded_RoutesToCostRules(t *testing.T) {
 		TaskID: "GH-100",
 		Error:  "Daily budget exceeded: $55.00 / $50.00",
 		Metadata: map[string]string{
-			"daily_spend": "55.00",
-			"total_spend": "600.00",
-			"daily_left":  "0.00",
+			"daily_spend":  "55.00",
+			"total_spend":  "600.00",
+			"daily_left":   "0.00",
 			"monthly_left": "0.00",
-			"action":      "stop",
+			"action":       "stop",
 		},
 		Timestamp: time.Now(),
 	})
@@ -934,12 +934,12 @@ func TestEngine_BudgetWarning_RoutesToCostRules(t *testing.T) {
 
 	// Budget warning event should route to daily spend rule
 	engine.ProcessEvent(Event{
-		Type:   EventTypeBudgetWarning,
-		Error:  "Daily budget at 90%: $45.00 / $50.00",
+		Type:  EventTypeBudgetWarning,
+		Error: "Daily budget at 90%: $45.00 / $50.00",
 		Metadata: map[string]string{
-			"daily_spend":  "45.00",
-			"alert_type":   "daily_budget_warning",
-			"severity":     "warning",
+			"daily_spend": "45.00",
+			"alert_type":  "daily_budget_warning",
+			"severity":    "warning",
 		},
 		Timestamp: time.Now(),
 	})

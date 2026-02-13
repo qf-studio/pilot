@@ -31,7 +31,7 @@ func NewSubtaskParser(log *slog.Logger) *SubtaskParser {
 		return nil
 	}
 	return &SubtaskParser{
-		apiKey: apiKey,
+		apiKey:  apiKey,
 		baseURL: "https://api.anthropic.com",
 		httpClient: &http.Client{
 			Timeout: 10 * time.Second,

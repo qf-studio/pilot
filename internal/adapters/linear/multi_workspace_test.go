@@ -7,11 +7,11 @@ import (
 
 func TestNewMultiWorkspaceHandler(t *testing.T) {
 	tests := []struct {
-		name          string
-		cfg           *Config
-		wantErr       bool
-		wantCount     int
-		errContains   string
+		name        string
+		cfg         *Config
+		wantErr     bool
+		wantCount   int
+		errContains string
 	}{
 		{
 			name: "single workspace from workspaces array",
@@ -122,8 +122,8 @@ func TestMultiWorkspaceHandler_OnIssue(t *testing.T) {
 	callbackRegistered := false
 	handler.OnIssue(func(ctx context.Context, issue *Issue, wsName string) error {
 		callbackRegistered = true
-		_ = issue    // use variables
-		_ = wsName   // use variables
+		_ = issue  // use variables
+		_ = wsName // use variables
 		return nil
 	})
 

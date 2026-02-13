@@ -69,8 +69,8 @@ func TestPrometheusExporter_WritePrometheus(t *testing.T) {
 					PRsConflicting:      2,
 					CircuitBreakerTrips: 1,
 					APIErrors: map[string]int64{
-						"GetPR":     10,
-						"MergePR":   2,
+						"GetPR":   10,
+						"MergePR": 2,
 					},
 					LabelCleanups: map[string]int64{
 						"pilot-in-progress": 8,

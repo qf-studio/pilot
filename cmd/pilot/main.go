@@ -2481,8 +2481,8 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 		Branch:             branchName,
 		CreatePR:           true,
 		SourceRepo:         sourceRepo,
-		MemberID:           resolveGitHubMemberID(issue),           // GH-634: RBAC lookup
-		Labels:             extractGitHubLabelNames(issue),         // GH-727: flow labels for complexity classifier
+		MemberID:           resolveGitHubMemberID(issue),                 // GH-634: RBAC lookup
+		Labels:             extractGitHubLabelNames(issue),               // GH-727: flow labels for complexity classifier
 		AcceptanceCriteria: github.ExtractAcceptanceCriteria(issue.Body), // GH-920: acceptance criteria in prompts
 	}
 
@@ -5949,9 +5949,19 @@ Note: Pilot must be running with --autopilot flag for this to work.`,
 					"auto_merge":  autopilotCfg.AutoMerge,
 					"auto_review": autopilotCfg.AutoReview,
 					"release": map[string]interface{}{
-						"enabled":   autopilotCfg.Release != nil && autopilotCfg.Release.Enabled,
-						"trigger":   func() string { if autopilotCfg.Release != nil { return autopilotCfg.Release.Trigger }; return "" }(),
-						"requireCI": func() bool { if autopilotCfg.Release != nil { return autopilotCfg.Release.RequireCI }; return false }(),
+						"enabled": autopilotCfg.Release != nil && autopilotCfg.Release.Enabled,
+						"trigger": func() string {
+							if autopilotCfg.Release != nil {
+								return autopilotCfg.Release.Trigger
+							}
+							return ""
+						}(),
+						"requireCI": func() bool {
+							if autopilotCfg.Release != nil {
+								return autopilotCfg.Release.RequireCI
+							}
+							return false
+						}(),
 					},
 					"ci_wait_timeout": autopilotCfg.CIWaitTimeout.String(),
 					"max_failures":    autopilotCfg.MaxFailures,

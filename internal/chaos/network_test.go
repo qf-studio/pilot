@@ -487,7 +487,7 @@ func TestChaos_FaultInjectorToggle(t *testing.T) {
 // TestChaos_ConcurrentRequests verifies thread-safety under load
 func TestChaos_ConcurrentRequests(t *testing.T) {
 	config := &FaultConfig{
-		Type:        FaultIntermittent,
+		Type:                   FaultIntermittent,
 		FailuresBeforeRecovery: 10,
 	}
 

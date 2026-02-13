@@ -11,32 +11,32 @@ func TestSignalParser_ParseSignals(t *testing.T) {
 	parser := NewSignalParser(logger)
 
 	tests := []struct {
-		name           string
-		input          string
-		expectedCount  int
-		expectedPhase  string
-		expectedProg   int
-		expectedExit   bool
+		name          string
+		input         string
+		expectedCount int
+		expectedPhase string
+		expectedProg  int
+		expectedExit  bool
 	}{
 		{
-			name: "valid status signal",
-			input: "Some text\n```pilot-signal\n{\"v\":2,\"type\":\"status\",\"phase\":\"IMPL\",\"progress\":50}\n```\nMore text",
+			name:          "valid status signal",
+			input:         "Some text\n```pilot-signal\n{\"v\":2,\"type\":\"status\",\"phase\":\"IMPL\",\"progress\":50}\n```\nMore text",
 			expectedCount: 1,
 			expectedPhase: "IMPL",
 			expectedProg:  50,
 			expectedExit:  false,
 		},
 		{
-			name: "exit signal",
-			input: "```pilot-signal\n{\"v\":2,\"type\":\"exit\",\"exit_signal\":true,\"success\":true}\n```",
+			name:          "exit signal",
+			input:         "```pilot-signal\n{\"v\":2,\"type\":\"exit\",\"exit_signal\":true,\"success\":true}\n```",
 			expectedCount: 1,
 			expectedPhase: "",
 			expectedProg:  -1,
 			expectedExit:  true,
 		},
 		{
-			name: "multiple signals",
-			input: "```pilot-signal\n{\"v\":2,\"type\":\"status\",\"phase\":\"RESEARCH\",\"progress\":25}\n```\n\n```pilot-signal\n{\"v\":2,\"type\":\"status\",\"phase\":\"IMPL\",\"progress\":75}\n```",
+			name:          "multiple signals",
+			input:         "```pilot-signal\n{\"v\":2,\"type\":\"status\",\"phase\":\"RESEARCH\",\"progress\":25}\n```\n\n```pilot-signal\n{\"v\":2,\"type\":\"status\",\"phase\":\"IMPL\",\"progress\":75}\n```",
 			expectedCount: 2,
 			expectedPhase: "IMPL",
 			expectedProg:  75,
@@ -59,8 +59,8 @@ func TestSignalParser_ParseSignals(t *testing.T) {
 			expectedExit:  false,
 		},
 		{
-			name: "signal with indicators",
-			input: "```pilot-signal\n{\"v\":2,\"type\":\"status\",\"phase\":\"VERIFY\",\"progress\":90,\"indicators\":{\"tests_pass\":true,\"code_changes\":true}}\n```",
+			name:          "signal with indicators",
+			input:         "```pilot-signal\n{\"v\":2,\"type\":\"status\",\"phase\":\"VERIFY\",\"progress\":90,\"indicators\":{\"tests_pass\":true,\"code_changes\":true}}\n```",
 			expectedCount: 1,
 			expectedPhase: "VERIFY",
 			expectedProg:  90,
@@ -109,9 +109,9 @@ func TestSignalParser_ProgressClamping(t *testing.T) {
 	parser := NewSignalParser(logger)
 
 	tests := []struct {
-		name           string
-		input          string
-		expectedProg   int
+		name         string
+		input        string
+		expectedProg int
 	}{
 		{
 			name:         "progress over 100 clamped",

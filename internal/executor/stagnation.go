@@ -1,8 +1,8 @@
 package executor
 
 import (
-	"hash/fnv"
 	"fmt"
+	"hash/fnv"
 	"log/slog"
 	"time"
 )
@@ -12,9 +12,9 @@ type StagnationLevel int
 
 const (
 	StagnationNone  StagnationLevel = iota
-	StagnationWarn  // 3+ identical states OR timeout
-	StagnationPause // 5+ identical states OR timeout
-	StagnationAbort // 7+ identical states OR timeout
+	StagnationWarn                  // 3+ identical states OR timeout
+	StagnationPause                 // 5+ identical states OR timeout
+	StagnationAbort                 // 7+ identical states OR timeout
 )
 
 func (l StagnationLevel) String() string {
@@ -98,8 +98,8 @@ func (m *StagnationMonitor) RecordState(phase string, progress, iteration int) S
 
 	// Check abort conditions first (highest priority)
 	if iteration >= m.config.AbortAtIteration ||
-	   repeats >= m.config.IdenticalStatesThreshold ||
-	   timeSinceStart >= m.config.AbortTimeout {
+		repeats >= m.config.IdenticalStatesThreshold ||
+		timeSinceStart >= m.config.AbortTimeout {
 		newLevel = StagnationAbort
 	} else if iteration >= m.config.PauseAtIteration || timeSinceProgress >= m.config.PauseTimeout {
 		newLevel = StagnationPause

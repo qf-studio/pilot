@@ -20,12 +20,12 @@ func (m *mockAlertProcessor) ProcessEvent(event AlertEvent) {
 
 // mockIntegrationBackend implements Backend for integration tests
 type mockIntegrationBackend struct {
-	name        string
-	results     []*BackendResult
-	resultIdx   int32
-	executeErr  error
-	execCount   int32
-	available   bool
+	name       string
+	results    []*BackendResult
+	resultIdx  int32
+	executeErr error
+	execCount  int32
+	available  bool
 }
 
 func newMockIntegrationBackend(name string, available bool) *mockIntegrationBackend {

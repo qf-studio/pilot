@@ -26,39 +26,39 @@ import (
 
 // Pilot is the main application
 type Pilot struct {
-	config             *config.Config
-	gateway            *gateway.Server
-	orchestrator       *orchestrator.Orchestrator
-	linearMultiWH      *linear.MultiWorkspaceHandler // Multi-workspace handler (GH-391)
-	linearClient       *linear.Client                // Legacy single-workspace client
-	linearWH           *linear.WebhookHandler        // Legacy single-workspace handler
-	linearNotify       *linear.Notifier              // Legacy single-workspace notifier
-	githubClient       *github.Client
-	githubWH           *github.WebhookHandler
-	githubNotify       *github.Notifier
-	gitlabClient       *gitlab.Client
-	gitlabWH           *gitlab.WebhookHandler
-	gitlabNotify       *gitlab.Notifier
-	jiraClient         *jira.Client
-	jiraWH             *jira.WebhookHandler
-	slackNotify        *slack.Notifier
-	slackClient        *slack.Client
-	slackInteractionWH *slack.InteractionHandler
-	slackApprovalHdlr  *approval.SlackHandler
-	telegramClient     *telegram.Client
-	telegramHandler        *telegram.Handler        // Telegram polling handler (GH-349)
-	telegramRunner         *executor.Runner         // Runner for Telegram tasks (GH-349)
-	telegramMemberResolver telegram.MemberResolver  // Team member resolver for Telegram RBAC (GH-634)
-	slackHandler           *slack.Handler           // Slack Socket Mode handler (GH-652)
-	slackRunner            *executor.Runner         // Runner for Slack tasks (GH-652)
-	slackMemberResolver    slack.MemberResolver     // Team member resolver for Slack RBAC (GH-786)
-	githubPoller           *github.Poller           // GitHub polling handler (GH-350)
-	alertEngine        *alerts.Engine
-	teamsService       *teams.Service   // Teams RBAC service (GH-633)
-	store              *memory.Store
-	graph              *memory.KnowledgeGraph
-	webhookManager     *webhooks.Manager
-	approvalMgr        *approval.Manager
+	config                 *config.Config
+	gateway                *gateway.Server
+	orchestrator           *orchestrator.Orchestrator
+	linearMultiWH          *linear.MultiWorkspaceHandler // Multi-workspace handler (GH-391)
+	linearClient           *linear.Client                // Legacy single-workspace client
+	linearWH               *linear.WebhookHandler        // Legacy single-workspace handler
+	linearNotify           *linear.Notifier              // Legacy single-workspace notifier
+	githubClient           *github.Client
+	githubWH               *github.WebhookHandler
+	githubNotify           *github.Notifier
+	gitlabClient           *gitlab.Client
+	gitlabWH               *gitlab.WebhookHandler
+	gitlabNotify           *gitlab.Notifier
+	jiraClient             *jira.Client
+	jiraWH                 *jira.WebhookHandler
+	slackNotify            *slack.Notifier
+	slackClient            *slack.Client
+	slackInteractionWH     *slack.InteractionHandler
+	slackApprovalHdlr      *approval.SlackHandler
+	telegramClient         *telegram.Client
+	telegramHandler        *telegram.Handler       // Telegram polling handler (GH-349)
+	telegramRunner         *executor.Runner        // Runner for Telegram tasks (GH-349)
+	telegramMemberResolver telegram.MemberResolver // Team member resolver for Telegram RBAC (GH-634)
+	slackHandler           *slack.Handler          // Slack Socket Mode handler (GH-652)
+	slackRunner            *executor.Runner        // Runner for Slack tasks (GH-652)
+	slackMemberResolver    slack.MemberResolver    // Team member resolver for Slack RBAC (GH-786)
+	githubPoller           *github.Poller          // GitHub polling handler (GH-350)
+	alertEngine            *alerts.Engine
+	teamsService           *teams.Service // Teams RBAC service (GH-633)
+	store                  *memory.Store
+	graph                  *memory.KnowledgeGraph
+	webhookManager         *webhooks.Manager
+	approvalMgr            *approval.Manager
 
 	// linearTasks maps task IDs to Linear issue IDs for completion callbacks
 	linearTasks   map[string]linearTaskInfo
@@ -434,7 +434,7 @@ func New(cfg *config.Config, opts ...Option) (*Pilot, error) {
 			AllowedIDs:     allowedIDs,
 			Transcription:  cfg.Adapters.Telegram.Transcription,
 			RateLimit:      cfg.Adapters.Telegram.RateLimit,
-			PlainTextMode:  true, // Default to plain text mode
+			PlainTextMode:  true,                     // Default to plain text mode
 			MemberResolver: p.telegramMemberResolver, // GH-634: Telegram user → team member RBAC
 		}, p.telegramRunner)
 

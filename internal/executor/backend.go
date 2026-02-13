@@ -426,11 +426,11 @@ func DefaultBackendConfig() *BackendConfig {
 		EffortRouting:    DefaultEffortRoutingConfig(),
 		EffortClassifier: DefaultEffortClassifierConfig(),
 		Decompose:        DefaultDecomposeConfig(),
-		IntentJudge:   DefaultIntentJudgeConfig(),
-		Navigator:      DefaultNavigatorConfig(),
-		Retry:          DefaultRetryConfig(),
-		Stagnation:     DefaultStagnationConfig(),
-		Simplification: DefaultSimplifyConfig(),
+		IntentJudge:      DefaultIntentJudgeConfig(),
+		Navigator:        DefaultNavigatorConfig(),
+		Retry:            DefaultRetryConfig(),
+		Stagnation:       DefaultStagnationConfig(),
+		Simplification:   DefaultSimplifyConfig(),
 	}
 }
 

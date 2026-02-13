@@ -38,18 +38,18 @@ type PendingTask struct {
 type Handler struct {
 	socketClient      *SocketModeClient
 	apiClient         *Client
-	memberResolver    MemberResolver              // Team member resolver for RBAC (optional, GH-786)
-	lastSender        map[string]string           // channelID -> last sender Slack user ID
-	runner            *executor.Runner            // Task executor
-	projects          ProjectSource               // Project source for multi-project support
-	projectPath       string                      // Default/fallback project path
-	activeProject     map[string]string           // channelID -> projectPath (active project per channel)
-	pendingTasks      map[string]*PendingTask     // channelID -> pending task
-	allowedChannels   map[string]bool             // Allowed channel IDs for security
-	allowedUsers      map[string]bool             // Allowed user IDs for security
-	conversationStore *intent.ConversationStore   // Conversation history per channel
-	rateLimiter       *RateLimiter                // Rate limiter for DoS protection
-	llmClassifier     intent.Classifier           // LLM intent classifier (optional)
+	memberResolver    MemberResolver            // Team member resolver for RBAC (optional, GH-786)
+	lastSender        map[string]string         // channelID -> last sender Slack user ID
+	runner            *executor.Runner          // Task executor
+	projects          ProjectSource             // Project source for multi-project support
+	projectPath       string                    // Default/fallback project path
+	activeProject     map[string]string         // channelID -> projectPath (active project per channel)
+	pendingTasks      map[string]*PendingTask   // channelID -> pending task
+	allowedChannels   map[string]bool           // Allowed channel IDs for security
+	allowedUsers      map[string]bool           // Allowed user IDs for security
+	conversationStore *intent.ConversationStore // Conversation history per channel
+	rateLimiter       *RateLimiter              // Rate limiter for DoS protection
+	llmClassifier     intent.Classifier         // LLM intent classifier (optional)
 	mu                sync.Mutex
 	stopCh            chan struct{}
 	wg                sync.WaitGroup
@@ -58,14 +58,14 @@ type Handler struct {
 
 // HandlerConfig holds configuration for the Slack handler.
 type HandlerConfig struct {
-	AppToken        string           // Slack app-level token (xapp-...)
-	BotToken        string           // Slack bot token (xoxb-...)
-	MemberResolver  MemberResolver   // Team member resolver for RBAC (optional, GH-786)
-	ProjectPath     string           // Default/fallback project path
-	Projects        ProjectSource    // Project source for multi-project support
-	AllowedChannels []string         // Channel IDs allowed to send tasks
-	AllowedUsers    []string         // User IDs allowed to send tasks
-	RateLimit       *RateLimitConfig // Rate limiting config (optional)
+	AppToken        string               // Slack app-level token (xapp-...)
+	BotToken        string               // Slack bot token (xoxb-...)
+	MemberResolver  MemberResolver       // Team member resolver for RBAC (optional, GH-786)
+	ProjectPath     string               // Default/fallback project path
+	Projects        ProjectSource        // Project source for multi-project support
+	AllowedChannels []string             // Channel IDs allowed to send tasks
+	AllowedUsers    []string             // User IDs allowed to send tasks
+	RateLimit       *RateLimitConfig     // Rate limiting config (optional)
 	LLMClassifier   *LLMClassifierConfig // LLM intent classification config (optional)
 }
 

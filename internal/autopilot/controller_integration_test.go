@@ -16,12 +16,12 @@ import (
 
 // integrationMockNotifier captures notifications for verification
 type integrationMockNotifier struct {
-	mu               sync.Mutex
-	mergedCalls      []*PRState
-	ciFailedCalls    []*PRState
-	approvalCalls    []*PRState
-	fixIssueCalls    []int
-	releaseCalls     []string
+	mu            sync.Mutex
+	mergedCalls   []*PRState
+	ciFailedCalls []*PRState
+	approvalCalls []*PRState
+	fixIssueCalls []int
+	releaseCalls  []string
 }
 
 func (m *integrationMockNotifier) NotifyMerged(ctx context.Context, prState *PRState) error {
