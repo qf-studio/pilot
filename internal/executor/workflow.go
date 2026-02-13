@@ -3,8 +3,35 @@ package executor
 // GetAutonomousWorkflowInstructions returns embedded execution workflow
 // that replaces Navigator's /nav-loop skill.
 func GetAutonomousWorkflowInstructions() string {
-	return autonomousWorkflowInstructions
+	return workflowEnforcement + "\n" + autonomousWorkflowInstructions
 }
+
+const workflowEnforcement = `## WORKFLOW CHECK (Mandatory)
+
+Before starting, confirm execution mode:
+
+┌────────────────────────────────────────┐
+│ WORKFLOW CHECK                         │
+├────────────────────────────────────────┤
+│ Loop trigger: [YES if autonomous]      │
+│ Complexity:   [TRIVIAL/SIMPLE/MEDIUM/COMPLEX] │
+│ Mode:         [LOOP/TASK/DIRECT]       │
+└────────────────────────────────────────┘
+
+**Loop triggers** (auto-detect):
+- "run until done"
+- "keep going until complete"
+- "iterate until finished"
+- "do all of these"
+- "finish this"
+
+**Mode selection**:
+- LOOP: Autonomous iteration with EXIT_SIGNAL
+- TASK: Structured phases (INIT→RESEARCH→IMPL→VERIFY→COMPLETE)
+- DIRECT: Simple changes, no overhead
+
+Output this block at start of execution to confirm mode.
+`
 
 const autonomousWorkflowInstructions = `## Autonomous Execution Workflow
 
