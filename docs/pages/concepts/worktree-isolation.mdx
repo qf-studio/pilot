@@ -1,0 +1,168 @@
+# Worktree Isolation
+
+Worktree isolation allows Pilot to execute tasks in a separate git worktree, preventing conflicts with your local uncommitted changes. This feature enables autonomous execution even when your repository has pending work.
+
+## Why Worktree Isolation Exists
+
+### The Problem
+
+Without worktree isolation, Pilot requires a clean working directory to safely execute tasks:
+
+- **Blocking uncommitted changes**: Pilot's git clean preflight check fails if you have local modifications
+- **Merge conflicts**: Pilot's changes might conflict with your uncommitted work
+- **Lost work risk**: Complex git operations could accidentally overwrite your changes
+- **Development friction**: You must commit or stash work before Pilot can run
+
+### The Solution
+
+Worktree isolation creates a temporary, isolated copy of your repository:
+
+```
+Original Repo (your work)     Isolated Worktree (Pilot's work)
+├── .git/                     ├── .git → points to original .git/
+├── src/                      ├── src/          (clean from HEAD)
+├── uncommitted changes       ├── no conflicts
+└── .agent/                   └── .agent/       (copied from original)
+```
+
+**Benefits:**
+- Execute tasks with uncommitted changes in your main repository
+- No risk of conflicts or lost work
+- Parallel development: you code while Pilot works
+- Clean execution environment for reliable automation
+
+## How It Works
+
+### Worktree Creation
+
+When enabled, Pilot creates an isolated worktree for each task:
+
+1. **Create worktree**: `git worktree add /tmp/pilot-worktree-<task>-<timestamp> HEAD`
+2. **Copy Navigator config**: Copies `.agent/` directory to preserve project-specific settings
+3. **Execute task**: All operations happen in the isolated environment
+4. **Push changes**: Results are pushed to remote from the worktree branch
+5. **Cleanup**: Worktree and temporary files are automatically removed
+
+### Navigator Integration
+
+The worktree includes full Navigator functionality:
+
+- **Config preservation**: `.agent/` directory is copied from your original repo
+- **Untracked content**: Research notes, context markers, and custom SOPs are preserved
+- **Pattern matching**: All Navigator skills work normally in the worktree
+
+## Configuration
+
+Enable worktree isolation in your Pilot configuration:
+
+```yaml
+executor:
+  use_worktree: true
+```
+
+**Default**: `false` (opt-in feature for compatibility)
+
+### Configuration Options
+
+The executor section supports these worktree-related options:
+
+- `use_worktree`: Enable/disable worktree isolation
+- Standard executor options (model routing, retry logic) work the same way
+
+## Cleanup Process
+
+Pilot uses multiple cleanup mechanisms to prevent orphaned worktrees:
+
+### Normal Cleanup (Deferred)
+
+Each worktree has an associated cleanup function that runs:
+- On successful task completion
+- On task failure or errors
+- On context cancellation
+- On panic recovery (via defer)
+
+```go
+defer result.Cleanup() // Always runs, even on panic
+```
+
+### Startup Orphan Scan
+
+On Pilot startup, orphaned worktrees are detected and removed:
+
+1. **Scan**: Check `/tmp/pilot-worktree-*` directories
+2. **Validate**: Verify each directory is a valid worktree
+3. **Clean**: Remove orphaned directories and stale git references
+4. **Prune**: Run `git worktree prune` to clean .git/worktrees/
+
+This handles cases where Pilot crashed before normal cleanup could run.
+
+### Automatic Cleanup
+
+Worktrees are cleaned up by:
+- Removing the worktree reference: `git worktree remove --force <path>`
+- Deleting the temporary directory: `rm -rf <worktree-path>`
+- Pruning stale references: `git worktree prune`
+
+## Troubleshooting
+
+### Orphan Detection
+
+If you suspect orphaned worktrees exist:
+
+```bash
+# Check for orphaned directories
+ls /tmp/pilot-worktree-*
+
+# Manual cleanup (if needed)
+git worktree prune
+rm -rf /tmp/pilot-worktree-*
+```
+
+### Navigator Copy Issues
+
+If Navigator features don't work in worktrees:
+
+1. **Check .agent/ exists**: Worktree should have `.agent/` directory
+2. **Verify permissions**: Copied files should maintain original permissions
+3. **Check untracked content**: Research notes and context markers should be present
+
+**Debug commands:**
+```bash
+# In worktree, check Navigator structure
+ls -la .agent/
+ls -la .agent/tasks/
+ls -la .agent/.context-markers/
+```
+
+### Performance Considerations
+
+Worktree operations add minimal overhead:
+- **Creation**: ~100-200ms per worktree
+- **Navigator copy**: ~10-50ms depending on .agent/ size
+- **Cleanup**: ~50-100ms per worktree
+- **Storage**: Temporary files in `/tmp/` (cleaned automatically)
+
+### When to Use
+
+**Enable worktree isolation when:**
+- You frequently have uncommitted changes during development
+- Multiple developers share a repository with Pilot
+- You want maximum safety and isolation
+- You're using Pilot for production releases
+
+**Keep disabled when:**
+- You always commit/stash before running Pilot
+- Repository is dedicated to Pilot automation
+- You prefer simpler execution without temporary files
+- Performance is critical (minimal but measurable overhead)
+
+## Branch Strategy
+
+Worktrees use proper git branches (not detached HEAD):
+
+- **Branch naming**: `pilot/GH-<issue-number>` or similar
+- **Base branch**: Created from `main` or specified base
+- **Push ready**: Can push directly to remote
+- **Auto-cleanup**: Branch is deleted when worktree is cleaned up
+
+This enables full git workflows including PR creation and remote collaboration.

@@ -160,6 +160,7 @@ executor:
   direct_commit: false                    # commit directly to branch without PR
   detect_ephemeral: true                  # detect and skip ephemeral changes
   skip_self_review: false                 # skip self-review step
+  use_worktree: false                     # execute tasks in isolated git worktrees
 
   claude_code:
     command: "claude"                     # path to claude CLI
@@ -200,6 +201,7 @@ executor:
 | `direct_commit` | bool | `false` | Commit directly without PR |
 | `detect_ephemeral` | bool | `true` | Detect and skip ephemeral file changes |
 | `skip_self_review` | bool | `false` | Skip the self-review step |
+| `use_worktree` | bool | `false` | Execute tasks in isolated git worktrees (enables execution with uncommitted changes) |
 | `claude_code.command` | string | `"claude"` | Path to the Claude CLI binary |
 | `claude_code.extra_args` | []string | `[]` | Additional CLI arguments |
 | `model_routing.enabled` | bool | `false` | Route tasks to different models by complexity |
@@ -255,6 +257,33 @@ executor:
 | `opencode.provider` | string | `"anthropic"` | LLM provider name |
 | `opencode.auto_start_server` | bool | `true` | Auto-start OpenCode server if not running |
 | `opencode.server_command` | string | `"opencode serve"` | Command to start the server |
+
+### Worktree Isolation
+
+Enable worktree isolation to execute tasks in separate git worktrees, preventing conflicts with uncommitted changes:
+
+```yaml
+executor:
+  use_worktree: true
+```
+
+When enabled:
+- Each task runs in an isolated temporary worktree (`/tmp/pilot-worktree-*`)
+- Your original repository remains untouched during execution
+- Navigator config (`.agent/`) is copied to the worktree
+- Changes are pushed from the worktree branch to remote
+- Automatic cleanup removes worktrees after task completion
+- Orphaned worktrees are cleaned up on Pilot startup
+
+**Benefits:**
+- Execute tasks with uncommitted local changes
+- No risk of merge conflicts with your work in progress
+- Parallel development: code while Pilot works
+- Clean execution environment for reliable automation
+
+**Performance impact:** Minimal overhead (~100-200ms per worktree creation)
+
+See the [Worktree Isolation](/concepts/worktree-isolation) concept guide for detailed information on how it works, cleanup processes, and troubleshooting.
 
 ---
 
