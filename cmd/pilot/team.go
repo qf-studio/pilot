@@ -267,6 +267,7 @@ func newTeamMemberCmd() *cobra.Command {
 		newTeamMemberAddCmd(),
 		newTeamMemberRemoveCmd(),
 		newTeamMemberRoleCmd(),
+		newTeamMemberListCmd(),
 	)
 
 	return cmd
@@ -436,6 +437,63 @@ func newTeamMemberRoleCmd() *cobra.Command {
 	_ = cmd.MarkFlagRequired("as")
 
 	return cmd
+}
+
+func newTeamMemberListCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "list [team-id]",
+		Short: "List members of a team",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			teamID := args[0]
+
+			service, cleanup, err := getTeamService()
+			if err != nil {
+				return err
+			}
+			defer cleanup()
+
+			team, err := findTeam(service, teamID)
+			if err != nil {
+				return err
+			}
+
+			members, err := service.ListMembers(team.ID)
+			if err != nil {
+				return fmt.Errorf("failed to list members: %w", err)
+			}
+
+			if len(members) == 0 {
+				fmt.Printf("No members in team '%s'.\n", team.Name)
+				fmt.Println()
+				fmt.Println("Add a member with:")
+				fmt.Printf("   pilot team member add %s <email> --role developer --as you@example.com\n", team.ID[:8])
+				return nil
+			}
+
+			fmt.Printf("Members of '%s' (%d total):\n\n", team.Name, len(members))
+
+			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+			_, _ = fmt.Fprintln(w, "ID\tEMAIL\tROLE\tPROJECTS")
+			_, _ = fmt.Fprintln(w, "──\t─────\t────\t────────")
+
+			for _, m := range members {
+				projects := "all"
+				if len(m.Projects) > 0 {
+					projects = strings.Join(m.Projects, ", ")
+				}
+				_, _ = fmt.Fprintf(w, "%s\t%s\t%s\t%s\n",
+					m.ID[:8],
+					m.Email,
+					m.Role,
+					projects,
+				)
+			}
+			_ = w.Flush()
+
+			return nil
+		},
+	}
 }
 
 func newTeamAuditCmd() *cobra.Command {

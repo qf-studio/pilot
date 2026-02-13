@@ -275,8 +275,17 @@ pilot doctor [flags]
 
 | Flag | Description |
 |------|-------------|
-| `--navigator` | Also check Navigator setup |
-| `--fix` | Attempt to fix issues |
+| `--verbose`, `-v` | Show detailed output with fix suggestions |
+
+### Examples
+
+```bash
+# Run all checks
+pilot doctor
+
+# Show detailed output
+pilot doctor --verbose
+```
 
 ## pilot logs
 
@@ -294,26 +303,3 @@ pilot logs [flags]
 | `--tail=N` | Show last N lines |
 | `--autopilot` | Filter to autopilot events |
 
-## pilot rollback
-
-Revert changes made by Pilot.
-
-```bash
-pilot rollback [flags]
-```
-
-### Flags
-
-| Flag | Description |
-|------|-------------|
-| `--last` | Revert the most recent merge |
-| `--pr=N` | Revert specific PR |
-
-## pilot navigator
-
-Navigator-related commands.
-
-```bash
-pilot navigator init    # Initialize .agent/ directory
-pilot navigator status  # Show Navigator status
-```

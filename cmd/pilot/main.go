@@ -5890,7 +5890,11 @@ func newAutopilotCmd() *cobra.Command {
 		Long:  `Commands for viewing and managing autopilot PR tracking and automation.`,
 	}
 
-	cmd.AddCommand(newAutopilotStatusCmd())
+	cmd.AddCommand(
+		newAutopilotStatusCmd(),
+		newAutopilotEnableCmd(),
+		newAutopilotDisableCmd(),
+	)
 	return cmd
 }
 
@@ -5986,6 +5990,156 @@ Note: Pilot must be running with --autopilot flag for this to work.`,
 			fmt.Println("   • Dashboard: pilot start --dashboard --autopilot=<env>")
 			fmt.Println("   • Logs: pilot logs --follow")
 
+			return nil
+		},
+	}
+
+	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Output as JSON")
+
+	return cmd
+}
+
+func newAutopilotEnableCmd() *cobra.Command {
+	var (
+		env        string
+		jsonOutput bool
+	)
+
+	cmd := &cobra.Command{
+		Use:   "enable",
+		Short: "Enable autopilot in configuration",
+		Long: `Enable autopilot mode in Pilot configuration.
+
+This updates the config file to enable autopilot. You must restart Pilot
+for changes to take effect.
+
+Examples:
+  pilot autopilot enable                 # Enable with default (dev) environment
+  pilot autopilot enable --env=stage     # Enable with staging environment
+  pilot autopilot enable --env=prod      # Enable with production environment`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			// Load config
+			configPath := cfgFile
+			if configPath == "" {
+				configPath = config.DefaultConfigPath()
+			}
+
+			cfg, err := config.Load(configPath)
+			if err != nil {
+				return fmt.Errorf("failed to load config: %w", err)
+			}
+
+			// Validate environment
+			switch autopilot.Environment(env) {
+			case autopilot.EnvDev, autopilot.EnvStage, autopilot.EnvProd:
+				// valid
+			default:
+				return fmt.Errorf("invalid environment: %s (use: dev, stage, prod)", env)
+			}
+
+			// Initialize orchestrator config if nil
+			if cfg.Orchestrator == nil {
+				cfg.Orchestrator = &config.OrchestratorConfig{}
+			}
+
+			// Initialize autopilot config if nil
+			if cfg.Orchestrator.Autopilot == nil {
+				cfg.Orchestrator.Autopilot = autopilot.DefaultConfig()
+			}
+
+			// Enable autopilot
+			cfg.Orchestrator.Autopilot.Enabled = true
+			cfg.Orchestrator.Autopilot.Environment = autopilot.Environment(env)
+
+			// Save config
+			if err := config.Save(cfg, configPath); err != nil {
+				return fmt.Errorf("failed to save config: %w", err)
+			}
+
+			if jsonOutput {
+				data := map[string]interface{}{
+					"enabled":     true,
+					"environment": env,
+					"message":     "autopilot enabled",
+				}
+				out, _ := json.MarshalIndent(data, "", "  ")
+				fmt.Println(string(out))
+				return nil
+			}
+
+			fmt.Printf("✓ Autopilot enabled (environment: %s)\n", env)
+			fmt.Println("  Restart Pilot to apply: pilot start --autopilot=" + env)
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&env, "env", "dev", "Environment: dev, stage, prod")
+	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Output as JSON")
+
+	return cmd
+}
+
+func newAutopilotDisableCmd() *cobra.Command {
+	var jsonOutput bool
+
+	cmd := &cobra.Command{
+		Use:   "disable",
+		Short: "Disable autopilot in configuration",
+		Long: `Disable autopilot mode in Pilot configuration.
+
+This updates the config file to disable autopilot. You must restart Pilot
+for changes to take effect.
+
+Examples:
+  pilot autopilot disable            # Disable autopilot
+  pilot autopilot disable --json     # Output as JSON`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			// Load config
+			configPath := cfgFile
+			if configPath == "" {
+				configPath = config.DefaultConfigPath()
+			}
+
+			cfg, err := config.Load(configPath)
+			if err != nil {
+				return fmt.Errorf("failed to load config: %w", err)
+			}
+
+			// Check if already disabled
+			if cfg.Orchestrator == nil || cfg.Orchestrator.Autopilot == nil || !cfg.Orchestrator.Autopilot.Enabled {
+				if jsonOutput {
+					data := map[string]interface{}{
+						"enabled": false,
+						"message": "autopilot already disabled",
+					}
+					out, _ := json.MarshalIndent(data, "", "  ")
+					fmt.Println(string(out))
+					return nil
+				}
+				fmt.Println("Autopilot is already disabled")
+				return nil
+			}
+
+			// Disable autopilot
+			cfg.Orchestrator.Autopilot.Enabled = false
+
+			// Save config
+			if err := config.Save(cfg, configPath); err != nil {
+				return fmt.Errorf("failed to save config: %w", err)
+			}
+
+			if jsonOutput {
+				data := map[string]interface{}{
+					"enabled": false,
+					"message": "autopilot disabled",
+				}
+				out, _ := json.MarshalIndent(data, "", "  ")
+				fmt.Println(string(out))
+				return nil
+			}
+
+			fmt.Println("✓ Autopilot disabled")
+			fmt.Println("  Restart Pilot to apply changes")
 			return nil
 		},
 	}
