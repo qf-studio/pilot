@@ -333,7 +333,7 @@ type EffortClassifierConfig struct {
 // DefaultEffortClassifierConfig returns default effort classifier configuration.
 func DefaultEffortClassifierConfig() *EffortClassifierConfig {
 	return &EffortClassifierConfig{
-		Enabled: false,
+		Enabled: true,
 		Model:   "claude-haiku-4-5-20251001",
 		Timeout: "30s",
 	}
