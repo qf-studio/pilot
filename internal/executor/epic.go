@@ -436,11 +436,16 @@ func (r *Runner) ExecuteSubIssues(ctx context.Context, parent *Task, issues []Cr
 		)
 
 		// Execute the sub-task (use override if set, for testing)
-		execFn := r.Execute
+		// GH-948: Use executeWithOptions to prevent recursive worktree creation
+		var result *ExecutionResult
+		var err error
 		if r.executeFunc != nil {
-			execFn = r.executeFunc
+			// Use test override function if set
+			result, err = r.executeFunc(ctx, subTask)
+		} else {
+			// Use internal method to prevent recursive worktree creation
+			result, err = r.executeWithOptions(ctx, subTask, false)
 		}
-		result, err := execFn(ctx, subTask)
 		if err != nil {
 			failMsg := fmt.Sprintf("❌ Failed on %d/%d: %s - Error: %v",
 				i+1, total, issue.Subtask.Title, err)

@@ -534,6 +534,13 @@ func (r *Runner) EmitProgress(taskID, phase string, progress int, message string
 // split into subtasks that run sequentially (GH-218). Only the final subtask
 // creates a PR, accumulating all changes from previous subtasks.
 func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, error) {
+	return r.executeWithOptions(ctx, task, true)
+}
+
+// executeWithOptions is the internal implementation that allows controlling worktree creation.
+// When allowWorktree is false, it skips worktree creation even if configured.
+// This prevents recursive worktree creation in sub-issues and decomposed tasks.
+func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktree bool) (*ExecutionResult, error) {
 	start := time.Now()
 
 	// GH-386: Validate source repo matches project path to prevent cross-project execution
@@ -563,7 +570,7 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 	executionPath := task.ProjectPath
 	var cleanupWorktree func()
 
-	if r.config != nil && r.config.UseWorktree && task.Branch != "" && !task.DirectCommit {
+	if allowWorktree && r.config != nil && r.config.UseWorktree && task.Branch != "" && !task.DirectCommit {
 		r.log.Info("Creating isolated worktree for execution",
 			slog.String("task_id", task.ID),
 			slog.String("branch", task.Branch),
@@ -2076,7 +2083,7 @@ func (r *Runner) executeDecomposedTask(ctx context.Context, parentTask *Task, su
 		savedDecomposer := r.decomposer
 		r.decomposer = nil
 
-		subtaskResult, err := r.Execute(ctx, subtask)
+		subtaskResult, err := r.executeWithOptions(ctx, subtask, false)
 
 		// Restore decomposer
 		r.decomposer = savedDecomposer
