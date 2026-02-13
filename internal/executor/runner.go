@@ -2347,8 +2347,7 @@ func (r *Runner) BuildPrompt(task *Task, executionPath string) string {
 	// Navigator-aware prompt structure for medium/complex tasks
 	if useNavigator {
 		// Navigator handles workflow, autonomous completion, and documentation
-		// Use nav-loop mode for structured autonomous execution with completion signals
-		sb.WriteString("Use /nav-loop mode for this task.\n\n")
+		// Embedded workflow instructions replace /nav-loop dependency (GH-987)
 
 		// CRITICAL: Override CLAUDE.md rules meant for human sessions (GH-265)
 		// Project CLAUDE.md may contain "DO NOT write code" rules for human Navigator
@@ -2375,15 +2374,9 @@ func (r *Runner) BuildPrompt(task *Task, executionPath string) string {
 			sb.WriteString(fmt.Sprintf("Create branch `%s` before starting.\n\n", task.Branch))
 		}
 
-		// nav-loop provides: structured phases, stagnation detection, dual-condition exit gate
-		sb.WriteString("Execute with nav-loop's structured workflow:\n")
-		sb.WriteString("- INIT → RESEARCH → IMPL → VERIFY → COMPLETE\n")
-		sb.WriteString("- Output progress in pilot-signal JSON blocks (v2 preferred):\n")
-		sb.WriteString("  ```pilot-signal\n")
-		sb.WriteString("  {\"v\":2,\"type\":\"status\",\"phase\":\"IMPL\",\"progress\":45}\n")
-		sb.WriteString("  ```\n")
-		sb.WriteString("- Or use legacy NAVIGATOR_STATUS blocks for backward compatibility\n")
-		sb.WriteString("- Set EXIT_SIGNAL: true when task is fully complete\n\n")
+		// Embed autonomous workflow instructions (replaces /nav-loop dependency)
+		sb.WriteString(GetAutonomousWorkflowInstructions())
+		sb.WriteString("\n")
 
 		// Pre-commit verification checklist (GH-359, GH-920)
 		sb.WriteString("## Pre-Commit Verification\n\n")
