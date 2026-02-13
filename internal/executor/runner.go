@@ -327,7 +327,12 @@ func NewRunnerWithConfig(config *BackendConfig) (*Runner, error) {
 			if config.IntentJudge.Model != "" {
 				runner.intentJudge.model = config.IntentJudge.Model
 			}
+			runner.log.Info("Intent judge initialized", slog.String("model", runner.intentJudge.model))
+		} else {
+			runner.log.Warn("Intent judge disabled: ANTHROPIC_API_KEY not set")
 		}
+	} else if config != nil && config.IntentJudge == nil {
+		runner.log.Debug("Intent judge disabled: no config")
 	}
 
 	// Initialize smart retrier (GH-920)
@@ -1786,6 +1791,15 @@ The previous execution completed but made no code changes. This task requires ac
 		}
 
 		// Intent judge: verify diff aligns with issue intent (GH-624, industry pattern from Spotify)
+		if r.intentJudge == nil {
+			log.Debug("Intent judge skipped: not initialized")
+		} else if !task.CreatePR {
+			log.Debug("Intent judge skipped: CreatePR=false")
+		} else if task.DirectCommit {
+			log.Debug("Intent judge skipped: DirectCommit=true")
+		} else if task.Branch == "" {
+			log.Debug("Intent judge skipped: no branch")
+		}
 		if r.intentJudge != nil && task.CreatePR && !task.DirectCommit && task.Branch != "" {
 			baseBranch := task.BaseBranch
 			if baseBranch == "" {
@@ -1802,6 +1816,10 @@ The previous execution completed but made no code changes. This task requires ac
 					slog.Any("error", diffErr),
 				)
 			} else if diff != "" {
+				log.Info("Intent judge running",
+					slog.String("task_id", task.ID),
+					slog.Int("diff_len", len(diff)),
+				)
 				r.reportProgress(task.ID, "Intent Check", 96, "Verifying diff matches intent...")
 
 				verdict, judgeErr := r.intentJudge.Judge(ctx, task.Title, task.Description, diff)
