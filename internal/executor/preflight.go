@@ -34,10 +34,39 @@ var DefaultPreflightChecks = []PreflightCheck{
 	},
 }
 
+// PreflightOptions configures which pre-flight checks to run.
+type PreflightOptions struct {
+	// SkipGitClean skips the git_clean check. Use this when worktree isolation
+	// is enabled, as the worktree is always clean (created from a commit).
+	SkipGitClean bool
+}
+
 // RunPreflightChecks executes all default pre-flight checks.
 // Returns the first error encountered, or nil if all checks pass.
 func RunPreflightChecks(ctx context.Context, projectPath string) error {
 	return RunPreflightChecksCustom(ctx, projectPath, DefaultPreflightChecks)
+}
+
+// RunPreflightChecksWithOptions executes pre-flight checks with the given options.
+// GH-1002: When worktree isolation is enabled, the git_clean check is skipped
+// because worktrees are always created from a commit (clean state).
+func RunPreflightChecksWithOptions(ctx context.Context, projectPath string, opts PreflightOptions) error {
+	checks := DefaultPreflightChecks
+	if opts.SkipGitClean {
+		checks = getChecksWithoutGitClean()
+	}
+	return RunPreflightChecksCustom(ctx, projectPath, checks)
+}
+
+// getChecksWithoutGitClean returns the default checks minus the git_clean check.
+func getChecksWithoutGitClean() []PreflightCheck {
+	var result []PreflightCheck
+	for _, check := range DefaultPreflightChecks {
+		if check.Name != "git_clean" {
+			result = append(result, check)
+		}
+	}
+	return result
 }
 
 // RunPreflightChecksCustom executes a custom set of pre-flight checks.

@@ -650,8 +650,12 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 
 	// GH-915: Run pre-flight checks to catch environmental issues early
 	// Skip when using mock backends in tests (skipPreflightChecks flag)
+	// GH-1002: Skip git_clean check when worktree isolation is enabled
 	if !r.skipPreflightChecks {
-		if err := RunPreflightChecks(ctx, executionPath); err != nil {
+		preflightOpts := PreflightOptions{
+			SkipGitClean: r.config != nil && r.config.UseWorktree,
+		}
+		if err := RunPreflightChecksWithOptions(ctx, executionPath, preflightOpts); err != nil {
 			r.log.Warn("Pre-flight check failed",
 				slog.String("task_id", task.ID),
 				slog.Any("error", err),

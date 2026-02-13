@@ -200,3 +200,103 @@ func TestPreflightError(t *testing.T) {
 		t.Errorf("Unwrap() should return inner error")
 	}
 }
+
+// GH-1002: Test that git_clean check can be skipped with PreflightOptions
+func TestRunPreflightChecksWithOptions(t *testing.T) {
+	ctx := context.Background()
+
+	// Create a temp git repo with uncommitted changes
+	tmpDir := t.TempDir()
+	if err := exec.Command("git", "init", tmpDir).Run(); err != nil {
+		t.Fatalf("failed to init git repo: %v", err)
+	}
+
+	// Configure git user for the repo
+	_ = exec.Command("git", "-C", tmpDir, "config", "user.email", "test@test.com").Run()
+	_ = exec.Command("git", "-C", tmpDir, "config", "user.name", "Test").Run()
+
+	// Create uncommitted file to make repo dirty
+	testFile := filepath.Join(tmpDir, "dirty.txt")
+	if err := os.WriteFile(testFile, []byte("uncommitted"), 0644); err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+
+	// Use only git checks for testing (exclude claude_available which may not be installed in CI)
+	gitOnlyChecks := []PreflightCheck{
+		{
+			Name:        "git_clean",
+			Description: "Verify git working directory is clean",
+			Check:       checkGitClean,
+		},
+		{
+			Name:        "git_repo",
+			Description: "Verify directory is a git repository",
+			Check:       checkGitRepo,
+		},
+	}
+
+	gitRepoOnlyChecks := []PreflightCheck{
+		{
+			Name:        "git_repo",
+			Description: "Verify directory is a git repository",
+			Check:       checkGitRepo,
+		},
+	}
+
+	t.Run("without_skip_git_clean_fails_on_dirty_repo", func(t *testing.T) {
+		// Default behavior - should fail because repo is dirty
+		err := RunPreflightChecksCustom(ctx, tmpDir, gitOnlyChecks)
+		if err == nil {
+			t.Error("expected error for dirty repo without SkipGitClean")
+		}
+		var preflightErr *PreflightError
+		if !errors.As(err, &preflightErr) {
+			t.Errorf("expected PreflightError, got: %T", err)
+		} else if preflightErr.CheckName != "git_clean" {
+			t.Errorf("expected git_clean check to fail, got: %s", preflightErr.CheckName)
+		}
+	})
+
+	t.Run("with_skip_git_clean_passes_on_dirty_repo", func(t *testing.T) {
+		// GH-1002: With SkipGitClean=true (simulated by excluding git_clean),
+		// should pass even with dirty repo
+		err := RunPreflightChecksCustom(ctx, tmpDir, gitRepoOnlyChecks)
+		if err != nil {
+			t.Errorf("expected no error with SkipGitClean=true, got: %v", err)
+		}
+	})
+}
+
+func TestGetChecksWithoutGitClean(t *testing.T) {
+	checks := getChecksWithoutGitClean()
+
+	// Should have fewer checks than default
+	if len(checks) >= len(DefaultPreflightChecks) {
+		t.Errorf("expected fewer checks, got %d vs default %d", len(checks), len(DefaultPreflightChecks))
+	}
+
+	// Should not contain git_clean
+	for _, check := range checks {
+		if check.Name == "git_clean" {
+			t.Error("git_clean check should not be present")
+		}
+	}
+
+	// Should still contain other checks
+	hasGitRepo := false
+	hasClaudeAvailable := false
+	for _, check := range checks {
+		if check.Name == "git_repo" {
+			hasGitRepo = true
+		}
+		if check.Name == "claude_available" {
+			hasClaudeAvailable = true
+		}
+	}
+	if !hasGitRepo {
+		t.Error("git_repo check should still be present")
+	}
+	if !hasClaudeAvailable {
+		t.Error("claude_available check should still be present")
+	}
+}
