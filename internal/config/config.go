@@ -501,6 +501,32 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	// GH-1124: Validate bounds and orchestrator configuration
+	if c.Orchestrator != nil {
+		// Validate max_concurrent >= 1
+		if c.Orchestrator.MaxConcurrent < 1 {
+			return fmt.Errorf("orchestrator.max_concurrent must be >= 1, got %d", c.Orchestrator.MaxConcurrent)
+		}
+
+		// Validate execution mode
+		if c.Orchestrator.Execution != nil {
+			validModes := map[string]bool{"sequential": true, "parallel": true}
+			if !validModes[c.Orchestrator.Execution.Mode] {
+				return fmt.Errorf("orchestrator.execution.mode must be 'sequential' or 'parallel', got %q", c.Orchestrator.Execution.Mode)
+			}
+		}
+	}
+
+	// Validate quality on_failure max_retries in [0, 10]
+	if c.Quality != nil && (c.Quality.OnFailure.MaxRetries < 0 || c.Quality.OnFailure.MaxRetries > 10) {
+		return fmt.Errorf("quality.on_failure.max_retries must be in range [0, 10], got %d", c.Quality.OnFailure.MaxRetries)
+	}
+
+	// Validate budget daily_limit > 0 when budget is enabled
+	if c.Budget != nil && c.Budget.Enabled && c.Budget.DailyLimit <= 0 {
+		return fmt.Errorf("budget.daily_limit must be > 0 when budget is enabled, got %g", c.Budget.DailyLimit)
+	}
+
 	return nil
 }
 
