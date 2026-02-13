@@ -219,8 +219,7 @@ func TestWorktreeEpicCleanupOnFailure(t *testing.T) {
 			t.Fatal("Worktree should exist during execution")
 		}
 
-		// Simulate failure (but don't panic - just return early)
-		return
+		// Simulate failure (function returns normally, testing cleanup on non-panic exit)
 	}()
 
 	// Verify worktree was cleaned up despite "failure"

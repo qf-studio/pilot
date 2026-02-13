@@ -2378,7 +2378,11 @@ func (r *Runner) BuildPrompt(task *Task, executionPath string) string {
 		// nav-loop provides: structured phases, stagnation detection, dual-condition exit gate
 		sb.WriteString("Execute with nav-loop's structured workflow:\n")
 		sb.WriteString("- INIT → RESEARCH → IMPL → VERIFY → COMPLETE\n")
-		sb.WriteString("- Output NAVIGATOR_STATUS blocks for progress tracking\n")
+		sb.WriteString("- Output progress in pilot-signal JSON blocks (v2 preferred):\n")
+		sb.WriteString("  ```pilot-signal\n")
+		sb.WriteString("  {\"v\":2,\"type\":\"status\",\"phase\":\"IMPL\",\"progress\":45}\n")
+		sb.WriteString("  ```\n")
+		sb.WriteString("- Or use legacy NAVIGATOR_STATUS blocks for backward compatibility\n")
 		sb.WriteString("- Set EXIT_SIGNAL: true when task is fully complete\n\n")
 
 		// Pre-commit verification checklist (GH-359, GH-920)
@@ -2902,6 +2906,21 @@ func (r *Runner) parseNavigatorStatusBlock(taskID, text string, state *progressS
 		line = strings.TrimSpace(line)
 		line = strings.TrimSuffix(line, "%")
 		if pct, err := strconv.Atoi(strings.TrimSpace(line)); err == nil {
+			// Clamp progress to valid range (GH-941)
+			if pct < 0 {
+				r.log.Warn("Legacy parser: clamping negative progress",
+					slog.String("task_id", taskID),
+					slog.Int("original", pct),
+				)
+				pct = 0
+			}
+			if pct > 100 {
+				r.log.Warn("Legacy parser: clamping progress > 100",
+					slog.String("task_id", taskID),
+					slog.Int("original", pct),
+				)
+				pct = 100
+			}
 			state.navProgress = pct
 		}
 	}
