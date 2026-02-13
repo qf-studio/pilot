@@ -85,16 +85,23 @@ Each worktree has an associated cleanup function that runs:
 defer result.Cleanup() // Always runs, even on panic
 ```
 
-### Startup Orphan Scan
+### Startup Orphan Scan (Crash Recovery)
 
-On Pilot startup, orphaned worktrees are detected and removed:
+On Pilot startup, orphaned worktrees are detected and removed automatically. This handles cases where Pilot crashed mid-execution:
 
 1. **Scan**: Check `/tmp/pilot-worktree-*` directories
-2. **Validate**: Verify each directory is a valid worktree
-3. **Clean**: Remove orphaned directories and stale git references
-4. **Prune**: Run `git worktree prune` to clean .git/worktrees/
+2. **Validate**: Verify each directory is a valid worktree by checking `.git` file
+3. **Verify connectivity**: Check if the `.git` reference points to the current repository
+4. **Clean**: Remove orphaned directories and stale git references
+5. **Prune**: Run `git worktree prune` to clean `.git/worktrees/`
 
-This handles cases where Pilot crashed before normal cleanup could run.
+**Crash scenarios handled:**
+- Pilot process killed (SIGKILL)
+- System crash or power loss
+- Out-of-memory termination
+- Network disconnection during execution
+
+No manual intervention is required — orphans are cleaned up on next startup.
 
 ### Automatic Cleanup
 

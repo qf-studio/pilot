@@ -173,6 +173,85 @@ This restores the backup created during the upgrade.
 
 ---
 
+## Worktree Isolation
+
+### Orphaned worktrees after crash
+
+If Pilot crashes mid-execution, worktrees may be left behind in `/tmp/`. On next startup, Pilot automatically scans for and removes orphaned worktrees.
+
+**Manual cleanup** (if needed):
+
+```bash
+# List orphaned worktrees
+ls /tmp/pilot-worktree-*
+
+# Remove all orphaned worktrees
+rm -rf /tmp/pilot-worktree-*
+
+# Clean git references
+git worktree prune
+```
+
+### "failed to create worktree" error
+
+The branch may already exist from a previous run:
+
+```bash
+# Check existing worktrees
+git worktree list
+
+# Remove stale worktree reference
+git worktree prune
+
+# If branch exists, delete it
+git branch -D pilot/GH-<issue>
+```
+
+### Navigator features not working in worktree
+
+Worktrees only contain tracked files from HEAD. If your `.agent/` directory has untracked content:
+
+1. **Check if .agent/ is gitignored**: Untracked `.agent/` content is copied automatically
+2. **Verify copy succeeded**: `ls -la /tmp/pilot-worktree-*/.agent/`
+3. **Check permissions**: Files should maintain original permissions
+
+If Navigator still doesn't work, verify the source repo has a valid `.agent/` directory:
+
+```bash
+ls -la .agent/
+ls -la .agent/tasks/
+```
+
+### Worktree execution hangs
+
+Check for network issues or locked resources:
+
+```bash
+# Verify remote access from worktree
+git -C /tmp/pilot-worktree-* ls-remote origin
+
+# Check for process holding locks
+lsof +D /tmp/pilot-worktree-*
+```
+
+### Disk space issues
+
+Worktrees are created in `/tmp/` and cleaned up automatically. If disk is full:
+
+```bash
+# Check tmp usage
+du -sh /tmp/pilot-worktree-*
+
+# Remove all worktrees (safe if no tasks running)
+rm -rf /tmp/pilot-worktree-*
+
+# Clear system temp files
+# macOS: let system handle /tmp cleanup
+# Linux: check if /tmp is on tmpfs
+```
+
+---
+
 ## Dashboard
 
 ### Dashboard doesn't show updates
