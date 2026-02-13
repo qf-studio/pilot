@@ -2106,7 +2106,7 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 			delivery := briefs.NewDeliveryService(briefsConfig, deliveryOpts...)
 
 			// Create and start scheduler
-			briefScheduler = briefs.NewScheduler(generator, delivery, briefsConfig, slog.Default())
+			briefScheduler = briefs.NewScheduler(generator, delivery, briefsConfig, slog.Default(), store)
 			if err := briefScheduler.Start(ctx); err != nil {
 				logging.WithComponent("start").Warn("Failed to start brief scheduler", slog.Any("error", err))
 				briefScheduler = nil

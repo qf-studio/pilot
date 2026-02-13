@@ -78,7 +78,7 @@ func TestNewScheduler(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			generator := NewGenerator(store, tt.config)
 			delivery := NewDeliveryService(tt.config)
-			scheduler := NewScheduler(generator, delivery, tt.config, tt.logger)
+			scheduler := NewScheduler(generator, delivery, tt.config, tt.logger, nil)
 
 			if scheduler == nil {
 				t.Fatal("expected scheduler, got nil")
@@ -141,7 +141,7 @@ func TestSchedulerStartStop(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			generator := NewGenerator(store, tt.config)
 			delivery := NewDeliveryService(tt.config)
-			scheduler := NewScheduler(generator, delivery, tt.config, nil)
+			scheduler := NewScheduler(generator, delivery, tt.config, nil, nil)
 
 			ctx := context.Background()
 			err := scheduler.Start(ctx)
@@ -178,7 +178,7 @@ func TestSchedulerDoubleStart(t *testing.T) {
 
 	generator := NewGenerator(store, config)
 	delivery := NewDeliveryService(config)
-	scheduler := NewScheduler(generator, delivery, config, nil)
+	scheduler := NewScheduler(generator, delivery, config, nil, nil)
 
 	ctx := context.Background()
 
@@ -210,7 +210,7 @@ func TestSchedulerDoubleStop(t *testing.T) {
 
 	generator := NewGenerator(store, config)
 	delivery := NewDeliveryService(config)
-	scheduler := NewScheduler(generator, delivery, config, nil)
+	scheduler := NewScheduler(generator, delivery, config, nil, nil)
 
 	ctx := context.Background()
 
@@ -241,7 +241,7 @@ func TestSchedulerNextRun(t *testing.T) {
 
 	generator := NewGenerator(store, config)
 	delivery := NewDeliveryService(config)
-	scheduler := NewScheduler(generator, delivery, config, nil)
+	scheduler := NewScheduler(generator, delivery, config, nil, nil)
 
 	// Before start, NextRun should return zero time
 	nextRun := scheduler.NextRun()
@@ -278,7 +278,7 @@ func TestSchedulerLastRun(t *testing.T) {
 
 	generator := NewGenerator(store, config)
 	delivery := NewDeliveryService(config)
-	scheduler := NewScheduler(generator, delivery, config, nil)
+	scheduler := NewScheduler(generator, delivery, config, nil, nil)
 
 	// Before start, LastRun should return zero time
 	lastRun := scheduler.LastRun()
@@ -311,7 +311,7 @@ func TestSchedulerStatus(t *testing.T) {
 
 	generator := NewGenerator(store, config)
 	delivery := NewDeliveryService(config)
-	scheduler := NewScheduler(generator, delivery, config, nil)
+	scheduler := NewScheduler(generator, delivery, config, nil, nil)
 
 	// Status before start
 	status := scheduler.Status()
@@ -365,7 +365,7 @@ func TestSchedulerRunNow(t *testing.T) {
 
 	generator := NewGenerator(store, config)
 	delivery := NewDeliveryService(config) // No actual clients configured
-	scheduler := NewScheduler(generator, delivery, config, nil)
+	scheduler := NewScheduler(generator, delivery, config, nil, nil)
 
 	ctx := context.Background()
 
@@ -418,7 +418,7 @@ func TestSchedulerCronSchedules(t *testing.T) {
 
 			generator := NewGenerator(store, config)
 			delivery := NewDeliveryService(config)
-			scheduler := NewScheduler(generator, delivery, config, nil)
+			scheduler := NewScheduler(generator, delivery, config, nil, nil)
 
 			ctx := context.Background()
 			err := scheduler.Start(ctx)

@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/alekspetrov/pilot/internal/memory"
 	"github.com/robfig/cron/v3"
 )
 
@@ -19,10 +20,12 @@ type Scheduler struct {
 	running   bool
 	entryID   cron.EntryID
 	logger    *slog.Logger
+	store     *memory.Store // nullable for graceful degradation
 }
 
-// NewScheduler creates a new brief scheduler
-func NewScheduler(generator *Generator, delivery *DeliveryService, config *BriefConfig, logger *slog.Logger) *Scheduler {
+// NewScheduler creates a new brief scheduler.
+// The store parameter is optional (nullable) for graceful degradation.
+func NewScheduler(generator *Generator, delivery *DeliveryService, config *BriefConfig, logger *slog.Logger, store *memory.Store) *Scheduler {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -39,6 +42,7 @@ func NewScheduler(generator *Generator, delivery *DeliveryService, config *Brief
 		config:    config,
 		cron:      cron.New(cron.WithLocation(loc)),
 		logger:    logger,
+		store:     store,
 	}
 }
 
@@ -76,6 +80,9 @@ func (s *Scheduler) Start(ctx context.Context) error {
 		"timezone", s.config.Timezone,
 		"next_run", nextRun,
 	)
+
+	// Check if we missed a scheduled brief and catch up if needed
+	s.maybeCatchUp(ctx)
 
 	return nil
 }
@@ -173,7 +180,94 @@ func (s *Scheduler) runBriefWithResults(ctx context.Context) ([]DeliveryResult, 
 	)
 
 	results := s.delivery.DeliverAll(ctx, brief)
+
+	// Record successful deliveries to store
+	if s.store != nil {
+		for _, result := range results {
+			if result.Success {
+				record := &memory.BriefRecord{
+					SentAt:    time.Now(),
+					Channel:   result.Channel,
+					BriefType: "daily",
+				}
+				if err := s.store.RecordBriefSent(record); err != nil {
+					s.logger.Warn("failed to record brief sent", "channel", result.Channel, "error", err)
+				}
+			}
+		}
+	}
+
 	return results, nil
+}
+
+// maybeCatchUp checks if a scheduled brief was missed and fires one if needed.
+// A brief is considered missed if the last sent time is before the previous scheduled run time.
+func (s *Scheduler) maybeCatchUp(ctx context.Context) {
+	if s.store == nil {
+		s.logger.Info("catch-up skipped: no store configured")
+		return
+	}
+
+	// Get the most recent brief sent for any channel
+	// We use "telegram" as a representative channel since it's the primary delivery mechanism
+	lastRecord, err := s.store.GetLastBriefSent("telegram")
+	if err != nil {
+		s.logger.Warn("catch-up: failed to get last brief sent", "error", err)
+		return
+	}
+
+	// Parse the cron schedule to determine the previous scheduled run
+	parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
+	schedule, err := parser.Parse(s.config.Schedule)
+	if err != nil {
+		s.logger.Warn("catch-up: failed to parse schedule", "schedule", s.config.Schedule, "error", err)
+		return
+	}
+
+	// Calculate the previous scheduled run time
+	// We iterate backwards from now to find the most recent scheduled time
+	now := time.Now()
+	loc, _ := time.LoadLocation(s.config.Timezone)
+	if loc == nil {
+		loc = time.UTC
+	}
+	nowInTz := now.In(loc)
+
+	// Find the previous scheduled time by checking what the next run would be from 48 hours ago
+	// then step forward until we find the most recent past scheduled time
+	checkTime := nowInTz.Add(-48 * time.Hour)
+	var prevScheduled time.Time
+	for {
+		nextRun := schedule.Next(checkTime)
+		if nextRun.After(nowInTz) {
+			break
+		}
+		prevScheduled = nextRun
+		checkTime = nextRun
+	}
+
+	if prevScheduled.IsZero() {
+		s.logger.Info("catch-up: no previous scheduled time found")
+		return
+	}
+
+	// Check if we missed the brief
+	if lastRecord == nil || lastRecord.SentAt.Before(prevScheduled) {
+		lastSentStr := "never"
+		if lastRecord != nil {
+			lastSentStr = lastRecord.SentAt.Format(time.RFC3339)
+		}
+		s.logger.Info("catch-up: missed brief detected, firing now",
+			"last_sent", lastSentStr,
+			"prev_scheduled", prevScheduled.Format(time.RFC3339),
+		)
+		s.runBrief(ctx)
+	} else {
+		s.logger.Info("catch-up: no missed brief",
+			"last_sent", lastRecord.SentAt.Format(time.RFC3339),
+			"prev_scheduled", prevScheduled.Format(time.RFC3339),
+		)
+	}
 }
 
 // Status returns scheduler status information
