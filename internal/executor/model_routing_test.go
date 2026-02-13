@@ -1,6 +1,8 @@
 package executor
 
 import (
+	"context"
+	"errors"
 	"testing"
 	"time"
 )
@@ -324,5 +326,63 @@ func TestModelRouter_GetTimeoutForComplexity(t *testing.T) {
 				t.Errorf("GetTimeoutForComplexity(%s) = %v, want %v", tt.complexity, got, tt.expected)
 			}
 		})
+	}
+}
+
+func TestModelRouter_SelectEffortWithLLMClassifier(t *testing.T) {
+	// Test that LLM classifier overrides static mapping
+	config := &EffortRoutingConfig{
+		Enabled: true,
+		Trivial: "low",
+		Simple:  "medium",
+		Medium:  "high",
+		Complex: "max",
+	}
+
+	router := NewModelRouterWithEffort(nil, nil, config)
+
+	// Attach a mock classifier that returns "high"
+	classifier := newEffortClassifierWithRunner(mockEffortRunner("high", "security sensitive"))
+	router.SetEffortClassifier(classifier)
+
+	// This task looks trivial by heuristic, but LLM says "high"
+	task := &Task{
+		ID:          "GH-100",
+		Description: "Fix typo in auth module", // Heuristic: trivial (typo), LLM: high
+	}
+
+	got := router.SelectEffort(task)
+	if got != "high" {
+		t.Errorf("Expected LLM classification 'high' to override static mapping, got %q", got)
+	}
+}
+
+func TestModelRouter_SelectEffortFallsBackOnLLMFailure(t *testing.T) {
+	// Test that static mapping is used when LLM fails
+	config := &EffortRoutingConfig{
+		Enabled: true,
+		Trivial: "low",
+		Simple:  "medium",
+		Medium:  "high",
+		Complex: "max",
+	}
+
+	router := NewModelRouterWithEffort(nil, nil, config)
+
+	// Attach a mock classifier that fails
+	classifier := newEffortClassifierWithRunner(func(_ context.Context, _ ...string) ([]byte, error) {
+		return nil, errors.New("subprocess failed")
+	})
+	router.SetEffortClassifier(classifier)
+
+	// This task is trivial by heuristic
+	task := &Task{
+		ID:          "GH-200",
+		Description: "Fix typo in README",
+	}
+
+	got := router.SelectEffort(task)
+	if got != "low" {
+		t.Errorf("Expected fallback to static mapping 'low', got %q", got)
 	}
 }

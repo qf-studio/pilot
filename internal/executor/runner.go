@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/alekspetrov/pilot/internal/logging"
+	"github.com/alekspetrov/pilot/internal/memory"
 	"github.com/alekspetrov/pilot/internal/quality"
 	"github.com/alekspetrov/pilot/internal/replay"
 	"github.com/alekspetrov/pilot/internal/webhooks"
@@ -257,6 +258,9 @@ type Runner struct {
 	skipPreflightChecks   bool                  // Skip preflight checks (for testing with mock backends)
 	retrier               *Retrier              // Optional smart retry handler (GH-920)
 	signalParser          *SignalParser         // Structured signal parser v2 for progress extraction (GH-960)
+	knowledge             *memory.KnowledgeStore  // Optional knowledge store for experiential memories (GH-994)
+	profileManager        *memory.ProfileManager  // Optional profile manager for user preferences (GH-994)
+	driftDetector         *DriftDetector          // Optional drift detector for collaboration drift (GH-997)
 }
 
 // NewRunner creates a new Runner instance with Claude Code backend by default.
@@ -315,6 +319,25 @@ func NewRunnerWithConfig(config *BackendConfig) (*Runner, error) {
 	// Configure model routing, timeouts, and effort from config
 	if config != nil {
 		runner.modelRouter = NewModelRouterWithEffort(config.ModelRouting, config.Timeout, config.EffortRouting)
+
+		// GH-727: Attach LLM effort classifier if enabled
+		// Uses Claude Code subprocess with Haiku - no ANTHROPIC_API_KEY needed
+		if config.EffortClassifier != nil && config.EffortClassifier.Enabled {
+			classifier := NewEffortClassifier()
+			if config.EffortClassifier.Model != "" {
+				classifier.model = config.EffortClassifier.Model
+			}
+			if config.EffortClassifier.Timeout != "" {
+				if d, err := time.ParseDuration(config.EffortClassifier.Timeout); err == nil {
+					classifier.timeout = d
+				}
+			}
+			runner.modelRouter.SetEffortClassifier(classifier)
+			runner.log.Info("LLM effort classifier initialized",
+				slog.String("model", classifier.model),
+				slog.Duration("timeout", classifier.timeout),
+			)
+		}
 
 		// Configure task decomposition (GH-218)
 		if config.Decompose != nil && config.Decompose.Enabled {
@@ -466,6 +489,24 @@ func (r *Runner) SetOnSubIssuePRCreated(fn SubIssuePRCallback) {
 // SetIntentJudge sets the intent judge for diff-vs-ticket alignment verification (GH-624).
 func (r *Runner) SetIntentJudge(judge *IntentJudge) {
 	r.intentJudge = judge
+}
+
+// SetKnowledgeStore sets the knowledge store for experiential memories (GH-994).
+// When set, relevant memories are surfaced in the prompt and decisions are captured post-task.
+func (r *Runner) SetKnowledgeStore(k *memory.KnowledgeStore) {
+	r.knowledge = k
+}
+
+// SetProfileManager sets the profile manager for user preferences (GH-994).
+// When set, user preferences (verbosity, code patterns) are applied to prompts.
+func (r *Runner) SetProfileManager(pm *memory.ProfileManager) {
+	r.profileManager = pm
+}
+
+// SetDriftDetector sets the drift detector for collaboration drift (GH-997).
+// When set, prompts may include re-anchoring instructions if drift is detected.
+func (r *Runner) SetDriftDetector(dd *DriftDetector) {
+	r.driftDetector = dd
 }
 
 // getRecordingsPath returns the recordings path, using default if not set
@@ -915,6 +956,14 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 			}
 		} else {
 			r.reportProgress(task.ID, "Branching", 8, fmt.Sprintf("Created branch %s", task.Branch))
+		}
+	}
+
+	// GH-994: Create task documentation if Navigator is present
+	agentPath := filepath.Join(executionPath, ".agent")
+	if _, err := os.Stat(agentPath); err == nil {
+		if err := CreateTaskDoc(agentPath, task); err != nil {
+			log.Warn("Failed to create task doc", slog.Any("error", err))
 		}
 	}
 
@@ -2470,6 +2519,12 @@ func (r *Runner) BuildPrompt(task *Task, executionPath string) string {
 		sb.WriteString("\nWork autonomously. Do not ask for confirmation.\n")
 	}
 
+	// GH-997: Inject re-anchor prompt if drift detected
+	if r.driftDetector != nil && r.driftDetector.ShouldReanchor() {
+		sb.WriteString(r.driftDetector.GetReanchorPrompt())
+		r.driftDetector.Reset()
+	}
+
 	return sb.String()
 }
 
@@ -3303,28 +3358,38 @@ func isValidSHA(s string) bool {
 }
 
 // estimateCost calculates estimated cost from token usage (TASK-13)
+// Pricing source: https://platform.claude.com/docs/en/about-claude/pricing
 func estimateCost(inputTokens, outputTokens int64, model string) float64 {
 	// Model pricing in USD per 1M tokens
 	const (
+		// Sonnet 4.5/4
 		sonnetInputPrice  = 3.00
 		sonnetOutputPrice = 15.00
-		// Opus 4.5 pricing ($15/$75 per 1M tokens)
+		// Opus 4.6/4.5 (same pricing)
 		opusInputPrice  = 5.00
 		opusOutputPrice = 25.00
-		// Legacy Opus 4.5 pricing
-		opus45InputPrice  = 15.00
-		opus45OutputPrice = 75.00
+		// Opus 4.1/4.0 (legacy)
+		opus41InputPrice  = 15.00
+		opus41OutputPrice = 75.00
+		// Haiku 4.5
+		haikuInputPrice  = 1.00
+		haikuOutputPrice = 5.00
 	)
 
 	var inputPrice, outputPrice float64
 	modelLower := strings.ToLower(model)
 	switch {
-	case model == "claude-opus-4-5":
-		inputPrice = opus45InputPrice
-		outputPrice = opus45OutputPrice
+	case strings.Contains(modelLower, "opus-4-1") || strings.Contains(modelLower, "opus-4-0") || model == "claude-opus-4":
+		// Legacy Opus 4.1/4.0
+		inputPrice = opus41InputPrice
+		outputPrice = opus41OutputPrice
 	case strings.Contains(modelLower, "opus"):
+		// Opus 4.6/4.5 ($5/$25)
 		inputPrice = opusInputPrice
 		outputPrice = opusOutputPrice
+	case strings.Contains(modelLower, "haiku"):
+		inputPrice = haikuInputPrice
+		outputPrice = haikuOutputPrice
 	default:
 		inputPrice = sonnetInputPrice
 		outputPrice = sonnetOutputPrice

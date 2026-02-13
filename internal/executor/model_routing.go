@@ -1,15 +1,17 @@
 package executor
 
 import (
+	"context"
 	"time"
 )
 
 // ModelRouter selects the appropriate model, timeout, and effort level based on task complexity.
 // It uses configuration to map complexity levels to model names, timeout durations, and effort levels.
 type ModelRouter struct {
-	modelConfig   *ModelRoutingConfig
-	timeoutConfig *TimeoutConfig
-	effortConfig  *EffortRoutingConfig
+	modelConfig      *ModelRoutingConfig
+	timeoutConfig    *TimeoutConfig
+	effortConfig     *EffortRoutingConfig
+	effortClassifier *EffortClassifier // LLM-based effort classifier (GH-727)
 }
 
 // NewModelRouter creates a new ModelRouter with the given configuration.
@@ -116,13 +118,30 @@ func (r *ModelRouter) IsRoutingEnabled() bool {
 	return r.modelConfig != nil && r.modelConfig.Enabled
 }
 
-// SelectEffort returns the appropriate effort level for a task based on its complexity.
-// If effort routing is disabled, returns empty string (use model default).
+// SetEffortClassifier attaches an LLM-based effort classifier to the router.
+// When set, SelectEffort will use LLM classification before falling back to static mapping.
+func (r *ModelRouter) SetEffortClassifier(c *EffortClassifier) {
+	r.effortClassifier = c
+}
+
+// SelectEffort returns the appropriate effort level for a task.
+// If an LLM classifier is attached and enabled, it tries LLM classification first.
+// Falls back to static complexity→effort mapping if LLM fails or is disabled.
+// Returns empty string if effort routing is disabled entirely (use model default).
 func (r *ModelRouter) SelectEffort(task *Task) string {
 	if r.effortConfig == nil || !r.effortConfig.Enabled {
 		return ""
 	}
 
+	// Try LLM classification first (GH-727)
+	if r.effortClassifier != nil {
+		if effort := r.effortClassifier.Classify(context.Background(), task); effort != "" {
+			return effort
+		}
+		// LLM failed, fall through to static mapping
+	}
+
+	// Static complexity-based fallback
 	complexity := DetectComplexity(task)
 	return r.GetEffortForComplexity(complexity)
 }

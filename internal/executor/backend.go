@@ -184,6 +184,9 @@ type BackendConfig struct {
 	// EffortRouting contains effort level selection based on task complexity
 	EffortRouting *EffortRoutingConfig `yaml:"effort_routing,omitempty"`
 
+	// EffortClassifier contains LLM-based effort classification settings (GH-727)
+	EffortClassifier *EffortClassifierConfig `yaml:"effort_classifier,omitempty"`
+
 	// Decompose contains auto-decomposition settings for complex tasks
 	Decompose *DecomposeConfig `yaml:"decompose,omitempty"`
 
@@ -299,6 +302,43 @@ type EffortRoutingConfig struct {
 	Complex string `yaml:"complex"`
 }
 
+// EffortClassifierConfig configures the LLM-based effort classifier that analyzes
+// task content to recommend the appropriate effort level before execution.
+// Falls back to static complexity→effort mapping on failure.
+//
+// GH-727: Smarter effort selection via LLM analysis.
+// Cost: ~$0.0002 per classification (negligible vs execution savings).
+//
+// Example YAML configuration:
+//
+//	executor:
+//	  effort_classifier:
+//	    enabled: true
+//	    model: "claude-haiku-4-5-20251001"
+//	    timeout: 30s
+type EffortClassifierConfig struct {
+	// Enabled controls whether LLM effort classification is active.
+	// When false (default), static complexity→effort mapping is used.
+	Enabled bool `yaml:"enabled"`
+
+	// Model is the model to use for effort classification.
+	// Default: "claude-haiku-4-5-20251001"
+	Model string `yaml:"model,omitempty"`
+
+	// Timeout is the maximum time to wait for LLM response.
+	// Default: "30s"
+	Timeout string `yaml:"timeout,omitempty"`
+}
+
+// DefaultEffortClassifierConfig returns default effort classifier configuration.
+func DefaultEffortClassifierConfig() *EffortClassifierConfig {
+	return &EffortClassifierConfig{
+		Enabled: false,
+		Model:   "claude-haiku-4-5-20251001",
+		Timeout: "30s",
+	}
+}
+
 // IntentJudgeConfig configures the LLM intent judge that compares diffs against
 // the original issue to catch scope creep and missing requirements.
 //
@@ -372,15 +412,16 @@ func DefaultBackendConfig() *BackendConfig {
 		},
 		OpenCode: &OpenCodeConfig{
 			ServerURL:       "http://127.0.0.1:4096",
-			Model:           "anthropic/claude-sonnet-4",
+			Model:           "anthropic/claude-sonnet-4-5",
 			Provider:        "anthropic",
 			AutoStartServer: true,
 			ServerCommand:   "opencode serve",
 		},
-		ModelRouting:  DefaultModelRoutingConfig(),
-		Timeout:       DefaultTimeoutConfig(),
-		EffortRouting: DefaultEffortRoutingConfig(),
-		Decompose:     DefaultDecomposeConfig(),
+		ModelRouting:     DefaultModelRoutingConfig(),
+		Timeout:          DefaultTimeoutConfig(),
+		EffortRouting:    DefaultEffortRoutingConfig(),
+		EffortClassifier: DefaultEffortClassifierConfig(),
+		Decompose:        DefaultDecomposeConfig(),
 		IntentJudge:   DefaultIntentJudgeConfig(),
 		Navigator:     DefaultNavigatorConfig(),
 		Retry:         DefaultRetryConfig(),
@@ -402,9 +443,9 @@ func DefaultModelRoutingConfig() *ModelRoutingConfig {
 	return &ModelRoutingConfig{
 		Enabled: false,
 		Trivial: "claude-haiku",
-		Simple:  "claude-opus-4-5",
-		Medium:  "claude-opus-4-5",
-		Complex: "claude-opus-4-5",
+		Simple:  "claude-opus-4-6",
+		Medium:  "claude-opus-4-6",
+		Complex: "claude-opus-4-6",
 	}
 }
 
