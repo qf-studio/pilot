@@ -711,7 +711,7 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 		}
 
 		if task.CreatePR && task.Branch != "" {
-			epicGit := NewGitOperations(task.ProjectPath)
+			epicGit := NewGitOperations(executionPath)
 
 			r.reportProgress(task.ID, "Creating PR", 96, "Pushing epic branch...")
 
