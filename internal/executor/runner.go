@@ -2037,6 +2037,14 @@ The previous execution completed but made no code changes. This task requires ac
 				log.Warn("Failed to sync Navigator index", slog.Any("error", syncErr))
 			}
 		}
+
+		// GH-1018: Sync main branch with origin after task completion
+		// This prevents local/remote divergence over time
+		if r.config != nil && r.config.SyncMainAfterTask {
+			if syncErr := r.syncMainBranch(ctx, task.ProjectPath); syncErr != nil {
+				log.Warn("Failed to sync main branch", slog.Any("error", syncErr))
+			}
+		}
 	}
 
 	return result, nil
@@ -3505,6 +3513,51 @@ func (r *Runner) syncNavigatorIndex(task *Task, status string, executionPath str
 		r.log.Debug("Task not found in Navigator index In Progress section",
 			slog.String("task_id", task.ID),
 		)
+	}
+
+	return nil
+}
+
+// syncMainBranch syncs the local main branch with origin/main after task completion.
+// GH-1018: This prevents local/remote divergence over time when multiple PRs are merged.
+//
+// Strategy:
+// 1. Fetch origin/main to get latest remote state
+// 2. If on main branch, reset --hard to origin/main
+// 3. If on feature branch, skip reset (don't disrupt worktree)
+//
+// This is opt-in via executor.sync_main_after_task config.
+func (r *Runner) syncMainBranch(ctx context.Context, repoPath string) error {
+	log := r.log.With(slog.String("repo", repoPath))
+	log.Debug("Syncing main branch with origin")
+
+	// Fetch latest from origin
+	fetchCmd := exec.CommandContext(ctx, "git", "fetch", "origin", "main")
+	fetchCmd.Dir = repoPath
+	if output, err := fetchCmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to fetch origin/main: %w: %s", err, output)
+	}
+
+	// Check current branch
+	branchCmd := exec.CommandContext(ctx, "git", "rev-parse", "--abbrev-ref", "HEAD")
+	branchCmd.Dir = repoPath
+	branchOutput, err := branchCmd.Output()
+	if err != nil {
+		return fmt.Errorf("failed to get current branch: %w", err)
+	}
+
+	currentBranch := strings.TrimSpace(string(branchOutput))
+
+	// Only reset if on main branch (don't disrupt feature branches or worktrees)
+	if currentBranch == "main" || currentBranch == "master" {
+		resetCmd := exec.CommandContext(ctx, "git", "reset", "--hard", "origin/main")
+		resetCmd.Dir = repoPath
+		if output, err := resetCmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("failed to reset main to origin/main: %w: %s", err, output)
+		}
+		log.Info("Synced main branch with origin/main")
+	} else {
+		log.Debug("Not on main branch, skipping reset", slog.String("branch", currentBranch))
 	}
 
 	return nil

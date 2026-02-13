@@ -199,6 +199,13 @@ type BackendConfig struct {
 	// Default: false (opt-in feature)
 	UseWorktree bool `yaml:"use_worktree,omitempty"`
 
+	// SyncMainAfterTask enables syncing the local main branch with origin after task completion.
+	// When true, Pilot fetches origin/main and resets local main to match after each task.
+	// This prevents local/remote divergence over time.
+	// Default: false (opt-in feature)
+	// GH-1018: Added to prevent local/remote main branch divergence
+	SyncMainAfterTask bool `yaml:"sync_main_after_task,omitempty"`
+
 	// Retry contains error-type-specific retry strategies (GH-920)
 	Retry *RetryConfig `yaml:"retry,omitempty"`
 

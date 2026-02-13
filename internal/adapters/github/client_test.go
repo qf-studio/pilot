@@ -1345,6 +1345,10 @@ func TestLabelConstants(t *testing.T) {
 	if LabelFailed != "pilot-failed" {
 		t.Errorf("LabelFailed = %s, want 'pilot-failed'", LabelFailed)
 	}
+	// GH-1015: Added pilot-retry-ready for PRs closed without merge
+	if LabelRetryReady != "pilot-retry-ready" {
+		t.Errorf("LabelRetryReady = %s, want 'pilot-retry-ready'", LabelRetryReady)
+	}
 }
 
 func TestMergePullRequest(t *testing.T) {

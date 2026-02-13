@@ -667,6 +667,7 @@ Examples:
 			}
 
 			// GH-539: Create budget enforcer for gateway mode
+			// GH-1019: Debug logging for budget state visibility
 			var gwEnforcer *budget.Enforcer
 			if cfg.Budget != nil && cfg.Budget.Enabled && gwStore != nil {
 				gwEnforcer = budget.NewEnforcer(cfg.Budget, gwStore)
@@ -683,6 +684,13 @@ Examples:
 				logging.WithComponent("start").Info("budget enforcement enabled (gateway mode)",
 					slog.Float64("daily_limit", cfg.Budget.DailyLimit),
 					slog.Float64("monthly_limit", cfg.Budget.MonthlyLimit),
+				)
+			} else {
+				// GH-1019: Log why budget is disabled for debugging
+				logging.WithComponent("start").Debug("budget enforcement disabled (gateway mode)",
+					slog.Bool("config_nil", cfg.Budget == nil),
+					slog.Bool("enabled", cfg.Budget != nil && cfg.Budget.Enabled),
+					slog.Bool("store_nil", gwStore == nil),
 				)
 
 				// GH-539: Wire per-task token/duration limits into executor stream (gateway mode)
@@ -1625,6 +1633,13 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 			fmt.Printf("💰 Budget enforcement enabled: $%.2f/day, $%.2f/month\n",
 				cfg.Budget.DailyLimit, cfg.Budget.MonthlyLimit)
 		}
+	} else {
+		// GH-1019: Log why budget is disabled for debugging
+		logging.WithComponent("start").Debug("budget enforcement disabled",
+			slog.Bool("config_nil", cfg.Budget == nil),
+			slog.Bool("enabled", cfg.Budget != nil && cfg.Budget.Enabled),
+			slog.Bool("store_nil", store == nil),
+		)
 	}
 
 	// GH-929: Start GitHub polling for multiple repos if enabled
@@ -2585,15 +2600,9 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 				// Update issueResult to reflect failure
 				issueResult.Success = false
 			} else {
-				// Has deliverables - mark as done
-				if err := client.AddLabels(ctx, parts[0], parts[1], issue.Number, []string{github.LabelDone}); err != nil {
-					logGitHubAPIError("AddLabels", parts[0], parts[1], issue.Number, err)
-				}
-				// Close issue so dependent issues can proceed (GH-933)
-				// Dependency resolution checks issue.State, not labels
-				if err := client.UpdateIssueState(ctx, parts[0], parts[1], issue.Number, "closed"); err != nil {
-					logGitHubAPIError("UpdateIssueState", parts[0], parts[1], issue.Number, err)
-				}
+				// Has deliverables - keep pilot-in-progress until PR merges
+				// GH-1015: pilot-done is now added by autopilot controller after successful merge
+				// This prevents false positives where PRs are closed without merging
 				comment := buildExecutionComment(result, branchName)
 				if _, err := client.AddComment(ctx, parts[0], parts[1], issue.Number, comment); err != nil {
 					logGitHubAPIError("AddComment", parts[0], parts[1], issue.Number, err)
@@ -3872,6 +3881,7 @@ Examples:
 			}
 
 			// GH-539: Wire per-task budget limits if configured
+			// GH-1019: Debug logging for budget state visibility
 			if cfg.Budget != nil && cfg.Budget.Enabled {
 				maxTokens := cfg.Budget.PerTask.MaxTokens
 				maxDuration := cfg.Budget.PerTask.MaxDuration
@@ -3891,6 +3901,16 @@ Examples:
 					})
 					fmt.Printf("   Per-task:  ✓ max %d tokens, %v duration\n", maxTokens, maxDuration)
 				}
+				logging.WithComponent("execute").Debug("budget enforcement enabled",
+					slog.Int64("max_tokens", cfg.Budget.PerTask.MaxTokens),
+					slog.Duration("max_duration", cfg.Budget.PerTask.MaxDuration),
+				)
+			} else {
+				// GH-1019: Log why budget is disabled for debugging
+				logging.WithComponent("execute").Debug("budget enforcement disabled",
+					slog.Bool("config_nil", cfg.Budget == nil),
+					slog.Bool("enabled", cfg.Budget != nil && cfg.Budget.Enabled),
+				)
 			}
 
 			// Team project access checker (GH-635)
@@ -4344,10 +4364,9 @@ Examples:
 				return fmt.Errorf("execution completed but no commits or PR created")
 			}
 
-			// Success with deliverables - add done label
-			if err := client.AddLabels(ctx, owner, repoName, int(issueNum), []string{"pilot-done"}); err != nil {
-				logGitHubAPIError("AddLabels", owner, repoName, int(issueNum), err)
-			}
+			// Success with deliverables - keep pilot-in-progress until PR merges
+			// GH-1015: pilot-done is now added by autopilot controller after successful merge
+			// This prevents false positives where PRs are closed without merging
 			// Remove pilot-failed if present (may exist from previous failed attempt)
 			_ = client.RemoveLabel(ctx, owner, repoName, int(issueNum), "pilot-failed")
 

@@ -566,6 +566,18 @@ func (c *Controller) handleMerging(ctx context.Context, prState *PRState) error 
 	c.metrics.RecordPRMerged()
 	c.metrics.RecordPRTimeToMerge(time.Since(prState.CreatedAt))
 
+	// GH-1015: Add pilot-done label after successful merge (not at PR creation)
+	// This prevents false positives where PRs are closed without merging
+	if prState.IssueNumber > 0 {
+		if err := c.ghClient.AddLabels(ctx, c.owner, c.repo, prState.IssueNumber, []string{github.LabelDone}); err != nil {
+			c.log.Warn("failed to add pilot-done label after merge", "issue", prState.IssueNumber, "error", err)
+		}
+		if err := c.ghClient.RemoveLabel(ctx, c.owner, c.repo, prState.IssueNumber, github.LabelInProgress); err != nil {
+			c.log.Warn("failed to remove pilot-in-progress label after merge", "issue", prState.IssueNumber, "error", err)
+		}
+		c.log.Info("marked issue as pilot-done after merge", "issue", prState.IssueNumber, "pr", prState.PRNumber)
+	}
+
 	// Notify merge success
 	if c.notifier != nil {
 		if err := c.notifier.NotifyMerged(ctx, prState); err != nil {
@@ -1326,10 +1338,20 @@ func (c *Controller) notifyExternalMerge(ctx context.Context, prState *PRState) 
 	}
 }
 
-// notifyExternalClose sends notification when a PR is closed externally.
-// Currently logs only; can be extended to use a specific notifier method.
+// notifyExternalClose sends notification when a PR is closed externally without merge.
+// GH-1015: Marks the issue as pilot-retry-ready so it can be re-picked by the poller.
 func (c *Controller) notifyExternalClose(ctx context.Context, prState *PRState) {
-	// No specific notification for closed PRs yet
-	// This is a hook for future extension
 	c.log.Info("PR closed externally without merge", "pr", prState.PRNumber, "issue", prState.IssueNumber)
+
+	// GH-1015: Add pilot-retry-ready label so the issue can be retried
+	// Remove pilot-in-progress to allow the poller to re-pick it
+	if prState.IssueNumber > 0 {
+		if err := c.ghClient.AddLabels(ctx, c.owner, c.repo, prState.IssueNumber, []string{github.LabelRetryReady}); err != nil {
+			c.log.Warn("failed to add pilot-retry-ready label", "issue", prState.IssueNumber, "error", err)
+		}
+		if err := c.ghClient.RemoveLabel(ctx, c.owner, c.repo, prState.IssueNumber, github.LabelInProgress); err != nil {
+			c.log.Warn("failed to remove pilot-in-progress label", "issue", prState.IssueNumber, "error", err)
+		}
+		c.log.Info("marked issue as pilot-retry-ready (PR closed without merge)", "issue", prState.IssueNumber, "pr", prState.PRNumber)
+	}
 }

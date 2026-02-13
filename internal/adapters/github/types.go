@@ -67,6 +67,7 @@ const (
 	LabelInProgress = "pilot-in-progress"
 	LabelDone       = "pilot-done"
 	LabelFailed     = "pilot-failed"
+	LabelRetryReady = "pilot-retry-ready" // PR closed without merge, issue ready for retry
 )
 
 // Priority mapping from GitHub labels
