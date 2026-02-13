@@ -519,6 +519,17 @@ Examples:
 					}
 				}
 
+				// GH-1027: Initialize knowledge store for experiential memories (gateway mode)
+				if gwStore != nil {
+					knowledgeStore := memory.NewKnowledgeStore(gwStore.DB())
+					if err := knowledgeStore.InitSchema(); err != nil {
+						logging.WithComponent("knowledge").Warn("Failed to initialize knowledge store schema (gateway)", slog.Any("error", err))
+					} else {
+						gwRunner.SetKnowledgeStore(knowledgeStore)
+						logging.WithComponent("knowledge").Debug("Knowledge store initialized for gateway mode")
+					}
+				}
+
 				// Create approval manager for autopilot
 				approvalMgr := approval.NewManager(cfg.Approval)
 
@@ -1402,6 +1413,17 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 		}
 	}
 
+	// GH-1027: Initialize knowledge store for experiential memories
+	if store != nil {
+		knowledgeStore := memory.NewKnowledgeStore(store.DB())
+		if err := knowledgeStore.InitSchema(); err != nil {
+			logging.WithComponent("knowledge").Warn("Failed to initialize knowledge store schema", slog.Any("error", err))
+		} else {
+			runner.SetKnowledgeStore(knowledgeStore)
+			logging.WithComponent("knowledge").Debug("Knowledge store initialized for polling mode")
+		}
+	}
+
 	// Create monitor and TUI program for dashboard mode
 	var monitor *executor.Monitor
 	var program *tea.Program
@@ -2126,10 +2148,15 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 						continue
 					}
 
-					// Perform hot upgrade
-					// Pass nil TaskChecker - the upgrade will proceed immediately
-					// In future, we could implement TaskChecker on Runner to wait for tasks
-					hotUpgrader, err := upgrade.NewHotUpgrader(version, nil)
+					// Drain pollers — stop accepting new issues before upgrade
+					program.Send(dashboard.AddLog("⏳ Draining pollers — no new issues will be accepted...")())
+					for _, p := range ghPollers {
+						go p.Drain()
+					}
+
+					// Perform hot upgrade with monitor as TaskChecker
+					// Monitor tracks running/queued tasks; upgrade waits for them to finish
+					hotUpgrader, err := upgrade.NewHotUpgrader(version, monitor)
 					if err != nil {
 						program.Send(dashboard.NotifyUpgradeComplete(false, err.Error())())
 						program.Send(dashboard.AddLog(fmt.Sprintf("❌ Upgrade failed: %v", err))())
@@ -2138,7 +2165,7 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 
 					upgradeCfg := &upgrade.HotUpgradeConfig{
 						WaitForTasks: true,
-						TaskTimeout:  2 * time.Minute,
+						TaskTimeout:  30 * time.Minute,
 						OnProgress: func(pct int, msg string) {
 							program.Send(dashboard.NotifyUpgradeProgress(pct, msg)())
 						},

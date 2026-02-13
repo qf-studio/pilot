@@ -1,6 +1,8 @@
 package executor
 
 import (
+	"context"
+	"fmt"
 	"sort"
 	"sync"
 	"time"
@@ -213,4 +215,43 @@ func (m *Monitor) Count() int {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return len(m.tasks)
+}
+
+// GetRunningTaskIDs returns IDs of currently running or queued tasks.
+// Implements upgrade.TaskChecker interface for graceful drain during hot upgrade.
+func (m *Monitor) GetRunningTaskIDs() []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	var ids []string
+	for _, state := range m.tasks {
+		if state.Status == StatusRunning || state.Status == StatusQueued {
+			ids = append(ids, state.ID)
+		}
+	}
+	return ids
+}
+
+// WaitForTasks polls until all running/queued tasks complete or context expires.
+// Implements upgrade.TaskChecker interface for graceful drain during hot upgrade.
+func (m *Monitor) WaitForTasks(ctx context.Context, timeout time.Duration) error {
+	deadline := time.After(timeout)
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		ids := m.GetRunningTaskIDs()
+		if len(ids) == 0 {
+			return nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-deadline:
+			return fmt.Errorf("drain timeout: %d tasks still active: %v", len(ids), ids)
+		case <-ticker.C:
+			// continue polling
+		}
+	}
 }

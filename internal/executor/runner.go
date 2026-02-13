@@ -378,6 +378,17 @@ func NewRunnerWithConfig(config *BackendConfig) (*Runner, error) {
 		runner.retrier = NewRetrier(config.Retry)
 	}
 
+	// Initialize profile manager and drift detector (GH-1027)
+	// Global profile: ~/.pilot/profile.json, Project profile: .agent/.user-profile.json
+	homeDir, _ := os.UserHomeDir()
+	globalProfilePath := filepath.Join(homeDir, ".pilot", "profile.json")
+	// Note: project path will be resolved per-task; using empty default here
+	runner.profileManager = memory.NewProfileManager(globalProfilePath, "")
+
+	// Drift detector uses default threshold of 3 corrections within 30-minute window
+	runner.driftDetector = NewDriftDetector(3, runner.profileManager)
+	runner.log.Debug("Profile manager and drift detector initialized")
+
 	return runner, nil
 }
 
@@ -2467,6 +2478,46 @@ func (r *Runner) BuildPrompt(task *Task, executionPath string) string {
 		// Embed autonomous workflow instructions (replaces /nav-loop dependency)
 		sb.WriteString(GetAutonomousWorkflowInstructions())
 		sb.WriteString("\n")
+
+		// Inject user preferences if profile manager is available (GH-1028)
+		if r.profileManager != nil {
+			profile, err := r.profileManager.Load()
+			if err == nil && profile != nil {
+				sb.WriteString("## User Preferences\n\n")
+				if profile.Verbosity != "" {
+					sb.WriteString(fmt.Sprintf("Verbosity: %s\n", profile.Verbosity))
+				}
+				if len(profile.CodePatterns) > 0 {
+					sb.WriteString("Code Patterns: " + strings.Join(profile.CodePatterns, ", ") + "\n")
+				}
+				if len(profile.Frameworks) > 0 {
+					sb.WriteString("Frameworks: " + strings.Join(profile.Frameworks, ", ") + "\n")
+				}
+				sb.WriteString("\n")
+			}
+		}
+
+		// Inject relevant knowledge if knowledge store is available (GH-1028)
+		if r.knowledge != nil {
+			// Use task.ProjectPath as projectID for memory lookup
+			projectID := "pilot" // Default fallback
+			if task.ProjectPath != "" {
+				projectID = filepath.Base(task.ProjectPath)
+			}
+			memories, err := r.knowledge.QueryByTopic(task.Description, projectID)
+			if err == nil && len(memories) > 0 {
+				sb.WriteString("## Relevant Knowledge\n\n")
+				// Limit to first 5 memories as requested in issue
+				limit := len(memories)
+				if limit > 5 {
+					limit = 5
+				}
+				for i := 0; i < limit; i++ {
+					sb.WriteString(fmt.Sprintf("%d. %s\n", i+1, memories[i].Content))
+				}
+				sb.WriteString("\n")
+			}
+		}
 
 		// Pre-commit verification checklist (GH-359, GH-920)
 		sb.WriteString("## Pre-Commit Verification\n\n")

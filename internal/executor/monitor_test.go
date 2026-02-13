@@ -1,7 +1,9 @@
 package executor
 
 import (
+	"context"
 	"testing"
+	"time"
 )
 
 func TestNewMonitor(t *testing.T) {
@@ -314,6 +316,67 @@ func TestMonitorGetRunningNoRunning(t *testing.T) {
 	running := monitor.GetRunning()
 	if len(running) != 0 {
 		t.Errorf("Expected 0 running tasks, got %d", len(running))
+	}
+}
+
+func TestMonitorGetRunningTaskIDs(t *testing.T) {
+	monitor := NewMonitor()
+	monitor.Register("task-1", "Task 1", "")
+	monitor.Register("task-2", "Task 2", "")
+	monitor.Register("task-3", "Task 3", "")
+
+	monitor.Queue("task-1")
+	monitor.Start("task-2")
+	// task-3 stays pending
+
+	ids := monitor.GetRunningTaskIDs()
+	if len(ids) != 2 {
+		t.Fatalf("Expected 2 active tasks (queued+running), got %d", len(ids))
+	}
+	// Should include both queued and running
+	found := map[string]bool{}
+	for _, id := range ids {
+		found[id] = true
+	}
+	if !found["task-1"] {
+		t.Error("Expected queued task-1 in active list")
+	}
+	if !found["task-2"] {
+		t.Error("Expected running task-2 in active list")
+	}
+	if found["task-3"] {
+		t.Error("Pending task-3 should not be in active list")
+	}
+}
+
+func TestMonitorWaitForTasks(t *testing.T) {
+	monitor := NewMonitor()
+	monitor.Register("task-1", "Task 1", "")
+	monitor.Start("task-1")
+
+	// Complete task in background after 100ms
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		monitor.Complete("task-1", "")
+	}()
+
+	ctx := context.Background()
+	err := monitor.WaitForTasks(ctx, 5*time.Second)
+	if err != nil {
+		t.Fatalf("WaitForTasks should succeed, got: %v", err)
+	}
+}
+
+func TestMonitorWaitForTasksTimeout(t *testing.T) {
+	monitor := NewMonitor()
+	monitor.Register("task-1", "Task 1", "")
+	monitor.Start("task-1")
+	// Never complete task-1
+
+	ctx := context.Background()
+	err := monitor.WaitForTasks(ctx, 100*time.Millisecond)
+	if err == nil {
+		t.Fatal("WaitForTasks should timeout")
 	}
 }
 

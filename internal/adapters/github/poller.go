@@ -633,6 +633,17 @@ func (p *Poller) markProcessed(number int) {
 	}
 }
 
+// Drain stops accepting new issues and waits for active executions to finish.
+// Used during hot upgrade to let in-flight work complete before process restart.
+func (p *Poller) Drain() {
+	p.logger.Info("Draining poller — no new issues will be accepted")
+	p.wgMu.Lock()
+	p.stopping.Store(true)
+	p.wgMu.Unlock()
+	p.activeWg.Wait()
+	p.logger.Info("Poller drained — all active tasks completed")
+}
+
 // WaitForActive waits for all active parallel goroutines to finish.
 // Used in tests to synchronize after checkForNewIssues.
 func (p *Poller) WaitForActive() {
