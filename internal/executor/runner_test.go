@@ -1552,7 +1552,7 @@ func TestSyncNavigatorIndex(t *testing.T) {
 		ProjectPath: tmpDir,
 	}
 
-	err := runner.syncNavigatorIndex(task, "completed")
+	err := runner.syncNavigatorIndex(task, "completed", task.ProjectPath)
 	if err != nil {
 		t.Fatalf("syncNavigatorIndex failed: %v", err)
 	}
@@ -1590,7 +1590,7 @@ func TestSyncNavigatorIndexNoIndex(t *testing.T) {
 		ProjectPath: t.TempDir(),
 	}
 
-	err := runner.syncNavigatorIndex(task, "completed")
+	err := runner.syncNavigatorIndex(task, "completed", task.ProjectPath)
 	if err != nil {
 		t.Errorf("syncNavigatorIndex should not error for missing index: %v", err)
 	}
@@ -1632,7 +1632,7 @@ func TestSyncNavigatorIndexTaskNotInProgress(t *testing.T) {
 		ProjectPath: tmpDir,
 	}
 
-	err := runner.syncNavigatorIndex(task, "completed")
+	err := runner.syncNavigatorIndex(task, "completed", task.ProjectPath)
 	if err != nil {
 		t.Fatalf("syncNavigatorIndex failed: %v", err)
 	}

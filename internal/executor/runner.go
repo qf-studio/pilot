@@ -1987,7 +1987,7 @@ The previous execution completed but made no code changes. This task requires ac
 
 		// Sync Navigator index (GH-57) - update DEVELOPMENT-README.md
 		if state.hasNavigator {
-			if syncErr := r.syncNavigatorIndex(task, "completed"); syncErr != nil {
+			if syncErr := r.syncNavigatorIndex(task, "completed", executionPath); syncErr != nil {
 				log.Warn("Failed to sync Navigator index", slog.Any("error", syncErr))
 			}
 		}
@@ -3270,8 +3270,8 @@ func (r *Runner) maybeInitNavigator(projectPath string) error {
 // syncNavigatorIndex updates DEVELOPMENT-README.md after task completion.
 // It moves completed tasks from "In Progress" to "Completed" section.
 // Supports both TASK-XX and GH-XX formats.
-func (r *Runner) syncNavigatorIndex(task *Task, status string) error {
-	indexPath := filepath.Join(task.ProjectPath, ".agent", "DEVELOPMENT-README.md")
+func (r *Runner) syncNavigatorIndex(task *Task, status string, executionPath string) error {
+	indexPath := filepath.Join(executionPath, ".agent", "DEVELOPMENT-README.md")
 
 	// Check if Navigator index exists
 	if _, err := os.Stat(indexPath); os.IsNotExist(err) {

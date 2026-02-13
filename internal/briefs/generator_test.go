@@ -93,11 +93,11 @@ func TestGeneratorGenerate(t *testing.T) {
 
 	// Verify results
 	if len(brief.Completed) != 2 {
-		t.Errorf("expected 2 completed tasks, got %d", len(brief.Completed))
+		t.Fatalf("expected 2 completed tasks, got %d", len(brief.Completed))
 	}
 
 	if len(brief.Blocked) != 1 {
-		t.Errorf("expected 1 blocked task, got %d", len(brief.Blocked))
+		t.Fatalf("expected 1 blocked task, got %d", len(brief.Blocked))
 	}
 
 	if brief.Blocked[0].Error != "tests failed: auth_test.go:42" {
