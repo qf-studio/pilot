@@ -1,7 +1,8 @@
 # TASK-01: Complete Navigator Port into Pilot
 
-**Status**: 🚧 In Progress
+**Status**: Scaffolding Done, Wiring Pending (GH-1026)
 **Created**: 2026-02-13
+**Updated**: 2026-02-13
 **Priority**: P0
 
 ---
@@ -14,17 +15,19 @@ Pilot depends on Navigator plugin for execution. This creates external dependenc
 **Goal**:
 Make Pilot fully self-contained by porting ALL Navigator concepts into Pilot's Go codebase. Users won't need Navigator plugin installed.
 
+**What happened**: 13 sequential issues (GH-986-1000) created. Serial merge conflict cascade killed the critical wiring PR (GH-994). All scaffolding files landed on `main` but most are dead code. Consolidated into single wiring issue GH-1026.
+
 **Success Criteria**:
+- [x] All scaffolding files created (8/8)
+- [ ] All scaffolding wired into execution pipeline (GH-1026)
 - [ ] Pilot works without Navigator plugin installed
-- [ ] All Navigator features available natively
 - [ ] No regression in execution quality
-- [ ] Defense-in-depth verification maintained
 
 ---
 
 ## Implementation Plan
 
-### Phase 1: Execution Workflow (Foundation) ✅ QUEUED
+### Phase 1: Execution Workflow (Foundation) ✅ DONE
 **Goal**: Replace `/nav-loop` with embedded execution instructions
 
 **Issues**:
@@ -35,7 +38,7 @@ Make Pilot fully self-contained by porting ALL Navigator concepts into Pilot's G
 - `internal/executor/workflow.go` - Embedded workflow prompts
 - `internal/executor/runner.go` - BuildPrompt() changes
 
-### Phase 2: Documentation Management ✅ QUEUED
+### Phase 2: Documentation Management ✅ DONE
 **Goal**: Native task doc and SOP management
 
 **Issues**:
@@ -47,7 +50,7 @@ Make Pilot fully self-contained by porting ALL Navigator concepts into Pilot's G
 - `internal/executor/templates/task.md` - Task template
 - `internal/executor/templates/sop.md` - SOP template
 
-### Phase 3: Context Markers ✅ QUEUED
+### Phase 3: Context Markers ✅ DONE (scaffolding)
 **Goal**: Session checkpoints for work continuity
 
 **Issues**:
@@ -56,7 +59,7 @@ Make Pilot fully self-contained by porting ALL Navigator concepts into Pilot's G
 **Files**:
 - `internal/executor/markers.go` - Marker CRUD operations
 
-### Phase 4: Knowledge Management ✅ QUEUED
+### Phase 4: Knowledge Management ✅ DONE (scaffolding)
 **Goal**: Persistent experiential memory
 
 **Issues**:
@@ -66,7 +69,7 @@ Make Pilot fully self-contained by porting ALL Navigator concepts into Pilot's G
 - `internal/memory/knowledge.go` - Knowledge graph operations
 - SQLite schema updates
 
-### Phase 5: User Profiles ✅ QUEUED
+### Phase 5: User Profiles ✅ DONE (scaffolding)
 **Goal**: Learn user preferences across sessions
 
 **Issues**:
@@ -77,7 +80,7 @@ Make Pilot fully self-contained by porting ALL Navigator concepts into Pilot's G
 - `internal/memory/profile.go` - Profile storage
 - `internal/executor/runner.go` - Integration
 
-### Phase 6: Code Simplification ✅ QUEUED
+### Phase 6: Code Simplification ✅ DONE (scaffolding, deferred wiring)
 **Goal**: Auto-simplify code before commit (nav-simplify)
 
 **Issues**:
@@ -86,7 +89,7 @@ Make Pilot fully self-contained by porting ALL Navigator concepts into Pilot's G
 **Files**:
 - `internal/executor/simplify.go` - Simplification engine
 
-### Phase 7: Workflow Enforcement ✅ QUEUED
+### Phase 7: Workflow Enforcement ✅ DONE
 **Goal**: WORKFLOW CHECK block before every task
 
 **Issues**:
@@ -95,7 +98,7 @@ Make Pilot fully self-contained by porting ALL Navigator concepts into Pilot's G
 **Files**:
 - `internal/executor/workflow.go` - Add enforcement section
 
-### Phase 8: Diagnose/Re-anchor ✅ QUEUED
+### Phase 8: Diagnose/Re-anchor ✅ DONE (scaffolding)
 **Goal**: Detect collaboration drift, prompt re-anchoring
 
 **Issues**:
@@ -104,7 +107,7 @@ Make Pilot fully self-contained by porting ALL Navigator concepts into Pilot's G
 **Files**:
 - `internal/executor/diagnose.go` - Drift detection
 
-### Phase 9: Knowledge Graph Query ✅ QUEUED
+### Phase 9: Knowledge Graph Query — DEFERRED (GH-998 never landed)
 **Goal**: Unified search across all docs (nav-graph)
 
 **Issues**:
@@ -113,7 +116,7 @@ Make Pilot fully self-contained by porting ALL Navigator concepts into Pilot's G
 **Files**:
 - `internal/memory/knowledge.go` - Enhanced query
 
-### Phase 10: Template Rendering ✅ QUEUED
+### Phase 10: Template Rendering ✅ DONE
 **Goal**: Go template rendering for task/SOP docs
 
 **Issues**:
@@ -122,7 +125,7 @@ Make Pilot fully self-contained by porting ALL Navigator concepts into Pilot's G
 **Files**:
 - `internal/executor/templates.go` - Template renderer
 
-### Phase 11: Enhanced Workflow Prompts ✅ QUEUED
+### Phase 11: Enhanced Workflow Prompts ✅ DONE (already equivalent on main)
 **Goal**: Match Navigator's detailed prompt quality
 
 **Issues**:
@@ -167,22 +170,23 @@ Make Pilot fully self-contained by porting ALL Navigator concepts into Pilot's G
 
 ## GitHub Issues Queue
 
-| # | Title | Phase | Blocked By | Status |
-|---|-------|-------|------------|--------|
-| 986 | Create workflow.go | 1 | - | ✅ Done |
-| 987 | Update runner.go for embedded workflow | 1 | 986 | ⏳ Waiting |
-| 988 | Create docs.go | 2 | 987 | ⏳ Waiting |
-| 989 | Add templates | 2 | 988 | ⏳ Waiting |
-| 990 | Create markers.go | 3 | 989 | ⏳ Waiting |
-| 991 | Create knowledge.go | 4 | 990 | ⏳ Waiting |
-| 993 | Create profile.go | 5 | 991 | ⏳ Waiting |
-| 994 | Wire into runner.go | 5 | 993 | ⏳ Waiting |
-| 995 | Create simplify.go | 6 | 994 | ⏳ Waiting |
-| 996 | Workflow enforcement | 7 | 994 | ⏳ Waiting |
-| 997 | Create diagnose.go | 8 | 994 | ⏳ Waiting |
-| 998 | Enhanced knowledge query | 9 | 991 | ⏳ Waiting |
-| 999 | Template rendering | 10 | 989 | ⏳ Waiting |
-| 1000 | Enhanced workflow prompts | 11 | 987 | ⏳ Waiting |
+| # | Title | Phase | Status |
+|---|-------|-------|--------|
+| 986 | Create workflow.go | 1 | CLOSED — merged PR #1001 |
+| 987 | Update runner.go for embedded workflow | 1 | CLOSED — merged PR #1001 |
+| 988 | Create docs.go | 2 | CLOSED — merged PR #1004 |
+| 989 | Add templates | 2 | CLOSED — merged PR #1007 |
+| 990 | Create markers.go | 3 | CLOSED — direct commit 7de71d9e |
+| 991 | Create knowledge.go | 4 | CLOSED — direct commit 9c8a2e7b |
+| 993 | Create profile.go | 5 | CLOSED — merged PR #1019 |
+| 994 | Wire into runner.go | 5 | CLOSED — **NEVER LANDED** (merge conflicts) |
+| 995 | Create simplify.go | 6 | CLOSED — direct commit 2a36bdc1 |
+| 996 | Workflow enforcement | 7 | CLOSED — direct commit b4d2ad61 |
+| 997 | Create diagnose.go | 8 | CLOSED — direct commit 1519b545 |
+| 998 | Enhanced knowledge query | 9 | CLOSED — never landed (merge conflicts) |
+| 999 | Template rendering | 10 | CLOSED — merged PR #1009 |
+| 1000 | Enhanced workflow prompts | 11 | CLOSED — already equivalent on main |
+| **1026** | **Wire all scaffolding into pipeline** | **ALL** | **OPEN — consolidated wiring issue** |
 
 ---
 

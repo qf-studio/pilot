@@ -113,7 +113,7 @@ Disable via config: `executor.navigator.auto_init: false`
 
 ## Current State
 
-**Current Version:** v0.59.0 | **125 features working** | **0 unwired**
+**Current Version:** v0.61.0 | **132 features working** | **5 unwired (Nav port scaffolding, GH-1026)**
 
 **Full implementation status:** `.agent/system/FEATURE-MATRIX.md`
 
