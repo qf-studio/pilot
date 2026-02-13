@@ -256,19 +256,22 @@ type Runner struct {
 	executeFunc           func(ctx context.Context, task *Task) (*ExecutionResult, error) // Internal override for testing
 	skipPreflightChecks   bool                  // Skip preflight checks (for testing with mock backends)
 	retrier               *Retrier              // Optional smart retry handler (GH-920)
+	signalParser          *SignalParser         // Structured signal parser v2 for progress extraction (GH-960)
 }
 
 // NewRunner creates a new Runner instance with Claude Code backend by default.
 // The Runner is ready to execute tasks immediately after creation.
 func NewRunner() *Runner {
+	log := logging.WithComponent("executor")
 	return &Runner{
 		backend:           NewClaudeCodeBackend(nil),
 		running:           make(map[string]*exec.Cmd),
 		progressCallbacks: make(map[string]ProgressCallback),
 		tokenCallbacks:    make(map[string]TokenCallback),
-		log:               logging.WithComponent("executor"),
+		log:               log,
 		enableRecording:   true, // Recording enabled by default
 		modelRouter:       NewModelRouter(nil, nil),
+		signalParser:      NewSignalParser(log),
 	}
 }
 
@@ -277,14 +280,16 @@ func NewRunnerWithBackend(backend Backend) *Runner {
 	if backend == nil {
 		backend = NewClaudeCodeBackend(nil)
 	}
+	log := logging.WithComponent("executor")
 	return &Runner{
 		backend:           backend,
 		running:           make(map[string]*exec.Cmd),
 		progressCallbacks: make(map[string]ProgressCallback),
 		tokenCallbacks:    make(map[string]TokenCallback),
-		log:               logging.WithComponent("executor"),
+		log:               log,
 		enableRecording:   true,
 		modelRouter:       NewModelRouter(nil, nil),
+		signalParser:      NewSignalParser(log),
 	}
 }
 
@@ -2759,6 +2764,16 @@ func (r *Runner) processBackendEvent(taskID string, event BackendEvent, state *p
 
 // parseNavigatorPatterns detects Navigator-specific progress signals from text
 func (r *Runner) parseNavigatorPatterns(taskID, text string, state *progressState) {
+	// Try structured signal parser v2 first (GH-960)
+	if r.signalParser != nil {
+		signals := r.signalParser.ParseSignals(text)
+		if len(signals) > 0 {
+			r.handleStructuredSignals(taskID, signals, state)
+			return
+		}
+	}
+
+	// Fall back to legacy string-based parsing for backward compatibility
 	// Navigator Session Started
 	if strings.Contains(text, "Navigator Session Started") {
 		state.hasNavigator = true
@@ -2866,6 +2881,64 @@ func (r *Runner) parseNavigatorStatusBlock(taskID, text string, state *progressS
 			if iter, err := strconv.Atoi(strings.TrimSpace(line[:slash])); err == nil {
 				state.navIteration = iter
 			}
+		}
+	}
+}
+
+// handleStructuredSignals processes v2 structured pilot signals (GH-960)
+func (r *Runner) handleStructuredSignals(taskID string, signals []PilotSignal, state *progressState) {
+	if len(signals) == 0 {
+		return
+	}
+
+	// Mark as having Navigator
+	state.hasNavigator = true
+
+	// Process signals in order
+	for _, signal := range signals {
+		r.log.Debug("Processing structured signal",
+			slog.String("task_id", taskID),
+			slog.String("type", signal.Type),
+			slog.String("phase", signal.Phase),
+			slog.Int("progress", signal.Progress),
+		)
+
+		switch signal.Type {
+		case SignalTypeStatus:
+			// Update phase if provided
+			if signal.Phase != "" {
+				r.handleNavigatorPhase(taskID, signal.Phase, state)
+			}
+			// Update progress if provided
+			if signal.Progress > 0 {
+				state.navProgress = signal.Progress
+			}
+			// Update iteration if provided
+			if signal.Iteration > 0 {
+				state.navIteration = signal.Iteration
+			}
+
+		case SignalTypePhase:
+			if signal.Phase != "" {
+				r.handleNavigatorPhase(taskID, signal.Phase, state)
+			}
+
+		case SignalTypeExit:
+			state.exitSignal = true
+			r.reportProgress(taskID, "Finishing", 95, signal.Message)
+
+		case SignalTypeStagnation:
+			r.reportProgress(taskID, "⚠️ Stalled", 0, "Navigator detected stagnation")
+		}
+
+		// Check for exit signal from any signal type
+		if signal.ExitSignal {
+			state.exitSignal = true
+			message := signal.Message
+			if message == "" {
+				message = "Exit signal detected"
+			}
+			r.reportProgress(taskID, "Finishing", 92, message)
 		}
 	}
 }
