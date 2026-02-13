@@ -1253,6 +1253,10 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 			if r.retrier != nil {
 				decision := r.retrier.Evaluate(err, state.smartRetryAttempt, timeout)
 				if decision.ShouldRetry {
+					// GH-1030: Record correction for drift detection
+					if r.driftDetector != nil {
+						r.driftDetector.RecordCorrection("retry_triggered", fmt.Sprintf("Error: %s, Retry attempt: %d", err.Error(), state.smartRetryAttempt+1))
+					}
 					state.smartRetryAttempt++
 					log.Info("Smart retry triggered",
 						slog.String("task_id", task.ID),
@@ -1677,7 +1681,7 @@ The previous execution completed but made no code changes. This task requires ac
 					r.reportProgress(task.ID, "Quality Passed", 94, "All quality gates passed")
 
 					// Run simplification phase if enabled (GH-995)
-					if r.config.Simplification != nil && r.config.Simplification.Enabled {
+					if r.config != nil && r.config.Simplification != nil && r.config.Simplification.Enabled {
 						r.reportProgress(task.ID, "Simplifying", 95, "Simplifying code...")
 						simplified, simplifyErr := SimplifyModifiedFiles(executionPath, r.config.Simplification)
 						if simplifyErr != nil {
@@ -1711,6 +1715,11 @@ The previous execution completed but made no code changes. This task requires ac
 					totalQualityRetries++ // Track total retries across all gates (GH-209)
 					r.reportProgress(task.ID, "Quality Retry", 92,
 						fmt.Sprintf("Fixing issues (attempt %d/%d)...", retryAttempt+1, maxAutoRetries))
+
+					// GH-1066: Record correction for drift detection
+					if r.driftDetector != nil {
+						r.driftDetector.RecordCorrection("quality_gate_retry", fmt.Sprintf("Quality gate failure: %s, Retry attempt: %d", outcome.RetryFeedback, retryAttempt+1))
+					}
 
 					// Emit retry event
 					r.emitAlertEvent(AlertEvent{
@@ -2125,6 +2134,35 @@ The previous execution completed but made no code changes. This task requires ac
 			if syncErr := r.syncNavigatorIndex(task, "completed", executionPath); syncErr != nil {
 				log.Warn("Failed to sync Navigator index", slog.Any("error", syncErr))
 			}
+
+			// GH-1063: Archive completed task documentation
+			agentPath := filepath.Join(executionPath, ".agent")
+			if archiveErr := ArchiveTaskDoc(agentPath, task.ID); archiveErr != nil {
+				log.Warn("Failed to archive task documentation", slog.Any("error", archiveErr))
+			}
+
+			// GH-1064: Create context marker for completed task
+			marker := &ContextMarker{
+				Name:        fmt.Sprintf("task-completed-%s", task.ID),
+				Description: fmt.Sprintf("Task completed: %s", task.Title),
+				TaskID:      task.ID,
+				CurrentFocus: fmt.Sprintf("Successfully completed task %s (%s). Duration: %v. Commits: %d files modified.",
+					task.ID, task.Title, duration, state.filesWrite),
+			}
+
+			// Add commit SHA and PR info if available
+			if result.CommitSHA != "" {
+				marker.Commits = append(marker.Commits, result.CommitSHA)
+			}
+			if result.PRUrl != "" {
+				marker.CurrentFocus += fmt.Sprintf(" PR created: %s", result.PRUrl)
+			}
+
+			if createMarkerErr := CreateMarker(agentPath, marker); createMarkerErr != nil {
+				log.Warn("Failed to create completion marker", slog.Any("error", createMarkerErr))
+			} else {
+				log.Debug("Created completion context marker", slog.String("marker_path", marker.FilePath))
+			}
 		}
 
 		// GH-1018: Sync main branch with origin after task completion
@@ -2132,6 +2170,33 @@ The previous execution completed but made no code changes. This task requires ac
 		if r.config != nil && r.config.SyncMainAfterTask {
 			if syncErr := r.syncMainBranch(ctx, task.ProjectPath); syncErr != nil {
 				log.Warn("Failed to sync main branch", slog.Any("error", syncErr))
+			}
+		}
+
+		// GH-1065: Store experiential memory after successful task completion
+		if r.knowledge != nil {
+			projectID := "pilot" // Default fallback
+			if task.ProjectPath != "" {
+				projectID = filepath.Base(task.ProjectPath)
+			}
+
+			filesModified := 0
+			if state != nil {
+				filesModified = state.filesWrite
+			}
+
+			memory := &memory.Memory{
+				Type:       memory.MemoryTypeLearning,
+				Content:    fmt.Sprintf("Successfully completed task: %s", task.Title),
+				Context:    fmt.Sprintf("Task %s - Duration: %v, Files modified: %d", task.ID, duration, filesModified),
+				Confidence: 1.0,
+				ProjectID:  projectID,
+			}
+
+			if addErr := r.knowledge.AddMemory(memory); addErr != nil {
+				log.Warn("Failed to store task completion memory", slog.Any("error", addErr))
+			} else {
+				log.Debug("Stored task completion memory", slog.String("task_id", task.ID))
 			}
 		}
 	}
