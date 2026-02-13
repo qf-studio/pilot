@@ -220,9 +220,12 @@ func (m *WorktreeManager) CreateWorktreeWithBranch(ctx context.Context, taskID, 
 		// Handle specific error cases
 		outputStr := string(output)
 		if strings.Contains(outputStr, "already checked out") ||
-			strings.Contains(outputStr, "is already used by worktree") {
-			// Branch is in use by another worktree - retry after cleanup
-			lastErr = fmt.Errorf("branch in use (attempt %d/%d): %s", attempt+1, maxRetries, outputStr)
+			strings.Contains(outputStr, "is already used by worktree") ||
+			strings.Contains(outputStr, "failed to read") && strings.Contains(outputStr, "commondir") {
+			// Branch is in use by another worktree, or Git race condition with commondir
+			// The commondir error occurs when multiple worktrees are created concurrently
+			// due to Git's internal lock file handling not being fully thread-safe
+			lastErr = fmt.Errorf("worktree conflict (attempt %d/%d): %s", attempt+1, maxRetries, outputStr)
 			continue
 		}
 
