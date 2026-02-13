@@ -455,8 +455,12 @@ Examples:
 			var gwAlertsEngine *alerts.Engine
 
 			if needsPollingInfra {
-				// Create shared runner
-				gwRunner = executor.NewRunner()
+				// Create shared runner with config (GH-956: enables worktree isolation)
+				var runnerErr error
+				gwRunner, runnerErr = executor.NewRunnerWithConfig(cfg.Executor)
+				if runnerErr != nil {
+					return fmt.Errorf("failed to create executor runner: %w", runnerErr)
+				}
 
 				// Set up quality gates on runner if configured
 				if cfg.Quality != nil && cfg.Quality.Enabled {
@@ -469,16 +473,6 @@ Examples:
 							}),
 						}
 					})
-				}
-
-				// Set up task decomposition if configured
-				if cfg.Executor != nil && cfg.Executor.Decompose != nil && cfg.Executor.Decompose.Enabled {
-					gwRunner.SetDecomposer(executor.NewTaskDecomposer(cfg.Executor.Decompose))
-				}
-
-				// Set up model routing if configured
-				if cfg.Executor != nil {
-					gwRunner.SetModelRouter(executor.NewModelRouterWithEffort(cfg.Executor.ModelRouting, cfg.Executor.Timeout, cfg.Executor.EffortRouting))
 				}
 
 				// Set up team project access checker if configured (GH-635)
@@ -1220,8 +1214,11 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 		logging.Suppress()
 	}
 
-	// Create runner
-	runner := executor.NewRunner()
+	// Create runner with config (GH-956: enables worktree isolation, decomposer, model routing)
+	runner, err := executor.NewRunnerWithConfig(cfg.Executor)
+	if err != nil {
+		return fmt.Errorf("failed to create executor runner: %w", err)
+	}
 
 	// Set up quality gates if configured (GH-207)
 	if cfg.Quality != nil && cfg.Quality.Enabled {
@@ -1235,17 +1232,6 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 			}
 		})
 		logging.WithComponent("start").Info("quality gates enabled for polling mode")
-	}
-
-	// Set up task decomposition if configured (GH-218)
-	if cfg.Executor != nil && cfg.Executor.Decompose != nil && cfg.Executor.Decompose.Enabled {
-		runner.SetDecomposer(executor.NewTaskDecomposer(cfg.Executor.Decompose))
-		logging.WithComponent("start").Info("task decomposition enabled for polling mode")
-	}
-
-	// Set up model routing if configured (GH-215)
-	if cfg.Executor != nil {
-		runner.SetModelRouter(executor.NewModelRouterWithEffort(cfg.Executor.ModelRouting, cfg.Executor.Timeout, cfg.Executor.EffortRouting))
 	}
 
 	// Set up team project access checker if configured (GH-635)
@@ -3819,73 +3805,70 @@ Examples:
 				})
 			}
 
-			// Create the executor runner
-			runner := executor.NewRunner()
+			// Load config for runner setup
+			configPath := cfgFile
+			if configPath == "" {
+				configPath = config.DefaultConfigPath()
+			}
+			cfg, cfgErr := config.Load(configPath)
+			if cfgErr != nil {
+				return fmt.Errorf("failed to load config: %w", cfgErr)
+			}
 
-			// Set up quality gates and decomposition if configured
-			{
-				configPath := cfgFile
-				if configPath == "" {
-					configPath = config.DefaultConfigPath()
-				}
-				cfg, err := config.Load(configPath)
-				if err == nil {
-					// Apply team flag overrides (GH-635)
-					applyTeamOverrides(cfg, cmd, teamID, teamMember)
+			// Apply team flag overrides (GH-635)
+			applyTeamOverrides(cfg, cmd, teamID, teamMember)
 
-					// Quality gates (GH-207)
-					if cfg.Quality != nil && cfg.Quality.Enabled {
-						runner.SetQualityCheckerFactory(func(taskID, projectPath string) executor.QualityChecker {
-							return &qualityCheckerWrapper{
-								executor: quality.NewExecutor(&quality.ExecutorConfig{
-									Config:      cfg.Quality,
-									ProjectPath: projectPath,
-									TaskID:      taskID,
-								}),
+			// Create the executor runner with config (GH-956: enables worktree isolation, decomposer, model routing)
+			runner, runnerErr := executor.NewRunnerWithConfig(cfg.Executor)
+			if runnerErr != nil {
+				return fmt.Errorf("failed to create executor runner: %w", runnerErr)
+			}
+
+			// Quality gates (GH-207)
+			if cfg.Quality != nil && cfg.Quality.Enabled {
+				runner.SetQualityCheckerFactory(func(taskID, projectPath string) executor.QualityChecker {
+					return &qualityCheckerWrapper{
+						executor: quality.NewExecutor(&quality.ExecutorConfig{
+							Config:      cfg.Quality,
+							ProjectPath: projectPath,
+							TaskID:      taskID,
+						}),
+					}
+				})
+				fmt.Println("   Quality:   ✓ gates enabled")
+			}
+
+			// Decomposer status (GH-218) - wired via NewRunnerWithConfig
+			if cfg.Executor != nil && cfg.Executor.Decompose != nil && cfg.Executor.Decompose.Enabled {
+				fmt.Println("   Decompose: ✓ enabled")
+			}
+
+			// GH-539: Wire per-task budget limits if configured
+			if cfg.Budget != nil && cfg.Budget.Enabled {
+				maxTokens := cfg.Budget.PerTask.MaxTokens
+				maxDuration := cfg.Budget.PerTask.MaxDuration
+				if maxTokens > 0 || maxDuration > 0 {
+					limiter := budget.NewTaskLimiter(maxTokens, maxDuration)
+					runner.SetTokenLimitCheck(func(_ string, deltaInput, deltaOutput int64) bool {
+						totalDelta := deltaInput + deltaOutput
+						if totalDelta > 0 {
+							if !limiter.AddTokens(totalDelta) {
+								return false
 							}
-						})
-						fmt.Println("   Quality:   ✓ gates enabled")
-					}
-
-					// Task decomposition (GH-218)
-					if cfg.Executor != nil && cfg.Executor.Decompose != nil && cfg.Executor.Decompose.Enabled {
-						runner.SetDecomposer(executor.NewTaskDecomposer(cfg.Executor.Decompose))
-						fmt.Println("   Decompose: ✓ enabled")
-					}
-
-					// Model routing (GH-215)
-					if cfg.Executor != nil {
-						runner.SetModelRouter(executor.NewModelRouterWithEffort(cfg.Executor.ModelRouting, cfg.Executor.Timeout, cfg.Executor.EffortRouting))
-					}
-
-					// GH-539: Wire per-task budget limits if configured
-					if cfg.Budget != nil && cfg.Budget.Enabled {
-						maxTokens := cfg.Budget.PerTask.MaxTokens
-						maxDuration := cfg.Budget.PerTask.MaxDuration
-						if maxTokens > 0 || maxDuration > 0 {
-							limiter := budget.NewTaskLimiter(maxTokens, maxDuration)
-							runner.SetTokenLimitCheck(func(_ string, deltaInput, deltaOutput int64) bool {
-								totalDelta := deltaInput + deltaOutput
-								if totalDelta > 0 {
-									if !limiter.AddTokens(totalDelta) {
-										return false
-									}
-								}
-								if !limiter.CheckDuration() {
-									return false
-								}
-								return true
-							})
-							fmt.Printf("   Per-task:  ✓ max %d tokens, %v duration\n", maxTokens, maxDuration)
 						}
-					}
-
-					// Team project access checker (GH-635)
-					if runTeamCleanup := wireProjectAccessChecker(runner, cfg); runTeamCleanup != nil {
-						defer runTeamCleanup()
-						fmt.Println("   Team:      ✓ project access scoping enabled")
-					}
+						if !limiter.CheckDuration() {
+							return false
+						}
+						return true
+					})
+					fmt.Printf("   Per-task:  ✓ max %d tokens, %v duration\n", maxTokens, maxDuration)
 				}
+			}
+
+			// Team project access checker (GH-635)
+			if runTeamCleanup := wireProjectAccessChecker(runner, cfg); runTeamCleanup != nil {
+				defer runTeamCleanup()
+				fmt.Println("   Team:      ✓ project access scoping enabled")
 			}
 
 			// Create progress display (disabled in verbose mode - show raw JSON instead)
@@ -4267,8 +4250,11 @@ Examples:
 				logGitHubAPIError("AddLabels", owner, repoName, int(issueNum), err)
 			}
 
-			// Execute the task
-			runner := executor.NewRunner()
+			// Execute the task with config (GH-956: enables worktree isolation, decomposer, model routing)
+			runner, runnerErr := executor.NewRunnerWithConfig(cfg.Executor)
+			if runnerErr != nil {
+				return fmt.Errorf("failed to create executor runner: %w", runnerErr)
+			}
 
 			// Team project access checker (GH-635)
 			if ghTeamCleanup := wireProjectAccessChecker(runner, cfg); ghTeamCleanup != nil {
