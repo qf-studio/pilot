@@ -261,6 +261,8 @@ type Runner struct {
 	knowledge             *memory.KnowledgeStore  // Optional knowledge store for experiential memories (GH-994)
 	profileManager        *memory.ProfileManager  // Optional profile manager for user preferences (GH-994)
 	driftDetector         *DriftDetector          // Optional drift detector for collaboration drift (GH-997)
+	taskProgress          map[string]int            // Per-task progress high-water mark (monotonic enforcement)
+	taskProgressMu        sync.RWMutex              // Protects taskProgress
 }
 
 // NewRunner creates a new Runner instance with Claude Code backend by default.
@@ -272,6 +274,7 @@ func NewRunner() *Runner {
 		running:           make(map[string]*exec.Cmd),
 		progressCallbacks: make(map[string]ProgressCallback),
 		tokenCallbacks:    make(map[string]TokenCallback),
+		taskProgress:      make(map[string]int),
 		log:               log,
 		enableRecording:   true, // Recording enabled by default
 		modelRouter:       NewModelRouter(nil, nil),
@@ -290,6 +293,7 @@ func NewRunnerWithBackend(backend Backend) *Runner {
 		running:           make(map[string]*exec.Cmd),
 		progressCallbacks: make(map[string]ProgressCallback),
 		tokenCallbacks:    make(map[string]TokenCallback),
+		taskProgress:      make(map[string]int),
 		log:               log,
 		enableRecording:   true,
 		modelRouter:       NewModelRouter(nil, nil),
@@ -3429,8 +3433,28 @@ func (r *Runner) dispatchWebhook(ctx context.Context, eventType webhooks.EventTy
 	r.webhooks.Dispatch(ctx, event)
 }
 
-// reportProgress sends a progress update to all registered callbacks
+// reportProgress sends a progress update to all registered callbacks.
+// Progress is monotonic — values lower than the current high-water mark
+// for a task are clamped upward to prevent dashboard progress regression.
 func (r *Runner) reportProgress(taskID, phase string, progress int, message string) {
+	// Enforce monotonic progress per task (never go backwards)
+	if progress < 100 { // Allow 100 from any state (completion/failure)
+		r.taskProgressMu.Lock()
+		if r.taskProgress == nil {
+			r.taskProgress = make(map[string]int)
+		}
+		if prev, ok := r.taskProgress[taskID]; ok && progress < prev {
+			progress = prev // Clamp to high-water mark
+		}
+		r.taskProgress[taskID] = progress
+		r.taskProgressMu.Unlock()
+	} else {
+		// Task done — clean up tracking
+		r.taskProgressMu.Lock()
+		delete(r.taskProgress, taskID)
+		r.taskProgressMu.Unlock()
+	}
+
 	// Log progress unless suppressed (e.g., when visual progress display is active)
 	if !r.suppressProgressLogs {
 		r.log.Info("Task progress",

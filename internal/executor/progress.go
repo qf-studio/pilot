@@ -139,7 +139,10 @@ func (p *ProgressDisplay) Update(phase string, progress int, message string) {
 	}
 
 	p.phase = phase
-	p.progress = progress
+	// Enforce monotonic progress (never go backwards)
+	if progress >= p.progress {
+		p.progress = progress
+	}
 
 	if message != "" {
 		timestamp := time.Now().Format("15:04:05")

@@ -75,14 +75,18 @@ func (m *Monitor) Start(taskID string) {
 	}
 }
 
-// UpdateProgress updates task progress
+// UpdateProgress updates task progress.
+// Progress is monotonic — never decreases (except reset to 0 on task start).
 func (m *Monitor) UpdateProgress(taskID, phase string, progress int, message string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	if state, ok := m.tasks[taskID]; ok {
 		state.Phase = phase
-		state.Progress = progress
+		// Enforce monotonic progress (never go backwards)
+		if progress >= state.Progress {
+			state.Progress = progress
+		}
 		if message != "" {
 			state.Message = message
 		}
