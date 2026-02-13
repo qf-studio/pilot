@@ -65,7 +65,8 @@ var numberedListRegex = regexp.MustCompile(`(?mi)^(?:\s*)(?:#{1,6}\s+)?(?:[-*]\s
 
 // PlanEpic runs Claude Code in planning mode to break an epic into subtasks.
 // Returns an EpicPlan with 3-5 sequential subtasks.
-func (r *Runner) PlanEpic(ctx context.Context, task *Task) (*EpicPlan, error) {
+// executionPath may differ from task.ProjectPath when using worktree isolation (GH-968).
+func (r *Runner) PlanEpic(ctx context.Context, task *Task, executionPath string) (*EpicPlan, error) {
 	// Build planning prompt
 	prompt := buildPlanningPrompt(task)
 
@@ -80,9 +81,9 @@ func (r *Runner) PlanEpic(ctx context.Context, task *Task) (*EpicPlan, error) {
 
 	cmd := exec.CommandContext(ctx, claudeCmd, args...)
 
-	// Set working directory if specified
-	if task.ProjectPath != "" {
-		cmd.Dir = task.ProjectPath
+	// Set working directory - use executionPath which respects worktree isolation
+	if executionPath != "" {
+		cmd.Dir = executionPath
 	}
 
 	// Capture output
@@ -280,7 +281,8 @@ func parsePRNumberFromURL(url string) int {
 }
 // CreateSubIssues creates GitHub issues from the planned subtasks.
 // Returns a slice of CreatedIssue with the issue numbers and URLs.
-func (r *Runner) CreateSubIssues(ctx context.Context, plan *EpicPlan) ([]CreatedIssue, error) {
+// executionPath may differ from task.ProjectPath when using worktree isolation (GH-968).
+func (r *Runner) CreateSubIssues(ctx context.Context, plan *EpicPlan, executionPath string) ([]CreatedIssue, error) {
 	if plan == nil || len(plan.Subtasks) == 0 {
 		return nil, fmt.Errorf("plan has no subtasks to create issues from")
 	}
@@ -304,9 +306,9 @@ func (r *Runner) CreateSubIssues(ctx context.Context, plan *EpicPlan) ([]Created
 
 		cmd := exec.CommandContext(ctx, "gh", args...)
 
-		// Set working directory if parent task has a project path
-		if plan.ParentTask != nil && plan.ParentTask.ProjectPath != "" {
-			cmd.Dir = plan.ParentTask.ProjectPath
+		// Set working directory - use executionPath which respects worktree isolation
+		if executionPath != "" {
+			cmd.Dir = executionPath
 		}
 
 		var stdout, stderr bytes.Buffer
@@ -380,14 +382,16 @@ func (r *Runner) CloseIssueWithComment(ctx context.Context, projectPath string, 
 // ExecuteSubIssues executes created sub-issues sequentially and tracks progress on the parent.
 // Each sub-issue is executed as a separate task, and the parent issue is updated with progress.
 // Returns an error if any sub-issue fails; completed sub-issues remain done.
-func (r *Runner) ExecuteSubIssues(ctx context.Context, parent *Task, issues []CreatedIssue) error {
+// executionPath may differ from task.ProjectPath when using worktree isolation (GH-968).
+func (r *Runner) ExecuteSubIssues(ctx context.Context, parent *Task, issues []CreatedIssue, executionPath string) error {
 	if len(issues) == 0 {
 		return fmt.Errorf("no sub-issues to execute")
 	}
 
 	total := len(issues)
-	projectPath := ""
-	if parent != nil {
+	// Use executionPath for gh CLI commands (respects worktree isolation)
+	projectPath := executionPath
+	if projectPath == "" && parent != nil {
 		projectPath = parent.ProjectPath
 	}
 

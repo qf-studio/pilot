@@ -105,7 +105,7 @@ func TestExecuteSubIssues_CallbackFiresForEachPR(t *testing.T) {
 		Title: "[epic] Build auth system",
 	}
 
-	err := runner.ExecuteSubIssues(context.Background(), parent, subIssues)
+	err := runner.ExecuteSubIssues(context.Background(), parent, subIssues, parent.ProjectPath)
 	if err != nil {
 		t.Fatalf("ExecuteSubIssues returned error: %v", err)
 	}
@@ -164,7 +164,7 @@ func TestExecuteSubIssues_NilCallbackNoPanic(t *testing.T) {
 		},
 	}
 
-	err := runner.ExecuteSubIssues(context.Background(), parent, issues)
+	err := runner.ExecuteSubIssues(context.Background(), parent, issues, parent.ProjectPath)
 	if err != nil {
 		t.Fatalf("ExecuteSubIssues should not error with nil callback: %v", err)
 	}
@@ -202,7 +202,7 @@ func TestExecuteSubIssues_CallbackNotFiredOnNoPRUrl(t *testing.T) {
 		},
 	}
 
-	err := runner.ExecuteSubIssues(context.Background(), parent, issues)
+	err := runner.ExecuteSubIssues(context.Background(), parent, issues, parent.ProjectPath)
 	if err != nil {
 		t.Fatalf("ExecuteSubIssues returned error: %v", err)
 	}
@@ -255,7 +255,7 @@ func TestExecuteSubIssues_CallbackNotFiredOnFailure(t *testing.T) {
 		{Number: 41, Subtask: PlannedSubtask{Title: "Bad task", Order: 2}},
 	}
 
-	err := runner.ExecuteSubIssues(context.Background(), parent, issues)
+	err := runner.ExecuteSubIssues(context.Background(), parent, issues, parent.ProjectPath)
 	if err == nil {
 		t.Fatal("ExecuteSubIssues should return error when sub-issue fails")
 	}
@@ -290,7 +290,7 @@ func TestExecuteSubIssues_CallbackNotFiredOnExecError(t *testing.T) {
 		{Number: 50, Subtask: PlannedSubtask{Title: "Task", Order: 1}},
 	}
 
-	err := runner.ExecuteSubIssues(context.Background(), parent, issues)
+	err := runner.ExecuteSubIssues(context.Background(), parent, issues, parent.ProjectPath)
 	if err == nil {
 		t.Fatal("expected error from ExecuteSubIssues")
 	}

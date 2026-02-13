@@ -290,7 +290,7 @@ func TestSequentialEpicFlow(t *testing.T) {
 					return result, err
 				})
 
-				err := sr.Runner.ExecuteSubIssues(ctx, parent, issues)
+				err := sr.Runner.ExecuteSubIssues(ctx, parent, issues, parent.ProjectPath)
 
 				if err == nil {
 					t.Fatal("expected error from cancelled context")
@@ -308,7 +308,7 @@ func TestSequentialEpicFlow(t *testing.T) {
 			}
 
 			sr := newSequentialRunner(tt.resultFn)
-			err := sr.Runner.ExecuteSubIssues(context.Background(), parent, issues)
+			err := sr.Runner.ExecuteSubIssues(context.Background(), parent, issues, parent.ProjectPath)
 
 			// Check error expectation
 			if tt.wantErr {
@@ -396,7 +396,7 @@ func TestSequentialEpicFlow_ExecutionOrder(t *testing.T) {
 		}, nil
 	})
 
-	err := sr.Runner.ExecuteSubIssues(context.Background(), parent, issues)
+	err := sr.Runner.ExecuteSubIssues(context.Background(), parent, issues, parent.ProjectPath)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -442,7 +442,7 @@ func TestSequentialEpicFlow_TaskConstruction(t *testing.T) {
 		}, nil
 	})
 
-	err := sr.Runner.ExecuteSubIssues(context.Background(), parent, issues)
+	err := sr.Runner.ExecuteSubIssues(context.Background(), parent, issues, parent.ProjectPath)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -496,7 +496,7 @@ func TestSequentialEpicFlow_PRCallbackFields(t *testing.T) {
 		}, nil
 	})
 
-	err := sr.Runner.ExecuteSubIssues(context.Background(), parent, issues)
+	err := sr.Runner.ExecuteSubIssues(context.Background(), parent, issues, parent.ProjectPath)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -546,7 +546,7 @@ func TestSequentialEpicFlow_EmptyIssuesList(t *testing.T) {
 	})
 
 	parent := &Task{ID: "GH-EMPTY", Title: "[epic] Empty test"}
-	err := sr.Runner.ExecuteSubIssues(context.Background(), parent, nil)
+	err := sr.Runner.ExecuteSubIssues(context.Background(), parent, nil, parent.ProjectPath)
 
 	if err == nil {
 		t.Fatal("expected error for empty issues")
@@ -582,7 +582,7 @@ func TestSequentialEpicFlow_PartialSuccessThenFailure(t *testing.T) {
 		}, nil
 	})
 
-	err := sr.Runner.ExecuteSubIssues(context.Background(), parent, issues)
+	err := sr.Runner.ExecuteSubIssues(context.Background(), parent, issues, parent.ProjectPath)
 	if err == nil {
 		t.Fatal("expected error from last sub-issue failure")
 	}
@@ -639,7 +639,7 @@ func TestSequentialEpicFlow_ContextDeadline(t *testing.T) {
 		}, nil
 	})
 
-	err := sr.Runner.ExecuteSubIssues(ctx, parent, issues)
+	err := sr.Runner.ExecuteSubIssues(ctx, parent, issues, parent.ProjectPath)
 	if err == nil {
 		t.Fatal("expected error from context deadline")
 	}
@@ -674,7 +674,7 @@ func TestSequentialEpicFlow_SingleSubIssue(t *testing.T) {
 		}, nil
 	})
 
-	err := sr.Runner.ExecuteSubIssues(context.Background(), parent, issues)
+	err := sr.Runner.ExecuteSubIssues(context.Background(), parent, issues, parent.ProjectPath)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

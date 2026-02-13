@@ -353,7 +353,7 @@ func TestPlanEpicSuccess(t *testing.T) {
 		ProjectPath: tmpDir,
 	}
 
-	plan, err := runner.PlanEpic(context.Background(), task)
+	plan, err := runner.PlanEpic(context.Background(), task, task.ProjectPath)
 	if err != nil {
 		t.Fatalf("PlanEpic returned unexpected error: %v", err)
 	}
@@ -412,7 +412,7 @@ func TestPlanEpicCLIFailure(t *testing.T) {
 		ProjectPath: tmpDir,
 	}
 
-	plan, err := runner.PlanEpic(context.Background(), task)
+	plan, err := runner.PlanEpic(context.Background(), task, task.ProjectPath)
 	if err == nil {
 		t.Fatal("PlanEpic should return error when CLI fails")
 	}
@@ -440,7 +440,7 @@ func TestPlanEpicEmptyOutput(t *testing.T) {
 		ProjectPath: tmpDir,
 	}
 
-	plan, err := runner.PlanEpic(context.Background(), task)
+	plan, err := runner.PlanEpic(context.Background(), task, task.ProjectPath)
 	if err == nil {
 		t.Fatal("PlanEpic should return error on empty output")
 	}
@@ -474,7 +474,7 @@ Security is paramount for this implementation.`
 		ProjectPath: tmpDir,
 	}
 
-	plan, err := runner.PlanEpic(context.Background(), task)
+	plan, err := runner.PlanEpic(context.Background(), task, task.ProjectPath)
 	if err == nil {
 		t.Fatal("PlanEpic should return error when no subtasks are parseable")
 	}
@@ -556,7 +556,7 @@ Step 3: Add tests`,
 				ProjectPath: tmpDir,
 			}
 
-			plan, err := runner.PlanEpic(context.Background(), task)
+			plan, err := runner.PlanEpic(context.Background(), task, task.ProjectPath)
 			if err != nil {
 				t.Fatalf("PlanEpic failed: %v", err)
 			}
@@ -597,7 +597,7 @@ func TestPlanEpicDefaultCommand(t *testing.T) {
 		Description: "Should fail when binary is not found",
 	}
 
-	_, err := runner.PlanEpic(context.Background(), task)
+	_, err := runner.PlanEpic(context.Background(), task, task.ProjectPath)
 	if err == nil {
 		t.Fatal("PlanEpic should fail when binary is not available")
 	}
@@ -620,7 +620,7 @@ func TestPlanEpicDefaultCommand(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	_, err = runner2.PlanEpic(ctx, task)
+	_, err = runner2.PlanEpic(ctx, task, task.ProjectPath)
 	// We expect either an error (binary not found) or timeout (binary exists but hangs)
 	if err == nil {
 		t.Fatal("PlanEpic with nil config should still attempt to run")
@@ -648,7 +648,7 @@ func TestPlanEpicContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // Cancel immediately
 
-	_, err := runner.PlanEpic(ctx, task)
+	_, err := runner.PlanEpic(ctx, task, task.ProjectPath)
 	if err == nil {
 		t.Fatal("PlanEpic should return error on cancelled context")
 	}

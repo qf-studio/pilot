@@ -669,7 +669,7 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 		)
 		r.reportProgress(task.ID, "Planning", 10, "Running epic planning...")
 
-		plan, err := r.PlanEpic(ctx, task)
+		plan, err := r.PlanEpic(ctx, task, executionPath)
 		if err != nil {
 			return &ExecutionResult{
 				TaskID:   task.ID,
@@ -685,7 +685,7 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 		// GH-412: Create sub-issues from the plan
 		r.reportProgress(task.ID, "Creating Issues", 40, "Creating GitHub sub-issues...")
 
-		issues, err := r.CreateSubIssues(ctx, plan)
+		issues, err := r.CreateSubIssues(ctx, plan, executionPath)
 		if err != nil {
 			return &ExecutionResult{
 				TaskID:   task.ID,
@@ -700,7 +700,7 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 		r.reportProgress(task.ID, "Executing", 50, fmt.Sprintf("Executing %d sub-issues sequentially...", len(issues)))
 
 		// GH-412: Execute sub-issues sequentially
-		if err := r.ExecuteSubIssues(ctx, task, issues); err != nil {
+		if err := r.ExecuteSubIssues(ctx, task, issues, executionPath); err != nil {
 			return &ExecutionResult{
 				TaskID:   task.ID,
 				Success:  false,
