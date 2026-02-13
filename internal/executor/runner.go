@@ -261,6 +261,7 @@ type Runner struct {
 	knowledge             *memory.KnowledgeStore  // Optional knowledge store for experiential memories (GH-994)
 	profileManager        *memory.ProfileManager  // Optional profile manager for user preferences (GH-994)
 	driftDetector         *DriftDetector          // Optional drift detector for collaboration drift (GH-997)
+	monitor               *Monitor                  // Optional monitor for state transitions (queued→running)
 	taskProgress          map[string]int            // Per-task progress high-water mark (monotonic enforcement)
 	taskProgressMu        sync.RWMutex              // Protects taskProgress
 }
@@ -513,6 +514,13 @@ func (r *Runner) SetDriftDetector(dd *DriftDetector) {
 	r.driftDetector = dd
 }
 
+// SetMonitor sets the task monitor for state transitions.
+// When set, Runner signals monitor.Start() when execution actually begins,
+// enabling accurate queued→running transitions in the dashboard.
+func (r *Runner) SetMonitor(m *Monitor) {
+	r.monitor = m
+}
+
 // getRecordingsPath returns the recordings path, using default if not set
 func (r *Runner) getRecordingsPath() string {
 	if r.recordingsPath != "" {
@@ -607,6 +615,11 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 // This prevents recursive worktree creation in sub-issues and decomposed tasks.
 func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktree bool) (*ExecutionResult, error) {
 	start := time.Now()
+
+	// Signal monitor that execution is actually starting (queued→running transition)
+	if r.monitor != nil {
+		r.monitor.Start(task.ID)
+	}
 
 	// GH-386: Validate source repo matches project path to prevent cross-project execution
 	if task.SourceRepo != "" && task.ProjectPath != "" {

@@ -129,7 +129,7 @@ Disable via config: `executor.navigator.auto_init: false`
 | Slack Socket Mode | Done | OpenConnection, Listen with auto-reconnect, event parsing (v0.29.0) |
 | Quality Gates | Done | Test/lint/build gates with retry |
 | Task Dispatcher | Done | Per-project queue |
-| Dashboard TUI | Done | Sparkline cards, muted palette, SQLite persistence, epic-aware HISTORY |
+| Dashboard TUI | Done | Sparkline cards, muted palette, SQLite persistence, epic-aware HISTORY, state-aware QUEUE |
 | Hot Upgrade | Done | Self-update via `pilot upgrade` or dashboard 'u' key |
 | Autopilot | Done | CI monitor, auto-merge, feedback loop, tag-only release, SQLite state (v0.30.0) |
 | Conflict Detection | Done | Detect merge conflicts before CI wait (v0.30.0) |
@@ -162,6 +162,7 @@ Disable via config: `executor.navigator.auto_init: false`
 | Multi-Repo Polling | Done | Poll issues from all projects with GitHub config (v0.54.0) |
 | Signal Parser v2 | Done | JSON pilot-signal blocks with validation (v0.56.0) |
 | Stagnation Monitor | Done | State hash tracking, escalation: warn → pause → abort (v0.56.0) |
+| Queue State Dashboard | Done | 5-state QUEUE panel: done/running/queued/pending/failed with shimmer animation |
 
 ### Telegram Interaction Modes (v0.6.0)
 
@@ -250,6 +251,7 @@ Goal: Raise autonomous reliability from 3/10 to 8/10. **Achieved: 8/10**
 
 | Item | What |
 |------|------|
+| Queue states | State-aware QUEUE panel: ✓done ●running ◌queued ·pending ✗failed with shimmer animation, fixed monitor state transitions |
 | **v0.63.0** | Fix monotonic progress — dashboard no longer jumps backwards (90%→85%→95%) |
 | **v0.61.0** | Pricing fix ($5/$25 not $15/$75), LLM effort classifier, knowledge store, drift detection, simplify.go, workflow enforcement |
 | **v0.60.0** | Preflight skip `git_clean` when worktree enabled (GH-1002) |
@@ -526,6 +528,30 @@ Task completed successfully!
 | Complete | `LOOP COMPLETE` / `TASK MODE COMPLETE` | 95% |
 
 Navigator status blocks provide real progress via `Progress: N%` field.
+
+### QUEUE Panel States
+
+The dashboard QUEUE panel shows 5 distinct task states with unique visual indicators:
+
+| State | Icon | Bar Style | Meta | Color |
+|-------|------|-----------|------|-------|
+| done | `✓` | Solid green `██████████████` | `done` | Sage green `#7ec699` |
+| running | `●` | Standard `███████░░░░░░░` | `50%` | Steel blue `#7eb8da` (pulses) |
+| queued | `◌` | Shimmer `░▒▓▒░` animated | `queue` | Mid gray `#8b949e` |
+| pending | `·` | Empty spaces | `wait` | Slate `#3d4450` |
+| failed | `✗` | Frozen at fail point | `fail` | Dusty rose `#d48a8a` |
+
+**State transitions:**
+- `monitor.Register()` → pending (poller picks up issue)
+- `monitor.Queue()` → queued (dispatcher accepts task)
+- `monitor.Start()` → running (runner.Execute actually begins)
+- `monitor.Complete()` → done (PR created)
+- `monitor.Fail()` → failed
+
+Items sorted by state priority: done → running → queued → pending → failed.
+Queued items have staggered shimmer animation (offset per queue position).
+
+**Key files:** `internal/dashboard/tui.go` (rendering), `internal/executor/monitor.go` (state machine), `cmd/pilot/main.go` (state wiring)
 
 ### Execution Report
 

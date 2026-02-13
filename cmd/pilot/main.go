@@ -623,6 +623,7 @@ Examples:
 				if dashboardMode {
 					gwRunner.SuppressProgressLogs(true)
 					gwMonitor = executor.NewMonitor()
+					gwRunner.SetMonitor(gwMonitor)
 					model := dashboard.NewModelWithOptions(version, gwStore, gwAutopilotController, nil)
 					gwProgram = tea.NewProgram(model,
 						tea.WithAltScreen(),
@@ -1409,6 +1410,7 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 		runner.SuppressProgressLogs(true)
 
 		monitor = executor.NewMonitor()
+		runner.SetMonitor(monitor)
 		upgradeRequestCh = make(chan struct{}, 1)
 		model := dashboard.NewModelWithOptions(version, store, autopilotController, upgradeRequestCh)
 		program = tea.NewProgram(model,
@@ -2341,9 +2343,10 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 	}
 
 	// Register task with monitor if in dashboard mode
+	// Note: monitor.Start() is NOT called here — it's called by runner.executeWithOptions()
+	// when execution actually begins, enabling accurate queued→running dashboard transitions.
 	if monitor != nil {
 		monitor.Register(taskID, issue.Title, issue.HTMLURL)
-		monitor.Start(taskID)
 	}
 	if program != nil {
 		program.Send(dashboard.AddLog(fmt.Sprintf("📥 GitHub Issue #%d: %s", issue.Number, issue.Title))())
@@ -2464,6 +2467,9 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 		if qErr != nil {
 			execErr = fmt.Errorf("failed to queue task: %w", qErr)
 		} else {
+			if monitor != nil {
+				monitor.Queue(taskID)
+			}
 			fmt.Printf("   📋 Queued as execution %s\n", execID[:8])
 			exec, waitErr := dispatcher.WaitForExecution(ctx, execID, time.Second)
 			if waitErr != nil {
@@ -2631,7 +2637,6 @@ func handleLinearIssueWithResult(ctx context.Context, cfg *config.Config, client
 	if monitor != nil {
 		issueURL := fmt.Sprintf("https://linear.app/issue/%s", issue.Identifier)
 		monitor.Register(taskID, issue.Title, issueURL)
-		monitor.Start(taskID)
 	}
 	if program != nil {
 		program.Send(dashboard.AddLog(fmt.Sprintf("📊 Linear Issue %s: %s", issue.Identifier, issue.Title))())
@@ -2708,6 +2713,9 @@ func handleLinearIssueWithResult(ctx context.Context, cfg *config.Config, client
 		if qErr != nil {
 			execErr = fmt.Errorf("failed to queue task: %w", qErr)
 		} else {
+			if monitor != nil {
+				monitor.Queue(taskID)
+			}
 			fmt.Printf("   📋 Queued as execution %s\n", execID[:8])
 			exec, waitErr := dispatcher.WaitForExecution(ctx, execID, time.Second)
 			if waitErr != nil {
@@ -2858,7 +2866,6 @@ func handleJiraIssueWithResult(ctx context.Context, cfg *config.Config, client *
 	if monitor != nil {
 		issueURL := fmt.Sprintf("%s/browse/%s", cfg.Adapters.Jira.BaseURL, issue.Key)
 		monitor.Register(taskID, issue.Fields.Summary, issueURL)
-		monitor.Start(taskID)
 	}
 	if program != nil {
 		program.Send(dashboard.AddLog(fmt.Sprintf("📊 Jira Issue %s: %s", issue.Key, issue.Fields.Summary))())
@@ -2933,6 +2940,9 @@ func handleJiraIssueWithResult(ctx context.Context, cfg *config.Config, client *
 		if qErr != nil {
 			execErr = fmt.Errorf("failed to queue task: %w", qErr)
 		} else {
+			if monitor != nil {
+				monitor.Queue(taskID)
+			}
 			fmt.Printf("   📋 Queued as execution %s\n", execID[:8])
 			exec, waitErr := dispatcher.WaitForExecution(ctx, execID, time.Second)
 			if waitErr != nil {
@@ -3120,7 +3130,6 @@ func handleAsanaTaskWithResult(ctx context.Context, cfg *config.Config, client *
 	// Register task with monitor if in dashboard mode
 	if monitor != nil {
 		monitor.Register(taskID, task.Name, taskURL)
-		monitor.Start(taskID)
 	}
 	if program != nil {
 		program.Send(dashboard.AddLog(fmt.Sprintf("📦 Asana Task %s: %s", task.GID, task.Name))())
@@ -3195,6 +3204,9 @@ func handleAsanaTaskWithResult(ctx context.Context, cfg *config.Config, client *
 		if qErr != nil {
 			execErr = fmt.Errorf("failed to queue task: %w", qErr)
 		} else {
+			if monitor != nil {
+				monitor.Queue(taskID)
+			}
 			fmt.Printf("   📋 Queued as execution %s\n", execID[:8])
 			exec, waitErr := dispatcher.WaitForExecution(ctx, execID, time.Second)
 			if waitErr != nil {
@@ -5364,19 +5376,21 @@ func runDashboardMode(p *pilot.Pilot, cfg *config.Config) error {
 	return p.Stop()
 }
 
-// convertTaskStatesToDisplay converts executor TaskStates to dashboard TaskDisplay format
+// convertTaskStatesToDisplay converts executor TaskStates to dashboard TaskDisplay format.
+// Maps all 5 states: done, running, queued, pending, failed for state-aware dashboard rendering.
 func convertTaskStatesToDisplay(states []*executor.TaskState) []dashboard.TaskDisplay {
 	var displays []dashboard.TaskDisplay
 	for _, state := range states {
-		// Skip completed/failed tasks — they appear in HISTORY, not QUEUE
-		if state.Status == executor.StatusCompleted || state.Status == executor.StatusFailed {
-			continue
-		}
-
 		var status string
 		switch state.Status {
 		case executor.StatusRunning:
 			status = "running"
+		case executor.StatusQueued:
+			status = "queued"
+		case executor.StatusCompleted:
+			status = "done"
+		case executor.StatusFailed:
+			status = "failed"
 		default:
 			status = "pending"
 		}

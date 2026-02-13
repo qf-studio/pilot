@@ -35,6 +35,41 @@ func TestMonitorRegister(t *testing.T) {
 	}
 }
 
+func TestMonitorQueue(t *testing.T) {
+	monitor := NewMonitor()
+	monitor.Register("task-1", "Test Task", "")
+
+	monitor.Queue("task-1")
+
+	state, _ := monitor.Get("task-1")
+	if state.Status != StatusQueued {
+		t.Errorf("Expected status queued, got %s", state.Status)
+	}
+	if state.Phase != "Queued" {
+		t.Errorf("Expected phase 'Queued', got '%s'", state.Phase)
+	}
+}
+
+func TestMonitorQueueThenStart(t *testing.T) {
+	monitor := NewMonitor()
+	monitor.Register("task-1", "Test Task", "")
+
+	monitor.Queue("task-1")
+	state, _ := monitor.Get("task-1")
+	if state.Status != StatusQueued {
+		t.Errorf("Expected status queued, got %s", state.Status)
+	}
+
+	monitor.Start("task-1")
+	state, _ = monitor.Get("task-1")
+	if state.Status != StatusRunning {
+		t.Errorf("Expected status running after start, got %s", state.Status)
+	}
+	if state.StartedAt == nil {
+		t.Error("StartedAt not set after start")
+	}
+}
+
 func TestMonitorStart(t *testing.T) {
 	monitor := NewMonitor()
 	monitor.Register("task-1", "Test Task", "")

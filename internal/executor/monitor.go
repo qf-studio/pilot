@@ -61,6 +61,17 @@ func (m *Monitor) Register(taskID, title, issueURL string) {
 	}
 }
 
+// Queue marks a task as queued in the dispatcher (waiting for execution slot).
+func (m *Monitor) Queue(taskID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if state, ok := m.tasks[taskID]; ok {
+		state.Status = StatusQueued
+		state.Phase = "Queued"
+	}
+}
+
 // Start marks a task as started
 func (m *Monitor) Start(taskID string) {
 	m.mu.Lock()

@@ -195,7 +195,7 @@ Documentation in `.agent/`:
 
 **Adapters:** Telegram (voice, images, 5 modes), GitHub, GitLab, Azure DevOps, Linear, Jira, Slack
 
-**Dashboard:** Sparkline cards, SQLite persistence, epic-aware history, hot upgrade
+**Dashboard:** Sparkline cards, SQLite persistence, epic-aware history, state-aware queue, hot upgrade
 
 **Docs:** Nextra v2 at pilot.quantflow.studio, auto-deploy via GitLab CI
 
