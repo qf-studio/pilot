@@ -110,7 +110,7 @@ func CleanupOldMarkers(agentPath string, retentionDays int) error {
 	cutoff := time.Now().AddDate(0, 0, -retentionDays)
 	for _, m := range markers {
 		if m.CreatedAt.Before(cutoff) {
-			os.Remove(m.FilePath)
+			_ = os.Remove(m.FilePath) // Best-effort cleanup, ignore errors
 		}
 	}
 	return nil
