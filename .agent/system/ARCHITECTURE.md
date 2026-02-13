@@ -1,6 +1,6 @@
 # Pilot Architecture
 
-**Last Updated:** 2026-01-28 (GH-52 audit)
+**Last Updated:** 2026-02-13 (v0.57.5 - Worktree reliability)
 
 ## System Overview
 
@@ -136,7 +136,16 @@ Pilot is a Go-based autonomous AI development pipeline that:
 
 ## Worktree Isolation + Epic Interaction
 
-**GH-945 (v0.53-v0.56)**: Worktree isolation enables task execution in isolated git worktrees, preventing conflicts with user's uncommitted changes.
+**Worktree Isolation (v0.53-v0.57)**: Execute tasks in isolated git worktrees, preventing conflicts with user's uncommitted changes.
+
+| Version | Feature | Issue |
+|---------|---------|-------|
+| v0.53.2 | Initial worktree isolation | GH-936 |
+| v0.56.0 | Epic + worktree integration | GH-945, GH-968-970 |
+| v0.57.3 | Crash recovery, orphan cleanup | GH-962 |
+| v0.57.4 | Stale worktree cleanup on retry | GH-963 |
+
+**Key files:** `worktree.go`, `runner.go:561-650`
 
 ### Epic + Worktree Architecture
 
