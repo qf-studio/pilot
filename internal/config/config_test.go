@@ -68,8 +68,8 @@ func TestDefaultConfig(t *testing.T) {
 		if config.Orchestrator == nil {
 			t.Fatal("Orchestrator config is nil")
 		}
-		if config.Orchestrator.Model != "claude-sonnet-4-20250514" {
-			t.Errorf("Orchestrator.Model = %q, want %q", config.Orchestrator.Model, "claude-sonnet-4-20250514")
+		if config.Orchestrator.Model != "claude-sonnet-4-5-20250929" {
+			t.Errorf("Orchestrator.Model = %q, want %q", config.Orchestrator.Model, "claude-sonnet-4-5-20250929")
 		}
 		if config.Orchestrator.MaxConcurrent != 2 {
 			t.Errorf("Orchestrator.MaxConcurrent = %d, want %d", config.Orchestrator.MaxConcurrent, 2)

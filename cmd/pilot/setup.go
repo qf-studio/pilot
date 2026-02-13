@@ -394,7 +394,7 @@ func setupBriefs(reader *bufio.Reader, cfg *config.Config) error {
 	// Initialize config
 	if cfg.Orchestrator == nil {
 		cfg.Orchestrator = &config.OrchestratorConfig{
-			Model:         "claude-sonnet-4-20250514",
+			Model:         "claude-sonnet-4-5-20250929",
 			MaxConcurrent: 2,
 		}
 	}

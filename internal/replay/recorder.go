@@ -471,22 +471,41 @@ func (r *Recorder) generateSummary() error {
 }
 
 // estimateCost calculates estimated cost from token usage
+// Pricing source: https://platform.claude.com/docs/en/about-claude/pricing
 func (r *Recorder) estimateCost() float64 {
-	// Pricing per 1M tokens (Sonnet defaults)
+	// Pricing per 1M tokens
 	const (
-		inputPrice  = 3.00
-		outputPrice = 15.00
+		// Sonnet 4.5/4
+		sonnetInputPrice  = 3.00
+		sonnetOutputPrice = 15.00
+		// Opus 4.6/4.5
+		opusInputPrice  = 5.00
+		opusOutputPrice = 25.00
+		// Opus 4.1/4.0 (legacy)
+		opus41InputPrice  = 15.00
+		opus41OutputPrice = 75.00
+		// Haiku 4.5
+		haikuInputPrice  = 1.00
+		haikuOutputPrice = 5.00
 	)
 
 	model := r.recording.Metadata.ModelName
+	modelLower := strings.ToLower(model)
 	var inPrice, outPrice float64
 
-	if strings.Contains(strings.ToLower(model), "opus") {
-		inPrice = 15.00
-		outPrice = 75.00
-	} else {
-		inPrice = inputPrice
-		outPrice = outputPrice
+	switch {
+	case strings.Contains(modelLower, "opus-4-1") || strings.Contains(modelLower, "opus-4-0") || model == "claude-opus-4":
+		inPrice = opus41InputPrice
+		outPrice = opus41OutputPrice
+	case strings.Contains(modelLower, "opus"):
+		inPrice = opusInputPrice
+		outPrice = opusOutputPrice
+	case strings.Contains(modelLower, "haiku"):
+		inPrice = haikuInputPrice
+		outPrice = haikuOutputPrice
+	default:
+		inPrice = sonnetInputPrice
+		outPrice = sonnetOutputPrice
 	}
 
 	inputCost := float64(r.recording.TokenUsage.InputTokens) * inPrice / 1_000_000
