@@ -1954,3 +1954,98 @@ func TestController_handleMerging_ConflictClearsLabel(t *testing.T) {
 		t.Errorf("Error = %q, want 'merge conflict with base branch'", prState.Error)
 	}
 }
+
+// TestController_handleMerging_Success_RemovesFailedLabel tests GH-1302:
+// When a retry succeeds and PR merges, pilot-failed label should be removed.
+func TestController_handleMerging_Success_RemovesFailedLabel(t *testing.T) {
+	pilotDoneAdded := false
+	pilotInProgressRemoved := false
+	pilotFailedRemoved := false
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/repos/owner/repo/commits/abc1234/check-runs":
+			resp := github.CheckRunsResponse{
+				TotalCount: 1,
+				CheckRuns: []github.CheckRun{
+					{Name: "build", Status: "completed", Conclusion: "success"},
+				},
+			}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(resp)
+		case r.URL.Path == "/repos/owner/repo/pulls/42/merge" && r.Method == http.MethodPut:
+			// Successful merge
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"sha":     "merged123",
+				"merged":  true,
+				"message": "Pull Request successfully merged",
+			})
+		case r.URL.Path == "/repos/owner/repo/pulls/42" && r.Method == http.MethodGet:
+			pr := github.PullRequest{
+				Number: 42,
+				State:  "open",
+				Head: github.PRRef{
+					Ref: "pilot/GH-10",
+					SHA: "abc1234",
+				},
+			}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(pr)
+		case r.URL.Path == "/repos/owner/repo/issues/10/labels" && r.Method == http.MethodPost:
+			pilotDoneAdded = true
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode([]github.Label{{Name: github.LabelDone}})
+		case r.URL.Path == "/repos/owner/repo/issues/10/labels/pilot-in-progress" && r.Method == http.MethodDelete:
+			pilotInProgressRemoved = true
+			w.WriteHeader(http.StatusOK)
+		case r.URL.Path == "/repos/owner/repo/issues/10/labels/pilot-failed" && r.Method == http.MethodDelete:
+			pilotFailedRemoved = true
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.Environment = EnvDev
+	cfg.AutoReview = false
+	cfg.RequiredChecks = []string{"build"}
+
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+
+	// Set up PR in StageMerging state
+	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc1234", "pilot/GH-10")
+	prState, _ := c.GetPRState(42)
+	prState.Stage = StageMerging
+
+	ctx := context.Background()
+
+	err := c.ProcessPR(ctx, 42)
+	if err != nil {
+		t.Fatalf("ProcessPR returned error: %v", err)
+	}
+
+	if !pilotDoneAdded {
+		t.Error("pilot-done label should have been added")
+	}
+
+	if !pilotInProgressRemoved {
+		t.Error("pilot-in-progress label should have been removed")
+	}
+
+	if !pilotFailedRemoved {
+		t.Error("pilot-failed label should have been removed (GH-1302)")
+	}
+
+	// PR should be in Merged state
+	prState, ok := c.GetPRState(42)
+	if !ok {
+		t.Fatal("PR should still be tracked")
+	}
+	if prState.Stage != StageMerged {
+		t.Errorf("Stage = %s, want %s", prState.Stage, StageMerged)
+	}
+}

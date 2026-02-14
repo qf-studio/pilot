@@ -575,6 +575,11 @@ func (c *Controller) handleMerging(ctx context.Context, prState *PRState) error 
 		if err := c.ghClient.RemoveLabel(ctx, c.owner, c.repo, prState.IssueNumber, github.LabelInProgress); err != nil {
 			c.log.Warn("failed to remove pilot-in-progress label after merge", "issue", prState.IssueNumber, "error", err)
 		}
+		// GH-1302: Clean up stale pilot-failed label from prior failed attempt
+		if err := c.ghClient.RemoveLabel(ctx, c.owner, c.repo, prState.IssueNumber, github.LabelFailed); err != nil {
+			// 404 is expected if label doesn't exist - silently ignore
+			c.log.Debug("pilot-failed label cleanup", "issue", prState.IssueNumber, "error", err)
+		}
 		c.log.Info("marked issue as pilot-done after merge", "issue", prState.IssueNumber, "pr", prState.PRNumber)
 	}
 
