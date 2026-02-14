@@ -124,6 +124,14 @@ func TestNewEffortClassifier(t *testing.T) {
 	if classifier.model != "claude-haiku-4-5-20251001" {
 		t.Errorf("expected haiku model, got %s", classifier.model)
 	}
+	// Test structured output configuration
+	if classifier.useStructuredOutput != false {
+		t.Errorf("expected structured output to default to false")
+	}
+	classifier.SetUseStructuredOutput(true)
+	if classifier.useStructuredOutput != true {
+		t.Errorf("expected structured output to be set to true")
+	}
 }
 
 func TestParseEffortResponse(t *testing.T) {
@@ -222,5 +230,99 @@ func TestEffortClassifier_TaskWithoutID(t *testing.T) {
 	// Without ID, should call subprocess twice (no caching)
 	if callCount != 2 {
 		t.Errorf("expected 2 subprocess calls (no cache without ID), got %d", callCount)
+	}
+}
+
+func TestParseStructuredEffortResponse(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+		wantErr  bool
+	}{
+		{
+			name: "valid low effort",
+			input: `{
+				"result": "Effort classification complete",
+				"session_id": "test-session",
+				"structured_output": {"effort": "low", "reason": "Simple change"}
+			}`,
+			expected: "low",
+			wantErr:  false,
+		},
+		{
+			name: "valid medium effort",
+			input: `{
+				"result": "Effort classification complete",
+				"session_id": "test-session",
+				"structured_output": {"effort": "medium", "reason": "Standard work"}
+			}`,
+			expected: "medium",
+			wantErr:  false,
+		},
+		{
+			name: "valid high effort",
+			input: `{
+				"result": "Effort classification complete",
+				"session_id": "test-session",
+				"structured_output": {"effort": "high", "reason": "Complex analysis needed"}
+			}`,
+			expected: "high",
+			wantErr:  false,
+		},
+		{
+			name: "case insensitive",
+			input: `{
+				"result": "Effort classification complete",
+				"session_id": "test-session",
+				"structured_output": {"effort": "HIGH", "reason": "Complex analysis"}
+			}`,
+			expected: "high",
+			wantErr:  false,
+		},
+		{
+			name:    "invalid JSON wrapper",
+			input:   `{invalid json}`,
+			wantErr: true,
+		},
+		{
+			name: "missing structured_output",
+			input: `{
+				"result": "Effort classification complete",
+				"session_id": "test-session"
+			}`,
+			wantErr: true,
+		},
+		{
+			name: "unknown effort level",
+			input: `{
+				"result": "Effort classification complete",
+				"session_id": "test-session",
+				"structured_output": {"effort": "extreme", "reason": "Invalid level"}
+			}`,
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := parseStructuredEffortResponse([]byte(tt.input))
+
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("expected error but got none")
+				}
+				return
+			}
+
+			if err != nil {
+				t.Errorf("unexpected error: %v", err)
+				return
+			}
+
+			if result != tt.expected {
+				t.Errorf("expected %s, got %s", tt.expected, result)
+			}
+		})
 	}
 }

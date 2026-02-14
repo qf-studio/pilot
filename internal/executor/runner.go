@@ -352,6 +352,9 @@ func NewRunnerWithConfig(config *BackendConfig) (*Runner, error) {
 					classifier.timeout = d
 				}
 			}
+			if config.ClaudeCode != nil {
+				classifier.SetUseStructuredOutput(config.ClaudeCode.UseStructuredOutput)
+			}
 			runner.modelRouter.SetEffortClassifier(classifier)
 			runner.log.Info("LLM effort classifier initialized",
 				slog.String("model", classifier.model),
@@ -365,7 +368,11 @@ func NewRunnerWithConfig(config *BackendConfig) (*Runner, error) {
 
 			// GH-727, GH-868: Attach LLM complexity classifier using Claude Code subprocess
 			// No ANTHROPIC_API_KEY needed - uses existing Claude Code subscription
-			runner.decomposer.SetClassifier(NewComplexityClassifier())
+			complexityClassifier := NewComplexityClassifier()
+			if config.ClaudeCode != nil {
+				complexityClassifier.SetUseStructuredOutput(config.ClaudeCode.UseStructuredOutput)
+			}
+			runner.decomposer.SetClassifier(complexityClassifier)
 		}
 	}
 
@@ -1454,6 +1461,26 @@ retrySucceeded:
 	// Extract commit SHA from state (parsed from Claude Code output)
 	if len(state.commitSHAs) > 0 {
 		result.CommitSHA = state.commitSHAs[len(state.commitSHAs)-1] // Use last commit
+	}
+
+	// Post-execution summary via structured output (GH-1264)
+	// This replaces brittle regex parsing with reliable --json-schema output
+	if result.CommitSHA == "" && result.Success && r.config != nil && r.config.ClaudeCode != nil && r.config.ClaudeCode.UseStructuredOutput {
+		if summary, summaryErr := r.getPostExecutionSummary(ctx); summaryErr == nil {
+			if summary.CommitSHA != "" {
+				result.CommitSHA = summary.CommitSHA
+				log.Info("CommitSHA extracted via post-execution summary",
+					slog.String("task_id", task.ID),
+					slog.String("sha", summary.CommitSHA[:min(7, len(summary.CommitSHA))]),
+					slog.String("branch", summary.BranchName),
+				)
+			}
+		} else {
+			log.Debug("post-execution summary failed, falling back to git",
+				slog.String("task_id", task.ID),
+				slog.Any("error", summaryErr),
+			)
+		}
 	}
 
 	// Fallback: if output parsing missed the commit SHA, ask git directly.
@@ -3303,4 +3330,48 @@ func (c *simpleQualityChecker) Check(ctx context.Context) (*QualityOutcome, erro
 	}
 
 	return outcome, nil
+}
+
+// PostExecutionSummary contains git state information extracted via structured output
+type PostExecutionSummary struct {
+	BranchName   string   `json:"branch_name"`
+	CommitSHA    string   `json:"commit_sha"`
+	FilesChanged []string `json:"files_changed"`
+	Summary      string   `json:"summary"`
+}
+
+// getPostExecutionSummary runs a structured output query to extract git state information.
+// This replaces brittle regex parsing of git output with reliable --json-schema extraction.
+func (r *Runner) getPostExecutionSummary(ctx context.Context) (*PostExecutionSummary, error) {
+	if r.config == nil || r.config.ClaudeCode == nil {
+		return nil, fmt.Errorf("claude code backend not configured")
+	}
+
+	prompt := "Report git state: run 'git log --oneline -1' and 'git branch --show-current' and 'git diff --name-only HEAD~1'. Return branch name, latest commit SHA, and changed files."
+
+	// Use fast Haiku model for this simple task
+	cmd := exec.CommandContext(ctx, "claude",
+		"--print",
+		"-p", prompt,
+		"--model", "claude-haiku-4-5-20251001",
+		"--output-format", "json",
+		"--json-schema", PostExecutionSummarySchema,
+	)
+
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("claude command failed: %w", err)
+	}
+
+	structuredOutput, err := extractStructuredOutput(output)
+	if err != nil {
+		return nil, fmt.Errorf("extract structured output: %w", err)
+	}
+
+	var summary PostExecutionSummary
+	if err := json.Unmarshal(structuredOutput, &summary); err != nil {
+		return nil, fmt.Errorf("parse post-execution summary: %w", err)
+	}
+
+	return &summary, nil
 }

@@ -20,9 +20,10 @@ import (
 // GH-868: Now uses `claude --print` subprocess instead of direct API calls,
 // leveraging the user's existing Claude Code subscription (no ANTHROPIC_API_KEY needed).
 type ComplexityClassifier struct {
-	model   string
-	timeout time.Duration
-	log     *slog.Logger
+	model               string
+	timeout             time.Duration
+	log                 *slog.Logger
+	useStructuredOutput bool
 
 	// cmdRunner is the function that executes the claude command.
 	// Can be overridden for testing.
@@ -76,6 +77,11 @@ func newComplexityClassifierWithRunner(runner func(ctx context.Context, args ...
 	c := NewComplexityClassifier()
 	c.cmdRunner = runner
 	return c
+}
+
+// SetUseStructuredOutput configures whether to use Claude Code's --json-schema structured output.
+func (c *ComplexityClassifier) SetUseStructuredOutput(enabled bool) {
+	c.useStructuredOutput = enabled
 }
 
 // Classify determines task complexity using Claude Code subprocess.
@@ -140,11 +146,22 @@ func (c *ComplexityClassifier) classify(ctx context.Context, task *Task) (Comple
 	defer cancel()
 
 	// Call claude --print with Haiku model
-	args := []string{
-		"--print",
-		"-p", prompt,
-		"--model", c.model,
-		"--output-format", "text",
+	var args []string
+	if c.useStructuredOutput {
+		args = []string{
+			"--print",
+			"-p", prompt,
+			"--model", c.model,
+			"--output-format", "json",
+			"--json-schema", ClassificationSchema,
+		}
+	} else {
+		args = []string{
+			"--print",
+			"-p", prompt,
+			"--model", c.model,
+			"--output-format", "text",
+		}
 	}
 
 	output, err := c.cmdRunner(ctx, args...)
@@ -156,7 +173,11 @@ func (c *ComplexityClassifier) classify(ctx context.Context, task *Task) (Comple
 		return "", fmt.Errorf("empty response from claude")
 	}
 
-	return parseClassificationResponse(string(output))
+	if c.useStructuredOutput {
+		return parseStructuredClassification(output)
+	} else {
+		return parseClassificationResponse(string(output))
+	}
 }
 
 // parseClassificationResponse extracts complexity from the LLM's JSON response.
@@ -171,6 +192,34 @@ func parseClassificationResponse(text string) (Complexity, error) {
 	var resp classificationResponse
 	if err := json.Unmarshal([]byte(text), &resp); err != nil {
 		return "", fmt.Errorf("parse classification JSON: %w (raw: %s)", err, text)
+	}
+
+	switch strings.ToLower(resp.Complexity) {
+	case "trivial":
+		return ComplexityTrivial, nil
+	case "simple":
+		return ComplexitySimple, nil
+	case "medium":
+		return ComplexityMedium, nil
+	case "complex":
+		return ComplexityComplex, nil
+	case "epic":
+		return ComplexityEpic, nil
+	default:
+		return "", fmt.Errorf("unknown complexity level: %q", resp.Complexity)
+	}
+}
+
+// parseStructuredClassification extracts complexity from Claude Code's structured JSON output.
+func parseStructuredClassification(jsonResponse []byte) (Complexity, error) {
+	structuredOutput, err := extractStructuredOutput(jsonResponse)
+	if err != nil {
+		return "", fmt.Errorf("extract structured output: %w", err)
+	}
+
+	var resp classificationResponse
+	if err := json.Unmarshal(structuredOutput, &resp); err != nil {
+		return "", fmt.Errorf("parse structured classification: %w", err)
 	}
 
 	switch strings.ToLower(resp.Complexity) {

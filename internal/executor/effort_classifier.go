@@ -20,9 +20,10 @@ import (
 // GH-727: LLM-based effort selection for smarter resource allocation.
 // Cost: ~$0.0002 per classification (negligible vs execution savings).
 type EffortClassifier struct {
-	model   string
-	timeout time.Duration
-	log     *slog.Logger
+	model               string
+	timeout             time.Duration
+	log                 *slog.Logger
+	useStructuredOutput bool
 
 	// cmdRunner is the function that executes the claude command.
 	// Can be overridden for testing.
@@ -82,6 +83,11 @@ func newEffortClassifierWithRunner(runner func(ctx context.Context, args ...stri
 	c := NewEffortClassifier()
 	c.cmdRunner = runner
 	return c
+}
+
+// SetUseStructuredOutput configures whether to use Claude Code's --json-schema structured output.
+func (c *EffortClassifier) SetUseStructuredOutput(enabled bool) {
+	c.useStructuredOutput = enabled
 }
 
 // Classify determines task effort level using Claude Code subprocess.
@@ -146,11 +152,22 @@ func (c *EffortClassifier) classify(ctx context.Context, task *Task) (string, er
 	defer cancel()
 
 	// Call claude --print with Haiku model
-	args := []string{
-		"--print",
-		"-p", prompt,
-		"--model", c.model,
-		"--output-format", "text",
+	var args []string
+	if c.useStructuredOutput {
+		args = []string{
+			"--print",
+			"-p", prompt,
+			"--model", c.model,
+			"--output-format", "json",
+			"--json-schema", EffortSchema,
+		}
+	} else {
+		args = []string{
+			"--print",
+			"-p", prompt,
+			"--model", c.model,
+			"--output-format", "text",
+		}
 	}
 
 	output, err := c.cmdRunner(ctx, args...)
@@ -162,7 +179,11 @@ func (c *EffortClassifier) classify(ctx context.Context, task *Task) (string, er
 		return "", fmt.Errorf("empty response from claude")
 	}
 
-	return parseEffortResponse(string(output))
+	if c.useStructuredOutput {
+		return parseStructuredEffortResponse(output)
+	} else {
+		return parseEffortResponse(string(output))
+	}
 }
 
 // parseEffortResponse extracts effort level from the LLM's JSON response.
@@ -177,6 +198,27 @@ func parseEffortResponse(text string) (string, error) {
 	var resp effortClassificationResponse
 	if err := json.Unmarshal([]byte(text), &resp); err != nil {
 		return "", fmt.Errorf("parse effort JSON: %w (raw: %s)", err, text)
+	}
+
+	effort := strings.ToLower(resp.Effort)
+	switch effort {
+	case "low", "medium", "high":
+		return effort, nil
+	default:
+		return "", fmt.Errorf("unknown effort level: %q", resp.Effort)
+	}
+}
+
+// parseStructuredEffortResponse extracts effort level from Claude Code's structured JSON output.
+func parseStructuredEffortResponse(jsonResponse []byte) (string, error) {
+	structuredOutput, err := extractStructuredOutput(jsonResponse)
+	if err != nil {
+		return "", fmt.Errorf("extract structured output: %w", err)
+	}
+
+	var resp effortClassificationResponse
+	if err := json.Unmarshal(structuredOutput, &resp); err != nil {
+		return "", fmt.Errorf("parse structured effort: %w", err)
 	}
 
 	effort := strings.ToLower(resp.Effort)

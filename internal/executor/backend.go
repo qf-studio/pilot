@@ -407,6 +407,9 @@ type ClaudeCodeConfig struct {
 	// ExtraArgs are additional arguments to pass to the CLI
 	ExtraArgs []string `yaml:"extra_args,omitempty"`
 
+	// UseStructuredOutput enables --json-schema structured output for classifiers and post-execution summary (default: false)
+	UseStructuredOutput bool `yaml:"use_structured_output,omitempty"`
+
 	// UseSessionResume enables session resume for self-review (GH-1265).
 	// When true, self-review uses --resume <session_id> to continue the
 	// original session, eliminating ~40% token waste from context rebuild.
