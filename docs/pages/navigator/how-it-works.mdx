@@ -205,3 +205,41 @@ case strings.Contains(text, "PHASE: → VERIFY"):
 
 This gives operators real-time visibility into what Navigator is doing inside the
 Claude Code subprocess.
+
+## Claude Code Integration
+
+Navigator works alongside Pilot's Claude Code integration features to provide enhanced
+execution capabilities.
+
+### Session Resume
+
+When `use_session_resume` is enabled, Navigator sessions can be resumed after
+context compaction or across execution phases. This enables:
+
+- **Self-review token savings** — Self-review reuses the execution context (~40% savings)
+- **Cross-phase continuity** — Context markers combined with session resume preserve knowledge
+- **PR fix continuation** — CI fix tasks resume with full context via `--from-pr`
+
+### Hooks System
+
+Claude Code hooks run quality checks during Navigator execution:
+
+- **Stop hook** — Runs build and tests before completion (exit 2 = keep fixing)
+- **PreToolUse:Bash** — Blocks destructive commands (rm -rf, force push, DROP TABLE)
+- **PostToolUse:Edit/Write** — Auto-lint after file changes
+
+Hooks complement Navigator's workflow enforcement by adding runtime guardrails.
+
+### Structured Output
+
+With `use_structured_output` enabled, Navigator's classifiers use JSON schemas instead
+of text parsing for:
+
+- Complexity classification (TRIVIAL/SIMPLE/MEDIUM/COMPLEX)
+- Effort routing decisions
+- Post-execution summary extraction
+
+<Callout type="info">
+  See [Claude Code Integration](/concepts/claude-code-integration) for detailed configuration
+  of session resume, hooks, and structured output features.
+</Callout>
