@@ -3403,7 +3403,11 @@ func (r *Runner) getPostExecutionSummary(ctx context.Context) (*PostExecutionSum
 	prompt := "Report git state: run 'git log --oneline -1' and 'git branch --show-current' and 'git diff --name-only HEAD~1'. Return branch name, latest commit SHA, and changed files."
 
 	// Use fast Haiku model for this simple task
-	cmd := exec.CommandContext(ctx, "claude",
+	claudeCmd := "claude"
+	if r.config.ClaudeCode.Command != "" {
+		claudeCmd = r.config.ClaudeCode.Command
+	}
+	cmd := exec.CommandContext(ctx, claudeCmd,
 		"--print",
 		"-p", prompt,
 		"--model", "claude-haiku-4-5-20251001",
