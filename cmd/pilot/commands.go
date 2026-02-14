@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -2119,7 +2120,18 @@ func runDashboardMode(p *pilot.Pilot, cfg *config.Config) error {
 	defer cancel()
 
 	// Register progress callback on Pilot's orchestrator
+	// GH-1220: Throttle progress callbacks to 200ms to prevent message flooding
+	var lastDashboardUpdate time.Time
+	var dashboardMu sync.Mutex
 	p.OnProgress(func(taskID, phase string, progress int, message string) {
+		dashboardMu.Lock()
+		if time.Since(lastDashboardUpdate) < 200*time.Millisecond {
+			dashboardMu.Unlock()
+			return // Skip — periodic ticker will catch it
+		}
+		lastDashboardUpdate = time.Now()
+		dashboardMu.Unlock()
+
 		// Convert current task states to dashboard display format
 		tasks := convertTaskStatesToDisplay(p.GetTaskStates())
 		program.Send(dashboard.UpdateTasks(tasks)())
@@ -2178,9 +2190,17 @@ func runDashboardMode(p *pilot.Pilot, cfg *config.Config) error {
 
 // convertTaskStatesToDisplay converts executor TaskStates to dashboard TaskDisplay format.
 // Maps all 5 states: done, running, queued, pending, failed for state-aware dashboard rendering.
+// GH-1220: Added deduplication safety net to prevent duplicate tasks in rendering.
 func convertTaskStatesToDisplay(states []*executor.TaskState) []dashboard.TaskDisplay {
+	seen := make(map[string]bool)
 	var displays []dashboard.TaskDisplay
 	for _, state := range states {
+		// GH-1220: Skip duplicate task IDs to prevent duplicate panels
+		if seen[state.ID] {
+			continue
+		}
+		seen[state.ID] = true
+
 		var status string
 		switch state.Status {
 		case executor.StatusRunning:

@@ -487,8 +487,20 @@ Examples:
 					)
 
 					// Wire runner progress updates to dashboard
+					// GH-1220: Throttle progress callbacks to 200ms to prevent message flooding
+					var gwLastDashboardUpdate time.Time
+					var gwDashboardMu sync.Mutex
 					gwRunner.AddProgressCallback("dashboard", func(taskID, phase string, progress int, message string) {
 						gwMonitor.UpdateProgress(taskID, phase, progress, message)
+
+						gwDashboardMu.Lock()
+						if time.Since(gwLastDashboardUpdate) < 200*time.Millisecond {
+							gwDashboardMu.Unlock()
+							return // Skip — periodic ticker will catch it
+						}
+						gwLastDashboardUpdate = time.Now()
+						gwDashboardMu.Unlock()
+
 						tasks := convertTaskStatesToDisplay(gwMonitor.GetAll())
 						gwProgram.Send(dashboard.UpdateTasks(tasks)())
 						logMsg := fmt.Sprintf("[%s] %s: %s (%d%%)", taskID, phase, message, progress)
@@ -1288,8 +1300,20 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 		// Wire runner progress updates to dashboard using named callback
 		// This uses AddProgressCallback instead of OnProgress to prevent Telegram handler
 		// from overwriting the dashboard callback (GH-149 fix)
+		// GH-1220: Throttle progress callbacks to 200ms to prevent message flooding
+		var lastDashboardUpdate time.Time
+		var dashboardMu sync.Mutex
 		runner.AddProgressCallback("dashboard", func(taskID, phase string, progress int, message string) {
 			monitor.UpdateProgress(taskID, phase, progress, message)
+
+			dashboardMu.Lock()
+			if time.Since(lastDashboardUpdate) < 200*time.Millisecond {
+				dashboardMu.Unlock()
+				return // Skip — periodic ticker will catch it
+			}
+			lastDashboardUpdate = time.Now()
+			dashboardMu.Unlock()
+
 			tasks := convertTaskStatesToDisplay(monitor.GetAll())
 			program.Send(dashboard.UpdateTasks(tasks)())
 
