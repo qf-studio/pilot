@@ -113,7 +113,7 @@ Disable via config: `executor.navigator.auto_init: false`
 
 ## Current State
 
-**Current Version:** v1.0.0 | **133 features working**
+**Current Version:** v1.0.11 | **134 features working**
 
 **Full implementation status:** `.agent/system/FEATURE-MATRIX.md`
 
@@ -163,6 +163,7 @@ Disable via config: `executor.navigator.auto_init: false`
 | Signal Parser v2 | Done | JSON pilot-signal blocks with validation (v0.56.0) |
 | Stagnation Monitor | Done | State hash tracking, escalation: warn → pause → abort (v0.56.0) |
 | Queue State Dashboard | Done | 5-state QUEUE panel: done/running/queued/pending/failed with shimmer animation |
+| Epic Scope Guard | Done | Prevent serial conflict cascade — consolidate single-package epics (v1.0.11) |
 
 ### Telegram Interaction Modes (v0.6.0)
 
@@ -246,6 +247,13 @@ Goal: Raise autonomous reliability from 3/10 to 8/10. **Achieved: 8/10**
 ---
 
 ## Completed Log
+
+### 2026-02-14
+
+| Item | What |
+|------|------|
+| **v1.0.11** | Epic scope guard — prevent serial conflict cascade by consolidating single-package epics (GH-1265) |
+| Cleanup | Closed 8 stuck `pilot onboard` sub-issues + 2 CI fix issues from conflict cascade |
 
 ### 2026-02-13
 
