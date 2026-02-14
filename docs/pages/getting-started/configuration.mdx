@@ -1430,6 +1430,36 @@ adapters:
 
 ---
 
+## Teams
+
+Team-based project access control for multi-user environments. When configured, task execution is scoped to the member's allowed projects.
+
+```yaml
+team:
+  enabled: true
+  team_id: "engineering"
+  member_email: "dev@example.com"
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `false` | Enable team-based access control |
+| `team_id` | string | — | Team ID or name to scope execution |
+| `member_email` | string | — | Email of the member executing tasks |
+
+**Environment variable alternative:**
+
+```bash
+PILOT_TEAM_ID="engineering"
+PILOT_MEMBER_EMAIL="dev@example.com"
+```
+
+<Callout type="info">
+Team configuration is optional. When not configured, Pilot runs without access restrictions. Enable it for multi-user deployments where you need to scope task execution to specific projects per team member.
+</Callout>
+
+---
+
 ## Projects
 
 Multi-project configuration for managing multiple repositories.
