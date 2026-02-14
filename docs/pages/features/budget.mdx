@@ -1,0 +1,320 @@
+import { Callout } from 'nextra/components'
+
+# Budget & Cost Controls
+
+Pilot tracks API costs and enforces spending limits at daily, monthly, and per-task granularity. Budget enforcement prevents runaway costs and enables predictable AI spend.
+
+## Overview
+
+Budget controls provide:
+
+- **Real-time cost tracking** — Track API costs as tasks execute
+- **Daily/monthly limits** — Hard caps that pause execution when reached
+- **Per-task limits** — Prevent single tasks from consuming excessive budget
+- **Alerts** — Get notified before limits are hit
+
+<Callout type="info">
+Budget tracking requires an Anthropic API key with usage reporting enabled. Costs are estimated based on token counts and model pricing.
+</Callout>
+
+## Quick Start
+
+```bash
+# Show current budget status
+pilot budget
+
+# Set daily limit to $50
+pilot budget set --daily 50
+
+# Set monthly limit to $500
+pilot budget set --monthly 500
+
+# Set per-task limit to $5
+pilot budget set --per-task 5
+
+# View spending history
+pilot budget history --days 7
+```
+
+## CLI Commands
+
+### `pilot budget`
+
+Show current budget status, remaining balance, and recent spend.
+
+```bash
+$ pilot budget
+
+Budget Status
+─────────────────────────────────────────
+Daily:    $12.34 / $50.00  (24.7%)  ████░░░░░░
+Monthly:  $156.78 / $500.00 (31.4%) ███░░░░░░░
+
+Today's Tasks: 15 completed, $12.34 total
+This Month:    127 completed, $156.78 total
+
+Top Consumers (Today)
+  1. feat(auth): implement OAuth  $4.12
+  2. fix(api): rate limiting bug  $2.88
+  3. docs: update README          $1.56
+```
+
+### `pilot budget set`
+
+Configure budget limits.
+
+```bash
+# Set limits
+pilot budget set --daily 100
+pilot budget set --monthly 1000
+pilot budget set --per-task 10
+
+# Clear a limit (unlimited)
+pilot budget set --daily 0
+
+# Set all limits at once
+pilot budget set --daily 50 --monthly 500 --per-task 5
+```
+
+### `pilot budget history`
+
+View spending history.
+
+```bash
+# Last 7 days
+pilot budget history --days 7
+
+# Last 30 days, grouped by project
+pilot budget history --days 30 --by-project
+
+# Export to CSV
+pilot budget history --days 30 --format csv > spend.csv
+```
+
+### `pilot budget alert`
+
+Configure budget alerts.
+
+```bash
+# Alert at 80% of daily limit
+pilot budget alert --daily-threshold 80
+
+# Alert at 90% of monthly limit
+pilot budget alert --monthly-threshold 90
+
+# Disable alerts
+pilot budget alert --disable
+```
+
+## Configuration
+
+Configure budget in `~/.pilot/config.yaml`:
+
+```yaml
+budget:
+  # Daily spending limit in USD (0 = unlimited)
+  daily_limit: 50.00
+
+  # Monthly spending limit in USD (0 = unlimited)
+  monthly_limit: 500.00
+
+  # Maximum cost per task in USD (0 = unlimited)
+  per_task: 5.00
+
+  # Alert thresholds (percentage of limit)
+  alerts:
+    daily_threshold: 80    # Alert at 80% of daily limit
+    monthly_threshold: 90  # Alert at 90% of monthly limit
+
+  # Cost estimation settings
+  estimation:
+    # Include input tokens in cost calculation
+    include_input: true
+    # Include output tokens in cost calculation
+    include_output: true
+    # Markup percentage for cache misses (optional)
+    cache_miss_markup: 0
+```
+
+### Model Pricing
+
+Pilot uses Anthropic's published pricing for cost estimation:
+
+| Model | Input (per 1M tokens) | Output (per 1M tokens) |
+|-------|----------------------:|------------------------:|
+| Opus 4.6/4.5 | $5.00 | $25.00 |
+| Opus 4.1/4.0 | $15.00 | $75.00 |
+| Sonnet 4.5/4 | $3.00 | $15.00 |
+| Haiku 4.5 | $1.00 | $5.00 |
+
+<Callout type="info">
+Batch API requests receive a 50% discount. Pilot automatically applies this discount when calculating batch costs.
+</Callout>
+
+## Enforcement Modes
+
+### Pre-Execution Check
+
+Before each task, Pilot checks budget availability:
+
+1. **Daily limit check** — Is today's spend below daily limit?
+2. **Monthly limit check** — Is this month's spend below monthly limit?
+3. **Per-task estimate** — Will estimated task cost exceed per-task limit?
+
+If any check fails, the task is queued until budget becomes available.
+
+```
+┌─────────────────────┐
+│ Task Queued         │
+└─────────┬───────────┘
+          ▼
+┌─────────────────────┐     ┌───────────────┐
+│ Check Daily Limit   │────▶│ Budget        │
+│                     │     │ Exceeded      │
+└─────────┬───────────┘     └───────────────┘
+          │ ✓
+          ▼
+┌─────────────────────┐     ┌───────────────┐
+│ Check Monthly Limit │────▶│ Budget        │
+│                     │     │ Exceeded      │
+└─────────┬───────────┘     └───────────────┘
+          │ ✓
+          ▼
+┌─────────────────────┐     ┌───────────────┐
+│ Estimate Task Cost  │────▶│ Per-Task      │
+│                     │     │ Exceeded      │
+└─────────┬───────────┘     └───────────────┘
+          │ ✓
+          ▼
+┌─────────────────────┐
+│ Execute Task        │
+└─────────────────────┘
+```
+
+### Polling Mode Enforcement
+
+In polling mode, the budget enforcer runs before each issue pickup:
+
+```go
+// internal/budget/enforcer.go
+type Enforcer interface {
+    CheckBudget(estimatedCost float64) error
+    RecordSpend(taskID string, cost float64) error
+    GetStatus() (*BudgetStatus, error)
+}
+```
+
+If budget is exhausted, the poller pauses until:
+- Daily limit resets at midnight UTC
+- Monthly limit resets on the 1st
+- Admin manually increases limits
+
+### Mid-Execution Tracking
+
+During task execution, Pilot tracks token usage in real-time:
+
+1. **Token counter** — Counts input/output tokens per API call
+2. **Cost calculator** — Applies model pricing to token counts
+3. **Running total** — Updates cumulative task cost
+4. **Abort check** — Aborts if per-task limit exceeded
+
+<Callout type="warning">
+Mid-execution abort terminates the Claude Code process. Any uncommitted changes are preserved in the working directory but no PR is created.
+</Callout>
+
+## Alerts
+
+Budget alerts notify you before limits are hit.
+
+### Alert Channels
+
+Alerts integrate with existing notification channels:
+
+```yaml
+# ~/.pilot/config.yaml
+budget:
+  alerts:
+    daily_threshold: 80
+    monthly_threshold: 90
+
+# Alerts use the same channels as task notifications
+adapters:
+  slack:
+    enabled: true
+    channel: "#pilot-alerts"
+  telegram:
+    enabled: true
+```
+
+### Alert Types
+
+| Alert | Trigger | Message |
+|-------|---------|---------|
+| `budget.daily.warning` | Daily spend reaches threshold | "Daily budget at 80% ($40/$50)" |
+| `budget.daily.exceeded` | Daily spend exceeds limit | "Daily budget exceeded. Tasks paused until midnight UTC." |
+| `budget.monthly.warning` | Monthly spend reaches threshold | "Monthly budget at 90% ($450/$500)" |
+| `budget.monthly.exceeded` | Monthly spend exceeds limit | "Monthly budget exceeded. Tasks paused until next month." |
+| `budget.task.exceeded` | Single task exceeds limit | "Task aborted: cost $6.50 exceeded $5.00 limit" |
+
+## Data Storage
+
+Budget data is stored in SQLite:
+
+```
+~/.pilot/data/pilot.db
+├── budget_config    # Limits and thresholds
+├── budget_daily     # Daily spending records
+├── budget_monthly   # Monthly spending records
+└── budget_tasks     # Per-task cost records
+```
+
+### Database Tables
+
+| Table | Purpose |
+|-------|---------|
+| `budget_config` | Configured limits and alert thresholds |
+| `budget_daily` | Date, total spend, task count |
+| `budget_monthly` | Year/month, total spend, task count |
+| `budget_tasks` | Task ID, cost, tokens, model, timestamp |
+
+## Best Practices
+
+1. **Start conservative** — Set low limits initially, increase as you learn typical costs
+2. **Use per-task limits** — Prevents runaway tasks from consuming entire budget
+3. **Enable alerts** — Get notified before limits are hit
+4. **Review history weekly** — Identify cost optimization opportunities
+5. **Separate dev/prod budgets** — Use different configs for different environments
+
+## Cost Optimization Tips
+
+### Use Appropriate Models
+
+Pilot's effort routing automatically selects cost-effective models:
+
+| Task Type | Model | Typical Cost |
+|-----------|-------|--------------|
+| Trivial (typos, comments) | Haiku 4.5 | $0.01-0.05 |
+| Simple (small fixes) | Opus 4.5 | $0.10-0.50 |
+| Medium (features) | Opus 4.5 | $0.50-2.00 |
+| Complex (architecture) | Opus 4.5 | $2.00-5.00 |
+
+### Batch Similar Tasks
+
+Group similar tasks to benefit from prompt caching:
+
+```bash
+# Instead of 5 separate issues for docs updates:
+# Create 1 issue covering all docs changes
+gh issue create --title "docs: update API reference pages" \
+  --label pilot \
+  --body "Update all API reference pages with new examples..."
+```
+
+### Decomposition Trade-offs
+
+Epic decomposition can increase or decrease costs:
+
+- **Increase**: More overhead per sub-issue (context loading, PR creation)
+- **Decrease**: Smaller tasks use cheaper models, higher cache hit rate
+
+For budget-sensitive projects, use `no-decompose` label on issues that should stay atomic.

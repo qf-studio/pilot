@@ -7,5 +7,6 @@
   "hot-upgrade": "Hot Upgrade",
   "replay": "Replay & Debug",
   "memory": "Memory & Learning",
-  "teams": "Teams & Permissions"
+  "teams": "Teams & Permissions",
+  "budget": "Budget & Cost Controls"
 }
