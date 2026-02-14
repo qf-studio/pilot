@@ -128,6 +128,12 @@ func buildPlanningPrompt(task *Task) string {
 	sb.WriteString("Break down this epic task into 3-5 sequential subtasks that can each be completed independently.\n")
 	sb.WriteString("Each subtask should be a concrete, implementable unit of work.\n\n")
 
+	sb.WriteString("## CRITICAL: Avoid Single-Package Splits\n\n")
+	sb.WriteString("If all the work lives in one package or directory (e.g., all files in `cmd/pilot/`),\n")
+	sb.WriteString("DO NOT split into separate subtasks. Instead, return a SINGLE subtask with the full scope.\n")
+	sb.WriteString("Splitting work within the same package causes merge conflicts when subtasks execute in parallel.\n")
+	sb.WriteString("Only split when subtasks genuinely touch DIFFERENT packages or directories.\n\n")
+
 	sb.WriteString("## Task to Plan\n\n")
 	sb.WriteString(fmt.Sprintf("**Title:** %s\n\n", task.Title))
 	if task.Description != "" {
@@ -145,8 +151,130 @@ func buildPlanningPrompt(task *Task) string {
 	sb.WriteString("- Logical ordering (dependencies flow naturally)\n")
 	sb.WriteString("- Each subtask should be testable/verifiable\n")
 	sb.WriteString("- Include any setup/infrastructure subtasks first\n")
+	sb.WriteString("- NEVER split work that belongs to the same Go package or directory into separate subtasks\n")
 
 	return sb.String()
+}
+
+// consolidateEpicPlan merges the original task description with the planned subtasks
+// into a single description for non-decomposed execution. The executor gets the full
+// implementation plan but executes it as one unit on one branch.
+func consolidateEpicPlan(originalDesc string, subtasks []PlannedSubtask) string {
+	var sb strings.Builder
+	sb.WriteString(originalDesc)
+	sb.WriteString("\n\n## Planned Steps (execute all in sequence)\n\n")
+	for _, st := range subtasks {
+		sb.WriteString(fmt.Sprintf("%d. **%s**", st.Order, st.Title))
+		if st.Description != "" {
+			sb.WriteString(" — ")
+			sb.WriteString(st.Description)
+		}
+		sb.WriteString("\n")
+	}
+	return sb.String()
+}
+
+// isSinglePackageScope checks whether all planned subtasks reference files within
+// the same Go package or directory. When true, creating separate GitHub issues
+// would cause merge conflicts because each sub-issue branches from main independently.
+//
+// Detection strategy:
+// 1. Extract all file paths mentioned across subtask titles and descriptions
+// 2. Compute unique parent directories
+// 3. If only 1 directory (or 0 files found), consider it single-package scope
+//
+// GH-1265: This prevents the "serial conflict cascade" bug where N sub-issues
+// all touching cmd/pilot/ create N branches from main, each redeclaring shared types.
+func isSinglePackageScope(subtasks []PlannedSubtask, taskDescription string) bool {
+	// Collect all text to scan for file references
+	var allText strings.Builder
+	allText.WriteString(taskDescription)
+	allText.WriteString("\n")
+	for _, st := range subtasks {
+		allText.WriteString(st.Title)
+		allText.WriteString("\n")
+		allText.WriteString(st.Description)
+		allText.WriteString("\n")
+	}
+
+	dirs := extractUniqueDirectories(allText.String())
+
+	// If we found file references and they all point to 1 directory → single package
+	if len(dirs) == 1 {
+		return true
+	}
+
+	// If no file references found, use heuristic: check if subtask titles suggest
+	// the same component (e.g., all mention "onboard", "dashboard", "config")
+	if len(dirs) == 0 {
+		return detectSameComponentFromTitles(subtasks)
+	}
+
+	return false
+}
+
+// extractUniqueDirectories finds file paths in text and returns their unique parent directories.
+func extractUniqueDirectories(text string) map[string]bool {
+	// Reuse the existing file path pattern from the decomposer
+	filePattern := regexp.MustCompile(`\b((?:[\w\-]+/)+[\w\-]+\.(?:go|py|ts|tsx|js|jsx|rs|java|rb))\b`)
+	matches := filePattern.FindAllStringSubmatch(text, -1)
+
+	dirs := make(map[string]bool)
+	for _, m := range matches {
+		if len(m) < 2 {
+			continue
+		}
+		filePath := m[1]
+		// Extract directory: "cmd/pilot/onboard.go" → "cmd/pilot"
+		lastSlash := strings.LastIndex(filePath, "/")
+		if lastSlash > 0 {
+			dirs[filePath[:lastSlash]] = true
+		}
+	}
+	return dirs
+}
+
+// detectSameComponentFromTitles checks if subtask titles all reference the same component.
+// Uses a simple heuristic: extract the most common significant word from titles.
+// If one word appears in >80% of subtask titles, it's likely single-scope.
+func detectSameComponentFromTitles(subtasks []PlannedSubtask) bool {
+	if len(subtasks) < 2 {
+		return false
+	}
+
+	// Count word frequency across titles
+	wordCounts := make(map[string]int)
+	stopWords := map[string]bool{
+		"the": true, "a": true, "an": true, "and": true, "or": true, "for": true,
+		"to": true, "in": true, "of": true, "with": true, "from": true, "by": true,
+		"add": true, "create": true, "implement": true, "update": true, "fix": true,
+		"setup": true, "set": true, "up": true, "new": true, "test": true, "tests": true,
+	}
+
+	for _, st := range subtasks {
+		words := strings.Fields(strings.ToLower(st.Title))
+		seen := make(map[string]bool) // dedupe within a single title
+		for _, w := range words {
+			w = strings.Trim(w, ".,:-()[]\"'`*")
+			if len(w) < 3 || stopWords[w] {
+				continue
+			}
+			if !seen[w] {
+				wordCounts[w]++
+				seen[w] = true
+			}
+		}
+	}
+
+	// Check if any significant word appears in >80% of titles
+	threshold := int(float64(len(subtasks)) * 0.8)
+	for _, count := range wordCounts {
+		if count >= threshold {
+			return true
+		}
+	}
+
+	return false
 }
 
 // parseSubtasks extracts subtasks from Claude's planning output using regex.

@@ -823,91 +823,112 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 
 		r.reportProgress(task.ID, "Planning", 30, fmt.Sprintf("Epic planned: %d subtasks", len(plan.Subtasks)))
 
-		// GH-412: Create sub-issues from the plan
-		r.reportProgress(task.ID, "Creating Issues", 40, "Creating GitHub sub-issues...")
+		// GH-1265: Detect single-package scope — if all subtasks target the same
+		// directory/package, consolidate into a single task instead of creating
+		// separate GitHub issues. Creating N sub-issues that all touch the same
+		// package causes merge conflicts because each sub-issue branches from main
+		// independently and redeclares shared types (e.g., the "pilot onboard" cascade).
+		if isSinglePackageScope(plan.Subtasks, task.Description) {
+			r.log.Info("Single-package scope detected, skipping epic decomposition — executing as single task",
+				slog.String("task_id", task.ID),
+				slog.Int("planned_subtasks", len(plan.Subtasks)),
+			)
+			r.reportProgress(task.ID, "Planning", 35, "Single-package scope detected, running as single task...")
 
-		issues, err := r.CreateSubIssues(ctx, plan, executionPath)
-		if err != nil {
-			return &ExecutionResult{
+			// Enrich the task description with the planned steps so the executor
+			// has the full implementation plan but executes it as one unit.
+			task.Description = consolidateEpicPlan(task.Description, plan.Subtasks)
+
+			// Fall through to normal execution below (past epic and decomposer blocks)
+		} else {
+			// Multi-package epic: safe to create separate GitHub issues
+
+			// GH-412: Create sub-issues from the plan
+			r.reportProgress(task.ID, "Creating Issues", 40, "Creating GitHub sub-issues...")
+
+			issues, err := r.CreateSubIssues(ctx, plan, executionPath)
+			if err != nil {
+				return &ExecutionResult{
+					TaskID:   task.ID,
+					Success:  false,
+					Error:    fmt.Sprintf("failed to create sub-issues: %v", err),
+					Duration: time.Since(start),
+					IsEpic:   true,
+					EpicPlan: plan,
+				}, nil
+			}
+
+			r.reportProgress(task.ID, "Executing", 50, fmt.Sprintf("Executing %d sub-issues sequentially...", len(issues)))
+
+			// GH-412: Execute sub-issues sequentially
+			if err := r.ExecuteSubIssues(ctx, task, issues, executionPath); err != nil {
+				return &ExecutionResult{
+					TaskID:   task.ID,
+					Success:  false,
+					Error:    fmt.Sprintf("sub-issue execution failed: %v", err),
+					Duration: time.Since(start),
+					IsEpic:   true,
+					EpicPlan: plan,
+				}, nil
+			}
+
+			// GH-539: Epic sub-executions may have created commits on the branch.
+			// Push branch and create PR to propagate deliverables.
+			epicResult := &ExecutionResult{
 				TaskID:   task.ID,
-				Success:  false,
-				Error:    fmt.Sprintf("failed to create sub-issues: %v", err),
+				Success:  true,
+				Output:   fmt.Sprintf("Epic completed: %d sub-issues executed", len(issues)),
 				Duration: time.Since(start),
 				IsEpic:   true,
 				EpicPlan: plan,
-			}, nil
-		}
+			}
 
-		r.reportProgress(task.ID, "Executing", 50, fmt.Sprintf("Executing %d sub-issues sequentially...", len(issues)))
+			if task.CreatePR && task.Branch != "" {
+				epicGit := NewGitOperations(executionPath)
 
-		// GH-412: Execute sub-issues sequentially
-		if err := r.ExecuteSubIssues(ctx, task, issues, executionPath); err != nil {
-			return &ExecutionResult{
-				TaskID:   task.ID,
-				Success:  false,
-				Error:    fmt.Sprintf("sub-issue execution failed: %v", err),
-				Duration: time.Since(start),
-				IsEpic:   true,
-				EpicPlan: plan,
-			}, nil
-		}
+				r.reportProgress(task.ID, "Creating PR", 96, "Pushing epic branch...")
 
-		// GH-539: Epic sub-executions may have created commits on the branch.
-		// Push branch and create PR to propagate deliverables.
-		epicResult := &ExecutionResult{
-			TaskID:   task.ID,
-			Success:  true,
-			Output:   fmt.Sprintf("Epic completed: %d sub-issues executed", len(issues)),
-			Duration: time.Since(start),
-			IsEpic:   true,
-			EpicPlan: plan,
-		}
+				if err := epicGit.Push(ctx, task.Branch); err != nil {
+					r.log.Warn("Epic branch push failed",
+						slog.String("task_id", task.ID),
+						slog.String("branch", task.Branch),
+						slog.Any("error", err),
+					)
+					// Don't fail the epic — sub-issues may have their own PRs
+				} else {
+					// Get commit SHA
+					if sha, shaErr := epicGit.GetCurrentCommitSHA(ctx); shaErr == nil && sha != "" {
+						epicResult.CommitSHA = sha
+					}
 
-		if task.CreatePR && task.Branch != "" {
-			epicGit := NewGitOperations(executionPath)
-
-			r.reportProgress(task.ID, "Creating PR", 96, "Pushing epic branch...")
-
-			if err := epicGit.Push(ctx, task.Branch); err != nil {
-				r.log.Warn("Epic branch push failed",
-					slog.String("task_id", task.ID),
-					slog.String("branch", task.Branch),
-					slog.Any("error", err),
-				)
-				// Don't fail the epic — sub-issues may have their own PRs
-			} else {
-				// Get commit SHA
-				if sha, shaErr := epicGit.GetCurrentCommitSHA(ctx); shaErr == nil && sha != "" {
-					epicResult.CommitSHA = sha
-				}
-
-				// Determine base branch
-				baseBranch := task.BaseBranch
-				if baseBranch == "" {
-					baseBranch, _ = epicGit.GetDefaultBranch(ctx)
+					// Determine base branch
+					baseBranch := task.BaseBranch
 					if baseBranch == "" {
-						baseBranch = "main"
+						baseBranch, _ = epicGit.GetDefaultBranch(ctx)
+						if baseBranch == "" {
+							baseBranch = "main"
+						}
+					}
+
+					// Create PR with GitHub auto-close keyword
+					epicIssueNum := strings.TrimPrefix(task.ID, "GH-")
+					prBody := fmt.Sprintf("## Summary\n\nAutomated PR created by Pilot for epic task %s.\n\nCloses #%s\n\n## Changes\n\n%s", task.ID, epicIssueNum, task.Description)
+					prURL, prErr := epicGit.CreatePR(ctx, task.Title, prBody, baseBranch)
+					if prErr != nil {
+						r.log.Warn("Epic PR creation failed",
+							slog.String("task_id", task.ID),
+							slog.Any("error", prErr),
+						)
+					} else {
+						epicResult.PRUrl = prURL
+						r.log.Info("Epic PR created", slog.String("pr_url", prURL))
 					}
 				}
-
-				// Create PR with GitHub auto-close keyword
-				epicIssueNum := strings.TrimPrefix(task.ID, "GH-")
-				prBody := fmt.Sprintf("## Summary\n\nAutomated PR created by Pilot for epic task %s.\n\nCloses #%s\n\n## Changes\n\n%s", task.ID, epicIssueNum, task.Description)
-				prURL, prErr := epicGit.CreatePR(ctx, task.Title, prBody, baseBranch)
-				if prErr != nil {
-					r.log.Warn("Epic PR creation failed",
-						slog.String("task_id", task.ID),
-						slog.Any("error", prErr),
-					)
-				} else {
-					epicResult.PRUrl = prURL
-					r.log.Info("Epic PR created", slog.String("pr_url", prURL))
-				}
 			}
-		}
 
-		r.reportProgress(task.ID, "Complete", 100, "Epic completed successfully")
-		return epicResult, nil
+			r.reportProgress(task.ID, "Complete", 100, "Epic completed successfully")
+			return epicResult, nil
+		}
 	}
 
 	// Check for task decomposition (GH-218)
