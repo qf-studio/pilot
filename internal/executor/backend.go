@@ -212,6 +212,9 @@ type BackendConfig struct {
 	// Navigator contains Navigator auto-init settings
 	Navigator *NavigatorConfig `yaml:"navigator,omitempty"`
 
+	// Hooks contains Claude Code hooks settings for quality gates during execution
+	Hooks *HooksConfig `yaml:"hooks,omitempty"`
+
 	// UseWorktree enables git worktree isolation for execution.
 	// When true, Pilot creates a temporary worktree for each task, allowing
 	// execution even when the user has uncommitted changes in their working directory.
@@ -466,6 +469,7 @@ func DefaultBackendConfig() *BackendConfig {
 		Decompose:        DefaultDecomposeConfig(),
 		IntentJudge:      DefaultIntentJudgeConfig(),
 		Navigator:        DefaultNavigatorConfig(),
+		Hooks:            DefaultHooksConfig(),
 		Retry:            DefaultRetryConfig(),
 		Stagnation:       DefaultStagnationConfig(),
 		Simplification:   DefaultSimplifyConfig(),

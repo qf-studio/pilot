@@ -1125,6 +1125,59 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 	backendName := r.backend.Name()
 	r.reportProgress(task.ID, "Starting", 0, fmt.Sprintf("Initializing %s...", backendName))
 
+	// Setup Claude Code hooks if enabled (GH-1266)
+	var hookRestoreFunc func() error
+	if r.config != nil && r.config.Hooks != nil && r.config.Hooks.Enabled {
+		log.Debug("Setting up Claude Code hooks", slog.String("task_id", task.ID))
+
+		// Create temporary directory for hook scripts
+		scriptDir, err := os.MkdirTemp("", "pilot-hooks-")
+		if err != nil {
+			log.Error("Failed to create hooks script directory", slog.Any("error", err))
+		} else {
+			// Write embedded scripts
+			if err := WriteEmbeddedScripts(scriptDir); err != nil {
+				log.Error("Failed to write embedded hook scripts", slog.Any("error", err))
+			} else {
+				// Generate Claude settings
+				hookSettings := GenerateClaudeSettings(r.config.Hooks, scriptDir)
+
+				// Merge with existing settings.json (worktree-safe path)
+				settingsPath := filepath.Join(executionPath, ".claude", "settings.json")
+				restoreFunc, mergeErr := MergeWithExisting(settingsPath, hookSettings)
+				if mergeErr != nil {
+					log.Error("Failed to setup Claude hooks", slog.Any("error", mergeErr))
+					// Clean up script directory
+					if rmErr := os.RemoveAll(scriptDir); rmErr != nil {
+						log.Warn("Failed to clean up hook scripts after merge error", slog.Any("error", rmErr))
+					}
+				} else {
+					hookRestoreFunc = func() error {
+						// Restore original settings.json
+						if restoreErr := restoreFunc(); restoreErr != nil {
+							log.Warn("Failed to restore original Claude settings", slog.Any("error", restoreErr))
+						}
+						// Clean up script directory
+						if rmErr := os.RemoveAll(scriptDir); rmErr != nil {
+							log.Warn("Failed to clean up hook scripts", slog.Any("error", rmErr))
+						}
+						return nil
+					}
+					log.Debug("Claude Code hooks configured",
+						slog.String("settings_path", settingsPath),
+						slog.String("script_dir", scriptDir))
+				}
+			}
+		}
+	}
+
+	// Ensure cleanup happens regardless of execution outcome
+	defer func() {
+		if hookRestoreFunc != nil {
+			_ = hookRestoreFunc() // Error already logged inside hookRestoreFunc
+		}
+	}()
+
 	// Execute via backend with watchdog (GH-882)
 	// Watchdog kills subprocess after 2x timeout as a safety net for processes
 	// that ignore context cancellation.
