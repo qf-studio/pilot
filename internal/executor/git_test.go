@@ -96,6 +96,40 @@ func TestGitOperationsInTempRepo(t *testing.T) {
 		}
 	})
 
+	t.Run("CreateOrResetBranch_NewBranch", func(t *testing.T) {
+		// GH-1235: CreateOrResetBranch should create new branch
+		err := git.CreateOrResetBranch(ctx, "new-reset-branch")
+		if err != nil {
+			t.Fatalf("CreateOrResetBranch (new) failed: %v", err)
+		}
+
+		branch, _ := git.GetCurrentBranch(ctx)
+		if branch != "new-reset-branch" {
+			t.Errorf("branch = %q, want new-reset-branch", branch)
+		}
+	})
+
+	t.Run("CreateOrResetBranch_ExistingBranch", func(t *testing.T) {
+		// GH-1235: CreateOrResetBranch should succeed even if branch exists
+		// First, go back to main
+		mainBranch := "main"
+		if git.branchExists(ctx, "master") && !git.branchExists(ctx, "main") {
+			mainBranch = "master"
+		}
+		_ = git.SwitchBranch(ctx, mainBranch)
+
+		// Now try to create/reset the branch that already exists
+		err := git.CreateOrResetBranch(ctx, "new-reset-branch")
+		if err != nil {
+			t.Fatalf("CreateOrResetBranch (existing) failed: %v", err)
+		}
+
+		branch, _ := git.GetCurrentBranch(ctx)
+		if branch != "new-reset-branch" {
+			t.Errorf("branch = %q, want new-reset-branch", branch)
+		}
+	})
+
 	t.Run("HasUncommittedChanges", func(t *testing.T) {
 		// Should have no changes
 		hasChanges, err := git.HasUncommittedChanges(ctx)

@@ -58,10 +58,11 @@ func (r *Runner) executeDecomposedTask(ctx context.Context, parentTask *Task, su
 		}
 		r.reportProgress(parentTask.ID, "Branching", 2, fmt.Sprintf("On %s, creating %s...", defaultBranch, parentTask.Branch))
 
-		if err := git.CreateBranch(ctx, parentTask.Branch); err != nil {
-			if switchErr := git.SwitchBranch(ctx, parentTask.Branch); switchErr != nil {
-				return nil, fmt.Errorf("failed to create/switch branch: %w", err)
-			}
+		// GH-1235: Use CreateOrResetBranch (-B flag) instead of CreateBranch (-b flag)
+		// because worktree mode may have already created this branch. The -B flag
+		// handles both cases: creates if missing, resets if exists.
+		if err := git.CreateOrResetBranch(ctx, parentTask.Branch); err != nil {
+			return nil, fmt.Errorf("failed to create/reset branch: %w", err)
 		}
 		r.reportProgress(parentTask.ID, "Branching", 5, fmt.Sprintf("Branch %s ready", parentTask.Branch))
 	}

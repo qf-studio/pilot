@@ -28,6 +28,19 @@ func (g *GitOperations) CreateBranch(ctx context.Context, branchName string) err
 	return nil
 }
 
+// CreateOrResetBranch creates a branch or resets it if it already exists.
+// Uses git checkout -B (uppercase) which force-creates the branch.
+// This is safe when worktree already created the branch (GH-1235).
+func (g *GitOperations) CreateOrResetBranch(ctx context.Context, branchName string) error {
+	cmd := exec.CommandContext(ctx, "git", "checkout", "-B", branchName)
+	cmd.Dir = g.projectPath
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to create/reset branch: %w: %s", err, output)
+	}
+	return nil
+}
+
 // SwitchBranch switches to an existing branch
 func (g *GitOperations) SwitchBranch(ctx context.Context, branchName string) error {
 	cmd := exec.CommandContext(ctx, "git", "checkout", branchName)
