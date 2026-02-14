@@ -46,6 +46,11 @@ type ExecuteOptions struct {
 	// eliminating context rebuild overhead (~40% token savings for self-review).
 	ResumeSessionID string
 
+	// FromPR specifies a PR number to use for --from-pr session resumption (GH-1267).
+	// When set, uses --from-pr <N> to resume the session linked to that PR,
+	// giving Claude full context of what was previously changed.
+	FromPR int
+
 	// EventHandler receives streaming events during execution
 	// The handler receives the raw event line from the backend
 	EventHandler func(event BackendEvent)
@@ -407,6 +412,12 @@ type ClaudeCodeConfig struct {
 	// original session, eliminating ~40% token waste from context rebuild.
 	// Default: false
 	UseSessionResume bool `yaml:"use_session_resume,omitempty"`
+
+	// UseFromPR enables --from-pr session resumption for autopilot fix issues (GH-1267).
+	// When true and a FromPR is specified, uses --from-pr <N> to resume the session
+	// linked to the original PR, giving Claude full context of previous changes.
+	// Default: false
+	UseFromPR bool `yaml:"use_from_pr,omitempty"`
 }
 
 // OpenCodeConfig contains OpenCode backend configuration.

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -36,12 +37,24 @@ func logGitHubAPIError(operation string, owner, repo string, issueNum int, err e
 
 // parseAutopilotBranch extracts the target branch from an autopilot-fix issue's metadata comment.
 // Returns empty string if no metadata found.
+// Supports both old format (branch:X) and new format (branch:X pr:N).
 func parseAutopilotBranch(body string) string {
-	re := regexp.MustCompile(`<!-- autopilot-meta branch:(\S+) -->`)
+	re := regexp.MustCompile(`<!-- autopilot-meta branch:(\S+).*?-->`)
 	if m := re.FindStringSubmatch(body); len(m) > 1 {
 		return m[1]
 	}
 	return ""
+}
+
+// parseAutopilotPR extracts the PR number from an autopilot-fix issue's metadata comment.
+// Returns 0 if no PR metadata found. Used for --from-pr session resumption (GH-1267).
+func parseAutopilotPR(body string) int {
+	re := regexp.MustCompile(`<!-- autopilot-meta.*?pr:(\d+).*?-->`)
+	if m := re.FindStringSubmatch(body); len(m) > 1 {
+		n, _ := strconv.Atoi(m[1])
+		return n
+	}
+	return 0
 }
 
 // resolveGitHubMemberID maps a GitHub issue author to a team member ID (GH-634).
@@ -190,12 +203,22 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 
 	// GH-489: For autopilot-fix issues, reuse the original branch so the fix
 	// lands on the same branch as the failed PR (not a new branch).
+	// GH-1267: Also extract PR number for --from-pr session resumption.
+	var fromPR int
 	for _, label := range issue.Labels {
 		if label.Name == "autopilot-fix" {
 			if parsed := parseAutopilotBranch(issue.Body); parsed != "" {
 				branchName = parsed
 				slog.Info("using original branch from autopilot-fix metadata",
 					slog.String("branch", branchName),
+					slog.Int("issue", issue.Number),
+				)
+			}
+			// GH-1267: Extract PR number for session resumption
+			if pr := parseAutopilotPR(issue.Body); pr > 0 {
+				fromPR = pr
+				slog.Info("extracted PR number from autopilot-fix metadata",
+					slog.Int("pr", fromPR),
 					slog.Int("issue", issue.Number),
 				)
 			}
@@ -206,6 +229,7 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 	// Always create branches and PRs - required for autopilot workflow
 	// GH-386: Include SourceRepo for cross-project validation in executor
 	// GH-920: Extract acceptance criteria for prompt inclusion
+	// GH-1267: Include FromPR for --from-pr session resumption
 	task := &executor.Task{
 		ID:                 taskID,
 		Title:              issue.Title,
@@ -217,6 +241,7 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 		MemberID:           resolveGitHubMemberID(issue),                 // GH-634: RBAC lookup
 		Labels:             extractGitHubLabelNames(issue),               // GH-727: flow labels for complexity classifier
 		AcceptanceCriteria: github.ExtractAcceptanceCriteria(issue.Body), // GH-920: acceptance criteria in prompts
+		FromPR:             fromPR,                                       // GH-1267: session resumption from PR context
 	}
 
 	var result *executor.ExecutionResult

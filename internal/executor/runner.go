@@ -134,6 +134,11 @@ type Task struct {
 	// AcceptanceCriteria contains extracted acceptance criteria from the issue body (GH-920).
 	// When present, included in the prompt and verified before commit.
 	AcceptanceCriteria []string
+	// FromPR is the PR number to resume session context from (GH-1267).
+	// When set and UseFromPR is enabled, uses --from-pr <N> to resume the session
+	// linked to the original PR, giving Claude full context of previous changes.
+	// Typically set for autopilot-fix issues to continue from the failed PR's session.
+	FromPR int
 }
 
 // QualityGateResult represents the result of a single quality gate check.
@@ -1123,6 +1128,7 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 		Verbose:         task.Verbose,
 		Model:           selectedModel,
 		Effort:          selectedEffort,
+		FromPR:          task.FromPR, // GH-1267: session resumption from PR context
 		WatchdogTimeout: watchdogTimeout,
 		WatchdogCallback: func(pid int, watchdogDuration time.Duration) {
 			log.Warn("Watchdog killed subprocess",

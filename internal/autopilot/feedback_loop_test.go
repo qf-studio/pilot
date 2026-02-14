@@ -840,9 +840,9 @@ func TestFeedbackLoop_IssueBody_BranchMetadata(t *testing.T) {
 		t.Error("body should contain branch reference in context section")
 	}
 
-	// Should contain machine-readable metadata comment
-	if !strings.Contains(capturedBody, "<!-- autopilot-meta branch:pilot/GH-10 -->") {
-		t.Error("body should contain autopilot-meta comment with branch")
+	// Should contain machine-readable metadata comment with branch and PR number (GH-1267)
+	if !strings.Contains(capturedBody, "<!-- autopilot-meta branch:pilot/GH-10 pr:42 -->") {
+		t.Error("body should contain autopilot-meta comment with branch and PR number")
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -42,6 +43,8 @@ const (
 	ErrorTypeAPIError ClaudeCodeErrorType = "api_error"
 	// ErrorTypeTimeout indicates the process was killed due to timeout
 	ErrorTypeTimeout ClaudeCodeErrorType = "timeout"
+	// ErrorTypeSessionNotFound indicates the session for --from-pr or --resume was not found (GH-1267)
+	ErrorTypeSessionNotFound ClaudeCodeErrorType = "session_not_found"
 	// ErrorTypeUnknown indicates an unclassified error
 	ErrorTypeUnknown ClaudeCodeErrorType = "unknown"
 )
@@ -96,6 +99,19 @@ func classifyClaudeCodeError(stderr string, originalErr error) *ClaudeCodeError 
 		return &ClaudeCodeError{
 			Type:    ErrorTypeAPIError,
 			Message: "Claude API error",
+			Stderr:  strings.TrimSpace(stderr),
+		}
+	}
+
+	// Session not found (GH-1267: --from-pr or --resume failed)
+	if strings.Contains(stderrLower, "session not found") ||
+		strings.Contains(stderrLower, "no session") ||
+		strings.Contains(stderrLower, "session expired") ||
+		strings.Contains(stderrLower, "could not find session") ||
+		strings.Contains(stderrLower, "invalid session") {
+		return &ClaudeCodeError{
+			Type:    ErrorTypeSessionNotFound,
+			Message: "Session not found for --from-pr or --resume",
 			Stderr:  strings.TrimSpace(stderr),
 		}
 	}
@@ -161,12 +177,47 @@ func (b *ClaudeCodeBackend) IsAvailable() bool {
 }
 
 // Execute runs a prompt through Claude Code CLI.
+// If --from-pr is used and fails with session not found, it falls back to executing without it.
 func (b *ClaudeCodeBackend) Execute(ctx context.Context, opts ExecuteOptions) (*BackendResult, error) {
+	result, err := b.executeWithFromPR(ctx, opts, true)
+
+	// GH-1267: Fallback if --from-pr fails with session not found
+	if err != nil && opts.FromPR > 0 && b.config.UseFromPR {
+		if ccErr, ok := err.(*ClaudeCodeError); ok && ccErr.Type == ErrorTypeSessionNotFound {
+			b.log.Warn("Session not found for --from-pr, retrying without it",
+				slog.Int("pr", opts.FromPR),
+				slog.String("error", ccErr.Message),
+			)
+			// Retry without --from-pr
+			return b.executeWithFromPR(ctx, opts, false)
+		}
+	}
+
+	return result, err
+}
+
+// executeWithFromPR is the internal implementation that allows controlling --from-pr usage.
+// When allowFromPR is false, it skips --from-pr even if opts.FromPR is set.
+// This enables fallback retry without --from-pr if the session is not found.
+func (b *ClaudeCodeBackend) executeWithFromPR(ctx context.Context, opts ExecuteOptions, allowFromPR bool) (*BackendResult, error) {
 	// Build command arguments
 	var args []string
 
-	// GH-1265: Use --resume for session continuation (e.g., self-review)
-	if opts.ResumeSessionID != "" {
+	// GH-1267: Use --from-pr for session resumption from PR context
+	// This takes precedence over --resume since it's more specific.
+	if opts.FromPR > 0 && allowFromPR && b.config.UseFromPR {
+		args = []string{
+			"--from-pr", strconv.Itoa(opts.FromPR),
+			"-p", opts.Prompt,
+			"--verbose",
+			"--output-format", "stream-json",
+			"--dangerously-skip-permissions",
+		}
+		b.log.Info("Resuming session from PR context",
+			slog.Int("pr", opts.FromPR),
+		)
+	} else if opts.ResumeSessionID != "" {
+		// GH-1265: Use --resume for session continuation (e.g., self-review)
 		args = []string{
 			"--resume", opts.ResumeSessionID,
 			"-p", opts.Prompt,
