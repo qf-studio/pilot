@@ -920,7 +920,7 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 				slog.Int("subtask_count", len(result.Subtasks)),
 				slog.String("reason", result.Reason),
 			)
-			return r.executeDecomposedTask(ctx, task, result.Subtasks)
+			return r.executeDecomposedTask(ctx, task, result.Subtasks, executionPath)
 		}
 	}
 

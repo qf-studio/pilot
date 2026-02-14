@@ -13,7 +13,11 @@ import (
 // Each subtask runs to completion before the next starts. Only the final subtask
 // creates a PR (CreatePR is already set by the decomposer). All changes accumulate
 // on the same branch, so the final PR contains all subtask work.
-func (r *Runner) executeDecomposedTask(ctx context.Context, parentTask *Task, subtasks []*Task) (*ExecutionResult, error) {
+//
+// GH-1235: executionPath is passed explicitly to handle worktree isolation.
+// When worktree mode is active, executionPath differs from parentTask.ProjectPath
+// and the branch is already checked out in the worktree, so we skip branch creation.
+func (r *Runner) executeDecomposedTask(ctx context.Context, parentTask *Task, subtasks []*Task, executionPath string) (*ExecutionResult, error) {
 	start := time.Now()
 	totalSubtasks := len(subtasks)
 
@@ -44,9 +48,15 @@ func (r *Runner) executeDecomposedTask(ctx context.Context, parentTask *Task, su
 		Source:      "pilot",
 	})
 
-	// Initialize git and create branch ONCE for all subtasks
-	git := NewGitOperations(parentTask.ProjectPath)
-	if parentTask.Branch != "" {
+	// GH-1235: Use executionPath for git operations - this is the worktree path when
+	// worktree isolation is active, or parentTask.ProjectPath in non-worktree mode.
+	git := NewGitOperations(executionPath)
+
+	// GH-1235: Only create branch in non-worktree mode. When worktree mode is active,
+	// the worktree was already created with the correct branch checked out, and trying
+	// to checkout the branch again fails because it's locked by the active worktree.
+	inWorktreeMode := executionPath != parentTask.ProjectPath
+	if parentTask.Branch != "" && !inWorktreeMode {
 		r.reportProgress(parentTask.ID, "Branching", 1, "Switching to default branch...")
 
 		// GH-279: Always switch to default branch and pull latest before creating new branch.
@@ -65,6 +75,8 @@ func (r *Runner) executeDecomposedTask(ctx context.Context, parentTask *Task, su
 			return nil, fmt.Errorf("failed to create/reset branch: %w", err)
 		}
 		r.reportProgress(parentTask.ID, "Branching", 5, fmt.Sprintf("Branch %s ready", parentTask.Branch))
+	} else if parentTask.Branch != "" && inWorktreeMode {
+		r.reportProgress(parentTask.ID, "Branching", 5, fmt.Sprintf("Branch %s already checked out in worktree", parentTask.Branch))
 	}
 
 	// Aggregate result
@@ -92,6 +104,9 @@ func (r *Runner) executeDecomposedTask(ctx context.Context, parentTask *Task, su
 		// Execute subtask (recursively calls Execute, but subtasks won't decompose further)
 		// Clear the branch since we already created it
 		subtask.Branch = ""
+
+		// GH-1235: Execute subtasks in the worktree when worktree mode is active
+		subtask.ProjectPath = executionPath
 
 		// Temporarily disable decomposer to prevent recursive decomposition
 		savedDecomposer := r.decomposer
