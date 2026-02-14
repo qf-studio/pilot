@@ -268,6 +268,8 @@ type Runner struct {
 	agentsContent         string // Cached AGENTS.md content, loaded once per Runner
 	agentsProjectPath     string // Project path for agents cache (invalidate on change)
 	agentsMu              sync.RWMutex // Protects agents cache
+	// GH-1078: Worktree pooling
+	worktreeManager       *WorktreeManager // Optional worktree manager with pool support
 }
 
 // NewRunner creates a new Runner instance with Claude Code backend by default.
@@ -426,6 +428,27 @@ func (r *Runner) SetRecordingEnabled(enabled bool) {
 // SetSkipPreflightChecks disables preflight checks (for testing with mock backends).
 func (r *Runner) SetSkipPreflightChecks(skip bool) {
 	r.skipPreflightChecks = skip
+}
+
+// InitWorktreePool initializes the worktree pool for a given repository.
+// Should be called before executing tasks when worktree pooling is enabled.
+// GH-1078: Saves 500ms-2s per task by reusing pre-created worktrees.
+func (r *Runner) InitWorktreePool(ctx context.Context, repoPath string) error {
+	if r.config == nil || r.config.WorktreePoolSize <= 0 {
+		return nil // Pooling disabled
+	}
+
+	r.worktreeManager = NewWorktreeManagerWithPool(repoPath, r.config.WorktreePoolSize)
+	return r.worktreeManager.WarmPool(ctx)
+}
+
+// CloseWorktreePool drains and closes the worktree pool.
+// Should be called during graceful shutdown.
+// GH-1078: Ensures clean shutdown without leaving orphaned worktrees.
+func (r *Runner) CloseWorktreePool() {
+	if r.worktreeManager != nil {
+		r.worktreeManager.Close()
+	}
 }
 
 // SetAlertProcessor sets the alert processor for emitting task lifecycle events.
@@ -678,8 +701,26 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 		)
 		r.reportProgress(task.ID, "Worktree", 1, "Creating isolated worktree...")
 
-		worktreePath, cleanup, err := CreateWorktreeWithBranch(
-			ctx, task.ProjectPath, task.ID, task.Branch, "")
+		var worktreePath string
+		var cleanup func()
+		var err error
+
+		// GH-1078: Use pool if available, otherwise fall back to direct creation
+		if r.worktreeManager != nil && r.worktreeManager.PoolSize() > 0 {
+			r.log.Debug("Using worktree pool",
+				slog.Int("pool_available", r.worktreeManager.PoolAvailable()),
+			)
+			var result *WorktreeResult
+			result, err = r.worktreeManager.Acquire(ctx, task.ID, task.Branch, "")
+			if err == nil {
+				worktreePath = result.Path
+				cleanup = result.Cleanup
+			}
+		} else {
+			worktreePath, cleanup, err = CreateWorktreeWithBranch(
+				ctx, task.ProjectPath, task.ID, task.Branch, "")
+		}
+
 		if err != nil {
 			r.log.Error("Failed to create worktree",
 				slog.String("task_id", task.ID),

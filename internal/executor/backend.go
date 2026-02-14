@@ -202,6 +202,13 @@ type BackendConfig struct {
 	// Default: false (opt-in feature)
 	UseWorktree bool `yaml:"use_worktree,omitempty"`
 
+	// WorktreePoolSize sets the number of pre-created worktrees to pool.
+	// When > 0, worktrees are reused across tasks in sequential mode, saving 500ms-2s per task.
+	// Pool paths: /tmp/pilot-worktree-pool-N/
+	// Set to 0 to disable pooling (current behavior).
+	// Default: 0 (disabled)
+	WorktreePoolSize int `yaml:"worktree_pool_size,omitempty"`
+
 	// SyncMainAfterTask enables syncing the local main branch with origin after task completion.
 	// When true, Pilot fetches origin/main and resets local main to match after each task.
 	// This prevents local/remote divergence over time.
