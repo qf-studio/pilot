@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/alekspetrov/pilot/internal/logging"
@@ -40,7 +41,7 @@ func (r *Runner) OnProgress(callback ProgressCallback) {
 	r.onProgress = callback
 }
 
-// RunAll executes all configured quality gates
+// RunAll executes all configured quality gates in parallel
 func (r *Runner) RunAll(ctx context.Context, taskID string) (*CheckResults, error) {
 	if !r.config.Enabled {
 		r.log.Debug("Quality gates disabled, skipping")
@@ -54,20 +55,29 @@ func (r *Runner) RunAll(ctx context.Context, taskID string) (*CheckResults, erro
 	results := &CheckResults{
 		TaskID:    taskID,
 		StartedAt: time.Now(),
-		Results:   make([]*Result, 0, len(r.config.Gates)),
+		Results:   make([]*Result, len(r.config.Gates)),
 	}
 
-	r.log.Info("Starting quality gate checks",
+	r.log.Info("Starting quality gate checks (parallel)",
 		slog.String("task_id", taskID),
 		slog.Int("gate_count", len(r.config.Gates)),
 	)
 
+	// Execute all gates in parallel
+	var wg sync.WaitGroup
+	for i, gate := range r.config.Gates {
+		wg.Add(1)
+		go func(idx int, g *Gate) {
+			defer wg.Done()
+			results.Results[idx] = r.runGate(ctx, g)
+		}(i, gate)
+	}
+	wg.Wait()
+
+	// Evaluate results
 	allPassed := true
-
-	for _, gate := range r.config.Gates {
-		result := r.runGate(ctx, gate)
-		results.Results = append(results.Results, result)
-
+	for i, result := range results.Results {
+		gate := r.config.Gates[i]
 		if result.Status == StatusFailed && gate.Required {
 			allPassed = false
 			r.log.Warn("Required quality gate failed",
