@@ -163,11 +163,27 @@ func (b *ClaudeCodeBackend) IsAvailable() bool {
 // Execute runs a prompt through Claude Code CLI.
 func (b *ClaudeCodeBackend) Execute(ctx context.Context, opts ExecuteOptions) (*BackendResult, error) {
 	// Build command arguments
-	args := []string{
-		"-p", opts.Prompt,
-		"--verbose",
-		"--output-format", "stream-json",
-		"--dangerously-skip-permissions",
+	var args []string
+
+	// GH-1265: Use --resume for session continuation (e.g., self-review)
+	if opts.ResumeSessionID != "" {
+		args = []string{
+			"--resume", opts.ResumeSessionID,
+			"-p", opts.Prompt,
+			"--verbose",
+			"--output-format", "stream-json",
+			"--dangerously-skip-permissions",
+		}
+		b.log.Info("Resuming session for context continuation",
+			slog.String("session_id", opts.ResumeSessionID),
+		)
+	} else {
+		args = []string{
+			"-p", opts.Prompt,
+			"--verbose",
+			"--output-format", "stream-json",
+			"--dangerously-skip-permissions",
+		}
 	}
 
 	// Add model flag if specified (model routing GH-215)
@@ -342,6 +358,11 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, opts ExecuteOptions) (*
 				}
 			}
 
+			// Capture session ID from init event (GH-1265)
+			if event.Type == EventTypeInit && event.SessionID != "" {
+				result.SessionID = event.SessionID
+			}
+
 			// Accumulate token usage
 			result.TokensInput += event.TokensInput
 			result.TokensOutput += event.TokensOutput
@@ -464,6 +485,7 @@ func (b *ClaudeCodeBackend) parseStreamEvent(line string) BackendEvent {
 	case "system":
 		if streamEvent.Subtype == "init" {
 			event.Type = EventTypeInit
+			event.SessionID = streamEvent.SessionID // Capture session ID for resume (GH-1265)
 			event.Message = "Claude Code initialized"
 		}
 

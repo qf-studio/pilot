@@ -41,6 +41,11 @@ type ExecuteOptions struct {
 	// Maps to Claude API output_config.effort or Claude Code --effort flag.
 	Effort string
 
+	// ResumeSessionID enables session resume for continued context (GH-1265).
+	// When set, uses --resume <session_id> to continue an existing Claude Code session,
+	// eliminating context rebuild overhead (~40% token savings for self-review).
+	ResumeSessionID string
+
 	// EventHandler receives streaming events during execution
 	// The handler receives the raw event line from the backend
 	EventHandler func(event BackendEvent)
@@ -96,6 +101,9 @@ type BackendEvent struct {
 
 	// Model is the model name used (if available)
 	Model string
+
+	// SessionID is the Claude Code session ID for resume support (GH-1265)
+	SessionID string
 }
 
 // BackendEventType categorizes backend events.
@@ -143,6 +151,9 @@ type BackendResult struct {
 
 	// Model is the model used for execution
 	Model string
+
+	// SessionID is the Claude Code session ID for resume support (GH-1265)
+	SessionID string
 }
 
 // BackendConfig contains configuration for executor backends.
@@ -390,6 +401,12 @@ type ClaudeCodeConfig struct {
 
 	// ExtraArgs are additional arguments to pass to the CLI
 	ExtraArgs []string `yaml:"extra_args,omitempty"`
+
+	// UseSessionResume enables session resume for self-review (GH-1265).
+	// When true, self-review uses --resume <session_id> to continue the
+	// original session, eliminating ~40% token waste from context rebuild.
+	// Default: false
+	UseSessionResume bool `yaml:"use_session_resume,omitempty"`
 }
 
 // OpenCodeConfig contains OpenCode backend configuration.
