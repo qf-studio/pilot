@@ -1,0 +1,279 @@
+import { Callout } from 'nextra/components'
+
+# Teams & Permissions
+
+Pilot supports team-based access control for organizations running multiple projects. When enabled, teams enforce role-based permissions on every task execution.
+
+## Overview
+
+Teams provide:
+
+- **Role-based access control (RBAC)** — Owner, Admin, Developer, Viewer roles
+- **Project-level permissions** — Restrict members to specific projects
+- **Identity mapping** — Map GitHub, Telegram, and Slack users to team members
+- **Audit logging** — Track all team and task actions
+
+<Callout type="info">
+Teams are optional. Without team configuration, Pilot operates in single-user mode with no permission checks.
+</Callout>
+
+## Quick Start
+
+```bash
+# Create a team
+pilot team create "My Team" --owner me@example.com
+
+# Add members
+pilot team member add alice@example.com --role developer
+pilot team member add bob@example.com --role viewer --projects "github.com/org/repo-a"
+
+# List team
+pilot team list
+pilot team members
+```
+
+## Roles
+
+| Role | Description | Key Permissions |
+|------|-------------|-----------------|
+| `owner` | Full control over team | All permissions, delete team |
+| `admin` | Manage members and projects | Add/remove members, manage projects |
+| `developer` | Execute tasks | Execute, create, cancel tasks |
+| `viewer` | Read-only access | View projects and tasks |
+
+### Permission Matrix
+
+| Permission | Owner | Admin | Developer | Viewer |
+|------------|:-----:|:-----:|:---------:|:------:|
+| `manage_team` | ✓ | | | |
+| `manage_members` | ✓ | ✓ | | |
+| `manage_billing` | ✓ | | | |
+| `manage_projects` | ✓ | ✓ | | |
+| `execute_tasks` | ✓ | ✓ | ✓ | |
+| `create_tasks` | ✓ | ✓ | ✓ | |
+| `cancel_tasks` | ✓ | ✓ | ✓ | |
+| `view_projects` | ✓ | ✓ | ✓ | ✓ |
+| `view_tasks` | ✓ | ✓ | ✓ | ✓ |
+| `view_audit_log` | ✓ | ✓ | ✓ | |
+
+## Project Access
+
+Members can be restricted to specific projects. An empty project list means access to all team projects.
+
+```bash
+# Restrict member to specific projects
+pilot team member update alice@example.com \
+  --projects "github.com/org/repo-a,github.com/org/repo-b"
+
+# Grant access to all projects
+pilot team member update alice@example.com --projects ""
+```
+
+### How Project Access Works
+
+1. **Base permission check** — Member must have the required permission (e.g., `execute_tasks`)
+2. **Project restriction check** — If member has a project list, the target project must be in it
+3. **Execution blocked** — If either check fails, Pilot returns a permission error
+
+```
+┌─────────────────────┐
+│ Task Request        │
+└─────────┬───────────┘
+          ▼
+┌─────────────────────┐     ┌───────────────┐
+│ Check Permission    │────▶│ Permission    │
+│ (e.g. execute_tasks)│     │ Denied        │
+└─────────┬───────────┘     └───────────────┘
+          │ ✓
+          ▼
+┌─────────────────────┐     ┌───────────────┐
+│ Check Project       │────▶│ Project       │
+│ Access              │     │ Not Allowed   │
+└─────────┬───────────┘     └───────────────┘
+          │ ✓
+          ▼
+┌─────────────────────┐
+│ Execute Task        │
+└─────────────────────┘
+```
+
+## Identity Mapping
+
+Pilot maps external identities (GitHub, Telegram, Slack) to team members for seamless permission enforcement.
+
+### GitHub Identity
+
+```bash
+# Link GitHub username to member
+pilot team member update alice@example.com --github alice-gh
+```
+
+When a GitHub issue is assigned to `alice-gh` or a PR is opened by `alice-gh`, Pilot resolves the identity to `alice@example.com` and applies their permissions.
+
+### Telegram Identity
+
+```bash
+# Link Telegram user ID to member
+pilot team member update alice@example.com --telegram 123456789
+```
+
+When a message comes from Telegram user `123456789`, Pilot applies Alice's permissions.
+
+### Slack Identity
+
+```bash
+# Link Slack user ID to member (email resolved via Slack API)
+pilot team member update alice@example.com --slack U01ABCDEF
+```
+
+<Callout type="warning">
+If a user can't be resolved to a team member, Pilot operates without RBAC enforcement for that request. Configure identity mappings for all team members to ensure consistent permission checks.
+</Callout>
+
+## Pre-Execution Check
+
+Teams integrate into the executor pipeline via the `TeamChecker` interface. Before every task execution:
+
+```go
+// internal/executor/teams.go
+type TeamChecker interface {
+    CheckPermission(memberID string, perm string) error
+    CheckProjectAccess(memberID, projectPath string, requiredPerm string) error
+}
+```
+
+The Runner calls `CheckProjectAccess` with `execute_tasks` before executing any task. If the check fails, execution is blocked immediately.
+
+### Execution Flow
+
+1. **Resolve identity** — GitHub/Telegram/Slack user → member ID
+2. **Check permission** — Member must have `execute_tasks`
+3. **Check project access** — Member must have access to target project
+4. **Execute** — Task runs if all checks pass
+
+## Team Commands
+
+### Team Management
+
+```bash
+# Create team
+pilot team create "Team Name" --owner owner@example.com
+
+# List teams
+pilot team list
+
+# Show team details
+pilot team show <team-id>
+
+# Update team settings
+pilot team update <team-id> --max-concurrent 4
+
+# Delete team (owner only)
+pilot team delete <team-id>
+```
+
+### Member Management
+
+```bash
+# Add member
+pilot team member add email@example.com --role developer
+
+# List members
+pilot team members
+
+# Update role
+pilot team member update email@example.com --role admin
+
+# Update project access
+pilot team member update email@example.com --projects "repo-a,repo-b"
+
+# Remove member
+pilot team member remove email@example.com
+```
+
+### Audit Log
+
+```bash
+# View recent audit entries
+pilot team audit --limit 50
+
+# Filter by action
+pilot team audit --action member.added
+```
+
+## Configuration
+
+Enable teams in `~/.pilot/config.yaml`:
+
+```yaml
+teams:
+  enabled: true
+  db_path: ~/.pilot/data  # SQLite storage
+
+# Team settings (set via pilot team update)
+# max_concurrent_tasks: 2
+# default_branch: main
+# allowed_projects: []  # Empty = all projects
+```
+
+### Per-Project Team Config
+
+Projects can specify team requirements:
+
+```yaml
+# ~/.pilot/config.yaml
+projects:
+  - path: /path/to/repo
+    github:
+      owner: org
+      repo: repo-name
+    team_id: "uuid-of-team"  # Require this team for access
+```
+
+## Data Storage
+
+Teams use SQLite for persistence:
+
+```
+~/.pilot/data/pilot.db
+├── teams           # Team records
+├── members         # Team members
+├── project_access  # Per-project permissions
+└── audit_log       # Audit trail
+```
+
+### Database Tables
+
+| Table | Purpose |
+|-------|---------|
+| `teams` | Team ID, name, settings |
+| `members` | Member ID, email, role, identity mappings |
+| `project_access` | Project-to-team mappings |
+| `audit_log` | All team and task actions |
+
+## Audit Actions
+
+| Action | Description |
+|--------|-------------|
+| `team.created` | Team created |
+| `team.updated` | Team settings changed |
+| `team.deleted` | Team deleted |
+| `member.added` | Member joined team |
+| `member.removed` | Member removed |
+| `member.updated` | Member details changed |
+| `role.changed` | Member role changed |
+| `project.added` | Project access granted |
+| `project.removed` | Project access revoked |
+| `task.created` | Task execution started |
+| `task.completed` | Task finished successfully |
+| `task.failed` | Task failed |
+| `task.cancelled` | Task cancelled |
+| `settings.changed` | Team settings updated |
+
+## Best Practices
+
+1. **Use project restrictions for contractors** — Limit access to specific repos
+2. **Map all identities** — Ensure GitHub/Telegram/Slack users resolve to members
+3. **Audit regularly** — Review audit logs for unexpected access patterns
+4. **Least privilege** — Start with `viewer` role, escalate as needed
+5. **One owner minimum** — Always have at least one owner per team
