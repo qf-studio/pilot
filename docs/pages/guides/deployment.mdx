@@ -1,0 +1,640 @@
+import { Callout, Tabs } from 'nextra/components'
+
+# Infrastructure & Deployment
+
+Production deployment guide covering self-hosted setup, Kubernetes, monitoring, and network configuration.
+
+---
+
+## Self-Hosted Setup
+
+### Binary Installation
+
+Download the latest release from GitHub:
+
+```bash
+# macOS (Apple Silicon)
+curl -L https://github.com/alekspetrov/pilot/releases/latest/download/pilot-darwin-arm64.tar.gz | tar xz
+mv pilot ~/.local/bin/
+
+# macOS (Intel)
+curl -L https://github.com/alekspetrov/pilot/releases/latest/download/pilot-darwin-amd64.tar.gz | tar xz
+mv pilot ~/.local/bin/
+
+# Linux (x86_64)
+curl -L https://github.com/alekspetrov/pilot/releases/latest/download/pilot-linux-amd64.tar.gz | tar xz
+mv pilot ~/.local/bin/
+```
+
+Verify installation:
+
+```bash
+pilot version
+```
+
+### Configuration
+
+Create the config directory and file:
+
+```bash
+mkdir -p ~/.pilot
+touch ~/.pilot/config.yaml
+```
+
+Minimal production config:
+
+```yaml
+version: "1.0"
+
+gateway:
+  host: "0.0.0.0"  # Listen on all interfaces
+  port: 9090
+
+adapters:
+  github:
+    enabled: true
+    token: "${GITHUB_TOKEN}"
+    repo: "your-org/your-repo"
+    pilot_label: "pilot"
+    polling:
+      enabled: true
+      interval: 30s
+
+executor:
+  type: "claude-code"
+  auto_create_pr: true
+
+autopilot:
+  enabled: true
+  auto_merge: true
+  merge_method: "squash"
+  ci_wait_timeout: 30m
+```
+
+### systemd Service
+
+Create a systemd unit file for Linux servers:
+
+```bash
+sudo tee /etc/systemd/system/pilot.service << 'EOF'
+[Unit]
+Description=Pilot AI Development Pipeline
+After=network.target
+
+[Service]
+Type=simple
+User=pilot
+Group=pilot
+WorkingDirectory=/home/pilot
+Environment="HOME=/home/pilot"
+Environment="PATH=/home/pilot/.local/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="GITHUB_TOKEN=ghp_xxxx"
+Environment="ANTHROPIC_API_KEY=sk-ant-xxxx"
+ExecStart=/home/pilot/.local/bin/pilot start --github
+Restart=always
+RestartSec=10
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/pilot/.pilot
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+EOF
+```
+
+Enable and start:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable pilot
+sudo systemctl start pilot
+```
+
+Check status:
+
+```bash
+sudo systemctl status pilot
+journalctl -u pilot -f  # Follow logs
+```
+
+### launchd Service (macOS)
+
+Create a launchd plist:
+
+```bash
+tee ~/Library/LaunchAgents/com.pilot.agent.plist << 'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.pilot.agent</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/YOU/.local/bin/pilot</string>
+        <string>start</string>
+        <string>--github</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/tmp/pilot.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/pilot.err</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>GITHUB_TOKEN</key>
+        <string>ghp_xxxx</string>
+        <key>ANTHROPIC_API_KEY</key>
+        <string>sk-ant-xxxx</string>
+    </dict>
+</dict>
+</plist>
+EOF
+```
+
+Load and start:
+
+```bash
+launchctl load ~/Library/LaunchAgents/com.pilot.agent.plist
+```
+
+---
+
+## Kubernetes Deployment
+
+### Health Probes
+
+Pilot exposes health endpoints for Kubernetes liveness and readiness probes:
+
+| Endpoint | Purpose | Success | Failure |
+|----------|---------|---------|---------|
+| `/ready` | Readiness probe | 200 when all checks pass | 503 when any check fails |
+| `/live` | Liveness probe | 200 when process is healthy | 503 when deadlocked |
+| `/health` | Basic health check | Always 200 | - |
+
+**Readiness probe** (`/ready`) checks:
+- Registered component readiness (e.g., GitHub client connected)
+- Returns JSON with individual check statuses
+
+**Liveness probe** (`/live`) checks:
+- Goroutine count < 1000 (detects goroutine leaks)
+- No recent panics (5-minute window)
+- Main loop heartbeat freshness (< 60 seconds)
+
+Example responses:
+
+```json
+// GET /ready
+{
+  "ready": true,
+  "checks": {
+    "github": true,
+    "database": true
+  }
+}
+
+// GET /live
+{
+  "alive": true,
+  "checks": {
+    "goroutines": {"count": 42, "max": 1000, "ok": true},
+    "panics": {"count": 0, "recent": false, "ok": true},
+    "heartbeat": {"last_seconds_ago": 5, "ok": true}
+  }
+}
+```
+
+### Kubernetes Manifest
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pilot
+  labels:
+    app: pilot
+spec:
+  replicas: 1  # Single replica recommended
+  selector:
+    matchLabels:
+      app: pilot
+  template:
+    metadata:
+      labels:
+        app: pilot
+    spec:
+      containers:
+      - name: pilot
+        image: ghcr.io/alekspetrov/pilot:latest
+        ports:
+        - containerPort: 9090
+          name: http
+        env:
+        - name: GITHUB_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: pilot-secrets
+              key: github-token
+        - name: ANTHROPIC_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: pilot-secrets
+              key: anthropic-api-key
+        livenessProbe:
+          httpGet:
+            path: /live
+            port: http
+          initialDelaySeconds: 10
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: http
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+        volumeMounts:
+        - name: config
+          mountPath: /home/pilot/.pilot
+        - name: data
+          mountPath: /home/pilot/.pilot/data
+      volumes:
+      - name: config
+        configMap:
+          name: pilot-config
+      - name: data
+        persistentVolumeClaim:
+          claimName: pilot-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pilot
+spec:
+  selector:
+    app: pilot
+  ports:
+  - port: 9090
+    targetPort: http
+    name: http
+```
+
+### Secrets
+
+```bash
+kubectl create secret generic pilot-secrets \
+  --from-literal=github-token=ghp_xxxx \
+  --from-literal=anthropic-api-key=sk-ant-xxxx
+```
+
+### ConfigMap
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pilot-config
+data:
+  config.yaml: |
+    version: "1.0"
+    gateway:
+      host: "0.0.0.0"
+      port: 9090
+    adapters:
+      github:
+        enabled: true
+        token: "${GITHUB_TOKEN}"
+        repo: "your-org/your-repo"
+    autopilot:
+      enabled: true
+      auto_merge: true
+```
+
+---
+
+## Prometheus Metrics
+
+Pilot exposes metrics at `/metrics` in Prometheus text format.
+
+### Available Metrics
+
+**Counters:**
+
+| Metric | Labels | Description |
+|--------|--------|-------------|
+| `pilot_issues_processed_total` | `result` | Issues processed (success, failed, rate_limited) |
+| `pilot_prs_merged_total` | - | PRs successfully merged |
+| `pilot_prs_failed_total` | - | PRs that failed |
+| `pilot_prs_conflicting_total` | - | PRs with merge conflicts |
+| `pilot_circuit_breaker_trips_total` | - | Circuit breaker activations |
+| `pilot_api_errors_total` | `endpoint` | API errors by endpoint |
+| `pilot_label_cleanups_total` | `label` | Label cleanup operations |
+
+**Gauges:**
+
+| Metric | Labels | Description |
+|--------|--------|-------------|
+| `pilot_queue_depth` | - | Issues waiting in queue |
+| `pilot_failed_queue_depth` | - | Failed issues in queue |
+| `pilot_active_prs` | `stage` | Active PRs by stage |
+| `pilot_active_prs_total` | - | Total active PRs |
+| `pilot_api_error_rate` | - | API errors/minute (5m window) |
+| `pilot_success_rate` | - | Success rate (0-1) |
+
+**Histograms:**
+
+| Metric | Buckets | Description |
+|--------|---------|-------------|
+| `pilot_pr_time_to_merge_seconds` | 1m, 5m, 10m, 30m, 1h, 2h, 4h, 8h, 24h | Time from PR creation to merge |
+| `pilot_execution_duration_seconds` | 10s, 30s, 1m, 2m, 5m, 10m, 20m, 30m, 1h | Task execution duration |
+| `pilot_ci_wait_duration_seconds` | 30s, 1m, 2m, 5m, 10m, 15m, 20m, 30m, 1h | CI wait duration |
+
+### Prometheus Scrape Config
+
+```yaml
+scrape_configs:
+  - job_name: 'pilot'
+    static_configs:
+      - targets: ['pilot:9090']
+    metrics_path: /metrics
+    scrape_interval: 30s
+```
+
+### Grafana Dashboard Tips
+
+Key panels to create:
+
+1. **Issue Throughput** - `rate(pilot_issues_processed_total[5m])` by result
+2. **PR Merge Rate** - `rate(pilot_prs_merged_total[1h])`
+3. **Success Rate** - `pilot_success_rate` gauge
+4. **Queue Depth** - `pilot_queue_depth` over time
+5. **Execution Duration P95** - `histogram_quantile(0.95, pilot_execution_duration_seconds_bucket)`
+6. **CI Wait Time P50** - `histogram_quantile(0.50, pilot_ci_wait_duration_seconds_bucket)`
+
+Alert recommendations:
+
+```yaml
+groups:
+- name: pilot
+  rules:
+  - alert: PilotHighFailureRate
+    expr: pilot_success_rate < 0.8
+    for: 15m
+    labels:
+      severity: warning
+    annotations:
+      summary: "Pilot success rate below 80%"
+
+  - alert: PilotQueueBacklog
+    expr: pilot_queue_depth > 10
+    for: 30m
+    labels:
+      severity: warning
+    annotations:
+      summary: "Pilot queue depth exceeds 10 issues"
+```
+
+---
+
+## JSON Structured Logging
+
+Enable JSON logging for log aggregation systems (ELK, Loki, CloudWatch):
+
+### Configuration
+
+```yaml
+logging:
+  level: info       # debug, info, warn, error
+  format: json      # json or text
+  output: stdout    # stdout, stderr, or file path
+```
+
+Or via CLI flag:
+
+```bash
+pilot start --log-format json
+```
+
+### Log Format
+
+JSON logs include structured fields:
+
+```json
+{
+  "time": "2026-02-14T10:30:00Z",
+  "level": "INFO",
+  "msg": "Task completed",
+  "component": "executor",
+  "task_id": "issue-123",
+  "project": "my-app",
+  "correlation_id": "abc-123",
+  "duration_ms": 45000
+}
+```
+
+### Log Rotation
+
+For file output, configure rotation:
+
+```yaml
+logging:
+  level: info
+  format: json
+  output: /var/log/pilot/pilot.log
+  rotation:
+    max_size: "100MB"
+    max_age: "7d"
+    max_backups: 5
+```
+
+---
+
+## Cloudflare Tunnel
+
+Expose webhooks publicly without opening firewall ports.
+
+### Quick Start
+
+```bash
+pilot start --tunnel
+```
+
+This automatically:
+1. Starts a Cloudflare tunnel (uses `cloudflared` if installed)
+2. Prints the public URL
+3. Shows webhook endpoints
+
+Output:
+```
+🌐 Public tunnel: https://abc123.trycloudflare.com
+   Webhooks: https://abc123.trycloudflare.com/webhooks/{linear,github,gitlab,jira}
+```
+
+### Configuration
+
+```yaml
+tunnel:
+  enabled: true
+  provider: cloudflare  # cloudflare, ngrok, or manual
+  domain: ""            # Optional: custom domain
+  port: 9090            # Local port (default: gateway port)
+```
+
+### Supported Providers
+
+| Provider | Config | Requirements |
+|----------|--------|--------------|
+| Cloudflare | `provider: cloudflare` | `cloudflared` CLI installed |
+| ngrok | `provider: ngrok` | `ngrok` CLI + auth token |
+| Manual | `provider: manual` | User provides tunnel externally |
+
+### Using with GitHub Webhooks
+
+1. Start Pilot with tunnel:
+   ```bash
+   pilot start --github --tunnel
+   ```
+
+2. Copy the public URL from output
+
+3. Configure GitHub webhook:
+   - Go to repo → Settings → Webhooks
+   - Payload URL: `https://abc123.trycloudflare.com/webhooks/github`
+   - Content type: `application/json`
+   - Secret: (same as `github_webhook_secret` in config)
+   - Events: Issues, Pull requests
+
+<Callout type="info">
+Cloudflare free tunnels use random URLs that change on restart. For production, set up a persistent tunnel with a custom domain.
+</Callout>
+
+---
+
+## Docker
+
+### Dockerfile
+
+```dockerfile
+FROM golang:1.24-alpine AS builder
+WORKDIR /app
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 go build -o pilot ./cmd/pilot
+
+FROM alpine:3.19
+RUN apk add --no-cache ca-certificates git nodejs npm
+RUN npm install -g @anthropic-ai/claude-code
+WORKDIR /home/pilot
+COPY --from=builder /app/pilot /usr/local/bin/
+USER nobody
+EXPOSE 9090
+ENTRYPOINT ["pilot"]
+CMD ["start"]
+```
+
+### Docker Compose
+
+```yaml
+version: '3.8'
+services:
+  pilot:
+    build: .
+    ports:
+      - "9090:9090"
+    environment:
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+    volumes:
+      - ./config.yaml:/home/pilot/.pilot/config.yaml:ro
+      - pilot-data:/home/pilot/.pilot/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9090/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  pilot-data:
+```
+
+### Run
+
+```bash
+docker compose up -d
+docker compose logs -f
+```
+
+---
+
+## Gateway Configuration
+
+The gateway provides HTTP/WebSocket endpoints for webhooks and control.
+
+### Configuration
+
+```yaml
+gateway:
+  host: "127.0.0.1"  # Bind address (0.0.0.0 for all interfaces)
+  port: 9090         # HTTP port
+```
+
+### Endpoints
+
+| Path | Method | Description |
+|------|--------|-------------|
+| `/ws` | WebSocket | Control plane connection |
+| `/health` | GET | Basic health check |
+| `/ready` | GET | Kubernetes readiness probe |
+| `/live` | GET | Kubernetes liveness probe |
+| `/metrics` | GET | Prometheus metrics |
+| `/api/v1/status` | GET | Pilot status |
+| `/api/v1/tasks` | GET | Task list |
+| `/webhooks/github` | POST | GitHub webhook |
+| `/webhooks/gitlab` | POST | GitLab webhook |
+| `/webhooks/linear` | POST | Linear webhook |
+| `/webhooks/jira` | POST | Jira webhook |
+| `/webhooks/asana` | POST | Asana webhook |
+
+### Authentication
+
+API endpoints can require authentication:
+
+```yaml
+auth:
+  type: "api-token"
+  token: "your-secret-token"
+```
+
+Protected endpoints (`/api/v1/*`) require `Authorization: Bearer <token>` header.
+
+<Callout type="warning">
+Webhook endpoints use their own signature validation (e.g., `X-Hub-Signature-256` for GitHub) and don't require bearer tokens.
+</Callout>
+
+### Timeouts
+
+Default server timeouts:
+- Read: 15 seconds
+- Write: 15 seconds
+- Idle: 60 seconds
+
+For long-running operations, use WebSocket connections.
