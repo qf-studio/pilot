@@ -1,0 +1,387 @@
+import { Callout, Tabs, Tab } from 'nextra/components'
+
+# Replay & Debug
+
+Every task execution is automatically recorded. Replay captures the full stream of events: tool calls, assistant responses, token usage, phase timings, and file changes. Use replay to debug failed executions, analyze token spend, or share execution traces with your team.
+
+{/* ILLUSTRATION: Recording flow — Pilot executes → stream.jsonl → metadata.json → summary.md */}
+
+## Auto-Recording
+
+Recording happens automatically for every task. No configuration needed.
+
+```bash
+# Start a task — recording begins automatically
+pilot start --telegram --github
+```
+
+When a task runs:
+1. Pilot creates a recording directory: `~/.pilot/recordings/TG-{timestamp}/`
+2. Events stream to `stream.jsonl` in real-time
+3. On completion, Pilot writes `metadata.json` and `summary.md`
+
+Each recording captures:
+- **Events**: Every tool call, assistant text, and result
+- **Token usage**: Input/output tokens with cost estimate
+- **Phase timings**: Time spent in each execution phase (Research → Implementing → Verifying → Completing)
+- **File changes**: Which files were read, created, or modified
+- **Metadata**: Branch, commit SHA, PR URL, model name
+
+<Callout type="info">
+Recordings are stored locally in `~/.pilot/recordings/`. Each recording is a self-contained directory with JSONL stream, JSON metadata, and Markdown summary.
+</Callout>
+
+## List Recordings
+
+View all recorded executions with filters:
+
+```bash
+# List recent recordings
+pilot replay list
+
+# Filter by project
+pilot replay list --project /path/to/project
+
+# Filter by status
+pilot replay list --status completed
+pilot replay list --status failed
+
+# Filter by time
+pilot replay list --since 24h
+pilot replay list --since 2024-01-15
+
+# Limit results
+pilot replay list --limit 10
+```
+
+**Example output:**
+
+```
+ID                    Task          Status      Duration  Events
+───────────────────────────────────────────────────────────────────
+TG-1705312847123     GH-1056       completed   3m 24s    847
+TG-1705298234567     GH-1052       completed   5m 12s    1,234
+TG-1705287654321     GH-1049       failed      1m 03s    312
+TG-1705276543210     GH-1047       completed   4m 56s    967
+```
+
+## Show Recording Details
+
+Inspect metadata and summary for a specific recording:
+
+```bash
+# Show recording details
+pilot replay show TG-1705312847123
+
+# Output format options
+pilot replay show TG-1705312847123 --format json
+pilot replay show TG-1705312847123 --format yaml
+```
+
+**Example output:**
+
+```
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+RECORDING: TG-1705312847123
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Task:       GH-1056
+Project:    /home/dev/pilot
+Status:     completed
+Duration:   3m 24s
+Events:     847
+
+METADATA
+───────────────────────────────────────
+  Branch:     pilot/GH-1056
+  Commit:     a1b2c3d4
+  PR:         https://github.com/org/repo/pull/42
+  Model:      claude-sonnet-4-5-20250929
+  Navigator:  true
+
+TOKEN USAGE
+───────────────────────────────────────
+  Input:      45,230 tokens
+  Output:     12,456 tokens
+  Total:      57,686 tokens
+  Cost:       $0.1892
+
+PHASE TIMINGS
+───────────────────────────────────────
+  Research:     45s (22.1%)
+  Implementing: 2m 05s (61.3%)
+  Verifying:    28s (13.7%)
+  Completing:   6s (2.9%)
+
+FILES CHANGED
+───────────────────────────────────────
+  internal/replay/recorder.go (modify)
+  internal/replay/viewer.go (create)
+  docs/pages/features/replay.mdx (create)
+```
+
+## Interactive Replay
+
+Play back executions in a TUI viewer with VCR-style controls:
+
+```bash
+# Open interactive viewer
+pilot replay play TG-1705312847123
+
+# Start from specific event
+pilot replay play TG-1705312847123 --start 100
+
+# Filter event types
+pilot replay play TG-1705312847123 --tools-only
+pilot replay play TG-1705312847123 --errors-only
+```
+
+### Viewer Controls
+
+| Key | Action |
+|-----|--------|
+| `Space`, `p` | Play/Pause |
+| `n`, `Enter`, `↓` | Next event |
+| `N`, `↑` | Previous event |
+| `g` | Go to start |
+| `G` | Go to end |
+| `PgUp`/`PgDn` | Jump 10 events |
+| `1`-`4` | Set speed (0.5x, 1x, 2x, 4x) |
+| `t` | Toggle tool calls |
+| `x` | Toggle text/assistant |
+| `r` | Toggle results |
+| `e` | Toggle errors |
+| `a` | Show all events |
+| `?`, `h` | Show help |
+| `q` | Quit |
+
+**Example viewer screen:**
+
+```
+ ▶ TG-1705312847123   Task: GH-1056
+
+▶ ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━─────────────── [234/847] 2.0x
+
+  14:23:05 #230  📖 Read: .../internal/replay/types.go
+  14:23:06 #231  💬 Analyzing the Recording struct fields...
+  14:23:07 #232  📝 Edit: .../internal/replay/recorder.go
+▶ 14:23:08 #233  💻 Bash: go build ./...
+  14:23:12 #234  ✅ Completed (1,234 in, 456 out)
+  14:23:13 #235  💬 Build succeeded. Running tests...
+
+───────────────────────────────────────────────────────────────────
+Showing: Tools, Text, Results, System, Errors
+Space: Play/Pause │ ←→: Navigate │ 1-4: Speed │ t/x/r/s/e: Filter │ ?: Help │ q: Quit
+```
+
+## Analyze Recording
+
+Get detailed analysis with token breakdown, tool usage stats, and error summary:
+
+```bash
+# Run analysis
+pilot replay analyze TG-1705312847123
+
+# Output as JSON for programmatic use
+pilot replay analyze TG-1705312847123 --format json
+```
+
+**Example output:**
+
+```
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+EXECUTION ANALYSIS REPORT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Recording:  TG-1705312847123
+Task:       GH-1056
+Status:     completed
+Duration:   3m 24s
+Events:     847
+
+TOKEN USAGE
+───────────────────────────────────────
+  Input:    45.2K tokens
+  Output:   12.5K tokens
+  Total:    57.7K tokens
+  Cost:     $0.1892
+
+PHASE ANALYSIS
+───────────────────────────────────────
+  Research:      45s (22.1%) 156 events
+  Implementing:  2m 5s (61.3%) 523 events
+  Verifying:     28s (13.7%) 134 events
+  Completing:    6s (2.9%) 34 events
+
+TOOL USAGE
+───────────────────────────────────────
+  Read:        42 calls
+  Edit:        18 calls
+  Bash:        12 calls (1 error)
+  Glob:        8 calls
+  Grep:        6 calls
+  Write:       3 calls
+
+ERRORS
+───────────────────────────────────────
+  #312 [14:24:05] Bash: Command exited with code 1
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+```
+
+### Analysis Insights
+
+The analyzer extracts:
+
+- **Token breakdown by phase**: See where tokens are spent (research vs implementation)
+- **Token breakdown by tool**: Identify expensive operations
+- **Tool usage stats**: Call counts, error rates
+- **Error events**: All errors with timestamps and context
+- **Decision points**: Key moments where Navigator made strategic choices
+
+## Export Recording
+
+Export recordings to shareable formats:
+
+<Tabs items={['HTML', 'Markdown', 'JSON']}>
+  <Tab>
+    ```bash
+    # Export to HTML (rich interactive report)
+    pilot replay export TG-1705312847123 --format html --output report.html
+    ```
+
+    The HTML export includes:
+    - Dark-themed dashboard layout
+    - Summary cards (duration, tokens, cost)
+    - Phase timing charts
+    - Tool usage breakdown
+    - Scrollable event timeline
+    - Error highlighting
+  </Tab>
+  <Tab>
+    ```bash
+    # Export to Markdown (documentation-friendly)
+    pilot replay export TG-1705312847123 --format markdown --output report.md
+    ```
+
+    The Markdown export includes:
+    - Metadata table
+    - Token usage section
+    - Phase timing table
+    - Tool usage table
+    - Collapsible event log
+  </Tab>
+  <Tab>
+    ```bash
+    # Export to JSON (programmatic access)
+    pilot replay export TG-1705312847123 --format json --output recording.json
+    ```
+
+    The JSON export includes:
+    - Full recording metadata
+    - All stream events with parsed data
+    - Useful for custom analysis or integration
+  </Tab>
+</Tabs>
+
+### Export Examples
+
+```bash
+# Export failed task for debugging
+pilot replay export TG-1705287654321 --format html -o failed-task-report.html
+
+# Export to share with team
+pilot replay export TG-1705312847123 --format markdown -o task-execution.md
+
+# Pipe JSON to jq for analysis
+pilot replay export TG-1705312847123 --format json | jq '.recording.token_usage'
+```
+
+## Use Cases
+
+### Debug Failed Executions
+
+When a task fails, replay helps identify the root cause:
+
+```bash
+# List recent failures
+pilot replay list --status failed --limit 5
+
+# Analyze the failure
+pilot replay analyze TG-1705287654321
+
+# Step through events to find the error
+pilot replay play TG-1705287654321 --errors-only
+```
+
+### Optimize Token Spend
+
+Identify which phases or tools consume the most tokens:
+
+```bash
+# Analyze a completed task
+pilot replay analyze TG-1705312847123 --format json | jq '.token_breakdown.by_tool'
+
+# Compare token usage across tasks
+for id in $(pilot replay list --limit 10 --format ids); do
+  pilot replay show $id --format json | jq '{id: .id, tokens: .token_usage.total_tokens}'
+done
+```
+
+### Share Execution Traces
+
+Export recordings for code review or documentation:
+
+```bash
+# Generate HTML report for PR review
+pilot replay export TG-1705312847123 --format html -o pr-execution-trace.html
+
+# Include in documentation
+pilot replay export TG-1705312847123 --format markdown >> docs/implementation-notes.md
+```
+
+## Storage
+
+Recordings are stored in `~/.pilot/recordings/` with this structure:
+
+```
+~/.pilot/recordings/
+└── TG-1705312847123/
+    ├── stream.jsonl      # Event stream (one JSON per line)
+    ├── metadata.json     # Recording metadata
+    ├── summary.md        # Human-readable summary
+    └── diffs/
+        └── changes.json  # File change tracking
+```
+
+<Callout type="warning">
+Recordings can grow large for complex tasks. Consider periodically cleaning old recordings:
+```bash
+# Delete recordings older than 30 days
+pilot replay clean --older-than 30d
+
+# Delete specific recording
+pilot replay delete TG-1705312847123
+```
+</Callout>
+
+## Configuration
+
+Recording is enabled by default. To customize:
+
+```yaml
+# ~/.pilot/config.yaml
+
+replay:
+  # Enable/disable recording (default: true)
+  enabled: true
+
+  # Recording directory (default: ~/.pilot/recordings)
+  path: ~/.pilot/recordings
+
+  # Auto-cleanup recordings older than this (default: 0, disabled)
+  retention_days: 30
+
+  # Maximum recordings to keep (default: 0, unlimited)
+  max_recordings: 100
+```

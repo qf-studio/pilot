@@ -4,5 +4,6 @@
   "autopilot": "Autopilot Mode",
   "autopilot-environments": "Autopilot Environments",
   "approval-workflows": "Approval Workflows",
-  "hot-upgrade": "Hot Upgrade"
+  "hot-upgrade": "Hot Upgrade",
+  "replay": "Replay & Debug"
 }
