@@ -1,0 +1,63 @@
+# Example Pilot Configuration
+# Copy this file to ~/.pilot/config.yaml and customize as needed
+
+# Integration Settings
+integrations:
+  github:
+    enabled: true
+    poll_interval: 30s
+    labels:
+      - pilot
+    repositories:
+      - owner/repo  # Replace with your repository
+
+  telegram:
+    enabled: false  # Set to true if using Telegram
+    bot_token: ""   # Your Telegram bot token
+    chat_id: 0      # Your Telegram chat ID
+
+  linear:
+    enabled: false
+    api_key: ""
+    team_id: ""
+
+  slack:
+    enabled: false
+    bot_token: ""
+    channel: "#pilot"
+
+# Execution Settings
+execution:
+  max_concurrent_tasks: 3
+  timeout: "30m"
+  autopilot: false  # Set to true for full automation
+
+  quality_gates:
+    enabled: true
+    build_check: true
+    test_check: true
+    lint_check: true
+
+# Dashboard Settings
+dashboard:
+  enabled: true
+  refresh_interval: "5s"
+  theme: "dark"  # or "light"
+
+# Logging
+logging:
+  level: "info"  # debug, info, warn, error
+  format: "json"  # json or text
+  file: "~/.pilot/logs/pilot.log"
+
+# Memory and Knowledge
+memory:
+  enabled: true
+  database_path: "~/.pilot/memory.db"
+  max_entries: 10000
+
+# Performance
+performance:
+  cache_enabled: true
+  cache_size: 1000
+  parallel_execution: true
