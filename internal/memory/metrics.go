@@ -161,21 +161,23 @@ func EstimateCost(inputTokens, outputTokens int64, model string) float64 {
 
 // SaveExecutionMetrics saves metrics for an execution
 func (s *Store) SaveExecutionMetrics(metrics *ExecutionMetrics) error {
-	_, err := s.db.Exec(`
-		UPDATE executions SET
-			tokens_input = ?,
-			tokens_output = ?,
-			tokens_total = ?,
-			estimated_cost_usd = ?,
-			files_changed = ?,
-			lines_added = ?,
-			lines_removed = ?,
-			model_name = ?
-		WHERE id = ?
-	`, metrics.TokensInput, metrics.TokensOutput, metrics.TokensTotal,
-		metrics.EstimatedCostUSD, metrics.FilesChanged, metrics.LinesAdded,
-		metrics.LinesRemoved, metrics.ModelName, metrics.ExecutionID)
-	return err
+	return s.withRetry("SaveExecutionMetrics", func() error {
+		_, err := s.db.Exec(`
+			UPDATE executions SET
+				tokens_input = ?,
+				tokens_output = ?,
+				tokens_total = ?,
+				estimated_cost_usd = ?,
+				files_changed = ?,
+				lines_added = ?,
+				lines_removed = ?,
+				model_name = ?
+			WHERE id = ?
+		`, metrics.TokensInput, metrics.TokensOutput, metrics.TokensTotal,
+			metrics.EstimatedCostUSD, metrics.FilesChanged, metrics.LinesAdded,
+			metrics.LinesRemoved, metrics.ModelName, metrics.ExecutionID)
+		return err
+	})
 }
 
 // GetMetricsSummary returns aggregated metrics for a time period

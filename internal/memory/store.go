@@ -37,9 +37,16 @@ func NewStore(dataPath string) (*Store, error) {
 	}
 
 	// Enable WAL mode and busy timeout for better concurrency
-	if _, err := db.Exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;"); err != nil {
+	if _, err := db.Exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=10000;"); err != nil {
 		return nil, fmt.Errorf("failed to set database pragmas: %w", err)
 	}
+
+	// SQLite supports only one writer at a time. Limiting to 1 open connection
+	// serializes all database access, eliminating SQLITE_BUSY contention.
+	// WAL mode still allows the single connection to interleave reads and writes efficiently.
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	db.SetConnMaxLifetime(0) // Don't close idle connections
 
 	store := &Store{
 		db:   db,
@@ -240,6 +247,33 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
+// withRetry executes a database operation with exponential backoff on transient errors.
+// Retries up to 5 times with 100ms, 200ms, 400ms, 800ms, 1600ms delays.
+func (s *Store) withRetry(operation string, fn func() error) error {
+	var err error
+	for attempt := 0; attempt < 5; attempt++ {
+		err = fn()
+		if err == nil {
+			return nil
+		}
+		// Only retry on SQLITE_BUSY/SQLITE_LOCKED
+		errStr := strings.ToLower(err.Error())
+		if !strings.Contains(errStr, "database is locked") &&
+			!strings.Contains(errStr, "sqlite_busy") &&
+			!strings.Contains(errStr, "sqlite_locked") {
+			return err // Non-retryable error
+		}
+		delay := time.Duration(100<<uint(attempt)) * time.Millisecond
+		slog.Warn("Database locked, retrying",
+			slog.String("operation", operation),
+			slog.Int("attempt", attempt+1),
+			slog.Duration("delay", delay),
+		)
+		time.Sleep(delay)
+	}
+	return fmt.Errorf("%s failed after 5 retries: %w", operation, err)
+}
+
 // Execution represents a task execution record stored in the database.
 // It captures the complete execution history including status, output, metrics, and PR information.
 type Execution struct {
@@ -275,15 +309,17 @@ type Execution struct {
 // SaveExecution saves an execution record to the database.
 // The execution ID must be unique; duplicate IDs will cause an error.
 func (s *Store) SaveExecution(exec *Execution) error {
-	_, err := s.db.Exec(`
-		INSERT INTO executions (id, task_id, project_path, status, output, error, duration_ms, pr_url, commit_sha, completed_at,
-			tokens_input, tokens_output, tokens_total, estimated_cost_usd, files_changed, lines_added, lines_removed, model_name,
-			task_title, task_description, task_branch, task_base_branch, task_create_pr, task_verbose)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, exec.ID, exec.TaskID, exec.ProjectPath, exec.Status, exec.Output, exec.Error, exec.DurationMs, exec.PRUrl, exec.CommitSHA, exec.CompletedAt,
-		exec.TokensInput, exec.TokensOutput, exec.TokensTotal, exec.EstimatedCostUSD, exec.FilesChanged, exec.LinesAdded, exec.LinesRemoved, exec.ModelName,
-		exec.TaskTitle, exec.TaskDescription, exec.TaskBranch, exec.TaskBaseBranch, exec.TaskCreatePR, exec.TaskVerbose)
-	return err
+	return s.withRetry("SaveExecution", func() error {
+		_, err := s.db.Exec(`
+			INSERT INTO executions (id, task_id, project_path, status, output, error, duration_ms, pr_url, commit_sha, completed_at,
+				tokens_input, tokens_output, tokens_total, estimated_cost_usd, files_changed, lines_added, lines_removed, model_name,
+				task_title, task_description, task_branch, task_base_branch, task_create_pr, task_verbose)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, exec.ID, exec.TaskID, exec.ProjectPath, exec.Status, exec.Output, exec.Error, exec.DurationMs, exec.PRUrl, exec.CommitSHA, exec.CompletedAt,
+			exec.TokensInput, exec.TokensOutput, exec.TokensTotal, exec.EstimatedCostUSD, exec.FilesChanged, exec.LinesAdded, exec.LinesRemoved, exec.ModelName,
+			exec.TaskTitle, exec.TaskDescription, exec.TaskBranch, exec.TaskBaseBranch, exec.TaskCreatePR, exec.TaskVerbose)
+		return err
+	})
 }
 
 // GetExecution retrieves an execution by its unique ID.
@@ -364,23 +400,26 @@ type Pattern struct {
 // If pattern.ID is zero, a new pattern is inserted; otherwise the existing pattern is updated.
 func (s *Store) SavePattern(pattern *Pattern) error {
 	if pattern.ID == 0 {
-		result, err := s.db.Exec(`
-			INSERT INTO patterns (project_path, pattern_type, content, confidence)
-			VALUES (?, ?, ?, ?)
-		`, pattern.ProjectPath, pattern.Type, pattern.Content, pattern.Confidence)
-		if err != nil {
-			return err
-		}
-		id, _ := result.LastInsertId()
-		pattern.ID = id
-	} else {
+		return s.withRetry("SavePattern", func() error {
+			result, err := s.db.Exec(`
+				INSERT INTO patterns (project_path, pattern_type, content, confidence)
+				VALUES (?, ?, ?, ?)
+			`, pattern.ProjectPath, pattern.Type, pattern.Content, pattern.Confidence)
+			if err != nil {
+				return err
+			}
+			id, _ := result.LastInsertId()
+			pattern.ID = id
+			return nil
+		})
+	}
+	return s.withRetry("SavePattern", func() error {
 		_, err := s.db.Exec(`
 			UPDATE patterns SET content = ?, confidence = ?, uses = uses + 1, updated_at = CURRENT_TIMESTAMP
 			WHERE id = ?
 		`, pattern.Content, pattern.Confidence, pattern.ID)
 		return err
-	}
-	return nil
+	})
 }
 
 // GetPatterns retrieves patterns applicable to a project.
@@ -427,16 +466,18 @@ type Project struct {
 // If a project with the same path exists, it is updated; otherwise a new record is created.
 func (s *Store) SaveProject(project *Project) error {
 	settings, _ := json.Marshal(project.Settings)
-	_, err := s.db.Exec(`
-		INSERT INTO projects (path, name, navigator_enabled, settings)
-		VALUES (?, ?, ?, ?)
-		ON CONFLICT(path) DO UPDATE SET
-			name = excluded.name,
-			navigator_enabled = excluded.navigator_enabled,
-			last_active = CURRENT_TIMESTAMP,
-			settings = excluded.settings
-	`, project.Path, project.Name, project.NavigatorEnabled, string(settings))
-	return err
+	return s.withRetry("SaveProject", func() error {
+		_, err := s.db.Exec(`
+			INSERT INTO projects (path, name, navigator_enabled, settings)
+			VALUES (?, ?, ?, ?)
+			ON CONFLICT(path) DO UPDATE SET
+				name = excluded.name,
+				navigator_enabled = excluded.navigator_enabled,
+				last_active = CURRENT_TIMESTAMP,
+				settings = excluded.settings
+		`, project.Path, project.Name, project.NavigatorEnabled, string(settings))
+		return err
+	})
 }
 
 // GetProject retrieves a project by its filesystem path.
@@ -719,31 +760,37 @@ func (s *Store) UpdateExecutionStatus(id, status string, errorMsg ...string) err
 
 	// Set completed_at for terminal states
 	if status == "completed" || status == "failed" || status == "cancelled" {
+		return s.withRetry("UpdateExecutionStatus", func() error {
+			_, err := s.db.Exec(`
+				UPDATE executions
+				SET status = ?, error = COALESCE(?, error), completed_at = CURRENT_TIMESTAMP
+				WHERE id = ?
+			`, status, errStr, id)
+			return err
+		})
+	}
+
+	return s.withRetry("UpdateExecutionStatus", func() error {
 		_, err := s.db.Exec(`
 			UPDATE executions
-			SET status = ?, error = COALESCE(?, error), completed_at = CURRENT_TIMESTAMP
+			SET status = ?, error = COALESCE(?, error)
 			WHERE id = ?
 		`, status, errStr, id)
 		return err
-	}
-
-	_, err := s.db.Exec(`
-		UPDATE executions
-		SET status = ?, error = COALESCE(?, error)
-		WHERE id = ?
-	`, status, errStr, id)
-	return err
+	})
 }
 
 // UpdateExecutionResult updates the result fields of an execution record.
 // Called when task execution completes successfully with PR/commit info.
 func (s *Store) UpdateExecutionResult(id string, prURL, commitSHA string, durationMs int64) error {
-	_, err := s.db.Exec(`
-		UPDATE executions
-		SET pr_url = ?, commit_sha = ?, duration_ms = ?
-		WHERE id = ?
-	`, prURL, commitSHA, durationMs, id)
-	return err
+	return s.withRetry("UpdateExecutionResult", func() error {
+		_, err := s.db.Exec(`
+			UPDATE executions
+			SET pr_url = ?, commit_sha = ?, duration_ms = ?
+			WHERE id = ?
+		`, prURL, commitSHA, durationMs, id)
+		return err
+	})
 }
 
 // GetStaleRunningExecutions returns executions that have been in "running" status
@@ -837,19 +884,21 @@ type PatternFeedback struct {
 func (s *Store) SaveCrossPattern(pattern *CrossPattern) error {
 	examples, _ := json.Marshal(pattern.Examples)
 
-	_, err := s.db.Exec(`
-		INSERT INTO cross_patterns (id, pattern_type, title, description, context, examples, confidence, occurrences, is_anti_pattern, scope, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-		ON CONFLICT(id) DO UPDATE SET
-			title = excluded.title,
-			description = excluded.description,
-			context = excluded.context,
-			examples = excluded.examples,
-			confidence = excluded.confidence,
-			occurrences = cross_patterns.occurrences + 1,
-			updated_at = CURRENT_TIMESTAMP
-	`, pattern.ID, pattern.Type, pattern.Title, pattern.Description, pattern.Context, string(examples), pattern.Confidence, pattern.Occurrences, pattern.IsAntiPattern, pattern.Scope)
-	return err
+	return s.withRetry("SaveCrossPattern", func() error {
+		_, err := s.db.Exec(`
+			INSERT INTO cross_patterns (id, pattern_type, title, description, context, examples, confidence, occurrences, is_anti_pattern, scope, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+			ON CONFLICT(id) DO UPDATE SET
+				title = excluded.title,
+				description = excluded.description,
+				context = excluded.context,
+				examples = excluded.examples,
+				confidence = excluded.confidence,
+				occurrences = cross_patterns.occurrences + 1,
+				updated_at = CURRENT_TIMESTAMP
+		`, pattern.ID, pattern.Type, pattern.Title, pattern.Description, pattern.Context, string(examples), pattern.Confidence, pattern.Occurrences, pattern.IsAntiPattern, pattern.Scope)
+		return err
+	})
 }
 
 // GetCrossPattern retrieves a cross-project pattern by its unique ID.
@@ -962,14 +1011,16 @@ func (s *Store) scanCrossPatterns(rows *sql.Rows) ([]*CrossPattern, error) {
 // LinkPatternToProject creates or updates a relationship between a pattern and a project.
 // If the link exists, the usage count is incremented; otherwise a new link is created.
 func (s *Store) LinkPatternToProject(patternID, projectPath string) error {
-	_, err := s.db.Exec(`
-		INSERT INTO pattern_projects (pattern_id, project_path, uses, last_used)
-		VALUES (?, ?, 1, CURRENT_TIMESTAMP)
-		ON CONFLICT(pattern_id, project_path) DO UPDATE SET
-			uses = pattern_projects.uses + 1,
-			last_used = CURRENT_TIMESTAMP
-	`, patternID, projectPath)
-	return err
+	return s.withRetry("LinkPatternToProject", func() error {
+		_, err := s.db.Exec(`
+			INSERT INTO pattern_projects (pattern_id, project_path, uses, last_used)
+			VALUES (?, ?, 1, CURRENT_TIMESTAMP)
+			ON CONFLICT(pattern_id, project_path) DO UPDATE SET
+				uses = pattern_projects.uses + 1,
+				last_used = CURRENT_TIMESTAMP
+		`, patternID, projectPath)
+		return err
+	})
 }
 
 // GetProjectsForPattern retrieves all projects that use a specific pattern.
@@ -1001,33 +1052,51 @@ func (s *Store) GetProjectsForPattern(patternID string) ([]*PatternProjectLink, 
 // Based on the outcome ("success", "failure", or "neutral"), it adjusts the pattern's
 // confidence score and updates project-level success/failure counts.
 func (s *Store) RecordPatternFeedback(feedback *PatternFeedback) error {
-	result, err := s.db.Exec(`
-		INSERT INTO pattern_feedback (pattern_id, execution_id, project_path, outcome, confidence_delta)
-		VALUES (?, ?, ?, ?, ?)
-	`, feedback.PatternID, feedback.ExecutionID, feedback.ProjectPath, feedback.Outcome, feedback.ConfidenceDelta)
+	err := s.withRetry("RecordPatternFeedback", func() error {
+		result, err := s.db.Exec(`
+			INSERT INTO pattern_feedback (pattern_id, execution_id, project_path, outcome, confidence_delta)
+			VALUES (?, ?, ?, ?, ?)
+		`, feedback.PatternID, feedback.ExecutionID, feedback.ProjectPath, feedback.Outcome, feedback.ConfidenceDelta)
+		if err != nil {
+			return err
+		}
+
+		id, _ := result.LastInsertId()
+		feedback.ID = id
+		return nil
+	})
 	if err != nil {
 		return err
 	}
 
-	id, _ := result.LastInsertId()
-	feedback.ID = id
-
 	// Update pattern confidence and project link based on outcome
 	switch feedback.Outcome {
 	case "success":
-		_, _ = s.db.Exec(`
-			UPDATE cross_patterns SET confidence = min(0.95, max(0.1, confidence + ?)) WHERE id = ?
-		`, feedback.ConfidenceDelta, feedback.PatternID)
-		_, _ = s.db.Exec(`
-			UPDATE pattern_projects SET success_count = success_count + 1 WHERE pattern_id = ? AND project_path = ?
-		`, feedback.PatternID, feedback.ProjectPath)
+		_ = s.withRetry("RecordPatternFeedback:updateConfidence", func() error {
+			_, err := s.db.Exec(`
+				UPDATE cross_patterns SET confidence = min(0.95, max(0.1, confidence + ?)) WHERE id = ?
+			`, feedback.ConfidenceDelta, feedback.PatternID)
+			return err
+		})
+		_ = s.withRetry("RecordPatternFeedback:updateSuccess", func() error {
+			_, err := s.db.Exec(`
+				UPDATE pattern_projects SET success_count = success_count + 1 WHERE pattern_id = ? AND project_path = ?
+			`, feedback.PatternID, feedback.ProjectPath)
+			return err
+		})
 	case "failure":
-		_, _ = s.db.Exec(`
-			UPDATE cross_patterns SET confidence = max(0.1, min(0.95, confidence - ?)) WHERE id = ?
-		`, feedback.ConfidenceDelta, feedback.PatternID)
-		_, _ = s.db.Exec(`
-			UPDATE pattern_projects SET failure_count = failure_count + 1 WHERE pattern_id = ? AND project_path = ?
-		`, feedback.PatternID, feedback.ProjectPath)
+		_ = s.withRetry("RecordPatternFeedback:updateConfidence", func() error {
+			_, err := s.db.Exec(`
+				UPDATE cross_patterns SET confidence = max(0.1, min(0.95, confidence - ?)) WHERE id = ?
+			`, feedback.ConfidenceDelta, feedback.PatternID)
+			return err
+		})
+		_ = s.withRetry("RecordPatternFeedback:updateFailure", func() error {
+			_, err := s.db.Exec(`
+				UPDATE pattern_projects SET failure_count = failure_count + 1 WHERE pattern_id = ? AND project_path = ?
+			`, feedback.PatternID, feedback.ProjectPath)
+			return err
+		})
 	}
 
 	return nil
@@ -1055,8 +1124,10 @@ func (s *Store) SearchCrossPatterns(query string, limit int) ([]*CrossPattern, e
 // DeleteCrossPattern deletes a cross-project pattern by ID.
 // Related pattern_projects and pattern_feedback records are deleted via foreign key cascade.
 func (s *Store) DeleteCrossPattern(id string) error {
-	_, err := s.db.Exec(`DELETE FROM cross_patterns WHERE id = ?`, id)
-	return err
+	return s.withRetry("DeleteCrossPattern", func() error {
+		_, err := s.db.Exec(`DELETE FROM cross_patterns WHERE id = ?`, id)
+		return err
+	})
 }
 
 // GetCrossPatternStats returns aggregate statistics about cross-project patterns
@@ -1156,10 +1227,13 @@ func (s *Store) GetOrCreateDailySession() (*Session, error) {
 			Date:      today,
 			StartedAt: time.Now(),
 		}
-		_, err = s.db.Exec(`
-			INSERT INTO sessions (id, date, started_at)
-			VALUES (?, ?, ?)
-		`, session.ID, session.Date, session.StartedAt)
+		err = s.withRetry("GetOrCreateDailySession", func() error {
+			_, err := s.db.Exec(`
+				INSERT INTO sessions (id, date, started_at)
+				VALUES (?, ?, ?)
+			`, session.ID, session.Date, session.StartedAt)
+			return err
+		})
 		if err != nil {
 			return nil, fmt.Errorf("failed to create session: %w", err)
 		}
@@ -1178,24 +1252,28 @@ func (s *Store) GetOrCreateDailySession() (*Session, error) {
 
 // UpdateSessionTokens updates token counts for a session.
 func (s *Store) UpdateSessionTokens(sessionID string, inputTokens, outputTokens int) error {
-	_, err := s.db.Exec(`
-		UPDATE sessions
-		SET total_input_tokens = total_input_tokens + ?,
-		    total_output_tokens = total_output_tokens + ?
-		WHERE id = ?
-	`, inputTokens, outputTokens, sessionID)
-	return err
+	return s.withRetry("UpdateSessionTokens", func() error {
+		_, err := s.db.Exec(`
+			UPDATE sessions
+			SET total_input_tokens = total_input_tokens + ?,
+			    total_output_tokens = total_output_tokens + ?
+			WHERE id = ?
+		`, inputTokens, outputTokens, sessionID)
+		return err
+	})
 }
 
 // UpdateSessionTaskCount updates task completion/failure counts.
 func (s *Store) UpdateSessionTaskCount(sessionID string, completed, failed int) error {
-	_, err := s.db.Exec(`
-		UPDATE sessions
-		SET tasks_completed = tasks_completed + ?,
-		    tasks_failed = tasks_failed + ?
-		WHERE id = ?
-	`, completed, failed, sessionID)
-	return err
+	return s.withRetry("UpdateSessionTaskCount", func() error {
+		_, err := s.db.Exec(`
+			UPDATE sessions
+			SET tasks_completed = tasks_completed + ?,
+			    tasks_failed = tasks_failed + ?
+			WHERE id = ?
+		`, completed, failed, sessionID)
+		return err
+	})
 }
 
 // LifetimeTokens holds cumulative token and cost totals from all executions.
@@ -1252,10 +1330,12 @@ func (s *Store) GetLifetimeTaskCounts() (*LifetimeTaskCounts, error) {
 
 // EndSession marks a session as ended.
 func (s *Store) EndSession(sessionID string) error {
-	_, err := s.db.Exec(`
-		UPDATE sessions SET ended_at = CURRENT_TIMESTAMP WHERE id = ?
-	`, sessionID)
-	return err
+	return s.withRetry("EndSession", func() error {
+		_, err := s.db.Exec(`
+			UPDATE sessions SET ended_at = CURRENT_TIMESTAMP WHERE id = ?
+		`, sessionID)
+		return err
+	})
 }
 
 // AutopilotMetricsRow represents a persisted autopilot metrics snapshot.
@@ -1282,22 +1362,24 @@ type AutopilotMetricsRow struct {
 
 // SaveAutopilotMetrics persists an autopilot metrics snapshot to SQLite.
 func (s *Store) SaveAutopilotMetrics(row *AutopilotMetricsRow) error {
-	_, err := s.db.Exec(`
-		INSERT INTO autopilot_metrics (
-			snapshot_at, issues_success, issues_failed, issues_rate_limited,
-			prs_merged, prs_failed, prs_conflicting, circuit_breaker_trips,
-			api_errors_total, api_error_rate, queue_depth, failed_queue_depth,
-			active_prs, success_rate, avg_ci_wait_ms, avg_merge_time_ms, avg_execution_ms
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`,
-		row.SnapshotAt,
-		row.IssuesSuccess, row.IssuesFailed, row.IssuesRateLimited,
-		row.PRsMerged, row.PRsFailed, row.PRsConflicting,
-		row.CircuitBreakerTrips, row.APIErrorsTotal, row.APIErrorRate,
-		row.QueueDepth, row.FailedQueueDepth, row.ActivePRs,
-		row.SuccessRate, row.AvgCIWaitMs, row.AvgMergeTimeMs, row.AvgExecutionMs,
-	)
-	return err
+	return s.withRetry("SaveAutopilotMetrics", func() error {
+		_, err := s.db.Exec(`
+			INSERT INTO autopilot_metrics (
+				snapshot_at, issues_success, issues_failed, issues_rate_limited,
+				prs_merged, prs_failed, prs_conflicting, circuit_breaker_trips,
+				api_errors_total, api_error_rate, queue_depth, failed_queue_depth,
+				active_prs, success_rate, avg_ci_wait_ms, avg_merge_time_ms, avg_execution_ms
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`,
+			row.SnapshotAt,
+			row.IssuesSuccess, row.IssuesFailed, row.IssuesRateLimited,
+			row.PRsMerged, row.PRsFailed, row.PRsConflicting,
+			row.CircuitBreakerTrips, row.APIErrorsTotal, row.APIErrorRate,
+			row.QueueDepth, row.FailedQueueDepth, row.ActivePRs,
+			row.SuccessRate, row.AvgCIWaitMs, row.AvgMergeTimeMs, row.AvgExecutionMs,
+		)
+		return err
+	})
 }
 
 // GetRecentAutopilotMetrics returns the most recent metrics snapshots.
@@ -1335,7 +1417,12 @@ func (s *Store) GetRecentAutopilotMetrics(limit int) ([]*AutopilotMetricsRow, er
 // PruneAutopilotMetrics deletes snapshots older than the given duration.
 func (s *Store) PruneAutopilotMetrics(olderThan time.Duration) (int64, error) {
 	cutoff := time.Now().Add(-olderThan)
-	result, err := s.db.Exec(`DELETE FROM autopilot_metrics WHERE snapshot_at < ?`, cutoff)
+	var result sql.Result
+	err := s.withRetry("PruneAutopilotMetrics", func() error {
+		var execErr error
+		result, execErr = s.db.Exec(`DELETE FROM autopilot_metrics WHERE snapshot_at < ?`, cutoff)
+		return execErr
+	})
 	if err != nil {
 		return 0, err
 	}
@@ -1353,16 +1440,18 @@ type BriefRecord struct {
 
 // RecordBriefSent records that a brief was sent to a channel.
 func (s *Store) RecordBriefSent(record *BriefRecord) error {
-	result, err := s.db.Exec(`
-		INSERT INTO brief_history (sent_at, channel, brief_type, recipient)
-		VALUES (?, ?, ?, ?)
-	`, record.SentAt, record.Channel, record.BriefType, record.Recipient)
-	if err != nil {
-		return err
-	}
-	id, _ := result.LastInsertId()
-	record.ID = id
-	return nil
+	return s.withRetry("RecordBriefSent", func() error {
+		result, err := s.db.Exec(`
+			INSERT INTO brief_history (sent_at, channel, brief_type, recipient)
+			VALUES (?, ?, ?, ?)
+		`, record.SentAt, record.Channel, record.BriefType, record.Recipient)
+		if err != nil {
+			return err
+		}
+		id, _ := result.LastInsertId()
+		record.ID = id
+		return nil
+	})
 }
 
 // GetLastBriefSent returns the most recent brief record for a given channel.

@@ -2,6 +2,7 @@ package memory
 
 import (
 	"bytes"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -1090,5 +1091,123 @@ func TestRecordBriefSent_SetsID(t *testing.T) {
 
 	if record.ID == 0 {
 		t.Error("ID should be set after insert")
+	}
+}
+
+func TestStore_WithRetry(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	t.Run("succeeds on first attempt", func(t *testing.T) {
+		attempts := 0
+		err := store.withRetry("test", func() error {
+			attempts++
+			return nil
+		})
+		if err != nil {
+			t.Errorf("withRetry should succeed: %v", err)
+		}
+		if attempts != 1 {
+			t.Errorf("should only attempt once, got %d", attempts)
+		}
+	})
+
+	t.Run("retries on database locked error", func(t *testing.T) {
+		var buf bytes.Buffer
+		oldLogger := slog.Default()
+		slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+		defer slog.SetDefault(oldLogger)
+
+		attempts := 0
+		err := store.withRetry("test", func() error {
+			attempts++
+			if attempts < 3 {
+				return fmt.Errorf("database is locked (SQLITE_BUSY)")
+			}
+			return nil
+		})
+		if err != nil {
+			t.Errorf("withRetry should succeed after retries: %v", err)
+		}
+		if attempts != 3 {
+			t.Errorf("should retry until success, got %d attempts", attempts)
+		}
+
+		logOutput := buf.String()
+		if !strings.Contains(logOutput, "Database locked, retrying") {
+			t.Errorf("expected retry warning in logs, got: %s", logOutput)
+		}
+	})
+
+	t.Run("does not retry non-retryable errors", func(t *testing.T) {
+		attempts := 0
+		err := store.withRetry("test", func() error {
+			attempts++
+			return fmt.Errorf("syntax error: invalid SQL")
+		})
+		if err == nil {
+			t.Error("withRetry should return error")
+		}
+		if attempts != 1 {
+			t.Errorf("should not retry non-retryable error, got %d attempts", attempts)
+		}
+		if !strings.Contains(err.Error(), "syntax error") {
+			t.Errorf("should return original error, got: %v", err)
+		}
+	})
+
+	t.Run("fails after max retries", func(t *testing.T) {
+		attempts := 0
+		err := store.withRetry("TestOp", func() error {
+			attempts++
+			return fmt.Errorf("database is locked (SQLITE_BUSY)")
+		})
+		if err == nil {
+			t.Error("withRetry should return error after max retries")
+		}
+		if attempts != 5 {
+			t.Errorf("should attempt 5 times, got %d", attempts)
+		}
+		if !strings.Contains(err.Error(), "TestOp failed after 5 retries") {
+			t.Errorf("error should mention operation and retry count, got: %v", err)
+		}
+	})
+
+	t.Run("retries on sqlite_locked", func(t *testing.T) {
+		attempts := 0
+		err := store.withRetry("test", func() error {
+			attempts++
+			if attempts < 2 {
+				return fmt.Errorf("table is locked (SQLITE_LOCKED)")
+			}
+			return nil
+		})
+		if err != nil {
+			t.Errorf("withRetry should succeed: %v", err)
+		}
+		if attempts != 2 {
+			t.Errorf("should retry, got %d attempts", attempts)
+		}
+	})
+}
+
+func TestStore_ConnectionPoolSettings(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	// Verify connection pool settings by checking stats
+	stats := store.db.Stats()
+
+	// MaxOpenConns should be 1
+	if stats.MaxOpenConnections != 1 {
+		t.Errorf("MaxOpenConnections = %d, want 1", stats.MaxOpenConnections)
 	}
 }
