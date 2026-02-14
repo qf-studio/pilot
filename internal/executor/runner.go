@@ -264,6 +264,10 @@ type Runner struct {
 	monitor               *Monitor                                                        // Optional monitor for state transitions (queued→running)
 	taskProgress          map[string]int                                                  // Per-task progress high-water mark (monotonic enforcement)
 	taskProgressMu        sync.RWMutex                                                    // Protects taskProgress
+	// GH-1077: AGENTS.md caching
+	agentsContent         string // Cached AGENTS.md content, loaded once per Runner
+	agentsProjectPath     string // Project path for agents cache (invalidate on change)
+	agentsMu              sync.RWMutex // Protects agents cache
 }
 
 // NewRunner creates a new Runner instance with Claude Code backend by default.

@@ -29,6 +29,34 @@ func LoadAgentsFile(projectPath string) (string, error) {
 	return strings.TrimSpace(string(content)), nil
 }
 
+// LoadAgentsFileWithCache loads AGENTS.md with caching. Returns cached content
+// if the project path hasn't changed, otherwise invalidates and reloads.
+func (r *Runner) LoadAgentsFileWithCache(projectPath string) (string, error) {
+	r.agentsMu.Lock()
+	defer r.agentsMu.Unlock()
+
+	// Invalidate cache if project path changed (multi-repo scenario)
+	if projectPath != r.agentsProjectPath {
+		r.agentsContent = ""
+		r.agentsProjectPath = projectPath
+	}
+
+	// Return cached content if available
+	if r.agentsContent != "" {
+		return r.agentsContent, nil
+	}
+
+	// Load fresh if not cached
+	content, err := LoadAgentsFile(projectPath)
+	if err != nil {
+		return "", err
+	}
+
+	// Cache for subsequent calls
+	r.agentsContent = content
+	return content, nil
+}
+
 // FormatAgentsContext wraps AGENTS.md content in a prompt section.
 // Returns empty string if content is empty.
 func FormatAgentsContext(content string) string {

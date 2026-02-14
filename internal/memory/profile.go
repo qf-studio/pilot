@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 )
 
 // UserProfile stores learned user preferences across sessions.
@@ -37,9 +38,15 @@ type Correction struct {
 // ProfileManager handles loading and saving user profiles.
 // It supports both global profiles (~/.pilot/profile.json) and
 // project-specific profiles (.agent/.user-profile.json).
+// GH-1077: Caches profile with 5-minute TTL to reduce file I/O.
 type ProfileManager struct {
 	globalPath  string // e.g., ~/.pilot/profile.json
 	projectPath string // e.g., .agent/.user-profile.json
+	// GH-1077: Profile caching with TTL
+	mu          sync.RWMutex
+	cached      *UserProfile
+	lastLoaded  time.Time
+	cacheTTL    time.Duration
 }
 
 // NewProfileManager creates a profile manager with the given paths.
@@ -49,12 +56,22 @@ func NewProfileManager(globalPath, projectPath string) *ProfileManager {
 	return &ProfileManager{
 		globalPath:  globalPath,
 		projectPath: projectPath,
+		cacheTTL:    5 * time.Minute, // GH-1077: 5-minute cache TTL
 	}
 }
 
 // Load loads the user profile, merging global defaults with project overrides.
-// Global profile is loaded first, then project-specific settings are applied on top.
+// GH-1077: Returns cached profile if < 5 minutes old, otherwise reloads.
 func (pm *ProfileManager) Load() (*UserProfile, error) {
+	pm.mu.RLock()
+	// Check if cached and still valid
+	if pm.cached != nil && time.Since(pm.lastLoaded) < pm.cacheTTL {
+		defer pm.mu.RUnlock()
+		return pm.cached, nil
+	}
+	pm.mu.RUnlock()
+
+	// Load fresh profile
 	profile := &UserProfile{
 		Conventions: make(map[string]string),
 	}
@@ -77,7 +94,26 @@ func (pm *ProfileManager) Load() (*UserProfile, error) {
 		profile.Conventions = make(map[string]string)
 	}
 
+	// Cache the profile
+	pm.mu.Lock()
+	pm.cached = profile
+	pm.lastLoaded = time.Now()
+	pm.mu.Unlock()
+
 	return profile, nil
+}
+
+// HasProfile checks if a profile exists without reading/merging files.
+// GH-1077: Fast check to avoid file I/O when no profile exists.
+func (pm *ProfileManager) HasProfile() bool {
+	// Check if either global or project profile file exists
+	if _, err := os.Stat(pm.globalPath); err == nil {
+		return true
+	}
+	if _, err := os.Stat(pm.projectPath); err == nil {
+		return true
+	}
+	return false
 }
 
 // Save saves the profile to the appropriate path.

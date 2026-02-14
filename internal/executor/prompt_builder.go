@@ -69,7 +69,8 @@ func (r *Runner) BuildPrompt(task *Task, executionPath string) string {
 		sb.WriteString("\n")
 
 		// Inject user preferences if profile manager is available (GH-1028)
-		if r.profileManager != nil {
+		// GH-1077: Fast check before loading to avoid file I/O when no profile exists
+		if r.profileManager != nil && r.profileManager.HasProfile() {
 			profile, err := r.profileManager.Load()
 			if err == nil && profile != nil {
 				sb.WriteString("## User Preferences\n\n")
@@ -87,7 +88,8 @@ func (r *Runner) BuildPrompt(task *Task, executionPath string) string {
 		}
 
 		// Inject relevant knowledge if knowledge store is available (GH-1028)
-		if r.knowledge != nil {
+		// GH-1077: Skip for trivial tasks - historical context doesn't help
+		if r.knowledge != nil && !complexity.ShouldSkipNavigator() {
 			// Use task.ProjectPath as projectID for memory lookup
 			projectID := "pilot" // Default fallback
 			if task.ProjectPath != "" {
