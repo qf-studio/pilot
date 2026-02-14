@@ -613,6 +613,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case "l":
 			m.showLogs = !m.showLogs
+			return m, tea.ClearScreen // GH-1249: Logs toggle changes height
 		case "up", "k":
 			if m.selectedTask > 0 {
 				m.selectedTask--
@@ -645,6 +646,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		return m, tea.ClearScreen // GH-1249: Terminal resized → full repaint
 
 	case tickMsg:
 		m.sparklineTick = !m.sparklineTick
@@ -652,7 +654,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tickCmd()
 
 	case updateTasksMsg:
+		prevLen := len(m.tasks)
 		m.tasks = msg
+		if len(m.tasks) != prevLen {
+			// GH-1249: Task count changed → content height changed.
+			// Force full repaint to prevent ghost lines from Bubbletea's diff renderer.
+			return m, tea.ClearScreen
+		}
 
 	case addLogMsg:
 		m.logs = append(m.logs, string(msg))
@@ -681,6 +689,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case addCompletedTaskMsg:
+		prevLen := len(m.completedTasks)
 		m.completedTasks = append(m.completedTasks, CompletedTask(msg))
 		if len(m.completedTasks) > 5 {
 			m.completedTasks = m.completedTasks[len(m.completedTasks)-5:]
@@ -697,6 +706,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.metricsCard.CostPerTask = m.metricsCard.TotalCostUSD / float64(m.metricsCard.TotalTasks)
 		}
 
+		// GH-1249: History count changed → force repaint
+		if len(m.completedTasks) != prevLen {
+			return m, tea.ClearScreen
+		}
+
 	case updateMetricsCardMsg:
 		m.metricsCard = MetricsCardData(msg)
 
@@ -707,6 +721,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			ReleaseNotes:   msg.ReleaseNotes,
 		}
 		m.upgradeState = UpgradeStateAvailable
+		return m, tea.ClearScreen // GH-1249: New panel added
 
 	case upgradeProgressMsg:
 		m.upgradeProgress = msg.Progress
@@ -772,7 +787,26 @@ func (m Model) View() string {
 	// Help
 	b.WriteString(helpStyle.Render("q: quit  l: logs  j/k: select  enter: open"))
 
-	return b.String()
+	// GH-1249: Pad output to terminal height to prevent ghost lines.
+	// Bubbletea's diff renderer miscalculates cursor positions when output
+	// height changes between frames. Fixed-height output eliminates the issue.
+	result := b.String()
+	if m.height > 0 {
+		lines := strings.Split(result, "\n")
+		if len(lines) < m.height {
+			// Pad with empty lines to fill terminal
+			for len(lines) < m.height {
+				lines = append(lines, "")
+			}
+			result = strings.Join(lines, "\n")
+		} else if len(lines) > m.height {
+			// Truncate to fit — drop bottom lines (logs get cut first since they're last)
+			lines = lines[:m.height]
+			result = strings.Join(lines, "\n")
+		}
+	}
+
+	return result
 }
 
 // renderPanel builds a panel manually with guaranteed width
