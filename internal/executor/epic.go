@@ -216,8 +216,8 @@ func splitTitleDescription(s string) (title, description string) {
 	// Remove markdown bold markers
 	s = strings.ReplaceAll(s, "**", "")
 
-	// Try common separators
-	separators := []string{" - ", ": ", " – "}
+	// Try common separators (em-dash first since Claude often uses it)
+	separators := []string{" — ", " - ", ": ", " – "}
 	for _, sep := range separators {
 		if idx := strings.Index(s, sep); idx > 0 {
 			return strings.TrimSpace(s[:idx]), strings.TrimSpace(s[idx+len(sep):])
@@ -296,10 +296,13 @@ func (r *Runner) CreateSubIssues(ctx context.Context, plan *EpicPlan, executionP
 			body = fmt.Sprintf("Parent: %s\n\n%s", plan.ParentTask.ID, body)
 		}
 
+		// Truncate title to max 80 chars for GitHub issue limits (GH-1133)
+		title := truncateTitle(subtask.Title, 80)
+
 		// Create issue using gh CLI
 		args := []string{
 			"issue", "create",
-			"--title", subtask.Title,
+			"--title", title,
 			"--body", body,
 			"--label", "pilot",
 		}

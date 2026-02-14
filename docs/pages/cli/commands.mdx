@@ -12,10 +12,22 @@ pilot start [flags]
 
 | Flag | Description |
 |------|-------------|
-| `--telegram` | Enable Telegram bot |
-| `--github` | Enable GitHub issue polling |
+| `--telegram` | Enable Telegram polling (overrides config) |
+| `--github` | Enable GitHub polling (overrides config) |
+| `--linear` | Enable Linear webhooks (overrides config) |
+| `--slack` | Enable Slack Socket Mode (overrides config) |
 | `--autopilot=ENV` | Enable autopilot: `dev`, `stage`, `prod` |
-| `--dashboard` | Show TUI dashboard |
+| `--auto-release` | Enable tag-based release automation (requires autopilot=prod) |
+| `--dashboard` | Show TUI dashboard for real-time task monitoring |
+| `-d`, `--daemon` | Run in background (daemon mode) |
+| `-p`, `--project` | Project path (default: config default or cwd) |
+| `--replace` | Kill existing bot instance before starting |
+| `--no-gateway` | Run polling adapters only (no HTTP gateway) |
+| `--sequential` | Sequential execution: wait for PR merge before next issue |
+| `--tunnel` | Enable public tunnel for webhook ingress (Cloudflare/ngrok) |
+| `--team` | Team ID or name for project access scoping |
+| `--team-member` | Member email for team access scoping |
+| `--log-format` | Log output format: `text` or `json` (default: text) |
 
 ### Examples
 
@@ -28,6 +40,18 @@ pilot start --telegram --github --autopilot=stage
 
 # With dashboard
 pilot start --telegram --github --dashboard
+
+# Sequential execution (wait for merge before next)
+pilot start --github --sequential
+
+# Production with auto-release
+pilot start --github --autopilot=prod --auto-release
+
+# Run in background
+pilot start --telegram --github -d
+
+# With JSON logging for aggregation systems
+pilot start --github --log-format=json
 ```
 
 ## pilot task
@@ -42,9 +66,13 @@ pilot task "description" [flags]
 
 | Flag | Description |
 |------|-------------|
-| `--create-pr` | Create GitHub PR after execution |
-| `--dry-run` | Show prompt without executing |
-| `--verbose` | Stream raw Claude output |
+| `-p`, `--project` | Project path (default: current directory) |
+| `--dry-run` | Show what would be executed without running |
+| `-v`, `--verbose` | Stream Claude Code output |
+| `--alerts` | Enable alerts for task execution |
+| `--budget` | Enable budget enforcement for this task |
+| `--team` | Team ID or name for project access scoping |
+| `--team-member` | Member email for team access scoping |
 
 ### Examples
 
@@ -52,11 +80,17 @@ pilot task "description" [flags]
 # Quick local execution
 pilot task "Fix the typo in README.md"
 
-# Create PR after completion
-pilot task "Add rate limiting" --create-pr
-
 # Preview what will happen
 pilot task "Refactor auth module" --dry-run
+
+# With verbose output
+pilot task "Add rate limiting" --verbose
+
+# With budget enforcement
+pilot task "Implement caching" --budget
+
+# Scoped to specific team
+pilot task "Update API docs" --team=backend
 ```
 
 ## pilot upgrade
@@ -64,83 +98,67 @@ pilot task "Refactor auth module" --dry-run
 Self-update to latest version.
 
 ```bash
+pilot upgrade [subcommand]
+```
+
+### Subcommands
+
+| Subcommand | Description |
+|------------|-------------|
+| `check` | Check for available updates |
+| `run` | Download and install the latest version (default) |
+| `rollback` | Restore the previous version from backup |
+
+### pilot upgrade check
+
+Check for updates without installing.
+
+```bash
+pilot upgrade check [flags]
+```
+
+| Flag | Description |
+|------|-------------|
+| `--json` | Output as JSON |
+
+### pilot upgrade run
+
+Download and install the latest version.
+
+```bash
+pilot upgrade run [flags]
+```
+
+| Flag | Description |
+|------|-------------|
+| `-f`, `--force` | Skip waiting for running tasks |
+| `-y`, `--yes` | Skip confirmation prompt |
+
+### pilot upgrade rollback
+
+Restore the previous Pilot version from backup created during upgrade.
+
+```bash
+pilot upgrade rollback
+```
+
+### Examples
+
+```bash
+# Check for updates only
+pilot upgrade check
+
+# Upgrade (with confirmation)
 pilot upgrade
-```
 
-### Flags
+# Upgrade without confirmation
+pilot upgrade run --yes
 
-| Flag | Description |
-|------|-------------|
-| `--check` | Check for updates without installing |
-| `--version=X.Y.Z` | Install specific version |
+# Force upgrade, skip task wait
+pilot upgrade run --force
 
-## pilot stop
-
-Stop a running Pilot daemon.
-
-```bash
-pilot stop
-```
-
-Signals to stop the Pilot daemon process. For processes started with `pilot start`, use Ctrl+C or send SIGTERM/SIGINT signals.
-
-### Examples
-
-```bash
-# Stop the daemon (shows guidance)
-pilot stop
-
-# Alternative: send SIGTERM to running process
-pkill -TERM pilot
-
-# Alternative: use Ctrl+C in the terminal running Pilot
-```
-
-## pilot status
-
-Show Pilot status and running configuration.
-
-```bash
-pilot status [flags]
-```
-
-### Flags
-
-| Flag | Description |
-|------|-------------|
-| `--json` | Output status as JSON |
-
-### Examples
-
-```bash
-# Show human-readable status
-pilot status
-
-# Get status as JSON (for scripting)
-pilot status --json
-
-# Check status in CI/CD pipeline
-pilot status --json | jq '.adapters.github'
-```
-
-## pilot version
-
-Show Pilot version information.
-
-```bash
-pilot version
-```
-
-Displays the current Pilot version and build timestamp.
-
-### Examples
-
-```bash
-# Show version
-pilot version
-
-# Check version before upgrade
-pilot version && pilot upgrade --check
+# Restore previous version
+pilot upgrade rollback
 ```
 
 ## pilot init
@@ -151,44 +169,180 @@ Initialize Pilot configuration.
 pilot init [flags]
 ```
 
-Creates `~/.pilot/config.yaml` with default settings. If a config already exists, shows current settings and available options.
+Creates `~/.pilot/config.yaml` with interactive prompts.
 
 ### Flags
 
 | Flag | Description |
 |------|-------------|
-| `--force` | Reinitialize config (backs up existing to `.bak`) |
+| `--force` | Reinitialize config (backs up existing to .bak) |
+
+## pilot doctor
+
+Check system health and configuration.
+
+```bash
+pilot doctor [flags]
+```
+
+Shows what's working, what's missing, and how to fix issues.
+
+### Flags
+
+| Flag | Description |
+|------|-------------|
+| `-v`, `--verbose` | Show detailed output with fix suggestions |
 
 ### Examples
 
 ```bash
-# Initialize new config
-pilot init
+# Run all checks
+pilot doctor
 
-# Reinitialize (creates backup)
-pilot init --force
-
-# Initialize then customize
-pilot init && $EDITOR ~/.pilot/config.yaml
+# Show detailed output
+pilot doctor --verbose
 ```
 
-## pilot setup
+## pilot logs
 
-Interactive setup wizard for configuring Pilot.
+View task execution logs.
+
+```bash
+pilot logs [task-id] [flags]
+```
+
+Without arguments, shows recent task logs. With a task ID, shows detailed logs for that specific task.
+
+### Flags
+
+| Flag | Description |
+|------|-------------|
+| `-n`, `--limit` | Number of recent tasks to show (default: 10) |
+| `-f`, `--follow` | Follow log output (not yet implemented) |
+| `-v`, `--verbose` | Show detailed output |
+| `--json` | Output as JSON |
+
+### Examples
+
+```bash
+# Show recent task logs
+pilot logs
+
+# Show last 20 tasks
+pilot logs --limit 20
+
+# Show logs for specific task
+pilot logs TASK-12345
+
+# Show logs for GitHub issue task
+pilot logs GH-15
+
+# JSON output
+pilot logs --json
+```
+
+---
+
+## Daemon Control
+
+### pilot stop
+
+Stop the Pilot daemon.
+
+```bash
+pilot stop
+```
+
+Signals the running Pilot daemon to shut down gracefully. For daemons started with `pilot start -d`, this command provides guidance on stopping the process.
+
+#### Usage Notes
+
+- Use `Ctrl+C` to stop a foreground Pilot process
+- Use `SIGTERM` to stop a background daemon: `kill $(pgrep pilot)`
+- For systemd/launchd managed services, use the appropriate service manager commands
+
+#### Examples
+
+```bash
+# Stop daemon (shows guidance)
+pilot stop
+
+# Alternative: stop via signal
+kill -TERM $(pgrep -f "pilot start")
+
+# Alternative: stop via pkill
+pkill -f "pilot start"
+```
+
+### pilot status
+
+Show Pilot status and running configuration.
+
+```bash
+pilot status [flags]
+```
+
+Displays current configuration state including gateway address, enabled adapters, and configured projects.
+
+#### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--json` | Output as JSON for programmatic access |
+
+#### Output
+
+The command displays:
+- **Gateway**: HTTP endpoint address (host:port)
+- **Adapters**: Status of each adapter (Linear, Slack, Telegram, GitHub)
+- **Projects**: Configured project paths with Navigator detection
+
+#### Examples
+
+```bash
+# Show human-readable status
+pilot status
+
+# Output as JSON (for scripts)
+pilot status --json
+
+# Parse JSON with jq
+pilot status --json | jq '.adapters'
+```
+
+#### Sample Output
+
+```
+📊 Pilot Status
+───────────────────────────────────────
+Gateway: http://localhost:8080
+
+Adapters:
+  ✓ Telegram (enabled)
+  ○ Linear (disabled)
+  ○ Slack (disabled)
+  ✓ GitHub (enabled)
+
+Projects:
+  • pilot: /Users/dev/pilot [Navigator]
+  • webapp: /Users/dev/webapp
+```
+
+---
+
+## Setup & Configuration
+
+### pilot setup
+
+Interactive setup wizard for Pilot configuration.
 
 ```bash
 pilot setup [flags]
 ```
 
-Guides you through configuring:
-- Telegram bot connection
-- Project paths
-- Voice transcription (OpenAI Whisper)
-- Daily briefs
-- Alerts
-- Cloudflare Tunnel (with `--tunnel`)
+Guides you through configuring Pilot step by step, including Telegram bot, projects, voice transcription, daily briefs, and alerts.
 
-### Flags
+#### Flags
 
 | Flag | Description |
 |------|-------------|
@@ -196,35 +350,207 @@ Guides you through configuring:
 | `--tunnel` | Set up Cloudflare Tunnel for webhooks |
 | `--no-sleep` | Disable Mac sleep for always-on operation (macOS only, requires sudo) |
 
-### Examples
+#### Setup Steps
+
+1. **Telegram Bot** - Configure bot token and chat ID
+2. **Projects** - Add project paths with automatic Navigator detection
+3. **Voice Transcription** (optional) - Configure OpenAI Whisper API
+4. **Daily Briefs** (optional) - Set up scheduled status reports
+5. **Alerts** (optional) - Enable failure notifications
+
+#### Examples
 
 ```bash
 # Full interactive setup
 pilot setup
 
-# Quick setup (essentials only)
+# Quick setup (skip optional features)
 pilot setup --skip-optional
 
-# Set up webhook tunnel
+# Set up Cloudflare Tunnel for webhooks
 pilot setup --tunnel
 
-# Configure Mac for always-on server
+# Disable Mac sleep for always-on server
 pilot setup --no-sleep
 ```
 
-## pilot completion
+### pilot config
 
-Generate shell completion scripts for Pilot.
+Manage Pilot configuration.
 
 ```bash
-pilot completion [bash|zsh|fish|powershell]
+pilot config <subcommand>
 ```
 
-### Examples
+View, edit, and validate the Pilot configuration file.
+
+#### Subcommands
+
+| Subcommand | Description |
+|------------|-------------|
+| `show` | Display current configuration |
+| `edit` | Open config in editor |
+| `validate` | Validate configuration syntax |
+| `path` | Show config file path |
+
+### pilot config show
+
+Display current configuration.
+
+```bash
+pilot config show [flags]
+```
+
+Outputs the full configuration in YAML or JSON format.
+
+#### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--json` | Output as JSON instead of YAML |
+
+#### Examples
+
+```bash
+# Show config as YAML
+pilot config show
+
+# Show config as JSON
+pilot config show --json
+
+# Pipe to tools
+pilot config show --json | jq '.projects'
+```
+
+### pilot config edit
+
+Open configuration in your default editor.
+
+```bash
+pilot config edit
+```
+
+Opens `~/.pilot/config.yaml` in your editor. Uses `$EDITOR` environment variable, falling back to vim, nano, or vi.
+
+After editing, the configuration is automatically validated.
+
+#### Editor Selection
+
+1. `$EDITOR` environment variable
+2. `$VISUAL` environment variable
+3. vim (if available)
+4. nano (if available)
+5. vi (if available)
+
+#### Examples
+
+```bash
+# Open in default editor
+pilot config edit
+
+# Use specific editor
+EDITOR=code pilot config edit
+EDITOR=nano pilot config edit
+```
+
+### pilot config validate
+
+Validate configuration syntax and structure.
+
+```bash
+pilot config validate [flags]
+```
+
+Checks YAML syntax and validates configuration structure. Reports warnings for common issues like missing tokens or non-existent project paths.
+
+#### Flags
+
+| Flag | Description |
+|------|-------------|
+| `-q`, `--quiet` | Exit with code 1 on error, no output |
+
+#### Validation Checks
+
+- YAML syntax validity
+- Configuration structure
+- Enabled adapters have required tokens
+- Project paths exist on filesystem
+
+#### Examples
+
+```bash
+# Validate with full output
+pilot config validate
+
+# Silent validation for scripts
+if pilot config validate --quiet; then
+  echo "Config OK"
+else
+  echo "Config invalid"
+fi
+```
+
+#### Sample Output
+
+```
+Config: ~/.pilot/config.yaml
+
+Syntax:     OK
+Validation: OK
+
+Warnings:
+  - GitHub enabled but token not set
+  - Project path does not exist: /old/project
+```
+
+### pilot config path
+
+Show the configuration file path.
+
+```bash
+pilot config path
+```
+
+Outputs the absolute path to the configuration file. Useful for scripts and automation.
+
+#### Examples
+
+```bash
+# Show path
+pilot config path
+# Output: /Users/dev/.pilot/config.yaml
+
+# Use in scripts
+cat "$(pilot config path)"
+
+# Back up config
+cp "$(pilot config path)" config-backup.yaml
+```
+
+### pilot completion
+
+Generate shell completion scripts.
+
+```bash
+pilot completion <shell>
+```
+
+Generates autocompletion scripts for bash, zsh, fish, or PowerShell.
+
+#### Supported Shells
+
+| Shell | Description |
+|-------|-------------|
+| `bash` | Bash completion script |
+| `zsh` | Zsh completion script |
+| `fish` | Fish completion script |
+| `powershell` | PowerShell completion script |
+
+#### Installation
 
 **Bash:**
 ```bash
-# Load completions for current session
+# Load for current session
 source <(pilot completion bash)
 
 # Install permanently (Linux)
@@ -236,13 +562,13 @@ pilot completion bash > $(brew --prefix)/etc/bash_completion.d/pilot
 
 **Zsh:**
 ```bash
-# Enable completion (add to ~/.zshrc if not already)
+# Enable completion (if not already enabled)
 echo "autoload -U compinit; compinit" >> ~/.zshrc
 
-# Install completions
+# Install completion
 pilot completion zsh > "${fpath[1]}/_pilot"
 
-# Restart shell to apply
+# Start new shell for changes to take effect
 ```
 
 **Fish:**
@@ -259,47 +585,2091 @@ pilot completion fish > ~/.config/fish/completions/pilot.fish
 # Load for current session
 pilot completion powershell | Out-String | Invoke-Expression
 
-# Generate file to source from profile
+# Install permanently (add to profile)
 pilot completion powershell > pilot.ps1
+# Then source from PowerShell profile
 ```
 
-## pilot doctor
+---
 
-Check Pilot configuration and dependencies.
+## Information
+
+### pilot version
+
+Show Pilot version information.
 
 ```bash
-pilot doctor [flags]
+pilot version
 ```
 
-### Flags
+Displays the current Pilot version and build time.
+
+#### Examples
+
+```bash
+pilot version
+# Output:
+# Pilot v0.63.0
+# Built: 2024-01-15T10:30:00Z
+```
+
+---
+
+## Execution & Review
+
+Commands for executing tasks and reviewing work history.
+
+### pilot github run
+
+Execute a GitHub issue as a Pilot task.
+
+```bash
+pilot github run <issue-number> [flags]
+```
+
+Fetches a GitHub issue and executes it as a Pilot task. PRs are always created to enable autopilot workflow.
+
+#### Flags
 
 | Flag | Description |
 |------|-------------|
-| `--verbose`, `-v` | Show detailed output with fix suggestions |
+| `-p`, `--project` | Project path |
+| `--repo` | GitHub repository (owner/repo) |
+| `--dry-run` | Show what would execute without running |
+| `-v`, `--verbose` | Verbose output |
+| `--team` | Team ID or name for project access scoping |
+| `--team-member` | Member email for team access scoping |
 
-### Examples
-
-```bash
-# Run all checks
-pilot doctor
-
-# Show detailed output
-pilot doctor --verbose
-```
-
-## pilot logs
-
-View Pilot logs.
+#### Examples
 
 ```bash
-pilot logs [flags]
+# Execute issue #8
+pilot github run 8
+
+# Execute from specific repository
+pilot github run 8 --repo owner/repo
+
+# Preview execution
+pilot github run 8 --dry-run
+
+# With verbose output
+pilot github run 8 --verbose
 ```
 
-### Flags
+### pilot brief
+
+Generate and send daily/weekly briefs.
+
+```bash
+pilot brief [flags]
+```
+
+Generate and optionally send daily/weekly briefs summarizing Pilot activity.
+
+#### Flags
 
 | Flag | Description |
 |------|-------------|
-| `--follow` | Stream logs in real-time |
-| `--tail=N` | Show last N lines |
-| `--autopilot` | Filter to autopilot events |
+| `--now` | Generate and send brief immediately |
+| `--weekly` | Generate a weekly summary |
 
+#### Examples
+
+```bash
+# Show scheduler status
+pilot brief
+
+# Generate and send brief immediately
+pilot brief --now
+
+# Generate a weekly summary
+pilot brief --weekly
+```
+
+### pilot replay
+
+Replay and debug execution recordings.
+
+```bash
+pilot replay <subcommand>
+```
+
+View, replay, and analyze execution recordings for debugging and improvement.
+
+#### Subcommands
+
+| Subcommand | Description |
+|------------|-------------|
+| `list` | List available recordings |
+| `show` | Show recording details |
+| `play` | Replay execution with interactive viewer |
+| `analyze` | Generate detailed analysis |
+| `export` | Export recording to HTML/JSON/Markdown |
+| `delete` | Delete a recording |
+
+### pilot replay list
+
+List available execution recordings.
+
+```bash
+pilot replay list [flags]
+```
+
+Display recordings with filtering options.
+
+#### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--limit` | Maximum number of recordings to show (default: 20) |
+| `--project` | Filter by project name |
+| `--status` | Filter by status (success, error, timeout) |
+
+#### Examples
+
+```bash
+# List recent recordings
+pilot replay list
+
+# Show only last 10
+pilot replay list --limit 10
+
+# Filter by project
+pilot replay list --project pilot
+
+# Show only failed executions
+pilot replay list --status error
+```
+
+### pilot replay show
+
+Show detailed information about a recording.
+
+```bash
+pilot replay show <recording-id>
+```
+
+Display metadata, events summary, and performance metrics for a specific recording.
+
+#### Examples
+
+```bash
+# Show recording details
+pilot replay show TG-1234567890
+
+# Example output includes:
+# - Basic info (task ID, duration, token usage)
+# - Phase breakdown
+# - Tool usage statistics
+# - Error summary (if any)
+```
+
+### pilot replay play
+
+Replay execution with interactive viewer.
+
+```bash
+pilot replay play <recording-id> [flags]
+```
+
+Interactive playback of the execution with step-by-step navigation.
+
+#### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--start` | Start from event sequence number |
+| `--stop` | Stop at event sequence number (0 = end) |
+| `-v`, `--verbose` | Show all event details |
+| `--tui` | Use interactive TUI viewer (default: true) |
+| `--speed` | Playback speed (0 = instant, 1 = real-time, 2 = 2x) |
+
+#### Examples
+
+```bash
+# Interactive replay
+pilot replay play TG-1234567890
+
+# Start from event 50
+pilot replay play TG-1234567890 --start 50
+
+# Simple output mode (no TUI)
+pilot replay play TG-1234567890 --no-tui
+
+# Show verbose details
+pilot replay play TG-1234567890 --verbose
+```
+
+### pilot replay analyze
+
+Generate detailed analysis of execution recording.
+
+```bash
+pilot replay analyze <recording-id>
+```
+
+Provides analysis of token usage, phase timing, tool usage patterns, and error diagnostics.
+
+#### Examples
+
+```bash
+# Analyze execution
+pilot replay analyze TG-1234567890
+
+# Output includes:
+# - Token usage breakdown by phase
+# - Tool usage patterns
+# - Performance bottlenecks
+# - Error analysis and recommendations
+```
+
+### pilot replay export
+
+Export recording to various formats.
+
+```bash
+pilot replay export <recording-id> [flags]
+```
+
+Export execution recording for sharing or external analysis.
+
+#### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--format` | Output format: html, json, markdown (default: html) |
+| `--output` | Output file path (default: auto-generated) |
+| `--with-analysis` | Include detailed analysis in export |
+
+#### Examples
+
+```bash
+# Export as HTML
+pilot replay export TG-1234567890
+
+# Export with analysis
+pilot replay export TG-1234567890 --with-analysis
+
+# Export as JSON
+pilot replay export TG-1234567890 --format json
+
+# Export as Markdown
+pilot replay export TG-1234567890 --format markdown
+
+# Custom output file
+pilot replay export TG-1234567890 --output report.html
+```
+
+### pilot replay delete
+
+Delete an execution recording.
+
+```bash
+pilot replay delete <recording-id> [flags]
+```
+
+Remove a recording from the database to free up storage space.
+
+#### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--force` | Skip confirmation prompt |
+
+#### Examples
+
+```bash
+# Delete with confirmation
+pilot replay delete TG-1234567890
+
+# Force delete without confirmation
+pilot replay delete TG-1234567890 --force
+```
+
+### pilot patterns
+
+Manage cross-project patterns.
+
+```bash
+pilot patterns <subcommand>
+```
+
+View, search, and manage learned patterns across projects.
+
+#### Subcommands
+
+| Subcommand | Description |
+|------------|-------------|
+| `list` | List discovered patterns |
+| `search` | Search patterns by keyword |
+| `stats` | Show pattern statistics |
+
+### pilot patterns list
+
+List discovered patterns from execution history.
+
+```bash
+pilot patterns list [flags]
+```
+
+Display patterns learned from successful and failed executions.
+
+#### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--limit` | Maximum number of patterns to show (default: 50) |
+| `--min-confidence` | Minimum confidence score (0.0-1.0, default: 0.5) |
+| `--type` | Pattern type filter (success, error, tool-usage) |
+| `--show-anti` | Include anti-patterns (things to avoid) |
+
+#### Examples
+
+```bash
+# List top patterns
+pilot patterns list
+
+# Show high-confidence patterns only
+pilot patterns list --min-confidence 0.8
+
+# Show anti-patterns
+pilot patterns list --show-anti
+
+# Limit results
+pilot patterns list --limit 20
+```
+
+### pilot patterns search
+
+Search patterns by keyword or description.
+
+```bash
+pilot patterns search <query>
+```
+
+Find patterns matching specific keywords or problem descriptions.
+
+#### Examples
+
+```bash
+# Search for authentication patterns
+pilot patterns search "authentication"
+
+# Search for error handling patterns
+pilot patterns search "error handling"
+
+# Search for specific technologies
+pilot patterns search "React hooks"
+```
+
+### pilot patterns stats
+
+Display pattern discovery statistics.
+
+```bash
+pilot patterns stats
+```
+
+Show overview of pattern discovery across projects including:
+- Total patterns discovered
+- Confidence distribution
+- Most common pattern types
+- Project coverage
+
+#### Examples
+
+```bash
+# Show pattern statistics
+pilot patterns stats
+
+# Example output:
+# Total patterns: 247
+# High confidence (>0.8): 89 patterns
+# Success patterns: 198
+# Anti-patterns: 49
+# Projects covered: 12
+```
+
+---
+
+## Monitoring & Billing
+
+Commands for monitoring system usage, billing information, and resource management.
+
+### pilot budget
+
+Manage budget settings and enforcement.
+
+```bash
+pilot budget <subcommand>
+```
+
+Configure and monitor budget limits to control AI usage costs across projects.
+
+#### Subcommands
+
+| Subcommand | Description |
+|------------|-------------|
+| `status` | Show current budget status and usage |
+| `config` | Configure budget limits and alerts |
+| `reset` | Reset budget counters for current period |
+
+### pilot budget status
+
+Show current budget status and usage across projects.
+
+```bash
+pilot budget status [flags]
+```
+
+Displays budget consumption, remaining limits, and project-wise breakdown.
+
+#### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--json` | Output as JSON |
+| `--project` | Filter by specific project |
+
+#### Examples
+
+```bash
+# Show budget status
+pilot budget status
+
+# Show as JSON
+pilot budget status --json
+
+# Show for specific project
+pilot budget status --project pilot
+```
+
+#### Sample Output
+
+```
+📊 Budget Status (January 2026)
+─────────────────────────────────────
+Monthly Limit: $100.00
+Used:          $23.45 (23%)
+Remaining:     $76.55
+
+Projects:
+  • pilot:    $15.20 (65%)
+  • webapp:   $8.25 (35%)
+
+Alerts: ✓ 50% threshold, ✓ 75% threshold
+```
+
+### pilot budget config
+
+Configure budget limits, thresholds, and alert settings.
+
+```bash
+pilot budget config [flags]
+```
+
+Set monthly/daily limits and configure alerts for budget monitoring.
+
+#### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--monthly` | Set monthly budget limit (e.g., $100) |
+| `--daily` | Set daily budget limit (e.g., $5) |
+| `--alert-threshold` | Alert threshold percentage (default: 75) |
+| `--project-limit` | Set per-project budget limit |
+| `--disable` | Disable budget enforcement |
+
+#### Examples
+
+```bash
+# Set monthly budget
+pilot budget config --monthly $100
+
+# Set daily limit
+pilot budget config --daily $5
+
+# Configure alert threshold
+pilot budget config --alert-threshold 80
+
+# Set project-specific limit
+pilot budget config --project pilot --monthly $50
+
+# Disable budget enforcement
+pilot budget config --disable
+```
+
+### pilot budget reset
+
+Reset budget counters for the current period.
+
+```bash
+pilot budget reset [flags]
+```
+
+Clears usage counters while preserving configured limits and settings.
+
+#### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--force` | Skip confirmation prompt |
+| `--project` | Reset specific project only |
+
+#### Examples
+
+```bash
+# Reset all budget counters
+pilot budget reset
+
+# Reset without confirmation
+pilot budget reset --force
+
+# Reset specific project
+pilot budget reset --project pilot
+```
+
+### pilot metrics
+
+System performance and usage metrics.
+
+```bash
+pilot metrics <subcommand>
+```
+
+View detailed metrics about Pilot performance, token usage, and system efficiency.
+
+#### Subcommands
+
+| Subcommand | Description |
+|------------|-------------|
+| `summary` | Show high-level metrics summary |
+| `daily` | Show daily metrics breakdown |
+| `projects` | Show per-project metrics |
+| `export` | Export metrics data |
+
+### pilot metrics summary
+
+Show high-level metrics summary for recent activity.
+
+```bash
+pilot metrics summary [flags]
+```
+
+Displays key performance indicators and usage statistics.
+
+#### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--period` | Time period: 7d, 30d, 90d (default: 30d) |
+| `--json` | Output as JSON |
+
+#### Examples
+
+```bash
+# Show 30-day summary
+pilot metrics summary
+
+# Show weekly summary
+pilot metrics summary --period 7d
+
+# Export as JSON
+pilot metrics summary --json
+```
+
+#### Sample Output
+
+```
+📈 Metrics Summary (30 days)
+─────────────────────────────────────
+Tasks Completed: 127
+Success Rate:     94.5%
+Avg Duration:     4m 32s
+
+Token Usage:
+  Input:  1,234,567 tokens
+  Output:   567,890 tokens
+  Total:  1,802,457 tokens
+
+Top Projects:
+  1. pilot (45 tasks)
+  2. webapp (32 tasks)
+  3. api (28 tasks)
+```
+
+### pilot metrics daily
+
+Show daily metrics breakdown with trends.
+
+```bash
+pilot metrics daily [flags]
+```
+
+View daily activity patterns and identify usage trends.
+
+#### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--days` | Number of days to show (default: 14) |
+| `--chart` | Show ASCII chart visualization |
+| `--json` | Output as JSON |
+
+#### Examples
+
+```bash
+# Show 14-day daily breakdown
+pilot metrics daily
+
+# Show with ASCII charts
+pilot metrics daily --chart
+
+# Show last 30 days
+pilot metrics daily --days 30
+```
+
+### pilot metrics projects
+
+Show per-project metrics and comparisons.
+
+```bash
+pilot metrics projects [flags]
+```
+
+Compare performance and usage across different projects.
+
+#### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--sort` | Sort by: tasks, tokens, duration, success (default: tasks) |
+| `--json` | Output as JSON |
+
+#### Examples
+
+```bash
+# Show project metrics
+pilot metrics projects
+
+# Sort by token usage
+pilot metrics projects --sort tokens
+
+# Sort by success rate
+pilot metrics projects --sort success
+```
+
+### pilot metrics export
+
+Export metrics data for external analysis.
+
+```bash
+pilot metrics export [flags]
+```
+
+Export metrics in various formats for reporting and analysis.
+
+#### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--format` | Export format: csv, json, excel (default: csv) |
+| `--output` | Output file path |
+| `--period` | Time period: 7d, 30d, 90d, all (default: 30d) |
+| `--include-raw` | Include raw event data |
+
+#### Examples
+
+```bash
+# Export as CSV
+pilot metrics export
+
+# Export as JSON with raw data
+pilot metrics export --format json --include-raw
+
+# Export to specific file
+pilot metrics export --output metrics-jan2026.csv
+
+# Export all historical data
+pilot metrics export --period all --format excel
+```
+
+### pilot usage
+
+Detailed usage analytics and cost tracking.
+
+```bash
+pilot usage <subcommand>
+```
+
+Track detailed usage patterns, costs, and resource consumption analytics.
+
+#### Subcommands
+
+| Subcommand | Description |
+|------------|-------------|
+| `summary` | Show usage summary and costs |
+| `daily` | Show daily usage patterns |
+| `projects` | Show per-project usage analytics |
+| `events` | Show detailed usage events |
+| `export` | Export usage data for billing |
+
+### pilot usage summary
+
+Show usage summary with cost breakdown.
+
+```bash
+pilot usage summary [flags]
+```
+
+Overview of usage patterns and associated costs.
+
+#### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--period` | Time period: 7d, 30d, 90d (default: 30d) |
+| `--breakdown` | Show detailed cost breakdown |
+| `--json` | Output as JSON |
+
+#### Examples
+
+```bash
+# Show usage summary
+pilot usage summary
+
+# Show with cost breakdown
+pilot usage summary --breakdown
+
+# Show weekly usage
+pilot usage summary --period 7d
+```
+
+#### Sample Output
+
+```
+💰 Usage Summary (30 days)
+─────────────────────────────────────
+Total Cost:       $45.67
+Token Cost:       $38.92 (85%)
+Infrastructure:   $6.75 (15%)
+
+API Calls:        2,847
+Tokens Processed: 1,802,457
+Avg Cost/Task:    $0.36
+
+Model Usage:
+  Claude-4.6:     $32.15 (84%)
+  Claude-4.5:     $6.77 (16%)
+```
+
+### pilot usage daily
+
+Show daily usage patterns and cost trends.
+
+```bash
+pilot usage daily [flags]
+```
+
+Analyze daily usage patterns to optimize costs and identify trends.
+
+#### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--days` | Number of days to show (default: 14) |
+| `--chart` | Show ASCII cost chart |
+| `--json` | Output as JSON |
+
+#### Examples
+
+```bash
+# Show daily usage
+pilot usage daily
+
+# Show with cost charts
+pilot usage daily --chart
+
+# Show last 30 days
+pilot usage daily --days 30
+```
+
+### pilot usage projects
+
+Show per-project usage analytics and costs.
+
+```bash
+pilot usage projects [flags]
+```
+
+Compare usage patterns and costs across different projects.
+
+#### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--sort` | Sort by: cost, tokens, calls, efficiency (default: cost) |
+| `--json` | Output as JSON |
+| `--efficiency` | Show cost efficiency metrics |
+
+#### Examples
+
+```bash
+# Show project usage
+pilot usage projects
+
+# Sort by efficiency
+pilot usage projects --sort efficiency --efficiency
+
+# Show detailed metrics
+pilot usage projects --efficiency
+```
+
+### pilot usage events
+
+Show detailed usage events and API calls.
+
+```bash
+pilot usage events [flags]
+```
+
+View individual API calls, tokens, and costs for detailed analysis.
+
+#### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--limit` | Number of events to show (default: 50) |
+| `--project` | Filter by project |
+| `--model` | Filter by AI model |
+| `--min-cost` | Filter by minimum cost |
+| `--json` | Output as JSON |
+
+#### Examples
+
+```bash
+# Show recent events
+pilot usage events
+
+# Show events for specific project
+pilot usage events --project pilot
+
+# Show expensive calls only
+pilot usage events --min-cost 1.00
+
+# Show events for specific model
+pilot usage events --model claude-4.6
+```
+
+### pilot usage export
+
+Export detailed usage data for billing and analysis.
+
+```bash
+pilot usage export [flags]
+```
+
+Export usage data in billing-friendly formats.
+
+#### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--format` | Export format: csv, json, billing (default: csv) |
+| `--output` | Output file path |
+| `--period` | Time period: 7d, 30d, 90d, all (default: 30d) |
+| `--group-by` | Group by: day, project, model (default: day) |
+| `--include-metadata` | Include task metadata |
+
+#### Examples
+
+```bash
+# Export usage data
+pilot usage export
+
+# Export in billing format
+pilot usage export --format billing
+
+# Export grouped by project
+pilot usage export --group-by project
+
+# Export with metadata
+pilot usage export --include-metadata --format json
+```
+
+### pilot webhooks
+
+Webhook management and integration.
+
+```bash
+pilot webhooks <subcommand>
+```
+
+Manage webhooks for GitHub, GitLab, Linear, and other integrations.
+
+#### Subcommands
+
+| Subcommand | Description |
+|------------|-------------|
+| `list` | List configured webhooks |
+| `add` | Add new webhook endpoint |
+| `remove` | Remove webhook endpoint |
+| `test` | Test webhook delivery |
+| `events` | Show webhook event history |
+
+### pilot webhooks list
+
+List all configured webhook endpoints.
+
+```bash
+pilot webhooks list [flags]
+```
+
+Display active webhooks with their configuration and status.
+
+#### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--service` | Filter by service: github, gitlab, linear, slack |
+| `--status` | Filter by status: active, inactive, error |
+| `--json` | Output as JSON |
+
+#### Examples
+
+```bash
+# List all webhooks
+pilot webhooks list
+
+# List GitHub webhooks only
+pilot webhooks list --service github
+
+# List inactive webhooks
+pilot webhooks list --status inactive
+```
+
+#### Sample Output
+
+```
+🔗 Configured Webhooks
+─────────────────────────────────────
+GitHub:
+  ✓ https://pilot.example.com/api/webhooks/github
+    Events: issues, pull_requests
+    Last ping: 2 hours ago
+
+Linear:
+  ✓ https://pilot.example.com/api/webhooks/linear
+    Events: issue.create, issue.update
+    Last ping: 15 minutes ago
+
+GitLab:
+  ⚠ https://pilot.example.com/api/webhooks/gitlab
+    Events: issues, merge_requests
+    Status: Connection error
+```
+
+### pilot webhooks add
+
+Add a new webhook endpoint for service integration.
+
+```bash
+pilot webhooks add <service> [flags]
+```
+
+Configure webhook endpoints for GitHub, GitLab, Linear, or Slack.
+
+#### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--url` | Webhook URL (auto-generated if not specified) |
+| `--events` | Comma-separated list of events to subscribe to |
+| `--secret` | Webhook secret for verification |
+| `--repo` | Repository for GitHub/GitLab (owner/repo) |
+| `--project` | Local project to associate webhook with |
+
+#### Examples
+
+```bash
+# Add GitHub webhook
+pilot webhooks add github --repo owner/repo
+
+# Add with specific events
+pilot webhooks add github --repo owner/repo --events issues,pull_requests
+
+# Add Linear webhook
+pilot webhooks add linear
+
+# Add with custom URL
+pilot webhooks add github --url https://custom.example.com/hook
+```
+
+### pilot webhooks remove
+
+Remove webhook endpoint from service.
+
+```bash
+pilot webhooks remove <service> [flags]
+```
+
+Remove webhook configuration from the service and local config.
+
+#### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--repo` | Repository for GitHub/GitLab (owner/repo) |
+| `--force` | Skip confirmation prompt |
+| `--keep-config` | Remove from service but keep local config |
+
+#### Examples
+
+```bash
+# Remove GitHub webhook
+pilot webhooks remove github --repo owner/repo
+
+# Remove without confirmation
+pilot webhooks remove linear --force
+
+# Remove from service only
+pilot webhooks remove github --repo owner/repo --keep-config
+```
+
+### pilot webhooks test
+
+Test webhook delivery and configuration.
+
+```bash
+pilot webhooks test <service> [flags]
+```
+
+Send test events to verify webhook configuration and connectivity.
+
+#### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--repo` | Repository for GitHub/GitLab (owner/repo) |
+| `--event` | Specific event type to test |
+| `--verbose` | Show detailed test output |
+
+#### Examples
+
+```bash
+# Test GitHub webhook
+pilot webhooks test github --repo owner/repo
+
+# Test specific event
+pilot webhooks test github --repo owner/repo --event issues
+
+# Test with verbose output
+pilot webhooks test linear --verbose
+```
+
+### pilot webhooks events
+
+Show webhook event history and delivery status.
+
+```bash
+pilot webhooks events [flags]
+```
+
+View recent webhook events, delivery status, and processing results.
+
+#### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--limit` | Number of events to show (default: 50) |
+| `--service` | Filter by service: github, gitlab, linear, slack |
+| `--status` | Filter by status: success, failed, pending |
+| `--since` | Show events since timestamp (e.g., "2h", "1d") |
+| `--json` | Output as JSON |
+
+#### Examples
+
+```bash
+# Show recent webhook events
+pilot webhooks events
+
+# Show GitHub events only
+pilot webhooks events --service github
+
+# Show failed events
+pilot webhooks events --status failed
+
+# Show events from last 2 hours
+pilot webhooks events --since 2h
+
+# Show last 100 events
+pilot webhooks events --limit 100
+```
+
+---
+
+## Team Management
+
+Commands for managing teams, members, and role-based access control.
+
+### pilot team
+
+Manage teams and permissions.
+
+```bash
+pilot team <subcommand>
+```
+
+Teams allow multiple users to collaborate on Pilot with different permission levels:
+- **owner**: Full access, can delete team
+- **admin**: Manage members and projects
+- **developer**: Execute tasks on assigned projects
+- **viewer**: Read-only access
+
+#### Subcommands
+
+| Subcommand | Description |
+|------------|-------------|
+| `create` | Create a new team |
+| `list` | List all teams |
+| `show` | Show team details |
+| `delete` | Delete a team (owner only) |
+| `member` | Manage team members |
+| `project` | Manage team project access |
+| `audit` | View team audit log |
+
+### pilot team create
+
+Create a new team.
+
+```bash
+pilot team create <name> [flags]
+```
+
+Creates a new team with the specified name and sets the initial owner.
+
+#### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--owner` | Owner email address (required) |
+
+#### Examples
+
+```bash
+# Create a new team
+pilot team create "Backend Team" --owner admin@example.com
+
+# Output includes team ID and instructions for adding members
+```
+
+### pilot team list
+
+List all teams.
+
+```bash
+pilot team list
+```
+
+Displays all teams with their ID, name, and creation date.
+
+#### Examples
+
+```bash
+# List all teams
+pilot team list
+
+# Sample output:
+# Found 2 team(s):
+#
+# ID        NAME           CREATED
+# ──        ────           ───────
+# abc12345  Backend Team   2026-01-15
+# def67890  Frontend Team  2026-01-20
+```
+
+### pilot team show
+
+Show team details.
+
+```bash
+pilot team show <team-id>
+```
+
+Displays team information including members and project access.
+
+#### Arguments
+
+The team ID can be a full ID, partial ID, or team name.
+
+#### Examples
+
+```bash
+# Show team by ID (partial match supported)
+pilot team show abc12345
+
+# Show team by name
+pilot team show "Backend Team"
+
+# Sample output:
+# 📋 Team: Backend Team
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#    ID:         abc12345-...
+#    Created:    2026-01-15 10:30
+#    Max Tasks:  5 concurrent
+#
+# 👥 Members (2):
+#    ID        EMAIL              ROLE       PROJECTS
+#    mem123    admin@example.com  owner      all
+#    mem456    dev@example.com    developer  all
+```
+
+### pilot team delete
+
+Delete a team (owner only).
+
+```bash
+pilot team delete <team-id> [flags]
+```
+
+Permanently deletes a team and all associated data. Only team owners can perform this action.
+
+#### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--as` | Your email (must be team owner, required) |
+| `--force` | Skip confirmation prompt |
+
+#### Examples
+
+```bash
+# Delete team (with confirmation)
+pilot team delete abc12345 --as owner@example.com
+
+# Delete without confirmation
+pilot team delete abc12345 --as owner@example.com --force
+```
+
+### pilot team member
+
+Manage team members.
+
+```bash
+pilot team member <subcommand>
+```
+
+#### Subcommands
+
+| Subcommand | Description |
+|------------|-------------|
+| `add` | Add a member to a team |
+| `remove` | Remove a member from a team |
+| `role` | Change a member's role |
+
+### pilot team member add
+
+Add a member to a team.
+
+```bash
+pilot team member add <team-id> <email> [flags]
+```
+
+Adds a new member to the specified team with the given role.
+
+#### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--role` | Role: owner, admin, developer, viewer (default: developer) |
+| `--projects` | Restrict to specific projects (comma-separated, empty = all) |
+| `--as` | Your email (must have manage_members permission, required) |
+
+#### Examples
+
+```bash
+# Add a developer with access to all projects
+pilot team member add abc123 dev@example.com --role developer --as admin@example.com
+
+# Add a viewer restricted to specific projects
+pilot team member add abc123 viewer@example.com --role viewer --projects api,frontend --as admin@example.com
+```
+
+### pilot team member remove
+
+Remove a member from a team.
+
+```bash
+pilot team member remove <team-id> <member-email> [flags]
+```
+
+Removes a member from the specified team.
+
+#### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--as` | Your email (must have manage_members permission, required) |
+
+#### Examples
+
+```bash
+# Remove a member
+pilot team member remove abc123 dev@example.com --as admin@example.com
+```
+
+### pilot team member role
+
+Change a member's role.
+
+```bash
+pilot team member role <team-id> <member-email> <new-role> [flags]
+```
+
+Updates the role of an existing team member.
+
+#### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--as` | Your email (must have manage_members permission, required) |
+
+#### Examples
+
+```bash
+# Promote a developer to admin
+pilot team member role abc123 dev@example.com admin --as owner@example.com
+
+# Demote to viewer
+pilot team member role abc123 user@example.com viewer --as admin@example.com
+```
+
+### pilot team project
+
+Manage team project access.
+
+```bash
+pilot team project <subcommand>
+```
+
+#### Subcommands
+
+| Subcommand | Description |
+|------------|-------------|
+| `set` | Set project access with a default role |
+| `remove` | Remove project access from a team |
+| `list` | List project access entries for a team |
+
+### pilot team project set
+
+Set project access with a default role.
+
+```bash
+pilot team project set <team-id> <project-path> [flags]
+```
+
+Sets or updates project access for a team with a default role. The default role determines the minimum permission level for all team members on the specified project.
+
+#### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--role` | Default role: owner, admin, developer, viewer (default: developer) |
+| `--as` | Your email (must have manage_projects permission, required) |
+
+#### Examples
+
+```bash
+# Grant team access to a project
+pilot team project set abc123 /path/to/project --role developer --as owner@example.com
+
+# Set read-only access
+pilot team project set abc123 /path/to/project --role viewer --as admin@example.com
+```
+
+### pilot team project remove
+
+Remove project access from a team.
+
+```bash
+pilot team project remove <team-id> <project-path> [flags]
+```
+
+Removes project access for a team.
+
+#### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--as` | Your email (must have manage_projects permission, required) |
+
+#### Examples
+
+```bash
+# Remove project access
+pilot team project remove abc123 /path/to/project --as admin@example.com
+```
+
+### pilot team project list
+
+List project access entries for a team.
+
+```bash
+pilot team project list <team-id>
+```
+
+Displays all project access entries for a team.
+
+#### Examples
+
+```bash
+# List project access
+pilot team project list abc123
+
+# Sample output:
+# 📂 Project Access for 'Backend Team' (2 entries):
+#
+# PROJECT PATH              DEFAULT ROLE
+# ────────────              ────────────
+# /home/dev/api             developer
+# /home/dev/shared-utils    viewer
+```
+
+### pilot team audit
+
+View team audit log.
+
+```bash
+pilot team audit <team-id> [flags]
+```
+
+Displays the audit log for a team showing member actions and changes.
+
+#### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--limit` | Maximum entries to show (default: 50) |
+| `--as` | Your email (must have view_audit_log permission, required) |
+
+#### Examples
+
+```bash
+# View recent audit entries
+pilot team audit abc123 --as admin@example.com
+
+# View last 100 entries
+pilot team audit abc123 --limit 100 --as admin@example.com
+
+# Sample output:
+# 📜 Audit Log for 'Backend Team' (showing 3 entries)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# [2026-01-15 10:30] admin@example.com performed add_member on member (mem456)
+# [2026-01-15 10:25] admin@example.com performed create_team on team (abc123)
+```
+
+---
+
+## Project Management
+
+Commands for managing Pilot projects.
+
+### pilot project
+
+Manage Pilot projects.
+
+```bash
+pilot project <subcommand>
+```
+
+Add, list, remove, and configure projects for Pilot.
+
+#### Subcommands
+
+| Subcommand | Description |
+|------------|-------------|
+| `list` | List all configured projects |
+| `add` | Add a new project |
+| `remove` | Remove a project |
+| `set-default` | Set the default project |
+| `show` | Show project details |
+
+### pilot project list
+
+List all configured projects.
+
+```bash
+pilot project list
+```
+
+Displays all projects with their name, path, GitHub repository, branch, Navigator status, and default status.
+
+#### Examples
+
+```bash
+# List all projects
+pilot project list
+
+# Sample output:
+# PROJECTS (2 configured)
+#
+#   NAME    PATH                    GITHUB           BRANCH  NAV  DEFAULT
+#   pilot   /Users/dev/pilot        owner/pilot      main    *    *
+#   webapp  /Users/dev/webapp       owner/webapp     main
+#
+# Use 'pilot project show <name>' for details
+```
+
+### pilot project add
+
+Add a new project.
+
+```bash
+pilot project add [flags]
+```
+
+Adds a new project to Pilot configuration with automatic detection of GitHub remote, branch, and Navigator setup.
+
+#### Flags
+
+| Flag | Description |
+|------|-------------|
+| `-n`, `--name` | Project name (required) |
+| `-p`, `--path` | Project path (default: current directory) |
+| `-g`, `--github` | GitHub repo (owner/repo) |
+| `-b`, `--branch` | Default branch (auto-detected) |
+| `--navigator` | Enable Navigator (auto-detected) |
+| `-d`, `--set-default` | Set as default project |
+
+#### Auto-detection
+
+- If `--path` is omitted, uses current working directory
+- If `--branch` is omitted, detects from git remote
+- If `--navigator` is omitted, checks for `.agent/` directory
+- If `--github` is omitted, parses from git remote origin
+
+#### Examples
+
+```bash
+# Add project from current directory (auto-detect settings)
+pilot project add --name my-app
+
+# Add with explicit GitHub repository
+pilot project add --name my-app --github owner/repo
+
+# Add with custom path and branch
+pilot project add -n my-app -p /path/to/project -g owner/repo -b develop
+
+# Add and set as default
+pilot project add --name primary-app --set-default
+```
+
+### pilot project remove
+
+Remove a project.
+
+```bash
+pilot project remove <name> [flags]
+```
+
+Removes a project from Pilot configuration.
+
+#### Flags
+
+| Flag | Description |
+|------|-------------|
+| `-n`, `--name` | Project name |
+| `-f`, `--force` | Skip confirmation prompt |
+
+#### Examples
+
+```bash
+# Remove with confirmation
+pilot project remove my-app
+
+# Remove without confirmation
+pilot project remove my-app --force
+
+# Using flag instead of positional argument
+pilot project remove --name my-app
+```
+
+### pilot project set-default
+
+Set the default project.
+
+```bash
+pilot project set-default <name>
+```
+
+Sets the specified project as the default for Pilot commands.
+
+#### Examples
+
+```bash
+# Set default project
+pilot project set-default my-app
+```
+
+### pilot project show
+
+Show project details.
+
+```bash
+pilot project show [name]
+```
+
+Displays details for a project. Without arguments, shows the default project.
+
+#### Examples
+
+```bash
+# Show specific project
+pilot project show my-app
+
+# Show default project
+pilot project show
+
+# Sample output:
+# PROJECT: my-app
+#
+#   Path:       /Users/dev/my-app
+#   GitHub:     owner/my-app
+#   Branch:     main
+#   Navigator:  enabled
+#   Default:    yes
+```
+
+---
+
+## Tunnel Management
+
+Commands for managing Cloudflare Tunnel for webhooks.
+
+### pilot tunnel
+
+Manage Cloudflare Tunnel for webhooks.
+
+```bash
+pilot tunnel <subcommand>
+```
+
+The tunnel provides a permanent public URL for receiving webhooks from GitHub, Linear, and other services - no port forwarding required.
+
+Supported providers:
+- **cloudflare**: Free, permanent URLs via Cloudflare Tunnel
+- **ngrok**: Quick testing (requires ngrok account for custom domains)
+
+#### Subcommands
+
+| Subcommand | Description |
+|------------|-------------|
+| `status` | Show tunnel status |
+| `start` | Start the tunnel |
+| `stop` | Stop the tunnel |
+| `url` | Show the tunnel webhook URL |
+| `setup` | Set up tunnel (create tunnel, configure DNS) |
+| `service` | Manage tunnel auto-start service |
+
+### pilot tunnel status
+
+Show tunnel status.
+
+```bash
+pilot tunnel status
+```
+
+Displays current tunnel status including provider, connection state, URL, and service status.
+
+#### Examples
+
+```bash
+# Show tunnel status
+pilot tunnel status
+
+# Sample output:
+# Tunnel Status
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#   Provider:  cloudflare
+#   Status:    ✓ Running
+#   Connected: ✓ Yes
+#   URL:       https://pilot-webhook.example.com
+#   Tunnel ID: abc123-def456-...
+#
+# Service (launchd)
+# ─────────────────────────────────────────
+#   Installed: ✓ Yes
+#   Running:   ✓ Yes (auto-starts on boot)
+```
+
+### pilot tunnel start
+
+Start the tunnel.
+
+```bash
+pilot tunnel start [flags]
+```
+
+Starts the Cloudflare Tunnel to expose local webhook endpoint. By default, runs in background.
+
+#### Flags
+
+| Flag | Description |
+|------|-------------|
+| `-f`, `--foreground` | Run in foreground |
+
+#### Examples
+
+```bash
+# Start tunnel (background)
+pilot tunnel start
+
+# Start in foreground (Ctrl+C to stop)
+pilot tunnel start --foreground
+
+# Output:
+# Starting cloudflare tunnel...
+#
+# ✓ Tunnel started
+#   URL: https://pilot-webhook.example.com
+#   Webhook endpoint: https://pilot-webhook.example.com/webhooks/github
+```
+
+### pilot tunnel stop
+
+Stop the tunnel.
+
+```bash
+pilot tunnel stop
+```
+
+Stops the running tunnel and any associated service.
+
+#### Examples
+
+```bash
+# Stop tunnel
+pilot tunnel stop
+
+# Output: ✓ Tunnel stopped
+```
+
+### pilot tunnel url
+
+Show the tunnel webhook URL.
+
+```bash
+pilot tunnel url [flags]
+```
+
+Displays the tunnel URL for configuring webhooks.
+
+#### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--webhook` | Append webhook path (e.g., /webhooks/github) |
+
+#### Examples
+
+```bash
+# Show base URL
+pilot tunnel url
+
+# Show full webhook URL
+pilot tunnel url --webhook /webhooks/github
+```
+
+### pilot tunnel setup
+
+Set up tunnel (create tunnel, configure DNS).
+
+```bash
+pilot tunnel setup [flags]
+```
+
+Sets up Cloudflare Tunnel for permanent webhook URLs.
+
+This command:
+1. Checks for cloudflared CLI installation
+2. Authenticates with Cloudflare (if needed)
+3. Creates a tunnel named 'pilot-webhook'
+4. Configures DNS routing (if custom domain provided)
+5. Optionally installs auto-start service
+
+#### Prerequisites
+
+- Cloudflare account (free tier is sufficient)
+- cloudflared CLI: `brew install cloudflared`
+
+#### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--provider` | Tunnel provider: cloudflare, ngrok (default: cloudflare) |
+| `--domain` | Custom domain (optional) |
+| `--service` | Install auto-start service |
+
+#### Examples
+
+```bash
+# Basic setup
+pilot tunnel setup
+
+# With custom domain
+pilot tunnel setup --domain pilot.example.com
+
+# With auto-start service
+pilot tunnel setup --service
+
+# Full setup with all options
+pilot tunnel setup --domain pilot.example.com --service
+```
+
+### pilot tunnel service
+
+Manage tunnel auto-start service.
+
+```bash
+pilot tunnel service <subcommand>
+```
+
+Manage the launchd service for automatic tunnel startup on macOS.
+
+#### Subcommands
+
+| Subcommand | Description |
+|------------|-------------|
+| `install` | Install auto-start service (macOS only) |
+| `uninstall` | Remove auto-start service |
+| `status` | Show service status |
+
+### pilot tunnel service install
+
+Install auto-start service (macOS only).
+
+```bash
+pilot tunnel service install
+```
+
+Installs a launchd service to automatically start the tunnel on boot.
+
+#### Prerequisites
+
+Run `pilot tunnel setup` first to configure the tunnel.
+
+#### Examples
+
+```bash
+# Install service
+pilot tunnel service install
+
+# Output:
+# Installing service... ✓
+#
+# Service installed!
+#   - Tunnel will auto-start on boot
+#   - Run 'pilot tunnel service status' to check
+```
+
+### pilot tunnel service uninstall
+
+Remove auto-start service.
+
+```bash
+pilot tunnel service uninstall
+```
+
+Removes the launchd service. The tunnel will no longer auto-start on boot.
+
+#### Examples
+
+```bash
+# Uninstall service
+pilot tunnel service uninstall
+
+# Output:
+# Uninstalling service... ✓
+# Service removed - tunnel will no longer auto-start
+```
+
+### pilot tunnel service status
+
+Show service status.
+
+```bash
+pilot tunnel service status
+```
+
+Displays the launchd service status.
+
+#### Examples
+
+```bash
+# Show service status
+pilot tunnel service status
+
+# Sample output:
+# Service Status (launchd)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#   Installed: ✓ Yes
+#   Path:      ~/Library/LaunchAgents/com.pilot.tunnel.plist
+#   Running:   ✓ Yes
+```
+
+---
+
+## Autopilot & Release
+
+Commands for autopilot PR lifecycle management and releases.
+
+### pilot autopilot
+
+Autopilot commands for PR lifecycle management.
+
+```bash
+pilot autopilot <subcommand>
+```
+
+Commands for viewing and managing autopilot PR tracking and automation.
+
+#### Subcommands
+
+| Subcommand | Description |
+|------------|-------------|
+| `status` | Show tracked PRs and their current stage |
+
+### pilot autopilot status
+
+Show tracked PRs and their current stage.
+
+```bash
+pilot autopilot status [flags]
+```
+
+Displays autopilot status including:
+- Tracked PRs and their lifecycle stage
+- Time in current stage
+- CI status for each PR
+- Release configuration status
+
+Note: Pilot must be running with `--autopilot` flag for live PR tracking.
+
+#### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--json` | Output as JSON |
+
+#### Examples
+
+```bash
+# Show autopilot status
+pilot autopilot status
+
+# Sample output:
+# 🤖 Autopilot Status
+# ───────────────────────────────────────
+# Environment: stage
+#
+# Configuration:
+#   Auto Merge:     true
+#   Auto Review:    false
+#   Merge Method:   squash
+#   CI Timeout:     10m0s
+#   Max Failures:   3
+#
+# Release:
+#   Enabled:        true
+#   Trigger:        on-merge
+#   Require CI:     true
+#   Tag Prefix:     v
+#
+# ℹ️  For live PR tracking, check:
+#    • Dashboard: pilot start --dashboard --autopilot=<env>
+#    • Logs: pilot logs --follow
+
+# JSON output
+pilot autopilot status --json
+```
+
+### pilot release
+
+Create a release manually.
+
+```bash
+pilot release [version] [flags]
+```
+
+Creates a new release for the current repository. If no version is specified, detects version bump from commits since the last release.
+
+#### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--bump` | Force bump type: patch, minor, major |
+| `--draft` | Create release as draft |
+| `--dry-run` | Show what would be released without creating |
+
+#### Examples
+
+```bash
+# Auto-detect version from commits
+pilot release
+
+# Force minor bump
+pilot release --bump=minor
+
+# Specific version
+pilot release v1.2.3
+
+# Create as draft
+pilot release --draft
+
+# Preview release without creating
+pilot release --dry-run
+
+# Output:
+# Would create release:
+#   Current version: v0.62.0
+#   New version: v0.63.0
+#   Bump type: patch
+#   Draft: false
+```
+
+### pilot allow
+
+Manage Telegram allowed users.
+
+```bash
+pilot allow [user_id] [flags]
+```
+
+Add, remove, or list Telegram user IDs in allowed_ids configuration.
+
+#### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--remove` | Remove user from allowed_ids |
+| `--list` | List current allowed users |
+
+#### Examples
+
+```bash
+# Add a user
+pilot allow 123456789
+
+# Remove a user
+pilot allow --remove 123456789
+
+# List allowed users
+pilot allow --list
+
+# Sample output:
+# Allowed Telegram users:
+#   123456789
+#   987654321
+#
+# Total: 2 user(s)
+```

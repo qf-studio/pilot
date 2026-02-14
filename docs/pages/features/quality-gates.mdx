@@ -1,0 +1,543 @@
+import { Callout } from 'nextra/components'
+
+# Quality Gates
+
+Quality gates enforce code quality standards between implementation and PR creation. They ensure all code passes basic checks before being submitted for review.
+
+<Callout type="info">
+  Quality gates run automatically after task implementation. If gates fail, Pilot receives feedback and retries the implementation.
+</Callout>
+
+<Callout type="warning">
+  Quality gates are disabled by default (`enabled: false`). You must explicitly enable them in your configuration.
+</Callout>
+
+## Overview
+
+Quality gates provide automated quality assurance by running checks like build verification, tests, linting, and security scans. When gates fail, the system provides specific error feedback to guide fixes.
+
+### When Gates Run
+
+```
+Task Implementation → Quality Gates → Pass? → Create PR
+                            ↓ Fail
+                      Retry with feedback
+                            ↓ Still fail
+                      Notify & Stop
+```
+
+Gates execute in the project directory after code changes are complete but before PR creation. This catches issues early while providing actionable feedback for automatic fixes.
+
+## Gate Types
+
+Quality gates support seven built-in types with configurable commands and thresholds:
+
+| Type | Default Timeout | Description |
+|------|----------------|-------------|
+| **build** | 5 minutes | Compilation and syntax checking |
+| **test** | 10 minutes | Unit, integration, and e2e test execution |
+| **lint** | 2 minutes | Code style, formatting, and static analysis |
+| **coverage** | 10 minutes | Test coverage measurement and threshold enforcement |
+| **security** | 5 minutes | Security vulnerability scanning |
+| **typecheck** | 3 minutes | Type checking for TypeScript, Flow, or similar |
+| **custom** | 5 minutes | Project-specific checks and validations |
+
+### Build Gates
+
+Verify code compiles and has no syntax errors. Auto-detects project type:
+
+- **Go**: `go build ./...`
+- **Node.js + TypeScript**: `npm run build || npx tsc --noEmit`
+- **Rust**: `cargo check`
+- **Python**: `python -m py_compile *.py`
+
+### Test Gates
+
+Execute test suites with configurable timeout. Common commands:
+
+- `make test`
+- `npm test`
+- `go test ./...`
+- `pytest`
+
+### Lint Gates
+
+Enforce code style and catch common issues:
+
+- `make lint`
+- `npm run lint`
+- `golangci-lint run`
+- `eslint .`
+
+### Coverage Gates
+
+Measure test coverage and enforce minimum thresholds. Supports parsing:
+
+- **Go**: `go test -cover ./...`
+- **Jest**: `npm test -- --coverage`
+- **Python**: `pytest --cov=.`
+
+Set `threshold: 80` to require 80% coverage.
+
+### Security Gates
+
+Scan for vulnerabilities and security issues:
+
+- `npm audit`
+- `go mod audit`
+- `safety check` (Python)
+- `cargo audit` (Rust)
+
+### Type Check Gates
+
+Verify type safety in typed languages:
+
+- `npx tsc --noEmit` (TypeScript)
+- `mypy .` (Python)
+- `flow check` (Flow)
+
+### Custom Gates
+
+Run project-specific checks:
+
+- Bundle size validation
+- Performance benchmarks
+- API contract verification
+- Database migration validation
+
+## Configuration
+
+Enable quality gates in `~/.pilot/config.yaml`:
+
+```yaml
+quality:
+  enabled: true
+  gates:
+    - name: build
+      type: build
+      command: "make build"
+      required: true
+      timeout: 5m
+      max_retries: 2
+      failure_hint: "Fix compilation errors in the changed files"
+
+    - name: test
+      type: test
+      command: "make test"
+      required: true
+      timeout: 10m
+      max_retries: 2
+      failure_hint: "Fix failing tests or update test expectations"
+
+    - name: lint
+      type: lint
+      command: "make lint"
+      required: false  # warn only
+      timeout: 2m
+      max_retries: 1
+      failure_hint: "Fix linting errors: formatting, unused imports, etc."
+
+    - name: coverage
+      type: coverage
+      command: "go test -cover ./..."
+      required: true
+      threshold: 80  # minimum coverage percentage
+      timeout: 10m
+
+    - name: security
+      type: security
+      command: "npm audit"
+      required: false
+      timeout: 5m
+
+  on_failure:
+    action: retry  # retry | fail | warn
+    max_retries: 2
+    notify_on: [failed]
+```
+
+### Gate Properties
+
+| Property | Description | Required |
+|----------|-------------|----------|
+| `name` | Unique gate identifier | ✓ |
+| `type` | Gate type (build, test, etc.) | ✓ |
+| `command` | Shell command to execute | ✓ |
+| `required` | Fail pipeline if gate fails | |
+| `timeout` | Maximum execution time | |
+| `threshold` | Coverage percentage (coverage gates only) | |
+| `max_retries` | Retry attempts on failure | |
+| `retry_delay` | Delay between retries | |
+| `failure_hint` | Guidance for Claude on failure | |
+
+## Behavior
+
+### Required vs Optional Gates
+
+- **Required gates**: Pipeline fails if gate fails after retries
+- **Optional gates**: Generate warnings but allow PR creation
+
+### Retry Logic
+
+Failed gates trigger automatic retries with:
+
+1. **Error feedback**: Gate output is provided to Claude
+2. **Failure hints**: Custom guidance for common issues
+3. **Delay**: Configurable wait between attempts
+4. **Max attempts**: Prevents infinite retry loops
+
+### Failure Actions
+
+Configure pipeline behavior when required gates fail:
+
+- **retry**: Provide feedback and retry implementation (default)
+- **fail**: Stop pipeline immediately
+- **warn**: Log warning but continue to PR creation
+
+## Retry Behavior
+
+Quality gates use a two-level retry system to maximize recovery from failures:
+
+### Two-Level Retry System
+
+**Level 1: Gate-Level Retries**
+
+Individual gates retry their command with configurable delay before reporting failure:
+
+```yaml
+- name: build
+  max_retries: 2      # Retry up to 2 times
+  retry_delay: 5s     # Wait 5 seconds between attempts
+```
+
+Gate-level retries handle transient failures (network issues, flaky commands) without re-invoking Claude Code.
+
+**Level 2: Pipeline-Level Retries**
+
+When gate-level retries are exhausted, the pipeline can re-invoke Claude Code with error feedback:
+
+```yaml
+on_failure:
+  action: retry       # Re-invoke Claude with feedback
+  max_retries: 2      # Maximum pipeline-level retries
+```
+
+Pipeline-level retries provide Claude with the full error output and `failure_hint`, allowing it to fix the underlying code issues.
+
+### Retry Flow
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                         QUALITY GATE EXECUTION                       │
+└─────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+                           ┌───────────────┐
+                           │   Run Gate    │
+                           │   Command     │
+                           └───────────────┘
+                                    │
+                          ┌─────────┴─────────┐
+                          │                   │
+                          ▼                   ▼
+                    ┌──────────┐        ┌──────────┐
+                    │  Pass    │        │  Fail    │
+                    └──────────┘        └──────────┘
+                          │                   │
+                          │           ┌───────┴───────┐
+                          │           │  Gate-level   │
+                          │           │  retries      │
+                          │           │  remaining?   │
+                          │           └───────────────┘
+                          │                   │
+                          │         ┌─────────┴─────────┐
+                          │         │ YES               │ NO
+                          │         ▼                   ▼
+                          │   ┌───────────┐      ┌─────────────┐
+                          │   │   Wait    │      │ Check       │
+                          │   │   delay   │      │ on_failure  │
+                          │   └───────────┘      │ action      │
+                          │         │            └─────────────┘
+                          │         │                   │
+                          │         └──────┐    ┌───────┴───────┬────────┐
+                          │                │    │               │        │
+                          │                ▼    ▼               ▼        ▼
+                          │           [retry]  "retry"        "fail"   "warn"
+                          │                     │               │        │
+                          │           ┌─────────┴─────────┐     │        │
+                          │           │ Pipeline retries  │     │        │
+                          │           │ remaining?        │     │        │
+                          │           └───────────────────┘     │        │
+                          │                   │                 │        │
+                          │         ┌─────────┴─────────┐       │        │
+                          │         │ YES               │ NO    │        │
+                          │         ▼                   ▼       ▼        ▼
+                          │   ┌───────────────┐   ┌──────────┐  │  ┌──────────┐
+                          │   │ Re-invoke     │   │ Pipeline │  │  │ Continue │
+                          │   │ Claude Code   │   │ Failed   │◄─┘  │ to PR    │
+                          │   │ with feedback │   └──────────┘     └──────────┘
+                          │   └───────────────┘
+                          │         │
+                          │         └───────────────┐
+                          │                         │
+                          ▼                         ▼
+                    ┌──────────┐             [run gates again]
+                    │ Continue │
+                    │  to PR   │
+                    └──────────┘
+```
+
+### on_failure Actions
+
+| Action | Behavior | Use Case |
+|--------|----------|----------|
+| `retry` | Re-invoke Claude Code with error feedback | Default. Allows AI to fix issues |
+| `fail` | Stop pipeline immediately | Strict mode. No automatic recovery |
+| `warn` | Log warning, continue to PR creation | Non-blocking gates |
+
+### Example: Full Retry Configuration
+
+```yaml
+quality:
+  enabled: true
+  gates:
+    - name: build
+      type: build
+      command: "go build ./..."
+      required: true
+      max_retries: 2        # Gate-level: retry command 2 times
+      retry_delay: 3s       # Wait 3s between gate retries
+      failure_hint: "Fix compilation errors shown above"
+
+    - name: test
+      type: test
+      command: "go test ./..."
+      required: true
+      max_retries: 1
+      retry_delay: 5s
+      failure_hint: "Fix failing tests. Check assertions and expected values"
+
+  on_failure:
+    action: retry           # Pipeline-level: re-invoke Claude
+    max_retries: 2          # Up to 2 full re-runs with feedback
+    notify_on: [failed]     # Alert when pipeline fails
+```
+
+With this configuration:
+1. Build gate runs, fails → waits 3s, retries → fails → waits 3s, retries → fails
+2. Gate-level retries exhausted → pipeline checks `on_failure.action`
+3. Action is `retry` → Claude Code re-invoked with build error output
+4. Claude fixes code → gates run again
+5. Up to 2 pipeline retries before final failure
+
+## Auto Build Gate
+
+When quality gates are enabled but no gates are configured, Pilot automatically creates a minimal build gate by detecting the project type.
+
+### Detection Priority
+
+Pilot checks for project indicators in this order:
+
+| Priority | File | Build Command |
+|----------|------|---------------|
+| 1 | `go.mod` | `go build ./...` |
+| 2 | `package.json` + `tsconfig.json` | `npm run build \|\| npx tsc --noEmit` |
+| 3 | `package.json` | `npm run build --if-present` |
+| 4 | `Cargo.toml` | `cargo check` |
+| 5 | `pyproject.toml` or `setup.py` | `python -m py_compile ...` |
+
+### Generated Configuration
+
+When auto-detection triggers, Pilot generates this minimal config:
+
+```yaml
+quality:
+  enabled: true
+  gates:
+    - name: build
+      type: build
+      command: "<detected-command>"  # Based on project type
+      required: true
+      timeout: 3m
+      max_retries: 1
+      retry_delay: 3s
+      failure_hint: "Fix compilation errors in the changed files"
+
+  on_failure:
+    action: retry
+    max_retries: 1
+```
+
+### Enabling Auto Build Gate
+
+Simply enable quality gates without specifying any gates:
+
+```yaml
+quality:
+  enabled: true
+  # No gates specified - auto-detection kicks in
+```
+
+<Callout type="info">
+  Auto build gate provides basic compilation safety with zero configuration. For test, lint, or coverage gates, you must configure them explicitly.
+</Callout>
+
+### Override Auto-Detection
+
+To use a custom build command instead of auto-detection:
+
+```yaml
+quality:
+  enabled: true
+  gates:
+    - name: build
+      type: build
+      command: "make build"  # Custom command overrides detection
+```
+
+## Self-Review
+
+After quality gates pass, Pilot runs an automatic self-review phase where Claude examines its own changes for common issues. This runs before PR creation.
+
+<Callout type="warning">
+  Self-review is **advisory only**. Errors during self-review do not block PR creation. The phase is designed to catch and fix issues when possible, but failures are logged and execution continues.
+</Callout>
+
+### What Self-Review Checks
+
+1. **Diff Analysis**: Examines staged changes for:
+   - Methods called that don't exist
+   - Struct fields added but never used
+   - Config fields that aren't wired through
+   - Unused imports
+
+2. **Build Verification**: Runs build command to catch compile errors
+
+3. **Wiring Check**: For new struct fields:
+   - Verifies field is assigned when creating the struct
+   - Verifies field is used somewhere in the code
+
+4. **Method Existence Check**: For new method calls:
+   - Searches for method implementation
+   - Implements missing methods if needed
+
+5. **Issue-to-Changes Alignment**: Compares issue title/body with actual changes:
+   - Detects if files mentioned in the issue weren't modified
+   - Flags incomplete implementations
+
+### Self-Review Flow
+
+```
+Quality Gates Pass
+        │
+        ▼
+┌───────────────────┐
+│   Self-Review     │
+│   Phase           │
+│   (2 min timeout) │
+└───────────────────┘
+        │
+        ├─── Issues found? ───► Fix automatically
+        │                              │
+        │                              ▼
+        │                       Commit fixes
+        │                              │
+        ▼                              │
+  No issues / ◄────────────────────────┘
+  Review passed
+        │
+        ▼
+   Create PR
+```
+
+### Configuration
+
+Self-review is enabled by default. To disable:
+
+```yaml
+executor:
+  skip_self_review: true
+```
+
+### Skipped Conditions
+
+Self-review is automatically skipped for:
+
+- **Trivial tasks**: Simple changes that don't warrant review
+- **Disabled in config**: When `skip_self_review: true`
+
+### Output Signals
+
+Self-review emits signals in its output:
+
+| Signal | Meaning |
+|--------|---------|
+| `REVIEW_PASSED` | No issues found |
+| `REVIEW_FIXED:` | Issues found and fixed |
+| `INCOMPLETE:` | Files mentioned in issue but not modified |
+
+## Minimal Configuration
+
+For basic protection without full configuration:
+
+```yaml
+quality:
+  enabled: true
+  # Uses minimal build gate with auto-detection
+```
+
+This enables build verification only, with commands auto-detected from project type.
+
+## Monitoring
+
+Quality gate results are logged and tracked:
+
+```bash
+# View recent gate results
+pilot logs --quality
+
+# Dashboard with gate status
+pilot start --dashboard
+```
+
+## Best Practices
+
+<Callout type="warning">
+  Start with build and test gates only. Add linting and coverage gates gradually to avoid overwhelming the system with failures.
+</Callout>
+
+1. **Start simple**: Enable build gates first, add others incrementally
+2. **Tune timeouts**: Adjust based on project size and CI performance
+3. **Meaningful hints**: Provide specific guidance in `failure_hint`
+4. **Optional first**: Make new gates optional until they're stable
+5. **Test locally**: Verify gate commands work in your environment
+
+## Troubleshooting
+
+### Gates Always Failing
+
+Check that gate commands work in your project:
+
+```bash
+# Test gate commands manually
+make build
+make test
+make lint
+```
+
+### Timeout Issues
+
+Increase timeout for slow operations:
+
+```yaml
+- name: integration-test
+  timeout: 20m  # Longer for slow tests
+```
+
+### Coverage Parsing
+
+Ensure coverage output format is supported. Quality gates parse:
+
+- Go: `coverage: X.X% of statements`
+- Jest: `All files | X.X |`
+- Python: `TOTAL.*X%`

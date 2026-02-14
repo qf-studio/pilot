@@ -216,7 +216,8 @@ func TestSplitTitleDescription(t *testing.T) {
 		{"**Title** - Description", "Title", "Description"},
 		{"Title - Description", "Title", "Description"},
 		{"Title: Description", "Title", "Description"},
-		{"Title – Description", "Title", "Description"}, // em dash
+		{"Title – Description", "Title", "Description"}, // en-dash (U+2013)
+		{"Title — Description", "Title", "Description"}, // em-dash (U+2014) - GH-1133
 		{"Just a title", "Just a title", ""},
 		{"**Bold title**", "Bold title", ""},
 		{"", "", ""},

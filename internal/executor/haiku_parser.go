@@ -70,7 +70,7 @@ func (h *HaikuParser) ParsePlanning(ctx context.Context, planningOutput string) 
 
 Each subtask should have:
 - "order": the sequence number (integer, 1-indexed)
-- "title": short title of the subtask
+- "title": short title (max 8 words, action-oriented, NO description or details)
 - "description": detailed description of what needs to be done
 
 Return ONLY a valid JSON array. No markdown, no explanation. Example:
