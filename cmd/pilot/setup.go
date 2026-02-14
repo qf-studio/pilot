@@ -39,6 +39,9 @@ Examples:
   pilot setup --skip-optional  # Skip optional features
   pilot setup --tunnel     # Set up Cloudflare Tunnel for webhooks`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			fmt.Println("Note: 'pilot setup' is deprecated. Use 'pilot onboard' instead.")
+			fmt.Println()
+
 			// If --tunnel flag, redirect to tunnel setup
 			if setupTunnel {
 				tunnelCmd := newTunnelSetupCmd()
