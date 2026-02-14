@@ -41,7 +41,8 @@ func (r *Runner) OnProgress(callback ProgressCallback) {
 	r.onProgress = callback
 }
 
-// RunAll executes all configured quality gates in parallel
+// RunAll executes all configured quality gates.
+// By default gates run in parallel. Set config.Parallel=false for sequential execution.
 func (r *Runner) RunAll(ctx context.Context, taskID string) (*CheckResults, error) {
 	if !r.config.Enabled {
 		r.log.Debug("Quality gates disabled, skipping")
@@ -58,21 +59,35 @@ func (r *Runner) RunAll(ctx context.Context, taskID string) (*CheckResults, erro
 		Results:   make([]*Result, len(r.config.Gates)),
 	}
 
-	r.log.Info("Starting quality gate checks (parallel)",
+	parallel := r.config.IsParallel()
+	mode := "parallel"
+	if !parallel {
+		mode = "sequential"
+	}
+
+	r.log.Info("Starting quality gate checks",
 		slog.String("task_id", taskID),
 		slog.Int("gate_count", len(r.config.Gates)),
+		slog.String("mode", mode),
 	)
 
-	// Execute all gates in parallel
-	var wg sync.WaitGroup
-	for i, gate := range r.config.Gates {
-		wg.Add(1)
-		go func(idx int, g *Gate) {
-			defer wg.Done()
-			results.Results[idx] = r.runGate(ctx, g)
-		}(i, gate)
+	if parallel {
+		// Execute all gates in parallel
+		var wg sync.WaitGroup
+		for i, gate := range r.config.Gates {
+			wg.Add(1)
+			go func(idx int, g *Gate) {
+				defer wg.Done()
+				results.Results[idx] = r.runGate(ctx, g)
+			}(i, gate)
+		}
+		wg.Wait()
+	} else {
+		// Execute gates sequentially
+		for i, gate := range r.config.Gates {
+			results.Results[i] = r.runGate(ctx, gate)
+		}
 	}
-	wg.Wait()
 
 	// Evaluate results
 	allPassed := true

@@ -754,3 +754,87 @@ func TestShouldRetry_ActionWarn(t *testing.T) {
 		t.Error("expected ShouldRetry to be false for ActionWarn")
 	}
 }
+
+func TestRunner_RunAll_ParallelExecution(t *testing.T) {
+	// Each gate sleeps for 100ms. In parallel, total time should be ~100ms.
+	// In sequential, total time would be ~300ms.
+	config := &Config{
+		Enabled: true,
+		Gates: []*Gate{
+			{Name: "gate1", Type: GateCustom, Command: "sleep 0.1", Required: true, Timeout: 5 * time.Second},
+			{Name: "gate2", Type: GateCustom, Command: "sleep 0.1", Required: true, Timeout: 5 * time.Second},
+			{Name: "gate3", Type: GateCustom, Command: "sleep 0.1", Required: true, Timeout: 5 * time.Second},
+		},
+	}
+
+	runner := NewRunner(config, "/tmp")
+	start := time.Now()
+	results, err := runner.RunAll(context.Background(), "parallel-test")
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !results.AllPassed {
+		t.Error("expected all gates to pass")
+	}
+	// Parallel execution: should complete in ~100-200ms, not 300ms+
+	if elapsed > 250*time.Millisecond {
+		t.Errorf("expected parallel execution to complete in <250ms, took %v", elapsed)
+	}
+}
+
+func TestRunner_RunAll_SequentialExecution(t *testing.T) {
+	// Each gate sleeps for 50ms. In sequential, total time should be ~150ms.
+	parallelFalse := false
+	config := &Config{
+		Enabled:  true,
+		Parallel: &parallelFalse,
+		Gates: []*Gate{
+			{Name: "gate1", Type: GateCustom, Command: "sleep 0.05", Required: true, Timeout: 5 * time.Second},
+			{Name: "gate2", Type: GateCustom, Command: "sleep 0.05", Required: true, Timeout: 5 * time.Second},
+			{Name: "gate3", Type: GateCustom, Command: "sleep 0.05", Required: true, Timeout: 5 * time.Second},
+		},
+	}
+
+	runner := NewRunner(config, "/tmp")
+	start := time.Now()
+	results, err := runner.RunAll(context.Background(), "sequential-test")
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !results.AllPassed {
+		t.Error("expected all gates to pass")
+	}
+	// Sequential execution: should take at least 150ms (3 x 50ms)
+	if elapsed < 140*time.Millisecond {
+		t.Errorf("expected sequential execution to take at least 140ms, took %v", elapsed)
+	}
+}
+
+func TestConfig_IsParallel(t *testing.T) {
+	tests := []struct {
+		name     string
+		parallel *bool
+		expected bool
+	}{
+		{name: "nil defaults to true", parallel: nil, expected: true},
+		{name: "explicit true", parallel: boolPtr(true), expected: true},
+		{name: "explicit false", parallel: boolPtr(false), expected: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			config := &Config{Parallel: tt.parallel}
+			if got := config.IsParallel(); got != tt.expected {
+				t.Errorf("IsParallel() = %v, want %v", got, tt.expected)
+			}
+		})
+	}
+}
+
+func boolPtr(b bool) *bool {
+	return &b
+}

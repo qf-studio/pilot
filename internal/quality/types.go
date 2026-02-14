@@ -121,8 +121,18 @@ func (cr *CheckResults) GetFailedGates() []*Result {
 // Config holds quality gates configuration
 type Config struct {
 	Enabled   bool          `yaml:"enabled" json:"enabled"`
+	Parallel  *bool         `yaml:"parallel" json:"parallel"` // Run gates in parallel (default: true)
 	Gates     []*Gate       `yaml:"gates" json:"gates"`
 	OnFailure FailureConfig `yaml:"on_failure" json:"on_failure"`
+}
+
+// IsParallel returns whether gates should run in parallel.
+// Defaults to true if not explicitly set.
+func (c *Config) IsParallel() bool {
+	if c.Parallel == nil {
+		return true // Default to parallel execution
+	}
+	return *c.Parallel
 }
 
 // FailureConfig defines behavior when gates fail
