@@ -2,5 +2,6 @@
   "why-pilot": "Why Pilot",
   "architecture": "Architecture",
   "model-routing": "Model Routing",
-  "worktree-isolation": "Worktree Isolation"
+  "worktree-isolation": "Worktree Isolation",
+  "claude-code-integration": "Claude Code Integration"
 }

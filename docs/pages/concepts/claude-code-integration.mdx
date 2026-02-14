@@ -1,0 +1,149 @@
+# Claude Code Integration
+
+Pilot integrates deeply with Claude Code to provide seamless AI-driven development workflows. This integration enables autonomous task execution while maintaining human oversight and control.
+
+## Core Integration Points
+
+### 1. Task Execution Pipeline
+
+Pilot uses Claude Code as its primary execution engine for development tasks:
+
+- **Intent Parsing**: Pilot analyzes task descriptions and routes them to appropriate execution strategies
+- **Code Generation**: Claude Code generates implementation code following project patterns
+- **Testing**: Automated test execution and validation
+- **Review**: Self-review and quality gates before PR creation
+
+### 2. Navigator Integration
+
+Pilot works in tandem with Navigator for comprehensive development workflows:
+
+```bash
+# Planning phase (Navigator)
+/nav-task "Add rate limiting to API"
+
+# Execution phase (Pilot)
+gh issue create --label pilot --title "Add rate limiting" --body "..."
+```
+
+### 3. Context Management
+
+Pilot maintains rich context throughout task execution:
+
+- **Codebase Understanding**: Deep analysis of project structure and patterns
+- **Memory System**: SQLite-backed knowledge graph for learning patterns
+- **Conversation Continuity**: Context preservation across multiple task iterations
+
+## Execution Modes
+
+### Standard Mode
+Default execution with full Claude Code capabilities:
+- Code analysis and generation
+- Test writing and execution
+- PR creation and review
+
+### Autopilot Mode
+Autonomous execution with CI monitoring:
+- Auto-merge when tests pass
+- Feedback loop integration
+- Release pipeline automation
+
+### Quality Gates
+Built-in quality assurance:
+- Self-review phase before PR creation
+- Build verification
+- Test coverage analysis
+
+## Development Workflow
+
+1. **Task Reception**: Pilot receives tasks via GitHub issues, Linear tickets, or direct messaging
+2. **Intent Analysis**: AI-powered intent classification and routing
+3. **Execution Planning**: Claude Code analyzes requirements and creates implementation plan
+4. **Implementation**: Code generation following project conventions
+5. **Validation**: Automated testing and quality checks
+6. **PR Creation**: Automated pull request with detailed description
+7. **Review Integration**: Human review with AI-suggested improvements
+
+## Configuration
+
+Pilot's Claude Code integration is configured through:
+
+```yaml
+# ~/.pilot/config.yaml
+claude_code:
+  model: "claude-3-5-sonnet"
+  max_tokens: 8192
+  temperature: 0.1
+
+execution:
+  self_review: true
+  quality_gates: true
+  auto_test: true
+```
+
+## Best Practices
+
+### Task Descriptions
+Provide clear, actionable task descriptions:
+```
+✅ "Add rate limiting middleware to /api/users endpoint with 100 req/min limit"
+❌ "Make API faster"
+```
+
+### Review Process
+- Always review Pilot's PRs before merging
+- Use review comments to guide future improvements
+- Leverage Pilot's self-review capabilities
+
+### Quality Control
+- Enable quality gates for critical projects
+- Configure appropriate test coverage thresholds
+- Use effort routing for complex tasks
+
+## Troubleshooting
+
+### Common Issues
+
+**Task Execution Stalls**
+- Check Claude Code process status
+- Verify API credentials
+- Review task complexity and break down if needed
+
+**Context Loss**
+- Use Navigator markers for context preservation
+- Check conversation history limits
+- Restart session if needed
+
+**Quality Gate Failures**
+- Review test failures in execution logs
+- Check build status and dependencies
+- Adjust quality thresholds if appropriate
+
+## Advanced Features
+
+### Custom Skill Integration
+Pilot can leverage custom Navigator skills:
+```bash
+/nav-skill-creator "API validation pattern"
+```
+
+### Multi-Agent Workflows
+For complex tasks requiring parallel execution:
+```bash
+/nav-multi "Implement authentication system"
+```
+
+### Learning System
+Pilot learns from execution patterns:
+- Success/failure pattern recognition
+- Code style adaptation
+- Project-specific conventions
+
+## Monitoring and Metrics
+
+Track Pilot's performance through:
+- Execution success rates
+- PR merge rates
+- Code quality metrics
+- Development velocity improvements
+
+The integration between Pilot and Claude Code creates a powerful autonomous development system while maintaining the flexibility and oversight needed for production software development.
