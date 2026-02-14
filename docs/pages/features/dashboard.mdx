@@ -1,0 +1,204 @@
+import { Callout } from 'nextra/components'
+
+# Dashboard TUI
+
+Real-time terminal interface for monitoring Pilot operations.
+
+## Launching
+
+```bash
+# Start with dashboard enabled
+pilot start --dashboard
+
+# Combined with other modes
+pilot start --github --autopilot=dev --dashboard
+pilot start --telegram --dashboard
+```
+
+The dashboard uses an alternate screen buffer and restores your terminal on exit.
+
+## Layout
+
+The dashboard displays six panels arranged vertically:
+
+```
+╭─ PILOT ─────────────────────────────────────────────────────────╮
+│  Logo + version                                                 │
+╰─────────────────────────────────────────────────────────────────╯
+
+╭─ TOKENS ─────╮╭─ COST ───────╮╭─ QUEUE ──────╮
+│  57.3K       ││  $1.42       ││  3           │
+│  ↑ 28.1K in  ││  ~$0.47/task ││  ✓ 12 ok     │
+│  ↓ 29.2K out ││              ││  ✗ 1 failed  │
+│  ▂▃▅▆▇▅▃▂▁•  ││  ▁▂▄▆█▇▅▃▂•  ││  ▃▂▁▃▅▆▄▂▁•  │
+╰──────────────╯╰──────────────╯╰──────────────╯
+
+╭─ QUEUE ─────────────────────────────────────────────────────────╮
+│  ✓ done     GH-145   Add user validation        [██████████████] #142 │
+│  ● running  GH-152   Implement caching          [████████░░░░░░]  67% │
+│  ◌ queued   GH-158   Update dependencies        [░▒▓▒░░░░░░░░░░]   #1 │
+╰─────────────────────────────────────────────────────────────────╯
+
+╭─ AUTOPILOT ─────────────────────────────────────────────────────╮
+│  Mode ................................. dev                     │
+│  Auto-release ......................... enabled                 │
+│  Active PRs ........................... 2                       │
+│    ~ #142: Waiting CI (3m)                                      │
+│    * #145: CI Passed (1m)                                       │
+╰─────────────────────────────────────────────────────────────────╯
+
+╭─ HISTORY ───────────────────────────────────────────────────────╮
+│  + GH-140  Fix login redirect                              5m ago │
+│  + GH-138  Add rate limiting                              12m ago │
+│  x GH-135  Broken migration                               25m ago │
+╰─────────────────────────────────────────────────────────────────╯
+```
+
+## Metrics Cards
+
+Three side-by-side cards show lifetime aggregates with 7-day sparkline trends:
+
+| Card | Primary | Details | Sparkline |
+|------|---------|---------|-----------|
+| **TOKENS** | Total tokens | Input ↑ / Output ↓ breakdown | Daily token usage |
+| **COST** | Total USD spent | Average cost per task | Daily cost trend |
+| **QUEUE** | Current queue depth | Succeeded ✓ / Failed ✗ counts | Daily task volume |
+
+<Callout type="info">
+  Metrics persist across restarts via SQLite. The sparkline pulses (•) to indicate live updates.
+</Callout>
+
+## Queue Panel
+
+Shows active and pending tasks with five visual states:
+
+| State | Icon | Progress Bar | Meta |
+|-------|------|--------------|------|
+| **Done** | ✓ | Full green bar | PR number |
+| **Running** | ● | Animated fill | Percentage |
+| **Queued** | ◌ | Shimmer animation | Queue position |
+| **Pending** | · | Empty bar | — |
+| **Failed** | ✗ | Red frozen bar | Error phase |
+
+```
+✓ done     GH-145   Add validation        [██████████████] #142
+● running  GH-152   Implement cache       [████████░░░░░░]  67%
+◌ queued   GH-158   Update deps           [░▒▓▒░░░░░░░░░░]   #1
+· pending  GH-161   New feature           [              ]
+✗ failed   GH-149   Broken test           [████░░░░░░░░░░] test
+```
+
+Tasks are sorted by state priority: done → running → queued → pending → failed.
+
+## Autopilot Panel
+
+Displays autopilot configuration and PR tracking:
+
+```
+Mode ................................. dev
+Auto-release ......................... enabled
+Active PRs ........................... 2
+  ~ #142: Waiting CI (3m)
+     CI: running
+  * #145: CI Passed (1m)
+```
+
+### PR Stage Icons
+
+| Icon | Stage | Description |
+|------|-------|-------------|
+| `+` | PR Created | PR just opened |
+| `~` | Waiting CI | CI checks running |
+| `*` | CI Passed | Ready to merge |
+| `x` | CI Failed | Needs fix |
+| `?` | Awaiting Approval | Manual review required |
+| `>` | Merging | Merge in progress |
+| `^` | Releasing | Creating release tag |
+| `!` | Failed | Error state |
+
+## History Panel
+
+Shows recent completed tasks with epic-aware grouping:
+
+```
++ GH-140  Fix login redirect                              5m ago
+* GH-385  Epic: API overhaul              [##--] 2/4        3m
+    + GH-386  Add endpoints                               2m ago
+    + GH-387  Add validation                              1m ago
+    · GH-388  Add tests                                      --
+    · GH-389  Update docs                                    --
+x GH-135  Broken migration                               25m ago
+```
+
+- **`+`** Success (green)
+- **`x`** Failed (red)
+- **`*`** Active epic with progress bar
+- Sub-issues indented under parent epic
+
+## Keyboard Shortcuts
+
+| Key | Action |
+|-----|--------|
+| `q` / `Ctrl+C` | Quit dashboard |
+| `l` | Toggle logs panel |
+| `j` / `↓` | Select next task |
+| `k` / `↑` | Select previous task |
+| `Enter` | Open selected task's issue URL |
+| `u` | Trigger hot upgrade (when available) |
+
+## Hot Upgrade
+
+When a new Pilot version is detected, an orange notification appears:
+
+```
+╭─ ^ UPDATE ──────────────────────────────────────────────────────╮
+│  v0.62.0 -> v0.63.0 available                                   │
+╰─────────────────────────────────────────────────────────────────╯
+                                                         u: upgrade
+```
+
+Press `u` to upgrade in-place. Progress is shown during download:
+
+```
+╭─ * UPGRADING ───────────────────────────────────────────────────╮
+│  Installing v0.63.0... [████████████░░░░░░] 65%                 │
+╰─────────────────────────────────────────────────────────────────╯
+```
+
+See [Hot Upgrade](/features/hot-upgrade) for details.
+
+## Configuration
+
+Dashboard settings in `~/.pilot/config.yaml`:
+
+```yaml
+dashboard:
+  # Cost estimation model (affects $/task calculation)
+  model: claude-opus-4-5
+
+  # Show logs panel by default
+  show_logs: true
+```
+
+## Persistence
+
+Dashboard state persists to SQLite (`~/.pilot/pilot.db`):
+
+- **Session tokens**: Input/output counts per day
+- **Execution history**: Task results, durations, costs
+- **Metrics aggregates**: Lifetime totals for cards
+
+Data survives restarts and is used to populate sparklines on launch.
+
+## Color Palette
+
+The dashboard uses a muted terminal aesthetic:
+
+| Element | Color | Hex |
+|---------|-------|-----|
+| Titles/Running | Steel blue | `#7eb8da` |
+| Success/Done | Sage green | `#7ec699` |
+| Failed | Dusty rose | `#d48a8a` |
+| Warnings | Amber | `#d4a054` |
+| Borders | Slate | `#3d4450` |
+| Dim text | Mid gray | `#8b949e` |
