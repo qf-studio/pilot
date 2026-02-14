@@ -75,19 +75,43 @@ get_latest_version() {
 
 # Download and install
 install() {
-    DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${VERSION}/${BINARY_NAME}-${PLATFORM}"
+    # Determine archive extension based on OS
+    if [ "$OS" = "windows" ]; then
+        ARCHIVE_EXT="zip"
+    else
+        ARCHIVE_EXT="tar.gz"
+    fi
+
+    ARCHIVE_NAME="${BINARY_NAME}-${PLATFORM}.${ARCHIVE_EXT}"
+    DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${VERSION}/${ARCHIVE_NAME}"
 
     info "Downloading from $DOWNLOAD_URL..."
 
-    # Create temp file
-    TMP_FILE=$(mktemp)
-    trap "rm -f $TMP_FILE" EXIT
+    # Create temp directory for extraction
+    TMP_DIR=$(mktemp -d)
+    trap "rm -rf $TMP_DIR" EXIT
 
-    if ! curl -fsSL "$DOWNLOAD_URL" -o "$TMP_FILE"; then
-        error "Failed to download binary"
+    TMP_ARCHIVE="$TMP_DIR/$ARCHIVE_NAME"
+
+    if ! curl -fsSL "$DOWNLOAD_URL" -o "$TMP_ARCHIVE"; then
+        error "Failed to download archive"
     fi
 
-    chmod +x "$TMP_FILE"
+    # Extract binary from archive
+    info "Extracting..."
+    if [ "$ARCHIVE_EXT" = "zip" ]; then
+        unzip -q "$TMP_ARCHIVE" -d "$TMP_DIR"
+    else
+        tar -xzf "$TMP_ARCHIVE" -C "$TMP_DIR"
+    fi
+
+    # Find the pilot binary in extracted files
+    EXTRACTED_BINARY="$TMP_DIR/$BINARY_NAME"
+    if [ ! -f "$EXTRACTED_BINARY" ]; then
+        error "Binary not found in archive"
+    fi
+
+    chmod +x "$EXTRACTED_BINARY"
 
     # Create install directory if needed (no sudo required for ~/.local/bin)
     if [ ! -d "$INSTALL_DIR" ]; then
@@ -97,7 +121,7 @@ install() {
 
     # Install
     info "Installing to $INSTALL_DIR..."
-    mv "$TMP_FILE" "$INSTALL_DIR/$BINARY_NAME"
+    mv "$EXTRACTED_BINARY" "$INSTALL_DIR/$BINARY_NAME"
 }
 
 # Check dependencies
