@@ -37,8 +37,7 @@ pilot version
 Expected output:
 
 ```
-Pilot v0.6.0
-Built with Go 1.22
+Pilot v1.8.1
 ```
 
 ## Next Steps

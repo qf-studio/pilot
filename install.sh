@@ -1,6 +1,6 @@
 #!/bin/bash
 # Pilot installer script
-# Usage: curl -fsSL https://get.pilot.dev | sh
+# Usage: curl -fsSL https://raw.githubusercontent.com/alekspetrov/pilot/main/install.sh | bash
 
 set -e
 
