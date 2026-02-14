@@ -183,7 +183,7 @@ Documentation in `.agent/`:
 
 ## Current Status
 
-**Version:** v0.63.0 | **133 features implemented** | **5 unwired (Nav port scaffolding, GH-1026)**
+**Version:** v1.0.0 | **133 features implemented**
 
 **Core:**
 - ✅ Task execution with Navigator integration

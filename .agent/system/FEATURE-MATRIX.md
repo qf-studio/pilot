@@ -1,6 +1,6 @@
 # Pilot Feature Matrix
 
-**Last Updated:** 2026-02-13 (v0.63.0)
+**Last Updated:** 2026-02-14 (v1.0.0)
 
 ## Legend
 
