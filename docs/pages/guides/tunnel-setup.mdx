@@ -1,0 +1,341 @@
+import { Callout, Steps, Tabs } from 'nextra/components'
+
+# Tunnel Setup Guide
+
+This guide walks you through setting up a public tunnel for webhook delivery. Tunnels provide instant webhook notifications without port forwarding or firewall changes.
+
+<Callout type="info">
+**When do you need a tunnel?** Tunnels are required when external services (GitHub, Linear, Jira) need to send webhooks to your local machine. If you're using polling-only mode, you don't need a tunnel.
+</Callout>
+
+## Quick Start
+
+<Steps>
+
+### Install cloudflared
+
+<Tabs items={['macOS (Homebrew)', 'Linux', 'Windows']}>
+  <Tabs.Tab>
+```bash
+brew install cloudflare/cloudflare/cloudflared
+```
+  </Tabs.Tab>
+  <Tabs.Tab>
+```bash
+curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
+chmod +x cloudflared
+sudo mv cloudflared /usr/local/bin/
+```
+  </Tabs.Tab>
+  <Tabs.Tab>
+```powershell
+winget install --id Cloudflare.cloudflared
+```
+  </Tabs.Tab>
+</Tabs>
+
+### Run Setup
+
+```bash
+pilot tunnel setup
+```
+
+This interactive wizard will:
+1. Detect available tunnel providers
+2. Authenticate with Cloudflare (if using Cloudflare)
+3. Create a tunnel named `pilot-webhook`
+4. Optionally configure a custom domain
+
+### Start Pilot with Tunnel
+
+```bash
+pilot start --tunnel --github --telegram
+```
+
+Pilot will display the public URL:
+
+```
+🌐 Public tunnel: https://abc123.trycloudflare.com
+   Webhooks:
+     GitHub: https://abc123.trycloudflare.com/webhooks/github
+     Linear: https://abc123.trycloudflare.com/webhooks/linear
+     Jira:   https://abc123.trycloudflare.com/webhooks/jira
+```
+
+### Verify
+
+```bash
+pilot tunnel url
+# Output: https://abc123.trycloudflare.com
+```
+
+</Steps>
+
+---
+
+## Provider Setup
+
+### Cloudflare (Free, Recommended)
+
+Cloudflare Tunnel provides free, secure tunnels without requiring an account for temporary URLs.
+
+**Temporary Tunnel (No Account)**
+
+```bash
+pilot start --tunnel
+```
+
+This creates a random URL like `https://abc123.trycloudflare.com` that changes each restart.
+
+**Persistent Tunnel (Free Account)**
+
+For a stable URL that survives restarts:
+
+1. Create a free Cloudflare account at [dash.cloudflare.com](https://dash.cloudflare.com)
+2. Authenticate cloudflared:
+   ```bash
+   cloudflared tunnel login
+   ```
+3. Run setup with a custom domain:
+   ```bash
+   pilot tunnel setup --domain pilot.yourdomain.com
+   ```
+
+**Configuration:**
+
+```yaml
+# ~/.pilot/config.yaml
+tunnel:
+  enabled: true
+  provider: cloudflare
+  domain: pilot.yourdomain.com  # Optional: custom domain
+```
+
+### ngrok (Paid)
+
+ngrok provides stable URLs but requires a paid plan for custom domains.
+
+**Setup:**
+
+1. Sign up at [ngrok.com](https://ngrok.com)
+2. Install ngrok:
+   ```bash
+   brew install ngrok/ngrok/ngrok  # macOS
+   ```
+3. Authenticate:
+   ```bash
+   ngrok config add-authtoken YOUR_AUTH_TOKEN
+   ```
+4. Configure Pilot:
+   ```yaml
+   tunnel:
+     enabled: true
+     provider: ngrok
+     domain: your-domain.ngrok.io  # Requires paid plan
+   ```
+
+**Start:**
+
+```bash
+pilot start --tunnel --github
+```
+
+---
+
+## Webhook URL Configuration
+
+After starting the tunnel, configure webhooks in each service using the tunnel URL.
+
+### GitHub
+
+1. Go to your repository → **Settings** → **Webhooks**
+2. Click **Add webhook**
+3. Configure:
+   - **Payload URL:** `https://<tunnel-url>/webhooks/github`
+   - **Content type:** `application/json`
+   - **Secret:** (same as `github_webhook_secret` in config.yaml)
+   - **Events:** Select "Issues" and "Pull requests"
+4. Click **Add webhook**
+
+```yaml
+# ~/.pilot/config.yaml
+adapters:
+  github:
+    enabled: true
+    webhook_secret: "your-secret-here"  # Match the GitHub webhook secret
+```
+
+### Linear
+
+1. Go to **Linear** → **Settings** → **API** → **Webhooks**
+2. Click **New webhook**
+3. Configure:
+   - **URL:** `https://<tunnel-url>/webhooks/linear`
+   - **Resource types:** Issues
+4. Click **Create webhook**
+
+### Jira
+
+1. Go to **Jira** → **Settings** → **System** → **Webhooks**
+2. Click **Create a WebHook**
+3. Configure:
+   - **URL:** `https://<tunnel-url>/webhooks/jira`
+   - **Events:** Issue created, Issue updated
+   - **Secret:** (optional, for HMAC verification)
+4. Click **Create**
+
+```yaml
+# ~/.pilot/config.yaml
+jira:
+  enabled: true
+  webhook_secret: "your-jira-secret"  # Optional: enables signature verification
+```
+
+### GitLab
+
+1. Go to your project → **Settings** → **Webhooks**
+2. Configure:
+   - **URL:** `https://<tunnel-url>/webhooks/gitlab`
+   - **Secret token:** (optional)
+   - **Triggers:** Issues events, Merge request events
+3. Click **Add webhook**
+
+---
+
+## Auto-Start Service
+
+Install a service to automatically start the tunnel on boot.
+
+### macOS (launchd)
+
+```bash
+pilot tunnel service install
+```
+
+This creates a launchd service at `~/Library/LaunchAgents/com.pilot.tunnel.plist`.
+
+**Manage the service:**
+
+```bash
+# Check status
+pilot tunnel service status
+
+# Stop tunnel
+pilot tunnel stop
+
+# Uninstall service
+pilot tunnel service uninstall
+```
+
+### Linux (systemd)
+
+Create a systemd unit file:
+
+```bash
+sudo tee /etc/systemd/system/pilot-tunnel.service << 'EOF'
+[Unit]
+Description=Pilot Cloudflare Tunnel
+After=network.target
+
+[Service]
+Type=simple
+User=pilot
+ExecStart=/usr/local/bin/cloudflared tunnel run pilot-webhook
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+```
+
+Enable and start:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable pilot-tunnel
+sudo systemctl start pilot-tunnel
+```
+
+---
+
+## Why Tunnel Instead of Polling?
+
+| Aspect | Polling | Tunnel (Webhooks) |
+|--------|---------|-------------------|
+| Latency | 30s delay (poll interval) | Instant |
+| API quota | Uses API calls each interval | Zero API usage for detection |
+| Reliability | May miss rapid changes | Real-time delivery |
+| Setup | Simple, no network config | Requires tunnel setup |
+
+<Callout type="info">
+**Best practice:** Use both together. Webhooks provide instant detection, while polling acts as a fallback if a webhook is missed.
+</Callout>
+
+```yaml
+# Recommended: both enabled
+adapters:
+  github:
+    enabled: true
+    polling:
+      enabled: true
+      interval: 60s  # Longer interval when webhooks active
+
+tunnel:
+  enabled: true
+  provider: cloudflare
+```
+
+---
+
+## Troubleshooting
+
+### Tunnel won't start
+
+```bash
+# Check cloudflared is installed
+cloudflared --version
+
+# Check for existing tunnel processes
+pgrep -f cloudflared
+
+# View tunnel logs
+pilot tunnel start --foreground
+```
+
+### Webhooks not arriving
+
+1. Verify the tunnel is running:
+   ```bash
+   pilot tunnel status
+   ```
+
+2. Test the webhook endpoint:
+   ```bash
+   curl -X POST https://<tunnel-url>/webhooks/github \
+     -H "Content-Type: application/json" \
+     -d '{"action": "test"}'
+   ```
+
+3. Check webhook delivery status in the service (GitHub → Settings → Webhooks → Recent Deliveries)
+
+### Random URL keeps changing
+
+This is expected for free Cloudflare tunnels without authentication. For a stable URL:
+
+1. Create a free Cloudflare account
+2. Run `cloudflared tunnel login`
+3. Re-run `pilot tunnel setup`
+
+### Service fails to start on boot
+
+```bash
+# Check service status
+pilot tunnel service status
+
+# View service logs (macOS)
+cat /tmp/pilot-tunnel.log
+
+# View service logs (Linux)
+journalctl -u pilot-tunnel -f
+```

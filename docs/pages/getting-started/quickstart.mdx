@@ -253,9 +253,26 @@ Here's the execution flow Pilot followed:
 6. **Self-Review** — Claude Code reviewed its own changes for quality
 7. **PR** — Pushed the branch and created a pull request
 
+## Production Setup
+
+For production environments, enable webhooks via tunnel for instant issue detection:
+
+```bash
+# Set up a public tunnel (free via Cloudflare)
+pilot tunnel setup
+
+# Start with webhook-based detection
+pilot start --tunnel --github --autopilot=stage
+```
+
+<Callout type="info">
+Tunnels provide instant webhook delivery with zero API polling. See the [Tunnel Setup Guide](/guides/tunnel-setup) for detailed configuration including GitHub, Linear, and Jira webhook URLs.
+</Callout>
+
 ## Next Steps
 
 - [Configuration](/getting-started/configuration) — Tune all config.yaml options
+- [Tunnel Setup](/guides/tunnel-setup) — Instant webhooks via Cloudflare or ngrok
 - [Autopilot](/features/autopilot) — Automatic CI monitoring and merge
 - [Telegram Bot](/features/telegram) — Chat, research, plan, and execute from mobile
 - [Navigator](/navigator) — Reduce token usage by 92% with structured context
