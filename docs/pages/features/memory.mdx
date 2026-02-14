@@ -1,0 +1,186 @@
+import { Callout } from 'nextra/components'
+
+# Memory & Learning
+
+Pilot learns from every execution. The memory subsystem stores execution history, extracts patterns, and applies learned knowledge to future tasks.
+
+## Execution History
+
+Every task execution is recorded in SQLite (`~/.pilot/data/pilot.db`). Each record captures:
+
+| Field | Description |
+|-------|-------------|
+| `task_id` | Issue or task identifier |
+| `project_path` | Project where task ran |
+| `status` | completed, failed, running |
+| `duration_ms` | Execution time |
+| `tokens_input/output` | Token usage |
+| `estimated_cost_usd` | Cost estimate |
+| `files_changed` | Number of files modified |
+| `lines_added/removed` | Code churn |
+| `pr_url` | Created PR link |
+| `commit_sha` | Final commit |
+
+Query execution history:
+
+```bash
+# Recent executions
+pilot metrics summary
+
+# Per-project breakdown
+pilot metrics projects
+
+# Daily trends
+pilot metrics daily --days 30
+```
+
+## Lifetime Metrics
+
+Metrics persist across Pilot restarts. The dashboard's "Lifetime" section shows cumulative totals:
+
+- **Tasks completed/failed** — Total count across all time
+- **Tokens used** — Cumulative input/output tokens
+- **Total cost** — Estimated API spend
+
+These values are computed from the executions table, not ephemeral session state.
+
+```bash
+# View lifetime summary in dashboard
+pilot start --dashboard
+```
+
+## Cross-Project Patterns
+
+Pilot extracts patterns from successful executions and applies them across projects.
+
+### Pattern Types
+
+| Type | Description | Example |
+|------|-------------|---------|
+| `code` | Code structure patterns | "Use dependency injection for services" |
+| `structure` | Directory/file conventions | "Tests live in `__tests__/` directories" |
+| `naming` | Naming conventions | "Use `handle*` prefix for event handlers" |
+| `workflow` | Process patterns | "Run lint before commit" |
+| `error` | Anti-patterns to avoid | "Don't use `any` type in TypeScript" |
+
+### Pattern Commands
+
+```bash
+# List all learned patterns
+pilot patterns list
+
+# Search patterns by keyword
+pilot patterns search "authentication"
+
+# View pattern statistics
+pilot patterns stats
+```
+
+### How Patterns Work
+
+1. **Extraction** — After each execution, the pattern extractor analyzes changes
+2. **Storage** — Patterns are saved with confidence scores (0.0–1.0)
+3. **Feedback** — Success/failure outcomes adjust confidence
+4. **Pruning** — Low-confidence patterns decay over time
+
+<Callout type="info">
+Patterns with confidence below 0.1 are automatically pruned. High-confidence patterns (>0.7) are prioritized in future task prompts.
+</Callout>
+
+## Knowledge Graph
+
+The knowledge graph stores relationships between concepts, files, and patterns.
+
+### Node Types
+
+- **pattern** — Learned code/workflow patterns
+- **learning** — Insights from debugging sessions
+- **decision** — Architectural choices made
+- **pitfall** — Common mistakes to avoid
+
+### Graph Structure
+
+```
+~/.pilot/data/knowledge.json
+```
+
+Nodes can have relations to other nodes, enabling queries like "what patterns relate to authentication?"
+
+### Adding Knowledge
+
+Knowledge is added automatically during execution. Manual additions are supported via the API:
+
+```go
+graph.AddLearning("JWT refresh flow", "Use sliding window...", metadata)
+graph.AddPattern("error_handling", "Always wrap in try/catch", nil)
+```
+
+## Knowledge Store (Memories)
+
+Separate from patterns, the knowledge store holds experiential memories with time-based decay.
+
+### Memory Types
+
+| Type | Use Case |
+|------|----------|
+| `pattern` | Recurring patterns discovered |
+| `pitfall` | Mistakes to avoid |
+| `decision` | Architectural decisions |
+| `learning` | Debug insights |
+
+### Confidence Decay
+
+Memories have a confidence score that decays over time if not reinforced:
+
+- **Initial**: 1.0 (full confidence)
+- **Decay rate**: Configurable per-day reduction
+- **Reinforcement**: Using a memory increases confidence
+- **Pruning**: Memories below threshold (default 0.1) are removed
+
+This ensures stale knowledge doesn't pollute future prompts while validated patterns remain available.
+
+## Data Storage
+
+```
+~/.pilot/data/
+├── pilot.db              # SQLite database (executions, patterns, metrics)
+├── knowledge.json        # Knowledge graph nodes
+└── global_patterns.json  # Cross-project pattern store
+```
+
+### Database Tables
+
+| Table | Purpose |
+|-------|---------|
+| `executions` | Task execution history |
+| `patterns` | Project-specific patterns |
+| `cross_patterns` | Organization-wide patterns |
+| `pattern_projects` | Pattern-to-project relationships |
+| `pattern_feedback` | Success/failure outcomes |
+| `memories` | Experiential knowledge store |
+| `sessions` | Dashboard session metrics |
+| `usage_events` | Billing/metering data |
+
+## Configuration
+
+Memory features are enabled by default. Configuration options:
+
+```yaml
+# ~/.pilot/config.yaml
+memory:
+  enabled: true
+  db_path: ~/.pilot/data  # SQLite location
+  pattern_min_confidence: 0.3  # Minimum for prompt inclusion
+  decay_rate: 0.02  # Confidence decay per day
+  prune_threshold: 0.1  # Remove below this
+```
+
+## Privacy
+
+<Callout type="warning">
+Pilot stores execution data locally by default. If you enable multi-repo polling or team features, data may be shared across projects within your organization.
+</Callout>
+
+- All data is stored in `~/.pilot/data/`
+- No data is sent to external services (unless you configure webhooks)
+- Patterns are scoped: `project` (single project), `org` (your projects), or `global`
