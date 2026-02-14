@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -167,8 +168,20 @@ func (m *WorktreeManager) CreateWorktreeWithBranch(ctx context.Context, taskID, 
 	worktreeName := fmt.Sprintf("pilot-worktree-%s-%d", sanitizeBranchName(taskID), time.Now().UnixNano())
 	worktreePath := filepath.Join(os.TempDir(), worktreeName)
 
-	// Determine base ref
-	baseRef := "HEAD"
+	// GH-1211: Always fetch origin before creating worktree to prevent branching
+	// from stale local main. This avoids conflicts when local main diverges from origin.
+	fetchCmd := exec.CommandContext(ctx, "git", "fetch", "origin", "main")
+	fetchCmd.Dir = m.repoPath
+	if output, fetchErr := fetchCmd.CombinedOutput(); fetchErr != nil {
+		slog.Warn("Failed to fetch origin/main before worktree creation",
+			slog.Any("error", fetchErr),
+			slog.String("output", string(output)),
+		)
+		// Non-fatal: proceed with local HEAD as fallback
+	}
+
+	// Determine base ref — prefer origin/main for freshest base
+	baseRef := "origin/main"
 	if baseBranch != "" {
 		baseRef = baseBranch
 	}
