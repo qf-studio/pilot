@@ -85,3 +85,53 @@ pilot webhook setup --github
 ```
 
 This eliminates polling delay for instant task pickup.
+
+## Rate Limiting & Reliability
+
+Pilot is designed to run 24/7 without hitting GitHub API rate limits or database issues.
+
+### Rate Limit Handling
+
+The scheduler automatically tracks GitHub API quota via response headers:
+
+- **On 429 (rate limited)**: Automatic retry with `RetryBuffer` (5-minute safety margin before reset)
+- **Exponential backoff**: Transient failures trigger progressive delays (added in v0.34.0)
+- **Check interval**: 1-minute default polling cycle
+
+### Reducing API Usage
+
+**Use webhooks instead of polling** — Zero API quota consumed for issue detection:
+
+```bash
+pilot start --github --tunnel
+```
+
+**Increase poll interval** — If webhooks aren't an option:
+
+```yaml
+# ~/.pilot/config.yaml
+orchestrator:
+  execution:
+    poll_interval: 60s  # Default is 30s
+```
+
+**Stale label cleanup** — Configurable threshold reduces label API calls:
+
+```yaml
+orchestrator:
+  stale_cleanup:
+    threshold: 2h  # How long before in-progress labels are cleaned
+```
+
+### SQLite Reliability (v1.5.2+)
+
+Pilot uses SQLite for local state and history. The following reliability measures ensure stable 24/7 operation:
+
+| Feature | Purpose |
+|---------|---------|
+| WAL mode | Concurrent read/write without blocking |
+| `SetMaxOpenConns(1)` | Serializes writes (prevents SQLITE_BUSY) |
+| `withRetry()` | Exponential backoff on transient DB errors |
+| `busy_timeout=10000` | 10-second wait before failing (defense-in-depth) |
+
+These settings are automatic — no configuration needed.

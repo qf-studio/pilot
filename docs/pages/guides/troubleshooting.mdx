@@ -268,6 +268,70 @@ rm -rf /tmp/pilot-worktree-*
 
 ---
 
+## GitHub API Rate Limits
+
+### Pilot hits GitHub rate limit (429 errors)
+
+The scheduler handles this automatically, but you can reduce API usage:
+
+1. **Use webhooks instead of polling** — Zero quota for issue detection:
+   ```bash
+   pilot start --github --tunnel
+   ```
+
+2. **Increase poll interval** — If webhooks aren't an option:
+   ```yaml
+   orchestrator:
+     execution:
+       poll_interval: 60s  # Default is 30s
+   ```
+
+3. **Check rate limit status**:
+   ```bash
+   gh api rate_limit
+   ```
+
+The scheduler tracks quota via response headers and automatically waits for reset (with a 5-minute safety buffer).
+
+---
+
+## Database Issues
+
+### "Database is locked" error
+
+Fixed in v1.5.2. If you see `SQLITE_BUSY` or "Database locked, retrying" in logs:
+
+1. **Upgrade to v1.5.2+**:
+   ```bash
+   pilot upgrade
+   ```
+
+2. **Check for multiple instances** — Only one Pilot process should access the database:
+   ```bash
+   pgrep -f "pilot start"
+   ```
+
+3. **Verify WAL mode** — Should be enabled automatically:
+   ```bash
+   sqlite3 ~/.pilot/data/pilot.db "PRAGMA journal_mode"
+   # Should return: wal
+   ```
+
+### Dashboard freezes or hangs
+
+Often caused by the same SQLite contention. Check logs for "Database locked, retrying" messages:
+
+```bash
+grep -i "database.*locked\|sqlite.*busy" ~/.pilot/logs/pilot.log
+```
+
+If present, upgrade to v1.5.2+ which includes:
+- WAL mode for concurrent access
+- Connection serialization
+- Automatic retry with backoff
+
+---
+
 ## Getting Help
 
 If none of the above resolves your issue:
