@@ -498,7 +498,7 @@ func TestController_ProcessPR_PersistsTransition(t *testing.T) {
 	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc123", "pilot/GH-10")
 
 	// Process — should transition from StagePRCreated to StageWaitingCI
-	if err := c.ProcessPR(context.Background(), 42); err != nil {
+	if err := c.ProcessPR(context.Background(), 42, nil); err != nil {
 		t.Fatalf("ProcessPR failed: %v", err)
 	}
 

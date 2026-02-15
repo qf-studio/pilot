@@ -236,7 +236,8 @@ func (c *Controller) OnPRCreated(prNumber int, prURL string, issueNumber int, he
 
 // ProcessPR processes a single PR through the state machine.
 // Returns error if processing fails; caller should retry based on error type.
-func (c *Controller) ProcessPR(ctx context.Context, prNumber int) error {
+// Accepts optional cached ghPR to avoid redundant API calls.
+func (c *Controller) ProcessPR(ctx context.Context, prNumber int, ghPR *github.PullRequest) error {
 	c.mu.RLock()
 	prState, ok := c.activePRs[prNumber]
 	c.mu.RUnlock()
@@ -257,9 +258,9 @@ func (c *Controller) ProcessPR(ctx context.Context, prNumber int) error {
 
 	switch prState.Stage {
 	case StagePRCreated:
-		err = c.handlePRCreated(ctx, prState)
+		err = c.handlePRCreated(ctx, prState, ghPR)
 	case StageWaitingCI:
-		err = c.handleWaitingCI(ctx, prState)
+		err = c.handleWaitingCI(ctx, prState, ghPR)
 	case StageCIPassed:
 		err = c.handleCIPassed(ctx, prState)
 	case StageCIFailed:
@@ -311,7 +312,8 @@ func (c *Controller) ProcessPR(ctx context.Context, prNumber int) error {
 
 // handlePRCreated starts CI monitoring for all environments.
 // Also checks for merge conflicts immediately (race condition with concurrent merges).
-func (c *Controller) handlePRCreated(ctx context.Context, prState *PRState) error {
+// Accepts optional cached ghPR to avoid redundant API calls.
+func (c *Controller) handlePRCreated(ctx context.Context, prState *PRState, ghPR *github.PullRequest) error {
 	c.log.Debug("handlePRCreated: starting CI monitoring",
 		"pr", prState.PRNumber,
 		"sha", ShortSHA(prState.HeadSHA),
@@ -319,12 +321,20 @@ func (c *Controller) handlePRCreated(ctx context.Context, prState *PRState) erro
 
 	// GH-724: Check for merge conflicts immediately after PR creation.
 	// Concurrent merges can make a PR conflicting before CI even starts.
-	ghPR, err := c.ghClient.GetPullRequest(ctx, c.owner, c.repo, prState.PRNumber)
-	if err != nil {
-		c.log.Warn("failed to check PR mergeable state on creation", "pr", prState.PRNumber, "error", err)
-		// Non-fatal: proceed to CI wait, conflict will be caught there
-	} else if c.isMergeConflict(ghPR) {
-		return c.handleMergeConflict(ctx, prState)
+	// Use cached ghPR if provided to avoid redundant API call.
+	if ghPR != nil {
+		if c.isMergeConflict(ghPR) {
+			return c.handleMergeConflict(ctx, prState)
+		}
+	} else {
+		// Fallback: fetch PR if not provided (for backward compatibility)
+		fetchedPR, err := c.ghClient.GetPullRequest(ctx, c.owner, c.repo, prState.PRNumber)
+		if err != nil {
+			c.log.Warn("failed to check PR mergeable state on creation", "pr", prState.PRNumber, "error", err)
+			// Non-fatal: proceed to CI wait, conflict will be caught there
+		} else if c.isMergeConflict(fetchedPR) {
+			return c.handleMergeConflict(ctx, prState)
+		}
 	}
 
 	// All environments wait for CI - no skipping
@@ -335,7 +345,8 @@ func (c *Controller) handlePRCreated(ctx context.Context, prState *PRState) erro
 
 // handleWaitingCI checks CI status once (non-blocking) and updates state.
 // Uses CheckCI instead of WaitForCI to prevent blocking the processing loop.
-func (c *Controller) handleWaitingCI(ctx context.Context, prState *PRState) error {
+// Accepts optional cached ghPR to avoid redundant API calls.
+func (c *Controller) handleWaitingCI(ctx context.Context, prState *PRState, ghPR *github.PullRequest) error {
 	// Initialize CIWaitStartedAt if not set (backwards compatibility)
 	if prState.CIWaitStartedAt.IsZero() {
 		prState.CIWaitStartedAt = time.Now()
@@ -360,14 +371,21 @@ func (c *Controller) handleWaitingCI(ctx context.Context, prState *PRState) erro
 	// The previous fix (GH-419) only handled empty SHA; stale non-empty SHAs
 	// caused autopilot to query CI for the wrong commit indefinitely.
 	sha := prState.HeadSHA
-	ghPR, err := c.ghClient.GetPullRequest(ctx, c.owner, c.repo, prState.PRNumber)
-	if err != nil {
-		c.log.Warn("failed to fetch PR head SHA", "pr", prState.PRNumber, "error", err)
-		if sha == "" {
-			return nil // Can't check CI without SHA, retry next cycle
+
+	// Use cached ghPR if provided, otherwise fetch it
+	if ghPR == nil {
+		var err error
+		ghPR, err = c.ghClient.GetPullRequest(ctx, c.owner, c.repo, prState.PRNumber)
+		if err != nil {
+			c.log.Warn("failed to fetch PR head SHA", "pr", prState.PRNumber, "error", err)
+			if sha == "" {
+				return nil // Can't check CI without SHA, retry next cycle
+			}
+			// Fall through with existing SHA if we have one
 		}
-		// Fall through with existing SHA if we have one
-	} else if ghPR.Head.SHA != "" {
+	}
+
+	if ghPR != nil && ghPR.Head.SHA != "" {
 		if sha != "" && sha != ghPR.Head.SHA {
 			c.log.Info("refreshed stale HeadSHA from GitHub",
 				"pr", prState.PRNumber,
@@ -396,10 +414,30 @@ func (c *Controller) handleWaitingCI(ctx context.Context, prState *PRState) erro
 	// Non-blocking CI status check
 	status, err := c.ciMonitor.CheckCI(ctx, sha)
 	if err != nil {
-		c.log.Warn("CI status check failed", "pr", prState.PRNumber, "sha", ShortSHA(sha), "error", err)
+		prState.ConsecutiveAPIFailures++
+		c.log.Warn("CI status check failed",
+			"pr", prState.PRNumber,
+			"sha", ShortSHA(sha),
+			"consecutive_failures", prState.ConsecutiveAPIFailures,
+			"error", err)
+
+		// If we've had 5 consecutive failures, transition to failed stage
+		if prState.ConsecutiveAPIFailures >= 5 {
+			prState.Stage = StageFailed
+			prState.Error = fmt.Sprintf("CI check API failed %d consecutive times: %v",
+				prState.ConsecutiveAPIFailures, err)
+			c.log.Error("PR transitioned to failed due to consecutive API failures",
+				"pr", prState.PRNumber,
+				"consecutive_failures", prState.ConsecutiveAPIFailures)
+			return nil
+		}
+
 		// Don't fail the PR on transient errors, will retry next poll cycle
 		return nil
 	}
+
+	// Reset failure counter on successful API call
+	prState.ConsecutiveAPIFailures = 0
 
 	// GH-862: Capture discovered checks for PR state (only once, when first seen)
 	if discovered := c.ciMonitor.GetDiscoveredChecks(sha); len(discovered) > 0 && len(prState.DiscoveredChecks) == 0 {
@@ -1239,7 +1277,13 @@ func (c *Controller) Run(ctx context.Context) error {
 		"release_enabled", c.config.Release != nil && c.config.Release.Enabled,
 	)
 
-	ticker := time.NewTicker(c.config.CIPollInterval)
+	// Dynamic poll interval settings
+	basePollInterval := c.config.CIPollInterval
+	fastPollInterval := 10 * time.Second
+	idlePollInterval := 60 * time.Second
+	currentInterval := basePollInterval
+
+	ticker := time.NewTicker(currentInterval)
 	defer ticker.Stop()
 
 	for {
@@ -1249,6 +1293,27 @@ func (c *Controller) Run(ctx context.Context) error {
 			return ctx.Err()
 		case <-ticker.C:
 			c.processAllPRs(ctx)
+
+			// Adjust interval based on active PR states
+			newInterval := idlePollInterval
+			activePRs := c.GetActivePRs()
+			for _, pr := range activePRs {
+				if pr.Stage == StageWaitingCI || pr.Stage == StagePRCreated {
+					newInterval = fastPollInterval
+					break
+				}
+			}
+
+			// Update ticker interval if it changed
+			if newInterval != currentInterval {
+				c.log.Debug("adjusting poll interval",
+					"old_interval", currentInterval,
+					"new_interval", newInterval,
+					"active_prs", len(activePRs),
+				)
+				ticker.Reset(newInterval)
+				currentInterval = newInterval
+			}
 		}
 	}
 }
@@ -1277,12 +1342,19 @@ func (c *Controller) processAllPRs(ctx context.Context) {
 				"ci_status", pr.CIStatus,
 			)
 
-			// Check if PR was merged/closed externally before processing
-			if c.checkExternalMergeOrClose(ctx, pr) {
+			// Fetch PR once, use twice - cache to avoid redundant API calls
+			ghPR, err := c.ghClient.GetPullRequest(ctx, c.owner, c.repo, pr.PRNumber)
+			if err != nil {
+				c.log.Warn("failed to fetch PR", "pr", pr.PRNumber, "error", err)
 				continue
 			}
 
-			if err := c.ProcessPR(ctx, pr.PRNumber); err != nil {
+			// Check if PR was merged/closed externally before processing
+			if c.checkExternalMergeOrClose(ctx, pr, ghPR) {
+				continue
+			}
+
+			if err := c.ProcessPR(ctx, pr.PRNumber, ghPR); err != nil {
 				// Error already logged in ProcessPR
 				continue
 			}
@@ -1292,12 +1364,8 @@ func (c *Controller) processAllPRs(ctx context.Context) {
 
 // checkExternalMergeOrClose checks if a PR was merged or closed externally (by human).
 // Returns true if the PR was removed from tracking, false otherwise.
-func (c *Controller) checkExternalMergeOrClose(ctx context.Context, prState *PRState) bool {
-	ghPR, err := c.ghClient.GetPullRequest(ctx, c.owner, c.repo, prState.PRNumber)
-	if err != nil {
-		c.log.Warn("failed to check PR state", "pr", prState.PRNumber, "error", err)
-		return false
-	}
+// Accepts cached ghPR to avoid redundant API calls.
+func (c *Controller) checkExternalMergeOrClose(ctx context.Context, prState *PRState, ghPR *github.PullRequest) bool {
 
 	// Check if PR was merged externally
 	if ghPR.Merged {

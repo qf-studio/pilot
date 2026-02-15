@@ -81,7 +81,7 @@ func TestFullWorkflow_IssueToMerge(t *testing.T) {
 
 	// Process through the workflow stages
 	// Stage 1: PR created → waiting CI
-	if err := controller.ProcessPR(ctx, 1); err != nil {
+	if err := controller.ProcessPR(ctx, 1, nil); err != nil {
 		t.Fatalf("ProcessPR stage 1 error: %v", err)
 	}
 	prState, _ = controller.GetPRState(1)
@@ -90,7 +90,7 @@ func TestFullWorkflow_IssueToMerge(t *testing.T) {
 	}
 
 	// Stage 2: waiting CI → CI passed
-	if err := controller.ProcessPR(ctx, 1); err != nil {
+	if err := controller.ProcessPR(ctx, 1, nil); err != nil {
 		t.Fatalf("ProcessPR stage 2 error: %v", err)
 	}
 	prState, _ = controller.GetPRState(1)
@@ -99,7 +99,7 @@ func TestFullWorkflow_IssueToMerge(t *testing.T) {
 	}
 
 	// Stage 3: CI passed → merging
-	if err := controller.ProcessPR(ctx, 1); err != nil {
+	if err := controller.ProcessPR(ctx, 1, nil); err != nil {
 		t.Fatalf("ProcessPR stage 3 error: %v", err)
 	}
 	prState, _ = controller.GetPRState(1)
@@ -108,7 +108,7 @@ func TestFullWorkflow_IssueToMerge(t *testing.T) {
 	}
 
 	// Stage 4: merging → merged
-	if err := controller.ProcessPR(ctx, 1); err != nil {
+	if err := controller.ProcessPR(ctx, 1, nil); err != nil {
 		t.Fatalf("ProcessPR stage 4 error: %v", err)
 	}
 	prState, _ = controller.GetPRState(1)
@@ -117,7 +117,7 @@ func TestFullWorkflow_IssueToMerge(t *testing.T) {
 	}
 
 	// Stage 5: merged → done (removed from tracking in dev)
-	if err := controller.ProcessPR(ctx, 1); err != nil {
+	if err := controller.ProcessPR(ctx, 1, nil); err != nil {
 		t.Fatalf("ProcessPR stage 5 error: %v", err)
 	}
 	_, ok = controller.GetPRState(1)
@@ -178,10 +178,10 @@ func TestWorkflow_CIFailure(t *testing.T) {
 	ctx := context.Background()
 
 	// Stage 1: PR created → waiting CI
-	_ = controller.ProcessPR(ctx, 1)
+	_ = controller.ProcessPR(ctx, 1, nil)
 
 	// Stage 2: waiting CI → CI failed
-	_ = controller.ProcessPR(ctx, 1)
+	_ = controller.ProcessPR(ctx, 1, nil)
 	prState, _ := controller.GetPRState(1)
 	if prState.Stage != autopilot.StageCIFailed {
 		t.Errorf("stage 2: got %s, want %s", prState.Stage, autopilot.StageCIFailed)
@@ -191,7 +191,7 @@ func TestWorkflow_CIFailure(t *testing.T) {
 	}
 
 	// Stage 3: CI failed → creates fix issue → failed state
-	_ = controller.ProcessPR(ctx, 1)
+	_ = controller.ProcessPR(ctx, 1, nil)
 	prState, _ = controller.GetPRState(1)
 	if prState.Stage != autopilot.StageFailed {
 		t.Errorf("stage 3: got %s, want %s", prState.Stage, autopilot.StageFailed)
@@ -251,7 +251,7 @@ func TestWorkflow_MergeConflict(t *testing.T) {
 	ctx := context.Background()
 
 	// Process - should detect conflict
-	_ = controller.ProcessPR(ctx, 1)
+	_ = controller.ProcessPR(ctx, 1, nil)
 
 	// Check that PR went to waiting CI (conflict detected on next check)
 	prState, ok := controller.GetPRState(1)
@@ -314,7 +314,7 @@ func TestWorkflow_MultiplePRs(t *testing.T) {
 
 	// Process each PR through one stage
 	for _, prNum := range []int{1, 2, 3} {
-		_ = controller.ProcessPR(ctx, prNum)
+		_ = controller.ProcessPR(ctx, prNum, nil)
 	}
 
 	// Verify states differ based on CI
@@ -364,7 +364,7 @@ func TestWorkflow_CircuitBreaker(t *testing.T) {
 	// The mock server will return 404 for merge (PR doesn't exist in mock's PR map)
 	// This causes repeated failures
 	for i := 0; i < 4; i++ {
-		_ = controller.ProcessPR(ctx, 1)
+		_ = controller.ProcessPR(ctx, 1, nil)
 	}
 
 	// Circuit breaker should be open
@@ -373,7 +373,7 @@ func TestWorkflow_CircuitBreaker(t *testing.T) {
 	}
 
 	// Further processing should fail
-	err := controller.ProcessPR(ctx, 1)
+	err := controller.ProcessPR(ctx, 1, nil)
 	if err == nil {
 		t.Error("ProcessPR should fail when circuit is open")
 	}

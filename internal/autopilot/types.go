@@ -268,4 +268,6 @@ type PRState struct {
 	ReleaseBumpType BumpType
 	// DiscoveredChecks holds check names found in auto mode.
 	DiscoveredChecks []string
+	// ConsecutiveAPIFailures counts consecutive CI check API failures.
+	ConsecutiveAPIFailures int
 }

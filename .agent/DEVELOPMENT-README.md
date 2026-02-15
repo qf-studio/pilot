@@ -113,7 +113,7 @@ Disable via config: `executor.navigator.auto_init: false`
 
 ## Current State
 
-**Current Version:** v1.0.11 | **134 features working**
+**Current Version:** v1.8.1 | **139 features working**
 
 **Full implementation status:** `.agent/system/FEATURE-MATRIX.md`
 
@@ -164,6 +164,11 @@ Disable via config: `executor.navigator.auto_init: false`
 | Stagnation Monitor | Done | State hash tracking, escalation: warn → pause → abort (v0.56.0) |
 | Queue State Dashboard | Done | 5-state QUEUE panel: done/running/queued/pending/failed with shimmer animation |
 | Epic Scope Guard | Done | Prevent serial conflict cascade — consolidate single-package epics (v1.0.11) |
+| Session Resume | Done | `--resume` for self-review context continuation, ~40% token savings (v1.1.0) |
+| PR Context Resume | Done | `--from-pr` for CI fix session context with auto-fallback (v1.2.0) |
+| Structured Output | Done | `--json-schema` for classifiers + post-execution summary (v1.3.0) |
+| Claude Code Hooks | Done | Stop/PreToolUse/PostToolUse hooks for inline quality gates (v1.3.0) |
+| Label Cleanup on Retry | Done | Remove `pilot-failed` on successful retry — accurate metrics (v1.8.1) |
 
 ### Telegram Interaction Modes (v0.6.0)
 
@@ -252,8 +257,18 @@ Goal: Raise autonomous reliability from 3/10 to 8/10. **Achieved: 8/10**
 
 | Item | What |
 |------|------|
-| **v1.0.11** | Epic scope guard — prevent serial conflict cascade by consolidating single-package epics (GH-1265) |
-| Cleanup | Closed 8 stuck `pilot onboard` sub-issues + 2 CI fix issues from conflict cascade |
+| **v1.8.1** | Remove `pilot-failed` label on successful retry — fixes inflated failure metrics (GH-1302) |
+| **v1.8.0** | Docs: configuration reference + Navigator cross-reference for SDK features (GH-1289) |
+| **v1.7.0** | Docs: example config updated with new fields (GH-1289 sub-issue) |
+| **v1.6.0** | Docs: tunnel setup guide + GitHub API rate limiting guide (GH-1290, GH-1291) |
+| **v1.5.2** | SQLite auto-recovery: `SetMaxOpenConns(1)` + `withRetry()` backoff (GH-1284) |
+| **v1.5.1** | `parseAutopilotPR()` test + configured command in `getPostExecutionSummary()` (GH-1280, GH-1281) |
+| **v1.3.0** | Structured output (`--json-schema`) + Claude Code hooks system (GH-1264, GH-1266) |
+| **v1.2.0** | PR context resume (`--from-pr`) for CI fix session continuity (GH-1267) |
+| **v1.1.0** | Session resume (`--resume`) for self-review token savings ~40% (GH-1265) |
+| **v1.0.11** | Epic scope guard — prevent serial conflict cascade (GH-1265) |
+| Diagnostics | Full v1.0.11→v1.5.0 architecture review, SQLite BUSY root cause analysis |
+| Cleanup | Closed 8 stuck sub-issues, 21 stale dual-labeled issues identified |
 
 ### 2026-02-13
 

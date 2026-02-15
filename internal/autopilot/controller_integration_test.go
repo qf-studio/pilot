@@ -145,7 +145,7 @@ func TestController_Integration_PRLifecycle(t *testing.T) {
 	defer cancel()
 
 	// First process: PRCreated -> WaitingCI
-	err := controller.ProcessPR(ctx, 1)
+	err := controller.ProcessPR(ctx, 1, nil)
 	if err != nil {
 		t.Fatalf("ProcessPR (PRCreated) failed: %v", err)
 	}
@@ -156,7 +156,7 @@ func TestController_Integration_PRLifecycle(t *testing.T) {
 	}
 
 	// Second process: WaitingCI -> CIPassed (CI success response)
-	err = controller.ProcessPR(ctx, 1)
+	err = controller.ProcessPR(ctx, 1, nil)
 	if err != nil {
 		t.Fatalf("ProcessPR (WaitingCI) failed: %v", err)
 	}
@@ -166,7 +166,7 @@ func TestController_Integration_PRLifecycle(t *testing.T) {
 	}
 
 	// Third process: CIPassed -> Merging (dev mode, no approval needed)
-	err = controller.ProcessPR(ctx, 1)
+	err = controller.ProcessPR(ctx, 1, nil)
 	if err != nil {
 		t.Fatalf("ProcessPR (CIPassed) failed: %v", err)
 	}
@@ -176,7 +176,7 @@ func TestController_Integration_PRLifecycle(t *testing.T) {
 	}
 
 	// Fourth process: Merging -> Merged
-	err = controller.ProcessPR(ctx, 1)
+	err = controller.ProcessPR(ctx, 1, nil)
 	if err != nil {
 		t.Fatalf("ProcessPR (Merging) failed: %v", err)
 	}
@@ -262,10 +262,10 @@ func TestController_Integration_CIFailure(t *testing.T) {
 	defer cancel()
 
 	// PRCreated -> WaitingCI
-	_ = controller.ProcessPR(ctx, 2)
+	_ = controller.ProcessPR(ctx, 2, nil)
 
 	// WaitingCI -> CIFailed
-	_ = controller.ProcessPR(ctx, 2)
+	_ = controller.ProcessPR(ctx, 2, nil)
 
 	prState := controller.activePRs[2]
 	if prState.Stage != StageCIFailed {
@@ -273,7 +273,7 @@ func TestController_Integration_CIFailure(t *testing.T) {
 	}
 
 	// CIFailed -> creates fix issue
-	_ = controller.ProcessPR(ctx, 2)
+	_ = controller.ProcessPR(ctx, 2, nil)
 
 	// Verify CI failure notification was sent
 	notifier.mu.Lock()
@@ -339,10 +339,10 @@ func TestController_Integration_ProdApproval(t *testing.T) {
 	defer cancel()
 
 	// PRCreated -> WaitingCI
-	_ = controller.ProcessPR(ctx, 3)
+	_ = controller.ProcessPR(ctx, 3, nil)
 
 	// WaitingCI -> CIPassed
-	_ = controller.ProcessPR(ctx, 3)
+	_ = controller.ProcessPR(ctx, 3, nil)
 
 	prState := controller.activePRs[3]
 	if prState.Stage != StageCIPassed {
@@ -350,7 +350,7 @@ func TestController_Integration_ProdApproval(t *testing.T) {
 	}
 
 	// CIPassed -> AwaitApproval (prod mode)
-	_ = controller.ProcessPR(ctx, 3)
+	_ = controller.ProcessPR(ctx, 3, nil)
 
 	if prState.Stage != StageAwaitApproval {
 		t.Errorf("Expected stage AwaitApproval in prod mode, got %s", prState.Stage)
@@ -428,7 +428,7 @@ func TestController_Integration_CircuitBreaker(t *testing.T) {
 	// Process through state machine until we hit merge failures
 	// PRCreated -> WaitingCI -> CIPassed -> Merging (fails repeatedly)
 	for i := 0; i < 10; i++ {
-		_ = controller.ProcessPR(ctx, 4)
+		_ = controller.ProcessPR(ctx, 4, nil)
 
 		// Once circuit is open, stop
 		if controller.isPRCircuitOpen(4) {

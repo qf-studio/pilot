@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -98,7 +99,7 @@ func TestController_ProcessPR_NotTracked(t *testing.T) {
 
 	c := NewController(cfg, ghClient, nil, "owner", "repo")
 
-	err := c.ProcessPR(context.Background(), 99)
+	err := c.ProcessPR(context.Background(), 99, nil)
 	if err == nil {
 		t.Error("ProcessPR should fail for untracked PR")
 	}
@@ -145,7 +146,7 @@ func TestController_ProcessPR_DevEnvironment(t *testing.T) {
 	ctx := context.Background()
 
 	// Stage 1: PR created → waiting CI (dev now waits for CI)
-	err := c.ProcessPR(ctx, 42)
+	err := c.ProcessPR(ctx, 42, nil)
 	if err != nil {
 		t.Fatalf("ProcessPR stage 1 error: %v", err)
 	}
@@ -155,7 +156,7 @@ func TestController_ProcessPR_DevEnvironment(t *testing.T) {
 	}
 
 	// Stage 2: waiting CI → CI passed
-	err = c.ProcessPR(ctx, 42)
+	err = c.ProcessPR(ctx, 42, nil)
 	if err != nil {
 		t.Fatalf("ProcessPR stage 2 error: %v", err)
 	}
@@ -165,7 +166,7 @@ func TestController_ProcessPR_DevEnvironment(t *testing.T) {
 	}
 
 	// Stage 3: CI passed → merging
-	err = c.ProcessPR(ctx, 42)
+	err = c.ProcessPR(ctx, 42, nil)
 	if err != nil {
 		t.Fatalf("ProcessPR stage 3 error: %v", err)
 	}
@@ -175,7 +176,7 @@ func TestController_ProcessPR_DevEnvironment(t *testing.T) {
 	}
 
 	// Stage 4: merging → merged
-	err = c.ProcessPR(ctx, 42)
+	err = c.ProcessPR(ctx, 42, nil)
 	if err != nil {
 		t.Fatalf("ProcessPR stage 4 error: %v", err)
 	}
@@ -188,7 +189,7 @@ func TestController_ProcessPR_DevEnvironment(t *testing.T) {
 	}
 
 	// Stage 5: merged → done (removed from tracking in dev)
-	err = c.ProcessPR(ctx, 42)
+	err = c.ProcessPR(ctx, 42, nil)
 	if err != nil {
 		t.Fatalf("ProcessPR stage 5 error: %v", err)
 	}
@@ -245,7 +246,7 @@ func TestController_ProcessPR_StageEnvironment_CIPass(t *testing.T) {
 	ctx := context.Background()
 
 	// Stage 1: PR created → waiting CI
-	err := c.ProcessPR(ctx, 42)
+	err := c.ProcessPR(ctx, 42, nil)
 	if err != nil {
 		t.Fatalf("ProcessPR stage 1 error: %v", err)
 	}
@@ -255,7 +256,7 @@ func TestController_ProcessPR_StageEnvironment_CIPass(t *testing.T) {
 	}
 
 	// Stage 2: waiting CI → CI passed
-	err = c.ProcessPR(ctx, 42)
+	err = c.ProcessPR(ctx, 42, nil)
 	if err != nil {
 		t.Fatalf("ProcessPR stage 2 error: %v", err)
 	}
@@ -265,7 +266,7 @@ func TestController_ProcessPR_StageEnvironment_CIPass(t *testing.T) {
 	}
 
 	// Stage 3: CI passed → merging (no approval in stage)
-	err = c.ProcessPR(ctx, 42)
+	err = c.ProcessPR(ctx, 42, nil)
 	if err != nil {
 		t.Fatalf("ProcessPR stage 3 error: %v", err)
 	}
@@ -275,7 +276,7 @@ func TestController_ProcessPR_StageEnvironment_CIPass(t *testing.T) {
 	}
 
 	// Stage 4: merging → merged
-	err = c.ProcessPR(ctx, 42)
+	err = c.ProcessPR(ctx, 42, nil)
 	if err != nil {
 		t.Fatalf("ProcessPR stage 4 error: %v", err)
 	}
@@ -288,7 +289,7 @@ func TestController_ProcessPR_StageEnvironment_CIPass(t *testing.T) {
 	}
 
 	// Stage 5: merged → post-merge CI
-	err = c.ProcessPR(ctx, 42)
+	err = c.ProcessPR(ctx, 42, nil)
 	if err != nil {
 		t.Fatalf("ProcessPR stage 5 error: %v", err)
 	}
@@ -298,7 +299,7 @@ func TestController_ProcessPR_StageEnvironment_CIPass(t *testing.T) {
 	}
 
 	// Stage 6: post-merge CI → done (removed from tracking)
-	err = c.ProcessPR(ctx, 42)
+	err = c.ProcessPR(ctx, 42, nil)
 	if err != nil {
 		t.Fatalf("ProcessPR stage 6 error: %v", err)
 	}
@@ -354,13 +355,13 @@ func TestController_ProcessPR_CIFailure(t *testing.T) {
 	ctx := context.Background()
 
 	// Stage 1: PR created → waiting CI
-	err := c.ProcessPR(ctx, 42)
+	err := c.ProcessPR(ctx, 42, nil)
 	if err != nil {
 		t.Fatalf("ProcessPR stage 1 error: %v", err)
 	}
 
 	// Stage 2: waiting CI → CI failed
-	err = c.ProcessPR(ctx, 42)
+	err = c.ProcessPR(ctx, 42, nil)
 	if err != nil {
 		t.Fatalf("ProcessPR stage 2 error: %v", err)
 	}
@@ -370,7 +371,7 @@ func TestController_ProcessPR_CIFailure(t *testing.T) {
 	}
 
 	// Stage 3: CI failed → create fix issue → close PR → failed
-	err = c.ProcessPR(ctx, 42)
+	err = c.ProcessPR(ctx, 42, nil)
 	if err != nil {
 		t.Fatalf("ProcessPR stage 3 error: %v", err)
 	}
@@ -413,7 +414,7 @@ func TestController_CircuitBreaker(t *testing.T) {
 
 	// Cause failures
 	for i := 0; i < 3; i++ {
-		_ = c.ProcessPR(ctx, 42)
+		_ = c.ProcessPR(ctx, 42, nil)
 	}
 
 	// Per-PR circuit breaker should be open for PR 42
@@ -422,7 +423,7 @@ func TestController_CircuitBreaker(t *testing.T) {
 	}
 
 	// Next call for PR 42 should be blocked
-	err := c.ProcessPR(ctx, 42)
+	err := c.ProcessPR(ctx, 42, nil)
 	if err == nil {
 		t.Error("ProcessPR should fail when per-PR circuit breaker is open")
 	}
@@ -497,7 +498,7 @@ func TestController_ProcessPR_FailedStageNoOp(t *testing.T) {
 	c.mu.Unlock()
 
 	// Processing failed stage should be a no-op
-	err := c.ProcessPR(context.Background(), 42)
+	err := c.ProcessPR(context.Background(), 42, nil)
 	if err != nil {
 		t.Errorf("ProcessPR on failed stage should not error: %v", err)
 	}
@@ -542,13 +543,13 @@ func TestController_ProcessPR_ProdRequiresApproval(t *testing.T) {
 	ctx := context.Background()
 
 	// Stage 1: PR created → waiting CI
-	_ = c.ProcessPR(ctx, 42)
+	_ = c.ProcessPR(ctx, 42, nil)
 
 	// Stage 2: waiting CI → CI passed
-	_ = c.ProcessPR(ctx, 42)
+	_ = c.ProcessPR(ctx, 42, nil)
 
 	// Stage 3: CI passed → awaiting approval (prod)
-	_ = c.ProcessPR(ctx, 42)
+	_ = c.ProcessPR(ctx, 42, nil)
 
 	pr, _ := c.GetPRState(42)
 	if pr.Stage != StageAwaitApproval {
@@ -599,7 +600,7 @@ func TestController_SuccessResetsFailureCount(t *testing.T) {
 	c.mu.Unlock()
 
 	// Successful processing (pr_created → waiting_ci)
-	err := c.ProcessPR(context.Background(), 42)
+	err := c.ProcessPR(context.Background(), 42, nil)
 	if err != nil {
 		t.Fatalf("ProcessPR error: %v", err)
 	}
@@ -659,7 +660,7 @@ func TestController_MergeAttemptIncrement(t *testing.T) {
 	ctx := context.Background()
 
 	// First attempt fails (merge fails, not CI verification)
-	err := c.ProcessPR(ctx, 42)
+	err := c.ProcessPR(ctx, 42, nil)
 	if err == nil {
 		t.Error("first merge attempt should fail")
 	}
@@ -670,7 +671,7 @@ func TestController_MergeAttemptIncrement(t *testing.T) {
 	}
 
 	// Second attempt succeeds
-	err = c.ProcessPR(ctx, 42)
+	err = c.ProcessPR(ctx, 42, nil)
 	if err != nil {
 		t.Errorf("second merge attempt should succeed: %v", err)
 	}
@@ -941,24 +942,15 @@ func TestController_CheckExternalMergeOrClose_OpenPR(t *testing.T) {
 }
 
 func TestController_CheckExternalMerge_APIError(t *testing.T) {
-	// Test that API errors don't remove PRs but allow processing to continue
-	ciCheckCalled := false
+	// Test that API errors don't remove PRs - they're kept for retry on next poll cycle.
+	// With the PR caching optimization (GH-1304), we skip processing if GetPR fails
+	// to avoid operating on stale data. The PR remains tracked for the next poll.
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/repos/owner/repo/pulls/42":
-			// Return error
+			// Return error - simulates transient API failure
 			w.WriteHeader(http.StatusInternalServerError)
-		case "/repos/owner/repo/commits/abc1234567890/check-runs":
-			ciCheckCalled = true
-			resp := github.CheckRunsResponse{
-				TotalCount: 1,
-				CheckRuns: []github.CheckRun{
-					{Name: "build", Status: "completed", Conclusion: "success"},
-				},
-			}
-			w.WriteHeader(http.StatusOK)
-			_ = json.NewEncoder(w).Encode(resp)
 		default:
 			w.WriteHeader(http.StatusOK)
 		}
@@ -983,7 +975,7 @@ func TestController_CheckExternalMerge_APIError(t *testing.T) {
 	}
 	c.mu.Unlock()
 
-	// Process PRs - should fail to check state but continue processing
+	// Process PRs - should fail to fetch PR state, skip processing, but keep PR tracked
 	c.processAllPRs(context.Background())
 
 	// Verify PR is still tracked (error shouldn't remove it)
@@ -991,9 +983,10 @@ func TestController_CheckExternalMerge_APIError(t *testing.T) {
 		t.Error("PR should still be tracked after API error")
 	}
 
-	// Verify normal processing continued despite check failure
-	if !ciCheckCalled {
-		t.Error("CI check should have been called even after state check failed")
+	// Verify stage hasn't changed (processing was skipped due to API error)
+	prState, _ := c.GetPRState(42)
+	if prState.Stage != StageWaitingCI {
+		t.Errorf("PR stage should remain waiting_ci, got %s", prState.Stage)
 	}
 }
 
@@ -1207,7 +1200,7 @@ func TestController_ProcessPR_RefreshesStaleHeadSHA(t *testing.T) {
 	ctx := context.Background()
 
 	// Stage 1: PR created → waiting CI
-	err := c.ProcessPR(ctx, 42)
+	err := c.ProcessPR(ctx, 42, nil)
 	if err != nil {
 		t.Fatalf("ProcessPR stage 1 error: %v", err)
 	}
@@ -1217,7 +1210,7 @@ func TestController_ProcessPR_RefreshesStaleHeadSHA(t *testing.T) {
 	}
 
 	// Stage 2: waiting CI → should refresh SHA and find CI passed
-	err = c.ProcessPR(ctx, 42)
+	err = c.ProcessPR(ctx, 42, nil)
 	if err != nil {
 		t.Fatalf("ProcessPR stage 2 error: %v", err)
 	}
@@ -1367,7 +1360,7 @@ func TestController_ProcessPR_MergeConflict_WaitingCI(t *testing.T) {
 	ctx := context.Background()
 
 	// Process PR in WaitingCI stage → should detect conflict and fail immediately
-	err := c.ProcessPR(ctx, 42)
+	err := c.ProcessPR(ctx, 42, nil)
 	if err != nil {
 		t.Fatalf("ProcessPR error: %v", err)
 	}
@@ -1430,7 +1423,7 @@ func TestController_ProcessPR_MergeConflict_PRCreated(t *testing.T) {
 	ctx := context.Background()
 
 	// Stage 1: PR created → should detect conflict immediately and skip CI wait
-	err := c.ProcessPR(ctx, 42)
+	err := c.ProcessPR(ctx, 42, nil)
 	if err != nil {
 		t.Fatalf("ProcessPR error: %v", err)
 	}
@@ -1490,7 +1483,7 @@ func TestController_ProcessPR_MergeableUnknown_ProceedsToCICheck(t *testing.T) {
 	ctx := context.Background()
 
 	// Stage 1: PR created → waiting CI (unknown mergeable should NOT block)
-	err := c.ProcessPR(ctx, 42)
+	err := c.ProcessPR(ctx, 42, nil)
 	if err != nil {
 		t.Fatalf("ProcessPR stage 1 error: %v", err)
 	}
@@ -1500,7 +1493,7 @@ func TestController_ProcessPR_MergeableUnknown_ProceedsToCICheck(t *testing.T) {
 	}
 
 	// Stage 2: waiting CI → CI passed (should check CI normally despite unknown mergeable)
-	err = c.ProcessPR(ctx, 42)
+	err = c.ProcessPR(ctx, 42, nil)
 	if err != nil {
 		t.Fatalf("ProcessPR stage 2 error: %v", err)
 	}
@@ -1547,13 +1540,13 @@ func TestController_ProcessPR_MergeableFalse_DetectsConflict(t *testing.T) {
 	ctx := context.Background()
 
 	// Stage 1: PR created → waiting CI
-	err := c.ProcessPR(ctx, 42)
+	err := c.ProcessPR(ctx, 42, nil)
 	if err != nil {
 		t.Fatalf("ProcessPR stage 1 error: %v", err)
 	}
 
 	// Stage 2: waiting CI → conflict detected via mergeable=false
-	err = c.ProcessPR(ctx, 42)
+	err = c.ProcessPR(ctx, 42, nil)
 	if err != nil {
 		t.Fatalf("ProcessPR stage 2 error: %v", err)
 	}
@@ -1615,7 +1608,7 @@ func TestController_PerPRCircuitBreaker_DoesNotBlockOtherPRs(t *testing.T) {
 
 	// Cause failures on PR 42 until circuit opens
 	for i := 0; i < 2; i++ {
-		_ = c.ProcessPR(ctx, 42)
+		_ = c.ProcessPR(ctx, 42, nil)
 	}
 
 	// PR 42's circuit should be open
@@ -1629,13 +1622,13 @@ func TestController_PerPRCircuitBreaker_DoesNotBlockOtherPRs(t *testing.T) {
 	}
 
 	// PR 43 should still be processable
-	err := c.ProcessPR(ctx, 43)
+	err := c.ProcessPR(ctx, 43, nil)
 	if err != nil {
 		t.Errorf("PR 43 should be processable despite PR 42's failures: %v", err)
 	}
 
 	// PR 42 should be blocked
-	err = c.ProcessPR(ctx, 42)
+	err = c.ProcessPR(ctx, 42, nil)
 	if err == nil {
 		t.Error("PR 42 should be blocked by its per-PR circuit breaker")
 	}
@@ -1919,7 +1912,7 @@ func TestController_handleMerging_ConflictClearsLabel(t *testing.T) {
 	ctx := context.Background()
 
 	// Process PR - merge should fail and trigger conflict handling
-	err := c.ProcessPR(ctx, 42)
+	err := c.ProcessPR(ctx, 42, nil)
 
 	// No error returned because handleMergeConflict handles it gracefully
 	if err != nil {
@@ -2023,7 +2016,7 @@ func TestController_handleMerging_Success_RemovesFailedLabel(t *testing.T) {
 
 	ctx := context.Background()
 
-	err := c.ProcessPR(ctx, 42)
+	err := c.ProcessPR(ctx, 42, nil)
 	if err != nil {
 		t.Fatalf("ProcessPR returned error: %v", err)
 	}
@@ -2047,5 +2040,170 @@ func TestController_handleMerging_Success_RemovesFailedLabel(t *testing.T) {
 	}
 	if prState.Stage != StageMerged {
 		t.Errorf("Stage = %s, want %s", prState.Stage, StageMerged)
+	}
+}
+
+// Test consecutive API failure counter logic
+func TestController_ConsecutiveAPIFailures(t *testing.T) {
+	// Mock HTTP server that always returns error for check runs API
+	var apiCallCount int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		apiCallCount++
+		if strings.Contains(r.URL.Path, "check-runs") {
+			// Return error for CI checks
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"message":"API Error"}`))
+			return
+		}
+		// Default PR response for GetPullRequest calls
+		if strings.Contains(r.URL.Path, "/pulls/") {
+			pr := map[string]interface{}{
+				"number":    42,
+				"state":     "open",
+				"merged":    false,
+				"mergeable": true,
+				"head": map[string]interface{}{
+					"sha": "abc1234",
+				},
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(pr)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("{}"))
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+
+	cfg := DefaultConfig()
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc1234", "pilot/GH-10")
+
+	// Set PR to waiting CI stage
+	prState, _ := c.GetPRState(42)
+	prState.Stage = StageWaitingCI
+
+	ctx := context.Background()
+
+	// Call ProcessPR 4 times - failures should increment but not transition to StageFailed yet
+	for i := 1; i <= 4; i++ {
+		err := c.ProcessPR(ctx, 42, nil)
+		if err != nil {
+			t.Fatalf("ProcessPR iteration %d error: %v", i, err)
+		}
+
+		prState, _ = c.GetPRState(42)
+		if prState.ConsecutiveAPIFailures != i {
+			t.Errorf("after %d failures: ConsecutiveAPIFailures = %d, want %d", i, prState.ConsecutiveAPIFailures, i)
+		}
+		if prState.Stage != StageWaitingCI {
+			t.Errorf("after %d failures: Stage = %s, want %s", i, prState.Stage, StageWaitingCI)
+		}
+	}
+
+	// 5th failure should transition to StageFailed
+	err := c.ProcessPR(ctx, 42, nil)
+	if err != nil {
+		t.Fatalf("ProcessPR 5th iteration error: %v", err)
+	}
+
+	prState, _ = c.GetPRState(42)
+	if prState.ConsecutiveAPIFailures != 5 {
+		t.Errorf("after 5 failures: ConsecutiveAPIFailures = %d, want 5", prState.ConsecutiveAPIFailures)
+	}
+	if prState.Stage != StageFailed {
+		t.Errorf("after 5 failures: Stage = %s, want %s", prState.Stage, StageFailed)
+	}
+	if !strings.Contains(prState.Error, "CI check API failed 5 consecutive times") {
+		t.Errorf("Error = %q, should contain consecutive API failure message", prState.Error)
+	}
+}
+
+// Test that consecutive failure counter resets on successful API call
+func TestController_ConsecutiveAPIFailures_Reset(t *testing.T) {
+	// Mock HTTP server that fails 3 times then succeeds
+	var apiCallCount int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "check-runs") {
+			apiCallCount++
+			if apiCallCount <= 3 {
+				// Return error for first 3 CI checks
+				w.WriteHeader(http.StatusInternalServerError)
+				_, _ = w.Write([]byte(`{"message":"API Error"}`))
+				return
+			}
+			// Success on 4th call - return successful CI
+			response := map[string]interface{}{
+				"total_count": 1,
+				"check_runs": []map[string]interface{}{
+					{
+						"name":       "build",
+						"status":     "completed",
+						"conclusion": "success",
+					},
+				},
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(response)
+			return
+		}
+		// Default PR response for GetPullRequest calls
+		if strings.Contains(r.URL.Path, "/pulls/") {
+			pr := map[string]interface{}{
+				"number":    42,
+				"state":     "open",
+				"merged":    false,
+				"mergeable": true,
+				"head": map[string]interface{}{
+					"sha": "abc1234",
+				},
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(pr)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("{}"))
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+
+	cfg := DefaultConfig()
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc1234", "pilot/GH-10")
+
+	// Set PR to waiting CI stage
+	prState, _ := c.GetPRState(42)
+	prState.Stage = StageWaitingCI
+
+	ctx := context.Background()
+
+	// Call ProcessPR 3 times with failures
+	for i := 1; i <= 3; i++ {
+		err := c.ProcessPR(ctx, 42, nil)
+		if err != nil {
+			t.Fatalf("ProcessPR iteration %d error: %v", i, err)
+		}
+		prState, _ = c.GetPRState(42)
+		if prState.ConsecutiveAPIFailures != i {
+			t.Errorf("after %d failures: ConsecutiveAPIFailures = %d, want %d", i, prState.ConsecutiveAPIFailures, i)
+		}
+	}
+
+	// 4th call succeeds - counter should reset and transition to StageCIPassed
+	err := c.ProcessPR(ctx, 42, nil)
+	if err != nil {
+		t.Fatalf("ProcessPR 4th iteration (success) error: %v", err)
+	}
+
+	prState, _ = c.GetPRState(42)
+	if prState.ConsecutiveAPIFailures != 0 {
+		t.Errorf("after success: ConsecutiveAPIFailures = %d, want 0", prState.ConsecutiveAPIFailures)
+	}
+	if prState.Stage != StageCIPassed {
+		t.Errorf("after success: Stage = %s, want %s", prState.Stage, StageCIPassed)
 	}
 }
