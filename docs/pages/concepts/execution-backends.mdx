@@ -1,0 +1,339 @@
+import { Callout, Tabs } from 'nextra/components'
+
+# Execution Backends
+
+Pilot supports multiple AI coding backends via a unified execution interface. All backends produce the same output (branches, commits, PRs) — the choice affects which AI model runs your tasks.
+
+## Overview
+
+Pilot abstracts away backend-specific differences so you can swap between AI providers without changing your workflow:
+
+- **Claude Code** (default): Anthropic's native CLI tool with full feature support
+- **Qwen Code**: Alibaba's Qwen models with structured JSON output and session resume
+- **OpenCode**: Community-driven backend with client/server architecture
+
+All three execute the same logic, handle tool calls identically, and produce pull requests. The differences lie in model capabilities, configuration complexity, and feature parity.
+
+---
+
+## Feature Comparison
+
+| Feature | Claude Code | Qwen Code | OpenCode |
+|---------|------------|-----------|----------|
+| **Stream JSON output** | Yes | Yes (v0.1.0+) | SSE (streaming) |
+| **Session resume (`--resume`)** | Yes | Yes | No |
+| **PR context (`--from-pr`)** | Yes | No | No |
+| **Effort routing** | Yes | No (silently skipped) | No |
+| **Model routing** | Yes | Yes | Via config |
+| **Permissions skip** | `--dangerously-skip-permissions` | `--yolo` | N/A |
+| **Verbose mode** | `--verbose` | Not supported | N/A |
+| **Error retry (rate limit, API)** | Yes | Yes | No (raw HTTP) |
+| **Session-not-found fallback** | Yes (`--from-pr` retry) | Yes (`--resume` retry) | No |
+
+---
+
+## Claude Code
+
+Anthropic's official CLI for Claude AI development. Provides the most complete feature set and is the default backend.
+
+### Prerequisites
+
+```bash
+npm install -g @anthropic-ai/claude-code
+claude login  # or set ANTHROPIC_API_KEY env var
+```
+
+### Configuration
+
+```yaml
+executor:
+  backend:
+    type: claude-code
+    claude_code:
+      command: "claude"
+      use_structured_output: true
+      use_session_resume: true
+      use_from_pr: true
+```
+
+### Configuration Fields
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `command` | string | `"claude"` | Path to the Claude Code CLI binary |
+| `use_structured_output` | bool | `false` | Enable JSON structured output for classifiers |
+| `use_session_resume` | bool | `false` | Reuse sessions for self-review (~40% token savings) |
+| `use_from_pr` | bool | `false` | Use `--from-pr` to resume from PR context |
+
+### Strengths
+
+- ✅ Full feature parity with Pilot
+- ✅ Session resume reduces token usage for self-review
+- ✅ PR context (`--from-pr`) enables targeted improvements
+- ✅ Effort routing for optimization
+- ✅ Automatic rate limit retries with exponential backoff
+
+### Best For
+
+- Default choice for all use cases
+- Teams wanting comprehensive features
+- Projects with high task complexity
+
+---
+
+## Qwen Code
+
+Alibaba's Qwen models with structured output and session support. Lightweight alternative to Claude Code.
+
+### Prerequisites
+
+```bash
+# Install Qwen Code v0.1.0 or later (must support --output-format stream-json)
+qwen --version
+```
+
+### Configuration
+
+```yaml
+executor:
+  backend:
+    type: qwen-code
+    qwen_code:
+      command: "qwen"
+      use_session_resume: true
+```
+
+### Configuration Fields
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `command` | string | `"qwen"` | Path to the Qwen Code CLI binary |
+| `use_session_resume` | bool | `false` | Reuse sessions for self-review |
+
+### Important Notes
+
+- **Effort routing is silently skipped** — Pilot passes effort levels but Qwen ignores them
+- **No `--from-pr` support** — PR context cannot be passed to Qwen Code
+- **Session resume requires v0.1.0+** — Earlier versions don't support `--output-format stream-json`
+
+### Strengths
+
+- ✅ Structured JSON streaming output
+- ✅ Session resume for context reuse
+- ✅ Rate limit error classification
+- ✅ Lightweight CLI
+
+### Limitations
+
+- ❌ No effort routing
+- ❌ No PR context support
+- ❌ No built-in Verbose mode
+
+### Best For
+
+- Qwen model advocates
+- Cost-sensitive environments
+- Simpler tasks without effort optimization
+
+---
+
+## OpenCode
+
+Community-driven backend using a client/server HTTP architecture. Flexible for self-hosted deployments.
+
+### Prerequisites
+
+```bash
+# Install OpenCode CLI
+npm install -g opencode
+
+# Start the server (can be auto-started by Pilot)
+opencode serve
+```
+
+The server must be running or Pilot will attempt to start it. By default, it listens on `http://127.0.0.1:4096`.
+
+### Configuration
+
+```yaml
+executor:
+  backend:
+    type: opencode
+    opencode:
+      server_url: "http://127.0.0.1:4096"
+      model: "anthropic/claude-sonnet-4"
+      provider: "anthropic"
+      auto_start_server: true
+      server_command: "opencode serve"
+```
+
+### Configuration Fields
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `server_url` | string | `"http://127.0.0.1:4096"` | OpenCode server URL (local or remote) |
+| `model` | string | `"anthropic/claude-sonnet-4"` | Model identifier in `provider/model` format |
+| `provider` | string | `"anthropic"` | LLM provider name |
+| `auto_start_server` | bool | `true` | Auto-start server if not responding |
+| `server_command` | string | `"opencode serve"` | Command to start the server |
+
+### Important Notes
+
+- **Server-based**: Requires a running OpenCode server process
+- **No session resume**: Cannot reuse context across invocations
+- **No PR context**: Cannot leverage `--from-pr` for targeted execution
+- **Raw HTTP**: Errors are not classified (rate limit, API, timeout all appear as HTTP errors)
+- **SSE streaming**: Uses HTTP Server-Sent Events instead of JSON streaming
+
+### Strengths
+
+- ✅ Flexible server architecture (can be remote)
+- ✅ Multi-user capable (one server, many clients)
+- ✅ Works with self-hosted OpenCode instances
+
+### Limitations
+
+- ❌ No session resume
+- ❌ No PR context support
+- ❌ No automatic error classification/retries
+- ❌ Requires server to be running
+- ❌ SSE streaming (no structured JSON)
+
+### Best For
+
+- Self-hosted deployments
+- Organizations with strict network isolation
+- Teams running shared OpenCode server
+
+### Troubleshooting
+
+**Server connection refused:**
+```bash
+# Check if server is running
+curl http://127.0.0.1:4096/global/health
+
+# Start server manually if auto-start fails
+opencode serve
+```
+
+**Server not auto-starting:**
+- Check that `opencode` CLI is in PATH
+- Verify `server_command` is correct
+- Review Pilot logs for startup errors
+
+---
+
+## Choosing a Backend
+
+### Decision Tree
+
+```
+Do you want the most features?
+├─ Yes → Claude Code (default, recommended)
+└─ No
+  ├─ Do you use Qwen models?
+  │  ├─ Yes → Qwen Code
+  │  └─ No
+  │    └─ Do you need a server-based backend?
+  │       ├─ Yes → OpenCode
+  │       └─ No → Claude Code (default)
+```
+
+### Comparison Summary
+
+| Need | Best Fit |
+|------|----------|
+| Default, all features | Claude Code |
+| Qwen model support | Qwen Code |
+| Self-hosted/server-based | OpenCode |
+| Cost optimization + features | Claude Code with model routing |
+| Lightweight alternative | Qwen Code |
+
+---
+
+## Switching Backends
+
+Switch backends by changing the `executor.type` field in your config and restarting Pilot:
+
+```yaml
+executor:
+  type: "qwen-code"  # Change from "claude-code" to "qwen-code"
+  qwen_code:
+    command: "qwen"
+    use_session_resume: true
+```
+
+<Callout type="warning">
+Different backends may have different feature support. Review the feature comparison table above before switching. For example, Qwen Code does not support `--from-pr` PR context, so self-review optimization will be reduced.
+</Callout>
+
+---
+
+## Troubleshooting
+
+### Backend not available
+
+```bash
+# Test backend availability
+pilot doctor
+
+# Output indicates which backends are available:
+# ✓ Claude Code detected (installed)
+# ✓ Qwen Code detected (installed)
+# ✗ OpenCode server not running (opencode CLI found)
+```
+
+### Session resume not working
+
+Session resume requires the backend to support it and Pilot config to enable it:
+
+```yaml
+executor:
+  type: claude-code
+  claude_code:
+    use_session_resume: true  # Must be enabled
+```
+
+**Claude Code**: Sessions are stored in `~/.claude/sessions/`
+
+**Qwen Code**: Requires `qwen --version` to show v0.1.0+
+
+### Rate limit errors
+
+**Claude Code** and **Qwen Code** automatically retry with exponential backoff. **OpenCode** does not — you must handle retries at the Pilot orchestrator level.
+
+Enable retry configuration:
+
+```yaml
+executor:
+  retry:
+    enabled: true
+    max_attempts: 3
+```
+
+---
+
+## Advanced: Using Multiple Backends
+
+While Pilot executes with a single backend at a time, you can switch backends between tasks by:
+
+1. Updating the config file
+2. Restarting Pilot
+3. Submitting new tasks
+
+This is useful for:
+- Testing different backends
+- Cost optimization (use Haiku for trivial tasks, switch to Sonnet for complex ones)
+- Gradual migration from one backend to another
+
+For automatic per-task backend selection, enable model routing (Claude Code only):
+
+```yaml
+executor:
+  model_routing:
+    enabled: true
+    trivial: "claude-haiku"
+    simple: "claude-sonnet"
+    medium: "claude-opus-4-6"
+    complex: "claude-opus-4-6"
+```

@@ -196,7 +196,7 @@ executor:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `type` | string | `"claude-code"` | Backend type: `claude-code` or `opencode` |
+| `type` | string | `"claude-code"` | Backend type: `claude-code`, `qwen-code`, or `opencode` |
 | `auto_create_pr` | bool | `true` | Automatically create PRs after execution |
 | `direct_commit` | bool | `false` | Commit directly without PR |
 | `detect_ephemeral` | bool | `true` | Detect and skip ephemeral file changes |
@@ -204,6 +204,8 @@ executor:
 | `use_worktree` | bool | `false` | Execute tasks in isolated git worktrees (enables execution with uncommitted changes) |
 | `claude_code.command` | string | `"claude"` | Path to the Claude CLI binary |
 | `claude_code.extra_args` | []string | `[]` | Additional CLI arguments |
+| `qwen_code.command` | string | `"qwen"` | Path to the Qwen Code CLI binary |
+| `qwen_code.use_session_resume` | bool | `false` | Reuse sessions for self-review |
 | `model_routing.enabled` | bool | `false` | Route tasks to different models by complexity |
 | `model_routing.trivial` | string | `"claude-haiku"` | Model for trivial tasks |
 | `model_routing.simple` | string | `"claude-opus-4-6"` | Model for simple tasks |

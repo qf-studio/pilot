@@ -1,7 +1,7 @@
 {
   "why-pilot": "Why Pilot",
   "architecture": "Architecture",
+  "execution-backends": "Execution Backends",
   "model-routing": "Model Routing",
-  "worktree-isolation": "Worktree Isolation",
-  "claude-code-integration": "Claude Code Integration"
+  "worktree-isolation": "Worktree Isolation"
 }

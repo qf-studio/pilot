@@ -8,9 +8,9 @@ Before installing Pilot, you need two things: **Claude Code** for AI execution a
 
 ---
 
-## Claude Code
+## Claude Code (Default)
 
-Pilot uses [Claude Code](https://docs.anthropic.com/en/docs/claude-code) as its execution engine. Claude Code is Anthropic's CLI tool for AI-powered development — Pilot orchestrates it as a subprocess.
+Pilot uses [Claude Code](https://docs.anthropic.com/en/docs/claude-code) as its default execution engine. Claude Code is Anthropic's CLI tool for AI-powered development — Pilot orchestrates it as a subprocess.
 
 ```bash
 npm install -g @anthropic-ai/claude-code
@@ -97,6 +97,67 @@ adapters:
 ```
   </Tabs.Tab>
 </Tabs>
+
+---
+
+## Optional Execution Backends
+
+Pilot supports multiple AI coding backends. Claude Code is recommended and enabled by default. The following backends are optional alternatives:
+
+<Tabs items={['Qwen Code', 'OpenCode']}>
+  <Tabs.Tab>
+### Qwen Code
+
+If you want to use Alibaba's Qwen models instead of Claude, install Qwen Code v0.1.0 or later:
+
+```bash
+# Install Qwen Code
+npm install -g qwen-code
+
+# Verify version (must be 0.1.0+)
+qwen --version
+
+# Configure Pilot to use Qwen Code
+# In ~/.pilot/config.yaml:
+executor:
+  type: qwen-code
+  qwen_code:
+    command: "qwen"
+    use_session_resume: true
+```
+
+See [Execution Backends](/concepts/execution-backends#qwen-code) for detailed configuration and feature comparison.
+  </Tabs.Tab>
+  <Tabs.Tab>
+### OpenCode
+
+If you want to use OpenCode (community-driven backend), install the CLI:
+
+```bash
+# Install OpenCode
+npm install -g opencode
+
+# Start the server (can also be auto-started by Pilot)
+opencode serve
+
+# Configure Pilot to use OpenCode
+# In ~/.pilot/config.yaml:
+executor:
+  type: opencode
+  opencode:
+    server_url: "http://127.0.0.1:4096"
+    model: "anthropic/claude-sonnet-4"
+    provider: "anthropic"
+    auto_start_server: true
+```
+
+See [Execution Backends](/concepts/execution-backends#opencode) for detailed configuration and feature comparison.
+  </Tabs.Tab>
+</Tabs>
+
+<Callout type="info">
+**Recommended**: Start with Claude Code (default). Other backends are optional and suitable for specific use cases (Qwen model preference, self-hosted server requirements, etc.).
+</Callout>
 
 ---
 
