@@ -113,7 +113,7 @@ Disable via config: `executor.navigator.auto_init: false`
 
 ## Current State
 
-**Current Version:** v1.8.1 | **139 features working**
+**Current Version:** v1.10.0 | **143 features working**
 
 **Full implementation status:** `.agent/system/FEATURE-MATRIX.md`
 
@@ -169,6 +169,10 @@ Disable via config: `executor.navigator.auto_init: false`
 | Structured Output | Done | `--json-schema` for classifiers + post-execution summary (v1.3.0) |
 | Claude Code Hooks | Done | Stop/PreToolUse/PostToolUse hooks for inline quality gates (v1.3.0) |
 | Label Cleanup on Retry | Done | Remove `pilot-failed` on successful retry — accurate metrics (v1.8.1) |
+| Autopilot Optimization | Done | Cached GetPR, API failure escalation, dynamic CI poll interval (v1.8.5) |
+| Qwen Code Backend | Done | Third executor backend — Alibaba Qwen Code CLI with stream-json (v1.9.0) |
+| Qwen Bug Fixes | Done | Pricing correction, version check, session_not_found, resume fallback (v1.9.2) |
+| Pipeline Hardening | Done | External correctness checks: constants, parity, coverage, dropped features (v1.10.0) |
 
 ### Telegram Interaction Modes (v0.6.0)
 
@@ -253,10 +257,20 @@ Goal: Raise autonomous reliability from 3/10 to 8/10. **Achieved: 8/10**
 
 ## Completed Log
 
+### 2026-02-15
+
+| Item | What |
+|------|------|
+| **v1.10.0** | Pipeline hardening: 4 external correctness checks — constants sanity, cross-file parity, coverage delta, dropped features (GH-1321) |
+| **v1.9.2** | Qwen Code bug fixes: pricing 5x correction, CLI version check, session_not_found, --resume fallback (GH-1316) |
+| **v1.9.0** | Qwen Code backend engine — third executor backend (GH-1314) |
+| Docs | Multi-backend documentation page: Claude Code, Qwen Code, OpenCode (GH-1324) |
+
 ### 2026-02-14
 
 | Item | What |
 |------|------|
+| **v1.8.5** | Autopilot optimization: cached GetPR, API failure escalation, dynamic CI poll interval (GH-1304) |
 | **v1.8.1** | Remove `pilot-failed` label on successful retry — fixes inflated failure metrics (GH-1302) |
 | **v1.8.0** | Docs: configuration reference + Navigator cross-reference for SDK features (GH-1289) |
 | **v1.7.0** | Docs: example config updated with new fields (GH-1289 sub-issue) |

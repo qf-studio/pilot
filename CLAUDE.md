@@ -183,7 +183,7 @@ Documentation in `.agent/`:
 
 ## Current Status
 
-**Version:** v1.0.11 | **134 features implemented**
+**Version:** v1.10.0 | **143 features implemented**
 
 **Core:**
 - ✅ Task execution with Navigator integration
