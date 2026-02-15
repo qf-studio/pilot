@@ -1,0 +1,230 @@
+import { Callout, Tabs } from 'nextra/components'
+
+# Local / Bare Metal Deployment
+
+Deploy Pilot on local machines or bare metal servers with systemd (Linux) or launchd (macOS).
+
+---
+
+## Binary Installation
+
+Download the latest release from GitHub:
+
+```bash
+# macOS (Apple Silicon)
+curl -L https://github.com/anthropics/pilot/releases/latest/download/pilot-darwin-arm64.tar.gz | tar xz
+mv pilot ~/.local/bin/
+
+# macOS (Intel)
+curl -L https://github.com/anthropics/pilot/releases/latest/download/pilot-darwin-amd64.tar.gz | tar xz
+mv pilot ~/.local/bin/
+
+# Linux (x86_64)
+curl -L https://github.com/anthropics/pilot/releases/latest/download/pilot-linux-amd64.tar.gz | tar xz
+mv pilot ~/.local/bin/
+```
+
+Verify installation:
+
+```bash
+pilot version
+```
+
+---
+
+## Configuration
+
+Create the config directory and file:
+
+```bash
+mkdir -p ~/.pilot
+touch ~/.pilot/config.yaml
+```
+
+Minimal production config:
+
+```yaml
+version: "1.0"
+
+gateway:
+  host: "0.0.0.0"  # Listen on all interfaces
+  port: 9090
+
+adapters:
+  github:
+    enabled: true
+    token: "${GITHUB_TOKEN}"
+    repo: "your-org/your-repo"
+    pilot_label: "pilot"
+    polling:
+      enabled: true
+      interval: 30s
+
+executor:
+  type: "claude-code"
+  auto_create_pr: true
+
+autopilot:
+  enabled: true
+  auto_merge: true
+  merge_method: "squash"
+  ci_wait_timeout: 30m
+```
+
+---
+
+## systemd Service (Linux)
+
+Create a systemd unit file for Linux servers:
+
+```bash
+sudo tee /etc/systemd/system/pilot.service << 'EOF'
+[Unit]
+Description=Pilot AI Development Pipeline
+After=network.target
+
+[Service]
+Type=simple
+User=pilot
+Group=pilot
+WorkingDirectory=/home/pilot
+Environment="HOME=/home/pilot"
+Environment="PATH=/home/pilot/.local/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="GITHUB_TOKEN=ghp_xxxx"
+Environment="ANTHROPIC_API_KEY=sk-ant-xxxx"
+ExecStart=/home/pilot/.local/bin/pilot start --github
+Restart=always
+RestartSec=10
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/pilot/.pilot
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+EOF
+```
+
+Enable and start:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable pilot
+sudo systemctl start pilot
+```
+
+Check status:
+
+```bash
+sudo systemctl status pilot
+journalctl -u pilot -f  # Follow logs
+```
+
+<Callout type="info">
+For production, store secrets in a secure location and reference them via `EnvironmentFile=/etc/pilot/env` instead of inline `Environment` directives.
+</Callout>
+
+---
+
+## launchd Service (macOS)
+
+Create a launchd plist:
+
+```bash
+tee ~/Library/LaunchAgents/com.pilot.agent.plist << 'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.pilot.agent</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/YOU/.local/bin/pilot</string>
+        <string>start</string>
+        <string>--github</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/tmp/pilot.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/pilot.err</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>GITHUB_TOKEN</key>
+        <string>ghp_xxxx</string>
+        <key>ANTHROPIC_API_KEY</key>
+        <string>sk-ant-xxxx</string>
+    </dict>
+</dict>
+</plist>
+EOF
+```
+
+Load and start:
+
+```bash
+launchctl load ~/Library/LaunchAgents/com.pilot.agent.plist
+```
+
+Check status:
+
+```bash
+launchctl list | grep pilot
+tail -f /tmp/pilot.log
+```
+
+Unload (stop):
+
+```bash
+launchctl unload ~/Library/LaunchAgents/com.pilot.agent.plist
+```
+
+<Callout type="warning">
+Replace `/Users/YOU` with your actual home directory path. macOS launchd runs as your user, so paths must be absolute.
+</Callout>
+
+---
+
+## Managing Secrets
+
+### Linux (systemd)
+
+Use an environment file:
+
+```bash
+sudo mkdir -p /etc/pilot
+sudo tee /etc/pilot/env << 'EOF'
+GITHUB_TOKEN=ghp_xxxx
+ANTHROPIC_API_KEY=sk-ant-xxxx
+EOF
+sudo chmod 600 /etc/pilot/env
+sudo chown pilot:pilot /etc/pilot/env
+```
+
+Update the service file:
+
+```ini
+[Service]
+EnvironmentFile=/etc/pilot/env
+# Remove inline Environment= lines
+```
+
+### macOS (Keychain)
+
+For macOS, you can use Keychain Access or a `.env` file with restricted permissions:
+
+```bash
+touch ~/.pilot/.env
+chmod 600 ~/.pilot/.env
+echo "GITHUB_TOKEN=ghp_xxxx" >> ~/.pilot/.env
+echo "ANTHROPIC_API_KEY=sk-ant-xxxx" >> ~/.pilot/.env
+```
+
+Then source it in a wrapper script referenced by launchd.

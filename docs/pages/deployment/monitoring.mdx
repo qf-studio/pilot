@@ -1,0 +1,311 @@
+import { Callout } from 'nextra/components'
+
+# Monitoring
+
+Pilot exposes Prometheus metrics and supports structured JSON logging for observability.
+
+---
+
+## Prometheus Metrics
+
+Pilot exposes metrics at `/metrics` in Prometheus text format.
+
+### Available Metrics
+
+**Counters:**
+
+| Metric | Labels | Description |
+|--------|--------|-------------|
+| `pilot_issues_processed_total` | `result` | Issues processed (success, failed, rate_limited) |
+| `pilot_prs_merged_total` | - | PRs successfully merged |
+| `pilot_prs_failed_total` | - | PRs that failed |
+| `pilot_prs_conflicting_total` | - | PRs with merge conflicts |
+| `pilot_circuit_breaker_trips_total` | - | Circuit breaker activations |
+| `pilot_api_errors_total` | `endpoint` | API errors by endpoint |
+| `pilot_label_cleanups_total` | `label` | Label cleanup operations |
+
+**Gauges:**
+
+| Metric | Labels | Description |
+|--------|--------|-------------|
+| `pilot_queue_depth` | - | Issues waiting in queue |
+| `pilot_failed_queue_depth` | - | Failed issues in queue |
+| `pilot_active_prs` | `stage` | Active PRs by stage |
+| `pilot_active_prs_total` | - | Total active PRs |
+| `pilot_api_error_rate` | - | API errors/minute (5m window) |
+| `pilot_success_rate` | - | Success rate (0-1) |
+
+**Histograms:**
+
+| Metric | Buckets | Description |
+|--------|---------|-------------|
+| `pilot_pr_time_to_merge_seconds` | 1m, 5m, 10m, 30m, 1h, 2h, 4h, 8h, 24h | Time from PR creation to merge |
+| `pilot_execution_duration_seconds` | 10s, 30s, 1m, 2m, 5m, 10m, 20m, 30m, 1h | Task execution duration |
+| `pilot_ci_wait_duration_seconds` | 30s, 1m, 2m, 5m, 10m, 15m, 20m, 30m, 1h | CI wait duration |
+
+---
+
+## Prometheus Scrape Config
+
+Add Pilot to your Prometheus configuration:
+
+```yaml
+scrape_configs:
+  - job_name: 'pilot'
+    static_configs:
+      - targets: ['pilot:9090']
+    metrics_path: /metrics
+    scrape_interval: 30s
+```
+
+For Kubernetes with ServiceMonitor:
+
+```yaml
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: pilot
+  labels:
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app: pilot
+  endpoints:
+  - port: http
+    path: /metrics
+    interval: 30s
+```
+
+---
+
+## Grafana Dashboard
+
+### Key Panels
+
+Create a Grafana dashboard with these panels:
+
+**1. Issue Throughput**
+```promql
+rate(pilot_issues_processed_total[5m])
+```
+Legend: `{{result}}`
+
+**2. PR Merge Rate**
+```promql
+rate(pilot_prs_merged_total[1h]) * 3600
+```
+Unit: PRs/hour
+
+**3. Success Rate**
+```promql
+pilot_success_rate
+```
+Thresholds: Red < 0.7, Yellow < 0.9, Green >= 0.9
+
+**4. Queue Depth**
+```promql
+pilot_queue_depth
+pilot_failed_queue_depth
+```
+
+**5. Execution Duration P95**
+```promql
+histogram_quantile(0.95, rate(pilot_execution_duration_seconds_bucket[5m]))
+```
+
+**6. CI Wait Time P50**
+```promql
+histogram_quantile(0.50, rate(pilot_ci_wait_duration_seconds_bucket[5m]))
+```
+
+**7. Active PRs by Stage**
+```promql
+pilot_active_prs
+```
+Legend: `{{stage}}`
+
+---
+
+## Alerting Rules
+
+```yaml
+groups:
+- name: pilot
+  rules:
+  - alert: PilotHighFailureRate
+    expr: pilot_success_rate < 0.8
+    for: 15m
+    labels:
+      severity: warning
+    annotations:
+      summary: "Pilot success rate below 80%"
+      description: "Success rate is {{ $value | humanizePercentage }}"
+
+  - alert: PilotQueueBacklog
+    expr: pilot_queue_depth > 10
+    for: 30m
+    labels:
+      severity: warning
+    annotations:
+      summary: "Pilot queue depth exceeds 10 issues"
+      description: "{{ $value }} issues waiting in queue"
+
+  - alert: PilotCircuitBreakerTripped
+    expr: increase(pilot_circuit_breaker_trips_total[5m]) > 0
+    labels:
+      severity: critical
+    annotations:
+      summary: "Pilot circuit breaker tripped"
+      description: "API errors caused circuit breaker to activate"
+
+  - alert: PilotDown
+    expr: up{job="pilot"} == 0
+    for: 5m
+    labels:
+      severity: critical
+    annotations:
+      summary: "Pilot is down"
+      description: "Pilot has been unreachable for 5 minutes"
+
+  - alert: PilotSlowExecution
+    expr: histogram_quantile(0.95, rate(pilot_execution_duration_seconds_bucket[15m])) > 1800
+    for: 30m
+    labels:
+      severity: warning
+    annotations:
+      summary: "Pilot execution times are high"
+      description: "P95 execution time is {{ $value | humanizeDuration }}"
+```
+
+---
+
+## JSON Structured Logging
+
+Enable JSON logging for log aggregation systems (ELK, Loki, CloudWatch):
+
+### Configuration
+
+```yaml
+logging:
+  level: info       # debug, info, warn, error
+  format: json      # json or text
+  output: stdout    # stdout, stderr, or file path
+```
+
+Or via CLI flag:
+
+```bash
+pilot start --log-format json
+```
+
+### Log Format
+
+JSON logs include structured fields:
+
+```json
+{
+  "time": "2026-02-14T10:30:00Z",
+  "level": "INFO",
+  "msg": "Task completed",
+  "component": "executor",
+  "task_id": "issue-123",
+  "project": "my-app",
+  "correlation_id": "abc-123",
+  "duration_ms": 45000
+}
+```
+
+### Key Fields
+
+| Field | Description |
+|-------|-------------|
+| `time` | ISO 8601 timestamp |
+| `level` | Log level (DEBUG, INFO, WARN, ERROR) |
+| `msg` | Log message |
+| `component` | Pilot component (executor, autopilot, gateway) |
+| `task_id` | Issue/task identifier |
+| `correlation_id` | Request correlation ID |
+| `duration_ms` | Operation duration in milliseconds |
+
+---
+
+## Log Rotation
+
+For file output, configure rotation:
+
+```yaml
+logging:
+  level: info
+  format: json
+  output: /var/log/pilot/pilot.log
+  rotation:
+    max_size: "100MB"
+    max_age: "7d"
+    max_backups: 5
+```
+
+### systemd Journal
+
+When running with systemd, logs go to the journal by default:
+
+```bash
+# View logs
+journalctl -u pilot -f
+
+# View logs as JSON
+journalctl -u pilot -o json-pretty
+
+# Export to file
+journalctl -u pilot --since "1 hour ago" > pilot-logs.json
+```
+
+---
+
+## Loki Integration
+
+For Grafana Loki, use Promtail to ship logs:
+
+```yaml
+# promtail-config.yaml
+scrape_configs:
+  - job_name: pilot
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: pilot
+          __path__: /var/log/pilot/*.log
+    pipeline_stages:
+      - json:
+          expressions:
+            level: level
+            component: component
+            task_id: task_id
+      - labels:
+          level:
+          component:
+```
+
+Query in Grafana:
+
+```logql
+{job="pilot"} | json | level="ERROR"
+```
+
+---
+
+## Health Check Dashboard
+
+Create a status page with health endpoints:
+
+| Endpoint | Check | Expected |
+|----------|-------|----------|
+| `/health` | Basic | 200 OK |
+| `/ready` | Component readiness | 200 when ready |
+| `/live` | Liveness | 200 when alive |
+| `/metrics` | Prometheus | Metrics text |
+
+<Callout type="info">
+The `/ready` endpoint returns 503 during startup until all components are initialized. Use this for load balancer health checks.
+</Callout>

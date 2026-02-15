@@ -1,0 +1,278 @@
+import { Callout, Tabs } from 'nextra/components'
+
+# Google Cloud Deployment
+
+Deploy Pilot on Google Cloud using Compute Engine or Cloud Run.
+
+---
+
+## Compute Engine (GCE)
+
+### Create VM Instance
+
+```bash
+gcloud compute instances create pilot \
+  --machine-type=e2-small \
+  --image-family=ubuntu-2204-lts \
+  --image-project=ubuntu-os-cloud \
+  --boot-disk-size=20GB \
+  --tags=pilot \
+  --zone=us-central1-a \
+  --service-account=pilot-sa@PROJECT.iam.gserviceaccount.com \
+  --scopes=cloud-platform
+```
+
+### Firewall Rules
+
+```bash
+# Allow inbound HTTP for webhooks (from load balancer or specific IPs)
+gcloud compute firewall-rules create allow-pilot \
+  --allow=tcp:9090 \
+  --target-tags=pilot \
+  --source-ranges=130.211.0.0/22,35.191.0.0/16  # GCP health check IPs
+```
+
+### Install Pilot
+
+SSH into the instance:
+
+```bash
+gcloud compute ssh pilot --zone=us-central1-a
+```
+
+Install dependencies and Pilot:
+
+```bash
+# Install dependencies
+sudo apt update && sudo apt install -y git nodejs npm
+
+# Install Claude Code CLI
+sudo npm install -g @anthropic-ai/claude-code
+
+# Download Pilot
+curl -L https://github.com/anthropics/pilot/releases/latest/download/pilot-linux-amd64.tar.gz | tar xz
+sudo mv pilot /usr/local/bin/
+
+# Create pilot user
+sudo useradd -r -m -s /bin/bash pilot
+sudo mkdir -p /home/pilot/.pilot
+sudo chown -R pilot:pilot /home/pilot
+```
+
+### Secret Manager
+
+Store secrets in Secret Manager:
+
+```bash
+# Create secrets
+echo -n "ghp_xxxx" | gcloud secrets create pilot-github-token --data-file=-
+echo -n "sk-ant-xxxx" | gcloud secrets create pilot-anthropic-api-key --data-file=-
+
+# Grant access to service account
+gcloud secrets add-iam-policy-binding pilot-github-token \
+  --member="serviceAccount:pilot-sa@PROJECT.iam.gserviceaccount.com" \
+  --role="roles/secretmanager.secretAccessor"
+
+gcloud secrets add-iam-policy-binding pilot-anthropic-api-key \
+  --member="serviceAccount:pilot-sa@PROJECT.iam.gserviceaccount.com" \
+  --role="roles/secretmanager.secretAccessor"
+```
+
+### Startup Script
+
+Create `/home/pilot/start.sh`:
+
+```bash
+#!/bin/bash
+export GITHUB_TOKEN=$(gcloud secrets versions access latest --secret=pilot-github-token)
+export ANTHROPIC_API_KEY=$(gcloud secrets versions access latest --secret=pilot-anthropic-api-key)
+exec /usr/local/bin/pilot start --github
+```
+
+### systemd Service
+
+```bash
+sudo tee /etc/systemd/system/pilot.service << 'EOF'
+[Unit]
+Description=Pilot AI Development Pipeline
+After=network.target
+
+[Service]
+Type=simple
+User=pilot
+Group=pilot
+WorkingDirectory=/home/pilot
+ExecStart=/home/pilot/start.sh
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable pilot
+sudo systemctl start pilot
+```
+
+---
+
+## Cloud Run
+
+<Callout type="warning">
+Cloud Run is designed for request-driven workloads. Pilot is a long-running service that polls for issues. Use the `--min-instances=1` flag to prevent cold starts and ensure continuous operation.
+</Callout>
+
+### Deploy to Cloud Run
+
+```bash
+# Build and push container
+gcloud builds submit --tag gcr.io/PROJECT/pilot
+
+# Deploy
+gcloud run deploy pilot \
+  --image=gcr.io/PROJECT/pilot \
+  --platform=managed \
+  --region=us-central1 \
+  --port=9090 \
+  --min-instances=1 \
+  --max-instances=1 \
+  --memory=1Gi \
+  --cpu=1 \
+  --set-secrets="GITHUB_TOKEN=pilot-github-token:latest,ANTHROPIC_API_KEY=pilot-anthropic-api-key:latest" \
+  --allow-unauthenticated  # For webhook access
+```
+
+### Service Account
+
+Create a service account for Cloud Run:
+
+```bash
+gcloud iam service-accounts create pilot-cloudrun \
+  --display-name="Pilot Cloud Run Service Account"
+
+# Grant secret access
+gcloud secrets add-iam-policy-binding pilot-github-token \
+  --member="serviceAccount:pilot-cloudrun@PROJECT.iam.gserviceaccount.com" \
+  --role="roles/secretmanager.secretAccessor"
+
+gcloud secrets add-iam-policy-binding pilot-anthropic-api-key \
+  --member="serviceAccount:pilot-cloudrun@PROJECT.iam.gserviceaccount.com" \
+  --role="roles/secretmanager.secretAccessor"
+```
+
+Deploy with the service account:
+
+```bash
+gcloud run deploy pilot \
+  --service-account=pilot-cloudrun@PROJECT.iam.gserviceaccount.com \
+  ...
+```
+
+---
+
+## Cloud Run with Persistent Storage
+
+Cloud Run doesn't support persistent disks directly. For SQLite persistence, use Cloud Storage FUSE or Filestore:
+
+### Option 1: Cloud Storage FUSE (Second Generation)
+
+```bash
+# Create bucket
+gsutil mb gs://pilot-data-PROJECT
+
+# Deploy with volume mount
+gcloud run deploy pilot \
+  --image=gcr.io/PROJECT/pilot \
+  --execution-environment=gen2 \
+  --add-volume=name=pilot-data,type=cloud-storage,bucket=pilot-data-PROJECT \
+  --add-volume-mount=volume=pilot-data,mount-path=/home/pilot/.pilot/data \
+  ...
+```
+
+<Callout type="info">
+Cloud Storage FUSE has higher latency than local storage. For performance-sensitive workloads, use Compute Engine with local SSDs.
+</Callout>
+
+---
+
+## Load Balancer
+
+For production webhook access, set up an external HTTPS load balancer:
+
+```bash
+# Reserve static IP
+gcloud compute addresses create pilot-ip --global
+
+# Create serverless NEG (for Cloud Run)
+gcloud compute network-endpoint-groups create pilot-neg \
+  --region=us-central1 \
+  --network-endpoint-type=serverless \
+  --cloud-run-service=pilot
+
+# Create backend service
+gcloud compute backend-services create pilot-backend \
+  --global \
+  --load-balancing-scheme=EXTERNAL_MANAGED
+
+gcloud compute backend-services add-backend pilot-backend \
+  --global \
+  --network-endpoint-group=pilot-neg \
+  --network-endpoint-group-region=us-central1
+
+# Create URL map and HTTPS proxy
+gcloud compute url-maps create pilot-url-map \
+  --default-service=pilot-backend
+
+gcloud compute ssl-certificates create pilot-cert \
+  --domains=pilot.example.com
+
+gcloud compute target-https-proxies create pilot-https-proxy \
+  --url-map=pilot-url-map \
+  --ssl-certificates=pilot-cert
+
+# Create forwarding rule
+gcloud compute forwarding-rules create pilot-forwarding-rule \
+  --global \
+  --target-https-proxy=pilot-https-proxy \
+  --ports=443 \
+  --address=pilot-ip
+```
+
+---
+
+## Monitoring
+
+Enable Cloud Monitoring for Pilot metrics:
+
+```bash
+# Install Ops Agent on GCE
+curl -sSO https://dl.google.com/cloudagents/add-google-cloud-ops-agent-repo.sh
+sudo bash add-google-cloud-ops-agent-repo.sh --also-install
+```
+
+Configure custom metrics scraping in `/etc/google-cloud-ops-agent/config.yaml`:
+
+```yaml
+metrics:
+  receivers:
+    pilot:
+      type: prometheus
+      config:
+        scrape_configs:
+          - job_name: 'pilot'
+            static_configs:
+              - targets: ['localhost:9090']
+            metrics_path: /metrics
+  service:
+    pipelines:
+      prometheus:
+        receivers:
+          - pilot
+```
+
+Restart the agent:
+
+```bash
+sudo systemctl restart google-cloud-ops-agent
+```

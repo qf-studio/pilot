@@ -1,0 +1,211 @@
+import { Callout } from 'nextra/components'
+
+# Docker Deployment
+
+Run Pilot in Docker containers for consistent, portable deployments.
+
+---
+
+## Dockerfile
+
+```dockerfile
+FROM golang:1.24-alpine AS builder
+WORKDIR /app
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 go build -o pilot ./cmd/pilot
+
+FROM alpine:3.19
+RUN apk add --no-cache ca-certificates git nodejs npm
+RUN npm install -g @anthropic-ai/claude-code
+WORKDIR /home/pilot
+COPY --from=builder /app/pilot /usr/local/bin/
+USER nobody
+EXPOSE 9090
+ENTRYPOINT ["pilot"]
+CMD ["start"]
+```
+
+### Multi-Architecture Build
+
+Build for multiple architectures:
+
+```bash
+docker buildx build --platform linux/amd64,linux/arm64 -t pilot:latest .
+```
+
+---
+
+## Docker Compose
+
+```yaml
+version: '3.8'
+services:
+  pilot:
+    build: .
+    ports:
+      - "9090:9090"
+    environment:
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+    volumes:
+      - ./config.yaml:/home/pilot/.pilot/config.yaml:ro
+      - pilot-data:/home/pilot/.pilot/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9090/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  pilot-data:
+```
+
+### Run
+
+```bash
+docker compose up -d
+docker compose logs -f
+```
+
+---
+
+## Pre-built Image
+
+Use the official image from GitHub Container Registry:
+
+```bash
+docker pull ghcr.io/anthropics/pilot:latest
+```
+
+Run with environment variables:
+
+```bash
+docker run -d \
+  --name pilot \
+  -p 9090:9090 \
+  -e GITHUB_TOKEN="${GITHUB_TOKEN}" \
+  -e ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY}" \
+  -v $(pwd)/config.yaml:/home/pilot/.pilot/config.yaml:ro \
+  -v pilot-data:/home/pilot/.pilot/data \
+  ghcr.io/anthropics/pilot:latest
+```
+
+---
+
+## Volume Recommendations
+
+| Volume | Purpose | Required |
+|--------|---------|----------|
+| `/home/pilot/.pilot/config.yaml` | Configuration file | Yes |
+| `/home/pilot/.pilot/data` | SQLite database, state | Yes (for persistence) |
+| `/home/pilot/.ssh` | SSH keys (if using SSH git URLs) | Optional |
+
+<Callout type="warning">
+Without a persistent volume for `/home/pilot/.pilot/data`, Pilot will lose its execution history and queue state on container restart.
+</Callout>
+
+---
+
+## Git Configuration
+
+The container needs git configured for creating branches and commits:
+
+```dockerfile
+# Add to Dockerfile
+RUN git config --global user.email "pilot@example.com" && \
+    git config --global user.name "Pilot Bot"
+```
+
+Or mount a `.gitconfig`:
+
+```yaml
+volumes:
+  - ./gitconfig:/home/pilot/.gitconfig:ro
+```
+
+---
+
+## Claude Code in Container
+
+The Dockerfile installs Claude Code CLI globally. Ensure your `ANTHROPIC_API_KEY` is valid:
+
+```bash
+# Test Claude Code works inside container
+docker exec -it pilot claude-code --version
+```
+
+For alternative backends (Qwen Code, OpenCode), modify the Dockerfile:
+
+```dockerfile
+# For Qwen Code
+RUN npm install -g qwen-code
+
+# For OpenCode
+RUN npm install -g opencode-cli
+```
+
+And update your config:
+
+```yaml
+executor:
+  type: "qwen-code"  # or "opencode"
+```
+
+---
+
+## Docker Swarm
+
+For Docker Swarm deployments:
+
+```yaml
+version: '3.8'
+services:
+  pilot:
+    image: ghcr.io/anthropics/pilot:latest
+    deploy:
+      replicas: 1  # Single replica recommended
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+        max_attempts: 3
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 256M
+    secrets:
+      - github_token
+      - anthropic_api_key
+    configs:
+      - source: pilot_config
+        target: /home/pilot/.pilot/config.yaml
+    volumes:
+      - pilot-data:/home/pilot/.pilot/data
+
+secrets:
+  github_token:
+    external: true
+  anthropic_api_key:
+    external: true
+
+configs:
+  pilot_config:
+    file: ./config.yaml
+
+volumes:
+  pilot-data:
+```
+
+Create secrets:
+
+```bash
+echo "ghp_xxxx" | docker secret create github_token -
+echo "sk-ant-xxxx" | docker secret create anthropic_api_key -
+```
+
+<Callout type="info">
+Pilot is designed to run as a single instance. Running multiple replicas may cause duplicate task processing.
+</Callout>

@@ -1,0 +1,285 @@
+import { Callout, Tabs } from 'nextra/components'
+
+# Azure Deployment
+
+Deploy Pilot on Azure using Azure Container Apps or Virtual Machines.
+
+---
+
+## Azure Container Apps
+
+Azure Container Apps is ideal for long-running containerized workloads.
+
+### Create Container App
+
+```bash
+# Create resource group
+az group create --name pilot-rg --location eastus
+
+# Create Container Apps environment
+az containerapp env create \
+  --name pilot-env \
+  --resource-group pilot-rg \
+  --location eastus
+
+# Create container app
+az containerapp create \
+  --name pilot \
+  --resource-group pilot-rg \
+  --environment pilot-env \
+  --image ghcr.io/anthropics/pilot:latest \
+  --target-port 9090 \
+  --ingress external \
+  --min-replicas 1 \
+  --max-replicas 1 \
+  --cpu 0.5 \
+  --memory 1.0Gi \
+  --secrets github-token=ghp_xxxx anthropic-key=sk-ant-xxxx \
+  --env-vars GITHUB_TOKEN=secretref:github-token ANTHROPIC_API_KEY=secretref:anthropic-key
+```
+
+### Using Key Vault for Secrets
+
+Store secrets in Azure Key Vault:
+
+```bash
+# Create Key Vault
+az keyvault create \
+  --name pilot-kv \
+  --resource-group pilot-rg \
+  --location eastus
+
+# Add secrets
+az keyvault secret set --vault-name pilot-kv --name github-token --value "ghp_xxxx"
+az keyvault secret set --vault-name pilot-kv --name anthropic-api-key --value "sk-ant-xxxx"
+
+# Create managed identity for Container App
+az containerapp identity assign \
+  --name pilot \
+  --resource-group pilot-rg \
+  --system-assigned
+
+# Get identity principal ID
+PRINCIPAL_ID=$(az containerapp identity show --name pilot --resource-group pilot-rg --query principalId -o tsv)
+
+# Grant Key Vault access
+az keyvault set-policy \
+  --name pilot-kv \
+  --object-id $PRINCIPAL_ID \
+  --secret-permissions get list
+```
+
+Update container app to use Key Vault references:
+
+```bash
+az containerapp secret set \
+  --name pilot \
+  --resource-group pilot-rg \
+  --secrets "github-token=keyvaultref:https://pilot-kv.vault.azure.net/secrets/github-token,identityref:/subscriptions/.../resourceGroups/pilot-rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/pilot-identity"
+```
+
+### Persistent Storage
+
+Create an Azure Files share for SQLite persistence:
+
+```bash
+# Create storage account
+az storage account create \
+  --name pilotstorage \
+  --resource-group pilot-rg \
+  --location eastus \
+  --sku Standard_LRS
+
+# Create file share
+az storage share create \
+  --name pilot-data \
+  --account-name pilotstorage
+
+# Get storage account key
+STORAGE_KEY=$(az storage account keys list --account-name pilotstorage --query "[0].value" -o tsv)
+
+# Add storage to Container Apps environment
+az containerapp env storage set \
+  --name pilot-env \
+  --resource-group pilot-rg \
+  --storage-name pilot-storage \
+  --azure-file-account-name pilotstorage \
+  --azure-file-account-key $STORAGE_KEY \
+  --azure-file-share-name pilot-data \
+  --access-mode ReadWrite
+
+# Mount storage in container app
+az containerapp update \
+  --name pilot \
+  --resource-group pilot-rg \
+  --set-env-vars "PILOT_DATA_DIR=/data" \
+  --container-name pilot \
+  --add-volume name=data,storage-type=AzureFile,storage-name=pilot-storage,mount-path=/home/pilot/.pilot/data
+```
+
+---
+
+## Azure Virtual Machine
+
+### Create VM
+
+```bash
+# Create VM
+az vm create \
+  --resource-group pilot-rg \
+  --name pilot-vm \
+  --image Ubuntu2204 \
+  --size Standard_B2s \
+  --admin-username azureuser \
+  --generate-ssh-keys \
+  --public-ip-sku Standard
+
+# Open port for webhooks
+az vm open-port \
+  --resource-group pilot-rg \
+  --name pilot-vm \
+  --port 9090 \
+  --priority 1001
+```
+
+### Install Pilot
+
+SSH into the VM:
+
+```bash
+az vm ssh --resource-group pilot-rg --name pilot-vm
+```
+
+Install dependencies:
+
+```bash
+# Install dependencies
+sudo apt update && sudo apt install -y git nodejs npm
+
+# Install Claude Code CLI
+sudo npm install -g @anthropic-ai/claude-code
+
+# Download Pilot
+curl -L https://github.com/anthropics/pilot/releases/latest/download/pilot-linux-amd64.tar.gz | tar xz
+sudo mv pilot /usr/local/bin/
+
+# Create pilot user
+sudo useradd -r -m -s /bin/bash pilot
+sudo mkdir -p /home/pilot/.pilot
+sudo chown -R pilot:pilot /home/pilot
+```
+
+### Managed Identity for Key Vault
+
+Enable system-assigned managed identity:
+
+```bash
+az vm identity assign --resource-group pilot-rg --name pilot-vm
+```
+
+Create startup script `/home/pilot/start.sh`:
+
+```bash
+#!/bin/bash
+# Get secrets from Key Vault using managed identity
+export GITHUB_TOKEN=$(az keyvault secret show --vault-name pilot-kv --name github-token --query value -o tsv)
+export ANTHROPIC_API_KEY=$(az keyvault secret show --vault-name pilot-kv --name anthropic-api-key --query value -o tsv)
+exec /usr/local/bin/pilot start --github
+```
+
+### systemd Service
+
+```bash
+sudo tee /etc/systemd/system/pilot.service << 'EOF'
+[Unit]
+Description=Pilot AI Development Pipeline
+After=network.target
+
+[Service]
+Type=simple
+User=pilot
+Group=pilot
+WorkingDirectory=/home/pilot
+ExecStart=/home/pilot/start.sh
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable pilot
+sudo systemctl start pilot
+```
+
+---
+
+## Application Gateway
+
+For production webhook access with HTTPS:
+
+```bash
+# Create public IP for Application Gateway
+az network public-ip create \
+  --resource-group pilot-rg \
+  --name pilot-ag-ip \
+  --sku Standard \
+  --allocation-method Static
+
+# Create Application Gateway
+az network application-gateway create \
+  --resource-group pilot-rg \
+  --name pilot-ag \
+  --location eastus \
+  --sku Standard_v2 \
+  --public-ip-address pilot-ag-ip \
+  --servers <pilot-vm-private-ip> \
+  --http-settings-port 9090 \
+  --http-settings-protocol Http \
+  --frontend-port 443 \
+  --routing-rule-type Basic
+
+# Add SSL certificate
+az network application-gateway ssl-cert create \
+  --resource-group pilot-rg \
+  --gateway-name pilot-ag \
+  --name pilot-cert \
+  --cert-file ./pilot.pfx \
+  --cert-password <password>
+```
+
+---
+
+## Monitoring with Azure Monitor
+
+Enable Azure Monitor for container apps:
+
+```bash
+# Create Log Analytics workspace
+az monitor log-analytics workspace create \
+  --resource-group pilot-rg \
+  --workspace-name pilot-logs
+
+# Enable diagnostics
+az monitor diagnostic-settings create \
+  --resource /subscriptions/.../resourceGroups/pilot-rg/providers/Microsoft.App/containerApps/pilot \
+  --name pilot-diagnostics \
+  --workspace pilot-logs \
+  --logs '[{"category": "ContainerAppConsoleLogs", "enabled": true}]' \
+  --metrics '[{"category": "AllMetrics", "enabled": true}]'
+```
+
+Query logs:
+
+```kusto
+ContainerAppConsoleLogs_CL
+| where ContainerAppName_s == "pilot"
+| project TimeGenerated, Log_s
+| order by TimeGenerated desc
+| take 100
+```
+
+<Callout type="info">
+For custom Prometheus metrics, use Azure Monitor managed service for Prometheus with Container Apps.
+</Callout>

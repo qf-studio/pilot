@@ -1,0 +1,359 @@
+import { Callout } from 'nextra/components'
+
+# Networking & Tunnels
+
+Configure Pilot's gateway, set up tunnels for webhooks, and integrate with reverse proxies.
+
+---
+
+## Gateway Configuration
+
+The gateway provides HTTP/WebSocket endpoints for webhooks and control.
+
+### Configuration
+
+```yaml
+gateway:
+  host: "127.0.0.1"  # Bind address (0.0.0.0 for all interfaces)
+  port: 9090         # HTTP port
+```
+
+### Endpoints
+
+| Path | Method | Description |
+|------|--------|-------------|
+| `/ws` | WebSocket | Control plane connection |
+| `/health` | GET | Basic health check |
+| `/ready` | GET | Kubernetes readiness probe |
+| `/live` | GET | Kubernetes liveness probe |
+| `/metrics` | GET | Prometheus metrics |
+| `/api/v1/status` | GET | Pilot status |
+| `/api/v1/tasks` | GET | Task list |
+| `/webhooks/github` | POST | GitHub webhook |
+| `/webhooks/gitlab` | POST | GitLab webhook |
+| `/webhooks/linear` | POST | Linear webhook |
+| `/webhooks/jira` | POST | Jira webhook |
+| `/webhooks/asana` | POST | Asana webhook |
+
+### Authentication
+
+API endpoints can require authentication:
+
+```yaml
+auth:
+  type: "api-token"
+  token: "your-secret-token"
+```
+
+Protected endpoints (`/api/v1/*`) require `Authorization: Bearer <token>` header.
+
+<Callout type="warning">
+Webhook endpoints use their own signature validation (e.g., `X-Hub-Signature-256` for GitHub) and don't require bearer tokens.
+</Callout>
+
+### Timeouts
+
+Default server timeouts:
+- Read: 15 seconds
+- Write: 15 seconds
+- Idle: 60 seconds
+
+For long-running operations, use WebSocket connections.
+
+---
+
+## Cloudflare Tunnel
+
+Expose webhooks publicly without opening firewall ports.
+
+### Quick Start
+
+```bash
+pilot start --tunnel
+```
+
+This automatically:
+1. Starts a Cloudflare tunnel (uses `cloudflared` if installed)
+2. Prints the public URL
+3. Shows webhook endpoints
+
+Output:
+```
+🌐 Public tunnel: https://abc123.trycloudflare.com
+   Webhooks: https://abc123.trycloudflare.com/webhooks/{linear,github,gitlab,jira}
+```
+
+### Configuration
+
+```yaml
+tunnel:
+  enabled: true
+  provider: cloudflare  # cloudflare, ngrok, or manual
+  domain: ""            # Optional: custom domain
+  port: 9090            # Local port (default: gateway port)
+```
+
+### Persistent Tunnel with Custom Domain
+
+For production, set up a persistent Cloudflare tunnel:
+
+```bash
+# Install cloudflared
+brew install cloudflared  # macOS
+# or
+curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
+
+# Authenticate
+cloudflared tunnel login
+
+# Create tunnel
+cloudflared tunnel create pilot
+
+# Configure tunnel
+cat > ~/.cloudflared/config.yml << EOF
+tunnel: <TUNNEL_ID>
+credentials-file: /home/user/.cloudflared/<TUNNEL_ID>.json
+
+ingress:
+  - hostname: pilot.example.com
+    service: http://localhost:9090
+  - service: http_status:404
+EOF
+
+# Route DNS
+cloudflared tunnel route dns pilot pilot.example.com
+
+# Run tunnel
+cloudflared tunnel run pilot
+```
+
+<Callout type="info">
+Cloudflare free tunnels use random URLs that change on restart. For production, set up a persistent tunnel with a custom domain.
+</Callout>
+
+---
+
+## ngrok Tunnel
+
+Alternative to Cloudflare for development:
+
+### Configuration
+
+```yaml
+tunnel:
+  enabled: true
+  provider: ngrok
+  auth_token: "your-ngrok-auth-token"  # From ngrok dashboard
+```
+
+### Manual Setup
+
+```bash
+# Install ngrok
+brew install ngrok  # macOS
+# or download from https://ngrok.com/download
+
+# Authenticate
+ngrok authtoken <your-token>
+
+# Start tunnel
+ngrok http 9090
+```
+
+### ngrok Configuration File
+
+```yaml
+# ~/.ngrok2/ngrok.yml
+authtoken: your-token
+tunnels:
+  pilot:
+    proto: http
+    addr: 9090
+    hostname: pilot.ngrok.io  # Requires paid plan
+```
+
+Run with:
+```bash
+ngrok start pilot
+```
+
+---
+
+## Reverse Proxy Setup
+
+### nginx
+
+```nginx
+upstream pilot {
+    server 127.0.0.1:9090;
+    keepalive 32;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name pilot.example.com;
+
+    ssl_certificate /etc/letsencrypt/live/pilot.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/pilot.example.com/privkey.pem;
+
+    # Webhook endpoints
+    location /webhooks/ {
+        proxy_pass http://pilot;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # Increase timeout for webhook processing
+        proxy_read_timeout 60s;
+    }
+
+    # WebSocket for control plane
+    location /ws {
+        proxy_pass http://pilot;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_read_timeout 3600s;
+    }
+
+    # Health and metrics (internal only)
+    location ~ ^/(health|ready|live|metrics)$ {
+        proxy_pass http://pilot;
+        allow 10.0.0.0/8;
+        allow 172.16.0.0/12;
+        allow 192.168.0.0/16;
+        deny all;
+    }
+
+    # API endpoints
+    location /api/ {
+        proxy_pass http://pilot;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+}
+```
+
+### Caddy
+
+```caddyfile
+pilot.example.com {
+    # Webhooks
+    handle /webhooks/* {
+        reverse_proxy localhost:9090
+    }
+
+    # WebSocket
+    handle /ws {
+        reverse_proxy localhost:9090
+    }
+
+    # API
+    handle /api/* {
+        reverse_proxy localhost:9090
+    }
+
+    # Health (internal only)
+    handle /health {
+        @internal remote_ip 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16
+        reverse_proxy @internal localhost:9090
+        respond 403
+    }
+
+    # Metrics (internal only)
+    handle /metrics {
+        @internal remote_ip 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16
+        reverse_proxy @internal localhost:9090
+        respond 403
+    }
+}
+```
+
+---
+
+## Webhook URL Configuration
+
+### GitHub
+
+1. Go to **Settings → Webhooks → Add webhook**
+2. Payload URL: `https://pilot.example.com/webhooks/github`
+3. Content type: `application/json`
+4. Secret: Same as `github_webhook_secret` in config
+5. Events: **Issues**, **Pull requests**, **Issue comments**
+
+### GitLab
+
+1. Go to **Settings → Webhooks**
+2. URL: `https://pilot.example.com/webhooks/gitlab`
+3. Secret token: Same as `gitlab_webhook_secret` in config
+4. Triggers: **Issues events**, **Merge request events**
+
+### Linear
+
+1. Go to **Settings → API → Webhooks**
+2. URL: `https://pilot.example.com/webhooks/linear`
+3. Events: **Issue created**, **Issue updated**
+
+### Jira
+
+1. Go to **System → WebHooks**
+2. URL: `https://pilot.example.com/webhooks/jira`
+3. Events: **Issue created**, **Issue updated**
+
+---
+
+## Security Best Practices
+
+### Webhook Signature Validation
+
+Pilot validates webhook signatures by default. Ensure you configure the secrets:
+
+```yaml
+adapters:
+  github:
+    webhook_secret: "your-webhook-secret"
+  gitlab:
+    webhook_secret: "your-webhook-secret"
+```
+
+### Rate Limiting
+
+Add rate limiting at the reverse proxy level:
+
+```nginx
+# nginx rate limiting
+limit_req_zone $binary_remote_addr zone=webhooks:10m rate=10r/s;
+
+location /webhooks/ {
+    limit_req zone=webhooks burst=20 nodelay;
+    proxy_pass http://pilot;
+}
+```
+
+### IP Allowlisting
+
+For GitHub webhooks, allow only GitHub's IP ranges:
+
+```bash
+# Fetch GitHub webhook IPs
+curl https://api.github.com/meta | jq '.hooks[]'
+```
+
+```nginx
+# nginx allowlist
+location /webhooks/github {
+    allow 140.82.112.0/20;
+    allow 143.55.64.0/20;
+    # ... more GitHub ranges
+    deny all;
+    proxy_pass http://pilot;
+}
+```
+
+<Callout type="info">
+GitHub's IP ranges change periodically. Use a dynamic solution or regularly update your allowlist.
+</Callout>

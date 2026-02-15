@@ -1,0 +1,290 @@
+import { Callout, Tabs } from 'nextra/components'
+
+# AWS Deployment
+
+Deploy Pilot on AWS using EC2, ECS, or Fargate.
+
+---
+
+## EC2 Deployment
+
+### Launch Instance
+
+1. Launch an EC2 instance:
+   - **AMI**: Amazon Linux 2023 or Ubuntu 22.04
+   - **Instance type**: `t3.small` or larger (2 vCPU, 2 GB RAM minimum)
+   - **Storage**: 20 GB gp3
+
+2. Configure Security Group:
+   - Inbound: Port 9090 (HTTP) from your VPC or load balancer
+   - Outbound: All traffic (for GitHub/Anthropic API access)
+
+### Install Pilot
+
+SSH into your instance and run:
+
+```bash
+# Install dependencies
+sudo yum install -y git nodejs npm  # Amazon Linux
+# or
+sudo apt install -y git nodejs npm  # Ubuntu
+
+# Install Claude Code CLI
+sudo npm install -g @anthropic-ai/claude-code
+
+# Download Pilot
+curl -L https://github.com/anthropics/pilot/releases/latest/download/pilot-linux-amd64.tar.gz | tar xz
+sudo mv pilot /usr/local/bin/
+
+# Create pilot user
+sudo useradd -r -m -s /bin/bash pilot
+sudo mkdir -p /home/pilot/.pilot
+sudo chown -R pilot:pilot /home/pilot
+```
+
+### Configure with SSM Parameter Store
+
+Store secrets in SSM Parameter Store:
+
+```bash
+aws ssm put-parameter \
+  --name "/pilot/github-token" \
+  --value "ghp_xxxx" \
+  --type "SecureString"
+
+aws ssm put-parameter \
+  --name "/pilot/anthropic-api-key" \
+  --value "sk-ant-xxxx" \
+  --type "SecureString"
+```
+
+Create a startup script that fetches secrets:
+
+```bash
+sudo tee /home/pilot/start.sh << 'EOF'
+#!/bin/bash
+export GITHUB_TOKEN=$(aws ssm get-parameter --name "/pilot/github-token" --with-decryption --query "Parameter.Value" --output text)
+export ANTHROPIC_API_KEY=$(aws ssm get-parameter --name "/pilot/anthropic-api-key" --with-decryption --query "Parameter.Value" --output text)
+exec /usr/local/bin/pilot start --github
+EOF
+sudo chmod +x /home/pilot/start.sh
+sudo chown pilot:pilot /home/pilot/start.sh
+```
+
+### systemd Service
+
+```bash
+sudo tee /etc/systemd/system/pilot.service << 'EOF'
+[Unit]
+Description=Pilot AI Development Pipeline
+After=network.target
+
+[Service]
+Type=simple
+User=pilot
+Group=pilot
+WorkingDirectory=/home/pilot
+ExecStart=/home/pilot/start.sh
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable pilot
+sudo systemctl start pilot
+```
+
+### IAM Role
+
+Attach an IAM role to the EC2 instance with this policy:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "ssm:GetParameter"
+      ],
+      "Resource": [
+        "arn:aws:ssm:*:*:parameter/pilot/*"
+      ]
+    }
+  ]
+}
+```
+
+---
+
+## ECS / Fargate Deployment
+
+### Task Definition
+
+```json
+{
+  "family": "pilot",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "512",
+  "memory": "1024",
+  "executionRoleArn": "arn:aws:iam::ACCOUNT:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::ACCOUNT:role/pilotTaskRole",
+  "containerDefinitions": [
+    {
+      "name": "pilot",
+      "image": "ghcr.io/anthropics/pilot:latest",
+      "portMappings": [
+        {
+          "containerPort": 9090,
+          "protocol": "tcp"
+        }
+      ],
+      "secrets": [
+        {
+          "name": "GITHUB_TOKEN",
+          "valueFrom": "arn:aws:secretsmanager:us-east-1:ACCOUNT:secret:pilot/github-token"
+        },
+        {
+          "name": "ANTHROPIC_API_KEY",
+          "valueFrom": "arn:aws:secretsmanager:us-east-1:ACCOUNT:secret:pilot/anthropic-api-key"
+        }
+      ],
+      "healthCheck": {
+        "command": ["CMD-SHELL", "wget -q --spider http://localhost:9090/health || exit 1"],
+        "interval": 30,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 10
+      },
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/pilot",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "pilot"
+        }
+      }
+    }
+  ]
+}
+```
+
+### Service Definition
+
+```json
+{
+  "serviceName": "pilot",
+  "cluster": "your-cluster",
+  "taskDefinition": "pilot",
+  "desiredCount": 1,
+  "launchType": "FARGATE",
+  "networkConfiguration": {
+    "awsvpcConfiguration": {
+      "subnets": ["subnet-xxxx"],
+      "securityGroups": ["sg-xxxx"],
+      "assignPublicIp": "ENABLED"
+    }
+  }
+}
+```
+
+### Secrets Manager
+
+Store secrets in AWS Secrets Manager:
+
+```bash
+aws secretsmanager create-secret \
+  --name "pilot/github-token" \
+  --secret-string "ghp_xxxx"
+
+aws secretsmanager create-secret \
+  --name "pilot/anthropic-api-key" \
+  --secret-string "sk-ant-xxxx"
+```
+
+### IAM Policies
+
+**Execution Role** (for pulling secrets):
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "secretsmanager:GetSecretValue"
+      ],
+      "Resource": [
+        "arn:aws:secretsmanager:*:*:secret:pilot/*"
+      ]
+    }
+  ]
+}
+```
+
+---
+
+## Application Load Balancer
+
+For webhook access, set up an ALB:
+
+```bash
+# Create target group
+aws elbv2 create-target-group \
+  --name pilot-tg \
+  --protocol HTTP \
+  --port 9090 \
+  --vpc-id vpc-xxxx \
+  --target-type ip \
+  --health-check-path /health
+
+# Create listener rule for webhooks
+aws elbv2 create-rule \
+  --listener-arn arn:aws:elasticloadbalancing:... \
+  --priority 10 \
+  --conditions Field=path-pattern,Values='/webhooks/*' \
+  --actions Type=forward,TargetGroupArn=arn:aws:elasticloadbalancing:...
+```
+
+<Callout type="info">
+Use HTTPS listeners with ACM certificates for production webhook endpoints.
+</Callout>
+
+---
+
+## EFS for Persistence
+
+For persistent SQLite storage with Fargate:
+
+```json
+{
+  "volumes": [
+    {
+      "name": "pilot-data",
+      "efsVolumeConfiguration": {
+        "fileSystemId": "fs-xxxx",
+        "rootDirectory": "/pilot"
+      }
+    }
+  ],
+  "containerDefinitions": [
+    {
+      "mountPoints": [
+        {
+          "sourceVolume": "pilot-data",
+          "containerPath": "/home/pilot/.pilot/data"
+        }
+      ]
+    }
+  ]
+}
+```
+
+<Callout type="warning">
+EFS adds latency compared to local storage. For high-throughput scenarios, consider EC2 with local EBS volumes.
+</Callout>

@@ -1,0 +1,334 @@
+import { Callout, Tabs } from 'nextra/components'
+
+# Kubernetes Deployment
+
+Deploy Pilot on Kubernetes with proper health checks, secrets management, and persistent storage.
+
+---
+
+## Health Probes
+
+Pilot exposes health endpoints for Kubernetes liveness and readiness probes:
+
+| Endpoint | Purpose | Success | Failure |
+|----------|---------|---------|---------|
+| `/ready` | Readiness probe | 200 when all checks pass | 503 when any check fails |
+| `/live` | Liveness probe | 200 when process is healthy | 503 when deadlocked |
+| `/health` | Basic health check | Always 200 | - |
+
+**Readiness probe** (`/ready`) checks:
+- Registered component readiness (e.g., GitHub client connected)
+- Returns JSON with individual check statuses
+
+**Liveness probe** (`/live`) checks:
+- Goroutine count < 1000 (detects goroutine leaks)
+- No recent panics (5-minute window)
+- Main loop heartbeat freshness (< 60 seconds)
+
+Example responses:
+
+```json
+// GET /ready
+{
+  "ready": true,
+  "checks": {
+    "github": true,
+    "database": true
+  }
+}
+
+// GET /live
+{
+  "alive": true,
+  "checks": {
+    "goroutines": {"count": 42, "max": 1000, "ok": true},
+    "panics": {"count": 0, "recent": false, "ok": true},
+    "heartbeat": {"last_seconds_ago": 5, "ok": true}
+  }
+}
+```
+
+---
+
+## Deployment Manifest
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pilot
+  labels:
+    app: pilot
+spec:
+  replicas: 1  # Single replica recommended
+  selector:
+    matchLabels:
+      app: pilot
+  template:
+    metadata:
+      labels:
+        app: pilot
+    spec:
+      containers:
+      - name: pilot
+        image: ghcr.io/anthropics/pilot:latest
+        ports:
+        - containerPort: 9090
+          name: http
+        env:
+        - name: GITHUB_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: pilot-secrets
+              key: github-token
+        - name: ANTHROPIC_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: pilot-secrets
+              key: anthropic-api-key
+        livenessProbe:
+          httpGet:
+            path: /live
+            port: http
+          initialDelaySeconds: 10
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: http
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+        volumeMounts:
+        - name: config
+          mountPath: /home/pilot/.pilot
+        - name: data
+          mountPath: /home/pilot/.pilot/data
+      volumes:
+      - name: config
+        configMap:
+          name: pilot-config
+      - name: data
+        persistentVolumeClaim:
+          claimName: pilot-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pilot
+spec:
+  selector:
+    app: pilot
+  ports:
+  - port: 9090
+    targetPort: http
+    name: http
+```
+
+---
+
+## Secrets
+
+Create secrets for API tokens:
+
+```bash
+kubectl create secret generic pilot-secrets \
+  --from-literal=github-token=ghp_xxxx \
+  --from-literal=anthropic-api-key=sk-ant-xxxx
+```
+
+Or use a manifest:
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: pilot-secrets
+type: Opaque
+stringData:
+  github-token: ghp_xxxx
+  anthropic-api-key: sk-ant-xxxx
+```
+
+<Callout type="warning">
+For production, use a secrets manager like HashiCorp Vault, AWS Secrets Manager, or Kubernetes External Secrets Operator.
+</Callout>
+
+---
+
+## ConfigMap
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pilot-config
+data:
+  config.yaml: |
+    version: "1.0"
+    gateway:
+      host: "0.0.0.0"
+      port: 9090
+    adapters:
+      github:
+        enabled: true
+        token: "${GITHUB_TOKEN}"
+        repo: "your-org/your-repo"
+    autopilot:
+      enabled: true
+      auto_merge: true
+```
+
+---
+
+## Persistent Volume
+
+Pilot uses SQLite for state persistence. Create a PVC:
+
+```yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pilot-data
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+  storageClassName: standard  # Adjust for your cluster
+```
+
+<Callout type="info">
+SQLite requires `ReadWriteOnce` access mode. This means Pilot must run as a single replica.
+</Callout>
+
+---
+
+## Helm Chart
+
+A minimal Helm chart structure:
+
+```
+pilot-chart/
+├── Chart.yaml
+├── values.yaml
+└── templates/
+    ├── deployment.yaml
+    ├── service.yaml
+    ├── configmap.yaml
+    ├── secret.yaml
+    └── pvc.yaml
+```
+
+**values.yaml**:
+
+```yaml
+replicaCount: 1
+
+image:
+  repository: ghcr.io/anthropics/pilot
+  tag: latest
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 9090
+
+resources:
+  requests:
+    memory: "256Mi"
+    cpu: "100m"
+  limits:
+    memory: "1Gi"
+    cpu: "1000m"
+
+persistence:
+  enabled: true
+  size: 1Gi
+  storageClass: ""
+
+config:
+  gateway:
+    host: "0.0.0.0"
+    port: 9090
+
+secrets:
+  githubToken: ""
+  anthropicApiKey: ""
+```
+
+Install:
+
+```bash
+helm install pilot ./pilot-chart \
+  --set secrets.githubToken=ghp_xxxx \
+  --set secrets.anthropicApiKey=sk-ant-xxxx
+```
+
+---
+
+## Ingress
+
+Expose Pilot via Ingress for webhook access:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: pilot
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+spec:
+  ingressClassName: nginx
+  tls:
+  - hosts:
+    - pilot.example.com
+    secretName: pilot-tls
+  rules:
+  - host: pilot.example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: pilot
+            port:
+              number: 9090
+```
+
+---
+
+## Scaling Considerations
+
+<Callout type="warning">
+**Do not use HPA (Horizontal Pod Autoscaler) with Pilot.**
+
+Pilot uses SQLite for state and is designed for single-instance operation. Running multiple replicas will cause:
+- Database lock contention
+- Duplicate task processing
+- Inconsistent state
+
+For high availability, consider:
+- Using a deployment with `replicas: 1` and a `Recreate` strategy
+- Monitoring with alerts for pod restarts
+- Database backup/restore procedures
+</Callout>
+
+```yaml
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate  # Ensures clean shutdown before new pod starts
+```

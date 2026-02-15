@@ -1,0 +1,61 @@
+# Deployment Overview
+
+Pilot is a single Go binary with minimal runtime dependencies. This section covers deployment options from local development to production cloud environments.
+
+## Requirements
+
+To run Pilot, you need:
+
+| Requirement | Description |
+|-------------|-------------|
+| **Pilot binary** | Single Go binary, no runtime dependencies |
+| **Git** | Installed and configured with credentials |
+| **Claude Code CLI** | Or alternative backend (Qwen Code, OpenCode) — see [Execution Backends](/features/execution-backends) |
+| **ANTHROPIC_API_KEY** | API key for Claude (or equivalent for your backend) |
+| **GITHUB_TOKEN** | Or equivalent for your PM adapter (GitLab, Azure DevOps, Linear, Jira) |
+| **Network access** | Outbound to GitHub/GitLab API + Anthropic API |
+
+### Optional
+
+- `~/.pilot/config.yaml` for customization
+- SQLite (embedded, no setup needed) for persistence
+- Cloudflare/ngrok for webhook tunneling
+
+## Deployment Options
+
+Choose the deployment method that fits your infrastructure:
+
+| Platform | Best For | Guide |
+|----------|----------|-------|
+| [Local / Bare Metal](/deployment/local) | Development, single-server setups | systemd, launchd |
+| [Docker](/deployment/docker) | Container environments, local testing | Dockerfile, Compose |
+| [Kubernetes](/deployment/kubernetes) | Production clusters, auto-scaling | Manifests, Helm |
+| [AWS](/deployment/aws) | AWS infrastructure | EC2, ECS/Fargate |
+| [Google Cloud](/deployment/google-cloud) | GCP infrastructure | GCE, Cloud Run |
+| [Azure](/deployment/azure) | Azure infrastructure | Container Apps, VMs |
+
+## Supporting Guides
+
+| Topic | Description |
+|-------|-------------|
+| [Monitoring](/deployment/monitoring) | Prometheus metrics, Grafana dashboards, alerting |
+| [Networking](/deployment/networking) | Gateway config, tunnels, reverse proxy, webhooks |
+
+## Quick Start
+
+The fastest way to get Pilot running:
+
+```bash
+# Download binary
+curl -L https://github.com/anthropics/pilot/releases/latest/download/pilot-$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m | sed 's/x86_64/amd64/').tar.gz | tar xz
+mv pilot ~/.local/bin/
+
+# Set environment variables
+export GITHUB_TOKEN="ghp_..."
+export ANTHROPIC_API_KEY="sk-ant-..."
+
+# Run
+pilot start --github
+```
+
+For production deployments, continue to the platform-specific guides.
