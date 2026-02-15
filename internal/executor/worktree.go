@@ -86,9 +86,26 @@ func (m *WorktreeManager) CreateWorktree(ctx context.Context, taskID string) (*W
 	worktreePath := filepath.Join(os.TempDir(), worktreeName)
 
 	// Create worktree from HEAD (current commit of default branch)
-	cmd := exec.CommandContext(ctx, "git", "worktree", "add", "--detach", worktreePath, "HEAD")
-	cmd.Dir = m.repoPath
-	output, err := cmd.CombinedOutput()
+	// Retry with exponential backoff to handle git race conditions on concurrent worktree creation
+	// (git has internal races on .git/worktrees/*/commondir when creating multiple worktrees concurrently)
+	var output []byte
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		cmd := exec.CommandContext(ctx, "git", "worktree", "add", "--detach", worktreePath, "HEAD")
+		cmd.Dir = m.repoPath
+		output, err = cmd.CombinedOutput()
+		if err == nil {
+			break
+		}
+		// Check for transient git worktree race condition errors
+		outputStr := string(output)
+		if strings.Contains(outputStr, "commondir") || strings.Contains(outputStr, "gitdir") {
+			time.Sleep(time.Duration(10*(attempt+1)) * time.Millisecond)
+			continue
+		}
+		// Non-transient error, don't retry
+		break
+	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to create worktree: %w: %s", err, output)
 	}
