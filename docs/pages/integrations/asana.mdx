@@ -1,0 +1,297 @@
+import { Callout } from 'nextra/components'
+
+# Asana Integration
+
+Pilot integrates with Asana to receive tasks and post status updates. When a task is tagged with the pilot tag, Pilot implements it and reports progress back to Asana.
+
+<Callout type="info">
+Asana uses **tasks** and **tags** as its primary organizational units. Pilot watches for tasks with a specific tag and processes them automatically.
+</Callout>
+
+## Setup
+
+### 1. Create an Asana Personal Access Token
+
+1. Go to **Asana** → **Settings** → **Apps** → **Developer apps**
+2. Click **Create new token**
+3. Name it "Pilot Bot" and copy the token
+
+<Callout type="warning">
+Store your token securely. For production, use environment variables or a secrets manager. Personal access tokens have full access to your Asana account.
+</Callout>
+
+### 2. Find Your Workspace ID
+
+Your workspace ID (GID) can be found:
+
+1. Go to any Asana project
+2. Look at the URL: `https://app.asana.com/0/{workspace_gid}/{project_gid}`
+3. The first number after `/0/` is your workspace GID
+
+Or use the Asana API:
+```bash
+curl -H "Authorization: Bearer $ASANA_ACCESS_TOKEN" \
+  https://app.asana.com/api/1.0/workspaces
+```
+
+### 3. Create the `pilot` Tag
+
+In your Asana workspace:
+
+1. Open any task
+2. Click **Add tags**
+3. Type `pilot` and create the tag
+4. The tag is now available workspace-wide
+
+### 4. Configure Pilot
+
+```yaml
+# ~/.pilot/config.yaml
+adapters:
+  asana:
+    enabled: true
+    access_token: ${ASANA_ACCESS_TOKEN}
+    workspace_id: "1234567890123"
+    pilot_tag: pilot
+    polling:
+      enabled: true
+      interval: 30s
+```
+
+## Configuration Reference
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `false` | Enable the Asana adapter |
+| `access_token` | string | required | Asana personal access token |
+| `workspace_id` | string | required | Asana workspace GID |
+| `webhook_secret` | string | — | X-Hook-Secret for webhook verification |
+| `pilot_tag` | string | `"pilot"` | Tag that triggers Pilot to process a task |
+| `polling.enabled` | bool | `false` | Enable polling for new tasks |
+| `polling.interval` | duration | `30s` | Polling interval |
+
+## Polling Mode
+
+When polling is enabled, Pilot:
+
+1. Finds the `pilot` tag by name in the workspace
+2. Queries tasks with that tag
+3. Filters to active (non-completed) tasks
+4. Processes tasks in order of creation date (oldest first)
+
+### Task Processing Flow
+
+```
+1. Find task with 'pilot' tag
+2. Skip if has 'pilot-in-progress', 'pilot-done', or 'pilot-failed' tag
+3. Add 'pilot-in-progress' tag
+4. Execute implementation
+5. On success: remove 'pilot-in-progress', add 'pilot-done'
+6. On failure: remove 'pilot-in-progress', add 'pilot-failed'
+```
+
+## Webhook Mode
+
+For real-time task detection, configure Asana webhooks:
+
+### 1. Set Up Webhook
+
+Webhooks are registered via the Asana API:
+
+```bash
+curl -X POST https://app.asana.com/api/1.0/webhooks \
+  -H "Authorization: Bearer $ASANA_ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "data": {
+      "resource": "1234567890123",
+      "target": "https://your-pilot.example.com/webhooks/asana"
+    }
+  }'
+```
+
+### 2. Webhook Handshake
+
+Asana uses a handshake protocol for webhook registration:
+
+1. Asana sends a request with `X-Hook-Secret` header
+2. Pilot must respond with the same value in `X-Hook-Secret`
+3. This establishes the webhook and provides the secret for future verification
+
+### 3. Configure Webhook Secret
+
+```yaml
+adapters:
+  asana:
+    webhook_secret: ${ASANA_WEBHOOK_SECRET}
+```
+
+<Callout type="info">
+The webhook secret is provided by Asana during handshake. Store it securely after the initial registration.
+</Callout>
+
+### Signature Verification
+
+Asana webhooks use HMAC-SHA256 signatures. Pilot validates incoming webhooks against the stored secret.
+
+### Supported Events
+
+| Event | Action | Behavior |
+|-------|--------|----------|
+| `added` | Task created | Process if has pilot tag |
+| `changed` | Task updated | Process if pilot tag was just added |
+| `removed` | Task deleted | Ignored |
+| `deleted` | Task deleted | Ignored |
+| `undeleted` | Task restored | Ignored |
+
+## Tags
+
+Pilot uses tags to track task status:
+
+| Tag | Purpose |
+|-----|---------|
+| `pilot` | Triggers Pilot to process the task |
+| `pilot-in-progress` | Applied while Pilot is working |
+| `pilot-done` | Applied after successful completion |
+| `pilot-failed` | Applied if execution fails |
+
+### Tag Operations
+
+Asana tags are managed via their GID. On startup, Pilot:
+
+1. Looks up the `pilot` tag by name
+2. Caches the GID for efficient polling
+3. Creates status tags if they don't exist
+
+## Status Updates
+
+Pilot posts comments (stories) to Asana tasks as it works:
+
+| Phase | Comment |
+|-------|---------|
+| Started | "Pilot started working on this task" |
+| Completed | "Successfully completed — PR #42" with link |
+| Failed | "Failed: error details" |
+
+### Comment Formats
+
+Pilot supports both plain text and HTML comments:
+
+```go
+// Plain text
+client.AddComment(ctx, taskGID, "Pilot completed the task")
+
+// HTML (for rich formatting)
+client.AddHTMLComment(ctx, taskGID, "<p>✅ <strong>Completed</strong> — <a href='...'>PR #42</a></p>")
+```
+
+## Priority Mapping
+
+Asana doesn't have a built-in priority field, but Pilot recognizes priority tags:
+
+| Tag Name | Pilot Priority |
+|----------|----------------|
+| `urgent`, `critical`, `URGENT` | Urgent |
+| `high`, `High`, `HIGH` | High |
+| `medium`, `Medium` | Medium |
+| `low`, `Low`, `LOW` | Low |
+
+## Task Conversion
+
+Asana tasks are converted to Pilot tasks:
+
+| Asana Field | Pilot Field | Format |
+|-------------|-------------|--------|
+| `gid` | Task ID | `ASANA-{gid}` |
+| `name` | Title | Direct |
+| `notes` | Description | Plain text |
+| `html_notes` | Description (alt) | HTML stripped |
+| `tags` | Labels | Tag names |
+| `projects[0].name` | ProjectName | First project |
+| `permalink_url` | TaskURL | Direct |
+| `created_at` | CreatedAt | ISO 8601 |
+
+## PR Attachments
+
+When Pilot creates a PR, it can add an external attachment to the Asana task:
+
+```go
+client.AddAttachment(ctx, taskGID, prURL, "Pull Request #42")
+```
+
+This creates a clickable link in the task's attachments section.
+
+## API Operations
+
+Pilot uses these Asana API endpoints:
+
+| Operation | Endpoint | Purpose |
+|-----------|----------|---------|
+| Get Task | `GET /tasks/{gid}` | Fetch task details |
+| Update Task | `PUT /tasks/{gid}` | Update completion status |
+| Add Story | `POST /tasks/{gid}/stories` | Post comments |
+| Add Tag | `POST /tasks/{gid}/addTag` | Add status tags |
+| Remove Tag | `POST /tasks/{gid}/removeTag` | Remove status tags |
+| Get Tags | `GET /workspaces/{gid}/tags` | List workspace tags |
+| Find Tag | `GET /workspaces/{gid}/tags` | Find tag by name |
+| Get Tasks by Tag | `GET /tags/{gid}/tasks` | Query tagged tasks |
+| Add Attachment | `POST /tasks/{gid}/attachments` | Link PR |
+
+## Multi-Project Support
+
+Asana tasks can belong to multiple projects. Pilot uses the first project for context:
+
+```yaml
+# Task belongs to "Backend" and "Sprint 42" projects
+# Pilot sees: ProjectName = "Backend"
+```
+
+## Retry Behavior
+
+If execution fails:
+
+1. `pilot-in-progress` tag is removed
+2. `pilot-failed` tag is added
+3. Task is NOT marked as processed (allowing retry)
+4. Removing `pilot-failed` tag allows Pilot to retry
+
+## Troubleshooting
+
+### Task Not Being Picked Up
+
+1. Verify the task has the `pilot` tag
+2. Check that task is not completed
+3. Ensure no `pilot-in-progress` or `pilot-done` tags exist
+4. Verify workspace ID is correct
+5. Check token has access to the workspace
+
+### Tag Not Found
+
+1. Ensure the tag exists in the workspace
+2. Tag names are case-sensitive
+3. Create the tag manually if it doesn't exist
+4. Check Pilot logs for "pilot tag not found" errors
+
+### Webhook Not Triggering
+
+1. Verify webhook URL is publicly accessible
+2. Check webhook registration succeeded
+3. Ensure webhook handshake completed
+4. Verify webhook secret matches
+5. Check Asana webhook delivery status
+
+### Authentication Errors
+
+1. Verify token hasn't expired
+2. Check token has workspace access
+3. Regenerate token if compromised
+4. Ensure token isn't rate-limited
+
+### Rate Limiting
+
+Asana has API rate limits. If you hit them:
+
+- Increase polling interval
+- Use webhooks instead of polling
+- Reduce concurrent operations
+- Check for runaway retry loops

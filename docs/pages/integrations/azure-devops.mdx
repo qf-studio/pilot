@@ -1,0 +1,330 @@
+import { Callout } from 'nextra/components'
+
+# Azure DevOps Integration
+
+Pilot integrates with Azure DevOps to receive work items and create pull requests. It supports both Azure DevOps Services (cloud) and Azure DevOps Server (on-premises).
+
+<Callout type="info">
+Azure DevOps uses **work items** and **tags** rather than GitHub's issues and labels. Pilot automatically adapts to these concepts while maintaining the same workflow.
+</Callout>
+
+## Setup
+
+### 1. Create a Personal Access Token (PAT)
+
+1. Go to **Azure DevOps** → **User Settings** (top right) → **Personal Access Tokens**
+2. Click **New Token**
+3. Configure the token:
+   - **Name**: Pilot Bot
+   - **Organization**: Select your organization
+   - **Expiration**: Set an appropriate expiration
+   - **Scopes**:
+     - **Work Items**: Read & Write
+     - **Code**: Read & Write
+     - **Pull Request Threads**: Read & Write
+
+<Callout type="warning">
+Store your PAT securely. It cannot be viewed again after creation. For production, use Azure Key Vault or environment variables.
+</Callout>
+
+### 2. Create the `pilot` Tag
+
+In your Azure DevOps project:
+
+1. Go to **Boards** → **Work Items**
+2. Open any work item
+3. Add a tag: `pilot`
+4. The tag is now available for all work items in the project
+
+### 3. Configure Pilot
+
+```yaml
+# ~/.pilot/config.yaml
+adapters:
+  azure_devops:
+    enabled: true
+    pat: ${AZURE_DEVOPS_PAT}
+    organization: myorg
+    project: MyProject
+    repository: myrepo
+    pilot_tag: pilot
+    work_item_types:
+      - User Story
+      - Bug
+      - Task
+    polling:
+      enabled: true
+      interval: 30s
+```
+
+## Configuration Reference
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `false` | Enable the Azure DevOps adapter |
+| `pat` | string | required | Personal Access Token |
+| `organization` | string | required | Azure DevOps organization name |
+| `project` | string | required | Project name |
+| `repository` | string | — | Repository name (defaults to project name) |
+| `base_url` | string | `"https://dev.azure.com"` | Azure DevOps instance URL |
+| `webhook_secret` | string | — | Secret for webhook basic authentication |
+| `pilot_tag` | string | `"pilot"` | Tag that triggers Pilot to process a work item |
+| `work_item_types` | []string | `["Bug", "Task", "User Story"]` | Work item types to process |
+| `polling.enabled` | bool | `false` | Enable polling for new work items |
+| `polling.interval` | duration | `30s` | Polling interval |
+| `stale_label_cleanup.enabled` | bool | `true` | Auto-remove stale `pilot-in-progress` tags |
+| `stale_label_cleanup.interval` | duration | `30m` | Cleanup check interval |
+| `stale_label_cleanup.threshold` | duration | `1h` | Tag age before cleanup |
+
+## Polling Mode
+
+When polling is enabled, Pilot uses WIQL (Work Item Query Language) to find work items:
+
+```sql
+SELECT [System.Id] FROM WorkItems
+WHERE [System.Tags] CONTAINS 'pilot'
+  AND ([System.State] = 'New' OR [System.State] = 'Active')
+  AND ([System.WorkItemType] = 'Bug'
+       OR [System.WorkItemType] = 'Task'
+       OR [System.WorkItemType] = 'User Story')
+ORDER BY [System.CreatedDate] ASC
+```
+
+### Sequential Execution
+
+In sequential mode (default), Pilot:
+
+1. Finds the oldest unprocessed work item with the `pilot` tag
+2. Skips work items with `pilot-in-progress` or `pilot-done` tags
+3. Processes the work item and creates a PR
+4. Waits for the PR to be merged
+5. Moves to the next work item
+
+### Work Item States
+
+Pilot filters work items by state:
+
+| State | Polled |
+|-------|--------|
+| `New` | Yes |
+| `Active` | Yes |
+| `Resolved` | No |
+| `Closed` | No |
+
+## Webhook Mode
+
+For real-time work item detection, configure Azure DevOps service hooks:
+
+### 1. Set Up Service Hook
+
+1. Go to **Project Settings** → **Service hooks**
+2. Click **Create subscription**
+3. Select **Web Hooks**
+4. Configure triggers:
+   - **Work item created**
+   - **Work item updated**
+5. Set **URL** to `https://your-pilot.example.com/webhooks/azuredevops`
+6. Set **Basic authentication** credentials if using `webhook_secret`
+
+### 2. Configure Authentication
+
+```yaml
+adapters:
+  azure_devops:
+    webhook_secret: ${AZURE_DEVOPS_WEBHOOK_SECRET}
+```
+
+<Callout type="info">
+Azure DevOps service hooks support basic authentication. The `webhook_secret` is used as the password with an empty username.
+</Callout>
+
+### Supported Events
+
+| Event Type | Behavior |
+|------------|----------|
+| `workitem.created` | Process if work item has pilot tag |
+| `workitem.updated` | Process if pilot tag was just added |
+| `workitem.deleted` | Ignored |
+| `workitem.restored` | Ignored |
+
+## Pull Request Management
+
+When Pilot completes work, it creates a pull request in Azure DevOps Repos.
+
+### PR Features
+
+- **Automatic branch creation**: `pilot/ADO-{workitem_id}`
+- **Work item linking**: PR is linked to the source work item
+- **Thread comments**: Status updates posted as PR comments
+- **Merge completion**: Automatic merge when enabled
+
+### Branch Naming
+
+Pilot creates branches in the format: `refs/heads/pilot/ADO-{workitem_id}`
+
+### PR States
+
+| Status | Description |
+|--------|-------------|
+| `active` | PR is open and awaiting review |
+| `completed` | PR has been merged |
+| `abandoned` | PR was closed without merge |
+
+### Merge Status
+
+| Status | Description |
+|--------|-------------|
+| `succeeded` | Merge completed successfully |
+| `conflicts` | Merge conflicts exist |
+| `failure` | Merge failed |
+| `queued` | Merge is pending |
+
+## Tags
+
+Pilot uses tags to track work item status:
+
+| Tag | Purpose |
+|-----|---------|
+| `pilot` | Triggers Pilot to process the work item |
+| `pilot-in-progress` | Applied while Pilot is working |
+| `pilot-done` | Applied after successful completion |
+| `pilot-failed` | Applied if execution fails |
+
+### Tag Operations
+
+Azure DevOps stores tags as a semicolon-separated string. Pilot handles tag manipulation:
+
+```go
+// Current: "frontend; pilot; urgent"
+// After adding pilot-in-progress: "frontend; pilot; urgent; pilot-in-progress"
+```
+
+## Priority Mapping
+
+Azure DevOps uses numeric priority fields:
+
+| Azure DevOps Priority | Value | Pilot Priority |
+|----------------------|-------|----------------|
+| Priority 1 | 1 | Urgent |
+| Priority 2 | 2 | High |
+| Priority 3 | 3 | Medium |
+| Priority 4 | 4 | Low |
+
+## Work Item Type Mapping
+
+Configure which work item types Pilot should process:
+
+```yaml
+work_item_types:
+  - User Story      # Requirements
+  - Bug             # Defects
+  - Task            # Implementation tasks
+  - Feature         # Large features (optional)
+```
+
+### Task Conversion
+
+Work items are converted to Pilot tasks:
+
+| Azure DevOps Field | Pilot Field | Format |
+|-------------------|-------------|--------|
+| System.Id | Task ID | `ADO-{id}` |
+| System.Title | Title | Direct |
+| System.Description | Description | HTML cleaned |
+| Microsoft.VSTS.Common.Priority | Priority | Mapped (see above) |
+| System.Tags | Labels | Split by semicolon |
+| System.WorkItemType | Type | Direct |
+
+## Stale Tag Cleanup
+
+Pilot automatically removes orphaned `pilot-in-progress` tags:
+
+```yaml
+stale_label_cleanup:
+  enabled: true
+  interval: 30m
+  threshold: 1h
+```
+
+The cleaner:
+- Runs every `interval`
+- Removes `pilot-in-progress` if no active execution exists and tag is older than `threshold`
+- Adds a comment explaining the cleanup
+
+## Self-Hosted Azure DevOps Server
+
+For on-premises Azure DevOps Server:
+
+```yaml
+adapters:
+  azure_devops:
+    enabled: true
+    pat: ${AZURE_DEVOPS_PAT}
+    base_url: https://azuredevops.mycompany.com
+    organization: DefaultCollection
+    project: MyProject
+    repository: myrepo
+```
+
+<Callout type="warning">
+Ensure your self-hosted instance is accessible from where Pilot runs. You may need to configure network rules or VPN access.
+</Callout>
+
+## API Operations
+
+Pilot uses these Azure DevOps REST API endpoints:
+
+| Operation | Endpoint | Purpose |
+|-----------|----------|---------|
+| WIQL Query | `POST /_apis/wit/wiql` | Find work items |
+| Get Work Item | `GET /_apis/wit/workitems/{id}` | Fetch details |
+| Update Work Item | `PATCH /_apis/wit/workitems/{id}` | Update tags/state |
+| Add Comment | `POST /_apis/wit/workitems/{id}/comments` | Post updates |
+| Create Branch | `POST /_apis/git/repositories/{repo}/refs` | Create feature branch |
+| Create PR | `POST /_apis/git/repositories/{repo}/pullrequests` | Submit changes |
+| Complete PR | `PATCH /_apis/git/repositories/{repo}/pullrequests/{id}` | Merge PR |
+| Get PR | `GET /_apis/git/repositories/{repo}/pullrequests/{id}` | Check status |
+
+## Differences from GitHub
+
+| Aspect | Azure DevOps | GitHub |
+|--------|-------------|--------|
+| Issue type | Work Item | Issue |
+| Label type | Tag (semicolon-separated) | Label (array) |
+| Auth header | `Authorization: Basic` | `Authorization: Bearer` |
+| Webhook security | Basic auth | HMAC-SHA256 |
+| PR terminology | Pull Request | Pull Request |
+| Merge result | `completed` status | `merged` boolean |
+| Task ID format | `ADO-{id}` | `GH-{number}` |
+| Priority | Numeric field (1-4) | Labels (`priority:high`) |
+
+## Troubleshooting
+
+### Work Item Not Being Picked Up
+
+1. Verify the work item has the `pilot` tag
+2. Check that work item state is `New` or `Active`
+3. Ensure work item type is in `work_item_types` list
+4. Check for existing `pilot-in-progress` or `pilot-done` tags
+5. Verify PAT has Work Items Read permission
+
+### Authentication Errors
+
+1. Check PAT hasn't expired
+2. Verify PAT has required scopes
+3. Ensure organization name is correct (case-sensitive)
+4. For self-hosted, verify base_url includes the collection
+
+### PR Creation Fails
+
+1. Check PAT has Code Write permission
+2. Verify repository name is correct
+3. Ensure default branch exists
+4. Check branch policies aren't blocking
+
+### Webhook Not Triggering
+
+1. Verify service hook URL is accessible
+2. Check service hook subscription is active
+3. Verify basic auth credentials match `webhook_secret`
+4. Review service hook delivery history in Azure DevOps

@@ -1,0 +1,335 @@
+import { Callout } from 'nextra/components'
+
+# GitHub Integration
+
+Pilot integrates with GitHub to receive issues and create pull requests. This is the primary adapter for most Pilot deployments, supporting both polling and webhook modes for real-time issue detection.
+
+<Callout type="info">
+GitHub is Pilot's flagship integration. It supports label-based issue intake, automatic PR creation, CI status tracking, auto-merge via Autopilot, and rich PR comments with execution metrics.
+</Callout>
+
+## Setup
+
+### 1. Create a GitHub Token
+
+You can use either a **Personal Access Token (PAT)** or a **GitHub App** token.
+
+**Personal Access Token (Classic):**
+1. Go to **GitHub** → **Settings** → **Developer settings** → **Personal access tokens** → **Tokens (classic)**
+2. Click **Generate new token (classic)**
+3. Select scopes:
+   - `repo` — full repository access
+   - `workflow` — if you need GitHub Actions integration
+
+**Fine-grained PAT (recommended):**
+1. Go to **Settings** → **Developer settings** → **Personal access tokens** → **Fine-grained tokens**
+2. Select the target repository
+3. Set permissions:
+   - **Repository permissions**: Contents (Read and write), Issues (Read and write), Pull requests (Read and write), Metadata (Read)
+
+<Callout type="warning">
+For production deployments, use a dedicated service account and fine-grained PAT scoped to specific repositories for better security isolation.
+</Callout>
+
+### 2. Create the `pilot` Label
+
+In your GitHub repository, create a label that triggers Pilot:
+
+1. Go to your repo → **Issues** → **Labels**
+2. Click **New label**
+3. Create a label named `pilot` (or your preferred name)
+
+### 3. Configure Pilot
+
+```yaml
+# ~/.pilot/config.yaml
+adapters:
+  github:
+    enabled: true
+    token: ${GITHUB_TOKEN}
+    repo: owner/repo
+    project_path: /path/to/local/repo
+    pilot_label: pilot
+    polling:
+      enabled: true
+      interval: 30s
+      label: pilot
+```
+
+## Configuration Reference
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `false` | Enable the GitHub adapter |
+| `token` | string | required | Personal Access Token or GitHub App token |
+| `repo` | string | required | Repository in `owner/repo` format |
+| `project_path` | string | required | Local filesystem path to the cloned repository |
+| `webhook_secret` | string | — | HMAC secret for webhook signature verification |
+| `pilot_label` | string | `"pilot"` | Label that triggers Pilot to process an issue |
+| `polling.enabled` | bool | `false` | Enable polling for new issues |
+| `polling.interval` | duration | `30s` | How often to poll for new issues |
+| `polling.label` | string | `"pilot"` | Label to filter issues by when polling |
+| `stale_label_cleanup.enabled` | bool | `true` | Auto-remove orphaned `pilot-in-progress` labels |
+| `stale_label_cleanup.interval` | duration | `30m` | How often to check for stale labels |
+| `stale_label_cleanup.threshold` | duration | `1h` | Age after which a label is considered stale |
+| `stale_label_cleanup.failed_threshold` | duration | `24h` | Age after which `pilot-failed` is removed |
+
+## Polling Mode
+
+When polling is enabled, Pilot periodically checks for open issues with the pilot label:
+
+1. Fetches issues sorted by creation date (oldest first)
+2. Filters out issues with `pilot-in-progress`, `pilot-done`, or `pilot-failed` labels
+3. Processes the oldest unprocessed issue
+4. Creates a PR and waits for merge (in sequential mode)
+5. Moves to the next issue
+
+### Sequential vs Parallel Execution
+
+```yaml
+orchestrator:
+  execution:
+    mode: sequential     # or "parallel"
+    wait_for_merge: true
+    poll_interval: 30s
+    pr_timeout: 1h
+```
+
+**Sequential mode** (default):
+- Processes one issue at a time
+- Waits for PR merge before starting the next issue
+- Prevents merge conflicts between concurrent PRs
+- Recommended for most workflows
+
+**Parallel mode**:
+- Processes multiple issues concurrently
+- Configurable concurrency limit via `max_concurrent`
+- Useful for independent, non-overlapping changes
+
+### Dependency Resolution
+
+Pilot respects issue dependencies declared in the issue body:
+
+```markdown
+## Summary
+Add user authentication
+
+## Depends on
+- #123
+- #124
+```
+
+Issues with open dependencies are skipped until their dependencies are closed.
+
+## Webhook Mode
+
+For real-time issue detection, configure GitHub webhooks:
+
+### 1. Set Up the Webhook
+
+1. Go to your repository → **Settings** → **Webhooks**
+2. Click **Add webhook**
+3. Set **Payload URL** to `https://your-pilot.example.com/webhooks/github`
+4. Set **Content type** to `application/json`
+5. Set **Secret** to match your `webhook_secret` config
+6. Select events: **Issues**, **Pull request reviews**
+
+### 2. Configure Webhook Secret
+
+```yaml
+adapters:
+  github:
+    webhook_secret: ${GITHUB_WEBHOOK_SECRET}
+```
+
+<Callout type="info">
+If `webhook_secret` is empty, signature verification is skipped (development mode only). Always set a secret in production.
+</Callout>
+
+### Signature Verification
+
+GitHub webhooks use HMAC-SHA256 signatures via the `X-Hub-Signature-256` header. Pilot validates every incoming webhook against this signature.
+
+### Supported Webhook Events
+
+| Event | Action | Behavior |
+|-------|--------|----------|
+| `issues` | `opened` | Process if issue has pilot label |
+| `issues` | `labeled` | Process if pilot label was just added |
+| `pull_request_review` | `submitted` | Notify Autopilot of approval status |
+
+## Pull Request Management
+
+When Pilot completes work on an issue, it creates a pull request with rich metadata.
+
+### PR Features
+
+- **Automatic branch naming**: `pilot/GH-{issue_number}`
+- **Issue linking**: PR body references the source issue
+- **Execution metrics**: Duration, phase breakdown, files changed
+- **CI integration**: Waits for checks to pass before considering merge
+
+### PR Labels
+
+Pilot applies labels to track issue status:
+
+| Label | Purpose |
+|-------|---------|
+| `pilot` | Triggers Pilot to process the issue |
+| `pilot-in-progress` | Applied while Pilot is working |
+| `pilot-done` | Applied after successful completion |
+| `pilot-failed` | Applied if execution fails |
+| `pilot-retry-ready` | PR closed without merge, ready for retry |
+
+### Merge Methods
+
+Pilot supports all GitHub merge methods:
+
+```yaml
+autopilot:
+  merge_method: squash   # "merge", "squash", or "rebase"
+```
+
+| Method | Description |
+|--------|-------------|
+| `merge` | Create a merge commit |
+| `squash` | Squash all commits into one |
+| `rebase` | Rebase and merge (linear history) |
+
+## CI Status Tracking
+
+Pilot monitors both commit statuses and check runs:
+
+### Commit Statuses
+
+| Status | Description |
+|--------|-------------|
+| `pending` | Checks are running |
+| `success` | All checks passed |
+| `failure` | One or more checks failed |
+| `error` | Check encountered an error |
+
+### Check Runs (GitHub Actions)
+
+| Status | Conclusion | Description |
+|--------|------------|-------------|
+| `queued` | — | Waiting to run |
+| `in_progress` | — | Currently running |
+| `completed` | `success` | All steps passed |
+| `completed` | `failure` | One or more steps failed |
+| `completed` | `cancelled` | Run was cancelled |
+
+## Autopilot Integration
+
+With Autopilot enabled, Pilot can automatically merge PRs after checks pass:
+
+```yaml
+autopilot:
+  enabled: true
+  environment: dev
+  auto_merge: true
+  require_approval: false
+  max_failures: 3
+```
+
+### Auto-Merge Flow
+
+1. Pilot creates PR from issue
+2. CI checks run (build, test, lint)
+3. If all checks pass and `auto_merge: true`:
+   - PR is automatically merged
+   - Issue is closed
+   - Next issue is processed
+4. If checks fail:
+   - Pilot retries implementation (up to `max_failures`)
+   - After max failures, issue is marked `pilot-failed`
+
+### Approval Requirements
+
+```yaml
+autopilot:
+  require_approval: true
+```
+
+When enabled, Pilot waits for a human approval review before auto-merging.
+
+## Stale Label Cleanup
+
+Pilot automatically removes orphaned status labels that may remain after restarts or failures:
+
+```yaml
+stale_label_cleanup:
+  enabled: true
+  interval: 30m
+  threshold: 1h
+  failed_threshold: 24h
+```
+
+The cleaner:
+- Runs every `interval`
+- Removes `pilot-in-progress` if no active execution exists and label is older than `threshold`
+- Removes `pilot-failed` after `failed_threshold` to allow automatic retry
+- Posts a comment explaining the cleanup
+
+## Priority Labels
+
+Pilot recognizes priority labels and can process higher-priority issues first:
+
+| Label | Priority | Value |
+|-------|----------|-------|
+| `priority:urgent` / `P0` | Urgent | 1 |
+| `priority:high` / `P1` | High | 2 |
+| `priority:medium` / `P2` | Medium | 3 |
+| `priority:low` / `P3` | Low | 4 |
+
+## Task ID Format
+
+GitHub issues are converted to Pilot tasks with the format `GH-{number}`:
+- Issue #42 → Task ID `GH-42`
+- Branch name: `pilot/GH-42`
+
+## API Operations
+
+Pilot uses the following GitHub API operations:
+
+| Operation | Endpoint | Purpose |
+|-----------|----------|---------|
+| List issues | `GET /repos/{owner}/{repo}/issues` | Poll for new issues |
+| Get issue | `GET /repos/{owner}/{repo}/issues/{number}` | Fetch issue details |
+| Add labels | `POST /repos/{owner}/{repo}/issues/{number}/labels` | Mark progress |
+| Remove labels | `DELETE /repos/{owner}/{repo}/issues/{number}/labels/{name}` | Clean up |
+| Create PR | `POST /repos/{owner}/{repo}/pulls` | Submit changes |
+| Merge PR | `PUT /repos/{owner}/{repo}/pulls/{number}/merge` | Complete workflow |
+| Add comment | `POST /repos/{owner}/{repo}/issues/{number}/comments` | Post updates |
+| Get check runs | `GET /repos/{owner}/{repo}/commits/{sha}/check-runs` | Monitor CI |
+| Get status | `GET /repos/{owner}/{repo}/commits/{sha}/status` | Monitor CI |
+
+## Troubleshooting
+
+### Issue Not Being Picked Up
+
+1. Verify the issue has the `pilot` label
+2. Check that no `pilot-in-progress` or `pilot-done` labels exist
+3. Ensure the issue is open (not closed)
+4. Check Pilot logs for polling activity
+
+### Webhook Not Triggering
+
+1. Verify webhook URL is accessible from GitHub
+2. Check webhook delivery logs in GitHub (Settings → Webhooks → Recent Deliveries)
+3. Ensure `webhook_secret` matches between GitHub and Pilot config
+4. Look for signature verification errors in Pilot logs
+
+### PR Not Merging
+
+1. Check if CI checks are passing
+2. Verify branch protection rules allow Pilot to merge
+3. Check if `require_approval` is enabled
+4. Look for merge conflicts in the PR
+
+### Rate Limiting
+
+GitHub has API rate limits (5000 requests/hour for authenticated requests). If you hit limits:
+- Increase polling interval
+- Use webhooks instead of polling
+- Check for runaway polling loops

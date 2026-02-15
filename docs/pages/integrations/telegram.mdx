@@ -1,0 +1,452 @@
+import { Callout } from 'nextra/components'
+
+# Telegram Integration
+
+Pilot provides a Telegram bot interface for conversational task submission, voice messages, image analysis, and real-time execution status. It's the most interactive way to communicate with Pilot.
+
+<Callout type="info">
+The Telegram adapter supports five interaction modes: **Task execution**, **Questions**, **Research**, **Planning**, and **Chat**. It automatically detects your intent and responds appropriately.
+</Callout>
+
+## Setup
+
+### 1. Create a Telegram Bot
+
+1. Open Telegram and find **@BotFather**
+2. Send `/newbot` and follow the prompts
+3. Copy the **bot token** (format: `123456789:ABC-DEF1234ghIkl-zyx57W2v1u123ew11`)
+
+### 2. Get Your Chat ID
+
+To find your Telegram user/chat ID:
+
+1. Start a chat with your new bot
+2. Send any message
+3. Visit `https://api.telegram.org/bot<YOUR_TOKEN>/getUpdates`
+4. Look for `"chat":{"id":123456789}` in the response
+
+Or use @userinfobot to get your user ID.
+
+### 3. Configure Pilot
+
+```yaml
+# ~/.pilot/config.yaml
+adapters:
+  telegram:
+    enabled: true
+    bot_token: ${TELEGRAM_BOT_TOKEN}
+    chat_id: "123456789"
+    allowed_ids:
+      - 123456789        # Your user ID
+    project_path: /path/to/repo
+    polling: true
+    plain_text_mode: true
+```
+
+<Callout type="warning">
+Always set `allowed_ids` to restrict who can trigger Pilot via Telegram. Without it, anyone who discovers your bot can submit tasks.
+</Callout>
+
+## Configuration Reference
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `false` | Enable the Telegram adapter |
+| `bot_token` | string | required | Bot token from @BotFather |
+| `chat_id` | string | — | Default chat ID for outbound notifications |
+| `allowed_ids` | []int64 | — | User/chat IDs authorized to send tasks |
+| `project_path` | string | — | Default project path for tasks |
+| `polling` | bool | `false` | Enable inbound message polling |
+| `plain_text_mode` | bool | `true` | Use plain text instead of Markdown |
+| `transcription.backend` | string | `"auto"` | Voice transcription backend |
+| `transcription.openai_api_key` | string | — | OpenAI API key for Whisper |
+| `rate_limit.enabled` | bool | `true` | Enable per-user rate limiting |
+| `rate_limit.messages_per_minute` | int | `20` | Max messages per minute per user |
+| `rate_limit.tasks_per_hour` | int | `10` | Max task executions per hour |
+| `rate_limit.burst_size` | int | `5` | Burst allowance above rate limit |
+| `llm_classifier.enabled` | bool | `false` | Enable LLM-based intent classification |
+| `llm_classifier.api_key` | string | — | Anthropic API key |
+| `llm_classifier.timeout_seconds` | int | `2` | Classification timeout |
+| `llm_classifier.history_size` | int | `10` | Messages to keep per chat |
+| `llm_classifier.history_ttl` | duration | `30m` | Conversation history TTL |
+
+## Chat Modes
+
+Pilot automatically detects your intent and responds in one of five modes:
+
+### Task Mode
+
+Triggered by action-oriented messages:
+
+```
+"Add a logout button to the header"
+"Fix the bug in user authentication"
+"Create a new API endpoint for orders"
+```
+
+Pilot will:
+1. Show a confirmation message with the task details
+2. Wait for you to confirm (Execute/Cancel buttons)
+3. Execute and create a PR
+4. Report results back to the chat
+
+### Question Mode
+
+Triggered by questions about the codebase:
+
+```
+"What handles authentication?"
+"How does the payment flow work?"
+"Where is the config loaded?"
+```
+
+Pilot will:
+1. Explore the codebase (read-only)
+2. Return a concise answer
+3. Not make any changes
+
+### Research Mode
+
+Triggered by research requests:
+
+```
+"Analyze the API response times"
+"Research how competitors implement this feature"
+"Investigate the memory usage patterns"
+```
+
+Pilot will:
+1. Perform deep analysis
+2. Return structured findings
+3. Save results to `.agent/research/`
+
+### Planning Mode
+
+Triggered by planning requests:
+
+```
+"Plan the implementation for user notifications"
+"How should we approach adding caching?"
+"Design the architecture for the new module"
+```
+
+Pilot will:
+1. Explore the codebase
+2. Draft an implementation plan
+3. Offer Execute/Cancel buttons to proceed
+
+### Chat Mode
+
+Triggered by conversational messages:
+
+```
+"Hello"
+"Thanks!"
+"What can you do?"
+```
+
+Pilot responds conversationally without code execution.
+
+## Bot Commands
+
+| Command | Description |
+|---------|-------------|
+| `/start`, `/help` | Show help message |
+| `/status` | Current task and queue status |
+| `/cancel` | Cancel pending or running task |
+| `/queue` | Show queued tasks |
+| `/projects` | List configured projects |
+| `/switch <name>` | Switch active project |
+| `/tasks` | Show task backlog from `.agent/tasks/` |
+| `/run <id>` | Execute task directly (e.g., `/run 07`) |
+| `/stop` | Stop running task |
+| `/history` | Recent task history |
+| `/budget` | Show usage and costs |
+| `/brief` | Generate on-demand daily summary |
+| `/voice` | Check voice transcription status |
+| `/nopr <task>` | Execute without creating PR |
+| `/pr <task>` | Force PR creation |
+
+## Voice Messages
+
+Pilot supports voice transcription using OpenAI Whisper:
+
+### Enable Voice Support
+
+```yaml
+adapters:
+  telegram:
+    transcription:
+      backend: auto
+      openai_api_key: ${OPENAI_API_KEY}
+```
+
+### How It Works
+
+1. Send a voice message to the bot
+2. Pilot transcribes it using Whisper API
+3. Shows you the transcription
+4. Processes it as if you typed it
+
+### Supported Languages
+
+Whisper automatically detects language. Pilot shows the detected language:
+
+```
+🎤 Transcribed (English):
+Add error handling to the payment endpoint
+```
+
+## Image Analysis
+
+Send photos to Pilot for visual analysis:
+
+1. Send a photo to the bot
+2. Optionally add a caption with instructions
+3. Pilot analyzes the image and responds
+
+Use cases:
+- Screenshot analysis
+- UI mockup interpretation
+- Error message screenshots
+- Architecture diagrams
+
+## Multi-Project Support
+
+Switch between configured projects:
+
+```
+/projects          # List all projects
+/switch backend    # Switch to backend project
+/project           # Show current project
+```
+
+Each chat maintains its own active project.
+
+## Task Confirmation
+
+When you submit a task, Pilot shows a confirmation:
+
+```
+📋 New Task
+
+TG-1234567890
+"Add logout button to header"
+
+Project: pilot
+📁 /path/to/repo
+
+[✅ Execute]  [❌ Cancel]
+```
+
+You can:
+- Click **Execute** or reply "yes" to proceed
+- Click **Cancel** or reply "no" to abort
+- Tasks expire after 5 minutes without response
+
+## Progress Updates
+
+During execution, Pilot updates the progress message:
+
+```
+🔄 Task TG-1234567890
+━━━━━━━━░░ 80%
+
+🔨 Implementing changes...
+```
+
+The progress bar updates in real-time as phases complete.
+
+## Ephemeral Tasks
+
+Pilot automatically detects ephemeral tasks (commands that shouldn't create PRs):
+
+```
+"Run the tests"
+"Start the dev server"
+"Check the build"
+```
+
+These execute without PR creation. Override with `/pr <task>` to force PR.
+
+## Quick Patterns
+
+Type these shortcuts for common operations:
+
+| Pattern | Action |
+|---------|--------|
+| `07` or `task 07` | Run TASK-07 from `.agent/tasks/` |
+| `status?` | Show project status |
+| `todos?` | List TODO/FIXME comments |
+
+## Rate Limiting
+
+Protect against abuse with per-user rate limits:
+
+```yaml
+rate_limit:
+  enabled: true
+  messages_per_minute: 20
+  tasks_per_hour: 10
+  burst_size: 5
+```
+
+When exceeded, users receive a warning message and must wait.
+
+## LLM Intent Classification
+
+For better intent detection, enable LLM classification:
+
+```yaml
+llm_classifier:
+  enabled: true
+  api_key: ${ANTHROPIC_API_KEY}
+  timeout_seconds: 2
+  history_size: 10
+  history_ttl: 30m
+```
+
+Benefits:
+- More accurate intent detection
+- Context-aware classification
+- Better handling of ambiguous messages
+
+Falls back to regex-based detection if LLM fails.
+
+## Inline Keyboards
+
+Pilot uses Telegram inline keyboards for interactions:
+
+- **Execute/Cancel**: Task confirmation
+- **Project switching**: Quick project selection
+- **Voice setup**: Transcription configuration
+
+## Singleton Mode
+
+Only one Pilot instance can poll the same bot:
+
+```go
+if err := handler.CheckSingleton(ctx); err == telegram.ErrConflict {
+    log.Fatal("Another Pilot instance is already running")
+}
+```
+
+If you see a 409 error, check for other running instances.
+
+## Notifications
+
+Pilot can send proactive notifications to your chat:
+
+- Task completion
+- PR ready for review
+- Execution failures
+- Daily briefs
+
+Configure via `daily_brief.channels`:
+
+```yaml
+daily_brief:
+  channels:
+    - type: telegram
+      channel: "123456789"
+```
+
+## Security Considerations
+
+### Allowed IDs
+
+Always configure `allowed_ids`:
+
+```yaml
+allowed_ids:
+  - 123456789        # Your user ID
+  - 987654321        # Team member
+  - -1001234567890   # Group chat ID
+```
+
+Group chat IDs are negative numbers.
+
+### Token Security
+
+- Never commit bot tokens to version control
+- Use environment variables
+- Rotate tokens if compromised
+- Consider using separate bots for dev/prod
+
+### Rate Limiting
+
+Enable rate limiting for production:
+
+```yaml
+rate_limit:
+  enabled: true
+  messages_per_minute: 20
+  tasks_per_hour: 10
+```
+
+## Team Member Resolution
+
+For multi-user deployments with RBAC:
+
+```yaml
+adapters:
+  telegram:
+    # ... other config ...
+
+team:
+  enabled: true
+  team_id: engineering
+```
+
+Pilot maps Telegram user IDs to team members for access control.
+
+## Troubleshooting
+
+### Bot Not Responding
+
+1. Verify bot token is correct
+2. Check `polling: true` is set
+3. Ensure no other instance is running (409 error)
+4. Check your user ID is in `allowed_ids`
+5. Look for errors in Pilot logs
+
+### Voice Not Working
+
+1. Verify `openai_api_key` is set
+2. Run `/voice` to check status
+3. Check OpenAI API quota
+4. Ensure audio format is supported (Telegram uses OGG)
+
+### Messages Not Authorized
+
+1. Add your user ID to `allowed_ids`
+2. For groups, add the group chat ID (negative number)
+3. Restart Pilot after config changes
+
+### Progress Updates Not Showing
+
+1. Check plain_text_mode setting
+2. Verify message edit permissions
+3. Look for rate limit errors
+4. Check Telegram API connectivity
+
+### Task Timing Out
+
+1. Default timeout is 30 minutes
+2. Check for infinite loops in execution
+3. Use `/stop` to cancel stuck tasks
+4. Check executor timeout configuration
+
+## API Usage
+
+Pilot uses these Telegram Bot API methods:
+
+| Method | Purpose |
+|--------|---------|
+| `getUpdates` | Long-polling for messages |
+| `sendMessage` | Send text responses |
+| `editMessageText` | Update progress |
+| `answerCallbackQuery` | Acknowledge button clicks |
+| `getFile` | Download voice/image files |
+
+The bot uses long-polling (30 second timeout) for real-time message reception.
