@@ -48,11 +48,12 @@ func normalizeQwenToolName(name string) string {
 type QwenCodeErrorType string
 
 const (
-	QwenErrorTypeRateLimit     QwenCodeErrorType = "rate_limit"
-	QwenErrorTypeAPIError      QwenCodeErrorType = "api_error"
-	QwenErrorTypeTimeout       QwenCodeErrorType = "timeout"
-	QwenErrorTypeInvalidConfig QwenCodeErrorType = "invalid_config"
-	QwenErrorTypeUnknown       QwenCodeErrorType = "unknown"
+	QwenErrorTypeRateLimit        QwenCodeErrorType = "rate_limit"
+	QwenErrorTypeAPIError         QwenCodeErrorType = "api_error"
+	QwenErrorTypeTimeout          QwenCodeErrorType = "timeout"
+	QwenErrorTypeInvalidConfig    QwenCodeErrorType = "invalid_config"
+	QwenErrorTypeSessionNotFound  QwenCodeErrorType = "session_not_found"
+	QwenErrorTypeUnknown          QwenCodeErrorType = "unknown"
 )
 
 // QwenCodeError represents a classified error from Qwen Code.
@@ -119,6 +120,17 @@ func classifyQwenCodeError(stderr string, originalErr error) *QwenCodeError {
 		}
 	}
 
+	// Session not found/expired
+	if strings.Contains(stderrLower, "session not found") ||
+		strings.Contains(stderrLower, "session expired") ||
+		strings.Contains(stderrLower, "invalid session") {
+		return &QwenCodeError{
+			Type:    QwenErrorTypeSessionNotFound,
+			Message: "Qwen session not found",
+			Stderr:  strings.TrimSpace(stderr),
+		}
+	}
+
 	// Timeout/killed
 	if strings.Contains(stderrLower, "killed") ||
 		strings.Contains(stderrLower, "signal") ||
@@ -171,8 +183,18 @@ func (b *QwenCodeBackend) Name() string {
 
 // IsAvailable checks if Qwen Code CLI is installed.
 func (b *QwenCodeBackend) IsAvailable() bool {
-	_, err := exec.LookPath(b.config.Command)
-	return err == nil
+	path, err := exec.LookPath(b.config.Command)
+	if err != nil {
+		return false
+	}
+	out, err := exec.Command(path, "--version").Output()
+	if err != nil {
+		b.log.Warn("qwen-code: could not determine version", "error", err)
+		return true
+	}
+	version := strings.TrimSpace(string(out))
+	b.log.Info("qwen-code: detected version", "version", version)
+	return true
 }
 
 // buildArgs constructs the CLI arguments for Qwen Code execution.
@@ -448,6 +470,14 @@ func (b *QwenCodeBackend) Execute(ctx context.Context, opts ExecuteOptions) (*Ba
 			slog.String("message", qcErr.Message),
 			slog.String("stderr", qcErr.Stderr),
 		)
+
+		// Fallback if --resume fails with session not found
+		if qcErr.Type == QwenErrorTypeSessionNotFound && opts.ResumeSessionID != "" {
+			b.log.Warn("qwen-code: session not found, retrying without --resume",
+				"session_id", opts.ResumeSessionID)
+			opts.ResumeSessionID = ""
+			return b.Execute(ctx, opts)
+		}
 
 		if result.Error == "" {
 			result.Error = qcErr.Error()

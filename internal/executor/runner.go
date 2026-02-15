@@ -3252,8 +3252,8 @@ func estimateCost(inputTokens, outputTokens int64, model string) float64 {
 		// Qwen3-Coder pricing (per 1M tokens)
 		switch {
 		case strings.Contains(modelLower, "480b") || strings.Contains(modelLower, "plus"):
-			inputPrice = 0.22  // Qwen3-Coder-480B / Plus
-			outputPrice = 1.00
+			inputPrice = 1.00  // Qwen3-Coder-Plus (International, 0-32K)
+			outputPrice = 5.00
 		case strings.Contains(modelLower, "flash"):
 			inputPrice = 0.30
 			outputPrice = 1.50

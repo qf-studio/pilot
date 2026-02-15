@@ -164,6 +164,11 @@ func TestQwenCodeBackendParseStreamEvent(t *testing.T) {
 			expectError: true,
 		},
 		{
+			name:       "user tool_result with content field",
+			line:       `{"type":"user","message":{"content":[{"type":"tool_result","content":"file contents here","is_error":false}]}}`,
+			expectType: EventTypeToolResult,
+		},
+		{
 			name:           "usage info extracted",
 			line:           `{"type":"result","result":"Done","usage":{"input_tokens":5000,"output_tokens":2000},"model":"qwen3-coder-plus"}`,
 			expectType:     EventTypeResult,
