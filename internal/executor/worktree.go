@@ -23,9 +23,10 @@ type PooledWorktree struct {
 // GH-936: Enables Pilot to work in repos where users have uncommitted changes.
 // GH-1078: Supports worktree pooling for sequential mode to save 500ms-2s per task.
 type WorktreeManager struct {
-	repoPath string
-	mu       sync.Mutex
-	active   map[string]string // taskID -> worktreePath
+	repoPath  string
+	mu        sync.Mutex
+	active    map[string]string // taskID -> worktreePath
+	createMu  sync.Mutex        // GH-1312: Serializes worktree creation to avoid git race conditions
 
 	// Pool support (GH-1078)
 	pool     []*PooledWorktree // Pre-created worktrees for reuse
@@ -84,6 +85,14 @@ func (m *WorktreeManager) CreateWorktree(ctx context.Context, taskID string) (*W
 	// Generate unique worktree path using taskID and timestamp to handle concurrent tasks
 	worktreeName := fmt.Sprintf("pilot-worktree-%s-%d", sanitizeBranchName(taskID), time.Now().UnixNano())
 	worktreePath := filepath.Join(os.TempDir(), worktreeName)
+
+	// GH-1312: Serialize worktree creation to avoid git race conditions.
+	// Git's worktree implementation has internal races on .git/worktrees/*/commondir
+	// when multiple worktrees are created concurrently. Rather than relying solely on
+	// retries, we serialize creation operations while still allowing concurrent execution
+	// in the worktrees themselves.
+	m.createMu.Lock()
+	defer m.createMu.Unlock()
 
 	// Create worktree from HEAD (current commit of default branch)
 	// Retry with exponential backoff to handle git race conditions on concurrent worktree creation
@@ -524,6 +533,12 @@ func (m *WorktreeManager) CreateWorktreeWithBranch(ctx context.Context, taskID, 
 	worktreeName := fmt.Sprintf("pilot-worktree-%s-%d", sanitizeBranchName(taskID), time.Now().UnixNano())
 	worktreePath := filepath.Join(os.TempDir(), worktreeName)
 
+	// GH-1312: Serialize worktree creation to avoid git race conditions.
+	// Git's worktree implementation has internal races on .git/worktrees/*/commondir
+	// when multiple worktrees are created concurrently.
+	m.createMu.Lock()
+	defer m.createMu.Unlock()
+
 	// GH-1211: Always fetch origin before creating worktree to prevent branching
 	// from stale local main. This avoids conflicts when local main diverges from origin.
 	fetchCmd := exec.CommandContext(ctx, "git", "fetch", "origin", "main")
@@ -546,63 +561,33 @@ func (m *WorktreeManager) CreateWorktreeWithBranch(ctx context.Context, taskID, 
 	// This handles retries where previous cleanup failed to fully remove the worktree reference.
 	m.cleanupStaleWorktreeForBranch(ctx, branchName)
 
-	// GH-1016: Atomic branch creation with retry loop
-	// Uses -B flag to force create/reset branch, avoiding TOCTOU race conditions
-	const maxRetries = 3
-	var lastErr error
+	// Use -B to force create/reset the branch atomically
+	// git worktree add -B <branch> <path> <base>
+	// -B creates the branch if it doesn't exist, or resets it if it does
+	cmd := exec.CommandContext(ctx, "git", "worktree", "add", "-B", branchName, worktreePath, baseRef)
+	cmd.Dir = m.repoPath
+	output, err := cmd.CombinedOutput()
 
-	for attempt := 0; attempt < maxRetries; attempt++ {
-		if attempt > 0 {
-			// Exponential backoff: 100ms, 200ms, 400ms
-			sleepDuration := time.Duration(100<<attempt) * time.Millisecond
-			time.Sleep(sleepDuration)
-			// Clean up any stale state before retry
-			m.cleanupStaleWorktreeForBranch(ctx, branchName)
-		}
-
-		// Use -B to force create/reset the branch atomically
-		// git worktree add -B <branch> <path> <base>
-		// -B creates the branch if it doesn't exist, or resets it if it does
-		cmd := exec.CommandContext(ctx, "git", "worktree", "add", "-B", branchName, worktreePath, baseRef)
-		cmd.Dir = m.repoPath
-		output, err := cmd.CombinedOutput()
-
-		if err == nil {
-			// Success - track and return
-			m.mu.Lock()
-			m.active[taskID] = worktreePath
-			m.mu.Unlock()
-
-			var cleanupOnce sync.Once
-			cleanup := func() {
-				cleanupOnce.Do(func() {
-					m.cleanupWorktreeAndBranch(taskID, worktreePath, branchName)
-				})
-			}
-
-			return &WorktreeResult{
-				Path:    worktreePath,
-				Cleanup: cleanup,
-			}, nil
-		}
-
-		// Handle specific error cases
-		outputStr := string(output)
-		if strings.Contains(outputStr, "already checked out") ||
-			strings.Contains(outputStr, "is already used by worktree") ||
-			strings.Contains(outputStr, "failed to read") && strings.Contains(outputStr, "commondir") {
-			// Branch is in use by another worktree, or Git race condition with commondir
-			// The commondir error occurs when multiple worktrees are created concurrently
-			// due to Git's internal lock file handling not being fully thread-safe
-			lastErr = fmt.Errorf("worktree conflict (attempt %d/%d): %s", attempt+1, maxRetries, outputStr)
-			continue
-		}
-
-		// Non-retryable error
+	if err != nil {
 		return nil, fmt.Errorf("failed to create worktree with branch: %w: %s", err, output)
 	}
 
-	return nil, fmt.Errorf("failed to create worktree after %d attempts: %w", maxRetries, lastErr)
+	// Success - track and return
+	m.mu.Lock()
+	m.active[taskID] = worktreePath
+	m.mu.Unlock()
+
+	var cleanupOnce sync.Once
+	cleanup := func() {
+		cleanupOnce.Do(func() {
+			m.cleanupWorktreeAndBranch(taskID, worktreePath, branchName)
+		})
+	}
+
+	return &WorktreeResult{
+		Path:    worktreePath,
+		Cleanup: cleanup,
+	}, nil
 }
 
 // cleanupWorktreeAndBranch removes a worktree, its branch, and cleans up tracking state.
