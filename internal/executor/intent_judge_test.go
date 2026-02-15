@@ -156,3 +156,61 @@ func TestNewIntentJudge(t *testing.T) {
 		t.Error("expected non-nil httpClient")
 	}
 }
+
+// TestIntentJudge_IncompleteMultiFileChanges tests detection of dropped features across backends (GH-1321)
+func TestIntentJudge_IncompleteMultiFileChanges(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Read the request to check the user content
+		var req haikuRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+
+		// The issue mentions "all backends" but diff only touches one file
+		// Judge should fail this
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"content":[{"text":"VERDICT:FAIL\nThe issue requests adding rate limiting to ALL backends, but the diff only modifies backend_claudecode.go. Missing changes for backend_opencode.go and backend_qwencode.go.\nCONFIDENCE:0.92"}]}`)
+	}))
+	defer server.Close()
+
+	judge := newIntentJudgeWithURL("fake-api-key", server.URL)
+	verdict, err := judge.Judge(
+		context.Background(),
+		"Add rate limiting to all backends",
+		"Implement rate limiting for all backend engines (ClaudeCode, OpenCode, QwenCode)",
+		"diff --git a/internal/executor/backend_claudecode.go\n+func (b *ClaudeCode) RateLimit()",
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if verdict.Passed {
+		t.Error("expected FAIL verdict for incomplete multi-file change")
+	}
+	if !strings.Contains(verdict.Reason, "backend") {
+		t.Error("reason should mention incomplete backend changes")
+	}
+}
+
+// TestIntentJudge_SingleBackendPass tests that single-backend issues pass when only one backend is modified (GH-1321)
+func TestIntentJudge_SingleBackendPass(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"content":[{"text":"VERDICT:PASS\nThe issue requests adding timeout to ClaudeCode backend only, and the diff correctly modifies only backend_claudecode.go.\nCONFIDENCE:0.95"}]}`)
+	}))
+	defer server.Close()
+
+	judge := newIntentJudgeWithURL("fake-api-key", server.URL)
+	verdict, err := judge.Judge(
+		context.Background(),
+		"Add timeout to ClaudeCode backend",
+		"Add a configurable timeout for the ClaudeCode backend engine",
+		"diff --git a/internal/executor/backend_claudecode.go\n+func (b *ClaudeCode) SetTimeout()",
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !verdict.Passed {
+		t.Error("expected PASS verdict for single-backend change")
+	}
+}

@@ -64,6 +64,7 @@ Check for:
 1) Scope creep (changes unrelated to the issue)
 2) Missing requirements (issue asks for X but diff doesn't include it)
 3) Unrelated changes (refactoring or cleanup not mentioned in issue)
+4) Incomplete multi-file changes (if the issue implies changes to multiple backends, adapters, or sibling files, verify ALL were updated — not just one)
 
 Output exactly one of: VERDICT:PASS or VERDICT:FAIL followed by a brief reason on the next line.
 Then output CONFIDENCE:X.X (0.0-1.0).`

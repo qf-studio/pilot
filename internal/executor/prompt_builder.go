@@ -110,15 +110,16 @@ func (r *Runner) BuildPrompt(task *Task, executionPath string) string {
 			}
 		}
 
-		// Pre-commit verification checklist (GH-359, GH-920)
+		// Pre-commit verification checklist (GH-359, GH-920, GH-1321)
 		sb.WriteString("## Pre-Commit Verification\n\n")
 		sb.WriteString("BEFORE committing, verify:\n")
 		sb.WriteString("1. **Build passes**: Run `go build ./...` (or equivalent for the project)\n")
 		sb.WriteString("2. **Config wiring**: Any new config struct fields must flow from yaml → main.go → handler\n")
 		sb.WriteString("3. **Methods exist**: Any method calls you added must have implementations\n")
-		sb.WriteString("4. **Tests pass**: Run `go test ./...` for changed packages\n")
+		sb.WriteString("4. **Tests pass + new code tested**: Run `go test ./...` for changed packages. If you added new exported functions or methods, write tests for them — \"tests pass\" is NOT enough.\n")
+		sb.WriteString("5. **Constants sourced**: If you added/changed numeric constants (prices, limits, thresholds, URLs), verify each value against the source mentioned in the issue. Do NOT invent values — cite the source in a code comment.\n")
 		if len(task.AcceptanceCriteria) > 0 {
-			sb.WriteString("5. **Acceptance criteria**: Verify ALL criteria listed above are satisfied\n")
+			sb.WriteString("6. **Acceptance criteria**: Verify ALL criteria listed above are satisfied\n")
 		}
 		sb.WriteString("\nIf any verification fails, fix it before committing.\n\n")
 
@@ -274,6 +275,24 @@ func (r *Runner) buildSelfReviewPrompt(task *Task) string {
 	sb.WriteString("If files mentioned in the issue are NOT in the diff:\n")
 	sb.WriteString("- Output `INCOMPLETE: Issue mentions <file> but it was not modified`\n")
 	sb.WriteString("- FIX the issue by making the required changes to those files\n\n")
+
+	// GH-1321: Constant value sanity check
+	sb.WriteString("### 6. Constant Value Sanity Check\n")
+	sb.WriteString("For any numeric constants in the diff (prices, rates, thresholds, limits):\n")
+	sb.WriteString("- Is the value sourced? Look for a comment with URL or reference\n")
+	sb.WriteString("- Does it fit the magnitude pattern of neighboring constants in the same block?\n")
+	sb.WriteString("- If the issue body specifies exact values, do they match the code EXACTLY?\n\n")
+	sb.WriteString("If suspicious: output `SUSPICIOUS_VALUE: <constant> = <value> in <file> — <reason>`\n")
+	sb.WriteString("Do NOT auto-fix uncertain values — flag only.\n\n")
+
+	// GH-1321: Cross-file parity check
+	sb.WriteString("### 7. Cross-File Parity Check\n")
+	sb.WriteString("If your changes touch a file with sibling implementations (e.g., `backend_*.go`, `adapter_*.go`):\n")
+	sb.WriteString("1. List siblings: `ls $(dirname <file>)/$(echo <file> | sed 's/_[^_]*//')_*.go`\n")
+	sb.WriteString("2. For each sibling, check: does it handle the same error types, config options, and fallback patterns?\n")
+	sb.WriteString("3. If you added a new error type or enum constant, verify it exists in ALL sibling files\n")
+	sb.WriteString("4. If you added a fallback/retry pattern, check if siblings need the same pattern\n\n")
+	sb.WriteString("If parity missing: output `PARITY_GAP: <feature> in <file_a> but not <file_b>` and FIX it.\n\n")
 
 	sb.WriteString("### Actions\n")
 	sb.WriteString("- If you find issues: FIX them and commit the fix\n")

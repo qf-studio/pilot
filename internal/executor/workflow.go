@@ -117,6 +117,11 @@ go test ./internal/path/to/changed/package/...
    - Method exists on type? ✓
    - Correct signature? ✓
 
+5. **New code has tests**:
+   - If you added new exported functions or methods, verify matching test cases exist
+   - Run ` + "`go test -v ./internal/path/...`" + ` and confirm the new code paths appear in test output
+   - "All tests pass" with zero new tests is NOT acceptable for non-trivial additions
+
 **If any check fails**:
 - Fix the issue
 - Re-run the check

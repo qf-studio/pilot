@@ -2590,3 +2590,74 @@ func TestRunner_CancelAll_MultipleTasks(t *testing.T) {
 		}
 	}
 }
+
+// TestBuildPrompt_ConstantsSourced verifies pre-commit verification includes "Constants sourced" (GH-1321)
+func TestBuildPrompt_ConstantsSourced(t *testing.T) {
+	// Create a temp directory with .agent/ to simulate Navigator project
+	tmpDir := t.TempDir()
+	agentDir := filepath.Join(tmpDir, ".agent")
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		t.Fatalf("Failed to create .agent dir: %v", err)
+	}
+
+	runner := NewRunner()
+
+	task := &Task{
+		ID:          "TEST-1321",
+		Title:       "Add pricing constants",
+		Description: "Add rate limits with proper validation",
+		ProjectPath: tmpDir,
+		Branch:      "pilot/TEST-1321",
+	}
+
+	prompt := runner.BuildPrompt(task, task.ProjectPath)
+
+	if !strings.Contains(prompt, "Constants sourced") {
+		t.Error("BuildPrompt should contain 'Constants sourced' verification item")
+	}
+	if !strings.Contains(prompt, "new code tested") {
+		t.Error("BuildPrompt should contain 'new code tested' in tests verification item")
+	}
+}
+
+// TestBuildSelfReviewPrompt_ConstantValueSanity verifies self-review includes check #6 (GH-1321)
+func TestBuildSelfReviewPrompt_ConstantValueSanity(t *testing.T) {
+	runner := NewRunner()
+
+	task := &Task{
+		ID:          "TEST-1321",
+		Title:       "Test task",
+		Description: "Test description",
+		ProjectPath: "/tmp/test",
+	}
+
+	prompt := runner.buildSelfReviewPrompt(task)
+
+	if !strings.Contains(prompt, "Constant Value Sanity Check") {
+		t.Error("Self-review prompt should contain 'Constant Value Sanity Check'")
+	}
+	if !strings.Contains(prompt, "SUSPICIOUS_VALUE") {
+		t.Error("Self-review prompt should contain 'SUSPICIOUS_VALUE' signal")
+	}
+}
+
+// TestBuildSelfReviewPrompt_CrossFileParity verifies self-review includes check #7 (GH-1321)
+func TestBuildSelfReviewPrompt_CrossFileParity(t *testing.T) {
+	runner := NewRunner()
+
+	task := &Task{
+		ID:          "TEST-1321",
+		Title:       "Test task",
+		Description: "Test description",
+		ProjectPath: "/tmp/test",
+	}
+
+	prompt := runner.buildSelfReviewPrompt(task)
+
+	if !strings.Contains(prompt, "Cross-File Parity Check") {
+		t.Error("Self-review prompt should contain 'Cross-File Parity Check'")
+	}
+	if !strings.Contains(prompt, "PARITY_GAP") {
+		t.Error("Self-review prompt should contain 'PARITY_GAP' signal")
+	}
+}
