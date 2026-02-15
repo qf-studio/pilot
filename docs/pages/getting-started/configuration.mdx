@@ -151,11 +151,11 @@ Always set `allowed_ids` to restrict who can trigger Pilot via Telegram. Without
 
 ## Executor
 
-Controls how Pilot runs Claude Code (or OpenCode) to execute tasks.
+Controls how Pilot runs execution backends (Claude Code, Qwen Code, or OpenCode) to execute tasks.
 
 ```yaml
 executor:
-  type: "claude-code"                     # "claude-code" or "opencode"
+  type: "claude-code"                     # "claude-code", "qwen-code", or "opencode"
   auto_create_pr: true
   direct_commit: false                    # commit directly to branch without PR
   detect_ephemeral: true                  # detect and skip ephemeral changes
