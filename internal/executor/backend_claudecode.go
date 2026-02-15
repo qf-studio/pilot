@@ -63,6 +63,15 @@ func (e *ClaudeCodeError) Error() string {
 	return fmt.Sprintf("%s: %s", e.Type, e.Message)
 }
 
+// ErrorType implements BackendError.
+func (e *ClaudeCodeError) ErrorType() string { return string(e.Type) }
+
+// ErrorMessage implements BackendError.
+func (e *ClaudeCodeError) ErrorMessage() string { return e.Message }
+
+// ErrorStderr implements BackendError.
+func (e *ClaudeCodeError) ErrorStderr() string { return e.Stderr }
+
 // classifyClaudeCodeError examines stderr output to classify the error.
 func classifyClaudeCodeError(stderr string, originalErr error) *ClaudeCodeError {
 	stderrLower := strings.ToLower(stderr)

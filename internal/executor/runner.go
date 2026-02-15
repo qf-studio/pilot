@@ -49,12 +49,16 @@ type AssistantMsg struct {
 	Content []ContentBlock `json:"content"`
 }
 
-// ContentBlock represents content in assistant messages
+// ContentBlock represents content in assistant messages.
+// Also used for tool_result blocks in user messages (Qwen Code sends these
+// in message.content[] instead of Claude Code's flat tool_use_result field).
 type ContentBlock struct {
-	Type  string                 `json:"type"`
-	Text  string                 `json:"text,omitempty"`
-	Name  string                 `json:"name,omitempty"`
-	Input map[string]interface{} `json:"input,omitempty"`
+	Type    string                 `json:"type"`
+	Text    string                 `json:"text,omitempty"`
+	Content string                 `json:"content,omitempty"` // For tool_result blocks
+	Name    string                 `json:"name,omitempty"`
+	Input   map[string]interface{} `json:"input,omitempty"`
+	IsError bool                   `json:"is_error,omitempty"` // For tool_result blocks
 }
 
 // ToolResultContent represents tool result in user events
@@ -1326,58 +1330,58 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 			errorCategory := "unknown"
 			var stderrOutput string // GH-917-5: Always capture stderr for logging
 
-			if ccErr, ok := err.(*ClaudeCodeError); ok {
-				result.Error = ccErr.Error()
-				stderrOutput = ccErr.Stderr // Capture stderr from classified error
+			if beErr, ok := err.(BackendError); ok {
+				result.Error = beErr.Error()
+				stderrOutput = beErr.ErrorStderr() // Capture stderr from classified error
 
 				// Map error type to alert event type and category
-				switch ccErr.Type {
-				case ErrorTypeRateLimit:
+				switch beErr.ErrorType() {
+				case "rate_limit":
 					alertType = AlertEventTypeRateLimit
 					errorCategory = "rate_limit"
-					log.Warn("Claude Code hit rate limit",
+					log.Warn("Backend hit rate limit",
 						slog.String("task_id", task.ID),
-						slog.String("stderr", ccErr.Stderr),
+						slog.String("stderr", beErr.ErrorStderr()),
 						slog.Duration("duration", duration),
 					)
-					r.reportProgress(task.ID, "Rate Limited", 100, "Claude Code hit rate limit - retry later")
+					r.reportProgress(task.ID, "Rate Limited", 100, "Backend hit rate limit - retry later")
 
-				case ErrorTypeInvalidConfig:
+				case "invalid_config":
 					alertType = AlertEventTypeConfigError
 					errorCategory = "invalid_config"
-					log.Error("Invalid Claude Code configuration",
+					log.Error("Invalid backend configuration",
 						slog.String("task_id", task.ID),
-						slog.String("message", ccErr.Message),
-						slog.String("stderr", ccErr.Stderr),
+						slog.String("message", beErr.ErrorMessage()),
+						slog.String("stderr", beErr.ErrorStderr()),
 					)
-					r.reportProgress(task.ID, "Config Error", 100, ccErr.Message)
+					r.reportProgress(task.ID, "Config Error", 100, beErr.ErrorMessage())
 
-				case ErrorTypeAPIError:
+				case "api_error":
 					alertType = AlertEventTypeAPIError
 					errorCategory = "api_error"
-					log.Error("Claude API error",
+					log.Error("Backend API error",
 						slog.String("task_id", task.ID),
-						slog.String("message", ccErr.Message),
-						slog.String("stderr", ccErr.Stderr),
+						slog.String("message", beErr.ErrorMessage()),
+						slog.String("stderr", beErr.ErrorStderr()),
 					)
-					r.reportProgress(task.ID, "API Error", 100, ccErr.Message)
+					r.reportProgress(task.ID, "API Error", 100, beErr.ErrorMessage())
 
 				default:
 					// GH-917-5: Log stderr for process errors and unknown errors too
 					log.Error("Backend execution failed",
 						slog.String("error", result.Error),
-						slog.String("error_type", string(ccErr.Type)),
-						slog.String("stderr", ccErr.Stderr),
+						slog.String("error_type", beErr.ErrorType()),
+						slog.String("stderr", beErr.ErrorStderr()),
 						slog.Duration("duration", duration),
 					)
 					r.reportProgress(task.ID, "Failed", 100, result.Error)
 				}
 			} else {
 				result.Error = err.Error()
-				// GH-917-5: Log even when error is not a ClaudeCodeError
+				// GH-917-5: Log even when error is not a classified backend error
 				log.Error("Backend execution failed",
 					slog.String("error", result.Error),
-					slog.String("error_type", "non_claude_code"),
+					slog.String("error_type", "unclassified"),
 					slog.Duration("duration", duration),
 				)
 				r.reportProgress(task.ID, "Failed", 100, result.Error)
@@ -1917,15 +1921,15 @@ The previous execution completed but made no code changes. This task requires ac
 					if retryErr != nil {
 						result.Success = false
 
-						// GH-917: Check for classified Claude Code error types in retry
+						// GH-917: Check for classified backend error types in retry
 						alertType := AlertEventTypeTaskFailed
 						errorCategory := "unknown"
 
-						if ccErr, ok := retryErr.(*ClaudeCodeError); ok {
-							result.Error = fmt.Sprintf("retry execution failed: %v", ccErr)
+						if beErr, ok := retryErr.(BackendError); ok {
+							result.Error = fmt.Sprintf("retry execution failed: %v", beErr)
 
-							switch ccErr.Type {
-							case ErrorTypeRateLimit:
+							switch beErr.ErrorType() {
+							case "rate_limit":
 								alertType = AlertEventTypeRateLimit
 								errorCategory = "rate_limit"
 								log.Warn("Retry hit rate limit",
@@ -1933,16 +1937,16 @@ The previous execution completed but made no code changes. This task requires ac
 									slog.Int("retry_attempt", retryAttempt+1),
 								)
 								r.reportProgress(task.ID, "Rate Limited", 100, "Retry hit rate limit")
-							case ErrorTypeInvalidConfig:
+							case "invalid_config":
 								alertType = AlertEventTypeConfigError
 								errorCategory = "invalid_config"
-								log.Error("Retry failed: invalid config", slog.String("message", ccErr.Message))
-								r.reportProgress(task.ID, "Config Error", 100, ccErr.Message)
-							case ErrorTypeAPIError:
+								log.Error("Retry failed: invalid config", slog.String("message", beErr.ErrorMessage()))
+								r.reportProgress(task.ID, "Config Error", 100, beErr.ErrorMessage())
+							case "api_error":
 								alertType = AlertEventTypeAPIError
 								errorCategory = "api_error"
-								log.Error("Retry failed: API error", slog.String("message", ccErr.Message))
-								r.reportProgress(task.ID, "API Error", 100, ccErr.Message)
+								log.Error("Retry failed: API error", slog.String("message", beErr.ErrorMessage()))
+								r.reportProgress(task.ID, "API Error", 100, beErr.ErrorMessage())
 							default:
 								log.Error("Retry execution failed", slog.Any("error", retryErr))
 								r.reportProgress(task.ID, "Retry Failed", 100, result.Error)
@@ -3244,6 +3248,19 @@ func estimateCost(inputTokens, outputTokens int64, model string) float64 {
 	case strings.Contains(modelLower, "haiku"):
 		inputPrice = haikuInputPrice
 		outputPrice = haikuOutputPrice
+	case strings.Contains(modelLower, "qwen"):
+		// Qwen3-Coder pricing (per 1M tokens)
+		switch {
+		case strings.Contains(modelLower, "480b") || strings.Contains(modelLower, "plus"):
+			inputPrice = 0.22  // Qwen3-Coder-480B / Plus
+			outputPrice = 1.00
+		case strings.Contains(modelLower, "flash"):
+			inputPrice = 0.30
+			outputPrice = 1.50
+		default:
+			inputPrice = 0.07  // Qwen3-Coder-Next (default)
+			outputPrice = 0.30
+		}
 	default:
 		inputPrice = sonnetInputPrice
 		outputPrice = sonnetOutputPrice

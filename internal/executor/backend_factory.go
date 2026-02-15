@@ -18,6 +18,9 @@ func NewBackend(config *BackendConfig) (Backend, error) {
 	case BackendTypeOpenCode:
 		return NewOpenCodeBackend(config.OpenCode), nil
 
+	case BackendTypeQwenCode:
+		return NewQwenCodeBackend(config.QwenCode), nil
+
 	default:
 		return nil, fmt.Errorf("unknown backend type: %s", config.Type)
 	}

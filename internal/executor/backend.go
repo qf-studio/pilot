@@ -111,6 +111,18 @@ type BackendEvent struct {
 	SessionID string
 }
 
+// BackendError is implemented by all backend-specific error types (ClaudeCodeError,
+// QwenCodeError, etc.) to enable unified error handling in retry logic and runner.
+type BackendError interface {
+	error
+	// ErrorType returns the error category as a string (e.g., "rate_limit", "api_error").
+	ErrorType() string
+	// ErrorMessage returns the human-readable error description.
+	ErrorMessage() string
+	// ErrorStderr returns the captured stderr output.
+	ErrorStderr() string
+}
+
 // BackendEventType categorizes backend events.
 type BackendEventType string
 
@@ -163,7 +175,7 @@ type BackendResult struct {
 
 // BackendConfig contains configuration for executor backends.
 type BackendConfig struct {
-	// Type specifies which backend to use ("claude-code" or "opencode")
+	// Type specifies which backend to use ("claude-code", "opencode", or "qwen-code")
 	Type string `yaml:"type"`
 
 	// AutoCreatePR controls whether PRs are created by default after successful execution.
@@ -190,6 +202,9 @@ type BackendConfig struct {
 
 	// OpenCode contains OpenCode specific settings
 	OpenCode *OpenCodeConfig `yaml:"opencode,omitempty"`
+
+	// QwenCode contains Qwen Code specific settings
+	QwenCode *QwenCodeConfig `yaml:"qwen_code,omitempty"`
 
 	// ModelRouting contains model selection based on task complexity
 	ModelRouting *ModelRoutingConfig `yaml:"model_routing,omitempty"`
@@ -426,6 +441,21 @@ type ClaudeCodeConfig struct {
 	UseFromPR bool `yaml:"use_from_pr,omitempty"`
 }
 
+// QwenCodeConfig contains Qwen Code backend configuration.
+// Qwen Code is an open-source CLI coding agent (Gemini CLI fork) by Alibaba.
+// Uses subprocess execution with --output-format stream-json, similar to Claude Code.
+type QwenCodeConfig struct {
+	// Command is the path to the qwen CLI (default: "qwen")
+	Command string `yaml:"command,omitempty"`
+
+	// ExtraArgs are additional arguments to pass to the CLI
+	ExtraArgs []string `yaml:"extra_args,omitempty"`
+
+	// UseSessionResume enables --resume for session continuation.
+	// Default: false
+	UseSessionResume bool `yaml:"use_session_resume,omitempty"`
+}
+
 // OpenCodeConfig contains OpenCode backend configuration.
 type OpenCodeConfig struct {
 	// ServerURL is the OpenCode server URL (default: "http://127.0.0.1:4096")
@@ -454,6 +484,9 @@ func DefaultBackendConfig() *BackendConfig {
 		DetectEphemeral: &detectEphemeral,
 		ClaudeCode: &ClaudeCodeConfig{
 			Command: "claude",
+		},
+		QwenCode: &QwenCodeConfig{
+			Command: "qwen",
 		},
 		OpenCode: &OpenCodeConfig{
 			ServerURL:       "http://127.0.0.1:4096",
@@ -580,4 +613,5 @@ func DefaultStagnationConfig() *StagnationConfig {
 const (
 	BackendTypeClaudeCode = "claude-code"
 	BackendTypeOpenCode   = "opencode"
+	BackendTypeQwenCode   = "qwen-code"
 )

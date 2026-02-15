@@ -125,28 +125,29 @@ func (r *Retrier) Evaluate(err error, attempt int, originalTimeout time.Duration
 		}
 	}
 
-	ccErr, ok := err.(*ClaudeCodeError)
+	// Support any backend error type (ClaudeCodeError, QwenCodeError, etc.)
+	beErr, ok := err.(BackendError)
 	if !ok {
 		return RetryDecision{
 			ShouldRetry: false,
-			Reason:      "not a classified Claude Code error",
+			Reason:      "not a classified backend error",
 		}
 	}
 
 	var strategy *RetryStrategy
 	var errorName string
 
-	switch ccErr.Type {
-	case ErrorTypeRateLimit:
+	switch beErr.ErrorType() {
+	case "rate_limit":
 		strategy = r.config.RateLimit
 		errorName = "rate_limit"
-	case ErrorTypeAPIError:
+	case "api_error":
 		strategy = r.config.APIError
 		errorName = "api_error"
-	case ErrorTypeTimeout:
+	case "timeout":
 		strategy = r.config.Timeout
 		errorName = "timeout"
-	case ErrorTypeInvalidConfig:
+	case "invalid_config":
 		// Invalid config should never be retried - fail fast
 		return RetryDecision{
 			ShouldRetry: false,
