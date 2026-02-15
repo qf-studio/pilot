@@ -107,7 +107,7 @@ Pilot delegates all AI execution to Claude Code. If `claude -p "hello"` works in
 
 ### PR quality is low
 
-1. **Initialize Navigator** — run `claude /nav-init` inside Claude Code in your project
+1. **Initialize context intelligence** — run `claude /nav-init` inside Claude Code in your project
 2. **Add CLAUDE.md** — describe your code standards, patterns, and conventions
 3. **Write better tickets** — treat them like briefings for a junior developer. Include context, requirements, and expected behavior
 4. **Configure quality gates** — auto-detected or in config. Failed gates get retried with error feedback
@@ -145,7 +145,7 @@ This restores the backup created during the upgrade.
 
 ### Token costs seem high
 
-- **Navigator** reduces token usage by ~92% — make sure `.agent/` is initialized in your project
+- **Context intelligence** reduces token usage by ~92% — make sure `.agent/` is initialized in your project
 - **Model routing** — enable to route trivial tasks to Haiku instead of Opus:
   ```yaml
   executor:
@@ -207,7 +207,7 @@ git worktree prune
 git branch -D pilot/GH-<issue>
 ```
 
-### Navigator features not working in worktree
+### Context intelligence not working in worktree
 
 Worktrees only contain tracked files from HEAD. If your `.agent/` directory has untracked content:
 
@@ -215,7 +215,7 @@ Worktrees only contain tracked files from HEAD. If your `.agent/` directory has 
 2. **Verify copy succeeded**: `ls -la /tmp/pilot-worktree-*/.agent/`
 3. **Check permissions**: Files should maintain original permissions
 
-If Navigator still doesn't work, verify the source repo has a valid `.agent/` directory:
+If context intelligence still doesn't work, verify the source repo has a valid `.agent/` directory:
 
 ```bash
 ls -la .agent/

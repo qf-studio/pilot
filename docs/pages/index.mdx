@@ -14,13 +14,13 @@ Pilot is an autonomous development pipeline. It picks up tickets from GitHub Iss
 {/* ILLUSTRATION: Hero — Ticket → Pilot → PR flow diagram */}
 
 ```
-┌─────────────┐      ┌─────────────┐      ┌─────────────┐      ┌─────────────┐
-│   Ticket    │ ───▶ │   Pilot     │ ───▶ │   Review    │ ───▶ │   Ship      │
-│ (GitHub/GL) │      │  (AI + Nav) │      │   (You)     │      │  (Merge)    │
-└─────────────┘      └─────────────┘      └─────────────┘      └─────────────┘
+┌─────────────┐      ┌─────────────┐      ┌ ─ ─ ─ ─ ─ ─┐      ┌─────────────┐
+│   Ticket    │ ───▶ │   Pilot     │ ───▶   Review (opt) ───▶ │   Ship      │
+│ (GitHub/GL) │      │  (executes) │      │  (You)      │      │  (Merge)    │
+└─────────────┘      └─────────────┘      └ ─ ─ ─ ─ ─ ─┘      └─────────────┘
 ```
 
-No prompting. No babysitting. Label a ticket, get a PR.
+No prompting. No babysitting. Label a ticket, get a PR or a release.
 
 ![Pilot Dashboard and GitHub Issues](/pilot-preview.png)
 
@@ -56,9 +56,9 @@ Works with your **Claude subscription** (Pro/Max) or Anthropic API key. No separ
 
 Other AI tools need you in the loop — typing prompts, reviewing suggestions, copy-pasting code. Pilot works from your existing ticket system. Write the ticket like you would for a junior developer. Pilot handles the rest.
 
-### Navigator intelligence
+### Context intelligence
 
-Without Navigator, Pilot would be another Claude Code wrapper. [Navigator](/navigator) gives Pilot deep codebase understanding through strategic documentation loading — reducing token usage by 92% while following your established patterns, SOPs, and conventions.
+Pilot's built-in context engine reduces token usage by 92% while following your architecture, patterns, and conventions. Strategic documentation loading gives Pilot deep codebase understanding — not generic code generation. [Learn more →](/navigator)
 
 ### Autopilot CI loop
 
@@ -95,7 +95,7 @@ Single Go binary. Runs on your infrastructure. Your secrets never leave your env
 
 **Team leads** — Turn 47 tickets into 47 PRs. Review them like any team member's code. No new tool to learn — your team just labels issues.
 
-**Organizations** — Codify engineering standards with Navigator. Every PR follows your patterns, across every team. Self-hosted for security. PR review for control.
+**Organizations** — Codify engineering standards with context intelligence. Every PR follows your patterns, across every team. Self-hosted for security. PR review for control.
 
 ---
 

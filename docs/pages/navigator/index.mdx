@@ -1,19 +1,14 @@
 import { Callout } from 'nextra/components'
 
-# Navigator Integration
+# Context Intelligence
 
-Navigator is a context engineering plugin for Claude Code that transforms raw AI sessions
-into structured, efficient workflows. Pilot auto-detects Navigator and uses it to
-dramatically reduce token waste while maintaining full project awareness.
+Pilot's context intelligence layer transforms raw AI sessions into structured, efficient
+workflows. It auto-detects your project's `.agent/` directory and uses it to dramatically
+reduce token waste while maintaining full project awareness.
 
-<Callout type="info">
-  Pilot without Navigator is just another Claude Code wrapper.
-  Navigator is what makes Pilot's autonomous execution efficient and context-aware.
-</Callout>
+## The Challenge
 
-## The Problem with Raw Claude Code
-
-Every Claude Code session starts from scratch. Without context engineering, the AI loads
+Every AI coding session starts from scratch. Without context engineering, the AI loads
 entire codebases, burns through tokens, and loses track of decisions between sessions.
 
 | Issue | Impact |
@@ -23,23 +18,23 @@ entire codebases, burns through tokens, and loses track of decisions between ses
 | No persistent memory | Repeated explanations every session |
 | Context waste | 92% of loaded context goes unused |
 
-## Navigator's Solution: Context Engineering
+## How Context Intelligence Solves It
 
-Navigator provides structured documentation loading, knowledge persistence, and session
-management — reducing token usage by **12x** while extending productive session length by **4x**.
+Structured documentation loading, knowledge persistence, and session management —
+reducing token usage by **12x** while extending productive session length by **4x**.
 
-| Metric | Without Navigator | With Navigator | Improvement |
-|--------|-------------------|----------------|-------------|
+| Metric | Without Context Engine | With Context Engine | Improvement |
+|--------|------------------------|---------------------|-------------|
 | Token usage per session | ~150,000 | ~12,000 | **12x reduction** |
 | Productive exchanges | 5-7 | 20+ | **4x longer** |
 | Context efficiency | 8% | 92% | **11.5x better** |
 | Knowledge persistence | None | Graph-based | Decisions survive sessions |
 | Session continuity | Start over | Resume from markers | Zero ramp-up time |
 
-## How Pilot Uses Navigator
+## How It Works
 
 When Pilot detects a `.agent/` directory in your project, it automatically prefixes
-every Claude Code execution with `"Start my Navigator session"`:
+every execution with context initialization:
 
 ```go
 // internal/executor/runner.go — BuildPrompt()
@@ -48,7 +43,7 @@ if _, err := os.Stat(filepath.Join(task.ProjectPath, ".agent")); err == nil {
 }
 ```
 
-This triggers Navigator to:
+This activates the context engine to:
 
 1. **Load the index** — Only `DEVELOPMENT-README.md` (~2k tokens), not the entire codebase
 2. **Lazy-load on demand** — Additional docs loaded only when referenced
@@ -59,7 +54,7 @@ This triggers Navigator to:
 
 ### Lazy Loading Architecture
 
-Instead of dumping everything into context at once, Navigator uses a tiered loading strategy:
+Instead of dumping everything into context at once, the context engine uses a tiered loading strategy:
 
 | Tier | What Loads | When | Token Cost |
 |------|-----------|------|------------|
@@ -72,7 +67,7 @@ Instead of dumping everything into context at once, Navigator uses a tiered load
 
 ### Knowledge Graph
 
-Navigator maintains a persistent knowledge graph across sessions:
+The context engine maintains a persistent knowledge graph across sessions:
 
 - **Decisions** — Why certain approaches were chosen (`"Use JWT over sessions for stateless scaling"`)
 - **Patterns** — Reusable solutions discovered during development
@@ -89,7 +84,7 @@ Context save points that preserve state before breaks, risky changes, or context
 
 ### Workflow Enforcement
 
-Navigator enforces structured execution with mandatory workflow checks:
+The context engine enforces structured execution with mandatory workflow checks:
 
 ```
 WORKFLOW CHECK
@@ -101,14 +96,27 @@ Mode: [LOOP/TASK/DIRECT]
 This routes tasks through the appropriate execution mode — loop mode for iterative work,
 task mode for planned features, or direct mode for simple changes.
 
-## Navigator in the Execution Report
+### Backend Support
 
-After every task, Pilot shows Navigator status in the execution report:
+Context intelligence works across all three execution backends:
+
+| Backend | Context Engine | Knowledge Graph | Session Markers |
+|---------|---------------|----------------|-----------------|
+| Claude Code | Full support | Full support | Full support |
+| Qwen Code | Full support | Full support | Full support |
+| OpenCode | Full support | Full support | Full support |
+
+The `.agent/` directory is backend-agnostic — it provides the same structured context
+regardless of which execution engine processes the task.
+
+## In the Execution Report
+
+After every task, Pilot shows context intelligence status in the execution report:
 
 ```
 📊 EXECUTION REPORT
 ───────────────────────
-🧭 Navigator: Active
+🧭 Context: Active
    Mode:    nav-task
 
 📈 Phases:
@@ -122,7 +130,7 @@ After every task, Pilot shows Navigator status in the execution report:
   Cost:     ~$0.82
 ```
 
-If Navigator is not detected:
+If context intelligence is not detected:
 ```
-⚠️ Navigator: not found (running raw Claude Code)
+⚠️ Context: not found (running without codebase context)
 ```

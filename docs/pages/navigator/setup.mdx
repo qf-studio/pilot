@@ -1,23 +1,37 @@
 import { Callout, Steps } from 'nextra/components'
 
-# Setting Up Navigator
+# Setup
 
-Navigator activates automatically when Pilot detects a `.agent/` directory in your project.
-This page covers how to initialize Navigator, structure your documentation, and verify
-the integration.
+Context intelligence activates automatically when Pilot detects a `.agent/` directory in your project.
+Since v0.33.16, Pilot auto-initializes the `.agent/` directory on first task execution — no manual setup required.
 
 <Callout type="info">
-  Navigator is a Claude Code plugin installed separately. Pilot only needs the `.agent/`
-  directory — it handles the rest automatically.
+  For most projects, context intelligence works out of the box. Pilot creates the `.agent/`
+  directory automatically when it runs its first task. Manual setup is only needed for
+  customizing the documentation structure.
 </Callout>
 
 ## Prerequisites
 
 - **Pilot** installed and configured (`pilot doctor` passes)
-- **Claude Code** installed with Navigator plugin
+- **Claude Code** (or Qwen Code / OpenCode) installed
 - A project repository with at least one commit
 
-## Initialize the `.agent/` Directory
+## Auto-Initialization (Default)
+
+When Pilot executes its first task in a project, it automatically creates the `.agent/` directory
+with a default `DEVELOPMENT-README.md`. This is sufficient for most projects.
+
+```bash
+# Just run a task — .agent/ is created automatically
+pilot task "Add health check endpoint"
+```
+
+The auto-generated index includes your project structure, detected framework, and component status.
+
+## Custom Setup
+
+For projects that need a tailored context structure, initialize manually:
 
 <Steps>
 
@@ -27,7 +41,7 @@ the integration.
 mkdir -p .agent/system .agent/tasks .agent/memories .agent/sops .agent/.context-markers
 ```
 
-This creates the standard Navigator layout:
+This creates the standard layout:
 
 ```
 .agent/
@@ -45,11 +59,11 @@ This creates the standard Navigator layout:
 
 ### Write the index document
 
-Create `.agent/DEVELOPMENT-README.md` — this is the only file Navigator loads at session
+Create `.agent/DEVELOPMENT-README.md` — this is the only file loaded at session
 start. Keep it under **500 words** (~2k tokens).
 
 ```markdown
-# Project Name — Development Navigator
+# Project Name — Development Context
 
 ## Quick Navigation
 
@@ -81,7 +95,7 @@ project/
 │   ├── services/     # Business logic
 │   └── models/       # Database models
 ├── tests/
-└── .agent/           # Navigator docs
+└── .agent/           # Context docs
 \`\`\`
 
 ## Active Work
@@ -91,36 +105,35 @@ _See GitHub Issues with `pilot` label for current queue._
 
 ### Configure CLAUDE.md
 
-Add Navigator instructions to your project's `CLAUDE.md` so Claude Code knows
-to use it:
+Add context intelligence instructions to your project's `CLAUDE.md`:
 
 ```markdown
-## Navigator Integration
+## Context Intelligence
 
-This project uses Navigator for context management.
+This project uses structured context management.
 Documentation lives in `.agent/`.
 
 ### Quick Commands
-- `/nav-start` — Start or resume Navigator session
+- `/nav-start` — Start or resume context session
 - `/nav-task "description"` — Plan a new task
 - `/nav-compact` — Clear context when done with a task
 ```
 
 ### Verify the setup
 
-Run Pilot to confirm Navigator detection:
+Run Pilot to confirm detection:
 
 ```bash
-pilot task --dry-run "Test Navigator detection"
+pilot task --dry-run "Test context detection"
 ```
 
 The output should include:
 
 ```
-🧭 Navigator: ✓ detected (.agent/ exists)
+🧭 Context: ✓ detected (.agent/ exists)
 ```
 
-If you see `⚠️ Navigator: not found`, check that `.agent/DEVELOPMENT-README.md` exists.
+If you see `⚠️ Context: not found`, check that `.agent/DEVELOPMENT-README.md` exists.
 
 </Steps>
 
@@ -163,7 +176,7 @@ Completed tasks move to `tasks/archive/`.
 ### `memories/` (Optional)
 
 Knowledge graph entries — decisions, patterns, and pitfalls captured during development.
-Navigator creates and queries these automatically.
+The context engine creates and queries these automatically.
 
 ### `sops/` (Optional)
 
@@ -174,12 +187,12 @@ Standard Operating Procedures for recurring workflows:
 
 ### `.context-markers/` (Auto-managed)
 
-Session save points created by Navigator. Do not manually edit these files.
+Session save points created by the context engine. Do not manually edit these files.
 Format: `YYYY-MM-DD-HHMM_description.md`
 
 ### `.nav-config.json` (Optional)
 
-Navigator configuration overrides:
+Context engine configuration overrides:
 
 ```json
 {
@@ -194,7 +207,7 @@ Navigator configuration overrides:
 
 ### `.user-profile.json` (Auto-managed)
 
-User preferences learned by Navigator's bilateral modeling system:
+User preferences learned by the bilateral modeling system:
 
 ```json
 {
@@ -207,7 +220,7 @@ User preferences learned by Navigator's bilateral modeling system:
 
 ## Configuration in `config.yaml`
 
-Enable Navigator per project in your Pilot configuration:
+Enable context intelligence per project in your Pilot configuration:
 
 ```yaml
 # ~/.pilot/config.yaml
@@ -217,15 +230,15 @@ projects:
     navigator: true    # Pilot checks for .agent/ before each task
 ```
 
-When `navigator: true`, Pilot will prefix Claude Code prompts with
-`"Start my Navigator session"` if `.agent/` exists in the project path.
+When `navigator: true`, Pilot will activate context intelligence
+if `.agent/` exists in the project path.
 
 ## Troubleshooting
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| `Navigator: not found` in output | Missing `.agent/` directory | Run `mkdir -p .agent` and create index |
-| Navigator loads but burns tokens | Index document too large | Keep `DEVELOPMENT-README.md` under 500 words |
+| `Context: not found` in output | Missing `.agent/` directory | Run `mkdir -p .agent` and create index |
+| Context engine loads but burns tokens | Index document too large | Keep `DEVELOPMENT-README.md` under 500 words |
 | Knowledge graph empty | No memories captured yet | Memories accumulate automatically over tasks |
 | Context markers missing | First session | Markers created when using `/nav-marker` or `/nav-compact` |
-| Phase progress stuck | Navigator signals not detected | Verify Claude Code has Navigator plugin installed |
+| Phase progress stuck | Context signals not detected | Verify execution backend is configured correctly |

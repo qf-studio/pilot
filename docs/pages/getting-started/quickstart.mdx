@@ -178,7 +178,7 @@ Within 30 seconds, Pilot detects the issue and starts executing. The dashboard u
 
    Implementing   [████████████░░░░░░░░] 60%  GH-12  32s
 
-   [14:35:15] Started Navigator session
+   [14:35:15] Started context session
    [14:35:18] Analyzing codebase patterns...
    [14:35:25] Creating health endpoint
    [14:35:40] Adding route
@@ -247,7 +247,7 @@ Here's the execution flow Pilot followed:
 
 1. **Polling** — Pilot detected the new issue with the `pilot` label
 2. **Branching** — Created a working branch (`pilot/GH-12` or `pilot/add-health-check`)
-3. **Navigator** — Loaded your project context from `.agent/` (if initialized) for pattern awareness
+3. **Context intelligence** — Loaded your project context from `.agent/` (if initialized) for pattern awareness
 4. **Execution** — Claude Code analyzed your codebase and implemented the change
 5. **Quality Gates** — Ran build/test/lint checks (auto-detected or configured)
 6. **Self-Review** — Claude Code reviewed its own changes for quality
@@ -275,5 +275,5 @@ Tunnels provide instant webhook delivery with zero API polling. See the [Tunnel 
 - [Tunnel Setup](/guides/tunnel-setup) — Instant webhooks via Cloudflare or ngrok
 - [Autopilot](/features/autopilot) — Automatic CI monitoring and merge
 - [Telegram Bot](/features/telegram) — Chat, research, plan, and execute from mobile
-- [Navigator](/navigator) — Reduce token usage by 92% with structured context
+- [Context Intelligence](/navigator) — Reduce token usage by 92% with structured context
 - [Hot Upgrade](/features/hot-upgrade) — Keep Pilot updated without downtime

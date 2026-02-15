@@ -272,7 +272,7 @@ executor:
 When enabled:
 - Each task runs in an isolated temporary worktree (`/tmp/pilot-worktree-*`)
 - Your original repository remains untouched during execution
-- Navigator config (`.agent/`) is copied to the worktree
+- Context config (`.agent/`) is copied to the worktree
 - Changes are pushed from the worktree branch to remote
 - Automatic cleanup removes worktrees after task completion
 - Orphaned worktrees are cleaned up on Pilot startup
@@ -1494,7 +1494,7 @@ memory:
 | `projects[].name` | string | — | Unique project name (used in CLI and logs) |
 | `projects[].path` | string | — | Absolute filesystem path to the repository |
 | `projects[].default_branch` | string | `"main"` | Default git branch for PRs |
-| `projects[].navigator` | bool | `false` | Enable Navigator integration for this project |
+| `projects[].navigator` | bool | `false` | Enable context intelligence for this project |
 | `projects[].github.owner` | string | — | GitHub organization or user |
 | `projects[].github.repo` | string | — | GitHub repository name |
 | `default_project` | string | — | Name of the project used when none is specified |

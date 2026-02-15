@@ -38,18 +38,18 @@ Original Repo (your work)     Isolated Worktree (Pilot's work)
 When enabled, Pilot creates an isolated worktree for each task:
 
 1. **Create worktree**: `git worktree add /tmp/pilot-worktree-<task>-<timestamp> HEAD`
-2. **Copy Navigator config**: Copies `.agent/` directory to preserve project-specific settings
+2. **Copy context config**: Copies `.agent/` directory to preserve project-specific settings
 3. **Execute task**: All operations happen in the isolated environment
 4. **Push changes**: Results are pushed to remote from the worktree branch
 5. **Cleanup**: Worktree and temporary files are automatically removed
 
-### Navigator Integration
+### Context Intelligence
 
-The worktree includes full Navigator functionality:
+The worktree includes full context intelligence functionality:
 
 - **Config preservation**: `.agent/` directory is copied from your original repo
 - **Untracked content**: Research notes, context markers, and custom SOPs are preserved
-- **Pattern matching**: All Navigator skills work normally in the worktree
+- **Pattern matching**: All context engine features work normally in the worktree
 
 ## Configuration
 
@@ -125,9 +125,9 @@ git worktree prune
 rm -rf /tmp/pilot-worktree-*
 ```
 
-### Navigator Copy Issues
+### Context Config Copy Issues
 
-If Navigator features don't work in worktrees:
+If context intelligence features don't work in worktrees:
 
 1. **Check .agent/ exists**: Worktree should have `.agent/` directory
 2. **Verify permissions**: Copied files should maintain original permissions
@@ -135,7 +135,7 @@ If Navigator features don't work in worktrees:
 
 **Debug commands:**
 ```bash
-# In worktree, check Navigator structure
+# In worktree, check context structure
 ls -la .agent/
 ls -la .agent/tasks/
 ls -la .agent/.context-markers/
@@ -145,7 +145,7 @@ ls -la .agent/.context-markers/
 
 Worktree operations add minimal overhead:
 - **Creation**: ~100-200ms per worktree
-- **Navigator copy**: ~10-50ms depending on .agent/ size
+- **Context copy**: ~10-50ms depending on .agent/ size
 - **Cleanup**: ~50-100ms per worktree
 - **Storage**: Temporary files in `/tmp/` (cleaned automatically)
 

@@ -131,7 +131,7 @@ Prevents stuck tasks from running indefinitely. Calibrated per complexity level.
 | Trivial | 5 minutes | Typo fixes shouldn't take longer |
 | Simple | 10 minutes | Small changes with room for quality gates |
 | Medium | 30 minutes | Standard feature work including research phase |
-| Complex | 60 minutes | Architectural changes with full Navigator workflow |
+| Complex | 60 minutes | Architectural changes with full context intelligence workflow |
 | Fallback | 30 minutes | Used when timeout config is missing or parse fails |
 
 ### Effort Routing
@@ -169,13 +169,13 @@ Beyond model and timeout, complexity drives execution behavior:
 
 | Behavior | Trivial | Simple | Medium | Complex | Epic |
 |----------|---------|--------|--------|---------|------|
-| Navigator injection | Skip | Full | Full | Full | N/A (decomposed) |
+| Context injection | Skip | Full | Full | Full | N/A (decomposed) |
 | Research phase | Skip | Skip | Run | Run | N/A |
 | Self-review | Run | Run | Run | Run | Per subtask |
 | Quality gates | Run | Run | Run | Run | Per subtask |
 | Task decomposition | No | No | No | If enabled | Always |
 
-**Navigator injection**: Trivial tasks skip `Start my Navigator session.` to avoid ~30s overhead on a task that takes 60s total.
+**Context injection**: Trivial tasks skip context initialization to avoid ~30s overhead on a task that takes 60s total.
 
 **Research phase**: Medium and complex tasks run a parallel research phase before implementation, giving Claude codebase context before writing code.
 

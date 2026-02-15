@@ -126,7 +126,7 @@ Before execution, Pilot classifies the task:
 | Medium | Opus 4.6 | 30m | ~$1.50 |
 | Complex | Opus 4.6 | 60m | ~$3.00 |
 
-Trivial tasks skip Navigator entirely. Simple through complex tasks get full Navigator context.
+Trivial tasks skip context intelligence entirely. Simple through complex tasks get full codebase context.
 
 **4. Epic Decomposition**
 
@@ -333,9 +333,9 @@ Task (input)                    ExecutionResult (output)
                               └─ MergeAttempts
 ```
 
-## Navigator Integration
+## Context Intelligence
 
-Navigator is a Claude Code plugin that provides structured codebase context. When Pilot detects a `.agent/` directory in the project, it injects `Start my Navigator session.` into the prompt.
+Pilot's context intelligence layer provides structured codebase context. When Pilot detects a `.agent/` directory in the project, it activates the context engine by injecting a session initialization command into the prompt.
 
 ```
 Pilot Prompt Construction:
@@ -344,7 +344,7 @@ Pilot Prompt Construction:
 ├────────────────────────┤
 │ Issue title + body     │ ← The actual work to do
 ├────────────────────────┤
-│ "Start my Navigator    │ ← Triggers Navigator plugin
+│ "Start my Navigator    │ ← Activates context engine
 │  session."             │
 ├────────────────────────┤
 │ Branch + PR metadata   │ ← Git context
@@ -353,11 +353,11 @@ Pilot Prompt Construction:
 └────────────────────────┘
 ```
 
-Navigator phases detected in the execution stream:
+Context engine phases detected in the execution stream:
 
 | Phase | Signal | Description |
 |-------|--------|-------------|
-| `navigator` | `Navigator Session Started` | Plugin loaded, docs indexed |
+| `navigator` | `Navigator Session Started` | Context engine loaded, docs indexed |
 | `task-mode` | `TASK MODE ACTIVATED` | Task planning begins |
 | `research` | `PHASE: → RESEARCH` | Codebase exploration |
 | `implementing` | `PHASE: → IMPL` | Writing code |
@@ -365,7 +365,7 @@ Navigator phases detected in the execution stream:
 | `complete` | Completion signal | Task finished |
 
 <Callout type="warning">
-Navigator integration is Pilot's core value proposition. The prompt injection (`Start my Navigator session.`) must never be removed — it's what gives Pilot deep codebase understanding rather than generic code generation.
+Context intelligence is Pilot's core value proposition. The prompt injection (`Start my Navigator session.`) must never be removed — it's what gives Pilot deep codebase understanding rather than generic code generation.
 </Callout>
 
 ## CI Feedback Loop

@@ -295,7 +295,7 @@ Displays current configuration state including gateway address, enabled adapters
 The command displays:
 - **Gateway**: HTTP endpoint address (host:port)
 - **Adapters**: Status of each adapter (Linear, Slack, Telegram, GitHub)
-- **Projects**: Configured project paths with Navigator detection
+- **Projects**: Configured project paths with context intelligence detection
 
 #### Examples
 
@@ -324,7 +324,7 @@ Adapters:
   ✓ GitHub (enabled)
 
 Projects:
-  • pilot: /Users/dev/pilot [Navigator]
+  • pilot: /Users/dev/pilot [Context]
   • webapp: /Users/dev/webapp
 ```
 
@@ -353,7 +353,7 @@ Guides you through configuring Pilot step by step, including Telegram bot, proje
 #### Setup Steps
 
 1. **Telegram Bot** - Configure bot token and chat ID
-2. **Projects** - Add project paths with automatic Navigator detection
+2. **Projects** - Add project paths with automatic context intelligence detection
 3. **Voice Transcription** (optional) - Configure OpenAI Whisper API
 4. **Daily Briefs** (optional) - Set up scheduled status reports
 5. **Alerts** (optional) - Enable failure notifications
@@ -2102,7 +2102,7 @@ List all configured projects.
 pilot project list
 ```
 
-Displays all projects with their name, path, GitHub repository, branch, Navigator status, and default status.
+Displays all projects with their name, path, GitHub repository, branch, context intelligence status, and default status.
 
 #### Examples
 
@@ -2128,7 +2128,7 @@ Add a new project.
 pilot project add [flags]
 ```
 
-Adds a new project to Pilot configuration with automatic detection of GitHub remote, branch, and Navigator setup.
+Adds a new project to Pilot configuration with automatic detection of GitHub remote, branch, and context intelligence setup.
 
 #### Flags
 
@@ -2138,7 +2138,7 @@ Adds a new project to Pilot configuration with automatic detection of GitHub rem
 | `-p`, `--path` | Project path (default: current directory) |
 | `-g`, `--github` | GitHub repo (owner/repo) |
 | `-b`, `--branch` | Default branch (auto-detected) |
-| `--navigator` | Enable Navigator (auto-detected) |
+| `--navigator` | Enable context intelligence (auto-detected) |
 | `-d`, `--set-default` | Set as default project |
 
 #### Auto-detection
@@ -2236,7 +2236,7 @@ pilot project show
 #   Path:       /Users/dev/my-app
 #   GitHub:     owner/my-app
 #   Branch:     main
-#   Navigator:  enabled
+#   Context:    enabled
 #   Default:    yes
 ```
 

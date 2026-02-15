@@ -90,16 +90,16 @@ GitHub Issue → Pilot picks it up → PR appears → You review
 
 Supported sources: GitHub Issues, Linear, Jira, Asana. The ticket system is the interface because it's already where work gets defined.
 
-### 2. Navigator: deep codebase context
+### 2. Context intelligence: deep codebase understanding
 
-This is Pilot's core differentiator. [Navigator](/navigator) is a Claude Code plugin that provides deep codebase understanding through strategic documentation loading. It reduces token usage by **92%** (from 150k to 12k tokens per session) while giving Pilot knowledge of your:
+This is Pilot's core differentiator. Pilot's built-in [context engine](/navigator) provides deep codebase understanding through strategic documentation loading. It reduces token usage by **92%** (from 150k to 12k tokens per session) while giving Pilot knowledge of your:
 
 - **Architecture** — System design, data flows, component relationships
 - **Patterns** — How you structure code, naming conventions, file organization
 - **SOPs** — Standard operating procedures for common tasks
 - **Cross-project memory** — Patterns learned across multiple repositories
 
-Without Navigator, AI generates generic code. With Navigator, it generates code that follows your established conventions. The difference between code that *works* and code that *belongs*.
+Without context intelligence, AI generates generic code. With it, Pilot generates code that follows your established conventions. The difference between code that *works* and code that *belongs*.
 
 ### 3. Autopilot feedback loop
 
@@ -144,7 +144,7 @@ Intent is classified automatically. "What files handle authentication?" → quic
 
 Not every ticket needs the same level of AI reasoning. Pilot classifies ticket complexity and routes to the optimal model:
 
-| Complexity | Model | Navigator | Cost | Example |
+| Complexity | Model | Context | Cost | Example |
 |------------|-------|-----------|------|---------|
 | Trivial | Haiku (fast) | Skipped | ~$0.02 | Fix typo, rename variable |
 | Simple | Opus 4.6 | Active | ~$0.50 | Add endpoint, write test |
@@ -160,7 +160,7 @@ Trivial tickets cost cents and complete in seconds. Complex tickets get the reas
 |-----------|-------|--------|---------|-------|-----------------|
 | **Autonomous execution** | ✅ Ticket → PR | ❌ | ❌ | ✅ | ⚠️ Manual |
 | **Ticket integration** | ✅ GitHub, Linear, Jira, Asana | ❌ | ⚠️ Partial | ✅ | ❌ |
-| **Codebase context** | ✅ Navigator (deep) | ⚠️ File-level | ⚠️ File-level | ⚠️ Proprietary | ⚠️ Manual CLAUDE.md |
+| **Codebase context** | ✅ Built-in (deep) | ⚠️ File-level | ⚠️ File-level | ⚠️ Proprietary | ⚠️ Manual CLAUDE.md |
 | **Cross-project memory** | ✅ | ❌ | ❌ | ❓ Unknown | ❌ |
 | **Self-hosted** | ✅ Your machine | ⚠️ Desktop app | ❌ Cloud | ❌ Cloud | ✅ |
 | **Source-available** | ✅ BSL 1.1 | ❌ | ❌ | ❌ | N/A |
@@ -179,7 +179,7 @@ Pilot augments engineers. It does not replace them. Understanding the boundaries
 
 ### Not an architect
 
-Pilot executes well-defined work. It doesn't make architectural tradeoffs, choose between database designs, or decide on authentication strategies. Those decisions require engineering judgment, business context, and experience with production consequences. Use Navigator to plan. Use Pilot to execute the plan.
+Pilot executes well-defined work. It doesn't make architectural tradeoffs, choose between database designs, or decide on authentication strategies. Those decisions require engineering judgment, business context, and experience with production consequences. Use the context engine to plan. Use Pilot to execute the plan.
 
 ### Not a researcher
 

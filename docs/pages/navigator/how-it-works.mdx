@@ -1,8 +1,8 @@
 import { Callout } from 'nextra/components'
 
-# How Navigator Works
+# Architecture
 
-Navigator is a Claude Code plugin that provides context engineering — structured loading,
+Pilot's context intelligence layer provides context engineering — structured loading,
 persistent memory, and workflow enforcement. This page explains the architecture and
 integration mechanics.
 
@@ -13,7 +13,7 @@ integration mechanics.
 │                      Pilot Process                          │
 │                                                             │
 │  ┌──────────┐    ┌──────────────┐    ┌──────────────────┐  │
-│  │ Executor │───▶│  Claude Code  │───▶│  Navigator Plugin │  │
+│  │ Executor │───▶│  Claude Code  │───▶│  Context Engine   │  │
 │  │runner.go │    │  subprocess   │    │  (auto-detected)  │  │
 │  └──────────┘    └──────────────┘    └────────┬─────────┘  │
 │                                               │             │
@@ -40,7 +40,7 @@ When Pilot picks up a task (from GitHub, Telegram, or CLI), execution follows th
 
 ### 1. Detection
 
-Pilot's executor checks for Navigator during prompt construction:
+Pilot's executor checks for context intelligence during prompt construction:
 
 ```go
 // internal/executor/runner.go — BuildPrompt()
@@ -50,12 +50,12 @@ if _, err := os.Stat(agentDir); err == nil {
 }
 ```
 
-If `.agent/` exists, the prompt is prefixed with `"Start my Navigator session"`.
-This triggers the Navigator plugin to activate inside Claude Code.
+If `.agent/` exists, the prompt is prefixed with the context initialization command.
+This activates the context engine inside the execution backend.
 
 ### 2. Session Initialization
 
-Navigator performs these steps on activation:
+The context engine performs these steps on activation:
 
 1. **Load index** — Reads `DEVELOPMENT-README.md` (~2k tokens)
 2. **Check context markers** — Looks for active markers in `.context-markers/`
@@ -65,7 +65,7 @@ Navigator performs these steps on activation:
 
 ### 3. Lazy Loading
 
-Navigator never loads all documentation at once. Instead, it uses a demand-driven strategy:
+The context engine never loads all documentation at once. Instead, it uses a demand-driven strategy:
 
 ```
 Session Start
@@ -93,11 +93,11 @@ Load Index (~2k tokens)
 
 ### 4. Execution Phases
 
-Navigator structures work into observable phases that Pilot tracks for progress display:
+The context engine structures work into observable phases that Pilot tracks for progress display:
 
-| Phase | Navigator Signal | Pilot Progress |
-|-------|-----------------|----------------|
-| Navigator Start | `Navigator Session Started` | 10% |
+| Phase | Signal | Pilot Progress |
+|-------|--------|----------------|
+| Context Start | `Navigator Session Started` | 10% |
 | Workflow Check | `WORKFLOW CHECK` | 12% |
 | Task Mode | `TASK MODE ACTIVATED` | 15% |
 | Loop Mode | `nav-loop` skill detected | 20% |
@@ -108,22 +108,22 @@ Navigator structures work into observable phases that Pilot tracks for progress 
 | Completing | `EXIT_SIGNAL: true` | 92% |
 | Complete | `LOOP COMPLETE` or `TASK MODE COMPLETE` | 95% |
 
-Pilot detects these signals from Claude Code's `stream-json` output and updates the
+Pilot detects these signals from the execution backend's `stream-json` output and updates the
 progress bar in real time.
 
 ### 5. Knowledge Capture
 
-During execution, Navigator automatically captures:
+During execution, the context engine automatically captures:
 
 - **Technical decisions** — Extracted from conversation and stored as decision memories
 - **Task artifacts** — Implementation plans, file change lists, test results
 - **Concept indexing** — Creates nodes in the knowledge graph linking tasks, files, and patterns
 
-After task completion, Navigator syncs new knowledge to `.agent/memories/`.
+After task completion, new knowledge syncs to `.agent/memories/`.
 
 ### 6. Session Markers
 
-At key points during execution, Navigator creates context markers — save points
+At key points during execution, context markers are created — save points
 in `.agent/.context-markers/` that capture:
 
 - Current task state
@@ -152,7 +152,7 @@ The knowledge graph is a persistent store that survives across sessions and task
 
 ### How It's Used
 
-When a new task starts, Navigator queries the graph for:
+When a new task starts, the context engine queries the graph for:
 - **Related decisions** — What was decided previously about this area?
 - **Known pitfalls** — What went wrong last time?
 - **Relevant patterns** — What approaches worked before?
@@ -161,7 +161,7 @@ This eliminates repeated discovery and prevents known mistakes.
 
 ## Workflow Enforcement
 
-Navigator enforces a mandatory workflow check before every task:
+The context engine enforces a mandatory workflow check before every task:
 
 ```
 WORKFLOW CHECK
@@ -171,7 +171,7 @@ Mode: LOOP
 ```
 
 <Callout type="info">
-  The workflow check prevents Claude Code from diving into implementation without
+  The workflow check prevents the AI from diving into implementation without
   proper planning. It routes tasks through the right execution mode based on complexity.
 </Callout>
 
@@ -185,7 +185,7 @@ Mode: LOOP
 
 ## Progress Detection in Pilot
 
-Pilot's executor parses Navigator signals from the Claude Code stream:
+Pilot's executor parses context engine signals from the execution stream:
 
 ```go
 // internal/executor/runner.go — phase detection
@@ -203,17 +203,17 @@ case strings.Contains(text, "PHASE: → VERIFY"):
 }
 ```
 
-This gives operators real-time visibility into what Navigator is doing inside the
-Claude Code subprocess.
+This gives operators real-time visibility into what the context engine is doing inside the
+execution subprocess.
 
 ## Claude Code Integration
 
-Navigator works alongside Pilot's Claude Code integration features to provide enhanced
+Context intelligence works alongside Pilot's Claude Code integration features to provide enhanced
 execution capabilities.
 
 ### Session Resume
 
-When `use_session_resume` is enabled, Navigator sessions can be resumed after
+When `use_session_resume` is enabled, sessions can be resumed after
 context compaction or across execution phases. This enables:
 
 - **Self-review token savings** — Self-review reuses the execution context (~40% savings)
@@ -222,24 +222,19 @@ context compaction or across execution phases. This enables:
 
 ### Hooks System
 
-Claude Code hooks run quality checks during Navigator execution:
+Claude Code hooks run quality checks during execution:
 
 - **Stop hook** — Runs build and tests before completion (exit 2 = keep fixing)
 - **PreToolUse:Bash** — Blocks destructive commands (rm -rf, force push, DROP TABLE)
 - **PostToolUse:Edit/Write** — Auto-lint after file changes
 
-Hooks complement Navigator's workflow enforcement by adding runtime guardrails.
+Hooks complement the context engine's workflow enforcement by adding runtime guardrails.
 
 ### Structured Output
 
-With `use_structured_output` enabled, Navigator's classifiers use JSON schemas instead
+With `use_structured_output` enabled, classifiers use JSON schemas instead
 of text parsing for:
 
 - Complexity classification (TRIVIAL/SIMPLE/MEDIUM/COMPLEX)
 - Effort routing decisions
 - Post-execution summary extraction
-
-<Callout type="info">
-  See [Claude Code Integration](/concepts/claude-code-integration) for detailed configuration
-  of session resume, hooks, and structured output features.
-</Callout>

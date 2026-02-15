@@ -2,7 +2,7 @@ import { Callout } from 'nextra/components'
 
 # Best Practices
 
-Proven patterns for getting the most out of Navigator with Pilot. These practices
+Proven patterns for getting the most out of context intelligence with Pilot. These practices
 are derived from real-world usage across 500+ autonomous task executions.
 
 ## Index Document Design
@@ -13,7 +13,7 @@ impacts token budget for the rest of the conversation.
 ### Keep It Under 500 Words
 
 ```markdown
-# Project — Development Navigator
+# Project — Development Context
 
 ## Quick Navigation
 | Document | When to Read |
@@ -90,7 +90,7 @@ API currently has no rate limiting. See ARCHITECTURE.md for endpoint list.
 - Integration: concurrent requests hit limit
 ```
 
-This way, Navigator loads the index + one task doc and has full context (~5k tokens total).
+This way, the context engine loads the index + one task doc and has full context (~5k tokens total).
 
 ## Knowledge Graph Usage
 
@@ -102,7 +102,7 @@ Non-obvious technical decisions should be recorded immediately:
 - Why an approach was rejected
 - Trade-offs that were consciously accepted
 
-Navigator captures these automatically during `/nav-task archive`, but you can also
+The context engine captures these automatically during `/nav-task archive`, but you can also
 trigger manual capture via `/nav-graph`.
 
 ### Document Pitfalls After Every Bug
@@ -155,7 +155,7 @@ For tasks requiring iteration (implement → test → fix → test), use loop mo
 /nav-loop "Implement and verify rate limiting"
 ```
 
-Loop mode runs Navigator in phases (Research → Implement → Verify) with
+Loop mode runs in phases (Research → Implement → Verify) with
 automatic completion detection. It prevents premature task completion.
 
 ## Documentation Loading Budget
@@ -178,14 +178,14 @@ or your docs need restructuring.
 |-------------|---------|-----------------|
 | Inline everything in index | 150k tokens per session, exhausted in 5 exchanges | Link to detailed docs, keep index under 500 words |
 | Skip task documentation | No context for future tasks, repeated discovery | Always create task docs with `/nav-task` |
-| Ignore knowledge graph | Known pitfalls rediscovered, decisions forgotten | Let Navigator capture automatically, review monthly |
+| Ignore knowledge graph | Known pitfalls rediscovered, decisions forgotten | Let the context engine capture automatically, review monthly |
 | Let context grow unbounded | Token efficiency drops below 50% after 10+ exchanges | Compact after each task with `/nav-compact` |
 | Load all docs at session start | Wastes 40k+ tokens before any work begins | Use lazy loading — load on demand only |
 | Large code blocks in docs | Each block costs 100-500 tokens every load | Reference file paths instead: `see src/api/auth.ts:45` |
 | Manual context markers | Inconsistent format, missed metadata | Use `/nav-marker` — auto-formats with timestamp and state |
 | No architecture docs | Every task requires full codebase exploration | Write `ARCHITECTURE.md` once, update incrementally |
 | Monolithic task docs | Single 2000-word task doc loaded for unrelated tasks | One file per task, archive when done |
-| Skipping workflow check | Tasks jump to implementation without planning | Navigator enforces this — don't override |
+| Skipping workflow check | Tasks jump to implementation without planning | The context engine enforces this — don't override |
 
 ## Project-Specific Tips
 
