@@ -391,9 +391,13 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 				// Update issueResult to reflect failure
 				issueResult.Success = false
 			} else {
-				// Has deliverables - keep pilot-in-progress until PR merges
-				// GH-1015: pilot-done is now added by autopilot controller after successful merge
-				// This prevents false positives where PRs are closed without merging
+				// Has deliverables — add pilot-done immediately to close label gap
+				// GH-1350: Prevents parallel poller re-dispatch race during the window
+				// between execution complete and autopilot merge handler
+				// GH-1015: Autopilot also adds pilot-done after merge (idempotent)
+				if err := client.AddLabels(ctx, parts[0], parts[1], issue.Number, []string{github.LabelDone}); err != nil {
+					logGitHubAPIError("AddLabels", parts[0], parts[1], issue.Number, err)
+				}
 
 				// GH-1302: Clean up stale pilot-failed label from prior failed attempt
 				if github.HasLabel(issue, github.LabelFailed) {
