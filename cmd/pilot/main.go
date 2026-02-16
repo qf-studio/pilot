@@ -867,7 +867,15 @@ Examples:
 				)
 				jiraPoller := jira.NewPoller(jiraClient, cfg.Adapters.Jira, interval,
 					jira.WithOnJiraIssue(func(issueCtx context.Context, issue *jira.Issue) (*jira.IssueResult, error) {
-						return handleJiraIssueWithResult(issueCtx, cfg, jiraClient, issue, projectPath, gwDispatcher, gwRunner, gwMonitor, gwProgram, gwAlertsEngine, gwEnforcer)
+						result, err := handleJiraIssueWithResult(issueCtx, cfg, jiraClient, issue, projectPath, gwDispatcher, gwRunner, gwMonitor, gwProgram, gwAlertsEngine, gwEnforcer)
+
+						// GH-1399: Wire PR to autopilot for CI monitoring + auto-merge
+						if result != nil && result.PRNumber > 0 && gwAutopilotController != nil {
+							// issueNumber=0 because Jira issues don't have GitHub issue numbers
+							gwAutopilotController.OnPRCreated(result.PRNumber, result.PRURL, 0, result.HeadSHA, result.BranchName)
+						}
+
+						return result, err
 					}),
 				)
 
@@ -901,7 +909,15 @@ Examples:
 				)
 				asanaPoller := asana.NewPoller(asanaClient, cfg.Adapters.Asana, interval,
 					asana.WithOnAsanaTask(func(taskCtx context.Context, task *asana.Task) (*asana.TaskResult, error) {
-						return handleAsanaTaskWithResult(taskCtx, cfg, asanaClient, task, projectPath, gwDispatcher, gwRunner, gwMonitor, gwProgram, gwAlertsEngine, gwEnforcer)
+						result, err := handleAsanaTaskWithResult(taskCtx, cfg, asanaClient, task, projectPath, gwDispatcher, gwRunner, gwMonitor, gwProgram, gwAlertsEngine, gwEnforcer)
+
+						// GH-1399: Wire PR to autopilot for CI monitoring + auto-merge
+						if result != nil && result.PRNumber > 0 && gwAutopilotController != nil {
+							// issueNumber=0 because Asana tasks don't have GitHub issue numbers
+							gwAutopilotController.OnPRCreated(result.PRNumber, result.PRURL, 0, result.HeadSHA, result.BranchName)
+						}
+
+						return result, err
 					}),
 				)
 
@@ -1998,7 +2014,15 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 		)
 		asanaPoller := asana.NewPoller(asanaClient, cfg.Adapters.Asana, interval,
 			asana.WithOnAsanaTask(func(taskCtx context.Context, task *asana.Task) (*asana.TaskResult, error) {
-				return handleAsanaTaskWithResult(taskCtx, cfg, asanaClient, task, projectPath, dispatcher, runner, monitor, program, alertsEngine, enforcer)
+				result, err := handleAsanaTaskWithResult(taskCtx, cfg, asanaClient, task, projectPath, dispatcher, runner, monitor, program, alertsEngine, enforcer)
+
+				// GH-1399: Wire PR to autopilot for CI monitoring + auto-merge
+				if result != nil && result.PRNumber > 0 && autopilotController != nil {
+					// issueNumber=0 because Asana tasks don't have GitHub issue numbers
+					autopilotController.OnPRCreated(result.PRNumber, result.PRURL, 0, result.HeadSHA, result.BranchName)
+				}
+
+				return result, err
 			}),
 		)
 

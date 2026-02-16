@@ -830,7 +830,8 @@ func handleJiraIssueWithResult(ctx context.Context, cfg *config.Config, client *
 
 	// Build issue result
 	issueResult := &jira.IssueResult{
-		Success: execErr == nil && result != nil && result.Success,
+		Success:    execErr == nil && result != nil && result.Success,
+		BranchName: branchName, // GH-1399: always set branch for autopilot wiring
 	}
 	if result != nil {
 		if result.PRUrl != "" {
@@ -839,6 +840,7 @@ func handleJiraIssueWithResult(ctx context.Context, cfg *config.Config, client *
 				issueResult.PRNumber = prNum
 			}
 		}
+		issueResult.HeadSHA = result.CommitSHA // GH-1399: for autopilot CI monitoring
 	}
 
 	// Add comment to Jira issue
@@ -1094,7 +1096,8 @@ func handleAsanaTaskWithResult(ctx context.Context, cfg *config.Config, client *
 
 	// Build task result
 	taskResult := &asana.TaskResult{
-		Success: execErr == nil && result != nil && result.Success,
+		Success:    execErr == nil && result != nil && result.Success,
+		BranchName: branchName, // GH-1399: always set branch for autopilot wiring
 	}
 	if result != nil {
 		if result.PRUrl != "" {
@@ -1103,6 +1106,7 @@ func handleAsanaTaskWithResult(ctx context.Context, cfg *config.Config, client *
 				taskResult.PRNumber = prNum
 			}
 		}
+		taskResult.HeadSHA = result.CommitSHA // GH-1399: for autopilot CI monitoring
 	}
 
 	// Add comment to Asana task
