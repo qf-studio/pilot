@@ -40,6 +40,12 @@ type ReleaseNotifier interface {
 	NotifyReleased(ctx context.Context, prState *PRState, releaseURL string) error
 }
 
+// TaskMonitor allows autopilot to update task display state.
+// GH-1336: Sync monitor state when autopilot merges PR so dashboard shows correct status.
+type TaskMonitor interface {
+	Complete(taskID, prURL string)
+}
+
 // Controller orchestrates the autopilot loop for PR processing.
 // It manages the state machine: PR created → CI check → merge → post-merge CI → feedback loop.
 type Controller struct {
@@ -51,6 +57,7 @@ type Controller struct {
 	feedbackLoop *FeedbackLoop
 	releaser     *Releaser
 	notifier     Notifier
+	monitor      TaskMonitor // GH-1336: sync dashboard state on merge
 	log          *slog.Logger
 
 	// State tracking
@@ -108,6 +115,13 @@ func NewController(cfg *Config, ghClient *github.Client, approvalMgr *approval.M
 // This is optional; if not set, no notifications will be sent.
 func (c *Controller) SetNotifier(n Notifier) {
 	c.notifier = n
+}
+
+// SetMonitor sets the task monitor for dashboard state sync.
+// GH-1336: When autopilot merges a PR, it updates monitor state so dashboard
+// shows correct "done" status instead of stale "failed" from earlier execution attempts.
+func (c *Controller) SetMonitor(m TaskMonitor) {
+	c.monitor = m
 }
 
 // SetStateStore sets the persistent state store for crash recovery.
@@ -619,6 +633,13 @@ func (c *Controller) handleMerging(ctx context.Context, prState *PRState) error 
 			c.log.Debug("pilot-failed label cleanup", "issue", prState.IssueNumber, "error", err)
 		}
 		c.log.Info("marked issue as pilot-done after merge", "issue", prState.IssueNumber, "pr", prState.PRNumber)
+
+		// GH-1336: Sync monitor state so dashboard shows "done" instead of stale "failed"
+		if c.monitor != nil {
+			taskID := fmt.Sprintf("GH-%d", prState.IssueNumber)
+			c.monitor.Complete(taskID, prState.PRURL)
+			c.log.Debug("updated monitor state to completed", "task", taskID, "pr", prState.PRNumber)
+		}
 	}
 
 	// Notify merge success

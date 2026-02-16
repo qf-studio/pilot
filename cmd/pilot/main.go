@@ -510,6 +510,10 @@ Examples:
 					gwRunner.SuppressProgressLogs(true)
 					gwMonitor = executor.NewMonitor()
 					gwRunner.SetMonitor(gwMonitor)
+					// GH-1336: Wire monitor to autopilot controller so dashboard shows "done" after merge
+					if gwAutopilotController != nil {
+						gwAutopilotController.SetMonitor(gwMonitor)
+					}
 					model := dashboard.NewModelWithOptions(version, gwStore, gwAutopilotController, nil)
 					gwProgram = tea.NewProgram(model,
 						tea.WithAltScreen(),
@@ -1320,6 +1324,10 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 
 		monitor = executor.NewMonitor()
 		runner.SetMonitor(monitor)
+		// GH-1336: Wire monitor to autopilot controllers so dashboard shows "done" after merge
+		for _, ctrl := range autopilotControllers {
+			ctrl.SetMonitor(monitor)
+		}
 		upgradeRequestCh = make(chan struct{}, 1)
 		model := dashboard.NewModelWithOptions(version, store, autopilotController, upgradeRequestCh)
 		program = tea.NewProgram(model,
