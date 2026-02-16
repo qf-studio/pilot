@@ -22,10 +22,12 @@ const (
 
 // TaskResult is returned by the task handler
 type TaskResult struct {
-	Success  bool
-	PRNumber int
-	PRURL    string
-	Error    error
+	Success    bool
+	PRNumber   int
+	PRURL      string
+	HeadSHA    string // Head commit SHA of the PR (GH-1398: for autopilot wiring)
+	BranchName string // Head branch name e.g. "pilot/TASK-123" (GH-1398: for autopilot wiring)
+	Error      error
 }
 
 // ProcessedStore persists which Asana tasks have been processed across restarts.

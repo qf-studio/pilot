@@ -22,10 +22,12 @@ const (
 
 // IssueResult is returned by the issue handler
 type IssueResult struct {
-	Success  bool
-	PRNumber int
-	PRURL    string
-	Error    error
+	Success    bool
+	PRNumber   int
+	PRURL      string
+	HeadSHA    string // Head commit SHA of the PR (GH-1398: for autopilot wiring)
+	BranchName string // Head branch name e.g. "pilot/PROJ-123" (GH-1398: for autopilot wiring)
+	Error      error
 }
 
 // ProcessedStore persists which Jira issues have been processed across restarts.
