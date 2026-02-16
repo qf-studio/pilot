@@ -211,10 +211,50 @@ func (p *Poller) Start(ctx context.Context) {
 		slog.Int("max_concurrent", p.maxConcurrent),
 	)
 
+	// GH-1355: Recover orphaned in-progress work items from previous run before starting poll loop
+	p.recoverOrphanedWorkItems(ctx)
+
 	if p.executionMode == ExecutionModeSequential {
 		p.startSequential(ctx)
 	} else {
 		p.startParallel(ctx)
+	}
+}
+
+// recoverOrphanedWorkItems finds work items with pilot-in-progress tag from a previous run
+// and removes the tag so they can be picked up again.
+// GH-1355: This handles restart/crash scenarios where work items were left orphaned.
+func (p *Poller) recoverOrphanedWorkItems(ctx context.Context) {
+	workItems, err := p.client.ListWorkItems(ctx, &ListWorkItemsOptions{
+		Tags:          []string{TagInProgress},
+		States:        []string{StateNew, StateActive},
+		WorkItemTypes: p.workItemTypes,
+	})
+	if err != nil {
+		p.logger.Warn("Failed to check for orphaned work items", slog.Any("error", err))
+		return
+	}
+
+	if len(workItems) == 0 {
+		return
+	}
+
+	p.logger.Info("Recovering orphaned in-progress work items",
+		slog.Int("count", len(workItems)),
+	)
+
+	for _, wi := range workItems {
+		if err := p.client.RemoveWorkItemTag(ctx, wi.ID, TagInProgress); err != nil {
+			p.logger.Warn("Failed to remove in-progress tag from orphaned work item",
+				slog.Int("id", wi.ID),
+				slog.Any("error", err),
+			)
+			continue
+		}
+		p.logger.Info("Recovered orphaned work item",
+			slog.Int("id", wi.ID),
+			slog.String("title", wi.GetTitle()),
+		)
 	}
 }
 

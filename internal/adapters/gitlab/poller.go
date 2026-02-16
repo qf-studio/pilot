@@ -200,10 +200,49 @@ func (p *Poller) Start(ctx context.Context) {
 		slog.Int("max_concurrent", p.maxConcurrent),
 	)
 
+	// GH-1355: Recover orphaned in-progress issues from previous run before starting poll loop
+	p.recoverOrphanedIssues(ctx)
+
 	if p.executionMode == ExecutionModeSequential {
 		p.startSequential(ctx)
 	} else {
 		p.startParallel(ctx)
+	}
+}
+
+// recoverOrphanedIssues finds issues with pilot-in-progress label from a previous run
+// and removes the label so they can be picked up again.
+// GH-1355: This handles restart/crash scenarios where issues were left orphaned.
+func (p *Poller) recoverOrphanedIssues(ctx context.Context) {
+	issues, err := p.client.ListIssues(ctx, &ListIssuesOptions{
+		Labels: []string{p.label, LabelInProgress},
+		State:  StateOpened,
+	})
+	if err != nil {
+		p.logger.Warn("Failed to check for orphaned issues", slog.Any("error", err))
+		return
+	}
+
+	if len(issues) == 0 {
+		return
+	}
+
+	p.logger.Info("Recovering orphaned in-progress issues",
+		slog.Int("count", len(issues)),
+	)
+
+	for _, issue := range issues {
+		if err := p.client.RemoveIssueLabel(ctx, issue.IID, LabelInProgress); err != nil {
+			p.logger.Warn("Failed to remove in-progress label from orphaned issue",
+				slog.Int("iid", issue.IID),
+				slog.Any("error", err),
+			)
+			continue
+		}
+		p.logger.Info("Recovered orphaned issue",
+			slog.Int("iid", issue.IID),
+			slog.String("title", issue.Title),
+		)
 	}
 }
 

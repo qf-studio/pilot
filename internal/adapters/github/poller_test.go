@@ -1232,3 +1232,85 @@ func TestPoller_FindOldestUnprocessedIssue_AllDepsOpen(t *testing.T) {
 		t.Errorf("issue should be nil when all have open dependencies, got #%d", issue.Number)
 	}
 }
+
+// GH-1355: Test recovery of orphaned in-progress issues
+func TestPoller_RecoverOrphanedIssues(t *testing.T) {
+	// Mock issues that have both pilot and pilot-in-progress labels
+	orphanedIssues := []*Issue{
+		{Number: 123, Title: "Orphaned Issue 1", Labels: []Label{{Name: "pilot"}, {Name: LabelInProgress}}},
+		{Number: 456, Title: "Orphaned Issue 2", Labels: []Label{{Name: "pilot"}, {Name: LabelInProgress}}},
+	}
+
+	removedLabels := []int{}
+	var mu sync.Mutex
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		switch r.Method {
+		case http.MethodGet:
+			if r.URL.Path == "/repos/owner/repo/issues" {
+				_ = json.NewEncoder(w).Encode(orphanedIssues)
+			}
+		case http.MethodDelete:
+			// Track label removal calls
+			switch r.URL.Path {
+			case "/repos/owner/repo/issues/123/labels/pilot-in-progress":
+				mu.Lock()
+				removedLabels = append(removedLabels, 123)
+				mu.Unlock()
+				w.WriteHeader(http.StatusOK)
+			case "/repos/owner/repo/issues/456/labels/pilot-in-progress":
+				mu.Lock()
+				removedLabels = append(removedLabels, 456)
+				mu.Unlock()
+				w.WriteHeader(http.StatusOK)
+			}
+		}
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second)
+
+	// Call recovery directly
+	poller.recoverOrphanedIssues(context.Background())
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	// Should have removed labels from both orphaned issues
+	if len(removedLabels) != 2 {
+		t.Errorf("expected 2 labels removed, got %d", len(removedLabels))
+	}
+}
+
+// GH-1355: Test recovery handles empty result
+func TestPoller_RecoverOrphanedIssues_NoOrphanedIssues(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// Return empty array - no orphaned issues
+		_ = json.NewEncoder(w).Encode([]*Issue{})
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second)
+
+	// Should not panic or error with empty result
+	poller.recoverOrphanedIssues(context.Background())
+}
+
+// GH-1355: Test recovery handles API error gracefully
+func TestPoller_RecoverOrphanedIssues_APIError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second)
+
+	// Should not panic - errors are logged but not returned
+	poller.recoverOrphanedIssues(context.Background())
+}

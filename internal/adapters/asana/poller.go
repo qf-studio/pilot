@@ -152,6 +152,9 @@ func (p *Poller) Start(ctx context.Context) error {
 		slog.Int("max_concurrent", p.maxConcurrent),
 	)
 
+	// GH-1355: Recover orphaned in-progress tasks from previous run before starting poll loop
+	p.recoverOrphanedTasks(ctx)
+
 	// Initial check
 	p.checkForNewTasks(ctx)
 
@@ -210,6 +213,44 @@ func (p *Poller) cacheTagGIDs(ctx context.Context) error {
 	)
 
 	return nil
+}
+
+// recoverOrphanedTasks finds tasks with pilot-in-progress tag from a previous run
+// and removes the tag so they can be picked up again.
+// GH-1355: This handles restart/crash scenarios where tasks were left orphaned.
+func (p *Poller) recoverOrphanedTasks(ctx context.Context) {
+	if p.inProgressTagGID == "" {
+		return
+	}
+
+	// Get tasks with in-progress tag
+	tasks, err := p.client.GetActiveTasksByTag(ctx, p.inProgressTagGID)
+	if err != nil {
+		p.logger.Warn("Failed to check for orphaned tasks", slog.Any("error", err))
+		return
+	}
+
+	if len(tasks) == 0 {
+		return
+	}
+
+	p.logger.Info("Recovering orphaned in-progress tasks",
+		slog.Int("count", len(tasks)),
+	)
+
+	for _, task := range tasks {
+		if err := p.client.RemoveTag(ctx, task.GID, p.inProgressTagGID); err != nil {
+			p.logger.Warn("Failed to remove in-progress tag from orphaned task",
+				slog.String("gid", task.GID),
+				slog.Any("error", err),
+			)
+			continue
+		}
+		p.logger.Info("Recovered orphaned task",
+			slog.String("gid", task.GID),
+			slog.String("name", task.Name),
+		)
+	}
 }
 
 func (p *Poller) checkForNewTasks(ctx context.Context) {
