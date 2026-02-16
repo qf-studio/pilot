@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/alekspetrov/pilot/internal/logging"
@@ -46,6 +47,13 @@ type Poller struct {
 
 	// GH-1351: Persistent processed store (optional)
 	processedStore ProcessedStore
+
+	// GH-1357: Parallel execution configuration
+	maxConcurrent int
+	semaphore     chan struct{}
+	activeWg      sync.WaitGroup
+	stopping      atomic.Bool
+	wgMu          sync.Mutex // protects stopping + activeWg Add/Wait coordination
 }
 
 // PollerOption configures a Poller
@@ -70,6 +78,17 @@ func WithPollerLogger(logger *slog.Logger) PollerOption {
 func WithProcessedStore(store ProcessedStore) PollerOption {
 	return func(p *Poller) {
 		p.processedStore = store
+	}
+}
+
+// WithMaxConcurrent sets the maximum number of parallel issue executions.
+// GH-1357: Ported from GitHub poller parallel execution pattern.
+func WithMaxConcurrent(n int) PollerOption {
+	return func(p *Poller) {
+		if n < 1 {
+			n = 1
+		}
+		p.maxConcurrent = n
 	}
 }
 
@@ -102,6 +121,12 @@ func NewPoller(client *Client, config *WorkspaceConfig, interval time.Duration, 
 		}
 	}
 
+	// GH-1357: Initialize parallel semaphore
+	if p.maxConcurrent < 1 {
+		p.maxConcurrent = 2 // default
+	}
+	p.semaphore = make(chan struct{}, p.maxConcurrent)
+
 	return p
 }
 
@@ -116,6 +141,7 @@ func (p *Poller) Start(ctx context.Context) error {
 		slog.String("team", p.config.TeamID),
 		slog.String("label", p.config.PilotLabel),
 		slog.Duration("interval", p.interval),
+		slog.Int("max_concurrent", p.maxConcurrent),
 	)
 
 	// Initial check
@@ -127,6 +153,11 @@ func (p *Poller) Start(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
+			p.logger.Info("Linear poller stopping, waiting for active tasks...")
+			p.wgMu.Lock()
+			p.stopping.Store(true)
+			p.wgMu.Unlock()
+			p.activeWg.Wait()
 			p.logger.Info("Linear poller stopped")
 			return nil
 		case <-ticker.C:
@@ -196,47 +227,74 @@ func (p *Poller) checkForNewIssues(ctx context.Context) {
 			continue
 		}
 
-		// Process the issue
-		p.logger.Info("Found new Linear issue",
+		// Mark processed immediately to prevent duplicate dispatch on next tick
+		p.markProcessed(issue.ID)
+
+		// Acquire semaphore slot (blocks if max_concurrent reached)
+		select {
+		case <-ctx.Done():
+			return
+		case p.semaphore <- struct{}{}:
+		}
+
+		p.logger.Info("Dispatching Linear issue for parallel execution",
 			slog.String("identifier", issue.Identifier),
 			slog.String("title", issue.Title),
 		)
 
-		if p.onIssue != nil {
-			// Add in-progress label
-			if p.inProgressLabelID != "" {
-				_ = p.client.AddLabel(ctx, issue.ID, p.inProgressLabelID)
-			}
-
-			result, err := p.onIssue(ctx, issue)
-			if err != nil {
-				p.logger.Error("Failed to process issue",
-					slog.String("identifier", issue.Identifier),
-					slog.Any("error", err),
-				)
-				// Remove in-progress label, add failed label
-				if p.inProgressLabelID != "" {
-					_ = p.client.RemoveLabel(ctx, issue.ID, p.inProgressLabelID)
-				}
-				if p.failedLabelID != "" {
-					_ = p.client.AddLabel(ctx, issue.ID, p.failedLabelID)
-				}
-				p.markProcessed(issue.ID)
-				continue
-			}
-
-			// Remove in-progress label
-			if p.inProgressLabelID != "" {
-				_ = p.client.RemoveLabel(ctx, issue.ID, p.inProgressLabelID)
-			}
-
-			// Add done label on success
-			if result != nil && result.Success && p.doneLabelID != "" {
-				_ = p.client.AddLabel(ctx, issue.ID, p.doneLabelID)
-			}
+		// Use mutex to coordinate stopping flag check with WaitGroup Add
+		p.wgMu.Lock()
+		if p.stopping.Load() {
+			p.wgMu.Unlock()
+			<-p.semaphore // release slot we acquired
+			return
 		}
+		p.activeWg.Add(1)
+		p.wgMu.Unlock()
 
-		p.markProcessed(issue.ID)
+		go p.processIssueAsync(ctx, issue)
+	}
+}
+
+// processIssueAsync handles a single issue in a goroutine.
+// GH-1357: Extracted to enable parallel execution.
+func (p *Poller) processIssueAsync(ctx context.Context, issue *Issue) {
+	defer p.activeWg.Done()
+	defer func() { <-p.semaphore }() // release slot
+
+	if p.onIssue == nil {
+		return
+	}
+
+	// Add in-progress label
+	if p.inProgressLabelID != "" {
+		_ = p.client.AddLabel(ctx, issue.ID, p.inProgressLabelID)
+	}
+
+	result, err := p.onIssue(ctx, issue)
+	if err != nil {
+		p.logger.Error("Failed to process issue",
+			slog.String("identifier", issue.Identifier),
+			slog.Any("error", err),
+		)
+		// Remove in-progress label, add failed label
+		if p.inProgressLabelID != "" {
+			_ = p.client.RemoveLabel(ctx, issue.ID, p.inProgressLabelID)
+		}
+		if p.failedLabelID != "" {
+			_ = p.client.AddLabel(ctx, issue.ID, p.failedLabelID)
+		}
+		return
+	}
+
+	// Remove in-progress label
+	if p.inProgressLabelID != "" {
+		_ = p.client.RemoveLabel(ctx, issue.ID, p.inProgressLabelID)
+	}
+
+	// Add done label on success
+	if result != nil && result.Success && p.doneLabelID != "" {
+		_ = p.client.AddLabel(ctx, issue.ID, p.doneLabelID)
 	}
 }
 
@@ -302,4 +360,24 @@ func (p *Poller) ClearProcessed(id string) {
 
 	p.logger.Debug("Cleared issue from processed map",
 		slog.String("id", id))
+}
+
+// Drain stops accepting new issues and waits for active executions to finish.
+// GH-1357: Used during hot upgrade to let in-flight work complete before process restart.
+func (p *Poller) Drain() {
+	p.logger.Info("Draining poller — no new issues will be accepted")
+	p.wgMu.Lock()
+	p.stopping.Store(true)
+	p.wgMu.Unlock()
+	p.activeWg.Wait()
+	p.logger.Info("Poller drained — all active tasks completed")
+}
+
+// WaitForActive waits for all active parallel goroutines to finish.
+// GH-1357: Used in tests to synchronize after checkForNewIssues.
+func (p *Poller) WaitForActive() {
+	p.wgMu.Lock()
+	p.stopping.Store(true)
+	p.wgMu.Unlock()
+	p.activeWg.Wait()
 }

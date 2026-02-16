@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/alekspetrov/pilot/internal/logging"
@@ -27,6 +28,15 @@ type IssueResult struct {
 	Error    error
 }
 
+// ProcessedStore persists which Jira issues have been processed across restarts.
+// GH-1357: Jira uses string IDs (issue keys like PROJ-123).
+type ProcessedStore interface {
+	MarkJiraIssueProcessed(issueKey string, result string) error
+	UnmarkJiraIssueProcessed(issueKey string) error
+	IsJiraIssueProcessed(issueKey string) (bool, error)
+	LoadJiraProcessedIssues() (map[string]bool, error)
+}
+
 // Poller polls Jira for issues with the pilot label
 type Poller struct {
 	client     *Client
@@ -37,6 +47,16 @@ type Poller struct {
 	onIssue    func(ctx context.Context, issue *Issue) (*IssueResult, error)
 	logger     *slog.Logger
 	pilotLabel string
+
+	// GH-1357: Persistent processed store (optional)
+	processedStore ProcessedStore
+
+	// GH-1357: Parallel execution configuration
+	maxConcurrent int
+	semaphore     chan struct{}
+	activeWg      sync.WaitGroup
+	stopping      atomic.Bool
+	wgMu          sync.Mutex // protects stopping + activeWg Add/Wait coordination
 }
 
 // PollerOption configures a Poller
@@ -53,6 +73,25 @@ func WithOnJiraIssue(fn func(ctx context.Context, issue *Issue) (*IssueResult, e
 func WithJiraPollerLogger(logger *slog.Logger) PollerOption {
 	return func(p *Poller) {
 		p.logger = logger
+	}
+}
+
+// WithProcessedStore sets the persistent store for processed issue tracking.
+// GH-1357: On startup, processed issues are loaded from the store to prevent re-processing after hot upgrade.
+func WithProcessedStore(store ProcessedStore) PollerOption {
+	return func(p *Poller) {
+		p.processedStore = store
+	}
+}
+
+// WithMaxConcurrent sets the maximum number of parallel issue executions.
+// GH-1357: Ported from GitHub poller parallel execution pattern.
+func WithMaxConcurrent(n int) PollerOption {
+	return func(p *Poller) {
+		if n < 1 {
+			n = 1
+		}
+		p.maxConcurrent = n
 	}
 }
 
@@ -76,6 +115,27 @@ func NewPoller(client *Client, config *Config, interval time.Duration, opts ...P
 		opt(p)
 	}
 
+	// GH-1357: Load processed issues from persistent store if available
+	if p.processedStore != nil {
+		loaded, err := p.processedStore.LoadJiraProcessedIssues()
+		if err != nil {
+			p.logger.Warn("Failed to load processed issues from store", slog.Any("error", err))
+		} else if len(loaded) > 0 {
+			p.mu.Lock()
+			for key := range loaded {
+				p.processed[key] = true
+			}
+			p.mu.Unlock()
+			p.logger.Info("Loaded processed issues from store", slog.Int("count", len(loaded)))
+		}
+	}
+
+	// GH-1357: Initialize parallel semaphore
+	if p.maxConcurrent < 1 {
+		p.maxConcurrent = 2 // default
+	}
+	p.semaphore = make(chan struct{}, p.maxConcurrent)
+
 	return p
 }
 
@@ -85,6 +145,7 @@ func (p *Poller) Start(ctx context.Context) error {
 		slog.String("label", p.pilotLabel),
 		slog.String("project", p.config.ProjectKey),
 		slog.Duration("interval", p.interval),
+		slog.Int("max_concurrent", p.maxConcurrent),
 	)
 
 	// Initial check
@@ -96,6 +157,11 @@ func (p *Poller) Start(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
+			p.logger.Info("Jira poller stopping, waiting for active tasks...")
+			p.wgMu.Lock()
+			p.stopping.Store(true)
+			p.wgMu.Unlock()
+			p.activeWg.Wait()
 			p.logger.Info("Jira poller stopped")
 			return nil
 		case <-ticker.C:
@@ -160,44 +226,71 @@ func (p *Poller) checkForNewIssues(ctx context.Context) {
 			continue
 		}
 
-		// Process the issue
-		p.logger.Info("Found new Jira issue",
+		// Mark processed immediately to prevent duplicate dispatch on next tick
+		p.markProcessed(issue.Key)
+
+		// Acquire semaphore slot (blocks if max_concurrent reached)
+		select {
+		case <-ctx.Done():
+			return
+		case p.semaphore <- struct{}{}:
+		}
+
+		p.logger.Info("Dispatching Jira issue for parallel execution",
 			slog.String("key", issue.Key),
 			slog.String("summary", issue.Fields.Summary),
 		)
 
-		if p.onIssue != nil {
-			// Add in-progress label
-			if err := p.client.AddLabel(ctx, issue.Key, LabelInProgress); err != nil {
-				p.logger.Warn("Failed to add in-progress label",
-					slog.String("key", issue.Key),
-					slog.Any("error", err),
-				)
-			}
-
-			result, err := p.onIssue(ctx, issue)
-			if err != nil {
-				p.logger.Error("Failed to process issue",
-					slog.String("key", issue.Key),
-					slog.Any("error", err),
-				)
-				// Remove in-progress label, add failed label
-				_ = p.client.RemoveLabel(ctx, issue.Key, LabelInProgress)
-				_ = p.client.AddLabel(ctx, issue.Key, LabelFailed)
-				// Don't mark as processed so it can be retried after fixing
-				continue
-			}
-
-			// Remove in-progress label
-			_ = p.client.RemoveLabel(ctx, issue.Key, LabelInProgress)
-
-			// Add done label on success
-			if result != nil && result.Success {
-				_ = p.client.AddLabel(ctx, issue.Key, LabelDone)
-			}
+		// Use mutex to coordinate stopping flag check with WaitGroup Add
+		p.wgMu.Lock()
+		if p.stopping.Load() {
+			p.wgMu.Unlock()
+			<-p.semaphore // release slot we acquired
+			return
 		}
+		p.activeWg.Add(1)
+		p.wgMu.Unlock()
 
-		p.markProcessed(issue.Key)
+		go p.processIssueAsync(ctx, issue)
+	}
+}
+
+// processIssueAsync handles a single issue in a goroutine.
+// GH-1357: Extracted to enable parallel execution.
+func (p *Poller) processIssueAsync(ctx context.Context, issue *Issue) {
+	defer p.activeWg.Done()
+	defer func() { <-p.semaphore }() // release slot
+
+	if p.onIssue == nil {
+		return
+	}
+
+	// Add in-progress label
+	if err := p.client.AddLabel(ctx, issue.Key, LabelInProgress); err != nil {
+		p.logger.Warn("Failed to add in-progress label",
+			slog.String("key", issue.Key),
+			slog.Any("error", err),
+		)
+	}
+
+	result, err := p.onIssue(ctx, issue)
+	if err != nil {
+		p.logger.Error("Failed to process issue",
+			slog.String("key", issue.Key),
+			slog.Any("error", err),
+		)
+		// Remove in-progress label, add failed label
+		_ = p.client.RemoveLabel(ctx, issue.Key, LabelInProgress)
+		_ = p.client.AddLabel(ctx, issue.Key, LabelFailed)
+		return
+	}
+
+	// Remove in-progress label
+	_ = p.client.RemoveLabel(ctx, issue.Key, LabelInProgress)
+
+	// Add done label on success
+	if result != nil && result.Success {
+		_ = p.client.AddLabel(ctx, issue.Key, LabelDone)
 	}
 }
 
@@ -211,6 +304,13 @@ func (p *Poller) markProcessed(key string) {
 	p.mu.Lock()
 	p.processed[key] = true
 	p.mu.Unlock()
+
+	// GH-1357: Persist to store if available
+	if p.processedStore != nil {
+		if err := p.processedStore.MarkJiraIssueProcessed(key, "processed"); err != nil {
+			p.logger.Warn("Failed to persist processed issue", slog.String("issue", key), slog.Any("error", err))
+		}
+	}
 }
 
 // IsProcessed checks if an issue has been processed
@@ -239,4 +339,36 @@ func (p *Poller) ClearProcessed(key string) {
 	p.mu.Lock()
 	delete(p.processed, key)
 	p.mu.Unlock()
+
+	// GH-1357: Also clear from persistent store
+	if p.processedStore != nil {
+		if err := p.processedStore.UnmarkJiraIssueProcessed(key); err != nil {
+			p.logger.Warn("Failed to unmark issue in store",
+				slog.String("key", key),
+				slog.Any("error", err))
+		}
+	}
+
+	p.logger.Debug("Cleared issue from processed map",
+		slog.String("key", key))
+}
+
+// Drain stops accepting new issues and waits for active executions to finish.
+// GH-1357: Used during hot upgrade to let in-flight work complete before process restart.
+func (p *Poller) Drain() {
+	p.logger.Info("Draining poller — no new issues will be accepted")
+	p.wgMu.Lock()
+	p.stopping.Store(true)
+	p.wgMu.Unlock()
+	p.activeWg.Wait()
+	p.logger.Info("Poller drained — all active tasks completed")
+}
+
+// WaitForActive waits for all active parallel goroutines to finish.
+// GH-1357: Used in tests to synchronize after checkForNewIssues.
+func (p *Poller) WaitForActive() {
+	p.wgMu.Lock()
+	p.stopping.Store(true)
+	p.wgMu.Unlock()
+	p.activeWg.Wait()
 }
