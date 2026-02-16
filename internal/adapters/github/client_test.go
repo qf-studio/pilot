@@ -3,6 +3,7 @@ package github
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -2097,6 +2098,106 @@ func TestGetTagForSHA(t *testing.T) {
 			}
 			if tagName != tt.wantTag {
 				t.Errorf("GetTagForSHA() = %q, want %q", tagName, tt.wantTag)
+			}
+		})
+	}
+}
+
+func TestDeleteBranch(t *testing.T) {
+	tests := []struct {
+		name       string
+		branch     string
+		statusCode int
+		wantErr    bool
+	}{
+		{
+			name:       "success - branch deleted",
+			branch:     "pilot/GH-123",
+			statusCode: http.StatusNoContent,
+			wantErr:    false,
+		},
+		{
+			name:       "success - branch already deleted (404)",
+			branch:     "pilot/GH-456",
+			statusCode: http.StatusNotFound,
+			wantErr:    false, // 404 is OK - branch may have been deleted by GitHub setting
+		},
+		{
+			name:       "success - branch already deleted (422)",
+			branch:     "pilot/GH-789",
+			statusCode: http.StatusUnprocessableEntity,
+			wantErr:    false, // 422 is OK - branch reference doesn't exist
+		},
+		{
+			name:       "server error",
+			branch:     "pilot/GH-999",
+			statusCode: http.StatusInternalServerError,
+			wantErr:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodDelete {
+					t.Errorf("expected DELETE, got %s", r.Method)
+				}
+				expectedPath := "/repos/owner/repo/git/refs/heads/" + tt.branch
+				if r.URL.Path != expectedPath {
+					t.Errorf("unexpected path: %s, want %s", r.URL.Path, expectedPath)
+				}
+				w.WriteHeader(tt.statusCode)
+			}))
+			defer server.Close()
+
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			err := client.DeleteBranch(context.Background(), "owner", "repo", tt.branch)
+
+			if (err != nil) != tt.wantErr {
+				t.Errorf("DeleteBranch() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestIsUnprocessableError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "nil error",
+			err:  nil,
+			want: false,
+		},
+		{
+			name: "422 error",
+			err:  fmt.Errorf("API error (status 422): Reference does not exist"),
+			want: true,
+		},
+		{
+			name: "404 error",
+			err:  fmt.Errorf("API error (status 404): Not Found"),
+			want: false,
+		},
+		{
+			name: "500 error",
+			err:  fmt.Errorf("API error (status 500): Internal Server Error"),
+			want: false,
+		},
+		{
+			name: "other error",
+			err:  fmt.Errorf("connection refused"),
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isUnprocessableError(tt.err)
+			if got != tt.want {
+				t.Errorf("isUnprocessableError() = %v, want %v", got, tt.want)
 			}
 		})
 	}

@@ -642,6 +642,17 @@ func (c *Controller) handleMerging(ctx context.Context, prState *PRState) error 
 		}
 	}
 
+	// GH-1383: Delete remote branch after successful merge
+	// Branch is safe to delete — it's fully merged. If GitHub already deleted it
+	// (delete_branch_on_merge setting), the API returns 404/422 which we ignore.
+	if prState.BranchName != "" {
+		if err := c.ghClient.DeleteBranch(ctx, c.owner, c.repo, prState.BranchName); err != nil {
+			c.log.Warn("failed to delete branch after merge", "branch", prState.BranchName, "pr", prState.PRNumber, "error", err)
+		} else {
+			c.log.Info("deleted branch after merge", "branch", prState.BranchName, "pr", prState.PRNumber)
+		}
+	}
+
 	// Notify merge success
 	if c.notifier != nil {
 		if err := c.notifier.NotifyMerged(ctx, prState); err != nil {
