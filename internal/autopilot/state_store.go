@@ -73,6 +73,12 @@ func (s *StateStore) migrate() error {
 			failure_count INTEGER NOT NULL DEFAULT 0,
 			last_failure_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)`,
+		// GH-1351: Linear processed issues table (uses string IDs unlike GitHub's integer IDs)
+		`CREATE TABLE IF NOT EXISTS linear_processed (
+			issue_id TEXT PRIMARY KEY,
+			processed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			result TEXT DEFAULT ''
+		)`,
 	}
 
 	for _, m := range migrations {
@@ -239,6 +245,65 @@ func (s *StateStore) LoadProcessedIssues() (map[int]bool, error) {
 		processed[num] = true
 	}
 	return processed, nil
+}
+
+// MarkLinearIssueProcessed records that a Linear issue has been processed.
+// GH-1351: Linear uses string IDs unlike GitHub's integer IDs.
+func (s *StateStore) MarkLinearIssueProcessed(issueID string, result string) error {
+	_, err := s.db.Exec(`
+		INSERT INTO linear_processed (issue_id, processed_at, result)
+		VALUES (?, CURRENT_TIMESTAMP, ?)
+		ON CONFLICT(issue_id) DO UPDATE SET
+			processed_at = CURRENT_TIMESTAMP,
+			result = excluded.result
+	`, issueID, result)
+	return err
+}
+
+// UnmarkLinearIssueProcessed removes a Linear issue from the processed table.
+// Used when pilot-failed label is removed to allow retry.
+func (s *StateStore) UnmarkLinearIssueProcessed(issueID string) error {
+	_, err := s.db.Exec(`DELETE FROM linear_processed WHERE issue_id = ?`, issueID)
+	return err
+}
+
+// IsLinearIssueProcessed checks if a Linear issue has been previously processed.
+func (s *StateStore) IsLinearIssueProcessed(issueID string) (bool, error) {
+	var count int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM linear_processed WHERE issue_id = ?`, issueID).Scan(&count)
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+// LoadLinearProcessedIssues returns a map of all processed Linear issue IDs.
+func (s *StateStore) LoadLinearProcessedIssues() (map[string]bool, error) {
+	rows, err := s.db.Query(`SELECT issue_id FROM linear_processed`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	processed := make(map[string]bool)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		processed[id] = true
+	}
+	return processed, nil
+}
+
+// PurgeOldLinearProcessedIssues removes Linear processed issue records older than the given duration.
+func (s *StateStore) PurgeOldLinearProcessedIssues(olderThan time.Duration) (int64, error) {
+	cutoff := time.Now().Add(-olderThan)
+	result, err := s.db.Exec(`DELETE FROM linear_processed WHERE processed_at < ?`, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 // SaveMetadata stores a key-value pair in the metadata table.

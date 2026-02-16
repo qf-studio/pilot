@@ -19,6 +19,15 @@ type IssueResult struct {
 	Error    error
 }
 
+// ProcessedStore persists which Linear issues have been processed across restarts.
+// GH-1351: Linear uses string IDs unlike GitHub's integer IDs.
+type ProcessedStore interface {
+	MarkLinearIssueProcessed(issueID string, result string) error
+	UnmarkLinearIssueProcessed(issueID string) error
+	IsLinearIssueProcessed(issueID string) (bool, error)
+	LoadLinearProcessedIssues() (map[string]bool, error)
+}
+
 // Poller polls Linear for issues with a specific label
 type Poller struct {
 	client    *Client
@@ -34,6 +43,9 @@ type Poller struct {
 	inProgressLabelID string
 	doneLabelID       string
 	failedLabelID     string
+
+	// GH-1351: Persistent processed store (optional)
+	processedStore ProcessedStore
 }
 
 // PollerOption configures a Poller
@@ -53,6 +65,14 @@ func WithPollerLogger(logger *slog.Logger) PollerOption {
 	}
 }
 
+// WithProcessedStore sets the persistent store for processed issue tracking.
+// GH-1351: On startup, processed issues are loaded from the store to prevent re-processing after hot upgrade.
+func WithProcessedStore(store ProcessedStore) PollerOption {
+	return func(p *Poller) {
+		p.processedStore = store
+	}
+}
+
 // NewPoller creates a new Linear issue poller
 func NewPoller(client *Client, config *WorkspaceConfig, interval time.Duration, opts ...PollerOption) *Poller {
 	p := &Poller{
@@ -65,6 +85,21 @@ func NewPoller(client *Client, config *WorkspaceConfig, interval time.Duration, 
 
 	for _, opt := range opts {
 		opt(p)
+	}
+
+	// GH-1351: Load processed issues from persistent store if available
+	if p.processedStore != nil {
+		loaded, err := p.processedStore.LoadLinearProcessedIssues()
+		if err != nil {
+			p.logger.Warn("Failed to load processed issues from store", slog.Any("error", err))
+		} else if len(loaded) > 0 {
+			p.mu.Lock()
+			for id := range loaded {
+				p.processed[id] = true
+			}
+			p.mu.Unlock()
+			p.logger.Info("Loaded processed issues from store", slog.Int("count", len(loaded)))
+		}
 	}
 
 	return p
@@ -108,10 +143,23 @@ func (p *Poller) cacheLabelIDs(ctx context.Context) error {
 		return fmt.Errorf("pilot label: %w", err)
 	}
 
-	// These labels are optional - create if needed or skip
-	p.inProgressLabelID, _ = p.client.GetLabelByName(ctx, p.config.TeamID, "pilot-in-progress")
-	p.doneLabelID, _ = p.client.GetLabelByName(ctx, p.config.TeamID, "pilot-done")
-	p.failedLabelID, _ = p.client.GetLabelByName(ctx, p.config.TeamID, "pilot-failed")
+	// GH-1351: Auto-create status labels if they don't exist.
+	// These labels are required for deduplication after hot upgrade.
+	// Colors chosen to match typical status semantics: blue=in-progress, green=done, red=failed
+	p.inProgressLabelID, err = p.client.GetOrCreateLabel(ctx, p.config.TeamID, "pilot-in-progress", "#0066FF")
+	if err != nil {
+		p.logger.Warn("Failed to get/create pilot-in-progress label", slog.Any("error", err))
+	}
+
+	p.doneLabelID, err = p.client.GetOrCreateLabel(ctx, p.config.TeamID, "pilot-done", "#00AA55")
+	if err != nil {
+		p.logger.Warn("Failed to get/create pilot-done label", slog.Any("error", err))
+	}
+
+	p.failedLabelID, err = p.client.GetOrCreateLabel(ctx, p.config.TeamID, "pilot-failed", "#DD0000")
+	if err != nil {
+		p.logger.Warn("Failed to get/create pilot-failed label", slog.Any("error", err))
+	}
 
 	return nil
 }
@@ -206,6 +254,13 @@ func (p *Poller) markProcessed(id string) {
 	p.mu.Lock()
 	p.processed[id] = true
 	p.mu.Unlock()
+
+	// GH-1351: Persist to store if available
+	if p.processedStore != nil {
+		if err := p.processedStore.MarkLinearIssueProcessed(id, "processed"); err != nil {
+			p.logger.Warn("Failed to persist processed issue", slog.String("issue", id), slog.Any("error", err))
+		}
+	}
 }
 
 // IsProcessed checks if an issue has been processed
@@ -227,4 +282,24 @@ func (p *Poller) Reset() {
 	p.mu.Lock()
 	p.processed = make(map[string]bool)
 	p.mu.Unlock()
+}
+
+// ClearProcessed removes a single issue from the processed map.
+// GH-1351: Used when pilot-failed label is removed to allow the issue to be retried.
+func (p *Poller) ClearProcessed(id string) {
+	p.mu.Lock()
+	delete(p.processed, id)
+	p.mu.Unlock()
+
+	// Also clear from persistent store
+	if p.processedStore != nil {
+		if err := p.processedStore.UnmarkLinearIssueProcessed(id); err != nil {
+			p.logger.Warn("Failed to unmark issue in store",
+				slog.String("id", id),
+				slog.Any("error", err))
+		}
+	}
+
+	p.logger.Debug("Cleared issue from processed map",
+		slog.String("id", id))
 }

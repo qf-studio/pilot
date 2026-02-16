@@ -634,3 +634,128 @@ func TestController_RemovePR_RemovesFailures(t *testing.T) {
 		t.Errorf("expected 0 failure records after removePR, got %d", len(failures))
 	}
 }
+
+// GH-1351: Test Linear processed issues (string IDs).
+func TestStateStore_LinearProcessedIssues(t *testing.T) {
+	store := newTestStateStore(t)
+
+	// Not processed initially
+	processed, err := store.IsLinearIssueProcessed("abc-123-def")
+	if err != nil {
+		t.Fatalf("IsLinearIssueProcessed failed: %v", err)
+	}
+	if processed {
+		t.Error("issue should not be processed initially")
+	}
+
+	// Mark processed
+	if err := store.MarkLinearIssueProcessed("abc-123-def", "success"); err != nil {
+		t.Fatalf("MarkLinearIssueProcessed failed: %v", err)
+	}
+
+	processed, err = store.IsLinearIssueProcessed("abc-123-def")
+	if err != nil {
+		t.Fatalf("IsLinearIssueProcessed failed: %v", err)
+	}
+	if !processed {
+		t.Error("issue should be processed after marking")
+	}
+
+	// Load all
+	all, err := store.LoadLinearProcessedIssues()
+	if err != nil {
+		t.Fatalf("LoadLinearProcessedIssues failed: %v", err)
+	}
+	if len(all) != 1 {
+		t.Errorf("got %d processed, want 1", len(all))
+	}
+	if !all["abc-123-def"] {
+		t.Error("issue abc-123-def should be in processed map")
+	}
+
+	// Idempotent mark
+	if err := store.MarkLinearIssueProcessed("abc-123-def", "failed"); err != nil {
+		t.Fatalf("idempotent MarkLinearIssueProcessed failed: %v", err)
+	}
+	all, _ = store.LoadLinearProcessedIssues()
+	if len(all) != 1 {
+		t.Errorf("got %d processed after idempotent mark, want 1", len(all))
+	}
+
+	// Unmark processed (for retry when pilot-failed label removed)
+	if err := store.UnmarkLinearIssueProcessed("abc-123-def"); err != nil {
+		t.Fatalf("UnmarkLinearIssueProcessed failed: %v", err)
+	}
+	processed, err = store.IsLinearIssueProcessed("abc-123-def")
+	if err != nil {
+		t.Fatalf("IsLinearIssueProcessed after unmark failed: %v", err)
+	}
+	if processed {
+		t.Error("issue should not be processed after unmarking")
+	}
+
+	// Unmark non-existent issue should not error
+	if err := store.UnmarkLinearIssueProcessed("nonexistent-id"); err != nil {
+		t.Fatalf("UnmarkLinearIssueProcessed for non-existent issue failed: %v", err)
+	}
+}
+
+// GH-1351: Test Linear processed issues purge.
+func TestStateStore_PurgeOldLinearProcessedIssues(t *testing.T) {
+	store := newTestStateStore(t)
+
+	// Mark some issues
+	for i := 1; i <= 5; i++ {
+		id := "linear-issue-" + string(rune('a'+i-1))
+		if err := store.MarkLinearIssueProcessed(id, "success"); err != nil {
+			t.Fatalf("MarkLinearIssueProcessed(%s) failed: %v", id, err)
+		}
+	}
+
+	// Purge older than 0 (all should be purged)
+	purged, err := store.PurgeOldLinearProcessedIssues(0)
+	if err != nil {
+		t.Fatalf("PurgeOldLinearProcessedIssues failed: %v", err)
+	}
+	if purged != 5 {
+		t.Errorf("purged = %d, want 5", purged)
+	}
+
+	all, _ := store.LoadLinearProcessedIssues()
+	if len(all) != 0 {
+		t.Errorf("got %d after purge, want 0", len(all))
+	}
+}
+
+// GH-1351: Test Linear and GitHub processed stores are independent.
+func TestStateStore_LinearAndGitHubProcessedIndependent(t *testing.T) {
+	store := newTestStateStore(t)
+
+	// Mark a GitHub issue (integer ID)
+	if err := store.MarkIssueProcessed(100, "success"); err != nil {
+		t.Fatalf("MarkIssueProcessed failed: %v", err)
+	}
+
+	// Mark a Linear issue (string ID)
+	if err := store.MarkLinearIssueProcessed("linear-abc-123", "success"); err != nil {
+		t.Fatalf("MarkLinearIssueProcessed failed: %v", err)
+	}
+
+	// Verify both are independent
+	ghProcessed, _ := store.LoadProcessedIssues()
+	linearProcessed, _ := store.LoadLinearProcessedIssues()
+
+	if len(ghProcessed) != 1 {
+		t.Errorf("GitHub processed = %d, want 1", len(ghProcessed))
+	}
+	if len(linearProcessed) != 1 {
+		t.Errorf("Linear processed = %d, want 1", len(linearProcessed))
+	}
+
+	if !ghProcessed[100] {
+		t.Error("GitHub issue 100 should be in processed map")
+	}
+	if !linearProcessed["linear-abc-123"] {
+		t.Error("Linear issue linear-abc-123 should be in processed map")
+	}
+}

@@ -416,3 +416,55 @@ func (c *Client) GetLabelByName(ctx context.Context, teamID, labelName string) (
 
 	return result.IssueLabels.Nodes[0].ID, nil
 }
+
+// CreateLabel creates a new label in a team and returns its ID.
+// GH-1351: Used to auto-create pilot status labels (pilot-in-progress, pilot-done, pilot-failed).
+func (c *Client) CreateLabel(ctx context.Context, teamID, labelName, color string) (string, error) {
+	mutation := `
+		mutation CreateLabel($teamId: String!, $name: String!, $color: String!) {
+			issueLabelCreate(input: { teamId: $teamId, name: $name, color: $color }) {
+				success
+				issueLabel {
+					id
+					name
+				}
+			}
+		}
+	`
+
+	var result struct {
+		IssueLabelCreate struct {
+			Success    bool `json:"success"`
+			IssueLabel struct {
+				ID   string `json:"id"`
+				Name string `json:"name"`
+			} `json:"issueLabel"`
+		} `json:"issueLabelCreate"`
+	}
+
+	if err := c.Execute(ctx, mutation, map[string]interface{}{
+		"teamId": teamID,
+		"name":   labelName,
+		"color":  color,
+	}, &result); err != nil {
+		return "", err
+	}
+
+	if !result.IssueLabelCreate.Success {
+		return "", fmt.Errorf("failed to create label %q in team %s", labelName, teamID)
+	}
+
+	return result.IssueLabelCreate.IssueLabel.ID, nil
+}
+
+// GetOrCreateLabel fetches a label ID by name, creating it if it doesn't exist.
+// GH-1351: Ensures pilot status labels exist for deduplication.
+func (c *Client) GetOrCreateLabel(ctx context.Context, teamID, labelName, color string) (string, error) {
+	id, err := c.GetLabelByName(ctx, teamID, labelName)
+	if err == nil {
+		return id, nil
+	}
+
+	// Label doesn't exist, create it
+	return c.CreateLabel(ctx, teamID, labelName, color)
+}
