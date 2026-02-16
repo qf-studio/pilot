@@ -259,3 +259,202 @@ func TestExtractPRNumber(t *testing.T) {
 		})
 	}
 }
+
+// GH-1358: Tests for parallel execution pattern
+
+func TestNewPollerWithMaxConcurrent(t *testing.T) {
+	client := NewClient(testutil.FakeAzureDevOpsPAT, "org", "project")
+
+	// Test default maxConcurrent
+	poller := NewPoller(client, "pilot", 30*time.Second)
+	if poller.maxConcurrent != 2 {
+		t.Errorf("default maxConcurrent = %d, want 2", poller.maxConcurrent)
+	}
+
+	// Test custom maxConcurrent
+	poller = NewPoller(client, "pilot", 30*time.Second, WithMaxConcurrent(5))
+	if poller.maxConcurrent != 5 {
+		t.Errorf("custom maxConcurrent = %d, want 5", poller.maxConcurrent)
+	}
+
+	// Test semaphore is created with correct capacity
+	if cap(poller.semaphore) != 5 {
+		t.Errorf("semaphore capacity = %d, want 5", cap(poller.semaphore))
+	}
+
+	// Test minimum maxConcurrent enforcement - WithMaxConcurrent enforces minimum of 1
+	poller = NewPoller(client, "pilot", 30*time.Second, WithMaxConcurrent(0))
+	if poller.maxConcurrent != 1 {
+		t.Errorf("zero maxConcurrent should become 1, got %d", poller.maxConcurrent)
+	}
+
+	poller = NewPoller(client, "pilot", 30*time.Second, WithMaxConcurrent(-1))
+	if poller.maxConcurrent != 1 {
+		t.Errorf("negative maxConcurrent should become 1, got %d", poller.maxConcurrent)
+	}
+}
+
+func TestPoller_ClearProcessed(t *testing.T) {
+	client := NewClient(testutil.FakeAzureDevOpsPAT, "org", "project")
+	poller := NewPoller(client, "pilot", 30*time.Second)
+
+	// Mark a work item as processed
+	poller.markProcessed(42)
+	if !poller.IsProcessed(42) {
+		t.Error("expected work item 42 to be processed after marking")
+	}
+
+	// Clear the processed flag
+	poller.ClearProcessed(42)
+	if poller.IsProcessed(42) {
+		t.Error("expected work item 42 to not be processed after clearing")
+	}
+
+	// Clearing a non-existent ID should not panic
+	poller.ClearProcessed(999)
+}
+
+func TestPoller_DrainAndWaitForActive(t *testing.T) {
+	client := NewClient(testutil.FakeAzureDevOpsPAT, "org", "project")
+	poller := NewPoller(client, "pilot", 30*time.Second, WithMaxConcurrent(2))
+
+	// Test that WaitForActive sets stopping flag
+	poller.WaitForActive()
+	if !poller.stopping.Load() {
+		t.Error("expected stopping flag to be true after WaitForActive")
+	}
+
+	// Reset for next test
+	poller.stopping.Store(false)
+
+	// Test that Drain sets stopping flag
+	poller.Drain()
+	if !poller.stopping.Load() {
+		t.Error("expected stopping flag to be true after Drain")
+	}
+}
+
+func TestPoller_hasStatusTag(t *testing.T) {
+	client := NewClient(testutil.FakeAzureDevOpsPAT, "org", "project")
+	poller := NewPoller(client, "pilot", 30*time.Second)
+
+	tests := []struct {
+		name string
+		tags string
+		want bool
+	}{
+		{
+			name: "no status tags",
+			tags: "pilot; bug",
+			want: false,
+		},
+		{
+			name: "in-progress tag",
+			tags: "pilot; " + TagInProgress,
+			want: true,
+		},
+		{
+			name: "done tag",
+			tags: "pilot; " + TagDone,
+			want: true,
+		},
+		{
+			name: "failed tag",
+			tags: "pilot; " + TagFailed,
+			want: true,
+		},
+		{
+			name: "empty tags",
+			tags: "",
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			wi := &WorkItem{
+				ID: 1,
+				Fields: map[string]interface{}{
+					"System.Tags": tt.tags,
+				},
+			}
+			got := poller.hasStatusTag(wi)
+			if got != tt.want {
+				t.Errorf("hasStatusTag() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// MockProcessedStore implements ProcessedStore for testing
+type MockProcessedStore struct {
+	processed map[int]bool
+}
+
+func NewMockProcessedStore() *MockProcessedStore {
+	return &MockProcessedStore{
+		processed: make(map[int]bool),
+	}
+}
+
+func (m *MockProcessedStore) MarkAzureDevOpsWorkItemProcessed(workItemID int, result string) error {
+	m.processed[workItemID] = true
+	return nil
+}
+
+func (m *MockProcessedStore) UnmarkAzureDevOpsWorkItemProcessed(workItemID int) error {
+	delete(m.processed, workItemID)
+	return nil
+}
+
+func (m *MockProcessedStore) IsAzureDevOpsWorkItemProcessed(workItemID int) (bool, error) {
+	return m.processed[workItemID], nil
+}
+
+func (m *MockProcessedStore) LoadAzureDevOpsProcessedWorkItems() (map[int]bool, error) {
+	result := make(map[int]bool)
+	for k, v := range m.processed {
+		result[k] = v
+	}
+	return result, nil
+}
+
+func TestPollerWithProcessedStore(t *testing.T) {
+	client := NewClient(testutil.FakeAzureDevOpsPAT, "org", "project")
+	store := NewMockProcessedStore()
+
+	// Pre-populate store
+	store.processed[100] = true
+	store.processed[200] = true
+
+	poller := NewPoller(client, "pilot", 30*time.Second, WithProcessedStore(store))
+
+	// Verify processed work items were loaded from store
+	if poller.ProcessedCount() != 2 {
+		t.Errorf("expected 2 processed work items loaded, got %d", poller.ProcessedCount())
+	}
+
+	if !poller.IsProcessed(100) {
+		t.Error("expected work item 100 to be processed (loaded from store)")
+	}
+
+	if !poller.IsProcessed(200) {
+		t.Error("expected work item 200 to be processed (loaded from store)")
+	}
+
+	// Mark a new work item as processed
+	poller.markProcessed(300)
+
+	// Verify it was persisted to store
+	if !store.processed[300] {
+		t.Error("expected work item 300 to be persisted to store")
+	}
+
+	// Clear a processed work item
+	poller.ClearProcessed(100)
+
+	// Verify it was removed from store
+	if store.processed[100] {
+		t.Error("expected work item 100 to be removed from store")
+	}
+}

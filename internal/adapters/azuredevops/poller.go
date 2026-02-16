@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/alekspetrov/pilot/internal/logging"
@@ -30,6 +31,15 @@ type WorkItemResult struct {
 	HeadSHA    string // Head commit SHA of the PR
 	BranchName string // Head branch name (e.g. "pilot/GH-123")
 	Error      error
+}
+
+// ProcessedStore persists which Azure DevOps work items have been processed across restarts.
+// GH-1358: Azure DevOps uses integer work item IDs.
+type ProcessedStore interface {
+	MarkAzureDevOpsWorkItemProcessed(workItemID int, result string) error
+	UnmarkAzureDevOpsWorkItemProcessed(workItemID int) error
+	IsAzureDevOpsWorkItemProcessed(workItemID int) (bool, error)
+	LoadAzureDevOpsProcessedWorkItems() (map[int]bool, error)
 }
 
 // Poller polls Azure DevOps for work items with a specific tag
@@ -56,6 +66,16 @@ type Poller struct {
 	waitForMerge   bool
 	prTimeout      time.Duration
 	prPollInterval time.Duration
+
+	// GH-1358: Persistent processed store (optional)
+	processedStore ProcessedStore
+
+	// GH-1358: Parallel execution configuration
+	maxConcurrent int
+	semaphore     chan struct{}
+	activeWg      sync.WaitGroup
+	stopping      atomic.Bool
+	wgMu          sync.Mutex // protects stopping + activeWg Add/Wait coordination
 }
 
 // PollerOption configures a Poller
@@ -112,6 +132,25 @@ func WithWorkItemTypes(types []string) PollerOption {
 	}
 }
 
+// WithProcessedStore sets the persistent store for processed work item tracking.
+// GH-1358: On startup, processed work items are loaded from the store to prevent re-processing after hot upgrade.
+func WithProcessedStore(store ProcessedStore) PollerOption {
+	return func(p *Poller) {
+		p.processedStore = store
+	}
+}
+
+// WithMaxConcurrent sets the maximum number of parallel work item executions.
+// GH-1358: Ported from GitHub poller parallel execution pattern.
+func WithMaxConcurrent(n int) PollerOption {
+	return func(p *Poller) {
+		if n < 1 {
+			n = 1
+		}
+		p.maxConcurrent = n
+	}
+}
+
 // NewPoller creates a new Azure DevOps work item poller
 func NewPoller(client *Client, tag string, interval time.Duration, opts ...PollerOption) *Poller {
 	p := &Poller{
@@ -131,6 +170,27 @@ func NewPoller(client *Client, tag string, interval time.Duration, opts ...Polle
 		opt(p)
 	}
 
+	// GH-1358: Load processed work items from persistent store if available
+	if p.processedStore != nil {
+		loaded, err := p.processedStore.LoadAzureDevOpsProcessedWorkItems()
+		if err != nil {
+			p.logger.Warn("Failed to load processed work items from store", slog.Any("error", err))
+		} else if len(loaded) > 0 {
+			p.mu.Lock()
+			for id := range loaded {
+				p.processed[id] = true
+			}
+			p.mu.Unlock()
+			p.logger.Info("Loaded processed work items from store", slog.Int("count", len(loaded)))
+		}
+	}
+
+	// GH-1358: Initialize parallel semaphore
+	if p.maxConcurrent < 1 {
+		p.maxConcurrent = 2 // default
+	}
+	p.semaphore = make(chan struct{}, p.maxConcurrent)
+
 	// Create merge waiter if in sequential mode
 	if p.executionMode == ExecutionModeSequential && p.waitForMerge {
 		p.mergeWaiter = NewMergeWaiter(client, &MergeWaiterConfig{
@@ -148,6 +208,7 @@ func (p *Poller) Start(ctx context.Context) {
 		slog.String("tag", p.tag),
 		slog.Duration("interval", p.interval),
 		slog.String("mode", string(p.executionMode)),
+		slog.Int("max_concurrent", p.maxConcurrent),
 	)
 
 	if p.executionMode == ExecutionModeSequential {
@@ -157,7 +218,7 @@ func (p *Poller) Start(ctx context.Context) {
 	}
 }
 
-// startParallel runs the legacy parallel execution mode
+// startParallel runs the parallel execution mode with goroutine dispatch
 func (p *Poller) startParallel(ctx context.Context) {
 	// Do an initial check immediately
 	p.checkForNewWorkItems(ctx)
@@ -168,6 +229,11 @@ func (p *Poller) startParallel(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
+			p.logger.Info("Azure DevOps poller stopping, waiting for active tasks...")
+			p.wgMu.Lock()
+			p.stopping.Store(true)
+			p.wgMu.Unlock()
+			p.activeWg.Wait()
 			p.logger.Info("Azure DevOps poller stopped")
 			return
 		case <-ticker.C:
@@ -385,7 +451,7 @@ func (p *Poller) processWorkItemSequential(ctx context.Context, wi *WorkItem) (*
 	return nil, fmt.Errorf("no work item handler configured")
 }
 
-// checkForNewWorkItems fetches work items and processes new ones (parallel mode)
+// checkForNewWorkItems fetches work items and dispatches them for parallel execution
 func (p *Poller) checkForNewWorkItems(ctx context.Context) {
 	workItems, err := p.client.ListWorkItems(ctx, &ListWorkItemsOptions{
 		Tags:          []string{p.tag},
@@ -397,6 +463,11 @@ func (p *Poller) checkForNewWorkItems(ctx context.Context) {
 		return
 	}
 
+	// Sort by creation date (oldest first)
+	sort.Slice(workItems, func(i, j int) bool {
+		return workItems[i].GetCreatedDate().Before(workItems[j].GetCreatedDate())
+	})
+
 	for _, wi := range workItems {
 		// Skip if already processed
 		p.mu.RLock()
@@ -407,31 +478,82 @@ func (p *Poller) checkForNewWorkItems(ctx context.Context) {
 			continue
 		}
 
-		// Skip if already in progress or done
-		if HasTag(wi, TagInProgress) || HasTag(wi, TagDone) {
+		// Skip if has in-progress, done, or failed tag
+		if p.hasStatusTag(wi) {
 			p.markProcessed(wi.ID)
 			continue
 		}
 
-		// Process the work item
-		p.logger.Info("Found new work item",
+		// Mark processed immediately to prevent duplicate dispatch on next tick
+		p.markProcessed(wi.ID)
+
+		// Acquire semaphore slot (blocks if max_concurrent reached)
+		select {
+		case <-ctx.Done():
+			return
+		case p.semaphore <- struct{}{}:
+		}
+
+		p.logger.Info("Dispatching Azure DevOps work item for parallel execution",
 			slog.Int("id", wi.ID),
 			slog.String("title", wi.GetTitle()),
 		)
 
-		if p.onWorkItem != nil {
-			if err := p.onWorkItem(ctx, wi); err != nil {
-				p.logger.Error("Failed to process work item",
-					slog.Int("id", wi.ID),
-					slog.Any("error", err),
-				)
-				// Don't mark as processed so we can retry
-				continue
-			}
+		// Use mutex to coordinate stopping flag check with WaitGroup Add
+		p.wgMu.Lock()
+		if p.stopping.Load() {
+			p.wgMu.Unlock()
+			<-p.semaphore // release slot we acquired
+			return
 		}
+		p.activeWg.Add(1)
+		p.wgMu.Unlock()
 
-		p.markProcessed(wi.ID)
+		go p.processWorkItemAsync(ctx, wi)
 	}
+}
+
+// processWorkItemAsync handles a single work item in a goroutine.
+// GH-1358: Extracted to enable parallel execution.
+func (p *Poller) processWorkItemAsync(ctx context.Context, wi *WorkItem) {
+	defer p.activeWg.Done()
+	defer func() { <-p.semaphore }() // release slot
+
+	if p.onWorkItem == nil {
+		return
+	}
+
+	// Add in-progress tag
+	if err := p.client.AddWorkItemTag(ctx, wi.ID, TagInProgress); err != nil {
+		p.logger.Warn("Failed to add in-progress tag",
+			slog.Int("id", wi.ID),
+			slog.Any("error", err),
+		)
+	}
+
+	err := p.onWorkItem(ctx, wi)
+	if err != nil {
+		p.logger.Error("Failed to process work item",
+			slog.Int("id", wi.ID),
+			slog.Any("error", err),
+		)
+		// Remove in-progress tag, add failed tag
+		_ = p.client.RemoveWorkItemTag(ctx, wi.ID, TagInProgress)
+		_ = p.client.AddWorkItemTag(ctx, wi.ID, TagFailed)
+		return
+	}
+
+	// Remove in-progress tag
+	_ = p.client.RemoveWorkItemTag(ctx, wi.ID, TagInProgress)
+
+	// Add done tag on success
+	_ = p.client.AddWorkItemTag(ctx, wi.ID, TagDone)
+}
+
+func (p *Poller) hasStatusTag(wi *WorkItem) bool {
+	return HasTag(wi, TagInProgress) ||
+		HasTag(wi, TagDone) ||
+		HasTag(wi, TagFailed)
 }
 
 // markProcessed marks a work item as processed
@@ -439,6 +561,13 @@ func (p *Poller) markProcessed(id int) {
 	p.mu.Lock()
 	p.processed[id] = true
 	p.mu.Unlock()
+
+	// GH-1358: Persist to store if available
+	if p.processedStore != nil {
+		if err := p.processedStore.MarkAzureDevOpsWorkItemProcessed(id, "processed"); err != nil {
+			p.logger.Warn("Failed to persist processed work item", slog.Int("id", id), slog.Any("error", err))
+		}
+	}
 }
 
 // IsProcessed checks if a work item has been processed
@@ -460,6 +589,46 @@ func (p *Poller) Reset() {
 	p.mu.Lock()
 	p.processed = make(map[int]bool)
 	p.mu.Unlock()
+}
+
+// ClearProcessed removes a single work item from the processed map.
+// GH-1358: Used when pilot-failed tag is removed to allow the work item to be retried.
+func (p *Poller) ClearProcessed(id int) {
+	p.mu.Lock()
+	delete(p.processed, id)
+	p.mu.Unlock()
+
+	// Also clear from persistent store
+	if p.processedStore != nil {
+		if err := p.processedStore.UnmarkAzureDevOpsWorkItemProcessed(id); err != nil {
+			p.logger.Warn("Failed to unmark work item in store",
+				slog.Int("id", id),
+				slog.Any("error", err))
+		}
+	}
+
+	p.logger.Debug("Cleared work item from processed map",
+		slog.Int("id", id))
+}
+
+// Drain stops accepting new work items and waits for active executions to finish.
+// GH-1358: Used during hot upgrade to let in-flight work complete before process restart.
+func (p *Poller) Drain() {
+	p.logger.Info("Draining poller — no new work items will be accepted")
+	p.wgMu.Lock()
+	p.stopping.Store(true)
+	p.wgMu.Unlock()
+	p.activeWg.Wait()
+	p.logger.Info("Poller drained — all active tasks completed")
+}
+
+// WaitForActive waits for all active parallel goroutines to finish.
+// GH-1358: Used in tests to synchronize after checkForNewWorkItems.
+func (p *Poller) WaitForActive() {
+	p.wgMu.Lock()
+	p.stopping.Store(true)
+	p.wgMu.Unlock()
+	p.activeWg.Wait()
 }
 
 // ExtractPRNumber extracts PR ID from an Azure DevOps PR URL

@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/alekspetrov/pilot/internal/logging"
@@ -32,6 +33,15 @@ type IssueResult struct {
 	Error      error
 }
 
+// ProcessedStore persists which GitLab issues have been processed across restarts.
+// GH-1358: GitLab uses integer IDs like GitHub.
+type ProcessedStore interface {
+	MarkGitLabIssueProcessed(issueNumber int, result string) error
+	UnmarkGitLabIssueProcessed(issueNumber int) error
+	IsGitLabIssueProcessed(issueNumber int) (bool, error)
+	LoadGitLabProcessedIssues() (map[int]bool, error)
+}
+
 // Poller polls GitLab for issues with a specific label
 type Poller struct {
 	client    *Client
@@ -53,6 +63,16 @@ type Poller struct {
 	waitForMerge   bool
 	mrTimeout      time.Duration
 	mrPollInterval time.Duration
+
+	// GH-1358: Persistent processed store (optional)
+	processedStore ProcessedStore
+
+	// GH-1358: Parallel execution configuration
+	maxConcurrent int
+	semaphore     chan struct{}
+	activeWg      sync.WaitGroup
+	stopping      atomic.Bool
+	wgMu          sync.Mutex // protects stopping + activeWg Add/Wait coordination
 }
 
 // PollerOption configures a Poller
@@ -102,6 +122,25 @@ func WithOnMRCreated(fn func(mrIID int, mrURL string, issueIID int, headSHA stri
 	}
 }
 
+// WithProcessedStore sets the persistent store for processed issue tracking.
+// GH-1358: On startup, processed issues are loaded from the store to prevent re-processing after hot upgrade.
+func WithProcessedStore(store ProcessedStore) PollerOption {
+	return func(p *Poller) {
+		p.processedStore = store
+	}
+}
+
+// WithMaxConcurrent sets the maximum number of parallel issue executions.
+// GH-1358: Ported from GitHub poller parallel execution pattern.
+func WithMaxConcurrent(n int) PollerOption {
+	return func(p *Poller) {
+		if n < 1 {
+			n = 1
+		}
+		p.maxConcurrent = n
+	}
+}
+
 // NewPoller creates a new GitLab issue poller
 func NewPoller(client *Client, label string, interval time.Duration, opts ...PollerOption) *Poller {
 	p := &Poller{
@@ -120,6 +159,27 @@ func NewPoller(client *Client, label string, interval time.Duration, opts ...Pol
 		opt(p)
 	}
 
+	// GH-1358: Load processed issues from persistent store if available
+	if p.processedStore != nil {
+		loaded, err := p.processedStore.LoadGitLabProcessedIssues()
+		if err != nil {
+			p.logger.Warn("Failed to load processed issues from store", slog.Any("error", err))
+		} else if len(loaded) > 0 {
+			p.mu.Lock()
+			for id := range loaded {
+				p.processed[id] = true
+			}
+			p.mu.Unlock()
+			p.logger.Info("Loaded processed issues from store", slog.Int("count", len(loaded)))
+		}
+	}
+
+	// GH-1358: Initialize parallel semaphore
+	if p.maxConcurrent < 1 {
+		p.maxConcurrent = 2 // default
+	}
+	p.semaphore = make(chan struct{}, p.maxConcurrent)
+
 	// Create merge waiter if in sequential mode
 	if p.executionMode == ExecutionModeSequential && p.waitForMerge {
 		p.mergeWaiter = NewMergeWaiter(client, &MergeWaiterConfig{
@@ -137,6 +197,7 @@ func (p *Poller) Start(ctx context.Context) {
 		slog.String("label", p.label),
 		slog.Duration("interval", p.interval),
 		slog.String("mode", string(p.executionMode)),
+		slog.Int("max_concurrent", p.maxConcurrent),
 	)
 
 	if p.executionMode == ExecutionModeSequential {
@@ -146,7 +207,7 @@ func (p *Poller) Start(ctx context.Context) {
 	}
 }
 
-// startParallel runs the legacy parallel execution mode
+// startParallel runs the parallel execution mode with goroutine dispatch
 func (p *Poller) startParallel(ctx context.Context) {
 	// Do an initial check immediately
 	p.checkForNewIssues(ctx)
@@ -157,6 +218,11 @@ func (p *Poller) startParallel(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
+			p.logger.Info("GitLab poller stopping, waiting for active tasks...")
+			p.wgMu.Lock()
+			p.stopping.Store(true)
+			p.wgMu.Unlock()
+			p.activeWg.Wait()
 			p.logger.Info("GitLab poller stopped")
 			return
 		case <-ticker.C:
@@ -375,18 +441,23 @@ func (p *Poller) processIssueSequential(ctx context.Context, issue *Issue) (*Iss
 	return nil, fmt.Errorf("no issue handler configured")
 }
 
-// checkForNewIssues fetches issues and processes new ones (parallel mode)
+// checkForNewIssues fetches issues and dispatches them for parallel execution
 func (p *Poller) checkForNewIssues(ctx context.Context) {
 	issues, err := p.client.ListIssues(ctx, &ListIssuesOptions{
 		Labels:  []string{p.label},
 		State:   StateOpened,
-		Sort:    "desc",
-		OrderBy: "updated_at",
+		Sort:    "asc", // Oldest first
+		OrderBy: "created_at",
 	})
 	if err != nil {
 		p.logger.Warn("Failed to fetch issues", slog.Any("error", err))
 		return
 	}
+
+	// Sort by creation date (oldest first)
+	sort.Slice(issues, func(i, j int) bool {
+		return issues[i].CreatedAt.Before(issues[j].CreatedAt)
+	})
 
 	for _, issue := range issues {
 		// Skip if already processed
@@ -398,31 +469,82 @@ func (p *Poller) checkForNewIssues(ctx context.Context) {
 			continue
 		}
 
-		// Skip if already in progress or done
-		if HasLabel(issue, LabelInProgress) || HasLabel(issue, LabelDone) {
+		// Skip if has in-progress, done, or failed label
+		if p.hasStatusLabel(issue) {
 			p.markProcessed(issue.IID)
 			continue
 		}
 
-		// Process the issue
-		p.logger.Info("Found new issue",
+		// Mark processed immediately to prevent duplicate dispatch on next tick
+		p.markProcessed(issue.IID)
+
+		// Acquire semaphore slot (blocks if max_concurrent reached)
+		select {
+		case <-ctx.Done():
+			return
+		case p.semaphore <- struct{}{}:
+		}
+
+		p.logger.Info("Dispatching GitLab issue for parallel execution",
 			slog.Int("iid", issue.IID),
 			slog.String("title", issue.Title),
 		)
 
-		if p.onIssue != nil {
-			if err := p.onIssue(ctx, issue); err != nil {
-				p.logger.Error("Failed to process issue",
-					slog.Int("iid", issue.IID),
-					slog.Any("error", err),
-				)
-				// Don't mark as processed so we can retry
-				continue
-			}
+		// Use mutex to coordinate stopping flag check with WaitGroup Add
+		p.wgMu.Lock()
+		if p.stopping.Load() {
+			p.wgMu.Unlock()
+			<-p.semaphore // release slot we acquired
+			return
 		}
+		p.activeWg.Add(1)
+		p.wgMu.Unlock()
 
-		p.markProcessed(issue.IID)
+		go p.processIssueAsync(ctx, issue)
 	}
+}
+
+// processIssueAsync handles a single issue in a goroutine.
+// GH-1358: Extracted to enable parallel execution.
+func (p *Poller) processIssueAsync(ctx context.Context, issue *Issue) {
+	defer p.activeWg.Done()
+	defer func() { <-p.semaphore }() // release slot
+
+	if p.onIssue == nil {
+		return
+	}
+
+	// Add in-progress label
+	if err := p.client.AddIssueLabels(ctx, issue.IID, []string{LabelInProgress}); err != nil {
+		p.logger.Warn("Failed to add in-progress label",
+			slog.Int("iid", issue.IID),
+			slog.Any("error", err),
+		)
+	}
+
+	err := p.onIssue(ctx, issue)
+	if err != nil {
+		p.logger.Error("Failed to process issue",
+			slog.Int("iid", issue.IID),
+			slog.Any("error", err),
+		)
+		// Remove in-progress label, add failed label
+		_ = p.client.RemoveIssueLabel(ctx, issue.IID, LabelInProgress)
+		_ = p.client.AddIssueLabels(ctx, issue.IID, []string{LabelFailed})
+		return
+	}
+
+	// Remove in-progress label
+	_ = p.client.RemoveIssueLabel(ctx, issue.IID, LabelInProgress)
+
+	// Add done label on success
+	_ = p.client.AddIssueLabels(ctx, issue.IID, []string{LabelDone})
+}
+
+func (p *Poller) hasStatusLabel(issue *Issue) bool {
+	return HasLabel(issue, LabelInProgress) ||
+		HasLabel(issue, LabelDone) ||
+		HasLabel(issue, LabelFailed)
 }
 
 // markProcessed marks an issue as processed
@@ -430,6 +552,13 @@ func (p *Poller) markProcessed(iid int) {
 	p.mu.Lock()
 	p.processed[iid] = true
 	p.mu.Unlock()
+
+	// GH-1358: Persist to store if available
+	if p.processedStore != nil {
+		if err := p.processedStore.MarkGitLabIssueProcessed(iid, "processed"); err != nil {
+			p.logger.Warn("Failed to persist processed issue", slog.Int("iid", iid), slog.Any("error", err))
+		}
+	}
 }
 
 // IsProcessed checks if an issue has been processed
@@ -451,6 +580,46 @@ func (p *Poller) Reset() {
 	p.mu.Lock()
 	p.processed = make(map[int]bool)
 	p.mu.Unlock()
+}
+
+// ClearProcessed removes a single issue from the processed map.
+// GH-1358: Used when pilot-failed label is removed to allow the issue to be retried.
+func (p *Poller) ClearProcessed(iid int) {
+	p.mu.Lock()
+	delete(p.processed, iid)
+	p.mu.Unlock()
+
+	// Also clear from persistent store
+	if p.processedStore != nil {
+		if err := p.processedStore.UnmarkGitLabIssueProcessed(iid); err != nil {
+			p.logger.Warn("Failed to unmark issue in store",
+				slog.Int("iid", iid),
+				slog.Any("error", err))
+		}
+	}
+
+	p.logger.Debug("Cleared issue from processed map",
+		slog.Int("iid", iid))
+}
+
+// Drain stops accepting new issues and waits for active executions to finish.
+// GH-1358: Used during hot upgrade to let in-flight work complete before process restart.
+func (p *Poller) Drain() {
+	p.logger.Info("Draining poller — no new issues will be accepted")
+	p.wgMu.Lock()
+	p.stopping.Store(true)
+	p.wgMu.Unlock()
+	p.activeWg.Wait()
+	p.logger.Info("Poller drained — all active tasks completed")
+}
+
+// WaitForActive waits for all active parallel goroutines to finish.
+// GH-1358: Used in tests to synchronize after checkForNewIssues.
+func (p *Poller) WaitForActive() {
+	p.wgMu.Lock()
+	p.stopping.Store(true)
+	p.wgMu.Unlock()
+	p.activeWg.Wait()
 }
 
 // ExtractMRNumber extracts MR IID from a GitLab MR URL
