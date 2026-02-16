@@ -643,6 +643,22 @@ func handleLinearIssueWithResult(ctx context.Context, cfg *config.Config, client
 					slog.Any("error", err),
 				)
 			}
+
+			// GH-1403: Best-effort state transition to Done
+			doneStateID, err := client.GetTeamDoneStateID(ctx, issue.Team.Key)
+			if err != nil {
+				logging.WithComponent("linear").Warn("failed to get done state ID for team",
+					slog.String("issue", issue.Identifier),
+					slog.String("team", issue.Team.Key),
+					slog.Any("error", err),
+				)
+			} else if err := client.UpdateIssueState(ctx, issue.ID, doneStateID); err != nil {
+				logging.WithComponent("linear").Warn("failed to transition issue to done state",
+					slog.String("issue", issue.Identifier),
+					slog.String("state_id", doneStateID),
+					slog.Any("error", err),
+				)
+			}
 		}
 	} else if result != nil {
 		comment := buildFailureComment(result)
@@ -871,6 +887,25 @@ func handleJiraIssueWithResult(ctx context.Context, cfg *config.Config, client *
 					slog.String("issue", issue.Key),
 					slog.Any("error", err),
 				)
+			}
+
+			// GH-1403: Best-effort state transition to Done
+			// Check config for explicit transition ID, fall back to name-based lookup
+			if cfg.Adapters.Jira.Transitions.Done != "" {
+				if err := client.TransitionIssue(ctx, issue.Key, cfg.Adapters.Jira.Transitions.Done); err != nil {
+					logging.WithComponent("jira").Warn("failed to transition issue to done state (explicit ID)",
+						slog.String("issue", issue.Key),
+						slog.String("transition_id", cfg.Adapters.Jira.Transitions.Done),
+						slog.Any("error", err),
+					)
+				}
+			} else {
+				if err := client.TransitionIssueTo(ctx, issue.Key, "Done"); err != nil {
+					logging.WithComponent("jira").Warn("failed to transition issue to done state (name lookup)",
+						slog.String("issue", issue.Key),
+						slog.Any("error", err),
+					)
+				}
 			}
 		}
 	} else if result != nil {
@@ -1134,6 +1169,14 @@ func handleAsanaTaskWithResult(ctx context.Context, cfg *config.Config, client *
 			comment := buildAsanaExecutionComment(result, branchName)
 			if _, err := client.AddComment(ctx, task.GID, comment); err != nil {
 				logging.WithComponent("asana").Warn("Failed to add comment",
+					slog.String("task", task.GID),
+					slog.Any("error", err),
+				)
+			}
+
+			// GH-1403: Best-effort task completion
+			if _, err := client.CompleteTask(ctx, task.GID); err != nil {
+				logging.WithComponent("asana").Warn("failed to complete task",
 					slog.String("task", task.GID),
 					slog.Any("error", err),
 				)
