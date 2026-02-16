@@ -14,10 +14,12 @@ import (
 
 // IssueResult is returned by the issue handler
 type IssueResult struct {
-	Success  bool
-	PRNumber int
-	PRURL    string
-	Error    error
+	Success    bool
+	PRNumber   int
+	PRURL      string
+	HeadSHA    string // Head commit SHA of the PR (GH-1361: for autopilot wiring)
+	BranchName string // Head branch name e.g. "pilot/APP-123" (GH-1361: for autopilot wiring)
+	Error      error
 }
 
 // ProcessedStore persists which Linear issues have been processed across restarts.

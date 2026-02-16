@@ -601,7 +601,8 @@ func handleLinearIssueWithResult(ctx context.Context, cfg *config.Config, client
 
 	// Build issue result
 	issueResult := &linear.IssueResult{
-		Success: execErr == nil && result != nil && result.Success,
+		Success:    execErr == nil && result != nil && result.Success,
+		BranchName: branchName, // GH-1361: always set branch for autopilot wiring
 	}
 	if result != nil {
 		if result.PRUrl != "" {
@@ -610,6 +611,7 @@ func handleLinearIssueWithResult(ctx context.Context, cfg *config.Config, client
 				issueResult.PRNumber = prNum
 			}
 		}
+		issueResult.HeadSHA = result.CommitSHA // GH-1361: for autopilot CI monitoring
 	}
 
 	// Add comment to Linear issue

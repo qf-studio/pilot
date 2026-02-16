@@ -814,7 +814,15 @@ Examples:
 					// Build poller options
 					gwLinearPollerOpts := []linear.PollerOption{
 						linear.WithOnLinearIssue(func(issueCtx context.Context, issue *linear.Issue) (*linear.IssueResult, error) {
-							return handleLinearIssueWithResult(issueCtx, cfg, linearClient, issue, projectPath, gwDispatcher, gwRunner, gwMonitor, gwProgram, gwAlertsEngine, gwEnforcer)
+							result, err := handleLinearIssueWithResult(issueCtx, cfg, linearClient, issue, projectPath, gwDispatcher, gwRunner, gwMonitor, gwProgram, gwAlertsEngine, gwEnforcer)
+
+							// GH-1361: Wire PR to autopilot for CI monitoring + auto-merge
+							if result != nil && result.PRNumber > 0 && gwAutopilotController != nil {
+								// issueNumber=0 because Linear issues don't have GitHub issue numbers
+								gwAutopilotController.OnPRCreated(result.PRNumber, result.PRURL, 0, result.HeadSHA, result.BranchName)
+							}
+
+							return result, err
 						}),
 					}
 
@@ -1927,12 +1935,29 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 				linear.WithOnLinearIssue(func(issueCtx context.Context, issue *linear.Issue) (*linear.IssueResult, error) {
 					// GH-1348: Resolve project path per-issue using workspace→project mapping
 					issueProjectPath := projectPath // fallback to default
-					if pilotProject := wsConfig.ResolvePilotProject(issue); pilotProject != "" {
+					pilotProject := wsConfig.ResolvePilotProject(issue)
+					if pilotProject != "" {
 						if proj := cfg.GetProjectByName(pilotProject); proj != nil {
 							issueProjectPath = proj.Path
 						}
 					}
-					return handleLinearIssueWithResult(issueCtx, cfg, linearClient, issue, issueProjectPath, dispatcher, runner, monitor, program, alertsEngine, enforcer)
+					result, err := handleLinearIssueWithResult(issueCtx, cfg, linearClient, issue, issueProjectPath, dispatcher, runner, monitor, program, alertsEngine, enforcer)
+
+					// GH-1361: Wire PR to autopilot for CI monitoring + auto-merge
+					if result != nil && result.PRNumber > 0 {
+						// Resolve which autopilot controller to use based on project
+						if pilotProject != "" {
+							if proj := cfg.GetProjectByName(pilotProject); proj != nil && proj.GitHub != nil {
+								repoFullName := fmt.Sprintf("%s/%s", proj.GitHub.Owner, proj.GitHub.Repo)
+								if controller, ok := autopilotControllers[repoFullName]; ok && controller != nil {
+									// issueNumber=0 because Linear issues don't have GitHub issue numbers
+									controller.OnPRCreated(result.PRNumber, result.PRURL, 0, result.HeadSHA, result.BranchName)
+								}
+							}
+						}
+					}
+
+					return result, err
 				}),
 			}
 
