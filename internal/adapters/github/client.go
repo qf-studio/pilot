@@ -567,6 +567,31 @@ func isNotFoundError(err error) bool {
 	return len(errStr) >= 21 && errStr[:21] == "API error (status 404"
 }
 
+// isUnprocessableError checks if error is a 422 unprocessable entity error
+func isUnprocessableError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := err.Error()
+	return len(errStr) >= 21 && errStr[:21] == "API error (status 422"
+}
+
+// DeleteBranch deletes a branch from the repository.
+// GitHub API: DELETE /repos/{owner}/{repo}/git/refs/heads/{branch}
+// Returns nil on success, or if the branch was already deleted (404/422).
+func (c *Client) DeleteBranch(ctx context.Context, owner, repo, branch string) error {
+	return WithRetryVoid(ctx, func() error {
+		path := fmt.Sprintf("/repos/%s/%s/git/refs/heads/%s", owner, repo, branch)
+		err := c.doRequest(ctx, http.MethodDelete, path, nil, nil)
+		// 404 = branch doesn't exist, 422 = branch already deleted
+		// Both are success cases for cleanup
+		if isNotFoundError(err) || isUnprocessableError(err) {
+			return nil
+		}
+		return err
+	}, DefaultRetryOptions())
+}
+
 // ListPullRequestReviews lists all reviews for a pull request
 func (c *Client) ListPullRequestReviews(ctx context.Context, owner, repo string, number int) ([]*PullRequestReview, error) {
 	path := fmt.Sprintf("/repos/%s/%s/pulls/%d/reviews", owner, repo, number)
