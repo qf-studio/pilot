@@ -38,6 +38,34 @@ type WorkspaceConfig struct {
 	Polling *PollingConfig `yaml:"polling,omitempty"`
 }
 
+// ResolvePilotProject returns the Pilot project name for an issue based on workspace config.
+// It matches by Linear project ID if available, otherwise falls back to the first mapped project.
+func (ws *WorkspaceConfig) ResolvePilotProject(issue *Issue) string {
+	// If Linear issue has a project, try to match by project ID
+	if issue.Project != nil {
+		for _, projectID := range ws.ProjectIDs {
+			if projectID == issue.Project.ID {
+				// Found a match - if we have projects mapped, use first one
+				if len(ws.Projects) > 0 {
+					return ws.Projects[0]
+				}
+			}
+		}
+	}
+
+	// If only one Pilot project mapped, use it
+	if len(ws.Projects) == 1 {
+		return ws.Projects[0]
+	}
+
+	// Return first project as fallback
+	if len(ws.Projects) > 0 {
+		return ws.Projects[0]
+	}
+
+	return ""
+}
+
 // GetWorkspaces returns all configured workspaces.
 // If workspaces array is set, returns it directly.
 // Otherwise, converts legacy single-workspace config to a workspace slice for backward compatibility.

@@ -317,3 +317,95 @@ func TestPriorityOrdering(t *testing.T) {
 		t.Error("PriorityNone should be 0")
 	}
 }
+
+func TestWorkspaceConfig_ResolvePilotProject(t *testing.T) {
+	tests := []struct {
+		name     string
+		config   *WorkspaceConfig
+		issue    *Issue
+		expected string
+	}{
+		{
+			name: "single project mapped",
+			config: &WorkspaceConfig{
+				Projects: []string{"aso-generator"},
+			},
+			issue:    &Issue{ID: "issue-1"},
+			expected: "aso-generator",
+		},
+		{
+			name: "multiple projects returns first",
+			config: &WorkspaceConfig{
+				Projects: []string{"pilot", "aso-generator"},
+			},
+			issue:    &Issue{ID: "issue-1"},
+			expected: "pilot",
+		},
+		{
+			name: "match by project ID",
+			config: &WorkspaceConfig{
+				ProjectIDs: []string{"proj-123", "proj-456"},
+				Projects:   []string{"aso-generator"},
+			},
+			issue: &Issue{
+				ID:      "issue-1",
+				Project: &Project{ID: "proj-123"},
+			},
+			expected: "aso-generator",
+		},
+		{
+			name: "project ID match with multiple pilot projects",
+			config: &WorkspaceConfig{
+				ProjectIDs: []string{"proj-aso"},
+				Projects:   []string{"aso-generator", "other-project"},
+			},
+			issue: &Issue{
+				ID:      "issue-1",
+				Project: &Project{ID: "proj-aso"},
+			},
+			expected: "aso-generator",
+		},
+		{
+			name: "project ID no match falls back to first project",
+			config: &WorkspaceConfig{
+				ProjectIDs: []string{"proj-123"},
+				Projects:   []string{"pilot"},
+			},
+			issue: &Issue{
+				ID:      "issue-1",
+				Project: &Project{ID: "proj-other"},
+			},
+			expected: "pilot",
+		},
+		{
+			name: "no projects mapped",
+			config: &WorkspaceConfig{
+				ProjectIDs: []string{},
+				Projects:   []string{},
+			},
+			issue:    &Issue{ID: "issue-1"},
+			expected: "",
+		},
+		{
+			name: "nil project in issue",
+			config: &WorkspaceConfig{
+				ProjectIDs: []string{"proj-123"},
+				Projects:   []string{"pilot"},
+			},
+			issue: &Issue{
+				ID:      "issue-1",
+				Project: nil,
+			},
+			expected: "pilot",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := tt.config.ResolvePilotProject(tt.issue)
+			if result != tt.expected {
+				t.Errorf("ResolvePilotProject() = %q, want %q", result, tt.expected)
+			}
+		})
+	}
+}

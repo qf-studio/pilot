@@ -1910,9 +1910,18 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 			}
 
 			linearClient := linear.NewClient(ws.APIKey)
+			// Capture workspace config for per-issue project resolution (GH-1348)
+			wsConfig := ws
 			linearPoller := linear.NewPoller(linearClient, ws, interval,
 				linear.WithOnLinearIssue(func(issueCtx context.Context, issue *linear.Issue) (*linear.IssueResult, error) {
-					return handleLinearIssueWithResult(issueCtx, cfg, linearClient, issue, projectPath, dispatcher, runner, monitor, program, alertsEngine, enforcer)
+					// GH-1348: Resolve project path per-issue using workspace→project mapping
+					issueProjectPath := projectPath // fallback to default
+					if pilotProject := wsConfig.ResolvePilotProject(issue); pilotProject != "" {
+						if proj := cfg.GetProjectByName(pilotProject); proj != nil {
+							issueProjectPath = proj.Path
+						}
+					}
+					return handleLinearIssueWithResult(issueCtx, cfg, linearClient, issue, issueProjectPath, dispatcher, runner, monitor, program, alertsEngine, enforcer)
 				}),
 			)
 

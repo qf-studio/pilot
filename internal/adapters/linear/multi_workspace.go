@@ -206,31 +206,10 @@ func (h *MultiWorkspaceHandler) ListWorkspaces() []string {
 	return names
 }
 
-// ResolvePilotProject returns the Pilot project name for an issue in a workspace
+// ResolvePilotProject returns the Pilot project name for an issue in a workspace.
+// Delegates to WorkspaceConfig.ResolvePilotProject for the actual resolution logic.
 func (ws *WorkspaceHandler) ResolvePilotProject(issue *Issue) string {
-	// If Linear issue has a project, try to match by project ID
-	if issue.Project != nil {
-		for _, projectID := range ws.config.ProjectIDs {
-			if projectID == issue.Project.ID {
-				// Found a match - if we have projects mapped, use first one
-				if len(ws.config.Projects) > 0 {
-					return ws.config.Projects[0]
-				}
-			}
-		}
-	}
-
-	// If only one Pilot project mapped, use it
-	if len(ws.config.Projects) == 1 {
-		return ws.config.Projects[0]
-	}
-
-	// Return first project as fallback
-	if len(ws.config.Projects) > 0 {
-		return ws.config.Projects[0]
-	}
-
-	return ""
+	return ws.config.ResolvePilotProject(issue)
 }
 
 // Config returns the workspace configuration
