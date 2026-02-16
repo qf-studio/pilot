@@ -2261,10 +2261,19 @@ The previous execution completed but made no code changes. This task requires ac
 			}
 			// Push branch
 			if err := git.Push(ctx, task.Branch); err != nil {
-				result.Success = false
-				result.Error = fmt.Sprintf("push failed: %v", err)
-				r.reportProgress(task.ID, "PR Failed", 100, result.Error)
-				return result, nil
+				// GH-1389: Worktree push may fail with chdir error even if data was already pushed.
+				// Check if branch exists on remote before declaring failure.
+				if git.RemoteBranchExists(ctx, task.Branch) {
+					log.Warn("Push reported error but branch exists on remote, continuing",
+						slog.Any("error", err),
+						slog.String("branch", task.Branch),
+					)
+				} else {
+					result.Success = false
+					result.Error = fmt.Sprintf("push failed: %v", err)
+					r.reportProgress(task.ID, "PR Failed", 100, result.Error)
+					return result, nil
+				}
 			}
 
 			// GH-457: Use actual pushed HEAD as CommitSHA source of truth.

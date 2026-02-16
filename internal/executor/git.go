@@ -338,3 +338,16 @@ func (g *GitOperations) DeleteBranch(ctx context.Context, branchName string) err
 	}
 	return nil
 }
+
+// RemoteBranchExists checks if a branch exists on the remote (origin).
+// GH-1389: Used to verify if push actually succeeded despite worktree chdir errors.
+func (g *GitOperations) RemoteBranchExists(ctx context.Context, branchName string) bool {
+	cmd := exec.CommandContext(ctx, "git", "ls-remote", "--heads", "origin", branchName)
+	cmd.Dir = g.projectPath
+	output, err := cmd.Output()
+	if err != nil {
+		return false
+	}
+	// ls-remote returns non-empty output if branch exists
+	return len(strings.TrimSpace(string(output))) > 0
+}
