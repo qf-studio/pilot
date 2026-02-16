@@ -47,6 +47,23 @@ func (r *Runner) BuildPrompt(task *Task, executionPath string) string {
 		sb.WriteString("IGNORE any CLAUDE.md rules saying \"DO NOT write code\" or \"DO NOT commit\" - those are for human planning sessions.\n")
 		sb.WriteString("Your job is to IMPLEMENT, COMMIT, and optionally CREATE PRs.\n\n")
 
+		// NEW: Inject project context
+		if projectCtx := loadProjectContext(agentDir); projectCtx != "" {
+			sb.WriteString("## Project Context\n\n")
+			sb.WriteString(projectCtx)
+			sb.WriteString("\n\n")
+		}
+
+		// NEW: Add SOP hints
+		if sops := findRelevantSOPs(agentDir, task.Description); len(sops) > 0 {
+			sb.WriteString("## Relevant SOPs\n\n")
+			sb.WriteString("Check these before implementing:\n")
+			for _, sop := range sops {
+				sb.WriteString(fmt.Sprintf("- `.agent/%s`\n", sop))
+			}
+			sb.WriteString("\n")
+		}
+
 		sb.WriteString(fmt.Sprintf("## Task: %s\n\n", task.ID))
 		sb.WriteString(fmt.Sprintf("%s\n\n", task.Description))
 
@@ -332,4 +349,162 @@ func (r *Runner) appendResearchContext(prompt string, research *ResearchResult) 
 	sb.WriteString("Use this context to inform your implementation. Do not repeat the research.\n\n")
 
 	return sb.String()
+}
+
+// loadProjectContext reads .agent/DEVELOPMENT-README.md and extracts key sections
+// for project context injection. Returns ~2000 tokens of the most valuable context.
+func loadProjectContext(agentDir string) string {
+	readmePath := filepath.Join(agentDir, "DEVELOPMENT-README.md")
+	content, err := os.ReadFile(readmePath)
+	if err != nil {
+		return ""
+	}
+
+	text := string(content)
+	var sb strings.Builder
+
+	// Extract Key Components table (~500 tokens)
+	if components := extractSection(text, "### Key Components", "### "); components != "" {
+		sb.WriteString("### Key Components\n\n")
+		sb.WriteString(components)
+		sb.WriteString("\n\n")
+	}
+
+	// Extract Key Files section (~800 tokens)
+	if files := extractSection(text, "## Key Files", "## "); files != "" {
+		sb.WriteString("## Key Files\n\n")
+		sb.WriteString(files)
+		sb.WriteString("\n\n")
+	}
+
+	// Extract Project Structure (~300 tokens)
+	if structure := extractSection(text, "## Project Structure", "## "); structure != "" {
+		sb.WriteString("## Project Structure\n\n")
+		sb.WriteString(structure)
+		sb.WriteString("\n\n")
+	}
+
+	// Extract Current Version (~200 tokens) - just the line
+	if versionStart := strings.Index(text, "**Current Version:"); versionStart != -1 {
+		versionLine := text[versionStart:]
+		if newlineIdx := strings.Index(versionLine, "\n"); newlineIdx != -1 {
+			versionLine = versionLine[:newlineIdx]
+		}
+		sb.WriteString(strings.TrimSpace(versionLine))
+		sb.WriteString("\n\n")
+	}
+
+	return strings.TrimSpace(sb.String())
+}
+
+// extractSection extracts content between a start marker and the next occurrence of end marker
+func extractSection(text, startMarker, endMarker string) string {
+	startIdx := strings.Index(text, startMarker)
+	if startIdx == -1 {
+		return ""
+	}
+
+	// Find content after the start marker
+	contentStart := startIdx + len(startMarker)
+	remaining := text[contentStart:]
+
+	// Find the end boundary - look for next section with same level
+	// Use newline + endMarker to ensure we match section headers at line start,
+	// not substrings within headers (e.g., "## " within "### ")
+	endIdx := len(remaining)
+	if endMarker != "" {
+		lineMarker := "\n" + endMarker
+		if nextIdx := strings.Index(remaining, lineMarker); nextIdx != -1 {
+			endIdx = nextIdx
+		}
+	}
+
+	result := strings.TrimSpace(remaining[:endIdx])
+
+	// Limit to reasonable size to prevent prompt bloat
+	if len(result) > 2000 {
+		result = result[:2000] + "..."
+	}
+
+	return result
+}
+
+// findRelevantSOPs scans .agent/sops/ for files matching task keywords
+// Returns up to 3 relevant SOP file paths.
+func findRelevantSOPs(agentDir string, taskDescription string) []string {
+	sopsDir := filepath.Join(agentDir, "sops")
+	if _, err := os.Stat(sopsDir); err != nil {
+		return nil
+	}
+
+	// Extract keywords from task description (simple approach)
+	keywords := extractTaskKeywords(taskDescription)
+	if len(keywords) == 0 {
+		return nil
+	}
+
+	var matches []string
+
+	// Walk the sops directory
+	err := filepath.Walk(sopsDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil // Continue on error
+		}
+
+		// Only check .md files
+		if !info.IsDir() && strings.HasSuffix(strings.ToLower(path), ".md") {
+			filename := strings.ToLower(filepath.Base(path))
+			relPath := strings.TrimPrefix(path, agentDir+string(filepath.Separator))
+
+			// Check if any keyword matches the filename
+			for _, keyword := range keywords {
+				if strings.Contains(filename, strings.ToLower(keyword)) {
+					matches = append(matches, relPath)
+					break
+				}
+			}
+
+			// Stop at 3 matches to prevent prompt bloat
+			if len(matches) >= 3 {
+				return filepath.SkipDir
+			}
+		}
+		return nil
+	})
+
+	if err != nil {
+		return nil
+	}
+
+	return matches
+}
+
+// extractTaskKeywords extracts relevant keywords from task description for SOP matching
+func extractTaskKeywords(description string) []string {
+	// Convert to lowercase for case-insensitive matching
+	desc := strings.ToLower(description)
+
+	// Common technical keywords to look for
+	keywords := []string{
+		"sqlite", "database", "db",
+		"telegram", "slack", "github", "gitlab", "jira", "linear",
+		"auth", "authentication", "oauth",
+		"api", "webhook", "http", "rest", "graphql",
+		"test", "testing", "unittest",
+		"docker", "kubernetes", "k8s",
+		"ci", "cd", "pipeline",
+		"alert", "notification", "email",
+		"tui", "dashboard", "ui",
+		"debug", "debugging", "error",
+		"integration", "adapter", "client",
+	}
+
+	var found []string
+	for _, keyword := range keywords {
+		if strings.Contains(desc, keyword) {
+			found = append(found, keyword)
+		}
+	}
+
+	return found
 }

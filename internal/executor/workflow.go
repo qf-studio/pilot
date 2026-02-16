@@ -41,11 +41,14 @@ const autonomousWorkflowInstructions = `## Autonomous Execution Workflow
 - Read the full task description
 - Identify acceptance criteria
 - Note any constraints mentioned
+- Read .agent/DEVELOPMENT-README.md for project context (key files, architecture)
+- Check .agent/sops/ for SOPs relevant to this task type
+- If task touches integrations, read the matching SOP in .agent/sops/integrations/
 
 **Don't**:
 - Start coding immediately
 - Skip reading requirements
-- Make assumptions
+- Ignore existing project documentation
 
 **Example signal**:
 ` + "```" + `pilot-signal

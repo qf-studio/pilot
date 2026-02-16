@@ -1,10 +1,30 @@
 {
   "hooks": {
-    "PreToolUse:Bash": {
-      "command": "/var/folders/_8/nnsxrdhn46x08pb886hrggv00000gn/T/pilot-hooks-520064683/pilot-bash-guard.sh"
-    },
-    "Stop": {
-      "command": "/var/folders/_8/nnsxrdhn46x08pb886hrggv00000gn/T/pilot-hooks-520064683/pilot-stop-gate.sh"
-    }
+    "PreToolUse": [
+      {
+        "matcher": {
+          "tools": [
+            "Bash"
+          ]
+        },
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/var/folders/_8/nnsxrdhn46x08pb886hrggv00000gn/T/pilot-hooks-2719011718/pilot-bash-guard.sh"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": {},
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/var/folders/_8/nnsxrdhn46x08pb886hrggv00000gn/T/pilot-hooks-2719011718/pilot-stop-gate.sh"
+          }
+        ]
+      }
+    ]
   }
 }
