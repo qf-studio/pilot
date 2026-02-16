@@ -259,6 +259,13 @@ type BackendConfig struct {
 	// Simplification contains code simplification settings (GH-995)
 	// When enabled, Pilot auto-simplifies code after implementation for clarity.
 	Simplification *SimplifyConfig `yaml:"simplification,omitempty"`
+
+	// PrePushLint enables lint checking before pushing to remote.
+	// When true (default), Pilot runs linter (golangci-lint for Go projects) after commit.
+	// If fixable issues are found, they are auto-fixed and re-committed.
+	// Unfixable issues are included in the execution result for self-review.
+	// GH-1376: Added to prevent lint-failure cascades
+	PrePushLint *bool `yaml:"pre_push_lint,omitempty"`
 }
 
 // ModelRoutingConfig controls which model to use based on task complexity.
@@ -478,10 +485,12 @@ type OpenCodeConfig struct {
 func DefaultBackendConfig() *BackendConfig {
 	autoCreatePR := true
 	detectEphemeral := true
+	prePushLint := true
 	return &BackendConfig{
 		Type:            "claude-code",
 		AutoCreatePR:    &autoCreatePR,
 		DetectEphemeral: &detectEphemeral,
+		PrePushLint:     &prePushLint,
 		ClaudeCode: &ClaudeCodeConfig{
 			Command: "claude",
 		},
