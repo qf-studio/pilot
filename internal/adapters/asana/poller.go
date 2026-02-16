@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/alekspetrov/pilot/internal/logging"
@@ -27,6 +28,15 @@ type TaskResult struct {
 	Error    error
 }
 
+// ProcessedStore persists which Asana tasks have been processed across restarts.
+// GH-1359: Asana uses string GIDs.
+type ProcessedStore interface {
+	MarkAsanaTaskProcessed(taskGID string, result string) error
+	UnmarkAsanaTaskProcessed(taskGID string) error
+	IsAsanaTaskProcessed(taskGID string) (bool, error)
+	LoadAsanaProcessedTasks() (map[string]bool, error)
+}
+
 // Poller polls Asana for tasks with the pilot tag
 type Poller struct {
 	client    *Client
@@ -42,6 +52,16 @@ type Poller struct {
 	inProgressTagGID string
 	doneTagGID       string
 	failedTagGID     string
+
+	// GH-1359: Persistent processed store (optional)
+	processedStore ProcessedStore
+
+	// GH-1359: Parallel execution configuration
+	maxConcurrent int
+	semaphore     chan struct{}
+	activeWg      sync.WaitGroup
+	stopping      atomic.Bool
+	wgMu          sync.Mutex // protects stopping + activeWg Add/Wait coordination
 }
 
 // PollerOption configures a Poller
@@ -61,6 +81,25 @@ func WithAsanaPollerLogger(logger *slog.Logger) PollerOption {
 	}
 }
 
+// WithProcessedStore sets the persistent store for processed task tracking.
+// GH-1359: On startup, processed tasks are loaded from the store to prevent re-processing after hot upgrade.
+func WithProcessedStore(store ProcessedStore) PollerOption {
+	return func(p *Poller) {
+		p.processedStore = store
+	}
+}
+
+// WithMaxConcurrent sets the maximum number of parallel task executions.
+// GH-1359: Ported parallel execution pattern from other adapters.
+func WithMaxConcurrent(n int) PollerOption {
+	return func(p *Poller) {
+		if n < 1 {
+			n = 1
+		}
+		p.maxConcurrent = n
+	}
+}
+
 // NewPoller creates a new Asana task poller
 func NewPoller(client *Client, config *Config, interval time.Duration, opts ...PollerOption) *Poller {
 	p := &Poller{
@@ -74,6 +113,27 @@ func NewPoller(client *Client, config *Config, interval time.Duration, opts ...P
 	for _, opt := range opts {
 		opt(p)
 	}
+
+	// GH-1359: Load processed tasks from persistent store if available
+	if p.processedStore != nil {
+		loaded, err := p.processedStore.LoadAsanaProcessedTasks()
+		if err != nil {
+			p.logger.Warn("Failed to load processed tasks from store", slog.Any("error", err))
+		} else if len(loaded) > 0 {
+			p.mu.Lock()
+			for gid := range loaded {
+				p.processed[gid] = true
+			}
+			p.mu.Unlock()
+			p.logger.Info("Loaded processed tasks from store", slog.Int("count", len(loaded)))
+		}
+	}
+
+	// GH-1359: Initialize parallel semaphore
+	if p.maxConcurrent < 1 {
+		p.maxConcurrent = 2 // default
+	}
+	p.semaphore = make(chan struct{}, p.maxConcurrent)
 
 	return p
 }
@@ -89,6 +149,7 @@ func (p *Poller) Start(ctx context.Context) error {
 		slog.String("workspace", p.client.workspaceID),
 		slog.String("tag", p.config.PilotTag),
 		slog.Duration("interval", p.interval),
+		slog.Int("max_concurrent", p.maxConcurrent),
 	)
 
 	// Initial check
@@ -100,6 +161,11 @@ func (p *Poller) Start(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
+			p.logger.Info("Asana poller stopping, waiting for active tasks...")
+			p.wgMu.Lock()
+			p.stopping.Store(true)
+			p.wgMu.Unlock()
+			p.activeWg.Wait()
 			p.logger.Info("Asana poller stopped")
 			return nil
 		case <-ticker.C:
@@ -171,59 +237,78 @@ func (p *Poller) checkForNewTasks(ctx context.Context) {
 
 		// Skip if has status tag (in-progress, done, or failed)
 		if p.hasStatusTag(&task) {
-			// Only mark as processed if it has done tag (allow retry of failed)
-			if p.hasTag(&task, TagDone) {
-				p.markProcessed(task.GID)
-			}
+			p.markProcessed(task.GID)
 			continue
 		}
 
-		// Process the task
-		p.logger.Info("Found new Asana task",
+		// Mark processed immediately to prevent duplicate dispatch on next tick
+		p.markProcessed(task.GID)
+
+		// Acquire semaphore slot (blocks if max_concurrent reached)
+		select {
+		case <-ctx.Done():
+			return
+		case p.semaphore <- struct{}{}:
+		}
+
+		p.logger.Info("Dispatching Asana task for parallel execution",
 			slog.String("gid", task.GID),
 			slog.String("name", task.Name),
 		)
 
-		if p.onTask != nil {
-			// Add in-progress tag
-			if p.inProgressTagGID != "" {
-				if err := p.client.AddTag(ctx, task.GID, p.inProgressTagGID); err != nil {
-					p.logger.Warn("Failed to add in-progress tag",
-						slog.String("gid", task.GID),
-						slog.Any("error", err),
-					)
-				}
-			}
-
-			result, err := p.onTask(ctx, &task)
-			if err != nil {
-				p.logger.Error("Failed to process task",
-					slog.String("gid", task.GID),
-					slog.Any("error", err),
-				)
-				// Remove in-progress tag, add failed tag
-				if p.inProgressTagGID != "" {
-					_ = p.client.RemoveTag(ctx, task.GID, p.inProgressTagGID)
-				}
-				if p.failedTagGID != "" {
-					_ = p.client.AddTag(ctx, task.GID, p.failedTagGID)
-				}
-				// Don't mark as processed so it can be retried after fixing
-				continue
-			}
-
-			// Remove in-progress tag
-			if p.inProgressTagGID != "" {
-				_ = p.client.RemoveTag(ctx, task.GID, p.inProgressTagGID)
-			}
-
-			// Add done tag on success
-			if result != nil && result.Success && p.doneTagGID != "" {
-				_ = p.client.AddTag(ctx, task.GID, p.doneTagGID)
-			}
+		// Use mutex to coordinate stopping flag check with WaitGroup Add
+		p.wgMu.Lock()
+		if p.stopping.Load() {
+			p.wgMu.Unlock()
+			<-p.semaphore // release slot we acquired
+			return
 		}
+		p.activeWg.Add(1)
+		p.wgMu.Unlock()
 
-		p.markProcessed(task.GID)
+		go p.processTaskAsync(ctx, &task)
+	}
+}
+
+// processTaskAsync handles a single task in a goroutine.
+// GH-1359: Extracted to enable parallel execution.
+func (p *Poller) processTaskAsync(ctx context.Context, task *Task) {
+	defer p.activeWg.Done()
+	defer func() { <-p.semaphore }() // release slot
+
+	if p.onTask == nil {
+		return
+	}
+
+	// Add in-progress tag
+	if p.inProgressTagGID != "" {
+		_ = p.client.AddTag(ctx, task.GID, p.inProgressTagGID)
+	}
+
+	result, err := p.onTask(ctx, task)
+	if err != nil {
+		p.logger.Error("Failed to process task",
+			slog.String("gid", task.GID),
+			slog.Any("error", err),
+		)
+		// Remove in-progress tag, add failed tag
+		if p.inProgressTagGID != "" {
+			_ = p.client.RemoveTag(ctx, task.GID, p.inProgressTagGID)
+		}
+		if p.failedTagGID != "" {
+			_ = p.client.AddTag(ctx, task.GID, p.failedTagGID)
+		}
+		return
+	}
+
+	// Remove in-progress tag
+	if p.inProgressTagGID != "" {
+		_ = p.client.RemoveTag(ctx, task.GID, p.inProgressTagGID)
+	}
+
+	// Add done tag on success
+	if result != nil && result.Success && p.doneTagGID != "" {
+		_ = p.client.AddTag(ctx, task.GID, p.doneTagGID)
 	}
 }
 
@@ -248,6 +333,13 @@ func (p *Poller) markProcessed(gid string) {
 	p.mu.Lock()
 	p.processed[gid] = true
 	p.mu.Unlock()
+
+	// GH-1359: Persist to store if available
+	if p.processedStore != nil {
+		if err := p.processedStore.MarkAsanaTaskProcessed(gid, "processed"); err != nil {
+			p.logger.Warn("Failed to persist processed task", slog.String("gid", gid), slog.Any("error", err))
+		}
+	}
 }
 
 // IsProcessed checks if a task has been processed
@@ -271,9 +363,42 @@ func (p *Poller) Reset() {
 	p.mu.Unlock()
 }
 
-// ClearProcessed removes a specific task from the processed map (for retry)
+// ClearProcessed removes a single task from the processed map.
+// GH-1359: Used when pilot-failed tag is removed to allow the task to be retried.
 func (p *Poller) ClearProcessed(gid string) {
 	p.mu.Lock()
 	delete(p.processed, gid)
 	p.mu.Unlock()
+
+	// Also clear from persistent store
+	if p.processedStore != nil {
+		if err := p.processedStore.UnmarkAsanaTaskProcessed(gid); err != nil {
+			p.logger.Warn("Failed to unmark task in store",
+				slog.String("gid", gid),
+				slog.Any("error", err))
+		}
+	}
+
+	p.logger.Debug("Cleared task from processed map",
+		slog.String("gid", gid))
+}
+
+// Drain stops accepting new tasks and waits for active executions to finish.
+// GH-1359: Used during hot upgrade to let in-flight work complete before process restart.
+func (p *Poller) Drain() {
+	p.logger.Info("Draining poller — no new tasks will be accepted")
+	p.wgMu.Lock()
+	p.stopping.Store(true)
+	p.wgMu.Unlock()
+	p.activeWg.Wait()
+	p.logger.Info("Poller drained — all active tasks completed")
+}
+
+// WaitForActive waits for all active parallel goroutines to finish.
+// GH-1359: Used in tests to synchronize after checkForNewTasks.
+func (p *Poller) WaitForActive() {
+	p.wgMu.Lock()
+	p.stopping.Store(true)
+	p.wgMu.Unlock()
+	p.activeWg.Wait()
 }
