@@ -52,9 +52,19 @@ func TestGenerateClaudeSettings(t *testing.T) {
 				Enabled: true,
 			},
 			expected: map[string]interface{}{
-				"hooks": map[string]HookDefinition{
-					"Stop":            {Command: "/test/scripts/pilot-stop-gate.sh"},
-					"PreToolUse:Bash": {Command: "/test/scripts/pilot-bash-guard.sh"},
+				"hooks": map[string][]HookMatcherEntry{
+					"Stop": {
+						{
+							Matcher: HookMatcher{},
+							Hooks:   []HookCommand{{Type: "command", Command: "/test/scripts/pilot-stop-gate.sh"}},
+						},
+					},
+					"PreToolUse": {
+						{
+							Matcher: HookMatcher{Tools: []string{"Bash"}},
+							Hooks:   []HookCommand{{Type: "command", Command: "/test/scripts/pilot-bash-guard.sh"}},
+						},
+					},
 				},
 			},
 		},
@@ -65,11 +75,29 @@ func TestGenerateClaudeSettings(t *testing.T) {
 				LintOnSave: true,
 			},
 			expected: map[string]interface{}{
-				"hooks": map[string]HookDefinition{
-					"Stop":              {Command: "/test/scripts/pilot-stop-gate.sh"},
-					"PreToolUse:Bash":   {Command: "/test/scripts/pilot-bash-guard.sh"},
-					"PostToolUse:Edit":  {Command: "/test/scripts/pilot-lint.sh"},
-					"PostToolUse:Write": {Command: "/test/scripts/pilot-lint.sh"},
+				"hooks": map[string][]HookMatcherEntry{
+					"Stop": {
+						{
+							Matcher: HookMatcher{},
+							Hooks:   []HookCommand{{Type: "command", Command: "/test/scripts/pilot-stop-gate.sh"}},
+						},
+					},
+					"PreToolUse": {
+						{
+							Matcher: HookMatcher{Tools: []string{"Bash"}},
+							Hooks:   []HookCommand{{Type: "command", Command: "/test/scripts/pilot-bash-guard.sh"}},
+						},
+					},
+					"PostToolUse": {
+						{
+							Matcher: HookMatcher{Tools: []string{"Edit"}},
+							Hooks:   []HookCommand{{Type: "command", Command: "/test/scripts/pilot-lint.sh"}},
+						},
+						{
+							Matcher: HookMatcher{Tools: []string{"Write"}},
+							Hooks:   []HookCommand{{Type: "command", Command: "/test/scripts/pilot-lint.sh"}},
+						},
+					},
 				},
 			},
 		},
@@ -99,24 +127,38 @@ func TestGenerateClaudeSettings(t *testing.T) {
 					t.Fatal("Expected hooks key in result")
 				}
 
-				expectedHooks := tt.expected["hooks"].(map[string]HookDefinition)
-				actualHooks, ok := hooks.(map[string]HookDefinition)
+				expectedHooks := tt.expected["hooks"].(map[string][]HookMatcherEntry)
+				actualHooks, ok := hooks.(map[string][]HookMatcherEntry)
 				if !ok {
-					t.Fatal("Expected hooks to be map[string]HookDefinition")
+					t.Fatal("Expected hooks to be map[string][]HookMatcherEntry")
 				}
 
 				if len(actualHooks) != len(expectedHooks) {
-					t.Errorf("Expected %d hooks, got %d", len(expectedHooks), len(actualHooks))
+					t.Errorf("Expected %d hook types, got %d", len(expectedHooks), len(actualHooks))
 				}
 
-				for key, expected := range expectedHooks {
-					actual, exists := actualHooks[key]
+				for key, expectedEntries := range expectedHooks {
+					actualEntries, exists := actualHooks[key]
 					if !exists {
-						t.Errorf("Expected hook %s not found", key)
+						t.Errorf("Expected hook type %s not found", key)
 						continue
 					}
-					if actual.Command != expected.Command {
-						t.Errorf("Hook %s: expected command %s, got %s", key, expected.Command, actual.Command)
+					if len(actualEntries) != len(expectedEntries) {
+						t.Errorf("Hook type %s: expected %d entries, got %d", key, len(expectedEntries), len(actualEntries))
+						continue
+					}
+					for i, expected := range expectedEntries {
+						actual := actualEntries[i]
+						if len(actual.Hooks) != len(expected.Hooks) {
+							t.Errorf("Hook type %s entry %d: expected %d hooks, got %d", key, i, len(expected.Hooks), len(actual.Hooks))
+							continue
+						}
+						if len(actual.Hooks) > 0 && actual.Hooks[0].Command != expected.Hooks[0].Command {
+							t.Errorf("Hook type %s entry %d: expected command %s, got %s", key, i, expected.Hooks[0].Command, actual.Hooks[0].Command)
+						}
+						if len(actual.Hooks) > 0 && actual.Hooks[0].Type != expected.Hooks[0].Type {
+							t.Errorf("Hook type %s entry %d: expected type %s, got %s", key, i, expected.Hooks[0].Type, actual.Hooks[0].Type)
+						}
 					}
 				}
 			}
@@ -129,8 +171,13 @@ func TestWriteClaudeSettings(t *testing.T) {
 	settingsPath := filepath.Join(tempDir, ".claude", "settings.json")
 
 	settings := map[string]interface{}{
-		"hooks": map[string]HookDefinition{
-			"Stop": {Command: "/test/script.sh"},
+		"hooks": map[string][]HookMatcherEntry{
+			"Stop": {
+				{
+					Matcher: HookMatcher{},
+					Hooks:   []HookCommand{{Type: "command", Command: "/test/script.sh"}},
+				},
+			},
 		},
 	}
 
@@ -156,11 +203,23 @@ func TestWriteClaudeSettings(t *testing.T) {
 		t.Error("Expected hooks key in parsed JSON")
 	}
 
-	// JSON unmarshaling converts our HookDefinition to map[string]interface{}
+	// JSON unmarshaling converts our types to map[string]interface{} and []interface{}
 	hooksMap := hooks.(map[string]interface{})
-	stopHook := hooksMap["Stop"].(map[string]interface{})
-	if stopHook["command"] != "/test/script.sh" {
-		t.Errorf("Expected Stop hook command '/test/script.sh', got %v", stopHook["command"])
+	stopEntries := hooksMap["Stop"].([]interface{})
+	if len(stopEntries) != 1 {
+		t.Fatalf("Expected 1 Stop entry, got %d", len(stopEntries))
+	}
+	stopEntry := stopEntries[0].(map[string]interface{})
+	stopHooks := stopEntry["hooks"].([]interface{})
+	if len(stopHooks) != 1 {
+		t.Fatalf("Expected 1 hook command, got %d", len(stopHooks))
+	}
+	hookCmd := stopHooks[0].(map[string]interface{})
+	if hookCmd["command"] != "/test/script.sh" {
+		t.Errorf("Expected Stop hook command '/test/script.sh', got %v", hookCmd["command"])
+	}
+	if hookCmd["type"] != "command" {
+		t.Errorf("Expected Stop hook type 'command', got %v", hookCmd["type"])
 	}
 }
 
@@ -179,8 +238,13 @@ func TestMergeWithExisting(t *testing.T) {
 			name:         "no existing file",
 			existingJSON: "",
 			pilotSettings: map[string]interface{}{
-				"hooks": map[string]HookDefinition{
-					"Stop": {Command: "/test/stop.sh"},
+				"hooks": map[string][]HookMatcherEntry{
+					"Stop": {
+						{
+							Matcher: HookMatcher{},
+							Hooks:   []HookCommand{{Type: "command", Command: "/test/stop.sh"}},
+						},
+					},
 				},
 			},
 			expectError: false,
@@ -211,11 +275,16 @@ func TestMergeWithExisting(t *testing.T) {
 			},
 		},
 		{
-			name:         "existing file with other settings",
+			name:         "existing file with old format hooks - replace with new format",
 			existingJSON: `{"other": "value", "hooks": {"Existing": {"command": "/existing.sh"}}}`,
 			pilotSettings: map[string]interface{}{
-				"hooks": map[string]HookDefinition{
-					"Stop": {Command: "/test/stop.sh"},
+				"hooks": map[string][]HookMatcherEntry{
+					"Stop": {
+						{
+							Matcher: HookMatcher{},
+							Hooks:   []HookCommand{{Type: "command", Command: "/test/stop.sh"}},
+						},
+					},
 				},
 			},
 			expectError: false,
@@ -236,9 +305,10 @@ func TestMergeWithExisting(t *testing.T) {
 					t.Error("Expected existing 'other' field to be preserved")
 				}
 
+				// When old format detected, pilot hooks replace it
 				hooks := parsed["hooks"].(map[string]interface{})
-				if len(hooks) != 2 {
-					t.Errorf("Expected 2 hooks, got %d", len(hooks))
+				if _, hasStop := hooks["Stop"]; !hasStop {
+					t.Error("Expected Stop hook from pilot settings")
 				}
 
 				// Test restore
@@ -259,6 +329,51 @@ func TestMergeWithExisting(t *testing.T) {
 				restoredHooks := restored["hooks"].(map[string]interface{})
 				if len(restoredHooks) != 1 {
 					t.Error("Expected only original hook after restore")
+				}
+			},
+		},
+		{
+			name:         "existing file with new format hooks - merge arrays",
+			existingJSON: `{"other": "value", "hooks": {"PreToolUse": [{"matcher": {"tools": ["Read"]}, "hooks": [{"type": "command", "command": "/existing.sh"}]}]}}`,
+			pilotSettings: map[string]interface{}{
+				"hooks": map[string][]HookMatcherEntry{
+					"Stop": {
+						{
+							Matcher: HookMatcher{},
+							Hooks:   []HookCommand{{Type: "command", Command: "/test/stop.sh"}},
+						},
+					},
+				},
+			},
+			expectError: false,
+			validateResult: func(t *testing.T, settingsPath string, restoreFunc func() error) {
+				data, err := os.ReadFile(settingsPath)
+				if err != nil {
+					t.Fatalf("Failed to read merged file: %v", err)
+				}
+
+				var parsed map[string]interface{}
+				if err := json.Unmarshal(data, &parsed); err != nil {
+					t.Fatalf("Failed to unmarshal merged file: %v", err)
+				}
+
+				// Should have both "other" and merged "hooks"
+				if parsed["other"] != "value" {
+					t.Error("Expected existing 'other' field to be preserved")
+				}
+
+				hooks := parsed["hooks"].(map[string]interface{})
+				// Should have both existing PreToolUse and new Stop
+				if _, hasPreToolUse := hooks["PreToolUse"]; !hasPreToolUse {
+					t.Error("Expected PreToolUse hook to be preserved")
+				}
+				if _, hasStop := hooks["Stop"]; !hasStop {
+					t.Error("Expected Stop hook from pilot settings")
+				}
+
+				// Test restore
+				if err := restoreFunc(); err != nil {
+					t.Errorf("Restore function failed: %v", err)
 				}
 			},
 		},
@@ -434,4 +549,78 @@ func TestGetScriptNames(t *testing.T) {
 // Helper function to create bool pointers
 func boolPtr(b bool) *bool {
 	return &b
+}
+
+// TestGenerateClaudeSettingsJSONFormat verifies the JSON output matches Claude Code 2.1.42+ format
+func TestGenerateClaudeSettingsJSONFormat(t *testing.T) {
+	config := &HooksConfig{
+		Enabled:    true,
+		LintOnSave: true,
+	}
+
+	settings := GenerateClaudeSettings(config, "/scripts")
+
+	// Marshal to JSON
+	data, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		t.Fatalf("Failed to marshal settings: %v", err)
+	}
+
+	// Unmarshal to verify structure
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("Failed to unmarshal settings: %v", err)
+	}
+
+	hooks := parsed["hooks"].(map[string]interface{})
+
+	// Verify Stop hook has array format with empty matcher
+	stopArr := hooks["Stop"].([]interface{})
+	if len(stopArr) != 1 {
+		t.Errorf("Stop: expected 1 entry, got %d", len(stopArr))
+	}
+	stopEntry := stopArr[0].(map[string]interface{})
+	stopMatcher := stopEntry["matcher"].(map[string]interface{})
+	if len(stopMatcher) != 0 {
+		t.Errorf("Stop matcher: expected empty, got %v", stopMatcher)
+	}
+	stopHooks := stopEntry["hooks"].([]interface{})
+	stopCmd := stopHooks[0].(map[string]interface{})
+	if stopCmd["type"] != "command" {
+		t.Errorf("Stop hook type: expected 'command', got %v", stopCmd["type"])
+	}
+
+	// Verify PreToolUse hook has matcher.tools
+	preArr := hooks["PreToolUse"].([]interface{})
+	if len(preArr) != 1 {
+		t.Errorf("PreToolUse: expected 1 entry, got %d", len(preArr))
+	}
+	preEntry := preArr[0].(map[string]interface{})
+	preMatcher := preEntry["matcher"].(map[string]interface{})
+	preTools := preMatcher["tools"].([]interface{})
+	if len(preTools) != 1 || preTools[0] != "Bash" {
+		t.Errorf("PreToolUse matcher.tools: expected [Bash], got %v", preTools)
+	}
+
+	// Verify PostToolUse hook has two matcher entries
+	postArr := hooks["PostToolUse"].([]interface{})
+	if len(postArr) != 2 {
+		t.Errorf("PostToolUse: expected 2 entries, got %d", len(postArr))
+	}
+
+	// First entry should match Edit
+	postEntry0 := postArr[0].(map[string]interface{})
+	postMatcher0 := postEntry0["matcher"].(map[string]interface{})
+	postTools0 := postMatcher0["tools"].([]interface{})
+	if len(postTools0) != 1 || postTools0[0] != "Edit" {
+		t.Errorf("PostToolUse[0] matcher.tools: expected [Edit], got %v", postTools0)
+	}
+
+	// Second entry should match Write
+	postEntry1 := postArr[1].(map[string]interface{})
+	postMatcher1 := postEntry1["matcher"].(map[string]interface{})
+	postTools1 := postMatcher1["tools"].([]interface{})
+	if len(postTools1) != 1 || postTools1[0] != "Write" {
+		t.Errorf("PostToolUse[1] matcher.tools: expected [Write], got %v", postTools1)
+	}
 }

@@ -57,44 +57,93 @@ func DefaultHooksConfig() *HooksConfig {
 }
 
 // ClaudeSettings represents the structure of .claude/settings.json
+// Uses Claude Code 2.1.42+ matcher-based hook format
 type ClaudeSettings struct {
-	Hooks map[string]HookDefinition `json:"hooks,omitempty"`
+	Hooks map[string][]HookMatcherEntry `json:"hooks,omitempty"`
 }
 
-// HookDefinition defines a single Claude Code hook
+// HookMatcherEntry defines a matcher-based hook entry (Claude Code 2.1.42+)
+type HookMatcherEntry struct {
+	Matcher HookMatcher   `json:"matcher"`
+	Hooks   []HookCommand `json:"hooks"`
+}
+
+// HookMatcher filters which tools a hook applies to
+type HookMatcher struct {
+	Tools []string `json:"tools,omitempty"`
+}
+
+// HookCommand defines a single hook command
+type HookCommand struct {
+	Type    string `json:"type"`
+	Command string `json:"command"`
+}
+
+// HookDefinition is kept for backward compatibility with old settings format
 type HookDefinition struct {
 	Command string `json:"command"`
 }
 
 // GenerateClaudeSettings builds the .claude/settings.json structure with hook entries
+// Uses Claude Code 2.1.42+ matcher-based array format
 func GenerateClaudeSettings(config *HooksConfig, scriptDir string) map[string]interface{} {
 	if config == nil || !config.Enabled {
 		return map[string]interface{}{}
 	}
 
-	hooks := make(map[string]HookDefinition)
+	hooks := make(map[string][]HookMatcherEntry)
 
 	// Stop hook: run tests before Claude finishes
 	if config.RunTestsOnStop == nil || *config.RunTestsOnStop {
-		hooks["Stop"] = HookDefinition{
-			Command: filepath.Join(scriptDir, "pilot-stop-gate.sh"),
+		hooks["Stop"] = []HookMatcherEntry{
+			{
+				Matcher: HookMatcher{}, // Empty matcher matches all
+				Hooks: []HookCommand{
+					{
+						Type:    "command",
+						Command: filepath.Join(scriptDir, "pilot-stop-gate.sh"),
+					},
+				},
+			},
 		}
 	}
 
 	// PreToolUse hook: block destructive Bash commands
 	if config.BlockDestructive == nil || *config.BlockDestructive {
-		hooks["PreToolUse:Bash"] = HookDefinition{
-			Command: filepath.Join(scriptDir, "pilot-bash-guard.sh"),
+		hooks["PreToolUse"] = []HookMatcherEntry{
+			{
+				Matcher: HookMatcher{Tools: []string{"Bash"}},
+				Hooks: []HookCommand{
+					{
+						Type:    "command",
+						Command: filepath.Join(scriptDir, "pilot-bash-guard.sh"),
+					},
+				},
+			},
 		}
 	}
 
 	// PostToolUse hook: lint files after changes (opt-in)
 	if config.LintOnSave {
-		hooks["PostToolUse:Edit"] = HookDefinition{
-			Command: filepath.Join(scriptDir, "pilot-lint.sh"),
-		}
-		hooks["PostToolUse:Write"] = HookDefinition{
-			Command: filepath.Join(scriptDir, "pilot-lint.sh"),
+		hooks["PostToolUse"] = []HookMatcherEntry{
+			{
+				Matcher: HookMatcher{Tools: []string{"Edit"}},
+				Hooks: []HookCommand{
+					{
+						Type:    "command",
+						Command: filepath.Join(scriptDir, "pilot-lint.sh"),
+					},
+				},
+			},
+			{
+				Matcher: HookMatcher{Tools: []string{"Write"}},
+				Hooks: []HookCommand{
+					{
+						Type:    "command",
+						Command: filepath.Join(scriptDir, "pilot-lint.sh"),
+					},
+				},
+			},
 		}
 	}
 
@@ -129,6 +178,7 @@ func WriteClaudeSettings(settingsPath string, settings map[string]interface{}) e
 
 // MergeWithExisting merges Pilot hooks with existing .claude/settings.json
 // Returns a restore function to revert changes and any error
+// Handles both old format (map[string]HookDefinition) and new format (map[string][]HookMatcherEntry)
 func MergeWithExisting(settingsPath string, pilotSettings map[string]interface{}) (restoreFunc func() error, err error) {
 	var originalData []byte
 	var originalExists bool
@@ -163,20 +213,19 @@ func MergeWithExisting(settingsPath string, pilotSettings map[string]interface{}
 
 		if pilotHooks, ok := pilotSettings["hooks"]; ok {
 			if existingHooks, exists := merged["hooks"]; exists {
-				// Merge hooks objects
+				// Check if existing hooks are in old format (object with command) or new format (arrays)
 				if existingHooksMap, ok := existingHooks.(map[string]interface{}); ok {
-					mergedHooks := make(map[string]interface{})
-					for k, v := range existingHooksMap {
-						mergedHooks[k] = v
+					if isOldHookFormat(existingHooksMap) {
+						// Old format detected - don't corrupt it, just add our new format hooks
+						// Keep existing as-is and append our hooks
+						merged["hooks"] = pilotHooks
+					} else {
+						// New format - merge arrays by hook event type
+						mergedHooks := mergeNewFormatHooks(existingHooksMap, pilotHooks)
+						merged["hooks"] = mergedHooks
 					}
-					if pilotHooksMap, ok := pilotHooks.(map[string]HookDefinition); ok {
-						for k, v := range pilotHooksMap {
-							mergedHooks[k] = v
-						}
-					}
-					merged["hooks"] = mergedHooks
 				} else {
-					// Existing hooks is not a map, replace with pilot hooks
+					// Unknown format, replace with pilot hooks
 					merged["hooks"] = pilotHooks
 				}
 			} else {
@@ -209,6 +258,72 @@ func MergeWithExisting(settingsPath string, pilotSettings map[string]interface{}
 	}
 
 	return restoreFunc, nil
+}
+
+// isOldHookFormat checks if the hooks map is in old format (e.g., "Stop": {"command": "..."})
+// Old format has string keys with object values containing "command" field
+// New format has string keys with array values
+func isOldHookFormat(hooks map[string]interface{}) bool {
+	for _, v := range hooks {
+		// In old format, each value is an object with "command" field
+		if obj, ok := v.(map[string]interface{}); ok {
+			if _, hasCommand := obj["command"]; hasCommand {
+				return true
+			}
+		}
+		// In new format, each value is an array
+		if _, isArray := v.([]interface{}); isArray {
+			return false
+		}
+	}
+	return false
+}
+
+// mergeNewFormatHooks merges two hook maps in the new array-based format
+func mergeNewFormatHooks(existing map[string]interface{}, pilot interface{}) map[string]interface{} {
+	mergedHooks := make(map[string]interface{})
+
+	// Copy existing hooks
+	for k, v := range existing {
+		mergedHooks[k] = v
+	}
+
+	// Merge pilot hooks
+	switch ph := pilot.(type) {
+	case map[string][]HookMatcherEntry:
+		for k, v := range ph {
+			if existingArr, ok := mergedHooks[k].([]interface{}); ok {
+				// Append pilot entries to existing array
+				for _, entry := range v {
+					existingArr = append(existingArr, entry)
+				}
+				mergedHooks[k] = existingArr
+			} else {
+				// No existing entries for this hook type, use pilot's
+				mergedHooks[k] = v
+			}
+		}
+	case map[string]interface{}:
+		for k, v := range ph {
+			if existingArr, ok := mergedHooks[k].([]interface{}); ok {
+				if newArr, ok := v.([]interface{}); ok {
+					// Both are arrays, merge them
+					mergedHooks[k] = append(existingArr, newArr...)
+				} else if newArr, ok := v.([]HookMatcherEntry); ok {
+					// Pilot entries as typed slice
+					for _, entry := range newArr {
+						existingArr = append(existingArr, entry)
+					}
+					mergedHooks[k] = existingArr
+				}
+			} else {
+				// No existing entries for this hook type, use pilot's
+				mergedHooks[k] = v
+			}
+		}
+	}
+
+	return mergedHooks
 }
 
 // WriteEmbeddedScripts extracts embedded hook scripts to the specified directory
