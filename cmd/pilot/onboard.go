@@ -117,11 +117,12 @@ func runOnboard(cmd *cobra.Command, args []string) error {
 	}
 
 	// Set stage count based on persona
+	// Stages: Project, Backend, Tickets, Notify, [Optional for Team/Enterprise]
 	switch persona {
 	case PersonaSolo:
-		state.StagesTotal = 4
-	case PersonaTeam, PersonaEnterprise:
 		state.StagesTotal = 5
+	case PersonaTeam, PersonaEnterprise:
+		state.StagesTotal = 6
 	}
 
 	// Execute stages
@@ -131,18 +132,23 @@ func runOnboard(cmd *cobra.Command, args []string) error {
 	}
 
 	state.CurrentStage = 2
-	if err := onboardTicketSetup(state); err != nil {
+	if err := onboardBackendSetup(state); err != nil {
 		return err
 	}
 
 	state.CurrentStage = 3
+	if err := onboardTicketSetup(state); err != nil {
+		return err
+	}
+
+	state.CurrentStage = 4
 	if err := onboardNotifySetup(state); err != nil {
 		return err
 	}
 
 	// Optional setup for Team/Enterprise
 	if persona == PersonaTeam || persona == PersonaEnterprise {
-		state.CurrentStage = 4
+		state.CurrentStage = 5
 		if err := onboardOptionalSetup(state); err != nil {
 			return err
 		}
@@ -163,9 +169,9 @@ func runOnboard(cmd *cobra.Command, args []string) error {
 
 func selectPersona(reader *bufio.Reader) Persona {
 	options := []string{
-		"Solo Developer — Personal projects (4 stages)",
-		"Team — Shared repos, Slack notifications (5 stages)",
-		"Enterprise — Full automation, approvals (5 stages)",
+		"Solo Developer — Personal projects (5 stages)",
+		"Team — Shared repos, Slack notifications (6 stages)",
+		"Enterprise — Full automation, approvals (6 stages)",
 	}
 
 	idx := selectOption(reader, "Select your workflow:", options)
@@ -277,6 +283,7 @@ func getNotifyChannelName(cfg *config.Config) string {
 }
 
 // Note: onboardProjectSetup is implemented in onboard_project.go
+// Note: onboardBackendSetup is implemented in onboard_backend.go
 // Note: onboardTicketSetup is implemented in onboard_ticket.go
 // Note: onboardNotifySetup is implemented in onboard_notify.go
 // Note: onboardOptionalSetup is implemented in onboard_optional.go
@@ -320,6 +327,7 @@ type SummaryCard struct {
 func buildSummaryCards(cfg *config.Config, persona Persona) []SummaryCard {
 	cards := []SummaryCard{
 		buildProjectCard(cfg),
+		buildBackendCardFromConfig(cfg),
 		buildTicketsCard(cfg),
 		buildNotifyCard(cfg),
 	}
@@ -334,6 +342,33 @@ func buildSummaryCards(cfg *config.Config, persona Persona) []SummaryCard {
 	}
 
 	return cards
+}
+
+// buildBackendCardFromConfig builds the summary card for backend selection
+func buildBackendCardFromConfig(cfg *config.Config) SummaryCard {
+	card := SummaryCard{Title: "BACKEND"}
+
+	if cfg.Executor != nil && cfg.Executor.Type != "" {
+		backendType := cfg.Executor.Type
+		// Map type to display name
+		switch backendType {
+		case "claude-code":
+			card.Value = "Claude Code"
+		case "qwen-code":
+			card.Value = "Qwen Code"
+		case "opencode":
+			card.Value = "OpenCode"
+		default:
+			card.Value = backendType
+		}
+		card.Configured = true
+	} else {
+		card.Value = "Claude Code"
+		card.Line1 = "(default)"
+		card.Configured = true
+	}
+
+	return card
 }
 
 func buildProjectCard(cfg *config.Config) SummaryCard {
