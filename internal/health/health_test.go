@@ -158,23 +158,32 @@ func TestReadyToStart(t *testing.T) {
 		{
 			name: "all ok",
 			deps: []Check{
-				{Name: "claude", Status: StatusOK},
+				{Name: "claude", Status: StatusOK, Message: "1.0.0 [active backend]"},
 				{Name: "git", Status: StatusOK},
 			},
 			want: true,
 		},
 		{
-			name: "claude missing",
+			name: "active backend missing",
 			deps: []Check{
-				{Name: "claude", Status: StatusError},
+				{Name: "claude", Status: StatusError, Message: "not found [active backend]"},
 				{Name: "git", Status: StatusOK},
 			},
 			want: false,
 		},
 		{
+			name: "non-active backend missing is ok",
+			deps: []Check{
+				{Name: "claude", Status: StatusOK, Message: "1.0.0 [active backend]"},
+				{Name: "qwen", Status: StatusError, Message: "not found"},
+				{Name: "git", Status: StatusOK},
+			},
+			want: true,
+		},
+		{
 			name: "git missing",
 			deps: []Check{
-				{Name: "claude", Status: StatusOK},
+				{Name: "claude", Status: StatusOK, Message: "1.0.0 [active backend]"},
 				{Name: "git", Status: StatusError},
 			},
 			want: false,
@@ -182,7 +191,7 @@ func TestReadyToStart(t *testing.T) {
 		{
 			name: "gh warning is ok",
 			deps: []Check{
-				{Name: "claude", Status: StatusOK},
+				{Name: "claude", Status: StatusOK, Message: "1.0.0 [active backend]"},
 				{Name: "git", Status: StatusOK},
 				{Name: "gh", Status: StatusWarning},
 			},

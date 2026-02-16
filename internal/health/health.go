@@ -65,8 +65,14 @@ type HealthReport struct {
 
 // RunChecks performs all health checks based on config
 func RunChecks(cfg *config.Config) *HealthReport {
+	// Determine active backend type from config
+	backendType := "claude-code" // default
+	if cfg.Executor != nil && cfg.Executor.Type != "" {
+		backendType = cfg.Executor.Type
+	}
+
 	report := &HealthReport{
-		Dependencies: checkDependencies(),
+		Dependencies: checkDependenciesWithBackend(backendType),
 		Config:       checkConfig(cfg),
 		Features:     checkFeatures(cfg),
 		Projects:     len(cfg.Projects),
@@ -101,27 +107,50 @@ func RunChecks(cfg *config.Config) *HealthReport {
 	return report
 }
 
+// backendInfo holds metadata about a backend for health checks
+type backendInfo struct {
+	name        string   // display name (e.g., "claude")
+	backendType string   // executor.BackendType constant (e.g., "claude-code")
+	command     string   // CLI command to check
+	versionArgs []string // args to get version (e.g., ["--version"])
+	installCmd  string   // install instruction
+}
+
+var backends = []backendInfo{
+	{
+		name:        "claude",
+		backendType: "claude-code",
+		command:     "claude",
+		versionArgs: []string{"--version"},
+		installCmd:  "npm install -g @anthropic-ai/claude-code",
+	},
+	{
+		name:        "qwen",
+		backendType: "qwen-code",
+		command:     "qwen",
+		versionArgs: []string{"--version"},
+		installCmd:  "See https://github.com/anthropics/qwen-code",
+	},
+	{
+		name:        "opencode",
+		backendType: "opencode",
+		command:     "opencode",
+		versionArgs: []string{"version"},
+		installCmd:  "go install github.com/opencode-ai/opencode@latest",
+	},
+}
+
 // checkDependencies checks required system dependencies
 func checkDependencies() []Check {
+	// Use default backend type for backwards compatibility
+	return checkDependenciesWithBackend("claude-code")
+}
+
+// checkDependenciesWithBackend checks dependencies including backend-aware checks
+func checkDependenciesWithBackend(activeBackendType string) []Check {
 	checks := []Check{}
 
-	// Check Claude Code
-	if version := getCommandVersion("claude", "--version"); version != "" {
-		checks = append(checks, Check{
-			Name:    "claude",
-			Status:  StatusOK,
-			Message: version,
-		})
-	} else {
-		checks = append(checks, Check{
-			Name:    "claude",
-			Status:  StatusError,
-			Message: "not found",
-			Fix:     "npm install -g @anthropic-ai/claude-code",
-		})
-	}
-
-	// Check Git
+	// Check Git first (always required)
 	if version := getCommandVersion("git", "--version"); version != "" {
 		checks = append(checks, Check{
 			Name:    "git",
@@ -151,6 +180,41 @@ func checkDependencies() []Check {
 			Message: "not found (PR creation unavailable)",
 			Fix:     "brew install gh && gh auth login",
 		})
+	}
+
+	// Check all backends (active backend is required, others are optional)
+	for _, backend := range backends {
+		isActive := backend.backendType == activeBackendType
+		version := getCommandVersion(backend.command, backend.versionArgs...)
+
+		if version != "" {
+			message := version
+			if isActive {
+				message = version + " [active backend]"
+			}
+			checks = append(checks, Check{
+				Name:    backend.name,
+				Status:  StatusOK,
+				Message: message,
+			})
+		} else {
+			if isActive {
+				// Active backend missing is an error
+				checks = append(checks, Check{
+					Name:    backend.name,
+					Status:  StatusError,
+					Message: "not found [active backend]",
+					Fix:     backend.installCmd,
+				})
+			} else {
+				// Other backends missing is informational (skip)
+				checks = append(checks, Check{
+					Name:    backend.name,
+					Status:  StatusDisabled,
+					Message: "not installed (optional)",
+				})
+			}
+		}
 	}
 
 	// Check Mac sleep status (macOS only)
@@ -332,10 +396,25 @@ func checkConfig(cfg *config.Config) []ConfigCheck {
 func checkFeatures(cfg *config.Config) []FeatureStatus {
 	features := []FeatureStatus{}
 
-	// Core execution
-	hasClaude := commandExists("claude")
+	// Determine active backend
+	backendType := "claude-code"
+	if cfg.Executor != nil && cfg.Executor.Type != "" {
+		backendType = cfg.Executor.Type
+	}
+
+	// Find the command for the active backend
+	backendCmd := "claude" // default
+	for _, b := range backends {
+		if b.backendType == backendType {
+			backendCmd = b.command
+			break
+		}
+	}
+
+	// Core execution - check active backend + git
+	hasBackend := commandExists(backendCmd)
 	hasGit := commandExists("git")
-	if hasClaude && hasGit {
+	if hasBackend && hasGit {
 		features = append(features, FeatureStatus{
 			Name:    "Task Execution",
 			Enabled: true,
@@ -343,8 +422,8 @@ func checkFeatures(cfg *config.Config) []FeatureStatus {
 		})
 	} else {
 		missing := []string{}
-		if !hasClaude {
-			missing = append(missing, "claude")
+		if !hasBackend {
+			missing = append(missing, backendCmd)
 		}
 		if !hasGit {
 			missing = append(missing, "git")
@@ -373,11 +452,11 @@ func checkFeatures(cfg *config.Config) []FeatureStatus {
 		Note:    telegramNote,
 	})
 
-	// Image analysis (always available via Claude)
+	// Image analysis (available via multimodal backends)
 	features = append(features, FeatureStatus{
 		Name:    "Images",
-		Enabled: hasClaude,
-		Status:  boolToStatus(hasClaude),
+		Enabled: hasBackend,
+		Status:  boolToStatus(hasBackend),
 	})
 
 	// Voice transcription (only requires OpenAI API key)
@@ -571,14 +650,14 @@ func (r *HealthReport) Summary() (errors int, warnings int) {
 func (r *HealthReport) ReadyToStart() bool {
 	// Check for critical dependency errors
 	for _, d := range r.Dependencies {
-		if d.Name == "claude" && d.Status == StatusError {
+		// git is always required
+		if d.Name == "git" && d.Status == StatusError {
 			return false
 		}
-		if d.Name == "git" && d.Status == StatusError {
+		// Any backend marked as active (contains "[active backend]") that's missing is critical
+		if d.Status == StatusError && strings.Contains(d.Message, "[active backend]") {
 			return false
 		}
 	}
 	return true
 }
-
-// commandExists checks if a command is available
