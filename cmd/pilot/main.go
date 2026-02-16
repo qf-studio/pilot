@@ -96,6 +96,7 @@ func main() {
 		newProjectCmd(),
 		newAutopilotCmd(),
 		newOnboardCmd(),
+		newBackendCmd(),
 	)
 
 	if err := rootCmd.Execute(); err != nil {
