@@ -217,6 +217,12 @@
 | CI auto-discovery | ✅ | autopilot | - | - | Auto-detect check names from GitHub API (v0.41.0) |
 | Stagnation monitor | ✅ | executor | - | - | State hash tracking, escalation: warn → pause → abort (v0.56.0) |
 
+## Epic Management
+
+| Feature | Status | Package | CLI Command | Config Key | Notes |
+|---------|--------|---------|-------------|------------|-------|
+| APP-789 Subtask 1 | ✅ | docs | - | - | First subtask implementation complete (v1.27.0) |
+
 **Environments:**
 - `dev`: Skip CI, auto-merge immediately
 - `stage`: Wait for CI, then auto-merge
@@ -255,7 +261,8 @@
 | Approval Workflows | 4 | 0 | 0 | 0 |
 | Autopilot | 17 | 0 | 0 | 0 |
 | Self-Management | 6 | 0 | 0 | 0 |
-| **Total** | **133** | **0** | **0** | **0** |
+| Epic Management | 1 | 0 | 0 | 0 |
+| **Total** | **134** | **0** | **0** | **0** |
 
 ---
 
