@@ -1017,3 +1017,316 @@ func TestParseIssueNumber(t *testing.T) {
 		})
 	}
 }
+
+// mockSubIssueCreator is a mock implementation of SubIssueCreator for testing.
+type mockSubIssueCreator struct {
+	// Called tracks CreateIssue calls
+	Called []mockCreateIssueCall
+	// Returns configures what CreateIssue returns
+	Returns []mockCreateIssueReturn
+	// CurrentCall tracks which call we're on
+	CurrentCall int
+}
+
+type mockCreateIssueCall struct {
+	ParentID string
+	Title    string
+	Body     string
+	Labels   []string
+}
+
+type mockCreateIssueReturn struct {
+	Identifier string
+	URL        string
+	Err        error
+}
+
+func (m *mockSubIssueCreator) CreateIssue(ctx context.Context, parentID, title, body string, labels []string) (string, string, error) {
+	m.Called = append(m.Called, mockCreateIssueCall{
+		ParentID: parentID,
+		Title:    title,
+		Body:     body,
+		Labels:   labels,
+	})
+
+	if m.CurrentCall >= len(m.Returns) {
+		return "", "", fmt.Errorf("unexpected call to CreateIssue")
+	}
+
+	ret := m.Returns[m.CurrentCall]
+	m.CurrentCall++
+	return ret.Identifier, ret.URL, ret.Err
+}
+
+func TestSetSubIssueCreator(t *testing.T) {
+	runner := NewRunner()
+
+	// Should be nil by default
+	if runner.subIssueCreator != nil {
+		t.Error("subIssueCreator should be nil by default")
+	}
+
+	// Set creator
+	mock := &mockSubIssueCreator{}
+	runner.SetSubIssueCreator(mock)
+
+	if runner.subIssueCreator == nil {
+		t.Fatal("subIssueCreator should be set after SetSubIssueCreator")
+	}
+}
+
+func TestCreateSubIssues_UsesAdapterForNonGitHub(t *testing.T) {
+	runner := NewRunner()
+
+	mock := &mockSubIssueCreator{
+		Returns: []mockCreateIssueReturn{
+			{Identifier: "APP-101", URL: "https://linear.app/test/issue/APP-101"},
+			{Identifier: "APP-102", URL: "https://linear.app/test/issue/APP-102"},
+		},
+	}
+	runner.SetSubIssueCreator(mock)
+
+	plan := &EpicPlan{
+		ParentTask: &Task{
+			ID:            "APP-100",
+			SourceAdapter: "linear",
+			SourceIssueID: "APP-100",
+		},
+		Subtasks: []PlannedSubtask{
+			{Title: "First subtask", Description: "Do first thing", Order: 1},
+			{Title: "Second subtask", Description: "Do second thing", Order: 2},
+		},
+	}
+
+	ctx := context.Background()
+	created, err := runner.CreateSubIssues(ctx, plan, "")
+
+	if err != nil {
+		t.Fatalf("CreateSubIssues failed: %v", err)
+	}
+
+	// Should have called the mock twice
+	if len(mock.Called) != 2 {
+		t.Errorf("Expected 2 calls to CreateIssue, got %d", len(mock.Called))
+	}
+
+	// Verify first call
+	if mock.Called[0].ParentID != "APP-100" {
+		t.Errorf("First call parentID = %q, want APP-100", mock.Called[0].ParentID)
+	}
+	if mock.Called[0].Title != "First subtask" {
+		t.Errorf("First call title = %q, want 'First subtask'", mock.Called[0].Title)
+	}
+
+	// Verify second call
+	if mock.Called[1].ParentID != "APP-100" {
+		t.Errorf("Second call parentID = %q, want APP-100", mock.Called[1].ParentID)
+	}
+
+	// Verify returned issues
+	if len(created) != 2 {
+		t.Fatalf("Expected 2 created issues, got %d", len(created))
+	}
+
+	if created[0].Identifier != "APP-101" {
+		t.Errorf("First issue Identifier = %q, want APP-101", created[0].Identifier)
+	}
+	if created[0].Number != 0 {
+		t.Errorf("First issue Number = %d, want 0 (non-GitHub)", created[0].Number)
+	}
+	if created[0].URL != "https://linear.app/test/issue/APP-101" {
+		t.Errorf("First issue URL = %q, want linear URL", created[0].URL)
+	}
+
+	if created[1].Identifier != "APP-102" {
+		t.Errorf("Second issue Identifier = %q, want APP-102", created[1].Identifier)
+	}
+}
+
+func TestCreateSubIssues_FallsBackToGitHubWhenNoAdapter(t *testing.T) {
+	// This test verifies the dispatch logic chooses GitHub path when SourceAdapter is empty.
+	// We test this by verifying the mock is NOT called, regardless of gh CLI outcome.
+	runner := NewRunner()
+
+	mock := &mockSubIssueCreator{
+		Returns: []mockCreateIssueReturn{
+			{Identifier: "APP-101", URL: "https://linear.app/test/issue/APP-101"},
+		},
+	}
+	runner.SetSubIssueCreator(mock)
+
+	// No SourceAdapter set - should use GitHub path
+	plan := &EpicPlan{
+		ParentTask: &Task{
+			ID: "GH-100",
+			// SourceAdapter not set - defaults to empty string
+		},
+		Subtasks: []PlannedSubtask{
+			{Title: "Test subtask", Description: "Test", Order: 1},
+		},
+	}
+
+	ctx := context.Background()
+	// Run in a non-existent directory to ensure gh CLI fails
+	// The important thing is that the mock adapter is NOT called
+	_, _ = runner.CreateSubIssues(ctx, plan, "/nonexistent/path")
+
+	// Mock should NOT have been called since we fall back to GitHub
+	if len(mock.Called) != 0 {
+		t.Errorf("Expected 0 calls to adapter when SourceAdapter is empty, got %d", len(mock.Called))
+	}
+}
+
+func TestCreateSubIssues_FallsBackToGitHubWhenAdapterIsGitHub(t *testing.T) {
+	// This test verifies the dispatch logic chooses GitHub path when SourceAdapter is "github".
+	// We test this by verifying the mock is NOT called, regardless of gh CLI outcome.
+	runner := NewRunner()
+
+	mock := &mockSubIssueCreator{
+		Returns: []mockCreateIssueReturn{
+			{Identifier: "101", URL: "https://github.com/test/issue/101"},
+		},
+	}
+	runner.SetSubIssueCreator(mock)
+
+	// SourceAdapter is "github" - should use GitHub path, not adapter
+	plan := &EpicPlan{
+		ParentTask: &Task{
+			ID:            "GH-100",
+			SourceAdapter: "github",
+			SourceIssueID: "100",
+		},
+		Subtasks: []PlannedSubtask{
+			{Title: "Test subtask", Description: "Test", Order: 1},
+		},
+	}
+
+	ctx := context.Background()
+	// Run in a non-existent directory to ensure gh CLI fails
+	// The important thing is that the mock adapter is NOT called
+	_, _ = runner.CreateSubIssues(ctx, plan, "/nonexistent/path")
+
+	// Mock should NOT have been called since adapter is "github"
+	if len(mock.Called) != 0 {
+		t.Errorf("Expected 0 calls to adapter when SourceAdapter is 'github', got %d", len(mock.Called))
+	}
+}
+
+func TestCreateSubIssues_FallsBackToGitHubWhenNoCreator(t *testing.T) {
+	// This test verifies that when SubIssueCreator is nil, even with a non-GitHub
+	// SourceAdapter, we fall back to the GitHub path (and don't panic).
+	runner := NewRunner()
+	// SubIssueCreator not set
+
+	plan := &EpicPlan{
+		ParentTask: &Task{
+			ID:            "APP-100",
+			SourceAdapter: "linear",
+			SourceIssueID: "APP-100",
+		},
+		Subtasks: []PlannedSubtask{
+			{Title: "Test subtask", Description: "Test", Order: 1},
+		},
+	}
+
+	ctx := context.Background()
+	// Run in a non-existent directory to ensure gh CLI fails
+	_, err := runner.CreateSubIssues(ctx, plan, "/nonexistent/path")
+
+	// Should get an error from gh CLI, not from a nil creator panic
+	if err == nil {
+		t.Skip("gh CLI succeeded unexpectedly (test requires gh CLI to fail in non-repo dir)")
+	}
+	// Verify it's a gh CLI error, not a nil pointer
+	if !strings.Contains(err.Error(), "failed to create issue") {
+		t.Errorf("Expected gh CLI error, got: %v", err)
+	}
+}
+
+func TestCreateSubIssues_AdapterError(t *testing.T) {
+	runner := NewRunner()
+
+	expectedErr := fmt.Errorf("Linear API error: rate limited")
+	mock := &mockSubIssueCreator{
+		Returns: []mockCreateIssueReturn{
+			{Err: expectedErr},
+		},
+	}
+	runner.SetSubIssueCreator(mock)
+
+	plan := &EpicPlan{
+		ParentTask: &Task{
+			ID:            "APP-100",
+			SourceAdapter: "linear",
+			SourceIssueID: "APP-100",
+		},
+		Subtasks: []PlannedSubtask{
+			{Title: "Test subtask", Description: "Test", Order: 1},
+		},
+	}
+
+	ctx := context.Background()
+	_, err := runner.CreateSubIssues(ctx, plan, "")
+
+	if err == nil {
+		t.Fatal("Expected error from adapter")
+	}
+	if !strings.Contains(err.Error(), "Linear API error") {
+		t.Errorf("Expected adapter error in message, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "linear adapter") {
+		t.Errorf("Expected adapter name in error, got: %v", err)
+	}
+}
+
+func TestCreatedIssue_IdentifierField(t *testing.T) {
+	// Test that Identifier field is properly set for different adapters
+	tests := []struct {
+		name       string
+		issue      CreatedIssue
+		wantNumber int
+		wantIdent  string
+	}{
+		{
+			name: "github issue",
+			issue: CreatedIssue{
+				Number:     123,
+				Identifier: "123",
+				URL:        "https://github.com/owner/repo/issues/123",
+			},
+			wantNumber: 123,
+			wantIdent:  "123",
+		},
+		{
+			name: "linear issue",
+			issue: CreatedIssue{
+				Number:     0,
+				Identifier: "APP-456",
+				URL:        "https://linear.app/team/issue/APP-456",
+			},
+			wantNumber: 0,
+			wantIdent:  "APP-456",
+		},
+		{
+			name: "jira issue",
+			issue: CreatedIssue{
+				Number:     0,
+				Identifier: "PROJ-789",
+				URL:        "https://jira.example.com/browse/PROJ-789",
+			},
+			wantNumber: 0,
+			wantIdent:  "PROJ-789",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.issue.Number != tt.wantNumber {
+				t.Errorf("Number = %d, want %d", tt.issue.Number, tt.wantNumber)
+			}
+			if tt.issue.Identifier != tt.wantIdent {
+				t.Errorf("Identifier = %q, want %q", tt.issue.Identifier, tt.wantIdent)
+			}
+		})
+	}
+}

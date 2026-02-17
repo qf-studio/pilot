@@ -145,6 +145,17 @@ type Task struct {
 	// linked to the original PR, giving Claude full context of previous changes.
 	// Typically set for autopilot-fix issues to continue from the failed PR's session.
 	FromPR int
+	// SourceAdapter identifies the adapter that originated this task (GH-1471).
+	// Examples: "github", "linear", "jira", "gitlab", "azuredevops"
+	// When non-empty and not "github", epic sub-issue creation uses the SubIssueCreator
+	// interface instead of the gh CLI.
+	SourceAdapter string
+	// SourceIssueID is the issue identifier in the source adapter (GH-1471).
+	// For GitHub: numeric issue number as string (e.g., "123")
+	// For Linear: full identifier (e.g., "APP-456")
+	// For Jira: issue key (e.g., "PROJ-789")
+	// Used as parentID when creating sub-issues via SubIssueCreator.
+	SourceIssueID string
 }
 
 // QualityGateResult represents the result of a single quality gate check.
@@ -240,6 +251,19 @@ type TokenLimitCallback func(taskID string, deltaInput, deltaOutput int64) bool
 // Signature matches Controller.OnPRCreated so it can be wired directly.
 type SubIssuePRCallback func(prNumber int, prURL string, issueNumber int, headSHA string, branchName string)
 
+// SubIssueCreator is an interface for creating sub-issues in external issue trackers.
+// Adapters like Linear, Jira, GitLab, and Azure DevOps can implement this interface
+// to allow epic decomposition to create sub-issues in the source tracker rather than GitHub.
+type SubIssueCreator interface {
+	// CreateIssue creates a new issue as a child of the given parent.
+	// parentID: The parent issue identifier (e.g., "APP-123" for Linear, "PROJ-456" for Jira)
+	// title: The issue title
+	// body: The issue description/body
+	// labels: Labels to apply to the new issue
+	// Returns: identifier (e.g., "APP-124"), URL, error
+	CreateIssue(ctx context.Context, parentID, title, body string, labels []string) (identifier string, url string, err error)
+}
+
 // Runner executes development tasks using an AI backend (Claude Code, OpenCode, etc.).
 // It manages task lifecycle including branch creation, AI invocation,
 // progress tracking, PR creation, and execution recording. Runner is safe for
@@ -285,6 +309,8 @@ type Runner struct {
 	agentsMu              sync.RWMutex // Protects agents cache
 	// GH-1078: Worktree pooling
 	worktreeManager       *WorktreeManager // Optional worktree manager with pool support
+	// GH-1471: SubIssueCreator for non-GitHub adapters
+	subIssueCreator       SubIssueCreator // Optional creator for sub-issues in external trackers
 }
 
 // NewRunner creates a new Runner instance with Claude Code backend by default.
@@ -549,6 +575,13 @@ func (r *Runner) SetTokenLimitCheck(cb TokenLimitCallback) {
 // each sub-issue PR individually for CI monitoring and auto-merge.
 func (r *Runner) SetOnSubIssuePRCreated(fn SubIssuePRCallback) {
 	r.onSubIssuePRCreated = fn
+}
+
+// SetSubIssueCreator sets the creator for sub-issues in external issue trackers (GH-1471).
+// When set and the task's SourceAdapter is non-GitHub, CreateSubIssues will dispatch
+// via this interface instead of using the gh CLI.
+func (r *Runner) SetSubIssueCreator(creator SubIssueCreator) {
+	r.subIssueCreator = creator
 }
 
 // SetIntentJudge sets the intent judge for diff-vs-ticket alignment verification (GH-624).
