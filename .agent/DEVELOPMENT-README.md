@@ -113,7 +113,7 @@ Disable via config: `executor.navigator.auto_init: false`
 
 ## Current State
 
-**Current Version:** v1.27.0 | **156 features working**
+**Current Version:** v1.39.0 | **159 features working**
 
 **Full implementation status:** `.agent/system/FEATURE-MATRIX.md`
 
@@ -187,6 +187,9 @@ Disable via config: `executor.navigator.auto_init: false`
 | Navigator Docs Update | Done | Auto-update feature matrix + knowledge capture post-execution (v1.19.0) |
 | Adapter State Transitions | Done | Transition Linear/Jira/Asana issues to Done on success (v1.19.0) |
 | Jira/Asana Autopilot Wire | Done | Wire OnPRCreated for Jira + Asana, add HeadSHA/BranchName (v1.19.0) |
+| URL-Encode Branch Names | Done | `url.PathEscape(branch)` in DeleteBranch/GetBranch — fixes 404 on slash branches (v1.28.0) |
+| Branch Cleanup on PR Close | Done | Delete remote branches on PR close/fail, not just merge (v1.35.0) |
+| Backend-Aware Preflight | Done | Preflight CLI check matches configured backend (claude/opencode/qwen) (v1.39.0) |
 
 ### Telegram Interaction Modes (v0.6.0)
 
@@ -298,6 +301,9 @@ Nextra 4 migration (PR #1409) + 8 docs pages covering all 156 features:
 
 | Item | What |
 |------|------|
+| **v1.39.0** | Backend-aware preflight checks: `PreflightOptions.BackendType` matches configured backend (claude/opencode/qwen) instead of hardcoding `claude` (GH-1483 — @kegesch contribution) |
+| **v1.35.0** | Delete branches on PR close/fail: `removePR()` in autopilot controller now calls `DeleteBranch()` for all PR removal paths, not just merged PRs |
+| **v1.28.0** | URL-encode branch names: `DeleteBranch()` and `GetBranch()` use `url.PathEscape(branch)` — fixes silent 404 on branch names with slashes (GH-1383 fix) |
 | **Docs refresh** | 8 issues (GH-1411–1418) all merged — epic decomp, hooks, multi-repo, signal parser, SDK features, stagnation, auto-init, config ref. 60 pages total. |
 | **Nextra 4** | Docs site migrated from Nextra 2 to Nextra 4 (App Router) — PR #1409, GH-1407 closed |
 | **v1.27.0** | Harden GH-1388: dedup modifiedFiles, case-insensitive feat( check, robust table insertion (no anchor dependency) |

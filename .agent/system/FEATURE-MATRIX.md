@@ -1,6 +1,6 @@
 # Pilot Feature Matrix
 
-**Last Updated:** 2026-02-14 (v1.0.0)
+**Last Updated:** 2026-02-17 (v1.39.0)
 
 ## Legend
 
@@ -40,6 +40,7 @@
 | Acceptance criteria | ✅ | executor | - | - | Extract from issue body, include in prompts (v0.51.0) |
 | Worktree isolation | ✅ | executor | - | `executor.use_worktree` | Execute in git worktree, allows uncommitted changes (v0.53.2) |
 | Signal parser v2 | ✅ | executor | - | - | JSON pilot-signal blocks with validation (v0.56.0) |
+| Backend-aware preflight | ✅ | executor | - | `executor.backend` | Preflight CLI check matches configured backend (claude/opencode/qwen) (v1.39.0) |
 
 ## Intelligence
 
@@ -216,6 +217,8 @@
 | GitHub API retry | ✅ | adapters/github | - | - | Exponential backoff, Retry-After header respect (v0.34.0) |
 | CI auto-discovery | ✅ | autopilot | - | - | Auto-detect check names from GitHub API (v0.41.0) |
 | Stagnation monitor | ✅ | executor | - | - | State hash tracking, escalation: warn → pause → abort (v0.56.0) |
+| URL-encode branch names | ✅ | adapters/github | - | - | `url.PathEscape(branch)` in DeleteBranch/GetBranch — fixes 404 on slash branches (v1.28.0) |
+| Branch cleanup on PR close | ✅ | autopilot | - | - | Delete remote branches on PR close/fail, not just merge (v1.35.0) |
 
 ## Epic Management
 
@@ -246,7 +249,7 @@
 
 | Category | ✅ Working | ⚠️ Implemented | 🚧 Partial | ❌ Missing |
 |----------|-----------|----------------|-----------|-----------|
-| Core Execution | 22 | 0 | 0 | 0 |
+| Core Execution | 23 | 0 | 0 | 0 |
 | Intelligence | 8 | 0 | 0 | 0 |
 | Input Adapters | 15 | 0 | 0 | 0 |
 | Output/Notifications | 5 | 0 | 0 | 0 |
@@ -260,10 +263,10 @@
 | Team Management | 3 | 0 | 0 | 0 |
 | Infrastructure | 8 | 0 | 0 | 0 |
 | Approval Workflows | 4 | 0 | 0 | 0 |
-| Autopilot | 17 | 0 | 0 | 0 |
+| Autopilot | 19 | 0 | 0 | 0 |
 | Self-Management | 6 | 0 | 0 | 0 |
 | Epic Management | 1 | 0 | 0 | 0 |
-| **Total** | **134** | **0** | **0** | **0** |
+| **Total** | **137** | **0** | **0** | **0** |
 
 ---
 
