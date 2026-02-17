@@ -9,11 +9,16 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/alekspetrov/pilot/internal/executor"
 )
 
 const (
 	linearAPIURL = "https://api.linear.app/graphql"
 )
+
+// Compile-time check: *Client implements executor.SubIssueCreator (GH-1472)
+var _ executor.SubIssueCreator = (*Client)(nil)
 
 // Client is a Linear API client
 type Client struct {

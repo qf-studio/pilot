@@ -492,6 +492,7 @@ func handleLinearIssueWithResult(ctx context.Context, cfg *config.Config, client
 	branchName := fmt.Sprintf("pilot/%s", taskID)
 
 	// GH-920: Extract acceptance criteria from Linear issue description
+	// GH-1472: Set SourceAdapter/SourceIssueID for sub-issue creation via Linear API
 	task := &executor.Task{
 		ID:                 taskID,
 		Title:              issue.Title,
@@ -500,7 +501,12 @@ func handleLinearIssueWithResult(ctx context.Context, cfg *config.Config, client
 		Branch:             branchName,
 		CreatePR:           true,
 		AcceptanceCriteria: github.ExtractAcceptanceCriteria(issue.Description),
+		SourceAdapter:      "linear",
+		SourceIssueID:      issue.ID,
 	}
+
+	// GH-1472: Wire Linear client as SubIssueCreator for epic decomposition
+	runner.SetSubIssueCreator(client)
 
 	var result *executor.ExecutionResult
 	var execErr error
