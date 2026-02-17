@@ -337,3 +337,96 @@ executor:
     medium: "claude-opus-4-6"
     complex: "claude-opus-4-6"
 ```
+
+---
+
+## Advanced SDK Features
+
+These opt-in features enhance Claude Code execution with session continuity and structured communication. They are disabled by default and can be enabled individually based on your needs.
+
+### Session Resume
+
+Session resume reuses the original execution session for self-review via `--resume <session_id>`. Instead of Claude rebuilding context from scratch, it continues the same session with full knowledge of what was just implemented.
+
+**How it works:**
+1. Runner captures `SessionID` from the initial task execution
+2. When self-review triggers, the runner passes `--resume <session_id>` to Claude Code
+3. Claude continues in the same session, skipping context reconstruction
+
+**Benefits:**
+- ~40% token savings on self-review phase
+- Faster self-review execution (no codebase re-scanning)
+- More accurate review (Claude remembers implementation decisions)
+
+**Configuration:**
+```yaml
+executor:
+  claude_code:
+    use_session_resume: true
+```
+
+### PR Context Resume
+
+When autopilot detects a CI failure and creates a fix issue, PR context resume uses `--from-pr <N>` to load the original PR's session context. Claude receives full knowledge of what was previously changed without re-reading all files.
+
+**How it works:**
+1. Autopilot creates a CI fix issue referencing PR #N
+2. Pilot executor receives the issue with `FromPR: N`
+3. Runner invokes Claude Code with `--from-pr N`
+4. Claude loads the session linked to that PR and continues with full context
+
+**Auto-fallback:** If the session is not found (expired or deleted), execution proceeds without context gracefully. No manual intervention required.
+
+**Benefits:**
+- CI fix tasks start with full PR context
+- No need to re-analyze the entire changeset
+- Faster iteration on failing builds
+
+**Configuration:**
+```yaml
+executor:
+  claude_code:
+    use_from_pr: true
+```
+
+### Structured Output
+
+Structured output enables the `--json-schema` flag for the complexity classifier and post-execution summary. Instead of parsing free-form text, Pilot receives machine-readable JSON responses.
+
+**How it works:**
+1. For complexity classification, Pilot sends a schema defining `{complexity: "trivial"|"simple"|"medium"|"complex"}`
+2. Claude responds with valid JSON matching the schema
+3. Pilot parses the response directly without regex or text extraction
+
+**Used by:**
+- Effort routing classifier (determines which model tier to use)
+- Execution report generation (extracts metrics and outcomes)
+- Post-execution summary (structured task results)
+
+**Benefits:**
+- Reliable parsing without text extraction heuristics
+- Consistent output format across executions
+- Easier integration with downstream systems
+
+**Configuration:**
+```yaml
+executor:
+  claude_code:
+    use_structured_output: true
+```
+
+### Combined Configuration
+
+Enable all three features for maximum efficiency:
+
+```yaml
+executor:
+  claude_code:
+    use_session_resume: true      # Reuse session for self-review (~40% savings)
+    use_from_pr: true             # Resume PR context for CI fixes
+    use_structured_output: true   # Machine-readable classifier output
+```
+
+<Callout type="info">
+All three features are disabled by default. Session resume provides the most immediate cost savings and is recommended as the first feature to enable. PR context resume benefits teams using autopilot for CI fixes. Structured output improves reliability for effort routing.
+</Callout>
