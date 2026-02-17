@@ -106,14 +106,14 @@ Disable via config: `executor.navigator.auto_init: false`
 | This file | Every session (navigator index) |
 | `.agent/system/FEATURE-MATRIX.md` | What's implemented vs not |
 | `.agent/system/ARCHITECTURE.md` | System design, data flow |
-| `.agent/system/PR-CHECKLIST.md` | Before merging any PR |
+| `.agent/system/PR-CHECKLIST.md` | Before merging PRs in `--autopilot=prod` mode |
 | `.agent/tasks/TASK-XX.md` | Active task details |
 | `.agent/sops/*.md` | Before modifying integrations |
 | `.agent/.context-markers/` | Resume after break |
 
 ## Current State
 
-**Current Version:** v1.10.0 | **143 features working**
+**Current Version:** v1.27.0 | **156 features working**
 
 **Full implementation status:** `.agent/system/FEATURE-MATRIX.md`
 
@@ -173,6 +173,20 @@ Disable via config: `executor.navigator.auto_init: false`
 | Qwen Code Backend | Done | Third executor backend — Alibaba Qwen Code CLI with stream-json (v1.9.0) |
 | Qwen Bug Fixes | Done | Pricing correction, version check, session_not_found, resume fallback (v1.9.2) |
 | Pipeline Hardening | Done | External correctness checks: constants, parity, coverage, dropped features (v1.10.0) |
+| Linear ProcessedStore | Done | Persistent dedup for Linear issues across restarts (v1.11.0) |
+| Linear Parallel Execution | Done | Goroutines + semaphore for Linear poller (v1.11.0) |
+| Linear Orphan Recovery | Done | Recover pilot-in-progress issues on restart (v1.11.0) |
+| Non-GitHub ProcessedStore | Done | Jira, Asana, AzureDevOps persistent dedup (v1.12.0) |
+| Non-GitHub Parallel Exec | Done | Parallel polling for Jira, Asana, AzureDevOps (v1.12.0) |
+| Linear OnPRCreated | Done | Wire Linear PRs to autopilot for CI monitor + auto-merge (v1.13.0) |
+| Claude Code Hooks v2 | Done | Migrate to matcher-based hook format for CC 2.1.42+ (v1.14.0) |
+| Pre-Push Lint Gate | Done | Run golangci-lint before creating PRs (v1.15.0) |
+| Worktree Push Fix | Done | Fix git push from worktree "no such file or directory" (v1.16.0) |
+| Auto-Delete Branches | Done | Auto-delete remote branches after PR merge (v1.17.0) |
+| Navigator Context Bridge | Done | Load project context (key files, components) into execution prompt (v1.18.0) |
+| Navigator Docs Update | Done | Auto-update feature matrix + knowledge capture post-execution (v1.19.0) |
+| Adapter State Transitions | Done | Transition Linear/Jira/Asana issues to Done on success (v1.19.0) |
+| Jira/Asana Autopilot Wire | Done | Wire OnPRCreated for Jira + Asana, add HeadSHA/BranchName (v1.19.0) |
 
 ### Telegram Interaction Modes (v0.6.0)
 
@@ -256,6 +270,32 @@ Goal: Raise autonomous reliability from 3/10 to 8/10. **Achieved: 8/10**
 ---
 
 ## Completed Log
+
+### 2026-02-17
+
+| Item | What |
+|------|------|
+| **v1.27.0** | Harden GH-1388: dedup modifiedFiles, case-insensitive feat( check, robust table insertion (no anchor dependency) |
+| **v1.27.0** | Use build version in UpdateFeatureMatrix instead of hardcoded v1.0.0 — Version field on BackendConfig |
+| **v1.19.0** | Adapter state transitions: Linear `UpdateIssueState`, Jira `TransitionIssueTo`, Asana `CompleteTask` on success (GH-1396) |
+| **v1.19.0** | Autopilot wiring: OnPRCreated for Jira + Asana, HeadSHA/BranchName in result types (GH-1397) |
+| **v1.19.0** | Navigator post-execution docs update: feature matrix, knowledge capture, context markers (GH-1388) |
+| Bug fix | APP-55 Linear retry — unblocked from processed store, PR created on aso-generator |
+
+### 2026-02-16
+
+| Item | What |
+|------|------|
+| **v1.18.0** | Navigator context bridge: load project context (key files, components, structure) into execution prompt (GH-1387) |
+| **v1.17.0** | Auto-delete remote branches after PR merge (GH-1383) |
+| **v1.16.0** | Fix git push from worktree "no such file or directory" (GH-1389) |
+| **v1.15.0** | Pre-push lint gate: run golangci-lint before creating PRs (GH-1376) |
+| **v1.14.0** | Claude Code hooks v2: migrate to matcher-based format for CC 2.1.42+ (GH-1366) |
+| **v1.13.0** | Wire Linear PRs to autopilot controller for CI monitoring + auto-merge (GH-1361) |
+| **v1.12.0** | Non-GitHub adapter parity: ProcessedStore + parallel exec for Jira, Asana, AzureDevOps (GH-1357-1359) |
+| **v1.11.0** | Linear adapter parity: ProcessedStore, parallel execution, orphan recovery (GH-1351, GH-1355, GH-1357) |
+| Cleanup | Removed MkDocs integration — unused, replaced by Nextra (GH-1385) |
+| Diagnostics | APP-55 failure analysis: identified missing adapter state transitions |
 
 ### 2026-02-15
 

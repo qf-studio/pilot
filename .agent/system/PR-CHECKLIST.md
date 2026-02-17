@@ -1,5 +1,8 @@
 # PR Merge Checklist
 
+> **Applies to:** `--autopilot=prod` (human review required) and manual merge workflows only.
+> In `--autopilot=stage` / `--autopilot=dev` modes, self-review + quality gates + CI handle verification automatically.
+
 **Purpose**: Prevent incomplete merges where changes don't propagate to all relevant commands.
 
 ## Pre-Merge Verification
