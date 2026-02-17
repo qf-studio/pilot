@@ -29,6 +29,69 @@ pilot task "Add health check endpoint"
 
 The auto-generated index includes your project structure, detected framework, and component status.
 
+### What Gets Created
+
+Auto-init creates the full Navigator directory structure:
+
+```
+.agent/
+├── DEVELOPMENT-README.md     # Project-specific navigator guide
+├── .nav-config.json          # Navigator configuration
+├── .gitignore                # Excludes session-specific files
+├── tasks/                    # Implementation plans
+├── system/                   # Architecture docs
+└── sops/                     # Standard operating procedures
+    ├── integrations/
+    ├── debugging/
+    ├── development/
+    └── deployment/
+```
+
+### Tech Stack Detection
+
+Pilot auto-detects your technology stack from project files:
+
+| File | Detected Stack |
+|------|---------------|
+| `go.mod` | Go + detected frameworks (Gin, Gorilla, Fiber) + ORMs (GORM) |
+| `package.json` | Node.js + frameworks (Next.js, React, Vue, Express) + TypeScript |
+| `pyproject.toml` | Python + frameworks (FastAPI, Django, Flask) |
+| `Cargo.toml` | Rust + frameworks (Actix, Axum) |
+| (none found) | Uses directory name as project identifier |
+
+### Template Variables
+
+Templates use these placeholders, automatically replaced during initialization:
+
+| Variable | Value |
+|----------|-------|
+| `${PROJECT_NAME}` | Detected project name (Title Case) |
+| `${project_name}` | Lowercase project name with hyphens |
+| `${TECH_STACK}` | Detected technology stack string |
+| `${DATE}` | Current date (YYYY-MM-DD) |
+| `${YEAR}` | Current year |
+
+### Auto-Init Configuration
+
+Configure auto-initialization in your Pilot config:
+
+```yaml
+# ~/.pilot/config.yaml
+executor:
+  navigator:
+    auto_init: true                # Enable auto-init (default: true)
+    templates_path: "/custom/path" # Override template location (optional)
+```
+
+<Callout type="info">
+Auto-init is enabled by default. If you manage `.agent/` manually or use a custom Navigator setup, disable it with `auto_init: false`.
+</Callout>
+
+### Custom Templates
+
+If `templates_path` is set, Pilot uses templates from that directory instead of built-in ones.
+This is useful for organizations that want standardized Navigator setup across all projects.
+
 ## Custom Setup
 
 For projects that need a tailored context structure, initialize manually:
