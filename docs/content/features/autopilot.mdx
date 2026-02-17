@@ -93,3 +93,58 @@ pilot rollback --last
 # Revert a specific PR
 pilot rollback --pr 123
 ```
+
+## Stagnation Monitor
+
+Detects stuck executions by tracking state changes and escalating through progressive intervention levels.
+
+### How Detection Works
+
+Each execution turn, Pilot hashes the current state using the pattern `phase:progress:iteration`. This creates a unique fingerprint for each distinct execution state.
+
+- **History buffer**: Recent state hashes are stored (configurable size, default 5)
+- **Repeat detection**: Consecutive identical hashes indicate the execution is stuck in a loop
+- **Time-based detection**: No progress for extended periods also triggers escalation
+
+When either condition is met, the monitor escalates through intervention levels.
+
+### Escalation Levels
+
+| Level | Trigger | Action |
+|-------|---------|--------|
+| None | Normal progress | Continue execution |
+| Warn | 3+ identical states OR `warn_timeout` (10m) | Log warning, continue |
+| Pause | `pause_at_iteration` (12) OR `pause_timeout` (20m) | Pause execution, attempt recovery |
+| Abort | `abort_at_iteration` (15) OR `abort_timeout` (30m) | Stop execution, optionally commit partial work |
+
+### Configuration
+
+```yaml
+# ~/.pilot/config.yaml
+executor:
+  stagnation:
+    enabled: true
+    warn_timeout: 10m              # Time without progress before warning
+    pause_timeout: 20m             # Time without progress before pause
+    abort_timeout: 30m             # Time without progress before abort
+    warn_at_iteration: 8           # Iteration count to trigger warn
+    pause_at_iteration: 12         # Iteration count to trigger pause
+    abort_at_iteration: 15         # Iteration count to trigger abort
+    state_history_size: 5          # Number of state hashes to track
+    identical_states_threshold: 3  # Consecutive identical states for warn
+    grace_period: 30s              # Ignore stagnation during startup
+    commit_partial_work: true      # Save progress on abort
+```
+
+### Partial Work Commit
+
+When `commit_partial_work: true` (default), Pilot salvages progress on abort:
+
+- Commits whatever changes were made before stagnation
+- Creates a PR with partial implementation
+- Marks the issue as `pilot-failed` with stagnation reason
+- Allows manual continuation from the partial branch
+
+<Callout type="warning">
+The stagnation monitor is disabled by default. Enable it for long-running tasks where stuck executions waste tokens. The default timeouts (10m/20m/30m) work well for most projects.
+</Callout>
