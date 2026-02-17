@@ -1,0 +1,132 @@
+import { Callout } from 'nextra/components'
+
+# Signal Parser
+
+Pilot uses structured JSON signal blocks to communicate execution progress between Claude Code (Navigator) and the Pilot runtime. These signals drive the dashboard progress display and enable stagnation detection during autonomous execution.
+
+## Signal Block Format
+
+Signals are embedded in Claude's output using fenced code blocks with the `pilot-signal` language identifier:
+
+````
+```pilot-signal
+{
+  "v": 2,
+  "type": "status",
+  "phase": "IMPL",
+  "progress": 65,
+  "iteration": 5,
+  "max_iterations": 10,
+  "message": "Implementing user authentication"
+}
+```
+````
+
+The parser extracts all `pilot-signal` blocks from Claude's output stream and processes them in order. Multiple signals can appear in a single response.
+
+## Signal Types
+
+| Type | Purpose | Key Fields |
+|------|---------|-----------|
+| `status` | Progress update | `progress`, `phase`, `message` |
+| `phase` | Phase transition | `phase` (INIT→RESEARCH→IMPL→VERIFY→COMPLETE) |
+| `exit` | Execution complete | `exit_signal`, `success`, `reason` |
+| `stagnation` | Stuck detection | `iteration`, `indicators` |
+
+## Field Reference
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `v` | number | No | Protocol version (default: 2) |
+| `type` | string | No | Signal type (default: "status") |
+| `phase` | string | No | Current phase: INIT, RESEARCH, IMPL, VERIFY, COMPLETE |
+| `progress` | number | No | Progress percentage (0-100, clamped) |
+| `iteration` | number | No | Current iteration count |
+| `max_iterations` | number | No | Maximum planned iterations |
+| `exit_signal` | boolean | No | True when execution should stop |
+| `success` | boolean | No | Whether execution succeeded (with exit) |
+| `reason` | string | No | Reason for exit/phase change |
+| `message` | string | No | Human-readable status message |
+| `indicators` | object | No | Key-value pairs for custom indicators |
+
+## Phase Lifecycle
+
+Navigator emits phase transitions automatically during execution. The dashboard maps phases to progress percentages:
+
+```
+INIT → RESEARCH → IMPL → VERIFY → COMPLETE
+(0%)    (25%)     (50%)   (80%)    (100%)
+```
+
+Each phase represents a distinct stage of task execution:
+
+- **INIT** — Reading requirements, loading context
+- **RESEARCH** — Finding similar code, checking patterns
+- **IMPL** — Writing code, making changes
+- **VERIFY** — Running tests, checking build
+- **COMPLETE** — Committing changes, creating PR
+
+## Validation
+
+The parser applies these validation rules:
+
+- **Progress clamping**: Values below 0 are clamped to 0; values above 100 are clamped to 100
+- **Default version**: Missing `v` field defaults to 2
+- **Default type**: Missing `type` field defaults to "status"
+- **Invalid JSON**: Malformed JSON blocks are silently skipped with a warning logged
+
+```go
+// Example: Progress is clamped automatically
+{"progress": 150}  // → progress becomes 100
+{"progress": -10}  // → progress becomes 0
+```
+
+## Dashboard Integration
+
+The [dashboard](/features/dashboard) uses three parser methods to drive the UI:
+
+| Method | Purpose |
+|--------|---------|
+| `GetLatestProgress()` | Returns the progress value from the most recent status signal, or -1 if none found |
+| `GetLatestPhase()` | Returns the phase from the most recent signal containing a phase, or empty string |
+| `HasExitSignal()` | Returns true if any signal contains `exit_signal: true` or has type `exit` |
+
+The progress bar updates in real-time as signals arrive. When `HasExitSignal()` returns true, the executor triggers completion handling and moves to the next task.
+
+<Callout type="info">
+Signals are emitted by Navigator during execution. You don't need to configure anything — they work automatically when Navigator is active.
+</Callout>
+
+## Exit Signals
+
+Exit signals terminate execution and report success or failure:
+
+```pilot-signal
+{"v":2,"type":"exit","exit_signal":true,"success":true}
+```
+
+For failures, include a reason:
+
+```pilot-signal
+{"v":2,"type":"exit","exit_signal":true,"success":false,"reason":"blocked: tests failing after 3 retry attempts"}
+```
+
+The `success` field determines whether Pilot marks the task as completed or failed. The `reason` field is included in PR comments and Slack notifications.
+
+## Stagnation Detection
+
+Stagnation signals help detect when execution is stuck:
+
+```pilot-signal
+{"v":2,"type":"stagnation","iteration":8,"max_iterations":10,"indicators":{"same_error":true,"no_progress":true}}
+```
+
+The `indicators` map contains boolean flags that describe the stagnation state. Common indicators:
+- `same_error` — Same error message repeated
+- `no_progress` — Progress hasn't changed in several iterations
+- `retry_exhausted` — Maximum retry attempts reached
+
+## What's Next
+
+- **[Architecture](/concepts/architecture)** — Full system architecture and signal flow
+- **[Dashboard](/features/dashboard)** — How signals drive the terminal UI
