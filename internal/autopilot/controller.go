@@ -886,11 +886,13 @@ func (c *Controller) handleMergeConflict(ctx context.Context, prState *PRState) 
 	return nil
 }
 
-// removePR removes PR from tracking.
+// removePR removes PR from tracking and cleans up the remote branch.
 func (c *Controller) removePR(prNumber int) {
 	c.mu.Lock()
 	prState, ok := c.activePRs[prNumber]
+	var branchName string
 	if ok {
+		branchName = prState.BranchName
 		// GH-862: Clean up discovery state for this PR's SHA
 		if prState.HeadSHA != "" {
 			c.ciMonitor.ClearDiscovery(prState.HeadSHA)
@@ -899,6 +901,15 @@ func (c *Controller) removePR(prNumber int) {
 	}
 	delete(c.prFailures, prNumber)
 	c.mu.Unlock()
+
+	// Clean up remote branch for closed/failed PRs (merged PRs already handled in handleMerging)
+	if branchName != "" && c.ghClient != nil {
+		if err := c.ghClient.DeleteBranch(context.Background(), c.owner, c.repo, branchName); err != nil {
+			c.log.Debug("branch cleanup on PR removal", "branch", branchName, "pr", prNumber, "error", err)
+		} else {
+			c.log.Info("deleted branch on PR removal", "branch", branchName, "pr", prNumber)
+		}
+	}
 
 	c.persistRemovePR(prNumber)
 	c.removePRFailures(prNumber)
