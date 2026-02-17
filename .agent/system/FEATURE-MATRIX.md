@@ -222,6 +222,7 @@
 | Feature | Status | Package | CLI Command | Config Key | Notes |
 |---------|--------|---------|-------------|------------|-------|
 | APP-789 Subtask 1 | ✅ | docs | - | - | First subtask implementation complete (v1.27.0) |
+| APP-789 Subtask 2 | ✅ | docs | - | - | Second subtask implementation complete (v1.27.0) |
 
 **Environments:**
 - `dev`: Skip CI, auto-merge immediately
