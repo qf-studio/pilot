@@ -8,7 +8,6 @@ import (
 )
 
 func TestUpdateFeatureMatrix(t *testing.T) {
-	// Create temporary directory
 	tmpDir := t.TempDir()
 	agentPath := filepath.Join(tmpDir, ".agent")
 	systemPath := filepath.Join(agentPath, "system")
@@ -17,7 +16,6 @@ func TestUpdateFeatureMatrix(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Create a minimal FEATURE-MATRIX.md
 	matrixPath := filepath.Join(systemPath, "FEATURE-MATRIX.md")
 	baseContent := `# Pilot Feature Matrix
 
@@ -39,7 +37,6 @@ func TestUpdateFeatureMatrix(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Test 1: Add a new feature
 	task := &Task{
 		ID:    "GH-1388",
 		Title: "feat(executor): update Navigator docs after task execution",
@@ -49,38 +46,88 @@ func TestUpdateFeatureMatrix(t *testing.T) {
 		t.Fatalf("UpdateFeatureMatrix failed: %v", err)
 	}
 
-	// Verify the file was updated
 	content, err := os.ReadFile(matrixPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-
 	contentStr := string(content)
 
-	// Check that feature name is present (in proper format)
+	// Feature name present
 	if !strings.Contains(contentStr, "Update Navigator docs") {
-		t.Errorf("Expected feature name 'Update Navigator docs' not found in matrix. Content:\n%s", contentStr)
+		t.Errorf("Expected feature name not found. Content:\n%s", contentStr)
 	}
 
-	// Check that done status is present (should appear multiple times)
-	statusCount := strings.Count(contentStr, "✅")
-	if statusCount < 2 {
-		t.Logf("Only found %d done status markers, expected at least 2", statusCount)
-	}
-
-	// Check that version is present
+	// Version present
 	if !strings.Contains(contentStr, "v1.10.0") {
-		t.Errorf("Expected version v1.10.0 not found in matrix")
+		t.Errorf("Expected version v1.10.0 not found")
 	}
 
-	// Check that task ID is referenced
+	// Task ID referenced
 	if !strings.Contains(contentStr, "GH-1388") {
-		t.Errorf("Expected task ID GH-1388 not found in matrix")
+		t.Errorf("Expected task ID GH-1388 not found")
+	}
+
+	// New row inserted BEFORE ## Intelligence (in Core Execution table)
+	newRowIdx := strings.Index(contentStr, "Update Navigator docs")
+	intellIdx := strings.Index(contentStr, "## Intelligence")
+	if newRowIdx > intellIdx {
+		t.Errorf("New row inserted after ## Intelligence, should be before")
+	}
+
+	// New row inserted AFTER the existing Core Execution data row
+	taskExecIdx := strings.Index(contentStr, "Task execution")
+	if newRowIdx < taskExecIdx {
+		t.Errorf("New row inserted before existing data row, should be after")
+	}
+}
+
+func TestUpdateFeatureMatrixNoIntelligenceSection(t *testing.T) {
+	tmpDir := t.TempDir()
+	agentPath := filepath.Join(tmpDir, ".agent")
+	systemPath := filepath.Join(agentPath, "system")
+
+	if err := os.MkdirAll(systemPath, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Matrix with Core Execution only, no other sections
+	matrixPath := filepath.Join(systemPath, "FEATURE-MATRIX.md")
+	baseContent := `# Pilot Feature Matrix
+
+## Core Execution
+
+| Feature | Status | Package | CLI Command | Config Key | Notes |
+|---------|--------|---------|-------------|------------|-------|
+| Task execution | ✅ | executor | ` + "`pilot task`" + ` | - | Claude Code subprocess |
+`
+	if err := os.WriteFile(matrixPath, []byte(baseContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	task := &Task{
+		ID:    "GH-2000",
+		Title: "feat(gateway): add health endpoint",
+	}
+
+	if err := UpdateFeatureMatrix(agentPath, task, "v2.0.0"); err != nil {
+		t.Fatalf("UpdateFeatureMatrix failed: %v", err)
+	}
+
+	content, err := os.ReadFile(matrixPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	contentStr := string(content)
+
+	if !strings.Contains(contentStr, "Add health endpoint") {
+		t.Errorf("Expected feature name not found. Content:\n%s", contentStr)
+	}
+	if !strings.Contains(contentStr, "v2.0.0") {
+		t.Errorf("Expected version v2.0.0 not found")
 	}
 }
 
 func TestUpdateFeatureMatrixMissingFile(t *testing.T) {
-	// Create temporary directory without FEATURE-MATRIX.md
 	tmpDir := t.TempDir()
 	agentPath := filepath.Join(tmpDir, ".agent")
 

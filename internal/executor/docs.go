@@ -78,48 +78,49 @@ func UpdateFeatureMatrix(agentPath string, task *Task, version string) error {
 		return nil
 	}
 
-	text := string(content)
-	lines := strings.Split(text, "\n")
+	lines := strings.Split(string(content), "\n")
+	featureName := extractFeatureName(task.Title)
+	newRow := fmt.Sprintf("| %s | ✅ | %s | - | - | %s |", featureName, version, task.ID)
 
-	// Find the "Core Execution" table and insert after the last row before a blank line or new section
-	// Look for the pattern: | Feature Name | Status | ... |
-	// We'll append to the end of the first table we find (Core Execution)
+	// Strategy: find the first markdown table (## Core Execution), locate the last
+	// pipe-prefixed row in that table, and insert after it. This avoids depending
+	// on a specific section header like "## Intelligence" as an anchor.
+	inCoreTable := false
+	lastPipeIdx := -1
 
-	var result []string
-	inserted := false
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
 
-	for _, line := range lines {
-		result = append(result, line)
+		// Detect start of Core Execution table
+		if strings.HasPrefix(trimmed, "## Core Execution") {
+			inCoreTable = true
+			continue
+		}
 
-		// After the Core Execution table ends (look for blank line after pipes), insert the new feature
-		if !inserted && strings.HasPrefix(line, "## Intelligence") {
-			// Go back one line (which should be blank or a pipe line)
-			// and insert before this section header
-			if len(result) > 0 && result[len(result)-1] == line {
-				// Insert before the ## Intelligence line
-				// Find the last data row of Core Execution table
-				insertIdx := len(result) - 1
+		// Detect end of Core Execution table (next section header)
+		if inCoreTable && strings.HasPrefix(trimmed, "## ") {
+			inCoreTable = false
+			continue
+		}
 
-				// Extract feature name from task description or title
-				featureName := extractFeatureName(task.Title)
-
-				// Create the row: | Feature Name | Done | version |
-				newRow := fmt.Sprintf("| %s | ✅ | %s | - | - | Task %s (GH-1388) |", featureName, version, task.ID)
-				result = append(result[:insertIdx], append([]string{newRow, ""}, result[insertIdx:]...)...)
-				inserted = true
-			}
+		// Track last data row (pipe-prefixed, not separator row like |---|---|)
+		if inCoreTable && strings.HasPrefix(trimmed, "|") && !strings.Contains(trimmed, "---|") {
+			lastPipeIdx = i
 		}
 	}
 
-	// If we didn't insert (table structure is different), just append to end
-	if !inserted {
-		result = append(result, fmt.Sprintf("| %s | ✅ | %s | - | - | Task %s (GH-1388) |",
-			extractFeatureName(task.Title), version, task.ID))
+	if lastPipeIdx >= 0 {
+		// Insert after the last data row in Core Execution table
+		after := make([]string, len(lines[lastPipeIdx+1:]))
+		copy(after, lines[lastPipeIdx+1:])
+		result := append(lines[:lastPipeIdx+1], newRow)
+		result = append(result, after...)
+		return os.WriteFile(featureMatrixPath, []byte(strings.Join(result, "\n")), 0644)
 	}
 
-	// Write back
-	newContent := strings.Join(result, "\n")
-	return os.WriteFile(featureMatrixPath, []byte(newContent), 0644)
+	// Fallback: append to end of file
+	lines = append(lines, newRow)
+	return os.WriteFile(featureMatrixPath, []byte(strings.Join(lines, "\n")), 0644)
 }
 
 // extractFeatureName extracts a clean feature name from the task title

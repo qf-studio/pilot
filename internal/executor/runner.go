@@ -2382,7 +2382,7 @@ The previous execution completed but made no code changes. This task requires ac
 			}
 
 			// GH-1388: Update feature matrix for feature tasks
-			if strings.HasPrefix(task.Title, "feat(") {
+			if strings.HasPrefix(strings.ToLower(task.Title), "feat(") {
 				ver := "unknown"
 				if r.config != nil && r.config.Version != "" {
 					ver = r.config.Version
@@ -3054,9 +3054,18 @@ func (r *Runner) handleToolUse(taskID, toolName string, input map[string]interfa
 	case "Write", "Edit":
 		state.filesWrite++
 		if fp, ok := input["file_path"].(string); ok {
-			// Track actual modified files (GH-1388)
+			// Track actual modified files with dedup (GH-1388)
 			if !strings.Contains(fp, ".agent/") {
-				state.modifiedFiles = append(state.modifiedFiles, fp)
+				found := false
+				for _, existing := range state.modifiedFiles {
+					if existing == fp {
+						found = true
+						break
+					}
+				}
+				if !found {
+					state.modifiedFiles = append(state.modifiedFiles, fp)
+				}
 			}
 			// Check if writing to .agent/ (Navigator activity)
 			if strings.Contains(fp, ".agent/") {
