@@ -132,7 +132,28 @@ go test ./internal/path/to/changed/package/...
 
 ---
 
-### Phase 5: COMPLETE (90-100%)
+### Phase 4.5: DOCUMENT (90-92%)
+
+After verification passes, before committing:
+
+1. **Update feature list**: If you added a new feature or capability, add a row to
+   ` + "`" + `.agent/system/FEATURE-MATRIX.md` + "`" + ` with status "Done" and the current version.
+
+2. **Knowledge capture**: If you solved a non-obvious problem or made an architectural
+   decision, note it in a code comment with ` + "`" + `// Decision: <reasoning>` + "`" + ` format.
+
+3. **SOP candidate**: If you encountered and solved a tricky issue that others might
+   hit (obscure error, config gotcha, integration quirk), create a brief SOP at
+   ` + "`" + `.agent/sops/{category}/{name}.md` + "`" + ` with: Problem, Root Cause, Solution, Prevention.
+
+**Skip this phase for**:
+- Trivial fixes (typos, one-line changes)
+- Bug fixes that don't reveal new patterns
+- Tasks that don't add features or solve novel problems
+
+---
+
+### Phase 5: COMPLETE (92-100%)
 
 **Commit format**:
 ` + "```" + `

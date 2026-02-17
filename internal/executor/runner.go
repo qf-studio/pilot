@@ -96,6 +96,8 @@ type progressState struct {
 	smartRetryAttempt int // Current retry attempt for error-based retries
 	// Session resume support (GH-1265)
 	sessionID string // Claude Code session ID for resume in self-review
+	// Modified files tracking (GH-1388)
+	modifiedFiles []string // List of actually modified files from Write/Edit tool events
 }
 
 // Task represents a task to be executed by the Runner.
@@ -2379,13 +2381,26 @@ The previous execution completed but made no code changes. This task requires ac
 				log.Warn("Failed to archive task documentation", slog.Any("error", archiveErr))
 			}
 
+			// GH-1388: Update feature matrix for feature tasks
+			if strings.HasPrefix(task.Title, "feat(") {
+				if fmErr := UpdateFeatureMatrix(agentPath, task, "v1.0.0"); fmErr != nil {
+					log.Warn("Failed to update feature matrix", slog.Any("error", fmErr))
+				}
+			}
+
 			// GH-1064: Create context marker for completed task
 			marker := &ContextMarker{
 				Name:        fmt.Sprintf("task-completed-%s", task.ID),
 				Description: fmt.Sprintf("Task completed: %s", task.Title),
 				TaskID:      task.ID,
-				CurrentFocus: fmt.Sprintf("Successfully completed task %s (%s). Duration: %v. Commits: %d files modified.",
-					task.ID, task.Title, duration, state.filesWrite),
+				CurrentFocus: fmt.Sprintf("Completed %s. %d files changed, %d lines added, %d removed. Cost: $%.2f.",
+					task.Title, result.FilesChanged, result.LinesAdded, result.LinesRemoved,
+					result.EstimatedCostUSD),
+			}
+
+			// Add modified files list (GH-1388)
+			if len(state.modifiedFiles) > 0 {
+				marker.CurrentFocus += fmt.Sprintf(" Modified: %s.", strings.Join(state.modifiedFiles, ", "))
 			}
 
 			// Add commit SHA and PR info if available
@@ -2393,7 +2408,7 @@ The previous execution completed but made no code changes. This task requires ac
 				marker.Commits = append(marker.Commits, result.CommitSHA)
 			}
 			if result.PRUrl != "" {
-				marker.CurrentFocus += fmt.Sprintf(" PR created: %s", result.PRUrl)
+				marker.CurrentFocus += fmt.Sprintf(" PR: %s", result.PRUrl)
 			}
 
 			if createMarkerErr := CreateMarker(agentPath, marker); createMarkerErr != nil {
@@ -2418,15 +2433,26 @@ The previous execution completed but made no code changes. This task requires ac
 				projectID = filepath.Base(task.ProjectPath)
 			}
 
-			filesModified := 0
-			if state != nil {
-				filesModified = state.filesWrite
+			// Enrich content with execution metrics
+			content := fmt.Sprintf(
+				"Completed %s: %s. Modified %d files. Duration: %v. Model: %s.",
+				task.ID, task.Title, result.FilesChanged, duration, result.ModelName,
+			)
+			if result.IntentWarning != "" {
+				content += fmt.Sprintf(" Intent warning: %s.", result.IntentWarning)
+			}
+
+			// Enrich context with branch, PR URL, and cost
+			contextStr := fmt.Sprintf("Branch: %s, Cost: $%.2f",
+				task.Branch, result.EstimatedCostUSD)
+			if result.PRUrl != "" {
+				contextStr += fmt.Sprintf(", PR: %s", result.PRUrl)
 			}
 
 			memory := &memory.Memory{
 				Type:       memory.MemoryTypeLearning,
-				Content:    fmt.Sprintf("Successfully completed task: %s", task.Title),
-				Context:    fmt.Sprintf("Task %s - Duration: %v, Files modified: %d", task.ID, duration, filesModified),
+				Content:    content,
+				Context:    contextStr,
 				Confidence: 1.0,
 				ProjectID:  projectID,
 			}
@@ -3024,6 +3050,10 @@ func (r *Runner) handleToolUse(taskID, toolName string, input map[string]interfa
 	case "Write", "Edit":
 		state.filesWrite++
 		if fp, ok := input["file_path"].(string); ok {
+			// Track actual modified files (GH-1388)
+			if !strings.Contains(fp, ".agent/") {
+				state.modifiedFiles = append(state.modifiedFiles, fp)
+			}
 			// Check if writing to .agent/ (Navigator activity)
 			if strings.Contains(fp, ".agent/") {
 				state.hasNavigator = true
