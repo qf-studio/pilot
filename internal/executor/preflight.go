@@ -39,6 +39,11 @@ type PreflightOptions struct {
 	// SkipGitClean skips the git_clean check. Use this when worktree isolation
 	// is enabled, as the worktree is always clean (created from a commit).
 	SkipGitClean bool
+
+	// BackendType specifies the configured backend ("claude-code", "opencode", "qwen-code").
+	// When set, the CLI availability check matches the active backend instead of
+	// always requiring 'claude'.
+	BackendType string
 }
 
 // RunPreflightChecks executes all default pre-flight checks.
@@ -52,9 +57,36 @@ func RunPreflightChecks(ctx context.Context, projectPath string) error {
 // because worktrees are always created from a commit (clean state).
 func RunPreflightChecksWithOptions(ctx context.Context, projectPath string, opts PreflightOptions) error {
 	checks := DefaultPreflightChecks
-	if opts.SkipGitClean {
-		checks = getChecksWithoutGitClean()
+
+	// GH-1483: Replace hardcoded claude check with backend-aware check
+	if opts.BackendType != "" && opts.BackendType != "claude-code" {
+		var filtered []PreflightCheck
+		for _, c := range checks {
+			if c.Name == "claude_available" {
+				filtered = append(filtered, PreflightCheck{
+					Name:        "backend_available",
+					Description: fmt.Sprintf("Verify %s CLI is available", opts.BackendType),
+					Check: func(ctx context.Context, _ string) error {
+						return checkBackendCLI(ctx, opts.BackendType)
+					},
+				})
+			} else {
+				filtered = append(filtered, c)
+			}
+		}
+		checks = filtered
 	}
+
+	if opts.SkipGitClean {
+		var filtered []PreflightCheck
+		for _, c := range checks {
+			if c.Name != "git_clean" {
+				filtered = append(filtered, c)
+			}
+		}
+		checks = filtered
+	}
+
 	return RunPreflightChecksCustom(ctx, projectPath, checks)
 }
 
@@ -98,10 +130,30 @@ func (e *PreflightError) Unwrap() error {
 
 // checkClaudeAvailable verifies the claude CLI is installed and accessible.
 func checkClaudeAvailable(ctx context.Context, _ string) error {
-	cmd := exec.CommandContext(ctx, "claude", "--version")
+	return checkBackendCLI(ctx, "claude-code")
+}
+
+// backendCLICommands maps backend type to the CLI command and version flag.
+var backendCLICommands = map[string]struct {
+	command     string
+	versionFlag string
+}{
+	"claude-code": {command: "claude", versionFlag: "--version"},
+	"opencode":    {command: "opencode", versionFlag: "version"},
+	"qwen-code":   {command: "qwen", versionFlag: "--version"},
+}
+
+// checkBackendCLI verifies the CLI for the given backend type is available.
+func checkBackendCLI(ctx context.Context, backendType string) error {
+	info, ok := backendCLICommands[backendType]
+	if !ok {
+		// Unknown backend — skip check rather than block
+		return nil
+	}
+	cmd := exec.CommandContext(ctx, info.command, info.versionFlag)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("claude command not available: %w (output: %s)", err, strings.TrimSpace(string(output)))
+		return fmt.Errorf("%s command not available: %w (output: %s)", info.command, err, strings.TrimSpace(string(output)))
 	}
 	return nil
 }

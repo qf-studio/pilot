@@ -451,6 +451,14 @@ func (r *Runner) Config() *BackendConfig {
 	return r.config
 }
 
+// backendType returns the configured backend type, defaulting to "claude-code".
+func (r *Runner) backendType() string {
+	if r.config != nil && r.config.Type != "" {
+		return r.config.Type
+	}
+	return "claude-code"
+}
+
 // SetBackend changes the execution backend.
 func (r *Runner) SetBackend(backend Backend) {
 	r.backend = backend
@@ -822,6 +830,7 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 	if !r.skipPreflightChecks {
 		preflightOpts := PreflightOptions{
 			SkipGitClean: r.config != nil && r.config.UseWorktree,
+			BackendType:  r.backendType(),
 		}
 		if err := RunPreflightChecksWithOptions(ctx, executionPath, preflightOpts); err != nil {
 			r.log.Warn("Pre-flight check failed",
