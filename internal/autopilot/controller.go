@@ -1415,6 +1415,28 @@ func (c *Controller) checkExternalMergeOrClose(ctx context.Context, prState *PRS
 		c.log.Info("PR merged externally", "pr", prState.PRNumber)
 		c.notifyExternalMerge(ctx, prState)
 
+		// GH-1486: Close associated issue and add pilot-done label on external merge
+		if prState.IssueNumber > 0 {
+			// Add pilot-done label
+			if err := c.ghClient.AddLabels(ctx, c.owner, c.repo, prState.IssueNumber, []string{github.LabelDone}); err != nil {
+				c.log.Warn("failed to add pilot-done label after external merge", "issue", prState.IssueNumber, "error", err)
+			}
+			// Remove pilot-in-progress label
+			if err := c.ghClient.RemoveLabel(ctx, c.owner, c.repo, prState.IssueNumber, github.LabelInProgress); err != nil {
+				c.log.Debug("pilot-in-progress label cleanup on external merge", "issue", prState.IssueNumber, "error", err)
+			}
+			// Remove pilot-failed label (cleanup from prior failed attempt)
+			if err := c.ghClient.RemoveLabel(ctx, c.owner, c.repo, prState.IssueNumber, github.LabelFailed); err != nil {
+				c.log.Debug("pilot-failed label cleanup on external merge", "issue", prState.IssueNumber, "error", err)
+			}
+			// Close the issue
+			if err := c.ghClient.UpdateIssueState(ctx, c.owner, c.repo, prState.IssueNumber, "closed"); err != nil {
+				c.log.Warn("failed to close issue after external merge", "issue", prState.IssueNumber, "error", err)
+			} else {
+				c.log.Info("closed issue after external merge", "issue", prState.IssueNumber, "pr", prState.PRNumber)
+			}
+		}
+
 		// GH-411: Trigger release for externally merged PRs if auto-release is enabled
 		if c.shouldTriggerRelease() && prState.Stage != StageReleasing {
 			c.log.Info("triggering release for externally merged PR", "pr", prState.PRNumber)
