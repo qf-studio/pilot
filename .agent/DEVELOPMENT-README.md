@@ -260,12 +260,35 @@ Goal: Raise autonomous reliability from 3/10 to 8/10. **Achieved: 8/10**
 
 **Usage**: `pilot start --slack` enables Socket Mode. Requires `app_token` in config.
 
+### Docs Refresh ✅ Complete (8/8)
+
+Nextra 4 migration (PR #1409) + 8 docs pages covering all 156 features:
+
+| Issue | Title | PR | Status |
+|-------|-------|----|--------|
+| GH-1411 | Epic Decomposition guide | #1422 | Merged (via retry GH-1420) |
+| GH-1412 | Claude Code Hooks guide | #1419 | Merged |
+| GH-1413 | Multi-Repo Polling guide | #1428 | Merged (retry) |
+| GH-1414 | Signal Parser reference | #1423 | Merged |
+| GH-1415 | Execution Backends SDK features | #1424 | Merged |
+| GH-1416 | Stagnation Monitor section | #1426 | Merged |
+| GH-1417 | Navigator Auto-Init section | #1425 | Merged |
+| GH-1418 | Homepage + config reference | #1427 | Merged |
+
+**Docs site**: 60 pages, Nextra 4, all 156 features documented.
+
 ### Backlog
 
 | Priority | Topic | Why |
 |----------|-------|-----|
-| P2 | Docs v2: Nextra 4 migration | Attempted, failed — docs still on Nextra v2 |
-| P3 | Docs refresh for 107 features | Teams RBAC, approval rules not documented |
+| P1 | Web dashboard / API | TUI is dev-only — need browser UI for teams |
+| P1 | Multi-tenant SaaS mode | Single-user CLI → hosted needs auth, isolation |
+| P1 | Public launch prep | Landing page, onboarding, pricing, billing |
+| P2 | E2E test suite | No integration tests — reliability untested |
+| P2 | Multi-model routing | Opus for everything is expensive |
+| P3 | Docker / Helm chart | K8s probes exist but no container story |
+| P3 | GitHub App auth | PAT → installable GitHub App |
+| P3 | Learn from PR reviews | Feedback loop into future executions |
 
 ---
 
@@ -275,6 +298,8 @@ Goal: Raise autonomous reliability from 3/10 to 8/10. **Achieved: 8/10**
 
 | Item | What |
 |------|------|
+| **Docs refresh** | 8 issues (GH-1411–1418) all merged — epic decomp, hooks, multi-repo, signal parser, SDK features, stagnation, auto-init, config ref. 60 pages total. |
+| **Nextra 4** | Docs site migrated from Nextra 2 to Nextra 4 (App Router) — PR #1409, GH-1407 closed |
 | **v1.27.0** | Harden GH-1388: dedup modifiedFiles, case-insensitive feat( check, robust table insertion (no anchor dependency) |
 | **v1.27.0** | Use build version in UpdateFeatureMatrix instead of hardcoded v1.0.0 — Version field on BackendConfig |
 | **v1.19.0** | Adapter state transitions: Linear `UpdateIssueState`, Jira `TransitionIssueTo`, Asana `CompleteTask` on success (GH-1396) |

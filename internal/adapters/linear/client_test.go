@@ -563,6 +563,10 @@ func TestClientMethodSignatures(t *testing.T) {
 	// AddComment
 	err = client.AddComment(ctx, "issue", "body")
 	_ = err
+
+	// CreateIssue
+	_, _, err = client.CreateIssue(ctx, "parent", "title", "body", []string{"label"})
+	_ = err
 }
 
 // testableClient wraps Client methods with custom URL support for testing
@@ -943,4 +947,360 @@ func TestGetTeamDoneStateID_Cache(t *testing.T) {
 	if callCount != 2 {
 		t.Errorf("expected 2 HTTP calls after third request (different team), got %d", callCount)
 	}
+}
+
+func TestCreateIssue_Success(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		var reqBody GraphQLRequest
+		if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {
+			t.Fatalf("failed to decode request body: %v", err)
+		}
+
+		// First call: GetIssue for parent context
+		if callCount == 1 {
+			if !contains(reqBody.Query, "issue(id: $id)") {
+				t.Errorf("first query should fetch parent issue, got: %s", reqBody.Query)
+			}
+			if reqBody.Variables["id"] != "parent-123" {
+				t.Errorf("variables[id] = %v, want parent-123", reqBody.Variables["id"])
+			}
+
+			resp := GraphQLResponse{
+				Data: json.RawMessage(`{
+					"issue": {
+						"id": "parent-123",
+						"identifier": "APP-42",
+						"title": "Parent issue",
+						"description": "Parent description",
+						"priority": 1,
+						"state": {"id": "state-1", "name": "In Progress", "type": "started"},
+						"labels": {"nodes": []},
+						"assignee": null,
+						"project": {"id": "project-1", "name": "Main Project"},
+						"team": {"id": "team-1", "name": "Engineering", "key": "ENG"},
+						"createdAt": "2024-01-15T10:00:00Z",
+						"updatedAt": "2024-01-16T12:00:00Z"
+					}
+				}`),
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(resp)
+			return
+		}
+
+		// Second call: GetOrCreateLabel for "Pilot" label
+		if callCount == 2 {
+			if !contains(reqBody.Query, "issueLabels") {
+				t.Errorf("second query should fetch labels, got: %s", reqBody.Query)
+			}
+			if reqBody.Variables["name"] != "Pilot" {
+				t.Errorf("variables[name] = %v, want Pilot", reqBody.Variables["name"])
+			}
+
+			resp := GraphQLResponse{
+				Data: json.RawMessage(`{
+					"issueLabels": {
+						"nodes": [{"id": "label-pilot", "name": "Pilot"}]
+					}
+				}`),
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(resp)
+			return
+		}
+
+		// Third call: issueCreate mutation
+		if callCount == 3 {
+			if !contains(reqBody.Query, "issueCreate") {
+				t.Errorf("third query should create issue, got: %s", reqBody.Query)
+			}
+
+			// Verify variables
+			if reqBody.Variables["teamId"] != "team-1" {
+				t.Errorf("variables[teamId] = %v, want team-1", reqBody.Variables["teamId"])
+			}
+			if reqBody.Variables["title"] != "Sub issue title" {
+				t.Errorf("variables[title] = %v, want 'Sub issue title'", reqBody.Variables["title"])
+			}
+			expectedDesc := "Parent: parent-123\n\nSub issue description"
+			if reqBody.Variables["description"] != expectedDesc {
+				t.Errorf("variables[description] = %v, want %q", reqBody.Variables["description"], expectedDesc)
+			}
+			if reqBody.Variables["projectId"] != "project-1" {
+				t.Errorf("variables[projectId] = %v, want project-1", reqBody.Variables["projectId"])
+			}
+
+			// Verify labelIds includes pilot label
+			labelIds, ok := reqBody.Variables["labelIds"].([]interface{})
+			if !ok || len(labelIds) != 1 || labelIds[0] != "label-pilot" {
+				t.Errorf("variables[labelIds] = %v, want [\"label-pilot\"]", reqBody.Variables["labelIds"])
+			}
+
+			resp := GraphQLResponse{
+				Data: json.RawMessage(`{
+					"issueCreate": {
+						"success": true,
+						"issue": {
+							"id": "new-issue-123",
+							"identifier": "APP-123",
+							"url": "https://linear.app/team/issue/APP-123"
+						}
+					}
+				}`),
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(resp)
+			return
+		}
+
+		t.Errorf("unexpected call count: %d", callCount)
+	}))
+	defer server.Close()
+
+	client := newTestableCreateIssueClient(server.URL, testutil.FakeLinearAPIKey)
+
+	identifier, url, err := client.CreateIssue(context.Background(), "parent-123", "Sub issue title", "Sub issue description", []string{})
+	if err != nil {
+		t.Fatalf("CreateIssue failed: %v", err)
+	}
+
+	if identifier != "APP-123" {
+		t.Errorf("identifier = %s, want APP-123", identifier)
+	}
+	if url != "https://linear.app/team/issue/APP-123" {
+		t.Errorf("url = %s, want https://linear.app/team/issue/APP-123", url)
+	}
+	if callCount != 3 {
+		t.Errorf("expected 3 API calls, got %d", callCount)
+	}
+}
+
+func TestCreateIssue_ParentNotFound(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		resp := GraphQLResponse{
+			Errors: []GraphQLError{
+				{Message: "Entity not found: Issue"},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	client := newTestableCreateIssueClient(server.URL, testutil.FakeLinearAPIKey)
+
+	_, _, err := client.CreateIssue(context.Background(), "nonexistent", "Title", "Description", []string{})
+	if err == nil {
+		t.Fatal("expected error but got nil")
+	}
+	if !contains(err.Error(), "failed to fetch parent issue") {
+		t.Errorf("error = %v, want to contain 'failed to fetch parent issue'", err)
+	}
+}
+
+func TestCreateIssue_CreateFails(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+
+		// First two calls succeed (GetIssue and GetLabel)
+		if callCount <= 2 {
+			if callCount == 1 {
+				// GetIssue response
+				resp := GraphQLResponse{
+					Data: json.RawMessage(`{
+						"issue": {
+							"id": "parent-123",
+							"identifier": "APP-42",
+							"title": "Parent",
+							"description": "",
+							"priority": 1,
+							"state": {"id": "state-1", "name": "Open", "type": "unstarted"},
+							"labels": {"nodes": []},
+							"assignee": null,
+							"project": null,
+							"team": {"id": "team-1", "name": "Engineering", "key": "ENG"},
+							"createdAt": "2024-01-15T10:00:00Z",
+							"updatedAt": "2024-01-16T12:00:00Z"
+						}
+					}`),
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(resp)
+			} else {
+				// GetLabel response
+				resp := GraphQLResponse{
+					Data: json.RawMessage(`{
+						"issueLabels": {
+							"nodes": [{"id": "label-pilot", "name": "Pilot"}]
+						}
+					}`),
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(resp)
+			}
+			return
+		}
+
+		// Third call fails (issueCreate)
+		resp := GraphQLResponse{
+			Errors: []GraphQLError{
+				{Message: "Cannot create issue in this team"},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	client := newTestableCreateIssueClient(server.URL, testutil.FakeLinearAPIKey)
+
+	_, _, err := client.CreateIssue(context.Background(), "parent-123", "Title", "Description", []string{})
+	if err == nil {
+		t.Fatal("expected error but got nil")
+	}
+	if !contains(err.Error(), "failed to create issue") {
+		t.Errorf("error = %v, want to contain 'failed to create issue'", err)
+	}
+}
+
+// testableCreateIssueClient extends testableClient with CreateIssue support
+type testableCreateIssueClient struct {
+	*testableClient
+}
+
+func newTestableCreateIssueClient(baseURL, apiKey string) *testableCreateIssueClient {
+	return &testableCreateIssueClient{
+		testableClient: newTestableClient(baseURL, apiKey),
+	}
+}
+
+func (c *testableCreateIssueClient) CreateIssue(ctx context.Context, parentID, title, body string, labels []string) (string, string, error) {
+	// Fetch parent issue to get team/project context
+	parent, err := c.getIssue(ctx, parentID)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to fetch parent issue %s: %w", parentID, err)
+	}
+
+	// Build body with parent reference
+	bodyWithParent := fmt.Sprintf("Parent: %s\n\n%s", parentID, body)
+
+	// Get or create "Pilot" label
+	pilotLabelID, err := c.getOrCreateLabel(ctx, parent.Team.Key, "Pilot", "#7ec699")
+	if err != nil {
+		return "", "", fmt.Errorf("failed to get/create Pilot label: %w", err)
+	}
+
+	// Collect all label IDs
+	labelIDs := []string{pilotLabelID}
+	for _, labelName := range labels {
+		if labelName != "Pilot" { // Avoid duplicates
+			labelID, err := c.getOrCreateLabel(ctx, parent.Team.Key, labelName, "#8b949e")
+			if err != nil {
+				return "", "", fmt.Errorf("failed to get/create label %s: %w", labelName, err)
+			}
+			labelIDs = append(labelIDs, labelID)
+		}
+	}
+
+	// Create issue using issueCreate mutation
+	mutation := `
+		mutation CreateIssue($teamId: String!, $title: String!, $description: String, $labelIds: [String!], $projectId: String) {
+			issueCreate(input: {
+				teamId: $teamId,
+				title: $title,
+				description: $description,
+				labelIds: $labelIds,
+				projectId: $projectId
+			}) {
+				success
+				issue {
+					id
+					identifier
+					url
+				}
+			}
+		}
+	`
+
+	variables := map[string]interface{}{
+		"teamId":      parent.Team.ID,
+		"title":       title,
+		"description": bodyWithParent,
+		"labelIds":    labelIDs,
+	}
+
+	// Include project if parent has one
+	if parent.Project != nil {
+		variables["projectId"] = parent.Project.ID
+	}
+
+	var result struct {
+		IssueCreate struct {
+			Success bool `json:"success"`
+			Issue   struct {
+				ID         string `json:"id"`
+				Identifier string `json:"identifier"`
+				URL        string `json:"url"`
+			} `json:"issue"`
+		} `json:"issueCreate"`
+	}
+
+	if err := c.execute(ctx, mutation, variables, &result); err != nil {
+		return "", "", fmt.Errorf("failed to create issue: %w", err)
+	}
+
+	if !result.IssueCreate.Success {
+		return "", "", fmt.Errorf("issueCreate returned success=false")
+	}
+
+	return result.IssueCreate.Issue.Identifier, result.IssueCreate.Issue.URL, nil
+}
+
+func (c *testableCreateIssueClient) getOrCreateLabel(ctx context.Context, teamKey, labelName, color string) (string, error) {
+	id, err := c.getLabelByName(ctx, teamKey, labelName)
+	if err == nil {
+		return id, nil
+	}
+
+	// Label doesn't exist, create it
+	return c.createLabel(ctx, teamKey, labelName, color)
+}
+
+func (c *testableCreateIssueClient) getLabelByName(ctx context.Context, teamKey, labelName string) (string, error) {
+	query := `
+		query GetLabel($teamId: String!, $name: String!) {
+			issueLabels(filter: { team: { key: { eq: $teamId } }, name: { eq: $name } }) {
+				nodes { id name }
+			}
+		}
+	`
+	var result struct {
+		IssueLabels struct {
+			Nodes []struct {
+				ID   string `json:"id"`
+				Name string `json:"name"`
+			} `json:"nodes"`
+		} `json:"issueLabels"`
+	}
+
+	if err := c.execute(ctx, query, map[string]interface{}{
+		"teamId": teamKey,
+		"name":   labelName,
+	}, &result); err != nil {
+		return "", err
+	}
+
+	if len(result.IssueLabels.Nodes) == 0 {
+		return "", fmt.Errorf("label %q not found in team %s", labelName, teamKey)
+	}
+
+	return result.IssueLabels.Nodes[0].ID, nil
+}
+
+func (c *testableCreateIssueClient) createLabel(ctx context.Context, teamKey, labelName, color string) (string, error) {
+	// For testing, just return a fake label ID
+	return "label-" + labelName, nil
 }
