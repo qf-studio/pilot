@@ -1,0 +1,355 @@
+import { Callout } from 'nextra/components'
+
+# Epic Decomposition
+
+Automatically breaks large, complex tasks into manageable sequential subtasks.
+
+<Callout type="info" emoji="⚡">
+  Epic decomposition uses Claude Code planning to intelligently split complex tickets into 3-5 focused subtasks.
+</Callout>
+
+## How It Works
+
+When Pilot detects a complex task (epic), it automatically:
+
+1. **Plans** the implementation using Claude Code in planning mode
+2. **Decomposes** the epic into 3-5 sequential subtasks
+3. **Creates** separate GitHub issues for each subtask
+4. **Executes** subtasks sequentially, updating progress on the parent issue
+5. **Closes** completed subtasks and the parent epic
+
+```
+Epic Issue → Planning → Subtasks → Sequential Execution → Completion
+```
+
+## Epic Detection
+
+Tasks are classified as epics based on:
+
+| Criteria | Threshold | Detection Method |
+|----------|-----------|------------------|
+| **Complexity** | "epic" level | LLM classification (Haiku API) |
+| **Description Length** | 100+ words | Word count heuristic |
+| **Scope Indicators** | Multiple components | Keyword analysis |
+
+### Epic Indicators
+
+Common patterns that trigger epic classification:
+
+```markdown
+# Epic Examples
+
+## Multi-component Tasks
+"Add user authentication with OAuth, JWT tokens, and profile management"
+
+## Infrastructure Changes
+"Set up CI/CD pipeline with Docker, tests, and deployment automation"
+
+## Feature Workflows
+"Implement complete order processing: cart → checkout → payment → fulfillment"
+```
+
+## Configuration
+
+```yaml
+# ~/.pilot/config.yaml
+orchestrator:
+  execution:
+    decompose:
+      enabled: true           # Enable epic decomposition
+      min_complexity: "epic"  # Only epics are decomposed
+      max_subtasks: 5         # Limit subtask count
+      min_description_words: 100  # Word threshold for decomposition
+```
+
+## Planning Process
+
+Epic planning uses a structured Claude Code prompt:
+
+### Planning Prompt Structure
+
+```
+You are a software architect planning an implementation.
+
+Break down this epic task into 3-5 sequential subtasks that can
+each be completed independently. Each subtask should be a concrete,
+implementable unit of work.
+
+## CRITICAL: Avoid Single-Package Splits
+If all work lives in one package or directory (e.g., all files in `cmd/pilot/`),
+DO NOT split into separate subtasks. Instead, return a SINGLE subtask with
+the full scope.
+
+## Task to Plan
+**Title:** Add user authentication system
+**Description:** [Epic description here]
+
+## Output Format
+1. **Setup authentication infrastructure** - Database models and middleware
+2. **Implement OAuth flow** - Google/GitHub OAuth integration
+3. **Add JWT token management** - Token generation and validation
+4. **Build user profile pages** - Profile CRUD operations
+5. **Add authentication tests** - Unit and integration test coverage
+```
+
+### Single-Package Detection
+
+Pilot automatically detects when subtasks would conflict:
+
+```go
+// Smart conflict detection
+func isSinglePackageScope(subtasks []PlannedSubtask) bool {
+    dirs := extractUniqueDirectories(allSubtaskText)
+
+    // If all subtasks touch the same directory → execute as one task
+    if len(dirs) == 1 {
+        return true // Skip decomposition
+    }
+
+    return false
+}
+```
+
+<Callout type="warning" emoji="⚠️">
+  Tasks that modify the same Go package or directory are **not** decomposed to prevent merge conflicts.
+</Callout>
+
+## Subtask Creation
+
+Each planned subtask becomes a GitHub issue:
+
+### Issue Properties
+
+| Property | Format | Example |
+|----------|--------|---------|
+| **Title** | Truncated to 80 chars | "Setup authentication infrastructure" |
+| **Body** | Subtask description + parent reference | "Parent: GH-123\n\nDatabase models and middleware..." |
+| **Labels** | `pilot` | Auto-queued for execution |
+| **Order** | Sequential numbering | 1, 2, 3, 4, 5 |
+
+### Branch Strategy
+
+```bash
+# Parent epic (not executed directly)
+pilot/GH-123  # Epic issue branch (unused)
+
+# Subtask branches (executed sequentially)
+pilot/GH-124  # Subtask 1: Setup infrastructure
+pilot/GH-125  # Subtask 2: OAuth implementation
+pilot/GH-126  # Subtask 3: JWT management
+pilot/GH-127  # Subtask 4: Profile pages
+pilot/GH-128  # Subtask 5: Test coverage
+```
+
+## Sequential Execution
+
+Subtasks execute in dependency order:
+
+### Execution Flow
+
+```
+Subtask 1 → PR Created → CI Passes → Merged
+             ↓
+Subtask 2 → PR Created → CI Passes → Merged
+             ↓
+Subtask 3 → PR Created → CI Passes → Merged
+             ↓
+... continues until all subtasks complete
+```
+
+### Progress Tracking
+
+The parent epic receives real-time progress updates:
+
+```markdown
+⏳ Progress: 2/5 - Starting: **JWT token management** (#126)
+```
+
+```markdown
+✅ Completed: 5/5 sub-issues done
+
+All sub-tasks executed successfully.
+```
+
+## Autopilot Integration
+
+Epic subtasks work seamlessly with autopilot mode:
+
+### Sub-issue PR Management
+
+```yaml
+# Each subtask PR is tracked independently
+autopilot:
+  enabled: true
+  environment: stage
+  merge_delay: 5m  # Applied to each subtask PR
+```
+
+### Callback Registration
+
+```go
+// Register sub-issue PR with autopilot (GH-596)
+if result.PRUrl != "" && r.onSubIssuePRCreated != nil {
+    prNum := parsePRNumberFromURL(result.PRUrl)
+    r.onSubIssuePRCreated(prNum, result.PRUrl, issue.Number,
+                         result.CommitSHA, subTask.Branch)
+}
+```
+
+## Best Practices
+
+### Writing Epic-Friendly Issues
+
+Structure complex issues for optimal decomposition:
+
+```markdown
+## Epic: User Authentication System
+
+### Overview
+Implement complete user authentication with OAuth providers,
+JWT tokens, and profile management.
+
+### Requirements
+- [ ] OAuth integration (Google, GitHub)
+- [ ] JWT token generation and validation
+- [ ] User profile CRUD operations
+- [ ] Role-based access control
+- [ ] Comprehensive test coverage
+
+### Technical Approach
+- Database: PostgreSQL with user/session tables
+- Auth: OAuth 2.0 + JWT tokens
+- Frontend: React components for login/profile
+- Backend: Express middleware for auth checks
+
+### Acceptance Criteria
+- [ ] Users can login with OAuth
+- [ ] JWT tokens expire and refresh properly
+- [ ] Profile pages allow editing user info
+- [ ] Tests cover all auth flows
+- [ ] Documentation updated
+```
+
+### Avoiding Over-decomposition
+
+Some tasks should **not** be decomposed:
+
+```markdown
+# ❌ Bad Epic (single package scope)
+"Refactor cmd/pilot/main.go to add configuration loading"
+
+# ✅ Good Epic (multiple components)
+"Add configuration system with YAML files, env vars, and validation"
+```
+
+## Troubleshooting
+
+### Common Issues
+
+**Subtasks creating merge conflicts:**
+- Likely single-package scope not detected
+- Check if files are in different directories
+- Consider adding `no-decompose` label
+
+**Missing dependencies between subtasks:**
+- Review planning prompt for logical ordering
+- Ensure infrastructure subtasks come first
+- Test subtasks should be last
+
+**Too many/few subtasks generated:**
+- Adjust `max_subtasks` configuration
+- Refine epic description specificity
+- Use `min_description_words` threshold
+
+### Bypass Decomposition
+
+For tasks that shouldn't be decomposed:
+
+```bash
+# Add no-decompose label to skip epic planning
+gh issue create \
+  --title "Complex but monolithic task" \
+  --label "pilot,no-decompose" \
+  --body "This should execute as one task"
+```
+
+## API Reference
+
+### Core Functions
+
+```go
+// Plan an epic into subtasks
+func (r *Runner) PlanEpic(ctx context.Context, task *Task,
+                         executionPath string) (*EpicPlan, error)
+
+// Create GitHub issues from planned subtasks
+func (r *Runner) CreateSubIssues(ctx context.Context, plan *EpicPlan,
+                                executionPath string) ([]CreatedIssue, error)
+
+// Execute subtasks sequentially with progress tracking
+func (r *Runner) ExecuteSubIssues(ctx context.Context, parent *Task,
+                                 issues []CreatedIssue,
+                                 executionPath string) error
+```
+
+### Data Structures
+
+```go
+type EpicPlan struct {
+    ParentTask  *Task              // Original epic task
+    Subtasks    []PlannedSubtask   // Planned subtasks (3-5)
+    TotalEffort string             // Effort estimate
+    PlanOutput  string             // Raw Claude output
+}
+
+type PlannedSubtask struct {
+    Title       string    // Short subtask title
+    Description string    // Detailed description
+    Order       int       // Execution order (1-indexed)
+    DependsOn   []int     // Dependency orders
+}
+
+type CreatedIssue struct {
+    Number      int              // GitHub issue number
+    URL         string           // Issue URL
+    Subtask     PlannedSubtask   // Associated planned subtask
+}
+```
+
+## Cost Considerations
+
+Epic decomposition impacts API usage:
+
+### Planning Costs
+- **Claude Code Planning**: 1 API call per epic (input: epic description, output: subtask plan)
+- **Haiku Subtask Parsing**: 1 API call per epic for structured extraction (optional, falls back to regex)
+
+### Execution Savings
+- **Focused Context**: Each subtask has smaller scope → more efficient Claude Code execution
+- **Parallel Development**: Multiple team members can work on different subtasks
+- **Faster Iterations**: Smaller PRs are easier to review and merge
+
+### Cost Example
+
+```
+Traditional Epic Execution:
+- 1 large Claude Code session: ~50K tokens
+- 1 massive PR review cycle
+- High risk of conflicts/revisions
+
+Epic Decomposition:
+- 1 planning call: ~5K tokens
+- 5 focused executions: 5 × ~15K = ~75K tokens
+- Total: ~80K tokens (60% increase)
+- BUT: Higher success rate, less rework, parallel execution
+```
+
+The 60% token increase is typically offset by reduced rework and higher success rates.
+
+## Version History
+
+- **v0.20.2**: Initial epic decomposition with Claude Code planning
+- **v0.27.0**: Added Haiku API for structured subtask parsing
+- **v0.34.0**: Single-package scope detection to prevent conflicts
+- **v1.5.0**: Autopilot integration for sub-issue PR management
+- **v1.15.0**: Worktree isolation support for epic execution
