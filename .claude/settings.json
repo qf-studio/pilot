@@ -28,6 +28,19 @@
         }
       },
       {
+        "hooks": [
+          {
+            "command": "/var/folders/_8/nnsxrdhn46x08pb886hrggv00000gn/T/pilot-hooks-940103359/pilot-bash-guard.sh",
+            "type": "command"
+          }
+        ],
+        "matcher": {
+          "tools": [
+            "Bash"
+          ]
+        }
+      },
+      {
         "matcher": {
           "tools": [
             "Bash"
@@ -36,7 +49,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/var/folders/_8/nnsxrdhn46x08pb886hrggv00000gn/T/pilot-hooks-940103359/pilot-bash-guard.sh"
+            "command": "/var/folders/_8/nnsxrdhn46x08pb886hrggv00000gn/T/pilot-hooks-263911396/pilot-bash-guard.sh"
           }
         ]
       }
@@ -61,11 +74,20 @@
         "matcher": {}
       },
       {
+        "hooks": [
+          {
+            "command": "/var/folders/_8/nnsxrdhn46x08pb886hrggv00000gn/T/pilot-hooks-940103359/pilot-stop-gate.sh",
+            "type": "command"
+          }
+        ],
+        "matcher": {}
+      },
+      {
         "matcher": {},
         "hooks": [
           {
             "type": "command",
-            "command": "/var/folders/_8/nnsxrdhn46x08pb886hrggv00000gn/T/pilot-hooks-940103359/pilot-stop-gate.sh"
+            "command": "/var/folders/_8/nnsxrdhn46x08pb886hrggv00000gn/T/pilot-hooks-263911396/pilot-stop-gate.sh"
           }
         ]
       }
