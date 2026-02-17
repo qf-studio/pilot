@@ -221,7 +221,7 @@ executor:
 | `timeout.simple` | duration | `10m` | Timeout for simple tasks |
 | `timeout.medium` | duration | `30m` | Timeout for medium tasks |
 | `timeout.complex` | duration | `60m` | Timeout for complex tasks |
-| `decompose.enabled` | bool | `false` | Auto-decompose complex tasks into subtasks |
+| `decompose.enabled` | bool | `false` | Auto-decompose complex tasks into subtasks ([learn more](/features/epic-decomposition)) |
 | `decompose.min_complexity` | string | `"complex"` | Minimum complexity to trigger decomposition |
 | `decompose.max_subtasks` | int | `5` | Maximum subtasks created (2-10) |
 | `decompose.min_description_words` | int | `50` | Minimum description words to decompose |
@@ -259,6 +259,96 @@ executor:
 | `opencode.provider` | string | `"anthropic"` | LLM provider name |
 | `opencode.auto_start_server` | bool | `true` | Auto-start OpenCode server if not running |
 | `opencode.server_command` | string | `"opencode serve"` | Command to start the server |
+
+### Hooks
+
+Claude Code hooks provide inline quality gates during task execution.
+
+```yaml
+executor:
+  hooks:
+    enabled: false             # Enable Claude Code hooks
+    run_tests_on_stop: true    # Stop gate: run tests before completion
+    block_destructive: true    # PreToolUse: block destructive Bash commands
+    lint_on_save: false        # PostToolUse: run linter after file edits
+```
+
+[Learn more about hooks →](/features/hooks)
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `hooks.enabled` | bool | `false` | Enable Claude Code hooks |
+| `hooks.run_tests_on_stop` | bool | `true` | Stop hook runs tests before completion |
+| `hooks.block_destructive` | bool | `true` | PreToolUse hook blocks dangerous commands |
+| `hooks.lint_on_save` | bool | `false` | PostToolUse hook runs linter after file changes |
+
+### Stagnation Monitor
+
+Detects when tasks are stuck in loops or making no progress.
+
+```yaml
+executor:
+  stagnation:
+    enabled: false
+    warn_timeout: 10m
+    pause_timeout: 20m
+    abort_timeout: 30m
+    warn_at_iteration: 8
+    pause_at_iteration: 12
+    abort_at_iteration: 15
+    state_history_size: 5
+    identical_states_threshold: 3
+    grace_period: 30s
+    commit_partial_work: true
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `stagnation.enabled` | bool | `false` | Enable stagnation detection |
+| `stagnation.warn_timeout` | duration | `10m` | Time before warning alert |
+| `stagnation.pause_timeout` | duration | `20m` | Time before pausing execution |
+| `stagnation.abort_timeout` | duration | `30m` | Time before aborting task |
+| `stagnation.warn_at_iteration` | int | `8` | Iteration count before warning |
+| `stagnation.pause_at_iteration` | int | `12` | Iteration count before pausing |
+| `stagnation.abort_at_iteration` | int | `15` | Iteration count before aborting |
+| `stagnation.state_history_size` | int | `5` | Size of state history for loop detection |
+| `stagnation.identical_states_threshold` | int | `3` | Identical states needed to detect loop |
+| `stagnation.grace_period` | duration | `30s` | Grace period after intervention |
+| `stagnation.commit_partial_work` | bool | `true` | Commit partial progress before aborting |
+
+### Claude Code SDK Features
+
+Advanced Claude Code backend features for session management and structured output.
+
+```yaml
+executor:
+  claude_code:
+    use_session_resume: false    # Reuse session for self-review
+    use_from_pr: false           # Resume PR context for CI fixes
+    use_structured_output: false # Machine-readable classifier output
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `claude_code.use_session_resume` | bool | `false` | Reuse session for self-review (~40% token savings) |
+| `claude_code.use_from_pr` | bool | `false` | Resume PR context for autopilot CI fixes |
+| `claude_code.use_structured_output` | bool | `false` | Enable structured JSON output for classifiers |
+
+### Navigator Auto-Init
+
+Automatically initialize Navigator documentation structure for projects.
+
+```yaml
+executor:
+  navigator:
+    auto_init: true
+    templates_path: ""          # Optional custom templates path
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `navigator.auto_init` | bool | `true` | Auto-create .agent/ on first task execution |
+| `navigator.templates_path` | string | `""` | Override plugin templates location |
 
 ### Worktree Isolation
 

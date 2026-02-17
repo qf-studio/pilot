@@ -9,7 +9,7 @@
 
 **AI that ships your tickets while you focus on architecture.**
 
-Pilot is an autonomous development pipeline. It picks up tickets from GitHub Issues, GitLab Issues, Linear, Jira, or Asana — plans the implementation using your codebase context, writes code with Claude Code, runs quality gates, and opens a pull request. You review and merge.
+Pilot is an autonomous development pipeline with **156 features** production-ready. It picks up tickets from GitHub Issues, GitLab Issues, Linear, Jira, or Asana — plans the implementation using your codebase context, writes code with Claude Code, runs quality gates, and opens a pull request. You review and merge.
 
 {/* ILLUSTRATION: Hero — Ticket → Pilot → PR flow diagram */}
 
@@ -79,7 +79,10 @@ Single Go binary. Runs on your infrastructure. Your secrets never leave your env
 | **Telegram Bot** | Chat, research, plan, and execute tasks from mobile |
 | **Quality Gates** | Test, lint, and build gates with automatic retry |
 | **Self-Review** | Code review runs before PR push |
-| **Epic Decomposition** | Complex tickets automatically split into subtasks |
+| **Epic Decomposition** | Complex tickets automatically split into subtasks ([learn more](/features/epic-decomposition)) |
+| **Claude Code Hooks** | Inline quality gates — stop gates, destructive command blocking |
+| **Multi-repo polling** | Manage multiple repositories from a single instance |
+| **Session Resume** | 40% token savings on self-review via context continuation |
 | **Model Routing** | Trivial tasks use fast models, complex tasks use deep reasoning |
 | **Dashboard** | Terminal UI with token usage, costs, and task history |
 | **Hot Upgrade** | Self-update without downtime, in-process binary replacement |
