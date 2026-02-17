@@ -193,6 +193,12 @@ Examples:
 				cfg.Adapters.Slack.SocketMode = false
 			}
 
+			// Stamp build version into executor config for feature matrix updates (GH-1388)
+			if cfg.Executor == nil {
+				cfg.Executor = executor.DefaultBackendConfig()
+			}
+			cfg.Executor.Version = version
+
 			// Resolve project path: flag > config default > cwd
 			if projectPath == "" {
 				if defaultProj := cfg.GetDefaultProject(); defaultProj != nil {

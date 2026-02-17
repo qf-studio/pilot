@@ -2383,7 +2383,11 @@ The previous execution completed but made no code changes. This task requires ac
 
 			// GH-1388: Update feature matrix for feature tasks
 			if strings.HasPrefix(task.Title, "feat(") {
-				if fmErr := UpdateFeatureMatrix(agentPath, task, "v1.0.0"); fmErr != nil {
+				ver := "unknown"
+				if r.config != nil && r.config.Version != "" {
+					ver = r.config.Version
+				}
+				if fmErr := UpdateFeatureMatrix(agentPath, task, ver); fmErr != nil {
 					log.Warn("Failed to update feature matrix", slog.Any("error", fmErr))
 				}
 			}

@@ -266,6 +266,10 @@ type BackendConfig struct {
 	// Unfixable issues are included in the execution result for self-review.
 	// GH-1376: Added to prevent lint-failure cascades
 	PrePushLint *bool `yaml:"pre_push_lint,omitempty"`
+
+	// Version is the Pilot binary version, set at startup from the build-time version var.
+	// Used for feature matrix updates and execution reports. Not a config file field.
+	Version string `yaml:"-"`
 }
 
 // ModelRoutingConfig controls which model to use based on task complexity.
