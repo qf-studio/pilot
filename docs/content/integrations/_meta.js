@@ -1,0 +1,10 @@
+export default {
+  github: "GitHub",
+  gitlab: "GitLab",
+  "azure-devops": "Azure DevOps",
+  linear: "Linear",
+  jira: "Jira",
+  asana: "Asana",
+  slack: "Slack",
+  telegram: "Telegram"
+}

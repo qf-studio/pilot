@@ -1,6 +1,6 @@
-{
-  "index": "Overview",
+export default {
+  index: "Overview",
   "how-it-works": "Architecture",
-  "setup": "Setup Guide",
+  setup: "Setup Guide",
   "best-practices": "Best Practices"
 }

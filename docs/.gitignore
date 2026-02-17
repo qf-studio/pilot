@@ -4,6 +4,7 @@ out/
 .vercel
 .env
 .env.local
+public/_pagefind/
 
 # misc
 .DS_Store

@@ -19,7 +19,7 @@ ARG NODE_ENV
 
 ENV NODE_ENV=${NODE_ENV}
 
-RUN bun run build && mkdir -p /app/public
+RUN bun run build && bun run postbuild && mkdir -p /app/public
 
 # Stage 3: Runner
 FROM node:24.10.0-alpine3.21 AS runner

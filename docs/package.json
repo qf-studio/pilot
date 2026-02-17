@@ -5,17 +5,19 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
+    "postbuild": "pagefind --site .next/static",
     "start": "next start"
   },
   "dependencies": {
-    "next": "~14.2.0",
-    "nextra": "~2.13.0",
-    "nextra-theme-docs": "~2.13.0",
-    "react": "^18.2.0",
-    "react-dom": "^18.2.0"
+    "next": "^15.0.0",
+    "nextra": "^4.0.0",
+    "nextra-theme-docs": "^4.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
   },
   "devDependencies": {
-    "@types/node": "25.2.0",
-    "typescript": "5.9.3"
+    "@types/node": "^20.0.0",
+    "typescript": "5.9.3",
+    "pagefind": "^1.0.0"
   }
 }

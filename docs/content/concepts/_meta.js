@@ -1,6 +1,6 @@
-{
+export default {
   "why-pilot": "Why Pilot",
-  "architecture": "Architecture",
+  architecture: "Architecture",
   "execution-backends": "Execution Backends",
   "model-routing": "Model Routing",
   "worktree-isolation": "Worktree Isolation"

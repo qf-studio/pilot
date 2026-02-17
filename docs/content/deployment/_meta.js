@@ -1,0 +1,11 @@
+export default {
+  index: "Overview",
+  local: "Local / Bare Metal",
+  docker: "Docker",
+  kubernetes: "Kubernetes",
+  aws: "AWS",
+  "google-cloud": "Google Cloud",
+  azure: "Azure",
+  monitoring: "Monitoring",
+  "networking": "Networking & Tunnels"
+}
