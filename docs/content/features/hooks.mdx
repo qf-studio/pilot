@@ -1,0 +1,219 @@
+import { Callout } from 'nextra/components'
+
+# Claude Code Hooks
+
+Claude Code Hooks are inline quality gates that run during Claude Code execution, catching issues while context is still available rather than after completion. Hooks can run tests before Claude finishes, block destructive commands, or auto-format files after changes.
+
+<Callout type="info">
+  Hooks run inline during task execution, not after. This allows Claude to fix issues immediately while it still has full context of the changes.
+</Callout>
+
+<Callout type="warning">
+  Hooks are disabled by default (`enabled: false`). You must explicitly enable them in your configuration.
+</Callout>
+
+## Hook Types
+
+Pilot supports three hook types that integrate with Claude Code's hook system:
+
+| Hook | Event | Matcher | Purpose |
+|------|-------|---------|---------|
+| **Stop** | Before Claude finishes | None (applies to all) | Run build/test gate |
+| **PreToolUse** | Before Bash execution | `Bash` | Block destructive commands |
+| **PostToolUse** | After Edit/Write | `Edit`, `Write` | Run linter/formatter |
+
+### Stop Hook
+
+Runs before Claude Code signals completion. Executes build and test commands, and returns exit code 2 if they fail. This tells Claude to continue fixing issues rather than finishing.
+
+### PreToolUse Hook
+
+Runs before any Bash command executes. Inspects the command and blocks dangerous operations like `rm -rf /`, `git push --force`, or `DROP TABLE`. Returns a deny decision to Claude Code when a dangerous pattern is detected.
+
+### PostToolUse Hook
+
+Runs after Edit or Write tools modify files. Auto-formats the changed file using the appropriate formatter for its type (gofmt, prettier, black, etc.). This is opt-in and disabled by default.
+
+## Configuration
+
+Enable hooks in `~/.pilot/config.yaml`:
+
+```yaml
+executor:
+  hooks:
+    enabled: true              # Master switch (default: false)
+    run_tests_on_stop: true    # Stop hook — runs build/tests before completion
+    block_destructive: true    # PreToolUse — blocks rm -rf, git push --force, DROP TABLE
+    lint_on_save: false        # PostToolUse — runs linter after file edits (opt-in)
+```
+
+### Configuration Properties
+
+| Property | Default | Description |
+|----------|---------|-------------|
+| `enabled` | `false` | Master switch to enable hooks |
+| `run_tests_on_stop` | `true` (when enabled) | Run build and tests before Claude finishes |
+| `block_destructive` | `true` (when enabled) | Block dangerous Bash commands |
+| `lint_on_save` | `false` | Auto-format files after edits (opt-in) |
+
+## How Hooks Work
+
+When hooks are enabled, Pilot integrates with Claude Code's hook system:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    HOOK EXECUTION FLOW                           │
+└─────────────────────────────────────────────────────────────────┘
+                               │
+         ┌─────────────────────┼─────────────────────┐
+         ▼                     ▼                     ▼
+   ┌───────────┐         ┌───────────┐         ┌───────────┐
+   │ PreToolUse │         │ PostToolUse│         │   Stop    │
+   │   Hook     │         │   Hook     │         │   Hook    │
+   └───────────┘         └───────────┘         └───────────┘
+         │                     │                     │
+         ▼                     ▼                     ▼
+   Before Bash            After Edit/           Before Claude
+   execution              Write tools           finishes
+         │                     │                     │
+         ▼                     ▼                     ▼
+   Block dangerous        Auto-format            Run tests
+   commands               changed file           Pass/Fail
+```
+
+1. **Pilot generates hook scripts** and writes them to a temporary directory
+2. **Scripts are registered** in Claude Code's `.claude/settings.json`
+3. **During execution**, Claude Code invokes scripts at appropriate events
+4. **Script exit code** determines pass/fail (exit code 2 tells Claude to keep fixing)
+
+## Hook Format
+
+Pilot uses Claude Code's matcher-based hook format (v2.1.42+):
+
+```json
+{
+  "hooks": {
+    "Stop": [{
+      "matcher": {},
+      "hooks": [{"type": "command", "command": "/tmp/pilot-hooks/pilot-stop-gate.sh"}]
+    }],
+    "PreToolUse": [{
+      "matcher": {"tools": ["Bash"]},
+      "hooks": [{"type": "command", "command": "/tmp/pilot-hooks/pilot-bash-guard.sh"}]
+    }],
+    "PostToolUse": [{
+      "matcher": {"tools": ["Edit"]},
+      "hooks": [{"type": "command", "command": "/tmp/pilot-hooks/pilot-lint.sh"}]
+    }]
+  }
+}
+```
+
+Key points:
+- **Stop hooks** use an empty matcher (applies to all completion events)
+- **PreToolUse/PostToolUse hooks** specify a `tools` array to match specific tools
+- **MergeWithExisting()** preserves user's existing settings when adding Pilot hooks
+
+<Callout type="info">
+  Hook scripts are written to a temporary directory and disappear after system reboot. Pilot regenerates them on each start.
+</Callout>
+
+## Built-in Scripts
+
+### pilot-stop-gate.sh
+
+Runs build and test commands based on detected project type before Claude finishes:
+
+| Project Type | Build Command | Test Command |
+|--------------|---------------|--------------|
+| Go | `go build ./...` | `go test ./... -count=1 -timeout 120s` |
+| Node.js | `npm run build` | `npm test` |
+| Python | — | `pytest` or `python -m pytest` |
+| Rust | `cargo build` | `cargo test` |
+| Makefile | `make build` | `make test` |
+
+Exit code 2 tells Claude to continue fixing issues rather than finishing.
+
+### pilot-bash-guard.sh
+
+Blocks dangerous Bash commands by pattern matching. Blocked patterns include:
+
+- `rm -rf /`, `rm -rf $`, `rm -rf ~`, `rm -rf *`
+- `git push --force`, `git push -f`
+- `git reset --hard`, `git clean -fd`
+- `DROP TABLE`, `DROP DATABASE`
+- `DELETE FROM.*WHERE 1=1`
+- `sudo rm`, `sudo dd`
+- `mkfs.*`, `fdisk`, `cfdisk`
+- `chmod -R 777 /`, `chown -R .* /`
+- `reboot`, `shutdown`, `halt`
+- `killall -9`, `pkill -f .*`
+
+When a dangerous pattern is detected, the script outputs a deny decision that Claude Code interprets as a blocked command.
+
+### pilot-lint.sh
+
+Auto-formats files after Edit/Write operations based on file extension:
+
+| Extension | Formatter |
+|-----------|-----------|
+| `.go` | gofmt, goimports |
+| `.js`, `.jsx`, `.ts`, `.tsx` | prettier or eslint --fix |
+| `.py` | black or autopep8 |
+| `.rs` | rustfmt |
+| `.json` | jq or prettier |
+| `.yaml`, `.yml` | prettier |
+
+This hook is opt-in (`lint_on_save: false` by default) since auto-formatting may not match project preferences.
+
+## Relationship to Quality Gates
+
+Hooks and [Quality Gates](/features/quality-gates) are complementary features:
+
+| Feature | When it runs | Purpose |
+|---------|--------------|---------|
+| **Hooks** | During execution | Inline feedback, immediate fixes |
+| **Quality Gates** | After execution | Final verification before PR |
+
+Use both together for comprehensive quality assurance:
+- Hooks catch issues early while Claude has full context
+- Quality Gates provide final verification with retry capability
+
+## Troubleshooting
+
+### Hooks Not Running
+
+1. Verify hooks are enabled in config:
+   ```yaml
+   executor:
+     hooks:
+       enabled: true
+   ```
+
+2. Check that `.claude/settings.json` contains hook entries after Pilot starts
+
+3. Verify scripts exist in the temp directory (path logged at startup)
+
+### Stop Gate Always Failing
+
+The stop gate runs build/test commands for your project type. If tests fail:
+
+1. Verify tests pass locally: `go test ./...` or `npm test`
+2. Check timeout settings (default 120s for Go tests)
+3. Review the specific error output in Claude's response
+
+### Dangerous Command Blocked
+
+If a legitimate command is blocked by the bash guard:
+
+1. Review the blocked pattern in pilot-bash-guard.sh
+2. Consider if the command can be made safer
+3. If necessary, temporarily disable `block_destructive: false`
+
+### Lint Hook Causing Issues
+
+If auto-formatting causes problems:
+
+1. Disable with `lint_on_save: false` (default)
+2. Verify project formatter settings match Pilot's defaults
+3. Consider using project-specific formatting via pre-commit hooks instead

@@ -11,5 +11,6 @@ export default {
   teams: "Teams & Permissions",
   budget: "Budget & Cost Controls",
   alerts: "Alerts & Notifications",
-  "quality-gates": "Quality Gates"
+  "quality-gates": "Quality Gates",
+  hooks: "Claude Code Hooks"
 }
