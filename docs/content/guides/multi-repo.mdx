@@ -1,0 +1,88 @@
+import { Callout } from 'nextra/components'
+
+# Multi-Repo Polling
+
+Run a single Pilot instance that monitors and executes issues across multiple GitHub repositories. Each project gets its own poller goroutine and autopilot controller, enabling independent CI monitoring and auto-merge behavior per repository.
+
+## Configuration
+
+Configure multiple projects in your `~/.pilot/config.yaml`:
+
+```yaml
+projects:
+  - name: frontend-app
+    path: ~/code/frontend-app
+    github:
+      owner: myorg
+      repo: frontend-app
+    navigator: true
+
+  - name: backend-api
+    path: ~/code/backend-api
+    github:
+      owner: myorg
+      repo: backend-api
+    navigator: true
+
+  - name: shared-lib
+    path: ~/code/shared-lib
+    github:
+      owner: myorg
+      repo: shared-lib
+    navigator: false
+
+orchestrator:
+  max_concurrent: 2           # Max parallel executions across all repos
+  execution:
+    mode: parallel            # parallel or sequential
+```
+
+## How It Works
+
+When Pilot starts with multiple projects configured:
+
+- **Per-project pollers**: Each project with `github.owner` and `github.repo` gets its own poller goroutine that independently monitors for issues labeled `pilot`
+- **Independent autopilot**: Each poller gets its own autopilot controller for CI monitoring, auto-merge, and feedback loops
+- **Deduplication**: If two projects reference the same `owner/repo`, only one poller is created to avoid duplicate processing
+- **Global concurrency**: The `max_concurrent` setting acts as a global semaphore—at most N tasks execute simultaneously across all repositories
+
+See [GitHub Integration](/integrations/github) for detailed adapter configuration and [Autopilot Mode](/features/autopilot) for auto-merge behavior.
+
+## Orphan Recovery
+
+When Pilot restarts, it automatically recovers from interrupted executions:
+
+1. **Scan for in-progress issues**: Pilot checks all configured repositories for issues with the `pilot-in-progress` label
+2. **Remove stale labels**: Issues that were abandoned mid-execution (due to crash or restart) have their `pilot-in-progress` label removed
+3. **Re-queue for pickup**: Cleaned issues return to the available pool and can be picked up again
+
+This prevents issues from getting stuck in limbo after unexpected shutdowns.
+
+## Per-Project Settings
+
+Each project can have independent configuration:
+
+| Setting | Description |
+|---------|-------------|
+| `path` | Working directory for task execution |
+| `github.owner` | GitHub organization or user |
+| `github.repo` | Repository name |
+| `navigator` | Enable Navigator integration (`true`/`false`) |
+
+<Callout type="info">
+Each project's autopilot controller is independent. A CI failure in one repo does not affect other repos.
+</Callout>
+
+Additional per-project options include custom labels, branch naming patterns, and PR templates. These inherit from global `adapters.github` settings but can be overridden at the project level.
+
+## Starting Multi-Repo Polling
+
+```bash
+# Start polling all configured projects
+pilot start --github --autopilot=stage
+
+# With dashboard to see all repos
+pilot start --github --autopilot=stage --dashboard
+```
+
+The dashboard displays task status across all repositories, with each project shown in the queue and history views.
