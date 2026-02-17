@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -441,7 +442,7 @@ func (c *Client) CreateIssue(ctx context.Context, owner, repo string, input *Iss
 
 // GetBranch fetches information about a branch
 func (c *Client) GetBranch(ctx context.Context, owner, repo, branch string) (*Branch, error) {
-	path := fmt.Sprintf("/repos/%s/%s/branches/%s", owner, repo, branch)
+	path := fmt.Sprintf("/repos/%s/%s/branches/%s", owner, repo, url.PathEscape(branch))
 	var result Branch
 	if err := c.doRequest(ctx, http.MethodGet, path, nil, &result); err != nil {
 		return nil, err
@@ -581,7 +582,7 @@ func isUnprocessableError(err error) bool {
 // Returns nil on success, or if the branch was already deleted (404/422).
 func (c *Client) DeleteBranch(ctx context.Context, owner, repo, branch string) error {
 	return WithRetryVoid(ctx, func() error {
-		path := fmt.Sprintf("/repos/%s/%s/git/refs/heads/%s", owner, repo, branch)
+		path := fmt.Sprintf("/repos/%s/%s/git/refs/heads/%s", owner, repo, url.PathEscape(branch))
 		err := c.doRequest(ctx, http.MethodDelete, path, nil, nil)
 		// 404 = branch doesn't exist, 422 = branch already deleted
 		// Both are success cases for cleanup

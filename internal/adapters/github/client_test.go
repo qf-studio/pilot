@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -2142,9 +2143,12 @@ func TestDeleteBranch(t *testing.T) {
 				if r.Method != http.MethodDelete {
 					t.Errorf("expected DELETE, got %s", r.Method)
 				}
-				expectedPath := "/repos/owner/repo/git/refs/heads/" + tt.branch
-				if r.URL.Path != expectedPath {
-					t.Errorf("unexpected path: %s, want %s", r.URL.Path, expectedPath)
+				// r.URL.RawPath preserves percent-encoding; verify slash is encoded
+				expectedRaw := "/repos/owner/repo/git/refs/heads/" + url.PathEscape(tt.branch)
+				if r.URL.RawPath != "" {
+					if r.URL.RawPath != expectedRaw {
+						t.Errorf("unexpected raw path: %s, want %s", r.URL.RawPath, expectedRaw)
+					}
 				}
 				w.WriteHeader(tt.statusCode)
 			}))
