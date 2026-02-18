@@ -113,7 +113,7 @@ Disable via config: `executor.navigator.auto_init: false`
 
 ## Current State
 
-**Current Version:** v1.39.0 | **159 features working**
+**Current Version:** v1.40.1 | **161 features working**
 
 **Full implementation status:** `.agent/system/FEATURE-MATRIX.md`
 
@@ -190,6 +190,8 @@ Disable via config: `executor.navigator.auto_init: false`
 | URL-Encode Branch Names | Done | `url.PathEscape(branch)` in DeleteBranch/GetBranch — fixes 404 on slash branches (v1.28.0) |
 | Branch Cleanup on PR Close | Done | Delete remote branches on PR close/fail, not just merge (v1.35.0) |
 | Backend-Aware Preflight | Done | Preflight CLI check matches configured backend (claude/opencode/qwen) (v1.39.0) |
+| Sonnet 4.6 Model Routing | Done | Default simple/medium tasks to Sonnet 4.6 (near-Opus quality, 40% cheaper) (v1.40.0) |
+| Sonnet 4.6 Codebase Update | Done | Update all stale model IDs to Sonnet 4.6 / Opus 4.6 across defaults, wizard, tests (v1.40.1) |
 
 ### Telegram Interaction Modes (v0.6.0)
 
@@ -296,6 +298,14 @@ Nextra 4 migration (PR #1409) + 8 docs pages covering all 156 features:
 ---
 
 ## Completed Log
+
+### 2026-02-18
+
+| Item | What |
+|------|------|
+| **v1.40.1** | Update all stale model IDs: `claude-sonnet-4-5-20250929` → `claude-sonnet-4-6`, `claude-opus-4-5` → `claude-opus-4-6` across config defaults, wizard, onboarding, and ~30 test refs (GH-1490) |
+| **v1.40.0** | Sonnet 4.6 model routing: default simple/medium → `claude-sonnet-4-6` (40% cheaper than Opus, near-Opus quality). Updated defaults, example config, tests (GH-1488) |
+| **Docs** | Updated 9 docs pages with Sonnet 4.6 / Opus 4.6 model references — model-routing, configuration, architecture, execution-backends, prerequisites, troubleshooting, replay, dashboard, why-pilot (GH-1492) |
 
 ### 2026-02-17
 
