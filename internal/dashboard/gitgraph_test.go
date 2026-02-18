@@ -483,6 +483,7 @@ func TestModelUpdate_ScrollWhenFocused(t *testing.T) {
 	m.gitGraphMode = GitGraphFull
 	m.gitGraphFocus = true
 	m.gitGraphScroll = 5
+	m.height = 40 // viewport = 35
 	m.gitGraphState = &GitGraphState{
 		Lines: make([]GitGraphLine, 50),
 	}
@@ -508,6 +509,7 @@ func TestModelUpdate_ScrollBoundaries(t *testing.T) {
 	m.gitGraphMode = GitGraphFull
 	m.gitGraphFocus = true
 	m.gitGraphScroll = 0
+	m.height = 8 // viewport = 3
 	m.gitGraphState = &GitGraphState{
 		Lines: make([]GitGraphLine, 5),
 	}
@@ -519,12 +521,12 @@ func TestModelUpdate_ScrollBoundaries(t *testing.T) {
 		t.Errorf("scroll should stay at 0, got %d", m.gitGraphScroll)
 	}
 
-	// Can't scroll down past len-1
-	m.gitGraphScroll = 4
+	// maxScroll = 5 - 3 = 2; can't scroll past that
+	m.gitGraphScroll = 2
 	updated, _ = m.Update(makeKey("j"))
 	m = updated.(Model)
-	if m.gitGraphScroll != 4 {
-		t.Errorf("scroll should stay at 4 (max), got %d", m.gitGraphScroll)
+	if m.gitGraphScroll != 2 {
+		t.Errorf("scroll should stay at 2 (max), got %d", m.gitGraphScroll)
 	}
 }
 
@@ -555,18 +557,19 @@ func TestModelUpdate_HalfPageScroll(t *testing.T) {
 	m.gitGraphMode = GitGraphFull
 	m.gitGraphFocus = true
 	m.gitGraphScroll = 0
+	m.height = 40 // viewport = 35, half-page = 17
 	m.gitGraphState = &GitGraphState{
 		Lines: make([]GitGraphLine, 100),
 	}
 
-	// Ctrl+D: down 15
+	// Ctrl+D: down half-page (35/2 = 17)
 	updated, _ := m.Update(makeKey("ctrl+d"))
 	m = updated.(Model)
-	if m.gitGraphScroll != 15 {
-		t.Errorf("ctrl+d: scroll = %d, want 15", m.gitGraphScroll)
+	if m.gitGraphScroll != 17 {
+		t.Errorf("ctrl+d: scroll = %d, want 17", m.gitGraphScroll)
 	}
 
-	// Ctrl+U: up 15
+	// Ctrl+U: up half-page (back to 0)
 	updated, _ = m.Update(makeKey("ctrl+u"))
 	m = updated.(Model)
 	if m.gitGraphScroll != 0 {

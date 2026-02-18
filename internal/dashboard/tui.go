@@ -654,7 +654,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "down", "j":
 			if m.gitGraphFocus {
 				if m.gitGraphState != nil {
-					maxScroll := len(m.gitGraphState.Lines) - 1
+					viewportH := m.gitGraphViewportHeight()
+					maxScroll := len(m.gitGraphState.Lines) - viewportH
+					if maxScroll < 0 {
+						maxScroll = 0
+					}
 					if m.gitGraphScroll < maxScroll {
 						m.gitGraphScroll++
 					}
@@ -664,15 +668,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "ctrl+d":
 			if m.gitGraphFocus && m.gitGraphState != nil {
-				m.gitGraphScroll += 15
-				maxScroll := len(m.gitGraphState.Lines) - 1
+				viewportH := m.gitGraphViewportHeight()
+				m.gitGraphScroll += viewportH / 2
+				maxScroll := len(m.gitGraphState.Lines) - viewportH
+				if maxScroll < 0 {
+					maxScroll = 0
+				}
 				if m.gitGraphScroll > maxScroll {
 					m.gitGraphScroll = maxScroll
 				}
 			}
 		case "ctrl+u":
 			if m.gitGraphFocus {
-				m.gitGraphScroll -= 15
+				viewportH := m.gitGraphViewportHeight()
+				m.gitGraphScroll -= viewportH / 2
 				if m.gitGraphScroll < 0 {
 					m.gitGraphScroll = 0
 				}

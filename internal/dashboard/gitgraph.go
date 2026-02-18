@@ -398,6 +398,15 @@ func gitRefreshTickCmd() tea.Cmd {
 // gitRefreshTickMsg fires every 15 seconds when the graph is visible.
 type gitRefreshTickMsg struct{}
 
+// gitGraphViewportHeight returns how many content lines fit in the git graph panel.
+// Panel structure: top border(1) + empty line(1) + [content] + empty line(1) + bottom border(1) + scroll indicator(1) = 5 overhead.
+func (m Model) gitGraphViewportHeight() int {
+	if m.height > 5 {
+		return m.height - 5
+	}
+	return 1
+}
+
 // renderGitGraph renders the full git graph panel for the current model state.
 // Returns an empty string if hidden or terminal too narrow.
 func (m Model) renderGitGraph() string {
@@ -452,9 +461,26 @@ func (m Model) renderGitGraph() string {
 			start = 0
 		}
 
-		// How many lines fit (panel height is dynamic; use available height estimate)
-		// We render up to 30 visible lines
-		visibleLines := 30
+		// Calculate visible lines from panel height:
+		// panel = top border + empty line + [content] + empty line + bottom border
+		// content area = m.height - 4, minus 1 for scroll indicator
+		visibleLines := 30 // fallback when height unknown
+		if m.height > 0 {
+			visibleLines = m.height - 5 // borders(2) + padding(2) + scroll indicator(1)
+			if visibleLines < 1 {
+				visibleLines = 1
+			}
+		}
+
+		// Clamp scroll offset
+		maxScroll := total - visibleLines
+		if maxScroll < 0 {
+			maxScroll = 0
+		}
+		if start > maxScroll {
+			start = maxScroll
+		}
+
 		end := start + visibleLines
 		if end > total {
 			end = total
