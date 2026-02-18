@@ -175,14 +175,18 @@ func (n *NavigatorInitializer) Initialize(projectPath string) error {
 		}
 	}
 
-	// Copy and customize templates
+	// Copy and customize templates — continue on individual failures
+	var initErrors []string
+
 	if err := n.copyTemplate("DEVELOPMENT-README.md", filepath.Join(agentDir, "DEVELOPMENT-README.md"), info); err != nil {
-		return fmt.Errorf("failed to copy DEVELOPMENT-README.md: %w", err)
+		n.log.Warn("Failed to copy DEVELOPMENT-README.md", slog.Any("error", err))
+		initErrors = append(initErrors, err.Error())
 	}
 
 	// Create .nav-config.json
 	if err := n.createNavConfig(agentDir, info); err != nil {
-		return fmt.Errorf("failed to create .nav-config.json: %w", err)
+		n.log.Warn("Failed to create .nav-config.json", slog.Any("error", err))
+		initErrors = append(initErrors, err.Error())
 	}
 
 	// Create .gitignore for .agent/
@@ -192,6 +196,10 @@ func (n *NavigatorInitializer) Initialize(projectPath string) error {
 `
 	if err := os.WriteFile(filepath.Join(agentDir, ".gitignore"), []byte(gitignoreContent), 0644); err != nil {
 		n.log.Warn("Failed to create .gitignore", slog.Any("error", err))
+	}
+
+	if len(initErrors) > 0 {
+		return fmt.Errorf("partial init (%d errors): %s", len(initErrors), strings.Join(initErrors, "; "))
 	}
 
 	n.log.Info("Navigator initialized successfully",
@@ -210,8 +218,8 @@ func (n *NavigatorInitializer) copyTemplate(templateName, destPath string, info 
 		// Read from plugin templates
 		content, err = os.ReadFile(filepath.Join(n.templatesPath, templateName))
 	} else {
-		// Read from embedded templates
-		content, err = fs.ReadFile(embeddedTemplates, filepath.Join("templates", templateName))
+		// Read from embedded templates — use forward slashes (embed.FS requirement, not filepath)
+		content, err = fs.ReadFile(embeddedTemplates, "templates/"+templateName)
 	}
 
 	if err != nil {
