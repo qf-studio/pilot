@@ -1,0 +1,29 @@
+services:
+  pilot:
+    build:
+      context: .
+      args:
+        VERSION: ${VERSION:-dev}
+        BUILD_TIME: ${BUILD_TIME:-}
+    image: pilot:${VERSION:-dev}
+    ports:
+      - "9090:9090"
+    volumes:
+      # Persistent SQLite data — required across restarts
+      - pilot-data:/home/pilot/.pilot/data
+      # Mount your config file (copy configs/pilot.example.yaml → config.yaml)
+      - ./config.yaml:/home/pilot/.pilot/config.yaml:ro
+    environment:
+      - ANTHROPIC_API_KEY
+      - GITHUB_TOKEN
+    command: ["start", "--github", "--autopilot=dev"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:9090/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+
+volumes:
+  pilot-data:

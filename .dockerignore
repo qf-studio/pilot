@@ -1,0 +1,28 @@
+# Version control
+.git
+.gitignore
+.gitattributes
+
+# Build artifacts
+bin/
+
+# Cloud SaaS variant (not needed for standalone Pilot image)
+cloud/
+
+# Documentation site (Next.js, not part of the binary)
+docs/
+
+# Node.js dependencies
+node_modules/
+
+# Development tools
+.agent/
+configs/
+
+# Test artifacts
+coverage.out
+coverage.html
+
+# OS artifacts
+.DS_Store
+Thumbs.db

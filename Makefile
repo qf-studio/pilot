@@ -1,4 +1,4 @@
-.PHONY: build run test test-e2e clean install lint fmt deps dev install-hooks check-secrets gate check-integration auto-fix test-short test-integration test-chaos package release
+.PHONY: build run test test-e2e clean install lint fmt deps dev install-hooks check-secrets gate check-integration auto-fix test-short test-integration test-chaos package release docker-build docker-push
 
 # Variables
 BINARY_NAME=pilot
@@ -181,6 +181,19 @@ endif
 	@echo "✅ Released v$(V)"
 	@echo "   Run 'pilot upgrade' to update"
 
+# Build Docker image for standalone Pilot
+docker-build:
+	docker build \
+		--build-arg VERSION=$(VERSION) \
+		--build-arg BUILD_TIME=$(BUILD_TIME) \
+		-t pilot:$(VERSION) \
+		.
+
+# Push Docker image to GitHub Container Registry
+docker-push:
+	docker tag pilot:$(VERSION) ghcr.io/alekspetrov/pilot:$(VERSION)
+	docker push ghcr.io/alekspetrov/pilot:$(VERSION)
+
 # Help
 help:
 	@echo "Pilot Makefile Commands:"
@@ -210,4 +223,6 @@ help:
 	@echo "  make test-chaos     Run chaos/fault injection tests"
 	@echo "  make package        Package binaries into tar.gz archives"
 	@echo "  make release        Create release (V=0.x.x required)"
+	@echo "  make docker-build   Build Docker image (tag: pilot:VERSION)"
+	@echo "  make docker-push    Push image to ghcr.io/alekspetrov/pilot"
 	@echo ""
