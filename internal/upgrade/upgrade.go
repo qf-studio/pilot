@@ -5,6 +5,7 @@ package upgrade
 
 import (
 	"archive/tar"
+	"archive/zip"
 	"compress/gzip"
 	"context"
 	"encoding/json"
@@ -268,11 +269,20 @@ func (u *Upgrader) fetchLatestRelease(ctx context.Context) (*Release, error) {
 
 // findAsset finds the appropriate release asset for the current platform
 func (u *Upgrader) findAsset(release *Release) *Asset {
-	// Expected asset name format: pilot-{os}-{arch}.tar.gz
-	expectedName := fmt.Sprintf("pilot-%s-%s.tar.gz", runtime.GOOS, runtime.GOARCH)
+	// Expected asset name format: pilot-{os}-{arch}.tar.gz (or .zip for Windows)
+	expectedTarGz := fmt.Sprintf("pilot-%s-%s.tar.gz", runtime.GOOS, runtime.GOARCH)
+	expectedZip := fmt.Sprintf("pilot-%s-%s.zip", runtime.GOOS, runtime.GOARCH)
 
+	// Try .tar.gz first (preferred for Unix platforms)
 	for i := range release.Assets {
-		if release.Assets[i].Name == expectedName {
+		if release.Assets[i].Name == expectedTarGz {
+			return &release.Assets[i]
+		}
+	}
+
+	// Try .zip (Windows releases use zip instead of tar.gz)
+	for i := range release.Assets {
+		if release.Assets[i].Name == expectedZip {
 			return &release.Assets[i]
 		}
 	}
@@ -378,9 +388,11 @@ func (u *Upgrader) createBackup() error {
 func (u *Upgrader) installBinary(downloadPath string) error {
 	var err error
 
-	// Check if it's a tarball
+	// Check archive format and extract accordingly
 	if strings.HasSuffix(downloadPath, ".tar.gz") || u.isTarGz(downloadPath) {
 		err = u.installFromTarGz(downloadPath)
+	} else if strings.HasSuffix(downloadPath, ".zip") || u.isZip(downloadPath) {
+		err = u.installFromZip(downloadPath)
 	} else {
 		// Direct binary
 		err = u.installDirectBinary(downloadPath)
@@ -413,6 +425,22 @@ func (u *Upgrader) isTarGz(path string) bool {
 	return buf[0] == 0x1f && buf[1] == 0x8b
 }
 
+// isZip checks if a file is a zip archive
+func (u *Upgrader) isZip(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = f.Close() }()
+
+	// Check magic bytes for zip (PK\x03\x04)
+	buf := make([]byte, 4)
+	if _, err := f.Read(buf); err != nil {
+		return false
+	}
+	return buf[0] == 0x50 && buf[1] == 0x4b && buf[2] == 0x03 && buf[3] == 0x04
+}
+
 // installFromTarGz extracts and installs from a tarball
 func (u *Upgrader) installFromTarGz(tarPath string) error {
 	f, err := os.Open(tarPath)
@@ -439,9 +467,10 @@ func (u *Upgrader) installFromTarGz(tarPath string) error {
 			return fmt.Errorf("failed to read tarball: %w", err)
 		}
 
-		// Look for the pilot binary
+		// Look for the pilot binary (pilot or pilot.exe)
+		baseName := filepath.Base(header.Name)
 		if header.Typeflag == tar.TypeReg &&
-			(header.Name == "pilot" || filepath.Base(header.Name) == "pilot") {
+			(baseName == "pilot" || baseName == "pilot.exe") {
 
 			// Extract to binary path
 			out, err := os.OpenFile(u.binaryPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
@@ -462,6 +491,51 @@ func (u *Upgrader) installFromTarGz(tarPath string) error {
 			return nil
 		}
 	}
+}
+
+// installFromZip extracts and installs from a zip archive
+func (u *Upgrader) installFromZip(zipPath string) error {
+	r, err := zip.OpenReader(zipPath)
+	if err != nil {
+		return fmt.Errorf("failed to open zip: %w", err)
+	}
+	defer func() { _ = r.Close() }()
+
+	// Find the pilot binary in the zip
+	for _, f := range r.File {
+		if f.FileInfo().IsDir() {
+			continue
+		}
+		name := filepath.Base(f.Name)
+		// Match "pilot" or "pilot.exe"
+		if name == "pilot" || name == "pilot.exe" {
+			rc, err := f.Open()
+			if err != nil {
+				return fmt.Errorf("failed to open zip entry: %w", err)
+			}
+
+			out, err := os.OpenFile(u.binaryPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
+			if err != nil {
+				_ = rc.Close()
+				return fmt.Errorf("failed to create binary: %w", err)
+			}
+
+			_, copyErr := io.Copy(out, rc)
+			closeErr := out.Close()
+			_ = rc.Close()
+
+			if copyErr != nil {
+				return fmt.Errorf("failed to extract binary: %w", copyErr)
+			}
+			if closeErr != nil {
+				return fmt.Errorf("failed to close binary: %w", closeErr)
+			}
+
+			return nil
+		}
+	}
+
+	return fmt.Errorf("binary not found in zip archive")
 }
 
 // installDirectBinary installs a direct binary file
