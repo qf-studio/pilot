@@ -1,0 +1,12 @@
+{{/*
+HPA is intentionally disabled for Pilot.
+
+Pilot uses SQLite for state storage, which does not support concurrent access
+from multiple pods. Horizontal scaling would cause database file lock conflicts
+and data corruption.
+
+Scale Pilot vertically by increasing resources.requests/limits, not replicas.
+
+This file exists as a placeholder to document the constraint and prevent
+accidental auto-scaling configuration.
+*/}}

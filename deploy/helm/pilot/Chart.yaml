@@ -1,0 +1,18 @@
+apiVersion: v2
+name: pilot
+description: Autonomous AI development pipeline — receives tickets, plans and executes implementation using Claude Code, creates PRs and notifies via Slack.
+type: application
+version: 0.1.0
+appVersion: "1.40.1"
+keywords:
+  - ai
+  - automation
+  - claude
+  - github
+  - ci
+home: https://pilot.quantflow.studio
+sources:
+  - https://github.com/alekspetrov/pilot
+maintainers:
+  - name: alekspetrov
+    url: https://github.com/alekspetrov

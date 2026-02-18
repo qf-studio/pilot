@@ -1,0 +1,54 @@
+Pilot has been deployed!
+
+  Release:   {{ .Release.Name }}
+  Namespace: {{ .Release.Namespace }}
+  Version:   {{ .Chart.AppVersion }}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+GATEWAY
+  Service: {{ include "pilot.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}
+
+  Health endpoints:
+    /health   — combined liveness + readiness
+    /ready    — readiness probe
+    /live     — liveness probe
+    /metrics  — Prometheus metrics
+
+{{- if .Values.ingress.enabled }}
+{{- range .Values.ingress.hosts }}
+  Webhook URL: https://{{ .host }}/webhook
+{{- end }}
+{{- else }}
+  Port-forward to test locally:
+    kubectl port-forward svc/{{ include "pilot.fullname" . }} 9090:{{ .Values.service.port }} -n {{ .Release.Namespace }}
+{{- end }}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+ADAPTERS ENABLED
+{{- if .Values.adapters.github.enabled }}  ✓ GitHub polling (picks issues labeled `pilot`){{- end }}
+{{- if .Values.adapters.telegram.enabled }}  ✓ Telegram bot{{- end }}
+{{- if .Values.adapters.slack.enabled }}  ✓ Slack socket mode{{- end }}
+{{- if .Values.adapters.linear.enabled }}  ✓ Linear webhooks{{- end }}
+
+AUTOPILOT MODE: {{ .Values.autopilot.mode }}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+IMPORTANT CONSTRAINTS
+
+⚠  Single replica only — SQLite cannot be shared across pods.
+   Increasing replicaCount WILL cause database corruption.
+
+⚠  PVC must survive Helm uninstall (helm.sh/resource-policy: keep).
+   Delete manually only when you want to wipe all data.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+QUICK CHECK
+  kubectl get pods -l app.kubernetes.io/instance={{ .Release.Name }} -n {{ .Release.Namespace }}
+  kubectl logs -l app.kubernetes.io/instance={{ .Release.Name }} -n {{ .Release.Namespace }} --tail=50
+
+DOCS
+  https://pilot.quantflow.studio

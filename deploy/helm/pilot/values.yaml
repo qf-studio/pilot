@@ -1,0 +1,145 @@
+# Pilot Helm Chart — Default Values
+#
+# IMPORTANT: replicaCount MUST remain 1.
+# Pilot uses SQLite for storage. Multiple replicas would cause database
+# file lock conflicts. Scale vertically (resources), not horizontally.
+replicaCount: 1
+
+image:
+  repository: ghcr.io/alekspetrov/pilot
+  # Defaults to Chart.appVersion when empty
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "9090"
+  prometheus.io/path: "/metrics"
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  readOnlyRootFilesystem: false
+
+service:
+  type: ClusterIP
+  port: 9090
+
+gateway:
+  # Must be 0.0.0.0 in containers — 127.0.0.1 is unreachable from outside the pod
+  host: "0.0.0.0"
+  port: 9090
+
+# Adapter toggles — enable only what you need
+adapters:
+  github:
+    enabled: true
+  telegram:
+    enabled: false
+  slack:
+    enabled: false
+  linear:
+    enabled: false
+
+autopilot:
+  # dev | stage | prod
+  mode: "stage"
+
+# API tokens and secrets — provide via --set or an external secret manager.
+# Leave empty strings here; never commit real tokens.
+secrets:
+  # Required
+  anthropicApiKey: ""
+  githubToken: ""
+  # Optional adapters
+  slackBotToken: ""
+  slackAppToken: ""
+  telegramBotToken: ""
+  linearApiKey: ""
+
+persistence:
+  enabled: true
+  # Uses cluster default StorageClass when empty
+  storageClass: ""
+  accessMode: ReadWriteOnce
+  size: 1Gi
+  # Existing PVC name — leave empty to create a new one
+  existingClaim: ""
+
+resources:
+  requests:
+    memory: "256Mi"
+    cpu: "250m"
+  limits:
+    memory: "1Gi"
+    cpu: "1"
+
+# Liveness and readiness probes use Pilot's built-in health endpoints
+livenessProbe:
+  httpGet:
+    path: /live
+    port: 9090
+  initialDelaySeconds: 15
+  periodSeconds: 20
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /ready
+    port: 9090
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  failureThreshold: 3
+
+metrics:
+  enabled: true
+  serviceMonitor:
+    # Set true if Prometheus Operator (kube-prometheus-stack) is installed
+    enabled: false
+    interval: 30s
+    namespace: ""
+    additionalLabels: {}
+
+ingress:
+  enabled: false
+  className: nginx
+  annotations: {}
+  hosts: []
+  #  - host: pilot.example.com
+  #    paths:
+  #      - path: /
+  #        pathType: Prefix
+  tls: []
+  #  - secretName: pilot-tls
+  #    hosts:
+  #      - pilot.example.com
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# Extra environment variables injected into the container
+extraEnv: []
+# - name: MY_VAR
+#   value: "my-value"
+
+# Extra volumes and mounts for advanced use cases (e.g. SSH keys, kubeconfig)
+extraVolumes: []
+extraVolumeMounts: []
