@@ -355,6 +355,9 @@ type Model struct {
 	upgradeError    string
 	upgradeCh       chan<- struct{} // Channel to trigger upgrade (write-only)
 
+	// Banner toggle (GH-1520)
+	showBanner bool
+
 	// Git graph panel (GH-1506)
 	gitGraphMode   GitGraphMode
 	gitGraphState  *GitGraphState
@@ -399,6 +402,7 @@ func NewModel(version string) Model {
 		tasks:          []TaskDisplay{},
 		logs:           []string{},
 		showLogs:       true,
+		showBanner:     true,
 		completedTasks: []CompletedTask{},
 		costPerMToken:  3.0,
 		autopilotPanel: NewAutopilotPanel(nil), // Disabled by default
@@ -413,6 +417,7 @@ func NewModelWithStore(version string, store *memory.Store) Model {
 		tasks:          []TaskDisplay{},
 		logs:           []string{},
 		showLogs:       true,
+		showBanner:     true,
 		completedTasks: []CompletedTask{},
 		costPerMToken:  3.0,
 		autopilotPanel: NewAutopilotPanel(nil),
@@ -429,6 +434,7 @@ func NewModelWithAutopilot(version string, controller *autopilot.Controller) Mod
 		tasks:          []TaskDisplay{},
 		logs:           []string{},
 		showLogs:       true,
+		showBanner:     true,
 		completedTasks: []CompletedTask{},
 		costPerMToken:  3.0,
 		autopilotPanel: NewAutopilotPanel(controller),
@@ -442,6 +448,7 @@ func NewModelWithStoreAndAutopilot(version string, store *memory.Store, controll
 		tasks:          []TaskDisplay{},
 		logs:           []string{},
 		showLogs:       true,
+		showBanner:     true,
 		completedTasks: []CompletedTask{},
 		costPerMToken:  3.0,
 		autopilotPanel: NewAutopilotPanel(controller),
@@ -584,6 +591,7 @@ func NewModelWithOptions(version string, store *memory.Store, controller *autopi
 		tasks:          []TaskDisplay{},
 		logs:           []string{},
 		showLogs:       true,
+		showBanner:     true,
 		completedTasks: []CompletedTask{},
 		costPerMToken:  3.0,
 		autopilotPanel: NewAutopilotPanel(controller),
@@ -623,6 +631,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "q", "ctrl+c":
 			m.quitting = true
 			return m, tea.Quit
+		case "b":
+			m.showBanner = !m.showBanner
+			return m, tea.ClearScreen
 		case "l":
 			m.showLogs = !m.showLogs
 			return m, tea.ClearScreen // GH-1249: Logs toggle changes height
@@ -860,11 +871,13 @@ func (m Model) renderDashboard() string {
 	var b strings.Builder
 
 	// Header with ASCII logo
-	b.WriteString("\n")
-	logo := strings.TrimPrefix(banner.Logo, "\n")
-	b.WriteString(titleStyle.Render(logo))
-	b.WriteString(titleStyle.Render(fmt.Sprintf("   Pilot %s", m.version)))
-	b.WriteString("\n")
+	if m.showBanner {
+		b.WriteString("\n")
+		logo := strings.TrimPrefix(banner.Logo, "\n")
+		b.WriteString(titleStyle.Render(logo))
+		b.WriteString(titleStyle.Render(fmt.Sprintf("   Pilot %s", m.version)))
+		b.WriteString("\n")
+	}
 
 	// Update notification (if available)
 	if m.updateInfo != nil {
@@ -907,13 +920,13 @@ func (m Model) renderHelp() string {
 	switch {
 	case m.gitGraphMode == GitGraphHidden:
 		// Graph hidden: show navigation and graph-open key
-		parts = []string{"q: quit", "l: logs", "g: graph", "j/k: select", "⏎: open"}
+		parts = []string{"q: quit", "l: logs", "b: banner", "g: graph", "j/k: select"}
 	case m.gitGraphFocus:
 		// Graph visible, graph panel focused
-		parts = []string{"q: quit", "g: cycle", "tab: dashboard", "j/k: scroll"}
+		parts = []string{"q: quit", "b: banner", "g: cycle", "tab: dashboard"}
 	default:
 		// Graph visible, dashboard focused
-		parts = []string{"q: quit", "g: cycle", "tab: graph", "j/k: select"}
+		parts = []string{"q: quit", "b: banner", "g: cycle", "tab: graph"}
 	}
 	help := strings.Join(parts, "  ")
 	if len(help) > panelTotalWidth {
