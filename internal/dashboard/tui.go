@@ -354,6 +354,13 @@ type Model struct {
 	upgradeMessage  string
 	upgradeError    string
 	upgradeCh       chan<- struct{} // Channel to trigger upgrade (write-only)
+
+	// Git graph panel (GH-1506)
+	gitGraphMode   GitGraphMode
+	gitGraphState  *GitGraphState
+	gitGraphScroll int
+	gitGraphFocus  bool
+	projectPath    string // Working directory for git commands
 }
 
 // tickMsg is sent periodically to refresh the display
@@ -588,6 +595,11 @@ func NewModelWithOptions(version string, store *memory.Store, controller *autopi
 	return m
 }
 
+// SetProjectPath sets the working directory used for git graph commands.
+func (m *Model) SetProjectPath(path string) {
+	m.projectPath = path
+}
+
 // Init initializes the model
 func (m Model) Init() tea.Cmd {
 	return tea.Batch(
@@ -614,13 +626,56 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "l":
 			m.showLogs = !m.showLogs
 			return m, tea.ClearScreen // GH-1249: Logs toggle changes height
+		case "g":
+			// Cycle git graph: Hidden → Full → Small → Hidden
+			m.gitGraphMode = (m.gitGraphMode + 1) % 3
+			m.gitGraphFocus = false
+			if m.gitGraphMode != GitGraphHidden {
+				// Start refresh and 15s tick when becoming visible
+				return m, tea.Batch(
+					refreshGitGraphCmd(m.projectPath),
+					gitRefreshTickCmd(),
+					tea.ClearScreen,
+				)
+			}
+			return m, tea.ClearScreen
+		case "tab":
+			if m.gitGraphMode != GitGraphHidden {
+				m.gitGraphFocus = !m.gitGraphFocus
+			}
 		case "up", "k":
-			if m.selectedTask > 0 {
+			if m.gitGraphFocus {
+				if m.gitGraphScroll > 0 {
+					m.gitGraphScroll--
+				}
+			} else if m.selectedTask > 0 {
 				m.selectedTask--
 			}
 		case "down", "j":
-			if m.selectedTask < len(m.tasks)-1 {
+			if m.gitGraphFocus {
+				if m.gitGraphState != nil {
+					maxScroll := len(m.gitGraphState.Lines) - 1
+					if m.gitGraphScroll < maxScroll {
+						m.gitGraphScroll++
+					}
+				}
+			} else if m.selectedTask < len(m.tasks)-1 {
 				m.selectedTask++
+			}
+		case "ctrl+d":
+			if m.gitGraphFocus && m.gitGraphState != nil {
+				m.gitGraphScroll += 15
+				maxScroll := len(m.gitGraphState.Lines) - 1
+				if m.gitGraphScroll > maxScroll {
+					m.gitGraphScroll = maxScroll
+				}
+			}
+		case "ctrl+u":
+			if m.gitGraphFocus {
+				m.gitGraphScroll -= 15
+				if m.gitGraphScroll < 0 {
+					m.gitGraphScroll = 0
+				}
 			}
 		case "enter":
 			if m.selectedTask >= 0 && m.selectedTask < len(m.tasks) {
@@ -736,6 +791,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.upgradeError = msg.Error
 			m.upgradeMessage = "Upgrade failed"
 		}
+
+	case gitRefreshMsg:
+		m.gitGraphState = msg.state
+		// Re-arm the 15-second refresh tick if panel is still visible
+		if m.gitGraphMode != GitGraphHidden {
+			return m, gitRefreshTickCmd()
+		}
+
+	case gitRefreshTickMsg:
+		// Only refresh when visible to save resources
+		if m.gitGraphMode != GitGraphHidden {
+			return m, refreshGitGraphCmd(m.projectPath)
+		}
 	}
 
 	return m, nil
@@ -747,11 +815,44 @@ func (m Model) View() string {
 		return "Pilot stopped.\n"
 	}
 
+	dashboard := m.renderDashboard()
+
+	var result string
+	if m.gitGraphMode == GitGraphHidden || (m.width > 0 && m.width < panelTotalWidth+1+20) {
+		result = dashboard
+	} else {
+		graphPanel := m.renderGitGraph()
+		if graphPanel == "" {
+			result = dashboard
+		} else {
+			result = lipgloss.JoinHorizontal(lipgloss.Top, dashboard, " ", graphPanel)
+		}
+	}
+
+	// GH-1249: Pad output to terminal height to prevent ghost lines.
+	if m.height > 0 {
+		lines := strings.Split(result, "\n")
+		if len(lines) < m.height {
+			for len(lines) < m.height {
+				lines = append(lines, "")
+			}
+			result = strings.Join(lines, "\n")
+		} else if len(lines) > m.height {
+			lines = lines[:m.height]
+			result = strings.Join(lines, "\n")
+		}
+	}
+
+	return result
+}
+
+// renderDashboard builds the left-side dashboard column (all existing panels).
+func (m Model) renderDashboard() string {
 	var b strings.Builder
 
 	// Header with ASCII logo
-	b.WriteString("\n")                           // Top padding to match bottom spacing
-	logo := strings.TrimPrefix(banner.Logo, "\n") // Remove leading newline
+	b.WriteString("\n")
+	logo := strings.TrimPrefix(banner.Logo, "\n")
 	b.WriteString(titleStyle.Render(logo))
 	b.WriteString(titleStyle.Render(fmt.Sprintf("   Pilot %s", m.version)))
 	b.WriteString("\n")
@@ -784,29 +885,14 @@ func (m Model) View() string {
 		b.WriteString("\n")
 	}
 
-	// Help
-	b.WriteString(helpStyle.Render("q: quit  l: logs  j/k: select  enter: open"))
-
-	// GH-1249: Pad output to terminal height to prevent ghost lines.
-	// Bubbletea's diff renderer miscalculates cursor positions when output
-	// height changes between frames. Fixed-height output eliminates the issue.
-	result := b.String()
-	if m.height > 0 {
-		lines := strings.Split(result, "\n")
-		if len(lines) < m.height {
-			// Pad with empty lines to fill terminal
-			for len(lines) < m.height {
-				lines = append(lines, "")
-			}
-			result = strings.Join(lines, "\n")
-		} else if len(lines) > m.height {
-			// Truncate to fit — drop bottom lines (logs get cut first since they're last)
-			lines = lines[:m.height]
-			result = strings.Join(lines, "\n")
-		}
+	// Help footer
+	if m.gitGraphMode != GitGraphHidden {
+		b.WriteString(helpStyle.Render("q: quit  l: logs  g: cycle graph  tab: focus  j/k: scroll  enter: open"))
+	} else {
+		b.WriteString(helpStyle.Render("q: quit  l: logs  g: git graph  j/k: select  enter: open"))
 	}
 
-	return result
+	return b.String()
 }
 
 // renderPanel builds a panel manually with guaranteed width
