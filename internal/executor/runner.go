@@ -3338,7 +3338,7 @@ func isValidSHA(s string) bool {
 func estimateCost(inputTokens, outputTokens int64, model string) float64 {
 	// Model pricing in USD per 1M tokens
 	const (
-		// Sonnet 4.5/4
+		// Sonnet 4.6/4.5/4
 		sonnetInputPrice  = 3.00
 		sonnetOutputPrice = 15.00
 		// Opus 4.6/4.5 (same pricing)

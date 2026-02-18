@@ -37,20 +37,20 @@ func TestModelRouter_SelectModel(t *testing.T) {
 			config: &ModelRoutingConfig{
 				Enabled: true,
 				Trivial: "claude-haiku",
-				Simple:  "claude-sonnet",
-				Medium:  "claude-sonnet",
+				Simple:  "claude-sonnet-4-6",
+				Medium:  "claude-sonnet-4-6",
 				Complex: "claude-opus",
 			},
 			task:     &Task{Description: "Add field to struct"},
-			expected: "claude-sonnet",
+			expected: "claude-sonnet-4-6",
 		},
 		{
 			name: "complex task returns opus",
 			config: &ModelRoutingConfig{
 				Enabled: true,
 				Trivial: "claude-haiku",
-				Simple:  "claude-sonnet",
-				Medium:  "claude-sonnet",
+				Simple:  "claude-sonnet-4-6",
+				Medium:  "claude-sonnet-4-6",
 				Complex: "claude-opus",
 			},
 			task:     &Task{Description: "Refactor the authentication system"},
@@ -170,8 +170,8 @@ func TestModelRouter_GetModelForComplexity(t *testing.T) {
 	config := &ModelRoutingConfig{
 		Enabled: true,
 		Trivial: "haiku",
-		Simple:  "sonnet",
-		Medium:  "sonnet",
+		Simple:  "claude-sonnet-4-6",
+		Medium:  "claude-sonnet-4-6",
 		Complex: "opus",
 	}
 	router := NewModelRouter(config, nil)
@@ -181,10 +181,10 @@ func TestModelRouter_GetModelForComplexity(t *testing.T) {
 		expected   string
 	}{
 		{ComplexityTrivial, "haiku"},
-		{ComplexitySimple, "sonnet"},
-		{ComplexityMedium, "sonnet"},
+		{ComplexitySimple, "claude-sonnet-4-6"},
+		{ComplexityMedium, "claude-sonnet-4-6"},
 		{ComplexityComplex, "opus"},
-		{Complexity("unknown"), "sonnet"}, // Default to medium
+		{Complexity("unknown"), "claude-sonnet-4-6"}, // Default to medium
 	}
 
 	for _, tt := range tests {

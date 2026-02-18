@@ -136,6 +136,14 @@ executor:
   #   medium: "high"             # Standard (default behavior)
   #   complex: "max"             # Deepest reasoning (Opus 4.6 only)
 
+  # Model routing - select model by task complexity
+  # model_routing:
+  #   enabled: true
+  #   trivial: "claude-haiku"           # Typos, renames ($1/$5 per MTok)
+  #   simple: "claude-sonnet-4-6"       # Small fixes, config ($3/$15 per MTok)
+  #   medium: "claude-sonnet-4-6"       # Features, endpoints ($3/$15 per MTok)
+  #   complex: "claude-opus-4-6"        # Refactors, migrations ($5/$25 per MTok)
+
   # Smart retry (GH-920) - retry on transient errors with backoff
   # retry:
   #   enabled: true
