@@ -895,13 +895,31 @@ func (m Model) renderDashboard() string {
 	}
 
 	// Help footer
-	if m.gitGraphMode != GitGraphHidden {
-		b.WriteString(helpStyle.Render("q: quit  l: logs  g: cycle graph  tab: focus  j/k: scroll  enter: open"))
-	} else {
-		b.WriteString(helpStyle.Render("q: quit  l: logs  g: git graph  j/k: select  enter: open"))
-	}
+	b.WriteString(m.renderHelp())
 
 	return b.String()
+}
+
+// renderHelp returns a context-aware help footer that fits within panelTotalWidth (69 chars).
+// Keys shown depend on gitGraphMode and gitGraphFocus state.
+func (m Model) renderHelp() string {
+	var parts []string
+	switch {
+	case m.gitGraphMode == GitGraphHidden:
+		// Graph hidden: show navigation and graph-open key
+		parts = []string{"q: quit", "l: logs", "g: graph", "j/k: select", "⏎: open"}
+	case m.gitGraphFocus:
+		// Graph visible, graph panel focused
+		parts = []string{"q: quit", "g: cycle", "tab: dashboard", "j/k: scroll"}
+	default:
+		// Graph visible, dashboard focused
+		parts = []string{"q: quit", "g: cycle", "tab: graph", "j/k: select"}
+	}
+	help := strings.Join(parts, "  ")
+	if len(help) > panelTotalWidth {
+		help = help[:panelTotalWidth-3] + "..."
+	}
+	return helpStyle.Render(help)
 }
 
 // renderPanel builds a panel manually with guaranteed width
