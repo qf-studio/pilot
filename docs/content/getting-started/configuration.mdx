@@ -1334,6 +1334,39 @@ auth:
 | `auth.type` | string | `"claude-code"` | Auth mode: `claude-code` (built-in) or `api-token` |
 | `auth.token` | string | — | Bearer token, required when `auth.type` is `api-token` |
 
+<Callout type="warning">
+**Container deployments:** Set `gateway.host: "0.0.0.0"` when running in Docker or Kubernetes. The default `127.0.0.1` only accepts loopback connections — health probes and ingress traffic will fail. See the [Docker & Helm guide](/deployment/docker-helm) for container-specific configuration.
+</Callout>
+
+### Container Config Mounting
+
+When running in a container, mount `config.yaml` as a read-only volume:
+
+```yaml
+# docker-compose.yml
+volumes:
+  - ./config.yaml:/home/pilot/.pilot/config.yaml:ro
+```
+
+```yaml
+# Kubernetes ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pilot-config
+data:
+  config.yaml: |
+    version: "1.0"
+    gateway:
+      host: "0.0.0.0"
+      port: 9090
+    adapters:
+      github:
+        enabled: true
+        token: "${GITHUB_TOKEN}"
+        repo: "your-org/your-repo"
+```
+
 ---
 
 ## Other Adapters

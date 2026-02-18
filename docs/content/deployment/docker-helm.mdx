@@ -1,0 +1,853 @@
+import { Callout, Tabs, Steps } from 'nextra/components'
+
+# Docker & Helm Deployment
+
+Production-ready deployment using Docker Compose or Helm on Kubernetes. Covers the official image, configuration, persistence, monitoring, ingress, and security hardening.
+
+<Callout type="info">
+The official image is available at `ghcr.io/anthropics/pilot`. It bundles the Pilot binary, Claude Code CLI, Git, and the GitHub CLI (`gh`) in a single Ubuntu-based image running as a non-root user.
+</Callout>
+
+---
+
+## Quick Start
+
+The fastest way to run Pilot in a container:
+
+<Steps>
+
+### Copy the example config
+
+```bash
+cp configs/pilot.example.yaml config.yaml
+# Edit config.yaml — set your repo, project_path, and adapter settings
+```
+
+### Set environment variables
+
+```bash
+export GITHUB_TOKEN="your-github-pat"
+export ANTHROPIC_API_KEY="your-anthropic-key"
+```
+
+### Start with Docker Compose
+
+```bash
+docker compose up -d
+docker compose logs -f pilot
+```
+
+</Steps>
+
+Pilot starts polling for issues labeled `pilot` on the configured repository within 30 seconds.
+
+---
+
+## Docker Image
+
+### Pull from GHCR
+
+```bash
+# Latest stable release
+docker pull ghcr.io/anthropics/pilot:latest
+
+# Pin to a specific version (recommended for production)
+docker pull ghcr.io/anthropics/pilot:v1.40.1
+```
+
+### Build from Source
+
+```bash
+# Build with version metadata
+docker build \
+  --build-arg VERSION=$(git describe --tags --always) \
+  --build-arg BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ) \
+  -t pilot:local .
+```
+
+Multi-architecture build (amd64 + arm64):
+
+```bash
+docker buildx build \
+  --platform linux/amd64,linux/arm64 \
+  --build-arg VERSION=$(git describe --tags --always) \
+  -t ghcr.io/anthropics/pilot:latest \
+  --push .
+```
+
+### Image Contents
+
+The runtime image is based on Ubuntu 22.04 (not Alpine — Claude Code requires Node.js and system libraries that Alpine cannot provide):
+
+| Component | Version | Purpose |
+|-----------|---------|---------|
+| Pilot binary | release tag | Main process |
+| Claude Code CLI | latest | AI execution backend |
+| Git + gh CLI | system | Repository operations |
+| Node.js + npm | system | Claude Code runtime |
+
+The binary runs as user `pilot` (UID 1000). The container exposes port `9090` for the gateway HTTP server.
+
+<Callout type="warning">
+Do not override `USER` in your Compose or Helm values. Running Pilot as root is unsupported and disables non-root security policies.
+</Callout>
+
+---
+
+## Docker Compose
+
+### Minimal Setup
+
+The `docker-compose.yml` in the project root is ready to use:
+
+```yaml
+services:
+  pilot:
+    build:
+      context: .
+      args:
+        VERSION: ${VERSION:-dev}
+        BUILD_TIME: ${BUILD_TIME:-}
+    image: pilot:${VERSION:-dev}
+    ports:
+      - "9090:9090"
+    volumes:
+      # Persistent SQLite data — required across restarts
+      - pilot-data:/home/pilot/.pilot/data
+      # Mount your config file
+      - ./config.yaml:/home/pilot/.pilot/config.yaml:ro
+    environment:
+      - ANTHROPIC_API_KEY
+      - GITHUB_TOKEN
+    command: ["start", "--github", "--autopilot=dev"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:9090/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+
+volumes:
+  pilot-data:
+```
+
+### Full Setup with All Adapters
+
+For production use with Telegram, Slack, and multiple adapters:
+
+```yaml
+services:
+  pilot:
+    image: ghcr.io/anthropics/pilot:v1.40.1
+    ports:
+      - "9090:9090"
+    environment:
+      # Required
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      # Optional adapters
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN}
+      - LINEAR_API_KEY=${LINEAR_API_KEY}
+      - JIRA_API_TOKEN=${JIRA_API_TOKEN}
+      # Optional LLM features
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+    volumes:
+      - pilot-data:/home/pilot/.pilot/data
+      - ./config.yaml:/home/pilot/.pilot/config.yaml:ro
+      - ./gitconfig:/home/pilot/.gitconfig:ro   # optional: git identity
+    command: ["start", "--github", "--telegram", "--autopilot=stage"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:9090/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+
+volumes:
+  pilot-data:
+    driver: local
+```
+
+Store secrets in a `.env` file (never commit it):
+
+```bash
+# .env
+ANTHROPIC_API_KEY=sk-ant-...
+GITHUB_TOKEN=ghp_...
+TELEGRAM_BOT_TOKEN=...
+SLACK_BOT_TOKEN=xoxb-...
+```
+
+### Common Commands
+
+```bash
+# Start in background
+docker compose up -d
+
+# Follow logs
+docker compose logs -f
+
+# Restart after config change
+docker compose restart pilot
+
+# Stop and remove containers (data volume preserved)
+docker compose down
+
+# Full teardown including data volume
+docker compose down -v
+```
+
+---
+
+## Helm Chart Installation
+
+<Callout type="info">
+The Helm chart is included in the repository at `helm/pilot/`. It deploys a single-replica Deployment, Service, ConfigMap, Secret, and PVC.
+</Callout>
+
+### Prerequisites
+
+```bash
+# Add helm repository (if published) or clone the repo
+git clone https://github.com/anthropics/pilot
+cd pilot
+```
+
+### Install
+
+<Tabs items={['Minimal', 'With Secrets', 'Production']}>
+  <Tabs.Tab>
+```bash
+helm install pilot ./helm/pilot \
+  --set secrets.githubToken="ghp_..." \
+  --set secrets.anthropicApiKey="sk-ant-..." \
+  --set config.adapters.github.repo="your-org/your-repo"
+```
+  </Tabs.Tab>
+  <Tabs.Tab>
+```bash
+# Create secrets separately (recommended)
+kubectl create secret generic pilot-secrets \
+  --from-literal=github-token="ghp_..." \
+  --from-literal=anthropic-api-key="sk-ant-..."
+
+# Install referencing existing secret
+helm install pilot ./helm/pilot \
+  --set existingSecret=pilot-secrets \
+  --set config.adapters.github.repo="your-org/your-repo"
+```
+  </Tabs.Tab>
+  <Tabs.Tab>
+```bash
+helm install pilot ./helm/pilot \
+  --namespace pilot --create-namespace \
+  --values values.production.yaml \
+  --set secrets.githubToken="ghp_..." \
+  --set secrets.anthropicApiKey="sk-ant-..."
+```
+  </Tabs.Tab>
+</Tabs>
+
+### Upgrade
+
+```bash
+helm upgrade pilot ./helm/pilot --reuse-values \
+  --set image.tag=v1.40.1
+```
+
+### values.yaml Reference
+
+```yaml
+# Image
+image:
+  repository: ghcr.io/anthropics/pilot
+  tag: v1.40.1           # pin to a specific version in production
+  pullPolicy: IfNotPresent
+
+# Replica count — always 1 (SQLite constraint)
+replicaCount: 1
+
+# Deployment strategy — Recreate ensures clean shutdown before pod restart
+strategy:
+  type: Recreate
+
+# Service
+service:
+  type: ClusterIP
+  port: 9090
+
+# Ingress — enable for webhook reception
+ingress:
+  enabled: false
+  className: nginx
+  host: pilot.example.com
+  tls: true
+
+# Resource requests and limits
+resources:
+  requests:
+    memory: "256Mi"
+    cpu: "100m"
+  limits:
+    memory: "1Gi"
+    cpu: "1000m"
+
+# Persistence — required for SQLite state
+persistence:
+  enabled: true
+  size: 1Gi
+  storageClass: ""        # use cluster default
+  accessMode: ReadWriteOnce
+
+# Pilot config — rendered into a ConfigMap
+config:
+  gateway:
+    host: "0.0.0.0"       # required in container: listen on all interfaces
+    port: 9090
+  adapters:
+    github:
+      enabled: true
+      repo: "your-org/your-repo"
+  autopilot:
+    enabled: true
+    auto_merge: false
+
+# Secrets — injected as env vars
+secrets:
+  githubToken: ""
+  anthropicApiKey: ""
+  telegramBotToken: ""
+  slackBotToken: ""
+
+# Reference an existing Kubernetes Secret instead of creating one
+existingSecret: ""
+
+# Prometheus ServiceMonitor
+serviceMonitor:
+  enabled: false
+  interval: 30s
+
+# Pod security context
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+```
+
+### Override Examples
+
+```bash
+# Change image tag
+helm upgrade pilot ./helm/pilot --set image.tag=v1.41.0
+
+# Enable ingress
+helm upgrade pilot ./helm/pilot \
+  --set ingress.enabled=true \
+  --set ingress.host=pilot.mycompany.com
+
+# Scale up persistence
+helm upgrade pilot ./helm/pilot --set persistence.size=5Gi
+
+# Enable Prometheus ServiceMonitor
+helm upgrade pilot ./helm/pilot --set serviceMonitor.enabled=true
+```
+
+---
+
+## Configuration
+
+### config.yaml in Container
+
+Mount your `config.yaml` as a read-only volume. In Docker Compose:
+
+```yaml
+volumes:
+  - ./config.yaml:/home/pilot/.pilot/config.yaml:ro
+```
+
+In Kubernetes (via ConfigMap):
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pilot-config
+data:
+  config.yaml: |
+    version: "1.0"
+    gateway:
+      host: "0.0.0.0"   # must be 0.0.0.0, not 127.0.0.1
+      port: 9090
+    adapters:
+      github:
+        enabled: true
+        token: "${GITHUB_TOKEN}"
+        repo: "your-org/your-repo"
+        project_path: "/workspace"
+    autopilot:
+      enabled: true
+      auto_merge: true
+```
+
+<Callout type="warning">
+**Gateway host must be `0.0.0.0` in containers.** The default `127.0.0.1` binds to loopback only — health checks and ingress traffic will not reach the process.
+</Callout>
+
+### Environment Variables
+
+All sensitive values should be injected as environment variables rather than embedded in `config.yaml`:
+
+| Variable | Description |
+|----------|-------------|
+| `ANTHROPIC_API_KEY` | Claude API key for execution |
+| `GITHUB_TOKEN` | GitHub PAT with `repo` + `workflow` scopes |
+| `TELEGRAM_BOT_TOKEN` | Telegram bot token |
+| `SLACK_BOT_TOKEN` | Slack bot token |
+| `LINEAR_API_KEY` | Linear API key |
+| `JIRA_API_TOKEN` | Jira API token |
+| `OPENAI_API_KEY` | OpenAI key for voice transcription |
+
+Reference them in `config.yaml` using `${VAR_NAME}` syntax:
+
+```yaml
+adapters:
+  github:
+    token: "${GITHUB_TOKEN}"
+```
+
+### Git Identity
+
+Pilot creates commits when implementing tasks. Configure git identity either in `config.yaml` or by mounting a `.gitconfig`:
+
+```yaml
+# docker-compose.yml
+volumes:
+  - ./gitconfig:/home/pilot/.gitconfig:ro
+```
+
+```ini
+# gitconfig
+[user]
+  name = Pilot Bot
+  email = pilot@yourcompany.com
+```
+
+---
+
+## Persistence
+
+### SQLite Volume
+
+Pilot uses SQLite for all state: task queue, execution history, memory, and autopilot state. Without a persistent volume, all state is lost on restart.
+
+**Docker Compose** — named volume:
+```yaml
+volumes:
+  - pilot-data:/home/pilot/.pilot/data
+```
+
+**Kubernetes** — PersistentVolumeClaim:
+```yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pilot-data
+spec:
+  accessModes:
+    - ReadWriteOnce     # SQLite requires single-writer access
+  resources:
+    requests:
+      storage: 1Gi
+  storageClass: standard
+```
+
+<Callout type="info">
+`ReadWriteOnce` means the PVC can only be mounted by a single node at a time. This is correct for Pilot — do not use `ReadWriteMany`.
+</Callout>
+
+### Single-Replica Constraint
+
+Pilot is designed for single-instance operation. Running multiple replicas causes:
+- SQLite write lock contention (WAL mode helps but does not eliminate conflicts)
+- Duplicate task processing (both replicas pick the same issue)
+- Split-brain autopilot state
+
+Always use `replicas: 1` and `strategy: Recreate`:
+
+```yaml
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate    # ensures old pod terminates before new one starts
+```
+
+Do **not** configure HPA or KEDA for scale-out.
+
+### Backup Strategy
+
+Back up the SQLite database file at `/home/pilot/.pilot/data/pilot.db`:
+
+```bash
+# Manual backup
+kubectl exec deploy/pilot -- \
+  sqlite3 /home/pilot/.pilot/data/pilot.db ".backup '/tmp/pilot-backup.db'"
+kubectl cp pilot-pod:/tmp/pilot-backup.db ./pilot-backup-$(date +%Y%m%d).db
+
+# CronJob backup to object storage (example with AWS S3)
+```
+
+```yaml
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: pilot-db-backup
+spec:
+  schedule: "0 2 * * *"    # 2 AM daily
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+          - name: backup
+            image: amazon/aws-cli
+            command:
+            - /bin/sh
+            - -c
+            - |
+              sqlite3 /data/pilot.db ".backup '/tmp/backup.db'" && \
+              aws s3 cp /tmp/backup.db s3://your-bucket/pilot/pilot-$(date +%Y%m%d).db
+            volumeMounts:
+            - name: data
+              mountPath: /data
+              readOnly: true
+          volumes:
+          - name: data
+            persistentVolumeClaim:
+              claimName: pilot-data
+          restartPolicy: OnFailure
+```
+
+---
+
+## Monitoring
+
+### Prometheus Metrics
+
+Pilot exposes Prometheus metrics at `GET /metrics`. Enable scraping:
+
+**Prometheus `scrape_configs`:**
+
+```yaml
+scrape_configs:
+  - job_name: 'pilot'
+    static_configs:
+      - targets: ['pilot:9090']
+    metrics_path: /metrics
+    scrape_interval: 30s
+```
+
+**Kubernetes ServiceMonitor** (requires Prometheus Operator):
+
+```yaml
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: pilot
+  labels:
+    release: prometheus   # match your Prometheus Operator release label
+spec:
+  selector:
+    matchLabels:
+      app: pilot
+  endpoints:
+  - port: http
+    path: /metrics
+    interval: 30s
+```
+
+Enable via Helm:
+
+```bash
+helm upgrade pilot ./helm/pilot --set serviceMonitor.enabled=true
+```
+
+### Key Metrics
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `pilot_issues_processed_total` | Counter | Issues processed by result |
+| `pilot_prs_merged_total` | Counter | PRs successfully merged |
+| `pilot_queue_depth` | Gauge | Issues waiting in queue |
+| `pilot_success_rate` | Gauge | Rolling success rate (0–1) |
+| `pilot_execution_duration_seconds` | Histogram | Task execution duration |
+
+### Grafana Dashboard
+
+Suggested panels for a Pilot dashboard:
+
+```promql
+# Issue throughput
+rate(pilot_issues_processed_total[5m])
+
+# Success rate (alert if < 0.9)
+pilot_success_rate
+
+# Queue depth
+pilot_queue_depth
+
+# P95 execution time
+histogram_quantile(0.95, rate(pilot_execution_duration_seconds_bucket[5m]))
+```
+
+See [Monitoring](/deployment/monitoring) for the full metrics reference and alerting rules.
+
+---
+
+## Ingress
+
+Configure ingress to receive webhooks from GitHub, Linear, and Jira:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: pilot
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: "1m"
+spec:
+  ingressClassName: nginx
+  tls:
+  - hosts:
+    - pilot.example.com
+    secretName: pilot-tls
+  rules:
+  - host: pilot.example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: pilot
+            port:
+              number: 9090
+```
+
+Enable via Helm values:
+
+```yaml
+ingress:
+  enabled: true
+  className: nginx
+  host: pilot.example.com
+  tls: true
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+```
+
+### Webhook URLs
+
+After ingress is configured, set these webhook URLs in each service:
+
+| Service | Webhook URL | Events |
+|---------|-------------|--------|
+| GitHub | `https://pilot.example.com/webhooks/github` | Issues, Pull requests |
+| Linear | `https://pilot.example.com/webhooks/linear` | Issues |
+| Jira | `https://pilot.example.com/webhooks/jira` | Issues |
+| GitLab | `https://pilot.example.com/webhooks/gitlab` | Issues, Merge requests |
+
+Set a webhook secret in your config for HMAC verification:
+
+```yaml
+adapters:
+  github:
+    webhook_secret: "${GITHUB_WEBHOOK_SECRET}"
+```
+
+<Callout type="info">
+Without ingress, Pilot falls back to polling (every 30s by default). Polling works but adds latency compared to instant webhook delivery.
+</Callout>
+
+---
+
+## Security
+
+### Non-Root Execution
+
+The official image runs as `pilot` (UID 1000). The Helm chart enforces this via `podSecurityContext`:
+
+```yaml
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: false   # Claude Code writes temp files
+  capabilities:
+    drop: ["ALL"]
+```
+
+<Callout type="warning">
+`readOnlyRootFilesystem: true` is not supported — Claude Code and git write temporary files during task execution.
+</Callout>
+
+### Network Policies
+
+Restrict Pilot's network access to only required egress:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: pilot-egress
+spec:
+  podSelector:
+    matchLabels:
+      app: pilot
+  policyTypes:
+    - Egress
+  egress:
+  # GitHub API
+  - to:
+    - ipBlock:
+        cidr: 0.0.0.0/0   # GitHub uses many IPs; restrict further if you have a static proxy
+    ports:
+    - protocol: TCP
+      port: 443
+  # Anthropic API
+  - to:
+    - ipBlock:
+        cidr: 0.0.0.0/0
+    ports:
+    - protocol: TCP
+      port: 443
+  # DNS
+  - ports:
+    - protocol: UDP
+      port: 53
+```
+
+### Secret Management
+
+**Option 1: External Secrets Operator** (recommended for production)
+
+```yaml
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: pilot-secrets
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: vault-backend
+    kind: ClusterSecretStore
+  target:
+    name: pilot-secrets
+  data:
+  - secretKey: github-token
+    remoteRef:
+      key: pilot/github
+      property: token
+  - secretKey: anthropic-api-key
+    remoteRef:
+      key: pilot/anthropic
+      property: api_key
+```
+
+**Option 2: Sealed Secrets**
+
+```bash
+# Encrypt with kubeseal
+kubectl create secret generic pilot-secrets \
+  --from-literal=github-token="ghp_..." \
+  --from-literal=anthropic-api-key="sk-ant-..." \
+  --dry-run=client -o yaml \
+  | kubeseal --format yaml > sealed-pilot-secrets.yaml
+
+# Apply sealed secret (safe to commit)
+kubectl apply -f sealed-pilot-secrets.yaml
+```
+
+Reference from Helm:
+
+```bash
+helm install pilot ./helm/pilot --set existingSecret=pilot-secrets
+```
+
+---
+
+## Troubleshooting
+
+### Port binding: address already in use
+
+Pilot's gateway binds to `host:port` from config. In containers, the default `127.0.0.1` only accepts loopback traffic — health checks from the kubelet will fail.
+
+**Fix:** Set `gateway.host: "0.0.0.0"` in `config.yaml`.
+
+```yaml
+gateway:
+  host: "0.0.0.0"
+  port: 9090
+```
+
+### SQLite database is locked
+
+Cause: Multiple processes attempting to write simultaneously, or a previous process did not release the lock cleanly.
+
+**Fix:**
+1. Ensure `replicas: 1` and `strategy: Recreate` — the old pod must terminate before the new one starts.
+2. If the lock persists, restart the pod: `kubectl rollout restart deploy/pilot`.
+3. For data integrity, restore from a backup rather than deleting the lock file.
+
+### Claude Code CLI not found
+
+The official image includes Claude Code. This error typically means you are using a custom image or mounting a binary that does not include it.
+
+**Verify:**
+```bash
+docker exec pilot claude --version
+# or in Kubernetes:
+kubectl exec deploy/pilot -- claude --version
+```
+
+**Fix:** Use the official image `ghcr.io/anthropics/pilot` or add to your Dockerfile:
+```dockerfile
+RUN npm install -g @anthropic-ai/claude-code
+```
+
+### Health check fails at startup
+
+Pilot takes 10–15 seconds to start up (Claude Code + git initialization). The Dockerfile and Helm chart both configure `start_period: 15s` / `initialDelaySeconds: 15` to avoid false failures.
+
+If health checks fail beyond startup:
+```bash
+# Check logs
+kubectl logs deploy/pilot --tail=50
+
+# Check the health endpoint directly
+kubectl port-forward svc/pilot 9090:9090
+curl http://localhost:9090/health
+curl http://localhost:9090/ready
+```
+
+### Webhook deliveries not received
+
+1. Verify ingress is configured and DNS resolves: `curl https://pilot.example.com/health`
+2. Check the webhook secret matches on both sides
+3. Confirm GitHub/Linear/Jira webhook logs show 200 responses
+4. Check Pilot logs: `kubectl logs deploy/pilot | grep webhook`
+
+Without ingress, switch to polling:
+```yaml
+adapters:
+  github:
+    polling:
+      enabled: true
+      interval: 30s
+```

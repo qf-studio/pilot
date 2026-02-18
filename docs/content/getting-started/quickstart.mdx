@@ -269,9 +269,42 @@ pilot start --tunnel --github --autopilot=stage
 Tunnels provide instant webhook delivery with zero API polling. See the [Tunnel Setup Guide](/guides/tunnel-setup) for detailed configuration including GitHub, Linear, and Jira webhook URLs.
 </Callout>
 
+## Deploy with Docker
+
+Run Pilot in a container instead of installing the binary directly:
+
+```bash
+# Pull the official image
+docker pull ghcr.io/anthropics/pilot:latest
+
+# Start with Docker Compose (recommended)
+cp configs/pilot.example.yaml config.yaml
+# Edit config.yaml with your repo and settings
+
+export GITHUB_TOKEN="ghp_..."
+export ANTHROPIC_API_KEY="sk-ant-..."
+
+docker compose up -d
+docker compose logs -f pilot
+```
+
+For Helm on Kubernetes:
+
+```bash
+helm install pilot ./helm/pilot \
+  --set secrets.githubToken="ghp_..." \
+  --set secrets.anthropicApiKey="sk-ant-..." \
+  --set config.adapters.github.repo="your-org/your-repo"
+```
+
+<Callout type="info">
+See the [Docker & Helm deployment guide](/deployment/docker-helm) for full configuration, persistence setup, ingress for webhooks, monitoring, and security hardening.
+</Callout>
+
 ## Next Steps
 
 - [Configuration](/getting-started/configuration) — Tune all config.yaml options
+- [Docker & Helm](/deployment/docker-helm) — Production container deployment
 - [Tunnel Setup](/guides/tunnel-setup) — Instant webhooks via Cloudflare or ngrok
 - [Autopilot](/features/autopilot) — Automatic CI monitoring and merge
 - [Telegram Bot](/features/telegram) — Chat, research, plan, and execute from mobile
