@@ -147,8 +147,8 @@ Not every ticket needs the same level of AI reasoning. Pilot classifies ticket c
 | Complexity | Model | Context | Cost | Example |
 |------------|-------|-----------|------|---------|
 | Trivial | Haiku (fast) | Skipped | ~$0.02 | Fix typo, rename variable |
-| Simple | Opus 4.6 | Active | ~$0.50 | Add endpoint, write test |
-| Medium | Opus 4.6 | Active | ~$1.50 | Feature spanning multiple files |
+| Simple | Sonnet 4.6 | Active | ~$0.20 | Add endpoint, write test |
+| Medium | Sonnet 4.6 | Active | ~$0.75 | Feature spanning multiple files |
 | Complex | Opus 4.6 (deep) | Active | ~$3.00 | Cross-cutting change |
 | Epic | Opus 4.6 | Active | ~$5.00+ | Auto-decomposed into subtasks |
 
@@ -166,7 +166,7 @@ Trivial tickets cost cents and complete in seconds. Complex tickets get the reas
 | **Source-available** | ✅ BSL 1.1 | ❌ | ❌ | ❌ | N/A |
 | **PR creation** | ✅ Automatic | ❌ | ⚠️ Workspace beta | ✅ | ⚠️ Manual |
 | **CI feedback loop** | ✅ Auto-fix on failure | ❌ | ❌ | ❌ | ❌ |
-| **Model routing** | ✅ Haiku + Opus | ❌ Fixed | ❌ Fixed | ❌ Fixed | ⚠️ Manual |
+| **Model routing** | ✅ Haiku + Sonnet + Opus | ❌ Fixed | ❌ Fixed | ❌ Fixed | ⚠️ Manual |
 | **Cost control** | ✅ Budget limits | 💰 Per-seat | 💰 Per-seat | 💰 Per-seat | ⚠️ Manual |
 | **Telegram interface** | ✅ 5 modes | ❌ | ❌ | ❌ | ❌ |
 | **Epic decomposition** | ✅ Auto-splits | ❌ | ❌ | ⚠️ Limited | ❌ |

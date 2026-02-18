@@ -59,7 +59,8 @@ This is the primary data flow — the path a GitHub issue takes from creation to
                     ┌────────▼────────┐
                     │ Model Routing   │  Classify complexity:
                     │                 │  trivial → Haiku
-                    │                 │  simple/medium/complex → Opus 4.6
+                    │                 │  simple/medium → Sonnet 4.6
+                    │                 │  complex → Opus 4.6
                     └────────┬────────┘
                              │
                     ┌────────▼────────┐
@@ -122,8 +123,8 @@ Before execution, Pilot classifies the task:
 | Complexity | Model | Timeout | Cost Range |
 |------------|-------|---------|------------|
 | Trivial | Haiku | 5m | ~$0.02 |
-| Simple | Opus 4.6 | 15m | ~$0.50 |
-| Medium | Opus 4.6 | 30m | ~$1.50 |
+| Simple | Sonnet 4.6 | 15m | ~$0.20 |
+| Medium | Sonnet 4.6 | 30m | ~$0.75 |
 | Complex | Opus 4.6 | 60m | ~$3.00 |
 
 Trivial tasks skip context intelligence entirely. Simple through complex tasks get full codebase context.
@@ -441,8 +442,8 @@ executor:          # Backend, model routing, decomposition
   backend: claude-code
   model_routing:
     trivial: claude-haiku-4-5-20251001
-    simple: claude-opus-4-6
-    medium: claude-opus-4-6
+    simple: claude-sonnet-4-6
+    medium: claude-sonnet-4-6
     complex: claude-opus-4-6
 memory:            # SQLite persistence
 quality:           # Gate configuration (build, test, lint, coverage)

@@ -114,12 +114,12 @@ Maps complexity to the AI model used for execution.
 | Complexity | Default Model | Pricing (input/output) | Rationale |
 |------------|---------------|------------------------|-----------|
 | Trivial | `claude-haiku` | $0.80 / $4 per 1M tokens | Speed over depth — mechanical changes don't need reasoning |
-| Simple | `claude-opus-4-6` | $5 / $25 per 1M tokens | Full capability at Sonnet pricing |
-| Medium | `claude-opus-4-6` | $5 / $25 per 1M tokens | Standard feature work needs solid reasoning |
+| Simple | `claude-sonnet-4-6` | $3 / $15 per 1M tokens | Near-Opus quality at 40% lower cost |
+| Medium | `claude-sonnet-4-6` | $3 / $15 per 1M tokens | Standard feature work, near-Opus quality |
 | Complex | `claude-opus-4-6` | $5 / $25 per 1M tokens | Architectural work gets the most capable model |
 
 <Callout type="info">
-Opus 4.6 replaced Sonnet as the default for simple/medium/complex tasks. Same pricing ($5/$25 per 1M tokens) but higher capability. Epic tasks are decomposed before execution, so each subtask routes independently.
+Sonnet 4.6 is the default for simple/medium tasks — near-Opus quality at 40% lower cost. Complex tasks use Opus 4.6 for maximum reasoning depth. Epic tasks are decomposed before execution, so each subtask routes independently.
 </Callout>
 
 ### Timeout Routing
@@ -190,8 +190,8 @@ executor:
   model_routing:
     enabled: true                  # false by default
     trivial: "claude-haiku"        # fastest, cheapest
-    simple: "claude-opus-4-6"      # full capability
-    medium: "claude-opus-4-6"
+    simple: "claude-sonnet-4-6"    # near-Opus quality, 40% cheaper
+    medium: "claude-sonnet-4-6"
     complex: "claude-opus-4-6"
 ```
 
@@ -249,8 +249,8 @@ executor:
   model_routing:
     enabled: true
     trivial: "claude-haiku"
-    simple: "claude-opus-4-6"
-    medium: "claude-opus-4-6"
+    simple: "claude-sonnet-4-6"
+    medium: "claude-sonnet-4-6"
     complex: "claude-opus-4-6"
 
   timeout:
@@ -294,7 +294,7 @@ Issue arrives
            │ No
      ┌─────┴──────────────┐
      │ ModelRouter         │
-     │  .SelectModel()     │──→ "claude-haiku" or "claude-opus-4-6"
+     │  .SelectModel()     │──→ "claude-haiku", "claude-sonnet-4-6", or "claude-opus-4-6"
      │  .SelectTimeout()   │──→ 5m / 10m / 30m / 60m
      │  .SelectEffort()    │──→ "low" / "medium" / "high" / "max"
      └──────────┬─────────┘

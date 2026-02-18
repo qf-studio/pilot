@@ -161,7 +161,7 @@ executor:
     type: opencode
     opencode:
       server_url: "http://127.0.0.1:4096"
-      model: "anthropic/claude-sonnet-4"
+      model: "anthropic/claude-sonnet-4-6"
       provider: "anthropic"
       auto_start_server: true
       server_command: "opencode serve"
@@ -172,7 +172,7 @@ executor:
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `server_url` | string | `"http://127.0.0.1:4096"` | OpenCode server URL (local or remote) |
-| `model` | string | `"anthropic/claude-sonnet-4"` | Model identifier in `provider/model` format |
+| `model` | string | `"anthropic/claude-sonnet-4-6"` | Model identifier in `provider/model` format |
 | `provider` | string | `"anthropic"` | LLM provider name |
 | `auto_start_server` | bool | `true` | Auto-start server if not responding |
 | `server_command` | string | `"opencode serve"` | Command to start the server |
@@ -333,8 +333,8 @@ executor:
   model_routing:
     enabled: true
     trivial: "claude-haiku"
-    simple: "claude-sonnet"
-    medium: "claude-opus-4-6"
+    simple: "claude-sonnet-4-6"
+    medium: "claude-sonnet-4-6"
     complex: "claude-opus-4-6"
 ```
 
