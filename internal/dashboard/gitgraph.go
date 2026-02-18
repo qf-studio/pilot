@@ -411,10 +411,10 @@ func (m Model) renderGitGraph() string {
 		return ""
 	}
 
-	// Graph panel width = remaining width after dashboard + 1-space gap
+	// Graph panel width = remaining width after dashboard + 1-space gap + 1-char right margin
 	graphWidth := 60 // default when terminal width unknown
 	if m.width > 0 {
-		graphWidth = m.width - panelTotalWidth - 1
+		graphWidth = m.width - panelTotalWidth - 2
 	}
 	if m.gitGraphMode == GitGraphSmall {
 		if graphWidth > 32 {
@@ -435,6 +435,7 @@ func (m Model) renderGitGraph() string {
 	innerWidth := graphWidth - 4 // border(1) + space(1) + space(1) + border(1)
 
 	var contentLines []string
+	var scrollIndicator string
 
 	// Error or loading state
 	if m.gitGraphState == nil {
@@ -469,13 +470,38 @@ func (m Model) renderGitGraph() string {
 			contentLines = append(contentLines, rendered)
 		}
 
-		// Scroll indicator
+		// Build scroll indicator (placed at bottom of content area)
 		if total > 0 {
 			indicator := fmt.Sprintf("[%d-%d of %d]", start+1, end, total)
-			contentLines = append(contentLines, "")
-			contentLines = append(contentLines,
-				padOrTruncate(graphScrollStyle.Render(indicator), innerWidth))
+			scrollIndicator = padOrTruncate(graphScrollStyle.Render(indicator), innerWidth)
 		}
+	}
+
+	// Full-height stretch: pad content lines to fill terminal height.
+	// Panel structure: top border + empty line + [content lines] + empty line + bottom border = height
+	// So content area height = m.height - 4 (top border, top empty, bottom empty, bottom border)
+	if m.height > 0 {
+		contentArea := m.height - 4
+		if contentArea < 1 {
+			contentArea = 1
+		}
+		// Reserve 1 line for scroll indicator (if present) at bottom of content area
+		indicatorReserve := 0
+		if scrollIndicator != "" {
+			indicatorReserve = 1
+		}
+		// Pad content lines to fill available space
+		for len(contentLines) < contentArea-indicatorReserve {
+			contentLines = append(contentLines, "")
+		}
+		// Append scroll indicator at bottom of content area
+		if scrollIndicator != "" {
+			contentLines = append(contentLines, scrollIndicator)
+		}
+	} else if scrollIndicator != "" {
+		// No height info: fallback to original placement
+		contentLines = append(contentLines, "")
+		contentLines = append(contentLines, scrollIndicator)
 	}
 
 	return m.renderGraphPanel(title, contentLines, graphWidth)
