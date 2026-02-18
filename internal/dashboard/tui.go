@@ -877,13 +877,13 @@ func (m Model) renderDashboard() string {
 		b.WriteString(titleStyle.Render(logo))
 		b.WriteString(titleStyle.Render(fmt.Sprintf("   Pilot %s", m.version)))
 		b.WriteString("\n")
-	}
 
-	// Update notification (if available)
-	if m.updateInfo != nil {
-		b.WriteString(m.renderUpdateNotification())
+		// Update notification (if available)
+		if m.updateInfo != nil {
+			b.WriteString(m.renderUpdateNotification())
+		}
+		b.WriteString("\n")
 	}
-	b.WriteString("\n")
 
 	// Metrics cards (tokens, cost, tasks)
 	b.WriteString(m.renderMetricsCards())
