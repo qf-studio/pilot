@@ -66,11 +66,6 @@ func (h *HotUpgrader) PerformHotUpgrade(ctx context.Context, release *Release, c
 
 	currentVersion := h.graceful.GetUpgrader().currentVersion
 
-	// Check if hot restart is supported on this platform
-	if !CanHotRestart() {
-		return fmt.Errorf("hot restart is not supported on this platform")
-	}
-
 	progress := func(pct int, msg string) {
 		slog.Info("upgrade progress", slog.Int("percent", pct), slog.String("msg", msg))
 		if cfg.OnProgress != nil {
@@ -120,12 +115,19 @@ func (h *HotUpgrader) PerformHotUpgrade(ctx context.Context, release *Release, c
 		return fmt.Errorf("upgrade failed: %w", err)
 	}
 
+	// Step 4: Restart if supported, otherwise notify user
+	if !CanHotRestart() {
+		progress(100, "Upgrade installed! Please restart Pilot manually.")
+		slog.Info("upgrade installed, manual restart required (Windows)",
+			slog.String("previous_version", currentVersion),
+			slog.String("new_version", release.TagName),
+		)
+		return nil
+	}
+
 	progress(95, "Preparing to restart...")
 
-	// Step 4: Get the binary path and restart
 	binaryPath := h.graceful.GetUpgrader().BinaryPath()
-
-	// Use current command-line arguments
 	args := os.Args
 
 	slog.Info("restarting with new binary",

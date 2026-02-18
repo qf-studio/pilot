@@ -805,7 +805,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case upgradeCompleteMsg:
 		if msg.Success {
 			m.upgradeState = UpgradeStateComplete
-			m.upgradeMessage = "Upgrade complete! Restarting..."
+			m.upgradeMessage = "Upgrade complete! Restart Pilot to apply."
 		} else {
 			m.upgradeState = UpgradeStateFailed
 			m.upgradeError = msg.Error

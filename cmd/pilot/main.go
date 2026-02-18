@@ -2198,8 +2198,13 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 					if err := hotUpgrader.PerformHotUpgrade(ctx, info.LatestRelease, upgradeCfg); err != nil {
 						program.Send(dashboard.NotifyUpgradeComplete(false, err.Error())())
 						program.Send(dashboard.AddLog(fmt.Sprintf("❌ Upgrade failed: %v", err))())
+					} else {
+						// On Unix, process is replaced and this line is never reached.
+						// On Windows, hot restart is not supported — binary is installed
+						// but process continues. Notify user to restart manually.
+						program.Send(dashboard.NotifyUpgradeComplete(true, "")())
+						program.Send(dashboard.AddLog("✅ Upgrade installed! Please restart Pilot to use the new version.")())
 					}
-					// If upgrade succeeds, the process is replaced and this line is never reached
 				}
 			}
 		}()
