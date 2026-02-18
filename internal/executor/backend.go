@@ -524,19 +524,14 @@ func DefaultBackendConfig() *BackendConfig {
 
 // DefaultModelRoutingConfig returns default model routing configuration.
 // Model routing is disabled by default; when enabled, uses Haiku for trivial
-// tasks (speed) and Opus 4.5 for simple/medium/complex tasks (highest
-// capability).
+// tasks (speed), Sonnet 4.6 for simple/medium tasks (near-Opus quality at 40%
+// lower cost), and Opus 4.6 for complex tasks (highest capability).
 //
 // Complexity detection criteria:
 //   - Trivial: Single-file changes, typos, logging, renames
 //   - Simple: Small fixes, add/remove fields, config updates
 //   - Medium: New endpoints, components, moderate refactoring
 //   - Complex: Architecture changes, multi-file refactors, migrations
-//
-// DefaultModelRoutingConfig returns default model routing configuration.
-// Model routing is disabled by default; when enabled, uses Haiku for trivial
-// tasks (speed), Sonnet 4.6 for simple/medium tasks (near-Opus quality at 40%
-// lower cost), and Opus 4.6 for complex tasks (highest capability).
 func DefaultModelRoutingConfig() *ModelRoutingConfig {
 	return &ModelRoutingConfig{
 		Enabled: false,
