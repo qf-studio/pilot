@@ -17,6 +17,7 @@ func TestNewNotifier(t *testing.T) {
 
 	if notifier == nil {
 		t.Fatal("NewNotifier returned nil")
+		return
 	}
 	if notifier.pilotTag != "pilot" {
 		t.Errorf("notifier.pilotTag = %s, want pilot", notifier.pilotTag)
