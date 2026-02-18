@@ -78,6 +78,10 @@ type Config struct {
 	// Safety
 	// MaxFailures is the circuit breaker threshold before pausing autopilot.
 	MaxFailures int `yaml:"max_failures"`
+	// MaxCIFixIterations limits how many CI fix issues can be chained before giving up.
+	// Prevents infinite fix cascades where each fix creates a new issue that also fails CI.
+	// Default: 3. Set to 0 to disable the limit.
+	MaxCIFixIterations int `yaml:"max_ci_fix_iterations"`
 	// FailureResetTimeout is how long after the last failure before the per-PR counter resets.
 	// Default: 30 minutes.
 	FailureResetTimeout time.Duration `yaml:"failure_reset_timeout"`
@@ -135,6 +139,7 @@ func DefaultConfig() *Config {
 		IssueLabels:         []string{"pilot", "autopilot-fix"},
 		NotifyOnFailure:     true,
 		MaxFailures:         3,
+		MaxCIFixIterations:  3,
 		FailureResetTimeout: 30 * time.Minute,
 		MaxMergesPerHour:    10,
 		ApprovalTimeout:     1 * time.Hour,

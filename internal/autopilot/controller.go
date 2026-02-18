@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -11,6 +13,19 @@ import (
 	"github.com/alekspetrov/pilot/internal/adapters/github"
 	"github.com/alekspetrov/pilot/internal/approval"
 )
+
+// iterationRe matches the iteration field in autopilot-meta comments.
+var iterationRe = regexp.MustCompile(`<!-- autopilot-meta.*?iteration:(\d+).*?-->`)
+
+// parseAutopilotIteration extracts the CI fix iteration counter from an issue body.
+// Returns 0 if no iteration metadata is found (i.e., the issue is not a fix issue).
+func parseAutopilotIteration(body string) int {
+	if m := iterationRe.FindStringSubmatch(body); len(m) > 1 {
+		n, _ := strconv.Atoi(m[1])
+		return n
+	}
+	return 0
+}
 
 // prFailureState tracks per-PR circuit breaker state.
 // Each PR has independent failure tracking so one bad PR doesn't block others.
@@ -518,6 +533,10 @@ func (c *Controller) handleCIPassed(ctx context.Context, prState *PRState) error
 }
 
 // handleCIFailed creates fix issue via feedback loop.
+// GH-1566: Tracks CI fix iteration depth to prevent infinite cascade.
+// Each fix issue embeds an iteration counter in autopilot-meta; when the
+// counter reaches MaxCIFixIterations the PR transitions to StageFailed
+// instead of spawning another fix issue.
 func (c *Controller) handleCIFailed(ctx context.Context, prState *PRState) error {
 	failedChecks, err := c.ciMonitor.GetFailedChecks(ctx, prState.HeadSHA)
 	if err != nil {
@@ -532,7 +551,40 @@ func (c *Controller) handleCIFailed(ctx context.Context, prState *PRState) error
 		}
 	}
 
-	issueNum, err := c.feedbackLoop.CreateFailureIssue(ctx, prState, FailureCIPreMerge, failedChecks, "")
+	// GH-1566: Check CI fix iteration depth from the originating issue.
+	// If this PR was created from an autopilot-fix issue, that issue's body
+	// contains an iteration counter. Stop the cascade when limit is reached.
+	iteration := 0
+	if prState.IssueNumber > 0 && c.config.MaxCIFixIterations > 0 {
+		issue, err := c.ghClient.GetIssue(ctx, c.owner, c.repo, prState.IssueNumber)
+		if err != nil {
+			c.log.Warn("failed to fetch issue for iteration check", "issue", prState.IssueNumber, "error", err)
+			// Continue with iteration=0 (safe: won't block on transient error)
+		} else {
+			iteration = parseAutopilotIteration(issue.Body)
+		}
+
+		if iteration >= c.config.MaxCIFixIterations {
+			c.log.Warn("CI fix iteration limit reached, stopping cascade",
+				"pr", prState.PRNumber,
+				"issue", prState.IssueNumber,
+				"iteration", iteration,
+				"max", c.config.MaxCIFixIterations,
+			)
+
+			// Close the failed PR so the sequential poller can unblock
+			if err := c.ghClient.ClosePullRequest(ctx, c.owner, c.repo, prState.PRNumber); err != nil {
+				c.log.Warn("failed to close failed PR", "pr", prState.PRNumber, "error", err)
+			}
+
+			prState.Stage = StageFailed
+			prState.Error = fmt.Sprintf("CI fix iteration limit reached (%d/%d): stopping cascade to prevent infinite loop", iteration, c.config.MaxCIFixIterations)
+			c.metrics.RecordPRFailed()
+			return nil
+		}
+	}
+
+	issueNum, err := c.feedbackLoop.CreateFailureIssue(ctx, prState, FailureCIPreMerge, failedChecks, "", iteration+1)
 	if err != nil {
 		return fmt.Errorf("failed to create fix issue: %w", err)
 	}
@@ -712,7 +764,8 @@ func (c *Controller) handlePostMergeCI(ctx context.Context, prState *PRState) er
 	if status == CIFailure {
 		c.log.Warn("post-merge CI failed", "pr", prState.PRNumber)
 		failedChecks, _ := c.ciMonitor.GetFailedChecks(ctx, mainSHA)
-		issueNum, err := c.feedbackLoop.CreateFailureIssue(ctx, prState, FailureCIPostMerge, failedChecks, "")
+		// Post-merge failures start a new lineage (iteration 1), not part of pre-merge cascade
+		issueNum, err := c.feedbackLoop.CreateFailureIssue(ctx, prState, FailureCIPostMerge, failedChecks, "", 1)
 		if err != nil {
 			c.log.Error("failed to create post-merge fix issue", "error", err)
 		} else {

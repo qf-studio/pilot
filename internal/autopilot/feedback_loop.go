@@ -46,10 +46,13 @@ const (
 )
 
 // CreateFailureIssue creates a GitHub issue for a CI/deployment failure.
+// The iteration parameter tracks how many CI fix attempts have been chained
+// (0 = original PR, 1 = first fix, etc.). It is embedded in autopilot-meta
+// so downstream fix issues can inherit and increment the counter.
 // Returns the issue number on success.
-func (f *FeedbackLoop) CreateFailureIssue(ctx context.Context, prState *PRState, failureType FailureType, failedChecks []string, logs string) (int, error) {
+func (f *FeedbackLoop) CreateFailureIssue(ctx context.Context, prState *PRState, failureType FailureType, failedChecks []string, logs string, iteration int) (int, error) {
 	title := f.generateTitle(prState, failureType)
-	body := f.generateBody(prState, failureType, failedChecks, logs)
+	body := f.generateBody(prState, failureType, failedChecks, logs, iteration)
 
 	input := &github.IssueInput{
 		Title:  title,
@@ -88,7 +91,7 @@ func (f *FeedbackLoop) generateTitle(prState *PRState, failureType FailureType) 
 }
 
 // generateBody creates a detailed issue body with context for Pilot.
-func (f *FeedbackLoop) generateBody(prState *PRState, failureType FailureType, failedChecks []string, logs string) string {
+func (f *FeedbackLoop) generateBody(prState *PRState, failureType FailureType, failedChecks []string, logs string, iteration int) string {
 	var sb strings.Builder
 
 	sb.WriteString("# Autopilot: Auto-Generated Fix Request\n\n")
@@ -149,8 +152,9 @@ func (f *FeedbackLoop) generateBody(prState *PRState, failureType FailureType, f
 
 	// Machine-readable metadata for poller to parse original branch and PR number.
 	// GH-1267: Include pr:N so fix sessions can use --from-pr for context resumption.
+	// GH-1566: Include iteration:N to track CI fix cascade depth and enforce limits.
 	if prState.BranchName != "" {
-		sb.WriteString(fmt.Sprintf("\n<!-- autopilot-meta branch:%s pr:%d -->\n", prState.BranchName, prState.PRNumber))
+		sb.WriteString(fmt.Sprintf("\n<!-- autopilot-meta branch:%s pr:%d iteration:%d -->\n", prState.BranchName, prState.PRNumber, iteration))
 	}
 
 	return sb.String()

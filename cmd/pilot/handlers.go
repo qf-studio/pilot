@@ -57,6 +57,17 @@ func parseAutopilotPR(body string) int {
 	return 0
 }
 
+// parseAutopilotIteration extracts the CI fix iteration counter from an issue's metadata comment.
+// Returns 0 if no iteration metadata found (GH-1566).
+func parseAutopilotIteration(body string) int {
+	re := regexp.MustCompile(`<!-- autopilot-meta.*?iteration:(\d+).*?-->`)
+	if m := re.FindStringSubmatch(body); len(m) > 1 {
+		n, _ := strconv.Atoi(m[1])
+		return n
+	}
+	return 0
+}
+
 // resolveGitHubMemberID maps a GitHub issue author to a team member ID (GH-634).
 // Uses the global teamAdapter (set at startup). Returns "" if no adapter is configured
 // or no matching member is found — callers treat "" as "skip RBAC".

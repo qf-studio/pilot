@@ -370,6 +370,54 @@ func TestParseAutopilotPR(t *testing.T) {
 	}
 }
 
+func TestParseAutopilotIteration(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want int
+	}{
+		{
+			name: "valid metadata with iteration",
+			body: "Some body\n\n<!-- autopilot-meta branch:pilot/GH-10 pr:42 iteration:2 -->\n",
+			want: 2,
+		},
+		{
+			name: "iteration zero",
+			body: "<!-- autopilot-meta branch:pilot/GH-10 pr:42 iteration:0 -->",
+			want: 0,
+		},
+		{
+			name: "no iteration field",
+			body: "<!-- autopilot-meta branch:pilot/GH-10 pr:42 -->",
+			want: 0,
+		},
+		{
+			name: "no metadata",
+			body: "just a normal issue body",
+			want: 0,
+		},
+		{
+			name: "empty body",
+			body: "",
+			want: 0,
+		},
+		{
+			name: "high iteration",
+			body: "<!-- autopilot-meta branch:pilot/GH-10 pr:42 iteration:15 -->",
+			want: 15,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parseAutopilotIteration(tt.body)
+			if got != tt.want {
+				t.Errorf("parseAutopilotIteration() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
 // =============================================================================
 // GH-635: wireProjectAccessChecker tests
 // =============================================================================
