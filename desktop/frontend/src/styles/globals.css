@@ -1,0 +1,111 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    box-sizing: border-box;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    background-color: #1e222a;
+    color: #c9d1d9;
+    font-family: 'SF Mono', Menlo, Monaco, Consolas, monospace;
+    font-size: 12px;
+    line-height: 1.5;
+    overflow: hidden;
+    /* Disable text selection for native app feel */
+    -webkit-user-select: none;
+    user-select: none;
+    /* macOS traffic light buttons: add top padding when titlebar hidden-inset */
+    padding-top: env(safe-area-inset-top, 0px);
+  }
+}
+
+@layer utilities {
+  /* Shimmer animation for queued tasks */
+  @keyframes shimmer {
+    0% {
+      background-position: -200% 0;
+    }
+    100% {
+      background-position: 200% 0;
+    }
+  }
+
+  .shimmer-bar {
+    background: linear-gradient(90deg, #3d4450 40%, #8b949e 50%, #3d4450 60%);
+    background-size: 200% 100%;
+    animation: shimmer 2s infinite linear;
+  }
+
+  /* Pulse animation for running indicator dot */
+  @keyframes pulse-opacity {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.3;
+    }
+  }
+
+  .pulse {
+    animation: pulse-opacity 1s infinite ease-in-out;
+  }
+
+  /* Staggered shimmer delays for queue items */
+  .shimmer-delay-0 {
+    animation-delay: 0s;
+  }
+  .shimmer-delay-1 {
+    animation-delay: 0.3s;
+  }
+  .shimmer-delay-2 {
+    animation-delay: 0.6s;
+  }
+  .shimmer-delay-3 {
+    animation-delay: 0.9s;
+  }
+  .shimmer-delay-4 {
+    animation-delay: 1.2s;
+  }
+
+  /* Dot leader for key-value pairs */
+  .dot-leader {
+    display: flex;
+    gap: 0;
+  }
+
+  .dot-leader-key {
+    flex: 0 0 auto;
+    color: #8b949e;
+  }
+
+  .dot-leader-dots {
+    flex: 1;
+    overflow: hidden;
+    color: #3d4450;
+    /* dots pattern via repeated character */
+  }
+
+  .dot-leader-value {
+    flex: 0 0 auto;
+  }
+
+  /* Scrollable log area */
+  .log-scroll {
+    overflow-y: auto;
+    scrollbar-width: none;
+  }
+
+  .log-scroll::-webkit-scrollbar {
+    display: none;
+  }
+}

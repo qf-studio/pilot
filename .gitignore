@@ -81,3 +81,9 @@ Library/
 
 # Nested git repo (docs has its own GitLab repo)
 docs/.git
+
+# Desktop app build artifacts
+desktop/frontend/node_modules/
+desktop/frontend/dist/
+desktop/build/bin/
+!desktop/frontend/dist/.gitkeep

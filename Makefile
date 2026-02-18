@@ -1,4 +1,4 @@
-.PHONY: build run test test-e2e clean install lint fmt deps dev install-hooks check-secrets gate check-integration auto-fix test-short test-integration test-chaos package release docker-build docker-push
+.PHONY: build run test test-e2e clean install lint fmt deps dev install-hooks check-secrets gate check-integration auto-fix test-short test-integration test-chaos package release docker-build docker-push desktop-dev desktop-build desktop
 
 # Variables
 BINARY_NAME=pilot
@@ -193,6 +193,15 @@ docker-build:
 docker-push:
 	docker tag pilot:$(VERSION) ghcr.io/alekspetrov/pilot:$(VERSION)
 	docker push ghcr.io/alekspetrov/pilot:$(VERSION)
+
+# Desktop app (Wails v2 + React)
+desktop-dev:
+	cd desktop && wails dev
+
+desktop-build:
+	cd desktop && wails build -platform darwin/universal
+
+desktop: desktop-build
 
 # Help
 help:
