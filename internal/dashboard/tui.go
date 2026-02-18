@@ -882,8 +882,8 @@ func (m Model) renderDashboard() string {
 	// Update notification (if available) — always visible regardless of banner
 	if m.updateInfo != nil {
 		b.WriteString(m.renderUpdateNotification())
+		b.WriteString("\n")
 	}
-	b.WriteString("\n")
 
 	// Metrics cards (tokens, cost, tasks)
 	b.WriteString(m.renderMetricsCards())
