@@ -32,7 +32,7 @@ func TestBackendEvent(t *testing.T) {
 		ToolInput:    map[string]interface{}{"file_path": "/test.go"},
 		TokensInput:  100,
 		TokensOutput: 50,
-		Model:        "claude-sonnet-4-5",
+		Model:        "claude-sonnet-4-6",
 	}
 
 	if event.Type != EventTypeToolUse {
@@ -52,7 +52,7 @@ func TestBackendResult(t *testing.T) {
 		Output:       "Task completed",
 		TokensInput:  1000,
 		TokensOutput: 500,
-		Model:        "claude-sonnet-4-5",
+		Model:        "claude-sonnet-4-6",
 	}
 
 	if !result.Success {

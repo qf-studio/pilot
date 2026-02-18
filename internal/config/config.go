@@ -246,7 +246,7 @@ func DefaultConfig() *Config {
 			Asana:       asana.DefaultConfig(),
 		},
 		Orchestrator: &OrchestratorConfig{
-			Model:         "claude-sonnet-4-5-20250929",
+			Model:         "claude-sonnet-4-6",
 			MaxConcurrent: 2,
 			DailyBrief: &DailyBriefConfig{
 				Enabled:  false,

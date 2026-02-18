@@ -266,7 +266,7 @@ func TestRecordUsageEvent_Metadata(t *testing.T) {
 		Metadata: map[string]interface{}{
 			"input_tokens":  10000,
 			"output_tokens": 5000,
-			"model":         "claude-sonnet-4-5",
+			"model":         "claude-sonnet-4-6",
 		},
 	}
 

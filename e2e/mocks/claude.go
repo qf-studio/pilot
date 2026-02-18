@@ -135,7 +135,7 @@ cat << 'EVENTS'
 {"type":"assistant","subtype":"tool_use","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"."}}]}}
 {"type":"user","subtype":"tool_result","tool_use_result":{"content":"Directory listing..."}}
 {"type":"assistant","subtype":"text","message":{"content":[{"type":"text","text":"Implementing changes..."}]}}
-{"type":"result","subtype":"success","result":%s,"is_error":false,"duration_ms":1000,"num_turns":3,"usage":{"input_tokens":500,"output_tokens":200},"model":"claude-opus-4-5"}
+{"type":"result","subtype":"success","result":%s,"is_error":false,"duration_ms":1000,"num_turns":3,"usage":{"input_tokens":500,"output_tokens":200},"model":"claude-opus-4-6"}
 EVENTS
 exit 0
 `, string(resultJSON)))

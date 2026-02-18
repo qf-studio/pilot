@@ -1294,7 +1294,7 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 			result.TokensTotal = state.tokensInput + state.tokensOutput
 			result.ModelName = state.modelName
 			if result.ModelName == "" {
-				result.ModelName = "claude-opus-4-5"
+				result.ModelName = "claude-opus-4-6"
 			}
 			result.EstimatedCostUSD = estimateCost(result.TokensInput, result.TokensOutput, result.ModelName)
 			log.Warn("Task cancelled due to per-task budget limit",
@@ -1613,7 +1613,7 @@ retrySucceeded:
 		result.ModelName = state.modelName
 	}
 	if result.ModelName == "" {
-		result.ModelName = "claude-opus-4-5" // Default model
+		result.ModelName = "claude-opus-4-6" // Default model
 	}
 	// Estimate cost based on token usage (including research tokens)
 	result.EstimatedCostUSD = estimateCost(result.TokensInput+result.ResearchTokens, result.TokensOutput, result.ModelName)

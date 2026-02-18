@@ -431,7 +431,7 @@ func TestFormatReport(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	recorder, _ := NewRecorder("TASK-REPORT", "/test/project", tmpDir)
-	recorder.SetModel("claude-sonnet-4-5")
+	recorder.SetModel("claude-sonnet-4-6")
 
 	events := []string{
 		`{"type":"system","subtype":"init"}`,

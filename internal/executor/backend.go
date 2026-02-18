@@ -503,7 +503,7 @@ func DefaultBackendConfig() *BackendConfig {
 		},
 		OpenCode: &OpenCodeConfig{
 			ServerURL:       "http://127.0.0.1:4096",
-			Model:           "anthropic/claude-sonnet-4-5",
+			Model:           "anthropic/claude-sonnet-4-6",
 			Provider:        "anthropic",
 			AutoStartServer: true,
 			ServerCommand:   "opencode serve",

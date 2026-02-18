@@ -127,7 +127,7 @@ func TestClaudeCodeBackendParseStreamEvent(t *testing.T) {
 func TestClaudeCodeBackendParseUsageInfo(t *testing.T) {
 	backend := NewClaudeCodeBackend(nil)
 
-	line := `{"type":"result","result":"Done","usage":{"input_tokens":100,"output_tokens":50},"model":"claude-sonnet-4-5"}`
+	line := `{"type":"result","result":"Done","usage":{"input_tokens":100,"output_tokens":50},"model":"claude-sonnet-4-6"}`
 	event := backend.parseStreamEvent(line)
 
 	if event.TokensInput != 100 {
@@ -136,8 +136,8 @@ func TestClaudeCodeBackendParseUsageInfo(t *testing.T) {
 	if event.TokensOutput != 50 {
 		t.Errorf("TokensOutput = %d, want 50", event.TokensOutput)
 	}
-	if event.Model != "claude-sonnet-4-5" {
-		t.Errorf("Model = %q, want claude-sonnet-4-5", event.Model)
+	if event.Model != "claude-sonnet-4-6" {
+		t.Errorf("Model = %q, want claude-sonnet-4-6", event.Model)
 	}
 }
 

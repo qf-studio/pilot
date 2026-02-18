@@ -615,7 +615,7 @@ func TestExecutionResultStruct(t *testing.T) {
 		FilesChanged:     3,
 		LinesAdded:       100,
 		LinesRemoved:     20,
-		ModelName:        "claude-sonnet-4-5",
+		ModelName:        "claude-sonnet-4-6",
 	}
 
 	if result.TaskID != "TASK-123" {
@@ -645,7 +645,7 @@ func TestEstimateCost(t *testing.T) {
 			name:         "sonnet zero tokens",
 			inputTokens:  0,
 			outputTokens: 0,
-			model:        "claude-sonnet-4-5",
+			model:        "claude-sonnet-4-6",
 			minCost:      0,
 			maxCost:      0,
 		},
@@ -653,7 +653,7 @@ func TestEstimateCost(t *testing.T) {
 			name:         "sonnet 1M input tokens",
 			inputTokens:  1000000,
 			outputTokens: 0,
-			model:        "claude-sonnet-4-5",
+			model:        "claude-sonnet-4-6",
 			minCost:      2.9,
 			maxCost:      3.1,
 		},
@@ -661,7 +661,7 @@ func TestEstimateCost(t *testing.T) {
 			name:         "sonnet 1M output tokens",
 			inputTokens:  0,
 			outputTokens: 1000000,
-			model:        "claude-sonnet-4-5",
+			model:        "claude-sonnet-4-6",
 			minCost:      14.9,
 			maxCost:      15.1,
 		},
@@ -685,7 +685,7 @@ func TestEstimateCost(t *testing.T) {
 			name:         "opus 4.5 1M input tokens (same as 4.6)",
 			inputTokens:  1000000,
 			outputTokens: 0,
-			model:        "claude-opus-4-5",
+			model:        "claude-opus-4-6",
 			minCost:      4.9,
 			maxCost:      5.1,
 		},
@@ -693,7 +693,7 @@ func TestEstimateCost(t *testing.T) {
 			name:         "opus 4.5 1M output tokens (same as 4.6)",
 			inputTokens:  0,
 			outputTokens: 1000000,
-			model:        "claude-opus-4-5",
+			model:        "claude-opus-4-6",
 			minCost:      24.9,
 			maxCost:      25.1,
 		},
@@ -717,7 +717,7 @@ func TestEstimateCost(t *testing.T) {
 			name:         "mixed usage sonnet",
 			inputTokens:  100000,
 			outputTokens: 50000,
-			model:        "claude-sonnet-4-5",
+			model:        "claude-sonnet-4-6",
 			minCost:      1.0,
 			maxCost:      1.1, // 0.3 + 0.75
 		},
@@ -944,7 +944,7 @@ func TestProgressStateStruct(t *testing.T) {
 		commitSHAs:   []string{"abc1234", "def5678"},
 		tokensInput:  1000,
 		tokensOutput: 500,
-		modelName:    "claude-sonnet-4-5",
+		modelName:    "claude-sonnet-4-6",
 	}
 
 	if state.phase != "Implementing" {
@@ -1284,7 +1284,7 @@ func TestParseStreamEventUsageTracking(t *testing.T) {
 	state := &progressState{phase: "Starting"}
 
 	// Event with usage info
-	jsonEvent := `{"type":"assistant","message":{"content":[]},"usage":{"input_tokens":100,"output_tokens":50},"model":"claude-sonnet-4-5"}`
+	jsonEvent := `{"type":"assistant","message":{"content":[]},"usage":{"input_tokens":100,"output_tokens":50},"model":"claude-sonnet-4-6"}`
 
 	runner.parseStreamEvent("TASK-1", jsonEvent, state)
 
@@ -1294,8 +1294,8 @@ func TestParseStreamEventUsageTracking(t *testing.T) {
 	if state.tokensOutput != 50 {
 		t.Errorf("tokensOutput = %d, want 50", state.tokensOutput)
 	}
-	if state.modelName != "claude-sonnet-4-5" {
-		t.Errorf("modelName = %q, want claude-sonnet-4-5", state.modelName)
+	if state.modelName != "claude-sonnet-4-6" {
+		t.Errorf("modelName = %q, want claude-sonnet-4-6", state.modelName)
 	}
 }
 
@@ -1355,7 +1355,7 @@ func TestStreamEventStructs(t *testing.T) {
 			InputTokens:  100,
 			OutputTokens: 50,
 		},
-		Model: "claude-sonnet-4-5",
+		Model: "claude-sonnet-4-6",
 	}
 
 	if event.Type != "assistant" {
@@ -1472,7 +1472,7 @@ func TestProcessBackendEventTokenTracking(t *testing.T) {
 	events := []BackendEvent{
 		{Type: EventTypeText, TokensInput: 100, TokensOutput: 50},
 		{Type: EventTypeText, TokensInput: 200, TokensOutput: 100},
-		{Type: EventTypeResult, TokensInput: 50, TokensOutput: 25, Model: "claude-sonnet-4-5"},
+		{Type: EventTypeResult, TokensInput: 50, TokensOutput: 25, Model: "claude-sonnet-4-6"},
 	}
 
 	for _, event := range events {
@@ -1488,8 +1488,8 @@ func TestProcessBackendEventTokenTracking(t *testing.T) {
 	if state.tokensOutput != expectedOutput {
 		t.Errorf("tokensOutput = %d, want %d", state.tokensOutput, expectedOutput)
 	}
-	if state.modelName != "claude-sonnet-4-5" {
-		t.Errorf("modelName = %q, want claude-sonnet-4-5", state.modelName)
+	if state.modelName != "claude-sonnet-4-6" {
+		t.Errorf("modelName = %q, want claude-sonnet-4-6", state.modelName)
 	}
 }
 

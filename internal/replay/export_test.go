@@ -10,7 +10,7 @@ func TestExportHTMLReport(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	recorder, _ := NewRecorder("TASK-REPORT", "/test/project", tmpDir)
-	recorder.SetModel("claude-sonnet-4-5")
+	recorder.SetModel("claude-sonnet-4-6")
 	recorder.SetBranch("feature/test")
 	recorder.SetNavigator(true)
 
@@ -95,7 +95,7 @@ func TestExportToMarkdown(t *testing.T) {
 
 	recorder, _ := NewRecorder("TASK-MD", "/test/project", tmpDir)
 	recorder.SetBranch("test-branch")
-	recorder.SetModel("claude-sonnet-4-5")
+	recorder.SetModel("claude-sonnet-4-6")
 	recorder.SetNavigator(true)
 
 	events := []string{
@@ -345,7 +345,7 @@ func TestRenderHTMLSummary(t *testing.T) {
 			EstimatedCostUSD: 0.0245,
 		},
 		Metadata: &Metadata{
-			ModelName:    "claude-sonnet-4-5",
+			ModelName:    "claude-sonnet-4-6",
 			HasNavigator: true,
 		},
 	}

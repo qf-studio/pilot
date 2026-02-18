@@ -216,7 +216,7 @@ func TestExecution_FullLifecycle(t *testing.T) {
 		FilesChanged:     5,
 		LinesAdded:       100,
 		LinesRemoved:     20,
-		ModelName:        "claude-sonnet-4-5",
+		ModelName:        "claude-sonnet-4-6",
 	}
 
 	// Save

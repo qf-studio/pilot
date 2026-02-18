@@ -98,7 +98,7 @@ func TestSetMetadata(t *testing.T) {
 	recorder.SetCommitSHA("abc1234")
 	recorder.SetPRUrl("https://github.com/test/pr/123")
 	recorder.SetNavigator(true)
-	recorder.SetModel("claude-sonnet-4-5")
+	recorder.SetModel("claude-sonnet-4-6")
 	recorder.SetMetadata("custom_key", "custom_value")
 
 	if err := recorder.Finish("completed"); err != nil {
@@ -119,7 +119,7 @@ func TestSetMetadata(t *testing.T) {
 	if !recording.Metadata.HasNavigator {
 		t.Error("HasNavigator should be true")
 	}
-	if recording.Metadata.ModelName != "claude-sonnet-4-5" {
+	if recording.Metadata.ModelName != "claude-sonnet-4-6" {
 		t.Errorf("ModelName mismatch: %s", recording.Metadata.ModelName)
 	}
 	if recording.Metadata.Tags["custom_key"] != "custom_value" {
