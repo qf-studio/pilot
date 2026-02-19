@@ -212,11 +212,54 @@ projects:
 # Autopilot settings
 autopilot:
   enabled: false
-  environment: "stage"         # dev, stage, prod
+  # Default environment used when --env is not specified (default: stage)
+  default_environment: "stage"
+  # Global autopilot settings
   auto_merge: true
   merge_method: "squash"
   ci_wait_timeout: 30m
   ci_poll_interval: 30s
+  approval_source: "telegram"   # telegram, slack, or github-review
+
+  # Define named environment configurations
+  # Each environment can have different branch, approval, and CI settings
+  environments:
+    # Development environment: fast feedback, auto-merge
+    dev:
+      branch: develop
+      require_approval: false
+      ci_timeout: 5m
+      skip_post_merge_ci: true
+      post_merge:
+        action: "none"
+
+    # Staging environment: wait for CI, then auto-merge
+    staging:
+      branch: staging
+      require_approval: false
+      ci_timeout: 30m
+      skip_post_merge_ci: false
+      post_merge:
+        action: "none"
+
+    # Production environment: requires human approval
+    prod:
+      branch: main
+      require_approval: true
+      approval_source: "telegram"
+      approval_timeout: 1h
+      ci_timeout: 30m
+      skip_post_merge_ci: false
+      merge_method: "squash"
+      post_merge:
+        action: "tag"
+        # For webhook action:
+        # webhook_url: "https://example.com/deploy"
+        # webhook_secret: "${DEPLOY_WEBHOOK_SECRET}"
+
+  # Approval configuration (per-environment override possible)
+  github_review:
+    poll_interval: 30s
 
   # CI Check Discovery (v0.34+)
   ci_checks:
@@ -226,11 +269,6 @@ autopilot:
       - "*-optional"
     # required: []                # Only used in manual mode
     discovery_grace_period: 60s   # Wait for CI to start
-
-  # Legacy (deprecated - use ci_checks.required instead)
-  # required_checks:
-  #   - test
-  #   - lint
 
 # Dashboard settings
 dashboard:

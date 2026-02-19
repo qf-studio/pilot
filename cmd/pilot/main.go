@@ -119,8 +119,7 @@ func newStartCmd() *cobra.Command {
 		// Mode flags
 		noGateway    bool   // Lightweight mode: polling only, no HTTP gateway
 		sequential   bool   // Sequential execution mode (one issue at a time)
-		autopilotEnv string // Autopilot environment: dev, stage, prod
-		autoRelease  bool   // Enable auto-release after PR merge
+		envFlag      string // Environment name: dev, stage, prod, or custom configured name
 		enableTunnel bool   // Enable public tunnel (Cloudflare/ngrok)
 		teamID       string // Optional team ID for scoping execution
 		teamMember   string // Member email for project access scoping
@@ -229,34 +228,29 @@ Examples:
 			}
 
 			// Override autopilot config if flag provided
-			if autopilotEnv != "" {
+			if envFlag != "" {
 				if cfg.Orchestrator.Autopilot == nil {
 					cfg.Orchestrator.Autopilot = autopilot.DefaultConfig()
 				}
 				cfg.Orchestrator.Autopilot.Enabled = true
-				cfg.Orchestrator.Autopilot.Environment = autopilot.Environment(autopilotEnv)
-
-				// Validate environment
-				switch cfg.Orchestrator.Autopilot.Environment {
-				case autopilot.EnvDev, autopilot.EnvStage, autopilot.EnvProd:
-					// valid
-				default:
-					return fmt.Errorf("invalid autopilot environment: %s (use: dev, stage, prod)", autopilotEnv)
+			
+				// Use SetActiveEnvironment to validate and resolve environment
+				if err := cfg.Orchestrator.Autopilot.SetActiveEnvironment(envFlag); err != nil {
+					// Show helpful error with available environments
+					availableEnvs := []string{"dev", "stage", "prod"}
+					if cfg.Orchestrator.Autopilot.Environments != nil {
+						for name := range cfg.Orchestrator.Autopilot.Environments {
+							availableEnvs = append(availableEnvs, name)
+						}
+					}
+					fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+					fmt.Fprintf(os.Stderr, "Available environments: %v\n", availableEnvs)
+					fmt.Fprintf(os.Stderr, "\nTo add a custom environment, add to autopilot.environments in config.yaml:\n")
+					fmt.Fprintf(os.Stderr, "autopilot:\n  environments:\n    my-env:\n      branch: main\n      require_approval: true\n")
+					return err
 				}
 			}
-
-			// Enable auto-release if flag provided
-			if autoRelease {
-				if cfg.Orchestrator.Autopilot == nil {
-					cfg.Orchestrator.Autopilot = autopilot.DefaultConfig()
-					cfg.Orchestrator.Autopilot.Enabled = true
-				}
-				if cfg.Orchestrator.Autopilot.Release == nil {
-					cfg.Orchestrator.Autopilot.Release = autopilot.DefaultReleaseConfig()
-				}
-				cfg.Orchestrator.Autopilot.Release.Enabled = true
-			}
-
+			
 			// GH-394: Polling mode is the default when any polling adapter is enabled.
 			// Previously, having linear.enabled=true would force gateway mode even when
 			// only using GitHub/Telegram polling. Now polling adapters work independently.
@@ -1104,10 +1098,12 @@ Examples:
 	cmd.Flags().BoolVar(&replace, "replace", false, "Kill existing bot instance before starting")
 	cmd.Flags().BoolVar(&noGateway, "no-gateway", false, "Run polling adapters only (no HTTP gateway)")
 	cmd.Flags().BoolVar(&sequential, "sequential", false, "Sequential execution: wait for PR merge before next issue")
-	cmd.Flags().StringVar(&autopilotEnv, "autopilot", "",
-		"Enable autopilot mode: dev (auto-merge), stage (CI gate), prod (approval gate)")
-	cmd.Flags().BoolVar(&autoRelease, "auto-release", false,
-		"Enable automatic release creation after PR merge")
+	cmd.Flags().StringVar(&envFlag, "env", "",
+		"Environment name: dev, stage, prod, or custom configured environment")
+	// Keep --autopilot as hidden deprecated alias
+	cmd.Flags().StringVar(&envFlag, "autopilot", "",
+		"DEPRECATED: Use --env instead")
+	_ = cmd.Flags().MarkHidden("autopilot")
 
 	// Input adapter flags - standard bool flags
 	cmd.Flags().BoolVar(&enableTelegram, "telegram", false, "Enable Telegram polling (overrides config)")

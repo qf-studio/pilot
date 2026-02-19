@@ -638,7 +638,7 @@ func printGetStartedCommands(cfg *config.Config, persona Persona) {
 
 	// Add autopilot for team/enterprise
 	if persona == PersonaTeam || persona == PersonaEnterprise {
-		flags = append(flags, "--autopilot=stage")
+		flags = append(flags, "--env=stage")
 	}
 
 	cmd := "pilot start"

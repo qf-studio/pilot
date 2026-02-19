@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/alekspetrov/pilot/internal/autopilot"
 	"github.com/alekspetrov/pilot/internal/config"
@@ -61,30 +62,159 @@ func onboardAutopilot(state *OnboardState) error {
 		cfg.Orchestrator.Autopilot = autopilot.DefaultConfig()
 	}
 
-	// Select environment
-	options := []string{
-		"dev       Skip CI, merge immediately",
-		"stage     Wait for CI, then auto-merge (recommended)",
-		"prod      Wait for CI + human approval",
-	}
-	choice := selectOption(reader, "    Select environment:", options)
-
-	var env autopilot.Environment
-	switch choice {
-	case 1:
-		env = autopilot.EnvDev
-	case 2:
-		env = autopilot.EnvStage
-	default:
-		env = autopilot.EnvProd
-	}
-
 	cfg.Orchestrator.Autopilot.Enabled = true
-	cfg.Orchestrator.Autopilot.Environment = env
 	cfg.Orchestrator.Autopilot.AutoMerge = true
 	cfg.Orchestrator.Autopilot.MergeMethod = "squash"
 
-	fmt.Printf("    Autopilot: %s\n", env)
+	// Ask how many environments user wants
+	fmt.Println()
+	envCountOptions := []string{
+		"Single pipeline",
+		"Dev + Production",
+		"Dev + Staging + Production",
+	}
+	envChoice := selectOption(reader, "    How many environments?", envCountOptions)
+
+	// Initialize environments map if needed
+	if cfg.Orchestrator.Autopilot.Environments == nil {
+		cfg.Orchestrator.Autopilot.Environments = make(map[string]*autopilot.EnvironmentConfig)
+	}
+
+	// Configure environment(s) based on choice
+	switch envChoice {
+	case 1:
+		// Single pipeline: staging/main
+		envName := readLineWithDefault(reader, "Environment name", "staging")
+
+		branch := readLineWithDefault(reader, "Target branch", "main")
+
+		fmt.Print("    Require approval? [y/N] ")
+		requireApproval := readYesNo(reader, false)
+
+		ciTimeoutStr := readLineWithDefault(reader, "CI timeout", "30m")
+
+		// Parse timeout
+		ciTimeout, _ := time.ParseDuration(ciTimeoutStr)
+		if ciTimeout == 0 {
+			ciTimeout = 30 * time.Minute
+		}
+
+		// Post-merge action
+		fmt.Println("    After merge:")
+		fmt.Println("      1. Nothing")
+		fmt.Println("      2. Create tag")
+		fmt.Println("      3. Webhook")
+		postMergeChoice := selectOption(reader, "    Action:", []string{"Nothing", "Create tag", "Webhook"})
+
+		postMergeAction := "none"
+		switch postMergeChoice {
+		case 2:
+			postMergeAction = "tag"
+		case 3:
+			postMergeAction = "webhook"
+		}
+
+		cfg.Orchestrator.Autopilot.Environments[envName] = &autopilot.EnvironmentConfig{
+			Branch:          branch,
+			RequireApproval: requireApproval,
+			CITimeout:       ciTimeout,
+			SkipPostMergeCI: false,
+			PostMerge: &autopilot.PostMergeConfig{
+				Action: postMergeAction,
+			},
+		}
+		cfg.Orchestrator.Autopilot.Environment = autopilot.Environment(envName)
+		fmt.Printf("    Autopilot: %s\n", envName)
+
+	case 2:
+		// Dev + Production
+		// Dev environment
+		devCfg := &autopilot.EnvironmentConfig{
+			Branch:          "main",
+			RequireApproval: false,
+			CITimeout:       5 * time.Minute,
+			SkipPostMergeCI: true,
+			PostMerge: &autopilot.PostMergeConfig{
+				Action: "none",
+			},
+		}
+		cfg.Orchestrator.Autopilot.Environments["dev"] = devCfg
+
+		// Production environment
+		prodBranch := readLineWithDefault(reader, "Production branch", "main")
+
+		fmt.Print("    Require approval for prod? [Y/n] ")
+		requireApproval := readYesNo(reader, true)
+
+		fmt.Println("    After merge:")
+		fmt.Println("      1. Nothing")
+		fmt.Println("      2. Create tag")
+		fmt.Println("      3. Webhook")
+		postMergeChoice := selectOption(reader, "    Action:", []string{"Nothing", "Create tag", "Webhook"})
+
+		postMergeAction := "none"
+		switch postMergeChoice {
+		case 2:
+			postMergeAction = "tag"
+		case 3:
+			postMergeAction = "webhook"
+		}
+
+		prodCfg := &autopilot.EnvironmentConfig{
+			Branch:          prodBranch,
+			RequireApproval: requireApproval,
+			ApprovalSource:  autopilot.ApprovalSourceTelegram,
+			CITimeout:       30 * time.Minute,
+			SkipPostMergeCI: false,
+			PostMerge: &autopilot.PostMergeConfig{
+				Action: postMergeAction,
+			},
+		}
+		cfg.Orchestrator.Autopilot.Environments["prod"] = prodCfg
+		cfg.Orchestrator.Autopilot.Environment = autopilot.EnvDev
+
+		fmt.Println("    Autopilot: dev + prod")
+
+	default:
+		// Dev + Staging + Production (all three)
+		devCfg := &autopilot.EnvironmentConfig{
+			Branch:          "develop",
+			RequireApproval: false,
+			CITimeout:       5 * time.Minute,
+			SkipPostMergeCI: true,
+			PostMerge: &autopilot.PostMergeConfig{
+				Action: "none",
+			},
+		}
+		cfg.Orchestrator.Autopilot.Environments["dev"] = devCfg
+
+		stagingCfg := &autopilot.EnvironmentConfig{
+			Branch:          "staging",
+			RequireApproval: false,
+			CITimeout:       30 * time.Minute,
+			SkipPostMergeCI: false,
+			PostMerge: &autopilot.PostMergeConfig{
+				Action: "none",
+			},
+		}
+		cfg.Orchestrator.Autopilot.Environments["staging"] = stagingCfg
+
+		prodCfg := &autopilot.EnvironmentConfig{
+			Branch:          "main",
+			RequireApproval: true,
+			ApprovalSource:  autopilot.ApprovalSourceTelegram,
+			CITimeout:       30 * time.Minute,
+			SkipPostMergeCI: false,
+			PostMerge: &autopilot.PostMergeConfig{
+				Action: "tag",
+			},
+		}
+		cfg.Orchestrator.Autopilot.Environments["prod"] = prodCfg
+		cfg.Orchestrator.Autopilot.Environment = autopilot.EnvDev
+
+		fmt.Println("    Autopilot: dev + staging + prod")
+	}
+
 	return nil
 }
 
@@ -220,3 +350,4 @@ func parseTimeToCron(timeStr string) string {
 
 	return fmt.Sprintf("%s %s * * 1-5", minute, hour)
 }
+

@@ -2398,6 +2398,7 @@ func newAutopilotCmd() *cobra.Command {
 
 	cmd.AddCommand(
 		newAutopilotStatusCmd(),
+		newAutopilotListCmd(),
 		newAutopilotEnableCmd(),
 		newAutopilotDisableCmd(),
 	)
@@ -2417,7 +2418,7 @@ func newAutopilotStatusCmd() *cobra.Command {
 - Release configuration status
 
 This command queries the running Pilot instance for autopilot state.
-Note: Pilot must be running with --autopilot flag for this to work.`,
+Note: Pilot must be running with --env flag for this to work.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Load config
 			configPath := cfgFile
@@ -2442,7 +2443,7 @@ Note: Pilot must be running with --autopilot flag for this to work.`,
 					return nil
 				}
 				fmt.Println("⚠️  Autopilot is not enabled in configuration")
-				fmt.Println("   Start Pilot with --autopilot=<env> to enable autopilot mode")
+				fmt.Println("   Start Pilot with --env=<env> to enable autopilot mode")
 				return nil
 			}
 
@@ -2480,7 +2481,7 @@ Note: Pilot must be running with --autopilot flag for this to work.`,
 
 			fmt.Println("🤖 Autopilot Status")
 			fmt.Println("───────────────────────────────────────")
-			fmt.Printf("Environment: %s\n", autopilotCfg.Environment)
+			fmt.Printf("Environment: %s\n", autopilotCfg.EnvironmentName())
 			fmt.Println()
 
 			fmt.Println("Configuration:")
@@ -2503,8 +2504,114 @@ Note: Pilot must be running with --autopilot flag for this to work.`,
 			fmt.Println()
 
 			fmt.Println("ℹ️  For live PR tracking, check:")
-			fmt.Println("   • Dashboard: pilot start --dashboard --autopilot=<env>")
+			fmt.Println("   • Dashboard: pilot start --dashboard --env=<env>")
 			fmt.Println("   • Logs: pilot logs --follow")
+
+			return nil
+		},
+	}
+
+	cmd.Flags().BoolVar(&jsonOutput, "json", false, "Output as JSON")
+
+	return cmd
+}
+
+func newAutopilotListCmd() *cobra.Command {
+	var jsonOutput bool
+
+	cmd := &cobra.Command{
+		Use:   "list",
+		Short: "List all configured autopilot environments",
+		Long: `Display all configured autopilot environments and their settings.
+
+Shows both built-in environments (dev, stage, prod) and any custom environments
+defined in the config file under autopilot.environments.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			// Load config
+			configPath := cfgFile
+			if configPath == "" {
+				configPath = config.DefaultConfigPath()
+			}
+
+			cfg, err := config.Load(configPath)
+			if err != nil {
+				return fmt.Errorf("failed to load config: %w", err)
+			}
+
+			// Check if autopilot is configured
+			if cfg.Orchestrator == nil || cfg.Orchestrator.Autopilot == nil {
+				if jsonOutput {
+					data := map[string]interface{}{
+						"environments": []string{},
+						"message":      "autopilot not configured",
+					}
+					out, _ := json.MarshalIndent(data, "", "  ")
+					fmt.Println(string(out))
+					return nil
+				}
+				fmt.Println("⚠️  Autopilot is not configured")
+				fmt.Println("   Enable autopilot: pilot autopilot enable")
+				return nil
+			}
+
+			autopilotCfg := cfg.Orchestrator.Autopilot
+
+			// Collect all environments: built-in defaults + custom
+			envMap := make(map[string]*autopilot.EnvironmentConfig)
+
+			// Add custom environments from config
+			if autopilotCfg.Environments != nil {
+				for name, envCfg := range autopilotCfg.Environments {
+					envMap[name] = envCfg
+				}
+			}
+
+			if jsonOutput {
+				envList := make([]map[string]interface{}, 0)
+				for name, envCfg := range envMap {
+					envList = append(envList, map[string]interface{}{
+						"name":               name,
+						"branch":             envCfg.Branch,
+						"require_approval":   envCfg.RequireApproval,
+						"approval_source":    string(envCfg.ApprovalSource),
+						"ci_timeout":         envCfg.CITimeout.String(),
+						"skip_post_merge_ci": envCfg.SkipPostMergeCI,
+						"merge_method":       envCfg.MergeMethod,
+					})
+				}
+				data := map[string]interface{}{
+					"environments": envList,
+				}
+				out, _ := json.MarshalIndent(data, "", "  ")
+				fmt.Println(string(out))
+				return nil
+			}
+
+			fmt.Println("🤖 Configured Autopilot Environments")
+			fmt.Println("───────────────────────────────────────")
+			if len(envMap) == 0 {
+				fmt.Println("No environments configured (using defaults)")
+				fmt.Println()
+				fmt.Println("Built-in defaults:")
+				fmt.Println("  dev    → main, no approval, 5m CI timeout")
+				fmt.Println("  stage  → main, no approval, 30m CI timeout")
+				fmt.Println("  prod   → main, approval required, 30m CI timeout")
+				return nil
+			}
+
+			for name, envCfg := range envMap {
+				fmt.Printf("  %s\n", name)
+				fmt.Printf("    Branch:    %s\n", envCfg.Branch)
+				fmt.Printf("    Approval:  %v\n", envCfg.RequireApproval)
+				if envCfg.RequireApproval && envCfg.ApprovalSource != "" {
+					fmt.Printf("    via:       %s\n", envCfg.ApprovalSource)
+				}
+				fmt.Printf("    CI Timeout: %s\n", envCfg.CITimeout)
+				if envCfg.MergeMethod != "" {
+					fmt.Printf("    Merge:     %s\n", envCfg.MergeMethod)
+				}
+				fmt.Println()
+			}
 
 			return nil
 		},
@@ -2584,7 +2691,7 @@ Examples:
 			}
 
 			fmt.Printf("✓ Autopilot enabled (environment: %s)\n", env)
-			fmt.Println("  Restart Pilot to apply: pilot start --autopilot=" + env)
+			fmt.Println("  Restart Pilot to apply: pilot start --env=" + env)
 			return nil
 		},
 	}
