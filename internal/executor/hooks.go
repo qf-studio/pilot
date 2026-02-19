@@ -63,12 +63,18 @@ type ClaudeSettings struct {
 }
 
 // HookMatcherEntry defines a matcher-based hook entry (Claude Code 2.1.42+)
+// For PreToolUse/PostToolUse: matcher is a regex string (e.g. "Bash", "Edit|Write")
+// For Stop: matcher field must be omitted entirely
 type HookMatcherEntry struct {
-	Matcher HookMatcher   `json:"matcher"`
+	Matcher *string       `json:"matcher,omitempty"`
 	Hooks   []HookCommand `json:"hooks"`
 }
 
-// HookMatcher filters which tools a hook applies to
+// stringPtr returns a pointer to a string (helper for HookMatcherEntry.Matcher)
+func stringPtr(s string) *string { return &s }
+
+// HookMatcher is kept for backward compatibility with old format parsing.
+// New code should use *string matcher in HookMatcherEntry.
 type HookMatcher struct {
 	Tools []string `json:"tools,omitempty"`
 }
@@ -93,11 +99,11 @@ func GenerateClaudeSettings(config *HooksConfig, scriptDir string) map[string]in
 
 	hooks := make(map[string][]HookMatcherEntry)
 
-	// Stop hook: run tests before Claude finishes
+	// Stop hook: run tests before Claude finishes (no matcher — Stop hooks must omit it)
 	if config.RunTestsOnStop == nil || *config.RunTestsOnStop {
 		hooks["Stop"] = []HookMatcherEntry{
 			{
-				Matcher: HookMatcher{}, // Empty matcher matches all
+				// Matcher intentionally nil — Stop hooks must not have matcher field
 				Hooks: []HookCommand{
 					{
 						Type:    "command",
@@ -108,11 +114,11 @@ func GenerateClaudeSettings(config *HooksConfig, scriptDir string) map[string]in
 		}
 	}
 
-	// PreToolUse hook: block destructive Bash commands
+	// PreToolUse hook: block destructive Bash commands (matcher is regex string)
 	if config.BlockDestructive == nil || *config.BlockDestructive {
 		hooks["PreToolUse"] = []HookMatcherEntry{
 			{
-				Matcher: HookMatcher{Tools: []string{"Bash"}},
+				Matcher: stringPtr("Bash"),
 				Hooks: []HookCommand{
 					{
 						Type:    "command",
@@ -123,20 +129,11 @@ func GenerateClaudeSettings(config *HooksConfig, scriptDir string) map[string]in
 		}
 	}
 
-	// PostToolUse hook: lint files after changes (opt-in)
+	// PostToolUse hook: lint files after changes (opt-in, single entry with regex matcher)
 	if config.LintOnSave {
 		hooks["PostToolUse"] = []HookMatcherEntry{
 			{
-				Matcher: HookMatcher{Tools: []string{"Edit"}},
-				Hooks: []HookCommand{
-					{
-						Type:    "command",
-						Command: filepath.Join(scriptDir, "pilot-lint.sh"),
-					},
-				},
-			},
-			{
-				Matcher: HookMatcher{Tools: []string{"Write"}},
+				Matcher: stringPtr("Edit|Write"),
 				Hooks: []HookCommand{
 					{
 						Type:    "command",
@@ -279,51 +276,128 @@ func isOldHookFormat(hooks map[string]interface{}) bool {
 	return false
 }
 
-// mergeNewFormatHooks merges two hook maps in the new array-based format
+// mergeNewFormatHooks merges pilot hooks into existing hooks, deduplicating by command path.
+// Also cleans stale entries whose command paths no longer exist on disk.
 func mergeNewFormatHooks(existing map[string]interface{}, pilot interface{}) map[string]interface{} {
 	mergedHooks := make(map[string]interface{})
 
-	// Copy existing hooks
-	for k, v := range existing {
-		mergedHooks[k] = v
-	}
-
-	// Merge pilot hooks
+	// Start with pilot hooks (fresh, authoritative)
 	switch ph := pilot.(type) {
 	case map[string][]HookMatcherEntry:
 		for k, v := range ph {
-			if existingArr, ok := mergedHooks[k].([]interface{}); ok {
-				// Append pilot entries to existing array
-				for _, entry := range v {
-					existingArr = append(existingArr, entry)
-				}
-				mergedHooks[k] = existingArr
-			} else {
-				// No existing entries for this hook type, use pilot's
-				mergedHooks[k] = v
-			}
+			mergedHooks[k] = v
 		}
 	case map[string]interface{}:
 		for k, v := range ph {
-			if existingArr, ok := mergedHooks[k].([]interface{}); ok {
-				if newArr, ok := v.([]interface{}); ok {
-					// Both are arrays, merge them
-					mergedHooks[k] = append(existingArr, newArr...)
-				} else if newArr, ok := v.([]HookMatcherEntry); ok {
-					// Pilot entries as typed slice
-					for _, entry := range newArr {
-						existingArr = append(existingArr, entry)
+			mergedHooks[k] = v
+		}
+	}
+
+	// Collect pilot command paths for dedup
+	pilotCommands := make(map[string]bool)
+	for _, v := range mergedHooks {
+		extractHookCommands(v, pilotCommands)
+	}
+
+	// Merge non-pilot existing entries (skip duplicates and stale entries)
+	for k, v := range existing {
+		if _, hasPilot := mergedHooks[k]; !hasPilot {
+			// Hook type not in pilot config — keep existing entries that are still valid
+			if cleaned := cleanStaleEntries(v); cleaned != nil {
+				mergedHooks[k] = cleaned
+			}
+			continue
+		}
+		// Hook type exists in both — preserve non-pilot, non-stale entries
+		if existingArr, ok := v.([]interface{}); ok {
+			for _, entry := range existingArr {
+				if entryMap, ok := entry.(map[string]interface{}); ok {
+					cmd := extractCommandFromEntry(entryMap)
+					if cmd != "" && !pilotCommands[cmd] && hookFileExists(cmd) {
+						mergedHooks[k] = appendHookEntry(mergedHooks[k], entry)
 					}
-					mergedHooks[k] = existingArr
 				}
-			} else {
-				// No existing entries for this hook type, use pilot's
-				mergedHooks[k] = v
 			}
 		}
 	}
 
 	return mergedHooks
+}
+
+// extractHookCommands collects all command paths from a hook value
+func extractHookCommands(v interface{}, commands map[string]bool) {
+	switch val := v.(type) {
+	case []HookMatcherEntry:
+		for _, entry := range val {
+			for _, h := range entry.Hooks {
+				commands[h.Command] = true
+			}
+		}
+	case []interface{}:
+		for _, entry := range val {
+			if m, ok := entry.(map[string]interface{}); ok {
+				if cmd := extractCommandFromEntry(m); cmd != "" {
+					commands[cmd] = true
+				}
+			}
+		}
+	}
+}
+
+// extractCommandFromEntry gets the command path from a hook entry map
+func extractCommandFromEntry(entry map[string]interface{}) string {
+	if hooks, ok := entry["hooks"].([]interface{}); ok {
+		for _, h := range hooks {
+			if hm, ok := h.(map[string]interface{}); ok {
+				if cmd, ok := hm["command"].(string); ok {
+					return cmd
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// cleanStaleEntries removes entries whose command files no longer exist
+func cleanStaleEntries(v interface{}) interface{} {
+	arr, ok := v.([]interface{})
+	if !ok {
+		return v
+	}
+	var cleaned []interface{}
+	for _, entry := range arr {
+		if m, ok := entry.(map[string]interface{}); ok {
+			cmd := extractCommandFromEntry(m)
+			if cmd == "" || hookFileExists(cmd) {
+				cleaned = append(cleaned, entry)
+			}
+		}
+	}
+	if len(cleaned) == 0 {
+		return nil
+	}
+	return cleaned
+}
+
+// appendHookEntry appends an entry to a hook value (handles both typed and untyped slices)
+func appendHookEntry(existing interface{}, entry interface{}) interface{} {
+	if arr, ok := existing.([]interface{}); ok {
+		return append(arr, entry)
+	}
+	if arr, ok := existing.([]HookMatcherEntry); ok {
+		result := make([]interface{}, len(arr))
+		for i, e := range arr {
+			result[i] = e
+		}
+		return append(result, entry)
+	}
+	return existing
+}
+
+// hookFileExists checks if a hook script file exists on disk
+func hookFileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }
 
 // WriteEmbeddedScripts extracts embedded hook scripts to the specified directory
