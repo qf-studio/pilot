@@ -1,4 +1,4 @@
-.PHONY: build run test test-e2e clean install lint fmt deps dev install-hooks check-secrets gate check-integration auto-fix test-short test-integration test-chaos package release docker-build docker-push desktop-dev desktop-build desktop
+.PHONY: build run test test-e2e clean install lint fmt deps dev install-hooks check-secrets gate check-integration auto-fix test-short test-integration test-chaos package release docker-build docker-push desktop-dev desktop-build desktop desktop-deps desktop-package desktop-clean
 
 # Variables
 BINARY_NAME=pilot
@@ -195,13 +195,25 @@ docker-push:
 	docker push ghcr.io/alekspetrov/pilot:$(VERSION)
 
 # Desktop app (Wails v2 + React)
+desktop-deps:
+	cd desktop/frontend && npm ci
+
 desktop-dev:
 	cd desktop && wails dev
 
-desktop-build:
-	cd desktop && wails build -platform darwin/universal
+desktop-build: desktop-deps
+	cd desktop && wails build -platform darwin/universal -ldflags "-X main.version=$(VERSION)"
 
 desktop: desktop-build
+
+desktop-package: desktop-build
+	@echo "Packaging Pilot.app..."
+	@mkdir -p bin
+	cd desktop/build/bin && COPYFILE_DISABLE=1 zip -r ../../../bin/Pilot-macOS-$(VERSION).zip Pilot.app
+	@echo "Created bin/Pilot-macOS-$(VERSION).zip"
+
+desktop-clean:
+	rm -rf desktop/build/bin desktop/frontend/dist desktop/frontend/node_modules
 
 # Help
 help:
@@ -234,4 +246,9 @@ help:
 	@echo "  make release        Create release (V=0.x.x required)"
 	@echo "  make docker-build   Build Docker image (tag: pilot:VERSION)"
 	@echo "  make docker-push    Push image to ghcr.io/alekspetrov/pilot"
+	@echo "  make desktop-deps   Install desktop frontend dependencies"
+	@echo "  make desktop-dev    Run desktop app in dev mode"
+	@echo "  make desktop-build  Build desktop app (darwin/universal)"
+	@echo "  make desktop-package Package Pilot.app into zip (VERSION=vX.Y.Z)"
+	@echo "  make desktop-clean  Clean desktop build artifacts"
 	@echo ""
