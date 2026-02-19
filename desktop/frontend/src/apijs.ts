@@ -1,7 +1,7 @@
 // HTTP-based data provider for browser mode.
 // Same function signatures as wailsjs.ts, but uses fetch() against gateway API endpoints.
 
-import type { DashboardMetrics, QueueTask, HistoryEntry, AutopilotStatus, ServerStatus, LogEntry } from './types'
+import type { DashboardMetrics, QueueTask, HistoryEntry, AutopilotStatus, ServerStatus, LogEntry, GitGraphData } from './types'
 
 async function fetchJSON<T>(path: string): Promise<T> {
   const res = await fetch(path)
@@ -38,6 +38,10 @@ export function GetServerStatus(): Promise<ServerStatus> {
       return res.json() as Promise<ServerStatus>
     })
     .catch(() => ({ running: false }) as ServerStatus)
+}
+
+export function GetGitGraph(limit: number): Promise<GitGraphData> {
+  return fetchJSON<GitGraphData>(`/api/v1/gitgraph?limit=${limit}`)
 }
 
 export function OpenInBrowser(url: string): Promise<void> {

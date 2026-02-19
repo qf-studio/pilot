@@ -65,3 +65,18 @@ export interface ServerStatus {
   version?: string
   gatewayURL?: string
 }
+
+export interface GitGraphLine {
+  graph_chars: string
+  refs?: string
+  message?: string
+  author?: string
+  sha?: string
+}
+
+export interface GitGraphData {
+  lines: GitGraphLine[]
+  total_count: number
+  error?: string
+  last_refresh: string
+}

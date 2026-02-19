@@ -2,7 +2,7 @@
 // The Go App methods are accessible via window.go.main.App.*
 // These wrappers provide TypeScript type safety.
 
-import type { DashboardMetrics, QueueTask, HistoryEntry, AutopilotStatus, ServerStatus, LogEntry } from './types'
+import type { DashboardMetrics, QueueTask, HistoryEntry, AutopilotStatus, ServerStatus, LogEntry, GitGraphData } from './types'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 declare const window: any
@@ -37,6 +37,10 @@ export function GetServerStatus(): Promise<ServerStatus> {
 
 export function GetLogs(limit: number): Promise<LogEntry[]> {
   return goCall<LogEntry[]>('GetLogs', limit)
+}
+
+export function GetGitGraph(limit: number): Promise<GitGraphData> {
+  return goCall<GitGraphData>('GetGitGraph', limit)
 }
 
 export function OpenInBrowser(url: string): Promise<void> {
