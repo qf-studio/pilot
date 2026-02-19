@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/alekspetrov/pilot/internal/config"
+	"github.com/alekspetrov/pilot/internal/dashboard"
 	"github.com/alekspetrov/pilot/internal/memory"
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -374,6 +375,44 @@ func issueURL(taskID string) string {
 		return fmt.Sprintf("https://github.com/alekspetrov/pilot/issues/%s", num)
 	}
 	return ""
+}
+
+// GetGitGraph returns the git commit graph for the configured project.
+// limit controls how many commits to fetch; defaults to 100 when 0 is passed.
+func (a *App) GetGitGraph(limit int) GitGraphData {
+	if limit <= 0 {
+		limit = 100
+	}
+
+	// Resolve project path from config (same pattern as startup()).
+	projectPath := "."
+	cfg, err := config.Load(config.DefaultConfigPath())
+	if err == nil && len(cfg.Projects) > 0 {
+		projectPath = cfg.Projects[0].Path
+	}
+
+	state := dashboard.FetchGitGraph(projectPath, limit)
+	if state == nil {
+		return GitGraphData{}
+	}
+
+	lines := make([]GitGraphLine, 0, len(state.Lines))
+	for _, l := range state.Lines {
+		lines = append(lines, GitGraphLine{
+			GraphChars: l.GraphChars,
+			Refs:       l.Refs,
+			Message:    l.Message,
+			Author:     l.Author,
+			SHA:        l.SHA,
+		})
+	}
+
+	return GitGraphData{
+		Lines:       lines,
+		TotalCount:  state.TotalCount,
+		Error:       state.Error,
+		LastRefresh: state.LastRefresh,
+	}
 }
 
 // normalizeStatus maps internal execution statuses to frontend-friendly names.

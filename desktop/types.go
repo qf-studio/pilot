@@ -82,3 +82,20 @@ type ServerStatus struct {
 	Version   string `json:"version,omitempty"`
 	GatewayURL string `json:"gatewayURL,omitempty"`
 }
+
+// GitGraphLine represents one parsed line of git log --graph output.
+type GitGraphLine struct {
+	GraphChars string `json:"graph_chars"`
+	Refs       string `json:"refs,omitempty"`
+	Message    string `json:"message,omitempty"`
+	Author     string `json:"author,omitempty"`
+	SHA        string `json:"sha,omitempty"`
+}
+
+// GitGraphData holds structured git graph data returned to the frontend.
+type GitGraphData struct {
+	Lines       []GitGraphLine `json:"lines"`
+	TotalCount  int            `json:"total_count"`
+	Error       string         `json:"error,omitempty"`
+	LastRefresh time.Time      `json:"last_refresh"`
+}
