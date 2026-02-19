@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/alekspetrov/pilot/internal/config"
 	"github.com/alekspetrov/pilot/internal/memory"
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -17,13 +18,17 @@ import (
 // App is the Wails application struct. Its exported methods are bound to the
 // frontend and callable from JavaScript/TypeScript via the generated bindings.
 type App struct {
-	ctx   context.Context
-	store *memory.Store
+	ctx        context.Context
+	store      *memory.Store
+	httpClient *http.Client
+	gatewayURL string // e.g. "http://127.0.0.1:9090"
 }
 
 // NewApp creates a new App instance.
 func NewApp() *App {
-	return &App{}
+	return &App{
+		httpClient: &http.Client{Timeout: 2 * time.Second},
+	}
 }
 
 // startup is called when the app starts. Opens the SQLite database.
@@ -41,6 +46,14 @@ func (a *App) startup(ctx context.Context) {
 		return
 	}
 	a.store = store
+
+	// Load config to determine gateway address
+	cfg, err := config.Load(config.DefaultConfigPath())
+	if err == nil && cfg.Gateway != nil {
+		a.gatewayURL = fmt.Sprintf("http://%s:%d", cfg.Gateway.Host, cfg.Gateway.Port)
+	} else {
+		a.gatewayURL = "http://127.0.0.1:9090"
+	}
 }
 
 // shutdown is called when the app is about to quit.
@@ -296,11 +309,43 @@ func (a *App) fetchAutopilotFromDaemon() (AutopilotStatus, bool) {
 	}, true
 }
 // GetServerStatus checks whether the pilot daemon gateway is reachable.
-// It attempts a lightweight HTTP check against the configured gateway URL.
+// It hits the unauthenticated /health endpoint and, on success, fetches
+// version info from /api/v1/status.
 func (a *App) GetServerStatus() ServerStatus {
-	// Default gateway address — the daemon exposes this when running.
-	// We do a simple TCP probe; no auth needed for status.
-	return ServerStatus{Running: false}
+	if a.gatewayURL == "" {
+		return ServerStatus{Running: false}
+	}
+
+	// Health check (unauthenticated)
+	resp, err := a.httpClient.Get(a.gatewayURL + "/health")
+	if err != nil {
+		return ServerStatus{Running: false}
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return ServerStatus{Running: false}
+	}
+
+	status := ServerStatus{
+		Running:    true,
+		GatewayURL: a.gatewayURL,
+	}
+
+	// Try to get version from /api/v1/status (best-effort, may require auth)
+	if vResp, err := a.httpClient.Get(a.gatewayURL + "/api/v1/status"); err == nil {
+		defer func() { _ = vResp.Body.Close() }()
+		if vResp.StatusCode == http.StatusOK {
+			var body struct {
+				Version string `json:"version"`
+			}
+			if json.NewDecoder(vResp.Body).Decode(&body) == nil && body.Version != "" {
+				status.Version = body.Version
+			}
+		}
+	}
+
+	return status
 }
 
 // OpenInBrowser opens the given URL in the system default browser.
