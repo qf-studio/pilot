@@ -1,6 +1,8 @@
 import React from 'react'
 import { Card } from './ui/Card'
-import { OpenInBrowser } from '../wailsjs'
+import { api } from '../provider'
+
+const { OpenInBrowser } = api
 import type { HistoryEntry } from '../types'
 
 function timeAgo(dateStr: string): string {

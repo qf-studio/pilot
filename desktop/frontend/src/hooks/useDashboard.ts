@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef } from 'react'
 import type { DashboardMetrics, QueueTask, HistoryEntry, AutopilotStatus, ServerStatus, LogEntry } from '../types'
-import { GetMetrics, GetQueueTasks, GetHistory, GetAutopilotStatus, GetServerStatus, GetLogs } from '../wailsjs'
+import { api } from '../provider'
+
+const { GetMetrics, GetQueueTasks, GetHistory, GetAutopilotStatus, GetServerStatus, GetLogs } = api
 
 export interface DashboardState {
   metrics: DashboardMetrics

@@ -2,7 +2,9 @@ import React from 'react'
 import { Card } from './ui/Card'
 import { StatusIcon } from './ui/StatusIcon'
 import { ProgressBar } from './ui/ProgressBar'
-import { OpenInBrowser } from '../wailsjs'
+import { api } from '../provider'
+
+const { OpenInBrowser } = api
 import type { QueueTask } from '../types'
 
 type TaskStatus = 'done' | 'running' | 'queued' | 'pending' | 'failed'
