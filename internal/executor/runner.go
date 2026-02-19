@@ -866,6 +866,16 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 		}
 	}
 
+	// GH-1588: Diagnostic logging for epic detection
+	r.log.Info("Epic detection check",
+		slog.String("task_id", task.ID),
+		slog.String("task_title", task.Title),
+		slog.Any("labels", task.Labels),
+		slog.Bool("has_no_decompose", hasNoDecompose),
+		slog.Bool("is_epic", complexity.IsEpic()),
+		slog.String("complexity", string(complexity)),
+	)
+
 	// GH-405: Epic tasks trigger planning mode instead of execution
 	if complexity.IsEpic() && !hasNoDecompose {
 		r.log.Info("Epic task detected, running planning mode",

@@ -241,6 +241,14 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 	// GH-386: Include SourceRepo for cross-project validation in executor
 	// GH-920: Extract acceptance criteria for prompt inclusion
 	// GH-1267: Include FromPR for --from-pr session resumption
+	labels := extractGitHubLabelNames(issue)
+
+	slog.Info("Task labels extracted",
+		slog.String("task_id", taskID),
+		slog.Any("labels", labels),
+		slog.Int("label_count", len(issue.Labels)),
+	)
+
 	task := &executor.Task{
 		ID:                 taskID,
 		Title:              issue.Title,
@@ -250,7 +258,7 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 		CreatePR:           true,
 		SourceRepo:         sourceRepo,
 		MemberID:           resolveGitHubMemberID(issue),                 // GH-634: RBAC lookup
-		Labels:             extractGitHubLabelNames(issue),               // GH-727: flow labels for complexity classifier
+		Labels:             labels,                                       // GH-727: flow labels for complexity classifier
 		AcceptanceCriteria: github.ExtractAcceptanceCriteria(issue.Body), // GH-920: acceptance criteria in prompts
 		FromPR:             fromPR,                                       // GH-1267: session resumption from PR context
 	}
