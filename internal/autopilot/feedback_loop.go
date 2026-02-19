@@ -120,9 +120,9 @@ func (f *FeedbackLoop) generateBody(prState *PRState, failureType FailureType, f
 		sb.WriteString("\n")
 	}
 
-	// Error logs section (truncated if too long)
+	// Error logs section in collapsible details block (GH-1567)
 	if logs != "" {
-		sb.WriteString("## Error Logs\n\n")
+		sb.WriteString("<details><summary>CI Error Logs</summary>\n\n")
 		sb.WriteString("```\n")
 		if len(logs) > 2000 {
 			sb.WriteString(logs[:2000])
@@ -131,6 +131,7 @@ func (f *FeedbackLoop) generateBody(prState *PRState, failureType FailureType, f
 			sb.WriteString(logs)
 		}
 		sb.WriteString("\n```\n\n")
+		sb.WriteString("</details>\n\n")
 	}
 
 	// Task instructions for Pilot

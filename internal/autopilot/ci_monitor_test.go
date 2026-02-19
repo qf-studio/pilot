@@ -1047,3 +1047,150 @@ func TestCIMonitor_NewConfigUsesManualMode(t *testing.T) {
 		t.Errorf("requiredChecks = %v, want [ci, deploy]", monitor.requiredChecks)
 	}
 }
+
+func TestCIMonitor_GetFailedCheckLogs(t *testing.T) {
+	t.Run("fetches logs for failed checks", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/repos/owner/repo/commits/abc123/check-runs":
+				resp := github.CheckRunsResponse{
+					TotalCount: 2,
+					CheckRuns: []github.CheckRun{
+						{ID: 100, Name: "lint", Status: "completed", Conclusion: "failure"},
+						{ID: 101, Name: "test", Status: "completed", Conclusion: "success"},
+					},
+				}
+				w.WriteHeader(http.StatusOK)
+				_ = json.NewEncoder(w).Encode(resp)
+			case "/repos/owner/repo/actions/jobs/100/logs":
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte("SA5011: possible nil pointer dereference"))
+			default:
+				w.WriteHeader(http.StatusNotFound)
+			}
+		}))
+		defer server.Close()
+
+		ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+		cfg := DefaultConfig()
+		monitor := NewCIMonitor(ghClient, "owner", "repo", cfg)
+
+		logs := monitor.GetFailedCheckLogs(context.Background(), "abc123", 2000)
+
+		if logs == "" {
+			t.Fatal("expected non-empty logs")
+		}
+		if !contains(logs, "=== lint ===") {
+			t.Error("logs should contain check name header")
+		}
+		if !contains(logs, "SA5011") {
+			t.Error("logs should contain actual error output")
+		}
+	})
+
+	t.Run("truncates to maxLen", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/repos/owner/repo/commits/abc123/check-runs":
+				resp := github.CheckRunsResponse{
+					TotalCount: 1,
+					CheckRuns: []github.CheckRun{
+						{ID: 100, Name: "lint", Status: "completed", Conclusion: "failure"},
+					},
+				}
+				w.WriteHeader(http.StatusOK)
+				_ = json.NewEncoder(w).Encode(resp)
+			case "/repos/owner/repo/actions/jobs/100/logs":
+				w.WriteHeader(http.StatusOK)
+				// Write a long log
+				longLog := make([]byte, 5000)
+				for i := range longLog {
+					longLog[i] = 'x'
+				}
+				_, _ = w.Write(longLog)
+			default:
+				w.WriteHeader(http.StatusNotFound)
+			}
+		}))
+		defer server.Close()
+
+		ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+		cfg := DefaultConfig()
+		monitor := NewCIMonitor(ghClient, "owner", "repo", cfg)
+
+		logs := monitor.GetFailedCheckLogs(context.Background(), "abc123", 100)
+
+		if len(logs) > 100 {
+			t.Errorf("logs length = %d, want <= 100", len(logs))
+		}
+	})
+
+	t.Run("graceful on log fetch failure", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/repos/owner/repo/commits/abc123/check-runs":
+				resp := github.CheckRunsResponse{
+					TotalCount: 1,
+					CheckRuns: []github.CheckRun{
+						{ID: 100, Name: "lint", Status: "completed", Conclusion: "failure"},
+					},
+				}
+				w.WriteHeader(http.StatusOK)
+				_ = json.NewEncoder(w).Encode(resp)
+			case "/repos/owner/repo/actions/jobs/100/logs":
+				w.WriteHeader(http.StatusInternalServerError)
+			default:
+				w.WriteHeader(http.StatusNotFound)
+			}
+		}))
+		defer server.Close()
+
+		ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+		cfg := DefaultConfig()
+		monitor := NewCIMonitor(ghClient, "owner", "repo", cfg)
+
+		logs := monitor.GetFailedCheckLogs(context.Background(), "abc123", 2000)
+
+		// Should return empty string on failure, not panic or error
+		if logs != "" {
+			t.Errorf("expected empty logs on fetch failure, got %q", logs)
+		}
+	})
+
+	t.Run("returns empty when no failed checks", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			resp := github.CheckRunsResponse{
+				TotalCount: 1,
+				CheckRuns: []github.CheckRun{
+					{ID: 100, Name: "lint", Status: "completed", Conclusion: "success"},
+				},
+			}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(resp)
+		}))
+		defer server.Close()
+
+		ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+		cfg := DefaultConfig()
+		monitor := NewCIMonitor(ghClient, "owner", "repo", cfg)
+
+		logs := monitor.GetFailedCheckLogs(context.Background(), "abc123", 2000)
+
+		if logs != "" {
+			t.Errorf("expected empty logs when no failed checks, got %q", logs)
+		}
+	})
+}
+
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsHelper(s, substr))
+}
+
+func containsHelper(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}

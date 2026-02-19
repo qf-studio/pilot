@@ -112,6 +112,13 @@ func TestFeedbackLoop_CreateFailureIssue_CIFailed(t *testing.T) {
 	if !strings.Contains(capturedBody, "Error: build failed") {
 		t.Error("body should contain error logs")
 	}
+	// GH-1567: Logs should be in collapsible details block
+	if !strings.Contains(capturedBody, "<details><summary>CI Error Logs</summary>") {
+		t.Error("body should wrap logs in collapsible <details> block")
+	}
+	if !strings.Contains(capturedBody, "</details>") {
+		t.Error("body should close </details> tag")
+	}
 	if !strings.Contains(capturedBody, "Fix the CI failures") {
 		t.Error("body should contain task instructions")
 	}

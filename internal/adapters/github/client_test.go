@@ -2206,3 +2206,66 @@ func TestIsUnprocessableError(t *testing.T) {
 		})
 	}
 }
+
+func TestGetJobLogs(t *testing.T) {
+	tests := []struct {
+		name       string
+		statusCode int
+		body       string
+		wantErr    bool
+		wantLogs   string
+	}{
+		{
+			name:       "success",
+			statusCode: http.StatusOK,
+			body:       "2024-01-01T00:00:00Z Error: lint failed\nSA5011: possible nil pointer",
+			wantErr:    false,
+			wantLogs:   "2024-01-01T00:00:00Z Error: lint failed\nSA5011: possible nil pointer",
+		},
+		{
+			name:       "not found",
+			statusCode: http.StatusNotFound,
+			body:       "Not Found",
+			wantErr:    true,
+		},
+		{
+			name:       "empty logs",
+			statusCode: http.StatusOK,
+			body:       "",
+			wantErr:    false,
+			wantLogs:   "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/repos/owner/repo/actions/jobs/123/logs" {
+					t.Errorf("unexpected path: %s", r.URL.Path)
+				}
+				if r.Method != http.MethodGet {
+					t.Errorf("unexpected method: %s", r.Method)
+				}
+				w.WriteHeader(tt.statusCode)
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer server.Close()
+
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			logs, err := client.GetJobLogs(context.Background(), "owner", "repo", 123)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Error("GetJobLogs() expected error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("GetJobLogs() unexpected error: %v", err)
+			}
+			if logs != tt.wantLogs {
+				t.Errorf("GetJobLogs() = %q, want %q", logs, tt.wantLogs)
+			}
+		})
+	}
+}
