@@ -3,6 +3,7 @@ package pilot
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"sync"
 
@@ -59,6 +60,7 @@ type Pilot struct {
 	graph                  *memory.KnowledgeGraph
 	webhookManager         *webhooks.Manager
 	approvalMgr            *approval.Manager
+	dashboardFS            fs.FS // Embedded React frontend (GH-1612)
 
 	// linearTasks maps task IDs to Linear issue IDs for completion callbacks
 	linearTasks   map[string]linearTaskInfo
@@ -159,6 +161,14 @@ func WithSlackHandler(runner *executor.Runner, projectPath string) Option {
 func WithSlackMemberResolver(resolver slack.MemberResolver) Option {
 	return func(p *Pilot) {
 		p.slackMemberResolver = resolver
+	}
+}
+
+// WithDashboardFS sets the embedded React frontend filesystem (GH-1612).
+// When set, the gateway serves the dashboard at /dashboard/.
+func WithDashboardFS(fsys fs.FS) Option {
+	return func(p *Pilot) {
+		p.dashboardFS = fsys
 	}
 }
 
@@ -408,6 +418,11 @@ func New(cfg *config.Config, opts ...Option) (*Pilot, error) {
 	// Apply functional options (GH-349)
 	for _, opt := range opts {
 		opt(p)
+	}
+
+	// Set embedded dashboard frontend on gateway if available (GH-1612)
+	if p.dashboardFS != nil {
+		p.gateway.SetDashboardFS(p.dashboardFS)
 	}
 
 	// Initialize Telegram handler if runner was provided via options (GH-349)

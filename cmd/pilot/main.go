@@ -286,6 +286,11 @@ Examples:
 			// Build Pilot options for gateway mode (GH-349)
 			var pilotOpts []pilot.Option
 
+			// Serve embedded React dashboard at /dashboard/ if available (GH-1612)
+			if dashboardEmbedded {
+				pilotOpts = append(pilotOpts, pilot.WithDashboardFS(dashboardFS))
+			}
+
 			// GH-392: Create shared infrastructure for polling adapters in gateway mode
 			// This allows GitHub polling to work alongside Linear/Jira webhooks
 			telegramFlagSet := cmd.Flags().Changed("telegram")

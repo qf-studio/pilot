@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"runtime"
@@ -70,6 +71,7 @@ type Server struct {
 	running             bool
 	customHandlers      map[string]http.Handler
 	githubWebhookSecret string // Secret for GitHub webhook signature validation
+	dashboardFS         fs.FS  // Embedded React frontend (nil if not embedded)
 	readinessCheckers   []ReadinessChecker
 	liveness            *livenessState
 	prometheusExporter  *PrometheusExporter
@@ -217,6 +219,9 @@ func (s *Server) Start(ctx context.Context) error {
 		mux.Handle(path, handler)
 	}
 	s.mu.RUnlock()
+
+	// Serve embedded React dashboard at /dashboard/ if available
+	s.serveDashboard(mux)
 
 	addr := fmt.Sprintf("%s:%d", s.config.Host, s.config.Port)
 	s.server = &http.Server{

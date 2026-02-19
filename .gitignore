@@ -87,3 +87,6 @@ desktop/frontend/node_modules/
 desktop/frontend/dist/
 desktop/build/bin/
 !desktop/frontend/dist/.gitkeep
+
+# Embedded dashboard build artifact (created by make build-with-dashboard)
+cmd/pilot/dashboard_dist/

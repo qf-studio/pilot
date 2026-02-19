@@ -1,4 +1,4 @@
-.PHONY: build run test test-e2e clean install lint fmt deps dev install-hooks check-secrets gate check-integration auto-fix test-short test-integration test-chaos package release docker-build docker-push desktop-dev desktop-build desktop desktop-deps desktop-package desktop-clean
+.PHONY: build run test test-e2e clean install lint fmt deps dev install-hooks check-secrets gate check-integration auto-fix test-short test-integration test-chaos package release docker-build docker-push desktop-dev desktop-build desktop desktop-deps desktop-package desktop-clean build-with-dashboard
 
 # Variables
 BINARY_NAME=pilot
@@ -194,6 +194,16 @@ docker-push:
 	docker tag pilot:$(VERSION) ghcr.io/alekspetrov/pilot:$(VERSION)
 	docker push ghcr.io/alekspetrov/pilot:$(VERSION)
 
+# Build with embedded React dashboard at /dashboard/ (GH-1612)
+build-with-dashboard: desktop-deps
+	@echo "Building frontend for gateway embedding..."
+	cd desktop/frontend && VITE_BASE_PATH=/dashboard/ npm run build
+	@rm -rf cmd/pilot/dashboard_dist
+	@cp -r desktop/frontend/dist cmd/pilot/dashboard_dist
+	@echo "Building $(BINARY_NAME) with embedded dashboard..."
+	go build -tags embed_dashboard $(LDFLAGS) -o bin/$(BINARY_NAME) ./cmd/pilot
+	@rm -rf cmd/pilot/dashboard_dist
+
 # Desktop app (Wails v2 + React)
 desktop-deps:
 	cd desktop/frontend && npm ci
@@ -246,6 +256,7 @@ help:
 	@echo "  make release        Create release (V=0.x.x required)"
 	@echo "  make docker-build   Build Docker image (tag: pilot:VERSION)"
 	@echo "  make docker-push    Push image to ghcr.io/alekspetrov/pilot"
+	@echo "  make build-with-dashboard  Build with embedded React dashboard"
 	@echo "  make desktop-deps   Install desktop frontend dependencies"
 	@echo "  make desktop-dev    Run desktop app in dev mode"
 	@echo "  make desktop-build  Build desktop app (darwin/universal)"
