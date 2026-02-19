@@ -995,6 +995,11 @@ Examples:
 				logging.WithComponent("start").Info("quality gates enabled for webhook mode")
 			}
 
+			// GH-1585: Wire autopilot provider to gateway so /api/v1/autopilot returns live PR data
+			if gwAutopilotController != nil {
+				p.Gateway().SetAutopilotProvider(&autopilotProviderAdapter{controller: gwAutopilotController})
+			}
+
 			if err := p.Start(); err != nil {
 				return fmt.Errorf("failed to start Pilot: %w", err)
 			}

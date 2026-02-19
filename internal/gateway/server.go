@@ -36,6 +36,25 @@ type livenessState struct {
 	panicWindowSecs int64
 }
 
+// AutopilotPRState holds the state of a single PR tracked by autopilot.
+// Used by AutopilotProvider to decouple gateway from autopilot package.
+type AutopilotPRState struct {
+	PRNumber   int
+	PRURL      string
+	Stage      string
+	CIStatus   string
+	Error      string
+	BranchName string
+}
+
+// AutopilotProvider exposes autopilot state to the gateway API.
+type AutopilotProvider interface {
+	GetEnvironment() string
+	GetActivePRs() []*AutopilotPRState
+	GetFailureCount() int
+	IsAutoReleaseEnabled() bool
+}
+
 // Server is the main gateway server handling WebSocket and HTTP connections.
 // It provides a control plane for managing Pilot via WebSocket, receives webhooks
 // from external services (Linear, GitHub, Jira, Asana), and exposes REST APIs for status
@@ -54,6 +73,7 @@ type Server struct {
 	readinessCheckers   []ReadinessChecker
 	liveness            *livenessState
 	prometheusExporter  *PrometheusExporter
+	autopilotProvider   AutopilotProvider
 }
 
 // Config holds gateway server configuration including network binding options.
@@ -170,6 +190,7 @@ func (s *Server) Start(ctx context.Context) error {
 	apiMux := http.NewServeMux()
 	apiMux.HandleFunc("/api/v1/status", s.handleStatus)
 	apiMux.HandleFunc("/api/v1/tasks", s.handleTasks)
+	apiMux.HandleFunc("/api/v1/autopilot", s.handleAutopilot)
 
 	// Apply auth middleware to API routes
 	if s.auth != nil {
@@ -232,6 +253,14 @@ func (s *Server) SetMetricsSource(source MetricsSource) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.prometheusExporter = NewPrometheusExporter(source)
+}
+
+// SetAutopilotProvider sets the autopilot provider for the /api/v1/autopilot endpoint.
+// Must be called before Start().
+func (s *Server) SetAutopilotProvider(p AutopilotProvider) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.autopilotProvider = p
 }
 
 // Shutdown gracefully shuts down the server with a 30-second timeout.
@@ -413,6 +442,47 @@ func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 	// Return placeholder for now - tasks would come from executor/memory integration
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
 		"tasks": []interface{}{},
+	})
+}
+
+// handleAutopilot returns current autopilot state including active PRs.
+func (s *Server) handleAutopilot(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	s.mu.RLock()
+	provider := s.autopilotProvider
+	s.mu.RUnlock()
+
+	if provider == nil {
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"enabled":      false,
+			"environment":  "",
+			"autoRelease":  false,
+			"activePRs":    []interface{}{},
+			"failureCount": 0,
+		})
+		return
+	}
+
+	prs := provider.GetActivePRs()
+	activePRs := make([]map[string]interface{}, 0, len(prs))
+	for _, pr := range prs {
+		activePRs = append(activePRs, map[string]interface{}{
+			"number":     pr.PRNumber,
+			"url":        pr.PRURL,
+			"stage":      pr.Stage,
+			"ciStatus":   pr.CIStatus,
+			"error":      pr.Error,
+			"branchName": pr.BranchName,
+		})
+	}
+
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"enabled":      true,
+		"environment":  provider.GetEnvironment(),
+		"autoRelease":  provider.IsAutoReleaseEnabled(),
+		"activePRs":    activePRs,
+		"failureCount": provider.GetFailureCount(),
 	})
 }
 

@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -181,9 +183,15 @@ func (a *App) GetHistory(limit int) []HistoryEntry {
 	return entries
 }
 
-// GetAutopilotStatus returns autopilot state from the most recent metrics snapshot.
-// When the daemon is not running, returns an empty status with Enabled=false.
+// GetAutopilotStatus returns autopilot state by querying the running daemon's gateway API.
+// Falls back to SQLite metrics when the daemon is not reachable.
 func (a *App) GetAutopilotStatus() AutopilotStatus {
+	// Try live daemon API first (GH-1585)
+	if status, ok := a.fetchAutopilotFromDaemon(); ok {
+		return status
+	}
+
+	// Fallback: read from SQLite metrics snapshot
 	if a.store == nil {
 		return AutopilotStatus{}
 	}
@@ -195,7 +203,7 @@ func (a *App) GetAutopilotStatus() AutopilotStatus {
 	return AutopilotStatus{
 		Enabled:      r.ActivePRs > 0 || r.PRsMerged > 0,
 		FailureCount: r.PRsFailed,
-		ActivePRs:    []ActivePR{}, // Live PR list requires running daemon via gateway API
+		ActivePRs:    []ActivePR{},
 	}
 }
 
@@ -231,6 +239,62 @@ func (a *App) GetLogs(limit int) []LogEntry {
 	return result
 }
 
+// daemonGatewayURL is the default gateway address for the running pilot daemon.
+const daemonGatewayURL = "http://127.0.0.1:9090"
+
+// fetchAutopilotFromDaemon queries the running daemon's /api/v1/autopilot endpoint.
+// Returns the parsed status and true if the daemon is reachable, or zero value and false otherwise.
+func (a *App) fetchAutopilotFromDaemon() (AutopilotStatus, bool) {
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get(daemonGatewayURL + "/api/v1/autopilot")
+	if err != nil {
+		return AutopilotStatus{}, false
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return AutopilotStatus{}, false
+	}
+
+	var data struct {
+		Enabled      bool   `json:"enabled"`
+		Environment  string `json:"environment"`
+		AutoRelease  bool   `json:"autoRelease"`
+		FailureCount int    `json:"failureCount"`
+		ActivePRs    []struct {
+			Number     int    `json:"number"`
+			URL        string `json:"url"`
+			Stage      string `json:"stage"`
+			CIStatus   string `json:"ciStatus"`
+			Error      string `json:"error"`
+			BranchName string `json:"branchName"`
+		} `json:"activePRs"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return AutopilotStatus{}, false
+	}
+
+	prs := make([]ActivePR, 0, len(data.ActivePRs))
+	for _, pr := range data.ActivePRs {
+		prs = append(prs, ActivePR{
+			Number:     pr.Number,
+			URL:        pr.URL,
+			Stage:      pr.Stage,
+			CIStatus:   pr.CIStatus,
+			Error:      pr.Error,
+			BranchName: pr.BranchName,
+		})
+	}
+
+	return AutopilotStatus{
+		Enabled:      data.Enabled,
+		Environment:  data.Environment,
+		AutoRelease:  data.AutoRelease,
+		ActivePRs:    prs,
+		FailureCount: data.FailureCount,
+	}, true
+}
 // GetServerStatus checks whether the pilot daemon gateway is reachable.
 // It attempts a lightweight HTTP check against the configured gateway URL.
 func (a *App) GetServerStatus() ServerStatus {

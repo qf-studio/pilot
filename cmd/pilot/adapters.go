@@ -12,9 +12,11 @@ import (
 	"github.com/alekspetrov/pilot/internal/adapters/telegram"
 	"github.com/alekspetrov/pilot/internal/alerts"
 	"github.com/alekspetrov/pilot/internal/approval"
+	"github.com/alekspetrov/pilot/internal/autopilot"
 	"github.com/alekspetrov/pilot/internal/briefs"
 	"github.com/alekspetrov/pilot/internal/config"
 	"github.com/alekspetrov/pilot/internal/executor"
+	"github.com/alekspetrov/pilot/internal/gateway"
 	"github.com/alekspetrov/pilot/internal/logging"
 	"github.com/alekspetrov/pilot/internal/quality"
 	"github.com/alekspetrov/pilot/internal/teams"
@@ -264,6 +266,41 @@ func (w *qualityCheckerWrapper) Check(ctx context.Context) (*executor.QualityOut
 	}
 
 	return result, nil
+}
+
+// autopilotProviderAdapter wraps autopilot.Controller to satisfy gateway.AutopilotProvider.
+// GH-1585: Bridges autopilot controller to gateway API for /api/v1/autopilot endpoint.
+type autopilotProviderAdapter struct {
+	controller *autopilot.Controller
+}
+
+func (a *autopilotProviderAdapter) GetEnvironment() string {
+	return string(a.controller.Config().Environment)
+}
+
+func (a *autopilotProviderAdapter) GetActivePRs() []*gateway.AutopilotPRState {
+	prs := a.controller.GetActivePRs()
+	result := make([]*gateway.AutopilotPRState, 0, len(prs))
+	for _, pr := range prs {
+		result = append(result, &gateway.AutopilotPRState{
+			PRNumber:   pr.PRNumber,
+			PRURL:      pr.PRURL,
+			Stage:      string(pr.Stage),
+			CIStatus:   string(pr.CIStatus),
+			Error:      pr.Error,
+			BranchName: pr.BranchName,
+		})
+	}
+	return result
+}
+
+func (a *autopilotProviderAdapter) GetFailureCount() int {
+	return a.controller.TotalFailures()
+}
+
+func (a *autopilotProviderAdapter) IsAutoReleaseEnabled() bool {
+	cfg := a.controller.Config()
+	return cfg.Release != nil && cfg.Release.Enabled
 }
 
 // resolveOwnerRepo determines the GitHub owner and repo from config or git remote.
