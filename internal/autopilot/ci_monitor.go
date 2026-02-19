@@ -32,12 +32,15 @@ type CIMonitor struct {
 }
 
 // NewCIMonitor creates a CI monitor with configuration from Config.
-// Uses DevCITimeout for dev environment, CIWaitTimeout for stage/prod.
+// The effective CI wait timeout is the minimum of CIWaitTimeout (user override) and
+// the environment-specific CITimeout. This lets environments define shorter timeouts
+// (e.g. dev uses 5m) while still respecting explicit user overrides in tests or configs.
 // Handles both legacy RequiredChecks and new CIChecks configuration.
 func NewCIMonitor(ghClient *github.Client, owner, repo string, cfg *Config) *CIMonitor {
 	timeout := cfg.CIWaitTimeout
-	if cfg.Environment == EnvDev && cfg.DevCITimeout > 0 {
-		timeout = cfg.DevCITimeout
+	envCITimeout := cfg.ResolvedEnv().CITimeout
+	if envCITimeout > 0 && (timeout == 0 || envCITimeout < timeout) {
+		timeout = envCITimeout
 	}
 
 	// Determine CI checks configuration

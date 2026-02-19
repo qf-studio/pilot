@@ -259,7 +259,7 @@ func (c *Controller) OnPRCreated(prNumber int, prURL string, issueNumber int, he
 		"branch", branchName,
 		"sha", ShortSHA(headSHA),
 		"stage", StagePRCreated,
-		"env", c.config.Environment,
+		"env", c.config.EnvironmentName(),
 	)
 }
 
@@ -315,7 +315,7 @@ func (c *Controller) ProcessPR(ctx context.Context, prNumber int, ghPR *github.P
 			"pr", prNumber,
 			"from", previousStage,
 			"to", prState.Stage,
-			"env", c.config.Environment,
+			"env", c.config.EnvironmentName(),
 		)
 
 		// GH-849: Update lastProgressAt and reset deadlock alert flag
@@ -381,10 +381,13 @@ func (c *Controller) handleWaitingCI(ctx context.Context, prState *PRState, ghPR
 		prState.CIWaitStartedAt = time.Now()
 	}
 
-	// Check for CI timeout
+	// Check for CI timeout: use the minimum of CIWaitTimeout and the environment's CITimeout.
+	// This respects explicit user overrides (e.g. short timeouts in tests) while defaulting
+	// to the environment-specific timeout when no override is set.
 	ciTimeout := c.config.CIWaitTimeout
-	if c.config.Environment == EnvDev && c.config.DevCITimeout > 0 {
-		ciTimeout = c.config.DevCITimeout
+	envCITimeout := c.config.ResolvedEnv().CITimeout
+	if envCITimeout > 0 && (ciTimeout == 0 || envCITimeout < ciTimeout) {
+		ciTimeout = envCITimeout
 	}
 
 	if time.Since(prState.CIWaitStartedAt) > ciTimeout {
@@ -504,16 +507,16 @@ func (c *Controller) handleWaitingCI(ctx context.Context, prState *PRState, ghPR
 	return nil
 }
 
-// handleCIPassed proceeds to merge (with approval for prod).
+// handleCIPassed proceeds to merge (with approval if required by environment config).
 func (c *Controller) handleCIPassed(ctx context.Context, prState *PRState) error {
 	c.log.Info("handleCIPassed: CI passed, determining next stage",
 		"pr", prState.PRNumber,
-		"env", c.config.Environment,
+		"env", c.config.EnvironmentName(),
 		"auto_merge", c.config.AutoMerge,
 	)
 
-	if c.config.Environment == EnvProd {
-		c.log.Info("prod mode: awaiting approval", "pr", prState.PRNumber)
+	if c.config.ResolvedEnv().RequireApproval {
+		c.log.Info("awaiting approval before merge", "pr", prState.PRNumber)
 		prState.Stage = StageAwaitApproval
 
 		// Notify approval required
@@ -523,9 +526,9 @@ func (c *Controller) handleCIPassed(ctx context.Context, prState *PRState) error
 			}
 		}
 	} else {
-		c.log.Info("dev/stage mode: proceeding to merge",
+		c.log.Info("proceeding to merge",
 			"pr", prState.PRNumber,
-			"env", c.config.Environment,
+			"env", c.config.EnvironmentName(),
 		)
 		prState.Stage = StageMerging
 	}
@@ -723,32 +726,32 @@ func (c *Controller) handleMerging(ctx context.Context, prState *PRState) error 
 	return nil
 }
 
-// handleMerged checks post-merge CI (stage/prod).
+// handleMerged checks post-merge CI based on environment config.
 func (c *Controller) handleMerged(ctx context.Context, prState *PRState) error {
 	c.log.Info("handleMerged: PR merged, checking next steps",
 		"pr", prState.PRNumber,
-		"env", c.config.Environment,
+		"env", c.config.EnvironmentName(),
 		"should_release", c.shouldTriggerRelease(),
 	)
 
-	if c.config.Environment == EnvDev {
-		// Dev: check if we should release without waiting for post-merge CI
+	if c.config.ResolvedEnv().SkipPostMergeCI {
+		// Fast path: skip post-merge CI, check if we should release immediately
 		if c.shouldTriggerRelease() && !c.config.Release.RequireCI {
-			c.log.Info("dev mode: proceeding to release (no post-merge CI required)",
+			c.log.Info("skipping post-merge CI: proceeding to release",
 				"pr", prState.PRNumber,
 			)
 			prState.Stage = StageReleasing
 			return nil
 		}
-		c.log.Info("dev mode: PR complete", "pr", prState.PRNumber)
+		c.log.Info("skipping post-merge CI: PR complete", "pr", prState.PRNumber)
 		c.removePR(prState.PRNumber)
 		return nil
 	}
 
-	// Stage/Prod: wait for post-merge CI
-	c.log.Info("stage/prod mode: waiting for post-merge CI",
+	// Wait for post-merge CI
+	c.log.Info("waiting for post-merge CI",
 		"pr", prState.PRNumber,
-		"env", c.config.Environment,
+		"env", c.config.EnvironmentName(),
 	)
 	prState.Stage = StagePostMergeCI
 	return nil
@@ -1245,7 +1248,7 @@ func (c *Controller) ScanExistingPRs(ctx context.Context) error {
 		restored++
 	}
 
-	c.log.Info("completed PR scan", "restored", restored, "env", c.config.Environment)
+	c.log.Info("completed PR scan", "restored", restored, "env", c.config.EnvironmentName())
 	return nil
 }
 
@@ -1376,7 +1379,7 @@ func (c *Controller) ScanRecentlyMergedPRs(ctx context.Context) error {
 // It continuously processes all active PRs until context is cancelled.
 func (c *Controller) Run(ctx context.Context) error {
 	c.log.Info("autopilot controller started",
-		"env", c.config.Environment,
+		"env", c.config.EnvironmentName(),
 		"poll_interval", c.config.CIPollInterval,
 		"ci_timeout", c.config.CIWaitTimeout,
 		"auto_merge", c.config.AutoMerge,

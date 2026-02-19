@@ -1,6 +1,9 @@
 package autopilot
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 // Environment defines deployment environment behavior.
 // Different environments have different levels of automation and approval requirements.
@@ -33,12 +36,58 @@ type GitHubReviewConfig struct {
 	PollInterval time.Duration `yaml:"poll_interval"`
 }
 
+// EnvironmentConfig defines a deployment pipeline for one target environment.
+type EnvironmentConfig struct {
+	// Branch is the target branch for PRs (e.g., "main", "develop").
+	Branch string `yaml:"branch"`
+	// RequireApproval gates merge on human approval.
+	RequireApproval bool `yaml:"require_approval"`
+	// ApprovalSource specifies which channel for approvals (telegram, slack, github-review).
+	ApprovalSource ApprovalSource `yaml:"approval_source,omitempty"`
+	// ApprovalTimeout is how long to wait for human approval.
+	ApprovalTimeout time.Duration `yaml:"approval_timeout,omitempty"`
+	// CITimeout overrides the CI wait timeout for this environment.
+	CITimeout time.Duration `yaml:"ci_timeout"`
+	// SkipPostMergeCI skips post-merge CI monitoring (fast path).
+	SkipPostMergeCI bool `yaml:"skip_post_merge_ci"`
+	// MergeMethod overrides the default merge method for this environment.
+	MergeMethod string `yaml:"merge_method,omitempty"`
+	// PostMerge defines what happens after merge (deployment trigger).
+	PostMerge *PostMergeConfig `yaml:"post_merge,omitempty"`
+	// Release holds per-environment release configuration.
+	Release *ReleaseConfig `yaml:"release,omitempty"`
+}
+
+// PostMergeConfig defines the deployment trigger action after PR merge.
+type PostMergeConfig struct {
+	// Action: "none", "tag", "webhook", "branch-push"
+	Action string `yaml:"action"`
+	// WebhookURL for action "webhook".
+	WebhookURL string `yaml:"webhook_url,omitempty"`
+	// WebhookHeaders for action "webhook".
+	WebhookHeaders map[string]string `yaml:"webhook_headers,omitempty"`
+	// WebhookSecret for action "webhook" HMAC signing.
+	WebhookSecret string `yaml:"webhook_secret,omitempty"`
+	// DeployBranch for action "branch-push".
+	DeployBranch string `yaml:"deploy_branch,omitempty"`
+}
+
 // Config holds autopilot configuration for automated PR handling.
 type Config struct {
 	// Enabled controls whether autopilot mode is active.
 	Enabled bool `yaml:"enabled"`
 	// Environment determines the automation level (dev/stage/prod).
-	Environment Environment `yaml:"environment"`
+	// DEPRECATED: use Environments map + DefaultEnvironment instead.
+	Environment Environment `yaml:"environment,omitempty"`
+
+	// DefaultEnvironment is the name of the environment used when --env is not specified.
+	DefaultEnvironment string `yaml:"default_environment,omitempty"`
+	// Environments is a map of named environment pipeline configs.
+	Environments map[string]*EnvironmentConfig `yaml:"environments,omitempty"`
+
+	// Runtime fields (not serialized to YAML).
+	activeEnvName   string
+	activeEnvConfig *EnvironmentConfig
 
 	// Approval
 	// ApprovalSource specifies which channel to use for approvals (telegram, slack, github-review).
@@ -113,6 +162,101 @@ type CIChecksConfig struct {
 	DiscoveryGracePeriod time.Duration `yaml:"discovery_grace_period"`
 }
 
+// defaultEnvironments returns built-in environment configs matching legacy behavior.
+func defaultEnvironments() map[string]*EnvironmentConfig {
+	return map[string]*EnvironmentConfig{
+		"dev": {
+			Branch:          "main",
+			RequireApproval: false,
+			CITimeout:       5 * time.Minute,
+			SkipPostMergeCI: true,
+			PostMerge:       &PostMergeConfig{Action: "none"},
+		},
+		"stage": {
+			Branch:          "main",
+			RequireApproval: false,
+			CITimeout:       30 * time.Minute,
+			SkipPostMergeCI: false,
+			PostMerge:       &PostMergeConfig{Action: "none"},
+		},
+		"prod": {
+			Branch:          "main",
+			RequireApproval: true,
+			ApprovalSource:  ApprovalSourceTelegram,
+			ApprovalTimeout: 1 * time.Hour,
+			CITimeout:       30 * time.Minute,
+			SkipPostMergeCI: false,
+			PostMerge:       &PostMergeConfig{Action: "tag"},
+		},
+	}
+}
+
+// ResolvedEnv returns the active environment config.
+// If activeEnvName is set and the Environments map contains it, that entry is returned.
+// Otherwise falls back to the legacy Environment field and synthesizes from defaultEnvironments.
+func (c *Config) ResolvedEnv() *EnvironmentConfig {
+	// New-style: runtime-selected environment takes priority.
+	if c.activeEnvName != "" {
+		if c.activeEnvConfig != nil {
+			return c.activeEnvConfig
+		}
+		if c.Environments != nil {
+			if env, ok := c.Environments[c.activeEnvName]; ok {
+				return env
+			}
+		}
+	}
+
+	// Legacy: derive from the Environment field using built-in defaults.
+	envName := string(c.Environment)
+	if envName == "" {
+		envName = "stage"
+	}
+	defaults := defaultEnvironments()
+	if env, ok := defaults[envName]; ok {
+		return env
+	}
+	// Unknown legacy environment: treat as stage (safe default).
+	return defaults["stage"]
+}
+
+// EnvironmentName returns the human-readable active environment name.
+func (c *Config) EnvironmentName() string {
+	if c.activeEnvName != "" {
+		return c.activeEnvName
+	}
+	if c.Environment != "" {
+		return string(c.Environment)
+	}
+	return "stage"
+}
+
+// SetActiveEnvironment sets the runtime-resolved environment by name.
+// Checks the Environments map first, then falls back to built-in defaults.
+// Called during CLI flag processing.
+func (c *Config) SetActiveEnvironment(name string) error {
+	// New-style: check user-defined Environments map first.
+	if c.Environments != nil {
+		if env, ok := c.Environments[name]; ok {
+			c.activeEnvName = name
+			c.activeEnvConfig = env
+			c.Environment = Environment(name) // keep legacy field in sync
+			return nil
+		}
+	}
+
+	// Fall back to built-in defaults.
+	defaults := defaultEnvironments()
+	if env, ok := defaults[name]; ok {
+		c.activeEnvName = name
+		c.activeEnvConfig = env
+		c.Environment = Environment(name) // keep legacy field in sync
+		return nil
+	}
+
+	return fmt.Errorf("unknown environment %q: must be one of dev, stage, prod or defined in environments config", name)
+}
+
 // DefaultConfig returns sensible defaults for autopilot configuration.
 func DefaultConfig() *Config {
 	return &Config{
@@ -145,6 +289,7 @@ func DefaultConfig() *Config {
 		ApprovalTimeout:     1 * time.Hour,
 		Release:             nil, // Disabled by default
 		MergedPRScanWindow:  30 * time.Minute,
+		Environments:        defaultEnvironments(),
 	}
 }
 

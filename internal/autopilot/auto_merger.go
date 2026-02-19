@@ -38,13 +38,13 @@ func NewAutoMerger(ghClient *github.Client, approvalMgr *approval.Manager, ciMon
 }
 
 // MergePR merges a PR with environment-appropriate safety checks.
-// For prod environment, requests human approval before merge.
+// For environments with RequireApproval, requests human approval before merge.
 func (m *AutoMerger) MergePR(ctx context.Context, prState *PRState) error {
 	env := m.config.Environment
 
 	m.log.Info("MergePR: starting merge process",
 		"pr", prState.PRNumber,
-		"env", env,
+		"env", m.config.EnvironmentName(),
 		"method", m.config.MergeMethod,
 		"auto_review", m.config.AutoReview,
 		"sha", ShortSHA(prState.HeadSHA),
@@ -93,9 +93,20 @@ func (m *AutoMerger) MergePR(ctx context.Context, prState *PRState) error {
 	return nil
 }
 
-// requiresApproval checks if environment needs human approval for merge.
+// requiresApproval checks if the active environment requires human approval before merge.
+// When a new-style environment is active (activeEnvName set), uses ResolvedEnv().RequireApproval.
+// Otherwise falls back to the default environment table keyed by the passed env name,
+// preserving legacy behavior where the caller passes m.config.Environment.
 func (m *AutoMerger) requiresApproval(env Environment) bool {
-	return env == EnvProd
+	if m.config.activeEnvName != "" {
+		return m.config.ResolvedEnv().RequireApproval
+	}
+	// Legacy: look up in built-in defaults using the passed environment name.
+	defaults := defaultEnvironments()
+	if envCfg, ok := defaults[string(env)]; ok {
+		return envCfg.RequireApproval
+	}
+	return false
 }
 
 // requestApproval requests human approval via the approval manager.
@@ -106,14 +117,15 @@ func (m *AutoMerger) requestApproval(ctx context.Context, prState *PRState) (boo
 
 	// Check if approval stage is enabled
 	if !m.approvalMgr.IsStageEnabled(approval.StagePreMerge) {
-		// In prod environment, do NOT auto-approve when approval stage is disabled.
-		// This is a safety measure: prod requires explicit approval configuration.
-		// Users must either enable pre_merge approval or use dev/stage environment.
-		if m.config.Environment == EnvProd {
-			m.log.Error("pre-merge approval stage not enabled in prod environment, blocking merge. "+
-				"Enable approval.pre_merge.enabled or use dev/stage environment",
-				"pr", prState.PRNumber)
-			return false, fmt.Errorf("prod environment requires pre_merge approval to be enabled")
+		// When the environment requires approval, do NOT auto-approve if the approval
+		// stage is disabled. This is a safety measure: environments with RequireApproval
+		// must have explicit approval configuration.
+		if m.config.ResolvedEnv().RequireApproval {
+			m.log.Error("pre-merge approval stage not enabled in environment requiring approval, blocking merge. "+
+				"Enable approval.pre_merge.enabled or switch to an environment without require_approval",
+				"pr", prState.PRNumber,
+				"env", m.config.EnvironmentName())
+			return false, fmt.Errorf("environment %q requires pre_merge approval to be enabled", m.config.EnvironmentName())
 		}
 		m.log.Warn("pre-merge approval stage not enabled, auto-approving",
 			"pr", prState.PRNumber)
