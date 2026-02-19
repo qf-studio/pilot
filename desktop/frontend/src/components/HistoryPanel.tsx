@@ -24,7 +24,7 @@ interface HistoryRowProps {
 function HistoryRow({ entry, isSubIssue = false }: HistoryRowProps) {
   const icon = entry.status === 'completed' ? '✓' : '✗'
   const iconColor = entry.status === 'completed' ? 'text-sage' : 'text-rose'
-  const indent = isSubIssue ? 'pl-4' : ''
+  const indent = isSubIssue ? 'pl-3' : ''
 
   function handleClick() {
     const url = entry.prURL || ''
@@ -33,11 +33,11 @@ function HistoryRow({ entry, isSubIssue = false }: HistoryRowProps) {
 
   return (
     <div
-      className={`flex items-center gap-1.5 px-1 py-0.5 hover:bg-slate/30 cursor-pointer rounded transition-colors ${indent}`}
+      className={`flex items-center gap-1 px-1 py-px hover:bg-slate/30 cursor-pointer rounded transition-colors ${indent}`}
       onClick={handleClick}
     >
-      <span className={`text-[11px] ${iconColor} shrink-0`}>{icon}</span>
-      <span className="text-steel text-[10px] shrink-0 w-14">{entry.issueID}</span>
+      <span className={`text-[10px] ${iconColor} shrink-0`}>{icon}</span>
+      <span className="text-steel text-[10px] shrink-0 w-12">{entry.issueID}</span>
       <span className="text-lightgray text-[10px] flex-1 min-w-0 truncate">{entry.title}</span>
       <span className="text-gray text-[10px] shrink-0">{timeAgo(entry.completedAt)}</span>
     </div>
@@ -58,9 +58,9 @@ function EpicGroup({ entry }: EpicGroupProps) {
 
   return (
     <div className="space-y-0">
-      <div className="flex items-center gap-1.5 px-1 py-0.5">
-        <span className={`text-[11px] ${iconColor} shrink-0`}>{icon}</span>
-        <span className="text-steel text-[10px] shrink-0 w-14">{entry.issueID}</span>
+      <div className="flex items-center gap-1 px-1 py-px">
+        <span className={`text-[10px] ${iconColor} shrink-0`}>{icon}</span>
+        <span className="text-steel text-[10px] shrink-0 w-12">{entry.issueID}</span>
         <span className="text-lightgray text-[10px] flex-1 min-w-0 truncate">{entry.title}</span>
         <span className="text-midgray text-[10px] shrink-0">[{done}/{total}]</span>
       </div>
@@ -77,20 +77,20 @@ interface HistoryPanelProps {
 
 export function HistoryPanel({ entries }: HistoryPanelProps) {
   return (
-    <Card title="HISTORY">
-      {entries.length === 0 ? (
-        <div className="text-gray text-[10px]">no completed tasks</div>
-      ) : (
-        <div className="space-y-0">
-          {entries.map((entry) =>
+    <Card title="HISTORY" className="flex-1 min-h-0">
+      <div className="overflow-y-auto h-full log-scroll">
+        {entries.length === 0 ? (
+          <div className="text-gray text-[10px]">no completed tasks</div>
+        ) : (
+          entries.map((entry) =>
             entry.subIssues && entry.subIssues.length > 0 ? (
               <EpicGroup key={entry.id} entry={entry} />
             ) : (
               <HistoryRow key={entry.id} entry={entry} />
             ),
-          )}
-        </div>
-      )}
+          )
+        )}
+      </div>
     </Card>
   )
 }

@@ -5,7 +5,6 @@ import { api } from '../provider'
 const { OpenInBrowser } = api
 import type { AutopilotStatus, ActivePR } from '../types'
 
-// Stage icon mapping — matches TUI autopilot panel
 const STAGE_ICONS: Record<string, string> = {
   created: '+',
   waiting_ci: '~',
@@ -28,56 +27,33 @@ const STAGE_COLORS: Record<string, string> = {
   failed: 'text-rose',
 }
 
-function stageIcon(stage: string): string {
-  return STAGE_ICONS[stage] ?? '?'
-}
-
-function stageColor(stage: string): string {
-  return STAGE_COLORS[stage] ?? 'text-midgray'
-}
-
 interface PRRowProps {
   pr: ActivePR
 }
 
 function PRRow({ pr }: PRRowProps) {
-  const icon = stageIcon(pr.stage)
-  const color = stageColor(pr.stage)
+  const icon = STAGE_ICONS[pr.stage] ?? '?'
+  const color = STAGE_COLORS[pr.stage] ?? 'text-midgray'
 
   return (
-    <div className="space-y-0.5">
-      <div
-        className="flex items-center gap-1.5 cursor-pointer hover:bg-slate/30 rounded px-1 py-0.5 transition-colors"
-        onClick={() => pr.url && OpenInBrowser(pr.url)}
-      >
-        <span className={`text-[11px] font-bold ${color}`}>{icon}</span>
-        <span className="text-steel text-[10px]">PR #{pr.number}</span>
-        <span className="text-midgray text-[10px] truncate flex-1">{pr.branchName}</span>
-        <span className={`text-[10px] ${color}`}>{pr.stage.replace('_', ' ')}</span>
-      </div>
-      {pr.ciStatus && pr.stage === 'waiting_ci' && (
-        <div className="text-amber text-[10px] pl-5">CI: {pr.ciStatus}</div>
-      )}
-      {pr.error && (
-        <div className="text-rose text-[10px] pl-5 truncate">{pr.error}</div>
-      )}
+    <div
+      className="flex items-center gap-1 cursor-pointer hover:bg-slate/30 rounded px-1 py-px transition-colors"
+      onClick={() => pr.url && OpenInBrowser(pr.url)}
+    >
+      <span className={`text-[10px] font-bold ${color}`}>{icon}</span>
+      <span className="text-steel text-[10px]">#{pr.number}</span>
+      <span className="text-midgray text-[10px] truncate flex-1">{pr.branchName}</span>
+      <span className={`text-[10px] ${color}`}>{pr.stage.replace('_', ' ')}</span>
     </div>
   )
 }
 
-interface DotRowProps {
-  label: string
-  value: string
-  valueColor?: string
-}
-
-function DotRow({ label, value, valueColor = 'text-lightgray' }: DotRowProps) {
+function DotRow({ label, value, valueColor = 'text-lightgray' }: { label: string; value: string; valueColor?: string }) {
   return (
     <div className="flex items-baseline gap-0 text-[10px]">
       <span className="text-midgray shrink-0">{label}</span>
       <span className="flex-1 text-slate overflow-hidden whitespace-nowrap">
-        {' '}
-        {'·'.repeat(30)}
+        {' '}{'·'.repeat(20)}
       </span>
       <span className={`shrink-0 ${valueColor}`}>{value}</span>
     </div>
@@ -90,33 +66,31 @@ interface AutopilotPanelProps {
 
 export function AutopilotPanel({ status }: AutopilotPanelProps) {
   return (
-    <Card title="AUTOPILOT">
-      {!status.enabled && status.activePRs.length === 0 ? (
-        <div className="text-gray text-[10px]">autopilot inactive</div>
-      ) : (
-        <div className="space-y-1">
-          <DotRow label="mode" value={status.environment || 'dev'} />
-          <DotRow
-            label="auto-release"
-            value={status.autoRelease ? 'enabled' : 'disabled'}
-            valueColor={status.autoRelease ? 'text-sage' : 'text-gray'}
-          />
-          {status.failureCount > 0 && (
+    <Card title="AUTOPILOT" className="flex-1 min-h-0">
+      <div className="overflow-y-auto h-full log-scroll">
+        {!status.enabled && status.activePRs.length === 0 ? (
+          <div className="text-gray text-[10px]">autopilot inactive</div>
+        ) : (
+          <div className="space-y-0.5">
+            <DotRow label="mode" value={status.environment || 'dev'} />
             <DotRow
-              label="failures"
-              value={String(status.failureCount)}
-              valueColor="text-amber"
+              label="release"
+              value={status.autoRelease ? 'on' : 'off'}
+              valueColor={status.autoRelease ? 'text-sage' : 'text-gray'}
             />
-          )}
-          {status.activePRs.length > 0 && (
-            <div className="mt-1.5 space-y-1 border-t border-border pt-1">
-              {status.activePRs.map((pr) => (
-                <PRRow key={pr.number} pr={pr} />
-              ))}
-            </div>
-          )}
-        </div>
-      )}
+            {status.failureCount > 0 && (
+              <DotRow label="fails" value={String(status.failureCount)} valueColor="text-amber" />
+            )}
+            {status.activePRs.length > 0 && (
+              <div className="mt-1 space-y-0.5 border-t border-border pt-1">
+                {status.activePRs.map((pr) => (
+                  <PRRow key={pr.number} pr={pr} />
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
     </Card>
   )
 }

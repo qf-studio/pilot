@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import type { DashboardMetrics, QueueTask, HistoryEntry, AutopilotStatus, ServerStatus } from '../types'
+import type { DashboardMetrics, QueueTask, HistoryEntry, AutopilotStatus, ServerStatus, LogEntry } from '../types'
 import { api } from '../provider'
 import { useDashboardLogs } from './useWebSocket'
 

@@ -10,19 +10,11 @@ import type { QueueTask } from '../types'
 type TaskStatus = 'done' | 'running' | 'queued' | 'pending' | 'failed'
 
 const STATUS_ORDER: Record<string, number> = {
-  done: 0,
-  running: 1,
-  queued: 2,
-  pending: 3,
-  failed: 4,
-}
-
-const STATE_LABELS: Record<string, string> = {
-  done: 'done   ',
-  running: 'running',
-  queued: 'queued ',
-  pending: 'pending',
-  failed: 'failed ',
+  running: 0,
+  queued: 1,
+  pending: 2,
+  failed: 3,
+  done: 4,
 }
 
 const STATE_COLORS: Record<string, string> = {
@@ -38,7 +30,7 @@ function metaText(task: QueueTask): string {
     case 'running':
       return `${Math.round(task.progress * 100)}%`
     case 'done':
-      return task.prURL ? `PR` : 'done'
+      return 'done'
     case 'failed':
       return 'fail'
     case 'queued':
@@ -62,35 +54,34 @@ interface QueueRowProps {
 
 function QueueRow({ task, shimmerIndex }: QueueRowProps) {
   const status = task.status as TaskStatus
-  const stateLabel = STATE_LABELS[task.status] ?? task.status
   const stateColor = STATE_COLORS[task.status] ?? 'text-midgray'
 
   function handleClick() {
-    const url = task.issueURL || task.prURL
+    const url = task.prURL || task.issueURL
     if (url) OpenInBrowser(url)
   }
 
   return (
     <div
-      className="flex items-center gap-1 px-2 py-0.5 hover:bg-slate/30 cursor-pointer rounded transition-colors"
+      className="flex items-center gap-1.5 px-1.5 py-px hover:bg-slate/30 cursor-pointer rounded transition-colors"
       onClick={handleClick}
     >
       <StatusIcon status={status} />
-      <span className={`text-[10px] w-16 shrink-0 ${stateColor}`}>{stateLabel}</span>
-      <span className="text-steel text-[10px] w-14 shrink-0 font-bold">
-        {truncate(task.issueID, 10)}
+      <span className="text-steel text-[10px] w-12 shrink-0 font-bold">
+        {truncate(task.issueID, 8)}
       </span>
       <span className="text-lightgray text-[10px] flex-1 min-w-0 truncate">
         {task.title}
       </span>
-      <div className="shrink-0 mx-1">
+      <div className="shrink-0">
         <ProgressBar
           status={status}
           progress={task.progress}
           shimmerDelay={shimmerIndex}
+          className="w-20"
         />
       </div>
-      <span className="text-gray text-[10px] w-10 text-right shrink-0">
+      <span className={`text-[10px] w-8 text-right shrink-0 ${stateColor}`}>
         {metaText(task)}
       </span>
     </div>
@@ -101,26 +92,43 @@ interface QueuePanelProps {
   tasks: QueueTask[]
 }
 
+// Show running/queued/pending/failed first, then last N done items
+const MAX_DONE_VISIBLE = 8
+
 export function QueuePanel({ tasks }: QueuePanelProps) {
   const sorted = [...tasks].sort((a, b) => {
     const oa = STATUS_ORDER[a.status] ?? 99
     const ob = STATUS_ORDER[b.status] ?? 99
-    return oa - ob
+    if (oa !== ob) return oa - ob
+    // Within same status, newest first
+    return b.id.localeCompare(a.id)
   })
 
-  // Track shimmer index per queued item for staggered animation
+  // Split active vs done
+  const active = sorted.filter(t => t.status !== 'done')
+  const done = sorted.filter(t => t.status === 'done').slice(0, MAX_DONE_VISIBLE)
+  const visible = [...active, ...done]
+  const hiddenCount = sorted.length - visible.length
+
   let queuedIdx = 0
 
   return (
-    <Card title="QUEUE" className="flex-1 min-h-0">
+    <Card title={`QUEUE  ${sorted.length}`} className="flex-1 min-h-0">
       <div className="overflow-y-auto h-full log-scroll">
-        {sorted.length === 0 ? (
+        {visible.length === 0 ? (
           <div className="text-gray text-[10px] px-1 py-1">no active tasks</div>
         ) : (
-          sorted.map((task) => {
-            const shimmerIndex = task.status === 'queued' ? queuedIdx++ : 0
-            return <QueueRow key={task.id} task={task} shimmerIndex={shimmerIndex} />
-          })
+          <>
+            {visible.map((task) => {
+              const shimmerIndex = task.status === 'queued' ? queuedIdx++ : 0
+              return <QueueRow key={task.id} task={task} shimmerIndex={shimmerIndex} />
+            })}
+            {hiddenCount > 0 && (
+              <div className="text-gray text-[10px] px-1.5 py-1 text-center">
+                + {hiddenCount} more completed
+              </div>
+            )}
+          </>
         )}
       </div>
     </Card>

@@ -55,7 +55,7 @@ export interface AutopilotStatus {
 
 export interface LogEntry {
   ts: string
-  level: string
+  level?: 'info' | 'warn' | 'error'
   message: string
   component?: string
 }

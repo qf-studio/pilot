@@ -10,22 +10,22 @@ interface ProgressBarProps {
 }
 
 export function ProgressBar({ status, progress, shimmerDelay = 0, className = '' }: ProgressBarProps) {
-  const filled = Math.round(Math.max(0, Math.min(1, progress)) * 14)
-  const empty = 14 - filled
+  const w = className || 'w-20'
 
   if (status === 'queued') {
     const delayClass = `shimmer-delay-${Math.min(shimmerDelay, 4)}`
     return (
-      <div className={`inline-block w-28 h-3 rounded-sm shimmer-bar ${delayClass} ${className}`} />
+      <div className={`inline-block ${w} h-2 rounded-sm shimmer-bar ${delayClass}`} />
     )
   }
 
   if (status === 'pending') {
     return (
-      <div className={`inline-flex w-28 h-3 rounded-sm bg-slate overflow-hidden ${className}`} />
+      <div className={`inline-flex ${w} h-2 rounded-sm bg-slate overflow-hidden`} />
     )
   }
 
+  const pct = Math.max(0, Math.min(1, progress)) * 100
   const fillColor =
     status === 'done'
       ? 'bg-sage'
@@ -34,19 +34,8 @@ export function ProgressBar({ status, progress, shimmerDelay = 0, className = ''
       : 'bg-steel'
 
   return (
-    <div className={`inline-flex w-28 h-3 rounded-sm bg-slate overflow-hidden ${className}`}>
-      {filled > 0 && (
-        <div
-          className={`h-full ${fillColor}`}
-          style={{ width: `${(filled / 14) * 100}%` }}
-        />
-      )}
-      {empty > 0 && (
-        <div
-          className="h-full bg-slate"
-          style={{ width: `${(empty / 14) * 100}%` }}
-        />
-      )}
+    <div className={`inline-flex ${w} h-2 rounded-sm bg-slate overflow-hidden`}>
+      <div className={`h-full ${fillColor}`} style={{ width: `${pct}%` }} />
     </div>
   )
 }
