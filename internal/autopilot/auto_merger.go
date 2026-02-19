@@ -106,6 +106,15 @@ func (m *AutoMerger) requestApproval(ctx context.Context, prState *PRState) (boo
 
 	// Check if approval stage is enabled
 	if !m.approvalMgr.IsStageEnabled(approval.StagePreMerge) {
+		// In prod environment, do NOT auto-approve when approval stage is disabled.
+		// This is a safety measure: prod requires explicit approval configuration.
+		// Users must either enable pre_merge approval or use dev/stage environment.
+		if m.config.Environment == EnvProd {
+			m.log.Error("pre-merge approval stage not enabled in prod environment, blocking merge. "+
+				"Enable approval.pre_merge.enabled or use dev/stage environment",
+				"pr", prState.PRNumber)
+			return false, fmt.Errorf("prod environment requires pre_merge approval to be enabled")
+		}
 		m.log.Warn("pre-merge approval stage not enabled, auto-approving",
 			"pr", prState.PRNumber)
 		return true, nil

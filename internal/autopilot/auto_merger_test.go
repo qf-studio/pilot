@@ -270,6 +270,7 @@ func TestAutoMerger_MergePR_ProdRequiresApproval(t *testing.T) {
 
 func TestAutoMerger_MergePR_ProdWithApprovalDisabled(t *testing.T) {
 	// Scenario: Prod environment but pre-merge approval stage is disabled
+	// Should BLOCK merge in prod — not silently auto-approve
 	mergeWasCalled := false
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -305,12 +306,57 @@ func TestAutoMerger_MergePR_ProdWithApprovalDisabled(t *testing.T) {
 	}
 
 	err := merger.MergePR(context.Background(), prState)
+	if err == nil {
+		t.Error("MergePR() should fail in prod when pre-merge approval is disabled")
+	}
+
+	if mergeWasCalled {
+		t.Error("merge should NOT have been called in prod when approval stage is disabled")
+	}
+}
+
+func TestAutoMerger_MergePR_NonProdWithApprovalDisabled(t *testing.T) {
+	// Scenario: Non-prod environment (dev/stage) with approval disabled should still auto-approve
+	mergeWasCalled := false
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/owner/repo/pulls/42/reviews":
+			w.WriteHeader(http.StatusOK)
+		case "/repos/owner/repo/pulls/42/merge":
+			mergeWasCalled = true
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+
+	approvalCfg := approval.DefaultConfig()
+	approvalCfg.Enabled = true
+	approvalCfg.PreMerge.Enabled = false
+	approvalMgr := approval.NewManager(approvalCfg)
+
+	cfg := DefaultConfig()
+	cfg.Environment = EnvDev
+	cfg.AutoReview = true
+
+	merger := NewAutoMerger(ghClient, approvalMgr, nil, "owner", "repo", cfg)
+
+	prState := &PRState{
+		PRNumber: 42,
+		PRURL:    "https://github.com/owner/repo/pull/42",
+	}
+
+	err := merger.MergePR(context.Background(), prState)
 	if err != nil {
 		t.Errorf("MergePR() error = %v", err)
 	}
 
 	if !mergeWasCalled {
-		t.Error("merge should have been called when approval stage is disabled")
+		t.Error("merge should have been called in dev when approval stage is disabled")
 	}
 }
 
