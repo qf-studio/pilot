@@ -301,9 +301,24 @@ helm install pilot ./helm/pilot \
 See the [Docker & Helm deployment guide](/deployment/docker-helm) for full configuration, persistence setup, ingress for webhooks, monitoring, and security hardening.
 </Callout>
 
+## Desktop App
+
+Prefer a graphical interface? The Pilot desktop app provides the same dashboard panels in a native macOS window:
+
+```bash
+# Build from source (requires Wails CLI)
+make desktop-build
+
+# Open alongside your running Pilot daemon
+open desktop/build/bin/Pilot.app
+```
+
+See the [Desktop App guide](/deployment/desktop-app) for prerequisites and full setup.
+
 ## Next Steps
 
 - [Configuration](/getting-started/configuration) — Tune all config.yaml options
+- [Desktop App](/deployment/desktop-app) — Native macOS dashboard application
 - [Docker & Helm](/deployment/docker-helm) — Production container deployment
 - [Tunnel Setup](/guides/tunnel-setup) — Instant webhooks via Cloudflare or ngrok
 - [Autopilot](/features/autopilot) — Automatic CI monitoring and merge

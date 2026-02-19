@@ -1,6 +1,7 @@
 export default {
   index: "Overview",
   local: "Local / Bare Metal",
+  "desktop-app": "Desktop App",
   docker: "Docker",
   "docker-helm": "Docker & Helm",
   kubernetes: "Kubernetes",

@@ -1,0 +1,155 @@
+import { Callout, Steps } from 'nextra/components'
+
+# Desktop App
+
+A native macOS desktop application that mirrors the [Dashboard TUI](/features/dashboard) in a graphical window. Built with [Wails](https://wails.io) and React.
+
+<Callout type="info">
+The desktop app connects to your running Pilot daemon via the gateway API. Start `pilot start` in a terminal first, then open Pilot.app alongside it.
+</Callout>
+
+---
+
+## Prerequisites
+
+- **Go 1.24+** — [golang.org/dl](https://go.dev/dl/)
+- **Node.js 18+** — for the frontend build
+- **Wails CLI v2** — install with `go install github.com/wailsapp/wails/v2/cmd/wails@latest`
+
+Verify Wails is installed:
+
+```bash
+wails doctor
+```
+
+---
+
+## Build from Source
+
+<Steps>
+
+### Clone the repository
+
+```bash
+git clone https://github.com/anthropics/pilot
+cd pilot
+```
+
+### Build the app
+
+```bash
+make desktop-build
+```
+
+This installs frontend dependencies (`npm ci`) and compiles a universal macOS binary via Wails. The output is at:
+
+```
+desktop/build/bin/Pilot.app
+```
+
+### (Optional) Package as a zip
+
+```bash
+make desktop-package VERSION=v1.40.1
+```
+
+Produces `bin/Pilot-macOS-v1.40.1.zip`.
+
+</Steps>
+
+---
+
+## Usage
+
+1. Start the Pilot daemon in a terminal:
+
+```bash
+pilot start --github --autopilot=dev
+```
+
+2. Open `Pilot.app` (from `desktop/build/bin/` or wherever you placed it).
+
+The desktop app reads `~/.pilot/config.yaml` to determine the gateway address and connects to the daemon automatically. If the daemon is not running, panels display empty state and retry on each poll cycle.
+
+---
+
+## Dashboard Panels
+
+The desktop app displays the same panels as the terminal dashboard:
+
+| Panel | Description |
+|-------|-------------|
+| **Header** | Logo, version, and daemon connection status |
+| **Metrics Cards** | Tokens, cost, and queue depth with 7-day sparklines |
+| **Queue** | Active, queued, and pending tasks with progress bars |
+| **Autopilot** | Mode, auto-release status, and active PR tracking |
+| **History** | Recent completed tasks with success/failure indicators |
+| **Logs** | Live execution log entries from the daemon |
+
+Metrics are read from the shared SQLite database at `~/.pilot/pilot.db`, so data persists across restarts and is shared between the TUI and desktop app.
+
+---
+
+## Configuration
+
+The desktop app reads the same `~/.pilot/config.yaml` as the CLI. The gateway address is derived from:
+
+```yaml
+gateway:
+  host: "127.0.0.1"
+  port: 9090
+```
+
+If no config exists or the gateway section is missing, the app defaults to `http://127.0.0.1:9090`.
+
+No additional configuration is required for the desktop app itself.
+
+---
+
+## Development
+
+For hot-reload during frontend development:
+
+```bash
+make desktop-dev
+```
+
+This runs `wails dev`, which starts a Vite dev server for the React frontend and rebuilds the Go backend on changes. The app window opens automatically.
+
+### Project structure
+
+```
+desktop/
+├── main.go              # Wails entrypoint
+├── app.go               # Go backend — metrics, queue, autopilot APIs
+├── types.go             # Shared type definitions
+├── wails.json           # Wails project config
+├── build/
+│   ├── appicon.png
+│   └── darwin/Info.plist
+└── frontend/
+    ├── src/
+    │   ├── App.tsx              # Root component
+    │   ├── components/          # Panel components
+    │   │   ├── Header.tsx
+    │   │   ├── MetricsCards.tsx
+    │   │   ├── QueuePanel.tsx
+    │   │   ├── AutopilotPanel.tsx
+    │   │   ├── HistoryPanel.tsx
+    │   │   └── LogsPanel.tsx
+    │   └── hooks/
+    │       ├── useDashboard.ts  # Data fetching hook
+    │       └── usePolling.ts    # Poll interval logic
+    ├── package.json
+    └── vite.config.ts
+```
+
+### Make targets
+
+| Target | Description |
+|--------|-------------|
+| `make desktop-deps` | Install frontend dependencies |
+| `make desktop-dev` | Run in development mode with hot reload |
+| `make desktop-build` | Build production `Pilot.app` (darwin/universal) |
+| `make desktop-package` | Build and zip for distribution (`VERSION=vX.Y.Z`) |
+| `make desktop-clean` | Remove build artifacts and node_modules |
