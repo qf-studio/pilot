@@ -139,7 +139,21 @@ func (p *AutopilotPanel) View() string {
 	cfg := p.controller.Config()
 
 	// Environment/Mode
-	content.WriteString(dotLeader("Mode", string(cfg.Environment), w))
+	content.WriteString(dotLeader("Environment", cfg.EnvironmentName(), w))
+	content.WriteString("\n")
+
+	// Target branch
+	if cfg.Release != nil && cfg.Release.TagPrefix != "" {
+		content.WriteString(dotLeader("Tag prefix", cfg.Release.TagPrefix, w))
+		content.WriteString("\n")
+	}
+
+	// Post-merge action
+	postMerge := "none"
+	if cfg.Release != nil && cfg.Release.Enabled {
+		postMerge = "auto-release"
+	}
+	content.WriteString(dotLeader("Post-merge", postMerge, w))
 	content.WriteString("\n")
 
 	// Release status

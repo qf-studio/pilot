@@ -238,14 +238,15 @@ func (c *Controller) OnPRCreated(prNumber int, prURL string, issueNumber int, he
 	defer c.mu.Unlock()
 
 	prState := &PRState{
-		PRNumber:    prNumber,
-		PRURL:       prURL,
-		IssueNumber: issueNumber,
-		BranchName:  branchName,
-		HeadSHA:     headSHA,
-		Stage:       StagePRCreated,
-		CIStatus:    CIPending,
-		CreatedAt:   time.Now(),
+		PRNumber:        prNumber,
+		PRURL:           prURL,
+		IssueNumber:     issueNumber,
+		BranchName:      branchName,
+		HeadSHA:         headSHA,
+		Stage:           StagePRCreated,
+		CIStatus:        CIPending,
+		CreatedAt:       time.Now(),
+		EnvironmentName: c.config.EnvironmentName(),
 	}
 	c.activePRs[prNumber] = prState
 
@@ -280,6 +281,16 @@ func (c *Controller) ProcessPR(ctx context.Context, prNumber int, ghPR *github.P
 		c.log.Warn("per-PR circuit breaker open", "pr", prNumber)
 		c.metrics.RecordCircuitBreakerTrip()
 		return fmt.Errorf("circuit breaker: PR %d has too many consecutive failures", prNumber)
+	}
+
+	// Populate PR metadata from GitHub response when available
+	if ghPR != nil {
+		if prState.PRTitle == "" && ghPR.Title != "" {
+			prState.PRTitle = ghPR.Title
+		}
+		if prState.TargetBranch == "" && ghPR.Base.Ref != "" {
+			prState.TargetBranch = ghPR.Base.Ref
+		}
 	}
 
 	previousStage := prState.Stage
@@ -1348,14 +1359,17 @@ func (c *Controller) ScanRecentlyMergedPRs(ctx context.Context) error {
 
 		// Create PR state and trigger release
 		prState := &PRState{
-			PRNumber:    pr.Number,
-			PRURL:       pr.HTMLURL,
-			IssueNumber: issueNum,
-			BranchName:  pr.Head.Ref,
-			HeadSHA:     pr.MergeCommitSHA,
-			Stage:       StageReleasing,
-			CIStatus:    CISuccess, // Assume CI passed if merged
-			CreatedAt:   time.Now(),
+			PRNumber:        pr.Number,
+			PRURL:           pr.HTMLURL,
+			IssueNumber:     issueNum,
+			BranchName:      pr.Head.Ref,
+			HeadSHA:         pr.MergeCommitSHA,
+			Stage:           StageReleasing,
+			CIStatus:        CISuccess, // Assume CI passed if merged
+			CreatedAt:       time.Now(),
+			EnvironmentName: c.config.EnvironmentName(),
+			PRTitle:         pr.Title,
+			TargetBranch:    pr.Base.Ref,
 		}
 
 		// Register and trigger release

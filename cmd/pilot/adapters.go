@@ -275,7 +275,7 @@ type autopilotProviderAdapter struct {
 }
 
 func (a *autopilotProviderAdapter) GetEnvironment() string {
-	return string(a.controller.Config().Environment)
+	return a.controller.Config().EnvironmentName()
 }
 
 func (a *autopilotProviderAdapter) GetActivePRs() []*gateway.AutopilotPRState {

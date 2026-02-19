@@ -145,6 +145,10 @@ type Config struct {
 	// MergedPRScanWindow is how far back to look for merged PRs on startup (default: 30m).
 	// This catches PRs that were merged while Pilot was offline.
 	MergedPRScanWindow time.Duration `yaml:"merged_pr_scan_window"`
+
+	// Name is a user-friendly label for this environment (e.g. "staging", "production").
+	// When empty, defaults to the Environment value.
+	Name string `yaml:"name"`
 }
 
 // CIChecksConfig holds configuration for CI check monitoring.
@@ -221,7 +225,12 @@ func (c *Config) ResolvedEnv() *EnvironmentConfig {
 }
 
 // EnvironmentName returns the human-readable active environment name.
+// Checks Name field first (user-friendly label), then activeEnvName,
+// then falls back to the Environment enum value.
 func (c *Config) EnvironmentName() string {
+	if c.Name != "" {
+		return c.Name
+	}
 	if c.activeEnvName != "" {
 		return c.activeEnvName
 	}
@@ -420,4 +429,10 @@ type PRState struct {
 	DiscoveredChecks []string
 	// ConsecutiveAPIFailures counts consecutive CI check API failures.
 	ConsecutiveAPIFailures int
+	// EnvironmentName is the user-friendly environment label (e.g. "staging").
+	EnvironmentName string
+	// PRTitle is the title of the pull request.
+	PRTitle string
+	// TargetBranch is the base branch the PR merges into (e.g. "main").
+	TargetBranch string
 }

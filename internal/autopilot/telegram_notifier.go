@@ -22,12 +22,35 @@ func NewTelegramNotifier(client *telegram.Client, chatID string) *TelegramNotifi
 	}
 }
 
+// envPrefix returns the "[env] " prefix for notification messages.
+// Returns empty string when EnvironmentName is not set.
+func envPrefix(prState *PRState) string {
+	if prState.EnvironmentName == "" {
+		return ""
+	}
+	return fmt.Sprintf("[%s] ", prState.EnvironmentName)
+}
+
+// prDetail returns PR title and target branch details when available.
+func prDetail(prState *PRState) string {
+	var parts []string
+	if prState.PRTitle != "" {
+		parts = append(parts, fmt.Sprintf("Title: %s", prState.PRTitle))
+	}
+	if prState.TargetBranch != "" {
+		parts = append(parts, fmt.Sprintf("Branch: `%s`", prState.TargetBranch))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "\n" + strings.Join(parts, "\n")
+}
+
 // NotifyMerged sends notification when a PR is successfully merged.
 func (n *TelegramNotifier) NotifyMerged(ctx context.Context, prState *PRState) error {
-	msg := fmt.Sprintf("✅ *PR #%d merged*\n\n"+
-		"Environment: `%s`\n"+
+	msg := fmt.Sprintf("%s✅ *PR #%d merged*%s\n\n"+
 		"Method: squash",
-		prState.PRNumber, prState.Stage)
+		envPrefix(prState), prState.PRNumber, prDetail(prState))
 
 	_, err := n.client.SendMessage(ctx, n.chatID, msg, "Markdown")
 	return err
@@ -45,8 +68,8 @@ func (n *TelegramNotifier) NotifyCIFailed(ctx context.Context, prState *PRState,
 		checks = "Failed checks: _unknown_"
 	}
 
-	msg := fmt.Sprintf("❌ *CI Failed* for PR #%d\n\n%s",
-		prState.PRNumber, checks)
+	msg := fmt.Sprintf("%s❌ *CI Failed* for PR #%d%s\n\n%s",
+		envPrefix(prState), prState.PRNumber, prDetail(prState), checks)
 
 	_, err := n.client.SendMessage(ctx, n.chatID, msg, "Markdown")
 	return err
@@ -54,10 +77,11 @@ func (n *TelegramNotifier) NotifyCIFailed(ctx context.Context, prState *PRState,
 
 // NotifyApprovalRequired sends notification when a PR requires human approval.
 func (n *TelegramNotifier) NotifyApprovalRequired(ctx context.Context, prState *PRState) error {
-	msg := fmt.Sprintf("⏳ *Approval Required*\n\n"+
-		"PR #%d is ready for production merge.\n"+
+	msg := fmt.Sprintf("%s⏳ *Approval Required*\n\n"+
+		"PR #%d is ready for production merge.%s\n"+
 		"Reply `/approve %d` or `/reject %d`",
-		prState.PRNumber, prState.PRNumber, prState.PRNumber)
+		envPrefix(prState), prState.PRNumber, prDetail(prState),
+		prState.PRNumber, prState.PRNumber)
 
 	_, err := n.client.SendMessage(ctx, n.chatID, msg, "Markdown")
 	return err
@@ -65,10 +89,19 @@ func (n *TelegramNotifier) NotifyApprovalRequired(ctx context.Context, prState *
 
 // NotifyFixIssueCreated sends notification when a fix issue is auto-created.
 func (n *TelegramNotifier) NotifyFixIssueCreated(ctx context.Context, prState *PRState, issueNumber int) error {
-	msg := fmt.Sprintf("🔄 *Fix Issue Created*\n\n"+
+	msg := fmt.Sprintf("%s🔄 *Fix Issue Created*\n\n"+
 		"Issue #%d created to fix failures from PR #%d.\n"+
 		"Pilot will pick this up automatically.",
-		issueNumber, prState.PRNumber)
+		envPrefix(prState), issueNumber, prState.PRNumber)
+
+	_, err := n.client.SendMessage(ctx, n.chatID, msg, "Markdown")
+	return err
+}
+
+// NotifyPipelineComplete sends notification when the full pipeline completes for a PR.
+func (n *TelegramNotifier) NotifyPipelineComplete(ctx context.Context, prState *PRState) error {
+	msg := fmt.Sprintf("%s🏁 *Pipeline complete* for GH-%d — PR #%d merged%s",
+		envPrefix(prState), prState.IssueNumber, prState.PRNumber, prDetail(prState))
 
 	_, err := n.client.SendMessage(ctx, n.chatID, msg, "Markdown")
 	return err
@@ -86,11 +119,12 @@ func (n *TelegramNotifier) NotifyReleased(ctx context.Context, prState *PRState,
 		bumpLabel = "patch release"
 	}
 
-	msg := fmt.Sprintf("✨ *Release %s Published*\n\n"+
+	msg := fmt.Sprintf("%s✨ *Release %s Published*\n\n"+
 		"Version: `%s`\n"+
 		"Type: %s\n"+
 		"From PR: #%d\n\n"+
 		"[View Release](%s)",
+		envPrefix(prState),
 		escapeMarkdown(prState.ReleaseVersion),
 		prState.ReleaseVersion,
 		bumpLabel,
