@@ -74,6 +74,7 @@ type Server struct {
 	liveness            *livenessState
 	prometheusExporter  *PrometheusExporter
 	autopilotProvider   AutopilotProvider
+	dashboardStore      DashboardStore
 }
 
 // Config holds gateway server configuration including network binding options.
@@ -191,6 +192,10 @@ func (s *Server) Start(ctx context.Context) error {
 	apiMux.HandleFunc("/api/v1/status", s.handleStatus)
 	apiMux.HandleFunc("/api/v1/tasks", s.handleTasks)
 	apiMux.HandleFunc("/api/v1/autopilot", s.handleAutopilot)
+	apiMux.HandleFunc("/api/v1/metrics", s.handleDashboardMetrics)
+	apiMux.HandleFunc("/api/v1/queue", s.handleDashboardQueue)
+	apiMux.HandleFunc("/api/v1/history", s.handleDashboardHistory)
+	apiMux.HandleFunc("/api/v1/logs", s.handleDashboardLogs)
 
 	// Apply auth middleware to API routes
 	if s.auth != nil {
