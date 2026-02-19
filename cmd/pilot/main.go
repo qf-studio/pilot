@@ -1005,6 +1005,11 @@ Examples:
 				p.Gateway().SetAutopilotProvider(&autopilotProviderAdapter{controller: gwAutopilotController})
 			}
 
+			// GH-1609: Wire dashboard store to gateway so /api/v1/{metrics,queue,history,logs} return 200
+			if gwStore != nil {
+				p.Gateway().SetDashboardStore(gwStore)
+			}
+
 			if err := p.Start(); err != nil {
 				return fmt.Errorf("failed to start Pilot: %w", err)
 			}
