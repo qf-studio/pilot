@@ -688,7 +688,11 @@ func (c *Controller) handleMerging(ctx context.Context, prState *PRState) error 
 			// 404 is expected if label doesn't exist - silently ignore
 			c.log.Debug("pilot-failed label cleanup", "issue", prState.IssueNumber, "error", err)
 		}
-		c.log.Info("marked issue as pilot-done after merge", "issue", prState.IssueNumber, "pr", prState.PRNumber)
+		// Close the issue after successful merge
+		if err := c.ghClient.UpdateIssueState(ctx, c.owner, c.repo, prState.IssueNumber, "closed"); err != nil {
+			c.log.Warn("failed to close issue after merge", "issue", prState.IssueNumber, "error", err)
+		}
+		c.log.Info("closed issue after merge", "issue", prState.IssueNumber, "pr", prState.PRNumber)
 
 		// GH-1336: Sync monitor state so dashboard shows "done" instead of stale "failed"
 		if c.monitor != nil {

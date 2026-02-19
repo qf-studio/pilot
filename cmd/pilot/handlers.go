@@ -425,6 +425,11 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 					}
 				}
 
+					// Close the issue so dependent issues can proceed
+				if err := client.UpdateIssueState(ctx, parts[0], parts[1], issue.Number, "closed"); err != nil {
+					logGitHubAPIError("UpdateIssueState", parts[0], parts[1], issue.Number, err)
+				}
+
 				comment := buildExecutionComment(result, branchName)
 				if _, err := client.AddComment(ctx, parts[0], parts[1], issue.Number, comment); err != nil {
 					logGitHubAPIError("AddComment", parts[0], parts[1], issue.Number, err)
