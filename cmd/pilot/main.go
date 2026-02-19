@@ -382,6 +382,11 @@ Examples:
 					}
 				}
 
+				// GH-1599: Wire log store for execution milestone entries (gateway mode)
+				if gwStore != nil {
+					gwRunner.SetLogStore(gwStore)
+				}
+
 				// Create approval manager for autopilot
 				approvalMgr := approval.NewManager(cfg.Approval)
 
@@ -1358,6 +1363,11 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 			runner.SetKnowledgeStore(knowledgeStore)
 			logging.WithComponent("knowledge").Debug("Knowledge store initialized for polling mode")
 		}
+	}
+
+	// GH-1599: Wire log store for execution milestone entries
+	if store != nil {
+		runner.SetLogStore(store)
 	}
 
 	// Create monitor and TUI program for dashboard mode

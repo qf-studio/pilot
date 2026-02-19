@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/alekspetrov/pilot/internal/memory"
 )
 
 func TestNewRunner(t *testing.T) {
@@ -2659,5 +2661,113 @@ func TestBuildSelfReviewPrompt_CrossFileParity(t *testing.T) {
 	}
 	if !strings.Contains(prompt, "PARITY_GAP") {
 		t.Error("Self-review prompt should contain 'PARITY_GAP' signal")
+	}
+}
+
+// TestRunner_SetLogStore verifies SetLogStore wires the log store to the runner.
+func TestRunner_SetLogStore(t *testing.T) {
+	runner := NewRunner()
+	if runner.logStore != nil {
+		t.Fatal("logStore should be nil by default")
+	}
+
+	tmpDir := t.TempDir()
+	store, err := memory.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	runner.SetLogStore(store)
+	if runner.logStore != store {
+		t.Error("SetLogStore did not set logStore")
+	}
+}
+
+// TestRunner_saveLogEntry_NilStore verifies saveLogEntry is a no-op when logStore is nil.
+func TestRunner_saveLogEntry_NilStore(t *testing.T) {
+	runner := NewRunner()
+	// Should not panic with nil store
+	runner.saveLogEntry("exec-1", "info", "test message")
+}
+
+// TestRunner_saveLogEntry_WritesEntry verifies saveLogEntry writes to SQLite and can be read back.
+func TestRunner_saveLogEntry_WritesEntry(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := memory.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	runner := NewRunner()
+	runner.SetLogStore(store)
+
+	// Write several milestone entries
+	runner.saveLogEntry("exec-42", "info", "Task started: Add feature X")
+	runner.saveLogEntry("exec-42", "info", "Branch created: pilot/GH-42")
+	runner.saveLogEntry("exec-42", "info", "Implementing changes...")
+	runner.saveLogEntry("exec-42", "info", "Running tests...")
+	runner.saveLogEntry("exec-42", "info", "Running self-review...")
+	runner.saveLogEntry("exec-42", "info", "PR created: https://github.com/test/repo/pull/42")
+	runner.saveLogEntry("exec-42", "info", "Task completed successfully")
+
+	// Read back and verify
+	logs, err := store.GetRecentLogs(20)
+	if err != nil {
+		t.Fatalf("failed to get recent logs: %v", err)
+	}
+
+	if len(logs) != 7 {
+		t.Fatalf("expected 7 log entries, got %d", len(logs))
+	}
+
+	// Logs are returned newest-first
+	if logs[0].Message != "Task completed successfully" {
+		t.Errorf("latest log message = %q, want %q", logs[0].Message, "Task completed successfully")
+	}
+	if logs[0].ExecutionID != "exec-42" {
+		t.Errorf("execution_id = %q, want %q", logs[0].ExecutionID, "exec-42")
+	}
+	if logs[0].Level != "info" {
+		t.Errorf("level = %q, want %q", logs[0].Level, "info")
+	}
+	if logs[0].Component != "executor" {
+		t.Errorf("component = %q, want %q", logs[0].Component, "executor")
+	}
+
+	// Verify first entry (oldest, at end of list)
+	if logs[6].Message != "Task started: Add feature X" {
+		t.Errorf("oldest log message = %q, want %q", logs[6].Message, "Task started: Add feature X")
+	}
+}
+
+// TestRunner_saveLogEntry_ErrorLevel verifies error-level entries are stored correctly.
+func TestRunner_saveLogEntry_ErrorLevel(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := memory.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	runner := NewRunner()
+	runner.SetLogStore(store)
+
+	runner.saveLogEntry("exec-99", "error", "Task failed: compilation error")
+
+	logs, err := store.GetRecentLogs(5)
+	if err != nil {
+		t.Fatalf("failed to get recent logs: %v", err)
+	}
+
+	if len(logs) != 1 {
+		t.Fatalf("expected 1 log entry, got %d", len(logs))
+	}
+	if logs[0].Level != "error" {
+		t.Errorf("level = %q, want %q", logs[0].Level, "error")
+	}
+	if logs[0].Message != "Task failed: compilation error" {
+		t.Errorf("message = %q, want %q", logs[0].Message, "Task failed: compilation error")
 	}
 }

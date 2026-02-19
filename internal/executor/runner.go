@@ -311,6 +311,8 @@ type Runner struct {
 	worktreeManager       *WorktreeManager // Optional worktree manager with pool support
 	// GH-1471: SubIssueCreator for non-GitHub adapters
 	subIssueCreator       SubIssueCreator // Optional creator for sub-issues in external trackers
+	// GH-1599: Execution log store for milestone entries
+	logStore              *memory.Store // Optional log store for writing execution milestones
 }
 
 // NewRunner creates a new Runner instance with Claude Code backend by default.
@@ -622,6 +624,30 @@ func (r *Runner) SetMonitor(m *Monitor) {
 	r.monitor = m
 }
 
+// SetLogStore sets the memory store used for writing execution milestone log entries (GH-1599).
+func (r *Runner) SetLogStore(store *memory.Store) {
+	r.logStore = store
+}
+
+// saveLogEntry writes a structured log entry to the log store (fire-and-forget).
+func (r *Runner) saveLogEntry(executionID, level, message string) {
+	if r.logStore == nil {
+		return
+	}
+	if err := r.logStore.SaveLogEntry(&memory.LogEntry{
+		ExecutionID: executionID,
+		Timestamp:   time.Now(),
+		Level:       level,
+		Message:     message,
+		Component:   "executor",
+	}); err != nil {
+		r.log.Warn("Failed to save log entry",
+			slog.String("execution_id", executionID),
+			slog.Any("error", err),
+		)
+	}
+}
+
 // getRecordingsPath returns the recordings path, using default if not set
 func (r *Runner) getRecordingsPath() string {
 	if r.recordingsPath != "" {
@@ -720,6 +746,9 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 	if r.monitor != nil {
 		r.monitor.Start(task.ID)
 	}
+
+	// GH-1599: Log task started milestone
+	r.saveLogEntry(task.ID, "info", "Task started: "+task.Title)
 
 	// GH-386: Validate source repo matches project path to prevent cross-project execution
 	if task.SourceRepo != "" && task.ProjectPath != "" {
@@ -1123,6 +1152,7 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 			}
 		} else {
 			r.reportProgress(task.ID, "Branching", 8, fmt.Sprintf("Created branch %s", task.Branch))
+			r.saveLogEntry(task.ID, "info", "Branch created: "+task.Branch)
 		}
 	}
 
@@ -1138,6 +1168,7 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 	var researchResult *ResearchResult
 	if r.parallelRunner != nil && complexity.ShouldRunResearch() {
 		r.reportProgress(task.ID, "Research", 10, "Running parallel research...")
+		r.saveLogEntry(task.ID, "info", "Exploring codebase...")
 		var researchErr error
 		researchResult, researchErr = r.parallelRunner.ExecuteResearchPhase(ctx, task)
 		if researchErr != nil {
@@ -1235,6 +1266,9 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 			_ = hookRestoreFunc() // Error already logged inside hookRestoreFunc
 		}
 	}()
+
+	// GH-1599: Log implementation phase
+	r.saveLogEntry(task.ID, "info", "Implementing changes...")
 
 	// Execute via backend with watchdog (GH-882)
 	// Watchdog kills subprocess after 2x timeout as a safety net for processes
@@ -1542,6 +1576,9 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 			})
 		}
 
+		// GH-1599: Log task failed milestone
+		r.saveLogEntry(task.ID, "error", "Task failed: "+result.Error)
+
 		// Finish recording with failed status
 		if recorder != nil {
 			recorder.SetModel(state.modelName)
@@ -1634,6 +1671,7 @@ retrySucceeded:
 			slog.Duration("duration", duration),
 		)
 		r.reportProgress(task.ID, "Failed", 100, result.Error)
+		r.saveLogEntry(task.ID, "error", "Task failed: "+result.Error)
 
 		// Emit task failed event
 		r.emitAlertEvent(AlertEvent{
@@ -1852,6 +1890,7 @@ The previous execution completed but made no code changes. This task requires ac
 
 			for retryAttempt := 0; retryAttempt <= maxAutoRetries; retryAttempt++ {
 				r.reportProgress(task.ID, "Quality Gates", 91, "Running quality checks...")
+				r.saveLogEntry(task.ID, "info", "Running tests...")
 
 				checker := r.qualityCheckerFactory(task.ID, executionPath)
 				outcome, qErr := checker.Check(ctx)
@@ -2172,6 +2211,7 @@ The previous execution completed but made no code changes. This task requires ac
 		var selfReviewErr error
 
 		if runSelfReview {
+			r.saveLogEntry(task.ID, "info", "Running self-review...")
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
@@ -2377,6 +2417,7 @@ The previous execution completed but made no code changes. This task requires ac
 			result.PRUrl = prURL
 			log.Info("Pull request created", slog.String("pr_url", prURL))
 			r.reportProgress(task.ID, "Completed", 100, fmt.Sprintf("PR created: %s", prURL))
+			r.saveLogEntry(task.ID, "info", "PR created: "+prURL)
 
 			// Update recording with PR info
 			if recorder != nil {
@@ -2385,6 +2426,9 @@ The previous execution completed but made no code changes. This task requires ac
 		} else {
 			r.reportProgress(task.ID, "Completed", 100, "Task completed successfully")
 		}
+
+		// GH-1599: Log task completed milestone
+		r.saveLogEntry(task.ID, "info", "Task completed successfully")
 
 		// Emit task completed event
 		r.emitAlertEvent(AlertEvent{
