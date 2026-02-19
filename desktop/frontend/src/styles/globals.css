@@ -20,11 +20,21 @@
     font-size: 12px;
     line-height: 1.5;
     overflow: hidden;
-    /* Disable text selection for native app feel */
+  }
+
+  /* Wails-specific styles: disable text selection, add titlebar padding */
+  .wails-mode {
     -webkit-user-select: none;
     user-select: none;
     /* macOS traffic light buttons: add top padding when titlebar hidden-inset */
     padding-top: env(safe-area-inset-top, 0px);
+  }
+
+  /* Browser-mode styles: normal text selection, standard scrollbar */
+  .browser-mode {
+    -webkit-user-select: auto;
+    user-select: auto;
+    padding-top: 0;
   }
 }
 

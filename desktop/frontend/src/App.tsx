@@ -9,11 +9,12 @@ import { useDashboard } from './hooks/useDashboard'
 
 function App() {
   const { metrics, queueTasks, history, autopilot, server, logs } = useDashboard()
+  const isWails = !!(window as any).go?.main?.App
 
   return (
-    <div className="flex flex-col h-full bg-bg overflow-hidden">
-      {/* macOS hidden-inset titlebar spacer */}
-      <div className="h-7 shrink-0" />
+    <div className={`flex flex-col h-full bg-bg overflow-hidden ${isWails ? 'wails-mode' : 'browser-mode'}`}>
+      {/* macOS hidden-inset titlebar spacer — only in Wails mode */}
+      {isWails && <div className="h-7 shrink-0" />}
 
       <Header serverRunning={server.running} version={server.version} />
 
