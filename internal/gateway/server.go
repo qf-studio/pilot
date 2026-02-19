@@ -77,6 +77,7 @@ type Server struct {
 	prometheusExporter  *PrometheusExporter
 	autopilotProvider   AutopilotProvider
 	dashboardStore      DashboardStore
+	logStreamStore      LogStreamStore
 }
 
 // Config holds gateway server configuration including network binding options.
@@ -182,6 +183,9 @@ func (s *Server) Start(ctx context.Context) error {
 
 	// WebSocket endpoint for control plane
 	mux.HandleFunc("/ws", s.handleWebSocket)
+
+	// WebSocket endpoint for dashboard log streaming
+	mux.HandleFunc("/ws/dashboard", s.handleDashboardWebSocket)
 
 	// Public endpoints (no auth required)
 	mux.HandleFunc("/health", s.handleHealth)

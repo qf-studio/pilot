@@ -1013,6 +1013,7 @@ Examples:
 			// GH-1609: Wire dashboard store to gateway so /api/v1/{metrics,queue,history,logs} return 200
 			if gwStore != nil {
 				p.Gateway().SetDashboardStore(gwStore)
+				p.Gateway().SetLogStreamStore(gwStore)
 			}
 
 			if err := p.Start(); err != nil {

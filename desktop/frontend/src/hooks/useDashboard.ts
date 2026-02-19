@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef } from 'react'
-import type { DashboardMetrics, QueueTask, HistoryEntry, AutopilotStatus, ServerStatus, LogEntry } from '../types'
+import type { DashboardMetrics, QueueTask, HistoryEntry, AutopilotStatus, ServerStatus } from '../types'
 import { api } from '../provider'
+import { useDashboardLogs } from './useWebSocket'
 
-const { GetMetrics, GetQueueTasks, GetHistory, GetAutopilotStatus, GetServerStatus, GetLogs } = api
+const { GetMetrics, GetQueueTasks, GetHistory, GetAutopilotStatus, GetServerStatus } = api
 
 export interface DashboardState {
   metrics: DashboardMetrics
@@ -45,7 +46,9 @@ export function useDashboard(): DashboardState {
   const [history, setHistory] = useState<HistoryEntry[]>([])
   const [autopilot, setAutopilot] = useState<AutopilotStatus>(defaultAutopilot)
   const [server, setServer] = useState<ServerStatus>(defaultServer)
-  const [logs, setLogs] = useState<LogEntry[]>([])
+
+  // Logs are streamed via WebSocket (falls back to polling in Wails mode).
+  const logs = useDashboardLogs()
 
   const tickRef = useRef(0)
 
@@ -68,16 +71,6 @@ export function useDashboard(): DashboardState {
         if (ap) setAutopilot(ap)
       } catch {
         // Graceful degradation — keep previous values
-      }
-
-      // Logs: every 2 seconds
-      if (t % 2 === 0) {
-        try {
-          const l = await GetLogs(20)
-          if (l) setLogs(l)
-        } catch {
-          // Graceful degradation
-        }
       }
 
       // Server status: every 5 seconds

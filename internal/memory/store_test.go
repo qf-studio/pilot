@@ -1278,3 +1278,97 @@ func TestLogEntryCRUD(t *testing.T) {
 		t.Errorf("Expected 0 entries on empty store, got %d", len(empty))
 	}
 }
+
+func TestLogSubscribeLogs(t *testing.T) {
+	tmpDir, _ := os.MkdirTemp("", "pilot-test-*")
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	// Subscribe before saving
+	ch := store.SubscribeLogs()
+
+	entry := &LogEntry{
+		ExecutionID: "exec-sub",
+		Timestamp:   time.Now(),
+		Level:       "info",
+		Message:     "hello subscriber",
+		Component:   "test",
+	}
+
+	if err := store.SaveLogEntry(entry); err != nil {
+		t.Fatalf("SaveLogEntry failed: %v", err)
+	}
+
+	select {
+	case got := <-ch:
+		if got.Message != "hello subscriber" {
+			t.Errorf("Expected 'hello subscriber', got %q", got.Message)
+		}
+		if got.ID == 0 {
+			t.Error("Expected non-zero ID on received entry")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Timed out waiting for subscriber notification")
+	}
+
+	// Unsubscribe and verify channel is closed
+	store.UnsubscribeLogs(ch)
+
+	// Save another entry — should not panic or block
+	entry2 := &LogEntry{
+		ExecutionID: "exec-sub",
+		Timestamp:   time.Now(),
+		Level:       "info",
+		Message:     "after unsubscribe",
+		Component:   "test",
+	}
+	if err := store.SaveLogEntry(entry2); err != nil {
+		t.Fatalf("SaveLogEntry after unsubscribe failed: %v", err)
+	}
+}
+
+func TestLogSubscribeMultipleSubscribers(t *testing.T) {
+	tmpDir, _ := os.MkdirTemp("", "pilot-test-*")
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	ch1 := store.SubscribeLogs()
+	ch2 := store.SubscribeLogs()
+
+	entry := &LogEntry{
+		ExecutionID: "exec-multi",
+		Timestamp:   time.Now(),
+		Level:       "warn",
+		Message:     "broadcast test",
+		Component:   "test",
+	}
+
+	if err := store.SaveLogEntry(entry); err != nil {
+		t.Fatalf("SaveLogEntry failed: %v", err)
+	}
+
+	// Both subscribers should receive the entry
+	for i, ch := range []<-chan *LogEntry{ch1, ch2} {
+		select {
+		case got := <-ch:
+			if got.Message != "broadcast test" {
+				t.Errorf("subscriber %d: expected 'broadcast test', got %q", i, got.Message)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("subscriber %d: timed out", i)
+		}
+	}
+
+	store.UnsubscribeLogs(ch1)
+	store.UnsubscribeLogs(ch2)
+}

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -19,6 +20,9 @@ import (
 type Store struct {
 	db   *sql.DB
 	path string
+
+	logSubMu      sync.RWMutex
+	logSubscribers map[chan *LogEntry]struct{}
 }
 
 // NewStore creates a new Store instance with a SQLite database at the given path.
@@ -49,8 +53,9 @@ func NewStore(dataPath string) (*Store, error) {
 	db.SetConnMaxLifetime(0) // Don't close idle connections
 
 	store := &Store{
-		db:   db,
-		path: dataPath,
+		db:             db,
+		path:           dataPath,
+		logSubscribers: make(map[chan *LogEntry]struct{}),
 	}
 
 	if err := store.migrate(); err != nil {
@@ -1474,9 +1479,9 @@ type LogEntry struct {
 	Component   string    `json:"component"`
 }
 
-// SaveLogEntry persists an execution log entry.
+// SaveLogEntry persists an execution log entry and notifies all subscribers.
 func (s *Store) SaveLogEntry(entry *LogEntry) error {
-	return s.withRetry("SaveLogEntry", func() error {
+	err := s.withRetry("SaveLogEntry", func() error {
 		result, err := s.db.Exec(`
 			INSERT INTO execution_logs (execution_id, timestamp, level, message, component)
 			VALUES (?, ?, ?, ?, ?)
@@ -1488,6 +1493,40 @@ func (s *Store) SaveLogEntry(entry *LogEntry) error {
 		entry.ID = id
 		return nil
 	})
+	if err != nil {
+		return err
+	}
+
+	// Fan out to subscribers (non-blocking)
+	s.logSubMu.RLock()
+	for ch := range s.logSubscribers {
+		select {
+		case ch <- entry:
+		default:
+			// Slow consumer, drop entry
+		}
+	}
+	s.logSubMu.RUnlock()
+
+	return nil
+}
+
+// SubscribeLogs returns a channel that receives new log entries as they are saved.
+// The channel is buffered to avoid blocking the writer. Call UnsubscribeLogs to clean up.
+func (s *Store) SubscribeLogs() chan *LogEntry {
+	ch := make(chan *LogEntry, 64)
+	s.logSubMu.Lock()
+	s.logSubscribers[ch] = struct{}{}
+	s.logSubMu.Unlock()
+	return ch
+}
+
+// UnsubscribeLogs removes a subscriber channel and closes it.
+func (s *Store) UnsubscribeLogs(ch chan *LogEntry) {
+	s.logSubMu.Lock()
+	delete(s.logSubscribers, ch)
+	s.logSubMu.Unlock()
+	close(ch)
 }
 
 // GetRecentLogs returns the most recent log entries ordered by timestamp descending.
