@@ -121,6 +121,10 @@ func DetectComplexity(task *Task) Complexity {
 
 	// Check epic patterns first (these are too large for single execution)
 	if detectEpic(task.Title, task.Description, combined) {
+		// Defense-in-depth: no-decompose label prevents epic classification (GH-1568)
+		if HasLabel(task, NoDecomposeLabel) {
+			return ComplexityComplex
+		}
 		return ComplexityEpic
 	}
 

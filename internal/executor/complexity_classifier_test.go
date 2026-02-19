@@ -342,6 +342,30 @@ func TestHasLabel(t *testing.T) {
 	}
 }
 
+func TestDetectComplexity_NoDecomposePreventsEpic(t *testing.T) {
+	task := &Task{
+		Title:       "[epic] Large refactor across multiple systems",
+		Description: "Phase 1: update models. Phase 2: rewrite API. Phase 3: migrate data. Phase 4: update frontend. Phase 5: integration tests.",
+		Labels:      []string{"pilot", "no-decompose"},
+	}
+
+	result := DetectComplexity(task)
+	if result != ComplexityComplex {
+		t.Errorf("expected ComplexityComplex when no-decompose label present, got %s", result)
+	}
+
+	// Verify same task WITHOUT no-decompose is detected as epic
+	taskWithoutLabel := &Task{
+		Title:       task.Title,
+		Description: task.Description,
+		Labels:      []string{"pilot"},
+	}
+	result2 := DetectComplexity(taskWithoutLabel)
+	if result2 != ComplexityEpic {
+		t.Errorf("expected ComplexityEpic without no-decompose label, got %s", result2)
+	}
+}
+
 func TestDecomposer_NoDecomposeLabel(t *testing.T) {
 	config := &DecomposeConfig{
 		Enabled:             true,
