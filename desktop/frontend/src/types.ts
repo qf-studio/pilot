@@ -53,6 +53,13 @@ export interface AutopilotStatus {
   failureCount: number
 }
 
+export interface LogEntry {
+  ts: string
+  level: string
+  message: string
+  component?: string
+}
+
 export interface ServerStatus {
   running: boolean
   version?: string

@@ -1211,3 +1211,70 @@ func TestStore_ConnectionPoolSettings(t *testing.T) {
 		t.Errorf("MaxOpenConnections = %d, want 1", stats.MaxOpenConnections)
 	}
 }
+
+func TestLogEntryCRUD(t *testing.T) {
+	tmpDir, _ := os.MkdirTemp("", "pilot-test-*")
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	// Save entries
+	entries := []*LogEntry{
+		{ExecutionID: "exec-1", Timestamp: time.Now().Add(-2 * time.Second), Level: "info", Message: "Task started", Component: "executor"},
+		{ExecutionID: "exec-1", Timestamp: time.Now().Add(-1 * time.Second), Level: "warn", Message: "Slow build", Component: "executor"},
+		{ExecutionID: "exec-1", Timestamp: time.Now(), Level: "error", Message: "Build failed", Component: "executor"},
+	}
+
+	for _, e := range entries {
+		if err := store.SaveLogEntry(e); err != nil {
+			t.Fatalf("SaveLogEntry failed: %v", err)
+		}
+		if e.ID == 0 {
+			t.Error("Expected non-zero ID after save")
+		}
+	}
+
+	// Get recent logs
+	recent, err := store.GetRecentLogs(10)
+	if err != nil {
+		t.Fatalf("GetRecentLogs failed: %v", err)
+	}
+	if len(recent) != 3 {
+		t.Fatalf("Expected 3 entries, got %d", len(recent))
+	}
+
+	// Should be ordered DESC by timestamp — most recent first
+	if recent[0].Message != "Build failed" {
+		t.Errorf("Expected most recent entry first, got %q", recent[0].Message)
+	}
+	if recent[0].Level != "error" {
+		t.Errorf("Expected level 'error', got %q", recent[0].Level)
+	}
+
+	// Test limit
+	limited, err := store.GetRecentLogs(2)
+	if err != nil {
+		t.Fatalf("GetRecentLogs with limit failed: %v", err)
+	}
+	if len(limited) != 2 {
+		t.Errorf("Expected 2 entries with limit, got %d", len(limited))
+	}
+
+	// Empty result
+	tmpDir2, _ := os.MkdirTemp("", "pilot-test-empty-*")
+	defer func() { _ = os.RemoveAll(tmpDir2) }()
+	store2, _ := NewStore(tmpDir2)
+	defer func() { _ = store2.Close() }()
+
+	empty, err := store2.GetRecentLogs(10)
+	if err != nil {
+		t.Fatalf("GetRecentLogs on empty store failed: %v", err)
+	}
+	if len(empty) != 0 {
+		t.Errorf("Expected 0 entries on empty store, got %d", len(empty))
+	}
+}

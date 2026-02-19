@@ -68,6 +68,14 @@ type ActivePR struct {
 	BranchName string `json:"branchName"`
 }
 
+// LogEntry represents a structured log entry for the logs panel.
+type LogEntry struct {
+	Ts        string `json:"ts"`
+	Level     string `json:"level"`
+	Message   string `json:"message"`
+	Component string `json:"component,omitempty"`
+}
+
 // ServerStatus holds the connection status of the running pilot daemon.
 type ServerStatus struct {
 	Running   bool   `json:"running"`

@@ -199,6 +199,38 @@ func (a *App) GetAutopilotStatus() AutopilotStatus {
 	}
 }
 
+// GetLogs returns recent execution log entries for the logs panel.
+func (a *App) GetLogs(limit int) []LogEntry {
+	if a.store == nil {
+		return nil
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+
+	entries, err := a.store.GetRecentLogs(limit)
+	if err != nil {
+		return nil
+	}
+
+	result := make([]LogEntry, 0, len(entries))
+	for _, e := range entries {
+		result = append(result, LogEntry{
+			Ts:        e.Timestamp.Format("15:04:05"),
+			Level:     e.Level,
+			Message:   e.Message,
+			Component: e.Component,
+		})
+	}
+
+	// Reverse so oldest is first (panel auto-scrolls to bottom)
+	for i, j := 0, len(result)-1; i < j; i, j = i+1, j-1 {
+		result[i], result[j] = result[j], result[i]
+	}
+
+	return result
+}
+
 // GetServerStatus checks whether the pilot daemon gateway is reachable.
 // It attempts a lightweight HTTP check against the configured gateway URL.
 func (a *App) GetServerStatus() ServerStatus {

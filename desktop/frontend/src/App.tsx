@@ -8,7 +8,7 @@ import { LogsPanel } from './components/LogsPanel'
 import { useDashboard } from './hooks/useDashboard'
 
 function App() {
-  const { metrics, queueTasks, history, autopilot, server } = useDashboard()
+  const { metrics, queueTasks, history, autopilot, server, logs } = useDashboard()
 
   return (
     <div className="flex flex-col h-full bg-bg overflow-hidden">
@@ -39,7 +39,7 @@ function App() {
 
         {/* Logs — collapsed at bottom */}
         <div className="shrink-0">
-          <LogsPanel entries={[]} />
+          <LogsPanel entries={logs} />
         </div>
       </div>
     </div>

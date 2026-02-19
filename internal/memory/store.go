@@ -219,6 +219,16 @@ func (s *Store) migrate() error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_brief_history_sent_at ON brief_history(sent_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_brief_history_channel ON brief_history(channel)`,
+		// Execution logs table (GH-1586)
+		`CREATE TABLE IF NOT EXISTS execution_logs (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			execution_id TEXT,
+			timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+			level TEXT NOT NULL DEFAULT 'info',
+			message TEXT NOT NULL,
+			component TEXT DEFAULT 'executor'
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_execution_logs_timestamp ON execution_logs(timestamp)`,
 	}
 
 	for _, migration := range migrations {
@@ -1452,6 +1462,56 @@ func (s *Store) RecordBriefSent(record *BriefRecord) error {
 		record.ID = id
 		return nil
 	})
+}
+
+// LogEntry represents a structured execution log entry.
+type LogEntry struct {
+	ID          int64     `json:"id"`
+	ExecutionID string    `json:"executionId,omitempty"`
+	Timestamp   time.Time `json:"ts"`
+	Level       string    `json:"level"`
+	Message     string    `json:"message"`
+	Component   string    `json:"component"`
+}
+
+// SaveLogEntry persists an execution log entry.
+func (s *Store) SaveLogEntry(entry *LogEntry) error {
+	return s.withRetry("SaveLogEntry", func() error {
+		result, err := s.db.Exec(`
+			INSERT INTO execution_logs (execution_id, timestamp, level, message, component)
+			VALUES (?, ?, ?, ?, ?)
+		`, entry.ExecutionID, entry.Timestamp, entry.Level, entry.Message, entry.Component)
+		if err != nil {
+			return err
+		}
+		id, _ := result.LastInsertId()
+		entry.ID = id
+		return nil
+	})
+}
+
+// GetRecentLogs returns the most recent log entries ordered by timestamp descending.
+func (s *Store) GetRecentLogs(limit int) ([]*LogEntry, error) {
+	rows, err := s.db.Query(`
+		SELECT id, COALESCE(execution_id, ''), timestamp, level, message, COALESCE(component, 'executor')
+		FROM execution_logs
+		ORDER BY timestamp DESC
+		LIMIT ?
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var entries []*LogEntry
+	for rows.Next() {
+		var e LogEntry
+		if err := rows.Scan(&e.ID, &e.ExecutionID, &e.Timestamp, &e.Level, &e.Message, &e.Component); err != nil {
+			return nil, err
+		}
+		entries = append(entries, &e)
+	}
+	return entries, rows.Err()
 }
 
 // GetLastBriefSent returns the most recent brief record for a given channel.
