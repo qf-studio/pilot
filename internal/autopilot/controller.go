@@ -71,6 +71,7 @@ type Controller struct {
 	autoMerger   *AutoMerger
 	feedbackLoop *FeedbackLoop
 	releaser     *Releaser
+	deployer     *Deployer
 	notifier     Notifier
 	monitor      TaskMonitor // GH-1336: sync dashboard state on merge
 	log          *slog.Logger
@@ -121,6 +122,11 @@ func NewController(cfg *Config, ghClient *github.Client, approvalMgr *approval.M
 	// Initialize releaser if release config exists
 	if cfg.Release != nil && cfg.Release.Enabled {
 		c.releaser = NewReleaser(ghClient, owner, repo, cfg.Release)
+	}
+
+	// Initialize deployer if post-merge config exists
+	if env := cfg.ResolvedEnv(); env.PostMerge != nil && env.PostMerge.Action != "" && env.PostMerge.Action != "none" {
+		c.deployer = NewDeployer(ghClient, owner, repo, env.PostMerge)
 	}
 
 	return c
@@ -737,13 +743,22 @@ func (c *Controller) handleMerging(ctx context.Context, prState *PRState) error 
 	return nil
 }
 
-// handleMerged checks post-merge CI based on environment config.
+// handleMerged runs post-merge deployer and checks post-merge CI based on environment config.
 func (c *Controller) handleMerged(ctx context.Context, prState *PRState) error {
 	c.log.Info("handleMerged: PR merged, checking next steps",
 		"pr", prState.PRNumber,
 		"env", c.config.EnvironmentName(),
 		"should_release", c.shouldTriggerRelease(),
 	)
+
+	// Run deployer if configured (webhook, branch-push).
+	// Tag action is a no-op here — handled by the releaser stage.
+	if c.deployer != nil {
+		if err := c.deployer.Deploy(ctx, prState); err != nil {
+			c.log.Error("post-merge deploy failed", "pr", prState.PRNumber, "error", err)
+			return fmt.Errorf("deploy failed: %w", err)
+		}
+	}
 
 	if c.config.ResolvedEnv().SkipPostMergeCI {
 		// Fast path: skip post-merge CI, check if we should release immediately

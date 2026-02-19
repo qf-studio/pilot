@@ -611,6 +611,33 @@ func isUnprocessableError(err error) bool {
 	return len(errStr) >= 21 && errStr[:21] == "API error (status 422"
 }
 
+// UpdateRef creates or updates a branch ref to point at the given SHA.
+// Uses PATCH /repos/{owner}/{repo}/git/refs/heads/{branch} with force=true.
+// If the ref does not exist, falls back to creating it via POST.
+func (c *Client) UpdateRef(ctx context.Context, owner, repo, branch, sha string) error {
+	return WithRetryVoid(ctx, func() error {
+		path := fmt.Sprintf("/repos/%s/%s/git/refs/heads/%s", owner, repo, url.PathEscape(branch))
+		body := map[string]interface{}{
+			"sha":   sha,
+			"force": true,
+		}
+		err := c.doRequest(ctx, http.MethodPatch, path, body, nil)
+		if err == nil {
+			return nil
+		}
+		// If the ref doesn't exist yet, create it
+		if isUnprocessableError(err) || isNotFoundError(err) {
+			createPath := fmt.Sprintf("/repos/%s/%s/git/refs", owner, repo)
+			createBody := map[string]string{
+				"ref": "refs/heads/" + branch,
+				"sha": sha,
+			}
+			return c.doRequest(ctx, http.MethodPost, createPath, createBody, nil)
+		}
+		return err
+	}, DefaultRetryOptions())
+}
+
 // DeleteBranch deletes a branch from the repository.
 // GitHub API: DELETE /repos/{owner}/{repo}/git/refs/heads/{branch}
 // Returns nil on success, or if the branch was already deleted (404/422).
