@@ -78,6 +78,8 @@ type Server struct {
 	autopilotProvider   AutopilotProvider
 	dashboardStore      DashboardStore
 	logStreamStore      LogStreamStore
+	gitGraphPath        string          // Project path for git graph API (defaults to ".")
+	gitGraphFetcher     GitGraphFetcher // Injected to avoid import cycle with internal/dashboard
 }
 
 // Config holds gateway server configuration including network binding options.
@@ -202,6 +204,7 @@ func (s *Server) Start(ctx context.Context) error {
 	apiMux.HandleFunc("/api/v1/queue", s.handleDashboardQueue)
 	apiMux.HandleFunc("/api/v1/history", s.handleDashboardHistory)
 	apiMux.HandleFunc("/api/v1/logs", s.handleDashboardLogs)
+	apiMux.HandleFunc("/api/v1/gitgraph", s.handleGitGraph)
 
 	// Apply auth middleware to API routes
 	if s.auth != nil {
@@ -275,6 +278,22 @@ func (s *Server) SetAutopilotProvider(p AutopilotProvider) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.autopilotProvider = p
+}
+
+// SetGitGraphPath sets the project path used by the /api/v1/gitgraph endpoint.
+// Defaults to "." if not set.
+func (s *Server) SetGitGraphPath(path string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.gitGraphPath = path
+}
+
+// SetGitGraphFetcher sets the function used to fetch git graph data.
+// Must be called before Start() for the /api/v1/gitgraph endpoint to work.
+func (s *Server) SetGitGraphFetcher(f GitGraphFetcher) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.gitGraphFetcher = f
 }
 
 // Shutdown gracefully shuts down the server with a 30-second timeout.

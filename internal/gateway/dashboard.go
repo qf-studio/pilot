@@ -11,6 +11,11 @@ import (
 	"github.com/alekspetrov/pilot/internal/memory"
 )
 
+// GitGraphFetcher fetches git graph state for a project path and commit limit.
+// Defined as a function type to avoid importing internal/dashboard which would
+// create an import cycle via dashboard → banner → config → gateway.
+type GitGraphFetcher func(projectPath string, limit int) interface{}
+
 // DashboardStore provides read access to execution and metrics data for the dashboard API.
 type DashboardStore interface {
 	GetLifetimeTokens() (*memory.LifetimeTokens, error)
@@ -238,6 +243,37 @@ func (s *Server) handleDashboardHistory(w http.ResponseWriter, r *http.Request) 
 	}
 
 	writeJSON(w, entries)
+}
+
+func (s *Server) handleGitGraph(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	s.mu.RLock()
+	fetcher := s.gitGraphFetcher
+	projectPath := s.gitGraphPath
+	s.mu.RUnlock()
+
+	if fetcher == nil {
+		http.Error(w, "git graph not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	limit := 100
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			limit = n
+		}
+	}
+
+	if projectPath == "" {
+		projectPath = "."
+	}
+
+	state := fetcher(projectPath, limit)
+	writeJSON(w, state)
 }
 
 func (s *Server) handleDashboardLogs(w http.ResponseWriter, r *http.Request) {

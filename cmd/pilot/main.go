@@ -1016,6 +1016,12 @@ Examples:
 				p.Gateway().SetLogStreamStore(gwStore)
 			}
 
+			// GH-1633: Wire git graph fetcher to gateway so /api/v1/gitgraph returns live git data
+			p.Gateway().SetGitGraphFetcher(func(path string, limit int) interface{} {
+				return dashboard.FetchGitGraph(path, limit)
+			})
+			p.Gateway().SetGitGraphPath(projectPath)
+
 			if err := p.Start(); err != nil {
 				return fmt.Errorf("failed to start Pilot: %w", err)
 			}
