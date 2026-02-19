@@ -30,25 +30,25 @@ func makeKey(s string) tea.KeyMsg {
 // TestTranslateGraphChars verifies git graph characters are mapped to our symbol set.
 func TestTranslateGraphChars(t *testing.T) {
 	// '*' → '●'
-	got := translateGraphChars("*")
+	got := TranslateGraphChars("*")
 	if !strings.Contains(got, "●") {
 		t.Errorf("* should become ●, got %q", got)
 	}
 
 	// '|' → '│' (or '├' after post-processing)
-	got = translateGraphChars("|")
+	got = TranslateGraphChars("|")
 	if got != "│" {
 		t.Errorf("| should become │, got %q", got)
 	}
 
 	// '-' → '╌'
-	got = translateGraphChars("-")
+	got = TranslateGraphChars("-")
 	if got != "╌" {
 		t.Errorf("- should become ╌, got %q", got)
 	}
 
 	// Spaces are unchanged
-	got = translateGraphChars("  ")
+	got = TranslateGraphChars("  ")
 	if got != "  " {
 		t.Errorf("spaces should be unchanged, got %q", got)
 	}
@@ -57,13 +57,13 @@ func TestTranslateGraphChars(t *testing.T) {
 // TestTranslateGraphChars_JunctionReplacement verifies branch-off/merge-back junctions.
 func TestTranslateGraphChars_JunctionReplacement(t *testing.T) {
 	// "|\\" in git output: | becomes │, \ becomes ╮, then │╮ → ├╌╮
-	got := translateGraphChars(`|\`)
+	got := TranslateGraphChars(`|\`)
 	if !strings.Contains(got, "├") || !strings.Contains(got, "╮") {
 		t.Errorf("branch-off `|\\` should produce ├...╮, got %q", got)
 	}
 
 	// "|/" in git output: │╯ → ├╌╯
-	got = translateGraphChars("|/")
+	got = TranslateGraphChars("|/")
 	if !strings.Contains(got, "├") || !strings.Contains(got, "╯") {
 		t.Errorf("merge-back `|/` should produce ├...╯, got %q", got)
 	}
@@ -77,7 +77,7 @@ func TestParseGitGraphOutput(t *testing.T) {
 		"|\n" +
 		"* \x00a1b2c3d|Bob Jones||fix: handle nil"
 
-	lines := parseGitGraphOutput(raw)
+	lines := ParseGitGraphOutput(raw)
 
 	if len(lines) != 3 {
 		t.Fatalf("expected 3 lines, got %d", len(lines))
@@ -116,7 +116,7 @@ func TestParseGitGraphOutput(t *testing.T) {
 
 // TestParseGitGraphOutput_Empty verifies empty input is handled gracefully.
 func TestParseGitGraphOutput_Empty(t *testing.T) {
-	lines := parseGitGraphOutput("")
+	lines := ParseGitGraphOutput("")
 	if len(lines) != 0 {
 		t.Errorf("expected 0 lines for empty input, got %d", len(lines))
 	}
@@ -137,9 +137,9 @@ func TestAbbreviateAuthor(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
-			got := abbreviateAuthor(tt.input)
+			got := AbbreviateAuthor(tt.input)
 			if got != tt.want {
-				t.Errorf("abbreviateAuthor(%q) = %q, want %q", tt.input, got, tt.want)
+				t.Errorf("AbbreviateAuthor(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
 	}

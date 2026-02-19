@@ -28,19 +28,19 @@ type gitRefreshMsg struct {
 
 // GitGraphState holds the parsed git graph data.
 type GitGraphState struct {
-	Lines       []GitGraphLine
-	TotalCount  int
-	Error       string
-	LastRefresh time.Time
+	Lines       []GitGraphLine `json:"lines"`
+	TotalCount  int            `json:"total_count"`
+	Error       string         `json:"error,omitempty"`
+	LastRefresh time.Time      `json:"last_refresh"`
 }
 
 // GitGraphLine represents one parsed line of git log --graph output.
 type GitGraphLine struct {
-	GraphChars string // Branch drawing characters (│ ├╌╮ etc.)
-	Refs       string // Branch/tag decorations
-	Message    string // Commit message
-	Author     string // Author name (short)
-	SHA        string // Short SHA (7 chars)
+	GraphChars string `json:"graph_chars"`           // Branch drawing characters (│ ├╌╮ etc.)
+	Refs       string `json:"refs,omitempty"`        // Branch/tag decorations
+	Message    string `json:"message,omitempty"`     // Commit message
+	Author     string `json:"author,omitempty"`      // Author name (short)
+	SHA        string `json:"sha,omitempty"`         // Short SHA (7 chars)
 }
 
 // branchColors cycles per track column (left → right).
@@ -64,9 +64,9 @@ var (
 	graphScrollStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#8b949e"))             // mid gray
 )
 
-// fetchGitGraph runs git fetch --prune then git log --graph, returns parsed state.
+// FetchGitGraph runs git fetch --prune then git log --graph, returns parsed state.
 // Called from a background goroutine via tea.Cmd.
-func fetchGitGraph(projectPath string, limit int) *GitGraphState {
+func FetchGitGraph(projectPath string, limit int) *GitGraphState {
 	state := &GitGraphState{LastRefresh: time.Now()}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -92,13 +92,13 @@ func fetchGitGraph(projectPath string, limit int) *GitGraphState {
 		return state
 	}
 
-	state.Lines = parseGitGraphOutput(string(out))
-	state.TotalCount = countGitCommits(projectPath)
+	state.Lines = ParseGitGraphOutput(string(out))
+	state.TotalCount = CountGitCommits(projectPath)
 	return state
 }
 
-// countGitCommits returns the total number of commits in the repo (best-effort).
-func countGitCommits(projectPath string) int {
+// CountGitCommits returns the total number of commits in the repo (best-effort).
+func CountGitCommits(projectPath string) int {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", "-C", projectPath, "rev-list", "--count", "--all")
@@ -111,10 +111,10 @@ func countGitCommits(projectPath string) int {
 	return n
 }
 
-// parseGitGraphOutput splits raw git log output into structured GitGraphLine entries.
+// ParseGitGraphOutput splits raw git log output into structured GitGraphLine entries.
 // Git outputs each commit as: <graph_chars>\x00sha|author|refs|message
 // Non-commit graph lines (pure branch connectors) get only GraphChars set.
-func parseGitGraphOutput(raw string) []GitGraphLine {
+func ParseGitGraphOutput(raw string) []GitGraphLine {
 	var lines []GitGraphLine
 
 	for _, rawLine := range strings.Split(raw, "\n") {
@@ -127,7 +127,7 @@ func parseGitGraphOutput(raw string) []GitGraphLine {
 		if nulIdx < 0 {
 			// Pure graph connector line (│, ├╌╮, etc.)
 			gl := GitGraphLine{
-				GraphChars: translateGraphChars(rawLine),
+				GraphChars: TranslateGraphChars(rawLine),
 			}
 			lines = append(lines, gl)
 			continue
@@ -138,7 +138,7 @@ func parseGitGraphOutput(raw string) []GitGraphLine {
 
 		parts := strings.SplitN(dataPart, "|", 4)
 		gl := GitGraphLine{
-			GraphChars: translateGraphChars(graphPart),
+			GraphChars: TranslateGraphChars(graphPart),
 		}
 		if len(parts) >= 1 {
 			sha := strings.TrimSpace(parts[0])
@@ -149,7 +149,7 @@ func parseGitGraphOutput(raw string) []GitGraphLine {
 			}
 		}
 		if len(parts) >= 2 {
-			gl.Author = abbreviateAuthor(strings.TrimSpace(parts[1]))
+			gl.Author = AbbreviateAuthor(strings.TrimSpace(parts[1]))
 		}
 		if len(parts) >= 3 {
 			gl.Refs = strings.TrimSpace(parts[2])
@@ -163,7 +163,7 @@ func parseGitGraphOutput(raw string) []GitGraphLine {
 	return lines
 }
 
-// translateGraphChars replaces standard git graph characters with our design set.
+// TranslateGraphChars replaces standard git graph characters with our design set.
 //
 // Git outputs: * | \ / -
 // Our set:     ● │ ╮ ╯ ╌
@@ -172,7 +172,7 @@ func parseGitGraphOutput(raw string) []GitGraphLine {
 //   git: |\ → our: ├╌╮
 //   git: |/ → our: ├╌╯
 //   git: |_ → our: ├╌╌
-func translateGraphChars(s string) string {
+func TranslateGraphChars(s string) string {
 	// Replace git graph chars with our aesthetic set.
 	// Process character by character to handle multi-byte sequences.
 	var b strings.Builder
@@ -213,9 +213,9 @@ func translateGraphChars(s string) string {
 	return result
 }
 
-// abbreviateAuthor shortens an author name to fit in the full-mode column.
+// AbbreviateAuthor shortens an author name to fit in the full-mode column.
 // "Firstname Lastname" → "F. Lastname" if > 10 chars.
-func abbreviateAuthor(name string) string {
+func AbbreviateAuthor(name string) string {
 	if len(name) <= 10 {
 		return name
 	}
@@ -312,7 +312,7 @@ func renderGraphLineFull(line GitGraphLine, width int) string {
 	const rightFixed = shaWidth + 1 + authorWidth // 18
 
 	styledSHA := graphSHAStyle.Render(fmt.Sprintf("%-7s", line.SHA))
-	styledAuthor := graphAuthorStyle.Render(fmt.Sprintf("%-10s", abbreviateAuthor(line.Author)))
+	styledAuthor := graphAuthorStyle.Render(fmt.Sprintf("%-10s", AbbreviateAuthor(line.Author)))
 	right := styledSHA + " " + styledAuthor // 18 visual chars
 
 	// Refs: rendered with colors; measure unstyled refs width.
@@ -383,7 +383,7 @@ func collapseRefs(refs string) string {
 // refreshGitGraphCmd returns a tea.Cmd that fetches git graph data in the background.
 func refreshGitGraphCmd(projectPath string) tea.Cmd {
 	return func() tea.Msg {
-		state := fetchGitGraph(projectPath, 200)
+		state := FetchGitGraph(projectPath, 200)
 		return gitRefreshMsg{state: state}
 	}
 }
