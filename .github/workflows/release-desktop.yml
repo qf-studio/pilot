@@ -1,0 +1,48 @@
+name: Release Desktop
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  desktop:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Wails
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
+
+      - name: Extract version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: Build desktop app
+        run: |
+          cd desktop/frontend && npm ci
+          cd ../.. && cd desktop && wails build -platform darwin/universal -ldflags "-X main.version=${{ steps.version.outputs.VERSION }}"
+
+      - name: Package archive
+        run: |
+          cd desktop/build/bin
+          COPYFILE_DISABLE=1 zip -r ../../../Pilot-macOS-universal.zip Pilot.app
+
+      - name: Upload to GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ steps.version.outputs.VERSION }}" Pilot-macOS-universal.zip --clobber

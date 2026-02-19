@@ -220,6 +220,7 @@
 | Stagnation monitor | ✅ | executor | - | - | State hash tracking, escalation: warn → pause → abort (v0.56.0) |
 | URL-encode branch names | ✅ | adapters/github | - | - | `url.PathEscape(branch)` in DeleteBranch/GetBranch — fixes 404 on slash branches (v1.28.0) |
 | Branch cleanup on PR close | ✅ | autopilot | - | - | Delete remote branches on PR close/fail, not just merge (v1.35.0) |
+| Desktop app release | ✅ | ci | - | - | Separate GH Actions workflow builds Wails macOS universal binary, uploads to release (v1.41.0) |
 
 ## Epic Management
 
