@@ -54,7 +54,7 @@ export function MetricsCards({ metrics }: MetricsCardsProps) {
       : '$0.000'
 
   return (
-    <div className="flex gap-2 px-2 py-2">
+    <div className="flex gap-1.5">
       <MetricCard
         title="TOKENS"
         value={formatTokens(metrics.totalTokens)}
