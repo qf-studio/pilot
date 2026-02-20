@@ -34,11 +34,11 @@ function HistoryRow({ entry, isSubIssue = false }: HistoryRowProps) {
 
   return (
     <div
-      className={`flex items-center gap-1 px-1 py-px hover:bg-slate/30 cursor-pointer rounded transition-colors ${indent}`}
+      className={`flex items-center gap-3 px-2 py-px hover:bg-slate/30 cursor-pointer rounded transition-colors ${indent}`}
       onClick={handleClick}
     >
       <span className={`text-[10px] font-bold ${prefixColor} shrink-0`}>{prefix}</span>
-      <span className="font-bold text-[10px] shrink-0" style={{ color: '#7eb8da' }}>{entry.issueID}</span>
+      <span className="font-bold text-[10px] shrink-0 whitespace-nowrap" style={{ color: '#7eb8da' }}>{entry.issueID}</span>
       <span className="text-lightgray text-[10px] flex-1 min-w-0 truncate">{entry.title}</span>
       <span className="text-midgray text-[10px] shrink-0">{timeAgo(entry.completedAt)}</span>
     </div>
@@ -59,9 +59,9 @@ function EpicGroup({ entry }: EpicGroupProps) {
 
   return (
     <div className="space-y-0">
-      <div className="flex items-center gap-1 px-1 py-px">
+      <div className="flex items-center gap-3 px-2 py-px">
         <span className={`text-[10px] font-bold ${prefixColor} shrink-0`}>{prefix}</span>
-        <span className="font-bold text-[10px] shrink-0" style={{ color: '#7eb8da' }}>{entry.issueID}</span>
+        <span className="font-bold text-[10px] shrink-0 whitespace-nowrap" style={{ color: '#7eb8da' }}>{entry.issueID}</span>
         <span className="text-lightgray text-[10px] flex-1 min-w-0 truncate">{entry.title}</span>
         <span className="text-midgray text-[10px] shrink-0">[{done}/{total}]</span>
       </div>

@@ -51,7 +51,7 @@ export function LogsPanel({ entries }: LogsPanelProps) {
             const taskID = extractTaskID(e)
             const message = taskID ? stripTaskPrefix(e.message) : e.message
             return (
-              <div key={i} className="flex gap-1.5 text-[10px] leading-tight py-px">
+              <div key={i} className="flex gap-3 text-[10px] leading-tight py-px px-2">
                 <span className="text-gray shrink-0">{e.ts}</span>
                 {taskID && (
                   <span className="shrink-0 font-bold" style={{ color: '#7eb8da' }}>

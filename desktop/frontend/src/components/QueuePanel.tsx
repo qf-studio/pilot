@@ -63,11 +63,11 @@ function QueueRow({ task, shimmerIndex }: QueueRowProps) {
 
   return (
     <div
-      className="flex items-center gap-1.5 px-1.5 py-px hover:bg-slate/30 cursor-pointer rounded transition-colors"
+      className="flex items-center gap-3 px-2 py-px hover:bg-slate/30 cursor-pointer rounded transition-colors"
       onClick={handleClick}
     >
       <StatusIcon status={status} />
-      <span className="text-steel text-[10px] w-12 shrink-0 font-bold">
+      <span className="text-steel text-[10px] shrink-0 font-bold whitespace-nowrap">
         {truncate(task.issueID, 8)}
       </span>
       <span className="text-lightgray text-[10px] flex-1 min-w-0 truncate">
