@@ -124,5 +124,7 @@ jobs:
         run: |
           find . -name 'Pilot-*' -type f -exec mv {} . \;
           for f in Pilot-*; do
-            gh release upload "$GITHUB_REF_NAME" "$f" --clobber --repo "$GITHUB_REPOSITORY"
+            # Delete existing asset first, then upload (--clobber unreliable on some gh versions)
+            gh release delete-asset "$GITHUB_REF_NAME" "$(basename "$f")" --repo "$GITHUB_REPOSITORY" -y 2>/dev/null || true
+            gh release upload "$GITHUB_REF_NAME" "$f" --repo "$GITHUB_REPOSITORY"
           done
