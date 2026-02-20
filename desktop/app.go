@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -132,9 +133,10 @@ func (a *App) GetQueueTasks() []QueueTask {
 		return nil
 	}
 
-	tasks := make([]QueueTask, 0, len(execs))
+	// Deduplicate by TaskID: keep the best execution per issue.
+	// Priority: running > completed > failed; then most recent.
+	best := make(map[string]QueueTask)
 	for _, exec := range execs {
-		// Only include tasks that are actionable or recently completed
 		qt := QueueTask{
 			ID:          exec.ID,
 			IssueID:     issueIDFromTaskID(exec.TaskID),
@@ -146,18 +148,29 @@ func (a *App) GetQueueTasks() []QueueTask {
 			CreatedAt:   exec.CreatedAt,
 		}
 
-		// Estimate progress from status
 		switch exec.Status {
 		case "running":
-			qt.Progress = 0.5 // mid-progress until done
+			qt.Progress = 0.5
 		case "completed":
 			qt.Progress = 1.0
 		case "failed":
 			qt.Progress = 0.0
 		}
 
+		key := exec.TaskID
+		existing, exists := best[key]
+		if !exists || queueTaskBetter(qt, existing) {
+			best[key] = qt
+		}
+	}
+
+	tasks := make([]QueueTask, 0, len(best))
+	for _, qt := range best {
 		tasks = append(tasks, qt)
 	}
+	sort.Slice(tasks, func(i, j int) bool {
+		return tasks[i].CreatedAt.After(tasks[j].CreatedAt)
+	})
 	return tasks
 }
 
@@ -175,7 +188,9 @@ func (a *App) GetHistory(limit int) []HistoryEntry {
 		return nil
 	}
 
-	entries := make([]HistoryEntry, 0, len(execs))
+	// Deduplicate by TaskID: keep the best execution per issue.
+	// Priority: completed > failed; prefer entry with PR URL; then most recent.
+	best := make(map[string]HistoryEntry)
 	for _, exec := range execs {
 		if exec.Status != "completed" && exec.Status != "failed" {
 			continue
@@ -192,8 +207,21 @@ func (a *App) GetHistory(limit int) []HistoryEntry {
 		if exec.CompletedAt != nil {
 			he.CompletedAt = *exec.CompletedAt
 		}
+
+		key := exec.TaskID
+		existing, exists := best[key]
+		if !exists || historyEntryBetter(he, existing) {
+			best[key] = he
+		}
+	}
+
+	entries := make([]HistoryEntry, 0, len(best))
+	for _, he := range best {
 		entries = append(entries, he)
 	}
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].CompletedAt.After(entries[j].CompletedAt)
+	})
 	return entries
 }
 
@@ -410,6 +438,52 @@ func (a *App) GetGitGraph(limit int) GitGraphData {
 		Error:       state.Error,
 		LastRefresh: state.LastRefresh,
 	}
+}
+
+// queueStatusPriority returns a numeric priority for queue task statuses.
+// Higher value = better status to keep when deduplicating.
+func queueStatusPriority(status string) int {
+	switch status {
+	case "running":
+		return 3
+	case "done":
+		return 2
+	case "queued", "pending":
+		return 1
+	default: // failed
+		return 0
+	}
+}
+
+// queueTaskBetter returns true if candidate should replace existing in dedup.
+func queueTaskBetter(candidate, existing QueueTask) bool {
+	cp, ep := queueStatusPriority(candidate.Status), queueStatusPriority(existing.Status)
+	if cp != ep {
+		return cp > ep
+	}
+	return candidate.CreatedAt.After(existing.CreatedAt)
+}
+
+// historyEntryBetter returns true if candidate should replace existing in dedup.
+func historyEntryBetter(candidate, existing HistoryEntry) bool {
+	// completed beats failed
+	if candidate.Status != existing.Status {
+		if candidate.Status == "completed" {
+			return true
+		}
+		if existing.Status == "completed" {
+			return false
+		}
+	}
+	// prefer entry with PR URL
+	if candidate.PRURL != "" && existing.PRURL == "" {
+		return true
+	}
+	if candidate.PRURL == "" && existing.PRURL != "" {
+		return false
+	}
+	// most recent wins
+	return candidate.CompletedAt.After(existing.CompletedAt)
 }
 
 // normalizeStatus maps internal execution statuses to frontend-friendly names.
