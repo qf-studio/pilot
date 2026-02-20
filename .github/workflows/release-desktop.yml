@@ -68,6 +68,7 @@ jobs:
           cd desktop
           wails build -platform ${{ matrix.platform }} -ldflags "-X main.version=${{ steps.version.outputs.VERSION }}" ${{ matrix.artifact == 'windows' && '-nsis' || '' }}
 
+      # macOS: DMG + ZIP
       - name: Package macOS DMG
         if: matrix.artifact == 'macos'
         shell: bash
@@ -75,40 +76,42 @@ jobs:
           mkdir -p dmg_staging
           cp -R desktop/build/bin/Pilot.app dmg_staging/
           ln -s /Applications dmg_staging/Applications
-          hdiutil create -volname "Pilot" -srcfolder dmg_staging -ov -format UDZO Pilot-macOS-universal.dmg
+          hdiutil create -volname "Pilot" -srcfolder dmg_staging -ov -format UDZO Pilot-Desktop-macOS-universal.dmg
 
       - name: Package macOS ZIP
         if: matrix.artifact == 'macos'
         shell: bash
         run: |
           cd desktop/build/bin
-          COPYFILE_DISABLE=1 zip -r ../../../Pilot-macOS-universal.zip Pilot.app
+          COPYFILE_DISABLE=1 zip -r ../../../Pilot-Desktop-macOS-universal.zip Pilot.app
 
+      # Windows: ZIP + NSIS installer
       - name: Package Windows ZIP
         if: matrix.artifact == 'windows'
         shell: bash
         run: |
           cd desktop/build/bin
-          7z a ../../../Pilot-Windows-amd64.zip Pilot.exe
+          7z a ../../../Pilot-Desktop-Windows-amd64.zip Pilot.exe
 
       - name: Rename Windows installer
         if: matrix.artifact == 'windows'
         shell: bash
         run: |
-          find desktop/build/bin -name '*.exe' -path '*installer*' -exec cp {} Pilot-Windows-amd64-setup.exe \;
+          find desktop/build/bin -name '*.exe' -path '*installer*' -exec cp {} Pilot-Desktop-Windows-amd64-setup.exe \; || true
 
+      # Linux: tar.gz
       - name: Package Linux tar.gz
         if: matrix.artifact == 'linux'
         shell: bash
         run: |
           cd desktop/build/bin
-          tar czf ../../../Pilot-Linux-amd64.tar.gz Pilot
+          tar czf ../../../Pilot-Desktop-Linux-amd64.tar.gz Pilot
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: desktop-${{ matrix.artifact }}
-          path: Pilot-*
+          path: Pilot-Desktop-*
 
   release-desktop:
     needs: build-desktop
@@ -120,23 +123,15 @@ jobs:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
 
-      - name: List downloaded artifacts
-        shell: bash
-        run: find . -name 'Pilot-*' -type f -ls
-
       - name: Upload to GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
           VERSION="${GITHUB_REF_NAME}"
-          find . -name 'Pilot-*' -type f -exec mv {} . \;
-          for f in Pilot-*; do
+          find . -name 'Pilot-Desktop-*' -type f -exec mv {} . \;
+          ls -la Pilot-Desktop-*
+          for f in Pilot-Desktop-*; do
             echo "Uploading $f to $VERSION..."
-            # Try clobber first, fall back to delete+upload
-            gh release upload "$VERSION" "$f" --clobber || {
-              echo "Clobber failed, trying delete+upload..."
-              gh release delete-asset "$VERSION" "$(basename "$f")" -y 2>/dev/null || true
-              gh release upload "$VERSION" "$f"
-            }
+            gh release upload "$VERSION" "$f" --clobber
           done
