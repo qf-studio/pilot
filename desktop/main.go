@@ -9,6 +9,8 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/options/mac"
 )
 
+var version = "dev"
+
 //go:embed all:frontend/dist
 var assets embed.FS
 
@@ -16,7 +18,7 @@ func main() {
 	app := NewApp()
 
 	if err := wails.Run(&options.App{
-		Title:     "Pilot",
+		Title:     "Pilot " + version,
 		Width:     480,
 		Height:    900,
 		MinWidth:  400,
@@ -31,7 +33,7 @@ func main() {
 		Mac: &mac.Options{
 			TitleBar: mac.TitleBarDefault(),
 			About: &mac.AboutInfo{
-				Title:   "Pilot",
+				Title:   "Pilot " + version,
 				Message: "AI that ships your tickets",
 			},
 		},

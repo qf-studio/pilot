@@ -6,8 +6,8 @@
     <key>CFBundleIdentifier</key><string>ai.pilotdev.desktop</string>
     <key>CFBundleName</key><string>Pilot</string>
     <key>CFBundleDisplayName</key><string>Pilot</string>
-    <key>CFBundleVersion</key><string>1.0.0</string>
-    <key>CFBundleShortVersionString</key><string>1.0.0</string>
+    <key>CFBundleVersion</key><string>{{.Info.ProductVersion}}</string>
+    <key>CFBundleShortVersionString</key><string>{{.Info.ProductVersion}}</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>NSHighResolutionCapable</key><true/>
     <key>NSAppTransportSecurity</key>

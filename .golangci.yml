@@ -21,6 +21,9 @@ linters:
         - "-ST1020"  # Comment format
         - "-ST1021"  # Comment format
   exclusions:
+    paths:
+      # Desktop app requires Wails toolchain + built frontend assets
+      - desktop/
     rules:
       # Exclude unused save functions in memory package
       - path: internal/memory/

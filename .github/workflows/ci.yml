@@ -33,10 +33,10 @@ jobs:
         run: go mod download
 
       - name: Build
-        run: go build -v ./...
+        run: go build -v $(go list ./... | grep -v /desktop)
 
       - name: Test
-        run: go test -v -race -coverprofile=coverage.out ./...
+        run: go test -v -race -coverprofile=coverage.out $(go list ./... | grep -v /desktop)
 
       - name: Upload coverage
         uses: codecov/codecov-action@v4
