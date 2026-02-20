@@ -9,8 +9,22 @@ permissions:
   contents: write
 
 jobs:
-  desktop:
-    runs-on: macos-latest
+  build-desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-latest
+            platform: darwin/universal
+            artifact: macos
+          - runner: windows-latest
+            platform: windows/amd64
+            artifact: windows
+          - runner: ubuntu-22.04
+            platform: linux/amd64
+            artifact: linux
+
+    runs-on: ${{ matrix.runner }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -25,24 +39,90 @@ jobs:
         with:
           node-version: '20'
 
+      - name: Install Linux dependencies
+        if: matrix.artifact == 'linux'
+        shell: bash
+        run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.0-dev build-essential pkg-config
+
+      - name: Install NSIS (Windows)
+        if: matrix.artifact == 'windows'
+        shell: bash
+        run: choco install nsis -y
+
       - name: Install Wails
+        shell: bash
         run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
 
       - name: Extract version from tag
         id: version
+        shell: bash
         run: echo "VERSION=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
 
-      - name: Build desktop app
-        run: |
-          cd desktop/frontend && npm ci
-          cd ../.. && cd desktop && wails build -platform darwin/universal -ldflags "-X main.version=${{ steps.version.outputs.VERSION }}"
+      - name: Install frontend dependencies
+        shell: bash
+        run: cd desktop/frontend && npm ci
 
-      - name: Package archive
+      - name: Build desktop app
+        shell: bash
+        run: |
+          cd desktop
+          wails build -platform ${{ matrix.platform }} -ldflags "-X main.version=${{ steps.version.outputs.VERSION }}" ${{ matrix.artifact == 'windows' && '-nsis' || '' }}
+
+      - name: Package macOS DMG
+        if: matrix.artifact == 'macos'
+        shell: bash
+        run: |
+          mkdir -p dmg_staging
+          cp -R desktop/build/bin/Pilot.app dmg_staging/
+          ln -s /Applications dmg_staging/Applications
+          hdiutil create -volname "Pilot" -srcfolder dmg_staging -ov -format UDZO Pilot-macOS-universal.dmg
+
+      - name: Package macOS ZIP
+        if: matrix.artifact == 'macos'
+        shell: bash
         run: |
           cd desktop/build/bin
           COPYFILE_DISABLE=1 zip -r ../../../Pilot-macOS-universal.zip Pilot.app
 
+      - name: Package Windows ZIP
+        if: matrix.artifact == 'windows'
+        shell: bash
+        run: |
+          cd desktop/build/bin
+          7z a ../../../Pilot-Windows-amd64.zip Pilot.exe
+
+      - name: Rename Windows installer
+        if: matrix.artifact == 'windows'
+        shell: bash
+        run: |
+          find desktop/build/bin -name '*.exe' -path '*installer*' -exec cp {} Pilot-Windows-amd64-setup.exe \;
+
+      - name: Package Linux tar.gz
+        if: matrix.artifact == 'linux'
+        shell: bash
+        run: |
+          cd desktop/build/bin
+          tar czf ../../../Pilot-Linux-amd64.tar.gz pilot
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.artifact }}
+          path: Pilot-*
+
+  release-desktop:
+    needs: build-desktop
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+
       - name: Upload to GitHub Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "${{ steps.version.outputs.VERSION }}" Pilot-macOS-universal.zip --clobber
+        shell: bash
+        run: |
+          find . -name 'Pilot-*' -type f -exec mv {} . \;
+          for f in Pilot-*; do
+            gh release upload "$GITHUB_REF_NAME" "$f" --clobber --repo "$GITHUB_REPOSITORY"
+          done
