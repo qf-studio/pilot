@@ -66,7 +66,7 @@ interface AutopilotPanelProps {
 
 export function AutopilotPanel({ status }: AutopilotPanelProps) {
   return (
-    <Card title="AUTOPILOT" className="flex-1 min-h-0">
+    <Card title="AUTOPILOT" className="shrink-0">
       <div className="overflow-y-auto h-full log-scroll">
         {!status.enabled && status.activePRs.length === 0 ? (
           <div className="text-gray text-[10px]">autopilot inactive</div>

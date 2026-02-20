@@ -78,7 +78,7 @@ interface HistoryPanelProps {
 
 export function HistoryPanel({ entries }: HistoryPanelProps) {
   return (
-    <Card title="HISTORY" className="flex-1 min-h-0">
+    <Card title="HISTORY" className="shrink-0">
       <div className="overflow-y-auto h-full log-scroll">
         {entries.length === 0 ? (
           <div className="text-gray text-[10px]">no completed tasks</div>
