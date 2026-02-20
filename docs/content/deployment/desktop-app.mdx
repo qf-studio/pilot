@@ -2,7 +2,7 @@ import { Callout, Steps } from 'nextra/components'
 
 # Desktop App
 
-A native macOS desktop application that mirrors the [Dashboard TUI](/features/dashboard) in a graphical window. Built with [Wails](https://wails.io) and React.
+A native desktop application for macOS, Windows, and Linux that mirrors the [Dashboard TUI](/features/dashboard) in a graphical window. Built with [Wails](https://wails.io) and React.
 
 <Callout type="info">
 The desktop app connects to your running Pilot daemon via the gateway API. Start `pilot start` in a terminal first, then open Pilot.app alongside it.
@@ -18,11 +18,12 @@ The desktop app is not yet code-signed. macOS will show a Gatekeeper warning on 
 
 Download the latest release for your platform:
 
-| Platform | Recommended | Alternative |
-|----------|-------------|-------------|
-| **macOS** | [DMG Installer](https://github.com/alekspetrov/pilot/releases/latest/download/Pilot-macOS-arm64.dmg) | [ZIP Archive](https://github.com/alekspetrov/pilot/releases/latest/download/Pilot-macOS-arm64.zip) |
-| **Windows** | [Installer (amd64)](https://github.com/alekspetrov/pilot/releases/latest/download/Pilot-Windows-amd64-setup.exe) | [ZIP Archive](https://github.com/alekspetrov/pilot/releases/latest/download/Pilot-Windows-amd64.zip) |
-| **Linux** | [tar.gz (amd64)](https://github.com/alekspetrov/pilot/releases/latest/download/Pilot-Linux-amd64.tar.gz) | — |
+| Platform | Download | Format |
+|----------|----------|--------|
+| **macOS** (Intel + Apple Silicon) | [Pilot-Desktop-macOS-universal.dmg](https://github.com/alekspetrov/pilot/releases/latest/download/Pilot-Desktop-macOS-universal.dmg) | DMG (recommended) |
+| **macOS** | [Pilot-Desktop-macOS-universal.zip](https://github.com/alekspetrov/pilot/releases/latest/download/Pilot-Desktop-macOS-universal.zip) | ZIP |
+| **Windows** (amd64) | [Pilot-Desktop-Windows-amd64.zip](https://github.com/alekspetrov/pilot/releases/latest/download/Pilot-Desktop-Windows-amd64.zip) | ZIP |
+| **Linux** (amd64) | [Pilot-Desktop-Linux-amd64.tar.gz](https://github.com/alekspetrov/pilot/releases/latest/download/Pilot-Desktop-Linux-amd64.tar.gz) | tar.gz |
 
 ---
 
@@ -56,15 +57,17 @@ Open **Pilot.app** from Applications as usual.
 
 <Steps>
 
-### Run the installer
+### Extract the ZIP
 
-Download and run `Pilot-Windows-amd64-setup.exe`. Follow the on-screen prompts.
-
-Alternatively, download the ZIP and extract it to any folder.
+Download `Pilot-Desktop-Windows-amd64.zip` and extract it to any folder (e.g. `C:\Program Files\Pilot\`).
 
 ### SmartScreen warning
 
 Windows may show a SmartScreen warning because the app is unsigned. Click **More info**, then click **Run anyway**.
+
+### Launch
+
+Run `Pilot.exe` from the extracted folder.
 
 </Steps>
 
@@ -72,7 +75,7 @@ Windows may show a SmartScreen warning because the app is unsigned. Click **More
 
 ```bash
 # Extract the archive
-tar xzf Pilot-Linux-amd64.tar.gz
+tar xzf Pilot-Desktop-Linux-amd64.tar.gz
 
 # Run directly
 ./Pilot
@@ -209,7 +212,9 @@ desktop/
 ├── wails.json           # Wails project config
 ├── build/
 │   ├── appicon.png
-│   └── darwin/Info.plist
+│   ├── darwin/Info.plist
+│   ├── windows/         # Windows icon, manifest, version info
+│   └── linux/           # .desktop file for app launcher
 └── frontend/
     ├── src/
     │   ├── App.tsx              # Root component
@@ -234,5 +239,8 @@ desktop/
 | `make desktop-deps` | Install frontend dependencies |
 | `make desktop-dev` | Run in development mode with hot reload |
 | `make desktop-build` | Build production `Pilot.app` (darwin/universal) |
+| `make desktop-build-windows` | Build for Windows (amd64) |
+| `make desktop-build-linux` | Build for Linux (amd64) |
 | `make desktop-package` | Build and zip for distribution (`VERSION=vX.Y.Z`) |
+| `make desktop-dmg` | Build and create macOS DMG (`VERSION=vX.Y.Z`) |
 | `make desktop-clean` | Remove build artifacts and node_modules |
