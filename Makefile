@@ -1,4 +1,4 @@
-.PHONY: build run test test-e2e clean install lint fmt deps dev install-hooks check-secrets gate check-integration auto-fix test-short test-integration test-chaos package release docker-build docker-push desktop-dev desktop-build desktop desktop-deps desktop-package desktop-clean build-with-dashboard
+.PHONY: build run test test-e2e clean install lint fmt deps dev install-hooks check-secrets gate check-integration auto-fix test-short test-integration test-chaos package release docker-build docker-push desktop-dev desktop-build desktop-build-windows desktop-build-linux desktop desktop-deps desktop-package desktop-dmg desktop-clean build-with-dashboard
 
 # Variables
 BINARY_NAME=pilot
@@ -222,6 +222,23 @@ desktop-package: desktop-build
 	cd desktop/build/bin && COPYFILE_DISABLE=1 zip -r ../../../bin/Pilot-macOS-$(VERSION).zip Pilot.app
 	@echo "Created bin/Pilot-macOS-$(VERSION).zip"
 
+desktop-build-windows: desktop-deps
+	cd desktop && wails build -platform windows/amd64 -ldflags "-X main.version=$(VERSION)"
+
+desktop-build-linux: desktop-deps
+	cd desktop && wails build -platform linux/amd64 -ldflags "-X main.version=$(VERSION)"
+
+desktop-dmg: desktop-build
+	@echo "Creating Pilot.dmg..."
+	@mkdir -p bin
+	@mkdir -p /tmp/pilot-dmg-staging
+	@cp -R desktop/build/bin/Pilot.app /tmp/pilot-dmg-staging/
+	@ln -sf /Applications /tmp/pilot-dmg-staging/Applications
+	@hdiutil create -volname "Pilot" -srcfolder /tmp/pilot-dmg-staging \
+		-ov -format UDZO bin/Pilot-macOS-$(VERSION).dmg
+	@rm -rf /tmp/pilot-dmg-staging
+	@echo "Created bin/Pilot-macOS-$(VERSION).dmg"
+
 desktop-clean:
 	rm -rf desktop/build/bin desktop/frontend/dist desktop/frontend/node_modules
 
@@ -257,9 +274,12 @@ help:
 	@echo "  make docker-build   Build Docker image (tag: pilot:VERSION)"
 	@echo "  make docker-push    Push image to ghcr.io/alekspetrov/pilot"
 	@echo "  make build-with-dashboard  Build with embedded React dashboard"
-	@echo "  make desktop-deps   Install desktop frontend dependencies"
-	@echo "  make desktop-dev    Run desktop app in dev mode"
-	@echo "  make desktop-build  Build desktop app (darwin/universal)"
-	@echo "  make desktop-package Package Pilot.app into zip (VERSION=vX.Y.Z)"
-	@echo "  make desktop-clean  Clean desktop build artifacts"
+	@echo "  make desktop-deps          Install desktop frontend dependencies"
+	@echo "  make desktop-dev           Run desktop app in dev mode"
+	@echo "  make desktop-build         Build desktop app (darwin/universal)"
+	@echo "  make desktop-build-windows Build desktop app (windows/amd64)"
+	@echo "  make desktop-build-linux   Build desktop app (linux/amd64)"
+	@echo "  make desktop-package       Package Pilot.app into zip (VERSION=vX.Y.Z)"
+	@echo "  make desktop-dmg           Create Pilot.dmg installer (VERSION=vX.Y.Z)"
+	@echo "  make desktop-clean         Clean desktop build artifacts"
 	@echo ""
