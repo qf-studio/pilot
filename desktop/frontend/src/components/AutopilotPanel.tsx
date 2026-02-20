@@ -48,12 +48,12 @@ function PRRow({ pr }: PRRowProps) {
   )
 }
 
-function DotRow({ label, value, valueColor = 'text-lightgray' }: { label: string; value: string; valueColor?: string }) {
+function DotLeaderRow({ label, value, valueColor = 'text-lightgray' }: { label: string; value: string; valueColor?: string }) {
   return (
-    <div className="flex items-baseline gap-0 text-[10px]">
+    <div className="flex items-baseline text-[10px] leading-tight">
       <span className="text-midgray shrink-0">{label}</span>
-      <span className="flex-1 text-slate overflow-hidden whitespace-nowrap">
-        {' '}{'·'.repeat(20)}
+      <span className="flex-1 overflow-hidden whitespace-nowrap text-slate mx-0.5" style={{ lineHeight: '1' }}>
+        {'·'.repeat(80)}
       </span>
       <span className={`shrink-0 ${valueColor}`}>{value}</span>
     </div>
@@ -72,14 +72,16 @@ export function AutopilotPanel({ status }: AutopilotPanelProps) {
           <div className="text-gray text-[10px]">autopilot inactive</div>
         ) : (
           <div className="space-y-0.5">
-            <DotRow label="mode" value={status.environment || 'dev'} />
-            <DotRow
-              label="release"
-              value={status.autoRelease ? 'on' : 'off'}
+            <DotLeaderRow label="Environment" value={status.environment || 'dev'} />
+            <DotLeaderRow label="Post-merge" value={status.autoRelease ? 'auto-release' : 'none'} />
+            <DotLeaderRow
+              label="Auto-release"
+              value={status.autoRelease ? 'enabled' : 'disabled'}
               valueColor={status.autoRelease ? 'text-sage' : 'text-gray'}
             />
+            <DotLeaderRow label="Active PRs" value={String(status.activePRs.length)} />
             {status.failureCount > 0 && (
-              <DotRow label="fails" value={String(status.failureCount)} valueColor="text-amber" />
+              <DotLeaderRow label="Failures" value={String(status.failureCount)} valueColor="text-amber" />
             )}
             {status.activePRs.length > 0 && (
               <div className="mt-1 space-y-0.5 border-t border-border pt-1">

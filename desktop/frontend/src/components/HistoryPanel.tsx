@@ -22,8 +22,9 @@ interface HistoryRowProps {
 }
 
 function HistoryRow({ entry, isSubIssue = false }: HistoryRowProps) {
-  const icon = entry.status === 'completed' ? '✓' : '✗'
-  const iconColor = entry.status === 'completed' ? 'text-sage' : 'text-rose'
+  const isSuccess = entry.status === 'completed'
+  const prefix = isSuccess ? '+' : 'x'
+  const prefixColor = isSuccess ? 'text-sage' : 'text-rose'
   const indent = isSubIssue ? 'pl-3' : ''
 
   function handleClick() {
@@ -36,10 +37,10 @@ function HistoryRow({ entry, isSubIssue = false }: HistoryRowProps) {
       className={`flex items-center gap-1 px-1 py-px hover:bg-slate/30 cursor-pointer rounded transition-colors ${indent}`}
       onClick={handleClick}
     >
-      <span className={`text-[10px] ${iconColor} shrink-0`}>{icon}</span>
-      <span className="text-steel text-[10px] shrink-0 w-12">{entry.issueID}</span>
+      <span className={`text-[10px] font-bold ${prefixColor} shrink-0`}>{prefix}</span>
+      <span className="font-bold text-[10px] shrink-0" style={{ color: '#7eb8da' }}>{entry.issueID}</span>
       <span className="text-lightgray text-[10px] flex-1 min-w-0 truncate">{entry.title}</span>
-      <span className="text-gray text-[10px] shrink-0">{timeAgo(entry.completedAt)}</span>
+      <span className="text-midgray text-[10px] shrink-0">{timeAgo(entry.completedAt)}</span>
     </div>
   )
 }
@@ -53,14 +54,14 @@ function EpicGroup({ entry }: EpicGroupProps) {
   const total = subIssues.length
   const done = subIssues.filter((s) => s.status === 'completed').length
   const allDone = done === total && total > 0
-  const icon = allDone ? '✓' : '●'
-  const iconColor = allDone ? 'text-sage' : 'text-steel'
+  const prefix = allDone ? '+' : '~'
+  const prefixColor = allDone ? 'text-sage' : 'text-steel'
 
   return (
     <div className="space-y-0">
       <div className="flex items-center gap-1 px-1 py-px">
-        <span className={`text-[10px] ${iconColor} shrink-0`}>{icon}</span>
-        <span className="text-steel text-[10px] shrink-0 w-12">{entry.issueID}</span>
+        <span className={`text-[10px] font-bold ${prefixColor} shrink-0`}>{prefix}</span>
+        <span className="font-bold text-[10px] shrink-0" style={{ color: '#7eb8da' }}>{entry.issueID}</span>
         <span className="text-lightgray text-[10px] flex-1 min-w-0 truncate">{entry.title}</span>
         <span className="text-midgray text-[10px] shrink-0">[{done}/{total}]</span>
       </div>
