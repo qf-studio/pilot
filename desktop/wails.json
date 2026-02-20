@@ -1,6 +1,6 @@
 {
   "$schema": "https://wails.io/schemas/config.v2.json",
-  "name": "pilot-desktop",
+  "name": "Pilot",
   "outputfilename": "Pilot",
   "frontend:install": "npm install",
   "frontend:build": "npm run build",

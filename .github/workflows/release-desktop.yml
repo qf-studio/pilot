@@ -102,7 +102,7 @@ jobs:
         shell: bash
         run: |
           cd desktop/build/bin
-          tar czf ../../../Pilot-Linux-amd64.tar.gz pilot
+          tar czf ../../../Pilot-Linux-amd64.tar.gz Pilot
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
