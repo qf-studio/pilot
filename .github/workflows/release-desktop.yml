@@ -114,17 +114,29 @@ jobs:
     needs: build-desktop
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
 
+      - name: List downloaded artifacts
+        shell: bash
+        run: find . -name 'Pilot-*' -type f -ls
+
       - name: Upload to GitHub Release
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
+          VERSION="${GITHUB_REF_NAME}"
           find . -name 'Pilot-*' -type f -exec mv {} . \;
           for f in Pilot-*; do
-            # Delete existing asset first, then upload (--clobber unreliable on some gh versions)
-            gh release delete-asset "$GITHUB_REF_NAME" "$(basename "$f")" --repo "$GITHUB_REPOSITORY" -y 2>/dev/null || true
-            gh release upload "$GITHUB_REF_NAME" "$f" --repo "$GITHUB_REPOSITORY"
+            echo "Uploading $f to $VERSION..."
+            # Try clobber first, fall back to delete+upload
+            gh release upload "$VERSION" "$f" --clobber || {
+              echo "Clobber failed, trying delete+upload..."
+              gh release delete-asset "$VERSION" "$(basename "$f")" -y 2>/dev/null || true
+              gh release upload "$VERSION" "$f"
+            }
           done
