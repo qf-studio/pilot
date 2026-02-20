@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 //go:embed hookscripts/*
@@ -313,7 +314,7 @@ func mergeNewFormatHooks(existing map[string]interface{}, pilot interface{}) map
 			for _, entry := range existingArr {
 				if entryMap, ok := entry.(map[string]interface{}); ok {
 					cmd := extractCommandFromEntry(entryMap)
-					if cmd != "" && !pilotCommands[cmd] && hookFileExists(cmd) {
+					if cmd != "" && !pilotCommands[cmd] && !isPilotManagedHook(cmd) && hookFileExists(cmd) {
 						mergedHooks[k] = appendHookEntry(mergedHooks[k], entry)
 					}
 				}
@@ -359,6 +360,7 @@ func extractCommandFromEntry(entry map[string]interface{}) string {
 }
 
 // cleanStaleEntries removes entries whose command files no longer exist
+// or are stale pilot-managed hooks from previous runs
 func cleanStaleEntries(v interface{}) interface{} {
 	arr, ok := v.([]interface{})
 	if !ok {
@@ -368,7 +370,8 @@ func cleanStaleEntries(v interface{}) interface{} {
 	for _, entry := range arr {
 		if m, ok := entry.(map[string]interface{}); ok {
 			cmd := extractCommandFromEntry(m)
-			if cmd == "" || hookFileExists(cmd) {
+			// Keep entry if: no command (unknown format), or file exists and not a stale pilot hook
+			if cmd == "" || (hookFileExists(cmd) && !isPilotManagedHook(cmd)) {
 				cleaned = append(cleaned, entry)
 			}
 		}
@@ -398,6 +401,14 @@ func appendHookEntry(existing interface{}, entry interface{}) interface{} {
 func hookFileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
+}
+
+// isPilotManagedHook checks if a command path is a pilot-generated hook script.
+// Pilot scripts are always named pilot-*.sh (e.g., pilot-bash-guard.sh, pilot-stop-gate.sh).
+// Used during merge to prevent accumulation of stale pilot entries from different temp dirs.
+func isPilotManagedHook(cmd string) bool {
+	base := filepath.Base(cmd)
+	return strings.HasPrefix(base, "pilot-") && strings.HasSuffix(base, ".sh")
 }
 
 // WriteEmbeddedScripts extracts embedded hook scripts to the specified directory

@@ -364,6 +364,121 @@ func TestGetScriptNames(t *testing.T) {
 	}
 }
 
+func TestMergeNewFormatHooks_DeduplicatesStalePilotEntries(t *testing.T) {
+	// Simulate the crash scenario: settings.json has stale pilot entries
+	// from a previous run's temp dir, plus a user-defined hook.
+	// Fresh pilot hooks should replace all stale pilot entries.
+
+	// Create two temp dirs to simulate old and new pilot runs
+	oldDir := t.TempDir()
+	newDir := t.TempDir()
+
+	// Write scripts to both dirs so hookFileExists returns true
+	for _, dir := range []string{oldDir, newDir} {
+		for _, name := range []string{"pilot-bash-guard.sh", "pilot-stop-gate.sh"} {
+			if err := os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\n"), 0755); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	// Also create a user hook script
+	userDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(userDir, "my-custom-hook.sh"), []byte("#!/bin/sh\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Existing settings: 3 stale pilot entries + 1 user entry for PreToolUse
+	existing := map[string]interface{}{
+		"PreToolUse": []interface{}{
+			map[string]interface{}{
+				"matcher": "Bash",
+				"hooks": []interface{}{
+					map[string]interface{}{"type": "command", "command": filepath.Join(oldDir, "pilot-bash-guard.sh")},
+				},
+			},
+			map[string]interface{}{
+				"matcher": "Bash",
+				"hooks": []interface{}{
+					map[string]interface{}{"type": "command", "command": filepath.Join(userDir, "my-custom-hook.sh")},
+				},
+			},
+		},
+		"Stop": []interface{}{
+			map[string]interface{}{
+				"hooks": []interface{}{
+					map[string]interface{}{"type": "command", "command": filepath.Join(oldDir, "pilot-stop-gate.sh")},
+				},
+			},
+		},
+	}
+
+	// Fresh pilot hooks (new temp dir)
+	bashMatcher := "Bash"
+	pilot := map[string][]HookMatcherEntry{
+		"PreToolUse": {
+			{
+				Matcher: &bashMatcher,
+				Hooks:   []HookCommand{{Type: "command", Command: filepath.Join(newDir, "pilot-bash-guard.sh")}},
+			},
+		},
+		"Stop": {
+			{
+				Hooks: []HookCommand{{Type: "command", Command: filepath.Join(newDir, "pilot-stop-gate.sh")}},
+			},
+		},
+	}
+
+	merged := mergeNewFormatHooks(existing, pilot)
+
+	// PreToolUse should have exactly 2 entries: fresh pilot + user hook
+	preEntries := merged["PreToolUse"]
+	var preCount int
+	switch v := preEntries.(type) {
+	case []HookMatcherEntry:
+		preCount = len(v)
+	case []interface{}:
+		preCount = len(v)
+	}
+	if preCount != 2 {
+		t.Errorf("PreToolUse: expected 2 entries (1 fresh pilot + 1 user), got %d", preCount)
+	}
+
+	// Stop should have exactly 1 entry: fresh pilot only
+	stopEntries := merged["Stop"]
+	var stopCount int
+	switch v := stopEntries.(type) {
+	case []HookMatcherEntry:
+		stopCount = len(v)
+	case []interface{}:
+		stopCount = len(v)
+	}
+	if stopCount != 1 {
+		t.Errorf("Stop: expected 1 entry (fresh pilot only), got %d", stopCount)
+	}
+}
+
+func TestIsPilotManagedHook(t *testing.T) {
+	tests := []struct {
+		cmd      string
+		expected bool
+	}{
+		{"/var/folders/xx/T/pilot-hooks-123/pilot-bash-guard.sh", true},
+		{"/var/folders/xx/T/pilot-hooks-456/pilot-stop-gate.sh", true},
+		{"/var/folders/xx/T/pilot-hooks-789/pilot-lint.sh", true},
+		{"/home/user/.config/my-custom-hook.sh", false},
+		{"/usr/local/bin/lint.sh", false},
+		{"", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.cmd, func(t *testing.T) {
+			if got := isPilotManagedHook(tt.cmd); got != tt.expected {
+				t.Errorf("isPilotManagedHook(%q) = %v, want %v", tt.cmd, got, tt.expected)
+			}
+		})
+	}
+}
+
 func boolPtr(b bool) *bool {
 	return &b
 }
