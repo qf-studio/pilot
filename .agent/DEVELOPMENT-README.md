@@ -113,7 +113,7 @@ Disable via config: `executor.navigator.auto_init: false`
 
 ## Current State
 
-**Current Version:** v1.40.1 | **161 features working**
+**Current Version:** v1.62.0 | **190+ features working**
 
 **Full implementation status:** `.agent/system/FEATURE-MATRIX.md`
 
@@ -192,6 +192,21 @@ Disable via config: `executor.navigator.auto_init: false`
 | Backend-Aware Preflight | Done | Preflight CLI check matches configured backend (claude/opencode/qwen) (v1.39.0) |
 | Sonnet 4.6 Model Routing | Done | Default simple/medium tasks to Sonnet 4.6 (near-Opus quality, 40% cheaper) (v1.40.0) |
 | Sonnet 4.6 Codebase Update | Done | Update all stale model IDs to Sonnet 4.6 / Opus 4.6 across defaults, wizard, tests (v1.40.1) |
+| Docker / Helm Chart | Done | Dockerfile, Helm chart, deployment guide in docs (v1.46.0) |
+| Claude Code Hooks v3 | Done | Matcher as regex string, Stop hooks no matcher, dedup cleanup (v1.50.0) |
+| Dashboard Git Graph | Done | Live git graph panel in TUI with branch visualization (v1.53.0) |
+| Desktop App (Wails) | Done | Wails v2 desktop app with React dashboard, macOS builds (v1.53.1) |
+| Dashboard API | Done | REST endpoints: `/api/v1/tasks`, `/api/v1/autopilot`, `/api/v1/history` (v1.55.0) |
+| Web Dashboard | Done | Embedded React frontend at `/dashboard` with SSE/WebSocket streaming (v1.56.0) |
+| No-Decompose Defense | Done | `detectEpic` checks `no-decompose` label as defense-in-depth (v1.57.0) |
+| Incremental Lint | Done | `golangci-lint --new-from-rev` prevents unrelated lint blocking PRs (v1.57.0) |
+| Environment Config | Done | `EnvironmentConfig` + `ResolvedEnv()` replaces hardcoded env checks (v1.59.0) |
+| Post-Merge Deployer | Done | Webhook and branch-push deployment triggers after merge (v1.60.0) |
+| CLI `--env` Flag | Done | Renamed `--autopilot` to `--env`, updated onboarding + config (v1.60.1) |
+| Prod Auto-Approve Safety | Done | Block auto-approve in prod when pre_merge approval disabled (v1.61.0) |
+| Gateway in Polling Mode | Done | HTTP server starts in background during polling mode for desktop/web (v1.62.0) |
+| History Dedup | Done | Desktop app deduplicates execution records per issue (v1.62.0) |
+| Desktop Native Titlebar | Done | macOS `TitleBarDefault()`, simplified two-column layout (v1.62.0) |
 
 ### Telegram Interaction Modes (v0.6.0)
 
@@ -205,20 +220,22 @@ Disable via config: `executor.navigator.auto_init: false`
 
 **Default behavior**: Ambiguous messages now default to Chat mode instead of Task, preventing accidental PRs.
 
-### Autopilot Environments
+### Autopilot Environments (v1.59.0+)
 
-The `--autopilot` flag controls automation behavior, not project environments:
+The `--env` flag (renamed from `--autopilot` in v1.60.1) selects a deployment pipeline:
 
-| Flag | CI Wait | Approval | Use Case |
-|------|---------|----------|----------|
-| `dev` | Skip | No | Fast iteration, trust the bot |
-| `stage` | Yes | No | CI must pass, then auto-merge |
-| `prod` | Yes | Yes | CI + human approval required |
+| Flag | CI Wait | Approval | Post-Merge | Use Case |
+|------|---------|----------|------------|----------|
+| `dev` | Skip | No | none | Fast iteration, trust the bot |
+| `stage` | Yes | No | none | CI must pass, then auto-merge |
+| `prod` | Yes | Yes | tag | CI + human approval required |
+
+Custom environments supported via `EnvironmentConfig` in config YAML.
 
 ```bash
-pilot start --autopilot=dev --telegram --github    # YOLO mode
-pilot start --autopilot=stage --telegram --github  # Balanced (recommended)
-pilot start --autopilot=prod --telegram --github   # Safe, manual approval
+pilot start --env=dev --telegram --github    # YOLO mode
+pilot start --env=stage --telegram --github  # Balanced (recommended)
+pilot start --env=prod --telegram --github   # Safe, manual approval
 ```
 
 ### Needs Verification
@@ -286,18 +303,54 @@ Nextra 4 migration (PR #1409) + 8 docs pages covering all 156 features:
 
 | Priority | Topic | Why |
 |----------|-------|-----|
-| P1 | Web dashboard / API | TUI is dev-only — need browser UI for teams |
 | P1 | Multi-tenant SaaS mode | Single-user CLI → hosted needs auth, isolation |
 | P1 | Public launch prep | Landing page, onboarding, pricing, billing |
+| P1 | Web dashboard polish | React UI functional but needs design pass |
+| P1 | Fix `shouldTriggerRelease()` | Doesn't check `ResolvedEnv().Release` — only top-level config |
 | P2 | E2E test suite | No integration tests — reliability untested |
-| P2 | Multi-model routing | Opus for everything is expensive |
-| P3 | Docker / Helm chart | K8s probes exist but no container story |
+| P2 | Web dashboard auth | Token-based auth for remote access |
+| P2 | Mobile-responsive dashboard | Primary use case is phone access |
 | P3 | GitHub App auth | PAT → installable GitHub App |
 | P3 | Learn from PR reviews | Feedback loop into future executions |
 
 ---
 
 ## Completed Log
+
+### 2026-02-20
+
+| Item | What |
+|------|------|
+| **v1.62.0** | Release with gateway fix, desktop polish, history dedup |
+| **Gateway in polling mode** | Start HTTP server in background during polling mode — desktop app detects daemon via `/health` (GH-1662, PR #1664) |
+| **History dedup** | Desktop app deduplicates execution records per issue, success takes priority (GH-1663, PR #1665) |
+| **Desktop native titlebar** | `TitleBarHiddenInset()` → `TitleBarDefault()` — fixes traffic light overlap |
+| **Desktop layout** | Simplified two-column flex layout, equal columns, metrics in left column |
+| **Desktop panel spacing** | Unified `gap-3` + `px-2` across Queue/History/Logs, `whitespace-nowrap` on issue IDs |
+| **Desktop panel sizing** | Autopilot + History `shrink-0`, Logs `flex-1` fills remaining space |
+| **Desktop logo** | Removed 3-space indent from ASCII PILOT logo |
+| **Desktop metrics** | Removed extra padding from MetricsCards to align with panels below |
+| **Env config** | Configured `environments.stage` with auto-release, post-merge tag, CI required |
+| **CLI migration** | `--autopilot=stage` → `--env stage`, `--auto-release` → YAML config |
+| **v1.61.0** | Prod auto-approve safety (PR #1628), env redesign v1.59.0–v1.60.2 (PRs #1644, #1651, #1652, #1655) |
+| **Desktop TUI parity** | Pilot executed GH-1657/1658/1660/1661 — redesigned desktop frontend layout + components |
+
+### 2026-02-19
+
+| Item | What |
+|------|------|
+| **v1.61.0** | Prod auto-approve safety: block auto-merge when `pre_merge` approval disabled in prod (PR #1628 by @dastanko) |
+| **v1.60.2** | Environment context in notifications and dashboard (GH-1643) |
+| **v1.60.1** | Rename `--autopilot` to `--env`, update onboarding + config surface (GH-1642) |
+| **v1.60.0** | Post-merge deployer: webhook and branch-push deployment triggers (GH-1641) |
+| **v1.59.0** | EnvironmentConfig + ResolvedEnv() — replaces all hardcoded env checks (GH-1640) |
+| **v1.58.0** | CI error logs in fix issues + circuit breaker keyed by branch lineage (GH-1566, GH-1567) |
+| **v1.57.0** | No-decompose label defense-in-depth + incremental lint (GH-1568, GH-1569) |
+| **v1.56.0** | WebSocket log streaming for web dashboard (GH-1613) |
+| **v1.55.0** | Dashboard API endpoints + execution milestones log store (GH-1599, GH-1600, GH-1601) |
+| **v1.54.0** | GoReleaser desktop app artifact for macOS (GH-1614) |
+| **v1.53.1** | Desktop app browser CSS adaptation + HTTP data provider (GH-1610, GH-1611) |
+| **v1.53.0** | Embed React frontend at `/dashboard` + gateway wiring (GH-1609, GH-1612) |
 
 ### 2026-02-18
 

@@ -85,8 +85,10 @@ docs/.git
 # Desktop app build artifacts
 desktop/frontend/node_modules/
 desktop/frontend/dist/
+desktop/frontend/wailsjs/
+desktop/frontend/package.json.md5
 desktop/build/bin/
-!desktop/frontend/dist/.gitkeep
+desktop/build/darwin/Info.dev.plist
 
 # Embedded dashboard build artifact (created by make build-with-dashboard)
 cmd/pilot/dashboard_dist/
