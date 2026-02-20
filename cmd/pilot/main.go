@@ -33,6 +33,7 @@ import (
 	"github.com/alekspetrov/pilot/internal/config"
 	"github.com/alekspetrov/pilot/internal/dashboard"
 	"github.com/alekspetrov/pilot/internal/executor"
+	"github.com/alekspetrov/pilot/internal/gateway"
 	"github.com/alekspetrov/pilot/internal/logging"
 	"github.com/alekspetrov/pilot/internal/memory"
 	"github.com/alekspetrov/pilot/internal/pilot"
@@ -264,7 +265,7 @@ Examples:
 			// When both are needed, gateway starts in background within polling mode.
 			hasPollingAdapter := hasTelegram || hasGithubPolling
 			if noGateway || hasPollingAdapter {
-				return runPollingMode(cfg, projectPath, replace, dashboardMode)
+				return runPollingMode(cfg, projectPath, replace, dashboardMode, noGateway)
 			}
 
 			// Full daemon mode with gateway
@@ -1175,8 +1176,10 @@ func applyTeamOverrides(cfg *config.Config, cmd *cobra.Command, teamID, teamMemb
 	}
 }
 
-// runPollingMode runs lightweight polling-only mode (no HTTP gateway)
-func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMode bool) error {
+// runPollingMode runs lightweight polling-only mode.
+// When noGateway is false, the HTTP gateway starts in the background so the
+// desktop app (and any other client hitting /health) can reach the daemon.
+func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMode, noGateway bool) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -1381,6 +1384,29 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 	// GH-1599: Wire log store for execution milestone entries
 	if store != nil {
 		runner.SetLogStore(store)
+	}
+
+	// GH-1662: Start gateway in background so desktop app can reach /health
+	if !noGateway && cfg.Gateway != nil {
+		gwServer := gateway.NewServer(cfg.Gateway)
+		if autopilotController != nil {
+			gwServer.SetAutopilotProvider(&autopilotProviderAdapter{controller: autopilotController})
+		}
+		if store != nil {
+			gwServer.SetDashboardStore(store)
+			gwServer.SetLogStreamStore(store)
+		}
+		gwServer.SetGitGraphFetcher(func(path string, limit int) interface{} {
+			return dashboard.FetchGitGraph(path, limit)
+		})
+		gwServer.SetGitGraphPath(projectPath)
+		go func() {
+			addr := fmt.Sprintf("%s:%d", cfg.Gateway.Host, cfg.Gateway.Port)
+			logging.WithComponent("gateway").Info("gateway started in background", "addr", addr)
+			if err := gwServer.Start(ctx); err != nil && ctx.Err() == nil {
+				logging.WithComponent("gateway").Error("gateway background error", "error", err)
+			}
+		}()
 	}
 
 	// Create monitor and TUI program for dashboard mode

@@ -253,14 +253,11 @@ func (a *App) GetLogs(limit int) []LogEntry {
 	return result
 }
 
-// daemonGatewayURL is the default gateway address for the running pilot daemon.
-const daemonGatewayURL = "http://127.0.0.1:9090"
-
 // fetchAutopilotFromDaemon queries the running daemon's /api/v1/autopilot endpoint.
 // Returns the parsed status and true if the daemon is reachable, or zero value and false otherwise.
 func (a *App) fetchAutopilotFromDaemon() (AutopilotStatus, bool) {
 	client := &http.Client{Timeout: 2 * time.Second}
-	resp, err := client.Get(daemonGatewayURL + "/api/v1/autopilot")
+	resp, err := client.Get(a.gatewayURL + "/api/v1/autopilot")
 	if err != nil {
 		return AutopilotStatus{}, false
 	}
