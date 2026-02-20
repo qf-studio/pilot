@@ -8,54 +8,88 @@ A native macOS desktop application that mirrors the [Dashboard TUI](/features/da
 The desktop app connects to your running Pilot daemon via the gateway API. Start `pilot start` in a terminal first, then open Pilot.app alongside it.
 </Callout>
 
----
-
-## Prerequisites
-
-- **Go 1.24+** — [golang.org/dl](https://go.dev/dl/)
-- **Node.js 18+** — for the frontend build
-- **Wails CLI v2** — install with `go install github.com/wailsapp/wails/v2/cmd/wails@latest`
-
-Verify Wails is installed:
-
-```bash
-wails doctor
-```
+<Callout type="warning">
+The desktop app is not yet code-signed. macOS will show a Gatekeeper warning on first launch — right-click the app and select **Open** to proceed. Windows may show a SmartScreen warning — click **More info** then **Run anyway**.
+</Callout>
 
 ---
 
-## Build from Source
+## Download
+
+Download the latest release for your platform:
+
+| Platform | Recommended | Alternative |
+|----------|-------------|-------------|
+| **macOS** | [DMG Installer](https://github.com/alekspetrov/pilot/releases/latest/download/Pilot-macOS-arm64.dmg) | [ZIP Archive](https://github.com/alekspetrov/pilot/releases/latest/download/Pilot-macOS-arm64.zip) |
+| **Windows** | [Installer (amd64)](https://github.com/alekspetrov/pilot/releases/latest/download/Pilot-Windows-amd64-setup.exe) | [ZIP Archive](https://github.com/alekspetrov/pilot/releases/latest/download/Pilot-Windows-amd64.zip) |
+| **Linux** | [tar.gz (amd64)](https://github.com/alekspetrov/pilot/releases/latest/download/Pilot-Linux-amd64.tar.gz) | — |
+
+---
+
+## Installation
+
+### macOS
 
 <Steps>
 
-### Clone the repository
+### Download the DMG
+
+Open the `.dmg` file and drag **Pilot.app** into your **Applications** folder.
+
+### Bypass Gatekeeper on first launch
+
+Since the app is unsigned, macOS will block it on first open. Right-click (or Control-click) **Pilot.app** and select **Open**, then click **Open** in the dialog.
+
+Alternatively, remove the quarantine attribute from a terminal:
 
 ```bash
-git clone https://github.com/anthropics/pilot
-cd pilot
+xattr -cr /Applications/Pilot.app
 ```
 
-### Build the app
+### Launch
 
-```bash
-make desktop-build
-```
-
-This installs frontend dependencies (`npm ci`) and compiles a universal macOS binary via Wails. The output is at:
-
-```
-desktop/build/bin/Pilot.app
-```
-
-### (Optional) Package as a zip
-
-```bash
-make desktop-package VERSION=v1.40.1
-```
-
-Produces `bin/Pilot-macOS-v1.40.1.zip`.
+Open **Pilot.app** from Applications as usual.
 
 </Steps>
+
+### Windows
+
+<Steps>
+
+### Run the installer
+
+Download and run `Pilot-Windows-amd64-setup.exe`. Follow the on-screen prompts.
+
+Alternatively, download the ZIP and extract it to any folder.
+
+### SmartScreen warning
+
+Windows may show a SmartScreen warning because the app is unsigned. Click **More info**, then click **Run anyway**.
+
+</Steps>
+
+### Linux
+
+```bash
+# Extract the archive
+tar xzf Pilot-Linux-amd64.tar.gz
+
+# Run directly
+./Pilot
+
+# Or install system-wide
+sudo cp Pilot /usr/local/bin/pilot-desktop
+```
+
+To add a desktop entry, create `~/.local/share/applications/pilot.desktop`:
+
+```ini
+[Desktop Entry]
+Name=Pilot
+Exec=/usr/local/bin/pilot-desktop
+Type=Application
+Categories=Development;
+```
 
 ---
 
@@ -64,10 +98,10 @@ Produces `bin/Pilot-macOS-v1.40.1.zip`.
 1. Start the Pilot daemon in a terminal:
 
 ```bash
-pilot start --github --autopilot=dev
+pilot start --github --env dev
 ```
 
-2. Open `Pilot.app` (from `desktop/build/bin/` or wherever you placed it).
+2. Open **Pilot.app** (from Applications, your install location, or `desktop/build/bin/`).
 
 The desktop app reads `~/.pilot/config.yaml` to determine the gateway address and connects to the daemon automatically. If the daemon is not running, panels display empty state and retry on each poll cycle.
 
@@ -103,6 +137,55 @@ gateway:
 If no config exists or the gateway section is missing, the app defaults to `http://127.0.0.1:9090`.
 
 No additional configuration is required for the desktop app itself.
+
+---
+
+## Build from Source
+
+For contributors who want to build from source rather than using pre-built binaries.
+
+### Prerequisites
+
+- **Go 1.24+** — [golang.org/dl](https://go.dev/dl/)
+- **Node.js 18+** — for the frontend build
+- **Wails CLI v2** — install with `go install github.com/wailsapp/wails/v2/cmd/wails@latest`
+
+Verify Wails is installed:
+
+```bash
+wails doctor
+```
+
+<Steps>
+
+### Clone the repository
+
+```bash
+git clone https://github.com/anthropics/pilot
+cd pilot
+```
+
+### Build the app
+
+```bash
+make desktop-build
+```
+
+This installs frontend dependencies (`npm ci`) and compiles a universal macOS binary via Wails. The output is at:
+
+```
+desktop/build/bin/Pilot.app
+```
+
+### (Optional) Package as a zip
+
+```bash
+make desktop-package VERSION=v1.40.1
+```
+
+Produces `bin/Pilot-macOS-v1.40.1.zip`.
+
+</Steps>
 
 ---
 
