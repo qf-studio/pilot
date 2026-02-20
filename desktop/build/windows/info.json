@@ -1,0 +1,15 @@
+{
+    "fixed": {
+        "file_version": "{{.Info.ProductVersion}}"
+    },
+    "info": {
+        "0000": {
+            "ProductVersion": "{{.Info.ProductVersion}}",
+            "CompanyName": "Pilot",
+            "FileDescription": "AI that ships your tickets",
+            "LegalCopyright": "Copyright 2026 Pilot",
+            "ProductName": "Pilot",
+            "Comments": "Built with Wails"
+        }
+    }
+}
