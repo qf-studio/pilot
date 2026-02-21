@@ -9,6 +9,9 @@ RUN bun install --frozen-lockfile
 # Stage 2: Builder
 FROM oven/bun:1-alpine AS builder
 
+# Next.js 15.5 requires npm in PATH during build
+RUN apk add --no-cache nodejs npm
+
 WORKDIR /app
 
 COPY --from=deps /app/node_modules ./node_modules
@@ -19,7 +22,7 @@ ARG NODE_ENV
 
 ENV NODE_ENV=${NODE_ENV}
 
-RUN bun run build && bun run postbuild && mkdir -p /app/public
+RUN bun run build && mkdir -p /app/public
 
 # Stage 3: Runner
 FROM node:24.10.0-alpine3.21 AS runner
@@ -43,7 +46,7 @@ USER nextjs
 
 EXPOSE 3000
 
-ENV PORT 3000
-ENV HOSTNAME "0.0.0.0"
+ENV PORT=3000
+ENV HOSTNAME="0.0.0.0"
 
 CMD ["node", "server.js"]
