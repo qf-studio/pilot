@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   pilot-docs:
     image: "${CI_REGISTRY_IMAGE}:${CI_COMMIT_REF_NAME}"
