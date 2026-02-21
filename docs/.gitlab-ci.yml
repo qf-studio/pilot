@@ -28,7 +28,7 @@ build:
 
 .deployment: &deployment
   script:
-    - docker compose -f docker-compose.prod.yml down --remove-orphans || true
+    - docker rm -f pilot-docs || true
     - docker compose -f docker-compose.prod.yml pull
     - docker compose -f docker-compose.prod.yml up -d --force-recreate
 
