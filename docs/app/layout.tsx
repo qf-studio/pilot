@@ -40,7 +40,18 @@ export default async function RootLayout({
       <Head />
       <body>
         <Layout
-          navbar={<Navbar logo={<strong>Pilot</strong>} />}
+          navbar={
+            <Navbar
+              logo={
+                <span style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+                  <img src="/logo.svg" alt="Pilot" height={24} style={{ height: 24, width: 'auto', alignSelf: 'center' }} />
+                  <span style={{ fontSize: '0.5em', opacity: 0.5, fontWeight: 400 }}>v2.0.1</span>
+                </span>
+              }
+              projectLink="https://github.com/alekspetrov/pilot"
+              chatLink="https://discord.gg/K6mM8TzJ"
+            />
+          }
           pageMap={await getPageMap()}
           footer={<Footer />}
         >
