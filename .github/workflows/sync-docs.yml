@@ -56,13 +56,13 @@ jobs:
             git push origin main
           fi
 
-          # Always trigger GitLab deploy via prod tag
-          # Delete old tag first to avoid protected tag conflict, then create fresh
+          # Always trigger GitLab deploy via unique prod tag
+          # GitLab ignores re-pushed tags, so each deploy needs a unique tag name
           VERSION=$(git -C "$GITHUB_WORKSPACE" describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')
           if [ -n "$VERSION" ]; then
-            DEPLOY_TAG="prod-${VERSION}"
-            git push origin ":refs/tags/${DEPLOY_TAG}" 2>/dev/null || true
-            git tag -f "$DEPLOY_TAG"
+            BUILD_NUM=$(date +%Y%m%d%H%M%S)
+            DEPLOY_TAG="prod-${VERSION}-${BUILD_NUM}"
+            git tag "$DEPLOY_TAG"
             git push origin "$DEPLOY_TAG"
             echo "Tagged ${DEPLOY_TAG} to trigger deploy"
           fi
