@@ -1,51 +1,34 @@
-import { notFound } from 'next/navigation'
-import { useMDXComponents } from '@/mdx-components'
-import * as fs from 'fs'
-import * as path from 'path'
+import { generateStaticParamsFor, importPage } from 'nextra/pages'
+import { useMDXComponents as getMDXComponents } from '../../mdx-components'
 
-async function getMDXContent(pathname: string) {
-  const contentPath = path.join(process.cwd(), 'content', ...pathname.split('/').filter(Boolean))
+export const generateStaticParams = generateStaticParamsFor('mdxPath')
 
-  // Try index.mdx first
-  let mdxPath = path.join(contentPath, 'index.mdx')
-  if (!fs.existsSync(mdxPath)) {
-    // Try direct file.mdx
-    mdxPath = contentPath + '.mdx'
-  }
-
-  if (!fs.existsSync(mdxPath)) {
-    return null
-  }
-
-  const content = fs.readFileSync(mdxPath, 'utf-8')
-  return content
+export async function generateMetadata(props: PageProps) {
+  const params = await props.params
+  const { metadata } = await importPage(params.mdxPath)
+  return metadata
 }
 
-export async function generateStaticParams() {
-  // This will be used by Next.js to pre-render dynamic routes
-  return []
-}
+const Wrapper = getMDXComponents({}).wrapper
 
-export default async function Page({
-  params,
-}: {
-  params: Promise<{ mdxPath?: string[] }>
-}) {
-  const { mdxPath = [] } = await params
-  const pathname = '/' + (mdxPath?.join('/') || '')
+export default async function Page(props: PageProps) {
+  const params = await props.params
+  const result = await importPage(params.mdxPath)
+  const { default: MDXContent, toc, metadata } = result
 
-  const content = await getMDXContent(pathname)
-
-  if (!content) {
-    notFound()
+  if (Wrapper) {
+    return (
+      <Wrapper toc={toc} metadata={metadata}>
+        <MDXContent {...props} params={params} />
+      </Wrapper>
+    )
   }
 
-  // Note: In a real implementation, you'd use MDX compilation here
-  // For now, this is a placeholder
-  return (
-    <div>
-      {/* MDX content would be rendered here */}
-      Content for: {pathname}
-    </div>
-  )
+  return <MDXContent {...props} params={params} />
+}
+
+type PageProps = {
+  params: Promise<{
+    mdxPath?: string[]
+  }>
 }

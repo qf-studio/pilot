@@ -1,4 +1,4 @@
-import { Callout, Tabs, Tab } from 'nextra/components'
+import { Callout, Tabs } from 'nextra/components'
 
 # Replay & Debug
 
@@ -244,7 +244,6 @@ The analyzer extracts:
 Export recordings to shareable formats:
 
 <Tabs items={['HTML', 'Markdown', 'JSON']}>
-  <Tab>
     ```bash
     # Export to HTML (rich interactive report)
     pilot replay export TG-1705312847123 --format html --output report.html
@@ -257,8 +256,7 @@ Export recordings to shareable formats:
     - Tool usage breakdown
     - Scrollable event timeline
     - Error highlighting
-  </Tab>
-  <Tab>
+
     ```bash
     # Export to Markdown (documentation-friendly)
     pilot replay export TG-1705312847123 --format markdown --output report.md
@@ -270,8 +268,7 @@ Export recordings to shareable formats:
     - Phase timing table
     - Tool usage table
     - Collapsible event log
-  </Tab>
-  <Tab>
+
     ```bash
     # Export to JSON (programmatic access)
     pilot replay export TG-1705312847123 --format json --output recording.json
@@ -281,7 +278,6 @@ Export recordings to shareable formats:
     - Full recording metadata
     - All stream events with parsed data
     - Useful for custom analysis or integration
-  </Tab>
 </Tabs>
 
 ### Export Examples

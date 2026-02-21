@@ -121,7 +121,7 @@ When `require_all: true`, a single rejection from any approver rejects the reque
 Pilot sends approval requests through whichever channel is configured. If multiple channels are available, the first registered channel is used.
 
 <Tabs items={['Telegram', 'Slack', 'GitHub PR Reviews']}>
-  <Tabs.Tab>
+
 ### Telegram Inline Keyboard
 
 Approval requests appear as messages with inline buttons:
@@ -144,8 +144,8 @@ Button labels are stage-specific:
 | `post_failure` | 🔄 Retry | ⏹ Abort |
 
 After a decision, the message is edited to show the result. No setup beyond the standard [Telegram Bot](/features/telegram) configuration is needed.
-  </Tabs.Tab>
-  <Tabs.Tab>
+
+
 ### Slack Interactive Blocks
 
 Approval requests are posted as rich messages with action buttons:
@@ -164,8 +164,8 @@ Slack blocks include:
 - Actions block with approve/reject buttons
 
 Requires Slack interactive messages to be configured (see your Slack app's **Interactivity & Shortcuts** settings).
-  </Tabs.Tab>
-  <Tabs.Tab>
+
+
 ### GitHub PR Reviews
 
 For the `pre_merge` stage, Pilot can use native GitHub PR reviews as the approval mechanism.
@@ -181,7 +181,7 @@ pilot start --github --autopilot=prod
 ```
 
 No additional configuration needed — Pilot monitors PR reviews on any PR it creates.
-  </Tabs.Tab>
+
 </Tabs>
 
 ## Autopilot Integration

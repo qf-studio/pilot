@@ -227,7 +227,7 @@ executor:
 | `decompose.min_description_words` | int | `50` | Minimum description words to decompose |
 
 <Tabs items={['Claude Code', 'OpenCode']}>
-  <Tabs.Tab>
+
 ```yaml
 executor:
   type: "claude-code"
@@ -235,8 +235,8 @@ executor:
     command: "claude"
     extra_args: ["--verbose"]
 ```
-  </Tabs.Tab>
-  <Tabs.Tab>
+
+
 ```yaml
 executor:
   type: "opencode"
@@ -247,7 +247,7 @@ executor:
     auto_start_server: false
     server_command: "opencode serve"
 ```
-  </Tabs.Tab>
+
 </Tabs>
 
 **OpenCode backend fields**
@@ -503,7 +503,7 @@ Seven built-in gate types with sensible default timeouts:
 ### Project-Specific Examples
 
 <Tabs items={['Go', 'Node.js / TypeScript', 'Python', 'Rust']}>
-  <Tabs.Tab>
+
 ```yaml
 quality:
   enabled: true
@@ -546,8 +546,8 @@ quality:
       required: false
       timeout: 10m
 ```
-  </Tabs.Tab>
-  <Tabs.Tab>
+
+
 ```yaml
 quality:
   enabled: true
@@ -595,8 +595,8 @@ quality:
 <Callout type="warning">
 For monorepos using Turborepo or Nx, prefix commands with the workspace runner: `npx turbo build` or `npx nx run-many --target=build`.
 </Callout>
-  </Tabs.Tab>
-  <Tabs.Tab>
+
+
 ```yaml
 quality:
   enabled: true
@@ -638,8 +638,8 @@ quality:
       timeout: 3m
       failure_hint: "Fix security issues flagged by bandit"
 ```
-  </Tabs.Tab>
-  <Tabs.Tab>
+
+
 ```yaml
 quality:
   enabled: true
@@ -675,7 +675,7 @@ quality:
       timeout: 1m
       failure_hint: "Run 'cargo fmt' to fix formatting"
 ```
-  </Tabs.Tab>
+
 </Tabs>
 
 ### Coverage Thresholds
@@ -837,30 +837,30 @@ Per-task limits protect against individual runaway executions — a single compl
 **Duration limit** (`per_task.max_duration`): Creates a Go context with a deadline. When the deadline expires, the executor's context is cancelled and the task stops gracefully.
 
 <Tabs items={['Conservative', 'Standard', 'Generous']}>
-  <Tabs.Tab>
+
 ```yaml
 # Small tasks, tight control
 per_task:
   max_tokens: 50000          # ~$0.25 per task
   max_duration: 15m
 ```
-  </Tabs.Tab>
-  <Tabs.Tab>
+
+
 ```yaml
 # Default — handles most issues
 per_task:
   max_tokens: 100000         # ~$0.50 per task
   max_duration: 30m
 ```
-  </Tabs.Tab>
-  <Tabs.Tab>
+
+
 ```yaml
 # Complex tasks, multi-file changes
 per_task:
   max_tokens: 500000         # ~$2.50 per task
   max_duration: 1h
 ```
-  </Tabs.Tab>
+
 </Tabs>
 
 <Callout type="warning">
@@ -895,7 +895,7 @@ Each limit boundary has an independently configurable action:
 **Recommended configurations by use case:**
 
 <Tabs items={['Solo Developer', 'Team / Staging', 'Production']}>
-  <Tabs.Tab>
+
 ```yaml
 # Solo: catch runaway tasks, don't lose work
 on_exceed:
@@ -903,8 +903,8 @@ on_exceed:
   monthly: "pause"           # stop new tasks at month cap
   per_task: "stop"           # kill individual runaway tasks
 ```
-  </Tabs.Tab>
-  <Tabs.Tab>
+
+
 ```yaml
 # Team: strict daily, hard monthly
 on_exceed:
@@ -912,8 +912,8 @@ on_exceed:
   monthly: "stop"            # hard stop at monthly cap
   per_task: "stop"           # kill runaway tasks
 ```
-  </Tabs.Tab>
-  <Tabs.Tab>
+
+
 ```yaml
 # Production: hard limits everywhere
 on_exceed:
@@ -921,7 +921,7 @@ on_exceed:
   monthly: "stop"
   per_task: "stop"
 ```
-  </Tabs.Tab>
+
 </Tabs>
 
 ### Warning Thresholds and Alerts

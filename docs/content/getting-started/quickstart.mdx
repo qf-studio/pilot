@@ -15,23 +15,23 @@ This guide takes you from zero to your first AI-generated pull request.
 ### Install Pilot
 
 <Tabs items={['Quick Install (recommended)', 'Homebrew', 'From Source']}>
-  <Tabs.Tab>
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/alekspetrov/pilot/main/install.sh | bash
 ```
-  </Tabs.Tab>
-  <Tabs.Tab>
+
+
 ```bash
 brew tap alekspetrov/pilot && brew install pilot
 ```
-  </Tabs.Tab>
-  <Tabs.Tab>
+
+
 ```bash
 git clone https://github.com/alekspetrov/pilot
 cd pilot && make build
 cp ./bin/pilot ~/.local/bin/pilot
 ```
-  </Tabs.Tab>
+
 </Tabs>
 
 Verify:
@@ -57,7 +57,7 @@ This creates `~/.pilot/config.yaml`. You can edit it manually later — see [Con
 ### Configure Your Repository
 
 <Tabs items={['GitHub', 'GitLab']}>
-  <Tabs.Tab>
+
 Add your GitHub repository to `~/.pilot/config.yaml`:
 
 ```yaml
@@ -78,8 +78,8 @@ Make sure your token is set:
 ```bash
 export GITHUB_TOKEN="your-github-pat"
 ```
-  </Tabs.Tab>
-  <Tabs.Tab>
+
+
 Add your GitLab repository to `~/.pilot/config.yaml`:
 
 ```yaml
@@ -101,22 +101,22 @@ Make sure your token is set:
 ```bash
 export GITLAB_TOKEN="your-gitlab-pat"
 ```
-  </Tabs.Tab>
+
 </Tabs>
 
 ### Start Pilot
 
 <Tabs items={['GitHub', 'GitLab']}>
-  <Tabs.Tab>
+
 ```bash
 pilot start --github --dashboard
 ```
-  </Tabs.Tab>
-  <Tabs.Tab>
+
+
 ```bash
 pilot start --gitlab --dashboard
 ```
-  </Tabs.Tab>
+
 </Tabs>
 
 The dashboard appears, showing Pilot is polling for issues:
@@ -137,21 +137,21 @@ The dashboard appears, showing Pilot is polling for issues:
 Open a new terminal and create an issue with the `pilot` label:
 
 <Tabs items={['GitHub (gh CLI)', 'GitHub (Web)', 'GitLab']}>
-  <Tabs.Tab>
+
 ```bash
 gh issue create \
   --title "Add health check endpoint" \
   --label pilot \
   --body "Create a GET /health endpoint that returns JSON with status: ok and the current server timestamp. Add a test."
 ```
-  </Tabs.Tab>
-  <Tabs.Tab>
+
+
     Go to your repository → **Issues** → **New Issue**.
     Set **Title** to `Add health check endpoint`,
     add the `pilot` label (create it first if it doesn't exist),
     and set **Body** to: `Create a GET /health endpoint that returns JSON with status: ok and the current server timestamp. Add a test.`
-  </Tabs.Tab>
-  <Tabs.Tab>
+
+
     Go to your project → **Issues** → **New Issue**.
     Set **Title** to `Add health check endpoint`,
     add the `pilot` label (create it first if it doesn't exist),
@@ -166,7 +166,7 @@ gh issue create \
       --data '{"title": "Add health check endpoint", "labels": "pilot", "description": "Create a GET /health endpoint..."}' \
       "https://gitlab.com/api/v4/projects/YOUR_PROJECT_ID/issues"
     ```
-  </Tabs.Tab>
+
 </Tabs>
 
 ### Watch Pilot Work
@@ -199,7 +199,7 @@ Pilot creates a PR with:
 - A PR description linking back to the issue
 
 <Tabs items={['GitHub', 'GitLab']}>
-  <Tabs.Tab>
+
 ```bash
 # Review the PR
 gh pr view 13
@@ -208,15 +208,15 @@ gh pr diff 13
 # Merge when satisfied
 gh pr merge 13
 ```
-  </Tabs.Tab>
-  <Tabs.Tab>
+
+
 Review the merge request in the GitLab UI, or:
 ```bash
 # Using glab CLI
 glab mr view 13
 glab mr merge 13
 ```
-  </Tabs.Tab>
+
 </Tabs>
 
 <Callout type="info">

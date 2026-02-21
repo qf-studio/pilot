@@ -19,7 +19,7 @@ npm install -g @anthropic-ai/claude-code
 After installing, authenticate Claude Code using one of two methods:
 
 <Tabs items={['Claude Subscription (recommended)', 'Anthropic API Key']}>
-  <Tabs.Tab>
+
 ### Claude Subscription
 
 If you have a **Claude Pro** ($20/mo) or **Claude Max** ($100–200/mo) subscription, Claude Code authenticates through your subscription. No API key needed.
@@ -34,8 +34,8 @@ This is the simplest setup — your subscription covers all Claude Code usage. P
 <Callout type="info">
 Claude Max plans include higher rate limits and longer context windows, which benefit complex tasks. Pro works fine for most use cases.
 </Callout>
-  </Tabs.Tab>
-  <Tabs.Tab>
+
+
 ### Anthropic API Key
 
 For pay-per-use pricing or enterprise deployments, set the `ANTHROPIC_API_KEY` environment variable. Claude Code picks it up automatically.
@@ -49,7 +49,7 @@ Get an API key from [console.anthropic.com](https://console.anthropic.com). Pric
 <Callout type="info">
 Pilot also uses `ANTHROPIC_API_KEY` directly for two optional internal features: the LLM intent classifier (Haiku) for smarter Telegram message routing, and structured subtask parsing for epic decomposition. These features gracefully degrade to simpler alternatives when no API key is set.
 </Callout>
-  </Tabs.Tab>
+
 </Tabs>
 
 ---
@@ -59,7 +59,7 @@ Pilot also uses `ANTHROPIC_API_KEY` directly for two optional internal features:
 Pilot needs access to a Git repository to poll issues and create pull requests. Both GitHub and GitLab are supported as first-class platforms.
 
 <Tabs items={['GitHub', 'GitLab']}>
-  <Tabs.Tab>
+
 ### GitHub
 
 Create a **Personal Access Token** (classic) at [github.com/settings/tokens](https://github.com/settings/tokens) with these scopes:
@@ -74,8 +74,8 @@ export GITHUB_TOKEN="your-github-pat"
 <Callout type="warning">
 Fine-grained tokens work too, but require explicit permissions for each repository. Classic tokens are simpler for getting started.
 </Callout>
-  </Tabs.Tab>
-  <Tabs.Tab>
+
+
 ### GitLab
 
 Create a **Personal Access Token** at `Settings → Access Tokens` with these scopes:
@@ -95,7 +95,7 @@ adapters:
   gitlab:
     base_url: "https://gitlab.yourcompany.com"
 ```
-  </Tabs.Tab>
+
 </Tabs>
 
 ---
@@ -105,7 +105,7 @@ adapters:
 Pilot supports multiple AI coding backends. Claude Code is recommended and enabled by default. The following backends are optional alternatives:
 
 <Tabs items={['Qwen Code', 'OpenCode']}>
-  <Tabs.Tab>
+
 ### Qwen Code
 
 If you want to use Alibaba's Qwen models instead of Claude, install Qwen Code v0.1.0 or later:
@@ -127,8 +127,8 @@ executor:
 ```
 
 See [Execution Backends](/concepts/execution-backends#qwen-code) for detailed configuration and feature comparison.
-  </Tabs.Tab>
-  <Tabs.Tab>
+
+
 ### OpenCode
 
 If you want to use OpenCode (community-driven backend), install the CLI:
@@ -152,7 +152,7 @@ executor:
 ```
 
 See [Execution Backends](/concepts/execution-backends#opencode) for detailed configuration and feature comparison.
-  </Tabs.Tab>
+
 </Tabs>
 
 <Callout type="info">

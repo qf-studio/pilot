@@ -1,16 +1,8 @@
 import type { Metadata } from 'next'
-import { Geist, Geist_Mono } from 'next/font/google'
+import { Footer, Layout, Navbar } from 'nextra-theme-docs'
+import { Head } from 'nextra/components'
+import { getPageMap } from 'nextra/page-map'
 import './globals.css'
-
-const geist = Geist({
-  variable: '--font-geist-sans',
-  subsets: ['latin'],
-})
-
-const geistMono = Geist_Mono({
-  variable: '--font-geist-mono',
-  subsets: ['latin'],
-})
 
 export const metadata: Metadata = {
   title: 'Pilot — AI That Ships Your Tickets',
@@ -37,18 +29,22 @@ export const metadata: Metadata = {
   },
 }
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: {
   children: React.ReactNode
 }) {
   return (
-    <html lang="en" suppressHydrationWarning>
-      <head>
-        <link rel="icon" href="/favicon.ico" />
-      </head>
-      <body className={`${geist.variable} ${geistMono.variable}`}>
-        {children}
+    <html lang="en" dir="ltr" suppressHydrationWarning>
+      <Head />
+      <body>
+        <Layout
+          navbar={<Navbar logo={<strong>Pilot</strong>} />}
+          pageMap={await getPageMap()}
+          footer={<Footer />}
+        >
+          {children}
+        </Layout>
       </body>
     </html>
   )

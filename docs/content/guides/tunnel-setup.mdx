@@ -15,23 +15,23 @@ This guide walks you through setting up a public tunnel for webhook delivery. Tu
 ### Install cloudflared
 
 <Tabs items={['macOS (Homebrew)', 'Linux', 'Windows']}>
-  <Tabs.Tab>
+
 ```bash
 brew install cloudflare/cloudflare/cloudflared
 ```
-  </Tabs.Tab>
-  <Tabs.Tab>
+
+
 ```bash
 curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -o cloudflared
 chmod +x cloudflared
 sudo mv cloudflared /usr/local/bin/
 ```
-  </Tabs.Tab>
-  <Tabs.Tab>
+
+
 ```powershell
 winget install --id Cloudflare.cloudflared
 ```
-  </Tabs.Tab>
+
 </Tabs>
 
 ### Run Setup

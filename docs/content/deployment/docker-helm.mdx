@@ -219,15 +219,14 @@ cd pilot
 ### Install
 
 <Tabs items={['Minimal', 'With Secrets', 'Production']}>
-  <Tabs.Tab>
+
 ```bash
 helm install pilot ./helm/pilot \
   --set secrets.githubToken="ghp_..." \
   --set secrets.anthropicApiKey="sk-ant-..." \
   --set config.adapters.github.repo="your-org/your-repo"
 ```
-  </Tabs.Tab>
-  <Tabs.Tab>
+
 ```bash
 # Create secrets separately (recommended)
 kubectl create secret generic pilot-secrets \
@@ -239,8 +238,7 @@ helm install pilot ./helm/pilot \
   --set existingSecret=pilot-secrets \
   --set config.adapters.github.repo="your-org/your-repo"
 ```
-  </Tabs.Tab>
-  <Tabs.Tab>
+
 ```bash
 helm install pilot ./helm/pilot \
   --namespace pilot --create-namespace \
@@ -248,7 +246,6 @@ helm install pilot ./helm/pilot \
   --set secrets.githubToken="ghp_..." \
   --set secrets.anthropicApiKey="sk-ant-..."
 ```
-  </Tabs.Tab>
 </Tabs>
 
 ### Upgrade
