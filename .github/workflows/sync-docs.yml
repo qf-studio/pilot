@@ -28,12 +28,9 @@ jobs:
           WORK=$(mktemp -d)
           git clone git@gitlab.com:quant-flow/pilot-docs.git "$WORK"
 
-          # Preserve GitLab CI infrastructure files that may have been
-          # modified directly on GitLab (router names, Dockerfile path, etc.)
+          # Preserve GitLab-only infrastructure files (Dockerfile may have
+          # GitLab-specific changes like apk add nodejs)
           BACKUP=$(mktemp -d)
-          for f in .gitlab-ci.yml docker-compose.prod.yml docker-compose.yml; do
-            [ -f "$WORK/$f" ] && cp "$WORK/$f" "$BACKUP/$f"
-          done
           [ -d "$WORK/docker" ] && cp -a "$WORK/docker" "$BACKUP/docker"
 
           # Remove old content (except .git), copy fresh docs
@@ -43,11 +40,7 @@ jobs:
           # Remove dirs that should never be synced to GitLab
           rm -rf "$WORK/.next" "$WORK/node_modules" "$WORK/.idea" "$WORK/~"
 
-          # Restore GitLab CI infrastructure files (GitLab version wins)
-          for f in .gitlab-ci.yml docker-compose.prod.yml docker-compose.yml; do
-            [ -f "$BACKUP/$f" ] && cp "$BACKUP/$f" "$WORK/$f"
-          done
-          # Remove first to prevent cp -a nesting into existing dir
+          # Restore GitLab-only infrastructure files
           [ -d "$BACKUP/docker" ] && rm -rf "$WORK/docker" && cp -a "$BACKUP/docker" "$WORK/docker"
 
           cd "$WORK"
