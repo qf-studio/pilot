@@ -86,10 +86,18 @@ func (n *Notifier) NotifyTaskCompleted(ctx context.Context, taskGID, prURL, summ
 		comment.WriteString("\n\n")
 	}
 
-	comment.WriteString("_This task will be marked complete when the PR is merged._")
-
 	if _, err := n.client.AddComment(ctx, taskGID, comment.String()); err != nil {
 		return fmt.Errorf("failed to add completion comment: %w", err)
+	}
+
+	// Mark the Asana task as complete; log warning on failure but don't block the flow
+	if _, err := n.client.CompleteTask(ctx, taskGID); err != nil {
+		logging.WithComponent("asana").Warn("Failed to mark task complete in Asana",
+			slog.String("task_gid", taskGID),
+			slog.Any("error", err))
+	} else {
+		logging.WithComponent("asana").Info("Marked task as complete",
+			slog.String("task_gid", taskGID))
 	}
 
 	logging.WithComponent("asana").Info("Notified task completed",

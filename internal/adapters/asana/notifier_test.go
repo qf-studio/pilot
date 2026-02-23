@@ -123,8 +123,28 @@ func TestNotifyProgress(t *testing.T) {
 
 func TestNotifyTaskCompleted(t *testing.T) {
 	var capturedComment string
+	var completeCalled bool
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPut && strings.Contains(r.URL.Path, "/tasks/") {
+			// CompleteTask call
+			var body map[string]interface{}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("failed to decode body: %v", err)
+			}
+			data := body["data"].(map[string]interface{})
+			if data["completed"] == true {
+				completeCalled = true
+			}
+			resp := APIResponse[Task]{
+				Data: Task{GID: "123456", Completed: true},
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(resp)
+			return
+		}
+
+		// Comment (story) request
 		var body map[string]interface{}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Fatalf("failed to decode body: %v", err)
@@ -157,12 +177,25 @@ func TestNotifyTaskCompleted(t *testing.T) {
 	if !strings.Contains(capturedComment, "Added feature X") {
 		t.Errorf("comment should contain summary, got: %s", capturedComment)
 	}
+	if !completeCalled {
+		t.Error("expected CompleteTask to be called on success path")
+	}
 }
 
 func TestNotifyTaskCompleted_NoPR(t *testing.T) {
 	var capturedComment string
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPut {
+			// CompleteTask call
+			resp := APIResponse[Task]{
+				Data: Task{GID: "123456", Completed: true},
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(resp)
+			return
+		}
+
 		var body map[string]interface{}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Fatalf("failed to decode body: %v", err)
@@ -188,6 +221,34 @@ func TestNotifyTaskCompleted_NoPR(t *testing.T) {
 
 	if !strings.Contains(capturedComment, "Pilot completed") {
 		t.Errorf("comment should mention completion, got: %s", capturedComment)
+	}
+}
+
+func TestNotifyTaskCompleted_CompleteTaskErrorDoesNotFail(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPut {
+			// CompleteTask fails
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"errors":[{"message":"not authorized"}]}`))
+			return
+		}
+
+		// Comment succeeds
+		resp := APIResponse[Story]{
+			Data: Story{GID: "story-1", Text: "ok"},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(server.URL, testutil.FakeAsanaAccessToken, testutil.FakeAsanaWorkspaceID)
+	notifier := NewNotifier(client, "pilot")
+
+	// Should NOT return an error even though CompleteTask fails
+	err := notifier.NotifyTaskCompleted(context.Background(), "123456", "https://github.com/pr/1", "summary")
+	if err != nil {
+		t.Fatalf("NotifyTaskCompleted should succeed even if CompleteTask fails, got: %v", err)
 	}
 }
 
