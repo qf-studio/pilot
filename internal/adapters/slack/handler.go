@@ -633,15 +633,9 @@ DO NOT make any code changes. Only explore and plan.`, request),
 	result, err := h.runner.Execute(planCtx, task)
 
 	if err != nil {
-		var errMsg string
-		if planCtx.Err() == context.DeadlineExceeded {
-			errMsg = "⏱ Planning timed out. Try a simpler request."
-		} else {
-			errMsg = fmt.Sprintf("❌ Planning failed: %s", err.Error())
-		}
 		_, _ = h.apiClient.PostMessage(ctx, &Message{
 			Channel:  channelID,
-			Text:     errMsg,
+			Text:     planningErrorMessage(err, planCtx.Err()),
 			ThreadTS: threadTS,
 		})
 		return

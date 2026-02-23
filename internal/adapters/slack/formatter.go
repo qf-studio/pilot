@@ -275,6 +275,16 @@ func BuildResultBlocks(taskID string, success bool, output, prURL string) []inte
 	return blocks
 }
 
+// planningErrorMessage returns the user-facing message when runner.Execute
+// returns a non-nil error during planning. It distinguishes context deadline
+// exceeded (timeout) from all other executor errors.
+func planningErrorMessage(err error, ctxErr error) string {
+	if ctxErr != nil {
+		return "⏱ Planning timed out. Try a simpler request."
+	}
+	return fmt.Sprintf("❌ Planning failed: %s", err.Error())
+}
+
 // planEmptyMessage returns the appropriate user-facing message when planning
 // produces no output. It differentiates between executor errors, non-success
 // (e.g. timeout), and the case where the task is too simple for planning.

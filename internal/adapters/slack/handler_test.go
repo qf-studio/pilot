@@ -1,6 +1,8 @@
 package slack
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -356,6 +358,37 @@ func TestFormatter(t *testing.T) {
 	})
 }
 
+func TestPlanningErrorMessage(t *testing.T) {
+	tests := []struct {
+		name         string
+		err          error
+		ctxErr       error
+		wantContains string
+	}{
+		{
+			name:         "deadline exceeded surfaces timeout message",
+			err:          context.DeadlineExceeded,
+			ctxErr:       context.DeadlineExceeded,
+			wantContains: "timed out",
+		},
+		{
+			name:         "generic error surfaces error text",
+			err:          errors.New("claude exited with code 1"),
+			ctxErr:       nil,
+			wantContains: "claude exited with code 1",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := planningErrorMessage(tc.err, tc.ctxErr)
+			if !strings.Contains(got, tc.wantContains) {
+				t.Errorf("planningErrorMessage() = %q, want string containing %q", got, tc.wantContains)
+			}
+		})
+	}
+}
+
 func TestPlanEmptyMessage(t *testing.T) {
 	tests := []struct {
 		name          string
@@ -368,6 +401,12 @@ func TestPlanEmptyMessage(t *testing.T) {
 			resultError:   "claude exited with code 1",
 			resultSuccess: false,
 			wantContains:  "claude exited with code 1",
+		},
+		{
+			name:          "error surfaced even when success is true",
+			resultError:   "partial failure",
+			resultSuccess: true,
+			wantContains:  "partial failure",
 		},
 		{
 			name:          "non-success without error indicates timeout",
