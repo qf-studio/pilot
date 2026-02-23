@@ -712,8 +712,12 @@ DO NOT make any code changes. Only explore and plan.`, request),
 		CreatePR:    false,
 	}
 
-	// Execute with timeout (2 minutes for planning)
-	planCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	// Execute with timeout from config (default 2 minutes for planning)
+	planTimeout := 2 * time.Minute
+	if h.runner.Config() != nil && h.runner.Config().PlanningTimeout > 0 {
+		planTimeout = h.runner.Config().PlanningTimeout
+	}
+	planCtx, cancel := context.WithTimeout(ctx, planTimeout)
 	defer cancel()
 
 	logging.WithTask(taskID).Info("Creating plan", slog.String("chat_id", chatID))
@@ -730,7 +734,7 @@ DO NOT make any code changes. Only explore and plan.`, request),
 
 	planContent := cleanInternalSignals(result.Output)
 	if planContent == "" {
-		_, _ = h.client.SendMessage(ctx, chatID, "🤷 Could not generate a plan. Try being more specific.", "")
+		_, _ = h.client.SendMessage(ctx, chatID, planEmptyMessage(result.Error, result.Success), "")
 		return
 	}
 
@@ -754,6 +758,20 @@ DO NOT make any code changes. Only explore and plan.`, request),
 				{Text: "❌ Cancel", CallbackData: "cancel"},
 			},
 		})
+}
+
+// planEmptyMessage returns the appropriate user-facing message when planning
+// produces no output. It differentiates between executor errors, non-success
+// (e.g. timeout), and the case where the task is too simple for planning.
+func planEmptyMessage(resultError string, resultSuccess bool) string {
+	switch {
+	case resultError != "":
+		return fmt.Sprintf("❌ Planning error: %s", resultError)
+	case !resultSuccess:
+		return "⏱ Planning timed out. Try a simpler request."
+	default:
+		return "🤷 The task may be too simple for planning. Try executing it directly."
+	}
 }
 
 // extractPlanSummary extracts key points from a plan for display

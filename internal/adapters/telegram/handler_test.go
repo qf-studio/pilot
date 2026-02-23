@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -1512,6 +1513,51 @@ status: pending`,
 			status, _ := parseTaskFile(filePath)
 			if status != tt.wantStatus {
 				t.Errorf("status = %q, want %q", status, tt.wantStatus)
+			}
+		})
+	}
+}
+
+// TestPlanEmptyMessage tests differentiated messages when planning returns empty output.
+func TestPlanEmptyMessage(t *testing.T) {
+	tests := []struct {
+		name          string
+		resultError   string
+		resultSuccess bool
+		wantContains  string
+	}{
+		{
+			name:          "error present surfaces error",
+			resultError:   "permission denied",
+			resultSuccess: false,
+			wantContains:  "permission denied",
+		},
+		{
+			name:          "error present even when success is true",
+			resultError:   "partial failure",
+			resultSuccess: true,
+			wantContains:  "partial failure",
+		},
+		{
+			name:          "not success without error indicates timeout",
+			resultError:   "",
+			resultSuccess: false,
+			wantContains:  "timed out",
+		},
+		{
+			name:          "success with no error suggests too simple",
+			resultError:   "",
+			resultSuccess: true,
+			wantContains:  "too simple",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			msg := planEmptyMessage(tt.resultError, tt.resultSuccess)
+			if !strings.Contains(msg, tt.wantContains) {
+				t.Errorf("planEmptyMessage(%q, %v) = %q, want substring %q",
+					tt.resultError, tt.resultSuccess, msg, tt.wantContains)
 			}
 		})
 	}
