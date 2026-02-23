@@ -122,6 +122,25 @@ Each approval message includes context (PR URL, error details, timeout countdown
 
 Approval webhooks use HMAC-SHA256 signature verification with a 5-minute timestamp window to prevent replay attacks.
 
+## Planning Error Messages
+
+When using the `/plan` command, Pilot shows specific error messages based on the failure type:
+
+| Scenario | Message | Description |
+|----------|---------|-------------|
+| Timeout | ⏱ Planning timed out. Try a simpler request. | Planning exceeded the `planning_timeout` duration |
+| API/executor error | ❌ Planning failed: `<error>` | The executor returned an error during planning |
+| Empty result (error) | ❌ Planning error: `<error>` | Planning completed but produced an error |
+| Empty result (timeout) | ⏱ Planning timed out. Try a simpler request. | Planning finished without output due to timeout |
+| Empty result (success) | 🤷 The task may be too simple for planning. | No plan generated — try executing directly |
+
+The planning timeout is controlled by the `planning_timeout` field in the executor config (default: `2m`).
+
+```yaml
+executor:
+  planning_timeout: 3m  # increase for complex tasks
+```
+
 ## Daily Briefs
 
 Pilot can send daily or weekly summary digests to Slack channels.
