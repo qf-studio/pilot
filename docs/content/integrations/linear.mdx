@@ -253,6 +253,22 @@ workspaces:
 
 If only one Pilot project is mapped, all issues from that workspace use it.
 
+## Autopilot Integration (v2.10.0)
+
+When Pilot creates a PR from a Linear issue, the autopilot controller automatically monitors CI status and can auto-merge the PR — the same pipeline that GitHub issues get.
+
+This is powered by the `OnPRCreated` callback on the Linear poller. After a successful execution produces a PR, the callback fires and hands off to autopilot for CI monitoring, status checks, and optional auto-merge. The callback only fires on successful execution — failed tasks do not trigger it.
+
+<Callout type="info">
+Previously, autopilot CI monitoring and auto-merge were GitHub-only. As of v2.10.0, Linear tasks get the full autopilot pipeline automatically with no extra configuration.
+</Callout>
+
+## Processed Issue Persistence (v2.10.0)
+
+The Linear poller uses a `ProcessedStore` to persist which issues have already been handled. This prevents re-dispatching issues after a restart or hot upgrade.
+
+The store is backed by SQLite (the same memory backend used by the rest of Pilot) and is enabled automatically — no configuration required.
+
 ### Resolution Precedence
 
 When an issue arrives, Pilot resolves the target project in this order:
