@@ -648,6 +648,335 @@ func TestPagerDutyChannel_Send(t *testing.T) {
 	}
 }
 
+func TestWebhookChannel_Send_VerifyHMACSignature(t *testing.T) {
+	var receivedSignature string
+	var receivedBody []byte
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedSignature = r.Header.Get("X-Signature-256")
+		body, _ := io.ReadAll(r.Body)
+		receivedBody = body
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	secret := testutil.FakeWebhookSecret
+	config := &WebhookChannelConfig{
+		URL:    server.URL,
+		Secret: secret,
+	}
+
+	ch := NewWebhookChannel("hmac-test", config)
+
+	alert := &Alert{
+		ID:       "alert-hmac",
+		Type:     AlertTypeTaskFailed,
+		Severity: SeverityCritical,
+		Title:    "HMAC Verification Test",
+		Message:  "Verify the signature is correct",
+	}
+
+	err := ch.Send(context.Background(), alert)
+	if err != nil {
+		t.Fatalf("Send() error: %v", err)
+	}
+
+	// Verify signature format: "sha256=<hex>"
+	if receivedSignature == "" {
+		t.Fatal("expected X-Signature-256 header")
+	}
+	if len(receivedSignature) < 7 || receivedSignature[:7] != "sha256=" {
+		t.Fatalf("expected signature prefix 'sha256=', got '%s'", receivedSignature)
+	}
+
+	// Recompute the expected HMAC
+	expectedSig := ch.sign(receivedBody)
+	actualSig := receivedSignature[7:] // strip "sha256=" prefix
+
+	if actualSig != expectedSig {
+		t.Errorf("HMAC mismatch: got %s, expected %s", actualSig, expectedSig)
+	}
+}
+
+func TestWebhookChannel_Send_NoSignatureWithoutSecret(t *testing.T) {
+	var receivedSignature string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedSignature = r.Header.Get("X-Signature-256")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	config := &WebhookChannelConfig{
+		URL:    server.URL,
+		Secret: "", // No secret
+	}
+	ch := NewWebhookChannel("no-sig", config)
+
+	err := ch.Send(context.Background(), &Alert{ID: "no-sig-test"})
+	if err != nil {
+		t.Fatalf("Send() error: %v", err)
+	}
+
+	if receivedSignature != "" {
+		t.Errorf("expected no signature header, got '%s'", receivedSignature)
+	}
+}
+
+func TestWebhookChannel_Send_CustomMethod(t *testing.T) {
+	var receivedMethod string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedMethod = r.Method
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	config := &WebhookChannelConfig{
+		URL:    server.URL,
+		Method: "PUT",
+	}
+	ch := NewWebhookChannel("put-webhook", config)
+
+	err := ch.Send(context.Background(), &Alert{ID: "put-test"})
+	if err != nil {
+		t.Fatalf("Send() error: %v", err)
+	}
+
+	if receivedMethod != "PUT" {
+		t.Errorf("expected PUT, got %s", receivedMethod)
+	}
+}
+
+func TestWebhookChannel_Send_PayloadContainsAlert(t *testing.T) {
+	var receivedBody map[string]interface{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &receivedBody)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	config := &WebhookChannelConfig{URL: server.URL}
+	ch := NewWebhookChannel("payload-test", config)
+
+	alert := &Alert{
+		ID:          "alert-payload",
+		Type:        AlertTypeConsecutiveFails,
+		Severity:    SeverityCritical,
+		Title:       "Consecutive Failures",
+		Message:     "3 tasks failed in a row",
+		Source:      "project-x",
+		ProjectPath: "/path/to/project",
+	}
+
+	err := ch.Send(context.Background(), alert)
+	if err != nil {
+		t.Fatalf("Send() error: %v", err)
+	}
+
+	if receivedBody["id"] != "alert-payload" {
+		t.Errorf("expected id 'alert-payload', got %v", receivedBody["id"])
+	}
+	if receivedBody["type"] != string(AlertTypeConsecutiveFails) {
+		t.Errorf("expected type '%s', got %v", AlertTypeConsecutiveFails, receivedBody["type"])
+	}
+	if receivedBody["severity"] != string(SeverityCritical) {
+		t.Errorf("expected severity 'critical', got %v", receivedBody["severity"])
+	}
+	if receivedBody["title"] != "Consecutive Failures" {
+		t.Errorf("expected title 'Consecutive Failures', got %v", receivedBody["title"])
+	}
+	if receivedBody["source"] != "project-x" {
+		t.Errorf("expected source 'project-x', got %v", receivedBody["source"])
+	}
+}
+
+func TestPagerDutyChannel_Send_SeverityMapping(t *testing.T) {
+	tests := []struct {
+		name             string
+		severity         Severity
+		expectedSeverity string
+	}{
+		{"critical maps to critical", SeverityCritical, "critical"},
+		{"warning maps to warning", SeverityWarning, "warning"},
+		{"info maps to info", SeverityInfo, "info"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var receivedBody map[string]interface{}
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, _ := io.ReadAll(r.Body)
+				_ = json.Unmarshal(body, &receivedBody)
+				w.WriteHeader(http.StatusAccepted)
+			}))
+			defer server.Close()
+
+			ch := &PagerDutyChannel{
+				name:       "pd-sev-test",
+				routingKey: testutil.FakePagerDutyRoutingKey,
+				baseURL:    server.URL,
+				client:     &http.Client{},
+			}
+
+			alert := &Alert{
+				Title:     "Severity Test",
+				Message:   "Testing severity mapping",
+				Severity:  tt.severity,
+				Type:      AlertTypeTaskFailed,
+				Source:    "test",
+				CreatedAt: time.Now(),
+			}
+
+			err := ch.Send(context.Background(), alert)
+			if err != nil {
+				t.Fatalf("Send() error: %v", err)
+			}
+
+			payload, ok := receivedBody["payload"].(map[string]interface{})
+			if !ok {
+				t.Fatal("payload missing or wrong type")
+			}
+			if payload["severity"] != tt.expectedSeverity {
+				t.Errorf("severity = %v, want %s", payload["severity"], tt.expectedSeverity)
+			}
+		})
+	}
+}
+
+func TestPagerDutyChannel_Send_DedupKey(t *testing.T) {
+	var receivedBody map[string]interface{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &receivedBody)
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer server.Close()
+
+	ch := &PagerDutyChannel{
+		name:       "pd-dedup",
+		routingKey: testutil.FakePagerDutyRoutingKey,
+		baseURL:    server.URL,
+		client:     &http.Client{},
+	}
+
+	alert := &Alert{
+		Type:      AlertTypeConsecutiveFails,
+		Source:    "my-project",
+		Severity:  SeverityCritical,
+		Title:     "Dedup Test",
+		Message:   "Test",
+		CreatedAt: time.Now(),
+	}
+
+	err := ch.Send(context.Background(), alert)
+	if err != nil {
+		t.Fatalf("Send() error: %v", err)
+	}
+
+	expectedDedup := "pilot-consecutive_failures-my-project"
+	if receivedBody["dedup_key"] != expectedDedup {
+		t.Errorf("dedup_key = %v, want %s", receivedBody["dedup_key"], expectedDedup)
+	}
+}
+
+func TestPagerDutyChannel_Send_PayloadStructure(t *testing.T) {
+	var receivedBody map[string]interface{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &receivedBody)
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer server.Close()
+
+	ch := &PagerDutyChannel{
+		name:       "pd-structure",
+		routingKey: testutil.FakePagerDutyRoutingKey,
+		serviceID:  "test-service",
+		baseURL:    server.URL,
+		client:     &http.Client{},
+	}
+
+	alert := &Alert{
+		Type:        AlertTypeTaskStuck,
+		Source:      "task:TASK-42",
+		Severity:    SeverityWarning,
+		Title:       "Task Stuck",
+		Message:     "No progress for 10m",
+		ProjectPath: "/home/user/project",
+		CreatedAt:   time.Now(),
+		Metadata:    map[string]string{"task_id": "TASK-42", "phase": "build"},
+	}
+
+	err := ch.Send(context.Background(), alert)
+	if err != nil {
+		t.Fatalf("Send() error: %v", err)
+	}
+
+	// Verify top-level fields
+	if receivedBody["routing_key"] != testutil.FakePagerDutyRoutingKey {
+		t.Errorf("routing_key = %v", receivedBody["routing_key"])
+	}
+	if receivedBody["event_action"] != "trigger" {
+		t.Errorf("event_action = %v", receivedBody["event_action"])
+	}
+
+	// Verify payload structure
+	payload, ok := receivedBody["payload"].(map[string]interface{})
+	if !ok {
+		t.Fatal("payload missing")
+	}
+
+	if payload["component"] != "pilot" {
+		t.Errorf("component = %v, want 'pilot'", payload["component"])
+	}
+	if payload["group"] != "/home/user/project" {
+		t.Errorf("group = %v, want '/home/user/project'", payload["group"])
+	}
+	if payload["class"] != string(AlertTypeTaskStuck) {
+		t.Errorf("class = %v, want '%s'", payload["class"], AlertTypeTaskStuck)
+	}
+	if payload["source"] != "task:TASK-42" {
+		t.Errorf("source = %v, want 'task:TASK-42'", payload["source"])
+	}
+
+	// Verify custom_details contains metadata
+	details, ok := payload["custom_details"].(map[string]interface{})
+	if !ok {
+		t.Fatal("custom_details missing or wrong type")
+	}
+	if details["task_id"] != "TASK-42" {
+		t.Errorf("custom_details.task_id = %v, want 'TASK-42'", details["task_id"])
+	}
+	if details["phase"] != "build" {
+		t.Errorf("custom_details.phase = %v, want 'build'", details["phase"])
+	}
+}
+
+func TestPagerDutyChannel_Send_NetworkError(t *testing.T) {
+	ch := &PagerDutyChannel{
+		name:       "pd-net-err",
+		routingKey: testutil.FakePagerDutyRoutingKey,
+		baseURL:    "http://localhost:99999",
+		client:     &http.Client{},
+	}
+
+	err := ch.Send(context.Background(), &Alert{
+		Title:     "Test",
+		Message:   "fail",
+		Severity:  SeverityWarning,
+		CreatedAt: time.Now(),
+	})
+	if err == nil {
+		t.Fatal("expected network error")
+	}
+}
+
 func TestPagerDutyChannel_Send_Error(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
