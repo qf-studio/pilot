@@ -246,6 +246,27 @@ Asana tasks can belong to multiple projects. Pilot uses the first project for co
 # Pilot sees: ProjectName = "Backend"
 ```
 
+## Duplicate Prevention
+
+<Callout type="info">
+Available since v2.10.0. All non-GitHub pollers now share this reliability feature.
+</Callout>
+
+The Asana poller persists processed task state to SQLite via a `ProcessedStore`. This means:
+
+- **Survives restarts and hot upgrades** — tasks that were already dispatched are not re-dispatched after a restart.
+- **Automatic rollback on failure** — if execution fails, the task is unmarked so Pilot can retry it on the next poll cycle.
+- **Loaded on startup** — previously processed tasks are restored from the database before the first poll.
+
+No additional configuration is required. The store is enabled automatically when Pilot uses SQLite for memory.
+
+## Automatic Task Completion
+
+When Pilot creates a PR for an Asana task, the task is automatically marked as completed in Asana via the `CompleteTask` API call.
+
+- Completion happens as part of the success notification flow (after the PR comment is posted).
+- **Non-blocking** — if the `CompleteTask` call fails (e.g., network error, permission issue), the PR is still created and the task is still marked as `pilot-done` via tags. A warning is logged instead.
+
 ## Retry Behavior
 
 If execution fails:
