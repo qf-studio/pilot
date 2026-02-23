@@ -1218,6 +1218,13 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 	backendName := r.backend.Name()
 	r.reportProgress(task.ID, "Starting", 0, fmt.Sprintf("Initializing %s...", backendName))
 
+	// Clean stale pilot hooks unconditionally — even when hooks.enabled is false.
+	// Prevents dead entries from accumulating after OS reboots clear temp dirs (GH-1749).
+	stalePath := filepath.Join(executionPath, ".claude", "settings.json")
+	if cleanErr := CleanStalePilotHooks(stalePath); cleanErr != nil {
+		log.Warn("Failed to clean stale pilot hooks", slog.Any("error", cleanErr))
+	}
+
 	// Setup Claude Code hooks if enabled (GH-1266)
 	var hookRestoreFunc func() error
 	if r.config != nil && r.config.Hooks != nil && r.config.Hooks.Enabled {

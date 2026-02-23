@@ -411,6 +411,94 @@ func isPilotManagedHook(cmd string) bool {
 	return strings.HasPrefix(base, "pilot-") && strings.HasSuffix(base, ".sh")
 }
 
+// CleanStalePilotHooks removes stale pilot hook entries from .claude/settings.json.
+// Called on startup regardless of hooks.enabled to prevent accumulation of dead entries
+// from previous runs (e.g. after OS reboot clears temp dirs, or after format upgrades).
+//
+// Removes entries where:
+//   - isPilotManagedHook(cmd) is true AND hookFileExists(cmd) is false (dead script paths)
+//   - OR the entry has an old object-format matcher ({"tools": [...]}) instead of a string
+//
+// Non-pilot user hooks are always preserved.
+func CleanStalePilotHooks(settingsPath string) error {
+	data, err := os.ReadFile(settingsPath)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("failed to read settings: %w", err)
+	}
+
+	var raw map[string]interface{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return fmt.Errorf("failed to parse settings: %w", err)
+	}
+
+	hooksRaw, ok := raw["hooks"]
+	if !ok {
+		return nil
+	}
+
+	hooksMap, ok := hooksRaw.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+
+	cleaned := make(map[string]interface{})
+	totalBefore, totalAfter := 0, 0
+
+	for event, entries := range hooksMap {
+		arr, ok := entries.([]interface{})
+		if !ok {
+			cleaned[event] = entries
+			continue
+		}
+
+		totalBefore += len(arr)
+
+		var kept []interface{}
+		for _, entry := range arr {
+			m, ok := entry.(map[string]interface{})
+			if !ok {
+				kept = append(kept, entry)
+				continue
+			}
+
+			// Remove entries with old object-format matcher: {"tools": [...]}
+			if matcherVal, hasMatcher := m["matcher"]; hasMatcher {
+				if _, isString := matcherVal.(string); !isString {
+					continue
+				}
+			}
+
+			// Remove stale pilot hooks whose script files are gone
+			cmd := extractCommandFromEntry(m)
+			if cmd != "" && isPilotManagedHook(cmd) && !hookFileExists(cmd) {
+				continue
+			}
+
+			kept = append(kept, entry)
+		}
+
+		totalAfter += len(kept)
+		if len(kept) > 0 {
+			cleaned[event] = kept
+		}
+	}
+
+	if totalBefore == totalAfter {
+		return nil
+	}
+
+	if len(cleaned) == 0 {
+		delete(raw, "hooks")
+	} else {
+		raw["hooks"] = cleaned
+	}
+
+	return WriteClaudeSettings(settingsPath, raw)
+}
+
 // WriteEmbeddedScripts extracts embedded hook scripts to the specified directory
 func WriteEmbeddedScripts(scriptDir string) error {
 	// Create directory if it doesn't exist
