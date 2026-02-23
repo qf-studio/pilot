@@ -18,6 +18,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-BSL_1.1-blue.svg?style=flat-square" alt="License: BSL 1.1"></a>
   <a href="https://github.com/alekspetrov/pilot/actions"><img src="https://github.com/alekspetrov/pilot/workflows/CI/badge.svg?style=flat-square" alt="CI"></a>
   <a href="https://goreportcard.com/report/github.com/alekspetrov/pilot"><img src="https://goreportcard.com/badge/github.com/alekspetrov/pilot?style=flat-square" alt="Go Report Card"></a>
+  <a href="https://discord.gg/K6mM8TzJ"><img src="https://img.shields.io/badge/Discord-Join%20Chat-5865F2?style=flat-square&logo=discord&logoColor=white" alt="Discord"></a>
 </p>
 
 <p align="center">
@@ -27,6 +28,7 @@
   <a href="#how-it-works">How It Works</a> •
   <a href="#features">Features</a> •
   <a href="#cli-reference">CLI</a> •
+  <a href="https://discord.gg/K6mM8TzJ">Discord</a> •
   <a href="docs/DEPLOYMENT.md">Deploy</a>
 </p>
 
