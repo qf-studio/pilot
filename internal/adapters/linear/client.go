@@ -23,6 +23,7 @@ var _ executor.SubIssueCreator = (*Client)(nil)
 // Client is a Linear API client
 type Client struct {
 	apiKey     string
+	baseURL    string
 	httpClient *http.Client
 
 	doneStateMu    sync.RWMutex
@@ -32,7 +33,20 @@ type Client struct {
 // NewClient creates a new Linear client
 func NewClient(apiKey string) *Client {
 	return &Client{
-		apiKey: apiKey,
+		apiKey:  apiKey,
+		baseURL: linearAPIURL,
+		httpClient: &http.Client{
+			Timeout: 30 * time.Second,
+		},
+		doneStateCache: make(map[string]string),
+	}
+}
+
+// NewClientWithBaseURL creates a new Linear client with a custom base URL (for testing)
+func NewClientWithBaseURL(apiKey, baseURL string) *Client {
+	return &Client{
+		apiKey:  apiKey,
+		baseURL: baseURL,
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
@@ -118,7 +132,7 @@ func (c *Client) Execute(ctx context.Context, query string, variables map[string
 		return fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, linearAPIURL, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
 	}
