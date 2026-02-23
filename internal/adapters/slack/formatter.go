@@ -275,6 +275,20 @@ func BuildResultBlocks(taskID string, success bool, output, prURL string) []inte
 	return blocks
 }
 
+// planEmptyMessage returns the appropriate user-facing message when planning
+// produces no output. It differentiates between executor errors, non-success
+// (e.g. timeout), and the case where the task is too simple for planning.
+func planEmptyMessage(resultError string, resultSuccess bool) string {
+	switch {
+	case resultError != "":
+		return fmt.Sprintf("❌ Planning error: %s", resultError)
+	case !resultSuccess:
+		return "⏱ Planning timed out. Try a simpler request."
+	default:
+		return "🤷 The task may be too simple for planning. Try executing it directly."
+	}
+}
+
 // CleanInternalSignals removes internal Navigator signals from output.
 func CleanInternalSignals(output string) string {
 	// Remove common internal signals

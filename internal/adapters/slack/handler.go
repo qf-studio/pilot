@@ -619,8 +619,12 @@ DO NOT make any code changes. Only explore and plan.`, request),
 		CreatePR:    false,
 	}
 
-	// Execute with timeout (2 minutes for planning)
-	planCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	// Execute with timeout from config (default 2 minutes for planning)
+	planTimeout := 2 * time.Minute
+	if h.runner.Config() != nil && h.runner.Config().PlanningTimeout > 0 {
+		planTimeout = h.runner.Config().PlanningTimeout
+	}
+	planCtx, cancel := context.WithTimeout(ctx, planTimeout)
 	defer cancel()
 
 	h.log.Info("Creating plan",
@@ -647,7 +651,7 @@ DO NOT make any code changes. Only explore and plan.`, request),
 	if planContent == "" {
 		_, _ = h.apiClient.PostMessage(ctx, &Message{
 			Channel:  channelID,
-			Text:     "🤷 Could not generate a plan. Try being more specific.",
+			Text:     planEmptyMessage(result.Error, result.Success),
 			ThreadTS: threadTS,
 		})
 		return

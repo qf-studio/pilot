@@ -355,3 +355,41 @@ func TestFormatter(t *testing.T) {
 		}
 	})
 }
+
+func TestPlanEmptyMessage(t *testing.T) {
+	tests := []struct {
+		name          string
+		resultError   string
+		resultSuccess bool
+		wantContains  string
+	}{
+		{
+			name:          "executor error surfaced",
+			resultError:   "claude exited with code 1",
+			resultSuccess: false,
+			wantContains:  "claude exited with code 1",
+		},
+		{
+			name:          "non-success without error indicates timeout",
+			resultError:   "",
+			resultSuccess: false,
+			wantContains:  "timed out",
+		},
+		{
+			name:          "success with no output suggests direct execution",
+			resultError:   "",
+			resultSuccess: true,
+			wantContains:  "directly",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := planEmptyMessage(tc.resultError, tc.resultSuccess)
+			if !strings.Contains(got, tc.wantContains) {
+				t.Errorf("planEmptyMessage(%q, %v) = %q, want string containing %q",
+					tc.resultError, tc.resultSuccess, got, tc.wantContains)
+			}
+		})
+	}
+}
