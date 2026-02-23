@@ -544,6 +544,163 @@ func TestAddPilotTag_CreateNew(t *testing.T) {
 	}
 }
 
+func TestNotifyTaskStarted_APIError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"errors":[{"message":"internal server error"}]}`))
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(server.URL, testutil.FakeAsanaAccessToken, testutil.FakeAsanaWorkspaceID)
+	notifier := NewNotifier(client, "pilot")
+
+	err := notifier.NotifyTaskStarted(context.Background(), "123456", "PILOT-001")
+	if err == nil {
+		t.Fatal("expected error when API returns 500")
+	}
+	if !strings.Contains(err.Error(), "failed to add start comment") {
+		t.Errorf("expected wrapped error, got: %v", err)
+	}
+}
+
+func TestNotifyTaskFailed_APIError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"errors":[{"message":"internal server error"}]}`))
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(server.URL, testutil.FakeAsanaAccessToken, testutil.FakeAsanaWorkspaceID)
+	notifier := NewNotifier(client, "pilot")
+
+	err := notifier.NotifyTaskFailed(context.Background(), "123456", "some reason")
+	if err == nil {
+		t.Fatal("expected error when API returns 500")
+	}
+	if !strings.Contains(err.Error(), "failed to add failure comment") {
+		t.Errorf("expected wrapped error, got: %v", err)
+	}
+}
+
+func TestNotifyProgress_APIError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"errors":[{"message":"internal server error"}]}`))
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(server.URL, testutil.FakeAsanaAccessToken, testutil.FakeAsanaWorkspaceID)
+	notifier := NewNotifier(client, "pilot")
+
+	err := notifier.NotifyProgress(context.Background(), "123456", "implementing", "details")
+	if err == nil {
+		t.Fatal("expected error when API returns 500")
+	}
+	if !strings.Contains(err.Error(), "failed to add progress comment") {
+		t.Errorf("expected wrapped error, got: %v", err)
+	}
+}
+
+func TestNotifyTaskCompleted_CommentAPIError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"errors":[{"message":"internal server error"}]}`))
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(server.URL, testutil.FakeAsanaAccessToken, testutil.FakeAsanaWorkspaceID)
+	notifier := NewNotifier(client, "pilot")
+
+	err := notifier.NotifyTaskCompleted(context.Background(), "123456", "https://github.com/pr/1", "summary")
+	if err == nil {
+		t.Fatal("expected error when comment API returns 500")
+	}
+	if !strings.Contains(err.Error(), "failed to add completion comment") {
+		t.Errorf("expected wrapped error, got: %v", err)
+	}
+}
+
+func TestCompleteTask_APIError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"errors":[{"message":"internal server error"}]}`))
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(server.URL, testutil.FakeAsanaAccessToken, testutil.FakeAsanaWorkspaceID)
+	notifier := NewNotifier(client, "pilot")
+
+	err := notifier.CompleteTask(context.Background(), "123456")
+	if err == nil {
+		t.Fatal("expected error when API returns 500")
+	}
+	if !strings.Contains(err.Error(), "failed to complete task") {
+		t.Errorf("expected wrapped error, got: %v", err)
+	}
+}
+
+func TestLinkPR_AttachmentFailsFallsBackToComment(t *testing.T) {
+	var capturedComment string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/attachments") {
+			// Attachment fails
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"errors":[{"message":"not authorized"}]}`))
+			return
+		}
+
+		if strings.Contains(r.URL.Path, "/stories") {
+			var body map[string]interface{}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("failed to decode body: %v", err)
+			}
+			data := body["data"].(map[string]interface{})
+			capturedComment = data["text"].(string)
+
+			resp := APIResponse[Story]{
+				Data: Story{GID: "story-1", Text: capturedComment},
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(resp)
+			return
+		}
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(server.URL, testutil.FakeAsanaAccessToken, testutil.FakeAsanaWorkspaceID)
+	notifier := NewNotifier(client, "pilot")
+
+	err := notifier.LinkPR(context.Background(), "123456", 42, "https://github.com/owner/repo/pull/42")
+	if err != nil {
+		t.Fatalf("LinkPR should succeed even if attachment fails: %v", err)
+	}
+
+	if !strings.Contains(capturedComment, "PR #42") {
+		t.Errorf("comment should mention PR number, got: %s", capturedComment)
+	}
+}
+
+func TestRemovePilotTag_TagNotFound(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Return empty tags list
+		resp := PagedResponse[Tag]{
+			Data: []Tag{},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(server.URL, testutil.FakeAsanaAccessToken, testutil.FakeAsanaWorkspaceID)
+	notifier := NewNotifier(client, "pilot")
+
+	err := notifier.RemovePilotTag(context.Background(), "123456")
+	if err != nil {
+		t.Fatalf("RemovePilotTag should succeed when tag not found: %v", err)
+	}
+}
+
 func TestNotifierMethodSignatures(t *testing.T) {
 	client := NewClient(testutil.FakeAsanaAccessToken, testutil.FakeAsanaWorkspaceID)
 	notifier := NewNotifier(client, "pilot")
