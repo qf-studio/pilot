@@ -2011,24 +2011,34 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 				linear.WithOnLinearIssue(func(issueCtx context.Context, issue *linear.Issue) (*linear.IssueResult, error) {
 					// GH-1348: Resolve project path per-issue using workspace→project mapping
 					issueProjectPath := projectPath // fallback to default
-					pilotProject := wsConfig.ResolvePilotProject(issue)
-					if pilotProject != "" {
-						if proj := cfg.GetProjectByName(pilotProject); proj != nil {
-							issueProjectPath = proj.Path
+					var resolvedProject *config.ProjectConfig
+
+					// GH-1684: Check project-level linear.project_id mapping first
+					if issue.Project != nil {
+						resolvedProject = cfg.GetProjectByLinearID(issue.Project.ID)
+					}
+
+					// Fall back to workspace-level resolution
+					if resolvedProject == nil {
+						pilotProject := wsConfig.ResolvePilotProject(issue)
+						if pilotProject != "" {
+							resolvedProject = cfg.GetProjectByName(pilotProject)
 						}
 					}
+
+					if resolvedProject != nil {
+						issueProjectPath = resolvedProject.Path
+					}
+
 					result, err := handleLinearIssueWithResult(issueCtx, cfg, linearClient, issue, issueProjectPath, dispatcher, runner, monitor, program, alertsEngine, enforcer)
 
 					// GH-1361: Wire PR to autopilot for CI monitoring + auto-merge
 					if result != nil && result.PRNumber > 0 {
-						// Resolve which autopilot controller to use based on project
-						if pilotProject != "" {
-							if proj := cfg.GetProjectByName(pilotProject); proj != nil && proj.GitHub != nil {
-								repoFullName := fmt.Sprintf("%s/%s", proj.GitHub.Owner, proj.GitHub.Repo)
-								if controller, ok := autopilotControllers[repoFullName]; ok && controller != nil {
-									// issueNumber=0 because Linear issues don't have GitHub issue numbers
-									controller.OnPRCreated(result.PRNumber, result.PRURL, 0, result.HeadSHA, result.BranchName)
-								}
+						if resolvedProject != nil && resolvedProject.GitHub != nil {
+							repoFullName := fmt.Sprintf("%s/%s", resolvedProject.GitHub.Owner, resolvedProject.GitHub.Repo)
+							if controller, ok := autopilotControllers[repoFullName]; ok && controller != nil {
+								// issueNumber=0 because Linear issues don't have GitHub issue numbers
+								controller.OnPRCreated(result.PRNumber, result.PRURL, 0, result.HeadSHA, result.BranchName)
 							}
 						}
 					}

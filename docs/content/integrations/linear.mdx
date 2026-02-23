@@ -208,7 +208,36 @@ Pilot posts comments on Linear issues as it works:
 
 ## Project Mapping
 
-Map Linear projects to Pilot projects to control which codebase Pilot works in:
+There are two ways to map Linear projects to Pilot projects: **project-level** (recommended) and **workspace-level** (legacy).
+
+### Project-Level Mapping (Recommended)
+
+Map each Pilot project directly to its Linear project using `linear.project_id` in the project config. This gives deterministic 1-to-1 mapping:
+
+```yaml
+projects:
+  - name: aso-generator
+    path: ~/Projects/aso-generator
+    github:
+      owner: my-org
+      repo: aso-generator
+    linear:
+      project_id: "linear-project-uuid-abc"
+
+  - name: pilot
+    path: ~/Projects/pilot
+    github:
+      owner: my-org
+      repo: pilot
+    linear:
+      project_id: "linear-project-uuid-def"
+```
+
+When a Linear issue belongs to `linear-project-uuid-abc`, Pilot resolves it to the `aso-generator` project directly.
+
+### Workspace-Level Mapping (Legacy)
+
+You can also map at the workspace level using `project_ids` and `projects` arrays:
 
 ```yaml
 workspaces:
@@ -222,4 +251,17 @@ workspaces:
       - pilot
 ```
 
-When a Linear issue belongs to `linear-project-uuid-abc`, Pilot resolves it to the `aso-generator` project. If only one Pilot project is mapped, all issues from that workspace use it.
+If only one Pilot project is mapped, all issues from that workspace use it.
+
+### Resolution Precedence
+
+When an issue arrives, Pilot resolves the target project in this order:
+
+1. **Project-level** `linear.project_id` — exact match on issue's Linear project ID
+2. **Workspace-level** `project_ids` / `projects` — workspace-scoped mapping
+3. **Generic matching** — match by Linear project name or team key
+4. **Default project** — first configured project as fallback
+
+<Callout type="info">
+Project-level mapping takes priority over workspace-level mapping. If both are configured, the project-level `linear.project_id` wins.
+</Callout>

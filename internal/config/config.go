@@ -150,12 +150,18 @@ type ProjectConfig struct {
 	Navigator     bool                 `yaml:"navigator"`
 	DefaultBranch string               `yaml:"default_branch"`
 	GitHub        *ProjectGitHubConfig `yaml:"github,omitempty"`
+	Linear        *ProjectLinearConfig `yaml:"linear,omitempty"`
 }
 
 // ProjectGitHubConfig holds GitHub-specific project configuration for PR creation and issue tracking.
 type ProjectGitHubConfig struct {
 	Owner string `yaml:"owner"`
 	Repo  string `yaml:"repo"`
+}
+
+// ProjectLinearConfig holds Linear-specific project configuration for project pairing.
+type ProjectLinearConfig struct {
+	ProjectID string `yaml:"project_id"`
 }
 
 // DashboardConfig holds settings for the terminal UI dashboard.
@@ -565,6 +571,17 @@ func (c *Config) GetProjectByName(name string) *ProjectConfig {
 	nameLower := strings.ToLower(name)
 	for _, project := range c.Projects {
 		if strings.ToLower(project.Name) == nameLower {
+			return project
+		}
+	}
+	return nil
+}
+
+// GetProjectByLinearID returns the project matching a Linear project UUID.
+// Returns nil if no project has a matching linear.project_id configured.
+func (c *Config) GetProjectByLinearID(linearProjectID string) *ProjectConfig {
+	for _, project := range c.Projects {
+		if project.Linear != nil && project.Linear.ProjectID == linearProjectID {
 			return project
 		}
 	}

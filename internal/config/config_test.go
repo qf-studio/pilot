@@ -727,6 +727,61 @@ func TestGetProjectByName(t *testing.T) {
 	}
 }
 
+func TestGetProjectByLinearID(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Projects = []*ProjectConfig{
+		{Name: "aso-generator", Path: "/path/to/aso", Linear: &ProjectLinearConfig{ProjectID: "proj-abc123"}},
+		{Name: "pilot", Path: "/path/to/pilot", Linear: &ProjectLinearConfig{ProjectID: "proj-def456"}},
+		{Name: "no-linear", Path: "/path/to/other"},
+	}
+
+	tests := []struct {
+		name      string
+		linearID  string
+		wantPath  string
+		wantNil   bool
+	}{
+		{
+			name:     "match first project",
+			linearID: "proj-abc123",
+			wantPath: "/path/to/aso",
+		},
+		{
+			name:     "match second project",
+			linearID: "proj-def456",
+			wantPath: "/path/to/pilot",
+		},
+		{
+			name:    "no match",
+			linearID: "proj-unknown",
+			wantNil: true,
+		},
+		{
+			name:    "empty ID",
+			linearID: "",
+			wantNil: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			project := cfg.GetProjectByLinearID(tt.linearID)
+			if tt.wantNil {
+				if project != nil {
+					t.Errorf("GetProjectByLinearID(%q) = %+v, want nil", tt.linearID, project)
+				}
+			} else {
+				if project == nil {
+					t.Fatalf("GetProjectByLinearID(%q) = nil, want project", tt.linearID)
+				}
+				if project.Path != tt.wantPath {
+					t.Errorf("GetProjectByLinearID(%q).Path = %q, want %q", tt.linearID, project.Path, tt.wantPath)
+				}
+			}
+		})
+	}
+}
+
 func TestGetDefaultProject(t *testing.T) {
 	tests := []struct {
 		name     string

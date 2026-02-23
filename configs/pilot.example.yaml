@@ -208,6 +208,14 @@ projects:
     path: "/path/to/my-app"
     navigator: true           # Use Navigator for context efficiency
     default_branch: "main"
+    # GitHub integration for PR creation
+    # github:
+    #   owner: "my-org"
+    #   repo: "my-app"
+    # Linear project pairing (GH-1684) - maps Linear project to this Pilot project
+    # Precedence: project-level linear.project_id > workspace-level > default_project
+    # linear:
+    #   project_id: "proj-abc123"   # Linear project UUID
 
 # Autopilot settings
 autopilot:

@@ -649,13 +649,23 @@ func (p *Pilot) handleLinearIssueMultiWorkspace(ctx context.Context, issue *line
 		return fmt.Errorf("workspace %s not found", workspaceName)
 	}
 
-	// Find project for this issue - first try workspace-specific mapping
+	// Find project for this issue
 	var projectPath string
-	pilotProject := ws.ResolvePilotProject(issue)
-	if pilotProject != "" {
-		// Look up the Pilot project config by name
-		if proj := p.config.GetProjectByName(pilotProject); proj != nil {
+
+	// GH-1684: Check project-level linear.project_id mapping first
+	if issue.Project != nil {
+		if proj := p.config.GetProjectByLinearID(issue.Project.ID); proj != nil {
 			projectPath = proj.Path
+		}
+	}
+
+	// Fall back to workspace-specific mapping
+	if projectPath == "" {
+		pilotProject := ws.ResolvePilotProject(issue)
+		if pilotProject != "" {
+			if proj := p.config.GetProjectByName(pilotProject); proj != nil {
+				projectPath = proj.Path
+			}
 		}
 	}
 
