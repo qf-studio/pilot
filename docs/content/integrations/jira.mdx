@@ -122,6 +122,26 @@ Jira issues are converted to Pilot tasks with the following mapping:
 | Labels | Labels | Filtered (excludes `pilot` and priority labels) |
 | Project key | ProjectKey | Direct |
 
+## Reliability Features (v2.10.0)
+
+### ProcessedStore — Duplicate Prevention
+
+The Jira poller tracks which issues have been processed using a persistent store backed by SQLite. This prevents duplicate task dispatch across restarts, hot upgrades, and crash recovery.
+
+On startup the poller loads previously processed issue keys. After successful execution an issue is marked as processed; if execution fails, the mark is removed so the issue is retried on the next poll cycle.
+
+No additional configuration is required — ProcessedStore is wired automatically when using the default Pilot setup.
+
+### Autopilot Pipeline via OnPRCreated
+
+Starting in v2.10.0, Jira-sourced tasks have full autopilot parity with GitHub issues. When Pilot creates a PR for a Jira issue, the `OnPRCreated` callback wires it into the autopilot controller, enabling:
+
+- **CI monitoring** — Pilot watches the PR's CI status and posts updates back to the Jira issue
+- **Auto-merge** — PRs that pass all quality gates are merged automatically (when enabled)
+- **Feedback loop** — CI failures trigger automatic fix attempts
+
+This brings Jira to the same level of automation previously available only for GitHub-sourced tasks.
+
 ## Status Transitions
 
 Pilot updates Jira issue status as it works:
