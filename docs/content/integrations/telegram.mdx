@@ -135,6 +135,13 @@ Pilot will:
 2. Draft an implementation plan
 3. Offer Execute/Cancel buttons to proceed
 
+If planning fails, Pilot shows a specific error message depending on the failure type:
+- **Timeout** — planning exceeded the configured `planning_timeout` duration
+- **API error** — the upstream LLM call failed
+- **Empty result** — planning completed but produced no output
+
+The timeout is controlled by the executor's `planning_timeout` setting.
+
 ### Chat Mode
 
 Triggered by conversational messages:
@@ -221,7 +228,7 @@ Switch between configured projects:
 /project           # Show current project
 ```
 
-Each chat maintains its own active project.
+Each chat maintains its own active project. When you submit a task, it is always routed to the currently active project — use `/switch` to change context before submitting.
 
 ## Task Confirmation
 
