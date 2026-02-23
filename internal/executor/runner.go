@@ -1550,6 +1550,23 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 				}
 			}
 
+			// GH-1716: If execution was killed and decompose_on_kill is enabled,
+			// attempt decomposition as last resort before failing.
+			if r.retrier != nil && r.retrier.config.DecomposeOnKill && r.decomposer != nil {
+				if beErr, ok := err.(BackendError); ok && beErr.ErrorType() == "timeout" {
+					log.Info("Execution killed, attempting decomposition fallback",
+						slog.String("task_id", task.ID))
+
+					decompResult := r.decomposer.DecomposeForRetry(ctx, task)
+					if decompResult.Decomposed && len(decompResult.Subtasks) > 1 {
+						log.Info("Decomposition fallback succeeded",
+							slog.String("task_id", task.ID),
+							slog.Int("subtask_count", len(decompResult.Subtasks)))
+						return r.executeDecomposedTask(ctx, task, decompResult.Subtasks, executionPath)
+					}
+				}
+			}
+
 			// GH-917-5: Include stderr in alert metadata for debugging
 			metadata := map[string]string{
 				"error_category": errorCategory,

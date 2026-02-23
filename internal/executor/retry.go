@@ -59,6 +59,12 @@ type RetryConfig struct {
 	// Timeout strategy for timeout errors (retry with extended timeout)
 	Timeout *RetryStrategy `yaml:"timeout,omitempty"`
 
+	// DecomposeOnKill enables automatic decomposition when execution is killed
+	// (OOM, signal:killed, timeout). Instead of plain retry, the task is decomposed
+	// into subtasks. Requires decomposer to be configured. Default: false.
+	// GH-1716: Prevents tasks too large for single execution from failing permanently.
+	DecomposeOnKill bool `yaml:"decompose_on_kill,omitempty"`
+
 	// Note: invalid_config has no entry = fail fast (no retry)
 }
 

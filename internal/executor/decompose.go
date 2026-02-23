@@ -155,6 +155,39 @@ func (d *TaskDecomposer) DecomposeWithContext(ctx context.Context, task *Task) *
 	}
 }
 
+// DecomposeForRetry attempts decomposition after an execution failure (OOM/killed).
+// Bypasses word count gate — execution failure already proved task is too large.
+// Still respects no-decompose label and requires structural split points.
+// GH-1716: Safety net for tasks that slip through initial classification.
+func (d *TaskDecomposer) DecomposeForRetry(ctx context.Context, task *Task) *DecomposeResult {
+	if task == nil {
+		return &DecomposeResult{Decomposed: false, Reason: "nil task"}
+	}
+
+	if HasLabel(task, NoDecomposeLabel) {
+		return &DecomposeResult{
+			Decomposed: false,
+			Subtasks:   []*Task{task},
+			Reason:     "skipped: no-decompose label (even on retry)",
+		}
+	}
+
+	subtasks := d.analyzeAndSplit(task)
+	if len(subtasks) <= 1 {
+		return &DecomposeResult{
+			Decomposed: false,
+			Subtasks:   []*Task{task},
+			Reason:     "no decomposition points found (retry fallback)",
+		}
+	}
+
+	return &DecomposeResult{
+		Decomposed: true,
+		Subtasks:   subtasks,
+		Reason:     "decomposed after execution failure (retry fallback)",
+	}
+}
+
 // shouldDecompose checks if the complexity meets the threshold.
 // Epic tasks are always decomposable since they're too large for single execution.
 func (d *TaskDecomposer) shouldDecompose(complexity Complexity) bool {

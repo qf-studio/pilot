@@ -589,6 +589,93 @@ func TestShouldDecompose(t *testing.T) {
 	}
 }
 
+func TestDecomposeForRetry_BypassesAllGates(t *testing.T) {
+	// DecomposeForRetry should bypass word count and complexity gates entirely.
+	// A short task with numbered steps should decompose because execution failure
+	// already proved the task is too large — gate bypass is the point of this path.
+	config := &DecomposeConfig{
+		Enabled:             false, // Disabled for normal path — bypass is the point
+		MinComplexity:       "complex",
+		MaxSubtasks:         5,
+		MinDescriptionWords: 1000, // Very high threshold — would block normal decomposition
+	}
+	decomposer := NewTaskDecomposer(config)
+
+	task := &Task{
+		ID:    "GH-1716",
+		Title: "Implement auth system",
+		Description: `Short task with numbered steps:
+1. Add user model
+2. Add login endpoint
+3. Add session middleware`,
+		ProjectPath: "/test/project",
+	}
+
+	result := decomposer.DecomposeForRetry(nil, task)
+
+	if !result.Decomposed {
+		t.Errorf("Expected DecomposeForRetry to decompose task with numbered steps, reason: %s", result.Reason)
+	}
+	if len(result.Subtasks) != 3 {
+		t.Errorf("Expected 3 subtasks, got %d", len(result.Subtasks))
+	}
+	if result.Reason != "decomposed after execution failure (retry fallback)" {
+		t.Errorf("Unexpected reason: %q", result.Reason)
+	}
+}
+
+func TestDecomposeForRetry_RespectsNoDecomposeLabel(t *testing.T) {
+	config := &DecomposeConfig{
+		Enabled:     true,
+		MaxSubtasks: 5,
+	}
+	decomposer := NewTaskDecomposer(config)
+
+	task := &Task{
+		ID:     "GH-1716",
+		Title:  "Implement auth system",
+		Labels: []string{NoDecomposeLabel},
+		Description: `1. Add user model
+2. Add login endpoint
+3. Add session middleware`,
+	}
+
+	result := decomposer.DecomposeForRetry(nil, task)
+
+	if result.Decomposed {
+		t.Error("Expected DecomposeForRetry to respect no-decompose label")
+	}
+	if result.Reason != "skipped: no-decompose label (even on retry)" {
+		t.Errorf("Unexpected reason: %q", result.Reason)
+	}
+}
+
+func TestDecomposeForRetry_NoStructuralPoints(t *testing.T) {
+	config := &DecomposeConfig{
+		Enabled:     true,
+		MaxSubtasks: 5,
+	}
+	decomposer := NewTaskDecomposer(config)
+
+	task := &Task{
+		ID:    "GH-1716",
+		Title: "Refactor the system",
+		Description: `This is a complex refactoring task that involves updating the system
+architecture to support new requirements. The changes will touch multiple files
+and modules across the codebase. We need to ensure backward compatibility while
+improving the overall design.`,
+	}
+
+	result := decomposer.DecomposeForRetry(nil, task)
+
+	if result.Decomposed {
+		t.Error("Expected DecomposeForRetry to return false when no structural split points exist")
+	}
+	if result.Reason != "no decomposition points found (retry fallback)" {
+		t.Errorf("Unexpected reason: %q", result.Reason)
+	}
+}
+
 func TestBuildSubtaskDescription(t *testing.T) {
 	parent := &Task{
 		ID:    "GH-150",
