@@ -165,6 +165,7 @@ executor:
   claude_code:
     command: "claude"                     # path to claude CLI
     extra_args: []                        # additional CLI arguments
+    planning_timeout: 2m                  # max time for epic planning before fallback to direct mode
 
   model_routing:
     enabled: false
@@ -204,6 +205,7 @@ executor:
 | `use_worktree` | bool | `false` | Execute tasks in isolated git worktrees (enables execution with uncommitted changes) |
 | `claude_code.command` | string | `"claude"` | Path to the Claude CLI binary |
 | `claude_code.extra_args` | []string | `[]` | Additional CLI arguments |
+| `claude_code.planning_timeout` | duration | `2m` | Maximum time for epic planning before fallback to direct execution. Affects Slack `/plan` and Telegram planning commands. |
 | `qwen_code.command` | string | `"qwen"` | Path to the Qwen Code CLI binary |
 | `qwen_code.use_session_resume` | bool | `false` | Reuse sessions for self-review |
 | `model_routing.enabled` | bool | `false` | Route tasks to different models by complexity |
