@@ -19,6 +19,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/alekspetrov/pilot/internal/adapters/asana"
+	"github.com/alekspetrov/pilot/internal/adapters/azuredevops"
 	"github.com/alekspetrov/pilot/internal/adapters/github"
 	"github.com/alekspetrov/pilot/internal/adapters/jira"
 	"github.com/alekspetrov/pilot/internal/adapters/linear"
@@ -944,6 +945,55 @@ Examples:
 						)
 					}
 				}(asanaPoller)
+			}
+
+			// Enable Azure DevOps polling in gateway mode if configured (GH-1699)
+			if cfg.Adapters.AzureDevOps != nil && cfg.Adapters.AzureDevOps.Enabled &&
+				cfg.Adapters.AzureDevOps.Polling != nil && cfg.Adapters.AzureDevOps.Polling.Enabled {
+
+				// Determine interval
+				interval := 30 * time.Second
+				if cfg.Adapters.AzureDevOps.Polling.Interval > 0 {
+					interval = cfg.Adapters.AzureDevOps.Polling.Interval
+				}
+
+				adoClient := azuredevops.NewClientWithConfig(cfg.Adapters.AzureDevOps)
+
+				adoPollerOpts := []azuredevops.PollerOption{
+					azuredevops.WithOnWorkItem(func(wiCtx context.Context, wi *azuredevops.WorkItem) error {
+						logging.WithComponent("azuredevops").Info("Work item picked up",
+							slog.Int("id", wi.ID),
+							slog.String("title", wi.GetTitle()),
+						)
+						return nil
+					}),
+				}
+
+				// Wire autopilot OnPRCreated callback
+				if gwAutopilotController != nil {
+					adoPollerOpts = append(adoPollerOpts, azuredevops.WithOnPRCreated(func(prID int, prURL string, workItemID int, headSHA string, branchName string) {
+						gwAutopilotController.OnPRCreated(prID, prURL, 0, headSHA, branchName)
+					}))
+				}
+
+				// Wire processed store for persistence
+				if gwAutopilotStateStore != nil {
+					adoPollerOpts = append(adoPollerOpts, azuredevops.WithProcessedStore(gwAutopilotStateStore))
+				}
+
+				pilotTag := cfg.Adapters.AzureDevOps.PilotTag
+				if pilotTag == "" {
+					pilotTag = "pilot"
+				}
+
+				adoPoller := azuredevops.NewPoller(adoClient, pilotTag, interval, adoPollerOpts...)
+
+				logging.WithComponent("start").Info("Azure DevOps polling enabled in gateway mode",
+					slog.String("organization", cfg.Adapters.AzureDevOps.Organization),
+					slog.String("project", cfg.Adapters.AzureDevOps.Project),
+					slog.Duration("interval", interval),
+				)
+				go adoPoller.Start(context.Background())
 			}
 
 			// Wire teams service if --team flag provided (GH-633)

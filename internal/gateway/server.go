@@ -219,6 +219,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/webhooks/gitlab", s.handleGitlabWebhook)
 	mux.HandleFunc("/webhooks/jira", s.handleJiraWebhook)
 	mux.HandleFunc("/webhooks/asana", s.handleAsanaWebhook)
+	mux.HandleFunc("/webhooks/azuredevops", s.handleAzureDevOpsWebhook)
 
 	// Register custom handlers
 	s.mu.RLock()
@@ -679,6 +680,37 @@ func (s *Server) handleAsanaWebhook(w http.ResponseWriter, r *http.Request) {
 
 	// Route to Asana adapter
 	s.router.HandleWebhook("asana", payload)
+
+	w.WriteHeader(http.StatusOK)
+}
+
+// handleAzureDevOpsWebhook receives webhooks from Azure DevOps service hooks
+func (s *Server) handleAzureDevOpsWebhook(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Azure DevOps service hooks use basic auth for webhook secret verification
+	// The secret is passed in the Authorization header or as a query parameter
+	var secret string
+	if user, pass, ok := r.BasicAuth(); ok {
+		secret = user + ":" + pass
+	}
+
+	var payload map[string]interface{}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	// Add metadata to payload for handler
+	payload["_secret"] = secret
+
+	logging.WithComponent("gateway").Info("Received Azure DevOps webhook")
+
+	// Route to Azure DevOps adapter
+	s.router.HandleWebhook("azuredevops", payload)
 
 	w.WriteHeader(http.StatusOK)
 }

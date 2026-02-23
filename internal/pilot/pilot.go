@@ -2,11 +2,13 @@ package pilot
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"log/slog"
 	"sync"
 
+	"github.com/alekspetrov/pilot/internal/adapters/azuredevops"
 	"github.com/alekspetrov/pilot/internal/adapters/github"
 	"github.com/alekspetrov/pilot/internal/adapters/gitlab"
 	"github.com/alekspetrov/pilot/internal/adapters/jira"
@@ -42,6 +44,8 @@ type Pilot struct {
 	gitlabNotify           *gitlab.Notifier
 	jiraClient             *jira.Client
 	jiraWH                 *jira.WebhookHandler
+	azureDevOpsClient      *azuredevops.Client
+	azureDevOpsWH          *azuredevops.WebhookHandler
 	slackNotify            *slack.Notifier
 	slackClient            *slack.Client
 	slackInteractionWH     *slack.InteractionHandler
@@ -338,6 +342,19 @@ func New(cfg *config.Config, opts ...Option) (*Pilot, error) {
 		p.jiraWH.OnIssue(p.handleJiraIssue)
 	}
 
+	// GH-1699: Initialize Azure DevOps webhook handler if configured
+	if cfg.Adapters.AzureDevOps != nil && cfg.Adapters.AzureDevOps.Enabled {
+		p.azureDevOpsClient = azuredevops.NewClientWithConfig(cfg.Adapters.AzureDevOps)
+		pilotTag := cfg.Adapters.AzureDevOps.PilotTag
+		if pilotTag == "" {
+			pilotTag = "pilot"
+		}
+		p.azureDevOpsWH = azuredevops.NewWebhookHandler(p.azureDevOpsClient, cfg.Adapters.AzureDevOps.WebhookSecret, pilotTag)
+		if len(cfg.Adapters.AzureDevOps.WorkItemTypes) > 0 {
+			p.azureDevOpsWH.SetWorkItemTypes(cfg.Adapters.AzureDevOps.WorkItemTypes)
+		}
+	}
+
 	// Initialize alerts engine if enabled
 	if cfg.Alerts != nil && cfg.Alerts.Enabled {
 		p.initAlerts(cfg)
@@ -404,6 +421,35 @@ func New(cfg *config.Config, opts ...Option) (*Pilot, error) {
 		p.gateway.Router().RegisterWebhookHandler("jira", func(payload map[string]interface{}) {
 			if err := p.jiraWH.Handle(ctx, payload); err != nil {
 				logging.WithComponent("pilot").Error("Jira webhook error", slog.Any("error", err))
+			}
+		})
+	}
+
+	// GH-1699: Register Azure DevOps webhook handler
+	if p.azureDevOpsWH != nil {
+		p.gateway.Router().RegisterWebhookHandler("azuredevops", func(payload map[string]interface{}) {
+			// Verify webhook secret
+			secret, _ := payload["_secret"].(string)
+			if !p.azureDevOpsWH.VerifySecret(secret) {
+				logging.WithComponent("pilot").Warn("Azure DevOps webhook secret verification failed")
+				return
+			}
+
+			// Parse the raw payload into WebhookPayload
+			payloadBytes, err := json.Marshal(payload)
+			if err != nil {
+				logging.WithComponent("pilot").Error("Failed to marshal Azure DevOps payload", slog.Any("error", err))
+				return
+			}
+
+			var webhookPayload azuredevops.WebhookPayload
+			if err := json.Unmarshal(payloadBytes, &webhookPayload); err != nil {
+				logging.WithComponent("pilot").Error("Failed to parse Azure DevOps webhook payload", slog.Any("error", err))
+				return
+			}
+
+			if err := p.azureDevOpsWH.Handle(ctx, &webhookPayload); err != nil {
+				logging.WithComponent("pilot").Error("Azure DevOps webhook error", slog.Any("error", err))
 			}
 		})
 	}
