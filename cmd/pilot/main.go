@@ -826,16 +826,13 @@ Examples:
 					// Build poller options
 					gwLinearPollerOpts := []linear.PollerOption{
 						linear.WithOnLinearIssue(func(issueCtx context.Context, issue *linear.Issue) (*linear.IssueResult, error) {
-							result, err := handleLinearIssueWithResult(issueCtx, cfg, linearClient, issue, projectPath, gwDispatcher, gwRunner, gwMonitor, gwProgram, gwAlertsEngine, gwEnforcer)
-
-							// GH-1361: Wire PR to autopilot for CI monitoring + auto-merge
-							if result != nil && result.PRNumber > 0 && gwAutopilotController != nil {
-								// issueNumber=0 because Linear issues don't have GitHub issue numbers
-								gwAutopilotController.OnPRCreated(result.PRNumber, result.PRURL, 0, result.HeadSHA, result.BranchName)
-							}
-
-							return result, err
+							return handleLinearIssueWithResult(issueCtx, cfg, linearClient, issue, projectPath, gwDispatcher, gwRunner, gwMonitor, gwProgram, gwAlertsEngine, gwEnforcer)
 						}),
+					}
+
+					// GH-1700: Wire OnPRCreated callback to autopilot controller
+					if gwAutopilotController != nil {
+						gwLinearPollerOpts = append(gwLinearPollerOpts, linear.WithOnPRCreated(gwAutopilotController.OnPRCreated))
 					}
 
 					// GH-1351: Wire processed issue persistence to prevent re-dispatch after hot upgrade
