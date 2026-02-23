@@ -346,6 +346,82 @@ Epic Decomposition:
 
 The 60% token increase is typically offset by reduced rework and higher success rates.
 
+## Retry with Decomposition
+
+When a task execution is killed by the OS (OOM or timeout), Pilot can automatically retry by first decomposing the task into subtasks.
+
+<Callout type="info" emoji="🔄">
+  Retry-with-decomposition is a safety net for tasks that slip through initial classification. Execution failure is strong evidence the task is too large.
+</Callout>
+
+### How It Works
+
+```
+Execution Killed → DecomposeForRetry → Subtask Issues → Sequential Retry
+```
+
+1. Pilot detects a `signal:killed` exit from Claude Code
+2. Calls `DecomposeForRetry()` — bypasses all gates (word count, complexity)
+3. Creates subtask issues from the decomposed plan
+4. Retries each subtask sequentially
+
+### Why Gates Are Bypassed
+
+The word count and complexity gates are skipped on retry because execution failure already proved the task is too large. Re-checking those gates would cause the same task to fail again.
+
+The `no-decompose` label is still respected — if present, retry-with-decomposition is skipped entirely.
+
+### Configuration
+
+```yaml
+# ~/.pilot/config.yaml
+retry:
+  decompose_on_kill: true  # Opt-in: retry killed executions via decomposition
+```
+
+This is opt-in. Without `decompose_on_kill: true`, killed tasks are not retried via decomposition.
+
+### Constraints
+
+- Only triggers on `signal:killed` failures (OOM/timeout)
+- Skipped if the issue has the `no-decompose` label
+- Requires structural split points in the task description — tasks with no decomposable structure are not retried
+
+## Smart Word Count Gate
+
+The word count gate in the decomposer is conditional on how complexity was determined.
+
+### Behavior
+
+| Classifier Mode | Word Count Gate |
+|-----------------|-----------------|
+| LLM classifier confirms COMPLEX | **Skipped** — trust the LLM |
+| Heuristic-only (no LLM) | **Enforced** — preserves GH-664/665 fix |
+
+### Why This Matters
+
+Without this logic, detailed issues with numbered steps (e.g., implementation plans) could exceed the word count threshold and be incorrectly decomposed in heuristic mode — even though they describe a single cohesive task.
+
+When the LLM classifier is attached and confirms the task is COMPLEX, the word count is irrelevant — the LLM already evaluated the task holistically. The gate is skipped.
+
+When running in heuristic-only mode (no LLM classifier configured), the word count gate is enforced to prevent over-decomposition of verbose but non-epic tasks.
+
+### Code Reference
+
+```go
+// internal/executor/decompose.go
+// Check description length — only enforce in heuristic mode (GH-1728).
+// When the LLM classifier is attached and confirmed COMPLEX, trust it over word count.
+wordCount := len(strings.Fields(task.Description))
+usedLLMClassifier := d.classifier != nil
+if !usedLLMClassifier && wordCount < d.config.MinDescriptionWords {
+    return &DecomposeResult{
+        Decomposed: false,
+        Reason:     "description too short for decomposition (heuristic mode)",
+    }
+}
+```
+
 ## Version History
 
 - **v0.20.2**: Initial epic decomposition with Claude Code planning
@@ -353,3 +429,6 @@ The 60% token increase is typically offset by reduced rework and higher success 
 - **v0.34.0**: Single-package scope detection to prevent conflicts
 - **v1.5.0**: Autopilot integration for sub-issue PR management
 - **v1.15.0**: Worktree isolation support for epic execution
+- **v2.10.0**:
+  - Retry-with-decomposition for killed executions (GH-1729)
+  - Smart word count gate: conditional on classifier type (GH-1728)
