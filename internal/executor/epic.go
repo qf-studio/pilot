@@ -11,6 +11,13 @@ import (
 	"strings"
 )
 
+// HasNoPlanKeyword checks whether the task title or description contains the [no-plan]
+// keyword, allowing users to bypass epic planning (GH-1687).
+func HasNoPlanKeyword(task *Task) bool {
+	return strings.Contains(strings.ToLower(task.Title), strings.ToLower(NoPlanKeyword)) ||
+		strings.Contains(strings.ToLower(task.Description), strings.ToLower(NoPlanKeyword))
+}
+
 // EpicPlan represents the result of planning an epic task.
 // Contains the parent task and the subtasks derived from Claude Code's planning output.
 type EpicPlan struct {

@@ -887,12 +887,16 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 	complexity := DetectComplexity(task)
 
 	// GH-664: Skip epic mode if task has no-decompose label
+	// GH-1687: Also skip if task title or description contains [no-plan] keyword
 	hasNoDecompose := false
 	for _, label := range task.Labels {
 		if strings.EqualFold(label, NoDecomposeLabel) {
 			hasNoDecompose = true
 			break
 		}
+	}
+	if !hasNoDecompose && HasNoPlanKeyword(task) {
+		hasNoDecompose = true
 	}
 
 	// GH-1588: Diagnostic logging for epic detection
@@ -915,16 +919,15 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 
 		plan, err := r.PlanEpic(ctx, task, executionPath)
 		if err != nil {
-			return &ExecutionResult{
-				TaskID:   task.ID,
-				Success:  false,
-				Error:    fmt.Sprintf("epic planning failed: %v", err),
-				Duration: time.Since(start),
-				IsEpic:   true,
-			}, nil
-		}
-
-		r.reportProgress(task.ID, "Planning", 30, fmt.Sprintf("Epic planned: %d subtasks", len(plan.Subtasks)))
+			// GH-1687: Planning failure is non-fatal — fall through to direct execution
+			r.log.Warn("Epic planning failed, falling back to direct execution",
+				slog.String("task_id", task.ID),
+				slog.Any("error", err),
+			)
+			r.reportProgress(task.ID, "Planning", 15, "Planning failed, falling back to direct execution...")
+			// Fall through to normal execution below
+		} else {
+			r.reportProgress(task.ID, "Planning", 30, fmt.Sprintf("Epic planned: %d subtasks", len(plan.Subtasks)))
 
 		// GH-1265: Detect single-package scope — if all subtasks target the same
 		// directory/package, consolidate into a single task instead of creating
@@ -1032,6 +1035,7 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 			r.reportProgress(task.ID, "Complete", 100, "Epic completed successfully")
 			return epicResult, nil
 		}
+		} // else: plan succeeded
 	}
 
 	// Check for task decomposition (GH-218)

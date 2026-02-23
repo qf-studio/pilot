@@ -51,6 +51,10 @@ type DecomposeResult struct {
 // NoDecomposeLabel is the GitHub label that bypasses decomposition entirely (GH-664).
 const NoDecomposeLabel = "no-decompose"
 
+// NoPlanKeyword is a keyword that users can include in the task title or description
+// to bypass epic planning and decomposition (GH-1687).
+const NoPlanKeyword = "[no-plan]"
+
 // TaskDecomposer handles breaking complex tasks into smaller subtasks.
 type TaskDecomposer struct {
 	config     *DecomposeConfig

@@ -267,6 +267,11 @@ type BackendConfig struct {
 	// GH-1376: Added to prevent lint-failure cascades
 	PrePushLint *bool `yaml:"pre_push_lint,omitempty"`
 
+	// PlanningTimeout is the maximum time to wait for epic planning (PlanEpic).
+	// If planning exceeds this timeout, execution falls through to direct (non-epic) mode.
+	// Default: 2m
+	PlanningTimeout time.Duration `yaml:"planning_timeout,omitempty"`
+
 	// Version is the Pilot binary version, set at startup from the build-time version var.
 	// Used for feature matrix updates and execution reports. Not a config file field.
 	Version string `yaml:"-"`
@@ -495,6 +500,7 @@ func DefaultBackendConfig() *BackendConfig {
 		AutoCreatePR:    &autoCreatePR,
 		DetectEphemeral: &detectEphemeral,
 		PrePushLint:     &prePushLint,
+		PlanningTimeout: 2 * time.Minute,
 		ClaudeCode: &ClaudeCodeConfig{
 			Command: "claude",
 		},
