@@ -126,13 +126,15 @@ func (d *TaskDecomposer) DecomposeWithContext(ctx context.Context, task *Task) *
 		}
 	}
 
-	// Check description length
+	// Check description length — only enforce in heuristic mode (GH-1728).
+	// When the LLM classifier is attached and confirmed COMPLEX, trust it over word count.
 	wordCount := len(strings.Fields(task.Description))
-	if wordCount < d.config.MinDescriptionWords {
+	usedLLMClassifier := d.classifier != nil
+	if !usedLLMClassifier && wordCount < d.config.MinDescriptionWords {
 		return &DecomposeResult{
 			Decomposed: false,
 			Subtasks:   []*Task{task},
-			Reason:     "description too short for decomposition",
+			Reason:     "description too short for decomposition (heuristic mode)",
 		}
 	}
 
@@ -396,6 +398,8 @@ func buildSubtaskDescription(parent *Task, part string, index, total int) string
 
 // ShouldDecompose is a convenience function that checks if a task needs decomposition.
 // Returns true if the task is complex enough and has sufficient structure for splitting.
+// NOTE: Uses heuristic-only detection (DetectComplexity). The full DecomposeWithContext()
+// method skips the word count gate when the LLM classifier confirms COMPLEX (GH-1728).
 func ShouldDecompose(task *Task, config *DecomposeConfig) bool {
 	if config == nil || !config.Enabled {
 		return false

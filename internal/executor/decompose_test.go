@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"context"
 	"strconv"
 	"strings"
 	"testing"
@@ -285,7 +286,7 @@ func TestTaskDecomposer_ShortDescription(t *testing.T) {
 	if result.Decomposed {
 		t.Error("Expected short description to not be decomposed")
 	}
-	if result.Reason != "description too short for decomposition" {
+	if result.Reason != "description too short for decomposition (heuristic mode)" {
 		t.Errorf("Expected reason about short description, got %q", result.Reason)
 	}
 }
@@ -614,5 +615,73 @@ func TestBuildSubtaskDescription(t *testing.T) {
 	finalDesc := buildSubtaskDescription(parent, "Final step", 5, 5)
 	if !strings.Contains(finalDesc, "final subtask") {
 		t.Error("Expected final subtask note")
+	}
+}
+
+// TestDecomposeWithContext_LLMClassifierSkipsWordCountGate verifies that when an LLM
+// classifier returns COMPLEX, the word count gate is bypassed (GH-1728).
+func TestDecomposeWithContext_LLMClassifierSkipsWordCountGate(t *testing.T) {
+	config := &DecomposeConfig{
+		Enabled:             true,
+		MinComplexity:       "complex",
+		MaxSubtasks:         5,
+		MinDescriptionWords: 300, // High threshold — task description is well under this
+	}
+	decomposer := NewTaskDecomposer(config)
+
+	// Attach LLM classifier that always returns COMPLEX
+	classifier := newComplexityClassifierWithRunner(mockClaudeRunner("COMPLEX", "multiple adapter changes required"))
+	decomposer.SetClassifier(classifier)
+
+	// Short description (~30 words) with numbered steps — well under MinDescriptionWords
+	task := &Task{
+		ID:    "GH-1716",
+		Title: "Add webhook support to three adapters",
+		Description: `Add outbound webhook support to three adapters:
+1. Telegram adapter
+2. Slack adapter
+3. GitHub adapter`,
+		ProjectPath: "/test/project",
+	}
+
+	result := decomposer.DecomposeWithContext(context.Background(), task)
+
+	if !result.Decomposed {
+		t.Errorf("LLM classifier COMPLEX + short description should decompose; reason: %s", result.Reason)
+	}
+	if len(result.Subtasks) != 3 {
+		t.Errorf("Expected 3 subtasks (one per adapter), got %d", len(result.Subtasks))
+	}
+}
+
+// TestDecomposeWithContext_HeuristicEnforcesWordCountGate verifies that without an LLM
+// classifier the word count gate still blocks short descriptions (GH-1728).
+func TestDecomposeWithContext_HeuristicEnforcesWordCountGate(t *testing.T) {
+	config := &DecomposeConfig{
+		Enabled:             true,
+		MinComplexity:       "complex",
+		MaxSubtasks:         5,
+		MinDescriptionWords: 300, // High threshold
+	}
+	decomposer := NewTaskDecomposer(config)
+	// No classifier set — heuristic mode
+
+	task := &Task{
+		ID:    "GH-1716",
+		Title: "Refactor all three adapters completely",
+		Description: `Refactor all three adapters completely:
+1. Telegram adapter
+2. Slack adapter
+3. GitHub adapter`,
+		ProjectPath: "/test/project",
+	}
+
+	result := decomposer.DecomposeWithContext(context.Background(), task)
+
+	if result.Decomposed {
+		t.Error("Heuristic mode with short description should NOT decompose")
+	}
+	if !strings.Contains(result.Reason, "heuristic mode") {
+		t.Errorf("Expected reason to mention heuristic mode, got %q", result.Reason)
 	}
 }
