@@ -1518,6 +1518,49 @@ status: pending`,
 	}
 }
 
+// TestActiveProjectUsedInTaskPaths verifies that after switching projects,
+// all task-related functions use the active project path, not the default.
+// Regression test for GH-1685.
+func TestActiveProjectUsedInTaskPaths(t *testing.T) {
+	defaultPath := "/default/project"
+	activePath := "/active/project"
+	chatID := "chat123"
+
+	h := &Handler{
+		projectPath:   defaultPath,
+		activeProject: make(map[string]string),
+	}
+
+	// Before switching, should return default
+	if got := h.getActiveProjectPath(chatID); got != defaultPath {
+		t.Errorf("before switch: getActiveProjectPath() = %q, want %q", got, defaultPath)
+	}
+
+	// Switch project for this chat
+	h.mu.Lock()
+	h.activeProject[chatID] = activePath
+	h.mu.Unlock()
+
+	// After switching, should return active project path
+	if got := h.getActiveProjectPath(chatID); got != activePath {
+		t.Errorf("after switch: getActiveProjectPath() = %q, want %q", got, activePath)
+	}
+
+	// Verify confirmation message uses active path
+	confirmMsg := FormatTaskConfirmation("TEST-01", "test task", h.getActiveProjectPath(chatID))
+	if !strings.Contains(confirmMsg, activePath) {
+		t.Errorf("confirmation message should contain active path %q, got:\n%s", activePath, confirmMsg)
+	}
+	if strings.Contains(confirmMsg, defaultPath) {
+		t.Errorf("confirmation message should NOT contain default path %q, got:\n%s", defaultPath, confirmMsg)
+	}
+
+	// Other chat should still get default
+	if got := h.getActiveProjectPath("other-chat"); got != defaultPath {
+		t.Errorf("other chat: getActiveProjectPath() = %q, want %q", got, defaultPath)
+	}
+}
+
 // TestPlanEmptyMessage tests differentiated messages when planning returns empty output.
 func TestPlanEmptyMessage(t *testing.T) {
 	tests := []struct {

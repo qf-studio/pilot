@@ -565,7 +565,7 @@ If the question is too broad, ask for clarification instead of exploring everyth
 		ID:          taskID,
 		Title:       "Question: " + truncateDescription(question, 40),
 		Description: prompt,
-		ProjectPath: h.projectPath,
+		ProjectPath: h.getActiveProjectPath(chatID),
 		Verbose:     false,
 	}
 
@@ -662,13 +662,13 @@ func (h *Handler) sendResearchOutput(ctx context.Context, chatID, query string, 
 	}
 
 	// Optionally save to file
-	h.saveResearchFile(query, content)
+	h.saveResearchFile(chatID, query, content)
 }
 
 // saveResearchFile saves research output to .agent/research/ directory
-func (h *Handler) saveResearchFile(query, content string) {
+func (h *Handler) saveResearchFile(chatID, query, content string) {
 	// Create .agent/research/ directory if it doesn't exist
-	researchDir := filepath.Join(h.projectPath, ".agent", "research")
+	researchDir := filepath.Join(h.getActiveProjectPath(chatID), ".agent", "research")
 	if err := os.MkdirAll(researchDir, 0755); err != nil {
 		return // Silent fail for file save
 	}
@@ -912,7 +912,7 @@ func (h *Handler) handleTask(ctx context.Context, chatID, description string) {
 
 	// Send confirmation message with inline keyboard
 	// Use displayDesc for user-friendly display, description is kept for execution
-	confirmMsg := FormatTaskConfirmation(taskID, displayDesc, h.projectPath)
+	confirmMsg := FormatTaskConfirmation(taskID, displayDesc, h.getActiveProjectPath(chatID))
 
 	msgResp, err := h.client.SendMessageWithKeyboard(ctx, chatID, confirmMsg, "",
 		[][]InlineKeyboardButton{
@@ -1025,7 +1025,7 @@ func (h *Handler) executeTaskWithOptions(ctx context.Context, chatID, taskID, de
 		ID:          taskID,
 		Title:       truncateDescription(description, 50),
 		Description: description,
-		ProjectPath: h.projectPath,
+		ProjectPath: h.getActiveProjectPath(chatID),
 		Verbose:     false,
 		Branch:      branch,
 		BaseBranch:  baseBranch,
@@ -1401,7 +1401,7 @@ func (h *Handler) executeImageTask(ctx context.Context, chatID, imagePath, promp
 		ID:          taskID,
 		Title:       "Image analysis",
 		Description: prompt,
-		ProjectPath: h.projectPath,
+		ProjectPath: h.getActiveProjectPath(chatID),
 		Verbose:     false,
 		ImagePath:   imagePath,
 		Branch:      fmt.Sprintf("pilot/%s", taskID),
