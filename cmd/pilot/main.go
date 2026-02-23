@@ -874,7 +874,8 @@ Examples:
 					cfg.Adapters.Jira.APIToken,
 					cfg.Adapters.Jira.Platform,
 				)
-				jiraPoller := jira.NewPoller(jiraClient, cfg.Adapters.Jira, interval,
+				// GH-1701: Wire processed store for dedup persistence across restarts
+				jiraPollerOpts := []jira.PollerOption{
 					jira.WithOnJiraIssue(func(issueCtx context.Context, issue *jira.Issue) (*jira.IssueResult, error) {
 						result, err := handleJiraIssueWithResult(issueCtx, cfg, jiraClient, issue, projectPath, gwDispatcher, gwRunner, gwMonitor, gwProgram, gwAlertsEngine, gwEnforcer)
 
@@ -886,7 +887,11 @@ Examples:
 
 						return result, err
 					}),
-				)
+				}
+				if gwAutopilotStateStore != nil {
+					jiraPollerOpts = append(jiraPollerOpts, jira.WithProcessedStore(gwAutopilotStateStore))
+				}
+				jiraPoller := jira.NewPoller(jiraClient, cfg.Adapters.Jira, interval, jiraPollerOpts...)
 
 				logging.WithComponent("start").Info("Jira polling enabled in gateway mode",
 					slog.String("base_url", cfg.Adapters.Jira.BaseURL),
@@ -916,7 +921,8 @@ Examples:
 					cfg.Adapters.Asana.AccessToken,
 					cfg.Adapters.Asana.WorkspaceID,
 				)
-				asanaPoller := asana.NewPoller(asanaClient, cfg.Adapters.Asana, interval,
+				// GH-1701: Wire processed store for dedup persistence across restarts
+				asanaPollerOpts := []asana.PollerOption{
 					asana.WithOnAsanaTask(func(taskCtx context.Context, task *asana.Task) (*asana.TaskResult, error) {
 						result, err := handleAsanaTaskWithResult(taskCtx, cfg, asanaClient, task, projectPath, gwDispatcher, gwRunner, gwMonitor, gwProgram, gwAlertsEngine, gwEnforcer)
 
@@ -928,7 +934,11 @@ Examples:
 
 						return result, err
 					}),
-				)
+				}
+				if gwAutopilotStateStore != nil {
+					asanaPollerOpts = append(asanaPollerOpts, asana.WithProcessedStore(gwAutopilotStateStore))
+				}
+				asanaPoller := asana.NewPoller(asanaClient, cfg.Adapters.Asana, interval, asanaPollerOpts...)
 
 				logging.WithComponent("start").Info("Asana polling enabled in gateway mode",
 					slog.String("workspace", cfg.Adapters.Asana.WorkspaceID),
@@ -2129,7 +2139,8 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 			cfg.Adapters.Asana.AccessToken,
 			cfg.Adapters.Asana.WorkspaceID,
 		)
-		asanaPoller := asana.NewPoller(asanaClient, cfg.Adapters.Asana, interval,
+		// GH-1701: Wire processed store for dedup persistence across restarts
+		asanaPollerOpts := []asana.PollerOption{
 			asana.WithOnAsanaTask(func(taskCtx context.Context, task *asana.Task) (*asana.TaskResult, error) {
 				result, err := handleAsanaTaskWithResult(taskCtx, cfg, asanaClient, task, projectPath, dispatcher, runner, monitor, program, alertsEngine, enforcer)
 
@@ -2141,7 +2152,11 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 
 				return result, err
 			}),
-		)
+		}
+		if autopilotStateStore != nil {
+			asanaPollerOpts = append(asanaPollerOpts, asana.WithProcessedStore(autopilotStateStore))
+		}
+		asanaPoller := asana.NewPoller(asanaClient, cfg.Adapters.Asana, interval, asanaPollerOpts...)
 
 		if !dashboardMode {
 			fmt.Printf("📦 Asana polling enabled: workspace %s (every %s)\n", cfg.Adapters.Asana.WorkspaceID, interval)
