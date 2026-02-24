@@ -17,6 +17,7 @@ const (
 // Client is a Slack API client
 type Client struct {
 	botToken   string
+	baseURL    string
 	httpClient *http.Client
 }
 
@@ -24,6 +25,18 @@ type Client struct {
 func NewClient(botToken string) *Client {
 	return &Client{
 		botToken: botToken,
+		baseURL:  slackAPIURL,
+		httpClient: &http.Client{
+			Timeout: 30 * time.Second,
+		},
+	}
+}
+
+// NewClientWithBaseURL creates a new Slack client with a custom base URL (for testing).
+func NewClientWithBaseURL(botToken, baseURL string) *Client {
+	return &Client{
+		botToken: botToken,
+		baseURL:  baseURL,
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
@@ -93,7 +106,7 @@ func (c *Client) PostMessage(ctx context.Context, msg *Message) (*PostMessageRes
 		return nil, fmt.Errorf("failed to marshal message: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, slackAPIURL+"/chat.postMessage", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/chat.postMessage", bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -143,7 +156,7 @@ func (c *Client) UpdateMessage(ctx context.Context, channel, ts string, msg *Mes
 		return fmt.Errorf("failed to marshal message: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, slackAPIURL+"/chat.update", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/chat.update", bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
 	}
@@ -187,7 +200,7 @@ func (c *Client) PostInteractiveMessage(ctx context.Context, msg *InteractiveMes
 		return nil, fmt.Errorf("failed to marshal message: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, slackAPIURL+"/chat.postMessage", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/chat.postMessage", bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
@@ -237,7 +250,7 @@ func (c *Client) UpdateInteractiveMessage(ctx context.Context, channel, ts strin
 		return fmt.Errorf("failed to marshal message: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, slackAPIURL+"/chat.update", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/chat.update", bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
 	}
