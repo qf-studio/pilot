@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -14,6 +15,13 @@ const (
 	OutcomeFailure FeedbackOutcome = "failure"
 	OutcomeNeutral FeedbackOutcome = "neutral"
 )
+
+// ReviewData represents a PR review comment
+type ReviewData struct {
+	Body     string // Review comment text
+	State    string // "APPROVED", "CHANGES_REQUESTED", "COMMENTED"
+	Reviewer string // Reviewer login
+}
 
 // LearningLoop implements the pattern learning feedback loop
 type LearningLoop struct {
@@ -279,6 +287,66 @@ func (l *LearningLoop) LearnFromDiff(ctx context.Context, projectPath, diff stri
 
 	if l.extractor != nil {
 		return l.extractor.ExtractAndSave(ctx, exec)
+	}
+
+	return nil
+}
+
+// LearnFromReview processes PR review comments and extracts patterns.
+// Approved reviews boost confidence of patterns used in the execution.
+// Changes-requested reviews extract anti-patterns from reviewer feedback.
+func (l *LearningLoop) LearnFromReview(ctx context.Context, projectPath string,
+	reviews []*ReviewData, prURL string) error {
+	if len(reviews) == 0 {
+		return nil
+	}
+
+	if l.extractor == nil {
+		return fmt.Errorf("pattern extractor is required for review learning")
+	}
+
+	// Collect all review comments for extraction
+	comments := make([]string, 0)
+	var approvedComments []string
+
+	for _, review := range reviews {
+		// Skip empty body reviews (approval clicks without text)
+		if strings.TrimSpace(review.Body) == "" {
+			continue
+		}
+
+		comments = append(comments, review.Body)
+
+		if review.State == "APPROVED" {
+			approvedComments = append(approvedComments, review.Body)
+		}
+	}
+
+	if len(comments) == 0 {
+		return nil // No meaningful reviews
+	}
+
+	// Extract patterns from review comments
+	result, err := l.extractor.ExtractFromReviewComments(ctx, comments, projectPath)
+	if err != nil {
+		return err
+	}
+
+	// Mark change-requested reviews as anti-patterns
+	for _, p := range result.AntiPatterns {
+		p.Confidence = min(0.85, p.Confidence)
+	}
+
+	// Boost confidence for approved reviews with positive patterns
+	if len(approvedComments) > 0 {
+		for _, p := range result.Patterns {
+			p.Confidence = min(0.95, p.Confidence+0.15)
+		}
+	}
+
+	// Save extracted patterns
+	if len(result.Patterns) > 0 || len(result.AntiPatterns) > 0 {
+		return l.extractor.SaveExtractedPatterns(ctx, result)
 	}
 
 	return nil
