@@ -762,7 +762,7 @@ func (c *Controller) handleMerged(ctx context.Context, prState *PRState) error {
 
 	if c.config.ResolvedEnv().SkipPostMergeCI {
 		// Fast path: skip post-merge CI, check if we should release immediately
-		if c.shouldTriggerRelease() && !c.config.Release.RequireCI {
+		if c.shouldTriggerRelease() && !c.resolvedRelease().RequireCI {
 			c.log.Info("skipping post-merge CI: proceeding to release",
 				"pr", prState.PRNumber,
 			)
@@ -834,11 +834,19 @@ func (c *Controller) getMainBranchSHA(ctx context.Context) (string, error) {
 	return branch.SHA(), nil
 }
 
+// resolvedRelease returns the effective release config, preferring per-environment
+// config over global. Returns nil if neither is set.
+func (c *Controller) resolvedRelease() *ReleaseConfig {
+	if env := c.config.ResolvedEnv(); env != nil && env.Release != nil {
+		return env.Release
+	}
+	return c.config.Release
+}
+
 // shouldTriggerRelease returns true if auto-release is configured.
 func (c *Controller) shouldTriggerRelease() bool {
-	return c.config.Release != nil &&
-		c.config.Release.Enabled &&
-		c.config.Release.Trigger == "on_merge"
+	rel := c.resolvedRelease()
+	return rel != nil && rel.Enabled && rel.Trigger == "on_merge"
 }
 
 // handleReleasing creates a release after successful merge and CI.
@@ -892,11 +900,12 @@ func (c *Controller) handleReleasing(ctx context.Context, prState *PRState) erro
 
 	// Calculate new version
 	newVersion := currentVersion.Bump(bumpType)
-	prState.ReleaseVersion = newVersion.String(c.config.Release.TagPrefix)
+	rel := c.resolvedRelease()
+	prState.ReleaseVersion = newVersion.String(rel.TagPrefix)
 
 	c.log.Info("creating release",
 		"pr", prState.PRNumber,
-		"current", currentVersion.String(c.config.Release.TagPrefix),
+		"current", currentVersion.String(rel.TagPrefix),
 		"new", prState.ReleaseVersion,
 		"bump", bumpType,
 	)
@@ -915,7 +924,7 @@ func (c *Controller) handleReleasing(ctx context.Context, prState *PRState) erro
 	)
 
 	// Send notification
-	if c.config.Release.NotifyOnRelease && c.notifier != nil {
+	if rel.NotifyOnRelease && c.notifier != nil {
 		if n, ok := c.notifier.(ReleaseNotifier); ok {
 			if err := n.NotifyReleased(ctx, prState, releaseURL); err != nil {
 				c.log.Warn("failed to send release notification", "error", err)
@@ -1412,7 +1421,7 @@ func (c *Controller) Run(ctx context.Context) error {
 		"poll_interval", c.config.CIPollInterval,
 		"ci_timeout", c.config.CIWaitTimeout,
 		"auto_merge", c.config.AutoMerge,
-		"release_enabled", c.config.Release != nil && c.config.Release.Enabled,
+		"release_enabled", c.resolvedRelease() != nil && c.resolvedRelease().Enabled,
 	)
 
 	// Dynamic poll interval settings
