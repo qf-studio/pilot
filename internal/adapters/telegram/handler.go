@@ -16,6 +16,7 @@ import (
 
 	"github.com/alekspetrov/pilot/internal/comms"
 	"github.com/alekspetrov/pilot/internal/executor"
+	"github.com/alekspetrov/pilot/internal/intent"
 	"github.com/alekspetrov/pilot/internal/logging"
 	"github.com/alekspetrov/pilot/internal/memory"
 	"github.com/alekspetrov/pilot/internal/transcription"
@@ -67,8 +68,8 @@ type Handler struct {
 	cmdHandler        *CommandHandler        // Command handler for /commands
 	plainTextMode     bool                   // Use plain text instead of Markdown
 	rateLimiter       *comms.RateLimiter     // Rate limiter for DoS protection
-	llmClassifier     *AnthropicClient       // LLM intent classifier (optional)
-	conversationStore *ConversationStore     // Conversation history per chat (optional)
+	llmClassifier     intent.Classifier       // LLM intent classifier (optional)
+	conversationStore *intent.ConversationStore // Conversation history per chat (optional)
 	memberResolver    MemberResolver         // Team member resolver for RBAC (optional, GH-634)
 	lastSender        map[string]int64       // chatID -> last sender Telegram user ID (GH-634)
 }
@@ -150,7 +151,7 @@ func NewHandler(config *HandlerConfig, runner *executor.Runner) *Handler {
 			apiKey = os.Getenv("ANTHROPIC_API_KEY")
 		}
 		if apiKey != "" {
-			h.llmClassifier = NewAnthropicClient(apiKey)
+			h.llmClassifier = intent.NewAnthropicClient(apiKey)
 
 			// Set up conversation store with defaults
 			historySize := 10
@@ -161,7 +162,7 @@ func NewHandler(config *HandlerConfig, runner *executor.Runner) *Handler {
 			if config.LLMClassifier.HistoryTTL > 0 {
 				historyTTL = config.LLMClassifier.HistoryTTL
 			}
-			h.conversationStore = NewConversationStore(historySize, historyTTL)
+			h.conversationStore = intent.NewConversationStore(historySize, historyTTL)
 
 			logging.WithComponent("telegram").Info("LLM intent classifier enabled",
 				slog.String("model", "claude-3-5-haiku"))
@@ -399,29 +400,29 @@ func (h *Handler) processUpdate(ctx context.Context, update *Update) {
 	}
 
 	// Detect intent (uses LLM if available, regex fallback)
-	intent := h.detectIntentWithLLM(ctx, chatID, text)
+	msgIntent := h.detectIntentWithLLM(ctx, chatID, text)
 	logging.WithComponent("telegram").Debug("Message received",
-		slog.String("chat_id", chatID), slog.String("intent", string(intent)))
+		slog.String("chat_id", chatID), slog.String("intent", string(msgIntent)))
 
 	// Record user message in conversation history
 	if h.conversationStore != nil {
 		h.conversationStore.Add(chatID, "user", text)
 	}
 
-	switch intent {
-	case IntentCommand:
+	switch msgIntent {
+	case intent.IntentCommand:
 		h.handleCommand(ctx, chatID, text)
-	case IntentGreeting:
+	case intent.IntentGreeting:
 		h.handleGreeting(ctx, chatID, msg.From)
-	case IntentQuestion:
+	case intent.IntentQuestion:
 		h.handleQuestion(ctx, chatID, text)
-	case IntentResearch:
+	case intent.IntentResearch:
 		h.handleResearch(ctx, chatID, text)
-	case IntentPlanning:
+	case intent.IntentPlanning:
 		h.handlePlanning(ctx, chatID, text)
-	case IntentChat:
+	case intent.IntentChat:
 		h.handleChat(ctx, chatID, text)
-	case IntentTask:
+	case intent.IntentTask:
 		h.handleTask(ctx, chatID, text)
 	default:
 		// Fallback to chat for conversational messages
@@ -430,21 +431,21 @@ func (h *Handler) processUpdate(ctx context.Context, update *Update) {
 }
 
 // detectIntentWithLLM uses LLM classification with regex fallback
-func (h *Handler) detectIntentWithLLM(ctx context.Context, chatID, text string) Intent {
+func (h *Handler) detectIntentWithLLM(ctx context.Context, chatID, text string) intent.Intent {
 	// If LLM classifier not available, use regex
 	if h.llmClassifier == nil {
-		return DetectIntent(text)
+		return intent.DetectIntent(text)
 	}
 
 	// Fast path: commands always use regex
 	if strings.HasPrefix(text, "/") {
-		return IntentCommand
+		return intent.IntentCommand
 	}
 
 	// Fast path: clear question patterns don't need LLM verification
 	// Prevents Haiku from misclassifying "What's in roadmap" as Task
-	if IsClearQuestion(text) {
-		return IntentQuestion
+	if intent.IsClearQuestion(text) {
+		return intent.IntentQuestion
 	}
 
 	// Try LLM classification with timeout
@@ -452,24 +453,24 @@ func (h *Handler) detectIntentWithLLM(ctx context.Context, chatID, text string) 
 	defer cancel()
 
 	// Get conversation history
-	var history []ConversationMessage
+	var history []intent.ConversationMessage
 	if h.conversationStore != nil {
 		history = h.conversationStore.Get(chatID)
 	}
 
-	intent, err := h.llmClassifier.Classify(classifyCtx, history, text)
+	classified, err := h.llmClassifier.Classify(classifyCtx, history, text)
 	if err != nil {
 		logging.WithComponent("telegram").Debug("LLM classification failed, using regex",
 			slog.Any("error", err))
-		return DetectIntent(text)
+		return intent.DetectIntent(text)
 	}
 
 	logging.WithComponent("telegram").Debug("LLM classified intent",
 		slog.String("chat_id", chatID),
-		slog.String("intent", string(intent)),
+		slog.String("intent", string(classified)),
 		slog.String("text", truncateDescription(text, 50)))
 
-	return intent
+	return classified
 }
 
 // handleCallback processes callback queries from inline keyboards
@@ -948,7 +949,7 @@ func (h *Handler) executeTask(ctx context.Context, chatID, taskID, description s
 		detectEphemeral = *h.runner.Config().DetectEphemeral
 	}
 
-	if detectEphemeral && IsEphemeralTask(description) {
+	if detectEphemeral && intent.IsEphemeralTask(description) {
 		createPR = false
 		logging.WithTask(taskID).Debug("Ephemeral task detected - skipping PR creation",
 			slog.String("description", truncateDescription(description, 50)))
@@ -1254,27 +1255,27 @@ func (h *Handler) handleVoice(ctx context.Context, chatID string, msg *Message) 
 
 	// Detect intent and handle (uses LLM if available)
 	text := strings.TrimSpace(result.Text)
-	intent := h.detectIntentWithLLM(ctx, chatID, text)
+	msgIntent := h.detectIntentWithLLM(ctx, chatID, text)
 
 	// Record transcribed message in conversation history
 	if h.conversationStore != nil {
 		h.conversationStore.Add(chatID, "user", text)
 	}
 
-	switch intent {
-	case IntentCommand:
+	switch msgIntent {
+	case intent.IntentCommand:
 		h.handleCommand(ctx, chatID, text)
-	case IntentGreeting:
+	case intent.IntentGreeting:
 		h.handleGreeting(ctx, chatID, msg.From)
-	case IntentQuestion:
+	case intent.IntentQuestion:
 		h.handleQuestion(ctx, chatID, text)
-	case IntentResearch:
+	case intent.IntentResearch:
 		h.handleResearch(ctx, chatID, text)
-	case IntentPlanning:
+	case intent.IntentPlanning:
 		h.handlePlanning(ctx, chatID, text)
-	case IntentChat:
+	case intent.IntentChat:
 		h.handleChat(ctx, chatID, text)
-	case IntentTask:
+	case intent.IntentTask:
 		h.handleTask(ctx, chatID, text)
 	default:
 		h.handleChat(ctx, chatID, text) // Default to chat, not task
