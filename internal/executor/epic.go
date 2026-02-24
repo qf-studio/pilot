@@ -229,24 +229,9 @@ func isSinglePackageScope(subtasks []PlannedSubtask, taskDescription string) boo
 }
 
 // extractUniqueDirectories finds file paths in text and returns their unique parent directories.
+// Delegates to the shared ExtractDirectoriesFromText (scope.go) for reuse across packages.
 func extractUniqueDirectories(text string) map[string]bool {
-	// Reuse the existing file path pattern from the decomposer
-	filePattern := regexp.MustCompile(`\b((?:[\w\-]+/)+[\w\-]+\.(?:go|py|ts|tsx|js|jsx|rs|java|rb))\b`)
-	matches := filePattern.FindAllStringSubmatch(text, -1)
-
-	dirs := make(map[string]bool)
-	for _, m := range matches {
-		if len(m) < 2 {
-			continue
-		}
-		filePath := m[1]
-		// Extract directory: "cmd/pilot/onboard.go" → "cmd/pilot"
-		lastSlash := strings.LastIndex(filePath, "/")
-		if lastSlash > 0 {
-			dirs[filePath[:lastSlash]] = true
-		}
-	}
-	return dirs
+	return ExtractDirectoriesFromText(text)
 }
 
 // detectSameComponentFromTitles checks if subtask titles all reference the same component.
