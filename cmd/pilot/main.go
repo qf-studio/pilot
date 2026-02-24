@@ -1538,6 +1538,7 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 			Transcription: cfg.Adapters.Telegram.Transcription,
 			RateLimit:     cfg.Adapters.Telegram.RateLimit,
 			LLMClassifier: cfg.Adapters.Telegram.LLMClassifier,
+			Store:         store,
 		}
 		// GH-634: Wire team member resolver if available (avoid nil interface trap)
 		if teamAdapter != nil {
