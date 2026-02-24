@@ -689,6 +689,18 @@ func (c *Client) HasApprovalReview(ctx context.Context, owner, repo string, numb
 	return false, "", nil
 }
 
+// GetPullRequestComments returns line-level review comments on a pull request.
+// These are inline code annotations, distinct from top-level review bodies returned by ListPullRequestReviews.
+// Uses: GET /repos/{owner}/{repo}/pulls/{number}/comments
+func (c *Client) GetPullRequestComments(ctx context.Context, owner, repo string, number int) ([]*PRReviewComment, error) {
+	path := fmt.Sprintf("/repos/%s/%s/pulls/%d/comments?per_page=100", owner, repo, number)
+	var result []*PRReviewComment
+	if err := c.doRequest(ctx, http.MethodGet, path, nil, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
 // UpdatePullRequestBranch updates the PR branch with the latest base branch.
 // Uses GitHub API: PUT /repos/{owner}/{repo}/pulls/{number}/update-branch
 // Returns nil on success, error if the branch cannot be automatically updated (true conflict).

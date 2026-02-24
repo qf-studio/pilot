@@ -267,6 +267,20 @@ type PullRequestReview struct {
 	SubmittedAt string `json:"submitted_at,omitempty"`
 }
 
+// PRReviewComment represents a line-level review comment on a pull request.
+// These are inline annotations on specific code lines, distinct from top-level review bodies.
+// See: https://docs.github.com/en/rest/pulls/comments#list-review-comments-on-a-pull-request
+type PRReviewComment struct {
+	ID        int64  `json:"id"`
+	Body      string `json:"body"`       // Comment text — primary learning source
+	Path      string `json:"path"`       // File path commented on
+	Line      int    `json:"line"`       // Line number (may be 0 if null in API)
+	Side      string `json:"side"`       // "LEFT" or "RIGHT"
+	User      User   `json:"user"`       // Commenter
+	CreatedAt string `json:"created_at"`
+	HTMLURL   string `json:"html_url"`
+}
+
 // Branch represents a GitHub branch
 type Branch struct {
 	Name      string       `json:"name"`
