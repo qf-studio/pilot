@@ -71,7 +71,6 @@ type Handler struct {
 	conversationStore *ConversationStore     // Conversation history per chat (optional)
 	memberResolver    MemberResolver         // Team member resolver for RBAC (optional, GH-634)
 	lastSender        map[string]int64       // chatID -> last sender Telegram user ID (GH-634)
-	transport         *Transport             // Transport layer for polling
 }
 
 // HandlerConfig holds configuration for the Telegram handler
@@ -119,7 +118,6 @@ func NewHandler(config *HandlerConfig, runner *executor.Runner) *Handler {
 		projectPath:    projectPath,
 		activeProject:  make(map[string]string),
 		allowedIDs:     allowedIDs,
-		offset:         0,
 		pendingTasks:   make(map[string]*PendingTask),
 		runningTasks:   make(map[string]*RunningTask),
 		stopCh:         make(chan struct{}),
@@ -171,9 +169,6 @@ func NewHandler(config *HandlerConfig, runner *executor.Runner) *Handler {
 			logging.WithComponent("telegram").Warn("LLM classifier enabled but no API key found")
 		}
 	}
-
-	// Create Transport layer for polling and message dispatch
-	h.transport = NewTransport(h.client, h)
 
 	return h
 }
@@ -232,24 +227,40 @@ func (h *Handler) CheckSingleton(ctx context.Context) error {
 	return h.client.CheckSingleton(ctx)
 }
 
-// StartPolling starts polling for updates via the Transport layer
+// StartPolling starts polling for updates in a goroutine
 func (h *Handler) StartPolling(ctx context.Context) {
-	if h.transport != nil {
-		h.transport.StartPolling(ctx)
-	}
+	h.wg.Add(1)
+	go h.pollLoop(ctx)
 
 	// Start cleanup goroutine for expired pending tasks
 	h.wg.Add(1)
 	go h.cleanupLoop(ctx)
 }
 
-// Stop gracefully stops the polling loop and transport
+// Stop gracefully stops the polling loop
 func (h *Handler) Stop() {
-	if h.transport != nil {
-		h.transport.Stop()
-	}
 	close(h.stopCh)
 	h.wg.Wait()
+}
+
+// pollLoop continuously polls for updates
+func (h *Handler) pollLoop(ctx context.Context) {
+	defer h.wg.Done()
+
+	logging.WithComponent("telegram").Debug("Starting poll loop")
+
+	for {
+		select {
+		case <-ctx.Done():
+			logging.WithComponent("telegram").Debug("Poll loop stopped")
+			return
+		case <-h.stopCh:
+			logging.WithComponent("telegram").Debug("Poll loop stopped")
+			return
+		default:
+			h.fetchAndProcess(ctx)
+		}
+	}
 }
 
 // cleanupLoop removes expired pending tasks
@@ -284,6 +295,31 @@ func (h *Handler) cleanupExpiredTasks(ctx context.Context) {
 			delete(h.pendingTasks, chatID)
 			logging.WithComponent("telegram").Debug("Expired pending task", slog.String("task_id", task.TaskID), slog.String("chat_id", chatID))
 		}
+	}
+}
+
+// fetchAndProcess fetches updates and processes them
+func (h *Handler) fetchAndProcess(ctx context.Context) {
+	// Use long polling with 30 second timeout
+	updates, err := h.client.GetUpdates(ctx, h.offset, 30)
+	if err != nil {
+		// Don't spam logs on context cancellation
+		if ctx.Err() == nil {
+			logging.WithComponent("telegram").Warn("Error fetching updates", slog.Any("error", err))
+		}
+		// Brief pause before retry on error
+		time.Sleep(time.Second)
+		return
+	}
+
+	for _, update := range updates {
+		h.processUpdate(ctx, update)
+		// Update offset to acknowledge this update
+		h.mu.Lock()
+		if update.UpdateID >= h.offset {
+			h.offset = update.UpdateID + 1
+		}
+		h.mu.Unlock()
 	}
 }
 
