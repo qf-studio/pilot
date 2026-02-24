@@ -1279,6 +1279,99 @@ func TestCreateSubIssues_AdapterError(t *testing.T) {
 	}
 }
 
+func TestCreateSubIssues_AdapterWiresDependsOnAnnotations(t *testing.T) {
+	// GH-1794: Verify DependsOn annotations are written into sub-issue bodies
+	runner := NewRunner()
+
+	mock := &mockSubIssueCreator{
+		Returns: []mockCreateIssueReturn{
+			{Identifier: "APP-101", URL: "https://linear.app/test/issue/APP-101"},
+			{Identifier: "APP-102", URL: "https://linear.app/test/issue/APP-102"},
+			{Identifier: "APP-103", URL: "https://linear.app/test/issue/APP-103"},
+		},
+	}
+	runner.SetSubIssueCreator(mock)
+
+	plan := &EpicPlan{
+		ParentTask: &Task{
+			ID:            "APP-100",
+			SourceAdapter: "linear",
+			SourceIssueID: "APP-100",
+		},
+		Subtasks: []PlannedSubtask{
+			{Title: "Setup infrastructure", Description: "Create base", Order: 1},
+			{Title: "Add feature", Description: "Build feature", Order: 2, DependsOn: []int{1}},
+			{Title: "Add tests", Description: "Write tests", Order: 3, DependsOn: []int{1, 2}},
+		},
+	}
+
+	ctx := context.Background()
+	created, err := runner.CreateSubIssues(ctx, plan, "")
+	if err != nil {
+		t.Fatalf("CreateSubIssues failed: %v", err)
+	}
+
+	if len(created) != 3 {
+		t.Fatalf("Expected 3 created issues, got %d", len(created))
+	}
+
+	// First issue: no dependencies
+	if strings.Contains(mock.Called[0].Body, "Depends on:") {
+		t.Errorf("First issue should not have dependency annotation, body: %s", mock.Called[0].Body)
+	}
+
+	// Second issue: depends on APP-101
+	if !strings.Contains(mock.Called[1].Body, "Depends on: APP-101") {
+		t.Errorf("Second issue body should contain 'Depends on: APP-101', got: %s", mock.Called[1].Body)
+	}
+
+	// Third issue: depends on both APP-101 and APP-102
+	if !strings.Contains(mock.Called[2].Body, "Depends on: APP-101") {
+		t.Errorf("Third issue body should contain 'Depends on: APP-101', got: %s", mock.Called[2].Body)
+	}
+	if !strings.Contains(mock.Called[2].Body, "Depends on: APP-102") {
+		t.Errorf("Third issue body should contain 'Depends on: APP-102', got: %s", mock.Called[2].Body)
+	}
+}
+
+func TestCreateSubIssues_AdapterNoDependsOnWhenEmpty(t *testing.T) {
+	// GH-1794: Verify no annotation is added when DependsOn is empty
+	runner := NewRunner()
+
+	mock := &mockSubIssueCreator{
+		Returns: []mockCreateIssueReturn{
+			{Identifier: "APP-101", URL: "https://linear.app/test/issue/APP-101"},
+			{Identifier: "APP-102", URL: "https://linear.app/test/issue/APP-102"},
+		},
+	}
+	runner.SetSubIssueCreator(mock)
+
+	plan := &EpicPlan{
+		ParentTask: &Task{
+			ID:            "APP-100",
+			SourceAdapter: "linear",
+			SourceIssueID: "APP-100",
+		},
+		Subtasks: []PlannedSubtask{
+			{Title: "First", Description: "Do first", Order: 1},
+			{Title: "Second", Description: "Do second", Order: 2},
+		},
+	}
+
+	ctx := context.Background()
+	_, err := runner.CreateSubIssues(ctx, plan, "")
+	if err != nil {
+		t.Fatalf("CreateSubIssues failed: %v", err)
+	}
+
+	// Neither issue should have dependency annotations
+	for i, call := range mock.Called {
+		if strings.Contains(call.Body, "Depends on:") {
+			t.Errorf("Issue %d should not have dependency annotation when DependsOn is empty, body: %s", i+1, call.Body)
+		}
+	}
+}
+
 func TestCreatedIssue_IdentifierField(t *testing.T) {
 	// Test that Identifier field is properly set for different adapters
 	tests := []struct {

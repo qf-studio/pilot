@@ -452,6 +452,9 @@ func (r *Runner) createSubIssuesViaAdapter(ctx context.Context, plan *EpicPlan) 
 	var created []CreatedIssue
 	parentID := plan.ParentTask.SourceIssueID
 
+	// Map subtask order → created issue identifier for dependency annotation (GH-1794)
+	orderToIdentifier := make(map[int]string)
+
 	r.log.Info("Creating sub-issues via adapter",
 		"adapter", plan.ParentTask.SourceAdapter,
 		"parent_id", parentID,
@@ -463,6 +466,13 @@ func (r *Runner) createSubIssuesViaAdapter(ctx context.Context, plan *EpicPlan) 
 		body := subtask.Description
 		if plan.ParentTask.ID != "" {
 			body = fmt.Sprintf("Parent: %s\n\n%s", plan.ParentTask.ID, body)
+		}
+
+		// Wire DependsOn annotations into the body (GH-1794)
+		for _, depOrder := range subtask.DependsOn {
+			if depID, ok := orderToIdentifier[depOrder]; ok {
+				body += fmt.Sprintf("\n\nDepends on: %s", depID)
+			}
 		}
 
 		// Truncate title (adapter may have different limits, but 80 is reasonable)
@@ -487,6 +497,9 @@ func (r *Runner) createSubIssuesViaAdapter(ctx context.Context, plan *EpicPlan) 
 			Subtask:    subtask,
 		})
 
+		// Track order → identifier for dependency resolution (GH-1794)
+		orderToIdentifier[subtask.Order] = identifier
+
 		r.log.Info("Created sub-issue via adapter",
 			"subtask_order", subtask.Order,
 			"identifier", identifier,
@@ -502,11 +515,21 @@ func (r *Runner) createSubIssuesViaAdapter(ctx context.Context, plan *EpicPlan) 
 func (r *Runner) createSubIssuesViaGitHub(ctx context.Context, plan *EpicPlan, executionPath string) ([]CreatedIssue, error) {
 	var created []CreatedIssue
 
+	// Map subtask order → created GitHub issue number for dependency annotation (GH-1794)
+	orderToIssueNumber := make(map[int]int)
+
 	for _, subtask := range plan.Subtasks {
 		// Build the issue body
 		body := subtask.Description
 		if plan.ParentTask != nil && plan.ParentTask.ID != "" {
 			body = fmt.Sprintf("Parent: %s\n\n%s", plan.ParentTask.ID, body)
+		}
+
+		// Wire DependsOn annotations into the body (GH-1794)
+		for _, depOrder := range subtask.DependsOn {
+			if depNum, ok := orderToIssueNumber[depOrder]; ok {
+				body += fmt.Sprintf("\n\nDepends on: #%d", depNum)
+			}
 		}
 
 		// Truncate title to max 80 chars for GitHub issue limits (GH-1133)
@@ -551,6 +574,9 @@ func (r *Runner) createSubIssuesViaGitHub(ctx context.Context, plan *EpicPlan, e
 			URL:        issueURL,
 			Subtask:    subtask,
 		})
+
+		// Track order → issue number for dependency resolution (GH-1794)
+		orderToIssueNumber[subtask.Order] = issueNumber
 
 		r.log.Info("Created GitHub issue",
 			"subtask_order", subtask.Order,
