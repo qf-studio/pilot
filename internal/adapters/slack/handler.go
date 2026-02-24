@@ -13,6 +13,7 @@ import (
 	"github.com/alekspetrov/pilot/internal/executor"
 	"github.com/alekspetrov/pilot/internal/intent"
 	"github.com/alekspetrov/pilot/internal/logging"
+	"github.com/alekspetrov/pilot/internal/memory"
 )
 
 // MemberResolver resolves a Slack user to a team member ID for RBAC (GH-786).
@@ -54,6 +55,7 @@ type Handler struct {
 	mu                sync.Mutex
 	stopCh            chan struct{}
 	wg                sync.WaitGroup
+	store             *memory.Store             // Memory store for history/queue/budget (optional)
 	log               *slog.Logger
 }
 
@@ -68,6 +70,7 @@ type HandlerConfig struct {
 	AllowedUsers    []string             // User IDs allowed to send tasks
 	RateLimit       *comms.RateLimitConfig // Rate limiting config (optional)
 	LLMClassifier   *LLMClassifierConfig // LLM intent classification config (optional)
+	Store           *memory.Store          // Memory store for history/queue/budget (optional)
 }
 
 // LLMClassifierConfig holds configuration for the LLM classifier.
@@ -119,6 +122,7 @@ func NewHandler(config *HandlerConfig, runner *executor.Runner) *Handler {
 		allowedChannels: allowedChannels,
 		allowedUsers:    allowedUsers,
 		rateLimiter:     rateLimiter,
+		store:           config.Store,
 		stopCh:          make(chan struct{}),
 		log:             logging.WithComponent("slack.handler"),
 	}

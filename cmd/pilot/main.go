@@ -2191,6 +2191,7 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 			AllowedChannels: cfg.Adapters.Slack.AllowedChannels,
 			AllowedUsers:    cfg.Adapters.Slack.AllowedUsers,
 			MemberResolver:  teamAdapter,
+			Store:           store,
 		}, runner)
 
 		go func() {
