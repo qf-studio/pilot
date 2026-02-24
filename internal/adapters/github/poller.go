@@ -23,6 +23,9 @@ const (
 	ExecutionModeSequential ExecutionMode = "sequential"
 	// ExecutionModeParallel processes issues concurrently (legacy behavior)
 	ExecutionModeParallel ExecutionMode = "parallel"
+	// ExecutionModeAuto uses parallel dispatch with scope-overlap guard:
+	// non-overlapping issues run concurrently; overlapping groups run oldest-first.
+	ExecutionModeAuto ExecutionMode = "auto"
 )
 
 // ProcessedStore persists which issues have been processed across restarts.
@@ -170,7 +173,7 @@ func NewPoller(client *Client, repo string, label string, interval time.Duration
 		interval:       interval,
 		processed:      make(map[int]bool),
 		logger:         logging.WithComponent("github-poller"),
-		executionMode:  ExecutionModeSequential, // Default matches config.DefaultExecutionConfig()
+		executionMode:  ExecutionModeAuto, // Default matches config.DefaultExecutionConfig()
 		waitForMerge:   true,
 		prPollInterval: 30 * time.Second,
 		prTimeout:      1 * time.Hour,
@@ -227,6 +230,9 @@ func (p *Poller) Start(ctx context.Context) {
 	if p.executionMode == ExecutionModeSequential {
 		p.startSequential(ctx)
 	} else {
+		// Both parallel and auto modes use startParallel; auto additionally
+		// applies the scope-overlap guard (groupByOverlappingScope) which is
+		// already built into checkForNewIssues.
 		p.startParallel(ctx)
 	}
 }
@@ -267,9 +273,12 @@ func (p *Poller) recoverOrphanedIssues(ctx context.Context) {
 	}
 }
 
-// startParallel runs concurrent issue execution with a semaphore limiter
+// startParallel runs concurrent issue execution with a semaphore limiter.
+// Used by both "parallel" and "auto" modes. In "auto" mode, checkForNewIssues
+// applies the scope-overlap guard so that overlapping issues are held back.
 func (p *Poller) startParallel(ctx context.Context) {
 	p.logger.Info("Running in parallel mode",
+		slog.String("mode", string(p.executionMode)),
 		slog.Int("max_concurrent", p.maxConcurrent),
 	)
 

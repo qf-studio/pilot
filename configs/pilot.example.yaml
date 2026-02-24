@@ -106,11 +106,14 @@ orchestrator:
   model: "claude-opus-4-6"
   max_concurrent: 2          # Max parallel tasks
 
-  # Execution mode (sequential or parallel)
+  # Execution mode (auto, sequential, or parallel)
   execution:
-    mode: "sequential"         # sequential: one issue at a time, waits for PR merge
-                               # parallel: process multiple issues concurrently (legacy)
-    wait_for_merge: true       # Wait for PR merge before picking next issue
+    mode: "auto"               # auto (default): parallel dispatch with scope-overlap guard
+                               #   non-overlapping issues run concurrently; overlapping groups
+                               #   run oldest-first (safe against merge conflicts)
+                               # sequential: one issue at a time, waits for PR merge
+                               # parallel: all issues run concurrently (legacy, no overlap guard)
+    wait_for_merge: true       # Wait for PR merge before picking next issue (sequential only)
     poll_interval: 30s         # How often to check PR status
     pr_timeout: 1h             # Max time to wait for PR merge
 

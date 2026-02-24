@@ -90,8 +90,8 @@ func TestDefaultConfig(t *testing.T) {
 			t.Fatal("Orchestrator.Execution is nil")
 		}
 		exec := config.Orchestrator.Execution
-		if exec.Mode != "sequential" {
-			t.Errorf("Execution.Mode = %q, want %q", exec.Mode, "sequential")
+		if exec.Mode != "auto" {
+			t.Errorf("Execution.Mode = %q, want %q", exec.Mode, "auto")
 		}
 		if exec.WaitForMerge != true {
 			t.Error("Execution.WaitForMerge should be true by default")

@@ -258,6 +258,16 @@ func TestConfig_Validate_OrchestratorBounds(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			name: "auto execution mode is valid",
+			orchestrator: &OrchestratorConfig{
+				MaxConcurrent: 2,
+				Execution: &ExecutionConfig{
+					Mode: "auto",
+				},
+			},
+			wantErr: false,
+		},
+		{
 			name: "invalid execution mode",
 			orchestrator: &OrchestratorConfig{
 				MaxConcurrent: 2,
@@ -266,7 +276,7 @@ func TestConfig_Validate_OrchestratorBounds(t *testing.T) {
 				},
 			},
 			wantErr:   true,
-			errSubstr: "orchestrator.execution.mode must be 'sequential' or 'parallel'",
+			errSubstr: "orchestrator.execution.mode must be 'sequential', 'parallel', or 'auto'",
 		},
 		{
 			name: "empty execution mode is invalid",
@@ -277,7 +287,7 @@ func TestConfig_Validate_OrchestratorBounds(t *testing.T) {
 				},
 			},
 			wantErr:   true,
-			errSubstr: "orchestrator.execution.mode must be 'sequential' or 'parallel'",
+			errSubstr: "orchestrator.execution.mode must be 'sequential', 'parallel', or 'auto'",
 		},
 	}
 

@@ -89,8 +89,9 @@ type OrchestratorConfig struct {
 // ExecutionConfig holds settings for task execution mode.
 // Sequential mode executes one task at a time, waiting for PR merge before the next.
 // Parallel mode (legacy) processes multiple tasks concurrently.
+// Auto mode (default) uses parallel dispatch with scope-overlap guard.
 type ExecutionConfig struct {
-	Mode         string        `yaml:"mode"`           // "sequential" or "parallel"
+	Mode         string        `yaml:"mode"`           // "sequential", "parallel", or "auto"
 	WaitForMerge bool          `yaml:"wait_for_merge"` // Wait for PR merge before next task
 	PollInterval time.Duration `yaml:"poll_interval"`  // How often to check PR status (default: 30s)
 	PRTimeout    time.Duration `yaml:"pr_timeout"`     // Max wait time for PR merge (default: 1h)
@@ -99,7 +100,7 @@ type ExecutionConfig struct {
 // DefaultExecutionConfig returns sensible defaults for execution config
 func DefaultExecutionConfig() *ExecutionConfig {
 	return &ExecutionConfig{
-		Mode:         "sequential",
+		Mode:         "auto",
 		WaitForMerge: true,
 		PollInterval: 30 * time.Second,
 		PRTimeout:    1 * time.Hour,
@@ -516,9 +517,9 @@ func (c *Config) Validate() error {
 
 		// Validate execution mode
 		if c.Orchestrator.Execution != nil {
-			validModes := map[string]bool{"sequential": true, "parallel": true}
+			validModes := map[string]bool{"sequential": true, "parallel": true, "auto": true}
 			if !validModes[c.Orchestrator.Execution.Mode] {
-				return fmt.Errorf("orchestrator.execution.mode must be 'sequential' or 'parallel', got %q", c.Orchestrator.Execution.Mode)
+				return fmt.Errorf("orchestrator.execution.mode must be 'sequential', 'parallel', or 'auto', got %q", c.Orchestrator.Execution.Mode)
 			}
 		}
 	}

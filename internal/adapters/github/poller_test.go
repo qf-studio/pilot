@@ -634,13 +634,25 @@ func TestWithExecutionMode(t *testing.T) {
 		}
 	})
 
-	t.Run("default is sequential matching config default", func(t *testing.T) {
+	t.Run("auto mode", func(t *testing.T) {
+		poller, err := NewPoller(client, "owner/repo", "pilot", 30*time.Second,
+			WithExecutionMode(ExecutionModeAuto),
+		)
+		if err != nil {
+			t.Fatalf("NewPoller() error = %v", err)
+		}
+		if poller.executionMode != ExecutionModeAuto {
+			t.Errorf("executionMode = %v, want %v", poller.executionMode, ExecutionModeAuto)
+		}
+	})
+
+	t.Run("default is auto matching config default", func(t *testing.T) {
 		poller, err := NewPoller(client, "owner/repo", "pilot", 30*time.Second)
 		if err != nil {
 			t.Fatalf("NewPoller() error = %v", err)
 		}
-		if poller.executionMode != ExecutionModeSequential {
-			t.Errorf("default executionMode = %v, want %v", poller.executionMode, ExecutionModeSequential)
+		if poller.executionMode != ExecutionModeAuto {
+			t.Errorf("default executionMode = %v, want %v", poller.executionMode, ExecutionModeAuto)
 		}
 	})
 }
@@ -1514,5 +1526,83 @@ func TestPoller_OverlapGrouping_MixedGroups(t *testing.T) {
 	}
 	if dispatchedSet[2] {
 		t.Error("issue 2 should be deferred (overlaps with older issue 1)")
+	}
+}
+
+// GH-1799: auto mode — non-overlapping issues dispatched in parallel
+func TestPoller_AutoMode_NonOverlapping(t *testing.T) {
+	now := time.Now()
+	issues := []*Issue{
+		{Number: 1, Title: "Gateway", Body: "Change internal/gateway/server.go", Labels: []Label{{Name: "pilot"}}, CreatedAt: now.Add(-3 * time.Hour)},
+		{Number: 2, Title: "Executor", Body: "Change internal/executor/runner.go", Labels: []Label{{Name: "pilot"}}, CreatedAt: now.Add(-2 * time.Hour)},
+		{Number: 3, Title: "Adapters", Body: "Change internal/adapters/slack.go", Labels: []Label{{Name: "pilot"}}, CreatedAt: now.Add(-1 * time.Hour)},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(issues)
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+
+	var callCount int32
+	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second,
+		WithExecutionMode(ExecutionModeAuto),
+		WithOnIssue(func(ctx context.Context, issue *Issue) error {
+			atomic.AddInt32(&callCount, 1)
+			return nil
+		}),
+	)
+
+	poller.checkForNewIssues(context.Background())
+	poller.WaitForActive()
+
+	// All 3 non-overlapping issues should be dispatched in parallel
+	if got := atomic.LoadInt32(&callCount); got != 3 {
+		t.Errorf("auto mode dispatched %d issues, want 3 (non-overlapping should all run)", got)
+	}
+}
+
+// GH-1799: auto mode — overlapping issues dispatch only the oldest
+func TestPoller_AutoMode_OverlappingDispatchesOldestOnly(t *testing.T) {
+	now := time.Now()
+	issues := []*Issue{
+		{Number: 3, Title: "Newest comms", Body: "Change internal/comms/types.go", Labels: []Label{{Name: "pilot"}}, CreatedAt: now.Add(-1 * time.Hour)},
+		{Number: 1, Title: "Oldest comms", Body: "Change internal/comms/handler.go", Labels: []Label{{Name: "pilot"}}, CreatedAt: now.Add(-3 * time.Hour)},
+		{Number: 2, Title: "Middle comms", Body: "Change internal/comms/router.go", Labels: []Label{{Name: "pilot"}}, CreatedAt: now.Add(-2 * time.Hour)},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(issues)
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+
+	var dispatched []int
+	var mu sync.Mutex
+	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second,
+		WithExecutionMode(ExecutionModeAuto),
+		WithOnIssue(func(ctx context.Context, issue *Issue) error {
+			mu.Lock()
+			dispatched = append(dispatched, issue.Number)
+			mu.Unlock()
+			return nil
+		}),
+	)
+
+	poller.checkForNewIssues(context.Background())
+	poller.WaitForActive()
+
+	mu.Lock()
+	defer mu.Unlock()
+	// Only the oldest (issue 1) should be dispatched; 2 and 3 deferred
+	if len(dispatched) != 1 {
+		t.Fatalf("auto mode dispatched %d issues, want 1; got %v", len(dispatched), dispatched)
+	}
+	if dispatched[0] != 1 {
+		t.Errorf("auto mode dispatched issue %d, want 1 (oldest)", dispatched[0])
 	}
 }
