@@ -314,7 +314,7 @@ type Runner struct {
 	// GH-1599: Execution log store for milestone entries
 	logStore              *memory.Store // Optional log store for writing execution milestones
 	// GH-1811: Learning system (self-improvement)
-	learningLoop   *memory.LearningLoop // Optional learning loop for pattern extraction + feedback
+	learningLoop   LearningRecorder     // Optional learning loop for pattern extraction + feedback
 	patternContext *PatternContext       // Optional pattern context for prompt injection
 }
 
@@ -633,7 +633,7 @@ func (r *Runner) SetLogStore(store *memory.Store) {
 }
 
 // SetLearningLoop sets the learning loop for post-execution pattern learning.
-func (r *Runner) SetLearningLoop(loop *memory.LearningLoop) {
+func (r *Runner) SetLearningLoop(loop LearningRecorder) {
 	r.learningLoop = loop
 }
 
@@ -2606,6 +2606,9 @@ The previous execution completed but made no code changes. This task requires ac
 		}
 	}
 
+	// GH-1813: Record execution outcome for pattern learning (self-improvement)
+	r.recordLearning(ctx, task, result)
+
 	return result, nil
 }
 // Cancel terminates a running task by killing its Claude Code process.
@@ -2620,6 +2623,36 @@ func (r *Runner) Cancel(taskID string) error {
 	}
 
 	return cmd.Process.Kill()
+}
+
+// recordLearning records the execution outcome for pattern learning.
+// It is non-fatal — errors are logged but do not affect the execution result.
+func (r *Runner) recordLearning(ctx context.Context, task *Task, result *ExecutionResult) {
+	if r.learningLoop == nil {
+		return
+	}
+	statusStr := "completed"
+	if !result.Success {
+		statusStr = "failed"
+	}
+	exec := &memory.Execution{
+		ID:           task.ID,
+		TaskID:       task.ID,
+		ProjectPath:  task.ProjectPath,
+		Status:       statusStr,
+		Output:       result.Output,
+		Error:        result.Error,
+		DurationMs:   result.Duration.Milliseconds(),
+		PRUrl:        result.PRUrl,
+		CommitSHA:    result.CommitSHA,
+		TokensInput:  result.TokensInput,
+		TokensOutput: result.TokensOutput,
+		FilesChanged: result.FilesChanged,
+		ModelName:    result.ModelName,
+	}
+	if learnErr := r.learningLoop.RecordExecution(ctx, exec, nil); learnErr != nil {
+		r.log.Warn("Failed to record execution for learning", slog.Any("error", learnErr))
+	}
 }
 
 // CancelAll terminates all running subprocesses gracefully.
