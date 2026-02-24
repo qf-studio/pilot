@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/alekspetrov/pilot/internal/comms"
 	"github.com/alekspetrov/pilot/internal/executor"
 	"github.com/alekspetrov/pilot/internal/intent"
 	"github.com/alekspetrov/pilot/internal/logging"
@@ -41,14 +42,14 @@ type Handler struct {
 	memberResolver    MemberResolver            // Team member resolver for RBAC (optional, GH-786)
 	lastSender        map[string]string         // channelID -> last sender Slack user ID
 	runner            *executor.Runner          // Task executor
-	projects          ProjectSource             // Project source for multi-project support
+	projects          comms.ProjectSource       // Project source for multi-project support
 	projectPath       string                    // Default/fallback project path
 	activeProject     map[string]string         // channelID -> projectPath (active project per channel)
 	pendingTasks      map[string]*PendingTask   // channelID -> pending task
 	allowedChannels   map[string]bool           // Allowed channel IDs for security
 	allowedUsers      map[string]bool           // Allowed user IDs for security
 	conversationStore *intent.ConversationStore // Conversation history per channel
-	rateLimiter       *RateLimiter              // Rate limiter for DoS protection
+	rateLimiter       *comms.RateLimiter        // Rate limiter for DoS protection
 	llmClassifier     intent.Classifier         // LLM intent classifier (optional)
 	mu                sync.Mutex
 	stopCh            chan struct{}
@@ -62,10 +63,10 @@ type HandlerConfig struct {
 	BotToken        string               // Slack bot token (xoxb-...)
 	MemberResolver  MemberResolver       // Team member resolver for RBAC (optional, GH-786)
 	ProjectPath     string               // Default/fallback project path
-	Projects        ProjectSource        // Project source for multi-project support
+	Projects        comms.ProjectSource  // Project source for multi-project support
 	AllowedChannels []string             // Channel IDs allowed to send tasks
 	AllowedUsers    []string             // User IDs allowed to send tasks
-	RateLimit       *RateLimitConfig     // Rate limiting config (optional)
+	RateLimit       *comms.RateLimitConfig // Rate limiting config (optional)
 	LLMClassifier   *LLMClassifierConfig // LLM intent classification config (optional)
 }
 
@@ -98,11 +99,11 @@ func NewHandler(config *HandlerConfig, runner *executor.Runner) *Handler {
 	}
 
 	// Initialize rate limiter
-	var rateLimiter *RateLimiter
+	var rateLimiter *comms.RateLimiter
 	if config.RateLimit != nil {
-		rateLimiter = NewRateLimiter(config.RateLimit)
+		rateLimiter = comms.NewRateLimiter(config.RateLimit)
 	} else {
-		rateLimiter = NewRateLimiter(DefaultRateLimitConfig())
+		rateLimiter = comms.NewRateLimiter(comms.DefaultRateLimitConfig())
 	}
 
 	h := &Handler{

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/alekspetrov/pilot/internal/comms"
 	"github.com/alekspetrov/pilot/internal/transcription"
 )
 
@@ -17,7 +18,7 @@ type Config struct {
 	AllowedIDs    []int64               `yaml:"allowed_ids"`     // User/chat IDs allowed to send tasks
 	PlainTextMode bool                  `yaml:"plain_text_mode"` // Use plain text instead of Markdown (default: true for messaging apps)
 	Transcription *transcription.Config `yaml:"transcription"`   // Voice message transcription config
-	RateLimit     *RateLimitConfig      `yaml:"rate_limit"`      // Rate limiting config (optional)
+	RateLimit     *comms.RateLimitConfig `yaml:"rate_limit"`      // Rate limiting config (optional)
 	LLMClassifier *LLMClassifierConfig  `yaml:"llm_classifier"`  // LLM intent classification config (optional)
 }
 

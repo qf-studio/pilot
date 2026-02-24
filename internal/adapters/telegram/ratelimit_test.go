@@ -1,18 +1,19 @@
 package telegram
 
 import (
+	"github.com/alekspetrov/pilot/internal/comms"
 	"testing"
 	"time"
 )
 
 func TestRateLimiter_AllowMessage(t *testing.T) {
-	config := &RateLimitConfig{
+	config := &comms.RateLimitConfig{
 		Enabled:           true,
 		MessagesPerMinute: 10,
 		TasksPerHour:      5,
 		BurstSize:         3,
 	}
-	limiter := NewRateLimiter(config)
+	limiter := comms.NewRateLimiter(config)
 
 	chatID := "test-chat-123"
 
@@ -30,13 +31,13 @@ func TestRateLimiter_AllowMessage(t *testing.T) {
 }
 
 func TestRateLimiter_AllowTask(t *testing.T) {
-	config := &RateLimitConfig{
+	config := &comms.RateLimitConfig{
 		Enabled:           true,
 		MessagesPerMinute: 20,
 		TasksPerHour:      5,
 		BurstSize:         2,
 	}
-	limiter := NewRateLimiter(config)
+	limiter := comms.NewRateLimiter(config)
 
 	chatID := "test-chat-456"
 
@@ -54,13 +55,13 @@ func TestRateLimiter_AllowTask(t *testing.T) {
 }
 
 func TestRateLimiter_Disabled(t *testing.T) {
-	config := &RateLimitConfig{
+	config := &comms.RateLimitConfig{
 		Enabled:           false,
 		MessagesPerMinute: 1,
 		TasksPerHour:      1,
 		BurstSize:         1,
 	}
-	limiter := NewRateLimiter(config)
+	limiter := comms.NewRateLimiter(config)
 
 	chatID := "test-chat-789"
 
@@ -76,13 +77,13 @@ func TestRateLimiter_Disabled(t *testing.T) {
 }
 
 func TestRateLimiter_TokenRefill(t *testing.T) {
-	config := &RateLimitConfig{
+	config := &comms.RateLimitConfig{
 		Enabled:           true,
 		MessagesPerMinute: 60, // 1 per second
 		TasksPerHour:      60,
 		BurstSize:         1,
 	}
-	limiter := NewRateLimiter(config)
+	limiter := comms.NewRateLimiter(config)
 
 	chatID := "test-chat-refill"
 
@@ -106,13 +107,13 @@ func TestRateLimiter_TokenRefill(t *testing.T) {
 }
 
 func TestRateLimiter_PerUserIsolation(t *testing.T) {
-	config := &RateLimitConfig{
+	config := &comms.RateLimitConfig{
 		Enabled:           true,
 		MessagesPerMinute: 10,
 		TasksPerHour:      5,
 		BurstSize:         2,
 	}
-	limiter := NewRateLimiter(config)
+	limiter := comms.NewRateLimiter(config)
 
 	chatID1 := "user-1"
 	chatID2 := "user-2"
@@ -136,13 +137,13 @@ func TestRateLimiter_PerUserIsolation(t *testing.T) {
 }
 
 func TestRateLimiter_GetRemaining(t *testing.T) {
-	config := &RateLimitConfig{
+	config := &comms.RateLimitConfig{
 		Enabled:           true,
 		MessagesPerMinute: 20,
 		TasksPerHour:      10,
 		BurstSize:         5,
 	}
-	limiter := NewRateLimiter(config)
+	limiter := comms.NewRateLimiter(config)
 
 	chatID := "test-remaining"
 
@@ -160,30 +161,22 @@ func TestRateLimiter_GetRemaining(t *testing.T) {
 }
 
 func TestRateLimiter_Cleanup(t *testing.T) {
-	config := DefaultRateLimitConfig()
-	limiter := NewRateLimiter(config)
+	config := comms.DefaultRateLimitConfig()
+	limiter := comms.NewRateLimiter(config)
 
 	// Create some buckets
 	limiter.AllowMessage("chat-1")
 	limiter.AllowMessage("chat-2")
 
 	// Verify buckets exist
-	limiter.mu.Lock()
-	initialCount := len(limiter.buckets)
-	limiter.mu.Unlock()
-
-	if initialCount != 2 {
+	if initialCount := limiter.BucketCount(); initialCount != 2 {
 		t.Errorf("Expected 2 buckets, got %d", initialCount)
 	}
 
 	// Cleanup with max age of 0 should remove all buckets
 	limiter.Cleanup(0)
 
-	limiter.mu.Lock()
-	finalCount := len(limiter.buckets)
-	limiter.mu.Unlock()
-
-	if finalCount != 0 {
+	if finalCount := limiter.BucketCount(); finalCount != 0 {
 		t.Errorf("Expected 0 buckets after cleanup, got %d", finalCount)
 	}
 }

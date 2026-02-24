@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alekspetrov/pilot/internal/comms"
 	"github.com/alekspetrov/pilot/internal/testutil"
 )
 
@@ -268,7 +269,7 @@ func TestCommandHandler_HandleQueue(t *testing.T) {
 func TestCommandHandler_HandleProjects(t *testing.T) {
 	tests := []struct {
 		name     string
-		projects ProjectSource
+		projects comms.ProjectSource
 	}{
 		{
 			name:     "no projects configured",
@@ -277,7 +278,7 @@ func TestCommandHandler_HandleProjects(t *testing.T) {
 		{
 			name: "with projects",
 			projects: &MockProjectSource{
-				projects: []*ProjectInfo{
+				projects: []*comms.ProjectInfo{
 					{Name: "project-a", Path: "/path/a", Navigator: true},
 					{Name: "project-b", Path: "/path/b", Navigator: false},
 				},
@@ -286,7 +287,7 @@ func TestCommandHandler_HandleProjects(t *testing.T) {
 		{
 			name: "empty project list",
 			projects: &MockProjectSource{
-				projects: []*ProjectInfo{},
+				projects: []*comms.ProjectInfo{},
 			},
 		},
 	}
@@ -313,7 +314,7 @@ func TestCommandHandler_HandleProjects(t *testing.T) {
 // TestCommandHandler_HandleSwitch tests the /switch command
 func TestCommandHandler_HandleSwitch(t *testing.T) {
 	projects := &MockProjectSource{
-		projects: []*ProjectInfo{
+		projects: []*comms.ProjectInfo{
 			{Name: "project-a", Path: "/path/a"},
 			{Name: "project-b", Path: "/path/b"},
 		},
@@ -544,7 +545,7 @@ func TestNewCommandHandler(t *testing.T) {
 // TestCommandHandler_HandleCallbackSwitch tests callback-based project switching
 func TestCommandHandler_HandleCallbackSwitch(t *testing.T) {
 	projects := &MockProjectSource{
-		projects: []*ProjectInfo{
+		projects: []*comms.ProjectInfo{
 			{Name: "project-a", Path: "/path/a"},
 			{Name: "project-b", Path: "/path/b"},
 		},
@@ -580,7 +581,7 @@ func TestCommandRouting(t *testing.T) {
 		activeProject: make(map[string]string),
 		projectPath:   "/test/path",
 		projects: &MockProjectSource{
-			projects: []*ProjectInfo{
+			projects: []*comms.ProjectInfo{
 				{Name: "test", Path: "/test/path"},
 			},
 		},

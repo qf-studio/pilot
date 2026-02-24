@@ -1,11 +1,11 @@
-package slack
+package comms
 
 import (
 	"sync"
 	"time"
 )
 
-// RateLimitConfig holds rate limiting configuration for Slack.
+// RateLimitConfig holds rate limiting configuration.
 type RateLimitConfig struct {
 	Enabled           bool `yaml:"enabled"`
 	MessagesPerMinute int  `yaml:"messages_per_minute"` // Max messages per minute (default: 20)
@@ -52,9 +52,9 @@ func NewRateLimiter(config *RateLimitConfig) *RateLimiter {
 	}
 }
 
-// AllowMessage checks if a message is allowed for the given channel/user ID.
+// AllowMessage checks if a message is allowed for the given ID.
 // Returns true if allowed, false if rate limited.
-func (r *RateLimiter) AllowMessage(channelID string) bool {
+func (r *RateLimiter) AllowMessage(id string) bool {
 	if !r.config.Enabled {
 		return true
 	}
@@ -62,7 +62,7 @@ func (r *RateLimiter) AllowMessage(channelID string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	bucket := r.getOrCreateBucket(channelID)
+	bucket := r.getOrCreateBucket(id)
 	bucket.refill()
 
 	if bucket.messageTokens >= 1 {
@@ -72,9 +72,9 @@ func (r *RateLimiter) AllowMessage(channelID string) bool {
 	return false
 }
 
-// AllowTask checks if a task execution is allowed for the given channel/user ID.
+// AllowTask checks if a task execution is allowed for the given ID.
 // Returns true if allowed, false if rate limited.
-func (r *RateLimiter) AllowTask(channelID string) bool {
+func (r *RateLimiter) AllowTask(id string) bool {
 	if !r.config.Enabled {
 		return true
 	}
@@ -82,7 +82,7 @@ func (r *RateLimiter) AllowTask(channelID string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	bucket := r.getOrCreateBucket(channelID)
+	bucket := r.getOrCreateBucket(id)
 	bucket.refill()
 
 	if bucket.taskTokens >= 1 {
@@ -92,9 +92,9 @@ func (r *RateLimiter) AllowTask(channelID string) bool {
 	return false
 }
 
-// getOrCreateBucket returns the token bucket for a channel ID, creating if needed.
-func (r *RateLimiter) getOrCreateBucket(channelID string) *tokenBucket {
-	bucket, exists := r.buckets[channelID]
+// getOrCreateBucket returns the token bucket for an ID, creating if needed.
+func (r *RateLimiter) getOrCreateBucket(id string) *tokenBucket {
+	bucket, exists := r.buckets[id]
 	if !exists {
 		maxMessageBurst := r.config.MessagesPerMinute
 		if r.config.BurstSize > 0 && r.config.BurstSize < maxMessageBurst {
@@ -115,7 +115,7 @@ func (r *RateLimiter) getOrCreateBucket(channelID string) *tokenBucket {
 			maxMessageBurst: maxMessageBurst,
 			maxTaskBurst:    maxTaskBurst,
 		}
-		r.buckets[channelID] = bucket
+		r.buckets[id] = bucket
 	}
 	return bucket
 }
@@ -139,7 +139,7 @@ func (b *tokenBucket) refill() {
 }
 
 // GetRemainingMessages returns the number of messages remaining in the rate limit.
-func (r *RateLimiter) GetRemainingMessages(channelID string) int {
+func (r *RateLimiter) GetRemainingMessages(id string) int {
 	if !r.config.Enabled {
 		return -1 // Unlimited
 	}
@@ -147,13 +147,13 @@ func (r *RateLimiter) GetRemainingMessages(channelID string) int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	bucket := r.getOrCreateBucket(channelID)
+	bucket := r.getOrCreateBucket(id)
 	bucket.refill()
 	return int(bucket.messageTokens)
 }
 
 // GetRemainingTasks returns the number of task executions remaining in the rate limit.
-func (r *RateLimiter) GetRemainingTasks(channelID string) int {
+func (r *RateLimiter) GetRemainingTasks(id string) int {
 	if !r.config.Enabled {
 		return -1 // Unlimited
 	}
@@ -161,9 +161,16 @@ func (r *RateLimiter) GetRemainingTasks(channelID string) int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	bucket := r.getOrCreateBucket(channelID)
+	bucket := r.getOrCreateBucket(id)
 	bucket.refill()
 	return int(bucket.taskTokens)
+}
+
+// BucketCount returns the number of active rate limit buckets (for testing).
+func (r *RateLimiter) BucketCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.buckets)
 }
 
 // Cleanup removes buckets that haven't been used recently.
@@ -173,9 +180,9 @@ func (r *RateLimiter) Cleanup(maxAge time.Duration) {
 	defer r.mu.Unlock()
 
 	cutoff := time.Now().Add(-maxAge)
-	for channelID, bucket := range r.buckets {
+	for id, bucket := range r.buckets {
 		if bucket.lastRefill.Before(cutoff) {
-			delete(r.buckets, channelID)
+			delete(r.buckets, id)
 		}
 	}
 }

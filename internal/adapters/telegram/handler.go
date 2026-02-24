@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/alekspetrov/pilot/internal/comms"
 	"github.com/alekspetrov/pilot/internal/executor"
 	"github.com/alekspetrov/pilot/internal/logging"
 	"github.com/alekspetrov/pilot/internal/memory"
@@ -50,7 +51,7 @@ type RunningTask struct {
 type Handler struct {
 	client            *Client
 	runner            *executor.Runner
-	projects          ProjectSource           // Project source for multi-project support
+	projects          comms.ProjectSource     // Project source for multi-project support
 	projectPath       string                  // Default/fallback project path
 	activeProject     map[string]string       // chatID -> projectPath (active project per chat)
 	allowedIDs        map[int64]bool          // Allowed user/chat IDs for security
@@ -65,7 +66,7 @@ type Handler struct {
 	store             *memory.Store          // Memory store for history/queue/budget (optional)
 	cmdHandler        *CommandHandler        // Command handler for /commands
 	plainTextMode     bool                   // Use plain text instead of Markdown
-	rateLimiter       *RateLimiter           // Rate limiter for DoS protection
+	rateLimiter       *comms.RateLimiter     // Rate limiter for DoS protection
 	llmClassifier     *AnthropicClient       // LLM intent classifier (optional)
 	conversationStore *ConversationStore     // Conversation history per chat (optional)
 	memberResolver    MemberResolver         // Team member resolver for RBAC (optional, GH-634)
@@ -76,12 +77,12 @@ type Handler struct {
 type HandlerConfig struct {
 	BotToken       string
 	ProjectPath    string                // Default/fallback project path
-	Projects       ProjectSource         // Project source for multi-project support
+	Projects       comms.ProjectSource   // Project source for multi-project support
 	AllowedIDs     []int64               // User/chat IDs allowed to send tasks
 	Transcription  *transcription.Config // Voice transcription config (optional)
 	Store          *memory.Store         // Memory store for history/queue/budget (optional)
 	PlainTextMode  bool                  // Use plain text instead of Markdown (default: true)
-	RateLimit      *RateLimitConfig      // Rate limiting config (optional)
+	RateLimit      *comms.RateLimitConfig // Rate limiting config (optional)
 	LLMClassifier  *LLMClassifierConfig  // LLM intent classification config (optional)
 	MemberResolver MemberResolver        // Team member resolver for RBAC (optional, GH-634)
 }
@@ -102,12 +103,12 @@ func NewHandler(config *HandlerConfig, runner *executor.Runner) *Handler {
 	}
 
 	// Initialize rate limiter
-	var rateLimiter *RateLimiter
+	var rateLimiter *comms.RateLimiter
 	if config.RateLimit != nil {
-		rateLimiter = NewRateLimiter(config.RateLimit)
+		rateLimiter = comms.NewRateLimiter(config.RateLimit)
 	} else {
 		// Use defaults if not configured
-		rateLimiter = NewRateLimiter(DefaultRateLimitConfig())
+		rateLimiter = comms.NewRateLimiter(comms.DefaultRateLimitConfig())
 	}
 
 	h := &Handler{
@@ -184,7 +185,7 @@ func (h *Handler) getActiveProjectPath(chatID string) string {
 }
 
 // setActiveProject sets the active project for a chat by name
-func (h *Handler) setActiveProject(chatID, projectName string) (*ProjectInfo, error) {
+func (h *Handler) setActiveProject(chatID, projectName string) (*comms.ProjectInfo, error) {
 	if h.projects == nil {
 		return nil, fmt.Errorf("no projects configured")
 	}
@@ -202,7 +203,7 @@ func (h *Handler) setActiveProject(chatID, projectName string) (*ProjectInfo, er
 }
 
 // getActiveProjectInfo returns the active project info for a chat
-func (h *Handler) getActiveProjectInfo(chatID string) *ProjectInfo {
+func (h *Handler) getActiveProjectInfo(chatID string) *comms.ProjectInfo {
 	if h.projects == nil {
 		return nil
 	}

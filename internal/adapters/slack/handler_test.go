@@ -5,6 +5,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/alekspetrov/pilot/internal/comms"
 )
 
 // mockMemberResolver implements MemberResolver for testing.
@@ -257,14 +259,14 @@ func TestHandler_IsAllowed(t *testing.T) {
 }
 
 func TestRateLimiter(t *testing.T) {
-	config := &RateLimitConfig{
+	config := &comms.RateLimitConfig{
 		Enabled:           true,
 		MessagesPerMinute: 5,
 		TasksPerHour:      2,
 		BurstSize:         3,
 	}
 
-	limiter := NewRateLimiter(config)
+	limiter := comms.NewRateLimiter(config)
 
 	// Should allow up to burst size
 	for i := 0; i < 3; i++ {

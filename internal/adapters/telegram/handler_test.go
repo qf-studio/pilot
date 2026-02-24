@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alekspetrov/pilot/internal/comms"
 	"github.com/alekspetrov/pilot/internal/testutil"
 )
 
@@ -130,10 +131,10 @@ func TestGetActiveProjectPath(t *testing.T) {
 
 // MockProjectSource implements ProjectSource for testing
 type MockProjectSource struct {
-	projects []*ProjectInfo
+	projects []*comms.ProjectInfo
 }
 
-func (m *MockProjectSource) GetProjectByName(name string) *ProjectInfo {
+func (m *MockProjectSource) GetProjectByName(name string) *comms.ProjectInfo {
 	for _, p := range m.projects {
 		if p.Name == name {
 			return p
@@ -142,7 +143,7 @@ func (m *MockProjectSource) GetProjectByName(name string) *ProjectInfo {
 	return nil
 }
 
-func (m *MockProjectSource) GetProjectByPath(path string) *ProjectInfo {
+func (m *MockProjectSource) GetProjectByPath(path string) *comms.ProjectInfo {
 	for _, p := range m.projects {
 		if p.Path == path {
 			return p
@@ -151,21 +152,21 @@ func (m *MockProjectSource) GetProjectByPath(path string) *ProjectInfo {
 	return nil
 }
 
-func (m *MockProjectSource) GetDefaultProject() *ProjectInfo {
+func (m *MockProjectSource) GetDefaultProject() *comms.ProjectInfo {
 	if len(m.projects) > 0 {
 		return m.projects[0]
 	}
 	return nil
 }
 
-func (m *MockProjectSource) ListProjects() []*ProjectInfo {
+func (m *MockProjectSource) ListProjects() []*comms.ProjectInfo {
 	return m.projects
 }
 
 // TestSetActiveProject tests project switching
 func TestSetActiveProject(t *testing.T) {
 	projects := &MockProjectSource{
-		projects: []*ProjectInfo{
+		projects: []*comms.ProjectInfo{
 			{Name: "project-a", Path: "/path/a"},
 			{Name: "project-b", Path: "/path/b"},
 		},
@@ -978,14 +979,14 @@ func TestTryFastAnswer(t *testing.T) {
 // TestGetActiveProjectInfo tests project info retrieval
 func TestGetActiveProjectInfo(t *testing.T) {
 	projects := &MockProjectSource{
-		projects: []*ProjectInfo{
+		projects: []*comms.ProjectInfo{
 			{Name: "test", Path: "/test/path"},
 		},
 	}
 
 	tests := []struct {
 		name     string
-		projects ProjectSource
+		projects comms.ProjectSource
 		wantNil  bool
 	}{
 		{
@@ -1081,7 +1082,7 @@ func TestRunningTask(t *testing.T) {
 
 // TestProjectInfo tests ProjectInfo struct
 func TestProjectInfo(t *testing.T) {
-	proj := &ProjectInfo{
+	proj := &comms.ProjectInfo{
 		Name:          "test-project",
 		Path:          "/path/to/project",
 		Navigator:     true,
@@ -1160,7 +1161,7 @@ func TestTaskInfo(t *testing.T) {
 // TestHandlerConfigStruct tests HandlerConfig struct
 func TestHandlerConfigStruct(t *testing.T) {
 	projects := &MockProjectSource{
-		projects: []*ProjectInfo{{Name: "test", Path: "/test"}},
+		projects: []*comms.ProjectInfo{{Name: "test", Path: "/test"}},
 	}
 
 	config := &HandlerConfig{
@@ -1187,7 +1188,7 @@ func TestHandlerConfigStruct(t *testing.T) {
 // TestNewHandlerWithProjects tests handler creation with projects source
 func TestNewHandlerWithProjects(t *testing.T) {
 	projects := &MockProjectSource{
-		projects: []*ProjectInfo{
+		projects: []*comms.ProjectInfo{
 			{Name: "default", Path: "/default/path"},
 			{Name: "other", Path: "/other/path"},
 		},
@@ -1209,7 +1210,7 @@ func TestNewHandlerWithProjects(t *testing.T) {
 // TestMockProjectSourceMethods tests all MockProjectSource methods
 func TestMockProjectSourceMethods(t *testing.T) {
 	projects := &MockProjectSource{
-		projects: []*ProjectInfo{
+		projects: []*comms.ProjectInfo{
 			{Name: "alpha", Path: "/alpha"},
 			{Name: "beta", Path: "/beta"},
 		},
@@ -1253,7 +1254,7 @@ func TestMockProjectSourceMethods(t *testing.T) {
 // TestMockProjectSourceEmpty tests empty project source
 func TestMockProjectSourceEmpty(t *testing.T) {
 	projects := &MockProjectSource{
-		projects: []*ProjectInfo{},
+		projects: []*comms.ProjectInfo{},
 	}
 
 	if projects.GetDefaultProject() != nil {
