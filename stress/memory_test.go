@@ -149,9 +149,31 @@ func TestMemory_ProcessedMapGrowth(t *testing.T) {
 		}
 	}
 
+	// After the initial dispatch poll, return issues with pilot-in-progress label
+	// so the retry logic doesn't clear them from the processed map on subsequent ticks.
+	// recoverOrphanedIssues also makes a ListIssues call, so we track calls and
+	// return the dispatchable set only on the second call (first actual poll).
+	var pollCount int64
+	inProgressIssues := make([]*github.Issue, numIssues)
+	for i := 0; i < numIssues; i++ {
+		inProgressIssues[i] = &github.Issue{
+			Number:    i + 1,
+			Title:     fmt.Sprintf("Issue %d", i+1),
+			State:     "open",
+			Labels:    []github.Label{{Name: "pilot"}, {Name: "pilot-in-progress"}},
+			CreatedAt: time.Now(),
+		}
+	}
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(issues)
+		n := atomic.AddInt64(&pollCount, 1)
+		if n <= 2 {
+			// Call 1: recoverOrphanedIssues, Call 2: first checkForNewIssues
+			_ = json.NewEncoder(w).Encode(issues)
+		} else {
+			_ = json.NewEncoder(w).Encode(inProgressIssues)
+		}
 	}))
 	defer server.Close()
 
