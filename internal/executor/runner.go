@@ -313,6 +313,9 @@ type Runner struct {
 	subIssueCreator       SubIssueCreator // Optional creator for sub-issues in external trackers
 	// GH-1599: Execution log store for milestone entries
 	logStore              *memory.Store // Optional log store for writing execution milestones
+	// GH-1811: Learning system (self-improvement)
+	learningLoop   *memory.LearningLoop // Optional learning loop for pattern extraction + feedback
+	patternContext *PatternContext       // Optional pattern context for prompt injection
 }
 
 // NewRunner creates a new Runner instance with Claude Code backend by default.
@@ -627,6 +630,16 @@ func (r *Runner) SetMonitor(m *Monitor) {
 // SetLogStore sets the memory store used for writing execution milestone log entries (GH-1599).
 func (r *Runner) SetLogStore(store *memory.Store) {
 	r.logStore = store
+}
+
+// SetLearningLoop sets the learning loop for post-execution pattern learning.
+func (r *Runner) SetLearningLoop(loop *memory.LearningLoop) {
+	r.learningLoop = loop
+}
+
+// SetPatternContext sets the pattern context for pre-execution pattern injection.
+func (r *Runner) SetPatternContext(ctx *PatternContext) {
+	r.patternContext = ctx
 }
 
 // saveLogEntry writes a structured log entry to the log store (fire-and-forget).

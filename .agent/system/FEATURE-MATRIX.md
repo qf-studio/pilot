@@ -27,7 +27,6 @@
 | Verbose output | ✅ | executor | `--verbose` | - | Stream raw JSON |
 | Task dispatcher | ✅ | executor | - | - | Per-project queue (GH-46) |
 | Sequential execution | ✅ | executor | `--sequential` | `orchestrator.execution.mode` | Wait for PR merge before next issue |
-| Auto execution mode | ✅ | poller | - | `orchestrator.execution.mode: auto` | Parallel dispatch with scope-overlap guard; default mode (GH-1799) |
 | Self-review | ✅ | executor | - | - | Auto code review before PR push (v0.13.0) |
 | Auto build gate | ✅ | executor | - | - | Minimal build gate when none configured (v0.13.0) |
 | Epic decomposition | ✅ | executor | - | `decompose.enabled` | PlanEpic + CreateSubIssues for complex tasks (v0.20.2) |
@@ -122,6 +121,7 @@
 | Knowledge graph | ✅ | memory | - | - | Internal only |
 | Knowledge store | ✅ | memory | - | - | Experiential memory with confidence tracking (v0.61.0) |
 | Profile manager | ✅ | memory | - | - | User preferences + correction learning (v0.61.0) |
+| Learning loop wiring | ✅ | executor | - | - | Runner fields + setters for learning loop & pattern context (GH-1811) |
 
 ## Dashboard
 
