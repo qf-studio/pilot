@@ -71,6 +71,7 @@ type Handler struct {
 	conversationStore *ConversationStore     // Conversation history per chat (optional)
 	memberResolver    MemberResolver         // Team member resolver for RBAC (optional, GH-634)
 	lastSender        map[string]int64       // chatID -> last sender Telegram user ID (GH-634)
+	transport         *Transport             // Transport layer for polling
 }
 
 // HandlerConfig holds configuration for the Telegram handler
@@ -118,6 +119,7 @@ func NewHandler(config *HandlerConfig, runner *executor.Runner) *Handler {
 		projectPath:    projectPath,
 		activeProject:  make(map[string]string),
 		allowedIDs:     allowedIDs,
+		offset:         0,
 		pendingTasks:   make(map[string]*PendingTask),
 		runningTasks:   make(map[string]*RunningTask),
 		stopCh:         make(chan struct{}),
@@ -169,6 +171,9 @@ func NewHandler(config *HandlerConfig, runner *executor.Runner) *Handler {
 			logging.WithComponent("telegram").Warn("LLM classifier enabled but no API key found")
 		}
 	}
+
+	// Create Transport layer for polling and message dispatch
+	h.transport = NewTransport(h.client, h)
 
 	return h
 }
@@ -227,18 +232,22 @@ func (h *Handler) CheckSingleton(ctx context.Context) error {
 	return h.client.CheckSingleton(ctx)
 }
 
-// StartPolling starts polling for updates in a goroutine
+// StartPolling starts polling for updates via the Transport layer
 func (h *Handler) StartPolling(ctx context.Context) {
-	h.wg.Add(1)
-	go h.pollLoop(ctx)
+	if h.transport != nil {
+		h.transport.StartPolling(ctx)
+	}
 
 	// Start cleanup goroutine for expired pending tasks
 	h.wg.Add(1)
 	go h.cleanupLoop(ctx)
 }
 
-// Stop gracefully stops the polling loop
+// Stop gracefully stops the polling loop and transport
 func (h *Handler) Stop() {
+	if h.transport != nil {
+		h.transport.Stop()
+	}
 	close(h.stopCh)
 	h.wg.Wait()
 }
