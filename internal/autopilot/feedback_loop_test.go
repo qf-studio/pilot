@@ -122,6 +122,10 @@ func TestFeedbackLoop_CreateFailureIssue_CIFailed(t *testing.T) {
 	if !strings.Contains(capturedBody, "Fix the CI failures") {
 		t.Error("body should contain task instructions")
 	}
+	// GH-1798: Verify dependency annotation for parent issue
+	if !strings.Contains(capturedBody, "Depends on: #10") {
+		t.Error("body should contain dependency annotation for parent issue")
+	}
 
 	// Verify labels
 	if len(capturedLabels) != 2 || capturedLabels[0] != "pilot" {
@@ -553,6 +557,10 @@ func TestFeedbackLoop_IssueBody_NoIssueNumber(t *testing.T) {
 	// Should not reference original issue
 	if strings.Contains(capturedBody, "Original Issue") {
 		t.Error("body should not contain Original Issue when no issue number")
+	}
+	// GH-1798: Should not contain dependency annotation when no parent issue
+	if strings.Contains(capturedBody, "Depends on:") {
+		t.Error("body should not contain dependency annotation when IssueNumber is 0")
 	}
 }
 
