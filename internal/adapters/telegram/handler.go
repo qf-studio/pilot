@@ -252,26 +252,6 @@ func (h *Handler) Stop() {
 	h.wg.Wait()
 }
 
-// pollLoop continuously polls for updates
-func (h *Handler) pollLoop(ctx context.Context) {
-	defer h.wg.Done()
-
-	logging.WithComponent("telegram").Debug("Starting poll loop")
-
-	for {
-		select {
-		case <-ctx.Done():
-			logging.WithComponent("telegram").Debug("Poll loop stopped")
-			return
-		case <-h.stopCh:
-			logging.WithComponent("telegram").Debug("Poll loop stopped")
-			return
-		default:
-			h.fetchAndProcess(ctx)
-		}
-	}
-}
-
 // cleanupLoop removes expired pending tasks
 func (h *Handler) cleanupLoop(ctx context.Context) {
 	defer h.wg.Done()
@@ -304,31 +284,6 @@ func (h *Handler) cleanupExpiredTasks(ctx context.Context) {
 			delete(h.pendingTasks, chatID)
 			logging.WithComponent("telegram").Debug("Expired pending task", slog.String("task_id", task.TaskID), slog.String("chat_id", chatID))
 		}
-	}
-}
-
-// fetchAndProcess fetches updates and processes them
-func (h *Handler) fetchAndProcess(ctx context.Context) {
-	// Use long polling with 30 second timeout
-	updates, err := h.client.GetUpdates(ctx, h.offset, 30)
-	if err != nil {
-		// Don't spam logs on context cancellation
-		if ctx.Err() == nil {
-			logging.WithComponent("telegram").Warn("Error fetching updates", slog.Any("error", err))
-		}
-		// Brief pause before retry on error
-		time.Sleep(time.Second)
-		return
-	}
-
-	for _, update := range updates {
-		h.processUpdate(ctx, update)
-		// Update offset to acknowledge this update
-		h.mu.Lock()
-		if update.UpdateID >= h.offset {
-			h.offset = update.UpdateID + 1
-		}
-		h.mu.Unlock()
 	}
 }
 
