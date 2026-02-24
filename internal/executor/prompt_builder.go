@@ -1,7 +1,9 @@
 package executor
 
 import (
+	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -215,7 +217,19 @@ func (r *Runner) BuildPrompt(task *Task, executionPath string) string {
 		r.driftDetector.Reset()
 	}
 
-	return sb.String()
+	prompt := sb.String()
+
+	// Inject learned patterns into prompt (self-improvement, GH-1819)
+	if r.patternContext != nil {
+		injected, err := r.patternContext.InjectPatterns(context.Background(), prompt, task.ProjectPath, task.Description)
+		if err != nil {
+			slog.Warn("Failed to inject patterns", slog.Any("error", err))
+		} else {
+			prompt = injected
+		}
+	}
+
+	return prompt
 }
 
 // buildRetryPrompt constructs a prompt for Claude Code to fix quality gate failures.
