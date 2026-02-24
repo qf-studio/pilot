@@ -634,13 +634,13 @@ func TestWithExecutionMode(t *testing.T) {
 		}
 	})
 
-	t.Run("default is parallel for backward compatibility", func(t *testing.T) {
+	t.Run("default is sequential matching config default", func(t *testing.T) {
 		poller, err := NewPoller(client, "owner/repo", "pilot", 30*time.Second)
 		if err != nil {
 			t.Fatalf("NewPoller() error = %v", err)
 		}
-		if poller.executionMode != ExecutionModeParallel {
-			t.Errorf("default executionMode = %v, want %v", poller.executionMode, ExecutionModeParallel)
+		if poller.executionMode != ExecutionModeSequential {
+			t.Errorf("default executionMode = %v, want %v", poller.executionMode, ExecutionModeSequential)
 		}
 	})
 }

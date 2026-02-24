@@ -164,6 +164,7 @@ func TestMemory_ProcessedMapGrowth(t *testing.T) {
 		"owner/repo",
 		"pilot",
 		10*time.Millisecond,
+		github.WithExecutionMode(github.ExecutionModeParallel),
 		github.WithMaxConcurrent(20),
 		github.WithOnIssue(func(ctx context.Context, issue *github.Issue) error {
 			atomic.AddInt64(&processedCount, 1)

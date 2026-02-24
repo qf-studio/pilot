@@ -170,7 +170,7 @@ func NewPoller(client *Client, repo string, label string, interval time.Duration
 		interval:       interval,
 		processed:      make(map[int]bool),
 		logger:         logging.WithComponent("github-poller"),
-		executionMode:  ExecutionModeParallel, // Default for backward compatibility
+		executionMode:  ExecutionModeSequential, // Default matches config.DefaultExecutionConfig()
 		waitForMerge:   true,
 		prPollInterval: 30 * time.Second,
 		prTimeout:      1 * time.Hour,
