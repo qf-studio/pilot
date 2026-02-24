@@ -12,6 +12,7 @@ import (
 
 	"github.com/alekspetrov/pilot/internal/adapters/github"
 	"github.com/alekspetrov/pilot/internal/approval"
+	"github.com/alekspetrov/pilot/internal/memory"
 )
 
 // iterationRe matches the iteration field in autopilot-meta comments.
@@ -83,6 +84,9 @@ type Controller struct {
 	// Persistent state store (optional, nil = in-memory only)
 	stateStore *StateStore
 
+	// Learning loop for capturing review feedback (optional, nil = learning disabled)
+	learningLoop *memory.LearningLoop
+
 	// Per-PR circuit breaker: each PR has independent failure tracking.
 	// A failure on one PR does not block other PRs.
 	prFailures map[int]*prFailureState
@@ -149,6 +153,12 @@ func (c *Controller) SetMonitor(m TaskMonitor) {
 // If set, all state transitions are persisted to SQLite.
 func (c *Controller) SetStateStore(store *StateStore) {
 	c.stateStore = store
+}
+
+// SetLearningLoop sets the learning loop for capturing PR review feedback.
+// When set, handleMerged will fetch reviews after merge and extract patterns.
+func (c *Controller) SetLearningLoop(loop *memory.LearningLoop) {
+	c.learningLoop = loop
 }
 
 // persistPRState saves a PR state to the store if available.
@@ -757,6 +767,51 @@ func (c *Controller) handleMerged(ctx context.Context, prState *PRState) error {
 		if err := c.deployer.Deploy(ctx, prState); err != nil {
 			c.log.Error("post-merge deploy failed", "pr", prState.PRNumber, "error", err)
 			return fmt.Errorf("deploy failed: %w", err)
+		}
+	}
+
+	// GH-1823: Learn from PR reviews (self-improvement).
+	// Fetch reviews and line-level comments after merge, when the review cycle is complete.
+	if c.learningLoop != nil {
+		reviews, err := c.ghClient.ListPullRequestReviews(ctx, c.owner, c.repo, prState.PRNumber)
+		if err != nil {
+			c.log.Warn("Failed to fetch reviews for learning", slog.Any("error", err))
+		} else if len(reviews) > 0 {
+			var reviewData []*memory.ReviewData
+			for _, r := range reviews {
+				if r.Body == "" {
+					continue // Skip click-only approvals
+				}
+				reviewData = append(reviewData, &memory.ReviewData{
+					Body:     r.Body,
+					State:    r.State,
+					Reviewer: r.User.Login,
+				})
+			}
+
+			// Also fetch line-level comments for richer signal
+			comments, err := c.ghClient.GetPullRequestComments(ctx, c.owner, c.repo, prState.PRNumber)
+			if err == nil {
+				for _, comment := range comments {
+					reviewData = append(reviewData, &memory.ReviewData{
+						Body:     comment.Body,
+						State:    "COMMENTED",
+						Reviewer: comment.User.Login,
+					})
+				}
+			}
+
+			if len(reviewData) > 0 {
+				projectPath := "" // resolved from prState if project path is available
+				if learnErr := c.learningLoop.LearnFromReview(ctx, projectPath, reviewData, prState.PRURL); learnErr != nil {
+					c.log.Warn("Failed to learn from reviews", slog.Any("error", learnErr))
+				} else {
+					c.log.Info("Learned from PR reviews",
+						slog.Int("pr", prState.PRNumber),
+						slog.Int("reviews", len(reviewData)),
+					)
+				}
+			}
 		}
 	}
 

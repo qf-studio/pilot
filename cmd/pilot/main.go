@@ -1456,6 +1456,11 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 			runner.SetLearningLoop(learningLoop)
 			runner.SetPatternContext(patternContext)
 
+			// GH-1823: Wire review learning into autopilot controllers
+			for _, ctrl := range autopilotControllers {
+				ctrl.SetLearningLoop(learningLoop)
+			}
+
 			logging.WithComponent("learning").Info("Learning system initialized")
 
 			// Pattern maintenance — decay and cleanup every 24h

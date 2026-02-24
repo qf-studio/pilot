@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/alekspetrov/pilot/internal/adapters/github"
 	"github.com/alekspetrov/pilot/internal/approval"
+	"github.com/alekspetrov/pilot/internal/memory"
 	"github.com/alekspetrov/pilot/internal/testutil"
 )
 
@@ -3007,4 +3009,158 @@ func TestController_handleMergeConflict_AutoRebaseFails(t *testing.T) {
 	if prState.Stage != StageFailed {
 		t.Errorf("Stage = %s, want %s", prState.Stage, StageFailed)
 	}
+}
+
+// newTestLearningLoop creates a LearningLoop backed by a temp SQLite store for testing.
+// The store is returned so the caller can close and clean it up.
+func newTestLearningLoop(t *testing.T) (*memory.LearningLoop, func()) {
+	t.Helper()
+	tmpDir, err := os.MkdirTemp("", "controller-learn-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	store, err := memory.NewStore(tmpDir)
+	if err != nil {
+		_ = os.RemoveAll(tmpDir)
+		t.Fatalf("failed to create store: %v", err)
+	}
+	// nil extractor: LearnFromReview will return an error (logged as warning, not propagated)
+	loop := memory.NewLearningLoop(store, nil, nil)
+	cleanup := func() {
+		_ = store.Close()
+		_ = os.RemoveAll(tmpDir)
+	}
+	return loop, cleanup
+}
+
+// TestHandleMerged_LearnsFromReviews verifies that handleMerged fetches PR reviews
+// when a learning loop is configured.
+func TestHandleMerged_LearnsFromReviews(t *testing.T) {
+	reviewsFetched := false
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/owner/repo/pulls/42/reviews":
+			reviewsFetched = true
+			reviews := []github.PullRequestReview{
+				{Body: "LGTM — nice implementation", State: "APPROVED", User: github.User{Login: "reviewer1"}},
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(mustJSON(t, reviews))
+		default:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("{}"))
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.Environment = EnvDev
+	cfg.AutoReview = false
+
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+	loop, cleanup := newTestLearningLoop(t)
+	defer cleanup()
+	c.SetLearningLoop(loop)
+
+	prState := &PRState{
+		PRNumber: 42,
+		PRURL:    "https://github.com/owner/repo/pull/42",
+		Stage:    StageMerged,
+	}
+
+	err := c.handleMerged(context.Background(), prState)
+	if err != nil {
+		t.Fatalf("handleMerged returned unexpected error: %v", err)
+	}
+
+	if !reviewsFetched {
+		t.Error("expected /pulls/42/reviews to be fetched for learning")
+	}
+}
+
+// TestHandleMerged_NoReviews verifies that handleMerged does not error when
+// there are no reviews to learn from.
+func TestHandleMerged_NoReviews(t *testing.T) {
+	reviewsFetched := false
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/owner/repo/pulls/42/reviews":
+			reviewsFetched = true
+			// Return empty array — no reviews
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("[]"))
+		default:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("{}"))
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.Environment = EnvDev
+	cfg.AutoReview = false
+
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+	loop, cleanup := newTestLearningLoop(t)
+	defer cleanup()
+	c.SetLearningLoop(loop)
+
+	prState := &PRState{
+		PRNumber: 42,
+		PRURL:    "https://github.com/owner/repo/pull/42",
+		Stage:    StageMerged,
+	}
+
+	err := c.handleMerged(context.Background(), prState)
+	if err != nil {
+		t.Fatalf("handleMerged returned unexpected error: %v", err)
+	}
+
+	if !reviewsFetched {
+		t.Error("expected /pulls/42/reviews to be fetched even when empty")
+	}
+}
+
+// TestHandleMerged_NilLearningLoop verifies that handleMerged does not panic
+// when no learning loop is configured (nil guard).
+func TestHandleMerged_NilLearningLoop(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("{}"))
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.Environment = EnvDev
+	cfg.AutoReview = false
+
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+	// learningLoop intentionally not set
+
+	prState := &PRState{
+		PRNumber: 42,
+		PRURL:    "https://github.com/owner/repo/pull/42",
+		Stage:    StageMerged,
+	}
+
+	// Must not panic
+	err := c.handleMerged(context.Background(), prState)
+	if err != nil {
+		t.Fatalf("handleMerged returned unexpected error: %v", err)
+	}
+}
+
+// mustJSON serialises v to JSON and fails the test on error.
+func mustJSON(t *testing.T, v any) []byte {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("failed to marshal JSON: %v", err)
+	}
+	return b
 }
