@@ -16,7 +16,7 @@ DATE=$(date +%Y-%m-%d)
 
 echo "Syncing docs to version $VERSION ($DATE)"
 
-# Files to update
+# Files to update (markdown version pattern)
 FILES=(
     ".agent/DEVELOPMENT-README.md"
     ".agent/system/FEATURE-MATRIX.md"
@@ -53,6 +53,20 @@ for file in "${FILES[@]}"; do
         echo "  Skipped $file (not found)"
     fi
 done
+
+# Update docs site navbar version (layout.tsx)
+LAYOUT_FILE="docs/app/layout.tsx"
+if [ -f "$LAYOUT_FILE" ]; then
+    if grep -q 'v[0-9]*\.[0-9]*\.[0-9]*</span>' "$LAYOUT_FILE"; then
+        if [[ "$OSTYPE" == "darwin"* ]]; then
+            sed -i '' "s/v[0-9]*\.[0-9]*\.[0-9]*<\/span>/${VERSION}<\/span>/g" "$LAYOUT_FILE"
+        else
+            sed -i "s/v[0-9]*\.[0-9]*\.[0-9]*<\/span>/${VERSION}<\/span>/g" "$LAYOUT_FILE"
+        fi
+        echo "  Updated $LAYOUT_FILE"
+        ((++updated))
+    fi
+fi
 
 if [ $updated -gt 0 ]; then
     echo "Version synced to $VERSION in $updated file(s)"

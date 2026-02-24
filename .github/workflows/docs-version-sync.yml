@@ -45,6 +45,7 @@ jobs:
             Updated files:
             - `.agent/DEVELOPMENT-README.md`
             - `.agent/system/FEATURE-MATRIX.md`
+            - `docs/app/layout.tsx` (navbar version)
 
             Created by docs-version-sync workflow.
           branch: docs/version-sync-${{ steps.version.outputs.VERSION }}
