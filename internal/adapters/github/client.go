@@ -688,3 +688,14 @@ func (c *Client) HasApprovalReview(ctx context.Context, owner, repo string, numb
 
 	return false, "", nil
 }
+
+// UpdatePullRequestBranch updates the PR branch with the latest base branch.
+// Uses GitHub API: PUT /repos/{owner}/{repo}/pulls/{number}/update-branch
+// Returns nil on success, error if the branch cannot be automatically updated (true conflict).
+func (c *Client) UpdatePullRequestBranch(ctx context.Context, owner, repo string, number int) error {
+	return WithRetryVoid(ctx, func() error {
+		path := fmt.Sprintf("/repos/%s/%s/pulls/%d/update-branch", owner, repo, number)
+		body := map[string]interface{}{}
+		return c.doRequest(ctx, http.MethodPut, path, body, nil)
+	}, DefaultRetryOptions())
+}

@@ -955,8 +955,9 @@ func (c *Controller) isMergeConflict(pr *github.PullRequest) bool {
 	return false
 }
 
-// handleMergeConflict closes a conflicting PR, comments, and returns the issue to the queue.
-// The issue will be re-picked by the poller and re-executed from updated main.
+// handleMergeConflict tries to auto-rebase the PR branch first. If that fails,
+// falls back to closing the PR and returning the issue to the queue.
+// GH-1796: Saves ~$8-15 per run by avoiding full re-execution for trivial conflicts.
 func (c *Controller) handleMergeConflict(ctx context.Context, prState *PRState) error {
 	c.log.Warn("merge conflict detected",
 		"pr", prState.PRNumber,
@@ -964,8 +965,18 @@ func (c *Controller) handleMergeConflict(ctx context.Context, prState *PRState) 
 		"branch", prState.BranchName,
 	)
 
+	// Try GitHub auto-update first (merge-from-base, not true rebase)
+	err := c.ghClient.UpdatePullRequestBranch(ctx, c.owner, c.repo, prState.PRNumber)
+	if err == nil {
+		c.log.Info("auto-rebased conflicting PR", "pr", prState.PRNumber)
+		prState.Stage = StageWaitingCI // rebase triggers new CI
+		prState.HeadSHA = ""           // force refresh on next tick
+		return nil
+	}
+	c.log.Warn("auto-rebase failed, closing PR for retry", "pr", prState.PRNumber, "error", err)
+
 	// Add comment explaining the closure
-	comment := "Merge conflict detected. Closing PR so the issue can be re-executed from updated main."
+	comment := "Merge conflict detected. Auto-rebase failed — closing PR so the issue can be re-executed from updated main."
 	if _, err := c.ghClient.AddPRComment(ctx, c.owner, c.repo, prState.PRNumber, comment); err != nil {
 		c.log.Warn("failed to comment on conflicting PR", "pr", prState.PRNumber, "error", err)
 	}

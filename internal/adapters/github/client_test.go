@@ -2269,3 +2269,49 @@ func TestGetJobLogs(t *testing.T) {
 		})
 	}
 }
+
+func TestUpdatePullRequestBranch(t *testing.T) {
+	tests := []struct {
+		name       string
+		statusCode int
+		wantErr    bool
+	}{
+		{
+			name:       "success",
+			statusCode: http.StatusAccepted,
+			wantErr:    false,
+		},
+		{
+			name:       "conflict cannot be resolved",
+			statusCode: http.StatusUnprocessableEntity,
+			wantErr:    true,
+		},
+		{
+			name:       "forbidden",
+			statusCode: http.StatusForbidden,
+			wantErr:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPut {
+					t.Errorf("expected PUT, got %s", r.Method)
+				}
+				if r.URL.Path != "/repos/owner/repo/pulls/42/update-branch" {
+					t.Errorf("unexpected path: %s", r.URL.Path)
+				}
+				w.WriteHeader(tt.statusCode)
+			}))
+			defer server.Close()
+
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			err := client.UpdatePullRequestBranch(context.Background(), "owner", "repo", 42)
+
+			if (err != nil) != tt.wantErr {
+				t.Errorf("UpdatePullRequestBranch() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
