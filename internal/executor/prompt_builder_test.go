@@ -448,6 +448,64 @@ func TestBuildPromptWithProjectContext(t *testing.T) {
 	}
 }
 
+func TestBuildPromptContainsErrcheckGuidance(t *testing.T) {
+	// Create temporary test environment with .agent/
+	tempDir, err := os.MkdirTemp("", "pilot-test-errcheck")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tempDir) }()
+
+	agentDir := filepath.Join(tempDir, ".agent")
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		t.Fatalf("Failed to create .agent dir: %v", err)
+	}
+
+	runner := NewRunner()
+	task := &Task{
+		ID:          "GH-1797",
+		Title:       "Add errcheck lint guidance",
+		Description: "Add lint guidance to prompt builder",
+		ProjectPath: tempDir,
+		Branch:      "pilot/GH-1797",
+	}
+
+	prompt := runner.BuildPrompt(task, tempDir)
+
+	// Verify pre-commit section contains errcheck guidance
+	if !strings.Contains(prompt, "Lint compliance") {
+		t.Error("BuildPrompt should contain lint compliance bullet in pre-commit verification")
+	}
+	if !strings.Contains(prompt, "errcheck") {
+		t.Error("BuildPrompt should mention errcheck linter")
+	}
+	if !strings.Contains(prompt, "w.Write()") {
+		t.Error("BuildPrompt should mention w.Write() as common unchecked return value")
+	}
+}
+
+func TestBuildSelfReviewPromptContainsLintCheck(t *testing.T) {
+	runner := NewRunner()
+	task := &Task{
+		ID:          "GH-1797",
+		Title:       "Add lint check to self-review",
+		Description: "Test self-review lint section",
+	}
+
+	prompt := runner.buildSelfReviewPrompt(task)
+
+	// Verify self-review contains lint check section
+	if !strings.Contains(prompt, "### 8. Lint Check") {
+		t.Error("Self-review prompt should contain '### 8. Lint Check' section")
+	}
+	if !strings.Contains(prompt, "golangci-lint run --new-from-rev=origin/main") {
+		t.Error("Self-review prompt should contain golangci-lint command")
+	}
+	if !strings.Contains(prompt, "unchecked return values") {
+		t.Error("Self-review prompt should mention unchecked return values as common issue")
+	}
+}
+
 func TestBuildPromptSkipsNavigatorForTrivialTask(t *testing.T) {
 	// Create temporary test environment with .agent/
 	tempDir, err := os.MkdirTemp("", "pilot-test-trivial")

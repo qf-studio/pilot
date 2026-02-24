@@ -135,8 +135,9 @@ func (r *Runner) BuildPrompt(task *Task, executionPath string) string {
 		sb.WriteString("3. **Methods exist**: Any method calls you added must have implementations\n")
 		sb.WriteString("4. **Tests pass + new code tested**: Run `go test ./...` for changed packages. If you added new exported functions or methods, write tests for them — \"tests pass\" is NOT enough.\n")
 		sb.WriteString("5. **Constants sourced**: If you added/changed numeric constants (prices, limits, thresholds, URLs), verify each value against the source mentioned in the issue. Do NOT invent values — cite the source in a code comment.\n")
+		sb.WriteString("6. **Lint compliance**: In Go test files, ALL return values must be checked — including w.Write(), json.NewEncoder().Encode(), fmt.Fprintf(w, ...) in HTTP mock handlers. Use '_, _ = w.Write(...)' or assign to err variable. The golangci-lint errcheck linter is enabled globally including test files.\n")
 		if len(task.AcceptanceCriteria) > 0 {
-			sb.WriteString("6. **Acceptance criteria**: Verify ALL criteria listed above are satisfied\n")
+			sb.WriteString("7. **Acceptance criteria**: Verify ALL criteria listed above are satisfied\n")
 		}
 		sb.WriteString("\nIf any verification fails, fix it before committing.\n\n")
 
@@ -310,6 +311,10 @@ func (r *Runner) buildSelfReviewPrompt(task *Task) string {
 	sb.WriteString("3. If you added a new error type or enum constant, verify it exists in ALL sibling files\n")
 	sb.WriteString("4. If you added a fallback/retry pattern, check if siblings need the same pattern\n\n")
 	sb.WriteString("If parity missing: output `PARITY_GAP: <feature> in <file_a> but not <file_b>` and FIX it.\n\n")
+
+	sb.WriteString("### 8. Lint Check\n")
+	sb.WriteString("Run `golangci-lint run --new-from-rev=origin/main ./...` and fix any violations.\n")
+	sb.WriteString("Common issue: unchecked return values in test mock handlers (w.Write, json.Encode, SendText).\n\n")
 
 	sb.WriteString("### Actions\n")
 	sb.WriteString("- If you find issues: FIX them and commit the fix\n")
