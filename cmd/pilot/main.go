@@ -1443,6 +1443,50 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 		runner.SetLogStore(store)
 	}
 
+	// GH-1814: Initialize learning system
+	if store != nil && (cfg.Memory.Learning == nil || cfg.Memory.Learning.Enabled) {
+		patternStore, patternErr := memory.NewGlobalPatternStore(cfg.Memory.Path)
+		if patternErr != nil {
+			logging.WithComponent("learning").Warn("Failed to create pattern store, learning disabled", slog.Any("error", patternErr))
+		} else {
+			extractor := memory.NewPatternExtractor(patternStore, store)
+			learningLoop := memory.NewLearningLoop(store, extractor, nil)
+			patternContext := executor.NewPatternContext(store)
+
+			runner.SetLearningLoop(learningLoop)
+			runner.SetPatternContext(patternContext)
+
+			logging.WithComponent("learning").Info("Learning system initialized")
+
+			// Pattern maintenance — decay and cleanup every 24h
+			go func() {
+				ticker := time.NewTicker(24 * time.Hour)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-ctx.Done():
+						return
+					case <-ticker.C:
+						if n, decayErr := learningLoop.ApplyDecay(ctx); decayErr != nil {
+							logging.WithComponent("learning").Warn("Pattern decay failed", slog.Any("error", decayErr))
+						} else if n > 0 {
+							logging.WithComponent("learning").Info("Applied pattern decay", slog.Int("patterns_decayed", n))
+						}
+						minConfidence := 0.1
+						if cfg.Memory.Learning != nil && cfg.Memory.Learning.MinConfidence > 0 {
+							minConfidence = cfg.Memory.Learning.MinConfidence
+						}
+						if n, depErr := learningLoop.DeprecateLowConfidencePatterns(ctx, minConfidence); depErr != nil {
+							logging.WithComponent("learning").Warn("Pattern deprecation failed", slog.Any("error", depErr))
+						} else if n > 0 {
+							logging.WithComponent("learning").Info("Deprecated low-confidence patterns", slog.Int("deprecated", n))
+						}
+					}
+				}
+			}()
+		}
+	}
+
 	// GH-1662: Start gateway in background so desktop app can reach /health
 	if !noGateway && cfg.Gateway != nil {
 		gwServer := gateway.NewServer(cfg.Gateway)

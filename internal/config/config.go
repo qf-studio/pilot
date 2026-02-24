@@ -138,10 +138,29 @@ type BriefFilterConfig struct {
 	Projects []string `yaml:"projects"` // Empty = all projects
 }
 
+// LearningConfig holds settings for the pattern learning system.
+type LearningConfig struct {
+	Enabled       bool    `yaml:"enabled"`        // Enable learning system (default: true)
+	MinConfidence float64 `yaml:"min_confidence"` // Min confidence for prompt injection (default: 0.6)
+	MaxPatterns   int     `yaml:"max_patterns"`   // Max patterns injected per task (default: 5)
+	IncludeAnti   bool    `yaml:"include_anti"`   // Include anti-patterns (default: true)
+}
+
+// DefaultLearningConfig returns sensible defaults for the learning system.
+func DefaultLearningConfig() *LearningConfig {
+	return &LearningConfig{
+		Enabled:       true,
+		MinConfidence: 0.6,
+		MaxPatterns:   5,
+		IncludeAnti:   true,
+	}
+}
+
 // MemoryConfig holds settings for the persistent memory/storage system.
 type MemoryConfig struct {
-	Path         string `yaml:"path"`
-	CrossProject bool   `yaml:"cross_project"`
+	Path         string          `yaml:"path"`
+	CrossProject bool            `yaml:"cross_project"`
+	Learning     *LearningConfig `yaml:"learning"`
 }
 
 // ProjectConfig holds configuration for a registered project.
@@ -276,6 +295,7 @@ func DefaultConfig() *Config {
 		Memory: &MemoryConfig{
 			Path:         filepath.Join(homeDir, ".pilot", "data"),
 			CrossProject: true,
+			Learning:     DefaultLearningConfig(),
 		},
 		Projects: []*ProjectConfig{},
 		Dashboard: &DashboardConfig{

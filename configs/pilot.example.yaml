@@ -203,6 +203,11 @@ briefs:
 memory:
   path: "~/.pilot/data"
   cross_project: true        # Share learnings across projects
+  learning:
+    enabled: true             # Enable pattern learning system
+    min_confidence: 0.6       # Min confidence for prompt injection
+    max_patterns: 5           # Max patterns injected per task
+    include_anti: true        # Include anti-patterns in prompts
 
 # Project configurations
 projects:
