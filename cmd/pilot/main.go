@@ -216,6 +216,9 @@ Examples:
 				projectPath = strings.Replace(projectPath, "~", home, 1)
 			}
 
+			// Clean stale pilot hooks on startup (GH-1883)
+			cleanStartupHooks(cfg, projectPath)
+
 			// Determine mode based on what's enabled
 			hasTelegram := cfg.Adapters.Telegram != nil && cfg.Adapters.Telegram.Enabled
 			hasGithubPolling := cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.Enabled &&
@@ -2231,4 +2234,29 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 	return nil
 }
 
+// cleanStartupHooks removes stale pilot hooks from .claude/settings.json
+// for the active project and all explicitly configured projects.
+func cleanStartupHooks(cfg *config.Config, projectPath string) {
+	seen := make(map[string]bool)
 
+	// Clean the resolved projectPath
+	if projectPath != "" {
+		seen[projectPath] = true
+		settingsPath := filepath.Join(projectPath, ".claude", "settings.json")
+		if err := executor.CleanStalePilotHooks(settingsPath); err != nil {
+			slog.Warn("failed to clean stale hooks", "path", projectPath, "error", err)
+		}
+	}
+
+	// Clean all explicitly configured projects
+	for _, p := range cfg.Projects {
+		if p.Path == "" || seen[p.Path] {
+			continue
+		}
+		seen[p.Path] = true
+		settingsPath := filepath.Join(p.Path, ".claude", "settings.json")
+		if err := executor.CleanStalePilotHooks(settingsPath); err != nil {
+			slog.Warn("failed to clean stale hooks", "path", p.Path, "error", err)
+		}
+	}
+}
