@@ -1,0 +1,165 @@
+import { Callout } from 'nextra/components'
+
+# Plane Integration
+
+Pilot integrates with [Plane](https://plane.so) to receive work items and automatically implement them. It supports both Plane Cloud and self-hosted instances, with polling and webhook modes for issue detection.
+
+## Setup
+
+### 1. Create a Plane API Key
+
+1. Go to your Plane workspace → **Settings** → **API Tokens**
+2. Click **Create token**
+3. Copy the API key
+
+### 2. Find Your Project UUID
+
+Your project UUID is visible in the Plane URL when viewing a project:
+```
+https://app.plane.so/{workspace}/projects/{project-uuid}/issues
+```
+
+### 3. Set Up Webhooks (Optional)
+
+For real-time issue detection:
+
+1. Go to **Workspace Settings** → **Webhooks**
+2. Click **Create webhook**
+3. Set the URL to `https://your-pilot.example.com/webhooks/plane`
+4. Select events: **Issues**
+5. Copy the signing secret
+
+<Callout type="warning">
+Always set a `webhook_secret` in production. When empty, signature verification is disabled (development mode only).
+</Callout>
+
+### 4. Configure Pilot
+
+```yaml
+# ~/.pilot/config.yaml
+adapters:
+  plane:
+    enabled: true
+    base_url: "https://api.plane.so"   # Or self-hosted URL
+    api_key: "${PLANE_API_KEY}"
+    webhook_secret: "${PLANE_WEBHOOK_SECRET}"
+    workspace_slug: "my-team"
+    project_ids:
+      - "project-uuid-1"
+    pilot_label: "pilot"
+    polling:
+      enabled: true
+      interval: 30s
+```
+
+## Configuration Reference
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `false` | Enable the Plane adapter |
+| `base_url` | string | `https://api.plane.so` | Plane API URL (cloud or self-hosted) |
+| `api_key` | string | required | Plane API key from workspace settings |
+| `webhook_secret` | string | — | HMAC-SHA256 secret for webhook verification |
+| `workspace_slug` | string | required | Your Plane workspace slug |
+| `project_ids` | []string | required | Project UUIDs to monitor |
+| `pilot_label` | string | `"pilot"` | Label name that triggers Pilot |
+| `polling.enabled` | bool | `false` | Enable polling for new issues |
+| `polling.interval` | duration | `30s` | Poll interval |
+
+## Polling Mode
+
+When polling is enabled, Pilot periodically queries Plane for issues matching:
+
+- **Project**: belongs to one of the configured `project_ids`
+- **Label**: has the `pilot_label` (default: `pilot`)
+
+Issues are processed oldest-first by creation date. Parallel execution is supported with configurable concurrency.
+
+### Crash-Safe Deduplication
+
+Pilot uses a `ProcessedStore` backed by SQLite to track which issues have been handled. This prevents re-dispatching issues after a restart or hot upgrade — no configuration required.
+
+## Webhook Mode
+
+For real-time issue detection, configure Plane webhooks to notify Pilot when issues are created or updated.
+
+### Endpoint
+
+```
+POST /webhooks/plane
+```
+
+### Signature Verification
+
+Plane signs webhook payloads with HMAC-SHA256. Pilot verifies the signature using the configured `webhook_secret`.
+
+<Callout type="info">
+If `webhook_secret` is empty, signature verification is skipped. This is intended for development only.
+</Callout>
+
+### Supported Events
+
+| Event | Behavior |
+|-------|----------|
+| Issue created | Process if issue has the pilot label |
+| Issue updated (label added) | Process if the pilot label was just added |
+
+## State Transitions
+
+Pilot updates issue state groups as it works:
+
+| Event | State Group |
+|-------|-------------|
+| Task dispatched | `started` |
+| Execution succeeded | `completed` |
+| Execution failed | State unchanged (manual triage) |
+
+### Labels Applied
+
+Pilot applies labels to track issue status:
+
+| Label | When |
+|-------|------|
+| `pilot-in-progress` | Task dispatched |
+| `pilot-done` | Execution succeeded |
+| `pilot-failed` | Execution failed |
+
+## Task ID Format
+
+Plane issues are converted to Pilot tasks with the format `PLANE-{first 8 chars of UUID}`:
+- Issue `a1b2c3d4-e5f6-...` → Task ID `PLANE-a1b2c3d4`
+- Branch name: `pilot/PLANE-a1b2c3d4`
+
+## Autopilot Integration
+
+PRs created from Plane issues are automatically wired into the autopilot pipeline. CI monitoring, auto-merge, and the feedback loop all work the same as with GitHub and Linear issues — no extra configuration required.
+
+## Running Pilot with Plane
+
+```bash
+pilot start --plane --github
+```
+
+This starts the Plane adapter alongside the GitHub adapter for PR creation.
+
+## Troubleshooting
+
+### Issues Not Picked Up
+
+1. Verify the project UUID matches exactly (check the URL in Plane)
+2. Confirm the label name matches `pilot_label` (case-sensitive)
+3. Check that `polling.enabled` is `true` or webhooks are configured
+4. Look for polling activity in Pilot logs
+
+### Webhook Not Triggering
+
+1. Verify the webhook URL is accessible from Plane's servers
+2. Check the signing secret matches between Plane and Pilot config
+3. Confirm the correct event types are selected in Plane webhook settings
+4. Check Pilot logs for signature verification errors
+
+### Self-Hosted Instances
+
+1. Ensure `base_url` includes the protocol (`https://`)
+2. Do not include a trailing slash in the URL
+3. Verify the API key has workspace-level access

@@ -1,0 +1,112 @@
+import { Callout } from 'nextra/components'
+
+# Discord Integration
+
+Pilot connects to your Discord server via a bot, allowing team members to submit tasks directly from Discord channels. Messages in allowed channels are converted to Pilot tasks with interactive confirmation buttons.
+
+## Setup
+
+### 1. Create a Discord Bot
+
+1. Go to the [Discord Developer Portal](https://discord.com/developers/applications)
+2. Click **New Application** → name it (e.g., "Pilot Bot")
+3. Go to **Bot** → click **Add Bot**
+4. Under **Privileged Gateway Intents**, enable:
+   - `GUILD_MESSAGES`
+   - `DIRECT_MESSAGES`
+   - `MESSAGE_CONTENT` (privileged — required for reading message text)
+5. Copy the **Bot Token** from the Bot page
+
+<Callout type="warning">
+The `MESSAGE_CONTENT` intent is privileged and must be explicitly enabled in the Developer Portal. Without it, Pilot cannot read message content.
+</Callout>
+
+### 2. Invite the Bot to Your Server
+
+1. Go to **OAuth2** → **URL Generator**
+2. Select scopes: `bot`, `applications.commands`
+3. Select bot permissions: **Send Messages**, **Read Message History**, **Use Slash Commands**
+4. Copy the generated URL and open it to invite the bot
+
+### 3. Configure Pilot
+
+```yaml
+# ~/.pilot/config.yaml
+adapters:
+  discord:
+    enabled: true
+    bot_token: "${DISCORD_BOT_TOKEN}"
+    allowed_guilds: []       # Guild IDs (empty = all guilds)
+    allowed_channels: []     # Channel IDs (empty = all channels)
+    command_prefix: "/"
+```
+
+## Configuration Reference
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `false` | Enable the Discord adapter |
+| `bot_token` | string | required | Discord bot token |
+| `allowed_guilds` | []string | `[]` | Guild IDs to allow (empty = all) |
+| `allowed_channels` | []string | `[]` | Channel IDs to allow (empty = all) |
+| `command_prefix` | string | `"/"` | Command prefix (reserved for future use) |
+
+## How It Works
+
+Pilot connects to Discord via the Gateway WebSocket for real-time message delivery — no polling required. The connection supports automatic reconnection with session resume on disconnect.
+
+**Constraints:**
+- One pending task per channel (prevents spam)
+- 5-minute task expiry for unconfirmed tasks
+
+### Task Flow
+
+1. User sends a message in an allowed channel
+2. Pilot replies with a task confirmation embed containing **Execute** (green) and **Cancel** (red) buttons
+3. User clicks **Execute** → Pilot dispatches the task
+4. Progress updates edit the original message in-place with a progress bar
+5. On completion, the result is posted with a PR link
+
+### Message Formats
+
+| Phase | Format |
+|-------|--------|
+| Confirmation | Task description + Execute / Cancel buttons |
+| Progress | `⚙️ [██████░░░░] 60%` with phase detail |
+| Success | `✅ Task completed` with PR link |
+| Failure | `❌ Task failed` with error summary |
+
+## Running Pilot with Discord
+
+```bash
+pilot start --discord --github
+```
+
+This starts the Discord adapter alongside the GitHub adapter for PR creation.
+
+## Troubleshooting
+
+### Bot Not Responding
+
+1. Verify the `MESSAGE_CONTENT` privileged intent is enabled in the Developer Portal
+2. Check that the bot is online in your server's member list
+3. Confirm the channel is in `allowed_channels` (or leave empty for all channels)
+
+### "Invalid Token" Close Code
+
+1. Regenerate the bot token in the Developer Portal → Bot → **Reset Token**
+2. Update `DISCORD_BOT_TOKEN` in your environment
+
+### Messages Not Received
+
+1. Verify `allowed_guilds` and `allowed_channels` lists are correct (or empty for all)
+2. Ensure the bot has **Read Message History** permission in the channel
+3. Check Pilot logs for gateway connection events
+
+### Rate Limits
+
+Discord enforces rate limits. Pilot defaults:
+- 5 messages per second per channel
+- 10 task dispatches per minute
+
+If you see `429 Too Many Requests` in logs, reduce concurrent task volume.
