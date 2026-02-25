@@ -271,6 +271,86 @@ The cleaner:
 - Removes `pilot-failed` after `failed_threshold` to allow automatic retry
 - Posts a comment explaining the cleanup
 
+## Projects V2 Board Sync
+
+Pilot can automatically move issues across your GitHub Projects V2 board columns as tasks progress through the execution pipeline. This keeps your project board in sync without manual card dragging.
+
+### Prerequisites
+
+- A GitHub Projects V2 board (classic projects not supported)
+- Personal Access Token with `project` scope (classic PAT required — fine-grained tokens don't support Projects V2 GraphQL API yet)
+
+<Callout type="warning">
+Board sync requires a **classic PAT** with the `project` scope. Fine-grained tokens do not yet support the Projects V2 GraphQL API.
+</Callout>
+
+### Configuration
+
+```yaml
+adapters:
+  github:
+    project_board:
+      enabled: true
+      project_number: 5              # From your project URL
+      status_field: "Status"          # Field name (default: "Status")
+      statuses:
+        in_progress: "In Progress"   # Column for active work
+        review: "In Review"          # Column after PR created (optional)
+        done: "Done"                 # Column on merge
+        failed: "Blocked"           # Column on failure (optional)
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `project_board.enabled` | bool | `false` | Enable board sync |
+| `project_board.project_number` | int | required | Project number from GitHub URL |
+| `project_board.status_field` | string | `"Status"` | Single-select field name |
+| `project_board.statuses.in_progress` | string | — | Status for active execution |
+| `project_board.statuses.review` | string | — | Status after PR created |
+| `project_board.statuses.done` | string | — | Status on successful merge |
+| `project_board.statuses.failed` | string | — | Status on failure |
+
+### How It Works
+
+1. On task dispatch → moves card to `in_progress` column
+2. On PR creation → moves card to `review` column (if configured)
+3. On merge → moves card to `done` column
+4. On failure → moves card to `failed` column (if configured)
+
+### Finding Your Project Number
+
+Navigate to your project board. The URL is `github.com/users/{owner}/projects/{NUMBER}` or `github.com/orgs/{owner}/projects/{NUMBER}`. Use that number.
+
+<Callout type="info">
+Status names must match exactly (case-insensitive) — Pilot looks up option IDs by name from your project's Status field.
+</Callout>
+
+### Non-Blocking Design
+
+Board sync errors are logged as warnings but never block task execution. If the GraphQL API is down or the project is misconfigured, tasks still run normally.
+
+### Performance
+
+- First sync: 3–4 GraphQL calls (resolves project ID, field ID, option IDs)
+- Subsequent syncs: 2 calls per update (cached IDs)
+- IDs cached for process lifetime — no repeated lookups
+
+### Autopilot Integration
+
+Board sync also works with Autopilot. When Autopilot merges a PR, the card moves to Done. When CI fails and Autopilot creates a fix issue, the card moves to Failed.
+
+### Partial Configuration
+
+Leave any status empty to skip that transition:
+
+```yaml
+statuses:
+  in_progress: ""          # Skip — don't move on dispatch
+  review: ""               # Skip — don't move on PR creation
+  done: "Done"             # Move to Done on merge
+  failed: "Blocked"        # Move to Blocked on failure
+```
+
 ## Priority Labels
 
 Pilot recognizes priority labels and can process higher-priority issues first:

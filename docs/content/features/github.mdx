@@ -86,6 +86,25 @@ pilot webhook setup --github
 
 This eliminates polling delay for instant task pickup.
 
+## Projects V2 Board Sync
+
+Pilot can automatically update your GitHub Projects V2 board as tasks progress. Issues move through configurable columns: In Progress → Review → Done (or Failed).
+
+```yaml
+adapters:
+  github:
+    project_board:
+      enabled: true
+      project_number: 5
+      statuses:
+        in_progress: "In Progress"
+        review: "In Review"
+        done: "Done"
+        failed: "Blocked"
+```
+
+[Full board sync documentation →](/integrations/github#projects-v2-board-sync)
+
 ## Rate Limiting & Reliability
 
 Pilot is designed to run 24/7 without hitting GitHub API rate limits or database issues.
