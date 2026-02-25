@@ -51,7 +51,7 @@ type Poller struct {
 	processedStore ProcessedStore
 
 	// GH-1700: OnPRCreated is called when a PR is created after issue processing
-	OnPRCreated func(prNumber int, prURL string, issueNumber int, headSHA string, branchName string)
+	OnPRCreated func(prNumber int, prURL string, issueNumber int, headSHA string, branchName string, issueNodeID string)
 
 	// GH-1357: Parallel execution configuration
 	maxConcurrent int
@@ -73,7 +73,7 @@ func WithOnLinearIssue(fn func(ctx context.Context, issue *Issue) (*IssueResult,
 
 // WithOnPRCreated sets the callback for PR creation events.
 // GH-1700: Mirrors the GitHub poller pattern for autopilot wiring.
-func WithOnPRCreated(fn func(prNumber int, prURL string, issueNumber int, headSHA string, branchName string)) PollerOption {
+func WithOnPRCreated(fn func(prNumber int, prURL string, issueNumber int, headSHA string, branchName string, issueNodeID string)) PollerOption {
 	return func(p *Poller) {
 		p.OnPRCreated = fn
 	}
@@ -357,7 +357,7 @@ func (p *Poller) processIssueAsync(ctx context.Context, issue *Issue) {
 
 	// GH-1700: Notify autopilot controller about new PR
 	if result != nil && result.PRNumber > 0 && p.OnPRCreated != nil {
-		p.OnPRCreated(result.PRNumber, result.PRURL, 0, result.HeadSHA, result.BranchName)
+		p.OnPRCreated(result.PRNumber, result.PRURL, 0, result.HeadSHA, result.BranchName, "")
 	}
 }
 

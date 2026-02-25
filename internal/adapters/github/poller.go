@@ -60,8 +60,8 @@ type Poller struct {
 	// onIssueWithResult is called for sequential mode, returns PR info
 	onIssueWithResult func(ctx context.Context, issue *Issue) (*IssueResult, error)
 	// OnPRCreated is called when a PR is created after issue processing
-	// Parameters: prNumber, prURL, issueNumber, headSHA, branchName
-	OnPRCreated func(prNumber int, prURL string, issueNumber int, headSHA string, branchName string)
+	// Parameters: prNumber, prURL, issueNumber, headSHA, branchName, issueNodeID
+	OnPRCreated func(prNumber int, prURL string, issueNumber int, headSHA string, branchName string, issueNodeID string)
 	logger      *slog.Logger
 
 	// Sequential mode configuration
@@ -125,9 +125,10 @@ func WithSequentialConfig(waitForMerge bool, pollInterval, timeout time.Duration
 	}
 }
 
-// WithOnPRCreated sets the callback for PR creation events
+// WithOnPRCreated sets the callback for PR creation events.
+// The callback receives prNumber, prURL, issueNumber, headSHA, branchName, issueNodeID.
 // The callback is invoked after a PR is successfully created for an issue
-func WithOnPRCreated(fn func(prNumber int, prURL string, issueNumber int, headSHA string, branchName string)) PollerOption {
+func WithOnPRCreated(fn func(prNumber int, prURL string, issueNumber int, headSHA string, branchName string, issueNodeID string)) PollerOption {
 	return func(p *Poller) {
 		p.OnPRCreated = fn
 	}
@@ -384,7 +385,7 @@ func (p *Poller) startSequential(ctx context.Context) {
 				slog.Int("issue_number", issue.Number),
 				slog.String("branch", result.BranchName),
 			)
-			p.OnPRCreated(result.PRNumber, result.PRURL, issue.Number, result.HeadSHA, result.BranchName)
+			p.OnPRCreated(result.PRNumber, result.PRURL, issue.Number, result.HeadSHA, result.BranchName, issue.NodeID)
 		}
 
 		// If we created a PR and should wait for merge
@@ -745,7 +746,7 @@ func (p *Poller) checkForNewIssues(ctx context.Context) {
 
 				// Notify autopilot controller of new PR
 				if result != nil && result.PRNumber > 0 && p.OnPRCreated != nil {
-					p.OnPRCreated(result.PRNumber, result.PRURL, issue.Number, result.HeadSHA, result.BranchName)
+					p.OnPRCreated(result.PRNumber, result.PRURL, issue.Number, result.HeadSHA, result.BranchName, issue.NodeID)
 				}
 			} else if p.onIssue != nil {
 				if err := p.onIssue(ctx, issue); err != nil {

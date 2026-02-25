@@ -440,7 +440,7 @@ func TestController_OnPRCreated_PersistsToStore(t *testing.T) {
 	c := NewController(cfg, nil, nil, "owner", "repo")
 	c.SetStateStore(store)
 
-	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc123", "pilot/GH-10")
+	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc123", "pilot/GH-10", "")
 
 	// Verify persisted to store
 	loaded, err := store.GetPRState(42)
@@ -462,7 +462,7 @@ func TestController_RemovePR_RemovesFromStore(t *testing.T) {
 	c := NewController(cfg, nil, nil, "owner", "repo")
 	c.SetStateStore(store)
 
-	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc123", "pilot/GH-10")
+	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc123", "pilot/GH-10", "")
 
 	// Remove
 	c.removePR(42)
@@ -495,7 +495,7 @@ func TestController_ProcessPR_PersistsTransition(t *testing.T) {
 	c.SetStateStore(store)
 
 	// Register a PR
-	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc123", "pilot/GH-10")
+	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc123", "pilot/GH-10", "")
 
 	// Process — should transition from StagePRCreated to StageWaitingCI
 	if err := c.ProcessPR(context.Background(), 42, nil); err != nil {
@@ -613,7 +613,7 @@ func TestController_RemovePR_RemovesFailures(t *testing.T) {
 	c.SetStateStore(store)
 
 	// Create PR and add failure state
-	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc123", "pilot/GH-10")
+	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc123", "pilot/GH-10", "")
 	c.mu.Lock()
 	c.prFailures[42] = &prFailureState{FailureCount: 2, LastFailureTime: time.Now()}
 	c.mu.Unlock()

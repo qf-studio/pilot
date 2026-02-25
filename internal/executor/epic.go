@@ -715,7 +715,7 @@ func (r *Runner) ExecuteSubIssues(ctx context.Context, parent *Task, issues []Cr
 		// Note: PR callback uses int issueNumber for GitHub compatibility
 		if result.PRUrl != "" && r.onSubIssuePRCreated != nil {
 			if prNum := parsePRNumberFromURL(result.PRUrl); prNum > 0 {
-				r.onSubIssuePRCreated(prNum, result.PRUrl, issue.Number, result.CommitSHA, subTask.Branch)
+				r.onSubIssuePRCreated(prNum, result.PRUrl, issue.Number, result.CommitSHA, subTask.Branch, "")
 			} else {
 				r.log.Warn("Failed to extract PR number from sub-issue PR URL",
 					"pr_url", result.PRUrl)

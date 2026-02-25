@@ -88,7 +88,7 @@ func TestExecuteSubIssues_CallbackFiresForEachPR(t *testing.T) {
 	// Register callback and collect invocations
 	var mu sync.Mutex
 	var calls []subIssuePRCall
-	runner.SetOnSubIssuePRCreated(func(prNumber int, prURL string, issueNumber int, commitSHA, branchName string) {
+	runner.SetOnSubIssuePRCreated(func(prNumber int, prURL string, issueNumber int, commitSHA, branchName string, issueNodeID string) {
 		mu.Lock()
 		defer mu.Unlock()
 		calls = append(calls, subIssuePRCall{
@@ -185,7 +185,7 @@ func TestExecuteSubIssues_CallbackNotFiredOnNoPRUrl(t *testing.T) {
 	runner := newTestRunnerWithExecFunc(execFn)
 
 	callbackFired := false
-	runner.SetOnSubIssuePRCreated(func(prNumber int, prURL string, issueNumber int, commitSHA, branchName string) {
+	runner.SetOnSubIssuePRCreated(func(prNumber int, prURL string, issueNumber int, commitSHA, branchName string, issueNodeID string) {
 		callbackFired = true
 	})
 
@@ -235,7 +235,7 @@ func TestExecuteSubIssues_CallbackNotFiredOnFailure(t *testing.T) {
 	runner := newTestRunnerWithExecFunc(execFn)
 
 	var calls []subIssuePRCall
-	runner.SetOnSubIssuePRCreated(func(prNumber int, prURL string, issueNumber int, commitSHA, branchName string) {
+	runner.SetOnSubIssuePRCreated(func(prNumber int, prURL string, issueNumber int, commitSHA, branchName string, issueNodeID string) {
 		calls = append(calls, subIssuePRCall{
 			PRNumber:    prNumber,
 			PRURL:       prURL,
@@ -281,7 +281,7 @@ func TestExecuteSubIssues_CallbackNotFiredOnExecError(t *testing.T) {
 	runner := newTestRunnerWithExecFunc(execFn)
 
 	callbackFired := false
-	runner.SetOnSubIssuePRCreated(func(prNumber int, prURL string, issueNumber int, commitSHA, branchName string) {
+	runner.SetOnSubIssuePRCreated(func(prNumber int, prURL string, issueNumber int, commitSHA, branchName string, issueNodeID string) {
 		callbackFired = true
 	})
 

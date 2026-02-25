@@ -49,7 +49,7 @@ func TestController_OnPRCreated(t *testing.T) {
 
 	c := NewController(cfg, ghClient, nil, "owner", "repo")
 
-	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc123", "pilot/GH-10")
+	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc123", "pilot/GH-10", "")
 
 	prs := c.GetActivePRs()
 	if len(prs) != 1 {
@@ -79,7 +79,7 @@ func TestController_GetPRState(t *testing.T) {
 	cfg := DefaultConfig()
 
 	c := NewController(cfg, ghClient, nil, "owner", "repo")
-	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc123", "pilot/GH-10")
+	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc123", "pilot/GH-10", "")
 
 	pr, ok := c.GetPRState(42)
 	if !ok {
@@ -143,7 +143,7 @@ func TestController_ProcessPR_DevEnvironment(t *testing.T) {
 	cfg.RequiredChecks = []string{"build", "test", "lint"}
 
 	c := NewController(cfg, ghClient, nil, "owner", "repo")
-	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc1234", "pilot/GH-10")
+	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc1234", "pilot/GH-10", "")
 
 	ctx := context.Background()
 
@@ -243,7 +243,7 @@ func TestController_ProcessPR_StageEnvironment_CIPass(t *testing.T) {
 	cfg.RequiredChecks = []string{"build", "test", "lint"}
 
 	c := NewController(cfg, ghClient, nil, "owner", "repo")
-	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc1234", "pilot/GH-10")
+	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc1234", "pilot/GH-10", "")
 
 	ctx := context.Background()
 
@@ -352,7 +352,7 @@ func TestController_ProcessPR_CIFailure(t *testing.T) {
 	cfg.RequiredChecks = []string{"build", "test", "lint"}
 
 	c := NewController(cfg, ghClient, nil, "owner", "repo")
-	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc1234", "pilot/GH-10")
+	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc1234", "pilot/GH-10", "")
 
 	ctx := context.Background()
 
@@ -468,9 +468,9 @@ func TestController_MultiplePRs(t *testing.T) {
 	c := NewController(cfg, ghClient, nil, "owner", "repo")
 
 	// Add multiple PRs
-	c.OnPRCreated(1, "url1", 10, "sha1", "pilot/GH-10")
-	c.OnPRCreated(2, "url2", 20, "sha2", "pilot/GH-20")
-	c.OnPRCreated(3, "url3", 30, "sha3", "pilot/GH-30")
+	c.OnPRCreated(1, "url1", 10, "sha1", "pilot/GH-10", "")
+	c.OnPRCreated(2, "url2", 20, "sha2", "pilot/GH-20", "")
+	c.OnPRCreated(3, "url3", 30, "sha3", "pilot/GH-30", "")
 
 	prs := c.GetActivePRs()
 	if len(prs) != 3 {
@@ -540,7 +540,7 @@ func TestController_ProcessPR_ProdRequiresApproval(t *testing.T) {
 	cfg.RequiredChecks = []string{"build", "test", "lint"}
 
 	c := NewController(cfg, ghClient, nil, "owner", "repo")
-	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc1234", "pilot/GH-10")
+	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc1234", "pilot/GH-10", "")
 
 	ctx := context.Background()
 
@@ -564,7 +564,7 @@ func TestController_RemovePR(t *testing.T) {
 	cfg := DefaultConfig()
 
 	c := NewController(cfg, ghClient, nil, "owner", "repo")
-	c.OnPRCreated(42, "url", 10, "sha", "pilot/GH-10")
+	c.OnPRCreated(42, "url", 10, "sha", "pilot/GH-10", "")
 
 	// Verify exists
 	if _, ok := c.GetPRState(42); !ok {
@@ -594,7 +594,7 @@ func TestController_SuccessResetsFailureCount(t *testing.T) {
 
 	c := NewController(cfg, ghClient, nil, "owner", "repo")
 
-	c.OnPRCreated(42, "url", 10, "abc1234", "pilot/GH-10")
+	c.OnPRCreated(42, "url", 10, "abc1234", "pilot/GH-10", "")
 
 	// Set some failures for this specific PR
 	c.mu.Lock()
@@ -821,7 +821,7 @@ func TestController_CheckExternalMerge(t *testing.T) {
 	cfg.CIPollInterval = 10 * time.Millisecond
 
 	c := NewController(cfg, ghClient, nil, "owner", "repo")
-	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc123", "pilot/GH-10")
+	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc123", "pilot/GH-10", "")
 
 	// Verify PR is tracked
 	if _, ok := c.GetPRState(42); !ok {
@@ -863,7 +863,7 @@ func TestController_CheckExternalClose(t *testing.T) {
 	cfg.CIPollInterval = 10 * time.Millisecond
 
 	c := NewController(cfg, ghClient, nil, "owner", "repo")
-	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc123", "pilot/GH-10")
+	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc123", "pilot/GH-10", "")
 
 	// Verify PR is tracked
 	if _, ok := c.GetPRState(42); !ok {
@@ -1033,7 +1033,7 @@ func TestController_CheckExternalMerge_WithNotifier(t *testing.T) {
 	}
 	c.SetNotifier(mockNotifier)
 
-	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc123", "pilot/GH-10")
+	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc123", "pilot/GH-10", "")
 
 	// Process PRs - should detect external merge and notify
 	c.processAllPRs(context.Background())
@@ -1106,7 +1106,7 @@ func TestController_CheckExternalMerge_ClosesIssue(t *testing.T) {
 	cfg.CIPollInterval = 10 * time.Millisecond
 
 	c := NewController(cfg, ghClient, nil, "owner", "repo")
-	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc123", "pilot/GH-10")
+	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc123", "pilot/GH-10", "")
 
 	// Process PRs - should detect external merge and close issue
 	c.processAllPRs(context.Background())
@@ -1164,9 +1164,9 @@ func TestController_CheckExternalMerge_MultiplePRs(t *testing.T) {
 	c := NewController(cfg, ghClient, nil, "owner", "repo")
 
 	// Add multiple PRs
-	c.OnPRCreated(1, "url1", 10, "sha1", "pilot/GH-10")
-	c.OnPRCreated(2, "url2", 20, "sha2", "pilot/GH-20")
-	c.OnPRCreated(3, "url3", 30, "sha3", "pilot/GH-30")
+	c.OnPRCreated(1, "url1", 10, "sha1", "pilot/GH-10", "")
+	c.OnPRCreated(2, "url2", 20, "sha2", "pilot/GH-20", "")
+	c.OnPRCreated(3, "url3", 30, "sha3", "pilot/GH-30", "")
 
 	// Process PRs
 	c.processAllPRs(context.Background())
@@ -1284,7 +1284,7 @@ func TestController_ProcessPR_RefreshesStaleHeadSHA(t *testing.T) {
 	c := NewController(cfg, ghClient, nil, "owner", "repo")
 
 	// Register PR with stale SHA (simulates self-review changing HEAD)
-	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, staleSHA, "pilot/GH-10")
+	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, staleSHA, "pilot/GH-10", "")
 
 	ctx := context.Background()
 
@@ -1513,7 +1513,7 @@ func TestController_ProcessPR_MergeConflict_PRCreated(t *testing.T) {
 	cfg.CIPollInterval = 10 * time.Millisecond
 
 	c := NewController(cfg, ghClient, nil, "owner", "repo")
-	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc1234", "pilot/GH-10")
+	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc1234", "pilot/GH-10", "")
 
 	ctx := context.Background()
 
@@ -1573,7 +1573,7 @@ func TestController_ProcessPR_MergeableUnknown_ProceedsToCICheck(t *testing.T) {
 	cfg.RequiredChecks = []string{"build", "test", "lint"}
 
 	c := NewController(cfg, ghClient, nil, "owner", "repo")
-	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc1234", "pilot/GH-10")
+	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc1234", "pilot/GH-10", "")
 
 	ctx := context.Background()
 
@@ -1633,7 +1633,7 @@ func TestController_ProcessPR_MergeableFalse_DetectsConflict(t *testing.T) {
 	cfg.DevCITimeout = 1 * time.Second
 
 	c := NewController(cfg, ghClient, nil, "owner", "repo")
-	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc1234", "pilot/GH-10")
+	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc1234", "pilot/GH-10", "")
 
 	ctx := context.Background()
 
@@ -1869,7 +1869,7 @@ func TestController_DeadlockDetection(t *testing.T) {
 	}
 
 	// Simulate a PR state transition by adding a PR
-	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc123", "pilot/GH-10")
+	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc123", "pilot/GH-10", "")
 
 	// Get PR and manually trigger a stage transition to update lastProgressAt
 	pr, _ := c.GetPRState(42)
@@ -1913,7 +1913,7 @@ func TestController_DeadlockDetection_StaleProgress(t *testing.T) {
 	}
 
 	// Add a PR to simulate active work
-	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc123", "pilot/GH-10")
+	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc123", "pilot/GH-10", "")
 
 	// The MetricsAlerter would check: noProgressMin >= 60 && len(activePRs) > 0
 	noProgressMin := time.Since(c.GetLastProgressAt()).Minutes()
@@ -2009,7 +2009,7 @@ func TestController_handleMerging_ConflictClearsLabel(t *testing.T) {
 	c := NewController(cfg, ghClient, nil, "owner", "repo")
 
 	// Set up PR in StageMerging state
-	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc1234", "pilot/GH-10")
+	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc1234", "pilot/GH-10", "")
 	prState, _ := c.GetPRState(42)
 	prState.Stage = StageMerging
 
@@ -2114,7 +2114,7 @@ func TestController_handleMerging_Success_RemovesFailedLabel(t *testing.T) {
 	c := NewController(cfg, ghClient, nil, "owner", "repo")
 
 	// Set up PR in StageMerging state
-	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc1234", "pilot/GH-10")
+	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc1234", "pilot/GH-10", "")
 	prState, _ := c.GetPRState(42)
 	prState.Stage = StageMerging
 
@@ -2183,7 +2183,7 @@ func TestController_ConsecutiveAPIFailures(t *testing.T) {
 
 	cfg := DefaultConfig()
 	c := NewController(cfg, ghClient, nil, "owner", "repo")
-	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc1234", "pilot/GH-10")
+	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc1234", "pilot/GH-10", "")
 
 	// Set PR to waiting CI stage
 	prState, _ := c.GetPRState(42)
@@ -2277,7 +2277,7 @@ func TestController_ConsecutiveAPIFailures_Reset(t *testing.T) {
 
 	cfg := DefaultConfig()
 	c := NewController(cfg, ghClient, nil, "owner", "repo")
-	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc1234", "pilot/GH-10")
+	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc1234", "pilot/GH-10", "")
 
 	// Set PR to waiting CI stage
 	prState, _ := c.GetPRState(42)
@@ -2373,7 +2373,7 @@ func TestController_MonitorCompletedOnMerge(t *testing.T) {
 	mockMonitor := newMockTaskMonitor()
 	c.SetMonitor(mockMonitor)
 
-	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc1234", "pilot/GH-10")
+	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc1234", "pilot/GH-10", "")
 
 	ctx := context.Background()
 
@@ -2433,7 +2433,7 @@ func TestController_MonitorNilSafe(t *testing.T) {
 	c := NewController(cfg, ghClient, nil, "owner", "repo")
 	// Intentionally NOT calling c.SetMonitor(...)
 
-	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc1234", "pilot/GH-10")
+	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc1234", "pilot/GH-10", "")
 
 	ctx := context.Background()
 
@@ -2492,7 +2492,7 @@ func TestController_CIFixCascadeLimit(t *testing.T) {
 	cfg.MaxCIFixIterations = 3
 
 	c := NewController(cfg, ghClient, nil, "owner", "repo")
-	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc1234", "pilot/GH-10")
+	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc1234", "pilot/GH-10", "")
 
 	ctx := context.Background()
 
@@ -2572,7 +2572,7 @@ func TestController_CIFixCascade_UnderLimit(t *testing.T) {
 	cfg.MaxCIFixIterations = 3
 
 	c := NewController(cfg, ghClient, nil, "owner", "repo")
-	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc1234", "pilot/GH-10")
+	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc1234", "pilot/GH-10", "")
 
 	ctx := context.Background()
 
@@ -2630,7 +2630,7 @@ func TestController_CIFixCascade_OriginalPR(t *testing.T) {
 	cfg.MaxCIFixIterations = 3
 
 	c := NewController(cfg, ghClient, nil, "owner", "repo")
-	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc1234", "pilot/GH-10")
+	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc1234", "pilot/GH-10", "")
 
 	ctx := context.Background()
 
@@ -2878,7 +2878,7 @@ func TestController_handleMergeConflict_AutoRebaseSuccess(t *testing.T) {
 	c := NewController(cfg, ghClient, nil, "owner", "repo")
 
 	// Set up PR in StageMerging state
-	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc1234", "pilot/GH-10")
+	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc1234", "pilot/GH-10", "")
 	prState, _ := c.GetPRState(42)
 	prState.Stage = StageMerging
 
@@ -2979,7 +2979,7 @@ func TestController_handleMergeConflict_AutoRebaseFails(t *testing.T) {
 
 	c := NewController(cfg, ghClient, nil, "owner", "repo")
 
-	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc1234", "pilot/GH-10")
+	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc1234", "pilot/GH-10", "")
 	prState, _ := c.GetPRState(42)
 	prState.Stage = StageMerging
 

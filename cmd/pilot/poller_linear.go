@@ -70,11 +70,11 @@ func linearPollerRegistration() PollerRegistration {
 							if deps.AutopilotControllers != nil && resolvedProject != nil && resolvedProject.GitHub != nil {
 								repoFullName := fmt.Sprintf("%s/%s", resolvedProject.GitHub.Owner, resolvedProject.GitHub.Repo)
 								if controller, ok := deps.AutopilotControllers[repoFullName]; ok && controller != nil {
-									controller.OnPRCreated(result.PRNumber, result.PRURL, 0, result.HeadSHA, result.BranchName)
+									controller.OnPRCreated(result.PRNumber, result.PRURL, 0, result.HeadSHA, result.BranchName, "")
 								}
 							} else if deps.AutopilotController != nil {
 								// GH-1700: Gateway mode uses single autopilot controller
-								deps.AutopilotController.OnPRCreated(result.PRNumber, result.PRURL, 0, result.HeadSHA, result.BranchName)
+								deps.AutopilotController.OnPRCreated(result.PRNumber, result.PRURL, 0, result.HeadSHA, result.BranchName, "")
 							}
 						}
 

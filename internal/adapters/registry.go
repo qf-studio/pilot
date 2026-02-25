@@ -67,7 +67,7 @@ type ProcessedStore interface {
 type PollerDeps struct {
 	ProcessedStore ProcessedStore
 	MaxConcurrent  int
-	OnPRCreated    func(prNumber int, prURL string, issueNumber int, headSHA, branchName string)
+	OnPRCreated    func(prNumber int, prURL string, issueNumber int, headSHA, branchName string, issueNodeID string)
 }
 
 // --- Registry ---

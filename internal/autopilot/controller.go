@@ -62,6 +62,19 @@ type TaskMonitor interface {
 	Complete(taskID, prURL string)
 }
 
+// ControllerOption is a functional option for Controller configuration.
+type ControllerOption func(*Controller)
+
+// WithProjectBoardSync wires a GitHub Projects V2 board sync into the controller.
+// doneStatus is the board column name for merged PRs; failStatus for CI failures (may be empty).
+func WithProjectBoardSync(bs *github.ProjectBoardSync, doneStatus, failStatus string) ControllerOption {
+	return func(c *Controller) {
+		c.boardSync = bs
+		c.doneStatus = doneStatus
+		c.failStatus = failStatus
+	}
+}
+
 // Controller orchestrates the autopilot loop for PR processing.
 // It manages the state machine: PR created → CI check → merge → post-merge CI → feedback loop.
 type Controller struct {
@@ -75,6 +88,9 @@ type Controller struct {
 	deployer     *Deployer
 	notifier     Notifier
 	monitor      TaskMonitor // GH-1336: sync dashboard state on merge
+	boardSync    *github.ProjectBoardSync
+	doneStatus   string
+	failStatus   string
 	log          *slog.Logger
 
 	// State tracking
@@ -105,7 +121,7 @@ type Controller struct {
 }
 
 // NewController creates an autopilot controller with all required components.
-func NewController(cfg *Config, ghClient *github.Client, approvalMgr *approval.Manager, owner, repo string) *Controller {
+func NewController(cfg *Config, ghClient *github.Client, approvalMgr *approval.Manager, owner, repo string, opts ...ControllerOption) *Controller {
 	c := &Controller{
 		config:         cfg,
 		ghClient:       ghClient,
@@ -131,6 +147,10 @@ func NewController(cfg *Config, ghClient *github.Client, approvalMgr *approval.M
 	// Initialize deployer if post-merge config exists
 	if env := cfg.ResolvedEnv(); env.PostMerge != nil && env.PostMerge.Action != "" && env.PostMerge.Action != "none" {
 		c.deployer = NewDeployer(ghClient, owner, repo, env.PostMerge)
+	}
+
+	for _, opt := range opts {
+		opt(c)
 	}
 
 	return c
@@ -249,7 +269,7 @@ func (c *Controller) RestoreState() (int, error) {
 }
 
 // OnPRCreated registers a new PR for autopilot processing.
-func (c *Controller) OnPRCreated(prNumber int, prURL string, issueNumber int, headSHA string, branchName string) {
+func (c *Controller) OnPRCreated(prNumber int, prURL string, issueNumber int, headSHA string, branchName string, issueNodeID string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -263,6 +283,7 @@ func (c *Controller) OnPRCreated(prNumber int, prURL string, issueNumber int, he
 		CIStatus:        CIPending,
 		CreatedAt:       time.Now(),
 		EnvironmentName: c.config.EnvironmentName(),
+		IssueNodeID:     issueNodeID,
 	}
 	c.activePRs[prNumber] = prState
 
@@ -642,6 +663,13 @@ func (c *Controller) handleCIFailed(ctx context.Context, prState *PRState) error
 		c.log.Info("closed failed PR", "pr", prState.PRNumber, "fix_issue", issueNum)
 	}
 
+	// GH-1870: Sync board card to "Failed" column on CI failure
+	if c.boardSync != nil && prState.IssueNodeID != "" && c.failStatus != "" {
+		if err := c.boardSync.UpdateProjectItemStatus(ctx, prState.IssueNodeID, c.failStatus); err != nil {
+			c.log.Warn("board sync on CI fail failed", "pr", prState.PRNumber, "error", err)
+		}
+	}
+
 	prState.Stage = StageFailed
 	c.metrics.RecordPRFailed()
 	return nil
@@ -729,6 +757,13 @@ func (c *Controller) handleMerging(ctx context.Context, prState *PRState) error 
 			taskID := fmt.Sprintf("GH-%d", prState.IssueNumber)
 			c.monitor.Complete(taskID, prState.PRURL)
 			c.log.Debug("updated monitor state to completed", "task", taskID, "pr", prState.PRNumber)
+		}
+
+		// GH-1870: Sync board card to "Done" column on merge
+		if c.boardSync != nil && prState.IssueNodeID != "" {
+			if err := c.boardSync.UpdateProjectItemStatus(ctx, prState.IssueNodeID, c.doneStatus); err != nil {
+				c.log.Warn("board sync on merge failed", "pr", prState.PRNumber, "error", err)
+			}
 		}
 	}
 
@@ -1345,7 +1380,7 @@ func (c *Controller) ScanExistingPRs(ctx context.Context) error {
 		)
 
 		// Register PR via existing mechanism
-		c.OnPRCreated(pr.Number, pr.HTMLURL, issueNum, pr.Head.SHA, pr.Head.Ref)
+		c.OnPRCreated(pr.Number, pr.HTMLURL, issueNum, pr.Head.SHA, pr.Head.Ref, "")
 		restored++
 	}
 

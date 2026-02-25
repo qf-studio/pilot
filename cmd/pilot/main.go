@@ -424,12 +424,20 @@ Examples:
 						parts := strings.SplitN(cfg.Adapters.GitHub.Repo, "/", 2)
 						if len(parts) == 2 {
 							ghClient := github.NewClient(ghToken)
+							// GH-1870: Board sync option for gateway autopilot controller.
+							var gwBoardOpts []autopilot.ControllerOption
+							if cfg.Adapters.GitHub.ProjectBoard != nil && cfg.Adapters.GitHub.ProjectBoard.Enabled {
+								bs := github.NewProjectBoardSync(ghClient, cfg.Adapters.GitHub.ProjectBoard, parts[0])
+								statuses := cfg.Adapters.GitHub.ProjectBoard.GetStatuses()
+								gwBoardOpts = append(gwBoardOpts, autopilot.WithProjectBoardSync(bs, statuses.Done, statuses.Failed))
+							}
 							gwAutopilotController = autopilot.NewController(
 								cfg.Orchestrator.Autopilot,
 								ghClient,
 								approvalMgr,
 								parts[0],
 								parts[1],
+								gwBoardOpts...,
 							)
 						}
 					}
@@ -723,7 +731,7 @@ Examples:
 
 						// GH-797: Call OnPRCreated for retried issues so autopilot tracks their PRs
 						if result != nil && result.PRNumber > 0 && gwAutopilotController != nil {
-							gwAutopilotController.OnPRCreated(result.PRNumber, result.PRURL, issue.Number, result.HeadSHA, result.BranchName)
+							gwAutopilotController.OnPRCreated(result.PRNumber, result.PRURL, issue.Number, result.HeadSHA, result.BranchName, issue.NodeID)
 						}
 
 						return err
@@ -1159,6 +1167,18 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 		if ghToken != "" {
 			ghClient := github.NewClient(ghToken)
 
+			// GH-1870: Build board sync option for autopilot controllers.
+			var autopilotBoardOpts []autopilot.ControllerOption
+			if cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.ProjectBoard != nil && cfg.Adapters.GitHub.ProjectBoard.Enabled {
+				owner := ""
+				if parts := strings.SplitN(cfg.Adapters.GitHub.Repo, "/", 2); len(parts) == 2 {
+					owner = parts[0]
+				}
+				bs := github.NewProjectBoardSync(ghClient, cfg.Adapters.GitHub.ProjectBoard, owner)
+				statuses := cfg.Adapters.GitHub.ProjectBoard.GetStatuses()
+				autopilotBoardOpts = append(autopilotBoardOpts, autopilot.WithProjectBoardSync(bs, statuses.Done, statuses.Failed))
+			}
+
 			// Create controller for default repo (adapters.github.repo)
 			if cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.Repo != "" {
 				parts := strings.SplitN(cfg.Adapters.GitHub.Repo, "/", 2)
@@ -1169,6 +1189,7 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 						approvalMgr,
 						parts[0],
 						parts[1],
+						autopilotBoardOpts...,
 					)
 					autopilotControllers[cfg.Adapters.GitHub.Repo] = controller
 					autopilotController = controller // Default for backwards compat
@@ -1190,6 +1211,7 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 					approvalMgr,
 					proj.GitHub.Owner,
 					proj.GitHub.Repo,
+					autopilotBoardOpts...,
 				)
 				autopilotControllers[repoFullName] = controller
 				logging.WithComponent("autopilot").Info("created controller for project",
@@ -1735,7 +1757,7 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 					result, err := handleGitHubIssueWithResult(retryCtx, cfg, client, issue, projPathCapture, sourceRepo, dispatcher, runner, monitor, program, alertsEngine, enforcer)
 
 					if result != nil && result.PRNumber > 0 && controllerCapture != nil {
-						controllerCapture.OnPRCreated(result.PRNumber, result.PRURL, issue.Number, result.HeadSHA, result.BranchName)
+						controllerCapture.OnPRCreated(result.PRNumber, result.PRURL, issue.Number, result.HeadSHA, result.BranchName, issue.NodeID)
 					}
 
 					return err

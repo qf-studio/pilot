@@ -341,7 +341,7 @@ func TestPoller_Integration_PRCallback(t *testing.T) {
 				BranchName: "pilot/GH-200",
 			}, nil
 		}),
-		WithOnPRCreated(func(prNumber int, prURL string, issueNumber int, headSHA string, branchName string) {
+		WithOnPRCreated(func(prNumber int, prURL string, issueNumber int, headSHA string, branchName string, issueNodeID string) {
 			atomic.AddInt32(&callbackCalled, 1)
 			callbackPRNum = prNumber
 			callbackIssueNum = issueNumber

@@ -66,7 +66,7 @@ func newSequentialRunner(
 	}
 
 	runner := newTestRunnerWithExecFunc(execFn)
-	runner.SetOnSubIssuePRCreated(func(prNumber int, prURL string, issueNumber int, commitSHA, branchName string) {
+	runner.SetOnSubIssuePRCreated(func(prNumber int, prURL string, issueNumber int, commitSHA, branchName string, issueNodeID string) {
 		sr.mu.Lock()
 		defer sr.mu.Unlock()
 		sr.PRCalls = append(sr.PRCalls, subIssuePRCall{

@@ -63,7 +63,7 @@ func TestFullWorkflow_IssueToMerge(t *testing.T) {
 	// Pre-create PR in mock so API calls work
 	ghMock.CreatePR(1, "feat: Add hello world feature", branchName, prSHA)
 
-	controller.OnPRCreated(1, ghMock.URL()+"/owner/repo/pull/1", issue.Number, prSHA, branchName)
+	controller.OnPRCreated(1, ghMock.URL()+"/owner/repo/pull/1", issue.Number, prSHA, branchName, "")
 
 	// Verify PR was registered
 	prState, ok := controller.GetPRState(1)
@@ -173,7 +173,7 @@ func TestWorkflow_CIFailure(t *testing.T) {
 	// Set CI to fail
 	ghMock.SetCIFailing(prSHA, "build", []string{"test", "lint"})
 
-	controller.OnPRCreated(1, ghMock.URL()+"/owner/repo/pull/1", issue.Number, prSHA, branchName)
+	controller.OnPRCreated(1, ghMock.URL()+"/owner/repo/pull/1", issue.Number, prSHA, branchName, "")
 
 	ctx := context.Background()
 
@@ -246,7 +246,7 @@ func TestWorkflow_MergeConflict(t *testing.T) {
 
 	// Directly inject PR state (simulating PR with conflict)
 	_ = pr
-	controller.OnPRCreated(1, ghMock.URL()+"/owner/repo/pull/1", issue.Number, prSHA, branchName)
+	controller.OnPRCreated(1, ghMock.URL()+"/owner/repo/pull/1", issue.Number, prSHA, branchName, "")
 
 	ctx := context.Background()
 
@@ -295,9 +295,9 @@ func TestWorkflow_MultiplePRs(t *testing.T) {
 
 	// Register PRs for each issue
 	sha1, sha2, sha3 := "sha1111", "sha2222", "sha3333"
-	controller.OnPRCreated(1, "url1", issue1.Number, sha1, "pilot/GH-1")
-	controller.OnPRCreated(2, "url2", issue2.Number, sha2, "pilot/GH-2")
-	controller.OnPRCreated(3, "url3", issue3.Number, sha3, "pilot/GH-3")
+	controller.OnPRCreated(1, "url1", issue1.Number, sha1, "pilot/GH-1", "")
+	controller.OnPRCreated(2, "url2", issue2.Number, sha2, "pilot/GH-2", "")
+	controller.OnPRCreated(3, "url3", issue3.Number, sha3, "pilot/GH-3", "")
 
 	// Verify all are tracked
 	prs := controller.GetActivePRs()
@@ -353,7 +353,7 @@ func TestWorkflow_CircuitBreaker(t *testing.T) {
 	controller := autopilot.NewController(cfg, ghClient, nil, "owner", "repo")
 
 	// Start PR in merging stage (will fail to merge due to server error)
-	controller.OnPRCreated(1, "url", issue.Number, "sha123", "pilot/GH-1")
+	controller.OnPRCreated(1, "url", issue.Number, "sha123", "pilot/GH-1", "")
 
 	// Manually set to merging stage
 	prState, _ := controller.GetPRState(1)
@@ -450,7 +450,7 @@ func TestWorkflow_ExternalMergeDetection(t *testing.T) {
 	controller := autopilot.NewController(cfg, ghClient, nil, "owner", "repo")
 
 	// Register PR
-	controller.OnPRCreated(1, ghMock.URL()+"/owner/repo/pull/1", issue.Number, "sha123", "pilot/GH-1")
+	controller.OnPRCreated(1, ghMock.URL()+"/owner/repo/pull/1", issue.Number, "sha123", "pilot/GH-1", "")
 
 	// Simulate external merge by directly updating mock state
 	// (In real world, someone merges via GitHub UI)

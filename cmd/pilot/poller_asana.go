@@ -36,7 +36,7 @@ func asanaPollerRegistration() PollerRegistration {
 					// GH-1399: Wire PR to autopilot for CI monitoring + auto-merge
 					if result != nil && result.PRNumber > 0 && deps.AutopilotController != nil {
 						// issueNumber=0 because Asana tasks don't have GitHub issue numbers
-						deps.AutopilotController.OnPRCreated(result.PRNumber, result.PRURL, 0, result.HeadSHA, result.BranchName)
+						deps.AutopilotController.OnPRCreated(result.PRNumber, result.PRURL, 0, result.HeadSHA, result.BranchName, "")
 					}
 
 					return result, err

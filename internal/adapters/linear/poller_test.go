@@ -426,7 +426,7 @@ func TestPoller_OnPRCreated(t *testing.T) {
 				BranchName: "pilot/TST-1",
 			}, nil
 		}),
-		WithOnPRCreated(func(prNumber int, prURL string, issueNumber int, headSHA string, branchName string) {
+		WithOnPRCreated(func(prNumber int, prURL string, issueNumber int, headSHA string, branchName string, issueNodeID string) {
 			atomic.AddInt32(&prCallbackCalled, 1)
 			capturedPRNumber = prNumber
 			capturedPRURL = prURL
@@ -465,7 +465,7 @@ func TestPoller_OnPRCreated_NotCalledOnFailure(t *testing.T) {
 		WithOnLinearIssue(func(ctx context.Context, issue *Issue) (*IssueResult, error) {
 			return nil, fmt.Errorf("processing failed")
 		}),
-		WithOnPRCreated(func(prNumber int, prURL string, issueNumber int, headSHA string, branchName string) {
+		WithOnPRCreated(func(prNumber int, prURL string, issueNumber int, headSHA string, branchName string, issueNodeID string) {
 			atomic.AddInt32(&prCallbackCalled, 1)
 		}),
 	)

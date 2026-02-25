@@ -39,7 +39,7 @@ func azuredevopsPollerRegistration() PollerRegistration {
 			// Wire autopilot OnPRCreated callback
 			if deps.AutopilotController != nil {
 				adoPollerOpts = append(adoPollerOpts, azuredevops.WithOnPRCreated(func(prID int, prURL string, workItemID int, headSHA string, branchName string) {
-					deps.AutopilotController.OnPRCreated(prID, prURL, 0, headSHA, branchName)
+					deps.AutopilotController.OnPRCreated(prID, prURL, 0, headSHA, branchName, "")
 				}))
 			}
 

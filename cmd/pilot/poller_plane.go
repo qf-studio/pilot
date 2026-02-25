@@ -35,7 +35,7 @@ func planePollerRegistration() PollerRegistration {
 
 					// Wire PR to autopilot for CI monitoring + auto-merge
 					if result != nil && result.PRNumber > 0 && deps.AutopilotController != nil {
-						deps.AutopilotController.OnPRCreated(result.PRNumber, result.PRURL, 0, result.HeadSHA, result.BranchName)
+						deps.AutopilotController.OnPRCreated(result.PRNumber, result.PRURL, 0, result.HeadSHA, result.BranchName, "")
 					}
 
 					return result, err

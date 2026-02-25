@@ -249,7 +249,7 @@ type TokenLimitCallback func(taskID string, deltaInput, deltaOutput int64) bool
 
 // SubIssuePRCallback is called when a sub-issue PR is created during epic execution.
 // Signature matches Controller.OnPRCreated so it can be wired directly.
-type SubIssuePRCallback func(prNumber int, prURL string, issueNumber int, headSHA string, branchName string)
+type SubIssuePRCallback func(prNumber int, prURL string, issueNumber int, headSHA string, branchName string, issueNodeID string)
 
 // SubIssueCreator is an interface for creating sub-issues in external issue trackers.
 // Adapters like Linear, Jira, GitLab, and Azure DevOps can implement this interface

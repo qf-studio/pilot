@@ -924,7 +924,7 @@ func TestSetOnSubIssuePRCreated(t *testing.T) {
 	var capturedSHA string
 	var capturedBranch string
 
-	runner.SetOnSubIssuePRCreated(func(prNumber int, prURL string, issueNumber int, headSHA string, branchName string) {
+	runner.SetOnSubIssuePRCreated(func(prNumber int, prURL string, issueNumber int, headSHA string, branchName string, issueNodeID string) {
 		called = true
 		capturedPR = prNumber
 		capturedURL = prURL
@@ -938,7 +938,7 @@ func TestSetOnSubIssuePRCreated(t *testing.T) {
 	}
 
 	// Invoke callback
-	runner.onSubIssuePRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc123", "pilot/GH-10")
+	runner.onSubIssuePRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc123", "pilot/GH-10", "")
 
 	if !called {
 		t.Error("callback was not invoked")
