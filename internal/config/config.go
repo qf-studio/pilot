@@ -16,6 +16,7 @@ import (
 	"github.com/alekspetrov/pilot/internal/adapters/gitlab"
 	"github.com/alekspetrov/pilot/internal/adapters/jira"
 	"github.com/alekspetrov/pilot/internal/adapters/linear"
+	"github.com/alekspetrov/pilot/internal/adapters/plane"
 	"github.com/alekspetrov/pilot/internal/adapters/slack"
 	"github.com/alekspetrov/pilot/internal/adapters/telegram"
 	"github.com/alekspetrov/pilot/internal/alerts"
@@ -74,6 +75,7 @@ type AdaptersConfig struct {
 	AzureDevOps *azuredevops.Config `yaml:"azure_devops"`
 	Jira        *jira.Config        `yaml:"jira"`
 	Asana       *asana.Config       `yaml:"asana"`
+	Plane       *plane.Config       `yaml:"plane"`
 }
 
 // OrchestratorConfig holds settings for the task orchestrator including
@@ -270,6 +272,7 @@ func DefaultConfig() *Config {
 			AzureDevOps: azuredevops.DefaultConfig(),
 			Jira:        jira.DefaultConfig(),
 			Asana:       asana.DefaultConfig(),
+			Plane:       plane.DefaultConfig(),
 		},
 		Orchestrator: &OrchestratorConfig{
 			Model:         "claude-sonnet-4-6",

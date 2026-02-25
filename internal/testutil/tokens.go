@@ -84,4 +84,10 @@ const (
 
 	// FakeAzureDevOpsWebhookSecret is a safe test secret for Azure DevOps webhook verification.
 	FakeAzureDevOpsWebhookSecret = "test-azure-devops-webhook-secret"
+
+	// FakePlaneAPIKey is a safe test API key for Plane.so.
+	FakePlaneAPIKey = "test-plane-api-key"
+
+	// FakePlaneWebhookSecret is a safe test webhook secret for Plane.so.
+	FakePlaneWebhookSecret = "test-plane-webhook-secret"
 )

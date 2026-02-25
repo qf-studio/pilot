@@ -1,0 +1,194 @@
+package plane
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+)
+
+// Client is a Plane.so REST API client.
+// Auth: X-API-Key header.
+// Rate limit: 60 req/min (respects Retry-After header).
+type Client struct {
+	baseURL    string
+	apiKey     string
+	httpClient *http.Client
+}
+
+// ClientOption configures the Client.
+type ClientOption func(*Client)
+
+// WithHTTPClient overrides the default HTTP client.
+func WithHTTPClient(hc *http.Client) ClientOption {
+	return func(c *Client) {
+		c.httpClient = hc
+	}
+}
+
+// NewClient creates a new Plane API client.
+// baseURL should be e.g. "https://api.plane.so" (no trailing slash).
+func NewClient(baseURL, apiKey string, opts ...ClientOption) *Client {
+	baseURL = strings.TrimSuffix(baseURL, "/")
+	c := &Client{
+		baseURL: baseURL,
+		apiKey:  apiKey,
+		httpClient: &http.Client{
+			Timeout: 30 * time.Second,
+		},
+	}
+	for _, opt := range opts {
+		opt(c)
+	}
+	return c
+}
+
+// doRequest performs an HTTP request to the Plane API.
+// It handles JSON marshalling, auth headers, rate-limit retries, and error responses.
+func (c *Client) doRequest(ctx context.Context, method, path string, body interface{}, result interface{}) error {
+	var bodyReader io.Reader
+	if body != nil {
+		data, err := json.Marshal(body)
+		if err != nil {
+			return fmt.Errorf("failed to marshal request body: %w", err)
+		}
+		bodyReader = bytes.NewReader(data)
+	}
+
+	url := c.baseURL + path
+	req, err := http.NewRequestWithContext(ctx, method, url, bodyReader)
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("X-API-Key", c.apiKey)
+	req.Header.Set("Accept", "application/json")
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to execute request: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	// Handle rate limiting (429)
+	if resp.StatusCode == http.StatusTooManyRequests {
+		retryAfter := resp.Header.Get("Retry-After")
+		secs, parseErr := strconv.Atoi(retryAfter)
+		if parseErr != nil || secs <= 0 {
+			secs = 5 // default backoff
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Duration(secs) * time.Second):
+		}
+		// Retry once after waiting
+		return c.doRequest(ctx, method, path, body, result)
+	}
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(respBody))
+	}
+
+	if result != nil && len(respBody) > 0 {
+		if err := json.Unmarshal(respBody, result); err != nil {
+			return fmt.Errorf("failed to parse response: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// workItemsBase returns the base path for work-items endpoints.
+func workItemsBase(workspaceSlug, projectID string) string {
+	return fmt.Sprintf("/api/v1/workspaces/%s/projects/%s/work-items", workspaceSlug, projectID)
+}
+
+// ListWorkItems fetches work items for a project, optionally filtered by label ID.
+// Pass empty labelID to list all work items.
+func (c *Client) ListWorkItems(ctx context.Context, workspaceSlug, projectID, labelID string) ([]WorkItem, error) {
+	path := workItemsBase(workspaceSlug, projectID) + "/"
+	if labelID != "" {
+		path += "?label=" + labelID
+	}
+
+	var resp paginatedResponse
+	if err := c.doRequest(ctx, http.MethodGet, path, nil, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Results, nil
+}
+
+// GetWorkItem fetches a single work item by ID.
+func (c *Client) GetWorkItem(ctx context.Context, workspaceSlug, projectID, workItemID string) (*WorkItem, error) {
+	path := workItemsBase(workspaceSlug, projectID) + "/" + workItemID + "/"
+
+	var item WorkItem
+	if err := c.doRequest(ctx, http.MethodGet, path, nil, &item); err != nil {
+		return nil, err
+	}
+	return &item, nil
+}
+
+// UpdateWorkItem patches a work item with the given fields.
+// Common fields: "state" (state UUID), "priority" (int), "labels" ([]string UUIDs).
+func (c *Client) UpdateWorkItem(ctx context.Context, workspaceSlug, projectID, workItemID string, fields map[string]interface{}) error {
+	path := workItemsBase(workspaceSlug, projectID) + "/" + workItemID + "/"
+	return c.doRequest(ctx, http.MethodPatch, path, fields, nil)
+}
+
+// CreateWorkItem creates a new work item in a project.
+// Required fields typically include "name". Optional: "description_html", "state", "priority", "labels".
+func (c *Client) CreateWorkItem(ctx context.Context, workspaceSlug, projectID string, fields map[string]interface{}) (*WorkItem, error) {
+	path := workItemsBase(workspaceSlug, projectID) + "/"
+
+	var item WorkItem
+	if err := c.doRequest(ctx, http.MethodPost, path, fields, &item); err != nil {
+		return nil, err
+	}
+	return &item, nil
+}
+
+// ListStates fetches all workflow states for a project.
+func (c *Client) ListStates(ctx context.Context, workspaceSlug, projectID string) ([]State, error) {
+	path := fmt.Sprintf("/api/v1/workspaces/%s/projects/%s/states/", workspaceSlug, projectID)
+
+	var resp statesResponse
+	if err := c.doRequest(ctx, http.MethodGet, path, nil, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Results, nil
+}
+
+// ListLabels fetches all labels for a project.
+func (c *Client) ListLabels(ctx context.Context, workspaceSlug, projectID string) ([]Label, error) {
+	path := fmt.Sprintf("/api/v1/workspaces/%s/projects/%s/labels/", workspaceSlug, projectID)
+
+	var resp labelsResponse
+	if err := c.doRequest(ctx, http.MethodGet, path, nil, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Results, nil
+}
+
+// AddComment adds an HTML comment to a work item.
+func (c *Client) AddComment(ctx context.Context, workspaceSlug, projectID, workItemID, commentHTML string) error {
+	path := workItemsBase(workspaceSlug, projectID) + "/" + workItemID + "/comments/"
+	body := map[string]string{
+		"comment_html": commentHTML,
+	}
+	return c.doRequest(ctx, http.MethodPost, path, body, nil)
+}
