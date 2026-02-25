@@ -288,6 +288,10 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 				if err := client.AddLabels(ctx, parts[0], parts[1], issue.Number, []string{github.LabelDone}); err != nil {
 					logGitHubAPIError("AddLabels", parts[0], parts[1], issue.Number, err)
 				}
+				// GH-1869: Move to Review column when PR is created
+				if hr.PRNumber > 0 {
+					syncBoardStatus(ctx, boardSync, issue.NodeID, boardStatuses.Review)
+				}
 				syncBoardStatus(ctx, boardSync, issue.NodeID, boardStatuses.Done) // GH-1853
 
 				// GH-1302: Clean up stale pilot-failed label from prior failed attempt
