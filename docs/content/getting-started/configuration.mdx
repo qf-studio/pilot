@@ -24,6 +24,8 @@ Pilot delegates AI execution to **Claude Code**, which manages its own authentic
 | **Telegram** | `TELEGRAM_BOT_TOKEN` env var or config | No |
 | **LLM classifier** (smart intent routing) | `ANTHROPIC_API_KEY` env var | No — falls back to keyword matching |
 | **Epic decomposition** (Haiku subtask parser) | `ANTHROPIC_API_KEY` env var | No — falls back to regex parser |
+| **Discord** | `DISCORD_BOT_TOKEN` env var or `adapters.discord.bot_token` in config | Yes, if using Discord |
+| **Plane** | `PLANE_API_KEY` env var or `adapters.plane.api_key` in config | Yes, if using Plane |
 
 <Callout type="info">
 **Most users don't need `ANTHROPIC_API_KEY` at all.** If you're logged into Claude Code with a Claude subscription, Pilot works out of the box. The API key is only needed for optional internal features (LLM classifier, structured subtask parsing) that have simpler fallbacks.
@@ -39,6 +41,8 @@ Pilot delegates AI execution to **Claude Code**, which manages its own authentic
 | `ANTHROPIC_API_KEY` | Enables LLM intent classifier and structured subtask parsing | No |
 | `OPENAI_API_KEY` | Enables Whisper voice transcription in Telegram | No |
 | `SLACK_BOT_TOKEN` | Slack bot token for notifications | No |
+| `DISCORD_BOT_TOKEN` | Discord bot token for chat interface | No |
+| `PLANE_API_KEY` | Plane.so API key for work item management | No |
 
 <Callout type="info">
 Use `${VAR_NAME}` in any string field to reference environment variables. Pilot expands them at load time. Paths starting with `~` are expanded to your home directory.
@@ -85,6 +89,34 @@ adapters:
 | `stale_label_cleanup.enabled` | bool | `true` | Auto-remove stale `pilot-in-progress` labels |
 | `stale_label_cleanup.interval` | duration | `30m` | Cleanup check interval |
 | `stale_label_cleanup.threshold` | duration | `1h` | How old a label must be to be considered stale |
+
+#### Project Board
+
+Sync task status to a GitHub Projects V2 board automatically.
+
+```yaml
+adapters:
+  github:
+    project_board:
+      enabled: true
+      project_number: 3                    # project number from the URL
+      status_field: "Status"               # single-select field name
+      statuses:
+        in_progress: "In Dev"
+        review: "Ready for Review"
+        done: "Done"
+        failed: "Blocked"
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `project_board.enabled` | bool | `false` | Enable GitHub Projects V2 board sync |
+| `project_board.project_number` | int | — | Project number (from the project URL) |
+| `project_board.status_field` | string | `"Status"` | Name of the single-select status field |
+| `project_board.statuses.in_progress` | string | — | Column name for tasks being worked on |
+| `project_board.statuses.review` | string | — | Column name for tasks in review |
+| `project_board.statuses.done` | string | — | Column name for completed tasks |
+| `project_board.statuses.failed` | string | — | Column name for failed/blocked tasks |
 
 ---
 
@@ -1464,6 +1496,63 @@ adapters:
 | `bot_token` | string | — | Slack bot token (`xoxb-...`) |
 | `channel` | string | — | Default notification channel |
 | `signing_secret` | string | — | Slack signing secret for webhook verification |
+
+### Discord
+
+```yaml
+adapters:
+  discord:
+    enabled: true
+    bot_token: ${DISCORD_BOT_TOKEN}
+    allowed_guilds:
+      - "123456789012345678"               # guild (server) IDs allowed to send tasks
+    allowed_channels:
+      - "987654321098765432"               # channel IDs allowed to send tasks
+    command_prefix: "!pilot"
+    rate_limit:
+      messages_per_second: 5
+      tasks_per_minute: 10
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `false` | Enable Discord adapter |
+| `bot_token` | string | — | Discord bot token |
+| `allowed_guilds` | list | — | Guild (server) IDs allowed to send tasks |
+| `allowed_channels` | list | — | Channel IDs allowed to send tasks |
+| `command_prefix` | string | — | Prefix for bot commands (e.g. `!pilot`) |
+| `rate_limit.messages_per_second` | int | `5` | Max outgoing messages per second |
+| `rate_limit.tasks_per_minute` | int | `10` | Max tasks accepted per minute |
+
+### Plane
+
+```yaml
+adapters:
+  plane:
+    enabled: true
+    base_url: "https://api.plane.so"       # or self-hosted URL
+    api_key: ${PLANE_API_KEY}
+    workspace_slug: "my-workspace"
+    project_ids:
+      - "project-uuid-1"
+    pilot_label: "pilot"
+    webhook_secret: ""
+    polling:
+      enabled: true
+      interval: 30s
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `false` | Enable Plane adapter |
+| `base_url` | string | `"https://api.plane.so"` | Plane API base URL (self-hosted or cloud) |
+| `api_key` | string | — | Plane API key (`X-API-Key` header) |
+| `workspace_slug` | string | — | Plane workspace slug |
+| `project_ids` | list | — | Project UUIDs to watch for work items |
+| `pilot_label` | string | `"pilot"` | Label that marks work items for Pilot |
+| `webhook_secret` | string | — | HMAC secret for webhook verification |
+| `polling.enabled` | bool | `false` | Enable work item polling |
+| `polling.interval` | duration | `30s` | How often to poll for new work items |
 
 ### Jira
 
