@@ -109,6 +109,15 @@ func (s *StateStore) migrate() error {
 			processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 			result TEXT DEFAULT ''
 		)`,
+		// GH-1838: Generic adapter_processed table — new adapters use this instead of per-adapter tables.
+		// Existing per-adapter tables are kept for backward compatibility.
+		`CREATE TABLE IF NOT EXISTS adapter_processed (
+			adapter TEXT NOT NULL,
+			issue_id TEXT NOT NULL,
+			processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			result TEXT DEFAULT '',
+			PRIMARY KEY (adapter, issue_id)
+		)`,
 	}
 
 	for _, m := range migrations {
@@ -625,6 +634,65 @@ func (s *StateStore) LoadPlaneProcessedIssues() (map[string]bool, error) {
 func (s *StateStore) PurgeOldPlaneProcessedIssues(olderThan time.Duration) (int64, error) {
 	cutoff := time.Now().Add(-olderThan)
 	result, err := s.db.Exec(`DELETE FROM plane_processed WHERE processed_at < ?`, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+// --- Generic adapter_processed methods (GH-1838) ---
+
+// MarkAdapterProcessed records that an issue has been processed for a given adapter.
+func (s *StateStore) MarkAdapterProcessed(adapter, issueID, result string) error {
+	_, err := s.db.Exec(`
+		INSERT INTO adapter_processed (adapter, issue_id, processed_at, result)
+		VALUES (?, ?, CURRENT_TIMESTAMP, ?)
+		ON CONFLICT(adapter, issue_id) DO UPDATE SET
+			processed_at = CURRENT_TIMESTAMP,
+			result = excluded.result
+	`, adapter, issueID, result)
+	return err
+}
+
+// UnmarkAdapterProcessed removes a processed record for a given adapter and issue.
+func (s *StateStore) UnmarkAdapterProcessed(adapter, issueID string) error {
+	_, err := s.db.Exec(`DELETE FROM adapter_processed WHERE adapter = ? AND issue_id = ?`, adapter, issueID)
+	return err
+}
+
+// IsAdapterProcessed checks if an issue has been processed for a given adapter.
+func (s *StateStore) IsAdapterProcessed(adapter, issueID string) (bool, error) {
+	var count int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM adapter_processed WHERE adapter = ? AND issue_id = ?`, adapter, issueID).Scan(&count)
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+// LoadAdapterProcessed returns a map of all processed issue IDs for a given adapter.
+func (s *StateStore) LoadAdapterProcessed(adapter string) (map[string]bool, error) {
+	rows, err := s.db.Query(`SELECT issue_id FROM adapter_processed WHERE adapter = ?`, adapter)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	processed := make(map[string]bool)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		processed[id] = true
+	}
+	return processed, nil
+}
+
+// PurgeOldAdapterProcessed removes processed records older than the given duration for a specific adapter.
+func (s *StateStore) PurgeOldAdapterProcessed(adapter string, olderThan time.Duration) (int64, error) {
+	cutoff := time.Now().Add(-olderThan)
+	result, err := s.db.Exec(`DELETE FROM adapter_processed WHERE adapter = ? AND processed_at < ?`, adapter, cutoff)
 	if err != nil {
 		return 0, err
 	}

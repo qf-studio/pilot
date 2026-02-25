@@ -1261,3 +1261,120 @@ func TestStateStore_PurgeOldPlaneProcessedIssues(t *testing.T) {
 		t.Errorf("expected 0 after purge, got %d", len(all))
 	}
 }
+
+// --- GH-1838: Generic adapter_processed tests ---
+
+func TestStateStore_GenericAdapterProcessed(t *testing.T) {
+	store := newTestStateStore(t)
+
+	// Mark processed
+	if err := store.MarkAdapterProcessed("jira", "PROJ-1", "success"); err != nil {
+		t.Fatalf("MarkAdapterProcessed failed: %v", err)
+	}
+	if err := store.MarkAdapterProcessed("jira", "PROJ-2", "failed"); err != nil {
+		t.Fatalf("MarkAdapterProcessed failed: %v", err)
+	}
+	if err := store.MarkAdapterProcessed("linear", "LIN-ABC", "success"); err != nil {
+		t.Fatalf("MarkAdapterProcessed failed: %v", err)
+	}
+
+	// Check processed
+	ok, err := store.IsAdapterProcessed("jira", "PROJ-1")
+	if err != nil {
+		t.Fatalf("IsAdapterProcessed failed: %v", err)
+	}
+	if !ok {
+		t.Error("PROJ-1 should be processed for jira")
+	}
+
+	ok, err = store.IsAdapterProcessed("jira", "PROJ-999")
+	if err != nil {
+		t.Fatalf("IsAdapterProcessed failed: %v", err)
+	}
+	if ok {
+		t.Error("PROJ-999 should not be processed for jira")
+	}
+
+	// Same issue ID different adapter should not conflict
+	ok, err = store.IsAdapterProcessed("linear", "PROJ-1")
+	if err != nil {
+		t.Fatalf("IsAdapterProcessed failed: %v", err)
+	}
+	if ok {
+		t.Error("PROJ-1 should not be processed for linear adapter")
+	}
+
+	// Load all for adapter
+	jiraProcessed, err := store.LoadAdapterProcessed("jira")
+	if err != nil {
+		t.Fatalf("LoadAdapterProcessed failed: %v", err)
+	}
+	if len(jiraProcessed) != 2 {
+		t.Errorf("jira processed count = %d, want 2", len(jiraProcessed))
+	}
+	if !jiraProcessed["PROJ-1"] || !jiraProcessed["PROJ-2"] {
+		t.Error("jira processed map missing expected keys")
+	}
+
+	linearProcessed, err := store.LoadAdapterProcessed("linear")
+	if err != nil {
+		t.Fatalf("LoadAdapterProcessed failed: %v", err)
+	}
+	if len(linearProcessed) != 1 {
+		t.Errorf("linear processed count = %d, want 1", len(linearProcessed))
+	}
+
+	// Unmark
+	if err := store.UnmarkAdapterProcessed("jira", "PROJ-1"); err != nil {
+		t.Fatalf("UnmarkAdapterProcessed failed: %v", err)
+	}
+	ok, _ = store.IsAdapterProcessed("jira", "PROJ-1")
+	if ok {
+		t.Error("PROJ-1 should be unmarked after UnmarkAdapterProcessed")
+	}
+}
+
+func TestStateStore_GenericAdapterProcessed_Upsert(t *testing.T) {
+	store := newTestStateStore(t)
+
+	// Mark, then re-mark with different result (upsert)
+	if err := store.MarkAdapterProcessed("github", "42", "pending"); err != nil {
+		t.Fatalf("MarkAdapterProcessed failed: %v", err)
+	}
+	if err := store.MarkAdapterProcessed("github", "42", "success"); err != nil {
+		t.Fatalf("MarkAdapterProcessed (upsert) failed: %v", err)
+	}
+
+	// Should still be one entry
+	all, err := store.LoadAdapterProcessed("github")
+	if err != nil {
+		t.Fatalf("LoadAdapterProcessed failed: %v", err)
+	}
+	if len(all) != 1 {
+		t.Errorf("expected 1 entry after upsert, got %d", len(all))
+	}
+}
+
+func TestStateStore_PurgeOldAdapterProcessed(t *testing.T) {
+	store := newTestStateStore(t)
+
+	for _, id := range []string{"A", "B", "C"} {
+		if err := store.MarkAdapterProcessed("test", id, "ok"); err != nil {
+			t.Fatalf("MarkAdapterProcessed failed: %v", err)
+		}
+	}
+
+	// Purge with 0 duration (all should be purged)
+	purged, err := store.PurgeOldAdapterProcessed("test", 0)
+	if err != nil {
+		t.Fatalf("PurgeOldAdapterProcessed failed: %v", err)
+	}
+	if purged != 3 {
+		t.Errorf("purged = %d, want 3", purged)
+	}
+
+	remaining, _ := store.LoadAdapterProcessed("test")
+	if len(remaining) != 0 {
+		t.Errorf("expected 0 after purge, got %d", len(remaining))
+	}
+}

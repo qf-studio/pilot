@@ -18,6 +18,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 
+	"github.com/alekspetrov/pilot/internal/adapters"
 	"github.com/alekspetrov/pilot/internal/adapters/asana"
 	"github.com/alekspetrov/pilot/internal/adapters/azuredevops"
 	"github.com/alekspetrov/pilot/internal/adapters/github"
@@ -860,45 +861,35 @@ Examples:
 				}
 			}
 
-			// Enable Jira polling in gateway mode if configured (GH-905)
+			// GH-1838: Jira adapter via common adapter interface + registry
 			if cfg.Adapters.Jira != nil && cfg.Adapters.Jira.Enabled &&
 				cfg.Adapters.Jira.Polling != nil && cfg.Adapters.Jira.Polling.Enabled {
 
-				// Determine interval
-				interval := 30 * time.Second
-				if cfg.Adapters.Jira.Polling.Interval > 0 {
-					interval = cfg.Adapters.Jira.Polling.Interval
-				}
+				jiraAdapter := jira.NewAdapter(cfg.Adapters.Jira)
+				adapters.Register(jiraAdapter)
 
-				jiraClient := jira.NewClient(
-					cfg.Adapters.Jira.BaseURL,
-					cfg.Adapters.Jira.Username,
-					cfg.Adapters.Jira.APIToken,
-					cfg.Adapters.Jira.Platform,
-				)
-				// GH-1701: Wire processed store for dedup persistence across restarts
-				jiraPollerOpts := []jira.PollerOption{
-					jira.WithOnJiraIssue(func(issueCtx context.Context, issue *jira.Issue) (*jira.IssueResult, error) {
-						result, err := handleJiraIssueWithResult(issueCtx, cfg, jiraClient, issue, projectPath, gwDispatcher, gwRunner, gwMonitor, gwProgram, gwAlertsEngine, gwEnforcer)
-
-						// GH-1399: Wire PR to autopilot for CI monitoring + auto-merge
-						if result != nil && result.PRNumber > 0 && gwAutopilotController != nil {
-							// issueNumber=0 because Jira issues don't have GitHub issue numbers
-							gwAutopilotController.OnPRCreated(result.PRNumber, result.PRURL, 0, result.HeadSHA, result.BranchName)
-						}
-
-						return result, err
-					}),
+				pollerDeps := adapters.PollerDeps{
+					MaxConcurrent: cfg.Orchestrator.MaxConcurrent,
 				}
 				if gwAutopilotStateStore != nil {
-					jiraPollerOpts = append(jiraPollerOpts, jira.WithProcessedStore(gwAutopilotStateStore))
+					pollerDeps.ProcessedStore = gwAutopilotStateStore
 				}
-				jiraPoller := jira.NewPoller(jiraClient, cfg.Adapters.Jira, interval, jiraPollerOpts...)
+
+				jiraPoller := jiraAdapter.CreatePoller(pollerDeps, func(issueCtx context.Context, issue *jira.Issue) (*jira.IssueResult, error) {
+					result, err := handleJiraIssueWithResult(issueCtx, cfg, jiraAdapter.Client(), issue, projectPath, gwDispatcher, gwRunner, gwMonitor, gwProgram, gwAlertsEngine, gwEnforcer)
+
+					// GH-1399: Wire PR to autopilot for CI monitoring + auto-merge
+					if result != nil && result.PRNumber > 0 && gwAutopilotController != nil {
+						gwAutopilotController.OnPRCreated(result.PRNumber, result.PRURL, 0, result.HeadSHA, result.BranchName)
+					}
+
+					return result, err
+				})
 
 				logging.WithComponent("start").Info("Jira polling enabled in gateway mode",
 					slog.String("base_url", cfg.Adapters.Jira.BaseURL),
 					slog.String("project", cfg.Adapters.Jira.ProjectKey),
-					slog.Duration("interval", interval),
+					slog.String("adapter", jiraAdapter.Name()),
 				)
 				go func(p *jira.Poller) {
 					if err := p.Start(context.Background()); err != nil {
