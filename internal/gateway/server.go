@@ -220,6 +220,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/webhooks/jira", s.handleJiraWebhook)
 	mux.HandleFunc("/webhooks/asana", s.handleAsanaWebhook)
 	mux.HandleFunc("/webhooks/azuredevops", s.handleAzureDevOpsWebhook)
+	mux.HandleFunc("/webhooks/plane", s.handlePlaneWebhook)
 
 	// Register custom handlers
 	s.mu.RLock()
@@ -711,6 +712,47 @@ func (s *Server) handleAzureDevOpsWebhook(w http.ResponseWriter, r *http.Request
 
 	// Route to Azure DevOps adapter
 	s.router.HandleWebhook("azuredevops", payload)
+
+	w.WriteHeader(http.StatusOK)
+}
+
+// handlePlaneWebhook receives webhooks from Plane.so
+func (s *Server) handlePlaneWebhook(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Plane sends event metadata in headers
+	eventType := r.Header.Get("X-Plane-Event")
+	signature := r.Header.Get("X-Plane-Signature")
+	deliveryID := r.Header.Get("X-Plane-Delivery")
+
+	// Read raw body (needed for signature verification downstream)
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "Failed to read request body", http.StatusBadRequest)
+		return
+	}
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
+	}
+
+	// Add metadata to payload for handler
+	payload["_event_type"] = eventType
+	payload["_signature"] = signature
+	payload["_delivery_id"] = deliveryID
+	payload["_raw_body"] = string(body)
+
+	logging.WithComponent("gateway").Info("Received Plane webhook",
+		slog.String("event_type", eventType),
+		slog.String("delivery_id", deliveryID))
+
+	// Route to Plane adapter
+	s.router.HandleWebhook("plane", payload)
 
 	w.WriteHeader(http.StatusOK)
 }
