@@ -917,7 +917,7 @@ func TestApplyInputOverrides(t *testing.T) {
 				_ = cmd.Flags().Set(k, v)
 			}
 
-			applyInputOverrides(cfg, cmd, tt.telegram, tt.github, tt.linear, tt.slack, tt.tunnel, false)
+			applyInputOverrides(cfg, cmd, tt.telegram, tt.github, tt.linear, tt.slack, tt.tunnel, false, false)
 
 			if tt.checkTelegram != nil {
 				if cfg.Adapters.Telegram == nil {

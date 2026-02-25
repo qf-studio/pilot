@@ -12,6 +12,7 @@ import (
 
 	"github.com/alekspetrov/pilot/internal/adapters/asana"
 	"github.com/alekspetrov/pilot/internal/adapters/azuredevops"
+	"github.com/alekspetrov/pilot/internal/adapters/discord"
 	"github.com/alekspetrov/pilot/internal/adapters/github"
 	"github.com/alekspetrov/pilot/internal/adapters/gitlab"
 	"github.com/alekspetrov/pilot/internal/adapters/jira"
@@ -76,6 +77,7 @@ type AdaptersConfig struct {
 	Jira        *jira.Config        `yaml:"jira"`
 	Asana       *asana.Config       `yaml:"asana"`
 	Plane       *plane.Config       `yaml:"plane"`
+	Discord     *discord.Config     `yaml:"discord"`
 }
 
 // OrchestratorConfig holds settings for the task orchestrator including
@@ -273,6 +275,7 @@ func DefaultConfig() *Config {
 			Jira:        jira.DefaultConfig(),
 			Asana:       asana.DefaultConfig(),
 			Plane:       plane.DefaultConfig(),
+			Discord:     discord.DefaultConfig(),
 		},
 		Orchestrator: &OrchestratorConfig{
 			Model:         "claude-sonnet-4-6",

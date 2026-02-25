@@ -47,6 +47,7 @@ func adapterPollerRegistrations() []PollerRegistration {
 		asanaPollerRegistration(),
 		azuredevopsPollerRegistration(),
 		planePollerRegistration(),
+		discordPollerRegistration(),
 	}
 }
 

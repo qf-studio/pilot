@@ -4,16 +4,18 @@ import "time"
 
 // Config holds Discord adapter configuration.
 type Config struct {
-	BotToken        string
-	AllowedGuilds   []string      // Guild IDs allowed to send tasks
-	AllowedChannels []string      // Channel IDs allowed to send tasks
-	RateLimit       *RateLimitConfig
+	Enabled         bool              `yaml:"enabled"`
+	BotToken        string            `yaml:"bot_token"`
+	AllowedGuilds   []string          `yaml:"allowed_guilds"`   // Guild IDs allowed to send tasks
+	AllowedChannels []string          `yaml:"allowed_channels"` // Channel IDs allowed to send tasks
+	CommandPrefix   string            `yaml:"command_prefix"`
+	RateLimit       *RateLimitConfig  `yaml:"rate_limit"`
 }
 
 // RateLimitConfig holds rate limiting configuration.
 type RateLimitConfig struct {
-	MessagesPerSecond int
-	TasksPerMinute    int
+	MessagesPerSecond int `yaml:"messages_per_second"`
+	TasksPerMinute    int `yaml:"tasks_per_minute"`
 }
 
 // DefaultConfig returns a Config with sensible defaults.

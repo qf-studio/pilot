@@ -109,6 +109,14 @@ adapters:
       enabled: true
       interval: 30s
 
+  # Discord - Chat-based task execution via Discord bot
+  discord:
+    enabled: false
+    bot_token: "${DISCORD_BOT_TOKEN}"
+    allowed_guilds: []       # Guild IDs (empty = all)
+    allowed_channels: []     # Channel IDs (empty = all)
+    command_prefix: "/"
+
   # Slack - Notifications
   slack:
     enabled: false
