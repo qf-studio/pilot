@@ -78,6 +78,7 @@ type WorkItem struct {
 	Priority    Priority  `json:"priority"`
 	LabelIDs    []string  `json:"labels"`
 	AssigneeIDs []string  `json:"assignees"`
+	ProjectID   string    `json:"project"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
 }

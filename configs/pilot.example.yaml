@@ -95,6 +95,20 @@ adapters:
     pilot_label: "pilot"    # Issues with this label are picked up
     auto_assign: true        # Auto-assign issues to Pilot
 
+  # Plane.so - Open-source project planning (cloud or self-hosted)
+  plane:
+    enabled: false
+    base_url: "https://api.plane.so"   # Or self-hosted URL e.g. "https://plane.mycompany.com"
+    api_key: "${PLANE_API_KEY}"
+    webhook_secret: "${PLANE_WEBHOOK_SECRET}"
+    workspace_slug: "my-team"          # Your Plane workspace slug
+    project_ids:                       # Projects to poll for pilot-labeled issues
+      - "project-uuid-1"
+    pilot_label: "pilot"               # Issues with this label are picked up
+    polling:
+      enabled: true
+      interval: 30s
+
   # Slack - Notifications
   slack:
     enabled: false

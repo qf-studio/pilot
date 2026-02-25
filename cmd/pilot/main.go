@@ -23,6 +23,7 @@ import (
 	"github.com/alekspetrov/pilot/internal/adapters/github"
 	"github.com/alekspetrov/pilot/internal/adapters/jira"
 	"github.com/alekspetrov/pilot/internal/adapters/linear"
+	"github.com/alekspetrov/pilot/internal/adapters/plane"
 	"github.com/alekspetrov/pilot/internal/adapters/slack"
 	"github.com/alekspetrov/pilot/internal/adapters/telegram"
 	"github.com/alekspetrov/pilot/internal/alerts"
@@ -118,6 +119,7 @@ func newStartCmd() *cobra.Command {
 		enableGithub   bool
 		enableLinear   bool
 		enableSlack    bool
+		enablePlane    bool
 		// Mode flags
 		noGateway    bool   // Lightweight mode: polling only, no HTTP gateway
 		sequential   bool   // Sequential execution mode (one issue at a time)
@@ -157,7 +159,7 @@ Examples:
 			}
 
 			// Apply flag overrides to config
-			applyInputOverrides(cfg, cmd, enableTelegram, enableGithub, enableLinear, enableSlack, enableTunnel)
+			applyInputOverrides(cfg, cmd, enableTelegram, enableGithub, enableLinear, enableSlack, enableTunnel, enablePlane)
 
 			// Apply team ID override if flag provided
 			if teamID != "" {
@@ -1003,6 +1005,55 @@ Examples:
 				go adoPoller.Start(context.Background())
 			}
 
+			// Enable Plane.so polling in gateway mode if configured (GH-1833)
+			if cfg.Adapters.Plane != nil && cfg.Adapters.Plane.Enabled &&
+				cfg.Adapters.Plane.Polling != nil && cfg.Adapters.Plane.Polling.Enabled {
+
+				// Determine interval
+				interval := 30 * time.Second
+				if cfg.Adapters.Plane.Polling.Interval > 0 {
+					interval = cfg.Adapters.Plane.Polling.Interval
+				}
+
+				planeClient := plane.NewClient(
+					cfg.Adapters.Plane.BaseURL,
+					cfg.Adapters.Plane.APIKey,
+				)
+
+				planePollerOpts := []plane.PollerOption{
+					plane.WithOnIssue(func(issueCtx context.Context, issue *plane.WorkItem) (*plane.IssueResult, error) {
+						result, err := handlePlaneIssueWithResult(issueCtx, cfg, planeClient, issue, projectPath, gwDispatcher, gwRunner, gwMonitor, gwProgram, gwAlertsEngine, gwEnforcer)
+
+						// Wire PR to autopilot for CI monitoring + auto-merge
+						if result != nil && result.PRNumber > 0 && gwAutopilotController != nil {
+							gwAutopilotController.OnPRCreated(result.PRNumber, result.PRURL, 0, result.HeadSHA, result.BranchName)
+						}
+
+						return result, err
+					}),
+				}
+				if gwAutopilotStateStore != nil {
+					planePollerOpts = append(planePollerOpts, plane.WithProcessedStore(gwAutopilotStateStore))
+				}
+				if cfg.Orchestrator.MaxConcurrent > 0 {
+					planePollerOpts = append(planePollerOpts, plane.WithMaxConcurrent(cfg.Orchestrator.MaxConcurrent))
+				}
+				planePoller := plane.NewPoller(planeClient, cfg.Adapters.Plane, interval, planePollerOpts...)
+
+				logging.WithComponent("start").Info("Plane.so polling enabled in gateway mode",
+					slog.String("workspace", cfg.Adapters.Plane.WorkspaceSlug),
+					slog.Int("projects", len(cfg.Adapters.Plane.ProjectIDs)),
+					slog.Duration("interval", interval),
+				)
+				go func(p *plane.Poller) {
+					if err := p.Start(context.Background()); err != nil {
+						logging.WithComponent("plane").Error("Plane poller failed",
+							slog.Any("error", err),
+						)
+					}
+				}(planePoller)
+			}
+
 			// Wire teams service if --team flag provided (GH-633)
 			var teamsDB *sql.DB
 			if cfg.TeamID != "" {
@@ -1168,6 +1219,7 @@ Examples:
 	cmd.Flags().BoolVar(&enableGithub, "github", false, "Enable GitHub polling (overrides config)")
 	cmd.Flags().BoolVar(&enableLinear, "linear", false, "Enable Linear webhooks (overrides config)")
 	cmd.Flags().BoolVar(&enableSlack, "slack", false, "Enable Slack Socket Mode (overrides config)")
+	cmd.Flags().BoolVar(&enablePlane, "plane", false, "Enable Plane.so polling (overrides config)")
 	cmd.Flags().BoolVar(&enableTunnel, "tunnel", false, "Enable public tunnel for webhook ingress (Cloudflare/ngrok)")
 	cmd.Flags().StringVar(&teamID, "team", "", "Team ID or name for project access scoping (overrides config)")
 	cmd.Flags().StringVar(&teamMember, "team-member", "", "Member email for team access scoping (overrides config)")
@@ -1178,7 +1230,7 @@ Examples:
 
 // applyInputOverrides applies CLI flag overrides to config
 // Uses cmd.Flags().Changed() to only apply flags that were explicitly set
-func applyInputOverrides(cfg *config.Config, cmd *cobra.Command, telegramFlag, githubFlag, linearFlag, slackFlag, tunnelFlag bool) {
+func applyInputOverrides(cfg *config.Config, cmd *cobra.Command, telegramFlag, githubFlag, linearFlag, slackFlag, tunnelFlag, planeFlag bool) {
 	if cmd.Flags().Changed("telegram") {
 		if cfg.Adapters.Telegram == nil {
 			cfg.Adapters.Telegram = telegram.DefaultConfig()
@@ -1214,6 +1266,16 @@ func applyInputOverrides(cfg *config.Config, cmd *cobra.Command, telegramFlag, g
 			cfg.Tunnel = tunnel.DefaultConfig()
 		}
 		cfg.Tunnel.Enabled = tunnelFlag
+	}
+	if cmd.Flags().Changed("plane") {
+		if cfg.Adapters.Plane == nil {
+			cfg.Adapters.Plane = plane.DefaultConfig()
+		}
+		cfg.Adapters.Plane.Enabled = planeFlag
+		if cfg.Adapters.Plane.Polling == nil {
+			cfg.Adapters.Plane.Polling = &plane.PollingConfig{}
+		}
+		cfg.Adapters.Plane.Polling.Enabled = planeFlag
 	}
 }
 
