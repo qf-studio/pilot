@@ -103,6 +103,12 @@ func (s *StateStore) migrate() error {
 			processed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			result TEXT DEFAULT ''
 		)`,
+		// GH-1829: Plane.so processed issues table (uses string IDs)
+		`CREATE TABLE IF NOT EXISTS plane_processed (
+			issue_id TEXT PRIMARY KEY,
+			processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			result TEXT DEFAULT ''
+		)`,
 	}
 
 	for _, m := range migrations {
@@ -560,6 +566,65 @@ func (s *StateStore) LoadAzureDevOpsProcessedWorkItems() (map[int]bool, error) {
 func (s *StateStore) PurgeOldAzureDevOpsProcessedWorkItems(olderThan time.Duration) (int64, error) {
 	cutoff := time.Now().Add(-olderThan)
 	result, err := s.db.Exec(`DELETE FROM azuredevops_processed WHERE processed_at < ?`, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+// MarkPlaneIssueProcessed records that a Plane.so issue has been processed.
+// Plane uses string IDs.
+func (s *StateStore) MarkPlaneIssueProcessed(issueID string, result string) error {
+	_, err := s.db.Exec(`
+		INSERT INTO plane_processed (issue_id, processed_at, result)
+		VALUES (?, CURRENT_TIMESTAMP, ?)
+		ON CONFLICT(issue_id) DO UPDATE SET
+			processed_at = CURRENT_TIMESTAMP,
+			result = excluded.result
+	`, issueID, result)
+	return err
+}
+
+// UnmarkPlaneIssueProcessed removes a Plane.so issue from the processed table.
+// Used when pilot-failed label is removed to allow retry.
+func (s *StateStore) UnmarkPlaneIssueProcessed(issueID string) error {
+	_, err := s.db.Exec(`DELETE FROM plane_processed WHERE issue_id = ?`, issueID)
+	return err
+}
+
+// IsPlaneIssueProcessed checks if a Plane.so issue has been previously processed.
+func (s *StateStore) IsPlaneIssueProcessed(issueID string) (bool, error) {
+	var count int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM plane_processed WHERE issue_id = ?`, issueID).Scan(&count)
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+// LoadPlaneProcessedIssues returns a map of all processed Plane.so issue IDs.
+func (s *StateStore) LoadPlaneProcessedIssues() (map[string]bool, error) {
+	rows, err := s.db.Query(`SELECT issue_id FROM plane_processed`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	processed := make(map[string]bool)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		processed[id] = true
+	}
+	return processed, nil
+}
+
+// PurgeOldPlaneProcessedIssues removes Plane processed issue records older than the given duration.
+func (s *StateStore) PurgeOldPlaneProcessedIssues(olderThan time.Duration) (int64, error) {
+	cutoff := time.Now().Add(-olderThan)
+	result, err := s.db.Exec(`DELETE FROM plane_processed WHERE processed_at < ?`, cutoff)
 	if err != nil {
 		return 0, err
 	}

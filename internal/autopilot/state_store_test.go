@@ -1163,4 +1163,101 @@ func TestStateStore_AllProcessedStoresIndependent(t *testing.T) {
 	if len(azureProcessed) != 1 || !azureProcessed[6000] {
 		t.Error("Azure DevOps work item 6000 should be processed")
 	}
+
+	// Plane
+	if err := store.MarkPlaneIssueProcessed("plane-issue-uuid-1", "success"); err != nil {
+		t.Fatalf("MarkPlaneIssueProcessed failed: %v", err)
+	}
+	planeProcessed, _ := store.LoadPlaneProcessedIssues()
+	if len(planeProcessed) != 1 || !planeProcessed["plane-issue-uuid-1"] {
+		t.Error("Plane issue plane-issue-uuid-1 should be processed")
+	}
+}
+
+// GH-1829: Test Plane.so processed issues (string IDs).
+func TestStateStore_PlaneProcessedIssues(t *testing.T) {
+	store := newTestStateStore(t)
+
+	// Initially not processed
+	processed, err := store.IsPlaneIssueProcessed("plane-uuid-123")
+	if err != nil {
+		t.Fatalf("IsPlaneIssueProcessed failed: %v", err)
+	}
+	if processed {
+		t.Error("issue should not be processed initially")
+	}
+
+	// Mark as processed
+	if err := store.MarkPlaneIssueProcessed("plane-uuid-123", "success"); err != nil {
+		t.Fatalf("MarkPlaneIssueProcessed failed: %v", err)
+	}
+
+	processed, err = store.IsPlaneIssueProcessed("plane-uuid-123")
+	if err != nil {
+		t.Fatalf("IsPlaneIssueProcessed failed: %v", err)
+	}
+	if !processed {
+		t.Error("issue should be processed after marking")
+	}
+
+	// Load all
+	all, err := store.LoadPlaneProcessedIssues()
+	if err != nil {
+		t.Fatalf("LoadPlaneProcessedIssues failed: %v", err)
+	}
+	if len(all) != 1 || !all["plane-uuid-123"] {
+		t.Errorf("LoadPlaneProcessedIssues = %v, want {plane-uuid-123: true}", all)
+	}
+
+	// Idempotent mark (update result)
+	if err := store.MarkPlaneIssueProcessed("plane-uuid-123", "failed"); err != nil {
+		t.Fatalf("idempotent MarkPlaneIssueProcessed failed: %v", err)
+	}
+	all, _ = store.LoadPlaneProcessedIssues()
+	if len(all) != 1 {
+		t.Errorf("expected 1 processed issue after idempotent mark, got %d", len(all))
+	}
+
+	// Unmark
+	if err := store.UnmarkPlaneIssueProcessed("plane-uuid-123"); err != nil {
+		t.Fatalf("UnmarkPlaneIssueProcessed failed: %v", err)
+	}
+	processed, err = store.IsPlaneIssueProcessed("plane-uuid-123")
+	if err != nil {
+		t.Fatalf("IsPlaneIssueProcessed after unmark failed: %v", err)
+	}
+	if processed {
+		t.Error("issue should not be processed after unmarking")
+	}
+
+	// Unmark non-existent issue should not error
+	if err := store.UnmarkPlaneIssueProcessed("nonexist-uuid"); err != nil {
+		t.Fatalf("UnmarkPlaneIssueProcessed for non-existent issue failed: %v", err)
+	}
+}
+
+// GH-1829: Test Plane.so processed issues purge.
+func TestStateStore_PurgeOldPlaneProcessedIssues(t *testing.T) {
+	store := newTestStateStore(t)
+
+	ids := []string{"plane-uuid-1", "plane-uuid-2", "plane-uuid-3"}
+	for _, id := range ids {
+		if err := store.MarkPlaneIssueProcessed(id, "success"); err != nil {
+			t.Fatalf("MarkPlaneIssueProcessed(%s) failed: %v", id, err)
+		}
+	}
+
+	// Purge older than 0 (all should be purged)
+	purged, err := store.PurgeOldPlaneProcessedIssues(0)
+	if err != nil {
+		t.Fatalf("PurgeOldPlaneProcessedIssues failed: %v", err)
+	}
+	if purged != 3 {
+		t.Errorf("purged = %d, want 3", purged)
+	}
+
+	all, _ := store.LoadPlaneProcessedIssues()
+	if len(all) != 0 {
+		t.Errorf("expected 0 after purge, got %d", len(all))
+	}
 }
