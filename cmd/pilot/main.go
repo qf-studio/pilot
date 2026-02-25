@@ -18,11 +18,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 
-	"github.com/alekspetrov/pilot/internal/adapters"
-	"github.com/alekspetrov/pilot/internal/adapters/asana"
-	"github.com/alekspetrov/pilot/internal/adapters/azuredevops"
 	"github.com/alekspetrov/pilot/internal/adapters/github"
-	"github.com/alekspetrov/pilot/internal/adapters/jira"
 	"github.com/alekspetrov/pilot/internal/adapters/linear"
 	"github.com/alekspetrov/pilot/internal/adapters/plane"
 	"github.com/alekspetrov/pilot/internal/adapters/slack"
@@ -805,245 +801,20 @@ Examples:
 				}
 			}
 
-			// Enable Linear polling in gateway mode if configured (GH-393)
-			if cfg.Adapters.Linear != nil && cfg.Adapters.Linear.Enabled &&
-				cfg.Adapters.Linear.Polling != nil && cfg.Adapters.Linear.Polling.Enabled {
-
-				workspaces := cfg.Adapters.Linear.GetWorkspaces()
-				for _, ws := range workspaces {
-					// Determine interval: workspace override > global > default
-					interval := 30 * time.Second
-					if ws.Polling != nil && ws.Polling.Interval > 0 {
-						interval = ws.Polling.Interval
-					} else if cfg.Adapters.Linear.Polling.Interval > 0 {
-						interval = cfg.Adapters.Linear.Polling.Interval
-					}
-
-					// Check if workspace polling is explicitly disabled
-					if ws.Polling != nil && !ws.Polling.Enabled {
-						continue
-					}
-
-					linearClient := linear.NewClient(ws.APIKey)
-
-					// Build poller options
-					gwLinearPollerOpts := []linear.PollerOption{
-						linear.WithOnLinearIssue(func(issueCtx context.Context, issue *linear.Issue) (*linear.IssueResult, error) {
-							return handleLinearIssueWithResult(issueCtx, cfg, linearClient, issue, projectPath, gwDispatcher, gwRunner, gwMonitor, gwProgram, gwAlertsEngine, gwEnforcer)
-						}),
-					}
-
-					// GH-1700: Wire OnPRCreated callback to autopilot controller
-					if gwAutopilotController != nil {
-						gwLinearPollerOpts = append(gwLinearPollerOpts, linear.WithOnPRCreated(gwAutopilotController.OnPRCreated))
-					}
-
-					// GH-1351: Wire processed issue persistence to prevent re-dispatch after hot upgrade
-					if gwAutopilotStateStore != nil {
-						gwLinearPollerOpts = append(gwLinearPollerOpts, linear.WithProcessedStore(gwAutopilotStateStore))
-					}
-
-					linearPoller := linear.NewPoller(linearClient, ws, interval, gwLinearPollerOpts...)
-
-					logging.WithComponent("start").Info("Linear polling enabled in gateway mode",
-						slog.String("workspace", ws.Name),
-						slog.String("team", ws.TeamID),
-						slog.Duration("interval", interval),
-					)
-					go func(p *linear.Poller, name string) {
-						if err := p.Start(context.Background()); err != nil {
-							logging.WithComponent("linear").Error("Linear poller failed",
-								slog.String("workspace", name),
-								slog.Any("error", err),
-							)
-						}
-					}(linearPoller, ws.Name)
-				}
+			// GH-1847: Start adapter pollers via registry pattern (gateway mode)
+			gwPollerDeps := &PollerDeps{
+				Cfg:                 cfg,
+				ProjectPath:         projectPath,
+				Dispatcher:          gwDispatcher,
+				Runner:              gwRunner,
+				Monitor:             gwMonitor,
+				Program:             gwProgram,
+				AlertsEngine:        gwAlertsEngine,
+				Enforcer:            gwEnforcer,
+				AutopilotController: gwAutopilotController,
+				AutopilotStateStore: gwAutopilotStateStore,
 			}
-
-			// GH-1838: Jira adapter via common adapter interface + registry
-			if cfg.Adapters.Jira != nil && cfg.Adapters.Jira.Enabled &&
-				cfg.Adapters.Jira.Polling != nil && cfg.Adapters.Jira.Polling.Enabled {
-
-				jiraAdapter := jira.NewAdapter(cfg.Adapters.Jira)
-				adapters.Register(jiraAdapter)
-
-				pollerDeps := adapters.PollerDeps{
-					MaxConcurrent: cfg.Orchestrator.MaxConcurrent,
-				}
-				if gwAutopilotStateStore != nil {
-					pollerDeps.ProcessedStore = gwAutopilotStateStore
-				}
-
-				jiraPoller := jiraAdapter.CreatePoller(pollerDeps, func(issueCtx context.Context, issue *jira.Issue) (*jira.IssueResult, error) {
-					result, err := handleJiraIssueWithResult(issueCtx, cfg, jiraAdapter.Client(), issue, projectPath, gwDispatcher, gwRunner, gwMonitor, gwProgram, gwAlertsEngine, gwEnforcer)
-
-					// GH-1399: Wire PR to autopilot for CI monitoring + auto-merge
-					if result != nil && result.PRNumber > 0 && gwAutopilotController != nil {
-						gwAutopilotController.OnPRCreated(result.PRNumber, result.PRURL, 0, result.HeadSHA, result.BranchName)
-					}
-
-					return result, err
-				})
-
-				logging.WithComponent("start").Info("Jira polling enabled in gateway mode",
-					slog.String("base_url", cfg.Adapters.Jira.BaseURL),
-					slog.String("project", cfg.Adapters.Jira.ProjectKey),
-					slog.String("adapter", jiraAdapter.Name()),
-				)
-				go func(p *jira.Poller) {
-					if err := p.Start(context.Background()); err != nil {
-						logging.WithComponent("jira").Error("Jira poller failed",
-							slog.Any("error", err),
-						)
-					}
-				}(jiraPoller)
-			}
-
-			// Enable Asana polling in gateway mode if configured (GH-906)
-			if cfg.Adapters.Asana != nil && cfg.Adapters.Asana.Enabled &&
-				cfg.Adapters.Asana.Polling != nil && cfg.Adapters.Asana.Polling.Enabled {
-
-				// Determine interval
-				interval := 30 * time.Second
-				if cfg.Adapters.Asana.Polling.Interval > 0 {
-					interval = cfg.Adapters.Asana.Polling.Interval
-				}
-
-				asanaClient := asana.NewClient(
-					cfg.Adapters.Asana.AccessToken,
-					cfg.Adapters.Asana.WorkspaceID,
-				)
-				// GH-1701: Wire processed store for dedup persistence across restarts
-				asanaPollerOpts := []asana.PollerOption{
-					asana.WithOnAsanaTask(func(taskCtx context.Context, task *asana.Task) (*asana.TaskResult, error) {
-						result, err := handleAsanaTaskWithResult(taskCtx, cfg, asanaClient, task, projectPath, gwDispatcher, gwRunner, gwMonitor, gwProgram, gwAlertsEngine, gwEnforcer)
-
-						// GH-1399: Wire PR to autopilot for CI monitoring + auto-merge
-						if result != nil && result.PRNumber > 0 && gwAutopilotController != nil {
-							// issueNumber=0 because Asana tasks don't have GitHub issue numbers
-							gwAutopilotController.OnPRCreated(result.PRNumber, result.PRURL, 0, result.HeadSHA, result.BranchName)
-						}
-
-						return result, err
-					}),
-				}
-				if gwAutopilotStateStore != nil {
-					asanaPollerOpts = append(asanaPollerOpts, asana.WithProcessedStore(gwAutopilotStateStore))
-				}
-				asanaPoller := asana.NewPoller(asanaClient, cfg.Adapters.Asana, interval, asanaPollerOpts...)
-
-				logging.WithComponent("start").Info("Asana polling enabled in gateway mode",
-					slog.String("workspace", cfg.Adapters.Asana.WorkspaceID),
-					slog.String("tag", cfg.Adapters.Asana.PilotTag),
-					slog.Duration("interval", interval),
-				)
-				go func(p *asana.Poller) {
-					if err := p.Start(context.Background()); err != nil {
-						logging.WithComponent("asana").Error("Asana poller failed",
-							slog.Any("error", err),
-						)
-					}
-				}(asanaPoller)
-			}
-
-			// Enable Azure DevOps polling in gateway mode if configured (GH-1699)
-			if cfg.Adapters.AzureDevOps != nil && cfg.Adapters.AzureDevOps.Enabled &&
-				cfg.Adapters.AzureDevOps.Polling != nil && cfg.Adapters.AzureDevOps.Polling.Enabled {
-
-				// Determine interval
-				interval := 30 * time.Second
-				if cfg.Adapters.AzureDevOps.Polling.Interval > 0 {
-					interval = cfg.Adapters.AzureDevOps.Polling.Interval
-				}
-
-				adoClient := azuredevops.NewClientWithConfig(cfg.Adapters.AzureDevOps)
-
-				adoPollerOpts := []azuredevops.PollerOption{
-					azuredevops.WithOnWorkItem(func(wiCtx context.Context, wi *azuredevops.WorkItem) error {
-						logging.WithComponent("azuredevops").Info("Work item picked up",
-							slog.Int("id", wi.ID),
-							slog.String("title", wi.GetTitle()),
-						)
-						return nil
-					}),
-				}
-
-				// Wire autopilot OnPRCreated callback
-				if gwAutopilotController != nil {
-					adoPollerOpts = append(adoPollerOpts, azuredevops.WithOnPRCreated(func(prID int, prURL string, workItemID int, headSHA string, branchName string) {
-						gwAutopilotController.OnPRCreated(prID, prURL, 0, headSHA, branchName)
-					}))
-				}
-
-				// Wire processed store for persistence
-				if gwAutopilotStateStore != nil {
-					adoPollerOpts = append(adoPollerOpts, azuredevops.WithProcessedStore(gwAutopilotStateStore))
-				}
-
-				pilotTag := cfg.Adapters.AzureDevOps.PilotTag
-				if pilotTag == "" {
-					pilotTag = "pilot"
-				}
-
-				adoPoller := azuredevops.NewPoller(adoClient, pilotTag, interval, adoPollerOpts...)
-
-				logging.WithComponent("start").Info("Azure DevOps polling enabled in gateway mode",
-					slog.String("organization", cfg.Adapters.AzureDevOps.Organization),
-					slog.String("project", cfg.Adapters.AzureDevOps.Project),
-					slog.Duration("interval", interval),
-				)
-				go adoPoller.Start(context.Background())
-			}
-
-			// Enable Plane.so polling in gateway mode if configured (GH-1833)
-			if cfg.Adapters.Plane != nil && cfg.Adapters.Plane.Enabled &&
-				cfg.Adapters.Plane.Polling != nil && cfg.Adapters.Plane.Polling.Enabled {
-
-				// Determine interval
-				interval := 30 * time.Second
-				if cfg.Adapters.Plane.Polling.Interval > 0 {
-					interval = cfg.Adapters.Plane.Polling.Interval
-				}
-
-				planeClient := plane.NewClient(
-					cfg.Adapters.Plane.BaseURL,
-					cfg.Adapters.Plane.APIKey,
-				)
-
-				planePollerOpts := []plane.PollerOption{
-					plane.WithOnIssue(func(issueCtx context.Context, issue *plane.WorkItem) (*plane.IssueResult, error) {
-						result, err := handlePlaneIssueWithResult(issueCtx, cfg, planeClient, issue, projectPath, gwDispatcher, gwRunner, gwMonitor, gwProgram, gwAlertsEngine, gwEnforcer)
-
-						// Wire PR to autopilot for CI monitoring + auto-merge
-						if result != nil && result.PRNumber > 0 && gwAutopilotController != nil {
-							gwAutopilotController.OnPRCreated(result.PRNumber, result.PRURL, 0, result.HeadSHA, result.BranchName)
-						}
-
-						return result, err
-					}),
-				}
-				if gwAutopilotStateStore != nil {
-					planePollerOpts = append(planePollerOpts, plane.WithProcessedStore(gwAutopilotStateStore))
-				}
-				if cfg.Orchestrator.MaxConcurrent > 0 {
-					planePollerOpts = append(planePollerOpts, plane.WithMaxConcurrent(cfg.Orchestrator.MaxConcurrent))
-				}
-				planePoller := plane.NewPoller(planeClient, cfg.Adapters.Plane, interval, planePollerOpts...)
-
-				logging.WithComponent("start").Info("Plane.so polling enabled in gateway mode",
-					slog.String("workspace", cfg.Adapters.Plane.WorkspaceSlug),
-					slog.Int("projects", len(cfg.Adapters.Plane.ProjectIDs)),
-					slog.Duration("interval", interval),
-				)
-				go func(p *plane.Poller) {
-					if err := p.Start(context.Background()); err != nil {
-						logging.WithComponent("plane").Error("Plane poller failed",
-							slog.Any("error", err),
-						)
-					}
-				}(planePoller)
-			}
+			StartAdapterPollers(context.Background(), gwPollerDeps, adapterPollerRegistrations())
 
 			// Wire teams service if --team flag provided (GH-633)
 			var teamsDB *sql.DB
@@ -2143,135 +1914,21 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 		}
 	}
 
-	// Start Linear polling if enabled (GH-393)
-	if cfg.Adapters.Linear != nil && cfg.Adapters.Linear.Enabled &&
-		cfg.Adapters.Linear.Polling != nil && cfg.Adapters.Linear.Polling.Enabled {
-
-		workspaces := cfg.Adapters.Linear.GetWorkspaces()
-		for _, ws := range workspaces {
-			// Determine interval: workspace override > global > default
-			interval := 30 * time.Second
-			if ws.Polling != nil && ws.Polling.Interval > 0 {
-				interval = ws.Polling.Interval
-			} else if cfg.Adapters.Linear.Polling.Interval > 0 {
-				interval = cfg.Adapters.Linear.Polling.Interval
-			}
-
-			// Check if workspace polling is explicitly disabled
-			if ws.Polling != nil && !ws.Polling.Enabled {
-				continue
-			}
-
-			linearClient := linear.NewClient(ws.APIKey)
-			// Capture workspace config for per-issue project resolution (GH-1348)
-			wsConfig := ws
-
-			// Build poller options
-			linearPollerOpts := []linear.PollerOption{
-				linear.WithOnLinearIssue(func(issueCtx context.Context, issue *linear.Issue) (*linear.IssueResult, error) {
-					// GH-1348: Resolve project path per-issue using workspace→project mapping
-					issueProjectPath := projectPath // fallback to default
-					var resolvedProject *config.ProjectConfig
-
-					// GH-1684: Check project-level linear.project_id mapping first
-					if issue.Project != nil {
-						resolvedProject = cfg.GetProjectByLinearID(issue.Project.ID)
-					}
-
-					// Fall back to workspace-level resolution
-					if resolvedProject == nil {
-						pilotProject := wsConfig.ResolvePilotProject(issue)
-						if pilotProject != "" {
-							resolvedProject = cfg.GetProjectByName(pilotProject)
-						}
-					}
-
-					if resolvedProject != nil {
-						issueProjectPath = resolvedProject.Path
-					}
-
-					result, err := handleLinearIssueWithResult(issueCtx, cfg, linearClient, issue, issueProjectPath, dispatcher, runner, monitor, program, alertsEngine, enforcer)
-
-					// GH-1361: Wire PR to autopilot for CI monitoring + auto-merge
-					if result != nil && result.PRNumber > 0 {
-						if resolvedProject != nil && resolvedProject.GitHub != nil {
-							repoFullName := fmt.Sprintf("%s/%s", resolvedProject.GitHub.Owner, resolvedProject.GitHub.Repo)
-							if controller, ok := autopilotControllers[repoFullName]; ok && controller != nil {
-								// issueNumber=0 because Linear issues don't have GitHub issue numbers
-								controller.OnPRCreated(result.PRNumber, result.PRURL, 0, result.HeadSHA, result.BranchName)
-							}
-						}
-					}
-
-					return result, err
-				}),
-			}
-
-			// GH-1351: Wire processed issue persistence to prevent re-dispatch after hot upgrade
-			if autopilotStateStore != nil {
-				linearPollerOpts = append(linearPollerOpts, linear.WithProcessedStore(autopilotStateStore))
-			}
-
-			linearPoller := linear.NewPoller(linearClient, ws, interval, linearPollerOpts...)
-
-			if !dashboardMode {
-				fmt.Printf("📊 Linear polling enabled: %s/%s (every %s)\n", ws.Name, ws.TeamID, interval)
-			}
-			go func(p *linear.Poller, name string) {
-				if err := p.Start(ctx); err != nil {
-					logging.WithComponent("linear").Error("Linear poller failed",
-						slog.String("workspace", name),
-						slog.Any("error", err),
-					)
-				}
-			}(linearPoller, ws.Name)
-		}
+	// GH-1847: Start adapter pollers via registry pattern (polling mode)
+	pollingDeps := &PollerDeps{
+		Cfg:                  cfg,
+		ProjectPath:          projectPath,
+		Dispatcher:           dispatcher,
+		Runner:               runner,
+		Monitor:              monitor,
+		Program:              program,
+		AlertsEngine:         alertsEngine,
+		Enforcer:             enforcer,
+		AutopilotController:  autopilotController,
+		AutopilotStateStore:  autopilotStateStore,
+		AutopilotControllers: autopilotControllers,
 	}
-
-	// Start Asana polling if enabled (GH-906)
-	if cfg.Adapters.Asana != nil && cfg.Adapters.Asana.Enabled &&
-		cfg.Adapters.Asana.Polling != nil && cfg.Adapters.Asana.Polling.Enabled {
-
-		// Determine interval
-		interval := 30 * time.Second
-		if cfg.Adapters.Asana.Polling.Interval > 0 {
-			interval = cfg.Adapters.Asana.Polling.Interval
-		}
-
-		asanaClient := asana.NewClient(
-			cfg.Adapters.Asana.AccessToken,
-			cfg.Adapters.Asana.WorkspaceID,
-		)
-		// GH-1701: Wire processed store for dedup persistence across restarts
-		asanaPollerOpts := []asana.PollerOption{
-			asana.WithOnAsanaTask(func(taskCtx context.Context, task *asana.Task) (*asana.TaskResult, error) {
-				result, err := handleAsanaTaskWithResult(taskCtx, cfg, asanaClient, task, projectPath, dispatcher, runner, monitor, program, alertsEngine, enforcer)
-
-				// GH-1399: Wire PR to autopilot for CI monitoring + auto-merge
-				if result != nil && result.PRNumber > 0 && autopilotController != nil {
-					// issueNumber=0 because Asana tasks don't have GitHub issue numbers
-					autopilotController.OnPRCreated(result.PRNumber, result.PRURL, 0, result.HeadSHA, result.BranchName)
-				}
-
-				return result, err
-			}),
-		}
-		if autopilotStateStore != nil {
-			asanaPollerOpts = append(asanaPollerOpts, asana.WithProcessedStore(autopilotStateStore))
-		}
-		asanaPoller := asana.NewPoller(asanaClient, cfg.Adapters.Asana, interval, asanaPollerOpts...)
-
-		if !dashboardMode {
-			fmt.Printf("📦 Asana polling enabled: workspace %s (every %s)\n", cfg.Adapters.Asana.WorkspaceID, interval)
-		}
-		go func(p *asana.Poller) {
-			if err := p.Start(ctx); err != nil {
-				logging.WithComponent("asana").Error("Asana poller failed",
-					slog.Any("error", err),
-				)
-			}
-		}(asanaPoller)
-	}
+	StartAdapterPollers(ctx, pollingDeps, adapterPollerRegistrations())
 
 	// Start Telegram polling if enabled
 	if tgHandler != nil {
