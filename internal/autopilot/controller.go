@@ -102,6 +102,10 @@ type Controller struct {
 	// Owner and repo for GitHub operations
 	owner string
 	repo  string
+
+	// boardSync syncs issue status to GitHub Projects V2 board (optional, nil = disabled).
+	boardSync  *github.ProjectBoardSync
+	doneStatus string // column name for "Done" in the project board
 }
 
 // NewController creates an autopilot controller with all required components.
@@ -159,6 +163,27 @@ func (c *Controller) SetStateStore(store *StateStore) {
 // When set, handleMerged will fetch reviews after merge and extract patterns.
 func (c *Controller) SetLearningLoop(loop *memory.LearningLoop) {
 	c.learningLoop = loop
+}
+
+// SetBoardSync configures GitHub Projects V2 board sync for the controller.
+// When set, the controller will move issues to doneStatus on PR merge.
+// doneStatus must match a column name in the configured project board (e.g. "Done").
+func (c *Controller) SetBoardSync(bs *github.ProjectBoardSync, doneStatus string) {
+	c.boardSync = bs
+	c.doneStatus = doneStatus
+}
+
+// SetPRIssueNodeID sets the GraphQL node ID for the linked issue on an active PR.
+// This enables board sync on merge. No-op if the PR is not tracked.
+func (c *Controller) SetPRIssueNodeID(prNumber int, issueNodeID string) {
+	if issueNodeID == "" {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if prState, ok := c.activePRs[prNumber]; ok {
+		prState.IssueNodeID = issueNodeID
+	}
 }
 
 // persistPRState saves a PR state to the store if available.
@@ -709,6 +734,12 @@ func (c *Controller) handleMerging(ctx context.Context, prState *PRState) error 
 	if prState.IssueNumber > 0 {
 		if err := c.ghClient.AddLabels(ctx, c.owner, c.repo, prState.IssueNumber, []string{github.LabelDone}); err != nil {
 			c.log.Warn("failed to add pilot-done label after merge", "issue", prState.IssueNumber, "error", err)
+		}
+		// GH-1854: Sync board status to "Done" on PR merge
+		if c.boardSync != nil && prState.IssueNodeID != "" {
+			if err := c.boardSync.UpdateProjectItemStatus(ctx, prState.IssueNodeID, c.doneStatus); err != nil {
+				slog.Warn("board sync on merge failed", "pr", prState.PRNumber, "error", err)
+			}
 		}
 		if err := c.ghClient.RemoveLabel(ctx, c.owner, c.repo, prState.IssueNumber, github.LabelInProgress); err != nil {
 			c.log.Warn("failed to remove pilot-in-progress label after merge", "issue", prState.IssueNumber, "error", err)
@@ -1590,6 +1621,12 @@ func (c *Controller) checkExternalMergeOrClose(ctx context.Context, prState *PRS
 			// Add pilot-done label
 			if err := c.ghClient.AddLabels(ctx, c.owner, c.repo, prState.IssueNumber, []string{github.LabelDone}); err != nil {
 				c.log.Warn("failed to add pilot-done label after external merge", "issue", prState.IssueNumber, "error", err)
+			}
+			// GH-1854: Sync board status to "Done" on external merge
+			if c.boardSync != nil && prState.IssueNodeID != "" {
+				if err := c.boardSync.UpdateProjectItemStatus(ctx, prState.IssueNodeID, c.doneStatus); err != nil {
+					slog.Warn("board sync on external merge failed", "pr", prState.PRNumber, "error", err)
+				}
 			}
 			// Remove pilot-in-progress label
 			if err := c.ghClient.RemoveLabel(ctx, c.owner, c.repo, prState.IssueNumber, github.LabelInProgress); err != nil {
