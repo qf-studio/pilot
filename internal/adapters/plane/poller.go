@@ -62,6 +62,11 @@ type Poller struct {
 	// GH-1830: Persistent processed store (optional)
 	processedStore ProcessedStore
 
+	// GH-1832: State UUID cache (resolved on startup by group)
+	// Maps project ID → state UUID for started/completed groups.
+	startedStateIDs   map[string]string
+	completedStateIDs map[string]string
+
 	// GH-1830: Parallel execution configuration
 	maxConcurrent int
 	semaphore     chan struct{}
@@ -158,6 +163,9 @@ func (p *Poller) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to cache label IDs: %w", err)
 	}
 
+	// GH-1832: Cache state UUIDs for state transitions
+	p.cacheStateIDs(ctx)
+
 	p.logger.Info("Starting Plane poller",
 		slog.String("workspace", p.config.WorkspaceSlug),
 		slog.Int("projects", len(p.config.ProjectIDs)),
@@ -239,6 +247,42 @@ func (p *Poller) cacheLabelIDs(ctx context.Context) error {
 	)
 
 	return nil
+}
+
+// cacheStateIDs fetches and caches the UUIDs for started/completed state groups per project.
+// GH-1832: Plane states are per-project; we cache them to avoid API calls on every transition.
+func (p *Poller) cacheStateIDs(ctx context.Context) {
+	p.startedStateIDs = make(map[string]string)
+	p.completedStateIDs = make(map[string]string)
+
+	for _, projectID := range p.config.ProjectIDs {
+		states, err := p.client.ListStates(ctx, p.config.WorkspaceSlug, projectID)
+		if err != nil {
+			p.logger.Warn("Failed to list states for project",
+				slog.String("project_id", projectID),
+				slog.Any("error", err),
+			)
+			continue
+		}
+
+		for _, s := range states {
+			switch s.Group {
+			case StateGroupStarted:
+				if p.startedStateIDs[projectID] == "" {
+					p.startedStateIDs[projectID] = s.ID
+				}
+			case StateGroupCompleted:
+				if p.completedStateIDs[projectID] == "" {
+					p.completedStateIDs[projectID] = s.ID
+				}
+			}
+		}
+	}
+
+	p.logger.Debug("Cached state IDs",
+		slog.Int("projects_with_started", len(p.startedStateIDs)),
+		slog.Int("projects_with_completed", len(p.completedStateIDs)),
+	)
 }
 
 // recoverOrphanedIssues finds work items with pilot-in-progress label from a previous run
@@ -368,6 +412,16 @@ func (p *Poller) processIssueAsync(ctx context.Context, item WorkItem) {
 		_ = p.client.AddLabel(ctx, p.config.WorkspaceSlug, item.ProjectID, item.ID, p.inProgressLabelID)
 	}
 
+	// GH-1832: Transition to started state on dispatch
+	if stateID := p.startedStateIDs[item.ProjectID]; stateID != "" {
+		if err := p.client.UpdateIssueState(ctx, p.config.WorkspaceSlug, item.ProjectID, item.ID, stateID); err != nil {
+			p.logger.Warn("Failed to transition work item to started state",
+				slog.String("id", item.ID),
+				slog.Any("error", err),
+			)
+		}
+	}
+
 	result, err := p.onIssue(ctx, &item)
 	if err != nil {
 		p.logger.Error("Failed to process work item",
@@ -381,6 +435,7 @@ func (p *Poller) processIssueAsync(ctx context.Context, item WorkItem) {
 		if p.failedLabelID != "" {
 			_ = p.client.AddLabel(ctx, p.config.WorkspaceSlug, item.ProjectID, item.ID, p.failedLabelID)
 		}
+		// GH-1832: On failure, leave state as-is (user decides)
 		return
 	}
 
@@ -392,6 +447,37 @@ func (p *Poller) processIssueAsync(ctx context.Context, item WorkItem) {
 	// Add done label on success
 	if result != nil && result.Success && p.doneLabelID != "" {
 		_ = p.client.AddLabel(ctx, p.config.WorkspaceSlug, item.ProjectID, item.ID, p.doneLabelID)
+	}
+
+	// GH-1832: Transition to completed state on success
+	if result != nil && result.Success {
+		if stateID := p.completedStateIDs[item.ProjectID]; stateID != "" {
+			if err := p.client.UpdateIssueState(ctx, p.config.WorkspaceSlug, item.ProjectID, item.ID, stateID); err != nil {
+				p.logger.Warn("Failed to transition work item to completed state",
+					slog.String("id", item.ID),
+					slog.Any("error", err),
+				)
+			}
+		}
+	}
+
+	// GH-1832: Post PR URL as comment with execution metrics and dedup
+	if result != nil && result.Success && result.PRNumber > 0 {
+		commentHTML := fmt.Sprintf(
+			`<p>✅ PR created: <a href="%s">#%d</a></p>`,
+			result.PRURL, result.PRNumber,
+		)
+		externalID := fmt.Sprintf("pilot-pr-%d-%s", result.PRNumber, item.ID)
+		if err := p.client.AddCommentWithTracking(
+			ctx, p.config.WorkspaceSlug, item.ProjectID, item.ID,
+			commentHTML, "pilot", externalID,
+		); err != nil {
+			p.logger.Warn("Failed to post PR comment on work item",
+				slog.String("id", item.ID),
+				slog.Int("pr_number", result.PRNumber),
+				slog.Any("error", err),
+			)
+		}
 	}
 
 	// Fire OnPRCreated callback

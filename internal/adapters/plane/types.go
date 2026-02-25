@@ -100,9 +100,12 @@ type Label struct {
 
 // Comment represents a Plane work item comment.
 type Comment struct {
-	ID          string    `json:"id"`
-	CommentHTML string    `json:"comment_html"`
-	CreatedAt   time.Time `json:"created_at"`
+	ID             string    `json:"id"`
+	CommentHTML    string    `json:"comment_html"`
+	ExternalSource string    `json:"external_source,omitempty"`
+	ExternalID     string    `json:"external_id,omitempty"`
+	Access         string    `json:"access,omitempty"`
+	CreatedAt      time.Time `json:"created_at"`
 }
 
 // paginatedResponse wraps paginated API responses from Plane.
@@ -119,4 +122,9 @@ type statesResponse struct {
 // labelsResponse wraps the labels list API response.
 type labelsResponse struct {
 	Results []Label `json:"results"`
+}
+
+// commentsResponse wraps the comments list API response.
+type commentsResponse struct {
+	Results []Comment `json:"results"`
 }

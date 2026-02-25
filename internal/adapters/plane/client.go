@@ -260,6 +260,65 @@ func HasLabelID(item *WorkItem, labelID string) bool {
 	return false
 }
 
+// UpdateIssueState sets the workflow state of a work item by state UUID.
+// GH-1832: Plane states are per-project UUIDs; use ResolveStateByGroup to find the UUID.
+func (c *Client) UpdateIssueState(ctx context.Context, workspaceSlug, projectID, workItemID, stateID string) error {
+	return c.UpdateWorkItem(ctx, workspaceSlug, projectID, workItemID, map[string]interface{}{
+		"state": stateID,
+	})
+}
+
+// ResolveStateByGroup fetches all states for a project and returns the first state UUID
+// matching the given group (e.g. StateGroupStarted, StateGroupCompleted).
+// Returns empty string if no state matches.
+// GH-1832: Used to resolve per-project state UUIDs by their fixed group category.
+func (c *Client) ResolveStateByGroup(ctx context.Context, workspaceSlug, projectID string, group StateGroup) (string, error) {
+	states, err := c.ListStates(ctx, workspaceSlug, projectID)
+	if err != nil {
+		return "", fmt.Errorf("ResolveStateByGroup: %w", err)
+	}
+	for _, s := range states {
+		if s.Group == group {
+			return s.ID, nil
+		}
+	}
+	return "", nil
+}
+
+// ListComments fetches all comments for a work item.
+// GH-1832: Used for dedup check before posting PR comments.
+func (c *Client) ListComments(ctx context.Context, workspaceSlug, projectID, workItemID string) ([]Comment, error) {
+	path := workItemsBase(workspaceSlug, projectID) + "/" + workItemID + "/comments/"
+	var resp commentsResponse
+	if err := c.doRequest(ctx, http.MethodGet, path, nil, &resp); err != nil {
+		return nil, err
+	}
+	return resp.Results, nil
+}
+
+// AddCommentWithTracking adds an HTML comment with external_source and external_id fields.
+// It checks existing comments for a matching external_id to prevent duplicates on retry.
+// GH-1832: Posts PR URL as comment with dedup via external_id.
+func (c *Client) AddCommentWithTracking(ctx context.Context, workspaceSlug, projectID, workItemID, commentHTML, externalSource, externalID string) error {
+	// Check for duplicate before posting
+	existing, err := c.ListComments(ctx, workspaceSlug, projectID, workItemID)
+	if err == nil {
+		for _, comment := range existing {
+			if comment.ExternalID == externalID && comment.ExternalSource == externalSource {
+				return nil // already posted
+			}
+		}
+	}
+	// Post the comment with tracking fields
+	body := map[string]string{
+		"comment_html":    commentHTML,
+		"access":          "INTERNAL",
+		"external_source": externalSource,
+		"external_id":     externalID,
+	}
+	return c.doRequest(ctx, http.MethodPost, workItemsBase(workspaceSlug, projectID)+"/"+workItemID+"/comments/", body, nil)
+}
+
 // CreateIssue implements executor.SubIssueCreator for epic decomposition.
 // GH-1833: Creates a child work item under parentID in the configured workspace/project.
 // parentID is a Plane work item UUID; the new item is created in the same project.
