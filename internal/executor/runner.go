@@ -1233,9 +1233,16 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 
 	// Clean stale pilot hooks unconditionally — even when hooks.enabled is false.
 	// Prevents dead entries from accumulating after OS reboots clear temp dirs (GH-1749).
-	stalePath := filepath.Join(executionPath, ".claude", "settings.json")
-	if cleanErr := CleanStalePilotHooks(stalePath); cleanErr != nil {
-		log.Warn("Failed to clean stale pilot hooks", slog.Any("error", cleanErr))
+	// Clean project root first (always), then worktree path if different (GH-1884).
+	projectSettingsPath := filepath.Join(task.ProjectPath, ".claude", "settings.json")
+	if cleanErr := CleanStalePilotHooks(projectSettingsPath); cleanErr != nil {
+		log.Warn("Failed to clean stale pilot hooks in project root", slog.Any("error", cleanErr))
+	}
+	if executionPath != task.ProjectPath {
+		worktreeSettingsPath := filepath.Join(executionPath, ".claude", "settings.json")
+		if cleanErr := CleanStalePilotHooks(worktreeSettingsPath); cleanErr != nil {
+			log.Warn("Failed to clean stale pilot hooks in worktree", slog.Any("error", cleanErr))
+		}
 	}
 
 	// Setup Claude Code hooks if enabled (GH-1266)
@@ -1257,7 +1264,7 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 
 				// Merge with existing settings.json (worktree-safe path)
 				settingsPath := filepath.Join(executionPath, ".claude", "settings.json")
-				restoreFunc, mergeErr := MergeWithExisting(settingsPath, hookSettings)
+				_, mergeErr := MergeWithExisting(settingsPath, hookSettings)
 				if mergeErr != nil {
 					log.Error("Failed to setup Claude hooks", slog.Any("error", mergeErr))
 					// Clean up script directory
@@ -1266,9 +1273,10 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 					}
 				} else {
 					hookRestoreFunc = func() error {
-						// Restore original settings.json
-						if restoreErr := restoreFunc(); restoreErr != nil {
-							log.Warn("Failed to restore original Claude settings", slog.Any("error", restoreErr))
+						// Instead of blind restoreFunc() (which may write back stale entries
+						// from a previous crash), use targeted cleanup (GH-1884).
+						if cleanErr := CleanStalePilotHooks(settingsPath); cleanErr != nil {
+							log.Warn("Failed to clean pilot hooks from settings", slog.Any("error", cleanErr))
 						}
 						// Clean up script directory
 						if rmErr := os.RemoveAll(scriptDir); rmErr != nil {
