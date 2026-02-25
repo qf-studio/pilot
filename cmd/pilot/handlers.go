@@ -19,7 +19,6 @@ import (
 	"github.com/alekspetrov/pilot/internal/alerts"
 	"github.com/alekspetrov/pilot/internal/budget"
 	"github.com/alekspetrov/pilot/internal/config"
-	"github.com/alekspetrov/pilot/internal/dashboard"
 	"github.com/alekspetrov/pilot/internal/executor"
 	"github.com/alekspetrov/pilot/internal/logging"
 )
@@ -127,89 +126,6 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 		}, wrappedErr
 	}
 
-	// Register task with monitor if in dashboard mode
-	// Note: monitor.Start() is NOT called here — it's called by runner.executeWithOptions()
-	// when execution actually begins, enabling accurate queued→running dashboard transitions.
-	if monitor != nil {
-		monitor.Register(taskID, issue.Title, issue.HTMLURL)
-	}
-	if program != nil {
-		program.Send(dashboard.AddLog(fmt.Sprintf("📥 GitHub Issue #%d: %s", issue.Number, issue.Title))())
-	}
-
-	// Emit task started event (GH-337)
-	if alertsEngine != nil {
-		alertsEngine.ProcessEvent(alerts.Event{
-			Type:      alerts.EventTypeTaskStarted,
-			TaskID:    taskID,
-			TaskTitle: issue.Title,
-			Project:   projectPath,
-			Timestamp: time.Now(),
-		})
-	}
-
-	// GH-539: Pre-execution budget check — block task if daily/monthly limits exceeded
-	if enforcer != nil {
-		checkResult, budgetErr := enforcer.CheckBudget(ctx, "", "")
-		if budgetErr != nil {
-			logging.WithComponent("budget").Warn("budget check failed, allowing task (fail-open)",
-				slog.String("task_id", taskID),
-				slog.Any("error", budgetErr),
-			)
-		} else if !checkResult.Allowed {
-			logging.WithComponent("budget").Warn("task blocked by budget enforcement",
-				slog.String("task_id", taskID),
-				slog.String("reason", checkResult.Reason),
-				slog.String("action", string(checkResult.Action)),
-			)
-
-			// Emit budget exceeded alert
-			if alertsEngine != nil {
-				alertsEngine.ProcessEvent(alerts.Event{
-					Type:      alerts.EventTypeBudgetExceeded,
-					TaskID:    taskID,
-					TaskTitle: issue.Title,
-					Project:   projectPath,
-					Error:     checkResult.Reason,
-					Metadata: map[string]string{
-						"daily_left":   fmt.Sprintf("%.2f", checkResult.DailyLeft),
-						"monthly_left": fmt.Sprintf("%.2f", checkResult.MonthlyLeft),
-						"action":       string(checkResult.Action),
-					},
-					Timestamp: time.Now(),
-				})
-			}
-
-			// Comment on the GitHub issue and label as failed
-			parts := strings.Split(sourceRepo, "/")
-			if len(parts) == 2 {
-				comment := fmt.Sprintf("⛔ **Budget Limit Exceeded**\n\n%s\n\nDaily remaining: $%.2f\nMonthly remaining: $%.2f\n\nThis task has been skipped. Resume execution after adjusting budget limits or waiting for the next billing period.",
-					checkResult.Reason, checkResult.DailyLeft, checkResult.MonthlyLeft)
-				if _, err := client.AddComment(ctx, parts[0], parts[1], issue.Number, comment); err != nil {
-					logGitHubAPIError("AddComment", parts[0], parts[1], issue.Number, err)
-				}
-				if err := client.AddLabels(ctx, parts[0], parts[1], issue.Number, []string{github.LabelFailed}); err != nil {
-					logGitHubAPIError("AddLabels", parts[0], parts[1], issue.Number, err)
-				}
-			}
-
-			budgetExceededErr := fmt.Errorf("budget enforcement: %s", checkResult.Reason)
-			return &github.IssueResult{
-				Success: false,
-				Error:   budgetExceededErr,
-			}, budgetExceededErr
-		}
-	}
-
-	fmt.Printf("\n📥 GitHub Issue #%d: %s\n", issue.Number, issue.Title)
-
-	parts := strings.Split(sourceRepo, "/")
-	if len(parts) == 2 {
-		if err := client.AddLabels(ctx, parts[0], parts[1], issue.Number, []string{github.LabelInProgress}); err != nil {
-			logGitHubAPIError("AddLabels", parts[0], parts[1], issue.Number, err)
-		}
-	}
-
 	taskDesc := fmt.Sprintf("GitHub Issue #%d: %s\n\n%s", issue.Number, issue.Title, issue.Body)
 	branchName := fmt.Sprintf("pilot/%s", taskID)
 
@@ -264,125 +180,48 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 		FromPR:             fromPR,                                       // GH-1267: session resumption from PR context
 	}
 
-	var result *executor.ExecutionResult
-	var execErr error
+	parts := strings.Split(sourceRepo, "/")
 
-	if dispatcher != nil {
-		execID, qErr := dispatcher.QueueTask(ctx, task)
-		if qErr != nil {
-			execErr = fmt.Errorf("failed to queue task: %w", qErr)
-		} else {
-			if monitor != nil {
-				monitor.Queue(taskID)
-			}
-			fmt.Printf("   📋 Queued as execution %s\n", execID[:8])
-			exec, waitErr := dispatcher.WaitForExecution(ctx, execID, time.Second)
-			if waitErr != nil {
-				execErr = fmt.Errorf("failed waiting for execution: %w", waitErr)
-			} else if exec.Status == "failed" {
-				execErr = fmt.Errorf("execution failed: %s", exec.Error)
-			} else {
-				result = &executor.ExecutionResult{
-					TaskID:    task.ID,
-					Success:   exec.Status == "completed",
-					Output:    exec.Output,
-					Error:     exec.Error,
-					PRUrl:     exec.PRUrl,
-					CommitSHA: exec.CommitSHA,
-					Duration:  time.Duration(exec.DurationMs) * time.Millisecond,
-				}
-			}
-		}
-	} else {
-		result, execErr = runner.Execute(ctx, task)
-	}
-
-	// Update monitor with completion status
-	prURL := ""
-	if result != nil {
-		prURL = result.PRUrl
-	}
-	if monitor != nil {
-		if execErr != nil {
-			monitor.Fail(taskID, execErr.Error())
-		} else {
-			monitor.Complete(taskID, prURL)
+	// Add pilot-in-progress label before execution begins
+	if len(parts) == 2 {
+		if err := client.AddLabels(ctx, parts[0], parts[1], issue.Number, []string{github.LabelInProgress}); err != nil {
+			logGitHubAPIError("AddLabels", parts[0], parts[1], issue.Number, err)
 		}
 	}
 
-	// Emit task completed/failed event (GH-337)
-	if alertsEngine != nil {
-		if execErr != nil {
-			alertsEngine.ProcessEvent(alerts.Event{
-				Type:      alerts.EventTypeTaskFailed,
-				TaskID:    taskID,
-				TaskTitle: issue.Title,
-				Project:   projectPath,
-				Error:     execErr.Error(),
-				Timestamp: time.Now(),
-			})
-		} else if result != nil && result.Success {
-			metadata := map[string]string{}
-			if result.PRUrl != "" {
-				metadata["pr_url"] = result.PRUrl
-			}
-			if result.Duration > 0 {
-				metadata["duration"] = result.Duration.String()
-			}
-			alertsEngine.ProcessEvent(alerts.Event{
-				Type:      alerts.EventTypeTaskCompleted,
-				TaskID:    taskID,
-				TaskTitle: issue.Title,
-				Project:   projectPath,
-				Metadata:  metadata,
-				Timestamp: time.Now(),
-			})
-		} else if result != nil {
-			alertsEngine.ProcessEvent(alerts.Event{
-				Type:      alerts.EventTypeTaskFailed,
-				TaskID:    taskID,
-				TaskTitle: issue.Title,
-				Project:   projectPath,
-				Error:     result.Error,
-				Timestamp: time.Now(),
-			})
-		}
+	deps := HandlerDeps{
+		Cfg:          cfg,
+		Dispatcher:   dispatcher,
+		Runner:       runner,
+		Monitor:      monitor,
+		Program:      program,
+		AlertsEngine: alertsEngine,
+		Enforcer:     enforcer,
+		ProjectPath:  projectPath,
+	}
+	info := IssueInfo{
+		TaskID:   taskID,
+		Title:    issue.Title,
+		URL:      issue.HTMLURL,
+		Adapter:  "github",
+		LogEmoji: "📥",
 	}
 
-	// Add completed task to dashboard history
-	if program != nil {
-		status := "success"
-		duration := ""
-		if execErr != nil {
-			status = "failed"
-		}
-		if result != nil {
-			duration = result.Duration.String()
-		}
-		program.Send(dashboard.AddCompletedTask(taskID, issue.Title, status, duration, "", false)())
-	}
+	// Note: monitor.Start() is NOT called here — it's called by runner.executeWithOptions()
+	// when execution actually begins, enabling accurate queued→running dashboard transitions.
+	hr, execErr := handleIssueGeneric(ctx, deps, info, task)
 
 	// Build the issue result
 	issueResult := &github.IssueResult{
-		Success:    execErr == nil && result != nil && result.Success,
-		BranchName: branchName,
-		Error:      execErr,
+		Success:    hr.Success,
+		BranchName: hr.BranchName,
+		PRNumber:   hr.PRNumber,
+		PRURL:      hr.PRURL,
+		HeadSHA:    hr.HeadSHA,
+		Error:      hr.Error,
 	}
 
-	// Extract PR number and head SHA from result if we have one
-	if result != nil {
-		if result.PRUrl != "" {
-			issueResult.PRURL = result.PRUrl
-			if prNum, err := github.ExtractPRNumber(result.PRUrl); err == nil {
-				issueResult.PRNumber = prNum
-			}
-		}
-		if result.CommitSHA != "" {
-			issueResult.HeadSHA = result.CommitSHA
-		}
-	}
-
-	// Update issue labels and add comment
+	// Post-execution: label management, close issue, add rich execution comment
 	if len(parts) == 2 {
 		if err := client.RemoveLabel(ctx, parts[0], parts[1], issue.Number, github.LabelInProgress); err != nil {
 			logGitHubAPIError("RemoveLabel", parts[0], parts[1], issue.Number, err)
@@ -396,15 +235,15 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 			if _, err := client.AddComment(ctx, parts[0], parts[1], issue.Number, comment); err != nil {
 				logGitHubAPIError("AddComment", parts[0], parts[1], issue.Number, err)
 			}
-		} else if result != nil && result.Success {
+		} else if hr.Result != nil && hr.Result.Success {
 			// Validate deliverables before marking as done
-			if result.CommitSHA == "" && result.PRUrl == "" {
+			if hr.Result.CommitSHA == "" && hr.Result.PRUrl == "" {
 				// No commits and no PR - mark as failed
 				if err := client.AddLabels(ctx, parts[0], parts[1], issue.Number, []string{github.LabelFailed}); err != nil {
 					logGitHubAPIError("AddLabels", parts[0], parts[1], issue.Number, err)
 				}
 				comment := fmt.Sprintf("⚠️ Pilot execution completed but no changes were made.\n\n**Duration:** %s\n**Branch:** `%s`\n\nNo commits or PR were created. The task may need clarification or manual intervention.",
-					result.Duration, branchName)
+					hr.Result.Duration, branchName)
 				if _, err := client.AddComment(ctx, parts[0], parts[1], issue.Number, comment); err != nil {
 					logGitHubAPIError("AddComment", parts[0], parts[1], issue.Number, err)
 				}
@@ -426,22 +265,22 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 					}
 				}
 
-					// Close the issue so dependent issues can proceed
+				// Close the issue so dependent issues can proceed
 				if err := client.UpdateIssueState(ctx, parts[0], parts[1], issue.Number, "closed"); err != nil {
 					logGitHubAPIError("UpdateIssueState", parts[0], parts[1], issue.Number, err)
 				}
 
-				comment := buildExecutionComment(result, branchName)
+				comment := buildExecutionComment(hr.Result, branchName)
 				if _, err := client.AddComment(ctx, parts[0], parts[1], issue.Number, comment); err != nil {
 					logGitHubAPIError("AddComment", parts[0], parts[1], issue.Number, err)
 				}
 			}
-		} else if result != nil {
+		} else if hr.Result != nil {
 			// result exists but Success is false - mark as failed
 			if err := client.AddLabels(ctx, parts[0], parts[1], issue.Number, []string{github.LabelFailed}); err != nil {
 				logGitHubAPIError("AddLabels", parts[0], parts[1], issue.Number, err)
 			}
-			comment := buildFailureComment(result)
+			comment := buildFailureComment(hr.Result)
 			if _, err := client.AddComment(ctx, parts[0], parts[1], issue.Number, comment); err != nil {
 				logGitHubAPIError("AddComment", parts[0], parts[1], issue.Number, err)
 			}
@@ -454,64 +293,6 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 // handleLinearIssueWithResult processes a Linear issue picked up by the poller (GH-393)
 func handleLinearIssueWithResult(ctx context.Context, cfg *config.Config, client *linear.Client, issue *linear.Issue, projectPath string, dispatcher *executor.Dispatcher, runner *executor.Runner, monitor *executor.Monitor, program *tea.Program, alertsEngine *alerts.Engine, enforcer *budget.Enforcer) (*linear.IssueResult, error) {
 	taskID := issue.Identifier // e.g., "APP-123"
-
-	// Register task with monitor if in dashboard mode
-	if monitor != nil {
-		issueURL := fmt.Sprintf("https://linear.app/issue/%s", issue.Identifier)
-		monitor.Register(taskID, issue.Title, issueURL)
-	}
-	if program != nil {
-		program.Send(dashboard.AddLog(fmt.Sprintf("📊 Linear Issue %s: %s", issue.Identifier, issue.Title))())
-	}
-
-	// Emit task started event (GH-337)
-	if alertsEngine != nil {
-		alertsEngine.ProcessEvent(alerts.Event{
-			Type:      alerts.EventTypeTaskStarted,
-			TaskID:    taskID,
-			TaskTitle: issue.Title,
-			Project:   projectPath,
-			Timestamp: time.Now(),
-		})
-	}
-
-	// GH-539: Pre-execution budget check
-	if enforcer != nil {
-		checkResult, budgetErr := enforcer.CheckBudget(ctx, "", "")
-		if budgetErr != nil {
-			logging.WithComponent("budget").Warn("budget check failed, allowing task (fail-open)",
-				slog.String("task_id", taskID),
-				slog.Any("error", budgetErr),
-			)
-		} else if !checkResult.Allowed {
-			logging.WithComponent("budget").Warn("task blocked by budget enforcement",
-				slog.String("task_id", taskID),
-				slog.String("reason", checkResult.Reason),
-			)
-			if alertsEngine != nil {
-				alertsEngine.ProcessEvent(alerts.Event{
-					Type:      alerts.EventTypeBudgetExceeded,
-					TaskID:    taskID,
-					TaskTitle: issue.Title,
-					Project:   projectPath,
-					Error:     checkResult.Reason,
-					Metadata: map[string]string{
-						"daily_left":   fmt.Sprintf("%.2f", checkResult.DailyLeft),
-						"monthly_left": fmt.Sprintf("%.2f", checkResult.MonthlyLeft),
-						"action":       string(checkResult.Action),
-					},
-					Timestamp: time.Now(),
-				})
-			}
-			budgetExceededErr := fmt.Errorf("budget enforcement: %s", checkResult.Reason)
-			return &linear.IssueResult{
-				Success: false,
-				Error:   budgetExceededErr,
-			}, budgetExceededErr
-		}
-	}
-
-	fmt.Printf("\n📊 Linear Issue %s: %s\n", issue.Identifier, issue.Title)
 
 	taskDesc := fmt.Sprintf("Linear Issue %s: %s\n\n%s", issue.Identifier, issue.Title, issue.Description)
 	branchName := fmt.Sprintf("pilot/%s", taskID)
@@ -533,119 +314,37 @@ func handleLinearIssueWithResult(ctx context.Context, cfg *config.Config, client
 	// GH-1472: Wire Linear client as SubIssueCreator for epic decomposition
 	runner.SetSubIssueCreator(client)
 
-	var result *executor.ExecutionResult
-	var execErr error
-
-	if dispatcher != nil {
-		execID, qErr := dispatcher.QueueTask(ctx, task)
-		if qErr != nil {
-			execErr = fmt.Errorf("failed to queue task: %w", qErr)
-		} else {
-			if monitor != nil {
-				monitor.Queue(taskID)
-			}
-			fmt.Printf("   📋 Queued as execution %s\n", execID[:8])
-			exec, waitErr := dispatcher.WaitForExecution(ctx, execID, time.Second)
-			if waitErr != nil {
-				execErr = fmt.Errorf("failed waiting for execution: %w", waitErr)
-			} else if exec.Status == "failed" {
-				execErr = fmt.Errorf("execution failed: %s", exec.Error)
-			} else {
-				result = &executor.ExecutionResult{
-					TaskID:    task.ID,
-					Success:   exec.Status == "completed",
-					Output:    exec.Output,
-					Error:     exec.Error,
-					PRUrl:     exec.PRUrl,
-					CommitSHA: exec.CommitSHA,
-					Duration:  time.Duration(exec.DurationMs) * time.Millisecond,
-				}
-			}
-		}
-	} else {
-		result, execErr = runner.Execute(ctx, task)
+	deps := HandlerDeps{
+		Cfg:          cfg,
+		Dispatcher:   dispatcher,
+		Runner:       runner,
+		Monitor:      monitor,
+		Program:      program,
+		AlertsEngine: alertsEngine,
+		Enforcer:     enforcer,
+		ProjectPath:  projectPath,
+	}
+	info := IssueInfo{
+		TaskID:   taskID,
+		Title:    issue.Title,
+		URL:      fmt.Sprintf("https://linear.app/issue/%s", issue.Identifier),
+		Adapter:  "linear",
+		LogEmoji: "📊",
 	}
 
-	// Update monitor with completion status
-	prURL := ""
-	if result != nil {
-		prURL = result.PRUrl
-	}
-	if monitor != nil {
-		if execErr != nil {
-			monitor.Fail(taskID, execErr.Error())
-		} else {
-			monitor.Complete(taskID, prURL)
-		}
-	}
-
-	// Emit task completed/failed event (GH-337)
-	if alertsEngine != nil {
-		if execErr != nil {
-			alertsEngine.ProcessEvent(alerts.Event{
-				Type:      alerts.EventTypeTaskFailed,
-				TaskID:    taskID,
-				TaskTitle: issue.Title,
-				Project:   projectPath,
-				Error:     execErr.Error(),
-				Timestamp: time.Now(),
-			})
-		} else if result != nil && result.Success {
-			metadata := map[string]string{}
-			if result.PRUrl != "" {
-				metadata["pr_url"] = result.PRUrl
-			}
-			if result.Duration > 0 {
-				metadata["duration"] = result.Duration.String()
-			}
-			alertsEngine.ProcessEvent(alerts.Event{
-				Type:      alerts.EventTypeTaskCompleted,
-				TaskID:    taskID,
-				TaskTitle: issue.Title,
-				Project:   projectPath,
-				Metadata:  metadata,
-				Timestamp: time.Now(),
-			})
-		} else if result != nil {
-			alertsEngine.ProcessEvent(alerts.Event{
-				Type:      alerts.EventTypeTaskFailed,
-				TaskID:    taskID,
-				TaskTitle: issue.Title,
-				Project:   projectPath,
-				Error:     result.Error,
-				Timestamp: time.Now(),
-			})
-		}
-	}
-
-	// Add completed task to dashboard history
-	if program != nil {
-		status := "success"
-		duration := ""
-		if execErr != nil {
-			status = "failed"
-		} else if result != nil {
-			duration = result.Duration.String()
-		}
-		program.Send(dashboard.AddCompletedTask(taskID, issue.Title, status, duration, "", false)())
-	}
+	hr, execErr := handleIssueGeneric(ctx, deps, info, task)
 
 	// Build issue result
 	issueResult := &linear.IssueResult{
-		Success:    execErr == nil && result != nil && result.Success,
-		BranchName: branchName, // GH-1361: always set branch for autopilot wiring
-	}
-	if result != nil {
-		if result.PRUrl != "" {
-			issueResult.PRURL = result.PRUrl
-			if prNum, err := github.ExtractPRNumber(result.PRUrl); err == nil {
-				issueResult.PRNumber = prNum
-			}
-		}
-		issueResult.HeadSHA = result.CommitSHA // GH-1361: for autopilot CI monitoring
+		Success:    hr.Success,
+		BranchName: hr.BranchName, // GH-1361: always set branch for autopilot wiring
+		PRNumber:   hr.PRNumber,
+		PRURL:      hr.PRURL,
+		HeadSHA:    hr.HeadSHA, // GH-1361: for autopilot CI monitoring
+		Error:      hr.Error,
 	}
 
-	// Add comment to Linear issue
+	// Post-execution: add comment, transition issue to Done state
 	if execErr != nil {
 		comment := fmt.Sprintf("❌ Pilot execution failed:\n\n```\n%s\n```", execErr.Error())
 		if err := client.AddComment(ctx, issue.ID, comment); err != nil {
@@ -654,11 +353,11 @@ func handleLinearIssueWithResult(ctx context.Context, cfg *config.Config, client
 				slog.Any("error", err),
 			)
 		}
-	} else if result != nil && result.Success {
+	} else if hr.Result != nil && hr.Result.Success {
 		// Validate deliverables before marking as done
-		if result.CommitSHA == "" && result.PRUrl == "" {
+		if hr.Result.CommitSHA == "" && hr.Result.PRUrl == "" {
 			comment := fmt.Sprintf("⚠️ Pilot execution completed but no changes were made.\n\n**Duration:** %s\n**Branch:** `%s`\n\nNo commits or PR were created. The task may need clarification or manual intervention.",
-				result.Duration, branchName)
+				hr.Result.Duration, branchName)
 			if err := client.AddComment(ctx, issue.ID, comment); err != nil {
 				logging.WithComponent("linear").Warn("Failed to add comment",
 					slog.String("issue", issue.Identifier),
@@ -667,7 +366,7 @@ func handleLinearIssueWithResult(ctx context.Context, cfg *config.Config, client
 			}
 			issueResult.Success = false
 		} else {
-			comment := buildExecutionComment(result, branchName)
+			comment := buildExecutionComment(hr.Result, branchName)
 			if err := client.AddComment(ctx, issue.ID, comment); err != nil {
 				logging.WithComponent("linear").Warn("Failed to add comment",
 					slog.String("issue", issue.Identifier),
@@ -691,8 +390,8 @@ func handleLinearIssueWithResult(ctx context.Context, cfg *config.Config, client
 				)
 			}
 		}
-	} else if result != nil {
-		comment := buildFailureComment(result)
+	} else if hr.Result != nil {
+		comment := buildFailureComment(hr.Result)
 		if err := client.AddComment(ctx, issue.ID, comment); err != nil {
 			logging.WithComponent("linear").Warn("Failed to add comment",
 				slog.String("issue", issue.Identifier),
@@ -708,64 +407,6 @@ func handleLinearIssueWithResult(ctx context.Context, cfg *config.Config, client
 func handleJiraIssueWithResult(ctx context.Context, cfg *config.Config, client *jira.Client, issue *jira.Issue, projectPath string, dispatcher *executor.Dispatcher, runner *executor.Runner, monitor *executor.Monitor, program *tea.Program, alertsEngine *alerts.Engine, enforcer *budget.Enforcer) (*jira.IssueResult, error) {
 	taskID := issue.Key // e.g., "PROJ-123"
 
-	// Register task with monitor if in dashboard mode
-	if monitor != nil {
-		issueURL := fmt.Sprintf("%s/browse/%s", cfg.Adapters.Jira.BaseURL, issue.Key)
-		monitor.Register(taskID, issue.Fields.Summary, issueURL)
-	}
-	if program != nil {
-		program.Send(dashboard.AddLog(fmt.Sprintf("📊 Jira Issue %s: %s", issue.Key, issue.Fields.Summary))())
-	}
-
-	// Emit task started event (GH-337)
-	if alertsEngine != nil {
-		alertsEngine.ProcessEvent(alerts.Event{
-			Type:      alerts.EventTypeTaskStarted,
-			TaskID:    taskID,
-			TaskTitle: issue.Fields.Summary,
-			Project:   projectPath,
-			Timestamp: time.Now(),
-		})
-	}
-
-	// GH-539: Pre-execution budget check
-	if enforcer != nil {
-		checkResult, budgetErr := enforcer.CheckBudget(ctx, "", "")
-		if budgetErr != nil {
-			logging.WithComponent("budget").Warn("budget check failed, allowing task (fail-open)",
-				slog.String("task_id", taskID),
-				slog.Any("error", budgetErr),
-			)
-		} else if !checkResult.Allowed {
-			logging.WithComponent("budget").Warn("task blocked by budget enforcement",
-				slog.String("task_id", taskID),
-				slog.String("reason", checkResult.Reason),
-			)
-			if alertsEngine != nil {
-				alertsEngine.ProcessEvent(alerts.Event{
-					Type:      alerts.EventTypeBudgetExceeded,
-					TaskID:    taskID,
-					TaskTitle: issue.Fields.Summary,
-					Project:   projectPath,
-					Error:     checkResult.Reason,
-					Metadata: map[string]string{
-						"daily_left":   fmt.Sprintf("%.2f", checkResult.DailyLeft),
-						"monthly_left": fmt.Sprintf("%.2f", checkResult.MonthlyLeft),
-						"action":       string(checkResult.Action),
-					},
-					Timestamp: time.Now(),
-				})
-			}
-			budgetExceededErr := fmt.Errorf("budget enforcement: %s", checkResult.Reason)
-			return &jira.IssueResult{
-				Success: false,
-				Error:   budgetExceededErr,
-			}, budgetExceededErr
-		}
-	}
-
-	fmt.Printf("\n📊 Jira Issue %s: %s\n", issue.Key, issue.Fields.Summary)
-
 	taskDesc := fmt.Sprintf("Jira Issue %s: %s\n\n%s", issue.Key, issue.Fields.Summary, issue.Fields.Description)
 	branchName := fmt.Sprintf("pilot/%s", taskID)
 
@@ -778,119 +419,37 @@ func handleJiraIssueWithResult(ctx context.Context, cfg *config.Config, client *
 		CreatePR:    true,
 	}
 
-	var result *executor.ExecutionResult
-	var execErr error
-
-	if dispatcher != nil {
-		execID, qErr := dispatcher.QueueTask(ctx, task)
-		if qErr != nil {
-			execErr = fmt.Errorf("failed to queue task: %w", qErr)
-		} else {
-			if monitor != nil {
-				monitor.Queue(taskID)
-			}
-			fmt.Printf("   📋 Queued as execution %s\n", execID[:8])
-			exec, waitErr := dispatcher.WaitForExecution(ctx, execID, time.Second)
-			if waitErr != nil {
-				execErr = fmt.Errorf("failed waiting for execution: %w", waitErr)
-			} else if exec.Status == "failed" {
-				execErr = fmt.Errorf("execution failed: %s", exec.Error)
-			} else {
-				result = &executor.ExecutionResult{
-					TaskID:    task.ID,
-					Success:   exec.Status == "completed",
-					Output:    exec.Output,
-					Error:     exec.Error,
-					PRUrl:     exec.PRUrl,
-					CommitSHA: exec.CommitSHA,
-					Duration:  time.Duration(exec.DurationMs) * time.Millisecond,
-				}
-			}
-		}
-	} else {
-		result, execErr = runner.Execute(ctx, task)
+	deps := HandlerDeps{
+		Cfg:          cfg,
+		Dispatcher:   dispatcher,
+		Runner:       runner,
+		Monitor:      monitor,
+		Program:      program,
+		AlertsEngine: alertsEngine,
+		Enforcer:     enforcer,
+		ProjectPath:  projectPath,
+	}
+	info := IssueInfo{
+		TaskID:   taskID,
+		Title:    issue.Fields.Summary,
+		URL:      fmt.Sprintf("%s/browse/%s", cfg.Adapters.Jira.BaseURL, issue.Key),
+		Adapter:  "jira",
+		LogEmoji: "📊",
 	}
 
-	// Update monitor with completion status
-	prURL := ""
-	if result != nil {
-		prURL = result.PRUrl
-	}
-	if monitor != nil {
-		if execErr != nil {
-			monitor.Fail(taskID, execErr.Error())
-		} else {
-			monitor.Complete(taskID, prURL)
-		}
-	}
-
-	// Emit task completed/failed event (GH-337)
-	if alertsEngine != nil {
-		if execErr != nil {
-			alertsEngine.ProcessEvent(alerts.Event{
-				Type:      alerts.EventTypeTaskFailed,
-				TaskID:    taskID,
-				TaskTitle: issue.Fields.Summary,
-				Project:   projectPath,
-				Error:     execErr.Error(),
-				Timestamp: time.Now(),
-			})
-		} else if result != nil && result.Success {
-			metadata := map[string]string{}
-			if result.PRUrl != "" {
-				metadata["pr_url"] = result.PRUrl
-			}
-			if result.Duration > 0 {
-				metadata["duration"] = result.Duration.String()
-			}
-			alertsEngine.ProcessEvent(alerts.Event{
-				Type:      alerts.EventTypeTaskCompleted,
-				TaskID:    taskID,
-				TaskTitle: issue.Fields.Summary,
-				Project:   projectPath,
-				Metadata:  metadata,
-				Timestamp: time.Now(),
-			})
-		} else if result != nil {
-			alertsEngine.ProcessEvent(alerts.Event{
-				Type:      alerts.EventTypeTaskFailed,
-				TaskID:    taskID,
-				TaskTitle: issue.Fields.Summary,
-				Project:   projectPath,
-				Error:     result.Error,
-				Timestamp: time.Now(),
-			})
-		}
-	}
-
-	// Add completed task to dashboard history
-	if program != nil {
-		status := "success"
-		duration := ""
-		if execErr != nil {
-			status = "failed"
-		} else if result != nil {
-			duration = result.Duration.String()
-		}
-		program.Send(dashboard.AddCompletedTask(taskID, issue.Fields.Summary, status, duration, "", false)())
-	}
+	hr, execErr := handleIssueGeneric(ctx, deps, info, task)
 
 	// Build issue result
 	issueResult := &jira.IssueResult{
-		Success:    execErr == nil && result != nil && result.Success,
-		BranchName: branchName, // GH-1399: always set branch for autopilot wiring
-	}
-	if result != nil {
-		if result.PRUrl != "" {
-			issueResult.PRURL = result.PRUrl
-			if prNum, err := github.ExtractPRNumber(result.PRUrl); err == nil {
-				issueResult.PRNumber = prNum
-			}
-		}
-		issueResult.HeadSHA = result.CommitSHA // GH-1399: for autopilot CI monitoring
+		Success:    hr.Success,
+		BranchName: hr.BranchName, // GH-1399: always set branch for autopilot wiring
+		PRNumber:   hr.PRNumber,
+		PRURL:      hr.PRURL,
+		HeadSHA:    hr.HeadSHA, // GH-1399: for autopilot CI monitoring
+		Error:      hr.Error,
 	}
 
-	// Add comment to Jira issue
+	// Post-execution: add comment (plain text format), transition issue via explicit ID or name lookup
 	if execErr != nil {
 		comment := fmt.Sprintf("❌ Pilot execution failed:\n\n%s", execErr.Error())
 		if _, err := client.AddComment(ctx, issue.Key, comment); err != nil {
@@ -899,11 +458,11 @@ func handleJiraIssueWithResult(ctx context.Context, cfg *config.Config, client *
 				slog.Any("error", err),
 			)
 		}
-	} else if result != nil && result.Success {
+	} else if hr.Result != nil && hr.Result.Success {
 		// Validate deliverables before marking as done
-		if result.CommitSHA == "" && result.PRUrl == "" {
+		if hr.Result.CommitSHA == "" && hr.Result.PRUrl == "" {
 			comment := fmt.Sprintf("⚠️ Pilot execution completed but no changes were made.\n\nDuration: %s\nBranch: %s\n\nNo commits or PR were created. The task may need clarification or manual intervention.",
-				result.Duration, branchName)
+				hr.Result.Duration, branchName)
 			if _, err := client.AddComment(ctx, issue.Key, comment); err != nil {
 				logging.WithComponent("jira").Warn("Failed to add comment",
 					slog.String("issue", issue.Key),
@@ -912,7 +471,7 @@ func handleJiraIssueWithResult(ctx context.Context, cfg *config.Config, client *
 			}
 			issueResult.Success = false
 		} else {
-			comment := buildJiraExecutionComment(result, branchName)
+			comment := buildJiraExecutionComment(hr.Result, branchName)
 			if _, err := client.AddComment(ctx, issue.Key, comment); err != nil {
 				logging.WithComponent("jira").Warn("Failed to add comment",
 					slog.String("issue", issue.Key),
@@ -939,8 +498,8 @@ func handleJiraIssueWithResult(ctx context.Context, cfg *config.Config, client *
 				}
 			}
 		}
-	} else if result != nil {
-		comment := buildJiraFailureComment(result)
+	} else if hr.Result != nil {
+		comment := buildJiraFailureComment(hr.Result)
 		if _, err := client.AddComment(ctx, issue.Key, comment); err != nil {
 			logging.WithComponent("jira").Warn("Failed to add comment",
 				slog.String("issue", issue.Key),
@@ -994,63 +553,6 @@ func handleAsanaTaskWithResult(ctx context.Context, cfg *config.Config, client *
 		taskURL = "https://app.asana.com/0/0/" + task.GID
 	}
 
-	// Register task with monitor if in dashboard mode
-	if monitor != nil {
-		monitor.Register(taskID, task.Name, taskURL)
-	}
-	if program != nil {
-		program.Send(dashboard.AddLog(fmt.Sprintf("📦 Asana Task %s: %s", task.GID, task.Name))())
-	}
-
-	// Emit task started event (GH-337)
-	if alertsEngine != nil {
-		alertsEngine.ProcessEvent(alerts.Event{
-			Type:      alerts.EventTypeTaskStarted,
-			TaskID:    taskID,
-			TaskTitle: task.Name,
-			Project:   projectPath,
-			Timestamp: time.Now(),
-		})
-	}
-
-	// GH-539: Pre-execution budget check
-	if enforcer != nil {
-		checkResult, budgetErr := enforcer.CheckBudget(ctx, "", "")
-		if budgetErr != nil {
-			logging.WithComponent("budget").Warn("budget check failed, allowing task (fail-open)",
-				slog.String("task_id", taskID),
-				slog.Any("error", budgetErr),
-			)
-		} else if !checkResult.Allowed {
-			logging.WithComponent("budget").Warn("task blocked by budget enforcement",
-				slog.String("task_id", taskID),
-				slog.String("reason", checkResult.Reason),
-			)
-			if alertsEngine != nil {
-				alertsEngine.ProcessEvent(alerts.Event{
-					Type:      alerts.EventTypeBudgetExceeded,
-					TaskID:    taskID,
-					TaskTitle: task.Name,
-					Project:   projectPath,
-					Error:     checkResult.Reason,
-					Metadata: map[string]string{
-						"daily_left":   fmt.Sprintf("%.2f", checkResult.DailyLeft),
-						"monthly_left": fmt.Sprintf("%.2f", checkResult.MonthlyLeft),
-						"action":       string(checkResult.Action),
-					},
-					Timestamp: time.Now(),
-				})
-			}
-			budgetExceededErr := fmt.Errorf("budget enforcement: %s", checkResult.Reason)
-			return &asana.TaskResult{
-				Success: false,
-				Error:   budgetExceededErr,
-			}, budgetExceededErr
-		}
-	}
-
-	fmt.Printf("\n📦 Asana Task %s: %s\n", task.GID, task.Name)
-
 	taskDesc := fmt.Sprintf("Asana Task %s: %s\n\n%s", task.GID, task.Name, task.Notes)
 	branchName := fmt.Sprintf("pilot/%s", taskID)
 
@@ -1063,119 +565,37 @@ func handleAsanaTaskWithResult(ctx context.Context, cfg *config.Config, client *
 		CreatePR:    true,
 	}
 
-	var result *executor.ExecutionResult
-	var execErr error
-
-	if dispatcher != nil {
-		execID, qErr := dispatcher.QueueTask(ctx, execTask)
-		if qErr != nil {
-			execErr = fmt.Errorf("failed to queue task: %w", qErr)
-		} else {
-			if monitor != nil {
-				monitor.Queue(taskID)
-			}
-			fmt.Printf("   📋 Queued as execution %s\n", execID[:8])
-			exec, waitErr := dispatcher.WaitForExecution(ctx, execID, time.Second)
-			if waitErr != nil {
-				execErr = fmt.Errorf("failed waiting for execution: %w", waitErr)
-			} else if exec.Status == "failed" {
-				execErr = fmt.Errorf("execution failed: %s", exec.Error)
-			} else {
-				result = &executor.ExecutionResult{
-					TaskID:    execTask.ID,
-					Success:   exec.Status == "completed",
-					Output:    exec.Output,
-					Error:     exec.Error,
-					PRUrl:     exec.PRUrl,
-					CommitSHA: exec.CommitSHA,
-					Duration:  time.Duration(exec.DurationMs) * time.Millisecond,
-				}
-			}
-		}
-	} else {
-		result, execErr = runner.Execute(ctx, execTask)
+	deps := HandlerDeps{
+		Cfg:          cfg,
+		Dispatcher:   dispatcher,
+		Runner:       runner,
+		Monitor:      monitor,
+		Program:      program,
+		AlertsEngine: alertsEngine,
+		Enforcer:     enforcer,
+		ProjectPath:  projectPath,
+	}
+	info := IssueInfo{
+		TaskID:   taskID,
+		Title:    task.Name,
+		URL:      taskURL,
+		Adapter:  "asana",
+		LogEmoji: "📦",
 	}
 
-	// Update monitor with completion status
-	prURL := ""
-	if result != nil {
-		prURL = result.PRUrl
-	}
-	if monitor != nil {
-		if execErr != nil {
-			monitor.Fail(taskID, execErr.Error())
-		} else {
-			monitor.Complete(taskID, prURL)
-		}
-	}
-
-	// Emit task completed/failed event (GH-337)
-	if alertsEngine != nil {
-		if execErr != nil {
-			alertsEngine.ProcessEvent(alerts.Event{
-				Type:      alerts.EventTypeTaskFailed,
-				TaskID:    taskID,
-				TaskTitle: task.Name,
-				Project:   projectPath,
-				Error:     execErr.Error(),
-				Timestamp: time.Now(),
-			})
-		} else if result != nil && result.Success {
-			metadata := map[string]string{}
-			if result.PRUrl != "" {
-				metadata["pr_url"] = result.PRUrl
-			}
-			if result.Duration > 0 {
-				metadata["duration"] = result.Duration.String()
-			}
-			alertsEngine.ProcessEvent(alerts.Event{
-				Type:      alerts.EventTypeTaskCompleted,
-				TaskID:    taskID,
-				TaskTitle: task.Name,
-				Project:   projectPath,
-				Metadata:  metadata,
-				Timestamp: time.Now(),
-			})
-		} else if result != nil {
-			alertsEngine.ProcessEvent(alerts.Event{
-				Type:      alerts.EventTypeTaskFailed,
-				TaskID:    taskID,
-				TaskTitle: task.Name,
-				Project:   projectPath,
-				Error:     result.Error,
-				Timestamp: time.Now(),
-			})
-		}
-	}
-
-	// Add completed task to dashboard history
-	if program != nil {
-		status := "success"
-		duration := ""
-		if execErr != nil {
-			status = "failed"
-		} else if result != nil {
-			duration = result.Duration.String()
-		}
-		program.Send(dashboard.AddCompletedTask(taskID, task.Name, status, duration, "", false)())
-	}
+	hr, execErr := handleIssueGeneric(ctx, deps, info, execTask)
 
 	// Build task result
 	taskResult := &asana.TaskResult{
-		Success:    execErr == nil && result != nil && result.Success,
-		BranchName: branchName, // GH-1399: always set branch for autopilot wiring
-	}
-	if result != nil {
-		if result.PRUrl != "" {
-			taskResult.PRURL = result.PRUrl
-			if prNum, err := github.ExtractPRNumber(result.PRUrl); err == nil {
-				taskResult.PRNumber = prNum
-			}
-		}
-		taskResult.HeadSHA = result.CommitSHA // GH-1399: for autopilot CI monitoring
+		Success:    hr.Success,
+		BranchName: hr.BranchName, // GH-1399: always set branch for autopilot wiring
+		PRNumber:   hr.PRNumber,
+		PRURL:      hr.PRURL,
+		HeadSHA:    hr.HeadSHA, // GH-1399: for autopilot CI monitoring
+		Error:      hr.Error,
 	}
 
-	// Add comment to Asana task
+	// Post-execution: add comment, call CompleteTask()
 	if execErr != nil {
 		comment := fmt.Sprintf("❌ Pilot execution failed:\n\n%s", execErr.Error())
 		if _, err := client.AddComment(ctx, task.GID, comment); err != nil {
@@ -1184,11 +604,11 @@ func handleAsanaTaskWithResult(ctx context.Context, cfg *config.Config, client *
 				slog.Any("error", err),
 			)
 		}
-	} else if result != nil && result.Success {
+	} else if hr.Result != nil && hr.Result.Success {
 		// Validate deliverables before marking as done
-		if result.CommitSHA == "" && result.PRUrl == "" {
+		if hr.Result.CommitSHA == "" && hr.Result.PRUrl == "" {
 			comment := fmt.Sprintf("⚠️ Pilot execution completed but no changes were made.\n\nDuration: %s\nBranch: %s\n\nNo commits or PR were created. The task may need clarification or manual intervention.",
-				result.Duration, branchName)
+				hr.Result.Duration, branchName)
 			if _, err := client.AddComment(ctx, task.GID, comment); err != nil {
 				logging.WithComponent("asana").Warn("Failed to add comment",
 					slog.String("task", task.GID),
@@ -1197,7 +617,7 @@ func handleAsanaTaskWithResult(ctx context.Context, cfg *config.Config, client *
 			}
 			taskResult.Success = false
 		} else {
-			comment := buildAsanaExecutionComment(result, branchName)
+			comment := buildAsanaExecutionComment(hr.Result, branchName)
 			if _, err := client.AddComment(ctx, task.GID, comment); err != nil {
 				logging.WithComponent("asana").Warn("Failed to add comment",
 					slog.String("task", task.GID),
@@ -1213,8 +633,8 @@ func handleAsanaTaskWithResult(ctx context.Context, cfg *config.Config, client *
 				)
 			}
 		}
-	} else if result != nil {
-		comment := buildAsanaFailureComment(result)
+	} else if hr.Result != nil {
+		comment := buildAsanaFailureComment(hr.Result)
 		if _, err := client.AddComment(ctx, task.GID, comment); err != nil {
 			logging.WithComponent("asana").Warn("Failed to add comment",
 				slog.String("task", task.GID),
@@ -1353,65 +773,6 @@ func handlePlaneIssueWithResult(ctx context.Context, cfg *config.Config, client 
 	taskID := "PLANE-" + issue.ID[:8]
 	title := issue.Name
 
-	// Register task with monitor if in dashboard mode
-	if monitor != nil {
-		issueURL := fmt.Sprintf("%s/workspaces/%s/projects/%s/work-items/%s",
-			cfg.Adapters.Plane.BaseURL, cfg.Adapters.Plane.WorkspaceSlug, issue.ProjectID, issue.ID)
-		monitor.Register(taskID, title, issueURL)
-	}
-	if program != nil {
-		program.Send(dashboard.AddLog(fmt.Sprintf("📊 Plane Issue %s: %s", taskID, title))())
-	}
-
-	// Emit task started event
-	if alertsEngine != nil {
-		alertsEngine.ProcessEvent(alerts.Event{
-			Type:      alerts.EventTypeTaskStarted,
-			TaskID:    taskID,
-			TaskTitle: title,
-			Project:   projectPath,
-			Timestamp: time.Now(),
-		})
-	}
-
-	// Pre-execution budget check
-	if enforcer != nil {
-		checkResult, budgetErr := enforcer.CheckBudget(ctx, "", "")
-		if budgetErr != nil {
-			logging.WithComponent("budget").Warn("budget check failed, allowing task (fail-open)",
-				slog.String("task_id", taskID),
-				slog.Any("error", budgetErr),
-			)
-		} else if !checkResult.Allowed {
-			logging.WithComponent("budget").Warn("task blocked by budget enforcement",
-				slog.String("task_id", taskID),
-				slog.String("reason", checkResult.Reason),
-			)
-			if alertsEngine != nil {
-				alertsEngine.ProcessEvent(alerts.Event{
-					Type:      alerts.EventTypeBudgetExceeded,
-					TaskID:    taskID,
-					TaskTitle: title,
-					Project:   projectPath,
-					Error:     checkResult.Reason,
-					Metadata: map[string]string{
-						"daily_left":   fmt.Sprintf("%.2f", checkResult.DailyLeft),
-						"monthly_left": fmt.Sprintf("%.2f", checkResult.MonthlyLeft),
-						"action":       string(checkResult.Action),
-					},
-					Timestamp: time.Now(),
-				})
-			}
-			budgetExceededErr := fmt.Errorf("budget enforcement: %s", checkResult.Reason)
-			return &plane.IssueResult{
-				Success: false,
-				Error:   budgetExceededErr,
-			}, budgetExceededErr
-		}
-	}
-
-	fmt.Printf("\n📊 Plane Issue %s: %s\n", taskID, title)
-
 	taskDesc := fmt.Sprintf("Plane Issue %s: %s\n\n%s", taskID, title, issue.Description)
 	branchName := fmt.Sprintf("pilot/%s", taskID)
 
@@ -1436,119 +797,37 @@ func handlePlaneIssueWithResult(ctx context.Context, cfg *config.Config, client 
 	)
 	runner.SetSubIssueCreator(subCreatorClient)
 
-	var result *executor.ExecutionResult
-	var execErr error
-
-	if dispatcher != nil {
-		execID, qErr := dispatcher.QueueTask(ctx, task)
-		if qErr != nil {
-			execErr = fmt.Errorf("failed to queue task: %w", qErr)
-		} else {
-			if monitor != nil {
-				monitor.Queue(taskID)
-			}
-			fmt.Printf("   📋 Queued as execution %s\n", execID[:8])
-			exec, waitErr := dispatcher.WaitForExecution(ctx, execID, time.Second)
-			if waitErr != nil {
-				execErr = fmt.Errorf("failed waiting for execution: %w", waitErr)
-			} else if exec.Status == "failed" {
-				execErr = fmt.Errorf("execution failed: %s", exec.Error)
-			} else {
-				result = &executor.ExecutionResult{
-					TaskID:    task.ID,
-					Success:   exec.Status == "completed",
-					Output:    exec.Output,
-					Error:     exec.Error,
-					PRUrl:     exec.PRUrl,
-					CommitSHA: exec.CommitSHA,
-					Duration:  time.Duration(exec.DurationMs) * time.Millisecond,
-				}
-			}
-		}
-	} else {
-		result, execErr = runner.Execute(ctx, task)
+	deps := HandlerDeps{
+		Cfg:          cfg,
+		Dispatcher:   dispatcher,
+		Runner:       runner,
+		Monitor:      monitor,
+		Program:      program,
+		AlertsEngine: alertsEngine,
+		Enforcer:     enforcer,
+		ProjectPath:  projectPath,
+	}
+	info := IssueInfo{
+		TaskID:   taskID,
+		Title:    title,
+		URL:      fmt.Sprintf("%s/workspaces/%s/projects/%s/work-items/%s", cfg.Adapters.Plane.BaseURL, cfg.Adapters.Plane.WorkspaceSlug, issue.ProjectID, issue.ID),
+		Adapter:  "plane",
+		LogEmoji: "📊",
 	}
 
-	// Update monitor with completion status
-	prURL := ""
-	if result != nil {
-		prURL = result.PRUrl
-	}
-	if monitor != nil {
-		if execErr != nil {
-			monitor.Fail(taskID, execErr.Error())
-		} else {
-			monitor.Complete(taskID, prURL)
-		}
-	}
-
-	// Emit task completed/failed event
-	if alertsEngine != nil {
-		if execErr != nil {
-			alertsEngine.ProcessEvent(alerts.Event{
-				Type:      alerts.EventTypeTaskFailed,
-				TaskID:    taskID,
-				TaskTitle: title,
-				Project:   projectPath,
-				Error:     execErr.Error(),
-				Timestamp: time.Now(),
-			})
-		} else if result != nil && result.Success {
-			metadata := map[string]string{}
-			if result.PRUrl != "" {
-				metadata["pr_url"] = result.PRUrl
-			}
-			if result.Duration > 0 {
-				metadata["duration"] = result.Duration.String()
-			}
-			alertsEngine.ProcessEvent(alerts.Event{
-				Type:      alerts.EventTypeTaskCompleted,
-				TaskID:    taskID,
-				TaskTitle: title,
-				Project:   projectPath,
-				Metadata:  metadata,
-				Timestamp: time.Now(),
-			})
-		} else if result != nil {
-			alertsEngine.ProcessEvent(alerts.Event{
-				Type:      alerts.EventTypeTaskFailed,
-				TaskID:    taskID,
-				TaskTitle: title,
-				Project:   projectPath,
-				Error:     result.Error,
-				Timestamp: time.Now(),
-			})
-		}
-	}
-
-	// Add completed task to dashboard history
-	if program != nil {
-		status := "success"
-		duration := ""
-		if execErr != nil {
-			status = "failed"
-		} else if result != nil {
-			duration = result.Duration.String()
-		}
-		program.Send(dashboard.AddCompletedTask(taskID, title, status, duration, "", false)())
-	}
+	hr, execErr := handleIssueGeneric(ctx, deps, info, task)
 
 	// Build issue result
 	issueResult := &plane.IssueResult{
-		Success:    execErr == nil && result != nil && result.Success,
-		BranchName: branchName,
-	}
-	if result != nil {
-		if result.PRUrl != "" {
-			issueResult.PRURL = result.PRUrl
-			if prNum, err := github.ExtractPRNumber(result.PRUrl); err == nil {
-				issueResult.PRNumber = prNum
-			}
-		}
-		issueResult.HeadSHA = result.CommitSHA
+		Success:    hr.Success,
+		BranchName: hr.BranchName,
+		PRNumber:   hr.PRNumber,
+		PRURL:      hr.PRURL,
+		HeadSHA:    hr.HeadSHA,
+		Error:      hr.Error,
 	}
 
-	// Add comment to Plane work item
+	// Post-execution: add HTML comment, transition work item state
 	workspaceSlug := cfg.Adapters.Plane.WorkspaceSlug
 	projectID := issue.ProjectID
 	if execErr != nil {
@@ -1559,10 +838,10 @@ func handlePlaneIssueWithResult(ctx context.Context, cfg *config.Config, client 
 				slog.Any("error", err),
 			)
 		}
-	} else if result != nil && result.Success {
-		if result.CommitSHA == "" && result.PRUrl == "" {
+	} else if hr.Result != nil && hr.Result.Success {
+		if hr.Result.CommitSHA == "" && hr.Result.PRUrl == "" {
 			comment := fmt.Sprintf("<p>⚠️ Pilot execution completed but no changes were made.</p><p>Duration: %s<br>Branch: <code>%s</code></p><p>No commits or PR were created. The task may need clarification or manual intervention.</p>",
-				result.Duration, branchName)
+				hr.Result.Duration, branchName)
 			if err := client.AddComment(ctx, workspaceSlug, projectID, issue.ID, comment); err != nil {
 				logging.WithComponent("plane").Warn("Failed to add comment",
 					slog.String("issue_id", issue.ID),
@@ -1571,7 +850,7 @@ func handlePlaneIssueWithResult(ctx context.Context, cfg *config.Config, client 
 			}
 			issueResult.Success = false
 		} else {
-			comment := buildPlaneExecutionComment(result, branchName)
+			comment := buildPlaneExecutionComment(hr.Result, branchName)
 			if err := client.AddComment(ctx, workspaceSlug, projectID, issue.ID, comment); err != nil {
 				logging.WithComponent("plane").Warn("Failed to add success comment",
 					slog.String("issue_id", issue.ID),
@@ -1579,8 +858,8 @@ func handlePlaneIssueWithResult(ctx context.Context, cfg *config.Config, client 
 				)
 			}
 		}
-	} else if result != nil {
-		comment := fmt.Sprintf("<p>❌ Pilot execution failed:</p><pre>%s</pre>", result.Error)
+	} else if hr.Result != nil {
+		comment := fmt.Sprintf("<p>❌ Pilot execution failed:</p><pre>%s</pre>", hr.Result.Error)
 		if err := client.AddComment(ctx, workspaceSlug, projectID, issue.ID, comment); err != nil {
 			logging.WithComponent("plane").Warn("Failed to add failure comment",
 				slog.String("issue_id", issue.ID),
