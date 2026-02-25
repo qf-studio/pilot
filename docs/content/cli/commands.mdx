@@ -16,6 +16,8 @@ pilot start [flags]
 | `--github` | Enable GitHub polling (overrides config) |
 | `--linear` | Enable Linear webhooks (overrides config) |
 | `--slack` | Enable Slack Socket Mode (overrides config) |
+| `--discord` | Enable Discord bot (overrides config) |
+| `--plane` | Enable Plane polling (overrides config) |
 | `--autopilot=ENV` | Enable autopilot: `dev`, `stage`, `prod` |
 | `--auto-release` | Enable tag-based release automation (requires autopilot=prod) |
 | `--dashboard` | Show TUI dashboard for real-time task monitoring |
@@ -52,6 +54,15 @@ pilot start --telegram --github -d
 
 # With JSON logging for aggregation systems
 pilot start --github --log-format=json
+
+# Discord bot + GitHub
+pilot start --discord --github
+
+# Plane + GitHub
+pilot start --plane --github
+
+# Full stack: all adapters
+pilot start --telegram --github --discord --plane --slack --dashboard
 ```
 
 ## pilot task
