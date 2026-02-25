@@ -23,18 +23,18 @@ Pilot is a Go-based autonomous development pipeline. This page covers the system
 │    Adapters     │  │     Executor        │  │    Memory      │  │   Gateway   │
 │ telegram/github │  │ Claude Code Runner  │  │ SQLite + Graph │  │ HTTP + WS   │
 │ linear/jira/    │  │ Progress Display    │  │ Patterns Store │  │ Webhooks    │
-│ slack           │  │ Git Operations      │  └────────────────┘  └─────────────┘
-└─────────────────┘  │ Quality Gates       │
-                     │ Alerts Integration  │
+│ slack/discord/  │  │ Git Operations      │  └────────────────┘  └─────────────┘
+│ plane/gitlab    │  │ Quality Gates       │
+└─────────────────┘  │ Alerts Integration  │
                      └─────────────────────┘
 ```
 
-**27 packages** across four layers:
+**29 packages** across four layers:
 
 | Layer | Packages | Role |
 |-------|----------|------|
 | **Core** | `pilot`, `executor`, `config`, `memory`, `logging`, `alerts`, `quality`, `dashboard`, `briefs`, `replay`, `upgrade` | Execution engine, state, observability |
-| **Adapters** | `telegram`, `github`, `slack`, `linear`, `jira` | Input sources and notification channels |
+| **Adapters** | `telegram`, `github`, `slack`, `linear`, `jira`, `discord`, `plane`, `gitlab`, `azure-devops`, `asana` | Input sources and notification channels |
 | **Supporting** | `gateway`, `orchestrator`, `approval`, `budget`, `teams`, `tunnel`, `webhooks`, `health` | Infrastructure, cost control, permissions |
 | **Test** | `testutil` | Fake tokens, test helpers |
 
@@ -100,10 +100,12 @@ This is the primary data flow — the path a GitHub issue takes from creation to
 
 **1. Input Ingestion**
 
-Issues enter Pilot through three channels:
+Issues enter Pilot through five channels:
 
 - **GitHub Poller** — Polls every 30 seconds for open issues labeled `pilot`. The primary production intake.
 - **Telegram Bot** — Messages classified by intent (task, question, research, plan, chat). Tasks become issues.
+- **Discord Bot** — Listens for commands in configured channels. Tasks are created as GitHub issues.
+- **Plane Poller** — Polls Plane project boards for issues assigned to the Pilot actor.
 - **Webhooks** — Linear, Jira, and GitHub webhook events via the Gateway HTTP server.
 
 **2. Dispatcher Serialization**
@@ -293,8 +295,13 @@ Once a PR exists, the autopilot controller manages its lifecycle through 10 stag
 │ Executor │ │ Executor │ │ │Backend │ │ │ CI monitor   │
 │          │ │          │ │ │Quality │ │ │ Auto-merger   │
 └──────────┘ └──────────┘ │ │Alerts  │ │ │ Feedback loop│
-                          │ └────────┘ │ └──────┬───────┘
-                          └──────┬─────┘        │
+┌──────────┐ ┌──────────┐ │ └────────┘ │ └──────┬───────┘
+│ Discord  │ │ Plane    │ └──────┬─────┘        │
+│ Bot      │ │ Poller   │       │              │
+│          │ │          │       │              │
+│ Cmds  → │ │ Issues → │       │              │
+│ Executor │ │ Executor │       │              │
+└──────────┘ └──────────┘       │              │
                                  │              │
                     ┌────────────┼──────────────┘
                     │            │
@@ -426,11 +433,19 @@ Budget status is checked before each task dispatch and during execution via the 
 ```yaml
 # ~/.pilot/config.yaml
 gateway:           # HTTP + WebSocket server binding
-adapters:          # Input sources (telegram, github, slack, linear, jira)
+adapters:          # Input sources (telegram, github, slack, linear, jira, discord, plane)
   github:
     polling:
       interval: 30s
       label: "pilot"
+  discord:
+    bot_token: ""
+    guild_id: ""
+    channel_ids: []
+  plane:
+    api_url: ""
+    api_token: ""
+    project_board: ""
 orchestrator:      # Execution mode, autopilot config
   execution_mode: sequential    # sequential | parallel
   autopilot:
