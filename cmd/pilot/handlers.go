@@ -126,8 +126,12 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 	// boardSync is nil when project_board config is missing or disabled — syncBoardStatus handles nil safely.
 	var boardSync *github.ProjectBoardSync
 	if cfg.Adapters.GitHub.ProjectBoard != nil && cfg.Adapters.GitHub.ProjectBoard.Enabled {
-		owner := strings.Split(cfg.Adapters.GitHub.Repo, "/")[0]
-		boardSync = github.NewProjectBoardSync(client, cfg.Adapters.GitHub.ProjectBoard, owner)
+		parts := strings.Split(cfg.Adapters.GitHub.Repo, "/")
+		if len(parts) == 2 && parts[0] != "" {
+			boardSync = github.NewProjectBoardSync(client, cfg.Adapters.GitHub.ProjectBoard, parts[0])
+		} else {
+			slog.Warn("board sync disabled: invalid repo format, expected owner/repo", "repo", cfg.Adapters.GitHub.Repo)
+		}
 	}
 
 	// GH-386: Pre-execution validation - fail fast if repo doesn't match project
