@@ -12,6 +12,7 @@ type Config struct {
 	ProjectPath       string                   `yaml:"project_path"`        // Required project path - must match repo (GH-386)
 	Polling           *PollingConfig           `yaml:"polling"`             // Polling configuration
 	StaleLabelCleanup *StaleLabelCleanupConfig `yaml:"stale_label_cleanup"` // Auto-cleanup stale labels
+	ProjectBoard      *ProjectBoardConfig      `yaml:"project_board"`       // GitHub Projects V2 board sync
 }
 
 // PollingConfig holds GitHub polling settings
@@ -27,6 +28,23 @@ type StaleLabelCleanupConfig struct {
 	Interval        time.Duration `yaml:"interval"`         // How often to check for stale labels (default: 30m)
 	Threshold       time.Duration `yaml:"threshold"`        // How long before pilot-in-progress is stale (default: 1h)
 	FailedThreshold time.Duration `yaml:"failed_threshold"` // How long before pilot-failed is stale (default: 24h)
+}
+
+// ProjectBoardConfig configures GitHub Projects V2 board sync.
+// When nil or Enabled=false, board sync is skipped.
+type ProjectBoardConfig struct {
+	Enabled       bool            `yaml:"enabled"`
+	ProjectNumber int             `yaml:"project_number"` // Project number from URL
+	StatusField   string          `yaml:"status_field"`   // Field name, e.g. "Status"
+	Statuses      ProjectStatuses `yaml:"statuses"`
+}
+
+// ProjectStatuses maps Pilot lifecycle events to board column names.
+type ProjectStatuses struct {
+	InProgress string `yaml:"in_progress"` // e.g. "In Dev"
+	Review     string `yaml:"review"`      // e.g. "Ready for Review"
+	Done       string `yaml:"done"`        // e.g. "Done"
+	Failed     string `yaml:"failed"`      // Optional — e.g. "Blocked"
 }
 
 // DefaultConfig returns default GitHub configuration

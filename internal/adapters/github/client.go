@@ -48,6 +48,7 @@ func NewClientWithBaseURL(token, baseURL string) *Client {
 // Issue represents a GitHub issue
 type Issue struct {
 	ID        int64     `json:"id"`
+	NodeID    string    `json:"node_id"` // GraphQL global node ID
 	Number    int       `json:"number"`
 	Title     string    `json:"title"`
 	Body      string    `json:"body"`
