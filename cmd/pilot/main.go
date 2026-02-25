@@ -431,11 +431,6 @@ Examples:
 								parts[0],
 								parts[1],
 							)
-							// GH-1854: Wire board sync into autopilot controller
-							if cfg.Adapters.GitHub.ProjectBoard != nil && cfg.Adapters.GitHub.ProjectBoard.Enabled {
-								boardSync := github.NewProjectBoardSync(ghClient, cfg.Adapters.GitHub.ProjectBoard, parts[0])
-								gwAutopilotController.SetBoardSync(boardSync, cfg.Adapters.GitHub.ProjectBoard.Statuses.Done)
-							}
 						}
 					}
 				}
@@ -729,8 +724,6 @@ Examples:
 						// GH-797: Call OnPRCreated for retried issues so autopilot tracks their PRs
 						if result != nil && result.PRNumber > 0 && gwAutopilotController != nil {
 							gwAutopilotController.OnPRCreated(result.PRNumber, result.PRURL, issue.Number, result.HeadSHA, result.BranchName)
-							// GH-1854: Propagate issue NodeID for board sync
-							gwAutopilotController.SetPRIssueNodeID(result.PRNumber, issue.NodeID)
 						}
 
 						return err
@@ -1179,11 +1172,6 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 					)
 					autopilotControllers[cfg.Adapters.GitHub.Repo] = controller
 					autopilotController = controller // Default for backwards compat
-					// GH-1854: Wire board sync into autopilot controller
-					if cfg.Adapters.GitHub.ProjectBoard != nil && cfg.Adapters.GitHub.ProjectBoard.Enabled {
-						boardSync := github.NewProjectBoardSync(ghClient, cfg.Adapters.GitHub.ProjectBoard, parts[0])
-						controller.SetBoardSync(boardSync, cfg.Adapters.GitHub.ProjectBoard.Statuses.Done)
-					}
 				}
 			}
 
@@ -1748,8 +1736,6 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 
 					if result != nil && result.PRNumber > 0 && controllerCapture != nil {
 						controllerCapture.OnPRCreated(result.PRNumber, result.PRURL, issue.Number, result.HeadSHA, result.BranchName)
-						// GH-1854: Propagate issue NodeID for board sync
-						controllerCapture.SetPRIssueNodeID(result.PRNumber, issue.NodeID)
 					}
 
 					return err

@@ -435,6 +435,4 @@ type PRState struct {
 	PRTitle string
 	// TargetBranch is the base branch the PR merges into (e.g. "main").
 	TargetBranch string
-	// IssueNodeID is the GraphQL node ID of the linked issue, used for board sync.
-	IssueNodeID string
 }

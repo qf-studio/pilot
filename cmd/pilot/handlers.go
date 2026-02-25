@@ -23,6 +23,17 @@ import (
 	"github.com/alekspetrov/pilot/internal/logging"
 )
 
+// syncBoardStatus updates a GitHub Projects V2 board column for an issue.
+// It is a no-op when boardSync is nil or status is empty. Errors are logged, never propagated.
+func syncBoardStatus(ctx context.Context, boardSync *github.ProjectBoardSync, nodeID string, status string) {
+	if boardSync == nil || status == "" {
+		return
+	}
+	if err := boardSync.UpdateProjectItemStatus(ctx, nodeID, status); err != nil {
+		slog.Warn("board sync failed", "status", status, "error", err)
+	}
+}
+
 // logGitHubAPIError logs a warning when a GitHub API call fails.
 func logGitHubAPIError(operation string, owner, repo string, issueNum int, err error) {
 	if err != nil {
@@ -111,6 +122,14 @@ func extractGitHubLabelNames(issue *github.Issue) []string {
 func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client *github.Client, issue *github.Issue, projectPath string, sourceRepo string, dispatcher *executor.Dispatcher, runner *executor.Runner, monitor *executor.Monitor, program *tea.Program, alertsEngine *alerts.Engine, enforcer *budget.Enforcer) (*github.IssueResult, error) {
 	taskID := fmt.Sprintf("GH-%d", issue.Number)
 
+	// GH-1853: Construct board sync for GitHub Projects V2 status transitions.
+	// boardSync is nil when project_board config is missing or disabled — syncBoardStatus handles nil safely.
+	var boardSync *github.ProjectBoardSync
+	if cfg.Adapters.GitHub.ProjectBoard != nil && cfg.Adapters.GitHub.ProjectBoard.Enabled {
+		owner := strings.Split(cfg.Adapters.GitHub.Repo, "/")[0]
+		boardSync = github.NewProjectBoardSync(client, cfg.Adapters.GitHub.ProjectBoard, owner)
+	}
+
 	// GH-386: Pre-execution validation - fail fast if repo doesn't match project
 	if err := executor.ValidateRepoProjectMatch(sourceRepo, projectPath); err != nil {
 		logging.WithComponent("github").Error("cross-project execution blocked",
@@ -189,6 +208,9 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 		}
 	}
 
+	// GH-1853: Move issue to "In Progress" column on project board
+	syncBoardStatus(ctx, boardSync, issue.NodeID, cfg.Adapters.GitHub.ProjectBoard.GetStatuses().InProgress)
+
 	deps := HandlerDeps{
 		Cfg:          cfg,
 		Dispatcher:   dispatcher,
@@ -227,10 +249,14 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 			logGitHubAPIError("RemoveLabel", parts[0], parts[1], issue.Number, err)
 		}
 
+		// GH-1853: Resolve board statuses once for all paths (nil-safe via GetStatuses)
+		boardStatuses := cfg.Adapters.GitHub.ProjectBoard.GetStatuses()
+
 		if execErr != nil {
 			if err := client.AddLabels(ctx, parts[0], parts[1], issue.Number, []string{github.LabelFailed}); err != nil {
 				logGitHubAPIError("AddLabels", parts[0], parts[1], issue.Number, err)
 			}
+			syncBoardStatus(ctx, boardSync, issue.NodeID, boardStatuses.Failed) // GH-1853
 			comment := fmt.Sprintf("❌ Pilot execution failed:\n\n```\n%s\n```", execErr.Error())
 			if _, err := client.AddComment(ctx, parts[0], parts[1], issue.Number, comment); err != nil {
 				logGitHubAPIError("AddComment", parts[0], parts[1], issue.Number, err)
@@ -242,6 +268,7 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 				if err := client.AddLabels(ctx, parts[0], parts[1], issue.Number, []string{github.LabelFailed}); err != nil {
 					logGitHubAPIError("AddLabels", parts[0], parts[1], issue.Number, err)
 				}
+				syncBoardStatus(ctx, boardSync, issue.NodeID, boardStatuses.Failed) // GH-1853
 				comment := fmt.Sprintf("⚠️ Pilot execution completed but no changes were made.\n\n**Duration:** %s\n**Branch:** `%s`\n\nNo commits or PR were created. The task may need clarification or manual intervention.",
 					hr.Result.Duration, branchName)
 				if _, err := client.AddComment(ctx, parts[0], parts[1], issue.Number, comment); err != nil {
@@ -257,6 +284,7 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 				if err := client.AddLabels(ctx, parts[0], parts[1], issue.Number, []string{github.LabelDone}); err != nil {
 					logGitHubAPIError("AddLabels", parts[0], parts[1], issue.Number, err)
 				}
+				syncBoardStatus(ctx, boardSync, issue.NodeID, boardStatuses.Done) // GH-1853
 
 				// GH-1302: Clean up stale pilot-failed label from prior failed attempt
 				if github.HasLabel(issue, github.LabelFailed) {
@@ -280,6 +308,7 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 			if err := client.AddLabels(ctx, parts[0], parts[1], issue.Number, []string{github.LabelFailed}); err != nil {
 				logGitHubAPIError("AddLabels", parts[0], parts[1], issue.Number, err)
 			}
+			syncBoardStatus(ctx, boardSync, issue.NodeID, boardStatuses.Failed) // GH-1853
 			comment := buildFailureComment(hr.Result)
 			if _, err := client.AddComment(ctx, parts[0], parts[1], issue.Number, comment); err != nil {
 				logGitHubAPIError("AddComment", parts[0], parts[1], issue.Number, err)

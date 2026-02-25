@@ -47,6 +47,15 @@ type ProjectStatuses struct {
 	Failed     string `yaml:"failed"`      // Optional — e.g. "Blocked"
 }
 
+// GetStatuses returns the statuses config, or a zero value if the receiver is nil.
+// This enables nil-safe access: cfg.Adapters.GitHub.ProjectBoard.GetStatuses().InProgress
+func (c *ProjectBoardConfig) GetStatuses() ProjectStatuses {
+	if c == nil {
+		return ProjectStatuses{}
+	}
+	return c.Statuses
+}
+
 // DefaultConfig returns default GitHub configuration
 func DefaultConfig() *Config {
 	return &Config{

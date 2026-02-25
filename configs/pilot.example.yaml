@@ -47,18 +47,6 @@ adapters:
       enabled: true
       interval: 30s
       label: "pilot"
-    # GitHub Projects V2 board sync (optional)
-    # Keeps your project board in sync as Pilot progresses through tasks.
-    # Requires classic PAT with "project" scope (fine-grained PATs not supported).
-    project_board:
-      enabled: false
-      project_number: 1            # Project number from URL (github.com/users/you/projects/1)
-      status_field: "Status"       # Name of the single-select status field
-      statuses:
-        in_progress: "In Dev"      # Set when Pilot starts working
-        review: "Ready for Review" # Set when PR is created (future)
-        done: "Done"               # Set when PR is merged
-        failed: "Blocked"          # Optional — set on execution failure
 
   # GitLab - Issue polling and MR creation
   gitlab:
