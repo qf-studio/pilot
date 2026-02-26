@@ -540,6 +540,7 @@ Examples:
 						gwAutopilotController.SetMonitor(gwMonitor)
 					}
 					model := dashboard.NewModelWithOptions(version, gwStore, gwAutopilotController, nil)
+					model.SetProjectPath(projectPath)
 					gwProgram = tea.NewProgram(model,
 						tea.WithAltScreen(),
 						tea.WithInput(os.Stdin),
@@ -1388,6 +1389,7 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 		}
 		upgradeRequestCh = make(chan struct{}, 1)
 		model := dashboard.NewModelWithOptions(version, store, autopilotController, upgradeRequestCh)
+		model.SetProjectPath(projectPath)
 		program = tea.NewProgram(model,
 			tea.WithAltScreen(),
 			tea.WithInput(os.Stdin),
