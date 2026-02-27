@@ -54,6 +54,8 @@ venv/
 
 # Data files (local to user)
 *.db
+*.db-shm
+*.db-wal
 *.sqlite
 *.sqlite3
 
