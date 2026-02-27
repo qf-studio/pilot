@@ -228,32 +228,6 @@ func TestRenderGraphLineFull_Connector(t *testing.T) {
 	}
 }
 
-// TestRenderGraphLineSmall verifies small-mode rendering.
-func TestRenderGraphLineSmall(t *testing.T) {
-	line := GitGraphLine{
-		GraphChars: "│ ",
-		SHA:        "a1b2c3d",
-		Message:    "fix: handle nil response in webhook handler",
-	}
-
-	width := 30
-	got := renderGraphLineSmall(line, width)
-
-	if got == "" {
-		t.Error("renderGraphLineSmall returned empty string")
-	}
-
-	plain := stripANSI(got)
-	// Should not include author or SHA (small mode: message only)
-	if strings.Contains(plain, "a1b2c3d") {
-		t.Error("small mode should not include SHA")
-	}
-	// Should contain truncated message
-	if !strings.Contains(plain, "fix:") {
-		t.Errorf("small mode should contain message start, got %q", plain)
-	}
-}
-
 // TestRenderGitGraph_Hidden verifies no output when mode is Hidden.
 func TestRenderGitGraph_Hidden(t *testing.T) {
 	m := NewModel("test")
@@ -360,29 +334,6 @@ func TestRenderGitGraph_WithData(t *testing.T) {
 	}
 }
 
-// TestRenderGitGraph_SmallMode verifies small mode uses "GIT" as title.
-func TestRenderGitGraph_SmallMode(t *testing.T) {
-	m := NewModel("test")
-	m.gitGraphMode = GitGraphSmall
-	m.width = 130
-	m.gitGraphState = &GitGraphState{
-		TotalCount: 1,
-		Lines: []GitGraphLine{
-			{GraphChars: "● ", SHA: "7eb8da1", Author: "Alice", Message: "fix: edge case"},
-		},
-	}
-
-	got := m.renderGitGraph()
-	if got == "" {
-		t.Fatal("small mode returned empty string")
-	}
-
-	plain := stripANSI(got)
-	if !strings.Contains(plain, "GIT") {
-		t.Error("small mode should have 'GIT' in panel title")
-	}
-}
-
 // TestRenderGitGraph_FocusedBorder verifies both focused and unfocused panels render.
 // Note: color differences require a TTY; here we only verify both render non-empty
 // and contain the correct panel structure.
@@ -417,7 +368,7 @@ func TestRenderGitGraph_FocusedBorder(t *testing.T) {
 	}
 }
 
-// TestModelUpdate_GToggle verifies 'g' key cycles through graph modes.
+// TestModelUpdate_GToggle verifies 'g' key toggles graph on/off.
 func TestModelUpdate_GToggle(t *testing.T) {
 	m := NewModel("test")
 	m.gitGraphMode = GitGraphHidden
@@ -430,18 +381,11 @@ func TestModelUpdate_GToggle(t *testing.T) {
 		t.Errorf("after 1st g: mode = %d, want GitGraphFull(%d)", m.gitGraphMode, GitGraphFull)
 	}
 
-	// Full → Small
-	updated, _ = m.Update(makeKey("g"))
-	m = updated.(Model)
-	if m.gitGraphMode != GitGraphSmall {
-		t.Errorf("after 2nd g: mode = %d, want GitGraphSmall(%d)", m.gitGraphMode, GitGraphSmall)
-	}
-
-	// Small → Hidden
+	// Full → Hidden
 	updated, _ = m.Update(makeKey("g"))
 	m = updated.(Model)
 	if m.gitGraphMode != GitGraphHidden {
-		t.Errorf("after 3rd g: mode = %d, want GitGraphHidden(%d)", m.gitGraphMode, GitGraphHidden)
+		t.Errorf("after 2nd g: mode = %d, want GitGraphHidden(%d)", m.gitGraphMode, GitGraphHidden)
 	}
 }
 

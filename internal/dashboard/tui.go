@@ -652,8 +652,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.showLogs = !m.showLogs
 			return m, tea.ClearScreen // GH-1249: Logs toggle changes height
 		case "g":
-			// Cycle git graph: Hidden → Full → Small → Hidden
-			m.gitGraphMode = (m.gitGraphMode + 1) % 3
+			// Toggle git graph: Hidden ↔ Full
+			if m.gitGraphMode == GitGraphHidden {
+				m.gitGraphMode = GitGraphFull
+			} else {
+				m.gitGraphMode = GitGraphHidden
+			}
 			m.gitGraphFocus = false
 			if m.gitGraphMode != GitGraphHidden {
 				// Start refresh and 15s tick when becoming visible
@@ -954,10 +958,10 @@ func (m Model) renderHelp() string {
 		parts = []string{"q: quit", "l: logs", "b: banner", "g: graph", "j/k: select"}
 	case m.gitGraphFocus:
 		// Graph visible, graph panel focused
-		parts = []string{"q: quit", "b: banner", "g: cycle", "tab: dashboard"}
+		parts = []string{"q: quit", "b: banner", "g: close", "tab: dashboard"}
 	default:
 		// Graph visible, dashboard focused
-		parts = []string{"q: quit", "b: banner", "g: cycle", "tab: graph"}
+		parts = []string{"q: quit", "b: banner", "g: close", "tab: graph"}
 	}
 	help := strings.Join(parts, "  ")
 	if len(help) > panelTotalWidth {

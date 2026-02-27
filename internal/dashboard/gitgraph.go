@@ -12,13 +12,12 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// GitGraphMode represents the 3 toggle states.
+// GitGraphMode represents the on/off toggle states.
 type GitGraphMode int
 
 const (
 	GitGraphHidden GitGraphMode = iota
 	GitGraphFull
-	GitGraphSmall
 )
 
 // gitRefreshMsg is sent after a background git graph refresh completes.
@@ -335,29 +334,6 @@ func renderGraphLineFull(line GitGraphLine, width int) string {
 	return graphColored + styledRefs + styledMsg + " " + right
 }
 
-// renderGraphLineSmall renders one line in Small mode:
-//   graph + truncated message only (no refs/author/SHA)
-func renderGraphLineSmall(line GitGraphLine, width int) string {
-	graphColored := colorizeGraphChars(line.GraphChars)
-	graphWidth := lipgloss.Width(line.GraphChars)
-
-	if line.SHA == "" {
-		// Pure graph connector
-		padding := width - graphWidth
-		if padding < 0 {
-			padding = 0
-		}
-		return graphColored + strings.Repeat(" ", padding)
-	}
-
-	msgWidth := width - graphWidth
-	if msgWidth < 5 {
-		msgWidth = 5
-	}
-	styledMsg := graphMsgStyle.Render(padOrTruncate(line.Message, msgWidth))
-	return graphColored + styledMsg
-}
-
 // collapseRefs returns a plain-text version of the refs string for width measurement.
 // Strips long-form prefixes (refs/heads/, refs/remotes/, etc.).
 func collapseRefs(refs string) string {
@@ -430,20 +406,11 @@ func (m Model) renderGitGraph(forceWidth ...int) string {
 			graphWidth = m.width - panelTotalWidth - 2
 		}
 	}
-	if m.gitGraphMode == GitGraphSmall {
-		if graphWidth > 32 {
-			graphWidth = 32
-		}
-	}
 	if graphWidth < 20 {
 		return ""
 	}
 
-	// Choose title based on mode
 	title := "GIT GRAPH"
-	if m.gitGraphMode == GitGraphSmall {
-		title = "GIT"
-	}
 
 	// Build content lines
 	innerWidth := graphWidth - 4 // border(1) + space(1) + space(1) + border(1)
@@ -492,13 +459,7 @@ func (m Model) renderGitGraph(forceWidth ...int) string {
 		}
 
 		for _, line := range lines[start:end] {
-			var rendered string
-			if m.gitGraphMode == GitGraphFull {
-				rendered = renderGraphLineFull(line, innerWidth)
-			} else {
-				rendered = renderGraphLineSmall(line, innerWidth)
-			}
-			contentLines = append(contentLines, rendered)
+			contentLines = append(contentLines, renderGraphLineFull(line, innerWidth))
 		}
 
 		// Build scroll indicator (placed at bottom of content area)
