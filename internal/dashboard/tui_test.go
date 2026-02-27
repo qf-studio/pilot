@@ -124,7 +124,7 @@ func TestRenderSparkline(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := renderSparkline(tt.levels, tt.pulsing)
+			got := renderSparkline(tt.levels, tt.pulsing, cardInnerWidth)
 
 			// Visual width must equal cardInnerWidth (17)
 			runeCount := utf8.RuneCountInString(got)
@@ -146,7 +146,7 @@ func TestRenderSparkline(t *testing.T) {
 }
 
 func TestBuildMiniCard(t *testing.T) {
-	card := buildMiniCard("TEST", "42", "detail one", "detail two", "▁▂▃▄▅▆▇█▁▂▃▄▅▆▇█•")
+	card := buildMiniCard("TEST", "42", "detail one", "detail two", "▁▂▃▄▅▆▇█▁▂▃▄▅▆▇█•", cardWidth)
 
 	lines := strings.Split(card, "\n")
 	for i, line := range lines {
@@ -231,7 +231,7 @@ func TestRenderTaskCard_ShowsQueueDepth(t *testing.T) {
 		{ID: "2", Title: "Task B", Status: "pending"},
 	}
 
-	output := m.renderTaskCard()
+	output := m.renderTaskCard(cardWidth)
 
 	// QUEUE card value must show current queue depth (2), not lifetime total (10)
 	if !strings.Contains(output, "QUEUE") {
@@ -262,7 +262,7 @@ func TestRenderTaskCard_EmptyQueue(t *testing.T) {
 	m.metricsCard.Failed = 2
 	m.tasks = nil
 
-	output := m.renderTaskCard()
+	output := m.renderTaskCard(cardWidth)
 
 	// Should show 0 for empty queue, not 5 (lifetime total)
 	if strings.Contains(output, "5") {
@@ -1054,4 +1054,81 @@ func TestGitGraph_NarrowTerminalNotSilent(t *testing.T) {
 	if !strings.Contains(plain, "GIT GRAPH") {
 		t.Error("narrow terminal (60 cols) should show stacked GIT GRAPH panel, got silent/empty")
 	}
+}
+
+func TestDashboardPanels_StretchInStackedMode(t *testing.T) {
+	// GH-1909: In stacked mode, dashboard panels should stretch to full terminal width,
+	// matching the git graph panel width for visual consistency.
+	m := Model{
+		width: 80, height: 40, gitGraphMode: GitGraphFull,
+		autopilotPanel: NewAutopilotPanel(nil),
+		gitGraphState: &GitGraphState{
+			Lines: []GitGraphLine{
+				{GraphChars: "●", SHA: "abc1234", Author: "Test", Message: "Initial commit"},
+			},
+		},
+	}
+
+	view := m.View()
+	lines := strings.Split(view, "\n")
+
+	// Find QUEUE panel border (a dashboard panel, not the git graph)
+	var queueBorderLine string
+	for _, line := range lines {
+		plain := stripANSI(line)
+		if strings.Contains(plain, "QUEUE") && strings.Contains(plain, "╭") {
+			queueBorderLine = plain
+			break
+		}
+	}
+	if queueBorderLine == "" {
+		t.Fatal("QUEUE panel not found in stacked layout output")
+	}
+
+	// Dashboard panels should stretch to full terminal width (80), not stay at panelTotalWidth (69)
+	borderWidth := lipgloss.Width(queueBorderLine)
+	if borderWidth != m.width {
+		t.Errorf("stacked QUEUE panel width = %d, want %d (full terminal width); panels should stretch in stacked mode", borderWidth, m.width)
+	}
+
+	// Also verify HISTORY panel stretches
+	var historyBorderLine string
+	for _, line := range lines {
+		plain := stripANSI(line)
+		if strings.Contains(plain, "HISTORY") && strings.Contains(plain, "╭") {
+			historyBorderLine = plain
+			break
+		}
+	}
+	if historyBorderLine == "" {
+		t.Fatal("HISTORY panel not found in stacked layout output")
+	}
+	historyWidth := lipgloss.Width(historyBorderLine)
+	if historyWidth != m.width {
+		t.Errorf("stacked HISTORY panel width = %d, want %d", historyWidth, m.width)
+	}
+}
+
+func TestDashboardPanels_DefaultWidthWhenNoGraph(t *testing.T) {
+	// When graph is hidden (no stacked mode), panels should use the default panelTotalWidth (69)
+	m := Model{
+		width: 120, height: 40, gitGraphMode: GitGraphHidden,
+		autopilotPanel: NewAutopilotPanel(nil),
+	}
+
+	view := m.View()
+	lines := strings.Split(view, "\n")
+
+	// Find QUEUE panel border
+	for _, line := range lines {
+		plain := stripANSI(line)
+		if strings.Contains(plain, "QUEUE") && strings.Contains(plain, "╭") {
+			borderWidth := lipgloss.Width(plain)
+			if borderWidth != panelTotalWidth {
+				t.Errorf("default QUEUE panel width = %d, want %d (panelTotalWidth)", borderWidth, panelTotalWidth)
+			}
+			return
+		}
+	}
+	t.Fatal("QUEUE panel not found in default layout output")
 }

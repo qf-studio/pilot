@@ -119,21 +119,26 @@ var (
 // AutopilotPanel displays autopilot status in the dashboard.
 type AutopilotPanel struct {
 	controller *autopilot.Controller
+	panelWidth int // dynamic panel width, set before View()
 }
 
 // NewAutopilotPanel creates an autopilot panel.
 func NewAutopilotPanel(controller *autopilot.Controller) *AutopilotPanel {
-	return &AutopilotPanel{controller: controller}
+	return &AutopilotPanel{controller: controller, panelWidth: panelTotalWidth}
 }
 
 // View renders the autopilot panel content.
 func (p *AutopilotPanel) View() string {
 	var content strings.Builder
-	w := panelInnerWidth
+	tw := p.panelWidth
+	if tw < panelTotalWidth {
+		tw = panelTotalWidth
+	}
+	w := tw - 4
 
 	if p.controller == nil {
 		content.WriteString("  Disabled")
-		return renderPanel("AUTOPILOT", content.String())
+		return renderPanel("AUTOPILOT", content.String(), tw)
 	}
 
 	cfg := p.controller.Config()
@@ -205,7 +210,7 @@ func (p *AutopilotPanel) View() string {
 		content.WriteString(dotLeaderStyled("Failures", failStr, warningStyle, w))
 	}
 
-	return renderPanel("AUTOPILOT", content.String())
+	return renderPanel("AUTOPILOT", content.String(), tw)
 }
 
 // formatDuration formats a duration for display (e.g., "2m", "1h30m").
@@ -379,6 +384,22 @@ type Model struct {
 	gitGraphFocus  bool
 	projectPath    string // Working directory for git commands
 }
+
+// isStackedMode returns true when the git graph is visible and the terminal is
+// too narrow for side-by-side layout, so the graph stacks below the dashboard.
+func (m Model) isStackedMode() bool {
+	return m.gitGraphMode != GitGraphHidden && m.width > 0 && m.width < panelTotalWidth+1+20
+}
+
+// effectivePanelTotalWidth returns the panel width for the current layout.
+// In stacked mode with a wider terminal, panels stretch to fill terminal width.
+func (m Model) effectivePanelTotalWidth() int {
+	if m.isStackedMode() && m.width > panelTotalWidth {
+		return m.width
+	}
+	return panelTotalWidth
+}
+
 
 // tickMsg is sent periodically to refresh the display
 type tickMsg time.Time
@@ -912,6 +933,11 @@ func (m Model) View() string {
 func (m Model) renderDashboard() string {
 	var b strings.Builder
 
+	// Set effective panel width on autopilot panel for stacked mode
+	if m.autopilotPanel != nil {
+		m.autopilotPanel.panelWidth = m.effectivePanelTotalWidth()
+	}
+
 	// Header with ASCII logo
 	if m.showBanner {
 		b.WriteString("\n")
@@ -970,48 +996,48 @@ func (m Model) renderHelp() string {
 		parts = []string{"q: quit", "b: banner", "g: close", "tab: graph"}
 	}
 	help := strings.Join(parts, "  ")
-	if len(help) > panelTotalWidth {
-		help = help[:panelTotalWidth-3] + "..."
+	tw := m.effectivePanelTotalWidth()
+	if len(help) > tw {
+		help = help[:tw-3] + "..."
 	}
 	return helpStyle.Render(help)
 }
 
-// renderPanel builds a panel manually with guaranteed width
-// Total width: panelTotalWidth (69 chars)
+// renderPanel builds a panel manually with guaranteed width.
+// tw specifies the total visual width including borders.
 // Structure: ╭─ TITLE ─...─╮ / │ (space) content (space) │ / ╰─...─╯
-func renderPanel(title string, content string) string {
+func renderPanel(title string, content string, tw int) string {
 	var lines []string
 
 	// Top border: ╭─ TITLE ─────────────────────────────────────────────────────╮
-	lines = append(lines, buildTopBorder(title))
+	lines = append(lines, buildTopBorder(title, tw))
 
 	// Empty line padding
-	lines = append(lines, buildEmptyLine())
+	lines = append(lines, buildEmptyLine(tw))
 
 	// Content lines
 	for _, line := range strings.Split(content, "\n") {
-		lines = append(lines, buildContentLine(line))
+		lines = append(lines, buildContentLine(line, tw))
 	}
 
 	// Empty line padding
-	lines = append(lines, buildEmptyLine())
+	lines = append(lines, buildEmptyLine(tw))
 
 	// Bottom border
-	lines = append(lines, buildBottomBorder())
+	lines = append(lines, buildBottomBorder(tw))
 
 	return strings.Join(lines, "\n")
 }
 
-// buildTopBorder creates: ╭─ TITLE ─────...─────╮ with exact panelTotalWidth
-func buildTopBorder(title string) string {
+// buildTopBorder creates: ╭─ TITLE ─────...─────╮ with exact tw width
+func buildTopBorder(title string, tw int) string {
 	// Characters: ╭ (1) + ─ (1) + space (1) + TITLE + space (1) + dashes + ╮ (1)
-	// Available for dashes = panelTotalWidth - 5 - len(title)
 	titleUpper := strings.ToUpper(title)
 	prefix := "╭─ "
 	prefixWidth := lipgloss.Width(prefix + titleUpper + " ")
 
 	// Calculate dashes needed (each ─ is 1 visual char)
-	dashCount := panelTotalWidth - prefixWidth - 1 // -1 for ╮
+	dashCount := tw - prefixWidth - 1 // -1 for ╮
 	if dashCount < 0 {
 		dashCount = 0
 	}
@@ -1021,25 +1047,25 @@ func buildTopBorder(title string) string {
 }
 
 // buildBottomBorder creates: ╰─────────────────────────────────────────────────╯
-func buildBottomBorder() string {
+func buildBottomBorder(tw int) string {
 	// ╰ + dashes + ╯
-	dashCount := panelTotalWidth - 2
+	dashCount := tw - 2
 	line := "╰" + strings.Repeat("─", dashCount) + "╯"
 	return borderStyle.Render(line)
 }
 
 // buildEmptyLine creates: │                                                                 │
-func buildEmptyLine() string {
+func buildEmptyLine(tw int) string {
 	// │ + spaces + │
-	spaceCount := panelTotalWidth - 2
+	spaceCount := tw - 2
 	border := borderStyle.Render("│")
 	return border + strings.Repeat(" ", spaceCount) + border
 }
 
 // buildContentLine creates: │ (space) content padded/truncated (space) │
-func buildContentLine(content string) string {
-	// Available width for content = panelTotalWidth - 4 (│ + space + space + │)
-	contentWidth := panelTotalWidth - 4
+func buildContentLine(content string, tw int) string {
+	// Available width for content = tw - 4 (│ + space + space + │)
+	contentWidth := tw - 4
 
 	// Pad or truncate content to exact width
 	adjusted := padOrTruncate(content, contentWidth)
@@ -1050,36 +1076,36 @@ func buildContentLine(content string) string {
 }
 
 // renderOrangePanel renders a panel with orange borders and title (for update notifications)
-func renderOrangePanel(title string, content string) string {
+func renderOrangePanel(title string, content string, tw int) string {
 	var lines []string
 
 	// Top border
-	lines = append(lines, buildOrangeTopBorder(title))
+	lines = append(lines, buildOrangeTopBorder(title, tw))
 
 	// Empty line padding
-	lines = append(lines, buildOrangeEmptyLine())
+	lines = append(lines, buildOrangeEmptyLine(tw))
 
 	// Content lines
 	for _, line := range strings.Split(content, "\n") {
-		lines = append(lines, buildOrangeContentLine(line))
+		lines = append(lines, buildOrangeContentLine(line, tw))
 	}
 
 	// Empty line padding
-	lines = append(lines, buildOrangeEmptyLine())
+	lines = append(lines, buildOrangeEmptyLine(tw))
 
 	// Bottom border
-	lines = append(lines, buildOrangeBottomBorder())
+	lines = append(lines, buildOrangeBottomBorder(tw))
 
 	return strings.Join(lines, "\n")
 }
 
 // buildOrangeTopBorder creates orange top border: ╭─ TITLE ─────...─────╮
-func buildOrangeTopBorder(title string) string {
+func buildOrangeTopBorder(title string, tw int) string {
 	titleUpper := strings.ToUpper(title)
 	prefix := "╭─ "
 	prefixWidth := lipgloss.Width(prefix + titleUpper + " ")
 
-	dashCount := panelTotalWidth - prefixWidth - 1
+	dashCount := tw - prefixWidth - 1
 	if dashCount < 0 {
 		dashCount = 0
 	}
@@ -1088,22 +1114,22 @@ func buildOrangeTopBorder(title string) string {
 }
 
 // buildOrangeBottomBorder creates orange bottom border: ╰─────────────────────────────────────────────────╯
-func buildOrangeBottomBorder() string {
-	dashCount := panelTotalWidth - 2
+func buildOrangeBottomBorder(tw int) string {
+	dashCount := tw - 2
 	line := "╰" + strings.Repeat("─", dashCount) + "╯"
 	return orangeBorderStyle.Render(line)
 }
 
 // buildOrangeEmptyLine creates orange bordered empty line: │                                                                 │
-func buildOrangeEmptyLine() string {
-	spaceCount := panelTotalWidth - 2
+func buildOrangeEmptyLine(tw int) string {
+	spaceCount := tw - 2
 	border := orangeBorderStyle.Render("│")
 	return border + strings.Repeat(" ", spaceCount) + border
 }
 
 // buildOrangeContentLine creates orange bordered content line: │ (space) content padded/truncated (space) │
-func buildOrangeContentLine(content string) string {
-	contentWidth := panelTotalWidth - 4
+func buildOrangeContentLine(content string, tw int) string {
+	contentWidth := tw - 4
 	adjusted := padOrTruncate(content, contentWidth)
 	border := orangeBorderStyle.Render("│")
 	return border + " " + adjusted + " " + border
@@ -1261,11 +1287,11 @@ func normalizeToSparkline(values []float64, width int) []int {
 
 // renderSparkline maps int levels to sparkBlocks rune chars.
 // Appends pulsing indicator (•) when pulsing=true, space otherwise.
-// Total visual width equals cardInnerWidth (17 chars).
-func renderSparkline(levels []int, pulsing bool) string {
+// Total visual width equals ciw chars.
+func renderSparkline(levels []int, pulsing bool, ciw int) string {
 	var b strings.Builder
-	// sparkline data chars = cardInnerWidth - 1 (for pulsing indicator)
-	dataWidth := cardInnerWidth - 1
+	// sparkline data chars = ciw - 1 (for pulsing indicator)
+	dataWidth := ciw - 1
 
 	// Render levels (take last dataWidth values, or pad left)
 	start := 0
@@ -1300,25 +1326,26 @@ func renderSparkline(levels []int, pulsing bool) string {
 
 // --- Mini-card builder helpers ---
 
-// miniCardEmptyLine returns a bordered empty line at exact cardWidth (21 chars).
-func miniCardEmptyLine() string {
+// miniCardEmptyLine returns a bordered empty line at exact cw width.
+func miniCardEmptyLine(cw int) string {
 	border := borderStyle.Render("│")
-	return border + strings.Repeat(" ", cardWidth-2) + border
+	return border + strings.Repeat(" ", cw-2) + border
 }
 
 // miniCardContentLine returns a bordered content line with 2-char padding each side.
-func miniCardContentLine(content string) string {
-	adjusted := padOrTruncate(content, cardInnerWidth)
+func miniCardContentLine(content string, cw int) string {
+	ciw := cw - 6 // inner width = card width minus borders and padding
+	adjusted := padOrTruncate(content, ciw)
 	border := borderStyle.Render("│")
 	return border + "  " + adjusted + "  " + border
 }
 
 // miniCardHeaderLine returns a header with TITLE left-aligned and VALUE right-aligned.
-func miniCardHeaderLine(title, value string) string {
+func miniCardHeaderLine(title, value string, ciw int) string {
 	styledTitle := titleStyle.Render(strings.ToUpper(title))
 	titleWidth := lipgloss.Width(styledTitle)
 	valueWidth := lipgloss.Width(value)
-	gap := cardInnerWidth - titleWidth - valueWidth
+	gap := ciw - titleWidth - valueWidth
 	if gap < 1 {
 		gap = 1
 	}
@@ -1326,21 +1353,21 @@ func miniCardHeaderLine(title, value string) string {
 }
 
 // buildMiniCard assembles a full bordered mini-card.
-func buildMiniCard(title, value, detail1, detail2, sparkline string) string {
-	dashCount := cardWidth - 2
+func buildMiniCard(title, value, detail1, detail2, sparkline string, cw int) string {
+	dashCount := cw - 2
 	top := borderStyle.Render("╭" + strings.Repeat("─", dashCount) + "╮")
 	bottom := borderStyle.Render("╰" + strings.Repeat("─", dashCount) + "╯")
 
 	lines := []string{
 		top,
-		miniCardEmptyLine(),
-		miniCardContentLine(miniCardHeaderLine(title, value)),
-		miniCardEmptyLine(),
-		miniCardContentLine(detail1),
-		miniCardContentLine(detail2),
-		miniCardEmptyLine(),
-		miniCardContentLine(sparkline),
-		miniCardEmptyLine(),
+		miniCardEmptyLine(cw),
+		miniCardContentLine(miniCardHeaderLine(title, value, cw-6), cw),
+		miniCardEmptyLine(cw),
+		miniCardContentLine(detail1, cw),
+		miniCardContentLine(detail2, cw),
+		miniCardEmptyLine(cw),
+		miniCardContentLine(sparkline, cw),
+		miniCardEmptyLine(cw),
 		bottom,
 	}
 	return strings.Join(lines, "\n")
@@ -1348,8 +1375,9 @@ func buildMiniCard(title, value, detail1, detail2, sparkline string) string {
 
 // --- Card renderers ---
 
-// renderTokenCard renders the TOKENS mini-card.
-func (m Model) renderTokenCard() string {
+// renderTokenCard renders the TOKENS mini-card with the given card width.
+func (m Model) renderTokenCard(cw int) string {
+	ciw := cw - 6
 	value := titleStyle.Render(formatCompact(m.metricsCard.TotalTokens))
 	detail1 := dimStyle.Render(fmt.Sprintf("↑ %s input", formatCompact(m.metricsCard.InputTokens)))
 	detail2 := dimStyle.Render(fmt.Sprintf("↓ %s output", formatCompact(m.metricsCard.OutputTokens)))
@@ -1359,28 +1387,30 @@ func (m Model) renderTokenCard() string {
 	for i, v := range m.metricsCard.TokenHistory {
 		floats[i] = float64(v)
 	}
-	levels := normalizeToSparkline(floats, cardInnerWidth-1)
-	spark := statusRunningStyle.Render(renderSparkline(levels, m.sparklineTick))
+	levels := normalizeToSparkline(floats, ciw-1)
+	spark := statusRunningStyle.Render(renderSparkline(levels, m.sparklineTick, ciw))
 
-	return buildMiniCard("tokens", value, detail1, detail2, spark)
+	return buildMiniCard("tokens", value, detail1, detail2, spark, cw)
 }
 
-// renderCostCard renders the COST mini-card.
-func (m Model) renderCostCard() string {
+// renderCostCard renders the COST mini-card with the given card width.
+func (m Model) renderCostCard(cw int) string {
+	ciw := cw - 6
 	value := costStyle.Render(fmt.Sprintf("$%.2f", m.metricsCard.TotalCostUSD))
 	costPerTask := m.metricsCard.CostPerTask
 	detail1 := dimStyle.Render(fmt.Sprintf("~$%.2f/task", costPerTask))
 	detail2 := ""
 
-	levels := normalizeToSparkline(m.metricsCard.CostHistory, cardInnerWidth-1)
-	spark := statusRunningStyle.Render(renderSparkline(levels, m.sparklineTick))
+	levels := normalizeToSparkline(m.metricsCard.CostHistory, ciw-1)
+	spark := statusRunningStyle.Render(renderSparkline(levels, m.sparklineTick, ciw))
 
-	return buildMiniCard("cost", value, detail1, detail2, spark)
+	return buildMiniCard("cost", value, detail1, detail2, spark, cw)
 }
 
-// renderTaskCard renders the QUEUE mini-card.
+// renderTaskCard renders the QUEUE mini-card with the given card width.
 // Value shows current queue depth (pending + running), not lifetime totals.
-func (m Model) renderTaskCard() string {
+func (m Model) renderTaskCard(cw int) string {
+	ciw := cw - 6
 	value := fmt.Sprintf("%d", len(m.tasks))
 	detail1 := statusCompletedStyle.Render(fmt.Sprintf("✓ %d succeeded", m.metricsCard.Succeeded))
 	detail2 := statusFailedStyle.Render(fmt.Sprintf("✗ %d failed", m.metricsCard.Failed))
@@ -1390,17 +1420,24 @@ func (m Model) renderTaskCard() string {
 	for i, v := range m.metricsCard.TaskHistory {
 		floats[i] = float64(v)
 	}
-	levels := normalizeToSparkline(floats, cardInnerWidth-1)
-	spark := statusRunningStyle.Render(renderSparkline(levels, m.sparklineTick))
+	levels := normalizeToSparkline(floats, ciw-1)
+	spark := statusRunningStyle.Render(renderSparkline(levels, m.sparklineTick, ciw))
 
-	return buildMiniCard("queue", value, detail1, detail2, spark)
+	return buildMiniCard("queue", value, detail1, detail2, spark, cw)
 }
 
 // renderMetricsCards renders all three mini-cards side by side.
 func (m Model) renderMetricsCards() string {
-	gap := strings.Repeat(" ", cardGap)
+	epw := m.effectivePanelTotalWidth()
+	cw := epw / 3
+	remainder := epw - 3*cw
+	// Distribute remainder as gaps between the 3 cards (2 gaps)
+	gap1 := remainder / 2
+	gap2 := remainder - gap1
 	return lipgloss.JoinHorizontal(lipgloss.Top,
-		m.renderTokenCard(), gap, m.renderCostCard(), gap, m.renderTaskCard())
+		m.renderTokenCard(cw), strings.Repeat(" ", gap1),
+		m.renderCostCard(cw), strings.Repeat(" ", gap2),
+		m.renderTaskCard(cw))
 }
 
 // taskStatePriority returns sort priority for task states (lower = higher in list).
@@ -1453,7 +1490,7 @@ func (m Model) renderTasks() string {
 		}
 	}
 
-	return renderPanel("QUEUE", content.String())
+	return renderPanel("QUEUE", content.String(), m.effectivePanelTotalWidth())
 }
 
 // renderTask renders a single task row with state-aware icons, bars, and meta.
@@ -1690,10 +1727,12 @@ func renderEpicProgressBar(done, total, innerWidth int) string {
 // Active epics show expanded with sub-issue tree; completed epics collapse to one line.
 func (m Model) renderHistory() string {
 	var content strings.Builder
+	tw := m.effectivePanelTotalWidth()
+	iw := tw - 4
 
 	if len(m.completedTasks) == 0 {
 		content.WriteString("  No completed tasks yet")
-		return renderPanel("HISTORY", content.String())
+		return renderPanel("HISTORY", content.String(), tw)
 	}
 
 	groups := m.groupedHistory()
@@ -1708,10 +1747,10 @@ func (m Model) renderHistory() string {
 					content.WriteString("\n")
 				}
 				first = false
-				content.WriteString(renderActiveEpicLine(g.Task))
+				content.WriteString(renderActiveEpicLine(g.Task, iw))
 				for _, sub := range g.SubIssues {
 					content.WriteString("\n")
-					content.WriteString(renderSubIssueLine(sub))
+					content.WriteString(renderSubIssueLine(sub, iw))
 				}
 			} else {
 				// Completed epic: collapsed single line with [N/N]
@@ -1719,7 +1758,7 @@ func (m Model) renderHistory() string {
 					content.WriteString("\n")
 				}
 				first = false
-				content.WriteString(renderCompletedEpicLine(g.Task))
+				content.WriteString(renderCompletedEpicLine(g.Task, iw))
 			}
 		} else {
 			// Standalone task: same as before
@@ -1727,18 +1766,18 @@ func (m Model) renderHistory() string {
 				content.WriteString("\n")
 			}
 			first = false
-			content.WriteString(renderStandaloneLine(g.Task))
+			content.WriteString(renderStandaloneLine(g.Task, iw))
 		}
 	}
 
-	return renderPanel("HISTORY", content.String())
+	return renderPanel("HISTORY", content.String(), tw)
 }
 
 // renderStandaloneLine renders a standalone (non-epic) task line.
 // Layout: "  + GH-156  Title...                                    2m ago"
-// indent(2) + icon(1) + space(1) + id(7) + space(2) + title + space(2) + timeAgo(8) = 65
-func renderStandaloneLine(task CompletedTask) string {
-	const titleWidth = panelInnerWidth - 23 // 42 chars
+// indent(2) + icon(1) + space(1) + id(7) + space(2) + title + space(2) + timeAgo(8) = iw
+func renderStandaloneLine(task CompletedTask, iw int) string {
+	titleWidth := iw - 23
 	icon, style := statusIconStyle(task.Status)
 	timeAgoStr := formatTimeAgo(task.CompletedAt)
 	titleStr := padOrTruncate(task.Title, titleWidth)
@@ -1752,11 +1791,7 @@ func renderStandaloneLine(task CompletedTask) string {
 }
 
 // renderActiveEpicLine renders the parent line for an active epic.
-// Layout: "  * GH-491  Title...              [##--] 2/3   3m"
-// indent(2) + icon(1) + space(1) + id(7) + space(2) + title + space(2) + [####](6) + space(1) + counts(N/M max 5) + space(3) + time(2) = 65
-// Right side: progress(6) + space(1) + counts(5) + space(3) + time(4) = 19
-// Title = 65 - 2 - 1 - 1 - 7 - 2 - 2 - 19 = 31
-func renderActiveEpicLine(task CompletedTask) string {
+func renderActiveEpicLine(task CompletedTask, iw int) string {
 	const progressInnerWidth = 4
 	// Recalculate: total = indent(2)+icon(1)+sp(1)+id(7)+sp(2)+title+sp(2)+right(rightWidth) = 65
 	// title = 65 - 2 - 1 - 1 - 7 - 2 - 2 - rightWidth = 65 - 15 - rightWidth
@@ -1777,7 +1812,7 @@ func renderActiveEpicLine(task CompletedTask) string {
 	rightLen := len(rightPart) // plain ASCII, no ANSI
 
 	// Title gets whatever remains
-	tWidth := panelInnerWidth - 2 - 1 - 1 - 7 - 2 - rightLen
+	tWidth := iw - 2 - 1 - 1 - 7 - 2 - rightLen
 	if tWidth < 10 {
 		tWidth = 10
 	}
@@ -1793,9 +1828,7 @@ func renderActiveEpicLine(task CompletedTask) string {
 }
 
 // renderCompletedEpicLine renders a collapsed completed epic.
-// Layout: "  + GH-385  Epic: Roadmap workflow            [5/5]    12m ago"
-// Same base layout as standalone but with [N/N] replacing part of title space.
-func renderCompletedEpicLine(task CompletedTask) string {
+func renderCompletedEpicLine(task CompletedTask, iw int) string {
 	counts := fmt.Sprintf("[%d/%d]", task.DoneSubs, task.TotalSubs)
 	timeAgoStr := formatTimeAgo(task.CompletedAt)
 
@@ -1803,8 +1836,8 @@ func renderCompletedEpicLine(task CompletedTask) string {
 	rightPart := fmt.Sprintf(" %s  %8s", counts, timeAgoStr)
 	rightLen := len(rightPart)
 
-	// Title = panelInnerWidth - indent(2) - icon(1) - sp(1) - id(7) - sp(2) - rightLen
-	tWidth := panelInnerWidth - 2 - 1 - 1 - 7 - 2 - rightLen
+	// Title = iw - indent(2) - icon(1) - sp(1) - id(7) - sp(2) - rightLen
+	tWidth := iw - 2 - 1 - 1 - 7 - 2 - rightLen
 	if tWidth < 10 {
 		tWidth = 10
 	}
@@ -1821,11 +1854,8 @@ func renderCompletedEpicLine(task CompletedTask) string {
 }
 
 // renderSubIssueLine renders an indented sub-issue line under an active epic.
-// Layout: "    + GH-492  Flip the default                          2m ago"
-// indent(4) + icon(1) + sp(1) + id(7) + sp(2) + title + sp(2) + timeAgo(8) = 65
-// Title = 65 - 4 - 1 - 1 - 7 - 2 - 2 - 8 = 40
-func renderSubIssueLine(task CompletedTask) string {
-	const titleWidth = panelInnerWidth - 25 // 40 chars (extra 2 indent vs standalone)
+func renderSubIssueLine(task CompletedTask, iw int) string {
+	titleWidth := iw - 25 // extra 2 indent vs standalone
 	icon, style := subIssueIconStyle(task.Status)
 
 	var timeStr string
@@ -1886,7 +1916,9 @@ func formatTimeAgo(t time.Time) string {
 // renderLogs renders the logs section
 func (m Model) renderLogs() string {
 	var content strings.Builder
-	w := panelInnerWidth - 4 // Account for indent (2 spaces each side)
+	tw := m.effectivePanelTotalWidth()
+	iw := tw - 4
+	w := iw - 4 // Account for indent (2 spaces each side)
 
 	if len(m.logs) == 0 {
 		content.WriteString("  No logs yet")
@@ -1904,7 +1936,7 @@ func (m Model) renderLogs() string {
 		}
 	}
 
-	return renderPanel("LOGS", content.String())
+	return renderPanel("LOGS", content.String(), tw)
 }
 
 // updateMetricsCardMsg updates the metrics card data
@@ -1964,6 +1996,8 @@ func (m Model) renderUpdateNotification() string {
 	var content strings.Builder
 	var title string
 	var hint string
+	tw := m.effectivePanelTotalWidth()
+	iw := tw - 4
 
 	switch m.upgradeState {
 	case UpgradeStateAvailable:
@@ -1971,7 +2005,7 @@ func (m Model) renderUpdateNotification() string {
 		// Left: version info, Right: will be hint below panel
 		leftText := fmt.Sprintf("%s -> %s available", m.updateInfo.CurrentVersion, m.updateInfo.LatestVersion)
 		rightText := ""
-		content.WriteString(formatPanelRow(leftText, rightText))
+		content.WriteString(formatPanelRow(leftText, rightText, iw))
 		hint = "u: upgrade"
 
 	case UpgradeStateInProgress:
@@ -1991,20 +2025,20 @@ func (m Model) renderUpdateNotification() string {
 		return ""
 	}
 
-	result := renderOrangePanel(title, content.String())
+	result := renderOrangePanel(title, content.String(), tw)
 	if hint != "" {
 		// Right-align hint under panel
-		hintLine := fmt.Sprintf("%*s", panelTotalWidth, hint)
+		hintLine := fmt.Sprintf("%*s", tw, hint)
 		result += "\n" + dimStyle.Render(hintLine)
 	}
 	return result
 }
 
 // formatPanelRow creates a full-width row with left and right aligned text
-func formatPanelRow(left, right string) string {
+func formatPanelRow(left, right string, iw int) string {
 	leftWidth := lipgloss.Width(left)
 	rightWidth := lipgloss.Width(right)
-	padding := panelInnerWidth - leftWidth - rightWidth - 4 // 4 for indent
+	padding := iw - leftWidth - rightWidth - 4 // 4 for indent
 	if padding < 1 {
 		padding = 1
 	}
