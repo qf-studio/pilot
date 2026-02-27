@@ -384,18 +384,24 @@ func (m Model) gitGraphViewportHeight() int {
 }
 
 // renderGitGraph renders the full git graph panel for the current model state.
-// Returns an empty string if hidden. When forceWidth > 0, uses that as the panel
-// width instead of calculating from terminal width (used for stacked layout).
-func (m Model) renderGitGraph(forceWidth ...int) string {
+// Returns an empty string if hidden. Optional variadic args:
+//   - opts[0] = forceWidth: panel width (stacked layout uses full terminal width)
+//   - opts[1] = forceHeight: panel height (stacked layout uses remaining terminal space)
+func (m Model) renderGitGraph(opts ...int) string {
 	if m.gitGraphMode == GitGraphHidden {
 		return ""
 	}
 
 	var graphWidth int
-	if len(forceWidth) > 0 && forceWidth[0] > 0 {
+	var forceHeight int
+	if len(opts) > 0 && opts[0] > 0 {
 		// Stacked layout: use provided width directly
-		graphWidth = forceWidth[0]
-	} else {
+		graphWidth = opts[0]
+	}
+	if len(opts) > 1 && opts[1] > 0 {
+		forceHeight = opts[1]
+	}
+	if graphWidth == 0 {
 		// Side-by-side layout: calculate from remaining terminal width
 		minTermWidth := panelTotalWidth + 1 + 20
 		if m.width > 0 && m.width < minTermWidth {
@@ -435,10 +441,14 @@ func (m Model) renderGitGraph(forceWidth ...int) string {
 
 		// Calculate visible lines from panel height:
 		// panel = top border + empty line + [content] + empty line + bottom border
-		// content area = m.height - 4, minus 1 for scroll indicator
+		// content area = panelHeight - 4, minus 1 for scroll indicator
+		panelHeight := m.height
+		if forceHeight > 0 {
+			panelHeight = forceHeight
+		}
 		visibleLines := 30 // fallback when height unknown
-		if m.height > 0 {
-			visibleLines = m.height - 5 // borders(2) + padding(2) + scroll indicator(1)
+		if panelHeight > 0 {
+			visibleLines = panelHeight - 5 // borders(2) + padding(2) + scroll indicator(1)
 			if visibleLines < 1 {
 				visibleLines = 1
 			}
@@ -469,11 +479,15 @@ func (m Model) renderGitGraph(forceWidth ...int) string {
 		}
 	}
 
-	// Full-height stretch: pad content lines to fill terminal height.
+	// Full-height stretch: pad content lines to fill panel height.
 	// Panel structure: top border + empty line + [content lines] + empty line + bottom border = height
-	// So content area height = m.height - 4 (top border, top empty, bottom empty, bottom border)
-	if m.height > 0 {
-		contentArea := m.height - 4
+	// So content area height = panelHeight - 4 (top border, top empty, bottom empty, bottom border)
+	stretchHeight := m.height
+	if forceHeight > 0 {
+		stretchHeight = forceHeight
+	}
+	if stretchHeight > 0 {
+		contentArea := stretchHeight - 4
 		if contentArea < 1 {
 			contentArea = 1
 		}

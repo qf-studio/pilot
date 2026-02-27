@@ -945,3 +945,113 @@ func TestHelpFooter_VisibleWithoutTruncation(t *testing.T) {
 		t.Error("help footer should be visible when terminal is tall enough")
 	}
 }
+
+// --- Responsive stacked git graph tests ---
+
+func TestGitGraph_StackedLayoutUsesFullWidth(t *testing.T) {
+	// On narrow terminal (<90 cols), graph should stack below dashboard at full terminal width
+	m := Model{
+		width: 80, height: 40, gitGraphMode: GitGraphFull,
+		autopilotPanel: NewAutopilotPanel(nil),
+		gitGraphState: &GitGraphState{
+			Lines: []GitGraphLine{
+				{GraphChars: "●", SHA: "abc1234", Author: "Test", Message: "Initial commit"},
+				{GraphChars: "●", SHA: "def5678", Author: "Test", Message: "Second commit"},
+			},
+		},
+	}
+
+	view := m.View()
+	lines := strings.Split(view, "\n")
+
+	// Find the git graph panel top border in the stacked output
+	var graphBorderLine string
+	for _, line := range lines {
+		plain := stripANSI(line)
+		if strings.Contains(plain, "GIT GRAPH") && strings.Contains(plain, "╭") {
+			graphBorderLine = plain
+			break
+		}
+	}
+	if graphBorderLine == "" {
+		t.Fatal("stacked graph panel not found in narrow terminal output")
+	}
+
+	// The graph panel border should span close to full terminal width (80), not panelTotalWidth (69)
+	borderWidth := lipgloss.Width(graphBorderLine)
+	if borderWidth <= panelTotalWidth {
+		t.Errorf("stacked graph width = %d, want > %d (panelTotalWidth); should use full terminal width", borderWidth, panelTotalWidth)
+	}
+	if borderWidth != m.width {
+		t.Errorf("stacked graph width = %d, want %d (m.width)", borderWidth, m.width)
+	}
+}
+
+func TestGitGraph_SideBySideOnWideTerminal(t *testing.T) {
+	// On wide terminal (≥90 cols), graph renders side-by-side
+	m := Model{
+		width: 120, height: 40, gitGraphMode: GitGraphFull,
+		autopilotPanel: NewAutopilotPanel(nil),
+		gitGraphState: &GitGraphState{
+			Lines: []GitGraphLine{
+				{GraphChars: "●", SHA: "abc1234", Author: "Test", Message: "Initial commit"},
+			},
+		},
+	}
+
+	view := m.View()
+	lines := strings.Split(view, "\n")
+
+	// In side-by-side mode, the GIT GRAPH border should NOT be at full terminal width
+	for _, line := range lines {
+		plain := stripANSI(line)
+		if strings.Contains(plain, "GIT GRAPH") && strings.Contains(plain, "╭") {
+			borderWidth := lipgloss.Width(plain)
+			if borderWidth == m.width {
+				t.Errorf("side-by-side graph should not be full terminal width (%d)", m.width)
+			}
+			break
+		}
+	}
+}
+
+func TestGitGraph_StackedHelpFooterVisible(t *testing.T) {
+	// Help footer must be visible at bottom even when graph is stacked
+	m := Model{
+		width: 75, height: 30, gitGraphMode: GitGraphFull,
+		autopilotPanel: NewAutopilotPanel(nil),
+		gitGraphState: &GitGraphState{
+			Lines: []GitGraphLine{
+				{GraphChars: "●", SHA: "abc1234", Author: "Test", Message: "commit"},
+			},
+		},
+	}
+
+	view := m.View()
+	lines := strings.Split(view, "\n")
+
+	lastLine := lines[len(lines)-1]
+	plain := stripANSI(lastLine)
+	if !strings.Contains(plain, "q: quit") {
+		t.Errorf("help footer missing from stacked layout, last line: %q", plain)
+	}
+}
+
+func TestGitGraph_NarrowTerminalNotSilent(t *testing.T) {
+	// On narrow terminal with graph enabled, pressing 'g' should produce visible graph output
+	m := Model{
+		width: 60, height: 30, gitGraphMode: GitGraphFull,
+		autopilotPanel: NewAutopilotPanel(nil),
+		gitGraphState: &GitGraphState{
+			Lines: []GitGraphLine{
+				{GraphChars: "●", SHA: "abc1234", Author: "Test", Message: "Initial commit"},
+			},
+		},
+	}
+
+	view := m.View()
+	plain := stripANSI(view)
+	if !strings.Contains(plain, "GIT GRAPH") {
+		t.Error("narrow terminal (60 cols) should show stacked GIT GRAPH panel, got silent/empty")
+	}
+}
