@@ -24,6 +24,7 @@
 <p align="center">
   <a href="https://pilot.quantflow.studio">Docs</a> •
   <a href="#install">Install</a> •
+  <a href="#desktop-app">Desktop</a> •
   <a href="#quick-start">Quick Start</a> •
   <a href="#how-it-works">How It Works</a> •
   <a href="#features">Features</a> •
@@ -80,6 +81,16 @@ cd pilot
 make build
 sudo make install-global
 ```
+
+### Desktop App
+
+Download the desktop app from the [latest release](https://github.com/alekspetrov/pilot/releases/latest):
+
+| Platform | Download |
+|----------|----------|
+| macOS (Universal) | `Pilot-Desktop-macOS-universal.dmg` |
+| Windows (x64) | `Pilot-Desktop-Windows-amd64-setup.exe` |
+| Linux (x64) | `Pilot-Desktop-Linux-amd64.tar.gz` |
 
 ### Requirements
 
