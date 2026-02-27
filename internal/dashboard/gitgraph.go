@@ -408,22 +408,27 @@ func (m Model) gitGraphViewportHeight() int {
 }
 
 // renderGitGraph renders the full git graph panel for the current model state.
-// Returns an empty string if hidden or terminal too narrow.
-func (m Model) renderGitGraph() string {
+// Returns an empty string if hidden. When forceWidth > 0, uses that as the panel
+// width instead of calculating from terminal width (used for stacked layout).
+func (m Model) renderGitGraph(forceWidth ...int) string {
 	if m.gitGraphMode == GitGraphHidden {
 		return ""
 	}
 
-	// Minimum terminal width: dashboard(69) + space(1) + graph border+content
-	minTermWidth := panelTotalWidth + 1 + 20
-	if m.width > 0 && m.width < minTermWidth {
-		return ""
-	}
-
-	// Graph panel width = remaining width after dashboard + 1-space gap + 1-char right margin
-	graphWidth := 60 // default when terminal width unknown
-	if m.width > 0 {
-		graphWidth = m.width - panelTotalWidth - 2
+	var graphWidth int
+	if len(forceWidth) > 0 && forceWidth[0] > 0 {
+		// Stacked layout: use provided width directly
+		graphWidth = forceWidth[0]
+	} else {
+		// Side-by-side layout: calculate from remaining terminal width
+		minTermWidth := panelTotalWidth + 1 + 20
+		if m.width > 0 && m.width < minTermWidth {
+			return ""
+		}
+		graphWidth = 60 // default when terminal width unknown
+		if m.width > 0 {
+			graphWidth = m.width - panelTotalWidth - 2
+		}
 	}
 	if m.gitGraphMode == GitGraphSmall {
 		if graphWidth > 32 {

@@ -852,8 +852,16 @@ func (m Model) View() string {
 	dashboard := m.renderDashboard()
 
 	var result string
-	if m.gitGraphMode == GitGraphHidden || (m.width > 0 && m.width < panelTotalWidth+1+20) {
+	if m.gitGraphMode == GitGraphHidden {
 		result = dashboard
+	} else if m.width > 0 && m.width < panelTotalWidth+1+20 {
+		// Terminal too narrow for side-by-side — stack graph below dashboard
+		graphPanel := m.renderGitGraph(panelTotalWidth)
+		if graphPanel == "" {
+			result = dashboard
+		} else {
+			result = dashboard + "\n" + graphPanel
+		}
 	} else {
 		graphPanel := m.renderGitGraph()
 		if graphPanel == "" {
