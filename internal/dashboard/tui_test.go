@@ -9,6 +9,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/alekspetrov/pilot/internal/memory"
@@ -886,5 +887,80 @@ func TestAddCompletedTask_HistoryCapAt5(t *testing.T) {
 	}
 	if last.ParentID != "GH-0" {
 		t.Errorf("last task ParentID = %q, want %q", last.ParentID, "GH-0")
+	}
+}
+
+// --- Git graph panel fix tests (GH-1920) ---
+
+func TestGitGraph_NarrowTerminalBlocksToggle(t *testing.T) {
+	m := Model{width: 80, height: 40} // 80 < 90 (panelTotalWidth+1+20)
+
+	// Press "g" — should NOT change gitGraphMode because terminal is too narrow
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'g'}})
+	m = updated.(Model)
+
+	if m.gitGraphMode != GitGraphHidden {
+		t.Errorf("gitGraphMode = %d, want %d (Hidden); narrow terminal should block toggle", m.gitGraphMode, GitGraphHidden)
+	}
+}
+
+func TestGitGraph_WideTerminalAllowsToggle(t *testing.T) {
+	m := Model{width: 120, height: 40} // 120 >= 90
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'g'}})
+	m = updated.(Model)
+
+	if m.gitGraphMode != GitGraphFull {
+		t.Errorf("gitGraphMode = %d, want %d (Full); wide terminal should allow toggle", m.gitGraphMode, GitGraphFull)
+	}
+}
+
+func TestGitGraph_NarrowTerminalHidesGraphHint(t *testing.T) {
+	m := Model{width: 80, height: 40, gitGraphMode: GitGraphHidden}
+
+	help := m.renderHelp()
+	if strings.Contains(help, "g: graph") {
+		t.Error("narrow terminal should NOT show 'g: graph' hint")
+	}
+}
+
+func TestGitGraph_WideTerminalShowsGraphHint(t *testing.T) {
+	m := Model{width: 120, height: 40, gitGraphMode: GitGraphHidden}
+
+	help := m.renderHelp()
+	plain := stripANSI(help)
+	if !strings.Contains(plain, "g: graph") {
+		t.Errorf("wide terminal should show 'g: graph' hint, got: %q", plain)
+	}
+}
+
+func TestHelpFooter_SurvivesHeightTruncation(t *testing.T) {
+	m := Model{
+		width: 120, height: 10, gitGraphMode: GitGraphHidden,
+		showBanner: true, showLogs: true,
+		autopilotPanel: NewAutopilotPanel(nil),
+	}
+
+	view := m.View()
+	lines := strings.Split(view, "\n")
+
+	// The last line should contain help text
+	lastLine := lines[len(lines)-1]
+	plain := stripANSI(lastLine)
+	if !strings.Contains(plain, "q: quit") {
+		t.Errorf("help footer missing from last line after height truncation, got: %q", plain)
+	}
+}
+
+func TestHelpFooter_VisibleWithoutTruncation(t *testing.T) {
+	m := Model{
+		width: 120, height: 200, gitGraphMode: GitGraphHidden,
+		autopilotPanel: NewAutopilotPanel(nil),
+	}
+
+	view := m.View()
+	plain := stripANSI(view)
+	if !strings.Contains(plain, "q: quit") {
+		t.Error("help footer should be visible when terminal is tall enough")
 	}
 }

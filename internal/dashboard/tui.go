@@ -652,6 +652,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.showLogs = !m.showLogs
 			return m, tea.ClearScreen // GH-1249: Logs toggle changes height
 		case "g":
+			// Don't cycle if terminal too narrow for git graph panel
+			if m.width > 0 && m.width < panelTotalWidth+1+20 {
+				return m, nil
+			}
 			// Cycle git graph: Hidden → Full → Small → Hidden
 			m.gitGraphMode = (m.gitGraphMode + 1) % 3
 			m.gitGraphFocus = false
@@ -863,18 +867,28 @@ func (m Model) View() string {
 		}
 	}
 
-	// GH-1249: Pad output to terminal height to prevent ghost lines.
-	if m.height > 0 {
+	// Help footer — appended after height truncation so it's never cut off.
+	helpLine := m.renderHelp()
+
+	// GH-1249: Pad or truncate output to terminal height to prevent ghost lines.
+	// Reserve the last line for the help footer so it's always visible.
+	if m.height > 1 {
+		contentHeight := m.height - 1 // reserve 1 line for help footer
 		lines := strings.Split(result, "\n")
-		if len(lines) < m.height {
-			for len(lines) < m.height {
+		if len(lines) < contentHeight {
+			for len(lines) < contentHeight {
 				lines = append(lines, "")
 			}
-			result = strings.Join(lines, "\n")
-		} else if len(lines) > m.height {
-			lines = lines[:m.height]
-			result = strings.Join(lines, "\n")
+		} else if len(lines) > contentHeight {
+			lines = lines[:contentHeight]
 		}
+		lines = append(lines, helpLine)
+		result = strings.Join(lines, "\n")
+	} else if m.height == 1 {
+		result = helpLine
+	} else {
+		// height unknown — just append help
+		result += "\n" + helpLine
 	}
 
 	return result
@@ -921,8 +935,7 @@ func (m Model) renderDashboard() string {
 		b.WriteString("\n")
 	}
 
-	// Help footer
-	b.WriteString(m.renderHelp())
+	// Help footer rendered separately in View() to survive height truncation
 
 	return b.String()
 }
@@ -934,7 +947,12 @@ func (m Model) renderHelp() string {
 	switch {
 	case m.gitGraphMode == GitGraphHidden:
 		// Graph hidden: show navigation and graph-open key
-		parts = []string{"q: quit", "l: logs", "b: banner", "g: graph", "j/k: select"}
+		if m.width > 0 && m.width < panelTotalWidth+1+20 {
+			// Terminal too narrow for git graph — hint the user
+			parts = []string{"q: quit", "l: logs", "b: banner", "j/k: select"}
+		} else {
+			parts = []string{"q: quit", "l: logs", "b: banner", "g: graph", "j/k: select"}
+		}
 	case m.gitGraphFocus:
 		// Graph visible, graph panel focused
 		parts = []string{"q: quit", "b: banner", "g: cycle", "tab: dashboard"}
