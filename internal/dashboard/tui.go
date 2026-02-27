@@ -858,7 +858,7 @@ func (m Model) View() string {
 	var result string
 	if m.gitGraphMode == GitGraphHidden {
 		result = dashboard
-	} else if m.width > 0 && m.width < panelTotalWidth+1+20 {
+	} else if m.width > 0 && m.width < panelTotalWidth+1+50 {
 		// Terminal too narrow for side-by-side — stack graph below at full terminal width.
 		// Calculate remaining height after dashboard so graph doesn't pad to full m.height.
 		dashLines := strings.Count(dashboard, "\n") + 1

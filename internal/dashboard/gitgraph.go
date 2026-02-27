@@ -403,7 +403,7 @@ func (m Model) renderGitGraph(opts ...int) string {
 	}
 	if graphWidth == 0 {
 		// Side-by-side layout: calculate from remaining terminal width
-		minTermWidth := panelTotalWidth + 1 + 20
+		minTermWidth := panelTotalWidth + 1 + 50
 		if m.width > 0 && m.width < minTermWidth {
 			return ""
 		}
