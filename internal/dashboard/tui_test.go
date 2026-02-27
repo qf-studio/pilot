@@ -890,47 +890,28 @@ func TestAddCompletedTask_HistoryCapAt5(t *testing.T) {
 	}
 }
 
-// --- Git graph panel fix tests (GH-1920) ---
+// --- Help footer truncation fix tests ---
 
-func TestGitGraph_NarrowTerminalBlocksToggle(t *testing.T) {
-	m := Model{width: 80, height: 40} // 80 < 90 (panelTotalWidth+1+20)
-
-	// Press "g" — should NOT change gitGraphMode because terminal is too narrow
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'g'}})
-	m = updated.(Model)
-
-	if m.gitGraphMode != GitGraphHidden {
-		t.Errorf("gitGraphMode = %d, want %d (Hidden); narrow terminal should block toggle", m.gitGraphMode, GitGraphHidden)
+func TestGitGraph_ToggleAlwaysWorks(t *testing.T) {
+	// "g" should cycle gitGraphMode regardless of terminal width
+	for _, width := range []int{80, 120} {
+		m := Model{width: width, height: 40}
+		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'g'}})
+		m = updated.(Model)
+		if m.gitGraphMode != GitGraphFull {
+			t.Errorf("width=%d: gitGraphMode = %d, want %d (Full)", width, m.gitGraphMode, GitGraphFull)
+		}
 	}
 }
 
-func TestGitGraph_WideTerminalAllowsToggle(t *testing.T) {
-	m := Model{width: 120, height: 40} // 120 >= 90
-
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'g'}})
-	m = updated.(Model)
-
-	if m.gitGraphMode != GitGraphFull {
-		t.Errorf("gitGraphMode = %d, want %d (Full); wide terminal should allow toggle", m.gitGraphMode, GitGraphFull)
-	}
-}
-
-func TestGitGraph_NarrowTerminalHidesGraphHint(t *testing.T) {
-	m := Model{width: 80, height: 40, gitGraphMode: GitGraphHidden}
-
-	help := m.renderHelp()
-	if strings.Contains(help, "g: graph") {
-		t.Error("narrow terminal should NOT show 'g: graph' hint")
-	}
-}
-
-func TestGitGraph_WideTerminalShowsGraphHint(t *testing.T) {
-	m := Model{width: 120, height: 40, gitGraphMode: GitGraphHidden}
-
-	help := m.renderHelp()
-	plain := stripANSI(help)
-	if !strings.Contains(plain, "g: graph") {
-		t.Errorf("wide terminal should show 'g: graph' hint, got: %q", plain)
+func TestHelpFooter_AlwaysShowsGraphHint(t *testing.T) {
+	// "g: graph" should appear in help regardless of terminal width
+	for _, width := range []int{80, 120} {
+		m := Model{width: width, height: 40, gitGraphMode: GitGraphHidden}
+		plain := stripANSI(m.renderHelp())
+		if !strings.Contains(plain, "g: graph") {
+			t.Errorf("width=%d: help should show 'g: graph', got: %q", width, plain)
+		}
 	}
 }
 

@@ -652,10 +652,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.showLogs = !m.showLogs
 			return m, tea.ClearScreen // GH-1249: Logs toggle changes height
 		case "g":
-			// Don't cycle if terminal too narrow for git graph panel
-			if m.width > 0 && m.width < panelTotalWidth+1+20 {
-				return m, nil
-			}
 			// Cycle git graph: Hidden → Full → Small → Hidden
 			m.gitGraphMode = (m.gitGraphMode + 1) % 3
 			m.gitGraphFocus = false
@@ -947,12 +943,7 @@ func (m Model) renderHelp() string {
 	switch {
 	case m.gitGraphMode == GitGraphHidden:
 		// Graph hidden: show navigation and graph-open key
-		if m.width > 0 && m.width < panelTotalWidth+1+20 {
-			// Terminal too narrow for git graph — hint the user
-			parts = []string{"q: quit", "l: logs", "b: banner", "j/k: select"}
-		} else {
-			parts = []string{"q: quit", "l: logs", "b: banner", "g: graph", "j/k: select"}
-		}
+		parts = []string{"q: quit", "l: logs", "b: banner", "g: graph", "j/k: select"}
 	case m.gitGraphFocus:
 		// Graph visible, graph panel focused
 		parts = []string{"q: quit", "b: banner", "g: cycle", "tab: dashboard"}
