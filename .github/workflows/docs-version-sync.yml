@@ -20,6 +20,16 @@ jobs:
         id: version
         run: echo "VERSION=${{ github.event.release.tag_name }}" >> $GITHUB_OUTPUT
 
+      - name: Close previous version-sync PRs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr list --state open --search "docs: sync version to" --json number,headRefName --jq '.[]' | while read -r line; do
+            pr_num=$(echo "$line" | jq -r '.number')
+            branch=$(echo "$line" | jq -r '.headRefName')
+            gh pr close "$pr_num" --comment "Superseded by ${{ steps.version.outputs.VERSION }}" --delete-branch || true
+          done
+
       - name: Run version sync script
         run: ./scripts/docs-version-sync.sh ${{ steps.version.outputs.VERSION }}
 
