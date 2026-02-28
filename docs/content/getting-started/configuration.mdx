@@ -1030,7 +1030,7 @@ orchestrator:
   max_concurrent: 2                       # max parallel tasks
 
   execution:
-    mode: "sequential"                    # sequential or parallel
+    mode: "sequential"                    # sequential | parallel | auto
     wait_for_merge: true                  # wait for PR merge before next task
     poll_interval: 30s
     pr_timeout: 1h                        # max wait for PR merge
@@ -1054,7 +1054,7 @@ orchestrator:
 |-------|------|---------|-------------|
 | `model` | string | `"claude-sonnet-4-6"` | Default model for planning |
 | `max_concurrent` | int | `2` | Max parallel task executions |
-| `execution.mode` | string | `"sequential"` | `sequential` or `parallel` |
+| `execution.mode` | string | `"sequential"` | `sequential` — wait for PR merge before next task; `parallel` — dispatch all tasks concurrently; `auto` — parallel dispatch with scope-overlap guard; issues targeting different directories run concurrently, overlapping scopes are serialized |
 | `execution.wait_for_merge` | bool | `true` | Wait for PR merge before next task |
 | `execution.poll_interval` | duration | `30s` | PR status poll interval |
 | `execution.pr_timeout` | duration | `1h` | Max wait for PR merge |

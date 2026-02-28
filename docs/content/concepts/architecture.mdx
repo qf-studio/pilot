@@ -29,7 +29,7 @@ Pilot is a Go-based autonomous development pipeline. This page covers the system
                      └─────────────────────┘
 ```
 
-**29 packages** across four layers:
+**37 packages** across four layers:
 
 | Layer | Packages | Role |
 |-------|----------|------|
@@ -447,7 +447,7 @@ adapters:          # Input sources (telegram, github, slack, linear, jira, disco
     api_token: ""
     project_board: ""
 orchestrator:      # Execution mode, autopilot config
-  execution_mode: sequential    # sequential | parallel
+  execution_mode: sequential    # sequential | parallel | auto
   autopilot:
     environment: stage          # dev | stage | prod
     auto_merge: true
