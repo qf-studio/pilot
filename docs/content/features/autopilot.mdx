@@ -94,6 +94,39 @@ pilot rollback --last
 pilot rollback --pr 123
 ```
 
+## Conflict Resolution
+
+When a Pilot PR has a merge conflict, autopilot automatically attempts to resolve it via rebase before falling back to full re-execution.
+
+### Auto-Rebase Flow
+
+```
+Merge Conflict Detected
+       │
+       ▼
+┌──────────────────┐
+│ Update Branch    │ ← GitHub API rebase
+│ (auto-rebase)    │
+└────────┬─────────┘
+         │
+    ┌────┴────┐
+    │         │
+  Success   Failure
+    │         │
+    ▼         ▼
+WaitingCI   Close PR
+(re-run CI) (re-queue)
+```
+
+- **First attempt**: Uses GitHub's "Update branch" API — equivalent to clicking the "Update branch" button on the PR page
+- **If rebase succeeds**: The PR returns to the `WaitingCI` stage and CI re-runs on the updated branch
+- **If rebase fails**: The PR is closed with an explanatory comment, and the original issue returns to the queue for full re-execution from scratch
+- **Cost savings**: Avoids ~$8–15 per full re-execution for conflicts that are trivially resolvable via rebase
+
+## CI Fix Dependencies
+
+When autopilot's feedback loop creates a CI fix issue (after a CI failure), the fix issue body includes a `Depends on: #N` annotation linking it back to the original parent issue. This provides traceability between fix attempts and the tasks that triggered them.
+
 ## Stagnation Monitor
 
 Detects stuck executions by tracking state changes and escalating through progressive intervention levels.
