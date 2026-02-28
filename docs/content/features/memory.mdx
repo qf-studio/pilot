@@ -87,6 +87,26 @@ pilot patterns stats
 Patterns with confidence below 0.1 are automatically pruned. High-confidence patterns (>0.7) are prioritized in future task prompts.
 </Callout>
 
+## Review Learning
+
+After a PR is merged, Pilot processes review comments left by human reviewers to learn patterns for future tasks. The `LearnFromReview()` method fetches PR review comments via the GitHub API and categorizes them by review type.
+
+| Review Type | Signal | Effect |
+|-------------|--------|--------|
+| Approved (with text) | Positive | Boost pattern confidence |
+| Changes requested | Negative | Create anti-pattern (max 0.85 confidence) |
+| Approved (no text) | None | Skipped |
+
+- **Approved reviews with text** — Reviewer comments on approved PRs are treated as positive signals. Patterns used in the execution get a confidence boost.
+- **Changes-requested reviews** — Reviewer feedback is extracted as anti-patterns, capped at 0.85 confidence to allow future override if conventions change.
+- **Empty approvals** — Approval clicks without review text are skipped since there is no actionable signal to extract.
+
+Learned patterns are injected into future execution prompts, so Pilot's code quality improves over time based on your team's feedback.
+
+<Callout type="info">
+Review learning runs automatically after PR merge. No configuration needed — it uses the same GitHub token configured for the GitHub adapter.
+</Callout>
+
 ## Knowledge Graph
 
 The knowledge graph stores relationships between concepts, files, and patterns.
