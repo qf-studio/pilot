@@ -388,7 +388,7 @@ type Model struct {
 // isStackedMode returns true when the git graph is visible and the terminal is
 // too narrow for side-by-side layout, so the graph stacks below the dashboard.
 func (m Model) isStackedMode() bool {
-	return m.gitGraphMode != GitGraphHidden && m.width > 0 && m.width < panelTotalWidth+1+20
+	return m.gitGraphMode != GitGraphHidden && m.width > 0 && m.width < panelTotalWidth+1+50
 }
 
 // effectivePanelTotalWidth returns the panel width for the current layout.
