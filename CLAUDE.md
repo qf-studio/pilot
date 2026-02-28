@@ -183,20 +183,23 @@ Documentation in `.agent/`:
 
 ## Current Status
 
-**Version:** v2.24.0 | **229+ features implemented**
+**Version:** v2.38.11 | **240+ features implemented**
 
 **Core:**
 - ✅ Task execution with Navigator integration
-- ✅ Autopilot: CI monitor, auto-merge, feedback loop, tag-only release
+- ✅ Autopilot: CI monitor, auto-merge, auto-rebase, feedback loop, tag-only release
 - ✅ Intent judge in execution pipeline
 - ✅ Rich PR comments with execution metrics
 - ✅ Epic decomposition with sub-issue PR wiring
 - ✅ Self-review, quality gates, effort routing
+- ✅ Pattern learning from PR reviews
+- ✅ GitHub Projects V2 board sync
+- ✅ Execution mode auto-switching (scope-based)
 
-**Adapters:** Telegram (voice, images, 5 modes), GitHub, GitLab, Azure DevOps, Linear, Jira, Slack
+**Adapters:** Telegram (voice, images, 5 modes), GitHub, GitLab, Azure DevOps, Linear, Jira, Slack, Discord, Plane
 
-**Dashboard:** Sparkline cards, SQLite persistence, epic-aware history, state-aware queue, hot upgrade
+**Dashboard:** Sparkline cards, SQLite persistence, epic-aware history, state-aware queue, hot upgrade, git graph
 
-**Docs:** Nextra v2 at pilot.quantflow.studio, auto-deploy via GitLab CI
+**Docs:** Nextra v4 at pilot.quantflow.studio, auto-deploy via GitLab CI
 
 <!-- GitHub integration verified -->
