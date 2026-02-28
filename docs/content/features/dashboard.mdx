@@ -139,11 +139,62 @@ x GH-135  Broken migration                               25m ago
 - **`*`** Active epic with progress bar
 - Sub-issues indented under parent epic
 
+## Git Graph
+
+Press `g` to toggle the git graph panel. When visible, it shows branch topology with colored tracks and merge points using standard git graph notation.
+
+```
+╭─ GIT GRAPH ───────────────────────────────────────────────────╮
+│  * 3a1f2c8  (HEAD -> main) fix: login redirect    alice  │
+│  *   b7e4d01  Merge PR #142                        bot    │
+│  |\                                                        │
+│  | * c9f3a22  feat: add caching                    bob    │
+│  | * 1d8e5f3  test: cache unit tests               bob    │
+│  |/                                                        │
+│  * a4c7b90  chore: update deps                     alice  │
+╰───────────────────────────────────────────────────────────────╯
+```
+
+### Auto-sizing
+
+The git graph automatically adjusts its detail level based on terminal width:
+
+| Size | Content | When |
+|------|---------|------|
+| **Small** | Graph + commit message | Narrow terminals |
+| **Medium** | Graph + branch refs + message | Mid-width terminals |
+| **Full** | Graph + refs + message + SHA + author | Wide terminals |
+
+The graph auto-refreshes when branches change during execution.
+
+## Responsive Layout
+
+When the terminal is narrow (less than ~90 columns) and the git graph is visible, the dashboard switches to **stacked mode**:
+
+- Dashboard panels (QUEUE, AUTOPILOT, HISTORY, LOGS) stretch to full terminal width
+- Git graph renders below the main panels at full width
+- When the terminal is wide enough, git graph renders side-by-side with the dashboard
+
+```
+┌─────────── Wide terminal ────────────┐  ┌── Narrow terminal ──┐
+│ ╭ QUEUE ──╮  ╭ GIT GRAPH ──╮        │  │ ╭ QUEUE ──────────╮  │
+│ │ ...     │  │ * abc  ...  │        │  │ │ ...             │  │
+│ ╰─────────╯  │ * def  ...  │        │  │ ╰────────────────╯  │
+│ ╭ HISTORY ╮  │ * ghi  ...  │        │  │ ╭ HISTORY ────────╮  │
+│ │ ...     │  ╰──────────────╯        │  │ │ ...             │  │
+│ ╰─────────╯                          │  │ ╰────────────────╯  │
+│                                      │  │ ╭ GIT GRAPH ──────╮  │
+│                                      │  │ │ * abc  ...      │  │
+│                                      │  │ ╰────────────────╯  │
+└──────────────────────────────────────┘  └─────────────────────┘
+```
+
 ## Keyboard Shortcuts
 
 | Key | Action |
 |-----|--------|
 | `q` / `Ctrl+C` | Quit dashboard |
+| `g` | Toggle git graph panel |
 | `l` | Toggle logs panel |
 | `j` / `↓` | Select next task |
 | `k` / `↑` | Select previous task |
