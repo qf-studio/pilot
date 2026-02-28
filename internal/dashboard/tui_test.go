@@ -1051,8 +1051,9 @@ func TestGitGraph_NarrowTerminalNotSilent(t *testing.T) {
 
 	view := m.View()
 	plain := stripANSI(view)
-	if !strings.Contains(plain, "GIT GRAPH") {
-		t.Error("narrow terminal (60 cols) should show stacked GIT GRAPH panel, got silent/empty")
+	// At 60 cols stacked, auto-size picks medium (title "GIT")
+	if !strings.Contains(plain, "GIT") {
+		t.Error("narrow terminal (60 cols) should show stacked GIT panel, got silent/empty")
 	}
 }
 

@@ -473,12 +473,14 @@ func (m Model) renderGitGraph(opts ...int) string {
 		return ""
 	}
 
-	// Auto-select size based on available width
+	// Auto-select size based on available width.
+	// Full needs enough room for graph + refs + message + SHA(7) + author(10) = 18 extra.
+	// Generous thresholds keep the graph compact until there's real space.
 	size := gitGraphSizeFull
-	if graphWidth < 46 {
+	if graphWidth < 65 {
 		size = gitGraphSizeMedium
 	}
-	if graphWidth < 28 {
+	if graphWidth < 40 {
 		size = gitGraphSizeSmall
 	}
 

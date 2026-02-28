@@ -329,7 +329,7 @@ func TestRenderGraphLineMedium_NoRefs(t *testing.T) {
 func TestRenderGitGraph_AutoSizeSmall(t *testing.T) {
 	m := NewModel("test")
 	m.gitGraphMode = GitGraphVisible
-	m.width = panelTotalWidth + 2 + 25 // available = 25 < 28 → small
+	m.width = panelTotalWidth + 2 + 35 // available = 35 < 40 → small
 	m.height = 30
 	m.gitGraphState = &GitGraphState{
 		Lines: []GitGraphLine{
@@ -352,7 +352,7 @@ func TestRenderGitGraph_AutoSizeSmall(t *testing.T) {
 func TestRenderGitGraph_AutoSizeMedium(t *testing.T) {
 	m := NewModel("test")
 	m.gitGraphMode = GitGraphVisible
-	m.width = panelTotalWidth + 2 + 35 // available = 35, between 28-45 → medium
+	m.width = panelTotalWidth + 2 + 50 // available = 50, between 40-64 → medium
 	m.height = 30
 	m.gitGraphState = &GitGraphState{
 		Lines: []GitGraphLine{
@@ -375,7 +375,7 @@ func TestRenderGitGraph_AutoSizeMedium(t *testing.T) {
 func TestRenderGitGraph_AutoSizeFull(t *testing.T) {
 	m := NewModel("test")
 	m.gitGraphMode = GitGraphVisible
-	m.width = panelTotalWidth + 2 + 60 // available = 60 > 45 → full
+	m.width = panelTotalWidth + 2 + 70 // available = 70 > 65 → full
 	m.height = 30
 	m.gitGraphState = &GitGraphState{
 		Lines: []GitGraphLine{
@@ -459,7 +459,7 @@ func TestRenderGitGraph_Error(t *testing.T) {
 func TestRenderGitGraph_WithData(t *testing.T) {
 	m := NewModel("test")
 	m.gitGraphMode = GitGraphVisible
-	m.width = 130
+	m.width = 140
 	m.gitGraphState = &GitGraphState{
 		TotalCount:  3,
 		LastRefresh: time.Now(),
@@ -505,7 +505,7 @@ func TestRenderGitGraph_WithData(t *testing.T) {
 func TestRenderGitGraph_FocusedBorder(t *testing.T) {
 	m := NewModel("test")
 	m.gitGraphMode = GitGraphVisible
-	m.width = 130
+	m.width = 140
 	m.gitGraphState = &GitGraphState{Lines: []GitGraphLine{{GraphChars: "● ", SHA: "abc1234", Message: "test"}}}
 
 	// Focused panel
@@ -725,7 +725,7 @@ func TestModelUpdate_GitRefreshTickHidden(t *testing.T) {
 func TestViewWithGitGraph_SideBySide(t *testing.T) {
 	m := NewModel("test")
 	m.gitGraphMode = GitGraphVisible
-	m.width = 130
+	m.width = 140 // graphWidth = 140 - 69 - 2 = 69 → full mode (>= 65)
 	m.height = 40
 	m.gitGraphState = &GitGraphState{
 		TotalCount: 2,
