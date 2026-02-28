@@ -1,4 +1,4 @@
-.PHONY: build run test test-e2e clean install lint fmt deps dev install-hooks check-secrets gate check-integration auto-fix test-short test-integration test-chaos package release docker-build docker-push desktop-dev desktop-build desktop-build-windows desktop-build-linux desktop desktop-deps desktop-package desktop-dmg desktop-clean build-with-dashboard
+.PHONY: build run test test-e2e clean install lint fmt deps dev install-hooks check-secrets gate check-integration auto-fix test-short test-integration test-chaos test-wiring package release docker-build docker-push desktop-dev desktop-build desktop-build-windows desktop-build-linux desktop desktop-deps desktop-package desktop-dmg desktop-clean build-with-dashboard
 
 # Variables
 BINARY_NAME=pilot
@@ -136,6 +136,10 @@ test-integration:
 test-chaos:
 	@echo "🔥 Running chaos tests..."
 	go test -v -race -timeout 5m ./internal/chaos/...
+
+# Run wiring tests (component initialization parity)
+test-wiring:
+	go test -v -count=1 -timeout 30s ./internal/wiring/...
 
 # Run integration checks (orphan commands, build tags, etc.)
 check-integration:
