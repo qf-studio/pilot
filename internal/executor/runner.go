@@ -642,6 +642,54 @@ func (r *Runner) SetPatternContext(ctx *PatternContext) {
 	r.patternContext = ctx
 }
 
+// HasLearningLoop reports whether a learning loop is wired.
+func (r *Runner) HasLearningLoop() bool { return r.learningLoop != nil }
+
+// HasPatternContext reports whether a pattern context is wired.
+func (r *Runner) HasPatternContext() bool { return r.patternContext != nil }
+
+// HasKnowledge reports whether a knowledge store is wired.
+func (r *Runner) HasKnowledge() bool { return r.knowledge != nil }
+
+// HasLogStore reports whether a log store is wired.
+func (r *Runner) HasLogStore() bool { return r.logStore != nil }
+
+// HasTeamChecker reports whether a team checker is wired.
+func (r *Runner) HasTeamChecker() bool { return r.teamChecker != nil }
+
+// HasQualityCheckerFactory reports whether a quality checker factory is wired.
+func (r *Runner) HasQualityCheckerFactory() bool { return r.qualityCheckerFactory != nil }
+
+// HasOnSubIssuePRCreated reports whether a sub-issue PR callback is wired.
+func (r *Runner) HasOnSubIssuePRCreated() bool { return r.onSubIssuePRCreated != nil }
+
+// HasDecomposer reports whether a task decomposer is wired.
+func (r *Runner) HasDecomposer() bool { return r.decomposer != nil }
+
+// HasMonitor reports whether a task monitor is wired.
+func (r *Runner) HasMonitor() bool { return r.monitor != nil }
+
+// HasAlertProcessor reports whether an alert processor is wired.
+func (r *Runner) HasAlertProcessor() bool { return r.alertProcessor != nil }
+
+// HasIntentJudge reports whether an intent judge is wired.
+func (r *Runner) HasIntentJudge() bool { return r.intentJudge != nil }
+
+// HasModelRouter reports whether a model router is wired.
+func (r *Runner) HasModelRouter() bool { return r.modelRouter != nil }
+
+// HasDriftDetector reports whether a drift detector is wired.
+func (r *Runner) HasDriftDetector() bool { return r.driftDetector != nil }
+
+// HasProfileManager reports whether a profile manager is wired.
+func (r *Runner) HasProfileManager() bool { return r.profileManager != nil }
+
+// HasParallelRunner reports whether a parallel runner is wired.
+func (r *Runner) HasParallelRunner() bool { return r.parallelRunner != nil }
+
+// HasSubIssueCreator reports whether a sub-issue creator is wired.
+func (r *Runner) HasSubIssueCreator() bool { return r.subIssueCreator != nil }
+
 // saveLogEntry writes a structured log entry to the log store (fire-and-forget).
 func (r *Runner) saveLogEntry(executionID, level, message string) {
 	if r.logStore == nil {
