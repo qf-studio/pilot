@@ -207,6 +207,20 @@ Disable via config: `executor.navigator.auto_init: false`
 | Gateway in Polling Mode | Done | HTTP server starts in background during polling mode for desktop/web (v1.62.0) |
 | History Dedup | Done | Desktop app deduplicates execution records per issue (v1.62.0) |
 | Desktop Native Titlebar | Done | macOS `TitleBarDefault()`, simplified two-column layout (v1.62.0) |
+| Pattern Learning | Done | Learn from PR reviews, inject patterns into prompts (v2.25.0) |
+| Execution Mode Auto | Done | Scope-based auto-switching between sequential/parallel (v2.25.0) |
+| Auto-Rebase on Conflict | Done | GitHub Update Branch API before close-and-retry (v2.25.0) |
+| CI Fix Dependencies | Done | `Depends on: #N` annotations in fix issues (v2.25.0) |
+| Messenger Refactor | Done | Extracted TelegramMessenger/SlackMessenger, shared Handler (v2.25.0) |
+| Plane.so Adapter | Done | REST client, polling, webhooks, HMAC-SHA256, state transitions (v2.25.0) |
+| Discord Adapter | Done | Gateway WebSocket, bot commands, progress embeds (v2.25.0) |
+| GitHub Projects V2 Board | Done | GraphQL board sync: Review/Done/Failed columns (v2.30.0) |
+| Common Adapter Registry | Done | Unified Adapter interface, generic ProcessedStore (v2.30.0) |
+| Handler Refactoring | Done | `handleIssueGeneric()` consolidates 5 adapter flows (v2.30.0) |
+| Windows Build Fix | Done | Removed SQLite WAL artifacts breaking checkout (v2.34.0) |
+| Dashboard Git Graph Sizes | Done | Small/medium/large/hidden modes, auto-size by terminal width (v2.35.0) |
+| Dashboard Responsive | Done | Stacked layout on narrow terminals, full-width panels (v2.38.0) |
+| Docs Version Sync CI | Done | Workflow closes previous version-sync PRs (v2.38.11) |
 
 ### Telegram Interaction Modes (v0.6.0)
 
@@ -297,7 +311,7 @@ Nextra 4 migration (PR #1409) + 8 docs pages covering all 156 features:
 | GH-1417 | Navigator Auto-Init section | #1425 | Merged |
 | GH-1418 | Homepage + config reference | #1427 | Merged |
 
-**Docs site**: 60 pages, Nextra 4, all 156 features documented.
+**Docs site**: 60+ pages, Nextra 4, 240+ features documented. Discord, Plane, board sync, git graph, auto-rebase, review learning sections added (v2.38.11).
 
 ### Backlog
 
@@ -311,11 +325,32 @@ Nextra 4 migration (PR #1409) + 8 docs pages covering all 156 features:
 | P2 | Web dashboard auth | Token-based auth for remote access |
 | P2 | Mobile-responsive dashboard | Primary use case is phone access |
 | P3 | GitHub App auth | PAT → installable GitHub App |
-| P3 | Learn from PR reviews | Feedback loop into future executions |
+| ~~P3~~ | ~~Learn from PR reviews~~ | ✅ Done (v2.25.0) — `LearnFromReview()` in memory/feedback.go |
 
 ---
 
 ## Completed Log
+
+### 2026-02-28
+
+| Item | What |
+|------|------|
+| **v2.38.11** | Docs website update: version strings, feature counts, 4 new content sections |
+| **Docs: version strings** | Updated v1.8.1 → v2.38.11 in quickstart + installation, navbar badge (GH-1918) |
+| **Docs: dashboard git graph** | Added Git Graph section, `g` shortcut, responsive layout docs (GH-1919) |
+| **Docs: autopilot auto-rebase** | Added Conflict Resolution section + CI fix dependency annotations (GH-1920) |
+| **Docs: review learning** | Added Review Learning section to memory page (GH-1921) |
+| **CI fix** | `docs-version-sync.yml` now closes previous version-sync PRs before creating new one |
+| **Cleanup** | Closed 7 stale version-sync PRs (#1901-#1917), deleted orphan branches |
+| **Project files** | Updated CLAUDE.md + DEVELOPMENT-README.md to v2.38.11, added Discord/Plane/board sync to status |
+
+### 2026-02-25–27
+
+| Item | What |
+|------|------|
+| **v2.25.0–v2.33.0** | Discord adapter, Plane adapter, GitHub Projects V2 board sync, pattern learning, auto-rebase, handler refactoring, common adapter registry |
+| **v2.34.0** | Windows build fix (SQLite WAL artifacts), dashboard project path fix |
+| **v2.35.0–v2.38.11** | Dashboard git graph size variants, responsive layout, auto-sizing, narrow terminal fixes |
 
 ### 2026-02-20
 
