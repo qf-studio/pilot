@@ -12,14 +12,21 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// GitGraphMode represents the display size states.
+// GitGraphMode represents the on/off toggle state.
 type GitGraphMode int
 
 const (
-	GitGraphHidden GitGraphMode = iota
-	GitGraphSmall                // graph + message only, title "GIT"
-	GitGraphMedium               // graph + refs + message (no SHA/author)
-	GitGraphFull                 // graph + refs + message + SHA + author, title "GIT GRAPH"
+	GitGraphHidden  GitGraphMode = iota
+	GitGraphVisible              // auto-selects Small/Medium/Full based on available width
+)
+
+// gitGraphSize is the effective display size, auto-selected from available width.
+type gitGraphSize int
+
+const (
+	gitGraphSizeSmall  gitGraphSize = iota // graph + message only, title "GIT"
+	gitGraphSizeMedium                     // graph + refs + message (no SHA/author)
+	gitGraphSizeFull                       // graph + refs + message + SHA + author, title "GIT GRAPH"
 )
 
 // gitRefreshMsg is sent after a background git graph refresh completes.
@@ -466,22 +473,18 @@ func (m Model) renderGitGraph(opts ...int) string {
 		return ""
 	}
 
-	// Apply width caps per mode
-	effectiveMode := m.gitGraphMode
-	switch effectiveMode {
-	case GitGraphSmall:
-		if graphWidth > 32 {
-			graphWidth = 32
-		}
-	case GitGraphMedium:
-		if graphWidth > 50 {
-			graphWidth = 50
-		}
+	// Auto-select size based on available width
+	size := gitGraphSizeFull
+	if graphWidth < 46 {
+		size = gitGraphSizeMedium
+	}
+	if graphWidth < 28 {
+		size = gitGraphSizeSmall
 	}
 
-	// Title based on mode
+	// Title based on size
 	title := "GIT"
-	if effectiveMode == GitGraphFull {
+	if size == gitGraphSizeFull {
 		title = "GIT GRAPH"
 	}
 
@@ -535,10 +538,10 @@ func (m Model) renderGitGraph(opts ...int) string {
 
 		for _, line := range lines[start:end] {
 			var rendered string
-			switch effectiveMode {
-			case GitGraphSmall:
+			switch size {
+			case gitGraphSizeSmall:
 				rendered = renderGraphLineSmall(line, innerWidth)
-			case GitGraphMedium:
+			case gitGraphSizeMedium:
 				rendered = renderGraphLineMedium(line, innerWidth)
 			default:
 				rendered = renderGraphLineFull(line, innerWidth)

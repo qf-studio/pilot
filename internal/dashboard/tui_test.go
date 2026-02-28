@@ -898,8 +898,8 @@ func TestGitGraph_ToggleAlwaysWorks(t *testing.T) {
 		m := Model{width: width, height: 40}
 		updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'g'}})
 		m = updated.(Model)
-		if m.gitGraphMode != GitGraphFull {
-			t.Errorf("width=%d: gitGraphMode = %d, want %d (Full)", width, m.gitGraphMode, GitGraphFull)
+		if m.gitGraphMode != GitGraphVisible {
+			t.Errorf("width=%d: gitGraphMode = %d, want %d (Full)", width, m.gitGraphMode, GitGraphVisible)
 		}
 	}
 }
@@ -951,7 +951,7 @@ func TestHelpFooter_VisibleWithoutTruncation(t *testing.T) {
 func TestGitGraph_StackedLayoutUsesFullWidth(t *testing.T) {
 	// On narrow terminal (<90 cols), graph should stack below dashboard at full terminal width
 	m := Model{
-		width: 80, height: 40, gitGraphMode: GitGraphFull,
+		width: 80, height: 40, gitGraphMode: GitGraphVisible,
 		autopilotPanel: NewAutopilotPanel(nil),
 		gitGraphState: &GitGraphState{
 			Lines: []GitGraphLine{
@@ -990,7 +990,7 @@ func TestGitGraph_StackedLayoutUsesFullWidth(t *testing.T) {
 func TestGitGraph_SideBySideOnWideTerminal(t *testing.T) {
 	// On wide terminal (≥90 cols), graph renders side-by-side
 	m := Model{
-		width: 120, height: 40, gitGraphMode: GitGraphFull,
+		width: 120, height: 40, gitGraphMode: GitGraphVisible,
 		autopilotPanel: NewAutopilotPanel(nil),
 		gitGraphState: &GitGraphState{
 			Lines: []GitGraphLine{
@@ -1018,7 +1018,7 @@ func TestGitGraph_SideBySideOnWideTerminal(t *testing.T) {
 func TestGitGraph_StackedHelpFooterVisible(t *testing.T) {
 	// Help footer must be visible at bottom even when graph is stacked
 	m := Model{
-		width: 75, height: 30, gitGraphMode: GitGraphFull,
+		width: 75, height: 30, gitGraphMode: GitGraphVisible,
 		autopilotPanel: NewAutopilotPanel(nil),
 		gitGraphState: &GitGraphState{
 			Lines: []GitGraphLine{
@@ -1040,7 +1040,7 @@ func TestGitGraph_StackedHelpFooterVisible(t *testing.T) {
 func TestGitGraph_NarrowTerminalNotSilent(t *testing.T) {
 	// On narrow terminal with graph enabled, pressing 'g' should produce visible graph output
 	m := Model{
-		width: 60, height: 30, gitGraphMode: GitGraphFull,
+		width: 60, height: 30, gitGraphMode: GitGraphVisible,
 		autopilotPanel: NewAutopilotPanel(nil),
 		gitGraphState: &GitGraphState{
 			Lines: []GitGraphLine{
@@ -1060,7 +1060,7 @@ func TestDashboardPanels_StretchInStackedMode(t *testing.T) {
 	// GH-1909: In stacked mode, dashboard panels should stretch to full terminal width,
 	// matching the git graph panel width for visual consistency.
 	m := Model{
-		width: 80, height: 40, gitGraphMode: GitGraphFull,
+		width: 80, height: 40, gitGraphMode: GitGraphVisible,
 		autopilotPanel: NewAutopilotPanel(nil),
 		gitGraphState: &GitGraphState{
 			Lines: []GitGraphLine{

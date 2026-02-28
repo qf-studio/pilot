@@ -391,14 +391,8 @@ func (m Model) isStackedMode() bool {
 	if m.gitGraphMode == GitGraphHidden || m.width <= 0 {
 		return false
 	}
-	minSideBySide := panelTotalWidth + 1 + 24
-	switch m.gitGraphMode {
-	case GitGraphMedium:
-		minSideBySide = panelTotalWidth + 1 + 30
-	case GitGraphFull:
-		minSideBySide = panelTotalWidth + 1 + 50
-	}
-	return m.width < minSideBySide
+	// Minimum for side-by-side: dashboard + gap + smallest useful graph (20)
+	return m.width < panelTotalWidth+1+20
 }
 
 // effectivePanelTotalWidth returns the panel width for the current layout.
@@ -683,15 +677,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.showLogs = !m.showLogs
 			return m, tea.ClearScreen // GH-1249: Logs toggle changes height
 		case "g":
-			// Cycle git graph: Hidden → Full → Medium → Small → Hidden
-			switch m.gitGraphMode {
-			case GitGraphHidden:
-				m.gitGraphMode = GitGraphFull
-			case GitGraphFull:
-				m.gitGraphMode = GitGraphMedium
-			case GitGraphMedium:
-				m.gitGraphMode = GitGraphSmall
-			case GitGraphSmall:
+			// Toggle git graph: Hidden ↔ Visible (auto-sizes)
+			if m.gitGraphMode == GitGraphHidden {
+				m.gitGraphMode = GitGraphVisible
+			} else {
 				m.gitGraphMode = GitGraphHidden
 			}
 			m.gitGraphFocus = false
@@ -894,36 +883,25 @@ func (m Model) View() string {
 	var result string
 	if m.gitGraphMode == GitGraphHidden {
 		result = dashboard
-	} else {
-		// Minimum terminal width for side-by-side layout depends on mode.
-		minSideBySide := panelTotalWidth + 1 + 24 // small: dashboard + gap + 24
-		switch m.gitGraphMode {
-		case GitGraphMedium:
-			minSideBySide = panelTotalWidth + 1 + 30
-		case GitGraphFull:
-			minSideBySide = panelTotalWidth + 1 + 50
+	} else if m.width > 0 && m.width < panelTotalWidth+1+20 {
+		// Terminal too narrow for side-by-side — stack graph below at full terminal width.
+		dashLines := strings.Count(dashboard, "\n") + 1
+		graphHeight := m.height - dashLines - 1 // -1 for help footer
+		if graphHeight < 8 {
+			graphHeight = 8 // minimum useful graph height
 		}
-
-		if m.width > 0 && m.width < minSideBySide {
-			// Terminal too narrow for side-by-side — stack graph below at full terminal width.
-			dashLines := strings.Count(dashboard, "\n") + 1
-			graphHeight := m.height - dashLines - 1 // -1 for help footer
-			if graphHeight < 8 {
-				graphHeight = 8 // minimum useful graph height
-			}
-			graphPanel := m.renderGitGraph(m.width, graphHeight)
-			if graphPanel == "" {
-				result = dashboard
-			} else {
-				result = dashboard + "\n" + graphPanel
-			}
+		graphPanel := m.renderGitGraph(m.width, graphHeight)
+		if graphPanel == "" {
+			result = dashboard
 		} else {
-			graphPanel := m.renderGitGraph()
-			if graphPanel == "" {
-				result = dashboard
-			} else {
-				result = lipgloss.JoinHorizontal(lipgloss.Top, dashboard, " ", graphPanel)
-			}
+			result = dashboard + "\n" + graphPanel
+		}
+	} else {
+		graphPanel := m.renderGitGraph()
+		if graphPanel == "" {
+			result = dashboard
+		} else {
+			result = lipgloss.JoinHorizontal(lipgloss.Top, dashboard, " ", graphPanel)
 		}
 	}
 
@@ -1015,10 +993,10 @@ func (m Model) renderHelp() string {
 		parts = []string{"q: quit", "l: logs", "b: banner", "g: graph", "j/k: select"}
 	case m.gitGraphFocus:
 		// Graph visible, graph panel focused
-		parts = []string{"q: quit", "b: banner", "g: cycle", "tab: dashboard"}
+		parts = []string{"q: quit", "b: banner", "g: close", "tab: dashboard"}
 	default:
 		// Graph visible, dashboard focused
-		parts = []string{"q: quit", "b: banner", "g: cycle", "tab: graph"}
+		parts = []string{"q: quit", "b: banner", "g: close", "tab: graph"}
 	}
 	help := strings.Join(parts, "  ")
 	tw := m.effectivePanelTotalWidth()

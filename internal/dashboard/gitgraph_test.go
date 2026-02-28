@@ -325,43 +325,71 @@ func TestRenderGraphLineMedium_NoRefs(t *testing.T) {
 	}
 }
 
-// TestRenderGitGraph_SmallWidthCap verifies small mode caps panel width at 32.
-func TestRenderGitGraph_SmallWidthCap(t *testing.T) {
+// TestRenderGitGraph_AutoSizeSmall verifies narrow width auto-selects small rendering.
+func TestRenderGitGraph_AutoSizeSmall(t *testing.T) {
 	m := NewModel("test")
-	m.gitGraphMode = GitGraphSmall
-	m.width = 160
+	m.gitGraphMode = GitGraphVisible
+	m.width = panelTotalWidth + 2 + 25 // available = 25 < 28 → small
 	m.height = 30
 	m.gitGraphState = &GitGraphState{
-		Lines: []GitGraphLine{{GraphChars: "● ", SHA: "abc1234", Message: "test commit"}},
+		Lines: []GitGraphLine{
+			{GraphChars: "● ", SHA: "abc1234", Author: "Alice", Refs: "HEAD -> main", Message: "test commit"},
+		},
 	}
 
 	got := m.renderGitGraph()
 	plain := stripANSI(got)
-	// Title should be "GIT" not "GIT GRAPH"
+	// Small: title "GIT", no SHA, no author
 	if strings.Contains(plain, "GIT GRAPH") {
-		t.Error("small mode should use 'GIT' title, not 'GIT GRAPH'")
+		t.Error("small auto-size should use 'GIT' title, not 'GIT GRAPH'")
 	}
-	if !strings.Contains(plain, "GIT") {
-		t.Error("small mode should contain 'GIT' title")
+	if strings.Contains(plain, "abc1234") {
+		t.Error("small auto-size should not contain SHA")
 	}
 }
 
-// TestRenderGitGraph_MediumWidthCap verifies medium mode caps panel width at 50.
-func TestRenderGitGraph_MediumWidthCap(t *testing.T) {
+// TestRenderGitGraph_AutoSizeMedium verifies medium width auto-selects medium rendering.
+func TestRenderGitGraph_AutoSizeMedium(t *testing.T) {
 	m := NewModel("test")
-	m.gitGraphMode = GitGraphMedium
-	m.width = 160
+	m.gitGraphMode = GitGraphVisible
+	m.width = panelTotalWidth + 2 + 35 // available = 35, between 28-45 → medium
 	m.height = 30
 	m.gitGraphState = &GitGraphState{
 		Lines: []GitGraphLine{
-			{GraphChars: "● ", SHA: "abc1234", Refs: "HEAD -> main", Message: "test commit"},
+			{GraphChars: "● ", SHA: "abc1234", Author: "Alice", Refs: "HEAD -> main", Message: "test commit"},
 		},
 	}
 
 	got := m.renderGitGraph()
 	plain := stripANSI(got)
 	if strings.Contains(plain, "GIT GRAPH") {
-		t.Error("medium mode should use 'GIT' title, not 'GIT GRAPH'")
+		t.Error("medium auto-size should use 'GIT' title, not 'GIT GRAPH'")
+	}
+	// Medium has refs but no SHA
+	if strings.Contains(plain, "abc1234") {
+		t.Error("medium auto-size should not contain SHA")
+	}
+}
+
+// TestRenderGitGraph_AutoSizeFull verifies wide width auto-selects full rendering.
+func TestRenderGitGraph_AutoSizeFull(t *testing.T) {
+	m := NewModel("test")
+	m.gitGraphMode = GitGraphVisible
+	m.width = panelTotalWidth + 2 + 60 // available = 60 > 45 → full
+	m.height = 30
+	m.gitGraphState = &GitGraphState{
+		Lines: []GitGraphLine{
+			{GraphChars: "● ", SHA: "abc1234", Author: "Alice", Message: "test commit"},
+		},
+	}
+
+	got := m.renderGitGraph()
+	plain := stripANSI(got)
+	if !strings.Contains(plain, "GIT GRAPH") {
+		t.Error("full auto-size should use 'GIT GRAPH' title")
+	}
+	if !strings.Contains(plain, "abc1234") {
+		t.Error("full auto-size should contain SHA")
 	}
 }
 
@@ -379,7 +407,7 @@ func TestRenderGitGraph_Hidden(t *testing.T) {
 // TestRenderGitGraph_NarrowTerminal verifies graph is hidden when too narrow.
 func TestRenderGitGraph_NarrowTerminal(t *testing.T) {
 	m := NewModel("test")
-	m.gitGraphMode = GitGraphFull
+	m.gitGraphMode = GitGraphVisible
 	m.width = 75 // remaining = 75 - 69 - 2 = 4, below minimum 20
 
 	got := m.renderGitGraph()
@@ -391,7 +419,7 @@ func TestRenderGitGraph_NarrowTerminal(t *testing.T) {
 // TestRenderGitGraph_Loading verifies loading state renders correctly.
 func TestRenderGitGraph_Loading(t *testing.T) {
 	m := NewModel("test")
-	m.gitGraphMode = GitGraphFull
+	m.gitGraphMode = GitGraphVisible
 	m.gitGraphState = nil
 	m.width = 130
 
@@ -409,7 +437,7 @@ func TestRenderGitGraph_Loading(t *testing.T) {
 // TestRenderGitGraph_Error verifies error state renders correctly.
 func TestRenderGitGraph_Error(t *testing.T) {
 	m := NewModel("test")
-	m.gitGraphMode = GitGraphFull
+	m.gitGraphMode = GitGraphVisible
 	m.width = 130
 	m.gitGraphState = &GitGraphState{
 		Error:       "fatal: not a git repository",
@@ -430,7 +458,7 @@ func TestRenderGitGraph_Error(t *testing.T) {
 // TestRenderGitGraph_WithData verifies full rendering with commit data.
 func TestRenderGitGraph_WithData(t *testing.T) {
 	m := NewModel("test")
-	m.gitGraphMode = GitGraphFull
+	m.gitGraphMode = GitGraphVisible
 	m.width = 130
 	m.gitGraphState = &GitGraphState{
 		TotalCount:  3,
@@ -476,7 +504,7 @@ func TestRenderGitGraph_WithData(t *testing.T) {
 // and contain the correct panel structure.
 func TestRenderGitGraph_FocusedBorder(t *testing.T) {
 	m := NewModel("test")
-	m.gitGraphMode = GitGraphFull
+	m.gitGraphMode = GitGraphVisible
 	m.width = 130
 	m.gitGraphState = &GitGraphState{Lines: []GitGraphLine{{GraphChars: "● ", SHA: "abc1234", Message: "test"}}}
 
@@ -505,45 +533,31 @@ func TestRenderGitGraph_FocusedBorder(t *testing.T) {
 	}
 }
 
-// TestModelUpdate_GToggle verifies 'g' key cycles through all graph modes.
+// TestModelUpdate_GToggle verifies 'g' key toggles graph on/off.
 func TestModelUpdate_GToggle(t *testing.T) {
 	m := NewModel("test")
 	m.gitGraphMode = GitGraphHidden
 	m.projectPath = "."
 
-	// Hidden → Full
+	// Hidden → Visible
 	updated, _ := m.Update(makeKey("g"))
 	m = updated.(Model)
-	if m.gitGraphMode != GitGraphFull {
-		t.Errorf("after 1st g: mode = %d, want GitGraphFull(%d)", m.gitGraphMode, GitGraphFull)
+	if m.gitGraphMode != GitGraphVisible {
+		t.Errorf("after 1st g: mode = %d, want GitGraphVisible(%d)", m.gitGraphMode, GitGraphVisible)
 	}
 
-	// Full → Medium
-	updated, _ = m.Update(makeKey("g"))
-	m = updated.(Model)
-	if m.gitGraphMode != GitGraphMedium {
-		t.Errorf("after 2nd g: mode = %d, want GitGraphMedium(%d)", m.gitGraphMode, GitGraphMedium)
-	}
-
-	// Medium → Small
-	updated, _ = m.Update(makeKey("g"))
-	m = updated.(Model)
-	if m.gitGraphMode != GitGraphSmall {
-		t.Errorf("after 3rd g: mode = %d, want GitGraphSmall(%d)", m.gitGraphMode, GitGraphSmall)
-	}
-
-	// Small → Hidden
+	// Visible → Hidden
 	updated, _ = m.Update(makeKey("g"))
 	m = updated.(Model)
 	if m.gitGraphMode != GitGraphHidden {
-		t.Errorf("after 4th g: mode = %d, want GitGraphHidden(%d)", m.gitGraphMode, GitGraphHidden)
+		t.Errorf("after 2nd g: mode = %d, want GitGraphHidden(%d)", m.gitGraphMode, GitGraphHidden)
 	}
 }
 
 // TestModelUpdate_TabFocus verifies Tab toggles focus when graph is visible.
 func TestModelUpdate_TabFocus(t *testing.T) {
 	m := NewModel("test")
-	m.gitGraphMode = GitGraphFull
+	m.gitGraphMode = GitGraphVisible
 	m.gitGraphFocus = false
 
 	updated, _ := m.Update(makeKey("tab"))
@@ -575,7 +589,7 @@ func TestModelUpdate_TabNoFocusWhenHidden(t *testing.T) {
 // TestModelUpdate_ScrollWhenFocused verifies j/k scroll the graph when focused.
 func TestModelUpdate_ScrollWhenFocused(t *testing.T) {
 	m := NewModel("test")
-	m.gitGraphMode = GitGraphFull
+	m.gitGraphMode = GitGraphVisible
 	m.gitGraphFocus = true
 	m.gitGraphScroll = 5
 	m.height = 40 // viewport = 35
@@ -601,7 +615,7 @@ func TestModelUpdate_ScrollWhenFocused(t *testing.T) {
 // TestModelUpdate_ScrollBoundaries verifies scroll doesn't go out of bounds.
 func TestModelUpdate_ScrollBoundaries(t *testing.T) {
 	m := NewModel("test")
-	m.gitGraphMode = GitGraphFull
+	m.gitGraphMode = GitGraphVisible
 	m.gitGraphFocus = true
 	m.gitGraphScroll = 0
 	m.height = 8 // viewport = 3
@@ -628,7 +642,7 @@ func TestModelUpdate_ScrollBoundaries(t *testing.T) {
 // TestModelUpdate_DashboardScrollWhenNotFocused verifies j/k select tasks when not focused.
 func TestModelUpdate_DashboardScrollWhenNotFocused(t *testing.T) {
 	m := NewModel("test")
-	m.gitGraphMode = GitGraphFull
+	m.gitGraphMode = GitGraphVisible
 	m.gitGraphFocus = false
 	m.tasks = []TaskDisplay{
 		{ID: "1", Title: "Task A", Status: "running"},
@@ -649,7 +663,7 @@ func TestModelUpdate_DashboardScrollWhenNotFocused(t *testing.T) {
 // TestModelUpdate_HalfPageScroll verifies Ctrl+D/Ctrl+U half-page scrolling.
 func TestModelUpdate_HalfPageScroll(t *testing.T) {
 	m := NewModel("test")
-	m.gitGraphMode = GitGraphFull
+	m.gitGraphMode = GitGraphVisible
 	m.gitGraphFocus = true
 	m.gitGraphScroll = 0
 	m.height = 40 // viewport = 35, half-page = 17
@@ -675,7 +689,7 @@ func TestModelUpdate_HalfPageScroll(t *testing.T) {
 // TestModelUpdate_GitRefreshMsg verifies state is updated on refresh.
 func TestModelUpdate_GitRefreshMsg(t *testing.T) {
 	m := NewModel("test")
-	m.gitGraphMode = GitGraphFull
+	m.gitGraphMode = GitGraphVisible
 
 	state := &GitGraphState{
 		TotalCount:  42,
@@ -710,7 +724,7 @@ func TestModelUpdate_GitRefreshTickHidden(t *testing.T) {
 // TestViewWithGitGraph_SideBySide verifies View renders both panels side-by-side.
 func TestViewWithGitGraph_SideBySide(t *testing.T) {
 	m := NewModel("test")
-	m.gitGraphMode = GitGraphFull
+	m.gitGraphMode = GitGraphVisible
 	m.width = 130
 	m.height = 40
 	m.gitGraphState = &GitGraphState{
@@ -765,7 +779,7 @@ func TestSetProjectPath(t *testing.T) {
 // TestGitGraphState_ScrollIndicator verifies scroll indicator shows correct range.
 func TestGitGraphState_ScrollIndicator(t *testing.T) {
 	m := NewModel("test")
-	m.gitGraphMode = GitGraphFull
+	m.gitGraphMode = GitGraphVisible
 	m.width = 130
 	m.gitGraphScroll = 10
 
