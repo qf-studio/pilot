@@ -12,12 +12,14 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// GitGraphMode represents the on/off toggle states.
+// GitGraphMode represents the display size states.
 type GitGraphMode int
 
 const (
 	GitGraphHidden GitGraphMode = iota
-	GitGraphFull
+	GitGraphSmall                // graph + message only, title "GIT"
+	GitGraphMedium               // graph + refs + message (no SHA/author)
+	GitGraphFull                 // graph + refs + message + SHA + author, title "GIT GRAPH"
 )
 
 // gitRefreshMsg is sent after a background git graph refresh completes.
@@ -334,6 +336,59 @@ func renderGraphLineFull(line GitGraphLine, width int) string {
 	return graphColored + styledRefs + styledMsg + " " + right
 }
 
+// renderGraphLineSmall renders one line in Small mode:
+//   graph + truncated message only (no refs/author/SHA)
+func renderGraphLineSmall(line GitGraphLine, width int) string {
+	graphColored := colorizeGraphChars(line.GraphChars)
+	graphWidth := lipgloss.Width(line.GraphChars)
+
+	if line.SHA == "" {
+		padding := width - graphWidth
+		if padding < 0 {
+			padding = 0
+		}
+		return graphColored + strings.Repeat(" ", padding)
+	}
+
+	msgWidth := width - graphWidth
+	if msgWidth < 5 {
+		msgWidth = 5
+	}
+	styledMsg := graphMsgStyle.Render(padOrTruncate(line.Message, msgWidth))
+	return graphColored + styledMsg
+}
+
+// renderGraphLineMedium renders one line in Medium mode:
+//   graph + refs + message (no author/SHA)
+func renderGraphLineMedium(line GitGraphLine, width int) string {
+	graphColored := colorizeGraphChars(line.GraphChars)
+	graphWidth := lipgloss.Width(line.GraphChars)
+
+	if line.SHA == "" {
+		padding := width - graphWidth
+		if padding < 0 {
+			padding = 0
+		}
+		return graphColored + strings.Repeat(" ", padding)
+	}
+
+	// Refs
+	styledRefs := colorizeRefs(line.Refs)
+	refsWidth := 0
+	if styledRefs != "" {
+		plainRefs := "(" + collapseRefs(line.Refs) + ") "
+		refsWidth = lipgloss.Width(plainRefs)
+		styledRefs += " "
+	}
+
+	msgWidth := width - graphWidth - refsWidth
+	if msgWidth < 5 {
+		msgWidth = 5
+	}
+	styledMsg := graphMsgStyle.Render(padOrTruncate(line.Message, msgWidth))
+	return graphColored + styledRefs + styledMsg
+}
+
 // collapseRefs returns a plain-text version of the refs string for width measurement.
 // Strips long-form prefixes (refs/heads/, refs/remotes/, etc.).
 func collapseRefs(refs string) string {
@@ -383,7 +438,7 @@ func (m Model) gitGraphViewportHeight() int {
 	return 1
 }
 
-// renderGitGraph renders the full git graph panel for the current model state.
+// renderGitGraph renders the git graph panel for the current model state.
 // Returns an empty string if hidden. Optional variadic args:
 //   - opts[0] = forceWidth: panel width (stacked layout uses full terminal width)
 //   - opts[1] = forceHeight: panel height (stacked layout uses remaining terminal space)
@@ -395,7 +450,6 @@ func (m Model) renderGitGraph(opts ...int) string {
 	var graphWidth int
 	var forceHeight int
 	if len(opts) > 0 && opts[0] > 0 {
-		// Stacked layout: use provided width directly
 		graphWidth = opts[0]
 	}
 	if len(opts) > 1 && opts[1] > 0 {
@@ -403,10 +457,6 @@ func (m Model) renderGitGraph(opts ...int) string {
 	}
 	if graphWidth == 0 {
 		// Side-by-side layout: calculate from remaining terminal width
-		minTermWidth := panelTotalWidth + 1 + 50
-		if m.width > 0 && m.width < minTermWidth {
-			return ""
-		}
 		graphWidth = 60 // default when terminal width unknown
 		if m.width > 0 {
 			graphWidth = m.width - panelTotalWidth - 2
@@ -416,7 +466,24 @@ func (m Model) renderGitGraph(opts ...int) string {
 		return ""
 	}
 
-	title := "GIT GRAPH"
+	// Apply width caps per mode
+	effectiveMode := m.gitGraphMode
+	switch effectiveMode {
+	case GitGraphSmall:
+		if graphWidth > 32 {
+			graphWidth = 32
+		}
+	case GitGraphMedium:
+		if graphWidth > 50 {
+			graphWidth = 50
+		}
+	}
+
+	// Title based on mode
+	title := "GIT"
+	if effectiveMode == GitGraphFull {
+		title = "GIT GRAPH"
+	}
 
 	// Build content lines
 	innerWidth := graphWidth - 4 // border(1) + space(1) + space(1) + border(1)
@@ -439,9 +506,7 @@ func (m Model) renderGitGraph(opts ...int) string {
 			start = 0
 		}
 
-		// Calculate visible lines from panel height:
-		// panel = top border + empty line + [content] + empty line + bottom border
-		// content area = panelHeight - 4, minus 1 for scroll indicator
+		// Calculate visible lines from panel height
 		panelHeight := m.height
 		if forceHeight > 0 {
 			panelHeight = forceHeight
@@ -469,19 +534,26 @@ func (m Model) renderGitGraph(opts ...int) string {
 		}
 
 		for _, line := range lines[start:end] {
-			contentLines = append(contentLines, renderGraphLineFull(line, innerWidth))
+			var rendered string
+			switch effectiveMode {
+			case GitGraphSmall:
+				rendered = renderGraphLineSmall(line, innerWidth)
+			case GitGraphMedium:
+				rendered = renderGraphLineMedium(line, innerWidth)
+			default:
+				rendered = renderGraphLineFull(line, innerWidth)
+			}
+			contentLines = append(contentLines, rendered)
 		}
 
-		// Build scroll indicator (placed at bottom of content area)
+		// Build scroll indicator
 		if total > 0 {
 			indicator := fmt.Sprintf("[%d-%d of %d]", start+1, end, total)
 			scrollIndicator = padOrTruncate(graphScrollStyle.Render(indicator), innerWidth)
 		}
 	}
 
-	// Full-height stretch: pad content lines to fill panel height.
-	// Panel structure: top border + empty line + [content lines] + empty line + bottom border = height
-	// So content area height = panelHeight - 4 (top border, top empty, bottom empty, bottom border)
+	// Full-height stretch: pad content lines to fill panel height
 	stretchHeight := m.height
 	if forceHeight > 0 {
 		stretchHeight = forceHeight
@@ -491,21 +563,17 @@ func (m Model) renderGitGraph(opts ...int) string {
 		if contentArea < 1 {
 			contentArea = 1
 		}
-		// Reserve 1 line for scroll indicator (if present) at bottom of content area
 		indicatorReserve := 0
 		if scrollIndicator != "" {
 			indicatorReserve = 1
 		}
-		// Pad content lines to fill available space
 		for len(contentLines) < contentArea-indicatorReserve {
 			contentLines = append(contentLines, "")
 		}
-		// Append scroll indicator at bottom of content area
 		if scrollIndicator != "" {
 			contentLines = append(contentLines, scrollIndicator)
 		}
 	} else if scrollIndicator != "" {
-		// No height info: fallback to original placement
 		contentLines = append(contentLines, "")
 		contentLines = append(contentLines, scrollIndicator)
 	}

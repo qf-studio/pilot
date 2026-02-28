@@ -228,6 +228,143 @@ func TestRenderGraphLineFull_Connector(t *testing.T) {
 	}
 }
 
+// TestRenderGraphLineSmall verifies small-mode rendering (graph + message only).
+func TestRenderGraphLineSmall(t *testing.T) {
+	line := GitGraphLine{
+		GraphChars: "● ",
+		Refs:       "HEAD -> main",
+		Message:    "feat: add git graph panel",
+		Author:     "Alice Smith",
+		SHA:        "7eb8da1",
+	}
+
+	width := 28
+	got := renderGraphLineSmall(line, width)
+
+	if got == "" {
+		t.Error("renderGraphLineSmall returned empty string")
+	}
+
+	plain := stripANSI(got)
+	// Should contain message
+	if !strings.Contains(plain, "feat:") {
+		t.Errorf("missing commit message in small line: %q", plain)
+	}
+	// Should NOT contain SHA or author
+	if strings.Contains(plain, "7eb8da1") {
+		t.Errorf("small line should not contain SHA: %q", plain)
+	}
+	if strings.Contains(plain, "Alice") {
+		t.Errorf("small line should not contain author: %q", plain)
+	}
+	// Should NOT contain refs
+	if strings.Contains(plain, "HEAD") {
+		t.Errorf("small line should not contain refs: %q", plain)
+	}
+}
+
+// TestRenderGraphLineSmall_Connector verifies connector lines in small mode.
+func TestRenderGraphLineSmall_Connector(t *testing.T) {
+	line := GitGraphLine{GraphChars: "├╌╮"}
+	width := 28
+	got := renderGraphLineSmall(line, width)
+	visualWidth := lipgloss.Width(got)
+	if visualWidth != width {
+		t.Errorf("connector visual width = %d, want %d", visualWidth, width)
+	}
+}
+
+// TestRenderGraphLineMedium verifies medium-mode rendering (graph + refs + message).
+func TestRenderGraphLineMedium(t *testing.T) {
+	line := GitGraphLine{
+		GraphChars: "● ",
+		Refs:       "HEAD -> main",
+		Message:    "feat: add git graph panel",
+		Author:     "Alice Smith",
+		SHA:        "7eb8da1",
+	}
+
+	width := 46
+	got := renderGraphLineMedium(line, width)
+
+	if got == "" {
+		t.Error("renderGraphLineMedium returned empty string")
+	}
+
+	plain := stripANSI(got)
+	// Should contain message
+	if !strings.Contains(plain, "feat:") {
+		t.Errorf("missing commit message in medium line: %q", plain)
+	}
+	// Should contain refs
+	if !strings.Contains(plain, "HEAD") {
+		t.Errorf("missing refs in medium line: %q", plain)
+	}
+	// Should NOT contain SHA or author
+	if strings.Contains(plain, "7eb8da1") {
+		t.Errorf("medium line should not contain SHA: %q", plain)
+	}
+	if strings.Contains(plain, "Alice") {
+		t.Errorf("medium line should not contain author: %q", plain)
+	}
+}
+
+// TestRenderGraphLineMedium_NoRefs verifies medium mode without refs.
+func TestRenderGraphLineMedium_NoRefs(t *testing.T) {
+	line := GitGraphLine{
+		GraphChars: "● ",
+		Message:    "fix: handle nil pointer",
+		SHA:        "a1b2c3d",
+	}
+
+	width := 46
+	got := renderGraphLineMedium(line, width)
+	plain := stripANSI(got)
+	if !strings.Contains(plain, "fix: handle nil") {
+		t.Errorf("missing message: %q", plain)
+	}
+}
+
+// TestRenderGitGraph_SmallWidthCap verifies small mode caps panel width at 32.
+func TestRenderGitGraph_SmallWidthCap(t *testing.T) {
+	m := NewModel("test")
+	m.gitGraphMode = GitGraphSmall
+	m.width = 160
+	m.height = 30
+	m.gitGraphState = &GitGraphState{
+		Lines: []GitGraphLine{{GraphChars: "● ", SHA: "abc1234", Message: "test commit"}},
+	}
+
+	got := m.renderGitGraph()
+	plain := stripANSI(got)
+	// Title should be "GIT" not "GIT GRAPH"
+	if strings.Contains(plain, "GIT GRAPH") {
+		t.Error("small mode should use 'GIT' title, not 'GIT GRAPH'")
+	}
+	if !strings.Contains(plain, "GIT") {
+		t.Error("small mode should contain 'GIT' title")
+	}
+}
+
+// TestRenderGitGraph_MediumWidthCap verifies medium mode caps panel width at 50.
+func TestRenderGitGraph_MediumWidthCap(t *testing.T) {
+	m := NewModel("test")
+	m.gitGraphMode = GitGraphMedium
+	m.width = 160
+	m.height = 30
+	m.gitGraphState = &GitGraphState{
+		Lines: []GitGraphLine{
+			{GraphChars: "● ", SHA: "abc1234", Refs: "HEAD -> main", Message: "test commit"},
+		},
+	}
+
+	got := m.renderGitGraph()
+	plain := stripANSI(got)
+	if strings.Contains(plain, "GIT GRAPH") {
+		t.Error("medium mode should use 'GIT' title, not 'GIT GRAPH'")
+	}
+}
+
 // TestRenderGitGraph_Hidden verifies no output when mode is Hidden.
 func TestRenderGitGraph_Hidden(t *testing.T) {
 	m := NewModel("test")
@@ -239,11 +376,11 @@ func TestRenderGitGraph_Hidden(t *testing.T) {
 	}
 }
 
-// TestRenderGitGraph_NarrowTerminal verifies graph is hidden for narrow terminals.
+// TestRenderGitGraph_NarrowTerminal verifies graph is hidden when too narrow.
 func TestRenderGitGraph_NarrowTerminal(t *testing.T) {
 	m := NewModel("test")
 	m.gitGraphMode = GitGraphFull
-	m.width = 80 // less than panelTotalWidth(69) + 1 + 20 = 90
+	m.width = 75 // remaining = 75 - 69 - 2 = 4, below minimum 20
 
 	got := m.renderGitGraph()
 	if got != "" {
@@ -368,7 +505,7 @@ func TestRenderGitGraph_FocusedBorder(t *testing.T) {
 	}
 }
 
-// TestModelUpdate_GToggle verifies 'g' key toggles graph on/off.
+// TestModelUpdate_GToggle verifies 'g' key cycles through all graph modes.
 func TestModelUpdate_GToggle(t *testing.T) {
 	m := NewModel("test")
 	m.gitGraphMode = GitGraphHidden
@@ -381,11 +518,25 @@ func TestModelUpdate_GToggle(t *testing.T) {
 		t.Errorf("after 1st g: mode = %d, want GitGraphFull(%d)", m.gitGraphMode, GitGraphFull)
 	}
 
-	// Full → Hidden
+	// Full → Medium
+	updated, _ = m.Update(makeKey("g"))
+	m = updated.(Model)
+	if m.gitGraphMode != GitGraphMedium {
+		t.Errorf("after 2nd g: mode = %d, want GitGraphMedium(%d)", m.gitGraphMode, GitGraphMedium)
+	}
+
+	// Medium → Small
+	updated, _ = m.Update(makeKey("g"))
+	m = updated.(Model)
+	if m.gitGraphMode != GitGraphSmall {
+		t.Errorf("after 3rd g: mode = %d, want GitGraphSmall(%d)", m.gitGraphMode, GitGraphSmall)
+	}
+
+	// Small → Hidden
 	updated, _ = m.Update(makeKey("g"))
 	m = updated.(Model)
 	if m.gitGraphMode != GitGraphHidden {
-		t.Errorf("after 2nd g: mode = %d, want GitGraphHidden(%d)", m.gitGraphMode, GitGraphHidden)
+		t.Errorf("after 4th g: mode = %d, want GitGraphHidden(%d)", m.gitGraphMode, GitGraphHidden)
 	}
 }
 
