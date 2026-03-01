@@ -648,6 +648,9 @@ func (r *Runner) HasLearningLoop() bool { return r.learningLoop != nil }
 // HasPatternContext reports whether a pattern context is wired.
 func (r *Runner) HasPatternContext() bool { return r.patternContext != nil }
 
+// HasTokenLimitCheck reports whether a token limit check callback is wired.
+func (r *Runner) HasTokenLimitCheck() bool { return r.tokenLimitCheck != nil }
+
 // HasKnowledge reports whether a knowledge store is wired.
 func (r *Runner) HasKnowledge() bool { return r.knowledge != nil }
 
