@@ -50,6 +50,30 @@ func TestConfigFlagToComponentMapping(t *testing.T) {
 			checkFunc: func(h *Harness) bool { return h.Runner.HasPatternContext() },
 			enabled:   true,
 		},
+		{
+			name:      "budget disabled → no token limit check",
+			field:     "TokenLimitCheck",
+			checkFunc: func(h *Harness) bool { return h.Runner.HasTokenLimitCheck() },
+			enabled:   false,
+		},
+		{
+			name:      "budget enabled → token limit check wired",
+			field:     "TokenLimitCheck",
+			checkFunc: func(h *Harness) bool { return h.Runner.HasTokenLimitCheck() },
+			enabled:   true,
+		},
+		{
+			name:      "team disabled → no team checker",
+			field:     "TeamChecker",
+			checkFunc: func(h *Harness) bool { return h.Runner.HasTeamChecker() },
+			enabled:   false,
+		},
+		{
+			name:      "team enabled → team checker wired",
+			field:     "TeamChecker",
+			checkFunc: func(h *Harness) bool { return h.Runner.HasTeamChecker() },
+			enabled:   true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -63,6 +87,10 @@ func TestConfigFlagToComponentMapping(t *testing.T) {
 					WithQuality(cfg)
 				case "LearningLoop", "PatternContext":
 					WithLearning(cfg)
+				case "TokenLimitCheck":
+					WithBudget(cfg)
+				case "TeamChecker":
+					WithTeam(cfg)
 				}
 			}
 

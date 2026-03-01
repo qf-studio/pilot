@@ -2,6 +2,9 @@ package wiring
 
 import (
 	"testing"
+
+	"github.com/alekspetrov/pilot/internal/config"
+	"github.com/alekspetrov/pilot/internal/dashboard"
 )
 
 // TestOnPRCreatedCallbackWired verifies that the OnSubIssuePRCreated callback
@@ -55,31 +58,38 @@ func TestGitHubMockPRCreation(t *testing.T) {
 	}
 }
 
-// TestBudgetEnforcerNilSafety verifies that when budget is disabled,
-// the token limit check is not wired, and the runner handles it gracefully.
-func TestBudgetEnforcerNilSafety(t *testing.T) {
-	cfg := MinimalConfig()
-	// Budget is disabled by default
-	h := NewPollingHarness(t, cfg)
+// TestBudgetEnforcerGatewayPath exercises the gateway handler path with budget
+// disabled (no panic, HasTokenLimitCheck false) and enabled (HasTokenLimitCheck true).
+func TestBudgetEnforcerGatewayPath(t *testing.T) {
+	t.Run("budget disabled", func(t *testing.T) {
+		cfg := MinimalConfig() // budget disabled by default
+		h := NewGatewayHarness(t, cfg)
 
-	// Runner should not have token limit check when budget disabled
-	// (The Has* accessor doesn't exist for TokenLimitCheck, so we verify
-	// the runner was created successfully without budget wiring)
-	if h.Runner == nil {
-		t.Fatal("Runner is nil with disabled budget")
-	}
-}
+		if h.Runner.HasTokenLimitCheck() {
+			t.Error("HasTokenLimitCheck should be false when budget is disabled")
+		}
+	})
 
-// TestBudgetEnforcerWired verifies that enabling budget wires the token limit check.
-func TestBudgetEnforcerWired(t *testing.T) {
-	cfg := WithBudget(MinimalConfig())
-	h := NewPollingHarness(t, cfg)
+	t.Run("budget enabled", func(t *testing.T) {
+		cfg := WithBudget(MinimalConfig())
+		h := NewGatewayHarness(t, cfg)
 
-	if h.Runner == nil {
-		t.Fatal("Runner is nil with enabled budget")
-	}
-	// Budget enforcement is wired via SetTokenLimitCheck — we verify the
-	// harness didn't panic during construction with budget enabled.
+		if !h.Runner.HasTokenLimitCheck() {
+			t.Error("HasTokenLimitCheck should be true when budget is enabled")
+		}
+	})
+
+	t.Run("budget parity polling vs gateway", func(t *testing.T) {
+		cfg1 := WithBudget(MinimalConfig())
+		polling := NewPollingHarness(t, cfg1)
+
+		cfg2 := WithBudget(MinimalConfig())
+		gateway := NewGatewayHarness(t, cfg2)
+
+		if polling.Runner.HasTokenLimitCheck() != gateway.Runner.HasTokenLimitCheck() {
+			t.Error("budget token limit check parity mismatch between polling and gateway")
+		}
+	})
 }
 
 // TestMultiRepoConfigCreation verifies that WithMultiRepo produces a valid
@@ -103,5 +113,76 @@ func TestMultiRepoConfigCreation(t *testing.T) {
 	}
 	if proj.GitHub.Repo != "test-repo-2" {
 		t.Errorf("expected repo 'test-repo-2', got %q", proj.GitHub.Repo)
+	}
+}
+
+// TestMultiRepoDashboardControllerVisibility configures 3 repos via WithMultiRepo,
+// builds a harness for each, and verifies dashboard model construction.
+//
+// Limitation: Each harness gets its own autopilot.Controller scoped to one repo.
+// The dashboard Model constructor accepts a single Controller, so multi-repo
+// visibility requires constructing one Model per controller. There is no
+// built-in aggregation across controllers in the current dashboard API.
+func TestMultiRepoDashboardControllerVisibility(t *testing.T) {
+	// Build a config with 3 repos (primary from MinimalConfig + 2 additional).
+	cfg := MinimalConfig()
+	WithMultiRepo(cfg) // adds "secondary" (test-repo-2)
+	cfg.Projects = append(cfg.Projects, &config.ProjectConfig{
+		Name: "tertiary",
+		Path: "/tmp/test-repo-3",
+		GitHub: &config.ProjectGitHubConfig{
+			Owner: "test-owner",
+			Repo:  "test-repo-3",
+		},
+	})
+
+	if len(cfg.Projects) < 2 {
+		t.Fatalf("expected at least 2 projects, got %d", len(cfg.Projects))
+	}
+
+	// Build a harness for each project config to simulate multi-repo setup.
+	// Each harness gets an independent store, controller, and runner.
+	type repoHarness struct {
+		name    string
+		harness *Harness
+		model   dashboard.Model
+	}
+	repos := make([]repoHarness, 0, len(cfg.Projects))
+
+	for _, proj := range cfg.Projects {
+		projCfg := MinimalConfig()
+		WithAutopilot(projCfg)
+
+		h := NewPollingHarness(t, projCfg)
+
+		// Construct dashboard model per-controller (single-controller limitation).
+		m := dashboard.NewModelWithStoreAndAutopilot("test", h.Store, h.Controller)
+		repos = append(repos, repoHarness{
+			name:    proj.Name,
+			harness: h,
+			model:   m,
+		})
+	}
+
+	// Verify each repo got its own independent harness and model.
+	if len(repos) < 2 {
+		t.Fatalf("expected at least 2 repo harnesses, got %d", len(repos))
+	}
+
+	for i, rh := range repos {
+		if rh.harness.Controller == nil {
+			t.Errorf("repo[%d] %q: Controller is nil", i, rh.name)
+		}
+		if rh.harness.Store == nil {
+			t.Errorf("repo[%d] %q: Store is nil", i, rh.name)
+		}
+		if rh.harness.Runner == nil {
+			t.Errorf("repo[%d] %q: Runner is nil", i, rh.name)
+		}
+	}
+
+	// Verify controllers are distinct instances (not shared).
+	if repos[0].harness.Controller == repos[1].harness.Controller {
+		t.Error("controllers should be distinct instances across repos")
 	}
 }

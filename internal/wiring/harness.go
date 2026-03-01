@@ -14,6 +14,7 @@ import (
 	"github.com/alekspetrov/pilot/internal/config"
 	"github.com/alekspetrov/pilot/internal/executor"
 	"github.com/alekspetrov/pilot/internal/memory"
+	"github.com/alekspetrov/pilot/internal/teams"
 )
 
 // Harness holds all components wired together for a single test scenario.
@@ -74,6 +75,16 @@ func NewPollingHarness(t *testing.T, cfg *config.Config) *Harness {
 	// Monitor
 	h.Runner.SetMonitor(executor.NewMonitor())
 
+	// Team checker (GH-634)
+	if cfg.Team != nil && cfg.Team.Enabled {
+		teamStore, err := teams.NewStore(store.DB())
+		if err != nil {
+			t.Fatalf("teams.NewStore: %v", err)
+		}
+		teamSvc := teams.NewService(teamStore)
+		h.Runner.SetTeamChecker(teams.NewServiceAdapter(teamSvc))
+	}
+
 	// Learning loop + pattern context (polling path ONLY — this is the parity gap)
 	if cfg.Memory != nil && cfg.Memory.Learning != nil && cfg.Memory.Learning.Enabled {
 		patternStore, err := memory.NewGlobalPatternStore(dataPath)
@@ -123,7 +134,7 @@ func NewPollingHarness(t *testing.T, cfg *config.Config) *Harness {
 }
 
 // NewGatewayHarness mirrors main.go's gateway mode wiring path.
-// This path does NOT wire learning loop or pattern context (the known parity gap).
+// Since GH-1935, both paths wire learning loop and pattern context identically.
 func NewGatewayHarness(t *testing.T, cfg *config.Config) *Harness {
 	t.Helper()
 
@@ -166,8 +177,31 @@ func NewGatewayHarness(t *testing.T, cfg *config.Config) *Harness {
 	// Monitor
 	h.Runner.SetMonitor(executor.NewMonitor())
 
-	// NOTE: Gateway mode does NOT wire LearningLoop or PatternContext.
-	// This is the known GH-1814 parity gap.
+	// Team checker (GH-634)
+	if cfg.Team != nil && cfg.Team.Enabled {
+		teamStore, err := teams.NewStore(store.DB())
+		if err != nil {
+			t.Fatalf("teams.NewStore: %v", err)
+		}
+		teamSvc := teams.NewService(teamStore)
+		h.Runner.SetTeamChecker(teams.NewServiceAdapter(teamSvc))
+	}
+
+	// GH-1935: Gateway mode now wires LearningLoop and PatternContext (parity gap closed).
+	if cfg.Memory != nil && cfg.Memory.Learning != nil && cfg.Memory.Learning.Enabled {
+		patternStore, err := memory.NewGlobalPatternStore(dataPath)
+		if err != nil {
+			t.Fatalf("NewGlobalPatternStore: %v", err)
+		}
+		extractor := memory.NewPatternExtractor(patternStore, store)
+		ll := memory.NewLearningLoop(store, extractor, nil)
+		h.LearningLoop = ll
+		h.Runner.SetLearningLoop(ll)
+
+		pc := executor.NewPatternContext(store)
+		h.PatternContext = pc
+		h.Runner.SetPatternContext(pc)
+	}
 
 	// Autopilot controller
 	apCfg := cfg.Orchestrator.Autopilot
@@ -177,6 +211,11 @@ func NewGatewayHarness(t *testing.T, cfg *config.Config) *Harness {
 	approvalMgr := approval.NewManager(cfg.Approval)
 	ctrl := autopilot.NewController(apCfg, h.GHClient, approvalMgr, "test-owner", "test-repo")
 	h.Controller = ctrl
+
+	// Wire learning loop to controller (gateway path, mirrors polling)
+	if h.LearningLoop != nil {
+		ctrl.SetLearningLoop(h.LearningLoop)
+	}
 
 	// State store
 	if _, err := autopilot.NewStateStore(store.DB()); err != nil {

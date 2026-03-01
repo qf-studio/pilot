@@ -63,6 +63,16 @@ func WithMultiRepo(cfg *config.Config) *config.Config {
 	return cfg
 }
 
+// WithTeam enables team-based RBAC in config.
+func WithTeam(cfg *config.Config) *config.Config {
+	cfg.Team = &config.TeamConfig{
+		Enabled:     true,
+		TeamID:      "test-team",
+		MemberEmail: "test@example.com",
+	}
+	return cfg
+}
+
 // WithExecutorDefaults ensures the executor config is set to safe defaults
 // suitable for wiring tests (no actual subprocess spawning).
 func WithExecutorDefaults(cfg *config.Config) *config.Config {
@@ -78,5 +88,6 @@ func FullConfig() *config.Config {
 	WithLearning(cfg)
 	WithBudget(cfg)
 	WithQuality(cfg)
+	WithTeam(cfg)
 	return cfg
 }
