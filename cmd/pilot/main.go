@@ -614,14 +614,6 @@ Examples:
 					slog.Float64("daily_limit", cfg.Budget.DailyLimit),
 					slog.Float64("monthly_limit", cfg.Budget.MonthlyLimit),
 				)
-			} else {
-				// GH-1019: Log why budget is disabled for debugging
-				logging.WithComponent("start").Debug("budget enforcement disabled (gateway mode)",
-					slog.Bool("config_nil", cfg.Budget == nil),
-					slog.Bool("enabled", cfg.Budget != nil && cfg.Budget.Enabled),
-					slog.Bool("store_nil", gwStore == nil),
-				)
-
 				// GH-539: Wire per-task token/duration limits into executor stream (gateway mode)
 				maxTokens, maxDuration := gwEnforcer.GetPerTaskLimits()
 				if gwRunner != nil && (maxTokens > 0 || maxDuration > 0) {
@@ -645,6 +637,13 @@ Examples:
 						slog.Duration("max_duration", maxDuration),
 					)
 				}
+			} else {
+				// GH-1019: Log why budget is disabled for debugging
+				logging.WithComponent("start").Debug("budget enforcement disabled (gateway mode)",
+					slog.Bool("config_nil", cfg.Budget == nil),
+					slog.Bool("enabled", cfg.Budget != nil && cfg.Budget.Enabled),
+					slog.Bool("store_nil", gwStore == nil),
+				)
 			}
 
 			// Enable GitHub polling in gateway mode only if --github flag was explicitly passed (GH-350, GH-351)
@@ -900,6 +899,27 @@ Examples:
 				return dashboard.FetchGitGraph(path, limit)
 			})
 			p.Gateway().SetGitGraphPath(projectPath)
+
+			// GH-1935: Wire learning system into gateway mode (mirrors polling-mode wiring)
+			if gwStore != nil && (cfg.Memory.Learning == nil || cfg.Memory.Learning.Enabled) {
+				gwPatternStore, gwPatternErr := memory.NewGlobalPatternStore(cfg.Memory.Path)
+				if gwPatternErr != nil {
+					logging.WithComponent("learning").Warn("Failed to create pattern store, learning disabled (gateway mode)", slog.Any("error", gwPatternErr))
+				} else {
+					gwExtractor := memory.NewPatternExtractor(gwPatternStore, gwStore)
+					gwLearningLoop := memory.NewLearningLoop(gwStore, gwExtractor, nil)
+					gwPatternContext := executor.NewPatternContext(gwStore)
+
+					gwRunner.SetLearningLoop(gwLearningLoop)
+					gwRunner.SetPatternContext(gwPatternContext)
+
+					if gwAutopilotController != nil {
+						gwAutopilotController.SetLearningLoop(gwLearningLoop)
+					}
+
+					logging.WithComponent("learning").Info("Learning system initialized (gateway mode)")
+				}
+			}
 
 			if err := p.Start(); err != nil {
 				return fmt.Errorf("failed to start Pilot: %w", err)
