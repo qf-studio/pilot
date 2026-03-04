@@ -352,6 +352,43 @@ func (l *LearningLoop) LearnFromReview(ctx context.Context, projectPath string,
 	return nil
 }
 
+// LearnFromCIFailure extracts patterns from CI failure logs and saves them.
+// It builds a synthetic extraction result from the CI logs, tags patterns with
+// CI check names, and persists them via the extractor's SaveExtractedPatterns.
+func (l *LearningLoop) LearnFromCIFailure(ctx context.Context, projectPath string, ciLogs string, checkNames []string) error {
+	if l.extractor == nil {
+		return fmt.Errorf("pattern extractor is required for CI failure learning")
+	}
+
+	if strings.TrimSpace(ciLogs) == "" {
+		return nil
+	}
+
+	// Extract CI-specific patterns (confidence 0.5, source:ci tagged)
+	ciPatterns := l.extractor.extractCIErrorPatterns(ciLogs)
+	if len(ciPatterns) == 0 {
+		return nil
+	}
+
+	// Tag patterns with CI check names
+	checkContext := strings.Join(checkNames, ", ")
+	for _, p := range ciPatterns {
+		if len(checkNames) > 0 {
+			p.Context = p.Context + " checks:" + checkContext
+		}
+	}
+
+	result := &ExtractionResult{
+		ExecutionID:  fmt.Sprintf("ci_failure_%d", time.Now().UnixNano()),
+		ProjectPath:  projectPath,
+		Patterns:     make([]*ExtractedPattern, 0),
+		AntiPatterns: ciPatterns,
+		ExtractedAt:  time.Now(),
+	}
+
+	return l.extractor.SaveExtractedPatterns(ctx, result)
+}
+
 // BoostPatternConfidence manually boosts a pattern's confidence
 func (l *LearningLoop) BoostPatternConfidence(ctx context.Context, patternID string, amount float64) error {
 	pattern, err := l.store.GetCrossPattern(patternID)

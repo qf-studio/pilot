@@ -292,6 +292,73 @@ func (e *PatternExtractor) extractErrorPatterns(errorOutput string) []*Extracted
 			desc:    "Restructure packages to avoid import cycles",
 			context: "Go package structure",
 		},
+		// CI compilation errors
+		{
+			regex:   regexp.MustCompile(`(?i)undefined:\s*\w+`),
+			pType:   PatternTypeError,
+			title:   "Undefined identifier",
+			desc:    "Ensure all identifiers are declared or imported before use",
+			context: "Go compilation",
+		},
+		{
+			regex:   regexp.MustCompile(`(?i)\w+\s+declared\s+(?:and\s+)?not\s+used`),
+			pType:   PatternTypeError,
+			title:   "Unused variable or import",
+			desc:    "Remove unused variables and imports to pass compilation",
+			context: "Go compilation",
+		},
+		{
+			regex:   regexp.MustCompile(`(?i)cannot\s+use\s+.*\s+as\s+.*\s+in`),
+			pType:   PatternTypeError,
+			title:   "Type mismatch",
+			desc:    "Ensure type compatibility in assignments and function calls",
+			context: "Go compilation",
+		},
+		// CI test failures
+		{
+			regex:   regexp.MustCompile(`(?m)^---\s+FAIL:\s+\w+`),
+			pType:   PatternTypeError,
+			title:   "Test failure",
+			desc:    "One or more tests failed during CI; investigate and fix failing assertions",
+			context: "Go test",
+		},
+		{
+			regex:   regexp.MustCompile(`(?i)panic:\s+test\s+timed\s+out|test\s+.*\s+timed?\s*out`),
+			pType:   PatternTypeError,
+			title:   "Test timeout",
+			desc:    "Test exceeded its deadline; check for blocking operations or infinite loops",
+			context: "Go test",
+		},
+		{
+			regex:   regexp.MustCompile(`(?i)panic:\s+runtime\s+error`),
+			pType:   PatternTypeError,
+			title:   "Runtime panic in test",
+			desc:    "A test triggered a runtime panic; add nil checks and bounds validation",
+			context: "Go test",
+		},
+		// CI lint errors
+		{
+			regex:   regexp.MustCompile(`(?i)(?:golangci-lint|staticcheck|errcheck|govet|gosimple)\s*[:\[]`),
+			pType:   PatternTypeWorkflow,
+			title:   "Lint violation",
+			desc:    "Code does not pass linter checks; fix reported issues before merging",
+			context: "Go lint",
+		},
+		// CI build/module errors
+		{
+			regex:   regexp.MustCompile(`(?i)missing\s+go\.sum\s+entry|missing\s+module`),
+			pType:   PatternTypeError,
+			title:   "Missing module",
+			desc:    "Run 'go mod tidy' to resolve missing module or go.sum entries",
+			context: "Go modules",
+		},
+		{
+			regex:   regexp.MustCompile(`(?i)require\s+.*:\s+version\s+"[^"]*"\s+invalid|go\.mod\s+.*\s+version\s+mismatch`),
+			pType:   PatternTypeError,
+			title:   "Module version conflict",
+			desc:    "Resolve version conflicts in go.mod; ensure compatible dependency versions",
+			context: "Go modules",
+		},
 	}
 
 	for _, matcher := range errorMatchers {
@@ -308,6 +375,21 @@ func (e *PatternExtractor) extractErrorPatterns(errorOutput string) []*Extracted
 	}
 
 	return patterns
+}
+
+// extractCIErrorPatterns extracts error patterns from CI logs with CI-appropriate
+// confidence (0.5 initial) and source:ci context tagging.
+func (e *PatternExtractor) extractCIErrorPatterns(ciLogs string) []*ExtractedPattern {
+	// Reuse the same matchers from extractErrorPatterns
+	rawPatterns := e.extractErrorPatterns(ciLogs)
+
+	// Adjust for CI context: lower initial confidence, add source:ci tag
+	for _, p := range rawPatterns {
+		p.Confidence = 0.5
+		p.Context = "source:ci " + p.Context
+	}
+
+	return rawPatterns
 }
 
 // extractWorkflowPatterns extracts workflow-related patterns
