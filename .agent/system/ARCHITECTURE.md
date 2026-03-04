@@ -298,6 +298,35 @@ Learn from PR reviews and inject patterns into future prompts:
 
 **Files:** `internal/memory/feedback.go`, `LearnFromReview()` integration in autopilot
 
+### CI Error Pattern Learning (v2.49.0+)
+
+Extract and learn from CI failures with categorized error patterns:
+
+```
+┌──────────────────────────────────────┐
+│  CI Failure Detection                │
+├──────────────────────────────────────┤
+│  1. Capture CI check logs            │
+│  2. Extract error patterns by type:  │
+│     • Compilation errors             │
+│     • Test failures                  │
+│     • Linter violations              │
+│     • Build failures                 │
+│  3. Tag with source:ci + category    │
+│  4. Store as anti-patterns (0.5 conf)│
+│  5. Boost confidence on recurrence   │
+│  6. Inject into retry prompts        │
+└──────────────────────────────────────┘
+```
+
+**Features:**
+- Pattern categorization: compilation, test, lint, build
+- Automatic confidence boosting on pattern recurrence
+- Context-aware: tracks check names and CI framework
+- Integration with retry system: injects CI patterns into follow-up prompts
+
+**Files:** `internal/memory/extractor.go` (pattern extraction), `internal/memory/feedback.go` (learning loop)
+
 ## Self-Review System (v0.33.14+)
 
 Optional automated code review before PR merge:
