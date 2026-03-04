@@ -946,6 +946,13 @@ func (p *Poller) hasMergedWork(ctx context.Context, issue *Issue) bool {
 			slog.Any("error", err),
 		)
 	}
+	// Remove stale pilot-failed label (GH-1302 gap)
+	if err := p.client.RemoveLabel(ctx, p.owner, p.repo, issue.Number, LabelFailed); err != nil {
+		p.logger.Debug("Failed to remove pilot-failed (may not exist)",
+			slog.Int("issue", issue.Number),
+			slog.Any("error", err),
+		)
+	}
 	p.markProcessed(issue.Number)
 	return true
 }

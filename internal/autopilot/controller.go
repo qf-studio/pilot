@@ -1718,6 +1718,10 @@ func (c *Controller) notifyExternalClose(ctx context.Context, prState *PRState) 
 		if err := c.ghClient.RemoveLabel(ctx, c.owner, c.repo, prState.IssueNumber, github.LabelInProgress); err != nil {
 			c.log.Warn("failed to remove pilot-in-progress label", "issue", prState.IssueNumber, "error", err)
 		}
+		// Remove stale pilot-failed label (GH-1302 gap)
+		if err := c.ghClient.RemoveLabel(ctx, c.owner, c.repo, prState.IssueNumber, github.LabelFailed); err != nil {
+			c.log.Debug("failed to remove pilot-failed (may not exist)", "issue", prState.IssueNumber, "error", err)
+		}
 		c.log.Info("marked issue as pilot-retry-ready (PR closed without merge)", "issue", prState.IssueNumber, "pr", prState.PRNumber)
 	}
 }
