@@ -330,6 +330,16 @@ func (r *Runner) buildSelfReviewPrompt(task *Task) string {
 	sb.WriteString("Run `golangci-lint run --new-from-rev=origin/main ./...` and fix any violations.\n")
 	sb.WriteString("Common issue: unchecked return values in test mock handlers (w.Write, json.Encode, SendText).\n\n")
 
+	// GH-1966: Acceptance criteria verification in self-review
+	if len(task.AcceptanceCriteria) > 0 {
+		sb.WriteString("### 9. Acceptance Criteria Verification\n")
+		sb.WriteString("Verify each acceptance criterion against your diff:\n\n")
+		for i, criterion := range task.AcceptanceCriteria {
+			sb.WriteString(fmt.Sprintf("- [ ] **AC%d**: %s — MET / UNMET (cite diff evidence)\n", i+1, criterion))
+		}
+		sb.WriteString("\nIf any criterion is UNMET, fix the implementation before proceeding.\n\n")
+	}
+
 	sb.WriteString("### Actions\n")
 	sb.WriteString("- If you find issues: FIX them and commit the fix\n")
 	sb.WriteString("- Output `REVIEW_FIXED: <description>` if you fixed something\n")

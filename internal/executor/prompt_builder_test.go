@@ -506,6 +506,79 @@ func TestBuildSelfReviewPromptContainsLintCheck(t *testing.T) {
 	}
 }
 
+func TestBuildSelfReviewPromptWithAcceptanceCriteria(t *testing.T) {
+	runner := NewRunner()
+
+	t.Run("AC section appears when criteria present", func(t *testing.T) {
+		task := &Task{
+			ID:    "GH-1966",
+			Title: "Add AC verification",
+			AcceptanceCriteria: []string{
+				"Function returns error on invalid input",
+				"Unit tests cover edge cases",
+				"Documentation updated",
+			},
+		}
+
+		prompt := runner.buildSelfReviewPrompt(task)
+
+		if !strings.Contains(prompt, "### 9. Acceptance Criteria Verification") {
+			t.Error("Self-review prompt should contain AC verification section when ACs present")
+		}
+	})
+
+	t.Run("each AC listed individually", func(t *testing.T) {
+		task := &Task{
+			ID:    "GH-1966",
+			Title: "Add AC verification",
+			AcceptanceCriteria: []string{
+				"Function returns error on invalid input",
+				"Unit tests cover edge cases",
+			},
+		}
+
+		prompt := runner.buildSelfReviewPrompt(task)
+
+		if !strings.Contains(prompt, "**AC1**: Function returns error on invalid input") {
+			t.Error("Self-review prompt should list first AC individually")
+		}
+		if !strings.Contains(prompt, "**AC2**: Unit tests cover edge cases") {
+			t.Error("Self-review prompt should list second AC individually")
+		}
+		if !strings.Contains(prompt, "MET / UNMET (cite diff evidence)") {
+			t.Error("Self-review prompt should instruct MET/UNMET with evidence")
+		}
+	})
+
+	t.Run("AC section omitted when empty", func(t *testing.T) {
+		task := &Task{
+			ID:                 "GH-1966",
+			Title:              "No ACs",
+			AcceptanceCriteria: []string{},
+		}
+
+		prompt := runner.buildSelfReviewPrompt(task)
+
+		if strings.Contains(prompt, "Acceptance Criteria Verification") {
+			t.Error("Self-review prompt should NOT contain AC section when ACs are empty")
+		}
+	})
+
+	t.Run("AC section omitted when nil", func(t *testing.T) {
+		task := &Task{
+			ID:                 "GH-1966",
+			Title:              "Nil ACs",
+			AcceptanceCriteria: nil,
+		}
+
+		prompt := runner.buildSelfReviewPrompt(task)
+
+		if strings.Contains(prompt, "Acceptance Criteria Verification") {
+			t.Error("Self-review prompt should NOT contain AC section when ACs are nil")
+		}
+	})
+}
+
 func TestBuildPromptSkipsNavigatorForTrivialTask(t *testing.T) {
 	// Create temporary test environment with .agent/
 	tempDir, err := os.MkdirTemp("", "pilot-test-trivial")
