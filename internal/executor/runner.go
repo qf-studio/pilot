@@ -314,8 +314,9 @@ type Runner struct {
 	// GH-1599: Execution log store for milestone entries
 	logStore              *memory.Store // Optional log store for writing execution milestones
 	// GH-1811: Learning system (self-improvement)
-	learningLoop   LearningRecorder     // Optional learning loop for pattern extraction + feedback
-	patternContext *PatternContext       // Optional pattern context for prompt injection
+	learningLoop         LearningRecorder     // Optional learning loop for pattern extraction + feedback
+	patternContext       *PatternContext       // Optional pattern context for prompt injection
+	selfReviewExtractor  SelfReviewExtractor   // Optional extractor for self-review pattern learning (GH-1955)
 }
 
 // NewRunner creates a new Runner instance with Claude Code backend by default.
@@ -647,6 +648,11 @@ func (r *Runner) HasLearningLoop() bool { return r.learningLoop != nil }
 
 // HasPatternContext reports whether a pattern context is wired.
 func (r *Runner) HasPatternContext() bool { return r.patternContext != nil }
+
+// SetSelfReviewExtractor sets the extractor for self-review pattern learning (GH-1955).
+func (r *Runner) SetSelfReviewExtractor(e SelfReviewExtractor) {
+	r.selfReviewExtractor = e
+}
 
 // HasTokenLimitCheck reports whether a token limit check callback is wired.
 func (r *Runner) HasTokenLimitCheck() bool { return r.tokenLimitCheck != nil }
@@ -2859,6 +2865,30 @@ func (r *Runner) runSelfReview(ctx context.Context, task *Task, state *progressS
 		r.log.Debug("Self-review completed (no explicit signal)",
 			slog.String("task_id", task.ID),
 		)
+	}
+
+	// GH-1955: Extract patterns from self-review output (non-blocking)
+	if r.selfReviewExtractor != nil && result.Output != "" {
+		extractResult, extractErr := r.selfReviewExtractor.ExtractFromSelfReview(ctx, result.Output, task.ProjectPath)
+		if extractErr != nil {
+			r.log.Warn("Failed to extract patterns from self-review",
+				slog.String("task_id", task.ID),
+				slog.Any("error", extractErr),
+			)
+		} else if len(extractResult.Patterns)+len(extractResult.AntiPatterns) > 0 {
+			if saveErr := r.selfReviewExtractor.SaveExtractedPatterns(ctx, extractResult); saveErr != nil {
+				r.log.Warn("Failed to save self-review patterns",
+					slog.String("task_id", task.ID),
+					slog.Any("error", saveErr),
+				)
+			} else {
+				r.log.Info("Saved patterns from self-review",
+					slog.String("task_id", task.ID),
+					slog.Int("patterns", len(extractResult.Patterns)),
+					slog.Int("anti_patterns", len(extractResult.AntiPatterns)),
+				)
+			}
+		}
 	}
 
 	return nil
