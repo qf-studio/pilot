@@ -1,0 +1,277 @@
+import { Callout } from 'nextra/components'
+
+# Adapters
+
+Adapters connect Pilot to external issue trackers, chat platforms, and project management tools. Each adapter translates platform-specific events into Pilot's normalized issue model, dispatches work to the executor, and reports results back to the source.
+
+## Common Adapter Interface
+
+All adapters implement a shared interface defined in `internal/adapters/registry.go`. This was unified in v2.30.0 to eliminate per-adapter boilerplate.
+
+```go
+// Base interface — every adapter implements this
+type Adapter interface {
+    Name() string
+}
+
+// Adapters that support polling for new issues
+type Pollable interface {
+    Adapter
+    NewPoller(opts PollerDeps) Poller
+}
+
+// Adapters that receive webhook events
+type WebhookCapable interface {
+    Adapter
+    WebhookSource() string
+}
+```
+
+Adapters register themselves via `init()` functions. The registry is a thread-safe map:
+
+```go
+adapters.Register(github.NewAdapter(cfg))
+adapters.Register(linear.NewAdapter(cfg))
+// ...
+```
+
+At startup, `cmd/pilot/main.go` iterates registered adapters, creates pollers for `Pollable` adapters, and registers webhook routes for `WebhookCapable` ones.
+
+### Normalized Event Model
+
+All adapters convert platform-specific events into a common `IssueEvent`:
+
+```go
+type IssueEvent struct {
+    Action    string   // "created", "updated"
+    IssueID   string   // Platform-specific ID
+    Title     string
+    Body      string
+    Labels    []string
+    ProjectID string
+}
+```
+
+Execution results flow back as `IssueResult`:
+
+```go
+type IssueResult struct {
+    Success    bool
+    PRNumber   int
+    PRURL      string
+    HeadSHA    string
+    BranchName string
+    Error      error
+}
+```
+
+## Supported Adapters
+
+Pilot ships with 9 adapters across three categories: issue trackers, chat platforms, and project boards.
+
+### Feature Matrix
+
+| Adapter | Polling | Webhooks | ID Type | State Management | Trigger |
+|---------|:-------:|:--------:|---------|-----------------|---------|
+| **GitHub** | ✅ | ✅ | Integer | Labels + issue state | `pilot` label |
+| **Linear** | ✅ | ✅ | String | Labels | `pilot` label |
+| **Jira** | ✅ | ✅ | String | Workflow transitions | Label or status |
+| **Asana** | ✅ | ✅ | String (GID) | Tags | Tag assignment |
+| **GitLab** | ✅ | ✅ | Integer | Labels + issue state | `pilot` label |
+| **Azure DevOps** | ✅ | ✅ | Integer | Work item state | Tag |
+| **Plane** | ✅ | ✅ | String | Issue state | Assignment |
+| **Slack** | ❌ | ✅ | — | — | Message/command |
+| **Discord** | ❌ | ✅ | — | — | Bot command |
+
+### Issue Trackers
+
+**GitHub** is the primary adapter. It supports the full feature set: polling, webhooks, parallel execution, scope-overlap guard, auto-rebase, and autopilot CI monitoring. Configuration:
+
+```yaml
+adapters:
+  github:
+    polling:
+      interval: 30s
+      label: "pilot"
+      repos:
+        - owner/repo
+```
+
+**Linear**, **Jira**, **Asana**, **GitLab**, **Azure DevOps**, and **Plane** provide equivalent polling + webhook support. Each maps its native state model (Jira transitions, Linear labels, Asana tags) to Pilot's internal lifecycle.
+
+### Chat Platforms
+
+**Slack** and **Discord** are inbound-only adapters. They receive messages via Socket Mode (Slack) or Gateway WebSocket (Discord), classify intent, and create GitHub issues for task-type messages. They don't poll — they react to events in real time.
+
+## ProcessedStore
+
+The ProcessedStore prevents duplicate execution across restarts. Every adapter records processed issue IDs in SQLite via a common interface:
+
+```go
+type ProcessedStore interface {
+    MarkAdapterProcessed(adapter, issueID, result string) error
+    UnmarkAdapterProcessed(adapter, issueID string) error
+    IsAdapterProcessed(adapter, issueID string) (bool, error)
+    LoadAdapterProcessed(adapter string) (map[string]bool, error)
+}
+```
+
+The implementation lives in `internal/autopilot/state_store.go` using a unified `adapter_processed` table with a composite primary key of `(adapter, issue_id)`.
+
+### How Dedup Works
+
+```
+Poller tick
+    │
+    ▼
+Fetch open issues with pilot label
+    │
+    ▼
+For each issue:
+    IsAdapterProcessed("github", "42") ?
+    ├─ true  → skip
+    └─ false → dispatch to executor
+                   │
+                   ▼
+              MarkAdapterProcessed("github", "42", "success")
+```
+
+### Retry via Store Clear
+
+When a task fails and the user removes the `pilot-failed` label to retry:
+
+1. The poller detects the label change
+2. Calls `UnmarkAdapterProcessed(adapter, issueID)`
+3. Next poll tick sees the issue as unprocessed
+4. Issue re-enters the execution pipeline
+
+<Callout type="info">
+Before v2.10.0, non-GitHub pollers used in-memory maps that were lost on restart. The unified ProcessedStore (GH-1838) ensures all adapters persist state to SQLite.
+</Callout>
+
+## Issue Lifecycle
+
+Each adapter manages issue state transitions using platform-native mechanisms. The lifecycle follows the same pattern regardless of source:
+
+```
+    ┌──────────┐
+    │   New    │  Issue created with pilot label/tag
+    └────┬─────┘
+         │
+    ┌────▼─────┐
+    │ Picked   │  Poller or webhook dispatches to executor
+    │ Up       │  Add pilot-in-progress label
+    └────┬─────┘
+         │
+    ┌────┴──────────────┐
+    │                   │
+┌───▼───┐         ┌────▼────┐
+│ Done  │         │ Failed  │
+│       │         │         │
+│ Add   │         │ Add     │
+│ done  │         │ failed  │
+│ label │         │ label   │
+│ Close │         │         │
+│ issue │         │ Keep    │
+└───────┘         │ open    │
+                  └─────────┘
+```
+
+### Platform-Specific State Mapping
+
+| Platform | "In Progress" | "Done" | "Failed" |
+|----------|--------------|--------|----------|
+| **GitHub** | Add `pilot-in-progress` label | Add `pilot-done` label, close issue | Add `pilot-failed` label |
+| **GitLab** | Add `pilot-in-progress` label | Add `pilot-done` label, close issue | Add `pilot-failed` label |
+| **Linear** | Add label | Add label | Add label |
+| **Jira** | Transition to "In Progress" | Transition to "Done" | Add comment with failure reason |
+| **Asana** | Add tag | Complete task | Add tag |
+| **Azure DevOps** | Update work item state | Update state to "Done" | Update state |
+| **Plane** | Update issue state | Update state | Update state |
+
+Each adapter's notifier (`internal/adapters/{name}/notifier.go`) handles these transitions and posts status comments at each stage.
+
+## Parallel Execution
+
+By default, Pilot processes one issue at a time per project (sequential mode). Parallel mode enables concurrent execution with safety controls.
+
+### Configuration
+
+```yaml
+orchestrator:
+  execution_mode: parallel  # sequential | parallel | auto
+  max_concurrent: 3         # Maximum simultaneous tasks
+```
+
+### Semaphore Pattern
+
+Each poller uses a buffered channel as a semaphore to limit concurrency:
+
+```go
+p.semaphore = make(chan struct{}, p.maxConcurrent)
+
+for _, issue := range toDispatch {
+    p.semaphore <- struct{}{}  // acquire slot (blocks if full)
+    go func(issue *Issue) {
+        defer func() { <-p.semaphore }()  // release slot
+        result, err := p.onIssue(ctx, issue)
+    }(issue)
+}
+```
+
+### Scope-Overlap Guard
+
+In `auto` mode, Pilot detects when multiple issues touch the same directories and serializes them to prevent merge conflicts. The algorithm uses union-find with transitive closure:
+
+1. **Extract directories** from each issue body
+2. **Pairwise comparison** — if two issues share a directory, union them
+3. **Group by root** — issues in the same group are serialized
+4. **Dispatch oldest first** — within each group, only the oldest issue runs; others are deferred to the next poll tick
+
+```
+Issues: #10 (src/api/), #11 (src/api/, src/db/), #12 (src/ui/)
+
+Union-find:
+  #10 ∪ #11 (share src/api/)
+  #12 remains separate
+
+Groups:
+  [#10, #11] → dispatch #10, defer #11
+  [#12]      → dispatch #12
+
+Result: #10 and #12 run in parallel, #11 waits
+```
+
+This lives in `groupByOverlappingScope()` in `internal/adapters/github/poller.go`.
+
+<Callout type="warning">
+The scope-overlap guard is currently implemented only in the GitHub adapter. Other adapters use the global `max_concurrent` semaphore without scope analysis.
+</Callout>
+
+## Adding a New Adapter
+
+To add a new adapter:
+
+1. Create a directory under `internal/adapters/{name}/`
+2. Implement the `Adapter` interface (and `Pollable`/`WebhookCapable` as needed)
+3. Register via `init()` in `adapter.go`
+4. Create a notifier that posts lifecycle comments
+5. Wire configuration in `internal/config/` and `cmd/pilot/main.go`
+6. Use the `ProcessedStore` shim for dedup:
+
+```go
+type genericStoreShim struct {
+    store   adapters.ProcessedStore
+    adapter string
+}
+
+func (s *genericStoreShim) MarkProcessed(id string) error {
+    return s.store.MarkAdapterProcessed(s.adapter, id, "")
+}
+```
+
+## What's Next
+
+- **[Architecture](/concepts/architecture)** — Full execution flow from issue to merged PR
+- **[GitHub Integration](/integrations/github)** — Detailed GitHub adapter configuration
+- **[Autopilot Mode](/features/autopilot)** — CI monitoring and auto-merge after adapter handoff
