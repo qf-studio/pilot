@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -519,6 +520,147 @@ func TestQuery_ScopeFilter(t *testing.T) {
 	for _, p := range result.Patterns {
 		if p.Scope != "org" {
 			t.Errorf("pattern scope = %q, want 'org'", p.Scope)
+		}
+	}
+}
+
+func TestFormatForPrompt_AntiPatternsNotCrowdedOut(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "query-test-anti-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	store, _ := NewStore(tmpDir)
+	defer func() { _ = store.Close() }()
+
+	tests := []struct {
+		name               string
+		patterns           []*CrossPattern
+		wantAntiSection    bool
+		wantNormalSection  bool
+		wantAntiSubstrings []string
+	}{
+		{
+			name: "anti-patterns appear despite many high-confidence normal patterns",
+			patterns: []*CrossPattern{
+				{ID: "norm-1", Type: "code", Title: "Normal 1", Description: "Desc 1", Confidence: 0.95, Occurrences: 20, Scope: "org"},
+				{ID: "norm-2", Type: "code", Title: "Normal 2", Description: "Desc 2", Confidence: 0.93, Occurrences: 18, Scope: "org"},
+				{ID: "norm-3", Type: "code", Title: "Normal 3", Description: "Desc 3", Confidence: 0.91, Occurrences: 15, Scope: "org"},
+				{ID: "norm-4", Type: "code", Title: "Normal 4", Description: "Desc 4", Confidence: 0.89, Occurrences: 12, Scope: "org"},
+				{ID: "norm-5", Type: "code", Title: "Normal 5", Description: "Desc 5", Confidence: 0.87, Occurrences: 10, Scope: "org"},
+				{ID: "norm-6", Type: "code", Title: "Normal 6", Description: "Desc 6", Confidence: 0.85, Occurrences: 8, Scope: "org"},
+				{ID: "anti-1", Type: "error", Title: "[ANTI] Nil deref", Description: "AVOID: Nil pointer dereference", Confidence: 0.7, IsAntiPattern: true, Scope: "org"},
+				{ID: "anti-2", Type: "error", Title: "[ANTI] Missing ctx", Description: "AVOID: Missing context propagation", Confidence: 0.65, IsAntiPattern: true, Scope: "org"},
+			},
+			wantAntiSection:    true,
+			wantNormalSection:  true,
+			wantAntiSubstrings: []string{"Nil deref", "Missing ctx"},
+		},
+		{
+			name: "only anti-patterns present",
+			patterns: []*CrossPattern{
+				{ID: "anti-only-1", Type: "error", Title: "[ANTI] Bad import", Description: "AVOID: Circular imports", Confidence: 0.8, IsAntiPattern: true, Scope: "org"},
+			},
+			wantAntiSection:    true,
+			wantNormalSection:  false,
+			wantAntiSubstrings: []string{"Bad import"},
+		},
+		{
+			name: "anti-patterns below min confidence excluded",
+			patterns: []*CrossPattern{
+				{ID: "norm-hi", Type: "code", Title: "Good pattern", Description: "Desc", Confidence: 0.9, Occurrences: 10, Scope: "org"},
+				{ID: "anti-low", Type: "error", Title: "[ANTI] Low conf", Description: "AVOID: something", Confidence: 0.4, IsAntiPattern: true, Scope: "org"},
+			},
+			wantAntiSection:   false,
+			wantNormalSection: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create a fresh store per subtest
+			subDir, err := os.MkdirTemp("", "query-subtest-*")
+			if err != nil {
+				t.Fatalf("failed to create temp dir: %v", err)
+			}
+			defer func() { _ = os.RemoveAll(subDir) }()
+
+			s, _ := NewStore(subDir)
+			defer func() { _ = s.Close() }()
+
+			for _, p := range tt.patterns {
+				if err := s.SaveCrossPattern(p); err != nil {
+					t.Fatalf("SaveCrossPattern failed: %v", err)
+				}
+			}
+
+			service := NewPatternQueryService(s)
+			ctx := context.Background()
+
+			prompt, err := service.FormatForPrompt(ctx, "/test/project", "implementing a handler")
+			if err != nil {
+				t.Fatalf("FormatForPrompt failed: %v", err)
+			}
+
+			hasAntiSection := strings.Contains(prompt, "Anti-Patterns to Avoid")
+			if hasAntiSection != tt.wantAntiSection {
+				t.Errorf("anti-pattern section present=%v, want %v\nprompt:\n%s", hasAntiSection, tt.wantAntiSection, prompt)
+			}
+
+			hasNormalSection := strings.Contains(prompt, "Recommended Patterns")
+			if hasNormalSection != tt.wantNormalSection {
+				t.Errorf("normal section present=%v, want %v\nprompt:\n%s", hasNormalSection, tt.wantNormalSection, prompt)
+			}
+
+			for _, sub := range tt.wantAntiSubstrings {
+				if !strings.Contains(prompt, sub) {
+					t.Errorf("expected anti-pattern substring %q in prompt, not found\nprompt:\n%s", sub, prompt)
+				}
+			}
+		})
+	}
+}
+
+func TestQuery_OnlyAnti(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "query-test-onlyanti-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	store, _ := NewStore(tmpDir)
+	defer func() { _ = store.Close() }()
+
+	// Mix of normal and anti-patterns
+	patterns := []*CrossPattern{
+		{ID: "oa-norm-1", Type: "code", Title: "Normal", Confidence: 0.95, Occurrences: 20, Scope: "org"},
+		{ID: "oa-norm-2", Type: "code", Title: "Normal 2", Confidence: 0.90, Occurrences: 15, Scope: "org"},
+		{ID: "oa-anti-1", Type: "error", Title: "Anti 1", Confidence: 0.7, IsAntiPattern: true, Scope: "org"},
+		{ID: "oa-anti-2", Type: "error", Title: "Anti 2", Confidence: 0.65, IsAntiPattern: true, Scope: "org"},
+	}
+	for _, p := range patterns {
+		_ = store.SaveCrossPattern(p)
+	}
+
+	service := NewPatternQueryService(store)
+	ctx := context.Background()
+
+	result, err := service.Query(ctx, &PatternQuery{
+		OnlyAnti:      true,
+		MinConfidence: 0.5,
+		MaxResults:    10,
+	})
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+
+	if len(result.Patterns) != 2 {
+		t.Errorf("got %d patterns, want 2 anti-patterns only", len(result.Patterns))
+	}
+	for _, p := range result.Patterns {
+		if !p.IsAntiPattern {
+			t.Errorf("got non-anti-pattern %q with OnlyAnti=true", p.ID)
 		}
 	}
 }

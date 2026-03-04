@@ -17,6 +17,7 @@ type PatternQuery struct {
 	MaxResults    int      // Maximum number of results
 	SearchTerm    string   // Optional text search
 	IncludeAnti   bool     // Include anti-patterns
+	OnlyAnti      bool     // Only return anti-patterns (implies IncludeAnti)
 	Scope         string   // "project", "org", "global" or empty for all
 }
 
@@ -84,7 +85,9 @@ func (s *PatternQueryService) Query(ctx context.Context, q *PatternQuery) (*Quer
 		}
 
 		// Filter anti-patterns
-		if !q.IncludeAnti && p.IsAntiPattern {
+		if q.OnlyAnti && !p.IsAntiPattern {
+			continue
+		} else if !q.IncludeAnti && !q.OnlyAnti && p.IsAntiPattern {
 			continue
 		}
 
@@ -191,10 +194,12 @@ func (s *PatternQueryService) FormatForPrompt(ctx context.Context, projectPath s
 		return "", err
 	}
 
-	// Get anti-patterns
+	// Get anti-patterns with a dedicated query so they don't compete
+	// with normal patterns for MaxResults slots
 	q := &PatternQuery{
 		ProjectPath:   projectPath,
-		IncludeAnti:   true,
+		IncludeGlobal: true,
+		OnlyAnti:      true,
 		MinConfidence: 0.6,
 		MaxResults:    5,
 	}
@@ -203,12 +208,7 @@ func (s *PatternQueryService) FormatForPrompt(ctx context.Context, projectPath s
 		return "", err
 	}
 
-	var antiPatterns []*CrossPattern
-	for _, p := range antiResult.Patterns {
-		if p.IsAntiPattern {
-			antiPatterns = append(antiPatterns, p)
-		}
-	}
+	antiPatterns := antiResult.Patterns
 
 	// Separate patterns and anti-patterns
 	var normalPatterns []*CrossPattern
