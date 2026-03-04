@@ -159,6 +159,8 @@ func (s *Store) migrate() error {
 		`CREATE INDEX IF NOT EXISTS idx_cross_patterns_type ON cross_patterns(pattern_type)`,
 		`CREATE INDEX IF NOT EXISTS idx_cross_patterns_scope ON cross_patterns(scope)`,
 		`CREATE INDEX IF NOT EXISTS idx_cross_patterns_confidence ON cross_patterns(confidence DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_cross_patterns_updated ON cross_patterns(updated_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_cross_patterns_title ON cross_patterns(title)`,
 		`CREATE INDEX IF NOT EXISTS idx_pattern_projects_project ON pattern_projects(project_path)`,
 		`CREATE INDEX IF NOT EXISTS idx_pattern_feedback_pattern ON pattern_feedback(pattern_id)`,
 		// Usage metering tables (TASK-16)

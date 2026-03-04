@@ -1372,3 +1372,77 @@ func TestLogSubscribeMultipleSubscribers(t *testing.T) {
 	store.UnsubscribeLogs(ch1)
 	store.UnsubscribeLogs(ch2)
 }
+
+func TestCrossPatternsIndexes(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "pilot-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	// Insert test data so the planner has something to work with
+	pattern := &CrossPattern{
+		ID:    "test-idx-1",
+		Type:  "naming",
+		Title: "Use camelCase",
+		Scope: "org",
+	}
+	if err := store.SaveCrossPattern(pattern); err != nil {
+		t.Fatalf("SaveCrossPattern failed: %v", err)
+	}
+
+	tests := []struct {
+		name  string
+		query string
+		index string
+	}{
+		{
+			name:  "scope filter uses index",
+			query: `EXPLAIN QUERY PLAN SELECT * FROM cross_patterns WHERE scope = 'org'`,
+			index: "idx_cross_patterns_scope",
+		},
+		{
+			name:  "updated_at filter uses index",
+			query: `EXPLAIN QUERY PLAN SELECT * FROM cross_patterns WHERE updated_at > '2025-01-01'`,
+			index: "idx_cross_patterns_updated",
+		},
+		{
+			name:  "title filter uses index",
+			query: `EXPLAIN QUERY PLAN SELECT * FROM cross_patterns WHERE title = 'Use camelCase'`,
+			index: "idx_cross_patterns_title",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rows, err := store.db.Query(tt.query)
+			if err != nil {
+				t.Fatalf("EXPLAIN QUERY PLAN failed: %v", err)
+			}
+			defer func() { _ = rows.Close() }()
+
+			var plan strings.Builder
+			for rows.Next() {
+				var id, parent, notused int
+				var detail string
+				if err := rows.Scan(&id, &parent, &notused, &detail); err != nil {
+					t.Fatalf("scan failed: %v", err)
+				}
+				_, _ = fmt.Fprintf(&plan, "%s\n", detail)
+			}
+			if err := rows.Err(); err != nil {
+				t.Fatalf("rows iteration failed: %v", err)
+			}
+
+			if !strings.Contains(plan.String(), tt.index) {
+				t.Errorf("expected query plan to use %s, got:\n%s", tt.index, plan.String())
+			}
+		})
+	}
+}
