@@ -44,6 +44,7 @@ jobs:
 
       - name: Create Pull Request
         if: steps.changes.outputs.changed == 'true'
+        id: pr
         uses: peter-evans/create-pull-request@v6
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -61,3 +62,12 @@ jobs:
           branch: docs/version-sync-${{ steps.version.outputs.VERSION }}
           base: main
           labels: documentation
+
+      - name: Enable auto-merge
+        if: steps.changes.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -n "${{ steps.pr.outputs.pull-request-number }}" ]; then
+            gh pr merge "${{ steps.pr.outputs.pull-request-number }}" --auto --squash
+          fi
