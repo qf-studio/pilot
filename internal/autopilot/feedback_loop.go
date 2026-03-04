@@ -7,17 +7,19 @@ import (
 	"strings"
 
 	"github.com/alekspetrov/pilot/internal/adapters/github"
+	"github.com/alekspetrov/pilot/internal/memory"
 )
 
 // FeedbackLoop creates issues when CI fails or bugs are detected.
 // It closes the autonomous loop by automatically creating fix issues
 // that Pilot can pick up and execute.
 type FeedbackLoop struct {
-	ghClient    *github.Client
-	owner       string
-	repo        string
-	issueLabels []string
-	log         *slog.Logger
+	ghClient     *github.Client
+	owner        string
+	repo         string
+	issueLabels  []string
+	learningLoop *memory.LearningLoop // GH-1979: optional, annotates issues with known patterns
+	log          *slog.Logger
 }
 
 // NewFeedbackLoop creates a feedback loop for automatic issue creation.
@@ -29,6 +31,11 @@ func NewFeedbackLoop(ghClient *github.Client, owner, repo string, cfg *Config) *
 		issueLabels: cfg.IssueLabels,
 		log:         slog.Default().With("component", "feedback-loop"),
 	}
+}
+
+// SetLearningLoop injects a learning loop for pattern annotation in fix issues.
+func (f *FeedbackLoop) SetLearningLoop(ll *memory.LearningLoop) {
+	f.learningLoop = ll
 }
 
 // FailureType categorizes the type of failure that occurred.
@@ -52,7 +59,20 @@ const (
 // Returns the issue number on success.
 func (f *FeedbackLoop) CreateFailureIssue(ctx context.Context, prState *PRState, failureType FailureType, failedChecks []string, logs string, iteration int) (int, error) {
 	title := f.generateTitle(prState, failureType)
-	body := f.generateBody(prState, failureType, failedChecks, logs, iteration)
+
+	// GH-1979: Surface known patterns to annotate the fix issue body.
+	var knownPatterns []*memory.CrossPattern
+	if f.learningLoop != nil {
+		projectPath := f.owner + "/" + f.repo
+		patterns, err := f.learningLoop.SurfaceHighValuePatterns(ctx, projectPath)
+		if err != nil {
+			f.log.Warn("failed to surface patterns for fix issue", "error", err)
+		} else {
+			knownPatterns = patterns
+		}
+	}
+
+	body := f.generateBody(prState, failureType, failedChecks, logs, iteration, knownPatterns)
 
 	input := &github.IssueInput{
 		Title:  title,
@@ -91,7 +111,7 @@ func (f *FeedbackLoop) generateTitle(prState *PRState, failureType FailureType) 
 }
 
 // generateBody creates a detailed issue body with context for Pilot.
-func (f *FeedbackLoop) generateBody(prState *PRState, failureType FailureType, failedChecks []string, logs string, iteration int) string {
+func (f *FeedbackLoop) generateBody(prState *PRState, failureType FailureType, failedChecks []string, logs string, iteration int, knownPatterns []*memory.CrossPattern) string {
 	var sb strings.Builder
 
 	sb.WriteString("# Autopilot: Auto-Generated Fix Request\n\n")
@@ -132,6 +152,16 @@ func (f *FeedbackLoop) generateBody(prState *PRState, failureType FailureType, f
 		}
 		sb.WriteString("\n```\n\n")
 		sb.WriteString("</details>\n\n")
+	}
+
+	// GH-1979: Known patterns section — helps Pilot avoid past mistakes.
+	if len(knownPatterns) > 0 {
+		sb.WriteString("## Known Patterns\n\n")
+		sb.WriteString("These patterns have been learned from previous failures in this project:\n\n")
+		for _, p := range knownPatterns {
+			sb.WriteString(fmt.Sprintf("- **%s** (confidence: %.0f%%): %s\n", p.Title, p.Confidence*100, p.Description))
+		}
+		sb.WriteString("\n")
 	}
 
 	// Task instructions for Pilot

@@ -179,6 +179,10 @@ func (c *Controller) SetStateStore(store *StateStore) {
 // When set, handleMerged will fetch reviews after merge and extract patterns.
 func (c *Controller) SetLearningLoop(loop *memory.LearningLoop) {
 	c.learningLoop = loop
+	// GH-1979: Forward to feedback loop so fix issues can be annotated with known patterns.
+	if c.feedbackLoop != nil {
+		c.feedbackLoop.SetLearningLoop(loop)
+	}
 }
 
 // persistPRState saves a PR state to the store if available.
@@ -644,9 +648,11 @@ func (c *Controller) handleCIFailed(ctx context.Context, prState *PRState) error
 		return fmt.Errorf("failed to create fix issue: %w", err)
 	}
 
-	// GH-1964: Learn from CI failure patterns (self-improvement).
-	if c.learningLoop != nil {
-		if learnErr := c.learningLoop.LearnFromCIFailure(ctx, "", ciLogs, failedChecks); learnErr != nil {
+	// GH-1964/GH-1979: Learn from CI failure patterns (self-improvement).
+	// Guard: skip learning when CI logs are empty/whitespace (nothing to extract).
+	if c.learningLoop != nil && strings.TrimSpace(ciLogs) != "" {
+		projectPath := c.owner + "/" + c.repo
+		if learnErr := c.learningLoop.LearnFromCIFailure(ctx, projectPath, ciLogs, failedChecks); learnErr != nil {
 			c.log.Warn("Failed to learn from CI failure", slog.Any("error", learnErr))
 		}
 	}
@@ -908,9 +914,11 @@ func (c *Controller) handlePostMergeCI(ctx context.Context, prState *PRState) er
 			c.log.Info("created fix issue for post-merge CI failure", "pr", prState.PRNumber, "issue", issueNum)
 		}
 
-		// GH-1964: Learn from post-merge CI failure patterns (self-improvement).
-		if c.learningLoop != nil {
-			if learnErr := c.learningLoop.LearnFromCIFailure(ctx, "", ciLogs, failedChecks); learnErr != nil {
+		// GH-1964/GH-1979: Learn from post-merge CI failure patterns (self-improvement).
+		// Guard: skip learning when CI logs are empty/whitespace (nothing to extract).
+		if c.learningLoop != nil && strings.TrimSpace(ciLogs) != "" {
+			projectPath := c.owner + "/" + c.repo
+			if learnErr := c.learningLoop.LearnFromCIFailure(ctx, projectPath, ciLogs, failedChecks); learnErr != nil {
 				c.log.Warn("Failed to learn from post-merge CI failure", slog.Any("error", learnErr))
 			}
 		}

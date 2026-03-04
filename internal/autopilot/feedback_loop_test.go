@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/alekspetrov/pilot/internal/adapters/github"
+	"github.com/alekspetrov/pilot/internal/memory"
 	"github.com/alekspetrov/pilot/internal/testutil"
 )
 
@@ -923,6 +924,122 @@ func TestFeedbackLoop_IssueBody_NoBranchMetadataWhenEmpty(t *testing.T) {
 	}
 	if strings.Contains(capturedBody, "**Branch**") {
 		t.Error("body should not contain Branch field when BranchName is empty")
+	}
+}
+
+func TestFeedbackLoop_SetLearningLoop(t *testing.T) {
+	ghClient := github.NewClient(testutil.FakeGitHubToken)
+	cfg := DefaultConfig()
+	fl := NewFeedbackLoop(ghClient, "owner", "repo", cfg)
+
+	if fl.learningLoop != nil {
+		t.Error("learningLoop should be nil initially")
+	}
+
+	// SetLearningLoop accepts nil gracefully
+	fl.SetLearningLoop(nil)
+	if fl.learningLoop != nil {
+		t.Error("learningLoop should remain nil when set to nil")
+	}
+}
+
+func TestFeedbackLoop_CreateFailureIssue_WithKnownPatterns(t *testing.T) {
+	capturedBody := ""
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/repos/owner/repo/issues" && r.Method == "POST" {
+			var input github.IssueInput
+			_ = json.NewDecoder(r.Body).Decode(&input)
+			capturedBody = input.Body
+
+			resp := github.Issue{Number: 120}
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(resp)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.IssueLabels = []string{"pilot"}
+
+	fl := NewFeedbackLoop(ghClient, "owner", "repo", cfg)
+
+	// No learning loop set — body should NOT contain "Known Patterns"
+	prState := &PRState{
+		PRNumber: 42,
+		HeadSHA:  "abc1234567890",
+	}
+
+	_, err := fl.CreateFailureIssue(
+		context.Background(),
+		prState,
+		FailureCIPreMerge,
+		[]string{"build"},
+		"Error: build failed",
+		0,
+	)
+	if err != nil {
+		t.Fatalf("CreateFailureIssue() error = %v", err)
+	}
+
+	if strings.Contains(capturedBody, "Known Patterns") {
+		t.Error("body should NOT contain Known Patterns section when no learning loop is set")
+	}
+}
+
+func TestFeedbackLoop_GenerateBody_WithPatterns(t *testing.T) {
+	ghClient := github.NewClient(testutil.FakeGitHubToken)
+	cfg := DefaultConfig()
+	fl := NewFeedbackLoop(ghClient, "owner", "repo", cfg)
+
+	prState := &PRState{
+		PRNumber: 42,
+		HeadSHA:  "abc1234567890",
+	}
+
+	// Test with patterns passed directly to generateBody
+	patterns := []*memory.CrossPattern{
+		{Title: "Missing import", Description: "Always check imports after refactoring", Confidence: 0.85},
+		{Title: "Test timeout", Description: "Increase timeout for integration tests", Confidence: 0.92},
+	}
+
+	body := fl.generateBody(prState, FailureCIPreMerge, []string{"build"}, "Error: build failed", 0, patterns)
+
+	if !strings.Contains(body, "Known Patterns") {
+		t.Error("body should contain Known Patterns section when patterns provided")
+	}
+	if !strings.Contains(body, "Missing import") {
+		t.Error("body should contain pattern title 'Missing import'")
+	}
+	if !strings.Contains(body, "85%") {
+		t.Error("body should contain pattern confidence as percentage")
+	}
+	if !strings.Contains(body, "Test timeout") {
+		t.Error("body should contain pattern title 'Test timeout'")
+	}
+	if !strings.Contains(body, "92%") {
+		t.Error("body should contain pattern confidence as percentage")
+	}
+}
+
+func TestFeedbackLoop_GenerateBody_NoPatterns(t *testing.T) {
+	ghClient := github.NewClient(testutil.FakeGitHubToken)
+	cfg := DefaultConfig()
+	fl := NewFeedbackLoop(ghClient, "owner", "repo", cfg)
+
+	prState := &PRState{
+		PRNumber: 42,
+		HeadSHA:  "abc1234567890",
+	}
+
+	// Empty patterns slice — no Known Patterns section
+	body := fl.generateBody(prState, FailureCIPreMerge, []string{"build"}, "", 0, nil)
+
+	if strings.Contains(body, "Known Patterns") {
+		t.Error("body should NOT contain Known Patterns section when no patterns")
 	}
 }
 
