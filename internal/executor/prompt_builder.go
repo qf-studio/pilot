@@ -129,6 +129,23 @@ func (r *Runner) BuildPrompt(task *Task, executionPath string) string {
 			}
 		}
 
+		// GH-2015: Inject related learnings from knowledge graph
+		if r.knowledgeGraph != nil && !complexity.ShouldSkipNavigator() {
+			keywords := extractTaskKeywords(task.Title + " " + task.Description)
+			if nodes := r.knowledgeGraph.GetRelatedByKeywords(keywords); len(nodes) > 0 {
+				sb.WriteString("## Related Learnings\n\n")
+				limit := len(nodes)
+				if limit > 5 {
+					limit = 5
+				}
+				for i := 0; i < limit; i++ {
+					node := nodes[i]
+					sb.WriteString(fmt.Sprintf("- **%s** [%s]: %s\n", node.Title, node.Type, node.Content))
+				}
+				sb.WriteString("\n")
+			}
+		}
+
 		// Pre-commit verification checklist (GH-359, GH-920, GH-1321)
 		sb.WriteString("## Pre-Commit Verification\n\n")
 		sb.WriteString("BEFORE committing, verify:\n")

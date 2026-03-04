@@ -318,6 +318,8 @@ type Runner struct {
 	patternContext       *PatternContext                // Optional pattern context for prompt injection
 	selfReviewExtractor  SelfReviewExtractor            // Optional extractor for self-review pattern learning (GH-1955)
 	outcomeTracker       *memory.ModelOutcomeTracker    // Optional outcome tracker for model escalation (GH-1991)
+	// GH-2015: Knowledge graph integration for execution learnings
+	knowledgeGraph       KnowledgeGraphRecorder         // Optional knowledge graph for cross-project learnings
 }
 
 // NewRunner creates a new Runner instance with Claude Code backend by default.
@@ -662,6 +664,14 @@ func (r *Runner) SetOutcomeTracker(t *memory.ModelOutcomeTracker) {
 
 // HasOutcomeTracker reports whether an outcome tracker is wired.
 func (r *Runner) HasOutcomeTracker() bool { return r.outcomeTracker != nil }
+
+// SetKnowledgeGraph sets the knowledge graph for execution learning recording (GH-2015).
+func (r *Runner) SetKnowledgeGraph(kg KnowledgeGraphRecorder) {
+	r.knowledgeGraph = kg
+}
+
+// HasKnowledgeGraph reports whether a knowledge graph is wired.
+func (r *Runner) HasKnowledgeGraph() bool { return r.knowledgeGraph != nil }
 
 // HasTokenLimitCheck reports whether a token limit check callback is wired.
 func (r *Runner) HasTokenLimitCheck() bool { return r.tokenLimitCheck != nil }
@@ -2686,6 +2696,9 @@ The previous execution completed but made no code changes. This task requires ac
 	// GH-1813: Record execution outcome for pattern learning (self-improvement)
 	r.recordLearning(ctx, task, result)
 
+	// GH-2015: Record execution into knowledge graph for cross-project learnings
+	r.recordGraphLearning(task, result)
+
 	// GH-1991: Record outcome for model routing escalation
 	r.recordOutcome(task, result, complexity, duration)
 
@@ -2733,6 +2746,43 @@ func (r *Runner) recordLearning(ctx context.Context, task *Task, result *Executi
 	if learnErr := r.learningLoop.RecordExecution(ctx, exec, nil); learnErr != nil {
 		r.log.Warn("Failed to record execution for learning", slog.Any("error", learnErr))
 	}
+}
+
+// recordGraphLearning records the execution into the knowledge graph (GH-2015).
+// It is non-fatal — errors are logged but do not affect the execution result.
+func (r *Runner) recordGraphLearning(task *Task, result *ExecutionResult) {
+	if r.knowledgeGraph == nil {
+		return
+	}
+	outcome := "success"
+	if !result.Success {
+		outcome = "failure"
+	}
+	// Extract simple patterns from task context
+	patterns := extractLearningPatterns(task)
+	content := task.Description
+	if len(content) > 500 {
+		content = content[:500]
+	}
+	if err := r.knowledgeGraph.AddExecutionLearning(task.Title, content, nil, patterns, outcome); err != nil {
+		r.log.Warn("Failed to record graph learning", slog.Any("error", err))
+	}
+}
+
+// extractLearningPatterns extracts simple pattern hints from a task's title and description.
+func extractLearningPatterns(task *Task) []string {
+	combined := strings.ToLower(task.Title + " " + task.Description)
+	candidates := []string{
+		"refactor", "test", "fix", "feature", "api", "database",
+		"auth", "webhook", "migration", "config", "ci", "lint",
+	}
+	var found []string
+	for _, c := range candidates {
+		if strings.Contains(combined, c) {
+			found = append(found, c)
+		}
+	}
+	return found
 }
 
 // recordOutcome records the model execution outcome for escalation tracking (GH-1991).
