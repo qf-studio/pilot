@@ -594,6 +594,168 @@ func TestMergePattern_AddsNewProjects(t *testing.T) {
 	}
 }
 
+func TestExtractFromSelfReview(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "extractor-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	store, _ := NewStore(tmpDir)
+	defer func() { _ = store.Close() }()
+
+	patternStore, _ := NewGlobalPatternStore(tmpDir)
+	extractor := NewPatternExtractor(patternStore, store)
+	ctx := context.Background()
+
+	tests := []struct {
+		name              string
+		selfReviewOutput  string
+		wantAntiPatterns  int
+		wantPatternTypes  []PatternType // expected types in anti-patterns (order-independent)
+	}{
+		{
+			name: "multiple finding types",
+			selfReviewOutput: `REVIEW_FIXED: corrected nil check in handler.go
+Found missing error handling in database query at store.go:42
+PARITY_GAP: interface method added but not implemented in mock
+test coverage gap for new validateInput function
+SUSPICIOUS_VALUE detected in pricing constant`,
+			wantAntiPatterns: 5,
+			wantPatternTypes: []PatternType{
+				PatternTypeCode,      // REVIEW_FIXED
+				PatternTypeError,     // missing error handling
+				PatternTypeStructure, // PARITY_GAP
+				PatternTypeWorkflow,  // test coverage gap
+				PatternTypeCode,      // SUSPICIOUS_VALUE
+			},
+		},
+		{
+			name:             "empty output",
+			selfReviewOutput: "",
+			wantAntiPatterns: 0,
+			wantPatternTypes: nil,
+		},
+		{
+			name:             "whitespace only output",
+			selfReviewOutput: "   \n\t  \n  ",
+			wantAntiPatterns: 0,
+			wantPatternTypes: nil,
+		},
+		{
+			name:             "unparseable output with no markers",
+			selfReviewOutput: "All checks passed. Code looks clean. No issues found.",
+			wantAntiPatterns: 0,
+			wantPatternTypes: nil,
+		},
+		{
+			name: "mixed findings with clean output",
+			selfReviewOutput: `Self-review complete.
+Files checked: 5
+REVIEW_FIXED: corrected nil check in handler
+Everything else looks good.
+INCOMPLETE: TODO items remain in auth module`,
+			wantAntiPatterns: 2,
+			wantPatternTypes: []PatternType{
+				PatternTypeCode,     // REVIEW_FIXED
+				PatternTypeWorkflow, // INCOMPLETE
+			},
+		},
+		{
+			name:             "build failure only",
+			selfReviewOutput: "build verification failure: missing return statement in Calculate()",
+			wantAntiPatterns: 1,
+			wantPatternTypes: []PatternType{PatternTypeError},
+		},
+		{
+			name:             "dead code detection",
+			selfReviewOutput: "Found unused import: fmt in utils.go\nFound dead code in legacy handler",
+			wantAntiPatterns: 1, // single regex matches both
+			wantPatternTypes: []PatternType{PatternTypeCode},
+		},
+		{
+			name:             "struct field unwired",
+			selfReviewOutput: "config field not wired: MaxRetries defined in Config but never read",
+			wantAntiPatterns: 1,
+			wantPatternTypes: []PatternType{PatternTypeStructure},
+		},
+		{
+			name:             "lint violations",
+			selfReviewOutput: "lint violation: exported function missing doc comment\nlinter error on line 55",
+			wantAntiPatterns: 1,
+			wantPatternTypes: []PatternType{PatternTypeWorkflow},
+		},
+		{
+			name: "cross-file parity",
+			selfReviewOutput: `cross-file parity issue: AddUser added to service.go but not to service_test.go
+parity mismatch between interface and implementation`,
+			wantAntiPatterns: 1, // single regex matches both variants
+			wantPatternTypes: []PatternType{PatternTypeStructure},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := extractor.ExtractFromSelfReview(ctx, tt.selfReviewOutput, "/test/project")
+			if err != nil {
+				t.Fatalf("ExtractFromSelfReview() error = %v", err)
+			}
+
+			if result == nil {
+				t.Fatal("ExtractFromSelfReview() returned nil result")
+			}
+
+			if len(result.AntiPatterns) != tt.wantAntiPatterns {
+				types := make([]PatternType, len(result.AntiPatterns))
+				for i, ap := range result.AntiPatterns {
+					types[i] = ap.Type
+				}
+				t.Errorf("got %d anti-patterns %v, want %d", len(result.AntiPatterns), types, tt.wantAntiPatterns)
+				return
+			}
+
+			// Verify pattern types match (order-independent)
+			if tt.wantPatternTypes != nil {
+				gotTypes := make(map[PatternType]int)
+				for _, ap := range result.AntiPatterns {
+					gotTypes[ap.Type]++
+				}
+
+				wantTypes := make(map[PatternType]int)
+				for _, pt := range tt.wantPatternTypes {
+					wantTypes[pt]++
+				}
+
+				for pt, count := range wantTypes {
+					if gotTypes[pt] != count {
+						t.Errorf("pattern type %s: got %d, want %d", pt, gotTypes[pt], count)
+					}
+				}
+			}
+
+			// Verify all anti-patterns have confidence 0.5
+			for _, ap := range result.AntiPatterns {
+				if ap.Confidence != 0.5 {
+					t.Errorf("anti-pattern %q has confidence %f, want 0.5", ap.Title, ap.Confidence)
+				}
+				if ap.Context != "Self-review" {
+					t.Errorf("anti-pattern %q has context %q, want 'Self-review'", ap.Title, ap.Context)
+				}
+			}
+
+			// Verify project path is set
+			if result.ProjectPath != "/test/project" {
+				t.Errorf("ProjectPath = %q, want %q", result.ProjectPath, "/test/project")
+			}
+
+			// Verify no positive patterns (self-review findings are all anti-patterns)
+			if len(result.Patterns) != 0 {
+				t.Errorf("got %d positive patterns, want 0", len(result.Patterns))
+			}
+		})
+	}
+}
+
 func TestExtractFromReviewComments_TestingFeedback(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "extractor-test-*")
 	if err != nil {
