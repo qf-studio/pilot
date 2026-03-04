@@ -314,9 +314,10 @@ type Runner struct {
 	// GH-1599: Execution log store for milestone entries
 	logStore              *memory.Store // Optional log store for writing execution milestones
 	// GH-1811: Learning system (self-improvement)
-	learningLoop         LearningRecorder     // Optional learning loop for pattern extraction + feedback
-	patternContext       *PatternContext       // Optional pattern context for prompt injection
-	selfReviewExtractor  SelfReviewExtractor   // Optional extractor for self-review pattern learning (GH-1955)
+	learningLoop         LearningRecorder              // Optional learning loop for pattern extraction + feedback
+	patternContext       *PatternContext                // Optional pattern context for prompt injection
+	selfReviewExtractor  SelfReviewExtractor            // Optional extractor for self-review pattern learning (GH-1955)
+	outcomeTracker       *memory.ModelOutcomeTracker    // Optional outcome tracker for model escalation (GH-1991)
 }
 
 // NewRunner creates a new Runner instance with Claude Code backend by default.
@@ -654,6 +655,14 @@ func (r *Runner) SetSelfReviewExtractor(e SelfReviewExtractor) {
 	r.selfReviewExtractor = e
 }
 
+// SetOutcomeTracker sets the outcome tracker for model escalation (GH-1991).
+func (r *Runner) SetOutcomeTracker(t *memory.ModelOutcomeTracker) {
+	r.outcomeTracker = t
+}
+
+// HasOutcomeTracker reports whether an outcome tracker is wired.
+func (r *Runner) HasOutcomeTracker() bool { return r.outcomeTracker != nil }
+
 // HasTokenLimitCheck reports whether a token limit check callback is wired.
 func (r *Runner) HasTokenLimitCheck() bool { return r.tokenLimitCheck != nil }
 
@@ -686,6 +695,9 @@ func (r *Runner) HasIntentJudge() bool { return r.intentJudge != nil }
 
 // HasModelRouter reports whether a model router is wired.
 func (r *Runner) HasModelRouter() bool { return r.modelRouter != nil }
+
+// ModelRouter returns the model router (may be nil).
+func (r *Runner) ModelRouter() *ModelRouter { return r.modelRouter }
 
 // HasDriftDetector reports whether a drift detector is wired.
 func (r *Runner) HasDriftDetector() bool { return r.driftDetector != nil }
@@ -2674,6 +2686,9 @@ The previous execution completed but made no code changes. This task requires ac
 	// GH-1813: Record execution outcome for pattern learning (self-improvement)
 	r.recordLearning(ctx, task, result)
 
+	// GH-1991: Record outcome for model routing escalation
+	r.recordOutcome(task, result, complexity, duration)
+
 	return result, nil
 }
 // Cancel terminates a running task by killing its Claude Code process.
@@ -2717,6 +2732,21 @@ func (r *Runner) recordLearning(ctx context.Context, task *Task, result *Executi
 	}
 	if learnErr := r.learningLoop.RecordExecution(ctx, exec, nil); learnErr != nil {
 		r.log.Warn("Failed to record execution for learning", slog.Any("error", learnErr))
+	}
+}
+
+// recordOutcome records the model execution outcome for escalation tracking (GH-1991).
+func (r *Runner) recordOutcome(task *Task, result *ExecutionResult, complexity Complexity, duration time.Duration) {
+	if r.outcomeTracker == nil {
+		return
+	}
+	outcome := "success"
+	if !result.Success {
+		outcome = "failure"
+	}
+	tokens := int(result.TokensInput + result.TokensOutput)
+	if err := r.outcomeTracker.RecordOutcome(string(complexity), result.ModelName, outcome, tokens, duration); err != nil {
+		r.log.Warn("Failed to record model outcome", slog.Any("error", err))
 	}
 }
 

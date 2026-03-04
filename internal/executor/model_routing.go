@@ -2,7 +2,10 @@ package executor
 
 import (
 	"context"
+	"log/slog"
 	"time"
+
+	"github.com/alekspetrov/pilot/internal/memory"
 )
 
 // ModelRouter selects the appropriate model, timeout, and effort level based on task complexity.
@@ -11,7 +14,8 @@ type ModelRouter struct {
 	modelConfig      *ModelRoutingConfig
 	timeoutConfig    *TimeoutConfig
 	effortConfig     *EffortRoutingConfig
-	effortClassifier *EffortClassifier // LLM-based effort classifier (GH-727)
+	effortClassifier *EffortClassifier          // LLM-based effort classifier (GH-727)
+	outcomeTracker   *memory.ModelOutcomeTracker // Outcome-based escalation (GH-1991)
 }
 
 // NewModelRouter creates a new ModelRouter with the given configuration.
@@ -41,13 +45,30 @@ func NewModelRouterWithEffort(modelConfig *ModelRoutingConfig, timeoutConfig *Ti
 
 // SelectModel returns the appropriate model name for a task based on its complexity.
 // If model routing is disabled, returns empty string (use backend default).
+// When an outcome tracker is set, checks failure rates and escalates if needed (GH-1991).
 func (r *ModelRouter) SelectModel(task *Task) string {
 	if r.modelConfig == nil || !r.modelConfig.Enabled {
 		return ""
 	}
 
 	complexity := DetectComplexity(task)
-	return r.GetModelForComplexity(complexity)
+	model := r.GetModelForComplexity(complexity)
+
+	// GH-1991: Check outcome tracker for escalation
+	if r.outcomeTracker != nil && model != "" {
+		taskType := string(complexity)
+		if shouldEscalate, escalatedModel := r.outcomeTracker.ShouldEscalate(taskType, model); shouldEscalate {
+			slog.Info("Model escalated based on outcome tracking",
+				slog.String("task_type", taskType),
+				slog.String("original_model", model),
+				slog.String("escalated_model", escalatedModel),
+				slog.Float64("failure_rate", r.outcomeTracker.GetFailureRate(taskType, model)),
+			)
+			return escalatedModel
+		}
+	}
+
+	return model
 }
 
 // GetModelForComplexity returns the model name for a given complexity level.
@@ -122,6 +143,11 @@ func (r *ModelRouter) IsRoutingEnabled() bool {
 // When set, SelectEffort will use LLM classification before falling back to static mapping.
 func (r *ModelRouter) SetEffortClassifier(c *EffortClassifier) {
 	r.effortClassifier = c
+}
+
+// SetOutcomeTracker attaches an outcome tracker for failure-rate-based model escalation (GH-1991).
+func (r *ModelRouter) SetOutcomeTracker(t *memory.ModelOutcomeTracker) {
+	r.outcomeTracker = t
 }
 
 // SelectEffort returns the appropriate effort level for a task.

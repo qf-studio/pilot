@@ -918,6 +918,13 @@ Examples:
 						gwAutopilotController.SetLearningLoop(gwLearningLoop)
 					}
 
+					// GH-1991: Wire outcome tracker for model escalation (gateway mode)
+					gwOutcomeTracker := memory.NewModelOutcomeTracker(gwStore)
+					gwRunner.SetOutcomeTracker(gwOutcomeTracker)
+					if gwRunner.HasModelRouter() {
+						gwRunner.ModelRouter().SetOutcomeTracker(gwOutcomeTracker)
+					}
+
 					logging.WithComponent("learning").Info("Learning system initialized (gateway mode)")
 				}
 			}
@@ -1343,6 +1350,14 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 			}
 
 			logging.WithComponent("learning").Info("Learning system initialized")
+
+			// GH-1991: Wire outcome tracker for model escalation
+			outcomeTracker := memory.NewModelOutcomeTracker(store)
+			runner.SetOutcomeTracker(outcomeTracker)
+			if runner.HasModelRouter() {
+				runner.ModelRouter().SetOutcomeTracker(outcomeTracker)
+			}
+			logging.WithComponent("learning").Info("Model outcome tracker initialized")
 
 			// Pattern maintenance — decay and cleanup every 24h
 			go func() {
