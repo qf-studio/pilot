@@ -1,0 +1,152 @@
+import { Callout } from 'nextra/components'
+
+# Self-Healing
+
+Pilot automatically learns from failures, retries intelligently, and prevents duplicate work — closing the loop between CI errors and fixes.
+
+<Callout type="info" emoji="🔄">
+  Self-healing combines CI pattern learning, automatic retry with decomposition, and merged PR detection to create a closed-loop fix pipeline.
+</Callout>
+
+## CI Error Pattern Learning
+
+When CI fails, Pilot extracts error patterns from logs and stores them for future reference. On subsequent failures, high-confidence patterns are injected into fix issue prompts — so Pilot doesn't repeat the same mistakes.
+
+### How It Works
+
+```
+CI Failure → Extract Patterns → Store in PatternDB → Annotate Fix Issues → Smarter Fixes
+```
+
+1. **Pattern extraction** — `PatternExtractor` analyzes CI logs using 16 pre-compiled regex matchers
+2. **Categorization** — errors are classified into categories (compilation, test, lint, dependency, runtime)
+3. **Confidence boosting** — recurring patterns get a 1.5× confidence boost (capped at 0.95)
+4. **Injection** — patterns with ≥0.75 confidence and ≥5 occurrences surface in fix issue bodies
+
+### Error Categories
+
+| Category | Examples |
+|----------|----------|
+| **Compilation** | Type mismatches, undefined identifiers, syntax errors |
+| **Test Failures** | Assertion failures, test timeouts, missing fixtures |
+| **Lint** | Unused imports, unchecked errors, style violations |
+| **Dependency** | Missing modules, version conflicts |
+| **Runtime** | Nil pointer dereference, panics, deadlocks |
+
+### Pattern Lifecycle
+
+Patterns start at 0.5 confidence when first extracted from CI logs. Each recurrence boosts confidence by 1.5×. Once a pattern reaches ≥0.75 confidence with ≥5 occurrences, it becomes a "high-value pattern" and is automatically included in fix issue prompts.
+
+Anti-patterns (common mistakes found in review comments) are also tracked and injected to prevent regression.
+
+### Configuration
+
+```yaml
+learning:
+  enabled: true
+  feedback_weight: 0.1   # Weight for new pattern observations
+  decay_rate: 0.01       # Confidence decay over time
+```
+
+## Retry with Decomposition
+
+When a task is killed (`signal:killed`) — typically due to running out of memory or exceeding time limits — Pilot can automatically decompose it into smaller subtasks and retry.
+
+<Callout type="warning" emoji="⚠️">
+  This feature is opt-in. Set `retry.decompose_on_kill: true` in your config to enable it.
+</Callout>
+
+### How It Works
+
+```
+Task Killed → DecomposeForRetry() → Split into Subtasks → Re-execute
+```
+
+`DecomposeForRetry()` bypasses all normal complexity gates — execution failure is proof the task is too large. It analyzes the task description for structural split points:
+
+1. **Numbered steps** — `1. ... 2. ... 3. ...`
+2. **Bullet points** — `- item`, `* item`
+3. **Acceptance criteria** — `[ ] checkbox items`
+4. **File/module groups** — groups by file extension or directory
+
+### Safeguards
+
+- The `no-decompose` label on an issue prevents decomposition (even on retry)
+- Maximum subtask count is configurable (default: 5, range: 2–10)
+- Only the final subtask creates a PR — earlier subtasks commit to the same branch
+
+### Configuration
+
+```yaml
+decompose:
+  enabled: true
+  min_complexity: complex   # Minimum level to trigger (complex or epic)
+  max_subtasks: 5           # Maximum subtasks per decomposition
+  min_description_words: 50 # Word count gate (skipped when LLM confirms complexity)
+
+retry:
+  decompose_on_kill: true   # Enable retry-with-decomposition on signal:killed
+```
+
+## Merged PR Guard
+
+Before dispatching a retry for a failed issue, Pilot checks whether work has already been merged. This prevents the infinite retry loop where Pilot keeps re-processing an issue whose PR was already merged but the issue was never closed.
+
+### How It Works
+
+```
+Issue Retry → hasMergedWork() → Search GitHub API → Skip if merged PR found
+```
+
+The poller calls `SearchMergedPRsForIssue()` which queries the GitHub Search API:
+
+```
+repo:owner/repo GH-{issue_number} in:title is:pr is:merged
+```
+
+If at least one merged PR matches, the issue is marked as done and skipped.
+
+<Callout type="info">
+  This guard catches the common case where a PR was merged but the originating issue was never closed — either due to a race condition, webhook failure, or manual merge without issue linking.
+</Callout>
+
+### No Configuration Required
+
+The merged PR guard runs automatically as part of the polling pipeline. No configuration is needed — it activates whenever the GitHub poller processes an issue.
+
+## Full Self-Healing Pipeline
+
+These three mechanisms work together to create a closed-loop system:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    Self-Healing Pipeline                     │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  Issue → Execute → CI Fails                                 │
+│                      │                                      │
+│                      ├─→ Extract patterns from CI logs       │
+│                      │     Store in PatternDB                │
+│                      │                                      │
+│                      ├─→ Create fix issue                    │
+│                      │     Annotate with learned patterns    │
+│                      │                                      │
+│                      └─→ Pilot picks up fix issue            │
+│                            Uses patterns to avoid repeats    │
+│                                                             │
+│  Task Killed → DecomposeForRetry()                          │
+│                  Split into smaller subtasks                 │
+│                  Re-execute sequentially                     │
+│                                                             │
+│  Retry Check → hasMergedWork()                              │
+│                  Skip if PR already merged                   │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+## Related Features
+
+- [Autopilot](/features/autopilot) — CI monitoring and auto-merge
+- [Epic Decomposition](/features/epic-decomposition) — task splitting for large issues
+- [Quality Gates](/features/quality-gates) — test/lint/build verification
+- [Memory & Learning](/features/memory) — pattern storage and knowledge graph
