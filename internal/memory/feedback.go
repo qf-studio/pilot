@@ -364,18 +364,10 @@ func (l *LearningLoop) LearnFromCIFailure(ctx context.Context, projectPath strin
 		return nil
 	}
 
-	// Extract CI-specific patterns (confidence 0.5, source:ci tagged)
-	ciPatterns := l.extractor.extractCIErrorPatterns(ciLogs)
+	// Extract CI-specific patterns (confidence 0.5, source:ci tagged, categorized)
+	ciPatterns := l.extractor.extractCIErrorPatterns(ciLogs, checkNames...)
 	if len(ciPatterns) == 0 {
 		return nil
-	}
-
-	// Tag patterns with CI check names
-	checkContext := strings.Join(checkNames, ", ")
-	for _, p := range ciPatterns {
-		if len(checkNames) > 0 {
-			p.Context = p.Context + " checks:" + checkContext
-		}
 	}
 
 	result := &ExtractionResult{
