@@ -107,6 +107,48 @@ Learned patterns are injected into future execution prompts, so Pilot's code qua
 Review learning runs automatically after PR merge. No configuration needed — it uses the same GitHub token configured for the GitHub adapter.
 </Callout>
 
+## CI Failure Pattern Extraction
+
+_Since v2.52.0_
+
+Pilot extracts error patterns from CI failure logs and stores them for future reference. When a similar CI failure occurs later, the learned pattern is injected into the execution prompt to help prevent repeat failures.
+
+### Error Categories
+
+| Category | Example |
+|----------|---------|
+| `compilation` | Missing imports, type mismatches |
+| `test_failure` | Assertion errors, timeout flakes |
+| `lint` | Style violations, unused variables |
+| `dependency` | Version conflicts, missing modules |
+| `runtime` | Nil dereference, out of memory |
+
+### How It Works
+
+1. **Detection** — CI fails on a Pilot PR
+2. **Extraction** — Failure logs are parsed for error patterns with category and frequency
+3. **Storage** — Patterns are saved to the `cross_patterns` table with error type metadata
+4. **Injection** — On future tasks in the same project, relevant CI failure patterns are included in the prompt
+
+<Callout type="info">
+CI failure extraction is automatic when autopilot monitors CI. No additional configuration needed.
+</Callout>
+
+## Self-Review Pattern Extraction
+
+_Since v2.48.0_
+
+Findings from Pilot's self-review step feed back into the learning system. When self-review identifies an issue in generated code, `ExtractFromSelfReview()` captures it as a pattern so the same mistake is avoided next time.
+
+This creates a feedback loop:
+
+1. **Generate** — Pilot writes code for a task
+2. **Review** — Self-review identifies issues (e.g., missing error handling)
+3. **Learn** — Issues are stored as anti-patterns with source `self_review`
+4. **Prevent** — Future prompts include the learned anti-patterns
+
+Self-review patterns follow the same confidence scoring as other patterns — they decay if not reinforced and are pruned below the configured threshold.
+
 ## Knowledge Graph
 
 The knowledge graph stores relationships between concepts, files, and patterns.
@@ -128,12 +170,17 @@ Nodes can have relations to other nodes, enabling queries like "what patterns re
 
 ### Adding Knowledge
 
-Knowledge is added automatically during execution. Manual additions are supported via the API:
+Knowledge is added automatically during execution. `graph.AddLearning()` stores task metadata after each execution, while `graph.GetRelated(keywords)` queries related learnings across node relationships: task type → files → patterns → outcomes.
 
 ```go
 graph.AddLearning("JWT refresh flow", "Use sliding window...", metadata)
 graph.AddPattern("error_handling", "Always wrap in try/catch", nil)
+related := graph.GetRelated([]string{"auth", "jwt"})
 ```
+
+<Callout type="info">
+Full knowledge graph wiring for execution prompts is in progress — see [GH-2012](https://github.com/anthropics/pilot/issues/2012).
+</Callout>
 
 ## Knowledge Store (Memories)
 
@@ -159,6 +206,14 @@ Memories have a confidence score that decays over time if not reinforced:
 
 This ensures stale knowledge doesn't pollute future prompts while validated patterns remain available.
 
+### Temporal Pattern Relevance (Upcoming)
+
+Per-project, per-task-type confidence tracking with recency decay. Patterns unused for 90+ days receive reduced weight, ensuring that stale conventions don't override current practices.
+
+<Callout type="info">
+Temporal relevance scoring is in progress — see [GH-2013](https://github.com/anthropics/pilot/issues/2013).
+</Callout>
+
 ## Data Storage
 
 ```
@@ -180,6 +235,12 @@ This ensures stale knowledge doesn't pollute future prompts while validated patt
 | `memories` | Experiential knowledge store |
 | `sessions` | Dashboard session metrics |
 | `usage_events` | Billing/metering data |
+
+### Performance Indexes
+
+_Since v2.47.0_
+
+The `cross_patterns` table has performance indexes on frequently queried columns: `title`, `description`, `scope`, and `updated_at`. These indexes speed up pattern lookups during prompt construction, especially for organizations with large pattern stores.
 
 ## Configuration
 
