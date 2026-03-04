@@ -113,7 +113,7 @@ Maps complexity to the AI model used for execution.
 
 | Complexity | Default Model | Pricing (input/output) | Rationale |
 |------------|---------------|------------------------|-----------|
-| Trivial | `claude-haiku` | $0.80 / $4 per 1M tokens | Speed over depth — mechanical changes don't need reasoning |
+| Trivial | `claude-haiku-4-5` | $0.80 / $4 per 1M tokens | Speed over depth — mechanical changes don't need reasoning |
 | Simple | `claude-sonnet-4-6` | $3 / $15 per 1M tokens | Near-Opus quality at 40% lower cost |
 | Medium | `claude-sonnet-4-6` | $3 / $15 per 1M tokens | Standard feature work, near-Opus quality |
 | Complex | `claude-opus-4-6` | $5 / $25 per 1M tokens | Architectural work gets the most capable model |
@@ -179,6 +179,47 @@ Beyond model and timeout, complexity drives execution behavior:
 
 **Research phase**: Medium and complex tasks run a parallel research phase before implementation, giving Claude codebase context before writing code.
 
+## Outcome-Based Escalation
+
+Starting in v2.56.0, Pilot tracks execution outcomes per model and automatically escalates to a more capable model when failure rates exceed a threshold.
+
+### How It Works
+
+Every task execution records an outcome in the `model_outcomes` SQLite table:
+
+| Column | Description |
+|--------|-------------|
+| `task_type` | Normalized task category (e.g., `endpoint`, `refactor`, `test`) |
+| `model` | Model used for execution |
+| `outcome` | `success` or `failure` |
+| `tokens` | Total tokens consumed |
+| `duration` | Execution wall time |
+
+Before each execution, `ShouldEscalate()` checks the last 10 outcomes for the current task type and model. If the failure rate exceeds the configured threshold (default 30%), Pilot escalates to the next model tier:
+
+```
+claude-haiku-4-5 → claude-sonnet-4-6 → claude-opus-4-6
+```
+
+Escalation is logged with the task type, original model, escalated model, and observed failure rate.
+
+<Callout type="info">
+Escalation is per task type — if Haiku fails frequently on `refactor` tasks but succeeds on `typo` tasks, only `refactor` tasks escalate. This keeps costs low for work the cheaper model handles well.
+</Callout>
+
+### Escalation Configuration
+
+```yaml
+executor:
+  model_routing:
+    escalation:
+      enabled: true                # false by default
+      threshold: 0.3               # 30% failure rate triggers escalation
+      lookback: 10                 # number of recent outcomes to evaluate
+```
+
+When `escalation.enabled` is false (default), models are selected purely by complexity level with no outcome feedback.
+
 ## Configuration
 
 All routing is configured under the `executor` key in `~/.pilot/config.yaml`.
@@ -189,7 +230,7 @@ All routing is configured under the `executor` key in `~/.pilot/config.yaml`.
 executor:
   model_routing:
     enabled: true                  # false by default
-    trivial: "claude-haiku"        # fastest, cheapest
+    trivial: "claude-haiku-4-5"     # fastest, cheapest
     simple: "claude-sonnet-4-6"    # near-Opus quality, 40% cheaper
     medium: "claude-sonnet-4-6"
     complex: "claude-opus-4-6"
@@ -248,10 +289,14 @@ Model routing and effort routing are both **disabled by default**. Enable them e
 executor:
   model_routing:
     enabled: true
-    trivial: "claude-haiku"
+    trivial: "claude-haiku-4-5"
     simple: "claude-sonnet-4-6"
     medium: "claude-sonnet-4-6"
     complex: "claude-opus-4-6"
+    escalation:
+      enabled: true
+      threshold: 0.3
+      lookback: 10
 
   timeout:
     default: "30m"
@@ -294,9 +339,15 @@ Issue arrives
            │ No
      ┌─────┴──────────────┐
      │ ModelRouter         │
-     │  .SelectModel()     │──→ "claude-haiku", "claude-sonnet-4-6", or "claude-opus-4-6"
+     │  .SelectModel()     │──→ "claude-haiku-4-5", "claude-sonnet-4-6", or "claude-opus-4-6"
      │  .SelectTimeout()   │──→ 5m / 10m / 30m / 60m
      │  .SelectEffort()    │──→ "low" / "medium" / "high" / "max"
+     └──────────┬─────────┘
+                │
+     ┌──────────▼─────────┐
+     │ ShouldEscalate()?   │──→ Check failure rate for task type + model
+     │  Yes → bump model   │    haiku → sonnet → opus
+     │  No  → keep model   │
      └──────────┬─────────┘
                 │
      ┌──────────▼─────────┐
