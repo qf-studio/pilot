@@ -175,56 +175,113 @@ func (e *PatternExtractor) ExtractFromReviewComments(ctx context.Context,
 	return result, nil
 }
 
+// codePatternMatcher maps a compiled regex to the pattern metadata it produces.
+type codePatternMatcher struct {
+	regex   *regexp.Regexp
+	pType   PatternType
+	title   string
+	desc    string
+	context string
+}
+
+// codePatternMatchers holds all 11 categories of code pattern matchers used by
+// extractCodePatterns. len(codePatternMatchers) == 11.
+var codePatternMatchers = []codePatternMatcher{
+	// 1. Context / cancellation
+	{
+		regex:   regexp.MustCompile(`(?i)using\s+context\.Context\s+in\s+(\w+)`),
+		pType:   PatternTypeCode,
+		title:   "Use context.Context for cancellation",
+		desc:    "Pass context.Context to functions for proper cancellation and timeout handling",
+		context: "Go handlers",
+	},
+	// 2. Error handling
+	{
+		regex:   regexp.MustCompile(`(?i)added\s+error\s+handling\s+for\s+(\w+)`),
+		pType:   PatternTypeCode,
+		title:   "Explicit error handling",
+		desc:    "Always handle errors explicitly rather than ignoring them",
+		context: "Go functions",
+	},
+	// 3. Test-driven implementation
+	{
+		regex:   regexp.MustCompile(`(?i)created?\s+test[s]?\s+for\s+(\w+)`),
+		pType:   PatternTypeWorkflow,
+		title:   "Test-driven implementation",
+		desc:    "Create tests alongside implementation code",
+		context: "All code",
+	},
+	// 4. Structured logging
+	{
+		regex:   regexp.MustCompile(`(?i)using\s+(zap|slog|logrus)\s+for\s+logging`),
+		pType:   PatternTypeCode,
+		title:   "Structured logging",
+		desc:    "Use structured logging library instead of fmt.Printf",
+		context: "Go services",
+	},
+	// 5. Input validation
+	{
+		regex:   regexp.MustCompile(`(?i)added?\s+validation\s+for\s+(\w+)`),
+		pType:   PatternTypeCode,
+		title:   "Input validation",
+		desc:    "Validate inputs at system boundaries",
+		context: "API handlers",
+	},
+	// 6. API Design — endpoint patterns, request/response structure, middleware usage
+	{
+		regex:   regexp.MustCompile(`(?i)(?:http\.Handler|router\.\w+|\bendpoint\b|\bmiddleware\b|\bREST\b|\bGraphQL\b)`),
+		pType:   PatternTypeCode,
+		title:   "API design pattern",
+		desc:    "Organise HTTP handlers, middleware, and routing following REST or GraphQL conventions",
+		context: "API design",
+	},
+	// 7. Concurrency — goroutine patterns, mutex usage, channel patterns, sync primitives
+	{
+		regex:   regexp.MustCompile(`(?i)(?:go\s+func|sync\.Mutex|sync\.WaitGroup|chan\s+\w+|select\s*\{|sync\.Once)`),
+		pType:   PatternTypeCode,
+		title:   "Concurrency pattern",
+		desc:    "Use goroutines, channels, and sync primitives for safe concurrent access",
+		context: "Concurrency",
+	},
+	// 8. Config wiring — YAML tags, env vars, Viper, mapstructure
+	{
+		regex:   regexp.MustCompile("(?i)(?:yaml:\"|env:\"|config\\.\\w+|viper\\.\\w+|\\bmapstructure\\b|os\\.Getenv)"),
+		pType:   PatternTypeCode,
+		title:   "Config wiring pattern",
+		desc:    "Load configuration from YAML, environment variables, or Viper with proper struct tags",
+		context: "Config wiring",
+	},
+	// 9. Test patterns — table-driven tests, httptest, mocks, testify assertions
+	{
+		regex:   regexp.MustCompile(`(?i)(?:t\.Run\s*\(|httptest\.\w+|\bmock\w*\b|\btestify\b|assert\.\w+|require\.\w+)`),
+		pType:   PatternTypeWorkflow,
+		title:   "Test pattern",
+		desc:    "Use table-driven tests, httptest, mocks, and testify assertions for comprehensive coverage",
+		context: "Test patterns",
+	},
+	// 10. Performance — caching, connection pooling, batch ops, indexing
+	{
+		regex:   regexp.MustCompile(`(?i)(?:\bcache\b|\bpool\b|\bbatch\b|\bindex\b|\bSetMaxOpenConns\b|sync\.Pool)`),
+		pType:   PatternTypeCode,
+		title:   "Performance pattern",
+		desc:    "Apply caching, connection pooling, batching, and indexing for performance-critical paths",
+		context: "Performance",
+	},
+	// 11. Security — auth, token validation, sanitisation, RBAC, HMAC
+	{
+		regex:   regexp.MustCompile(`(?i)(?:\bauthentication\b|\bauthorization\b|\btoken\s+\w+|\bsanitize\b|\bescape\b|\bpermission\b|\brbac\b|\bhmac\b)`),
+		pType:   PatternTypeCode,
+		title:   "Security pattern",
+		desc:    "Apply authentication, token validation, input sanitisation, RBAC, and HMAC signing",
+		context: "Security",
+	},
+}
+
 // extractCodePatterns extracts code-related patterns
 func (e *PatternExtractor) extractCodePatterns(output string) []*ExtractedPattern {
 	var patterns []*ExtractedPattern
 
-	// Look for common successful patterns in output
-	patternMatchers := []struct {
-		regex   *regexp.Regexp
-		pType   PatternType
-		title   string
-		desc    string
-		context string
-	}{
-		{
-			regex:   regexp.MustCompile(`(?i)using\s+context\.Context\s+in\s+(\w+)`),
-			pType:   PatternTypeCode,
-			title:   "Use context.Context for cancellation",
-			desc:    "Pass context.Context to functions for proper cancellation and timeout handling",
-			context: "Go handlers",
-		},
-		{
-			regex:   regexp.MustCompile(`(?i)added\s+error\s+handling\s+for\s+(\w+)`),
-			pType:   PatternTypeCode,
-			title:   "Explicit error handling",
-			desc:    "Always handle errors explicitly rather than ignoring them",
-			context: "Go functions",
-		},
-		{
-			regex:   regexp.MustCompile(`(?i)created?\s+test[s]?\s+for\s+(\w+)`),
-			pType:   PatternTypeWorkflow,
-			title:   "Test-driven implementation",
-			desc:    "Create tests alongside implementation code",
-			context: "All code",
-		},
-		{
-			regex:   regexp.MustCompile(`(?i)using\s+(zap|slog|logrus)\s+for\s+logging`),
-			pType:   PatternTypeCode,
-			title:   "Structured logging",
-			desc:    "Use structured logging library instead of fmt.Printf",
-			context: "Go services",
-		},
-		{
-			regex:   regexp.MustCompile(`(?i)added?\s+validation\s+for\s+(\w+)`),
-			pType:   PatternTypeCode,
-			title:   "Input validation",
-			desc:    "Validate inputs at system boundaries",
-			context: "API handlers",
-		},
-	}
-
-	for _, matcher := range patternMatchers {
+	for _, matcher := range codePatternMatchers {
 		if matches := matcher.regex.FindAllStringSubmatch(output, -1); len(matches) > 0 {
 			examples := make([]string, 0, len(matches))
 			for _, m := range matches {

@@ -1,6 +1,6 @@
 # Pilot Feature Matrix
 
-**Last Updated:** 2026-03-04 (v2.52.0)
+**Last Updated:** 2026-03-04 (v2.53.0)
 
 ## Legend
 
@@ -93,6 +93,7 @@
 | CI-specific error matchers | ✅ | memory | - | - | Add CI-specific error matchers to PatternExtractor (v2.47.0, PR #1973) |
 | CI pattern confidence boost | ✅ | memory | - | - | Confidence boosting for recurring CI patterns (v2.48.0, PR #1975) |
 | CI log learning pipeline | ✅ | autopilot | - | - | Wire CI log learning into autopilot controller and feedback loop (v2.50.0, PR #1977) |
+| Expanded pattern extractors (11 categories) | ✅ | memory | - | - | Added API design, concurrency, config wiring, test patterns, performance, security matchers (v2.54.0, GH-1989) |
 
 ## Input Adapters
 

@@ -1632,3 +1632,192 @@ func TestExtractFromReviewComments_Documentation(t *testing.T) {
 		t.Error("Expected documentation anti-pattern")
 	}
 }
+
+// TestCodePatternMatcherCount verifies exactly 11 categories are registered.
+func TestCodePatternMatcherCount(t *testing.T) {
+	if got := len(codePatternMatchers); got != 11 {
+		t.Errorf("len(codePatternMatchers) = %d, want 11", got)
+	}
+}
+
+// TestNewCodePatternCategories verifies the 6 new matcher categories (API Design,
+// Concurrency, Config Wiring, Test Patterns, Performance, Security) each fire on
+// matching input and stay silent on unrelated input.
+func TestNewCodePatternCategories(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "extractor-new-cats-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	store, _ := NewStore(tmpDir)
+	defer func() { _ = store.Close() }()
+
+	patternStore, _ := NewGlobalPatternStore(tmpDir)
+	extractor := NewPatternExtractor(patternStore, store)
+
+	tests := []struct {
+		name        string
+		output      string
+		wantTitle   string // substring of expected pattern title
+		wantMatch   bool
+	}{
+		// --- API Design ---
+		{
+			name:      "api design: http.Handler match",
+			output:    "implemented http.Handler interface for the webhook route",
+			wantTitle: "API design",
+			wantMatch: true,
+		},
+		{
+			name:      "api design: REST endpoint match",
+			output:    "added REST endpoint with middleware for rate limiting",
+			wantTitle: "API design",
+			wantMatch: true,
+		},
+		{
+			name:      "api design: no match",
+			output:    "wrote a helper function to format timestamps",
+			wantTitle: "API design",
+			wantMatch: false,
+		},
+		// --- Concurrency ---
+		{
+			name:      "concurrency: sync.Mutex match",
+			output:    "protected shared counter using sync.Mutex to avoid data races",
+			wantTitle: "Concurrency",
+			wantMatch: true,
+		},
+		{
+			name:      "concurrency: go func match",
+			output:    "launched background worker via go func with sync.WaitGroup",
+			wantTitle: "Concurrency",
+			wantMatch: true,
+		},
+		{
+			name:      "concurrency: no match",
+			output:    "added a simple sequential loop to process items",
+			wantTitle: "Concurrency",
+			wantMatch: false,
+		},
+		// --- Config Wiring ---
+		{
+			name:      "config wiring: yaml tag match",
+			output:    `added yaml:"timeout" struct tag and os.Getenv fallback`,
+			wantTitle: "Config wiring",
+			wantMatch: true,
+		},
+		{
+			name:      "config wiring: viper match",
+			output:    "loading settings via viper.GetString and mapstructure decode",
+			wantTitle: "Config wiring",
+			wantMatch: true,
+		},
+		{
+			name:      "config wiring: no match",
+			output:    "refactored the retry loop to use exponential backoff",
+			wantTitle: "Config wiring",
+			wantMatch: false,
+		},
+		// --- Test Patterns ---
+		{
+			name:      "test patterns: t.Run match",
+			output:    "added table-driven tests using t.Run( for each scenario",
+			wantTitle: "Test pattern",
+			wantMatch: true,
+		},
+		{
+			name:      "test patterns: httptest match",
+			output:    "wrote handler test with httptest.NewRecorder and assert.Equal",
+			wantTitle: "Test pattern",
+			wantMatch: true,
+		},
+		{
+			name:      "test patterns: no match",
+			output:    "updated the deployment manifest",
+			wantTitle: "Test pattern",
+			wantMatch: false,
+		},
+		// --- Performance ---
+		{
+			name:      "performance: SetMaxOpenConns match",
+			output:    "tuned database pool with SetMaxOpenConns to reduce contention",
+			wantTitle: "Performance",
+			wantMatch: true,
+		},
+		{
+			name:      "performance: cache match",
+			output:    "added in-memory cache layer to avoid redundant database queries",
+			wantTitle: "Performance",
+			wantMatch: true,
+		},
+		{
+			name:      "performance: no match",
+			output:    "formatted the codebase with gofmt",
+			wantTitle: "Performance",
+			wantMatch: false,
+		},
+		// --- Security ---
+		{
+			name:      "security: authentication match",
+			output:    "added authentication middleware with token validation",
+			wantTitle: "Security",
+			wantMatch: true,
+		},
+		{
+			name:      "security: hmac match",
+			output:    "signing webhook payloads with hmac and checking permission on every call",
+			wantTitle: "Security",
+			wantMatch: true,
+		},
+		{
+			name:      "security: no match",
+			output:    "added structured logging to the service startup path",
+			wantTitle: "Security",
+			wantMatch: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			exec := &Execution{
+				ID:          "test-exec",
+				ProjectPath: "/test/project",
+				Status:      "completed",
+				Output:      tt.output,
+			}
+
+			result, err := extractor.ExtractFromExecution(context.Background(), exec)
+			if err != nil {
+				t.Fatalf("ExtractFromExecution failed: %v", err)
+			}
+
+			found := false
+			for _, p := range result.Patterns {
+				if strings.Contains(p.Title, tt.wantTitle) {
+					found = true
+					break
+				}
+			}
+
+			if found != tt.wantMatch {
+				if tt.wantMatch {
+					t.Errorf("expected pattern with title containing %q, got none (patterns: %v)",
+						tt.wantTitle, patternTitles(result.Patterns))
+				} else {
+					t.Errorf("expected no pattern with title containing %q, but found one",
+						tt.wantTitle)
+				}
+			}
+		})
+	}
+}
+
+// patternTitles returns the titles of extracted patterns for test diagnostics.
+func patternTitles(patterns []*ExtractedPattern) []string {
+	titles := make([]string, len(patterns))
+	for i, p := range patterns {
+		titles[i] = p.Title
+	}
+	return titles
+}
