@@ -247,6 +247,20 @@ func (s *Store) migrate() error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_model_outcomes_task_model ON model_outcomes(task_type, model)`,
 		`CREATE INDEX IF NOT EXISTS idx_model_outcomes_created ON model_outcomes(created_at)`,
+		// Pattern performance tracking (GH-2020)
+		`CREATE TABLE IF NOT EXISTS pattern_performance (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			pattern_id TEXT NOT NULL,
+			project_id TEXT NOT NULL,
+			task_type TEXT NOT NULL,
+			model TEXT NOT NULL DEFAULT '',
+			success_count INTEGER DEFAULT 0,
+			failure_count INTEGER DEFAULT 0,
+			last_used DATETIME DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE(pattern_id, project_id, task_type)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_pattern_performance_pattern ON pattern_performance(pattern_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_pattern_performance_project ON pattern_performance(project_id)`,
 	}
 
 	for _, migration := range migrations {
