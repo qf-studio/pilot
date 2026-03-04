@@ -1,6 +1,6 @@
 # Pilot Feature Matrix
 
-**Last Updated:** 2026-03-04 (v2.44.0)
+**Last Updated:** 2026-03-04 (v2.52.0)
 
 ## Legend
 
@@ -67,6 +67,12 @@
 | Code simplification pipeline | ✅ | executor | - | - | simplify.go integrated into execution pipeline for code quality (v0.61.0, GH-995) |
 | Context markers | ✅ | executor | - | - | markers.go for context save points before risky operations (v0.61.0) |
 | Worktree push fix | ✅ | executor | - | - | Fix git push from worktree "no such file or directory" error (v1.16.0, GH-1389) |
+| Acceptance criteria in self-review | ✅ | executor | - | - | Verify acceptance criteria during self-review prompt (v2.48.0, PR #1976) |
+| Errcheck lint guidance | ✅ | executor | - | - | Add errcheck lint rules for generated test code (v2.25.0, PR #1802) |
+| Scope utilities extraction | ✅ | executor | - | - | Extract directory-scope utilities into scope.go (v2.25.0, PR #1807) |
+| Scope-overlap guard | ✅ | executor | - | - | Scope-overlap guard in parallel dispatch prevents file conflicts (v2.25.0, PR #1808) |
+| Default sequential mode | ✅ | executor | - | - | Default execution mode is sequential, not parallel (v2.25.0, PR #1804) |
+| Token limit check accessor | ✅ | executor | - | - | HasTokenLimitCheck accessor for wiring verification (v2.42.0, PR #1937) |
 
 ## Intelligence
 
@@ -83,6 +89,10 @@
 | Sonnet 4.6 model routing | ✅ | executor | - | - | Default simple/medium tasks to Sonnet 4.6, 40% cheaper than Opus (v1.40.0, GH-1488) |
 | LLM word count conditional gate | ✅ | executor | - | - | Word count threshold only applied in heuristic-only mode (v2.10.0, GH-1728) |
 | Model ID codebase update | ✅ | executor | - | - | Update all stale claude-sonnet-4-5 → claude-sonnet-4-6 across defaults + tests (v1.40.1, GH-1490) |
+| CI error pattern extraction | ✅ | memory | - | - | Enhance CI error pattern extraction and categorization (v2.51.0, PR #1980) |
+| CI-specific error matchers | ✅ | memory | - | - | Add CI-specific error matchers to PatternExtractor (v2.47.0, PR #1973) |
+| CI pattern confidence boost | ✅ | memory | - | - | Confidence boosting for recurring CI patterns (v2.48.0, PR #1975) |
+| CI log learning pipeline | ✅ | autopilot | - | - | Wire CI log learning into autopilot controller and feedback loop (v2.50.0, PR #1977) |
 
 ## Input Adapters
 
@@ -117,6 +127,12 @@
 | GitHub Projects V2 Board | ✅ | adapters/github | - | `adapters.github.project_board` | GraphQL board sync: Review/Done/Failed columns (v2.30.0, PR #1863) |
 | Common Adapter Registry | ✅ | adapters | - | - | Unified Adapter interface, generic ProcessedStore table (v2.30.0, PR #1845) |
 | Linear workspace mode | ✅ | adapters/linear | - | `adapters.linear.projects` | Project-scoped routing via project_ids mapping for multi-project setups |
+| Plane.so state transitions | ✅ | adapters/plane | - | - | State transitions and PR comments on Plane.so issues (v2.25.0, PR #1843) |
+| Plane.so webhooks | ✅ | adapters/plane | - | - | Webhook handler with HMAC-SHA256 signature verification (v2.25.0, PR #1842) |
+| Plane.so ProcessedStore | ✅ | adapters/plane | - | - | Persistent dedup for Plane.so in autopilot StateStore (v2.25.0, PR #1839) |
+| Discord adapter wiring | ✅ | main | `--discord` | `adapters.discord` | Wire Discord poller, config, and CLI flag in main.go (v2.30.0, PR #1882) |
+| Asana CompleteTask callback | ✅ | adapters/asana | - | - | Wire Asana CompleteTask on successful PR creation (v2.10.0, PR #1720) |
+| Telegram memory store | ✅ | adapters/telegram | - | - | Wire memory store to Telegram HandlerConfig (v2.25.0, PR #1754) |
 
 ## Output/Notifications
 
@@ -132,6 +148,14 @@
 | Messenger refactor | ✅ | adapters | - | - | Shared Handler with TelegramMessenger/SlackMessenger (v2.25.0) |
 | GitHub Review status transition | ✅ | adapters/github | - | - | Move issue to Review column on PR creation (v2.30.0, PR #1872) |
 | Discord progress embeds | ✅ | adapters/discord | - | - | Rich Discord embed messages for task start/progress/complete (v2.25.0) |
+| Comms Messenger interface | ✅ | comms | - | - | Unified Messenger interface with shared helpers (v2.25.0, PR #1770) |
+| Comms shared Handler | ✅ | comms | - | - | Shared Handler with HandleMessage, intent dispatch, task lifecycle (v2.25.0, PR #1790) |
+| TelegramMessenger | ✅ | comms | - | - | TelegramMessenger implementing comms.Messenger (v2.25.0, PR #1791) |
+| SlackMessenger | ✅ | comms | - | - | SlackMessenger implementing comms.Messenger (v2.25.0, PR #1780) |
+| Telegram Transport layer | ✅ | adapters/telegram | - | - | Transport layer extraction, handler shrunk to ~200 lines (v2.25.0, PR #1777) |
+| Comms shared types | ✅ | comms | - | - | ProjectSource, RateLimiter shared types (v2.25.0, PR #1766) |
+| Comms intent consolidation | ✅ | comms | - | - | Conversation store + LLM classifier consolidated into intent package (v2.25.0, PR #1789) |
+| Comms main.go wiring | ✅ | main | - | - | Updated main.go wiring for unified comms.Handler (v2.25.0, PR #1775) |
 
 ## Alerts & Monitoring
 
@@ -179,6 +203,13 @@
 | Self-review pattern extractor | ✅ | memory | - | - | ExtractFromSelfReview method in pattern extractor (v2.44.0, GH-1954) |
 | Execution milestones store | ✅ | memory | - | - | Milestone events stored per execution for dashboard/API (v1.55.0, GH-1600) |
 | Pattern injection into prompts | ✅ | executor | - | - | Inject learned patterns into execution prompts on retry (v2.25.0, PR #1820) |
+| Learning system init wiring | ✅ | main | - | - | Initialize and wire learning system in main.go with config (v2.25.0, PR #1818) |
+| Execution outcome recording | ✅ | executor | - | - | Record execution outcomes for pattern learning (v2.25.0, PR #1817) |
+| Learning system fields | ✅ | executor | - | - | Learning system fields and setters on Runner (v2.25.0, PR #1815) |
+| Review learning wiring | ✅ | autopilot | - | - | Wire review learning into handleMerged and webhook handler (v2.25.0, PR #1826) |
+| PR review comments API | ✅ | adapters/github | - | - | GetPullRequestComments for line-level review feedback (v2.25.0, PR #1825) |
+| CI log pattern learning | ✅ | autopilot | - | - | Wire CI log learning into autopilot feedback loop (v2.50.0, PR #1977) |
+| Staticcheck S1011 fix | ✅ | memory | - | - | Replace loop with append for staticcheck compliance (v2.46.1, PR #1971) |
 
 ## Dashboard
 
@@ -203,6 +234,11 @@
 | History dedup | ✅ | desktop | - | - | Deduplicates execution records per issue, success takes priority (v1.62.0, GH-1663) |
 | WebSocket log streaming | ✅ | gateway | - | - | Real-time execution logs via WebSocket to web dashboard (v1.56.0, GH-1613) |
 | Epic-aware HISTORY panel | ✅ | dashboard | - | - | HISTORY panel shows epic decomposition info + sub-issue counts (v0.22.1) |
+| Update notification | ✅ | dashboard | - | - | Show update notification independently of banner toggle (v1.46.0) |
+| Banner gap fix | ✅ | dashboard | - | - | Remove top gap when banner hidden, align metrics with git graph (v1.46.0) |
+| Desktop native titlebar | ✅ | desktop | - | - | macOS TitleBarDefault, simplified two-column layout (v1.62.0, GH-1661) |
+| Desktop panel spacing | ✅ | desktop | - | - | Consistent spacing, nowrap issue IDs, flex logs panel (v1.62.0) |
+| Desktop TUI parity | ✅ | desktop | - | - | Redesign frontend layout to match TUI dashboard (v1.62.0, GH-1658) |
 
 ## Replay & Debug
 
@@ -274,6 +310,21 @@
 | GitLab docs sync CI | ✅ | ci | - | - | GitHub Action syncs docs/ to GitLab repo on merge to main (v0.23.2) |
 | Poller registration refactor | ✅ | main | - | - | Extract poller registration pattern from main.go (v2.30.0, PR #1857) |
 | Secrets check | ✅ | - | `make check-secrets` | - | Scan test files for realistic secret patterns before push |
+| Windows hot upgrade | ✅ | upgrade | - | - | Allow dashboard hot upgrade on Windows without restart (v1.46.0) |
+| Windows forward slashes | ✅ | navigator | - | - | Use forward slashes for embed.FS on Windows (v1.46.0) |
+| Nextra 4 migration | ✅ | docs | - | - | Docs site migrated from Nextra 2 to Nextra 4 App Router (v1.27.0, PR #1409) |
+| Docs navbar branding | ✅ | docs | - | - | PILOT logo, version badge, and nav links in navbar (v2.10.0) |
+| Docs GitLab deploy tags | ✅ | ci | - | - | Unique deploy tags to trigger GitLab pipelines (v2.10.0) |
+| Desktop CI artifact naming | ✅ | ci | - | - | Rename desktop artifacts to Pilot-Desktop-* prefix (v1.54.0) |
+| Desktop CI resilience | ✅ | ci | - | - | Delete-asset before upload, checkout step in desktop release (v1.54.0) |
+| GraphQL client method | ✅ | adapters/github | - | - | ExecuteGraphQL method on GitHub client (v2.30.0, PR #1860) |
+| Project board config types | ✅ | adapters/github | - | - | ProjectBoardConfig types and NodeID on Issue struct (v2.30.0, PR #1858) |
+| Project board example config | ✅ | config | - | - | project_board example in pilot.example.yaml (v2.30.0, PR #1859) |
+| Epic DependsOn annotations | ✅ | executor | - | - | Wire DependsOn annotations into sub-issue creation (v2.25.0, PR #1800) |
+| Docs Discord/Plane pages | ✅ | docs | - | - | Discord and Plane.so integration documentation pages (v2.38.0) |
+| Docs board sync page | ✅ | docs | - | - | GitHub Projects V2 Board Sync documentation (v2.38.0) |
+| Docs CLI/homepage update | ✅ | docs | - | - | Update CLI commands and homepage for v2.25 (v2.38.0) |
+| Docs architecture update | ✅ | docs | - | - | Update architecture page with new adapters (v2.38.0) |
 
 ## Approval Workflows
 
@@ -321,6 +372,12 @@
 | Label cleanup on retry | ✅ | adapters/github | - | - | Remove `pilot-failed` on successful retry — accurate metrics (v1.8.1, GH-1302) |
 | Autopilot CI optimization | ✅ | autopilot | - | - | Cached GetPR, API failure escalation, dynamic 10s/60s poll interval (v1.8.5, GH-1304) |
 | Stale branch detection | ✅ | autopilot | - | - | Detect and clean stale remote branches before execution (v0.48.0) |
+| Auto-close issues on merge | ✅ | autopilot | - | - | Close GitHub issues after successful execution and merge (v1.62.0, PR #1636) |
+| shouldTriggerRelease fix | ✅ | autopilot | - | - | Check ResolvedEnv().Release instead of top-level config only (v2.25.0, PR #1752) |
+| Board sync IssueNodeID | ✅ | autopilot | - | - | Wire board sync into controller with IssueNodeID in PRState (v2.30.0, PR #1873) |
+| Board sync owner guard | ✅ | adapters/github | - | - | Guard owner extraction in board sync construction (v2.30.0, PR #1871) |
+| Board sync tests | ✅ | adapters/github | - | - | ProjectBoardSync and ExecuteGraphQL unit tests (v2.30.0, PR #1865) |
+| CI context wiring | ✅ | autopilot | - | - | Wire proper CI context from autopilot controller (v2.52.0, PR #1981) |
 
 ## Epic Management
 
@@ -332,6 +389,20 @@
 | Sub-issue PR wiring | ✅ | executor | - | - | Sub-issue PR callbacks chain back to autopilot controller (v0.23.1) |
 | Linear sub-issue creation | ✅ | adapters/linear | - | `adapters.linear` | CreateIssue GraphQL mutation for decomposed epics (v1.27.0) |
 | Decompose on retry | ✅ | executor | - | `retry.decompose_on_kill` | Retry via decomposition when task killed (signal:killed) (v2.10.0, GH-1729) |
+
+## Test Coverage
+
+| Feature | Status | Package | CLI Command | Config Key | Notes |
+|---------|--------|---------|-------------|------------|-------|
+| Linear notifier tests | ✅ | adapters/linear | - | - | Test coverage for Linear notifier (v2.10.0, PR #1726) |
+| Jira notifier tests | ✅ | adapters/jira | - | - | Test coverage for Jira notifier (v2.10.0, PR #1730) |
+| Asana notifier tests | ✅ | adapters/asana | - | - | Test coverage for Asana notifier (v2.10.0, PR #1727) |
+| Slack Socket Mode tests | ✅ | adapters/slack | - | - | Test coverage for Slack Socket Mode and Telegram handlers (v2.10.0, PR #1721) |
+| Alerts test lint fixes | ✅ | alerts | - | - | Fix lint errors in alerts test files (v2.10.0, PR #1722) |
+| Planning timeout config | ✅ | config | - | `planning_timeout` | Add planning_timeout config field (v2.10.0, PR #1741) |
+| SA5011 lint fix | ✅ | adapters | - | - | Add return after t.Fatal to satisfy SA5011 across all adapters (v1.46.0) |
+| Duplicate test decl fix | ✅ | upgrade | - | - | Remove duplicate test declarations causing lint failure (v2.10.0, PR #1713) |
+| CI pattern integration test | ✅ | testing | - | - | Integration test for CI pattern confidence boosting (v2.48.0, PR #1975) |
 
 ## Self-Management
 
@@ -354,24 +425,25 @@
 
 | Category | ✅ Working | ⚠️ Implemented | 🚧 Partial | ❌ Missing |
 |----------|-----------|----------------|-----------|-----------|
-| Core Execution | 50 | 0 | 0 | 0 |
-| Intelligence | 11 | 0 | 0 | 0 |
-| Input Adapters | 29 | 0 | 0 | 0 |
-| Output/Notifications | 10 | 0 | 0 | 0 |
+| Core Execution | 56 | 0 | 0 | 0 |
+| Intelligence | 15 | 0 | 0 | 0 |
+| Input Adapters | 35 | 0 | 0 | 0 |
+| Output/Notifications | 18 | 0 | 0 | 0 |
 | Alerts & Monitoring | 11 | 0 | 0 | 0 |
 | Quality Gates | 5 | 0 | 0 | 0 |
-| Memory & Learning | 16 | 0 | 0 | 0 |
-| Dashboard | 19 | 0 | 0 | 0 |
+| Memory & Learning | 23 | 0 | 0 | 0 |
+| Dashboard | 24 | 0 | 0 | 0 |
 | Replay & Debug | 6 | 0 | 0 | 0 |
 | Reports & Briefs | 4 | 0 | 0 | 0 |
 | Cost Controls | 5 | 0 | 0 | 0 |
 | Team Management | 3 | 0 | 0 | 0 |
-| Infrastructure | 28 | 0 | 0 | 0 |
+| Infrastructure | 43 | 0 | 0 | 0 |
 | Approval Workflows | 4 | 0 | 0 | 0 |
-| Autopilot | 33 | 0 | 0 | 0 |
+| Autopilot | 39 | 0 | 0 | 0 |
 | Epic Management | 6 | 0 | 0 | 0 |
+| Test Coverage | 9 | 0 | 0 | 0 |
 | Self-Management | 10 | 0 | 0 | 0 |
-| **Total** | **250** | **0** | **0** | **0** |
+| **Total** | **316** | **0** | **0** | **0** |
 
 ---
 
