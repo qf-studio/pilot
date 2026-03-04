@@ -599,8 +599,45 @@ func (e *PatternExtractor) SaveExtractedPatterns(ctx context.Context, result *Ex
 			},
 		}
 
-		if err := e.store.Add(globalPattern); err != nil {
-			return fmt.Errorf("failed to save anti-pattern: %w", err)
+		// Recurrence detection: if a similar anti-pattern already exists,
+		// boost confidence instead of creating a duplicate.
+		effectiveConfidence := p.Confidence
+		if existing := e.findSimilarPattern(globalPattern); existing != nil {
+			isCISourced := strings.HasPrefix(fmt.Sprintf("%v", existing.Metadata["context"]), "source:ci") ||
+				strings.HasPrefix(p.Context, "source:ci")
+			if isCISourced {
+				// CI recurrence: boost by 1.5x, capped at 0.95
+				existing.Confidence = min(0.95, existing.Confidence*1.5)
+			} else {
+				e.mergePattern(existing, globalPattern, result.ProjectPath)
+			}
+			effectiveConfidence = existing.Confidence
+			if err := e.store.Add(existing); err != nil {
+				return fmt.Errorf("failed to update anti-pattern: %w", err)
+			}
+		} else {
+			if err := e.store.Add(globalPattern); err != nil {
+				return fmt.Errorf("failed to save anti-pattern: %w", err)
+			}
+		}
+
+		// Also persist CI-sourced anti-patterns to SQLite CrossPattern store
+		// so they are visible to PatternContext.InjectPatterns().
+		if strings.HasPrefix(p.Context, "source:ci") && e.execStore != nil {
+			crossPattern := &CrossPattern{
+				ID:            fmt.Sprintf("ci_%s_%s", p.Type, strings.ReplaceAll(strings.ToLower(p.Title), " ", "_")),
+				Type:          string(p.Type),
+				Title:         "[ANTI] " + p.Title,
+				Description:   "AVOID: " + p.Description,
+				Context:       p.Context,
+				Examples:      p.Examples,
+				Confidence:    effectiveConfidence,
+				Occurrences:   1,
+				IsAntiPattern: true,
+				Scope:         "project",
+			}
+			_ = e.execStore.SaveCrossPattern(crossPattern)
+			_ = e.execStore.LinkPatternToProject(crossPattern.ID, result.ProjectPath)
 		}
 	}
 
