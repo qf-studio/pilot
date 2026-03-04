@@ -351,6 +351,55 @@ statuses:
   failed: "Blocked"        # Move to Blocked on failure
 ```
 
+## Merged PR Guard
+
+Before retrying a failed issue, Pilot checks whether a merged PR already exists for that issue. This prevents wasted execution on work that was already completed (e.g., a PR was merged manually or via a different workflow).
+
+### How It Works
+
+1. On retry, Pilot searches GitHub: `GH-{number} in:title is:pr is:merged`
+2. If a merged PR is found, the issue is marked `pilot-done` and retry is skipped
+3. If no merged PR exists, normal retry proceeds
+
+<Callout type="info">
+This guard runs automatically — no configuration needed. It prevents duplicate work when issues are retried after a restart or label cleanup.
+</Callout>
+
+## Auto-Delete Branches
+
+Pilot automatically deletes remote branches after PR lifecycle events to keep your repository clean.
+
+- **On merge**: Branch deleted immediately after successful merge
+- **On close/fail**: Branch deleted when PR is closed without merge or execution fails
+
+```yaml
+# Branch cleanup is enabled by default — no configuration required
+```
+
+<Callout type="info">
+Branch names containing slashes (e.g., `pilot/GH-42`) are URL-encoded before deletion to avoid 404 errors from the GitHub API.
+</Callout>
+
+## Auto-Rebase on Conflict
+
+When Autopilot detects a merge conflict on a PR, it attempts to resolve it automatically before falling back to a full retry.
+
+### Resolution Strategy
+
+1. **Update branch**: Calls the GitHub [Update a pull request branch](https://docs.github.com/en/rest/pulls/pulls#update-a-pull-request-branch) API to merge the latest base branch into the PR branch
+2. **If update succeeds**: CI re-runs on the updated branch, normal flow continues
+3. **If update fails** (true conflict): Pilot closes the PR, creates a new branch from the latest `main`, and retries execution from scratch
+
+### Dependency Annotations
+
+When a CI fix creates a new PR that depends on another, Pilot adds a dependency annotation to the PR body:
+
+```markdown
+Depends on: #123
+```
+
+This helps reviewers understand the relationship between fix PRs.
+
 ## Priority Labels
 
 Pilot recognizes priority labels and can process higher-priority issues first:
