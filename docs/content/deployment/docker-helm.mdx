@@ -52,7 +52,7 @@ Pilot starts polling for issues labeled `pilot` on the configured repository wit
 docker pull ghcr.io/anthropics/pilot:latest
 
 # Pin to a specific version (recommended for production)
-docker pull ghcr.io/anthropics/pilot:v1.40.1
+docker pull ghcr.io/anthropics/pilot:v2.53.0
 ```
 
 ### Build from Source
@@ -139,7 +139,7 @@ For production use with Telegram, Slack, and multiple adapters:
 ```yaml
 services:
   pilot:
-    image: ghcr.io/anthropics/pilot:v1.40.1
+    image: ghcr.io/anthropics/pilot:v2.53.0
     ports:
       - "9090:9090"
     environment:
@@ -252,7 +252,7 @@ helm install pilot ./helm/pilot \
 
 ```bash
 helm upgrade pilot ./helm/pilot --reuse-values \
-  --set image.tag=v1.40.1
+  --set image.tag=v2.53.0
 ```
 
 ### values.yaml Reference
@@ -261,7 +261,7 @@ helm upgrade pilot ./helm/pilot --reuse-values \
 # Image
 image:
   repository: ghcr.io/anthropics/pilot
-  tag: v1.40.1           # pin to a specific version in production
+  tag: v2.53.0           # pin to a specific version in production
   pullPolicy: IfNotPresent
 
 # Replica count — always 1 (SQLite constraint)
@@ -338,7 +338,7 @@ podSecurityContext:
 
 ```bash
 # Change image tag
-helm upgrade pilot ./helm/pilot --set image.tag=v1.41.0
+helm upgrade pilot ./helm/pilot --set image.tag=v2.53.0
 
 # Enable ingress
 helm upgrade pilot ./helm/pilot \

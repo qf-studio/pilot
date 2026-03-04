@@ -142,9 +142,9 @@ Pilot uses Anthropic's published pricing for cost estimation:
 
 | Model | Input (per 1M tokens) | Output (per 1M tokens) |
 |-------|----------------------:|------------------------:|
-| Opus 4.6/4.5 | $5.00 | $25.00 |
+| Opus 4.6 | $5.00 | $25.00 |
 | Opus 4.1/4.0 | $15.00 | $75.00 |
-| Sonnet 4.5/4 | $3.00 | $15.00 |
+| Sonnet 4.6 | $3.00 | $15.00 |
 | Haiku 4.5 | $1.00 | $5.00 |
 
 <Callout type="info">
@@ -294,9 +294,9 @@ Pilot's effort routing automatically selects cost-effective models:
 | Task Type | Model | Typical Cost |
 |-----------|-------|--------------|
 | Trivial (typos, comments) | Haiku 4.5 | $0.01-0.05 |
-| Simple (small fixes) | Opus 4.5 | $0.10-0.50 |
-| Medium (features) | Opus 4.5 | $0.50-2.00 |
-| Complex (architecture) | Opus 4.5 | $2.00-5.00 |
+| Simple (small fixes) | Opus 4.6 | $0.10-0.50 |
+| Medium (features) | Opus 4.6 | $0.50-2.00 |
+| Complex (architecture) | Opus 4.6 | $2.00-5.00 |
 
 ### Batch Similar Tasks
 
