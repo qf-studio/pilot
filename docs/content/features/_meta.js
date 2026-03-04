@@ -5,6 +5,7 @@ export default {
   autopilot: "Autopilot Mode",
   "autopilot-environments": "Autopilot Environments",
   "approval-workflows": "Approval Workflows",
+  "execution-modes": "Execution Modes",
   "epic-decomposition": "Epic Decomposition",
   "hot-upgrade": "Hot Upgrade",
   replay: "Replay & Debug",

@@ -1,0 +1,127 @@
+import { Callout, Tabs } from 'nextra/components'
+
+# Execution Modes
+
+Control how Pilot processes multiple tasks — sequentially, in parallel, or automatically based on scope overlap.
+
+## Modes Overview
+
+| Mode | Behavior | Best For |
+|------|----------|----------|
+| `sequential` | One task at a time, waits for PR merge | Small teams, shared codebases |
+| `parallel` | Concurrent execution up to `max_concurrent` | Independent repos, high throughput |
+| `auto` | Parallel with scope-overlap guard | Mixed workloads (default) |
+
+## Sequential Mode
+
+Processes one issue at a time. After creating a PR, Pilot waits for it to be merged (or timeout) before picking the next task.
+
+```yaml
+# ~/.pilot/config.yaml
+orchestrator:
+  max_concurrent: 1
+  execution:
+    mode: sequential
+    wait_for_merge: true
+    poll_interval: 30s
+    pr_timeout: 1h
+```
+
+- **`wait_for_merge`** — block until the PR is merged before starting the next task
+- **`poll_interval`** — how often to check PR merge status (default: 30s)
+- **`pr_timeout`** — maximum time to wait for a merge before moving on (default: 1h)
+
+<Callout type="info">
+  Sequential mode is useful when tasks touch overlapping files and you want to avoid merge conflicts entirely.
+</Callout>
+
+## Parallel Mode
+
+Dispatches up to `max_concurrent` tasks simultaneously. Each task runs in its own worktree branch.
+
+```yaml
+orchestrator:
+  max_concurrent: 3
+  execution:
+    mode: parallel
+```
+
+Tasks are dispatched as goroutines with a semaphore limiting concurrency. When a slot opens, the next queued issue is picked up immediately.
+
+<Callout type="warning">
+  Parallel mode does not check for file overlap between tasks. If two concurrent tasks modify the same files, one PR may have merge conflicts.
+</Callout>
+
+## Auto Mode (Default)
+
+Combines parallel throughput with conflict prevention. Pilot groups candidate issues by file scope overlap, then:
+
+1. **Independent tasks** (no shared directories) run concurrently
+2. **Overlapping tasks** (shared directories) run sequentially — oldest first
+
+```yaml
+orchestrator:
+  max_concurrent: 3
+  execution:
+    mode: auto
+```
+
+### Scope Overlap Guard
+
+The `groupByOverlappingScope()` function in the GitHub poller uses a **union-find algorithm** to partition issues into groups:
+
+1. **Extract scope** — parse directory paths from each issue's title, body, and labels
+2. **Build groups** — if two issues reference at least one common directory, they belong to the same group (transitive closure)
+3. **Dispatch** — from each group, only the oldest issue is dispatched; the rest wait for the next poll cycle
+
+```
+Issues:  A (src/api/)  B (src/api/, src/db/)  C (src/ui/)  D (src/ui/)
+
+Groups:  [A, B] — overlap on src/api/
+         [C, D] — overlap on src/ui/
+
+Dispatch: A and C run in parallel
+          B waits for A's PR to merge
+          D waits for C's PR to merge
+```
+
+<Callout type="info">
+  Auto mode is the default since v2.25.0. It gives you parallel throughput for independent tasks while preventing merge conflicts between related ones.
+</Callout>
+
+## Configuration Reference
+
+```yaml
+orchestrator:
+  # Maximum concurrent tasks (applies to parallel and auto modes)
+  max_concurrent: 3
+
+  execution:
+    # Execution mode: "sequential", "parallel", or "auto"
+    mode: auto
+
+    # Wait for PR merge before next task (sequential mode only)
+    wait_for_merge: true
+
+    # PR merge check interval
+    poll_interval: 30s
+
+    # Maximum time to wait for a PR merge
+    pr_timeout: 1h
+```
+
+### Defaults
+
+| Setting | Default |
+|---------|---------|
+| `mode` | `auto` |
+| `max_concurrent` | `2` |
+| `wait_for_merge` | `true` |
+| `poll_interval` | `30s` |
+| `pr_timeout` | `1h` |
+
+## When to Use Each Mode
+
+- **Sequential** — when your tasks frequently touch the same files, or you want deterministic ordering
+- **Parallel** — when tasks are guaranteed independent (different repos or completely separate modules)
+- **Auto** — for most workloads; lets Pilot decide based on actual file scope analysis
