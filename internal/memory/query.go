@@ -11,6 +11,7 @@ import (
 // PatternQuery holds parameters for querying patterns
 type PatternQuery struct {
 	ProjectPath   string
+	TaskType      string   // Task type for contextual confidence (e.g., "feat", "fix", "refactor")
 	Types         []string // Filter by pattern types
 	IncludeGlobal bool     // Include global scope patterns
 	MinConfidence float64  // Minimum confidence threshold
@@ -99,10 +100,12 @@ func (s *PatternQueryService) Query(ctx context.Context, q *PatternQuery) (*Quer
 		filtered = append(filtered, p)
 	}
 
-	// Sort by confidence and occurrences
+	// Sort by contextual confidence (when project + task type available) or global confidence
 	sort.Slice(filtered, func(i, j int) bool {
-		if filtered[i].Confidence != filtered[j].Confidence {
-			return filtered[i].Confidence > filtered[j].Confidence
+		ci := s.patternConfidence(filtered[i], q.ProjectPath, q.TaskType)
+		cj := s.patternConfidence(filtered[j], q.ProjectPath, q.TaskType)
+		if ci != cj {
+			return ci > cj
 		}
 		return filtered[i].Occurrences > filtered[j].Occurrences
 	})
@@ -121,7 +124,7 @@ func (s *PatternQueryService) Query(ctx context.Context, q *PatternQuery) (*Quer
 }
 
 // GetRelevantPatterns retrieves patterns relevant to a task context
-func (s *PatternQueryService) GetRelevantPatterns(ctx context.Context, projectPath string, taskContext string) ([]*CrossPattern, error) {
+func (s *PatternQueryService) GetRelevantPatterns(ctx context.Context, projectPath, taskType, taskContext string) ([]*CrossPattern, error) {
 	// Get all project patterns
 	patterns, err := s.store.GetCrossPatternsForProject(projectPath, true)
 	if err != nil {
@@ -138,7 +141,7 @@ func (s *PatternQueryService) GetRelevantPatterns(ctx context.Context, projectPa
 	contextLower := strings.ToLower(taskContext)
 
 	for _, p := range patterns {
-		score := p.Confidence // Base score from confidence
+		score := s.patternConfidence(p, projectPath, taskType) // Base score from contextual confidence
 
 		// Boost score if context matches
 		if strings.Contains(contextLower, strings.ToLower(p.Context)) {
@@ -187,9 +190,9 @@ type PromptInjection struct {
 }
 
 // FormatForPrompt formats patterns for injection into a task prompt
-func (s *PatternQueryService) FormatForPrompt(ctx context.Context, projectPath string, taskContext string) (string, error) {
+func (s *PatternQueryService) FormatForPrompt(ctx context.Context, projectPath, taskType, taskContext string) (string, error) {
 	// Get relevant patterns
-	patterns, err := s.GetRelevantPatterns(ctx, projectPath, taskContext)
+	patterns, err := s.GetRelevantPatterns(ctx, projectPath, taskType, taskContext)
 	if err != nil {
 		return "", err
 	}
@@ -298,6 +301,17 @@ func (s *PatternQueryService) GetPatternSuggestions(ctx context.Context, project
 	}
 
 	return result.Patterns, nil
+}
+
+// patternConfidence returns contextual confidence when project and task type
+// are available, falling back to the pattern's global confidence.
+func (s *PatternQueryService) patternConfidence(p *CrossPattern, projectPath, taskType string) float64 {
+	if projectPath != "" && taskType != "" {
+		if c := s.store.GetContextualConfidence(p.ID, projectPath, taskType); c != 0.5 {
+			return c
+		}
+	}
+	return p.Confidence
 }
 
 // containsString checks if a slice contains a string

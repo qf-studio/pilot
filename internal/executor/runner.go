@@ -2746,6 +2746,38 @@ func (r *Runner) recordLearning(ctx context.Context, task *Task, result *Executi
 	if learnErr := r.learningLoop.RecordExecution(ctx, exec, nil); learnErr != nil {
 		r.log.Warn("Failed to record execution for learning", slog.Any("error", learnErr))
 	}
+
+	// GH-2021: Record per-pattern outcome for contextual confidence tracking
+	r.recordPatternOutcomes(task, result)
+}
+
+// recordPatternOutcomes records success/failure for each pattern that was applied
+// to this task's project+type context. Uses logStore if available.
+func (r *Runner) recordPatternOutcomes(task *Task, result *ExecutionResult) {
+	if r.logStore == nil {
+		return
+	}
+	taskType := inferTaskType(task)
+	model := result.ModelName
+	if model == "" {
+		model = "claude-opus-4-6"
+	}
+
+	// Get patterns linked to this project to record outcomes
+	patterns, err := r.logStore.GetCrossPatternsForProject(task.ProjectPath, false)
+	if err != nil {
+		r.log.Warn("Failed to get patterns for outcome recording", slog.Any("error", err))
+		return
+	}
+
+	for _, p := range patterns {
+		if recErr := r.logStore.RecordPatternOutcome(p.ID, task.ProjectPath, taskType, model, result.Success); recErr != nil {
+			r.log.Warn("Failed to record pattern outcome",
+				slog.String("pattern_id", p.ID),
+				slog.Any("error", recErr),
+			)
+		}
+	}
 }
 
 // recordGraphLearning records the execution into the knowledge graph (GH-2015).

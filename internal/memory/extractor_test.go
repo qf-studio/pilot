@@ -1579,7 +1579,7 @@ func TestCIPatternRecurrence_EndToEnd(t *testing.T) {
 
 	// Step 4: Verify pattern appears in FormatForPrompt output
 	queryService := NewPatternQueryService(store)
-	promptBlock, err := queryService.FormatForPrompt(ctx, projectPath, "CI test failure fix")
+	promptBlock, err := queryService.FormatForPrompt(ctx, projectPath, "fix", "CI test failure fix")
 	if err != nil {
 		t.Fatalf("FormatForPrompt failed: %v", err)
 	}

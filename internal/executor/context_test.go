@@ -81,6 +81,35 @@ func TestPatternContextConfigValues(t *testing.T) {
 	}
 }
 
+func TestInferTaskType(t *testing.T) {
+	tests := []struct {
+		name   string
+		task   *Task
+		expect string
+	}{
+		{name: "feat prefix", task: &Task{Title: "feat: add login"}, expect: "feat"},
+		{name: "fix prefix", task: &Task{Title: "fix: null pointer"}, expect: "fix"},
+		{name: "refactor prefix", task: &Task{Title: "refactor auth module"}, expect: "refactor"},
+		{name: "test prefix", task: &Task{Title: "test: add unit tests"}, expect: "test"},
+		{name: "docs prefix", task: &Task{Title: "docs: update README"}, expect: "docs"},
+		{name: "chore prefix", task: &Task{Title: "chore: bump deps"}, expect: "chore"},
+		{name: "bug label", task: &Task{Title: "Handle nil response", Labels: []string{"bug"}}, expect: "fix"},
+		{name: "enhancement label", task: &Task{Title: "Add dark mode", Labels: []string{"enhancement"}}, expect: "feat"},
+		{name: "fix label", task: &Task{Title: "Something", Labels: []string{"fix"}}, expect: "fix"},
+		{name: "no match defaults to feat", task: &Task{Title: "Add login page"}, expect: "feat"},
+		{name: "empty task", task: &Task{}, expect: "feat"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := inferTaskType(tt.task)
+			if got != tt.expect {
+				t.Errorf("inferTaskType(%q, labels=%v) = %q, want %q", tt.task.Title, tt.task.Labels, got, tt.expect)
+			}
+		})
+	}
+}
+
 func TestInjectPatternsLogic(t *testing.T) {
 	// Test the string manipulation logic of InjectPatterns
 	// without needing a real PatternContext or Store

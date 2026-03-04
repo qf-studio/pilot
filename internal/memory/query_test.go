@@ -266,7 +266,7 @@ func TestGetRelevantPatterns(t *testing.T) {
 	ctx := context.Background()
 
 	// Query with handler context
-	patterns, err := service.GetRelevantPatterns(ctx, "/test/project", "implementing a new handler")
+	patterns, err := service.GetRelevantPatterns(ctx, "/test/project", "feat", "implementing a new handler")
 	if err != nil {
 		t.Fatalf("GetRelevantPatterns failed: %v", err)
 	}
@@ -310,7 +310,7 @@ func TestFormatForPrompt(t *testing.T) {
 	service := NewPatternQueryService(store)
 	ctx := context.Background()
 
-	prompt, err := service.FormatForPrompt(ctx, "/test/project", "fixing an error handler")
+	prompt, err := service.FormatForPrompt(ctx, "/test/project", "feat", "fixing an error handler")
 	if err != nil {
 		t.Fatalf("FormatForPrompt failed: %v", err)
 	}
@@ -337,7 +337,7 @@ func TestFormatForPrompt_Empty(t *testing.T) {
 	service := NewPatternQueryService(store)
 	ctx := context.Background()
 
-	prompt, err := service.FormatForPrompt(ctx, "/empty/project", "doing something")
+	prompt, err := service.FormatForPrompt(ctx, "/empty/project", "feat", "doing something")
 	if err != nil {
 		t.Fatalf("FormatForPrompt failed: %v", err)
 	}
@@ -598,7 +598,7 @@ func TestFormatForPrompt_AntiPatternsNotCrowdedOut(t *testing.T) {
 			service := NewPatternQueryService(s)
 			ctx := context.Background()
 
-			prompt, err := service.FormatForPrompt(ctx, "/test/project", "implementing a handler")
+			prompt, err := service.FormatForPrompt(ctx, "/test/project", "feat", "implementing a handler")
 			if err != nil {
 				t.Fatalf("FormatForPrompt failed: %v", err)
 			}
@@ -665,6 +665,50 @@ func TestQuery_OnlyAnti(t *testing.T) {
 	}
 }
 
+func TestPatternConfidence_ContextualOverGlobal(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "query-test-ctx-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	store, _ := NewStore(tmpDir)
+	defer func() { _ = store.Close() }()
+
+	// Create pattern with low global confidence
+	_ = store.SaveCrossPattern(&CrossPattern{
+		ID: "ctx-pat", Type: "code", Title: "Contextual Pattern",
+		Confidence: 0.5, Scope: "org",
+	})
+	_ = store.LinkPatternToProject("ctx-pat", "/test/project")
+
+	// Record high success rate for this project+task type
+	for i := 0; i < 10; i++ {
+		_ = store.RecordPatternOutcome("ctx-pat", "/test/project", "feat", "opus", true)
+	}
+
+	service := NewPatternQueryService(store)
+
+	// With contextual data, should use contextual confidence (high success rate)
+	c := service.patternConfidence(&CrossPattern{ID: "ctx-pat", Confidence: 0.5}, "/test/project", "feat")
+	if c <= 0.5 {
+		t.Errorf("contextual confidence = %f, want > 0.5 (should use high success rate)", c)
+	}
+
+	// Without task type, should fall back to global confidence
+	c2 := service.patternConfidence(&CrossPattern{ID: "ctx-pat", Confidence: 0.5}, "/test/project", "")
+	if c2 != 0.5 {
+		t.Errorf("fallback confidence = %f, want 0.5 (global)", c2)
+	}
+
+	// For unknown pattern+context combo (returns 0.5 from GetContextualConfidence),
+	// should fall back to global confidence
+	c3 := service.patternConfidence(&CrossPattern{ID: "unknown-pat", Confidence: 0.8}, "/test/project", "feat")
+	if c3 != 0.8 {
+		t.Errorf("unknown pattern confidence = %f, want 0.8 (global fallback)", c3)
+	}
+}
+
 func TestGetRelevantPatterns_Scoring(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "query-test-*")
 	if err != nil {
@@ -700,7 +744,7 @@ func TestGetRelevantPatterns_Scoring(t *testing.T) {
 	service := NewPatternQueryService(store)
 	ctx := context.Background()
 
-	patterns, err := service.GetRelevantPatterns(ctx, "/test/project", "implementing authentication handler")
+	patterns, err := service.GetRelevantPatterns(ctx, "/test/project", "feat", "implementing authentication handler")
 	if err != nil {
 		t.Fatalf("GetRelevantPatterns failed: %v", err)
 	}

@@ -20,13 +20,13 @@ func NewPatternContext(store *memory.Store) *PatternContext {
 }
 
 // GetPatternsForTask retrieves relevant patterns for a task
-func (c *PatternContext) GetPatternsForTask(ctx context.Context, projectPath, taskDescription string) (string, error) {
-	return c.queryService.FormatForPrompt(ctx, projectPath, taskDescription)
+func (c *PatternContext) GetPatternsForTask(ctx context.Context, projectPath, taskType, taskDescription string) (string, error) {
+	return c.queryService.FormatForPrompt(ctx, projectPath, taskType, taskDescription)
 }
 
 // InjectPatterns adds learned patterns to a prompt
-func (c *PatternContext) InjectPatterns(ctx context.Context, prompt, projectPath, taskDescription string) (string, error) {
-	patterns, err := c.GetPatternsForTask(ctx, projectPath, taskDescription)
+func (c *PatternContext) InjectPatterns(ctx context.Context, prompt, projectPath, taskType, taskDescription string) (string, error) {
+	patterns, err := c.GetPatternsForTask(ctx, projectPath, taskType, taskDescription)
 	if err != nil {
 		// Don't fail task if pattern injection fails, just log
 		return prompt, nil
@@ -59,6 +59,32 @@ type PatternContextConfig struct {
 	MinConfidence float64 // Minimum confidence for patterns
 	MaxPatterns   int     // Maximum patterns to inject
 	IncludeAnti   bool    // Include anti-patterns
+}
+
+// inferTaskType derives a task type string from the task title or labels.
+// Returns a short label like "feat", "fix", "refactor", "test", "docs", "chore".
+func inferTaskType(task *Task) string {
+	title := strings.ToLower(task.Title)
+	for _, prefix := range []string{"feat", "fix", "refactor", "test", "docs", "chore"} {
+		if strings.HasPrefix(title, prefix) {
+			return prefix
+		}
+	}
+	for _, label := range task.Labels {
+		l := strings.ToLower(label)
+		for _, t := range []string{"feat", "fix", "refactor", "test", "docs", "chore", "bug", "enhancement"} {
+			if l == t {
+				if l == "bug" {
+					return "fix"
+				}
+				if l == "enhancement" {
+					return "feat"
+				}
+				return l
+			}
+		}
+	}
+	return "feat" // default
 }
 
 // DefaultPatternContextConfig returns default configuration

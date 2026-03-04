@@ -238,7 +238,7 @@ func (r *Runner) BuildPrompt(task *Task, executionPath string) string {
 
 	// Inject learned patterns into prompt (self-improvement, GH-1819)
 	if r.patternContext != nil {
-		injected, err := r.patternContext.InjectPatterns(context.Background(), prompt, task.ProjectPath, task.Description)
+		injected, err := r.patternContext.InjectPatterns(context.Background(), prompt, task.ProjectPath, inferTaskType(task), task.Description)
 		if err != nil {
 			slog.Warn("Failed to inject patterns", slog.Any("error", err))
 		} else {

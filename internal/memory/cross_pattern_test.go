@@ -504,7 +504,7 @@ func TestPatternQueryService(t *testing.T) {
 	}
 
 	// Test FormatForPrompt
-	promptBlock, err := queryService.FormatForPrompt(ctx, "/test/project", "implementing a new handler")
+	promptBlock, err := queryService.FormatForPrompt(ctx, "/test/project", "feat", "implementing a new handler")
 	if err != nil {
 		t.Fatalf("FormatForPrompt failed: %v", err)
 	}

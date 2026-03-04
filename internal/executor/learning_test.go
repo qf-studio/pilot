@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"fmt"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -182,6 +183,67 @@ func TestRecordLearning_ErrorDoesNotPanic(t *testing.T) {
 	if len(mock.calls) != 1 {
 		t.Fatalf("expected RecordExecution to still be called, got %d calls", len(mock.calls))
 	}
+}
+
+func TestRecordPatternOutcomes(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "outcome-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	store, err := memory.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	// Create patterns linked to a project
+	_ = store.SaveCrossPattern(&memory.CrossPattern{
+		ID: "pat-1", Type: "code", Title: "P1", Confidence: 0.8, Scope: "org",
+	})
+	_ = store.SaveCrossPattern(&memory.CrossPattern{
+		ID: "pat-2", Type: "code", Title: "P2", Confidence: 0.7, Scope: "org",
+	})
+	_ = store.LinkPatternToProject("pat-1", "/test/project")
+	_ = store.LinkPatternToProject("pat-2", "/test/project")
+
+	runner := NewRunner()
+	runner.SetLogStore(store)
+
+	task := &Task{
+		ID:          "task-outcomes",
+		Title:       "feat: add login",
+		ProjectPath: "/test/project",
+	}
+
+	result := &ExecutionResult{
+		Success:   true,
+		ModelName: "claude-opus-4-6",
+	}
+
+	runner.recordPatternOutcomes(task, result)
+
+	// Verify outcomes were recorded via contextual confidence
+	c1 := store.GetContextualConfidence("pat-1", "/test/project", "feat")
+	if c1 <= 0 {
+		t.Errorf("expected positive contextual confidence for pat-1, got %f", c1)
+	}
+	c2 := store.GetContextualConfidence("pat-2", "/test/project", "feat")
+	if c2 <= 0 {
+		t.Errorf("expected positive contextual confidence for pat-2, got %f", c2)
+	}
+}
+
+func TestRecordPatternOutcomes_NilStore(t *testing.T) {
+	runner := NewRunner()
+	// logStore is nil by default
+
+	task := &Task{ID: "task-nil", Title: "fix: nil", ProjectPath: "/test"}
+	result := &ExecutionResult{Success: true}
+
+	// Should not panic
+	runner.recordPatternOutcomes(task, result)
 }
 
 func TestLearningRecorder_Interface(t *testing.T) {
