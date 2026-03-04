@@ -488,6 +488,11 @@ func (p *Poller) findOldestUnprocessedIssue(ctx context.Context) (*Issue, error)
 	// Filter out already processed and in-progress issues
 	var candidates []*Issue
 	for _, issue := range issues {
+		// Skip pull requests (GitHub Issues API returns both issues and PRs)
+		if issue.PullRequest != nil {
+			continue
+		}
+
 		// Skip if has status labels
 		if HasLabel(issue, LabelInProgress) || HasLabel(issue, LabelDone) || HasLabel(issue, LabelFailed) {
 			continue
@@ -645,6 +650,11 @@ func (p *Poller) checkForNewIssues(ctx context.Context) {
 	// Phase 1: Collect candidates eligible for dispatch
 	var candidates []*Issue
 	for _, issue := range issues {
+		// Skip pull requests (GitHub Issues API returns both issues and PRs)
+		if issue.PullRequest != nil {
+			continue
+		}
+
 		// Skip if already in progress or failed (check before processed to allow retry)
 		if HasLabel(issue, LabelInProgress) || HasLabel(issue, LabelFailed) {
 			continue

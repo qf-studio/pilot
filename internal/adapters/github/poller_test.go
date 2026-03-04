@@ -1762,3 +1762,77 @@ func TestPoller_FindOldestUnprocessedIssue_SkipsRetryWithMergedPRs(t *testing.T)
 		t.Errorf("findOldestUnprocessedIssue() returned issue %d, want nil (should skip issue with merged PRs)", issue.Number)
 	}
 }
+
+func TestPoller_CheckForNewIssues_SkipsPullRequests(t *testing.T) {
+	pr := &struct{}{}
+	items := []*Issue{
+		{Number: 1, Title: "Real issue", Labels: []Label{{Name: "pilot"}}},
+		{Number: 2, Title: "A pull request", Labels: []Label{{Name: "pilot"}}, PullRequest: pr},
+		{Number: 3, Title: "Another issue", Labels: []Label{{Name: "pilot"}}},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(items)
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+
+	var dispatched []int
+	var mu sync.Mutex
+
+	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second,
+		WithOnIssue(func(ctx context.Context, issue *Issue) error {
+			mu.Lock()
+			dispatched = append(dispatched, issue.Number)
+			mu.Unlock()
+			return nil
+		}),
+	)
+
+	poller.checkForNewIssues(context.Background())
+	poller.WaitForActive()
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if len(dispatched) != 2 {
+		t.Fatalf("dispatched %d issues, want 2 (PRs should be skipped)", len(dispatched))
+	}
+
+	for _, num := range dispatched {
+		if num == 2 {
+			t.Errorf("PR (issue #2) should not have been dispatched")
+		}
+	}
+}
+
+func TestPoller_FindOldestUnprocessedIssue_SkipsPullRequests(t *testing.T) {
+	pr := &struct{}{}
+	now := time.Now()
+	items := []*Issue{
+		{Number: 10, Title: "A pull request", Labels: []Label{{Name: "pilot"}}, PullRequest: pr, CreatedAt: now.Add(-2 * time.Hour)},
+		{Number: 20, Title: "Real issue", Labels: []Label{{Name: "pilot"}}, CreatedAt: now.Add(-1 * time.Hour)},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(items)
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second)
+
+	issue, err := poller.findOldestUnprocessedIssue(context.Background())
+	if err != nil {
+		t.Fatalf("findOldestUnprocessedIssue() error = %v", err)
+	}
+	if issue == nil {
+		t.Fatal("expected an issue, got nil")
+	}
+	if issue.Number != 20 {
+		t.Errorf("got issue #%d, want #20 (PR #10 should be skipped)", issue.Number)
+	}
+}

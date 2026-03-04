@@ -75,9 +75,10 @@ type Issue struct {
 	Assignee  *User     `json:"assignee"`
 	Assignees []User    `json:"assignees"`
 	User      User      `json:"user"` // Issue author
-	HTMLURL   string    `json:"html_url"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	HTMLURL     string    `json:"html_url"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+	PullRequest *struct{} `json:"pull_request,omitempty"` // Non-nil when item is a PR (GitHub Issues API returns both)
 }
 
 // Label represents a GitHub label
