@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -204,6 +205,136 @@ func (kg *KnowledgeGraph) AddLearning(title, content string, metadata map[string
 		Metadata: metadata,
 	}
 	return kg.Add(node)
+}
+
+// AddExecutionLearning adds a learning node with relations linking task→files,
+// files→patterns, patterns→outcome. Unlike AddLearning which creates flat nodes,
+// this populates the Relations field to connect related concept nodes.
+func (kg *KnowledgeGraph) AddExecutionLearning(title, content string, filesChanged []string, patterns []string, outcome string) error {
+	now := time.Now()
+	nano := now.UnixNano()
+
+	learningID := fmt.Sprintf("exec_learning_%d", nano)
+	var relationIDs []string
+
+	// Create file nodes and collect their IDs
+	for i, file := range filesChanged {
+		fileID := fmt.Sprintf("file_%d_%d", nano, i)
+		fileNode := &GraphNode{
+			ID:    fileID,
+			Type:  "file",
+			Title: file,
+			Metadata: map[string]interface{}{
+				"learning_id": learningID,
+			},
+		}
+		if err := kg.Add(fileNode); err != nil {
+			return fmt.Errorf("add file node %q: %w", file, err)
+		}
+		relationIDs = append(relationIDs, fileID)
+	}
+
+	// Create pattern nodes and collect their IDs
+	for i, pattern := range patterns {
+		patternID := fmt.Sprintf("exec_pattern_%d_%d", nano, i)
+		patternNode := &GraphNode{
+			ID:    patternID,
+			Type:  "pattern",
+			Title: pattern,
+			Metadata: map[string]interface{}{
+				"learning_id": learningID,
+			},
+		}
+		if err := kg.Add(patternNode); err != nil {
+			return fmt.Errorf("add pattern node %q: %w", pattern, err)
+		}
+		relationIDs = append(relationIDs, patternID)
+	}
+
+	// Create outcome node
+	outcomeID := fmt.Sprintf("outcome_%d", nano)
+	outcomeNode := &GraphNode{
+		ID:    outcomeID,
+		Type:  "outcome",
+		Title: outcome,
+		Metadata: map[string]interface{}{
+			"learning_id": learningID,
+		},
+	}
+	if err := kg.Add(outcomeNode); err != nil {
+		return fmt.Errorf("add outcome node: %w", err)
+	}
+	relationIDs = append(relationIDs, outcomeID)
+
+	// Create the learning node with all relations
+	learningNode := &GraphNode{
+		ID:      learningID,
+		Type:    "execution_learning",
+		Title:   title,
+		Content: content,
+		Metadata: map[string]interface{}{
+			"files_changed": filesChanged,
+			"patterns":      patterns,
+			"outcome":       outcome,
+		},
+		Relations: relationIDs,
+	}
+	return kg.Add(learningNode)
+}
+
+// GetRelatedByKeywords searches nodes by keywords across title, content, and
+// metadata values. Returns matching nodes sorted by recency (newest first).
+func (kg *KnowledgeGraph) GetRelatedByKeywords(keywords []string) []*GraphNode {
+	if len(keywords) == 0 {
+		return nil
+	}
+
+	kg.mu.RLock()
+	defer kg.mu.RUnlock()
+
+	var results []*GraphNode
+	for _, node := range kg.nodes {
+		if kg.nodeMatchesKeywords(node, keywords) {
+			results = append(results, node)
+		}
+	}
+
+	// Sort by UpdatedAt descending (newest first)
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].UpdatedAt.After(results[j].UpdatedAt)
+	})
+
+	return results
+}
+
+// nodeMatchesKeywords checks if any keyword matches the node's title, content,
+// or metadata string values. All comparisons are case-insensitive.
+func (kg *KnowledgeGraph) nodeMatchesKeywords(node *GraphNode, keywords []string) bool {
+	titleLower := strings.ToLower(node.Title)
+	contentLower := strings.ToLower(node.Content)
+
+	for _, kw := range keywords {
+		kwLower := strings.ToLower(kw)
+		if strings.Contains(titleLower, kwLower) || strings.Contains(contentLower, kwLower) {
+			return true
+		}
+		// Search metadata values
+		for _, v := range node.Metadata {
+			switch val := v.(type) {
+			case string:
+				if strings.Contains(strings.ToLower(val), kwLower) {
+					return true
+				}
+			case []interface{}:
+				for _, item := range val {
+					if s, ok := item.(string); ok && strings.Contains(strings.ToLower(s), kwLower) {
+						return true
+					}
+				}
+			}
+		}
+	}
+	return false
 }
 
 // GetPatterns retrieves all patterns
