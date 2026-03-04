@@ -1606,3 +1606,159 @@ func TestPoller_AutoMode_OverlappingDispatchesOldestOnly(t *testing.T) {
 		t.Errorf("auto mode dispatched issue %d, want 1 (oldest)", dispatched[0])
 	}
 }
+
+func TestPoller_HasMergedWork(t *testing.T) {
+	tests := []struct {
+		name           string
+		searchResponse string
+		wantSkip       bool
+		wantLabeled    bool
+	}{
+		{
+			name:           "merged PRs exist - skip and label",
+			searchResponse: `{"total_count": 2}`,
+			wantSkip:       true,
+			wantLabeled:    true,
+		},
+		{
+			name:           "no merged PRs - allow retry",
+			searchResponse: `{"total_count": 0}`,
+			wantSkip:       false,
+			wantLabeled:    false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var labeled bool
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				switch {
+				case r.URL.Path == "/search/issues":
+					_, _ = w.Write([]byte(tt.searchResponse))
+				case r.Method == http.MethodPost && r.URL.Path == "/repos/owner/repo/issues/42/labels":
+					labeled = true
+					w.WriteHeader(http.StatusOK)
+				default:
+					w.WriteHeader(http.StatusOK)
+				}
+			}))
+			defer server.Close()
+
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second)
+
+			issue := &Issue{Number: 42, Title: "Test issue"}
+			got := poller.hasMergedWork(context.Background(), issue)
+
+			if got != tt.wantSkip {
+				t.Errorf("hasMergedWork() = %v, want %v", got, tt.wantSkip)
+			}
+			if labeled != tt.wantLabeled {
+				t.Errorf("labeled = %v, want %v", labeled, tt.wantLabeled)
+			}
+			if tt.wantSkip && !poller.IsProcessed(42) {
+				t.Error("issue should be marked as processed when skipped")
+			}
+		})
+	}
+}
+
+func TestPoller_HasMergedWork_APIError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"message": "rate limit"}`))
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second)
+
+	issue := &Issue{Number: 42, Title: "Test issue"}
+	got := poller.hasMergedWork(context.Background(), issue)
+
+	// Should not block on API errors — allow the issue through
+	if got {
+		t.Error("hasMergedWork() should return false on API error")
+	}
+}
+
+func TestPoller_CheckForNewIssues_SkipsRetryWithMergedPRs(t *testing.T) {
+	issues := []*Issue{
+		{Number: 1, Title: "GH-1 feature", Labels: []Label{{Name: "pilot"}}},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/repos/owner/repo/issues":
+			_ = json.NewEncoder(w).Encode(issues)
+		case "/search/issues":
+			_, _ = w.Write([]byte(`{"total_count": 1}`))
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+
+	var callCount int32
+	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second,
+		WithOnIssue(func(ctx context.Context, issue *Issue) error {
+			atomic.AddInt32(&callCount, 1)
+			return nil
+		}),
+	)
+
+	// Pre-mark as processed (simulating previous failed attempt)
+	poller.markProcessed(1)
+
+	poller.checkForNewIssues(context.Background())
+	poller.WaitForActive()
+
+	// Should NOT retry since merged PRs exist
+	if got := atomic.LoadInt32(&callCount); got != 0 {
+		t.Errorf("callback called %d times, want 0 (should skip issue with merged PRs)", got)
+	}
+}
+
+func TestPoller_FindOldestUnprocessedIssue_SkipsRetryWithMergedPRs(t *testing.T) {
+	issues := []*Issue{
+		{
+			Number:    1,
+			Title:     "GH-1 feature",
+			Labels:    []Label{{Name: "pilot"}},
+			CreatedAt: time.Now().Add(-1 * time.Hour),
+		},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/repos/owner/repo/issues":
+			_ = json.NewEncoder(w).Encode(issues)
+		case "/search/issues":
+			_, _ = w.Write([]byte(`{"total_count": 3}`))
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second,
+		WithExecutionMode(ExecutionModeSequential),
+	)
+
+	// Pre-mark as processed (simulating previous failed attempt)
+	poller.markProcessed(1)
+
+	issue, err := poller.findOldestUnprocessedIssue(context.Background())
+	if err != nil {
+		t.Fatalf("findOldestUnprocessedIssue() error = %v", err)
+	}
+	if issue != nil {
+		t.Errorf("findOldestUnprocessedIssue() returned issue %d, want nil (should skip issue with merged PRs)", issue.Number)
+	}
+}

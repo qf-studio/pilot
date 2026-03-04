@@ -513,6 +513,11 @@ func (p *Poller) findOldestUnprocessedIssue(ctx context.Context) (*Issue, error)
 						slog.Any("error", err))
 				}
 			}
+
+			// GH-1983: Before retrying, check if merged PRs already exist
+			if p.hasMergedWork(ctx, issue) {
+				continue
+			}
 		}
 
 		candidates = append(candidates, issue)
@@ -669,6 +674,11 @@ func (p *Poller) checkForNewIssues(ctx context.Context) {
 						slog.Int("number", issue.Number),
 						slog.Any("error", err))
 				}
+			}
+
+			// GH-1983: Before retrying, check if merged PRs already exist
+			if p.hasMergedWork(ctx, issue) {
+				continue
 			}
 		}
 
@@ -899,6 +909,35 @@ func ParseDependencies(body string) []int {
 	}
 
 	return deps
+}
+
+// hasMergedWork checks if the issue already has merged PRs (e.g. "GH-123" in title).
+// If merged work exists, the issue is marked as done and should be skipped.
+func (p *Poller) hasMergedWork(ctx context.Context, issue *Issue) bool {
+	found, err := p.client.SearchMergedPRsForIssue(ctx, p.owner, p.repo, issue.Number)
+	if err != nil {
+		p.logger.Warn("Failed to check for merged PRs",
+			slog.Int("issue", issue.Number),
+			slog.Any("error", err),
+		)
+		return false // Don't block on API errors
+	}
+	if !found {
+		return false
+	}
+
+	p.logger.Info("Issue already has merged PRs, marking as done",
+		slog.Int("issue", issue.Number),
+		slog.String("title", issue.Title),
+	)
+	if err := p.client.AddLabels(ctx, p.owner, p.repo, issue.Number, []string{LabelDone}); err != nil {
+		p.logger.Warn("Failed to add pilot-done label",
+			slog.Int("issue", issue.Number),
+			slog.Any("error", err),
+		)
+	}
+	p.markProcessed(issue.Number)
+	return true
 }
 
 // hasPendingDependencies checks if any of the issue's dependencies are still open.

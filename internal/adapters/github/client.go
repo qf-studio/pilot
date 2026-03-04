@@ -771,6 +771,22 @@ func (c *Client) ExecuteGraphQL(ctx context.Context, query string, variables map
 	return nil
 }
 
+// SearchMergedPRsForIssue checks if any merged PRs exist that reference the given
+// issue number in their title (e.g. "GH-123" pattern). Uses the GitHub Search API.
+// Returns true if at least one merged PR is found.
+func (c *Client) SearchMergedPRsForIssue(ctx context.Context, owner, repo string, issueNumber int) (bool, error) {
+	q := fmt.Sprintf("repo:%s/%s GH-%d in:title is:pr is:merged", owner, repo, issueNumber)
+	path := fmt.Sprintf("/search/issues?q=%s&per_page=1", url.QueryEscape(q))
+
+	var result struct {
+		TotalCount int `json:"total_count"`
+	}
+	if err := c.doRequest(ctx, http.MethodGet, path, nil, &result); err != nil {
+		return false, fmt.Errorf("search merged PRs for issue %d: %w", issueNumber, err)
+	}
+	return result.TotalCount > 0, nil
+}
+
 // UpdatePullRequestBranch updates the PR branch with the latest base branch.
 // Uses GitHub API: PUT /repos/{owner}/{repo}/pulls/{number}/update-branch
 // Returns nil on success, error if the branch cannot be automatically updated (true conflict).

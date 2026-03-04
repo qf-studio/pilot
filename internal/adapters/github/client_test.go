@@ -2521,3 +2521,74 @@ func TestExecuteGraphQL(t *testing.T) {
 		})
 	}
 }
+
+func TestSearchMergedPRsForIssue(t *testing.T) {
+	tests := []struct {
+		name        string
+		issueNumber int
+		statusCode  int
+		response    string
+		wantFound   bool
+		wantErr     bool
+	}{
+		{
+			name:        "merged PRs exist",
+			issueNumber: 42,
+			statusCode:  http.StatusOK,
+			response:    `{"total_count": 2}`,
+			wantFound:   true,
+		},
+		{
+			name:        "no merged PRs",
+			issueNumber: 99,
+			statusCode:  http.StatusOK,
+			response:    `{"total_count": 0}`,
+			wantFound:   false,
+		},
+		{
+			name:        "open PRs only - not counted",
+			issueNumber: 55,
+			statusCode:  http.StatusOK,
+			response:    `{"total_count": 0}`,
+			wantFound:   false,
+		},
+		{
+			name:        "API error",
+			issueNumber: 10,
+			statusCode:  http.StatusForbidden,
+			response:    `{"message": "rate limit"}`,
+			wantErr:     true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if !strings.HasPrefix(r.URL.Path, "/search/issues") {
+					t.Errorf("unexpected path: %s", r.URL.Path)
+					w.WriteHeader(http.StatusNotFound)
+					return
+				}
+				q := r.URL.Query().Get("q")
+				expectedQ := fmt.Sprintf("repo:owner/repo GH-%d in:title is:pr is:merged", tt.issueNumber)
+				if q != expectedQ {
+					t.Errorf("query = %q, want %q", q, expectedQ)
+				}
+				w.WriteHeader(tt.statusCode)
+				_, _ = w.Write([]byte(tt.response))
+			}))
+			defer server.Close()
+
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			found, err := client.SearchMergedPRsForIssue(context.Background(), "owner", "repo", tt.issueNumber)
+
+			if (err != nil) != tt.wantErr {
+				t.Errorf("SearchMergedPRsForIssue() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if !tt.wantErr && found != tt.wantFound {
+				t.Errorf("SearchMergedPRsForIssue() = %v, want %v", found, tt.wantFound)
+			}
+		})
+	}
+}
