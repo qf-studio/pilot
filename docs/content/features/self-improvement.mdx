@@ -1,0 +1,149 @@
+import { Callout } from 'nextra/components'
+
+# Self-Improvement System
+
+Pilot learns from every task execution, PR review, and CI failure — getting smarter over time.
+
+## Overview
+
+Pilot has 20+ learning mechanisms that form a self-evolving pipeline. Each execution feeds patterns back into the system, improving future task quality without manual configuration.
+
+The self-improvement system operates across three layers:
+
+1. **Pattern extraction** — learning what works (and what doesn't) from real outcomes
+2. **Anti-pattern injection** — preventing repeated mistakes by injecting learned patterns into prompts
+3. **Outcome-based routing** — automatically selecting the best model for each task type
+
+## Pattern Learning
+
+### From PR Reviews
+
+When reviewers comment on Pilot's PRs, patterns are extracted and stored with confidence scores. Future tasks check learned patterns during self-review.
+
+```
+Reviewer comments on PR → LearnFromReview() extracts pattern
+  → Pattern stored with category + confidence score
+  → Future self-reviews check against learned patterns
+  → Confidence boosted when pattern confirmed by multiple reviews
+```
+
+<Callout type="info">
+Patterns are project-scoped. A pattern learned in one repo won't affect another unless you configure shared pattern stores.
+</Callout>
+
+### From CI Failures
+
+CI failure logs are analyzed to extract error patterns across several categories:
+
+- **Compilation errors** — missing imports, type mismatches, undefined symbols
+- **Test failures** — assertion errors, timeout issues, flaky test patterns
+- **Lint violations** — style rules, unused variables, error handling gaps
+- **Dependency issues** — version conflicts, missing packages
+- **Runtime errors** — nil pointer dereferences, race conditions
+
+These patterns are injected into future execution prompts to prevent repeat failures.
+
+### From Self-Review
+
+Self-review findings feed back into the learning system. If self-review catches an issue, that pattern is stored for future reference — creating a feedback loop where Pilot's reviews get more thorough over time.
+
+## Anti-Pattern Injection
+
+Known anti-patterns are injected into execution prompts so Pilot avoids repeating mistakes. Patterns are ranked by confidence score — higher confidence patterns are prioritized in the prompt to stay within token budgets.
+
+```yaml
+# Example learned anti-pattern
+category: error_handling
+pattern: "Always check error return from json.Unmarshal in HTTP handlers"
+confidence: 0.92
+source: pr_review
+```
+
+## Self-Review Pattern Checks
+
+Self-review includes a dedicated check that validates code against learned project patterns — not just static rules. This means Pilot's self-review evolves with each project:
+
+- New patterns are checked automatically after learning
+- Patterns below a confidence threshold are skipped to avoid false positives
+- Anti-patterns trigger warnings in the self-review output
+
+## Acceptance Criteria Verification
+
+When issues include acceptance criteria (checkbox lists, numbered requirements, or explicit "Acceptance Criteria" sections), self-review verifies each criterion was addressed in the implementation. Unmet criteria are flagged before the PR is created.
+
+## Pattern Categories
+
+The pattern extraction system recognizes 11 categories:
+
+| # | Category | Examples |
+|---|----------|----------|
+| 1 | Context & Architecture | Project structure conventions, file organization |
+| 2 | Error Handling | Return patterns, error wrapping, nil checks |
+| 3 | Testing | Table-driven tests, mock patterns, test helpers |
+| 4 | Logging | Structured logging, log levels, context fields |
+| 5 | Validation | Input validation, boundary checks, type assertions |
+| 6 | API Design | Endpoint naming, response formats, status codes |
+| 7 | Concurrency | Goroutine patterns, mutex usage, channel idioms |
+| 8 | Config Wiring | Struct tags, env vars, default values |
+| 9 | Test Patterns | Setup/teardown, fixtures, assertion styles |
+| 10 | Performance | Query optimization, caching, batch operations |
+| 11 | Security | Auth checks, input sanitization, secret handling |
+
+Each category has its own extractor that identifies relevant patterns from PR review comments and CI failure logs.
+
+## Outcome-Based Model Routing
+
+Task outcomes (success/failure) are tracked per model. Pilot uses this data to automatically select the best model for each task type:
+
+- **Haiku** — trivial tasks (typos, config changes, simple additions)
+- **Sonnet** — simple to medium complexity (feature additions, bug fixes)
+- **Opus** — complex tasks (architecture changes, multi-file refactors)
+
+If a model fails more than 30% of a task type, Pilot auto-escalates to a more capable model. This means the system self-corrects its routing decisions based on real outcomes.
+
+```
+Task classified as "simple" → Routed to Sonnet
+  → Sonnet fails 3 of 8 similar tasks (37.5%)
+  → Future similar tasks auto-escalated to Opus
+```
+
+## Configuration
+
+```yaml
+executor:
+  learning:
+    enabled: true              # Enable the learning system
+    pattern_extraction: true   # Extract patterns from PR reviews
+    ci_failure_learning: true  # Learn from CI failure logs
+
+  self_review:
+    enabled: true
+    pattern_checks: true           # Check code against learned patterns
+    acceptance_criteria: true      # Verify acceptance criteria in issues
+
+  model_routing:
+    enabled: true
+    failure_threshold: 0.3   # Auto-escalate above 30% failure rate
+```
+
+<Callout type="warning">
+The learning system is enabled by default. Disable `pattern_extraction` if you want Pilot to operate without learning from reviews (e.g., in CI-only environments).
+</Callout>
+
+## How It All Connects
+
+```
+┌─────────────┐    ┌──────────────┐    ┌─────────────────┐
+│  PR Reviews  │───▶│   Pattern    │───▶│  Anti-Pattern    │
+│  CI Failures │    │  Extraction  │    │  Injection       │
+│  Self-Review │    │              │    │  (future prompts)│
+└─────────────┘    └──────────────┘    └─────────────────┘
+                          │
+                          ▼
+                   ┌──────────────┐    ┌─────────────────┐
+                   │   Outcome    │───▶│  Model Routing   │
+                   │   Tracking   │    │  Auto-Escalation │
+                   └──────────────┘    └─────────────────┘
+```
+
+Each execution makes the next one better — Pilot continuously improves its code quality, reduces CI failures, and optimizes model selection.

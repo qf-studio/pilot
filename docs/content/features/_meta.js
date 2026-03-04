@@ -14,6 +14,7 @@ export default {
   budget: "Budget & Cost Controls",
   alerts: "Alerts & Notifications",
   "quality-gates": "Quality Gates",
+  "self-improvement": "Self-Improvement",
   "self-healing": "Self-Healing",
   hooks: "Claude Code Hooks"
 }
