@@ -644,6 +644,13 @@ func (c *Controller) handleCIFailed(ctx context.Context, prState *PRState) error
 		return fmt.Errorf("failed to create fix issue: %w", err)
 	}
 
+	// GH-1964: Learn from CI failure patterns (self-improvement).
+	if c.learningLoop != nil {
+		if learnErr := c.learningLoop.LearnFromCIFailure(ctx, "", ciLogs, failedChecks); learnErr != nil {
+			c.log.Warn("Failed to learn from CI failure", slog.Any("error", learnErr))
+		}
+	}
+
 	// Notify fix issue created
 	if c.notifier != nil {
 		if err := c.notifier.NotifyFixIssueCreated(ctx, prState, issueNum); err != nil {
@@ -900,6 +907,14 @@ func (c *Controller) handlePostMergeCI(ctx context.Context, prState *PRState) er
 		} else {
 			c.log.Info("created fix issue for post-merge CI failure", "pr", prState.PRNumber, "issue", issueNum)
 		}
+
+		// GH-1964: Learn from post-merge CI failure patterns (self-improvement).
+		if c.learningLoop != nil {
+			if learnErr := c.learningLoop.LearnFromCIFailure(ctx, "", ciLogs, failedChecks); learnErr != nil {
+				c.log.Warn("Failed to learn from post-merge CI failure", slog.Any("error", learnErr))
+			}
+		}
+
 		c.removePR(prState.PRNumber)
 		return nil
 	}
