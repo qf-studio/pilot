@@ -925,6 +925,15 @@ Examples:
 						gwRunner.ModelRouter().SetOutcomeTracker(gwOutcomeTracker)
 					}
 
+					// GH-2016: Wire knowledge graph into gateway runner
+					gwKG, gwKGErr := memory.NewKnowledgeGraph(cfg.Memory.Path)
+					if gwKGErr != nil {
+						logging.WithComponent("learning").Warn("Failed to create knowledge graph (gateway mode)", slog.Any("error", gwKGErr))
+					} else {
+						gwRunner.SetKnowledgeGraph(gwKG)
+						logging.WithComponent("learning").Info("Knowledge graph initialized (gateway mode)")
+					}
+
 					logging.WithComponent("learning").Info("Learning system initialized (gateway mode)")
 				}
 			}
@@ -1358,6 +1367,15 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 				runner.ModelRouter().SetOutcomeTracker(outcomeTracker)
 			}
 			logging.WithComponent("learning").Info("Model outcome tracker initialized")
+
+			// GH-2016: Wire knowledge graph into runner
+			kg, kgErr := memory.NewKnowledgeGraph(cfg.Memory.Path)
+			if kgErr != nil {
+				logging.WithComponent("learning").Warn("Failed to create knowledge graph", slog.Any("error", kgErr))
+			} else {
+				runner.SetKnowledgeGraph(kg)
+				logging.WithComponent("learning").Info("Knowledge graph initialized")
+			}
 
 			// Pattern maintenance — decay and cleanup every 24h
 			go func() {

@@ -99,6 +99,13 @@ func NewPollingHarness(t *testing.T, cfg *config.Config) *Harness {
 		pc := executor.NewPatternContext(store)
 		h.PatternContext = pc
 		h.Runner.SetPatternContext(pc)
+
+		// GH-2016: Wire knowledge graph (polling path)
+		kg, kgErr := memory.NewKnowledgeGraph(dataPath)
+		if kgErr != nil {
+			t.Fatalf("NewKnowledgeGraph: %v", kgErr)
+		}
+		h.Runner.SetKnowledgeGraph(kg)
 	}
 
 	// Autopilot controller
@@ -201,6 +208,13 @@ func NewGatewayHarness(t *testing.T, cfg *config.Config) *Harness {
 		pc := executor.NewPatternContext(store)
 		h.PatternContext = pc
 		h.Runner.SetPatternContext(pc)
+
+		// GH-2016: Wire knowledge graph (gateway path)
+		kg, kgErr := memory.NewKnowledgeGraph(dataPath)
+		if kgErr != nil {
+			t.Fatalf("NewKnowledgeGraph: %v", kgErr)
+		}
+		h.Runner.SetKnowledgeGraph(kg)
 	}
 
 	// Autopilot controller
