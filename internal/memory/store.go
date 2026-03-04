@@ -236,6 +236,17 @@ func (s *Store) migrate() error {
 			component TEXT DEFAULT 'executor'
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_execution_logs_timestamp ON execution_logs(timestamp)`,
+		`CREATE TABLE IF NOT EXISTS model_outcomes (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			task_type TEXT NOT NULL,
+			model TEXT NOT NULL,
+			outcome TEXT NOT NULL,
+			tokens_used INTEGER DEFAULT 0,
+			duration_ms INTEGER DEFAULT 0,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_model_outcomes_task_model ON model_outcomes(task_type, model)`,
+		`CREATE INDEX IF NOT EXISTS idx_model_outcomes_created ON model_outcomes(created_at)`,
 	}
 
 	for _, migration := range migrations {
