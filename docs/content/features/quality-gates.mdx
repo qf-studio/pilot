@@ -459,6 +459,51 @@ executor:
   skip_self_review: true
 ```
 
+### Acceptance Criteria Verification
+
+Starting in v2.49.0, self-review includes automatic verification of acceptance criteria (ACs) from the source issue.
+
+**How ACs flow through the pipeline:**
+
+```
+Issue Body (ACs)
+       │
+       ▼
+┌──────────────────┐
+│ prompt_builder.go │  ← Extracts ACs from issue body (lines 73-80)
+│ Parse checkboxes  │
+└────────┬─────────┘
+         │
+         ▼
+┌──────────────────┐
+│   Execution      │  ← Claude implements with ACs in context
+└────────┬─────────┘
+         │
+         ▼
+┌──────────────────┐
+│   Self-Review    │  ← Verifies each AC was actually implemented
+│   AC Check       │
+└──────────────────┘
+```
+
+1. **Extraction**: The prompt builder parses the issue body for Markdown checkboxes (`- [ ] ...`) and structured acceptance criteria sections. These are injected into the execution prompt so Claude knows exactly what to deliver.
+
+2. **Verification**: During self-review, each extracted AC is checked against the actual diff. The reviewer looks for evidence that the criterion was addressed — matching file changes, new tests, config additions, etc.
+
+3. **Signals**: If an AC appears unaddressed, self-review emits an `INCOMPLETE:` signal with the specific criterion, giving Claude a chance to fix it before PR creation.
+
+**Example issue body:**
+
+```markdown
+### Acceptance Criteria
+- [ ] Add rate limiting middleware to /api/v1/* routes
+- [ ] Default limit: 100 requests per minute per IP
+- [ ] Return 429 status with Retry-After header
+- [ ] Add rate limit config to config.yaml
+```
+
+Each checkbox becomes a verification target. Self-review confirms the diff includes middleware registration, the 100 req/min default, 429 response handling, and a config struct field.
+
 ### Skipped Conditions
 
 Self-review is automatically skipped for:

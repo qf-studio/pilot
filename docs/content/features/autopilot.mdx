@@ -96,7 +96,7 @@ pilot rollback --pr 123
 
 ## Conflict Resolution
 
-When a Pilot PR has a merge conflict, autopilot automatically attempts to resolve it via rebase before falling back to full re-execution.
+When a Pilot PR has a merge conflict, autopilot automatically attempts to resolve it via rebase before falling back to full re-execution. This is handled by `handleMergeConflict()` in the autopilot controller.
 
 ### Auto-Rebase Flow
 
@@ -104,28 +104,77 @@ When a Pilot PR has a merge conflict, autopilot automatically attempts to resolv
 Merge Conflict Detected
        │
        ▼
-┌──────────────────┐
-│ Update Branch    │ ← GitHub API rebase
-│ (auto-rebase)    │
-└────────┬─────────┘
+┌──────────────────────────┐
+│ handleMergeConflict()    │
+│ Detect DIRTY/CONFLICTING │
+└────────┬─────────────────┘
+         │
+         ▼
+┌──────────────────────────┐
+│ UpdatePullRequestBranch  │ ← GitHub API: merge base into head
+│ (auto-rebase)            │
+└────────┬─────────────────┘
          │
     ┌────┴────┐
     │         │
   Success   Failure
     │         │
     ▼         ▼
-WaitingCI   Close PR
-(re-run CI) (re-queue)
+WaitingCI   ┌──────────────────────────┐
+(re-run CI) │ Close PR with comment    │
+            │ Re-queue original issue  │
+            │ New branch from latest   │
+            │ main → full re-execution │
+            └──────────────────────────┘
 ```
 
-- **First attempt**: Uses GitHub's "Update branch" API — equivalent to clicking the "Update branch" button on the PR page
-- **If rebase succeeds**: The PR returns to the `WaitingCI` stage and CI re-runs on the updated branch
-- **If rebase fails**: The PR is closed with an explanatory comment, and the original issue returns to the queue for full re-execution from scratch
-- **Cost savings**: Avoids ~$8–15 per full re-execution for conflicts that are trivially resolvable via rebase
+### How Conflict Detection Works
+
+Autopilot checks the PR's `mergeable_state` field from the GitHub API during each poll cycle. When the state is `DIRTY` or `CONFLICTING`, conflict resolution triggers automatically:
+
+1. **First attempt — API rebase**: Calls GitHub's [Update a pull request branch](https://docs.github.com/en/rest/pulls/pulls#update-a-pull-request-branch) endpoint. This is equivalent to clicking the "Update branch" button on the PR page. It merges the base branch (typically `main`) into the PR's head branch.
+
+2. **If rebase succeeds**: The PR transitions back to the `WaitingCI` stage. GitHub automatically triggers CI on the updated branch, and autopilot resumes monitoring from there.
+
+3. **If rebase fails**: The conflict is non-trivial (e.g., both branches edited the same lines). Autopilot closes the PR with an explanatory comment describing the conflict, then returns the original issue to the execution queue. On re-execution, Pilot creates a fresh branch from the latest `main` and re-implements the changes from scratch.
+
+### Cost Savings
+
+Auto-rebase avoids ~$8–15 per full re-execution for conflicts that are trivially resolvable (e.g., upstream added a new file, or unrelated lines in the same file changed). In projects with frequent parallel PRs, this can save significant cost over a week of operation.
+
+### Configuration
+
+```yaml
+# ~/.pilot/config.yaml
+autopilot:
+  enabled: true
+  conflict_handling:
+    auto_rebase: true        # Enable auto-rebase via GitHub API (default: true)
+    close_on_failure: true   # Close PR if rebase fails (default: true)
+    requeue_on_failure: true # Re-queue issue for fresh execution (default: true)
+    max_rebase_attempts: 1   # Attempts before falling back to close (default: 1)
+```
+
+Set `auto_rebase: false` to skip the rebase attempt and immediately close-and-requeue on any conflict. This is useful if your CI is fast and re-execution is cheaper than debugging merge artifacts.
 
 ## CI Fix Dependencies
 
 When autopilot's feedback loop creates a CI fix issue (after a CI failure), the fix issue body includes a `Depends on: #N` annotation linking it back to the original parent issue. This provides traceability between fix attempts and the tasks that triggered them.
+
+### Dependency Annotations
+
+The annotation is added to the fix issue body as a metadata line:
+
+```markdown
+Depends on: #142
+
+CI failed on PR #145 (branch: pilot/GH-142).
+Error: `test_login_redirect` assertion failure on line 47.
+
+Fix the failing test while preserving the original feature behavior.
+```
+
+This lets you trace the chain: original issue → PR → CI failure → fix issue → fix PR. GitHub also renders `#142` as a clickable cross-reference, so the original issue shows all related fix attempts in its timeline.
 
 ## Stagnation Monitor
 

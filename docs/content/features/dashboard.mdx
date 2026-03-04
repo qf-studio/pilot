@@ -245,6 +245,98 @@ Dashboard state persists to SQLite (`~/.pilot/pilot.db`):
 
 Data survives restarts and is used to populate sparklines on launch.
 
+## Web Dashboard & REST API
+
+Starting in v1.53.0, Pilot includes an embedded web dashboard alongside the terminal TUI. The HTTP gateway serves a React frontend and a REST API for programmatic access to task data.
+
+<Callout type="info">
+  The web dashboard runs as a background HTTP server in polling mode (v1.62.0+). It is always available when Pilot is running, even without `--dashboard`.
+</Callout>
+
+### Launching
+
+The web dashboard is served at `http://localhost:PORT/dashboard` where `PORT` is your configured gateway port (default: 8090):
+
+```bash
+# Start Pilot — web dashboard available automatically
+pilot start --github
+
+# Open in browser
+open http://localhost:8090/dashboard
+```
+
+### REST API Endpoints
+
+The following REST endpoints are available under `/api/v1/`:
+
+| Method | Endpoint | Description | Since |
+|--------|----------|-------------|-------|
+| `GET` | `/api/v1/tasks` | List all tasks (running, queued, completed) | v1.55.0 |
+| `GET` | `/api/v1/tasks/:id` | Get single task details | v1.55.0 |
+| `GET` | `/api/v1/autopilot` | Autopilot state and active PRs | v1.55.0 |
+| `GET` | `/api/v1/history` | Execution history with metrics | v1.55.0 |
+| `GET` | `/api/v1/metrics` | Token usage, cost, queue stats | v1.55.0 |
+| `GET` | `/health` | Health check (used by desktop app) | v1.53.0 |
+
+**Example — list tasks:**
+
+```bash
+curl http://localhost:8090/api/v1/tasks | jq
+```
+
+```json
+{
+  "tasks": [
+    {
+      "id": "GH-152",
+      "title": "Implement caching",
+      "state": "running",
+      "progress": 67,
+      "started_at": "2026-03-04T10:15:00Z"
+    },
+    {
+      "id": "GH-158",
+      "title": "Update dependencies",
+      "state": "queued",
+      "position": 1
+    }
+  ]
+}
+```
+
+### WebSocket Log Streaming
+
+Connect to `/ws/logs` for real-time execution log streaming (v1.56.0):
+
+```javascript
+const ws = new WebSocket('ws://localhost:8090/ws/logs');
+ws.onmessage = (event) => {
+  const entry = JSON.parse(event.data);
+  console.log(`[${entry.task_id}] ${entry.level}: ${entry.message}`);
+};
+```
+
+Log entries include the task ID, log level, timestamp, and message. The WebSocket connection automatically receives logs from all running executions.
+
+### Desktop App Connection
+
+The [Desktop App](/deployment/desktop-app) connects to the same HTTP gateway via the `/health` endpoint for service discovery. When Pilot is running locally, the desktop app auto-detects it and displays the same panels as the web dashboard in a native macOS window.
+
+### Configuration
+
+```yaml
+# ~/.pilot/config.yaml
+gateway:
+  port: 8090           # HTTP server port (default: 8090)
+  host: "127.0.0.1"    # Bind address (default: localhost only)
+  cors_origins:         # Allowed CORS origins for web dashboard
+    - "http://localhost:3000"
+```
+
+<Callout type="warning">
+  The gateway binds to `127.0.0.1` by default. To expose it on a network, set `host: "0.0.0.0"` — but ensure proper authentication is in place.
+</Callout>
+
 ## Color Palette
 
 The dashboard uses a muted terminal aesthetic:
