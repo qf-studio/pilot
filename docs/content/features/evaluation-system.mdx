@@ -1,0 +1,345 @@
+import { Callout } from 'nextra/components'
+
+# Evaluation System
+
+Pilot's evaluation system extracts benchmark tasks from merged PRs, tracks execution quality over time, and detects regressions across model changes or configuration updates.
+
+## Overview
+
+The evaluation system provides:
+
+- **Automatic task extraction** — Captures eval tasks from every merged PR with quality gate results
+- **Regression detection** — Compares pass rates across eval runs to catch quality drops
+- **Multi-model benchmarking** — Run eval suites against different models with pass@k metrics
+- **Dashboard visibility** — Real-time pass@1 rates with trend indicators in the TUI
+- **Alert integration** — Automatic alerts when regression thresholds are breached
+- **CLI tooling** — Run evals, check regressions, and view stats from the command line
+
+<Callout type="info">
+The eval system builds its task corpus automatically from real executions. Every merged PR contributes a benchmark task, so eval coverage grows organically as Pilot processes more issues.
+</Callout>
+
+### Data Flow
+
+```
+┌──────────────┐     ┌──────────────────┐     ┌──────────────┐
+│  Merged PR   │────▶│ ExtractEvalTask  │────▶│  SQLite DB   │
+│  (autopilot) │     │ (eval.go)        │     │  (eval_tasks)│
+└──────────────┘     └──────────────────┘     └──────┬───────┘
+                                                      │
+                     ┌──────────────────┐              │
+                     │  pilot eval run  │◀─────────────┘
+                     │  (eval_runner)   │
+                     └────────┬─────────┘
+                              │
+               ┌──────────────┼──────────────┐
+               ▼              ▼              ▼
+        ┌────────────┐ ┌────────────┐ ┌────────────┐
+        │ EvalResult │ │ EvalStats  │ │ Regression │
+        │ (per-task) │ │ (per-model)│ │  Check     │
+        └──────┬─────┘ └──────┬─────┘ └──────┬─────┘
+               │              │              │
+               ▼              ▼              ▼
+        ┌────────────┐ ┌────────────┐ ┌────────────┐
+        │ Dashboard  │ │ CLI Stats  │ │   Alerts   │
+        │  Panel     │ │  Output    │ │  Engine    │
+        └────────────┘ └────────────┘ └────────────┘
+```
+
+1. **Extraction** — When autopilot merges a PR, `handleMerged()` calls `ExtractEvalTask()` to capture the task, quality gate results, files changed, and duration
+2. **Storage** — Eval tasks are persisted to SQLite with upsert semantics (keyed on repo + issue number)
+3. **Evaluation** — `pilot eval run` replays stored tasks against a model and records results
+4. **Analysis** — Stats aggregation, regression detection, and model comparison run against stored results
+5. **Reporting** — Dashboard panel, CLI output, and alert engine surface findings
+
+## Eval Task Extraction
+
+Every merged PR generates an eval task automatically. The extraction captures everything needed to replay and benchmark the task later.
+
+### How It Works
+
+`ExtractEvalTask()` in `internal/memory/eval.go` converts execution data into a storable benchmark:
+
+- **Deterministic ID** — SHA256 hash of repo + issue number ensures idempotent storage
+- **Pass criteria** — Each quality gate (build, test, lint) is recorded with its pass/fail status
+- **Files changed** — The list of modified files is captured for scope analysis
+- **Duration** — Execution time in milliseconds for performance tracking
+
+### EvalTask Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `ID` | string | Deterministic `eval-<sha256>` identifier |
+| `ExecutionID` | string | Original task/run identifier |
+| `IssueNumber` | int | GitHub issue number |
+| `IssueTitle` | string | Issue title (used as task description) |
+| `Repo` | string | Repository in `owner/name` format |
+| `Success` | bool | Whether all quality gates passed |
+| `PassCriteria` | []PassCriteria | Individual gate results |
+| `FilesChanged` | []string | Files modified during execution |
+| `DurationMs` | int64 | Execution duration in milliseconds |
+
+### PassCriteria
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `Type` | string | Gate type: `build`, `test`, `lint`, `custom` |
+| `Command` | string | Optional command that was run |
+| `Passed` | bool | Whether this gate passed |
+
+## Regression Checker
+
+The regression checker compares two sets of eval results to detect quality drops. It is the core safety mechanism for validating model upgrades, config changes, or prompt modifications.
+
+### Detection Logic
+
+`CheckRegression()` in `internal/memory/eval_regression.go` computes pass@1 rates for baseline and current eval runs, then flags a regression if the drop exceeds the configured threshold.
+
+```
+Baseline pass@1: 85.0%  (34/40 tasks passed)
+Current  pass@1: 78.0%  (31/40 tasks passed)
+Delta:           -7.0pp
+Threshold:        5.0pp
+Result:          REGRESSION DETECTED
+```
+
+### RegressionReport
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `BaselinePassRate` | float64 | Baseline pass@1 percentage |
+| `CurrentPassRate` | float64 | Current pass@1 percentage |
+| `Delta` | float64 | Difference in percentage points |
+| `Regressed` | bool | `true` if `-delta > threshold` |
+| `RegressedTaskIDs` | []string | Tasks that regressed (passed before, fail now) |
+| `ImprovedTaskIDs` | []string | Tasks that improved (failed before, pass now) |
+| `Recommendation` | string | Human-readable guidance |
+
+### Eval Metrics
+
+The eval runner supports standard benchmarking metrics:
+
+- **pass@1** — Fraction of tasks that pass on the first attempt
+- **pass@k** — Probability that at least one of k attempts passes (unbiased estimator)
+- **Model comparison** — Side-by-side pass@1/pass@k with winner determination
+
+## CLI Commands
+
+The `pilot eval` command group provides four subcommands for managing and running evaluations.
+
+### `pilot eval run`
+
+Execute stored eval tasks against a model and record results.
+
+```bash
+# Run all eval tasks for a repo
+pilot eval run --repo owner/repo --model claude-sonnet-4-6
+
+# Limit to 10 tasks
+pilot eval run --repo owner/repo --model claude-opus-4-6 --limit 10
+```
+
+| Flag | Type | Required | Description |
+|------|------|----------|-------------|
+| `--repo` | string | Yes | Repository to run evals for |
+| `--model` | string | No | Model to evaluate (default: configured model) |
+| `--limit` | int | No | Maximum number of tasks to run |
+
+Output includes per-task pass/fail status, overall pass@1 rate, and comparison with historical results.
+
+### `pilot eval list`
+
+Display stored eval tasks with optional filtering.
+
+```bash
+# List all eval tasks
+pilot eval list
+
+# List failed tasks for a specific repo
+pilot eval list --repo owner/repo --failed
+
+# List recent successful tasks
+pilot eval list --success --limit 20
+```
+
+| Flag | Type | Description |
+|------|------|-------------|
+| `--repo` | string | Filter by repository |
+| `--limit` | int | Maximum number of tasks to display |
+| `--success` | bool | Show only successful tasks |
+| `--failed` | bool | Show only failed tasks |
+
+Output format:
+
+```
+ID              STATUS  ISSUE  TITLE                          REPO
+eval-a1b2c3...  PASS    #142   Add rate limiting              owner/repo
+eval-d4e5f6...  FAIL    #155   Fix auth token refresh         owner/repo
+eval-g7h8i9...  PASS    #163   Update dashboard layout        owner/repo
+```
+
+### `pilot eval stats`
+
+Show aggregated pass@1 metrics and quality gate breakdown.
+
+```bash
+# Overall stats
+pilot eval stats
+
+# Per-repo stats
+pilot eval stats --repo owner/repo
+```
+
+Output includes overall pass rate, per-repo breakdown, and per-gate pass rates (build, test, lint).
+
+### `pilot eval check`
+
+Compare two eval runs for regression detection. Exits with code 1 if regression is detected, making it suitable for CI pipelines.
+
+```bash
+# Compare two eval runs
+pilot eval check --baseline run-abc123 --current run-def456
+
+# Custom threshold (default: 5.0 percentage points)
+pilot eval check --baseline run-abc123 --current run-def456 --threshold 3.0
+```
+
+| Flag | Type | Required | Description |
+|------|------|----------|-------------|
+| `--baseline` | string | Yes | Baseline run ID to compare against |
+| `--current` | string | Yes | Current run ID to compare |
+| `--threshold` | float | No | Regression threshold in percentage points (default: 5.0) |
+
+When a regression is detected, the command emits an alert event and exits with code 1:
+
+```
+REGRESSION DETECTED
+  Baseline pass@1: 85.0%
+  Current  pass@1: 78.0%
+  Delta:           -7.0pp (threshold: 5.0pp)
+  Regressed tasks: 3
+  Recommendation:  Investigate regressed tasks before deploying
+```
+
+## Dashboard Panel
+
+The TUI dashboard includes an eval stats panel that shows real-time pass@1 rates with trend indicators.
+
+### Display Format
+
+```
+EVAL
+  pass@1  85.0%  ↑  (42 tasks)
+```
+
+The panel compares recent eval tasks against older ones to compute a trend:
+
+| Indicator | Meaning |
+|-----------|---------|
+| `↑` | Pass rate improving |
+| `→` | Pass rate stable |
+| `↓` | Pass rate declining |
+
+When a regression is detected (delta exceeds 5 percentage points), a warning line appears:
+
+```
+EVAL
+  pass@1  72.5%  ↓  (42 tasks)
+  ! regression: 5.2pp drop (3 task(s))
+```
+
+The eval panel is rendered as part of the metrics view in the dashboard and updates automatically as new eval data arrives.
+
+## Alert Integration
+
+The eval system integrates with Pilot's alert engine to notify when regression thresholds are breached.
+
+### Event Type
+
+| Field | Value |
+|-------|-------|
+| Event type | `eval_regression` |
+| Alert type | `eval_regression` |
+| Default severity | `warning` |
+| Escalation | `critical` if delta exceeds 2x threshold |
+
+### Alert Metadata
+
+| Key | Description |
+|-----|-------------|
+| `baseline_pass1` | Baseline pass@1 rate |
+| `current_pass1` | Current pass@1 rate |
+| `delta` | Change in percentage points |
+| `regressed_count` | Number of regressed tasks |
+| `recommendation` | Human-readable guidance |
+
+### Configuration
+
+Add an eval regression rule to your alert configuration:
+
+```yaml
+alerts:
+  enabled: true
+  rules:
+    - name: eval_regression
+      type: eval_regression
+      enabled: true
+      severity: warning
+      condition:
+        usage_spike_percent: 5.0  # regression threshold in percentage points
+      channels: [slack-alerts]
+      cooldown: 1h
+      description: "Alert when eval pass rate drops below threshold"
+```
+
+<Callout type="warning">
+The regression threshold reuses the `usage_spike_percent` condition field. Set this to the maximum acceptable pass rate drop in percentage points (e.g., `5.0` means a 5pp drop triggers the alert).
+</Callout>
+
+## Configuration
+
+The eval system uses the standard memory store path for persistence. No additional configuration is required for basic eval task extraction — it activates automatically when autopilot merges PRs.
+
+### Memory Store
+
+Eval tasks are stored in the same SQLite database as other memory data:
+
+```yaml
+memory:
+  path: ~/.pilot/memory.db    # Default path
+  cross_project: true          # Share eval data across projects
+```
+
+### Eval Alert Rule
+
+To enable regression alerts, add the eval rule to your alerts configuration:
+
+```yaml
+alerts:
+  enabled: true
+  rules:
+    - name: eval_regression
+      type: eval_regression
+      enabled: false            # Enable when ready
+      severity: warning
+      condition:
+        usage_spike_percent: 5.0
+      channels: []              # Empty = all channels matching severity
+      cooldown: 1h
+```
+
+### CI Integration
+
+Use `pilot eval check` in CI pipelines to gate deployments on eval quality:
+
+```yaml
+# GitHub Actions example
+- name: Check eval regression
+  run: |
+    pilot eval check \
+      --baseline ${{ env.BASELINE_RUN_ID }} \
+      --current ${{ env.CURRENT_RUN_ID }} \
+      --threshold 3.0
+```
+
+The command exits with code 1 on regression, failing the CI step and preventing deployment of changes that degrade execution quality.

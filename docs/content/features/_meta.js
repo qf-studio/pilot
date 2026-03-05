@@ -15,6 +15,7 @@ export default {
   alerts: "Alerts & Notifications",
   "quality-gates": "Quality Gates",
   "self-improvement": "Self-Improvement",
+  "evaluation-system": "Evaluation System",
   "self-healing": "Self-Healing",
   hooks: "Claude Code Hooks"
 }
