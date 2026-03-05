@@ -1103,6 +1103,9 @@ func (c *Controller) handleMerged(ctx context.Context, prState *PRState) error {
 		}
 	}
 
+	// GH-2086: Close parent issue when all sub-issues are done.
+	c.maybeCloseParentIssue(ctx, prState)
+
 	if c.config.ResolvedEnv().SkipPostMergeCI {
 		// Fast path: skip post-merge CI, check if we should release immediately
 		if c.shouldTriggerRelease() && !c.resolvedRelease().RequireCI {
@@ -1124,6 +1127,63 @@ func (c *Controller) handleMerged(ctx context.Context, prState *PRState) error {
 	)
 	prState.Stage = StagePostMergeCI
 	return nil
+}
+
+// maybeCloseParentIssue checks whether the merged PR's issue is a sub-issue
+// and, if all sibling sub-issues are also closed, closes the parent issue.
+// All errors are logged as warnings without blocking the merge flow.
+func (c *Controller) maybeCloseParentIssue(ctx context.Context, prState *PRState) {
+	if prState.IssueNumber == 0 {
+		return
+	}
+
+	// Fetch the sub-issue body to find parent reference.
+	issue, err := c.ghClient.GetIssue(ctx, c.owner, c.repo, prState.IssueNumber)
+	if err != nil {
+		c.log.Warn("maybeCloseParentIssue: failed to fetch issue", slog.Int("issue", prState.IssueNumber), slog.Any("error", err))
+		return
+	}
+
+	parentNum := github.ParseParentIssueNumber(issue.Body)
+	if parentNum == 0 {
+		return
+	}
+
+	// Check how many sibling sub-issues are still open.
+	openCount, err := c.ghClient.SearchOpenSubIssues(ctx, c.owner, c.repo, parentNum)
+	if err != nil {
+		c.log.Warn("maybeCloseParentIssue: failed to search open sub-issues", slog.Int("parent", parentNum), slog.Any("error", err))
+		return
+	}
+
+	if openCount > 0 {
+		c.log.Info("maybeCloseParentIssue: siblings still open", slog.Int("parent", parentNum), slog.Int("open", openCount))
+		return
+	}
+
+	// All sub-issues closed — close the parent.
+	c.log.Info("maybeCloseParentIssue: all sub-issues done, closing parent", slog.Int("parent", parentNum))
+
+	// Label cleanup: add pilot-done, remove stale labels.
+	if err := c.ghClient.AddLabels(ctx, c.owner, c.repo, parentNum, []string{"pilot-done"}); err != nil {
+		c.log.Warn("maybeCloseParentIssue: failed to add pilot-done label", slog.Int("parent", parentNum), slog.Any("error", err))
+	}
+	for _, stale := range []string{"pilot-failed", "pilot-in-progress"} {
+		if err := c.ghClient.RemoveLabel(ctx, c.owner, c.repo, parentNum, stale); err != nil {
+			c.log.Warn("maybeCloseParentIssue: failed to remove label", slog.String("label", stale), slog.Int("parent", parentNum), slog.Any("error", err))
+		}
+	}
+
+	// Post summary comment.
+	comment := fmt.Sprintf("All sub-issues for GH-%d are complete. Closing parent issue automatically.", parentNum)
+	if _, err := c.ghClient.AddComment(ctx, c.owner, c.repo, parentNum, comment); err != nil {
+		c.log.Warn("maybeCloseParentIssue: failed to post comment", slog.Int("parent", parentNum), slog.Any("error", err))
+	}
+
+	// Close the parent issue.
+	if err := c.ghClient.UpdateIssueState(ctx, c.owner, c.repo, parentNum, "closed"); err != nil {
+		c.log.Warn("maybeCloseParentIssue: failed to close parent issue", slog.Int("parent", parentNum), slog.Any("error", err))
+	}
 }
 
 // handlePostMergeCI monitors deployment/post-merge checks.
