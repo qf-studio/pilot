@@ -2592,3 +2592,67 @@ func TestSearchMergedPRsForIssue(t *testing.T) {
 		})
 	}
 }
+
+func TestSearchOpenSubIssues(t *testing.T) {
+	tests := []struct {
+		name       string
+		parentNum  int
+		statusCode int
+		response   string
+		wantCount  int
+		wantErr    bool
+	}{
+		{
+			name:       "parent with open siblings",
+			parentNum:  100,
+			statusCode: http.StatusOK,
+			response:   `{"total_count": 3}`,
+			wantCount:  3,
+		},
+		{
+			name:       "all siblings closed",
+			parentNum:  200,
+			statusCode: http.StatusOK,
+			response:   `{"total_count": 0}`,
+			wantCount:  0,
+		},
+		{
+			name:       "API error",
+			parentNum:  300,
+			statusCode: http.StatusForbidden,
+			response:   `{"message": "rate limit"}`,
+			wantErr:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if !strings.HasPrefix(r.URL.Path, "/search/issues") {
+					t.Errorf("unexpected path: %s", r.URL.Path)
+					w.WriteHeader(http.StatusNotFound)
+					return
+				}
+				q := r.URL.Query().Get("q")
+				expectedQ := fmt.Sprintf(`repo:owner/repo "Parent: GH-%d" is:issue is:open`, tt.parentNum)
+				if q != expectedQ {
+					t.Errorf("query = %q, want %q", q, expectedQ)
+				}
+				w.WriteHeader(tt.statusCode)
+				_, _ = w.Write([]byte(tt.response))
+			}))
+			defer server.Close()
+
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			count, err := client.SearchOpenSubIssues(context.Background(), "owner", "repo", tt.parentNum)
+
+			if (err != nil) != tt.wantErr {
+				t.Errorf("SearchOpenSubIssues() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if !tt.wantErr && count != tt.wantCount {
+				t.Errorf("SearchOpenSubIssues() = %d, want %d", count, tt.wantCount)
+			}
+		})
+	}
+}

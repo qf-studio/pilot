@@ -804,6 +804,21 @@ func (c *Client) SearchMergedPRsForIssue(ctx context.Context, owner, repo string
 	return result.TotalCount > 0, nil
 }
 
+// SearchOpenSubIssues counts open issues in a repo whose body contains "Parent: GH-{parentNum}".
+// Uses the GitHub Search API to find sub-issues referencing the given parent.
+func (c *Client) SearchOpenSubIssues(ctx context.Context, owner, repo string, parentNum int) (int, error) {
+	q := fmt.Sprintf(`repo:%s/%s "Parent: GH-%d" is:issue is:open`, owner, repo, parentNum)
+	path := fmt.Sprintf("/search/issues?q=%s&per_page=1", url.QueryEscape(q))
+
+	var result struct {
+		TotalCount int `json:"total_count"`
+	}
+	if err := c.doRequest(ctx, http.MethodGet, path, nil, &result); err != nil {
+		return 0, fmt.Errorf("search open sub-issues for parent %d: %w", parentNum, err)
+	}
+	return result.TotalCount, nil
+}
+
 // UpdatePullRequestBranch updates the PR branch with the latest base branch.
 // Uses GitHub API: PUT /repos/{owner}/{repo}/pulls/{number}/update-branch
 // Returns nil on success, error if the branch cannot be automatically updated (true conflict).
