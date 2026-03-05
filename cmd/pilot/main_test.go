@@ -21,7 +21,6 @@ func TestStartCommandFlags(t *testing.T) {
 		name      string
 		shorthand string
 	}{
-		{"daemon", "d"},
 		{"dashboard", ""},
 		{"project", "p"},
 		{"replace", ""},

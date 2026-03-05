@@ -108,7 +108,6 @@ func main() {
 
 func newStartCmd() *cobra.Command {
 	var (
-		daemon        bool
 		dashboardMode bool
 		projectPath   string
 		replace       bool
@@ -1064,8 +1063,7 @@ Examples:
 		},
 	}
 
-	cmd.Flags().BoolVarP(&daemon, "daemon", "d", false, "Run in background (daemon mode)")
-	cmd.Flags().BoolVar(&dashboardMode, "dashboard", false, "Show TUI dashboard for real-time task monitoring")
+cmd.Flags().BoolVar(&dashboardMode, "dashboard", false, "Show TUI dashboard for real-time task monitoring")
 	cmd.Flags().StringVarP(&projectPath, "project", "p", "", "Project path (default: config default or cwd)")
 	cmd.Flags().BoolVar(&replace, "replace", false, "Kill existing bot instance before starting")
 	cmd.Flags().BoolVar(&noGateway, "no-gateway", false, "Run polling adapters only (no HTTP gateway)")
