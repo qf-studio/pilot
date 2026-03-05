@@ -318,6 +318,34 @@ func (c *Controller) OnPRCreated(prNumber int, prURL string, issueNumber int, he
 	)
 }
 
+// OnReviewRequested handles PR review events from GitHub webhooks.
+// It logs the review and, for changes_requested reviews, records the event on tracked PRs.
+func (c *Controller) OnReviewRequested(prNumber int, action, state, reviewer string) {
+	c.mu.RLock()
+	prState, tracked := c.activePRs[prNumber]
+	c.mu.RUnlock()
+
+	c.log.Info("PR review received",
+		"pr", prNumber,
+		"action", action,
+		"state", state,
+		"reviewer", reviewer,
+		"tracked", tracked,
+	)
+
+	if !tracked {
+		return
+	}
+
+	if state == "changes_requested" {
+		c.log.Warn("Changes requested on PR",
+			"pr", prNumber,
+			"reviewer", reviewer,
+			"current_stage", prState.Stage,
+		)
+	}
+}
+
 // ProcessPR processes a single PR through the state machine.
 // Returns error if processing fails; caller should retry based on error type.
 // Accepts optional cached ghPR to avoid redundant API calls.

@@ -989,6 +989,15 @@ func (p *Pilot) SetQualityCheckerFactory(factory executor.QualityCheckerFactory)
 	p.orchestrator.SetQualityCheckerFactory(factory)
 }
 
+// SetOnPRReview wires a PR review callback on the GitHub webhook handler.
+// This allows cmd/pilot/main.go to route review events to the autopilot controller
+// without creating import cycles.
+func (p *Pilot) SetOnPRReview(callback github.PRReviewCallback) {
+	if p.githubWH != nil {
+		p.githubWH.OnPRReview(callback)
+	}
+}
+
 // handleGithubIssue handles a new GitHub issue
 func (p *Pilot) handleGithubIssue(ctx context.Context, issue *github.Issue, repo *github.Repository) error {
 	logging.WithComponent("pilot").Info("Received GitHub issue",

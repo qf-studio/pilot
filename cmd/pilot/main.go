@@ -886,6 +886,14 @@ Examples:
 			// GH-1585: Wire autopilot provider to gateway so /api/v1/autopilot returns live PR data
 			if gwAutopilotController != nil {
 				p.Gateway().SetAutopilotProvider(&autopilotProviderAdapter{controller: gwAutopilotController})
+
+				// GH-2080: Wire PR review events to autopilot controller
+				p.SetOnPRReview(func(ctx context.Context, prNumber int, action, state, reviewer string, repo *github.Repository) error {
+					if action == "submitted" {
+						gwAutopilotController.OnReviewRequested(prNumber, action, state, reviewer)
+					}
+					return nil
+				})
 			}
 
 			// GH-1609: Wire dashboard store to gateway so /api/v1/{metrics,queue,history,logs} return 200
@@ -1462,6 +1470,31 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 		gwServer := gateway.NewServer(cfg.Gateway)
 		if autopilotController != nil {
 			gwServer.SetAutopilotProvider(&autopilotProviderAdapter{controller: autopilotController})
+		}
+
+		// GH-2080: Wire PR review webhook events to autopilot controller in polling mode
+		if autopilotController != nil && cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.Enabled {
+			capturedController := autopilotController
+			token := cfg.Adapters.GitHub.Token
+			if token == "" {
+				token = os.Getenv("GITHUB_TOKEN")
+			}
+			if token != "" {
+				ghClient := github.NewClient(token)
+				ghWH := github.NewWebhookHandler(ghClient, cfg.Adapters.GitHub.WebhookSecret, cfg.Adapters.GitHub.PilotLabel)
+				ghWH.OnPRReview(func(ctx context.Context, prNumber int, action, state, reviewer string, repo *github.Repository) error {
+					if action == "submitted" {
+						capturedController.OnReviewRequested(prNumber, action, state, reviewer)
+					}
+					return nil
+				})
+				gwServer.Router().RegisterWebhookHandler("github", func(payload map[string]interface{}) {
+					eventType, _ := payload["_event_type"].(string)
+					if err := ghWH.Handle(context.Background(), eventType, payload); err != nil {
+						logging.WithComponent("pilot").Error("GitHub webhook error (polling mode)", slog.Any("error", err))
+					}
+				})
+			}
 		}
 		if store != nil {
 			gwServer.SetDashboardStore(store)

@@ -95,6 +95,32 @@ func TestController_GetPRState(t *testing.T) {
 	}
 }
 
+func TestController_OnReviewRequested(t *testing.T) {
+	ghClient := github.NewClient(testutil.FakeGitHubToken)
+	cfg := DefaultConfig()
+
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+
+	// Should not panic on untracked PR
+	c.OnReviewRequested(99, "submitted", "changes_requested", "reviewer1")
+
+	// Register a PR and send review
+	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc123", "pilot/GH-10", "")
+	c.OnReviewRequested(42, "submitted", "changes_requested", "reviewer1")
+
+	// PR should still be tracked (OnReviewRequested is informational for now)
+	pr, ok := c.GetPRState(42)
+	if !ok {
+		t.Fatal("expected PR to be tracked after review event")
+	}
+	if pr.PRNumber != 42 {
+		t.Errorf("PRNumber = %d, want 42", pr.PRNumber)
+	}
+
+	// Approved review should also not panic
+	c.OnReviewRequested(42, "submitted", "approved", "reviewer2")
+}
+
 func TestController_ProcessPR_NotTracked(t *testing.T) {
 	ghClient := github.NewClient(testutil.FakeGitHubToken)
 	cfg := DefaultConfig()
