@@ -230,3 +230,75 @@ When `commit_partial_work: true` (default), Pilot salvages progress on abort:
 <Callout type="warning">
 The stagnation monitor is disabled by default. Enable it for long-running tasks where stuck executions waste tokens. The default timeouts (10m/20m/30m) work well for most projects.
 </Callout>
+
+## Review Feedback
+
+When a reviewer submits `CHANGES_REQUESTED` on a Pilot PR, autopilot automatically creates a revision issue, closes the original PR, and re-executes with the reviewer's feedback incorporated.
+
+### How It Works
+
+```
+Reviewer submits CHANGES_REQUESTED
+         │
+         ▼
+┌─────────────────────────────┐
+│ Collect review comments     │
+│ (top-level + line-level)    │
+└────────┬────────────────────┘
+         │
+         ▼
+┌─────────────────────────────┐
+│ Learn from review           │ ← Pattern learning (pre-execution)
+│ (confidence boost,          │
+│  anti-pattern extraction)   │
+└────────┬────────────────────┘
+         │
+         ▼
+┌─────────────────────────────┐
+│ Create revision issue       │ ← Formatted review comments in body
+│ with iteration counter      │
+└────────┬────────────────────┘
+         │
+         ▼
+┌─────────────────────────────┐
+│ Close original PR           │ ← Unblocks sequential poller
+│ Clean up branch             │
+└────────┬────────────────────┘
+         │
+         ▼
+┌─────────────────────────────┐
+│ Pilot picks up revision     │
+│ issue → re-executes on      │
+│ same branch with --from-pr  │
+│ for session context         │
+└─────────────────────────────┘
+```
+
+### Detection Modes
+
+Review feedback works in both operational modes:
+
+- **Webhook mode** (instant): The `OnPRReview` callback fires immediately when GitHub sends a `pull_request_review` event with `action: submitted` and `state: changes_requested`.
+- **Polling mode** (periodic): During each `processAllPRs` tick, autopilot calls `hasChangesRequested()` to check for unresolved change requests. Bot reviews (self-review) are filtered out automatically.
+
+### Configuration
+
+```yaml
+# ~/.pilot/config.yaml
+autopilot:
+  review_feedback:
+    enabled: true
+    max_iterations: 3  # Maximum revision cycles before giving up (default: 3)
+```
+
+### Safety Guards
+
+| Guard | Description |
+|-------|-------------|
+| Iteration limit | Controlled by `max_iterations` (default: 3). After reaching the limit, the PR is closed and marked as failed. Prevents infinite review-fix cycles. |
+| Self-review filter | Bot reviews (usernames containing `[bot]` or ending in `-bot`) are excluded from change-request detection. Pilot's own self-review won't trigger a revision loop. |
+| Per-reviewer tracking | Only the latest review state per reviewer is considered. If a reviewer approves after previously requesting changes, the change request is resolved. |
+
+<Callout type="info">
+  The iteration limit reuses the same counter mechanism as CI fix iterations. Each revision issue body includes an `Autopilot-Iteration: N` marker that the controller parses to track the current cycle.
+</Callout>
