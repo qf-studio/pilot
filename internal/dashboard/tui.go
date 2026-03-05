@@ -968,6 +968,12 @@ func (m Model) renderDashboard() string {
 	b.WriteString(m.autopilotPanel.View())
 	b.WriteString("\n")
 
+	// Eval stats
+	if evalPanel := m.renderEvalStats(); evalPanel != "" {
+		b.WriteString(evalPanel)
+		b.WriteString("\n")
+	}
+
 	// History
 	b.WriteString(m.renderHistory())
 	b.WriteString("\n")
@@ -1724,6 +1730,83 @@ func renderEpicProgressBar(done, total, innerWidth int) string {
 	}
 	empty := innerWidth - filled
 	return "[" + strings.Repeat("#", filled) + strings.Repeat("-", empty) + "]"
+}
+
+// renderEvalStats renders a compact eval stats panel showing latest pass@1 rate
+// with a trend indicator and optional regression warning.
+func (m Model) renderEvalStats() string {
+	if m.store == nil {
+		return ""
+	}
+
+	tw := m.effectivePanelTotalWidth()
+
+	tasks, err := m.store.ListEvalTasks(memory.EvalTaskFilter{Limit: 200})
+	if err != nil || len(tasks) == 0 {
+		return ""
+	}
+
+	// Compute current pass@1 rate from all tasks.
+	var passed int
+	for _, t := range tasks {
+		if t.Success {
+			passed++
+		}
+	}
+	rate := float64(passed) / float64(len(tasks)) * 100
+
+	// Determine trend: compare latest half vs oldest half as a simple baseline.
+	mid := len(tasks) / 2
+	if mid == 0 {
+		mid = 1
+	}
+	// tasks are ordered DESC (newest first)
+	recent := tasks[:mid]
+	older := tasks[mid:]
+
+	var recentPassed, olderPassed int
+	for _, t := range recent {
+		if t.Success {
+			recentPassed++
+		}
+	}
+	for _, t := range older {
+		if t.Success {
+			olderPassed++
+		}
+	}
+
+	recentRate := float64(recentPassed) / float64(len(recent)) * 100
+	olderRate := float64(olderPassed) / float64(len(older)) * 100
+	delta := recentRate - olderRate
+
+	// Trend indicator
+	var trend string
+	switch {
+	case delta > 2:
+		trend = statusDoneStyle.Render("↑")
+	case delta < -2:
+		trend = statusFailedStyle.Render("↓")
+	default:
+		trend = dimStyle.Render("→")
+	}
+
+	// Format: "  pass@1  72.5%  ↑  (42 tasks)"
+	line := fmt.Sprintf("  pass@1  %.1f%%  %s  %s",
+		rate,
+		trend,
+		dimStyle.Render(fmt.Sprintf("(%d tasks)", len(tasks))),
+	)
+
+	// Regression warning
+	report := memory.CheckRegression(older, recent, memory.DefaultRegressionThreshold)
+	if report.Regressed {
+		line += "\n" + "  " + statusFailedStyle.Render(
+			fmt.Sprintf("! regression: %.1fpp drop (%d task(s))", -report.Delta, len(report.RegressedTaskIDs)),
+		)
+	}
+
+	return renderPanel("EVAL", line, tw)
 }
 
 // renderHistory renders completed tasks history with epic-aware grouping.

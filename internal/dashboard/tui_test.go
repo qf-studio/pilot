@@ -1133,3 +1133,93 @@ func TestDashboardPanels_DefaultWidthWhenNoGraph(t *testing.T) {
 	}
 	t.Fatal("QUEUE panel not found in default layout output")
 }
+
+func TestRenderEvalStats(t *testing.T) {
+	t.Run("nil store returns empty", func(t *testing.T) {
+		m := Model{}
+		got := m.renderEvalStats()
+		if got != "" {
+			t.Errorf("expected empty string for nil store, got %q", got)
+		}
+	})
+
+	t.Run("no eval tasks returns empty", func(t *testing.T) {
+		store, err := memory.NewStore(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		m := Model{store: store}
+		got := m.renderEvalStats()
+		if got != "" {
+			t.Errorf("expected empty string for no tasks, got %q", got)
+		}
+	})
+
+	t.Run("shows pass rate and trend", func(t *testing.T) {
+		store, err := memory.NewStore(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Save mix of pass/fail tasks
+		for i := 1; i <= 10; i++ {
+			task := &memory.EvalTask{
+				ID:          fmt.Sprintf("eval-%d", i),
+				IssueNumber: i,
+				IssueTitle:  fmt.Sprintf("Task %d", i),
+				Repo:        "test/repo",
+				Success:     i <= 7, // 7 pass, 3 fail = 70%
+			}
+			if err := store.SaveEvalTask(task); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		m := Model{store: store}
+		got := m.renderEvalStats()
+
+		plain := stripANSI(got)
+		if !strings.Contains(plain, "EVAL") {
+			t.Error("expected EVAL panel header")
+		}
+		if !strings.Contains(plain, "pass@1") {
+			t.Error("expected pass@1 label")
+		}
+		if !strings.Contains(plain, "70.0%") {
+			t.Errorf("expected 70.0%% rate in output, got %q", plain)
+		}
+		if !strings.Contains(plain, "(10 tasks)") {
+			t.Errorf("expected (10 tasks) in output, got %q", plain)
+		}
+	})
+
+	t.Run("shows regression warning", func(t *testing.T) {
+		store, err := memory.NewStore(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Older tasks (higher issue numbers = earlier created_at in list since DESC)
+		// We need recent tasks to fail more than older ones.
+		// Tasks are ordered by created_at DESC, so we insert older-passing first, then recent-failing.
+		for i := 1; i <= 10; i++ {
+			task := &memory.EvalTask{
+				ID:          fmt.Sprintf("eval-%d", i),
+				IssueNumber: i,
+				IssueTitle:  fmt.Sprintf("Task %d", i),
+				Repo:        "test/repo",
+				Success:     i <= 5, // first 5 pass (these will be "older" in DESC order)
+			}
+			if err := store.SaveEvalTask(task); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		m := Model{store: store}
+		got := m.renderEvalStats()
+		plain := stripANSI(got)
+
+		// Recent half (6-10) all fail, older half (1-5) all pass => regression
+		if !strings.Contains(plain, "regression") {
+			t.Errorf("expected regression warning in output, got %q", plain)
+		}
+	})
+}
