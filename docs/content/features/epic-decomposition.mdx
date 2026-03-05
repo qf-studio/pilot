@@ -422,6 +422,56 @@ if !usedLLMClassifier && wordCount < d.config.MinDescriptionWords {
 }
 ```
 
+## Parent Issue Lifecycle
+
+When all sub-issues of a decomposed epic are completed, Pilot automatically closes the parent issue.
+
+<Callout type="info" emoji="🔗">
+  Added in v2.76.0. Parent auto-close is non-blocking — any errors are logged as warnings without affecting the merge flow.
+</Callout>
+
+### How It Works
+
+```
+Sub-issue PR Merged → Check Siblings → All Closed? → Close Parent
+```
+
+1. On each sub-issue PR merge, autopilot's `handleMerged()` calls `maybeCloseParentIssue()`
+2. The method reads the sub-issue body and looks for a `Parent: GH-{num}` reference
+3. Calls `SearchOpenSubIssues()` to count remaining open sibling issues
+4. If zero open siblings remain, closes the parent issue with a summary comment
+
+### Detection Mechanism
+
+Sub-issues are linked to their parent via a text pattern in the issue body, added automatically during epic decomposition:
+
+```markdown
+Parent: GH-123
+
+Implement OAuth flow for Google and GitHub providers...
+```
+
+The `ParseParentIssueNumber()` function extracts the parent issue number from this pattern. Issues without a `Parent: GH-{num}` reference are not treated as sub-issues.
+
+### Closure Flow
+
+When the last sub-issue is closed:
+
+1. `pilot-done` label is added to the parent issue
+2. `pilot-failed` and `pilot-in-progress` labels are removed (if present)
+3. The parent issue is closed
+4. A summary comment is posted on the parent issue
+
+### Search Query
+
+Open siblings are found using the GitHub search API:
+
+```
+repo:{owner}/{repo} "Parent: GH-{parentNum}" is:issue is:open
+```
+
+If the search returns zero results, all siblings are complete and the parent is eligible for closure.
+
 ## Version History
 
 - **v0.20.2**: Initial epic decomposition with Claude Code planning
