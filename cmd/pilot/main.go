@@ -98,6 +98,7 @@ func main() {
 		newAutopilotCmd(),
 		newOnboardCmd(),
 		newBackendCmd(),
+		newEvalCmd(),
 	)
 
 	if err := rootCmd.Execute(); err != nil {

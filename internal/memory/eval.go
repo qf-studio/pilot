@@ -107,6 +107,7 @@ func (s *Store) SaveEvalTask(task *EvalTask) error {
 // EvalTaskFilter controls which eval tasks are returned by ListEvalTasks.
 type EvalTaskFilter struct {
 	Repo        string
+	ExecutionID string // Filter by execution_id (used as eval run identifier)
 	SuccessOnly bool
 	FailedOnly  bool
 	Limit       int
@@ -120,6 +121,10 @@ func (s *Store) ListEvalTasks(filter EvalTaskFilter) ([]*EvalTask, error) {
 	if filter.Repo != "" {
 		conditions = append(conditions, "repo = ?")
 		args = append(args, filter.Repo)
+	}
+	if filter.ExecutionID != "" {
+		conditions = append(conditions, "execution_id = ?")
+		args = append(args, filter.ExecutionID)
 	}
 	if filter.SuccessOnly {
 		conditions = append(conditions, "success = 1")
