@@ -8,11 +8,13 @@ import (
 	"log/slog"
 	"sync"
 
+	"github.com/alekspetrov/pilot/internal/adapters/asana"
 	"github.com/alekspetrov/pilot/internal/adapters/azuredevops"
 	"github.com/alekspetrov/pilot/internal/adapters/github"
 	"github.com/alekspetrov/pilot/internal/adapters/gitlab"
 	"github.com/alekspetrov/pilot/internal/adapters/jira"
 	"github.com/alekspetrov/pilot/internal/adapters/linear"
+	"github.com/alekspetrov/pilot/internal/adapters/plane"
 	"github.com/alekspetrov/pilot/internal/adapters/slack"
 	"github.com/alekspetrov/pilot/internal/adapters/telegram"
 	"github.com/alekspetrov/pilot/internal/alerts"
@@ -46,6 +48,9 @@ type Pilot struct {
 	jiraWH                 *jira.WebhookHandler
 	azureDevOpsClient      *azuredevops.Client
 	azureDevOpsWH          *azuredevops.WebhookHandler
+	asanaClient            *asana.Client
+	asanaWH                *asana.WebhookHandler
+	planeWH                *plane.WebhookHandler
 	slackNotify            *slack.Notifier
 	slackClient            *slack.Client
 	slackInteractionWH     *slack.InteractionHandler
@@ -355,6 +360,27 @@ func New(cfg *config.Config, opts ...Option) (*Pilot, error) {
 		}
 	}
 
+	// GH-2044: Initialize Asana adapter if enabled
+	if cfg.Adapters.Asana != nil && cfg.Adapters.Asana.Enabled {
+		p.asanaClient = asana.NewClient(cfg.Adapters.Asana.AccessToken, cfg.Adapters.Asana.WorkspaceID)
+		pilotTag := cfg.Adapters.Asana.PilotTag
+		if pilotTag == "" {
+			pilotTag = "pilot"
+		}
+		p.asanaWH = asana.NewWebhookHandler(p.asanaClient, cfg.Adapters.Asana.WebhookSecret, pilotTag)
+		p.asanaWH.OnTask(p.handleAsanaTask)
+	}
+
+	// GH-2044: Initialize Plane adapter if enabled
+	if cfg.Adapters.Plane != nil && cfg.Adapters.Plane.Enabled {
+		pilotLabel := cfg.Adapters.Plane.PilotLabel
+		if pilotLabel == "" {
+			pilotLabel = "pilot"
+		}
+		p.planeWH = plane.NewWebhookHandler(cfg.Adapters.Plane.WebhookSecret, pilotLabel, cfg.Adapters.Plane.ProjectIDs)
+		p.planeWH.OnWorkItem(p.handlePlaneWorkItem)
+	}
+
 	// Initialize alerts engine if enabled
 	if cfg.Alerts != nil && cfg.Alerts.Enabled {
 		p.initAlerts(cfg)
@@ -450,6 +476,41 @@ func New(cfg *config.Config, opts ...Option) (*Pilot, error) {
 
 			if err := p.azureDevOpsWH.Handle(ctx, &webhookPayload); err != nil {
 				logging.WithComponent("pilot").Error("Azure DevOps webhook error", slog.Any("error", err))
+			}
+		})
+	}
+
+	// GH-2044: Register Asana webhook handler
+	if p.asanaWH != nil {
+		p.gateway.Router().RegisterWebhookHandler("asana", func(payload map[string]interface{}) {
+			// Parse the map payload into WebhookPayload
+			payloadBytes, err := json.Marshal(payload)
+			if err != nil {
+				logging.WithComponent("pilot").Error("Failed to marshal Asana payload", slog.Any("error", err))
+				return
+			}
+
+			var webhookPayload asana.WebhookPayload
+			if err := json.Unmarshal(payloadBytes, &webhookPayload); err != nil {
+				logging.WithComponent("pilot").Error("Failed to parse Asana webhook payload", slog.Any("error", err))
+				return
+			}
+
+			if err := p.asanaWH.Handle(ctx, &webhookPayload); err != nil {
+				logging.WithComponent("pilot").Error("Asana webhook error", slog.Any("error", err))
+			}
+		})
+	}
+
+	// GH-2044: Register Plane webhook handler
+	if p.planeWH != nil {
+		p.gateway.Router().RegisterWebhookHandler("plane", func(payload map[string]interface{}) {
+			// Plane handler needs raw bytes + signature for HMAC verification
+			rawBody, _ := payload["_raw_body"].(string)
+			signature, _ := payload["_signature"].(string)
+
+			if err := p.planeWH.Handle(ctx, []byte(rawBody), signature); err != nil {
+				logging.WithComponent("pilot").Error("Plane webhook error", slog.Any("error", err))
 			}
 		})
 	}
@@ -1021,6 +1082,39 @@ func (p *Pilot) findProjectForJiraProject(projectKey string) string {
 		return p.config.Projects[0].Path
 	}
 
+	return ""
+}
+
+// handleAsanaTask handles a new Asana task (GH-2044)
+func (p *Pilot) handleAsanaTask(ctx context.Context, task *asana.Task) error {
+	logging.WithComponent("pilot").Info("Received Asana task",
+		slog.String("gid", task.GID),
+		slog.String("name", task.Name))
+
+	taskInfo := asana.ConvertToTaskInfo(task)
+
+	// Find project (use first project as fallback)
+	projectPath := p.defaultProjectPath()
+
+	return p.orchestrator.ProcessAsanaTicket(ctx, taskInfo, projectPath)
+}
+
+// handlePlaneWorkItem handles a new Plane work item (GH-2044)
+func (p *Pilot) handlePlaneWorkItem(ctx context.Context, item *plane.WebhookWorkItemData) error {
+	logging.WithComponent("pilot").Info("Received Plane work item",
+		slog.String("id", item.ID),
+		slog.String("name", item.Name))
+
+	projectPath := p.defaultProjectPath()
+
+	return p.orchestrator.ProcessPlaneTicket(ctx, item, projectPath)
+}
+
+// defaultProjectPath returns the first configured project path
+func (p *Pilot) defaultProjectPath() string {
+	if len(p.config.Projects) > 0 {
+		return p.config.Projects[0].Path
+	}
 	return ""
 }
 

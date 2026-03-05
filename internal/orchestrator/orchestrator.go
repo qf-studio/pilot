@@ -8,10 +8,12 @@ import (
 	"path/filepath"
 	"sync"
 
+	"github.com/alekspetrov/pilot/internal/adapters/asana"
 	"github.com/alekspetrov/pilot/internal/adapters/github"
 	"github.com/alekspetrov/pilot/internal/adapters/gitlab"
 	"github.com/alekspetrov/pilot/internal/adapters/jira"
 	"github.com/alekspetrov/pilot/internal/adapters/linear"
+	"github.com/alekspetrov/pilot/internal/adapters/plane"
 	"github.com/alekspetrov/pilot/internal/adapters/slack"
 	"github.com/alekspetrov/pilot/internal/executor"
 	"github.com/alekspetrov/pilot/internal/logging"
@@ -440,6 +442,69 @@ func (o *Orchestrator) ProcessJiraTicket(ctx context.Context, task *jira.TaskInf
 	}
 
 	// Queue task
+	o.QueueTask(internalTask)
+
+	return nil
+}
+
+// ProcessAsanaTicket processes a new ticket from Asana (GH-2044)
+func (o *Orchestrator) ProcessAsanaTicket(ctx context.Context, task *asana.TaskInfo, projectPath string) error {
+	ticket := &TicketData{
+		ID:          task.ID,
+		Identifier:  task.ID,
+		Title:       task.Title,
+		Description: task.Description,
+		Priority:    int(task.Priority),
+		Labels:      task.Labels,
+		Project:     task.ProjectName,
+	}
+
+	doc, err := o.bridge.PlanTicket(ctx, ticket)
+	if err != nil {
+		return fmt.Errorf("failed to plan ticket: %w", err)
+	}
+
+	if err := o.saveTaskDocument(projectPath, doc); err != nil {
+		logging.WithComponent("orchestrator").Warn("Failed to save task document", slog.Any("error", err))
+	}
+
+	internalTask := &Task{
+		ID:          doc.ID,
+		Document:    doc,
+		ProjectPath: projectPath,
+		Branch:      fmt.Sprintf("pilot/%s", task.ID),
+		Priority:    float64(task.Priority),
+	}
+
+	o.QueueTask(internalTask)
+
+	return nil
+}
+
+// ProcessPlaneTicket processes a new ticket from Plane (GH-2044)
+func (o *Orchestrator) ProcessPlaneTicket(ctx context.Context, item *plane.WebhookWorkItemData, projectPath string) error {
+	ticket := &TicketData{
+		ID:         item.ID,
+		Identifier: fmt.Sprintf("PLANE-%d", item.SequenceID),
+		Title:      item.Name,
+	}
+
+	doc, err := o.bridge.PlanTicket(ctx, ticket)
+	if err != nil {
+		return fmt.Errorf("failed to plan ticket: %w", err)
+	}
+
+	if err := o.saveTaskDocument(projectPath, doc); err != nil {
+		logging.WithComponent("orchestrator").Warn("Failed to save task document", slog.Any("error", err))
+	}
+
+	internalTask := &Task{
+		ID:          doc.ID,
+		Document:    doc,
+		ProjectPath: projectPath,
+		Branch:      fmt.Sprintf("pilot/PLANE-%d", item.SequenceID),
+	}
+
 	o.QueueTask(internalTask)
 
 	return nil
