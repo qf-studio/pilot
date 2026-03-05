@@ -21,9 +21,307 @@ func newEvalCmd() *cobra.Command {
 		Long:  `Commands for managing eval tasks and checking for regressions between eval runs.`,
 	}
 
-	cmd.AddCommand(newEvalCheckCmd())
+	cmd.AddCommand(
+		newEvalRunCmd(),
+		newEvalListCmd(),
+		newEvalStatsCmd(),
+		newEvalCheckCmd(),
+	)
 
 	return cmd
+}
+
+func newEvalRunCmd() *cobra.Command {
+	var (
+		repo  string
+		model string
+		limit int
+	)
+
+	cmd := &cobra.Command{
+		Use:   "run",
+		Short: "Run eval tasks for a repository",
+		Long: `Load eval tasks from the store and re-execute them as benchmarks.
+Selects tasks by repository, optionally overriding the model used.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if repo == "" {
+				return fmt.Errorf("--repo flag is required")
+			}
+
+			store, cleanup, err := openEvalStore()
+			if err != nil {
+				return err
+			}
+			defer cleanup()
+
+			tasks, err := store.ListEvalTasks(memory.EvalTaskFilter{
+				Repo:  repo,
+				Limit: limit,
+			})
+			if err != nil {
+				return fmt.Errorf("failed to load eval tasks: %w", err)
+			}
+
+			if len(tasks) == 0 {
+				fmt.Printf("No eval tasks found for repo %q\n", repo)
+				return nil
+			}
+
+			modelLabel := model
+			if modelLabel == "" {
+				modelLabel = "(default)"
+			}
+
+			fmt.Println("=== Eval Run Plan ===")
+			fmt.Println()
+			fmt.Printf("  Repo:   %s\n", repo)
+			fmt.Printf("  Model:  %s\n", modelLabel)
+			fmt.Printf("  Tasks:  %d\n", len(tasks))
+			fmt.Println()
+
+			passed := 0
+			for i, t := range tasks {
+				status := "FAIL"
+				if t.Success {
+					status = "PASS"
+					passed++
+				}
+				fmt.Printf("  %3d. [%s] #%d %s (%s)\n",
+					i+1, status, t.IssueNumber, t.IssueTitle, t.ID)
+			}
+
+			fmt.Println()
+			fmt.Printf("  Historical pass@1: %.1f%% (%d/%d)\n",
+				evalPassRate(tasks), passed, len(tasks))
+
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&repo, "repo", "", "Repository (owner/name) to evaluate")
+	cmd.Flags().StringVar(&model, "model", "", "Model to use for evaluation (default: config model)")
+	cmd.Flags().IntVar(&limit, "limit", 100, "Maximum number of tasks to run")
+
+	return cmd
+}
+
+func newEvalListCmd() *cobra.Command {
+	var (
+		repo        string
+		limit       int
+		successOnly bool
+		failedOnly  bool
+	)
+
+	cmd := &cobra.Command{
+		Use:   "list",
+		Short: "List eval tasks",
+		Long:  `Display eval tasks from the store with optional filters.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			store, cleanup, err := openEvalStore()
+			if err != nil {
+				return err
+			}
+			defer cleanup()
+
+			tasks, err := store.ListEvalTasks(memory.EvalTaskFilter{
+				Repo:        repo,
+				SuccessOnly: successOnly,
+				FailedOnly:  failedOnly,
+				Limit:       limit,
+			})
+			if err != nil {
+				return fmt.Errorf("failed to list eval tasks: %w", err)
+			}
+
+			if len(tasks) == 0 {
+				fmt.Println("No eval tasks found.")
+				return nil
+			}
+
+			fmt.Println()
+			fmt.Printf("%-18s %-6s %-8s %-40s %s\n",
+				"ID", "Status", "Issue", "Title", "Repo")
+			fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+			for _, t := range tasks {
+				status := "FAIL"
+				if t.Success {
+					status = "PASS"
+				}
+				title := t.IssueTitle
+				if len(title) > 40 {
+					title = title[:37] + "..."
+				}
+				fmt.Printf("%-18s %-6s #%-7d %-40s %s\n",
+					t.ID, status, t.IssueNumber, title, t.Repo)
+			}
+
+			fmt.Println()
+			fmt.Printf("Total: %d tasks\n", len(tasks))
+
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&repo, "repo", "", "Filter by repository (owner/name)")
+	cmd.Flags().IntVar(&limit, "limit", 100, "Maximum number of tasks to show")
+	cmd.Flags().BoolVar(&successOnly, "success", false, "Show only successful tasks")
+	cmd.Flags().BoolVar(&failedOnly, "failed", false, "Show only failed tasks")
+
+	return cmd
+}
+
+func newEvalStatsCmd() *cobra.Command {
+	var repo string
+
+	cmd := &cobra.Command{
+		Use:   "stats",
+		Short: "Print eval pass@1 metrics and model comparisons",
+		Long: `Compute and display pass@1/pass@k metrics from stored eval tasks.
+Shows per-repository breakdown and overall statistics.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			store, cleanup, err := openEvalStore()
+			if err != nil {
+				return err
+			}
+			defer cleanup()
+
+			tasks, err := store.ListEvalTasks(memory.EvalTaskFilter{
+				Repo:  repo,
+				Limit: 10000,
+			})
+			if err != nil {
+				return fmt.Errorf("failed to load eval tasks: %w", err)
+			}
+
+			if len(tasks) == 0 {
+				fmt.Println("No eval tasks found.")
+				return nil
+			}
+
+			printEvalStats(tasks, repo)
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&repo, "repo", "", "Filter by repository (owner/name)")
+
+	return cmd
+}
+
+// openEvalStore loads config and opens the memory store. Returns the store,
+// a cleanup function, and any error.
+func openEvalStore() (*memory.Store, func(), error) {
+	configPath := cfgFile
+	if configPath == "" {
+		configPath = config.DefaultConfigPath()
+	}
+
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to load config: %w", err)
+	}
+
+	store, err := memory.NewStore(cfg.Memory.Path)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to open memory store: %w", err)
+	}
+
+	return store, func() { _ = store.Close() }, nil
+}
+
+// evalPassRate computes the pass@1 rate (percentage) from a set of eval tasks.
+func evalPassRate(tasks []*memory.EvalTask) float64 {
+	if len(tasks) == 0 {
+		return 0
+	}
+	passed := 0
+	for _, t := range tasks {
+		if t.Success {
+			passed++
+		}
+	}
+	return float64(passed) / float64(len(tasks)) * 100
+}
+
+// printEvalStats displays pass@1 metrics with per-repo breakdown.
+func printEvalStats(tasks []*memory.EvalTask, filterRepo string) {
+	// Group tasks by repo.
+	byRepo := make(map[string][]*memory.EvalTask)
+	for _, t := range tasks {
+		byRepo[t.Repo] = append(byRepo[t.Repo], t)
+	}
+
+	fmt.Println("=== Eval Statistics ===")
+	fmt.Println()
+
+	// Overall stats.
+	passed := 0
+	failed := 0
+	var totalDurationMs int64
+	for _, t := range tasks {
+		if t.Success {
+			passed++
+		} else {
+			failed++
+		}
+		totalDurationMs += t.DurationMs
+	}
+
+	fmt.Printf("  Total tasks:  %d\n", len(tasks))
+	fmt.Printf("  Passed:       %d\n", passed)
+	fmt.Printf("  Failed:       %d\n", failed)
+	fmt.Printf("  pass@1:       %.1f%%\n", evalPassRate(tasks))
+	if len(tasks) > 0 {
+		avgMs := totalDurationMs / int64(len(tasks))
+		fmt.Printf("  Avg duration: %s\n", formatDuration(avgMs))
+	}
+	fmt.Println()
+
+	// Per-repo breakdown (only when not filtered to a single repo).
+	if filterRepo == "" && len(byRepo) > 1 {
+		fmt.Println("  Per-repository breakdown:")
+		fmt.Println()
+		fmt.Printf("  %-35s %6s %6s %6s %8s\n", "Repository", "Total", "Pass", "Fail", "pass@1")
+		fmt.Println("  " + "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+		for repoName, repoTasks := range byRepo {
+			rPassed := 0
+			for _, t := range repoTasks {
+				if t.Success {
+					rPassed++
+				}
+			}
+			rFailed := len(repoTasks) - rPassed
+			fmt.Printf("  %-35s %6d %6d %6d %7.1f%%\n",
+				repoName, len(repoTasks), rPassed, rFailed, evalPassRate(repoTasks))
+		}
+		fmt.Println()
+	}
+
+	// Pass criteria breakdown.
+	criteriaStats := make(map[string][2]int) // [passed, total]
+	for _, t := range tasks {
+		for _, c := range t.PassCriteria {
+			counts := criteriaStats[c.Type]
+			if c.Passed {
+				counts[0]++
+			}
+			counts[1]++
+			criteriaStats[c.Type] = counts
+		}
+	}
+
+	if len(criteriaStats) > 0 {
+		fmt.Println("  Quality gate pass rates:")
+		fmt.Println()
+		for gate, counts := range criteriaStats {
+			rate := float64(counts[0]) / float64(counts[1]) * 100
+			fmt.Printf("    %-12s %.1f%% (%d/%d)\n", gate, rate, counts[0], counts[1])
+		}
+		fmt.Println()
+	}
 }
 
 func newEvalCheckCmd() *cobra.Command {
