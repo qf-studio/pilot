@@ -189,7 +189,7 @@ Each adapter manages issue state transitions using platform-native mechanisms. T
 | **Azure DevOps** | Update work item state | Update state to "Done" | Update state |
 | **Plane** | Update issue state | Update state | Update state |
 
-Each adapter's notifier (`internal/adapters/{name}/notifier.go`) handles these transitions and posts status comments at each stage.
+Each adapter defines state transitions in its notifier (`internal/adapters/{name}/notifier.go`). Label and state changes are applied during execution. Status comment posting back to source systems is planned but not yet wired into the executor runner.
 
 ## Parallel Execution
 
