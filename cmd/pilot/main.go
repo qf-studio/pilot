@@ -998,6 +998,56 @@ Examples:
 				}
 			}
 
+			// Show GitLab status (GH-2045)
+			if cfg.Adapters.GitLab != nil && cfg.Adapters.GitLab.Enabled {
+				if cfg.Adapters.GitLab.Polling != nil && cfg.Adapters.GitLab.Polling.Enabled {
+					fmt.Println("🦊 GitLab polling active")
+				} else {
+					fmt.Println("🦊 GitLab webhooks enabled")
+				}
+			}
+
+			// Show Jira status (GH-2045)
+			if cfg.Adapters.Jira != nil && cfg.Adapters.Jira.Enabled {
+				if cfg.Adapters.Jira.Polling != nil && cfg.Adapters.Jira.Polling.Enabled {
+					fmt.Println("🎫 Jira polling active")
+				} else {
+					fmt.Println("🎫 Jira webhooks enabled")
+				}
+			}
+
+			// Show Asana status (GH-2045)
+			if cfg.Adapters.Asana != nil && cfg.Adapters.Asana.Enabled {
+				if cfg.Adapters.Asana.Polling != nil && cfg.Adapters.Asana.Polling.Enabled {
+					fmt.Println("📋 Asana polling active")
+				} else {
+					fmt.Println("📋 Asana webhooks enabled")
+				}
+			}
+
+			// Show Azure DevOps status (GH-2045)
+			if cfg.Adapters.AzureDevOps != nil && cfg.Adapters.AzureDevOps.Enabled {
+				if cfg.Adapters.AzureDevOps.Polling != nil && cfg.Adapters.AzureDevOps.Polling.Enabled {
+					fmt.Println("🔷 Azure DevOps polling active")
+				} else {
+					fmt.Println("🔷 Azure DevOps webhooks enabled")
+				}
+			}
+
+			// Show Plane status (GH-2045)
+			if cfg.Adapters.Plane != nil && cfg.Adapters.Plane.Enabled {
+				if cfg.Adapters.Plane.Polling != nil && cfg.Adapters.Plane.Polling.Enabled {
+					fmt.Println("✈️  Plane polling active")
+				} else {
+					fmt.Println("✈️  Plane webhooks enabled")
+				}
+			}
+
+			// Show Discord status (GH-2045)
+			if cfg.Adapters.Discord != nil && cfg.Adapters.Discord.Enabled {
+				fmt.Println("🎮 Discord gateway enabled")
+			}
+
 			// Wait for shutdown signal
 			sigCh := make(chan os.Signal, 1)
 			signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -2248,7 +2298,52 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 				}
 			}
 
-			// Check for restart marker (set by hot upgrade)
+			// Show GitLab status (GH-2045)
+		if cfg.Adapters.GitLab != nil && cfg.Adapters.GitLab.Enabled {
+			if cfg.Adapters.GitLab.Polling != nil && cfg.Adapters.GitLab.Polling.Enabled {
+				program.Send(dashboard.AddLog("🦊 GitLab polling active")())
+			} else {
+				program.Send(dashboard.AddLog("🦊 GitLab webhooks enabled")())
+			}
+		}
+		// Show Jira status (GH-2045)
+		if cfg.Adapters.Jira != nil && cfg.Adapters.Jira.Enabled {
+			if cfg.Adapters.Jira.Polling != nil && cfg.Adapters.Jira.Polling.Enabled {
+				program.Send(dashboard.AddLog("🎫 Jira polling active")())
+			} else {
+				program.Send(dashboard.AddLog("🎫 Jira webhooks enabled")())
+			}
+		}
+		// Show Asana status (GH-2045)
+		if cfg.Adapters.Asana != nil && cfg.Adapters.Asana.Enabled {
+			if cfg.Adapters.Asana.Polling != nil && cfg.Adapters.Asana.Polling.Enabled {
+				program.Send(dashboard.AddLog("📋 Asana polling active")())
+			} else {
+				program.Send(dashboard.AddLog("📋 Asana webhooks enabled")())
+			}
+		}
+		// Show Azure DevOps status (GH-2045)
+		if cfg.Adapters.AzureDevOps != nil && cfg.Adapters.AzureDevOps.Enabled {
+			if cfg.Adapters.AzureDevOps.Polling != nil && cfg.Adapters.AzureDevOps.Polling.Enabled {
+				program.Send(dashboard.AddLog("🔷 Azure DevOps polling active")())
+			} else {
+				program.Send(dashboard.AddLog("🔷 Azure DevOps webhooks enabled")())
+			}
+		}
+		// Show Plane status (GH-2045)
+		if cfg.Adapters.Plane != nil && cfg.Adapters.Plane.Enabled {
+			if cfg.Adapters.Plane.Polling != nil && cfg.Adapters.Plane.Polling.Enabled {
+				program.Send(dashboard.AddLog("✈️  Plane polling active")())
+			} else {
+				program.Send(dashboard.AddLog("✈️  Plane webhooks enabled")())
+			}
+		}
+		// Show Discord status (GH-2045)
+		if cfg.Adapters.Discord != nil && cfg.Adapters.Discord.Enabled {
+			program.Send(dashboard.AddLog("🎮 Discord gateway enabled")())
+		}
+
+		// Check for restart marker (set by hot upgrade)
 			// GH-879: Config is automatically reloaded because syscall.Exec starts a fresh process
 			if os.Getenv("PILOT_RESTARTED") == "1" {
 				prevVersion := os.Getenv("PILOT_PREVIOUS_VERSION")
