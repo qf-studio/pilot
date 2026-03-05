@@ -3409,6 +3409,93 @@ func TestSetLearningLoop_ForwardsToFeedbackLoop(t *testing.T) {
 	}
 }
 
+// mockEvalStore captures SaveEvalTask calls for testing.
+type mockEvalStore struct {
+	saved []*memory.EvalTask
+}
+
+func (m *mockEvalStore) SaveEvalTask(task *memory.EvalTask) error {
+	m.saved = append(m.saved, task)
+	return nil
+}
+
+// TestHandleMerged_ExtractsEvalTask verifies that handleMerged extracts and saves
+// an eval task when evalStore is configured and the PR has a linked issue.
+func TestHandleMerged_ExtractsEvalTask(t *testing.T) {
+	issueFetched := false
+	filesFetched := false
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/owner/repo/issues/10":
+			issueFetched = true
+			issue := github.Issue{Number: 10, Title: "Add feature X"}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(mustJSON(t, issue))
+		case "/repos/owner/repo/pulls/42/files":
+			filesFetched = true
+			files := []github.PRFile{
+				{Filename: "internal/foo.go", Status: "modified"},
+				{Filename: "internal/bar.go", Status: "added"},
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(mustJSON(t, files))
+		default:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("{}"))
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.Environment = EnvDev
+	cfg.AutoReview = false
+
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+	evalMock := &mockEvalStore{}
+	c.SetEvalStore(evalMock)
+
+	prState := &PRState{
+		PRNumber:    42,
+		PRURL:       "https://github.com/owner/repo/pull/42",
+		IssueNumber: 10,
+		Stage:       StageMerged,
+	}
+
+	err := c.handleMerged(context.Background(), prState)
+	if err != nil {
+		t.Fatalf("handleMerged returned unexpected error: %v", err)
+	}
+
+	if !issueFetched {
+		t.Error("expected /issues/10 to be fetched")
+	}
+	if !filesFetched {
+		t.Error("expected /pulls/42/files to be fetched")
+	}
+	if len(evalMock.saved) != 1 {
+		t.Fatalf("expected 1 eval task saved, got %d", len(evalMock.saved))
+	}
+
+	task := evalMock.saved[0]
+	if task.IssueNumber != 10 {
+		t.Errorf("expected issue number 10, got %d", task.IssueNumber)
+	}
+	if task.IssueTitle != "Add feature X" {
+		t.Errorf("expected issue title 'Add feature X', got %q", task.IssueTitle)
+	}
+	if task.Repo != "owner/repo" {
+		t.Errorf("expected repo 'owner/repo', got %q", task.Repo)
+	}
+	if !task.Success {
+		t.Error("expected task success=true for merged PR")
+	}
+	if len(task.FilesChanged) != 2 {
+		t.Errorf("expected 2 files changed, got %d", len(task.FilesChanged))
+	}
+}
+
 // mustJSON serialises v to JSON and fails the test on error.
 func mustJSON(t *testing.T, v any) []byte {
 	t.Helper()

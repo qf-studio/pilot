@@ -62,6 +62,11 @@ type TaskMonitor interface {
 	Complete(taskID, prURL string)
 }
 
+// EvalStore persists eval tasks extracted from merged PRs.
+type EvalStore interface {
+	SaveEvalTask(task *memory.EvalTask) error
+}
+
 // ControllerOption is a functional option for Controller configuration.
 type ControllerOption func(*Controller)
 
@@ -102,6 +107,9 @@ type Controller struct {
 
 	// Learning loop for capturing review feedback (optional, nil = learning disabled)
 	learningLoop *memory.LearningLoop
+
+	// Eval store for capturing eval tasks from merged PRs (optional, nil = eval disabled)
+	evalStore EvalStore
 
 	// Per-PR circuit breaker: each PR has independent failure tracking.
 	// A failure on one PR does not block other PRs.
@@ -183,6 +191,11 @@ func (c *Controller) SetLearningLoop(loop *memory.LearningLoop) {
 	if c.feedbackLoop != nil {
 		c.feedbackLoop.SetLearningLoop(loop)
 	}
+}
+
+// SetEvalStore sets the eval store for capturing eval tasks from merged PRs.
+func (c *Controller) SetEvalStore(store EvalStore) {
+	c.evalStore = store
 }
 
 // persistPRState saves a PR state to the store if available.
@@ -857,6 +870,40 @@ func (c *Controller) handleMerged(ctx context.Context, prState *PRState) error {
 					c.log.Info("Learned from PR reviews",
 						slog.Int("pr", prState.PRNumber),
 						slog.Int("reviews", len(reviewData)),
+					)
+				}
+			}
+		}
+	}
+
+	// GH-2059: Extract eval task from merged PR for benchmarking.
+	if c.evalStore != nil && prState.IssueNumber > 0 {
+		issue, err := c.ghClient.GetIssue(ctx, c.owner, c.repo, prState.IssueNumber)
+		if err != nil {
+			c.log.Warn("Failed to fetch issue for eval task", slog.Any("error", err))
+		} else {
+			prFiles, err := c.ghClient.ListPullRequestFiles(ctx, c.owner, c.repo, prState.PRNumber)
+			if err != nil {
+				c.log.Warn("Failed to fetch PR files for eval task", slog.Any("error", err))
+			} else {
+				var filenames []string
+				for _, f := range prFiles {
+					filenames = append(filenames, f.Filename)
+				}
+				evalTask := memory.ExtractEvalTask(memory.EvalInput{
+					TaskID:       fmt.Sprintf("pr-%d", prState.PRNumber),
+					Success:      true, // merged = successful
+					IssueNumber:  prState.IssueNumber,
+					IssueTitle:   issue.Title,
+					Repo:         fmt.Sprintf("%s/%s", c.owner, c.repo),
+					FilesChanged: filenames,
+				})
+				if saveErr := c.evalStore.SaveEvalTask(evalTask); saveErr != nil {
+					c.log.Warn("Failed to save eval task", slog.Any("error", saveErr))
+				} else {
+					c.log.Info("Saved eval task from merged PR",
+						slog.Int("pr", prState.PRNumber),
+						slog.Int("issue", prState.IssueNumber),
 					)
 				}
 			}

@@ -915,6 +915,7 @@ Examples:
 
 					if gwAutopilotController != nil {
 						gwAutopilotController.SetLearningLoop(gwLearningLoop)
+						gwAutopilotController.SetEvalStore(gwStore)
 					}
 
 					// GH-1991: Wire outcome tracker for model escalation (gateway mode)
@@ -1404,6 +1405,7 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 			// GH-1823: Wire review learning into autopilot controllers
 			for _, ctrl := range autopilotControllers {
 				ctrl.SetLearningLoop(learningLoop)
+				ctrl.SetEvalStore(store)
 			}
 
 			logging.WithComponent("learning").Info("Learning system initialized")

@@ -684,6 +684,22 @@ func (c *Client) ListPullRequestReviews(ctx context.Context, owner, repo string,
 	return result, nil
 }
 
+// PRFile represents a file changed in a pull request.
+type PRFile struct {
+	Filename string `json:"filename"`
+	Status   string `json:"status"` // "added", "removed", "modified", "renamed"
+}
+
+// ListPullRequestFiles returns the list of files changed in a pull request.
+func (c *Client) ListPullRequestFiles(ctx context.Context, owner, repo string, number int) ([]*PRFile, error) {
+	path := fmt.Sprintf("/repos/%s/%s/pulls/%d/files", owner, repo, number)
+	var result []*PRFile
+	if err := c.doRequest(ctx, http.MethodGet, path, nil, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
 // HasApprovalReview checks if a PR has at least one approval review.
 // Returns (hasApproval, approverLogin, error).
 // Only considers the latest review from each user.
