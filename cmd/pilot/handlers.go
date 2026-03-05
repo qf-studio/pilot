@@ -13,6 +13,7 @@ import (
 
 	"github.com/alekspetrov/pilot/internal/adapters/asana"
 	"github.com/alekspetrov/pilot/internal/adapters/github"
+	"github.com/alekspetrov/pilot/internal/adapters/gitlab"
 	"github.com/alekspetrov/pilot/internal/adapters/jira"
 	"github.com/alekspetrov/pilot/internal/adapters/linear"
 	"github.com/alekspetrov/pilot/internal/adapters/plane"
@@ -919,4 +920,100 @@ func buildPlaneExecutionComment(result *executor.ExecutionResult, branchName str
 		comment += fmt.Sprintf("<p>⏱ Duration: %s</p>", result.Duration)
 	}
 	return comment
+}
+
+func handleGitLabIssueWithResult(ctx context.Context, cfg *config.Config, client *gitlab.Client, issue *gitlab.Issue, projectPath string, dispatcher *executor.Dispatcher, runner *executor.Runner, monitor *executor.Monitor, program *tea.Program, alertsEngine *alerts.Engine, enforcer *budget.Enforcer) (*gitlab.IssueResult, error) {
+	taskID := fmt.Sprintf("GL-%d", issue.IID)
+	branchName := fmt.Sprintf("pilot/%s", taskID)
+
+	taskDesc := fmt.Sprintf("GitLab Issue %s: %s\n\n%s", taskID, issue.Title, issue.Description)
+
+	task := &executor.Task{
+		ID:          taskID,
+		Title:       issue.Title,
+		Description: taskDesc,
+		ProjectPath: projectPath,
+		Branch:      branchName,
+		CreatePR:    true,
+	}
+
+	deps := HandlerDeps{
+		Cfg:          cfg,
+		Dispatcher:   dispatcher,
+		Runner:       runner,
+		Monitor:      monitor,
+		Program:      program,
+		AlertsEngine: alertsEngine,
+		Enforcer:     enforcer,
+		ProjectPath:  projectPath,
+	}
+	info := IssueInfo{
+		TaskID:   taskID,
+		Title:    issue.Title,
+		URL:      issue.WebURL,
+		Adapter:  "gitlab",
+		LogEmoji: "🦊",
+	}
+
+	hr, execErr := handleIssueGeneric(ctx, deps, info, task)
+
+	issueResult := &gitlab.IssueResult{
+		Success:    hr.Success,
+		BranchName: hr.BranchName,
+		MRNumber:   hr.PRNumber,
+		MRURL:      hr.PRURL,
+		HeadSHA:    hr.HeadSHA,
+		Error:      hr.Error,
+	}
+
+	if execErr != nil {
+		note := fmt.Sprintf("❌ Pilot execution failed:\n\n%s", execErr.Error())
+		if _, err := client.AddIssueNote(ctx, issue.IID, note); err != nil {
+			logging.WithComponent("gitlab").Warn("Failed to add failure note",
+				slog.Int("iid", issue.IID),
+				slog.Any("error", err),
+			)
+		}
+	} else if hr.Result != nil && hr.Result.Success {
+		if hr.Result.CommitSHA == "" && hr.Result.PRUrl == "" {
+			note := fmt.Sprintf("⚠️ Pilot execution completed but no changes were made.\n\nDuration: %s\nBranch: %s\n\nNo commits or MR were created. The task may need clarification or manual intervention.",
+				hr.Result.Duration, branchName)
+			if _, err := client.AddIssueNote(ctx, issue.IID, note); err != nil {
+				logging.WithComponent("gitlab").Warn("Failed to add note",
+					slog.Int("iid", issue.IID),
+					slog.Any("error", err),
+				)
+			}
+			issueResult.Success = false
+		} else {
+			var parts []string
+			parts = append(parts, "✅ Pilot execution completed successfully!")
+			parts = append(parts, "")
+			if hr.Result.PRUrl != "" {
+				parts = append(parts, fmt.Sprintf("Merge Request: %s", hr.Result.PRUrl))
+			}
+			if hr.Result.CommitSHA != "" {
+				parts = append(parts, fmt.Sprintf("Commit: %s", hr.Result.CommitSHA[:min(8, len(hr.Result.CommitSHA))]))
+			}
+			parts = append(parts, fmt.Sprintf("Branch: %s", branchName))
+			parts = append(parts, fmt.Sprintf("Duration: %s", hr.Result.Duration))
+			note := strings.Join(parts, "\n")
+			if _, err := client.AddIssueNote(ctx, issue.IID, note); err != nil {
+				logging.WithComponent("gitlab").Warn("Failed to add success note",
+					slog.Int("iid", issue.IID),
+					slog.Any("error", err),
+				)
+			}
+		}
+	} else if hr.Result != nil {
+		note := fmt.Sprintf("❌ Pilot execution failed\n\nError: %s\nDuration: %s", hr.Result.Error, hr.Result.Duration)
+		if _, err := client.AddIssueNote(ctx, issue.IID, note); err != nil {
+			logging.WithComponent("gitlab").Warn("Failed to add failure note",
+				slog.Int("iid", issue.IID),
+				slog.Any("error", err),
+			)
+		}
+	}
+
+	return issueResult, execErr
 }

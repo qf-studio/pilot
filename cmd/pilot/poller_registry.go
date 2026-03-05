@@ -48,6 +48,7 @@ func adapterPollerRegistrations() []PollerRegistration {
 		azuredevopsPollerRegistration(),
 		planePollerRegistration(),
 		discordPollerRegistration(),
+		gitlabPollerRegistration(),
 	}
 }
 
