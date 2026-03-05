@@ -45,6 +45,9 @@ const (
 
 	// Heartbeat timeout (GH-884)
 	AlertTypeHeartbeatTimeout AlertType = "heartbeat_timeout"
+
+	// Eval regression detection (GH-2065)
+	AlertTypeEvalRegression AlertType = "eval_regression"
 )
 
 // Alert represents an alert event
@@ -322,6 +325,19 @@ func defaultRules() []AlertRule {
 			Channels:    []string{},
 			Cooldown:    1 * time.Hour,
 			Description: "Alert when autopilot has no state transitions for 1 hour",
+		},
+		// Eval regression detection (GH-2065)
+		{
+			Name:    "eval_regression",
+			Type:    AlertTypeEvalRegression,
+			Enabled: true,
+			Condition: RuleCondition{
+				UsageSpikePercent: 10.0, // delta threshold; >2× this → critical
+			},
+			Severity:    SeverityWarning,
+			Channels:    []string{},
+			Cooldown:    30 * time.Minute,
+			Description: "Alert when eval pass@1 scores regress compared to baseline",
 		},
 		// Escalation rule (GH-848)
 		{

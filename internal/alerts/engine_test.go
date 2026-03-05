@@ -2372,3 +2372,108 @@ func TestEngine_CreateEscalationAlert(t *testing.T) {
 		t.Errorf("expected project path '/my/project', got '%s'", alert.ProjectPath)
 	}
 }
+
+func TestHandleEvalRegression(t *testing.T) {
+	mock := newMockChannel("slack", "slack")
+	dispatcher := NewDispatcher(nil)
+	dispatcher.RegisterChannel(mock)
+
+	config := &AlertConfig{
+		Enabled: true,
+		Channels: []ChannelConfig{
+			{Name: "slack", Type: "slack", Enabled: true},
+		},
+		Rules: []AlertRule{
+			{
+				Name:    "eval_regression",
+				Type:    AlertTypeEvalRegression,
+				Enabled: true,
+				Condition: RuleCondition{
+					UsageSpikePercent: 10.0,
+				},
+				Severity:    SeverityWarning,
+				Channels:    []string{"slack"},
+				Description: "Eval regression alert",
+			},
+		},
+	}
+
+	engine := NewEngine(config, WithDispatcher(dispatcher), WithLogger(slog.Default()))
+	ctx := context.Background()
+	_ = engine.Start(ctx)
+	defer engine.Stop()
+
+	t.Run("warning severity for small delta", func(t *testing.T) {
+		event := Event{
+			Type:    EventTypeEvalRegression,
+			TaskID:  "eval-run-1",
+			Project: "pilot",
+			Metadata: map[string]string{
+				"baseline_pass1":  "0.85",
+				"current_pass1":   "0.72",
+				"delta":           "13.0",
+				"regressed_count": "3",
+				"recommendation":  "Review recent prompt changes",
+			},
+			Timestamp: time.Now(),
+		}
+
+		engine.handleEvalRegression(ctx, event)
+
+		mock.mu.Lock()
+		defer mock.mu.Unlock()
+
+		if len(mock.alerts) != 1 {
+			t.Fatalf("expected 1 alert, got %d", len(mock.alerts))
+		}
+
+		alert := mock.alerts[0]
+		if alert.Type != AlertTypeEvalRegression {
+			t.Errorf("expected type %s, got %s", AlertTypeEvalRegression, alert.Type)
+		}
+		if alert.Severity != SeverityWarning {
+			t.Errorf("expected severity warning, got %s", alert.Severity)
+		}
+	})
+
+	t.Run("critical severity when delta exceeds 2x threshold", func(t *testing.T) {
+		mock.mu.Lock()
+		mock.alerts = mock.alerts[:0]
+		mock.mu.Unlock()
+
+		event := Event{
+			Type:    EventTypeEvalRegression,
+			TaskID:  "eval-run-2",
+			Project: "pilot",
+			Metadata: map[string]string{
+				"baseline_pass1":  "0.85",
+				"current_pass1":   "0.50",
+				"delta":           "35.0",
+				"regressed_count": "7",
+				"recommendation":  "",
+			},
+			Timestamp: time.Now(),
+		}
+
+		engine.handleEvalRegression(ctx, event)
+
+		mock.mu.Lock()
+		defer mock.mu.Unlock()
+
+		if len(mock.alerts) != 1 {
+			t.Fatalf("expected 1 alert, got %d", len(mock.alerts))
+		}
+
+		alert := mock.alerts[0]
+		if alert.Severity != SeverityCritical {
+			t.Errorf("expected severity critical for delta 35 (2x threshold 10), got %s", alert.Severity)
+		}
+	})
+}
+
+func TestParseAlertTypeEvalRegression(t *testing.T) {
+	result := parseAlertType("eval_regression")
+	if result != AlertTypeEvalRegression {
+		t.Errorf("parseAlertType(\"eval_regression\") = %s, want %s", result, AlertTypeEvalRegression)
+	}
+}

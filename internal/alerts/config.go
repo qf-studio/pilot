@@ -156,6 +156,8 @@ func parseAlertType(t string) AlertType {
 		return AlertTypeSensitiveFile
 	case "unusual_pattern":
 		return AlertTypeUnusualPattern
+	case "eval_regression":
+		return AlertTypeEvalRegression
 	default:
 		return AlertType(t)
 	}

@@ -66,6 +66,9 @@ const (
 
 	// Escalation events (GH-885)
 	EventTypeEscalation EventType = "escalation"
+
+	// Eval regression events (GH-2065)
+	EventTypeEvalRegression EventType = "eval_regression"
 )
 
 // EngineOption configures the Engine
@@ -183,6 +186,8 @@ func (e *Engine) handleEvent(ctx context.Context, event Event) {
 		e.handleAutopilotMetrics(ctx, event)
 	case EventTypeEscalation:
 		e.handleEscalation(ctx, event)
+	case EventTypeEvalRegression:
+		e.handleEvalRegression(ctx, event)
 	}
 }
 
@@ -664,6 +669,47 @@ func (e *Engine) handleAutopilotMetrics(ctx context.Context, event Event) {
 				e.fireAlert(ctx, rule, alert)
 			}
 		}
+	}
+}
+
+// handleEvalRegression processes eval regression events (GH-2065).
+// Metadata keys: baseline_pass1, current_pass1, delta, regressed_count, recommendation.
+func (e *Engine) handleEvalRegression(ctx context.Context, event Event) {
+	for _, rule := range e.config.Rules {
+		if !rule.Enabled || rule.Type != AlertTypeEvalRegression {
+			continue
+		}
+
+		if !e.shouldFire(rule) {
+			continue
+		}
+
+		baselinePass1 := event.Metadata["baseline_pass1"]
+		currentPass1 := event.Metadata["current_pass1"]
+		delta := event.Metadata["delta"]
+		regressedCount := event.Metadata["regressed_count"]
+		recommendation := event.Metadata["recommendation"]
+
+		message := fmt.Sprintf(
+			"Eval regression detected: pass@1 dropped from %s to %s (delta: %s). %s eval(s) regressed.",
+			baselinePass1, currentPass1, delta, regressedCount,
+		)
+		if recommendation != "" {
+			message += " Recommendation: " + recommendation
+		}
+
+		alert := e.createAlert(rule, event, message)
+
+		// Escalate to critical if delta exceeds 2× the threshold
+		deltaVal := 0.0
+		if _, err := fmt.Sscanf(delta, "%f", &deltaVal); err == nil {
+			threshold := rule.Condition.UsageSpikePercent // reuse as regression threshold
+			if threshold > 0 && deltaVal > 2*threshold {
+				alert.Severity = SeverityCritical
+			}
+		}
+
+		e.fireAlert(ctx, rule, alert)
 	}
 }
 
