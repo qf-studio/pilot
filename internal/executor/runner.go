@@ -1111,7 +1111,8 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 					// Create PR with GitHub auto-close keyword
 					epicIssueNum := strings.TrimPrefix(task.ID, "GH-")
 					prBody := fmt.Sprintf("## Summary\n\nAutomated PR created by Pilot for epic task %s.\n\nCloses #%s\n\n## Changes\n\n%s", task.ID, epicIssueNum, task.Description)
-					prURL, prErr := epicGit.CreatePR(ctx, task.Title, prBody, baseBranch)
+					epicPRTitle := fmt.Sprintf("%s: %s", task.ID, task.Title)
+				prURL, prErr := epicGit.CreatePR(ctx, epicPRTitle, prBody, baseBranch)
 					if prErr != nil {
 						r.log.Warn("Epic PR creation failed",
 							slog.String("task_id", task.ID),
@@ -2534,7 +2535,8 @@ The previous execution completed but made no code changes. This task requires ac
 			prBody := fmt.Sprintf("## Summary\n\nAutomated PR created by Pilot for task %s.\n\nCloses #%s\n\n## Changes\n\n%s", task.ID, issueNum, task.Description)
 
 			// Create PR
-			prURL, err := git.CreatePR(ctx, task.Title, prBody, baseBranch)
+			prTitle := fmt.Sprintf("%s: %s", task.ID, task.Title)
+			prURL, err := git.CreatePR(ctx, prTitle, prBody, baseBranch)
 			if err != nil {
 				result.Success = false
 				result.Error = fmt.Sprintf("PR creation failed: %v", err)
