@@ -124,6 +124,10 @@ type Config struct {
 	// NotifyOnFailure enables notifications when CI fails.
 	NotifyOnFailure bool `yaml:"notify_on_failure"`
 
+	// Review Feedback
+	// ReviewFeedback configures automatic handling of PR review change requests.
+	ReviewFeedback *ReviewFeedbackConfig `yaml:"review_feedback"`
+
 	// Safety
 	// MaxFailures is the circuit breaker threshold before pausing autopilot.
 	MaxFailures int `yaml:"max_failures"`
@@ -149,6 +153,15 @@ type Config struct {
 	// Name is a user-friendly label for this environment (e.g. "staging", "production").
 	// When empty, defaults to the Environment value.
 	Name string `yaml:"name"`
+}
+
+// ReviewFeedbackConfig holds configuration for handling PR review change requests.
+type ReviewFeedbackConfig struct {
+	// Enabled controls whether review feedback handling is active.
+	Enabled bool `yaml:"enabled"`
+	// MaxIterations limits how many revision issues can be chained before giving up.
+	// Prevents infinite review-fix cycles. Default: 3. Set to 0 to disable the limit.
+	MaxIterations int `yaml:"max_iterations"`
 }
 
 // CIChecksConfig holds configuration for CI check monitoring.
@@ -288,6 +301,10 @@ func DefaultConfig() *Config {
 			Required:             []string{},
 			DiscoveryGracePeriod: 60 * time.Second,
 		},
+		ReviewFeedback: &ReviewFeedbackConfig{
+			Enabled:       true,
+			MaxIterations: 3,
+		},
 		AutoCreateIssues:    true,
 		IssueLabels:         []string{"pilot", "autopilot-fix"},
 		NotifyOnFailure:     true,
@@ -355,6 +372,8 @@ const (
 	StagePostMergeCI PRStage = "post_merge_ci"
 	// StageReleasing indicates the PR is triggering an automatic release.
 	StageReleasing PRStage = "releasing"
+	// StageReviewRequested indicates a human reviewer requested changes on the PR.
+	StageReviewRequested PRStage = "review_requested"
 	// StageFailed indicates the PR pipeline has failed and requires intervention.
 	StageFailed PRStage = "failed"
 )

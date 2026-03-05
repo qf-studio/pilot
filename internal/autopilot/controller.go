@@ -319,7 +319,8 @@ func (c *Controller) OnPRCreated(prNumber int, prURL string, issueNumber int, he
 }
 
 // OnReviewRequested handles PR review events from GitHub webhooks.
-// It logs the review and, for changes_requested reviews, records the event on tracked PRs.
+// For changes_requested reviews on tracked PRs, it transitions the PR to StageReviewRequested
+// so the next processAllPRs tick will create a revision issue.
 func (c *Controller) OnReviewRequested(prNumber int, action, state, reviewer string) {
 	c.mu.RLock()
 	prState, tracked := c.activePRs[prNumber]
@@ -337,13 +338,31 @@ func (c *Controller) OnReviewRequested(prNumber int, action, state, reviewer str
 		return
 	}
 
-	if state == "changes_requested" {
-		c.log.Warn("Changes requested on PR",
+	// Only act on changes_requested reviews
+	if state != "changes_requested" {
+		return
+	}
+
+	// Check if review feedback handling is enabled
+	if c.config.ReviewFeedback == nil || !c.config.ReviewFeedback.Enabled {
+		c.log.Info("review feedback handling disabled, ignoring changes_requested",
 			"pr", prNumber,
 			"reviewer", reviewer,
-			"current_stage", prState.Stage,
 		)
+		return
 	}
+
+	c.log.Warn("Changes requested on PR, transitioning to review_requested stage",
+		"pr", prNumber,
+		"reviewer", reviewer,
+		"current_stage", prState.Stage,
+	)
+
+	c.mu.Lock()
+	prState.Stage = StageReviewRequested
+	c.mu.Unlock()
+
+	c.persistPRState(prState)
 }
 
 // ProcessPR processes a single PR through the state machine.
@@ -395,6 +414,8 @@ func (c *Controller) ProcessPR(ctx context.Context, prNumber int, ghPR *github.P
 		err = c.handleMerged(ctx, prState)
 	case StagePostMergeCI:
 		err = c.handlePostMergeCI(ctx, prState)
+	case StageReviewRequested:
+		err = c.handleReviewRequested(ctx, prState)
 	case StageReleasing:
 		err = c.handleReleasing(ctx, prState)
 	case StageFailed:
@@ -727,6 +748,150 @@ func (c *Controller) handleCIFailed(ctx context.Context, prState *PRState) error
 	prState.Stage = StageFailed
 	c.metrics.RecordPRFailed()
 	return nil
+}
+
+// handleReviewRequested processes a PR that received "changes requested" review feedback.
+// It fetches reviews and comments, checks iteration limits, creates a revision issue,
+// learns from the review, then closes the PR and deletes the branch.
+func (c *Controller) handleReviewRequested(ctx context.Context, prState *PRState) error {
+	c.log.Info("handleReviewRequested: processing review feedback",
+		"pr", prState.PRNumber,
+	)
+
+	// Fetch reviews and comments
+	reviews, err := c.ghClient.ListPullRequestReviews(ctx, c.owner, c.repo, prState.PRNumber)
+	if err != nil {
+		return fmt.Errorf("failed to fetch reviews: %w", err)
+	}
+
+	comments, err := c.ghClient.GetPullRequestComments(ctx, c.owner, c.repo, prState.PRNumber)
+	if err != nil {
+		c.log.Warn("failed to fetch review comments", "pr", prState.PRNumber, "error", err)
+		// Non-fatal: proceed with reviews only
+	}
+
+	// Check iteration limit
+	iteration := 0
+	if prState.IssueNumber > 0 && c.config.ReviewFeedback != nil && c.config.ReviewFeedback.MaxIterations > 0 {
+		issue, err := c.ghClient.GetIssue(ctx, c.owner, c.repo, prState.IssueNumber)
+		if err != nil {
+			c.log.Warn("failed to fetch issue for iteration check", "issue", prState.IssueNumber, "error", err)
+		} else {
+			iteration = parseAutopilotIteration(issue.Body)
+		}
+
+		if iteration >= c.config.ReviewFeedback.MaxIterations {
+			c.log.Warn("review feedback iteration limit reached",
+				"pr", prState.PRNumber,
+				"iteration", iteration,
+				"max", c.config.ReviewFeedback.MaxIterations,
+			)
+
+			if err := c.ghClient.ClosePullRequest(ctx, c.owner, c.repo, prState.PRNumber); err != nil {
+				c.log.Warn("failed to close PR", "pr", prState.PRNumber, "error", err)
+			}
+
+			prState.Stage = StageFailed
+			prState.Error = fmt.Sprintf("review feedback iteration limit reached (%d/%d)", iteration, c.config.ReviewFeedback.MaxIterations)
+			c.metrics.RecordPRFailed()
+			return nil
+		}
+	}
+
+	// Create revision issue with review feedback
+	issueNum, err := c.feedbackLoop.CreateReviewIssue(ctx, prState, reviews, comments, iteration+1)
+	if err != nil {
+		return fmt.Errorf("failed to create review issue: %w", err)
+	}
+
+	// Learn from review (self-improvement)
+	if c.learningLoop != nil && len(reviews) > 0 {
+		var reviewData []*memory.ReviewData
+		for _, r := range reviews {
+			if r.Body == "" {
+				continue
+			}
+			reviewData = append(reviewData, &memory.ReviewData{
+				Body:     r.Body,
+				State:    r.State,
+				Reviewer: r.User.Login,
+			})
+		}
+		for _, comment := range comments {
+			reviewData = append(reviewData, &memory.ReviewData{
+				Body:     comment.Body,
+				State:    "COMMENTED",
+				Reviewer: comment.User.Login,
+			})
+		}
+		if len(reviewData) > 0 {
+			projectPath := c.owner + "/" + c.repo
+			if learnErr := c.learningLoop.LearnFromReview(ctx, projectPath, reviewData, prState.PRURL); learnErr != nil {
+				c.log.Warn("Failed to learn from review feedback", slog.Any("error", learnErr))
+			}
+		}
+	}
+
+	// Notify fix issue created
+	if c.notifier != nil {
+		if err := c.notifier.NotifyFixIssueCreated(ctx, prState, issueNum); err != nil {
+			c.log.Warn("failed to send review issue notification", "error", err)
+		}
+	}
+
+	c.log.Info("created revision issue for review feedback", "pr", prState.PRNumber, "issue", issueNum)
+
+	// Close the PR and delete the branch
+	if err := c.ghClient.ClosePullRequest(ctx, c.owner, c.repo, prState.PRNumber); err != nil {
+		c.log.Warn("failed to close PR after review", "pr", prState.PRNumber, "error", err)
+	}
+
+	if prState.BranchName != "" {
+		if err := c.ghClient.DeleteBranch(ctx, c.owner, c.repo, prState.BranchName); err != nil {
+			c.log.Debug("branch cleanup after review", "branch", prState.BranchName, "error", err)
+		}
+	}
+
+	prState.Stage = StageFailed
+	c.metrics.RecordPRFailed()
+	return nil
+}
+
+// hasChangesRequested checks if a PR has unresolved "changes requested" reviews.
+// It filters out bot reviews and only considers reviews submitted after the PR was created.
+func (c *Controller) hasChangesRequested(ctx context.Context, prState *PRState) bool {
+	reviews, err := c.ghClient.ListPullRequestReviews(ctx, c.owner, c.repo, prState.PRNumber)
+	if err != nil {
+		c.log.Warn("failed to fetch reviews for changes_requested check", "pr", prState.PRNumber, "error", err)
+		return false
+	}
+
+	// Track latest review state per user (only non-bot users)
+	latestState := make(map[string]string)
+	for _, r := range reviews {
+		// Skip bot reviews (self-review)
+		if strings.Contains(r.User.Login, "[bot]") || strings.HasSuffix(r.User.Login, "-bot") {
+			continue
+		}
+
+		// Only consider reviews submitted after the PR entered tracking
+		if r.SubmittedAt != "" && !prState.CreatedAt.IsZero() {
+			submittedAt, err := time.Parse(time.RFC3339, r.SubmittedAt)
+			if err == nil && submittedAt.Before(prState.CreatedAt) {
+				continue
+			}
+		}
+
+		latestState[r.User.Login] = r.State
+	}
+
+	for _, state := range latestState {
+		if state == "CHANGES_REQUESTED" {
+			return true
+		}
+	}
+
+	return false
 }
 
 // handleAwaitApproval waits for human approval (prod only).
@@ -1698,6 +1863,22 @@ func (c *Controller) processAllPRs(ctx context.Context) {
 			// Check if PR was merged/closed externally before processing
 			if c.checkExternalMergeOrClose(ctx, pr, ghPR) {
 				continue
+			}
+
+			// Detect changes_requested reviews in polling mode (webhook mode uses OnReviewRequested).
+			// Only check PRs that haven't already been transitioned to review_requested.
+			if pr.Stage != StageReviewRequested && pr.Stage != StageFailed &&
+				c.config.ReviewFeedback != nil && c.config.ReviewFeedback.Enabled {
+				if c.hasChangesRequested(ctx, pr) {
+					c.log.Info("detected changes_requested review in polling mode",
+						"pr", pr.PRNumber,
+						"stage", pr.Stage,
+					)
+					c.mu.Lock()
+					pr.Stage = StageReviewRequested
+					c.mu.Unlock()
+					c.persistPRState(pr)
+				}
 			}
 
 			if err := c.ProcessPR(ctx, pr.PRNumber, ghPR); err != nil {
