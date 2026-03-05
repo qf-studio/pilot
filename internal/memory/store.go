@@ -261,6 +261,23 @@ func (s *Store) migrate() error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_pattern_performance_pattern ON pattern_performance(pattern_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_pattern_performance_project ON pattern_performance(project_id)`,
+		// Eval tasks table (GH-2058)
+		`CREATE TABLE IF NOT EXISTS eval_tasks (
+			id TEXT PRIMARY KEY,
+			execution_id TEXT NOT NULL,
+			issue_number INTEGER NOT NULL,
+			issue_title TEXT NOT NULL,
+			repo TEXT NOT NULL,
+			success BOOLEAN NOT NULL,
+			pass_criteria TEXT,
+			files_changed TEXT,
+			duration_ms INTEGER DEFAULT 0,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE(repo, issue_number)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_eval_tasks_repo ON eval_tasks(repo)`,
+		`CREATE INDEX IF NOT EXISTS idx_eval_tasks_success ON eval_tasks(success)`,
+		`CREATE INDEX IF NOT EXISTS idx_eval_tasks_created ON eval_tasks(created_at)`,
 	}
 
 	for _, migration := range migrations {
