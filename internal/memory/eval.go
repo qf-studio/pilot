@@ -104,6 +104,136 @@ func (s *Store) SaveEvalTask(task *EvalTask) error {
 	})
 }
 
+// EvalResult stores the outcome of a single eval run for one task and model.
+type EvalResult struct {
+	ID         int64     `json:"id"`
+	RunID      string    `json:"run_id"`
+	TaskID     string    `json:"task_id"`
+	Model      string    `json:"model"`
+	Passed     bool      `json:"passed"`
+	DurationMs int64     `json:"duration_ms"`
+	TokensUsed int64     `json:"tokens_used"`
+	CostUSD    float64   `json:"cost_usd"`
+	ErrorMsg   string    `json:"error_msg,omitempty"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
+// EvalStats aggregates eval results for a model.
+type EvalStats struct {
+	Model       string  `json:"model"`
+	TotalTasks  int     `json:"total_tasks"`
+	Passed      int     `json:"passed"`
+	Failed      int     `json:"failed"`
+	PassRate    float64 `json:"pass_rate"`
+	AvgDuration int64   `json:"avg_duration_ms"`
+	AvgTokens   int64   `json:"avg_tokens"`
+	TotalCost   float64 `json:"total_cost_usd"`
+}
+
+// SaveEvalResult persists an eval result row.
+func (s *Store) SaveEvalResult(r *EvalResult) error {
+	return s.withRetry("SaveEvalResult", func() error {
+		res, err := s.db.Exec(`
+			INSERT INTO eval_results (run_id, task_id, model, passed, duration_ms, tokens_used, cost_usd, error_msg)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		`, r.RunID, r.TaskID, r.Model, r.Passed, r.DurationMs, r.TokensUsed, r.CostUSD, r.ErrorMsg)
+		if err != nil {
+			return err
+		}
+		id, _ := res.LastInsertId()
+		r.ID = id
+		return nil
+	})
+}
+
+// EvalResultFilter controls which eval results are returned by GetEvalResults.
+type EvalResultFilter struct {
+	RunID string
+	Model string
+	Limit int
+}
+
+// GetEvalResults returns eval results matching the filter, ordered by created_at DESC.
+func (s *Store) GetEvalResults(filter EvalResultFilter) ([]*EvalResult, error) {
+	var conditions []string
+	var args []interface{}
+
+	if filter.RunID != "" {
+		conditions = append(conditions, "run_id = ?")
+		args = append(args, filter.RunID)
+	}
+	if filter.Model != "" {
+		conditions = append(conditions, "model = ?")
+		args = append(args, filter.Model)
+	}
+
+	query := "SELECT id, run_id, task_id, model, passed, duration_ms, tokens_used, cost_usd, error_msg, created_at FROM eval_results"
+	if len(conditions) > 0 {
+		query += " WHERE " + strings.Join(conditions, " AND ")
+	}
+	query += " ORDER BY created_at DESC"
+
+	limit := filter.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+	query += fmt.Sprintf(" LIMIT %d", limit)
+
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query eval_results: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var results []*EvalResult
+	for rows.Next() {
+		var r EvalResult
+		if err := rows.Scan(&r.ID, &r.RunID, &r.TaskID, &r.Model, &r.Passed,
+			&r.DurationMs, &r.TokensUsed, &r.CostUSD, &r.ErrorMsg, &r.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan eval_result: %w", err)
+		}
+		results = append(results, &r)
+	}
+	return results, rows.Err()
+}
+
+// GetEvalStats returns aggregated stats per model for a given run. If runID is empty, aggregates all runs.
+func (s *Store) GetEvalStats(runID string) ([]*EvalStats, error) {
+	query := `SELECT model, COUNT(*) as total, SUM(CASE WHEN passed THEN 1 ELSE 0 END) as passed,
+		SUM(CASE WHEN passed THEN 0 ELSE 1 END) as failed,
+		AVG(duration_ms) as avg_dur, AVG(tokens_used) as avg_tok, SUM(cost_usd) as total_cost
+		FROM eval_results`
+	var args []interface{}
+	if runID != "" {
+		query += " WHERE run_id = ?"
+		args = append(args, runID)
+	}
+	query += " GROUP BY model ORDER BY model"
+
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query eval_stats: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var stats []*EvalStats
+	for rows.Next() {
+		var st EvalStats
+		var avgDur, avgTok float64
+		if err := rows.Scan(&st.Model, &st.TotalTasks, &st.Passed, &st.Failed,
+			&avgDur, &avgTok, &st.TotalCost); err != nil {
+			return nil, fmt.Errorf("scan eval_stats: %w", err)
+		}
+		st.AvgDuration = int64(avgDur)
+		st.AvgTokens = int64(avgTok)
+		if st.TotalTasks > 0 {
+			st.PassRate = float64(st.Passed) / float64(st.TotalTasks) * 100
+		}
+		stats = append(stats, &st)
+	}
+	return stats, rows.Err()
+}
+
 // EvalTaskFilter controls which eval tasks are returned by ListEvalTasks.
 type EvalTaskFilter struct {
 	Repo        string
