@@ -173,6 +173,8 @@ type ProjectConfig struct {
 	Path          string               `yaml:"path"`
 	Navigator     bool                 `yaml:"navigator"`
 	DefaultBranch string               `yaml:"default_branch"`
+	Reviewers     []string             `yaml:"reviewers,omitempty"`
+	TeamReviewers []string             `yaml:"team_reviewers,omitempty"`
 	GitHub        *ProjectGitHubConfig `yaml:"github,omitempty"`
 	Linear        *ProjectLinearConfig `yaml:"linear,omitempty"`
 }
@@ -186,6 +188,19 @@ type ProjectGitHubConfig struct {
 // ProjectLinearConfig holds Linear-specific project configuration for project pairing.
 type ProjectLinearConfig struct {
 	ProjectID string `yaml:"project_id"`
+}
+
+// FindProjectByRepo returns the ProjectConfig whose GitHub owner/repo matches
+// the given "owner/repo" string, or nil if no match is found.
+func (c *Config) FindProjectByRepo(ownerRepo string) *ProjectConfig {
+	for _, p := range c.Projects {
+		if p.GitHub != nil {
+			if fmt.Sprintf("%s/%s", p.GitHub.Owner, p.GitHub.Repo) == ownerRepo {
+				return p
+			}
+		}
+	}
+	return nil
 }
 
 // DashboardConfig holds settings for the terminal UI dashboard.

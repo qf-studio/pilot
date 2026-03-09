@@ -47,6 +47,34 @@ func logGitHubAPIError(operation string, owner, repo string, issueNum int, err e
 	}
 }
 
+// requestReviewersFromConfig looks up the project config for the given sourceRepo
+// and requests PR reviewers if configured. Errors are logged but not propagated.
+func requestReviewersFromConfig(ctx context.Context, cfg *config.Config, client *github.Client, sourceRepo, owner, repo string, prNumber int) {
+	proj := cfg.FindProjectByRepo(sourceRepo)
+	if proj == nil {
+		return
+	}
+	if len(proj.Reviewers) == 0 && len(proj.TeamReviewers) == 0 {
+		return
+	}
+	if err := client.RequestReviewers(ctx, owner, repo, prNumber, proj.Reviewers, proj.TeamReviewers); err != nil {
+		logging.WithComponent("github").Warn("Failed to request PR reviewers",
+			slog.String("repo", sourceRepo),
+			slog.Int("pr", prNumber),
+			slog.Any("reviewers", proj.Reviewers),
+			slog.Any("team_reviewers", proj.TeamReviewers),
+			slog.Any("error", err),
+		)
+	} else {
+		slog.Info("PR reviewers requested",
+			slog.String("repo", sourceRepo),
+			slog.Int("pr", prNumber),
+			slog.Any("reviewers", proj.Reviewers),
+			slog.Any("team_reviewers", proj.TeamReviewers),
+		)
+	}
+}
+
 // parseAutopilotBranch extracts the target branch from an autopilot-fix issue's metadata comment.
 // Returns empty string if no metadata found.
 // Supports both old format (branch:X) and new format (branch:X pr:N).
@@ -292,6 +320,9 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 				// GH-1869: Move to Review column when PR is created
 				if hr.PRNumber > 0 {
 					syncBoardStatus(ctx, boardSync, issue.NodeID, boardStatuses.Review)
+
+					// GH-2099: Auto-assign PR reviewers from project config
+					requestReviewersFromConfig(ctx, cfg, client, sourceRepo, parts[0], parts[1], hr.PRNumber)
 				}
 				syncBoardStatus(ctx, boardSync, issue.NodeID, boardStatuses.Done) // GH-1853
 

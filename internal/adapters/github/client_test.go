@@ -1921,6 +1921,90 @@ func TestHasApprovalReview(t *testing.T) {
 	}
 }
 
+func TestRequestReviewers(t *testing.T) {
+	tests := []struct {
+		name          string
+		reviewers     []string
+		teamReviewers []string
+		statusCode    int
+		wantErr       bool
+		wantSkipped   bool // expect no HTTP call
+	}{
+		{
+			name:       "success - individual reviewers",
+			reviewers:  []string{"alice", "bob"},
+			statusCode: http.StatusCreated,
+		},
+		{
+			name:          "success - team reviewers",
+			teamReviewers: []string{"backend-team"},
+			statusCode:    http.StatusCreated,
+		},
+		{
+			name:          "success - both individual and team",
+			reviewers:     []string{"alice"},
+			teamReviewers: []string{"frontend-team"},
+			statusCode:    http.StatusCreated,
+		},
+		{
+			name:        "skip - no reviewers",
+			wantSkipped: true,
+		},
+		{
+			name:       "error - not found",
+			reviewers:  []string{"nonexistent"},
+			statusCode: http.StatusUnprocessableEntity,
+			wantErr:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			called := false
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				called = true
+				if r.Method != http.MethodPost {
+					t.Errorf("expected POST, got %s", r.Method)
+				}
+				if !strings.Contains(r.URL.Path, "/requested_reviewers") {
+					t.Errorf("unexpected path: %s", r.URL.Path)
+				}
+
+				var body map[string][]string
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Fatalf("failed to decode request body: %v", err)
+				}
+				if len(tt.reviewers) > 0 {
+					if len(body["reviewers"]) != len(tt.reviewers) {
+						t.Errorf("reviewers = %v, want %v", body["reviewers"], tt.reviewers)
+					}
+				}
+				if len(tt.teamReviewers) > 0 {
+					if len(body["team_reviewers"]) != len(tt.teamReviewers) {
+						t.Errorf("team_reviewers = %v, want %v", body["team_reviewers"], tt.teamReviewers)
+					}
+				}
+
+				w.WriteHeader(tt.statusCode)
+			}))
+			defer server.Close()
+
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			err := client.RequestReviewers(context.Background(), "owner", "repo", 42, tt.reviewers, tt.teamReviewers)
+
+			if (err != nil) != tt.wantErr {
+				t.Errorf("RequestReviewers() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if tt.wantSkipped && called {
+				t.Error("RequestReviewers() should not make HTTP call when no reviewers specified")
+			}
+			if !tt.wantSkipped && !tt.wantErr && !called {
+				t.Error("RequestReviewers() should have made HTTP call")
+			}
+		})
+	}
+}
+
 func TestListPullRequests(t *testing.T) {
 	tests := []struct {
 		name       string

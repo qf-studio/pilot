@@ -238,6 +238,12 @@ projects:
     path: "/path/to/my-app"
     navigator: true           # Use Navigator for context efficiency
     default_branch: "main"
+    # PR reviewers - auto-assigned when Pilot creates a PR
+    # reviewers:
+    #   - alice
+    #   - bob
+    # team_reviewers:
+    #   - backend-team
     # GitHub integration for PR creation
     # github:
     #   owner: "my-org"

@@ -1272,3 +1272,110 @@ team:
 		}
 	})
 }
+
+func TestFindProjectByRepo(t *testing.T) {
+	cfg := &Config{
+		Projects: []*ProjectConfig{
+			{
+				Name:          "app-one",
+				Reviewers:     []string{"alice", "bob"},
+				TeamReviewers: []string{"backend-team"},
+				GitHub: &ProjectGitHubConfig{
+					Owner: "my-org",
+					Repo:  "app-one",
+				},
+			},
+			{
+				Name: "app-two",
+				GitHub: &ProjectGitHubConfig{
+					Owner: "my-org",
+					Repo:  "app-two",
+				},
+			},
+			{
+				Name: "no-github",
+			},
+		},
+	}
+
+	t.Run("found with reviewers", func(t *testing.T) {
+		proj := cfg.FindProjectByRepo("my-org/app-one")
+		if proj == nil {
+			t.Fatal("expected project, got nil")
+		}
+		if proj.Name != "app-one" {
+			t.Errorf("Name = %s, want app-one", proj.Name)
+		}
+		if len(proj.Reviewers) != 2 {
+			t.Errorf("Reviewers count = %d, want 2", len(proj.Reviewers))
+		}
+		if len(proj.TeamReviewers) != 1 {
+			t.Errorf("TeamReviewers count = %d, want 1", len(proj.TeamReviewers))
+		}
+	})
+
+	t.Run("found without reviewers", func(t *testing.T) {
+		proj := cfg.FindProjectByRepo("my-org/app-two")
+		if proj == nil {
+			t.Fatal("expected project, got nil")
+		}
+		if len(proj.Reviewers) != 0 {
+			t.Errorf("Reviewers count = %d, want 0", len(proj.Reviewers))
+		}
+	})
+
+	t.Run("not found", func(t *testing.T) {
+		proj := cfg.FindProjectByRepo("other-org/other-repo")
+		if proj != nil {
+			t.Errorf("expected nil, got %v", proj)
+		}
+	})
+
+	t.Run("empty config", func(t *testing.T) {
+		empty := &Config{}
+		proj := empty.FindProjectByRepo("my-org/app-one")
+		if proj != nil {
+			t.Errorf("expected nil, got %v", proj)
+		}
+	})
+}
+
+func TestProjectConfigReviewersYAML(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+
+	configContent := `
+version: "1.0"
+projects:
+  - name: "my-app"
+    path: "/tmp/my-app"
+    reviewers:
+      - alice
+      - bob
+    team_reviewers:
+      - backend-team
+    github:
+      owner: "my-org"
+      repo: "my-app"
+`
+	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+		t.Fatalf("Failed to write test config: %v", err)
+	}
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	if len(cfg.Projects) != 1 {
+		t.Fatalf("Projects count = %d, want 1", len(cfg.Projects))
+	}
+
+	proj := cfg.Projects[0]
+	if len(proj.Reviewers) != 2 || proj.Reviewers[0] != "alice" || proj.Reviewers[1] != "bob" {
+		t.Errorf("Reviewers = %v, want [alice bob]", proj.Reviewers)
+	}
+	if len(proj.TeamReviewers) != 1 || proj.TeamReviewers[0] != "backend-team" {
+		t.Errorf("TeamReviewers = %v, want [backend-team]", proj.TeamReviewers)
+	}
+}

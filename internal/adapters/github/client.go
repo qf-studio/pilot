@@ -278,6 +278,25 @@ func (c *Client) CreatePullRequest(ctx context.Context, owner, repo string, inpu
 	}, DefaultRetryOptions())
 }
 
+// RequestReviewers requests reviewers for a pull request.
+// reviewers are individual GitHub usernames, teamReviewers are team slugs.
+func (c *Client) RequestReviewers(ctx context.Context, owner, repo string, number int, reviewers, teamReviewers []string) error {
+	if len(reviewers) == 0 && len(teamReviewers) == 0 {
+		return nil
+	}
+	return WithRetryVoid(ctx, func() error {
+		path := fmt.Sprintf("/repos/%s/%s/pulls/%d/requested_reviewers", owner, repo, number)
+		body := map[string][]string{}
+		if len(reviewers) > 0 {
+			body["reviewers"] = reviewers
+		}
+		if len(teamReviewers) > 0 {
+			body["team_reviewers"] = teamReviewers
+		}
+		return c.doRequest(ctx, http.MethodPost, path, body, nil)
+	}, DefaultRetryOptions())
+}
+
 // GetPullRequest fetches a pull request by number
 func (c *Client) GetPullRequest(ctx context.Context, owner, repo string, number int) (*PullRequest, error) {
 	path := fmt.Sprintf("/repos/%s/%s/pulls/%d", owner, repo, number)
