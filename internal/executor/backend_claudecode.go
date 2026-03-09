@@ -20,8 +20,14 @@ import (
 // This allows the process to clean up gracefully if it responds to SIGTERM.
 const GracePeriod = 5 * time.Second
 
-// HeartbeatTimeout is the time to wait for any stream-json event before considering the process hung.
-const HeartbeatTimeout = 5 * time.Minute
+// DefaultHeartbeatTimeout is the default time to wait for any stream-json event before considering the process hung.
+const DefaultHeartbeatTimeout = 5 * time.Minute
+
+// MinHeartbeatTimeout is the minimum allowed heartbeat timeout.
+const MinHeartbeatTimeout = 1 * time.Minute
+
+// MaxHeartbeatTimeout is the maximum allowed heartbeat timeout.
+const MaxHeartbeatTimeout = 30 * time.Minute
 
 // HeartbeatCheckInterval is how often to check for heartbeat timeout.
 const HeartbeatCheckInterval = 30 * time.Second
@@ -156,8 +162,9 @@ func parseClaudeCodeError(stderr string, originalErr error) error {
 
 // ClaudeCodeBackend implements Backend for Claude Code CLI.
 type ClaudeCodeBackend struct {
-	config *ClaudeCodeConfig
-	log    *slog.Logger
+	config           *ClaudeCodeConfig
+	heartbeatTimeout time.Duration
+	log              *slog.Logger
 }
 
 // NewClaudeCodeBackend creates a new Claude Code backend.
@@ -169,9 +176,15 @@ func NewClaudeCodeBackend(config *ClaudeCodeConfig) *ClaudeCodeBackend {
 		config.Command = "claude"
 	}
 	return &ClaudeCodeBackend{
-		config: config,
-		log:    logging.WithComponent("executor.claudecode"),
+		config:           config,
+		heartbeatTimeout: DefaultHeartbeatTimeout,
+		log:              logging.WithComponent("executor.claudecode"),
 	}
+}
+
+// SetHeartbeatTimeout sets a custom heartbeat timeout for this backend.
+func (b *ClaudeCodeBackend) SetHeartbeatTimeout(d time.Duration) {
+	b.heartbeatTimeout = d
 }
 
 // Name returns the backend identifier.
@@ -314,11 +327,11 @@ func (b *ClaudeCodeBackend) executeWithFromPR(ctx context.Context, opts ExecuteO
 				lastNano := lastEventAt.Load()
 				lastTime := time.Unix(0, lastNano)
 				age := time.Since(lastTime)
-				if age > HeartbeatTimeout {
+				if age > b.heartbeatTimeout {
 					b.log.Warn("Heartbeat timeout detected, killing hung process",
 						slog.Int("pid", cmd.Process.Pid),
 						slog.Duration("last_event_age", age),
-						slog.Duration("timeout", HeartbeatTimeout),
+						slog.Duration("timeout", b.heartbeatTimeout),
 					)
 
 					// Invoke callback if provided

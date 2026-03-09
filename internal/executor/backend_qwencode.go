@@ -158,8 +158,9 @@ func classifyQwenCodeError(stderr string, originalErr error) *QwenCodeError {
 // Qwen Code is a Gemini CLI fork that supports --output-format stream-json
 // with a nearly identical event structure to Claude Code.
 type QwenCodeBackend struct {
-	config *QwenCodeConfig
-	log    *slog.Logger
+	config           *QwenCodeConfig
+	heartbeatTimeout time.Duration
+	log              *slog.Logger
 }
 
 // NewQwenCodeBackend creates a new Qwen Code backend.
@@ -171,9 +172,15 @@ func NewQwenCodeBackend(config *QwenCodeConfig) *QwenCodeBackend {
 		config.Command = "qwen"
 	}
 	return &QwenCodeBackend{
-		config: config,
-		log:    logging.WithComponent("executor.qwencode"),
+		config:           config,
+		heartbeatTimeout: DefaultHeartbeatTimeout,
+		log:              logging.WithComponent("executor.qwencode"),
 	}
+}
+
+// SetHeartbeatTimeout sets a custom heartbeat timeout for this backend.
+func (b *QwenCodeBackend) SetHeartbeatTimeout(d time.Duration) {
+	b.heartbeatTimeout = d
 }
 
 // Name returns the backend identifier.
@@ -287,11 +294,11 @@ func (b *QwenCodeBackend) Execute(ctx context.Context, opts ExecuteOptions) (*Ba
 				lastNano := lastEventAt.Load()
 				lastTime := time.Unix(0, lastNano)
 				age := time.Since(lastTime)
-				if age > HeartbeatTimeout {
+				if age > b.heartbeatTimeout {
 					b.log.Warn("Heartbeat timeout detected, killing hung process",
 						slog.Int("pid", cmd.Process.Pid),
 						slog.Duration("last_event_age", age),
-						slog.Duration("timeout", HeartbeatTimeout),
+						slog.Duration("timeout", b.heartbeatTimeout),
 					)
 
 					if opts.HeartbeatCallback != nil {

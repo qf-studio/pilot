@@ -267,6 +267,11 @@ type BackendConfig struct {
 	// GH-1376: Added to prevent lint-failure cascades
 	PrePushLint *bool `yaml:"pre_push_lint,omitempty"`
 
+	// HeartbeatTimeout is the time to wait for any stream-json event before
+	// considering the subprocess hung and killing it.
+	// Valid range: 1m to 30m. Default: 5m.
+	HeartbeatTimeout time.Duration `yaml:"heartbeat_timeout,omitempty"`
+
 	// PlanningTimeout is the maximum time to wait for epic planning (PlanEpic).
 	// If planning exceeds this timeout, execution falls through to direct (non-epic) mode.
 	// Default: 2m
@@ -275,6 +280,21 @@ type BackendConfig struct {
 	// Version is the Pilot binary version, set at startup from the build-time version var.
 	// Used for feature matrix updates and execution reports. Not a config file field.
 	Version string `yaml:"-"`
+}
+
+// EffectiveHeartbeatTimeout returns the heartbeat timeout to use, applying
+// defaults and clamping to the valid range [1m, 30m].
+func (c *BackendConfig) EffectiveHeartbeatTimeout() time.Duration {
+	if c == nil || c.HeartbeatTimeout <= 0 {
+		return DefaultHeartbeatTimeout
+	}
+	if c.HeartbeatTimeout < MinHeartbeatTimeout {
+		return MinHeartbeatTimeout
+	}
+	if c.HeartbeatTimeout > MaxHeartbeatTimeout {
+		return MaxHeartbeatTimeout
+	}
+	return c.HeartbeatTimeout
 }
 
 // ModelRoutingConfig controls which model to use based on task complexity.

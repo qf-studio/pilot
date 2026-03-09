@@ -10,16 +10,21 @@ func NewBackend(config *BackendConfig) (Backend, error) {
 		config = DefaultBackendConfig()
 	}
 
+	heartbeatTimeout := config.EffectiveHeartbeatTimeout()
+
 	switch config.Type {
 	case BackendTypeClaudeCode, "":
-		// Default to Claude Code
-		return NewClaudeCodeBackend(config.ClaudeCode), nil
+		b := NewClaudeCodeBackend(config.ClaudeCode)
+		b.SetHeartbeatTimeout(heartbeatTimeout)
+		return b, nil
 
 	case BackendTypeOpenCode:
 		return NewOpenCodeBackend(config.OpenCode), nil
 
 	case BackendTypeQwenCode:
-		return NewQwenCodeBackend(config.QwenCode), nil
+		b := NewQwenCodeBackend(config.QwenCode)
+		b.SetHeartbeatTimeout(heartbeatTimeout)
+		return b, nil
 
 	default:
 		return nil, fmt.Errorf("unknown backend type: %s", config.Type)

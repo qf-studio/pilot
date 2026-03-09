@@ -231,8 +231,14 @@ func TestClaudeCodeBackendContextCancellation(t *testing.T) {
 
 func TestHeartbeatConstants(t *testing.T) {
 	// Verify heartbeat constants are set to expected values
-	if HeartbeatTimeout != 5*time.Minute {
-		t.Errorf("HeartbeatTimeout = %v, want 5m", HeartbeatTimeout)
+	if DefaultHeartbeatTimeout != 5*time.Minute {
+		t.Errorf("DefaultHeartbeatTimeout = %v, want 5m", DefaultHeartbeatTimeout)
+	}
+	if MinHeartbeatTimeout != 1*time.Minute {
+		t.Errorf("MinHeartbeatTimeout = %v, want 1m", MinHeartbeatTimeout)
+	}
+	if MaxHeartbeatTimeout != 30*time.Minute {
+		t.Errorf("MaxHeartbeatTimeout = %v, want 30m", MaxHeartbeatTimeout)
 	}
 	if HeartbeatCheckInterval != 30*time.Second {
 		t.Errorf("HeartbeatCheckInterval = %v, want 30s", HeartbeatCheckInterval)
@@ -342,6 +348,92 @@ func TestExecuteOptionsWatchdogCallback(t *testing.T) {
 	opts.WatchdogCallback(1234, opts.WatchdogTimeout)
 	if !callbackCalled {
 		t.Error("WatchdogCallback was not called")
+	}
+}
+
+func TestEffectiveHeartbeatTimeout(t *testing.T) {
+	tests := []struct {
+		name     string
+		config   *BackendConfig
+		expected time.Duration
+	}{
+		{
+			name:     "nil config returns default",
+			config:   nil,
+			expected: DefaultHeartbeatTimeout,
+		},
+		{
+			name:     "zero value returns default",
+			config:   &BackendConfig{},
+			expected: DefaultHeartbeatTimeout,
+		},
+		{
+			name:     "custom value within range",
+			config:   &BackendConfig{HeartbeatTimeout: 10 * time.Minute},
+			expected: 10 * time.Minute,
+		},
+		{
+			name:     "below minimum clamped to min",
+			config:   &BackendConfig{HeartbeatTimeout: 30 * time.Second},
+			expected: MinHeartbeatTimeout,
+		},
+		{
+			name:     "above maximum clamped to max",
+			config:   &BackendConfig{HeartbeatTimeout: 45 * time.Minute},
+			expected: MaxHeartbeatTimeout,
+		},
+		{
+			name:     "exact minimum allowed",
+			config:   &BackendConfig{HeartbeatTimeout: 1 * time.Minute},
+			expected: 1 * time.Minute,
+		},
+		{
+			name:     "exact maximum allowed",
+			config:   &BackendConfig{HeartbeatTimeout: 30 * time.Minute},
+			expected: 30 * time.Minute,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.config.EffectiveHeartbeatTimeout()
+			if got != tt.expected {
+				t.Errorf("EffectiveHeartbeatTimeout() = %v, want %v", got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestClaudeCodeBackendHeartbeatTimeout(t *testing.T) {
+	// Default backend should use DefaultHeartbeatTimeout
+	b := NewClaudeCodeBackend(nil)
+	if b.heartbeatTimeout != DefaultHeartbeatTimeout {
+		t.Errorf("default heartbeatTimeout = %v, want %v", b.heartbeatTimeout, DefaultHeartbeatTimeout)
+	}
+
+	// SetHeartbeatTimeout should update the value
+	b.SetHeartbeatTimeout(15 * time.Minute)
+	if b.heartbeatTimeout != 15*time.Minute {
+		t.Errorf("after SetHeartbeatTimeout(15m), heartbeatTimeout = %v, want 15m", b.heartbeatTimeout)
+	}
+}
+
+func TestBackendFactoryHeartbeatTimeout(t *testing.T) {
+	// Factory should wire heartbeat timeout from BackendConfig
+	config := &BackendConfig{
+		Type:             BackendTypeClaudeCode,
+		HeartbeatTimeout: 12 * time.Minute,
+	}
+	backend, err := NewBackend(config)
+	if err != nil {
+		t.Fatalf("NewBackend() error: %v", err)
+	}
+	ccb, ok := backend.(*ClaudeCodeBackend)
+	if !ok {
+		t.Fatal("expected *ClaudeCodeBackend")
+	}
+	if ccb.heartbeatTimeout != 12*time.Minute {
+		t.Errorf("heartbeatTimeout = %v, want 12m", ccb.heartbeatTimeout)
 	}
 }
 
