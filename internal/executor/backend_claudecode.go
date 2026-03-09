@@ -411,6 +411,11 @@ func (b *ClaudeCodeBackend) executeWithFromPR(ctx context.Context, opts ExecuteO
 
 			// Track final result
 			if event.Type == EventTypeResult {
+				// GH-2103: Cancel heartbeat on result event.
+				// On slow I/O flush, the heartbeat timer could fire and kill
+				// the process after it had already produced output.
+				cancelHeartbeat()
+
 				if event.IsError {
 					result.Error = event.Message
 				} else {

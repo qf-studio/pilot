@@ -618,6 +618,88 @@ func TestBuildPromptSkipsNavigatorForTrivialTask(t *testing.T) {
 	}
 }
 
+func TestBuildPromptLocalMode(t *testing.T) {
+	// GH-2103: LocalMode should use problem-solving prompt even if .agent/ exists
+	tempDir, err := os.MkdirTemp("", "pilot-test-local")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tempDir) }()
+
+	// Create .agent/ directory to simulate Navigator project
+	agentDir := filepath.Join(tempDir, ".agent")
+	if err := os.MkdirAll(agentDir, 0755); err != nil {
+		t.Fatalf("Failed to create .agent dir: %v", err)
+	}
+
+	runner := NewRunner()
+	task := &Task{
+		ID:          "LOCAL-123",
+		Title:       "Fix bug locally",
+		Description: "Fix the authentication bug in auth_test.go",
+		ProjectPath: tempDir,
+		LocalMode:   true,
+	}
+
+	prompt := runner.BuildPrompt(task, tempDir)
+
+	// Should use problem-solving prompt
+	if !strings.Contains(prompt, "## Problem-Solving Mode") {
+		t.Error("LocalMode should produce problem-solving prompt")
+	}
+
+	// Should NOT contain Navigator/PR workflow elements
+	if strings.Contains(prompt, "PILOT EXECUTION MODE") {
+		t.Error("LocalMode should not contain PILOT EXECUTION MODE header")
+	}
+	if strings.Contains(prompt, "## Project Context") {
+		t.Error("LocalMode should not inject project context")
+	}
+	if strings.Contains(prompt, "## Relevant SOPs") {
+		t.Error("LocalMode should not inject SOPs")
+	}
+	if strings.Contains(prompt, "optionally CREATE PRs") {
+		t.Error("LocalMode should not mention PR creation constraints")
+	}
+
+	// Should contain task details
+	if !strings.Contains(prompt, "## Task: LOCAL-123") {
+		t.Error("LocalMode should contain task ID")
+	}
+	if !strings.Contains(prompt, "Fix the authentication bug") {
+		t.Error("LocalMode should contain task description")
+	}
+
+	// Should include test-first instruction since description mentions test file
+	if !strings.Contains(prompt, "Write tests FIRST") {
+		t.Error("LocalMode should include test-first instruction when task mentions test files")
+	}
+}
+
+func TestBuildPromptLocalModeWithoutTestFiles(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "pilot-test-local-notest")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tempDir) }()
+
+	runner := NewRunner()
+	task := &Task{
+		ID:          "LOCAL-456",
+		Title:       "Add feature",
+		Description: "Add rate limiting to API endpoints",
+		ProjectPath: tempDir,
+		LocalMode:   true,
+	}
+
+	prompt := runner.BuildPrompt(task, tempDir)
+
+	// Should NOT include test-first instruction for non-test tasks
+	if strings.Contains(prompt, "Write tests FIRST") {
+		t.Error("LocalMode should not include test-first instruction when task doesn't mention test files")
+	}
+}
+
 func TestBuildPromptNoNavigator(t *testing.T) {
 	// Test with non-Navigator project (no .agent/ directory)
 	tempDir, err := os.MkdirTemp("", "pilot-test-no-nav")

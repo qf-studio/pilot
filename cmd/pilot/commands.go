@@ -313,6 +313,7 @@ func newTaskCmd() *cobra.Command {
 	var verbose bool
 	var enableAlerts bool
 	var enableBudget bool
+	var localMode bool    // GH-2103: problem-solving prompt without PR constraints
 	var teamID string     // GH-635: team project access scoping
 	var teamMember string // GH-635: member email for access scoping
 
@@ -328,7 +329,8 @@ Examples:
   pilot task "Fix the login bug in auth.go" --project /path/to/project
   pilot task "Refactor the API handlers" --dry-run
   pilot task "Add index.py with hello world" --verbose
-  pilot task "Fix bug" --alerts`,
+  pilot task "Fix bug" --alerts
+  pilot task "Fix bug" --local`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			taskDesc := args[0]
@@ -389,6 +391,7 @@ Examples:
 				Branch:      branchName,
 				Verbose:     verbose,
 				CreatePR:    true,
+				LocalMode:   localMode, // GH-2103
 			}
 
 			// Dry run mode - just show what would happen
@@ -745,6 +748,7 @@ Examples:
 	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "Stream Claude Code output")
 	cmd.Flags().BoolVar(&enableAlerts, "alerts", false, "Enable alerts for task execution")
 	cmd.Flags().BoolVar(&enableBudget, "budget", false, "Enable budget enforcement for this task")
+	cmd.Flags().BoolVar(&localMode, "local", false, "Use problem-solving prompt without PR/Navigator constraints")
 	cmd.Flags().StringVar(&teamID, "team", "", "Team ID or name for project access scoping (overrides config)")
 	cmd.Flags().StringVar(&teamMember, "team-member", "", "Member email for team access scoping (overrides config)")
 

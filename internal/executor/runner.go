@@ -156,6 +156,10 @@ type Task struct {
 	// For Jira: issue key (e.g., "PROJ-789")
 	// Used as parentID when creating sub-issues via SubIssueCreator.
 	SourceIssueID string
+	// LocalMode enables problem-solving prompt without PR constraints (GH-2103).
+	// When true, BuildPrompt skips Navigator detection and uses a focused
+	// problem-solving prompt suitable for local execution.
+	LocalMode bool
 }
 
 // QualityGateResult represents the result of a single quality gate check.
