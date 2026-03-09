@@ -143,11 +143,36 @@ func newStatusCmd() *cobra.Command {
 
 func newInitCmd() *cobra.Command {
 	var force bool
+	var projectMode bool
 
 	cmd := &cobra.Command{
 		Use:   "init",
-		Short: "Initialize Pilot configuration",
+		Short: "Initialize Pilot configuration or scaffold a project",
+		Long: `Initialize Pilot configuration or scaffold a project with CLAUDE.md.
+
+Without flags: initialize ~/.pilot/config.yaml (global Pilot config).
+With --project: run the interactive project scaffolding wizard in the current directory.
+
+The --project wizard:
+  - Detects the project language (Go, TypeScript, Python)
+  - Generates CLAUDE.md with coding conventions and quality gates
+  - Adds the project to ~/.pilot/config.yaml
+  - Optionally creates a .agent/ Navigator structure
+
+Examples:
+  pilot init            # Initialize global config
+  pilot init --project  # Scaffold project in current directory
+  pilot init --force    # Reinitialize global config (backs up existing)`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Project scaffolding mode
+			if projectMode {
+				cwd, err := os.Getwd()
+				if err != nil {
+					return fmt.Errorf("failed to get current directory: %w", err)
+				}
+				return runInitProject(cwd)
+			}
+
 			configPath := config.DefaultConfigPath()
 
 			// Check if config already exists
@@ -189,6 +214,7 @@ func newInitCmd() *cobra.Command {
 	}
 
 	cmd.Flags().BoolVar(&force, "force", false, "Reinitialize config (backs up existing to .bak)")
+	cmd.Flags().BoolVar(&projectMode, "project", false, "Scaffold a project in the current directory (generates CLAUDE.md)")
 
 	return cmd
 }
