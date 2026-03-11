@@ -2973,3 +2973,42 @@ func TestRunSelfReview_SkipsSaveWhenNoPatternsExtracted(t *testing.T) {
 		t.Errorf("expected 0 save calls when no patterns extracted, got %d", extractor.saveCalls)
 	}
 }
+
+func TestLocalModeSkipsNavigatorAutoInit(t *testing.T) {
+	projectDir := t.TempDir()
+
+	backend := &mockSelfReviewBackend{output: "done"}
+	runner := NewRunnerWithBackend(backend)
+	runner.config = &BackendConfig{
+		Navigator: &NavigatorConfig{
+			AutoInit: true,
+		},
+	}
+	runner.SetRecordingEnabled(false)
+	runner.skipPreflightChecks = true
+
+	task := &Task{
+		ID:          "LOCAL-001",
+		Title:       "Local mode task",
+		Description: "Should skip Navigator init",
+		ProjectPath: projectDir,
+		LocalMode:   true,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	result, err := runner.Execute(ctx, task)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+	if !result.Success {
+		t.Fatalf("Execute() not successful: %s", result.Error)
+	}
+
+	// Verify .agent/ directory was NOT created
+	agentDir := filepath.Join(projectDir, ".agent")
+	if _, err := os.Stat(agentDir); err == nil {
+		t.Errorf(".agent/ directory was created in LocalMode — Navigator auto-init should be skipped")
+	}
+}

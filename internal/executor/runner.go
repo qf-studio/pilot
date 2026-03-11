@@ -972,7 +972,7 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 
 	// Auto-init Navigator if configured and missing
 	// Use executionPath to check/init in worktree if worktree isolation is active
-	if r.config != nil && r.config.Navigator != nil && r.config.Navigator.AutoInit {
+	if !task.LocalMode && r.config != nil && r.config.Navigator != nil && r.config.Navigator.AutoInit {
 		if err := r.maybeInitNavigator(executionPath); err != nil {
 			r.log.Warn("Navigator auto-init failed", slog.Any("error", err))
 			// Continue without Navigator - graceful degradation
