@@ -171,6 +171,11 @@ type BackendResult struct {
 
 	// SessionID is the Claude Code session ID for resume support (GH-1265)
 	SessionID string
+
+	// SawSuccessResult tracks whether a successful result event was observed during
+	// stream-json parsing. Used to recover success when the process exits with an error
+	// after completing work (e.g., timeout on final summary). GH-2107.
+	SawSuccessResult bool
 }
 
 // BackendConfig contains configuration for executor backends.

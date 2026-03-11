@@ -555,6 +555,78 @@ func TestParseClaudeCodeError(t *testing.T) {
 	}
 }
 
+func TestSawSuccessResultRecovery(t *testing.T) {
+	// GH-2107: When a successful result event was seen but the process exits with
+	// an error (e.g., timeout on final summary), SawSuccessResult should be set.
+	t.Run("successful result sets SawSuccessResult", func(t *testing.T) {
+		backend := NewClaudeCodeBackend(nil)
+		event := backend.parseStreamEvent(`{"type":"result","result":"All tasks completed.","is_error":false}`)
+		if event.Type != EventTypeResult {
+			t.Fatalf("expected result event, got %s", event.Type)
+		}
+		if event.IsError {
+			t.Fatal("expected non-error result")
+		}
+
+		// Simulate what executeWithFromPR does: set SawSuccessResult when result is not error
+		result := &BackendResult{}
+		if event.Type == EventTypeResult && !event.IsError {
+			result.Output = event.Message
+			result.SawSuccessResult = true
+		}
+
+		if !result.SawSuccessResult {
+			t.Error("SawSuccessResult should be true for non-error result")
+		}
+		if result.Output != "All tasks completed." {
+			t.Errorf("Output = %q, want %q", result.Output, "All tasks completed.")
+		}
+	})
+
+	t.Run("error result does not set SawSuccessResult", func(t *testing.T) {
+		backend := NewClaudeCodeBackend(nil)
+		event := backend.parseStreamEvent(`{"type":"result","result":"Failed to complete","is_error":true}`)
+
+		result := &BackendResult{}
+		if event.Type == EventTypeResult {
+			if event.IsError {
+				result.Error = event.Message
+			} else {
+				result.SawSuccessResult = true
+			}
+		}
+
+		if result.SawSuccessResult {
+			t.Error("SawSuccessResult should be false for error result")
+		}
+	})
+
+	t.Run("no result event does not set SawSuccessResult", func(t *testing.T) {
+		result := &BackendResult{}
+		if result.SawSuccessResult {
+			t.Error("SawSuccessResult should default to false")
+		}
+	})
+}
+
+func TestTruncate(t *testing.T) {
+	tests := []struct {
+		input    string
+		n        int
+		expected string
+	}{
+		{"hello", 10, "hello"},
+		{"hello world", 5, "hello..."},
+		{"", 5, ""},
+	}
+	for _, tt := range tests {
+		got := truncate(tt.input, tt.n)
+		if got != tt.expected {
+			t.Errorf("truncate(%q, %d) = %q, want %q", tt.input, tt.n, got, tt.expected)
+		}
+	}
+}
+
 func TestClaudeCodeError_Error(t *testing.T) {
 	t.Run("with stderr", func(t *testing.T) {
 		err := &ClaudeCodeError{

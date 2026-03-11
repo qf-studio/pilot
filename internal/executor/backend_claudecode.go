@@ -433,6 +433,7 @@ func (b *ClaudeCodeBackend) executeWithFromPR(ctx context.Context, opts ExecuteO
 					result.Error = event.Message
 				} else {
 					result.Output = event.Message
+					result.SawSuccessResult = true // GH-2107: track successful result for timeout recovery
 				}
 			}
 
@@ -519,6 +520,18 @@ func (b *ClaudeCodeBackend) executeWithFromPR(ctx context.Context, opts ExecuteO
 	close(cmdDone) // Signal that command is done
 
 	if err != nil {
+		// GH-2107: If a successful result event was seen before the process exited with
+		// an error, the work was completed but Claude Code timed out on a subsequent turn
+		// (e.g., writing final summary). Recover as success.
+		if result.SawSuccessResult {
+			b.log.Info("Recovering success: process exited with error after successful result event (GH-2107)",
+				slog.String("exit_error", err.Error()),
+				slog.String("output_preview", truncate(result.Output, 200)),
+			)
+			result.Success = true
+			return result, nil
+		}
+
 		result.Success = false
 
 		// GH-917: Classify the error for better handling
@@ -542,6 +555,14 @@ func (b *ClaudeCodeBackend) executeWithFromPR(ctx context.Context, opts ExecuteO
 
 	result.Success = true
 	return result, nil
+}
+
+// truncate returns the first n characters of s, appending "..." if truncated.
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
 }
 
 // parseStreamEvent converts Claude Code stream-json to BackendEvent.
