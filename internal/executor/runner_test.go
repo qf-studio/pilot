@@ -3012,3 +3012,44 @@ func TestLocalModeSkipsNavigatorAutoInit(t *testing.T) {
 		t.Errorf(".agent/ directory was created in LocalMode — Navigator auto-init should be skipped")
 	}
 }
+
+func TestLocalModeSkipsQualityGates(t *testing.T) {
+	projectDir := t.TempDir()
+
+	backend := &mockSelfReviewBackend{output: "done"}
+	runner := NewRunnerWithBackend(backend)
+	runner.config = &BackendConfig{}
+	runner.SetRecordingEnabled(false)
+	runner.skipPreflightChecks = true
+
+	qualityGateCalled := false
+	runner.SetQualityCheckerFactory(func(taskID, projectPath string) QualityChecker {
+		qualityGateCalled = true
+		return &mockQualityChecker{
+			outcome: &QualityOutcome{Passed: true},
+		}
+	})
+
+	task := &Task{
+		ID:          "LOCAL-QG-001",
+		Title:       "Local mode quality gate skip",
+		Description: "Quality gates should not run in LocalMode",
+		ProjectPath: projectDir,
+		LocalMode:   true,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	result, err := runner.Execute(ctx, task)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+	if !result.Success {
+		t.Fatalf("Execute() not successful: %s", result.Error)
+	}
+
+	if qualityGateCalled {
+		t.Errorf("quality checker factory was called in LocalMode — quality gates should be skipped")
+	}
+}
