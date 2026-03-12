@@ -2,6 +2,9 @@ package executor
 
 import (
 	"context"
+	"fmt"
+	"os/exec"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -625,6 +628,108 @@ func TestTruncate(t *testing.T) {
 			t.Errorf("truncate(%q, %d) = %q, want %q", tt.input, tt.n, got, tt.expected)
 		}
 	}
+}
+
+func TestClassifyClaudeCodeError_OOM(t *testing.T) {
+	// GH-2112: OOM/SIGKILL detection via exit code
+	tests := []struct {
+		name       string
+		exitCode   int
+		stderr     string
+		expectType ClaudeCodeErrorType
+		expectMsg  string
+	}{
+		{
+			name:       "exit 137 (SIGKILL) classified as OOM",
+			exitCode:   137,
+			stderr:     "",
+			expectType: ErrorTypeOOM,
+			expectMsg:  "Process killed by SIGKILL (exit code 137)",
+		},
+		{
+			name:       "exit 139 (SIGSEGV) classified as OOM",
+			exitCode:   139,
+			stderr:     "",
+			expectType: ErrorTypeOOM,
+			expectMsg:  "Process killed by SIGSEGV (exit code 139)",
+		},
+		{
+			name:       "exit 137 with stderr still classified as OOM",
+			exitCode:   137,
+			stderr:     "some output before death",
+			expectType: ErrorTypeOOM,
+			expectMsg:  "Process killed by SIGKILL (exit code 137)",
+		},
+		{
+			name:       "exit 1 with empty stderr is not OOM",
+			exitCode:   1,
+			stderr:     "",
+			expectType: ErrorTypeUnknown,
+		},
+		{
+			name:       "exit 1 with rate limit stderr",
+			exitCode:   1,
+			stderr:     "Error: You've hit your limit",
+			expectType: ErrorTypeRateLimit,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Create a real exec.ExitError by running a process that exits with the desired code
+			var exitErr error
+			if tt.exitCode > 0 {
+				cmd := exec.Command("sh", "-c", fmt.Sprintf("exit %d", tt.exitCode))
+				exitErr = cmd.Run()
+			}
+			err := classifyClaudeCodeError(tt.stderr, exitErr)
+			if err.Type != tt.expectType {
+				t.Errorf("type = %q, want %q", err.Type, tt.expectType)
+			}
+			if tt.expectMsg != "" && err.Message != tt.expectMsg {
+				t.Errorf("message = %q, want %q", err.Message, tt.expectMsg)
+			}
+		})
+	}
+}
+
+func TestExtractExitCode(t *testing.T) {
+	tests := []struct {
+		name     string
+		exitCode int
+		expected int
+	}{
+		{"exit 0 (no error)", 0, -1}, // cmd.Run() returns nil for exit 0
+		{"exit 1", 1, 1},
+		{"exit 137", 137, 137},
+		{"exit 139", 139, 139},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if runtime.GOOS == "windows" {
+				t.Skip("signal-based exit codes are Unix-only")
+			}
+			cmd := exec.Command("sh", "-c", fmt.Sprintf("exit %d", tt.exitCode))
+			err := cmd.Run()
+			got := extractExitCode(err)
+			if got != tt.expected {
+				t.Errorf("extractExitCode() = %d, want %d", got, tt.expected)
+			}
+		})
+	}
+
+	t.Run("nil error returns -1", func(t *testing.T) {
+		if got := extractExitCode(nil); got != -1 {
+			t.Errorf("extractExitCode(nil) = %d, want -1", got)
+		}
+	})
+
+	t.Run("non-ExitError returns -1", func(t *testing.T) {
+		if got := extractExitCode(fmt.Errorf("some error")); got != -1 {
+			t.Errorf("extractExitCode(non-ExitError) = %d, want -1", got)
+		}
+	})
 }
 
 func TestClaudeCodeError_Error(t *testing.T) {
