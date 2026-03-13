@@ -615,6 +615,65 @@ Examples:
 				fmt.Println("   Team:      ✓ project access scoping enabled")
 			}
 
+			// GH-2146: Initialize learning system for task command
+			// Mirrors main.go polling/gateway mode learning init
+			if cfg.Memory != nil && cfg.Memory.Path != "" {
+				learningStore, lsErr := memory.NewStore(cfg.Memory.Path)
+				if lsErr != nil {
+					logging.WithComponent("learning").Warn("Failed to open memory store for learning, learning disabled", slog.Any("error", lsErr))
+				} else {
+					defer func() { _ = learningStore.Close() }()
+
+					// Wire log store for execution milestone entries (GH-1599)
+					runner.SetLogStore(learningStore)
+
+					// Wire knowledge store for experiential memories (GH-1027)
+					knowledgeStore := memory.NewKnowledgeStore(learningStore.DB())
+					if ksErr := knowledgeStore.InitSchema(); ksErr != nil {
+						logging.WithComponent("knowledge").Warn("Failed to initialize knowledge store schema", slog.Any("error", ksErr))
+					} else {
+						runner.SetKnowledgeStore(knowledgeStore)
+					}
+
+					// Initialize learning components if enabled
+					if cfg.Memory.Learning == nil || cfg.Memory.Learning.Enabled {
+						patternStore, patternErr := memory.NewGlobalPatternStore(cfg.Memory.Path)
+						if patternErr != nil {
+							logging.WithComponent("learning").Warn("Failed to create pattern store, learning disabled", slog.Any("error", patternErr))
+						} else {
+							extractor := memory.NewPatternExtractor(patternStore, learningStore)
+							learningLoop := memory.NewLearningLoop(learningStore, extractor, nil)
+							patternContext := executor.NewPatternContext(learningStore)
+
+							runner.SetLearningLoop(learningLoop)
+							runner.SetPatternContext(patternContext)
+							runner.SetSelfReviewExtractor(extractor)
+
+							logging.WithComponent("learning").Info("Learning system initialized")
+
+							// GH-1991: Wire outcome tracker for model escalation
+							outcomeTracker := memory.NewModelOutcomeTracker(learningStore)
+							runner.SetOutcomeTracker(outcomeTracker)
+							if runner.HasModelRouter() {
+								runner.ModelRouter().SetOutcomeTracker(outcomeTracker)
+							}
+							logging.WithComponent("learning").Info("Model outcome tracker initialized")
+
+							// GH-2016: Wire knowledge graph into runner
+							kg, kgErr := memory.NewKnowledgeGraph(cfg.Memory.Path)
+							if kgErr != nil {
+								logging.WithComponent("learning").Warn("Failed to create knowledge graph", slog.Any("error", kgErr))
+							} else {
+								runner.SetKnowledgeGraph(kg)
+								logging.WithComponent("learning").Info("Knowledge graph initialized")
+							}
+						}
+					}
+
+					fmt.Println("   Learning:  ✓ initialized")
+				}
+			}
+
 			// Create progress display (disabled in verbose mode - show raw JSON instead)
 			progress := executor.NewProgressDisplay(task.ID, taskDesc, !verbose)
 
