@@ -2140,27 +2140,7 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 		logging.WithComponent("start").Info("Slack Socket Mode started in polling mode")
 	}
 
-	// Start Discord bot if enabled (TASK-10)
-	var discordHandler *discord.Handler
-	if cfg.Adapters.Discord != nil && cfg.Adapters.Discord.Enabled &&
-		cfg.Adapters.Discord.BotToken != "" {
-		discordHandler = discord.NewHandler(&discord.HandlerConfig{
-			BotToken:        cfg.Adapters.Discord.BotToken,
-			AllowedGuilds:   cfg.Adapters.Discord.AllowedGuilds,
-			AllowedChannels: cfg.Adapters.Discord.AllowedChannels,
-		}, runner)
-
-		go func() {
-			if err := discordHandler.StartListening(ctx); err != nil {
-				logging.WithComponent("discord").Error("Discord bot error", slog.Any("error", err))
-			}
-		}()
-
-		if !dashboardMode {
-			fmt.Println("🎮 Discord bot started")
-		}
-		logging.WithComponent("start").Info("Discord bot started in polling mode")
-	}
+	// Discord bot started via poller registry (poller_discord.go)
 
 	// Start brief scheduler if enabled
 	var briefScheduler *briefs.Scheduler
@@ -2405,9 +2385,6 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 		if tgHandler != nil {
 			tgHandler.Stop()
 		}
-		if discordHandler != nil {
-			discordHandler.Stop()
-		}
 		// ghPoller stops via context cancellation (no explicit stop needed)
 		if dispatcher != nil {
 			dispatcher.Stop()
@@ -2430,9 +2407,6 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 
 	if tgHandler != nil {
 		tgHandler.Stop()
-	}
-	if discordHandler != nil {
-		discordHandler.Stop()
 	}
 	if len(ghPollers) > 0 {
 		fmt.Printf("🐙 Stopping GitHub pollers (%d)...\n", len(ghPollers))
