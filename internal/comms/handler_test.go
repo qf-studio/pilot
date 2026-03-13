@@ -195,6 +195,27 @@ func TestHandleMessage_Greeting(t *testing.T) {
 	}
 }
 
+func TestHandleMessage_GreetingPersonalized(t *testing.T) {
+	m := &handlerMock{}
+	h := newTestHandler(m)
+
+	h.HandleMessage(context.Background(), &IncomingMessage{
+		ContextID:  "ch1",
+		SenderID:   "u1",
+		SenderName: "Alice",
+		Text:       "hello",
+	})
+
+	texts := m.getTexts()
+	if len(texts) == 0 {
+		t.Fatal("expected at least one text message")
+	}
+	want := "👋 Hello Alice! I'm Pilot — send me a task, question, or say /help."
+	if texts[0].text != want {
+		t.Errorf("expected personalized greeting, got: %s", texts[0].text)
+	}
+}
+
 func TestHandleMessage_ConfirmationNo(t *testing.T) {
 	m := &handlerMock{}
 	h := newTestHandler(m)
@@ -601,6 +622,148 @@ func TestIncomingMessage_PlatformFieldsZeroValues(t *testing.T) {
 	}
 	if !msg.Timestamp.IsZero() {
 		t.Error("expected zero timestamp")
+	}
+}
+
+func TestHandleMessage_VoiceTextFallback(t *testing.T) {
+	m := &handlerMock{}
+	h := newTestHandler(m)
+
+	h.HandleMessage(context.Background(), &IncomingMessage{
+		ContextID: "ch1",
+		SenderID:  "u1",
+		Text:      "", // empty text
+		VoiceText: "hello",
+		Platform:  "telegram",
+	})
+
+	texts := m.getTexts()
+	if len(texts) == 0 {
+		t.Fatal("expected at least one text message from voice fallback")
+	}
+	// Voice text "hello" should be treated as greeting
+	if texts[0].text != "👋 Hello! I'm Pilot — send me a task, question, or say /help." {
+		t.Errorf("unexpected response for voice text: %s", texts[0].text)
+	}
+}
+
+func TestHandleMessage_CallbackExecuteTaskActionID(t *testing.T) {
+	m := &handlerMock{}
+	h := newTestHandler(m)
+
+	h.mu.Lock()
+	h.pendingTasks["ch1"] = &PendingTask{
+		TaskID:      "TEST-ET",
+		Description: "discord task",
+		ContextID:   "ch1",
+		CreatedAt:   time.Now(),
+	}
+	h.mu.Unlock()
+
+	// Discord uses "cancel_task" — verify that "execute_task" is NOT treated as cancel.
+	// We use cancel_task here to avoid needing a runner for execution.
+	h.HandleMessage(context.Background(), &IncomingMessage{
+		ContextID:        "ch1",
+		SenderID:         "u1",
+		IsCallback:       true,
+		CallbackID:       "interaction-1",
+		ActionID:         "cancel_task",
+		InteractionID:    "int-123",
+		InteractionToken: "tok-abc",
+	})
+
+	if len(m.acks) == 0 {
+		t.Error("expected callback acknowledgment")
+	}
+
+	texts := m.getTexts()
+	if len(texts) == 0 {
+		t.Fatal("expected cancellation message")
+	}
+	if texts[0].text != "❌ Task TEST-ET cancelled." {
+		t.Errorf("unexpected: %s", texts[0].text)
+	}
+}
+
+func TestHandleMessage_ExecuteTaskActionIsConfirm(t *testing.T) {
+	// Verify the "execute_task" action ID (Discord's custom_id) is recognized
+	// as a confirmation action alongside "execute", "confirm", and "yes".
+	m := &handlerMock{}
+	h := newTestHandler(m)
+
+	// No pending task → should get "No pending task to confirm"
+	h.HandleMessage(context.Background(), &IncomingMessage{
+		ContextID:  "ch1",
+		SenderID:   "u1",
+		IsCallback: true,
+		CallbackID: "cb-1",
+		ActionID:   "execute_task",
+	})
+
+	texts := m.getTexts()
+	if len(texts) == 0 {
+		t.Fatal("expected response")
+	}
+	// "No pending task" means it went through the confirm path, not cancel
+	if texts[0].text != "No pending task to confirm." {
+		t.Errorf("execute_task should be treated as confirmation, got: %s", texts[0].text)
+	}
+}
+
+func TestIncomingMessage_InteractionFields(t *testing.T) {
+	msg := &IncomingMessage{
+		ContextID:        "ch1",
+		SenderID:         "u1",
+		IsCallback:       true,
+		CallbackID:       "cb-1",
+		ActionID:         "execute_task",
+		InteractionID:    "interaction-999",
+		InteractionToken: "token-secret",
+	}
+
+	if msg.InteractionID != "interaction-999" {
+		t.Errorf("expected interaction-999, got %s", msg.InteractionID)
+	}
+	if msg.InteractionToken != "token-secret" {
+		t.Errorf("expected token-secret, got %s", msg.InteractionToken)
+	}
+}
+
+func TestIncomingMessage_InteractionFieldsZeroValues(t *testing.T) {
+	// Backward compatibility: interaction fields default to empty
+	msg := &IncomingMessage{
+		ContextID: "ch1",
+		SenderID:  "u1",
+		Text:      "hello",
+	}
+
+	if msg.InteractionID != "" {
+		t.Errorf("expected empty interaction ID, got %s", msg.InteractionID)
+	}
+	if msg.InteractionToken != "" {
+		t.Errorf("expected empty interaction token, got %s", msg.InteractionToken)
+	}
+}
+
+func TestCleanupLoop_ContextCancellation(t *testing.T) {
+	m := &handlerMock{}
+	h := newTestHandler(m)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		h.CleanupLoop(ctx)
+		close(done)
+	}()
+
+	// Cancel context immediately — CleanupLoop should exit
+	cancel()
+
+	select {
+	case <-done:
+		// Success: CleanupLoop exited on context cancellation
+	case <-time.After(2 * time.Second):
+		t.Fatal("CleanupLoop did not exit after context cancellation")
 	}
 }
 

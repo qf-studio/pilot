@@ -105,11 +105,24 @@ func (h *Handler) HandleMessage(ctx context.Context, msg *IncomingMessage) {
 	contextID := msg.ContextID
 	text := msg.Text
 
+	// Merge voice transcription into text when the text field is empty
+	if text == "" && msg.VoiceText != "" {
+		text = msg.VoiceText
+	}
+
 	// Track sender for RBAC
 	if msg.SenderID != "" {
 		h.mu.Lock()
 		h.lastSender[contextID] = msg.SenderID
 		h.mu.Unlock()
+	}
+
+	// Log with platform info when available for cross-adapter debugging
+	if msg.Platform != "" {
+		h.log.Debug("Handling message",
+			slog.String("platform", msg.Platform),
+			slog.String("context_id", contextID),
+			slog.String("sender_id", msg.SenderID))
 	}
 
 	// Rate limit check
@@ -122,7 +135,8 @@ func (h *Handler) HandleMessage(ctx context.Context, msg *IncomingMessage) {
 	// Handle callback (button press) — check pending confirmation
 	if msg.IsCallback {
 		_ = h.messenger.AcknowledgeCallback(ctx, msg.CallbackID)
-		confirmed := msg.ActionID == "execute" || msg.ActionID == "confirm" || msg.ActionID == "yes"
+		confirmed := msg.ActionID == "execute" || msg.ActionID == "confirm" || msg.ActionID == "yes" ||
+			msg.ActionID == "execute_task"
 		h.handleConfirmation(ctx, contextID, msg.ThreadID, confirmed)
 		return
 	}
@@ -149,7 +163,7 @@ func (h *Handler) HandleMessage(ctx context.Context, msg *IncomingMessage) {
 	// Dispatch
 	switch detected {
 	case intent.IntentGreeting:
-		h.handleGreeting(ctx, contextID)
+		h.handleGreeting(ctx, contextID, msg.SenderName)
 	case intent.IntentQuestion:
 		h.handleQuestion(ctx, contextID, msg.ThreadID, text)
 	case intent.IntentResearch:
@@ -207,7 +221,11 @@ func (h *Handler) detectIntent(ctx context.Context, contextID, text string) inte
 
 // ---------- intent handlers ----------
 
-func (h *Handler) handleGreeting(ctx context.Context, contextID string) {
+func (h *Handler) handleGreeting(ctx context.Context, contextID, senderName string) {
+	if senderName != "" {
+		_ = h.messenger.SendText(ctx, contextID, fmt.Sprintf("👋 Hello %s! I'm Pilot — send me a task, question, or say /help.", senderName))
+		return
+	}
 	_ = h.messenger.SendText(ctx, contextID, "👋 Hello! I'm Pilot — send me a task, question, or say /help.")
 }
 
