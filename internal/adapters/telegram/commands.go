@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/alekspetrov/pilot/internal/briefs"
+	"github.com/alekspetrov/pilot/internal/comms"
 	"github.com/alekspetrov/pilot/internal/memory"
 )
 
@@ -165,10 +166,12 @@ _Note: Ephemeral commands (serve, run, etc.) auto-skip PR creation._`
 
 // handleStatus shows current status with running/pending/queue info
 func (c *CommandHandler) handleStatus(ctx context.Context, chatID string) {
-	c.handler.mu.Lock()
-	pending := c.handler.pendingTasks[chatID]
-	running := c.handler.runningTasks[chatID]
-	c.handler.mu.Unlock()
+	var pending *comms.PendingTask
+	var running *comms.RunningTask
+	if c.handler.commsHandler != nil {
+		pending = c.handler.commsHandler.GetPendingTask(chatID)
+		running = c.handler.commsHandler.GetRunningTask(chatID)
+	}
 
 	activeProjectPath := c.handler.getActiveProjectPath(chatID)
 	projName := filepath.Base(activeProjectPath)
@@ -231,39 +234,12 @@ func (c *CommandHandler) handleStatus(ctx context.Context, chatID string) {
 
 // handleCancel cancels pending or running task
 func (c *CommandHandler) handleCancel(ctx context.Context, chatID string) {
-	c.handler.mu.Lock()
-	pending := c.handler.pendingTasks[chatID]
-	running := c.handler.runningTasks[chatID]
-	c.handler.mu.Unlock()
-
-	// Cancel pending first
-	if pending != nil {
-		c.handler.mu.Lock()
-		delete(c.handler.pendingTasks, chatID)
-		c.handler.mu.Unlock()
-		_, _ = c.handler.client.SendMessage(ctx, chatID,
-			fmt.Sprintf("❌ Cancelled pending task: %s", pending.TaskID), "")
+	if c.handler.commsHandler != nil {
+		if err := c.handler.commsHandler.CancelTask(ctx, chatID); err != nil {
+			_, _ = c.handler.client.SendMessage(ctx, chatID, "No task to cancel.", "")
+		}
 		return
 	}
-
-	// Cancel running task
-	if running != nil {
-		if running.Cancel != nil {
-			running.Cancel()
-		}
-		if c.handler.runner != nil {
-			_ = c.handler.runner.Cancel(running.TaskID)
-		}
-
-		c.handler.mu.Lock()
-		delete(c.handler.runningTasks, chatID)
-		c.handler.mu.Unlock()
-
-		_, _ = c.handler.client.SendMessage(ctx, chatID,
-			fmt.Sprintf("🛑 Stopped running task: %s", running.TaskID), "")
-		return
-	}
-
 	_, _ = c.handler.client.SendMessage(ctx, chatID, "No task to cancel.", "")
 }
 
@@ -281,14 +257,10 @@ func (c *CommandHandler) handleQueue(ctx context.Context, chatID string) {
 	}
 
 	if len(queued) == 0 {
-		// Show in-memory pending tasks as fallback
-		c.handler.mu.Lock()
-		pendingCount := len(c.handler.pendingTasks)
-		c.handler.mu.Unlock()
-
-		if pendingCount > 0 {
+		// Show pending task as fallback
+		if c.handler.commsHandler != nil && c.handler.commsHandler.GetPendingTask(chatID) != nil {
 			_, _ = c.handler.client.SendMessage(ctx, chatID,
-				fmt.Sprintf("📋 No queued tasks\n⏳ %d pending confirmation", pendingCount), "")
+				"📋 No queued tasks\n⏳ 1 pending confirmation", "")
 		} else {
 			_, _ = c.handler.client.SendMessage(ctx, chatID, "📋 Queue is empty", "")
 		}
@@ -600,32 +572,23 @@ func (c *CommandHandler) handleTasks(ctx context.Context, chatID string) {
 
 // handleStop stops a running task
 func (c *CommandHandler) handleStop(ctx context.Context, chatID string) {
-	c.handler.mu.Lock()
-	running := c.handler.runningTasks[chatID]
-	c.handler.mu.Unlock()
-
-	if running == nil {
-		_, _ = c.handler.client.SendMessage(ctx, chatID, "No task is currently running.", "")
+	if c.handler.commsHandler != nil {
+		running := c.handler.commsHandler.GetRunningTask(chatID)
+		if running == nil {
+			_, _ = c.handler.client.SendMessage(ctx, chatID, "No task is currently running.", "")
+			return
+		}
+		_ = c.handler.commsHandler.CancelTask(ctx, chatID)
+		var text string
+		if c.handler.plainTextMode {
+			text = fmt.Sprintf("🛑 Stopped task %s", running.TaskID)
+		} else {
+			text = fmt.Sprintf("🛑 Stopped task `%s`", running.TaskID)
+		}
+		_, _ = c.handler.client.SendMessage(ctx, chatID, text, c.handler.getParseMode())
 		return
 	}
-
-	// Cancel the task
-	if running.Cancel != nil {
-		running.Cancel()
-	}
-	_ = c.handler.runner.Cancel(running.TaskID)
-
-	c.handler.mu.Lock()
-	delete(c.handler.runningTasks, chatID)
-	c.handler.mu.Unlock()
-
-	var text string
-	if c.handler.plainTextMode {
-		text = fmt.Sprintf("🛑 Stopped task %s", running.TaskID)
-	} else {
-		text = fmt.Sprintf("🛑 Stopped task `%s`", running.TaskID)
-	}
-	_, _ = c.handler.client.SendMessage(ctx, chatID, text, c.handler.getParseMode())
+	_, _ = c.handler.client.SendMessage(ctx, chatID, "No task is currently running.", "")
 }
 
 // handleBrief generates and sends a daily brief on demand
@@ -685,7 +648,12 @@ func (c *CommandHandler) handleNoPR(ctx context.Context, chatID, description str
 	taskID := fmt.Sprintf("TG-%d", time.Now().Unix())
 	_, _ = c.handler.client.SendMessage(ctx, chatID,
 		fmt.Sprintf("🚀 Executing without PR: %s", truncateForDisplay(description, 50)), "")
-	c.handler.executeTaskWithOptions(ctx, chatID, taskID, description, false)
+	if c.handler.commsHandler != nil {
+		forcePR := false
+		c.handler.commsHandler.ExecuteDirectTask(ctx, chatID, "", taskID, description, &comms.DirectTaskOpts{
+			ForcePR: &forcePR,
+		})
+	}
 }
 
 // handleForcePR executes a task and forces PR creation
@@ -693,7 +661,12 @@ func (c *CommandHandler) handleForcePR(ctx context.Context, chatID, description 
 	taskID := fmt.Sprintf("TG-%d", time.Now().Unix())
 	_, _ = c.handler.client.SendMessage(ctx, chatID,
 		fmt.Sprintf("🚀 Executing with PR: %s", truncateForDisplay(description, 50)), "")
-	c.handler.executeTaskWithOptions(ctx, chatID, taskID, description, true)
+	if c.handler.commsHandler != nil {
+		forcePR := true
+		c.handler.commsHandler.ExecuteDirectTask(ctx, chatID, "", taskID, description, &comms.DirectTaskOpts{
+			ForcePR: &forcePR,
+		})
+	}
 }
 
 // truncateForDisplay truncates a string for display purposes

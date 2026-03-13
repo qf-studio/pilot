@@ -9,153 +9,11 @@ import (
 	"github.com/alekspetrov/pilot/internal/comms"
 )
 
-// mockMemberResolver implements MemberResolver for testing.
-type mockMemberResolver struct {
-	mappings map[string]string // slackUserID -> memberID
-}
-
-func (m *mockMemberResolver) ResolveSlackIdentity(slackUserID, email string) (string, error) {
-	if m.mappings == nil {
-		return "", nil
-	}
-	return m.mappings[slackUserID], nil
-}
-
-func TestHandler_TrackSender(t *testing.T) {
-	h := NewHandler(&HandlerConfig{
-		AppToken: "xapp-test-token",
-		BotToken: "xoxb-test-token",
-	}, nil)
-
-	// Track a sender
-	h.TrackSender("C12345", "U67890")
-
-	// Verify tracking
-	got := h.GetLastSender("C12345")
-	if got != "U67890" {
-		t.Errorf("GetLastSender() = %q, want %q", got, "U67890")
-	}
-
-	// Empty channel/user should not track
-	h.TrackSender("", "U11111")
-	h.TrackSender("C22222", "")
-
-	if h.GetLastSender("") != "" {
-		t.Error("empty channel should not be tracked")
-	}
-	if h.GetLastSender("C22222") != "" {
-		t.Error("empty user should not be tracked")
-	}
-}
-
-func TestHandler_TrackSender_OverwritesPrevious(t *testing.T) {
-	h := NewHandler(&HandlerConfig{
-		AppToken: "xapp-test-token",
-		BotToken: "xoxb-test-token",
-	}, nil)
-
-	h.TrackSender("C12345", "U11111")
-	h.TrackSender("C12345", "U22222")
-
-	got := h.GetLastSender("C12345")
-	if got != "U22222" {
-		t.Errorf("GetLastSender() = %q, want %q (should overwrite)", got, "U22222")
-	}
-}
-
-func TestHandler_ResolveMemberID_NoResolver(t *testing.T) {
-	h := NewHandler(&HandlerConfig{
-		AppToken: "xapp-test-token",
-		BotToken: "xoxb-test-token",
-		// No MemberResolver
-	}, nil)
-
-	h.TrackSender("C12345", "U67890")
-
-	// Without resolver, should return empty string
-	got := h.resolveMemberID("C12345")
-	if got != "" {
-		t.Errorf("resolveMemberID() without resolver = %q, want empty", got)
-	}
-}
-
-func TestHandler_ResolveMemberID_WithResolver(t *testing.T) {
-	resolver := &mockMemberResolver{
-		mappings: map[string]string{
-			"U67890": "member-alice",
-			"U11111": "member-bob",
-		},
-	}
-
-	h := NewHandler(&HandlerConfig{
-		AppToken:       "xapp-test-token",
-		BotToken:       "xoxb-test-token",
-		MemberResolver: resolver,
-	}, nil)
-
-	// Track and resolve
-	h.TrackSender("C12345", "U67890")
-	got := h.resolveMemberID("C12345")
-	if got != "member-alice" {
-		t.Errorf("resolveMemberID() = %q, want %q", got, "member-alice")
-	}
-
-	// Different channel, different user
-	h.TrackSender("C99999", "U11111")
-	got = h.resolveMemberID("C99999")
-	if got != "member-bob" {
-		t.Errorf("resolveMemberID() = %q, want %q", got, "member-bob")
-	}
-}
-
-func TestHandler_ResolveMemberID_UnknownUser(t *testing.T) {
-	resolver := &mockMemberResolver{
-		mappings: map[string]string{
-			"U67890": "member-alice",
-		},
-	}
-
-	h := NewHandler(&HandlerConfig{
-		AppToken:       "xapp-test-token",
-		BotToken:       "xoxb-test-token",
-		MemberResolver: resolver,
-	}, nil)
-
-	h.TrackSender("C12345", "U99999") // Unknown user
-	got := h.resolveMemberID("C12345")
-	if got != "" {
-		t.Errorf("resolveMemberID() for unknown user = %q, want empty", got)
-	}
-}
-
-func TestHandler_ResolveMemberID_NoSenderTracked(t *testing.T) {
-	resolver := &mockMemberResolver{
-		mappings: map[string]string{
-			"U67890": "member-alice",
-		},
-	}
-
-	h := NewHandler(&HandlerConfig{
-		AppToken:       "xapp-test-token",
-		BotToken:       "xoxb-test-token",
-		MemberResolver: resolver,
-	}, nil)
-
-	// No sender tracked for this channel
-	got := h.resolveMemberID("C12345")
-	if got != "" {
-		t.Errorf("resolveMemberID() with no sender = %q, want empty", got)
-	}
-}
-
 func TestNewHandler(t *testing.T) {
-	resolver := &mockMemberResolver{}
-
 	h := NewHandler(&HandlerConfig{
-		AppToken:       "xapp-test-token",
-		BotToken:       "xoxb-test-token",
-		MemberResolver: resolver,
-	}, nil)
+		AppToken: "xapp-test-token",
+		BotToken: "xoxb-test-token",
+	})
 
 	if h.socketClient == nil {
 		t.Error("NewHandler() should initialize socketClient")
@@ -163,14 +21,20 @@ func TestNewHandler(t *testing.T) {
 	if h.apiClient == nil {
 		t.Error("NewHandler() should initialize apiClient")
 	}
-	if h.memberResolver != resolver {
-		t.Error("NewHandler() should set memberResolver from config")
-	}
-	if h.lastSender == nil {
-		t.Error("NewHandler() should initialize lastSender map")
-	}
 	if h.log == nil {
 		t.Error("NewHandler() should initialize logger")
+	}
+}
+
+func TestNewHandler_WithClient(t *testing.T) {
+	client := NewClient("xoxb-test-token")
+	h := NewHandler(&HandlerConfig{
+		AppToken: "xapp-test-token",
+		Client:   client,
+	})
+
+	if h.apiClient != client {
+		t.Error("NewHandler() should reuse provided client")
 	}
 }
 
@@ -248,7 +112,7 @@ func TestHandler_IsAllowed(t *testing.T) {
 				BotToken:        "xoxb-test-token",
 				AllowedChannels: tt.allowedChannels,
 				AllowedUsers:    tt.allowedUsers,
-			}, nil)
+			})
 
 			got := h.isAllowed(tt.channelID, tt.userID)
 			if got != tt.want {
@@ -256,6 +120,45 @@ func TestHandler_IsAllowed(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestMemberResolverAdapter(t *testing.T) {
+	resolver := &mockMemberResolver{
+		mappings: map[string]string{
+			"U67890": "member-alice",
+		},
+	}
+
+	adapter := &MemberResolverAdapter{Inner: resolver}
+
+	memberID, err := adapter.ResolveIdentity("U67890")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if memberID != "member-alice" {
+		t.Errorf("ResolveIdentity() = %q, want %q", memberID, "member-alice")
+	}
+
+	// Unknown user
+	memberID, err = adapter.ResolveIdentity("U99999")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if memberID != "" {
+		t.Errorf("ResolveIdentity() for unknown = %q, want empty", memberID)
+	}
+}
+
+// mockMemberResolver implements MemberResolver for testing.
+type mockMemberResolver struct {
+	mappings map[string]string // slackUserID -> memberID
+}
+
+func (m *mockMemberResolver) ResolveSlackIdentity(slackUserID, email string) (string, error) {
+	if m.mappings == nil {
+		return "", nil
+	}
+	return m.mappings[slackUserID], nil
 }
 
 func TestRateLimiter(t *testing.T) {

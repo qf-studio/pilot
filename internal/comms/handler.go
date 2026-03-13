@@ -105,24 +105,11 @@ func (h *Handler) HandleMessage(ctx context.Context, msg *IncomingMessage) {
 	contextID := msg.ContextID
 	text := msg.Text
 
-	// Merge voice transcription into text when the text field is empty
-	if text == "" && msg.VoiceText != "" {
-		text = msg.VoiceText
-	}
-
 	// Track sender for RBAC
 	if msg.SenderID != "" {
 		h.mu.Lock()
 		h.lastSender[contextID] = msg.SenderID
 		h.mu.Unlock()
-	}
-
-	// Log with platform info when available for cross-adapter debugging
-	if msg.Platform != "" {
-		h.log.Debug("Handling message",
-			slog.String("platform", msg.Platform),
-			slog.String("context_id", contextID),
-			slog.String("sender_id", msg.SenderID))
 	}
 
 	// Rate limit check
@@ -135,8 +122,7 @@ func (h *Handler) HandleMessage(ctx context.Context, msg *IncomingMessage) {
 	// Handle callback (button press) — check pending confirmation
 	if msg.IsCallback {
 		_ = h.messenger.AcknowledgeCallback(ctx, msg.CallbackID)
-		confirmed := msg.ActionID == "execute" || msg.ActionID == "confirm" || msg.ActionID == "yes" ||
-			msg.ActionID == "execute_task"
+		confirmed := msg.ActionID == "execute" || msg.ActionID == "confirm" || msg.ActionID == "yes"
 		h.handleConfirmation(ctx, contextID, msg.ThreadID, confirmed)
 		return
 	}
@@ -163,7 +149,7 @@ func (h *Handler) HandleMessage(ctx context.Context, msg *IncomingMessage) {
 	// Dispatch
 	switch detected {
 	case intent.IntentGreeting:
-		h.handleGreeting(ctx, contextID, msg.SenderName)
+		h.handleGreeting(ctx, contextID)
 	case intent.IntentQuestion:
 		h.handleQuestion(ctx, contextID, msg.ThreadID, text)
 	case intent.IntentResearch:
@@ -221,11 +207,7 @@ func (h *Handler) detectIntent(ctx context.Context, contextID, text string) inte
 
 // ---------- intent handlers ----------
 
-func (h *Handler) handleGreeting(ctx context.Context, contextID, senderName string) {
-	if senderName != "" {
-		_ = h.messenger.SendText(ctx, contextID, fmt.Sprintf("👋 Hello %s! I'm Pilot — send me a task, question, or say /help.", senderName))
-		return
-	}
+func (h *Handler) handleGreeting(ctx context.Context, contextID string) {
 	_ = h.messenger.SendText(ctx, contextID, "👋 Hello! I'm Pilot — send me a task, question, or say /help.")
 }
 
@@ -476,6 +458,41 @@ func (h *Handler) handleTask(ctx context.Context, contextID, threadID, descripti
 	}
 }
 
+// ---------- direct task API ----------
+
+// DirectTaskOpts provides options for direct task execution via ExecuteDirectTask.
+type DirectTaskOpts struct {
+	ForcePR   *bool  // nil = auto-detect, true = force PR, false = no PR
+	ImagePath string // path to image file for image analysis tasks
+}
+
+// ExecuteDirectTask creates and executes a task directly, bypassing intent detection
+// and the confirmation flow. Used by adapter command handlers (/run, /nopr, /pr, images).
+func (h *Handler) ExecuteDirectTask(ctx context.Context, contextID, threadID, taskID, description string, opts *DirectTaskOpts) {
+	createPR := h.shouldCreatePR(description)
+	var imagePath string
+
+	if opts != nil {
+		if opts.ForcePR != nil {
+			createPR = *opts.ForcePR
+		}
+		imagePath = opts.ImagePath
+	}
+
+	h.executeTaskCore(ctx, contextID, threadID, taskID, description, createPR, imagePath)
+}
+
+func (h *Handler) shouldCreatePR(description string) bool {
+	detectEphemeral := true
+	if h.runner.Config() != nil && h.runner.Config().DetectEphemeral != nil {
+		detectEphemeral = *h.runner.Config().DetectEphemeral
+	}
+	if detectEphemeral && intent.IsEphemeralTask(description) {
+		return false
+	}
+	return true
+}
+
 // ---------- confirmation & execution ----------
 
 func (h *Handler) handleConfirmation(ctx context.Context, contextID, threadID string, confirmed bool) {
@@ -500,18 +517,11 @@ func (h *Handler) handleConfirmation(ctx context.Context, contextID, threadID st
 }
 
 func (h *Handler) executeTask(ctx context.Context, contextID, threadID, taskID, description string) {
-	// Detect ephemeral tasks
-	createPR := true
-	detectEphemeral := true
-	if h.runner.Config() != nil && h.runner.Config().DetectEphemeral != nil {
-		detectEphemeral = *h.runner.Config().DetectEphemeral
-	}
-	if detectEphemeral && intent.IsEphemeralTask(description) {
-		createPR = false
-		h.log.Debug("Ephemeral task detected - skipping PR creation",
-			slog.String("task_id", taskID))
-	}
+	createPR := h.shouldCreatePR(description)
+	h.executeTaskCore(ctx, contextID, threadID, taskID, description, createPR, "")
+}
 
+func (h *Handler) executeTaskCore(ctx context.Context, contextID, threadID, taskID, description string, createPR bool, imagePath string) {
 	// Send starting message
 	prNote := ""
 	if !createPR {
@@ -562,6 +572,7 @@ func (h *Handler) executeTask(ctx context.Context, contextID, threadID, taskID, 
 		BaseBranch:  baseBranch,
 		CreatePR:    createPR,
 		MemberID:    memberID,
+		ImagePath:   imagePath,
 	}
 
 	// Progress callback with throttling (named callback for parallel-safe execution)

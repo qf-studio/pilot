@@ -18,6 +18,7 @@ import (
 	"github.com/alekspetrov/pilot/internal/adapters/slack"
 	"github.com/alekspetrov/pilot/internal/adapters/telegram"
 	"github.com/alekspetrov/pilot/internal/alerts"
+	"github.com/alekspetrov/pilot/internal/comms"
 	"github.com/alekspetrov/pilot/internal/approval"
 	"github.com/alekspetrov/pilot/internal/config"
 	"github.com/alekspetrov/pilot/internal/executor"
@@ -549,15 +550,34 @@ func New(cfg *config.Config, opts ...Option) (*Pilot, error) {
 			projectPath = cfg.Projects[0].Path
 		}
 
-		p.telegramHandler = telegram.NewHandler(&telegram.HandlerConfig{
-			BotToken:       cfg.Adapters.Telegram.BotToken,
-			ProjectPath:    projectPath,
+		tgClient := telegram.NewClient(cfg.Adapters.Telegram.BotToken)
+		tgMessenger := telegram.NewMessenger(tgClient, true) // Default to plain text mode
+
+		// Build comms.MemberResolver wrapper (GH-634)
+		var tgMemberResolver comms.MemberResolver
+		if p.telegramMemberResolver != nil {
+			tgMemberResolver = &telegram.MemberResolverAdapter{Inner: p.telegramMemberResolver}
+		}
+
+		tgCommsHandler := comms.NewHandler(&comms.HandlerConfig{
+			Messenger:      tgMessenger,
+			Runner:         p.telegramRunner,
 			Projects:       config.NewProjectSource(cfg),
-			AllowedIDs:     allowedIDs,
-			Transcription:  cfg.Adapters.Telegram.Transcription,
+			ProjectPath:    projectPath,
 			RateLimit:      cfg.Adapters.Telegram.RateLimit,
-			PlainTextMode:  true,                     // Default to plain text mode
-			MemberResolver: p.telegramMemberResolver, // GH-634: Telegram user → team member RBAC
+			MemberResolver: tgMemberResolver,
+			Store:          p.store,
+			TaskIDPrefix:   "TG",
+		})
+
+		p.telegramHandler = telegram.NewHandler(&telegram.HandlerConfig{
+			Client:        tgClient,
+			CommsHandler:  tgCommsHandler,
+			ProjectPath:   projectPath,
+			Projects:      config.NewProjectSource(cfg),
+			AllowedIDs:    allowedIDs,
+			Transcription: cfg.Adapters.Telegram.Transcription,
+			Store:         p.store,
 		}, p.telegramRunner)
 
 		if len(allowedIDs) == 0 {
@@ -576,15 +596,31 @@ func New(cfg *config.Config, opts ...Option) (*Pilot, error) {
 			projectPath = cfg.Projects[0].Path
 		}
 
+		slackClient := slack.NewClient(cfg.Adapters.Slack.BotToken)
+		slackMessenger := slack.NewMessenger(slackClient)
+
+		var slackMemberResolver comms.MemberResolver
+		if p.slackMemberResolver != nil {
+			slackMemberResolver = &slack.MemberResolverAdapter{Inner: p.slackMemberResolver}
+		}
+
+		slackCommsHandler := comms.NewHandler(&comms.HandlerConfig{
+			Messenger:      slackMessenger,
+			Runner:         p.slackRunner,
+			Projects:       config.NewSlackProjectSource(cfg),
+			ProjectPath:    projectPath,
+			MemberResolver: slackMemberResolver,
+			Store:          p.store,
+			TaskIDPrefix:   "SLACK",
+		})
+
 		p.slackHandler = slack.NewHandler(&slack.HandlerConfig{
 			AppToken:        cfg.Adapters.Slack.AppToken,
-			BotToken:        cfg.Adapters.Slack.BotToken,
-			ProjectPath:     projectPath,
-			Projects:        config.NewSlackProjectSource(cfg),
+			Client:          slackClient,
+			CommsHandler:    slackCommsHandler,
 			AllowedChannels: cfg.Adapters.Slack.AllowedChannels,
 			AllowedUsers:    cfg.Adapters.Slack.AllowedUsers,
-			MemberResolver:  p.slackMemberResolver, // GH-786: Slack user → team member RBAC
-		}, p.slackRunner)
+		})
 
 		if len(cfg.Adapters.Slack.AllowedChannels) == 0 && len(cfg.Adapters.Slack.AllowedUsers) == 0 {
 			logging.WithComponent("pilot").Warn("SECURITY: slack allowed_channels and allowed_users are empty - ALL users can interact with the bot!")

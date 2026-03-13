@@ -17,6 +17,33 @@ import (
 	"github.com/alekspetrov/pilot/internal/testutil"
 )
 
+// noopMessenger is a no-op implementation of comms.Messenger for tests.
+type noopMessenger struct{}
+
+func (n *noopMessenger) SendText(context.Context, string, string) error { return nil }
+func (n *noopMessenger) SendConfirmation(context.Context, string, string, string, string, string) (string, error) {
+	return "", nil
+}
+func (n *noopMessenger) SendProgress(context.Context, string, string, string, string, int, string) (string, error) {
+	return "", nil
+}
+func (n *noopMessenger) SendResult(context.Context, string, string, string, bool, string, string) error {
+	return nil
+}
+func (n *noopMessenger) SendChunked(context.Context, string, string, string, string) error {
+	return nil
+}
+func (n *noopMessenger) AcknowledgeCallback(context.Context, string) error { return nil }
+func (n *noopMessenger) MaxMessageLength() int                            { return 4096 }
+
+// newTestCommsHandler creates a comms.Handler with a no-op messenger for tests.
+func newTestCommsHandler() *comms.Handler {
+	return comms.NewHandler(&comms.HandlerConfig{
+		Messenger:    &noopMessenger{},
+		TaskIDPrefix: "TG",
+	})
+}
+
 // MockRunner implements a minimal executor.Runner interface for testing
 type MockRunner struct {
 	cancelFunc     func(taskID string) error
@@ -89,37 +116,22 @@ func TestNewHandler(t *testing.T) {
 			if len(h.allowedIDs) != tt.wantAllowIDs {
 				t.Errorf("allowedIDs len = %d, want %d", len(h.allowedIDs), tt.wantAllowIDs)
 			}
-			if h.pendingTasks == nil {
-				t.Error("pendingTasks map not initialized")
-			}
-			if h.runningTasks == nil {
-				t.Error("runningTasks map not initialized")
-			}
 		})
 	}
 }
 
 // TestGetActiveProjectPath tests active project path retrieval
 func TestGetActiveProjectPath(t *testing.T) {
+	ch := newTestCommsHandler()
 	h := &Handler{
-		projectPath:   "/default/path",
-		activeProject: make(map[string]string),
+		projectPath:  "/default/path",
+		commsHandler: ch,
 	}
 
 	// Test default path
 	path := h.getActiveProjectPath("chat1")
 	if path != "/default/path" {
 		t.Errorf("getActiveProjectPath() = %q, want %q", path, "/default/path")
-	}
-
-	// Set active project for chat
-	h.mu.Lock()
-	h.activeProject["chat1"] = "/custom/path"
-	h.mu.Unlock()
-
-	path = h.getActiveProjectPath("chat1")
-	if path != "/custom/path" {
-		t.Errorf("getActiveProjectPath() = %q, want %q", path, "/custom/path")
 	}
 
 	// Other chat still gets default
@@ -172,9 +184,14 @@ func TestSetActiveProject(t *testing.T) {
 		},
 	}
 
+	ch := comms.NewHandler(&comms.HandlerConfig{
+		Messenger:    &noopMessenger{},
+		Projects:     projects,
+		TaskIDPrefix: "TG",
+	})
 	h := &Handler{
-		projects:      projects,
-		activeProject: make(map[string]string),
+		projects:     projects,
+		commsHandler: ch,
 	}
 
 	tests := []struct {
@@ -232,8 +249,8 @@ func TestSetActiveProject(t *testing.T) {
 // TestSetActiveProjectNoProjects tests error when no projects configured
 func TestSetActiveProjectNoProjects(t *testing.T) {
 	h := &Handler{
-		projects:      nil,
-		activeProject: make(map[string]string),
+		projects:     nil,
+		commsHandler: newTestCommsHandler(),
 	}
 
 	_, err := h.setActiveProject("chat1", "any")
@@ -242,48 +259,19 @@ func TestSetActiveProjectNoProjects(t *testing.T) {
 	}
 }
 
-// TestPendingTask tests pending task management
+// TestPendingTask tests pending task management via commsHandler
 func TestPendingTask(t *testing.T) {
-	h := &Handler{
-		pendingTasks: make(map[string]*PendingTask),
+	ch := newTestCommsHandler()
+
+	// Initially no pending task
+	if got := ch.GetPendingTask("chat1"); got != nil {
+		t.Fatalf("expected no pending task, got %+v", got)
 	}
 
-	// Add pending task
-	task := &PendingTask{
-		TaskID:      "TEST-01",
-		Description: "Test task",
-		ChatID:      "chat1",
-		CreatedAt:   time.Now(),
-	}
-
-	h.mu.Lock()
-	h.pendingTasks["chat1"] = task
-	h.mu.Unlock()
-
-	// Check pending task exists
-	h.mu.Lock()
-	got, exists := h.pendingTasks["chat1"]
-	h.mu.Unlock()
-
-	if !exists {
-		t.Fatal("pending task not found")
-	}
-	if got.TaskID != "TEST-01" {
-		t.Errorf("TaskID = %q, want %q", got.TaskID, "TEST-01")
-	}
-
-	// Delete pending task
-	h.mu.Lock()
-	delete(h.pendingTasks, "chat1")
-	h.mu.Unlock()
-
-	h.mu.Lock()
-	_, exists = h.pendingTasks["chat1"]
-	h.mu.Unlock()
-
-	if exists {
-		t.Error("pending task should be deleted")
-	}
+	// Send a task message to trigger pending task creation
+	// The commsHandler creates pending tasks via HandleMessage + intent detection.
+	// For a focused unit test, verify GetPendingTask returns nil initially.
+	// Full lifecycle is tested in comms/handler_test.go.
 }
 
 // TestResolveTaskID tests task ID resolution from user input
@@ -1004,9 +992,9 @@ func TestGetActiveProjectInfo(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			h := &Handler{
-				projects:      tt.projects,
-				projectPath:   "/test/path",
-				activeProject: make(map[string]string),
+				projects:     tt.projects,
+				projectPath:  "/test/path",
+				commsHandler: newTestCommsHandler(),
 			}
 
 			got := h.getActiveProjectInfo("chat1")
@@ -1024,60 +1012,16 @@ func TestGetActiveProjectInfo(t *testing.T) {
 	}
 }
 
-// TestRunningTask tests running task structure
+// TestRunningTask tests running task structure via commsHandler
 func TestRunningTask(t *testing.T) {
-	h := &Handler{
-		runningTasks: make(map[string]*RunningTask),
+	ch := newTestCommsHandler()
+
+	// Initially no running task
+	if got := ch.GetRunningTask("chat1"); got != nil {
+		t.Fatalf("expected no running task, got %+v", got)
 	}
 
-	// Add running task
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	task := &RunningTask{
-		TaskID:    "TEST-01",
-		ChatID:    "chat1",
-		StartedAt: time.Now(),
-		Cancel:    cancel,
-	}
-
-	h.mu.Lock()
-	h.runningTasks["chat1"] = task
-	h.mu.Unlock()
-
-	// Check running task exists
-	h.mu.Lock()
-	got, exists := h.runningTasks["chat1"]
-	h.mu.Unlock()
-
-	if !exists {
-		t.Fatal("running task not found")
-	}
-	if got.TaskID != "TEST-01" {
-		t.Errorf("TaskID = %q, want %q", got.TaskID, "TEST-01")
-	}
-
-	// Cancel should work
-	if got.Cancel == nil {
-		t.Error("Cancel function is nil")
-	}
-
-	// Context should not be done yet
-	select {
-	case <-ctx.Done():
-		t.Error("context should not be cancelled yet")
-	default:
-		// OK
-	}
-
-	// After cancel, context should be done
-	cancel()
-	select {
-	case <-ctx.Done():
-		// OK
-	default:
-		t.Error("context should be cancelled")
-	}
+	// Full lifecycle (execute → running → done) tested in comms/handler_test.go.
 }
 
 // TestProjectInfo tests ProjectInfo struct
@@ -1527,9 +1471,22 @@ func TestActiveProjectUsedInTaskPaths(t *testing.T) {
 	activePath := "/active/project"
 	chatID := "chat123"
 
+	projects := &MockProjectSource{
+		projects: []*comms.ProjectInfo{
+			{Name: "active-proj", Path: activePath},
+		},
+	}
+	ch := comms.NewHandler(&comms.HandlerConfig{
+		Messenger:    &noopMessenger{},
+		Projects:     projects,
+		ProjectPath:  defaultPath,
+		TaskIDPrefix: "TG",
+	})
+
 	h := &Handler{
-		projectPath:   defaultPath,
-		activeProject: make(map[string]string),
+		projectPath:  defaultPath,
+		projects:     projects,
+		commsHandler: ch,
 	}
 
 	// Before switching, should return default
@@ -1537,10 +1494,10 @@ func TestActiveProjectUsedInTaskPaths(t *testing.T) {
 		t.Errorf("before switch: getActiveProjectPath() = %q, want %q", got, defaultPath)
 	}
 
-	// Switch project for this chat
-	h.mu.Lock()
-	h.activeProject[chatID] = activePath
-	h.mu.Unlock()
+	// Switch project for this chat via commsHandler
+	if err := ch.SetActiveProject(chatID, "active-proj"); err != nil {
+		t.Fatal(err)
+	}
 
 	// After switching, should return active project path
 	if got := h.getActiveProjectPath(chatID); got != activePath {
@@ -1559,51 +1516,6 @@ func TestActiveProjectUsedInTaskPaths(t *testing.T) {
 	// Other chat should still get default
 	if got := h.getActiveProjectPath("other-chat"); got != defaultPath {
 		t.Errorf("other chat: getActiveProjectPath() = %q, want %q", got, defaultPath)
-	}
-}
-
-// TestPlanEmptyMessage tests differentiated messages when planning returns empty output.
-func TestPlanEmptyMessage(t *testing.T) {
-	tests := []struct {
-		name          string
-		resultError   string
-		resultSuccess bool
-		wantContains  string
-	}{
-		{
-			name:          "error present surfaces error",
-			resultError:   "permission denied",
-			resultSuccess: false,
-			wantContains:  "permission denied",
-		},
-		{
-			name:          "error present even when success is true",
-			resultError:   "partial failure",
-			resultSuccess: true,
-			wantContains:  "partial failure",
-		},
-		{
-			name:          "not success without error indicates timeout",
-			resultError:   "",
-			resultSuccess: false,
-			wantContains:  "timed out",
-		},
-		{
-			name:          "success with no error suggests too simple",
-			resultError:   "",
-			resultSuccess: true,
-			wantContains:  "too simple",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			msg := planEmptyMessage(tt.resultError, tt.resultSuccess)
-			if !strings.Contains(msg, tt.wantContains) {
-				t.Errorf("planEmptyMessage(%q, %v) = %q, want substring %q",
-					tt.resultError, tt.resultSuccess, msg, tt.wantContains)
-			}
-		})
 	}
 }
 

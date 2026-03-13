@@ -16,7 +16,6 @@ import (
 
 	"github.com/alekspetrov/pilot/internal/comms"
 	"github.com/alekspetrov/pilot/internal/executor"
-	"github.com/alekspetrov/pilot/internal/intent"
 	"github.com/alekspetrov/pilot/internal/logging"
 	"github.com/alekspetrov/pilot/internal/memory"
 	"github.com/alekspetrov/pilot/internal/transcription"
@@ -28,6 +27,20 @@ type MemberResolver interface {
 	// ResolveTelegramIdentity maps a Telegram user ID and/or email to a member ID.
 	// Returns ("", nil) when no match is found (= skip RBAC).
 	ResolveTelegramIdentity(telegramID int64, email string) (string, error)
+}
+
+// MemberResolverAdapter wraps a telegram.MemberResolver as comms.MemberResolver.
+type MemberResolverAdapter struct {
+	Inner MemberResolver
+}
+
+// ResolveIdentity maps a sender ID string to a team member ID via the inner Telegram resolver.
+func (a *MemberResolverAdapter) ResolveIdentity(senderID string) (string, error) {
+	id, err := strconv.ParseInt(senderID, 10, 64)
+	if err != nil {
+		return "", nil // not a valid Telegram ID
+	}
+	return a.Inner.ResolveTelegramIdentity(id, "")
 }
 
 // PendingTask represents a task awaiting confirmation
@@ -50,29 +63,22 @@ type RunningTask struct {
 
 // Handler processes incoming Telegram messages and executes tasks
 type Handler struct {
-	client            *Client
-	runner            *executor.Runner
-	projects          comms.ProjectSource     // Project source for multi-project support
-	projectPath       string                  // Default/fallback project path
-	activeProject     map[string]string       // chatID -> projectPath (active project per chat)
-	allowedIDs        map[int64]bool          // Allowed user/chat IDs for security
-	offset            int64                   // Last processed update ID
-	pendingTasks      map[string]*PendingTask // ChatID -> pending task
-	runningTasks      map[string]*RunningTask // ChatID -> running task
-	mu                sync.Mutex
-	stopCh            chan struct{}
-	wg                sync.WaitGroup
-	transcriber       *transcription.Service // Voice transcription service (optional)
-	transcriptionErr  error                  // Error from transcription init (for guidance)
-	store             *memory.Store          // Memory store for history/queue/budget (optional)
-	cmdHandler        *CommandHandler        // Command handler for /commands
-	plainTextMode     bool                   // Use plain text instead of Markdown
-	rateLimiter       *comms.RateLimiter     // Rate limiter for DoS protection
-	llmClassifier     intent.Classifier       // LLM intent classifier (optional)
-	conversationStore *intent.ConversationStore // Conversation history per chat (optional)
-	memberResolver    MemberResolver         // Team member resolver for RBAC (optional, GH-634)
-	lastSender        map[string]int64       // chatID -> last sender Telegram user ID (GH-634)
-	botUsername       string                 // Bot username for mention stripping (GH-2129)
+	client           *Client
+	runner           *executor.Runner
+	projects         comms.ProjectSource // Project source for multi-project support
+	projectPath      string              // Default/fallback project path
+	allowedIDs       map[int64]bool      // Allowed user/chat IDs for security
+	offset           int64               // Last processed update ID
+	mu               sync.Mutex
+	stopCh           chan struct{}
+	wg               sync.WaitGroup
+	transcriber      *transcription.Service // Voice transcription service (optional)
+	transcriptionErr error                  // Error from transcription init (for guidance)
+	store            *memory.Store          // Memory store for history/queue/budget (optional)
+	cmdHandler       *CommandHandler        // Command handler for /commands
+	plainTextMode    bool                   // Use plain text instead of Markdown
+	botUsername       string                // Bot username for mention stripping (GH-2129)
+	commsHandler     *comms.Handler         // Shared message handler (GH-2143)
 }
 
 // HandlerConfig holds configuration for the Telegram handler
@@ -87,6 +93,8 @@ type HandlerConfig struct {
 	RateLimit      *comms.RateLimitConfig // Rate limiting config (optional)
 	LLMClassifier  *LLMClassifierConfig  // LLM intent classification config (optional)
 	MemberResolver MemberResolver        // Team member resolver for RBAC (optional, GH-634)
+	CommsHandler   *comms.Handler        // Shared message handler (optional, GH-2143)
+	Client         *Client               // Optional reuse of existing client
 }
 
 // NewHandler creates a new Telegram message handler
@@ -104,30 +112,22 @@ func NewHandler(config *HandlerConfig, runner *executor.Runner) *Handler {
 		}
 	}
 
-	// Initialize rate limiter
-	var rateLimiter *comms.RateLimiter
-	if config.RateLimit != nil {
-		rateLimiter = comms.NewRateLimiter(config.RateLimit)
-	} else {
-		// Use defaults if not configured
-		rateLimiter = comms.NewRateLimiter(comms.DefaultRateLimitConfig())
+	// Use provided client or create a new one
+	client := config.Client
+	if client == nil {
+		client = NewClient(config.BotToken)
 	}
 
 	h := &Handler{
-		client:         NewClient(config.BotToken),
-		runner:         runner,
-		projects:       config.Projects,
-		projectPath:    projectPath,
-		activeProject:  make(map[string]string),
-		allowedIDs:     allowedIDs,
-		pendingTasks:   make(map[string]*PendingTask),
-		runningTasks:   make(map[string]*RunningTask),
-		stopCh:         make(chan struct{}),
-		store:          config.Store,
-		plainTextMode:  config.PlainTextMode,
-		rateLimiter:    rateLimiter,
-		memberResolver: config.MemberResolver,
-		lastSender:     make(map[string]int64),
+		client:       client,
+		runner:       runner,
+		projects:     config.Projects,
+		projectPath:  projectPath,
+		allowedIDs:   allowedIDs,
+		stopCh:       make(chan struct{}),
+		store:        config.Store,
+		plainTextMode: config.PlainTextMode,
+		commsHandler: config.CommsHandler,
 	}
 
 	// Initialize command handler
@@ -145,62 +145,34 @@ func NewHandler(config *HandlerConfig, runner *executor.Runner) *Handler {
 		}
 	}
 
-	// Initialize LLM classifier if configured
-	if config.LLMClassifier != nil && config.LLMClassifier.Enabled {
-		apiKey := config.LLMClassifier.APIKey
-		if apiKey == "" {
-			apiKey = os.Getenv("ANTHROPIC_API_KEY")
-		}
-		if apiKey != "" {
-			h.llmClassifier = intent.NewAnthropicClient(apiKey)
-
-			// Set up conversation store with defaults
-			historySize := 10
-			if config.LLMClassifier.HistorySize > 0 {
-				historySize = config.LLMClassifier.HistorySize
-			}
-			historyTTL := 30 * time.Minute
-			if config.LLMClassifier.HistoryTTL > 0 {
-				historyTTL = config.LLMClassifier.HistoryTTL
-			}
-			h.conversationStore = intent.NewConversationStore(historySize, historyTTL)
-
-			logging.WithComponent("telegram").Info("LLM intent classifier enabled",
-				slog.String("model", "claude-3-5-haiku"))
-		} else {
-			logging.WithComponent("telegram").Warn("LLM classifier enabled but no API key found")
-		}
-	}
-
 	return h
 }
 
 // getActiveProjectPath returns the active project path for a chat
 func (h *Handler) getActiveProjectPath(chatID string) string {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	if path, ok := h.activeProject[chatID]; ok {
-		return path
+	if h.commsHandler != nil {
+		_, path := h.commsHandler.GetActiveProject(chatID)
+		if path != "" {
+			return path
+		}
 	}
 	return h.projectPath
 }
 
 // setActiveProject sets the active project for a chat by name
 func (h *Handler) setActiveProject(chatID, projectName string) (*comms.ProjectInfo, error) {
+	if h.commsHandler != nil {
+		if err := h.commsHandler.SetActiveProject(chatID, projectName); err != nil {
+			return nil, err
+		}
+	}
 	if h.projects == nil {
 		return nil, fmt.Errorf("no projects configured")
 	}
-
 	proj := h.projects.GetProjectByName(projectName)
 	if proj == nil {
 		return nil, fmt.Errorf("project '%s' not found", projectName)
 	}
-
-	h.mu.Lock()
-	h.activeProject[chatID] = proj.Path
-	h.mu.Unlock()
-
 	return proj, nil
 }
 
@@ -273,38 +245,20 @@ func (h *Handler) pollLoop(ctx context.Context) {
 	}
 }
 
-// cleanupLoop removes expired pending tasks
+// cleanupLoop delegates cleanup to the shared commsHandler.
 func (h *Handler) cleanupLoop(ctx context.Context) {
 	defer h.wg.Done()
-	ticker := time.NewTicker(time.Minute)
-	defer ticker.Stop()
-
-	for {
+	cctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go func() {
 		select {
-		case <-ctx.Done():
-			return
 		case <-h.stopCh:
-			return
-		case <-ticker.C:
-			h.cleanupExpiredTasks(ctx)
+			cancel()
+		case <-cctx.Done():
 		}
-	}
-}
-
-// cleanupExpiredTasks removes tasks pending for more than 5 minutes
-func (h *Handler) cleanupExpiredTasks(ctx context.Context) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	expiry := time.Now().Add(-5 * time.Minute)
-	for chatID, task := range h.pendingTasks {
-		if task.CreatedAt.Before(expiry) {
-			// Notify user that task expired
-			_, _ = h.client.SendMessage(ctx, chatID,
-				fmt.Sprintf("⏰ Task %s expired (no confirmation received).", task.TaskID), "")
-			delete(h.pendingTasks, chatID)
-			logging.WithComponent("telegram").Debug("Expired pending task", slog.String("task_id", task.TaskID), slog.String("chat_id", chatID))
-		}
+	}()
+	if h.commsHandler != nil {
+		h.commsHandler.CleanupLoop(cctx)
 	}
 }
 
@@ -348,22 +302,6 @@ func (h *Handler) processUpdate(ctx context.Context, update *Update) {
 	msg := update.Message
 	chatID := strconv.FormatInt(msg.Chat.ID, 10)
 
-	// Track sender for RBAC resolution (GH-634)
-	if msg.From != nil && msg.From.ID != 0 {
-		h.mu.Lock()
-		h.lastSender[chatID] = msg.From.ID
-		h.mu.Unlock()
-	}
-
-	// Rate limiting check for all message types
-	if h.rateLimiter != nil && !h.rateLimiter.AllowMessage(chatID) {
-		logging.WithComponent("telegram").Warn("Rate limit exceeded",
-			slog.String("chat_id", chatID), slog.String("type", "message"))
-		_, _ = h.client.SendMessage(ctx, chatID,
-			"⚠️ Rate limit exceeded. Please wait a moment before sending more messages.", "")
-		return
-	}
-
 	// Handle photo messages
 	if len(msg.Photo) > 0 {
 		h.handlePhoto(ctx, chatID, msg)
@@ -398,89 +336,31 @@ func (h *Handler) processUpdate(ctx context.Context, update *Update) {
 	text := strings.TrimSpace(msg.Text)
 	text = stripBotMention(text, h.botUsername)
 
-	// Check for confirmation responses
-	textLower := strings.ToLower(text)
-	if textLower == "yes" || textLower == "y" || textLower == "execute" || textLower == "confirm" {
-		h.handleConfirmation(ctx, chatID, true)
-		return
-	}
-	if textLower == "no" || textLower == "n" || textLower == "cancel" || textLower == "abort" {
-		h.handleConfirmation(ctx, chatID, false)
-		return
-	}
-
-	// Detect intent (uses LLM if available, regex fallback)
-	msgIntent := h.detectIntentWithLLM(ctx, chatID, text)
-	logging.WithComponent("telegram").Debug("Message received",
-		slog.String("chat_id", chatID), slog.String("intent", string(msgIntent)))
-
-	// Record user message in conversation history
-	if h.conversationStore != nil {
-		h.conversationStore.Add(chatID, "user", text)
-	}
-
-	switch msgIntent {
-	case intent.IntentCommand:
-		h.handleCommand(ctx, chatID, text)
-	case intent.IntentGreeting:
-		h.handleGreeting(ctx, chatID, msg.From)
-	case intent.IntentQuestion:
-		h.handleQuestion(ctx, chatID, text)
-	case intent.IntentResearch:
-		h.handleResearch(ctx, chatID, text)
-	case intent.IntentPlanning:
-		h.handlePlanning(ctx, chatID, text)
-	case intent.IntentChat:
-		h.handleChat(ctx, chatID, text)
-	case intent.IntentTask:
-		h.handleTask(ctx, chatID, text)
-	default:
-		// Fallback to chat for conversational messages
-		h.handleChat(ctx, chatID, text)
-	}
-}
-
-// detectIntentWithLLM uses LLM classification with regex fallback
-func (h *Handler) detectIntentWithLLM(ctx context.Context, chatID, text string) intent.Intent {
-	// If LLM classifier not available, use regex
-	if h.llmClassifier == nil {
-		return intent.DetectIntent(text)
-	}
-
-	// Fast path: commands always use regex
+	// Commands stay local
 	if strings.HasPrefix(text, "/") {
-		return intent.IntentCommand
+		h.handleCommand(ctx, chatID, text)
+		return
 	}
 
-	// Fast path: clear question patterns don't need LLM verification
-	// Prevents Haiku from misclassifying "What's in roadmap" as Task
-	if intent.IsClearQuestion(text) {
-		return intent.IntentQuestion
+	// Delegate all other text to shared comms.Handler
+	if h.commsHandler != nil {
+		senderID := ""
+		senderName := ""
+		if msg.From != nil {
+			senderID = strconv.FormatInt(msg.From.ID, 10)
+			if msg.From.FirstName != "" {
+				senderName = msg.From.FirstName
+			}
+		}
+		h.commsHandler.HandleMessage(ctx, &comms.IncomingMessage{
+			ContextID:  chatID,
+			SenderID:   senderID,
+			SenderName: senderName,
+			Text:       text,
+			Platform:   "telegram",
+			Timestamp:  time.Now(),
+		})
 	}
-
-	// Try LLM classification with timeout
-	classifyCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
-
-	// Get conversation history
-	var history []intent.ConversationMessage
-	if h.conversationStore != nil {
-		history = h.conversationStore.Get(chatID)
-	}
-
-	classified, err := h.llmClassifier.Classify(classifyCtx, history, text)
-	if err != nil {
-		logging.WithComponent("telegram").Debug("LLM classification failed, using regex",
-			slog.Any("error", err))
-		return intent.DetectIntent(text)
-	}
-
-	logging.WithComponent("telegram").Debug("LLM classified intent",
-		slog.String("chat_id", chatID),
-		slog.String("intent", string(classified)),
-		slog.String("text", truncateDescription(text, 50)))
-
-	return classified
 }
 
 // handleCallback processes callback queries from inline keyboards
@@ -492,616 +372,46 @@ func (h *Handler) handleCallback(ctx context.Context, callback *CallbackQuery) {
 	chatID := strconv.FormatInt(callback.Message.Chat.ID, 10)
 	data := callback.Data
 
-	// Track sender from callback for RBAC resolution (GH-634)
-	if callback.From != nil && callback.From.ID != 0 {
-		h.mu.Lock()
-		h.lastSender[chatID] = callback.From.ID
-		h.mu.Unlock()
-	}
-
 	// Answer callback to remove loading state
 	_ = h.client.AnswerCallback(ctx, callback.ID, "")
 
 	switch {
 	case data == "execute":
-		h.handleConfirmation(ctx, chatID, true)
+		if h.commsHandler != nil {
+			senderID := ""
+			if callback.From != nil {
+				senderID = strconv.FormatInt(callback.From.ID, 10)
+			}
+			h.commsHandler.HandleMessage(ctx, &comms.IncomingMessage{
+				ContextID:  chatID,
+				SenderID:   senderID,
+				Platform:   "telegram",
+				IsCallback: true,
+				CallbackID: callback.ID,
+				ActionID:   "execute",
+			})
+		}
 	case data == "cancel":
-		h.handleConfirmation(ctx, chatID, false)
+		if h.commsHandler != nil {
+			senderID := ""
+			if callback.From != nil {
+				senderID = strconv.FormatInt(callback.From.ID, 10)
+			}
+			h.commsHandler.HandleMessage(ctx, &comms.IncomingMessage{
+				ContextID:  chatID,
+				SenderID:   senderID,
+				Platform:   "telegram",
+				IsCallback: true,
+				CallbackID: callback.ID,
+				ActionID:   "cancel",
+			})
+		}
 	case strings.HasPrefix(data, "switch_"):
 		projectName := strings.TrimPrefix(data, "switch_")
 		h.cmdHandler.HandleCallbackSwitch(ctx, chatID, projectName)
 	case data == "voice_check_status":
 		h.sendVoiceSetupPrompt(ctx, chatID)
 	}
-}
-
-// handleConfirmation handles task confirmation or cancellation
-func (h *Handler) handleConfirmation(ctx context.Context, chatID string, confirmed bool) {
-	h.mu.Lock()
-	pending, exists := h.pendingTasks[chatID]
-	if exists {
-		delete(h.pendingTasks, chatID)
-	}
-	h.mu.Unlock()
-
-	if !exists {
-		_, _ = h.client.SendMessage(ctx, chatID, "No pending task to confirm.", "")
-		return
-	}
-
-	if confirmed {
-		h.executeTask(ctx, chatID, pending.TaskID, pending.Description)
-	} else {
-		_, _ = h.client.SendMessage(ctx, chatID,
-			fmt.Sprintf("❌ Task %s cancelled.", pending.TaskID), "")
-	}
-}
-
-// handleGreeting responds to greetings
-func (h *Handler) handleGreeting(ctx context.Context, chatID string, from *User) {
-	username := ""
-	if from != nil {
-		username = from.FirstName
-	}
-	_, _ = h.client.SendMessage(ctx, chatID, FormatGreeting(username), "")
-}
-
-// handleQuestion handles questions about the codebase
-func (h *Handler) handleQuestion(ctx context.Context, chatID, question string) {
-	// Try fast path first for common questions
-	if answer := h.tryFastAnswer(question); answer != "" {
-		logging.WithComponent("telegram").Debug("Fast answer used", slog.String("chat_id", chatID))
-		_, _ = h.client.SendMessage(ctx, chatID, answer, "")
-		return
-	}
-
-	// Send acknowledgment for slow path
-	_, _ = h.client.SendMessage(ctx, chatID, FormatQuestionAck(), "")
-
-	// Create a timeout context for questions (90 seconds max)
-	questionCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
-	defer cancel()
-
-	// Create a read-only prompt for Claude
-	// Be explicit about being concise to avoid extensive exploration
-	prompt := fmt.Sprintf(`Answer this question about the codebase. DO NOT make any changes, only read and analyze.
-
-Question: %s
-
-IMPORTANT: Be concise. Limit your exploration to 5-10 files max. Provide a brief, direct answer.
-If the question is too broad, ask for clarification instead of exploring everything.`, question)
-
-	// Create a read-only task (no branch, no PR)
-	taskID := fmt.Sprintf("Q-%d", time.Now().Unix())
-	task := &executor.Task{
-		ID:          taskID,
-		Title:       "Question: " + truncateDescription(question, 40),
-		Description: prompt,
-		ProjectPath: h.getActiveProjectPath(chatID),
-		Verbose:     false,
-	}
-
-	// Execute with timeout context
-	logging.WithTask(taskID).Debug("Answering question", slog.String("chat_id", chatID))
-	result, err := h.runner.Execute(questionCtx, task)
-
-	if err != nil {
-		if questionCtx.Err() == context.DeadlineExceeded {
-			_, _ = h.client.SendMessage(ctx, chatID,
-				"⏱ Question timed out. Try asking something more specific.", "")
-		} else {
-			_, _ = h.client.SendMessage(ctx, chatID,
-				"❌ Sorry, I couldn't answer that question. Try rephrasing it.", "")
-		}
-		return
-	}
-
-	// Format and send answer
-	answer := FormatQuestionAnswer(result.Output)
-	if answer == "" {
-		answer = "I couldn't find a clear answer to that question."
-	}
-
-	_, _ = h.client.SendMessage(ctx, chatID, answer, "")
-}
-
-// handleResearch handles research/analysis requests
-// Executes Claude Code in read-only mode and returns analysis directly to chat
-func (h *Handler) handleResearch(ctx context.Context, chatID, query string) {
-	// Send acknowledgment
-	_, _ = h.client.SendMessage(ctx, chatID, "🔬 Researching...", "")
-
-	// Create research task (no branch, no PR)
-	taskID := fmt.Sprintf("RES-%d", time.Now().Unix())
-	task := &executor.Task{
-		ID:    taskID,
-		Title: "Research: " + truncateDescription(query, 40),
-		Description: fmt.Sprintf(`Research and analyze: %s
-
-Provide findings in a structured format with:
-- Executive summary
-- Key findings
-- Relevant code/files if applicable
-- Recommendations
-
-DO NOT make any code changes. This is a read-only research task.`, query),
-		ProjectPath: h.getActiveProjectPath(chatID),
-		CreatePR:    false,
-	}
-
-	// Execute with timeout (3 minutes for research)
-	researchCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
-	defer cancel()
-
-	logging.WithTask(taskID).Info("Executing research", slog.String("chat_id", chatID), slog.String("query", truncateDescription(query, 50)))
-	result, err := h.runner.Execute(researchCtx, task)
-
-	if err != nil {
-		if researchCtx.Err() == context.DeadlineExceeded {
-			_, _ = h.client.SendMessage(ctx, chatID, "⏱ Research timed out. Try a more specific query.", "")
-		} else {
-			_, _ = h.client.SendMessage(ctx, chatID, fmt.Sprintf("❌ Research failed: %s", err.Error()), "")
-		}
-		return
-	}
-
-	// Send content to Telegram (chunked if long)
-	h.sendResearchOutput(ctx, chatID, query, result)
-}
-
-// sendResearchOutput sends research findings to Telegram, chunking if necessary
-func (h *Handler) sendResearchOutput(ctx context.Context, chatID, query string, result *executor.ExecutionResult) {
-	content := cleanInternalSignals(result.Output)
-	if content == "" {
-		_, _ = h.client.SendMessage(ctx, chatID, "🤷 No research findings to report.", "")
-		return
-	}
-
-	// Chunk content for Telegram (4096 char limit, use 3800 for safety)
-	chunks := chunkContent(content, 3800)
-
-	for i, chunk := range chunks {
-		msg := chunk
-		if len(chunks) > 1 {
-			msg = fmt.Sprintf("📄 Part %d/%d\n\n%s", i+1, len(chunks), chunk)
-		}
-		_, _ = h.client.SendMessage(ctx, chatID, msg, "")
-
-		// Small delay between chunks to avoid rate limiting
-		if i < len(chunks)-1 {
-			time.Sleep(500 * time.Millisecond)
-		}
-	}
-
-	// Optionally save to file
-	h.saveResearchFile(chatID, query, content)
-}
-
-// saveResearchFile saves research output to .agent/research/ directory
-func (h *Handler) saveResearchFile(chatID, query, content string) {
-	// Create .agent/research/ directory if it doesn't exist
-	researchDir := filepath.Join(h.getActiveProjectPath(chatID), ".agent", "research")
-	if err := os.MkdirAll(researchDir, 0755); err != nil {
-		return // Silent fail for file save
-	}
-
-	// Generate filename from query
-	slug := strings.ToLower(query)
-	slug = regexp.MustCompile(`[^a-z0-9]+`).ReplaceAllString(slug, "-")
-	if len(slug) > 40 {
-		slug = slug[:40]
-	}
-	filename := fmt.Sprintf("%s-%d.md", slug, time.Now().Unix())
-
-	// Save file
-	filePath := filepath.Join(researchDir, filename)
-	_ = os.WriteFile(filePath, []byte(content), 0644)
-
-	logging.WithComponent("telegram").Debug("Saved research file", slog.String("path", filePath))
-}
-
-// handlePlanning handles planning requests
-// Explores codebase and creates implementation plan, then offers Execute/Cancel
-func (h *Handler) handlePlanning(ctx context.Context, chatID, request string) {
-	// Send acknowledgment
-	_, _ = h.client.SendMessage(ctx, chatID, "📐 Drafting plan...", "")
-
-	// Create planning task (read-only exploration)
-	taskID := fmt.Sprintf("PLAN-%d", time.Now().Unix())
-	task := &executor.Task{
-		ID:    taskID,
-		Title: "Plan: " + truncateDescription(request, 40),
-		Description: fmt.Sprintf(`Create an implementation plan for: %s
-
-Explore the codebase and propose a detailed plan. Include:
-1. Summary of approach
-2. Files to modify/create
-3. Step-by-step implementation phases
-4. Potential risks or considerations
-
-DO NOT make any code changes. Only explore and plan.`, request),
-		ProjectPath: h.getActiveProjectPath(chatID),
-		CreatePR:    false,
-	}
-
-	// Execute with timeout from config (default 2 minutes for planning)
-	planTimeout := 2 * time.Minute
-	if h.runner.Config() != nil && h.runner.Config().PlanningTimeout > 0 {
-		planTimeout = h.runner.Config().PlanningTimeout
-	}
-	planCtx, cancel := context.WithTimeout(ctx, planTimeout)
-	defer cancel()
-
-	logging.WithTask(taskID).Info("Creating plan", slog.String("chat_id", chatID))
-	result, err := h.runner.Execute(planCtx, task)
-
-	if err != nil {
-		if planCtx.Err() == context.DeadlineExceeded {
-			_, _ = h.client.SendMessage(ctx, chatID, "⏱ Planning timed out. Try a simpler request.", "")
-		} else {
-			_, _ = h.client.SendMessage(ctx, chatID, fmt.Sprintf("❌ Planning failed: %s", err.Error()), "")
-		}
-		return
-	}
-
-	planContent := cleanInternalSignals(result.Output)
-	if planContent == "" {
-		_, _ = h.client.SendMessage(ctx, chatID, planEmptyMessage(result.Error, result.Success), "")
-		return
-	}
-
-	// Store the plan as a pending task for execution
-	h.mu.Lock()
-	h.pendingTasks[chatID] = &PendingTask{
-		TaskID:      taskID,
-		Description: fmt.Sprintf("## Implementation Plan\n\n%s\n\n## Original Request\n\n%s", planContent, request),
-		ChatID:      chatID,
-		CreatedAt:   time.Now(),
-	}
-	h.mu.Unlock()
-
-	// Send plan summary with execute button
-	summary := extractPlanSummary(planContent)
-	_, _ = h.client.SendMessageWithKeyboard(ctx, chatID,
-		fmt.Sprintf("📋 Implementation Plan\n\n%s", summary), "",
-		[][]InlineKeyboardButton{
-			{
-				{Text: "✅ Execute", CallbackData: "execute"},
-				{Text: "❌ Cancel", CallbackData: "cancel"},
-			},
-		})
-}
-
-// planEmptyMessage returns the appropriate user-facing message when planning
-// produces no output. It differentiates between executor errors, non-success
-// (e.g. timeout), and the case where the task is too simple for planning.
-func planEmptyMessage(resultError string, resultSuccess bool) string {
-	switch {
-	case resultError != "":
-		return fmt.Sprintf("❌ Planning error: %s", resultError)
-	case !resultSuccess:
-		return "⏱ Planning timed out. Try a simpler request."
-	default:
-		return "🤷 The task may be too simple for planning. Try executing it directly."
-	}
-}
-
-// extractPlanSummary extracts key points from a plan for display
-func extractPlanSummary(plan string) string {
-	lines := strings.Split(plan, "\n")
-	var summary []string
-	lineCount := 0
-
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" {
-			continue
-		}
-
-		summary = append(summary, trimmed)
-		lineCount++
-
-		if lineCount >= 20 {
-			break
-		}
-	}
-
-	result := strings.Join(summary, "\n")
-	if len(result) > 2000 {
-		result = result[:2000] + "\n\n_(truncated)_"
-	}
-
-	return result
-}
-
-// handleChat handles conversational messages
-// Responds conversationally without code execution or PR creation
-func (h *Handler) handleChat(ctx context.Context, chatID, message string) {
-	// Send typing indicator
-	_, _ = h.client.SendMessage(ctx, chatID, "💬 Thinking...", "")
-
-	// Create chat task (read-only, conversational)
-	taskID := fmt.Sprintf("CHAT-%d", time.Now().Unix())
-	task := &executor.Task{
-		ID:    taskID,
-		Title: "Chat: " + truncateDescription(message, 30),
-		Description: fmt.Sprintf(`You are Pilot, an AI assistant for the codebase at %s.
-
-The user wants to have a conversation (not execute a task).
-Respond helpfully and conversationally. You can reference project knowledge but DO NOT make code changes.
-
-Be concise - this is a chat conversation, not a report. Keep response under 500 words.
-
-User message: %s`, h.getActiveProjectPath(chatID), message),
-		ProjectPath: h.getActiveProjectPath(chatID),
-		CreatePR:    false,
-	}
-
-	// Execute with short timeout (60 seconds for chat)
-	chatCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
-	defer cancel()
-
-	logging.WithTask(taskID).Debug("Chat response", slog.String("chat_id", chatID))
-	result, err := h.runner.Execute(chatCtx, task)
-
-	if err != nil {
-		if chatCtx.Err() == context.DeadlineExceeded {
-			_, _ = h.client.SendMessage(ctx, chatID, "⏱ Took too long to respond. Try a simpler question.", "")
-		} else {
-			_, _ = h.client.SendMessage(ctx, chatID, "Sorry, I couldn't process that. Try rephrasing?", "")
-		}
-		return
-	}
-
-	// Clean and send response
-	response := cleanInternalSignals(result.Output)
-	if response == "" {
-		response = "I'm not sure how to respond to that. Could you rephrase?"
-	}
-
-	// Truncate if too long
-	if len(response) > 4000 {
-		response = response[:3997] + "..."
-	}
-
-	_, _ = h.client.SendMessage(ctx, chatID, response, "")
-
-	// Record assistant response in conversation history
-	if h.conversationStore != nil {
-		h.conversationStore.Add(chatID, "assistant", truncateDescription(response, 500))
-	}
-}
-
-// handleTask handles task requests with confirmation
-func (h *Handler) handleTask(ctx context.Context, chatID, description string) {
-	// Check task rate limit
-	if h.rateLimiter != nil && !h.rateLimiter.AllowTask(chatID) {
-		remaining := h.rateLimiter.GetRemainingTasks(chatID)
-		logging.WithComponent("telegram").Warn("Task rate limit exceeded",
-			slog.String("chat_id", chatID), slog.Int("remaining", remaining))
-		_, _ = h.client.SendMessage(ctx, chatID,
-			"⚠️ Task rate limit exceeded. You've submitted too many tasks recently. Please wait before submitting more.", "")
-		return
-	}
-
-	// Check if there's already a pending task
-	h.mu.Lock()
-	if existing, exists := h.pendingTasks[chatID]; exists {
-		h.mu.Unlock()
-		_, _ = h.client.SendMessage(ctx, chatID,
-			fmt.Sprintf("⚠️ You already have a pending task: %s\n\nReply yes to execute or no to cancel.",
-				existing.TaskID), "")
-		return
-	}
-	h.mu.Unlock()
-
-	// Try to resolve task ID from description (e.g., "Start task 07" → TASK-07)
-	taskID := ""
-	displayDesc := description
-	if taskInfo := h.resolveTaskFromDescription(description); taskInfo != nil {
-		taskID = taskInfo.FullID
-		displayDesc = fmt.Sprintf("%s: %s", taskInfo.FullID, taskInfo.Title)
-		// Load full task description for execution
-		if fullDesc := h.loadTaskDescription(taskInfo); fullDesc != "" {
-			description = fullDesc
-		}
-	} else {
-		// Fallback to generated ID for free-form tasks
-		taskID = fmt.Sprintf("TG-%d", time.Now().Unix())
-	}
-
-	h.mu.Lock()
-
-	// Create pending task
-	pending := &PendingTask{
-		TaskID:      taskID,
-		Description: description,
-		ChatID:      chatID,
-		CreatedAt:   time.Now(),
-	}
-	h.pendingTasks[chatID] = pending
-	h.mu.Unlock()
-
-	// Send confirmation message with inline keyboard
-	// Use displayDesc for user-friendly display, description is kept for execution
-	confirmMsg := FormatTaskConfirmation(taskID, displayDesc, h.getActiveProjectPath(chatID))
-
-	msgResp, err := h.client.SendMessageWithKeyboard(ctx, chatID, confirmMsg, "",
-		[][]InlineKeyboardButton{
-			{
-				{Text: "✅ Execute", CallbackData: "execute"},
-				{Text: "❌ Cancel", CallbackData: "cancel"},
-			},
-		})
-
-	if err != nil {
-		logging.WithComponent("telegram").Warn("Failed to send confirmation", slog.Any("error", err))
-		// Fallback to text-based confirmation
-		_, _ = h.client.SendMessage(ctx, chatID,
-			confirmMsg+"\n\n_Reply yes to execute or no to cancel._", "")
-	} else if msgResp != nil && msgResp.Result != nil {
-		h.mu.Lock()
-		if p, ok := h.pendingTasks[chatID]; ok {
-			p.MessageID = msgResp.Result.MessageID
-		}
-		h.mu.Unlock()
-	}
-}
-
-// executeTask executes a confirmed task with automatic ephemeral detection
-func (h *Handler) executeTask(ctx context.Context, chatID, taskID, description string) {
-	// Determine if this is an ephemeral task (shouldn't create PR)
-	createPR := true
-
-	// Check if ephemeral detection is enabled (default: true)
-	detectEphemeral := true
-	if h.runner != nil && h.runner.Config() != nil && h.runner.Config().DetectEphemeral != nil {
-		detectEphemeral = *h.runner.Config().DetectEphemeral
-	}
-
-	if detectEphemeral && intent.IsEphemeralTask(description) {
-		createPR = false
-		logging.WithTask(taskID).Debug("Ephemeral task detected - skipping PR creation",
-			slog.String("description", truncateDescription(description, 50)))
-	}
-
-	h.executeTaskWithOptions(ctx, chatID, taskID, description, createPR)
-}
-
-// resolveMemberID resolves the current Telegram sender to a team member ID (GH-634).
-// Returns "" if no resolver is configured or no match is found.
-func (h *Handler) resolveMemberID(chatID string) string {
-	if h.memberResolver == nil {
-		return ""
-	}
-
-	h.mu.Lock()
-	senderID := h.lastSender[chatID]
-	h.mu.Unlock()
-
-	if senderID == 0 {
-		return ""
-	}
-
-	memberID, err := h.memberResolver.ResolveTelegramIdentity(senderID, "")
-	if err != nil {
-		logging.WithComponent("telegram").Warn("failed to resolve Telegram identity",
-			slog.Int64("telegram_id", senderID),
-			slog.Any("error", err))
-		return ""
-	}
-
-	if memberID != "" {
-		logging.WithComponent("telegram").Debug("resolved Telegram user to team member",
-			slog.Int64("telegram_id", senderID),
-			slog.String("member_id", memberID))
-	}
-
-	return memberID
-}
-
-// executeTaskWithOptions executes a task with explicit PR creation control
-func (h *Handler) executeTaskWithOptions(ctx context.Context, chatID, taskID, description string, createPR bool) {
-	// Send execution started message (this will be updated with progress)
-	// NOTE: Using plain text (no parse mode) to avoid markdown escaping issues.
-	// See SOP: .agent/sops/telegram-bot-development.md
-	prNote := ""
-	if !createPR {
-		prNote = " (no PR)"
-	}
-	resp, err := h.client.SendMessage(ctx, chatID, FormatProgressUpdate(taskID, "Starting"+prNote, 0, "Initializing..."), "")
-	if err != nil {
-		logging.WithTask(taskID).Warn("Failed to send start message", slog.Any("error", err))
-		// Fallback to simple message
-		_, _ = h.client.SendMessage(ctx, chatID, FormatTaskStarted(taskID, description), "")
-	}
-
-	// Track progress message ID for updates
-	var progressMsgID int64
-	if resp != nil && resp.Result != nil {
-		progressMsgID = resp.Result.MessageID
-		logging.WithTask(taskID).Debug("Progress message ready", slog.Int64("message_id", progressMsgID))
-	} else {
-		logging.WithTask(taskID).Warn("No progress message ID - progress updates disabled")
-	}
-
-	// Create task for executor
-	branch := ""
-	baseBranch := ""
-	if createPR {
-		branch = fmt.Sprintf("pilot/%s", taskID)
-		baseBranch = "main"
-	}
-
-	task := &executor.Task{
-		ID:          taskID,
-		Title:       truncateDescription(description, 50),
-		Description: description,
-		ProjectPath: h.getActiveProjectPath(chatID),
-		Verbose:     false,
-		Branch:      branch,
-		BaseBranch:  baseBranch,
-		CreatePR:    createPR,
-		MemberID:    h.resolveMemberID(chatID), // GH-634: RBAC lookup
-	}
-
-	// Set up progress callback with throttling
-	var lastPhase string
-	var lastProgress int
-	var lastUpdate time.Time
-
-	if progressMsgID != 0 {
-		logging.WithTask(taskID).Debug("Setting up progress callback")
-		h.runner.OnProgress(func(tid string, phase string, progress int, message string) {
-			// Only update for our task
-			if tid != taskID {
-				return
-			}
-
-			logging.WithTask(taskID).Debug("Progress update",
-				slog.String("phase", phase), slog.Int("progress", progress))
-
-			// Throttle updates: phase change OR progress change >= 15% OR 3 seconds elapsed
-			now := time.Now()
-			phaseChanged := phase != lastPhase
-			progressChanged := progress-lastProgress >= 15
-			timeElapsed := now.Sub(lastUpdate) >= 3*time.Second
-
-			if !phaseChanged && !progressChanged && !timeElapsed {
-				return
-			}
-
-			// Update tracking state
-			lastPhase = phase
-			lastProgress = progress
-			lastUpdate = now
-
-			// Send update
-			updateText := FormatProgressUpdate(taskID, phase, progress, message)
-			if err := h.client.EditMessage(ctx, chatID, progressMsgID, updateText, ""); err != nil {
-				logging.WithTask(taskID).Warn("Failed to edit progress message", slog.Any("error", err))
-			}
-		})
-	} else {
-		logging.WithTask(taskID).Warn("Progress callback NOT set (no message ID)")
-	}
-
-	// Execute task
-	logging.WithTask(taskID).Info("Executing task", slog.String("chat_id", chatID))
-	result, err := h.runner.Execute(ctx, task)
-
-	// Clear progress callback
-	h.runner.OnProgress(nil)
-
-	// Send result with clean formatting
-	if err != nil {
-		errMsg := fmt.Sprintf("❌ Task failed\n%s\n\n%s", taskID, err.Error())
-		_, _ = h.client.SendMessage(ctx, chatID, errMsg, "")
-		return
-	}
-
-	result.TaskID = taskID // Ensure TaskID is set
-	_, _ = h.client.SendMessage(ctx, chatID, FormatTaskResult(result), "")
 }
 
 // handleCommand processes bot commands
@@ -1113,15 +423,14 @@ func (h *Handler) handleCommand(ctx context.Context, chatID, text string) {
 // handleRunCommand executes a task directly without confirmation
 func (h *Handler) handleRunCommand(ctx context.Context, chatID, taskIDInput string) {
 	// Check if already running a task
-	h.mu.Lock()
-	if running := h.runningTasks[chatID]; running != nil {
-		h.mu.Unlock()
-		elapsed := time.Since(running.StartedAt).Round(time.Second)
-		_, _ = h.client.SendMessage(ctx, chatID,
-			fmt.Sprintf("⚠️ Already running %s (%s)\n\nUse /stop to cancel it first.", running.TaskID, elapsed), "")
-		return
+	if h.commsHandler != nil {
+		if running := h.commsHandler.GetRunningTask(chatID); running != nil {
+			elapsed := time.Since(running.StartedAt).Round(time.Second)
+			_, _ = h.client.SendMessage(ctx, chatID,
+				fmt.Sprintf("⚠️ Already running %s (%s)\n\nUse /stop to cancel it first.", running.TaskID, elapsed), "")
+			return
+		}
 	}
-	h.mu.Unlock()
 
 	// Resolve task ID
 	taskInfo := h.resolveTaskID(taskIDInput)
@@ -1143,8 +452,10 @@ func (h *Handler) handleRunCommand(ctx context.Context, chatID, taskIDInput stri
 	_, _ = h.client.SendMessage(ctx, chatID,
 		fmt.Sprintf("🚀 Starting task\n\n%s: %s", taskInfo.FullID, taskInfo.Title), "")
 
-	// Execute directly
-	h.executeTask(ctx, chatID, taskInfo.FullID, fmt.Sprintf("## Task: %s\n\n%s", taskInfo.FullID, description))
+	// Execute directly via commsHandler
+	if h.commsHandler != nil {
+		h.commsHandler.ExecuteDirectTask(ctx, chatID, "", taskInfo.FullID, fmt.Sprintf("## Task: %s\n\n%s", taskInfo.FullID, description), nil)
+	}
 }
 
 // handlePhoto processes photo messages
@@ -1188,8 +499,13 @@ func (h *Handler) handlePhoto(ctx context.Context, chatID string, msg *Message) 
 		prompt = "Analyze this image and describe what you see."
 	}
 
-	// Execute with image
-	h.executeImageTask(ctx, chatID, imagePath, prompt)
+	// Execute with image via commsHandler
+	taskID := fmt.Sprintf("IMG-%d", time.Now().Unix())
+	if h.commsHandler != nil {
+		h.commsHandler.ExecuteDirectTask(ctx, chatID, "", taskID, prompt, &comms.DirectTaskOpts{
+			ImagePath: imagePath,
+		})
+	}
 }
 
 // handleVoice processes voice messages
@@ -1260,35 +576,23 @@ func (h *Handler) handleVoice(ctx context.Context, chatID string, msg *Message) 
 	transcriptMsg := fmt.Sprintf("🎤 Transcribed%s:\n%s", langInfo, result.Text)
 	_, _ = h.client.SendMessage(ctx, chatID, transcriptMsg, "")
 
-	// Process the transcribed text as if it was typed
+	// Delegate transcribed text to commsHandler
+	text := strings.TrimSpace(result.Text)
 	logging.WithComponent("telegram").Debug("Processing transcribed text", slog.String("chat_id", chatID))
 
-	// Detect intent and handle (uses LLM if available)
-	text := strings.TrimSpace(result.Text)
-	msgIntent := h.detectIntentWithLLM(ctx, chatID, text)
-
-	// Record transcribed message in conversation history
-	if h.conversationStore != nil {
-		h.conversationStore.Add(chatID, "user", text)
-	}
-
-	switch msgIntent {
-	case intent.IntentCommand:
-		h.handleCommand(ctx, chatID, text)
-	case intent.IntentGreeting:
-		h.handleGreeting(ctx, chatID, msg.From)
-	case intent.IntentQuestion:
-		h.handleQuestion(ctx, chatID, text)
-	case intent.IntentResearch:
-		h.handleResearch(ctx, chatID, text)
-	case intent.IntentPlanning:
-		h.handlePlanning(ctx, chatID, text)
-	case intent.IntentChat:
-		h.handleChat(ctx, chatID, text)
-	case intent.IntentTask:
-		h.handleTask(ctx, chatID, text)
-	default:
-		h.handleChat(ctx, chatID, text) // Default to chat, not task
+	if h.commsHandler != nil {
+		senderID := ""
+		if msg.From != nil {
+			senderID = strconv.FormatInt(msg.From.ID, 10)
+		}
+		h.commsHandler.HandleMessage(ctx, &comms.IncomingMessage{
+			ContextID: chatID,
+			SenderID:  senderID,
+			Text:      text,
+			VoiceText: text,
+			Platform:  "telegram",
+			Timestamp: time.Now(),
+		})
 	}
 }
 
@@ -1394,92 +698,6 @@ func (h *Handler) downloadImage(ctx context.Context, fileID string) (string, err
 	}
 
 	return tmpFile.Name(), nil
-}
-
-// executeImageTask executes a task with an image attachment
-func (h *Handler) executeImageTask(ctx context.Context, chatID, imagePath, prompt string) {
-	// Generate task ID
-	taskID := fmt.Sprintf("IMG-%d", time.Now().Unix())
-
-	// Send progress message
-	resp, err := h.client.SendMessage(ctx, chatID, FormatProgressUpdate(taskID, "Analyzing", 10, "Processing image..."), "")
-	var progressMsgID int64
-	if err == nil && resp != nil && resp.Result != nil {
-		progressMsgID = resp.Result.MessageID
-	}
-
-	// Create task with image
-	task := &executor.Task{
-		ID:          taskID,
-		Title:       "Image analysis",
-		Description: prompt,
-		ProjectPath: h.getActiveProjectPath(chatID),
-		Verbose:     false,
-		ImagePath:   imagePath,
-		Branch:      fmt.Sprintf("pilot/%s", taskID),
-		BaseBranch:  "main",
-		CreatePR:    true,
-	}
-
-	// Set up progress callback
-	var lastPhase string
-	var lastProgress int
-	var lastUpdate time.Time
-
-	if progressMsgID != 0 {
-		h.runner.OnProgress(func(tid string, phase string, progress int, message string) {
-			if tid != taskID {
-				return
-			}
-			now := time.Now()
-			phaseChanged := phase != lastPhase
-			progressChanged := progress-lastProgress >= 15
-			timeElapsed := now.Sub(lastUpdate) >= 3*time.Second
-
-			if !phaseChanged && !progressChanged && !timeElapsed {
-				return
-			}
-
-			lastPhase = phase
-			lastProgress = progress
-			lastUpdate = now
-
-			updateText := FormatProgressUpdate(taskID, phase, progress, message)
-			_ = h.client.EditMessage(ctx, chatID, progressMsgID, updateText, "")
-		})
-	}
-
-	// Execute task (90 second timeout for image analysis)
-	taskCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
-	defer cancel()
-
-	logging.WithTask(taskID).Info("Executing image task", slog.String("chat_id", chatID))
-	result, err := h.runner.Execute(taskCtx, task)
-
-	// Clear progress callback
-	h.runner.OnProgress(nil)
-
-	if err != nil {
-		if taskCtx.Err() == context.DeadlineExceeded {
-			_, _ = h.client.SendMessage(ctx, chatID, "⏱ Image analysis timed out. Try a simpler request.", "")
-		} else {
-			_, _ = h.client.SendMessage(ctx, chatID, fmt.Sprintf("❌ Analysis failed: %s", err.Error()), "")
-		}
-		return
-	}
-
-	// Format and send result
-	answer := result.Output
-	if answer == "" {
-		answer = "Could not analyze the image."
-	}
-
-	// Truncate if too long for Telegram
-	if len(answer) > 4000 {
-		answer = answer[:3997] + "..."
-	}
-
-	_, _ = h.client.SendMessage(ctx, chatID, answer, "")
 }
 
 // ============================================================================

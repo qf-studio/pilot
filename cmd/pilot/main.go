@@ -28,6 +28,8 @@ import (
 	"github.com/alekspetrov/pilot/internal/approval"
 	"github.com/alekspetrov/pilot/internal/autopilot"
 	"github.com/alekspetrov/pilot/internal/banner"
+	"github.com/alekspetrov/pilot/internal/comms"
+	"github.com/alekspetrov/pilot/internal/intent"
 	"github.com/alekspetrov/pilot/internal/briefs"
 	"github.com/alekspetrov/pilot/internal/budget"
 	"github.com/alekspetrov/pilot/internal/config"
@@ -1578,19 +1580,58 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 			}
 		}
 
+		tgClient := telegram.NewClient(cfg.Adapters.Telegram.BotToken)
+		tgMessenger := telegram.NewMessenger(tgClient, cfg.Adapters.Telegram.PlainTextMode)
+
+		// Build LLM classifier + conversation store for comms.Handler
+		var tgLLMClassifier intent.Classifier
+		var tgConvStore *intent.ConversationStore
+		if cfg.Adapters.Telegram.LLMClassifier != nil && cfg.Adapters.Telegram.LLMClassifier.Enabled {
+			apiKey := cfg.Adapters.Telegram.LLMClassifier.APIKey
+			if apiKey == "" {
+				apiKey = os.Getenv("ANTHROPIC_API_KEY")
+			}
+			if apiKey != "" {
+				tgLLMClassifier = intent.NewAnthropicClient(apiKey)
+				historySize := 10
+				if cfg.Adapters.Telegram.LLMClassifier.HistorySize > 0 {
+					historySize = cfg.Adapters.Telegram.LLMClassifier.HistorySize
+				}
+				historyTTL := 30 * time.Minute
+				if cfg.Adapters.Telegram.LLMClassifier.HistoryTTL > 0 {
+					historyTTL = cfg.Adapters.Telegram.LLMClassifier.HistoryTTL
+				}
+				tgConvStore = intent.NewConversationStore(historySize, historyTTL)
+			}
+		}
+
+		// Build comms.MemberResolver wrapper (GH-634)
+		var tgMemberResolver comms.MemberResolver
+		if teamAdapter != nil {
+			tgMemberResolver = &telegram.MemberResolverAdapter{Inner: teamAdapter}
+		}
+
+		tgCommsHandler := comms.NewHandler(&comms.HandlerConfig{
+			Messenger:      tgMessenger,
+			Runner:         runner,
+			Projects:       config.NewProjectSource(cfg),
+			ProjectPath:    projectPath,
+			RateLimit:      cfg.Adapters.Telegram.RateLimit,
+			LLMClassifier:  tgLLMClassifier,
+			ConvStore:      tgConvStore,
+			MemberResolver: tgMemberResolver,
+			Store:          store,
+			TaskIDPrefix:   "TG",
+		})
+
 		tgConfig := &telegram.HandlerConfig{
-			BotToken:      cfg.Adapters.Telegram.BotToken,
+			Client:        tgClient,
+			CommsHandler:  tgCommsHandler,
 			ProjectPath:   projectPath,
 			Projects:      config.NewProjectSource(cfg),
 			AllowedIDs:    allowedIDs,
 			Transcription: cfg.Adapters.Telegram.Transcription,
-			RateLimit:     cfg.Adapters.Telegram.RateLimit,
-			LLMClassifier: cfg.Adapters.Telegram.LLMClassifier,
 			Store:         store,
-		}
-		// GH-634: Wire team member resolver if available (avoid nil interface trap)
-		if teamAdapter != nil {
-			tgConfig.MemberResolver = teamAdapter
 		}
 		tgHandler = telegram.NewHandler(tgConfig, runner)
 
@@ -2117,16 +2158,31 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 	var slackHandler *slack.Handler
 	if cfg.Adapters.Slack != nil && cfg.Adapters.Slack.Enabled && cfg.Adapters.Slack.SocketMode &&
 		cfg.Adapters.Slack.AppToken != "" && cfg.Adapters.Slack.BotToken != "" {
+		slackClient := slack.NewClient(cfg.Adapters.Slack.BotToken)
+		slackMessenger := slack.NewMessenger(slackClient)
+
+		var slackMemberResolver comms.MemberResolver
+		if teamAdapter != nil {
+			slackMemberResolver = &slack.MemberResolverAdapter{Inner: teamAdapter}
+		}
+
+		slackCommsHandler := comms.NewHandler(&comms.HandlerConfig{
+			Messenger:      slackMessenger,
+			Runner:         runner,
+			Projects:       config.NewSlackProjectSource(cfg),
+			ProjectPath:    projectPath,
+			MemberResolver: slackMemberResolver,
+			Store:          store,
+			TaskIDPrefix:   "SLACK",
+		})
+
 		slackHandler = slack.NewHandler(&slack.HandlerConfig{
 			AppToken:        cfg.Adapters.Slack.AppToken,
-			BotToken:        cfg.Adapters.Slack.BotToken,
-			ProjectPath:     projectPath,
-			Projects:        config.NewSlackProjectSource(cfg),
+			Client:          slackClient,
+			CommsHandler:    slackCommsHandler,
 			AllowedChannels: cfg.Adapters.Slack.AllowedChannels,
 			AllowedUsers:    cfg.Adapters.Slack.AllowedUsers,
-			MemberResolver:  teamAdapter,
-			Store:           store,
-		}, runner)
+		})
 
 		go func() {
 			if err := slackHandler.StartListening(ctx); err != nil {

@@ -21,16 +21,7 @@ type IncomingMessage struct {
 	IsCallback bool        // true when this is a button callback
 	CallbackID string      // platform callback ID
 	ActionID   string      // button action ID
-
-	// InteractionID is the Discord interaction ID for button/component callbacks.
-	// Adapters set this so AcknowledgeCallback can issue a deferred interaction response.
-	InteractionID string
-
-	// InteractionToken is the Discord interaction token required alongside InteractionID
-	// to send follow-up messages or acknowledge the interaction via the REST API.
-	InteractionToken string
-
-	RawEvent interface{} // platform-specific escape hatch
+	RawEvent   interface{} // platform-specific escape hatch
 }
 
 // Messenger is the interface every chat adapter must implement for outbound messaging.
