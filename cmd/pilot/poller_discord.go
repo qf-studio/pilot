@@ -26,6 +26,10 @@ func discordPollerRegistration() PollerRegistration {
 				LLMClassifier:   deps.Cfg.Adapters.Discord.LLMClassifier,
 			}, deps.Runner)
 
+			// GH-2132: Wire notifier for task lifecycle messages
+			discordClient := discord.NewClient(deps.Cfg.Adapters.Discord.BotToken)
+			handler.SetNotifier(discord.NewNotifier(discordClient))
+
 			go func() {
 				if err := handler.StartListening(ctx); err != nil {
 					logging.WithComponent("discord").Error("Discord listener error",

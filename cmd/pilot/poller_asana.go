@@ -28,10 +28,38 @@ func asanaPollerRegistration() PollerRegistration {
 				deps.Cfg.Adapters.Asana.AccessToken,
 				deps.Cfg.Adapters.Asana.WorkspaceID,
 			)
+
+			// GH-2132: Create notifier for task lifecycle notifications
+			asanaPilotTag := deps.Cfg.Adapters.Asana.PilotTag
+			if asanaPilotTag == "" {
+				asanaPilotTag = "pilot"
+			}
+			asanaNotifier := asana.NewNotifier(asanaClient, asanaPilotTag)
+
 			// GH-1701: Wire processed store for dedup persistence across restarts
 			asanaPollerOpts := []asana.PollerOption{
 				asana.WithOnAsanaTask(func(taskCtx context.Context, task *asana.Task) (*asana.TaskResult, error) {
+					taskID := "ASANA-" + task.GID
+
+					// GH-2132: Notify task started
+					if err := asanaNotifier.NotifyTaskStarted(taskCtx, task.GID, taskID); err != nil {
+						logging.WithComponent("asana").Warn("Failed to notify task started",
+							slog.String("task_gid", task.GID),
+							slog.Any("error", err),
+						)
+					}
+
 					result, err := handleAsanaTaskWithResult(taskCtx, deps.Cfg, asanaClient, task, deps.ProjectPath, deps.Dispatcher, deps.Runner, deps.Monitor, deps.Program, deps.AlertsEngine, deps.Enforcer)
+
+					// GH-2132: Link PR via notifier
+					if result != nil && result.PRNumber > 0 {
+						if linkErr := asanaNotifier.LinkPR(taskCtx, task.GID, result.PRNumber, result.PRURL); linkErr != nil {
+							logging.WithComponent("asana").Warn("Failed to link PR",
+								slog.String("task_gid", task.GID),
+								slog.Any("error", linkErr),
+							)
+						}
+					}
 
 					// GH-1399: Wire PR to autopilot for CI monitoring + auto-merge
 					if result != nil && result.PRNumber > 0 && deps.AutopilotController != nil {

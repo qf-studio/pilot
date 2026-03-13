@@ -19,6 +19,7 @@ import (
 type Handler struct {
 	gatewayClient     *GatewayClient
 	apiClient         *Client
+	notifier          *Notifier // GH-2132: task lifecycle notifications
 	runner            *executor.Runner
 	allowedGuilds     map[string]bool
 	allowedChannels   map[string]bool
@@ -110,6 +111,11 @@ func NewHandler(config *HandlerConfig, runner *executor.Runner) *Handler {
 	}
 
 	return h
+}
+
+// SetNotifier sets the notifier for task lifecycle messages (GH-2132).
+func (h *Handler) SetNotifier(n *Notifier) {
+	h.notifier = n
 }
 
 // StartListening connects to Discord and starts listening for events
@@ -668,6 +674,13 @@ func (h *Handler) handleConfirmation(ctx context.Context, channelID, userID stri
 
 // executeTask executes a confirmed task.
 func (h *Handler) executeTask(ctx context.Context, channelID, taskID, description string) {
+	// GH-2132: Notify task started via notifier
+	if h.notifier != nil {
+		if err := h.notifier.NotifyTaskStarted(ctx, channelID, taskID, description); err != nil {
+			h.log.Warn("Failed to send task started notification", slog.Any("error", err))
+		}
+	}
+
 	// Send execution started message
 	progressMsg := FormatProgressUpdate(taskID, "Starting", 0, "Initializing...")
 	msg, err := h.apiClient.SendMessage(ctx, channelID, progressMsg)
@@ -737,6 +750,10 @@ func (h *Handler) executeTask(ctx context.Context, channelID, taskID, descriptio
 	if err != nil {
 		errMsg := fmt.Sprintf("❌ Task failed\n%s\n\n%s", taskID, err.Error())
 		_, _ = h.apiClient.SendMessage(ctx, channelID, errMsg)
+		// GH-2132: Notify failure via notifier
+		if h.notifier != nil {
+			_ = h.notifier.NotifyTaskFailed(ctx, channelID, taskID, err.Error())
+		}
 		return
 	}
 
@@ -746,4 +763,9 @@ func (h *Handler) executeTask(ctx context.Context, channelID, taskID, descriptio
 	resultMsg := FormatTaskResult(output, true, prURL)
 
 	_, _ = h.apiClient.SendMessage(ctx, channelID, resultMsg)
+
+	// GH-2132: Notify completion via notifier
+	if h.notifier != nil {
+		_ = h.notifier.NotifyTaskCompleted(ctx, channelID, taskID, output, prURL)
+	}
 }

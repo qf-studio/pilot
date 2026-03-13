@@ -26,13 +26,23 @@ func azuredevopsPollerRegistration() PollerRegistration {
 
 			adoClient := azuredevops.NewClientWithConfig(deps.Cfg.Adapters.AzureDevOps)
 
+			// GH-2132: Create notifier for task lifecycle notifications
+			pilotTag := deps.Cfg.Adapters.AzureDevOps.PilotTag
+			if pilotTag == "" {
+				pilotTag = "pilot"
+			}
+			adoNotifier := azuredevops.NewNotifier(adoClient, pilotTag)
+
 			adoPollerOpts := []azuredevops.PollerOption{
-				azuredevops.WithOnWorkItem(func(wiCtx context.Context, wi *azuredevops.WorkItem) error {
-					logging.WithComponent("azuredevops").Info("Work item picked up",
-						slog.Int("id", wi.ID),
-						slog.String("title", wi.GetTitle()),
-					)
-					return nil
+				azuredevops.WithOnWorkItemWithResult(func(wiCtx context.Context, wi *azuredevops.WorkItem) (*azuredevops.WorkItemResult, error) {
+					result, err := handleAzureDevOpsWorkItemWithResult(wiCtx, deps.Cfg, adoClient, adoNotifier, wi, deps.ProjectPath, deps.Dispatcher, deps.Runner, deps.Monitor, deps.Program, deps.AlertsEngine, deps.Enforcer)
+
+					// GH-2132: Wire PR to autopilot for CI monitoring + auto-merge
+					if result != nil && result.PRNumber > 0 && deps.AutopilotController != nil {
+						deps.AutopilotController.OnPRCreated(result.PRNumber, result.PRURL, 0, result.HeadSHA, result.BranchName, "")
+					}
+
+					return result, err
 				}),
 			}
 
@@ -46,11 +56,6 @@ func azuredevopsPollerRegistration() PollerRegistration {
 			// Wire processed store for persistence
 			if deps.AutopilotStateStore != nil {
 				adoPollerOpts = append(adoPollerOpts, azuredevops.WithProcessedStore(deps.AutopilotStateStore))
-			}
-
-			pilotTag := deps.Cfg.Adapters.AzureDevOps.PilotTag
-			if pilotTag == "" {
-				pilotTag = "pilot"
 			}
 
 			adoPoller := azuredevops.NewPoller(adoClient, pilotTag, interval, adoPollerOpts...)

@@ -22,6 +22,13 @@ func jiraPollerRegistration() PollerRegistration {
 			jiraAdapter := jira.NewAdapter(deps.Cfg.Adapters.Jira)
 			adapters.Register(jiraAdapter)
 
+			// GH-2132: Create notifier for task lifecycle notifications
+			jiraNotifier := jira.NewNotifier(
+				jiraAdapter.Client(),
+				deps.Cfg.Adapters.Jira.Transitions.InProgress,
+				deps.Cfg.Adapters.Jira.Transitions.Done,
+			)
+
 			pollerDeps := adapters.PollerDeps{
 				MaxConcurrent: deps.Cfg.Orchestrator.MaxConcurrent,
 			}
@@ -30,7 +37,25 @@ func jiraPollerRegistration() PollerRegistration {
 			}
 
 			jiraPoller := jiraAdapter.CreatePoller(pollerDeps, func(issueCtx context.Context, issue *jira.Issue) (*jira.IssueResult, error) {
+				// GH-2132: Notify task started (transitions to In Progress + posts comment)
+				if err := jiraNotifier.NotifyTaskStarted(issueCtx, issue.Key, issue.Key); err != nil {
+					logging.WithComponent("jira").Warn("Failed to notify task started",
+						slog.String("issue", issue.Key),
+						slog.Any("error", err),
+					)
+				}
+
 				result, err := handleJiraIssueWithResult(issueCtx, deps.Cfg, jiraAdapter.Client(), issue, deps.ProjectPath, deps.Dispatcher, deps.Runner, deps.Monitor, deps.Program, deps.AlertsEngine, deps.Enforcer)
+
+				// GH-2132: Link PR via notifier
+				if result != nil && result.PRNumber > 0 {
+					if linkErr := jiraNotifier.LinkPR(issueCtx, issue.Key, result.PRNumber, result.PRURL); linkErr != nil {
+						logging.WithComponent("jira").Warn("Failed to link PR",
+							slog.String("issue", issue.Key),
+							slog.Any("error", linkErr),
+						)
+					}
+				}
 
 				// GH-1399: Wire PR to autopilot for CI monitoring + auto-merge
 				if result != nil && result.PRNumber > 0 && deps.AutopilotController != nil {

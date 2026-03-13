@@ -29,9 +29,32 @@ func planePollerRegistration() PollerRegistration {
 				deps.Cfg.Adapters.Plane.APIKey,
 			)
 
+			// GH-2132: Create notifier for task lifecycle notifications
+			planeNotifier := plane.NewNotifier(planeClient, deps.Cfg.Adapters.Plane.WorkspaceSlug)
+
 			planePollerOpts := []plane.PollerOption{
 				plane.WithOnIssue(func(issueCtx context.Context, issue *plane.WorkItem) (*plane.IssueResult, error) {
+					taskID := "PLANE-" + issue.ID[:8]
+
+					// GH-2132: Notify task started
+					if err := planeNotifier.NotifyTaskStarted(issueCtx, issue.ProjectID, issue.ID, taskID); err != nil {
+						logging.WithComponent("plane").Warn("Failed to notify task started",
+							slog.String("work_item_id", issue.ID),
+							slog.Any("error", err),
+						)
+					}
+
 					result, err := handlePlaneIssueWithResult(issueCtx, deps.Cfg, planeClient, issue, deps.ProjectPath, deps.Dispatcher, deps.Runner, deps.Monitor, deps.Program, deps.AlertsEngine, deps.Enforcer)
+
+					// GH-2132: Link PR via notifier
+					if result != nil && result.PRNumber > 0 {
+						if linkErr := planeNotifier.LinkPR(issueCtx, issue.ProjectID, issue.ID, result.PRNumber, result.PRURL); linkErr != nil {
+							logging.WithComponent("plane").Warn("Failed to link PR",
+								slog.String("work_item_id", issue.ID),
+								slog.Any("error", linkErr),
+							)
+						}
+					}
 
 					// Wire PR to autopilot for CI monitoring + auto-merge
 					if result != nil && result.PRNumber > 0 && deps.AutopilotController != nil {
