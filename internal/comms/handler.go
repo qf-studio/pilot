@@ -174,6 +174,13 @@ func (h *Handler) detectIntent(ctx context.Context, contextID, text string) inte
 		return intent.IntentCommand
 	}
 
+	// Fast path: greeting-prefixed messages (e.g. "Hello! How is it going?")
+	// Must be checked before IsClearQuestion so that greetings with trailing
+	// questions don't get misclassified as codebase questions.
+	if intent.StartsWithGreeting(text) {
+		return intent.IntentGreeting
+	}
+
 	// Fast path: clear questions
 	if intent.IsClearQuestion(text) {
 		return intent.IntentQuestion

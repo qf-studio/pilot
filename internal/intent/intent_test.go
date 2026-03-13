@@ -145,6 +145,47 @@ func TestIsGreeting(t *testing.T) {
 	}
 }
 
+func TestStartsWithGreeting(t *testing.T) {
+	tests := []struct {
+		message  string
+		expected bool
+	}{
+		// Short greetings (also caught by IsGreeting)
+		{"hi", true},
+		{"hello", true},
+		{"hey", true},
+
+		// Greeting-prefixed longer messages (the main use case)
+		{"Hello! How is it going?", true},
+		{"hello, how are you today", true},
+		{"hey what's up", true},
+		{"hi, can you help me?", true},
+		{"good morning! how's everything?", true},
+		{"good afternoon, quick question", true},
+		{"привет, как дела", true},
+		{"yo, what's the status?", true},
+
+		// NOT greetings
+		{"what is the auth handler?", false},
+		{"create a new file", false},
+		{"fix the bug", false},
+		{"how do I run tests", false},
+		{"", false},
+
+		// Too long (> 10 words)
+		{"hello I have a very long message that goes on and on about nothing", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.message, func(t *testing.T) {
+			got := StartsWithGreeting(tt.message)
+			if got != tt.expected {
+				t.Errorf("StartsWithGreeting(%q) = %v, want %v", tt.message, got, tt.expected)
+			}
+		})
+	}
+}
+
 func TestIsQuestion(t *testing.T) {
 	tests := []struct {
 		message  string

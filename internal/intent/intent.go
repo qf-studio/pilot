@@ -157,6 +157,38 @@ func IsLikelyGreeting(msg string) bool {
 	return false
 }
 
+// StartsWithGreeting returns true when the message opens with a greeting word
+// regardless of length. This catches conversational greetings like "Hello! How
+// is it going?" that are too long for IsGreeting but clearly not codebase questions.
+func StartsWithGreeting(msg string) bool {
+	lower := strings.ToLower(strings.TrimSpace(msg))
+	words := strings.Fields(lower)
+	if len(words) == 0 || len(words) > 10 {
+		return false
+	}
+	for _, pattern := range greetingPatterns {
+		pWords := strings.Fields(pattern)
+		if len(pWords) == 1 {
+			// Single-word greeting: match word or word + punctuation
+			w := strings.TrimRight(words[0], "!?,.")
+			if w == pattern {
+				return true
+			}
+		} else if len(words) >= len(pWords) {
+			// Multi-word greeting (e.g. "good morning")
+			// Strip trailing punctuation from the last pattern word for matching
+			cleaned := make([]string, len(pWords))
+			for i, w := range words[:len(pWords)] {
+				cleaned[i] = strings.TrimRight(w, "!?,.")
+			}
+			if strings.Join(cleaned, " ") == pattern {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // IsGreeting checks if the message is a greeting
 func IsGreeting(msg string) bool {
 	// Very short messages that are just greetings
