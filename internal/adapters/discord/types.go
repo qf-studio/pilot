@@ -4,13 +4,22 @@ import "time"
 
 // Config holds Discord adapter configuration.
 type Config struct {
-	Enabled         bool              `yaml:"enabled"`
-	BotToken        string            `yaml:"bot_token"`
-	BotID           string            `yaml:"bot_id"`            // Bot user ID for mention stripping
-	AllowedGuilds   []string          `yaml:"allowed_guilds"`   // Guild IDs allowed to send tasks
-	AllowedChannels []string          `yaml:"allowed_channels"` // Channel IDs allowed to send tasks
-	CommandPrefix   string            `yaml:"command_prefix"`
-	RateLimit       *RateLimitConfig  `yaml:"rate_limit"`
+	Enabled         bool                `yaml:"enabled"`
+	BotToken        string              `yaml:"bot_token"`
+	BotID           string              `yaml:"bot_id"`            // Bot user ID for mention stripping
+	AllowedGuilds   []string            `yaml:"allowed_guilds"`   // Guild IDs allowed to send tasks
+	AllowedChannels []string            `yaml:"allowed_channels"` // Channel IDs allowed to send tasks
+	CommandPrefix   string              `yaml:"command_prefix"`
+	RateLimit       *RateLimitConfig    `yaml:"rate_limit"`
+	LLMClassifier   *LLMClassifierConfig `yaml:"llm_classifier"`
+}
+
+// LLMClassifierConfig configures LLM-based intent classification for Discord.
+type LLMClassifierConfig struct {
+	Enabled     bool          `yaml:"enabled"`
+	APIKey      string        `yaml:"api_key"`
+	HistorySize int           `yaml:"history_size"`
+	HistoryTTL  time.Duration `yaml:"history_ttl"`
 }
 
 // RateLimitConfig holds rate limiting configuration.

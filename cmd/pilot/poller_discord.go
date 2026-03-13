@@ -23,6 +23,7 @@ func discordPollerRegistration() PollerRegistration {
 				AllowedGuilds:   deps.Cfg.Adapters.Discord.AllowedGuilds,
 				AllowedChannels: deps.Cfg.Adapters.Discord.AllowedChannels,
 				ProjectPath:     deps.ProjectPath,
+				LLMClassifier:   deps.Cfg.Adapters.Discord.LLMClassifier,
 			}, deps.Runner)
 
 			go func() {

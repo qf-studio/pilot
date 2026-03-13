@@ -5,29 +5,33 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/alekspetrov/pilot/internal/executor"
+	"github.com/alekspetrov/pilot/internal/intent"
 	"github.com/alekspetrov/pilot/internal/logging"
 )
 
 // Handler processes incoming Discord events and coordinates task execution.
 type Handler struct {
-	gatewayClient   *GatewayClient
-	apiClient       *Client
-	runner          *executor.Runner
-	allowedGuilds   map[string]bool
-	allowedChannels map[string]bool
-	pendingTasks    map[string]*PendingTaskInfo
-	mu              sync.Mutex
-	stopCh          chan struct{}
-	stopOnce        sync.Once
-	wg              sync.WaitGroup
-	log             *slog.Logger
-	botID           string
-	projectPath     string
+	gatewayClient     *GatewayClient
+	apiClient         *Client
+	runner            *executor.Runner
+	allowedGuilds     map[string]bool
+	allowedChannels   map[string]bool
+	pendingTasks      map[string]*PendingTaskInfo
+	mu                sync.Mutex
+	stopCh            chan struct{}
+	stopOnce          sync.Once
+	wg                sync.WaitGroup
+	log               *slog.Logger
+	botID             string
+	projectPath       string
+	llmClassifier     intent.Classifier
+	conversationStore *intent.ConversationStore
 }
 
 // PendingTaskInfo represents a task awaiting confirmation.
@@ -47,6 +51,7 @@ type HandlerConfig struct {
 	AllowedGuilds   []string
 	AllowedChannels []string
 	ProjectPath     string
+	LLMClassifier   *LLMClassifierConfig
 }
 
 // NewHandler creates a new Discord event handler.
@@ -66,7 +71,7 @@ func NewHandler(config *HandlerConfig, runner *executor.Runner) *Handler {
 		projectPath = "."
 	}
 
-	return &Handler{
+	h := &Handler{
 		gatewayClient:   NewGatewayClient(config.BotToken, DefaultIntents),
 		apiClient:       NewClient(config.BotToken),
 		runner:          runner,
@@ -78,6 +83,33 @@ func NewHandler(config *HandlerConfig, runner *executor.Runner) *Handler {
 		botID:           config.BotID,
 		projectPath:     projectPath,
 	}
+
+	// Initialize LLM classifier if configured
+	if config.LLMClassifier != nil && config.LLMClassifier.Enabled {
+		apiKey := config.LLMClassifier.APIKey
+		if apiKey == "" {
+			apiKey = os.Getenv("ANTHROPIC_API_KEY")
+		}
+		if apiKey != "" {
+			h.llmClassifier = intent.NewAnthropicClient(apiKey)
+
+			historySize := 10
+			if config.LLMClassifier.HistorySize > 0 {
+				historySize = config.LLMClassifier.HistorySize
+			}
+			historyTTL := 30 * time.Minute
+			if config.LLMClassifier.HistoryTTL > 0 {
+				historyTTL = config.LLMClassifier.HistoryTTL
+			}
+			h.conversationStore = intent.NewConversationStore(historySize, historyTTL)
+
+			h.log.Info("LLM intent classifier enabled")
+		} else {
+			h.log.Warn("LLM classifier enabled but no API key found")
+		}
+	}
+
+	return h
 }
 
 // StartListening connects to Discord and starts listening for events
@@ -222,20 +254,38 @@ func (h *Handler) handleMessageCreate(ctx context.Context, event *GatewayEvent) 
 		return
 	}
 
+	// Detect intent (uses LLM if available, regex fallback)
+	msgIntent := h.detectIntentWithLLM(ctx, msg.ChannelID, text)
 	h.log.Debug("Message received",
 		slog.String("channel_id", msg.ChannelID),
 		slog.String("author_id", msg.Author.ID),
+		slog.String("intent", string(msgIntent)),
 		slog.String("text", TruncateText(text, 50)))
 
-	// For now, treat as task message
-	// In a full implementation, would use intent detection
-	if strings.HasPrefix(text, "/") {
-		// Handle commands
-		return
+	// Record user message in conversation history
+	if h.conversationStore != nil {
+		h.conversationStore.Add(msg.ChannelID, "user", text)
 	}
 
-	// Treat as task request
-	h.handleTask(ctx, msg.ChannelID, msg.Author.ID, text)
+	switch msgIntent {
+	case intent.IntentCommand:
+		// Commands start with / — no handler wired yet
+		return
+	case intent.IntentGreeting:
+		h.handleGreeting(ctx, msg.ChannelID, msg.Author.Username)
+	case intent.IntentQuestion:
+		h.handleQuestion(ctx, msg.ChannelID, text)
+	case intent.IntentResearch:
+		h.handleResearch(ctx, msg.ChannelID, text)
+	case intent.IntentPlanning:
+		h.handlePlanning(ctx, msg.ChannelID, text)
+	case intent.IntentChat:
+		h.handleChat(ctx, msg.ChannelID, text)
+	case intent.IntentTask:
+		h.handleTask(ctx, msg.ChannelID, msg.Author.ID, text)
+	default:
+		h.handleChat(ctx, msg.ChannelID, text)
+	}
 }
 
 // handleInteractionCreate processes button clicks and other interactions.
@@ -300,6 +350,242 @@ func (h *Handler) isAllowed(guildID, channelID string) bool {
 	}
 
 	return false
+}
+
+// detectIntentWithLLM uses LLM classification with regex fallback.
+func (h *Handler) detectIntentWithLLM(ctx context.Context, channelID, text string) intent.Intent {
+	if h.llmClassifier == nil {
+		return intent.DetectIntent(text)
+	}
+
+	// Fast path: commands always use regex
+	if strings.HasPrefix(text, "/") {
+		return intent.IntentCommand
+	}
+
+	// Fast path: clear question patterns skip LLM
+	if intent.IsClearQuestion(text) {
+		return intent.IntentQuestion
+	}
+
+	// Try LLM classification with timeout
+	classifyCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+
+	var history []intent.ConversationMessage
+	if h.conversationStore != nil {
+		history = h.conversationStore.Get(channelID)
+	}
+
+	classified, err := h.llmClassifier.Classify(classifyCtx, history, text)
+	if err != nil {
+		h.log.Debug("LLM classification failed, using regex", slog.Any("error", err))
+		return intent.DetectIntent(text)
+	}
+
+	h.log.Debug("LLM classified intent",
+		slog.String("channel_id", channelID),
+		slog.String("intent", string(classified)),
+		slog.String("text", TruncateText(text, 50)))
+
+	return classified
+}
+
+// handleGreeting responds to greetings without task execution.
+func (h *Handler) handleGreeting(ctx context.Context, channelID, username string) {
+	_, _ = h.apiClient.SendMessage(ctx, channelID, FormatGreeting())
+}
+
+// handleQuestion answers questions about the codebase using read-only execution.
+func (h *Handler) handleQuestion(ctx context.Context, channelID, question string) {
+	if h.runner == nil {
+		_, _ = h.apiClient.SendMessage(ctx, channelID, "❌ Executor not available.")
+		return
+	}
+	_, _ = h.apiClient.SendMessage(ctx, channelID, "🔍 Looking into that...")
+
+	taskID := fmt.Sprintf("Q-%d", time.Now().UnixNano())
+	task := &executor.Task{
+		ID:    taskID,
+		Title: "Question: " + TruncateText(question, 40),
+		Description: fmt.Sprintf(`Answer this question about the codebase. DO NOT make any changes, only read and analyze.
+
+Question: %s
+
+IMPORTANT: Be concise. Limit your exploration to 5-10 files max. Provide a brief, direct answer.`, question),
+		ProjectPath: h.projectPath,
+	}
+
+	questionCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	defer cancel()
+
+	result, err := h.runner.Execute(questionCtx, task)
+	if err != nil {
+		if questionCtx.Err() == context.DeadlineExceeded {
+			_, _ = h.apiClient.SendMessage(ctx, channelID, "⏱ Question timed out. Try something more specific.")
+		} else {
+			_, _ = h.apiClient.SendMessage(ctx, channelID, "❌ Couldn't answer that question. Try rephrasing.")
+		}
+		return
+	}
+
+	answer := CleanInternalSignals(result.Output)
+	if answer == "" {
+		answer = "I couldn't find a clear answer to that question."
+	}
+	h.sendChunked(ctx, channelID, answer)
+}
+
+// handleResearch handles research/analysis requests with read-only execution.
+func (h *Handler) handleResearch(ctx context.Context, channelID, query string) {
+	if h.runner == nil {
+		_, _ = h.apiClient.SendMessage(ctx, channelID, "❌ Executor not available.")
+		return
+	}
+	_, _ = h.apiClient.SendMessage(ctx, channelID, "🔬 Researching...")
+
+	taskID := fmt.Sprintf("RES-%d", time.Now().UnixNano())
+	task := &executor.Task{
+		ID:    taskID,
+		Title: "Research: " + TruncateText(query, 40),
+		Description: fmt.Sprintf(`Research and analyze: %s
+
+Provide findings in a structured format with:
+- Executive summary
+- Key findings
+- Relevant code/files if applicable
+- Recommendations
+
+DO NOT make any code changes. This is a read-only research task.`, query),
+		ProjectPath: h.projectPath,
+	}
+
+	researchCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+	defer cancel()
+
+	result, err := h.runner.Execute(researchCtx, task)
+	if err != nil {
+		if researchCtx.Err() == context.DeadlineExceeded {
+			_, _ = h.apiClient.SendMessage(ctx, channelID, "⏱ Research timed out. Try a more specific query.")
+		} else {
+			_, _ = h.apiClient.SendMessage(ctx, channelID, fmt.Sprintf("❌ Research failed: %s", err.Error()))
+		}
+		return
+	}
+
+	content := CleanInternalSignals(result.Output)
+	if content == "" {
+		_, _ = h.apiClient.SendMessage(ctx, channelID, "🤷 No research findings to report.")
+		return
+	}
+	h.sendChunked(ctx, channelID, content)
+}
+
+// handlePlanning creates an implementation plan and offers Execute/Cancel buttons.
+func (h *Handler) handlePlanning(ctx context.Context, channelID, request string) {
+	if h.runner == nil {
+		_, _ = h.apiClient.SendMessage(ctx, channelID, "❌ Executor not available.")
+		return
+	}
+	_, _ = h.apiClient.SendMessage(ctx, channelID, "📐 Drafting plan...")
+
+	taskID := fmt.Sprintf("PLAN-%d", time.Now().UnixNano())
+	task := &executor.Task{
+		ID:    taskID,
+		Title: "Plan: " + TruncateText(request, 40),
+		Description: fmt.Sprintf(`Create an implementation plan for: %s
+
+Explore the codebase and propose a detailed plan. Include:
+1. Summary of approach
+2. Files to modify/create
+3. Step-by-step implementation phases
+4. Potential risks or considerations
+
+DO NOT make any code changes. Only explore and plan.`, request),
+		ProjectPath: h.projectPath,
+	}
+
+	planCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+
+	result, err := h.runner.Execute(planCtx, task)
+	if err != nil {
+		if planCtx.Err() == context.DeadlineExceeded {
+			_, _ = h.apiClient.SendMessage(ctx, channelID, "⏱ Planning timed out. Try a simpler request.")
+		} else {
+			_, _ = h.apiClient.SendMessage(ctx, channelID, fmt.Sprintf("❌ Planning failed: %s", err.Error()))
+		}
+		return
+	}
+
+	planContent := CleanInternalSignals(result.Output)
+	if planContent == "" {
+		_, _ = h.apiClient.SendMessage(ctx, channelID, "🤷 The task may be too simple for planning. Try executing it directly.")
+		return
+	}
+
+	// Truncate plan for Discord display
+	display := planContent
+	if len(display) > 1800 {
+		display = display[:1800] + "\n\n_(truncated)_"
+	}
+
+	_, _ = h.apiClient.SendMessage(ctx, channelID, fmt.Sprintf("📋 **Implementation Plan**\n\n%s", display))
+}
+
+// handleChat handles conversational messages with read-only execution.
+func (h *Handler) handleChat(ctx context.Context, channelID, message string) {
+	if h.runner == nil {
+		_, _ = h.apiClient.SendMessage(ctx, channelID, "❌ Executor not available.")
+		return
+	}
+	_, _ = h.apiClient.SendMessage(ctx, channelID, "💬 Thinking...")
+
+	taskID := fmt.Sprintf("CHAT-%d", time.Now().UnixNano())
+	task := &executor.Task{
+		ID:    taskID,
+		Title: "Chat: " + TruncateText(message, 30),
+		Description: fmt.Sprintf(`You are Pilot, an AI assistant for the codebase at %s.
+
+The user wants to have a conversation (not execute a task).
+Respond helpfully and conversationally. You can reference project knowledge but DO NOT make code changes.
+
+Be concise - this is a chat conversation, not a report. Keep response under 500 words.
+
+User message: %s`, h.projectPath, message),
+		ProjectPath: h.projectPath,
+	}
+
+	chatCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+
+	result, err := h.runner.Execute(chatCtx, task)
+	if err != nil {
+		if chatCtx.Err() == context.DeadlineExceeded {
+			_, _ = h.apiClient.SendMessage(ctx, channelID, "⏱ Took too long to respond. Try a simpler question.")
+		} else {
+			_, _ = h.apiClient.SendMessage(ctx, channelID, "Sorry, I couldn't process that. Try rephrasing?")
+		}
+		return
+	}
+
+	response := CleanInternalSignals(result.Output)
+	if response == "" {
+		response = "I'm not sure how to respond to that. Could you rephrase?"
+	}
+	h.sendChunked(ctx, channelID, response)
+}
+
+// sendChunked sends content in Discord-safe chunks (max 2000 chars).
+func (h *Handler) sendChunked(ctx context.Context, channelID, content string) {
+	chunks := ChunkContent(content, 1900)
+	for i, chunk := range chunks {
+		msg := chunk
+		if len(chunks) > 1 {
+			msg = fmt.Sprintf("📄 Part %d/%d\n\n%s", i+1, len(chunks), chunk)
+		}
+		_, _ = h.apiClient.SendMessage(ctx, channelID, msg)
+	}
 }
 
 // handleTask creates and sends a confirmation prompt for a task.

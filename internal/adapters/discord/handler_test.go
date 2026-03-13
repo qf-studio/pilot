@@ -178,6 +178,137 @@ func TestHandlerBotMessageSkipping(t *testing.T) {
 	// No assertion needed - just ensuring it doesn't crash
 }
 
+func TestIntentRouting(t *testing.T) {
+	tests := []struct {
+		name            string
+		content         string
+		expectContains  string // Expected substring in the API call body
+		expectNoTask    bool   // Should NOT create a pending task
+	}{
+		{
+			name:           "greeting does not create task",
+			content:        "hi",
+			expectNoTask:   true,
+		},
+		{
+			name:           "hello does not create task",
+			content:        "hello",
+			expectNoTask:   true,
+		},
+		{
+			name:           "question does not create task",
+			content:        "what files handle auth?",
+			expectNoTask:   true,
+		},
+		{
+			name:           "task creates pending task",
+			content:        "add a logout button to the navbar",
+			expectNoTask:   false,
+		},
+		{
+			name:           "command is ignored",
+			content:        "/status",
+			expectNoTask:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": "msg1"})
+			}))
+			defer server.Close()
+
+			config := &HandlerConfig{
+				BotToken: testutil.FakeBearerToken,
+			}
+			h := NewHandler(config, nil)
+			h.apiClient = NewClientWithBaseURL(testutil.FakeBearerToken, server.URL)
+
+			msg := MessageCreate{
+				ID:        "msg1",
+				ChannelID: "chan1",
+				Author:    User{ID: "user1", Username: "testuser"},
+				Content:   tt.content,
+			}
+
+			msgData, _ := json.Marshal(msg)
+			event := &GatewayEvent{
+				T: stringPtr("MESSAGE_CREATE"),
+				D: json.RawMessage(msgData),
+			}
+
+			ctx := context.Background()
+			h.handleMessageCreate(ctx, event)
+
+			h.mu.Lock()
+			_, hasPending := h.pendingTasks["chan1"]
+			h.mu.Unlock()
+
+			if tt.expectNoTask && hasPending {
+				t.Errorf("expected no pending task for %q, but one was created", tt.content)
+			}
+			if !tt.expectNoTask && !hasPending {
+				t.Errorf("expected pending task for %q, but none was created", tt.content)
+			}
+		})
+	}
+}
+
+func TestDetectIntentWithLLMFallback(t *testing.T) {
+	// Without LLM classifier, should use regex
+	config := &HandlerConfig{
+		BotToken: testutil.FakeBearerToken,
+	}
+	h := NewHandler(config, nil)
+
+	ctx := context.Background()
+
+	// Greeting
+	result := h.detectIntentWithLLM(ctx, "chan1", "hi")
+	if result != "greeting" {
+		t.Errorf("expected greeting, got %s", result)
+	}
+
+	// Command
+	result = h.detectIntentWithLLM(ctx, "chan1", "/status")
+	if result != "command" {
+		t.Errorf("expected command, got %s", result)
+	}
+
+	// Task
+	result = h.detectIntentWithLLM(ctx, "chan1", "add a new endpoint for users")
+	if result != "task" {
+		t.Errorf("expected task, got %s", result)
+	}
+
+	// Question
+	result = h.detectIntentWithLLM(ctx, "chan1", "what files handle authentication?")
+	if result != "question" {
+		t.Errorf("expected question, got %s", result)
+	}
+}
+
+func TestConversationStoreWiring(t *testing.T) {
+	config := &HandlerConfig{
+		BotToken: testutil.FakeBearerToken,
+		LLMClassifier: &LLMClassifierConfig{
+			Enabled: true,
+			APIKey:  "test-api-key",
+		},
+	}
+	h := NewHandler(config, nil)
+
+	if h.llmClassifier == nil {
+		t.Fatal("expected llmClassifier to be initialized")
+	}
+	if h.conversationStore == nil {
+		t.Fatal("expected conversationStore to be initialized")
+	}
+}
+
 func TestHandlerButtonCallbackRouting(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
