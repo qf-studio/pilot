@@ -257,6 +257,64 @@ func TestIntentRouting(t *testing.T) {
 	}
 }
 
+func TestMentionStrippedBeforeIntentClassification(t *testing.T) {
+	var receivedBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		// Capture the message body sent by the greeting handler
+		if r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/messages") {
+			buf := new(strings.Builder)
+			_, _ = fmt.Fprintf(buf, "")
+			var payload map[string]interface{}
+			_ = json.NewDecoder(r.Body).Decode(&payload)
+			if content, ok := payload["content"].(string); ok {
+				receivedBody = content
+			}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": "msg1"})
+	}))
+	defer server.Close()
+
+	// No botID configured — relies on fallback stripping
+	config := &HandlerConfig{
+		BotToken: testutil.FakeBearerToken,
+	}
+	h := NewHandler(config, nil)
+	h.apiClient = NewClientWithBaseURL(testutil.FakeBearerToken, server.URL)
+
+	// Simulate "@Pilot hi" which Discord delivers as "<@1481980896998326383> hi"
+	msg := MessageCreate{
+		ID:        "msg1",
+		ChannelID: "chan1",
+		Author:    User{ID: "user1", Username: "testuser"},
+		Content:   "<@1481980896998326383> hi",
+	}
+
+	msgData, _ := json.Marshal(msg)
+	event := &GatewayEvent{
+		T: stringPtr("MESSAGE_CREATE"),
+		D: json.RawMessage(msgData),
+	}
+
+	ctx := context.Background()
+	h.handleMessageCreate(ctx, event)
+
+	// Should NOT create a pending task (greeting, not task)
+	h.mu.Lock()
+	_, hasPending := h.pendingTasks["chan1"]
+	h.mu.Unlock()
+
+	if hasPending {
+		t.Error("mention + greeting should not create pending task")
+	}
+
+	// Greeting handler should have sent a response
+	if receivedBody == "" {
+		t.Error("expected greeting response to be sent")
+	}
+}
+
 func TestDetectIntentWithLLMFallback(t *testing.T) {
 	// Without LLM classifier, should use regex
 	config := &HandlerConfig{
@@ -619,14 +677,26 @@ func TestMentionStripping(t *testing.T) {
 			expected: "<@987654321> deploy the thing",
 		},
 		{
-			name:     "empty bot ID does nothing",
+			name:     "empty bot ID strips leading mention (fallback)",
 			botID:    "",
 			content:  "<@123456789> deploy the thing",
-			expected: "<@123456789> deploy the thing",
+			expected: "deploy the thing",
+		},
+		{
+			name:     "empty bot ID strips nickname mention (fallback)",
+			botID:    "",
+			content:  "<@!123456789> deploy the thing",
+			expected: "deploy the thing",
 		},
 		{
 			name:     "mention only",
 			botID:    "123456789",
+			content:  "<@123456789>",
+			expected: "",
+		},
+		{
+			name:     "empty bot ID mention only",
+			botID:    "",
 			content:  "<@123456789>",
 			expected: "",
 		},

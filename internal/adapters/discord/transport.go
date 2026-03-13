@@ -18,6 +18,7 @@ type GatewayClient struct {
 	intents       int
 	conn          *websocket.Conn
 	sessionID     string
+	botUserID     string
 	seq           *int
 	heartbeatTick *time.Ticker
 	stopCh        chan struct{}
@@ -218,13 +219,21 @@ func (g *GatewayClient) Listen(ctx context.Context) (<-chan GatewayEvent, error)
 			if event.T != nil && *event.T == "READY" {
 				var readyData struct {
 					SessionID string `json:"session_id"`
+					User      struct {
+						ID string `json:"id"`
+					} `json:"user"`
 				}
 				data, _ := json.Marshal(event.D)
 				if err := json.Unmarshal(data, &readyData); err == nil {
 					g.mu.Lock()
 					g.sessionID = readyData.SessionID
+					if readyData.User.ID != "" {
+						g.botUserID = readyData.User.ID
+					}
 					g.mu.Unlock()
-					g.log.Info("Received READY", slog.String("session_id", readyData.SessionID))
+					g.log.Info("Received READY",
+						slog.String("session_id", readyData.SessionID),
+						slog.String("bot_user_id", readyData.User.ID))
 				}
 			}
 
@@ -383,6 +392,13 @@ func (g *GatewayClient) Resume(ctx context.Context) error {
 
 	g.log.Info("Sent RESUME", slog.String("session_id", g.sessionID))
 	return nil
+}
+
+// BotUserID returns the bot's user ID extracted from the READY event.
+func (g *GatewayClient) BotUserID() string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.botUserID
 }
 
 // Close closes the WebSocket connection. Safe to call multiple times.

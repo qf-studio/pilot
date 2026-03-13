@@ -120,6 +120,11 @@ func (h *Handler) StartListening(ctx context.Context) error {
 		return fmt.Errorf("start listening: %w", err)
 	}
 
+	// Pick up bot user ID from READY event if not configured
+	if h.botID == "" {
+		h.botID = h.gatewayClient.BotUserID()
+	}
+
 	h.log.Info("Discord handler listening for events")
 
 	// Start cleanup goroutine
@@ -222,6 +227,14 @@ func (h *Handler) stripMention(content string) string {
 		content = strings.TrimPrefix(content, prefix1)
 		content = strings.TrimPrefix(content, prefix2)
 		content = strings.TrimSpace(content)
+		return content
+	}
+
+	// Fallback: strip any leading <@...> or <@!...> mention when botID is unknown
+	if strings.HasPrefix(content, "<@") {
+		if idx := strings.Index(content, ">"); idx != -1 {
+			content = strings.TrimSpace(content[idx+1:])
+		}
 	}
 	return content
 }
