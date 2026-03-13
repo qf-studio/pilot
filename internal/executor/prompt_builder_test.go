@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/alekspetrov/pilot/internal/memory"
 )
 
 func TestLoadProjectContext(t *testing.T) {
@@ -697,6 +699,134 @@ func TestBuildPromptLocalModeWithoutTestFiles(t *testing.T) {
 	// Should NOT include test-first instruction for non-test tasks
 	if strings.Contains(prompt, "Write tests FIRST") {
 		t.Error("LocalMode should not include test-first instruction when task doesn't mention test files")
+	}
+}
+
+func TestBuildPromptLocalModeWithPatternContext(t *testing.T) {
+	// GH-2147: LocalMode should inject learned patterns
+	tempDir, err := os.MkdirTemp("", "pilot-test-local-patterns")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tempDir) }()
+
+	// Create a memory store and save a pattern
+	store, err := memory.NewStore(tempDir)
+	if err != nil {
+		t.Fatalf("Failed to create store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	_ = store.SaveCrossPattern(&memory.CrossPattern{
+		ID:          "test-pattern-1",
+		Type:        "code",
+		Title:       "Error Wrapping",
+		Description: "Always wrap errors with context",
+		Context:     "Go code",
+		Confidence:  0.9,
+		Occurrences: 10,
+		Scope:       "org",
+	})
+
+	runner := NewRunner()
+	runner.SetPatternContext(NewPatternContext(store))
+
+	task := &Task{
+		ID:          "LOCAL-789",
+		Title:       "Fix auth bug",
+		Description: "Fix authentication error handling",
+		ProjectPath: tempDir,
+		LocalMode:   true,
+	}
+
+	prompt := runner.BuildPrompt(task, tempDir)
+
+	// Should still have problem-solving prompt
+	if !strings.Contains(prompt, "## Problem-Solving Mode") {
+		t.Error("LocalMode with patterns should still have problem-solving prompt")
+	}
+
+	// Should contain injected patterns
+	if !strings.Contains(prompt, "Error Wrapping") {
+		t.Error("LocalMode should inject learned patterns from PatternContext")
+	}
+}
+
+func TestBuildPromptLocalModeWithKnowledgeGraph(t *testing.T) {
+	// GH-2147: LocalMode should inject knowledge graph learnings
+	tempDir, err := os.MkdirTemp("", "pilot-test-local-kg")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tempDir) }()
+
+	runner := NewRunner()
+	mock := &mockKnowledgeGraphRecorder{
+		keywordResults: []*memory.GraphNode{
+			{Title: "Auth Pattern", Type: "pattern", Content: "Use JWT for stateless auth"},
+			{Title: "API Design", Type: "pattern", Content: "Always validate input"},
+			{Title: "Error Handling", Type: "pattern", Content: "Wrap errors with context"},
+			{Title: "Extra Node", Type: "pattern", Content: "Should be excluded (max 3)"},
+		},
+	}
+	runner.SetKnowledgeGraph(mock)
+
+	task := &Task{
+		ID:          "LOCAL-KG-1",
+		Title:       "Add API authentication endpoint",
+		Description: "Implement OAuth authentication for the REST API",
+		ProjectPath: tempDir,
+		LocalMode:   true,
+	}
+
+	prompt := runner.BuildPrompt(task, tempDir)
+
+	// Should have problem-solving prompt
+	if !strings.Contains(prompt, "## Problem-Solving Mode") {
+		t.Error("LocalMode with knowledge graph should have problem-solving prompt")
+	}
+
+	// Should contain related learnings section
+	if !strings.Contains(prompt, "## Related Learnings") {
+		t.Error("LocalMode should inject Related Learnings from knowledge graph")
+	}
+
+	// Should include first 3 nodes
+	if !strings.Contains(prompt, "**Auth Pattern**: Use JWT for stateless auth") {
+		t.Error("Should include first knowledge graph node")
+	}
+	if !strings.Contains(prompt, "**API Design**: Always validate input") {
+		t.Error("Should include second knowledge graph node")
+	}
+	if !strings.Contains(prompt, "**Error Handling**: Wrap errors with context") {
+		t.Error("Should include third knowledge graph node")
+	}
+
+	// Should NOT include 4th node (max 3 for local mode)
+	if strings.Contains(prompt, "Extra Node") {
+		t.Error("LocalMode should limit knowledge graph entries to 3")
+	}
+}
+
+func TestBuildPromptLocalModeNilComponents(t *testing.T) {
+	// GH-2147: Nil patternContext and knowledgeGraph should not panic
+	runner := NewRunner()
+
+	task := &Task{
+		ID:          "LOCAL-NIL-1",
+		Title:       "Simple task",
+		Description: "A simple local task",
+		LocalMode:   true,
+	}
+
+	// Should not panic with nil components
+	prompt := runner.BuildPrompt(task, "")
+
+	if !strings.Contains(prompt, "## Problem-Solving Mode") {
+		t.Error("LocalMode with nil components should produce problem-solving prompt")
+	}
+	if strings.Contains(prompt, "## Related Learnings") {
+		t.Error("Should not contain Related Learnings when knowledgeGraph is nil")
 	}
 }
 

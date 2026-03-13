@@ -26,7 +26,33 @@ func (r *Runner) BuildPrompt(task *Task, executionPath string) string {
 	// Sandbox environments with .agent/ dirs would hijack the prompt to Navigator path,
 	// ignoring --local flag entirely.
 	if task.LocalMode {
-		return r.buildLocalModePrompt(task)
+		prompt := r.buildLocalModePrompt(task)
+		// GH-2147: Inject learned patterns (keep prompt lean)
+		if r.patternContext != nil {
+			injected, err := r.patternContext.InjectPatterns(
+				context.Background(), prompt, task.ProjectPath,
+				inferTaskType(task), task.Description)
+			if err != nil {
+				slog.Warn("Failed to inject patterns for local mode", slog.Any("error", err))
+			} else {
+				prompt = injected
+			}
+		}
+		// GH-2147: Inject knowledge graph learnings (max 3 to stay lean)
+		if r.knowledgeGraph != nil {
+			keywords := extractTaskKeywords(task.Title + " " + task.Description)
+			if nodes := r.knowledgeGraph.GetRelatedByKeywords(keywords); len(nodes) > 0 {
+				var sb strings.Builder
+				sb.WriteString(prompt)
+				sb.WriteString("\n\n## Related Learnings\n\n")
+				limit := min(len(nodes), 3)
+				for i := 0; i < limit; i++ {
+					sb.WriteString(fmt.Sprintf("- **%s**: %s\n", nodes[i].Title, nodes[i].Content))
+				}
+				prompt = sb.String()
+			}
+		}
+		return prompt
 	}
 
 	// Check if project has Navigator initialized (use executionPath for worktree support)
