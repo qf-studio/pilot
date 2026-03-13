@@ -266,6 +266,22 @@ Regular sync meetings with stakeholders will be necessary to ensure alignment on
 			task:     &Task{Description: "Rewrite the parser from scratch"},
 			expected: ComplexityComplex,
 		},
+		{
+			name: "GH-2136: refactor in title overrides trivial in body",
+			task: &Task{
+				Title: "refactor(adapters): wire Slack/Telegram/Discord to use shared comms.Handler pipeline",
+				Description: `Consolidate adapter implementations to reduce duplication.
+
+Steps:
+- Delete from each adapter the duplicate pipeline code
+- Remove unused helper methods
+- Delete unused constants and types
+- Integrate shared Handler
+
+This affects adapters/slack, adapters/telegram, adapters/discord.`,
+			},
+			expected: ComplexityComplex, // Title says "refactor" → complex, NOT trivial despite "delete unused"
+		},
 
 		// Medium cases (default)
 		{

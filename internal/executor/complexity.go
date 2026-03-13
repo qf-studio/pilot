@@ -128,23 +128,46 @@ func DetectComplexity(task *Task) Complexity {
 		return ComplexityEpic
 	}
 
-	// Check trivial patterns (fastest path for small changes)
-	for _, pattern := range trivialPatterns {
-		if strings.Contains(combined, pattern) {
-			return ComplexityTrivial
-		}
-	}
-
-	// Check complex patterns next (prevents false simple classification)
+	// Check title for complex patterns first (title is strongest signal - GH-2136)
+	// If title indicates complex work, use complex classification regardless of body
 	for _, pattern := range complexPatterns {
-		if strings.Contains(combined, pattern) {
+		if strings.Contains(title, pattern) {
 			return ComplexityComplex
 		}
 	}
 
-	// Check simple patterns
+	// Check title for trivial patterns (second priority)
+	for _, pattern := range trivialPatterns {
+		if strings.Contains(title, pattern) {
+			return ComplexityTrivial
+		}
+	}
+
+	// Check title for simple patterns
 	for _, pattern := range simplePatterns {
-		if strings.Contains(combined, pattern) {
+		if strings.Contains(title, pattern) {
+			return ComplexitySimple
+		}
+	}
+
+	// Fall back to body-based detection if title had no matches
+	// Check complex patterns in description
+	for _, pattern := range complexPatterns {
+		if strings.Contains(desc, pattern) {
+			return ComplexityComplex
+		}
+	}
+
+	// Check trivial patterns in description
+	for _, pattern := range trivialPatterns {
+		if strings.Contains(desc, pattern) {
+			return ComplexityTrivial
+		}
+	}
+
+	// Check simple patterns in description
+	for _, pattern := range simplePatterns {
+		if strings.Contains(desc, pattern) {
 			return ComplexitySimple
 		}
 	}
