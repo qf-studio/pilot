@@ -543,3 +543,109 @@ func TestSenderTracking(t *testing.T) {
 		t.Errorf("expected sender user-42, got %s", sender)
 	}
 }
+
+func TestIncomingMessage_PlatformFields(t *testing.T) {
+	m := &handlerMock{}
+	h := newTestHandler(m)
+
+	now := time.Now()
+	msg := &IncomingMessage{
+		ContextID:  "ch1",
+		SenderID:   "u1",
+		SenderName: "Alice",
+		Text:       "hello",
+		Platform:   "discord",
+		GuildID:    "guild-123",
+		Timestamp:  now,
+	}
+
+	// Verify fields pass through HandleMessage without error
+	h.HandleMessage(context.Background(), msg)
+
+	texts := m.getTexts()
+	if len(texts) == 0 {
+		t.Fatal("expected at least one response")
+	}
+
+	// Verify struct fields are accessible and correct
+	if msg.Platform != "discord" {
+		t.Errorf("expected platform discord, got %s", msg.Platform)
+	}
+	if msg.GuildID != "guild-123" {
+		t.Errorf("expected guild-123, got %s", msg.GuildID)
+	}
+	if msg.SenderName != "Alice" {
+		t.Errorf("expected sender name Alice, got %s", msg.SenderName)
+	}
+	if msg.Timestamp.IsZero() {
+		t.Error("expected non-zero timestamp")
+	}
+}
+
+func TestIncomingMessage_PlatformFieldsZeroValues(t *testing.T) {
+	// Verify backward compatibility: new fields default to zero values
+	msg := &IncomingMessage{
+		ContextID: "ch1",
+		SenderID:  "u1",
+		Text:      "hello",
+	}
+
+	if msg.Platform != "" {
+		t.Errorf("expected empty platform, got %s", msg.Platform)
+	}
+	if msg.GuildID != "" {
+		t.Errorf("expected empty guild ID, got %s", msg.GuildID)
+	}
+	if msg.SenderName != "" {
+		t.Errorf("expected empty sender name, got %s", msg.SenderName)
+	}
+	if !msg.Timestamp.IsZero() {
+		t.Error("expected zero timestamp")
+	}
+}
+
+func TestHandleMessage_CallbackWithPlatformFields(t *testing.T) {
+	m := &handlerMock{}
+	h := newTestHandler(m)
+
+	h.mu.Lock()
+	h.pendingTasks["ch1"] = &PendingTask{
+		TaskID:      "TEST-789",
+		Description: "test task",
+		ContextID:   "ch1",
+		CreatedAt:   time.Now(),
+	}
+	h.mu.Unlock()
+
+	// Use "cancel" action to avoid triggering executeTask (requires runner)
+	h.HandleMessage(context.Background(), &IncomingMessage{
+		ContextID:  "ch1",
+		SenderID:   "u1",
+		SenderName: "Bob",
+		Platform:   "slack",
+		IsCallback: true,
+		CallbackID: "cb-2",
+		ActionID:   "cancel",
+	})
+
+	if len(m.acks) == 0 {
+		t.Error("expected callback acknowledgment")
+	}
+
+	// Verify sender was tracked despite being a callback
+	h.mu.Lock()
+	sender := h.lastSender["ch1"]
+	h.mu.Unlock()
+	if sender != "u1" {
+		t.Errorf("expected sender u1, got %s", sender)
+	}
+
+	// Verify task was cancelled
+	texts := m.getTexts()
+	if len(texts) == 0 {
+		t.Fatal("expected cancellation message")
+	}
+	if texts[0].text != "❌ Task TEST-789 cancelled." {
+		t.Errorf("unexpected message: %s", texts[0].text)
+	}
+}

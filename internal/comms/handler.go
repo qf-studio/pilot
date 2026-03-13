@@ -546,13 +546,14 @@ func (h *Handler) executeTask(ctx context.Context, contextID, threadID, taskID, 
 		MemberID:    memberID,
 	}
 
-	// Progress callback with throttling
+	// Progress callback with throttling (named callback for parallel-safe execution)
+	callbackName := fmt.Sprintf("comms-%s", taskID)
 	if msgRef != "" && h.runner != nil {
 		var lastPhase string
 		var lastProgress int
 		var lastUpdate time.Time
 
-		h.runner.OnProgress(func(tid, phase string, progress int, message string) {
+		h.runner.AddProgressCallback(callbackName, func(tid, phase string, progress int, message string) {
 			if tid != taskID {
 				return
 			}
@@ -575,12 +576,14 @@ func (h *Handler) executeTask(ctx context.Context, contextID, threadID, taskID, 
 	}
 
 	// Execute
-	h.log.Info("Executing task", slog.String("task_id", taskID), slog.String("context_id", contextID))
+	h.log.Info("Executing task",
+		slog.String("task_id", taskID),
+		slog.String("context_id", contextID))
 	result, err := h.runner.Execute(taskCtx, task)
 
-	// Clear progress callback
+	// Remove named progress callback
 	if h.runner != nil {
-		h.runner.OnProgress(nil)
+		h.runner.RemoveProgressCallback(callbackName)
 	}
 
 	if err != nil {

@@ -10,8 +10,12 @@ import (
 type IncomingMessage struct {
 	ContextID  string      // chatID / channelID
 	SenderID   string      // user ID (string; adapters convert int64)
+	SenderName string      // display name (optional; for logging/notifications)
 	Text       string      // normalized message text
 	ThreadID   string      // thread context (Slack threadTS, Telegram reply, etc.)
+	Platform   string      // source adapter: "telegram", "slack", "discord"
+	GuildID    string      // Discord server/guild ID (empty on other platforms)
+	Timestamp  time.Time   // message creation time (zero value if unavailable)
 	ImagePath  string      // downloaded image path (optional)
 	VoiceText  string      // transcribed voice text (optional)
 	IsCallback bool        // true when this is a button callback
