@@ -496,6 +496,86 @@ func TestModelRouter_SelectModelNilTrackerNoEscalation(t *testing.T) {
 	}
 }
 
+func TestResolveComplexity_LLMUpgradesHeuristic(t *testing.T) {
+	router := NewModelRouter(nil, nil)
+	// Attach LLM classifier returning "high"
+	classifier := newEffortClassifierWithRunner(mockEffortRunner("high", "large refactor"))
+	router.SetEffortClassifier(classifier)
+
+	// "remove unused" matches trivial heuristic, but LLM says high → complex
+	task := &Task{ID: "GH-2131", Description: "remove unused imports"}
+	got := router.resolveComplexity(task)
+	if got != ComplexityComplex {
+		t.Errorf("Expected ComplexityComplex (LLM floor), got %s", got)
+	}
+}
+
+func TestResolveComplexity_HeuristicWinsWhenHigher(t *testing.T) {
+	router := NewModelRouter(nil, nil)
+	// Attach LLM classifier returning "low"
+	classifier := newEffortClassifierWithRunner(mockEffortRunner("low", "trivial"))
+	router.SetEffortClassifier(classifier)
+
+	// Heuristic returns complex, LLM says low → heuristic wins
+	task := &Task{ID: "GH-999", Description: "Refactor the authentication system"}
+	got := router.resolveComplexity(task)
+	if got != ComplexityComplex {
+		t.Errorf("Expected ComplexityComplex (heuristic wins), got %s", got)
+	}
+}
+
+func TestResolveComplexity_NoClassifier(t *testing.T) {
+	router := NewModelRouter(nil, nil)
+	// No LLM classifier — pure heuristic
+
+	task := &Task{ID: "GH-1", Description: "Fix typo in README"}
+	got := router.resolveComplexity(task)
+	heuristic := DetectComplexity(task)
+	if got != heuristic {
+		t.Errorf("Expected heuristic %s, got %s", heuristic, got)
+	}
+}
+
+func TestSelectModel_UsesResolvedComplexity(t *testing.T) {
+	config := &ModelRoutingConfig{
+		Enabled: true,
+		Trivial: "haiku",
+		Simple:  "sonnet",
+		Medium:  "sonnet",
+		Complex: "opus",
+	}
+	router := NewModelRouter(config, nil)
+	// LLM says "high" → should select opus despite trivial heuristic
+	classifier := newEffortClassifierWithRunner(mockEffortRunner("high", "security sensitive"))
+	router.SetEffortClassifier(classifier)
+
+	task := &Task{ID: "GH-2145", Description: "remove unused imports"}
+	got := router.SelectModel(task)
+	if got != "opus" {
+		t.Errorf("Expected 'opus' (LLM effort floor), got %q", got)
+	}
+}
+
+func TestSelectTimeout_UsesResolvedComplexity(t *testing.T) {
+	timeoutConfig := &TimeoutConfig{
+		Default: "30m",
+		Trivial: "5m",
+		Simple:  "10m",
+		Medium:  "30m",
+		Complex: "60m",
+	}
+	router := NewModelRouter(nil, timeoutConfig)
+	// LLM says "high" → should get 60m despite trivial heuristic
+	classifier := newEffortClassifierWithRunner(mockEffortRunner("high", "large refactor"))
+	router.SetEffortClassifier(classifier)
+
+	task := &Task{ID: "GH-2145", Description: "remove unused imports"}
+	got := router.SelectTimeout(task)
+	if got != 60*time.Minute {
+		t.Errorf("Expected 60m (LLM effort floor), got %v", got)
+	}
+}
+
 func TestModelRouter_SetOutcomeTracker(t *testing.T) {
 	tracker, cleanup := newTestOutcomeTracker(t)
 	defer cleanup()

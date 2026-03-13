@@ -43,6 +43,59 @@ func NewModelRouterWithEffort(modelConfig *ModelRoutingConfig, timeoutConfig *Ti
 	return router
 }
 
+// complexityRank returns a numeric rank for a Complexity value, used for comparison.
+func complexityRank(c Complexity) int {
+	switch c {
+	case ComplexityTrivial:
+		return 0
+	case ComplexitySimple:
+		return 1
+	case ComplexityMedium:
+		return 2
+	case ComplexityComplex:
+		return 3
+	case ComplexityEpic:
+		return 4
+	default:
+		return 2
+	}
+}
+
+// resolveComplexity combines the heuristic complexity with the LLM effort classifier floor.
+// The LLM can only upgrade the complexity, never downgrade it (floor mechanism).
+func (r *ModelRouter) resolveComplexity(task *Task) Complexity {
+	heuristic := DetectComplexity(task)
+
+	if r.effortClassifier == nil {
+		return heuristic
+	}
+
+	effort := r.effortClassifier.Classify(context.Background(), task)
+
+	var floor Complexity
+	switch effort {
+	case "high":
+		floor = ComplexityComplex
+	case "medium":
+		floor = ComplexityMedium
+	case "low":
+		floor = ComplexitySimple
+	default:
+		return heuristic
+	}
+
+	if complexityRank(floor) > complexityRank(heuristic) {
+		slog.Info("LLM effort classifier upgraded complexity",
+			slog.String("task_id", task.ID),
+			slog.String("heuristic", string(heuristic)),
+			slog.String("llm_effort", effort),
+			slog.String("resolved", string(floor)),
+		)
+		return floor
+	}
+	return heuristic
+}
+
 // SelectModel returns the appropriate model name for a task based on its complexity.
 // If model routing is disabled, returns empty string (use backend default).
 // When an outcome tracker is set, checks failure rates and escalates if needed (GH-1991).
@@ -51,7 +104,7 @@ func (r *ModelRouter) SelectModel(task *Task) string {
 		return ""
 	}
 
-	complexity := DetectComplexity(task)
+	complexity := r.resolveComplexity(task)
 	model := r.GetModelForComplexity(complexity)
 
 	// GH-1991: Check outcome tracker for escalation
@@ -93,7 +146,7 @@ func (r *ModelRouter) GetModelForComplexity(complexity Complexity) string {
 
 // SelectTimeout returns the appropriate timeout duration for a task based on its complexity.
 func (r *ModelRouter) SelectTimeout(task *Task) time.Duration {
-	complexity := DetectComplexity(task)
+	complexity := r.resolveComplexity(task)
 	return r.GetTimeoutForComplexity(complexity)
 }
 
