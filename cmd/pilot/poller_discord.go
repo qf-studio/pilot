@@ -4,9 +4,13 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
+	"time"
 
 	"github.com/alekspetrov/pilot/internal/adapters/discord"
+	"github.com/alekspetrov/pilot/internal/comms"
 	"github.com/alekspetrov/pilot/internal/config"
+	"github.com/alekspetrov/pilot/internal/intent"
 	"github.com/alekspetrov/pilot/internal/logging"
 )
 
@@ -17,17 +21,52 @@ func discordPollerRegistration() PollerRegistration {
 			return cfg.Adapters.Discord != nil && cfg.Adapters.Discord.Enabled
 		},
 		CreateAndStart: func(ctx context.Context, deps *PollerDeps) {
+			discordCfg := deps.Cfg.Adapters.Discord
+
+			// Build LLM classifier + conversation store for comms.Handler
+			var llmClassifier intent.Classifier
+			var convStore *intent.ConversationStore
+			if discordCfg.LLMClassifier != nil && discordCfg.LLMClassifier.Enabled {
+				apiKey := discordCfg.LLMClassifier.APIKey
+				if apiKey == "" {
+					apiKey = os.Getenv("ANTHROPIC_API_KEY")
+				}
+				if apiKey != "" {
+					llmClassifier = intent.NewAnthropicClient(apiKey)
+					historySize := 10
+					if discordCfg.LLMClassifier.HistorySize > 0 {
+						historySize = discordCfg.LLMClassifier.HistorySize
+					}
+					historyTTL := 30 * time.Minute
+					if discordCfg.LLMClassifier.HistoryTTL > 0 {
+						historyTTL = discordCfg.LLMClassifier.HistoryTTL
+					}
+					convStore = intent.NewConversationStore(historySize, historyTTL)
+				}
+			}
+
+			// Build DiscordMessenger + comms.Handler
+			discordClient := discord.NewClient(discordCfg.BotToken)
+			messenger := discord.NewMessenger(discordClient)
+
+			commsHandler := comms.NewHandler(&comms.HandlerConfig{
+				Messenger:     messenger,
+				Runner:        deps.Runner,
+				Projects:      config.NewProjectSource(deps.Cfg),
+				ProjectPath:   deps.ProjectPath,
+				LLMClassifier: llmClassifier,
+				ConvStore:     convStore,
+				TaskIDPrefix:  "DISCORD",
+			})
+
 			handler := discord.NewHandler(&discord.HandlerConfig{
-				BotToken:        deps.Cfg.Adapters.Discord.BotToken,
-				BotID:           deps.Cfg.Adapters.Discord.BotID,
-				AllowedGuilds:   deps.Cfg.Adapters.Discord.AllowedGuilds,
-				AllowedChannels: deps.Cfg.Adapters.Discord.AllowedChannels,
-				ProjectPath:     deps.ProjectPath,
-				LLMClassifier:   deps.Cfg.Adapters.Discord.LLMClassifier,
-			}, deps.Runner)
+				BotToken:        discordCfg.BotToken,
+				BotID:           discordCfg.BotID,
+				AllowedGuilds:   discordCfg.AllowedGuilds,
+				AllowedChannels: discordCfg.AllowedChannels,
+			}, commsHandler)
 
 			// GH-2132: Wire notifier for task lifecycle messages
-			discordClient := discord.NewClient(deps.Cfg.Adapters.Discord.BotToken)
 			handler.SetNotifier(discord.NewNotifier(discordClient))
 
 			go func() {

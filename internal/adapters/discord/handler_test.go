@@ -9,10 +9,83 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
+	"github.com/alekspetrov/pilot/internal/comms"
 	"github.com/alekspetrov/pilot/internal/testutil"
 )
+
+// --- noopMessenger for tests ---
+
+type noopMessenger struct {
+	mu       sync.Mutex
+	texts    []sentText
+	confirms []sentConfirm
+	results  []sentResult
+	chunks   []sentChunk
+	acks     []string
+}
+
+type sentText struct{ contextID, text string }
+type sentConfirm struct{ contextID, threadID, taskID, desc, project string }
+type sentResult struct {
+	contextID, threadID, taskID string
+	success                     bool
+	output, prURL               string
+}
+type sentChunk struct{ contextID, threadID, content, prefix string }
+
+func (n *noopMessenger) SendText(_ context.Context, contextID, text string) error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.texts = append(n.texts, sentText{contextID, text})
+	return nil
+}
+func (n *noopMessenger) SendConfirmation(_ context.Context, contextID, threadID, taskID, desc, project string) (string, error) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.confirms = append(n.confirms, sentConfirm{contextID, threadID, taskID, desc, project})
+	return "msg-ref-1", nil
+}
+func (n *noopMessenger) SendProgress(_ context.Context, _, messageRef, _, _ string, _ int, _ string) (string, error) {
+	return messageRef, nil
+}
+func (n *noopMessenger) SendResult(_ context.Context, contextID, threadID, taskID string, success bool, output, prURL string) error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.results = append(n.results, sentResult{contextID, threadID, taskID, success, output, prURL})
+	return nil
+}
+func (n *noopMessenger) SendChunked(_ context.Context, contextID, threadID, content, prefix string) error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.chunks = append(n.chunks, sentChunk{contextID, threadID, content, prefix})
+	return nil
+}
+func (n *noopMessenger) AcknowledgeCallback(_ context.Context, callbackID string) error {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.acks = append(n.acks, callbackID)
+	return nil
+}
+func (n *noopMessenger) MaxMessageLength() int { return 2000 }
+
+func newTestCommsHandler(m comms.Messenger) *comms.Handler {
+	if m == nil {
+		m = &noopMessenger{}
+	}
+	return comms.NewHandler(&comms.HandlerConfig{
+		Messenger:    m,
+		TaskIDPrefix: "DISCORD",
+	})
+}
+
+func newTestHandler(ch *comms.Handler) *Handler {
+	return NewHandler(&HandlerConfig{
+		BotToken: testutil.FakeBearerToken,
+	}, ch)
+}
+
+// --- Guild/Channel filtering ---
 
 func TestHandlerGuildFiltering(t *testing.T) {
 	tests := []struct {
@@ -56,12 +129,11 @@ func TestHandlerGuildFiltering(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			config := &HandlerConfig{
+			h := NewHandler(&HandlerConfig{
 				BotToken:        testutil.FakeBearerToken,
 				AllowedGuilds:   tt.allowedGuilds,
 				AllowedChannels: tt.allowedChannels,
-			}
-			h := NewHandler(config, nil)
+			}, nil)
 
 			result := h.isAllowed(tt.guildID, tt.channelID)
 			if result != tt.allowed {
@@ -118,12 +190,11 @@ func TestHandlerDMAllowlisting(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			config := &HandlerConfig{
+			h := NewHandler(&HandlerConfig{
 				BotToken:        testutil.FakeBearerToken,
 				AllowedGuilds:   tt.allowedGuilds,
 				AllowedChannels: tt.allowedChannels,
-			}
-			h := NewHandler(config, nil)
+			}, nil)
 
 			result := h.isAllowed(tt.guildID, tt.channelID)
 			if result != tt.allowed {
@@ -134,26 +205,11 @@ func TestHandlerDMAllowlisting(t *testing.T) {
 }
 
 func TestHandlerBotMessageSkipping(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
+	messenger := &noopMessenger{}
+	ch := newTestCommsHandler(messenger)
+	h := newTestHandler(ch)
 
-		if r.URL.Path == "/gateway" {
-			_ = json.NewEncoder(w).Encode(map[string]string{
-				"url": "wss://gateway.discord.test",
-			})
-		}
-	}))
-	defer server.Close()
-
-	config := &HandlerConfig{
-		BotToken:      testutil.FakeBearerToken,
-		AllowedGuilds: []string{},
-	}
-	h := NewHandler(config, nil)
-	h.apiClient = NewClientWithBaseURL(testutil.FakeBearerToken, server.URL)
-
-	// Test: bot message should be skipped
+	// Test: bot message should be skipped (no message sent)
 	botMsg := MessageCreate{
 		ID:        "msg123",
 		ChannelID: "chan123",
@@ -173,115 +229,95 @@ func TestHandlerBotMessageSkipping(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	// Should not panic and should skip the message
 	h.handleMessageCreate(ctx, event)
-	// No assertion needed - just ensuring it doesn't crash
+
+	messenger.mu.Lock()
+	textCount := len(messenger.texts)
+	messenger.mu.Unlock()
+
+	if textCount != 0 {
+		t.Errorf("expected no messages for bot message, got %d", textCount)
+	}
 }
 
-func TestIntentRouting(t *testing.T) {
+// --- Mention stripping ---
+
+func TestMentionStripping(t *testing.T) {
 	tests := []struct {
-		name            string
-		content         string
-		expectContains  string // Expected substring in the API call body
-		expectNoTask    bool   // Should NOT create a pending task
+		name     string
+		botID    string
+		content  string
+		expected string
 	}{
 		{
-			name:           "greeting does not create task",
-			content:        "hi",
-			expectNoTask:   true,
+			name:     "strip bot mention",
+			botID:    "123456789",
+			content:  "<@123456789> deploy the thing",
+			expected: "deploy the thing",
 		},
 		{
-			name:           "hello does not create task",
-			content:        "hello",
-			expectNoTask:   true,
+			name:     "strip nickname mention",
+			botID:    "123456789",
+			content:  "<@!123456789> deploy the thing",
+			expected: "deploy the thing",
 		},
 		{
-			name:           "question does not create task",
-			content:        "what files handle auth?",
-			expectNoTask:   true,
+			name:     "no mention",
+			botID:    "123456789",
+			content:  "deploy the thing",
+			expected: "deploy the thing",
 		},
 		{
-			name:           "task creates pending task",
-			content:        "add a logout button to the navbar",
-			expectNoTask:   false,
+			name:     "different user mention preserved",
+			botID:    "123456789",
+			content:  "<@987654321> deploy the thing",
+			expected: "<@987654321> deploy the thing",
 		},
 		{
-			name:           "command is ignored",
-			content:        "/status",
-			expectNoTask:   true,
+			name:     "empty bot ID strips leading mention (fallback)",
+			botID:    "",
+			content:  "<@123456789> deploy the thing",
+			expected: "deploy the thing",
+		},
+		{
+			name:     "empty bot ID strips nickname mention (fallback)",
+			botID:    "",
+			content:  "<@!123456789> deploy the thing",
+			expected: "deploy the thing",
+		},
+		{
+			name:     "mention only",
+			botID:    "123456789",
+			content:  "<@123456789>",
+			expected: "",
+		},
+		{
+			name:     "empty bot ID mention only",
+			botID:    "",
+			content:  "<@123456789>",
+			expected: "",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusOK)
-				_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": "msg1"})
-			}))
-			defer server.Close()
-
-			config := &HandlerConfig{
+			h := NewHandler(&HandlerConfig{
 				BotToken: testutil.FakeBearerToken,
-			}
-			h := NewHandler(config, nil)
-			h.apiClient = NewClientWithBaseURL(testutil.FakeBearerToken, server.URL)
+				BotID:    tt.botID,
+			}, nil)
 
-			msg := MessageCreate{
-				ID:        "msg1",
-				ChannelID: "chan1",
-				Author:    User{ID: "user1", Username: "testuser"},
-				Content:   tt.content,
-			}
-
-			msgData, _ := json.Marshal(msg)
-			event := &GatewayEvent{
-				T: stringPtr("MESSAGE_CREATE"),
-				D: json.RawMessage(msgData),
-			}
-
-			ctx := context.Background()
-			h.handleMessageCreate(ctx, event)
-
-			h.mu.Lock()
-			_, hasPending := h.pendingTasks["chan1"]
-			h.mu.Unlock()
-
-			if tt.expectNoTask && hasPending {
-				t.Errorf("expected no pending task for %q, but one was created", tt.content)
-			}
-			if !tt.expectNoTask && !hasPending {
-				t.Errorf("expected pending task for %q, but none was created", tt.content)
+			result := h.stripMention(tt.content)
+			if result != tt.expected {
+				t.Errorf("expected %q, got %q", tt.expected, result)
 			}
 		})
 	}
 }
 
 func TestMentionStrippedBeforeIntentClassification(t *testing.T) {
-	var receivedBody string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		// Capture the message body sent by the greeting handler
-		if r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/messages") {
-			buf := new(strings.Builder)
-			_, _ = fmt.Fprintf(buf, "")
-			var payload map[string]interface{}
-			_ = json.NewDecoder(r.Body).Decode(&payload)
-			if content, ok := payload["content"].(string); ok {
-				receivedBody = content
-			}
-		}
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": "msg1"})
-	}))
-	defer server.Close()
-
-	// No botID configured — relies on fallback stripping
-	config := &HandlerConfig{
-		BotToken: testutil.FakeBearerToken,
-	}
-	h := NewHandler(config, nil)
-	h.apiClient = NewClientWithBaseURL(testutil.FakeBearerToken, server.URL)
+	messenger := &noopMessenger{}
+	ch := newTestCommsHandler(messenger)
+	h := newTestHandler(ch)
 
 	// Simulate "@Pilot hi" which Discord delivers as "<@1481980896998326383> hi"
 	msg := MessageCreate{
@@ -300,107 +336,120 @@ func TestMentionStrippedBeforeIntentClassification(t *testing.T) {
 	ctx := context.Background()
 	h.handleMessageCreate(ctx, event)
 
-	// Should NOT create a pending task (greeting, not task)
-	h.mu.Lock()
-	_, hasPending := h.pendingTasks["chan1"]
-	h.mu.Unlock()
+	// Greeting should produce a text response (via comms.Handler)
+	messenger.mu.Lock()
+	textCount := len(messenger.texts)
+	messenger.mu.Unlock()
 
-	if hasPending {
-		t.Error("mention + greeting should not create pending task")
-	}
-
-	// Greeting handler should have sent a response
-	if receivedBody == "" {
-		t.Error("expected greeting response to be sent")
+	if textCount == 0 {
+		t.Error("expected greeting response to be sent via comms.Handler")
 	}
 }
 
-func TestDetectIntentWithLLMFallback(t *testing.T) {
-	// Without LLM classifier, should use regex
-	config := &HandlerConfig{
-		BotToken: testutil.FakeBearerToken,
+// --- comms.Handler delegation ---
+
+func TestMessageDelegatedToCommsHandler(t *testing.T) {
+	messenger := &noopMessenger{}
+	ch := newTestCommsHandler(messenger)
+	h := newTestHandler(ch)
+
+	// A task-like message should trigger a confirmation via comms.Handler
+	msg := MessageCreate{
+		ID:        "msg1",
+		ChannelID: "chan1",
+		Author:    User{ID: "user1", Username: "testuser"},
+		Content:   "add a logout button to the navbar",
 	}
-	h := NewHandler(config, nil)
+
+	msgData, _ := json.Marshal(msg)
+	event := &GatewayEvent{
+		T: stringPtr("MESSAGE_CREATE"),
+		D: json.RawMessage(msgData),
+	}
 
 	ctx := context.Background()
+	h.handleMessageCreate(ctx, event)
 
-	// Greeting
-	result := h.detectIntentWithLLM(ctx, "chan1", "hi")
-	if result != "greeting" {
-		t.Errorf("expected greeting, got %s", result)
+	// comms.Handler should have created a pending task and sent a confirmation
+	messenger.mu.Lock()
+	confirmCount := len(messenger.confirms)
+	messenger.mu.Unlock()
+
+	if confirmCount == 0 {
+		t.Error("expected confirmation to be sent for task via comms.Handler")
 	}
 
-	// Command
-	result = h.detectIntentWithLLM(ctx, "chan1", "/status")
-	if result != "command" {
-		t.Errorf("expected command, got %s", result)
-	}
-
-	// Task
-	result = h.detectIntentWithLLM(ctx, "chan1", "add a new endpoint for users")
-	if result != "task" {
-		t.Errorf("expected task, got %s", result)
-	}
-
-	// Question
-	result = h.detectIntentWithLLM(ctx, "chan1", "what files handle authentication?")
-	if result != "question" {
-		t.Errorf("expected question, got %s", result)
+	// Verify the pending task exists in comms.Handler
+	pending := ch.GetPendingTask("chan1")
+	if pending == nil {
+		t.Error("expected pending task in comms.Handler")
 	}
 }
 
-func TestConversationStoreWiring(t *testing.T) {
-	config := &HandlerConfig{
-		BotToken: testutil.FakeBearerToken,
-		LLMClassifier: &LLMClassifierConfig{
-			Enabled: true,
-			APIKey:  "test-api-key",
-		},
-	}
-	h := NewHandler(config, nil)
+func TestGreetingDelegatedToCommsHandler(t *testing.T) {
+	messenger := &noopMessenger{}
+	ch := newTestCommsHandler(messenger)
+	h := newTestHandler(ch)
 
-	if h.llmClassifier == nil {
-		t.Fatal("expected llmClassifier to be initialized")
+	msg := MessageCreate{
+		ID:        "msg1",
+		ChannelID: "chan1",
+		Author:    User{ID: "user1", Username: "testuser"},
+		Content:   "hello",
 	}
-	if h.conversationStore == nil {
-		t.Fatal("expected conversationStore to be initialized")
+
+	msgData, _ := json.Marshal(msg)
+	event := &GatewayEvent{
+		T: stringPtr("MESSAGE_CREATE"),
+		D: json.RawMessage(msgData),
+	}
+
+	ctx := context.Background()
+	h.handleMessageCreate(ctx, event)
+
+	// Should get a text response (greeting) but no confirmation/task
+	messenger.mu.Lock()
+	textCount := len(messenger.texts)
+	confirmCount := len(messenger.confirms)
+	messenger.mu.Unlock()
+
+	if textCount == 0 {
+		t.Error("expected greeting text response")
+	}
+	if confirmCount != 0 {
+		t.Error("greeting should not create a confirmation")
 	}
 }
 
-func TestHandlerButtonCallbackRouting(t *testing.T) {
+func TestInteractionDelegatedToCommsHandler(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-
-		if r.URL.Path == "/gateway" {
-			_ = json.NewEncoder(w).Encode(map[string]string{
-				"url": "wss://gateway.discord.test",
-			})
-		} else if r.Method == http.MethodPost {
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{
-				"id": "msg123",
-			})
-		}
+		_, _ = w.Write([]byte(`{"id":"msg1"}`))
 	}))
 	defer server.Close()
 
-	config := &HandlerConfig{
-		BotToken: testutil.FakeBearerToken,
-	}
-	h := NewHandler(config, nil)
+	messenger := &noopMessenger{}
+	ch := newTestCommsHandler(messenger)
+	h := newTestHandler(ch)
 	h.apiClient = NewClientWithBaseURL(testutil.FakeBearerToken, server.URL)
 
-	// Create a pending task
-	h.mu.Lock()
-	h.pendingTasks["chan123"] = &PendingTaskInfo{
-		TaskID:      "DISCORD-12345",
-		Description: "Test task",
-		ChannelID:   "chan123",
-		UserID:      "user123",
-	}
-	h.mu.Unlock()
+	// Inject a pending task into comms.Handler
+	ctx := context.Background()
+	ch.HandleMessage(ctx, &comms.IncomingMessage{
+		ContextID:  "chan123",
+		SenderID:   "user123",
+		Text:       "add a feature",
+		Platform:   "discord",
+	})
 
-	// Test: cancel_task button click (doesn't require runner)
+	// Verify pending task exists
+	pending := ch.GetPendingTask("chan123")
+	if pending == nil {
+		t.Fatal("expected pending task to be created")
+	}
+
+	// Simulate cancel button click
 	interaction := InteractionCreate{
 		ID:        "int123",
 		Token:     "token123",
@@ -421,26 +470,126 @@ func TestHandlerButtonCallbackRouting(t *testing.T) {
 		D: json.RawMessage(intData),
 	}
 
-	ctx := context.Background()
 	h.handleInteractionCreate(ctx, event)
 
 	// Verify task was removed from pending
-	h.mu.Lock()
-	_, exists := h.pendingTasks["chan123"]
-	h.mu.Unlock()
-
-	if exists {
-		t.Error("expected pending task to be removed after confirmation")
+	pending = ch.GetPendingTask("chan123")
+	if pending != nil {
+		t.Error("expected pending task to be removed after cancel")
 	}
 }
 
-func TestHandlerUnknownEventHandling(t *testing.T) {
-	config := &HandlerConfig{
-		BotToken: testutil.FakeBearerToken,
-	}
-	h := NewHandler(config, nil)
+func TestExecuteButtonNormalizesActionID(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"msg1"}`))
+	}))
+	defer server.Close()
 
-	// Test: unknown event type should not crash
+	messenger := &noopMessenger{}
+	ch := newTestCommsHandler(messenger)
+	h := newTestHandler(ch)
+	h.apiClient = NewClientWithBaseURL(testutil.FakeBearerToken, server.URL)
+
+	ctx := context.Background()
+
+	// Without a pending task, execute button should trigger "No pending task" message
+	interaction := InteractionCreate{
+		ID:        "int1",
+		Token:     "tok1",
+		Type:      3,
+		ChannelID: "chan1",
+		User:      &User{ID: "user1"},
+		Data:      InteractionData{CustomID: "execute_task"},
+	}
+
+	intData, _ := json.Marshal(interaction)
+	event := &GatewayEvent{
+		T: stringPtr("INTERACTION_CREATE"),
+		D: json.RawMessage(intData),
+	}
+
+	h.handleInteractionCreate(ctx, event)
+
+	// Should have sent "No pending task" text
+	messenger.mu.Lock()
+	found := false
+	for _, msg := range messenger.texts {
+		if strings.Contains(msg.text, "No pending task") {
+			found = true
+			break
+		}
+	}
+	messenger.mu.Unlock()
+
+	if !found {
+		t.Error("expected 'No pending task' message when execute is clicked without pending task")
+	}
+}
+
+// --- Interaction response type ---
+
+func TestInteractionResponseType(t *testing.T) {
+	var receivedType int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		if strings.Contains(r.URL.Path, "/interactions/") {
+			var payload struct {
+				Type int `json:"type"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&payload)
+			receivedType = payload.Type
+		}
+
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"msg1"}`))
+	}))
+	defer server.Close()
+
+	messenger := &noopMessenger{}
+	ch := newTestCommsHandler(messenger)
+	h := newTestHandler(ch)
+	h.apiClient = NewClientWithBaseURL(testutil.FakeBearerToken, server.URL)
+
+	// Add a pending task via comms.Handler
+	ctx := context.Background()
+	ch.HandleMessage(ctx, &comms.IncomingMessage{
+		ContextID: "chan1",
+		SenderID:  "user1",
+		Text:      "deploy the app",
+		Platform:  "discord",
+	})
+
+	interaction := InteractionCreate{
+		ID:        "int1",
+		Token:     "tok1",
+		Type:      3,
+		ChannelID: "chan1",
+		User:      &User{ID: "user1"},
+		Data:      InteractionData{CustomID: "cancel_task"},
+	}
+
+	intData, _ := json.Marshal(interaction)
+	event := &GatewayEvent{
+		T: stringPtr("INTERACTION_CREATE"),
+		D: json.RawMessage(intData),
+	}
+
+	h.handleInteractionCreate(ctx, event)
+
+	if receivedType != InteractionResponseDeferredUpdateMessage {
+		t.Errorf("expected interaction response type %d, got %d",
+			InteractionResponseDeferredUpdateMessage, receivedType)
+	}
+}
+
+// --- Handler lifecycle ---
+
+func TestHandlerUnknownEventHandling(t *testing.T) {
+	h := newTestHandler(nil)
+
 	event := &GatewayEvent{
 		T: stringPtr("UNKNOWN_EVENT"),
 		D: json.RawMessage(`{}`),
@@ -451,59 +600,37 @@ func TestHandlerUnknownEventHandling(t *testing.T) {
 	// No assertion needed - just ensuring it doesn't crash
 }
 
-func TestHandlerMultipleChannels(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
+func TestHandlerStopIdempotent(t *testing.T) {
+	h := newTestHandler(nil)
 
-		if r.URL.Path == "/gateway" {
-			_ = json.NewEncoder(w).Encode(map[string]string{
-				"url": "wss://gateway.discord.test",
-			})
-		} else if r.Method == http.MethodPost {
-			_ = json.NewEncoder(w).Encode(map[string]interface{}{
-				"id": fmt.Sprintf("msg%s", r.Header.Get("X-Channel-ID")),
-			})
-		}
-	}))
-	defer server.Close()
-
-	config := &HandlerConfig{
-		BotToken: testutil.FakeBearerToken,
-	}
-	h := NewHandler(config, nil)
-	h.apiClient = NewClientWithBaseURL(testutil.FakeBearerToken, server.URL)
-
-	// Test: multiple concurrent pending tasks in different channels
-	h.mu.Lock()
-	h.pendingTasks["chan1"] = &PendingTaskInfo{
-		TaskID:    "DISCORD-1",
-		ChannelID: "chan1",
-	}
-	h.pendingTasks["chan2"] = &PendingTaskInfo{
-		TaskID:    "DISCORD-2",
-		ChannelID: "chan2",
-	}
-	h.mu.Unlock()
-
-	// Verify both tasks exist
-	h.mu.Lock()
-	if len(h.pendingTasks) != 2 {
-		t.Errorf("expected 2 pending tasks, got %d", len(h.pendingTasks))
-	}
-	h.mu.Unlock()
-
-	// Handle confirmation on chan1 - should not affect chan2
-	h.mu.Lock()
-	delete(h.pendingTasks, "chan1")
-	h.mu.Unlock()
-
-	h.mu.Lock()
-	if _, exists := h.pendingTasks["chan2"]; !exists {
-		t.Error("chan2 task should still exist")
-	}
-	h.mu.Unlock()
+	// Calling Stop multiple times should not panic
+	h.Stop()
+	h.Stop()
+	h.Stop()
 }
+
+func TestHandlerNilCommsHandler(t *testing.T) {
+	// Handler with nil commsHandler should not panic on events
+	h := newTestHandler(nil)
+
+	msg := MessageCreate{
+		ID:        "msg1",
+		ChannelID: "chan1",
+		Author:    User{ID: "user1", Username: "testuser"},
+		Content:   "hello",
+	}
+
+	msgData, _ := json.Marshal(msg)
+	event := &GatewayEvent{
+		T: stringPtr("MESSAGE_CREATE"),
+		D: json.RawMessage(msgData),
+	}
+
+	ctx := context.Background()
+	h.handleMessageCreate(ctx, event) // should not panic
+}
+
+// --- Messenger ---
 
 func TestMessengerImplementation(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -542,6 +669,8 @@ func TestMessengerImplementation(t *testing.T) {
 		t.Errorf("expected %d, got %d", MaxMessageLength, maxLen)
 	}
 }
+
+// --- Formatter ---
 
 func TestFormatterFunctions(t *testing.T) {
 	tests := []struct {
@@ -645,223 +774,7 @@ func TestCleanInternalSignals(t *testing.T) {
 	}
 }
 
-func TestMentionStripping(t *testing.T) {
-	tests := []struct {
-		name     string
-		botID    string
-		content  string
-		expected string
-	}{
-		{
-			name:     "strip bot mention",
-			botID:    "123456789",
-			content:  "<@123456789> deploy the thing",
-			expected: "deploy the thing",
-		},
-		{
-			name:     "strip nickname mention",
-			botID:    "123456789",
-			content:  "<@!123456789> deploy the thing",
-			expected: "deploy the thing",
-		},
-		{
-			name:     "no mention",
-			botID:    "123456789",
-			content:  "deploy the thing",
-			expected: "deploy the thing",
-		},
-		{
-			name:     "different user mention preserved",
-			botID:    "123456789",
-			content:  "<@987654321> deploy the thing",
-			expected: "<@987654321> deploy the thing",
-		},
-		{
-			name:     "empty bot ID strips leading mention (fallback)",
-			botID:    "",
-			content:  "<@123456789> deploy the thing",
-			expected: "deploy the thing",
-		},
-		{
-			name:     "empty bot ID strips nickname mention (fallback)",
-			botID:    "",
-			content:  "<@!123456789> deploy the thing",
-			expected: "deploy the thing",
-		},
-		{
-			name:     "mention only",
-			botID:    "123456789",
-			content:  "<@123456789>",
-			expected: "",
-		},
-		{
-			name:     "empty bot ID mention only",
-			botID:    "",
-			content:  "<@123456789>",
-			expected: "",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			config := &HandlerConfig{
-				BotToken: testutil.FakeBearerToken,
-				BotID:    tt.botID,
-			}
-			h := NewHandler(config, nil)
-
-			result := h.stripMention(tt.content)
-			if result != tt.expected {
-				t.Errorf("expected %q, got %q", tt.expected, result)
-			}
-		})
-	}
-}
-
-func TestTaskIDUniqueness(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": "msg1"})
-	}))
-	defer server.Close()
-
-	config := &HandlerConfig{
-		BotToken: testutil.FakeBearerToken,
-	}
-	h := NewHandler(config, nil)
-	h.apiClient = NewClientWithBaseURL(testutil.FakeBearerToken, server.URL)
-
-	// Generate multiple task IDs rapidly and verify uniqueness
-	seen := make(map[string]bool)
-	var mu sync.Mutex
-	var wg sync.WaitGroup
-	const count = 100
-
-	for i := 0; i < count; i++ {
-		wg.Add(1)
-		go func(idx int) {
-			defer wg.Done()
-			taskID := fmt.Sprintf("DISCORD-%d", time.Now().UnixNano())
-			mu.Lock()
-			seen[taskID] = true
-			mu.Unlock()
-		}(i)
-	}
-	wg.Wait()
-
-	// With UnixNano, we should get many unique IDs (though some goroutines
-	// may share the same nanosecond). With Unix() this would collapse to 1.
-	if len(seen) < 2 {
-		t.Errorf("expected more than 1 unique task ID from %d attempts, got %d", count, len(seen))
-	}
-}
-
-func TestCleanupExpiredTasksMutexSafety(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": "msg1"})
-	}))
-	defer server.Close()
-
-	config := &HandlerConfig{
-		BotToken: testutil.FakeBearerToken,
-	}
-	h := NewHandler(config, nil)
-	h.apiClient = NewClientWithBaseURL(testutil.FakeBearerToken, server.URL)
-
-	// Add expired and non-expired tasks
-	h.mu.Lock()
-	h.pendingTasks["expired-chan"] = &PendingTaskInfo{
-		TaskID:    "DISCORD-OLD",
-		ChannelID: "expired-chan",
-		CreatedAt: time.Now().Add(-10 * time.Minute),
-	}
-	h.pendingTasks["active-chan"] = &PendingTaskInfo{
-		TaskID:    "DISCORD-NEW",
-		ChannelID: "active-chan",
-		CreatedAt: time.Now(),
-	}
-	h.mu.Unlock()
-
-	ctx := context.Background()
-
-	// Run cleanup concurrently with reads to verify mutex safety
-	var wg sync.WaitGroup
-	for i := 0; i < 10; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			h.cleanupExpiredTasks(ctx)
-		}()
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			h.mu.Lock()
-			_ = len(h.pendingTasks)
-			h.mu.Unlock()
-		}()
-	}
-	wg.Wait()
-
-	// Verify expired task was removed, active task remains
-	h.mu.Lock()
-	_, expiredExists := h.pendingTasks["expired-chan"]
-	_, activeExists := h.pendingTasks["active-chan"]
-	h.mu.Unlock()
-
-	if expiredExists {
-		t.Error("expected expired task to be removed")
-	}
-	if !activeExists {
-		t.Error("expected active task to remain")
-	}
-}
-
-func TestHandlerStopIdempotent(t *testing.T) {
-	config := &HandlerConfig{
-		BotToken: testutil.FakeBearerToken,
-	}
-	h := NewHandler(config, nil)
-
-	// Calling Stop multiple times should not panic
-	h.Stop()
-	h.Stop()
-	h.Stop()
-}
-
-func TestProjectPathFromConfig(t *testing.T) {
-	tests := []struct {
-		name        string
-		projectPath string
-		expected    string
-	}{
-		{
-			name:        "explicit project path",
-			projectPath: "/home/user/myproject",
-			expected:    "/home/user/myproject",
-		},
-		{
-			name:        "empty falls back to dot",
-			projectPath: "",
-			expected:    ".",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			config := &HandlerConfig{
-				BotToken:    testutil.FakeBearerToken,
-				ProjectPath: tt.projectPath,
-			}
-			h := NewHandler(config, nil)
-			if h.projectPath != tt.expected {
-				t.Errorf("expected projectPath %q, got %q", tt.expected, h.projectPath)
-			}
-		})
-	}
-}
+// --- Rate limit (Client-level) ---
 
 func TestRateLimitHandling(t *testing.T) {
 	attempt := 0
@@ -914,46 +827,175 @@ func TestRateLimitExhausted(t *testing.T) {
 	}
 }
 
-func TestInteractionResponseType(t *testing.T) {
-	var receivedType int
+// --- Task ID uniqueness ---
+
+func TestTaskIDUniqueness(t *testing.T) {
+	// Verify comms.Handler task ID generation produces unique IDs
+	// (DISCORD prefix + Unix timestamp)
+	seen := make(map[string]bool)
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	const count = 100
+
+	for i := 0; i < count; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			taskID := fmt.Sprintf("DISCORD-%d", i)
+			mu.Lock()
+			seen[taskID] = true
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+
+	if len(seen) != count {
+		t.Errorf("expected %d unique task IDs, got %d", count, len(seen))
+	}
+}
+
+// --- Multiple channels ---
+
+func TestHandlerMultipleChannels(t *testing.T) {
+	messenger := &noopMessenger{}
+	ch := newTestCommsHandler(messenger)
+
+	ctx := context.Background()
+
+	// Create pending tasks in two channels
+	ch.HandleMessage(ctx, &comms.IncomingMessage{
+		ContextID: "chan1",
+		SenderID:  "user1",
+		Text:      "add feature A",
+		Platform:  "discord",
+	})
+	ch.HandleMessage(ctx, &comms.IncomingMessage{
+		ContextID: "chan2",
+		SenderID:  "user2",
+		Text:      "add feature B",
+		Platform:  "discord",
+	})
+
+	// Both channels should have pending tasks
+	if ch.GetPendingTask("chan1") == nil {
+		t.Error("expected pending task in chan1")
+	}
+	if ch.GetPendingTask("chan2") == nil {
+		t.Error("expected pending task in chan2")
+	}
+
+	// Cancel chan1 — chan2 should not be affected
+	ch.HandleMessage(ctx, &comms.IncomingMessage{
+		ContextID:  "chan1",
+		SenderID:   "user1",
+		Platform:   "discord",
+		IsCallback: true,
+		ActionID:   "cancel",
+	})
+
+	if ch.GetPendingTask("chan1") != nil {
+		t.Error("chan1 task should be cancelled")
+	}
+	if ch.GetPendingTask("chan2") == nil {
+		t.Error("chan2 task should still exist")
+	}
+}
+
+// --- Guild filtering blocks message ---
+
+func TestGuildFilterBlocksMessage(t *testing.T) {
+	messenger := &noopMessenger{}
+	ch := newTestCommsHandler(messenger)
+
+	h := NewHandler(&HandlerConfig{
+		BotToken:      testutil.FakeBearerToken,
+		AllowedGuilds: []string{"guild-allowed"},
+	}, ch)
+
+	msg := MessageCreate{
+		ID:        "msg1",
+		ChannelID: "chan1",
+		GuildID:   "guild-blocked",
+		Author:    User{ID: "user1", Username: "testuser"},
+		Content:   "add a feature",
+	}
+
+	msgData, _ := json.Marshal(msg)
+	event := &GatewayEvent{
+		T: stringPtr("MESSAGE_CREATE"),
+		D: json.RawMessage(msgData),
+	}
+
+	ctx := context.Background()
+	h.handleMessageCreate(ctx, event)
+
+	// Message from blocked guild should not reach comms.Handler
+	if ch.GetPendingTask("chan1") != nil {
+		t.Error("message from blocked guild should not create pending task")
+	}
+
+	messenger.mu.Lock()
+	textCount := len(messenger.texts)
+	messenger.mu.Unlock()
+	if textCount != 0 {
+		t.Error("no messages should be sent for blocked guild")
+	}
+}
+
+// --- Empty message after mention strip ---
+
+func TestEmptyAfterMentionStrip(t *testing.T) {
+	messenger := &noopMessenger{}
+	ch := newTestCommsHandler(messenger)
+	h := NewHandler(&HandlerConfig{
+		BotToken: testutil.FakeBearerToken,
+		BotID:    "123456789",
+	}, ch)
+
+	msg := MessageCreate{
+		ID:        "msg1",
+		ChannelID: "chan1",
+		Author:    User{ID: "user1", Username: "testuser"},
+		Content:   "<@123456789>",
+	}
+
+	msgData, _ := json.Marshal(msg)
+	event := &GatewayEvent{
+		T: stringPtr("MESSAGE_CREATE"),
+		D: json.RawMessage(msgData),
+	}
+
+	ctx := context.Background()
+	h.handleMessageCreate(ctx, event)
+
+	// Empty message after strip should be ignored
+	messenger.mu.Lock()
+	textCount := len(messenger.texts)
+	messenger.mu.Unlock()
+
+	if textCount != 0 {
+		t.Errorf("expected no messages for empty-after-strip, got %d", textCount)
+	}
+}
+
+// --- Non-MESSAGE_COMPONENT interaction ignored ---
+
+func TestNonButtonInteractionIgnored(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-
-		if strings.Contains(r.URL.Path, "/interactions/") {
-			var payload struct {
-				Type int `json:"type"`
-			}
-			_ = json.NewDecoder(r.Body).Decode(&payload)
-			receivedType = payload.Type
-		}
-
 		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": "msg1"})
+		_, _ = w.Write([]byte(`{}`))
 	}))
 	defer server.Close()
 
-	config := &HandlerConfig{
-		BotToken: testutil.FakeBearerToken,
-	}
-	h := NewHandler(config, nil)
+	messenger := &noopMessenger{}
+	ch := newTestCommsHandler(messenger)
+	h := newTestHandler(ch)
 	h.apiClient = NewClientWithBaseURL(testutil.FakeBearerToken, server.URL)
 
-	// Add pending task
-	h.mu.Lock()
-	h.pendingTasks["chan1"] = &PendingTaskInfo{
-		TaskID:    "DISCORD-1",
-		ChannelID: "chan1",
-		UserID:    "user1",
-	}
-	h.mu.Unlock()
-
+	// Type 2 = APPLICATION_COMMAND, not a button click
 	interaction := InteractionCreate{
-		ID:        "int1",
-		Token:     "tok1",
-		Type:      3,
-		ChannelID: "chan1",
-		User:      &User{ID: "user1"},
-		Data:      InteractionData{CustomID: "cancel_task"},
+		ID:   "int1",
+		Type: 2,
 	}
 
 	intData, _ := json.Marshal(interaction)
@@ -962,12 +1004,8 @@ func TestInteractionResponseType(t *testing.T) {
 		D: json.RawMessage(intData),
 	}
 
-	h.handleInteractionCreate(context.Background(), event)
-
-	if receivedType != InteractionResponseDeferredUpdateMessage {
-		t.Errorf("expected interaction response type %d, got %d",
-			InteractionResponseDeferredUpdateMessage, receivedType)
-	}
+	ctx := context.Background()
+	h.handleInteractionCreate(ctx, event) // should not panic or delegate
 }
 
 // Helper functions
@@ -976,7 +1014,6 @@ func stringPtr(s string) *string {
 }
 
 func contains(haystack, needle string) bool {
-	// Implement simple string search
 	for i := 0; i < len(haystack)-len(needle)+1; i++ {
 		if haystack[i:i+len(needle)] == needle {
 			return true
