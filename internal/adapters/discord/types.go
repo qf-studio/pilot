@@ -6,6 +6,7 @@ import "time"
 type Config struct {
 	Enabled         bool              `yaml:"enabled"`
 	BotToken        string            `yaml:"bot_token"`
+	BotID           string            `yaml:"bot_id"`            // Bot user ID for mention stripping
 	AllowedGuilds   []string          `yaml:"allowed_guilds"`   // Guild IDs allowed to send tasks
 	AllowedChannels []string          `yaml:"allowed_channels"` // Channel IDs allowed to send tasks
 	CommandPrefix   string            `yaml:"command_prefix"`
@@ -83,6 +84,18 @@ const (
 
 	// Non-resumable close code
 	CloseCodeInvalidToken = 4014
+)
+
+// Interaction response types
+const (
+	// InteractionResponseChannelMessage sends a new message in response to an interaction.
+	InteractionResponseChannelMessage = 4
+	// InteractionResponseDeferredChannelMessage acknowledges and shows "thinking" indicator.
+	InteractionResponseDeferredChannelMessage = 5
+	// InteractionResponseDeferredUpdateMessage acknowledges a component interaction without sending a new message.
+	InteractionResponseDeferredUpdateMessage = 6
+	// InteractionResponseUpdateMessage updates the original message of the component.
+	InteractionResponseUpdateMessage = 7
 )
 
 // MaxMessageLength is the maximum message length for Discord.

@@ -22,6 +22,7 @@ type GatewayClient struct {
 	heartbeatTick *time.Ticker
 	stopCh        chan struct{}
 	mu            sync.Mutex
+	closeOnce     sync.Once
 	log           *slog.Logger
 }
 
@@ -146,6 +147,25 @@ func (g *GatewayClient) heartbeatLoop() {
 	}
 }
 
+// isResumableCloseCode returns true for Discord close codes 4000-4009 that allow session resume.
+func isResumableCloseCode(code int) bool {
+	return code >= CloseCodeUnknownError && code <= CloseCodeSessionTimeout
+}
+
+// isFatalCloseCode returns true for close codes that require a full re-identify (no resume).
+func isFatalCloseCode(code int) bool {
+	return code == CloseCodeAuthenticationFailed || code == CloseCodeInvalidToken
+}
+
+// extractCloseCode extracts the WebSocket close code from a *websocket.CloseError.
+// Returns 0 if the error is not a close error.
+func extractCloseCode(err error) int {
+	if closeErr, ok := err.(*websocket.CloseError); ok {
+		return closeErr.Code
+	}
+	return 0
+}
+
 // Listen returns a channel of incoming events. Blocks until ctx is cancelled.
 func (g *GatewayClient) Listen(ctx context.Context) (<-chan GatewayEvent, error) {
 	if g.conn == nil {
@@ -168,7 +188,22 @@ func (g *GatewayClient) Listen(ctx context.Context) (<-chan GatewayEvent, error)
 
 			var event GatewayEvent
 			if err := g.conn.ReadJSON(&event); err != nil {
-				g.log.Warn("Read event error", slog.Any("error", err))
+				// gorilla/websocket surfaces close frames as errors from ReadJSON,
+				// not as events. Extract the close code from the error.
+				closeCode := extractCloseCode(err)
+				if closeCode != 0 {
+					if isFatalCloseCode(closeCode) {
+						g.log.Error("Fatal close code, cannot reconnect",
+							slog.Int("code", closeCode), slog.Any("error", err))
+						return
+					}
+					if isResumableCloseCode(closeCode) {
+						g.log.Warn("Resumable close code, reconnecting",
+							slog.Int("code", closeCode), slog.Any("error", err))
+					}
+				} else {
+					g.log.Warn("Read event error", slog.Any("error", err))
+				}
 				return
 			}
 
@@ -193,24 +228,130 @@ func (g *GatewayClient) Listen(ctx context.Context) (<-chan GatewayEvent, error)
 				}
 			}
 
-			// Handle close codes for reconnection logic
-			if event.Op < 0 { // Close frame
-				closeCode := event.Op // Simplified, actual close code is in frame
-				if closeCode >= CloseCodeUnknownError && closeCode <= CloseCodeSessionTimeout {
-					g.log.Info("Reconnectable close code", slog.Int("code", closeCode))
-					// Caller should handle reconnection
-				} else if closeCode == CloseCodeInvalidToken {
-					g.log.Error("Non-resumable close code", slog.Int("code", closeCode))
-					return
-				}
-			}
-
 			select {
 			case out <- event:
 			case <-ctx.Done():
 				return
 			case <-g.stopCh:
 				return
+			}
+		}
+	}()
+
+	return out, nil
+}
+
+// StartListening connects to the gateway and listens for events with automatic
+// reconnection. On resumable close codes (4000-4009) it attempts RESUME with
+// exponential backoff. On non-resumable codes it performs a full reconnect.
+// Fatal codes (4004, 4014) abort immediately.
+func (g *GatewayClient) StartListening(ctx context.Context) (<-chan GatewayEvent, error) {
+	out := make(chan GatewayEvent, 64)
+
+	// Initial connect
+	if err := g.Connect(ctx); err != nil {
+		return nil, fmt.Errorf("initial connect: %w", err)
+	}
+
+	go func() {
+		defer close(out)
+
+		const (
+			minBackoff = 1 * time.Second
+			maxBackoff = 60 * time.Second
+		)
+		backoff := minBackoff
+
+		for {
+			events, err := g.Listen(ctx)
+			if err != nil {
+				g.log.Error("Listen failed", slog.Any("error", err))
+				return
+			}
+
+			// Forward events to caller
+			var lastErr error
+		eventLoop:
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-g.stopCh:
+					return
+				case evt, ok := <-events:
+					if !ok {
+						break eventLoop
+					}
+					// Reset backoff on successful event
+					backoff = minBackoff
+
+					select {
+					case out <- evt:
+					case <-ctx.Done():
+						return
+					case <-g.stopCh:
+						return
+					}
+				}
+			}
+
+			// Channel closed — check if we should reconnect
+			select {
+			case <-ctx.Done():
+				return
+			case <-g.stopCh:
+				return
+			default:
+			}
+
+			// Determine reconnection strategy from the last read error
+			g.mu.Lock()
+			canResume := g.sessionID != "" && g.seq != nil
+			// Close the old connection
+			if g.conn != nil {
+				_ = g.conn.Close()
+				g.conn = nil
+			}
+			if g.heartbeatTick != nil {
+				g.heartbeatTick.Stop()
+			}
+			g.mu.Unlock()
+
+			g.log.Info("Reconnecting to Discord Gateway",
+				slog.Duration("backoff", backoff),
+				slog.Bool("resume", canResume),
+				slog.Any("last_error", lastErr))
+
+			select {
+			case <-ctx.Done():
+				return
+			case <-g.stopCh:
+				return
+			case <-time.After(backoff):
+			}
+
+			// Exponential backoff
+			backoff *= 2
+			if backoff > maxBackoff {
+				backoff = maxBackoff
+			}
+
+			// Attempt reconnect
+			if err := g.Connect(ctx); err != nil {
+				g.log.Error("Reconnect failed", slog.Any("error", err))
+				continue
+			}
+
+			// If we have session state, attempt RESUME
+			if canResume {
+				if err := g.Resume(ctx); err != nil {
+					g.log.Warn("Resume failed, will re-identify on next connect",
+						slog.Any("error", err))
+					g.mu.Lock()
+					g.sessionID = ""
+					g.seq = nil
+					g.mu.Unlock()
+				}
 			}
 		}
 	}()
@@ -244,19 +385,21 @@ func (g *GatewayClient) Resume(ctx context.Context) error {
 	return nil
 }
 
-// Close closes the WebSocket connection.
+// Close closes the WebSocket connection. Safe to call multiple times.
 func (g *GatewayClient) Close() error {
-	g.mu.Lock()
-	defer g.mu.Unlock()
+	var closeErr error
+	g.closeOnce.Do(func() {
+		g.mu.Lock()
+		defer g.mu.Unlock()
 
-	close(g.stopCh)
-	if g.heartbeatTick != nil {
-		g.heartbeatTick.Stop()
-	}
+		close(g.stopCh)
+		if g.heartbeatTick != nil {
+			g.heartbeatTick.Stop()
+		}
 
-	if g.conn != nil {
-		return g.conn.Close()
-	}
-
-	return nil
+		if g.conn != nil {
+			closeErr = g.conn.Close()
+		}
+	})
+	return closeErr
 }

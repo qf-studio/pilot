@@ -6,15 +6,21 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
+
+	"github.com/alekspetrov/pilot/internal/logging"
 )
 
-// Client is a Discord REST API client.
+// Client is a Discord REST API client with rate limit handling.
 type Client struct {
 	botToken   string
 	baseURL    string
 	httpClient *http.Client
+	log        *slog.Logger
+	maxRetries int
 }
 
 // NewClient creates a new Discord client.
@@ -25,6 +31,8 @@ func NewClient(botToken string) *Client {
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
+		log:        logging.WithComponent("discord.client"),
+		maxRetries: 3,
 	}
 }
 
@@ -36,23 +44,67 @@ func NewClientWithBaseURL(botToken, baseURL string) *Client {
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
+		log:        logging.WithComponent("discord.client"),
+		maxRetries: 3,
 	}
 }
 
-// doRequest sends an HTTP request to the Discord API.
+// doRequest sends an HTTP request to the Discord API with rate limit handling.
+// On 429 responses, it reads the Retry-After header and retries up to maxRetries times.
 func (c *Client) doRequest(ctx context.Context, method, endpoint string, body interface{}) ([]byte, error) {
+	for attempt := 0; attempt <= c.maxRetries; attempt++ {
+		respBody, statusCode, retryAfter, err := c.doRequestOnce(ctx, method, endpoint, body)
+		if err != nil {
+			return nil, err
+		}
+
+		if statusCode == http.StatusTooManyRequests {
+			if attempt >= c.maxRetries {
+				return nil, fmt.Errorf("discord API rate limited after %d retries: HTTP 429", c.maxRetries)
+			}
+
+			wait := retryAfter
+			if wait <= 0 {
+				wait = time.Duration(attempt+1) * time.Second
+			}
+
+			c.log.Warn("Rate limited by Discord API, waiting",
+				slog.String("endpoint", endpoint),
+				slog.Duration("retry_after", wait),
+				slog.Int("attempt", attempt+1))
+
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(wait):
+			}
+			continue
+		}
+
+		if statusCode >= 400 {
+			return nil, fmt.Errorf("discord API error: HTTP %d: %s", statusCode, string(respBody))
+		}
+
+		return respBody, nil
+	}
+
+	return nil, fmt.Errorf("discord API: exhausted retries")
+}
+
+// doRequestOnce performs a single HTTP request and returns the body, status code, and retry-after duration.
+func (c *Client) doRequestOnce(ctx context.Context, method, endpoint string, body interface{}) ([]byte, int, time.Duration, error) {
 	var reqBody io.Reader
 	if body != nil {
 		data, err := json.Marshal(body)
 		if err != nil {
-			return nil, fmt.Errorf("marshal body: %w", err)
+			return nil, 0, 0, fmt.Errorf("marshal body: %w", err)
 		}
 		reqBody = bytes.NewReader(data)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+endpoint, reqBody)
 	if err != nil {
-		return nil, fmt.Errorf("create request: %w", err)
+		return nil, 0, 0, fmt.Errorf("create request: %w", err)
 	}
 
 	req.Header.Set("Authorization", "Bot "+c.botToken)
@@ -61,20 +113,43 @@ func (c *Client) doRequest(ctx context.Context, method, endpoint string, body in
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("send request: %w", err)
+		return nil, 0, 0, fmt.Errorf("send request: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("read response: %w", err)
+		return nil, 0, 0, fmt.Errorf("read response: %w", err)
 	}
 
-	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("discord API error: HTTP %d: %s", resp.StatusCode, string(respBody))
+	// Parse Retry-After header for 429 responses
+	var retryAfter time.Duration
+	if resp.StatusCode == http.StatusTooManyRequests {
+		retryAfter = parseRetryAfter(resp.Header)
 	}
 
-	return respBody, nil
+	return respBody, resp.StatusCode, retryAfter, nil
+}
+
+// parseRetryAfter extracts the wait duration from the Retry-After header.
+// Discord sends this as seconds (possibly fractional).
+func parseRetryAfter(headers http.Header) time.Duration {
+	val := headers.Get("Retry-After")
+	if val == "" {
+		return 0
+	}
+
+	// Try parsing as float (Discord uses fractional seconds)
+	if secs, err := strconv.ParseFloat(val, 64); err == nil {
+		return time.Duration(secs * float64(time.Second))
+	}
+
+	// Fallback: parse as integer seconds
+	if secs, err := strconv.Atoi(val); err == nil {
+		return time.Duration(secs) * time.Second
+	}
+
+	return 0
 }
 
 // SendMessage sends a message to a channel.
@@ -113,8 +188,8 @@ func (c *Client) EditMessage(ctx context.Context, channelID, messageID, content 
 // SendMessageWithComponents sends a message with interactive components (buttons).
 func (c *Client) SendMessageWithComponents(ctx context.Context, channelID, content string, components []Component) (*Message, error) {
 	payload := struct {
-		Content    string       `json:"content"`
-		Components []Component  `json:"components"`
+		Content    string      `json:"content"`
+		Components []Component `json:"components"`
 	}{
 		Content:    content,
 		Components: components,
