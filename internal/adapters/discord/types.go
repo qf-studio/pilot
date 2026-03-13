@@ -147,6 +147,7 @@ type MessageCreate struct {
 type User struct {
 	ID       string `json:"id"`
 	Username string `json:"username"`
+	Bot      bool   `json:"bot,omitempty"`
 	Email    string `json:"email,omitempty"`
 }
 

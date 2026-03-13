@@ -94,8 +94,9 @@ func TestHandlerBotMessageSkipping(t *testing.T) {
 		ChannelID: "chan123",
 		GuildID:   "guild123",
 		Author: User{
-			ID:       "bot",
-			Username: "DiscordBot",
+			ID:       "123456789",
+			Username: "PilotBot",
+			Bot:      true,
 		},
 		Content: "Some bot message",
 	}

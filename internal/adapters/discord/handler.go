@@ -169,8 +169,8 @@ func (h *Handler) handleMessageCreate(ctx context.Context, event *GatewayEvent) 
 		return
 	}
 
-	// Ignore bot messages
-	if msg.Author.ID == "bot" { // In real Discord, this would be checked against bot's own ID
+	// Ignore bot messages (including our own)
+	if msg.Author.Bot {
 		return
 	}
 
