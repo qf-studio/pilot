@@ -480,6 +480,13 @@ type ClaudeCodeConfig struct {
 	// linked to the original PR, giving Claude full context of previous changes.
 	// Default: false
 	UseFromPR bool `yaml:"use_from_pr,omitempty"`
+
+	// Disable1MContext opts out of 1M context (sets CLAUDE_CODE_DISABLE_1M_CONTEXT=1).
+	// When true, forces 200K context window. Default false = use Claude Code defaults.
+	Disable1MContext bool `yaml:"disable_1m_context,omitempty"`
+
+	// MaxOutputTokens sets CLAUDE_CODE_MAX_OUTPUT_TOKENS. Default 0 = Claude Code default (32K).
+	MaxOutputTokens int `yaml:"max_output_tokens,omitempty"`
 }
 
 // QwenCodeConfig contains Qwen Code backend configuration.

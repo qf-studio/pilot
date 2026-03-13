@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -309,6 +310,18 @@ func (b *ClaudeCodeBackend) executeWithFromPR(ctx context.Context, opts ExecuteO
 
 	cmd := exec.CommandContext(ctx, b.config.Command, args...)
 	cmd.Dir = opts.ProjectPath
+
+	// Pass context window and output token env vars if configured (GH-2163).
+	if b.config.Disable1MContext || b.config.MaxOutputTokens > 0 {
+		env := os.Environ()
+		if b.config.Disable1MContext {
+			env = append(env, "CLAUDE_CODE_DISABLE_1M_CONTEXT=1")
+		}
+		if b.config.MaxOutputTokens > 0 {
+			env = append(env, fmt.Sprintf("CLAUDE_CODE_MAX_OUTPUT_TOKENS=%d", b.config.MaxOutputTokens))
+		}
+		cmd.Env = env
+	}
 
 	b.log.Debug("Starting Claude Code",
 		slog.String("command", b.config.Command),

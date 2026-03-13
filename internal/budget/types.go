@@ -58,8 +58,8 @@ func DefaultConfig() *Config {
 		DailyLimit:   50.00,
 		MonthlyLimit: 500.00,
 		PerTask: PerTaskConfig{
-			MaxTokens:   100000,
-			MaxDuration: 30 * time.Minute,
+			MaxTokens:   500000,
+			MaxDuration: 60 * time.Minute,
 		},
 		OnExceed: ExceedAction{
 			Daily:   ActionPause,

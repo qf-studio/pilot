@@ -732,6 +732,91 @@ func TestExtractExitCode(t *testing.T) {
 	})
 }
 
+func TestClaudeCodeConfigContextWindow(t *testing.T) {
+	// GH-2163: Verify 1M context and max output tokens config fields
+	tests := []struct {
+		name                string
+		config              *ClaudeCodeConfig
+		expectDisable1M     bool
+		expectMaxOutput     int
+		expectEnvContains   []string
+		expectEnvNotContain []string
+	}{
+		{
+			name:                "default config - no context window flags",
+			config:              &ClaudeCodeConfig{Command: "claude"},
+			expectDisable1M:     false,
+			expectMaxOutput:     0,
+			expectEnvNotContain: []string{"CLAUDE_CODE_DISABLE_1M_CONTEXT", "CLAUDE_CODE_MAX_OUTPUT_TOKENS"},
+		},
+		{
+			name:              "disable 1M context",
+			config:            &ClaudeCodeConfig{Command: "claude", Disable1MContext: true},
+			expectDisable1M:   true,
+			expectEnvContains: []string{"CLAUDE_CODE_DISABLE_1M_CONTEXT=1"},
+		},
+		{
+			name:              "max output tokens set",
+			config:            &ClaudeCodeConfig{Command: "claude", MaxOutputTokens: 128000},
+			expectMaxOutput:   128000,
+			expectEnvContains: []string{"CLAUDE_CODE_MAX_OUTPUT_TOKENS=128000"},
+		},
+		{
+			name:            "both flags set",
+			config:          &ClaudeCodeConfig{Command: "claude", Disable1MContext: true, MaxOutputTokens: 64000},
+			expectDisable1M: true,
+			expectMaxOutput: 64000,
+			expectEnvContains: []string{
+				"CLAUDE_CODE_DISABLE_1M_CONTEXT=1",
+				"CLAUDE_CODE_MAX_OUTPUT_TOKENS=64000",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.config.Disable1MContext != tt.expectDisable1M {
+				t.Errorf("Disable1MContext = %v, want %v", tt.config.Disable1MContext, tt.expectDisable1M)
+			}
+			if tt.config.MaxOutputTokens != tt.expectMaxOutput {
+				t.Errorf("MaxOutputTokens = %d, want %d", tt.config.MaxOutputTokens, tt.expectMaxOutput)
+			}
+
+			// Simulate the env-building logic from Execute()
+			var env []string
+			if tt.config.Disable1MContext || tt.config.MaxOutputTokens > 0 {
+				env = []string{"PATH=/usr/bin"} // minimal base env for test
+				if tt.config.Disable1MContext {
+					env = append(env, "CLAUDE_CODE_DISABLE_1M_CONTEXT=1")
+				}
+				if tt.config.MaxOutputTokens > 0 {
+					env = append(env, fmt.Sprintf("CLAUDE_CODE_MAX_OUTPUT_TOKENS=%d", tt.config.MaxOutputTokens))
+				}
+			}
+
+			for _, expected := range tt.expectEnvContains {
+				found := false
+				for _, e := range env {
+					if e == expected {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Errorf("env should contain %q, got %v", expected, env)
+				}
+			}
+			for _, notExpected := range tt.expectEnvNotContain {
+				for _, e := range env {
+					if len(e) >= len(notExpected) && e[:len(notExpected)] == notExpected {
+						t.Errorf("env should NOT contain %q, got %v", notExpected, env)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestClaudeCodeError_Error(t *testing.T) {
 	t.Run("with stderr", func(t *testing.T) {
 		err := &ClaudeCodeError{

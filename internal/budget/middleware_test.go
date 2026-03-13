@@ -200,12 +200,12 @@ func TestDefaultConfig(t *testing.T) {
 		t.Errorf("expected MonthlyLimit 500.00, got %v", config.MonthlyLimit)
 	}
 
-	if config.PerTask.MaxTokens != 100000 {
-		t.Errorf("expected PerTask.MaxTokens 100000, got %v", config.PerTask.MaxTokens)
+	if config.PerTask.MaxTokens != 500000 {
+		t.Errorf("expected PerTask.MaxTokens 500000, got %v", config.PerTask.MaxTokens)
 	}
 
-	if config.PerTask.MaxDuration != 30*time.Minute {
-		t.Errorf("expected PerTask.MaxDuration 30m, got %v", config.PerTask.MaxDuration)
+	if config.PerTask.MaxDuration != 60*time.Minute {
+		t.Errorf("expected PerTask.MaxDuration 60m, got %v", config.PerTask.MaxDuration)
 	}
 
 	if config.OnExceed.Daily != ActionPause {

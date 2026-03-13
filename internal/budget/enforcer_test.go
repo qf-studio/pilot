@@ -42,6 +42,17 @@ func (m *mockUsageProvider) Reset() {
 	m.mu.Unlock()
 }
 
+func TestDefaultConfig_BudgetDefaults(t *testing.T) {
+	// GH-2163: Budget defaults updated for 1M context window
+	cfg := DefaultConfig()
+	if cfg.PerTask.MaxTokens != 500000 {
+		t.Errorf("PerTask.MaxTokens = %d, want 500000", cfg.PerTask.MaxTokens)
+	}
+	if cfg.PerTask.MaxDuration != 60*time.Minute {
+		t.Errorf("PerTask.MaxDuration = %v, want 60m", cfg.PerTask.MaxDuration)
+	}
+}
+
 func TestEnforcer_CheckBudget_Disabled(t *testing.T) {
 	config := &Config{
 		Enabled: false,
