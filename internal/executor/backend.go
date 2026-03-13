@@ -104,6 +104,12 @@ type BackendEvent struct {
 	// TokensOutput is the output token count (if available)
 	TokensOutput int64
 
+	// CacheCreationInputTokens is the cache creation input token count (GH-2164)
+	CacheCreationInputTokens int64
+
+	// CacheReadInputTokens is the cache read input token count (GH-2164)
+	CacheReadInputTokens int64
+
 	// Model is the model name used (if available)
 	Model string
 
@@ -165,6 +171,12 @@ type BackendResult struct {
 
 	// TokensOutput is the total output tokens generated
 	TokensOutput int64
+
+	// CacheCreationInputTokens is the total cache creation input tokens (GH-2164)
+	CacheCreationInputTokens int64
+
+	// CacheReadInputTokens is the total cache read input tokens (GH-2164)
+	CacheReadInputTokens int64
 
 	// Model is the model used for execution
 	Model string

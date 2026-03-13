@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -806,6 +807,147 @@ func TestEstimateCost(t *testing.T) {
 				t.Errorf("estimateCost() = %f, want between %f and %f", cost, tt.minCost, tt.maxCost)
 			}
 		})
+	}
+}
+
+func TestEstimateCostWithCache(t *testing.T) {
+	tests := []struct {
+		name          string
+		input         int64
+		output        int64
+		cacheCreation int64
+		cacheRead     int64
+		model         string
+		minCost       float64
+		maxCost       float64
+	}{
+		{
+			name:          "no cache tokens matches estimateCost",
+			input:         1000000,
+			output:        100000,
+			cacheCreation: 0,
+			cacheRead:     0,
+			model:         "claude-sonnet-4-6",
+			minCost:       4.49, // 3.0 + 1.5
+			maxCost:       4.51,
+		},
+		{
+			name:          "sonnet cache creation 1M tokens at 125% of input price",
+			input:         0,
+			output:        0,
+			cacheCreation: 1000000,
+			cacheRead:     0,
+			model:         "claude-sonnet-4-6",
+			minCost:       3.74, // 3.00 * 1.25 = 3.75
+			maxCost:       3.76,
+		},
+		{
+			name:          "sonnet cache read 1M tokens at 10% of input price",
+			input:         0,
+			output:        0,
+			cacheCreation: 0,
+			cacheRead:     1000000,
+			model:         "claude-sonnet-4-6",
+			minCost:       0.29, // 3.00 * 0.10 = 0.30
+			maxCost:       0.31,
+		},
+		{
+			name:          "opus cache creation 1M tokens",
+			input:         0,
+			output:        0,
+			cacheCreation: 1000000,
+			cacheRead:     0,
+			model:         "claude-opus-4-6",
+			minCost:       6.24, // 5.00 * 1.25 = 6.25
+			maxCost:       6.26,
+		},
+		{
+			name:          "opus cache read 1M tokens",
+			input:         0,
+			output:        0,
+			cacheCreation: 0,
+			cacheRead:     1000000,
+			model:         "claude-opus-4-6",
+			minCost:       0.49, // 5.00 * 0.10 = 0.50
+			maxCost:       0.51,
+		},
+		{
+			name:          "mixed usage with cache - realistic scenario",
+			input:         50000,  // 50K regular input
+			output:        20000,  // 20K output
+			cacheCreation: 100000, // 100K cache write
+			cacheRead:     800000, // 800K cache read (typical with 1M context)
+			model:         "claude-sonnet-4-6",
+			// input: 50000 * 3.00 / 1M = 0.15
+			// output: 20000 * 15.00 / 1M = 0.30
+			// cache_create: 100000 * 3.75 / 1M = 0.375
+			// cache_read: 800000 * 0.30 / 1M = 0.24
+			minCost: 1.06,
+			maxCost: 1.07,
+		},
+		{
+			name:          "backward compat: estimateCost equals estimateCostWithCache(0,0)",
+			input:         500000,
+			output:        100000,
+			cacheCreation: 0,
+			cacheRead:     0,
+			model:         "claude-opus-4-6",
+			minCost:       4.99, // 500K * 5/1M + 100K * 25/1M = 2.5 + 2.5
+			maxCost:       5.01,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cost := estimateCostWithCache(tt.input, tt.output, tt.cacheCreation, tt.cacheRead, tt.model)
+			if cost < tt.minCost || cost > tt.maxCost {
+				t.Errorf("estimateCostWithCache() = %f, want between %f and %f", cost, tt.minCost, tt.maxCost)
+			}
+		})
+	}
+
+	// Verify backward compatibility: estimateCost == estimateCostWithCache with zero cache
+	t.Run("backward_compat_wrapper", func(t *testing.T) {
+		old := estimateCost(1000000, 500000, "claude-opus-4-6")
+		new := estimateCostWithCache(1000000, 500000, 0, 0, "claude-opus-4-6")
+		if old != new {
+			t.Errorf("estimateCost(%f) != estimateCostWithCache(%f) — backward compat broken", old, new)
+		}
+	})
+}
+
+func TestUsageInfoCacheFields(t *testing.T) {
+	// Verify UsageInfo correctly unmarshals cache token fields from stream-json
+	jsonStr := `{"input_tokens": 1000, "output_tokens": 500, "cache_creation_input_tokens": 200, "cache_read_input_tokens": 800}`
+	var usage UsageInfo
+	if err := json.Unmarshal([]byte(jsonStr), &usage); err != nil {
+		t.Fatalf("Failed to unmarshal UsageInfo: %v", err)
+	}
+	if usage.InputTokens != 1000 {
+		t.Errorf("InputTokens = %d, want 1000", usage.InputTokens)
+	}
+	if usage.OutputTokens != 500 {
+		t.Errorf("OutputTokens = %d, want 500", usage.OutputTokens)
+	}
+	if usage.CacheCreationInputTokens != 200 {
+		t.Errorf("CacheCreationInputTokens = %d, want 200", usage.CacheCreationInputTokens)
+	}
+	if usage.CacheReadInputTokens != 800 {
+		t.Errorf("CacheReadInputTokens = %d, want 800", usage.CacheReadInputTokens)
+	}
+
+	// Verify omitempty: zero cache fields should not appear in JSON
+	usage2 := UsageInfo{InputTokens: 100, OutputTokens: 50}
+	data, err := json.Marshal(usage2)
+	if err != nil {
+		t.Fatalf("Failed to marshal UsageInfo: %v", err)
+	}
+	str := string(data)
+	if strings.Contains(str, "cache_creation") {
+		t.Errorf("Zero cache_creation should be omitted, got: %s", str)
+	}
+	if strings.Contains(str, "cache_read") {
+		t.Errorf("Zero cache_read should be omitted, got: %s", str)
 	}
 }
 

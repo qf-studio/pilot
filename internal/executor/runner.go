@@ -40,8 +40,10 @@ type StreamEvent struct {
 
 // UsageInfo represents token usage in stream events
 type UsageInfo struct {
-	InputTokens  int64 `json:"input_tokens"`
-	OutputTokens int64 `json:"output_tokens"`
+	InputTokens              int64 `json:"input_tokens"`
+	OutputTokens             int64 `json:"output_tokens"`
+	CacheCreationInputTokens int64 `json:"cache_creation_input_tokens,omitempty"`
+	CacheReadInputTokens     int64 `json:"cache_read_input_tokens,omitempty"`
 }
 
 // AssistantMsg represents the message field in assistant events
@@ -82,9 +84,11 @@ type progressState struct {
 	exitSignal   bool     // Navigator EXIT_SIGNAL detected
 	commitSHAs   []string // Extracted commit SHAs from git output
 	// Metrics tracking (TASK-13)
-	tokensInput  int64  // Input tokens used
-	tokensOutput int64  // Output tokens used
-	modelName    string // Model used
+	tokensInput              int64  // Input tokens used
+	tokensOutput             int64  // Output tokens used
+	cacheCreationInputTokens int64  // Cache creation input tokens (GH-2164)
+	cacheReadInputTokens     int64  // Cache read input tokens (GH-2164)
+	modelName                string // Model used
 	// Note: filesChanged/linesAdded/linesRemoved tracked via git diff at commit time
 	// Intent judge retry tracking (GH-624)
 	intentRetried bool // Set after first intent retry to prevent infinite loops
@@ -214,6 +218,10 @@ type ExecutionResult struct {
 	TokensOutput int64
 	// TokensTotal is the total token count (input + output).
 	TokensTotal int64
+	// CacheCreationInputTokens is the number of cache creation input tokens (GH-2164).
+	CacheCreationInputTokens int64
+	// CacheReadInputTokens is the number of cache read input tokens (GH-2164).
+	CacheReadInputTokens int64
 	// ResearchTokens is the number of tokens used by parallel research phase (GH-217).
 	ResearchTokens int64
 	// EstimatedCostUSD is the estimated cost in USD based on token usage.
@@ -1452,11 +1460,13 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 			result.TokensInput = state.tokensInput
 			result.TokensOutput = state.tokensOutput
 			result.TokensTotal = state.tokensInput + state.tokensOutput
+			result.CacheCreationInputTokens = state.cacheCreationInputTokens
+			result.CacheReadInputTokens = state.cacheReadInputTokens
 			result.ModelName = state.modelName
 			if result.ModelName == "" {
 				result.ModelName = "claude-opus-4-6"
 			}
-			result.EstimatedCostUSD = estimateCost(result.TokensInput, result.TokensOutput, result.ModelName)
+			result.EstimatedCostUSD = estimateCostWithCache(result.TokensInput, result.TokensOutput, result.CacheCreationInputTokens, result.CacheReadInputTokens, result.ModelName)
 			log.Warn("Task cancelled due to per-task budget limit",
 				slog.String("task_id", task.ID),
 				slog.String("reason", state.budgetReason),
@@ -1789,14 +1799,16 @@ retrySucceeded:
 
 	// Fill in additional metrics from state
 	result.FilesChanged = state.filesWrite
+	result.CacheCreationInputTokens = state.cacheCreationInputTokens
+	result.CacheReadInputTokens = state.cacheReadInputTokens
 	if result.ModelName == "" {
 		result.ModelName = state.modelName
 	}
 	if result.ModelName == "" {
 		result.ModelName = "claude-opus-4-6" // Default model
 	}
-	// Estimate cost based on token usage (including research tokens)
-	result.EstimatedCostUSD = estimateCost(result.TokensInput+result.ResearchTokens, result.TokensOutput, result.ModelName)
+	// Estimate cost based on token usage (including research tokens) with cache-aware pricing (GH-2164)
+	result.EstimatedCostUSD = estimateCostWithCache(result.TokensInput+result.ResearchTokens, result.TokensOutput, result.CacheCreationInputTokens, result.CacheReadInputTokens, result.ModelName)
 
 	if !result.Success {
 		log.Error("Task execution failed",
@@ -1913,6 +1925,8 @@ The previous execution completed but made no code changes. This task requires ac
 						// Track tokens from retry
 						state.tokensInput += event.TokensInput
 						state.tokensOutput += event.TokensOutput
+						state.cacheCreationInputTokens += event.CacheCreationInputTokens
+						state.cacheReadInputTokens += event.CacheReadInputTokens
 						// Extract any commit SHAs from retry
 						if event.Type == EventTypeToolResult && event.ToolResult != "" {
 							extractCommitSHA(event.ToolResult, state)
@@ -2407,6 +2421,8 @@ The previous execution completed but made no code changes. This task requires ac
 						EventHandler: func(event BackendEvent) {
 							state.tokensInput += event.TokensInput
 							state.tokensOutput += event.TokensOutput
+							state.cacheCreationInputTokens += event.CacheCreationInputTokens
+							state.cacheReadInputTokens += event.CacheReadInputTokens
 							if event.Type == EventTypeToolResult && event.ToolResult != "" {
 								extractCommitSHA(event.ToolResult, state)
 							}
@@ -2952,6 +2968,8 @@ func (r *Runner) runSelfReview(ctx context.Context, task *Task, state *progressS
 			// Track tokens from self-review
 			state.tokensInput += event.TokensInput
 			state.tokensOutput += event.TokensOutput
+			state.cacheCreationInputTokens += event.CacheCreationInputTokens
+			state.cacheReadInputTokens += event.CacheReadInputTokens
 			// Extract any new commit SHAs from self-review fixes
 			if event.Type == EventTypeToolResult && event.ToolResult != "" {
 				extractCommitSHA(event.ToolResult, state)
@@ -3058,6 +3076,8 @@ func (r *Runner) parseStreamEvent(taskID, line string, state *progressState) (st
 		if event.Usage != nil {
 			state.tokensInput += event.Usage.InputTokens
 			state.tokensOutput += event.Usage.OutputTokens
+			state.cacheCreationInputTokens += event.Usage.CacheCreationInputTokens
+			state.cacheReadInputTokens += event.Usage.CacheReadInputTokens
 		}
 		if event.Model != "" {
 			state.modelName = event.Model
@@ -3078,6 +3098,8 @@ func (r *Runner) parseStreamEvent(taskID, line string, state *progressState) (st
 	if event.Usage != nil {
 		state.tokensInput += event.Usage.InputTokens
 		state.tokensOutput += event.Usage.OutputTokens
+		state.cacheCreationInputTokens += event.Usage.CacheCreationInputTokens
+		state.cacheReadInputTokens += event.Usage.CacheReadInputTokens
 		// Report token usage to callbacks (e.g., dashboard)
 		r.reportTokens(taskID, state.tokensInput, state.tokensOutput)
 	}
@@ -3094,6 +3116,8 @@ func (r *Runner) processBackendEvent(taskID string, event BackendEvent, state *p
 	// Track token usage
 	state.tokensInput += event.TokensInput
 	state.tokensOutput += event.TokensOutput
+	state.cacheCreationInputTokens += event.CacheCreationInputTokens
+	state.cacheReadInputTokens += event.CacheReadInputTokens
 	if event.Model != "" {
 		state.modelName = event.Model
 	}
@@ -3668,9 +3692,9 @@ func isValidSHA(s string) bool {
 	return true
 }
 
-// estimateCost calculates estimated cost from token usage (TASK-13)
+// modelPricing returns (inputPrice, outputPrice) in USD per 1M tokens for the given model.
 // Pricing source: https://platform.claude.com/docs/en/about-claude/pricing
-func estimateCost(inputTokens, outputTokens int64, model string) float64 {
+func modelPricing(model string) (inputPrice, outputPrice float64) {
 	// Model pricing in USD per 1M tokens
 	const (
 		// Sonnet 4.6/4.5/4
@@ -3687,41 +3711,48 @@ func estimateCost(inputTokens, outputTokens int64, model string) float64 {
 		haikuOutputPrice = 5.00
 	)
 
-	var inputPrice, outputPrice float64
 	modelLower := strings.ToLower(model)
 	switch {
 	case strings.Contains(modelLower, "opus-4-1") || strings.Contains(modelLower, "opus-4-0") || model == "claude-opus-4":
 		// Legacy Opus 4.1/4.0
-		inputPrice = opus41InputPrice
-		outputPrice = opus41OutputPrice
+		return opus41InputPrice, opus41OutputPrice
 	case strings.Contains(modelLower, "opus"):
 		// Opus 4.6/4.5 ($5/$25)
-		inputPrice = opusInputPrice
-		outputPrice = opusOutputPrice
+		return opusInputPrice, opusOutputPrice
 	case strings.Contains(modelLower, "haiku"):
-		inputPrice = haikuInputPrice
-		outputPrice = haikuOutputPrice
+		return haikuInputPrice, haikuOutputPrice
 	case strings.Contains(modelLower, "qwen"):
 		// Qwen3-Coder pricing (per 1M tokens)
 		switch {
 		case strings.Contains(modelLower, "480b") || strings.Contains(modelLower, "plus"):
-			inputPrice = 1.00  // Qwen3-Coder-Plus (International, 0-32K)
-			outputPrice = 5.00
+			return 1.00, 5.00 // Qwen3-Coder-Plus (International, 0-32K)
 		case strings.Contains(modelLower, "flash"):
-			inputPrice = 0.30
-			outputPrice = 1.50
+			return 0.30, 1.50
 		default:
-			inputPrice = 0.07  // Qwen3-Coder-Next (default)
-			outputPrice = 0.30
+			return 0.07, 0.30 // Qwen3-Coder-Next (default)
 		}
 	default:
-		inputPrice = sonnetInputPrice
-		outputPrice = sonnetOutputPrice
+		return sonnetInputPrice, sonnetOutputPrice
 	}
+}
 
-	inputCost := float64(inputTokens) * inputPrice / 1_000_000
-	outputCost := float64(outputTokens) * outputPrice / 1_000_000
-	return inputCost + outputCost
+// estimateCost calculates estimated cost from token usage (TASK-13).
+// Backward-compatible wrapper — treats all input tokens at full price.
+func estimateCost(inputTokens, outputTokens int64, model string) float64 {
+	return estimateCostWithCache(inputTokens, outputTokens, 0, 0, model)
+}
+
+// estimateCostWithCache calculates estimated cost with cache-aware pricing (GH-2164).
+// Cache creation tokens cost 125% of input price, cache read tokens cost 10%.
+// Pricing source: https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching#pricing
+func estimateCostWithCache(input, output, cacheCreation, cacheRead int64, model string) float64 {
+	inputPrice, outputPrice := modelPricing(model)
+
+	inputCost := float64(input) * inputPrice / 1_000_000
+	outputCost := float64(output) * outputPrice / 1_000_000
+	cacheCreateCost := float64(cacheCreation) * (inputPrice * 1.25) / 1_000_000
+	cacheReadCost := float64(cacheRead) * (inputPrice * 0.10) / 1_000_000
+	return inputCost + outputCost + cacheCreateCost + cacheReadCost
 }
 
 // emitAlertEvent sends an event to the alert processor if configured

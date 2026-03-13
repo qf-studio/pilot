@@ -29,6 +29,12 @@ type ExecutionMetrics struct {
 	// TokensOut is the number of output tokens generated
 	TokensOut int64
 
+	// CacheCreationTokens is the number of cache creation input tokens (GH-2164)
+	CacheCreationTokens int64
+
+	// CacheReadTokens is the number of cache read input tokens (GH-2164)
+	CacheReadTokens int64
+
 	// EstimatedCostUSD is the estimated cost based on model and token usage
 	EstimatedCostUSD float64
 
@@ -61,6 +67,8 @@ func (m *ExecutionMetrics) LogAttrs() []slog.Attr {
 		slog.Bool("navigator_skipped", m.NavigatorSkipped),
 		slog.Int64("tokens_in", m.TokensIn),
 		slog.Int64("tokens_out", m.TokensOut),
+		slog.Int64("cache_creation_tokens", m.CacheCreationTokens),
+		slog.Int64("cache_read_tokens", m.CacheReadTokens),
 		slog.Float64("cost_usd", m.EstimatedCostUSD),
 		slog.String("phase", m.Phase),
 		slog.Int("files_read", m.FilesRead),
@@ -92,9 +100,11 @@ func NewExecutionMetrics(
 		Model:            model,
 		Duration:         duration,
 		NavigatorSkipped: complexity.ShouldSkipNavigator(),
-		TokensIn:         state.tokensInput,
-		TokensOut:        state.tokensOutput,
-		EstimatedCostUSD: estimateCost(state.tokensInput, state.tokensOutput, model),
+		TokensIn:            state.tokensInput,
+		TokensOut:           state.tokensOutput,
+		CacheCreationTokens: state.cacheCreationInputTokens,
+		CacheReadTokens:     state.cacheReadInputTokens,
+		EstimatedCostUSD:    estimateCostWithCache(state.tokensInput, state.tokensOutput, state.cacheCreationInputTokens, state.cacheReadInputTokens, model),
 		Phase:            state.phase,
 		FilesRead:        state.filesRead,
 		FilesWritten:     state.filesWrite,

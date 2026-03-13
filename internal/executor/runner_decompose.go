@@ -141,6 +141,8 @@ func (r *Runner) executeDecomposedTask(ctx context.Context, parentTask *Task, su
 		aggregateResult.TokensInput += subtaskResult.TokensInput
 		aggregateResult.TokensOutput += subtaskResult.TokensOutput
 		aggregateResult.TokensTotal += subtaskResult.TokensTotal
+		aggregateResult.CacheCreationInputTokens += subtaskResult.CacheCreationInputTokens
+		aggregateResult.CacheReadInputTokens += subtaskResult.CacheReadInputTokens
 		aggregateResult.ResearchTokens += subtaskResult.ResearchTokens
 		aggregateResult.FilesChanged += subtaskResult.FilesChanged
 		aggregateResult.LinesAdded += subtaskResult.LinesAdded
@@ -170,9 +172,11 @@ func (r *Runner) executeDecomposedTask(ctx context.Context, parentTask *Task, su
 	}
 
 	aggregateResult.Duration = time.Since(start)
-	aggregateResult.EstimatedCostUSD = estimateCost(
+	aggregateResult.EstimatedCostUSD = estimateCostWithCache(
 		aggregateResult.TokensInput+aggregateResult.ResearchTokens,
 		aggregateResult.TokensOutput,
+		aggregateResult.CacheCreationInputTokens,
+		aggregateResult.CacheReadInputTokens,
 		aggregateResult.ModelName,
 	)
 
