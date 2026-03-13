@@ -199,6 +199,46 @@ func (c *Client) CheckSingleton(ctx context.Context) error {
 	return nil
 }
 
+// GetMeResponse represents the response from getMe
+type GetMeResponse struct {
+	OK          bool   `json:"ok"`
+	Result      *User  `json:"result,omitempty"`
+	Description string `json:"description,omitempty"`
+	ErrorCode   int    `json:"error_code,omitempty"`
+}
+
+// GetMe returns the bot's user info from the Telegram API.
+func (c *Client) GetMe(ctx context.Context) (*User, error) {
+	url := fmt.Sprintf("%s%s/getMe", c.baseURL, c.botToken)
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("failed to call getMe: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	var result GetMeResponse
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	if !result.OK {
+		return nil, fmt.Errorf("telegram API error: %s (code: %d)", result.Description, result.ErrorCode)
+	}
+
+	return result.Result, nil
+}
+
 // GetUpdates retrieves updates using long polling
 func (c *Client) GetUpdates(ctx context.Context, offset int64, timeout int) ([]*Update, error) {
 	url := fmt.Sprintf("%s%s/getUpdates?offset=%d&timeout=%d", c.baseURL, c.botToken, offset, timeout)

@@ -72,6 +72,7 @@ type Handler struct {
 	conversationStore *intent.ConversationStore // Conversation history per chat (optional)
 	memberResolver    MemberResolver         // Team member resolver for RBAC (optional, GH-634)
 	lastSender        map[string]int64       // chatID -> last sender Telegram user ID (GH-634)
+	botUsername       string                 // Bot username for mention stripping (GH-2129)
 }
 
 // HandlerConfig holds configuration for the Telegram handler
@@ -230,6 +231,14 @@ func (h *Handler) CheckSingleton(ctx context.Context) error {
 
 // StartPolling starts polling for updates in a goroutine
 func (h *Handler) StartPolling(ctx context.Context) {
+	// Fetch bot username for mention stripping (GH-2129)
+	if me, err := h.client.GetMe(ctx); err != nil {
+		logging.WithComponent("telegram").Warn("Failed to fetch bot username via getMe", slog.String("error", err.Error()))
+	} else if me != nil {
+		h.botUsername = me.Username
+		logging.WithComponent("telegram").Debug("Bot username resolved", slog.String("username", me.Username))
+	}
+
 	h.wg.Add(1)
 	go h.pollLoop(ctx)
 
@@ -387,6 +396,7 @@ func (h *Handler) processUpdate(ctx context.Context, update *Update) {
 	}
 
 	text := strings.TrimSpace(msg.Text)
+	text = stripBotMention(text, h.botUsername)
 
 	// Check for confirmation responses
 	textLower := strings.ToLower(text)
@@ -1591,6 +1601,18 @@ func (h *Handler) tryFastAnswer(question string) string {
 	}
 
 	return "" // Fall back to Claude
+}
+
+// stripBotMention removes a leading @username mention from message text (GH-2129).
+func stripBotMention(text, botUsername string) string {
+	if botUsername == "" {
+		return text
+	}
+	prefix := "@" + botUsername
+	if len(text) >= len(prefix) && strings.EqualFold(text[:len(prefix)], prefix) {
+		text = strings.TrimSpace(text[len(prefix):])
+	}
+	return text
 }
 
 // containsAny returns true if s contains any of the substrings

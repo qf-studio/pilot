@@ -1606,3 +1606,28 @@ func TestPlanEmptyMessage(t *testing.T) {
 		})
 	}
 }
+
+func TestStripBotMention(t *testing.T) {
+	tests := []struct {
+		name        string
+		text        string
+		botUsername string
+		want        string
+	}{
+		{"with mention", "@PilotBot hi", "PilotBot", "hi"},
+		{"no mention", "hi", "PilotBot", "hi"},
+		{"mention only", "@PilotBot", "PilotBot", ""},
+		{"case insensitive", "@pilotbot hi", "PilotBot", "hi"},
+		{"empty username", "@PilotBot hi", "", "@PilotBot hi"},
+		{"mention with extra spaces", "@PilotBot   hello world", "PilotBot", "hello world"},
+		{"mention mid-text", "hey @PilotBot hi", "PilotBot", "hey @PilotBot hi"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := stripBotMention(tt.text, tt.botUsername)
+			if got != tt.want {
+				t.Errorf("stripBotMention(%q, %q) = %q, want %q", tt.text, tt.botUsername, got, tt.want)
+			}
+		})
+	}
+}
