@@ -84,7 +84,12 @@ func (m *AutoMerger) MergePR(ctx context.Context, prState *PRState) error {
 	}
 
 	// Merge the PR
+	// For squash merges, use PR title as commit message to preserve conventional commit prefixes
+	// (e.g. "feat(scope): ...") so parseBumpFromMessage() can detect release bumps.
 	commitTitle := fmt.Sprintf("Merge PR #%d", prState.PRNumber)
+	if mergeMethod == github.MergeMethodSquash && prState.PRTitle != "" {
+		commitTitle = prState.PRTitle
+	}
 	if err := m.ghClient.MergePullRequest(ctx, m.owner, m.repo, prState.PRNumber, mergeMethod, commitTitle); err != nil {
 		return fmt.Errorf("merge failed: %w", err)
 	}
