@@ -821,8 +821,8 @@ func TestCleanupOrphanedWorktrees(t *testing.T) {
 	// Run cleanup
 	err := CleanupOrphanedWorktrees(ctx, repoPath)
 	if err != nil {
-		// Error should report number of cleaned directories
-		if !strings.Contains(err.Error(), "cleaned up") {
+		// Error should report number of cleaned directories and freed space
+		if !strings.Contains(err.Error(), "cleaned up") || !strings.Contains(err.Error(), "MB") {
 			t.Errorf("unexpected error format: %v", err)
 		}
 	}
@@ -844,7 +844,9 @@ func TestCleanupOrphanedWorktrees(t *testing.T) {
 	_ = os.RemoveAll(orphan3)
 }
 
-// TestCleanupOrphanedWorktrees_ValidWorktree tests that valid worktrees connected to our repo are handled properly
+// TestCleanupOrphanedWorktrees_ValidWorktree tests GH-2168: valid worktrees connected
+// to our repo ARE removed at startup — after OOM/SIGKILL, defer never runs so the
+// worktree is valid but stale. At startup all non-pool pilot worktrees are stale.
 func TestCleanupOrphanedWorktrees_ValidWorktree(t *testing.T) {
 	repoPath := setupTestRepo(t)
 	defer func() { _ = os.RemoveAll(repoPath) }()
@@ -852,8 +854,8 @@ func TestCleanupOrphanedWorktrees_ValidWorktree(t *testing.T) {
 	ctx := context.Background()
 	manager := NewWorktreeManager(repoPath)
 
-	// Create a valid worktree
-	result, err := manager.CreateWorktree(ctx, "valid-task")
+	// Create a valid worktree (simulates OOM scenario: worktree exists, .git reference valid)
+	result, err := manager.CreateWorktree(ctx, "oom-task")
 	if err != nil {
 		t.Fatalf("failed to create worktree: %v", err)
 	}
@@ -863,19 +865,48 @@ func TestCleanupOrphanedWorktrees_ValidWorktree(t *testing.T) {
 		t.Skipf("worktree path doesn't match expected pattern: %s", result.Path)
 	}
 
-	// Run cleanup - should not remove the valid worktree that has proper .git connection
-	err = CleanupOrphanedWorktrees(ctx, repoPath)
-	if err != nil && !strings.Contains(err.Error(), "cleaned up 0") {
-		t.Logf("cleanup result: %v", err) // Log but don't fail - valid worktrees might be detected differently
-	}
-
-	// Verify valid worktree still exists and is functional
+	// Verify it exists before cleanup
 	if _, statErr := os.Stat(result.Path); statErr != nil {
-		t.Errorf("valid worktree should not be removed: %v", statErr)
+		t.Fatalf("worktree should exist before cleanup: %v", statErr)
 	}
 
-	// Cleanup properly
-	result.Cleanup()
+	// Run cleanup — GH-2168: should remove valid-but-stale worktrees at startup
+	err = CleanupOrphanedWorktrees(ctx, repoPath)
+	if err == nil {
+		t.Error("cleanup should report removed worktrees")
+	} else if !strings.Contains(err.Error(), "cleaned up") {
+		t.Errorf("unexpected error format: %v", err)
+	}
+
+	// Verify the valid worktree was removed (it's stale at startup)
+	if _, statErr := os.Stat(result.Path); !os.IsNotExist(statErr) {
+		t.Error("stale worktree should be removed after startup cleanup")
+	}
+}
+
+// TestCleanupOrphanedWorktrees_PoolSkipped tests GH-2168: pool worktrees are NOT
+// removed by startup cleanup — they are managed by WorktreeManager.Close().
+func TestCleanupOrphanedWorktrees_PoolSkipped(t *testing.T) {
+	repoPath := setupTestRepo(t)
+	defer func() { _ = os.RemoveAll(repoPath) }()
+
+	ctx := context.Background()
+	tmpDir := os.TempDir()
+
+	// Create a fake pool worktree directory
+	poolDir := filepath.Join(tmpDir, "pilot-worktree-pool-0")
+	if err := os.MkdirAll(poolDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.RemoveAll(poolDir) }()
+
+	// Run cleanup
+	_ = CleanupOrphanedWorktrees(ctx, repoPath)
+
+	// Pool worktree should NOT be removed
+	if _, err := os.Stat(poolDir); os.IsNotExist(err) {
+		t.Error("pool worktree should not be removed by startup cleanup")
+	}
 }
 
 // TestCleanupOrphanedWorktrees_EmptyTmp tests behavior when /tmp/ has no pilot worktrees
