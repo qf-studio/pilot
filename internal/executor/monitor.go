@@ -33,6 +33,8 @@ type TaskState struct {
 	Error       string
 	PRUrl       string
 	IssueURL    string
+	ProjectPath string // Resolved project directory for this task (GH-2167)
+	ProjectName string // Short project name for display (GH-2167)
 }
 
 // Monitor tracks task execution progress
@@ -60,6 +62,17 @@ func (m *Monitor) Register(taskID, title, issueURL string) {
 		Phase:    "Pending",
 		Progress: 0,
 		IssueURL: issueURL,
+	}
+}
+
+// SetProjectInfo sets the project path and name for a task (GH-2167).
+func (m *Monitor) SetProjectInfo(taskID, projectPath, projectName string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if state, ok := m.tasks[taskID]; ok {
+		state.ProjectPath = projectPath
+		state.ProjectName = projectName
 	}
 }
 

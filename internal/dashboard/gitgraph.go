@@ -484,10 +484,13 @@ func (m Model) renderGitGraph(opts ...int) string {
 		size = gitGraphSizeSmall
 	}
 
-	// Title based on size
+	// Title based on size, with project name suffix (GH-2167)
 	title := "GIT"
 	if size == gitGraphSizeFull {
 		title = "GIT GRAPH"
+	}
+	if m.gitProjectName != "" {
+		title += " — " + m.gitProjectName
 	}
 
 	// Build content lines

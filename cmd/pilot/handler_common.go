@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -72,6 +73,8 @@ func handleIssueGeneric(ctx context.Context, deps HandlerDeps, info IssueInfo, t
 	// 1. Register with monitor
 	if deps.Monitor != nil {
 		deps.Monitor.Register(taskID, title, info.URL)
+		// GH-2167: Attach project path so dashboard git graph can follow focused task
+		deps.Monitor.SetProjectInfo(taskID, projectPath, filepath.Base(projectPath))
 	}
 
 	// 2. Log to dashboard

@@ -2311,14 +2311,16 @@ func convertTaskStatesToDisplay(states []*executor.TaskState) []dashboard.TaskDi
 		}
 
 		displays = append(displays, dashboard.TaskDisplay{
-			ID:       state.ID,
-			Title:    state.Title,
-			Status:   status,
-			Phase:    state.Phase,
-			Progress: state.Progress,
-			Duration: duration,
-			IssueURL: state.IssueURL,
-			PRURL:    state.PRUrl,
+			ID:          state.ID,
+			Title:       state.Title,
+			Status:      status,
+			Phase:       state.Phase,
+			Progress:    state.Progress,
+			Duration:    duration,
+			IssueURL:    state.IssueURL,
+			PRURL:       state.PRUrl,
+			ProjectPath: state.ProjectPath,
+			ProjectName: state.ProjectName,
 		})
 	}
 	return displays

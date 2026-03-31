@@ -433,3 +433,27 @@ func TestTaskStateFields(t *testing.T) {
 		t.Errorf("Message = %q, want Working on it", state.Message)
 	}
 }
+
+// GH-2167: SetProjectInfo attaches project path and name to a registered task.
+func TestMonitorSetProjectInfo(t *testing.T) {
+	m := NewMonitor()
+	m.Register("GH-1", "Test task", "https://example.com/1")
+	m.SetProjectInfo("GH-1", "/home/user/pilot", "pilot")
+
+	state, ok := m.Get("GH-1")
+	if !ok {
+		t.Fatal("task not found")
+	}
+	if state.ProjectPath != "/home/user/pilot" {
+		t.Errorf("ProjectPath = %q, want /home/user/pilot", state.ProjectPath)
+	}
+	if state.ProjectName != "pilot" {
+		t.Errorf("ProjectName = %q, want pilot", state.ProjectName)
+	}
+}
+
+func TestMonitorSetProjectInfo_NonExistent(t *testing.T) {
+	m := NewMonitor()
+	// Should not panic on non-existent task
+	m.SetProjectInfo("GH-999", "/tmp/foo", "foo")
+}
