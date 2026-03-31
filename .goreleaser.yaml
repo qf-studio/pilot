@@ -82,7 +82,7 @@ changelog:
 
 release:
   github:
-    owner: alekspetrov
+    owner: qf-studio
     name: pilot
   draft: false
   prerelease: auto
