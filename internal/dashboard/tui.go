@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"math"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
@@ -295,14 +296,16 @@ func (p *AutopilotPanel) stageLabel(stage autopilot.PRStage) string {
 
 // TaskDisplay represents a task for display
 type TaskDisplay struct {
-	ID       string
-	Title    string
-	Status   string
-	Phase    string
-	Progress int
-	Duration string
-	IssueURL string
-	PRURL    string
+	ID          string
+	Title       string
+	Status      string
+	Phase       string
+	Progress    int
+	Duration    string
+	IssueURL    string
+	PRURL       string
+	ProjectPath string // Resolved project directory (GH-2167)
+	ProjectName string // Short project name for git graph title (GH-2167)
 }
 
 // TokenUsage tracks token consumption
@@ -382,7 +385,9 @@ type Model struct {
 	gitGraphState  *GitGraphState
 	gitGraphScroll int
 	gitGraphFocus  bool
-	projectPath    string // Working directory for git commands
+	projectPath        string // Working directory for git commands
+	defaultProjectPath string // Fallback project path from config (GH-2167)
+	gitProjectName     string // Current project name shown in git panel title (GH-2167)
 }
 
 // isStackedMode returns true when the git graph is visible and the terminal is
@@ -643,8 +648,46 @@ func NewModelWithOptions(version string, store *memory.Store, controller *autopi
 }
 
 // SetProjectPath sets the working directory used for git graph commands.
+// The first call also sets the default fallback path (GH-2167).
 func (m *Model) SetProjectPath(path string) {
 	m.projectPath = path
+	if m.defaultProjectPath == "" {
+		m.defaultProjectPath = path
+	}
+}
+
+// syncGitGraphToSelectedTask updates projectPath to match the selected task's project.
+// Returns a tea.Cmd to refresh the git graph if the project changed, nil otherwise.
+// Falls back to defaultProjectPath when no task is selected or the task has no project. (GH-2167)
+func (m *Model) syncGitGraphToSelectedTask() tea.Cmd {
+	if m.gitGraphMode == GitGraphHidden {
+		return nil
+	}
+
+	newPath := m.defaultProjectPath
+	newName := ""
+
+	if m.selectedTask >= 0 && m.selectedTask < len(m.tasks) {
+		task := m.tasks[m.selectedTask]
+		if task.ProjectPath != "" {
+			newPath = task.ProjectPath
+			newName = task.ProjectName
+			if newName == "" {
+				newName = filepath.Base(newPath)
+			}
+		}
+	}
+
+	if newPath == m.projectPath {
+		// Project unchanged — just update display name if needed
+		m.gitProjectName = newName
+		return nil
+	}
+
+	m.projectPath = newPath
+	m.gitProjectName = newName
+	m.gitGraphScroll = 0
+	return refreshGitGraphCmd(m.projectPath)
 }
 
 // Init initializes the model
@@ -704,6 +747,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			} else if m.selectedTask > 0 {
 				m.selectedTask--
+				if cmd := m.syncGitGraphToSelectedTask(); cmd != nil {
+					return m, cmd
+				}
 			}
 		case "down", "j":
 			if m.gitGraphFocus {
@@ -719,6 +765,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			} else if m.selectedTask < len(m.tasks)-1 {
 				m.selectedTask++
+				if cmd := m.syncGitGraphToSelectedTask(); cmd != nil {
+					return m, cmd
+				}
 			}
 		case "ctrl+d":
 			if m.gitGraphFocus && m.gitGraphState != nil {
@@ -774,10 +823,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case updateTasksMsg:
 		prevLen := len(m.tasks)
 		m.tasks = msg
+		// GH-2167: Sync git graph to selected task's project when task list updates
+		gitCmd := m.syncGitGraphToSelectedTask()
 		if len(m.tasks) != prevLen {
 			// GH-1249: Task count changed → content height changed.
 			// Force full repaint to prevent ghost lines from Bubbletea's diff renderer.
+			if gitCmd != nil {
+				return m, tea.Batch(gitCmd, tea.ClearScreen)
+			}
 			return m, tea.ClearScreen
+		}
+		if gitCmd != nil {
+			return m, gitCmd
 		}
 
 	case addLogMsg:

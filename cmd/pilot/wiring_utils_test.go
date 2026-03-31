@@ -360,14 +360,16 @@ func TestConvertTaskStatesToDisplay_FieldMapping(t *testing.T) {
 	now := time.Now()
 	states := []*executor.TaskState{
 		{
-			ID:       "GH-5",
-			Title:    "Test task",
-			Status:   executor.StatusRunning,
-			Phase:    "verify",
-			Progress: 80,
-			IssueURL: "https://github.com/org/repo/issues/5",
-			PRUrl:    "https://github.com/org/repo/pull/10",
-			StartedAt: &now,
+			ID:          "GH-5",
+			Title:       "Test task",
+			Status:      executor.StatusRunning,
+			Phase:       "verify",
+			Progress:    80,
+			IssueURL:    "https://github.com/org/repo/issues/5",
+			PRUrl:       "https://github.com/org/repo/pull/10",
+			StartedAt:   &now,
+			ProjectPath: "/home/user/projects/pilot",
+			ProjectName: "pilot",
 		},
 	}
 
@@ -376,13 +378,15 @@ func TestConvertTaskStatesToDisplay_FieldMapping(t *testing.T) {
 
 	// Verify all fields map correctly
 	want := dashboard.TaskDisplay{
-		ID:       "GH-5",
-		Title:    "Test task",
-		Status:   "running",
-		Phase:    "verify",
-		Progress: 80,
-		IssueURL: "https://github.com/org/repo/issues/5",
-		PRURL:    "https://github.com/org/repo/pull/10",
+		ID:          "GH-5",
+		Title:       "Test task",
+		Status:      "running",
+		Phase:       "verify",
+		Progress:    80,
+		IssueURL:    "https://github.com/org/repo/issues/5",
+		PRURL:       "https://github.com/org/repo/pull/10",
+		ProjectPath: "/home/user/projects/pilot",
+		ProjectName: "pilot",
 	}
 
 	if d.ID != want.ID {
@@ -405,5 +409,11 @@ func TestConvertTaskStatesToDisplay_FieldMapping(t *testing.T) {
 	}
 	if d.PRURL != want.PRURL {
 		t.Errorf("PRURL = %q, want %q", d.PRURL, want.PRURL)
+	}
+	if d.ProjectPath != want.ProjectPath {
+		t.Errorf("ProjectPath = %q, want %q", d.ProjectPath, want.ProjectPath)
+	}
+	if d.ProjectName != want.ProjectName {
+		t.Errorf("ProjectName = %q, want %q", d.ProjectName, want.ProjectName)
 	}
 }
