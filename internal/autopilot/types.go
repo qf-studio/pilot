@@ -335,6 +335,8 @@ type ReleaseConfig struct {
 	NotifyOnRelease bool `yaml:"notify_on_release"`
 	// RequireCI waits for post-merge CI before releasing.
 	RequireCI bool `yaml:"require_ci"`
+	// GenerateSummary enables LLM-generated release summary prepended to GoReleaser changelog.
+	GenerateSummary bool `yaml:"generate_summary"`
 }
 
 // DefaultReleaseConfig returns sensible defaults for release configuration.
@@ -347,6 +349,7 @@ func DefaultReleaseConfig() *ReleaseConfig {
 		GenerateChangelog: true,
 		NotifyOnRelease:   true,
 		RequireCI:         true,
+		GenerateSummary:   true,
 	}
 }
 

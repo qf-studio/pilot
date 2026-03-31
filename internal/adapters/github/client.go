@@ -541,6 +541,32 @@ func (c *Client) GetLatestRelease(ctx context.Context, owner, repo string) (*Rel
 	return &result, nil
 }
 
+// GetReleaseByTag fetches a release by its tag name.
+// Returns nil, nil if no release exists for the given tag (404).
+func (c *Client) GetReleaseByTag(ctx context.Context, owner, repo, tag string) (*Release, error) {
+	path := fmt.Sprintf("/repos/%s/%s/releases/tags/%s", owner, repo, tag)
+	var result Release
+	if err := c.doRequest(ctx, http.MethodGet, path, nil, &result); err != nil {
+		if isNotFoundError(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &result, nil
+}
+
+// UpdateRelease updates an existing release (e.g. to enrich the body with a summary).
+func (c *Client) UpdateRelease(ctx context.Context, owner, repo string, releaseID int64, input *ReleaseInput) (*Release, error) {
+	return WithRetry(ctx, func() (*Release, error) {
+		path := fmt.Sprintf("/repos/%s/%s/releases/%d", owner, repo, releaseID)
+		var result Release
+		if err := c.doRequest(ctx, http.MethodPatch, path, input, &result); err != nil {
+			return nil, err
+		}
+		return &result, nil
+	}, DefaultRetryOptions())
+}
+
 // ListReleases lists releases for a repository (newest first)
 func (c *Client) ListReleases(ctx context.Context, owner, repo string, perPage int) ([]*Release, error) {
 	path := fmt.Sprintf("/repos/%s/%s/releases?per_page=%d", owner, repo, perPage)
