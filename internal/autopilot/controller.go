@@ -120,6 +120,9 @@ type Controller struct {
 	lastProgressAt    time.Time
 	deadlockAlertSent bool
 
+	// Release summary generator (optional, nil = no LLM enrichment)
+	releaseSummary *ReleaseSummaryGenerator
+
 	// Metrics
 	metrics *Metrics
 
@@ -196,6 +199,12 @@ func (c *Controller) SetLearningLoop(loop *memory.LearningLoop) {
 // SetEvalStore sets the eval store for capturing eval tasks from merged PRs.
 func (c *Controller) SetEvalStore(store EvalStore) {
 	c.evalStore = store
+}
+
+// SetReleaseSummaryGenerator sets the LLM release summary generator.
+// When set, handleReleasing will enrich GitHub releases with a human-friendly summary.
+func (c *Controller) SetReleaseSummaryGenerator(gen *ReleaseSummaryGenerator) {
+	c.releaseSummary = gen
 }
 
 // persistPRState saves a PR state to the store if available.
@@ -1335,6 +1344,19 @@ func (c *Controller) handleReleasing(ctx context.Context, prState *PRState) erro
 		"version", prState.ReleaseVersion,
 		"tag", tagName,
 	)
+
+	// Enrich release with LLM-generated summary (best-effort, non-blocking).
+	// Runs in a goroutine because it polls for GoReleaser to publish the release
+	// (up to 5 min) and we don't want to block the notification or PR cleanup.
+	if c.releaseSummary != nil && rel.GenerateSummary {
+		go func() {
+			enrichCtx, cancel := context.WithTimeout(context.Background(), releasePollTimeout+releaseSummaryTimeout)
+			defer cancel()
+			if err := c.releaseSummary.EnrichRelease(enrichCtx, c.owner, c.repo, tagName, commits); err != nil {
+				c.log.Warn("failed to enrich release notes", "tag", tagName, "error", err)
+			}
+		}()
+	}
 
 	// Send notification
 	if rel.NotifyOnRelease && c.notifier != nil {
