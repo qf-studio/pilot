@@ -17,7 +17,11 @@ Era 1: Human writes code → AI suggests completions
 Era 2: Human writes ticket → AI ships the PR
 ```
 
-Pilot is built for Era 2.
+Pilot is built for Era 2 — and the benchmarks prove it.
+
+<Callout type="info">
+**#1 on Terminal-Bench 2.0** — Pilot scored 82% across 445 real-world software engineering tasks, ranking first on the global leaderboard for autonomous coding agents. [View the leaderboard →](https://huggingface.co/datasets/harborframework/terminal-bench-2-leaderboard)
+</Callout>
 
 <Callout type="info">
 This is not about replacing engineers. It's about removing engineers from work that doesn't need their judgment — CRUD endpoints, test coverage, documentation updates, bug fixes with clear repro steps.
@@ -71,7 +75,7 @@ Running Claude Code directly with a `CLAUDE.md` file works for one-off tasks. Bu
                        ASSISTIVE
 ```
 
-Pilot occupies a unique quadrant: **autonomous and self-hosted**. No other tool in the market combines ticket-driven autonomous execution with full self-hosting capability.
+Pilot occupies a unique quadrant: **autonomous and self-hosted**. No other tool in the market combines ticket-driven autonomous execution with full self-hosting capability. Pilot is also the **#1 ranked agent on Terminal-Bench 2.0**, the industry standard benchmark for autonomous coding tools.
 
 - **Top-left (Pilot):** Autonomous execution on your own infrastructure. Your code never leaves your environment. Full control over the AI pipeline.
 - **Top-right (Devin, Factory):** Autonomous but cloud-locked. You trust a third party with source code access and CI credentials.
@@ -158,6 +162,7 @@ Trivial tickets cost cents and complete in seconds. Complex tickets get the reas
 
 | Capability | Pilot | Cursor | Copilot | Devin | DIY Claude Code |
 |-----------|-------|--------|---------|-------|-----------------|
+| **Terminal-Bench 2.0** | ✅ #1 (82%) | ❌ N/A | ❌ N/A | ❌ Not ranked | ❌ N/A |
 | **Autonomous execution** | ✅ Ticket → PR | ❌ | ❌ | ✅ | ⚠️ Manual |
 | **Ticket integration** | ✅ GitHub, Linear, Jira, Asana | ❌ | ⚠️ Partial | ✅ | ❌ |
 | **Codebase context** | ✅ Built-in (deep) | ⚠️ File-level | ⚠️ File-level | ⚠️ Proprietary | ⚠️ Manual CLAUDE.md |
