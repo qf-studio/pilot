@@ -434,12 +434,13 @@ func TestPoller_CheckForNewIssues_CallbackError(t *testing.T) {
 		t.Errorf("callback called %d times, want 2", got)
 	}
 
-	// In parallel mode, issues are pre-marked to prevent duplicate dispatch
-	if !poller.IsProcessed(1) {
-		t.Error("issue 1 should be marked as processed (pre-marked in parallel mode)")
+	// GH-2176: When the callback returns an error, the issue is unmarked so it
+	// can be retried on the next poll cycle (after pilot-failed label is removed).
+	if poller.IsProcessed(1) {
+		t.Error("issue 1 should NOT be marked as processed after callback error (GH-2176: retry path)")
 	}
-	if !poller.IsProcessed(2) {
-		t.Error("issue 2 should be marked as processed (pre-marked in parallel mode)")
+	if poller.IsProcessed(2) {
+		t.Error("issue 2 should NOT be marked as processed after callback error (GH-2176: retry path)")
 	}
 }
 
