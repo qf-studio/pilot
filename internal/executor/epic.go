@@ -731,6 +731,18 @@ func (r *Runner) ExecuteSubIssues(ctx context.Context, parent *Task, issues []Cr
 		if result.PRUrl != "" && r.onSubIssuePRCreated != nil {
 			if prNum := parsePRNumberFromURL(result.PRUrl); prNum > 0 {
 				r.onSubIssuePRCreated(prNum, result.PRUrl, issue.Number, result.CommitSHA, subTask.Branch, "")
+
+				// GH-2179: Wait for sub-issue PR to merge before proceeding to next.
+				// Skip for the last sub-issue — nothing follows it.
+				if r.subIssueMergeWait != nil && i < total-1 {
+					r.log.Info("Waiting for sub-issue PR to merge before next sub-issue",
+						"pr_number", prNum, "sub_issue", issueRef)
+					if err := r.subIssueMergeWait(ctx, prNum); err != nil {
+						r.log.Warn("Sub-issue merge-wait failed",
+							"pr_number", prNum, "error", err)
+						return fmt.Errorf("merge-wait for sub-issue %s PR #%d: %w", issueRef, prNum, err)
+					}
+				}
 			} else {
 				r.log.Warn("Failed to extract PR number from sub-issue PR URL",
 					"pr_url", result.PRUrl)

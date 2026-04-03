@@ -263,6 +263,11 @@ type TokenLimitCallback func(taskID string, deltaInput, deltaOutput int64) bool
 // Signature matches Controller.OnPRCreated so it can be wired directly.
 type SubIssuePRCallback func(prNumber int, prURL string, issueNumber int, headSHA string, branchName string, issueNodeID string)
 
+// SubIssueMergeWaitFn blocks until the given sub-issue PR is merged (or fails).
+// Used during epic execution to serialise sub-issues so that each one merges
+// before the next begins (GH-2179).
+type SubIssueMergeWaitFn func(ctx context.Context, prNumber int) error
+
 // SubIssueCreator is an interface for creating sub-issues in external issue trackers.
 // Adapters like Linear, Jira, GitLab, and Azure DevOps can implement this interface
 // to allow epic decomposition to create sub-issues in the source tracker rather than GitHub.
@@ -303,6 +308,7 @@ type Runner struct {
 	suppressProgressLogs  bool                                                            // Suppress slog output for progress (use when visual display is active)
 	tokenLimitCheck       TokenLimitCallback                                              // Optional per-task token/duration limit check (GH-539)
 	onSubIssuePRCreated   SubIssuePRCallback                                              // Optional callback when a sub-issue PR is created (GH-596)
+	subIssueMergeWait     SubIssueMergeWaitFn                                             // Optional merge-wait for sub-issue PRs (GH-2179)
 	intentJudge           *IntentJudge                                                    // Optional intent judge for diff-vs-ticket alignment (GH-624)
 	teamChecker           TeamChecker                                                     // Optional team RBAC checker (GH-633)
 	executeFunc           func(ctx context.Context, task *Task) (*ExecutionResult, error) // Internal override for testing
@@ -606,6 +612,12 @@ func (r *Runner) SetOnSubIssuePRCreated(fn SubIssuePRCallback) {
 	r.onSubIssuePRCreated = fn
 }
 
+// SetSubIssueMergeWait sets the function called after each sub-issue PR is created
+// to block until that PR is merged before proceeding to the next sub-issue (GH-2179).
+func (r *Runner) SetSubIssueMergeWait(fn SubIssueMergeWaitFn) {
+	r.subIssueMergeWait = fn
+}
+
 // SetSubIssueCreator sets the creator for sub-issues in external issue trackers (GH-1471).
 // When set and the task's SourceAdapter is non-GitHub, CreateSubIssues will dispatch
 // via this interface instead of using the gh CLI.
@@ -702,6 +714,9 @@ func (r *Runner) HasQualityCheckerFactory() bool { return r.qualityCheckerFactor
 
 // HasOnSubIssuePRCreated reports whether a sub-issue PR callback is wired.
 func (r *Runner) HasOnSubIssuePRCreated() bool { return r.onSubIssuePRCreated != nil }
+
+// HasSubIssueMergeWait reports whether a sub-issue merge-wait function is wired.
+func (r *Runner) HasSubIssueMergeWait() bool { return r.subIssueMergeWait != nil }
 
 // HasDecomposer reports whether a task decomposer is wired.
 func (r *Runner) HasDecomposer() bool { return r.decomposer != nil }

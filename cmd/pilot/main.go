@@ -712,6 +712,24 @@ Examples:
 					repoOwner, repoName := repoParts[0], repoParts[1]
 					gwSourceRepo := cfg.Adapters.GitHub.Repo // GH-929: Capture for closure
 
+					// GH-2179: Wire sub-issue merge-wait so epic sub-issues wait for merge before next
+					if waitForMerge {
+						mergeWaiter := github.NewMergeWaiter(client, repoOwner, repoName, &github.MergeWaiterConfig{
+							PollInterval: pollInterval,
+							Timeout:      prTimeout,
+						})
+						gwRunner.SetSubIssueMergeWait(func(ctx context.Context, prNumber int) error {
+							result, waitErr := mergeWaiter.WaitForMerge(ctx, prNumber)
+							if waitErr != nil {
+								return waitErr
+							}
+							if !result.Merged {
+								return fmt.Errorf("sub-issue PR #%d not merged: %s", prNumber, result.Message)
+							}
+							return nil
+						})
+					}
+
 					rateLimitScheduler := executor.NewScheduler(executor.DefaultSchedulerConfig(), nil)
 					rateLimitScheduler.SetRetryCallback(func(retryCtx context.Context, pendingTask *executor.PendingTask) error {
 						var issueNum int
@@ -2096,6 +2114,27 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 				// Wire sub-issue PR callback for default controller (GH-594)
 				if autopilotController != nil {
 					runner.SetOnSubIssuePRCreated(autopilotController.OnPRCreated)
+				}
+
+				// GH-2179: Wire sub-issue merge-wait so epic sub-issues wait for merge before next
+				if waitForMerge && cfg.Adapters.GitHub.Repo != "" {
+					defaultRepoParts := strings.Split(cfg.Adapters.GitHub.Repo, "/")
+					if len(defaultRepoParts) == 2 {
+						mergeWaiter := github.NewMergeWaiter(client, defaultRepoParts[0], defaultRepoParts[1], &github.MergeWaiterConfig{
+							PollInterval: pollInterval,
+							Timeout:      prTimeout,
+						})
+						runner.SetSubIssueMergeWait(func(ctx context.Context, prNumber int) error {
+							result, waitErr := mergeWaiter.WaitForMerge(ctx, prNumber)
+							if waitErr != nil {
+								return waitErr
+							}
+							if !result.Merged {
+								return fmt.Errorf("sub-issue PR #%d not merged: %s", prNumber, result.Message)
+							}
+							return nil
+						})
+					}
 				}
 			}
 
