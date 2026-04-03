@@ -92,11 +92,27 @@ func (g *GitOperations) Push(ctx context.Context, branchName string) error {
 
 // CreatePR creates a pull request using gh CLI
 func (g *GitOperations) CreatePR(ctx context.Context, title, body, baseBranch string) (string, error) {
-	cmd := exec.CommandContext(ctx, "gh", "pr", "create",
+	// GH-2177: Detect current branch to pass --head explicitly.
+	// In worktree mode, gh may see uncommitted changes and refuse to infer the head branch.
+	// Using --head bypasses the dirty working tree check.
+	headBranch := ""
+	if branchCmd := exec.CommandContext(ctx, "git", "rev-parse", "--abbrev-ref", "HEAD"); branchCmd != nil {
+		branchCmd.Dir = g.projectPath
+		if out, err := branchCmd.Output(); err == nil {
+			headBranch = strings.TrimSpace(string(out))
+		}
+	}
+
+	args := []string{"pr", "create",
 		"--title", title,
 		"--body", body,
 		"--base", baseBranch,
-	)
+	}
+	if headBranch != "" {
+		args = append(args, "--head", headBranch)
+	}
+
+	cmd := exec.CommandContext(ctx, "gh", args...)
 	cmd.Dir = g.projectPath
 	output, err := cmd.CombinedOutput()
 	outputStr := string(output)
