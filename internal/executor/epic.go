@@ -737,6 +737,41 @@ func (r *Runner) ExecuteSubIssues(ctx context.Context, parent *Task, issues []Cr
 			}
 		}
 
+		// GH-2178: Wait for the sub-issue PR to merge before starting the next one.
+		// Skip for the last sub-issue (no next issue to sequence).
+		// Nil check degrades gracefully — if not wired, execution proceeds without waiting.
+		if r.subIssueMergeWait != nil && result.PRUrl != "" && i < total-1 {
+			prNum := parsePRNumberFromURL(result.PRUrl)
+			if prNum > 0 {
+				waitMsg := fmt.Sprintf("⏳ Waiting for PR #%d to merge before starting next sub-issue (%d/%d)...",
+					prNum, i+1, total)
+				_ = r.UpdateIssueProgress(ctx, projectPath, parent.ID, waitMsg)
+
+				r.log.Info("Waiting for sub-issue PR to merge",
+					"parent_id", parent.ID,
+					"sub_issue", issueRef,
+					"pr_number", prNum,
+					"order", i+1,
+					"total", total,
+				)
+
+				if err := r.subIssueMergeWait(ctx, prNum); err != nil {
+					failMsg := fmt.Sprintf("❌ Merge wait failed for %s (PR #%d): %v", issueRef, prNum, err)
+					_ = r.UpdateIssueProgress(ctx, projectPath, parent.ID, failMsg)
+					return fmt.Errorf("merge wait failed for sub-issue %s (PR #%d): %w", issueRef, prNum, err)
+				}
+
+				// Sync local main branch so the next sub-issue branches from the merged state.
+				if syncErr := r.syncMainBranch(ctx, subTaskRepoPath); syncErr != nil {
+					r.log.Warn("Failed to sync main branch after sub-issue merge",
+						"sub_issue", issueRef,
+						"error", syncErr,
+					)
+					// Non-fatal: next sub-issue will fetch from origin anyway.
+				}
+			}
+		}
+
 		// Close completed sub-issue
 		// GH-1471: Use Identifier for issue reference in close command
 		closeComment := fmt.Sprintf("✅ Completed as part of %s", parent.ID)
