@@ -699,6 +699,21 @@ Examples:
 						gwRunner.SetOnSubIssuePRCreated(gwAutopilotController.OnPRCreated)
 					}
 
+					// Wire sub-issue merge-wait so epic sub-issues block until their PR merges (GH-2179)
+					if waitForMerge {
+						gwRepoParts := strings.SplitN(cfg.Adapters.GitHub.Repo, "/", 2)
+						if len(gwRepoParts) == 2 {
+							mergeWaiter := github.NewMergeWaiter(client, gwRepoParts[0], gwRepoParts[1], &github.MergeWaiterConfig{
+								PollInterval: pollInterval,
+								Timeout:      prTimeout,
+							})
+							gwRunner.SetSubIssueMergeWait(func(ctx context.Context, prNumber int) error {
+								_, err := mergeWaiter.WaitForMerge(ctx, prNumber)
+								return err
+							})
+						}
+					}
+
 					// GH-726: Wire processed issue persistence for gateway poller
 					if gwAutopilotStateStore != nil {
 						pollerOpts = append(pollerOpts, github.WithProcessedStore(gwAutopilotStateStore))
@@ -2096,6 +2111,21 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 				// Wire sub-issue PR callback for default controller (GH-594)
 				if autopilotController != nil {
 					runner.SetOnSubIssuePRCreated(autopilotController.OnPRCreated)
+				}
+
+				// Wire sub-issue merge-wait so epic sub-issues block until their PR merges (GH-2179)
+				if waitForMerge && cfg.Adapters.GitHub.Repo != "" {
+					parts := strings.SplitN(cfg.Adapters.GitHub.Repo, "/", 2)
+					if len(parts) == 2 {
+						mergeWaiter := github.NewMergeWaiter(client, parts[0], parts[1], &github.MergeWaiterConfig{
+							PollInterval: pollInterval,
+							Timeout:      prTimeout,
+						})
+						runner.SetSubIssueMergeWait(func(ctx context.Context, prNumber int) error {
+							_, err := mergeWaiter.WaitForMerge(ctx, prNumber)
+							return err
+						})
+					}
 				}
 			}
 
