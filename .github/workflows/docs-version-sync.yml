@@ -3,6 +3,11 @@ name: Sync Docs Version
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag (e.g. v2.87.2)'
+        required: true
 
 permissions:
   contents: write
@@ -18,7 +23,12 @@ jobs:
 
       - name: Get release version
         id: version
-        run: echo "VERSION=${{ github.event.release.tag_name }}" >> $GITHUB_OUTPUT
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "VERSION=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          else
+            echo "VERSION=${{ github.event.release.tag_name }}" >> $GITHUB_OUTPUT
+          fi
 
       - name: Close previous version-sync PRs
         env:
