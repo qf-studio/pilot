@@ -468,6 +468,16 @@ func (p *Poller) startSequential(ctx context.Context) {
 			continue
 		}
 
+		// GH-2176: Don't mark as processed if execution failed (no PR created, not successful)
+		// This allows the retry path in findOldestUnprocessedIssue to re-pick the issue
+		// after pilot-failed label is removed (manually or by stale label cleanup)
+		if result != nil && !result.Success && result.PRNumber == 0 {
+			p.logger.Info("Execution failed without PR, not marking as processed (retryable)",
+				slog.Int("issue_number", issue.Number),
+			)
+			continue
+		}
+
 		// PR was created but we're not waiting for merge, or no PR was created
 		p.markProcessed(issue.Number)
 	}
@@ -761,7 +771,17 @@ func (p *Poller) checkForNewIssues(ctx context.Context) {
 						slog.Int("number", issue.Number),
 						slog.Any("error", err),
 					)
+					// GH-2176: Unmark so retry path can re-pick after pilot-failed is removed
+					p.unmarkProcessed(issue.Number)
 					return
+				}
+
+				// GH-2176: Unmark if execution failed without creating a PR
+				if result != nil && !result.Success && result.PRNumber == 0 {
+					p.logger.Info("Execution failed without PR, unmarking for retry",
+						slog.Int("number", issue.Number),
+					)
+					p.unmarkProcessed(issue.Number)
 				}
 
 				// Notify autopilot controller of new PR
@@ -774,6 +794,8 @@ func (p *Poller) checkForNewIssues(ctx context.Context) {
 						slog.Int("number", issue.Number),
 						slog.Any("error", err),
 					)
+					// GH-2176: Unmark so retry path can re-pick
+					p.unmarkProcessed(issue.Number)
 				}
 			}
 		}(issue)
@@ -790,6 +812,20 @@ func (p *Poller) markProcessed(number int) {
 	if p.processedStore != nil {
 		if err := p.processedStore.MarkIssueProcessed(number, "processed"); err != nil {
 			p.logger.Warn("Failed to persist processed issue", slog.Int("issue", number), slog.Any("error", err))
+		}
+	}
+}
+
+// unmarkProcessed removes an issue from the processed set, allowing retry.
+// GH-2176: Used when execution fails without creating a PR.
+func (p *Poller) unmarkProcessed(number int) {
+	p.mu.Lock()
+	delete(p.processed, number)
+	p.mu.Unlock()
+
+	if p.processedStore != nil {
+		if err := p.processedStore.UnmarkIssueProcessed(number); err != nil {
+			p.logger.Warn("Failed to unmark processed issue", slog.Int("issue", number), slog.Any("error", err))
 		}
 	}
 }
