@@ -41,6 +41,17 @@ Added `repoPath` parameter to `ExecuteSubIssues()`:
 | `internal/executor/sub_issue_callback_test.go` | Updated all call sites with `""` fallback |
 | `docs/content/features/epic-decomposition.mdx` | Updated function signature |
 
+## Follow-up: GH-2178 — Enable worktree isolation for sub-issues
+
+GH-2177 fixed the `ProjectPath` but sub-issues still ran with `allowWorktree=false`,
+meaning they executed directly on the main checkout (polluting it, leaving it on a pilot
+branch). With `ProjectPath` now pointing to the real repo, it's safe to enable worktrees.
+
+**Change:** `epic.go:711` — `allowWorktree` from `false` to `true`
+
+Each sub-issue now gets its own isolated worktree created from the real repo.
+No test assertion changes needed (mocks bypass `executeWithOptions`).
+
 ## Testing
 
 All 20 epic/worktree/sub-issue tests pass. `TestWorktreeEpicIntegration` now confirms

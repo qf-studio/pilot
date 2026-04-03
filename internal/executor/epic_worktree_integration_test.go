@@ -17,12 +17,14 @@ func testLogger() *slog.Logger {
 }
 
 // TestEpicWorktreeIsolation verifies that epic decomposition with worktree isolation
-// enabled does NOT create recursive/nested worktrees for sub-issues.
+// works correctly for sub-issues.
 //
-// GH-961: This integration test ensures:
+// GH-961, GH-2178: This integration test ensures:
 // 1. Parent epic task uses worktree when UseWorktree=true
-// 2. Sub-issues execute without creating nested worktrees (allowWorktree=false)
+// 2. Sub-issues get their own worktrees from the real repo (allowWorktree=true, GH-2178)
 // 3. Cleanup happens correctly for parent worktree
+// Note: This test uses executeFunc mock which bypasses executeWithOptions,
+// so worktree creation for sub-issues is not exercised here.
 func TestEpicWorktreeIsolation(t *testing.T) {
 	// Create test repo with remote
 	localRepo, remoteRepo := setupTestRepoWithRemote(t)
@@ -51,9 +53,9 @@ func TestEpicWorktreeIsolation(t *testing.T) {
 		skipPreflightChecks: true, // Skip preflight for test
 	}
 
-	// Create a mock execute function that tracks worktree behavior
-	// The key insight: ExecuteSubIssues calls executeWithOptions(ctx, subTask, false)
-	// which means sub-issues should NOT attempt worktree creation even when UseWorktree=true
+	// Create a mock execute function that tracks execution paths.
+	// Note: executeFunc mock bypasses executeWithOptions, so worktree creation
+	// (enabled via GH-2178) is not exercised here — only task.ProjectPath is observed.
 	runner.executeFunc = func(ctx context.Context, task *Task) (*ExecutionResult, error) {
 		mu.Lock()
 		executionPaths = append(executionPaths, task.ProjectPath)
@@ -309,12 +311,13 @@ func TestNoRecursiveWorktreeInDecomposedTasks(t *testing.T) {
 	var mu sync.Mutex
 	var worktreeAttempts int
 
-	// The key test: when executeWithOptions is called with allowWorktree=false,
-	// it should NOT create a worktree even if UseWorktree=true in config
+	// GH-2178: Sub-issues now get allowWorktree=true, but this test uses executeFunc
+	// mock which bypasses executeWithOptions. The mock observes task.ProjectPath
+	// (real repo path from GH-2177), not worktree paths.
 	runner := &Runner{
 		config: &BackendConfig{
 			ClaudeCode:  &ClaudeCodeConfig{Command: "echo"},
-			UseWorktree: true, // Enabled, but should be skipped for sub-tasks
+			UseWorktree: true,
 		},
 		running:             make(map[string]*exec.Cmd),
 		progressCallbacks:   make(map[string]ProgressCallback),

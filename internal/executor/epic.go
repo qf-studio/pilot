@@ -700,15 +700,17 @@ func (r *Runner) ExecuteSubIssues(ctx context.Context, parent *Task, issues []Cr
 		)
 
 		// Execute the sub-task (use override if set, for testing)
-		// GH-948: Use executeWithOptions to prevent recursive worktree creation
 		var result *ExecutionResult
 		var err error
 		if r.executeFunc != nil {
 			// Use test override function if set
 			result, err = r.executeFunc(ctx, subTask)
 		} else {
-			// Use internal method to prevent recursive worktree creation
-			result, err = r.executeWithOptions(ctx, subTask, false)
+			// GH-2178: Enable worktree isolation for sub-issues. Each sub-issue creates
+			// its own worktree from the real repo (safe after GH-2177 set ProjectPath = repoPath).
+			// Previously false (GH-948) to prevent nested worktrees, but GH-2177 ensured
+			// subTask.ProjectPath points to the real repo, not the parent's worktree.
+			result, err = r.executeWithOptions(ctx, subTask, true)
 		}
 		if err != nil {
 			failMsg := fmt.Sprintf("❌ Failed on %d/%d: %s - Error: %v",

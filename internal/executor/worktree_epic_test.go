@@ -126,7 +126,9 @@ func TestWorktreeEpicIntegration(t *testing.T) {
 		t.Fatalf("ExecuteSubIssues failed: %v", err)
 	}
 
-	// GH-2177: Verify sub-issue executions used the real repo path (not worktree)
+	// GH-2177: Verify sub-issue task.ProjectPath is the real repo path.
+	// Note: executeFunc mock bypasses executeWithOptions, so worktree creation
+	// (enabled via GH-2178) is not exercised here — only task.ProjectPath is observed.
 	pathsMu.Lock()
 	defer pathsMu.Unlock()
 
@@ -136,7 +138,7 @@ func TestWorktreeEpicIntegration(t *testing.T) {
 
 	for i, path := range subIssueExecutionPaths {
 		t.Logf("Sub-issue %d executed in path: %s", i+1, path)
-		// GH-2177: Sub-issues should use the real repo path, not the parent's worktree
+		// GH-2177: task.ProjectPath = real repo (executeFunc mock sees this before worktree creation)
 		if path != localRepo {
 			t.Errorf("Sub-issue %d: expected real repo path %q, got %q", i+1, localRepo, path)
 		}
