@@ -14,10 +14,14 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/alekspetrov/pilot/releases"><img src="https://img.shields.io/github/v/release/alekspetrov/pilot?style=flat-square" alt="Release"></a>
+  <strong>#1 on <a href="https://huggingface.co/datasets/harborframework/terminal-bench-2-leaderboard">Terminal-Bench 2.0</a></strong> — 82% pass rate across 445 real-world software tasks
+</p>
+
+<p align="center">
+  <a href="https://github.com/qf-studio/pilot/releases"><img src="https://img.shields.io/github/v/release/qf-studio/pilot?style=flat-square" alt="Release"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-BSL_1.1-blue.svg?style=flat-square" alt="License: BSL 1.1"></a>
-  <a href="https://github.com/alekspetrov/pilot/actions"><img src="https://github.com/alekspetrov/pilot/workflows/CI/badge.svg?style=flat-square" alt="CI"></a>
-  <a href="https://goreportcard.com/report/github.com/alekspetrov/pilot"><img src="https://goreportcard.com/badge/github.com/alekspetrov/pilot?style=flat-square" alt="Go Report Card"></a>
+  <a href="https://github.com/qf-studio/pilot/actions"><img src="https://github.com/qf-studio/pilot/workflows/CI/badge.svg?style=flat-square" alt="CI"></a>
+  <a href="https://goreportcard.com/report/github.com/qf-studio/pilot"><img src="https://goreportcard.com/badge/github.com/qf-studio/pilot?style=flat-square" alt="Go Report Card"></a>
   <a href="https://discord.gg/K6mM8TzJ"><img src="https://img.shields.io/badge/Discord-Join%20Chat-5865F2?style=flat-square&logo=discord&logoColor=white" alt="Discord"></a>
 </p>
 
@@ -34,8 +38,6 @@
 </p>
 
 <br />
-
-<!-- TODO: Add demo.gif or YouTube embed after recording -->
 
 ---
 
@@ -54,7 +56,7 @@ Pilot picks up tickets from GitHub, Linear, Jira, or Asana—plans the implement
 └─────────────┘      └─────────────┘      └─────────────┘      └─────────────┘
 ```
 
-<img width="1758" height="1124" alt="pilot-preview-screenshot" src="https://github.com/user-attachments/assets/faaff57a-a23e-4cee-a08a-b9fa08ae135d" />
+<img alt="Pilot dashboard — auth-service built from scratch overnight" src="assets/pilot-dashboard-screenshot.png" />
 
 
 
@@ -63,20 +65,20 @@ Pilot picks up tickets from GitHub, Linear, Jira, or Asana—plans the implement
 ### Homebrew (recommended)
 
 ```bash
-brew tap alekspetrov/pilot
+brew tap qf-studio/pilot
 brew install pilot
 ```
 
 ### Go Install
 
 ```bash
-go install github.com/alekspetrov/pilot/cmd/pilot@latest
+go install github.com/qf-studio/pilot/cmd/pilot@latest
 ```
 
 ### From Source
 
 ```bash
-git clone https://github.com/alekspetrov/pilot
+git clone https://github.com/qf-studio/pilot
 cd pilot
 make build
 sudo make install-global
@@ -84,7 +86,7 @@ sudo make install-global
 
 ### Desktop App
 
-Download the desktop app from the [latest release](https://github.com/alekspetrov/pilot/releases/latest):
+Download the desktop app from the [latest release](https://github.com/qf-studio/pilot/releases/latest):
 
 | Platform | Download |
 |----------|----------|
@@ -158,7 +160,7 @@ You label issue "pilot"
 
 ## Features
 
-**133 features implemented** across execution, intelligence, integrations, and infrastructure.
+**260+ features implemented** across execution, intelligence, integrations, and infrastructure.
 
 ### Core Execution
 
@@ -504,7 +506,7 @@ make test
 </p>
 
 <p align="center">
-  <a href="https://github.com/alekspetrov/pilot">⭐ Star on GitHub</a>
+  <a href="https://github.com/qf-studio/pilot">⭐ Star on GitHub</a>
 </p>
 
 <p align="center">
