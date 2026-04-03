@@ -55,7 +55,7 @@ func TestPollingGatewayParity(t *testing.T) {
 		},
 	}
 
-	// All 17 Has* accessors on Runner.
+	// All 18 Has* accessors on Runner.
 	type hasCheck struct {
 		field string
 		get   func(*Harness) bool
@@ -65,6 +65,7 @@ func TestPollingGatewayParity(t *testing.T) {
 		{"HasLogStore", func(h *Harness) bool { return h.Runner.HasLogStore() }},
 		{"HasMonitor", func(h *Harness) bool { return h.Runner.HasMonitor() }},
 		{"HasOnSubIssuePRCreated", func(h *Harness) bool { return h.Runner.HasOnSubIssuePRCreated() }},
+		{"HasSubIssueMergeWait", func(h *Harness) bool { return h.Runner.HasSubIssueMergeWait() }},
 		{"HasModelRouter", func(h *Harness) bool { return h.Runner.HasModelRouter() }},
 		{"HasQualityCheckerFactory", func(h *Harness) bool { return h.Runner.HasQualityCheckerFactory() }},
 		{"HasLearningLoop", func(h *Harness) bool { return h.Runner.HasLearningLoop() }},
@@ -139,6 +140,9 @@ func TestHarnessFieldsWithMinimalConfig(t *testing.T) {
 			}
 			if !h.Runner.HasOnSubIssuePRCreated() {
 				t.Error("HasOnSubIssuePRCreated should be true")
+			}
+			if !h.Runner.HasSubIssueMergeWait() {
+				t.Error("HasSubIssueMergeWait should be true")
 			}
 			if !h.Runner.HasModelRouter() {
 				t.Error("HasModelRouter should be true")

@@ -4,6 +4,7 @@
 package wiring
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
 
@@ -140,6 +141,9 @@ func NewPollingHarness(t *testing.T, cfg *config.Config) *Harness {
 	// OnSubIssuePRCreated callback → autopilot
 	h.Runner.SetOnSubIssuePRCreated(ctrl.OnPRCreated)
 
+	// SubIssueMergeWait — immediate success for tests (GH-2179)
+	h.Runner.SetSubIssueMergeWait(func(_ context.Context, _ int) error { return nil })
+
 	return h
 }
 
@@ -251,6 +255,9 @@ func NewGatewayHarness(t *testing.T, cfg *config.Config) *Harness {
 
 	// OnSubIssuePRCreated callback → autopilot
 	h.Runner.SetOnSubIssuePRCreated(ctrl.OnPRCreated)
+
+	// SubIssueMergeWait — immediate success for tests (GH-2179)
+	h.Runner.SetSubIssueMergeWait(func(_ context.Context, _ int) error { return nil })
 
 	return h
 }
