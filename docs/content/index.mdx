@@ -16,8 +16,10 @@ Pilot is an autonomous development pipeline with **260+ features** production-re
 {/* ILLUSTRATION: Hero — Ticket → Pilot → PR flow diagram */}
 
 ```
-Ticket          Pilot           Review          Ship
-(GitHub/GL)  →  (executes)  →   (You)    →     (Merge)
+┌──────────────┐     ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
+│    Ticket    │     │    Pilot     │     │ Review (opt) │     │     Ship     │
+│ (GitHub/GL)  │ ──▶ │  (executes)  │ ──▶ │    (You)     │ ──▶ │   (Merge)    │
+└──────────────┘     └──────────────┘     └──────────────┘     └──────────────┘
 ```
 
 No prompting. No babysitting. Label a ticket, get a PR or a release.
