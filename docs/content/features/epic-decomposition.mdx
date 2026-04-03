@@ -287,9 +287,11 @@ func (r *Runner) CreateSubIssues(ctx context.Context, plan *EpicPlan,
                                 executionPath string) ([]CreatedIssue, error)
 
 // Execute subtasks sequentially with progress tracking
+// GH-2177: repoPath ensures sub-issues branch from the real repo, not a parent worktree
 func (r *Runner) ExecuteSubIssues(ctx context.Context, parent *Task,
                                  issues []CreatedIssue,
-                                 executionPath string) error
+                                 executionPath string,
+                                 repoPath string) error
 ```
 
 ### Data Structures

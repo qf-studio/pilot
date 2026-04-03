@@ -95,7 +95,7 @@ func TestEpicWorktreeIsolation(t *testing.T) {
 	}
 
 	// Execute sub-issues (this is what happens inside executeWithOptions for epics)
-	err := runner.ExecuteSubIssues(ctx, parent, subIssues, localRepo)
+	err := runner.ExecuteSubIssues(ctx, parent, subIssues, localRepo, "")
 	if err != nil {
 		t.Fatalf("ExecuteSubIssues failed: %v", err)
 	}
@@ -183,7 +183,7 @@ func TestEpicWorktreeIsolation_ExecuteWithOptionsTracking(t *testing.T) {
 		ProjectPath: localRepo,
 	}
 
-	err := runner.ExecuteSubIssues(ctx, parent, subIssues, localRepo)
+	err := runner.ExecuteSubIssues(ctx, parent, subIssues, localRepo, "")
 	if err != nil {
 		t.Fatalf("ExecuteSubIssues failed: %v", err)
 	}
@@ -269,15 +269,16 @@ func TestEpicWorktreeCleanup(t *testing.T) {
 		ProjectPath: worktreePath, // Use worktree path
 	}
 
-	err = runner.ExecuteSubIssues(ctx, parent, subIssues, worktreePath)
+	// GH-2177: Pass localRepo as repoPath so sub-issues branch from real repo
+	err = runner.ExecuteSubIssues(ctx, parent, subIssues, worktreePath, localRepo)
 	if err != nil {
 		t.Fatalf("ExecuteSubIssues failed: %v", err)
 	}
 
-	// Verify sub-issues used worktree path
+	// GH-2177: Verify sub-issues used real repo path (not worktree path)
 	for i, path := range executedPaths {
-		if path != worktreePath {
-			t.Errorf("sub-issue %d: executed in %q, want %q", i, path, worktreePath)
+		if path != localRepo {
+			t.Errorf("sub-issue %d: executed in %q, want %q (real repo, not worktree)", i, path, localRepo)
 		}
 	}
 
@@ -353,7 +354,7 @@ func TestNoRecursiveWorktreeInDecomposedTasks(t *testing.T) {
 		ProjectPath: localRepo, // NOT a worktree path
 	}
 
-	err := runner.ExecuteSubIssues(ctx, parent, subIssues, localRepo)
+	err := runner.ExecuteSubIssues(ctx, parent, subIssues, localRepo, "")
 	if err != nil {
 		t.Fatalf("ExecuteSubIssues failed: %v", err)
 	}
@@ -441,13 +442,15 @@ func TestWorktreeIsolationWithNavigatorCopy(t *testing.T) {
 		ProjectPath: result.Path, // Use worktree path
 	}
 
-	err = runner.ExecuteSubIssues(ctx, parent, subIssues, result.Path)
+	// GH-2177: Pass localRepo as repoPath — sub-issues use real repo path.
+	// Navigator availability check still works because localRepo has .agent/
+	err = runner.ExecuteSubIssues(ctx, parent, subIssues, result.Path, localRepo)
 	if err != nil {
 		t.Fatalf("ExecuteSubIssues failed: %v", err)
 	}
 
 	if !navigatorAvailable {
-		t.Error("Navigator should be available in worktree for sub-issues")
+		t.Error("Navigator should be available in sub-issue repo path")
 	}
 }
 

@@ -611,7 +611,10 @@ func (r *Runner) CloseIssueWithComment(ctx context.Context, projectPath string, 
 // Each sub-issue is executed as a separate task, and the parent issue is updated with progress.
 // Returns an error if any sub-issue fails; completed sub-issues remain done.
 // executionPath may differ from task.ProjectPath when using worktree isolation (GH-968).
-func (r *Runner) ExecuteSubIssues(ctx context.Context, parent *Task, issues []CreatedIssue, executionPath string) error {
+// GH-2177: repoPath is the real repository path (not a worktree). Sub-issues need this
+// as their ProjectPath so they can create their own branches from the real repo.
+// executionPath is still used for gh CLI commands (issue comments) that need worktree context.
+func (r *Runner) ExecuteSubIssues(ctx context.Context, parent *Task, issues []CreatedIssue, executionPath string, repoPath string) error {
 	if len(issues) == 0 {
 		return fmt.Errorf("no sub-issues to execute")
 	}
@@ -621,6 +624,14 @@ func (r *Runner) ExecuteSubIssues(ctx context.Context, parent *Task, issues []Cr
 	projectPath := executionPath
 	if projectPath == "" && parent != nil {
 		projectPath = parent.ProjectPath
+	}
+
+	// GH-2177: Use repoPath for sub-task ProjectPath so each sub-issue branches
+	// from the real repo, not the parent's worktree. Fall back to projectPath
+	// for backwards compatibility (non-worktree mode).
+	subTaskRepoPath := repoPath
+	if subTaskRepoPath == "" {
+		subTaskRepoPath = projectPath
 	}
 
 	r.log.Info("Starting sequential sub-issue execution",
@@ -670,11 +681,13 @@ func (r *Runner) ExecuteSubIssues(ctx context.Context, parent *Task, issues []Cr
 		}
 
 		// Create task from sub-issue
+		// GH-2177: Use real repo path so sub-issues can create branches from main,
+		// not from inside the parent's worktree (which locks the branch).
 		subTask := &Task{
 			ID:          taskID,
 			Title:       issue.Subtask.Title,
 			Description: issue.Subtask.Description,
-			ProjectPath: projectPath,
+			ProjectPath: subTaskRepoPath,
 			Branch:      fmt.Sprintf("pilot/%s", taskID),
 			CreatePR:    true,
 		}

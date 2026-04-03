@@ -120,12 +120,13 @@ func TestWorktreeEpicIntegration(t *testing.T) {
 		{Number: 1002, URL: "https://github.com/test/repo/issues/1002", Subtask: plan.Subtasks[1]},
 	}
 
-	err = runner.ExecuteSubIssues(ctx, epicTask, mockIssues, worktreeResult.Path)
+	// GH-2177: Pass localRepo as repoPath so sub-issues branch from real repo
+	err = runner.ExecuteSubIssues(ctx, epicTask, mockIssues, worktreeResult.Path, localRepo)
 	if err != nil {
 		t.Fatalf("ExecuteSubIssues failed: %v", err)
 	}
 
-	// Verify sub-issue executions used the worktree path
+	// GH-2177: Verify sub-issue executions used the real repo path (not worktree)
 	pathsMu.Lock()
 	defer pathsMu.Unlock()
 
@@ -135,9 +136,9 @@ func TestWorktreeEpicIntegration(t *testing.T) {
 
 	for i, path := range subIssueExecutionPaths {
 		t.Logf("Sub-issue %d executed in path: %s", i+1, path)
-		// Sub-issues should use the worktree path passed to ExecuteSubIssues
-		if path != worktreeResult.Path {
-			t.Errorf("Sub-issue %d: expected worktree path %q, got %q", i+1, worktreeResult.Path, path)
+		// GH-2177: Sub-issues should use the real repo path, not the parent's worktree
+		if path != localRepo {
+			t.Errorf("Sub-issue %d: expected real repo path %q, got %q", i+1, localRepo, path)
 		}
 	}
 }

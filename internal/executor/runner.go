@@ -1071,7 +1071,9 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 			r.reportProgress(task.ID, "Executing", 50, fmt.Sprintf("Executing %d sub-issues sequentially...", len(issues)))
 
 			// GH-412: Execute sub-issues sequentially
-			if err := r.ExecuteSubIssues(ctx, task, issues, executionPath); err != nil {
+			// GH-2177: Pass task.ProjectPath as repoPath so sub-issues branch from
+			// the real repo, not the parent's worktree path.
+			if err := r.ExecuteSubIssues(ctx, task, issues, executionPath, task.ProjectPath); err != nil {
 				return &ExecutionResult{
 					TaskID:   task.ID,
 					Success:  false,
