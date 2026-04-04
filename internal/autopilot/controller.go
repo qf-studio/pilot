@@ -2062,4 +2062,8 @@ func (c *Controller) notifyExternalClose(ctx context.Context, prState *PRState) 
 		}
 		c.log.Info("marked issue as pilot-retry-ready (PR closed without merge)", "issue", prState.IssueNumber, "pr", prState.PRNumber)
 	}
+
+	// GH-2198: Close parent epic when all sub-issues are done (even if this one
+	// was closed without merge). maybeCloseParentIssue no-ops for non-sub-issues.
+	c.maybeCloseParentIssue(ctx, prState)
 }

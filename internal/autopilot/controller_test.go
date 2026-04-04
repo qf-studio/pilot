@@ -3953,3 +3953,103 @@ func TestMaybeCloseParentIssue(t *testing.T) {
 		})
 	}
 }
+
+// TestNotifyExternalClose_MaybeCloseParent verifies that notifyExternalClose
+// calls maybeCloseParentIssue so parent epics are auto-closed when the last
+// sub-issue PR is closed without merge (GH-2198).
+func TestNotifyExternalClose_MaybeCloseParent(t *testing.T) {
+	tests := []struct {
+		name             string
+		issueNumber      int
+		issueBody        string
+		openSubIssues    int
+		wantParentClosed bool
+	}{
+		{
+			name:             "last sub-issue PR closed externally - parent closes",
+			issueNumber:      10,
+			issueBody:        "Fix the bug\n\nParent: GH-5\n",
+			openSubIssues:    0,
+			wantParentClosed: true,
+		},
+		{
+			name:             "non-last sub-issue - parent stays open",
+			issueNumber:      10,
+			issueBody:        "Fix the bug\n\nParent: GH-5\n",
+			openSubIssues:    1,
+			wantParentClosed: false,
+		},
+		{
+			name:             "non-sub-issue - no parent lookup",
+			issueNumber:      10,
+			issueBody:        "Standalone issue",
+			openSubIssues:    0,
+			wantParentClosed: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var parentCloseCalled bool
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				// Label/remove calls for the sub-issue itself (notifyExternalClose)
+				case r.URL.Path == "/repos/owner/repo/issues/10/labels" && r.Method == http.MethodPost:
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write([]byte("[]"))
+				case strings.HasPrefix(r.URL.Path, "/repos/owner/repo/issues/10/labels/") && r.Method == http.MethodDelete:
+					w.WriteHeader(http.StatusOK)
+
+				// maybeCloseParentIssue: fetch sub-issue body
+				case r.URL.Path == "/repos/owner/repo/issues/10" && r.Method == http.MethodGet:
+					issue := github.Issue{Number: 10, Body: tt.issueBody}
+					w.WriteHeader(http.StatusOK)
+					_ = json.NewEncoder(w).Encode(issue)
+
+				// maybeCloseParentIssue: count open siblings
+				case strings.HasPrefix(r.URL.Path, "/search/issues"):
+					resp := struct {
+						TotalCount int `json:"total_count"`
+					}{TotalCount: tt.openSubIssues}
+					w.WriteHeader(http.StatusOK)
+					_ = json.NewEncoder(w).Encode(resp)
+
+				// maybeCloseParentIssue: close parent
+				case r.URL.Path == "/repos/owner/repo/issues/5" && r.Method == http.MethodPatch:
+					parentCloseCalled = true
+					w.WriteHeader(http.StatusOK)
+
+				// parent label / comment calls
+				case r.URL.Path == "/repos/owner/repo/issues/5/labels" && r.Method == http.MethodPost:
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write([]byte("[]"))
+				case strings.HasPrefix(r.URL.Path, "/repos/owner/repo/issues/5/labels/") && r.Method == http.MethodDelete:
+					w.WriteHeader(http.StatusOK)
+				case r.URL.Path == "/repos/owner/repo/issues/5/comments" && r.Method == http.MethodPost:
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write([]byte(`{"id":1}`))
+
+				default:
+					w.WriteHeader(http.StatusOK)
+				}
+			}))
+			defer server.Close()
+
+			ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			cfg := DefaultConfig()
+			c := NewController(cfg, ghClient, nil, "owner", "repo")
+
+			prState := &PRState{
+				PRNumber:    42,
+				IssueNumber: tt.issueNumber,
+			}
+
+			c.notifyExternalClose(context.Background(), prState)
+
+			if parentCloseCalled != tt.wantParentClosed {
+				t.Errorf("parent closed = %v, want %v", parentCloseCalled, tt.wantParentClosed)
+			}
+		})
+	}
+}
