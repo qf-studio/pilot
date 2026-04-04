@@ -14,7 +14,7 @@ Pilot is source-available under [BSL 1.1](LICENSE). Contributions are welcome an
 ### Clone and Build
 
 ```bash
-git clone https://github.com/alekspetrov/pilot.git
+git clone https://github.com/qf-studio/pilot.git
 cd pilot
 make build
 ```
@@ -43,7 +43,7 @@ make fmt
 
 ### Report Bugs
 
-Open a [GitHub Issue](https://github.com/alekspetrov/pilot/issues/new) with:
+Open a [GitHub Issue](https://github.com/qf-studio/pilot/issues/new) with:
 - Steps to reproduce
 - Expected vs actual behavior
 - Pilot version (`pilot --version`)

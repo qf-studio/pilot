@@ -42,6 +42,6 @@ docker run -d \
   -e ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY \
   -e GITHUB_TOKEN=$GITHUB_TOKEN \
   -v pilot-data:/data \
-  ghcr.io/alekspetrov/pilot:latest \
+  ghcr.io/qf-studio/pilot:latest \
   start --telegram --github
 ```

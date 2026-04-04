@@ -28,7 +28,7 @@ Parameters:
 
   ContainerImage:
     Type: String
-    Default: ghcr.io/alekspetrov/pilot:latest
+    Default: ghcr.io/qf-studio/pilot:latest
     Description: Container image to deploy
 
 Resources:
