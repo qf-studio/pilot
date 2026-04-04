@@ -91,7 +91,7 @@ release:
 
 brews:
   - repository:
-      owner: alekspetrov
+      owner: qf-studio
       name: homebrew-pilot
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
     directory: Formula
