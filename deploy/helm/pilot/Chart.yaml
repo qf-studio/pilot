@@ -12,7 +12,7 @@ keywords:
   - ci
 home: https://pilot.quantflow.studio
 sources:
-  - https://github.com/alekspetrov/pilot
+  - https://github.com/qf-studio/pilot
 maintainers:
   - name: alekspetrov
     url: https://github.com/alekspetrov

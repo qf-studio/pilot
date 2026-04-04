@@ -9,7 +9,7 @@
   "containerDefinitions": [
     {
       "name": "pilot",
-      "image": "ghcr.io/alekspetrov/pilot:latest",
+      "image": "ghcr.io/qf-studio/pilot:latest",
       "essential": true,
       "command": ["pilot", "start", "--telegram", "--github"],
       "environment": [
