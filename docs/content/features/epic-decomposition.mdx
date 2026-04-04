@@ -15,7 +15,7 @@ When Pilot detects a complex task (epic), it automatically:
 1. **Plans** the implementation using Claude Code in planning mode
 2. **Decomposes** the epic into 3-5 sequential subtasks
 3. **Creates** separate GitHub issues for each subtask
-4. **Executes** subtasks sequentially, updating progress on the parent issue
+4. **Executes** subtasks sequentially, updating progress on the parent issue (optionally waiting for each PR to merge before starting the next — see [Merge-Wait](#merge-wait-between-sub-issues))
 5. **Closes** completed subtasks and the parent epic
 
 ```
@@ -61,6 +61,43 @@ orchestrator:
       max_subtasks: 5         # Limit subtask count
       min_description_words: 100  # Word threshold for decomposition
 ```
+
+## Merge-Wait Between Sub-Issues
+
+### Problem
+
+By default, all sub-issues branch from the same `main` HEAD. If two subtasks touch overlapping files, the second PR will conflict with the first once it's merged — causing CI failures and manual resolution work.
+
+### Solution
+
+Set `execution.wait_for_merge: true` in config. Pilot will wait for each sub-issue's PR to be merged before branching and executing the next one.
+
+```yaml
+# ~/.pilot/config.yaml
+orchestrator:
+  execution:
+    wait_for_merge: true  # Wait for each sub-issue PR to merge before next
+```
+
+### How It Works
+
+```
+Sub-issue N → PR Created → Poll until Merged → Sync main → Sub-issue N+1 branches from updated main
+```
+
+1. After sub-issue N's PR is created, Pilot polls GitHub until it is merged
+2. `syncMainBranch` pulls the merged changes into the local `main`
+3. Sub-issue N+1 branches from the updated `main`, picking up N's changes
+4. The last sub-issue skips the wait (nothing follows it)
+5. If the PR is closed without merging, or the merge times out, the epic aborts with a clear error
+
+<Callout type="tip" emoji="💡">
+  Enable merge-wait for epics where sub-issues touch overlapping files or packages. Without it, sub-issues branch in parallel from the same HEAD — which is faster but risks merge conflicts when PRs land.
+</Callout>
+
+### Backwards Compatibility
+
+Without `wait_for_merge: true`, sub-issues continue to fire in parallel (the default behavior before v2.87.5). Existing configs require no changes.
 
 ## Planning Process
 
