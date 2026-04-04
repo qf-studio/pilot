@@ -37,12 +37,12 @@ Body:
 
 ## Documentation
 
-- [README](https://github.com/alekspetrov/pilot#readme): Full documentation, installation, configuration
-- [Deployment Guide](https://github.com/alekspetrov/pilot/blob/main/docs/DEPLOYMENT.md): Cloud deployment options
-- [CLI Reference](https://github.com/alekspetrov/pilot#cli-reference): All commands and flags
+- [README](https://github.com/qf-studio/pilot#readme): Full documentation, installation, configuration
+- [Deployment Guide](https://github.com/qf-studio/pilot/blob/main/docs/DEPLOYMENT.md): Cloud deployment options
+- [CLI Reference](https://github.com/qf-studio/pilot#cli-reference): All commands and flags
 
 ## Optional
 
-- [Configuration](https://github.com/alekspetrov/pilot#configuration): YAML config reference
-- [Autopilot Modes](https://github.com/alekspetrov/pilot#autopilot-modes): dev/stage/prod autonomy levels
-- [Telegram Integration](https://github.com/alekspetrov/pilot#telegram-integration): Chat, voice, and image support
+- [Configuration](https://github.com/qf-studio/pilot#configuration): YAML config reference
+- [Autopilot Modes](https://github.com/qf-studio/pilot#autopilot-modes): dev/stage/prod autonomy levels
+- [Telegram Integration](https://github.com/qf-studio/pilot#telegram-integration): Chat, voice, and image support
