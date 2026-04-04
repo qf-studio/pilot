@@ -1,10 +1,10 @@
 #!/bin/bash
 # Pilot installer script
-# Usage: curl -fsSL https://raw.githubusercontent.com/alekspetrov/pilot/main/install.sh | bash
+# Usage: curl -fsSL https://raw.githubusercontent.com/qf-studio/pilot/main/install.sh | bash
 
 set -e
 
-REPO="alekspetrov/pilot"
+REPO="qf-studio/pilot"
 BINARY_NAME="pilot"
 INSTALL_DIR="$HOME/.local/bin"
 

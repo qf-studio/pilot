@@ -65,7 +65,7 @@ Pilot picks up tickets from GitHub, Linear, Jira, or Asana—plans the implement
 ### Homebrew (recommended)
 
 ```bash
-brew tap qf-studio/pilot
+brew tap alekspetrov/pilot
 brew install pilot
 ```
 
