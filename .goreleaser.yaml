@@ -88,3 +88,20 @@ release:
   prerelease: auto
   mode: append
   name_template: "{{.ProjectName}} v{{.Version}}"
+
+brews:
+  - repository:
+      owner: alekspetrov
+      name: homebrew-pilot
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    directory: Formula
+    homepage: "https://pilot.quantflow.studio"
+    description: "AI that ships your tickets — autonomous development pipeline"
+    license: "MIT"
+    install: |
+      bin.install "pilot"
+    test: |
+      system "#{bin}/pilot", "version"
+    commit_author:
+      name: "Pilot Bot"
+      email: "pilot@quantflow.studio"
