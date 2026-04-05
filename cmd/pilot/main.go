@@ -719,6 +719,11 @@ Examples:
 						pollerOpts = append(pollerOpts, github.WithProcessedStore(gwAutopilotStateStore))
 					}
 
+					// GH-2201: Wire task checker for retry grace period (gateway mode)
+					if gwStore != nil {
+						pollerOpts = append(pollerOpts, github.WithTaskChecker(storeTaskChecker{store: gwStore}))
+					}
+
 					// Create rate limit retry scheduler
 					repoParts := strings.Split(cfg.Adapters.GitHub.Repo, "/")
 					if len(repoParts) != 2 {
@@ -1939,6 +1944,9 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 					pollerOpts = append(pollerOpts, github.WithProcessedStore(autopilotStateStore))
 				}
 
+				// GH-2201: Wire task checker for retry grace period
+				pollerOpts = append(pollerOpts, github.WithTaskChecker(storeTaskChecker{store: store}))
+
 				// Capture variables for closures
 				sourceRepo := repoFullName
 				projPathCapture := projPath
@@ -2533,4 +2541,19 @@ func cleanStartupHooks(cfg *config.Config, projectPath string) {
 			slog.Warn("failed to clean stale hooks", "path", p.Path, "error", err)
 		}
 	}
+}
+
+// storeTaskChecker adapts memory.Store to the github.TaskChecker interface.
+// GH-2201: Used by the poller to check if a task is still queued/in-progress
+// before allowing retry after the grace period expires.
+type storeTaskChecker struct {
+	store *memory.Store
+}
+
+func (s storeTaskChecker) IsTaskQueued(taskID string) bool {
+	queued, err := s.store.IsTaskQueued(taskID)
+	if err != nil {
+		return false // Don't block retry on DB errors
+	}
+	return queued
 }
