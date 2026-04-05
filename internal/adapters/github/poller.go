@@ -37,6 +37,13 @@ type ProcessedStore interface {
 	LoadProcessedIssues() (map[int]bool, error)
 }
 
+// TaskChecker checks whether a task is currently queued or in-progress.
+// Used during retry grace-period evaluation to avoid re-dispatching issues
+// that are still being executed.
+type TaskChecker interface {
+	IsTaskQueued(taskID string) bool
+}
+
 // IssueResult is returned by the issue handler with PR information
 type IssueResult struct {
 	Success    bool
@@ -54,7 +61,7 @@ type Poller struct {
 	repo      string
 	label     string
 	interval  time.Duration
-	processed map[int]bool
+	processed map[int]time.Time
 	mu        sync.RWMutex
 	onIssue   func(ctx context.Context, issue *Issue) error
 	// onIssueWithResult is called for sequential mode, returns PR info
@@ -83,6 +90,15 @@ type Poller struct {
 
 	// Persistent processed store (optional)
 	processedStore ProcessedStore
+
+	// GH-2201: Retry grace period prevents rapid re-dispatch of recently-processed issues.
+	// When a processed issue's status labels are removed, the poller waits this duration
+	// before allowing retry. Default: 5 minutes.
+	retryGracePeriod time.Duration
+
+	// GH-2201: TaskChecker verifies whether an issue is still queued/in-progress
+	// before allowing retry after the grace period expires.
+	taskChecker TaskChecker
 }
 
 // PollerOption configures a Poller
@@ -149,6 +165,22 @@ func WithProcessedStore(store ProcessedStore) PollerOption {
 	}
 }
 
+// WithRetryGracePeriod sets the minimum time that must elapse after an issue is
+// marked processed before the retry path will allow re-dispatch. Default: 5 minutes.
+func WithRetryGracePeriod(d time.Duration) PollerOption {
+	return func(p *Poller) {
+		p.retryGracePeriod = d
+	}
+}
+
+// WithTaskChecker sets the task checker used to verify whether an issue is still
+// queued or in-progress before allowing retry after the grace period expires.
+func WithTaskChecker(tc TaskChecker) PollerOption {
+	return func(p *Poller) {
+		p.taskChecker = tc
+	}
+}
+
 // WithMaxConcurrent sets the maximum number of parallel issue executions
 func WithMaxConcurrent(n int) PollerOption {
 	return func(p *Poller) {
@@ -167,17 +199,18 @@ func NewPoller(client *Client, repo string, label string, interval time.Duration
 	}
 
 	p := &Poller{
-		client:         client,
-		owner:          parts[0],
-		repo:           parts[1],
-		label:          label,
-		interval:       interval,
-		processed:      make(map[int]bool),
-		logger:         logging.WithComponent("github-poller"),
-		executionMode:  ExecutionModeAuto, // Default matches config.DefaultExecutionConfig()
-		waitForMerge:   true,
-		prPollInterval: 30 * time.Second,
-		prTimeout:      1 * time.Hour,
+		client:           client,
+		owner:            parts[0],
+		repo:             parts[1],
+		label:            label,
+		interval:         interval,
+		processed:        make(map[int]time.Time),
+		logger:           logging.WithComponent("github-poller"),
+		executionMode:    ExecutionModeAuto, // Default matches config.DefaultExecutionConfig()
+		waitForMerge:     true,
+		prPollInterval:   30 * time.Second,
+		prTimeout:        1 * time.Hour,
+		retryGracePeriod: 5 * time.Minute, // GH-2201: default grace period
 	}
 
 	for _, opt := range opts {
@@ -200,7 +233,7 @@ func NewPoller(client *Client, repo string, label string, interval time.Duration
 		} else if len(loaded) > 0 {
 			p.mu.Lock()
 			for num := range loaded {
-				p.processed[num] = true
+				p.processed[num] = time.Now()
 			}
 			p.mu.Unlock()
 			p.logger.Info("Loaded processed issues from store", slog.Int("count", len(loaded)))
@@ -510,11 +543,31 @@ func (p *Poller) findOldestUnprocessedIssue(ctx context.Context) (*Issue, error)
 
 		// Check if previously processed
 		p.mu.RLock()
-		processed := p.processed[issue.Number]
+		processedAt, processed := p.processed[issue.Number]
 		p.mu.RUnlock()
 
 		// If processed but no status labels, allow retry (pilot-failed was removed)
 		if processed {
+			// GH-2201: Check grace period before allowing retry
+			if p.retryGracePeriod > 0 && time.Since(processedAt) < p.retryGracePeriod {
+				p.logger.Debug("Issue within retry grace period, skipping",
+					slog.Int("number", issue.Number),
+					slog.Duration("elapsed", time.Since(processedAt)),
+					slog.Duration("grace_period", p.retryGracePeriod))
+				continue
+			}
+
+			// GH-2201: Check if task is still queued/in-progress
+			if p.taskChecker != nil {
+				taskID := fmt.Sprintf("GH-%d", issue.Number)
+				if p.taskChecker.IsTaskQueued(taskID) {
+					p.logger.Debug("Issue still queued/in-progress, skipping retry",
+						slog.Int("number", issue.Number),
+						slog.String("task_id", taskID))
+					continue
+				}
+			}
+
 			p.logger.Info("Issue was processed but status labels removed, allowing retry",
 				slog.Int("number", issue.Number))
 			p.mu.Lock()
@@ -678,11 +731,31 @@ func (p *Poller) checkForNewIssues(ctx context.Context) {
 
 		// Check if already processed
 		p.mu.RLock()
-		processed := p.processed[issue.Number]
+		processedAt, processed := p.processed[issue.Number]
 		p.mu.RUnlock()
 
 		// If processed but no status labels, allow retry (pilot-failed was removed)
 		if processed {
+			// GH-2201: Check grace period before allowing retry
+			if p.retryGracePeriod > 0 && time.Since(processedAt) < p.retryGracePeriod {
+				p.logger.Debug("Issue within retry grace period, skipping",
+					slog.Int("number", issue.Number),
+					slog.Duration("elapsed", time.Since(processedAt)),
+					slog.Duration("grace_period", p.retryGracePeriod))
+				continue
+			}
+
+			// GH-2201: Check if task is still queued/in-progress
+			if p.taskChecker != nil {
+				taskID := fmt.Sprintf("GH-%d", issue.Number)
+				if p.taskChecker.IsTaskQueued(taskID) {
+					p.logger.Debug("Issue still queued/in-progress, skipping retry",
+						slog.Int("number", issue.Number),
+						slog.String("task_id", taskID))
+					continue
+				}
+			}
+
 			p.logger.Info("Issue was processed but status labels removed, allowing retry",
 				slog.Int("number", issue.Number))
 			p.mu.Lock()
@@ -802,10 +875,10 @@ func (p *Poller) checkForNewIssues(ctx context.Context) {
 	}
 }
 
-// markProcessed marks an issue as processed
+// markProcessed marks an issue as processed with the current timestamp
 func (p *Poller) markProcessed(number int) {
 	p.mu.Lock()
-	p.processed[number] = true
+	p.processed[number] = time.Now()
 	p.mu.Unlock()
 
 	// Persist to store if available
@@ -854,7 +927,8 @@ func (p *Poller) WaitForActive() {
 func (p *Poller) IsProcessed(number int) bool {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	return p.processed[number]
+	_, ok := p.processed[number]
+	return ok
 }
 
 // ProcessedCount returns the number of processed issues
@@ -867,7 +941,7 @@ func (p *Poller) ProcessedCount() int {
 // Reset clears the processed issues map
 func (p *Poller) Reset() {
 	p.mu.Lock()
-	p.processed = make(map[int]bool)
+	p.processed = make(map[int]time.Time)
 	p.mu.Unlock()
 }
 
