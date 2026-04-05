@@ -719,6 +719,11 @@ Examples:
 						pollerOpts = append(pollerOpts, github.WithProcessedStore(gwAutopilotStateStore))
 					}
 
+					// GH-2201: Wire task checker to prevent retry of queued/running tasks
+					if gwStore != nil {
+						pollerOpts = append(pollerOpts, github.WithTaskChecker(gwStore))
+					}
+
 					// Create rate limit retry scheduler
 					repoParts := strings.Split(cfg.Adapters.GitHub.Repo, "/")
 					if len(repoParts) != 2 {
@@ -1937,6 +1942,11 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 				// GH-726: Wire processed issue persistence
 				if autopilotStateStore != nil {
 					pollerOpts = append(pollerOpts, github.WithProcessedStore(autopilotStateStore))
+				}
+
+				// GH-2201: Wire task checker to prevent retry of queued/running tasks
+				if store != nil {
+					pollerOpts = append(pollerOpts, github.WithTaskChecker(store))
 				}
 
 				// Capture variables for closures

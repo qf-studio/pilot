@@ -523,6 +523,7 @@ func TestPoller_CheckForNewIssues_AllowsRetryWhenLabelsRemoved(t *testing.T) {
 			atomic.AddInt32(&callCount, 1)
 			return nil
 		}),
+		WithRetryGracePeriod(0), // GH-2201: Disable grace period for test
 	)
 
 	// Pre-mark as processed (simulating previous failed attempt)
@@ -534,6 +535,199 @@ func TestPoller_CheckForNewIssues_AllowsRetryWhenLabelsRemoved(t *testing.T) {
 	// Should retry since labels were removed
 	if got := atomic.LoadInt32(&callCount); got != 1 {
 		t.Errorf("callback called %d times, want 1 (should retry after labels removed)", got)
+	}
+}
+
+// mockTaskChecker implements TaskChecker for tests.
+type mockTaskChecker struct {
+	queued map[string]bool
+}
+
+func (m *mockTaskChecker) IsTaskQueued(taskID string) (bool, error) {
+	return m.queued[taskID], nil
+}
+
+func TestPoller_SkipsRecentlyProcessed(t *testing.T) {
+	issues := []*Issue{
+		{Number: 1, Title: "Issue 1", Labels: []Label{{Name: "pilot"}}},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(issues)
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+
+	var callCount int32
+	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second,
+		WithOnIssue(func(ctx context.Context, issue *Issue) error {
+			atomic.AddInt32(&callCount, 1)
+			return nil
+		}),
+		WithRetryGracePeriod(10*time.Minute), // Long grace period
+	)
+
+	// Pre-mark as processed (simulating recent processing)
+	poller.markProcessed(1)
+
+	poller.checkForNewIssues(context.Background())
+	poller.WaitForActive()
+
+	// Should NOT retry because grace period hasn't elapsed
+	if got := atomic.LoadInt32(&callCount); got != 0 {
+		t.Errorf("callback called %d times, want 0 (should skip during grace period)", got)
+	}
+}
+
+func TestPoller_AllowsRetryAfterGrace(t *testing.T) {
+	issues := []*Issue{
+		{Number: 1, Title: "Issue 1", Labels: []Label{{Name: "pilot"}}},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(issues)
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+
+	var callCount int32
+	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second,
+		WithOnIssue(func(ctx context.Context, issue *Issue) error {
+			atomic.AddInt32(&callCount, 1)
+			return nil
+		}),
+		WithRetryGracePeriod(1*time.Millisecond), // Very short grace period
+	)
+
+	// Pre-mark as processed with a timestamp in the past
+	poller.mu.Lock()
+	poller.processed[1] = time.Now().Add(-1 * time.Second)
+	poller.mu.Unlock()
+
+	poller.checkForNewIssues(context.Background())
+	poller.WaitForActive()
+
+	// Should retry because grace period has elapsed
+	if got := atomic.LoadInt32(&callCount); got != 1 {
+		t.Errorf("callback called %d times, want 1 (should retry after grace period)", got)
+	}
+}
+
+func TestPoller_SkipsQueuedTask(t *testing.T) {
+	issues := []*Issue{
+		{Number: 42, Title: "Issue 42", Labels: []Label{{Name: "pilot"}}},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(issues)
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+
+	checker := &mockTaskChecker{queued: map[string]bool{"GH-42": true}}
+
+	var callCount int32
+	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second,
+		WithOnIssue(func(ctx context.Context, issue *Issue) error {
+			atomic.AddInt32(&callCount, 1)
+			return nil
+		}),
+		WithRetryGracePeriod(0),
+		WithTaskChecker(checker),
+	)
+
+	// Pre-mark as processed
+	poller.mu.Lock()
+	poller.processed[42] = time.Now().Add(-1 * time.Hour)
+	poller.mu.Unlock()
+
+	poller.checkForNewIssues(context.Background())
+	poller.WaitForActive()
+
+	// Should NOT retry because task is still queued
+	if got := atomic.LoadInt32(&callCount); got != 0 {
+		t.Errorf("callback called %d times, want 0 (should skip queued task)", got)
+	}
+}
+
+func TestPoller_AllowsRetryCompletedTask(t *testing.T) {
+	issues := []*Issue{
+		{Number: 42, Title: "Issue 42", Labels: []Label{{Name: "pilot"}}},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(issues)
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+
+	// Task is NOT queued (completed)
+	checker := &mockTaskChecker{queued: map[string]bool{}}
+
+	var callCount int32
+	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second,
+		WithOnIssue(func(ctx context.Context, issue *Issue) error {
+			atomic.AddInt32(&callCount, 1)
+			return nil
+		}),
+		WithRetryGracePeriod(0),
+		WithTaskChecker(checker),
+	)
+
+	// Pre-mark as processed with old timestamp
+	poller.mu.Lock()
+	poller.processed[42] = time.Now().Add(-1 * time.Hour)
+	poller.mu.Unlock()
+
+	poller.checkForNewIssues(context.Background())
+	poller.WaitForActive()
+
+	// Should retry because task is completed and grace period elapsed
+	if got := atomic.LoadInt32(&callCount); got != 1 {
+		t.Errorf("callback called %d times, want 1 (should retry completed task)", got)
+	}
+}
+
+func TestPoller_ProcessedMapStoresTimestamps(t *testing.T) {
+	client := NewClient(testutil.FakeGitHubToken)
+	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second)
+
+	before := time.Now()
+	poller.markProcessed(1)
+	after := time.Now()
+
+	poller.mu.RLock()
+	ts, ok := poller.processed[1]
+	poller.mu.RUnlock()
+
+	if !ok {
+		t.Fatal("issue 1 not found in processed map")
+	}
+
+	if ts.Before(before) || ts.After(after) {
+		t.Errorf("processed timestamp %v not between %v and %v", ts, before, after)
+	}
+
+	// Verify IsProcessed still works
+	if !poller.IsProcessed(1) {
+		t.Error("IsProcessed(1) = false, want true")
+	}
+	if poller.IsProcessed(2) {
+		t.Error("IsProcessed(2) = true, want false")
+	}
+
+	// Verify ClearProcessed works
+	poller.ClearProcessed(1)
+	if poller.IsProcessed(1) {
+		t.Error("IsProcessed(1) = true after ClearProcessed, want false")
 	}
 }
 
@@ -790,7 +984,9 @@ func TestPoller_FindOldestUnprocessedIssue_AllowsRetryWhenFailedLabelRemoved(t *
 	defer server.Close()
 
 	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
-	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second)
+	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second,
+		WithRetryGracePeriod(0), // GH-2201: Disable grace period for test
+	)
 
 	// Simulate: issue was processed (failed) but pilot-failed label was removed
 	poller.markProcessed(1)
@@ -1710,6 +1906,7 @@ func TestPoller_CheckForNewIssues_SkipsRetryWithMergedPRs(t *testing.T) {
 			atomic.AddInt32(&callCount, 1)
 			return nil
 		}),
+		WithRetryGracePeriod(0), // GH-2201: Disable grace period for test
 	)
 
 	// Pre-mark as processed (simulating previous failed attempt)
@@ -1750,6 +1947,7 @@ func TestPoller_FindOldestUnprocessedIssue_SkipsRetryWithMergedPRs(t *testing.T)
 	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second,
 		WithExecutionMode(ExecutionModeSequential),
+		WithRetryGracePeriod(0), // GH-2201: Disable grace period for test
 	)
 
 	// Pre-mark as processed (simulating previous failed attempt)
