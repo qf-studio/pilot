@@ -1,8 +1,9 @@
 name: Sync Docs Version
 
 on:
-  release:
-    types: [published]
+  push:
+    tags:
+      - 'v*.*.*'
   workflow_dispatch:
     inputs:
       version:
@@ -26,6 +27,8 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "VERSION=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event_name }}" = "push" ]; then
+            echo "VERSION=${{ github.ref_name }}" >> $GITHUB_OUTPUT
           else
             echo "VERSION=${{ github.event.release.tag_name }}" >> $GITHUB_OUTPUT
           fi
