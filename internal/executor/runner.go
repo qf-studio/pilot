@@ -3812,6 +3812,15 @@ func (r *Runner) reportProgress(taskID, phase string, progress int, message stri
 		r.taskProgressMu.Unlock()
 	}
 
+	// Emit task progress to alerts engine so stuck-task detection sees updates (GH-2204)
+	r.emitAlertEvent(AlertEvent{
+		Type:      AlertEventTypeTaskProgress,
+		TaskID:    taskID,
+		Phase:     phase,
+		Progress:  progress,
+		Timestamp: time.Now(),
+	})
+
 	// Log progress unless suppressed (e.g., when visual progress display is active)
 	if !r.suppressProgressLogs {
 		r.log.Info("Task progress",

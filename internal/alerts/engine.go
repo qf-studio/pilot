@@ -30,9 +30,10 @@ type Engine struct {
 }
 
 type progressState struct {
-	Progress  int
-	UpdatedAt time.Time
-	Phase     string
+	Progress      int
+	UpdatedAt     time.Time
+	Phase         string
+	LastAlertedAt time.Time // Per-task alert cooldown (GH-2204)
 }
 
 // Event represents an event that might trigger an alert
@@ -212,6 +213,8 @@ func (e *Engine) handleTaskProgress(event Event) {
 			Progress:  event.Progress,
 			UpdatedAt: event.Timestamp,
 			Phase:     event.Phase,
+			// Reset per-task alert cooldown when progress advances (GH-2204)
+			LastAlertedAt: time.Time{},
 		}
 	}
 }
@@ -366,14 +369,16 @@ func (e *Engine) checkStuckTasks(ctx context.Context) {
 }
 
 func (e *Engine) evaluateStuckTasks(ctx context.Context) {
+	now := time.Now()
+
+	// Collect orphan IDs under read lock, then evict under write lock (GH-2204)
 	e.mu.RLock()
 	tasks := make(map[string]progressState)
+	var orphans []string
 	for k, v := range e.taskLastProgress {
 		tasks[k] = v
 	}
 	e.mu.RUnlock()
-
-	now := time.Now()
 
 	for _, rule := range e.config.Rules {
 		if !rule.Enabled || rule.Type != AlertTypeTaskStuck {
@@ -385,21 +390,61 @@ func (e *Engine) evaluateStuckTasks(ctx context.Context) {
 			threshold = 10 * time.Minute
 		}
 
+		cooldown := rule.Cooldown
+		orphanThreshold := 4 * threshold // Evict entries stuck for 4× the threshold (GH-2204)
+
 		for taskID, state := range tasks {
-			if now.Sub(state.UpdatedAt) > threshold && e.shouldFire(rule) {
-				event := Event{
-					Type:      EventTypeTaskProgress,
-					TaskID:    taskID,
-					Phase:     state.Phase,
-					Progress:  state.Progress,
-					Timestamp: now,
-				}
-				alert := e.createAlert(rule, event,
-					fmt.Sprintf("Task %s stuck at %d%% (%s) for %v",
-						taskID, state.Progress, state.Phase, now.Sub(state.UpdatedAt).Round(time.Minute)))
-				e.fireAlert(ctx, rule, alert)
+			stuckDuration := now.Sub(state.UpdatedAt)
+
+			// Orphan eviction: remove entries that have been stuck far too long (GH-2204)
+			if stuckDuration > orphanThreshold {
+				orphans = append(orphans, taskID)
+				e.logger.Warn("evicting orphaned stuck-task entry",
+					"task_id", taskID,
+					"stuck_for", stuckDuration.Round(time.Minute),
+					"orphan_threshold", orphanThreshold,
+				)
+				continue
 			}
+
+			if stuckDuration <= threshold {
+				continue
+			}
+
+			// Per-task cooldown: skip if already alerted recently for THIS task (GH-2204)
+			if !state.LastAlertedAt.IsZero() && cooldown > 0 && now.Sub(state.LastAlertedAt) < cooldown {
+				continue
+			}
+
+			event := Event{
+				Type:      EventTypeTaskProgress,
+				TaskID:    taskID,
+				Phase:     state.Phase,
+				Progress:  state.Progress,
+				Timestamp: now,
+			}
+			alert := e.createAlert(rule, event,
+				fmt.Sprintf("Task %s stuck at %d%% (%s) for %v",
+					taskID, state.Progress, state.Phase, stuckDuration.Round(time.Minute)))
+			e.fireAlert(ctx, rule, alert)
+
+			// Record per-task alert time (GH-2204)
+			e.mu.Lock()
+			if s, ok := e.taskLastProgress[taskID]; ok {
+				s.LastAlertedAt = now
+				e.taskLastProgress[taskID] = s
+			}
+			e.mu.Unlock()
 		}
+	}
+
+	// Evict orphans
+	if len(orphans) > 0 {
+		e.mu.Lock()
+		for _, id := range orphans {
+			delete(e.taskLastProgress, id)
+		}
+		e.mu.Unlock()
 	}
 }
 
