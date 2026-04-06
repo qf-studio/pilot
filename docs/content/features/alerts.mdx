@@ -417,10 +417,11 @@ Cooldowns prevent alert fatigue by limiting how often a rule can fire.
 
 ### How Cooldowns Work
 
-1. **Per-rule tracking** — Each rule maintains its own last-fired timestamp
-2. **Check before firing** — The engine calls `shouldFire()` before dispatching an alert
-3. **Zero cooldown** — A cooldown of `0` means fire every time (no rate limiting)
-4. **Independent tracking** — Different rules have independent cooldown timers
+1. **Per-rule tracking** — Most rules maintain a per-rule last-fired timestamp
+2. **Per-task tracking (stuck tasks)** — The `task_stuck` rule uses per-task cooldowns so that multiple stuck tasks can all fire independently in the same evaluation cycle, rather than a single task blocking alerts for all others
+3. **Check before firing** — The engine checks cooldown state before dispatching an alert
+4. **Zero cooldown** — A cooldown of `0` means fire every time (no rate limiting)
+5. **Progress resets cooldown** — For stuck-task alerts, receiving a progress event resets the per-task cooldown, so the task can re-alert if it gets stuck again later
 
 ```
 Rule fires at t=0
@@ -429,6 +430,10 @@ Rule fires at t=0
 ├── t=15m: New event matches rule → Cooldown expired, fire alert
 └── t=16m: New event matches rule → Cooldown active (15m), skip
 ```
+
+### Orphan Eviction
+
+Tasks tracked for stuck-task detection are automatically evicted if they remain stuck for **4× the configured threshold** (e.g., 40 minutes with the default 10-minute threshold). This prevents zombie entries from accumulating when task completion/failure events are missed (e.g., due to process crashes or hot upgrades). Evictions are logged at `WARN` level with the task ID.
 
 ### When to Use Which Cooldown
 
