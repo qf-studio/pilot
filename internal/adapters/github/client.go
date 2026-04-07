@@ -929,3 +929,95 @@ func (c *Client) UpdatePullRequestBranch(ctx context.Context, owner, repo string
 		return c.doRequest(ctx, http.MethodPut, path, body, nil)
 	}, DefaultRetryOptions())
 }
+
+// GetIssueNodeID fetches the GraphQL node ID for a given issue number via the REST API.
+func (c *Client) GetIssueNodeID(ctx context.Context, owner, repo string, number int) (string, error) {
+	path := fmt.Sprintf("/repos/%s/%s/issues/%d", owner, repo, number)
+	var issue struct {
+		NodeID string `json:"node_id"`
+	}
+	if err := c.doRequest(ctx, http.MethodGet, path, nil, &issue); err != nil {
+		return "", fmt.Errorf("get issue node ID for %s/%s#%d: %w", owner, repo, number, err)
+	}
+	if issue.NodeID == "" {
+		return "", fmt.Errorf("issue %s/%s#%d returned empty node_id", owner, repo, number)
+	}
+	return issue.NodeID, nil
+}
+
+// LinkSubIssue links a child issue to a parent issue using the addSubIssue GraphQL mutation.
+// Both issue numbers are resolved to node IDs first.
+func (c *Client) LinkSubIssue(ctx context.Context, owner, repo string, parentNum, childNum int) error {
+	parentID, err := c.GetIssueNodeID(ctx, owner, repo, parentNum)
+	if err != nil {
+		return fmt.Errorf("resolve parent node ID: %w", err)
+	}
+	childID, err := c.GetIssueNodeID(ctx, owner, repo, childNum)
+	if err != nil {
+		return fmt.Errorf("resolve child node ID: %w", err)
+	}
+
+	const mutation = `mutation($parentID: ID!, $childID: ID!) {
+		addSubIssue(input: {issueId: $parentID, subIssueId: $childID}) {
+			issue { id }
+			subIssue { id }
+		}
+	}`
+
+	variables := map[string]interface{}{
+		"parentID": parentID,
+		"childID":  childID,
+	}
+	return c.ExecuteGraphQL(ctx, mutation, variables, nil)
+}
+
+// GetOpenSubIssueCount queries native GitHub sub-issues for a parent issue and returns:
+//   - count: number of sub-issues in OPEN state
+//   - hasNativeLinks: true when the parent has at least one native sub-issue link (totalCount > 0)
+//   - error: any API or parsing error
+func (c *Client) GetOpenSubIssueCount(ctx context.Context, owner, repo string, parentNum int) (count int, hasNativeLinks bool, err error) {
+	parentID, err := c.GetIssueNodeID(ctx, owner, repo, parentNum)
+	if err != nil {
+		return 0, false, fmt.Errorf("resolve parent node ID: %w", err)
+	}
+
+	const query = `query($issueID: ID!) {
+		node(id: $issueID) {
+			... on Issue {
+				subIssues(first: 100) {
+					totalCount
+					nodes {
+						state
+					}
+				}
+			}
+		}
+	}`
+
+	var result struct {
+		Node struct {
+			SubIssues struct {
+				TotalCount int `json:"totalCount"`
+				Nodes      []struct {
+					State string `json:"state"`
+				} `json:"nodes"`
+			} `json:"subIssues"`
+		} `json:"node"`
+	}
+
+	if err := c.ExecuteGraphQL(ctx, query, map[string]interface{}{"issueID": parentID}, &result); err != nil {
+		return 0, false, fmt.Errorf("query sub-issues for %s/%s#%d: %w", owner, repo, parentNum, err)
+	}
+
+	if result.Node.SubIssues.TotalCount == 0 {
+		return 0, false, nil
+	}
+
+	openCount := 0
+	for _, n := range result.Node.SubIssues.Nodes {
+		if n.State == "OPEN" {
+			openCount++
+		}
+	}
+	return openCount, true, nil
+}
