@@ -471,7 +471,7 @@ func TestPoller_CheckForNewIssues_NoCallback(t *testing.T) {
 }
 
 func TestPoller_CheckForNewIssues_SkipsAlreadyProcessed(t *testing.T) {
-	// Issue 1 has pilot-failed so should be skipped
+	// Issue 1 has pilot-failed and is at max retries — should be skipped
 	// Issue 2 has only pilot so should be processed
 	issues := []*Issue{
 		{Number: 1, Title: "Issue 1", Labels: []Label{{Name: "pilot"}, {Name: "pilot-failed"}}},
@@ -492,14 +492,20 @@ func TestPoller_CheckForNewIssues_SkipsAlreadyProcessed(t *testing.T) {
 			atomic.AddInt32(&callCount, 1)
 			return nil
 		}),
+		WithMaxFailedRetries(3),
 	)
+
+	// GH-2176: Set retry count to max so issue is skipped (not auto-retried)
+	poller.mu.Lock()
+	poller.failedRetryCount[1] = 3
+	poller.mu.Unlock()
 
 	poller.checkForNewIssues(context.Background())
 	poller.WaitForActive()
 
-	// Only issue 2 should trigger callback (issue 1 has pilot-failed)
+	// Only issue 2 should trigger callback (issue 1 at max retries)
 	if got := atomic.LoadInt32(&callCount); got != 1 {
-		t.Errorf("callback called %d times, want 1 (issue with status labels should be skipped)", got)
+		t.Errorf("callback called %d times, want 1 (issue at retry limit should be skipped)", got)
 	}
 }
 
@@ -2036,5 +2042,210 @@ func TestPoller_ProcessedMapStoresTimestamps(t *testing.T) {
 	poller.Reset()
 	if poller.IsProcessed(1) {
 		t.Error("IsProcessed should return false after Reset")
+	}
+}
+
+func TestPoller_AutoRetryFailedIssue_FirstFailure(t *testing.T) {
+	now := time.Now()
+	issues := []*Issue{
+		{Number: 42, Title: "Stuck issue", Labels: []Label{{Name: "pilot"}, {Name: LabelFailed}}, CreatedAt: now.Add(-1 * time.Hour)},
+	}
+
+	var labelRemoved atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// Handle label removal
+		if r.Method == http.MethodDelete && r.URL.Path == "/repos/owner/repo/issues/42/labels/"+LabelFailed {
+			labelRemoved.Store(true)
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		// Handle search (hasMergedWork check) — no merged PRs
+		if r.URL.Path == "/search/issues" {
+			_, _ = w.Write([]byte(`{"total_count": 0}`))
+			return
+		}
+		// Handle list issues
+		_ = json.NewEncoder(w).Encode(issues)
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second,
+		WithRetryGracePeriod(0),
+	)
+
+	issue, err := poller.findOldestUnprocessedIssue(context.Background())
+	if err != nil {
+		t.Fatalf("findOldestUnprocessedIssue() error = %v", err)
+	}
+	if issue == nil {
+		t.Fatal("issue should not be nil — pilot-failed issue should be retried on first failure")
+	}
+	if issue.Number != 42 {
+		t.Errorf("got issue #%d, want #42", issue.Number)
+	}
+	if !labelRemoved.Load() {
+		t.Error("pilot-failed label should have been removed")
+	}
+
+	// Verify retry count incremented
+	poller.mu.RLock()
+	retries := poller.failedRetryCount[42]
+	poller.mu.RUnlock()
+	if retries != 1 {
+		t.Errorf("retry count = %d, want 1", retries)
+	}
+}
+
+func TestPoller_AutoRetryFailedIssue_RetryLimitReached(t *testing.T) {
+	now := time.Now()
+	issues := []*Issue{
+		{Number: 42, Title: "Stuck issue", Labels: []Label{{Name: "pilot"}, {Name: LabelFailed}}, CreatedAt: now.Add(-1 * time.Hour)},
+		{Number: 43, Title: "Available issue", Labels: []Label{{Name: "pilot"}}, CreatedAt: now},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(issues)
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second,
+		WithMaxFailedRetries(3),
+	)
+
+	// Simulate: already retried 3 times
+	poller.mu.Lock()
+	poller.failedRetryCount[42] = 3
+	poller.mu.Unlock()
+
+	issue, err := poller.findOldestUnprocessedIssue(context.Background())
+	if err != nil {
+		t.Fatalf("findOldestUnprocessedIssue() error = %v", err)
+	}
+	if issue == nil {
+		t.Fatal("issue should not be nil — #43 should be picked")
+	}
+	if issue.Number != 43 {
+		t.Errorf("got issue #%d, want #43 (should skip #42 at retry limit)", issue.Number)
+	}
+}
+
+func TestPoller_AutoRetryFailedIssue_SkipsDoneIssues(t *testing.T) {
+	now := time.Now()
+	issues := []*Issue{
+		// Has both pilot-failed AND pilot-done — should NOT be retried
+		{Number: 42, Title: "Done+Failed", Labels: []Label{{Name: "pilot"}, {Name: LabelFailed}, {Name: LabelDone}}, CreatedAt: now.Add(-1 * time.Hour)},
+		{Number: 43, Title: "Available", Labels: []Label{{Name: "pilot"}}, CreatedAt: now},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(issues)
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second)
+
+	issue, err := poller.findOldestUnprocessedIssue(context.Background())
+	if err != nil {
+		t.Fatalf("findOldestUnprocessedIssue() error = %v", err)
+	}
+	if issue == nil {
+		t.Fatal("issue should not be nil — #43 should be picked")
+	}
+	if issue.Number != 43 {
+		t.Errorf("got issue #%d, want #43 (should skip #42 with pilot-done)", issue.Number)
+	}
+}
+
+func TestPoller_AutoRetryFailedIssue_ParallelMode(t *testing.T) {
+	now := time.Now()
+	issues := []*Issue{
+		{Number: 42, Title: "Stuck issue", Labels: []Label{{Name: "pilot"}, {Name: LabelFailed}}, CreatedAt: now.Add(-1 * time.Hour)},
+	}
+
+	var labelRemoved atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodDelete && r.URL.Path == "/repos/owner/repo/issues/42/labels/"+LabelFailed {
+			labelRemoved.Store(true)
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		if r.URL.Path == "/search/issues" {
+			_, _ = w.Write([]byte(`{"total_count": 0}`))
+			return
+		}
+		_ = json.NewEncoder(w).Encode(issues)
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+
+	var processedIssues []*Issue
+	var mu sync.Mutex
+
+	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second,
+		WithOnIssue(func(ctx context.Context, issue *Issue) error {
+			mu.Lock()
+			processedIssues = append(processedIssues, issue)
+			mu.Unlock()
+			return nil
+		}),
+		WithRetryGracePeriod(0),
+	)
+
+	poller.checkForNewIssues(context.Background())
+	poller.WaitForActive()
+
+	mu.Lock()
+	got := len(processedIssues)
+	mu.Unlock()
+
+	if got != 1 {
+		t.Errorf("processed %d issues, want 1", got)
+	}
+	if !labelRemoved.Load() {
+		t.Error("pilot-failed label should have been removed in parallel mode")
+	}
+}
+
+func TestPoller_AutoRetryFailedIssue_ParallelMode_LimitReached(t *testing.T) {
+	now := time.Now()
+	issues := []*Issue{
+		{Number: 42, Title: "Stuck issue", Labels: []Label{{Name: "pilot"}, {Name: LabelFailed}}, CreatedAt: now.Add(-1 * time.Hour)},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(issues)
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+
+	var processedCount atomic.Int32
+	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second,
+		WithOnIssue(func(ctx context.Context, issue *Issue) error {
+			processedCount.Add(1)
+			return nil
+		}),
+		WithMaxFailedRetries(2),
+	)
+
+	// Simulate: already at max retries
+	poller.mu.Lock()
+	poller.failedRetryCount[42] = 2
+	poller.mu.Unlock()
+
+	poller.checkForNewIssues(context.Background())
+	poller.WaitForActive()
+
+	if processedCount.Load() != 0 {
+		t.Errorf("processed %d issues, want 0 (should skip at retry limit)", processedCount.Load())
 	}
 }
