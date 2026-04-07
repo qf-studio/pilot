@@ -17,14 +17,24 @@ import (
 // DispatcherConfig configures the task dispatcher behavior.
 type DispatcherConfig struct {
 	// StaleTaskDuration is how long a "running" task can be stale before reset.
-	// Used on startup to detect crashed workers.
 	StaleTaskDuration time.Duration
+
+	// StaleQueuedDuration is how long a "queued" task can sit without a worker
+	// before it is considered orphaned and failed. Re-queuing without a worker
+	// just recreates the orphan, so these are marked "failed" instead.
+	StaleQueuedDuration time.Duration
+
+	// StaleRecoveryInterval is how often the background loop checks for stale tasks.
+	// Zero disables periodic recovery (only startup recovery runs).
+	StaleRecoveryInterval time.Duration
 }
 
 // DefaultDispatcherConfig returns default dispatcher settings.
 func DefaultDispatcherConfig() *DispatcherConfig {
 	return &DispatcherConfig{
-		StaleTaskDuration: 30 * time.Minute,
+		StaleTaskDuration:     30 * time.Minute,
+		StaleQueuedDuration:   1 * time.Hour,
+		StaleRecoveryInterval: 5 * time.Minute,
 	}
 }
 
@@ -72,13 +82,26 @@ func (d *Dispatcher) SetDecomposer(decomposer *TaskDecomposer) {
 	d.decomposer = decomposer
 }
 
-// Start initializes the dispatcher and recovers from any stale tasks.
-func (d *Dispatcher) Start() error {
+// Start initializes the dispatcher, recovers stale tasks, and launches a
+// background goroutine that periodically re-checks for orphans.
+func (d *Dispatcher) Start(ctx context.Context) error {
 	d.log.Info("Starting dispatcher")
 
-	// Recover stale running tasks (from crashed workers)
+	// Recover stale tasks on startup (both running and queued)
 	if err := d.recoverStaleTasks(); err != nil {
 		d.log.Warn("Failed to recover stale tasks", slog.Any("error", err))
+	}
+
+	// Launch periodic recovery loop if interval is configured
+	if d.config.StaleRecoveryInterval > 0 {
+		d.wg.Add(1)
+		go func() {
+			defer d.wg.Done()
+			d.runStaleRecoveryLoop(ctx)
+		}()
+		d.log.Info("Stale recovery loop started",
+			slog.Duration("interval", d.config.StaleRecoveryInterval),
+		)
 	}
 
 	return nil
@@ -101,31 +124,80 @@ func (d *Dispatcher) Stop() {
 	d.log.Info("Dispatcher stopped")
 }
 
-// recoverStaleTasks resets tasks that were left in "running" state
-// from a previous crashed session.
+// recoverStaleTasks resets running tasks and fails orphaned queued tasks.
+// Running tasks are reset to "failed" (re-queuing without a live worker just
+// recreates the orphan). Queued tasks that have sat too long are also failed.
+// Returns the total number of tasks recovered/failed.
 func (d *Dispatcher) recoverStaleTasks() error {
-	stale, err := d.store.GetStaleRunningExecutions(d.config.StaleTaskDuration)
+	var resetCount int
+
+	// 1. Recover stale running tasks → mark failed
+	staleRunning, err := d.store.GetStaleRunningExecutions(d.config.StaleTaskDuration)
 	if err != nil {
-		return err
+		return fmt.Errorf("get stale running: %w", err)
 	}
 
-	for _, exec := range stale {
-		d.log.Warn("Recovering stale task",
+	for _, exec := range staleRunning {
+		d.log.Warn("Recovering stale running task",
 			slog.String("execution_id", exec.ID),
 			slog.String("task_id", exec.TaskID),
 			slog.Time("created_at", exec.CreatedAt),
 		)
-		// Reset to queued so it will be picked up again
-		if err := d.store.UpdateExecutionStatus(exec.ID, "queued", "recovered from stale running state"); err != nil {
-			d.log.Error("Failed to reset stale task", slog.String("id", exec.ID), slog.Any("error", err))
+		if err := d.store.UpdateExecutionStatus(exec.ID, "failed", "recovered from stale running state — worker crashed"); err != nil {
+			d.log.Error("Failed to reset stale running task", slog.String("id", exec.ID), slog.Any("error", err))
+		} else {
+			resetCount++
 		}
 	}
 
-	if len(stale) > 0 {
-		d.log.Info("Recovered stale tasks", slog.Int("count", len(stale)))
+	// 2. Recover stale queued tasks → mark failed (re-queuing without a worker recreates the orphan)
+	staleQueued, err := d.store.GetStaleQueuedExecutions(d.config.StaleQueuedDuration)
+	if err != nil {
+		return fmt.Errorf("get stale queued: %w", err)
 	}
 
+	for _, exec := range staleQueued {
+		d.log.Warn("Failing orphaned queued task",
+			slog.String("execution_id", exec.ID),
+			slog.String("task_id", exec.TaskID),
+			slog.Time("created_at", exec.CreatedAt),
+		)
+		if err := d.store.UpdateExecutionStatus(exec.ID, "failed", "orphaned queued task — no worker picked it up"); err != nil {
+			d.log.Error("Failed to reset stale queued task", slog.String("id", exec.ID), slog.Any("error", err))
+		} else {
+			resetCount++
+		}
+	}
+
+	d.log.Info("stale recovery complete, reset tasks",
+		slog.Int("count", resetCount),
+		slog.Int("stale_running", len(staleRunning)),
+		slog.Int("stale_queued", len(staleQueued)),
+	)
+
 	return nil
+}
+
+// runStaleRecoveryLoop periodically invokes recoverStaleTasks until the context
+// is cancelled. Logs on every tick (even when 0 recovered) for diagnosability.
+func (d *Dispatcher) runStaleRecoveryLoop(ctx context.Context) {
+	ticker := time.NewTicker(d.config.StaleRecoveryInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			d.log.Info("Stale recovery loop stopped")
+			return
+		case <-d.ctx.Done():
+			d.log.Info("Stale recovery loop stopped (dispatcher context)")
+			return
+		case <-ticker.C:
+			if err := d.recoverStaleTasks(); err != nil {
+				d.log.Warn("Stale recovery pass failed", slog.Any("error", err))
+			}
+		}
+	}
 }
 
 // QueueTask adds a task to the execution queue and returns the execution ID.

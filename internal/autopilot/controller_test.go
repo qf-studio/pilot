@@ -1073,10 +1073,10 @@ func TestController_CheckExternalMerge_WithNotifier(t *testing.T) {
 // GH-1486: Test that external merge closes the associated issue
 func TestController_CheckExternalMerge_ClosesIssue(t *testing.T) {
 	var (
-		addLabelsCalled     bool
-		removeLabelInProg   bool
-		removeLabelFailed   bool
-		issueStateClosed    bool
+		addLabelsCalled   bool
+		removeLabelInProg bool
+		removeLabelFailed bool
+		issueStateClosed  bool
 	)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -3678,8 +3678,8 @@ func TestController_HandleReviewRequested_IterationLimit(t *testing.T) {
 func TestController_HandleReviewRequested_IgnoresSelfReview(t *testing.T) {
 	// hasChangesRequested should skip bot reviews
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.URL.Path == "/repos/owner/repo/pulls/42/reviews":
+		switch r.URL.Path {
+		case "/repos/owner/repo/pulls/42/reviews":
 			resp := []*github.PullRequestReview{
 				{ID: 1, User: github.User{Login: "pilot[bot]"}, Body: "Self-review", State: "CHANGES_REQUESTED", SubmittedAt: "2026-03-05T10:00:00Z"},
 				{ID: 2, User: github.User{Login: "ci-bot"}, Body: "Bot review", State: "CHANGES_REQUESTED", SubmittedAt: "2026-03-05T10:00:00Z"},
@@ -3750,8 +3750,8 @@ func TestController_OnReviewRequested_UntrackedPR(t *testing.T) {
 func TestController_HasChangesRequested_FilterByTime(t *testing.T) {
 	// Reviews submitted before PR tracking should be ignored
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.URL.Path == "/repos/owner/repo/pulls/42/reviews":
+		switch r.URL.Path {
+		case "/repos/owner/repo/pulls/42/reviews":
 			resp := []*github.PullRequestReview{
 				{
 					ID:          1,
@@ -3790,17 +3790,17 @@ func TestController_HasChangesRequested_FilterByTime(t *testing.T) {
 
 func TestMaybeCloseParentIssue(t *testing.T) {
 	tests := []struct {
-		name              string
-		issueNumber       int
-		issueBody         string
-		openSubIssues     int // used by text-search fallback
-		getIssueErr       bool
-		searchErr         bool
-		nativeTotal       int    // totalCount returned by GraphQL native sub-issues
-		nativeOpenStates  []string // states of natively linked sub-issues
-		wantClosed        bool
-		wantLabeled       bool
-		wantCommented     bool
+		name             string
+		issueNumber      int
+		issueBody        string
+		openSubIssues    int // used by text-search fallback
+		getIssueErr      bool
+		searchErr        bool
+		nativeTotal      int      // totalCount returned by GraphQL native sub-issues
+		nativeOpenStates []string // states of natively linked sub-issues
+		wantClosed       bool
+		wantLabeled      bool
+		wantCommented    bool
 	}{
 		{
 			name:          "last sub-issue triggers parent close (text-search path)",

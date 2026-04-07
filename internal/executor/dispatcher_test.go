@@ -40,7 +40,7 @@ func TestDispatcher_QueueTask(t *testing.T) {
 	runner := NewRunner()
 	dispatcher := NewDispatcher(store, runner, nil)
 
-	if err := dispatcher.Start(); err != nil {
+	if err := dispatcher.Start(context.Background()); err != nil {
 		t.Fatalf("failed to start dispatcher: %v", err)
 	}
 	defer dispatcher.Stop()
@@ -105,7 +105,7 @@ func TestDispatcher_DuplicateTask(t *testing.T) {
 	runner := NewRunner()
 	dispatcher := NewDispatcher(store, runner, nil)
 
-	if err := dispatcher.Start(); err != nil {
+	if err := dispatcher.Start(context.Background()); err != nil {
 		t.Fatalf("failed to start dispatcher: %v", err)
 	}
 	defer dispatcher.Stop()
@@ -140,7 +140,7 @@ func TestDispatcher_GetWorkerStatus(t *testing.T) {
 	runner := NewRunner()
 	dispatcher := NewDispatcher(store, runner, nil)
 
-	if err := dispatcher.Start(); err != nil {
+	if err := dispatcher.Start(context.Background()); err != nil {
 		t.Fatalf("failed to start dispatcher: %v", err)
 	}
 	defer dispatcher.Stop()
@@ -187,7 +187,7 @@ func TestDispatcher_MultipleProjects(t *testing.T) {
 	runner := NewRunner()
 	dispatcher := NewDispatcher(store, runner, nil)
 
-	if err := dispatcher.Start(); err != nil {
+	if err := dispatcher.Start(context.Background()); err != nil {
 		t.Fatalf("failed to start dispatcher: %v", err)
 	}
 	defer dispatcher.Stop()
@@ -439,19 +439,20 @@ func TestDispatcher_RecoverStaleTasks(t *testing.T) {
 	runner := NewRunner()
 	dispatcher := NewDispatcher(store, runner, config)
 
-	if err := dispatcher.Start(); err != nil {
+	if err := dispatcher.Start(context.Background()); err != nil {
 		t.Fatalf("failed to start dispatcher: %v", err)
 	}
 	defer dispatcher.Stop()
 
-	// Check that the task was reset to queued
+	// Check that the task was marked as failed (not re-queued, since re-queuing
+	// without a worker just recreates the orphan)
 	updated, err := store.GetExecution("exec-recover")
 	if err != nil {
 		t.Fatalf("failed to get execution: %v", err)
 	}
 
-	if updated.Status != "queued" {
-		t.Errorf("expected recovered task to have status 'queued', got '%s'", updated.Status)
+	if updated.Status != "failed" {
+		t.Errorf("expected recovered task to have status 'failed', got '%s'", updated.Status)
 	}
 }
 
@@ -486,7 +487,7 @@ func TestDispatcher_ExecutionStatusPath(t *testing.T) {
 	runner := NewRunner()
 	dispatcher := NewDispatcher(store, runner, nil)
 
-	if err := dispatcher.Start(); err != nil {
+	if err := dispatcher.Start(context.Background()); err != nil {
 		t.Fatalf("failed to start dispatcher: %v", err)
 	}
 	defer dispatcher.Stop()
@@ -515,5 +516,249 @@ func TestDispatcher_ExecutionStatusPath(t *testing.T) {
 	// Status should be queued or running (worker might have picked it up)
 	if exec.Status != "queued" && exec.Status != "running" && exec.Status != "failed" {
 		t.Errorf("unexpected execution status: %s", exec.Status)
+	}
+}
+
+func TestRecoverStaleTasks_QueuedAndRunning(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	// Insert a stale "running" task and a stale "queued" task
+	execRunning := &memory.Execution{
+		ID:          "exec-stale-running",
+		TaskID:      "TASK-RUN",
+		ProjectPath: "/project-a",
+		Status:      "running",
+	}
+	execQueued := &memory.Execution{
+		ID:          "exec-stale-queued",
+		TaskID:      "TASK-QUEUE",
+		ProjectPath: "/project-b",
+		Status:      "queued",
+	}
+	// A fresh queued task that should NOT be recovered
+	execFresh := &memory.Execution{
+		ID:          "exec-fresh-queued",
+		TaskID:      "TASK-FRESH",
+		ProjectPath: "/project-c",
+		Status:      "queued",
+	}
+
+	for _, exec := range []*memory.Execution{execRunning, execQueued, execFresh} {
+		if err := store.SaveExecution(exec); err != nil {
+			t.Fatalf("failed to save execution: %v", err)
+		}
+	}
+
+	// Use 0 durations for running/queued to make everything stale immediately,
+	// except fresh task — we'll use a long queued duration to keep it alive
+	config := &DispatcherConfig{
+		StaleTaskDuration:     0,            // All running tasks are stale
+		StaleQueuedDuration:   0,            // All queued tasks are stale
+		StaleRecoveryInterval: 0,            // No periodic loop for this test
+	}
+
+	runner := NewRunner()
+	dispatcher := NewDispatcher(store, runner, config)
+
+	if err := dispatcher.Start(context.Background()); err != nil {
+		t.Fatalf("failed to start dispatcher: %v", err)
+	}
+	defer dispatcher.Stop()
+
+	// Stale running → failed
+	updated, err := store.GetExecution("exec-stale-running")
+	if err != nil {
+		t.Fatalf("failed to get execution: %v", err)
+	}
+	if updated.Status != "failed" {
+		t.Errorf("expected stale running task to be 'failed', got '%s'", updated.Status)
+	}
+
+	// Stale queued → failed
+	updated, err = store.GetExecution("exec-stale-queued")
+	if err != nil {
+		t.Fatalf("failed to get execution: %v", err)
+	}
+	if updated.Status != "failed" {
+		t.Errorf("expected stale queued task to be 'failed', got '%s'", updated.Status)
+	}
+
+	// Fresh queued is also failed since StaleQueuedDuration=0 makes everything stale
+	updated, err = store.GetExecution("exec-fresh-queued")
+	if err != nil {
+		t.Fatalf("failed to get execution: %v", err)
+	}
+	if updated.Status != "failed" {
+		t.Errorf("expected fresh queued task with 0 duration to be 'failed', got '%s'", updated.Status)
+	}
+}
+
+func TestRecoverStaleTasks_RespectsThresholds(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	// Insert a running task and a queued task — both just created
+	execRunning := &memory.Execution{
+		ID:          "exec-running-fresh",
+		TaskID:      "TASK-RUN-FRESH",
+		ProjectPath: "/project",
+		Status:      "running",
+	}
+	execQueued := &memory.Execution{
+		ID:          "exec-queued-fresh",
+		TaskID:      "TASK-QUEUE-FRESH",
+		ProjectPath: "/project",
+		Status:      "queued",
+	}
+
+	for _, exec := range []*memory.Execution{execRunning, execQueued} {
+		if err := store.SaveExecution(exec); err != nil {
+			t.Fatalf("failed to save execution: %v", err)
+		}
+	}
+
+	// Use very long thresholds so nothing is stale
+	config := &DispatcherConfig{
+		StaleTaskDuration:     24 * time.Hour,
+		StaleQueuedDuration:   24 * time.Hour,
+		StaleRecoveryInterval: 0,
+	}
+
+	runner := NewRunner()
+	dispatcher := NewDispatcher(store, runner, config)
+
+	if err := dispatcher.Start(context.Background()); err != nil {
+		t.Fatalf("failed to start dispatcher: %v", err)
+	}
+	defer dispatcher.Stop()
+
+	// Running task should still be running (not stale yet)
+	updated, err := store.GetExecution("exec-running-fresh")
+	if err != nil {
+		t.Fatalf("failed to get execution: %v", err)
+	}
+	if updated.Status != "running" {
+		t.Errorf("expected running task to remain 'running' with long threshold, got '%s'", updated.Status)
+	}
+
+	// Queued task should still be queued (not stale yet)
+	updated, err = store.GetExecution("exec-queued-fresh")
+	if err != nil {
+		t.Fatalf("failed to get execution: %v", err)
+	}
+	if updated.Status != "queued" {
+		t.Errorf("expected queued task to remain 'queued' with long threshold, got '%s'", updated.Status)
+	}
+}
+
+func TestRunStaleRecoveryLoop_Periodic(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	// Use 0 stale durations so any task is immediately stale
+	config := &DispatcherConfig{
+		StaleTaskDuration:     0,
+		StaleQueuedDuration:   0,
+		StaleRecoveryInterval: 100 * time.Millisecond, // Fast tick for test
+	}
+
+	runner := NewRunner()
+	dispatcher := NewDispatcher(store, runner, config)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := dispatcher.Start(ctx); err != nil {
+		t.Fatalf("failed to start dispatcher: %v", err)
+	}
+	defer dispatcher.Stop()
+
+	// Insert a stale running task AFTER Start (so initial recovery didn't see it)
+	exec := &memory.Execution{
+		ID:          "exec-late-stale",
+		TaskID:      "TASK-LATE",
+		ProjectPath: "/project",
+		Status:      "running",
+	}
+	if err := store.SaveExecution(exec); err != nil {
+		t.Fatalf("failed to save execution: %v", err)
+	}
+
+	// Wait for at least one recovery tick
+	time.Sleep(300 * time.Millisecond)
+
+	// The periodic loop should have picked it up
+	updated, err := store.GetExecution("exec-late-stale")
+	if err != nil {
+		t.Fatalf("failed to get execution: %v", err)
+	}
+	if updated.Status != "failed" {
+		t.Errorf("expected periodic recovery to fail stale task, got '%s'", updated.Status)
+	}
+}
+
+func TestQueueTask_AfterRecovery(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	// Insert a stale task for the same task ID we'll try to queue later
+	exec := &memory.Execution{
+		ID:          "exec-old",
+		TaskID:      "TASK-REQUEUE",
+		ProjectPath: "/project",
+		Status:      "running",
+	}
+	if err := store.SaveExecution(exec); err != nil {
+		t.Fatalf("failed to save execution: %v", err)
+	}
+
+	// Recover it (mark as failed)
+	config := &DispatcherConfig{
+		StaleTaskDuration:     0,
+		StaleQueuedDuration:   0,
+		StaleRecoveryInterval: 0,
+	}
+
+	runner := NewRunner()
+	dispatcher := NewDispatcher(store, runner, config)
+
+	if err := dispatcher.Start(context.Background()); err != nil {
+		t.Fatalf("failed to start dispatcher: %v", err)
+	}
+	defer dispatcher.Stop()
+
+	// Verify old task is now failed
+	updated, err := store.GetExecution("exec-old")
+	if err != nil {
+		t.Fatalf("failed to get execution: %v", err)
+	}
+	if updated.Status != "failed" {
+		t.Fatalf("expected recovered task to be 'failed', got '%s'", updated.Status)
+	}
+
+	// Now queue a new task with the same task ID — should succeed since old one is failed
+	task := &Task{
+		ID:          "TASK-REQUEUE",
+		Title:       "Requeued Task",
+		Description: "Testing re-queue after recovery",
+		ProjectPath: "/project",
+	}
+
+	execID, err := dispatcher.QueueTask(context.Background(), task)
+	if err != nil {
+		t.Fatalf("expected QueueTask to succeed after recovery, got: %v", err)
+	}
+	if execID == "" {
+		t.Error("expected non-empty execution ID")
+	}
+
+	// Verify the new execution is queued
+	newExec, err := store.GetExecution(execID)
+	if err != nil {
+		t.Fatalf("failed to get new execution: %v", err)
+	}
+	if newExec.Status != "queued" && newExec.Status != "running" {
+		t.Errorf("expected new task to be 'queued' or 'running', got '%s'", newExec.Status)
 	}
 }
