@@ -3904,20 +3904,23 @@ func TestMaybeCloseParentIssue(t *testing.T) {
 					w.WriteHeader(http.StatusOK)
 					_ = json.NewEncoder(w).Encode(issue)
 
+				case r.URL.Path == "/repos/owner/repo/issues/5" && r.Method == http.MethodGet:
+					// Serve node_id for GetIssueNodeID (parent issue lookup).
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write([]byte(`{"node_id":"I_parent5","number":5}`))
+
 				case r.URL.Path == "/graphql" && r.Method == http.MethodPost:
-					// Serve native sub-issues GraphQL response.
+					// Serve native sub-issues GraphQL response (node-based query).
 					nodes := make([]map[string]string, len(tt.nativeOpenStates))
 					for i, s := range tt.nativeOpenStates {
 						nodes[i] = map[string]string{"state": s}
 					}
 					resp := map[string]interface{}{
 						"data": map[string]interface{}{
-							"repository": map[string]interface{}{
-								"issue": map[string]interface{}{
-									"subIssues": map[string]interface{}{
-										"totalCount": tt.nativeTotal,
-										"nodes":      nodes,
-									},
+							"node": map[string]interface{}{
+								"subIssues": map[string]interface{}{
+									"totalCount": tt.nativeTotal,
+									"nodes":      nodes,
 								},
 							},
 						},
