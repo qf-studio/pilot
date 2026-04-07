@@ -3904,20 +3904,28 @@ func TestMaybeCloseParentIssue(t *testing.T) {
 					w.WriteHeader(http.StatusOK)
 					_ = json.NewEncoder(w).Encode(issue)
 
+				case r.URL.Path == "/repos/owner/repo/issues/5" && r.Method == http.MethodGet:
+					// Return node_id for GetIssueNodeID call in native sub-issue path.
+					if tt.nativeTotal > 0 {
+						w.WriteHeader(http.StatusOK)
+						_, _ = w.Write([]byte(`{"node_id":"I_parent_node","number":5}`))
+					} else {
+						// No native links — return empty body so GetIssueNodeID fails and falls back to text search.
+						w.WriteHeader(http.StatusOK)
+					}
+
 				case r.URL.Path == "/graphql" && r.Method == http.MethodPost:
-					// Serve native sub-issues GraphQL response.
+					// Serve native sub-issues GraphQL response in node(id:) format used by GetOpenSubIssueCount.
 					nodes := make([]map[string]string, len(tt.nativeOpenStates))
 					for i, s := range tt.nativeOpenStates {
 						nodes[i] = map[string]string{"state": s}
 					}
 					resp := map[string]interface{}{
 						"data": map[string]interface{}{
-							"repository": map[string]interface{}{
-								"issue": map[string]interface{}{
-									"subIssues": map[string]interface{}{
-										"totalCount": tt.nativeTotal,
-										"nodes":      nodes,
-									},
+							"node": map[string]interface{}{
+								"subIssues": map[string]interface{}{
+									"totalCount": tt.nativeTotal,
+									"nodes":      nodes,
 								},
 							},
 						},
