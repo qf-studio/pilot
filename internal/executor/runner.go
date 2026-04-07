@@ -281,6 +281,12 @@ type SubIssueCreator interface {
 	CreateIssue(ctx context.Context, parentID, title, body string, labels []string) (identifier string, url string, err error)
 }
 
+// SubIssueLinker links a child issue to a parent issue using GitHub's native sub-issue API (GH-2211).
+// *github.Client satisfies this interface via its LinkSubIssue method.
+type SubIssueLinker interface {
+	LinkSubIssue(ctx context.Context, owner, repo string, parentNum, childNum int) error
+}
+
 // Runner executes development tasks using an AI backend (Claude Code, OpenCode, etc.).
 // It manages task lifecycle including branch creation, AI invocation,
 // progress tracking, PR creation, and execution recording. Runner is safe for
@@ -329,6 +335,8 @@ type Runner struct {
 	worktreeManager       *WorktreeManager // Optional worktree manager with pool support
 	// GH-1471: SubIssueCreator for non-GitHub adapters
 	subIssueCreator       SubIssueCreator // Optional creator for sub-issues in external trackers
+	// GH-2211: SubIssueLinker for native GitHub sub-issue API linking
+	subIssueLinker        SubIssueLinker // Optional linker for native GitHub parent→child wiring
 	// GH-1599: Execution log store for milestone entries
 	logStore              *memory.Store // Optional log store for writing execution milestones
 	// GH-1811: Learning system (self-improvement)
@@ -627,6 +635,14 @@ func (r *Runner) HasSubIssueMergeWait() bool { return r.subIssueMergeWait != nil
 // via this interface instead of using the gh CLI.
 func (r *Runner) SetSubIssueCreator(creator SubIssueCreator) {
 	r.subIssueCreator = creator
+}
+
+// SetSubIssueLinker sets the linker for native GitHub sub-issue linking (GH-2211).
+// When set, createSubIssuesViaGitHub will call LinkSubIssue after each child issue is
+// created to establish the native parent→child relationship. Failures are non-fatal
+// (warn-level log only) — the text "Parent: GH-N" body marker remains as fallback.
+func (r *Runner) SetSubIssueLinker(linker SubIssueLinker) {
+	r.subIssueLinker = linker
 }
 
 // SetIntentJudge sets the intent judge for diff-vs-ticket alignment verification (GH-624).
