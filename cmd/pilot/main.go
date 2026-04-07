@@ -359,7 +359,7 @@ Examples:
 				// Create dispatcher if store available
 				if gwStore != nil {
 					gwDispatcher = executor.NewDispatcher(gwStore, gwRunner, nil)
-					if dispErr := gwDispatcher.Start(); dispErr != nil {
+					if dispErr := gwDispatcher.Start(context.Background()); dispErr != nil {
 						logging.WithComponent("start").Warn("Failed to start dispatcher for gateway polling", slog.Any("error", dispErr))
 						gwDispatcher = nil
 					}
@@ -1793,7 +1793,7 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 	var dispatcher *executor.Dispatcher
 	if store != nil {
 		dispatcher = executor.NewDispatcher(store, runner, nil)
-		if err := dispatcher.Start(); err != nil {
+		if err := dispatcher.Start(ctx); err != nil {
 			logging.WithComponent("start").Warn("Failed to start dispatcher", slog.Any("error", err))
 			dispatcher = nil
 		} else {
