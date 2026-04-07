@@ -431,6 +431,8 @@ Examples:
 						parts := strings.SplitN(cfg.Adapters.GitHub.Repo, "/", 2)
 						if len(parts) == 2 {
 							ghClient := github.NewClient(ghToken)
+							// GH-2211: Wire native sub-issue linker for epic decomposition.
+							gwRunner.SetSubIssueLinker(ghClient)
 							// GH-1870: Board sync option for gateway autopilot controller.
 							var gwBoardOpts []autopilot.ControllerOption
 							if cfg.Adapters.GitHub.ProjectBoard != nil && cfg.Adapters.GitHub.ProjectBoard.Enabled {
@@ -1296,6 +1298,9 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 		}
 		if ghToken != "" {
 			ghClient := github.NewClient(ghToken)
+
+			// GH-2211: Wire native sub-issue linker so epic decomposition creates native parent→child links.
+			runner.SetSubIssueLinker(ghClient)
 
 			// GH-1870: Build board sync option for autopilot controllers.
 			var autopilotBoardOpts []autopilot.ControllerOption

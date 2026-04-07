@@ -568,6 +568,30 @@ func (r *Runner) createSubIssuesViaGitHub(ctx context.Context, plan *EpicPlan, e
 			"issue_number", issueNumber,
 			"url", issueURL,
 		)
+
+		// GH-2211: Establish native GitHub sub-issue relationship when possible.
+		// Non-fatal — the "Parent: GH-N" text in the body remains as fallback.
+		if r.subIssueLinker != nil && issueNumber > 0 &&
+			plan.ParentTask != nil && plan.ParentTask.SourceIssueID != "" && plan.ParentTask.SourceRepo != "" {
+			parentNum, parseErr := strconv.Atoi(plan.ParentTask.SourceIssueID)
+			if parseErr == nil && parentNum > 0 {
+				parts := strings.SplitN(plan.ParentTask.SourceRepo, "/", 2)
+				if len(parts) == 2 {
+					if linkErr := r.subIssueLinker.LinkSubIssue(ctx, parts[0], parts[1], parentNum, issueNumber); linkErr != nil {
+						r.log.Warn("Failed to link sub-issue natively (text fallback intact)",
+							"parent", parentNum,
+							"child", issueNumber,
+							"error", linkErr,
+						)
+					} else {
+						r.log.Debug("Linked native GitHub sub-issue",
+							"parent", parentNum,
+							"child", issueNumber,
+						)
+					}
+				}
+			}
+		}
 	}
 
 	return created, nil

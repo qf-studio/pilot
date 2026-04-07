@@ -268,6 +268,15 @@ type SubIssuePRCallback func(prNumber int, prURL string, issueNumber int, headSH
 // to enforce sequential ordering: sub-issue N+1 only starts after sub-issue N is merged.
 type SubIssueMergeWaitFn func(ctx context.Context, prNumber int) error
 
+// SubIssueLinker establishes a native parent→child relationship between GitHub issues.
+// Implemented by *github.Client. Kept as a narrow interface so the executor package
+// does not import the github adapter package directly.
+type SubIssueLinker interface {
+	// LinkSubIssue adds childNum as a sub-issue of parentNum in the given repo.
+	// Non-fatal: callers should warn on error and keep text fallbacks intact.
+	LinkSubIssue(ctx context.Context, owner, repo string, parentNum, childNum int) error
+}
+
 // SubIssueCreator is an interface for creating sub-issues in external issue trackers.
 // Adapters like Linear, Jira, GitLab, and Azure DevOps can implement this interface
 // to allow epic decomposition to create sub-issues in the source tracker rather than GitHub.
@@ -329,6 +338,8 @@ type Runner struct {
 	worktreeManager       *WorktreeManager // Optional worktree manager with pool support
 	// GH-1471: SubIssueCreator for non-GitHub adapters
 	subIssueCreator       SubIssueCreator // Optional creator for sub-issues in external trackers
+	// GH-2211: SubIssueLinker for native GitHub parent→child relationships
+	subIssueLinker        SubIssueLinker // Optional linker for native GitHub sub-issue API
 	// GH-1599: Execution log store for milestone entries
 	logStore              *memory.Store // Optional log store for writing execution milestones
 	// GH-1811: Learning system (self-improvement)
@@ -627,6 +638,13 @@ func (r *Runner) HasSubIssueMergeWait() bool { return r.subIssueMergeWait != nil
 // via this interface instead of using the gh CLI.
 func (r *Runner) SetSubIssueCreator(creator SubIssueCreator) {
 	r.subIssueCreator = creator
+}
+
+// SetSubIssueLinker sets the linker for native GitHub parent→child sub-issue relationships (GH-2211).
+// When set, createSubIssuesViaGitHub calls LinkSubIssue after each gh issue create succeeds.
+// Failures are non-fatal: a warning is logged and the "Parent: GH-N" text fallback remains.
+func (r *Runner) SetSubIssueLinker(linker SubIssueLinker) {
+	r.subIssueLinker = linker
 }
 
 // SetIntentJudge sets the intent judge for diff-vs-ticket alignment verification (GH-624).

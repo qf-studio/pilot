@@ -2861,3 +2861,96 @@ func TestUpdateRelease(t *testing.T) {
 		})
 	}
 }
+
+func TestGetIssueNodeID(t *testing.T) {
+	tests := []struct {
+		name       string
+		issueResp  string
+		statusCode int
+		wantNodeID string
+		wantErr    bool
+	}{
+		{
+			name:       "returns node_id",
+			statusCode: http.StatusOK,
+			issueResp:  `{"number":42,"node_id":"MDU6SXNzdWU0Mg==","title":"Test"}`,
+			wantNodeID: "MDU6SXNzdWU0Mg==",
+		},
+		{
+			name:       "empty node_id",
+			statusCode: http.StatusOK,
+			issueResp:  `{"number":42,"node_id":"","title":"Test"}`,
+			wantErr:    true,
+		},
+		{
+			name:       "api error",
+			statusCode: http.StatusNotFound,
+			issueResp:  `{"message":"Not Found"}`,
+			wantErr:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tt.statusCode)
+				_, _ = fmt.Fprint(w, tt.issueResp)
+			}))
+			defer server.Close()
+
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			nodeID, err := client.GetIssueNodeID(context.Background(), "owner", "repo", 42)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("GetIssueNodeID() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if !tt.wantErr && nodeID != tt.wantNodeID {
+				t.Errorf("GetIssueNodeID() = %q, want %q", nodeID, tt.wantNodeID)
+			}
+		})
+	}
+}
+
+func TestLinkSubIssue(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		var graphqlCalled bool
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasSuffix(r.URL.Path, "/graphql") {
+				graphqlCalled = true
+				// First two calls are GetIssueNodeID (via GetIssue REST); third is GraphQL mutation.
+				// In this test server we handle both REST issue fetches and the GraphQL mutation.
+				_, _ = fmt.Fprint(w, `{"data":{"addSubIssue":{"issue":{"id":"parent-id"}}}}`)
+				return
+			}
+			// REST: return issue with a node_id
+			issueNum := "1"
+			if strings.Contains(r.URL.Path, "/issues/2") {
+				issueNum = "2"
+			}
+			_, _ = fmt.Fprintf(w, `{"number":%s,"node_id":"node-%s"}`, issueNum, issueNum)
+		}))
+		defer server.Close()
+
+		client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+		err := client.LinkSubIssue(context.Background(), "owner", "repo", 1, 2)
+		if err != nil {
+			t.Fatalf("LinkSubIssue() unexpected error: %v", err)
+		}
+		if !graphqlCalled {
+			t.Error("LinkSubIssue() did not call GraphQL endpoint")
+		}
+	})
+
+	t.Run("parent node id error", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = fmt.Fprint(w, `{"message":"Not Found"}`)
+		}))
+		defer server.Close()
+
+		client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+		err := client.LinkSubIssue(context.Background(), "owner", "repo", 1, 2)
+		if err == nil {
+			t.Fatal("LinkSubIssue() expected error, got nil")
+		}
+	})
+}

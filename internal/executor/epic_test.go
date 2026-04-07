@@ -1423,3 +1423,84 @@ func TestCreatedIssue_IdentifierField(t *testing.T) {
 		})
 	}
 }
+
+// mockSubIssueLinker records LinkSubIssue calls for testing.
+type mockSubIssueLinker struct {
+	Calls  []mockLinkCall
+	RetErr error
+}
+
+type mockLinkCall struct {
+	Owner, Repo      string
+	ParentNum, ChildNum int
+}
+
+func (m *mockSubIssueLinker) LinkSubIssue(_ context.Context, owner, repo string, parentNum, childNum int) error {
+	m.Calls = append(m.Calls, mockLinkCall{Owner: owner, Repo: repo, ParentNum: parentNum, ChildNum: childNum})
+	return m.RetErr
+}
+
+// TestSetSubIssueLinker verifies the setter and that the interface is stored correctly.
+func TestSetSubIssueLinker(t *testing.T) {
+	runner := NewRunner()
+	if runner.subIssueLinker != nil {
+		t.Fatal("subIssueLinker should be nil initially")
+	}
+
+	mock := &mockSubIssueLinker{}
+	runner.SetSubIssueLinker(mock)
+	if runner.subIssueLinker == nil {
+		t.Fatal("SetSubIssueLinker did not store the linker")
+	}
+}
+
+// TestCreateSubIssues_LinkerNotCalledWhenGhFails verifies that the SubIssueLinker
+// is never invoked when gh CLI fails (error from gh → early return before linking).
+func TestCreateSubIssues_LinkerNotCalledWhenGhFails(t *testing.T) {
+	runner := NewRunner()
+	linker := &mockSubIssueLinker{}
+	runner.SetSubIssueLinker(linker)
+
+	plan := &EpicPlan{
+		ParentTask: &Task{
+			ID:            "GH-100",
+			SourceIssueID: "100",
+			SourceRepo:    "owner/repo",
+		},
+		Subtasks: []PlannedSubtask{
+			{Title: "Test subtask", Description: "Test", Order: 1},
+		},
+	}
+
+	// gh CLI will fail in /nonexistent/path → createSubIssuesViaGitHub returns error → linker not called.
+	_, _ = runner.CreateSubIssues(context.Background(), plan, "/nonexistent/path")
+
+	if len(linker.Calls) != 0 {
+		t.Errorf("expected 0 linker calls when gh CLI fails, got %d", len(linker.Calls))
+	}
+}
+
+// TestCreateSubIssues_LinkerNotCalledWhenNoSourceRepo verifies that the SubIssueLinker
+// is skipped when the parent task has no SourceRepo (defensive guard).
+func TestCreateSubIssues_LinkerNotCalledWhenNoSourceRepo(t *testing.T) {
+	runner := NewRunner()
+	linker := &mockSubIssueLinker{}
+	runner.SetSubIssueLinker(linker)
+
+	plan := &EpicPlan{
+		ParentTask: &Task{
+			ID:            "GH-100",
+			SourceIssueID: "100",
+			SourceRepo:    "", // empty — guard should skip linking
+		},
+		Subtasks: []PlannedSubtask{
+			{Title: "Test subtask", Description: "Test", Order: 1},
+		},
+	}
+
+	_, _ = runner.CreateSubIssues(context.Background(), plan, "/nonexistent/path")
+
+	if len(linker.Calls) != 0 {
+		t.Errorf("expected 0 linker calls when SourceRepo is empty, got %d", len(linker.Calls))
+	}
+}

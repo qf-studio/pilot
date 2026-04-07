@@ -864,6 +864,47 @@ func (c *Client) SearchOpenSubIssues(ctx context.Context, owner, repo string, pa
 	return result.TotalCount, nil
 }
 
+// GetIssueNodeID returns the GraphQL global node ID for a GitHub issue.
+// The node ID is required for GraphQL mutations such as addSubIssue.
+func (c *Client) GetIssueNodeID(ctx context.Context, owner, repo string, number int) (string, error) {
+	issue, err := c.GetIssue(ctx, owner, repo, number)
+	if err != nil {
+		return "", fmt.Errorf("get issue node ID for %s/%s#%d: %w", owner, repo, number, err)
+	}
+	if issue.NodeID == "" {
+		return "", fmt.Errorf("empty node ID returned for %s/%s#%d", owner, repo, number)
+	}
+	return issue.NodeID, nil
+}
+
+// LinkSubIssue establishes a native GitHub sub-issue relationship between two issues
+// using the addSubIssue GraphQL mutation. Both issue node IDs are resolved via REST
+// before calling the mutation.
+//
+// This is a best-effort call: callers should log a warning on failure and keep any
+// text-based "Parent: GH-N" fallback intact.
+func (c *Client) LinkSubIssue(ctx context.Context, owner, repo string, parentNum, childNum int) error {
+	parentNodeID, err := c.GetIssueNodeID(ctx, owner, repo, parentNum)
+	if err != nil {
+		return fmt.Errorf("resolve parent node ID: %w", err)
+	}
+	childNodeID, err := c.GetIssueNodeID(ctx, owner, repo, childNum)
+	if err != nil {
+		return fmt.Errorf("resolve child node ID: %w", err)
+	}
+
+	const mutation = `mutation($parentId: ID!, $childId: ID!) {
+  addSubIssue(input: { issueId: $parentId, subIssueId: $childId }) {
+    issue { id }
+  }
+}`
+	vars := map[string]interface{}{
+		"parentId": parentNodeID,
+		"childId":  childNodeID,
+	}
+	return c.ExecuteGraphQL(ctx, mutation, vars, nil)
+}
+
 // UpdatePullRequestBranch updates the PR branch with the latest base branch.
 // Uses GitHub API: PUT /repos/{owner}/{repo}/pulls/{number}/update-branch
 // Returns nil on success, error if the branch cannot be automatically updated (true conflict).
