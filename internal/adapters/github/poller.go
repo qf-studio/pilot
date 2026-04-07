@@ -99,6 +99,11 @@ type Poller struct {
 	// GH-2201: TaskChecker verifies whether an issue is still queued/in-progress
 	// before allowing retry after the grace period expires.
 	taskChecker TaskChecker
+
+	// GH-2176: Auto-retry issues stuck with pilot-failed from execution failures.
+	// Tracks how many times each issue has been retried after pilot-failed.
+	failedRetryCount map[int]int
+	maxFailedRetries int // default: 3
 }
 
 // PollerOption configures a Poller
@@ -181,6 +186,17 @@ func WithTaskChecker(tc TaskChecker) PollerOption {
 	}
 }
 
+// WithMaxFailedRetries sets the maximum number of auto-retries for issues
+// that are stuck with pilot-failed label from execution failures. Default: 3.
+func WithMaxFailedRetries(n int) PollerOption {
+	return func(p *Poller) {
+		if n < 0 {
+			n = 0
+		}
+		p.maxFailedRetries = n
+	}
+}
+
 // WithMaxConcurrent sets the maximum number of parallel issue executions
 func WithMaxConcurrent(n int) PollerOption {
 	return func(p *Poller) {
@@ -211,6 +227,8 @@ func NewPoller(client *Client, repo string, label string, interval time.Duration
 		prPollInterval:   30 * time.Second,
 		prTimeout:        1 * time.Hour,
 		retryGracePeriod: 5 * time.Minute, // GH-2201: default grace period
+		failedRetryCount: make(map[int]int),
+		maxFailedRetries: 3, // GH-2176: default max retries for pilot-failed issues
 	}
 
 	for _, opt := range opts {
@@ -536,9 +554,17 @@ func (p *Poller) findOldestUnprocessedIssue(ctx context.Context) (*Issue, error)
 			continue
 		}
 
-		// Skip if has status labels
-		if HasLabel(issue, LabelInProgress) || HasLabel(issue, LabelDone) || HasLabel(issue, LabelFailed) {
+		// Skip if in-progress or done
+		if HasLabel(issue, LabelInProgress) || HasLabel(issue, LabelDone) {
 			continue
+		}
+
+		// GH-2176: Auto-retry issues stuck with pilot-failed (no pilot-done)
+		if HasLabel(issue, LabelFailed) {
+			if !p.shouldRetryFailedIssue(ctx, issue) {
+				continue
+			}
+			// Label removed, fall through to candidate selection
 		}
 
 		// Check if previously processed
@@ -718,9 +744,17 @@ func (p *Poller) checkForNewIssues(ctx context.Context) {
 			continue
 		}
 
-		// Skip if already in progress or failed (check before processed to allow retry)
-		if HasLabel(issue, LabelInProgress) || HasLabel(issue, LabelFailed) {
+		// Skip if already in progress
+		if HasLabel(issue, LabelInProgress) {
 			continue
+		}
+
+		// GH-2176: Auto-retry issues stuck with pilot-failed (no pilot-done)
+		if HasLabel(issue, LabelFailed) {
+			if !p.shouldRetryFailedIssue(ctx, issue) {
+				continue
+			}
+			// Label removed, fall through to candidate selection
 		}
 
 		// Skip and mark done issues as permanently processed
@@ -1064,6 +1098,58 @@ func (p *Poller) hasMergedWork(ctx context.Context, issue *Issue) bool {
 		)
 	}
 	p.markProcessed(issue.Number)
+	return true
+}
+
+// shouldRetryFailedIssue checks if a pilot-failed issue should be auto-retried.
+// Returns true if the issue should be retried (label removed), false if it should be skipped.
+// GH-2176: Issues stuck with pilot-failed get retried up to maxFailedRetries times.
+func (p *Poller) shouldRetryFailedIssue(ctx context.Context, issue *Issue) bool {
+	// Never retry if also marked done
+	if HasLabel(issue, LabelDone) {
+		return false
+	}
+
+	p.mu.RLock()
+	retries := p.failedRetryCount[issue.Number]
+	p.mu.RUnlock()
+
+	if retries >= p.maxFailedRetries {
+		p.logger.Warn("Issue has reached max failed retries, skipping",
+			slog.Int("number", issue.Number),
+			slog.Int("retries", retries),
+			slog.Int("max", p.maxFailedRetries),
+		)
+		return false
+	}
+
+	// Check if merged work already exists before retrying
+	if p.hasMergedWork(ctx, issue) {
+		return false
+	}
+
+	// Remove pilot-failed label and increment retry count
+	if err := p.client.RemoveLabel(ctx, p.owner, p.repo, issue.Number, LabelFailed); err != nil {
+		p.logger.Warn("Failed to remove pilot-failed label for retry",
+			slog.Int("number", issue.Number),
+			slog.Any("error", err),
+		)
+		return false
+	}
+
+	p.mu.Lock()
+	p.failedRetryCount[issue.Number] = retries + 1
+	p.mu.Unlock()
+
+	// Clear from processed map so the issue can be re-picked
+	p.ClearProcessed(issue.Number)
+
+	p.logger.Info("Auto-retrying pilot-failed issue",
+		slog.Int("number", issue.Number),
+		slog.Int("retry", retries+1),
+		slog.Int("max", p.maxFailedRetries),
+	)
+
 	return true
 }
 
