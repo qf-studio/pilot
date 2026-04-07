@@ -1159,10 +1159,20 @@ func (c *Controller) maybeCloseParentIssue(ctx context.Context, prState *PRState
 	}
 
 	// Check how many sibling sub-issues are still open.
-	openCount, err := c.ghClient.SearchOpenSubIssues(ctx, c.owner, c.repo, parentNum)
-	if err != nil {
-		c.log.Warn("maybeCloseParentIssue: failed to search open sub-issues", slog.Int("parent", parentNum), slog.Any("error", err))
-		return
+	// Tier 1: try native GitHub sub-issues GraphQL API (more reliable, works even without text patterns).
+	// Tier 2: fall back to text search when native links are absent (legacy repos use body "Parent: GH-N" only).
+	openCount, hasNativeLinks, err := c.ghClient.GetOpenSubIssueCount(ctx, c.owner, c.repo, parentNum)
+	if err != nil || !hasNativeLinks {
+		if err != nil {
+			c.log.Warn("maybeCloseParentIssue: native sub-issue count failed, falling back to search", slog.Int("parent", parentNum), slog.Any("error", err))
+		} else {
+			c.log.Debug("maybeCloseParentIssue: no native sub-issue links, falling back to search", slog.Int("parent", parentNum))
+		}
+		openCount, err = c.ghClient.SearchOpenSubIssues(ctx, c.owner, c.repo, parentNum)
+		if err != nil {
+			c.log.Warn("maybeCloseParentIssue: failed to search open sub-issues", slog.Int("parent", parentNum), slog.Any("error", err))
+			return
+		}
 	}
 
 	if openCount > 0 {

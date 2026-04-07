@@ -3790,18 +3790,20 @@ func TestController_HasChangesRequested_FilterByTime(t *testing.T) {
 
 func TestMaybeCloseParentIssue(t *testing.T) {
 	tests := []struct {
-		name           string
-		issueNumber    int
-		issueBody      string
-		openSubIssues  int
-		getIssueErr    bool
-		searchErr      bool
-		wantClosed     bool
-		wantLabeled    bool
-		wantCommented  bool
+		name              string
+		issueNumber       int
+		issueBody         string
+		openSubIssues     int // used by text-search fallback
+		getIssueErr       bool
+		searchErr         bool
+		nativeTotal       int    // totalCount returned by GraphQL native sub-issues
+		nativeOpenStates  []string // states of natively linked sub-issues
+		wantClosed        bool
+		wantLabeled       bool
+		wantCommented     bool
 	}{
 		{
-			name:          "last sub-issue triggers parent close",
+			name:          "last sub-issue triggers parent close (text-search path)",
 			issueNumber:   10,
 			issueBody:     "Fix the bug\n\nParent: GH-5\n",
 			openSubIssues: 0,
@@ -3810,7 +3812,7 @@ func TestMaybeCloseParentIssue(t *testing.T) {
 			wantCommented: true,
 		},
 		{
-			name:          "sibling still open - no-op",
+			name:          "sibling still open - no-op (text-search path)",
 			issueNumber:   10,
 			issueBody:     "Fix the bug\n\nParent: GH-5\n",
 			openSubIssues: 2,
@@ -3856,15 +3858,35 @@ func TestMaybeCloseParentIssue(t *testing.T) {
 			wantLabeled:   true,
 			wantCommented: true,
 		},
+		{
+			name:             "native links all closed - closes parent",
+			issueNumber:      10,
+			issueBody:        "Fix the bug\n\nParent: GH-5\n",
+			nativeTotal:      2,
+			nativeOpenStates: []string{"CLOSED", "CLOSED"},
+			wantClosed:       true,
+			wantLabeled:      true,
+			wantCommented:    true,
+		},
+		{
+			name:             "native links with open sibling - no-op",
+			issueNumber:      10,
+			issueBody:        "Fix the bug\n\nParent: GH-5\n",
+			nativeTotal:      2,
+			nativeOpenStates: []string{"OPEN", "CLOSED"},
+			wantClosed:       false,
+			wantLabeled:      false,
+			wantCommented:    false,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var (
-				closeCalled       bool
-				addLabelsCalled   bool
-				removeLabelCalls  []string
-				commentCalled     bool
+				closeCalled      bool
+				addLabelsCalled  bool
+				removeLabelCalls []string
+				commentCalled    bool
 			)
 
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -3881,6 +3903,27 @@ func TestMaybeCloseParentIssue(t *testing.T) {
 					}
 					w.WriteHeader(http.StatusOK)
 					_ = json.NewEncoder(w).Encode(issue)
+
+				case r.URL.Path == "/graphql" && r.Method == http.MethodPost:
+					// Serve native sub-issues GraphQL response.
+					nodes := make([]map[string]string, len(tt.nativeOpenStates))
+					for i, s := range tt.nativeOpenStates {
+						nodes[i] = map[string]string{"state": s}
+					}
+					resp := map[string]interface{}{
+						"data": map[string]interface{}{
+							"repository": map[string]interface{}{
+								"issue": map[string]interface{}{
+									"subIssues": map[string]interface{}{
+										"totalCount": tt.nativeTotal,
+										"nodes":      nodes,
+									},
+								},
+							},
+						},
+					}
+					w.WriteHeader(http.StatusOK)
+					_ = json.NewEncoder(w).Encode(resp)
 
 				case strings.HasPrefix(r.URL.Path, "/search/issues"):
 					if tt.searchErr {
