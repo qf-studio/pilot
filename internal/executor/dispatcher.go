@@ -43,32 +43,16 @@ func DefaultDispatcherConfig() *DispatcherConfig {
 	}
 }
 
-// effectiveRunningThreshold returns StaleRunningThreshold, falling back
-// to StaleTaskDuration for backwards compatibility.
-func (c *DispatcherConfig) effectiveRunningThreshold() time.Duration {
-	if c.StaleRunningThreshold > 0 {
-		return c.StaleRunningThreshold
+// resolveDefaults fills zero-valued fields with sensible defaults and
+// applies the StaleTaskDuration backwards-compat alias.
+func (c *DispatcherConfig) resolveDefaults() {
+	// Backwards compat: if only the deprecated field is set, use it.
+	if c.StaleRunningThreshold == 0 && c.StaleTaskDuration > 0 {
+		c.StaleRunningThreshold = c.StaleTaskDuration
 	}
-	if c.StaleTaskDuration > 0 {
-		return c.StaleTaskDuration
+	if c.StaleRecoveryInterval == 0 {
+		c.StaleRecoveryInterval = 5 * time.Minute
 	}
-	return 30 * time.Minute
-}
-
-// effectiveQueuedThreshold returns StaleQueuedThreshold with a default.
-func (c *DispatcherConfig) effectiveQueuedThreshold() time.Duration {
-	if c.StaleQueuedThreshold > 0 {
-		return c.StaleQueuedThreshold
-	}
-	return 5 * time.Minute
-}
-
-// effectiveRecoveryInterval returns StaleRecoveryInterval with a default.
-func (c *DispatcherConfig) effectiveRecoveryInterval() time.Duration {
-	if c.StaleRecoveryInterval > 0 {
-		return c.StaleRecoveryInterval
-	}
-	return 5 * time.Minute
 }
 
 // Dispatcher manages task queuing and per-project workers.
@@ -94,6 +78,7 @@ func NewDispatcher(store *memory.Store, runner *Runner, config *DispatcherConfig
 	if config == nil {
 		config = DefaultDispatcherConfig()
 	}
+	config.resolveDefaults()
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -135,7 +120,7 @@ func (d *Dispatcher) Start(ctx context.Context) error {
 func (d *Dispatcher) runStaleRecoveryLoop(ctx context.Context) {
 	defer d.wg.Done()
 
-	interval := d.config.effectiveRecoveryInterval()
+	interval := d.config.StaleRecoveryInterval
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -178,7 +163,7 @@ func (d *Dispatcher) recoverStaleTasks() int {
 	var resetCount int
 
 	// Recover stale running tasks (crashed workers).
-	staleRunning, err := d.store.GetStaleRunningExecutions(d.config.effectiveRunningThreshold())
+	staleRunning, err := d.store.GetStaleRunningExecutions(d.config.StaleRunningThreshold)
 	if err != nil {
 		d.log.Warn("Failed to fetch stale running executions", slog.Any("error", err))
 	}
@@ -196,7 +181,7 @@ func (d *Dispatcher) recoverStaleTasks() int {
 	}
 
 	// Recover stale queued tasks (stuck in queue with no worker).
-	staleQueued, err := d.store.GetStaleQueuedExecutions(d.config.effectiveQueuedThreshold())
+	staleQueued, err := d.store.GetStaleQueuedExecutions(d.config.StaleQueuedThreshold)
 	if err != nil {
 		d.log.Warn("Failed to fetch stale queued executions", slog.Any("error", err))
 	}
