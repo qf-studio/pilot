@@ -16,16 +16,50 @@ import (
 
 // DispatcherConfig configures the task dispatcher behavior.
 type DispatcherConfig struct {
-	// StaleTaskDuration is how long a "running" task can be stale before reset.
-	// Used on startup to detect crashed workers.
+	// StaleTaskDuration is a backwards-compat alias for StaleRunningThreshold.
+	// If set and StaleRunningThreshold is zero, it is used as the running threshold.
 	StaleTaskDuration time.Duration
+
+	// StaleRunningThreshold is how long a "running" task can be stale before
+	// it is marked failed. Used to detect crashed workers.
+	StaleRunningThreshold time.Duration
+
+	// StaleQueuedThreshold is how long a "queued" task can sit without being
+	// picked up before it is marked failed (no worker to re-queue to).
+	StaleQueuedThreshold time.Duration
+
+	// StaleRecoveryInterval is how often the periodic stale-recovery loop runs.
+	// Zero disables the periodic loop (recovery only runs once on startup).
+	StaleRecoveryInterval time.Duration
 }
 
 // DefaultDispatcherConfig returns default dispatcher settings.
 func DefaultDispatcherConfig() *DispatcherConfig {
 	return &DispatcherConfig{
-		StaleTaskDuration: 30 * time.Minute,
+		StaleRunningThreshold: 30 * time.Minute,
+		StaleQueuedThreshold:  30 * time.Minute,
+		StaleRecoveryInterval: 5 * time.Minute,
 	}
+}
+
+// effectiveRunningThreshold returns the configured running threshold,
+// falling back to the legacy StaleTaskDuration field.
+func (c *DispatcherConfig) effectiveRunningThreshold() time.Duration {
+	if c.StaleRunningThreshold > 0 {
+		return c.StaleRunningThreshold
+	}
+	if c.StaleTaskDuration > 0 {
+		return c.StaleTaskDuration
+	}
+	return 30 * time.Minute
+}
+
+// effectiveQueuedThreshold returns the configured queued threshold.
+func (c *DispatcherConfig) effectiveQueuedThreshold() time.Duration {
+	if c.StaleQueuedThreshold > 0 {
+		return c.StaleQueuedThreshold
+	}
+	return 30 * time.Minute
 }
 
 // Dispatcher manages task queuing and per-project workers.
@@ -72,13 +106,20 @@ func (d *Dispatcher) SetDecomposer(decomposer *TaskDecomposer) {
 	d.decomposer = decomposer
 }
 
-// Start initializes the dispatcher and recovers from any stale tasks.
-func (d *Dispatcher) Start() error {
+// Start initializes the dispatcher, recovers stale tasks, and launches
+// a periodic recovery loop if StaleRecoveryInterval > 0.
+func (d *Dispatcher) Start(ctx context.Context) error {
 	d.log.Info("Starting dispatcher")
 
-	// Recover stale running tasks (from crashed workers)
+	// Initial recovery pass on startup
 	if err := d.recoverStaleTasks(); err != nil {
 		d.log.Warn("Failed to recover stale tasks", slog.Any("error", err))
+	}
+
+	// Launch periodic recovery loop
+	if d.config.StaleRecoveryInterval > 0 {
+		d.wg.Add(1)
+		go d.runStaleRecoveryLoop(ctx)
 	}
 
 	return nil
@@ -101,31 +142,73 @@ func (d *Dispatcher) Stop() {
 	d.log.Info("Dispatcher stopped")
 }
 
-// recoverStaleTasks resets tasks that were left in "running" state
-// from a previous crashed session.
+// recoverStaleTasks marks stale running and queued tasks as failed.
+// Running tasks are stale when their worker has crashed; queued tasks are
+// stale when no worker exists to pick them up. Both are marked failed
+// rather than re-queued — re-queuing without a worker just recreates
+// the orphan.
 func (d *Dispatcher) recoverStaleTasks() error {
-	stale, err := d.store.GetStaleRunningExecutions(d.config.StaleTaskDuration)
-	if err != nil {
-		return err
-	}
+	var resetCount int
 
-	for _, exec := range stale {
-		d.log.Warn("Recovering stale task",
+	// Recover stale running tasks
+	staleRunning, err := d.store.GetStaleRunningExecutions(d.config.effectiveRunningThreshold())
+	if err != nil {
+		return fmt.Errorf("get stale running: %w", err)
+	}
+	for _, exec := range staleRunning {
+		d.log.Warn("Recovering stale running task",
 			slog.String("execution_id", exec.ID),
 			slog.String("task_id", exec.TaskID),
 			slog.Time("created_at", exec.CreatedAt),
 		)
-		// Reset to queued so it will be picked up again
-		if err := d.store.UpdateExecutionStatus(exec.ID, "queued", "recovered from stale running state"); err != nil {
-			d.log.Error("Failed to reset stale task", slog.String("id", exec.ID), slog.Any("error", err))
+		if err := d.store.UpdateExecutionStatus(exec.ID, "failed", "recovered from stale running state"); err != nil {
+			d.log.Error("Failed to mark stale running task as failed", slog.String("id", exec.ID), slog.Any("error", err))
+		} else {
+			resetCount++
 		}
 	}
 
-	if len(stale) > 0 {
-		d.log.Info("Recovered stale tasks", slog.Int("count", len(stale)))
+	// Recover stale queued tasks
+	staleQueued, err := d.store.GetStaleQueuedExecutions(d.config.effectiveQueuedThreshold())
+	if err != nil {
+		return fmt.Errorf("get stale queued: %w", err)
+	}
+	for _, exec := range staleQueued {
+		d.log.Warn("Recovering stale queued task",
+			slog.String("execution_id", exec.ID),
+			slog.String("task_id", exec.TaskID),
+			slog.Time("created_at", exec.CreatedAt),
+		)
+		if err := d.store.UpdateExecutionStatus(exec.ID, "failed", "recovered from stale queued state"); err != nil {
+			d.log.Error("Failed to mark stale queued task as failed", slog.String("id", exec.ID), slog.Any("error", err))
+		} else {
+			resetCount++
+		}
 	}
 
+	d.log.Info("stale recovery complete, reset N tasks", slog.Int("count", resetCount))
 	return nil
+}
+
+// runStaleRecoveryLoop periodically runs recoverStaleTasks until ctx is done.
+func (d *Dispatcher) runStaleRecoveryLoop(ctx context.Context) {
+	defer d.wg.Done()
+
+	ticker := time.NewTicker(d.config.StaleRecoveryInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-d.ctx.Done():
+			return
+		case <-ticker.C:
+			if err := d.recoverStaleTasks(); err != nil {
+				d.log.Warn("Periodic stale recovery failed", slog.Any("error", err))
+			}
+		}
+	}
 }
 
 // QueueTask adds a task to the execution queue and returns the execution ID.

@@ -40,7 +40,7 @@ func TestDispatcher_QueueTask(t *testing.T) {
 	runner := NewRunner()
 	dispatcher := NewDispatcher(store, runner, nil)
 
-	if err := dispatcher.Start(); err != nil {
+	if err := dispatcher.Start(context.Background()); err != nil {
 		t.Fatalf("failed to start dispatcher: %v", err)
 	}
 	defer dispatcher.Stop()
@@ -105,7 +105,7 @@ func TestDispatcher_DuplicateTask(t *testing.T) {
 	runner := NewRunner()
 	dispatcher := NewDispatcher(store, runner, nil)
 
-	if err := dispatcher.Start(); err != nil {
+	if err := dispatcher.Start(context.Background()); err != nil {
 		t.Fatalf("failed to start dispatcher: %v", err)
 	}
 	defer dispatcher.Stop()
@@ -140,7 +140,7 @@ func TestDispatcher_GetWorkerStatus(t *testing.T) {
 	runner := NewRunner()
 	dispatcher := NewDispatcher(store, runner, nil)
 
-	if err := dispatcher.Start(); err != nil {
+	if err := dispatcher.Start(context.Background()); err != nil {
 		t.Fatalf("failed to start dispatcher: %v", err)
 	}
 	defer dispatcher.Stop()
@@ -187,7 +187,7 @@ func TestDispatcher_MultipleProjects(t *testing.T) {
 	runner := NewRunner()
 	dispatcher := NewDispatcher(store, runner, nil)
 
-	if err := dispatcher.Start(); err != nil {
+	if err := dispatcher.Start(context.Background()); err != nil {
 		t.Fatalf("failed to start dispatcher: %v", err)
 	}
 	defer dispatcher.Stop()
@@ -432,26 +432,27 @@ func TestDispatcher_RecoverStaleTasks(t *testing.T) {
 		t.Fatalf("failed to save execution: %v", err)
 	}
 
-	// Create dispatcher with 0 stale duration
+	// Create dispatcher with 0 stale duration (everything is stale immediately)
 	config := &DispatcherConfig{
-		StaleTaskDuration: 0, // Everything is stale
+		StaleRunningThreshold: 0,
+		StaleQueuedThreshold:  0,
 	}
 	runner := NewRunner()
 	dispatcher := NewDispatcher(store, runner, config)
 
-	if err := dispatcher.Start(); err != nil {
+	if err := dispatcher.Start(context.Background()); err != nil {
 		t.Fatalf("failed to start dispatcher: %v", err)
 	}
 	defer dispatcher.Stop()
 
-	// Check that the task was reset to queued
+	// Check that the task was marked failed (not re-queued)
 	updated, err := store.GetExecution("exec-recover")
 	if err != nil {
 		t.Fatalf("failed to get execution: %v", err)
 	}
 
-	if updated.Status != "queued" {
-		t.Errorf("expected recovered task to have status 'queued', got '%s'", updated.Status)
+	if updated.Status != "failed" {
+		t.Errorf("expected recovered task to have status 'failed', got '%s'", updated.Status)
 	}
 }
 
@@ -486,7 +487,7 @@ func TestDispatcher_ExecutionStatusPath(t *testing.T) {
 	runner := NewRunner()
 	dispatcher := NewDispatcher(store, runner, nil)
 
-	if err := dispatcher.Start(); err != nil {
+	if err := dispatcher.Start(context.Background()); err != nil {
 		t.Fatalf("failed to start dispatcher: %v", err)
 	}
 	defer dispatcher.Stop()
@@ -515,5 +516,178 @@ func TestDispatcher_ExecutionStatusPath(t *testing.T) {
 	// Status should be queued or running (worker might have picked it up)
 	if exec.Status != "queued" && exec.Status != "running" && exec.Status != "failed" {
 		t.Errorf("unexpected execution status: %s", exec.Status)
+	}
+}
+
+func TestRecoverStaleTasks_QueuedAndRunning(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	// Insert a stale running task and a stale queued task
+	for _, exec := range []*memory.Execution{
+		{ID: "stale-run-1", TaskID: "TASK-R1", ProjectPath: "/proj", Status: "running"},
+		{ID: "stale-q-1", TaskID: "TASK-Q1", ProjectPath: "/proj", Status: "queued"},
+		{ID: "fresh-run", TaskID: "TASK-FRESH", ProjectPath: "/proj", Status: "running"},
+	} {
+		if err := store.SaveExecution(exec); err != nil {
+			t.Fatalf("failed to save execution: %v", err)
+		}
+	}
+
+	// Use 0 threshold so everything is immediately stale
+	config := &DispatcherConfig{
+		StaleRunningThreshold: 0,
+		StaleQueuedThreshold:  0,
+	}
+	runner := NewRunner()
+	dispatcher := NewDispatcher(store, runner, config)
+
+	if err := dispatcher.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer dispatcher.Stop()
+
+	// All three should be marked failed
+	for _, id := range []string{"stale-run-1", "stale-q-1", "fresh-run"} {
+		exec, err := store.GetExecution(id)
+		if err != nil {
+			t.Fatalf("GetExecution(%s): %v", id, err)
+		}
+		if exec.Status != "failed" {
+			t.Errorf("expected %s status=failed, got %s", id, exec.Status)
+		}
+	}
+}
+
+func TestRecoverStaleTasks_RespectsThresholds(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	// Insert executions — they'll get CURRENT_TIMESTAMP as created_at
+	for _, exec := range []*memory.Execution{
+		{ID: "run-1", TaskID: "TASK-R1", ProjectPath: "/proj", Status: "running"},
+		{ID: "q-1", TaskID: "TASK-Q1", ProjectPath: "/proj", Status: "queued"},
+	} {
+		if err := store.SaveExecution(exec); err != nil {
+			t.Fatalf("failed to save execution: %v", err)
+		}
+	}
+
+	// Use very long thresholds — nothing should be considered stale
+	config := &DispatcherConfig{
+		StaleRunningThreshold: 24 * time.Hour,
+		StaleQueuedThreshold:  24 * time.Hour,
+	}
+	runner := NewRunner()
+	dispatcher := NewDispatcher(store, runner, config)
+
+	if err := dispatcher.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer dispatcher.Stop()
+
+	// Both should still be in their original state
+	for _, tc := range []struct {
+		id     string
+		expect string
+	}{
+		{"run-1", "running"},
+		{"q-1", "queued"},
+	} {
+		exec, err := store.GetExecution(tc.id)
+		if err != nil {
+			t.Fatalf("GetExecution(%s): %v", tc.id, err)
+		}
+		if exec.Status != tc.expect {
+			t.Errorf("expected %s status=%s, got %s", tc.id, tc.expect, exec.Status)
+		}
+	}
+}
+
+func TestRunStaleRecoveryLoop_Periodic(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	config := &DispatcherConfig{
+		StaleRunningThreshold: 0,
+		StaleQueuedThreshold:  0,
+		StaleRecoveryInterval: 100 * time.Millisecond, // fast ticks for test
+	}
+	runner := NewRunner()
+	dispatcher := NewDispatcher(store, runner, config)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := dispatcher.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer dispatcher.Stop()
+
+	// Insert a stale task AFTER start — the periodic loop should catch it
+	if err := store.SaveExecution(&memory.Execution{
+		ID: "late-stale", TaskID: "TASK-LATE", ProjectPath: "/proj", Status: "running",
+	}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	// Wait enough ticks for the loop to fire
+	time.Sleep(350 * time.Millisecond)
+
+	exec, err := store.GetExecution("late-stale")
+	if err != nil {
+		t.Fatalf("GetExecution: %v", err)
+	}
+	if exec.Status != "failed" {
+		t.Errorf("expected late-stale to be failed after periodic recovery, got %s", exec.Status)
+	}
+}
+
+func TestQueueTask_AfterRecovery(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	// Insert a stale task for the same task ID we'll queue later
+	if err := store.SaveExecution(&memory.Execution{
+		ID: "old-exec", TaskID: "TASK-REQUEUE", ProjectPath: "/proj", Status: "running",
+	}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	// Start dispatcher with 0 threshold — marks old task as failed
+	config := &DispatcherConfig{
+		StaleRunningThreshold: 0,
+		StaleQueuedThreshold:  0,
+	}
+	runner := NewRunner()
+	dispatcher := NewDispatcher(store, runner, config)
+
+	if err := dispatcher.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer dispatcher.Stop()
+
+	// Verify old task is failed
+	old, err := store.GetExecution("old-exec")
+	if err != nil {
+		t.Fatalf("GetExecution: %v", err)
+	}
+	if old.Status != "failed" {
+		t.Fatalf("expected old-exec failed, got %s", old.Status)
+	}
+
+	// Now re-queue the same task ID — should succeed since old one is failed
+	task := &Task{
+		ID:          "TASK-REQUEUE",
+		Title:       "Re-queued task",
+		Description: "After recovery",
+		ProjectPath: "/proj",
+	}
+	execID, err := dispatcher.QueueTask(context.Background(), task)
+	if err != nil {
+		t.Fatalf("QueueTask after recovery: %v", err)
+	}
+	if execID == "" {
+		t.Error("expected execution ID, got empty")
 	}
 }
