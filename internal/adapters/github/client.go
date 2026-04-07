@@ -864,60 +864,6 @@ func (c *Client) SearchOpenSubIssues(ctx context.Context, owner, repo string, pa
 	return result.TotalCount, nil
 }
 
-// GetOpenSubIssueCount queries the GitHub GraphQL API for native sub-issues linked to parentNum.
-// Returns (openCount, hasNativeLinks, error).
-// hasNativeLinks is true when the parent has at least one natively linked sub-issue (totalCount > 0).
-// When hasNativeLinks is false, the caller should fall back to text-search (SearchOpenSubIssues).
-func (c *Client) GetOpenSubIssueCount(ctx context.Context, owner, repo string, parentNum int) (int, bool, error) {
-	const query = `query($owner: String!, $repo: String!, $number: Int!) {
-  repository(owner: $owner, name: $repo) {
-    issue(number: $number) {
-      subIssues(first: 100) {
-        totalCount
-        nodes {
-          state
-        }
-      }
-    }
-  }
-}`
-	vars := map[string]interface{}{
-		"owner":  owner,
-		"repo":   repo,
-		"number": parentNum,
-	}
-
-	var resp struct {
-		Repository struct {
-			Issue struct {
-				SubIssues struct {
-					TotalCount int `json:"totalCount"`
-					Nodes      []struct {
-						State string `json:"state"`
-					} `json:"nodes"`
-				} `json:"subIssues"`
-			} `json:"issue"`
-		} `json:"repository"`
-	}
-
-	if err := c.ExecuteGraphQL(ctx, query, vars, &resp); err != nil {
-		return 0, false, fmt.Errorf("get native sub-issues for parent %d: %w", parentNum, err)
-	}
-
-	totalCount := resp.Repository.Issue.SubIssues.TotalCount
-	if totalCount == 0 {
-		// No native sub-issue links — caller should fall back to text search.
-		return 0, false, nil
-	}
-
-	openCount := 0
-	for _, node := range resp.Repository.Issue.SubIssues.Nodes {
-		if node.State == "OPEN" {
-			openCount++
-		}
-	}
-	return openCount, true, nil
-}
 
 // UpdatePullRequestBranch updates the PR branch with the latest base branch.
 // Uses GitHub API: PUT /repos/{owner}/{repo}/pulls/{number}/update-branch
