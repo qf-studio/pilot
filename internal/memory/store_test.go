@@ -1446,3 +1446,52 @@ func TestCrossPatternsIndexes(t *testing.T) {
 		})
 	}
 }
+
+func TestGetStaleQueuedExecutions(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore failed: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	staleDuration := time.Hour
+
+	now := time.Now()
+
+	insertAt := func(exec *Execution, createdAt time.Time) {
+		t.Helper()
+		if err := store.SaveExecution(exec); err != nil {
+			t.Fatalf("SaveExecution %s: %v", exec.ID, err)
+		}
+		if _, err := store.db.Exec(
+			`UPDATE executions SET created_at = ? WHERE id = ?`, createdAt, exec.ID,
+		); err != nil {
+			t.Fatalf("set created_at for %s: %v", exec.ID, err)
+		}
+	}
+
+	// Fresh queued execution (created now — should NOT be returned).
+	insertAt(&Execution{ID: "queued-fresh", TaskID: "TASK-fresh", ProjectPath: "/proj", Status: "queued"}, now)
+
+	// Stale queued execution (created 2 hours ago — should be returned).
+	insertAt(&Execution{ID: "queued-stale", TaskID: "TASK-stale", ProjectPath: "/proj", Status: "queued"}, now.Add(-2*time.Hour))
+
+	// Stale running execution — must NOT appear in queued results.
+	insertAt(&Execution{ID: "running-stale", TaskID: "TASK-running", ProjectPath: "/proj", Status: "running"}, now.Add(-2*time.Hour))
+
+	results, err := store.GetStaleQueuedExecutions(staleDuration)
+	if err != nil {
+		t.Fatalf("GetStaleQueuedExecutions: %v", err)
+	}
+
+	if len(results) != 1 {
+		t.Fatalf("expected 1 stale queued execution, got %d", len(results))
+	}
+	if results[0].ID != "queued-stale" {
+		t.Errorf("expected ID %q, got %q", "queued-stale", results[0].ID)
+	}
+	if results[0].Status != "queued" {
+		t.Errorf("expected status 'queued', got %q", results[0].Status)
+	}
+}

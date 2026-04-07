@@ -900,6 +900,37 @@ func (s *Store) GetStaleRunningExecutions(staleDuration time.Duration) ([]*Execu
 	return executions, nil
 }
 
+// GetStaleQueuedExecutions returns executions that have been in "queued" status
+// for longer than the specified duration. Used to detect stuck queue entries.
+func (s *Store) GetStaleQueuedExecutions(staleDuration time.Duration) ([]*Execution, error) {
+	staleTime := time.Now().Add(-staleDuration)
+	rows, err := s.db.Query(`
+		SELECT id, task_id, project_path, status, output, error, duration_ms, pr_url, commit_sha, created_at, completed_at
+		FROM executions
+		WHERE status = 'queued' AND created_at < ?
+		ORDER BY created_at ASC
+	`, staleTime)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var executions []*Execution
+	for rows.Next() {
+		var exec Execution
+		var completedAt sql.NullTime
+		if err := rows.Scan(&exec.ID, &exec.TaskID, &exec.ProjectPath, &exec.Status, &exec.Output, &exec.Error, &exec.DurationMs, &exec.PRUrl, &exec.CommitSHA, &exec.CreatedAt, &completedAt); err != nil {
+			return nil, err
+		}
+		if completedAt.Valid {
+			exec.CompletedAt = &completedAt.Time
+		}
+		executions = append(executions, &exec)
+	}
+
+	return executions, nil
+}
+
 // IsTaskQueued checks if a task with the given ID is already queued or running.
 // Used to prevent duplicate task submissions.
 func (s *Store) IsTaskQueued(taskID string) (bool, error) {
