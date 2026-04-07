@@ -563,6 +563,24 @@ func (r *Runner) createSubIssuesViaGitHub(ctx context.Context, plan *EpicPlan, e
 		// Track order → issue number for dependency resolution (GH-1794)
 		orderToIssueNumber[subtask.Order] = issueNumber
 
+		// GH-2211: Wire native GitHub sub-issue link (non-fatal — text marker is fallback)
+		if r.subIssueLinker != nil &&
+			plan.ParentTask != nil &&
+			plan.ParentTask.SourceRepo != "" &&
+			plan.ParentTask.SourceIssueID != "" {
+			if parts := strings.SplitN(plan.ParentTask.SourceRepo, "/", 2); len(parts) == 2 {
+				if parentNum, parseErr := strconv.Atoi(plan.ParentTask.SourceIssueID); parseErr == nil {
+					if linkErr := r.subIssueLinker.LinkSubIssue(ctx, parts[0], parts[1], parentNum, issueNumber); linkErr != nil {
+						r.log.Warn("Failed to link native sub-issue",
+							"parent", parentNum,
+							"child", issueNumber,
+							"error", linkErr,
+						)
+					}
+				}
+			}
+		}
+
 		r.log.Info("Created GitHub issue",
 			"subtask_order", subtask.Order,
 			"issue_number", issueNumber,

@@ -714,6 +714,9 @@ Examples:
 						}
 					}
 
+					// GH-2211: Wire native sub-issue linker so epic children get proper parent→child links
+					gwRunner.SetSubIssueLinker(client)
+
 					// GH-726: Wire processed issue persistence for gateway poller
 					if gwAutopilotStateStore != nil {
 						pollerOpts = append(pollerOpts, github.WithProcessedStore(gwAutopilotStateStore))
