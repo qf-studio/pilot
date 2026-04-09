@@ -49,7 +49,7 @@ export default async function RootLayout({
                 </span>
               }
               projectLink="https://github.com/qf-studio/pilot"
-              chatLink="https://discord.gg/K6mM8TzJ"
+              chatLink="https://discord.gg/EfEeMsW9"
             />
           }
           pageMap={await getPageMap()}
