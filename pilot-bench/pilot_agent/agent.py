@@ -51,6 +51,16 @@ class PilotAgent(BaseInstalledAgent):
         safe_instruction = instruction.replace("'", "'\\''")
         # Prohibit reading evaluation test files
         safe_instruction += "\n\nIMPORTANT: Do NOT read, cat, or access any files under /tests/. These are evaluation files used after your work is complete. Solve the task based solely on this instruction."
+        safe_instruction += """
+
+VERIFICATION PROTOCOL (mandatory before finishing):
+1. Re-read the original instruction above
+2. List every testable requirement from the instruction
+3. Write a validation script (validate.sh or validate.py) that checks each requirement
+4. Run it and examine output carefully
+5. If ANY check fails, fix your implementation and re-run until all pass
+6. Only declare success after your own validation passes
+"""
 
         return [
             ExecInput(
@@ -67,7 +77,7 @@ class PilotAgent(BaseInstalledAgent):
                     "IS_SANDBOX": "1",
                     # CC uses OAuth token internally for API calls
                     # 54K output tokens — default 32K kills complex tasks mid-thinking
-                    "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "54000",
+                    "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "64000",
                 },
                 timeout_sec=MAIN_TIMEOUT,
             ),
@@ -281,8 +291,8 @@ executor:
   heartbeat_timeout: 15m
   model_routing:
     enabled: true
-    trivial: "claude-haiku-4-5-20251001"
-    simple: "claude-sonnet-4-6"
+    trivial: "{model}"
+    simple: "{model}"
     medium: "{model}"
     complex: "{model}"
   timeout:
@@ -293,8 +303,8 @@ executor:
     complex: 60m
   effort_routing:
     enabled: true
-    trivial: low
-    simple: medium
+    trivial: high
+    simple: high
     medium: high
     complex: high
   effort_classifier:
@@ -408,15 +418,20 @@ memory:
         """
         cmds = [
             "echo '=== FILES ==='",
-            "ls /app/ 2>/dev/null | head -30",
-            "echo '=== PYTHON PACKAGES ==='",
-            "python3 -c \"import torch; print('torch='+torch.__version__)\" 2>/dev/null || echo 'torch=missing'",
-            "python3 -c \"import scipy; print('scipy='+scipy.__version__)\" 2>/dev/null || echo 'scipy=missing'",
-            "python3 -c \"import pandas; print('pandas='+pandas.__version__)\" 2>/dev/null || echo 'pandas=missing'",
-            "python3 -c \"import sklearn; print('sklearn=available')\" 2>/dev/null || echo 'sklearn=missing'",
+            "find /app -maxdepth 3 -type f 2>/dev/null | head -100",
+            "echo '=== BUILD SYSTEMS ==='",
+            "ls /app/Makefile /app/pyproject.toml /app/Cargo.toml /app/package.json /app/CMakeLists.txt 2>/dev/null || echo 'none found'",
+            "echo '=== README ==='",
+            "cat /app/README* /app/INSTRUCTIONS* 2>/dev/null | head -200 || echo 'no readme'",
+            "echo '=== PYTHON ==='",
+            "python3 --version 2>/dev/null",
+            "pip list 2>/dev/null | head -30 || echo 'pip: N/A'",
             "echo '=== SYSTEM ==='",
-            "free -m 2>/dev/null | grep Mem || echo 'free: N/A'",
+            "uname -m",
             "echo \"CPUs: $(nproc 2>/dev/null || echo N/A)\"",
+            "free -m 2>/dev/null | grep Mem || echo 'free: N/A'",
+            "echo '=== DATA FILES ==='",
+            "find /app -maxdepth 2 \\( -name '*.csv' -o -name '*.json' -o -name '*.txt' -o -name '*.dat' -o -name '*.db' \\) 2>/dev/null | head -20",
         ]
         script = " ; ".join(cmds)
         try:
