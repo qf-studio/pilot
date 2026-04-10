@@ -662,6 +662,195 @@ func TestRunStaleRecoveryLoop_Periodic(t *testing.T) {
 	}
 }
 
+func TestRecoverStaleTasks_DeletesOrphanWhenCompleted(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	// Scenario: same TaskID has a completed row AND an orphan running/queued row.
+	executions := []*memory.Execution{
+		{ID: "exec-completed", TaskID: "TASK-ORPHAN", ProjectPath: "/project", Status: "completed"},
+		{ID: "exec-orphan-run", TaskID: "TASK-ORPHAN", ProjectPath: "/project", Status: "running"},
+		{ID: "exec-orphan-q", TaskID: "TASK-ORPHAN", ProjectPath: "/project", Status: "queued"},
+	}
+	for _, exec := range executions {
+		if err := store.SaveExecution(exec); err != nil {
+			t.Fatalf("failed to save execution: %v", err)
+		}
+	}
+
+	config := &DispatcherConfig{
+		StaleRunningThreshold: 0,
+		StaleQueuedThreshold:  0,
+		StaleRecoveryInterval: time.Hour,
+	}
+	runner := NewRunner()
+	dispatcher := NewDispatcher(store, runner, config)
+
+	if err := dispatcher.Start(context.Background()); err != nil {
+		t.Fatalf("failed to start dispatcher: %v", err)
+	}
+	defer dispatcher.Stop()
+
+	// Orphan rows should be deleted, not marked failed.
+	for _, id := range []string{"exec-orphan-run", "exec-orphan-q"} {
+		exec, err := store.GetExecution(id)
+		if err == nil && exec != nil {
+			t.Errorf("expected orphan %s to be deleted, but it still exists with status '%s'", id, exec.Status)
+		}
+	}
+
+	// Completed row should remain untouched.
+	exec, err := store.GetExecution("exec-completed")
+	if err != nil {
+		t.Fatalf("failed to get completed execution: %v", err)
+	}
+	if exec.Status != "completed" {
+		t.Errorf("expected completed execution to remain 'completed', got '%s'", exec.Status)
+	}
+}
+
+func TestRecoverStaleTasks_MarksFailedWhenNoCompleted(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	// Scenario: orphan rows with no completed execution for the same TaskID.
+	executions := []*memory.Execution{
+		{ID: "exec-only-run", TaskID: "TASK-NOCOMPLETE", ProjectPath: "/project", Status: "running"},
+		{ID: "exec-only-q", TaskID: "TASK-NOCOMPLETE-Q", ProjectPath: "/project", Status: "queued"},
+	}
+	for _, exec := range executions {
+		if err := store.SaveExecution(exec); err != nil {
+			t.Fatalf("failed to save execution: %v", err)
+		}
+	}
+
+	config := &DispatcherConfig{
+		StaleRunningThreshold: 0,
+		StaleQueuedThreshold:  0,
+		StaleRecoveryInterval: time.Hour,
+	}
+	runner := NewRunner()
+	dispatcher := NewDispatcher(store, runner, config)
+
+	if err := dispatcher.Start(context.Background()); err != nil {
+		t.Fatalf("failed to start dispatcher: %v", err)
+	}
+	defer dispatcher.Stop()
+
+	// Both should be marked failed (no completed execution exists).
+	for _, id := range []string{"exec-only-run", "exec-only-q"} {
+		exec, err := store.GetExecution(id)
+		if err != nil {
+			t.Fatalf("failed to get execution %s: %v", id, err)
+		}
+		if exec.Status != "failed" {
+			t.Errorf("expected %s to be 'failed', got '%s'", id, exec.Status)
+		}
+	}
+}
+
+func TestRecoverStaleTasks_DifferentProjectPath(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	// Scenario: completed execution exists for a DIFFERENT project path.
+	// The orphan should still be marked failed (HasCompletedExecution checks both fields).
+	executions := []*memory.Execution{
+		{ID: "exec-diff-completed", TaskID: "TASK-DIFF", ProjectPath: "/project-a", Status: "completed"},
+		{ID: "exec-diff-orphan", TaskID: "TASK-DIFF", ProjectPath: "/project-b", Status: "running"},
+	}
+	for _, exec := range executions {
+		if err := store.SaveExecution(exec); err != nil {
+			t.Fatalf("failed to save execution: %v", err)
+		}
+	}
+
+	config := &DispatcherConfig{
+		StaleRunningThreshold: 0,
+		StaleQueuedThreshold:  0,
+		StaleRecoveryInterval: time.Hour,
+	}
+	runner := NewRunner()
+	dispatcher := NewDispatcher(store, runner, config)
+
+	if err := dispatcher.Start(context.Background()); err != nil {
+		t.Fatalf("failed to start dispatcher: %v", err)
+	}
+	defer dispatcher.Stop()
+
+	// Different project path → no match → should be marked failed, not deleted.
+	exec, err := store.GetExecution("exec-diff-orphan")
+	if err != nil {
+		t.Fatalf("failed to get execution: %v", err)
+	}
+	if exec.Status != "failed" {
+		t.Errorf("expected orphan with different project to be 'failed', got '%s'", exec.Status)
+	}
+}
+
+func TestStore_HasCompletedExecution(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	executions := []*memory.Execution{
+		{ID: "exec-hce-1", TaskID: "TASK-HCE", ProjectPath: "/project-a", Status: "completed"},
+		{ID: "exec-hce-2", TaskID: "TASK-HCE", ProjectPath: "/project-b", Status: "running"},
+		{ID: "exec-hce-3", TaskID: "TASK-HCE-NONE", ProjectPath: "/project-a", Status: "failed"},
+	}
+	for _, exec := range executions {
+		if err := store.SaveExecution(exec); err != nil {
+			t.Fatalf("failed to save execution: %v", err)
+		}
+	}
+
+	tests := []struct {
+		name        string
+		taskID      string
+		projectPath string
+		want        bool
+	}{
+		{"completed exists", "TASK-HCE", "/project-a", true},
+		{"different project", "TASK-HCE", "/project-b", false},
+		{"only failed", "TASK-HCE-NONE", "/project-a", false},
+		{"nonexistent task", "TASK-NOPE", "/project-a", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := store.HasCompletedExecution(tc.taskID, tc.projectPath)
+			if err != nil {
+				t.Fatalf("HasCompletedExecution error: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("HasCompletedExecution(%q, %q) = %v, want %v", tc.taskID, tc.projectPath, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestStore_DeleteExecution(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	exec := &memory.Execution{
+		ID:          "exec-del",
+		TaskID:      "TASK-DEL",
+		ProjectPath: "/project",
+		Status:      "running",
+	}
+	if err := store.SaveExecution(exec); err != nil {
+		t.Fatalf("failed to save execution: %v", err)
+	}
+
+	if err := store.DeleteExecution("exec-del"); err != nil {
+		t.Fatalf("DeleteExecution error: %v", err)
+	}
+
+	got, err := store.GetExecution("exec-del")
+	if err == nil && got != nil {
+		t.Errorf("expected execution to be deleted, but found status '%s'", got.Status)
+	}
+}
+
 func TestQueueTask_AfterRecovery(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()

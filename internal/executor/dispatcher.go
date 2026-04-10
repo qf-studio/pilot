@@ -168,6 +168,18 @@ func (d *Dispatcher) recoverStaleTasks() int {
 		d.log.Warn("Failed to fetch stale running executions", slog.Any("error", err))
 	}
 	for _, exec := range staleRunning {
+		// If this task already completed successfully, delete the orphan row
+		// instead of marking it failed (avoids dashboard showing false failures).
+		if completed, _ := d.store.HasCompletedExecution(exec.TaskID, exec.ProjectPath); completed {
+			d.log.Info("Deleting orphan running row (task already completed)",
+				slog.String("execution_id", exec.ID),
+				slog.String("task_id", exec.TaskID),
+			)
+			if err := d.store.DeleteExecution(exec.ID); err != nil {
+				d.log.Error("Failed to delete orphan running row", slog.String("id", exec.ID), slog.Any("error", err))
+			}
+			continue
+		}
 		d.log.Warn("Marking stale running task as failed",
 			slog.String("execution_id", exec.ID),
 			slog.String("task_id", exec.TaskID),
@@ -186,6 +198,16 @@ func (d *Dispatcher) recoverStaleTasks() int {
 		d.log.Warn("Failed to fetch stale queued executions", slog.Any("error", err))
 	}
 	for _, exec := range staleQueued {
+		if completed, _ := d.store.HasCompletedExecution(exec.TaskID, exec.ProjectPath); completed {
+			d.log.Info("Deleting orphan queued row (task already completed)",
+				slog.String("execution_id", exec.ID),
+				slog.String("task_id", exec.TaskID),
+			)
+			if err := d.store.DeleteExecution(exec.ID); err != nil {
+				d.log.Error("Failed to delete orphan queued row", slog.String("id", exec.ID), slog.Any("error", err))
+			}
+			continue
+		}
 		d.log.Warn("Marking stale queued task as failed",
 			slog.String("execution_id", exec.ID),
 			slog.String("task_id", exec.TaskID),
