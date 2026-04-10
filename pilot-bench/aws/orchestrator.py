@@ -143,6 +143,9 @@ class AWSBenchOrchestrator:
             if not ssm_ready:
                 raise RuntimeError("No instances with SSM available")
 
+            # Remove instances whose SSM agent never came online
+            self.pool.trim_to_ready(ssm_ready)
+
             logger.info(f"{len(ssm_ready)} instances ready for execution")
 
             # 4. Build work queue
@@ -162,8 +165,36 @@ class AWSBenchOrchestrator:
             self._dispatch_batch(work_queue)
 
             # Poll loop
+            health_check_interval = 60
+            last_health_check = time.time()
+
             while self.ssm.active_count > 0 or work_queue:
                 time.sleep(10)
+
+                # Periodic health check for dead instances
+                if time.time() - last_health_check >= health_check_interval:
+                    dead = self.pool.check_health()
+                    if dead:
+                        logger.warning(f"Dead instances detected: {dead}")
+                        for dead_id in dead:
+                            dead_results = self.ssm.mark_instance_failed(dead_id)
+                            for result in dead_results:
+                                trial = TrialResult(
+                                    task_name=result["task_name"],
+                                    trial_id=result["trial_id"],
+                                    status="Failed",
+                                    reward=0.0,
+                                    duration_sec=result["duration_sec"],
+                                    instance_id=dead_id,
+                                )
+                                bench.results.append(trial)
+                                failed += 1
+                                logger.info(
+                                    f"[{completed + failed}/{total_trials}] "
+                                    f"{result['task_name']}/{result['trial_id']}: "
+                                    f"Failed (instance {dead_id} terminated)"
+                                )
+                    last_health_check = time.time()
 
                 # Check for completed commands
                 done = self.ssm.poll_all_active()

@@ -143,10 +143,61 @@ class InstancePool:
                 return iid
         return None
 
+    def trim_to_ready(self, ready_ids: list[str]) -> list[str]:
+        """Remove instances from pool that are not in the ready set.
+
+        Call after wait_for_ssm() to evict instances whose SSM agent
+        never came online, preventing dispatch to unreachable hosts.
+
+        Returns list of removed instance IDs.
+        """
+        registered = set(self._instances.keys())
+        ready_set = set(ready_ids)
+        removed = []
+        for iid in registered - ready_set:
+            del self._instances[iid]
+            removed.append(iid)
+        if removed:
+            logger.warning(
+                f"Trimmed {len(removed)} non-SSM-ready instances from pool: {removed}"
+            )
+        return removed
+
+    def check_health(self) -> list[str]:
+        """Check that busy instances are still running.
+
+        Returns list of dead instance IDs that were removed from the pool.
+        """
+        busy = [iid for iid, state in self._instances.items() if state == "busy"]
+        if not busy:
+            return []
+
+        dead: list[str] = []
+        try:
+            response = self.ec2.describe_instances(InstanceIds=busy)
+            for reservation in response.get("Reservations", []):
+                for instance in reservation.get("Instances", []):
+                    state = instance.get("State", {}).get("Name", "")
+                    if state not in ("running", "pending"):
+                        dead.append(instance["InstanceId"])
+        except Exception as e:
+            logger.error(f"Health check failed: {e}")
+            return []
+
+        for iid in dead:
+            self._instances.pop(iid, None)
+            logger.warning(f"Dead instance removed from pool: {iid}")
+
+        return dead
+
     def release_instance(self, instance_id: str) -> None:
         """Mark an instance as idle (available for new tasks)."""
         if instance_id in self._instances:
             self._instances[instance_id] = "idle"
+        else:
+            logger.warning(
+                f"release_instance called for unknown instance {instance_id}"
+            )
 
     def get_idle_count(self) -> int:
         return sum(1 for s in self._instances.values() if s == "idle")

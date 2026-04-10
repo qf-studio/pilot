@@ -162,6 +162,39 @@ class SSMExecutor:
 
         return completed
 
+    def mark_instance_failed(self, instance_id: str) -> list[dict]:
+        """Mark all active commands for a given instance as failed.
+
+        Used when an instance is detected as dead/terminated.
+        Returns list of result dicts for the failed commands.
+        """
+        failed = []
+        to_remove = []
+
+        for command_id, meta in self._active_commands.items():
+            if meta["instance_id"] == instance_id:
+                result = {
+                    "command_id": command_id,
+                    "task_name": meta["task_name"],
+                    "trial_id": meta["trial_id"],
+                    "instance_id": instance_id,
+                    "status": "Failed",
+                    "stdout": "",
+                    "stderr": f"Instance {instance_id} terminated",
+                    "duration_sec": time.time() - meta["started_at"],
+                }
+                failed.append(result)
+                to_remove.append(command_id)
+                logger.warning(
+                    f"Marked command {command_id} ({meta['task_name']}/{meta['trial_id']}) "
+                    f"as failed: instance {instance_id} is dead"
+                )
+
+        for cmd_id in to_remove:
+            del self._active_commands[cmd_id]
+
+        return failed
+
     @property
     def active_count(self) -> int:
         return len(self._active_commands)
