@@ -298,10 +298,19 @@ Examples:
 			telegramFlagSet := cmd.Flags().Changed("telegram")
 			githubFlagSet := cmd.Flags().Changed("github")
 			slackFlagSet := cmd.Flags().Changed("slack")
+			// GH-2232: Check if any adapter-registry poller is enabled (GitLab, Linear, Jira, etc.)
+			adapterPollerEnabled := false
+			for _, reg := range adapterPollerRegistrations() {
+				if reg.Enabled(cfg) {
+					adapterPollerEnabled = true
+					break
+				}
+			}
 			needsPollingInfra := (telegramFlagSet && hasTelegram && cfg.Adapters.Telegram.Polling) ||
 				(githubFlagSet && hasGithubPolling && cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.Enabled &&
 					cfg.Adapters.GitHub.Polling != nil && cfg.Adapters.GitHub.Polling.Enabled) ||
-				(slackFlagSet && hasSlack)
+				(slackFlagSet && hasSlack) ||
+				adapterPollerEnabled
 
 			// Shared infrastructure for polling adapters
 			var gwRunner *executor.Runner

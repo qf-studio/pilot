@@ -549,7 +549,7 @@ func (p *Poller) processIssueAsync(ctx context.Context, issue *Issue) {
 	defer p.activeWg.Done()
 	defer func() { <-p.semaphore }() // release slot
 
-	if p.onIssue == nil {
+	if p.onIssueWithResult == nil && p.onIssue == nil {
 		return
 	}
 
@@ -561,22 +561,51 @@ func (p *Poller) processIssueAsync(ctx context.Context, issue *Issue) {
 		)
 	}
 
+	// GH-2232: Check onIssueWithResult first (matches GitHub parallel dispatch pattern)
+	if p.onIssueWithResult != nil {
+		result, err := p.onIssueWithResult(ctx, issue)
+		if err != nil {
+			p.logger.Error("Failed to process issue",
+				slog.Int("iid", issue.IID),
+				slog.Any("error", err),
+			)
+			_ = p.client.RemoveIssueLabel(ctx, issue.IID, LabelInProgress)
+			_ = p.client.AddIssueLabels(ctx, issue.IID, []string{LabelFailed})
+			p.ClearProcessed(issue.IID)
+			return
+		}
+
+		// Unmark if execution failed without creating an MR
+		if result != nil && !result.Success && result.MRNumber == 0 {
+			p.logger.Info("Execution failed without MR, unmarking for retry",
+				slog.Int("iid", issue.IID),
+			)
+			p.ClearProcessed(issue.IID)
+		}
+
+		// Notify autopilot controller of new MR
+		if result != nil && result.MRNumber > 0 && p.OnMRCreated != nil {
+			p.OnMRCreated(result.MRNumber, result.MRURL, issue.IID, result.HeadSHA, result.BranchName)
+		}
+
+		_ = p.client.RemoveIssueLabel(ctx, issue.IID, LabelInProgress)
+		_ = p.client.AddIssueLabels(ctx, issue.IID, []string{LabelDone})
+		return
+	}
+
+	// Legacy fallback: onIssue
 	err := p.onIssue(ctx, issue)
 	if err != nil {
 		p.logger.Error("Failed to process issue",
 			slog.Int("iid", issue.IID),
 			slog.Any("error", err),
 		)
-		// Remove in-progress label, add failed label
 		_ = p.client.RemoveIssueLabel(ctx, issue.IID, LabelInProgress)
 		_ = p.client.AddIssueLabels(ctx, issue.IID, []string{LabelFailed})
 		return
 	}
 
-	// Remove in-progress label
 	_ = p.client.RemoveIssueLabel(ctx, issue.IID, LabelInProgress)
-
-	// Add done label on success
 	_ = p.client.AddIssueLabels(ctx, issue.IID, []string{LabelDone})
 }
 
