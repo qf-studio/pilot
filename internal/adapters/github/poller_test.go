@@ -2049,7 +2049,7 @@ func TestPoller_ProcessedMapStoresTimestamps(t *testing.T) {
 func TestPoller_AutoRetryFailedIssue_FirstFailure(t *testing.T) {
 	now := time.Now()
 	issues := []*Issue{
-		{Number: 42, Title: "Stuck issue", Labels: []Label{{Name: "pilot"}, {Name: LabelFailed}}, CreatedAt: now.Add(-1 * time.Hour)},
+		{Number: 42, State: "open", Title: "Stuck issue", Labels: []Label{{Name: "pilot"}, {Name: LabelFailed}}, CreatedAt: now.Add(-1 * time.Hour)},
 	}
 
 	var labelRemoved atomic.Bool
@@ -2102,8 +2102,8 @@ func TestPoller_AutoRetryFailedIssue_FirstFailure(t *testing.T) {
 func TestPoller_AutoRetryFailedIssue_RetryLimitReached(t *testing.T) {
 	now := time.Now()
 	issues := []*Issue{
-		{Number: 42, Title: "Stuck issue", Labels: []Label{{Name: "pilot"}, {Name: LabelFailed}}, CreatedAt: now.Add(-1 * time.Hour)},
-		{Number: 43, Title: "Available issue", Labels: []Label{{Name: "pilot"}}, CreatedAt: now},
+		{Number: 42, State: "open", Title: "Stuck issue", Labels: []Label{{Name: "pilot"}, {Name: LabelFailed}}, CreatedAt: now.Add(-1 * time.Hour)},
+		{Number: 43, State: "open", Title: "Available issue", Labels: []Label{{Name: "pilot"}}, CreatedAt: now},
 	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2138,8 +2138,8 @@ func TestPoller_AutoRetryFailedIssue_SkipsDoneIssues(t *testing.T) {
 	now := time.Now()
 	issues := []*Issue{
 		// Has both pilot-failed AND pilot-done — should NOT be retried
-		{Number: 42, Title: "Done+Failed", Labels: []Label{{Name: "pilot"}, {Name: LabelFailed}, {Name: LabelDone}}, CreatedAt: now.Add(-1 * time.Hour)},
-		{Number: 43, Title: "Available", Labels: []Label{{Name: "pilot"}}, CreatedAt: now},
+		{Number: 42, State: "open", Title: "Done+Failed", Labels: []Label{{Name: "pilot"}, {Name: LabelFailed}, {Name: LabelDone}}, CreatedAt: now.Add(-1 * time.Hour)},
+		{Number: 43, State: "open", Title: "Available", Labels: []Label{{Name: "pilot"}}, CreatedAt: now},
 	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2163,10 +2163,39 @@ func TestPoller_AutoRetryFailedIssue_SkipsDoneIssues(t *testing.T) {
 	}
 }
 
+func TestPoller_AutoRetryFailedIssue_SkipsClosedIssues(t *testing.T) {
+	now := time.Now()
+	issues := []*Issue{
+		// Closed issue with stale pilot-failed label — should NOT be retried (GH-2252)
+		{Number: 42, State: "closed", Title: "Closed+Failed", Labels: []Label{{Name: "pilot"}, {Name: LabelFailed}}, CreatedAt: now.Add(-1 * time.Hour)},
+		{Number: 43, State: "open", Title: "Available", Labels: []Label{{Name: "pilot"}}, CreatedAt: now},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(issues)
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second)
+
+	issue, err := poller.findOldestUnprocessedIssue(context.Background())
+	if err != nil {
+		t.Fatalf("findOldestUnprocessedIssue() error = %v", err)
+	}
+	if issue == nil {
+		t.Fatal("issue should not be nil — #43 should be picked")
+	}
+	if issue.Number != 43 {
+		t.Errorf("got issue #%d, want #43 (should skip closed #42 with pilot-failed)", issue.Number)
+	}
+}
+
 func TestPoller_AutoRetryFailedIssue_ParallelMode(t *testing.T) {
 	now := time.Now()
 	issues := []*Issue{
-		{Number: 42, Title: "Stuck issue", Labels: []Label{{Name: "pilot"}, {Name: LabelFailed}}, CreatedAt: now.Add(-1 * time.Hour)},
+		{Number: 42, State: "open", Title: "Stuck issue", Labels: []Label{{Name: "pilot"}, {Name: LabelFailed}}, CreatedAt: now.Add(-1 * time.Hour)},
 	}
 
 	var labelRemoved atomic.Bool
@@ -2218,7 +2247,7 @@ func TestPoller_AutoRetryFailedIssue_ParallelMode(t *testing.T) {
 func TestPoller_AutoRetryFailedIssue_ParallelMode_LimitReached(t *testing.T) {
 	now := time.Now()
 	issues := []*Issue{
-		{Number: 42, Title: "Stuck issue", Labels: []Label{{Name: "pilot"}, {Name: LabelFailed}}, CreatedAt: now.Add(-1 * time.Hour)},
+		{Number: 42, State: "open", Title: "Stuck issue", Labels: []Label{{Name: "pilot"}, {Name: LabelFailed}}, CreatedAt: now.Add(-1 * time.Hour)},
 	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

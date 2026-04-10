@@ -1143,6 +1143,15 @@ func (p *Poller) hasMergedWork(ctx context.Context, issue *Issue) bool {
 // Returns true if the issue should be retried (label removed), false if it should be skipped.
 // GH-2176: Issues stuck with pilot-failed get retried up to maxFailedRetries times.
 func (p *Poller) shouldRetryFailedIssue(ctx context.Context, issue *Issue) bool {
+	// Don't retry closed issues — they may have stale pilot-failed labels (GH-2252)
+	if issue.State != "open" {
+		p.logger.Info("Skipping retry — issue is closed",
+			slog.Int("number", issue.Number),
+			slog.String("state", issue.State),
+		)
+		return false
+	}
+
 	// Never retry if also marked done
 	if HasLabel(issue, LabelDone) {
 		return false
