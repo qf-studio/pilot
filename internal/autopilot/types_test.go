@@ -121,6 +121,65 @@ func TestResolvedEnv_NewOverridesLegacy(t *testing.T) {
 	}
 }
 
+func TestPRState_RepoOwnerAndName(t *testing.T) {
+	tests := []struct {
+		name      string
+		prURL     string
+		wantOwner string
+		wantRepo  string
+	}{
+		{
+			name:      "cross-repo PR URL",
+			prURL:     "https://github.com/qf-studio/auth-service/pull/422",
+			wantOwner: "qf-studio",
+			wantRepo:  "auth-service",
+		},
+		{
+			name:      "same-repo PR URL",
+			prURL:     "https://github.com/alekspetrov/pilot/pull/100",
+			wantOwner: "alekspetrov",
+			wantRepo:  "pilot",
+		},
+		{
+			name:      "empty URL falls back",
+			prURL:     "",
+			wantOwner: "fallback-owner",
+			wantRepo:  "fallback-repo",
+		},
+		{
+			name:      "non-github URL falls back",
+			prURL:     "https://gitlab.com/org/repo/merge_requests/1",
+			wantOwner: "fallback-owner",
+			wantRepo:  "fallback-repo",
+		},
+		{
+			name:      "malformed github URL falls back",
+			prURL:     "https://github.com/",
+			wantOwner: "fallback-owner",
+			wantRepo:  "fallback-repo",
+		},
+		{
+			name:      "github URL with only owner",
+			prURL:     "https://github.com/owner",
+			wantOwner: "fallback-owner",
+			wantRepo:  "fallback-repo",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ps := &PRState{PRURL: tt.prURL}
+			owner, repo := ps.RepoOwnerAndName("fallback-owner", "fallback-repo")
+			if owner != tt.wantOwner {
+				t.Errorf("owner = %q, want %q", owner, tt.wantOwner)
+			}
+			if repo != tt.wantRepo {
+				t.Errorf("repo = %q, want %q", repo, tt.wantRepo)
+			}
+		})
+	}
+}
+
 func TestEnvironmentName_Legacy(t *testing.T) {
 	tests := []struct {
 		env  Environment

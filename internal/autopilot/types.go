@@ -2,6 +2,7 @@ package autopilot
 
 import (
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -459,4 +460,19 @@ type PRState struct {
 	TargetBranch string
 	// IssueNodeID is the GraphQL global node ID of the linked issue, used for board sync.
 	IssueNodeID string
+}
+
+// RepoOwnerAndName extracts the repository owner and name from the PR URL.
+// Falls back to the provided defaults if the URL is missing or unparseable.
+func (ps *PRState) RepoOwnerAndName(fallbackOwner, fallbackRepo string) (string, string) {
+	if ps.PRURL != "" {
+		trimmed := strings.TrimPrefix(ps.PRURL, "https://github.com/")
+		if trimmed != ps.PRURL { // prefix was actually present
+			parts := strings.Split(trimmed, "/")
+			if len(parts) >= 2 && parts[0] != "" && parts[1] != "" {
+				return parts[0], parts[1]
+			}
+		}
+	}
+	return fallbackOwner, fallbackRepo
 }
