@@ -277,6 +277,59 @@ func TestGetExecution_NotFound(t *testing.T) {
 	}
 }
 
+func TestHasCompletedExecution(t *testing.T) {
+	tmpDir, _ := os.MkdirTemp("", "pilot-test-*")
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	store, _ := NewStore(tmpDir)
+	defer func() { _ = store.Close() }()
+
+	// No executions yet — should return false
+	completed, err := store.HasCompletedExecution("GH-42", "/project")
+	if err != nil {
+		t.Fatalf("HasCompletedExecution failed: %v", err)
+	}
+	if completed {
+		t.Error("expected false for non-existent task")
+	}
+
+	// Save a non-completed execution
+	_ = store.SaveExecution(&Execution{
+		ID:          "exec-pending",
+		TaskID:      "GH-42",
+		ProjectPath: "/project",
+		Status:      "running",
+	})
+	completed, err = store.HasCompletedExecution("GH-42", "/project")
+	if err != nil {
+		t.Fatalf("HasCompletedExecution failed: %v", err)
+	}
+	if completed {
+		t.Error("expected false for running task")
+	}
+
+	// Save a completed execution
+	_ = store.SaveExecution(&Execution{
+		ID:          "exec-done",
+		TaskID:      "GH-42",
+		ProjectPath: "/project",
+		Status:      "completed",
+	})
+	completed, err = store.HasCompletedExecution("GH-42", "/project")
+	if err != nil {
+		t.Fatalf("HasCompletedExecution failed: %v", err)
+	}
+	if !completed {
+		t.Error("expected true for completed task")
+	}
+
+	// Different project path — should return false
+	completed, _ = store.HasCompletedExecution("GH-42", "/other-project")
+	if completed {
+		t.Error("expected false for different project path")
+	}
+}
+
 func TestPattern_Update(t *testing.T) {
 	tmpDir, _ := os.MkdirTemp("", "pilot-test-*")
 	defer func() { _ = os.RemoveAll(tmpDir) }()

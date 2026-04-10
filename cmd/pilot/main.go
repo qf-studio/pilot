@@ -727,6 +727,11 @@ Examples:
 						pollerOpts = append(pollerOpts, github.WithTaskChecker(storeTaskChecker{store: gwStore}))
 					}
 
+					// GH-2242: Wire execution checker to prevent re-dispatch of completed tasks (gateway mode)
+					if gwStore != nil {
+						pollerOpts = append(pollerOpts, github.WithExecutionChecker(gwStore, projectPath))
+					}
+
 					// Create rate limit retry scheduler
 					repoParts := strings.Split(cfg.Adapters.GitHub.Repo, "/")
 					if len(repoParts) != 2 {
@@ -1949,6 +1954,11 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 
 				// GH-2201: Wire task checker for retry grace period
 				pollerOpts = append(pollerOpts, github.WithTaskChecker(storeTaskChecker{store: store}))
+
+				// GH-2242: Wire execution checker to prevent re-dispatch of completed tasks
+				if store != nil {
+					pollerOpts = append(pollerOpts, github.WithExecutionChecker(store, projPath))
+				}
 
 				// Capture variables for closures
 				sourceRepo := repoFullName

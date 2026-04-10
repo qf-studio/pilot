@@ -44,6 +44,12 @@ type TaskChecker interface {
 	IsTaskQueued(taskID string) bool
 }
 
+// ExecutionChecker verifies whether a completed execution exists for a task.
+// GH-2242: Prevents re-dispatch of completed tasks when pilot-done label is missing.
+type ExecutionChecker interface {
+	HasCompletedExecution(taskID, projectPath string) (bool, error)
+}
+
 // IssueResult is returned by the issue handler with PR information
 type IssueResult struct {
 	Success    bool
@@ -104,6 +110,11 @@ type Poller struct {
 	// Tracks how many times each issue has been retried after pilot-failed.
 	failedRetryCount map[int]int
 	maxFailedRetries int // default: 3
+
+	// GH-2242: ExecutionChecker prevents re-dispatch of completed tasks
+	// when pilot-done label failed to apply.
+	execChecker ExecutionChecker
+	projectPath string
 }
 
 // PollerOption configures a Poller
@@ -183,6 +194,15 @@ func WithRetryGracePeriod(d time.Duration) PollerOption {
 func WithTaskChecker(tc TaskChecker) PollerOption {
 	return func(p *Poller) {
 		p.taskChecker = tc
+	}
+}
+
+// WithExecutionChecker sets the execution checker used to prevent re-dispatch
+// of tasks that already have a completed execution in the database (GH-2242).
+func WithExecutionChecker(ec ExecutionChecker, projectPath string) PollerOption {
+	return func(p *Poller) {
+		p.execChecker = ec
+		p.projectPath = projectPath
 	}
 }
 
@@ -815,6 +835,24 @@ func (p *Poller) checkForNewIssues(ctx context.Context) {
 				slog.Int("number", issue.Number),
 			)
 			continue
+		}
+
+		// GH-2242: Before dispatching, check if we already have a completed execution.
+		// This prevents re-dispatch when pilot-done label failed to apply.
+		if p.execChecker != nil {
+			taskID := fmt.Sprintf("GH-%d", issue.Number)
+			completed, err := p.execChecker.HasCompletedExecution(taskID, p.projectPath)
+			if err != nil {
+				p.logger.Warn("Failed to check execution status",
+					slog.Int("number", issue.Number),
+					slog.Any("error", err))
+			} else if completed {
+				p.logger.Info("Skipping re-dispatch — completed execution exists",
+					slog.Int("number", issue.Number),
+					slog.String("task_id", taskID))
+				p.markProcessed(issue.Number)
+				continue
+			}
 		}
 
 		candidates = append(candidates, issue)
