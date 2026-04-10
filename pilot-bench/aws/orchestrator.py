@@ -364,7 +364,7 @@ quality:
   gates:
     - name: test
       type: test
-      command: "if [ -f /tests/test_outputs.py ]; then cd /app && /usr/local/bin/uvx -p 3.13 -w pytest==8.4.1 pytest /tests/test_outputs.py -rA 2>&1 || /root/.local/bin/uvx -p 3.13 -w pytest==8.4.1 pytest /tests/test_outputs.py -rA 2>&1; fi"
+      command: "export PATH=/root/.local/bin:/usr/local/bin:$PATH; if [ -f /tests/test_outputs.py ]; then cd /app && uvx -p 3.13 -w pytest==8.4.1 pytest /tests/test_outputs.py -rA 2>&1; fi"
       required: true
       timeout: 5m
       max_retries: 2
