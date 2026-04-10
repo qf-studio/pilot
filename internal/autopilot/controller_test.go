@@ -3445,6 +3445,10 @@ func (m *mockEvalStore) SaveEvalTask(task *memory.EvalTask) error {
 	return nil
 }
 
+func (m *mockEvalStore) UpdateExecutionStatusByTaskID(taskID, status string) error {
+	return nil
+}
+
 // TestHandleMerged_ExtractsEvalTask verifies that handleMerged extracts and saves
 // an eval task when evalStore is configured and the PR has a linked issue.
 func TestHandleMerged_ExtractsEvalTask(t *testing.T) {

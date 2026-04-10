@@ -1548,3 +1548,72 @@ func TestGetStaleQueuedExecutions(t *testing.T) {
 		t.Errorf("expected status 'queued', got %q", results[0].Status)
 	}
 }
+
+func TestUpdateExecutionStatusByTaskID_UpdatesFailedToCompleted(t *testing.T) {
+	tmpDir, _ := os.MkdirTemp("", "pilot-test-*")
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	store, _ := NewStore(tmpDir)
+	defer func() { _ = store.Close() }()
+
+	_ = store.SaveExecution(&Execution{
+		ID:          "exec-fail-1",
+		TaskID:      "GH-100",
+		ProjectPath: "/tmp/proj",
+		Status:      "failed",
+		Error:       "quality gate failed",
+	})
+
+	if err := store.UpdateExecutionStatusByTaskID("GH-100", "completed"); err != nil {
+		t.Fatalf("UpdateExecutionStatusByTaskID failed: %v", err)
+	}
+
+	exec, err := store.GetExecution("exec-fail-1")
+	if err != nil {
+		t.Fatalf("GetExecution failed: %v", err)
+	}
+	if exec.Status != "completed" {
+		t.Errorf("expected status 'completed', got %q", exec.Status)
+	}
+	if exec.CompletedAt == nil {
+		t.Error("expected completed_at to be set")
+	}
+}
+
+func TestUpdateExecutionStatusByTaskID_SkipsNonFailed(t *testing.T) {
+	tmpDir, _ := os.MkdirTemp("", "pilot-test-*")
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	store, _ := NewStore(tmpDir)
+	defer func() { _ = store.Close() }()
+
+	_ = store.SaveExecution(&Execution{
+		ID:          "exec-ok-1",
+		TaskID:      "GH-200",
+		ProjectPath: "/tmp/proj",
+		Status:      "completed",
+	})
+
+	if err := store.UpdateExecutionStatusByTaskID("GH-200", "completed"); err != nil {
+		t.Fatalf("UpdateExecutionStatusByTaskID failed: %v", err)
+	}
+
+	exec, _ := store.GetExecution("exec-ok-1")
+	// Status should remain "completed" — the WHERE clause only targets "failed"
+	if exec.Status != "completed" {
+		t.Errorf("expected status 'completed', got %q", exec.Status)
+	}
+}
+
+func TestUpdateExecutionStatusByTaskID_NoMatchingTask(t *testing.T) {
+	tmpDir, _ := os.MkdirTemp("", "pilot-test-*")
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	store, _ := NewStore(tmpDir)
+	defer func() { _ = store.Close() }()
+
+	// Should not error even with no matching rows
+	if err := store.UpdateExecutionStatusByTaskID("GH-999", "completed"); err != nil {
+		t.Fatalf("expected no error for non-existent task, got: %v", err)
+	}
+}
