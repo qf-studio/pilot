@@ -945,21 +945,6 @@ func (s *Store) GetStaleQueuedExecutions(staleDuration time.Duration) ([]*Execut
 	return executions, nil
 }
 
-// HasCompletedExecution checks if a task already has a completed execution for
-// the given project. Used by stale recovery to avoid marking orphan rows as
-// failed when the task already succeeded.
-func (s *Store) HasCompletedExecution(taskID, projectPath string) (bool, error) {
-	var count int
-	err := s.db.QueryRow(`
-		SELECT COUNT(*) FROM executions
-		WHERE task_id = ? AND project_path = ? AND status = 'completed'
-	`, taskID, projectPath).Scan(&count)
-	if err != nil {
-		return false, err
-	}
-	return count > 0, nil
-}
-
 // DeleteExecution removes an execution row by ID. Used to clean up orphan rows
 // when the same task already has a completed execution.
 func (s *Store) DeleteExecution(id string) error {

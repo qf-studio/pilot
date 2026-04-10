@@ -1223,3 +1223,115 @@ func TestRenderEvalStats(t *testing.T) {
 		}
 	})
 }
+
+// TestStoreRefreshMsg_UpdatesHistoryAndMetrics verifies that storeRefreshMsg
+// replaces stale in-memory history and metrics with live DB state (GH-2248).
+func TestStoreRefreshMsg_UpdatesHistoryAndMetrics(t *testing.T) {
+	m := NewModel("test")
+	// Seed stale in-memory state
+	m.completedTasks = []CompletedTask{
+		{ID: "stale-1", Title: "Stale Task", Status: "failed"},
+	}
+	m.metricsCard = MetricsCardData{TotalTasks: 1, Failed: 1}
+
+	// Simulate a store refresh with different data (as if the DB row was deleted)
+	msg := storeRefreshMsg{
+		completedTasks: []CompletedTask{
+			{ID: "fresh-1", Title: "Fresh Task", Status: "success"},
+			{ID: "fresh-2", Title: "Another Task", Status: "success"},
+		},
+		metricsCard: MetricsCardData{
+			TotalTasks:  2,
+			Succeeded:   2,
+			Failed:      0,
+			TotalTokens: 5000,
+		},
+	}
+
+	updated, _ := m.Update(msg)
+	model := updated.(Model)
+
+	if len(model.completedTasks) != 2 {
+		t.Fatalf("completedTasks len = %d, want 2", len(model.completedTasks))
+	}
+	if model.completedTasks[0].ID != "fresh-1" {
+		t.Errorf("completedTasks[0].ID = %q, want %q", model.completedTasks[0].ID, "fresh-1")
+	}
+	if model.metricsCard.TotalTasks != 2 {
+		t.Errorf("TotalTasks = %d, want 2", model.metricsCard.TotalTasks)
+	}
+	if model.metricsCard.Failed != 0 {
+		t.Errorf("Failed = %d, want 0", model.metricsCard.Failed)
+	}
+}
+
+// TestStoreRefreshCmd_QueriesDB verifies storeRefreshCmd returns correct data
+// from SQLite (GH-2248).
+func TestStoreRefreshCmd_QueriesDB(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "pilot-dash-refresh-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	store, err := memory.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	// Insert a completed execution
+	if err := store.SaveExecution(&memory.Execution{
+		ID: "exec-1", TaskID: "TASK-1", TaskTitle: "Test Task",
+		ProjectPath: "/test", Status: "completed",
+	}); err != nil {
+		t.Fatalf("SaveExecution: %v", err)
+	}
+	if err := store.SaveExecutionMetrics(&memory.ExecutionMetrics{
+		ExecutionID: "exec-1", TokensInput: 1000, TokensOutput: 500,
+		TokensTotal: 1500, EstimatedCostUSD: 0.10,
+	}); err != nil {
+		t.Fatalf("SaveExecutionMetrics: %v", err)
+	}
+
+	// Run the refresh command
+	cmd := storeRefreshCmd(store)
+	rawMsg := cmd()
+	msg, ok := rawMsg.(storeRefreshMsg)
+	if !ok {
+		t.Fatalf("expected storeRefreshMsg, got %T", rawMsg)
+	}
+
+	if len(msg.completedTasks) != 1 {
+		t.Fatalf("completedTasks len = %d, want 1", len(msg.completedTasks))
+	}
+	if msg.completedTasks[0].ID != "TASK-1" {
+		t.Errorf("completedTasks[0].ID = %q, want %q", msg.completedTasks[0].ID, "TASK-1")
+	}
+	if msg.completedTasks[0].Status != "success" {
+		t.Errorf("Status = %q, want %q", msg.completedTasks[0].Status, "success")
+	}
+	if msg.metricsCard.TotalTasks != 1 {
+		t.Errorf("TotalTasks = %d, want 1", msg.metricsCard.TotalTasks)
+	}
+	if msg.metricsCard.Succeeded != 1 {
+		t.Errorf("Succeeded = %d, want 1", msg.metricsCard.Succeeded)
+	}
+
+	// Now delete the row and verify refresh picks up the change
+	_, err = store.DB().Exec("DELETE FROM executions WHERE id = 'exec-1'")
+	if err != nil {
+		t.Fatalf("DELETE: %v", err)
+	}
+
+	cmd = storeRefreshCmd(store)
+	rawMsg = cmd()
+	msg = rawMsg.(storeRefreshMsg)
+
+	if len(msg.completedTasks) != 0 {
+		t.Errorf("after DELETE: completedTasks len = %d, want 0", len(msg.completedTasks))
+	}
+	if msg.metricsCard.TotalTasks != 0 {
+		t.Errorf("after DELETE: TotalTasks = %d, want 0", msg.metricsCard.TotalTasks)
+	}
+}
