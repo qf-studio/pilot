@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/alekspetrov/pilot/internal/executor"
+	"github.com/qf-studio/pilot/internal/executor"
 )
 
 const (

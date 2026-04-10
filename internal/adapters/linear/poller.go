@@ -9,7 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/alekspetrov/pilot/internal/logging"
+	"github.com/qf-studio/pilot/internal/logging"
 )
 
 // IssueResult is returned by the issue handler

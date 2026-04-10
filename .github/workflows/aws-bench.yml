@@ -1,0 +1,89 @@
+name: AWS Bench — Terminal Bench 2.0
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "Run identifier (e.g., aws-v1)"
+        required: true
+        default: "aws-v1"
+      tasks:
+        description: "Task filter (comma-separated names or 'all')"
+        required: true
+        default: "break-filter-js-from-html,chess-best-move,gcode-to-text"
+      k_trials:
+        description: "Number of trials per task"
+        required: true
+        default: "1"
+      max_parallel:
+        description: "Max parallel EC2 instances"
+        required: true
+        default: "5"
+      model:
+        description: "Model to use"
+        required: true
+        default: "claude-opus-4-6"
+
+env:
+  AWS_DEFAULT_REGION: eu-central-1
+  S3_BUCKET: pilot-s3-agent-data
+
+jobs:
+  bench:
+    name: Run Benchmark
+    runs-on: [self-hosted, aws-agent-deployer]
+    timeout-minutes: 1440  # 24 hours max
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Python dependencies
+        run: |
+          pip install boto3 2>/dev/null || pip3 install boto3
+
+      - name: Build pilot binary
+        run: |
+          make bench-binary
+          ls -lh pilot-bench/bin/pilot-linux-amd64*
+
+      - name: Generate task manifest
+        working-directory: pilot-bench/aws
+        run: |
+          python3 extract_tasks.py --output tasks-manifest.json --upload
+          echo "Task count: $(python3 -c "import json; print(json.load(open('tasks-manifest.json'))['task_count'])")"
+
+      - name: Run benchmark
+        working-directory: pilot-bench/aws
+        run: |
+          python3 orchestrator.py \
+            --run-id "${{ inputs.run_id }}" \
+            --tasks "${{ inputs.tasks }}" \
+            --k-trials "${{ inputs.k_trials }}" \
+            --max-parallel "${{ inputs.max_parallel }}" \
+            --model "${{ inputs.model }}"
+
+      - name: Analyze results
+        if: always()
+        working-directory: pilot-bench
+        run: |
+          if [ -d "aws/results/${{ inputs.run_id }}" ]; then
+            python3 pilot_agent/scripts/analyze-results.py "aws/results/${{ inputs.run_id }}" || true
+          fi
+
+      - name: Upload results artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-results-${{ inputs.run_id }}
+          path: pilot-bench/aws/results/${{ inputs.run_id }}/
+          retention-days: 90
+
+      - name: Scale down (safety net)
+        if: always()
+        run: |
+          echo "Ensuring ASG scaled to 0..."
+          aws autoscaling set-desired-capacity \
+            --auto-scaling-group-name pilot-agent-pool \
+            --desired-capacity 0 || true
+          echo "Done"

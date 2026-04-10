@@ -5,8 +5,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/alekspetrov/pilot/internal/autopilot"
-	"github.com/alekspetrov/pilot/internal/config"
+	"github.com/qf-studio/pilot/internal/autopilot"
+	"github.com/qf-studio/pilot/internal/config"
 )
 
 // onboardOptionalSetup handles the automation/optional features stage.

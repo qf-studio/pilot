@@ -16,7 +16,7 @@ User should see a real PR from Pilot within their first session. This is the "ah
 curl -fsSL https://pilot.dev/install.sh | sh
 
 # Or with homebrew
-brew install alekspetrov/tap/pilot
+brew install qf-studio/tap/pilot
 ```
 
 **Key:** No Docker, no complex dependencies. Single binary.

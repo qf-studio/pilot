@@ -6,7 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 
-	"github.com/alekspetrov/pilot/internal/config"
+	"github.com/qf-studio/pilot/internal/config"
 )
 
 // onboardProjectSetup implements the project setup stage of onboarding.

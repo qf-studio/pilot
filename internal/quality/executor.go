@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/alekspetrov/pilot/internal/logging"
+	"github.com/qf-studio/pilot/internal/logging"
 )
 
 // ExecutorConfig configures quality gate execution in the pipeline

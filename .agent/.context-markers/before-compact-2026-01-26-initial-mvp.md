@@ -22,7 +22,7 @@ Built complete Pilot MVP - an autonomous AI development pipeline that receives t
 - **TUI Dashboard**: bubbletea-based terminal UI (skeleton)
 
 ### Infrastructure
-- Homebrew tap: `brew tap alekspetrov/pilot && brew install pilot`
+- Homebrew tap: `brew tap qf-studio/pilot && brew install pilot`
 - GitHub repo with topics, description configured
 - ASCII banner for CLI
 - 24 tests passing
@@ -59,8 +59,8 @@ pilot/
 
 ## Repositories
 
-- **Main**: https://github.com/alekspetrov/pilot
-- **Homebrew tap**: https://github.com/alekspetrov/homebrew-pilot
+- **Main**: https://github.com/qf-studio/pilot
+- **Homebrew tap**: https://github.com/qf-studio/homebrew-pilot
 
 ## Pending / Next Steps
 
@@ -82,7 +82,7 @@ pilot/
 
 ```bash
 # Install
-brew tap alekspetrov/pilot
+brew tap qf-studio/pilot
 brew install --HEAD pilot
 
 # Run

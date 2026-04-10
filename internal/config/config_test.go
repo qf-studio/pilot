@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/alekspetrov/pilot/internal/gateway"
+	"github.com/qf-studio/pilot/internal/gateway"
 )
 
 func TestDefaultConfig(t *testing.T) {

@@ -9,10 +9,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/alekspetrov/pilot/internal/executor"
-	"github.com/alekspetrov/pilot/internal/intent"
-	"github.com/alekspetrov/pilot/internal/logging"
-	"github.com/alekspetrov/pilot/internal/memory"
+	"github.com/qf-studio/pilot/internal/executor"
+	"github.com/qf-studio/pilot/internal/intent"
+	"github.com/qf-studio/pilot/internal/logging"
+	"github.com/qf-studio/pilot/internal/memory"
 )
 
 // MemberResolver resolves a platform user to a team member ID for RBAC.

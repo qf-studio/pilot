@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/alekspetrov/pilot/internal/logging"
+	"github.com/qf-studio/pilot/internal/logging"
 )
 
 // RetryStrategy defines how to retry based on error type.

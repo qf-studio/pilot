@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/alekspetrov/pilot/internal/logging"
+	"github.com/qf-studio/pilot/internal/logging"
 )
 
 // ProgressCallback reports gate execution progress

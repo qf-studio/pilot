@@ -173,7 +173,7 @@ grep -n "result != nil" cmd/pilot/main.go | grep -i label
 **gh pr create output when PR exists**:
 ```
 a pull request for branch "pilot/GH-284" into branch "main" already exists:
-https://github.com/alekspetrov/pilot/pull/285
+https://github.com/qf-studio/pilot/pull/285
 Exit code: 1
 ```
 

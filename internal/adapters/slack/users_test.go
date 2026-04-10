@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/alekspetrov/pilot/internal/testutil"
+	"github.com/qf-studio/pilot/internal/testutil"
 )
 
 // TestGetUserInfo tests the GetUserInfo method

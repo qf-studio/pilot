@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/alekspetrov/pilot/internal/testutil"
+	"github.com/qf-studio/pilot/internal/testutil"
 )
 
 func TestNewPoller(t *testing.T) {

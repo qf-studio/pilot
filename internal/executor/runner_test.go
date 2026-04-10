@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/alekspetrov/pilot/internal/memory"
+	"github.com/qf-studio/pilot/internal/memory"
 )
 
 func TestNewRunner(t *testing.T) {
@@ -2217,7 +2217,7 @@ func TestExtractRepoName(t *testing.T) {
 		repo     string
 		expected string
 	}{
-		{"alekspetrov/pilot", "pilot"},
+		{"qf-studio/pilot", "pilot"},
 		{"org/my-repo", "my-repo"},
 		{"company/complex.repo.name", "complex.repo.name"},
 		{"pilot", "pilot"}, // Already just repo name
@@ -2244,19 +2244,19 @@ func TestValidateRepoProjectMatch(t *testing.T) {
 	}{
 		{
 			name:        "matching repo and project",
-			sourceRepo:  "alekspetrov/pilot",
+			sourceRepo:  "qf-studio/pilot",
 			projectPath: "/Users/test/Projects/pilot",
 			wantErr:     false,
 		},
 		{
 			name:        "matching with different case",
-			sourceRepo:  "alekspetrov/Pilot",
+			sourceRepo:  "qf-studio/Pilot",
 			projectPath: "/Users/test/Projects/pilot",
 			wantErr:     false,
 		},
 		{
 			name:        "mismatched repo and project",
-			sourceRepo:  "alekspetrov/pilot",
+			sourceRepo:  "qf-studio/pilot",
 			projectPath: "/Users/test/Projects/bostonteamgroup",
 			wantErr:     true,
 		},
@@ -2268,7 +2268,7 @@ func TestValidateRepoProjectMatch(t *testing.T) {
 		},
 		{
 			name:        "empty project path",
-			sourceRepo:  "alekspetrov/pilot",
+			sourceRepo:  "qf-studio/pilot",
 			projectPath: "",
 			wantErr:     false, // No validation needed
 		},
@@ -2312,11 +2312,11 @@ func TestTaskStructSourceRepo(t *testing.T) {
 		ProjectPath: "/Users/test/Projects/pilot",
 		Branch:      "pilot/GH-386",
 		CreatePR:    true,
-		SourceRepo:  "alekspetrov/pilot",
+		SourceRepo:  "qf-studio/pilot",
 	}
 
-	if task.SourceRepo != "alekspetrov/pilot" {
-		t.Errorf("SourceRepo = %q, want alekspetrov/pilot", task.SourceRepo)
+	if task.SourceRepo != "qf-studio/pilot" {
+		t.Errorf("SourceRepo = %q, want qf-studio/pilot", task.SourceRepo)
 	}
 }
 
@@ -2477,13 +2477,13 @@ func TestSetTokenLimitCheck(t *testing.T) {
 
 // Test mismatch error message format (GH-386)
 func TestValidateRepoProjectMatchErrorMessage(t *testing.T) {
-	err := ValidateRepoProjectMatch("alekspetrov/pilot", "/Projects/wrong-project")
+	err := ValidateRepoProjectMatch("qf-studio/pilot", "/Projects/wrong-project")
 	if err == nil {
 		t.Fatal("Expected error for mismatched repo/project")
 	}
 
 	errMsg := err.Error()
-	if !strings.Contains(errMsg, "alekspetrov/pilot") {
+	if !strings.Contains(errMsg, "qf-studio/pilot") {
 		t.Error("Error message should contain source repo")
 	}
 	if !strings.Contains(errMsg, "wrong-project") {
@@ -3155,7 +3155,9 @@ func TestLocalModeSkipsNavigatorAutoInit(t *testing.T) {
 	}
 }
 
-func TestLocalModeSkipsQualityGates(t *testing.T) {
+func TestLocalModeRunsQualityGates(t *testing.T) {
+	// Quality gates are now enabled in LocalMode (re-enabled for bench,
+	// deps are pre-installed so OOM risk is mitigated).
 	projectDir := t.TempDir()
 
 	backend := &mockSelfReviewBackend{output: "done"}
@@ -3174,8 +3176,8 @@ func TestLocalModeSkipsQualityGates(t *testing.T) {
 
 	task := &Task{
 		ID:          "LOCAL-QG-001",
-		Title:       "Local mode quality gate skip",
-		Description: "Quality gates should not run in LocalMode",
+		Title:       "Local mode quality gate test",
+		Description: "Quality gates should run in LocalMode",
 		ProjectPath: projectDir,
 		LocalMode:   true,
 	}
@@ -3191,7 +3193,7 @@ func TestLocalModeSkipsQualityGates(t *testing.T) {
 		t.Fatalf("Execute() not successful: %s", result.Error)
 	}
 
-	if qualityGateCalled {
-		t.Errorf("quality checker factory was called in LocalMode — quality gates should be skipped")
+	if !qualityGateCalled {
+		t.Errorf("quality checker factory was NOT called in LocalMode — quality gates should run")
 	}
 }

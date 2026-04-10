@@ -183,14 +183,14 @@ Documentation in `.agent/`:
 
 ## Current Status
 
-**Version:** v2.89.2 | **240+ features implemented**
+**Version:** v2.53.0 | **316 features implemented**
 
 **Core:**
 - ✅ Task execution with Navigator integration
 - ✅ Autopilot: CI monitor, auto-merge, auto-rebase, feedback loop, tag-only release
 - ✅ Intent judge in execution pipeline
 - ✅ Rich PR comments with execution metrics
-- ✅ Epic decomposition with sub-issue PR wiring + merge-wait (`SubIssueMergeWaitFn`, `execution.wait_for_merge`)
+- ✅ Epic decomposition with sub-issue PR wiring
 - ✅ Self-review, quality gates, effort routing
 - ✅ Pattern learning from PR reviews
 - ✅ GitHub Projects V2 board sync

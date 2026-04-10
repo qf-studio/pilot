@@ -1,4 +1,4 @@
-module github.com/alekspetrov/pilot
+module github.com/qf-studio/pilot
 
 go 1.24.2
 

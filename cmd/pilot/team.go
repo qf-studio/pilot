@@ -10,8 +10,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/alekspetrov/pilot/internal/config"
-	"github.com/alekspetrov/pilot/internal/teams"
+	"github.com/qf-studio/pilot/internal/config"
+	"github.com/qf-studio/pilot/internal/teams"
 )
 
 func newTeamCmd() *cobra.Command {

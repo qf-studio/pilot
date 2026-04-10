@@ -1,0 +1,138 @@
+#!/bin/bash
+set -e
+
+echo "=== Pilot Agent Setup (anthropic-api backend) ==="
+
+# DNS fallback
+echo "nameserver 8.8.8.8" >> /etc/resolv.conf 2>/dev/null || true
+
+# Detect OS
+if [ -f /etc/os-release ]; then
+    . /etc/os-release
+    OS_ID="$ID"
+else
+    OS_ID="unknown"
+fi
+echo "Detected OS: $OS_ID"
+
+# Install Node.js + npm (required for Claude Code CLI)
+if ! command -v node &> /dev/null || ! command -v npm &> /dev/null; then
+    echo "Installing Node.js + npm..."
+    case "$OS_ID" in
+        alpine)
+            apk add --no-cache nodejs npm
+            ;;
+        ubuntu|debian)
+            apt-get update -qq && apt-get install -y -qq nodejs npm
+            ;;
+        fedora|rhel|centos)
+            dnf install -y nodejs npm 2>/dev/null || yum install -y nodejs npm
+            ;;
+        *)
+            if command -v curl &> /dev/null; then
+                curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+                apt-get install -y nodejs 2>/dev/null || apk add --no-cache nodejs npm
+            else
+                echo "ERROR: Cannot install Node.js"
+                exit 1
+            fi
+            ;;
+    esac
+fi
+echo "Node version: $(node --version)"
+
+# Install Claude Code CLI (pinned — 2.1.78+ has TypeError on Node 18)
+echo "Installing Claude Code CLI..."
+npm install -g @anthropic-ai/claude-code@2.1.74 2>&1
+
+if ! command -v claude &> /dev/null; then
+    export PATH="$PATH:/usr/local/bin:/usr/bin:$(npm root -g)/.bin"
+fi
+echo "Claude Code version: $(claude --version 2>/dev/null || echo 'unknown')"
+
+# Install common utilities
+echo "Installing common utilities..."
+case "$OS_ID" in
+    alpine)
+        apk add --no-cache bash curl wget git jq python3 py3-pip make gcc 2>/dev/null || true
+        ;;
+    ubuntu|debian)
+        apt-get update -qq 2>/dev/null && apt-get install -y -qq bash curl wget git jq python3 python3-pip make gcc 2>/dev/null || true
+        ;;
+    *)
+        true
+        ;;
+esac
+
+# Install uv/uvx (many terminal-bench verifiers need it)
+# Critical: verifier test.sh scripts try to install uv themselves, but DNS often
+# times out in Daytona sandboxes. We pre-install uv and make it available at
+# multiple paths so verifiers work even when their own install fails.
+echo "Installing uv..."
+curl -LsSf https://astral.sh/uv/install.sh 2>/dev/null | sh 2>/dev/null || true
+export PATH="$HOME/.local/bin:$PATH:/root/.local/bin:/root/.cargo/bin"
+
+# Symlink to /usr/local/bin so uv/uvx are on default PATH for all users/scripts
+if [ -f /root/.local/bin/uv ]; then
+    ln -sf /root/.local/bin/uv /usr/local/bin/uv 2>/dev/null || true
+    ln -sf /root/.local/bin/uvx /usr/local/bin/uvx 2>/dev/null || true
+fi
+
+# Create /root/.local/bin/env shim — verifier test.sh scripts do
+# `source $HOME/.local/bin/env` which fails if uv's installer didn't run.
+# This no-op shim prevents that `source` from failing.
+if [ ! -f /root/.local/bin/env ]; then
+    mkdir -p /root/.local/bin
+    cat > /root/.local/bin/env << 'ENVEOF'
+# uv env shim — pre-installed by pilot agent setup
+export PATH="/root/.local/bin:/usr/local/bin:$PATH"
+ENVEOF
+fi
+
+echo "uv version: $(uv --version 2>/dev/null || echo 'not installed')"
+
+# Pre-install lightweight Python dependencies only.
+# IMPORTANT: Do NOT pre-install torch here — it's 250MB+ (CPU) or 2GB+ (full),
+# causes setup timeouts (>1800s) and disk-full errors on containers with large
+# data files. Most tasks that need torch have it in their prebuilt Docker image.
+# If a task needs torch and doesn't have it, Claude can install it during execution.
+echo "Pre-installing lightweight Python dependencies..."
+pip install --break-system-packages --no-cache-dir numpy 2>/dev/null || true
+echo "Python deps: $(python3 -c 'import numpy; print(f"numpy={numpy.__version__}")' 2>/dev/null || echo 'numpy=N/A')"
+
+# Detect working directory — some containers use /app, others /home or /root
+WORK_DIR="/app"
+if [ ! -d "$WORK_DIR" ]; then
+    # Try common alternatives
+    for candidate in /home /workspace /root /tmp/work; do
+        if [ -d "$candidate" ]; then
+            WORK_DIR="$candidate"
+            break
+        fi
+    done
+    # Last resort: create /app
+    if [ ! -d "$WORK_DIR" ]; then
+        mkdir -p /app
+        WORK_DIR="/app"
+    fi
+fi
+echo "Working directory: $WORK_DIR"
+
+# Initialize git repo if needed (pilot task requires git)
+cd "$WORK_DIR"
+if [ ! -d .git ]; then
+    git config --global init.defaultBranch main
+    git config --global user.email "bench@pilot.dev"
+    git config --global user.name "Pilot Bench"
+    git init
+    git add -A 2>/dev/null || true
+    git commit -m "initial" --allow-empty 2>/dev/null || true
+fi
+git config --global --add safe.directory '*'
+
+# Config and pilot binary are uploaded by setup() — not handled here
+
+# Create working directories
+mkdir -p /logs/agent
+
+echo "=== Pilot Real Agent: Installation complete ==="

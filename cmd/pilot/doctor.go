@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/alekspetrov/pilot/internal/config"
-	"github.com/alekspetrov/pilot/internal/health"
+	"github.com/qf-studio/pilot/internal/config"
+	"github.com/qf-studio/pilot/internal/health"
 	"github.com/spf13/cobra"
 )
 

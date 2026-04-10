@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/alekspetrov/pilot/internal/budget"
-	"github.com/alekspetrov/pilot/internal/executor"
+	"github.com/qf-studio/pilot/internal/budget"
+	"github.com/qf-studio/pilot/internal/executor"
 )
 
 // TestHandleIssueGeneric_BudgetExceeded verifies that handleIssueGeneric returns early

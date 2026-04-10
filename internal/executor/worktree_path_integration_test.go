@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/alekspetrov/pilot/internal/quality"
+	"github.com/qf-studio/pilot/internal/quality"
 )
 
 // TestWorktreePathIntegration tests path handling in worktree mode without full execution.

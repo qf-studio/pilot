@@ -14,11 +14,11 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/alekspetrov/pilot/internal/logging"
-	"github.com/alekspetrov/pilot/internal/memory"
-	"github.com/alekspetrov/pilot/internal/quality"
-	"github.com/alekspetrov/pilot/internal/replay"
-	"github.com/alekspetrov/pilot/internal/webhooks"
+	"github.com/qf-studio/pilot/internal/logging"
+	"github.com/qf-studio/pilot/internal/memory"
+	"github.com/qf-studio/pilot/internal/quality"
+	"github.com/qf-studio/pilot/internal/replay"
+	"github.com/qf-studio/pilot/internal/webhooks"
 )
 
 // StreamEvent represents a Claude Code stream-json event
@@ -994,9 +994,11 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 	// GH-915: Run pre-flight checks to catch environmental issues early
 	// Skip when using mock backends in tests (skipPreflightChecks flag)
 	// GH-1002: Skip git_clean check when worktree isolation is enabled
+	// LocalMode: skip git_clean — bench containers have pre-existing files that
+	// create dirty git state after our install script commits.
 	if !r.skipPreflightChecks {
 		preflightOpts := PreflightOptions{
-			SkipGitClean: r.config != nil && r.config.UseWorktree,
+			SkipGitClean: task.LocalMode || (r.config != nil && r.config.UseWorktree),
 			BackendType:  r.backendType(),
 		}
 		if err := RunPreflightChecksWithOptions(ctx, executionPath, preflightOpts); err != nil {
@@ -1014,6 +1016,7 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 
 	// Auto-init Navigator if configured and missing
 	// Use executionPath to check/init in worktree if worktree isolation is active
+	// Skip for LocalMode — bench/sandbox tasks don't use Navigator (GH-2108)
 	if !task.LocalMode && r.config != nil && r.config.Navigator != nil && r.config.Navigator.AutoInit {
 		if err := r.maybeInitNavigator(executionPath); err != nil {
 			r.log.Warn("Navigator auto-init failed", slog.Any("error", err))
@@ -1193,8 +1196,17 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 		}
 	}
 
-	// Apply timeout based on task complexity
+	// Apply timeout based on task complexity.
+	// LocalMode: override to complex timeout (60m minimum) since bench tasks
+	// can't be reliably classified from short descriptions alone. A "trivial"
+	// classification giving 15m timeout caused filter-js-from-html to fail.
 	timeout := r.modelRouter.SelectTimeout(task)
+	if task.LocalMode {
+		complexTimeout := r.modelRouter.GetTimeoutForComplexity(ComplexityComplex)
+		if timeout < complexTimeout {
+			timeout = complexTimeout
+		}
+	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -2063,8 +2075,10 @@ The previous execution completed but made no code changes. This task requires ac
 		// Track if quality gates passed for self-review decision (GH-1079)
 		qualityGatesPassed := false
 
-		// Run quality gates if configured (skip in LocalMode — no PR workflow)
-		if r.qualityCheckerFactory != nil && !task.LocalMode {
+		// Run quality gates if configured.
+		// Previously skipped in LocalMode (v25 OOM concern), re-enabled since
+		// deps are now pre-installed and gate runs pytest only (bounded cost).
+		if r.qualityCheckerFactory != nil {
 			const maxAutoRetries = 2 // Circuit breaker to prevent infinite loops
 
 			// Track quality gate results across retries (GH-209)

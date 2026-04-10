@@ -14,10 +14,10 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/alekspetrov/pilot/releases"><img src="https://img.shields.io/github/v/release/alekspetrov/pilot?style=flat-square" alt="Release"></a>
+  <a href="https://github.com/qf-studio/pilot/releases"><img src="https://img.shields.io/github/v/release/qf-studio/pilot?style=flat-square" alt="Release"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-BSL_1.1-blue.svg?style=flat-square" alt="License: BSL 1.1"></a>
-  <a href="https://github.com/alekspetrov/pilot/actions"><img src="https://github.com/alekspetrov/pilot/workflows/CI/badge.svg?style=flat-square" alt="CI"></a>
-  <a href="https://goreportcard.com/report/github.com/alekspetrov/pilot"><img src="https://goreportcard.com/badge/github.com/alekspetrov/pilot?style=flat-square" alt="Go Report Card"></a>
+  <a href="https://github.com/qf-studio/pilot/actions"><img src="https://github.com/qf-studio/pilot/workflows/CI/badge.svg?style=flat-square" alt="CI"></a>
+  <a href="https://goreportcard.com/report/github.com/qf-studio/pilot"><img src="https://goreportcard.com/badge/github.com/qf-studio/pilot?style=flat-square" alt="Go Report Card"></a>
 </p>
 
 <p align="center">
@@ -54,20 +54,20 @@ Pilot picks up tickets from GitHub, Linear, Jira, or Asana—plans the implement
 ### Homebrew (recommended)
 
 ```bash
-brew tap alekspetrov/pilot
+brew tap qf-studio/pilot
 brew install pilot
 ```
 
 ### Go Install
 
 ```bash
-go install github.com/alekspetrov/pilot/cmd/pilot@latest
+go install github.com/qf-studio/pilot/cmd/pilot@latest
 ```
 
 ### From Source
 
 ```bash
-git clone https://github.com/alekspetrov/pilot
+git clone https://github.com/qf-studio/pilot
 cd pilot
 make build
 sudo make install-global
@@ -464,7 +464,7 @@ make test
 </p>
 
 <p align="center">
-  <a href="https://github.com/alekspetrov/pilot">⭐ Star on GitHub</a>
+  <a href="https://github.com/qf-studio/pilot">⭐ Star on GitHub</a>
 </p>
 
 <p align="center">

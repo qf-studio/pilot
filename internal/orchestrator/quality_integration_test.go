@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/alekspetrov/pilot/internal/executor"
+	"github.com/qf-studio/pilot/internal/executor"
 )
 
 // setupTestGitRepo creates a temporary git repository for testing.

@@ -4,10 +4,10 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/alekspetrov/pilot/internal/adapters"
-	"github.com/alekspetrov/pilot/internal/adapters/jira"
-	"github.com/alekspetrov/pilot/internal/config"
-	"github.com/alekspetrov/pilot/internal/logging"
+	"github.com/qf-studio/pilot/internal/adapters"
+	"github.com/qf-studio/pilot/internal/adapters/jira"
+	"github.com/qf-studio/pilot/internal/config"
+	"github.com/qf-studio/pilot/internal/logging"
 )
 
 func jiraPollerRegistration() PollerRegistration {

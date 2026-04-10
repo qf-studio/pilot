@@ -11,7 +11,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/alekspetrov/pilot/internal/adapters/github"
+	"github.com/qf-studio/pilot/internal/adapters/github"
 )
 
 func TestDeployer_None(t *testing.T) {

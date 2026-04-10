@@ -6,7 +6,7 @@ import (
 	"text/template"
 	"time"
 
-	"github.com/alekspetrov/pilot/internal/memory"
+	"github.com/qf-studio/pilot/internal/memory"
 )
 
 // DriftIndicator represents a sign of collaboration drift

@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/alekspetrov/pilot/internal/adapters/github"
-	"github.com/alekspetrov/pilot/internal/memory"
-	"github.com/alekspetrov/pilot/internal/testutil"
+	"github.com/qf-studio/pilot/internal/adapters/github"
+	"github.com/qf-studio/pilot/internal/memory"
+	"github.com/qf-studio/pilot/internal/testutil"
 )
 
 func TestNewFeedbackLoop(t *testing.T) {

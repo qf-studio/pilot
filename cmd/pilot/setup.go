@@ -9,9 +9,9 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/alekspetrov/pilot/internal/adapters/telegram"
-	"github.com/alekspetrov/pilot/internal/config"
-	"github.com/alekspetrov/pilot/internal/transcription"
+	"github.com/qf-studio/pilot/internal/adapters/telegram"
+	"github.com/qf-studio/pilot/internal/config"
+	"github.com/qf-studio/pilot/internal/transcription"
 	"github.com/spf13/cobra"
 )
 

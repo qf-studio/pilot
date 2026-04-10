@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/alekspetrov/pilot/internal/logging"
+	"github.com/qf-studio/pilot/internal/logging"
 	"log/slog"
 )
 

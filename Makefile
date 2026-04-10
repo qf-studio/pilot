@@ -22,6 +22,12 @@ build-all:
 	GOOS=linux GOARCH=amd64 go build $(LDFLAGS) -o bin/$(BINARY_NAME)-linux-amd64 ./cmd/pilot
 	GOOS=linux GOARCH=arm64 go build $(LDFLAGS) -o bin/$(BINARY_NAME)-linux-arm64 ./cmd/pilot
 
+# Build bench binary for Terminal-Bench (linux/amd64, static)
+bench-binary:
+	@echo "Building bench binary (linux/amd64)..."
+	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags "-s -w -X main.version=$(VERSION)" -o pilot-bench/bin/pilot-linux-amd64 ./cmd/pilot
+	@ls -lh pilot-bench/bin/pilot-linux-amd64
+
 # Package binaries into tar.gz archives for release
 # Binary inside tar is named "pilot" (not pilot-darwin-arm64) to match upgrade code.
 # COPYFILE_DISABLE=1 prevents macOS tar from adding ._* resource fork entries.
@@ -195,8 +201,8 @@ docker-build:
 
 # Push Docker image to GitHub Container Registry
 docker-push:
-	docker tag pilot:$(VERSION) ghcr.io/alekspetrov/pilot:$(VERSION)
-	docker push ghcr.io/alekspetrov/pilot:$(VERSION)
+	docker tag pilot:$(VERSION) ghcr.io/qf-studio/pilot:$(VERSION)
+	docker push ghcr.io/qf-studio/pilot:$(VERSION)
 
 # Build with embedded React dashboard at /dashboard/ (GH-1612)
 build-with-dashboard: desktop-deps
@@ -276,7 +282,7 @@ help:
 	@echo "  make package        Package binaries into tar.gz archives"
 	@echo "  make release        Create release (V=0.x.x required)"
 	@echo "  make docker-build   Build Docker image (tag: pilot:VERSION)"
-	@echo "  make docker-push    Push image to ghcr.io/alekspetrov/pilot"
+	@echo "  make docker-push    Push image to ghcr.io/qf-studio/pilot"
 	@echo "  make build-with-dashboard  Build with embedded React dashboard"
 	@echo "  make desktop-deps          Install desktop frontend dependencies"
 	@echo "  make desktop-dev           Run desktop app in dev mode"

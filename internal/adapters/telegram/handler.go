@@ -14,11 +14,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/alekspetrov/pilot/internal/comms"
-	"github.com/alekspetrov/pilot/internal/executor"
-	"github.com/alekspetrov/pilot/internal/logging"
-	"github.com/alekspetrov/pilot/internal/memory"
-	"github.com/alekspetrov/pilot/internal/transcription"
+	"github.com/qf-studio/pilot/internal/comms"
+	"github.com/qf-studio/pilot/internal/executor"
+	"github.com/qf-studio/pilot/internal/logging"
+	"github.com/qf-studio/pilot/internal/memory"
+	"github.com/qf-studio/pilot/internal/transcription"
 )
 
 // MemberResolver resolves a Telegram user to a team member ID for RBAC (GH-634).

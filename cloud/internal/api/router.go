@@ -10,11 +10,11 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/google/uuid"
 
-	"github.com/alekspetrov/pilot/cloud/internal/auth"
-	"github.com/alekspetrov/pilot/cloud/internal/billing"
-	"github.com/alekspetrov/pilot/cloud/internal/oauth"
-	"github.com/alekspetrov/pilot/cloud/internal/sandbox"
-	"github.com/alekspetrov/pilot/cloud/internal/tenants"
+	"github.com/qf-studio/pilot/cloud/internal/auth"
+	"github.com/qf-studio/pilot/cloud/internal/billing"
+	"github.com/qf-studio/pilot/cloud/internal/oauth"
+	"github.com/qf-studio/pilot/cloud/internal/sandbox"
+	"github.com/qf-studio/pilot/cloud/internal/tenants"
 )
 
 // Server handles HTTP requests

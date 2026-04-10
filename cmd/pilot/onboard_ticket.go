@@ -9,13 +9,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/alekspetrov/pilot/internal/adapters/asana"
-	"github.com/alekspetrov/pilot/internal/adapters/azuredevops"
-	"github.com/alekspetrov/pilot/internal/adapters/github"
-	"github.com/alekspetrov/pilot/internal/adapters/gitlab"
-	"github.com/alekspetrov/pilot/internal/adapters/jira"
-	"github.com/alekspetrov/pilot/internal/adapters/linear"
-	"github.com/alekspetrov/pilot/internal/config"
+	"github.com/qf-studio/pilot/internal/adapters/asana"
+	"github.com/qf-studio/pilot/internal/adapters/azuredevops"
+	"github.com/qf-studio/pilot/internal/adapters/github"
+	"github.com/qf-studio/pilot/internal/adapters/gitlab"
+	"github.com/qf-studio/pilot/internal/adapters/jira"
+	"github.com/qf-studio/pilot/internal/adapters/linear"
+	"github.com/qf-studio/pilot/internal/config"
 )
 
 // TicketSource represents an available ticket source adapter

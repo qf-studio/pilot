@@ -72,12 +72,19 @@ gh pr merge <number>
 The `BuildPrompt()` function MUST invoke `/nav-loop` mode when `.agent/` exists. This is Pilot's core value proposition:
 
 ```go
+// LocalMode takes priority — checked FIRST (GH-2103, bench val10)
+if task.LocalMode {
+    return r.buildLocalModePrompt(task)  // problem-solving prompt, no PR constraints
+}
+
 // Navigator-aware prompt structure for medium/complex tasks
 if useNavigator {
     sb.WriteString("Use /nav-loop mode for this task.\n\n")  // <- NEVER REMOVE
     // ... PILOT EXECUTION MODE override for CLAUDE.md rules
 }
 ```
+
+**LocalMode priority (GH-2103)**: `task.LocalMode` MUST be checked before Navigator detection. Sandbox environments (bench, CI) may have `.agent/` directories that hijack the prompt to Navigator path. LocalMode = problem-solving prompt without PR workflow constraints.
 
 **Incident 2026-01-26**: Navigator prefix was accidentally removed during "simplification" refactor. Pilot without Navigator = just another Claude Code wrapper with zero value.
 
@@ -109,11 +116,13 @@ Disable via config: `executor.navigator.auto_init: false`
 | `.agent/system/PR-CHECKLIST.md` | Before merging PRs in `--autopilot=prod` mode |
 | `.agent/tasks/TASK-XX.md` | Active task details |
 | `.agent/sops/*.md` | Before modifying integrations |
+| `.agent/sops/development/pilot-bench-real-binary.md` | Running real-binary bench on Daytona |
+| `.agent/sops/daytona-bench-operations.md` | Daytona sandbox management + monitoring |
 | `.agent/.context-markers/` | Resume after break |
 
 ## Current State
 
-**Current Version:** v2.76.0 | **240+ features working**
+**Current Version:** v2.53.0 | **316 features working**
 
 **Full implementation status:** `.agent/system/FEATURE-MATRIX.md`
 
@@ -213,7 +222,7 @@ Disable via config: `executor.navigator.auto_init: false`
 | CI Fix Dependencies | Done | `Depends on: #N` annotations in fix issues (v2.25.0) |
 | Messenger Refactor | Done | Extracted TelegramMessenger/SlackMessenger, shared Handler (v2.25.0) |
 | Plane.so Adapter | Done | REST client, polling, webhooks, HMAC-SHA256, state transitions (v2.25.0) |
-| Discord Adapter | Done | Gateway WebSocket, bot commands, progress embeds (v2.25.0) |
+| Discord Adapter | Done | Gateway WebSocket, reconnection, rate limits, mention strip, Author.Bot filter (v2.80.0) |
 | GitHub Projects V2 Board | Done | GraphQL board sync: Review/Done/Failed columns (v2.30.0) |
 | Common Adapter Registry | Done | Unified Adapter interface, generic ProcessedStore (v2.30.0) |
 | Handler Refactoring | Done | `handleIssueGeneric()` consolidates 5 adapter flows (v2.30.0) |
@@ -221,6 +230,16 @@ Disable via config: `executor.navigator.auto_init: false`
 | Dashboard Git Graph Sizes | Done | Small/medium/large/hidden modes, auto-size by terminal width (v2.35.0) |
 | Dashboard Responsive | Done | Stacked layout on narrow terminals, full-width panels (v2.38.0) |
 | Docs Version Sync CI | Done | Workflow closes previous version-sync PRs (v2.38.11) |
+| PR Reviewer Auto-Assign | Done | Reviewers config for auto-assigning PR reviewers (v2.77.0) |
+| `pilot init` Command | Done | Project scaffolding — config, hooks, Navigator setup (v2.77.0) |
+| LocalMode Prompt Priority | Done | `BuildPrompt` checks `task.LocalMode` FIRST before Navigator (v2.78.0) |
+| Configurable HeartbeatTimeout | Done | `executor.heartbeat_timeout` in config.yaml, default 15m (v2.78.0) |
+| Success Recovery on Timeout | Done | Recover success when Claude Code times out after completing work (v2.78.0) |
+| Skip Nav Auto-Init in LocalMode | Done | No `.agent/` creation in bench/CI sandboxes (v2.78.0) |
+| OOM/SIGKILL Handling | Done | Classify exit 137/139 as OOM, skip retry on unrecoverable errors (v2.79.0) |
+| Skip Quality Gates in LocalMode | Done | Quality gates bypass in bench/CI execution (v2.79.0) |
+| Discord Bot Self-Loop Fix | Done | `Author.Bot` field filter, single handler via poller registry (v2.79.5-v2.79.6) |
+| Discord Production Hardening | Done | Reconnection, rate limits, mention strip, sync.Once, per-task progress (v2.80.0) |
 
 ### Telegram Interaction Modes (v0.6.0)
 
@@ -260,10 +279,21 @@ pilot start --env=prod --telegram --github   # Safe, manual approval
 | Jira Webhooks | Needs gateway running |
 | Email Alerts | Implemented, untested |
 | PagerDuty | Implemented, untested |
+| Discord Intent Classification | [GH-2121](https://github.com/qf-studio/pilot/issues/2121) — all messages treated as tasks, needs Haiku classifier |
+| Slack Regex Fallback | [GH-2122](https://github.com/qf-studio/pilot/issues/2122) — falls back to unreliable regex on LLM timeout |
+| Dead Regex Classifier | [GH-2123](https://github.com/qf-studio/pilot/issues/2123) — remove `DetectIntent()` after 2121+2122 |
 
 ---
 
 ## Active Work
+
+### Terminal-Bench Benchmark (feat/pilot-bench-real)
+
+Full 89-task run in progress on Daytona. Benchmarking real Pilot Go binary vs stock Claude Code (58%).
+- **Validation**: 3/3 (100%) on val10 — break-filter, chess, gcode all pass
+- **Branch**: `feat/pilot-bench-real` — bench workspace, not for merge to main
+- **Findings → main**: GH-2103 (LocalMode priority), GH-2104 (configurable heartbeat) — both merged
+- **Docs**: `pilot-bench/README.md`, `pilot-bench/WORKLOG.md`, `.agent/sops/development/pilot-bench-real-binary.md`
 
 **Source of truth: GitHub Issues with `pilot` label**
 
@@ -272,6 +302,13 @@ gh issue list --label pilot --state open
 gh issue list --label pilot-in-progress --state open
 gh pr list --state open
 ```
+
+### Discord Intent Classification (GH-2121/2122/2123)
+
+All I/O channels should use Haiku LLM classifier. Discord has none (every message = task). Slack falls back to unreliable regex on LLM timeout.
+- **GH-2121**: Wire Haiku classifier into Discord handler
+- **GH-2122**: Replace Slack's regex fallback with `IntentChat` default
+- **GH-2123**: Remove dead `DetectIntent()` regex classifier (after 2121+2122)
 
 ### Stability Plan ✅ Complete (11/11)
 
@@ -311,7 +348,7 @@ Nextra 4 migration (PR #1409) + 8 docs pages covering all 156 features:
 | GH-1417 | Navigator Auto-Init section | #1425 | Merged |
 | GH-1418 | Homepage + config reference | #1427 | Merged |
 
-**Docs site**: 60+ pages, Nextra 4, 240+ features documented. Discord, Plane, board sync, git graph, auto-rebase, review learning sections added (v2.38.11).
+**Docs site**: 60+ pages, Nextra 4, 316 features documented. Discord, Plane, board sync, git graph, auto-rebase, review learning sections added (v2.53.0).
 
 ### Backlog
 
@@ -330,6 +367,21 @@ Nextra 4 migration (PR #1409) + 8 docs pages covering all 156 features:
 ---
 
 ## Completed Log
+
+### 2026-03-13
+
+| Item | What |
+|------|------|
+| **v2.80.0** | Discord production hardening: reconnection, rate limits, mention strip, per-task progress, sync.Once (PR #2119 via GH-2117) |
+| **v2.79.5-v2.79.6** | Discord bot self-loop fix (Author.Bot field) + duplicate handler removal (direct-to-main) |
+| **v2.79.0** | OOM/SIGKILL handling (exit 137/139), skip quality gates in LocalMode (PRs #2113, #2114) |
+| **v2.78.0** | LocalMode prompt priority, configurable HeartbeatTimeout, success recovery on timeout, skip nav auto-init (PRs #2105, #2106, #2109, #2110) |
+| **v2.77.0** | PR reviewer auto-assign, `pilot init` project scaffolding (PRs #2101, #2102) |
+| **Docs** | Version strings synced to v2.76.0, evaluation system page, epic auto-close docs, PR review feedback section (PRs #2094-#2097) |
+| **Discord live test** | First real-world Discord integration — found and fixed 15 bugs across 3 releases |
+| **TASK-10** | Completed — Discord handler wired and tested |
+| **TASK-12** | Completed — Discord production hardening (GH-2118 closed, PR #2119 merged) |
+| **Open issues** | GH-2121 (Discord intent), GH-2122 (Slack regex fallback), GH-2123 (remove dead classifier) |
 
 ### 2026-02-28
 
@@ -638,7 +690,7 @@ pilot upgrade
 
 **Fresh Install:**
 ```bash
-curl -fsSL https://raw.githubusercontent.com/alekspetrov/pilot/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/qf-studio/pilot/main/install.sh | bash
 ```
 
 **Known Issue (GH-204):** Install script doesn't auto-configure PATH. Users must add `~/.local/bin` to PATH or open new terminal.

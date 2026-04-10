@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/alekspetrov/pilot/internal/executor"
+	"github.com/qf-studio/pilot/internal/executor"
 )
 
 func TestCleanInternalSignals(t *testing.T) {

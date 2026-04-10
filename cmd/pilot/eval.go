@@ -9,9 +9,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/alekspetrov/pilot/internal/alerts"
-	"github.com/alekspetrov/pilot/internal/config"
-	"github.com/alekspetrov/pilot/internal/memory"
+	"github.com/qf-studio/pilot/internal/alerts"
+	"github.com/qf-studio/pilot/internal/config"
+	"github.com/qf-studio/pilot/internal/memory"
 )
 
 func newEvalCmd() *cobra.Command {

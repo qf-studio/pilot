@@ -95,3 +95,9 @@ desktop/build/darwin/Info.dev.plist
 
 # Embedded dashboard build artifact (created by make build-with-dashboard)
 cmd/pilot/dashboard_dist/
+
+# Bench cross-compiled binaries
+pilot-bench/bin/
+
+# Bench job outputs
+pilot-bench/jobs/

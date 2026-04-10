@@ -5,7 +5,7 @@
 # Variables
 BINARY_NAME=pilot-cloud
 BUILD_DIR=./bin
-DOCKER_REGISTRY=ghcr.io/alekspetrov
+DOCKER_REGISTRY=ghcr.io/qf-studio
 VERSION=$(shell git describe --tags --always --dirty)
 
 # Build

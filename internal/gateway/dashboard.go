@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/alekspetrov/pilot/internal/memory"
+	"github.com/qf-studio/pilot/internal/memory"
 )
 
 // GitGraphFetcher fetches git graph state for a project path and commit limit.

@@ -14,5 +14,5 @@ home: https://pilot.quantflow.studio
 sources:
   - https://github.com/qf-studio/pilot
 maintainers:
-  - name: alekspetrov
-    url: https://github.com/alekspetrov
+  - name: qf-studio
+    url: https://github.com/qf-studio

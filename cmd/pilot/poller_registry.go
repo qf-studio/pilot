@@ -6,12 +6,12 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/alekspetrov/pilot/internal/alerts"
-	"github.com/alekspetrov/pilot/internal/autopilot"
-	"github.com/alekspetrov/pilot/internal/budget"
-	"github.com/alekspetrov/pilot/internal/config"
-	"github.com/alekspetrov/pilot/internal/executor"
-	"github.com/alekspetrov/pilot/internal/logging"
+	"github.com/qf-studio/pilot/internal/alerts"
+	"github.com/qf-studio/pilot/internal/autopilot"
+	"github.com/qf-studio/pilot/internal/budget"
+	"github.com/qf-studio/pilot/internal/config"
+	"github.com/qf-studio/pilot/internal/executor"
+	"github.com/qf-studio/pilot/internal/logging"
 )
 
 // PollerDeps groups shared infrastructure used by all adapter poller startup blocks.

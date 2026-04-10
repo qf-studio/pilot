@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/alekspetrov/pilot/internal/alerts"
+	"github.com/qf-studio/pilot/internal/alerts"
 )
 
 func TestTripTracker_RecordTrip(t *testing.T) {

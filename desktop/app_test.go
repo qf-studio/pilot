@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/alekspetrov/pilot/internal/dashboard"
+	"github.com/qf-studio/pilot/internal/dashboard"
 )
 
 // TestGetGitGraph_DefaultLimit verifies that passing limit=0 falls back to 100

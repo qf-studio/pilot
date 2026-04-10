@@ -7,11 +7,11 @@ import (
 	"os"
 	"time"
 
-	"github.com/alekspetrov/pilot/internal/adapters/discord"
-	"github.com/alekspetrov/pilot/internal/comms"
-	"github.com/alekspetrov/pilot/internal/config"
-	"github.com/alekspetrov/pilot/internal/intent"
-	"github.com/alekspetrov/pilot/internal/logging"
+	"github.com/qf-studio/pilot/internal/adapters/discord"
+	"github.com/qf-studio/pilot/internal/comms"
+	"github.com/qf-studio/pilot/internal/config"
+	"github.com/qf-studio/pilot/internal/intent"
+	"github.com/qf-studio/pilot/internal/logging"
 )
 
 func discordPollerRegistration() PollerRegistration {

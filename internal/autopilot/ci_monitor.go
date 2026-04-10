@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/alekspetrov/pilot/internal/adapters/github"
+	"github.com/qf-studio/pilot/internal/adapters/github"
 )
 
 // CIMonitor watches GitHub CI status for PRs.

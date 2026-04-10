@@ -13,12 +13,12 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 
-	"github.com/alekspetrov/pilot/cloud/internal/api"
-	"github.com/alekspetrov/pilot/cloud/internal/auth"
-	"github.com/alekspetrov/pilot/cloud/internal/billing"
-	"github.com/alekspetrov/pilot/cloud/internal/oauth"
-	"github.com/alekspetrov/pilot/cloud/internal/sandbox"
-	"github.com/alekspetrov/pilot/cloud/internal/tenants"
+	"github.com/qf-studio/pilot/cloud/internal/api"
+	"github.com/qf-studio/pilot/cloud/internal/auth"
+	"github.com/qf-studio/pilot/cloud/internal/billing"
+	"github.com/qf-studio/pilot/cloud/internal/oauth"
+	"github.com/qf-studio/pilot/cloud/internal/sandbox"
+	"github.com/qf-studio/pilot/cloud/internal/tenants"
 )
 
 func main() {

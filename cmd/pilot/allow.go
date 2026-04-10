@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strconv"
 
-	"github.com/alekspetrov/pilot/internal/adapters/telegram"
-	"github.com/alekspetrov/pilot/internal/config"
+	"github.com/qf-studio/pilot/internal/adapters/telegram"
+	"github.com/qf-studio/pilot/internal/config"
 	"github.com/spf13/cobra"
 )
 

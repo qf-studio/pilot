@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/alekspetrov/pilot/internal/adapters/slack"
+	"github.com/qf-studio/pilot/internal/adapters/slack"
 )
 
 // Mock Slack client for testing

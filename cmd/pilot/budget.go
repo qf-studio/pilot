@@ -6,9 +6,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/alekspetrov/pilot/internal/budget"
-	"github.com/alekspetrov/pilot/internal/config"
-	"github.com/alekspetrov/pilot/internal/memory"
+	"github.com/qf-studio/pilot/internal/budget"
+	"github.com/qf-studio/pilot/internal/config"
+	"github.com/qf-studio/pilot/internal/memory"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 )

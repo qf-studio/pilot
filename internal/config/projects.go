@@ -1,7 +1,7 @@
 package config
 
 import (
-	"github.com/alekspetrov/pilot/internal/comms"
+	"github.com/qf-studio/pilot/internal/comms"
 )
 
 // ProjectSourceAdapter wraps Config to implement comms.ProjectSource.

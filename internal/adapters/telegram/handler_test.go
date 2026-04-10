@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/alekspetrov/pilot/internal/comms"
-	"github.com/alekspetrov/pilot/internal/testutil"
+	"github.com/qf-studio/pilot/internal/comms"
+	"github.com/qf-studio/pilot/internal/testutil"
 )
 
 // noopMessenger is a no-op implementation of comms.Messenger for tests.

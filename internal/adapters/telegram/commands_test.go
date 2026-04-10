@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/alekspetrov/pilot/internal/comms"
-	"github.com/alekspetrov/pilot/internal/testutil"
+	"github.com/qf-studio/pilot/internal/comms"
+	"github.com/qf-studio/pilot/internal/testutil"
 )
 
 // mockTelegramServer creates a test server that captures sent messages

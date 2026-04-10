@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/alekspetrov/pilot/internal/testutil"
+	"github.com/qf-studio/pilot/internal/testutil"
 )
 
 func TestVerifyToken(t *testing.T) {

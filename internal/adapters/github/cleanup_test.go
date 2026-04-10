@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/alekspetrov/pilot/internal/memory"
-	"github.com/alekspetrov/pilot/internal/testutil"
+	"github.com/qf-studio/pilot/internal/memory"
+	"github.com/qf-studio/pilot/internal/testutil"
 )
 
 func TestNewCleaner(t *testing.T) {

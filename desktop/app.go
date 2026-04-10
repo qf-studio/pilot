@@ -11,9 +11,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/alekspetrov/pilot/internal/config"
-	"github.com/alekspetrov/pilot/internal/dashboard"
-	"github.com/alekspetrov/pilot/internal/memory"
+	"github.com/qf-studio/pilot/internal/config"
+	"github.com/qf-studio/pilot/internal/dashboard"
+	"github.com/qf-studio/pilot/internal/memory"
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
@@ -397,7 +397,7 @@ func issueURL(taskID string) string {
 	id := issueIDFromTaskID(taskID)
 	if strings.HasPrefix(id, "GH-") {
 		num := strings.TrimPrefix(id, "GH-")
-		return fmt.Sprintf("https://github.com/alekspetrov/pilot/issues/%s", num)
+		return fmt.Sprintf("https://github.com/qf-studio/pilot/issues/%s", num)
 	}
 	return ""
 }

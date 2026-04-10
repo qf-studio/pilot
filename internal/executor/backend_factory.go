@@ -26,6 +26,9 @@ func NewBackend(config *BackendConfig) (Backend, error) {
 		b.SetHeartbeatTimeout(heartbeatTimeout)
 		return b, nil
 
+	case BackendTypeAnthropicAPI:
+		return NewAnthropicBackend(config), nil
+
 	default:
 		return nil, fmt.Errorf("unknown backend type: %s", config.Type)
 	}

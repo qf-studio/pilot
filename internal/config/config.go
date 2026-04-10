@@ -10,26 +10,26 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/alekspetrov/pilot/internal/adapters/asana"
-	"github.com/alekspetrov/pilot/internal/adapters/azuredevops"
-	"github.com/alekspetrov/pilot/internal/adapters/discord"
-	"github.com/alekspetrov/pilot/internal/adapters/github"
-	"github.com/alekspetrov/pilot/internal/adapters/gitlab"
-	"github.com/alekspetrov/pilot/internal/adapters/jira"
-	"github.com/alekspetrov/pilot/internal/adapters/linear"
-	"github.com/alekspetrov/pilot/internal/adapters/plane"
-	"github.com/alekspetrov/pilot/internal/adapters/slack"
-	"github.com/alekspetrov/pilot/internal/adapters/telegram"
-	"github.com/alekspetrov/pilot/internal/alerts"
-	"github.com/alekspetrov/pilot/internal/approval"
-	"github.com/alekspetrov/pilot/internal/autopilot"
-	"github.com/alekspetrov/pilot/internal/budget"
-	"github.com/alekspetrov/pilot/internal/executor"
-	"github.com/alekspetrov/pilot/internal/gateway"
-	"github.com/alekspetrov/pilot/internal/logging"
-	"github.com/alekspetrov/pilot/internal/quality"
-	"github.com/alekspetrov/pilot/internal/tunnel"
-	"github.com/alekspetrov/pilot/internal/webhooks"
+	"github.com/qf-studio/pilot/internal/adapters/asana"
+	"github.com/qf-studio/pilot/internal/adapters/azuredevops"
+	"github.com/qf-studio/pilot/internal/adapters/discord"
+	"github.com/qf-studio/pilot/internal/adapters/github"
+	"github.com/qf-studio/pilot/internal/adapters/gitlab"
+	"github.com/qf-studio/pilot/internal/adapters/jira"
+	"github.com/qf-studio/pilot/internal/adapters/linear"
+	"github.com/qf-studio/pilot/internal/adapters/plane"
+	"github.com/qf-studio/pilot/internal/adapters/slack"
+	"github.com/qf-studio/pilot/internal/adapters/telegram"
+	"github.com/qf-studio/pilot/internal/alerts"
+	"github.com/qf-studio/pilot/internal/approval"
+	"github.com/qf-studio/pilot/internal/autopilot"
+	"github.com/qf-studio/pilot/internal/budget"
+	"github.com/qf-studio/pilot/internal/executor"
+	"github.com/qf-studio/pilot/internal/gateway"
+	"github.com/qf-studio/pilot/internal/logging"
+	"github.com/qf-studio/pilot/internal/quality"
+	"github.com/qf-studio/pilot/internal/tunnel"
+	"github.com/qf-studio/pilot/internal/webhooks"
 )
 
 // Config represents the main Pilot configuration loaded from YAML.
@@ -498,11 +498,11 @@ func expandPath(path string) string {
 }
 
 // validEffortLevels are the effort levels supported by Claude Code CLI.
-// Note: "max" is NOT supported for Claude.ai subscribers.
 var validEffortLevels = map[string]bool{
 	"low":    true,
 	"medium": true,
 	"high":   true,
+	"max":    true,
 	"":       true, // Empty uses default
 }
 
@@ -530,7 +530,7 @@ func (c *Config) Validate() error {
 		for name, value := range levels {
 			normalized := strings.ToLower(strings.TrimSpace(value))
 			if !validEffortLevels[normalized] {
-				return fmt.Errorf("invalid effort_routing.%s: %q (must be low, medium, or high; 'max' is not supported by Claude Code)", name, value)
+				return fmt.Errorf("invalid effort_routing.%s: %q (must be low, medium, high, or max)", name, value)
 			}
 		}
 	}

@@ -1,0 +1,22 @@
+[project]
+name = "pilot-agent"
+version = "0.1.0"
+description = "Pilot Terminal-Bench agent — wraps Claude Code with test awareness, verification loops, and pattern injection"
+requires-python = ">=3.12"
+dependencies = [
+    "harbor",
+    "jinja2>=3.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.4",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["pilot_agent"]

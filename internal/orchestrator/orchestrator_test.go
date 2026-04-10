@@ -3,7 +3,7 @@ package orchestrator
 import (
 	"testing"
 
-	"github.com/alekspetrov/pilot/internal/adapters/linear"
+	"github.com/qf-studio/pilot/internal/adapters/linear"
 )
 
 func TestExtractLabelNames(t *testing.T) {

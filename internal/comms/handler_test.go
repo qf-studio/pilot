@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/alekspetrov/pilot/internal/intent"
+	"github.com/qf-studio/pilot/internal/intent"
 )
 
 // handlerMock records all Messenger calls for assertion in handler tests.

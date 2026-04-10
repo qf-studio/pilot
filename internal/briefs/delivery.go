@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/alekspetrov/pilot/internal/adapters/slack"
+	"github.com/qf-studio/pilot/internal/adapters/slack"
 )
 
 // TelegramMessageResponse represents the response from sending a Telegram message

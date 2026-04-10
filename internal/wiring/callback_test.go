@@ -3,8 +3,8 @@ package wiring
 import (
 	"testing"
 
-	"github.com/alekspetrov/pilot/internal/config"
-	"github.com/alekspetrov/pilot/internal/dashboard"
+	"github.com/qf-studio/pilot/internal/config"
+	"github.com/qf-studio/pilot/internal/dashboard"
 )
 
 // TestOnPRCreatedCallbackWired verifies that the OnSubIssuePRCreated callback

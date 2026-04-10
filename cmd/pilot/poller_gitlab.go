@@ -5,9 +5,9 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/alekspetrov/pilot/internal/adapters/gitlab"
-	"github.com/alekspetrov/pilot/internal/config"
-	"github.com/alekspetrov/pilot/internal/logging"
+	"github.com/qf-studio/pilot/internal/adapters/gitlab"
+	"github.com/qf-studio/pilot/internal/config"
+	"github.com/qf-studio/pilot/internal/logging"
 )
 
 func gitlabPollerRegistration() PollerRegistration {

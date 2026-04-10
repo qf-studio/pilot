@@ -11,7 +11,7 @@ name = "pilot"
 compatibility_date = "2025-06-01"
 
 [containers]
-image = "ghcr.io/alekspetrov/pilot:latest"
+image = "ghcr.io/qf-studio/pilot:latest"
 command = ["pilot", "start", "--telegram", "--github"]
 
 # CPU and memory allocation

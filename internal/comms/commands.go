@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/alekspetrov/pilot/internal/memory"
+	"github.com/qf-studio/pilot/internal/memory"
 )
 
 // CommandHandler processes bot commands with access to messenger and memory store.

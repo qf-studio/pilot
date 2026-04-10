@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/alekspetrov/pilot/internal/adapters/asana"
-	"github.com/alekspetrov/pilot/internal/adapters/plane"
-	"github.com/alekspetrov/pilot/internal/gateway"
+	"github.com/qf-studio/pilot/internal/adapters/asana"
+	"github.com/qf-studio/pilot/internal/adapters/plane"
+	"github.com/qf-studio/pilot/internal/gateway"
 )
 
 func TestAsanaWebhookHandlerRegistration(t *testing.T) {

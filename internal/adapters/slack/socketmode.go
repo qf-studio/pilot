@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/alekspetrov/pilot/internal/logging"
+	"github.com/qf-studio/pilot/internal/logging"
 	"github.com/gorilla/websocket"
 )
 

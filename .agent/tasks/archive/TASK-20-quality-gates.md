@@ -107,7 +107,7 @@ quality:
 ### In Executor
 
 ```go
-import "github.com/alekspetrov/pilot/internal/quality"
+import "github.com/qf-studio/pilot/internal/quality"
 
 // Create executor
 qe := quality.NewExecutor(&quality.ExecutorConfig{

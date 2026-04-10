@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/alekspetrov/pilot/internal/adapters/github"
-	"github.com/alekspetrov/pilot/internal/approval"
-	"github.com/alekspetrov/pilot/internal/memory"
-	"github.com/alekspetrov/pilot/internal/testutil"
+	"github.com/qf-studio/pilot/internal/adapters/github"
+	"github.com/qf-studio/pilot/internal/approval"
+	"github.com/qf-studio/pilot/internal/memory"
+	"github.com/qf-studio/pilot/internal/testutil"
 )
 
 func TestNewController(t *testing.T) {
@@ -3678,8 +3678,8 @@ func TestController_HandleReviewRequested_IterationLimit(t *testing.T) {
 func TestController_HandleReviewRequested_IgnoresSelfReview(t *testing.T) {
 	// hasChangesRequested should skip bot reviews
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.URL.Path == "/repos/owner/repo/pulls/42/reviews":
+		switch r.URL.Path {
+		case "/repos/owner/repo/pulls/42/reviews":
 			resp := []*github.PullRequestReview{
 				{ID: 1, User: github.User{Login: "pilot[bot]"}, Body: "Self-review", State: "CHANGES_REQUESTED", SubmittedAt: "2026-03-05T10:00:00Z"},
 				{ID: 2, User: github.User{Login: "ci-bot"}, Body: "Bot review", State: "CHANGES_REQUESTED", SubmittedAt: "2026-03-05T10:00:00Z"},
@@ -3750,8 +3750,8 @@ func TestController_OnReviewRequested_UntrackedPR(t *testing.T) {
 func TestController_HasChangesRequested_FilterByTime(t *testing.T) {
 	// Reviews submitted before PR tracking should be ignored
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.URL.Path == "/repos/owner/repo/pulls/42/reviews":
+		switch r.URL.Path {
+		case "/repos/owner/repo/pulls/42/reviews":
 			resp := []*github.PullRequestReview{
 				{
 					ID:          1,

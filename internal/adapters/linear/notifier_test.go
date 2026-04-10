@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/alekspetrov/pilot/internal/testutil"
+	"github.com/qf-studio/pilot/internal/testutil"
 )
 
 func TestNewNotifier(t *testing.T) {

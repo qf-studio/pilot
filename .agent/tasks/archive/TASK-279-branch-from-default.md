@@ -1,6 +1,6 @@
 # TASK-279: Fix Branch Creation to Fork from Default Branch
 
-**Issue:** [GH-279](https://github.com/alekspetrov/pilot/issues/279)
+**Issue:** [GH-279](https://github.com/qf-studio/pilot/issues/279)
 **Priority:** P1 - Bug affecting all users
 **Branch:** `pilot/GH-279`
 

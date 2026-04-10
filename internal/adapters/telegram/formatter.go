@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/alekspetrov/pilot/internal/executor"
+	"github.com/qf-studio/pilot/internal/executor"
 )
 
 // Internal signals to strip from output

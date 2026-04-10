@@ -9,10 +9,10 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/alekspetrov/pilot/releases"><img src="https://img.shields.io/github/v/release/alekspetrov/pilot?style=flat-square" alt="Release"></a>
-  <a href="https://github.com/alekspetrov/pilot/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-BSL--1.1-blue?style=flat-square" alt="License"></a>
-  <a href="https://github.com/alekspetrov/pilot/stargazers"><img src="https://img.shields.io/github/stars/alekspetrov/pilot?style=flat-square" alt="Stars"></a>
-  <a href="https://github.com/alekspetrov/pilot/actions"><img src="https://img.shields.io/github/actions/workflow/status/alekspetrov/pilot/ci.yml?style=flat-square" alt="Build"></a>
+  <a href="https://github.com/qf-studio/pilot/releases"><img src="https://img.shields.io/github/v/release/qf-studio/pilot?style=flat-square" alt="Release"></a>
+  <a href="https://github.com/qf-studio/pilot/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-BSL--1.1-blue?style=flat-square" alt="License"></a>
+  <a href="https://github.com/qf-studio/pilot/stargazers"><img src="https://img.shields.io/github/stars/qf-studio/pilot?style=flat-square" alt="Stars"></a>
+  <a href="https://github.com/qf-studio/pilot/actions"><img src="https://img.shields.io/github/actions/workflow/status/qf-studio/pilot/ci.yml?style=flat-square" alt="Build"></a>
 </p>
 
 <p align="center">
@@ -49,13 +49,13 @@ Pilot picks up tickets from GitHub, Linear, or Jira—plans the implementation, 
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/alekspetrov/pilot/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/qf-studio/pilot/main/install.sh | bash
 ```
 
 Or with Homebrew:
 
 ```bash
-brew install alekspetrov/tap/pilot
+brew install qf-studio/tap/pilot
 ```
 
 ## Quick Start
@@ -287,7 +287,7 @@ Free for internal use and non-competitive products. Converts to Apache 2.0 after
 </p>
 
 <p align="center">
-  <a href="https://github.com/alekspetrov/pilot">⭐ Star on GitHub</a> •
+  <a href="https://github.com/qf-studio/pilot">⭐ Star on GitHub</a> •
   <a href="https://discord.gg/pilot">💬 Join Discord</a> •
   <a href="https://twitter.com/pikiselev">🐦 Follow Updates</a>
 </p>

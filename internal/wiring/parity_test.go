@@ -3,7 +3,7 @@ package wiring
 import (
 	"testing"
 
-	"github.com/alekspetrov/pilot/internal/config"
+	"github.com/qf-studio/pilot/internal/config"
 )
 
 // TestPollingGatewayParity verifies that both harness constructors produce

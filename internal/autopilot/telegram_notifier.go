@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/alekspetrov/pilot/internal/adapters/telegram"
+	"github.com/qf-studio/pilot/internal/adapters/telegram"
 )
 
 // TelegramNotifier sends autopilot notifications to Telegram.

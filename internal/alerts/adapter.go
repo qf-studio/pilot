@@ -1,7 +1,7 @@
 package alerts
 
 import (
-	"github.com/alekspetrov/pilot/internal/executor"
+	"github.com/qf-studio/pilot/internal/executor"
 )
 
 // EngineAdapter wraps an Engine to implement executor.AlertEventProcessor.

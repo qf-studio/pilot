@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/alekspetrov/pilot/internal/autopilot"
+	"github.com/qf-studio/pilot/internal/autopilot"
 )
 
 // mockMetricsSource implements MetricsSource for testing.

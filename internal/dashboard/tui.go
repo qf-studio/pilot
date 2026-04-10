@@ -14,9 +14,9 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/alekspetrov/pilot/internal/autopilot"
-	"github.com/alekspetrov/pilot/internal/banner"
-	"github.com/alekspetrov/pilot/internal/memory"
+	"github.com/qf-studio/pilot/internal/autopilot"
+	"github.com/qf-studio/pilot/internal/banner"
+	"github.com/qf-studio/pilot/internal/memory"
 )
 
 // Panel width (all panels same width)

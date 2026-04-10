@@ -27,7 +27,7 @@ param telegramChatId string = ''
 param location string = resourceGroup().location
 
 @description('Container image to deploy')
-param containerImage string = 'ghcr.io/alekspetrov/pilot:latest'
+param containerImage string = 'ghcr.io/qf-studio/pilot:latest'
 
 // Container Apps Environment
 resource environment 'Microsoft.App/managedEnvironments@2023-11-02-preview' = {

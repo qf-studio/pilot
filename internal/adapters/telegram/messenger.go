@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strconv"
 
-	"github.com/alekspetrov/pilot/internal/comms"
+	"github.com/qf-studio/pilot/internal/comms"
 )
 
 // Compile-time check that TelegramMessenger implements comms.Messenger.

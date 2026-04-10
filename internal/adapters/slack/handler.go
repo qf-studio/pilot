@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/alekspetrov/pilot/internal/comms"
-	"github.com/alekspetrov/pilot/internal/logging"
+	"github.com/qf-studio/pilot/internal/comms"
+	"github.com/qf-studio/pilot/internal/logging"
 )
 
 // MemberResolver resolves a Slack user to a team member ID for RBAC (GH-786).

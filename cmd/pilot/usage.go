@@ -7,8 +7,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/alekspetrov/pilot/internal/config"
-	"github.com/alekspetrov/pilot/internal/memory"
+	"github.com/qf-studio/pilot/internal/config"
+	"github.com/qf-studio/pilot/internal/memory"
 	"github.com/spf13/cobra"
 )
 

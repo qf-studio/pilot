@@ -7,7 +7,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/alekspetrov/pilot/internal/logging"
+	"github.com/qf-studio/pilot/internal/logging"
 )
 
 // MergeWaitResult represents the outcome of waiting for a PR to merge

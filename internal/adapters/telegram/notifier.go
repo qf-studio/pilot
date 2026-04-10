@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/alekspetrov/pilot/internal/comms"
-	"github.com/alekspetrov/pilot/internal/transcription"
+	"github.com/qf-studio/pilot/internal/comms"
+	"github.com/qf-studio/pilot/internal/transcription"
 )
 
 // Config holds Telegram adapter configuration

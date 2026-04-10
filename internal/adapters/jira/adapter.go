@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/alekspetrov/pilot/internal/adapters"
+	"github.com/qf-studio/pilot/internal/adapters"
 )
 
 // AdapterName is the registry key for the Jira adapter.

@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/alekspetrov/pilot/internal/logging"
-	"github.com/alekspetrov/pilot/internal/memory"
+	"github.com/qf-studio/pilot/internal/logging"
+	"github.com/qf-studio/pilot/internal/memory"
 	"github.com/gorilla/websocket"
 )
 

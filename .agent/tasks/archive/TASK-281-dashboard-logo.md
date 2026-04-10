@@ -81,7 +81,7 @@ func NewModelWithAutopilot(version string, controller *autopilot.Controller) Mod
 ```go
 import (
     // ... existing imports ...
-    "github.com/alekspetrov/pilot/internal/banner"
+    "github.com/qf-studio/pilot/internal/banner"
 )
 ```
 

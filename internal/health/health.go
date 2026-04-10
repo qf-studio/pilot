@@ -14,7 +14,7 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/alekspetrov/pilot/internal/config"
+	"github.com/qf-studio/pilot/internal/config"
 )
 
 // Status represents feature or dependency status

@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/alekspetrov/pilot/internal/webhooks"
+	"github.com/qf-studio/pilot/internal/webhooks"
 )
 
 // executeDecomposedTask runs subtasks sequentially and aggregates results (GH-218).

@@ -3,7 +3,7 @@ package briefs
 import (
 	"time"
 
-	"github.com/alekspetrov/pilot/internal/memory"
+	"github.com/qf-studio/pilot/internal/memory"
 )
 
 // Generator creates daily briefs from execution data

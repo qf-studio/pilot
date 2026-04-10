@@ -10,7 +10,7 @@ app = "pilot"
 primary_region = "iad"
 
 [build]
-image = "ghcr.io/alekspetrov/pilot:latest"
+image = "ghcr.io/qf-studio/pilot:latest"
 
 [env]
 PILOT_DATA_DIR = "/data"

@@ -105,7 +105,7 @@ Never use realistic API key patterns in test code. GitHub push protection blocks
 token := "xoxb-123456789012-1234567890123-abcdefghij"
 
 // Good — use test utilities
-import "github.com/alekspetrov/pilot/internal/testutil"
+import "github.com/qf-studio/pilot/internal/testutil"
 token := testutil.FakeSlackBotToken
 ```
 

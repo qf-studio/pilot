@@ -5,10 +5,10 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/alekspetrov/pilot/internal/adapters/slack"
-	"github.com/alekspetrov/pilot/internal/adapters/telegram"
-	"github.com/alekspetrov/pilot/internal/config"
-	"github.com/alekspetrov/pilot/internal/transcription"
+	"github.com/qf-studio/pilot/internal/adapters/slack"
+	"github.com/qf-studio/pilot/internal/adapters/telegram"
+	"github.com/qf-studio/pilot/internal/config"
+	"github.com/qf-studio/pilot/internal/transcription"
 )
 
 // ---------------------------------------------------------------------------

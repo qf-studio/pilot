@@ -1,4 +1,4 @@
-module github.com/alekspetrov/pilot/cloud
+module github.com/qf-studio/pilot/cloud
 
 go 1.22.0
 

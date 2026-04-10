@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/alekspetrov/pilot/internal/testutil"
+	"github.com/qf-studio/pilot/internal/testutil"
 )
 
 func TestManager_Dispatch_SingleEndpoint(t *testing.T) {

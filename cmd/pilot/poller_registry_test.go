@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/alekspetrov/pilot/internal/config"
+	"github.com/qf-studio/pilot/internal/config"
 )
 
 func TestStartAdapterPollers_OnlyStartsEnabled(t *testing.T) {
