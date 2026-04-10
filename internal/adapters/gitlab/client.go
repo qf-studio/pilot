@@ -234,6 +234,22 @@ func (c *Client) CreateMergeRequest(ctx context.Context, input *MergeRequestInpu
 	return &mr, nil
 }
 
+// CreatePR implements the executor.PRCreator interface.
+// It creates a GitLab merge request and returns the web URL.
+func (c *Client) CreatePR(ctx context.Context, sourceBranch, targetBranch, title, body string) (string, error) {
+	mr, err := c.CreateMergeRequest(ctx, &MergeRequestInput{
+		Title:              title,
+		Description:        body,
+		SourceBranch:       sourceBranch,
+		TargetBranch:       targetBranch,
+		RemoveSourceBranch: true,
+	})
+	if err != nil {
+		return "", fmt.Errorf("GitLab MR creation failed: %w", err)
+	}
+	return mr.WebURL, nil
+}
+
 // GetMergeRequest fetches a merge request by IID
 func (c *Client) GetMergeRequest(ctx context.Context, iid int) (*MergeRequest, error) {
 	path := fmt.Sprintf("/api/v4/projects/%s/merge_requests/%d", c.projectID, iid)

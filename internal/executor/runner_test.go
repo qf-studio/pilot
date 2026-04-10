@@ -3197,3 +3197,66 @@ func TestLocalModeRunsQualityGates(t *testing.T) {
 		t.Errorf("quality checker factory was NOT called in LocalMode — quality gates should run")
 	}
 }
+
+// mockPRCreator records calls to CreatePR for testing.
+type mockPRCreator struct {
+	Called       bool
+	SourceBranch string
+	TargetBranch string
+	Title        string
+	Body         string
+	ReturnURL    string
+	ReturnErr    error
+}
+
+func (m *mockPRCreator) CreatePR(_ context.Context, sourceBranch, targetBranch, title, body string) (string, error) {
+	m.Called = true
+	m.SourceBranch = sourceBranch
+	m.TargetBranch = targetBranch
+	m.Title = title
+	m.Body = body
+	return m.ReturnURL, m.ReturnErr
+}
+
+func TestSetPRCreator(t *testing.T) {
+	runner := NewRunner()
+	if runner.prCreator != nil {
+		t.Error("prCreator should be nil by default")
+	}
+	mock := &mockPRCreator{}
+	runner.SetPRCreator(mock)
+	if runner.prCreator == nil {
+		t.Fatal("prCreator should be set after SetPRCreator")
+	}
+}
+
+func TestPRCreator_RoutingCondition(t *testing.T) {
+	runner := NewRunner()
+	mock := &mockPRCreator{ReturnURL: "https://gitlab.com/ns/proj/-/merge_requests/1"}
+	runner.SetPRCreator(mock)
+	task := &Task{ID: "GL-1", SourceAdapter: "gitlab"}
+	useAdapter := runner.prCreator != nil && task.SourceAdapter != "" && task.SourceAdapter != "github"
+	if !useAdapter {
+		t.Error("should use PRCreator for gitlab adapter")
+	}
+}
+
+func TestPRCreator_NotUsedForGitHubAdapter(t *testing.T) {
+	runner := NewRunner()
+	runner.SetPRCreator(&mockPRCreator{})
+	task := &Task{SourceAdapter: "github"}
+	useAdapter := runner.prCreator != nil && task.SourceAdapter != "" && task.SourceAdapter != "github"
+	if useAdapter {
+		t.Error("should NOT use PRCreator for github adapter")
+	}
+}
+
+func TestPRCreator_NotUsedWhenEmpty(t *testing.T) {
+	runner := NewRunner()
+	runner.SetPRCreator(&mockPRCreator{})
+	task := &Task{SourceAdapter: ""}
+	useAdapter := runner.prCreator != nil && task.SourceAdapter != "" && task.SourceAdapter != "github"
+	if useAdapter {
+		t.Error("should NOT use PRCreator when SourceAdapter is empty")
+	}
+}

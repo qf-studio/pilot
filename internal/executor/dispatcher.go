@@ -257,16 +257,18 @@ func (d *Dispatcher) queueDecomposedTask(ctx context.Context, parent *Task, resu
 
 	// Save parent as "decomposed" status
 	parentExec := &memory.Execution{
-		ID:              parentExecID,
-		TaskID:          parent.ID,
-		ProjectPath:     parent.ProjectPath,
-		Status:          "decomposed",
-		TaskTitle:       parent.Title,
-		TaskDescription: parent.Description,
-		TaskBranch:      parent.Branch,
-		TaskBaseBranch:  parent.BaseBranch,
-		TaskCreatePR:    parent.CreatePR,
-		TaskVerbose:     parent.Verbose,
+		ID:                parentExecID,
+		TaskID:            parent.ID,
+		ProjectPath:       parent.ProjectPath,
+		Status:            "decomposed",
+		TaskTitle:         parent.Title,
+		TaskDescription:   parent.Description,
+		TaskBranch:        parent.Branch,
+		TaskBaseBranch:    parent.BaseBranch,
+		TaskCreatePR:      parent.CreatePR,
+		TaskVerbose:       parent.Verbose,
+		TaskSourceAdapter: parent.SourceAdapter,
+		TaskSourceIssueID: parent.SourceIssueID,
 	}
 
 	if err := d.store.SaveExecution(parentExec); err != nil {
@@ -312,16 +314,18 @@ func (d *Dispatcher) queueSingleTask(ctx context.Context, task *Task) (string, e
 
 	// Save to SQLite with status='queued' and full task details
 	exec := &memory.Execution{
-		ID:              execID,
-		TaskID:          task.ID,
-		ProjectPath:     task.ProjectPath,
-		Status:          "queued",
-		TaskTitle:       task.Title,
-		TaskDescription: task.Description,
-		TaskBranch:      task.Branch,
-		TaskBaseBranch:  task.BaseBranch,
-		TaskCreatePR:    task.CreatePR,
-		TaskVerbose:     task.Verbose,
+		ID:                execID,
+		TaskID:            task.ID,
+		ProjectPath:       task.ProjectPath,
+		Status:            "queued",
+		TaskTitle:         task.Title,
+		TaskDescription:   task.Description,
+		TaskBranch:        task.Branch,
+		TaskBaseBranch:    task.BaseBranch,
+		TaskCreatePR:      task.CreatePR,
+		TaskVerbose:       task.Verbose,
+		TaskSourceAdapter: task.SourceAdapter,
+		TaskSourceIssueID: task.SourceIssueID,
 	}
 
 	if err := d.store.SaveExecution(exec); err != nil {
@@ -561,14 +565,16 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 
 		// Build task from execution record (full details stored when queued)
 		task := &Task{
-			ID:          exec.TaskID,
-			Title:       exec.TaskTitle,
-			Description: exec.TaskDescription,
-			ProjectPath: exec.ProjectPath,
-			Branch:      exec.TaskBranch,
-			BaseBranch:  exec.TaskBaseBranch,
-			CreatePR:    exec.TaskCreatePR,
-			Verbose:     exec.TaskVerbose,
+			ID:            exec.TaskID,
+			Title:         exec.TaskTitle,
+			Description:   exec.TaskDescription,
+			ProjectPath:   exec.ProjectPath,
+			Branch:        exec.TaskBranch,
+			BaseBranch:    exec.TaskBaseBranch,
+			CreatePR:      exec.TaskCreatePR,
+			Verbose:       exec.TaskVerbose,
+			SourceAdapter: exec.TaskSourceAdapter,
+			SourceIssueID: exec.TaskSourceIssueID,
 		}
 
 		// Execute (blocking)

@@ -153,6 +153,8 @@ func (s *Store) migrate() error {
 		`ALTER TABLE executions ADD COLUMN task_base_branch TEXT`,
 		`ALTER TABLE executions ADD COLUMN task_create_pr BOOLEAN DEFAULT FALSE`,
 		`ALTER TABLE executions ADD COLUMN task_verbose BOOLEAN DEFAULT FALSE`,
+		`ALTER TABLE executions ADD COLUMN task_source_adapter TEXT DEFAULT ''`,
+		`ALTER TABLE executions ADD COLUMN task_source_issue_id TEXT DEFAULT ''`,
 		`CREATE INDEX IF NOT EXISTS idx_executions_status ON executions(status)`,
 		`CREATE INDEX IF NOT EXISTS idx_patterns_project ON patterns(project_path)`,
 		// Cross-project pattern indexes
@@ -378,8 +380,10 @@ type Execution struct {
 	TaskDescription string
 	TaskBranch      string
 	TaskBaseBranch  string
-	TaskCreatePR    bool
-	TaskVerbose     bool
+	TaskCreatePR      bool
+	TaskVerbose       bool
+	TaskSourceAdapter string // Source adapter (e.g., "github", "gitlab", "linear")
+	TaskSourceIssueID string // Issue ID in the source adapter
 }
 
 // SaveExecution saves an execution record to the database.
@@ -389,11 +393,13 @@ func (s *Store) SaveExecution(exec *Execution) error {
 		_, err := s.db.Exec(`
 			INSERT INTO executions (id, task_id, project_path, status, output, error, duration_ms, pr_url, commit_sha, completed_at,
 				tokens_input, tokens_output, tokens_total, estimated_cost_usd, files_changed, lines_added, lines_removed, model_name,
-				task_title, task_description, task_branch, task_base_branch, task_create_pr, task_verbose)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				task_title, task_description, task_branch, task_base_branch, task_create_pr, task_verbose,
+				task_source_adapter, task_source_issue_id)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`, exec.ID, exec.TaskID, exec.ProjectPath, exec.Status, exec.Output, exec.Error, exec.DurationMs, exec.PRUrl, exec.CommitSHA, exec.CompletedAt,
 			exec.TokensInput, exec.TokensOutput, exec.TokensTotal, exec.EstimatedCostUSD, exec.FilesChanged, exec.LinesAdded, exec.LinesRemoved, exec.ModelName,
-			exec.TaskTitle, exec.TaskDescription, exec.TaskBranch, exec.TaskBaseBranch, exec.TaskCreatePR, exec.TaskVerbose)
+			exec.TaskTitle, exec.TaskDescription, exec.TaskBranch, exec.TaskBaseBranch, exec.TaskCreatePR, exec.TaskVerbose,
+			exec.TaskSourceAdapter, exec.TaskSourceIssueID)
 		return err
 	})
 }
@@ -407,7 +413,8 @@ func (s *Store) GetExecution(id string) (*Execution, error) {
 			COALESCE(estimated_cost_usd, 0), COALESCE(files_changed, 0), COALESCE(lines_added, 0),
 			COALESCE(lines_removed, 0), COALESCE(model_name, ''),
 			COALESCE(task_title, ''), COALESCE(task_description, ''), COALESCE(task_branch, ''),
-			COALESCE(task_base_branch, ''), COALESCE(task_create_pr, 0), COALESCE(task_verbose, 0)
+			COALESCE(task_base_branch, ''), COALESCE(task_create_pr, 0), COALESCE(task_verbose, 0),
+			COALESCE(task_source_adapter, ''), COALESCE(task_source_issue_id, '')
 		FROM executions WHERE id = ?
 	`, id)
 
@@ -415,7 +422,8 @@ func (s *Store) GetExecution(id string) (*Execution, error) {
 	var completedAt sql.NullTime
 	err := row.Scan(&exec.ID, &exec.TaskID, &exec.ProjectPath, &exec.Status, &exec.Output, &exec.Error, &exec.DurationMs, &exec.PRUrl, &exec.CommitSHA, &exec.CreatedAt, &completedAt,
 		&exec.TokensInput, &exec.TokensOutput, &exec.TokensTotal, &exec.EstimatedCostUSD, &exec.FilesChanged, &exec.LinesAdded, &exec.LinesRemoved, &exec.ModelName,
-		&exec.TaskTitle, &exec.TaskDescription, &exec.TaskBranch, &exec.TaskBaseBranch, &exec.TaskCreatePR, &exec.TaskVerbose)
+		&exec.TaskTitle, &exec.TaskDescription, &exec.TaskBranch, &exec.TaskBaseBranch, &exec.TaskCreatePR, &exec.TaskVerbose,
+		&exec.TaskSourceAdapter, &exec.TaskSourceIssueID)
 	if err != nil {
 		return nil, err
 	}
@@ -812,7 +820,8 @@ func (s *Store) GetQueuedTasksForProject(projectPath string, limit int) ([]*Exec
 	rows, err := s.db.Query(`
 		SELECT id, task_id, project_path, status, output, error, duration_ms, pr_url, commit_sha, created_at, completed_at,
 			COALESCE(task_title, ''), COALESCE(task_description, ''), COALESCE(task_branch, ''),
-			COALESCE(task_base_branch, ''), COALESCE(task_create_pr, 0), COALESCE(task_verbose, 0)
+			COALESCE(task_base_branch, ''), COALESCE(task_create_pr, 0), COALESCE(task_verbose, 0),
+			COALESCE(task_source_adapter, ''), COALESCE(task_source_issue_id, '')
 		FROM executions
 		WHERE (status = 'queued' OR status = 'pending') AND project_path = ?
 		ORDER BY created_at ASC
@@ -828,7 +837,8 @@ func (s *Store) GetQueuedTasksForProject(projectPath string, limit int) ([]*Exec
 		var exec Execution
 		var completedAt sql.NullTime
 		if err := rows.Scan(&exec.ID, &exec.TaskID, &exec.ProjectPath, &exec.Status, &exec.Output, &exec.Error, &exec.DurationMs, &exec.PRUrl, &exec.CommitSHA, &exec.CreatedAt, &completedAt,
-			&exec.TaskTitle, &exec.TaskDescription, &exec.TaskBranch, &exec.TaskBaseBranch, &exec.TaskCreatePR, &exec.TaskVerbose); err != nil {
+			&exec.TaskTitle, &exec.TaskDescription, &exec.TaskBranch, &exec.TaskBaseBranch, &exec.TaskCreatePR, &exec.TaskVerbose,
+			&exec.TaskSourceAdapter, &exec.TaskSourceIssueID); err != nil {
 			return nil, err
 		}
 		if completedAt.Valid {

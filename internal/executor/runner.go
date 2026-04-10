@@ -281,6 +281,14 @@ type SubIssueCreator interface {
 	CreateIssue(ctx context.Context, parentID, title, body string, labels []string) (identifier string, url string, err error)
 }
 
+// PRCreator is an interface for creating pull/merge requests in external forges.
+// Adapters like GitLab, Azure DevOps, etc. can implement this interface so the runner
+// creates MRs via their native API instead of the gh CLI.
+type PRCreator interface {
+	// CreatePR creates a pull/merge request and returns its URL.
+	CreatePR(ctx context.Context, sourceBranch, targetBranch, title, body string) (url string, err error)
+}
+
 // SubIssueLinker links a child issue to a parent issue using GitHub's native sub-issue API (GH-2211).
 // *github.Client satisfies this interface via its LinkSubIssue method.
 type SubIssueLinker interface {
@@ -335,6 +343,7 @@ type Runner struct {
 	worktreeManager       *WorktreeManager // Optional worktree manager with pool support
 	// GH-1471: SubIssueCreator for non-GitHub adapters
 	subIssueCreator       SubIssueCreator // Optional creator for sub-issues in external trackers
+	prCreator             PRCreator       // Optional creator for MRs/PRs in external forges
 	// GH-2211: SubIssueLinker for native GitHub sub-issue API linking
 	subIssueLinker        SubIssueLinker // Optional linker for native GitHub parent→child wiring
 	// GH-1599: Execution log store for milestone entries
@@ -637,6 +646,11 @@ func (r *Runner) HasSubIssueMergeWait() bool { return r.subIssueMergeWait != nil
 // via this interface instead of using the gh CLI.
 func (r *Runner) SetSubIssueCreator(creator SubIssueCreator) {
 	r.subIssueCreator = creator
+}
+
+// SetPRCreator sets the creator for pull/merge requests in external forges.
+func (r *Runner) SetPRCreator(creator PRCreator) {
+	r.prCreator = creator
 }
 
 // SetSubIssueLinker sets the linker for native GitHub sub-issue linking (GH-2211).
@@ -2600,18 +2614,38 @@ The previous execution completed but made no code changes. This task requires ac
 				}
 			}
 
-			// Generate PR body with GitHub auto-close keyword
-			issueNum := strings.TrimPrefix(task.ID, "GH-")
-			prBody := fmt.Sprintf("## Summary\n\nAutomated PR created by Pilot for task %s.\n\nCloses #%s\n\n## Changes\n\n%s", task.ID, issueNum, task.Description)
-
-			// Create PR
 			prTitle := fmt.Sprintf("%s: %s", task.ID, task.Title)
-			prURL, err := git.CreatePR(ctx, prTitle, prBody, baseBranch)
-			if err != nil {
-				result.Success = false
-				result.Error = fmt.Sprintf("PR creation failed: %v", err)
-				r.reportProgress(task.ID, "PR Failed", 100, result.Error)
-				return result, nil
+
+			// Route PR/MR creation through adapter-specific creator when available
+			var prURL string
+			if r.prCreator != nil && task.SourceAdapter != "" && task.SourceAdapter != "github" {
+				// Non-GitHub adapter: use PRCreator (e.g., GitLab MR API)
+				// Include "Closes #N" keyword so GitLab auto-closes the source issue on merge
+				closeKeyword := ""
+				if task.SourceIssueID != "" {
+					closeKeyword = fmt.Sprintf("\n\nCloses #%s", task.SourceIssueID)
+				}
+				prBody := fmt.Sprintf("## Summary\n\nAutomated MR created by Pilot for task %s.%s\n\n## Changes\n\n%s", task.ID, closeKeyword, task.Description)
+				var createErr error
+				prURL, createErr = r.prCreator.CreatePR(ctx, task.Branch, baseBranch, prTitle, prBody)
+				if createErr != nil {
+					result.Success = false
+					result.Error = fmt.Sprintf("MR creation failed: %v", createErr)
+					r.reportProgress(task.ID, "MR Failed", 100, result.Error)
+					return result, nil
+				}
+			} else {
+				// GitHub: use gh CLI with auto-close keyword
+				issueNum := strings.TrimPrefix(task.ID, "GH-")
+				prBody := fmt.Sprintf("## Summary\n\nAutomated PR created by Pilot for task %s.\n\nCloses #%s\n\n## Changes\n\n%s", task.ID, issueNum, task.Description)
+				var createErr error
+				prURL, createErr = git.CreatePR(ctx, prTitle, prBody, baseBranch)
+				if createErr != nil {
+					result.Success = false
+					result.Error = fmt.Sprintf("PR creation failed: %v", createErr)
+					r.reportProgress(task.ID, "PR Failed", 100, result.Error)
+					return result, nil
+				}
 			}
 
 			result.PRUrl = prURL

@@ -961,13 +961,19 @@ func handleGitLabIssueWithResult(ctx context.Context, cfg *config.Config, client
 	taskDesc := fmt.Sprintf("GitLab Issue %s: %s\n\n%s", taskID, issue.Title, issue.Description)
 
 	task := &executor.Task{
-		ID:          taskID,
-		Title:       issue.Title,
-		Description: taskDesc,
-		ProjectPath: projectPath,
-		Branch:      branchName,
-		CreatePR:    true,
+		ID:            taskID,
+		Title:         issue.Title,
+		Description:   taskDesc,
+		ProjectPath:   projectPath,
+		Branch:        branchName,
+		CreatePR:      true,
+		SourceAdapter: "gitlab",
+		SourceIssueID: fmt.Sprintf("%d", issue.IID),
 	}
+
+	// Wire GitLab client as PRCreator so the runner creates MRs via
+	// the GitLab API instead of the gh CLI.
+	runner.SetPRCreator(client)
 
 	deps := HandlerDeps{
 		Cfg:          cfg,

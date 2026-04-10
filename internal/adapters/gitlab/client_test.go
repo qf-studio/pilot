@@ -369,6 +369,47 @@ func TestCreateMergeRequest(t *testing.T) {
 	}
 }
 
+func TestCreatePR_PRCreatorInterface(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("expected POST, got %s", r.Method)
+		}
+		var body MergeRequestInput
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("failed to decode body: %v", err)
+		}
+		if body.SourceBranch != "pilot/GL-1" {
+			t.Errorf("source_branch = %q, want %q", body.SourceBranch, "pilot/GL-1")
+		}
+		if body.TargetBranch != "main" {
+			t.Errorf("target_branch = %q, want %q", body.TargetBranch, "main")
+		}
+		if !body.RemoveSourceBranch {
+			t.Error("remove_source_branch should be true")
+		}
+		w.WriteHeader(http.StatusCreated)
+		result := MergeRequest{
+			IID:          7,
+			Title:        body.Title,
+			SourceBranch: body.SourceBranch,
+			TargetBranch: body.TargetBranch,
+			State:        MRStateOpened,
+			WebURL:       "https://gitlab.com/ns/proj/-/merge_requests/7",
+		}
+		_ = json.NewEncoder(w).Encode(result)
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitLabToken, "ns/proj", server.URL)
+	url, err := client.CreatePR(context.Background(), "pilot/GL-1", "main", "GL-1: Fix bug", "## Summary\n\nFix it")
+	if err != nil {
+		t.Fatalf("CreatePR() error = %v", err)
+	}
+	if url != "https://gitlab.com/ns/proj/-/merge_requests/7" {
+		t.Errorf("CreatePR() url = %q, want gitlab MR URL", url)
+	}
+}
+
 func TestGetMergeRequest(t *testing.T) {
 	tests := []struct {
 		name       string
