@@ -342,6 +342,7 @@ type Runner struct {
 	// GH-1811: Learning system (self-improvement)
 	learningLoop         LearningRecorder              // Optional learning loop for pattern extraction + feedback
 	patternContext       *PatternContext                // Optional pattern context for prompt injection
+	dryRun               bool                          // Skip real gh CLI calls (for testing)
 	selfReviewExtractor  SelfReviewExtractor            // Optional extractor for self-review pattern learning (GH-1955)
 	outcomeTracker       *memory.ModelOutcomeTracker    // Optional outcome tracker for model escalation (GH-1991)
 	// GH-2015: Knowledge graph integration for execution learnings

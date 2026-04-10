@@ -593,6 +593,10 @@ func (r *Runner) createSubIssuesViaGitHub(ctx context.Context, plan *EpicPlan, e
 
 // UpdateIssueProgress adds a progress comment to an issue.
 func (r *Runner) UpdateIssueProgress(ctx context.Context, projectPath string, issueID string, message string) error {
+	if r.dryRun {
+		r.log.Info("dryRun: skipping UpdateIssueProgress", "issue", issueID)
+		return nil
+	}
 	args := []string{"issue", "comment", issueID, "--body", message}
 	cmd := exec.CommandContext(ctx, "gh", args...)
 	if projectPath != "" {
@@ -609,7 +613,27 @@ func (r *Runner) UpdateIssueProgress(ctx context.Context, projectPath string, is
 }
 
 // CloseIssueWithComment closes an issue with a completion comment.
+// Includes an idempotency guard: if the issue is already CLOSED, it short-circuits.
 func (r *Runner) CloseIssueWithComment(ctx context.Context, projectPath string, issueID string, comment string) error {
+	if r.dryRun {
+		r.log.Info("dryRun: skipping CloseIssueWithComment", "issue", issueID)
+		return nil
+	}
+
+	// Idempotency guard: check if issue is already closed
+	checkArgs := []string{"issue", "view", issueID, "--json", "state", "--jq", ".state"}
+	checkCmd := exec.CommandContext(ctx, "gh", checkArgs...)
+	if projectPath != "" {
+		checkCmd.Dir = projectPath
+	}
+	if out, err := checkCmd.Output(); err == nil {
+		state := strings.TrimSpace(string(out))
+		if state == "CLOSED" {
+			r.log.Info("issue already closed, skipping", "issue", issueID)
+			return nil
+		}
+	}
+
 	args := []string{"issue", "close", issueID, "--comment", comment}
 	cmd := exec.CommandContext(ctx, "gh", args...)
 	if projectPath != "" {
