@@ -346,6 +346,8 @@ type Runner struct {
 	outcomeTracker       *memory.ModelOutcomeTracker    // Optional outcome tracker for model escalation (GH-1991)
 	// GH-2015: Knowledge graph integration for execution learnings
 	knowledgeGraph       KnowledgeGraphRecorder         // Optional knowledge graph for cross-project learnings
+	// GH-2256: Dry-run mode to suppress real gh CLI calls (issue close/comment)
+	dryRun               bool
 }
 
 // NewRunner creates a new Runner instance with Claude Code backend by default.

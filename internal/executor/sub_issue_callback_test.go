@@ -35,6 +35,7 @@ func newTestRunnerWithExecFunc(execFn func(ctx context.Context, task *Task) (*Ex
 		log:               slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})),
 		modelRouter:       NewModelRouter(nil, nil),
 		executeFunc:       execFn,
+		dryRun:            true,
 	}
 }
 
