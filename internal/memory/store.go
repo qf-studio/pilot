@@ -870,6 +870,20 @@ func (s *Store) UpdateExecutionStatus(id, status string, errorMsg ...string) err
 	})
 }
 
+// UpdateExecutionStatusByTaskID updates the status of the most recent execution
+// for a given task ID. Used by autopilot to mark failed executions as completed
+// when the PR is merged externally.
+func (s *Store) UpdateExecutionStatusByTaskID(taskID, status string) error {
+	return s.withRetry("UpdateExecutionStatusByTaskID", func() error {
+		_, err := s.db.Exec(`
+			UPDATE executions
+			SET status = ?, completed_at = CURRENT_TIMESTAMP
+			WHERE task_id = ? AND status = 'failed'
+		`, status, taskID)
+		return err
+	})
+}
+
 // UpdateExecutionResult updates the result fields of an execution record.
 // Called when task execution completes successfully with PR/commit info.
 func (s *Store) UpdateExecutionResult(id string, prURL, commitSHA string, durationMs int64) error {

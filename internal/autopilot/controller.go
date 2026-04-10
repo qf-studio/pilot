@@ -65,6 +65,9 @@ type TaskMonitor interface {
 // EvalStore persists eval tasks extracted from merged PRs.
 type EvalStore interface {
 	SaveEvalTask(task *memory.EvalTask) error
+	// UpdateExecutionStatusByTaskID updates execution status by task ID.
+	// Used to mark failed executions as completed when the PR is merged.
+	UpdateExecutionStatusByTaskID(taskID, status string) error
 }
 
 // ControllerOption is a functional option for Controller configuration.
@@ -985,6 +988,15 @@ func (c *Controller) handleMerging(ctx context.Context, prState *PRState) error 
 			taskID := fmt.Sprintf("GH-%d", prState.IssueNumber)
 			c.monitor.Complete(taskID, prState.PRURL)
 			c.log.Debug("updated monitor state to completed", "task", taskID, "pr", prState.PRNumber)
+		}
+
+		// GH-2279: Update execution record from "failed" to "completed" when PR is merged
+		if c.evalStore != nil {
+			taskID := fmt.Sprintf("GH-%d", prState.IssueNumber)
+			if err := c.evalStore.UpdateExecutionStatusByTaskID(taskID, "completed"); err != nil {
+				c.log.Warn("failed to update execution status on merge",
+					"task_id", taskID, "error", err)
+			}
 		}
 
 		// GH-1870: Sync board card to "Done" column on merge
