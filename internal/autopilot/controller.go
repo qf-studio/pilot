@@ -1749,9 +1749,10 @@ func (c *Controller) ScanExistingPRs(ctx context.Context) error {
 	return nil
 }
 
-// ScanRecentlyMergedPRs scans for Pilot PRs that were merged while Pilot was offline.
-// This catches PRs that need release triggering but were merged externally.
-// Called on startup after ScanExistingPRs.
+// ScanRecentlyMergedPRs scans for Pilot PRs that were merged externally.
+// This catches PRs that need release triggering but were merged outside of
+// autopilot (e.g. via `gh pr merge` or the GitHub UI).
+// Called on startup and periodically from the Run loop.
 func (c *Controller) ScanRecentlyMergedPRs(ctx context.Context) error {
 	// Skip if auto-release is not enabled
 	if !c.shouldTriggerRelease() {
@@ -1818,6 +1819,14 @@ func (c *Controller) ScanRecentlyMergedPRs(ctx context.Context) error {
 			continue
 		}
 		if mergedAt.Before(cutoff) {
+			continue
+		}
+
+		// Skip if already tracked in activePRs (avoid duplicate processing)
+		c.mu.RLock()
+		_, alreadyTracked := c.activePRs[pr.Number]
+		c.mu.RUnlock()
+		if alreadyTracked {
 			continue
 		}
 
@@ -1892,6 +1901,15 @@ func (c *Controller) Run(ctx context.Context) error {
 	idlePollInterval := 60 * time.Second
 	currentInterval := basePollInterval
 
+	// GH-2251: Periodic scan for externally-merged PRs.
+	// Use half the scan window as the interval so merges are detected well within the window.
+	mergedScanInterval := c.config.MergedPRScanWindow / 2
+	if mergedScanInterval < 5*time.Minute {
+		mergedScanInterval = 5 * time.Minute
+	}
+	mergedScanTicker := time.NewTicker(mergedScanInterval)
+	defer mergedScanTicker.Stop()
+
 	ticker := time.NewTicker(currentInterval)
 	defer ticker.Stop()
 
@@ -1900,6 +1918,12 @@ func (c *Controller) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			c.log.Info("autopilot controller stopping")
 			return ctx.Err()
+		case <-mergedScanTicker.C:
+			// GH-2251: Periodically scan for externally-merged PRs that
+			// were never tracked by autopilot (e.g. merged via gh pr merge).
+			if err := c.ScanRecentlyMergedPRs(ctx); err != nil {
+				c.log.Warn("periodic merged PR scan failed", "error", err)
+			}
 		case <-ticker.C:
 			c.processAllPRs(ctx)
 
