@@ -185,7 +185,17 @@ def main():
         action="store_true",
         help="Upload manifest to S3 after generation",
     )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite existing manifest file (default when called from run-aws-bench.sh)",
+    )
     args = parser.parse_args()
+
+    output_path = Path(args.output)
+    if output_path.exists() and not args.force:
+        print(f"Manifest already exists at {output_path}. Use --force to overwrite.")
+        return 0
 
     repo_path = Path(args.repo_path)
 

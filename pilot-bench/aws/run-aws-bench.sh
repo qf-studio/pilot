@@ -61,16 +61,22 @@ if ! python3 -c "import boto3" 2>/dev/null; then
     exit 1
 fi
 
-# Generate task manifest if missing
+# Always regenerate task manifest to avoid stale data
 MANIFEST="tasks-manifest.json"
-if [ ! -f "$MANIFEST" ]; then
-    echo "Generating task manifest..."
-    python3 extract_tasks.py --output "$MANIFEST"
-fi
+echo "Generating task manifest..."
+python3 extract_tasks.py --output "$MANIFEST" --force
 
 if [ "$EXTRACT_ONLY" = true ]; then
     echo "Manifest generated. Exiting (--extract-only)."
     exit 0
+fi
+
+# Validate manifest task count
+TASK_COUNT=$(python3 -c "import json; print(len(json.load(open('$MANIFEST')).get('tasks',[])))")
+echo "Manifest: $TASK_COUNT tasks"
+if [ "$TASK_COUNT" -lt 80 ]; then
+    echo "ERROR: Manifest has only $TASK_COUNT tasks (expected ~89 for TB 2.0). Aborting."
+    exit 1
 fi
 
 # Check pilot binary
