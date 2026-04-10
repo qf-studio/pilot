@@ -63,10 +63,14 @@ detect_platform() {
 # Get latest version from GitHub
 get_latest_version() {
     info "Fetching latest version..."
-    VERSION=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
+    if command -v jq &>/dev/null; then
+        VERSION=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" | jq -r '.tag_name')
+    else
+        VERSION=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" | grep '"tag_name"' | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
+    fi
 
-    if [ -z "$VERSION" ]; then
-        VERSION="v0.1.0"  # Fallback
+    if [ -z "$VERSION" ] || [ "$VERSION" = "null" ]; then
+        VERSION="v2.91.0"
         warn "Could not fetch latest version, using $VERSION"
     fi
 
