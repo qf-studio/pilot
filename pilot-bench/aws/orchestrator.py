@@ -16,6 +16,7 @@ Usage:
 import argparse
 import json
 import logging
+import signal
 import sys
 import time
 from collections import deque
@@ -113,6 +114,17 @@ class AWSBenchOrchestrator:
             started_at=time.time(),
         )
 
+        # Register signal handlers for graceful shutdown
+        shutdown_requested = False
+
+        def _handle_signal(signum, frame):
+            nonlocal shutdown_requested
+            shutdown_requested = True
+            logger.warning(f"Signal {signum} received, shutting down gracefully...")
+
+        prev_sigterm = signal.signal(signal.SIGTERM, _handle_signal)
+        prev_sigint = signal.signal(signal.SIGINT, _handle_signal)
+
         try:
             # 1. Load task manifest
             manifest = self._load_manifest()
@@ -131,8 +143,8 @@ class AWSBenchOrchestrator:
 
             self._print_banner(bench, total_trials)
 
-            # 2. Upload assets to S3
-            self._upload_assets()
+            # 2. Upload assets to S3 (with retry)
+            self._upload_assets_with_retry()
 
             # 3. Scale up instances
             n_instances = min(self.max_parallel, total_trials)
@@ -161,8 +173,18 @@ class AWSBenchOrchestrator:
             # Initial dispatch — fill all idle instances
             self._dispatch_batch(work_queue)
 
-            # Poll loop
-            while self.ssm.active_count > 0 or work_queue:
+            # Poll loop with wall-clock deadline
+            max_wall_clock = 6 * 3600  # 6 hours max
+            run_deadline = time.time() + max_wall_clock
+
+            while (self.ssm.active_count > 0 or work_queue) and not shutdown_requested:
+                if time.time() >= run_deadline:
+                    logger.error(
+                        f"Wall-clock timeout after {max_wall_clock}s "
+                        f"with {self.ssm.active_count} active commands"
+                    )
+                    break
+
                 time.sleep(10)
 
                 # Check for completed commands
@@ -203,8 +225,8 @@ class AWSBenchOrchestrator:
                 # Dispatch more work to freed instances
                 self._dispatch_batch(work_queue)
 
-            # 6. Collect results from S3
-            self._collect_results()
+            if shutdown_requested:
+                logger.warning("Shutdown requested, stopping dispatch loop")
 
             # 7. Print summary
             self._print_summary(bench, total_trials)
@@ -221,7 +243,35 @@ class AWSBenchOrchestrator:
             except Exception as e:
                 logger.error(f"Scale-down failed: {e}")
 
+            # Always attempt to collect results (completed trials are in S3)
+            try:
+                self._collect_results()
+            except Exception as e:
+                logger.error(f"Failed to collect results: {e}")
+
+            # Restore previous signal handlers
+            signal.signal(signal.SIGTERM, prev_sigterm)
+            signal.signal(signal.SIGINT, prev_sigint)
+
         return bench
+
+    def _upload_assets_with_retry(self, max_attempts: int = 3) -> None:
+        """Upload assets with exponential backoff retry."""
+        for attempt in range(1, max_attempts + 1):
+            try:
+                self._upload_assets()
+                return
+            except Exception as e:
+                if attempt == max_attempts:
+                    raise RuntimeError(
+                        f"Asset upload failed after {max_attempts} attempts: {e}"
+                    ) from e
+                backoff = 2 ** (attempt - 1)  # 1s, 2s
+                logger.warning(
+                    f"Asset upload attempt {attempt}/{max_attempts} failed: {e}. "
+                    f"Retrying in {backoff}s..."
+                )
+                time.sleep(backoff)
 
     def _load_manifest(self) -> dict:
         """Download and parse task manifest from S3."""
