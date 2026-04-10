@@ -966,6 +966,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		prevLen := len(m.completedTasks)
 		m.completedTasks = msg.completedTasks
 		m.metricsCard = msg.metricsCard
+		m.loadMetricsHistory()
 		if len(m.completedTasks) != prevLen {
 			return m, tea.ClearScreen
 		}
