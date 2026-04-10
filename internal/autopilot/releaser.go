@@ -269,6 +269,59 @@ func (r *Releaser) CreateTag(ctx context.Context, prState *PRState, newVersion S
 	return tagName, nil
 }
 
+// CreateTagForRepo creates a lightweight git tag in the specified repository.
+// Used for cross-repo PRs where the tag should be created in the source repo,
+// not the default repo configured in the Releaser.
+func (r *Releaser) CreateTagForRepo(ctx context.Context, owner, repo string, prState *PRState, newVersion SemVer) (string, error) {
+	tagName := newVersion.String(r.config.TagPrefix)
+	sha := prState.HeadSHA
+
+	if err := r.ghClient.CreateGitTag(ctx, owner, repo, tagName, sha); err != nil {
+		return "", fmt.Errorf("failed to create tag %s: %w", tagName, err)
+	}
+
+	return tagName, nil
+}
+
+// GetCurrentVersionForRepo gets the current version from the specified repository.
+func (r *Releaser) GetCurrentVersionForRepo(ctx context.Context, owner, repo string) (SemVer, error) {
+	release, err := r.ghClient.GetLatestRelease(ctx, owner, repo)
+	if err != nil {
+		return SemVer{}, fmt.Errorf("failed to get latest release: %w", err)
+	}
+	if release != nil {
+		return ParseSemVer(release.TagName)
+	}
+
+	tags, err := r.ghClient.ListTags(ctx, owner, repo, 10)
+	if err != nil {
+		return SemVer{}, fmt.Errorf("failed to list tags: %w", err)
+	}
+
+	var versions []SemVer
+	for _, tag := range tags {
+		if v, err := ParseSemVer(tag.Name); err == nil {
+			versions = append(versions, v)
+		}
+	}
+
+	if len(versions) == 0 {
+		return SemVer{}, nil
+	}
+
+	sort.Slice(versions, func(i, j int) bool {
+		if versions[i].Major != versions[j].Major {
+			return versions[i].Major > versions[j].Major
+		}
+		if versions[i].Minor != versions[j].Minor {
+			return versions[i].Minor > versions[j].Minor
+		}
+		return versions[i].Patch > versions[j].Patch
+	})
+
+	return versions[0], nil
+}
+
 // ShouldRelease determines if a release should be created based on config and bump type.
 func (r *Releaser) ShouldRelease(bumpType BumpType) bool {
 	if !r.config.Enabled {

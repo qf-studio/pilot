@@ -1289,11 +1289,17 @@ func (c *Controller) handleReleasing(ctx context.Context, prState *PRState) erro
 		return nil
 	}
 
+	// Resolve the actual repo owner/name from the PR URL.
+	// Cross-repo PRs (e.g. auth-service) have a PRURL pointing to a different repo
+	// than c.owner/c.repo (the pilot repo). All release API calls must target the
+	// correct repo to avoid stuck-forever releasing state.
+	owner, repo := prState.RepoOwnerAndName(c.owner, c.repo)
+
 	// Race condition guard: Check if this commit already has a tag.
 	// When multiple PRs merge rapidly, each triggers handleReleasing but only
 	// the first should create a tag. Subsequent PRs will see their merge commit
 	// is already tagged (by an earlier release) and skip.
-	existingTag, err := c.ghClient.GetTagForSHA(ctx, c.owner, c.repo, prState.HeadSHA)
+	existingTag, err := c.ghClient.GetTagForSHA(ctx, owner, repo, prState.HeadSHA)
 	if err != nil {
 		c.log.Warn("failed to check existing tags", "error", err)
 		// Continue anyway - worst case we get a duplicate tag error
@@ -1307,15 +1313,15 @@ func (c *Controller) handleReleasing(ctx context.Context, prState *PRState) erro
 		return nil
 	}
 
-	// Get current version
-	currentVersion, err := c.releaser.GetCurrentVersion(ctx)
+	// Get current version from the target repo
+	currentVersion, err := c.releaser.GetCurrentVersionForRepo(ctx, owner, repo)
 	if err != nil {
 		c.log.Warn("failed to get current version, defaulting to 0.0.0", "error", err)
 		currentVersion = SemVer{}
 	}
 
 	// Get PR commits for bump detection
-	commits, err := c.ghClient.GetPRCommits(ctx, c.owner, c.repo, prState.PRNumber)
+	commits, err := c.ghClient.GetPRCommits(ctx, owner, repo, prState.PRNumber)
 	if err != nil {
 		return fmt.Errorf("failed to get PR commits: %w", err)
 	}
@@ -1342,13 +1348,13 @@ func (c *Controller) handleReleasing(ctx context.Context, prState *PRState) erro
 		"bump", bumpType,
 	)
 
-	// Create git tag only — GoReleaser CI handles the full release with binaries
-	tagName, err := c.releaser.CreateTag(ctx, prState, newVersion)
+	// Create git tag in the correct repo
+	tagName, err := c.releaser.CreateTagForRepo(ctx, owner, repo, prState, newVersion)
 	if err != nil {
 		return fmt.Errorf("failed to create tag: %w", err)
 	}
 
-	releaseURL := fmt.Sprintf("https://github.com/%s/%s/releases/tag/%s", c.owner, c.repo, tagName)
+	releaseURL := fmt.Sprintf("https://github.com/%s/%s/releases/tag/%s", owner, repo, tagName)
 	c.log.Info("tag created (GoReleaser will create release)",
 		"pr", prState.PRNumber,
 		"version", prState.ReleaseVersion,
@@ -1362,7 +1368,7 @@ func (c *Controller) handleReleasing(ctx context.Context, prState *PRState) erro
 		go func() {
 			enrichCtx, cancel := context.WithTimeout(context.Background(), releasePollTimeout+releaseSummaryTimeout)
 			defer cancel()
-			if err := c.releaseSummary.EnrichRelease(enrichCtx, c.owner, c.repo, tagName, commits); err != nil {
+			if err := c.releaseSummary.EnrichRelease(enrichCtx, owner, repo, tagName, commits); err != nil {
 				c.log.Warn("failed to enrich release notes", "tag", tagName, "error", err)
 			}
 		}()

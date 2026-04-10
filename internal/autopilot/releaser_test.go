@@ -517,6 +517,45 @@ func TestReleaser_CreateTag(t *testing.T) {
 	}
 }
 
+func TestReleaser_CreateTagForRepo(t *testing.T) {
+	var capturedPath string
+	var capturedBody map[string]interface{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedPath = r.URL.Path
+		if r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/git/refs") {
+			_ = json.NewDecoder(r.Body).Decode(&capturedBody)
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"ref":"refs/tags/v2.0.0","object":{"sha":"def456"}}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	client := github.NewClientWithBaseURL("test-token", server.URL)
+	config := &ReleaseConfig{Enabled: true, Trigger: "on_merge", TagPrefix: "v"}
+	r := NewReleaser(client, "default-owner", "default-repo", config)
+
+	prState := &PRState{PRNumber: 422, HeadSHA: "def456"}
+	newVersion := SemVer{Major: 2, Minor: 0, Patch: 0}
+
+	// Call with a different owner/repo than the releaser default
+	tagName, err := r.CreateTagForRepo(context.Background(), "qf-studio", "auth-service", prState, newVersion)
+	if err != nil {
+		t.Fatalf("CreateTagForRepo() error = %v", err)
+	}
+
+	if tagName != "v2.0.0" {
+		t.Errorf("CreateTagForRepo() = %q, want %q", tagName, "v2.0.0")
+	}
+
+	// Verify the API call targeted the correct repo, not the default
+	if capturedPath != "/repos/qf-studio/auth-service/git/refs" {
+		t.Errorf("API path = %q, want %q", capturedPath, "/repos/qf-studio/auth-service/git/refs")
+	}
+}
+
 func TestNewReleaser(t *testing.T) {
 	client := github.NewClient("test-token")
 	config := DefaultReleaseConfig()
