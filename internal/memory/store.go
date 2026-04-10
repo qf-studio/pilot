@@ -427,6 +427,20 @@ func (s *Store) GetExecution(id string) (*Execution, error) {
 	return &exec, nil
 }
 
+// HasCompletedExecution checks whether a completed execution exists for the given task and project.
+// It returns true if at least one execution with status "completed" exists.
+func (s *Store) HasCompletedExecution(taskID, projectPath string) (bool, error) {
+	var count int
+	err := s.db.QueryRow(`
+		SELECT COUNT(*) FROM executions
+		WHERE task_id = ? AND project_path = ? AND status = 'completed'
+	`, taskID, projectPath).Scan(&count)
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
 // GetRecentExecutions returns the most recent executions ordered by creation time.
 // The limit parameter specifies the maximum number of executions to return.
 func (s *Store) GetRecentExecutions(limit int) ([]*Execution, error) {
