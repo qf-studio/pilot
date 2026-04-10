@@ -385,6 +385,7 @@ type Model struct {
 	gitGraphState  *GitGraphState
 	gitGraphScroll int
 	gitGraphFocus  bool
+	dbSyncTick     int    // Counter for periodic DB re-sync (GH-2248)
 	projectPath        string // Working directory for git commands
 	defaultProjectPath string // Fallback project path from config (GH-2167)
 	gitProjectName     string // Current project name shown in git panel title (GH-2167)
@@ -438,6 +439,12 @@ type upgradeProgressMsg struct {
 type upgradeCompleteMsg struct {
 	Success bool
 	Error   string
+}
+
+// storeRefreshMsg carries refreshed state from SQLite (GH-2248).
+type storeRefreshMsg struct {
+	completedTasks []CompletedTask
+	metricsCard    MetricsCardData
 }
 
 // NewModel creates a new dashboard model
@@ -705,6 +712,65 @@ func tickCmd() tea.Cmd {
 	})
 }
 
+// storeRefreshCmd queries SQLite for current execution state (GH-2248).
+// Runs asynchronously so the TUI never blocks on DB I/O.
+func storeRefreshCmd(store *memory.Store) tea.Cmd {
+	return func() tea.Msg {
+		msg := storeRefreshMsg{}
+
+		executions, err := store.GetRecentExecutions(20)
+		if err != nil {
+			slog.Warn("store refresh: failed to load executions", slog.Any("error", err))
+			return msg
+		}
+		for i, exec := range executions {
+			if i >= 5 {
+				break
+			}
+			status := "success"
+			if exec.Status == "failed" {
+				status = "failed"
+			}
+			completedAt := exec.CreatedAt
+			if exec.CompletedAt != nil {
+				completedAt = *exec.CompletedAt
+			}
+			msg.completedTasks = append(msg.completedTasks, CompletedTask{
+				ID:          exec.TaskID,
+				Title:       exec.TaskTitle,
+				Status:      status,
+				Duration:    fmt.Sprintf("%dms", exec.DurationMs),
+				CompletedAt: completedAt,
+			})
+		}
+
+		lifetime, err := store.GetLifetimeTokens()
+		if err != nil {
+			slog.Warn("store refresh: failed to load lifetime tokens", slog.Any("error", err))
+		} else {
+			msg.metricsCard.TotalTokens = int(lifetime.TotalTokens)
+			msg.metricsCard.InputTokens = int(lifetime.InputTokens)
+			msg.metricsCard.OutputTokens = int(lifetime.OutputTokens)
+			msg.metricsCard.TotalCostUSD = lifetime.TotalCostUSD
+		}
+
+		taskCounts, err := store.GetLifetimeTaskCounts()
+		if err != nil {
+			slog.Warn("store refresh: failed to load task counts", slog.Any("error", err))
+		} else {
+			msg.metricsCard.TotalTasks = taskCounts.Total
+			msg.metricsCard.Succeeded = taskCounts.Succeeded
+			msg.metricsCard.Failed = taskCounts.Failed
+		}
+
+		if msg.metricsCard.TotalTasks > 0 {
+			msg.metricsCard.CostPerTask = msg.metricsCard.TotalCostUSD / float64(msg.metricsCard.TotalTasks)
+		}
+
+		return msg
+	}
+}
+
 // Update handles messages
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -818,6 +884,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tickMsg:
 		m.sparklineTick = !m.sparklineTick
 		m.shimmerTick++
+		m.dbSyncTick++
+		// GH-2248: Re-sync history and metrics from SQLite every 5 seconds
+		// so external DB changes (orphan cleanup, manual edits) are reflected.
+		if m.store != nil && m.dbSyncTick%5 == 0 {
+			return m, tea.Batch(tickCmd(), storeRefreshCmd(m.store))
+		}
 		return m, tickCmd()
 
 	case updateTasksMsg:
@@ -888,6 +960,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case updateMetricsCardMsg:
 		m.metricsCard = MetricsCardData(msg)
+
+	case storeRefreshMsg:
+		// GH-2248: Replace in-memory history and metrics with live DB state.
+		prevLen := len(m.completedTasks)
+		m.completedTasks = msg.completedTasks
+		m.metricsCard = msg.metricsCard
+		if len(m.completedTasks) != prevLen {
+			return m, tea.ClearScreen
+		}
 
 	case updateAvailableMsg:
 		m.updateInfo = &UpdateInfo{
