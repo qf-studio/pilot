@@ -111,6 +111,11 @@ type Poller struct {
 	failedRetryCount map[int]int
 	maxFailedRetries int // default: 3
 
+	// GH-2276: Auto-retry issues with pilot-retry-ready (PR closed without merge).
+	// Tracks how many times each issue has been retried after pilot-retry-ready.
+	retryReadyCount      map[int]int
+	maxRetryReadyRetries int // default: 3
+
 	// GH-2242: ExecutionChecker prevents re-dispatch of completed tasks
 	// when pilot-done label failed to apply.
 	execChecker ExecutionChecker
@@ -217,6 +222,17 @@ func WithMaxFailedRetries(n int) PollerOption {
 	}
 }
 
+// WithMaxRetryReadyRetries sets the maximum number of auto-retries for issues
+// with pilot-retry-ready label (PR closed without merge). Default: 3.
+func WithMaxRetryReadyRetries(n int) PollerOption {
+	return func(p *Poller) {
+		if n < 0 {
+			n = 0
+		}
+		p.maxRetryReadyRetries = n
+	}
+}
+
 // WithMaxConcurrent sets the maximum number of parallel issue executions
 func WithMaxConcurrent(n int) PollerOption {
 	return func(p *Poller) {
@@ -247,8 +263,10 @@ func NewPoller(client *Client, repo string, label string, interval time.Duration
 		prPollInterval:   30 * time.Second,
 		prTimeout:        1 * time.Hour,
 		retryGracePeriod: 5 * time.Minute, // GH-2201: default grace period
-		failedRetryCount: make(map[int]int),
-		maxFailedRetries: 3, // GH-2176: default max retries for pilot-failed issues
+		failedRetryCount:     make(map[int]int),
+		maxFailedRetries:     3, // GH-2176: default max retries for pilot-failed issues
+		retryReadyCount:      make(map[int]int),
+		maxRetryReadyRetries: 3, // GH-2276: default max retries for pilot-retry-ready issues
 	}
 
 	for _, opt := range opts {
@@ -587,6 +605,14 @@ func (p *Poller) findOldestUnprocessedIssue(ctx context.Context) (*Issue, error)
 			// Label removed, fall through to candidate selection
 		}
 
+		// GH-2276: Auto-retry issues with pilot-retry-ready (PR closed without merge)
+		if HasLabel(issue, LabelRetryReady) {
+			if !p.shouldRetryRetryReadyIssue(ctx, issue) {
+				continue
+			}
+			// Label removed, fall through to candidate selection
+		}
+
 		// Check if previously processed
 		p.mu.RLock()
 		processedAt, processed := p.processed[issue.Number]
@@ -772,6 +798,14 @@ func (p *Poller) checkForNewIssues(ctx context.Context) {
 		// GH-2176: Auto-retry issues stuck with pilot-failed (no pilot-done)
 		if HasLabel(issue, LabelFailed) {
 			if !p.shouldRetryFailedIssue(ctx, issue) {
+				continue
+			}
+			// Label removed, fall through to candidate selection
+		}
+
+		// GH-2276: Auto-retry issues with pilot-retry-ready (PR closed without merge)
+		if HasLabel(issue, LabelRetryReady) {
+			if !p.shouldRetryRetryReadyIssue(ctx, issue) {
 				continue
 			}
 			// Label removed, fall through to candidate selection
@@ -1195,6 +1229,67 @@ func (p *Poller) shouldRetryFailedIssue(ctx context.Context, issue *Issue) bool 
 		slog.Int("number", issue.Number),
 		slog.Int("retry", retries+1),
 		slog.Int("max", p.maxFailedRetries),
+	)
+
+	return true
+}
+
+// shouldRetryRetryReadyIssue checks if a pilot-retry-ready issue should be auto-retried.
+// Returns true if the issue should be retried (label removed), false if it should be skipped.
+// GH-2276: Issues with pilot-retry-ready (PR closed without merge) get retried up to maxRetryReadyRetries times.
+func (p *Poller) shouldRetryRetryReadyIssue(ctx context.Context, issue *Issue) bool {
+	// Don't retry closed issues
+	if issue.State != "open" {
+		p.logger.Info("Skipping retry — issue is closed",
+			slog.Int("number", issue.Number),
+			slog.String("state", issue.State),
+		)
+		return false
+	}
+
+	// Never retry if also marked done
+	if HasLabel(issue, LabelDone) {
+		return false
+	}
+
+	p.mu.RLock()
+	retries := p.retryReadyCount[issue.Number]
+	p.mu.RUnlock()
+
+	if retries >= p.maxRetryReadyRetries {
+		p.logger.Warn("Issue has reached max retry-ready retries, skipping",
+			slog.Int("number", issue.Number),
+			slog.Int("retries", retries),
+			slog.Int("max", p.maxRetryReadyRetries),
+		)
+		return false
+	}
+
+	// Check if merged work already exists before retrying
+	if p.hasMergedWork(ctx, issue) {
+		return false
+	}
+
+	// Remove pilot-retry-ready label and increment retry count
+	if err := p.client.RemoveLabel(ctx, p.owner, p.repo, issue.Number, LabelRetryReady); err != nil {
+		p.logger.Warn("Failed to remove pilot-retry-ready label for retry",
+			slog.Int("number", issue.Number),
+			slog.Any("error", err),
+		)
+		return false
+	}
+
+	p.mu.Lock()
+	p.retryReadyCount[issue.Number] = retries + 1
+	p.mu.Unlock()
+
+	// Clear from processed map so the issue can be re-picked
+	p.ClearProcessed(issue.Number)
+
+	p.logger.Info("Auto-retrying pilot-retry-ready issue",
+		slog.Int("number", issue.Number),
+		slog.Int("retry", retries+1),
+		slog.Int("max", p.maxRetryReadyRetries),
 	)
 
 	return true
