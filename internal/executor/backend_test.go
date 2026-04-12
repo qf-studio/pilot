@@ -128,3 +128,42 @@ func TestOpenCodeConfig(t *testing.T) {
 		t.Error("AutoStartServer should be true")
 	}
 }
+
+func TestResolveModel(t *testing.T) {
+	tests := []struct {
+		name     string
+		config   *BackendConfig
+		explicit string
+		want     string
+	}{
+		{name: "nil_returns_explicit", config: nil, explicit: "haiku", want: "haiku"},
+		{name: "empty_returns_explicit", config: &BackendConfig{}, explicit: "haiku", want: "haiku"},
+		{name: "default_overrides", config: &BackendConfig{DefaultModel: "glm-5.1"}, explicit: "haiku", want: "glm-5.1"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.config.ResolveModel(tt.explicit); got != tt.want {
+				t.Errorf("ResolveModel(%q) = %q, want %q", tt.explicit, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestResolveAPIBaseURL(t *testing.T) {
+	tests := []struct {
+		name   string
+		config *BackendConfig
+		want   string
+	}{
+		{name: "nil_default", config: nil, want: "https://api.anthropic.com"},
+		{name: "empty_default", config: &BackendConfig{}, want: "https://api.anthropic.com"},
+		{name: "custom_url", config: &BackendConfig{APIBaseURL: "https://api.z.ai/api/anthropic"}, want: "https://api.z.ai/api/anthropic"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.config.ResolveAPIBaseURL(); got != tt.want {
+				t.Errorf("ResolveAPIBaseURL() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

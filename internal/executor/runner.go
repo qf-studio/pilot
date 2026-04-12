@@ -433,6 +433,12 @@ func NewRunnerWithConfig(config *BackendConfig) (*Runner, error) {
 			if config.ClaudeCode != nil {
 				classifier.SetUseStructuredOutput(config.ClaudeCode.UseStructuredOutput)
 			}
+			if config.DefaultModel != "" {
+				classifier.model = config.DefaultModel
+			}
+			if config.APIBaseURL != "" {
+				classifier.apiURL = config.ResolveAPIBaseURL() + "/v1/messages"
+			}
 			runner.modelRouter.SetEffortClassifier(classifier)
 			runner.log.Info("LLM effort classifier initialized",
 				slog.String("model", classifier.model),
@@ -447,6 +453,9 @@ func NewRunnerWithConfig(config *BackendConfig) (*Runner, error) {
 			// GH-727, GH-868: Attach LLM complexity classifier using Claude Code subprocess
 			// No ANTHROPIC_API_KEY needed - uses existing Claude Code subscription
 			complexityClassifier := NewComplexityClassifier()
+			if config.DefaultModel != "" {
+				complexityClassifier.model = config.DefaultModel
+			}
 			if config.ClaudeCode != nil {
 				complexityClassifier.SetUseStructuredOutput(config.ClaudeCode.UseStructuredOutput)
 			}
@@ -456,6 +465,14 @@ func NewRunnerWithConfig(config *BackendConfig) (*Runner, error) {
 
 	// Initialize Haiku subtask parser; nil if ANTHROPIC_API_KEY unset (GH-501)
 	runner.subtaskParser = NewSubtaskParser(runner.log)
+	if runner.subtaskParser != nil && config != nil {
+		if config.DefaultModel != "" {
+			runner.subtaskParser.model = config.DefaultModel
+		}
+		if config.APIBaseURL != "" {
+			runner.subtaskParser.baseURL = config.ResolveAPIBaseURL()
+		}
+	}
 
 	// Initialize intent judge for diff-vs-ticket alignment (GH-624)
 	if config != nil && config.IntentJudge != nil && (config.IntentJudge.Enabled == nil || *config.IntentJudge.Enabled) {
@@ -464,6 +481,12 @@ func NewRunnerWithConfig(config *BackendConfig) (*Runner, error) {
 			runner.intentJudge = NewIntentJudge(apiKey)
 			if config.IntentJudge.Model != "" {
 				runner.intentJudge.model = config.IntentJudge.Model
+			}
+			if config.DefaultModel != "" {
+				runner.intentJudge.model = config.DefaultModel
+			}
+			if config.APIBaseURL != "" {
+				runner.intentJudge.apiURL = config.ResolveAPIBaseURL() + "/v1/messages"
 			}
 			runner.log.Info("Intent judge initialized", slog.String("model", runner.intentJudge.model))
 		} else {
@@ -590,6 +613,9 @@ func (r *Runner) SetParallelRunner(runner *ParallelRunner) {
 // This is a convenience method to enable parallel research with default settings.
 func (r *Runner) EnableParallelResearch() {
 	r.parallelRunner = NewParallelRunner(DefaultParallelConfig(), r.modelRouter)
+	if r.config != nil && r.config.DefaultModel != "" {
+		r.parallelRunner.SetDefaultModel(r.config.DefaultModel)
+	}
 }
 
 // SetTeamChecker sets the team permission checker for RBAC enforcement (GH-634).
@@ -1233,6 +1259,13 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 
 	// Select model if routing is enabled
 	selectedModel := r.modelRouter.SelectModel(task)
+	if r.config != nil && r.config.DefaultModel != "" {
+		if r.config.Type == BackendTypeClaudeCode {
+			selectedModel = ""
+		} else {
+			selectedModel = r.config.DefaultModel
+		}
+	}
 	if selectedModel != "" {
 		log = log.With(slog.String("routed_model", selectedModel))
 	}
@@ -3027,6 +3060,13 @@ func (r *Runner) runSelfReview(ctx context.Context, task *Task, state *progressS
 
 	// Select model and effort (use same routing as main execution)
 	selectedModel := r.modelRouter.SelectModel(task)
+	if r.config != nil && r.config.DefaultModel != "" {
+		if r.config.Type == BackendTypeClaudeCode {
+			selectedModel = ""
+		} else {
+			selectedModel = r.config.DefaultModel
+		}
+	}
 	selectedEffort := r.modelRouter.SelectEffort(task)
 
 	// GH-1265: Determine if session resume is enabled and session ID is available
@@ -4004,7 +4044,7 @@ func (r *Runner) getPostExecutionSummary(ctx context.Context) (*PostExecutionSum
 	cmd := exec.CommandContext(ctx, claudeCmd,
 		"--print",
 		"-p", prompt,
-		"--model", "claude-haiku-4-5-20251001",
+		"--model", r.config.ResolveModel("claude-haiku-4-5-20251001"),
 		"--output-format", "json",
 		"--json-schema", PostExecutionSummarySchema,
 	)

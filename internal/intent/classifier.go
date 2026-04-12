@@ -31,6 +31,7 @@ type AnthropicClient struct {
 	apiKey     string
 	httpClient *http.Client
 	model      string
+	apiURL     string
 }
 
 // NewAnthropicClient creates a new Anthropic API client
@@ -103,7 +104,7 @@ Respond with JSON only: {"intent": "...", "confidence": 0.0-1.0}`
 	}
 
 	// Make API request
-	req, err := http.NewRequestWithContext(ctx, "POST", "https://api.anthropic.com/v1/messages", bytes.NewReader(jsonBody))
+	req, err := http.NewRequestWithContext(ctx, "POST", c.apiURL, bytes.NewReader(jsonBody))
 	if err != nil {
 		return "", fmt.Errorf("failed to create request: %w", err)
 	}

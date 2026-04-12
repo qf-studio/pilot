@@ -294,6 +294,13 @@ type BackendConfig struct {
 	// Default: 2m
 	PlanningTimeout time.Duration `yaml:"planning_timeout,omitempty"`
 
+	// DefaultModel overrides all model name references throughout the executor.
+	// When set, all internal LLM calls use this model instead of hardcoded Anthropic names.
+	DefaultModel string `yaml:"default_model,omitempty"`
+
+	// APIBaseURL overrides the Anthropic API base URL for all direct API calls.
+	APIBaseURL string `yaml:"api_base_url,omitempty"`
+
 	// Version is the Pilot binary version, set at startup from the build-time version var.
 	// Used for feature matrix updates and execution reports. Not a config file field.
 	Version string `yaml:"-"`
@@ -312,6 +319,22 @@ func (c *BackendConfig) EffectiveHeartbeatTimeout() time.Duration {
 		return MaxHeartbeatTimeout
 	}
 	return c.HeartbeatTimeout
+}
+
+// ResolveModel returns the default model if set, otherwise falls back to explicit.
+func (c *BackendConfig) ResolveModel(explicit string) string {
+	if c != nil && c.DefaultModel != "" {
+		return c.DefaultModel
+	}
+	return explicit
+}
+
+// ResolveAPIBaseURL returns the configured API base URL, or the Anthropic default.
+func (c *BackendConfig) ResolveAPIBaseURL() string {
+	if c != nil && c.APIBaseURL != "" {
+		return c.APIBaseURL
+	}
+	return "https://api.anthropic.com"
 }
 
 // ModelRoutingConfig controls which model to use based on task complexity.

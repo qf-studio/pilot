@@ -71,7 +71,8 @@ type ParallelRunner struct {
 	modelRoute *ModelRouter
 	log        *slog.Logger
 	mu         sync.Mutex
-	running    map[string]*exec.Cmd
+	running      map[string]*exec.Cmd
+	defaultModel string
 }
 
 // NewParallelRunner creates a new parallel execution coordinator
@@ -85,6 +86,11 @@ func NewParallelRunner(config *ParallelConfig, router *ModelRouter) *ParallelRun
 		log:        logging.WithComponent("parallel"),
 		running:    make(map[string]*exec.Cmd),
 	}
+}
+
+// SetDefaultModel overrides the model for all subagents.
+func (p *ParallelRunner) SetDefaultModel(model string) {
+	p.defaultModel = model
 }
 
 // ExecuteResearchPhase runs parallel research subagents for complex tasks
@@ -236,13 +242,17 @@ func (p *ParallelRunner) executeSubagent(ctx context.Context, projectPath string
 
 	// Determine model flag
 	modelFlag := ""
-	switch task.Model {
-	case "haiku":
+	if p.defaultModel != "" {
+		modelFlag = "--model " + p.defaultModel
+	} else {
+		switch task.Model {
+		case "haiku":
 		modelFlag = "--model haiku"
 	case "sonnet":
 		modelFlag = "--model sonnet"
-	case "opus":
-		modelFlag = "--model opus"
+		case "opus":
+			modelFlag = "--model opus"
+		}
 	}
 
 	// Build command - use haiku for fast research

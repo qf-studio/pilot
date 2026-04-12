@@ -38,6 +38,8 @@ type ReleaseSummaryGenerator struct {
 	apiKey     string
 	httpClient *http.Client
 	log        *slog.Logger
+	model      string
+	apiURL     string
 }
 
 // NewReleaseSummaryGenerator creates a generator. Returns nil if apiKey is empty
@@ -52,9 +54,17 @@ func NewReleaseSummaryGenerator(ghClient *github.Client, apiKey string, log *slo
 		httpClient: &http.Client{
 			Timeout: releaseSummaryTimeout,
 		},
-		log: log,
+		log:    log,
+		model:  releaseSummaryModel,
+		apiURL: anthropicAPIURL,
 	}
 }
+
+// SetModel overrides the model.
+func (g *ReleaseSummaryGenerator) SetModel(model string) { g.model = model }
+
+// SetAPIURL overrides the API URL.
+func (g *ReleaseSummaryGenerator) SetAPIURL(url string) { g.apiURL = url }
 
 // EnrichRelease polls for the GoReleaser-created release, generates an LLM summary
 // from the commit messages, and prepends it to the release body.
@@ -153,7 +163,7 @@ Rules:
 - Do NOT include the raw commit messages — this is a summary for end users`
 
 	reqBody := summaryRequest{
-		Model:     releaseSummaryModel,
+		Model:     g.model,
 		MaxTokens: 512,
 		System:    systemPrompt,
 		Messages: []summaryMessage{
@@ -169,7 +179,7 @@ Rules:
 		return "", fmt.Errorf("marshal request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, anthropicAPIURL, bytes.NewReader(jsonBody))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, g.apiURL, bytes.NewReader(jsonBody))
 	if err != nil {
 		return "", fmt.Errorf("create request: %w", err)
 	}

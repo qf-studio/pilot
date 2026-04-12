@@ -33,6 +33,7 @@ type EffortClassifier struct {
 	log                 *slog.Logger
 	useStructuredOutput bool
 	apiKey              string // Anthropic API key or OAuth token for direct API mode
+	apiURL              string // API endpoint URL
 
 	// cmdRunner is the function that executes the claude command (subprocess mode).
 	// Can be overridden for testing.
@@ -75,6 +76,7 @@ Respond with ONLY a JSON object (no markdown, no explanation):
 func NewEffortClassifier() *EffortClassifier {
 	c := &EffortClassifier{
 		model:   "claude-haiku-4-5-20251001",
+		apiURL:  "https://api.anthropic.com/v1/messages",
 		timeout: 30 * time.Second,
 		log:     logging.WithComponent("effort-classifier"),
 		cache:   make(map[string]string),
@@ -228,7 +230,7 @@ func (c *EffortClassifier) classifyViaAPI(ctx context.Context, task *Task) (stri
 	ctx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, "POST", "https://api.anthropic.com/v1/messages", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, "POST", c.apiURL, bytes.NewReader(body))
 	if err != nil {
 		return "", fmt.Errorf("create request: %w", err)
 	}

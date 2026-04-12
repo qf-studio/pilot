@@ -1629,7 +1629,16 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 				apiKey = os.Getenv("ANTHROPIC_API_KEY")
 			}
 			if apiKey != "" {
-				tgLLMClassifier = intent.NewAnthropicClient(apiKey)
+				client := intent.NewAnthropicClient(apiKey)
+				if cfg.Executor != nil {
+					if cfg.Executor.DefaultModel != "" {
+						client.SetModel(cfg.Executor.DefaultModel)
+					}
+					if cfg.Executor.APIBaseURL != "" {
+						client.SetAPIURL(cfg.Executor.APIBaseURL + "/v1/messages")
+					}
+				}
+				tgLLMClassifier = client
 				historySize := 10
 				if cfg.Adapters.Telegram.LLMClassifier.HistorySize > 0 {
 					historySize = cfg.Adapters.Telegram.LLMClassifier.HistorySize
