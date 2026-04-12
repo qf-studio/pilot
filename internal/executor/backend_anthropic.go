@@ -42,11 +42,18 @@ const (
 type AnthropicBackend struct {
 	apiKey string
 	model  string
+	apiURL string
+	config *BackendConfig
 }
 
 // NewAnthropicBackend creates a new direct API backend.
 func NewAnthropicBackend(config *BackendConfig) *AnthropicBackend {
-	b := &AnthropicBackend{}
+	b := &AnthropicBackend{config: config, apiURL: anthropicAPIURL}
+
+	// Override API URL if custom base URL configured
+	if config != nil && config.APIBaseURL != "" {
+		b.apiURL = config.ResolveAPIBaseURL() + "/v1/messages"
+	}
 
 	// Resolve API key (same priority as effort_classifier.go:84-95)
 	for _, key := range []string{"ANTHROPIC_API_KEY", "PILOT_ENGINE_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"} {
@@ -322,7 +329,7 @@ func (b *AnthropicBackend) callAPI(ctx context.Context, req *apiRequest) (*apiRe
 	backoffs := []time.Duration{30 * time.Second, 60 * time.Second, 90 * time.Second, 120 * time.Second, 180 * time.Second}
 
 	for attempt := 0; attempt <= apiMaxRetries; attempt++ {
-		httpReq, err := http.NewRequestWithContext(ctx, "POST", anthropicAPIURL, bytes.NewReader(body))
+		httpReq, err := http.NewRequestWithContext(ctx, "POST", b.apiURL, bytes.NewReader(body))
 		if err != nil {
 			return nil, fmt.Errorf("create request: %w", err)
 		}
@@ -513,7 +520,7 @@ func (b *AnthropicBackend) Execute(ctx context.Context, opts ExecuteOptions) (*B
 
 	model := opts.Model
 	if model == "" {
-		model = "claude-opus-4-6"
+		model = b.config.ResolveModel("claude-opus-4-6")
 	}
 
 	cwd := opts.ProjectPath

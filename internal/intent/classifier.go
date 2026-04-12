@@ -31,6 +31,7 @@ type AnthropicClient struct {
 	apiKey     string
 	httpClient *http.Client
 	model      string
+	apiURL     string
 }
 
 // NewAnthropicClient creates a new Anthropic API client
@@ -40,8 +41,19 @@ func NewAnthropicClient(apiKey string) *AnthropicClient {
 		httpClient: &http.Client{
 			Timeout: 5 * time.Second, // Fast timeout for classification
 		},
-		model: "claude-haiku-4-5-20251001",
+		model:  "claude-haiku-4-5-20251001",
+		apiURL: "https://api.anthropic.com/v1/messages",
 	}
+}
+
+// SetModel overrides the model used for classification.
+func (c *AnthropicClient) SetModel(model string) {
+	c.model = model
+}
+
+// SetAPIURL overrides the API endpoint URL.
+func (c *AnthropicClient) SetAPIURL(url string) {
+	c.apiURL = url
 }
 
 // Classify determines the intent of a message using Claude Haiku
@@ -103,7 +115,7 @@ Respond with JSON only: {"intent": "...", "confidence": 0.0-1.0}`
 	}
 
 	// Make API request
-	req, err := http.NewRequestWithContext(ctx, "POST", "https://api.anthropic.com/v1/messages", bytes.NewReader(jsonBody))
+	req, err := http.NewRequestWithContext(ctx, "POST", c.apiURL, bytes.NewReader(jsonBody))
 	if err != nil {
 		return "", fmt.Errorf("failed to create request: %w", err)
 	}

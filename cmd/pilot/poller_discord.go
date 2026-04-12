@@ -32,7 +32,8 @@ func discordPollerRegistration() PollerRegistration {
 					apiKey = os.Getenv("ANTHROPIC_API_KEY")
 				}
 				if apiKey != "" {
-					llmClassifier = intent.NewAnthropicClient(apiKey)
+					client := intent.NewAnthropicClient(apiKey)
+					llmClassifier = client
 					historySize := 10
 					if discordCfg.LLMClassifier.HistorySize > 0 {
 						historySize = discordCfg.LLMClassifier.HistorySize

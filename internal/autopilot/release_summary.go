@@ -38,6 +38,8 @@ type ReleaseSummaryGenerator struct {
 	apiKey     string
 	httpClient *http.Client
 	log        *slog.Logger
+	model      string // Model name (default: claude-haiku-4-5-20251001)
+	apiURL     string // API endpoint (default: https://api.anthropic.com/v1/messages)
 }
 
 // NewReleaseSummaryGenerator creates a generator. Returns nil if apiKey is empty
@@ -47,13 +49,25 @@ func NewReleaseSummaryGenerator(ghClient *github.Client, apiKey string, log *slo
 		return nil
 	}
 	return &ReleaseSummaryGenerator{
-		ghClient: ghClient,
-		apiKey:   apiKey,
+		ghClient:   ghClient,
+		apiKey:     apiKey,
+		model:      releaseSummaryModel,
+		apiURL:     anthropicAPIURL,
 		httpClient: &http.Client{
 			Timeout: releaseSummaryTimeout,
 		},
 		log: log,
 	}
+}
+
+// SetModel overrides the LLM model used for summary generation.
+func (g *ReleaseSummaryGenerator) SetModel(model string) {
+	g.model = model
+}
+
+// SetAPIURL overrides the API endpoint URL.
+func (g *ReleaseSummaryGenerator) SetAPIURL(url string) {
+	g.apiURL = url
 }
 
 // EnrichRelease polls for the GoReleaser-created release, generates an LLM summary
@@ -153,7 +167,7 @@ Rules:
 - Do NOT include the raw commit messages — this is a summary for end users`
 
 	reqBody := summaryRequest{
-		Model:     releaseSummaryModel,
+		Model:     g.model,
 		MaxTokens: 512,
 		System:    systemPrompt,
 		Messages: []summaryMessage{
@@ -169,7 +183,7 @@ Rules:
 		return "", fmt.Errorf("marshal request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, anthropicAPIURL, bytes.NewReader(jsonBody))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, g.apiURL, bytes.NewReader(jsonBody))
 	if err != nil {
 		return "", fmt.Errorf("create request: %w", err)
 	}
