@@ -33,6 +33,14 @@ func discordPollerRegistration() PollerRegistration {
 				}
 				if apiKey != "" {
 					client := intent.NewAnthropicClient(apiKey)
+					if deps.Cfg.Executor != nil {
+						if deps.Cfg.Executor.DefaultModel != "" {
+							client.SetModel(deps.Cfg.Executor.DefaultModel)
+						}
+						if deps.Cfg.Executor.APIBaseURL != "" {
+							client.SetAPIURL(deps.Cfg.Executor.APIBaseURL + "/v1/messages")
+						}
+					}
 					llmClassifier = client
 					historySize := 10
 					if discordCfg.LLMClassifier.HistorySize > 0 {
