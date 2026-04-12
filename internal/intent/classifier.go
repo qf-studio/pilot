@@ -41,8 +41,19 @@ func NewAnthropicClient(apiKey string) *AnthropicClient {
 		httpClient: &http.Client{
 			Timeout: 5 * time.Second, // Fast timeout for classification
 		},
-		model: "claude-haiku-4-5-20251001",
+		model:  "claude-haiku-4-5-20251001",
+		apiURL: "https://api.anthropic.com/v1/messages",
 	}
+}
+
+// SetModel overrides the model used for classification.
+func (c *AnthropicClient) SetModel(model string) {
+	c.model = model
+}
+
+// SetAPIURL overrides the API endpoint URL.
+func (c *AnthropicClient) SetAPIURL(url string) {
+	c.apiURL = url
 }
 
 // Classify determines the intent of a message using Claude Haiku

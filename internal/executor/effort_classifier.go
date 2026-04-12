@@ -33,7 +33,7 @@ type EffortClassifier struct {
 	log                 *slog.Logger
 	useStructuredOutput bool
 	apiKey              string // Anthropic API key or OAuth token for direct API mode
-	apiURL              string // API endpoint URL
+	apiURL              string // API endpoint URL (default: https://api.anthropic.com/v1/messages)
 
 	// cmdRunner is the function that executes the claude command (subprocess mode).
 	// Can be overridden for testing.
@@ -249,7 +249,7 @@ func (c *EffortClassifier) classifyViaAPI(ctx context.Context, task *Task) (stri
 	if err != nil {
 		return "", fmt.Errorf("API request failed: %w", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {

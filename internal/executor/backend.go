@@ -295,10 +295,16 @@ type BackendConfig struct {
 	PlanningTimeout time.Duration `yaml:"planning_timeout,omitempty"`
 
 	// DefaultModel overrides all model name references throughout the executor.
-	// When set, all internal LLM calls use this model instead of hardcoded Anthropic names.
+	// When set, all internal LLM calls (classifiers, judges, parsers, summaries)
+	// use this model instead of hardcoded Anthropic model names.
+	// For claude-code backend, main execution does NOT pass --model (lets CC use its own settings).
+	// When empty, existing Anthropic defaults are used.
 	DefaultModel string `yaml:"default_model,omitempty"`
 
 	// APIBaseURL overrides the Anthropic API base URL for all direct API calls.
+	// Used by effort classifier, intent judge, subtask parser, release summary.
+	// Example: "https://api.z.ai/api/anthropic" for Z.AI provider.
+	// When empty, defaults to "https://api.anthropic.com".
 	APIBaseURL string `yaml:"api_base_url,omitempty"`
 
 	// Version is the Pilot binary version, set at startup from the build-time version var.
@@ -321,7 +327,8 @@ func (c *BackendConfig) EffectiveHeartbeatTimeout() time.Duration {
 	return c.HeartbeatTimeout
 }
 
-// ResolveModel returns the default model if set, otherwise falls back to explicit.
+// ResolveModel returns the default model if set, otherwise falls back to the explicit model name.
+// Use this wherever a model name is needed: classifiers, judges, parsers, summaries.
 func (c *BackendConfig) ResolveModel(explicit string) string {
 	if c != nil && c.DefaultModel != "" {
 		return c.DefaultModel
@@ -330,6 +337,7 @@ func (c *BackendConfig) ResolveModel(explicit string) string {
 }
 
 // ResolveAPIBaseURL returns the configured API base URL, or the Anthropic default.
+// Callers should append "/v1/messages" for the full endpoint.
 func (c *BackendConfig) ResolveAPIBaseURL() string {
 	if c != nil && c.APIBaseURL != "" {
 		return c.APIBaseURL
