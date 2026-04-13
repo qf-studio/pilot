@@ -16,6 +16,7 @@ Usage:
 import argparse
 import json
 import logging
+import os
 import sys
 import time
 from collections import deque
@@ -315,11 +316,14 @@ class AWSBenchOrchestrator:
     def _generate_pilot_config(self) -> str:
         """Generate pilot config.yaml — mirrors agent.py:_build_config()."""
         m = self.model
+        base_url = os.environ.get("ANTHROPIC_BASE_URL", "https://api.z.ai/api/anthropic")
         return f"""version: "1.0"
 orchestrator:
   model: "{m}"
 executor:
   type: "claude-code"
+  default_model: "{m}"
+  api_base_url: "{base_url}"
   claude_code:
     command: claude
     use_structured_output: true
@@ -346,7 +350,7 @@ executor:
     medium: high
     complex: high
   effort_classifier:
-    enabled: false
+    enabled: true
   intent_judge:
     enabled: false
   retry:
@@ -366,16 +370,7 @@ executor:
       extend_timeout: true
       timeout_multiplier: 1.5
 quality:
-  enabled: true
-  gates:
-    - name: test
-      type: test
-      command: "if [ -f /tests/test_outputs.py ]; then cd /app && export PATH=/opt/pilot-tools/bin:/root/.local/bin:/usr/local/bin:$PATH; pip install -q pytest 2>/dev/null || pip3 install -q pytest 2>/dev/null || uvx --version >/dev/null 2>&1; python3 -m pytest /tests/test_outputs.py -rA 2>&1 || uvx -p 3.13 --with pytest pytest /tests/test_outputs.py -rA 2>&1; fi"
-      required: true
-      timeout: 5m
-      max_retries: 2
-      retry_delay: 5s
-      failure_hint: "Tests failed. Read /tests/test_outputs.py to understand what is expected, then fix your implementation."
+  enabled: false
 memory:
   path: /root/.pilot/data
   learning:
