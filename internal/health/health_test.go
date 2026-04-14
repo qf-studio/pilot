@@ -2,6 +2,7 @@ package health
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -644,7 +645,7 @@ func TestCheckConfig_GitHubChecks(t *testing.T) {
 		wantStatus     Status
 	}{
 		{
-			name: "enabled no token",
+			name: "enabled no token no gh auth",
 			cfg: &config.Config{
 				Adapters: &config.AdaptersConfig{
 					GitHub: &github.Config{
@@ -653,8 +654,8 @@ func TestCheckConfig_GitHubChecks(t *testing.T) {
 					},
 				},
 			},
-			wantCheckName: "github.token",
-			wantStatus:    StatusError,
+			wantCheckName: ghAuthFallbackCheckName(t),
+			wantStatus:    ghAuthFallbackStatus(t),
 		},
 		{
 			name: "enabled no repos polling on",
@@ -743,6 +744,29 @@ func TestCheckConfig_GitHubChecks(t *testing.T) {
 			}
 		})
 	}
+}
+
+// ghAuthFallbackStatus returns the expected status when config token is empty.
+// If gh CLI is authenticated on the host, the fallback makes it OK; otherwise error.
+func ghAuthFallbackStatus(t *testing.T) Status {
+	t.Helper()
+	err := exec.Command("gh", "auth", "status").Run()
+	if err == nil {
+		return StatusOK
+	}
+	return StatusError
+}
+
+// ghAuthFallbackCheckName returns the expected check name when config token is empty.
+// If gh CLI is authenticated, the fallback passes and the check is named "github";
+// otherwise it fails as "github.token".
+func ghAuthFallbackCheckName(t *testing.T) string {
+	t.Helper()
+	err := exec.Command("gh", "auth", "status").Run()
+	if err == nil {
+		return "github"
+	}
+	return "github.token"
 }
 
 // checkNames returns all check names for error messages

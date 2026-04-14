@@ -371,12 +371,19 @@ func checkConfig(cfg *config.Config) []ConfigCheck {
 
 	// Check GitHub config
 	if cfg.Adapters != nil && cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.Enabled {
-		if cfg.Adapters.GitHub.Token == "" {
+		hasToken := cfg.Adapters.GitHub.Token != ""
+		// Fallback: check if gh CLI is authenticated
+		if !hasToken {
+			err := exec.Command("gh", "auth", "status").Run()
+			hasToken = err == nil
+		}
+
+		if !hasToken {
 			checks = append(checks, ConfigCheck{
 				Name:    "github.token",
 				Status:  StatusError,
 				Message: "enabled but token missing",
-				Fix:     "Add github.token to config (personal access token or GitHub App token)",
+				Fix:     "Add github.token to config or run: gh auth login",
 			})
 		} else {
 			// Token present — check repo configuration for polling mode
