@@ -369,6 +369,44 @@ func checkConfig(cfg *config.Config) []ConfigCheck {
 		}
 	}
 
+	// Check GitHub config
+	if cfg.Adapters != nil && cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.Enabled {
+		if cfg.Adapters.GitHub.Token == "" {
+			checks = append(checks, ConfigCheck{
+				Name:    "github.token",
+				Status:  StatusError,
+				Message: "enabled but token missing",
+				Fix:     "Add github.token to config (personal access token or GitHub App token)",
+			})
+		} else {
+			// Token present — check repo configuration for polling mode
+			hasDefaultRepo := cfg.Adapters.GitHub.Repo != ""
+			hasProjectRepos := false
+			for _, p := range cfg.Projects {
+				if p.GitHub != nil && p.GitHub.Owner != "" && p.GitHub.Repo != "" {
+					hasProjectRepos = true
+					break
+				}
+			}
+			pollingEnabled := cfg.Adapters.GitHub.Polling != nil && cfg.Adapters.GitHub.Polling.Enabled
+
+			if pollingEnabled && !hasDefaultRepo && !hasProjectRepos {
+				checks = append(checks, ConfigCheck{
+					Name:    "github.repos",
+					Status:  StatusWarning,
+					Message: "polling enabled but no repos configured",
+					Fix:     "Set adapters.github.repo (\"owner/repo\") or add github.owner/repo to each project",
+				})
+			} else {
+				checks = append(checks, ConfigCheck{
+					Name:    "github",
+					Status:  StatusOK,
+					Message: "configured",
+				})
+			}
+		}
+	}
+
 	// Check daily brief schedule
 	if cfg.Orchestrator != nil && cfg.Orchestrator.DailyBrief != nil {
 		if cfg.Orchestrator.DailyBrief.Enabled {
