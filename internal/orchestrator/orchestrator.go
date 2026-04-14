@@ -23,6 +23,7 @@ import (
 type Config struct {
 	Model         string
 	MaxConcurrent int
+	BackendConfig *executor.BackendConfig // GH-2286: pass executor config to runner
 }
 
 // Orchestrator coordinates ticket processing and task execution
@@ -63,10 +64,21 @@ func NewOrchestrator(config *Config, notifier *slack.Notifier) (*Orchestrator, e
 
 	ctx, cancel := context.WithCancel(context.Background())
 
+	// GH-2286: use executor config instead of hardcoded defaults
+	backendCfg := config.BackendConfig
+	if backendCfg == nil {
+		backendCfg = executor.DefaultBackendConfig()
+	}
+	runner, runnerErr := executor.NewRunnerWithConfig(backendCfg)
+	if runnerErr != nil {
+		cancel()
+		return nil, fmt.Errorf("failed to create runner: %w", runnerErr)
+	}
+
 	o := &Orchestrator{
 		config:    config,
 		bridge:    bridge,
-		runner:    executor.NewRunner(),
+		runner:    runner,
 		monitor:   executor.NewMonitor(),
 		notifier:  notifier,
 		taskQueue: make(chan *Task, 100),

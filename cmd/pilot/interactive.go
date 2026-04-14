@@ -164,7 +164,15 @@ func interactiveNewTask(cfg *config.Config) error {
 		Branch:      branchName,
 	}
 
-	runner := executor.NewRunner()
+	// GH-2286: use executor config from config.yaml instead of hardcoded defaults
+	backendCfg := cfg.Executor
+	if backendCfg == nil {
+		backendCfg = executor.DefaultBackendConfig()
+	}
+	runner, err := executor.NewRunnerWithConfig(backendCfg)
+	if err != nil {
+		return fmt.Errorf("failed to create runner: %w", err)
+	}
 	progress := executor.NewProgressDisplay(task.ID, taskDesc, true)
 
 	// Suppress slog progress output when visual display is active
@@ -189,7 +197,7 @@ func interactiveNewTask(cfg *config.Config) error {
 	})
 
 	fmt.Println()
-	fmt.Println("  Executing task with Claude Code...")
+	fmt.Printf("  Executing task with %s...\n", backendCfg.Type)
 	fmt.Println()
 
 	// Start with Navigator check
