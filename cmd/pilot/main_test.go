@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 	_ "modernc.org/sqlite"
 
+	"github.com/qf-studio/pilot/internal/adapters/github"
 	"github.com/qf-studio/pilot/internal/config"
 	"github.com/qf-studio/pilot/internal/executor"
 	"github.com/qf-studio/pilot/internal/teams"
@@ -971,3 +972,70 @@ func TestApplyInputOverrides(t *testing.T) {
 }
 
 func boolPtr(b bool) *bool { return &b }
+
+func TestCountGitHubRepos(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  *config.Config
+		want int
+	}{
+		{
+			name: "nil github adapter",
+			cfg:  &config.Config{},
+			want: 0,
+		},
+		{
+			name: "default repo only",
+			cfg: &config.Config{
+				Adapters: &config.AdaptersConfig{
+					GitHub: &github.Config{Repo: "owner/repo"},
+				},
+			},
+			want: 1,
+		},
+		{
+			name: "project repos only",
+			cfg: &config.Config{
+				Projects: []*config.ProjectConfig{
+					{Name: "a", GitHub: &config.ProjectGitHubConfig{Owner: "org", Repo: "proj-a"}},
+					{Name: "b", GitHub: &config.ProjectGitHubConfig{Owner: "org", Repo: "proj-b"}},
+				},
+			},
+			want: 2,
+		},
+		{
+			name: "default plus projects deduped",
+			cfg: &config.Config{
+				Adapters: &config.AdaptersConfig{
+					GitHub: &github.Config{Repo: "org/proj-a"},
+				},
+				Projects: []*config.ProjectConfig{
+					{Name: "a", GitHub: &config.ProjectGitHubConfig{Owner: "org", Repo: "proj-a"}},
+					{Name: "b", GitHub: &config.ProjectGitHubConfig{Owner: "org", Repo: "proj-b"}},
+				},
+			},
+			want: 2, // org/proj-a deduplicated
+		},
+		{
+			name: "empty strings ignored",
+			cfg: &config.Config{
+				Adapters: &config.AdaptersConfig{
+					GitHub: &github.Config{Repo: ""},
+				},
+				Projects: []*config.ProjectConfig{
+					{Name: "a", GitHub: &config.ProjectGitHubConfig{Owner: "org", Repo: ""}},
+					{Name: "b", GitHub: &config.ProjectGitHubConfig{Owner: "", Repo: "repo"}},
+				},
+			},
+			want: 0,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := countGitHubRepos(tt.cfg)
+			if got != tt.want {
+				t.Errorf("countGitHubRepos() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}

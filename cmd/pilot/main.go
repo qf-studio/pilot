@@ -2097,6 +2097,11 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 				go poller.Start(ctx)
 			}
 
+			if len(ghPollers) == 0 {
+				logging.WithComponent("github").Warn("GitHub polling enabled but no repos configured — set adapters.github.repo or add project-level github.owner/github.repo",
+					slog.Int("pollers", 0))
+			}
+
 			if len(ghPollers) > 0 {
 				if !dashboardMode && execMode == github.ExecutionModeSequential && waitForMerge {
 					fmt.Printf("   ⏳ Sequential mode: waiting for PR merge before next issue (timeout: %s)\n", prTimeout)
@@ -2426,7 +2431,12 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 			hasGitHubPolling := cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.Enabled &&
 				cfg.Adapters.GitHub.Polling != nil && cfg.Adapters.GitHub.Polling.Enabled
 			if hasGitHubPolling {
-				program.Send(dashboard.AddLog(fmt.Sprintf("🐙 GitHub polling: %s", cfg.Adapters.GitHub.Repo))())
+				repoCount := countGitHubRepos(cfg)
+				if repoCount == 0 {
+					program.Send(dashboard.AddLog("🐙 GitHub polling: no repos configured")())
+				} else {
+					program.Send(dashboard.AddLog(fmt.Sprintf("🐙 GitHub polling: %d repo(s) configured", repoCount))())
+				}
 			}
 			hasLinearPolling := cfg.Adapters.Linear != nil && cfg.Adapters.Linear.Enabled &&
 				cfg.Adapters.Linear.Polling != nil && cfg.Adapters.Linear.Polling.Enabled
@@ -2587,4 +2597,18 @@ func (s storeTaskChecker) IsTaskQueued(taskID string) bool {
 		return false // Don't block retry on DB errors
 	}
 	return queued
+}
+
+// countGitHubRepos counts unique GitHub repos from the default config and project-level entries.
+func countGitHubRepos(cfg *config.Config) int {
+	seen := make(map[string]bool)
+	if cfg.Adapters != nil && cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.Repo != "" {
+		seen[cfg.Adapters.GitHub.Repo] = true
+	}
+	for _, proj := range cfg.Projects {
+		if proj.GitHub != nil && proj.GitHub.Owner != "" && proj.GitHub.Repo != "" {
+			seen[fmt.Sprintf("%s/%s", proj.GitHub.Owner, proj.GitHub.Repo)] = true
+		}
+	}
+	return len(seen)
 }
