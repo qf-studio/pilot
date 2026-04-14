@@ -1,0 +1,58 @@
+name: Feature Request
+description: Suggest a new feature or enhancement for Pilot
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What problem does this feature solve?
+      placeholder: "I'm frustrated when..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed Solution
+      description: How should this work?
+      placeholder: "It would be great if..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: What other approaches have you considered?
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: adapters
+    attributes:
+      label: Affected Adapters
+      description: Which adapters would this feature affect?
+      options:
+        - label: GitHub
+        - label: GitLab
+        - label: Linear
+        - label: Jira
+        - label: Slack
+        - label: Discord
+        - label: Telegram
+        - label: Azure DevOps
+        - label: Plane
+        - label: Asana
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      description: How important is this to you?
+      options:
+        - Low
+        - Medium
+        - High
+    validations:
+      required: false

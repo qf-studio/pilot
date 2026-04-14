@@ -1,0 +1,54 @@
+name: Pilot Task
+description: Create a task for Pilot to execute autonomously
+labels: ["pilot"]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: Task Description
+      description: |
+        Describe what Pilot should implement. Include acceptance criteria.
+        Be specific about expected behavior and edge cases.
+      placeholder: |
+        ## What
+        Implement X by doing Y.
+
+        ## Acceptance Criteria
+        - [ ] Feature does A
+        - [ ] Edge case B is handled
+        - [ ] Tests cover C
+    validations:
+      required: true
+
+  - type: textarea
+    id: files
+    attributes:
+      label: Files to Modify
+      description: List specific files or packages that need changes (optional)
+      placeholder: |
+        - internal/executor/runner.go
+        - internal/config/config.go
+    validations:
+      required: false
+
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: Dependencies
+      description: Any related issues, PRs, or external dependencies
+      placeholder: "Depends on #123, blocked by #456"
+    validations:
+      required: false
+
+  - type: dropdown
+    id: complexity
+    attributes:
+      label: Complexity Hint
+      description: Help Pilot choose the right execution strategy
+      options:
+        - trivial
+        - simple
+        - medium
+        - complex
+    validations:
+      required: false

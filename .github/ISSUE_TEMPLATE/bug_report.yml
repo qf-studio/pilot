@@ -1,0 +1,89 @@
+name: Bug Report
+description: Report a bug or unexpected behavior in Pilot
+labels: ["bug"]
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: A clear description of the bug
+      placeholder: "What went wrong?"
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to Reproduce
+      description: How can we reproduce this behavior?
+      placeholder: |
+        1. Run `pilot start`
+        2. Create an issue with `pilot` label
+        3. ...
+    validations:
+      required: false
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      description: What did you expect to happen?
+    validations:
+      required: false
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual Behavior
+      description: What actually happened?
+    validations:
+      required: false
+
+  - type: input
+    id: version
+    attributes:
+      label: Pilot Version
+      description: What version of Pilot are you running?
+      placeholder: "e.g., v2.87.4"
+    validations:
+      required: false
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating System
+      description: What OS are you running Pilot on?
+      options:
+        - macOS
+        - Linux
+        - Windows
+    validations:
+      required: false
+
+  - type: dropdown
+    id: adapter
+    attributes:
+      label: Adapter
+      description: Which adapter is affected?
+      options:
+        - GitHub
+        - GitLab
+        - Linear
+        - Jira
+        - Slack
+        - Discord
+        - Telegram
+        - Azure DevOps
+        - Plane
+        - Asana
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Relevant log output (redact any secrets)
+      render: shell
+    validations:
+      required: false
