@@ -18,6 +18,23 @@ import (
 // iterationRe matches the iteration field in autopilot-meta comments.
 var iterationRe = regexp.MustCompile(`<!-- autopilot-meta.*?iteration:(\d+).*?-->`)
 
+// buildMergeCompletionComment creates a success comment to post on an issue
+// after its associated PR is merged. This ensures the last comment on the issue
+// is a success message rather than a stale failure comment from a prior attempt.
+func buildMergeCompletionComment(prState *PRState) string {
+	var sb strings.Builder
+	sb.WriteString("✅ PR merged successfully!\n\n")
+	sb.WriteString("| Metric | Value |\n")
+	sb.WriteString("|--------|-------|\n")
+	sb.WriteString(fmt.Sprintf("| PR | #%d |\n", prState.PRNumber))
+	sb.WriteString(fmt.Sprintf("| Branch | `%s` |\n", prState.BranchName))
+	if !prState.CreatedAt.IsZero() {
+		duration := time.Since(prState.CreatedAt).Round(time.Second)
+		sb.WriteString(fmt.Sprintf("| Time to merge | %s |\n", duration))
+	}
+	return sb.String()
+}
+
 // parseAutopilotIteration extracts the CI fix iteration counter from an issue body.
 // Returns 0 if no iteration metadata is found (i.e., the issue is not a fix issue).
 func parseAutopilotIteration(body string) int {
@@ -982,6 +999,12 @@ func (c *Controller) handleMerging(ctx context.Context, prState *PRState) error 
 			c.log.Warn("failed to close issue after merge", "issue", prState.IssueNumber, "error", err)
 		}
 		c.log.Info("closed issue after merge", "issue", prState.IssueNumber, "pr", prState.PRNumber)
+
+		// GH-2297: Post success comment so last comment isn't stale failure
+		comment := buildMergeCompletionComment(prState)
+		if _, err := c.ghClient.AddComment(ctx, c.owner, c.repo, prState.IssueNumber, comment); err != nil {
+			c.log.Warn("failed to post merge completion comment", "issue", prState.IssueNumber, "error", err)
+		}
 
 		// GH-1336: Sync monitor state so dashboard shows "done" instead of stale "failed"
 		if c.monitor != nil {
@@ -2052,6 +2075,12 @@ func (c *Controller) checkExternalMergeOrClose(ctx context.Context, prState *PRS
 				c.log.Warn("failed to close issue after external merge", "issue", prState.IssueNumber, "error", err)
 			} else {
 				c.log.Info("closed issue after external merge", "issue", prState.IssueNumber, "pr", prState.PRNumber)
+
+			// GH-2297: Post success comment so last comment isn't stale failure
+			comment := buildMergeCompletionComment(prState)
+			if _, err := c.ghClient.AddComment(ctx, c.owner, c.repo, prState.IssueNumber, comment); err != nil {
+				c.log.Warn("failed to post merge completion comment on external merge", "issue", prState.IssueNumber, "error", err)
+			}
 			}
 		}
 
