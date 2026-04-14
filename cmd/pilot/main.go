@@ -2092,6 +2092,27 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 				}
 			}
 
+			// GH-2305: warn if GitHub polling enabled but no pollers created
+			if len(ghPollers) == 0 {
+				logging.WithComponent("github").Warn("GitHub polling enabled but no pollers created — check repo config",
+					slog.String("default_repo", func() string {
+						if cfg.Adapters.GitHub != nil {
+							return cfg.Adapters.GitHub.Repo
+						}
+						return ""
+					}()),
+					slog.Int("projects_with_github", func() int {
+						n := 0
+						for _, p := range cfg.Projects {
+							if p.GitHub != nil && p.GitHub.Owner != "" && p.GitHub.Repo != "" {
+								n++
+							}
+						}
+						return n
+					}()),
+				)
+			}
+
 			// Start all pollers
 			for _, poller := range ghPollers {
 				go poller.Start(ctx)
@@ -2426,7 +2447,12 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 			hasGitHubPolling := cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.Enabled &&
 				cfg.Adapters.GitHub.Polling != nil && cfg.Adapters.GitHub.Polling.Enabled
 			if hasGitHubPolling {
-				program.Send(dashboard.AddLog(fmt.Sprintf("🐙 GitHub polling: %s", cfg.Adapters.GitHub.Repo))())
+				repoCount := countGitHubRepos(cfg)
+				if repoCount > 0 {
+					program.Send(dashboard.AddLog(fmt.Sprintf("🐙 GitHub polling: %d repo(s) configured", repoCount))())
+				} else {
+					program.Send(dashboard.AddLog("🐙 GitHub polling: ⚠️ no repos configured")())
+				}
 			}
 			hasLinearPolling := cfg.Adapters.Linear != nil && cfg.Adapters.Linear.Enabled &&
 				cfg.Adapters.Linear.Polling != nil && cfg.Adapters.Linear.Polling.Enabled
@@ -2572,6 +2598,22 @@ func cleanStartupHooks(cfg *config.Config, projectPath string) {
 			slog.Warn("failed to clean stale hooks", "path", p.Path, "error", err)
 		}
 	}
+}
+
+// countGitHubRepos counts configured GitHub repos: the default adapter repo
+// plus any project-level github.owner/repo entries. Used by dashboard startup
+// log and zero-poller warning. (GH-2305)
+func countGitHubRepos(cfg *config.Config) int {
+	count := 0
+	if cfg.Adapters != nil && cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.Repo != "" {
+		count++
+	}
+	for _, p := range cfg.Projects {
+		if p.GitHub != nil && p.GitHub.Owner != "" && p.GitHub.Repo != "" {
+			count++
+		}
+	}
+	return count
 }
 
 // storeTaskChecker adapts memory.Store to the github.TaskChecker interface.
