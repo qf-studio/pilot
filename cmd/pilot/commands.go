@@ -409,15 +409,32 @@ Examples:
 
 			// Dry run mode - just show what would happen
 			if dryRun {
+				// GH-2286: load config to respect executor.type setting
+				dryRunCfgPath := cfgFile
+				if dryRunCfgPath == "" {
+					dryRunCfgPath = config.DefaultConfigPath()
+				}
+				dryRunCfg, cfgErr := config.Load(dryRunCfgPath)
+				if cfgErr != nil {
+					return fmt.Errorf("failed to load config for dry-run: %w", cfgErr)
+				}
+				dryRunBackendCfg := dryRunCfg.Executor
+				if dryRunBackendCfg == nil {
+					dryRunBackendCfg = executor.DefaultBackendConfig()
+				}
+
 				fmt.Println("🧪 DRY RUN - showing what would execute:")
 				fmt.Println()
-				fmt.Println("Command: claude -p \"<prompt>\" --verbose --output-format stream-json")
+				fmt.Printf("Command: %s -p \"<prompt>\" --verbose --output-format stream-json\n", dryRunBackendCfg.Type)
 				fmt.Println("Working directory:", projectPath)
 				fmt.Println()
 				fmt.Println("Prompt:")
 				fmt.Println("─────────────────────────────────────")
-				// Build actual prompt using a temporary runner
-				runner := executor.NewRunner()
+				// Build actual prompt using a runner with config
+				runner, runnerErr := executor.NewRunnerWithConfig(dryRunBackendCfg)
+				if runnerErr != nil {
+					return fmt.Errorf("failed to create runner for dry-run: %w", runnerErr)
+				}
 				prompt := runner.BuildPrompt(task, task.ProjectPath)
 				fmt.Println(prompt)
 				fmt.Println("─────────────────────────────────────")
@@ -1061,9 +1078,17 @@ Examples:
 
 			// Dry run mode
 			if dryRun {
+				// GH-2286: use executor config from already-loaded cfg
+				ghBackendCfg := cfg.Executor
+				if ghBackendCfg == nil {
+					ghBackendCfg = executor.DefaultBackendConfig()
+				}
 				fmt.Println("🧪 DRY RUN - showing what would execute:")
 				fmt.Println()
-				runner := executor.NewRunner()
+				runner, runnerErr := executor.NewRunnerWithConfig(ghBackendCfg)
+				if runnerErr != nil {
+					return fmt.Errorf("failed to create runner for dry-run: %w", runnerErr)
+				}
 				prompt := runner.BuildPrompt(task, task.ProjectPath)
 				fmt.Println("Prompt:")
 				fmt.Println("─────────────────────────────────────")

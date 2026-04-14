@@ -258,6 +258,7 @@ func New(cfg *config.Config, opts ...Option) (*Pilot, error) {
 	orchConfig := &orchestrator.Config{
 		Model:         cfg.Orchestrator.Model,
 		MaxConcurrent: cfg.Orchestrator.MaxConcurrent,
+		BackendConfig: cfg.Executor, // GH-2286: pass executor config to runner
 	}
 	orch, err := orchestrator.NewOrchestrator(orchConfig, p.slackNotify)
 	if err != nil {
