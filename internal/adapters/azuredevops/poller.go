@@ -251,6 +251,8 @@ func (p *Poller) recoverOrphanedWorkItems(ctx context.Context) {
 			)
 			continue
 		}
+		// GH-2301: Also clear from processed map/store so the first poll cycle picks it up.
+		p.ClearProcessed(wi.ID)
 		p.logger.Info("Recovered orphaned work item",
 			slog.Int("id", wi.ID),
 			slog.String("title", wi.GetTitle()),

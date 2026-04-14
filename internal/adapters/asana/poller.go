@@ -248,6 +248,8 @@ func (p *Poller) recoverOrphanedTasks(ctx context.Context) {
 			)
 			continue
 		}
+		// GH-2301: Also clear from processed map/store so the first poll cycle picks it up.
+		p.ClearProcessed(task.GID)
 		p.logger.Info("Recovered orphaned task",
 			slog.String("gid", task.GID),
 			slog.String("name", task.Name),

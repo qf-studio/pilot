@@ -356,6 +356,8 @@ func (p *Poller) recoverOrphanedIssues(ctx context.Context) {
 			)
 			continue
 		}
+		// GH-2301: Also clear from processed map/store so the first poll cycle picks it up.
+		p.unmarkProcessed(issue.Number)
 		p.logger.Info("Recovered orphaned issue",
 			slog.Int("number", issue.Number),
 			slog.String("title", issue.Title),
