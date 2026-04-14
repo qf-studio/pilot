@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/qf-studio/pilot/internal/adapters/github"
 	"github.com/qf-studio/pilot/internal/approval"
@@ -89,6 +90,12 @@ func (m *AutoMerger) MergePR(ctx context.Context, prState *PRState) error {
 	commitTitle := fmt.Sprintf("Merge PR #%d", prState.PRNumber)
 	if mergeMethod == github.MergeMethodSquash && prState.PRTitle != "" {
 		commitTitle = prState.PRTitle
+		// Strip "GH-XXXX: " prefix from Pilot-generated PR titles so
+		// parseBumpFromMessage() sees the conventional commit prefix (e.g. "fix(scope): ...").
+		if prState.IssueNumber > 0 {
+			prefix := fmt.Sprintf("GH-%d: ", prState.IssueNumber)
+			commitTitle = strings.TrimPrefix(commitTitle, prefix)
+		}
 	}
 	if err := m.ghClient.MergePullRequest(ctx, m.owner, m.repo, prState.PRNumber, mergeMethod, commitTitle); err != nil {
 		return fmt.Errorf("merge failed: %w", err)
