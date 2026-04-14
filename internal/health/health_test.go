@@ -3,8 +3,10 @@ package health
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/qf-studio/pilot/internal/adapters/github"
 	"github.com/qf-studio/pilot/internal/adapters/slack"
 	"github.com/qf-studio/pilot/internal/adapters/telegram"
 	"github.com/qf-studio/pilot/internal/config"
@@ -632,6 +634,124 @@ func findCheck(checks []Check, name string) *Check {
 		}
 	}
 	return nil
+}
+
+func TestCheckConfig_GitHubChecks(t *testing.T) {
+	tests := []struct {
+		name           string
+		cfg            *config.Config
+		wantCheckName  string
+		wantStatus     Status
+	}{
+		{
+			name: "enabled no token",
+			cfg: &config.Config{
+				Adapters: &config.AdaptersConfig{
+					GitHub: &github.Config{
+						Enabled: true,
+						Token:   "",
+					},
+				},
+			},
+			wantCheckName: "github.token",
+			wantStatus:    StatusError,
+		},
+		{
+			name: "enabled no repos polling on",
+			cfg: &config.Config{
+				Adapters: &config.AdaptersConfig{
+					GitHub: &github.Config{
+						Enabled:  true,
+						Token:    "test-gh-token",
+						Polling:  &github.PollingConfig{Enabled: true},
+					},
+				},
+			},
+			wantCheckName: "github.repos",
+			wantStatus:    StatusWarning,
+		},
+		{
+			name: "fully configured",
+			cfg: &config.Config{
+				Adapters: &config.AdaptersConfig{
+					GitHub: &github.Config{
+						Enabled: true,
+						Token:   "test-gh-token",
+						Repo:    "org/repo",
+					},
+				},
+			},
+			wantCheckName: "github",
+			wantStatus:    StatusOK,
+		},
+		{
+			name: "disabled entirely",
+			cfg: &config.Config{
+				Adapters: &config.AdaptersConfig{
+					GitHub: &github.Config{
+						Enabled: false,
+					},
+				},
+			},
+			wantCheckName: "", // no github check expected
+			wantStatus:    StatusDisabled,
+		},
+		{
+			name: "token with project-level repos",
+			cfg: &config.Config{
+				Adapters: &config.AdaptersConfig{
+					GitHub: &github.Config{
+						Enabled: true,
+						Token:   "test-gh-token",
+						Polling: &github.PollingConfig{Enabled: true},
+					},
+				},
+				Projects: []*config.ProjectConfig{
+					{
+						Name: "myproj",
+						Path: "/tmp",
+						GitHub: &config.ProjectGitHubConfig{
+							Owner: "org",
+							Repo:  "repo",
+						},
+					},
+				},
+			},
+			wantCheckName: "github",
+			wantStatus:    StatusOK,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			checks := checkConfig(tt.cfg)
+			if tt.wantCheckName == "" {
+				// No GitHub check should appear
+				for _, c := range checks {
+					if strings.HasPrefix(c.Name, "github") {
+						t.Errorf("found unexpected github check %q (status=%v), want none", c.Name, c.Status)
+					}
+				}
+				return
+			}
+			found := findConfigCheck(checks, tt.wantCheckName)
+			if found == nil {
+				t.Fatalf("expected check %q, not found in %v", tt.wantCheckName, checkNames(checks))
+			}
+			if found.Status != tt.wantStatus {
+				t.Errorf("%q status = %v, want %v", tt.wantCheckName, found.Status, tt.wantStatus)
+			}
+		})
+	}
+}
+
+// checkNames returns all check names for error messages
+func checkNames(checks []ConfigCheck) []string {
+	names := make([]string, len(checks))
+	for i, c := range checks {
+		names[i] = c.Name
+	}
+	return names
 }
 
 func findConfigCheck(checks []ConfigCheck, name string) *ConfigCheck {
