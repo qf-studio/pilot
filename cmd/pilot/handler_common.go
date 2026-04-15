@@ -9,7 +9,9 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/qf-studio/pilot/internal/adapters/azuredevops"
 	"github.com/qf-studio/pilot/internal/adapters/github"
+	"github.com/qf-studio/pilot/internal/adapters/gitlab"
 	"github.com/qf-studio/pilot/internal/alerts"
 	"github.com/qf-studio/pilot/internal/budget"
 	"github.com/qf-studio/pilot/internal/config"
@@ -243,8 +245,21 @@ func handleIssueGeneric(ctx context.Context, deps HandlerDeps, info IssueInfo, t
 	if result != nil {
 		if result.PRUrl != "" {
 			hr.PRURL = result.PRUrl
-			if prNum, err := github.ExtractPRNumber(result.PRUrl); err == nil {
-				hr.PRNumber = prNum
+			// GH-2293: Use adapter-specific PR/MR number extraction.
+			// Each forge has a different URL format for pull/merge requests.
+			switch info.Adapter {
+			case "gitlab":
+				if mrNum, err := gitlab.ExtractMRNumber(result.PRUrl); err == nil {
+					hr.PRNumber = mrNum
+				}
+			case "azuredevops":
+				if prNum, err := azuredevops.ExtractPRNumber(result.PRUrl); err == nil {
+					hr.PRNumber = prNum
+				}
+			default:
+				if prNum, err := github.ExtractPRNumber(result.PRUrl); err == nil {
+					hr.PRNumber = prNum
+				}
 			}
 		}
 		hr.HeadSHA = result.CommitSHA

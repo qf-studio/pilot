@@ -5,6 +5,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/qf-studio/pilot/internal/adapters/azuredevops"
+	"github.com/qf-studio/pilot/internal/adapters/github"
+	"github.com/qf-studio/pilot/internal/adapters/gitlab"
 	"github.com/qf-studio/pilot/internal/budget"
 	"github.com/qf-studio/pilot/internal/executor"
 )
@@ -88,6 +91,86 @@ func TestHandleIssueGeneric_MonitorRegistration(t *testing.T) {
 	}
 	if state.Title != "Linear task title" {
 		t.Errorf("expected task title %q, got %q", "Linear task title", state.Title)
+	}
+}
+
+// TestAdapterSpecificPRNumberExtraction verifies that PR/MR number extraction
+// uses the correct adapter-specific regex for each forge (GH-2293).
+func TestAdapterSpecificPRNumberExtraction(t *testing.T) {
+	tests := []struct {
+		name     string
+		adapter  string
+		prURL    string
+		wantNum  int
+		wantFail bool
+	}{
+		{
+			name:    "github PR URL",
+			adapter: "github",
+			prURL:   "https://github.com/org/repo/pull/42",
+			wantNum: 42,
+		},
+		{
+			name:    "gitlab MR URL",
+			adapter: "gitlab",
+			prURL:   "https://gitlab.com/namespace/project/-/merge_requests/17",
+			wantNum: 17,
+		},
+		{
+			name:    "gitlab MR URL without dash prefix",
+			adapter: "gitlab",
+			prURL:   "https://gitlab.example.com/group/repo/merge_requests/99",
+			wantNum: 99,
+		},
+		{
+			name:    "azuredevops PR URL",
+			adapter: "azuredevops",
+			prURL:   "https://dev.azure.com/org/project/_git/repo/pullrequest/55",
+			wantNum: 55,
+		},
+		{
+			name:     "github extractor does not match gitlab URL",
+			adapter:  "github",
+			prURL:    "https://gitlab.com/ns/proj/-/merge_requests/10",
+			wantNum:  0,
+			wantFail: true,
+		},
+		{
+			name:     "gitlab extractor does not match github URL",
+			adapter:  "gitlab",
+			prURL:    "https://github.com/org/repo/pull/10",
+			wantNum:  0,
+			wantFail: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var got int
+			var err error
+			switch tc.adapter {
+			case "gitlab":
+				got, err = gitlab.ExtractMRNumber(tc.prURL)
+			case "azuredevops":
+				got, err = azuredevops.ExtractPRNumber(tc.prURL)
+			default:
+				got, err = github.ExtractPRNumber(tc.prURL)
+			}
+
+			if tc.wantFail {
+				if err == nil {
+					t.Errorf("expected extraction to fail for adapter=%s url=%s, got %d", tc.adapter, tc.prURL, got)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("extraction failed for adapter=%s url=%s: %v", tc.adapter, tc.prURL, err)
+			}
+			if got != tc.wantNum {
+				t.Errorf("expected PR number %d, got %d (adapter=%s url=%s)", tc.wantNum, got, tc.adapter, tc.prURL)
+			}
+		})
 	}
 }
 
