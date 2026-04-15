@@ -436,12 +436,16 @@ func (s *Store) GetExecution(id string) (*Execution, error) {
 }
 
 // HasCompletedExecution checks whether a completed execution exists for the given task and project.
-// It returns true if at least one execution with status "completed" exists.
+// It returns true if at least one execution with status "completed" exists AND has no error.
+// Executions marked "completed" but with a non-empty error field (e.g., orphan recovery) are
+// excluded — they didn't genuinely succeed and should not block re-dispatch.
+// GH-2315: Defense-in-depth against orphan recovery blocking re-dispatch.
 func (s *Store) HasCompletedExecution(taskID, projectPath string) (bool, error) {
 	var count int
 	err := s.db.QueryRow(`
 		SELECT COUNT(*) FROM executions
 		WHERE task_id = ? AND project_path = ? AND status = 'completed'
+			AND (error IS NULL OR error = '')
 	`, taskID, projectPath).Scan(&count)
 	if err != nil {
 		return false, err

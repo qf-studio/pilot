@@ -330,6 +330,66 @@ func TestHasCompletedExecution(t *testing.T) {
 	}
 }
 
+// TestHasCompletedExecution_OrphanRecovery verifies that a completed execution
+// with a non-empty error field (e.g., from orphan recovery) does NOT count as
+// completed. This prevents orphan-recovered executions from blocking re-dispatch.
+// GH-2315: Defense-in-depth against orphan recovery blocking re-dispatch.
+func TestHasCompletedExecution_OrphanRecovery(t *testing.T) {
+	tmpDir, _ := os.MkdirTemp("", "pilot-test-*")
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	store, _ := NewStore(tmpDir)
+	defer func() { _ = store.Close() }()
+
+	taskID := "GH-2305"
+	projectPath := "/project"
+
+	// Simulate 5 failed executions (original scenario from GH-2314)
+	for i := 0; i < 5; i++ {
+		execID := fmt.Sprintf("exec-failed-%d", i)
+		_ = store.SaveExecution(&Execution{
+			ID:          execID,
+			TaskID:      taskID,
+			ProjectPath: projectPath,
+			Status:      "failed",
+		})
+	}
+
+	// Simulate orphan recovery: marks stale running task as "completed" with error
+	_ = store.SaveExecution(&Execution{
+		ID:          "exec-orphan",
+		TaskID:      taskID,
+		ProjectPath: projectPath,
+		Status:      "running",
+	})
+	// Orphan recovery calls UpdateExecutionStatus with error message
+	_ = store.UpdateExecutionStatus("exec-orphan", "completed", "stale running task recovered (orphaned worker)")
+
+	// The orphan-recovered "completed" execution should NOT count as completed
+	completed, err := store.HasCompletedExecution(taskID, projectPath)
+	if err != nil {
+		t.Fatalf("HasCompletedExecution failed: %v", err)
+	}
+	if completed {
+		t.Error("expected false — orphan-recovered execution with error should not block re-dispatch")
+	}
+
+	// Now add a genuine completed execution (no error)
+	_ = store.SaveExecution(&Execution{
+		ID:          "exec-genuine",
+		TaskID:      taskID,
+		ProjectPath: projectPath,
+		Status:      "completed",
+	})
+	completed, err = store.HasCompletedExecution(taskID, projectPath)
+	if err != nil {
+		t.Fatalf("HasCompletedExecution failed: %v", err)
+	}
+	if !completed {
+		t.Error("expected true — genuine completed execution should be found")
+	}
+}
+
 func TestPattern_Update(t *testing.T) {
 	tmpDir, _ := os.MkdirTemp("", "pilot-test-*")
 	defer func() { _ = os.RemoveAll(tmpDir) }()
