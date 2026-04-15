@@ -330,6 +330,49 @@ func TestHasCompletedExecution(t *testing.T) {
 	}
 }
 
+func TestHasCompletedExecution_ExcludesCompletedWithError(t *testing.T) {
+	tmpDir, _ := os.MkdirTemp("", "pilot-test-*")
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	store, _ := NewStore(tmpDir)
+	defer func() { _ = store.Close() }()
+
+	// Save a "completed" execution WITH an error (e.g., from orphan recovery or
+	// UpdateExecutionStatusByTaskID that didn't clear the error).
+	// This should NOT count as a successful completion.
+	_ = store.SaveExecution(&Execution{
+		ID:          "exec-completed-with-error",
+		TaskID:      "GH-99",
+		ProjectPath: "/project",
+		Status:      "completed",
+		Error:       "stale running task recovered (orphaned worker)",
+	})
+
+	completed, err := store.HasCompletedExecution("GH-99", "/project")
+	if err != nil {
+		t.Fatalf("HasCompletedExecution failed: %v", err)
+	}
+	if completed {
+		t.Error("expected false for completed-with-error execution (orphan recovery should not block re-dispatch)")
+	}
+
+	// Now add a clean "completed" execution — should return true
+	_ = store.SaveExecution(&Execution{
+		ID:          "exec-clean-completed",
+		TaskID:      "GH-99",
+		ProjectPath: "/project",
+		Status:      "completed",
+	})
+
+	completed, err = store.HasCompletedExecution("GH-99", "/project")
+	if err != nil {
+		t.Fatalf("HasCompletedExecution failed: %v", err)
+	}
+	if !completed {
+		t.Error("expected true when at least one clean completed execution exists")
+	}
+}
+
 func TestPattern_Update(t *testing.T) {
 	tmpDir, _ := os.MkdirTemp("", "pilot-test-*")
 	defer func() { _ = os.RemoveAll(tmpDir) }()
@@ -1578,6 +1621,11 @@ func TestUpdateExecutionStatusByTaskID_UpdatesFailedToCompleted(t *testing.T) {
 	if exec.CompletedAt == nil {
 		t.Error("expected completed_at to be set")
 	}
+	// GH-2316: Error field must be cleared when transitioning to completed,
+	// otherwise HasCompletedExecution would still see it as an errored record.
+	if exec.Error != "" {
+		t.Errorf("expected error to be cleared, got %q", exec.Error)
+	}
 }
 
 func TestUpdateExecutionStatusByTaskID_SkipsNonFailed(t *testing.T) {
@@ -1615,5 +1663,49 @@ func TestUpdateExecutionStatusByTaskID_NoMatchingTask(t *testing.T) {
 	// Should not error even with no matching rows
 	if err := store.UpdateExecutionStatusByTaskID("GH-999", "completed"); err != nil {
 		t.Fatalf("expected no error for non-existent task, got: %v", err)
+	}
+}
+
+// TestHasCompletedExecution_OrphanRecoveryScenario reproduces the bug from GH-2314:
+// An execution fails (e.g., orphan recovery marks it "failed" with error), then
+// UpdateExecutionStatusByTaskID transitions it to "completed" (PR merged externally).
+// HasCompletedExecution should return true because UpdateExecutionStatusByTaskID clears the error.
+func TestHasCompletedExecution_OrphanRecoveryScenario(t *testing.T) {
+	tmpDir, _ := os.MkdirTemp("", "pilot-test-*")
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	store, _ := NewStore(tmpDir)
+	defer func() { _ = store.Close() }()
+
+	// Step 1: Execution runs and worker crashes, orphan recovery marks as failed
+	_ = store.SaveExecution(&Execution{
+		ID:          "exec-orphan",
+		TaskID:      "GH-2305",
+		ProjectPath: "/project",
+		Status:      "running",
+	})
+	_ = store.UpdateExecutionStatus("exec-orphan", "failed", "stale running task recovered (orphaned worker)")
+
+	// No completed record yet
+	completed, err := store.HasCompletedExecution("GH-2305", "/project")
+	if err != nil {
+		t.Fatalf("HasCompletedExecution failed: %v", err)
+	}
+	if completed {
+		t.Error("should be false after failed execution")
+	}
+
+	// Step 2: Autopilot sees PR merged externally, transitions failed -> completed
+	if err := store.UpdateExecutionStatusByTaskID("GH-2305", "completed"); err != nil {
+		t.Fatalf("UpdateExecutionStatusByTaskID failed: %v", err)
+	}
+
+	// After fix: error is cleared, so HasCompletedExecution returns true
+	completed, err = store.HasCompletedExecution("GH-2305", "/project")
+	if err != nil {
+		t.Fatalf("HasCompletedExecution failed: %v", err)
+	}
+	if !completed {
+		t.Error("should be true after failed->completed transition with error cleared")
 	}
 }

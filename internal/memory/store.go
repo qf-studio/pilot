@@ -435,13 +435,15 @@ func (s *Store) GetExecution(id string) (*Execution, error) {
 	return &exec, nil
 }
 
-// HasCompletedExecution checks whether a completed execution exists for the given task and project.
-// It returns true if at least one execution with status "completed" exists.
+// HasCompletedExecution checks whether a successfully completed execution exists for the given task and project.
+// It returns true only if at least one execution with status "completed" AND empty error field exists.
+// Records with status "completed" but non-empty error (e.g., from orphan recovery) are excluded,
+// preventing false positives that would block re-dispatch.
 func (s *Store) HasCompletedExecution(taskID, projectPath string) (bool, error) {
 	var count int
 	err := s.db.QueryRow(`
 		SELECT COUNT(*) FROM executions
-		WHERE task_id = ? AND project_path = ? AND status = 'completed'
+		WHERE task_id = ? AND project_path = ? AND status = 'completed' AND (error IS NULL OR error = '')
 	`, taskID, projectPath).Scan(&count)
 	if err != nil {
 		return false, err
@@ -883,11 +885,13 @@ func (s *Store) UpdateExecutionStatus(id, status string, errorMsg ...string) err
 // UpdateExecutionStatusByTaskID updates the status of the most recent execution
 // for a given task ID. Used by autopilot to mark failed executions as completed
 // when the PR is merged externally.
+// Clears the error field when transitioning to a non-failed state so that
+// HasCompletedExecution does not incorrectly see a "completed" record with an error.
 func (s *Store) UpdateExecutionStatusByTaskID(taskID, status string) error {
 	return s.withRetry("UpdateExecutionStatusByTaskID", func() error {
 		_, err := s.db.Exec(`
 			UPDATE executions
-			SET status = ?, completed_at = CURRENT_TIMESTAMP
+			SET status = ?, completed_at = CURRENT_TIMESTAMP, error = ''
 			WHERE task_id = ? AND status = 'failed'
 		`, status, taskID)
 		return err
