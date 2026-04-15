@@ -188,7 +188,7 @@ type MergeRequest struct {
 	Labels         []string  `json:"labels"`
 	Draft          bool      `json:"draft"`
 	HeadPipeline   *Pipeline `json:"head_pipeline,omitempty"`
-	DetailedStatus *Status   `json:"detailed_merge_status,omitempty"`
+	DetailedMergeStatus string `json:"detailed_merge_status,omitempty"`
 }
 
 // MergeRequestInput is used for creating merge requests
