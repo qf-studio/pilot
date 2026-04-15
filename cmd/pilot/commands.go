@@ -2244,20 +2244,65 @@ func checkForUpdates() {
 }
 
 // runDashboardMode runs the TUI dashboard with live task updates
-func runDashboardMode(p *pilot.Pilot, cfg *config.Config) error {
+func runDashboardMode(p *pilot.Pilot, cfg *config.Config, gwProgram *tea.Program, gwMonitor *executor.Monitor, gwRunner *executor.Runner) error {
 	// Suppress slog output to prevent corrupting TUI display (GH-164)
 	logging.Suppress()
 	p.SuppressProgressLogs(true)
 
-	// Create TUI program
-	model := dashboard.NewModel(version)
-	program := tea.NewProgram(model, tea.WithAltScreen())
+	// GH-2291: Use the pre-built gateway program when adapter pollers are active.
+	// gwProgram has the richer model (store, autopilot, project path) and is already
+	// referenced by handler_common.go's deps.Program for task start/complete log sends.
+	// When no adapter pollers are active, create a basic program for pure webhook mode.
+	program := gwProgram
+	if program == nil {
+		model := dashboard.NewModel(version)
+		program = tea.NewProgram(model, tea.WithAltScreen())
+	}
 
 	// Set up event bridge: poll task states and send to dashboard
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Register progress callback on Pilot's orchestrator
+	// GH-2291: collectTasks merges task states from adapter pollers (gwMonitor)
+	// and gateway webhook tasks (p.GetTaskStates()) into a single view.
+	// convertTaskStatesToDisplay deduplicates by task ID.
+	collectTasks := func() []dashboard.TaskDisplay {
+		var allStates []*executor.TaskState
+		if gwMonitor != nil {
+			allStates = append(allStates, gwMonitor.GetAll()...)
+		}
+		allStates = append(allStates, p.GetTaskStates()...)
+		return convertTaskStatesToDisplay(allStates)
+	}
+
+	// GH-2291: Wire adapter poller runner progress/token callbacks to the dashboard.
+	// These callbacks also update gwMonitor so collectTasks() returns current data.
+	if gwRunner != nil && gwMonitor != nil {
+		var gwLastUpdate time.Time
+		var gwMu sync.Mutex
+		gwRunner.AddProgressCallback("dashboard", func(taskID, phase string, progress int, message string) {
+			gwMonitor.UpdateProgress(taskID, phase, progress, message)
+
+			gwMu.Lock()
+			if time.Since(gwLastUpdate) < 200*time.Millisecond {
+				gwMu.Unlock()
+				return // Skip — periodic ticker will catch it
+			}
+			gwLastUpdate = time.Now()
+			gwMu.Unlock()
+
+			tasks := collectTasks()
+			program.Send(dashboard.UpdateTasks(tasks)())
+			logMsg := fmt.Sprintf("[%s] %s: %s (%d%%)", taskID, phase, message, progress)
+			program.Send(dashboard.AddLog(logMsg)())
+		})
+
+		gwRunner.AddTokenCallback("dashboard", func(taskID string, inputTokens, outputTokens int64) {
+			program.Send(dashboard.UpdateTokens(int(inputTokens), int(outputTokens))())
+		})
+	}
+
+	// Register progress callback on Pilot's orchestrator (gateway webhook tasks)
 	// GH-1220: Throttle progress callbacks to 200ms to prevent message flooding
 	var lastDashboardUpdate time.Time
 	var dashboardMu sync.Mutex
@@ -2270,11 +2315,9 @@ func runDashboardMode(p *pilot.Pilot, cfg *config.Config) error {
 		lastDashboardUpdate = time.Now()
 		dashboardMu.Unlock()
 
-		// Convert current task states to dashboard display format
-		tasks := convertTaskStatesToDisplay(p.GetTaskStates())
+		tasks := collectTasks()
 		program.Send(dashboard.UpdateTasks(tasks)())
 
-		// Also add progress message as log
 		logMsg := fmt.Sprintf("[%s] %s: %s (%d%%)", taskID, phase, message, progress)
 		program.Send(dashboard.AddLog(logMsg)())
 	})
@@ -2294,7 +2337,7 @@ func runDashboardMode(p *pilot.Pilot, cfg *config.Config) error {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				tasks := convertTaskStatesToDisplay(p.GetTaskStates())
+				tasks := collectTasks()
 				program.Send(dashboard.UpdateTasks(tasks)())
 			}
 		}

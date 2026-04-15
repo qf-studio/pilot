@@ -557,32 +557,8 @@ Examples:
 						tea.WithInput(os.Stdin),
 						tea.WithOutput(os.Stdout),
 					)
-
-					// Wire runner progress updates to dashboard
-					// GH-1220: Throttle progress callbacks to 200ms to prevent message flooding
-					var gwLastDashboardUpdate time.Time
-					var gwDashboardMu sync.Mutex
-					gwRunner.AddProgressCallback("dashboard", func(taskID, phase string, progress int, message string) {
-						gwMonitor.UpdateProgress(taskID, phase, progress, message)
-
-						gwDashboardMu.Lock()
-						if time.Since(gwLastDashboardUpdate) < 200*time.Millisecond {
-							gwDashboardMu.Unlock()
-							return // Skip — periodic ticker will catch it
-						}
-						gwLastDashboardUpdate = time.Now()
-						gwDashboardMu.Unlock()
-
-						tasks := convertTaskStatesToDisplay(gwMonitor.GetAll())
-						gwProgram.Send(dashboard.UpdateTasks(tasks)())
-						logMsg := fmt.Sprintf("[%s] %s: %s (%d%%)", taskID, phase, message, progress)
-						gwProgram.Send(dashboard.AddLog(logMsg)())
-					})
-
-					// Wire token usage updates to dashboard
-					gwRunner.AddTokenCallback("dashboard", func(taskID string, inputTokens, outputTokens int64) {
-						gwProgram.Send(dashboard.UpdateTokens(int(inputTokens), int(outputTokens))())
-					})
+					// GH-2291: Progress/token callbacks are registered by runDashboardMode
+					// which merges task states from both adapter pollers and gateway webhooks.
 				}
 			}
 
@@ -1013,8 +989,9 @@ Examples:
 			go checkForUpdates()
 
 			if dashboardMode {
-				// Run TUI dashboard mode
-				return runDashboardMode(p, cfg)
+				// GH-2291: Pass adapter poller infrastructure so the dashboard
+				// merges task states from both adapter pollers and gateway webhooks.
+				return runDashboardMode(p, cfg, gwProgram, gwMonitor, gwRunner)
 			}
 
 			// Show startup banner (headless mode)
