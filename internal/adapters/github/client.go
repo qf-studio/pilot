@@ -849,6 +849,26 @@ func (c *Client) SearchMergedPRsForIssue(ctx context.Context, owner, repo string
 	return result.TotalCount > 0, nil
 }
 
+// FindMergedPRByBranch looks up PRs by head branch via the strongly-consistent REST API
+// (no Search API indexing lag). Returns true if any PR on that branch is merged.
+// GH-2341: bypasses Search API lag that allowed duplicate dispatch of recently-merged issues.
+func (c *Client) FindMergedPRByBranch(ctx context.Context, owner, repo, branch string) (bool, error) {
+	head := fmt.Sprintf("%s:%s", owner, branch)
+	path := fmt.Sprintf("/repos/%s/%s/pulls?head=%s&state=closed&per_page=10",
+		owner, repo, url.QueryEscape(head))
+
+	var prs []*PullRequest
+	if err := c.doRequest(ctx, http.MethodGet, path, nil, &prs); err != nil {
+		return false, fmt.Errorf("list PRs by branch %s: %w", branch, err)
+	}
+	for _, pr := range prs {
+		if pr.MergedAt != "" || pr.Merged {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // SearchOpenSubIssues counts open issues in a repo whose body contains "Parent: GH-{parentNum}".
 // Uses the GitHub Search API to find sub-issues referencing the given parent.
 func (c *Client) SearchOpenSubIssues(ctx context.Context, owner, repo string, parentNum int) (int, error) {

@@ -917,6 +917,26 @@ func (p *Poller) checkForNewIssues(ctx context.Context) {
 
 	// Phase 3: Dispatch selected issues
 	for _, issue := range toDispatch {
+		// GH-2341: Refresh labels via single-issue GET to bypass stale ListIssues snapshot.
+		// If pilot-done or pilot-in-progress was added after the list was fetched,
+		// the snapshot's Labels will not reflect it — fetch fresh state.
+		if fresh, ferr := p.client.GetIssue(ctx, p.owner, p.repo, issue.Number); ferr == nil && fresh != nil {
+			if HasLabel(fresh, LabelDone) || HasLabel(fresh, LabelInProgress) {
+				p.logger.Info("Skipping dispatch — fresh labels show issue already handled",
+					slog.Int("number", issue.Number),
+					slog.Bool("done", HasLabel(fresh, LabelDone)),
+					slog.Bool("in_progress", HasLabel(fresh, LabelInProgress)),
+				)
+				p.markProcessed(issue.Number)
+				continue
+			}
+		} else if ferr != nil {
+			p.logger.Debug("Failed to refresh issue labels before dispatch — proceeding with snapshot",
+				slog.Int("number", issue.Number),
+				slog.Any("error", ferr),
+			)
+		}
+
 		// Mark processed immediately to prevent duplicate dispatch on next tick
 		p.markProcessed(issue.Number)
 
@@ -1148,10 +1168,29 @@ func (p *Poller) hasMergedWork(ctx context.Context, issue *Issue) bool {
 			slog.Int("issue", issue.Number),
 			slog.Any("error", err),
 		)
-		return false // Don't block on API errors
+		// Fall through to branch lookup below — don't block on Search API errors alone.
 	}
+
+	// GH-2341: Search API has up to ~30s indexing lag. Supplement with a direct REST
+	// lookup by branch (strongly consistent) to catch just-merged PRs on pilot/GH-N.
 	if !found {
-		return false
+		branch := fmt.Sprintf("pilot/GH-%d", issue.Number)
+		branchFound, berr := p.client.FindMergedPRByBranch(ctx, p.owner, p.repo, branch)
+		if berr != nil {
+			p.logger.Warn("Failed to check merged PRs by branch",
+				slog.Int("issue", issue.Number),
+				slog.String("branch", branch),
+				slog.Any("error", berr),
+			)
+			return false
+		}
+		if !branchFound {
+			return false
+		}
+		p.logger.Info("Merged PR found via branch lookup (Search API lag)",
+			slog.Int("issue", issue.Number),
+			slog.String("branch", branch),
+		)
 	}
 
 	p.logger.Info("Issue already has merged PRs, marking as done",
