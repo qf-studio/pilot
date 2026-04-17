@@ -2162,6 +2162,14 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 							}
 						}))
 					}
+					// GH-2354: when pilot-in-progress is stripped from a closed
+					// issue, remove its task from the dashboard monitor so it
+					// stops showing in the queue view.
+					if monitor != nil {
+						cleanerOpts = append(cleanerOpts, github.WithOnInProgressCleaned(func(issueNumber int) {
+							monitor.Remove(fmt.Sprintf("GH-%d", issueNumber))
+						}))
+					}
 					cleaner, cleanerErr := github.NewCleaner(client, store, cfg.Adapters.GitHub.Repo, cfg.Adapters.GitHub.StaleLabelCleanup, cleanerOpts...)
 					if cleanerErr != nil {
 						if !dashboardMode {
