@@ -544,6 +544,13 @@ type ClaudeCodeConfig struct {
 
 	// MaxOutputTokens sets CLAUDE_CODE_MAX_OUTPUT_TOKENS. Default 0 = Claude Code default (32K).
 	MaxOutputTokens int `yaml:"max_output_tokens,omitempty"`
+
+	// DisableNavigatorForEpic skips Navigator context injection (project README,
+	// SOPs, knowledge graph, memories) for COMPLEX / EPIC tasks. GH-2332: large
+	// Navigator prompts on Opus 4.7 have correlated with OOM-killed subprocesses
+	// on long runs. When true, such tasks fall back to the lean non-Navigator
+	// prompt. Default: false (Navigator context always injected when available).
+	DisableNavigatorForEpic bool `yaml:"disable_navigator_for_epic,omitempty"`
 }
 
 // QwenCodeConfig contains Qwen Code backend configuration.

@@ -70,6 +70,11 @@ const (
 
 	// Eval regression events (GH-2065)
 	EventTypeEvalRegression EventType = "eval_regression"
+
+	// OOM-killed backend events (GH-2332). Routed through the task-failed
+	// handler so consecutive-failure tracking keeps working, but kept as a
+	// distinct type so rules and dashboards can single these out.
+	EventTypeOOMKilled EventType = "oom_killed"
 )
 
 // EngineOption configures the Engine
@@ -175,7 +180,10 @@ func (e *Engine) handleEvent(ctx context.Context, event Event) {
 		e.handleTaskProgress(event)
 	case EventTypeTaskCompleted:
 		e.handleTaskCompleted(ctx, event)
-	case EventTypeTaskFailed:
+	case EventTypeTaskFailed, EventTypeOOMKilled:
+		// GH-2332: OOM kills are a strict subset of failures — route through
+		// the same handler so consecutive-failure counters and escalation
+		// rules fire, but preserve the distinct type for logging/metadata.
 		e.handleTaskFailed(ctx, event)
 	case EventTypeCostUpdate:
 		e.handleCostUpdate(ctx, event)
