@@ -9,7 +9,117 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
+
+// conventionalCommitPrefixRegex matches conventional-commit type prefixes like
+// "fix:", "feat(scope):", "chore(epic):" at the start of a title.
+var conventionalCommitPrefixRegex = regexp.MustCompile(`^(?i)(fix|feat|chore|docs|test|refactor|style|perf|ci|build|revert)(\([^)]+\))?:`)
+
+// subtaskActionVerbs is the allow-list of first words that identify a subtask
+// title as an action item (vs LLM analysis/prose). Kept intentionally broad to
+// cover normal engineering verbs without admitting analysis sentences.
+var subtaskActionVerbs = map[string]bool{
+	"add": true, "adjust": true, "allow": true, "apply": true, "audit": true,
+	"block": true, "build": true, "bump": true, "cache": true, "check": true,
+	"clean": true, "cleanup": true, "clear": true, "consolidate": true,
+	"convert": true, "create": true, "decouple": true, "dedupe": true,
+	"delete": true, "deploy": true, "deprecate": true, "detect": true,
+	"disable": true, "document": true, "drop": true, "emit": true, "enable": true,
+	"enforce": true, "ensure": true, "expose": true, "extract": true,
+	"fallback": true, "filter": true, "fix": true, "gate": true, "generate": true,
+	"guard": true, "handle": true, "harden": true, "hide": true, "implement": true,
+	"improve": true, "init": true, "inject": true, "install": true,
+	"instrument": true, "introduce": true, "invalidate": true, "limit": true,
+	"load": true, "log": true, "make": true, "merge": true, "migrate": true,
+	"move": true, "normalize": true, "parse": true, "patch": true, "persist": true,
+	"plumb": true, "port": true, "prefix": true, "prevent": true, "propagate": true,
+	"protect": true, "provide": true, "publish": true, "refactor": true,
+	"register": true, "reject": true, "remove": true, "rename": true,
+	"replace": true, "reset": true, "restore": true, "retry": true, "return": true,
+	"revert": true, "rewrite": true, "route": true, "sanitize": true, "scope": true,
+	"seed": true, "send": true, "serialize": true, "set": true, "setup": true,
+	"simplify": true, "skip": true, "split": true, "standardize": true,
+	"stop": true, "store": true, "strip": true, "support": true, "surface": true,
+	"switch": true, "sync": true, "teach": true, "test": true, "throttle": true,
+	"trim": true, "truncate": true, "unify": true, "unwire": true, "update": true,
+	"upgrade": true, "use": true, "validate": true, "verify": true, "wait": true,
+	"warn": true, "wire": true, "wrap": true, "write": true,
+}
+
+// subtaskProseIndicators are phrases that strongly signal a subtask "title" is
+// actually LLM analysis/prose rather than an action item. See GH-2324 / GH-2315.
+var subtaskProseIndicators = []string{
+	", not ", " but ", " however", "however,",
+	"appears correct", "appears to ", "looks good", "looks correct",
+	" is fine", " is correct", " is actually ", " already ",
+	"already marks", "already handles", "already does",
+	" seems to ", " seems like", " should already",
+	"the status appears", "the current code",
+}
+
+// validateSubtaskTitle reports an error when a subtask title extracted from LLM
+// planning output is structurally unsuitable for use as a GitHub issue title.
+//
+// Incident (GH-2324): the decomposition of GH-2314 produced GH-2315 with this
+// as its title, directly from the LLM's skeptical analysis of the parent issue:
+//
+//	"Dispatcher `recoverStaleTasks()` (line 188) already marks orphans as
+//	 `\"failed\"`, not `\"completed\"`. The status appears correct in the
+//	 current code."
+//
+// The string flowed verbatim into the sub-issue title, PR #2317 title, the
+// squash-merge commit subject, and the public v2.95.3 changelog. This validator
+// rejects such titles before they reach the tracker.
+//
+// Rejection criteria:
+//  1. Contains prose/analysis indicators (", not ", " but ", "appears correct",
+//     "already", ...).
+//  2. Exceeds 15 words — real action titles are terse.
+//  3. First significant word is neither a conventional-commit type prefix nor
+//     an allow-listed action verb.
+func validateSubtaskTitle(title string) error {
+	t := strings.TrimSpace(title)
+	if t == "" {
+		return fmt.Errorf("empty title")
+	}
+
+	lower := strings.ToLower(t)
+	for _, ind := range subtaskProseIndicators {
+		if strings.Contains(lower, ind) {
+			return fmt.Errorf("title contains analysis/prose indicator %q", strings.TrimSpace(ind))
+		}
+	}
+
+	words := strings.Fields(t)
+	if len(words) > 15 {
+		return fmt.Errorf("title has %d words (>15); action titles should be terse", len(words))
+	}
+
+	if conventionalCommitPrefixRegex.MatchString(t) {
+		return nil
+	}
+
+	firstWord := strings.ToLower(strings.Trim(words[0], "*_`\"'.,:;()[]"))
+	if firstWord == "" {
+		return fmt.Errorf("title has no leading word")
+	}
+	if !subtaskActionVerbs[firstWord] {
+		return fmt.Errorf("title does not start with an action verb or conventional-commit prefix (got %q)", firstWord)
+	}
+	return nil
+}
+
+// syntheticSubtaskTitle builds a fallback title for subtasks whose LLM-produced
+// title failed validateSubtaskTitle. Uses the parent ID so the sub-issue is
+// still traceable back to the epic. GH-2324.
+func syntheticSubtaskTitle(parent *Task, order int) string {
+	parentID := "epic"
+	if parent != nil && parent.ID != "" {
+		parentID = parent.ID
+	}
+	return fmt.Sprintf("%s: Subtask %d", parentID, order)
+}
 
 // HasNoPlanKeyword checks whether the task title or description contains the [no-plan]
 // keyword, allowing users to bypass epic planning (GH-1687).
@@ -463,6 +573,35 @@ func (r *Runner) createSubIssuesViaAdapter(ctx context.Context, plan *EpicPlan) 
 		// Truncate title (adapter may have different limits, but 80 is reasonable)
 		title := truncateTitle(subtask.Title, 80)
 
+		// GH-2324: Reject LLM analysis-style titles before they reach the tracker.
+		// Falls back to a synthetic parent-derived title, emits an alert so the
+		// regression is visible.
+		if err := validateSubtaskTitle(title); err != nil {
+			fallback := syntheticSubtaskTitle(plan.ParentTask, subtask.Order)
+			r.log.Warn("Rejected invalid LLM subtask title; using synthetic fallback",
+				"original_title", subtask.Title,
+				"fallback_title", fallback,
+				"reason", err.Error(),
+				"subtask_order", subtask.Order,
+				"parent_id", parentID,
+			)
+			r.emitAlertEvent(AlertEvent{
+				Type:      AlertEventTypeConfigError,
+				TaskID:    parentID,
+				TaskTitle: plan.ParentTask.Title,
+				Project:   plan.ParentTask.ProjectPath,
+				Error:     fmt.Sprintf("invalid subtask title rejected: %v", err),
+				Metadata: map[string]string{
+					"event":          "invalid_subtask_title",
+					"original_title": subtask.Title,
+					"fallback_title": fallback,
+					"subtask_order":  strconv.Itoa(subtask.Order),
+				},
+				Timestamp: time.Now(),
+			})
+			title = fallback
+		}
+
 		r.log.Debug("Creating sub-issue via adapter",
 			"subtask_order", subtask.Order,
 			"title", title,
@@ -519,6 +658,43 @@ func (r *Runner) createSubIssuesViaGitHub(ctx context.Context, plan *EpicPlan, e
 
 		// Truncate title to max 80 chars for GitHub issue limits (GH-1133)
 		title := truncateTitle(subtask.Title, 80)
+
+		// GH-2324: Reject LLM analysis-style titles before they reach GitHub.
+		// Falls back to a synthetic parent-derived title, emits an alert so the
+		// regression is visible.
+		if err := validateSubtaskTitle(title); err != nil {
+			fallback := syntheticSubtaskTitle(plan.ParentTask, subtask.Order)
+			parentID := ""
+			parentProject := ""
+			parentTitle := ""
+			if plan.ParentTask != nil {
+				parentID = plan.ParentTask.ID
+				parentProject = plan.ParentTask.ProjectPath
+				parentTitle = plan.ParentTask.Title
+			}
+			r.log.Warn("Rejected invalid LLM subtask title; using synthetic fallback",
+				"original_title", subtask.Title,
+				"fallback_title", fallback,
+				"reason", err.Error(),
+				"subtask_order", subtask.Order,
+				"parent_id", parentID,
+			)
+			r.emitAlertEvent(AlertEvent{
+				Type:      AlertEventTypeConfigError,
+				TaskID:    parentID,
+				TaskTitle: parentTitle,
+				Project:   parentProject,
+				Error:     fmt.Sprintf("invalid subtask title rejected: %v", err),
+				Metadata: map[string]string{
+					"event":          "invalid_subtask_title",
+					"original_title": subtask.Title,
+					"fallback_title": fallback,
+					"subtask_order":  strconv.Itoa(subtask.Order),
+				},
+				Timestamp: time.Now(),
+			})
+			title = fallback
+		}
 
 		// Create issue using gh CLI
 		args := []string{
