@@ -86,6 +86,20 @@ func (r *Runner) BuildPrompt(task *Task, executionPath string) string {
 	// This reduces overhead for typos, logging, comments, renames, etc.
 	useNavigator := hasNavigator && !complexity.ShouldSkipNavigator()
 
+	// GH-2332: escape hatch — when claude_code.disable_navigator_for_epic is
+	// set, strip Navigator context for COMPLEX/EPIC tasks. The heavy Navigator
+	// prompt (project README + SOPs + knowledge graph + memories) has
+	// correlated with OOM-killed subprocesses on Opus 4.7 long runs.
+	if useNavigator && complexity.IsHeavy() &&
+		r.config != nil && r.config.ClaudeCode != nil &&
+		r.config.ClaudeCode.DisableNavigatorForEpic {
+		slog.Info("Skipping Navigator context for heavy task (claude_code.disable_navigator_for_epic=true)",
+			slog.String("task_id", task.ID),
+			slog.String("complexity", complexity.String()),
+		)
+		useNavigator = false
+	}
+
 	// Navigator-aware prompt structure for medium/complex tasks
 	if useNavigator {
 		// Navigator handles workflow, autonomous completion, and documentation

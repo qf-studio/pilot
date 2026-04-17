@@ -42,6 +42,11 @@ const (
 	AlertEventTypeConfigError AlertEventType = "config_error"
 	AlertEventTypeAPIError    AlertEventType = "api_error"
 
+	// GH-2332: OOM/SIGKILL events are worth separating from the generic
+	// task_failed bucket so operators can spot memory-pressure patterns
+	// and wire dedicated remediation (shrink context, lower concurrency).
+	AlertEventTypeOOMKilled AlertEventType = "oom_killed"
+
 	// GH-925: Stagnation detection alerts
 	AlertEventTypeStagnationWarn  AlertEventType = "stagnation_warn"
 	AlertEventTypeStagnationPause AlertEventType = "stagnation_pause"

@@ -23,6 +23,13 @@ import (
 // This allows the process to clean up gracefully if it responds to SIGTERM.
 const GracePeriod = 5 * time.Second
 
+// MaxStderrBufferBytes caps the in-memory stderr buffer for a single Claude Code
+// invocation. GH-2332: long-running Navigator sessions (10+ min, 100+ tool calls)
+// could accumulate unbounded stderr lines and push Pilot into OOM territory.
+// When the cap is reached, the oldest bytes are dropped (tail-truncation) so the
+// most recent stderr — which classifyClaudeCodeError actually inspects — is kept.
+const MaxStderrBufferBytes = 1 << 20 // 1 MiB
+
 // DefaultHeartbeatTimeout is the default time to wait for any stream-json event before considering the process hung.
 const DefaultHeartbeatTimeout = 5 * time.Minute
 
@@ -352,7 +359,8 @@ func (b *ClaudeCodeBackend) executeWithFromPR(ctx context.Context, opts ExecuteO
 
 	// Track results
 	result := &BackendResult{}
-	var stderrOutput strings.Builder
+	// GH-2332: bounded stderr buffer to prevent OOM on long sessions.
+	stderrOutput := newBoundedBuffer(MaxStderrBufferBytes)
 	var wg sync.WaitGroup
 
 	// Channel to signal command completion
@@ -519,7 +527,7 @@ func (b *ClaudeCodeBackend) executeWithFromPR(ctx context.Context, opts ExecuteO
 		scanner := bufio.NewScanner(stderr)
 		for scanner.Scan() {
 			line := scanner.Text()
-			stderrOutput.WriteString(line + "\n")
+			stderrOutput.WriteLine(line)
 			if opts.Verbose {
 				fmt.Printf("   [err] %s\n", line)
 			}

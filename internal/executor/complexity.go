@@ -282,3 +282,11 @@ func (c Complexity) ShouldRunResearch() bool {
 func (c Complexity) IsEpic() bool {
 	return c == ComplexityEpic
 }
+
+// IsHeavy returns true for complex or epic tasks — those most at risk of
+// blowing the Claude Code subprocess memory budget when Navigator context is
+// injected (GH-2332). Used by claude_code.disable_navigator_for_epic to gate
+// the Navigator path.
+func (c Complexity) IsHeavy() bool {
+	return c == ComplexityComplex || c == ComplexityEpic
+}
