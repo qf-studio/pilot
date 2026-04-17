@@ -90,8 +90,17 @@ func (g *GitOperations) Push(ctx context.Context, branchName string) error {
 	return nil
 }
 
-// CreatePR creates a pull request using gh CLI
+// CreatePR creates a pull request using gh CLI.
+// GH-2325: title is validated against the conventional commit format before
+// the remote call so malformed titles cannot reach main (and public release
+// notes). The expected shape is "<issue-id>: <type>(<scope>)?: <subject>",
+// which matches what the squash-merge path strips back to a conventional
+// commit message.
 func (g *GitOperations) CreatePR(ctx context.Context, title, body, baseBranch string) (string, error) {
+	if err := validatePRTitle(title); err != nil {
+		return "", err
+	}
+
 	// GH-2177: Detect current branch to pass --head explicitly.
 	// In worktree mode, gh may see uncommitted changes and refuse to infer the head branch.
 	// Using --head bypasses the dirty working tree check.
