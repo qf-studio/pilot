@@ -248,8 +248,13 @@ func TestCleaner_Cleanup_RecentIssuesSkipped(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 
-		// List issues endpoint
+		// List issues endpoint — only return the recent open issue for state=open
+		// queries. The closed-state scan (GH-2355) should receive an empty list.
 		if r.Method == http.MethodGet && r.URL.Path == "/repos/owner/repo/issues" {
+			if r.URL.Query().Get("state") == StateClosed {
+				_ = json.NewEncoder(w).Encode([]*Issue{})
+				return
+			}
 			_ = json.NewEncoder(w).Encode(issues)
 			return
 		}
@@ -340,6 +345,140 @@ func TestCleaner_Cleanup_ActiveExecutionsSkipped(t *testing.T) {
 
 	if removeLabelCalled {
 		t.Error("RemoveLabel should NOT have been called for issue with active execution")
+	}
+}
+
+// TestCleaner_Cleanup_ClosedInProgressRemoved verifies GH-2355: closed issues
+// with pilot-in-progress label get the label cleared regardless of age.
+func TestCleaner_Cleanup_ClosedInProgressRemoved(t *testing.T) {
+	store := createTestStore(t)
+	defer func() { _ = store.Close() }()
+
+	// Issue updated 5 minutes ago — well under the 1h threshold. Would NOT be
+	// cleaned by the existing open-issue path. Should still be cleaned here
+	// because it's closed with pilot-in-progress.
+	recentTime := time.Now().Add(-5 * time.Minute)
+	closedIssues := []*Issue{
+		{
+			Number:    2348,
+			Title:     "Externally closed",
+			Labels:    []Label{{Name: LabelInProgress}},
+			UpdatedAt: recentTime,
+		},
+	}
+
+	var removeLabelCalled bool
+	var listClosedCalled bool
+	var mu sync.Mutex
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+
+		w.Header().Set("Content-Type", "application/json")
+
+		if r.Method == http.MethodGet && r.URL.Path == "/repos/owner/repo/issues" {
+			if r.URL.Query().Get("state") == StateClosed {
+				listClosedCalled = true
+				_ = json.NewEncoder(w).Encode(closedIssues)
+				return
+			}
+			// Open-issue listings (called for in-progress + failed threshold paths)
+			_ = json.NewEncoder(w).Encode([]*Issue{})
+			return
+		}
+
+		if r.Method == http.MethodDelete && r.URL.Path == "/repos/owner/repo/issues/2348/labels/"+LabelInProgress {
+			removeLabelCalled = true
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cleaner, _ := NewCleaner(client, store, "owner/repo", &StaleLabelCleanupConfig{
+		Enabled:   true,
+		Interval:  30 * time.Minute,
+		Threshold: 1 * time.Hour,
+	})
+
+	if err := cleaner.Cleanup(context.Background()); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if !listClosedCalled {
+		t.Error("expected ListIssues with state=closed to be called")
+	}
+	if !removeLabelCalled {
+		t.Error("expected RemoveLabel to be called for closed in-progress issue")
+	}
+}
+
+// TestCleaner_Cleanup_ClosedInProgressSkipsActive verifies that a closed issue
+// with an active execution is NOT touched — the worker may still be wrapping up.
+func TestCleaner_Cleanup_ClosedInProgressSkipsActive(t *testing.T) {
+	store := createTestStore(t)
+	defer func() { _ = store.Close() }()
+
+	exec := &memory.Execution{
+		ID:          "exec-2348",
+		TaskID:      "GH-2348",
+		ProjectPath: "/test/project",
+		Status:      "running",
+	}
+	if err := store.SaveExecution(exec); err != nil {
+		t.Fatalf("SaveExecution: %v", err)
+	}
+
+	closedIssues := []*Issue{
+		{
+			Number:    2348,
+			Title:     "Closed but active",
+			Labels:    []Label{{Name: LabelInProgress}},
+			UpdatedAt: time.Now(),
+		},
+	}
+
+	removeLabelCalled := false
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		if r.Method == http.MethodGet && r.URL.Path == "/repos/owner/repo/issues" {
+			if r.URL.Query().Get("state") == StateClosed {
+				_ = json.NewEncoder(w).Encode(closedIssues)
+				return
+			}
+			_ = json.NewEncoder(w).Encode([]*Issue{})
+			return
+		}
+
+		if r.Method == http.MethodDelete {
+			removeLabelCalled = true
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cleaner, _ := NewCleaner(client, store, "owner/repo", &StaleLabelCleanupConfig{
+		Enabled:   true,
+		Interval:  30 * time.Minute,
+		Threshold: 1 * time.Hour,
+	})
+
+	if err := cleaner.Cleanup(context.Background()); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+
+	if removeLabelCalled {
+		t.Error("RemoveLabel should NOT be called when an active execution exists")
 	}
 }
 

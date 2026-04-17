@@ -180,11 +180,20 @@ func (c *Cleaner) Cleanup(ctx context.Context) error {
 		return fmt.Errorf("failed to cleanup failed labels: %w", err)
 	}
 
-	totalCleaned := inProgressCleaned + failedCleaned
+	// Clean up pilot-in-progress on externally-closed issues (GH-2355).
+	// A closed issue carrying pilot-in-progress is contradictory state — the
+	// label should be cleared immediately regardless of age.
+	closedInProgressCleaned, err := c.cleanupClosedInProgress(ctx, activeTaskIDs)
+	if err != nil {
+		return fmt.Errorf("failed to cleanup closed in-progress labels: %w", err)
+	}
+
+	totalCleaned := inProgressCleaned + failedCleaned + closedInProgressCleaned
 	if totalCleaned > 0 {
 		c.logger.Info("Stale label cleanup completed",
 			slog.Int("in_progress_cleaned", inProgressCleaned),
 			slog.Int("failed_cleaned", failedCleaned),
+			slog.Int("closed_in_progress_cleaned", closedInProgressCleaned),
 		)
 	}
 
@@ -275,6 +284,58 @@ func (c *Cleaner) cleanupLabel(ctx context.Context, label string, threshold time
 		// For failed labels, notify callback to clear from processed map
 		if label == LabelFailed && c.OnFailedCleaned != nil {
 			c.OnFailedCleaned(issue.Number)
+		}
+
+		cleanedCount++
+	}
+
+	return cleanedCount, nil
+}
+
+// cleanupClosedInProgress removes pilot-in-progress from issues that are CLOSED.
+// A closed issue with that label is contradictory state (externally closed via
+// `gh issue close` or UI without label cleanup). No age threshold — clear on
+// first observation. Active executions are still skipped so we don't race a
+// legitimate in-flight run that closed the issue itself.
+func (c *Cleaner) cleanupClosedInProgress(ctx context.Context, activeTaskIDs map[string]bool) (int, error) {
+	issues, err := c.client.ListIssues(ctx, c.owner, c.repo, &ListIssuesOptions{
+		Labels: []string{LabelInProgress},
+		State:  StateClosed,
+	})
+	if err != nil {
+		return 0, fmt.Errorf("failed to list closed issues with %s label: %w", LabelInProgress, err)
+	}
+
+	if len(issues) == 0 {
+		return 0, nil
+	}
+
+	c.logger.Debug("Found closed issues with pilot-in-progress label",
+		slog.Int("count", len(issues)),
+	)
+
+	cleanedCount := 0
+	for _, issue := range issues {
+		taskID := fmt.Sprintf("GH-%d", issue.Number)
+		if activeTaskIDs[taskID] {
+			c.logger.Debug("Closed issue has active execution, skipping",
+				slog.Int("issue", issue.Number),
+				slog.String("task_id", taskID),
+			)
+			continue
+		}
+
+		c.logger.Info("Removing pilot-in-progress from externally-closed issue",
+			slog.Int("issue", issue.Number),
+			slog.String("title", issue.Title),
+		)
+
+		if err := c.client.RemoveLabel(ctx, c.owner, c.repo, issue.Number, LabelInProgress); err != nil {
+			c.logger.Warn("Failed to remove pilot-in-progress from closed issue",
+				slog.Int("issue", issue.Number),
+				slog.Any("error", err),
+			)
+			continue
 		}
 
 		cleanedCount++
