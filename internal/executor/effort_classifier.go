@@ -109,6 +109,7 @@ func (c *EffortClassifier) defaultCmdRunner(ctx context.Context, args ...string)
 func newEffortClassifierWithRunner(runner func(ctx context.Context, args ...string) ([]byte, error)) *EffortClassifier {
 	c := NewEffortClassifier()
 	c.cmdRunner = runner
+	c.apiKey = "" // force subprocess path for tests regardless of ambient env
 	return c
 }
 
