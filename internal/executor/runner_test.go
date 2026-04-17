@@ -3260,3 +3260,75 @@ func TestPRCreator_NotUsedWhenEmpty(t *testing.T) {
 		t.Error("should NOT use PRCreator when SourceAdapter is empty")
 	}
 }
+
+// TestTruncateDiagnostic verifies the diagnostic truncation helper used by
+// persistBackendDiagnostics honors its character ceilings and appends a
+// visible marker so readers know the payload was clipped. GH-2328.
+func TestTruncateDiagnostic(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		max     int
+		want    string
+		trunced bool
+	}{
+		{
+			name:  "under limit unchanged",
+			input: "short stderr",
+			max:   100,
+			want:  "short stderr",
+		},
+		{
+			name:  "equal to limit unchanged",
+			input: strings.Repeat("x", 10),
+			max:   10,
+			want:  strings.Repeat("x", 10),
+		},
+		{
+			name:    "over limit truncated with marker",
+			input:   strings.Repeat("y", 20),
+			max:     5,
+			want:    strings.Repeat("y", 5) + "\n[...truncated]",
+			trunced: true,
+		},
+		{
+			name:    "stderr ceiling (16 KB)",
+			input:   strings.Repeat("e", 20*1024),
+			max:     diagnosticsStderrMaxChars,
+			trunced: true,
+		},
+		{
+			name:    "message ceiling (4 KB)",
+			input:   strings.Repeat("m", 10*1024),
+			max:     diagnosticsMessageMaxChars,
+			trunced: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := truncateDiagnostic(tt.input, tt.max)
+			if !tt.trunced && got != tt.want {
+				t.Errorf("got %q, want %q", got, tt.want)
+			}
+			if tt.trunced {
+				if !strings.HasSuffix(got, "\n[...truncated]") {
+					t.Errorf("expected truncation marker, got %q", got[max(0, len(got)-32):])
+				}
+				// Output length = max + len marker.
+				expectedLen := tt.max + len("\n[...truncated]")
+				if len(got) != expectedLen {
+					t.Errorf("truncated length = %d, want %d", len(got), expectedLen)
+				}
+			}
+		})
+	}
+
+	// Ceiling constants must match the design target so project-side tooling
+	// that assumes ≤16 KB / ≤4 KB keeps working. GH-2328 acceptance.
+	if diagnosticsStderrMaxChars != 16*1024 {
+		t.Errorf("diagnosticsStderrMaxChars = %d, want 16384", diagnosticsStderrMaxChars)
+	}
+	if diagnosticsMessageMaxChars != 4*1024 {
+		t.Errorf("diagnosticsMessageMaxChars = %d, want 4096", diagnosticsMessageMaxChars)
+	}
+}

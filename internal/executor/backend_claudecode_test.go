@@ -842,3 +842,37 @@ func TestClaudeCodeError_Error(t *testing.T) {
 		}
 	})
 }
+
+// TestErrorTypeNoChanges verifies that the no_changes classification constant
+// is defined and distinguishable from other error types. GH-2328.
+func TestErrorTypeNoChanges(t *testing.T) {
+	if ErrorTypeNoChanges != "no_changes" {
+		t.Errorf("ErrorTypeNoChanges = %q, want %q", ErrorTypeNoChanges, "no_changes")
+	}
+
+	// Must not collide with any other classification the runner already depends on.
+	others := []ClaudeCodeErrorType{
+		ErrorTypeRateLimit,
+		ErrorTypeInvalidConfig,
+		ErrorTypeAPIError,
+		ErrorTypeTimeout,
+		ErrorTypeOOM,
+		ErrorTypeSessionNotFound,
+		ErrorTypeUnknown,
+	}
+	for _, o := range others {
+		if ErrorTypeNoChanges == o {
+			t.Errorf("ErrorTypeNoChanges collides with %q", o)
+		}
+	}
+
+	// A ClaudeCodeError carrying no_changes must render the final assistant
+	// text via Error() so the autopilot failure comment surfaces the refusal.
+	err := &ClaudeCodeError{
+		Type:    ErrorTypeNoChanges,
+		Message: "refused: this task is out of scope",
+	}
+	if got := err.Error(); got != "no_changes: refused: this task is out of scope" {
+		t.Errorf("Error() = %q, want %q", got, "no_changes: refused: this task is out of scope")
+	}
+}

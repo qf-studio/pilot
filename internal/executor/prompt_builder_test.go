@@ -581,6 +581,113 @@ func TestBuildSelfReviewPromptWithAcceptanceCriteria(t *testing.T) {
 	})
 }
 
+// TestBuildPromptExecutorHeader verifies the [PILOT-EXEC] executor-mode header
+// is emitted for every non-image, non-local-mode task so the child Claude
+// session (and project CLAUDE.md) can tell it was invoked by Pilot without
+// sniffing CWD or prompt-prefix heuristics. GH-2328.
+func TestBuildPromptExecutorHeader(t *testing.T) {
+	runner := NewRunner()
+
+	cases := []struct {
+		name  string
+		task  *Task
+		setup func(t *testing.T) string
+		want  bool
+	}{
+		{
+			name: "navigator task has header",
+			task: &Task{
+				ID:          "GH-2328",
+				Title:       "Signal executor mode",
+				Description: "Signal executor mode to Claude",
+				Branch:      "pilot/GH-2328",
+			},
+			setup: func(t *testing.T) string {
+				dir := t.TempDir()
+				if err := os.MkdirAll(filepath.Join(dir, ".agent"), 0755); err != nil {
+					t.Fatalf("mkdir: %v", err)
+				}
+				return dir
+			},
+			want: true,
+		},
+		{
+			name: "trivial navigator task has header",
+			task: &Task{
+				ID:          "TRIVIAL-1",
+				Title:       "Fix typo",
+				Description: "Fix typo in README.md",
+			},
+			setup: func(t *testing.T) string {
+				dir := t.TempDir()
+				if err := os.MkdirAll(filepath.Join(dir, ".agent"), 0755); err != nil {
+					t.Fatalf("mkdir: %v", err)
+				}
+				return dir
+			},
+			want: true,
+		},
+		{
+			name: "non-navigator project has header",
+			task: &Task{
+				ID:          "NONAV-1",
+				Title:       "Add file",
+				Description: "Create a config file",
+			},
+			setup: func(t *testing.T) string { return t.TempDir() },
+			want:  true,
+		},
+		{
+			name: "local mode does not include header",
+			task: &Task{
+				ID:          "LOCAL-1",
+				Title:       "Sandbox run",
+				Description: "Solve bench task",
+				LocalMode:   true,
+			},
+			setup: func(t *testing.T) string { return t.TempDir() },
+			want:  false,
+		},
+		{
+			name: "image task does not include header",
+			task: &Task{
+				ID:          "IMG-1",
+				Title:       "Describe image",
+				Description: "Describe the image",
+				ImagePath:   "/tmp/nonexistent.png",
+			},
+			setup: func(t *testing.T) string { return t.TempDir() },
+			want:  false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := tc.setup(t)
+			tc.task.ProjectPath = dir
+
+			prompt := runner.BuildPrompt(tc.task, dir)
+			got := strings.HasPrefix(prompt, "[PILOT-EXEC]")
+			if got != tc.want {
+				t.Errorf("header present = %v, want %v\nprompt[:80]=%q",
+					got, tc.want, prompt[:min(len(prompt), 80)])
+			}
+
+			if tc.want {
+				// The body of the header must tell Claude not to defer. Without
+				// this, a refusal-prone project CLAUDE.md could still veto the
+				// task on mixed heuristics.
+				if !strings.Contains(prompt, "do not refuse") {
+					t.Error("executor header missing 'do not refuse' directive")
+				}
+				if !strings.Contains(prompt, "Navigator + Pilot pipeline") {
+					t.Error("executor header should name the Navigator + Pilot pipeline")
+				}
+			}
+		})
+	}
+}
+
 func TestBuildPromptSkipsNavigatorForTrivialTask(t *testing.T) {
 	// Create temporary test environment with .agent/
 	tempDir, err := os.MkdirTemp("", "pilot-test-trivial")

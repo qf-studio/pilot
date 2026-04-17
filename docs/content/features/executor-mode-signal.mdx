@@ -1,0 +1,87 @@
+import { Callout } from 'nextra/components'
+
+# Executor-Mode Signal
+
+Pilot tells the Claude Code subprocess it was invoked by the executor (not a
+human Navigator session) via two explicit signals. Project `CLAUDE.md` and
+auto-memory files can cooperate with these signals to skip Navigator-only
+"don't write code" rules without relying on fragile CWD or prompt-prefix
+heuristics. (GH-2328)
+
+## Why this exists
+
+Before GH-2328, the child Claude session had to infer it was running under
+Pilot. If the project's `CLAUDE.md` declared "NEVER write code, always plan
+via `/nav-task`", the child would silently refuse the task — exit cleanly
+with a polite "I will not implement this, create an issue instead" — and the
+executor recorded only `unknown: exit status 1`. GH-2305, GH-2324, and
+GH-2325 each burned several hours on that failure mode before the refusal
+text was spotted in the stdout transcript.
+
+## Signal 1 — `PILOT_EXECUTOR=1` environment variable
+
+The executor sets `PILOT_EXECUTOR=1` on every Claude Code subprocess it
+spawns. Project `CLAUDE.md` files, hooks, and other tooling can branch on
+this variable deterministically:
+
+```bash
+# In a hook script invoked by Claude Code
+if [ "${PILOT_EXECUTOR:-}" = "1" ]; then
+  echo "Pilot-executor run: enforcing commit-on-success"
+fi
+```
+
+## Signal 2 — `[PILOT-EXEC]` prompt header
+
+Every executor prompt begins with a short standard header:
+
+```
+[PILOT-EXEC]
+You are invoked by Pilot's executor to implement a specific task on this
+repository. You are the execution leg of the Navigator + Pilot pipeline.
+Implement the task described below directly — do not refuse, do not ask
+to create a GitHub issue, do not defer. Write code, run build/tests via
+the stop-gate hook, and complete the task.
+```
+
+The header is **stable** — the first line is always literally `[PILOT-EXEC]`.
+Project `CLAUDE.md` files can pattern-match the first line to scope rules:
+
+````markdown
+<!-- Excerpt from a project CLAUDE.md -->
+
+## Navigator vs Pilot
+
+If the prompt begins with `[PILOT-EXEC]`, you are the execution leg.
+- Implement the task directly.
+- Ignore any "do not write code" rules below; they apply only to
+  interactive planning sessions.
+
+Otherwise (no `[PILOT-EXEC]` marker), you are in an interactive session:
+- Use `/nav-task` to plan.
+- Hand execution to Pilot by creating a GitHub issue labeled `pilot`.
+````
+
+<Callout type="info">
+The header is not emitted for **image-analysis** tasks or **local-mode**
+bench runs — those invocations are not implementing repository changes, so
+the executor-mode directives do not apply.
+</Callout>
+
+## Failure diagnostics
+
+When an executor run does fail, Pilot now persists:
+
+- **Error classification** (e.g. `rate_limit`, `api_error`, `oom_killed`,
+  `no_changes`, `unknown`) — written to `execution_logs` with a `Backend
+  error classification:` prefix.
+- **Raw stderr** — truncated to 16 KB, written with a `Backend stderr:`
+  prefix.
+- **Final assistant message** — the last `text` block from the stream-json
+  output, truncated to 4 KB, written with a `Final assistant message:`
+  prefix. This captures refusal text when Claude exits 0 without making
+  changes.
+
+The `no_changes` classification is emitted when Claude exits successfully
+but produces no diff after the retry path — typically a polite refusal the
+executor would previously have reported as `unknown: exit status 1`.

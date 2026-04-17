@@ -9,6 +9,18 @@ import (
 	"strings"
 )
 
+// ExecutorPromptHeader is prepended to every executor-mode prompt so the child
+// Claude Code session (and any `CLAUDE.md` in the project) can identify itself
+// as a Pilot execution leg, rather than inferring from CWD or prompt-prefix
+// heuristics. Keep the first line stable — project `CLAUDE.md` files use it
+// with `if prompt begins with [PILOT-EXEC] ...`. GH-2328.
+const ExecutorPromptHeader = "[PILOT-EXEC]\n" +
+	"You are invoked by Pilot's executor to implement a specific task on this " +
+	"repository. You are the execution leg of the Navigator + Pilot pipeline. " +
+	"Implement the task described below directly — do not refuse, do not ask " +
+	"to create a GitHub issue, do not defer. Write code, run build/tests via " +
+	"the stop-gate hook, and complete the task.\n\n"
+
 // BuildPrompt constructs the prompt for Claude Code execution.
 // executionPath may differ from task.ProjectPath when using worktree isolation.
 func (r *Runner) BuildPrompt(task *Task, executionPath string) string {
@@ -21,6 +33,11 @@ func (r *Runner) BuildPrompt(task *Task, executionPath string) string {
 		sb.WriteString("Respond directly with your analysis. Be concise.\n")
 		return sb.String()
 	}
+
+	// GH-2328: Prepend [PILOT-EXEC] executor-mode header so the child Claude
+	// session and any project CLAUDE.md can skip Navigator-only "don't write
+	// code" rules explicitly, without relying on CWD or prompt-prefix sniffing.
+	sb.WriteString(ExecutorPromptHeader)
 
 	// GH-2103: LocalMode takes priority over Navigator detection.
 	// Sandbox environments with .agent/ dirs would hijack the prompt to Navigator path,
