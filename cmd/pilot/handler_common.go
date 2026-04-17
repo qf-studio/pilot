@@ -133,8 +133,10 @@ func handleIssueGeneric(ctx context.Context, deps HandlerDeps, info IssueInfo, t
 		}
 	}
 
-	// 5. Print to stdout
-	fmt.Printf("\n%s %s: %s\n", info.LogEmoji, taskID, title)
+	// 5. Print to stdout (skip in dashboard mode to avoid corrupting the TUI alt-screen)
+	if deps.Program == nil {
+		fmt.Printf("\n%s %s: %s\n", info.LogEmoji, taskID, title)
+	}
 
 	// 6. Dispatch via dispatcher OR direct execute via runner
 	var result *executor.ExecutionResult
@@ -148,7 +150,9 @@ func handleIssueGeneric(ctx context.Context, deps HandlerDeps, info IssueInfo, t
 			if deps.Monitor != nil {
 				deps.Monitor.Queue(taskID)
 			}
-			fmt.Printf("   📋 Queued as execution %s\n", execID[:8])
+			if deps.Program == nil {
+				fmt.Printf("   📋 Queued as execution %s\n", execID[:8])
+			}
 			exec, waitErr := deps.Dispatcher.WaitForExecution(ctx, execID, time.Second)
 			if waitErr != nil {
 				execErr = fmt.Errorf("failed waiting for execution: %w", waitErr)
