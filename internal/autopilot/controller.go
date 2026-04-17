@@ -1773,6 +1773,19 @@ func (c *Controller) ScanExistingPRs(ctx context.Context) error {
 			continue
 		}
 
+		// Skip PRs already tracked via RestoreState — OnPRCreated would clobber
+		// their persisted stage (e.g. StageWaitingCI) back to StagePRCreated and
+		// reset CIWaitStartedAt, making CI timers restart from zero after every
+		// Pilot restart. RestoreState is authoritative for PRs in SQLite; this
+		// scan only registers genuine orphans (PRs created while Pilot was down).
+		c.mu.RLock()
+		_, alreadyTracked := c.activePRs[pr.Number]
+		c.mu.RUnlock()
+		if alreadyTracked {
+			c.log.Debug("skipping already-tracked PR in scan", "pr", pr.Number, "branch", pr.Head.Ref)
+			continue
+		}
+
 		c.log.Info("restoring Pilot PR for tracking",
 			"pr", pr.Number,
 			"branch", pr.Head.Ref,
