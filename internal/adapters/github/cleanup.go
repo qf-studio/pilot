@@ -29,6 +29,11 @@ type Cleaner struct {
 	// Used to clear the issue from the poller's processed map.
 	OnFailedCleaned func(issueNumber int)
 
+	// OnInProgressCleaned is called when a pilot-in-progress label is removed
+	// from a closed issue. Used to prune the dashboard monitor so the task
+	// stops appearing in the queue view (GH-2354).
+	OnInProgressCleaned func(issueNumber int)
+
 	mu      sync.Mutex
 	running bool
 	stopCh  chan struct{}
@@ -49,6 +54,15 @@ func WithCleanerLogger(logger *slog.Logger) CleanerOption {
 func WithOnFailedCleaned(fn func(issueNumber int)) CleanerOption {
 	return func(c *Cleaner) {
 		c.OnFailedCleaned = fn
+	}
+}
+
+// WithOnInProgressCleaned sets the callback for when a pilot-in-progress label
+// is removed from a closed issue. The callback receives the issue number and
+// should remove the task from the dashboard monitor (GH-2354).
+func WithOnInProgressCleaned(fn func(issueNumber int)) CleanerOption {
+	return func(c *Cleaner) {
+		c.OnInProgressCleaned = fn
 	}
 }
 
@@ -174,16 +188,25 @@ func (c *Cleaner) Cleanup(ctx context.Context) error {
 		return fmt.Errorf("failed to cleanup in-progress labels: %w", err)
 	}
 
+	// GH-2354: Also clean up pilot-in-progress labels left on CLOSED issues.
+	// Externally closed issues (e.g. `gh issue close`) retain the label; the
+	// dashboard monitor keeps them in its queue view until the task is pruned.
+	closedCleaned, err := c.cleanupClosedInProgressLabels(ctx, activeTaskIDs)
+	if err != nil {
+		return fmt.Errorf("failed to cleanup closed in-progress labels: %w", err)
+	}
+
 	// Clean up stale pilot-failed labels
 	failedCleaned, err := c.cleanupLabel(ctx, LabelFailed, c.failedThreshold, activeTaskIDs)
 	if err != nil {
 		return fmt.Errorf("failed to cleanup failed labels: %w", err)
 	}
 
-	totalCleaned := inProgressCleaned + failedCleaned
+	totalCleaned := inProgressCleaned + closedCleaned + failedCleaned
 	if totalCleaned > 0 {
 		c.logger.Info("Stale label cleanup completed",
 			slog.Int("in_progress_cleaned", inProgressCleaned),
+			slog.Int("closed_in_progress_cleaned", closedCleaned),
 			slog.Int("failed_cleaned", failedCleaned),
 		)
 	}
@@ -275,6 +298,74 @@ func (c *Cleaner) cleanupLabel(ctx context.Context, label string, threshold time
 		// For failed labels, notify callback to clear from processed map
 		if label == LabelFailed && c.OnFailedCleaned != nil {
 			c.OnFailedCleaned(issue.Number)
+		}
+
+		cleanedCount++
+	}
+
+	return cleanedCount, nil
+}
+
+// cleanupClosedInProgressLabels removes the pilot-in-progress label from
+// issues that are CLOSED on GitHub but still carry the label. This happens
+// when an issue is closed externally (e.g. `gh issue close`) without the
+// label being cleared. The dashboard monitor treats such tasks as live and
+// keeps them in the queue view — GH-2354.
+//
+// No staleness threshold is applied: a closed issue should never carry the
+// in-progress label, so we clean immediately on discovery. Active executions
+// (tracked in the memory store) are still skipped so an in-flight run isn't
+// silently stripped while it's still working.
+func (c *Cleaner) cleanupClosedInProgressLabels(ctx context.Context, activeTaskIDs map[string]bool) (int, error) {
+	issues, err := c.client.ListIssues(ctx, c.owner, c.repo, &ListIssuesOptions{
+		Labels: []string{LabelInProgress},
+		State:  StateClosed,
+	})
+	if err != nil {
+		return 0, fmt.Errorf("failed to list closed issues with %s label: %w", LabelInProgress, err)
+	}
+
+	if len(issues) == 0 {
+		return 0, nil
+	}
+
+	c.logger.Debug("Found closed issues with in-progress label",
+		slog.Int("count", len(issues)),
+	)
+
+	cleanedCount := 0
+	for _, issue := range issues {
+		// Defensive: only act on issues that are genuinely closed. GitHub's
+		// real API honours the state=closed filter, but we don't want to
+		// strip labels from open issues if the response is ambiguous.
+		if issue.State != StateClosed {
+			continue
+		}
+
+		taskID := fmt.Sprintf("GH-%d", issue.Number)
+		if activeTaskIDs[taskID] {
+			c.logger.Debug("Closed issue has active execution, skipping",
+				slog.Int("issue", issue.Number),
+				slog.String("task_id", taskID),
+			)
+			continue
+		}
+
+		c.logger.Info("Removing in-progress label from closed issue",
+			slog.Int("issue", issue.Number),
+			slog.String("title", issue.Title),
+		)
+
+		if err := c.client.RemoveLabel(ctx, c.owner, c.repo, issue.Number, LabelInProgress); err != nil {
+			c.logger.Warn("Failed to remove in-progress label from closed issue",
+				slog.Int("issue", issue.Number),
+				slog.Any("error", err),
+			)
+			continue
+		}
+
+		if c.OnInProgressCleaned != nil {
+			c.OnInProgressCleaned(issue.Number)
 		}
 
 		cleanedCount++

@@ -665,6 +665,146 @@ func TestCleaner_FailedThreshold_DefaultValue(t *testing.T) {
 	}
 }
 
+// GH-2354: pilot-in-progress label on externally-closed issues should be
+// cleaned up immediately, and the dashboard monitor callback should fire.
+func TestCleaner_Cleanup_ClosedInProgressIssueCleaned(t *testing.T) {
+	store := createTestStore(t)
+	defer func() { _ = store.Close() }()
+
+	closedIssues := []*Issue{
+		{
+			Number:    2348,
+			Title:     "Externally closed issue",
+			Labels:    []Label{{Name: LabelInProgress}},
+			State:     StateClosed,
+			UpdatedAt: time.Now(), // recent — threshold must be ignored for closed
+		},
+	}
+
+	var (
+		mu              sync.Mutex
+		removeLabelHit  bool
+		sawStateClosed  bool
+		commentOnClosed bool
+	)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+
+		w.Header().Set("Content-Type", "application/json")
+
+		if r.Method == http.MethodGet && r.URL.Path == "/repos/owner/repo/issues" {
+			state := r.URL.Query().Get("state")
+			if state == "closed" {
+				sawStateClosed = true
+				_ = json.NewEncoder(w).Encode(closedIssues)
+				return
+			}
+			_ = json.NewEncoder(w).Encode([]*Issue{})
+			return
+		}
+
+		if r.Method == http.MethodDelete && r.URL.Path == "/repos/owner/repo/issues/2348/labels/"+LabelInProgress {
+			removeLabelHit = true
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		if r.Method == http.MethodPost && r.URL.Path == "/repos/owner/repo/issues/2348/comments" {
+			commentOnClosed = true
+			_ = json.NewEncoder(w).Encode(&Comment{ID: 1})
+			return
+		}
+
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	var callbackIssue int
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cleaner, _ := NewCleaner(client, store, "owner/repo", &StaleLabelCleanupConfig{
+		Enabled:   true,
+		Interval:  30 * time.Minute,
+		Threshold: 1 * time.Hour,
+	}, WithOnInProgressCleaned(func(n int) { callbackIssue = n }))
+
+	if err := cleaner.Cleanup(context.Background()); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if !sawStateClosed {
+		t.Error("expected ListIssues to be called with state=closed")
+	}
+	if !removeLabelHit {
+		t.Error("RemoveLabel should have been called for closed in-progress issue")
+	}
+	if commentOnClosed {
+		t.Error("AddComment must NOT be called for closed-issue cleanup (silent)")
+	}
+	if callbackIssue != 2348 {
+		t.Errorf("OnInProgressCleaned callback issue = %d, want 2348", callbackIssue)
+	}
+}
+
+// GH-2354: active executions for closed issues must NOT have the label stripped
+// while the task is still running in-memory.
+func TestCleaner_Cleanup_ClosedInProgressWithActiveExecutionSkipped(t *testing.T) {
+	store := createTestStore(t)
+	defer func() { _ = store.Close() }()
+
+	if err := store.SaveExecution(&memory.Execution{
+		ID:          "exec-2351",
+		TaskID:      "GH-2351",
+		ProjectPath: "/test/project",
+		Status:      "running",
+	}); err != nil {
+		t.Fatalf("SaveExecution: %v", err)
+	}
+
+	closedIssues := []*Issue{
+		{Number: 2351, Title: "Closed but still running", Labels: []Label{{Name: LabelInProgress}}, State: StateClosed, UpdatedAt: time.Now()},
+	}
+
+	removeLabelHit := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodGet && r.URL.Path == "/repos/owner/repo/issues" {
+			if r.URL.Query().Get("state") == "closed" {
+				_ = json.NewEncoder(w).Encode(closedIssues)
+				return
+			}
+			_ = json.NewEncoder(w).Encode([]*Issue{})
+			return
+		}
+		if r.Method == http.MethodDelete {
+			removeLabelHit = true
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	callbackFired := false
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cleaner, _ := NewCleaner(client, store, "owner/repo", &StaleLabelCleanupConfig{
+		Enabled: true, Interval: 30 * time.Minute, Threshold: 1 * time.Hour,
+	}, WithOnInProgressCleaned(func(int) { callbackFired = true }))
+
+	if err := cleaner.Cleanup(context.Background()); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+
+	if removeLabelHit {
+		t.Error("RemoveLabel must NOT be called for closed issue with active execution")
+	}
+	if callbackFired {
+		t.Error("OnInProgressCleaned must NOT fire for closed issue with active execution")
+	}
+}
+
 // Helper function to create a test memory store
 func createTestStore(t *testing.T) *memory.Store {
 	t.Helper()
