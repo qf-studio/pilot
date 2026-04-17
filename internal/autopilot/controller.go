@@ -1000,10 +1000,15 @@ func (c *Controller) handleMerging(ctx context.Context, prState *PRState) error 
 		}
 		c.log.Info("closed issue after merge", "issue", prState.IssueNumber, "pr", prState.PRNumber)
 
-		// GH-2297: Post success comment so last comment isn't stale failure
-		comment := buildMergeCompletionComment(prState)
-		if _, err := c.ghClient.AddComment(ctx, c.owner, c.repo, prState.IssueNumber, comment); err != nil {
-			c.log.Warn("failed to post merge completion comment", "issue", prState.IssueNumber, "error", err)
+		// GH-2297: Post success comment so last comment isn't stale failure.
+		// GH-2345: Guard against re-entry producing duplicate comments.
+		if !prState.MergeNotificationPosted {
+			comment := buildMergeCompletionComment(prState)
+			if _, err := c.ghClient.AddComment(ctx, c.owner, c.repo, prState.IssueNumber, comment); err != nil {
+				c.log.Warn("failed to post merge completion comment", "issue", prState.IssueNumber, "error", err)
+			} else {
+				prState.MergeNotificationPosted = true
+			}
 		}
 
 		// GH-1336: Sync monitor state so dashboard shows "done" instead of stale "failed"

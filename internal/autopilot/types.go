@@ -460,6 +460,10 @@ type PRState struct {
 	TargetBranch string
 	// IssueNodeID is the GraphQL global node ID of the linked issue, used for board sync.
 	IssueNodeID string
+	// MergeNotificationPosted is true once the merge-completion comment has been
+	// posted to the linked issue. Prevents duplicate comments on state-machine
+	// re-entry for an already-merged PR (GH-2345).
+	MergeNotificationPosted bool
 }
 
 // RepoOwnerAndName extracts the repository owner and name from the PR URL.

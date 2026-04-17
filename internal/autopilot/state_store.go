@@ -58,6 +58,10 @@ func (s *StateStore) migrate() error {
 			release_version TEXT DEFAULT '',
 			release_bump_type TEXT DEFAULT ''
 		)`,
+		// GH-2345: Track whether the merge-completion comment has been posted,
+		// so re-entry into StageMerging (e.g. after crash recovery) does not
+		// emit duplicate "PR merged" comments on the linked issue.
+		`ALTER TABLE autopilot_pr_state ADD COLUMN merge_notification_posted INTEGER NOT NULL DEFAULT 0`,
 		`CREATE TABLE IF NOT EXISTS autopilot_processed (
 			issue_number INTEGER PRIMARY KEY,
 			processed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -139,8 +143,8 @@ func (s *StateStore) SavePRState(pr *PRState) error {
 			pr_number, pr_url, issue_number, branch_name, head_sha,
 			stage, ci_status, last_checked, ci_wait_started_at,
 			merge_attempts, error, created_at, updated_at,
-			release_version, release_bump_type
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?)
+			release_version, release_bump_type, merge_notification_posted
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?)
 		ON CONFLICT(pr_number) DO UPDATE SET
 			pr_url = excluded.pr_url,
 			issue_number = excluded.issue_number,
@@ -154,13 +158,14 @@ func (s *StateStore) SavePRState(pr *PRState) error {
 			error = excluded.error,
 			updated_at = CURRENT_TIMESTAMP,
 			release_version = excluded.release_version,
-			release_bump_type = excluded.release_bump_type
+			release_bump_type = excluded.release_bump_type,
+			merge_notification_posted = excluded.merge_notification_posted
 	`,
 		pr.PRNumber, pr.PRURL, pr.IssueNumber, pr.BranchName, pr.HeadSHA,
 		string(pr.Stage), string(pr.CIStatus),
 		nullTime(pr.LastChecked), nullTime(pr.CIWaitStartedAt),
 		pr.MergeAttempts, pr.Error, nullTime(pr.CreatedAt),
-		pr.ReleaseVersion, string(pr.ReleaseBumpType),
+		pr.ReleaseVersion, string(pr.ReleaseBumpType), pr.MergeNotificationPosted,
 	)
 	return err
 }
@@ -172,7 +177,7 @@ func (s *StateStore) GetPRState(prNumber int) (*PRState, error) {
 		SELECT pr_number, pr_url, issue_number, branch_name, head_sha,
 			stage, ci_status, last_checked, ci_wait_started_at,
 			merge_attempts, error, created_at,
-			release_version, release_bump_type
+			release_version, release_bump_type, merge_notification_posted
 		FROM autopilot_pr_state WHERE pr_number = ?
 	`, prNumber)
 
@@ -192,7 +197,7 @@ func (s *StateStore) LoadAllPRStates() ([]*PRState, error) {
 		SELECT pr_number, pr_url, issue_number, branch_name, head_sha,
 			stage, ci_status, last_checked, ci_wait_started_at,
 			merge_attempts, error, created_at,
-			release_version, release_bump_type
+			release_version, release_bump_type, merge_notification_posted
 		FROM autopilot_pr_state
 	`)
 	if err != nil {
@@ -210,7 +215,7 @@ func (s *StateStore) LoadAllPRStates() ([]*PRState, error) {
 			&pr.PRNumber, &pr.PRURL, &pr.IssueNumber, &pr.BranchName, &pr.HeadSHA,
 			&stage, &ciStatus, &lastChecked, &ciWaitStartedAt,
 			&pr.MergeAttempts, &pr.Error, &createdAt,
-			&pr.ReleaseVersion, &relBumpType,
+			&pr.ReleaseVersion, &relBumpType, &pr.MergeNotificationPosted,
 		); err != nil {
 			return nil, err
 		}
@@ -802,7 +807,7 @@ func scanPRState(row *sql.Row) (*PRState, error) {
 		&pr.PRNumber, &pr.PRURL, &pr.IssueNumber, &pr.BranchName, &pr.HeadSHA,
 		&stage, &ciStatus, &lastChecked, &ciWaitStartedAt,
 		&pr.MergeAttempts, &pr.Error, &createdAt,
-		&pr.ReleaseVersion, &relBumpType,
+		&pr.ReleaseVersion, &relBumpType, &pr.MergeNotificationPosted,
 	)
 	if err != nil {
 		return nil, err
