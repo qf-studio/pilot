@@ -2677,6 +2677,76 @@ func TestSearchMergedPRsForIssue(t *testing.T) {
 	}
 }
 
+func TestFindMergedPRByBranch(t *testing.T) {
+	tests := []struct {
+		name       string
+		branch     string
+		response   string
+		wantFound  bool
+		wantErr    bool
+		statusCode int
+	}{
+		{
+			name:       "merged PR on branch",
+			branch:     "pilot/GH-42",
+			statusCode: http.StatusOK,
+			response:   `[{"number": 100, "merged_at": "2026-04-17T14:01:40Z"}]`,
+			wantFound:  true,
+		},
+		{
+			name:       "closed but not merged",
+			branch:     "pilot/GH-43",
+			statusCode: http.StatusOK,
+			response:   `[{"number": 101, "merged_at": ""}]`,
+			wantFound:  false,
+		},
+		{
+			name:       "no PRs on branch",
+			branch:     "pilot/GH-44",
+			statusCode: http.StatusOK,
+			response:   `[]`,
+			wantFound:  false,
+		},
+		{
+			name:       "API error",
+			branch:     "pilot/GH-45",
+			statusCode: http.StatusForbidden,
+			response:   `{"message":"rate limit"}`,
+			wantErr:    true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/repos/owner/repo/pulls" {
+					t.Errorf("unexpected path: %s", r.URL.Path)
+					w.WriteHeader(http.StatusNotFound)
+					return
+				}
+				if got := r.URL.Query().Get("head"); got != "owner:"+tt.branch {
+					t.Errorf("head filter = %q, want %q", got, "owner:"+tt.branch)
+				}
+				if got := r.URL.Query().Get("state"); got != "closed" {
+					t.Errorf("state = %q, want closed", got)
+				}
+				w.WriteHeader(tt.statusCode)
+				_, _ = w.Write([]byte(tt.response))
+			}))
+			defer server.Close()
+
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			found, err := client.FindMergedPRByBranch(context.Background(), "owner", "repo", tt.branch)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("FindMergedPRByBranch() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if !tt.wantErr && found != tt.wantFound {
+				t.Errorf("FindMergedPRByBranch() = %v, want %v", found, tt.wantFound)
+			}
+		})
+	}
+}
+
 func TestSearchOpenSubIssues(t *testing.T) {
 	tests := []struct {
 		name       string
