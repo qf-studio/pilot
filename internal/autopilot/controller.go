@@ -2131,6 +2131,20 @@ func (c *Controller) notifyExternalClose(ctx context.Context, prState *PRState) 
 	// GH-1015: Add pilot-retry-ready label so the issue can be retried
 	// Remove pilot-in-progress to allow the poller to re-pick it
 	if prState.IssueNumber > 0 {
+		// GH-2340: Skip pilot-retry-ready when the issue already carries
+		// pilot-done. This happens when Pilot itself closed a duplicate PR
+		// (e.g. via handleMergeConflict) after the original PR was already
+		// merged. Adding pilot-retry-ready in that case strands the label
+		// on a closed/done issue forever (poller skips non-open issues).
+		issue, err := c.ghClient.GetIssue(ctx, c.owner, c.repo, prState.IssueNumber)
+		if err != nil {
+			c.log.Warn("failed to fetch issue for label check", "issue", prState.IssueNumber, "error", err)
+		} else if github.HasLabel(issue, github.LabelDone) {
+			c.log.Info("skipping pilot-retry-ready: issue already pilot-done", "issue", prState.IssueNumber, "pr", prState.PRNumber)
+			c.maybeCloseParentIssue(ctx, prState)
+			return
+		}
+
 		if err := c.ghClient.AddLabels(ctx, c.owner, c.repo, prState.IssueNumber, []string{github.LabelRetryReady}); err != nil {
 			c.log.Warn("failed to add pilot-retry-ready label", "issue", prState.IssueNumber, "error", err)
 		}

@@ -4109,6 +4109,76 @@ func TestNotifyExternalClose_MaybeCloseParent(t *testing.T) {
 	}
 }
 
+// GH-2340: notifyExternalClose must not stamp pilot-retry-ready on issues
+// that already carry pilot-done. This happens when Pilot itself closed a
+// duplicate PR after the original PR was merged — the issue is closed and
+// done, and adding pilot-retry-ready strands the label forever (poller
+// skips non-open issues).
+func TestNotifyExternalClose_SkipsRetryReadyWhenDone(t *testing.T) {
+	tests := []struct {
+		name              string
+		issueLabels       []github.Label
+		wantRetryAdded    bool
+	}{
+		{
+			name:           "issue already pilot-done - skip retry-ready",
+			issueLabels:    []github.Label{{Name: github.LabelDone}},
+			wantRetryAdded: false,
+		},
+		{
+			name:           "issue not done - add retry-ready",
+			issueLabels:    []github.Label{},
+			wantRetryAdded: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var retryReadyAdded bool
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.URL.Path == "/repos/owner/repo/issues/10" && r.Method == http.MethodGet:
+					issue := github.Issue{Number: 10, State: "closed", Labels: tt.issueLabels}
+					w.WriteHeader(http.StatusOK)
+					_ = json.NewEncoder(w).Encode(issue)
+
+				case r.URL.Path == "/repos/owner/repo/issues/10/labels" && r.Method == http.MethodPost:
+					var body struct {
+						Labels []string `json:"labels"`
+					}
+					_ = json.NewDecoder(r.Body).Decode(&body)
+					for _, l := range body.Labels {
+						if l == github.LabelRetryReady {
+							retryReadyAdded = true
+						}
+					}
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write([]byte("[]"))
+
+				case strings.HasPrefix(r.URL.Path, "/repos/owner/repo/issues/10/labels/") && r.Method == http.MethodDelete:
+					w.WriteHeader(http.StatusOK)
+
+				default:
+					w.WriteHeader(http.StatusOK)
+				}
+			}))
+			defer server.Close()
+
+			ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			cfg := DefaultConfig()
+			c := NewController(cfg, ghClient, nil, "owner", "repo")
+
+			prState := &PRState{PRNumber: 42, IssueNumber: 10}
+			c.notifyExternalClose(context.Background(), prState)
+
+			if retryReadyAdded != tt.wantRetryAdded {
+				t.Errorf("pilot-retry-ready added = %v, want %v", retryReadyAdded, tt.wantRetryAdded)
+			}
+		})
+	}
+}
+
 // GH-2251: Test that ScanRecentlyMergedPRs discovers externally-merged PRs
 // and skips those already tracked.
 func TestController_ScanRecentlyMergedPRs(t *testing.T) {
