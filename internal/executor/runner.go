@@ -2722,7 +2722,22 @@ The previous execution completed but made no code changes. This task requires ac
 				}
 			}
 
-			prTitle := fmt.Sprintf("%s: %s", task.ID, task.Title)
+			// GH-2325: ensure the subject passed through to the PR (and the squash
+			// commit on main) is a conventional commit. Falls back to a
+			// label-derived prefix; aborts if neither applies.
+			normalizedTitle, titleErr := normalizeTitle(task.Title, task.Labels)
+			if titleErr != nil {
+				result.Success = false
+				result.Error = fmt.Sprintf("PR creation refused: %v", titleErr)
+				log.Warn("PR creation refused: non-conventional title",
+					slog.String("task_id", task.ID),
+					slog.String("title", task.Title),
+					slog.Any("labels", task.Labels),
+				)
+				r.reportProgress(task.ID, "PR Failed", 100, result.Error)
+				return result, nil
+			}
+			prTitle := fmt.Sprintf("%s: %s", task.ID, normalizedTitle)
 
 			// Route PR/MR creation through adapter-specific creator when available
 			var prURL string
