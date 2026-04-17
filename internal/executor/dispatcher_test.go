@@ -570,6 +570,71 @@ func TestRecoverStaleTasks_QueuedAndRunning(t *testing.T) {
 	}
 }
 
+func TestRecoverStaleTasks_RunningSkipsWhenLiveWorker(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	exec := &memory.Execution{ID: "exec-live-run", TaskID: "TASK-LR", ProjectPath: "/project-live", Status: "running"}
+	if err := store.SaveExecution(exec); err != nil {
+		t.Fatalf("failed to save execution: %v", err)
+	}
+
+	config := &DispatcherConfig{
+		StaleRunningThreshold: 0,
+		StaleQueuedThreshold:  0,
+		StaleRecoveryInterval: time.Hour,
+	}
+	runner := NewRunner()
+	dispatcher := NewDispatcher(store, runner, config)
+
+	// Inject a live worker for the project so the reaper should skip it.
+	dispatcher.mu.Lock()
+	dispatcher.workers["/project-live"] = &ProjectWorker{projectPath: "/project-live"}
+	dispatcher.mu.Unlock()
+
+	dispatcher.recoverStaleTasks()
+
+	got, err := store.GetExecution("exec-live-run")
+	if err != nil {
+		t.Fatalf("failed to get execution: %v", err)
+	}
+	if got.Status != "running" {
+		t.Errorf("expected running task with live worker to remain 'running', got '%s'", got.Status)
+	}
+}
+
+func TestRecoverStaleTasks_QueuedSkipsWhenLiveWorker(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	exec := &memory.Execution{ID: "exec-live-q", TaskID: "TASK-LQ", ProjectPath: "/project-live", Status: "queued"}
+	if err := store.SaveExecution(exec); err != nil {
+		t.Fatalf("failed to save execution: %v", err)
+	}
+
+	config := &DispatcherConfig{
+		StaleRunningThreshold: 0,
+		StaleQueuedThreshold:  0,
+		StaleRecoveryInterval: time.Hour,
+	}
+	runner := NewRunner()
+	dispatcher := NewDispatcher(store, runner, config)
+
+	dispatcher.mu.Lock()
+	dispatcher.workers["/project-live"] = &ProjectWorker{projectPath: "/project-live"}
+	dispatcher.mu.Unlock()
+
+	dispatcher.recoverStaleTasks()
+
+	got, err := store.GetExecution("exec-live-q")
+	if err != nil {
+		t.Fatalf("failed to get execution: %v", err)
+	}
+	if got.Status != "queued" {
+		t.Errorf("expected queued task with live worker to remain 'queued', got '%s'", got.Status)
+	}
+}
+
 func TestRecoverStaleTasks_RespectsThresholds(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
