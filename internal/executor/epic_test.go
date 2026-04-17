@@ -1094,8 +1094,8 @@ func TestCreateSubIssues_UsesAdapterForNonGitHub(t *testing.T) {
 			SourceIssueID: "APP-100",
 		},
 		Subtasks: []PlannedSubtask{
-			{Title: "First subtask", Description: "Do first thing", Order: 1},
-			{Title: "Second subtask", Description: "Do second thing", Order: 2},
+			{Title: "Add first subtask", Description: "Do first thing", Order: 1},
+			{Title: "Add second subtask", Description: "Do second thing", Order: 2},
 		},
 	}
 
@@ -1115,8 +1115,8 @@ func TestCreateSubIssues_UsesAdapterForNonGitHub(t *testing.T) {
 	if mock.Called[0].ParentID != "APP-100" {
 		t.Errorf("First call parentID = %q, want APP-100", mock.Called[0].ParentID)
 	}
-	if mock.Called[0].Title != "First subtask" {
-		t.Errorf("First call title = %q, want 'First subtask'", mock.Called[0].Title)
+	if mock.Called[0].Title != "Add first subtask" {
+		t.Errorf("First call title = %q, want 'Add first subtask'", mock.Called[0].Title)
 	}
 
 	// Verify second call
@@ -1593,5 +1593,125 @@ func TestCreateSubIssues_LinkerSkippedWhenSourceRepoEmpty(t *testing.T) {
 
 	if len(mock.Calls) != 0 {
 		t.Errorf("linker must not be called when SourceRepo is empty, got %d calls", len(mock.Calls))
+	}
+}
+
+// TestValidateSubtaskTitle covers GH-2324: titles emitted by the LLM planner
+// occasionally contain analysis prose instead of action items (incident
+// GH-2315). Validator must reject these without false-positives on real titles.
+func TestValidateSubtaskTitle(t *testing.T) {
+	tests := []struct {
+		name    string
+		title   string
+		wantErr bool
+	}{
+		// --- Negative cases (must be rejected) ---
+		{
+			name:    "GH-2315 incident verbatim",
+			title:   "Dispatcher `recoverStaleTasks()` (line 188) already marks orphans as \"failed\", not \"completed\". The status appears correct in the current code.",
+			wantErr: true,
+		},
+		{
+			name:    "leading code identifier with prose",
+			title:   "`fn()` already handles this case",
+			wantErr: true,
+		},
+		{
+			name:    "comma-not clause",
+			title:   "Marks tasks as failed, not completed",
+			wantErr: true,
+		},
+		{
+			name:    "appears correct phrase",
+			title:   "Add validation appears correct already",
+			wantErr: true,
+		},
+		{
+			name:    "empty title",
+			title:   "",
+			wantErr: true,
+		},
+		{
+			name:    "whitespace only",
+			title:   "   \t\n",
+			wantErr: true,
+		},
+		{
+			name:    "first word not an action verb",
+			title:   "The dispatcher should reject stale tasks now",
+			wantErr: true,
+		},
+		{
+			name:    "too many words",
+			title:   "Add a really long subtask title that goes on forever and definitely exceeds the fifteen word limit imposed",
+			wantErr: true,
+		},
+
+		// --- Positive cases (must pass) ---
+		{
+			name:    "simple add title",
+			title:   "Add rate limiting to webhook handler",
+			wantErr: false,
+		},
+		{
+			name:    "fix prefix",
+			title:   "Fix nil pointer in adapter init",
+			wantErr: false,
+		},
+		{
+			name:    "refactor prefix",
+			title:   "Refactor signal parsing into separate file",
+			wantErr: false,
+		},
+		{
+			name:    "wire prefix",
+			title:   "Wire alert engine to executor pipeline",
+			wantErr: false,
+		},
+		{
+			name:    "validate prefix",
+			title:   "Validate subtask titles before issue creation",
+			wantErr: false,
+		},
+		{
+			name:    "case insensitive verb",
+			title:   "ADD authentication middleware",
+			wantErr: false,
+		},
+		{
+			name:    "markdown bold prefix",
+			title:   "**Add** caching layer to reduce DB load",
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateSubtaskTitle(tt.title)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateSubtaskTitle(%q) error = %v, wantErr %v",
+					tt.title, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestFallbackSubtaskTitle(t *testing.T) {
+	tests := []struct {
+		parentID string
+		order    int
+		want     string
+	}{
+		{"GH-2314", 1, "GH-2314: Subtask 1"},
+		{"GH-2314", 5, "GH-2314: Subtask 5"},
+		{"", 2, "Subtask 2"},
+		{"APP-99", 3, "APP-99: Subtask 3"},
+	}
+	for _, tt := range tests {
+		got := fallbackSubtaskTitle(tt.parentID, tt.order)
+		if got != tt.want {
+			t.Errorf("fallbackSubtaskTitle(%q, %d) = %q, want %q",
+				tt.parentID, tt.order, got, tt.want)
+		}
 	}
 }

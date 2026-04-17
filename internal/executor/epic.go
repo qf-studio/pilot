@@ -371,6 +371,120 @@ func finalizeSubtask(subtask *PlannedSubtask, lines []string) {
 	}
 }
 
+// actionVerbs is the allowlist of first-word verbs accepted by validateSubtaskTitle.
+// Real subtask titles are imperative ("Add X", "Fix Y"). LLM analysis output
+// usually starts with an identifier or noun, so requiring an action verb filters
+// out the most common malformed titles. Compared lower-case.
+var actionVerbs = map[string]bool{
+	"add": true, "allow": true, "attach": true, "audit": true,
+	"block": true, "build": true, "bump": true,
+	"cache": true, "check": true, "clean": true, "configure": true,
+	"convert": true, "create": true,
+	"decouple": true, "delete": true, "deprecate": true, "detect": true,
+	"disable": true, "dispatch": true, "document": true, "drop": true,
+	"emit": true, "enable": true, "ensure": true, "expose": true,
+	"extract": true,
+	"fall": true, "fetch": true, "fix": true, "flag": true,
+	"gate": true, "generate": true, "guard": true,
+	"handle": true, "hide": true,
+	"implement": true, "improve": true, "init": true, "initialize": true,
+	"inject": true, "install": true, "integrate": true, "invalidate": true,
+	"link": true, "load": true, "log": true,
+	"merge": true, "migrate": true, "move": true,
+	"normalize": true,
+	"parse": true, "persist": true, "port": true, "prevent": true,
+	"propagate": true, "publish": true, "purge": true,
+	"refactor": true, "register": true, "reject": true, "remove": true,
+	"rename": true, "replace": true, "reset": true, "restore": true,
+	"retry": true, "route": true, "run": true,
+	"sanitize": true, "schedule": true, "send": true, "set": true,
+	"setup": true, "show": true, "skip": true, "split": true, "stop": true,
+	"strip": true, "support": true, "sync": true,
+	"test": true, "throttle": true, "trigger": true, "truncate": true,
+	"unlink": true, "update": true, "upgrade": true, "use": true,
+	"validate": true, "verify": true,
+	"wait": true, "warn": true, "wire": true, "wrap": true,
+}
+
+// validateSubtaskTitle rejects titles that look like LLM analysis or prose
+// instead of action items. Catches the GH-2315 incident: a sub-issue title
+// containing the LLM's skeptical analysis of the parent issue ("`fn()` already
+// marks ... appears correct in the current code") flowed unchecked through to
+// GitHub, the PR title, and a permanent commit in main's history.
+//
+// Rules:
+//  1. Empty title is invalid.
+//  2. Title must contain at most 15 words.
+//  3. Title must not contain prose/analysis indicators (", not ", " but ",
+//     " however ", "appears correct", "already ", "is fine", "looks good",
+//     "in the current code").
+//  4. First non-symbol word must be an action verb (see actionVerbs).
+func validateSubtaskTitle(title string) error {
+	t := strings.TrimSpace(title)
+	if t == "" {
+		return fmt.Errorf("empty title")
+	}
+
+	if wc := len(strings.Fields(t)); wc > 15 {
+		return fmt.Errorf("title too long (%d words, max 15)", wc)
+	}
+
+	lower := strings.ToLower(t)
+	proseMarkers := []string{
+		", not ", " but ", " however ",
+		"appears correct", "already marks", "is fine", "looks good",
+		"in the current code", "the status appears", "no longer needed",
+	}
+	for _, m := range proseMarkers {
+		if strings.Contains(lower, m) {
+			return fmt.Errorf("title contains analysis prose: %q", m)
+		}
+	}
+
+	first := firstWord(t)
+	if first == "" {
+		return fmt.Errorf("no leading word found")
+	}
+	if !actionVerbs[strings.ToLower(first)] {
+		return fmt.Errorf("first word %q is not an action verb", first)
+	}
+
+	return nil
+}
+
+// firstWord returns the first whitespace-separated token of s, with backticks,
+// markdown bold markers, and surrounding punctuation stripped. Returns "" if
+// the leading token is purely a code/identifier fragment (e.g. "`fn()`") with
+// no alphabetic content after stripping.
+func firstWord(s string) string {
+	for _, raw := range strings.Fields(s) {
+		w := strings.Trim(raw, "`*_\"'.,:;()[]{}")
+		// Reject pure code identifiers like "recoverStaleTasks()" — they
+		// usually contain parens or camelCase markers; treat as non-word
+		// so the verb check fails on the *next* token.
+		if w == "" {
+			continue
+		}
+		if strings.ContainsAny(raw, "`(){}") {
+			// Code fragment — skip and try the next token.
+			continue
+		}
+		return w
+	}
+	return ""
+}
+
+// fallbackSubtaskTitle synthesizes a safe title when the planner-supplied one
+// fails validation. Format: "GH-{parent}: Subtask {N}". When parentID is
+// empty, falls back to "Subtask {N}". Used by both create paths so an
+// incident like GH-2315 can never propagate a garbage title to GitHub.
+func fallbackSubtaskTitle(parentID string, order int) string {
+	if parentID == "" {
+		return fmt.Sprintf("Subtask %d", order)
+	}
+	return fmt.Sprintf("%s: Subtask %d", parentID, order)
+}
+
 // issueNumberRegex extracts the issue number from a GitHub issue URL.
 // Matches patterns like: https://github.com/owner/repo/issues/123
 var issueNumberRegex = regexp.MustCompile(`/issues/(\d+)`)
@@ -460,6 +574,21 @@ func (r *Runner) createSubIssuesViaAdapter(ctx context.Context, plan *EpicPlan) 
 			}
 		}
 
+		// GH-2324: Validate title before sending to the adapter. Reject LLM
+		// analysis-style titles and substitute a synthetic fallback so garbage
+		// can't reach the issue tracker, PR title, or commit history.
+		if err := validateSubtaskTitle(subtask.Title); err != nil {
+			fallback := fallbackSubtaskTitle(plan.ParentTask.ID, subtask.Order)
+			r.log.Warn("Rejected invalid subtask title; using fallback",
+				"original", subtask.Title,
+				"fallback", fallback,
+				"reason", err,
+				"parent_id", parentID,
+				"subtask_order", subtask.Order,
+			)
+			subtask.Title = fallback
+		}
+
 		// Truncate title (adapter may have different limits, but 80 is reasonable)
 		title := truncateTitle(subtask.Title, 80)
 
@@ -515,6 +644,25 @@ func (r *Runner) createSubIssuesViaGitHub(ctx context.Context, plan *EpicPlan, e
 			if depNum, ok := orderToIssueNumber[depOrder]; ok {
 				body += fmt.Sprintf("\n\nDepends on: #%d", depNum)
 			}
+		}
+
+		// GH-2324: Validate title before creating the GitHub issue. See
+		// validateSubtaskTitle for the rules; on failure we substitute a
+		// synthetic fallback so analysis-style strings (incident GH-2315)
+		// can't become permanent in the issue tracker or commit history.
+		if err := validateSubtaskTitle(subtask.Title); err != nil {
+			parentID := ""
+			if plan.ParentTask != nil {
+				parentID = plan.ParentTask.ID
+			}
+			fallback := fallbackSubtaskTitle(parentID, subtask.Order)
+			r.log.Warn("Rejected invalid subtask title; using fallback",
+				"original", subtask.Title,
+				"fallback", fallback,
+				"reason", err,
+				"subtask_order", subtask.Order,
+			)
+			subtask.Title = fallback
 		}
 
 		// Truncate title to max 80 chars for GitHub issue limits (GH-1133)
