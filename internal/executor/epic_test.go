@@ -1094,8 +1094,8 @@ func TestCreateSubIssues_UsesAdapterForNonGitHub(t *testing.T) {
 			SourceIssueID: "APP-100",
 		},
 		Subtasks: []PlannedSubtask{
-			{Title: "First subtask", Description: "Do first thing", Order: 1},
-			{Title: "Second subtask", Description: "Do second thing", Order: 2},
+			{Title: "Add first subtask", Description: "Do first thing", Order: 1},
+			{Title: "Add second subtask", Description: "Do second thing", Order: 2},
 		},
 	}
 
@@ -1115,8 +1115,8 @@ func TestCreateSubIssues_UsesAdapterForNonGitHub(t *testing.T) {
 	if mock.Called[0].ParentID != "APP-100" {
 		t.Errorf("First call parentID = %q, want APP-100", mock.Called[0].ParentID)
 	}
-	if mock.Called[0].Title != "First subtask" {
-		t.Errorf("First call title = %q, want 'First subtask'", mock.Called[0].Title)
+	if mock.Called[0].Title != "Add first subtask" {
+		t.Errorf("First call title = %q, want 'Add first subtask'", mock.Called[0].Title)
 	}
 
 	// Verify second call
@@ -1163,7 +1163,7 @@ func TestCreateSubIssues_FallsBackToGitHubWhenNoAdapter(t *testing.T) {
 			// SourceAdapter not set - defaults to empty string
 		},
 		Subtasks: []PlannedSubtask{
-			{Title: "Test subtask", Description: "Test", Order: 1},
+			{Title: "Add test subtask", Description: "Test", Order: 1},
 		},
 	}
 
@@ -1198,7 +1198,7 @@ func TestCreateSubIssues_FallsBackToGitHubWhenAdapterIsGitHub(t *testing.T) {
 			SourceIssueID: "100",
 		},
 		Subtasks: []PlannedSubtask{
-			{Title: "Test subtask", Description: "Test", Order: 1},
+			{Title: "Add test subtask", Description: "Test", Order: 1},
 		},
 	}
 
@@ -1226,7 +1226,7 @@ func TestCreateSubIssues_FallsBackToGitHubWhenNoCreator(t *testing.T) {
 			SourceIssueID: "APP-100",
 		},
 		Subtasks: []PlannedSubtask{
-			{Title: "Test subtask", Description: "Test", Order: 1},
+			{Title: "Add test subtask", Description: "Test", Order: 1},
 		},
 	}
 
@@ -1262,7 +1262,7 @@ func TestCreateSubIssues_AdapterError(t *testing.T) {
 			SourceIssueID: "APP-100",
 		},
 		Subtasks: []PlannedSubtask{
-			{Title: "Test subtask", Description: "Test", Order: 1},
+			{Title: "Add test subtask", Description: "Test", Order: 1},
 		},
 	}
 
@@ -1354,8 +1354,8 @@ func TestCreateSubIssues_AdapterNoDependsOnWhenEmpty(t *testing.T) {
 			SourceIssueID: "APP-100",
 		},
 		Subtasks: []PlannedSubtask{
-			{Title: "First", Description: "Do first", Order: 1},
-			{Title: "Second", Description: "Do second", Order: 2},
+			{Title: "Add first", Description: "Do first", Order: 1},
+			{Title: "Add second", Description: "Do second", Order: 2},
 		},
 	}
 
@@ -1483,7 +1483,7 @@ func TestCreateSubIssues_LinkerInvokedAfterGhCreate(t *testing.T) {
 			SourceIssueID: "10",
 		},
 		Subtasks: []PlannedSubtask{
-			{Title: "Child task", Description: "Do it", Order: 1},
+			{Title: "Add child task", Description: "Do it", Order: 1},
 		},
 	}
 
@@ -1545,7 +1545,7 @@ func TestCreateSubIssues_LinkerErrorIsNonFatal(t *testing.T) {
 			SourceIssueID: "5",
 		},
 		Subtasks: []PlannedSubtask{
-			{Title: "Child", Description: "child", Order: 1},
+			{Title: "Add child", Description: "child", Order: 1},
 		},
 	}
 
@@ -1584,7 +1584,7 @@ func TestCreateSubIssues_LinkerSkippedWhenSourceRepoEmpty(t *testing.T) {
 			// SourceRepo intentionally empty
 		},
 		Subtasks: []PlannedSubtask{
-			{Title: "Child", Description: "child", Order: 1},
+			{Title: "Add child", Description: "child", Order: 1},
 		},
 	}
 
@@ -1593,5 +1593,167 @@ func TestCreateSubIssues_LinkerSkippedWhenSourceRepoEmpty(t *testing.T) {
 
 	if len(mock.Calls) != 0 {
 		t.Errorf("linker must not be called when SourceRepo is empty, got %d calls", len(mock.Calls))
+	}
+}
+
+// TestValidateSubtaskTitle covers GH-2324: rejecting LLM analysis-style titles
+// before they become sub-issue titles / PR titles / commit subjects.
+func TestValidateSubtaskTitle(t *testing.T) {
+	tests := []struct {
+		name      string
+		title     string
+		wantError bool
+	}{
+		// GH-2315 incident — the exact string that flowed into commit 70c14dc5.
+		{
+			name:      "GH-2315 incident title is rejected",
+			title:     "Dispatcher `recoverStaleTasks()` (line 188) already marks orphans as `\"failed\"`, not `\"completed\"`. The status appears correct in the current code.",
+			wantError: true,
+		},
+		{
+			name:      "analysis clause with 'already' is rejected",
+			title:     "Dispatcher already marks orphans as failed",
+			wantError: true,
+		},
+		{
+			name:      "contrast clause 'not X' is rejected",
+			title:     "Adds a label, not a comment, on completion",
+			wantError: true,
+		},
+		{
+			name:      "'appears correct' evaluative phrase is rejected",
+			title:     "Handler appears correct in current code",
+			wantError: true,
+		},
+		{
+			name:      "too many words is rejected",
+			title:     "Add a function that takes a parameter and returns a value and also handles errors in a nice way always",
+			wantError: true,
+		},
+		{
+			name:      "first word is a noun, not an action verb, is rejected",
+			title:     "Dispatcher recovery semantics",
+			wantError: true,
+		},
+		{
+			name:      "empty title is rejected",
+			title:     "   ",
+			wantError: true,
+		},
+
+		// Positive cases — realistic action-item titles that must pass.
+		{
+			name:      "plain action verb title passes",
+			title:     "Add validateSubtaskTitle helper",
+			wantError: false,
+		},
+		{
+			name:      "conventional commit prefix passes",
+			title:     "fix(epic): validate sub-issue titles",
+			wantError: false,
+		},
+		{
+			name:      "conventional commit no scope passes",
+			title:     "feat: introduce sub-issue title validator",
+			wantError: false,
+		},
+		{
+			name:      "refactor verb passes",
+			title:     "Refactor splitTitleDescription to handle edge cases",
+			wantError: false,
+		},
+		{
+			name:      "wire action verb passes",
+			title:     "Wire validator into both create paths",
+			wantError: false,
+		},
+		{
+			name:      "terse fix title passes",
+			title:     "Fix stale SHA in autopilot",
+			wantError: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateSubtaskTitle(tc.title)
+			if tc.wantError && err == nil {
+				t.Errorf("validateSubtaskTitle(%q) = nil, want error", tc.title)
+			}
+			if !tc.wantError && err != nil {
+				t.Errorf("validateSubtaskTitle(%q) = %v, want nil", tc.title, err)
+			}
+		})
+	}
+}
+
+// TestSyntheticSubtaskTitle verifies fallback titles are deterministic and
+// include the parent ID so sub-issues remain traceable to the epic.
+func TestSyntheticSubtaskTitle(t *testing.T) {
+	t.Run("uses parent ID when present", func(t *testing.T) {
+		got := syntheticSubtaskTitle(&Task{ID: "GH-2314"}, 2)
+		want := "GH-2314: Subtask 2"
+		if got != want {
+			t.Errorf("syntheticSubtaskTitle = %q, want %q", got, want)
+		}
+	})
+	t.Run("uses 'epic' fallback when parent ID is empty", func(t *testing.T) {
+		got := syntheticSubtaskTitle(&Task{}, 1)
+		want := "epic: Subtask 1"
+		if got != want {
+			t.Errorf("syntheticSubtaskTitle = %q, want %q", got, want)
+		}
+	})
+	t.Run("handles nil parent", func(t *testing.T) {
+		got := syntheticSubtaskTitle(nil, 3)
+		want := "epic: Subtask 3"
+		if got != want {
+			t.Errorf("syntheticSubtaskTitle = %q, want %q", got, want)
+		}
+	})
+}
+
+// TestCreateSubIssues_RejectsAnalysisTitle ensures the GH-2324 guard kicks in
+// end-to-end through the adapter path: an LLM analysis sentence must not reach
+// the tracker verbatim; a synthetic fallback is used instead.
+func TestCreateSubIssues_RejectsAnalysisTitle(t *testing.T) {
+	runner := NewRunner()
+
+	mock := &mockSubIssueCreator{
+		Returns: []mockCreateIssueReturn{
+			{Identifier: "APP-101", URL: "https://linear.app/test/issue/APP-101"},
+		},
+	}
+	runner.SetSubIssueCreator(mock)
+
+	// Exact incident string from GH-2315.
+	badTitle := "Dispatcher `recoverStaleTasks()` (line 188) already marks orphans as `\"failed\"`, not `\"completed\"`. The status appears correct in the current code."
+
+	plan := &EpicPlan{
+		ParentTask: &Task{
+			ID:            "APP-100",
+			SourceAdapter: "linear",
+			SourceIssueID: "APP-100",
+			Title:         "Parent epic",
+		},
+		Subtasks: []PlannedSubtask{
+			{Title: badTitle, Description: "body", Order: 1},
+		},
+	}
+
+	ctx := context.Background()
+	if _, err := runner.CreateSubIssues(ctx, plan, ""); err != nil {
+		t.Fatalf("CreateSubIssues failed: %v", err)
+	}
+
+	if len(mock.Called) != 1 {
+		t.Fatalf("expected 1 adapter call, got %d", len(mock.Called))
+	}
+	got := mock.Called[0].Title
+	if got == badTitle {
+		t.Errorf("analysis-style title was passed through unchanged: %q", got)
+	}
+	if got != "APP-100: Subtask 1" {
+		t.Errorf("fallback title = %q, want %q", got, "APP-100: Subtask 1")
 	}
 }
