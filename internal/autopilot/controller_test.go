@@ -4386,3 +4386,184 @@ func TestController_ScanRecentlyMergedPRs(t *testing.T) {
 		})
 	}
 }
+
+// mergeMockServer returns an httptest server that answers the handleMerging
+// happy-path requests (PR fetch, merge, labels) and counts POSTs to the
+// issue comments endpoint.
+func mergeMockServer(t *testing.T, prNumber, issueNumber int, commentCount *int) *httptest.Server {
+	t.Helper()
+	commentPath := "/repos/owner/repo/issues/" + itoa(issueNumber) + "/comments"
+	prPath := "/repos/owner/repo/pulls/" + itoa(prNumber)
+	mergePath := prPath + "/merge"
+	labelsPath := "/repos/owner/repo/issues/" + itoa(issueNumber) + "/labels"
+
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "/check-runs"):
+			resp := github.CheckRunsResponse{
+				TotalCount: 1,
+				CheckRuns: []github.CheckRun{
+					{Name: "build", Status: "completed", Conclusion: "success"},
+				},
+			}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(resp)
+		case r.URL.Path == commentPath && r.Method == http.MethodPost:
+			*commentCount++
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"id": 1})
+		case r.URL.Path == mergePath && r.Method == http.MethodPut:
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"sha": "merged123", "merged": true, "message": "Pull Request successfully merged",
+			})
+		case r.URL.Path == prPath && r.Method == http.MethodGet:
+			pr := github.PullRequest{
+				Number: prNumber,
+				State:  "open",
+				Head:   github.PRRef{Ref: "pilot/GH-" + itoa(issueNumber), SHA: "abc1234"},
+			}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(pr)
+		case r.URL.Path == labelsPath && r.Method == http.MethodPost:
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode([]github.Label{{Name: github.LabelDone}})
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+}
+
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	neg := false
+	if n < 0 {
+		neg = true
+		n = -n
+	}
+	var buf [20]byte
+	i := len(buf)
+	for n > 0 {
+		i--
+		buf[i] = byte('0' + n%10)
+		n /= 10
+	}
+	if neg {
+		i--
+		buf[i] = '-'
+	}
+	return string(buf[i:])
+}
+
+// TestController_handleMerging_IdempotentCompletionComment tests GH-2345:
+// Re-entering StageMerging for an already-merged PR must not produce a second
+// "PR merged" comment.
+func TestController_handleMerging_IdempotentCompletionComment(t *testing.T) {
+	commentCount := 0
+	server := mergeMockServer(t, 42, 10, &commentCount)
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.Environment = EnvDev
+	cfg.AutoReview = false
+	cfg.RequiredChecks = []string{"build"}
+
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc1234", "pilot/GH-10", "")
+	prState, _ := c.GetPRState(42)
+	prState.Stage = StageMerging
+
+	ctx := context.Background()
+
+	// First entry: posts the completion comment and advances stage.
+	if err := c.handleMerging(ctx, prState); err != nil {
+		t.Fatalf("first handleMerging returned error: %v", err)
+	}
+	if commentCount != 1 {
+		t.Fatalf("after first handleMerging: comment count = %d, want 1", commentCount)
+	}
+	if !prState.MergeNotificationPosted {
+		t.Fatal("MergeNotificationPosted should be true after first successful post")
+	}
+
+	// Simulate re-entry (e.g. via duplicate-dispatch or crash recovery).
+	prState.Stage = StageMerging
+	if err := c.handleMerging(ctx, prState); err != nil {
+		t.Fatalf("re-entry handleMerging returned error: %v", err)
+	}
+	if commentCount != 1 {
+		t.Errorf("after re-entry: comment count = %d, want 1 (no duplicate)", commentCount)
+	}
+}
+
+// TestController_handleMerging_CommentFlagPersists tests GH-2345:
+// MergeNotificationPosted round-trips through SavePRState/LoadAllPRStates so
+// that crash recovery honors the flag and a restored PR never re-posts.
+func TestController_handleMerging_CommentFlagPersists(t *testing.T) {
+	store := newTestStateStore(t)
+
+	pr := &PRState{
+		PRNumber:                42,
+		PRURL:                   "https://github.com/owner/repo/pull/42",
+		IssueNumber:             10,
+		BranchName:              "pilot/GH-10",
+		HeadSHA:                 "abc1234",
+		Stage:                   StageMerging,
+		CIStatus:                CIPending,
+		CreatedAt:               time.Now().Add(-5 * time.Minute).Truncate(time.Second),
+		MergeNotificationPosted: true,
+	}
+	if err := store.SavePRState(pr); err != nil {
+		t.Fatalf("SavePRState failed: %v", err)
+	}
+
+	loaded, err := store.GetPRState(42)
+	if err != nil {
+		t.Fatalf("GetPRState failed: %v", err)
+	}
+	if loaded == nil || !loaded.MergeNotificationPosted {
+		t.Fatalf("MergeNotificationPosted did not persist: got %+v", loaded)
+	}
+
+	all, err := store.LoadAllPRStates()
+	if err != nil {
+		t.Fatalf("LoadAllPRStates failed: %v", err)
+	}
+	if len(all) != 1 || !all[0].MergeNotificationPosted {
+		t.Fatalf("LoadAllPRStates did not preserve MergeNotificationPosted: %+v", all)
+	}
+
+	// Wire the restored state into a controller and run handleMerging — it
+	// must not post a duplicate comment because the flag is already set.
+	commentCount := 0
+	server := mergeMockServer(t, 42, 10, &commentCount)
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.Environment = EnvDev
+	cfg.AutoReview = false
+	cfg.RequiredChecks = []string{"build"}
+
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+	c.SetStateStore(store)
+	if _, err := c.RestoreState(); err != nil {
+		t.Fatalf("RestoreState failed: %v", err)
+	}
+
+	restored, ok := c.GetPRState(42)
+	if !ok {
+		t.Fatal("restored PR not tracked")
+	}
+	restored.Stage = StageMerging
+
+	if err := c.handleMerging(context.Background(), restored); err != nil {
+		t.Fatalf("handleMerging after restore returned error: %v", err)
+	}
+	if commentCount != 0 {
+		t.Errorf("after restore: comment count = %d, want 0 (flag honored)", commentCount)
+	}
+}
