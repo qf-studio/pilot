@@ -21,7 +21,7 @@ type Store struct {
 	db   *sql.DB
 	path string
 
-	logSubMu      sync.RWMutex
+	logSubMu       sync.RWMutex
 	logSubscribers map[chan *LogEntry]struct{}
 }
 
@@ -155,6 +155,8 @@ func (s *Store) migrate() error {
 		`ALTER TABLE executions ADD COLUMN task_verbose BOOLEAN DEFAULT FALSE`,
 		`ALTER TABLE executions ADD COLUMN task_source_adapter TEXT DEFAULT ''`,
 		`ALTER TABLE executions ADD COLUMN task_source_issue_id TEXT DEFAULT ''`,
+		// GH-2326: persist Task.Labels across queue round-trip so no-decompose survives dispatch
+		`ALTER TABLE executions ADD COLUMN task_labels TEXT DEFAULT ''`,
 		`CREATE INDEX IF NOT EXISTS idx_executions_status ON executions(status)`,
 		`CREATE INDEX IF NOT EXISTS idx_patterns_project ON patterns(project_path)`,
 		// Cross-project pattern indexes
@@ -376,32 +378,66 @@ type Execution struct {
 	LinesRemoved     int
 	ModelName        string
 	// Task queue fields (GH-46) - store task details for deferred execution
-	TaskTitle       string
-	TaskDescription string
-	TaskBranch      string
-	TaskBaseBranch  string
+	TaskTitle         string
+	TaskDescription   string
+	TaskBranch        string
+	TaskBaseBranch    string
 	TaskCreatePR      bool
 	TaskVerbose       bool
 	TaskSourceAdapter string // Source adapter (e.g., "github", "gitlab", "linear")
 	TaskSourceIssueID string // Issue ID in the source adapter
+	// GH-2326: persisted Task.Labels so label-driven gates (no-decompose, autopilot-fix, etc.)
+	// survive the dispatcher queue → worker round-trip.
+	TaskLabels []string
 }
 
 // SaveExecution saves an execution record to the database.
 // The execution ID must be unique; duplicate IDs will cause an error.
 func (s *Store) SaveExecution(exec *Execution) error {
+	labelsJSON, err := marshalLabels(exec.TaskLabels)
+	if err != nil {
+		return fmt.Errorf("failed to marshal task labels: %w", err)
+	}
 	return s.withRetry("SaveExecution", func() error {
 		_, err := s.db.Exec(`
 			INSERT INTO executions (id, task_id, project_path, status, output, error, duration_ms, pr_url, commit_sha, completed_at,
 				tokens_input, tokens_output, tokens_total, estimated_cost_usd, files_changed, lines_added, lines_removed, model_name,
 				task_title, task_description, task_branch, task_base_branch, task_create_pr, task_verbose,
-				task_source_adapter, task_source_issue_id)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				task_source_adapter, task_source_issue_id, task_labels)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`, exec.ID, exec.TaskID, exec.ProjectPath, exec.Status, exec.Output, exec.Error, exec.DurationMs, exec.PRUrl, exec.CommitSHA, exec.CompletedAt,
 			exec.TokensInput, exec.TokensOutput, exec.TokensTotal, exec.EstimatedCostUSD, exec.FilesChanged, exec.LinesAdded, exec.LinesRemoved, exec.ModelName,
 			exec.TaskTitle, exec.TaskDescription, exec.TaskBranch, exec.TaskBaseBranch, exec.TaskCreatePR, exec.TaskVerbose,
-			exec.TaskSourceAdapter, exec.TaskSourceIssueID)
+			exec.TaskSourceAdapter, exec.TaskSourceIssueID, labelsJSON)
 		return err
 	})
+}
+
+// marshalLabels serializes labels to JSON; returns "" when the slice is empty
+// so the DB column stays compatible with pre-migration rows and default "".
+func marshalLabels(labels []string) (string, error) {
+	if len(labels) == 0 {
+		return "", nil
+	}
+	b, err := json.Marshal(labels)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+// unmarshalLabels parses JSON-encoded labels; empty/whitespace → nil slice.
+func unmarshalLabels(s string) []string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	var labels []string
+	if err := json.Unmarshal([]byte(s), &labels); err != nil {
+		// Legacy / malformed rows: return nil rather than failing the read.
+		return nil
+	}
+	return labels
 }
 
 // GetExecution retrieves an execution by its unique ID.
@@ -414,19 +450,22 @@ func (s *Store) GetExecution(id string) (*Execution, error) {
 			COALESCE(lines_removed, 0), COALESCE(model_name, ''),
 			COALESCE(task_title, ''), COALESCE(task_description, ''), COALESCE(task_branch, ''),
 			COALESCE(task_base_branch, ''), COALESCE(task_create_pr, 0), COALESCE(task_verbose, 0),
-			COALESCE(task_source_adapter, ''), COALESCE(task_source_issue_id, '')
+			COALESCE(task_source_adapter, ''), COALESCE(task_source_issue_id, ''),
+			COALESCE(task_labels, '')
 		FROM executions WHERE id = ?
 	`, id)
 
 	var exec Execution
 	var completedAt sql.NullTime
+	var labelsJSON string
 	err := row.Scan(&exec.ID, &exec.TaskID, &exec.ProjectPath, &exec.Status, &exec.Output, &exec.Error, &exec.DurationMs, &exec.PRUrl, &exec.CommitSHA, &exec.CreatedAt, &completedAt,
 		&exec.TokensInput, &exec.TokensOutput, &exec.TokensTotal, &exec.EstimatedCostUSD, &exec.FilesChanged, &exec.LinesAdded, &exec.LinesRemoved, &exec.ModelName,
 		&exec.TaskTitle, &exec.TaskDescription, &exec.TaskBranch, &exec.TaskBaseBranch, &exec.TaskCreatePR, &exec.TaskVerbose,
-		&exec.TaskSourceAdapter, &exec.TaskSourceIssueID)
+		&exec.TaskSourceAdapter, &exec.TaskSourceIssueID, &labelsJSON)
 	if err != nil {
 		return nil, err
 	}
+	exec.TaskLabels = unmarshalLabels(labelsJSON)
 
 	if completedAt.Valid {
 		exec.CompletedAt = &completedAt.Time
@@ -825,7 +864,8 @@ func (s *Store) GetQueuedTasksForProject(projectPath string, limit int) ([]*Exec
 		SELECT id, task_id, project_path, status, output, error, duration_ms, pr_url, commit_sha, created_at, completed_at,
 			COALESCE(task_title, ''), COALESCE(task_description, ''), COALESCE(task_branch, ''),
 			COALESCE(task_base_branch, ''), COALESCE(task_create_pr, 0), COALESCE(task_verbose, 0),
-			COALESCE(task_source_adapter, ''), COALESCE(task_source_issue_id, '')
+			COALESCE(task_source_adapter, ''), COALESCE(task_source_issue_id, ''),
+			COALESCE(task_labels, '')
 		FROM executions
 		WHERE (status = 'queued' OR status = 'pending') AND project_path = ?
 		ORDER BY created_at ASC
@@ -840,14 +880,16 @@ func (s *Store) GetQueuedTasksForProject(projectPath string, limit int) ([]*Exec
 	for rows.Next() {
 		var exec Execution
 		var completedAt sql.NullTime
+		var labelsJSON string
 		if err := rows.Scan(&exec.ID, &exec.TaskID, &exec.ProjectPath, &exec.Status, &exec.Output, &exec.Error, &exec.DurationMs, &exec.PRUrl, &exec.CommitSHA, &exec.CreatedAt, &completedAt,
 			&exec.TaskTitle, &exec.TaskDescription, &exec.TaskBranch, &exec.TaskBaseBranch, &exec.TaskCreatePR, &exec.TaskVerbose,
-			&exec.TaskSourceAdapter, &exec.TaskSourceIssueID); err != nil {
+			&exec.TaskSourceAdapter, &exec.TaskSourceIssueID, &labelsJSON); err != nil {
 			return nil, err
 		}
 		if completedAt.Valid {
 			exec.CompletedAt = &completedAt.Time
 		}
+		exec.TaskLabels = unmarshalLabels(labelsJSON)
 		executions = append(executions, &exec)
 	}
 

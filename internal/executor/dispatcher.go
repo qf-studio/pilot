@@ -9,9 +9,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/qf-studio/pilot/internal/logging"
 	"github.com/qf-studio/pilot/internal/memory"
-	"github.com/google/uuid"
 )
 
 // DispatcherConfig configures the task dispatcher behavior.
@@ -269,6 +269,7 @@ func (d *Dispatcher) queueDecomposedTask(ctx context.Context, parent *Task, resu
 		TaskVerbose:       parent.Verbose,
 		TaskSourceAdapter: parent.SourceAdapter,
 		TaskSourceIssueID: parent.SourceIssueID,
+		TaskLabels:        parent.Labels, // GH-2326: persist labels for no-decompose/autopilot-fix gates
 	}
 
 	if err := d.store.SaveExecution(parentExec); err != nil {
@@ -326,6 +327,7 @@ func (d *Dispatcher) queueSingleTask(ctx context.Context, task *Task) (string, e
 		TaskVerbose:       task.Verbose,
 		TaskSourceAdapter: task.SourceAdapter,
 		TaskSourceIssueID: task.SourceIssueID,
+		TaskLabels:        task.Labels, // GH-2326: persist labels for no-decompose/autopilot-fix gates
 	}
 
 	if err := d.store.SaveExecution(exec); err != nil {
@@ -564,6 +566,8 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 		w.runner.EmitProgress(exec.TaskID, "Running", 2, fmt.Sprintf("Worker started: %s", truncateForLog(exec.TaskTitle, 40)))
 
 		// Build task from execution record (full details stored when queued)
+		// GH-2326: restore Labels so runner-side no-decompose / autopilot-fix
+		// gates see the same labels the dispatch-time Decompose() saw.
 		task := &Task{
 			ID:            exec.TaskID,
 			Title:         exec.TaskTitle,
@@ -575,6 +579,7 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 			Verbose:       exec.TaskVerbose,
 			SourceAdapter: exec.TaskSourceAdapter,
 			SourceIssueID: exec.TaskSourceIssueID,
+			Labels:        exec.TaskLabels,
 		}
 
 		// Execute (blocking)

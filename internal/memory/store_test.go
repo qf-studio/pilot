@@ -656,6 +656,79 @@ func TestGetQueuedTasks(t *testing.T) {
 	}
 }
 
+// TestTaskLabelsRoundTrip verifies that Task.Labels survive the queue round-trip
+// (SaveExecution → GetExecution and GetQueuedTasksForProject). Without this, labels
+// like "no-decompose" are silently dropped and runner-side gates bypassed (GH-2326).
+func TestTaskLabelsRoundTrip(t *testing.T) {
+	tmpDir, _ := os.MkdirTemp("", "pilot-test-*")
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	store, _ := NewStore(tmpDir)
+	defer func() { _ = store.Close() }()
+
+	cases := []struct {
+		name   string
+		labels []string
+	}{
+		{"nil labels", nil},
+		{"empty slice", []string{}},
+		{"single label", []string{"no-decompose"}},
+		{"multiple labels", []string{"pilot", "no-decompose", "priority:high"}},
+		{"special chars", []string{"kind/bug", "area/executor", "v1.0+"}},
+	}
+
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			execID := fmt.Sprintf("exec-labels-%d", i)
+			input := &Execution{
+				ID:          execID,
+				TaskID:      fmt.Sprintf("T-%d", i),
+				ProjectPath: "/project/a",
+				Status:      "queued",
+				TaskTitle:   "test",
+				TaskLabels:  tc.labels,
+			}
+			if err := store.SaveExecution(input); err != nil {
+				t.Fatalf("SaveExecution: %v", err)
+			}
+
+			got, err := store.GetExecution(execID)
+			if err != nil {
+				t.Fatalf("GetExecution: %v", err)
+			}
+			// nil and empty slice both normalize to nil on read
+			wantLen := len(tc.labels)
+			if len(got.TaskLabels) != wantLen {
+				t.Fatalf("labels length: got %d (%v), want %d (%v)", len(got.TaskLabels), got.TaskLabels, wantLen, tc.labels)
+			}
+			for j, l := range tc.labels {
+				if got.TaskLabels[j] != l {
+					t.Errorf("labels[%d]: got %q, want %q", j, got.TaskLabels[j], l)
+				}
+			}
+
+			// Also verify the worker-facing read path returns labels.
+			queued, err := store.GetQueuedTasksForProject("/project/a", 100)
+			if err != nil {
+				t.Fatalf("GetQueuedTasksForProject: %v", err)
+			}
+			var found *Execution
+			for _, e := range queued {
+				if e.ID == execID {
+					found = e
+					break
+				}
+			}
+			if found == nil {
+				t.Fatalf("execution %s not in queued list", execID)
+			}
+			if len(found.TaskLabels) != wantLen {
+				t.Errorf("queued read labels length: got %d (%v), want %d", len(found.TaskLabels), found.TaskLabels, wantLen)
+			}
+		})
+	}
+}
+
 func TestGetExecutionsInPeriod(t *testing.T) {
 	tmpDir, _ := os.MkdirTemp("", "pilot-test-*")
 	defer func() { _ = os.RemoveAll(tmpDir) }()
@@ -1044,12 +1117,12 @@ func TestGetLifetimeTaskCounts(t *testing.T) {
 
 func TestBriefHistory(t *testing.T) {
 	tests := []struct {
-		name           string
-		setup          func(*Store)
-		channel        string
-		wantNil        bool
-		wantBriefType  string
-		wantRecipient  string
+		name          string
+		setup         func(*Store)
+		channel       string
+		wantNil       bool
+		wantBriefType string
+		wantRecipient string
 	}{
 		{
 			name:    "empty table returns nil",
