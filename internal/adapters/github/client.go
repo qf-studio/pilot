@@ -500,6 +500,19 @@ func (c *Client) ListPullRequests(ctx context.Context, owner, repo, state string
 	return result, nil
 }
 
+// ListPullRequestsByHead lists pull requests filtered by head branch.
+// Uses GitHub's pulls?head=owner:branch filter, which is strongly consistent
+// (unlike the Search API, which has indexing lag).
+func (c *Client) ListPullRequestsByHead(ctx context.Context, owner, repo, branch string) ([]*PullRequest, error) {
+	path := fmt.Sprintf("/repos/%s/%s/pulls?state=all&head=%s:%s&per_page=10",
+		owner, repo, owner, url.QueryEscape(branch))
+	var result []*PullRequest
+	if err := c.doRequest(ctx, http.MethodGet, path, nil, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
 // CreateRelease creates a new release
 func (c *Client) CreateRelease(ctx context.Context, owner, repo string, input *ReleaseInput) (*Release, error) {
 	return WithRetry(ctx, func() (*Release, error) {

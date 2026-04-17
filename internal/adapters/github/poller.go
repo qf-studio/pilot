@@ -917,6 +917,22 @@ func (p *Poller) checkForNewIssues(ctx context.Context) {
 
 	// Phase 3: Dispatch selected issues
 	for _, issue := range toDispatch {
+		// GH-2341: Defense-in-depth. The `issues` snapshot from ListIssues can
+		// be stale by seconds; a pilot-done / pilot-in-progress label added
+		// between list fetch and dispatch would otherwise cause duplicate work.
+		// Re-fetch the single issue to get fresh labels before committing.
+		if fresh, err := p.client.GetIssue(ctx, p.owner, p.repo, issue.Number); err == nil && fresh != nil {
+			if HasLabel(fresh, LabelDone) || HasLabel(fresh, LabelInProgress) {
+				p.logger.Info("Skipping dispatch — fresh labels show issue already handled",
+					slog.Int("number", issue.Number),
+					slog.Bool("done", HasLabel(fresh, LabelDone)),
+					slog.Bool("in_progress", HasLabel(fresh, LabelInProgress)),
+				)
+				p.markProcessed(issue.Number)
+				continue
+			}
+		}
+
 		// Mark processed immediately to prevent duplicate dispatch on next tick
 		p.markProcessed(issue.Number)
 
@@ -1141,6 +1157,10 @@ func ParseDependencies(body string) []int {
 
 // hasMergedWork checks if the issue already has merged PRs (e.g. "GH-123" in title).
 // If merged work exists, the issue is marked as done and should be skipped.
+//
+// GH-2341: Search API has up to ~30s indexing lag after a merge. If search returns
+// empty, also check the expected branch `pilot/GH-{number}` via REST (strongly
+// consistent) to avoid duplicate dispatch during the indexing window.
 func (p *Poller) hasMergedWork(ctx context.Context, issue *Issue) bool {
 	found, err := p.client.SearchMergedPRsForIssue(ctx, p.owner, p.repo, issue.Number)
 	if err != nil {
@@ -1148,7 +1168,14 @@ func (p *Poller) hasMergedWork(ctx context.Context, issue *Issue) bool {
 			slog.Int("issue", issue.Number),
 			slog.Any("error", err),
 		)
-		return false // Don't block on API errors
+		// Fall through to REST check — don't block on Search API errors but
+		// still try the strongly-consistent path.
+	}
+	if !found {
+		// GH-2341: Bypass Search API indexing lag via direct branch lookup.
+		if p.hasMergedPRForBranch(ctx, issue.Number) {
+			found = true
+		}
 	}
 	if !found {
 		return false
@@ -1173,6 +1200,34 @@ func (p *Poller) hasMergedWork(ctx context.Context, issue *Issue) bool {
 	}
 	p.markProcessed(issue.Number)
 	return true
+}
+
+// hasMergedPRForBranch checks whether a merged PR exists for the canonical
+// pilot branch `pilot/GH-{number}`. Uses the REST pulls?head= filter which is
+// strongly consistent — unlike the Search API, it reflects merges immediately.
+// GH-2341: covers the Search API indexing-lag window (~30s after merge).
+func (p *Poller) hasMergedPRForBranch(ctx context.Context, issueNumber int) bool {
+	branch := fmt.Sprintf("pilot/GH-%d", issueNumber)
+	prs, err := p.client.ListPullRequestsByHead(ctx, p.owner, p.repo, branch)
+	if err != nil {
+		p.logger.Debug("Failed to list PRs by head branch",
+			slog.Int("issue", issueNumber),
+			slog.String("branch", branch),
+			slog.Any("error", err),
+		)
+		return false
+	}
+	for _, pr := range prs {
+		if pr.Merged || pr.MergedAt != "" {
+			p.logger.Info("Found merged PR via branch lookup (Search API lag bypass)",
+				slog.Int("issue", issueNumber),
+				slog.String("branch", branch),
+				slog.Int("pr", pr.Number),
+			)
+			return true
+		}
+	}
+	return false
 }
 
 // shouldRetryFailedIssue checks if a pilot-failed issue should be auto-retried.

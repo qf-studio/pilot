@@ -1675,6 +1675,142 @@ func TestPoller_HasMergedWork(t *testing.T) {
 	}
 }
 
+// GH-2341: Search API returns empty (indexing lag) but a merged PR exists on
+// the canonical pilot branch. hasMergedWork must fall through to the REST
+// branch lookup and still return true to prevent duplicate dispatch.
+func TestPoller_HasMergedWork_SearchLagBypassedByBranchLookup(t *testing.T) {
+	var labeled bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/search/issues":
+			_, _ = w.Write([]byte(`{"total_count": 0}`))
+		case r.URL.Path == "/repos/owner/repo/pulls" && r.URL.Query().Get("head") == "owner:pilot/GH-42":
+			_, _ = w.Write([]byte(`[{"number": 100, "state": "closed", "merged": true, "merged_at": "2026-04-17T14:01:40Z"}]`))
+		case r.Method == http.MethodPost && r.URL.Path == "/repos/owner/repo/issues/42/labels":
+			labeled = true
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second)
+
+	issue := &Issue{Number: 42, Title: "Test issue"}
+	got := poller.hasMergedWork(context.Background(), issue)
+
+	if !got {
+		t.Error("hasMergedWork() = false, want true (branch lookup should bypass Search API lag)")
+	}
+	if !labeled {
+		t.Error("pilot-done label should have been applied")
+	}
+	if !poller.IsProcessed(42) {
+		t.Error("issue should be marked processed")
+	}
+}
+
+// GH-2341: When Search API returns empty AND no merged PR exists on branch,
+// hasMergedWork returns false and allows retry (the original behavior).
+func TestPoller_HasMergedWork_NoMergedWork(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/search/issues":
+			_, _ = w.Write([]byte(`{"total_count": 0}`))
+		case r.URL.Path == "/repos/owner/repo/pulls":
+			_, _ = w.Write([]byte(`[]`))
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second)
+
+	issue := &Issue{Number: 42, Title: "Test issue"}
+	if poller.hasMergedWork(context.Background(), issue) {
+		t.Error("hasMergedWork() = true, want false (no merged work anywhere)")
+	}
+}
+
+// GH-2341: If branch lookup returns only closed-without-merge PRs, it should
+// NOT count as merged work.
+func TestPoller_HasMergedWork_ClosedNotMergedOnBranch(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/search/issues":
+			_, _ = w.Write([]byte(`{"total_count": 0}`))
+		case r.URL.Path == "/repos/owner/repo/pulls":
+			_, _ = w.Write([]byte(`[{"number": 100, "state": "closed", "merged": false, "merged_at": ""}]`))
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second)
+
+	issue := &Issue{Number: 42, Title: "Test issue"}
+	if poller.hasMergedWork(context.Background(), issue) {
+		t.Error("hasMergedWork() = true, want false (PR closed but not merged)")
+	}
+}
+
+// GH-2341: Defense-in-depth. The issues snapshot from ListIssues can be stale.
+// Before dispatching, poller re-fetches the issue and skips if pilot-done or
+// pilot-in-progress appear on the fresh copy.
+func TestPoller_CheckForNewIssues_SkipsWhenFreshLabelsShowDone(t *testing.T) {
+	// Snapshot: issue has no pilot-done.
+	snapshotIssues := []*Issue{
+		{Number: 42, Title: "GH-42 feature", Labels: []Label{{Name: "pilot"}}},
+	}
+	// Fresh single-issue GET: pilot-done now present.
+	freshIssue := &Issue{
+		Number: 42, Title: "GH-42 feature",
+		Labels: []Label{{Name: "pilot"}, {Name: LabelDone}},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/repos/owner/repo/issues":
+			_ = json.NewEncoder(w).Encode(snapshotIssues)
+		case "/repos/owner/repo/issues/42":
+			_ = json.NewEncoder(w).Encode(freshIssue)
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+
+	var callCount int32
+	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second,
+		WithOnIssue(func(ctx context.Context, issue *Issue) error {
+			atomic.AddInt32(&callCount, 1)
+			return nil
+		}),
+	)
+
+	poller.checkForNewIssues(context.Background())
+	poller.WaitForActive()
+
+	if got := atomic.LoadInt32(&callCount); got != 0 {
+		t.Errorf("dispatched %d times, want 0 (fresh labels show pilot-done)", got)
+	}
+	if !poller.IsProcessed(42) {
+		t.Error("issue should be marked processed after skip")
+	}
+}
+
 func TestPoller_HasMergedWork_APIError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
