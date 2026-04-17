@@ -826,6 +826,40 @@ func (r *Runner) saveLogEntry(executionID, level, message string) {
 	}
 }
 
+// persistBackendDiagnostics writes the backend's stderr, error type, and final
+// assistant text to execution_logs so `unknown: exit status 1` failures are
+// actually diagnosable. Previously these bytes were only emitted via slog to
+// stdout and disappeared when Pilot restarted. GH-2328.
+func (r *Runner) persistBackendDiagnostics(executionID string, backendResult *BackendResult) {
+	if backendResult == nil || r.logStore == nil {
+		return
+	}
+
+	const (
+		stderrMaxChars  = 16 * 1024
+		messageMaxChars = 4 * 1024
+	)
+
+	if backendResult.ErrorType != "" {
+		r.saveLogEntry(executionID, "error",
+			"Backend error classification: "+backendResult.ErrorType)
+	}
+
+	if stderr := strings.TrimSpace(backendResult.Stderr); stderr != "" {
+		if len(stderr) > stderrMaxChars {
+			stderr = stderr[:stderrMaxChars] + "\n[...truncated]"
+		}
+		r.saveLogEntry(executionID, "error", "Backend stderr:\n"+stderr)
+	}
+
+	if msg := strings.TrimSpace(backendResult.LastAssistantText); msg != "" {
+		if len(msg) > messageMaxChars {
+			msg = msg[:messageMaxChars] + "\n[...truncated]"
+		}
+		r.saveLogEntry(executionID, "error", "Final assistant message:\n"+msg)
+	}
+}
+
 // getRecordingsPath returns the recordings path, using default if not set
 func (r *Runner) getRecordingsPath() string {
 	if r.recordingsPath != "" {
@@ -1817,6 +1851,12 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 		// GH-1599: Log task failed milestone
 		r.saveLogEntry(task.ID, "error", "Task failed: "+result.Error)
 
+		// GH-2328: persist stderr + final assistant message + error type so
+		// "unknown: exit status 1" is actually diagnosable. Without this,
+		// failures look identical regardless of whether Claude refused, hit a
+		// rate limit, was OOM-killed, or crashed silently.
+		r.persistBackendDiagnostics(task.ID, backendResult)
+
 		// Finish recording with failed status
 		if recorder != nil {
 			recorder.SetModel(state.modelName)
@@ -1912,6 +1952,9 @@ retrySucceeded:
 		)
 		r.reportProgress(task.ID, "Failed", 100, result.Error)
 		r.saveLogEntry(task.ID, "error", "Task failed: "+result.Error)
+
+		// GH-2328: persist stderr + final assistant message + error type.
+		r.persistBackendDiagnostics(task.ID, backendResult)
 
 		// Emit task failed event
 		r.emitAlertEvent(AlertEvent{

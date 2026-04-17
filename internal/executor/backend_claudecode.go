@@ -468,6 +468,12 @@ func (b *ClaudeCodeBackend) executeWithFromPR(ctx context.Context, opts ExecuteO
 				opts.EventHandler(event)
 			}
 
+			// GH-2328: track the last assistant text block so refusals (Claude
+			// exits 0 after politely declining) can be surfaced to the user.
+			if event.Type == EventTypeText && event.Message != "" {
+				result.LastAssistantText = event.Message
+			}
+
 			// Track final result
 			if event.Type == EventTypeResult {
 				// GH-2103: Cancel heartbeat on result event.
@@ -588,6 +594,13 @@ func (b *ClaudeCodeBackend) executeWithFromPR(ctx context.Context, opts ExecuteO
 		stderr := stderrOutput.String()
 		ccErr := parseClaudeCodeError(stderr, err).(*ClaudeCodeError)
 
+		// GH-2328: surface the raw stderr + classification so the runner can
+		// write them to execution_logs. Without this, "unknown: exit status 1"
+		// is all the user ever sees and diagnosis requires re-running with a
+		// patched binary.
+		result.Stderr = stderr
+		result.ErrorType = string(ccErr.Type)
+
 		// GH-2112: Log OOM kills at error level for monitoring
 		if ccErr.Type == ErrorTypeOOM {
 			b.log.Error("Claude Code process OOM-killed",
@@ -613,6 +626,9 @@ func (b *ClaudeCodeBackend) executeWithFromPR(ctx context.Context, opts ExecuteO
 	}
 
 	result.Success = true
+	// GH-2328: expose stderr on success too so warnings (e.g. rate-limit
+	// overage rejected, context window warnings) can be logged.
+	result.Stderr = stderrOutput.String()
 	return result, nil
 }
 

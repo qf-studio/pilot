@@ -188,6 +188,20 @@ type BackendResult struct {
 	// stream-json parsing. Used to recover success when the process exits with an error
 	// after completing work (e.g., timeout on final summary). GH-2107.
 	SawSuccessResult bool
+
+	// Stderr is the full captured stderr output from the backend subprocess.
+	// Populated even on success so Pilot can log warnings; critical on failure
+	// for diagnosing `unknown: exit status 1`. GH-2328.
+	Stderr string
+
+	// LastAssistantText is the final assistant `text` block observed in the
+	// stream-json output. When Claude refuses a task (exits 0 or non-zero with
+	// no stderr), this captures the refusal reason for diagnosis. GH-2328.
+	LastAssistantText string
+
+	// ErrorType classifies the failure (rate_limit, api_error, oom_killed,
+	// session_not_found, timeout, invalid_config, unknown). GH-2328.
+	ErrorType string
 }
 
 // BackendConfig contains configuration for executor backends.
