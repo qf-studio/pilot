@@ -193,6 +193,11 @@ func (d *Dispatcher) recoverStaleTasks() int {
 	}
 
 	// Recover stale queued tasks (stuck in queue with no worker).
+	// GH-2331: Don't mark queued tasks stale when a live worker exists for the
+	// project — they're just waiting their turn. Pilot runs tasks serially per
+	// project; when one task takes 8+ minutes (common for epic/Navigator work),
+	// its siblings exceed the 5-minute threshold purely by waiting, and get
+	// killed mid-queue. Only orphans (no worker alive) should be reaped.
 	staleQueued, err := d.store.GetStaleQueuedExecutions(d.config.StaleQueuedThreshold)
 	if err != nil {
 		d.log.Warn("Failed to fetch stale queued executions", slog.Any("error", err))
@@ -208,6 +213,16 @@ func (d *Dispatcher) recoverStaleTasks() int {
 			}
 			continue
 		}
+
+		if d.hasLiveWorker(exec.ProjectPath) {
+			d.log.Debug("Skipping stale queued reap — live worker for project exists",
+				slog.String("execution_id", exec.ID),
+				slog.String("task_id", exec.TaskID),
+				slog.String("project", exec.ProjectPath),
+			)
+			continue
+		}
+
 		d.log.Warn("Marking stale queued task as failed",
 			slog.String("execution_id", exec.ID),
 			slog.String("task_id", exec.TaskID),
@@ -222,6 +237,16 @@ func (d *Dispatcher) recoverStaleTasks() int {
 
 	d.log.Info("stale recovery complete, reset N tasks", slog.Int("count", resetCount))
 	return resetCount
+}
+
+// hasLiveWorker reports whether a worker goroutine exists for the given
+// project path. Used by stale recovery to avoid killing queued tasks that
+// are simply waiting their turn behind a long-running sibling. GH-2331.
+func (d *Dispatcher) hasLiveWorker(projectPath string) bool {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	_, ok := d.workers[projectPath]
+	return ok
 }
 
 // QueueTask adds a task to the execution queue and returns the execution ID.
