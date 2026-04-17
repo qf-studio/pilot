@@ -56,6 +56,10 @@ const (
 	ErrorTypeOOM ClaudeCodeErrorType = "oom_killed"
 	// ErrorTypeSessionNotFound indicates the session for --from-pr or --resume was not found (GH-1267)
 	ErrorTypeSessionNotFound ClaudeCodeErrorType = "session_not_found"
+	// ErrorTypeNoChanges indicates Claude exited 0 but produced no diff — typically
+	// a refusal or "task already done" response. The final assistant message holds
+	// the refusal reason. GH-2328.
+	ErrorTypeNoChanges ClaudeCodeErrorType = "no_changes"
 	// ErrorTypeUnknown indicates an unclassified error
 	ErrorTypeUnknown ClaudeCodeErrorType = "unknown"
 )
@@ -311,17 +315,18 @@ func (b *ClaudeCodeBackend) executeWithFromPR(ctx context.Context, opts ExecuteO
 	cmd := exec.CommandContext(ctx, b.config.Command, args...)
 	cmd.Dir = opts.ProjectPath
 
+	// GH-2328: Signal executor mode to the child process. Project `CLAUDE.md`
+	// and auto-memory can detect this and skip Navigator-only "DO NOT write
+	// code" rules without relying on prompt-prefix heuristics.
+	env := append(os.Environ(), "PILOT_EXECUTOR=1")
 	// Pass context window and output token env vars if configured (GH-2163).
-	if b.config.Disable1MContext || b.config.MaxOutputTokens > 0 {
-		env := os.Environ()
-		if b.config.Disable1MContext {
-			env = append(env, "CLAUDE_CODE_DISABLE_1M_CONTEXT=1")
-		}
-		if b.config.MaxOutputTokens > 0 {
-			env = append(env, fmt.Sprintf("CLAUDE_CODE_MAX_OUTPUT_TOKENS=%d", b.config.MaxOutputTokens))
-		}
-		cmd.Env = env
+	if b.config.Disable1MContext {
+		env = append(env, "CLAUDE_CODE_DISABLE_1M_CONTEXT=1")
 	}
+	if b.config.MaxOutputTokens > 0 {
+		env = append(env, fmt.Sprintf("CLAUDE_CODE_MAX_OUTPUT_TOKENS=%d", b.config.MaxOutputTokens))
+	}
+	cmd.Env = env
 
 	b.log.Debug("Starting Claude Code",
 		slog.String("command", b.config.Command),
