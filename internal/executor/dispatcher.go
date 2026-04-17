@@ -180,6 +180,14 @@ func (d *Dispatcher) recoverStaleTasks() int {
 			}
 			continue
 		}
+		if d.hasLiveWorker(exec.ProjectPath) {
+			d.log.Debug("Skipping stale running reap — live worker for project exists",
+				slog.String("execution_id", exec.ID),
+				slog.String("task_id", exec.TaskID),
+				slog.String("project", exec.ProjectPath),
+			)
+			continue
+		}
 		d.log.Warn("Marking stale running task as failed",
 			slog.String("execution_id", exec.ID),
 			slog.String("task_id", exec.TaskID),
