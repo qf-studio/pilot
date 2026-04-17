@@ -804,6 +804,61 @@ func TestController_ScanExistingPRs(t *testing.T) {
 	}
 }
 
+// TestController_ScanExistingPRs_PreservesTrackedState verifies that PRs
+// already tracked (e.g. restored from SQLite via RestoreState) are not
+// clobbered back to StagePRCreated by a subsequent ScanExistingPRs call.
+// Regression test for GH-2349.
+func TestController_ScanExistingPRs_PreservesTrackedState(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/repos/owner/repo/pulls" {
+			prs := []*github.PullRequest{
+				{Number: 42, Head: github.PRRef{Ref: "pilot/GH-100", SHA: "sha-new"}, HTMLURL: "url"},
+			}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(prs)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+
+	// Simulate RestoreState having already populated this PR at StageCIPassed
+	// with a non-zero CIWaitStartedAt.
+	ciWaitStart := time.Now().Add(-30 * time.Minute)
+	c.mu.Lock()
+	c.activePRs[42] = &PRState{
+		PRNumber:        42,
+		IssueNumber:     100,
+		BranchName:      "pilot/GH-100",
+		HeadSHA:         "sha-old",
+		Stage:           StageCIPassed,
+		CIWaitStartedAt: ciWaitStart,
+	}
+	c.mu.Unlock()
+
+	if err := c.ScanExistingPRs(context.Background()); err != nil {
+		t.Fatalf("ScanExistingPRs() error = %v", err)
+	}
+
+	pr, ok := c.GetPRState(42)
+	if !ok {
+		t.Fatal("PR 42 missing after scan")
+	}
+	if pr.Stage != StageCIPassed {
+		t.Errorf("Stage = %v, want %v (regressed by scan)", pr.Stage, StageCIPassed)
+	}
+	if !pr.CIWaitStartedAt.Equal(ciWaitStart) {
+		t.Errorf("CIWaitStartedAt reset by scan: got %v, want %v", pr.CIWaitStartedAt, ciWaitStart)
+	}
+	if pr.HeadSHA != "sha-old" {
+		t.Errorf("HeadSHA = %q, want %q (clobbered by scan)", pr.HeadSHA, "sha-old")
+	}
+}
+
 func TestController_ScanExistingPRs_Error(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
