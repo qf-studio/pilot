@@ -1,0 +1,190 @@
+import { Callout, Steps, Tabs } from 'nextra/components'
+
+# Custom Model Providers
+
+Route Pilot to any Anthropic-compatible endpoint — Z.AI (GLM), OpenRouter, LiteLLM, or a self-hosted proxy — from a single config block. Pilot propagates the base URL, auth token, and default model to both its own LLM calls **and** the Claude Code subprocess, so you don't need to edit `~/.claude/settings.json`.
+
+<Callout type="info">
+  Shipped in v2.98.0 ([GH-2287](https://github.com/qf-studio/pilot/issues/2287), [GH-2371](https://github.com/qf-studio/pilot/issues/2371)). Requires an endpoint that speaks Anthropic's Messages API wire format.
+</Callout>
+
+## Why
+
+- **Cost** — Z.AI's GLM-4.6 runs ~5x cheaper per task than Claude Opus on comparable work.
+- **Subscriptions without caps** — flat-fee providers (Z.AI MAX, OpenRouter credits) sidestep Anthropic's weekly rate limits for heavy users.
+- **Regional / compliance** — route through providers with in-region data residency or enterprise SLAs.
+- **Single source of truth** — one YAML block instead of juggling shell env vars and CC settings.
+
+## Quick Start: Z.AI GLM-4.6
+
+<Steps>
+
+### Set your provider API key
+
+```bash
+export ZAI_API_KEY="your-z.ai-token"
+```
+
+Add this to your shell rc file so it persists across Pilot restarts.
+
+### Configure `executor` block
+
+Edit `~/.pilot/config.yaml`:
+
+```yaml
+executor:
+  type: "claude-code"
+
+  api_base_url: "https://api.z.ai/api/anthropic"
+  api_auth_token: "${ZAI_API_KEY}"
+  default_model: "glm-4.6"
+
+  claude_code:
+    command: "claude"
+```
+
+`${ZAI_API_KEY}` is expanded at config-load time via `os.ExpandEnv`. You can also inline the token directly, but env-var substitution is preferred for secrets.
+
+### Restart Pilot
+
+```bash
+pilot start --github --env stage
+```
+
+Pilot injects `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, and `ANTHROPIC_MODEL` into every Claude Code subprocess — no changes to `~/.claude/settings.json` required.
+
+### Verify
+
+Run a task and check logs for the auth source. Pilot logs the resolved provider at startup:
+
+```
+level=INFO msg="Backend configured with custom provider" api_base_url=https://api.z.ai/api/anthropic default_model=glm-4.6
+```
+
+Or trigger a trivial task (`pilot github run <issue-number>`) and check the execution report — `Model:` will show your configured default.
+
+</Steps>
+
+## Field Reference
+
+All three fields live under the top-level `executor:` block.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `api_base_url` | string | `""` (Anthropic) | Base URL of an Anthropic-compatible endpoint. Example: `https://api.z.ai/api/anthropic`. |
+| `api_auth_token` | string | `""` | Bearer token for the provider. Supports `${ENV_VAR}` expansion. |
+| `default_model` | string | `""` (use Pilot defaults) | Model name the provider recognises (e.g. `glm-4.6`, `openrouter/anthropic/claude-sonnet-4-6`). |
+
+All three are optional. Leave empty for default Anthropic behavior — Pilot uses OAuth, `~/.claude/settings.json`, or `ANTHROPIC_API_KEY` as before.
+
+## How Injection Works
+
+Pilot uses the custom provider in two places:
+
+```
+                    ┌──────────────────────────────┐
+                    │  executor config (YAML)      │
+                    │  api_base_url                │
+                    │  api_auth_token              │
+                    │  default_model               │
+                    └──────────────┬───────────────┘
+                                   │
+           ┌───────────────────────┴────────────────────────┐
+           │                                                │
+           ▼                                                ▼
+  ┌─────────────────────────┐              ┌──────────────────────────────┐
+  │  Pilot internal HTTP    │              │  Claude Code subprocess env  │
+  │  • effort classifier    │              │  ANTHROPIC_BASE_URL=...      │
+  │  • intent judge         │              │  ANTHROPIC_AUTH_TOKEN=...    │
+  │  • subtask parser       │              │  ANTHROPIC_MODEL=...         │
+  │  • release summary      │              │  (appended after os.Environ) │
+  └─────────────────────────┘              └──────────────────────────────┘
+```
+
+Pilot-injected env vars are appended **after** `os.Environ()`, so they win over any stale shell exports in the parent process.
+
+## Provider Compatibility
+
+The endpoint must expose the Anthropic Messages API shape. Known-good providers:
+
+| Provider | `api_base_url` | Notes |
+|----------|----------------|-------|
+| **Z.AI (GLM)** | `https://api.z.ai/api/anthropic` | GLM-4.6 / GLM-5.1. MAX subscription has no session caps. |
+| **OpenRouter (Anthropic-compat)** | `https://openrouter.ai/api/v1` | Prefix model names (e.g. `anthropic/claude-sonnet-4-6`). |
+| **LiteLLM proxy** | `http://your-proxy:4000` | Self-hosted gateway that translates to OpenAI / Bedrock / Gemini. |
+| **Anthropic (default)** | *(leave empty)* | First-party. |
+| **AWS Bedrock / Vertex** | *(use CC native env)* | Use `CLAUDE_CODE_USE_BEDROCK=1` / `CLAUDE_CODE_USE_VERTEX=1` instead. |
+
+<Callout type="warning">
+  Model routing ([configure](/concepts/model-routing)) still works, but the model names you configure in `model_routing.*` must be recognised by your provider. Prefer setting `default_model` alone for non-Anthropic providers until you confirm per-complexity names resolve.
+</Callout>
+
+## Common Setups
+
+### Mix: Pilot on Anthropic, CC on Z.AI
+
+Only set `api_base_url` + `api_auth_token` without `default_model` to route Claude Code to the provider while leaving Pilot's internal classifiers on Anthropic. This is niche — most users want all-or-nothing.
+
+### Env-var-only (no YAML)
+
+Skip the YAML fields entirely and export the Anthropic env vars yourself before starting Pilot:
+
+```bash
+export ANTHROPIC_BASE_URL="https://api.z.ai/api/anthropic"
+export ANTHROPIC_AUTH_TOKEN="$ZAI_API_KEY"
+export ANTHROPIC_MODEL="glm-4.6"
+pilot start --github --env stage
+```
+
+Works, but you lose the single-source-of-truth benefit and Pilot's internal HTTP calls still hit Anthropic.
+
+## Verification
+
+After restart, confirm routing worked:
+
+1. **Logs** — search Pilot logs for `api_base_url=` at startup. Absence means config didn't load.
+2. **Execution report** — the `Model:` line in the post-task report reflects `default_model`.
+3. **Provider dashboard** — check request volume on your provider's billing page after triggering a task.
+4. **Network** — `lsof -i` during execution should show connections to your provider's host, not `api.anthropic.com`.
+
+## Troubleshooting
+
+### `401 Unauthorized` from provider
+
+The token isn't being passed. Check:
+
+- `echo $ZAI_API_KEY` returns a non-empty value in the shell that started Pilot.
+- `api_auth_token:` line uses `${ZAI_API_KEY}` (with `$`) and not literal `ZAI_API_KEY`.
+- You restarted Pilot after editing config — config is read at startup, not hot-reloaded.
+
+### Claude Code still hits `api.anthropic.com`
+
+- Verify both `api_base_url` AND `api_auth_token` are set — injection requires both.
+- Check `~/.claude/settings.json` doesn't hardcode an endpoint that overrides env vars.
+- Pilot logs `ANTHROPIC_BASE_URL injected into subprocess env` when propagation works.
+
+### Model name not recognized
+
+Providers use their own naming. Cross-check:
+
+- Z.AI: `glm-4.6`, `glm-5.1` — not `claude-*`.
+- OpenRouter: needs provider prefix — `anthropic/claude-sonnet-4-6`.
+- LiteLLM: depends on your proxy's model mapping.
+
+### Effort routing unexpectedly enabled or silent
+
+Effort routing ([model-routing](/concepts/model-routing)) passes `--model` flags. If your provider ignores or rejects them, disable:
+
+```yaml
+executor:
+  effort_routing:
+    enabled: false
+  model_routing:
+    enabled: false
+```
+
+## Related
+
+- [Execution Backends](/concepts/execution-backends) — backend selection (Claude Code, Qwen, OpenCode)
+- [Model Routing](/concepts/model-routing) — complexity-based model selection
+- [Configuration Reference](/getting-started/configuration#executor) — full executor block

@@ -194,6 +194,11 @@ executor:
   skip_self_review: false                 # skip self-review step
   use_worktree: false                     # execute tasks in isolated git worktrees
 
+  # Non-Anthropic provider routing — see Custom Providers guide
+  # api_base_url: "https://api.z.ai/api/anthropic"
+  # api_auth_token: "${ZAI_API_KEY}"
+  # default_model: "glm-4.6"
+
   claude_code:
     command: "claude"                     # path to claude CLI
     extra_args: []                        # additional CLI arguments
@@ -235,6 +240,9 @@ executor:
 | `detect_ephemeral` | bool | `true` | Detect and skip ephemeral file changes |
 | `skip_self_review` | bool | `false` | Skip the self-review step |
 | `use_worktree` | bool | `false` | Execute tasks in isolated git worktrees (enables execution with uncommitted changes) |
+| `api_base_url` | string | `""` | Anthropic-compatible endpoint (e.g. Z.AI, OpenRouter). See [Custom Providers](/guides/custom-providers). |
+| `api_auth_token` | string | `""` | Auth token for the custom provider. Supports `${ENV_VAR}` expansion. |
+| `default_model` | string | `""` | Model name for the custom provider (e.g. `glm-4.6`). |
 | `claude_code.command` | string | `"claude"` | Path to the Claude CLI binary |
 | `claude_code.extra_args` | []string | `[]` | Additional CLI arguments |
 | `claude_code.planning_timeout` | duration | `2m` | Maximum time for epic planning before fallback to direct execution. Affects Slack `/plan` and Telegram planning commands. |

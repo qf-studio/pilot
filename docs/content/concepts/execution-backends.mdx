@@ -65,6 +65,10 @@ executor:
 | `use_session_resume` | bool | `false` | Reuse sessions for self-review (~40% token savings) |
 | `use_from_pr` | bool | `false` | Use `--from-pr` to resume from PR context |
 
+<Callout type="info">
+  For non-Anthropic providers (Z.AI, OpenRouter, LiteLLM), set `executor.api_base_url` / `api_auth_token` / `default_model` at the top of the `executor:` block — Pilot propagates them into the Claude Code subprocess env automatically. See [Custom Providers guide](/guides/custom-providers).
+</Callout>
+
 ### Strengths
 
 - ✅ Full feature parity with Pilot
