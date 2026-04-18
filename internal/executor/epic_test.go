@@ -969,7 +969,7 @@ func TestParseIssueNumber(t *testing.T) {
 	}{
 		{
 			name:     "standard github issue url",
-			url:      "https://github.com/anthropics/pilot/issues/123",
+			url:      "https://github.com/qf-studio/pilot/issues/123",
 			expected: 123,
 		},
 		{

@@ -581,7 +581,7 @@ func TestDashboardIssueURL(t *testing.T) {
 		input    string
 		expected string
 	}{
-		{"GH-100", "https://github.com/anthropics/pilot/issues/100"},
+		{"GH-100", "https://github.com/qf-studio/pilot/issues/100"},
 		{"LINEAR-123", ""},
 		{"", ""},
 	}

@@ -145,7 +145,7 @@ When writing tests that need API tokens or secrets:
 
 - ✅ **DO** use constants from `internal/testutil/tokens.go`:
   ```go
-  import "github.com/anthropics/pilot/internal/testutil"
+  import "github.com/qf-studio/pilot/internal/testutil"
 
   token := testutil.FakeSlackBotToken
   ```
