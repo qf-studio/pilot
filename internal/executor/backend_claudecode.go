@@ -149,8 +149,11 @@ func classifyClaudeCodeError(stderr string, originalErr error) *ClaudeCodeError 
 	}
 
 	// Session not found (GH-1267: --from-pr or --resume failed)
+	// GH-2377: include "no conversation found" — CC emits this exact phrase
+	// when --resume targets an evicted/expired session ID.
 	if strings.Contains(stderrLower, "session not found") ||
 		strings.Contains(stderrLower, "no session") ||
+		strings.Contains(stderrLower, "no conversation found") ||
 		strings.Contains(stderrLower, "session expired") ||
 		strings.Contains(stderrLower, "could not find session") ||
 		strings.Contains(stderrLower, "invalid session") {
@@ -277,6 +280,21 @@ func (b *ClaudeCodeBackend) Execute(ctx context.Context, opts ExecuteOptions) (*
 			)
 			// Retry without --from-pr
 			return b.executeWithFromPR(ctx, opts, false)
+		}
+	}
+
+	// GH-2377: Fallback if --resume fails with session not found.
+	// Self-review reuses the main-execution session ID to save tokens
+	// (GH-1265); when CC has evicted that session, drop --resume and
+	// run a fresh session rather than silently skipping self-review.
+	if err != nil && opts.ResumeSessionID != "" {
+		if ccErr, ok := err.(*ClaudeCodeError); ok && ccErr.Type == ErrorTypeSessionNotFound {
+			b.log.Warn("Session not found for --resume, retrying without it",
+				slog.String("session_id", opts.ResumeSessionID),
+				slog.String("error", ccErr.Message),
+			)
+			opts.ResumeSessionID = ""
+			return b.Execute(ctx, opts)
 		}
 	}
 

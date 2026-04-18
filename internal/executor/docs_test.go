@@ -175,3 +175,38 @@ func TestExtractFeatureName(t *testing.T) {
 		})
 	}
 }
+
+// TestSanitizeFilename verifies GH-2377 fix: titles containing path
+// separators (/, \) and other filesystem-unsafe chars (:|<>?*") must not
+// leak into os.WriteFile paths as subdirectory traversals.
+func TestSanitizeFilename(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{"spaces lowercased", "Hello World", "hello-world"},
+		{"forward slash", "fix(jira): migrate /rest/api/2 to /rest/api/3", "fix(jira)-migrate-rest-api-2-to-rest-api-3"},
+		{"pipe and slash", "fix: /rest/api/2|3/search", "fix-rest-api-2-3-search"},
+		{"colon", "task: do a thing", "task-do-a-thing"},
+		{"backslash", "path\\to\\thing", "path-to-thing"},
+		{"angle brackets", "<foo> vs <bar>", "foo-vs-bar"},
+		{"question mark and star", "what? *now*", "what-now"},
+		{"quote", `say "hi"`, "say-hi"},
+		{"trim leading trailing dashes", "/leading/", "leading"},
+		{"collapse consecutive dashes", "a // b", "a-b"},
+		{"plain simple", "simple-id", "simple-id"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := sanitizeFilename(tt.input)
+			if got != tt.expected {
+				t.Errorf("sanitizeFilename(%q) = %q, want %q", tt.input, got, tt.expected)
+			}
+			if strings.ContainsAny(got, `/\:|<>?*"`) {
+				t.Errorf("sanitizeFilename(%q) = %q still contains unsafe chars", tt.input, got)
+			}
+		})
+	}
+}

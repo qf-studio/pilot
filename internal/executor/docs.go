@@ -61,8 +61,21 @@ func formatTaskDoc(task *Task) string {
 	return sb.String()
 }
 
+// sanitizeFilename converts a human title into a path-safe filename fragment.
+// GH-2377: previously only lowercased + replaced spaces, so titles containing
+// "/", ":", "|" (common in REST-path or pipe-delimited titles) leaked into
+// os.WriteFile and were interpreted as subdirectories, failing marker writes.
 func sanitizeFilename(s string) string {
-	return strings.ReplaceAll(strings.ToLower(s), " ", "-")
+	s = strings.ToLower(s)
+	unsafe := []string{"/", "\\", ":", "|", "<", ">", "?", "*", "\""}
+	for _, c := range unsafe {
+		s = strings.ReplaceAll(s, c, "-")
+	}
+	s = strings.ReplaceAll(s, " ", "-")
+	for strings.Contains(s, "--") {
+		s = strings.ReplaceAll(s, "--", "-")
+	}
+	return strings.Trim(s, "-")
 }
 
 // UpdateFeatureMatrix appends a new feature row to .agent/system/FEATURE-MATRIX.md

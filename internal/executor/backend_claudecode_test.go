@@ -3,8 +3,10 @@ package executor
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -480,6 +482,19 @@ func TestClassifyClaudeCodeError(t *testing.T) {
 			name:       "timeout - killed",
 			stderr:     "signal: killed",
 			expectType: ErrorTypeTimeout,
+		},
+		{
+			// GH-2377: CC emits "No conversation found with session ID: <uuid>"
+			// when --resume targets an evicted session. Must classify as
+			// session_not_found so the --resume fallback triggers.
+			name:       "session not found - no conversation found",
+			stderr:     "No conversation found with session ID: 723e1e6e-0253-45ae-a7e4-e79112d73deb",
+			expectType: ErrorTypeSessionNotFound,
+		},
+		{
+			name:       "session not found - classic phrasing",
+			stderr:     "Error: session not found",
+			expectType: ErrorTypeSessionNotFound,
 		},
 		{
 			name:       "unknown error",
@@ -990,5 +1005,69 @@ func TestNewBackendWiresProviderEnv(t *testing.T) {
 	}
 	if cc.defaultModel != cfg.DefaultModel {
 		t.Errorf("defaultModel = %q, want %q", cc.defaultModel, cfg.DefaultModel)
+	}
+}
+
+// TestClaudeCodeBackendResumeSessionFallback verifies the GH-2377 fix:
+// when Execute is called with ResumeSessionID set and the CLI exits with a
+// "session not found" stderr, the backend retries Execute without --resume.
+//
+// Strategy: install a tiny shell script as the "claude" command that writes
+// its full argv to a counter file, then exits with different stderr on the
+// first vs second invocation. If the fallback fires, we expect exactly 2
+// invocations — the first containing "--resume" and the second not.
+func TestClaudeCodeBackendResumeSessionFallback(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake-CLI test relies on shell scripts; skipping on windows")
+	}
+
+	tmpDir := t.TempDir()
+	logFile := tmpDir + "/calls.log"
+	script := tmpDir + "/fake-claude"
+
+	// Script logs argv and exits with different stderr based on call count.
+	body := `#!/bin/sh
+printf '%s\n' "$*" >> ` + logFile + `
+COUNT=$(wc -l < ` + logFile + ` | tr -d ' ')
+if [ "$COUNT" = "1" ]; then
+  echo "No conversation found with session ID: abc-123" >&2
+  exit 1
+fi
+echo "fake retry stderr" >&2
+exit 2
+`
+	if err := os.WriteFile(script, []byte(body), 0755); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+
+	backend := NewClaudeCodeBackend(&ClaudeCodeConfig{Command: script})
+	opts := ExecuteOptions{
+		Prompt:          "hello",
+		ProjectPath:     tmpDir,
+		ResumeSessionID: "abc-123",
+		EventHandler:    func(BackendEvent) {},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_, err := backend.Execute(ctx, opts)
+	if err == nil {
+		t.Fatal("expected error from fake CLI, got nil")
+	}
+
+	// Verify exactly 2 invocations and --resume dropped on retry.
+	data, readErr := os.ReadFile(logFile)
+	if readErr != nil {
+		t.Fatalf("read log: %v", readErr)
+	}
+	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 CLI invocations, got %d: %q", len(lines), lines)
+	}
+	if !strings.Contains(lines[0], "--resume") || !strings.Contains(lines[0], "abc-123") {
+		t.Errorf("first invocation missing --resume: %q", lines[0])
+	}
+	if strings.Contains(lines[1], "--resume") {
+		t.Errorf("second invocation should not contain --resume: %q", lines[1])
 	}
 }
