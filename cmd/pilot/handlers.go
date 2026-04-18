@@ -345,14 +345,21 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 				}
 			}
 		} else if hr.Result != nil {
-			// result exists but Success is false - mark as failed
-			if err := client.AddLabels(ctx, parts[0], parts[1], issue.Number, []string{github.LabelFailed}); err != nil {
-				logGitHubAPIError("AddLabels", parts[0], parts[1], issue.Number, err)
-			}
-			syncBoardStatus(ctx, boardSync, issue.NodeID, boardStatuses.Failed) // GH-1853
-			comment := buildFailureComment(hr.Result)
-			if _, err := client.AddComment(ctx, parts[0], parts[1], issue.Number, comment); err != nil {
-				logGitHubAPIError("AddComment", parts[0], parts[1], issue.Number, err)
+			// GH-2363: Title-guard escalation already posted its own structured
+			// comment and added pilot-failed + pilot-title-rejected. Skip the
+			// generic failure-comment path to avoid duplicate noise.
+			if hr.Result.TitleRejected {
+				syncBoardStatus(ctx, boardSync, issue.NodeID, boardStatuses.Failed)
+			} else {
+				// result exists but Success is false - mark as failed
+				if err := client.AddLabels(ctx, parts[0], parts[1], issue.Number, []string{github.LabelFailed}); err != nil {
+					logGitHubAPIError("AddLabels", parts[0], parts[1], issue.Number, err)
+				}
+				syncBoardStatus(ctx, boardSync, issue.NodeID, boardStatuses.Failed) // GH-1853
+				comment := buildFailureComment(hr.Result)
+				if _, err := client.AddComment(ctx, parts[0], parts[1], issue.Number, comment); err != nil {
+					logGitHubAPIError("AddComment", parts[0], parts[1], issue.Number, err)
+				}
 			}
 		}
 	}
