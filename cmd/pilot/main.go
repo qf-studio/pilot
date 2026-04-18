@@ -159,6 +159,14 @@ Examples:
 				return fmt.Errorf("failed to load config: %w", err)
 			}
 
+			// GH-2361: Fail loudly when an adapter flag is used but the
+			// corresponding adapter block is missing from config. Previously,
+			// `pilot start --github` would silently auto-enable a defaulted
+			// adapter with no token/repo and poll nothing.
+			if err := validateAdapterFlags(cfg, cmd); err != nil {
+				return err
+			}
+
 			// Apply flag overrides to config
 			applyInputOverrides(cfg, cmd, enableTelegram, enableGithub, enableLinear, enableSlack, enableTunnel, enablePlane, enableDiscord)
 
@@ -1114,6 +1122,39 @@ cmd.Flags().BoolVar(&dashboardMode, "dashboard", false, "Show TUI dashboard for 
 	cmd.Flags().StringVar(&logFormat, "log-format", "text", "Log output format: text or json (for log aggregation systems)")
 
 	return cmd
+}
+
+// validateAdapterFlags returns an error when an adapter flag is set but the
+// corresponding adapter block is missing or disabled in config. This prevents
+// `pilot start --github` from silently auto-enabling a blank adapter and
+// launching a no-op poller (GH-2361).
+func validateAdapterFlags(cfg *config.Config, cmd *cobra.Command) error {
+	type adapterCheck struct {
+		flag    string
+		enabled bool
+		exists  bool
+	}
+	adapters := []adapterCheck{
+		{"github", cfg.Adapters != nil && cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.Enabled, cfg.Adapters != nil && cfg.Adapters.GitHub != nil},
+		{"linear", cfg.Adapters != nil && cfg.Adapters.Linear != nil && cfg.Adapters.Linear.Enabled, cfg.Adapters != nil && cfg.Adapters.Linear != nil},
+		{"plane", cfg.Adapters != nil && cfg.Adapters.Plane != nil && cfg.Adapters.Plane.Enabled, cfg.Adapters != nil && cfg.Adapters.Plane != nil},
+		{"discord", cfg.Adapters != nil && cfg.Adapters.Discord != nil && cfg.Adapters.Discord.Enabled, cfg.Adapters != nil && cfg.Adapters.Discord != nil},
+	}
+	for _, a := range adapters {
+		if !cmd.Flags().Changed(a.flag) {
+			continue
+		}
+		if a.enabled {
+			continue
+		}
+		if a.exists {
+			return fmt.Errorf("--%s flag set but adapters.%s.enabled is false in config.\nFix: set adapters.%s.enabled: true, or run 'pilot setup'",
+				a.flag, a.flag, a.flag)
+		}
+		return fmt.Errorf("--%s flag set but adapters.%s block is missing in config.\nFix: add adapters.%s block, or run 'pilot setup'",
+			a.flag, a.flag, a.flag)
+	}
+	return nil
 }
 
 // applyInputOverrides applies CLI flag overrides to config
