@@ -203,7 +203,7 @@ func TestPollerCheckForNewIssues(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 
 		// Handle search request
-		if r.Method == http.MethodGet && r.URL.Path == "/rest/api/3/search" {
+		if r.Method == http.MethodPost && r.URL.Path == "/rest/api/3/search/jql" {
 			resp := SearchResponse{
 				Issues: []*Issue{
 					{
@@ -275,7 +275,7 @@ func TestPollerCheckForNewIssues_SkipsAlreadyProcessed(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 
-		if r.Method == http.MethodGet && r.URL.Path == "/rest/api/3/search" {
+		if r.Method == http.MethodPost && r.URL.Path == "/rest/api/3/search/jql" {
 			resp := SearchResponse{
 				Issues: []*Issue{
 					{

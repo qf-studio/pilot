@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -209,21 +210,50 @@ func (c *Client) GetProject(ctx context.Context, projectKey string) (*Project, e
 	return &project, nil
 }
 
-// SearchResponse represents the response from the search API
+// SearchResponse represents the response from the search API.
+// Server/DC returns Total/StartAt/MaxResults; Cloud /search/jql returns
+// NextPageToken/IsLast instead (the legacy fields are absent).
 type SearchResponse struct {
-	Issues     []*Issue `json:"issues"`
-	Total      int      `json:"total"`
-	StartAt    int      `json:"startAt"`
-	MaxResults int      `json:"maxResults"`
+	Issues        []*Issue `json:"issues"`
+	Total         int      `json:"total,omitempty"`
+	StartAt       int      `json:"startAt,omitempty"`
+	MaxResults    int      `json:"maxResults,omitempty"`
+	NextPageToken string   `json:"nextPageToken,omitempty"`
+	IsLast        bool     `json:"isLast,omitempty"`
 }
 
-// SearchIssues searches for issues using JQL
+// searchFields is the explicit field list requested from the Cloud
+// /rest/api/3/search/jql endpoint — it does not return all fields by default.
+var searchFields = []string{
+	"summary", "description", "issuetype", "status", "priority",
+	"labels", "assignee", "reporter", "project", "created", "updated",
+}
+
+// SearchIssues searches for issues using JQL.
+//
+// Atlassian removed the legacy /rest/api/3/search endpoint in May 2025
+// (CHANGE-2046). Cloud instances now use POST /rest/api/3/search/jql with
+// a JSON body and cursor-based pagination. Server/Data Center still
+// supports the legacy GET /rest/api/2/search.
 func (c *Client) SearchIssues(ctx context.Context, jql string, maxResults int) ([]*Issue, error) {
 	if maxResults <= 0 {
 		maxResults = 50
 	}
 
-	path := fmt.Sprintf("/search?jql=%s&maxResults=%d", strings.ReplaceAll(jql, " ", "+"), maxResults)
+	if c.platform == PlatformCloud {
+		reqBody := map[string]interface{}{
+			"jql":        jql,
+			"maxResults": maxResults,
+			"fields":     searchFields,
+		}
+		var resp SearchResponse
+		if err := c.doRequest(ctx, http.MethodPost, "/search/jql", reqBody, &resp); err != nil {
+			return nil, err
+		}
+		return resp.Issues, nil
+	}
+
+	path := fmt.Sprintf("/search?jql=%s&maxResults=%d", url.QueryEscape(jql), maxResults)
 	var resp SearchResponse
 	if err := c.doRequest(ctx, http.MethodGet, path, nil, &resp); err != nil {
 		return nil, err

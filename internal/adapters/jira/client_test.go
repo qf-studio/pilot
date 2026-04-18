@@ -334,6 +334,85 @@ func TestDoRequest_ErrorHandling(t *testing.T) {
 	}
 }
 
+func TestSearchIssues_Cloud_UsesJQLEndpoint(t *testing.T) {
+	var gotMethod, gotPath string
+	var gotBody map[string]interface{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		if r.Body != nil {
+			_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(SearchResponse{
+			Issues: []*Issue{
+				{Key: "TEST-1", Fields: Fields{Summary: "first"}},
+				{Key: "TEST-2", Fields: Fields{Summary: "second"}},
+			},
+			IsLast: true,
+		})
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "user@example.com", "api-token", PlatformCloud)
+	issues, err := client.SearchIssues(context.Background(), "labels = pilot", 50)
+	if err != nil {
+		t.Fatalf("SearchIssues failed: %v", err)
+	}
+
+	if gotMethod != http.MethodPost {
+		t.Errorf("expected POST, got %s", gotMethod)
+	}
+	if gotPath != "/rest/api/3/search/jql" {
+		t.Errorf("expected /rest/api/3/search/jql, got %s", gotPath)
+	}
+	if gotBody["jql"] != "labels = pilot" {
+		t.Errorf("expected jql in body, got %v", gotBody["jql"])
+	}
+	if _, ok := gotBody["fields"]; !ok {
+		t.Error("expected fields in body")
+	}
+	if len(issues) != 2 {
+		t.Errorf("expected 2 issues, got %d", len(issues))
+	}
+}
+
+func TestSearchIssues_Server_UsesLegacyEndpoint(t *testing.T) {
+	var gotMethod, gotPath, gotQuery string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		gotQuery = r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(SearchResponse{
+			Issues: []*Issue{{Key: "TEST-9", Fields: Fields{Summary: "dc"}}},
+			Total:  1,
+		})
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "admin", "token", PlatformServer)
+	issues, err := client.SearchIssues(context.Background(), "labels = pilot", 25)
+	if err != nil {
+		t.Fatalf("SearchIssues failed: %v", err)
+	}
+
+	if gotMethod != http.MethodGet {
+		t.Errorf("expected GET, got %s", gotMethod)
+	}
+	if gotPath != "/rest/api/2/search" {
+		t.Errorf("expected /rest/api/2/search, got %s", gotPath)
+	}
+	if gotQuery == "" {
+		t.Error("expected query params on GET")
+	}
+	if len(issues) != 1 {
+		t.Errorf("expected 1 issue, got %d", len(issues))
+	}
+}
+
 // Integration test helper - verifies client can be created and method signatures are correct
 func TestClientMethodSignatures(t *testing.T) {
 	client := NewClient("https://jira.example.com", "user", "token", PlatformCloud)
