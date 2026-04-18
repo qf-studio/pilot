@@ -202,8 +202,8 @@ func TestPollerCheckForNewIssues(t *testing.T) {
 		requestCount++
 		w.Header().Set("Content-Type", "application/json")
 
-		// Handle search request
-		if r.Method == http.MethodGet && r.URL.Path == "/rest/api/3/search" {
+		// Handle search request (Cloud uses POST /search/jql since May 2025)
+		if r.Method == http.MethodPost && r.URL.Path == "/rest/api/3/search/jql" {
 			resp := SearchResponse{
 				Issues: []*Issue{
 					{
@@ -225,8 +225,7 @@ func TestPollerCheckForNewIssues(t *testing.T) {
 						},
 					},
 				},
-				Total:      2,
-				MaxResults: 50,
+				IsLast: true,
 			}
 			_ = json.NewEncoder(w).Encode(resp)
 			return
@@ -275,7 +274,7 @@ func TestPollerCheckForNewIssues_SkipsAlreadyProcessed(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 
-		if r.Method == http.MethodGet && r.URL.Path == "/rest/api/3/search" {
+		if r.Method == http.MethodPost && r.URL.Path == "/rest/api/3/search/jql" {
 			resp := SearchResponse{
 				Issues: []*Issue{
 					{

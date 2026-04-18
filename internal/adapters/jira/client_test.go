@@ -334,6 +334,83 @@ func TestDoRequest_ErrorHandling(t *testing.T) {
 	}
 }
 
+func TestSearchIssues_Cloud(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("expected POST, got %s", r.Method)
+		}
+		if r.URL.Path != "/rest/api/3/search/jql" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+
+		var body map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("failed to decode body: %v", err)
+		}
+		if body["jql"] != "labels = pilot" {
+			t.Errorf("unexpected jql: %v", body["jql"])
+		}
+		if _, ok := body["fields"]; !ok {
+			t.Error("expected fields in body")
+		}
+
+		resp := map[string]interface{}{
+			"issues": []Issue{
+				{ID: "10001", Key: "PROJ-1", Fields: Fields{Summary: "First"}},
+				{ID: "10002", Key: "PROJ-2", Fields: Fields{Summary: "Second"}},
+			},
+			"nextPageToken": nil,
+			"isLast":        true,
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "user@example.com", "api-token", PlatformCloud)
+	issues, err := client.SearchIssues(context.Background(), "labels = pilot", 50)
+	if err != nil {
+		t.Fatalf("SearchIssues failed: %v", err)
+	}
+	if len(issues) != 2 {
+		t.Fatalf("expected 2 issues, got %d", len(issues))
+	}
+	if issues[0].Key != "PROJ-1" {
+		t.Errorf("expected first issue PROJ-1, got %s", issues[0].Key)
+	}
+}
+
+func TestSearchIssues_Server(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("expected GET, got %s", r.Method)
+		}
+		if r.URL.Path != "/rest/api/2/search" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		if r.URL.Query().Get("jql") == "" {
+			t.Error("expected jql query param")
+		}
+
+		resp := SearchResponse{
+			Issues: []*Issue{{ID: "10001", Key: "PROJ-1"}},
+			Total:  1,
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "admin", "token", PlatformServer)
+	issues, err := client.SearchIssues(context.Background(), "labels = pilot", 50)
+	if err != nil {
+		t.Fatalf("SearchIssues failed: %v", err)
+	}
+	if len(issues) != 1 {
+		t.Fatalf("expected 1 issue, got %d", len(issues))
+	}
+}
+
 // Integration test helper - verifies client can be created and method signatures are correct
 func TestClientMethodSignatures(t *testing.T) {
 	client := NewClient("https://jira.example.com", "user", "token", PlatformCloud)
