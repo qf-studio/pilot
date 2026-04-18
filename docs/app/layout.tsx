@@ -45,11 +45,11 @@ export default async function RootLayout({
               logo={
                 <span style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
                   <img src="/logo.svg" alt="Pilot" height={24} style={{ height: 24, width: 'auto', alignSelf: 'center' }} />
-                  <span style={{ fontSize: '0.5em', opacity: 0.5, fontWeight: 400 }}>v2.76.0</span>
+                  <span style={{ fontSize: '0.5em', opacity: 0.5, fontWeight: 400 }}>v2.95.13</span>
                 </span>
               }
               projectLink="https://github.com/qf-studio/pilot"
-              chatLink="https://discord.gg/K6mM8TzJ"
+              chatLink="https://discord.gg/Hsz63MTB3c"
             />
           }
           pageMap={await getPageMap()}
