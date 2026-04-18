@@ -136,8 +136,8 @@ func TestPRState_RepoOwnerAndName(t *testing.T) {
 		},
 		{
 			name:      "same-repo PR URL",
-			prURL:     "https://github.com/alekspetrov/pilot/pull/100",
-			wantOwner: "alekspetrov",
+			prURL:     "https://github.com/qf-studio/pilot/pull/100",
+			wantOwner: "qf-studio",
 			wantRepo:  "pilot",
 		},
 		{

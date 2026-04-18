@@ -343,7 +343,7 @@ func dashboardIssueURL(taskID string) string {
 	id := issueIDFromTaskID(taskID)
 	if strings.HasPrefix(id, "GH-") {
 		num := strings.TrimPrefix(id, "GH-")
-		return fmt.Sprintf("https://github.com/anthropics/pilot/issues/%s", num)
+		return fmt.Sprintf("https://github.com/qf-studio/pilot/issues/%s", num)
 	}
 	return ""
 }

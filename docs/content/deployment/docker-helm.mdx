@@ -5,7 +5,7 @@ import { Callout, Tabs, Steps } from 'nextra/components'
 Production-ready deployment using Docker Compose or Helm on Kubernetes. Covers the official image, configuration, persistence, monitoring, ingress, and security hardening.
 
 <Callout type="info">
-The official image is available at `ghcr.io/anthropics/pilot`. It bundles the Pilot binary, Claude Code CLI, Git, and the GitHub CLI (`gh`) in a single Ubuntu-based image running as a non-root user.
+The official image is available at `ghcr.io/qf-studio/pilot`. It bundles the Pilot binary, Claude Code CLI, Git, and the GitHub CLI (`gh`) in a single Ubuntu-based image running as a non-root user.
 </Callout>
 
 ---
@@ -49,10 +49,10 @@ Pilot starts polling for issues labeled `pilot` on the configured repository wit
 
 ```bash
 # Latest stable release
-docker pull ghcr.io/anthropics/pilot:latest
+docker pull ghcr.io/qf-studio/pilot:latest
 
 # Pin to a specific version (recommended for production)
-docker pull ghcr.io/anthropics/pilot:v2.56.0
+docker pull ghcr.io/qf-studio/pilot:v2.56.0
 ```
 
 ### Build from Source
@@ -71,7 +71,7 @@ Multi-architecture build (amd64 + arm64):
 docker buildx build \
   --platform linux/amd64,linux/arm64 \
   --build-arg VERSION=$(git describe --tags --always) \
-  -t ghcr.io/anthropics/pilot:latest \
+  -t ghcr.io/qf-studio/pilot:latest \
   --push .
 ```
 
@@ -139,7 +139,7 @@ For production use with Telegram, Slack, and multiple adapters:
 ```yaml
 services:
   pilot:
-    image: ghcr.io/anthropics/pilot:v2.56.0
+    image: ghcr.io/qf-studio/pilot:v2.56.0
     ports:
       - "9090:9090"
     environment:
@@ -260,7 +260,7 @@ helm upgrade pilot ./helm/pilot --reuse-values \
 ```yaml
 # Image
 image:
-  repository: ghcr.io/anthropics/pilot
+  repository: ghcr.io/qf-studio/pilot
   tag: v2.56.0           # pin to a specific version in production
   pullPolicy: IfNotPresent
 
@@ -813,7 +813,7 @@ docker exec pilot claude --version
 kubectl exec deploy/pilot -- claude --version
 ```
 
-**Fix:** Use the official image `ghcr.io/anthropics/pilot` or add to your Dockerfile:
+**Fix:** Use the official image `ghcr.io/qf-studio/pilot` or add to your Dockerfile:
 ```dockerfile
 RUN npm install -g @anthropic-ai/claude-code
 ```

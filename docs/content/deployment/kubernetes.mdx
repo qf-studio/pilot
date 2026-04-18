@@ -71,7 +71,7 @@ spec:
     spec:
       containers:
       - name: pilot
-        image: ghcr.io/anthropics/pilot:latest
+        image: ghcr.io/qf-studio/pilot:latest
         ports:
         - containerPort: 9090
           name: http
@@ -237,7 +237,7 @@ pilot-chart/
 replicaCount: 1
 
 image:
-  repository: ghcr.io/anthropics/pilot
+  repository: ghcr.io/qf-studio/pilot
   tag: latest
   pullPolicy: IfNotPresent
 

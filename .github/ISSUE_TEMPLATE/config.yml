@@ -4,5 +4,5 @@ contact_links:
     url: https://pilot.quantflow.studio
     about: Read the Pilot documentation and guides
   - name: GitHub Discussions
-    url: https://github.com/anthropics/pilot/discussions
+    url: https://github.com/qf-studio/pilot/discussions
     about: Ask questions and discuss with the community

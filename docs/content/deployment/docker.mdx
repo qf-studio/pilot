@@ -77,7 +77,7 @@ docker compose logs -f
 Use the official image from GitHub Container Registry:
 
 ```bash
-docker pull ghcr.io/anthropics/pilot:latest
+docker pull ghcr.io/qf-studio/pilot:latest
 ```
 
 Run with environment variables:
@@ -90,7 +90,7 @@ docker run -d \
   -e ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY}" \
   -v $(pwd)/config.yaml:/home/pilot/.pilot/config.yaml:ro \
   -v pilot-data:/home/pilot/.pilot/data \
-  ghcr.io/anthropics/pilot:latest
+  ghcr.io/qf-studio/pilot:latest
 ```
 
 ---
@@ -164,7 +164,7 @@ For Docker Swarm deployments:
 version: '3.8'
 services:
   pilot:
-    image: ghcr.io/anthropics/pilot:latest
+    image: ghcr.io/qf-studio/pilot:latest
     deploy:
       replicas: 1  # Single replica recommended
       restart_policy:
