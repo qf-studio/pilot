@@ -330,6 +330,11 @@ type ReleaseConfig struct {
 	VersionStrategy string `yaml:"version_strategy"`
 	// TagPrefix is prepended to version (default "v").
 	TagPrefix string `yaml:"tag_prefix"`
+	// DeployTagPrefix is an optional secondary tag prefix pushed alongside
+	// TagPrefix at the same SHA. Used to trigger downstream pipelines that
+	// watch a different tag namespace (e.g. a docs deploy that fires on
+	// `prod-X.Y.Z`). Empty disables the secondary tag. Default "prod-".
+	DeployTagPrefix string `yaml:"deploy_tag_prefix"`
 	// GenerateChangelog enables changelog generation from commits.
 	GenerateChangelog bool `yaml:"generate_changelog"`
 	// NotifyOnRelease sends notification when release is created.
@@ -347,6 +352,7 @@ func DefaultReleaseConfig() *ReleaseConfig {
 		Trigger:           "on_merge",
 		VersionStrategy:   "conventional_commits",
 		TagPrefix:         "v",
+		DeployTagPrefix:   "prod-",
 		GenerateChangelog: true,
 		NotifyOnRelease:   true,
 		RequireCI:         true,

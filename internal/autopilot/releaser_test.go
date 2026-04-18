@@ -499,7 +499,7 @@ func TestReleaser_CreateTag(t *testing.T) {
 	prState := &PRState{PRNumber: 42, HeadSHA: "abc123"}
 	newVersion := SemVer{Major: 1, Minor: 0, Patch: 0}
 
-	tagName, err := r.CreateTag(context.Background(), prState, newVersion)
+	tagName, deployTag, err := r.CreateTag(context.Background(), prState, newVersion)
 	if err != nil {
 		t.Fatalf("CreateTag() error = %v", err)
 	}
@@ -508,12 +508,112 @@ func TestReleaser_CreateTag(t *testing.T) {
 		t.Errorf("CreateTag() = %v, want v1.0.0", tagName)
 	}
 
+	if deployTag != "" {
+		t.Errorf("CreateTag() deployTag = %q, want empty (DeployTagPrefix not set)", deployTag)
+	}
+
 	if capturedBody["ref"] != "refs/tags/v1.0.0" {
 		t.Errorf("CreateTag() ref = %v, want refs/tags/v1.0.0", capturedBody["ref"])
 	}
 
 	if capturedBody["sha"] != "abc123" {
 		t.Errorf("CreateTag() sha = %v, want abc123", capturedBody["sha"])
+	}
+}
+
+func TestReleaser_CreateTag_PushesDeployTag(t *testing.T) {
+	var capturedRefs []string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/repos/owner/repo/git/refs" && r.Method == "POST" {
+			var body map[string]interface{}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			if ref, ok := body["ref"].(string); ok {
+				capturedRefs = append(capturedRefs, ref)
+			}
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"ref":    body["ref"],
+				"object": map[string]string{"sha": "abc123"},
+			})
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	client := github.NewClientWithBaseURL("test-token", server.URL)
+	config := &ReleaseConfig{
+		Enabled:         true,
+		Trigger:         "on_merge",
+		TagPrefix:       "v",
+		DeployTagPrefix: "prod-",
+	}
+	r := NewReleaser(client, "owner", "repo", config)
+
+	prState := &PRState{PRNumber: 42, HeadSHA: "abc123"}
+	newVersion := SemVer{Major: 1, Minor: 2, Patch: 3}
+
+	tagName, deployTag, err := r.CreateTag(context.Background(), prState, newVersion)
+	if err != nil {
+		t.Fatalf("CreateTag() error = %v", err)
+	}
+
+	if tagName != "v1.2.3" {
+		t.Errorf("tagName = %q, want v1.2.3", tagName)
+	}
+	if deployTag != "prod-1.2.3" {
+		t.Errorf("deployTag = %q, want prod-1.2.3", deployTag)
+	}
+
+	wantRefs := []string{"refs/tags/v1.2.3", "refs/tags/prod-1.2.3"}
+	if len(capturedRefs) != 2 ||
+		capturedRefs[0] != wantRefs[0] ||
+		capturedRefs[1] != wantRefs[1] {
+		t.Errorf("captured refs = %v, want %v", capturedRefs, wantRefs)
+	}
+}
+
+func TestReleaser_CreateTag_DeployTagFailureNonFatal(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/repos/owner/repo/git/refs" && r.Method == "POST" {
+			calls++
+			if calls == 1 {
+				w.WriteHeader(http.StatusCreated)
+				_, _ = w.Write([]byte(`{"ref":"refs/tags/v1.0.0","object":{"sha":"abc123"}}`))
+				return
+			}
+			// Second call (deploy tag) fails
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			_, _ = w.Write([]byte(`{"message":"Reference already exists"}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	client := github.NewClientWithBaseURL("test-token", server.URL)
+	config := &ReleaseConfig{
+		Enabled:         true,
+		Trigger:         "on_merge",
+		TagPrefix:       "v",
+		DeployTagPrefix: "prod-",
+	}
+	r := NewReleaser(client, "owner", "repo", config)
+
+	prState := &PRState{PRNumber: 42, HeadSHA: "abc123"}
+	newVersion := SemVer{Major: 1, Minor: 0, Patch: 0}
+
+	tagName, deployTag, err := r.CreateTag(context.Background(), prState, newVersion)
+	if err != nil {
+		t.Fatalf("CreateTag() error = %v, want nil (deploy tag failure must not fail release)", err)
+	}
+	if tagName != "v1.0.0" {
+		t.Errorf("tagName = %q, want v1.0.0", tagName)
+	}
+	if deployTag != "" {
+		t.Errorf("deployTag = %q, want empty on push failure", deployTag)
 	}
 }
 
@@ -541,7 +641,7 @@ func TestReleaser_CreateTagForRepo(t *testing.T) {
 	newVersion := SemVer{Major: 2, Minor: 0, Patch: 0}
 
 	// Call with a different owner/repo than the releaser default
-	tagName, err := r.CreateTagForRepo(context.Background(), "qf-studio", "auth-service", prState, newVersion)
+	tagName, _, err := r.CreateTagForRepo(context.Background(), "qf-studio", "auth-service", prState, newVersion)
 	if err != nil {
 		t.Fatalf("CreateTagForRepo() error = %v", err)
 	}
