@@ -1232,6 +1232,15 @@ func (p *Poller) shouldRetryFailedIssue(ctx context.Context, issue *Issue) bool 
 		return false
 	}
 
+	// GH-2363: Title-guard escalation explicitly halted retries. A human must
+	// edit the title and remove pilot-title-rejected before we try again.
+	if HasLabel(issue, LabelTitleRejected) {
+		p.logger.Info("Skipping retry — pilot-title-rejected set (GH-2363)",
+			slog.Int("number", issue.Number),
+		)
+		return false
+	}
+
 	p.mu.RLock()
 	retries := p.failedRetryCount[issue.Number]
 	p.mu.RUnlock()

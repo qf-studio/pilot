@@ -243,6 +243,10 @@ type ExecutionResult struct {
 	// IntentWarning contains the reason if the intent judge flagged a mismatch.
 	// When set, the PR was created despite intent misalignment (after retry failed).
 	IntentWarning string
+	// TitleRejected indicates the task failed at the conventional-commit title
+	// guard and the runner has already posted a structured "how to fix" comment
+	// (GH-2363). Callers should skip their generic failure-comment path.
+	TitleRejected bool
 }
 
 // ProgressCallback is a function called during execution with progress updates.
@@ -357,6 +361,9 @@ type Runner struct {
 	knowledgeGraph       KnowledgeGraphRecorder         // Optional knowledge graph for cross-project learnings
 	// GH-2256: Dry-run mode to suppress real gh CLI calls (issue close/comment)
 	dryRun               bool
+	// GH-2363: Track consecutive title-rejection failures per issue so we stop
+	// retrying and post a helpful comment after the 2nd identical rejection.
+	titleRejections      *titleRejectionTracker
 }
 
 // NewRunner creates a new Runner instance with Claude Code backend by default.
@@ -373,6 +380,7 @@ func NewRunner() *Runner {
 		enableRecording:   true, // Recording enabled by default
 		modelRouter:       NewModelRouter(nil, nil),
 		signalParser:      NewSignalParser(log),
+		titleRejections:   newTitleRejectionTracker(),
 	}
 }
 
@@ -392,6 +400,7 @@ func NewRunnerWithBackend(backend Backend) *Runner {
 		enableRecording:   true,
 		modelRouter:       NewModelRouter(nil, nil),
 		signalParser:      NewSignalParser(log),
+		titleRejections:   newTitleRejectionTracker(),
 	}
 }
 
@@ -2753,8 +2762,34 @@ The previous execution completed but made no code changes. This task requires ac
 					slog.String("title", task.Title),
 					slog.Any("labels", task.Labels),
 				)
+
+				// GH-2363: On the 2nd consecutive rejection for this exact title,
+				// escalate with a structured comment + stop-retry labels so we
+				// don't spam the same failure every retry cycle.
+				if r.titleRejections != nil {
+					count := r.titleRejections.record(task.ID, task.Title)
+					if count >= titleRejectionMaxCount {
+						if err := r.postTitleRejectionEscalation(ctx, task); err != nil {
+							log.Warn("title-rejection escalation failed",
+								slog.String("task_id", task.ID),
+								slog.Any("error", err),
+							)
+						} else {
+							result.TitleRejected = true
+							log.Info("title-rejection escalated — posted guidance comment, stopping retries",
+								slog.String("task_id", task.ID),
+								slog.Int("count", count),
+							)
+						}
+					}
+				}
+
 				r.reportProgress(task.ID, "PR Failed", 100, result.Error)
 				return result, nil
+			}
+			// Title accepted — clear any prior rejection bookkeeping for this task.
+			if r.titleRejections != nil {
+				r.titleRejections.clear(task.ID)
 			}
 			prTitle := fmt.Sprintf("%s: %s", task.ID, normalizedTitle)
 

@@ -94,7 +94,8 @@ const (
 	LabelInProgress = "pilot-in-progress"
 	LabelDone       = "pilot-done"
 	LabelFailed     = "pilot-failed"
-	LabelRetryReady = "pilot-retry-ready" // PR closed without merge, issue ready for retry
+	LabelRetryReady    = "pilot-retry-ready"    // PR closed without merge, issue ready for retry
+	LabelTitleRejected = "pilot-title-rejected" // GH-2363: title guard escalation; blocks auto-retry until human edits title
 )
 
 // Priority mapping from GitHub labels
