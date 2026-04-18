@@ -209,18 +209,40 @@ func (c *Client) GetProject(ctx context.Context, projectKey string) (*Project, e
 	return &project, nil
 }
 
-// SearchResponse represents the response from the search API
+// SearchResponse represents the response from the legacy search API (Server/DC).
+// Cloud's /rest/api/3/search/jql returns a subset of these fields (no total/startAt).
 type SearchResponse struct {
-	Issues     []*Issue `json:"issues"`
-	Total      int      `json:"total"`
-	StartAt    int      `json:"startAt"`
-	MaxResults int      `json:"maxResults"`
+	Issues        []*Issue `json:"issues"`
+	Total         int      `json:"total,omitempty"`
+	StartAt       int      `json:"startAt,omitempty"`
+	MaxResults    int      `json:"maxResults,omitempty"`
+	NextPageToken string   `json:"nextPageToken,omitempty"`
+	IsLast        bool     `json:"isLast,omitempty"`
 }
 
-// SearchIssues searches for issues using JQL
+// SearchIssues searches for issues using JQL.
+//
+// Cloud uses POST /rest/api/3/search/jql (the legacy /search endpoint was removed
+// in May 2025 — see Atlassian changelog CHANGE-2046). Server/DC still uses the
+// legacy GET /rest/api/2/search endpoint.
 func (c *Client) SearchIssues(ctx context.Context, jql string, maxResults int) ([]*Issue, error) {
 	if maxResults <= 0 {
 		maxResults = 50
+	}
+
+	if c.platform == PlatformCloud {
+		reqBody := map[string]interface{}{
+			"jql":        jql,
+			"maxResults": maxResults,
+			// The new jql endpoint returns only id/key by default — request all
+			// fields to preserve prior behavior (summary/status/labels/etc).
+			"fields": []string{"*all"},
+		}
+		var resp SearchResponse
+		if err := c.doRequest(ctx, http.MethodPost, "/search/jql", reqBody, &resp); err != nil {
+			return nil, err
+		}
+		return resp.Issues, nil
 	}
 
 	path := fmt.Sprintf("/search?jql=%s&maxResults=%d", strings.ReplaceAll(jql, " ", "+"), maxResults)
