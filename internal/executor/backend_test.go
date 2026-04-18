@@ -202,3 +202,18 @@ func TestResolveAPIBaseURL(t *testing.T) {
 		})
 	}
 }
+
+// TestBackendConfigAPIAuthToken covers the GH-2371 field: default empty,
+// and round-trips a plain value. Env expansion itself is done during
+// config.Load (os.ExpandEnv) — tested separately in internal/config.
+func TestBackendConfigAPIAuthToken(t *testing.T) {
+	var zero BackendConfig
+	if zero.APIAuthToken != "" {
+		t.Errorf("zero-value APIAuthToken = %q, want empty", zero.APIAuthToken)
+	}
+
+	cfg := &BackendConfig{APIAuthToken: "zai-fake-token"}
+	if cfg.APIAuthToken != "zai-fake-token" {
+		t.Errorf("APIAuthToken = %q, want %q", cfg.APIAuthToken, "zai-fake-token")
+	}
+}

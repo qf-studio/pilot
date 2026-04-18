@@ -321,6 +321,15 @@ type BackendConfig struct {
 	// When empty, defaults to "https://api.anthropic.com".
 	APIBaseURL string `yaml:"api_base_url,omitempty"`
 
+	// APIAuthToken is the auth token for non-Anthropic providers (GH-2371).
+	// Supports ${ENV_VAR} expansion (via os.ExpandEnv during config load).
+	// When set together with APIBaseURL, Pilot injects ANTHROPIC_BASE_URL,
+	// ANTHROPIC_AUTH_TOKEN, and ANTHROPIC_MODEL into the Claude Code
+	// subprocess env so a single config drives both Pilot-internal HTTP calls
+	// and the CC subprocess. When empty, the CC subprocess uses its own auth
+	// (~/.claude/settings.json, ANTHROPIC_API_KEY, or CC OAuth).
+	APIAuthToken string `yaml:"api_auth_token,omitempty"`
+
 	// Version is the Pilot binary version, set at startup from the build-time version var.
 	// Used for feature matrix updates and execution reports. Not a config file field.
 	Version string `yaml:"-"`
