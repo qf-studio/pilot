@@ -2591,3 +2591,116 @@ func TestPoller_DispatchesWhenNoCompletedExecution(t *testing.T) {
 		t.Errorf("callback called %d times, want 1 (should dispatch when no completed execution)", got)
 	}
 }
+
+// GH-2341: Search API may lag up to ~30s after a merge. hasMergedWork must
+// supplement with a direct REST PR lookup by branch to catch that window.
+func TestPoller_HasMergedWork_SearchLag_BranchFallback(t *testing.T) {
+	var searchCalls, pullsCalls int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/search/issues":
+			atomic.AddInt32(&searchCalls, 1)
+			_, _ = w.Write([]byte(`{"total_count": 0}`))
+		case "/repos/owner/repo/pulls":
+			atomic.AddInt32(&pullsCalls, 1)
+			head := r.URL.Query().Get("head")
+			if head != "owner:pilot/GH-42" {
+				t.Errorf("unexpected head filter: %q", head)
+			}
+			_, _ = w.Write([]byte(`[{"number": 100, "merged_at": "2026-04-17T14:01:40Z", "head": {"ref": "pilot/GH-42"}}]`))
+		case "/repos/owner/repo/issues/42/labels":
+			if r.Method == http.MethodPost {
+				w.WriteHeader(http.StatusOK)
+			}
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second)
+
+	issue := &Issue{Number: 42, Title: "Test issue"}
+	got := poller.hasMergedWork(context.Background(), issue)
+
+	if !got {
+		t.Error("hasMergedWork() should return true when branch has merged PR (even with Search API empty)")
+	}
+	if atomic.LoadInt32(&pullsCalls) == 0 {
+		t.Error("expected branch REST lookup to be called when Search API returned empty")
+	}
+	_ = searchCalls
+}
+
+// GH-2341: If neither Search API nor branch REST find a merged PR, allow retry.
+func TestPoller_HasMergedWork_NoMerges_NoFallbackBlock(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/search/issues":
+			_, _ = w.Write([]byte(`{"total_count": 0}`))
+		case "/repos/owner/repo/pulls":
+			_, _ = w.Write([]byte(`[]`))
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second)
+
+	issue := &Issue{Number: 42, Title: "Test issue"}
+	if poller.hasMergedWork(context.Background(), issue) {
+		t.Error("hasMergedWork() should return false when no merged PRs exist on branch")
+	}
+}
+
+// GH-2341: Fresh label fetch before dispatch blocks re-dispatch when the
+// ListIssues snapshot is stale and pilot-done was added in between.
+func TestPoller_CheckForNewIssues_StaleSnapshot_RefreshesLabels(t *testing.T) {
+	// Snapshot returned by ListIssues has NO pilot-done label.
+	staleIssues := []*Issue{
+		{Number: 42, Title: "GH-42 feature", State: "open", Labels: []Label{{Name: "pilot"}}},
+	}
+	// Fresh GetIssue response includes pilot-done.
+	freshIssue := &Issue{
+		Number: 42, Title: "GH-42 feature", State: "open",
+		Labels: []Label{{Name: "pilot"}, {Name: LabelDone}},
+	}
+
+	var dispatches int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method != http.MethodGet {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		switch r.URL.Path {
+		case "/repos/owner/repo/issues":
+			_ = json.NewEncoder(w).Encode(staleIssues)
+		case "/repos/owner/repo/issues/42":
+			_ = json.NewEncoder(w).Encode(freshIssue)
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second,
+		WithOnIssue(func(ctx context.Context, issue *Issue) error {
+			atomic.AddInt32(&dispatches, 1)
+			return nil
+		}),
+	)
+
+	poller.checkForNewIssues(context.Background())
+	poller.WaitForActive()
+
+	if got := atomic.LoadInt32(&dispatches); got != 0 {
+		t.Errorf("dispatched %d times, want 0 (fresh GetIssue shows pilot-done)", got)
+	}
+}

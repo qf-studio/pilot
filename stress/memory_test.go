@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"runtime"
+	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -167,6 +169,16 @@ func TestMemory_ProcessedMapGrowth(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		// Single-issue GET (e.g. /repos/owner/repo/issues/42): return one fresh
+		// issue so the poller's label re-check (GH-2341) doesn't decode a
+		// 1000-element array per dispatch.
+		if strings.Contains(r.URL.Path, "/issues/") {
+			parts := strings.Split(r.URL.Path, "/")
+			if n, perr := strconv.Atoi(parts[len(parts)-1]); perr == nil && n >= 1 && n <= numIssues {
+				_ = json.NewEncoder(w).Encode(issues[n-1])
+				return
+			}
+		}
 		n := atomic.AddInt64(&pollCount, 1)
 		if n <= 2 {
 			// Call 1: recoverOrphanedIssues, Call 2: first checkForNewIssues
