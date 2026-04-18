@@ -76,6 +76,16 @@ func requestReviewersFromConfig(ctx context.Context, cfg *config.Config, client 
 	}
 }
 
+// resolveProjectBaseBranch returns the configured default/branch_from for the given
+// project path, or "" when no project matches. Used by adapter handlers to honor
+// `default_branch` / `branch_from` overrides (GH-2290).
+func resolveProjectBaseBranch(cfg *config.Config, projectPath string) string {
+	if cfg == nil {
+		return ""
+	}
+	return cfg.FindProjectByPath(projectPath).ResolveBaseBranch()
+}
+
 // parseAutopilotBranch extracts the target branch from an autopilot-fix issue's metadata comment.
 // Returns empty string if no metadata found.
 // Supports both old format (branch:X) and new format (branch:X pr:N).
@@ -231,6 +241,9 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 		Labels:             labels,                                       // GH-727: flow labels for complexity classifier
 		AcceptanceCriteria: github.ExtractAcceptanceCriteria(issue.Body), // GH-920: acceptance criteria in prompts
 		FromPR:             fromPR,                                       // GH-1267: session resumption from PR context
+		// GH-2290: honor project.default_branch / branch_from so branching and PR target
+		// follow the configured integration branch (e.g. `dev` in main → dev → feature).
+		BaseBranch: cfg.FindProjectByRepo(sourceRepo).ResolveBaseBranch(),
 	}
 
 	parts := strings.Split(sourceRepo, "/")
@@ -386,6 +399,7 @@ func handleLinearIssueWithResult(ctx context.Context, cfg *config.Config, client
 		AcceptanceCriteria: github.ExtractAcceptanceCriteria(issue.Description),
 		SourceAdapter:      "linear",
 		SourceIssueID:      issue.ID,
+		BaseBranch:         resolveProjectBaseBranch(cfg, projectPath), // GH-2290
 	}
 
 	// GH-1472: Wire Linear client as SubIssueCreator for epic decomposition
@@ -494,6 +508,7 @@ func handleJiraIssueWithResult(ctx context.Context, cfg *config.Config, client *
 		ProjectPath: projectPath,
 		Branch:      branchName,
 		CreatePR:    true,
+		BaseBranch:  resolveProjectBaseBranch(cfg, projectPath), // GH-2290
 	}
 
 	deps := HandlerDeps{
@@ -640,6 +655,7 @@ func handleAsanaTaskWithResult(ctx context.Context, cfg *config.Config, client *
 		ProjectPath: projectPath,
 		Branch:      branchName,
 		CreatePR:    true,
+		BaseBranch:  resolveProjectBaseBranch(cfg, projectPath), // GH-2290
 	}
 
 	deps := HandlerDeps{
@@ -862,6 +878,7 @@ func handlePlaneIssueWithResult(ctx context.Context, cfg *config.Config, client 
 		CreatePR:      true,
 		SourceAdapter: "plane",
 		SourceIssueID: issue.ID,
+		BaseBranch:    resolveProjectBaseBranch(cfg, projectPath), // GH-2290
 	}
 
 	// Wire Plane client as SubIssueCreator for epic decomposition (GH-1833)
@@ -976,6 +993,9 @@ func handleGitLabIssueWithResult(ctx context.Context, cfg *config.Config, client
 		CreatePR:      true,
 		SourceAdapter: "gitlab",
 		SourceIssueID: fmt.Sprintf("%d", issue.IID),
+		// GH-2290: honor project.default_branch / branch_from for GitLab MRs too —
+		// this is the reporter's exact case (main → dev → feature).
+		BaseBranch: cfg.FindProjectByPath(projectPath).ResolveBaseBranch(),
 	}
 
 	// Wire GitLab client as PRCreator so the runner creates MRs via
@@ -1078,6 +1098,7 @@ func handleAzureDevOpsWorkItemWithResult(ctx context.Context, cfg *config.Config
 		ProjectPath: projectPath,
 		Branch:      branchName,
 		CreatePR:    true,
+		BaseBranch:  resolveProjectBaseBranch(cfg, projectPath), // GH-2290
 	}
 
 	// GH-2132: Notify task started via notifier (adds in-progress tag + comment)

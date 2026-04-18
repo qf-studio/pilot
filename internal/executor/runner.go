@@ -1364,7 +1364,15 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 		// GH-279: Always switch to default branch and pull latest before creating new branch.
 		// This prevents new branches from forking off previous pilot branches instead of main.
 		// GH-836: Hard fail if we can't switch - continuing from wrong branch causes corrupted PRs.
-		defaultBranch, err := git.SwitchToDefaultBranchAndPull(ctx)
+		// GH-2290: Honor task.BaseBranch (sourced from project.default_branch / branch_from) so
+		// `main → dev → feature` workflows branch off dev rather than git's HEAD.
+		var defaultBranch string
+		var err error
+		if task.BaseBranch != "" {
+			defaultBranch, err = git.SwitchToBranchAndPull(ctx, task.BaseBranch)
+		} else {
+			defaultBranch, err = git.SwitchToDefaultBranchAndPull(ctx)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("branch switch failed, aborting execution: failed to switch to default branch: %w", err)
 		}

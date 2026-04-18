@@ -294,6 +294,22 @@ func (g *GitOperations) Pull(ctx context.Context, branch string) error {
 	return nil
 }
 
+// SwitchToBranchAndPull switches to the given branch and pulls latest changes.
+// Used to honor project.default_branch / branch_from overrides (GH-2290).
+// Pull failures are non-fatal so offline / no-upstream scenarios still work.
+func (g *GitOperations) SwitchToBranchAndPull(ctx context.Context, branch string) (string, error) {
+	if branch == "" {
+		return g.SwitchToDefaultBranchAndPull(ctx)
+	}
+	if err := g.SwitchBranch(ctx, branch); err != nil {
+		return branch, fmt.Errorf("failed to switch to %s: %w", branch, err)
+	}
+	if err := g.Pull(ctx, branch); err != nil {
+		return branch, nil
+	}
+	return branch, nil
+}
+
 // SwitchToDefaultBranchAndPull switches to the default branch and pulls latest changes.
 // This ensures new branches are created from the latest default branch, not from
 // whatever branch was previously checked out (fixes GH-279).
