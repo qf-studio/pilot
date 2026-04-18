@@ -876,3 +876,119 @@ func TestErrorTypeNoChanges(t *testing.T) {
 		t.Errorf("Error() = %q, want %q", got, "no_changes: refused: this task is out of scope")
 	}
 }
+
+// TestSetProviderEnv verifies the GH-2371 provider routing fields are stored
+// on the backend and surface in the subprocess env build. The env-build logic
+// in Execute() is mirrored here to avoid spawning a real claude CLI.
+func TestSetProviderEnv(t *testing.T) {
+	tests := []struct {
+		name              string
+		baseURL           string
+		authToken         string
+		model             string
+		expectContains    []string
+		expectNotContains []string
+	}{
+		{
+			name:              "all empty - no injection (Anthropic default)",
+			expectNotContains: []string{"ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_MODEL"},
+		},
+		{
+			name:              "base URL only",
+			baseURL:           "https://api.z.ai/api/anthropic",
+			expectContains:    []string{"ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic"},
+			expectNotContains: []string{"ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_MODEL"},
+		},
+		{
+			name:      "all three set (Z.AI)",
+			baseURL:   "https://api.z.ai/api/anthropic",
+			authToken: "zai-fake-token",
+			model:     "glm-4.6",
+			expectContains: []string{
+				"ANTHROPIC_BASE_URL=https://api.z.ai/api/anthropic",
+				"ANTHROPIC_AUTH_TOKEN=zai-fake-token",
+				"ANTHROPIC_MODEL=glm-4.6",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			b := NewClaudeCodeBackend(nil)
+			b.SetProviderEnv(tt.baseURL, tt.authToken, tt.model)
+
+			if b.apiBaseURL != tt.baseURL {
+				t.Errorf("apiBaseURL = %q, want %q", b.apiBaseURL, tt.baseURL)
+			}
+			if b.apiAuthToken != tt.authToken {
+				t.Errorf("apiAuthToken = %q, want %q", b.apiAuthToken, tt.authToken)
+			}
+			if b.defaultModel != tt.model {
+				t.Errorf("defaultModel = %q, want %q", b.defaultModel, tt.model)
+			}
+
+			// Mirror Execute()'s env-build logic.
+			env := []string{"PATH=/usr/bin", "PILOT_EXECUTOR=1"}
+			if b.apiBaseURL != "" {
+				env = append(env, "ANTHROPIC_BASE_URL="+b.apiBaseURL)
+			}
+			if b.apiAuthToken != "" {
+				env = append(env, "ANTHROPIC_AUTH_TOKEN="+b.apiAuthToken)
+			}
+			if b.defaultModel != "" {
+				env = append(env, "ANTHROPIC_MODEL="+b.defaultModel)
+			}
+
+			for _, want := range tt.expectContains {
+				found := false
+				for _, e := range env {
+					if e == want {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Errorf("env should contain %q, got %v", want, env)
+				}
+			}
+			for _, banned := range tt.expectNotContains {
+				for _, e := range env {
+					if len(e) >= len(banned) && e[:len(banned)] == banned {
+						t.Errorf("env should NOT contain prefix %q, got %v", banned, env)
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestNewBackendWiresProviderEnv verifies the factory propagates
+// BackendConfig.{APIBaseURL,APIAuthToken,DefaultModel} onto the
+// ClaudeCodeBackend so users configure provider routing once (GH-2371).
+func TestNewBackendWiresProviderEnv(t *testing.T) {
+	cfg := &BackendConfig{
+		Type:         BackendTypeClaudeCode,
+		APIBaseURL:   "https://api.z.ai/api/anthropic",
+		APIAuthToken: "zai-fake-token",
+		DefaultModel: "glm-4.6",
+		ClaudeCode:   &ClaudeCodeConfig{Command: "claude"},
+	}
+
+	backend, err := NewBackend(cfg)
+	if err != nil {
+		t.Fatalf("NewBackend error: %v", err)
+	}
+	cc, ok := backend.(*ClaudeCodeBackend)
+	if !ok {
+		t.Fatalf("expected *ClaudeCodeBackend, got %T", backend)
+	}
+	if cc.apiBaseURL != cfg.APIBaseURL {
+		t.Errorf("apiBaseURL = %q, want %q", cc.apiBaseURL, cfg.APIBaseURL)
+	}
+	if cc.apiAuthToken != cfg.APIAuthToken {
+		t.Errorf("apiAuthToken = %q, want %q", cc.apiAuthToken, cfg.APIAuthToken)
+	}
+	if cc.defaultModel != cfg.DefaultModel {
+		t.Errorf("defaultModel = %q, want %q", cc.defaultModel, cfg.DefaultModel)
+	}
+}

@@ -210,6 +210,14 @@ type ClaudeCodeBackend struct {
 	config           *ClaudeCodeConfig
 	heartbeatTimeout time.Duration
 	log              *slog.Logger
+
+	// GH-2371: provider routing env vars injected into the subprocess.
+	// Sourced from BackendConfig.APIBaseURL / APIAuthToken / DefaultModel
+	// via the factory. Empty = preserve today's CC defaults (OAuth /
+	// ~/.claude/settings.json / ANTHROPIC_API_KEY).
+	apiBaseURL   string
+	apiAuthToken string
+	defaultModel string
 }
 
 // NewClaudeCodeBackend creates a new Claude Code backend.
@@ -230,6 +238,18 @@ func NewClaudeCodeBackend(config *ClaudeCodeConfig) *ClaudeCodeBackend {
 // SetHeartbeatTimeout sets a custom heartbeat timeout for this backend.
 func (b *ClaudeCodeBackend) SetHeartbeatTimeout(d time.Duration) {
 	b.heartbeatTimeout = d
+}
+
+// SetProviderEnv configures provider-routing env vars injected into the
+// Claude Code subprocess (GH-2371). When any value is non-empty, the
+// corresponding ANTHROPIC_* env var is appended to the subprocess env,
+// letting a single Pilot config route both Pilot-internal HTTP calls and
+// the CC subprocess to a non-Anthropic provider (Z.AI, OpenRouter, etc.).
+// All empty = today's behavior (CC uses its own auth).
+func (b *ClaudeCodeBackend) SetProviderEnv(baseURL, authToken, model string) {
+	b.apiBaseURL = baseURL
+	b.apiAuthToken = authToken
+	b.defaultModel = model
 }
 
 // Name returns the backend identifier.
@@ -326,6 +346,18 @@ func (b *ClaudeCodeBackend) executeWithFromPR(ctx context.Context, opts ExecuteO
 	// and auto-memory can detect this and skip Navigator-only "DO NOT write
 	// code" rules without relying on prompt-prefix heuristics.
 	env := append(os.Environ(), "PILOT_EXECUTOR=1")
+	// GH-2371: route the CC subprocess to the configured provider when set.
+	// Values are appended after os.Environ() so they win on Node's last-write
+	// lookup if the user's shell also exports ANTHROPIC_*.
+	if b.apiBaseURL != "" {
+		env = append(env, "ANTHROPIC_BASE_URL="+b.apiBaseURL)
+	}
+	if b.apiAuthToken != "" {
+		env = append(env, "ANTHROPIC_AUTH_TOKEN="+b.apiAuthToken)
+	}
+	if b.defaultModel != "" {
+		env = append(env, "ANTHROPIC_MODEL="+b.defaultModel)
+	}
 	// Pass context window and output token env vars if configured (GH-2163).
 	if b.config.Disable1MContext {
 		env = append(env, "CLAUDE_CODE_DISABLE_1M_CONTEXT=1")
