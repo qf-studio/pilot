@@ -270,6 +270,76 @@ func TestCheckConfig_InvalidProjectPath(t *testing.T) {
 	}
 }
 
+// GH-2361: warn when projects are configured but no issue-source adapter is enabled.
+func TestCheckConfig_Adapters_ProjectsButNoAdapter(t *testing.T) {
+	cfg := &config.Config{
+		Projects: []*config.ProjectConfig{
+			{Name: "myrepo", Path: os.TempDir()},
+		},
+	}
+	checks := checkConfig(cfg)
+
+	found := findConfigCheck(checks, "adapters")
+	if found == nil {
+		t.Fatal("expected 'adapters' check")
+	}
+	if found.Status != StatusWarning {
+		t.Errorf("adapters status = %v, want StatusWarning", found.Status)
+	}
+	if !strings.Contains(found.Message, "no issue source") {
+		t.Errorf("adapters message = %q, want mention of 'no issue source'", found.Message)
+	}
+}
+
+func TestCheckConfig_Adapters_GitHubEnabled(t *testing.T) {
+	cfg := &config.Config{
+		Projects: []*config.ProjectConfig{
+			{Name: "myrepo", Path: os.TempDir()},
+		},
+		Adapters: &config.AdaptersConfig{
+			GitHub: &github.Config{Enabled: true, Token: "test-gh-token", Repo: "org/repo"},
+		},
+	}
+	checks := checkConfig(cfg)
+
+	found := findConfigCheck(checks, "adapters")
+	if found == nil {
+		t.Fatal("expected 'adapters' check")
+	}
+	if found.Status != StatusOK {
+		t.Errorf("adapters status = %v, want StatusOK", found.Status)
+	}
+}
+
+func TestCheckConfig_Adapters_GitHubPresentButDisabled(t *testing.T) {
+	cfg := &config.Config{
+		Projects: []*config.ProjectConfig{
+			{Name: "myrepo", Path: os.TempDir()},
+		},
+		Adapters: &config.AdaptersConfig{
+			GitHub: &github.Config{Enabled: false},
+		},
+	}
+	checks := checkConfig(cfg)
+
+	found := findConfigCheck(checks, "adapters")
+	if found == nil {
+		t.Fatal("expected 'adapters' check")
+	}
+	if found.Status != StatusWarning {
+		t.Errorf("adapters status = %v, want StatusWarning", found.Status)
+	}
+}
+
+func TestCheckConfig_Adapters_NoProjectsSkipped(t *testing.T) {
+	cfg := &config.Config{}
+	checks := checkConfig(cfg)
+
+	if found := findConfigCheck(checks, "adapters"); found != nil {
+		t.Errorf("adapters check should not appear when no projects configured, got %+v", found)
+	}
+}
+
 func TestCheckConfig_TelegramEnabled_NoToken(t *testing.T) {
 	cfg := &config.Config{
 		Adapters: &config.AdaptersConfig{

@@ -260,6 +260,55 @@ func checkMacSleep() Check {
 	}
 }
 
+// issueSourceAdapters lists config paths to adapters that can ingest issues
+// for Pilot to execute. At least one must be enabled for the daemon to
+// actually pick up work — otherwise `pilot start` launches a no-op poller.
+func enabledIssueSources(cfg *config.Config) []string {
+	if cfg.Adapters == nil {
+		return nil
+	}
+	var enabled []string
+	if cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.Enabled {
+		enabled = append(enabled, "github")
+	}
+	if cfg.Adapters.GitLab != nil && cfg.Adapters.GitLab.Enabled {
+		enabled = append(enabled, "gitlab")
+	}
+	if cfg.Adapters.Linear != nil && cfg.Adapters.Linear.Enabled {
+		enabled = append(enabled, "linear")
+	}
+	if cfg.Adapters.Jira != nil && cfg.Adapters.Jira.Enabled {
+		enabled = append(enabled, "jira")
+	}
+	if cfg.Adapters.Asana != nil && cfg.Adapters.Asana.Enabled {
+		enabled = append(enabled, "asana")
+	}
+	if cfg.Adapters.AzureDevOps != nil && cfg.Adapters.AzureDevOps.Enabled {
+		enabled = append(enabled, "azure_devops")
+	}
+	if cfg.Adapters.Plane != nil && cfg.Adapters.Plane.Enabled {
+		enabled = append(enabled, "plane")
+	}
+	return enabled
+}
+
+func checkIssueSourceAdapter(cfg *config.Config) ConfigCheck {
+	enabled := enabledIssueSources(cfg)
+	if len(enabled) == 0 {
+		return ConfigCheck{
+			Name:    "adapters",
+			Status:  StatusWarning,
+			Message: "no issue source enabled",
+			Fix:     "Enable at least one of: github, gitlab, linear, jira, asana, azure_devops, plane. Run 'pilot setup'.",
+		}
+	}
+	return ConfigCheck{
+		Name:    "adapters",
+		Status:  StatusOK,
+		Message: strings.Join(enabled, ", "),
+	}
+}
+
 // checkConfig validates configuration
 func checkConfig(cfg *config.Config) []ConfigCheck {
 	checks := []ConfigCheck{}
@@ -335,6 +384,13 @@ func checkConfig(cfg *config.Config) []ConfigCheck {
 				Fix:     "Add xoxb-... token to config",
 			})
 		}
+	}
+
+	// Check that at least one issue-source adapter is enabled when projects
+	// are configured. Prevents silent "no poller running" when a user has
+	// `projects:` set but no `adapters:` block (GH-2361).
+	if len(cfg.Projects) > 0 {
+		checks = append(checks, checkIssueSourceAdapter(cfg))
 	}
 
 	// Check projects
