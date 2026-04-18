@@ -1057,6 +1057,38 @@ projects:
 	}
 }
 
+// TestProjectConfigBranchFromYAML verifies the branch_from alias deserializes
+// alongside default_branch (GH-2290).
+func TestProjectConfigBranchFromYAML(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+	content := `
+version: "1.0"
+projects:
+  - name: "proj"
+    path: "/p"
+    default_branch: "main"
+    branch_from: "dev"
+`
+	if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	p := cfg.Projects[0]
+	if p.DefaultBranch != "main" {
+		t.Errorf("DefaultBranch = %q, want main", p.DefaultBranch)
+	}
+	if p.BranchFrom != "dev" {
+		t.Errorf("BranchFrom = %q, want dev", p.BranchFrom)
+	}
+	if got := p.ResolveBaseBranch(); got != "dev" {
+		t.Errorf("ResolveBaseBranch() = %q, want dev", got)
+	}
+}
+
 // Helper function to check if a string contains a substring
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||
@@ -1338,6 +1370,51 @@ func TestFindProjectByRepo(t *testing.T) {
 			t.Errorf("expected nil, got %v", proj)
 		}
 	})
+}
+
+// TestProjectConfigResolveBaseBranch covers the BranchFrom / DefaultBranch
+// precedence introduced in GH-2290.
+func TestProjectConfigResolveBaseBranch(t *testing.T) {
+	tests := []struct {
+		name string
+		p    *ProjectConfig
+		want string
+	}{
+		{"nil receiver", nil, ""},
+		{"both empty", &ProjectConfig{}, ""},
+		{"default_branch only", &ProjectConfig{DefaultBranch: "dev"}, "dev"},
+		{"branch_from only", &ProjectConfig{BranchFrom: "dev"}, "dev"},
+		{
+			"branch_from wins over default_branch",
+			&ProjectConfig{DefaultBranch: "main", BranchFrom: "dev"},
+			"dev",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.p.ResolveBaseBranch(); got != tt.want {
+				t.Errorf("ResolveBaseBranch() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFindProjectByPath(t *testing.T) {
+	cfg := &Config{
+		Projects: []*ProjectConfig{
+			{Name: "a", Path: "/tmp/a", DefaultBranch: "dev"},
+			{Name: "b", Path: "/tmp/b"},
+		},
+	}
+	if p := cfg.FindProjectByPath("/tmp/a"); p == nil || p.Name != "a" {
+		t.Errorf("FindProjectByPath(/tmp/a) = %v, want project a", p)
+	}
+	if p := cfg.FindProjectByPath("/tmp/missing"); p != nil {
+		t.Errorf("FindProjectByPath(missing) = %v, want nil", p)
+	}
+	if p := cfg.FindProjectByPath(""); p != nil {
+		t.Errorf("FindProjectByPath(\"\") = %v, want nil", p)
+	}
 }
 
 func TestProjectConfigReviewersYAML(t *testing.T) {

@@ -276,6 +276,55 @@ func TestSwitchToDefaultBranchAndPull(t *testing.T) {
 	}
 }
 
+// TestSwitchToBranchAndPull verifies that SwitchToBranchAndPull honors an
+// explicit branch override (GH-2290: project.default_branch / branch_from).
+func TestSwitchToBranchAndPull(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	tmpDir, err := os.MkdirTemp("", "pilot-git-test-*")
+	if err != nil {
+		t.Fatalf("temp dir: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	ctx := context.Background()
+	_ = exec.CommandContext(ctx, "git", "-C", tmpDir, "init").Run()
+	_ = exec.CommandContext(ctx, "git", "-C", tmpDir, "config", "user.email", "t@t").Run()
+	_ = exec.CommandContext(ctx, "git", "-C", tmpDir, "config", "user.name", "T").Run()
+
+	testFile := filepath.Join(tmpDir, "a.txt")
+	_ = os.WriteFile(testFile, []byte("x"), 0644)
+	_ = exec.CommandContext(ctx, "git", "-C", tmpDir, "add", ".").Run()
+	_ = exec.CommandContext(ctx, "git", "-C", tmpDir, "commit", "-m", "init").Run()
+
+	git := NewGitOperations(tmpDir)
+
+	// Create a `dev` branch and a feature branch off of it.
+	_ = git.CreateBranch(ctx, "dev")
+	_ = os.WriteFile(testFile, []byte("dev"), 0644)
+	_, _ = git.Commit(ctx, "dev commit")
+	_ = git.CreateBranch(ctx, "feature")
+
+	// Explicit override must switch to dev, not the git default.
+	branch, err := git.SwitchToBranchAndPull(ctx, "dev")
+	if err != nil {
+		t.Logf("pull failed (expected, no remote): %v", err)
+	}
+	if branch != "dev" {
+		t.Errorf("branch = %q, want dev", branch)
+	}
+	current, _ := git.GetCurrentBranch(ctx)
+	if current != "dev" {
+		t.Errorf("current = %q, want dev", current)
+	}
+
+	// Empty override should fall back to SwitchToDefaultBranchAndPull.
+	if _, err := git.SwitchToBranchAndPull(ctx, ""); err != nil {
+		t.Logf("fallback returned err (ok): %v", err)
+	}
+}
+
 func TestSwitchToDefaultBranchAndPull_NewBranchFromMain(t *testing.T) {
 	// This test verifies the fix for GH-279: new branches should fork from main, not previous branch
 	if _, err := exec.LookPath("git"); err != nil {

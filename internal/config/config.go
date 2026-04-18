@@ -173,10 +173,27 @@ type ProjectConfig struct {
 	Path          string               `yaml:"path"`
 	Navigator     bool                 `yaml:"navigator"`
 	DefaultBranch string               `yaml:"default_branch"`
+	// BranchFrom is an alias for DefaultBranch. When both are set, BranchFrom wins.
+	// Lets users express "branch from (and PR target) this branch" more intuitively
+	// in workflows like main → dev → feature, where dev is the integration branch (GH-2290).
+	BranchFrom    string               `yaml:"branch_from,omitempty"`
 	Reviewers     []string             `yaml:"reviewers,omitempty"`
 	TeamReviewers []string             `yaml:"team_reviewers,omitempty"`
 	GitHub        *ProjectGitHubConfig `yaml:"github,omitempty"`
 	Linear        *ProjectLinearConfig `yaml:"linear,omitempty"`
+}
+
+// ResolveBaseBranch returns the branch that Pilot should branch from and
+// target for PRs/MRs. BranchFrom takes precedence over DefaultBranch; both
+// may be empty (caller must fall back to git's default branch).
+func (p *ProjectConfig) ResolveBaseBranch() string {
+	if p == nil {
+		return ""
+	}
+	if p.BranchFrom != "" {
+		return p.BranchFrom
+	}
+	return p.DefaultBranch
 }
 
 // ProjectGitHubConfig holds GitHub-specific project configuration for PR creation and issue tracking.
@@ -198,6 +215,22 @@ func (c *Config) FindProjectByRepo(ownerRepo string) *ProjectConfig {
 			if fmt.Sprintf("%s/%s", p.GitHub.Owner, p.GitHub.Repo) == ownerRepo {
 				return p
 			}
+		}
+	}
+	return nil
+}
+
+// FindProjectByPath returns the ProjectConfig whose Path matches the given
+// absolute path, or nil if no match is found. Used by adapters that don't
+// know the source repo (e.g. GitLab) to look up per-project settings like
+// the configured default branch (GH-2290).
+func (c *Config) FindProjectByPath(path string) *ProjectConfig {
+	if path == "" {
+		return nil
+	}
+	for _, p := range c.Projects {
+		if p.Path == path {
+			return p
 		}
 	}
 	return nil
