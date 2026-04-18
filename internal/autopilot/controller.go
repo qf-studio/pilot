@@ -1389,7 +1389,7 @@ func (c *Controller) handleReleasing(ctx context.Context, prState *PRState) erro
 	)
 
 	// Create git tag in the correct repo
-	tagName, deployTag, err := c.releaser.CreateTagForRepo(ctx, owner, repo, prState, newVersion)
+	tagName, err := c.releaser.CreateTagForRepo(ctx, owner, repo, prState, newVersion)
 	if err != nil {
 		return fmt.Errorf("failed to create tag: %w", err)
 	}
@@ -1399,14 +1399,7 @@ func (c *Controller) handleReleasing(ctx context.Context, prState *PRState) erro
 		"pr", prState.PRNumber,
 		"version", prState.ReleaseVersion,
 		"tag", tagName,
-		"deploy_tag", deployTag,
 	)
-	if rel.DeployTagPrefix != "" && deployTag == "" {
-		c.log.Warn("deploy tag push failed; downstream deploy pipeline will not fire",
-			"pr", prState.PRNumber,
-			"prefix", rel.DeployTagPrefix,
-		)
-	}
 
 	// Enrich release with LLM-generated summary (best-effort, non-blocking).
 	// Runs in a goroutine because it polls for GoReleaser to publish the release
