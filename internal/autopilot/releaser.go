@@ -258,29 +258,35 @@ func GenerateChangelog(commits []*github.Commit, prNumber int) string {
 // The actual GitHub Release (with binary assets) is created by GoReleaser CI
 // which triggers on tag push. This avoids the conflict where both Pilot and
 // GoReleaser try to create the same release.
-func (r *Releaser) CreateTag(ctx context.Context, prState *PRState, newVersion SemVer) (string, error) {
-	tagName := newVersion.String(r.config.TagPrefix)
-	sha := prState.HeadSHA
-
-	if err := r.ghClient.CreateGitTag(ctx, r.owner, r.repo, tagName, sha); err != nil {
-		return "", fmt.Errorf("failed to create tag %s: %w", tagName, err)
-	}
-
-	return tagName, nil
+//
+// When config.DeployTagPrefix is non-empty, a second tag (e.g. "prod-X.Y.Z")
+// is also pushed at the same SHA to trigger downstream deploy pipelines that
+// watch a separate tag namespace (e.g. docs site). The deploy tag is
+// best-effort: a failure to create it does NOT fail the release. The returned
+// deployTag is empty when disabled or when the push failed.
+func (r *Releaser) CreateTag(ctx context.Context, prState *PRState, newVersion SemVer) (tagName, deployTag string, err error) {
+	return r.CreateTagForRepo(ctx, r.owner, r.repo, prState, newVersion)
 }
 
 // CreateTagForRepo creates a lightweight git tag in the specified repository.
 // Used for cross-repo PRs where the tag should be created in the source repo,
 // not the default repo configured in the Releaser.
-func (r *Releaser) CreateTagForRepo(ctx context.Context, owner, repo string, prState *PRState, newVersion SemVer) (string, error) {
-	tagName := newVersion.String(r.config.TagPrefix)
+func (r *Releaser) CreateTagForRepo(ctx context.Context, owner, repo string, prState *PRState, newVersion SemVer) (tagName, deployTag string, err error) {
+	tagName = newVersion.String(r.config.TagPrefix)
 	sha := prState.HeadSHA
 
 	if err := r.ghClient.CreateGitTag(ctx, owner, repo, tagName, sha); err != nil {
-		return "", fmt.Errorf("failed to create tag %s: %w", tagName, err)
+		return "", "", fmt.Errorf("failed to create tag %s: %w", tagName, err)
 	}
 
-	return tagName, nil
+	if r.config.DeployTagPrefix != "" {
+		candidate := newVersion.String(r.config.DeployTagPrefix)
+		if deployErr := r.ghClient.CreateGitTag(ctx, owner, repo, candidate, sha); deployErr == nil {
+			deployTag = candidate
+		}
+	}
+
+	return tagName, deployTag, nil
 }
 
 // GetCurrentVersionForRepo gets the current version from the specified repository.
