@@ -81,6 +81,8 @@ class AWSBenchOrchestrator:
         max_parallel: int = DEFAULT_MAX_PARALLEL,
         s3_bucket: str = S3_BUCKET,
         region: str = AWS_REGION,
+        resume: bool = False,
+        dry_run: bool = False,
     ):
         self.run_id = run_id
         self.model = model
@@ -88,6 +90,8 @@ class AWSBenchOrchestrator:
         self.max_parallel = max_parallel
         self.s3_bucket = s3_bucket
         self.region = region
+        self.resume = resume
+        self.dry_run = dry_run
 
         self.pool = InstancePool(region=region)
         self.ssm = SSMExecutor(region=region)
@@ -130,7 +134,32 @@ class AWSBenchOrchestrator:
             bench.task_names = tasks
             total_trials = len(tasks) * self.k_trials
 
+            # Resume mode: identify already-completed trials from S3 and skip them.
+            # A trial is "complete" iff s3://.../{task}/{trial}/reward.txt exists.
+            # This filter is PURE ADDITION — without --resume the work queue is identical.
+            skip_set: set[tuple[str, str]] = set()
+            if self.resume:
+                skip_set = self._scan_completed_trials(tasks)
+                logger.info(
+                    f"[resume] Found {len(skip_set)} completed trials in S3 — will skip"
+                )
+
             self._print_banner(bench, total_trials)
+
+            if self.dry_run:
+                planned = []
+                for task in tasks:
+                    for k in range(1, self.k_trials + 1):
+                        trial_id = f"trial-{k:03d}"
+                        if (task, trial_id) not in skip_set:
+                            planned.append(f"{task}/{trial_id}")
+                logger.info(f"[dry-run] Would dispatch {len(planned)} trials "
+                            f"(skipping {len(skip_set)}). No AWS mutations.")
+                for p in planned[:20]:
+                    logger.info(f"[dry-run]   {p}")
+                if len(planned) > 20:
+                    logger.info(f"[dry-run]   ... and {len(planned) - 20} more")
+                return bench
 
             # 2. Upload assets to S3
             self._upload_assets()
@@ -146,14 +175,24 @@ class AWSBenchOrchestrator:
 
             logger.info(f"{len(ssm_ready)} instances ready for execution")
 
-            # 4. Build work queue
+            # 4. Build work queue (skip trials already complete in resume mode)
             work_queue: deque[tuple[str, str]] = deque()
+            skipped = 0
             for task in tasks:
                 for k in range(1, self.k_trials + 1):
                     trial_id = f"trial-{k:03d}"
+                    if (task, trial_id) in skip_set:
+                        skipped += 1
+                        continue
                     work_queue.append((task, trial_id))
 
-            logger.info(f"Work queue: {len(work_queue)} trials across {len(tasks)} tasks")
+            if self.resume:
+                logger.info(
+                    f"Work queue: {len(work_queue)} trials "
+                    f"(skipped {skipped} already-complete) across {len(tasks)} tasks"
+                )
+            else:
+                logger.info(f"Work queue: {len(work_queue)} trials across {len(tasks)} tasks")
 
             # 5. Dispatch and poll
             completed = 0
@@ -401,6 +440,30 @@ memory:
 
         return dispatched
 
+    def _scan_completed_trials(self, tasks: list[str]) -> set[tuple[str, str]]:
+        """Return set of (task, trial_id) where reward.txt already exists in S3.
+
+        Uses a single paginated list_objects_v2 per task prefix — cheap and fast.
+        Never deletes, never overwrites — read-only scan.
+        """
+        done: set[tuple[str, str]] = set()
+        paginator = self.s3.get_paginator("list_objects_v2")
+        for task in tasks:
+            prefix = f"{S3_RUNS_PREFIX}/{self.run_id}/{task}/"
+            try:
+                for page in paginator.paginate(Bucket=self.s3_bucket, Prefix=prefix):
+                    for obj in page.get("Contents", []) or []:
+                        key = obj["Key"]
+                        if key.endswith("/reward.txt"):
+                            # key format: .../{task}/{trial_id}/reward.txt
+                            parts = key.rstrip("/").split("/")
+                            if len(parts) >= 3:
+                                trial_id = parts[-2]
+                                done.add((task, trial_id))
+            except Exception as e:  # pragma: no cover - defensive
+                logger.warning(f"[resume] scan failed for {task}: {e}")
+        return done
+
     def _read_reward_from_s3(self, task_name: str, trial_id: str) -> float | None:
         """Read authoritative reward from S3 (reward.txt written by task runner).
 
@@ -571,6 +634,16 @@ def main():
         default=AWS_REGION,
         help=f"AWS region (default: {AWS_REGION})",
     )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Skip trials that already have reward.txt in S3 for this run-id",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print what would be dispatched and exit; no AWS scale/dispatch/upload",
+    )
     args = parser.parse_args()
 
     task_names = None
@@ -584,6 +657,8 @@ def main():
         max_parallel=args.max_parallel,
         s3_bucket=args.s3_bucket,
         region=args.region,
+        resume=args.resume,
+        dry_run=args.dry_run,
     )
 
     bench = orchestrator.run(task_names=task_names)

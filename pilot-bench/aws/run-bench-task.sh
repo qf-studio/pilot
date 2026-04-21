@@ -433,6 +433,24 @@ echo "  $DEP_CHECK"
 echo ""
 echo "--- Environment bootstrap ---"
 
+# Some TB2 images use /workspace (or other dirs) as WORKDIR instead of /app.
+# All downstream steps (oracle removal, git init, agent exec, verifier) assume /app.
+# If /app is missing, symlink it to the image's WORKDIR so everything resolves.
+# This is Harbor-safe: oracle-file removal and canary-grep still operate on the
+# real workdir contents through the symlink; no test access is introduced.
+docker exec -w / "$CONTAINER_NAME" bash -c '
+    if [ ! -e /app ]; then
+        for cand in /workspace /home/user /home/agent /srv; do
+            if [ -d "$cand" ]; then
+                ln -s "$cand" /app
+                echo "  Symlinked /app -> $cand (image uses non-standard WORKDIR)"
+                break
+            fi
+        done
+        [ -e /app ] || { mkdir -p /app; echo "  Created /app (no known WORKDIR found)"; }
+    fi
+'
+
 docker exec -w / "$CONTAINER_NAME" bash -c '
     (
         echo "=== FILES ==="
