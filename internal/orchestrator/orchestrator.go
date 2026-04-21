@@ -206,11 +206,15 @@ func (o *Orchestrator) processTask(task *Task) {
 	}
 
 	// Execute task
+	var priority int
+	if task.Ticket != nil {
+		priority = task.Ticket.Priority
+	}
 	execTask := &executor.Task{
 		ID:          task.ID,
 		Title:       task.Document.Title,
 		Description: task.Document.Markdown,
-		Priority:    task.Ticket.Priority,
+		Priority:    priority,
 		ProjectPath: task.ProjectPath,
 		Branch:      task.Branch,
 	}
