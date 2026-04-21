@@ -118,6 +118,7 @@ Disable via config: `executor.navigator.auto_init: false`
 | `.agent/sops/*.md` | Before modifying integrations |
 | `.agent/sops/development/pilot-bench-real-binary.md` | Running real-binary bench on Daytona |
 | `.agent/sops/daytona-bench-operations.md` | Daytona sandbox management + monitoring |
+| `.agent/sops/benchmark-integrity-audit.md` | Pre-submission cheat-pattern audit for bench runs |
 | `.agent/.context-markers/` | Resume after break |
 
 ## Current State
@@ -286,6 +287,31 @@ pilot start --env=prod --telegram --github   # Safe, manual approval
 ---
 
 ## Active Work
+
+### TASK-25: Stale Recovery Queue Drain Fix (Planned)
+
+**Problem**: `recoverStaleTasks()` marks queued tasks older than 5 min as failed. When `runner.Execute()` blocks for 10-20 min (GLM-5.1, complex tasks), queued tasks behind it get nuked even though the worker is actively processing.
+
+**Fix**: Add `isWorkerProcessing()` helper and guard in `recoverStaleTasks()` — skip tasks for projects with active workers (`processing == true`).
+
+**Plan**: `.agent/tasks/TASK-25-stale-recovery-queue-drain-fix.md`
+
+**Changes**:
+- `internal/executor/dispatcher.go` — `isWorkerProcessing()` + guard (~16 lines)
+- `internal/executor/dispatcher_test.go` — 2 new tests (~85 lines)
+
+### Config Update: Opus 4.7 High Effort (2026-04-17)
+
+Changed from GLM-5.1 back to Claude Opus 4.7 with high effort mode:
+
+| Config | Before | After |
+|--------|--------|-------|
+| Pilot `default_model` | `glm-5.1` | `claude-opus-4-7` |
+| Pilot `model_routing.complex` | `claude-opus-4-6` | `claude-opus-4-7` |
+| Claude Code `ANTHROPIC_MODEL` | `glm-5.1` | `claude-opus-4-7` |
+| Claude Code `effortLevel` | `high` | `high` |
+
+**Note**: Z.AI API base URL still configured — ensure provider supports `claude-opus-4-7`.
 
 ### Terminal-Bench Benchmark (feat/pilot-bench-real)
 

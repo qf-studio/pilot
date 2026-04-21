@@ -182,9 +182,20 @@ def parse_log_timing(log_path: str) -> tuple[str, str, str, str, float]:
     if not first_ts:
         return "—", "—", "—", "—", 0.0
 
-    today = datetime.now().strftime("%Y-%m-%d")
-    t0 = datetime.strptime(f"{today} {first_ts}", "%Y-%m-%d %H:%M:%S")
+    # Anchor start date from file birth time (accurate for multi-day runs)
+    try:
+        st = os.stat(log_path)
+        # macOS: st_birthtime, Linux: fall back to st_ctime
+        bt = getattr(st, 'st_birthtime', st.st_ctime)
+        file_btime = datetime.fromtimestamp(bt)
+        start_date = file_btime.strftime("%Y-%m-%d")
+    except OSError:
+        start_date = datetime.now().strftime("%Y-%m-%d")
+    t0 = datetime.strptime(f"{start_date} {first_ts}", "%Y-%m-%d %H:%M:%S")
     now = datetime.now()
+    # If reconstructed t0 is still in the future, shift back one day
+    if t0 > now:
+        t0 -= __import__("datetime").timedelta(days=1)
     dt = (now - t0).total_seconds()
     h, mi = int(dt // 3600), int((dt % 3600) // 60)
     started = t0.strftime("%H:%M")
@@ -311,18 +322,17 @@ def main():
     row(f"  {BWHITE}{'TASK':<26}{R} {DIM}TRIALS{R} {DIM}PASS{R}  {DIM}{'CI 95%':>14}{R}")
     row(f"  {DIM}{'─' * 56}{R}")
 
-    sorted_tasks = sorted(
-        results.items(),
-        key=lambda x: (-last_seen.get(x[0], 0),),
+    # Sort: passed first (alphabetical), then failed (alphabetical)
+    passed_tasks = sorted(
+        [(t, rs) for t, rs in results.items() if max(rs) > 0],
+        key=lambda x: x[0],
+    )
+    failed_tasks = sorted(
+        [(t, rs) for t, rs in results.items() if max(rs) == 0],
+        key=lambda x: x[0],
     )
 
-    max_show = 10
-    for i, (task, rewards) in enumerate(sorted_tasks):
-        if i >= max_show:
-            rest = len(sorted_tasks) - max_show
-            row(f"  {DIM}  ↓ {rest} more scored{R}")
-            break
-
+    for task, rewards in passed_tasks:
         name = task[:24].ljust(24)
         n_pass = sum(1 for r in rewards if r > 0)
         n_tot = len(rewards)
@@ -330,16 +340,27 @@ def main():
         d = dots(rewards, K)
         ci_s = f"[{tci_lo:.2f}, {tci_hi:.2f}]"
         ps = f"{n_pass}/{n_tot}"
+        nc = f"{GREEN}{name}{R}"
+        row(f"  {nc}  {d}  {ps:>3}   {DIM}{ci_s:>14}{R}")
 
-        if n_pass > 0:
-            nc = f"{GREEN}{name}{R}"
-        else:
-            nc = f"{DIM}{name}{R}"
+    if passed_tasks and failed_tasks:
+        row(f"  {DIM}{'─' * 56}{R}")
 
+    for task, rewards in failed_tasks:
+        name = task[:24].ljust(24)
+        n_pass = sum(1 for r in rewards if r > 0)
+        n_tot = len(rewards)
+        tci_lo, tci_hi = wilson_ci(n_pass, n_tot)
+        d = dots(rewards, K)
+        ci_s = f"[{tci_lo:.2f}, {tci_hi:.2f}]"
+        ps = f"{n_pass}/{n_tot}"
+        nc = f"{RED}{name}{R}"
         row(f"  {nc}  {d}  {ps:>3}   {DIM}{ci_s:>14}{R}")
 
     pending = TOTAL_TASKS - n_tasks
     if pending > 0:
+        if failed_tasks:
+            row(f"  {DIM}{'─' * 56}{R}")
         row(f"  {DIM}  ○ {pending} tasks pending{R}")
     empty()
 

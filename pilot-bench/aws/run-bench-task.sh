@@ -513,11 +513,12 @@ docker exec -w /app \
     "${EXEC_ENV_ARGS[@]}" \
     "$CONTAINER_NAME" \
     timeout "${MAIN_TIMEOUT}" \
-    pilot task "$INSTRUCTION" \
+    pilot task \
         --local \
         --project /app \
         --verbose \
         --result-json /logs/agent/pilot-result.json \
+        -- "$INSTRUCTION" \
     2>&1 | tee "${LOGS_DIR}/pilot-stdout.log"
 PILOT_EXIT=${PIPESTATUS[0]}
 set -e
