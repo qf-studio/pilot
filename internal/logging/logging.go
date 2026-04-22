@@ -24,6 +24,13 @@ var (
 	// defaultLogger is the global logger instance
 	defaultLogger *slog.Logger
 	loggerMu      sync.RWMutex
+
+	// baseHandler is the primary slog handler (text/JSON) created by Init.
+	// Preserved so SetOTelHandler can build a fan-out without re-parsing config.
+	baseHandler slog.Handler
+	// otelHandler, when non-nil, receives a copy of every log record alongside
+	// baseHandler via fanoutHandler. Wired by observability.Init.
+	otelHandler slog.Handler
 )
 
 func init() {
@@ -83,10 +90,77 @@ func Init(cfg *Config) error {
 	}
 
 	loggerMu.Lock()
-	defaultLogger = slog.New(handler)
+	baseHandler = handler
+	defaultLogger = slog.New(composeHandler())
 	loggerMu.Unlock()
 
 	return nil
+}
+
+// SetOTelHandler installs an OTel-bridging slog handler that receives a copy
+// of every log record in parallel with the primary handler. Passing nil
+// removes the bridge. Called by observability.Init when logs are enabled.
+func SetOTelHandler(h slog.Handler) {
+	loggerMu.Lock()
+	defer loggerMu.Unlock()
+	otelHandler = h
+	if baseHandler == nil {
+		baseHandler = slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})
+	}
+	defaultLogger = slog.New(composeHandler())
+	slog.SetDefault(defaultLogger)
+}
+
+// composeHandler returns baseHandler alone, or a fanout to baseHandler+otelHandler.
+// Caller must hold loggerMu.
+func composeHandler() slog.Handler {
+	if otelHandler == nil {
+		return baseHandler
+	}
+	return &fanoutHandler{handlers: []slog.Handler{baseHandler, otelHandler}}
+}
+
+// fanoutHandler dispatches slog records to multiple underlying handlers.
+// Used to tee logs to stdout AND the OTel logs exporter simultaneously.
+type fanoutHandler struct {
+	handlers []slog.Handler
+}
+
+func (f *fanoutHandler) Enabled(ctx context.Context, l slog.Level) bool {
+	for _, h := range f.handlers {
+		if h.Enabled(ctx, l) {
+			return true
+		}
+	}
+	return false
+}
+
+func (f *fanoutHandler) Handle(ctx context.Context, r slog.Record) error {
+	var firstErr error
+	for _, h := range f.handlers {
+		if h.Enabled(ctx, r.Level) {
+			if err := h.Handle(ctx, r.Clone()); err != nil && firstErr == nil {
+				firstErr = err
+			}
+		}
+	}
+	return firstErr
+}
+
+func (f *fanoutHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	next := make([]slog.Handler, len(f.handlers))
+	for i, h := range f.handlers {
+		next[i] = h.WithAttrs(attrs)
+	}
+	return &fanoutHandler{handlers: next}
+}
+
+func (f *fanoutHandler) WithGroup(name string) slog.Handler {
+	next := make([]slog.Handler, len(f.handlers))
+	for i, h := range f.handlers {
+		next[i] = h.WithGroup(name)
+	}
+	return &fanoutHandler{handlers: next}
 }
 
 // Suppress redirects all logging to io.Discard, effectively silencing logs.

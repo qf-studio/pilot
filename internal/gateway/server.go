@@ -16,6 +16,7 @@ import (
 
 	"github.com/qf-studio/pilot/internal/adapters/github"
 	"github.com/qf-studio/pilot/internal/logging"
+	"github.com/qf-studio/pilot/internal/observability"
 	"github.com/gorilla/websocket"
 )
 
@@ -235,7 +236,7 @@ func (s *Server) Start(ctx context.Context) error {
 	addr := fmt.Sprintf("%s:%d", s.config.Host, s.config.Port)
 	s.server = &http.Server{
 		Addr:         addr,
-		Handler:      mux,
+		Handler:      observability.HTTPHandler(mux, "pilot.gateway"),
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 15 * time.Second,
 		IdleTimeout:  60 * time.Second,

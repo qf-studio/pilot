@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+
+	"github.com/qf-studio/pilot/internal/observability"
 	"strings"
 	"time"
 )
@@ -32,6 +34,7 @@ func NewClient(accessToken, workspaceID string) *Client {
 		workspaceID: workspaceID,
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
+		Transport: observability.HTTPTransport(nil),
 		},
 	}
 }
@@ -44,6 +47,7 @@ func NewClientWithBaseURL(baseURL, accessToken, workspaceID string) *Client {
 		workspaceID: workspaceID,
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
+		Transport: observability.HTTPTransport(nil),
 		},
 	}
 }

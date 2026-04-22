@@ -38,6 +38,7 @@ import (
 	"github.com/qf-studio/pilot/internal/gateway"
 	"github.com/qf-studio/pilot/internal/logging"
 	"github.com/qf-studio/pilot/internal/memory"
+	"github.com/qf-studio/pilot/internal/observability"
 	"github.com/qf-studio/pilot/internal/pilot"
 	"github.com/qf-studio/pilot/internal/quality"
 	"github.com/qf-studio/pilot/internal/teams"
@@ -191,6 +192,21 @@ Examples:
 					return fmt.Errorf("failed to initialize logging: %w", err)
 				}
 			}
+
+			// Initialize OpenTelemetry (traces, metrics, logs). Opt-in via
+			// cfg.Observability.enabled; returns a no-op shutdown when disabled.
+			otelShutdown, err := observability.Init(cmd.Context(), cfg.Observability, logging.SetOTelHandler)
+			if err != nil {
+				logging.WithComponent("observability").Warn("otel init failed, continuing without telemetry", slog.Any("error", err))
+				otelShutdown = func(context.Context) error { return nil }
+			}
+			defer func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				if err := otelShutdown(ctx); err != nil {
+					logging.WithComponent("observability").Warn("otel shutdown error", slog.Any("error", err))
+				}
+			}()
 
 			// GH-879: Log config reload on hot upgrade
 			// After syscall.Exec, the new binary starts fresh and re-reads config from disk

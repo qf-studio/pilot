@@ -8,6 +8,8 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+
+	"github.com/qf-studio/pilot/internal/observability"
 	"strconv"
 	"time"
 
@@ -30,6 +32,7 @@ func NewClient(botToken string) *Client {
 		baseURL:  DiscordAPIURL,
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
+		Transport: observability.HTTPTransport(nil),
 		},
 		log:        logging.WithComponent("discord.client"),
 		maxRetries: 3,
@@ -43,6 +46,7 @@ func NewClientWithBaseURL(botToken, baseURL string) *Client {
 		baseURL:  baseURL,
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
+		Transport: observability.HTTPTransport(nil),
 		},
 		log:        logging.WithComponent("discord.client"),
 		maxRetries: 3,

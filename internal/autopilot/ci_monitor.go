@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/qf-studio/pilot/internal/adapters/github"
+	"github.com/qf-studio/pilot/internal/observability"
 )
 
 // CIMonitor watches GitHub CI status for PRs.
@@ -90,7 +91,21 @@ func NewCIMonitor(ghClient *github.Client, owner, repo string, cfg *Config) *CIM
 // WaitForCI polls until all required checks complete or timeout.
 // Returns CISuccess if all checks pass, CIFailure if any fail,
 // or error on context cancellation or timeout.
-func (m *CIMonitor) WaitForCI(ctx context.Context, sha string) (CIStatus, error) {
+func (m *CIMonitor) WaitForCI(ctx context.Context, sha string) (status CIStatus, err error) {
+	start := time.Now()
+	ctx, endSpan := observability.StartSpan(ctx, "pilot.autopilot.ci_wait")
+	defer func() {
+		endSpan(err)
+		result := "timeout"
+		switch status {
+		case CISuccess:
+			result = "passed"
+		case CIFailure:
+			result = "failed"
+		}
+		observability.RecordCIWait(ctx, result, time.Since(start))
+	}()
+
 	deadline := time.Now().Add(m.waitTimeout)
 	ticker := time.NewTicker(m.pollInterval)
 	defer ticker.Stop()
@@ -107,16 +122,16 @@ func (m *CIMonitor) WaitForCI(ctx context.Context, sha string) (CIStatus, error)
 				return CIPending, fmt.Errorf("CI timeout after %v", m.waitTimeout)
 			}
 
-			status, err := m.checkStatus(ctx, sha)
-			if err != nil {
-				m.log.Warn("CI status check failed", "error", err)
+			s, cerr := m.checkStatus(ctx, sha)
+			if cerr != nil {
+				m.log.Warn("CI status check failed", "error", cerr)
 				continue
 			}
 
-			m.log.Info("CI status", "sha", ShortSHA(sha), "status", status)
+			m.log.Info("CI status", "sha", ShortSHA(sha), "status", s)
 
-			if status == CISuccess || status == CIFailure {
-				return status, nil
+			if s == CISuccess || s == CIFailure {
+				return s, nil
 			}
 		}
 	}

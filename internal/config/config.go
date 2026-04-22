@@ -27,6 +27,7 @@ import (
 	"github.com/qf-studio/pilot/internal/executor"
 	"github.com/qf-studio/pilot/internal/gateway"
 	"github.com/qf-studio/pilot/internal/logging"
+	"github.com/qf-studio/pilot/internal/observability"
 	"github.com/qf-studio/pilot/internal/quality"
 	"github.com/qf-studio/pilot/internal/tunnel"
 	"github.com/qf-studio/pilot/internal/webhooks"
@@ -49,6 +50,7 @@ type Config struct {
 	Alerts         *AlertsConfig           `yaml:"alerts"`
 	Budget         *budget.Config          `yaml:"budget"`
 	Logging        *logging.Config         `yaml:"logging"`
+	Observability  *observability.Config   `yaml:"observability"`
 	Approval       *approval.Config        `yaml:"approval"`
 	Quality        *quality.Config         `yaml:"quality"`
 	Tunnel         *tunnel.Config          `yaml:"tunnel"`
@@ -367,7 +369,8 @@ func DefaultConfig() *Config {
 			},
 		},
 		Budget:   budget.DefaultConfig(),
-		Logging:  logging.DefaultConfig(),
+		Logging:       logging.DefaultConfig(),
+		Observability: observability.DefaultConfig(),
 		Approval: approval.DefaultConfig(),
 		Quality:  quality.DefaultConfig(),
 		Tunnel:   tunnel.DefaultConfig(),

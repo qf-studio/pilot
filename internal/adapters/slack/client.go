@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+
+	"github.com/qf-studio/pilot/internal/observability"
 	"time"
 )
 
@@ -28,6 +30,7 @@ func NewClient(botToken string) *Client {
 		baseURL:  slackAPIURL,
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
+		Transport: observability.HTTPTransport(nil),
 		},
 	}
 }
@@ -39,6 +42,7 @@ func NewClientWithBaseURL(botToken, baseURL string) *Client {
 		baseURL:  baseURL,
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
+		Transport: observability.HTTPTransport(nil),
 		},
 	}
 }

@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+
+	"github.com/qf-studio/pilot/internal/observability"
 	"sync"
 	"time"
 
@@ -37,6 +39,7 @@ func NewClient(apiKey string) *Client {
 		baseURL: linearAPIURL,
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
+		Transport: observability.HTTPTransport(nil),
 		},
 		doneStateCache: make(map[string]string),
 	}
@@ -49,6 +52,7 @@ func NewClientWithBaseURL(apiKey, baseURL string) *Client {
 		baseURL: baseURL,
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
+		Transport: observability.HTTPTransport(nil),
 		},
 		doneStateCache: make(map[string]string),
 	}

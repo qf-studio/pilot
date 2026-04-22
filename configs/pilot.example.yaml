@@ -326,3 +326,25 @@ autopilot:
 dashboard:
   refresh_interval: 1000     # ms
   show_logs: true
+
+# OpenTelemetry observability (traces, metrics, logs)
+# Off by default — flip enabled to true and point endpoint at your collector
+# (Jaeger, Grafana Tempo, OTLP-compatible agent, etc.).
+# Standard OTEL_* environment variables are also honored and take precedence.
+observability:
+  enabled: false
+  service_name: "pilot"
+  service_version: ""           # empty = use binary build info
+  exporter: "otlp"              # otlp | stdout | none
+  endpoint: "localhost:4317"    # OTLP endpoint (gRPC=4317, HTTP=4318)
+  protocol: "grpc"              # grpc | http
+  insecure: true                # disable TLS for local collectors
+  headers: {}                   # optional OTLP headers (auth tokens, tenant IDs)
+  sampling: 1.0                 # parent-based trace sample ratio (0.0–1.0)
+  traces:
+    enabled: true
+  metrics:
+    enabled: true
+    interval: 60s               # periodic export interval
+  logs:
+    enabled: true               # bridges slog records to OTLP logs

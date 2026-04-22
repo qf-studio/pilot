@@ -14,8 +14,11 @@ import (
 	"syscall"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+
 	"github.com/qf-studio/pilot/internal/logging"
 	"github.com/qf-studio/pilot/internal/memory"
+	"github.com/qf-studio/pilot/internal/observability"
 	"github.com/qf-studio/pilot/internal/quality"
 	"github.com/qf-studio/pilot/internal/replay"
 	"github.com/qf-studio/pilot/internal/webhooks"
@@ -969,8 +972,20 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 // executeWithOptions is the internal implementation that allows controlling worktree creation.
 // When allowWorktree is false, it skips worktree creation even if configured.
 // This prevents recursive worktree creation in sub-issues and decomposed tasks.
-func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktree bool) (*ExecutionResult, error) {
+func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktree bool) (resultOut *ExecutionResult, errOut error) {
 	start := time.Now()
+
+	ctx, endSpan := observability.StartSpan(ctx, "pilot.executor.run",
+		attribute.String("task.id", task.ID),
+		attribute.String("project", task.ProjectPath),
+		attribute.Bool("worktree.allowed", allowWorktree),
+	)
+	defer func() {
+		endSpan(errOut)
+		if resultOut != nil {
+			observability.RecordTokens(ctx, resultOut.ModelName, resultOut.TokensInput, resultOut.TokensOutput)
+		}
+	}()
 
 	// Signal monitor that execution is actually starting (queued→running transition)
 	if r.monitor != nil {

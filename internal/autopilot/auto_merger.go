@@ -8,6 +8,7 @@ import (
 
 	"github.com/qf-studio/pilot/internal/adapters/github"
 	"github.com/qf-studio/pilot/internal/approval"
+	"github.com/qf-studio/pilot/internal/observability"
 )
 
 // AutoMerger handles PR merging with environment-aware safety.
@@ -40,7 +41,26 @@ func NewAutoMerger(ghClient *github.Client, approvalMgr *approval.Manager, ciMon
 
 // MergePR merges a PR with environment-appropriate safety checks.
 // For environments with RequireApproval, requests human approval before merge.
-func (m *AutoMerger) MergePR(ctx context.Context, prState *PRState) error {
+func (m *AutoMerger) MergePR(ctx context.Context, prState *PRState) (err error) {
+	ctx, endSpan := observability.StartSpan(ctx, "pilot.autopilot.merge")
+	defer func() {
+		endSpan(err)
+		result := "merged"
+		if err != nil {
+			switch {
+			case strings.Contains(err.Error(), "approval denied"):
+				result = "rejected"
+			case strings.Contains(err.Error(), "CI"):
+				result = "ci_failed"
+			case strings.Contains(err.Error(), "conflict"):
+				result = "conflict"
+			default:
+				result = "error"
+			}
+		}
+		observability.RecordAutoMerge(ctx, result)
+	}()
+
 	env := m.config.Environment
 
 	m.log.Info("MergePR: starting merge process",

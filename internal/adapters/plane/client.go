@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+
+	"github.com/qf-studio/pilot/internal/observability"
 	"strconv"
 	"strings"
 	"time"
@@ -56,6 +58,7 @@ func NewClient(baseURL, apiKey string, opts ...ClientOption) *Client {
 		apiKey:  apiKey,
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
+		Transport: observability.HTTPTransport(nil),
 		},
 	}
 	for _, opt := range opts {

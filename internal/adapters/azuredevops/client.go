@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+
+	"github.com/qf-studio/pilot/internal/observability"
 	"net/url"
 	"strconv"
 	"strings"
@@ -40,6 +42,7 @@ func NewClient(pat, organization, project string) *Client {
 		baseURL:      defaultBaseURL,
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
+		Transport: observability.HTTPTransport(nil),
 		},
 	}
 }
@@ -66,6 +69,7 @@ func NewClientWithBaseURL(pat, organization, project, baseURL string) *Client {
 		baseURL:      baseURL,
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
+		Transport: observability.HTTPTransport(nil),
 		},
 	}
 }

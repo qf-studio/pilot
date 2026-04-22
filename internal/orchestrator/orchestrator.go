@@ -7,6 +7,9 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
+
+	"go.opentelemetry.io/otel/attribute"
 
 	"github.com/qf-studio/pilot/internal/adapters/asana"
 	"github.com/qf-studio/pilot/internal/adapters/github"
@@ -17,6 +20,7 @@ import (
 	"github.com/qf-studio/pilot/internal/adapters/slack"
 	"github.com/qf-studio/pilot/internal/executor"
 	"github.com/qf-studio/pilot/internal/logging"
+	"github.com/qf-studio/pilot/internal/observability"
 )
 
 // Config holds orchestrator configuration
@@ -200,9 +204,18 @@ func (o *Orchestrator) processTask(task *Task) {
 	logging.WithTask(task.ID).Info("Processing task", slog.String("title", task.Document.Title))
 	o.monitor.Start(task.ID)
 
+	// Root span for the entire task lifecycle. Executor and autopilot spans
+	// nest under this via context propagation.
+	start := time.Now()
+	spanCtx, endSpan := observability.StartSpan(o.ctx, "pilot.task.execute",
+		attribute.String("task.id", task.ID),
+		attribute.String("task.title", task.Document.Title),
+		attribute.String("project", task.ProjectPath),
+	)
+
 	// Notify Slack
 	if o.notifier != nil {
-		_ = o.notifier.TaskStarted(o.ctx, task.ID, task.Document.Title)
+		_ = o.notifier.TaskStarted(spanCtx, task.ID, task.Document.Title)
 	}
 
 	// Execute task
@@ -215,8 +228,10 @@ func (o *Orchestrator) processTask(task *Task) {
 		Branch:      task.Branch,
 	}
 
-	result, err := o.runner.Execute(o.ctx, execTask)
+	result, err := o.runner.Execute(spanCtx, execTask)
 	if err != nil {
+		endSpan(err)
+		observability.RecordTask(o.ctx, task.ProjectPath, "error", time.Since(start))
 		logging.WithTask(task.ID).Error("Task execution error", slog.Any("error", err))
 		o.monitor.Fail(task.ID, err.Error())
 		if o.notifier != nil {
@@ -227,6 +242,8 @@ func (o *Orchestrator) processTask(task *Task) {
 	}
 
 	if !result.Success {
+		endSpan(fmt.Errorf("%s", result.Error))
+		observability.RecordTask(o.ctx, task.ProjectPath, "failed", time.Since(start))
 		logging.WithTask(task.ID).Error("Task failed", slog.String("error", result.Error))
 		o.monitor.Fail(task.ID, result.Error)
 		if o.notifier != nil {
@@ -236,6 +253,8 @@ func (o *Orchestrator) processTask(task *Task) {
 		return
 	}
 
+	endSpan(nil)
+	observability.RecordTask(o.ctx, task.ProjectPath, "success", time.Since(start))
 	logging.WithTask(task.ID).Info("Task completed", slog.Duration("duration", result.Duration))
 	o.monitor.Complete(task.ID, result.PRUrl)
 
