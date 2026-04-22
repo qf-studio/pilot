@@ -288,6 +288,28 @@ pilot start --env=prod --telegram --github   # Safe, manual approval
 
 ## Active Work
 
+### TASK-26: AWS Bench Harbor-Compliant Clean Run (In Progress)
+
+**Problem**: `glm-leaderboard-v2` (445 trials, 74.2%) had 60 trials exceed their
+manifest `agent_timeout_sec` — violates Harbor's `timeout_multiplier=1.0` rule.
+Also needed resumability, credential-leak removal, broadened oracle-file guard,
+and `/app` symlink for non-standard WORKDIRs (e.g., `prove-plus-comm` uses `/workspace`).
+
+**Fix**: Orchestrator `--resume` / `--dry-run` / `--rerun-list` flags; per-task
+`agent_timeout_sec` enforcement in `run-bench-task.sh`; broadened oracle guard
+(+`/workspace /tests /home/* /srv /root`); removed `tee /tmp/ssm-auth-debug.log`
+token leak; symlink `/app → $WORKDIR` fallback.
+
+**Strategy**: Clean run `glm-leaderboard-v3` at parallel=3 with all patches —
+chosen over selective rerun + disclosure for simpler Harbor reviewer story.
+
+**Plan**: `.agent/tasks/TASK-26-aws-bench-harbor-clean-run.md`
+
+**Changes**:
+- `pilot-bench/aws/orchestrator.py` (+79 lines, committed `13decf41`)
+- `pilot-bench/aws/run-bench-task.sh` (~50 lines across 4 phases)
+- `pilot-bench/submissions/glm-leaderboard-v2-notes.md` (created)
+
 ### TASK-25: Stale Recovery Queue Drain Fix (Planned)
 
 **Problem**: `recoverStaleTasks()` marks queued tasks older than 5 min as failed. When `runner.Execute()` blocks for 10-20 min (GLM-5.1, complex tasks), queued tasks behind it get nuked even though the worker is actively processing.
