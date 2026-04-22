@@ -83,6 +83,7 @@ class AWSBenchOrchestrator:
         region: str = AWS_REGION,
         resume: bool = False,
         dry_run: bool = False,
+        rerun_set: set[tuple[str, str]] | None = None,
     ):
         self.run_id = run_id
         self.model = model
@@ -92,6 +93,9 @@ class AWSBenchOrchestrator:
         self.region = region
         self.resume = resume
         self.dry_run = dry_run
+        # (task, trial_id) tuples to force-dispatch even if reward.txt exists.
+        # Used to re-run specific trials that need redoing (e.g., over-timeout).
+        self.rerun_set: set[tuple[str, str]] = rerun_set or set()
 
         self.pool = InstancePool(region=region)
         self.ssm = SSMExecutor(region=region)
@@ -142,6 +146,16 @@ class AWSBenchOrchestrator:
                 skip_set = self._scan_completed_trials(tasks)
                 logger.info(
                     f"[resume] Found {len(skip_set)} completed trials in S3 — will skip"
+                )
+            # Force-rerun list takes priority over skip_set.
+            # Trials in rerun_set are dispatched even if they have existing reward.txt;
+            # new artifacts overwrite old ones; S3 versioning preserves history.
+            if self.rerun_set:
+                before = len(skip_set)
+                skip_set -= self.rerun_set
+                logger.info(
+                    f"[rerun] Forcing re-dispatch of {len(self.rerun_set)} trials "
+                    f"(skip_set trimmed from {before} to {len(skip_set)})"
                 )
 
             self._print_banner(bench, total_trials)
@@ -644,11 +658,29 @@ def main():
         action="store_true",
         help="Print what would be dispatched and exit; no AWS scale/dispatch/upload",
     )
+    parser.add_argument(
+        "--rerun-list",
+        type=str,
+        default=None,
+        help="Path to file with 'task/trial-NNN' lines — these trials are force-redispatched "
+             "even if reward.txt exists; new artifacts overwrite old (S3 versioning preserves history).",
+    )
     args = parser.parse_args()
 
     task_names = None
     if args.tasks != "all":
         task_names = [t.strip() for t in args.tasks.split(",") if t.strip()]
+
+    rerun_set: set[tuple[str, str]] = set()
+    if args.rerun_list:
+        with open(args.rerun_list) as f:
+            for line in f:
+                line = line.strip()
+                if not line or "/" not in line:
+                    continue
+                task, trial = line.rsplit("/", 1)
+                rerun_set.add((task, trial))
+        logger.info(f"[rerun] Loaded {len(rerun_set)} trials from {args.rerun_list}")
 
     orchestrator = AWSBenchOrchestrator(
         run_id=args.run_id,
@@ -659,6 +691,7 @@ def main():
         region=args.region,
         resume=args.resume,
         dry_run=args.dry_run,
+        rerun_set=rerun_set,
     )
 
     bench = orchestrator.run(task_names=task_names)

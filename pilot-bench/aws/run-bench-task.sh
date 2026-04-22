@@ -123,10 +123,17 @@ PILOTCFG
 
 # ─── Step 1: Load secrets from SSM ────────────────────────────────────────────
 echo "--- Loading secrets from SSM ---"
-echo "DEBUG: Loading ANTHROPIC_AUTH_TOKEN from SSM..."
-export ANTHROPIC_AUTH_TOKEN=$(aws ssm get-parameter \
+# Remove any stale debug log that might exist from an older build (security).
+rm -f /tmp/ssm-auth-debug.log 2>/dev/null
+echo "Loading ANTHROPIC_AUTH_TOKEN from SSM..."
+ANTHROPIC_AUTH_TOKEN=$(aws ssm get-parameter \
     --name "${SSM_PREFIX}/ANTHROPIC_AUTH_TOKEN" --with-decryption \
-    --query "Parameter.Value" --output text 2>&1 | tee /tmp/ssm-auth-debug.log || { echo "ERROR: Failed to load ANTHROPIC_AUTH_TOKEN"; cat /tmp/ssm-auth-debug.log; exit 1; })
+    --query "Parameter.Value" --output text 2>/dev/null)
+if [ -z "$ANTHROPIC_AUTH_TOKEN" ] || [ "$ANTHROPIC_AUTH_TOKEN" = "None" ]; then
+    echo "ERROR: ANTHROPIC_AUTH_TOKEN not found in SSM (${SSM_PREFIX}/ANTHROPIC_AUTH_TOKEN)"
+    exit 1
+fi
+export ANTHROPIC_AUTH_TOKEN
 export ANTHROPIC_BASE_URL=$(aws ssm get-parameter \
     --name "${SSM_PREFIX}/ANTHROPIC_BASE_URL" \
     --query "Parameter.Value" --output text 2>/dev/null || echo "https://api.z.ai/api/anthropic")
@@ -135,10 +142,6 @@ GITHUB_TOKEN=$(aws ssm get-parameter \
     --name "${SSM_PREFIX}/GITHUB_TOKEN" \
     --query "Parameter.Value" --output text 2>/dev/null || echo "")
 
-if [ -z "$ANTHROPIC_AUTH_TOKEN" ]; then
-    echo "ERROR: ANTHROPIC_AUTH_TOKEN not found in SSM"
-    exit 1
-fi
 echo "  Auth token loaded (${#ANTHROPIC_AUTH_TOKEN} chars)"
 echo "  Base URL: $ANTHROPIC_BASE_URL"
 echo "  Model: $ANTHROPIC_MODEL"
@@ -186,6 +189,7 @@ for t in manifest['tasks']:
         print(f'INSTRUCTION={shlex.quote(t.get(\"instruction\",\"\"))}')
         print(f'TASK_CPUS={t.get(\"cpus\",1)}')
         print(f'TASK_MEMORY={t.get(\"memory_mb\",2048)}')
+        print(f'TASK_AGENT_TIMEOUT={int(t.get(\"agent_timeout_sec\",900))}')
         sys.exit(0)
 sys.exit(1)
 " 2>/dev/null)" || {
@@ -466,15 +470,33 @@ docker exec -w / "$CONTAINER_NAME" bash -c '
 '
 echo "  Bootstrap written to /app/.pilot-env-context.txt"
 
-# Remove oracle test files from /app BEFORE agent runs (Harbor compliance).
-# Docker images ship test_outputs.py, test.sh, etc. at /app/ — agent must not see them.
+# Remove oracle test files BEFORE agent runs (Harbor H1/H4 compliance).
+# Docker images may ship test_outputs.py, test.sh, tests/ at /app/, /workspace/,
+# /tests/ (root), or other WORKDIRs. Be exhaustive — the verifier phase will
+# deliberately `docker cp` tests into /tests AFTER pilot exits.
 docker exec -w / "$CONTAINER_NAME" bash -c '
-    rm -f /app/test_outputs.py /app/test.sh /app/tests/test_outputs.py /app/tests/test.sh 2>/dev/null
-    rm -rf /app/tests/ 2>/dev/null
-    # Also remove any canary-marked files the agent could read
-    grep -rl "terminal-bench-canary" /app/ 2>/dev/null | xargs rm -f 2>/dev/null || true
+    set +e
+    REMOVED=0
+    # Known oracle file names at all common task dirs + container root.
+    for base in /app /workspace /tests /home/user /home/agent /srv /root; do
+        for f in test_outputs.py test.sh conftest.py pytest.ini tests; do
+            target="$base/$f"
+            if [ -e "$target" ]; then
+                rm -rf "$target" 2>/dev/null && REMOVED=$((REMOVED+1))
+                echo "  [oracle-guard] removed: $target"
+            fi
+        done
+    done
+    # Canary-grep across all plausible task dirs (scoped — no system-wide grep).
+    for scan in /app /workspace /tests /home /srv /opt; do
+        [ -d "$scan" ] || continue
+        grep -rl --include="*" "terminal-bench-canary" "$scan" 2>/dev/null | while read -r hit; do
+            rm -f "$hit" 2>/dev/null && echo "  [oracle-guard] canary file removed: $hit"
+        done
+    done
+    echo "  [oracle-guard] pre-agent cleanup complete (removed: $REMOVED direct targets)"
 '
-echo "  Oracle files removed from /app"
+echo "  Oracle files removed (broadened scan: /app /workspace /tests /home/user /home/agent /srv /root)"
 
 # Initialize git repo in /app (pilot needs it)
 docker exec -w / "$CONTAINER_NAME" bash -c '
@@ -512,7 +534,7 @@ set +e  # handle pilot exit code ourselves
 docker exec -w /app \
     "${EXEC_ENV_ARGS[@]}" \
     "$CONTAINER_NAME" \
-    timeout "${MAIN_TIMEOUT}" \
+    timeout "${TASK_AGENT_TIMEOUT:-${MAIN_TIMEOUT}}" \
     pilot task \
         --local \
         --project /app \
