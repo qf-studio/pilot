@@ -325,6 +325,10 @@ func (p *Poller) processTaskAsync(ctx context.Context, task *Task) {
 		return
 	}
 
+	// Strip invisible Unicode from untrusted fields before downstream
+	// consumers see them. See sanitize.go for the shared helper.
+	sanitizeTaskInPlace(task)
+
 	// Add in-progress tag
 	if p.inProgressTagGID != "" {
 		_ = p.client.AddTag(ctx, task.GID, p.inProgressTagGID)

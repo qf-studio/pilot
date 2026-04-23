@@ -138,6 +138,10 @@ func (h *WebhookHandler) handleTaskEvent(ctx context.Context, event WebhookEvent
 
 // processTask processes a task that should be handled by Pilot
 func (h *WebhookHandler) processTask(ctx context.Context, task *Task) error {
+	// Strip invisible Unicode from untrusted fields before the log line
+	// and before handing the task to the pilot callback.
+	sanitizeTaskInPlace(task)
+
 	logging.WithComponent("asana").Info("Processing pilot task",
 		slog.String("gid", task.GID),
 		slog.String("name", task.Name))

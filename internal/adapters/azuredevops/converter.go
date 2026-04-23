@@ -2,8 +2,12 @@ package azuredevops
 
 import (
 	"fmt"
+	"log/slog"
 	"regexp"
 	"strings"
+
+	"github.com/qf-studio/pilot/internal/logging"
+	"github.com/qf-studio/pilot/internal/text"
 )
 
 // TaskInfo contains the extracted task information from an Azure DevOps work item
@@ -39,10 +43,25 @@ func ConvertWorkItemToTask(wi *WorkItem, organization, project, repository, base
 		wi.ID,
 	)
 
+	// Sanitize untrusted fields to strip invisible Unicode format
+	// characters used for ASCII-smuggling / prompt-injection attacks.
+	title, titleStripped := text.SanitizeUntrusted(wi.GetTitle())
+	description, bodyStripped := text.SanitizeUntrusted(extractDescription(wi.GetDescription()))
+
+	if titleStripped+bodyStripped > 0 {
+		logging.WithComponent("azuredevops").Warn(
+			"invisible_unicode_stripped",
+			slog.String("source", "azuredevops"),
+			slog.Int("workitem", wi.ID),
+			slog.Int("title_stripped", titleStripped),
+			slog.Int("body_stripped", bodyStripped),
+		)
+	}
+
 	task := &TaskInfo{
 		ID:           fmt.Sprintf("AZDO-%d", wi.ID),
-		Title:        wi.GetTitle(),
-		Description:  extractDescription(wi.GetDescription()),
+		Title:        title,
+		Description:  description,
 		Priority:     wi.GetPriority(),
 		Tags:         extractTagNames(wi.GetTags()),
 		Organization: organization,
@@ -94,7 +113,7 @@ func extractDescription(body string) string {
 		}
 	}
 
-	return strings.TrimSpace(strings.Join(filtered, "\n"))
+	return text.SanitizeUntrustedString(strings.TrimSpace(strings.Join(filtered, "\n")))
 }
 
 // stripHTML removes HTML tags from a string

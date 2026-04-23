@@ -2,8 +2,12 @@ package jira
 
 import (
 	"fmt"
+	"log/slog"
 	"regexp"
 	"strings"
+
+	"github.com/qf-studio/pilot/internal/logging"
+	"github.com/qf-studio/pilot/internal/text"
 )
 
 // TaskInfo contains the extracted task information from a Jira issue
@@ -18,17 +22,34 @@ type TaskInfo struct {
 	IssueURL    string
 }
 
-// ConvertIssueToTask converts a Jira issue to a TaskInfo
+// ConvertIssueToTask converts a Jira issue to a TaskInfo.
+//
+// All untrusted fields (Summary, Description) are run through
+// text.SanitizeUntrusted to strip invisible Unicode format characters
+// used for ASCII-smuggling / prompt-injection attacks.
 func ConvertIssueToTask(issue *Issue, baseURL string) *TaskInfo {
 	var priority Priority
 	if issue.Fields.Priority != nil {
 		priority = PriorityFromJira(issue.Fields.Priority.Name)
 	}
 
+	title, titleStripped := text.SanitizeUntrusted(issue.Fields.Summary)
+	description, bodyStripped := text.SanitizeUntrusted(extractDescription(issue.Fields.Description))
+
+	if titleStripped+bodyStripped > 0 {
+		logging.WithComponent("jira").Warn(
+			"invisible_unicode_stripped",
+			slog.String("source", "jira"),
+			slog.String("issue", issue.Key),
+			slog.Int("title_stripped", titleStripped),
+			slog.Int("body_stripped", bodyStripped),
+		)
+	}
+
 	task := &TaskInfo{
 		ID:          fmt.Sprintf("JIRA-%s", issue.Key),
-		Title:       issue.Fields.Summary,
-		Description: extractDescription(issue.Fields.Description),
+		Title:       title,
+		Description: description,
 		Priority:    priority,
 		Labels:      filterLabels(issue.Fields.Labels),
 		ProjectKey:  issue.Fields.Project.Key,
@@ -73,7 +94,7 @@ func extractDescription(body string) string {
 		}
 	}
 
-	return strings.TrimSpace(strings.Join(filtered, "\n"))
+	return text.SanitizeUntrustedString(strings.TrimSpace(strings.Join(filtered, "\n")))
 }
 
 // filterLabels returns labels excluding pilot and priority labels

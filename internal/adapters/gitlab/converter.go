@@ -2,8 +2,12 @@ package gitlab
 
 import (
 	"fmt"
+	"log/slog"
 	"regexp"
 	"strings"
+
+	"github.com/qf-studio/pilot/internal/logging"
+	"github.com/qf-studio/pilot/internal/text"
 )
 
 // TaskInfo contains the extracted task information from a GitLab issue
@@ -19,15 +23,32 @@ type TaskInfo struct {
 	CloneURL    string
 }
 
-// ConvertIssueToTask converts a GitLab issue to a TaskInfo
+// ConvertIssueToTask converts a GitLab issue to a TaskInfo.
+//
+// All untrusted fields (Title, Description) are run through
+// text.SanitizeUntrusted to strip invisible Unicode format characters
+// used for ASCII-smuggling / prompt-injection attacks.
 func ConvertIssueToTask(issue *Issue, project *Project) *TaskInfo {
 	// Construct clone URL from project web URL
 	cloneURL := project.WebURL + ".git"
 
+	title, titleStripped := text.SanitizeUntrusted(issue.Title)
+	description, bodyStripped := text.SanitizeUntrusted(extractDescription(issue.Description))
+
+	if titleStripped+bodyStripped > 0 {
+		logging.WithComponent("gitlab").Warn(
+			"invisible_unicode_stripped",
+			slog.String("source", "gitlab"),
+			slog.Int("issue", issue.IID),
+			slog.Int("title_stripped", titleStripped),
+			slog.Int("body_stripped", bodyStripped),
+		)
+	}
+
 	task := &TaskInfo{
 		ID:          fmt.Sprintf("GL-%d", issue.IID),
-		Title:       issue.Title,
-		Description: extractDescription(issue.Description),
+		Title:       title,
+		Description: description,
 		Priority:    extractPriority(issue.Labels),
 		Labels:      extractLabelNames(issue.Labels),
 		ProjectPath: project.PathWithNamespace,
@@ -74,7 +95,7 @@ func extractDescription(body string) string {
 		}
 	}
 
-	return strings.TrimSpace(strings.Join(filtered, "\n"))
+	return text.SanitizeUntrustedString(strings.TrimSpace(strings.Join(filtered, "\n")))
 }
 
 // extractPriority determines priority from labels

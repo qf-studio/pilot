@@ -92,6 +92,11 @@ func (h *WebhookHandler) Handle(ctx context.Context, payload map[string]interfac
 		return nil
 	}
 
+	// Strip invisible Unicode from untrusted fields before the log line
+	// and before handing the issue to the pilot callback. See
+	// sanitize.go for the shared helper used by the poller path too.
+	sanitizeIssueInPlace(issue)
+
 	logging.WithComponent("linear").Info("Processing pilot issue", slog.String("identifier", issue.Identifier), slog.String("title", issue.Title))
 
 	// Call the callback

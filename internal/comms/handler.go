@@ -13,6 +13,7 @@ import (
 	"github.com/qf-studio/pilot/internal/intent"
 	"github.com/qf-studio/pilot/internal/logging"
 	"github.com/qf-studio/pilot/internal/memory"
+	texthelper "github.com/qf-studio/pilot/internal/text"
 )
 
 // MemberResolver resolves a platform user to a team member ID for RBAC.
@@ -101,7 +102,29 @@ func NewHandler(cfg *HandlerConfig) *Handler {
 
 // HandleMessage is the main entry point for processing an incoming message.
 // It performs rate limiting, intent detection, and dispatches to the appropriate handler.
+//
+// This is the shared chokepoint for Telegram/Slack/Discord inbound text.
+// Every platform adapter populates IncomingMessage.Text (and optionally
+// VoiceText) here, so sanitizing once in this function is equivalent to
+// sanitizing at every chat adapter site. See internal/text/sanitize.go
+// for the threat model.
 func (h *Handler) HandleMessage(ctx context.Context, msg *IncomingMessage) {
+	// Strip invisible Unicode format characters before any downstream
+	// logic reads the message. This also means confirmation echoes,
+	// intent routing, and memory writes all see the cleaned text.
+	var textStripped, voiceStripped int
+	msg.Text, textStripped = texthelper.SanitizeUntrusted(msg.Text)
+	msg.VoiceText, voiceStripped = texthelper.SanitizeUntrusted(msg.VoiceText)
+	if textStripped+voiceStripped > 0 {
+		h.log.Warn("invisible_unicode_stripped",
+			slog.String("source", msg.Platform),
+			slog.String("context_id", msg.ContextID),
+			slog.String("sender_id", msg.SenderID),
+			slog.Int("text_stripped", textStripped),
+			slog.Int("voice_stripped", voiceStripped),
+		)
+	}
+
 	contextID := msg.ContextID
 	text := msg.Text
 
