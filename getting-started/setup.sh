@@ -9,13 +9,13 @@ echo "🚀 Setting up Pilot development environment..."
 
 # Check if Go is installed
 if ! command -v go &> /dev/null; then
-    echo "❌ Go is not installed. Please install Go 1.24+ from https://golang.org/dl/"
+    echo "❌ Go is not installed. Please install Go 1.25+ from https://golang.org/dl/"
     exit 1
 fi
 
 # Check Go version
 GO_VERSION=$(go version | awk '{print $3}' | sed 's/go//')
-MIN_VERSION="1.24"
+MIN_VERSION="1.25"
 
 if [ "$(printf '%s\n' "$MIN_VERSION" "$GO_VERSION" | sort -V | head -n1)" != "$MIN_VERSION" ]; then
     echo "❌ Go version $GO_VERSION is too old. Please install Go $MIN_VERSION or later."
