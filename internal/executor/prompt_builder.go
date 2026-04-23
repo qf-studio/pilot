@@ -27,8 +27,10 @@ func (r *Runner) BuildPrompt(task *Task, executionPath string) string {
 	// ignoring --local flag entirely.
 	if task.LocalMode {
 		prompt := r.buildLocalModePrompt(task)
-		// GH-2147: Inject learned patterns (keep prompt lean)
-		if r.patternContext != nil {
+		inject := r.shouldInjectPatterns()
+		// GH-2147: Inject learned patterns (keep prompt lean).
+		// Gated by learning.inject_patterns config (Harbor bench compliance).
+		if inject && r.patternContext != nil {
 			injected, err := r.patternContext.InjectPatterns(
 				context.Background(), prompt, task.ProjectPath,
 				inferTaskType(task), task.Description)
@@ -38,8 +40,9 @@ func (r *Runner) BuildPrompt(task *Task, executionPath string) string {
 				prompt = injected
 			}
 		}
-		// GH-2147: Inject knowledge graph learnings (max 3 to stay lean)
-		if r.knowledgeGraph != nil {
+		// GH-2147: Inject knowledge graph learnings (max 3 to stay lean).
+		// Gated by learning.inject_patterns config (same toggle).
+		if inject && r.knowledgeGraph != nil {
 			keywords := extractTaskKeywords(task.Title + " " + task.Description)
 			if nodes := r.knowledgeGraph.GetRelatedByKeywords(keywords); len(nodes) > 0 {
 				var sb strings.Builder
@@ -269,8 +272,9 @@ func (r *Runner) BuildPrompt(task *Task, executionPath string) string {
 
 	prompt := sb.String()
 
-	// Inject learned patterns into prompt (self-improvement, GH-1819)
-	if r.patternContext != nil {
+	// Inject learned patterns into prompt (self-improvement, GH-1819).
+	// Gated by learning.inject_patterns (Harbor bench compliance).
+	if r.shouldInjectPatterns() && r.patternContext != nil {
 		injected, err := r.patternContext.InjectPatterns(context.Background(), prompt, task.ProjectPath, inferTaskType(task), task.Description)
 		if err != nil {
 			slog.Warn("Failed to inject patterns", slog.Any("error", err))
@@ -475,8 +479,9 @@ func (r *Runner) buildSelfReviewPrompt(task *Task) string {
 		sb.WriteString("\nIf any criterion is UNMET, fix the implementation before proceeding.\n\n")
 	}
 
-	// Inject learned patterns for validation (ROAD-02: self-review pattern check)
-	if r.patternContext != nil {
+	// Inject learned patterns for validation (ROAD-02: self-review pattern check).
+	// Gated by learning.inject_patterns (Harbor bench compliance).
+	if r.shouldInjectPatterns() && r.patternContext != nil {
 		patternBlock, err := r.patternContext.GetPatternsForTask(
 			context.Background(), task.ProjectPath, inferTaskType(task), task.Description)
 		if err != nil {

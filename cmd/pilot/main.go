@@ -961,6 +961,12 @@ Examples:
 					gwRunner.SetPatternContext(gwPatternContext)
 					gwRunner.SetSelfReviewExtractor(gwExtractor)
 
+					// Harbor bench compliance: honor learning.inject_patterns toggle.
+					gwRunner.SetInjectPatterns(cfg.Memory.Learning.ShouldInjectPatterns())
+					if !cfg.Memory.Learning.ShouldInjectPatterns() {
+						logging.WithComponent("learning").Info("Pattern/KG prompt injection DISABLED via learning.inject_patterns=false (gateway mode)")
+					}
+
 					if gwAutopilotController != nil {
 						gwAutopilotController.SetLearningLoop(gwLearningLoop)
 						gwAutopilotController.SetEvalStore(gwStore)
@@ -1449,6 +1455,12 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 			runner.SetLearningLoop(learningLoop)
 			runner.SetPatternContext(patternContext)
 			runner.SetSelfReviewExtractor(extractor)
+
+			// Harbor bench compliance: honor learning.inject_patterns toggle.
+			runner.SetInjectPatterns(cfg.Memory.Learning.ShouldInjectPatterns())
+			if !cfg.Memory.Learning.ShouldInjectPatterns() {
+				logging.WithComponent("learning").Info("Pattern/KG prompt injection DISABLED via learning.inject_patterns=false")
+			}
 
 			// GH-1823: Wire review learning into autopilot controllers
 			for _, ctrl := range autopilotControllers {

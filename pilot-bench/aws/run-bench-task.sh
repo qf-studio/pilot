@@ -118,6 +118,11 @@ memory:
   path: /root/.pilot/data
   learning:
     enabled: true
+    # Harbor bench compliance (TB2): disable prompt injection of learned
+    # patterns + knowledge-graph nodes. The learning system still RECORDS
+    # outcomes, but no task-targeted priors are injected into the agent
+    # prompt — preserves "harness-only" claim for leaderboard submission.
+    inject_patterns: false
 PILOTCFG
 }
 
@@ -170,10 +175,13 @@ aws s3 cp "s3://${S3_BUCKET}/${S3_PREFIX}/tasks-manifest.json" "${ASSETS_DIR}/ta
 echo "  Downloading pilot config..."
 aws s3 cp "s3://${S3_BUCKET}/${S3_PREFIX}/pilot-config.yaml" "${ASSETS_DIR}/pilot-config.yaml" --quiet 2>/dev/null || echo "  No config found, will generate inline"
 
-# Learning DB
-echo "  Downloading learning DB..."
+# Learning DB — Harbor bench compliance: we deliberately do NOT seed a DB.
+# learning.inject_patterns=false in the generated pilot-config.yaml is the
+# primary guard; starting with an empty DB is belt-and-suspenders. Any stale
+# pilot.db from a prior trial on the same warm-pool host is removed.
+echo "  Clearing any stale learning DB (Harbor H2 compliance)..."
 mkdir -p /root/.pilot/data
-aws s3 cp "s3://${S3_BUCKET}/${S3_PREFIX}/pilot.db" /root/.pilot/data/pilot.db --quiet 2>/dev/null || echo "  No learning DB found, starting fresh"
+rm -f /root/.pilot/data/pilot.db 2>/dev/null || true
 
 # ─── Step 3: Get task metadata from manifest ──────────────────────────────────
 echo ""

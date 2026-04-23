@@ -346,6 +346,10 @@ type Runner struct {
 	outcomeTracker       *memory.ModelOutcomeTracker    // Optional outcome tracker for model escalation (GH-1991)
 	// GH-2015: Knowledge graph integration for execution learnings
 	knowledgeGraph       KnowledgeGraphRecorder         // Optional knowledge graph for cross-project learnings
+	// Pattern/KG injection toggle (Harbor bench compliance). When false,
+	// BuildPrompt skips PatternContext.InjectPatterns + KG injection even
+	// when those components are wired. nil = enabled (backward compat).
+	injectPatterns       *bool
 	// GH-2256: Dry-run mode to suppress real gh CLI calls (issue close/comment)
 	dryRun               bool
 }
@@ -748,6 +752,23 @@ func (r *Runner) SetKnowledgeGraph(kg KnowledgeGraphRecorder) {
 
 // HasKnowledgeGraph reports whether a knowledge graph is wired.
 func (r *Runner) HasKnowledgeGraph() bool { return r.knowledgeGraph != nil }
+
+// SetInjectPatterns controls whether pattern + knowledge-graph injection
+// runs during BuildPrompt. Pass false for benchmark runs to guarantee
+// "harness-only" submissions (no task-targeted prompt priors). When unset
+// (nil), injection defaults to enabled for backward compatibility.
+func (r *Runner) SetInjectPatterns(enabled bool) {
+	r.injectPatterns = &enabled
+}
+
+// shouldInjectPatterns returns true when pattern/KG injection should run.
+// nil = true (backward compat with callers that never configured this).
+func (r *Runner) shouldInjectPatterns() bool {
+	if r.injectPatterns == nil {
+		return true
+	}
+	return *r.injectPatterns
+}
 
 // HasTokenLimitCheck reports whether a token limit check callback is wired.
 func (r *Runner) HasTokenLimitCheck() bool { return r.tokenLimitCheck != nil }

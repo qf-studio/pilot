@@ -144,20 +144,33 @@ type BriefFilterConfig struct {
 
 // LearningConfig holds settings for the pattern learning system.
 type LearningConfig struct {
-	Enabled       bool    `yaml:"enabled"`        // Enable learning system (default: true)
-	MinConfidence float64 `yaml:"min_confidence"` // Min confidence for prompt injection (default: 0.6)
-	MaxPatterns   int     `yaml:"max_patterns"`   // Max patterns injected per task (default: 5)
-	IncludeAnti   bool    `yaml:"include_anti"`   // Include anti-patterns (default: true)
+	Enabled        bool    `yaml:"enabled"`         // Enable learning system (default: true)
+	MinConfidence  float64 `yaml:"min_confidence"`  // Min confidence for prompt injection (default: 0.6)
+	MaxPatterns    int     `yaml:"max_patterns"`    // Max patterns injected per task (default: 5)
+	IncludeAnti    bool    `yaml:"include_anti"`    // Include anti-patterns (default: true)
+	InjectPatterns *bool   `yaml:"inject_patterns"` // Inject learned patterns + KG into prompts (default: true). Set false for benchmarks to ensure "harness-only" compliance.
 }
 
 // DefaultLearningConfig returns sensible defaults for the learning system.
 func DefaultLearningConfig() *LearningConfig {
+	inject := true
 	return &LearningConfig{
-		Enabled:       true,
-		MinConfidence: 0.6,
-		MaxPatterns:   5,
-		IncludeAnti:   true,
+		Enabled:        true,
+		MinConfidence:  0.6,
+		MaxPatterns:    5,
+		IncludeAnti:    true,
+		InjectPatterns: &inject,
 	}
+}
+
+// ShouldInjectPatterns returns whether pattern + knowledge-graph injection is
+// enabled. Nil pointer (field absent from YAML) is treated as true for
+// backward compatibility.
+func (c *LearningConfig) ShouldInjectPatterns() bool {
+	if c == nil || c.InjectPatterns == nil {
+		return true
+	}
+	return *c.InjectPatterns
 }
 
 // MemoryConfig holds settings for the persistent memory/storage system.

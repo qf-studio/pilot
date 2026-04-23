@@ -662,6 +662,14 @@ Examples:
 							runner.SetPatternContext(patternContext)
 							runner.SetSelfReviewExtractor(extractor)
 
+							// Harbor bench compliance: honor learning.inject_patterns toggle.
+							// When false, learning system still records outcomes but no
+							// patterns/KG nodes are injected into prompts.
+							runner.SetInjectPatterns(cfg.Memory.Learning.ShouldInjectPatterns())
+							if !cfg.Memory.Learning.ShouldInjectPatterns() {
+								logging.WithComponent("learning").Info("Pattern/KG prompt injection DISABLED via learning.inject_patterns=false")
+							}
+
 							logging.WithComponent("learning").Info("Learning system initialized")
 
 							// GH-1991: Wire outcome tracker for model escalation
