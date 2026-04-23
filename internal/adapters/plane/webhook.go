@@ -10,6 +10,7 @@ import (
 	"log/slog"
 
 	"github.com/qf-studio/pilot/internal/logging"
+	"github.com/qf-studio/pilot/internal/text"
 )
 
 // WebhookEventType represents the type of Plane webhook event.
@@ -116,6 +117,18 @@ func (h *WebhookHandler) Handle(ctx context.Context, payload []byte, signature s
 			slog.String("work_item_id", data.ID))
 		return nil
 	}
+
+	// Strip invisible Unicode from the untrusted Name field before the
+	// log line and before handing data to the pilot callback.
+	cleanName, stripped := text.SanitizeUntrusted(data.Name)
+	if stripped > 0 {
+		log.Warn("invisible_unicode_stripped",
+			slog.String("source", "plane-webhook"),
+			slog.String("workitem", data.ID),
+			slog.Int("name_stripped", stripped),
+		)
+	}
+	data.Name = cleanName
 
 	log.Info("Processing pilot work item",
 		slog.String("work_item_id", data.ID),

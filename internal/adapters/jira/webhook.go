@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/qf-studio/pilot/internal/logging"
+	"github.com/qf-studio/pilot/internal/text"
 )
 
 // WebhookEventType represents the type of webhook event
@@ -175,17 +176,32 @@ func (h *WebhookHandler) extractIssue(payload map[string]interface{}) (*Issue, e
 		issue.Self = self
 	}
 
-	// Extract fields
+	// Extract fields.
+	//
+	// Untrusted text coming off the wire is sanitized before being stored on
+	// the canonical Issue struct so that every downstream consumer (not just
+	// ConvertIssueToTask) sees the cleaned form. This defends against
+	// ASCII-smuggling prompt-injection via invisible Unicode format chars.
+	var summaryStripped, descStripped int
 	if fieldsData, ok := issueData["fields"].(map[string]interface{}); ok {
 		if summary, ok := fieldsData["summary"].(string); ok {
-			issue.Fields.Summary = summary
+			issue.Fields.Summary, summaryStripped = text.SanitizeUntrusted(summary)
 		}
 		if desc, ok := fieldsData["description"].(string); ok {
-			issue.Fields.Description = desc
+			issue.Fields.Description, descStripped = text.SanitizeUntrusted(desc)
 		}
 		// Also check for ADF description (Jira Cloud)
 		if desc, ok := fieldsData["description"].(map[string]interface{}); ok {
-			issue.Fields.Description = h.extractADFText(desc)
+			issue.Fields.Description, descStripped = text.SanitizeUntrusted(h.extractADFText(desc))
+		}
+		if summaryStripped+descStripped > 0 {
+			logging.WithComponent("jira").Warn(
+				"invisible_unicode_stripped",
+				slog.String("source", "jira-webhook"),
+				slog.String("issue", issue.Key),
+				slog.Int("summary_stripped", summaryStripped),
+				slog.Int("description_stripped", descStripped),
+			)
 		}
 
 		// Extract labels

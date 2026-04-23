@@ -8,6 +8,7 @@ import (
 
 	"github.com/qf-studio/pilot/internal/adapters/github"
 	"github.com/qf-studio/pilot/internal/memory"
+	"github.com/qf-studio/pilot/internal/text"
 )
 
 // FeedbackLoop creates issues when CI fails or bugs are detected.
@@ -60,6 +61,26 @@ const (
 // so downstream fix issues can inherit and increment the counter.
 // Returns the issue number on success.
 func (f *FeedbackLoop) CreateFailureIssue(ctx context.Context, prState *PRState, failureType FailureType, failedChecks []string, logs string, iteration int) (int, error) {
+	// CI logs and check names are attacker-controllable (test-failure
+	// output, assertion messages, diff content). Strip invisible Unicode
+	// format characters before embedding into the fix-issue body so an
+	// adversarial test-failure payload cannot re-enter Pilot via the
+	// GitHub poller and inject instructions into the next execution.
+	var logsStripped, checksStripped int
+	logs, logsStripped = text.SanitizeUntrusted(logs)
+	for i := range failedChecks {
+		var n int
+		failedChecks[i], n = text.SanitizeUntrusted(failedChecks[i])
+		checksStripped += n
+	}
+	if logsStripped+checksStripped > 0 {
+		f.log.Warn("invisible_unicode_stripped",
+			slog.String("source", "feedback_loop"),
+			slog.Int("logs_stripped", logsStripped),
+			slog.Int("checks_stripped", checksStripped),
+		)
+	}
+
 	title := f.generateTitle(prState, failureType)
 
 	// GH-1979: Surface known patterns to annotate the fix issue body.

@@ -7,7 +7,27 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/qf-studio/pilot/internal/text"
 )
+
+// sanitizePromptReturn is a deferred helper used by every prompt
+// builder to guarantee that no invisible Unicode format characters
+// reach the Claude Code subprocess — a belt-and-suspenders layer on
+// top of adapter-boundary sanitization. If any runes are stripped at
+// this chokepoint it indicates an adapter or re-ingestion path that
+// skipped its own sanitize; the slog.Warn surfaces that regression.
+func sanitizePromptReturn(fn string, prompt *string) {
+	clean, stripped := text.SanitizeUntrusted(*prompt)
+	if stripped > 0 {
+		slog.Warn("invisible_unicode_stripped_at_prompt_chokepoint",
+			slog.String("component", "executor"),
+			slog.String("func", fn),
+			slog.Int("stripped", stripped),
+		)
+	}
+	*prompt = clean
+}
 
 // ExecutorPromptHeader is prepended to every executor-mode prompt so the child
 // Claude Code session (and any `CLAUDE.md` in the project) can identify itself
@@ -23,7 +43,8 @@ const ExecutorPromptHeader = "[PILOT-EXEC]\n" +
 
 // BuildPrompt constructs the prompt for Claude Code execution.
 // executionPath may differ from task.ProjectPath when using worktree isolation.
-func (r *Runner) BuildPrompt(task *Task, executionPath string) string {
+func (r *Runner) BuildPrompt(task *Task, executionPath string) (prompt string) {
+	defer sanitizePromptReturn("BuildPrompt", &prompt)
 	var sb strings.Builder
 
 	// Handle image analysis tasks (no Navigator overhead for simple image questions)
@@ -298,7 +319,7 @@ func (r *Runner) BuildPrompt(task *Task, executionPath string) string {
 		r.driftDetector.Reset()
 	}
 
-	prompt := sb.String()
+	prompt = sb.String()
 
 	// Inject learned patterns into prompt (self-improvement, GH-1819)
 	if r.patternContext != nil {
@@ -329,7 +350,8 @@ func readEnvContext(projectPath string) string {
 	return string(data)
 }
 
-func (r *Runner) buildLocalModePrompt(task *Task) string {
+func (r *Runner) buildLocalModePrompt(task *Task) (prompt string) {
+	defer sanitizePromptReturn("buildLocalModePrompt", &prompt)
 	var sb strings.Builder
 
 	sb.WriteString(fmt.Sprintf("## Task\n\n%s\n\n", task.Description))
@@ -391,7 +413,8 @@ func (r *Runner) buildLocalModePrompt(task *Task) string {
 // buildRetryPrompt constructs a prompt for Claude Code to fix quality gate failures.
 // Includes git diff context and explicit strategy-switch instruction to avoid
 // repeating the same failed approach (GH-bench: ALGORITHM_VARIANCE fix).
-func (r *Runner) buildRetryPrompt(task *Task, feedback string, attempt int) string {
+func (r *Runner) buildRetryPrompt(task *Task, feedback string, attempt int) (prompt string) {
+	defer sanitizePromptReturn("buildRetryPrompt", &prompt)
 	var sb strings.Builder
 
 	sb.WriteString(fmt.Sprintf("## Quality Gate Retry (Attempt %d)\n\n", attempt))
@@ -423,7 +446,8 @@ func (r *Runner) buildRetryPrompt(task *Task, feedback string, attempt int) stri
 // buildSelfReviewPrompt constructs the prompt for self-review phase.
 // The prompt instructs Claude to examine its changes for common issues
 // and fix them before PR creation.
-func (r *Runner) buildSelfReviewPrompt(task *Task) string {
+func (r *Runner) buildSelfReviewPrompt(task *Task) (prompt string) {
+	defer sanitizePromptReturn("buildSelfReviewPrompt", &prompt)
 	var sb strings.Builder
 
 	sb.WriteString("## Self-Review Phase\n\n")

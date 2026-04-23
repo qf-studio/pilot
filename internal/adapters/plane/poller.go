@@ -409,6 +409,10 @@ func (p *Poller) processIssueAsync(ctx context.Context, item WorkItem) {
 		return
 	}
 
+	// Strip invisible Unicode from untrusted fields before downstream
+	// consumers see them. See sanitize.go for the shared helper.
+	sanitizeWorkItemInPlace(&item)
+
 	// Add in-progress label
 	if p.inProgressLabelID != "" {
 		_ = p.client.AddLabel(ctx, p.config.WorkspaceSlug, item.ProjectID, item.ID, p.inProgressLabelID)

@@ -2,8 +2,12 @@ package github
 
 import (
 	"fmt"
+	"log/slog"
 	"regexp"
 	"strings"
+
+	"github.com/qf-studio/pilot/internal/logging"
+	"github.com/qf-studio/pilot/internal/text"
 )
 
 // TaskInfo contains the extracted task information from a GitHub issue
@@ -20,12 +24,31 @@ type TaskInfo struct {
 	CloneURL    string
 }
 
-// ConvertIssueToTask converts a GitHub issue to a TaskInfo
+// ConvertIssueToTask converts a GitHub issue to a TaskInfo.
+//
+// All untrusted fields (Title, Body) are run through
+// text.SanitizeUntrusted to strip invisible Unicode format characters
+// used for ASCII-smuggling / prompt-injection attacks. A slog.Warn is
+// emitted when any runes are stripped — that is the attack-in-progress
+// signal.
 func ConvertIssueToTask(issue *Issue, repo *Repository) *TaskInfo {
+	title, titleStripped := text.SanitizeUntrusted(issue.Title)
+	description, bodyStripped := text.SanitizeUntrusted(extractDescription(issue.Body))
+
+	if titleStripped+bodyStripped > 0 {
+		logging.WithComponent("github").Warn(
+			"invisible_unicode_stripped",
+			slog.String("source", "github"),
+			slog.Int("issue", issue.Number),
+			slog.Int("title_stripped", titleStripped),
+			slog.Int("body_stripped", bodyStripped),
+		)
+	}
+
 	task := &TaskInfo{
 		ID:          fmt.Sprintf("GH-%d", issue.Number),
-		Title:       issue.Title,
-		Description: extractDescription(issue.Body),
+		Title:       title,
+		Description: description,
 		Priority:    extractPriority(issue.Labels),
 		Labels:      extractLabelNames(issue.Labels),
 		RepoOwner:   repo.Owner.Login,
@@ -70,7 +93,7 @@ func extractDescription(body string) string {
 		}
 	}
 
-	return strings.TrimSpace(strings.Join(filtered, "\n"))
+	return text.SanitizeUntrustedString(strings.TrimSpace(strings.Join(filtered, "\n")))
 }
 
 // extractPriority determines priority from labels

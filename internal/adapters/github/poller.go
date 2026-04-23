@@ -13,6 +13,7 @@ import (
 
 	"github.com/qf-studio/pilot/internal/executor"
 	"github.com/qf-studio/pilot/internal/logging"
+	"github.com/qf-studio/pilot/internal/text"
 )
 
 // ExecutionMode determines how issues are processed
@@ -251,18 +252,18 @@ func NewPoller(client *Client, repo string, label string, interval time.Duration
 	}
 
 	p := &Poller{
-		client:           client,
-		owner:            parts[0],
-		repo:             parts[1],
-		label:            label,
-		interval:         interval,
-		processed:        make(map[int]time.Time),
-		logger:           logging.WithComponent("github-poller"),
-		executionMode:    ExecutionModeAuto, // Default matches config.DefaultExecutionConfig()
-		waitForMerge:     true,
-		prPollInterval:   30 * time.Second,
-		prTimeout:        1 * time.Hour,
-		retryGracePeriod: 5 * time.Minute, // GH-2201: default grace period
+		client:               client,
+		owner:                parts[0],
+		repo:                 parts[1],
+		label:                label,
+		interval:             interval,
+		processed:            make(map[int]time.Time),
+		logger:               logging.WithComponent("github-poller"),
+		executionMode:        ExecutionModeAuto, // Default matches config.DefaultExecutionConfig()
+		waitForMerge:         true,
+		prPollInterval:       30 * time.Second,
+		prTimeout:            1 * time.Hour,
+		retryGracePeriod:     5 * time.Minute, // GH-2201: default grace period
 		failedRetryCount:     make(map[int]int),
 		maxFailedRetries:     3, // GH-2176: default max retries for pilot-failed issues
 		retryReadyCount:      make(map[int]int),
@@ -443,10 +444,22 @@ func (p *Poller) startSequential(ctx context.Context) {
 			if executor.IsRateLimitError(err.Error()) {
 				rlInfo, ok := executor.ParseRateLimitError(err.Error())
 				if ok && p.scheduler != nil {
+					// Second converter path (rate-limit retry) — bypasses
+					// ConvertIssueToTask, so sanitize explicitly here.
+					cleanTitle, titleStripped := text.SanitizeUntrusted(issue.Title)
+					cleanBody, bodyStripped := text.SanitizeUntrusted(issue.Body)
+					if titleStripped+bodyStripped > 0 {
+						p.logger.Warn("invisible_unicode_stripped",
+							slog.String("path", "rate_limit_retry"),
+							slog.Int("issue", issue.Number),
+							slog.Int("title_stripped", titleStripped),
+							slog.Int("body_stripped", bodyStripped),
+						)
+					}
 					task := &executor.Task{
 						ID:          fmt.Sprintf("GH-%d", issue.Number),
-						Title:       issue.Title,
-						Description: issue.Body,
+						Title:       cleanTitle,
+						Description: cleanBody,
 						ProjectPath: "", // Will be set by retry callback
 					}
 					p.scheduler.QueueTask(task, rlInfo)
@@ -736,10 +749,12 @@ func groupByOverlappingScope(candidates []*Issue) [][]*Issue {
 		}
 	}
 
-	// Pre-extract directories once per candidate, then pairwise set intersection
+	// Pre-extract directories once per candidate, then pairwise set intersection.
+	// Comment bodies are attacker-controllable text; sanitize before parsing so
+	// smuggled paths cannot influence grouping decisions.
 	dirs := make([]map[string]bool, n)
 	for i, c := range candidates {
-		dirs[i] = executor.ExtractDirectoriesFromText(c.Body)
+		dirs[i] = executor.ExtractDirectoriesFromText(text.SanitizeUntrustedString(c.Body))
 	}
 	for i := 0; i < n; i++ {
 		if len(dirs[i]) == 0 {
@@ -1348,7 +1363,9 @@ func (p *Poller) shouldRetryRetryReadyIssue(ctx context.Context, issue *Issue) b
 // hasPendingDependencies checks if any of the issue's dependencies are still open.
 // Returns true if the issue has open dependencies and should be skipped.
 func (p *Poller) hasPendingDependencies(ctx context.Context, issue *Issue) bool {
-	deps := ParseDependencies(issue.Body)
+	// Sanitize before parsing so an attacker cannot smuggle fake dependency
+	// references (e.g. an invisible "#1337" that would block execution).
+	deps := ParseDependencies(text.SanitizeUntrustedString(issue.Body))
 	if len(deps) == 0 {
 		return false
 	}
