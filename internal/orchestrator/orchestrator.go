@@ -206,11 +206,19 @@ func (o *Orchestrator) processTask(task *Task) {
 	}
 
 	// Execute task
+	// Priority resolution (GH-2386):
+	// - Non-Linear adapters (GitHub/GitLab/Jira/Asana/Plane) set task.Priority directly.
+	// - Linear adapter populates task.Ticket; prefer Ticket.Priority when present.
+	// - task.Ticket is nil for all non-Linear adapters — must guard against deref (GH-2384).
+	priority := int(task.Priority)
+	if task.Ticket != nil {
+		priority = task.Ticket.Priority
+	}
 	execTask := &executor.Task{
 		ID:          task.ID,
 		Title:       task.Document.Title,
 		Description: task.Document.Markdown,
-		Priority:    task.Ticket.Priority,
+		Priority:    priority,
 		ProjectPath: task.ProjectPath,
 		Branch:      task.Branch,
 	}
