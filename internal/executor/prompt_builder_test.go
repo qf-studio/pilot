@@ -790,6 +790,42 @@ func TestBuildPromptLocalMode(t *testing.T) {
 	}
 }
 
+func TestBuildPromptLocalModeNoOraclePaths(t *testing.T) {
+	// GH-2393: prompt must not name oracle test paths; agent should discover
+	// the spec from the workspace. Naming /tests/test_outputs.py blocks
+	// Terminal-Bench 2.0 leaderboard submission (Harbor compliance).
+	tempDir, err := os.MkdirTemp("", "pilot-test-local-oracle")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tempDir) }()
+
+	runner := NewRunner()
+	task := &Task{
+		ID:          "LOCAL-2393",
+		Title:       "Oracle compliance",
+		Description: "Solve task",
+		ProjectPath: tempDir,
+		LocalMode:   true,
+	}
+
+	prompt := runner.BuildPrompt(task, tempDir)
+
+	forbidden := []string{"/tests", "test_outputs", "test.sh", "conftest"}
+	for _, s := range forbidden {
+		if strings.Contains(prompt, s) {
+			t.Errorf("LocalMode prompt must not mention oracle path %q", s)
+		}
+	}
+
+	if !strings.Contains(prompt, "Discover the spec") {
+		t.Error("LocalMode prompt should instruct agent to discover the spec from the workspace")
+	}
+	if !strings.Contains(prompt, "Do NOT assume a specific test-file path") {
+		t.Error("LocalMode prompt should warn against assuming a specific test-file path")
+	}
+}
+
 func TestBuildPromptLocalModeWithoutTestFiles(t *testing.T) {
 	tempDir, err := os.MkdirTemp("", "pilot-test-local-notest")
 	if err != nil {
@@ -996,8 +1032,8 @@ func TestBuildPromptLocalModeBench(t *testing.T) {
 	if !strings.Contains(prompt, "## Phase 3: RECOVERY") {
 		t.Error("Should contain recovery phase")
 	}
-	if !strings.Contains(prompt, "test_outputs.py") {
-		t.Error("Should mention test files")
+	if !strings.Contains(prompt, "Discover the spec") {
+		t.Error("Should instruct agent to discover the spec from the workspace (GH-2393)")
 	}
 
 	// Should have environment section with pre-installed deps
