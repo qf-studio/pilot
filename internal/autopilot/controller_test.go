@@ -1212,6 +1212,50 @@ func TestController_CheckExternalMerge_ClosesIssue(t *testing.T) {
 	}
 }
 
+// GH-2402: External merge must self-heal the execution row to "completed" so
+// dashboards/queries don't see a stale "failed" status after the PR landed.
+func TestController_CheckExternalMerge_SelfHealsExecutionStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/repos/owner/repo/pulls/42":
+			resp := github.PullRequest{
+				Number:  42,
+				State:   "closed",
+				Merged:  true,
+				HTMLURL: "https://github.com/owner/repo/pull/42",
+			}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(resp)
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.Environment = EnvDev
+	cfg.CIPollInterval = 10 * time.Millisecond
+
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+	evalMock := &mockEvalStore{}
+	c.SetEvalStore(evalMock)
+	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc123", "pilot/GH-10", "")
+
+	c.processAllPRs(context.Background())
+
+	if len(evalMock.statusUpdates) == 0 {
+		t.Fatal("expected UpdateExecutionStatusByTaskID to be called on external merge")
+	}
+	got := evalMock.statusUpdates[len(evalMock.statusUpdates)-1]
+	if got.taskID != "GH-10" {
+		t.Errorf("status update task_id = %q, want %q", got.taskID, "GH-10")
+	}
+	if got.status != "completed" {
+		t.Errorf("status update status = %q, want %q", got.status, "completed")
+	}
+}
+
 func TestController_CheckExternalMerge_MultiplePRs(t *testing.T) {
 	// Test processing multiple PRs where some are merged externally
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -3490,9 +3534,15 @@ func TestSetLearningLoop_ForwardsToFeedbackLoop(t *testing.T) {
 	}
 }
 
-// mockEvalStore captures SaveEvalTask calls for testing.
+// mockEvalStore captures SaveEvalTask and UpdateExecutionStatusByTaskID calls.
 type mockEvalStore struct {
-	saved []*memory.EvalTask
+	saved          []*memory.EvalTask
+	statusUpdates  []evalStatusUpdate // GH-2402: capture status updates
+}
+
+type evalStatusUpdate struct {
+	taskID string
+	status string
 }
 
 func (m *mockEvalStore) SaveEvalTask(task *memory.EvalTask) error {
@@ -3501,6 +3551,7 @@ func (m *mockEvalStore) SaveEvalTask(task *memory.EvalTask) error {
 }
 
 func (m *mockEvalStore) UpdateExecutionStatusByTaskID(taskID, status string) error {
+	m.statusUpdates = append(m.statusUpdates, evalStatusUpdate{taskID: taskID, status: status})
 	return nil
 }
 

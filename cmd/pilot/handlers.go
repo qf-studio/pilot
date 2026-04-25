@@ -25,6 +25,17 @@ import (
 	"github.com/qf-studio/pilot/internal/logging"
 )
 
+// classifyFailureLabel chooses the GitHub label to apply to a failed
+// execution. Permanent (non-retriable) failures route to LabelBlocked so the
+// poller skips auto-retry; transient failures route to LabelFailed and remain
+// auto-retriable (GH-2402).
+func classifyFailureLabel(execErr error) string {
+	if executor.IsPermanentFailure(execErr) {
+		return github.LabelBlocked
+	}
+	return github.LabelFailed
+}
+
 // syncBoardStatus updates a GitHub Projects V2 board column for an issue.
 // It is a no-op when boardSync is nil or status is empty. Errors are logged, never propagated.
 func syncBoardStatus(ctx context.Context, boardSync *github.ProjectBoardSync, nodeID string, status string) {
@@ -300,11 +311,18 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 		boardStatuses := cfg.Adapters.GitHub.ProjectBoard.GetStatuses()
 
 		if execErr != nil {
-			if err := client.AddLabels(ctx, parts[0], parts[1], issue.Number, []string{github.LabelFailed}); err != nil {
+			// GH-2402: Classify failure — permanent failures (cross-project, permission denied,
+			// pre-flight, worktree setup) get pilot-blocked and stop auto-retry. Transient
+			// failures get pilot-failed and remain auto-retriable.
+			failureLabel := classifyFailureLabel(execErr)
+			if err := client.AddLabels(ctx, parts[0], parts[1], issue.Number, []string{failureLabel}); err != nil {
 				logGitHubAPIError("AddLabels", parts[0], parts[1], issue.Number, err)
 			}
 			syncBoardStatus(ctx, boardSync, issue.NodeID, boardStatuses.Failed) // GH-1853
 			comment := fmt.Sprintf("❌ Pilot execution failed:\n\n```\n%s\n```", execErr.Error())
+			if failureLabel == github.LabelBlocked {
+				comment += "\n\n_Marked `pilot-blocked` — not retriable automatically. Remove the label after fixing the underlying environment/permissions issue to allow retry._"
+			}
 			if _, err := client.AddComment(ctx, parts[0], parts[1], issue.Number, comment); err != nil {
 				logGitHubAPIError("AddComment", parts[0], parts[1], issue.Number, err)
 			}
@@ -340,11 +358,12 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 				}
 				syncBoardStatus(ctx, boardSync, issue.NodeID, boardStatuses.Done) // GH-1853
 
-				// GH-1302: Clean up stale pilot-failed label from prior failed attempt
-				if github.HasLabel(issue, github.LabelFailed) {
-					if err := client.RemoveLabel(ctx, parts[0], parts[1], issue.Number, github.LabelFailed); err != nil {
-						logGitHubAPIError("RemoveLabel", parts[0], parts[1], issue.Number, err)
-					}
+				// GH-1302/GH-2402: Clean up stale pilot-failed label from prior failed attempt.
+				// Removal is unconditional — `issue.Labels` is a stale snapshot from the
+				// list call, so a label added between dispatch and now wouldn't appear here.
+				// RemoveLabel returns 404 silently when the label is absent.
+				if err := client.RemoveLabel(ctx, parts[0], parts[1], issue.Number, github.LabelFailed); err != nil {
+					logGitHubAPIError("RemoveLabel", parts[0], parts[1], issue.Number, err)
 				}
 
 				// Close the issue so dependent issues can proceed

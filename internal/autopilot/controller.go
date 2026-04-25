@@ -2100,6 +2100,17 @@ func (c *Controller) checkExternalMergeOrClose(ctx context.Context, prState *PRS
 				c.log.Warn("failed to post merge completion comment on external merge", "issue", prState.IssueNumber, "error", err)
 			}
 			}
+
+			// GH-2402: Self-heal execution row to "completed" on external merge.
+			// Mirrors the in-controller merge path (handleMerging) so dashboards
+			// and queries don't see a stale "failed" status after the PR landed.
+			if c.evalStore != nil {
+				taskID := fmt.Sprintf("GH-%d", prState.IssueNumber)
+				if err := c.evalStore.UpdateExecutionStatusByTaskID(taskID, "completed"); err != nil {
+					c.log.Warn("failed to update execution status on external merge",
+						"task_id", taskID, "error", err)
+				}
+			}
 		}
 
 		// GH-411: Trigger release for externally merged PRs if auto-release is enabled

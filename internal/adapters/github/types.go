@@ -96,6 +96,16 @@ const (
 	LabelFailed     = "pilot-failed"
 	LabelRetryReady    = "pilot-retry-ready"    // PR closed without merge, issue ready for retry
 	LabelTitleRejected = "pilot-title-rejected" // GH-2363: title guard escalation; blocks auto-retry until human edits title
+	// LabelBlocked marks an issue that hit a permanent (non-retriable) failure
+	// such as cross-project violation, permission denied, or environment setup
+	// failure. Unlike pilot-failed, LabelBlocked is NOT auto-retried — a human
+	// must remove the label after fixing the underlying issue (GH-2402).
+	LabelBlocked = "pilot-blocked"
+	// LabelSuperseded marks a sub-issue whose parent epic was merged before
+	// this sub-issue was dispatched, indicating the work was rolled into the
+	// parent's PR and re-running it would create duplicate or conflicting
+	// changes (GH-2402).
+	LabelSuperseded = "pilot-superseded"
 )
 
 // Priority mapping from GitHub labels

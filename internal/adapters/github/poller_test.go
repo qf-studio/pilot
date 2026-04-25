@@ -2704,3 +2704,250 @@ func TestPoller_CheckForNewIssues_StaleSnapshot_RefreshesLabels(t *testing.T) {
 		t.Errorf("dispatched %d times, want 0 (fresh GetIssue shows pilot-done)", got)
 	}
 }
+
+// GH-2402: Issues with pilot-blocked must not be dispatched (parallel mode).
+func TestPoller_BlockedLabel_SkipsDispatch_Parallel(t *testing.T) {
+	now := time.Now()
+	issues := []*Issue{
+		{Number: 42, State: "open", Title: "Blocked", Labels: []Label{{Name: "pilot"}, {Name: LabelBlocked}}, CreatedAt: now},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(issues)
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+
+	var dispatches int32
+	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second,
+		WithOnIssue(func(ctx context.Context, issue *Issue) error {
+			atomic.AddInt32(&dispatches, 1)
+			return nil
+		}),
+	)
+
+	poller.checkForNewIssues(context.Background())
+	poller.WaitForActive()
+
+	if got := atomic.LoadInt32(&dispatches); got != 0 {
+		t.Errorf("dispatched %d times, want 0 (pilot-blocked must skip)", got)
+	}
+}
+
+// GH-2402: Issues with pilot-blocked must not be picked in sequential mode.
+func TestPoller_BlockedLabel_SkipsDispatch_Sequential(t *testing.T) {
+	now := time.Now()
+	issues := []*Issue{
+		{Number: 42, State: "open", Title: "Blocked", Labels: []Label{{Name: "pilot"}, {Name: LabelBlocked}}, CreatedAt: now.Add(-1 * time.Hour)},
+		{Number: 43, State: "open", Title: "Available", Labels: []Label{{Name: "pilot"}}, CreatedAt: now},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(issues)
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second)
+
+	issue, err := poller.findOldestUnprocessedIssue(context.Background())
+	if err != nil {
+		t.Fatalf("findOldestUnprocessedIssue() error = %v", err)
+	}
+	if issue == nil || issue.Number != 43 {
+		got := -1
+		if issue != nil {
+			got = issue.Number
+		}
+		t.Errorf("expected issue #43 (skip blocked #42), got #%d", got)
+	}
+}
+
+// GH-2402: When pilot-blocked is removed between polls, OnLabelRemoved fires
+// so the wiring layer can clear the ProcessedStore for immediate re-dispatch.
+func TestPoller_OnLabelRemoved_FiresWhenBlockedDisappears(t *testing.T) {
+	now := time.Now()
+	withBlocked := []*Issue{
+		{Number: 42, State: "open", Title: "Blocked", Labels: []Label{{Name: "pilot"}, {Name: LabelBlocked}}, CreatedAt: now},
+	}
+	withoutBlocked := []*Issue{
+		{Number: 42, State: "open", Title: "Blocked", Labels: []Label{{Name: "pilot"}}, CreatedAt: now},
+	}
+
+	var phase atomic.Int32 // 0 = first poll (blocked), 1 = second poll (unblocked)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if phase.Load() == 0 {
+			_ = json.NewEncoder(w).Encode(withBlocked)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(withoutBlocked)
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+
+	type cb struct {
+		label  string
+		number int
+	}
+	var (
+		mu       sync.Mutex
+		captured []cb
+	)
+	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second,
+		WithOnLabelRemoved(func(label string, number int) {
+			mu.Lock()
+			defer mu.Unlock()
+			captured = append(captured, cb{label, number})
+		}),
+		WithOnIssue(func(ctx context.Context, issue *Issue) error {
+			return nil
+		}),
+	)
+
+	// First poll: observe blocked
+	poller.checkForNewIssues(context.Background())
+	poller.WaitForActive()
+
+	mu.Lock()
+	if len(captured) != 0 {
+		t.Errorf("first poll: callback fired %d times, want 0", len(captured))
+	}
+	mu.Unlock()
+
+	// Second poll: blocked removed → callback should fire
+	phase.Store(1)
+	poller.checkForNewIssues(context.Background())
+	poller.WaitForActive()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(captured) != 1 {
+		t.Fatalf("second poll: callback fired %d times, want 1", len(captured))
+	}
+	if captured[0].label != LabelBlocked || captured[0].number != 42 {
+		t.Errorf("callback got (%s, %d), want (%s, 42)", captured[0].label, captured[0].number, LabelBlocked)
+	}
+}
+
+// GH-2402: When a parent epic is closed AND has a merged Pilot PR, child
+// sub-issues are tagged pilot-superseded and skipped from dispatch.
+func TestPoller_ParentMergedGuard_TagsSupersededAndSkips(t *testing.T) {
+	now := time.Now()
+	subIssues := []*Issue{
+		{
+			Number:    101,
+			State:     "open",
+			Title:     "Sub-issue",
+			Labels:    []Label{{Name: "pilot"}},
+			Body:      "Parent: GH-100\n\nDo the thing",
+			CreatedAt: now,
+		},
+	}
+	parent := &Issue{Number: 100, State: "closed", Title: "Epic"}
+
+	var (
+		labeledSuperseded atomic.Bool
+		dispatches        int32
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/repos/owner/repo/issues" && r.Method == http.MethodGet:
+			_ = json.NewEncoder(w).Encode(subIssues)
+		case r.URL.Path == "/repos/owner/repo/issues/100":
+			_ = json.NewEncoder(w).Encode(parent)
+		case r.URL.Path == "/repos/owner/repo/issues/101":
+			_ = json.NewEncoder(w).Encode(subIssues[0])
+		case r.URL.Path == "/repos/owner/repo/pulls":
+			head := r.URL.Query().Get("head")
+			if head == "owner:pilot/GH-100" {
+				_, _ = w.Write([]byte(`[{"number": 200, "merged_at": "2026-04-17T14:01:40Z", "head": {"ref": "pilot/GH-100"}}]`))
+				return
+			}
+			_, _ = w.Write([]byte(`[]`))
+		case r.URL.Path == "/repos/owner/repo/issues/101/labels" && r.Method == http.MethodPost:
+			var body map[string][]string
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			for _, l := range body["labels"] {
+				if l == LabelSuperseded {
+					labeledSuperseded.Store(true)
+				}
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`[]`))
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second,
+		WithOnIssue(func(ctx context.Context, issue *Issue) error {
+			atomic.AddInt32(&dispatches, 1)
+			return nil
+		}),
+	)
+
+	poller.checkForNewIssues(context.Background())
+	poller.WaitForActive()
+
+	if got := atomic.LoadInt32(&dispatches); got != 0 {
+		t.Errorf("dispatched %d times, want 0 (parent-merged guard must skip)", got)
+	}
+	if !labeledSuperseded.Load() {
+		t.Error("expected pilot-superseded label to be added on parent-merged guard")
+	}
+}
+
+// GH-2402: When parent is open, sub-issue dispatches normally.
+func TestPoller_ParentMergedGuard_OpenParent_DispatchesNormally(t *testing.T) {
+	now := time.Now()
+	subIssues := []*Issue{
+		{
+			Number:    101,
+			State:     "open",
+			Title:     "Sub-issue",
+			Labels:    []Label{{Name: "pilot"}},
+			Body:      "Parent: GH-100\n\nDo the thing",
+			CreatedAt: now,
+		},
+	}
+	parent := &Issue{Number: 100, State: "open", Title: "Epic"}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/repos/owner/repo/issues" && r.Method == http.MethodGet:
+			_ = json.NewEncoder(w).Encode(subIssues)
+		case r.URL.Path == "/repos/owner/repo/issues/100":
+			_ = json.NewEncoder(w).Encode(parent)
+		case r.URL.Path == "/repos/owner/repo/issues/101":
+			_ = json.NewEncoder(w).Encode(subIssues[0])
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	var dispatches int32
+	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second,
+		WithOnIssue(func(ctx context.Context, issue *Issue) error {
+			atomic.AddInt32(&dispatches, 1)
+			return nil
+		}),
+	)
+
+	poller.checkForNewIssues(context.Background())
+	poller.WaitForActive()
+
+	if got := atomic.LoadInt32(&dispatches); got != 1 {
+		t.Errorf("dispatched %d times, want 1 (open parent should not block)", got)
+	}
+}

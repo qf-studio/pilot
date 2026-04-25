@@ -713,6 +713,22 @@ Examples:
 					// GH-726: Wire processed issue persistence for gateway poller
 					if gwAutopilotStateStore != nil {
 						pollerOpts = append(pollerOpts, github.WithProcessedStore(gwAutopilotStateStore))
+
+						// GH-2402: Clear processed-store entry when human strips
+						// pilot-blocked, so the issue is re-dispatched on next poll
+						// without waiting for the retry grace period.
+						gwStateStoreCapture := gwAutopilotStateStore
+						pollerOpts = append(pollerOpts, github.WithOnLabelRemoved(func(label string, issueNumber int) {
+							if label != github.LabelBlocked {
+								return
+							}
+							if err := gwStateStoreCapture.UnmarkIssueProcessed(issueNumber); err != nil {
+								logging.WithComponent("github-poller").Warn("Failed to clear processed entry on pilot-blocked removal",
+									slog.Int("issue", issueNumber),
+									slog.Any("error", err),
+								)
+							}
+						}))
 					}
 
 					// GH-2201: Wire task checker for retry grace period (gateway mode)
@@ -1986,6 +2002,22 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 				// GH-726: Wire processed issue persistence
 				if autopilotStateStore != nil {
 					pollerOpts = append(pollerOpts, github.WithProcessedStore(autopilotStateStore))
+
+					// GH-2402: Clear processed-store entry when human strips
+					// pilot-blocked, so the issue is re-dispatched on next poll
+					// without waiting for the retry grace period.
+					stateStoreCapture := autopilotStateStore
+					pollerOpts = append(pollerOpts, github.WithOnLabelRemoved(func(label string, issueNumber int) {
+						if label != github.LabelBlocked {
+							return
+						}
+						if err := stateStoreCapture.UnmarkIssueProcessed(issueNumber); err != nil {
+							logging.WithComponent("github-poller").Warn("Failed to clear processed entry on pilot-blocked removal",
+								slog.Int("issue", issueNumber),
+								slog.Any("error", err),
+							)
+						}
+					}))
 				}
 
 				// GH-2201: Wire task checker for retry grace period

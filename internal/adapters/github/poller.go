@@ -121,6 +121,17 @@ type Poller struct {
 	// when pilot-done label failed to apply.
 	execChecker ExecutionChecker
 	projectPath string
+
+	// GH-2402: Tracks issues we previously observed carrying LabelBlocked, so we
+	// can fire OnLabelRemoved when a human strips the label and the issue should
+	// be re-dispatched. Protected by mu.
+	blockedIssues map[int]bool
+
+	// GH-2402: OnLabelRemoved fires when the poller detects a label was removed
+	// from an issue it had previously observed carrying that label. The callback
+	// is intended for wiring into ProcessedStore.UnmarkIssueProcessed so retries
+	// of pilot-blocked issues bypass the grace period.
+	onLabelRemoved func(label string, issueNumber int)
 }
 
 // PollerOption configures a Poller
@@ -234,6 +245,16 @@ func WithMaxRetryReadyRetries(n int) PollerOption {
 	}
 }
 
+// WithOnLabelRemoved sets a callback that fires when the poller detects a
+// label has been removed from an issue it previously observed carrying that
+// label. Currently emitted for LabelBlocked (GH-2402). Wire to ProcessedStore
+// clearing so the issue can be re-dispatched immediately on next poll.
+func WithOnLabelRemoved(fn func(label string, issueNumber int)) PollerOption {
+	return func(p *Poller) {
+		p.onLabelRemoved = fn
+	}
+}
+
 // WithMaxConcurrent sets the maximum number of parallel issue executions
 func WithMaxConcurrent(n int) PollerOption {
 	return func(p *Poller) {
@@ -268,6 +289,7 @@ func NewPoller(client *Client, repo string, label string, interval time.Duration
 		maxFailedRetries:     3, // GH-2176: default max retries for pilot-failed issues
 		retryReadyCount:      make(map[int]int),
 		maxRetryReadyRetries: 3, // GH-2276: default max retries for pilot-retry-ready issues
+		blockedIssues:        make(map[int]bool), // GH-2402: track pilot-blocked observations
 	}
 
 	for _, opt := range opts {
@@ -612,6 +634,19 @@ func (p *Poller) findOldestUnprocessedIssue(ctx context.Context) (*Issue, error)
 			continue
 		}
 
+		// GH-2402: Issues marked pilot-blocked are permanent failures and
+		// must NOT be auto-retried. observeBlockedLabel also fires
+		// onLabelRemoved when the label disappears so the issue can be
+		// re-dispatched on the next cycle.
+		if p.observeBlockedLabel(issue) {
+			continue
+		}
+
+		// GH-2402: Skip pilot-superseded — parent epic was merged first.
+		if HasLabel(issue, LabelSuperseded) {
+			continue
+		}
+
 		// GH-2176: Auto-retry issues stuck with pilot-failed (no pilot-done)
 		if HasLabel(issue, LabelFailed) {
 			if !p.shouldRetryFailedIssue(ctx, issue) {
@@ -626,6 +661,13 @@ func (p *Poller) findOldestUnprocessedIssue(ctx context.Context) (*Issue, error)
 				continue
 			}
 			// Label removed, fall through to candidate selection
+		}
+
+		// GH-2402: Pre-dispatch guard — sub-issues whose parent epic has already
+		// merged are typically rolled into the parent's PR. Tag pilot-superseded
+		// and skip rather than re-running them.
+		if p.hasMergedParent(ctx, issue) {
+			continue
 		}
 
 		// Check if previously processed
@@ -812,6 +854,18 @@ func (p *Poller) checkForNewIssues(ctx context.Context) {
 			continue
 		}
 
+		// GH-2402: pilot-blocked is a permanent failure — never auto-retry.
+		// observeBlockedLabel also fires onLabelRemoved so a human-removed
+		// label triggers ProcessedStore clear for next-tick re-dispatch.
+		if p.observeBlockedLabel(issue) {
+			continue
+		}
+
+		// GH-2402: Skip pilot-superseded — parent epic merged first.
+		if HasLabel(issue, LabelSuperseded) {
+			continue
+		}
+
 		// GH-2176: Auto-retry issues stuck with pilot-failed (no pilot-done)
 		if HasLabel(issue, LabelFailed) {
 			if !p.shouldRetryFailedIssue(ctx, issue) {
@@ -831,6 +885,11 @@ func (p *Poller) checkForNewIssues(ctx context.Context) {
 		// Skip and mark done issues as permanently processed
 		if HasLabel(issue, LabelDone) {
 			p.markProcessed(issue.Number)
+			continue
+		}
+
+		// GH-2402: Parent-merged pre-dispatch guard.
+		if p.hasMergedParent(ctx, issue) {
 			continue
 		}
 
@@ -1357,6 +1416,97 @@ func (p *Poller) shouldRetryRetryReadyIssue(ctx context.Context, issue *Issue) b
 		slog.Int("max", p.maxRetryReadyRetries),
 	)
 
+	return true
+}
+
+// observeBlockedLabel updates the poller's blocked-label tracking and fires
+// onLabelRemoved when an issue that previously carried LabelBlocked no longer
+// does. This lets the wiring layer (main.go) clear the ProcessedStore entry so
+// the issue is eligible for re-dispatch on the next poll cycle (GH-2402).
+//
+// Returns true when the issue currently carries LabelBlocked (caller should skip).
+func (p *Poller) observeBlockedLabel(issue *Issue) bool {
+	hasBlocked := HasLabel(issue, LabelBlocked)
+
+	p.mu.Lock()
+	previouslyBlocked := p.blockedIssues[issue.Number]
+	if hasBlocked {
+		p.blockedIssues[issue.Number] = true
+	} else if previouslyBlocked {
+		delete(p.blockedIssues, issue.Number)
+	}
+	p.mu.Unlock()
+
+	if previouslyBlocked && !hasBlocked && p.onLabelRemoved != nil {
+		p.logger.Info("pilot-blocked label removed, signalling for retry",
+			slog.Int("number", issue.Number),
+		)
+		p.onLabelRemoved(LabelBlocked, issue.Number)
+	}
+
+	return hasBlocked
+}
+
+// hasMergedParent checks whether the issue references a parent epic whose own
+// PR has already been merged. When a parent epic is merged before its
+// sub-issues finish dispatching, those sub-issues are typically already
+// rolled into the parent's PR — re-running them creates duplicate or
+// conflicting work. The pre-dispatch guard tags such issues with
+// LabelSuperseded and instructs callers to skip them (GH-2402).
+//
+// Returns true (and applies LabelSuperseded best-effort) when the parent is
+// closed AND has a merged Pilot PR. A network error is logged and treated as
+// "not superseded" — we don't want a transient API failure to block dispatch.
+func (p *Poller) hasMergedParent(ctx context.Context, issue *Issue) bool {
+	if issue == nil {
+		return false
+	}
+	parentNum := ParseParentIssueNumber(text.SanitizeUntrustedString(issue.Body))
+	if parentNum == 0 {
+		return false
+	}
+
+	parent, err := p.client.GetIssue(ctx, p.owner, p.repo, parentNum)
+	if err != nil || parent == nil {
+		if err != nil {
+			p.logger.Debug("Failed to fetch parent issue for merge check",
+				slog.Int("issue", issue.Number),
+				slog.Int("parent", parentNum),
+				slog.Any("error", err),
+			)
+		}
+		return false
+	}
+
+	// Parent must be closed; only then is a merged-PR check meaningful.
+	if parent.State != StateClosed {
+		return false
+	}
+
+	parentBranch := fmt.Sprintf("pilot/GH-%d", parentNum)
+	merged, berr := p.client.FindMergedPRByBranch(ctx, p.owner, p.repo, parentBranch)
+	if berr != nil {
+		p.logger.Debug("Parent merged-PR lookup failed, not blocking dispatch",
+			slog.Int("issue", issue.Number),
+			slog.Int("parent", parentNum),
+			slog.Any("error", berr),
+		)
+		return false
+	}
+	if !merged {
+		return false
+	}
+
+	p.logger.Info("Issue superseded by parent's merged PR — skipping dispatch",
+		slog.Int("issue", issue.Number),
+		slog.Int("parent", parentNum),
+	)
+	if err := p.client.AddLabels(ctx, p.owner, p.repo, issue.Number, []string{LabelSuperseded}); err != nil {
+		p.logger.Warn("Failed to add pilot-superseded label",
+			slog.Int("issue", issue.Number),
+			slog.Any("error", err),
+		)
+	}
 	return true
 }
 
