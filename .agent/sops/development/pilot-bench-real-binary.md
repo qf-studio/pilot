@@ -100,8 +100,10 @@ harbor run \
   -e daytona \
   -n 1 \
   --timeout-multiplier 5.0 \
-  --ae "CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-..." \
   -t chess-best-move -t break-filter-js-from-html -t gcode-to-text
+# Auth: export CLAUDE_CODE_OAUTH_TOKEN=... in your shell BEFORE running harbor.
+# Do NOT use --ae for tokens — Harbor serializes that flag verbatim into
+# config.json/result.json, which leaks into committed/published submissions.
 ```
 
 **Expected**: 3/3 pass (100%) as of val10. All three tasks reliable on Daytona x86.
@@ -137,8 +139,8 @@ harbor run \
   -m "anthropic/claude-opus-4-6" \
   -e daytona \
   -n 1 \
-  --timeout-multiplier 5.0 \
-  --ae "CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-..."
+  --timeout-multiplier 5.0
+# Auth via ambient env: export CLAUDE_CODE_OAUTH_TOKEN before running. Never --ae.
 ```
 
 **Duration**: 12-20 hours (sequential, n=1). Run in `tmux`.

@@ -59,9 +59,14 @@ harbor run \
   -e daytona \
   -n 1 \
   --timeout-multiplier 5.0 \
-  --ae "CLAUDE_CODE_OAUTH_TOKEN=$CLAUDE_CODE_OAUTH_TOKEN" \
   -t chess-best-move -t break-filter-js-from-html -t gcode-to-text
 ```
+
+> **NEVER use `--ae` for auth tokens.** Harbor serializes `--ae` values
+> verbatim into `config.json`/`result.json`, which leaks into committed
+> and published submission artifacts. `source .env` exports the token
+> into the ambient process environment; the agent subprocess inherits
+> it without it being recorded.
 
 **Full 89-task run** (12-20h, run in tmux):
 ```bash
@@ -74,8 +79,7 @@ harbor run \
   -m "anthropic/claude-opus-4-6" \
   -e daytona \
   -n 1 \
-  --timeout-multiplier 5.0 \
-  --ae "CLAUDE_CODE_OAUTH_TOKEN=$CLAUDE_CODE_OAUTH_TOKEN"
+  --timeout-multiplier 5.0
 ```
 
 **Specific tasks only**:

@@ -788,6 +788,19 @@ func TestBuildPromptLocalMode(t *testing.T) {
 	if !strings.Contains(prompt, "## Environment") {
 		t.Error("LocalMode should have environment section")
 	}
+
+	// GH-2393: Phase 1 RECON must not reference oracle test paths
+	forbidden := []string{"/tests/", "test_outputs.py", "test.sh", "conftest.py"}
+	for _, s := range forbidden {
+		if strings.Contains(prompt, s) {
+			t.Errorf("LocalMode prompt must not reference oracle path %q (Harbor compliance)", s)
+		}
+	}
+
+	// Must use workspace-discovery wording instead
+	if !strings.Contains(prompt, "Discover the workspace") {
+		t.Error("LocalMode Phase 1 should use workspace-discovery wording")
+	}
 }
 
 func TestBuildPromptLocalModeWithoutTestFiles(t *testing.T) {
@@ -996,8 +1009,14 @@ func TestBuildPromptLocalModeBench(t *testing.T) {
 	if !strings.Contains(prompt, "## Phase 3: RECOVERY") {
 		t.Error("Should contain recovery phase")
 	}
-	if !strings.Contains(prompt, "test_outputs.py") {
-		t.Error("Should mention test files")
+	// GH-2393: Phase 1 RECON must not reference oracle test paths (Harbor compliance)
+	for _, forbidden := range []string{"/tests/", "test_outputs.py", "test.sh", "conftest.py"} {
+		if strings.Contains(prompt, forbidden) {
+			t.Errorf("Prompt must not reference oracle path %q", forbidden)
+		}
+	}
+	if !strings.Contains(prompt, "Discover the workspace") {
+		t.Error("Should use workspace-discovery wording in Phase 1")
 	}
 
 	// Should have environment section with pre-installed deps

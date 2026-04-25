@@ -38,7 +38,7 @@ const ExecutorPromptHeader = "[PILOT-EXEC]\n" +
 	"You are invoked by Pilot's executor to implement a specific task on this " +
 	"repository. You are the execution leg of the Navigator + Pilot pipeline. " +
 	"Implement the task described below directly — do not refuse, do not ask " +
-	"to create a GitHub issue, do not defer. Write code, run build/tests via " +
+	"to create a GitHub issue, do not defer. Write code, run build and tests via " +
 	"the stop-gate hook, and complete the task.\n\n"
 
 // BuildPrompt constructs the prompt for Claude Code execution.
@@ -367,15 +367,15 @@ func (r *Runner) buildLocalModePrompt(task *Task) (prompt string) {
 	// Phase 1: Mandatory reconnaissance (ForgeCode: +28pts from enforced planning)
 	sb.WriteString("## Phase 1: RECON (mandatory — do ALL before writing ANY code)\n\n")
 	sb.WriteString("You MUST complete every step below before writing a single line of solution code.\n\n")
-	sb.WriteString("1. **Read test file**: `cat /tests/test_outputs.py` — this defines pass/fail. Understand EXACTLY what outputs are expected, what format, what tolerances.\n")
-	sb.WriteString("2. **Inventory the workspace**: `ls -la /app/` and read every relevant file. Understand what exists.\n")
+	sb.WriteString("1. **Discover the workspace**: `ls -la /app/` (and any other relevant root directories). Identify what files exist, including any task description, input data, and existing scaffolding.\n")
+	sb.WriteString("2. **Read every relevant file**: Read the task description, any README/instructions, and any input files. Understand EXACTLY what outputs are expected — format, filenames, tolerances — from the task description itself.\n")
 	sb.WriteString("3. **Write a plan**: Create a TODO list with specific steps. State which approach you'll use and why. This is NOT optional.\n\n")
 
 	// Phase 2: Implementation
 	sb.WriteString("## Phase 2: IMPLEMENT\n\n")
 	sb.WriteString("1. **Start with the simplest working approach** — brute-force beats elegant theory you never finish.\n")
 	sb.WriteString("2. **Produce output files EARLY** — partial/placeholder output beats no output.\n")
-	sb.WriteString("3. **Run tests after EVERY significant change**: `cd /app && python3 -m pytest /tests/test_outputs.py -v 2>&1`\n")
+	sb.WriteString("3. **Validate your output after EVERY significant change**: produce the expected output files and verify their contents match the task description (format, filenames, tolerances).\n")
 	sb.WriteString("4. **If tests pass, STOP IMMEDIATELY.** No cleanup, no refactoring, no summary.\n\n")
 
 	// Phase 3: Recovery
@@ -436,8 +436,8 @@ func (r *Runner) buildRetryPrompt(task *Task, feedback string, attempt int) (pro
 	sb.WriteString("1. Run `git diff HEAD~1` to see what you tried before\n")
 	sb.WriteString("2. DELETE your previous approach entirely\n")
 	sb.WriteString("3. Implement a COMPLETELY DIFFERENT solution\n")
-	sb.WriteString("4. Run tests to verify: `cd /app && python3 -m pytest /tests/test_outputs.py -v`\n")
-	sb.WriteString("5. If tests pass, STOP.\n\n")
+	sb.WriteString("4. Validate your output against the task description's expected results.\n")
+	sb.WriteString("5. If validation passes, STOP.\n\n")
 	sb.WriteString("Work autonomously. Do not ask for confirmation.\n")
 
 	return sb.String()
