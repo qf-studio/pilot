@@ -1201,8 +1201,8 @@ func TestController_CheckExternalMerge_ClosesIssue(t *testing.T) {
 	)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.URL.Path == "/repos/owner/repo/pulls/42":
+		switch r.URL.Path {
+		case "/repos/owner/repo/pulls/42":
 			resp := github.PullRequest{
 				Number:  42,
 				State:   "closed",
@@ -1212,32 +1212,42 @@ func TestController_CheckExternalMerge_ClosesIssue(t *testing.T) {
 			w.WriteHeader(http.StatusOK)
 			_ = json.NewEncoder(w).Encode(resp)
 
-		case r.URL.Path == "/repos/owner/repo/issues/10/labels" && r.Method == http.MethodPost:
-			// AddLabels call - body is {"labels": ["pilot-done"]}
-			var body map[string][]string
-			_ = json.NewDecoder(r.Body).Decode(&body)
-			for _, l := range body["labels"] {
-				if l == "pilot-done" {
-					addLabelsCalled = true
+		case "/repos/owner/repo/issues/10/labels":
+			if r.Method == http.MethodPost {
+				// AddLabels call - body is {"labels": ["pilot-done"]}
+				var body map[string][]string
+				_ = json.NewDecoder(r.Body).Decode(&body)
+				for _, l := range body["labels"] {
+					if l == "pilot-done" {
+						addLabelsCalled = true
+					}
 				}
+				w.WriteHeader(http.StatusOK)
+				_ = json.NewEncoder(w).Encode([]github.Label{{Name: "pilot-done"}})
+				return
 			}
 			w.WriteHeader(http.StatusOK)
-			_ = json.NewEncoder(w).Encode([]github.Label{{Name: "pilot-done"}})
 
-		case r.URL.Path == "/repos/owner/repo/issues/10/labels/pilot-in-progress" && r.Method == http.MethodDelete:
-			removeLabelInProg = true
+		case "/repos/owner/repo/issues/10/labels/pilot-in-progress":
+			if r.Method == http.MethodDelete {
+				removeLabelInProg = true
+			}
 			w.WriteHeader(http.StatusOK)
 
-		case r.URL.Path == "/repos/owner/repo/issues/10/labels/pilot-failed" && r.Method == http.MethodDelete:
-			removeLabelFailed = true
+		case "/repos/owner/repo/issues/10/labels/pilot-failed":
+			if r.Method == http.MethodDelete {
+				removeLabelFailed = true
+			}
 			w.WriteHeader(http.StatusOK)
 
-		case r.URL.Path == "/repos/owner/repo/issues/10" && r.Method == http.MethodPatch:
-			// UpdateIssueState call
-			var body map[string]string
-			_ = json.NewDecoder(r.Body).Decode(&body)
-			if body["state"] == "closed" {
-				issueStateClosed = true
+		case "/repos/owner/repo/issues/10":
+			if r.Method == http.MethodPatch {
+				// UpdateIssueState call
+				var body map[string]string
+				_ = json.NewDecoder(r.Body).Decode(&body)
+				if body["state"] == "closed" {
+					issueStateClosed = true
+				}
 			}
 			w.WriteHeader(http.StatusOK)
 
