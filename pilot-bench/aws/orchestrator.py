@@ -339,10 +339,13 @@ class AWSBenchOrchestrator:
         config_path.write_text(self._generate_pilot_config())
         assets[PILOT_CONFIG_S3_KEY] = str(config_path)
 
-        # Learning DB
-        db_path = bench_dir / "pilot_agent" / "data" / "pilot.db"
-        if db_path.exists():
-            assets[PILOT_DB_S3_KEY] = str(db_path)
+        # Learning DB — Harbor bench compliance (H2): we DELIBERATELY do
+        # NOT upload the seeded pilot.db. The run-bench-task.sh no longer
+        # downloads it either, and starts each trial with an empty DB. The
+        # inject_patterns:false config guarantees that even a (hypothetical)
+        # populated DB would not reach the prompt. Belt-and-suspenders.
+        # NOTE: do not re-add this upload without revisiting benchmark
+        # integrity — the seeded DB contains TB2-targeted patterns.
 
         # Task manifest
         manifest_local = self.results_dir / "tasks-manifest.json"
@@ -428,6 +431,10 @@ memory:
   path: /root/.pilot/data
   learning:
     enabled: true
+    # Harbor bench compliance (TB2 H2): disable prompt injection of learned
+    # patterns + knowledge-graph nodes. Recording stays on; only the agent
+    # prompt is kept pristine for "harness-only" leaderboard submissions.
+    inject_patterns: false
 """
 
     def _dispatch_batch(self, work_queue: deque[tuple[str, str]]) -> int:

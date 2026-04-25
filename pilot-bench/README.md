@@ -56,18 +56,20 @@ source .env  # DAYTONA_API_KEY, DAYTONA_BASE_URL, CLAUDE_CODE_OAUTH_TOKEN
 # Build the binary (from project root)
 make bench-binary
 
+# Auth: export CLAUDE_CODE_OAUTH_TOKEN in your shell BEFORE running harbor.
+# Do NOT pass it via --ae — Harbor records --ae values in config.json/result.json
+# verbatim, which leaks into committed/published submission artifacts.
+
 # 3-task validation
 harbor run --job-name pilot-val -o jobs \
   -d terminal-bench@2.0 --agent-import-path "pilot_agent:PilotAgent" \
   -m "anthropic/claude-opus-4-6" -e daytona -n 1 --timeout-multiplier 5.0 \
-  --ae "CLAUDE_CODE_OAUTH_TOKEN=$CLAUDE_CODE_OAUTH_TOKEN" \
   -t chess-best-move -t break-filter-js-from-html -t gcode-to-text
 
 # Full 89-task run
 harbor run --job-name pilot-full -o jobs \
   -d terminal-bench@2.0 --agent-import-path "pilot_agent:PilotAgent" \
-  -m "anthropic/claude-opus-4-6" -e daytona -n 1 --timeout-multiplier 5.0 \
-  --ae "CLAUDE_CODE_OAUTH_TOKEN=$CLAUDE_CODE_OAUTH_TOKEN"
+  -m "anthropic/claude-opus-4-6" -e daytona -n 1 --timeout-multiplier 5.0
 
 # Check results
 python3 pilot_agent/scripts/analyze-results.py jobs/<job-name>

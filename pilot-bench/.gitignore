@@ -3,3 +3,7 @@ jobs/
 aws/results/
 aws/tasks-manifest.json
 aws/__pycache__/
+# HF-format submission output: lives in the HF leaderboard repo, not here.
+# Notes (*.md), the translator, and the checksums map are committed; the
+# per-trial trees are not.
+submissions/*-hf/

@@ -40,6 +40,10 @@ if [ "$N_TASKS" != "all" ]; then
     TASK_ARGS="-l $N_TASKS"
 fi
 
+# NOTE: do NOT pass auth tokens via --ae. Harbor serializes those flags
+# into config.json/result.json verbatim, and those files are published as
+# part of leaderboard submissions. Tokens must be inherited from the
+# ambient process environment instead (set in your shell before running).
 harbor run \
     -d terminal-bench@2.0 \
     --agent-import-path "pilot_agent:PilotAgent" \
@@ -47,6 +51,4 @@ harbor run \
     -e docker \
     -n "$N_CONCURRENT" \
     $TASK_ARGS \
-    --ae "CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN:-}" \
-    --ae "ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}" \
     --debug
