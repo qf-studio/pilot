@@ -132,6 +132,14 @@ func (r *Runner) runGate(ctx context.Context, gate *Gate) *Result {
 		StartedAt: time.Now(),
 	}
 
+	if gate.Skip {
+		result.Status = StatusSkipped
+		result.CompletedAt = time.Now()
+		result.Duration = result.CompletedAt.Sub(result.StartedAt)
+		r.reportProgress(gate.Name, StatusSkipped, fmt.Sprintf("%s gate skipped", gate.Name))
+		return result
+	}
+
 	r.reportProgress(gate.Name, StatusRunning, fmt.Sprintf("Running %s gate...", gate.Name))
 
 	maxAttempts := gate.MaxRetries + 1

@@ -838,3 +838,29 @@ func TestConfig_IsParallel(t *testing.T) {
 func boolPtr(b bool) *bool {
 	return &b
 }
+
+func TestRunGate_SkipFlag(t *testing.T) {
+	// Skipped gates must short-circuit without invoking the shell.
+	// `false` exits non-zero, so if the gate ran it would fail.
+	config := &Config{
+		Enabled: true,
+		Gates: []*Gate{
+			{Name: "test", Type: GateTest, Command: "false", Required: true, Skip: true},
+		},
+	}
+
+	runner := NewRunner(config, "/tmp")
+	results, err := runner.RunAll(context.Background(), "skip-test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !results.AllPassed {
+		t.Error("expected AllPassed=true when only gate is skipped")
+	}
+	if len(results.Results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results.Results))
+	}
+	if results.Results[0].Status != StatusSkipped {
+		t.Errorf("expected StatusSkipped, got %s", results.Results[0].Status)
+	}
+}

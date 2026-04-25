@@ -2214,6 +2214,25 @@ The previous execution completed but made no code changes. This task requires ac
 				minimalConfig := quality.MinimalBuildGate()
 				minimalConfig.Gates[0].Command = buildCmd
 
+				// Auto-detect test command for the test gate (GH-2397).
+				// Override the test gate's command when detection succeeds; mark it
+				// skipped (rather than failing) when no test runner is recognised.
+				testCmd := quality.DetectTestCommand(executionPath)
+				for _, g := range minimalConfig.Gates {
+					if g.Type == quality.GateTest {
+						if testCmd != "" {
+							g.Command = testCmd
+							log.Info("Auto-enabling test gate",
+								slog.String("command", testCmd),
+							)
+						} else {
+							g.Skip = true
+							log.Info("No test runner detected - skipping test gate")
+						}
+						break
+					}
+				}
+
 				r.qualityCheckerFactory = func(taskID, projectPath string) QualityChecker {
 					return &simpleQualityChecker{
 						config:      minimalConfig,

@@ -251,8 +251,8 @@ func TestMinimalBuildGate(t *testing.T) {
 		t.Error("expected minimal build gate to be enabled")
 	}
 
-	if len(config.Gates) != 1 {
-		t.Errorf("expected 1 gate, got %d", len(config.Gates))
+	if len(config.Gates) != 2 {
+		t.Errorf("expected 2 gates (build + test), got %d", len(config.Gates))
 	}
 
 	gate := config.Gates[0]
@@ -270,6 +270,17 @@ func TestMinimalBuildGate(t *testing.T) {
 	}
 	if gate.MaxRetries != 1 {
 		t.Errorf("expected 1 max retry, got %d", gate.MaxRetries)
+	}
+
+	testGate := config.Gates[1]
+	if testGate.Name != "test" {
+		t.Errorf("expected second gate name 'test', got '%s'", testGate.Name)
+	}
+	if testGate.Type != GateTest {
+		t.Errorf("expected gate type %s, got %s", GateTest, testGate.Type)
+	}
+	if testGate.Required {
+		t.Error("expected test gate to be non-required in minimal config")
 	}
 
 	// Check failure config
@@ -351,6 +362,98 @@ func TestDetectBuildCommand(t *testing.T) {
 			got := DetectBuildCommand(testDir)
 			if got != tt.expectedCmd {
 				t.Errorf("DetectBuildCommand() = %q, want %q", got, tt.expectedCmd)
+			}
+		})
+	}
+}
+
+func TestDetectTestCommand(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "quality-test-detect-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	type fileSpec struct {
+		name    string
+		content string
+	}
+
+	tests := []struct {
+		name        string
+		setupFiles  []fileSpec
+		expectedCmd string
+	}{
+		{
+			name:        "go project",
+			setupFiles:  []fileSpec{{name: "go.mod"}},
+			expectedCmd: "go test ./...",
+		},
+		{
+			name:        "node project",
+			setupFiles:  []fileSpec{{name: "package.json"}},
+			expectedCmd: "npm test",
+		},
+		{
+			name:        "rust project",
+			setupFiles:  []fileSpec{{name: "Cargo.toml"}},
+			expectedCmd: "cargo test",
+		},
+		{
+			name:        "python pyproject",
+			setupFiles:  []fileSpec{{name: "pyproject.toml"}},
+			expectedCmd: "pytest -v 2>&1",
+		},
+		{
+			name:        "python loose .py file",
+			setupFiles:  []fileSpec{{name: "main.py"}},
+			expectedCmd: "pytest -v 2>&1",
+		},
+		{
+			name:        "python requirements.txt",
+			setupFiles:  []fileSpec{{name: "requirements.txt"}},
+			expectedCmd: "pytest -v 2>&1",
+		},
+		{
+			name: "makefile with test target",
+			setupFiles: []fileSpec{
+				{name: "Makefile", content: "build:\n\techo build\n\ntest:\n\techo test\n"},
+				{name: "go.mod"}, // would otherwise return go test
+			},
+			expectedCmd: "make test",
+		},
+		{
+			name: "makefile without test target falls through",
+			setupFiles: []fileSpec{
+				{name: "Makefile", content: "build:\n\techo build\n"},
+				{name: "go.mod"},
+			},
+			expectedCmd: "go test ./...",
+		},
+		{
+			name:        "empty workspace",
+			setupFiles:  nil,
+			expectedCmd: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			testDir := filepath.Join(tmpDir, tt.name)
+			if err := os.MkdirAll(testDir, 0755); err != nil {
+				t.Fatalf("failed to create test dir: %v", err)
+			}
+
+			for _, f := range tt.setupFiles {
+				p := filepath.Join(testDir, f.name)
+				if err := os.WriteFile(p, []byte(f.content), 0644); err != nil {
+					t.Fatalf("failed to create file %s: %v", f.name, err)
+				}
+			}
+
+			got := DetectTestCommand(testDir)
+			if got != tt.expectedCmd {
+				t.Errorf("DetectTestCommand() = %q, want %q", got, tt.expectedCmd)
 			}
 		})
 	}

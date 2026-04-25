@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
 	"time"
 )
 
@@ -53,6 +54,7 @@ type Gate struct {
 	MaxRetries  int           `yaml:"max_retries" json:"max_retries"`   // Retry count on failure
 	RetryDelay  time.Duration `yaml:"retry_delay" json:"retry_delay"`   // Delay between retries
 	FailureHint string        `yaml:"failure_hint" json:"failure_hint"` // Hint for Claude on failure
+	Skip        bool          `yaml:"skip" json:"skip"`                 // Skip this gate (returns StatusSkipped without executing)
 }
 
 // DefaultTimeout returns default timeout for a gate type
@@ -222,16 +224,17 @@ func (c *Config) Validate() error {
 		if g.Name == "" {
 			return errors.New("quality gate name is required")
 		}
-		if g.Command == "" {
+		if g.Command == "" && !g.Skip {
 			return errors.New("quality gate command is required for gate: " + g.Name)
 		}
 	}
 	return nil
 }
 
-// MinimalBuildGate returns a minimal quality gate config with just build verification.
+// MinimalBuildGate returns a minimal quality gate config with build + test verification.
 // Used when quality gates are not explicitly configured but we still want basic safety.
-// The build command should be set via DetectBuildCommand() based on project type.
+// The build command should be set via DetectBuildCommand() and test command via
+// DetectTestCommand() based on project type.
 func MinimalBuildGate() *Config {
 	return &Config{
 		Enabled: true,
@@ -245,6 +248,16 @@ func MinimalBuildGate() *Config {
 				MaxRetries:  1, // Single retry for build fixes
 				RetryDelay:  3 * time.Second,
 				FailureHint: "Fix compilation errors in the changed files",
+			},
+			{
+				Name:        "test",
+				Type:        GateTest,
+				Command:     "go test ./...", // Default for Go projects, override via DetectTestCommand
+				Required:    false,           // Don't block PR on test failures in minimal mode
+				Timeout:     5 * time.Minute,
+				MaxRetries:  0,
+				RetryDelay:  3 * time.Second,
+				FailureHint: "Fix failing tests in the changed files",
 			},
 		},
 		OnFailure: FailureConfig{
@@ -286,4 +299,58 @@ func DetectBuildCommand(projectPath string) string {
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
+}
+
+// makefileHasTestTarget reports whether the Makefile at projectPath defines a
+// "test" target (a line beginning with "test:" at column zero).
+func makefileHasTestTarget(projectPath string) bool {
+	data, err := os.ReadFile(filepath.Join(projectPath, "Makefile"))
+	if err != nil {
+		return false
+	}
+	// Multi-line: target lines like `test:` or `test: deps` at start of line.
+	pattern := regexp.MustCompile(`(?m)^test:`)
+	return pattern.Match(data)
+}
+
+// hasPythonProject checks for any Python project indicator in projectPath:
+// a *.py file in the root, pyproject.toml, setup.py, or requirements.txt.
+func hasPythonProject(projectPath string) bool {
+	if fileExists(filepath.Join(projectPath, "pyproject.toml")) ||
+		fileExists(filepath.Join(projectPath, "setup.py")) ||
+		fileExists(filepath.Join(projectPath, "requirements.txt")) {
+		return true
+	}
+	matches, err := filepath.Glob(filepath.Join(projectPath, "*.py"))
+	if err != nil {
+		return false
+	}
+	return len(matches) > 0
+}
+
+// DetectTestCommand returns the appropriate test command for the project.
+// Priority order:
+//  1. `make test` if Makefile defines a `test:` target
+//  2. `pytest -v 2>&1` if any Python project indicator is present
+//  3. `npm test` for package.json
+//  4. `cargo test` for Cargo.toml
+//  5. `go test ./...` for go.mod
+//  6. "" if no test runner can be inferred
+func DetectTestCommand(projectPath string) string {
+	if fileExists(filepath.Join(projectPath, "Makefile")) && makefileHasTestTarget(projectPath) {
+		return "make test"
+	}
+	if hasPythonProject(projectPath) {
+		return "pytest -v 2>&1"
+	}
+	if fileExists(filepath.Join(projectPath, "package.json")) {
+		return "npm test"
+	}
+	if fileExists(filepath.Join(projectPath, "Cargo.toml")) {
+		return "cargo test"
+	}
+	if fileExists(filepath.Join(projectPath, "go.mod")) {
+		return "go test ./..."
+	}
+	return ""
 }
