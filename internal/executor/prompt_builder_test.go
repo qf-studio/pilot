@@ -888,8 +888,14 @@ func TestBuildPromptLocalModeBench(t *testing.T) {
 	if !strings.Contains(prompt, "## Phase 3: RECOVERY") {
 		t.Error("Should contain recovery phase")
 	}
-	if !strings.Contains(prompt, "test_outputs.py") {
-		t.Error("Should mention test files")
+	if !strings.Contains(prompt, "Discover the spec") {
+		t.Error("Should instruct agent to discover the spec from the workspace (GH-2393)")
+	}
+	// Harbor compliance: prompt MUST NOT name oracle test paths (GH-2393).
+	for _, s := range []string{"/tests", "test_outputs", "test.sh", "conftest"} {
+		if strings.Contains(prompt, s) {
+			t.Errorf("LocalMode prompt must not mention oracle path %q (Harbor compliance)", s)
+		}
 	}
 
 	// Should have environment section with pre-installed deps
