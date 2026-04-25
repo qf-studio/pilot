@@ -96,6 +96,8 @@ const (
 	LabelFailed     = "pilot-failed"
 	LabelRetryReady    = "pilot-retry-ready"    // PR closed without merge, issue ready for retry
 	LabelTitleRejected = "pilot-title-rejected" // GH-2363: title guard escalation; blocks auto-retry until human edits title
+	LabelSuperseded    = "pilot-superseded"     // GH-2402: sub-issue auto-closed because parent epic already shipped the work
+	LabelBlocked       = "pilot-blocked"        // GH-2402: deterministic failure that won't change between retries (e.g. non-conventional title)
 )
 
 // Priority mapping from GitHub labels

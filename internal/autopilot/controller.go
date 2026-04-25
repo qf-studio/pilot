@@ -85,6 +85,9 @@ type EvalStore interface {
 	// UpdateExecutionStatusByTaskID updates execution status by task ID.
 	// Used to mark failed executions as completed when the PR is merged.
 	UpdateExecutionStatusByTaskID(taskID, status string) error
+	// SelfHealExecutionAfterMerge promotes failed rows to completed and
+	// stamps the PR URL after a successful merge. GH-2402.
+	SelfHealExecutionAfterMerge(taskID, prURL string) error
 }
 
 // ControllerOption is a functional option for Controller configuration.
@@ -1018,11 +1021,14 @@ func (c *Controller) handleMerging(ctx context.Context, prState *PRState) error 
 			c.log.Debug("updated monitor state to completed", "task", taskID, "pr", prState.PRNumber)
 		}
 
-		// GH-2279: Update execution record from "failed" to "completed" when PR is merged
+		// GH-2279/GH-2402: Self-heal execution record on merge. Promotes any prior
+		// "failed" row to "completed" and stamps the PR URL so the dashboard
+		// reflects the merged outcome (handles user-pushed commits, sub-issues
+		// merged via parent, etc.).
 		if c.evalStore != nil {
 			taskID := fmt.Sprintf("GH-%d", prState.IssueNumber)
-			if err := c.evalStore.UpdateExecutionStatusByTaskID(taskID, "completed"); err != nil {
-				c.log.Warn("failed to update execution status on merge",
+			if err := c.evalStore.SelfHealExecutionAfterMerge(taskID, prState.PRURL); err != nil {
+				c.log.Warn("failed to self-heal execution on merge",
 					"task_id", taskID, "error", err)
 			}
 		}

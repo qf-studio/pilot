@@ -300,11 +300,20 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 		boardStatuses := cfg.Adapters.GitHub.ProjectBoard.GetStatuses()
 
 		if execErr != nil {
-			if err := client.AddLabels(ctx, parts[0], parts[1], issue.Number, []string{github.LabelFailed}); err != nil {
+			// GH-2402: Classify deterministic failures (e.g. non-conventional title)
+			// as pilot-blocked instead of pilot-failed so the poller stops retrying.
+			failureLabel := github.LabelFailed
+			if executor.IsPermanentFailure(execErr.Error()) {
+				failureLabel = github.LabelBlocked
+			}
+			if err := client.AddLabels(ctx, parts[0], parts[1], issue.Number, []string{failureLabel}); err != nil {
 				logGitHubAPIError("AddLabels", parts[0], parts[1], issue.Number, err)
 			}
 			syncBoardStatus(ctx, boardSync, issue.NodeID, boardStatuses.Failed) // GH-1853
 			comment := fmt.Sprintf("❌ Pilot execution failed:\n\n```\n%s\n```", execErr.Error())
+			if failureLabel == github.LabelBlocked {
+				comment += "\n\nThis is a deterministic failure (`pilot-blocked`). Retries are paused — fix the underlying issue (e.g. rename to a conventional commit title) and remove the `pilot-blocked` label to resume."
+			}
 			if _, err := client.AddComment(ctx, parts[0], parts[1], issue.Number, comment); err != nil {
 				logGitHubAPIError("AddComment", parts[0], parts[1], issue.Number, err)
 			}
@@ -340,11 +349,13 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 				}
 				syncBoardStatus(ctx, boardSync, issue.NodeID, boardStatuses.Done) // GH-1853
 
-				// GH-1302: Clean up stale pilot-failed label from prior failed attempt
-				if github.HasLabel(issue, github.LabelFailed) {
-					if err := client.RemoveLabel(ctx, parts[0], parts[1], issue.Number, github.LabelFailed); err != nil {
-						logGitHubAPIError("RemoveLabel", parts[0], parts[1], issue.Number, err)
-					}
+				// GH-1302/GH-2402: Clean up stale pilot-failed label from prior failed attempt.
+				// Removed unconditionally — the in-memory `issue` object is the snapshot
+				// from dispatch and won't reflect labels added during execution
+				// (e.g. by an earlier retry on the same poll cycle).
+				if err := client.RemoveLabel(ctx, parts[0], parts[1], issue.Number, github.LabelFailed); err != nil {
+					// 404 is expected if label doesn't exist — log at debug level
+					slog.Debug("pilot-failed label cleanup", "issue", issue.Number, "error", err)
 				}
 
 				// Close the issue so dependent issues can proceed
@@ -365,11 +376,19 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 				syncBoardStatus(ctx, boardSync, issue.NodeID, boardStatuses.Failed)
 			} else {
 				// result exists but Success is false - mark as failed
-				if err := client.AddLabels(ctx, parts[0], parts[1], issue.Number, []string{github.LabelFailed}); err != nil {
+				// GH-2402: Use pilot-blocked for deterministic failures so we don't retry.
+				failureLabel := github.LabelFailed
+				if hr.Result.Error != "" && executor.IsPermanentFailure(hr.Result.Error) {
+					failureLabel = github.LabelBlocked
+				}
+				if err := client.AddLabels(ctx, parts[0], parts[1], issue.Number, []string{failureLabel}); err != nil {
 					logGitHubAPIError("AddLabels", parts[0], parts[1], issue.Number, err)
 				}
 				syncBoardStatus(ctx, boardSync, issue.NodeID, boardStatuses.Failed) // GH-1853
 				comment := buildFailureComment(hr.Result)
+				if failureLabel == github.LabelBlocked {
+					comment += "\n\nThis is a deterministic failure (`pilot-blocked`). Retries are paused — fix the underlying issue and remove the `pilot-blocked` label to resume."
+				}
 				if _, err := client.AddComment(ctx, parts[0], parts[1], issue.Number, comment); err != nil {
 					logGitHubAPIError("AddComment", parts[0], parts[1], issue.Number, err)
 				}

@@ -612,6 +612,17 @@ func (p *Poller) findOldestUnprocessedIssue(ctx context.Context) (*Issue, error)
 			continue
 		}
 
+		// GH-2402: Skip permanently-blocked issues. The user must remove
+		// the pilot-blocked label to retry (e.g. after fixing a non-conventional title).
+		if HasLabel(issue, LabelBlocked) {
+			continue
+		}
+
+		// GH-2402: Auto-close sub-issues whose parent epic already shipped.
+		if p.skipSupersededByParent(ctx, issue) {
+			continue
+		}
+
 		// GH-2176: Auto-retry issues stuck with pilot-failed (no pilot-done)
 		if HasLabel(issue, LabelFailed) {
 			if !p.shouldRetryFailedIssue(ctx, issue) {
@@ -809,6 +820,17 @@ func (p *Poller) checkForNewIssues(ctx context.Context) {
 
 		// Skip if already in progress
 		if HasLabel(issue, LabelInProgress) {
+			continue
+		}
+
+		// GH-2402: Skip permanently-blocked issues. The user must remove
+		// the pilot-blocked label to retry (e.g. after fixing a non-conventional title).
+		if HasLabel(issue, LabelBlocked) {
+			continue
+		}
+
+		// GH-2402: Auto-close sub-issues whose parent epic already shipped.
+		if p.skipSupersededByParent(ctx, issue) {
 			continue
 		}
 
@@ -1357,6 +1379,69 @@ func (p *Poller) shouldRetryRetryReadyIssue(ctx context.Context, issue *Issue) b
 		slog.Int("max", p.maxRetryReadyRetries),
 	)
 
+	return true
+}
+
+// skipSupersededByParent auto-closes a sub-issue whose parent epic has already
+// shipped (closed AND has pilot-done). Returns true if the issue was closed
+// and should be skipped from dispatch. GH-2402.
+//
+// On transient API errors (e.g. failed parent lookup) the function returns
+// false so the issue falls through to normal dispatch — we never want to lose
+// work because of a flaky GET.
+func (p *Poller) skipSupersededByParent(ctx context.Context, issue *Issue) bool {
+	parentNum := ParseParentIssueNumber(issue.Body)
+	if parentNum <= 0 {
+		return false
+	}
+
+	parent, err := p.client.GetIssue(ctx, p.owner, p.repo, parentNum)
+	if err != nil {
+		p.logger.Warn("Failed to fetch parent issue, falling through to normal dispatch",
+			slog.Int("issue", issue.Number),
+			slog.Int("parent", parentNum),
+			slog.Any("error", err),
+		)
+		return false
+	}
+
+	// Parent must be both closed AND marked done. A closed-without-done parent
+	// (e.g. user closed the epic manually before Pilot finished) shouldn't
+	// strand sub-issues.
+	if parent.State != StateClosed || !HasLabel(parent, LabelDone) {
+		return false
+	}
+
+	p.logger.Info("Auto-closing sub-issue: parent epic already shipped",
+		slog.Int("issue", issue.Number),
+		slog.Int("parent", parentNum),
+	)
+
+	comment := fmt.Sprintf(
+		"🔁 Auto-closed by Pilot: parent epic #%d already shipped this work. "+
+			"This sub-issue is redundant.",
+		parentNum,
+	)
+	if _, cerr := p.client.AddComment(ctx, p.owner, p.repo, issue.Number, comment); cerr != nil {
+		p.logger.Warn("Failed to post superseded comment",
+			slog.Int("issue", issue.Number),
+			slog.Any("error", cerr),
+		)
+	}
+	if lerr := p.client.AddLabels(ctx, p.owner, p.repo, issue.Number, []string{LabelSuperseded}); lerr != nil {
+		p.logger.Warn("Failed to add pilot-superseded label",
+			slog.Int("issue", issue.Number),
+			slog.Any("error", lerr),
+		)
+	}
+	if uerr := p.client.UpdateIssueState(ctx, p.owner, p.repo, issue.Number, StateClosed); uerr != nil {
+		p.logger.Warn("Failed to close superseded sub-issue",
+			slog.Int("issue", issue.Number),
+			slog.Any("error", uerr),
+		)
+	}
+
+	p.markProcessed(issue.Number)
 	return true
 }
 

@@ -3332,3 +3332,29 @@ func TestTruncateDiagnostic(t *testing.T) {
 		t.Errorf("diagnosticsMessageMaxChars = %d, want 4096", diagnosticsMessageMaxChars)
 	}
 }
+
+// GH-2402: IsPermanentFailure must classify deterministic errors so the
+// caller can apply pilot-blocked instead of pilot-failed (which auto-retries).
+func TestIsPermanentFailure(t *testing.T) {
+	tests := []struct {
+		name string
+		err  string
+		want bool
+	}{
+		{"empty string", "", false},
+		{"transient network error", "connection refused: dial tcp", false},
+		{"rate limit hit", "rate limit exceeded, retry after 60s", false},
+		{"non-conventional title", "PR creation refused: title is not a conventional commit: 'Implement test thing'", true},
+		{"could not auto-correct title", "title is invalid: could not auto-correct to a conventional commit", true},
+		{"PR creation refused (catch-all)", "PR creation refused: some reason", true},
+		{"random failure", "no_changes: Claude completed but made no code changes", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsPermanentFailure(tt.err); got != tt.want {
+				t.Errorf("IsPermanentFailure(%q) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}

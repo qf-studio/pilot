@@ -588,6 +588,86 @@ func TestCleaner_Cleanup_StaleFailedLabelsRemoved(t *testing.T) {
 	}
 }
 
+// GH-2402: Cleaner removes stale pilot-blocked labels and fires OnBlockedCleaned
+// so the poller can clear the issue from its processed map.
+func TestCleaner_Cleanup_StaleBlockedLabelsRemoved(t *testing.T) {
+	store := createTestStore(t)
+	defer func() { _ = store.Close() }()
+
+	staleTime := time.Now().Add(-25 * time.Hour)
+	allIssues := []*Issue{
+		{
+			Number:    789,
+			Title:     "Stale Blocked Issue",
+			Labels:    []Label{{Name: LabelBlocked}},
+			UpdatedAt: staleTime,
+		},
+	}
+
+	var (
+		mu                     sync.Mutex
+		removeLabelCalled      bool
+		addCommentCalled       bool
+		onBlockedCleanedCalled bool
+		cleanedIssueNumber     int
+	)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+
+		if r.Method == http.MethodGet && r.URL.Path == "/repos/owner/repo/issues" {
+			_ = json.NewEncoder(w).Encode(allIssues)
+			return
+		}
+		if r.Method == http.MethodDelete && r.URL.Path == "/repos/owner/repo/issues/789/labels/"+LabelBlocked {
+			removeLabelCalled = true
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		if r.Method == http.MethodPost && r.URL.Path == "/repos/owner/repo/issues/789/comments" {
+			addCommentCalled = true
+			_ = json.NewEncoder(w).Encode(&Comment{ID: 1, Body: "cleanup"})
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cleaner, _ := NewCleaner(client, store, "owner/repo", &StaleLabelCleanupConfig{
+		Enabled:         true,
+		Interval:        30 * time.Minute,
+		Threshold:       1 * time.Hour,
+		FailedThreshold: 24 * time.Hour,
+	}, WithOnBlockedCleaned(func(issueNumber int) {
+		mu.Lock()
+		onBlockedCleanedCalled = true
+		cleanedIssueNumber = issueNumber
+		mu.Unlock()
+	}))
+
+	if err := cleaner.Cleanup(context.Background()); err != nil {
+		t.Errorf("Cleanup() error = %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if !removeLabelCalled {
+		t.Error("RemoveLabel should have been called for stale blocked issue")
+	}
+	if !addCommentCalled {
+		t.Error("AddComment should have been called for stale blocked issue")
+	}
+	if !onBlockedCleanedCalled {
+		t.Error("OnBlockedCleaned callback should have been called")
+	}
+	if cleanedIssueNumber != 789 {
+		t.Errorf("OnBlockedCleaned called with issue %d, want 789", cleanedIssueNumber)
+	}
+}
+
 func TestCleaner_Cleanup_RecentFailedIssuesSkipped(t *testing.T) {
 	store := createTestStore(t)
 	defer func() { _ = store.Close() }()
