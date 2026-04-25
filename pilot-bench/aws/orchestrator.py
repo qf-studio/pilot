@@ -370,17 +370,25 @@ class AWSBenchOrchestrator:
         return None
 
     def _generate_pilot_config(self) -> str:
-        """Generate pilot config.yaml — mirrors agent.py:_build_config()."""
+        """Generate pilot config.yaml — mirrors agent.py:_build_config().
+
+        v5: subscription-only (no api_base_url override → Claude Code uses
+        api.anthropic.com via CLAUDE_CODE_OAUTH_TOKEN). Model routing ON so
+        Pilot's complexity classifier downgrades easy tasks to Sonnet 4.6
+        and reserves Opus 4.7 for medium/complex.
+        """
         m = self.model
-        base_url = os.environ.get("ANTHROPIC_BASE_URL", "https://api.z.ai/api/anthropic")
+        # Optional explicit base-URL override only if env var is set; otherwise
+        # omit the field so Claude Code uses its default endpoint.
+        base_url = os.environ.get("ANTHROPIC_BASE_URL", "").strip()
+        api_base_url_line = f'  api_base_url: "{base_url}"\n' if base_url else ""
         return f"""version: "1.0"
 orchestrator:
   model: "{m}"
 executor:
   type: "claude-code"
   default_model: "{m}"
-  api_base_url: "{base_url}"
-  claude_code:
+{api_base_url_line}  claude_code:
     command: claude
     use_structured_output: true
     use_session_resume: true
@@ -392,7 +400,7 @@ executor:
     lint_on_save: false
   heartbeat_timeout: 15m
   model_routing:
-    enabled: false
+    enabled: true
   timeout:
     default: 30m
     trivial: 15m
@@ -426,7 +434,8 @@ executor:
       extend_timeout: true
       timeout_multiplier: 1.5
 quality:
-  enabled: false
+  # v5: gates ON for Build-Verify-Fix retry loop (runner.go:2147+).
+  enabled: true
 memory:
   path: /root/.pilot/data
   learning:

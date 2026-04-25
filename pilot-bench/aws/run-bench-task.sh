@@ -113,11 +113,13 @@ executor:
       extend_timeout: true
       timeout_multiplier: 1.5
 quality:
-  # NOTE: keep disabled until DetectTestCommand() lands. Default gates run
-  # `make build` / `make test` which fail on TB2 workspaces (no Makefile),
-  # spuriously triggering retries. Re-enable after the auto-detect change
-  # ships. Tracking via a separate Pilot issue.
-  enabled: false
+  # v5: gates ON. Enables the Build-Verify-Fix retry loop (runner.go:2147+)
+  # that gives the agent up to 2 retries with a "try a different algorithm"
+  # prompt when the test gate fails. For TB2 workspaces without a Makefile,
+  # the test gate will fail-skip via DetectTestCommand once #2396 lands; until
+  # then, the build gate (auto-detected) still runs and the test gate's
+  # spurious failures convert into retries that may help or be no-ops.
+  enabled: true
 memory:
   path: /root/.pilot/data
   learning:
@@ -131,28 +133,32 @@ PILOTCFG
 }
 
 # ─── Step 1: Load secrets from SSM ────────────────────────────────────────────
+# v5: Claude Code subscription auth (no API). Real Opus 4.7 / Sonnet 4.6 via
+# the official Anthropic endpoint, model routed by complexity (router on).
 echo "--- Loading secrets from SSM ---"
 # Remove any stale debug log that might exist from an older build (security).
 rm -f /tmp/ssm-auth-debug.log 2>/dev/null
-echo "Loading ANTHROPIC_AUTH_TOKEN from SSM..."
-ANTHROPIC_AUTH_TOKEN=$(aws ssm get-parameter \
-    --name "${SSM_PREFIX}/ANTHROPIC_AUTH_TOKEN" --with-decryption \
+echo "Loading CLAUDE_CODE_OAUTH_TOKEN from SSM..."
+CLAUDE_CODE_OAUTH_TOKEN=$(aws ssm get-parameter \
+    --name "${SSM_PREFIX}/CLAUDE_CODE_OAUTH_TOKEN" --with-decryption \
     --query "Parameter.Value" --output text 2>/dev/null)
-if [ -z "$ANTHROPIC_AUTH_TOKEN" ] || [ "$ANTHROPIC_AUTH_TOKEN" = "None" ]; then
-    echo "ERROR: ANTHROPIC_AUTH_TOKEN not found in SSM (${SSM_PREFIX}/ANTHROPIC_AUTH_TOKEN)"
+if [ -z "$CLAUDE_CODE_OAUTH_TOKEN" ] || [ "$CLAUDE_CODE_OAUTH_TOKEN" = "None" ]; then
+    echo "ERROR: CLAUDE_CODE_OAUTH_TOKEN not found in SSM (${SSM_PREFIX}/CLAUDE_CODE_OAUTH_TOKEN)"
+    echo "Hint: claude setup-token  →  aws ssm put-parameter --type SecureString \\"
+    echo "        --name ${SSM_PREFIX}/CLAUDE_CODE_OAUTH_TOKEN --value <token>"
     exit 1
 fi
-export ANTHROPIC_AUTH_TOKEN
-export ANTHROPIC_BASE_URL=$(aws ssm get-parameter \
-    --name "${SSM_PREFIX}/ANTHROPIC_BASE_URL" \
-    --query "Parameter.Value" --output text 2>/dev/null || echo "https://api.z.ai/api/anthropic")
-export ANTHROPIC_MODEL="${MODEL:-glm-5.1}"
+export CLAUDE_CODE_OAUTH_TOKEN
+# Default to Anthropic endpoint by leaving ANTHROPIC_BASE_URL unset; Claude Code
+# will use api.anthropic.com via the OAuth subscription. NOT setting it here is
+# intentional — historical Z.AI proxy (api.z.ai) is removed for v5.
+export ANTHROPIC_MODEL="${MODEL:-claude-opus-4-7}"
 GITHUB_TOKEN=$(aws ssm get-parameter \
     --name "${SSM_PREFIX}/GITHUB_TOKEN" \
     --query "Parameter.Value" --output text 2>/dev/null || echo "")
 
-echo "  Auth token loaded (${#ANTHROPIC_AUTH_TOKEN} chars)"
-echo "  Base URL: $ANTHROPIC_BASE_URL"
+echo "  OAuth token loaded (${#CLAUDE_CODE_OAUTH_TOKEN} chars)"
+echo "  Base URL: (default api.anthropic.com — subscription)"
 echo "  Model: $ANTHROPIC_MODEL"
 
 # ─── Step 2: Download assets from S3 ─────────────────────────────────────────
@@ -388,12 +394,12 @@ fi
 echo ""
 echo "--- Configuring Claude Code auth ---"
 
-# GLM via Z.AI: pass ANTHROPIC_AUTH_TOKEN + ANTHROPIC_BASE_URL + ANTHROPIC_MODEL
-# Claude Code reads these env vars to route to the Z.AI Anthropic-compatible endpoint.
-echo "  Auth: GLM via Z.AI API"
-echo "  ANTHROPIC_AUTH_TOKEN: loaded (${#ANTHROPIC_AUTH_TOKEN} chars)"
-echo "  ANTHROPIC_BASE_URL: $ANTHROPIC_BASE_URL"
-echo "  ANTHROPIC_MODEL: $ANTHROPIC_MODEL"
+# v5: subscription via CLAUDE_CODE_OAUTH_TOKEN. Claude Code uses the OAuth
+# token to route to api.anthropic.com (no proxy). Model selection is governed
+# by Pilot's model router based on task complexity (Opus 4.7 / Sonnet 4.6).
+echo "  Auth: Claude Code OAuth (subscription)"
+echo "  CLAUDE_CODE_OAUTH_TOKEN: loaded (${#CLAUDE_CODE_OAUTH_TOKEN} chars)"
+echo "  ANTHROPIC_MODEL: $ANTHROPIC_MODEL  (router will downgrade to Sonnet for low/medium complexity)"
 
 # ─── Step 6c: Validate critical dependencies ─────────────────────────────────
 echo ""
@@ -533,15 +539,14 @@ TASK_START=$(date +%s)
 # over apiKeyHelper in settings.json and the API key account may have no credits.
 # Pilot's effort classifier will fall back to static mapping (acceptable).
 EXEC_ENV_ARGS=(-e IS_SANDBOX=1 -e CLAUDE_CODE_MAX_OUTPUT_TOKENS=54000 -e PATH="/opt/pilot-tools/bin:/root/.local/bin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
-# GLM via Z.AI: pass auth token, base URL, and model to Claude Code
+# v5: pass Claude Code OAuth token (subscription) + default model. ANTHROPIC_BASE_URL
+# is intentionally NOT set so Claude Code uses api.anthropic.com (no Z.AI proxy).
 EXEC_ENV_ARGS+=(
-    -e ANTHROPIC_AUTH_TOKEN="$ANTHROPIC_AUTH_TOKEN"
-    -e ANTHROPIC_BASE_URL="$ANTHROPIC_BASE_URL"
+    -e CLAUDE_CODE_OAUTH_TOKEN="$CLAUDE_CODE_OAUTH_TOKEN"
     -e ANTHROPIC_MODEL="$ANTHROPIC_MODEL"
 )
-echo "  Auth: ANTHROPIC_AUTH_TOKEN (GLM via Z.AI)"
-echo "  Base URL: $ANTHROPIC_BASE_URL"
-echo "  Model: $ANTHROPIC_MODEL"
+echo "  Auth: CLAUDE_CODE_OAUTH_TOKEN (subscription)"
+echo "  Model: $ANTHROPIC_MODEL  (router-driven downgrade to Sonnet for low/medium complexity)"
 set +e  # handle pilot exit code ourselves
 docker exec -w /app \
     "${EXEC_ENV_ARGS[@]}" \
