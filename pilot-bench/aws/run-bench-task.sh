@@ -113,6 +113,10 @@ executor:
       extend_timeout: true
       timeout_multiplier: 1.5
 quality:
+  # NOTE: keep disabled until DetectTestCommand() lands. Default gates run
+  # `make build` / `make test` which fail on TB2 workspaces (no Makefile),
+  # spuriously triggering retries. Re-enable after the auto-detect change
+  # ships. Tracking via a separate Pilot issue.
   enabled: false
 memory:
   path: /root/.pilot/data
