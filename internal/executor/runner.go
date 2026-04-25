@@ -2205,6 +2205,7 @@ The previous execution completed but made no code changes. This task requires ac
 		// This ensures broken code never becomes a PR, even without explicit quality config
 		if r.qualityCheckerFactory == nil {
 			buildCmd := quality.DetectBuildCommand(executionPath)
+			testCmd := quality.DetectTestCommand(executionPath)
 			if buildCmd != "" {
 				log.Info("Auto-enabling build gate (no quality config)",
 					slog.String("command", buildCmd),
@@ -2213,6 +2214,23 @@ The previous execution completed but made no code changes. This task requires ac
 				// Create minimal quality checker with auto-detected build command
 				minimalConfig := quality.MinimalBuildGate()
 				minimalConfig.Gates[0].Command = buildCmd
+
+				// GH-2398: also auto-enable a test gate when a test runner is
+				// detectable. Empty testCmd → skip the gate entirely instead of
+				// failing it on workspaces that lack a Makefile / test harness.
+				if testCmd != "" {
+					log.Info("Auto-enabling test gate", slog.String("command", testCmd))
+					minimalConfig.Gates = append(minimalConfig.Gates, &quality.Gate{
+						Name:        "test",
+						Type:        quality.GateTest,
+						Command:     testCmd,
+						Required:    true,
+						Timeout:     5 * time.Minute,
+						MaxRetries:  1,
+						RetryDelay:  3 * time.Second,
+						FailureHint: "Fix failing tests in the changed files",
+					})
+				}
 
 				r.qualityCheckerFactory = func(taskID, projectPath string) QualityChecker {
 					return &simpleQualityChecker{
