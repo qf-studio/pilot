@@ -940,6 +940,24 @@ func (s *Store) UpdateExecutionStatusByTaskID(taskID, status string) error {
 	})
 }
 
+// SelfHealExecutionAfterMerge promotes any "failed" rows for the given task ID
+// to "completed" and stamps the PR URL so the dashboard reflects the merged
+// outcome. Used when autopilot observes a merge for an issue whose previous
+// execution row was recorded as failed (e.g. user-pushed commits, sub-issue
+// shipped via parent epic). GH-2402.
+func (s *Store) SelfHealExecutionAfterMerge(taskID, prURL string) error {
+	return s.withRetry("SelfHealExecutionAfterMerge", func() error {
+		_, err := s.db.Exec(`
+			UPDATE executions
+			SET status = 'completed',
+				completed_at = CURRENT_TIMESTAMP,
+				pr_url = CASE WHEN ? <> '' THEN ? ELSE pr_url END
+			WHERE task_id = ? AND status = 'failed'
+		`, prURL, prURL, taskID)
+		return err
+	})
+}
+
 // UpdateExecutionResult updates the result fields of an execution record.
 // Called when task execution completes successfully with PR/commit info.
 func (s *Store) UpdateExecutionResult(id string, prURL, commitSHA string, durationMs int64) error {

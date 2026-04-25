@@ -34,6 +34,11 @@ type Cleaner struct {
 	// stops appearing in the queue view (GH-2354).
 	OnInProgressCleaned func(issueNumber int)
 
+	// OnBlockedCleaned is called when a pilot-blocked label is removed.
+	// Used to clear the issue from the poller's processed map so it can be
+	// re-dispatched after a human resolves the blocking condition (GH-2402).
+	OnBlockedCleaned func(issueNumber int)
+
 	mu      sync.Mutex
 	running bool
 	stopCh  chan struct{}
@@ -63,6 +68,16 @@ func WithOnFailedCleaned(fn func(issueNumber int)) CleanerOption {
 func WithOnInProgressCleaned(fn func(issueNumber int)) CleanerOption {
 	return func(c *Cleaner) {
 		c.OnInProgressCleaned = fn
+	}
+}
+
+// WithOnBlockedCleaned sets the callback for when a pilot-blocked label is
+// detected as removed. The callback receives the issue number and should
+// clear it from the poller's processed map so the next poll can re-dispatch.
+// GH-2402.
+func WithOnBlockedCleaned(fn func(issueNumber int)) CleanerOption {
+	return func(c *Cleaner) {
+		c.OnBlockedCleaned = fn
 	}
 }
 
@@ -202,12 +217,21 @@ func (c *Cleaner) Cleanup(ctx context.Context) error {
 		return fmt.Errorf("failed to cleanup failed labels: %w", err)
 	}
 
-	totalCleaned := inProgressCleaned + closedCleaned + failedCleaned
+	// GH-2402: Clean up stale pilot-blocked labels. Blocked issues are paused
+	// until human intervention, but the same staleness threshold as pilot-failed
+	// is applied as a safety net so a forgotten label doesn't strand work forever.
+	blockedCleaned, err := c.cleanupLabel(ctx, LabelBlocked, c.failedThreshold, activeTaskIDs)
+	if err != nil {
+		return fmt.Errorf("failed to cleanup blocked labels: %w", err)
+	}
+
+	totalCleaned := inProgressCleaned + closedCleaned + failedCleaned + blockedCleaned
 	if totalCleaned > 0 {
 		c.logger.Info("Stale label cleanup completed",
 			slog.Int("in_progress_cleaned", inProgressCleaned),
 			slog.Int("closed_in_progress_cleaned", closedCleaned),
 			slog.Int("failed_cleaned", failedCleaned),
+			slog.Int("blocked_cleaned", blockedCleaned),
 		)
 	}
 
@@ -286,6 +310,10 @@ func (c *Cleaner) cleanupLabel(ctx context.Context, label string, threshold time
 			comment = "🧹 **Pilot cleanup**: Removed stale `pilot-failed` label.\n\n" +
 				"This issue was marked as failed but has been stale for over 24 hours. " +
 				"The label has been removed to allow Pilot to retry this issue automatically."
+		case LabelBlocked:
+			comment = "🧹 **Pilot cleanup**: Removed stale `pilot-blocked` label.\n\n" +
+				"This issue was paused on a deterministic failure (e.g. non-conventional title) but has " +
+				"been stale for the configured threshold. The label has been removed so Pilot can retry."
 		}
 
 		if _, err := c.client.AddComment(ctx, c.owner, c.repo, issue.Number, comment); err != nil {
@@ -295,9 +323,16 @@ func (c *Cleaner) cleanupLabel(ctx context.Context, label string, threshold time
 			)
 		}
 
-		// For failed labels, notify callback to clear from processed map
-		if label == LabelFailed && c.OnFailedCleaned != nil {
-			c.OnFailedCleaned(issue.Number)
+		// Notify callbacks so the poller can clear its processed map and pick up the issue again.
+		switch label {
+		case LabelFailed:
+			if c.OnFailedCleaned != nil {
+				c.OnFailedCleaned(issue.Number)
+			}
+		case LabelBlocked:
+			if c.OnBlockedCleaned != nil {
+				c.OnBlockedCleaned(issue.Number)
+			}
 		}
 
 		cleanedCount++

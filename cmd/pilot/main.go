@@ -2202,6 +2202,12 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 								p.ClearProcessed(issueNumber)
 							}
 						}))
+						// GH-2402: Same wiring for pilot-blocked so removal allows re-dispatch.
+						cleanerOpts = append(cleanerOpts, github.WithOnBlockedCleaned(func(issueNumber int) {
+							for _, p := range ghPollers {
+								p.ClearProcessed(issueNumber)
+							}
+						}))
 					}
 					// GH-2354: when pilot-in-progress is stripped from a closed
 					// issue, remove its task from the dashboard monitor so it

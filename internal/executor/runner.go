@@ -21,6 +21,31 @@ import (
 	"github.com/qf-studio/pilot/internal/webhooks"
 )
 
+// permanentFailurePatterns are substrings in error messages that indicate
+// failures which won't change between retries (e.g. invalid issue title).
+// GH-2402: terminal-classify these so the poller stops the retry loop.
+var permanentFailurePatterns = []string{
+	"title is not a conventional commit",
+	"could not auto-correct",
+	"PR creation refused",
+}
+
+// IsPermanentFailure reports whether an error message represents a
+// deterministic failure that won't change between retries. Callers should
+// label such failures with pilot-blocked instead of pilot-failed so the
+// poller doesn't burn cycles on identical retries. GH-2402.
+func IsPermanentFailure(errStr string) bool {
+	if errStr == "" {
+		return false
+	}
+	for _, pat := range permanentFailurePatterns {
+		if strings.Contains(errStr, pat) {
+			return true
+		}
+	}
+	return false
+}
+
 // StreamEvent represents a Claude Code stream-json event
 type StreamEvent struct {
 	Type          string          `json:"type"`

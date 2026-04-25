@@ -415,6 +415,72 @@ func TestController_ProcessPR_CIFailure(t *testing.T) {
 	}
 }
 
+// GH-2402: After a successful merge, the controller must call
+// SelfHealExecutionAfterMerge so any prior failed execution row for the
+// same task ID is promoted to "completed" with the PR URL stamped.
+func TestController_HandleMerging_SelfHealsExecution(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/owner/repo/commits/abc1234/check-runs":
+			resp := github.CheckRunsResponse{
+				TotalCount: 1,
+				CheckRuns: []github.CheckRun{
+					{Name: "build", Status: github.CheckRunCompleted, Conclusion: github.ConclusionSuccess},
+				},
+			}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(resp)
+		case "/repos/owner/repo/pulls/42/merge":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"sha":"merged123","merged":true,"message":"merged"}`))
+		default:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("{}"))
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.Environment = EnvDev
+	cfg.AutoReview = false
+	cfg.RequiredChecks = []string{"build"}
+
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+	evalMock := &mockEvalStore{}
+	c.SetEvalStore(evalMock)
+
+	c.mu.Lock()
+	c.activePRs[42] = &PRState{
+		PRNumber:    42,
+		PRURL:       "https://github.com/owner/repo/pull/42",
+		HeadSHA:     "abc1234",
+		IssueNumber: 99,
+		Stage:       StageMerging,
+	}
+	c.mu.Unlock()
+
+	if err := c.ProcessPR(context.Background(), 42, nil); err != nil {
+		t.Fatalf("ProcessPR returned unexpected error: %v", err)
+	}
+
+	if len(evalMock.selfHealed) != 1 {
+		t.Fatalf("expected 1 self-heal call, got %d", len(evalMock.selfHealed))
+	}
+	got := evalMock.selfHealed[0]
+	if got.TaskID != "GH-99" {
+		t.Errorf("self-heal task ID = %q, want GH-99", got.TaskID)
+	}
+	if got.PRURL != "https://github.com/owner/repo/pull/42" {
+		t.Errorf("self-heal PR URL = %q, want PR URL", got.PRURL)
+	}
+	// Old UpdateExecutionStatusByTaskID path must NOT also be invoked — self-heal
+	// supersedes it so we don't write stale rows without the PR URL.
+	if len(evalMock.updateStatus) != 0 {
+		t.Errorf("expected 0 UpdateExecutionStatusByTaskID calls (self-heal replaces it), got %d", len(evalMock.updateStatus))
+	}
+}
+
 func TestController_CircuitBreaker(t *testing.T) {
 	// Test per-PR circuit breaker trips after max failures for that specific PR
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -3492,7 +3558,19 @@ func TestSetLearningLoop_ForwardsToFeedbackLoop(t *testing.T) {
 
 // mockEvalStore captures SaveEvalTask calls for testing.
 type mockEvalStore struct {
-	saved []*memory.EvalTask
+	saved        []*memory.EvalTask
+	selfHealed   []selfHealCall
+	updateStatus []updateStatusCall
+}
+
+type selfHealCall struct {
+	TaskID string
+	PRURL  string
+}
+
+type updateStatusCall struct {
+	TaskID string
+	Status string
 }
 
 func (m *mockEvalStore) SaveEvalTask(task *memory.EvalTask) error {
@@ -3501,6 +3579,12 @@ func (m *mockEvalStore) SaveEvalTask(task *memory.EvalTask) error {
 }
 
 func (m *mockEvalStore) UpdateExecutionStatusByTaskID(taskID, status string) error {
+	m.updateStatus = append(m.updateStatus, updateStatusCall{TaskID: taskID, Status: status})
+	return nil
+}
+
+func (m *mockEvalStore) SelfHealExecutionAfterMerge(taskID, prURL string) error {
+	m.selfHealed = append(m.selfHealed, selfHealCall{TaskID: taskID, PRURL: prURL})
 	return nil
 }
 
