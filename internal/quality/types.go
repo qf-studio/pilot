@@ -3,9 +3,11 @@
 package quality
 
 import (
+	"bufio"
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -286,4 +288,77 @@ func DetectBuildCommand(projectPath string) string {
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
+}
+
+// DetectTestCommand returns the appropriate test command for the project.
+// Priority order:
+//  1. `make test` if Makefile exists and contains a `test:` target
+//  2. `pytest -v 2>&1` if any Python sources or Python project markers exist
+//  3. `npm test` if package.json exists
+//  4. `cargo test` if Cargo.toml exists
+//  5. `go test ./...` if go.mod exists
+//
+// Returns empty string if no test command can be detected.
+func DetectTestCommand(projectPath string) string {
+	if hasMakefileTarget(filepath.Join(projectPath, "Makefile"), "test") {
+		return "make test"
+	}
+	if hasPythonProject(projectPath) {
+		return "pytest -v 2>&1"
+	}
+	if fileExists(filepath.Join(projectPath, "package.json")) {
+		return "npm test"
+	}
+	if fileExists(filepath.Join(projectPath, "Cargo.toml")) {
+		return "cargo test"
+	}
+	if fileExists(filepath.Join(projectPath, "go.mod")) {
+		return "go test ./..."
+	}
+	return ""
+}
+
+// hasMakefileTarget reports whether the Makefile at path declares the given
+// target (e.g. a line beginning with `test:`). Returns false if the file is
+// missing or unreadable.
+func hasMakefileTarget(path, target string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer func() { _ = f.Close() }()
+
+	prefix := target + ":"
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasPythonProject reports whether projectPath looks like a Python project:
+// either a Python project marker file is present, or at least one *.py file
+// exists at the top level.
+func hasPythonProject(projectPath string) bool {
+	for _, marker := range []string{"pyproject.toml", "setup.py", "requirements.txt"} {
+		if fileExists(filepath.Join(projectPath, marker)) {
+			return true
+		}
+	}
+	entries, err := os.ReadDir(projectPath)
+	if err != nil {
+		return false
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		if strings.HasSuffix(entry.Name(), ".py") {
+			return true
+		}
+	}
+	return false
 }
