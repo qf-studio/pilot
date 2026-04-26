@@ -123,7 +123,15 @@ Disable via config: `executor.navigator.auto_init: false`
 
 ## Current State
 
-**Current Version:** v2.53.0 | **316 features working**
+**Current Version:** v2.100.1 | **321 commits in main since v2.0.0**
+
+**Recent (v2.99.1 → v2.100.1, Apr 25 2026):**
+- `fix(executor,autopilot,github)`: block stranded sub-issue dispatch + break deterministic-failure retry loop (`pilot-blocked` label, `IsPermanentFailure` classifier, autopilot self-heal after merge)
+- `feat(quality)`: `DetectTestCommand` for bench / non-Makefile workspaces (auto-detects pytest, npm, cargo, go test; skips gate when no runner found)
+- `fix(executor)`: remove oracle-test paths from `buildLocalModePrompt` (Harbor TB2 compliance — prompt no longer names `/tests/test_outputs.py`)
+- `fix`: invisible Unicode sanitization across all adapters (security: ASCII smuggling defense)
+- `fix(orchestrator)`: preserve priority from non-Linear adapters in `processTask`
+- `fix(jira)`: migrate search to `/rest/api/3/search/jql` (Atlassian removed `/search`)
 
 **Full implementation status:** `.agent/system/FEATURE-MATRIX.md`
 

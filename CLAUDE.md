@@ -183,18 +183,21 @@ Documentation in `.agent/`:
 
 ## Current Status
 
-**Version:** v2.53.0 | **316 features implemented**
+**Version:** v2.100.1 | **321 commits in main since v2.0.0**
 
 **Core:**
 - ✅ Task execution with Navigator integration
-- ✅ Autopilot: CI monitor, auto-merge, auto-rebase, feedback loop, tag-only release
+- ✅ Autopilot: CI monitor, auto-merge, auto-rebase, feedback loop, tag-only release, self-heal after merge (v2.100.1)
+- ✅ Deterministic-failure circuit breaker: `pilot-blocked` label pauses retries on permanent errors (v2.100.1)
+- ✅ Stranded sub-issue cleanup: parent-merged epics auto-close orphan children with `pilot-superseded` (v2.100.1)
 - ✅ Intent judge in execution pipeline
 - ✅ Rich PR comments with execution metrics
 - ✅ Epic decomposition with sub-issue PR wiring
-- ✅ Self-review, quality gates, effort routing
-- ✅ Pattern learning from PR reviews
+- ✅ Self-review, quality gates (`DetectTestCommand` auto-skips when no runner — v2.100.0), effort routing
+- ✅ Pattern learning from PR reviews + `learning.inject_patterns` toggle (Harbor compliance)
 - ✅ GitHub Projects V2 board sync
 - ✅ Execution mode auto-switching (scope-based)
+- ✅ Invisible Unicode sanitization across all adapters (security)
 
 **Adapters:** Telegram (voice, images, 5 modes), GitHub, GitLab, Azure DevOps, Linear, Jira, Slack, Discord, Plane
 
