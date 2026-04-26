@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os/exec"
 	"strings"
 	"sync"
@@ -174,6 +175,11 @@ func (b *OpenCodeBackend) createSession(ctx context.Context, projectPath string)
 		return "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if projectPath != "" {
+		// Decision: attached OpenCode servers select project directory from this
+		// header, not from the legacy JSON payload fields.
+		req.Header.Set("X-OpenCode-Directory", url.QueryEscape(projectPath))
+	}
 
 	resp, err := b.httpClient.Do(req)
 	if err != nil {
@@ -232,6 +238,9 @@ func (b *OpenCodeBackend) sendMessage(ctx context.Context, sessionID string, opt
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
+	if opts.ProjectPath != "" {
+		req.Header.Set("X-OpenCode-Directory", url.QueryEscape(opts.ProjectPath))
+	}
 
 	resp, err := b.httpClient.Do(req)
 	if err != nil {

@@ -555,6 +555,48 @@ func TestOpenCodeBackendSendMessagePayloadShape(t *testing.T) {
 	}
 }
 
+func TestOpenCodeBackendSendsProjectDirectoryHeader(t *testing.T) {
+	var sessionHeader string
+	var messageHeader string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/global/health":
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodPost && r.URL.Path == "/session":
+			sessionHeader = r.Header.Get("X-OpenCode-Directory")
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"sess-1"}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/session/sess-1/message":
+			messageHeader = r.Header.Get("X-OpenCode-Directory")
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"info":{"id":"msg_1","role":"assistant","sessionID":"sess-1","providerID":"anthropic","modelID":"claude-sonnet-4","tokens":{"input":1,"output":1,"reasoning":0,"cache":{"read":0,"write":0}}},"parts":[{"type":"text","text":"ok"}]}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	const projectPath = "/config/Desktop/projects/linkedinopenclaw"
+	backend := NewOpenCodeBackend(&OpenCodeConfig{ServerURL: server.URL, Model: "anthropic/claude-sonnet-4", Provider: "anthropic", AutoStartServer: false})
+	result, err := backend.Execute(context.Background(), ExecuteOptions{
+		Prompt:      "hello",
+		ProjectPath: projectPath,
+	})
+	if err != nil {
+		t.Fatalf("Execute error = %v", err)
+	}
+	if !result.Success || result.Output != "ok" {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	const want = "%2Fconfig%2FDesktop%2Fprojects%2Flinkedinopenclaw"
+	if sessionHeader != want {
+		t.Fatalf("session header = %q, want %q", sessionHeader, want)
+	}
+	if messageHeader != want {
+		t.Fatalf("message header = %q, want %q", messageHeader, want)
+	}
+}
+
 func TestOpenCodeEventStructs(t *testing.T) {
 	// Test openCodeEvent struct
 	event := openCodeEvent{
