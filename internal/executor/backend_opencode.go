@@ -210,8 +210,12 @@ func (b *OpenCodeBackend) sendMessage(ctx context.Context, sessionID string, opt
 		},
 	}
 
-	if b.config.Model != "" {
-		payload["model"] = b.config.Model
+	// OpenCode v1.4.x's Hono+Zod validator requires `model` to be either
+	// {providerID, modelID} or omitted. Sending a plain string fails with
+	// HTTP 400 "invalid_type" before the handler runs (GH-2413). See
+	// https://github.com/anomalyco/opencode/blob/v1.4.6/packages/opencode/src/session/prompt.ts
+	if ref := b.resolveModelRef(); ref != nil {
+		payload["model"] = ref
 	}
 
 	jsonData, err := json.Marshal(payload)
@@ -262,6 +266,39 @@ func (b *OpenCodeBackend) sendMessage(ctx context.Context, sessionID string, opt
 	}
 
 	return result, nil
+}
+
+// ocModelRef matches OpenCode v1.4.x's PromptInput.model schema:
+// {providerID, modelID}. Encoded as a JSON object.
+type ocModelRef struct {
+	ProviderID string `json:"providerID"`
+	ModelID    string `json:"modelID"`
+}
+
+// resolveModelRef builds the OpenCode model reference from config.
+// Returns nil when no model is configured, signalling the caller to omit
+// the field so the server falls back to its default model.
+//
+// Resolution rules:
+//   - "providerID/modelID" → split on first "/"
+//   - bare "modelID" + config.Provider → use config.Provider as providerID
+//   - bare "modelID" with no provider → empty providerID (server may reject;
+//     we still send what we have rather than silently dropping the model)
+func (b *OpenCodeBackend) resolveModelRef() *ocModelRef {
+	model := strings.TrimSpace(b.config.Model)
+	if model == "" {
+		return nil
+	}
+	if i := strings.Index(model, "/"); i > 0 && i < len(model)-1 {
+		return &ocModelRef{
+			ProviderID: model[:i],
+			ModelID:    model[i+1:],
+		}
+	}
+	return &ocModelRef{
+		ProviderID: strings.TrimSpace(b.config.Provider),
+		ModelID:    model,
+	}
 }
 
 // parseAssistantResponse decodes the synchronous response from
