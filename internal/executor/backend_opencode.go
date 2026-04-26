@@ -247,18 +247,13 @@ func (b *OpenCodeBackend) sendMessage(ctx context.Context, sessionID string, opt
 			return nil, err
 		}
 	} else {
-		// Parse JSON response
-		var msgResult struct {
-			Success bool   `json:"success"`
-			Output  string `json:"output"`
-			Error   string `json:"error"`
-		}
-		if err := json.NewDecoder(resp.Body).Decode(&msgResult); err != nil {
+		// OpenCode v1.4.x POST /session/:id/message returns application/json
+		// with the shape {info: AssistantMessage, parts: Part[]}, regardless of
+		// the Accept: text/event-stream request header. Parse that shape and
+		// project it onto BackendResult / BackendEvent. (GH-2409)
+		if err := b.parseAssistantResponse(resp.Body, opts, result); err != nil {
 			return nil, err
 		}
-		result.Success = msgResult.Success
-		result.Output = msgResult.Output
-		result.Error = msgResult.Error
 	}
 
 	// If no error set, mark as successful
@@ -267,6 +262,107 @@ func (b *OpenCodeBackend) sendMessage(ctx context.Context, sessionID string, opt
 	}
 
 	return result, nil
+}
+
+// parseAssistantResponse decodes the synchronous response from
+// POST /session/:id/message and populates result. The body shape comes from
+// OpenCode v1.4.6 (packages/opencode/src/server/instance/session.ts) and
+// looks like: {info: AssistantMessage, parts: Part[]}.
+//
+// Text parts are concatenated into result.Output. Non-text parts (tool, file,
+// agent, etc.) are surfaced through opts.EventHandler so the runner sees the
+// same event stream it would for a streaming backend. Token usage and model
+// metadata come from info.
+func (b *OpenCodeBackend) parseAssistantResponse(body io.Reader, opts ExecuteOptions, result *BackendResult) error {
+	var resp ocAssistantResponse
+	if err := json.NewDecoder(body).Decode(&resp); err != nil {
+		return fmt.Errorf("decode opencode response: %w", err)
+	}
+
+	// Model metadata: prefer providerID/modelID; fall back to model field.
+	if resp.Info.ModelID != "" {
+		if resp.Info.ProviderID != "" {
+			result.Model = resp.Info.ProviderID + "/" + resp.Info.ModelID
+		} else {
+			result.Model = resp.Info.ModelID
+		}
+	} else if resp.Info.Model != "" {
+		result.Model = resp.Info.Model
+	}
+
+	// Token usage. v1.4.x exposes tokens.{input,output,reasoning,cache.{read,write}}.
+	result.TokensInput += resp.Info.Tokens.Input
+	result.TokensOutput += resp.Info.Tokens.Output
+	result.CacheReadInputTokens += resp.Info.Tokens.Cache.Read
+	result.CacheCreationInputTokens += resp.Info.Tokens.Cache.Write
+
+	if resp.Info.SessionID != "" {
+		result.SessionID = resp.Info.SessionID
+	}
+
+	// If the assistant message carries an error indicator, propagate it.
+	if resp.Info.Error.Message != "" {
+		result.Error = resp.Info.Error.Message
+	} else if resp.Info.Error.Name != "" {
+		result.Error = resp.Info.Error.Name
+	}
+
+	var output strings.Builder
+	for _, part := range resp.Parts {
+		switch part.Type {
+		case "text":
+			output.WriteString(part.Text)
+			if opts.EventHandler != nil {
+				opts.EventHandler(BackendEvent{
+					Type:    EventTypeText,
+					Message: part.Text,
+					Raw:     part.Text,
+				})
+			}
+		case "tool":
+			if opts.EventHandler != nil {
+				opts.EventHandler(BackendEvent{
+					Type:      EventTypeToolUse,
+					ToolName:  part.Tool,
+					ToolInput: part.State.Input,
+					Message:   fmt.Sprintf("Using %s", part.Tool),
+				})
+				if part.State.Status == "completed" || part.State.Status == "error" {
+					ev := BackendEvent{
+						Type:       EventTypeToolResult,
+						ToolName:   part.Tool,
+						ToolResult: part.State.Output,
+						IsError:    part.State.Status == "error",
+					}
+					opts.EventHandler(ev)
+				}
+			}
+		case "step-start", "step-finish", "reasoning", "file", "agent", "snapshot":
+			if opts.EventHandler != nil {
+				opts.EventHandler(BackendEvent{
+					Type:    EventTypeProgress,
+					Message: part.Type,
+				})
+			}
+		}
+	}
+
+	result.Output = output.String()
+
+	// Synthesize a final result event so downstream consumers (alerts, logging)
+	// see a terminal event, mirroring the SSE path.
+	if opts.EventHandler != nil {
+		opts.EventHandler(BackendEvent{
+			Type:         EventTypeResult,
+			Message:      result.Output,
+			IsError:      result.Error != "",
+			TokensInput:  resp.Info.Tokens.Input,
+			TokensOutput: resp.Info.Tokens.Output,
+			Model:        result.Model,
+		})
+	}
+
+	return nil
 }
 
 // parseSSEStream parses Server-Sent Events from OpenCode.
@@ -414,6 +510,62 @@ type openCodeDelta struct {
 type openCodeUsage struct {
 	InputTokens  int64 `json:"input_tokens"`
 	OutputTokens int64 `json:"output_tokens"`
+}
+
+// ocAssistantResponse mirrors the response body of
+// POST /session/:sessionID/message in OpenCode v1.4.x:
+//
+//	{info: AssistantMessage, parts: Part[]}
+//
+// Field set is intentionally minimal — only what Pilot consumes. Unknown
+// fields are ignored by the JSON decoder.
+type ocAssistantResponse struct {
+	Info  ocAssistantInfo `json:"info"`
+	Parts []ocPart        `json:"parts"`
+}
+
+type ocAssistantInfo struct {
+	ID         string         `json:"id,omitempty"`
+	Role       string         `json:"role,omitempty"`
+	SessionID  string         `json:"sessionID,omitempty"`
+	ProviderID string         `json:"providerID,omitempty"`
+	ModelID    string         `json:"modelID,omitempty"`
+	Model      string         `json:"model,omitempty"` // legacy/fallback
+	Tokens     ocTokens       `json:"tokens"`
+	Cost       float64        `json:"cost,omitempty"`
+	Error      ocAssistantErr `json:"error,omitempty"`
+}
+
+type ocTokens struct {
+	Input     int64        `json:"input"`
+	Output    int64        `json:"output"`
+	Reasoning int64        `json:"reasoning,omitempty"`
+	Cache     ocCacheToken `json:"cache"`
+}
+
+type ocCacheToken struct {
+	Read  int64 `json:"read"`
+	Write int64 `json:"write"`
+}
+
+type ocAssistantErr struct {
+	Name    string `json:"name,omitempty"`
+	Message string `json:"message,omitempty"`
+}
+
+// ocPart covers the relevant union variants from MessageV2.Part. Only fields
+// Pilot uses are mapped; other types decode with zero values for unused fields.
+type ocPart struct {
+	Type  string      `json:"type"`
+	Text  string      `json:"text,omitempty"`
+	Tool  string      `json:"tool,omitempty"`
+	State ocPartState `json:"state,omitempty"`
+}
+
+type ocPartState struct {
+	Status string                 `json:"status,omitempty"`
+	Input  map[string]interface{} `json:"input,omitempty"`
+	Output string                 `json:"output,omitempty"`
 }
 
 // StopServer stops the managed OpenCode server if running.

@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -227,6 +228,131 @@ func TestOpenCodeBackendStopServer(t *testing.T) {
 	err := backend.StopServer()
 	if err != nil {
 		t.Errorf("StopServer() error = %v, want nil", err)
+	}
+}
+
+// TestOpenCodeBackendParseAssistantResponse verifies the JSON-shape parsing
+// for OpenCode v1.4.x's POST /session/:id/message response. Regression for
+// GH-2409 — the previous parser looked for {success,output,error}, none of
+// which exist on the actual response, so result.Output came back empty even
+// though the call succeeded.
+func TestOpenCodeBackendParseAssistantResponse(t *testing.T) {
+	backend := NewOpenCodeBackend(nil)
+
+	body := `{
+		"info": {
+			"id": "msg_1",
+			"role": "assistant",
+			"sessionID": "ses_1",
+			"providerID": "anthropic",
+			"modelID": "claude-sonnet-4",
+			"tokens": {
+				"input": 123,
+				"output": 45,
+				"reasoning": 0,
+				"cache": {"read": 7, "write": 8}
+			}
+		},
+		"parts": [
+			{"type": "text", "text": "Hello "},
+			{"type": "tool", "tool": "Read", "state": {"status": "completed", "input": {"file_path": "/x.go"}, "output": "ok"}},
+			{"type": "text", "text": "world"}
+		]
+	}`
+
+	var events []BackendEvent
+	opts := ExecuteOptions{
+		EventHandler: func(e BackendEvent) {
+			events = append(events, e)
+		},
+	}
+	result := &BackendResult{}
+
+	if err := backend.parseAssistantResponse(strings.NewReader(body), opts, result); err != nil {
+		t.Fatalf("parseAssistantResponse error = %v", err)
+	}
+
+	if result.Output != "Hello world" {
+		t.Errorf("Output = %q, want %q", result.Output, "Hello world")
+	}
+	if result.TokensInput != 123 {
+		t.Errorf("TokensInput = %d, want 123", result.TokensInput)
+	}
+	if result.TokensOutput != 45 {
+		t.Errorf("TokensOutput = %d, want 45", result.TokensOutput)
+	}
+	if result.CacheReadInputTokens != 7 {
+		t.Errorf("CacheReadInputTokens = %d, want 7", result.CacheReadInputTokens)
+	}
+	if result.CacheCreationInputTokens != 8 {
+		t.Errorf("CacheCreationInputTokens = %d, want 8", result.CacheCreationInputTokens)
+	}
+	if result.Model != "anthropic/claude-sonnet-4" {
+		t.Errorf("Model = %q, want anthropic/claude-sonnet-4", result.Model)
+	}
+	if result.SessionID != "ses_1" {
+		t.Errorf("SessionID = %q, want ses_1", result.SessionID)
+	}
+	if result.Error != "" {
+		t.Errorf("Error = %q, want empty", result.Error)
+	}
+
+	// Expect events: text, tool_use, tool_result, text, result.
+	wantTypes := []BackendEventType{
+		EventTypeText, EventTypeToolUse, EventTypeToolResult, EventTypeText, EventTypeResult,
+	}
+	if len(events) != len(wantTypes) {
+		t.Fatalf("event count = %d, want %d (events=%v)", len(events), len(wantTypes), events)
+	}
+	for i, et := range wantTypes {
+		if events[i].Type != et {
+			t.Errorf("event[%d].Type = %q, want %q", i, events[i].Type, et)
+		}
+	}
+
+	// Tool event should carry the tool name and input.
+	toolEv := events[1]
+	if toolEv.ToolName != "Read" {
+		t.Errorf("tool event ToolName = %q, want Read", toolEv.ToolName)
+	}
+	if toolEv.ToolInput["file_path"] != "/x.go" {
+		t.Errorf("tool event ToolInput[file_path] = %v, want /x.go", toolEv.ToolInput["file_path"])
+	}
+
+	// Final result event should carry the concatenated output.
+	finalEv := events[len(events)-1]
+	if finalEv.Message != "Hello world" {
+		t.Errorf("final event Message = %q, want %q", finalEv.Message, "Hello world")
+	}
+}
+
+func TestOpenCodeBackendParseAssistantResponseEmpty(t *testing.T) {
+	backend := NewOpenCodeBackend(nil)
+
+	// No parts at all — output should be empty but parse must succeed.
+	body := `{"info": {"id":"msg_2","tokens":{"input":1,"output":2,"cache":{"read":0,"write":0}}}, "parts": []}`
+	result := &BackendResult{}
+	if err := backend.parseAssistantResponse(strings.NewReader(body), ExecuteOptions{}, result); err != nil {
+		t.Fatalf("parseAssistantResponse error = %v", err)
+	}
+	if result.Output != "" {
+		t.Errorf("Output = %q, want empty", result.Output)
+	}
+	if result.TokensInput != 1 || result.TokensOutput != 2 {
+		t.Errorf("tokens = %d/%d, want 1/2", result.TokensInput, result.TokensOutput)
+	}
+}
+
+func TestOpenCodeBackendParseAssistantResponseError(t *testing.T) {
+	backend := NewOpenCodeBackend(nil)
+
+	body := `{"info": {"id":"msg_3","tokens":{"input":0,"output":0,"cache":{"read":0,"write":0}}, "error":{"name":"ProviderAuthError","message":"bad key"}}, "parts": []}`
+	result := &BackendResult{}
+	if err := backend.parseAssistantResponse(strings.NewReader(body), ExecuteOptions{}, result); err != nil {
+		t.Fatalf("parseAssistantResponse error = %v", err)
+	}
+	if result.Error != "bad key" {
+		t.Errorf("Error = %q, want %q", result.Error, "bad key")
 	}
 }
 
