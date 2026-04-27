@@ -159,6 +159,44 @@ func EstimateCost(inputTokens, outputTokens int64, model string) float64 {
 	return inputCost + outputCost
 }
 
+// TelemetryGapStats summarises how many recent completed executions reported
+// zero token usage, used by the startup health check (GH-2428). A high ratio
+// signals the configured backend's usage events aren't being parsed — cost
+// reporting and per-task budgets silently misbehave when this happens.
+type TelemetryGapStats struct {
+	CompletedRuns int // Completed runs inspected (with non-empty commit_sha)
+	ZeroTokenRuns int // Subset where tokens_total = 0
+}
+
+// RecentCompletedTelemetryStats counts how many of the last `limit` completed
+// executions with a real commit reported tokens_total = 0. Excludes epic
+// orchestrator rows (no commit_sha) so we measure backend telemetry, not
+// the parent-task path that legitimately has no tokens. GH-2428.
+func (s *Store) RecentCompletedTelemetryStats(limit int) (*TelemetryGapStats, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	row := s.db.QueryRow(`
+		SELECT
+			COUNT(*) as total,
+			COALESCE(SUM(CASE WHEN tokens_total = 0 THEN 1 ELSE 0 END), 0) as zero_tokens
+		FROM (
+			SELECT tokens_total
+			FROM executions
+			WHERE status = 'completed'
+			  AND commit_sha != ''
+			  AND commit_sha IS NOT NULL
+			ORDER BY created_at DESC
+			LIMIT ?
+		)
+	`, limit)
+	stats := &TelemetryGapStats{}
+	if err := row.Scan(&stats.CompletedRuns, &stats.ZeroTokenRuns); err != nil {
+		return nil, fmt.Errorf("failed to scan telemetry gap stats: %w", err)
+	}
+	return stats, nil
+}
+
 // SaveExecutionMetrics saves metrics for an execution
 func (s *Store) SaveExecutionMetrics(metrics *ExecutionMetrics) error {
 	return s.withRetry("SaveExecutionMetrics", func() error {

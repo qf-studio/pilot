@@ -562,6 +562,28 @@ func (r *Runner) backendType() string {
 	return "claude-code"
 }
 
+// fallbackModelName returns the best-known model name for telemetry rows when
+// the backend stream did not surface a model field. Used to distinguish
+// "telemetry-missing" from "true-zero" runs in execution_metrics. Resolution:
+//  1. config.DefaultModel (set when running via OpenCode/GLM/etc.)
+//  2. OpenCode config.Model (e.g. "anthropic/claude-sonnet-4-6")
+//  3. Backend type prefix (e.g. "claude-code", "opencode") — never empty.
+//
+// GH-2428: previously runner.go hardcoded "claude-opus-4-6" as the fallback,
+// which (a) was stale (real Claude Code runs report 4-7) and (b) silently
+// labelled OpenCode/GLM runs as Claude Opus, biasing cost/model metrics.
+func (r *Runner) fallbackModelName() string {
+	if r.config != nil {
+		if r.config.DefaultModel != "" {
+			return r.config.DefaultModel
+		}
+		if r.config.OpenCode != nil && r.config.Type == BackendTypeOpenCode && r.config.OpenCode.Model != "" {
+			return r.config.OpenCode.Model
+		}
+	}
+	return r.backendType()
+}
+
 // SetBackend changes the execution backend.
 func (r *Runner) SetBackend(backend Backend) {
 	r.backend = backend
@@ -1240,13 +1262,16 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 
 			// GH-539: Epic sub-executions may have created commits on the branch.
 			// Push branch and create PR to propagate deliverables.
+			// GH-2428: Set ModelName so the saved row distinguishes "epic
+			// orchestrator (no backend call)" from "telemetry-missing".
 			epicResult := &ExecutionResult{
-				TaskID:   task.ID,
-				Success:  true,
-				Output:   fmt.Sprintf("Epic completed: %d sub-issues executed", len(issues)),
-				Duration: time.Since(start),
-				IsEpic:   true,
-				EpicPlan: plan,
+				TaskID:    task.ID,
+				Success:   true,
+				Output:    fmt.Sprintf("Epic completed: %d sub-issues executed", len(issues)),
+				Duration:  time.Since(start),
+				IsEpic:    true,
+				EpicPlan:  plan,
+				ModelName: r.fallbackModelName(),
 			}
 
 			if task.CreatePR && task.Branch != "" {
@@ -1644,7 +1669,7 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 			result.CacheReadInputTokens = state.cacheReadInputTokens
 			result.ModelName = state.modelName
 			if result.ModelName == "" {
-				result.ModelName = "claude-opus-4-6"
+				result.ModelName = r.fallbackModelName()
 			}
 			result.EstimatedCostUSD = estimateCostWithCache(result.TokensInput, result.TokensOutput, result.CacheCreationInputTokens, result.CacheReadInputTokens, result.ModelName)
 			log.Warn("Task cancelled due to per-task budget limit",
@@ -2004,7 +2029,11 @@ retrySucceeded:
 		result.ModelName = state.modelName
 	}
 	if result.ModelName == "" {
-		result.ModelName = "claude-opus-4-6" // Default model
+		// GH-2428: derive from config (DefaultModel/OpenCode.Model/backend type)
+		// instead of hardcoding "claude-opus-4-6". The hardcoded value was stale
+		// (Claude Code reports 4-7) and silently labelled OpenCode/GLM runs as
+		// Claude Opus, biasing model-outcome metrics.
+		result.ModelName = r.fallbackModelName()
 	}
 	// Estimate cost based on token usage (including research tokens) with cache-aware pricing (GH-2164)
 	result.EstimatedCostUSD = estimateCostWithCache(result.TokensInput+result.ResearchTokens, result.TokensOutput, result.CacheCreationInputTokens, result.CacheReadInputTokens, result.ModelName)

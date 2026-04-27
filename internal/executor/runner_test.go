@@ -3358,3 +3358,49 @@ func TestIsPermanentFailure(t *testing.T) {
 		})
 	}
 }
+
+// TestRunnerFallbackModelName verifies that the telemetry fallback model name
+// reflects the configured backend, not a hardcoded default. GH-2428.
+func TestRunnerFallbackModelName(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  *BackendConfig
+		want string
+	}{
+		{
+			name: "default model overrides everything",
+			cfg: &BackendConfig{
+				Type:         BackendTypeOpenCode,
+				DefaultModel: "glm-5.1",
+				OpenCode:     &OpenCodeConfig{Model: "anthropic/claude-sonnet-4-6"},
+			},
+			want: "glm-5.1",
+		},
+		{
+			name: "opencode falls back to OpenCode.Model",
+			cfg: &BackendConfig{
+				Type:     BackendTypeOpenCode,
+				OpenCode: &OpenCodeConfig{Model: "anthropic/claude-sonnet-4-6"},
+			},
+			want: "anthropic/claude-sonnet-4-6",
+		},
+		{
+			name: "claude-code with no DefaultModel falls back to backend type",
+			cfg:  &BackendConfig{Type: BackendTypeClaudeCode},
+			want: BackendTypeClaudeCode,
+		},
+		{
+			name: "nil config returns claude-code default",
+			cfg:  nil,
+			want: "claude-code",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := &Runner{config: tt.cfg}
+			if got := r.fallbackModelName(); got != tt.want {
+				t.Errorf("fallbackModelName() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

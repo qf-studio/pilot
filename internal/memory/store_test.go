@@ -1750,3 +1750,58 @@ func TestUpdateExecutionStatusByTaskID_NoMatchingTask(t *testing.T) {
 		t.Fatalf("expected no error for non-existent task, got: %v", err)
 	}
 }
+
+// TestRecentCompletedTelemetryStats verifies the zero-token telemetry gap
+// query: rows are filtered to completed runs with a real commit, and rows
+// without commit_sha (e.g. epic orchestrators) are excluded so they don't
+// inflate the gap ratio. GH-2428.
+func TestRecentCompletedTelemetryStats(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	type rec struct {
+		id        string
+		status    string
+		commit    string
+		tokens    int64
+	}
+	rows := []rec{
+		{"a", "completed", "deadbeef", 100},  // counts, not zero
+		{"b", "completed", "cafe1234", 0},    // counts, zero
+		{"c", "completed", "ba5eba11", 0},    // counts, zero
+		{"d", "completed", "", 0},            // SKIPPED (no commit — epic orchestrator)
+		{"e", "failed", "feedface", 0},       // SKIPPED (not completed)
+	}
+	for _, r := range rows {
+		if err := store.SaveExecution(&Execution{
+			ID:          r.id,
+			TaskID:      "T-" + r.id,
+			ProjectPath: "/x",
+			Status:      r.status,
+			CommitSHA:   r.commit,
+		}); err != nil {
+			t.Fatalf("SaveExecution %s: %v", r.id, err)
+		}
+		if err := store.SaveExecutionMetrics(&ExecutionMetrics{
+			ExecutionID: r.id,
+			TokensTotal: r.tokens,
+		}); err != nil {
+			t.Fatalf("SaveExecutionMetrics %s: %v", r.id, err)
+		}
+	}
+
+	stats, err := store.RecentCompletedTelemetryStats(50)
+	if err != nil {
+		t.Fatalf("RecentCompletedTelemetryStats: %v", err)
+	}
+	if stats.CompletedRuns != 3 {
+		t.Errorf("CompletedRuns = %d, want 3 (only completed+commit rows)", stats.CompletedRuns)
+	}
+	if stats.ZeroTokenRuns != 2 {
+		t.Errorf("ZeroTokenRuns = %d, want 2", stats.ZeroTokenRuns)
+	}
+}
