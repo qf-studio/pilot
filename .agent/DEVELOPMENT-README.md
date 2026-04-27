@@ -125,6 +125,12 @@ Disable via config: `executor.navigator.auto_init: false`
 
 **Current Version:** v2.100.4 | **319 features working**
 
+**Recent (v2.100.2 → v2.100.4, Apr 26-27 2026):**
+- `fix(executor)`: OpenCode message schema + response parsing — modern `model: {providerID, modelID}` payload, `{info, parts}` response shape (GH-2407, GH-2409, GH-2413; closed unmerged #2408)
+- `fix(ci)`: docs deploy pipeline chained-trigger limitation — `docs-version-sync.yml` now uses `PILOT_DOCS_PAT` (with `GITHUB_TOKEN` fallback) so the auto-merge fires `sync-docs.yml`; `sync-docs.yml` gains `workflow_dispatch` as a backstop (GH-2423)
+- Repo-wide: enabled "Allow GitHub Actions to create and approve pull requests" at qf-studio org level — prerequisite for the chained-trigger fix
+- Pending cleanup: `refactor(ci)` — replace token-via-`$GITHUB_OUTPUT` with native `${{ secrets.A || secrets.B }}` fallback (GH-2426)
+
 **Full implementation status:** `.agent/system/FEATURE-MATRIX.md`
 
 ### Key Components
@@ -393,6 +399,18 @@ Nextra 4 migration (PR #1409) + 8 docs pages covering all 156 features:
 ---
 
 ## Completed Log
+
+### 2026-04-26 to 04-27
+
+| Item | What |
+|------|------|
+| **v2.100.4** | `fix(ci)`: docs deploy chained-trigger fix — `docs-version-sync.yml` resolves token via PAT-or-GITHUB_TOKEN; `sync-docs.yml` adds `workflow_dispatch` (GH-2423, PR #2424). Wires future releases to auto-deploy `pilot.quantflow.studio` end-to-end without manual nudge. |
+| **v2.100.3** | `fix(executor)`: send OpenCode `model` as `{providerID, modelID}` object — re-do of closed external PR #2408. Modern OpenCode (≥1.4.x) requires this; pre-fix Pilot couldn't send any message at all (GH-2407, GH-2413, PR #2414). |
+| **v2.100.2** | `fix(executor)`: OpenCode response parsing — decodes `{info, parts}` shape from `POST /session/:id/message`, surfaces text parts as `Output`, tool/step parts as BackendEvents (GH-2409). Without this, even after schema fix, runs reported success with empty Output → silent failure downstream. |
+| **Pipeline gotcha closed** | "GitHub Actions is not permitted to create or approve pull requests" — root caused to **org-level** setting (qf-studio org), not repo-level. Org-level toggle blocked all repo-level overrides. Memory updated. |
+| **Chained-trigger pattern** | `peter-evans/create-pull-request` + `gh pr merge --auto` using `GITHUB_TOKEN` does NOT trigger downstream `push`-event workflows (well-known limitation). Fix: pass a PAT (`PILOT_DOCS_PAT`) instead. PAT secret created with fine-grained scope: `Contents: r/w`, `Pull requests: r/w` for qf-studio/pilot only. Annual rotation reminder needed. |
+| **Ghost-close pattern recurrence** | PR #2414 and #2424 both got `pilot-done` label set on parent issue while PR remained OPEN with green CI. Autopilot eventually merged both, but the desync makes status reporting unreliable. Logged for follow-up but no fix queued. |
+| **Bench / TASK-26** | No movement — feat/aws-bench branch parked; main branch active for production work. |
 
 ### 2026-04-18
 
