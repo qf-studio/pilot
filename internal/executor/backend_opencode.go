@@ -440,9 +440,12 @@ func (b *OpenCodeBackend) parseSSEStream(reader io.Reader, opts ExecuteOptions, 
 				}
 			}
 
-			// Accumulate token usage
+			// Accumulate token usage. GH-2428: also accumulate cache tokens so
+			// the SSE path matches the synchronous parseAssistantResponse path.
 			result.TokensInput += event.TokensInput
 			result.TokensOutput += event.TokensOutput
+			result.CacheCreationInputTokens += event.CacheCreationInputTokens
+			result.CacheReadInputTokens += event.CacheReadInputTokens
 			if event.Model != "" {
 				result.Model = event.Model
 			}
@@ -507,6 +510,8 @@ func (b *OpenCodeBackend) parseOpenCodeEvent(data string) BackendEvent {
 		if ocEvent.Usage != nil {
 			event.TokensInput = ocEvent.Usage.InputTokens
 			event.TokensOutput = ocEvent.Usage.OutputTokens
+			event.CacheCreationInputTokens = ocEvent.Usage.cacheCreate()
+			event.CacheReadInputTokens = ocEvent.Usage.cacheRead()
 		}
 
 	default:
@@ -515,10 +520,13 @@ func (b *OpenCodeBackend) parseOpenCodeEvent(data string) BackendEvent {
 		event.Message = data
 	}
 
-	// Extract usage if present
+	// Extract usage if present (covers events where the usage block lives at
+	// the top level rather than under a dedicated "usage" event type).
 	if ocEvent.Usage != nil {
 		event.TokensInput = ocEvent.Usage.InputTokens
 		event.TokensOutput = ocEvent.Usage.OutputTokens
+		event.CacheCreationInputTokens = ocEvent.Usage.cacheCreate()
+		event.CacheReadInputTokens = ocEvent.Usage.cacheRead()
 	}
 	if ocEvent.Model != "" {
 		event.Model = ocEvent.Model
@@ -544,9 +552,32 @@ type openCodeDelta struct {
 	Text string `json:"text,omitempty"`
 }
 
+// openCodeUsage matches the usage shape OpenCode v1.4.x emits in SSE events.
+// Both flat (cache_*) and nested (cache.{read,write}) shapes are accepted —
+// different OpenCode builds and provider passthroughs use different layouts.
+// GH-2428.
 type openCodeUsage struct {
-	InputTokens  int64 `json:"input_tokens"`
-	OutputTokens int64 `json:"output_tokens"`
+	InputTokens              int64        `json:"input_tokens"`
+	OutputTokens             int64        `json:"output_tokens"`
+	CacheCreationInputTokens int64        `json:"cache_creation_input_tokens,omitempty"`
+	CacheReadInputTokens     int64        `json:"cache_read_input_tokens,omitempty"`
+	Cache                    ocCacheToken `json:"cache,omitempty"`
+}
+
+// cacheCreate returns cache creation tokens from either layout.
+func (u openCodeUsage) cacheCreate() int64 {
+	if u.CacheCreationInputTokens > 0 {
+		return u.CacheCreationInputTokens
+	}
+	return u.Cache.Write
+}
+
+// cacheRead returns cache read tokens from either layout.
+func (u openCodeUsage) cacheRead() int64 {
+	if u.CacheReadInputTokens > 0 {
+		return u.CacheReadInputTokens
+	}
+	return u.Cache.Read
 }
 
 // ocAssistantResponse mirrors the response body of

@@ -108,11 +108,46 @@ func (d *Dispatcher) Start(ctx context.Context) error {
 	// Initial recovery pass on startup.
 	d.recoverStaleTasks()
 
+	// GH-2428: warn when the last batch of completed runs has no token
+	// telemetry. A persistent gap means the backend's usage events aren't
+	// being parsed — cost reporting and per-task budgets silently degrade.
+	d.checkTelemetryGap()
+
 	// Launch periodic recovery loop.
 	d.wg.Add(1)
 	go d.runStaleRecoveryLoop(ctx)
 
 	return nil
+}
+
+// checkTelemetryGap inspects recent completed executions and logs a warning
+// when token telemetry is mostly missing. Threshold: ≥50% of the last 50
+// completed runs (with a real commit) reporting tokens_total=0. GH-2428.
+func (d *Dispatcher) checkTelemetryGap() {
+	const sampleSize = 50
+	const threshold = 0.5
+	stats, err := d.store.RecentCompletedTelemetryStats(sampleSize)
+	if err != nil {
+		d.log.Debug("Skipping telemetry gap check", slog.Any("error", err))
+		return
+	}
+	if stats.CompletedRuns < 10 {
+		return // Not enough data
+	}
+	ratio := float64(stats.ZeroTokenRuns) / float64(stats.CompletedRuns)
+	if ratio >= threshold {
+		backend := "claude-code"
+		if d.runner != nil {
+			backend = d.runner.backendType()
+		}
+		d.log.Warn("Token telemetry gap detected — recent completed runs report 0 tokens",
+			slog.String("backend", backend),
+			slog.Int("completed_runs", stats.CompletedRuns),
+			slog.Int("zero_token_runs", stats.ZeroTokenRuns),
+			slog.Float64("zero_token_ratio", ratio),
+			slog.String("hint", "verify backend usage events are being parsed (GH-2428)"),
+		)
+	}
 }
 
 // runStaleRecoveryLoop ticks every StaleRecoveryInterval and calls
