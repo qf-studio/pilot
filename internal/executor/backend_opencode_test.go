@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -595,6 +597,228 @@ func TestOpenCodeBackendSendsProjectDirectoryHeader(t *testing.T) {
 	if messageHeader != want {
 		t.Fatalf("message header = %q, want %q", messageHeader, want)
 	}
+}
+
+func TestOpenCodeBackendCreateSessionUsesDirectoryQuery(t *testing.T) {
+	projectPath := "/tmp/project"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/session" {
+			t.Fatalf("path = %s, want /session", r.URL.Path)
+		}
+		if got := r.URL.Query().Get("directory"); got != projectPath {
+			t.Fatalf("directory query = %q, want %q", got, projectPath)
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		if strings.TrimSpace(string(body)) != "{}" {
+			t.Fatalf("body = %s, want {}", string(body))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"sess-query"}`))
+	}))
+	defer server.Close()
+
+	backend := NewOpenCodeBackend(&OpenCodeConfig{ServerURL: server.URL})
+	id, err := backend.createSession(context.Background(), projectPath)
+	if err != nil {
+		t.Fatalf("createSession error = %v", err)
+	}
+	if id != "sess-query" {
+		t.Fatalf("id = %q, want sess-query", id)
+	}
+}
+
+func TestOpenCodeBackendCreateSessionFallsBackToLegacyPayload(t *testing.T) {
+	projectPath := "/tmp/project"
+	var requestCount atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch requestCount.Add(1) {
+		case 1:
+			if got := r.URL.Query().Get("directory"); got != projectPath {
+				t.Fatalf("directory query = %q, want %q", got, projectPath)
+			}
+			http.Error(w, "query api unsupported", http.StatusBadRequest)
+		case 2:
+			if got := r.URL.Query().Get("directory"); got != "" {
+				t.Fatalf("unexpected fallback directory query = %q", got)
+			}
+			payload := decodePayloadMap(t, mustReadBody(t, r))
+			if payload["path"] != projectPath {
+				t.Fatalf("payload path = %#v, want %q", payload["path"], projectPath)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"sess-legacy"}`))
+		default:
+			t.Fatalf("unexpected extra request %d", requestCount.Load())
+		}
+	}))
+	defer server.Close()
+
+	backend := NewOpenCodeBackend(&OpenCodeConfig{ServerURL: server.URL})
+	id, err := backend.createSession(context.Background(), projectPath)
+	if err != nil {
+		t.Fatalf("createSession error = %v", err)
+	}
+	if id != "sess-legacy" {
+		t.Fatalf("id = %q, want sess-legacy", id)
+	}
+	if got := requestCount.Load(); got != 2 {
+		t.Fatalf("requestCount = %d, want 2", got)
+	}
+}
+
+func TestOpenCodeBackendSendMessageModernPromptAsync(t *testing.T) {
+	projectPath := "/tmp/project"
+	promptCalled := make(chan struct{})
+	eventSubscribed := make(chan struct{})
+	var messageCalls atomic.Int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/event":
+			if got := r.URL.Query().Get("directory"); got != projectPath {
+				t.Fatalf("event directory = %q, want %q", got, projectPath)
+			}
+			w.Header().Set("Content-Type", "text/event-stream")
+			flusher, ok := w.(http.Flusher)
+			if !ok {
+				t.Fatal("response writer is not a flusher")
+			}
+			close(eventSubscribed)
+			<-promptCalled
+			writeSSE(t, w, flusher, fmt.Sprintf(`{"type":"message.updated","properties":{"sessionID":"sess-1","info":{"id":"msg-1","sessionID":"sess-1","role":"assistant","providerID":"dokproxy","modelID":"gpt-5.4"}}}`))
+			writeSSE(t, w, flusher, fmt.Sprintf(`{"type":"message.part.updated","properties":{"sessionID":"sess-1","part":{"id":"part-1","sessionID":"sess-1","messageID":"msg-1","type":"text","text":"OK"}}}`))
+			writeSSE(t, w, flusher, fmt.Sprintf(`{"type":"message.part.updated","properties":{"sessionID":"sess-1","part":{"id":"part-2","sessionID":"sess-1","messageID":"msg-1","type":"step-finish","reason":"stop","tokens":{"input":10,"output":2,"reasoning":0,"cache":{"read":0,"write":0}}}}}`))
+		case "/session/sess-1/prompt_async":
+			if got := r.URL.Query().Get("directory"); got != projectPath {
+				t.Fatalf("prompt_async directory = %q, want %q", got, projectPath)
+			}
+			payload := decodePayloadMap(t, mustReadBody(t, r))
+			parts, ok := payload["parts"].([]interface{})
+			if !ok || len(parts) != 1 {
+				t.Fatalf("parts = %#v, want single-element slice", payload["parts"])
+			}
+			obj, ok := payload["model"].(map[string]interface{})
+			if !ok || obj["providerID"] != "dokproxy" || obj["modelID"] != "gpt-5.4" {
+				t.Fatalf("model = %#v, want object dokproxy/gpt-5.4", payload["model"])
+			}
+			close(promptCalled)
+			w.WriteHeader(http.StatusNoContent)
+		case "/session/sess-1/message":
+			messageCalls.Add(1)
+			http.Error(w, "legacy path should not be called", http.StatusInternalServerError)
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	backend := NewOpenCodeBackend(&OpenCodeConfig{ServerURL: server.URL, Model: "dokproxy/gpt-5.4", Provider: "dokproxy"})
+	result, err := backend.sendMessage(context.Background(), "sess-1", ExecuteOptions{Prompt: "hello", ProjectPath: projectPath})
+	if err != nil {
+		t.Fatalf("sendMessage error = %v", err)
+	}
+	if !result.Success {
+		t.Fatalf("result.Success = false, error = %q", result.Error)
+	}
+	if result.Output != "OK" {
+		t.Fatalf("result.Output = %q, want OK", result.Output)
+	}
+	if result.Model != "dokproxy/gpt-5.4" {
+		t.Fatalf("result.Model = %q, want dokproxy/gpt-5.4", result.Model)
+	}
+	if result.TokensInput != 10 || result.TokensOutput != 2 {
+		t.Fatalf("tokens = %d/%d, want 10/2", result.TokensInput, result.TokensOutput)
+	}
+	if messageCalls.Load() != 0 {
+		t.Fatalf("legacy message path called %d times", messageCalls.Load())
+	}
+	select {
+	case <-eventSubscribed:
+	default:
+		t.Fatal("event stream was not subscribed")
+	}
+}
+
+func TestOpenCodeBackendParseGlobalEventAutoApprovesProjectPermission(t *testing.T) {
+	projectPath := "/tmp/project"
+	var permissionReplyCount atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/permission/per-1/reply" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		if got := r.URL.Query().Get("directory"); got != projectPath {
+			t.Fatalf("directory query = %q, want %q", got, projectPath)
+		}
+		permissionReplyCount.Add(1)
+		body := decodePayloadMap(t, mustReadBody(t, r))
+		if body["reply"] != "always" {
+			t.Fatalf("reply = %#v, want always", body["reply"])
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`true`))
+	}))
+	defer server.Close()
+
+	backend := NewOpenCodeBackend(&OpenCodeConfig{ServerURL: server.URL})
+	events, done, err := backend.parseGlobalEvent(fmt.Sprintf(`{"directory":%q,"payload":{"type":"permission.asked","properties":{"id":"per-1","sessionID":"sess-1","permission":"external_directory","patterns":[%q]}}}`, projectPath, projectPath+"/*"), projectPath, "sess-1")
+	if err != nil {
+		t.Fatalf("parseGlobalEvent error = %v", err)
+	}
+	if done {
+		t.Fatal("done = true, want false")
+	}
+	if permissionReplyCount.Load() != 1 {
+		t.Fatalf("permissionReplyCount = %d, want 1", permissionReplyCount.Load())
+	}
+	if len(events) != 1 || events[0].Type != EventTypeProgress {
+		t.Fatalf("events = %+v, want single progress event", events)
+	}
+}
+
+func TestOpenCodeBackendParseGlobalEventBareMessagePartUpdated(t *testing.T) {
+	backend := NewOpenCodeBackend(nil)
+	events, done, err := backend.parseGlobalEvent(`{"type":"message.part.updated","properties":{"sessionID":"sess-1","part":{"id":"part-1","sessionID":"sess-1","messageID":"msg-1","type":"text","text":"OK"}}}`, "/tmp/project", "sess-1")
+	if err != nil {
+		t.Fatalf("parseGlobalEvent error = %v", err)
+	}
+	if done {
+		t.Fatal("done = true, want false")
+	}
+	if len(events) != 1 {
+		t.Fatalf("len(events) = %d, want 1", len(events))
+	}
+	if events[0].Type != EventTypeText || events[0].Message != "OK" {
+		t.Fatalf("event = %+v, want text OK", events[0])
+	}
+}
+
+func mustReadBody(t *testing.T, r *http.Request) []byte {
+	t.Helper()
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	return body
+}
+
+func decodePayloadMap(t *testing.T, body []byte) map[string]interface{} {
+	t.Helper()
+	var payload map[string]interface{}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("unmarshal payload: %v\nbody=%s", err, string(body))
+	}
+	return payload
+}
+
+func writeSSE(t *testing.T, w http.ResponseWriter, flusher http.Flusher, payload string) {
+	t.Helper()
+	if _, err := io.WriteString(w, "data: "+payload+"\n\n"); err != nil {
+		t.Fatalf("write SSE: %v", err)
+	}
+	flusher.Flush()
 }
 
 func TestOpenCodeEventStructs(t *testing.T) {

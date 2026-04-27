@@ -5,12 +5,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -27,6 +29,80 @@ type OpenCodeBackend struct {
 	httpClient *http.Client
 	serverCmd  *exec.Cmd
 	serverMu   sync.Mutex
+}
+
+type openCodeGlobalEvent struct {
+	Directory string               `json:"directory"`
+	Payload   openCodeEventPayload `json:"payload"`
+}
+
+type openCodeEventPayload struct {
+	Type        string            `json:"type"`
+	Name        string            `json:"name"`
+	AggregateID string            `json:"aggregateID"`
+	Properties  openCodeEventData `json:"properties"`
+	Data        openCodeEventData `json:"data"`
+}
+
+type openCodeEventData struct {
+	ID         string                    `json:"id,omitempty"`
+	SessionID  string                    `json:"sessionID,omitempty"`
+	MessageID  string                    `json:"messageID,omitempty"`
+	PartID     string                    `json:"partID,omitempty"`
+	Field      string                    `json:"field,omitempty"`
+	Delta      string                    `json:"delta,omitempty"`
+	Info       *openCodeEventMessageInfo `json:"info,omitempty"`
+	Part       *openCodeResponsePart     `json:"part,omitempty"`
+	Permission string                    `json:"permission,omitempty"`
+	Patterns   []string                  `json:"patterns,omitempty"`
+	Status     *struct {
+		Type    string `json:"type"`
+		Attempt int    `json:"attempt,omitempty"`
+		Message string `json:"message,omitempty"`
+		Next    int64  `json:"next,omitempty"`
+	} `json:"status,omitempty"`
+	Error *struct {
+		Name string `json:"name"`
+		Data struct {
+			Message string `json:"message"`
+		} `json:"data"`
+	} `json:"error,omitempty"`
+}
+
+type openCodeEventMessageInfo struct {
+	ID         string `json:"id"`
+	SessionID  string `json:"sessionID"`
+	Role       string `json:"role"`
+	ModelID    string `json:"modelID"`
+	ProviderID string `json:"providerID"`
+	Finish     string `json:"finish"`
+	Error      *struct {
+		Name string `json:"name"`
+		Data struct {
+			Message string `json:"message"`
+		} `json:"data"`
+	} `json:"error,omitempty"`
+}
+
+type openCodeResponsePart struct {
+	ID        string       `json:"id,omitempty"`
+	Type      string       `json:"type"`
+	Text      string       `json:"text,omitempty"`
+	Tool      string       `json:"tool,omitempty"`
+	CallID    string       `json:"callID,omitempty"`
+	Output    string       `json:"output,omitempty"`
+	Reason    string       `json:"reason,omitempty"`
+	SessionID string       `json:"sessionID,omitempty"`
+	MessageID string       `json:"messageID,omitempty"`
+	State     *ocPartState `json:"state,omitempty"`
+	Tokens    *ocTokens    `json:"tokens,omitempty"`
+}
+
+type openCodePermissionRequest struct {
+	ID         string   `json:"id"`
+	SessionID  string   `json:"sessionID"`
+	Permission string   `json:"permission"`
+	Patterns   []string `json:"patterns"`
 }
 
 // NewOpenCodeBackend creates a new OpenCode backend.
@@ -160,68 +236,74 @@ func (b *OpenCodeBackend) Execute(ctx context.Context, opts ExecuteOptions) (*Ba
 
 // createSession creates a new OpenCode session.
 func (b *OpenCodeBackend) createSession(ctx context.Context, projectPath string) (string, error) {
-	// OpenCode session creation payload
-	payload := map[string]interface{}{
-		"path": projectPath,
+	baseURL := strings.TrimRight(b.config.ServerURL, "/") + "/session"
+	if projectPath != "" {
+		q := url.Values{}
+		q.Set("directory", projectPath)
+		baseURL += "?" + q.Encode()
 	}
 
+	result, err := b.doCreateSessionRequest(ctx, baseURL, map[string]interface{}{}, projectPath)
+	if err == nil {
+		return result.ID, nil
+	}
+
+	legacyResult, legacyErr := b.doCreateSessionRequest(ctx, strings.TrimRight(b.config.ServerURL, "/")+"/session", map[string]interface{}{"path": projectPath}, projectPath)
+	if legacyErr == nil {
+		b.log.Warn("OpenCode session create fell back to legacy payload API")
+		return legacyResult.ID, nil
+	}
+
+	return "", err
+}
+
+func (b *OpenCodeBackend) doCreateSessionRequest(ctx context.Context, requestURL string, payload map[string]interface{}, projectPath string) (*struct {
+	ID string `json:"id"`
+}, error) {
 	jsonData, err := json.Marshal(payload)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", b.config.ServerURL+"/session", bytes.NewBuffer(jsonData))
+	req, err := http.NewRequestWithContext(ctx, "POST", requestURL, bytes.NewBuffer(jsonData))
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if projectPath != "" {
-		// Decision: attached OpenCode servers select project directory from this
-		// header, not from the legacy JSON payload fields.
 		req.Header.Set("X-OpenCode-Directory", url.QueryEscape(projectPath))
 	}
 
 	resp, err := b.httpClient.Do(req)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 		body, _ := io.ReadAll(resp.Body)
-		return "", fmt.Errorf("session creation failed: %s", string(body))
+		return nil, fmt.Errorf("session creation failed: %s", string(body))
 	}
 
 	var result struct {
 		ID string `json:"id"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", err
+		return nil, err
 	}
-
-	return result.ID, nil
+	return &result, nil
 }
 
 // sendMessage sends a prompt to an OpenCode session and streams the response.
 func (b *OpenCodeBackend) sendMessage(ctx context.Context, sessionID string, opts ExecuteOptions) (*BackendResult, error) {
 	result := &BackendResult{}
 
-	// Build message payload
-	payload := map[string]interface{}{
-		"parts": []map[string]interface{}{
-			{
-				"type": "text",
-				"text": opts.Prompt,
-			},
-		},
-	}
+	payload := b.buildPromptPayload(opts)
 
-	// OpenCode v1.4.x's Hono+Zod validator requires `model` to be either
-	// {providerID, modelID} or omitted. Sending a plain string fails with
-	// HTTP 400 "invalid_type" before the handler runs (GH-2413). See
-	// https://github.com/anomalyco/opencode/blob/v1.4.6/packages/opencode/src/session/prompt.ts
-	if ref := b.resolveModelRef(); ref != nil {
-		payload["model"] = ref
+	if modernResult, modernErr := b.sendMessageModern(ctx, sessionID, opts, payload); modernErr == nil {
+		return modernResult, nil
+	} else {
+		b.log.Warn("OpenCode modern prompt API failed, falling back to legacy message API", slog.Any("error", modernErr))
 	}
 
 	jsonData, err := json.Marshal(payload)
@@ -275,6 +357,397 @@ func (b *OpenCodeBackend) sendMessage(ctx context.Context, sessionID string, opt
 	}
 
 	return result, nil
+}
+
+func (b *OpenCodeBackend) buildPromptPayload(opts ExecuteOptions) map[string]interface{} {
+	payload := map[string]interface{}{
+		"parts": []map[string]interface{}{{
+			"type": "text",
+			"text": opts.Prompt,
+		}},
+	}
+	if ref := b.resolveModelRef(); ref != nil {
+		payload["model"] = ref
+	}
+	return payload
+}
+
+func (b *OpenCodeBackend) sendMessageModern(ctx context.Context, sessionID string, opts ExecuteOptions, payload map[string]interface{}) (*BackendResult, error) {
+	result := &BackendResult{}
+
+	eventCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	events := make(chan BackendEvent, 32)
+	eventErrCh := make(chan error, 1)
+	go b.consumeEventStream(eventCtx, opts.ProjectPath, sessionID, events, eventErrCh)
+
+	if err := b.doPromptAsyncRequest(ctx, sessionID, opts.ProjectPath, payload); err != nil {
+		return nil, err
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case err := <-eventErrCh:
+			if err != nil {
+				return nil, err
+			}
+		case event, ok := <-events:
+			if !ok {
+				if result.Success || result.Error != "" || result.Output != "" {
+					return result, nil
+				}
+				return nil, fmt.Errorf("event stream closed before completion")
+			}
+
+			if opts.EventHandler != nil {
+				opts.EventHandler(event)
+			}
+
+			result.TokensInput += event.TokensInput
+			result.TokensOutput += event.TokensOutput
+			if event.Model != "" {
+				result.Model = event.Model
+			}
+			switch event.Type {
+			case EventTypeText:
+				if event.Message != "" {
+					result.Output += event.Message
+				}
+			case EventTypeToolResult:
+				if event.ToolResult != "" {
+					result.LastAssistantText = event.ToolResult
+				}
+			case EventTypeError:
+				result.Error = event.Message
+				return result, nil
+			case EventTypeResult:
+				if event.Message != "" && result.Output == "" {
+					result.Output = event.Message
+				}
+				result.Success = !event.IsError
+				if event.IsError {
+					result.Error = event.Message
+				}
+				return result, nil
+			}
+		}
+	}
+}
+
+func (b *OpenCodeBackend) doPromptAsyncRequest(ctx context.Context, sessionID, projectPath string, payload map[string]interface{}) error {
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+
+	requestURL := fmt.Sprintf("%s/session/%s/prompt_async", strings.TrimRight(b.config.ServerURL, "/"), sessionID)
+	if projectPath != "" {
+		q := url.Values{}
+		q.Set("directory", projectPath)
+		requestURL += "?" + q.Encode()
+	}
+	req, err := http.NewRequestWithContext(ctx, "POST", requestURL, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if projectPath != "" {
+		req.Header.Set("X-OpenCode-Directory", url.QueryEscape(projectPath))
+	}
+
+	resp, err := b.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("prompt_async failed: %s", strings.TrimSpace(string(body)))
+	}
+	return nil
+}
+
+func (b *OpenCodeBackend) consumeEventStream(ctx context.Context, projectPath, sessionID string, events chan<- BackendEvent, errCh chan<- error) {
+	defer close(events)
+
+	requestURL := strings.TrimRight(b.config.ServerURL, "/") + "/event"
+	if projectPath != "" {
+		q := url.Values{}
+		q.Set("directory", projectPath)
+		requestURL += "?" + q.Encode()
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "GET", requestURL, nil)
+	if err != nil {
+		errCh <- err
+		return
+	}
+	if projectPath != "" {
+		req.Header.Set("X-OpenCode-Directory", url.QueryEscape(projectPath))
+	}
+
+	resp, err := b.httpClient.Do(req)
+	if err != nil {
+		errCh <- err
+		return
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		errCh <- fmt.Errorf("event subscribe failed: %s", strings.TrimSpace(string(body)))
+		return
+	}
+
+	if err := b.parseGlobalEventStream(resp.Body, projectPath, sessionID, events); err != nil && !errors.Is(err, context.Canceled) {
+		errCh <- err
+		return
+	}
+	errCh <- nil
+}
+
+func (b *OpenCodeBackend) parseGlobalEventStream(reader io.Reader, projectPath, sessionID string, events chan<- BackendEvent) error {
+	scanner := bufio.NewScanner(reader)
+	buf := make([]byte, 0, 64*1024)
+	scanner.Buffer(buf, 1024*1024)
+
+	var eventData strings.Builder
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "data: ") {
+			eventData.WriteString(strings.TrimPrefix(line, "data: "))
+			continue
+		}
+		if line != "" || eventData.Len() == 0 {
+			continue
+		}
+		mapped, done, err := b.parseGlobalEvent(eventData.String(), projectPath, sessionID)
+		eventData.Reset()
+		if err != nil {
+			return err
+		}
+		for _, event := range mapped {
+			events <- event
+		}
+		if done {
+			return nil
+		}
+	}
+	return scanner.Err()
+}
+
+func (b *OpenCodeBackend) parseGlobalEvent(data, projectPath, sessionID string) ([]BackendEvent, bool, error) {
+	directory, payload, err := decodeOpenCodeStreamEvent(data)
+	if err != nil {
+		return nil, false, err
+	}
+	if projectPath != "" && directory != "" && !samePath(directory, projectPath) {
+		return nil, false, nil
+	}
+	if sid := firstNonEmpty(payload.Properties.SessionID, payload.Data.SessionID); sid != "" && sid != sessionID {
+		return nil, false, nil
+	}
+
+	switch payload.Type {
+	case "message.updated":
+		if payload.Properties.Info != nil {
+			return []BackendEvent{{
+				Type:      EventTypeInit,
+				Raw:       data,
+				Message:   "OpenCode session started",
+				SessionID: payload.Properties.Info.SessionID,
+				Model:     joinModel(payload.Properties.Info.ProviderID, payload.Properties.Info.ModelID),
+			}}, false, nil
+		}
+	case "message.part.updated":
+		part := payload.Properties.Part
+		if part == nil {
+			part = payload.Data.Part
+		}
+		if part == nil {
+			return nil, false, nil
+		}
+		return b.mapResponsePart(*part, data), false, nil
+	case "message.part.delta":
+		delta := firstNonEmpty(payload.Properties.Delta, payload.Data.Delta)
+		if delta == "" {
+			return nil, false, nil
+		}
+		return []BackendEvent{{Type: EventTypeText, Raw: data, Message: delta}}, false, nil
+	case "session.error":
+		msg := "OpenCode session error"
+		if payload.Properties.Error != nil && payload.Properties.Error.Data.Message != "" {
+			msg = payload.Properties.Error.Data.Message
+		}
+		return []BackendEvent{{Type: EventTypeError, Raw: data, Message: msg, IsError: true}}, true, nil
+	case "session.idle":
+		return []BackendEvent{{Type: EventTypeResult, Raw: data}}, true, nil
+	case "permission.asked":
+		approved, err := b.handlePermissionRequest(projectPath, openCodePermissionRequest{
+			ID:         payload.Properties.ID,
+			SessionID:  payload.Properties.SessionID,
+			Permission: payload.Properties.Permission,
+			Patterns:   payload.Properties.Patterns,
+		})
+		if err != nil {
+			return nil, false, err
+		}
+		if approved {
+			return []BackendEvent{{Type: EventTypeProgress, Raw: data, Message: "Auto-approved external directory permission"}}, false, nil
+		}
+		return []BackendEvent{{Type: EventTypeError, Raw: data, Message: "OpenCode requested unsupported permission", IsError: true}}, true, nil
+	case "question.asked":
+		return []BackendEvent{{Type: EventTypeError, Raw: data, Message: "OpenCode asked interactive question; unattended mode unsupported", IsError: true}}, true, nil
+	}
+
+	if payload.Type == "sync" {
+		switch payload.Name {
+		case "message.updated.1":
+			if payload.Data.Info != nil {
+				return []BackendEvent{{
+					Type:      EventTypeInit,
+					Raw:       data,
+					Message:   "OpenCode session started",
+					SessionID: payload.Data.Info.SessionID,
+					Model:     joinModel(payload.Data.Info.ProviderID, payload.Data.Info.ModelID),
+				}}, false, nil
+			}
+		case "message.part.updated.1":
+			if payload.Data.Part != nil {
+				return b.mapResponsePart(*payload.Data.Part, data), false, nil
+			}
+		}
+	}
+
+	return nil, false, nil
+}
+
+func (b *OpenCodeBackend) mapResponsePart(part openCodeResponsePart, raw string) []BackendEvent {
+	switch part.Type {
+	case "text":
+		if part.Text == "" {
+			return nil
+		}
+		return []BackendEvent{{Type: EventTypeText, Raw: raw, Message: part.Text}}
+	case "tool":
+		if part.State == nil {
+			return nil
+		}
+		switch part.State.Status {
+		case "pending", "running":
+			return []BackendEvent{{Type: EventTypeToolUse, Raw: raw, ToolName: part.Tool, ToolInput: part.State.Input, Message: fmt.Sprintf("Using %s", part.Tool)}}
+		case "completed":
+			return []BackendEvent{{Type: EventTypeToolResult, Raw: raw, ToolName: part.Tool, ToolResult: part.State.Output}}
+		case "error":
+			return []BackendEvent{{Type: EventTypeError, Raw: raw, ToolName: part.Tool, Message: part.State.Output, IsError: true}}
+		}
+	case "step-finish":
+		event := BackendEvent{Type: EventTypeResult, Raw: raw}
+		if part.Tokens != nil {
+			event.TokensInput = part.Tokens.Input
+			event.TokensOutput = part.Tokens.Output
+		}
+		if part.Reason == "error" {
+			event.IsError = true
+			event.Message = "OpenCode step failed"
+		}
+		return []BackendEvent{event}
+	}
+	return nil
+}
+
+func (b *OpenCodeBackend) handlePermissionRequest(projectPath string, req openCodePermissionRequest) (bool, error) {
+	if req.Permission != "external_directory" {
+		return false, nil
+	}
+	if !permissionMatchesProject(req.Patterns, projectPath) {
+		return false, nil
+	}
+
+	requestURL := fmt.Sprintf("%s/permission/%s/reply", strings.TrimRight(b.config.ServerURL, "/"), req.ID)
+	if projectPath != "" {
+		q := url.Values{}
+		q.Set("directory", projectPath)
+		requestURL += "?" + q.Encode()
+	}
+	body, err := json.Marshal(map[string]string{"reply": "always"})
+	if err != nil {
+		return false, err
+	}
+	reqHTTP, err := http.NewRequestWithContext(context.Background(), "POST", requestURL, bytes.NewBuffer(body))
+	if err != nil {
+		return false, err
+	}
+	reqHTTP.Header.Set("Content-Type", "application/json")
+	if projectPath != "" {
+		reqHTTP.Header.Set("X-OpenCode-Directory", url.QueryEscape(projectPath))
+	}
+	resp, err := b.httpClient.Do(reqHTTP)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		data, _ := io.ReadAll(resp.Body)
+		return false, fmt.Errorf("permission reply failed: %s", strings.TrimSpace(string(data)))
+	}
+	return true, nil
+}
+
+func permissionMatchesProject(patterns []string, projectPath string) bool {
+	if projectPath == "" {
+		return false
+	}
+	cleanProject := filepath.Clean(projectPath)
+	for _, pattern := range patterns {
+		trimmed := strings.TrimSuffix(filepath.Clean(pattern), string(filepath.Separator)+"*")
+		if strings.HasPrefix(cleanProject, trimmed) || strings.HasPrefix(trimmed, cleanProject) {
+			return true
+		}
+	}
+	return false
+}
+
+func samePath(a, b string) bool {
+	return filepath.Clean(a) == filepath.Clean(b)
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func joinModel(providerID, modelID string) string {
+	if providerID == "" {
+		return modelID
+	}
+	if modelID == "" {
+		return providerID
+	}
+	return providerID + "/" + modelID
+}
+
+func decodeOpenCodeStreamEvent(data string) (string, openCodeEventPayload, error) {
+	var wrapped openCodeGlobalEvent
+	if err := json.Unmarshal([]byte(data), &wrapped); err == nil {
+		if wrapped.Payload.Type != "" || wrapped.Payload.Name != "" || wrapped.Directory != "" {
+			return wrapped.Directory, wrapped.Payload, nil
+		}
+	}
+
+	var payload openCodeEventPayload
+	if err := json.Unmarshal([]byte(data), &payload); err != nil {
+		return "", openCodeEventPayload{}, err
+	}
+	return "", payload, nil
 }
 
 // ocModelRef matches OpenCode v1.4.x's PromptInput.model schema:
