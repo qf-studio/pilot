@@ -715,6 +715,20 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 			}); err != nil {
 				w.log.Error("Failed to save execution metrics", slog.Any("error", err))
 			}
+
+			// GH-2429: emit per-execution usage events (task + token + compute) so the
+			// `usage_events` table reflects real activity. UserID is single-tenant for
+			// now (empty); when multi-user lands, plumb the real ID through Execution.
+			if err := w.store.RecordTaskUsage(
+				exec.ID,
+				exec.UserID,
+				exec.ProjectPath,
+				duration.Milliseconds(),
+				result.TokensInput,
+				result.TokensOutput,
+			); err != nil {
+				w.log.Error("Failed to record usage event", slog.Any("error", err))
+			}
 		}
 
 		w.currentTaskID.Store("")
