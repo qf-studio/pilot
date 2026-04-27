@@ -360,6 +360,10 @@ type Execution struct {
 	ID          string
 	TaskID      string
 	ProjectPath string
+	// UserID identifies the user/tenant that owns this execution.
+	// Empty in single-tenant deployments; populated when multi-user mode is enabled.
+	// Used as the pivot for `usage_events` aggregation (GH-2429).
+	UserID      string
 	Status      string
 	Output      string
 	Error       string
