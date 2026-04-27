@@ -46,18 +46,9 @@ jobs:
       - name: Run version sync script
         run: ./scripts/docs-version-sync.sh ${{ steps.version.outputs.VERSION }}
 
-      - name: Resolve token
-        id: token
-        env:
-          PILOT_DOCS_PAT: ${{ secrets.PILOT_DOCS_PAT }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          if [ -n "$PILOT_DOCS_PAT" ]; then
-            echo "token=$PILOT_DOCS_PAT" >> "$GITHUB_OUTPUT"
-          else
-            echo "::warning::PILOT_DOCS_PAT not set — sync-docs.yml will not chain from the auto-merge"
-            echo "token=$GITHUB_TOKEN" >> "$GITHUB_OUTPUT"
-          fi
+      - name: Warn if PAT missing
+        if: ${{ !secrets.PILOT_DOCS_PAT }}
+        run: echo "::warning::PILOT_DOCS_PAT not set — auto-merge will use GITHUB_TOKEN, sync-docs.yml will not chain"
 
       - name: Check for changes
         id: changes
@@ -73,7 +64,7 @@ jobs:
         id: pr
         uses: peter-evans/create-pull-request@v6
         with:
-          token: ${{ steps.token.outputs.token }}
+          token: ${{ secrets.PILOT_DOCS_PAT || secrets.GITHUB_TOKEN }}
           commit-message: "docs: sync version to ${{ steps.version.outputs.VERSION }}"
           title: "docs: sync version to ${{ steps.version.outputs.VERSION }}"
           body: |
@@ -92,7 +83,7 @@ jobs:
       - name: Enable auto-merge
         if: steps.changes.outputs.changed == 'true'
         env:
-          GH_TOKEN: ${{ steps.token.outputs.token }}
+          GH_TOKEN: ${{ secrets.PILOT_DOCS_PAT || secrets.GITHUB_TOKEN }}
         run: |
           if [ -n "${{ steps.pr.outputs.pull-request-number }}" ]; then
             gh pr merge "${{ steps.pr.outputs.pull-request-number }}" --auto --squash
