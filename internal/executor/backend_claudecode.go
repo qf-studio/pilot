@@ -355,6 +355,16 @@ func (b *ClaudeCodeBackend) executeWithFromPR(ctx context.Context, opts ExecuteO
 		b.log.Info("Using routed effort", slog.String("effort", opts.Effort))
 	}
 
+	// GH-2432: --allowedTools restricts the subprocess toolbox; --mcp-config
+	// scopes which MCP servers (if any) the subprocess loads. Both cut the
+	// per-turn token cost considerably when MCPs are not needed.
+	if len(opts.AllowedTools) > 0 {
+		args = append(args, "--allowedTools", strings.Join(opts.AllowedTools, ","))
+	}
+	if opts.MCPConfigPath != "" {
+		args = append(args, "--mcp-config", opts.MCPConfigPath)
+	}
+
 	args = append(args, b.config.ExtraArgs...)
 
 	cmd := exec.CommandContext(ctx, b.config.Command, args...)

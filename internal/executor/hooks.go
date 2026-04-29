@@ -46,8 +46,12 @@ type HooksConfig struct {
 }
 
 // DefaultHooksConfig returns default hooks configuration.
+// GH-2432: RunTestsOnStop default flipped to false. Stop-hook tests forced
+// long unproductive turns into the Claude session, inflating token cost
+// without comparable quality gain. Quality gates still run after the
+// subprocess exits.
 func DefaultHooksConfig() *HooksConfig {
-	runTestsOnStop := true
+	runTestsOnStop := false
 	blockDestructive := true
 	return &HooksConfig{
 		Enabled:          false, // Disabled by default, opt-in feature

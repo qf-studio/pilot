@@ -98,7 +98,17 @@ const (
 	LabelTitleRejected = "pilot-title-rejected" // GH-2363: title guard escalation; blocks auto-retry until human edits title
 	LabelSuperseded    = "pilot-superseded"     // GH-2402: sub-issue auto-closed because parent epic already shipped the work
 	LabelBlocked       = "pilot-blocked"        // GH-2402: deterministic failure that won't change between retries (e.g. non-conventional title)
+
+	// GH-2432: Retry-counter labels persist retry state across `pilot start`
+	// restarts (the in-memory retryReadyCount map was lost on restart, letting
+	// broken issues consume Opus indefinitely).
+	LabelRetry1         = "pilot-retry-1"
+	LabelRetry2         = "pilot-retry-2"
+	LabelRetryExhausted = "pilot-retry-exhausted"
 )
+
+// RetryStateLabels lists the retry-counter labels in escalation order. GH-2432.
+var RetryStateLabels = []string{LabelRetry1, LabelRetry2, LabelRetryExhausted}
 
 // Priority mapping from GitHub labels
 type Priority int

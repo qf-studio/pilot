@@ -584,6 +584,16 @@ func (r *Runner) fallbackModelName() string {
 	return r.backendType()
 }
 
+// executionToolOptions returns the AllowedTools and MCPConfigPath that should
+// be applied to every backend.Execute call site driven by this Runner. These
+// shave the per-turn token cost by scoping the subprocess toolbox. GH-2432.
+func (r *Runner) executionToolOptions() (allowed []string, mcpPath string) {
+	if r.config != nil && r.config.ClaudeCode != nil {
+		return r.config.ClaudeCode.AllowedTools, r.config.ClaudeCode.MCPConfigPath
+	}
+	return nil, ""
+}
+
 // SetBackend changes the execution backend.
 func (r *Runner) SetBackend(backend Backend) {
 	r.backend = backend
@@ -1603,6 +1613,7 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 	// Watchdog kills subprocess after 2x timeout as a safety net for processes
 	// that ignore context cancellation.
 	watchdogTimeout := 2 * timeout
+	allowedTools, mcpConfigPath := r.executionToolOptions()
 	backendResult, err := r.backend.Execute(ctx, ExecuteOptions{
 		Prompt:          prompt,
 		ProjectPath:     executionPath, // Use worktree path if active
@@ -1611,6 +1622,8 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 		Effort:          selectedEffort,
 		FromPR:          task.FromPR, // GH-1267: session resumption from PR context
 		WatchdogTimeout: watchdogTimeout,
+		AllowedTools:    allowedTools,
+		MCPConfigPath:   mcpConfigPath,
 		WatchdogCallback: func(pid int, watchdogDuration time.Duration) {
 			log.Warn("Watchdog killed subprocess",
 				slog.Int("pid", pid),
@@ -1851,6 +1864,7 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 
 						r.reportProgress(task.ID, "Re-executing", 55, fmt.Sprintf("Retry attempt %d with %v timeout...", state.smartRetryAttempt, retryTimeout))
 
+						smartAllowed, smartMCP := r.executionToolOptions()
 						retryResult, retryErr := r.backend.Execute(retryCtx, ExecuteOptions{
 							Prompt:          prompt,
 							ProjectPath:     task.ProjectPath,
@@ -1858,6 +1872,8 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 							Model:           selectedModel,
 							Effort:          selectedEffort,
 							WatchdogTimeout: 2 * retryTimeout,
+							AllowedTools:    smartAllowed,
+							MCPConfigPath:   smartMCP,
 							EventHandler: func(event BackendEvent) {
 								if recorder != nil {
 									_ = recorder.RecordEvent(event.Raw)
@@ -2145,6 +2161,7 @@ The previous execution completed but made no code changes. This task requires ac
 %s`, task.Title, task.Description)
 
 				// Execute retry
+				noopRetryAllowed, noopRetryMCP := r.executionToolOptions()
 				retryResult, retryErr := r.backend.Execute(ctx, ExecuteOptions{
 					Prompt:          retryPrompt,
 					ProjectPath:     task.ProjectPath,
@@ -2152,6 +2169,8 @@ The previous execution completed but made no code changes. This task requires ac
 					Model:           selectedModel,
 					Effort:          selectedEffort,
 					WatchdogTimeout: watchdogTimeout,
+					AllowedTools:    noopRetryAllowed,
+					MCPConfigPath:   noopRetryMCP,
 					EventHandler: func(event BackendEvent) {
 						// Track tokens from retry
 						state.tokensInput += event.TokensInput
@@ -2416,12 +2435,15 @@ The previous execution completed but made no code changes. This task requires ac
 					)
 
 					// Re-invoke backend with retry prompt
+					feedbackAllowed, feedbackMCP := r.executionToolOptions()
 					retryResult, retryErr := r.backend.Execute(ctx, ExecuteOptions{
-						Prompt:      retryPrompt,
-						ProjectPath: task.ProjectPath,
-						Verbose:     task.Verbose,
-						Model:       selectedModel,
-						Effort:      selectedEffort,
+						Prompt:        retryPrompt,
+						ProjectPath:   task.ProjectPath,
+						Verbose:       task.Verbose,
+						Model:         selectedModel,
+						Effort:        selectedEffort,
+						AllowedTools:  feedbackAllowed,
+						MCPConfigPath: feedbackMCP,
 						EventHandler: func(event BackendEvent) {
 							if recorder != nil {
 								if recErr := recorder.RecordEvent(event.Raw); recErr != nil {
@@ -2692,12 +2714,15 @@ The previous execution completed but made no code changes. This task requires ac
 						intentVerdict.Reason, task.Title, task.Description,
 					)
 
+					intentAllowed, intentMCP := r.executionToolOptions()
 					_, retryErr := r.backend.Execute(ctx, ExecuteOptions{
-						Prompt:      retryPrompt,
-						ProjectPath: task.ProjectPath,
-						Verbose:     task.Verbose,
-						Model:       selectedModel,
-						Effort:      selectedEffort,
+						Prompt:        retryPrompt,
+						ProjectPath:   task.ProjectPath,
+						Verbose:       task.Verbose,
+						Model:         selectedModel,
+						Effort:        selectedEffort,
+						AllowedTools:  intentAllowed,
+						MCPConfigPath: intentMCP,
 						EventHandler: func(event BackendEvent) {
 							state.tokensInput += event.TokensInput
 							state.tokensOutput += event.TokensOutput
@@ -3305,6 +3330,7 @@ func (r *Runner) runSelfReview(ctx context.Context, task *Task, state *progressS
 		}
 	}
 
+	reviewAllowed, reviewMCP := r.executionToolOptions()
 	result, err := r.backend.Execute(reviewCtx, ExecuteOptions{
 		Prompt:          reviewPrompt,
 		ProjectPath:     task.ProjectPath,
@@ -3312,6 +3338,8 @@ func (r *Runner) runSelfReview(ctx context.Context, task *Task, state *progressS
 		Model:           selectedModel,
 		Effort:          selectedEffort,
 		ResumeSessionID: resumeSessionID,
+		AllowedTools:    reviewAllowed,
+		MCPConfigPath:   reviewMCP,
 		EventHandler: func(event BackendEvent) {
 			// Track tokens from self-review
 			state.tokensInput += event.TokensInput

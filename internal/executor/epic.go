@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"regexp"
 	"strconv"
@@ -201,10 +202,25 @@ func (r *Runner) PlanEpic(ctx context.Context, task *Task, executionPath string)
 		claudeCmd = r.config.ClaudeCode.Command
 	}
 
-	// Run Claude Code with --print flag for planning
-	args := []string{"--print", "-p", prompt}
+	// GH-2432: Planning gets Opus for stronger reasoning; execution stays on
+	// Sonnet (set via the regular runner path). The model is also exported via
+	// ANTHROPIC_MODEL because Pilot's global env may otherwise win on Node's
+	// last-write lookup inside Claude Code (see backend_claudecode.go).
+	planningModel := "claude-opus-4-7"
+	if r.config != nil && r.config.Planning != nil && r.config.Planning.Model != "" {
+		planningModel = r.config.Planning.Model
+	}
+
+	// Run Claude Code with --print flag for planning. Restrict tools to
+	// read-only — planning must not write code.
+	args := []string{
+		"--print", "-p", prompt,
+		"--model", planningModel,
+		"--allowedTools", strings.Join(DefaultAllowedToolsPlanning(), ","),
+	}
 
 	cmd := exec.CommandContext(ctx, claudeCmd, args...)
+	cmd.Env = append(os.Environ(), "ANTHROPIC_MODEL="+planningModel)
 
 	// Set working directory - use executionPath which respects worktree isolation
 	if executionPath != "" {

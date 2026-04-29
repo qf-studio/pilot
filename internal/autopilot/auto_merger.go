@@ -102,6 +102,18 @@ func (m *AutoMerger) MergePR(ctx context.Context, prState *PRState) error {
 	}
 
 	m.log.Info("PR merged", "pr", prState.PRNumber, "method", mergeMethod)
+
+	// GH-2432: Strip retry-counter labels off the linked issue so a future
+	// regression on the same issue starts the retry budget from zero again.
+	if prState.IssueNumber > 0 {
+		for _, label := range github.RetryStateLabels {
+			if err := m.ghClient.RemoveLabel(ctx, m.owner, m.repo, prState.IssueNumber, label); err != nil {
+				m.log.Debug("retry label cleanup: remove failed (likely not present)",
+					"issue", prState.IssueNumber, "label", label, "error", err)
+			}
+		}
+	}
+
 	return nil
 }
 
