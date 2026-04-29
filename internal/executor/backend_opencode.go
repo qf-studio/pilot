@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os/exec"
 	"strings"
 	"sync"
@@ -174,6 +175,13 @@ func (b *OpenCodeBackend) createSession(ctx context.Context, projectPath string)
 		return "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	// OpenCode attached mode resolves the project directory from the
+	// `x-opencode-directory` header (or `directory` query param), not from the
+	// JSON `path` field. Without it, sessions are created in the server's cwd
+	// rather than the target project. GH-2415.
+	if projectPath != "" {
+		req.Header.Set("X-OpenCode-Directory", url.QueryEscape(projectPath))
+	}
 
 	resp, err := b.httpClient.Do(req)
 	if err != nil {
@@ -232,6 +240,11 @@ func (b *OpenCodeBackend) sendMessage(ctx context.Context, sessionID string, opt
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
+	// See createSession: attached-mode directory resolution requires this
+	// header on the message endpoint too. GH-2415.
+	if opts.ProjectPath != "" {
+		req.Header.Set("X-OpenCode-Directory", url.QueryEscape(opts.ProjectPath))
+	}
 
 	resp, err := b.httpClient.Do(req)
 	if err != nil {

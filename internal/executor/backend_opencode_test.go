@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -552,6 +553,59 @@ func TestOpenCodeBackendSendMessagePayloadShape(t *testing.T) {
 	if !strings.Contains(raw.String(), `"providerID":"anthropic"`) ||
 		!strings.Contains(raw.String(), `"modelID":"claude-sonnet-4"`) {
 		t.Fatalf("payload missing object-form model: %s", raw.String())
+	}
+}
+
+// TestOpenCodeBackendDirectoryHeader verifies that both POST /session and
+// POST /session/:id/message send the X-OpenCode-Directory header so that
+// attached OpenCode servers create sessions in the target project path,
+// not in the server's cwd. GH-2415.
+func TestOpenCodeBackendDirectoryHeader(t *testing.T) {
+	const projectPath = "/tmp/some path/with spaces"
+	wantHeader := url.QueryEscape(projectPath)
+
+	var sessionHeader, messageHeader string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/session":
+			sessionHeader = r.Header.Get("X-OpenCode-Directory")
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"ses_1"}`))
+		case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/session/"):
+			messageHeader = r.Header.Get("X-OpenCode-Directory")
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"info":{"id":"m1","tokens":{"input":0,"output":0,"cache":{"read":0,"write":0}}},"parts":[{"type":"text","text":"ok"}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	b := &OpenCodeBackend{
+		config: &OpenCodeConfig{
+			ServerURL: srv.URL,
+			Model:     "anthropic/claude-sonnet-4",
+		},
+		httpClient: &http.Client{Timeout: 5 * time.Second},
+	}
+	b.log = NewOpenCodeBackend(nil).log
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	sessionID, err := b.createSession(ctx, projectPath)
+	if err != nil {
+		t.Fatalf("createSession error = %v", err)
+	}
+	if sessionHeader != wantHeader {
+		t.Errorf("createSession X-OpenCode-Directory = %q, want %q", sessionHeader, wantHeader)
+	}
+
+	if _, err := b.sendMessage(ctx, sessionID, ExecuteOptions{Prompt: "hi", ProjectPath: projectPath}); err != nil {
+		t.Fatalf("sendMessage error = %v", err)
+	}
+	if messageHeader != wantHeader {
+		t.Errorf("sendMessage X-OpenCode-Directory = %q, want %q", messageHeader, wantHeader)
 	}
 }
 
