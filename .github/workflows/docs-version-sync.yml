@@ -47,8 +47,12 @@ jobs:
         run: ./scripts/docs-version-sync.sh ${{ steps.version.outputs.VERSION }}
 
       - name: Warn if PAT missing
-        if: ${{ !secrets.PILOT_DOCS_PAT }}
-        run: echo "::warning::PILOT_DOCS_PAT not set — auto-merge will use GITHUB_TOKEN, sync-docs.yml will not chain"
+        env:
+          HAS_PAT: ${{ secrets.PILOT_DOCS_PAT != '' }}
+        run: |
+          if [ "$HAS_PAT" != "true" ]; then
+            echo "::warning::PILOT_DOCS_PAT not set — auto-merge will use GITHUB_TOKEN, sync-docs.yml will not chain"
+          fi
 
       - name: Check for changes
         id: changes
