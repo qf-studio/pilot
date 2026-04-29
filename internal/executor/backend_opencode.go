@@ -51,7 +51,7 @@ func NewOpenCodeBackend(config *OpenCodeConfig) *OpenCodeBackend {
 		config: config,
 		log:    logging.WithComponent("executor.opencode"),
 		httpClient: &http.Client{
-			Timeout: 10 * time.Minute, // Long timeout for AI operations
+			Timeout: config.EffectiveRequestTimeout(),
 		},
 	}
 }

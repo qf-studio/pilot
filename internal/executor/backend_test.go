@@ -116,6 +116,7 @@ func TestOpenCodeConfig(t *testing.T) {
 		Provider:        "anthropic",
 		AutoStartServer: true,
 		ServerCommand:   "opencode serve --port 5000",
+		RequestTimeout:  "20m",
 	}
 
 	if config.ServerURL != "http://localhost:5000" {
@@ -126,6 +127,32 @@ func TestOpenCodeConfig(t *testing.T) {
 	}
 	if !config.AutoStartServer {
 		t.Error("AutoStartServer should be true")
+	}
+	if config.RequestTimeout != "20m" {
+		t.Errorf("RequestTimeout = %q, want 20m", config.RequestTimeout)
+	}
+}
+
+func TestOpenCodeConfigEffectiveRequestTimeout(t *testing.T) {
+	tests := []struct {
+		name   string
+		config *OpenCodeConfig
+		want   string
+	}{
+		{name: "nil config fallback", config: nil, want: "10m0s"},
+		{name: "empty timeout fallback", config: &OpenCodeConfig{}, want: "10m0s"},
+		{name: "configured timeout used", config: &OpenCodeConfig{RequestTimeout: "20m"}, want: "20m0s"},
+		{name: "invalid timeout falls back", config: &OpenCodeConfig{RequestTimeout: "nope"}, want: "10m0s"},
+		{name: "zero timeout falls back", config: &OpenCodeConfig{RequestTimeout: "0s"}, want: "10m0s"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.config.EffectiveRequestTimeout().String()
+			if got != tt.want {
+				t.Fatalf("EffectiveRequestTimeout() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 

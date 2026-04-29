@@ -643,6 +643,24 @@ type OpenCodeConfig struct {
 
 	// ServerCommand is the command to start the server (default: "opencode serve")
 	ServerCommand string `yaml:"server_command,omitempty"`
+
+	// RequestTimeout is the maximum time to wait for OpenCode HTTP responses.
+	// Applies to session creation, message send, and SSE response headers.
+	// Default: "10m"
+	RequestTimeout string `yaml:"request_timeout,omitempty"`
+}
+
+// EffectiveRequestTimeout returns the OpenCode HTTP request timeout.
+// Falls back to 10m when empty or invalid.
+func (c *OpenCodeConfig) EffectiveRequestTimeout() time.Duration {
+	if c == nil || c.RequestTimeout == "" {
+		return 10 * time.Minute
+	}
+	d, err := time.ParseDuration(c.RequestTimeout)
+	if err != nil || d <= 0 {
+		return 10 * time.Minute
+	}
+	return d
 }
 
 // DefaultBackendConfig returns default backend configuration.
@@ -669,6 +687,7 @@ func DefaultBackendConfig() *BackendConfig {
 			Provider:        "anthropic",
 			AutoStartServer: true,
 			ServerCommand:   "opencode serve",
+			RequestTimeout:  "10m",
 		},
 		ModelRouting:     DefaultModelRoutingConfig(),
 		Timeout:          DefaultTimeoutConfig(),

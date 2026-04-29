@@ -19,12 +19,14 @@ func TestNewOpenCodeBackend(t *testing.T) {
 		config          *OpenCodeConfig
 		expectServerURL string
 		expectModel     string
+		expectTimeout   string
 	}{
 		{
 			name:            "nil config uses defaults",
 			config:          nil,
 			expectServerURL: "http://127.0.0.1:4096",
 			expectModel:     "anthropic/claude-sonnet-4",
+			expectTimeout:   "10m0s",
 		},
 		{
 			name: "empty server URL uses default",
@@ -34,15 +36,18 @@ func TestNewOpenCodeBackend(t *testing.T) {
 			},
 			expectServerURL: "http://127.0.0.1:4096",
 			expectModel:     "custom-model",
+			expectTimeout:   "10m0s",
 		},
 		{
 			name: "custom config",
 			config: &OpenCodeConfig{
-				ServerURL: "http://localhost:5000",
-				Model:     "anthropic/claude-opus-4",
+				ServerURL:      "http://localhost:5000",
+				Model:          "anthropic/claude-opus-4",
+				RequestTimeout: "20m",
 			},
 			expectServerURL: "http://localhost:5000",
 			expectModel:     "anthropic/claude-opus-4",
+			expectTimeout:   "20m0s",
 		},
 		{
 			name: "empty model uses default",
@@ -52,6 +57,7 @@ func TestNewOpenCodeBackend(t *testing.T) {
 			},
 			expectServerURL: "http://localhost:4096",
 			expectModel:     "anthropic/claude-sonnet-4",
+			expectTimeout:   "10m0s",
 		},
 	}
 
@@ -66,6 +72,9 @@ func TestNewOpenCodeBackend(t *testing.T) {
 			}
 			if backend.config.Model != tt.expectModel {
 				t.Errorf("Model = %q, want %q", backend.config.Model, tt.expectModel)
+			}
+			if backend.httpClient.Timeout.String() != tt.expectTimeout {
+				t.Errorf("http timeout = %q, want %q", backend.httpClient.Timeout.String(), tt.expectTimeout)
 			}
 		})
 	}
