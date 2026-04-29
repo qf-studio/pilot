@@ -21,6 +21,8 @@ import (
 	"github.com/qf-studio/pilot/internal/transcription"
 )
 
+const startupAPITimeout = 10 * time.Second
+
 // MemberResolver resolves a Telegram user to a team member ID for RBAC (GH-634).
 // Decoupled from teams package to avoid import cycles.
 type MemberResolver interface {
@@ -77,24 +79,24 @@ type Handler struct {
 	store            *memory.Store          // Memory store for history/queue/budget (optional)
 	cmdHandler       *CommandHandler        // Command handler for /commands
 	plainTextMode    bool                   // Use plain text instead of Markdown
-	botUsername       string                // Bot username for mention stripping (GH-2129)
+	botUsername      string                 // Bot username for mention stripping (GH-2129)
 	commsHandler     *comms.Handler         // Shared message handler (GH-2143)
 }
 
 // HandlerConfig holds configuration for the Telegram handler
 type HandlerConfig struct {
 	BotToken       string
-	ProjectPath    string                // Default/fallback project path
-	Projects       comms.ProjectSource   // Project source for multi-project support
-	AllowedIDs     []int64               // User/chat IDs allowed to send tasks
-	Transcription  *transcription.Config // Voice transcription config (optional)
-	Store          *memory.Store         // Memory store for history/queue/budget (optional)
-	PlainTextMode  bool                  // Use plain text instead of Markdown (default: true)
+	ProjectPath    string                 // Default/fallback project path
+	Projects       comms.ProjectSource    // Project source for multi-project support
+	AllowedIDs     []int64                // User/chat IDs allowed to send tasks
+	Transcription  *transcription.Config  // Voice transcription config (optional)
+	Store          *memory.Store          // Memory store for history/queue/budget (optional)
+	PlainTextMode  bool                   // Use plain text instead of Markdown (default: true)
 	RateLimit      *comms.RateLimitConfig // Rate limiting config (optional)
-	LLMClassifier  *LLMClassifierConfig  // LLM intent classification config (optional)
-	MemberResolver MemberResolver        // Team member resolver for RBAC (optional, GH-634)
-	CommsHandler   *comms.Handler        // Shared message handler (optional, GH-2143)
-	Client         *Client               // Optional reuse of existing client
+	LLMClassifier  *LLMClassifierConfig   // LLM intent classification config (optional)
+	MemberResolver MemberResolver         // Team member resolver for RBAC (optional, GH-634)
+	CommsHandler   *comms.Handler         // Shared message handler (optional, GH-2143)
+	Client         *Client                // Optional reuse of existing client
 }
 
 // NewHandler creates a new Telegram message handler
@@ -119,15 +121,15 @@ func NewHandler(config *HandlerConfig, runner *executor.Runner) *Handler {
 	}
 
 	h := &Handler{
-		client:       client,
-		runner:       runner,
-		projects:     config.Projects,
-		projectPath:  projectPath,
-		allowedIDs:   allowedIDs,
-		stopCh:       make(chan struct{}),
-		store:        config.Store,
+		client:        client,
+		runner:        runner,
+		projects:      config.Projects,
+		projectPath:   projectPath,
+		allowedIDs:    allowedIDs,
+		stopCh:        make(chan struct{}),
+		store:         config.Store,
 		plainTextMode: config.PlainTextMode,
-		commsHandler: config.CommsHandler,
+		commsHandler:  config.CommsHandler,
 	}
 
 	// Initialize command handler
@@ -198,13 +200,17 @@ func (h *Handler) getParseMode() string {
 // CheckSingleton verifies no other bot instance is already running.
 // Returns ErrConflict if another instance is detected.
 func (h *Handler) CheckSingleton(ctx context.Context) error {
-	return h.client.CheckSingleton(ctx)
+	startupCtx, cancel := context.WithTimeout(ctx, startupAPITimeout)
+	defer cancel()
+	return h.client.CheckSingleton(startupCtx)
 }
 
 // StartPolling starts polling for updates in a goroutine
 func (h *Handler) StartPolling(ctx context.Context) {
 	// Fetch bot username for mention stripping (GH-2129)
-	if me, err := h.client.GetMe(ctx); err != nil {
+	startupCtx, cancel := context.WithTimeout(ctx, startupAPITimeout)
+	defer cancel()
+	if me, err := h.client.GetMe(startupCtx); err != nil {
 		logging.WithComponent("telegram").Warn("Failed to fetch bot username via getMe", slog.String("error", err.Error()))
 	} else if me != nil {
 		h.botUsername = me.Username

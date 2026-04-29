@@ -34,7 +34,7 @@ func (n *noopMessenger) SendChunked(context.Context, string, string, string, str
 	return nil
 }
 func (n *noopMessenger) AcknowledgeCallback(context.Context, string) error { return nil }
-func (n *noopMessenger) MaxMessageLength() int                            { return 4096 }
+func (n *noopMessenger) MaxMessageLength() int                             { return 4096 }
 
 // newTestCommsHandler creates a comms.Handler with a no-op messenger for tests.
 func newTestCommsHandler() *comms.Handler {
@@ -793,6 +793,43 @@ func TestHandlerCheckSingleton(t *testing.T) {
 	// but we're verifying the method signature and delegation work
 	ctx := context.Background()
 	_ = h.CheckSingleton(ctx)
+}
+
+func TestHandlerStartPollingUsesStartupTimeout(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "getMe") {
+			time.Sleep(startupAPITimeout + time.Second)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok":     true,
+			"result": map[string]any{"id": 1, "username": "pilot_bot", "first_name": "Pilot"},
+		})
+	}))
+	defer server.Close()
+
+	h := &Handler{
+		client:       NewClientWithBaseURL(testutil.FakeTelegramBotToken, server.URL),
+		stopCh:       make(chan struct{}),
+		commsHandler: newTestCommsHandler(),
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	start := time.Now()
+	h.StartPolling(ctx)
+	defer h.Stop()
+
+	if elapsed := time.Since(start); elapsed > startupAPITimeout+2*time.Second {
+		t.Fatalf("StartPolling blocked too long: %v", elapsed)
+	}
+	if h.botUsername != "" {
+		t.Fatalf("botUsername = %q, want empty on startup timeout", h.botUsername)
+	}
+	if elapsed := time.Since(start); elapsed < startupAPITimeout {
+		t.Fatalf("StartPolling returned before startup timeout elapsed: %v", elapsed)
+	}
 }
 
 // TestFastListTasksEmpty tests fast list when no tasks directory
