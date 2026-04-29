@@ -69,6 +69,14 @@ type ExecuteOptions struct {
 	// The callback receives the process PID and the watchdog timeout duration.
 	// Called BEFORE the process is killed, allowing for alert emission.
 	WatchdogCallback func(pid int, watchdogTimeout time.Duration)
+
+	// AllowedTools restricts the set of tools the subprocess may use.
+	// Maps to the Claude Code CLI --allowedTools flag. GH-2432.
+	AllowedTools []string
+
+	// MCPConfigPath is passed to the subprocess via --mcp-config. When empty,
+	// no MCP servers are loaded (avoiding tool-definition token bloat). GH-2432.
+	MCPConfigPath string
 }
 
 // BackendEvent represents a streaming event from the backend.
@@ -260,6 +268,10 @@ type BackendConfig struct {
 
 	// Hooks contains Claude Code hooks settings for quality gates during execution
 	Hooks *HooksConfig `yaml:"hooks,omitempty"`
+
+	// Planning controls the model used for epic planning subprocesses (GH-2432).
+	// Planning gets Opus while execution stays on Sonnet for cost savings.
+	Planning *PlanningConfig `yaml:"planning,omitempty"`
 
 	// UseWorktree enables git worktree isolation for execution.
 	// When true, Pilot creates a temporary worktree for each task, allowing
@@ -560,6 +572,44 @@ type ClaudeCodeConfig struct {
 	// on long runs. When true, such tasks fall back to the lean non-Navigator
 	// prompt. Default: false (Navigator context always injected when available).
 	DisableNavigatorForEpic bool `yaml:"disable_navigator_for_epic,omitempty"`
+
+	// AllowedTools restricts the set of tools the Claude Code subprocess may use.
+	// Maps to the CLI's --allowedTools flag. Default (when unset, see
+	// DefaultAllowedToolsExecution) keeps the standard execution toolbox while
+	// excluding heavy MCP-loaded tools, cutting per-turn token cost. GH-2432.
+	AllowedTools []string `yaml:"allowed_tools,omitempty"`
+
+	// MCPConfigPath points to an MCP server config file passed via --mcp-config.
+	// When empty, the subprocess does NOT load any MCP servers — drastically
+	// reducing tool-definition tokens replayed on every turn. GH-2432.
+	MCPConfigPath string `yaml:"mcp_config_path,omitempty"`
+}
+
+// PlanningConfig controls the model and behavior for epic planning subprocesses.
+// Planning runs benefit from stronger reasoning (Opus); execution runs stay on
+// the cheaper, verbose-friendly Sonnet. GH-2432.
+type PlanningConfig struct {
+	// Model is the Claude model name passed to the planning subprocess via
+	// --model and the ANTHROPIC_MODEL env var. Default: "claude-opus-4-7".
+	Model string `yaml:"model,omitempty"`
+}
+
+// DefaultPlanningConfig returns the default planning config (Opus 4.7).
+func DefaultPlanningConfig() *PlanningConfig {
+	return &PlanningConfig{Model: "claude-opus-4-7"}
+}
+
+// DefaultAllowedToolsExecution is the default --allowedTools list for execution
+// subprocesses. Excludes MCP and Web* tools to cut per-turn context bloat.
+// GH-2432.
+func DefaultAllowedToolsExecution() []string {
+	return []string{"Read", "Write", "Edit", "Bash", "Grep", "Glob", "Task"}
+}
+
+// DefaultAllowedToolsPlanning is the default --allowedTools list for the
+// planning subprocess. Planning should not write code. GH-2432.
+func DefaultAllowedToolsPlanning() []string {
+	return []string{"Read", "Grep", "Glob"}
 }
 
 // QwenCodeConfig contains Qwen Code backend configuration.
@@ -607,7 +657,8 @@ func DefaultBackendConfig() *BackendConfig {
 		PrePushLint:     &prePushLint,
 		PlanningTimeout: 2 * time.Minute,
 		ClaudeCode: &ClaudeCodeConfig{
-			Command: "claude",
+			Command:      "claude",
+			AllowedTools: DefaultAllowedToolsExecution(),
 		},
 		QwenCode: &QwenCodeConfig{
 			Command: "qwen",
@@ -627,6 +678,7 @@ func DefaultBackendConfig() *BackendConfig {
 		IntentJudge:      DefaultIntentJudgeConfig(),
 		Navigator:        DefaultNavigatorConfig(),
 		Hooks:            DefaultHooksConfig(),
+		Planning:         DefaultPlanningConfig(),
 		Retry:            DefaultRetryConfig(),
 		Stagnation:       DefaultStagnationConfig(),
 		Simplification:   DefaultSimplifyConfig(),
@@ -649,7 +701,8 @@ func DefaultModelRoutingConfig() *ModelRoutingConfig {
 		Trivial: "claude-haiku",
 		Simple:  "claude-sonnet-4-6",
 		Medium:  "claude-sonnet-4-6",
-		Complex: "claude-opus-4-6",
+		// GH-2432: Sonnet for "complex" too — Opus is reserved for planning only.
+		Complex: "claude-sonnet-4-6",
 	}
 }
 

@@ -13,8 +13,9 @@ func TestHooksConfig_Defaults(t *testing.T) {
 	if config.Enabled {
 		t.Error("Expected hooks to be disabled by default")
 	}
-	if config.RunTestsOnStop == nil || !*config.RunTestsOnStop {
-		t.Error("Expected RunTestsOnStop to default to true when enabled")
+	// GH-2432: RunTestsOnStop default flipped to false to cut subprocess token spend.
+	if config.RunTestsOnStop == nil || *config.RunTestsOnStop {
+		t.Error("Expected RunTestsOnStop to default to false (GH-2432)")
 	}
 	if config.BlockDestructive == nil || !*config.BlockDestructive {
 		t.Error("Expected BlockDestructive to default to true when enabled")

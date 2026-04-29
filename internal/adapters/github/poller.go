@@ -1324,6 +1324,11 @@ func (p *Poller) shouldRetryFailedIssue(ctx context.Context, issue *Issue) bool 
 // shouldRetryRetryReadyIssue checks if a pilot-retry-ready issue should be auto-retried.
 // Returns true if the issue should be retried (label removed), false if it should be skipped.
 // GH-2276: Issues with pilot-retry-ready (PR closed without merge) get retried up to maxRetryReadyRetries times.
+//
+// GH-2432: Retry counter is persisted via GitHub labels (pilot-retry-1, -2,
+// -exhausted) so the count survives `pilot start` restarts. The previous
+// in-memory map silently reset on restart, allowing pathological issues to
+// consume Opus indefinitely.
 func (p *Poller) shouldRetryRetryReadyIssue(ctx context.Context, issue *Issue) bool {
 	// Don't retry closed issues
 	if issue.State != "open" {
@@ -1339,15 +1344,46 @@ func (p *Poller) shouldRetryRetryReadyIssue(ctx context.Context, issue *Issue) b
 		return false
 	}
 
-	p.mu.RLock()
-	retries := p.retryReadyCount[issue.Number]
-	p.mu.RUnlock()
-
-	if retries >= p.maxRetryReadyRetries {
-		p.logger.Warn("Issue has reached max retry-ready retries, skipping",
+	// GH-2432: terminal state — exhausted retries never retry again.
+	if HasLabel(issue, LabelRetryExhausted) {
+		p.logger.Warn("Issue is pilot-retry-exhausted, skipping",
 			slog.Int("number", issue.Number),
-			slog.Int("retries", retries),
-			slog.Int("max", p.maxRetryReadyRetries),
+		)
+		return false
+	}
+
+	// Determine the next retry-counter label based on current state.
+	var currentRetryLabel, nextRetryLabel string
+	switch {
+	case HasLabel(issue, LabelRetry2):
+		currentRetryLabel = LabelRetry2
+		nextRetryLabel = LabelRetryExhausted
+	case HasLabel(issue, LabelRetry1):
+		currentRetryLabel = LabelRetry1
+		nextRetryLabel = LabelRetry2
+	default:
+		nextRetryLabel = LabelRetry1
+	}
+
+	// If escalating to exhausted, mark the label and skip dispatch.
+	if nextRetryLabel == LabelRetryExhausted {
+		if err := p.client.RemoveLabel(ctx, p.owner, p.repo, issue.Number, currentRetryLabel); err != nil {
+			p.logger.Warn("Failed to remove prior retry label",
+				slog.Int("number", issue.Number),
+				slog.String("label", currentRetryLabel),
+				slog.Any("error", err),
+			)
+		}
+		if err := p.client.AddLabels(ctx, p.owner, p.repo, issue.Number, []string{LabelRetryExhausted}); err != nil {
+			p.logger.Warn("Failed to add pilot-retry-exhausted label",
+				slog.Int("number", issue.Number),
+				slog.Any("error", err),
+			)
+		}
+		// Also clear pilot-retry-ready so the poller doesn't keep finding it.
+		_ = p.client.RemoveLabel(ctx, p.owner, p.repo, issue.Number, LabelRetryReady)
+		p.logger.Warn("Issue exhausted retry budget — escalated to pilot-retry-exhausted",
+			slog.Int("number", issue.Number),
 		)
 		return false
 	}
@@ -1357,7 +1393,26 @@ func (p *Poller) shouldRetryRetryReadyIssue(ctx context.Context, issue *Issue) b
 		return false
 	}
 
-	// Remove pilot-retry-ready label and increment retry count
+	// Swap retry-N label: remove current (if any), add next.
+	if currentRetryLabel != "" {
+		if err := p.client.RemoveLabel(ctx, p.owner, p.repo, issue.Number, currentRetryLabel); err != nil {
+			p.logger.Warn("Failed to remove prior retry label",
+				slog.Int("number", issue.Number),
+				slog.String("label", currentRetryLabel),
+				slog.Any("error", err),
+			)
+		}
+	}
+	if err := p.client.AddLabels(ctx, p.owner, p.repo, issue.Number, []string{nextRetryLabel}); err != nil {
+		p.logger.Warn("Failed to add retry label",
+			slog.Int("number", issue.Number),
+			slog.String("label", nextRetryLabel),
+			slog.Any("error", err),
+		)
+		// Continue anyway; we'd rather retry than block on a label flake.
+	}
+
+	// Remove pilot-retry-ready label so the poller doesn't loop the same issue.
 	if err := p.client.RemoveLabel(ctx, p.owner, p.repo, issue.Number, LabelRetryReady); err != nil {
 		p.logger.Warn("Failed to remove pilot-retry-ready label for retry",
 			slog.Int("number", issue.Number),
@@ -1366,8 +1421,10 @@ func (p *Poller) shouldRetryRetryReadyIssue(ctx context.Context, issue *Issue) b
 		return false
 	}
 
+	// Keep the legacy in-memory counter in sync so existing tests/state observers
+	// remain consistent. GH-2432: this is now a mirror, not the source of truth.
 	p.mu.Lock()
-	p.retryReadyCount[issue.Number] = retries + 1
+	p.retryReadyCount[issue.Number]++
 	p.mu.Unlock()
 
 	// Clear from processed map so the issue can be re-picked
@@ -1375,8 +1432,7 @@ func (p *Poller) shouldRetryRetryReadyIssue(ctx context.Context, issue *Issue) b
 
 	p.logger.Info("Auto-retrying pilot-retry-ready issue",
 		slog.Int("number", issue.Number),
-		slog.Int("retry", retries+1),
-		slog.Int("max", p.maxRetryReadyRetries),
+		slog.String("retry_label", nextRetryLabel),
 	)
 
 	return true

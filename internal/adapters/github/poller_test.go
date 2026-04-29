@@ -2337,8 +2337,11 @@ func TestPoller_AutoRetryRetryReadyIssue_FirstRetry(t *testing.T) {
 
 func TestPoller_AutoRetryRetryReadyIssue_RetryLimitReached(t *testing.T) {
 	now := time.Now()
+	// GH-2432: Retry state is now persisted via labels — issue already at
+	// pilot-retry-2 means the next escalation goes to pilot-retry-exhausted
+	// (no dispatch).
 	issues := []*Issue{
-		{Number: 42, State: "open", Title: "Retry-ready issue", Labels: []Label{{Name: "pilot"}, {Name: LabelRetryReady}}, CreatedAt: now.Add(-1 * time.Hour)},
+		{Number: 42, State: "open", Title: "Retry-ready issue", Labels: []Label{{Name: "pilot"}, {Name: LabelRetryReady}, {Name: LabelRetry2}}, CreatedAt: now.Add(-1 * time.Hour)},
 		{Number: 43, State: "open", Title: "Available issue", Labels: []Label{{Name: "pilot"}}, CreatedAt: now},
 	}
 
@@ -2352,11 +2355,6 @@ func TestPoller_AutoRetryRetryReadyIssue_RetryLimitReached(t *testing.T) {
 	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second,
 		WithMaxRetryReadyRetries(3),
 	)
-
-	// Simulate: already retried 3 times
-	poller.mu.Lock()
-	poller.retryReadyCount[42] = 3
-	poller.mu.Unlock()
 
 	issue, err := poller.findOldestUnprocessedIssue(context.Background())
 	if err != nil {
