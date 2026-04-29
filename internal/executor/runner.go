@@ -562,6 +562,17 @@ func (r *Runner) backendType() string {
 	return "claude-code"
 }
 
+// selfReviewTimeout returns the per-backend timeout for the self-review phase.
+// OpenCode runs are legitimately slower than Claude Code (server-managed
+// session, larger streaming overhead); a 2-minute cap cancels review while the
+// backend is still working and surfaces as a false regression. GH-2416.
+func (r *Runner) selfReviewTimeout() time.Duration {
+	if r.backendType() == BackendTypeOpenCode {
+		return 10 * time.Minute
+	}
+	return 2 * time.Minute
+}
+
 // fallbackModelName returns the best-known model name for telemetry rows when
 // the backend stream did not surface a model field. Used to distinguish
 // "telemetry-missing" from "true-zero" runs in execution_metrics. Resolution:
@@ -3303,8 +3314,10 @@ func (r *Runner) runSelfReview(ctx context.Context, task *Task, state *progressS
 
 	reviewPrompt := r.buildSelfReviewPrompt(task)
 
-	// Execute self-review with shorter timeout (2 minutes)
-	reviewCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	// Execute self-review with backend-aware timeout. OpenCode runs are
+	// genuinely slower than Claude Code; the 2-minute default cancels review
+	// mid-flight and surfaces as a regression. GH-2416.
+	reviewCtx, cancel := context.WithTimeout(ctx, r.selfReviewTimeout())
 	defer cancel()
 
 	// Select model and effort (use same routing as main execution)

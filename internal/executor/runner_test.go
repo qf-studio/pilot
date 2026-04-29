@@ -76,6 +76,40 @@ func TestNewRunnerWithConfig(t *testing.T) {
 	}
 }
 
+func TestSelfReviewTimeout(t *testing.T) {
+	t.Run("opencode uses longer self-review timeout", func(t *testing.T) {
+		runner, err := NewRunnerWithConfig(&BackendConfig{
+			Type: BackendTypeOpenCode,
+			OpenCode: &OpenCodeConfig{
+				ServerURL: "http://localhost:5000",
+			},
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got := runner.selfReviewTimeout(); got != 10*time.Minute {
+			t.Fatalf("selfReviewTimeout() = %v, want %v", got, 10*time.Minute)
+		}
+	})
+
+	t.Run("claude-code keeps short self-review timeout", func(t *testing.T) {
+		runner, err := NewRunnerWithConfig(&BackendConfig{Type: BackendTypeClaudeCode})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got := runner.selfReviewTimeout(); got != 2*time.Minute {
+			t.Fatalf("selfReviewTimeout() = %v, want %v", got, 2*time.Minute)
+		}
+	})
+
+	t.Run("default backend keeps short self-review timeout", func(t *testing.T) {
+		r := &Runner{}
+		if got := r.selfReviewTimeout(); got != 2*time.Minute {
+			t.Fatalf("selfReviewTimeout() = %v, want %v", got, 2*time.Minute)
+		}
+	})
+}
+
 func TestNewRunnerWithConfigInvalid(t *testing.T) {
 	config := &BackendConfig{
 		Type: "invalid-backend",
