@@ -123,7 +123,7 @@ Disable via config: `executor.navigator.auto_init: false`
 
 ## Current State
 
-**Current Version:** v2.102.3 | **319 features working**
+**Current Version:** v2.103.0 | **319 features working**
 
 **Recent (v2.100.2 → v2.100.4, Apr 26-27 2026):**
 - `fix(executor)`: OpenCode message schema + response parsing — modern `model: {providerID, modelID}` payload, `{info, parts}` response shape (GH-2407, GH-2409, GH-2413; closed unmerged #2408)
