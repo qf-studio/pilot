@@ -752,6 +752,10 @@ func (m *Model) SetProjectPath(path string) {
 	}
 }
 
+// RenderBannerForTest exposes renderBanner for cross-package tests
+// (cmd/pilot verifies applyDashboardBannerMeta wiring end-to-end).
+func (m Model) RenderBannerForTest() string { return m.renderBanner() }
+
 // SetBannerMeta configures optional metadata shown in the dashboard banner (GH-2455).
 // envName is the active environment (e.g. "prod"), modelStack describes the routing
 // config (e.g. "opus:plan │ sonnet:exec"), adapters is the list of active adapter names.
