@@ -129,7 +129,6 @@ func newStartCmd() *cobra.Command {
 		teamID       string // Optional team ID for scoping execution
 		teamMember   string // Member email for project access scoping
 		logFormat    string // Log output format: text or json (GH-847)
-		noSplash     bool   // Skip startup splash animation (GH-2455)
 	)
 
 	cmd := &cobra.Command{
@@ -279,15 +278,8 @@ Examples:
 			//
 			// Note: Linear/Jira webhooks require gateway but don't block polling adapters.
 			// When both are needed, gateway starts in background within polling mode.
-			// Run startup splash when dashboard mode is active, unless --no-splash
-			// or CI=true (non-interactive) (GH-2455).
-			if dashboardMode && !noSplash && os.Getenv("CI") != "true" {
-				splashProg := tea.NewProgram(dashboard.NewSplashModel(), tea.WithAltScreen())
-				if _, err := splashProg.Run(); err != nil {
-					// Splash is non-critical — log and continue
-					logging.WithComponent("dashboard").Debug("splash screen error", "error", err)
-				}
-			}
+			// Splash screen removed — caused alt-screen flicker between
+			// splash exit and dashboard start (GH-2459 follow-up).
 
 			hasPollingAdapter := hasTelegram || hasGithubPolling
 			if noGateway || hasPollingAdapter {
@@ -572,6 +564,7 @@ Examples:
 					model := dashboard.NewModelWithOptions(version, gwStore, gwAutopilotController, nil)
 					model.SetProjectPath(projectPath)
 					applyDashboardBannerMeta(&model, cfg, cmd)
+					model.EnableSplash(resolvedConfigPath())
 					gwProgram = tea.NewProgram(model,
 						tea.WithAltScreen(),
 						tea.WithInput(os.Stdin),
@@ -1132,7 +1125,6 @@ Examples:
 	cmd.Flags().StringVar(&teamID, "team", "", "Team ID or name for project access scoping (overrides config)")
 	cmd.Flags().StringVar(&teamMember, "team-member", "", "Member email for team access scoping (overrides config)")
 	cmd.Flags().StringVar(&logFormat, "log-format", "text", "Log output format: text or json (for log aggregation systems)")
-	cmd.Flags().BoolVar(&noSplash, "no-splash", false, "Skip the startup splash animation")
 
 	return cmd
 }
@@ -1600,6 +1592,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 		model := dashboard.NewModelWithOptions(version, store, autopilotController, upgradeRequestCh)
 		model.SetProjectPath(projectPath)
 		applyDashboardBannerMeta(&model, cfg, cmd)
+		model.EnableSplash(resolvedConfigPath())
 		program = tea.NewProgram(model,
 			tea.WithAltScreen(),
 			tea.WithInput(os.Stdin),
@@ -2662,18 +2655,18 @@ func applyDashboardBannerMeta(model *dashboard.Model, cfg *config.Config, cmd *c
 
 	modelStack := ""
 	if cfg.Executor != nil {
-		def := strings.TrimSpace(cfg.Executor.DefaultModel)
+		def := shortenModelID(cfg.Executor.DefaultModel)
 		var complex string
 		if cfg.Executor.ModelRouting != nil {
-			complex = strings.TrimSpace(cfg.Executor.ModelRouting.Complex)
+			complex = shortenModelID(cfg.Executor.ModelRouting.Complex)
 		}
 		switch {
 		case complex != "" && def != "" && complex != def:
-			modelStack = strings.ToUpper(complex) + " / " + strings.ToUpper(def)
+			modelStack = complex + " / " + def
 		case def != "":
-			modelStack = strings.ToUpper(def)
+			modelStack = def
 		case complex != "":
-			modelStack = strings.ToUpper(complex)
+			modelStack = complex
 		}
 	}
 
@@ -2742,28 +2735,34 @@ func applyDashboardBannerMeta(model *dashboard.Model, cfg *config.Config, cmd *c
 
 	model.SetBannerMeta(envName, modelStack, nil, time.Now())
 	model.SetBannerAdapters(adapters)
-	model.SetBannerSessionCode(deriveSessionCode())
 }
 
-// deriveSessionCode returns a short identifier for the banner's flight-code
-// prefix. Uses the short git SHA from the build version if present (e.g.
-// "v2.103.0-2-g6700a399-dirty" → "6700a39/"), otherwise falls back to the
-// process start time formatted as HHMM/.
-func deriveSessionCode() string {
-	if idx := strings.Index(version, "-g"); idx >= 0 {
-		rest := version[idx+2:]
-		// Trim trailing "-dirty" or similar suffixes.
-		if dash := strings.Index(rest, "-"); dash >= 0 {
-			rest = rest[:dash]
-		}
-		if len(rest) >= 4 {
-			if len(rest) > 7 {
-				rest = rest[:7]
-			}
-			return rest + "/"
+// resolvedConfigPath returns the user-facing path to ~/.pilot/config.yaml
+// (with $HOME contracted to ~) for display in the splash boot block.
+func resolvedConfigPath() string {
+	home, _ := os.UserHomeDir()
+	full := filepath.Join(home, ".pilot", "config.yaml")
+	if home != "" && strings.HasPrefix(full, home) {
+		return "~" + strings.TrimPrefix(full, home)
+	}
+	return full
+}
+
+// shortenModelID compacts a model identifier for the banner: strips the
+// vendor prefix ("claude-", "gpt-", etc.) and uppercases the rest so
+// "claude-opus-4-7" → "OPUS-4-7". Returns empty string for empty input.
+func shortenModelID(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	for _, prefix := range []string{"claude-", "gpt-", "anthropic-", "openai-"} {
+		if strings.HasPrefix(s, prefix) {
+			s = strings.TrimPrefix(s, prefix)
+			break
 		}
 	}
-	return time.Now().UTC().Format("1504") + "/"
+	return strings.ToUpper(s)
 }
 
 func countGitHubRepos(cfg *config.Config) int {
