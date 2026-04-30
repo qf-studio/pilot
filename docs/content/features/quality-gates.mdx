@@ -2,7 +2,7 @@ import { Callout } from 'nextra/components'
 
 # Quality Gates
 
-Quality gates enforce code quality standards between implementation and PR creation. They ensure all code passes basic checks before being submitted for review.
+Quality gates enforce code quality standards between implementation and PR creation. They ensure all code passes basic checks before being submitted for review. Gates run as [step 8](/concepts/execution-pipeline#8-quality-gates) of Pilot's execution pipeline, immediately before self-review.
 
 <Callout type="info">
   Quality gates run automatically after task implementation. If gates fail, Pilot receives feedback and retries the implementation.
