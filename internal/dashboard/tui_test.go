@@ -1403,29 +1403,32 @@ func TestAutopilotPanelDisabled(t *testing.T) {
 }
 
 func TestRenderAutopilotRailPositions(t *testing.T) {
+	// New rail uses lamp-per-node: ✓ (done) / ● (current) / ○ (pending).
+	// Each rail has exactly one ● (the current stage), N done lamps, M pending lamps.
 	tests := []struct {
-		stage    autopilot.PRStage
-		wantBull int // expected number of ● in the output (active + past connectors)
-		wantPos  int // 0-based position of current node
-		nodeName string
+		stage      autopilot.PRStage
+		wantDone   int // count of ✓
+		wantBull   int // count of ● (always 1 for active stages)
+		wantPend   int // count of ○
+		nodeName   string
 	}{
-		{autopilot.StageWaitingCI, 1, 0, "ci-wait"},
-		{autopilot.StageMerging, 3, 2, "merge"},
-		{autopilot.StagePostMergeCI, 4, 3, "tag"},
-		{autopilot.StageReleasing, 4, 4, "release"},
+		{autopilot.StageWaitingCI, 0, 1, 4, "ci-wait"},
+		{autopilot.StageMerging, 2, 1, 2, "merge"},
+		{autopilot.StagePostMergeCI, 3, 1, 1, "tag"},
+		{autopilot.StageReleasing, 4, 1, 0, "release"},
 	}
 
 	for _, tt := range tests {
 		t.Run(string(tt.stage), func(t *testing.T) {
 			out := renderAutopilotRail(tt.stage)
-			// Strip ANSI before counting runes
-			plain := lipgloss.NewStyle().Render(out)
-			_ = plain
-			// Count ● by scanning raw bytes (they survive style rendering)
-			bullCount := strings.Count(out, "●")
-			if bullCount != tt.wantBull {
-				t.Errorf("stage %s: ● count = %d, want %d  (rail: %q)",
-					tt.stage, bullCount, tt.wantBull, out)
+			if got := strings.Count(out, "✓"); got != tt.wantDone {
+				t.Errorf("stage %s: ✓ count = %d, want %d (rail: %q)", tt.stage, got, tt.wantDone, out)
+			}
+			if got := strings.Count(out, "●"); got != tt.wantBull {
+				t.Errorf("stage %s: ● count = %d, want %d (rail: %q)", tt.stage, got, tt.wantBull, out)
+			}
+			if got := strings.Count(out, "○"); got != tt.wantPend {
+				t.Errorf("stage %s: ○ count = %d, want %d (rail: %q)", tt.stage, got, tt.wantPend, out)
 			}
 			if !strings.Contains(out, tt.nodeName) {
 				t.Errorf("stage %s: rail missing node %q", tt.stage, tt.nodeName)

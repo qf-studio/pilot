@@ -15,7 +15,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/qf-studio/pilot/internal/autopilot"
-	"github.com/qf-studio/pilot/internal/banner"
 	"github.com/qf-studio/pilot/internal/memory"
 )
 
@@ -259,30 +258,36 @@ func pipelineStagePosition(stage autopilot.PRStage) int {
 	return 0
 }
 
-// renderAutopilotRail renders the 5-node pipeline progress rail.
-// The connector after the current stage shows ● (active); future connectors show ○.
-// Format: ci-wait ──●── rebase ──○── merge ──○── tag ──○── release
+// renderAutopilotRail renders the 5-node pipeline progress rail with a status
+// lamp before each node: ✓ (done, sage), ● (current, steel blue), ○ (pending,
+// dim slate). Connectors are plain dim "──" separators.
+// Format example for stage=releasing:
+//
+//	✓ ci-wait ── ✓ rebase ── ✓ merge ── ✓ tag ── ● release
 func renderAutopilotRail(stage autopilot.PRStage) string {
 	nodes := []string{"ci-wait", "rebase", "merge", "tag", "release"}
 	pos := pipelineStagePosition(stage)
 	var sb strings.Builder
 	for i, name := range nodes {
-		if i == pos {
-			sb.WriteString(titleStyle.Render(name))
-		} else {
-			sb.WriteString(dimStyle.Render(name))
+		var lamp, label string
+		var lampStyle, labelStyle lipgloss.Style
+		switch {
+		case i < pos:
+			lamp, lampStyle = "✓", statusCompletedStyle
+			labelStyle = statusCompletedStyle
+		case i == pos:
+			lamp, lampStyle = "●", statusRunningStyle
+			labelStyle = titleStyle
+		default:
+			lamp, lampStyle = "○", dimStyle
+			labelStyle = dimStyle
 		}
+		label = name
+		sb.WriteString(lampStyle.Render(lamp))
+		sb.WriteString(" ")
+		sb.WriteString(labelStyle.Render(label))
 		if i < len(nodes)-1 {
-			// Connector between node i and i+1
-			if i < pos {
-				// Already passed this connector
-				sb.WriteString(statusCompletedStyle.Render(" ──●── "))
-			} else if i == pos {
-				// Currently at this connector (leaving current node)
-				sb.WriteString(statusRunningStyle.Render(" ──●── "))
-			} else {
-				sb.WriteString(dimStyle.Render(" ──○── "))
-			}
+			sb.WriteString(dimStyle.Render(" ── "))
 		}
 	}
 	return sb.String()
@@ -460,17 +465,17 @@ type Model struct {
 	showBanner bool
 
 	// Banner metadata (GH-2455): env name, model routing description, active adapter names
-	startTime     time.Time
-	modelStack    string
-	envName       string
+	startTime      time.Time
+	modelStack     string
+	envName        string
 	activeAdapters []string
 
 	// Git graph panel (GH-1506)
-	gitGraphMode   GitGraphMode
-	gitGraphState  *GitGraphState
-	gitGraphScroll int
-	gitGraphFocus  bool
-	dbSyncTick     int    // Counter for periodic DB re-sync (GH-2248)
+	gitGraphMode       GitGraphMode
+	gitGraphState      *GitGraphState
+	gitGraphScroll     int
+	gitGraphFocus      bool
+	dbSyncTick         int    // Counter for periodic DB re-sync (GH-2248)
 	projectPath        string // Working directory for git commands
 	defaultProjectPath string // Fallback project path from config (GH-2167)
 	gitProjectName     string // Current project name shown in git panel title (GH-2167)
@@ -494,7 +499,6 @@ func (m Model) effectivePanelTotalWidth() int {
 	}
 	return panelTotalWidth
 }
-
 
 // tickMsg is sent periodically to refresh the display
 type tickMsg time.Time
@@ -1242,11 +1246,10 @@ func (m Model) renderDashboard() string {
 		m.autopilotPanel.panelWidth = m.effectivePanelTotalWidth()
 	}
 
-	// Header: ASCII logo + bordered banner frame (GH-2455)
+	// Header: bordered banner frame (GH-2455 / GH-2459).
+	// The ASCII logo is shown only during the splash; steady-state dashboard
+	// uses the compact banner frame to keep header real-estate small.
 	if m.showBanner {
-		b.WriteString("\n")
-		logo := strings.TrimPrefix(banner.Logo, "\n")
-		b.WriteString(titleStyle.Render(logo))
 		b.WriteString(m.renderBanner())
 		b.WriteString("\n")
 	}

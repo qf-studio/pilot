@@ -28,14 +28,14 @@ import (
 	"github.com/qf-studio/pilot/internal/approval"
 	"github.com/qf-studio/pilot/internal/autopilot"
 	"github.com/qf-studio/pilot/internal/banner"
-	"github.com/qf-studio/pilot/internal/comms"
-	"github.com/qf-studio/pilot/internal/intent"
 	"github.com/qf-studio/pilot/internal/briefs"
 	"github.com/qf-studio/pilot/internal/budget"
+	"github.com/qf-studio/pilot/internal/comms"
 	"github.com/qf-studio/pilot/internal/config"
 	"github.com/qf-studio/pilot/internal/dashboard"
 	"github.com/qf-studio/pilot/internal/executor"
 	"github.com/qf-studio/pilot/internal/gateway"
+	"github.com/qf-studio/pilot/internal/intent"
 	"github.com/qf-studio/pilot/internal/logging"
 	"github.com/qf-studio/pilot/internal/memory"
 	"github.com/qf-studio/pilot/internal/pilot"
@@ -250,7 +250,7 @@ Examples:
 					cfg.Orchestrator.Autopilot = autopilot.DefaultConfig()
 				}
 				cfg.Orchestrator.Autopilot.Enabled = true
-			
+
 				// Use SetActiveEnvironment to validate and resolve environment
 				if err := cfg.Orchestrator.Autopilot.SetActiveEnvironment(envFlag); err != nil {
 					// Show helpful error with available environments
@@ -267,7 +267,7 @@ Examples:
 					return err
 				}
 			}
-			
+
 			// GH-394: Polling mode is the default when any polling adapter is enabled.
 			// Previously, having linear.enabled=true would force gateway mode even when
 			// only using GitHub/Telegram polling. Now polling adapters work independently.
@@ -571,6 +571,7 @@ Examples:
 					}
 					model := dashboard.NewModelWithOptions(version, gwStore, gwAutopilotController, nil)
 					model.SetProjectPath(projectPath)
+					applyDashboardBannerMeta(&model, cfg)
 					gwProgram = tea.NewProgram(model,
 						tea.WithAltScreen(),
 						tea.WithInput(os.Stdin),
@@ -1108,7 +1109,7 @@ Examples:
 		},
 	}
 
-cmd.Flags().BoolVar(&dashboardMode, "dashboard", false, "Show TUI dashboard for real-time task monitoring")
+	cmd.Flags().BoolVar(&dashboardMode, "dashboard", false, "Show TUI dashboard for real-time task monitoring")
 	cmd.Flags().StringVarP(&projectPath, "project", "p", "", "Project path (default: config default or cwd)")
 	cmd.Flags().BoolVar(&replace, "replace", false, "Kill existing bot instance before starting")
 	cmd.Flags().BoolVar(&noGateway, "no-gateway", false, "Run polling adapters only (no HTTP gateway)")
@@ -1598,6 +1599,7 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 		upgradeRequestCh = make(chan struct{}, 1)
 		model := dashboard.NewModelWithOptions(version, store, autopilotController, upgradeRequestCh)
 		model.SetProjectPath(projectPath)
+		applyDashboardBannerMeta(&model, cfg)
 		program = tea.NewProgram(model,
 			tea.WithAltScreen(),
 			tea.WithInput(os.Stdin),
@@ -2492,51 +2494,51 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 			}
 
 			// Show GitLab status (GH-2045)
-		if cfg.Adapters.GitLab != nil && cfg.Adapters.GitLab.Enabled {
-			if cfg.Adapters.GitLab.Polling != nil && cfg.Adapters.GitLab.Polling.Enabled {
-				program.Send(dashboard.AddLog("🦊 GitLab polling active")())
-			} else {
-				program.Send(dashboard.AddLog("🦊 GitLab webhooks enabled")())
+			if cfg.Adapters.GitLab != nil && cfg.Adapters.GitLab.Enabled {
+				if cfg.Adapters.GitLab.Polling != nil && cfg.Adapters.GitLab.Polling.Enabled {
+					program.Send(dashboard.AddLog("🦊 GitLab polling active")())
+				} else {
+					program.Send(dashboard.AddLog("🦊 GitLab webhooks enabled")())
+				}
 			}
-		}
-		// Show Jira status (GH-2045)
-		if cfg.Adapters.Jira != nil && cfg.Adapters.Jira.Enabled {
-			if cfg.Adapters.Jira.Polling != nil && cfg.Adapters.Jira.Polling.Enabled {
-				program.Send(dashboard.AddLog("🎫 Jira polling active")())
-			} else {
-				program.Send(dashboard.AddLog("🎫 Jira webhooks enabled")())
+			// Show Jira status (GH-2045)
+			if cfg.Adapters.Jira != nil && cfg.Adapters.Jira.Enabled {
+				if cfg.Adapters.Jira.Polling != nil && cfg.Adapters.Jira.Polling.Enabled {
+					program.Send(dashboard.AddLog("🎫 Jira polling active")())
+				} else {
+					program.Send(dashboard.AddLog("🎫 Jira webhooks enabled")())
+				}
 			}
-		}
-		// Show Asana status (GH-2045)
-		if cfg.Adapters.Asana != nil && cfg.Adapters.Asana.Enabled {
-			if cfg.Adapters.Asana.Polling != nil && cfg.Adapters.Asana.Polling.Enabled {
-				program.Send(dashboard.AddLog("📋 Asana polling active")())
-			} else {
-				program.Send(dashboard.AddLog("📋 Asana webhooks enabled")())
+			// Show Asana status (GH-2045)
+			if cfg.Adapters.Asana != nil && cfg.Adapters.Asana.Enabled {
+				if cfg.Adapters.Asana.Polling != nil && cfg.Adapters.Asana.Polling.Enabled {
+					program.Send(dashboard.AddLog("📋 Asana polling active")())
+				} else {
+					program.Send(dashboard.AddLog("📋 Asana webhooks enabled")())
+				}
 			}
-		}
-		// Show Azure DevOps status (GH-2045)
-		if cfg.Adapters.AzureDevOps != nil && cfg.Adapters.AzureDevOps.Enabled {
-			if cfg.Adapters.AzureDevOps.Polling != nil && cfg.Adapters.AzureDevOps.Polling.Enabled {
-				program.Send(dashboard.AddLog("🔷 Azure DevOps polling active")())
-			} else {
-				program.Send(dashboard.AddLog("🔷 Azure DevOps webhooks enabled")())
+			// Show Azure DevOps status (GH-2045)
+			if cfg.Adapters.AzureDevOps != nil && cfg.Adapters.AzureDevOps.Enabled {
+				if cfg.Adapters.AzureDevOps.Polling != nil && cfg.Adapters.AzureDevOps.Polling.Enabled {
+					program.Send(dashboard.AddLog("🔷 Azure DevOps polling active")())
+				} else {
+					program.Send(dashboard.AddLog("🔷 Azure DevOps webhooks enabled")())
+				}
 			}
-		}
-		// Show Plane status (GH-2045)
-		if cfg.Adapters.Plane != nil && cfg.Adapters.Plane.Enabled {
-			if cfg.Adapters.Plane.Polling != nil && cfg.Adapters.Plane.Polling.Enabled {
-				program.Send(dashboard.AddLog("✈️  Plane polling active")())
-			} else {
-				program.Send(dashboard.AddLog("✈️  Plane webhooks enabled")())
+			// Show Plane status (GH-2045)
+			if cfg.Adapters.Plane != nil && cfg.Adapters.Plane.Enabled {
+				if cfg.Adapters.Plane.Polling != nil && cfg.Adapters.Plane.Polling.Enabled {
+					program.Send(dashboard.AddLog("✈️  Plane polling active")())
+				} else {
+					program.Send(dashboard.AddLog("✈️  Plane webhooks enabled")())
+				}
 			}
-		}
-		// Show Discord status (GH-2045)
-		if cfg.Adapters.Discord != nil && cfg.Adapters.Discord.Enabled {
-			program.Send(dashboard.AddLog("🎮 Discord gateway enabled")())
-		}
+			// Show Discord status (GH-2045)
+			if cfg.Adapters.Discord != nil && cfg.Adapters.Discord.Enabled {
+				program.Send(dashboard.AddLog("🎮 Discord gateway enabled")())
+			}
 
-		// Check for restart marker (set by hot upgrade)
+			// Check for restart marker (set by hot upgrade)
 			// GH-879: Config is automatically reloaded because syscall.Exec starts a fresh process
 			if os.Getenv("PILOT_RESTARTED") == "1" {
 				prevVersion := os.Getenv("PILOT_PREVIOUS_VERSION")
@@ -2644,6 +2646,61 @@ func (s storeTaskChecker) IsTaskQueued(taskID string) bool {
 }
 
 // countGitHubRepos counts unique GitHub repos from the default config and project-level entries.
+// applyDashboardBannerMeta populates the dashboard banner with env name,
+// model stack (plan/exec), and the list of active adapters so the compact
+// banner frame renders meaningful runtime info instead of placeholders.
+// (GH-2459 — fix-up to GH-2455.)
+func applyDashboardBannerMeta(model *dashboard.Model, cfg *config.Config) {
+	envName := ""
+	if cfg.Orchestrator != nil && cfg.Orchestrator.Autopilot != nil {
+		envName = string(cfg.Orchestrator.Autopilot.Environment)
+	}
+
+	modelStack := ""
+	if cfg.Executor != nil {
+		def := strings.TrimSpace(cfg.Executor.DefaultModel)
+		var complex string
+		if cfg.Executor.ModelRouting != nil {
+			complex = strings.TrimSpace(cfg.Executor.ModelRouting.Complex)
+		}
+		switch {
+		case complex != "" && def != "" && complex != def:
+			modelStack = strings.ToUpper(complex) + " / " + strings.ToUpper(def)
+		case def != "":
+			modelStack = strings.ToUpper(def)
+		case complex != "":
+			modelStack = strings.ToUpper(complex)
+		}
+	}
+
+	var adapters []string
+	if cfg.Adapters != nil {
+		if cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.Enabled {
+			adapters = append(adapters, "github")
+		}
+		if cfg.Adapters.Telegram != nil && cfg.Adapters.Telegram.Enabled {
+			adapters = append(adapters, "telegram")
+		}
+		if cfg.Adapters.Slack != nil && cfg.Adapters.Slack.Enabled {
+			adapters = append(adapters, "slack")
+		}
+		if cfg.Adapters.Discord != nil && cfg.Adapters.Discord.Enabled {
+			adapters = append(adapters, "discord")
+		}
+		if cfg.Adapters.Linear != nil && cfg.Adapters.Linear.Enabled {
+			adapters = append(adapters, "linear")
+		}
+		if cfg.Adapters.Jira != nil && cfg.Adapters.Jira.Enabled {
+			adapters = append(adapters, "jira")
+		}
+		if cfg.Adapters.GitLab != nil && cfg.Adapters.GitLab.Enabled {
+			adapters = append(adapters, "gitlab")
+		}
+	}
+
+	model.SetBannerMeta(envName, modelStack, adapters, time.Now())
+}
+
 func countGitHubRepos(cfg *config.Config) int {
 	seen := make(map[string]bool)
 	if cfg.Adapters != nil && cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.Repo != "" {
