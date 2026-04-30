@@ -68,6 +68,20 @@ if [ -f "$LAYOUT_FILE" ]; then
     fi
 fi
 
+# Update docs/lib/version.ts (single source of truth for <CurrentVersion/>)
+VERSION_TS="docs/lib/version.ts"
+if [ -f "$VERSION_TS" ]; then
+    if grep -q 'CURRENT_VERSION = "v[0-9]*\.[0-9]*\.[0-9]*"' "$VERSION_TS"; then
+        if [[ "$OSTYPE" == "darwin"* ]]; then
+            sed -i '' "s/CURRENT_VERSION = \"v[0-9]*\.[0-9]*\.[0-9]*\"/CURRENT_VERSION = \"${VERSION}\"/g" "$VERSION_TS"
+        else
+            sed -i "s/CURRENT_VERSION = \"v[0-9]*\.[0-9]*\.[0-9]*\"/CURRENT_VERSION = \"${VERSION}\"/g" "$VERSION_TS"
+        fi
+        echo "  Updated $VERSION_TS"
+        ((++updated))
+    fi
+fi
+
 if [ $updated -gt 0 ]; then
     echo "Version synced to $VERSION in $updated file(s)"
 else

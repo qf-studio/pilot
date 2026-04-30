@@ -1,3 +1,4 @@
 // Single source of truth for the current Pilot release shown in docs prose.
-// Bump on every release tag (see GoReleaser hook follow-up — out of scope here).
+// Auto-bumped by .github/workflows/docs-version-sync.yml on every v* tag push
+// via scripts/docs-version-sync.sh.
 export const CURRENT_VERSION = "v2.102.2"
