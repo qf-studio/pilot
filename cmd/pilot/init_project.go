@@ -296,6 +296,17 @@ func buildClaudeMD(data *initProjectData) string {
 		sb.WriteString("\n")
 	}
 
+	// Documentation maintenance rules
+	sb.WriteString("## Documentation Maintenance\n\n")
+	sb.WriteString("Keep `.agent/*.md` files lean. Alternative locations for long-lived content:\n\n")
+	sb.WriteString("- **Changelog / release notes** → `git log` or GitHub Releases\n")
+	sb.WriteString("- **Architectural decisions** → `.agent/system/` (one file per decision)\n")
+	sb.WriteString("- **Completed task history** → `.agent/tasks/archive/`\n")
+	sb.WriteString("- **Active task plans** → `.agent/tasks/` (remove when merged)\n\n")
+	sb.WriteString("Rules:\n\n")
+	sb.WriteString("- Do **not** append to `## Recent` blocks — replace the block content instead.\n")
+	sb.WriteString("- Do **not** let any `.agent/*.md` section grow append-only; prune or archive instead.\n\n")
+
 	return sb.String()
 }
 

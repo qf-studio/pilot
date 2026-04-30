@@ -214,6 +214,24 @@ func TestBuildClaudeMD(t *testing.T) {
 			},
 			absent: []string{"## Quality Gates"},
 		},
+		{
+			name: "Documentation maintenance section always present",
+			data: &initProjectData{
+				ProjectName:  "myapp",
+				Template:     TemplateGo,
+				CommitFormat: "feat(scope): description",
+			},
+			contains: []string{
+				"## Documentation Maintenance",
+				"git log",
+				"GitHub Releases",
+				".agent/system/",
+				".agent/tasks/archive/",
+				".agent/tasks/",
+				"## Recent",
+				"append-only",
+			},
+		},
 	}
 
 	for _, tt := range tests {
