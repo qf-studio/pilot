@@ -28,14 +28,14 @@ import (
 	"github.com/qf-studio/pilot/internal/approval"
 	"github.com/qf-studio/pilot/internal/autopilot"
 	"github.com/qf-studio/pilot/internal/banner"
-	"github.com/qf-studio/pilot/internal/comms"
-	"github.com/qf-studio/pilot/internal/intent"
 	"github.com/qf-studio/pilot/internal/briefs"
 	"github.com/qf-studio/pilot/internal/budget"
+	"github.com/qf-studio/pilot/internal/comms"
 	"github.com/qf-studio/pilot/internal/config"
 	"github.com/qf-studio/pilot/internal/dashboard"
 	"github.com/qf-studio/pilot/internal/executor"
 	"github.com/qf-studio/pilot/internal/gateway"
+	"github.com/qf-studio/pilot/internal/intent"
 	"github.com/qf-studio/pilot/internal/logging"
 	"github.com/qf-studio/pilot/internal/memory"
 	"github.com/qf-studio/pilot/internal/pilot"
@@ -129,7 +129,6 @@ func newStartCmd() *cobra.Command {
 		teamID       string // Optional team ID for scoping execution
 		teamMember   string // Member email for project access scoping
 		logFormat    string // Log output format: text or json (GH-847)
-		noSplash     bool   // Skip startup splash animation (GH-2455)
 	)
 
 	cmd := &cobra.Command{
@@ -250,7 +249,7 @@ Examples:
 					cfg.Orchestrator.Autopilot = autopilot.DefaultConfig()
 				}
 				cfg.Orchestrator.Autopilot.Enabled = true
-			
+
 				// Use SetActiveEnvironment to validate and resolve environment
 				if err := cfg.Orchestrator.Autopilot.SetActiveEnvironment(envFlag); err != nil {
 					// Show helpful error with available environments
@@ -267,7 +266,7 @@ Examples:
 					return err
 				}
 			}
-			
+
 			// GH-394: Polling mode is the default when any polling adapter is enabled.
 			// Previously, having linear.enabled=true would force gateway mode even when
 			// only using GitHub/Telegram polling. Now polling adapters work independently.
@@ -279,19 +278,12 @@ Examples:
 			//
 			// Note: Linear/Jira webhooks require gateway but don't block polling adapters.
 			// When both are needed, gateway starts in background within polling mode.
-			// Run startup splash when dashboard mode is active, unless --no-splash
-			// or CI=true (non-interactive) (GH-2455).
-			if dashboardMode && !noSplash && os.Getenv("CI") != "true" {
-				splashProg := tea.NewProgram(dashboard.NewSplashModel(), tea.WithAltScreen())
-				if _, err := splashProg.Run(); err != nil {
-					// Splash is non-critical — log and continue
-					logging.WithComponent("dashboard").Debug("splash screen error", "error", err)
-				}
-			}
+			// Splash screen removed — caused alt-screen flicker between
+			// splash exit and dashboard start (GH-2459 follow-up).
 
 			hasPollingAdapter := hasTelegram || hasGithubPolling
 			if noGateway || hasPollingAdapter {
-				return runPollingMode(cfg, projectPath, replace, dashboardMode, noGateway)
+				return runPollingMode(cmd, cfg, projectPath, replace, dashboardMode, noGateway)
 			}
 
 			// Full daemon mode with gateway
@@ -571,6 +563,8 @@ Examples:
 					}
 					model := dashboard.NewModelWithOptions(version, gwStore, gwAutopilotController, nil)
 					model.SetProjectPath(projectPath)
+					applyDashboardBannerMeta(&model, cfg, cmd)
+					model.EnableSplash(resolvedConfigPath())
 					gwProgram = tea.NewProgram(model,
 						tea.WithAltScreen(),
 						tea.WithInput(os.Stdin),
@@ -1108,7 +1102,7 @@ Examples:
 		},
 	}
 
-cmd.Flags().BoolVar(&dashboardMode, "dashboard", false, "Show TUI dashboard for real-time task monitoring")
+	cmd.Flags().BoolVar(&dashboardMode, "dashboard", false, "Show TUI dashboard for real-time task monitoring")
 	cmd.Flags().StringVarP(&projectPath, "project", "p", "", "Project path (default: config default or cwd)")
 	cmd.Flags().BoolVar(&replace, "replace", false, "Kill existing bot instance before starting")
 	cmd.Flags().BoolVar(&noGateway, "no-gateway", false, "Run polling adapters only (no HTTP gateway)")
@@ -1131,7 +1125,6 @@ cmd.Flags().BoolVar(&dashboardMode, "dashboard", false, "Show TUI dashboard for 
 	cmd.Flags().StringVar(&teamID, "team", "", "Team ID or name for project access scoping (overrides config)")
 	cmd.Flags().StringVar(&teamMember, "team-member", "", "Member email for team access scoping (overrides config)")
 	cmd.Flags().StringVar(&logFormat, "log-format", "text", "Log output format: text or json (for log aggregation systems)")
-	cmd.Flags().BoolVar(&noSplash, "no-splash", false, "Skip the startup splash animation")
 
 	return cmd
 }
@@ -1245,7 +1238,7 @@ func applyTeamOverrides(cfg *config.Config, cmd *cobra.Command, teamID, teamMemb
 // runPollingMode runs lightweight polling-only mode.
 // When noGateway is false, the HTTP gateway starts in the background so the
 // desktop app (and any other client hitting /health) can reach the daemon.
-func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMode, noGateway bool) error {
+func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, replace, dashboardMode, noGateway bool) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -1598,6 +1591,8 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 		upgradeRequestCh = make(chan struct{}, 1)
 		model := dashboard.NewModelWithOptions(version, store, autopilotController, upgradeRequestCh)
 		model.SetProjectPath(projectPath)
+		applyDashboardBannerMeta(&model, cfg, cmd)
+		model.EnableSplash(resolvedConfigPath())
 		program = tea.NewProgram(model,
 			tea.WithAltScreen(),
 			tea.WithInput(os.Stdin),
@@ -2492,51 +2487,51 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 			}
 
 			// Show GitLab status (GH-2045)
-		if cfg.Adapters.GitLab != nil && cfg.Adapters.GitLab.Enabled {
-			if cfg.Adapters.GitLab.Polling != nil && cfg.Adapters.GitLab.Polling.Enabled {
-				program.Send(dashboard.AddLog("🦊 GitLab polling active")())
-			} else {
-				program.Send(dashboard.AddLog("🦊 GitLab webhooks enabled")())
+			if cfg.Adapters.GitLab != nil && cfg.Adapters.GitLab.Enabled {
+				if cfg.Adapters.GitLab.Polling != nil && cfg.Adapters.GitLab.Polling.Enabled {
+					program.Send(dashboard.AddLog("🦊 GitLab polling active")())
+				} else {
+					program.Send(dashboard.AddLog("🦊 GitLab webhooks enabled")())
+				}
 			}
-		}
-		// Show Jira status (GH-2045)
-		if cfg.Adapters.Jira != nil && cfg.Adapters.Jira.Enabled {
-			if cfg.Adapters.Jira.Polling != nil && cfg.Adapters.Jira.Polling.Enabled {
-				program.Send(dashboard.AddLog("🎫 Jira polling active")())
-			} else {
-				program.Send(dashboard.AddLog("🎫 Jira webhooks enabled")())
+			// Show Jira status (GH-2045)
+			if cfg.Adapters.Jira != nil && cfg.Adapters.Jira.Enabled {
+				if cfg.Adapters.Jira.Polling != nil && cfg.Adapters.Jira.Polling.Enabled {
+					program.Send(dashboard.AddLog("🎫 Jira polling active")())
+				} else {
+					program.Send(dashboard.AddLog("🎫 Jira webhooks enabled")())
+				}
 			}
-		}
-		// Show Asana status (GH-2045)
-		if cfg.Adapters.Asana != nil && cfg.Adapters.Asana.Enabled {
-			if cfg.Adapters.Asana.Polling != nil && cfg.Adapters.Asana.Polling.Enabled {
-				program.Send(dashboard.AddLog("📋 Asana polling active")())
-			} else {
-				program.Send(dashboard.AddLog("📋 Asana webhooks enabled")())
+			// Show Asana status (GH-2045)
+			if cfg.Adapters.Asana != nil && cfg.Adapters.Asana.Enabled {
+				if cfg.Adapters.Asana.Polling != nil && cfg.Adapters.Asana.Polling.Enabled {
+					program.Send(dashboard.AddLog("📋 Asana polling active")())
+				} else {
+					program.Send(dashboard.AddLog("📋 Asana webhooks enabled")())
+				}
 			}
-		}
-		// Show Azure DevOps status (GH-2045)
-		if cfg.Adapters.AzureDevOps != nil && cfg.Adapters.AzureDevOps.Enabled {
-			if cfg.Adapters.AzureDevOps.Polling != nil && cfg.Adapters.AzureDevOps.Polling.Enabled {
-				program.Send(dashboard.AddLog("🔷 Azure DevOps polling active")())
-			} else {
-				program.Send(dashboard.AddLog("🔷 Azure DevOps webhooks enabled")())
+			// Show Azure DevOps status (GH-2045)
+			if cfg.Adapters.AzureDevOps != nil && cfg.Adapters.AzureDevOps.Enabled {
+				if cfg.Adapters.AzureDevOps.Polling != nil && cfg.Adapters.AzureDevOps.Polling.Enabled {
+					program.Send(dashboard.AddLog("🔷 Azure DevOps polling active")())
+				} else {
+					program.Send(dashboard.AddLog("🔷 Azure DevOps webhooks enabled")())
+				}
 			}
-		}
-		// Show Plane status (GH-2045)
-		if cfg.Adapters.Plane != nil && cfg.Adapters.Plane.Enabled {
-			if cfg.Adapters.Plane.Polling != nil && cfg.Adapters.Plane.Polling.Enabled {
-				program.Send(dashboard.AddLog("✈️  Plane polling active")())
-			} else {
-				program.Send(dashboard.AddLog("✈️  Plane webhooks enabled")())
+			// Show Plane status (GH-2045)
+			if cfg.Adapters.Plane != nil && cfg.Adapters.Plane.Enabled {
+				if cfg.Adapters.Plane.Polling != nil && cfg.Adapters.Plane.Polling.Enabled {
+					program.Send(dashboard.AddLog("✈️  Plane polling active")())
+				} else {
+					program.Send(dashboard.AddLog("✈️  Plane webhooks enabled")())
+				}
 			}
-		}
-		// Show Discord status (GH-2045)
-		if cfg.Adapters.Discord != nil && cfg.Adapters.Discord.Enabled {
-			program.Send(dashboard.AddLog("🎮 Discord gateway enabled")())
-		}
+			// Show Discord status (GH-2045)
+			if cfg.Adapters.Discord != nil && cfg.Adapters.Discord.Enabled {
+				program.Send(dashboard.AddLog("🎮 Discord gateway enabled")())
+			}
 
-		// Check for restart marker (set by hot upgrade)
+			// Check for restart marker (set by hot upgrade)
 			// GH-879: Config is automatically reloaded because syscall.Exec starts a fresh process
 			if os.Getenv("PILOT_RESTARTED") == "1" {
 				prevVersion := os.Getenv("PILOT_PREVIOUS_VERSION")
@@ -2644,6 +2639,132 @@ func (s storeTaskChecker) IsTaskQueued(taskID string) bool {
 }
 
 // countGitHubRepos counts unique GitHub repos from the default config and project-level entries.
+// applyDashboardBannerMeta populates the dashboard banner with env name,
+// model stack (plan/exec), session code, and a per-adapter active/configured
+// list so the banner reflects what's actually running this session.
+// (GH-2459 — rework of the wiring shipped in GH-2455.)
+//
+// An adapter contributes a chip to the banner when it is configured (non-nil
+// + Enabled) in cfg. Active=true when the corresponding CLI flag was passed
+// on this invocation; Active=false renders an empty circle.
+func applyDashboardBannerMeta(model *dashboard.Model, cfg *config.Config, cmd *cobra.Command) {
+	envName := ""
+	if cfg.Orchestrator != nil && cfg.Orchestrator.Autopilot != nil {
+		envName = string(cfg.Orchestrator.Autopilot.Environment)
+	}
+
+	modelStack := ""
+	if cfg.Executor != nil {
+		def := shortenModelID(cfg.Executor.DefaultModel)
+		var complex string
+		if cfg.Executor.ModelRouting != nil {
+			complex = shortenModelID(cfg.Executor.ModelRouting.Complex)
+		}
+		switch {
+		case complex != "" && def != "" && complex != def:
+			modelStack = complex + " / " + def
+		case def != "":
+			modelStack = def
+		case complex != "":
+			modelStack = complex
+		}
+	}
+
+	flagPassed := func(name string) bool {
+		if cmd == nil {
+			return true // no cobra context — assume runtime active for back-compat
+		}
+		f := cmd.Flags().Lookup(name)
+		if f == nil {
+			return false
+		}
+		return f.Changed
+	}
+
+	var adapters []dashboard.AdapterStatus
+	if cfg.Adapters != nil {
+		if cfg.Adapters.GitHub != nil {
+			adapters = append(adapters, dashboard.AdapterStatus{
+				Name:   "GH",
+				Active: cfg.Adapters.GitHub.Enabled && flagPassed("github"),
+			})
+		}
+		if cfg.Adapters.Telegram != nil {
+			adapters = append(adapters, dashboard.AdapterStatus{
+				Name:   "TG",
+				Active: cfg.Adapters.Telegram.Enabled && flagPassed("telegram"),
+			})
+		}
+		if cfg.Adapters.Slack != nil {
+			adapters = append(adapters, dashboard.AdapterStatus{
+				Name:   "SLACK",
+				Active: cfg.Adapters.Slack.Enabled && flagPassed("slack"),
+			})
+		}
+		if cfg.Adapters.Discord != nil {
+			adapters = append(adapters, dashboard.AdapterStatus{
+				Name:   "DISCORD",
+				Active: cfg.Adapters.Discord.Enabled && flagPassed("discord"),
+			})
+		}
+		if cfg.Adapters.Linear != nil {
+			adapters = append(adapters, dashboard.AdapterStatus{
+				Name:   "LINEAR",
+				Active: cfg.Adapters.Linear.Enabled && flagPassed("linear"),
+			})
+		}
+		if cfg.Adapters.Jira != nil {
+			adapters = append(adapters, dashboard.AdapterStatus{
+				Name:   "JIRA",
+				Active: cfg.Adapters.Jira.Enabled,
+			})
+		}
+		if cfg.Adapters.GitLab != nil {
+			adapters = append(adapters, dashboard.AdapterStatus{
+				Name:   "GL",
+				Active: cfg.Adapters.GitLab.Enabled,
+			})
+		}
+		if cfg.Adapters.Plane != nil {
+			adapters = append(adapters, dashboard.AdapterStatus{
+				Name:   "PLANE",
+				Active: cfg.Adapters.Plane.Enabled && flagPassed("plane"),
+			})
+		}
+	}
+
+	model.SetBannerMeta(envName, modelStack, nil, time.Now())
+	model.SetBannerAdapters(adapters)
+}
+
+// resolvedConfigPath returns the user-facing path to ~/.pilot/config.yaml
+// (with $HOME contracted to ~) for display in the splash boot block.
+func resolvedConfigPath() string {
+	home, _ := os.UserHomeDir()
+	full := filepath.Join(home, ".pilot", "config.yaml")
+	if home != "" && strings.HasPrefix(full, home) {
+		return "~" + strings.TrimPrefix(full, home)
+	}
+	return full
+}
+
+// shortenModelID compacts a model identifier for the banner: strips the
+// vendor prefix ("claude-", "gpt-", etc.) and uppercases the rest so
+// "claude-opus-4-7" → "OPUS-4-7". Returns empty string for empty input.
+func shortenModelID(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	for _, prefix := range []string{"claude-", "gpt-", "anthropic-", "openai-"} {
+		if strings.HasPrefix(s, prefix) {
+			s = strings.TrimPrefix(s, prefix)
+			break
+		}
+	}
+	return strings.ToUpper(s)
+}
+
 func countGitHubRepos(cfg *config.Config) int {
 	seen := make(map[string]bool)
 	if cfg.Adapters != nil && cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.Repo != "" {

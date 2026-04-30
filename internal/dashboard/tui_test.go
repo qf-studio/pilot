@@ -1342,19 +1342,18 @@ func TestStoreRefreshCmd_QueriesDB(t *testing.T) {
 func TestRenderBanner(t *testing.T) {
 	m := NewModel("2.102.3")
 	start := time.Now().Add(-90 * time.Minute) // 1h30m ago
-	m.SetBannerMeta("prod", "opus:plan | sonnet:exec", []string{"github", "slack"}, start)
+	m.SetBannerMeta("prod", "opus:plan | sonnet:exec", nil, start)
+	m.SetBannerAdapters([]AdapterStatus{
+		{Name: "GH", Active: true},
+		{Name: "SLACK", Active: false},
+	})
 
 	out := m.renderBanner()
 
-	for _, want := range []string{"v2.102.3", "prod", "opus:plan", "UTC", "github", "slack"} {
-		if !strings.Contains(lipgloss.NewStyle().Render(out), out) {
-			// Use plain string comparison without ANSI codes
-			_ = want
-		}
-		// Strip ANSI codes for assertion (lipgloss.Width strips them conceptually;
-		// the easiest approach here is checking the raw output before any stripping).
+	// Banner uppercases env, MODEL/ENV labels, and adapter names.
+	for _, want := range []string{"v2.102.3", "PROD", "opus:plan", "UTC", "GH", "SLACK", "DAEMON"} {
 		if !strings.Contains(out, want) {
-			t.Errorf("renderBanner() missing %q", want)
+			t.Errorf("renderBanner() missing %q\nout:\n%s", want, out)
 		}
 	}
 
@@ -1403,29 +1402,32 @@ func TestAutopilotPanelDisabled(t *testing.T) {
 }
 
 func TestRenderAutopilotRailPositions(t *testing.T) {
+	// New rail uses lamp-per-node: ✓ (done) / ● (current) / ○ (pending).
+	// Each rail has exactly one ● (the current stage), N done lamps, M pending lamps.
 	tests := []struct {
 		stage    autopilot.PRStage
-		wantBull int // expected number of ● in the output (active + past connectors)
-		wantPos  int // 0-based position of current node
+		wantDone int // count of ✓
+		wantBull int // count of ● (always 1 for active stages)
+		wantPend int // count of ○
 		nodeName string
 	}{
-		{autopilot.StageWaitingCI, 1, 0, "ci-wait"},
-		{autopilot.StageMerging, 3, 2, "merge"},
-		{autopilot.StagePostMergeCI, 4, 3, "tag"},
-		{autopilot.StageReleasing, 4, 4, "release"},
+		{autopilot.StageWaitingCI, 0, 1, 4, "ci-wait"},
+		{autopilot.StageMerging, 2, 1, 2, "merge"},
+		{autopilot.StagePostMergeCI, 3, 1, 1, "tag"},
+		{autopilot.StageReleasing, 4, 1, 0, "release"},
 	}
 
 	for _, tt := range tests {
 		t.Run(string(tt.stage), func(t *testing.T) {
 			out := renderAutopilotRail(tt.stage)
-			// Strip ANSI before counting runes
-			plain := lipgloss.NewStyle().Render(out)
-			_ = plain
-			// Count ● by scanning raw bytes (they survive style rendering)
-			bullCount := strings.Count(out, "●")
-			if bullCount != tt.wantBull {
-				t.Errorf("stage %s: ● count = %d, want %d  (rail: %q)",
-					tt.stage, bullCount, tt.wantBull, out)
+			if got := strings.Count(out, "✓"); got != tt.wantDone {
+				t.Errorf("stage %s: ✓ count = %d, want %d (rail: %q)", tt.stage, got, tt.wantDone, out)
+			}
+			if got := strings.Count(out, "●"); got != tt.wantBull {
+				t.Errorf("stage %s: ● count = %d, want %d (rail: %q)", tt.stage, got, tt.wantBull, out)
+			}
+			if got := strings.Count(out, "○"); got != tt.wantPend {
+				t.Errorf("stage %s: ○ count = %d, want %d (rail: %q)", tt.stage, got, tt.wantPend, out)
 			}
 			if !strings.Contains(out, tt.nodeName) {
 				t.Errorf("stage %s: rail missing node %q", tt.stage, tt.nodeName)
@@ -1436,9 +1438,9 @@ func TestRenderAutopilotRailPositions(t *testing.T) {
 
 func TestRenderAutopilotBar(t *testing.T) {
 	tests := []struct {
-		pct      int
-		barWidth int
-		wantFull int // count of filled █ chars
+		pct       int
+		barWidth  int
+		wantFull  int // count of filled █ chars
 		wantEmpty int
 	}{
 		{0, 8, 0, 8},
@@ -1459,61 +1461,5 @@ func TestRenderAutopilotBar(t *testing.T) {
 				t.Errorf("pct=%d barWidth=%d: ░ count = %d, want %d", tt.pct, tt.barWidth, gotEmpty, tt.wantEmpty)
 			}
 		})
-	}
-}
-
-func TestSplashModelLampProgression(t *testing.T) {
-	m := NewSplashModel()
-	if m.lampState != 0 {
-		t.Fatalf("initial lampState = %d, want 0", m.lampState)
-	}
-
-	// Simulate ticks and verify lampState cycles through 0-3.
-	for tick := 1; tick <= splashLampCount*2; tick++ {
-		raw, _ := m.Update(splashTickMsg(time.Now()))
-		m = raw.(SplashModel)
-		wantLamp := tick % splashLampCount
-		if m.lampState != wantLamp {
-			t.Errorf("tick %d: lampState = %d, want %d", tick, m.lampState, wantLamp)
-		}
-	}
-}
-
-func TestSplashModelViewContainsLogo(t *testing.T) {
-	m := NewSplashModel()
-	out := m.View()
-	// Logo contains "PILOT" characters from the ASCII art
-	if !strings.Contains(out, "PILOT") && !strings.Contains(out, "██") {
-		t.Errorf("SplashModel.View() does not appear to contain ASCII logo")
-	}
-	// Should contain at least one lamp character
-	if !strings.Contains(out, lampLit) && !strings.Contains(out, lampDim) {
-		t.Errorf("SplashModel.View() missing lamp characters")
-	}
-}
-
-func TestSplashModelExitsAfterMaxTicks(t *testing.T) {
-	m := NewSplashModel()
-	var gotQuit bool
-	for i := 0; i < splashMaxTicks+2; i++ {
-		raw, cmd := m.Update(splashTickMsg(time.Now()))
-		m = raw.(SplashModel)
-		if m.done {
-			gotQuit = true
-			_ = cmd
-			break
-		}
-	}
-	if !gotQuit {
-		t.Errorf("SplashModel did not set done=true after %d ticks", splashMaxTicks)
-	}
-}
-
-func TestSplashModelKeySkip(t *testing.T) {
-	m := NewSplashModel()
-	raw, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	m = raw.(SplashModel)
-	if !m.done {
-		t.Errorf("SplashModel did not set done=true on key press")
 	}
 }

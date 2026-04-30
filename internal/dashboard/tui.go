@@ -15,7 +15,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/qf-studio/pilot/internal/autopilot"
-	"github.com/qf-studio/pilot/internal/banner"
 	"github.com/qf-studio/pilot/internal/memory"
 )
 
@@ -259,30 +258,36 @@ func pipelineStagePosition(stage autopilot.PRStage) int {
 	return 0
 }
 
-// renderAutopilotRail renders the 5-node pipeline progress rail.
-// The connector after the current stage shows ● (active); future connectors show ○.
-// Format: ci-wait ──●── rebase ──○── merge ──○── tag ──○── release
+// renderAutopilotRail renders the 5-node pipeline progress rail with a status
+// lamp before each node: ✓ (done, sage), ● (current, steel blue), ○ (pending,
+// dim slate). Connectors are plain dim "──" separators.
+// Format example for stage=releasing:
+//
+//	✓ ci-wait ── ✓ rebase ── ✓ merge ── ✓ tag ── ● release
 func renderAutopilotRail(stage autopilot.PRStage) string {
 	nodes := []string{"ci-wait", "rebase", "merge", "tag", "release"}
 	pos := pipelineStagePosition(stage)
 	var sb strings.Builder
 	for i, name := range nodes {
-		if i == pos {
-			sb.WriteString(titleStyle.Render(name))
-		} else {
-			sb.WriteString(dimStyle.Render(name))
+		var lamp, label string
+		var lampStyle, labelStyle lipgloss.Style
+		switch {
+		case i < pos:
+			lamp, lampStyle = "✓", statusCompletedStyle
+			labelStyle = statusCompletedStyle
+		case i == pos:
+			lamp, lampStyle = "●", statusRunningStyle
+			labelStyle = titleStyle
+		default:
+			lamp, lampStyle = "○", dimStyle
+			labelStyle = dimStyle
 		}
+		label = name
+		sb.WriteString(lampStyle.Render(lamp))
+		sb.WriteString(" ")
+		sb.WriteString(labelStyle.Render(label))
 		if i < len(nodes)-1 {
-			// Connector between node i and i+1
-			if i < pos {
-				// Already passed this connector
-				sb.WriteString(statusCompletedStyle.Render(" ──●── "))
-			} else if i == pos {
-				// Currently at this connector (leaving current node)
-				sb.WriteString(statusRunningStyle.Render(" ──●── "))
-			} else {
-				sb.WriteString(dimStyle.Render(" ──○── "))
-			}
+			sb.WriteString(dimStyle.Render(" ── "))
 		}
 	}
 	return sb.String()
@@ -459,18 +464,28 @@ type Model struct {
 	// Banner toggle (GH-1520)
 	showBanner bool
 
-	// Banner metadata (GH-2455): env name, model routing description, active adapter names
-	startTime     time.Time
-	modelStack    string
-	envName       string
+	// Banner metadata (GH-2455 / GH-2459 rework): env name, model stack, adapter
+	// status list.
+	startTime      time.Time
+	modelStack     string
+	envName        string
+	bannerAdapters []AdapterStatus
+	// activeAdapters retained for backwards compatibility with SetBannerMeta callers.
 	activeAdapters []string
 
+	// Splash state — shown for the first ~1.5s of the session inside the same
+	// tea.Program (avoids alt-screen flicker that a separate splash program caused).
+	splashActive bool
+	splashFrame  int       // increments each splashTickMsg
+	splashStart  time.Time // first frame timestamp
+	configPath   string    // shown in splash boot block ("~/.pilot/config.yaml")
+
 	// Git graph panel (GH-1506)
-	gitGraphMode   GitGraphMode
-	gitGraphState  *GitGraphState
-	gitGraphScroll int
-	gitGraphFocus  bool
-	dbSyncTick     int    // Counter for periodic DB re-sync (GH-2248)
+	gitGraphMode       GitGraphMode
+	gitGraphState      *GitGraphState
+	gitGraphScroll     int
+	gitGraphFocus      bool
+	dbSyncTick         int    // Counter for periodic DB re-sync (GH-2248)
 	projectPath        string // Working directory for git commands
 	defaultProjectPath string // Fallback project path from config (GH-2167)
 	gitProjectName     string // Current project name shown in git panel title (GH-2167)
@@ -494,7 +509,6 @@ func (m Model) effectivePanelTotalWidth() int {
 	}
 	return panelTotalWidth
 }
-
 
 // tickMsg is sent periodically to refresh the display
 type tickMsg time.Time
@@ -748,19 +762,59 @@ func (m *Model) SetProjectPath(path string) {
 	}
 }
 
+// RenderBannerForTest exposes renderBanner for cross-package tests
+// (cmd/pilot verifies applyDashboardBannerMeta wiring end-to-end).
+func (m Model) RenderBannerForTest() string { return m.renderBanner() }
+
+// AdapterStatus describes a configured adapter for the banner status row.
+// Active=true when the adapter was started this session (flag passed); false
+// when it is configured but not running. Adapters absent from the slice are
+// not rendered at all (not configured).
+type AdapterStatus struct {
+	Name   string
+	Active bool
+}
+
 // SetBannerMeta configures optional metadata shown in the dashboard banner (GH-2455).
-// envName is the active environment (e.g. "prod"), modelStack describes the routing
-// config (e.g. "opus:plan │ sonnet:exec"), adapters is the list of active adapter names.
-// startTime is used to compute uptime; if zero, time.Now() is used.
+// Adapters provided here are all rendered as Active=true (legacy contract).
+// New callers should use SetBannerAdapters for richer state (active vs configured).
 func (m *Model) SetBannerMeta(envName, modelStack string, adapters []string, startTime time.Time) {
 	m.envName = envName
 	m.modelStack = modelStack
 	m.activeAdapters = adapters
+	// Mirror into bannerAdapters with Active=true so renderBanner has a single source.
+	m.bannerAdapters = make([]AdapterStatus, 0, len(adapters))
+	for _, a := range adapters {
+		m.bannerAdapters = append(m.bannerAdapters, AdapterStatus{Name: a, Active: true})
+	}
 	if startTime.IsZero() {
 		m.startTime = time.Now()
 	} else {
 		m.startTime = startTime
 	}
+}
+
+// EnableSplash turns on the in-program splash overlay shown for the first
+// ~1.5s after the dashboard starts. configPath is displayed in the boot
+// block (e.g. "~/.pilot/config.yaml").
+func (m *Model) EnableSplash(configPath string) {
+	m.splashActive = true
+	m.configPath = configPath
+}
+
+// SetBannerAdapters replaces the adapter status list shown in the banner.
+// Pass an entry with Active=false for adapters that are configured but not
+// running this session; omit entries entirely for adapters with no config.
+func (m *Model) SetBannerAdapters(adapters []AdapterStatus) {
+	m.bannerAdapters = adapters
+	// Mirror Active-true names into legacy field for any consumers still reading it.
+	names := make([]string, 0, len(adapters))
+	for _, a := range adapters {
+		if a.Active {
+			names = append(names, a.Name)
+		}
+	}
+	m.activeAdapters = names
 }
 
 // syncGitGraphToSelectedTask updates projectPath to match the selected task's project.
@@ -799,10 +853,11 @@ func (m *Model) syncGitGraphToSelectedTask() tea.Cmd {
 
 // Init initializes the model
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(
-		tickCmd(),
-		tea.EnterAltScreen,
-	)
+	cmds := []tea.Cmd{tickCmd(), tea.EnterAltScreen}
+	if m.splashActive {
+		cmds = append(cmds, splashTickCmd())
+	}
+	return tea.Batch(cmds...)
 }
 
 // tickCmd creates a tick command
@@ -811,6 +866,20 @@ func tickCmd() tea.Cmd {
 		return tickMsg(t)
 	})
 }
+
+// splashTickMsg drives the boot-screen lamp animation.
+type splashTickMsg time.Time
+
+// splashTickCmd schedules the next splash frame (~150ms cadence).
+func splashTickCmd() tea.Cmd {
+	return tea.Tick(150*time.Millisecond, func(t time.Time) tea.Msg {
+		return splashTickMsg(t)
+	})
+}
+
+// splashFramesTotal: number of frames the splash plays before dismissal.
+// 10 frames * 150ms = 1.5s.
+const splashFramesTotal = 10
 
 // storeRefreshCmd queries SQLite for current execution state (GH-2248).
 // Runs asynchronously so the TUI never blocks on DB I/O.
@@ -992,6 +1061,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, tickCmd()
 
+	case splashTickMsg:
+		if !m.splashActive {
+			return m, nil
+		}
+		if m.splashStart.IsZero() {
+			m.splashStart = time.Time(msg)
+		}
+		m.splashFrame++
+		if m.splashFrame >= splashFramesTotal {
+			m.splashActive = false
+			return m, tea.ClearScreen
+		}
+		return m, splashTickCmd()
+
 	case updateTasksMsg:
 		prevLen := len(m.tasks)
 		m.tasks = msg
@@ -1117,6 +1200,10 @@ func (m Model) View() string {
 		return "Pilot stopped.\n"
 	}
 
+	if m.splashActive {
+		return m.renderSplash()
+	}
+
 	dashboard := m.renderDashboard()
 
 	var result string
@@ -1171,66 +1258,366 @@ func (m Model) View() string {
 	return result
 }
 
-// renderBanner returns a compact 3-line bordered frame with version, env, model
-// stack, adapter status, uptime, and a live UTC clock (GH-2455).
+// renderBanner returns the avionics banner: 3 content rows wrapped with inner
+// padding rows for breathing space.
+//
+//	╭─ PILOT ──────────────────────────────────────────────────────────╮
+//	│                                                                   │
+//	│ 1636/  PILOT v2.103.0      ENV STAGE      MODEL OPUS-4-7 / SONNET │
+//	│                                                                   │
+//	│ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ │
+//	│                                                                   │
+//	│ DAEMON ●  GH ●  TG ●  SLACK ○  DISCORD ○      UP 4m 12s  16:36 UTC│
+//	│                                                                   │
+//	╰───────────────────────────────────────────────────────────────────╯
+//
+// Adapter dots: ● filled (statusRunningStyle) when active this session,
+// ○ empty (dimStyle) when configured but not flagged. Adapters with no
+// config are not present in m.bannerAdapters and don't render at all.
+// pilotLogo is the ASCII art shown during splash boot.
+const pilotLogo = `
+   ██████╗ ██╗██╗      ██████╗ ████████╗
+   ██╔══██╗██║██║     ██╔═══██╗╚══██╔══╝
+   ██████╔╝██║██║     ██║   ██║   ██║
+   ██╔═══╝ ██║██║     ██║   ██║   ██║
+   ██║     ██║███████╗╚██████╔╝   ██║
+   ╚═╝     ╚═╝╚══════╝ ╚═════╝    ╚═╝
+`
+
+// renderSplash returns the boot screen shown for the first ~1.5s of the
+// dashboard session. Lamps progressively light up as splashFrame advances;
+// the final frames flash READY before the splash dismisses.
+func (m Model) renderSplash() string {
+	var sb strings.Builder
+
+	sb.WriteString("\n")
+	sb.WriteString(titleStyle.Render(strings.TrimPrefix(pilotLogo, "\n")))
+	sb.WriteString("\n")
+
+	ver := m.version
+	if idx := strings.Index(ver, "-"); idx > 0 {
+		ver = ver[:idx]
+	}
+	if !strings.HasPrefix(ver, "v") {
+		ver = "v" + ver
+	}
+	tagline := dimStyle.Render("AI THAT SHIPS YOUR TICKETS")
+	verStyled := labelStyle.Render(ver)
+	// 47-char wide row to roughly match the logo block.
+	gap := 47 - lipgloss.Width(tagline) - lipgloss.Width(verStyled)
+	if gap < 1 {
+		gap = 1
+	}
+	sb.WriteString("   " + tagline + strings.Repeat(" ", gap) + verStyled + "\n\n")
+
+	// BOOT block: 4 lamp lines, lit one at a time as splashFrame progresses.
+	const ruleWidth = 49
+	rule := dimStyle.Render(strings.Repeat("─", ruleWidth))
+	sb.WriteString("   " + dimStyle.Render("BOOT ") + dimStyle.Render(strings.Repeat("─", ruleWidth-5)) + "\n")
+
+	cfgPath := m.configPath
+	if cfgPath == "" {
+		cfgPath = "~/.pilot/config.yaml"
+	}
+	adapterList := splashAdapterList(m.bannerAdapters)
+	if adapterList == "" {
+		adapterList = dimStyle.Render("(none configured)")
+	}
+	model := m.modelStack
+	if model == "" {
+		model = dimStyle.Render("(unset)")
+	}
+	envName := strings.ToUpper(m.envName)
+	if envName == "" {
+		envName = dimStyle.Render("(default)")
+	}
+
+	lamps := []struct {
+		label, value string
+	}{
+		{"config loaded", cfgPath},
+		{"adapters online", adapterList},
+		{"model stack", model},
+		{"env", envName},
+	}
+	// Threshold = ceil(splashFramesTotal/2) so all 4 lamps light by mid-splash.
+	litCount := m.splashFrame * len(lamps) / (splashFramesTotal / 2)
+	if litCount > len(lamps) {
+		litCount = len(lamps)
+	}
+	for i, l := range lamps {
+		var dot string
+		if i < litCount {
+			dot = statusRunningStyle.Render("●")
+		} else {
+			dot = dimStyle.Render("○")
+		}
+		sb.WriteString(fmt.Sprintf("   %s %s    %s\n",
+			dot, dimStyle.Render(padTo(l.label, 16)), l.value))
+	}
+	sb.WriteString("   " + rule + "\n")
+
+	// READY footer: appears in the last 3 frames.
+	if m.splashFrame >= splashFramesTotal-3 {
+		sb.WriteString(strings.Repeat(" ", 45) + statusCompletedStyle.Render("READY") + "\n")
+	} else {
+		sb.WriteString("\n")
+	}
+
+	return sb.String()
+}
+
+// splashAdapterList renders "github · telegram · slack" from the banner's
+// adapter list (configured adapters only, lowercased).
+func splashAdapterList(adapters []AdapterStatus) string {
+	if len(adapters) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(adapters))
+	for _, a := range adapters {
+		parts = append(parts, strings.ToLower(a.Name))
+	}
+	return strings.Join(parts, dimStyle.Render(" · "))
+}
+
 func (m Model) renderBanner() string {
 	tw := m.effectivePanelTotalWidth()
-	w := tw - 4 // inner width (content area between borders)
+	// Match the 3-space inner padding other panels use (e.g. AUTOPILOT, QUEUE).
+	// buildContentLine reserves "│ " on each side (2 chars), so the content
+	// receives tw - 4 cells. Reserving 2 more inside gives a 3-space gutter.
+	const innerGutter = 2
+	w := tw - 4 - innerGutter*2 // usable content width inside the gutter
 
-	envStr := m.envName
-	if envStr == "" {
-		envStr = "─"
+	// --- Line 1: code/  PILOT vX.Y.Z   ENV xxx   MODEL plan / exec
+	// Strip dev suffix (e.g. "-4-g14764db1-dirty") so the banner shows the
+	// clean release version. The full SHA still appears in the session code
+	// prefix, so no information is lost.
+	ver := m.version
+	if idx := strings.Index(ver, "-"); idx > 0 {
+		ver = ver[:idx]
+	}
+	if !strings.HasPrefix(ver, "v") {
+		ver = "v" + ver
 	}
 
-	// Line 1: version  env  [model stack if set]
-	line1 := labelStyle.Render("v"+m.version) + "  " + dimStyle.Render(envStr)
+	leftPart := labelStyle.Render(ver)
+
+	envSeg := ""
+	if m.envName != "" {
+		envSeg = dimStyle.Render("ENV") + " " + statusRunningStyle.Render(strings.ToUpper(m.envName))
+	}
+
+	modelSeg := ""
 	if m.modelStack != "" {
-		line1 += "  " + borderStyle.Render("│") + "  " + dimStyle.Render(m.modelStack)
+		modelSeg = dimStyle.Render("MODEL") + " " + labelStyle.Render(m.modelStack)
 	}
 
-	// Line 2: adapter status dots    uptime  HH:MM UTC
-	var adapterParts []string
-	for _, a := range m.activeAdapters {
-		adapterParts = append(adapterParts, statusRunningStyle.Render("●")+" "+a)
-	}
-	adapterStr := strings.Join(adapterParts, "  ")
+	line1 := joinSegmentsSpaced(w, leftPart, envSeg, modelSeg)
 
-	uptime := ""
+	// --- Line 2: tick separator
+	line2 := buildTickSeparator(w)
+
+	// --- Line 3: adapter chips (left), uptime + clock (right)
+	upStr := ""
 	if !m.startTime.IsZero() {
-		uptime = "up " + formatDurationShort(time.Since(m.startTime))
+		upStr = dimStyle.Render("UP") + " " + labelStyle.Render(formatDurationShort(time.Since(m.startTime)))
 	}
-	clock := time.Now().UTC().Format("15:04") + " UTC"
-
-	rightPart := uptime
-	if uptime != "" {
-		rightPart += "   "
-	}
-	rightPart += clock
-
-	// Pad adapter dots left, clock/uptime right
-	line2 := adapterStr
-	gap := w - lipgloss.Width(line2) - lipgloss.Width(rightPart)
-	if gap > 0 {
-		line2 += strings.Repeat(" ", gap) + rightPart
-	} else {
-		line2 = rightPart
+	clockStr := dimStyle.Render(time.Now().UTC().Format("15:04") + " UTC")
+	rightPart := clockStr
+	if upStr != "" {
+		rightPart = upStr + "  " + clockStr
 	}
 
-	// Empty line 3 keeps 3-line structure; use a separator dot row if no adapters
-	line3 := ""
+	// Available room for chips = inner width minus right side and a small gap.
+	chipsBudget := w - lipgloss.Width(rightPart) - 2
 
-	content := line1 + "\n" + line2
-	if line3 != "" {
-		content += "\n" + line3
-	}
+	chipsStr := buildAdapterChipsRow(m.bannerAdapters, chipsBudget)
 
+	line3 := padLeftRightLine(w, chipsStr, rightPart)
+
+	// Wrap each line with the inner gutter so the banner aligns with sibling
+	// panels (which start their content 3 chars in from the border).
+	gutter := strings.Repeat(" ", innerGutter)
+	wrap := func(s string) string { return gutter + s + gutter }
+
+	pad := buildEmptyLine(tw)
 	var lines []string
 	lines = append(lines, buildTopBorder("PILOT", tw))
-	for _, cl := range strings.Split(content, "\n") {
-		lines = append(lines, buildContentLine(cl, tw))
-	}
+	lines = append(lines, pad)
+	lines = append(lines, buildContentLine(wrap(line1), tw))
+	lines = append(lines, pad)
+	lines = append(lines, buildContentLine(wrap(line2), tw))
+	lines = append(lines, pad)
+	lines = append(lines, buildContentLine(wrap(line3), tw))
+	lines = append(lines, pad)
 	lines = append(lines, buildBottomBorder(tw))
 	return strings.Join(lines, "\n")
+}
+
+// buildAdapterChipsRow packs DAEMON + per-adapter chips into a row that fits
+// within `budget` visual chars. Strategy:
+//  1. Always include "DAEMON ●".
+//  2. Add active adapters first (●, full name).
+//  3. Add inactive adapters next (○, full name) until budget is reached.
+//  4. If inactive adapters remain that didn't fit, append "+N idle" summary.
+func buildAdapterChipsRow(adapters []AdapterStatus, budget int) string {
+	const sep = "  "
+
+	type chipEntry struct {
+		render   string
+		inactive bool
+	}
+
+	daemon := chipEntry{render: dimStyle.Render("DAEMON") + " " + statusRunningStyle.Render("●")}
+	chips := []chipEntry{daemon}
+
+	for _, a := range adapters {
+		if !a.Active {
+			continue
+		}
+		chips = append(chips, chipEntry{
+			render: dimStyle.Render(strings.ToUpper(a.Name)) + " " + statusRunningStyle.Render("●"),
+		})
+	}
+	for _, a := range adapters {
+		if a.Active {
+			continue
+		}
+		chips = append(chips, chipEntry{
+			render:   dimStyle.Render(strings.ToUpper(a.Name)) + " " + dimStyle.Render("○"),
+			inactive: true,
+		})
+	}
+
+	// First pass: include chips greedily until budget runs out.
+	included := []chipEntry{}
+	used := 0
+	for i, c := range chips {
+		extra := lipgloss.Width(c.render)
+		if i > 0 {
+			extra += lipgloss.Width(sep)
+		}
+		if used+extra > budget {
+			break
+		}
+		included = append(included, c)
+		used += extra
+	}
+
+	skippedInactive := 0
+	for i := len(included); i < len(chips); i++ {
+		if chips[i].inactive {
+			skippedInactive++
+		}
+	}
+
+	// If we dropped any inactive chips, append a "+N idle" summary, dropping
+	// trailing inactive chips as needed to make room (and updating the count).
+	if skippedInactive > 0 {
+		for {
+			summary := dimStyle.Render(fmt.Sprintf("+%d idle", skippedInactive))
+			cost := lipgloss.Width(sep) + lipgloss.Width(summary)
+			if used+cost <= budget {
+				included = append(included, chipEntry{render: summary})
+				break
+			}
+			// No room — drop trailing chip. If it was inactive, bump the count.
+			if len(included) <= 1 {
+				break // can't drop DAEMON
+			}
+			drop := included[len(included)-1]
+			included = included[:len(included)-1]
+			used -= lipgloss.Width(drop.render) + lipgloss.Width(sep)
+			if drop.inactive {
+				skippedInactive++
+			}
+		}
+	}
+
+	parts := make([]string, 0, len(included))
+	for _, c := range included {
+		parts = append(parts, c.render)
+	}
+	return strings.Join(parts, sep)
+}
+
+// joinSegmentsSpaced packs leading + middle + trailing segments into a row of
+// inner width w with the leading segment left-aligned, trailing right-aligned,
+// and middle segments distributed in between with even spacing. Empty segments
+// are skipped.
+func joinSegmentsSpaced(w int, segs ...string) string {
+	var nonEmpty []string
+	for _, s := range segs {
+		if s != "" {
+			nonEmpty = append(nonEmpty, s)
+		}
+	}
+	if len(nonEmpty) == 0 {
+		return strings.Repeat(" ", w)
+	}
+	if len(nonEmpty) == 1 {
+		return padTo(nonEmpty[0], w)
+	}
+
+	// Total visual width of segments
+	used := 0
+	for _, s := range nonEmpty {
+		used += lipgloss.Width(s)
+	}
+	gaps := len(nonEmpty) - 1
+	free := w - used
+	if free < gaps {
+		// Not enough room — fall back to single-space joins.
+		return padTo(strings.Join(nonEmpty, " "), w)
+	}
+	per := free / gaps
+	rem := free % gaps
+
+	var sb strings.Builder
+	for i, s := range nonEmpty {
+		sb.WriteString(s)
+		if i < gaps {
+			extra := 0
+			if i < rem {
+				extra = 1
+			}
+			sb.WriteString(strings.Repeat(" ", per+extra))
+		}
+	}
+	return sb.String()
+}
+
+// padLeftRightLine packs left content left-aligned and right content
+// right-aligned within width w. Truncates left if total exceeds w.
+func padLeftRightLine(w int, left, right string) string {
+	lw := lipgloss.Width(left)
+	rw := lipgloss.Width(right)
+	if lw+rw >= w {
+		// Right wins on overflow; left is dropped.
+		if rw >= w {
+			return right
+		}
+		return strings.Repeat(" ", w-rw) + right
+	}
+	gap := w - lw - rw
+	return left + strings.Repeat(" ", gap) + right
+}
+
+// padTo right-pads s with spaces to reach visual width w.
+func padTo(s string, w int) string {
+	visual := lipgloss.Width(s)
+	if visual >= w {
+		return s
+	}
+	return s + strings.Repeat(" ", w-visual)
+}
+
+// buildTickSeparator builds a solid horizontal rule of width w using "─".
+func buildTickSeparator(w int) string {
+	if w <= 0 {
+		return ""
+	}
+	return dimStyle.Render(strings.Repeat("─", w))
 }
 
 // renderDashboard builds the left-side dashboard column (all existing panels).
@@ -1242,11 +1629,10 @@ func (m Model) renderDashboard() string {
 		m.autopilotPanel.panelWidth = m.effectivePanelTotalWidth()
 	}
 
-	// Header: ASCII logo + bordered banner frame (GH-2455)
+	// Header: bordered banner frame (GH-2455 / GH-2459).
+	// The ASCII logo is shown only during the splash; steady-state dashboard
+	// uses the compact banner frame to keep header real-estate small.
 	if m.showBanner {
-		b.WriteString("\n")
-		logo := strings.TrimPrefix(banner.Logo, "\n")
-		b.WriteString(titleStyle.Render(logo))
 		b.WriteString(m.renderBanner())
 		b.WriteString("\n")
 	}
