@@ -5,7 +5,9 @@ import (
 	"archive/zip"
 	"compress/gzip"
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -427,6 +429,82 @@ func TestInstallDirectBinary_Success(t *testing.T) {
 	info, _ := os.Stat(binPath)
 	if info.Mode()&0755 != 0755 {
 		t.Errorf("permissions = %o, want 0755", info.Mode()&os.ModePerm)
+	}
+}
+
+func TestInstallDirectBinary_ReplacesExistingBinaryAtomically(t *testing.T) {
+	dir := t.TempDir()
+	srcPath := filepath.Join(dir, "downloaded")
+	binPath := filepath.Join(dir, "pilot")
+
+	if err := os.WriteFile(srcPath, []byte("new-binary"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(binPath, []byte("old-binary"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	before, err := os.Stat(binPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	u := &Upgrader{binaryPath: binPath}
+	if err := u.installDirectBinary(srcPath); err != nil {
+		t.Fatalf("installDirectBinary() error = %v", err)
+	}
+
+	got, err := os.ReadFile(binPath)
+	if err != nil {
+		t.Fatalf("failed to read installed binary: %v", err)
+	}
+	if string(got) != "new-binary" {
+		t.Errorf("content = %q, want %q", got, "new-binary")
+	}
+
+	after, err := os.Stat(binPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if os.SameFile(before, after) {
+		t.Fatal("installDirectBinary() rewrote existing inode, want atomic replacement")
+	}
+}
+
+func TestInstallToBinaryPath_CleansUpTempOnWriterError(t *testing.T) {
+	dir := t.TempDir()
+	binPath := filepath.Join(dir, "pilot")
+	if err := os.WriteFile(binPath, []byte("old-binary"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	u := &Upgrader{binaryPath: binPath}
+	errBoom := fmt.Errorf("boom")
+	err := u.installToBinaryPath(func(out io.Writer) error {
+		_, _ = out.Write([]byte("partial"))
+		return errBoom
+	})
+	if err == nil {
+		t.Fatal("installToBinaryPath() expected error, got nil")
+	}
+	if !errors.Is(err, errBoom) {
+		t.Fatalf("installToBinaryPath() error = %v, want wrapped %v", err, errBoom)
+	}
+
+	got, readErr := os.ReadFile(binPath)
+	if readErr != nil {
+		t.Fatalf("failed to read existing binary: %v", readErr)
+	}
+	if string(got) != "old-binary" {
+		t.Errorf("content = %q, want %q", got, "old-binary")
+	}
+
+	matches, globErr := filepath.Glob(filepath.Join(dir, ".pilot-install-*"))
+	if globErr != nil {
+		t.Fatalf("glob temp files: %v", globErr)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("temp install files left behind: %v", matches)
 	}
 }
 
