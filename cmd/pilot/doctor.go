@@ -131,6 +131,9 @@ Examples:
 			// Helpful next steps
 			fmt.Println("Run 'pilot setup' for interactive configuration wizard")
 
+			if report.HasErrors {
+				return fmt.Errorf("%d error(s) detected — fix them before running Pilot", errors)
+			}
 			return nil
 		},
 	}

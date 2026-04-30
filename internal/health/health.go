@@ -8,6 +8,7 @@ package health
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -63,6 +64,59 @@ type HealthReport struct {
 	HasWarnings  bool
 }
 
+// agentDocWarnLines is the line count at which a .agent/*.md file triggers a warning.
+const agentDocWarnLines = 500
+
+// agentDocFailLines is the line count at which a .agent/*.md file triggers an error.
+const agentDocFailLines = 1000
+
+// checkAgentDocSize walks agentDir for .md files and returns ConfigChecks for
+// files that exceed the warn or fail thresholds.
+func checkAgentDocSize(agentDir string) []ConfigCheck {
+	var checks []ConfigCheck
+
+	_ = filepath.WalkDir(agentDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || filepath.Ext(path) != ".md" {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+		lineCount := strings.Count(string(data), "\n")
+		if len(data) > 0 && data[len(data)-1] != '\n' {
+			lineCount++
+		}
+		if lineCount <= agentDocWarnLines {
+			return nil
+		}
+
+		rel, _ := filepath.Rel(filepath.Dir(agentDir), path)
+		if rel == "" {
+			rel = path
+		}
+
+		if lineCount > agentDocFailLines {
+			checks = append(checks, ConfigCheck{
+				Name:    rel,
+				Status:  StatusError,
+				Message: fmt.Sprintf("%d lines (limit: %d)", lineCount, agentDocFailLines),
+				Fix:     fmt.Sprintf("Archive or trim %s to under %d lines", rel, agentDocFailLines),
+			})
+		} else {
+			checks = append(checks, ConfigCheck{
+				Name:    rel,
+				Status:  StatusWarning,
+				Message: fmt.Sprintf("%d lines (warn at: %d)", lineCount, agentDocWarnLines),
+				Fix:     fmt.Sprintf("Consider archiving sections of %s", rel),
+			})
+		}
+		return nil
+	})
+
+	return checks
+}
+
 // RunChecks performs all health checks based on config
 func RunChecks(cfg *config.Config) *HealthReport {
 	// Determine active backend type from config
@@ -71,9 +125,14 @@ func RunChecks(cfg *config.Config) *HealthReport {
 		backendType = cfg.Executor.Type
 	}
 
+	configChecks := checkConfig(cfg)
+	if cwd, err := os.Getwd(); err == nil {
+		configChecks = append(configChecks, checkAgentDocSize(filepath.Join(cwd, ".agent"))...)
+	}
+
 	report := &HealthReport{
 		Dependencies: checkDependenciesWithBackend(backendType),
-		Config:       checkConfig(cfg),
+		Config:       configChecks,
 		Features:     checkFeatures(cfg),
 		Projects:     len(cfg.Projects),
 	}
