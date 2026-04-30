@@ -123,13 +123,13 @@ Disable via config: `executor.navigator.auto_init: false`
 
 ## Current State
 
-**Current Version:** v2.103.1 | **319 features working**
+**Current Version:** v2.103.1 | **322 features working**
 
-**Recent (v2.100.2 → v2.100.4, Apr 26-27 2026):**
-- `fix(executor)`: OpenCode message schema + response parsing — modern `model: {providerID, modelID}` payload, `{info, parts}` response shape (GH-2407, GH-2409, GH-2413; closed unmerged #2408)
-- `fix(ci)`: docs deploy pipeline chained-trigger limitation — `docs-version-sync.yml` now uses `PILOT_DOCS_PAT` (with `GITHUB_TOKEN` fallback) so the auto-merge fires `sync-docs.yml`; `sync-docs.yml` gains `workflow_dispatch` as a backstop (GH-2423)
-- Repo-wide: enabled "Allow GitHub Actions to create and approve pull requests" at qf-studio org level — prerequisite for the chained-trigger fix
-- Pending cleanup: `refactor(ci)` — replace token-via-`$GITHUB_OUTPUT` with native `${{ secrets.A || secrets.B }}` fallback (GH-2426)
+**Recent (v2.103.0 → v2.103.1, Apr 30 2026):**
+- `feat(dashboard)`: avionics-style TUI redesign — splash boot screen, compact 3-row banner with version/env/model stack/adapter chips, autopilot panel rework with CI/MERGE/RETRY gauges + 5-node pipeline rail (GH-2454, GH-2455, PR #2456 → v2.103.0)
+- `fix(dashboard)`: wire avionics banner meta + rework pipeline rail with status lamps (PR #2459 → v2.103.1) — drop the duplicate ASCII logo above the banner, populate env/model stack/adapter dots from config, lamp-per-node rail (`✓ ● ○`) so terminal `releasing` stage shows a current marker
+- `refactor(dashboard)`: banner polish + reintegrate splash inside main tea.Program (v2.103.1) — solid horizontal rule, 3-space inner gutter matches sibling panels, drop duplicate "PILOT" inside the frame, strip `claude-`/`gpt-` vendor prefixes from model IDs, smart adapter chip overflow with `+N idle` summary, splash now in-program (no alt-screen flicker), `--no-splash` flag removed
+- Pending docs: screenshots in `pilot.quantflow.studio` to be refreshed manually for the new banner
 
 **Full implementation status:** `.agent/system/FEATURE-MATRIX.md`
 
@@ -399,6 +399,16 @@ Nextra 4 migration (PR #1409) + 8 docs pages covering all 156 features:
 ---
 
 ## Completed Log
+
+### 2026-04-30
+
+| Item | What |
+|------|------|
+| **v2.103.1** | `refactor(dashboard)`: banner polish + reintegrate splash inside main tea.Program. Solid horizontal rule replaces tick separator. 3-space inner gutter matches AUTOPILOT/QUEUE/HISTORY. Drop duplicate "PILOT" inside the frame; banner now leads with the version. Strip `claude-`/`gpt-` vendor prefixes from model IDs (`OPUS-4-7 / SONNET-4-6`). Smart adapter chip overflow: pack DAEMON + active adapters first, then inactives until full, then `+N idle` summary. Splash now folded into the main dashboard model — no alt-screen flicker, no init-log scroll between splash and dashboard. `--no-splash` flag removed. Released directly from `fix/dashboard-avionics-wiring` (PR #2459). |
+| **v2.103.0** | `feat(dashboard)`: avionics-style TUI redesign — splash boot screen with animated lamps, 3-line bordered banner with version/env/model stack/adapter status dots/uptime/UTC clock, autopilot panel rework with STATE/PR/AGE block, CI/MERGE/RETRY mini-gauges, and 5-node pipeline rail (GH-2454 epic, GH-2455 sub-issue, PR #2456). Initial release shipped with three wiring gaps (logo persisted in steady state, banner state never populated, terminal pipeline stage missing marker) — fixed in v2.103.1 follow-up. |
+| **Design pattern** | Pipeline rail switched from connector-based marker to lamp-per-node (`✓` done / `●` current / `○` pending). Connector approach left terminal stages with no current marker because there's no trailing connector; lamp-per-node always shows position. |
+| **Banner adapter semantics** | `●` filled = configured AND CLI flag passed this run; `○` empty = configured but no flag; hidden = not in `cfg.Adapters`. Implemented via cobra `cmd.Flags().Lookup(name).Changed` check in `applyDashboardBannerMeta`. |
+| **Splash UX gotcha** | First splash implementation used a separate `tea.Program` that ran before the dashboard's program. Caused alt-screen flicker: splash shows → exits alt screen → init logs scroll in normal terminal → dashboard re-enters alt screen. Fix: fold splash into the dashboard model itself with `EnableSplash()` + `splashFrame` + a `splashTickMsg` ticker; single program lifecycle, single alt-screen. |
 
 ### 2026-04-26 to 04-27
 
