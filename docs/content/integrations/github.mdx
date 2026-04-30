@@ -180,6 +180,11 @@ Pilot applies labels to track issue status:
 | `pilot-done` | Applied after successful completion |
 | `pilot-failed` | Applied if execution fails |
 | `pilot-retry-ready` | PR closed without merge, ready for retry |
+| `pilot-retry-1` | Retry counter — first failed attempt recorded |
+| `pilot-retry-2` | Retry counter — second failed attempt recorded |
+| `pilot-retry-exhausted` | Retry budget consumed; blocks further retries until manually cleared |
+
+Each failed execution bumps the persistent retry counter (`pilot-retry-1` → `pilot-retry-2`). Once the budget is exhausted, Pilot applies `pilot-retry-exhausted` and stops picking up the issue. Remove that label manually to allow another attempt.
 
 ### Merge Methods
 
