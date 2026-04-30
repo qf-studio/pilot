@@ -290,6 +290,7 @@
 | Gateway HTTP | ✅ | gateway | `pilot start` | `gateway` | Internal server, wired in main.go |
 | Gateway WebSocket | ✅ | gateway | - | - | Session management active in gateway |
 | Health checks | ✅ | health | `pilot doctor` | - | System validation, 32 unit tests |
+| Agent doc size check | ✅ | health | `pilot doctor` | - | Warns >500 lines, errors >1000 lines per .agent/*.md (GH-2462) |
 | OpenCode backend | ✅ | executor | `--backend opencode` | `executor.backend` | HTTP/SSE alternative to Claude Code |
 | K8s health probes | ✅ | gateway | - | - | `/ready` and `/live` endpoints for Kubernetes (v0.37.0) |
 | Prometheus metrics | ✅ | gateway | - | - | `/metrics` endpoint in Prometheus text format (v0.37.0) |

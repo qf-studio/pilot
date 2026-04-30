@@ -1,3 +1,4 @@
 export default {
-  commands: "Commands"
+  commands: "Commands",
+  doctor: "pilot doctor"
 }

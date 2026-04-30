@@ -1,0 +1,95 @@
+# pilot doctor
+
+Run health checks on system dependencies, configuration, and features.
+
+```bash
+pilot doctor [flags]
+```
+
+## Flags
+
+| Flag | Description |
+|------|-------------|
+| `-v`, `--verbose` | Show detailed output with fix suggestions |
+
+## Exit codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | All checks passed (warnings are non-fatal) |
+| `1` | One or more error-level checks failed |
+
+## Checks
+
+`pilot doctor` runs three categories of checks:
+
+### System Dependencies
+
+Verifies that required tools are installed and reachable in `PATH`:
+
+- **git** — required for all task execution
+- **gh** — GitHub CLI, needed for PR creation
+- **claude / qwen / opencode** — the active execution backend
+- **sleep** (macOS) — warns if system sleep is enabled, which may pause Pilot
+
+### Configuration
+
+Validates `~/.pilot/config.yaml`:
+
+- Config file exists
+- Telegram bot token present (if adapter enabled)
+- Slack bot token present (if adapter enabled)
+- At least one issue-source adapter is configured when projects are defined
+- GitHub token / `gh auth` reachable (if adapter enabled)
+- Daily brief has a cron schedule (if enabled)
+- Project paths resolve on disk
+
+#### Agent doc size
+
+`pilot doctor` also walks `.agent/**/*.md` in the current working directory and
+checks that documentation files have not grown unbounded.
+
+| Threshold | Behaviour |
+|-----------|-----------|
+| > 500 lines | Warning — `pilot doctor` exits `0` but prints `○` for the file |
+| > 1000 lines | Error — `pilot doctor` exits `1` |
+
+**Example output (verbose):**
+
+```
+○ .agent/DEVELOPMENT-README.md  641 lines (warn at: 500)
+  → Consider archiving sections of .agent/DEVELOPMENT-README.md
+```
+
+**Why it matters:** Navigator sessions append release notes and changelogs to
+`.agent/DEVELOPMENT-README.md` by default, causing unbounded growth that slows
+context loading and degrades plan quality.
+
+**Fix:** Archive older sections to `.agent/archive/` or split the file into
+focused topic documents. Keep the active index under 500 lines.
+
+### Features
+
+Checks optional feature availability based on config:
+
+- **Task Execution** — requires active backend + git
+- **Telegram** — requires bot token
+- **Images** — multimodal support (always available when backend is present)
+- **Voice** — requires `OPENAI_API_KEY` for Whisper transcription
+- **Briefs** — requires `orchestrator.daily_brief` config block
+- **Alerts** — requires `alerts.enabled: true`
+- **Memory** — requires `memory.cross_project: true`
+- **PRs** — requires `gh` CLI
+
+## Examples
+
+```bash
+# Quick check
+pilot doctor
+
+# Show fix suggestions
+pilot doctor --verbose
+
+# Use in CI (exits 1 on errors)
+pilot doctor || exit 1
+```
