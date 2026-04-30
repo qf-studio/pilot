@@ -741,7 +741,7 @@ func TestViewWithGitGraph_SideBySide(t *testing.T) {
 
 	plain := stripANSI(output)
 
-	if !strings.Contains(plain, "Pilot") {
+	if !strings.Contains(plain, "PILOT") {
 		t.Error("View() should contain dashboard header")
 	}
 	if !strings.Contains(plain, "GIT GRAPH") {
@@ -762,7 +762,7 @@ func TestViewHidden_NoGraph(t *testing.T) {
 	if strings.Contains(plain, "GIT GRAPH") {
 		t.Error("View() should NOT contain GIT GRAPH when hidden")
 	}
-	if !strings.Contains(plain, "Pilot") {
+	if !strings.Contains(plain, "PILOT") {
 		t.Error("View() should contain dashboard header")
 	}
 }

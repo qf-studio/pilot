@@ -12,6 +12,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/qf-studio/pilot/internal/autopilot"
 	"github.com/qf-studio/pilot/internal/memory"
 )
 
@@ -1333,5 +1334,186 @@ func TestStoreRefreshCmd_QueriesDB(t *testing.T) {
 	}
 	if msg.metricsCard.TotalTasks != 0 {
 		t.Errorf("after DELETE: TotalTasks = %d, want 0", msg.metricsCard.TotalTasks)
+	}
+}
+
+// --- GH-2455: avionics redesign tests ---
+
+func TestRenderBanner(t *testing.T) {
+	m := NewModel("2.102.3")
+	start := time.Now().Add(-90 * time.Minute) // 1h30m ago
+	m.SetBannerMeta("prod", "opus:plan | sonnet:exec", []string{"github", "slack"}, start)
+
+	out := m.renderBanner()
+
+	for _, want := range []string{"v2.102.3", "prod", "opus:plan", "UTC", "github", "slack"} {
+		if !strings.Contains(lipgloss.NewStyle().Render(out), out) {
+			// Use plain string comparison without ANSI codes
+			_ = want
+		}
+		// Strip ANSI codes for assertion (lipgloss.Width strips them conceptually;
+		// the easiest approach here is checking the raw output before any stripping).
+		if !strings.Contains(out, want) {
+			t.Errorf("renderBanner() missing %q", want)
+		}
+	}
+
+	// Verify each rendered line is exactly panelTotalWidth visual chars wide.
+	for i, line := range strings.Split(out, "\n") {
+		w := lipgloss.Width(line)
+		if w != panelTotalWidth {
+			t.Errorf("renderBanner() line %d: visual width = %d, want %d  (line: %q)", i, w, panelTotalWidth, line)
+		}
+	}
+}
+
+func TestRenderBannerDefaults(t *testing.T) {
+	// Banner renders without metadata set (env defaults to "─", no adapters, no uptime).
+	m := NewModel("1.0.0")
+	out := m.renderBanner()
+
+	if !strings.Contains(out, "v1.0.0") {
+		t.Errorf("renderBanner() missing version")
+	}
+	if !strings.Contains(out, "UTC") {
+		t.Errorf("renderBanner() missing UTC clock")
+	}
+
+	for _, line := range strings.Split(out, "\n") {
+		w := lipgloss.Width(line)
+		if w != panelTotalWidth {
+			t.Errorf("renderBanner() default: line width = %d, want %d", w, panelTotalWidth)
+		}
+	}
+}
+
+func TestAutopilotPanelDisabled(t *testing.T) {
+	p := NewAutopilotPanel(nil)
+	out := p.View()
+
+	if !strings.Contains(out, "Disabled") {
+		t.Errorf("AutopilotPanel(nil).View() missing 'Disabled'")
+	}
+	for _, line := range strings.Split(out, "\n") {
+		w := lipgloss.Width(line)
+		if w != panelTotalWidth {
+			t.Errorf("AutopilotPanel disabled: line width = %d, want %d", w, panelTotalWidth)
+		}
+	}
+}
+
+func TestRenderAutopilotRailPositions(t *testing.T) {
+	tests := []struct {
+		stage    autopilot.PRStage
+		wantBull int // expected number of ● in the output (active + past connectors)
+		wantPos  int // 0-based position of current node
+		nodeName string
+	}{
+		{autopilot.StageWaitingCI, 1, 0, "ci-wait"},
+		{autopilot.StageMerging, 3, 2, "merge"},
+		{autopilot.StagePostMergeCI, 4, 3, "tag"},
+		{autopilot.StageReleasing, 4, 4, "release"},
+	}
+
+	for _, tt := range tests {
+		t.Run(string(tt.stage), func(t *testing.T) {
+			out := renderAutopilotRail(tt.stage)
+			// Strip ANSI before counting runes
+			plain := lipgloss.NewStyle().Render(out)
+			_ = plain
+			// Count ● by scanning raw bytes (they survive style rendering)
+			bullCount := strings.Count(out, "●")
+			if bullCount != tt.wantBull {
+				t.Errorf("stage %s: ● count = %d, want %d  (rail: %q)",
+					tt.stage, bullCount, tt.wantBull, out)
+			}
+			if !strings.Contains(out, tt.nodeName) {
+				t.Errorf("stage %s: rail missing node %q", tt.stage, tt.nodeName)
+			}
+		})
+	}
+}
+
+func TestRenderAutopilotBar(t *testing.T) {
+	tests := []struct {
+		pct      int
+		barWidth int
+		wantFull int // count of filled █ chars
+		wantEmpty int
+	}{
+		{0, 8, 0, 8},
+		{50, 8, 4, 4},
+		{100, 8, 8, 0},
+		{100, 10, 10, 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("%d%%", tt.pct), func(t *testing.T) {
+			out := renderAutopilotBar(tt.pct, tt.barWidth)
+			gotFull := strings.Count(out, "█")
+			gotEmpty := strings.Count(out, "░")
+			if gotFull != tt.wantFull {
+				t.Errorf("pct=%d barWidth=%d: █ count = %d, want %d", tt.pct, tt.barWidth, gotFull, tt.wantFull)
+			}
+			if gotEmpty != tt.wantEmpty {
+				t.Errorf("pct=%d barWidth=%d: ░ count = %d, want %d", tt.pct, tt.barWidth, gotEmpty, tt.wantEmpty)
+			}
+		})
+	}
+}
+
+func TestSplashModelLampProgression(t *testing.T) {
+	m := NewSplashModel()
+	if m.lampState != 0 {
+		t.Fatalf("initial lampState = %d, want 0", m.lampState)
+	}
+
+	// Simulate ticks and verify lampState cycles through 0-3.
+	for tick := 1; tick <= splashLampCount*2; tick++ {
+		raw, _ := m.Update(splashTickMsg(time.Now()))
+		m = raw.(SplashModel)
+		wantLamp := tick % splashLampCount
+		if m.lampState != wantLamp {
+			t.Errorf("tick %d: lampState = %d, want %d", tick, m.lampState, wantLamp)
+		}
+	}
+}
+
+func TestSplashModelViewContainsLogo(t *testing.T) {
+	m := NewSplashModel()
+	out := m.View()
+	// Logo contains "PILOT" characters from the ASCII art
+	if !strings.Contains(out, "PILOT") && !strings.Contains(out, "██") {
+		t.Errorf("SplashModel.View() does not appear to contain ASCII logo")
+	}
+	// Should contain at least one lamp character
+	if !strings.Contains(out, lampLit) && !strings.Contains(out, lampDim) {
+		t.Errorf("SplashModel.View() missing lamp characters")
+	}
+}
+
+func TestSplashModelExitsAfterMaxTicks(t *testing.T) {
+	m := NewSplashModel()
+	var gotQuit bool
+	for i := 0; i < splashMaxTicks+2; i++ {
+		raw, cmd := m.Update(splashTickMsg(time.Now()))
+		m = raw.(SplashModel)
+		if m.done {
+			gotQuit = true
+			_ = cmd
+			break
+		}
+	}
+	if !gotQuit {
+		t.Errorf("SplashModel did not set done=true after %d ticks", splashMaxTicks)
+	}
+}
+
+func TestSplashModelKeySkip(t *testing.T) {
+	m := NewSplashModel()
+	raw, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = raw.(SplashModel)
+	if !m.done {
+		t.Errorf("SplashModel did not set done=true on key press")
 	}
 }

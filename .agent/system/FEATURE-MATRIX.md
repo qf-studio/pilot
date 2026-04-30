@@ -1,6 +1,6 @@
 # Pilot Feature Matrix
 
-**Last Updated:** 2026-04-30 (v2.53.0)
+**Last Updated:** 2026-04-29 (v2.53.0)
 
 ## Legend
 
@@ -240,6 +240,9 @@
 | Desktop native titlebar | ✅ | desktop | - | - | macOS TitleBarDefault, simplified two-column layout (v1.62.0, GH-1661) |
 | Desktop panel spacing | ✅ | desktop | - | - | Consistent spacing, nowrap issue IDs, flex logs panel (v1.62.0) |
 | Desktop TUI parity | ✅ | desktop | - | - | Redesign frontend layout to match TUI dashboard (v1.62.0, GH-1658) |
+| Avionics redesign: splash screen | ✅ | dashboard | `--no-splash` | - | Boot splash with 4-lamp animation at 200ms cadence, key/CI bypass (v2.103.0, GH-2455) |
+| Avionics redesign: banner frame | ✅ | dashboard | `b` toggle | - | Bordered banner frame with version, env, model stack, adapter dots, uptime, live UTC clock (v2.103.0, GH-2455) |
+| Avionics redesign: autopilot rail | ✅ | dashboard | - | - | Autopilot panel shows STATE/PR/AGE + CI/MERGE/RETRY gauges + pipeline rail; idle collapses (v2.103.0, GH-2455) |
 
 ## Replay & Debug
 
