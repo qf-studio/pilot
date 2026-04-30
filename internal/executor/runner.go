@@ -679,6 +679,26 @@ func (r *Runner) SetModelRouter(router *ModelRouter) {
 	r.modelRouter = router
 }
 
+// resolveSelectedModel returns the model name to pass to the backend for a task.
+// GH-2450: model_routing wins when configured. Only fall back to default_model
+// (or CC empty-passthrough) when the router returned an empty string. Setting
+// default_model previously clobbered routing for the Claude Code backend.
+func (r *Runner) resolveSelectedModel(task *Task) string {
+	model := r.modelRouter.SelectModel(task)
+	if model != "" {
+		return model
+	}
+	if r.config == nil || r.config.DefaultModel == "" {
+		return ""
+	}
+	if r.config.Type == BackendTypeClaudeCode {
+		// CC reads ANTHROPIC_MODEL / its own settings; pass empty to avoid
+		// overriding the user's CC-side configuration.
+		return ""
+	}
+	return r.config.DefaultModel
+}
+
 // SetParallelRunner sets the parallel runner for research phase execution (GH-217).
 // When set and enabled, medium/complex tasks run parallel research subagents
 // before the main implementation to gather codebase context.
@@ -1380,15 +1400,7 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 		slog.Duration("timeout", timeout),
 	)
 
-	// Select model if routing is enabled
-	selectedModel := r.modelRouter.SelectModel(task)
-	if r.config != nil && r.config.DefaultModel != "" {
-		if r.config.Type == BackendTypeClaudeCode {
-			selectedModel = ""
-		} else {
-			selectedModel = r.config.DefaultModel
-		}
-	}
+	selectedModel := r.resolveSelectedModel(task)
 	if selectedModel != "" {
 		log = log.With(slog.String("routed_model", selectedModel))
 	}
@@ -3320,15 +3332,8 @@ func (r *Runner) runSelfReview(ctx context.Context, task *Task, state *progressS
 	reviewCtx, cancel := context.WithTimeout(ctx, r.selfReviewTimeout())
 	defer cancel()
 
-	// Select model and effort (use same routing as main execution)
-	selectedModel := r.modelRouter.SelectModel(task)
-	if r.config != nil && r.config.DefaultModel != "" {
-		if r.config.Type == BackendTypeClaudeCode {
-			selectedModel = ""
-		} else {
-			selectedModel = r.config.DefaultModel
-		}
-	}
+	// Select model and effort (use same routing as main execution).
+	selectedModel := r.resolveSelectedModel(task)
 	selectedEffort := r.modelRouter.SelectEffort(task)
 
 	// GH-1265: Determine if session resume is enabled and session ID is available
