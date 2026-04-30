@@ -464,10 +464,14 @@ type Model struct {
 	// Banner toggle (GH-1520)
 	showBanner bool
 
-	// Banner metadata (GH-2455): env name, model routing description, active adapter names
+	// Banner metadata (GH-2455 / GH-2459 rework): env name, model stack, adapter
+	// status list, optional session code for the flight-code prefix.
 	startTime      time.Time
 	modelStack     string
 	envName        string
+	sessionCode    string // e.g. "1636/" — short identifier shown left of PILOT
+	bannerAdapters []AdapterStatus
+	// activeAdapters retained for backwards compatibility with SetBannerMeta callers.
 	activeAdapters []string
 
 	// Git graph panel (GH-1506)
@@ -756,20 +760,52 @@ func (m *Model) SetProjectPath(path string) {
 // (cmd/pilot verifies applyDashboardBannerMeta wiring end-to-end).
 func (m Model) RenderBannerForTest() string { return m.renderBanner() }
 
+// AdapterStatus describes a configured adapter for the banner status row.
+// Active=true when the adapter was started this session (flag passed); false
+// when it is configured but not running. Adapters absent from the slice are
+// not rendered at all (not configured).
+type AdapterStatus struct {
+	Name   string
+	Active bool
+}
+
 // SetBannerMeta configures optional metadata shown in the dashboard banner (GH-2455).
-// envName is the active environment (e.g. "prod"), modelStack describes the routing
-// config (e.g. "opus:plan │ sonnet:exec"), adapters is the list of active adapter names.
-// startTime is used to compute uptime; if zero, time.Now() is used.
+// Adapters provided here are all rendered as Active=true (legacy contract).
+// New callers should use SetBannerAdapters for richer state (active vs configured).
 func (m *Model) SetBannerMeta(envName, modelStack string, adapters []string, startTime time.Time) {
 	m.envName = envName
 	m.modelStack = modelStack
 	m.activeAdapters = adapters
+	// Mirror into bannerAdapters with Active=true so renderBanner has a single source.
+	m.bannerAdapters = make([]AdapterStatus, 0, len(adapters))
+	for _, a := range adapters {
+		m.bannerAdapters = append(m.bannerAdapters, AdapterStatus{Name: a, Active: true})
+	}
 	if startTime.IsZero() {
 		m.startTime = time.Now()
 	} else {
 		m.startTime = startTime
 	}
 }
+
+// SetBannerAdapters replaces the adapter status list shown in the banner.
+// Pass an entry with Active=false for adapters that are configured but not
+// running this session; omit entries entirely for adapters with no config.
+func (m *Model) SetBannerAdapters(adapters []AdapterStatus) {
+	m.bannerAdapters = adapters
+	// Mirror Active-true names into legacy field for any consumers still reading it.
+	names := make([]string, 0, len(adapters))
+	for _, a := range adapters {
+		if a.Active {
+			names = append(names, a.Name)
+		}
+	}
+	m.activeAdapters = names
+}
+
+// SetBannerSessionCode configures the short identifier shown left of "PILOT"
+// in the banner (e.g. "1636/" or "6700a39/"). Empty disables the prefix.
+func (m *Model) SetBannerSessionCode(code string) { m.sessionCode = code }
 
 // syncGitGraphToSelectedTask updates projectPath to match the selected task's project.
 // Returns a tea.Cmd to refresh the git graph if the project changed, nil otherwise.
@@ -1179,66 +1215,178 @@ func (m Model) View() string {
 	return result
 }
 
-// renderBanner returns a compact 3-line bordered frame with version, env, model
-// stack, adapter status, uptime, and a live UTC clock (GH-2455).
+// renderBanner returns the avionics banner: 3 content rows wrapped with inner
+// padding rows for breathing space.
+//
+//	╭─ PILOT ──────────────────────────────────────────────────────────╮
+//	│                                                                   │
+//	│ 1636/  PILOT v2.103.0      ENV STAGE      MODEL OPUS-4-7 / SONNET │
+//	│                                                                   │
+//	│ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ │
+//	│                                                                   │
+//	│ DAEMON ●  GH ●  TG ●  SLACK ○  DISCORD ○      UP 4m 12s  16:36 UTC│
+//	│                                                                   │
+//	╰───────────────────────────────────────────────────────────────────╯
+//
+// Adapter dots: ● filled (statusRunningStyle) when active this session,
+// ○ empty (dimStyle) when configured but not flagged. Adapters with no
+// config are not present in m.bannerAdapters and don't render at all.
 func (m Model) renderBanner() string {
 	tw := m.effectivePanelTotalWidth()
 	w := tw - 4 // inner width (content area between borders)
 
-	envStr := m.envName
-	if envStr == "" {
-		envStr = "─"
+	// --- Line 1: code/  PILOT vX.Y.Z   ENV xxx   MODEL plan / exec
+	ver := m.version
+	if !strings.HasPrefix(ver, "v") {
+		ver = "v" + ver
 	}
 
-	// Line 1: version  env  [model stack if set]
-	line1 := labelStyle.Render("v"+m.version) + "  " + dimStyle.Render(envStr)
+	var leftSegs []string
+	if m.sessionCode != "" {
+		leftSegs = append(leftSegs, dimStyle.Render(m.sessionCode))
+	}
+	leftSegs = append(leftSegs, titleStyle.Render("PILOT")+" "+labelStyle.Render(ver))
+	leftPart := strings.Join(leftSegs, "  ")
+
+	envSeg := ""
+	if m.envName != "" {
+		envSeg = dimStyle.Render("ENV") + " " + statusRunningStyle.Render(strings.ToUpper(m.envName))
+	}
+
+	modelSeg := ""
 	if m.modelStack != "" {
-		line1 += "  " + borderStyle.Render("│") + "  " + dimStyle.Render(m.modelStack)
+		modelSeg = dimStyle.Render("MODEL") + " " + labelStyle.Render(m.modelStack)
 	}
 
-	// Line 2: adapter status dots    uptime  HH:MM UTC
-	var adapterParts []string
-	for _, a := range m.activeAdapters {
-		adapterParts = append(adapterParts, statusRunningStyle.Render("●")+" "+a)
-	}
-	adapterStr := strings.Join(adapterParts, "  ")
+	line1 := joinSegmentsSpaced(w, leftPart, envSeg, modelSeg)
 
-	uptime := ""
+	// --- Line 2: tick separator
+	line2 := buildTickSeparator(w)
+
+	// --- Line 3: adapter chips (left), uptime + clock (right)
+	var chipParts []string
+	// DAEMON is always present and always active (the dashboard itself).
+	chipParts = append(chipParts, dimStyle.Render("DAEMON")+" "+statusRunningStyle.Render("●"))
+	for _, a := range m.bannerAdapters {
+		dot := dimStyle.Render("○")
+		if a.Active {
+			dot = statusRunningStyle.Render("●")
+		}
+		chipParts = append(chipParts, dimStyle.Render(strings.ToUpper(a.Name))+" "+dot)
+	}
+	chipsStr := strings.Join(chipParts, "  ")
+
+	upStr := ""
 	if !m.startTime.IsZero() {
-		uptime = "up " + formatDurationShort(time.Since(m.startTime))
+		upStr = dimStyle.Render("UP") + " " + labelStyle.Render(formatDurationShort(time.Since(m.startTime)))
 	}
-	clock := time.Now().UTC().Format("15:04") + " UTC"
-
-	rightPart := uptime
-	if uptime != "" {
-		rightPart += "   "
-	}
-	rightPart += clock
-
-	// Pad adapter dots left, clock/uptime right
-	line2 := adapterStr
-	gap := w - lipgloss.Width(line2) - lipgloss.Width(rightPart)
-	if gap > 0 {
-		line2 += strings.Repeat(" ", gap) + rightPart
-	} else {
-		line2 = rightPart
+	clockStr := dimStyle.Render(time.Now().UTC().Format("15:04") + " UTC")
+	rightPart := clockStr
+	if upStr != "" {
+		rightPart = upStr + "  " + clockStr
 	}
 
-	// Empty line 3 keeps 3-line structure; use a separator dot row if no adapters
-	line3 := ""
+	line3 := padLeftRightLine(w, chipsStr, rightPart)
 
-	content := line1 + "\n" + line2
-	if line3 != "" {
-		content += "\n" + line3
-	}
-
+	// Compose with inner padding rows (top, between each line, bottom).
+	pad := buildEmptyLine(tw)
 	var lines []string
 	lines = append(lines, buildTopBorder("PILOT", tw))
-	for _, cl := range strings.Split(content, "\n") {
-		lines = append(lines, buildContentLine(cl, tw))
-	}
+	lines = append(lines, pad)
+	lines = append(lines, buildContentLine(line1, tw))
+	lines = append(lines, pad)
+	lines = append(lines, buildContentLine(line2, tw))
+	lines = append(lines, pad)
+	lines = append(lines, buildContentLine(line3, tw))
+	lines = append(lines, pad)
 	lines = append(lines, buildBottomBorder(tw))
 	return strings.Join(lines, "\n")
+}
+
+// joinSegmentsSpaced packs leading + middle + trailing segments into a row of
+// inner width w with the leading segment left-aligned, trailing right-aligned,
+// and middle segments distributed in between with even spacing. Empty segments
+// are skipped.
+func joinSegmentsSpaced(w int, segs ...string) string {
+	var nonEmpty []string
+	for _, s := range segs {
+		if s != "" {
+			nonEmpty = append(nonEmpty, s)
+		}
+	}
+	if len(nonEmpty) == 0 {
+		return strings.Repeat(" ", w)
+	}
+	if len(nonEmpty) == 1 {
+		return padTo(nonEmpty[0], w)
+	}
+
+	// Total visual width of segments
+	used := 0
+	for _, s := range nonEmpty {
+		used += lipgloss.Width(s)
+	}
+	gaps := len(nonEmpty) - 1
+	free := w - used
+	if free < gaps {
+		// Not enough room — fall back to single-space joins.
+		return padTo(strings.Join(nonEmpty, " "), w)
+	}
+	per := free / gaps
+	rem := free % gaps
+
+	var sb strings.Builder
+	for i, s := range nonEmpty {
+		sb.WriteString(s)
+		if i < gaps {
+			extra := 0
+			if i < rem {
+				extra = 1
+			}
+			sb.WriteString(strings.Repeat(" ", per+extra))
+		}
+	}
+	return sb.String()
+}
+
+// padLeftRightLine packs left content left-aligned and right content
+// right-aligned within width w. Truncates left if total exceeds w.
+func padLeftRightLine(w int, left, right string) string {
+	lw := lipgloss.Width(left)
+	rw := lipgloss.Width(right)
+	if lw+rw >= w {
+		// Right wins on overflow; left is dropped.
+		if rw >= w {
+			return right
+		}
+		return strings.Repeat(" ", w-rw) + right
+	}
+	gap := w - lw - rw
+	return left + strings.Repeat(" ", gap) + right
+}
+
+// padTo right-pads s with spaces to reach visual width w.
+func padTo(s string, w int) string {
+	visual := lipgloss.Width(s)
+	if visual >= w {
+		return s
+	}
+	return s + strings.Repeat(" ", w-visual)
+}
+
+// buildTickSeparator builds a row of "─ " ticks filling the inner width w.
+func buildTickSeparator(w int) string {
+	if w <= 0 {
+		return ""
+	}
+	// Each "─ " is 2 visual chars; an odd width gets one more "─" at the end.
+	n := w / 2
+	tail := ""
+	if w%2 == 1 {
+		tail = "─"
+	}
+	row := strings.Repeat("─ ", n) + tail
+	return dimStyle.Render(strings.TrimRight(row, " ")) + strings.Repeat(" ", w-lipgloss.Width(strings.TrimRight(row, " ")))
 }
 
 // renderDashboard builds the left-side dashboard column (all existing panels).

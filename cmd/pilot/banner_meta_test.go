@@ -31,8 +31,8 @@ func TestApplyDashboardBannerMeta(t *testing.T) {
 					Autopilot: &autopilot.Config{Environment: autopilot.Environment("stage")},
 				},
 				Executor: &executor.BackendConfig{
-					DefaultModel: "claude-sonnet-4-6",
-					ModelRouting: &executor.ModelRoutingConfig{Complex: "claude-opus-4-7"},
+					DefaultModel: "sonnet-4-6",
+					ModelRouting: &executor.ModelRoutingConfig{Complex: "opus-4-7"},
 				},
 				Adapters: &config.AdaptersConfig{
 					GitHub:   &ghadapter.Config{Enabled: true},
@@ -41,35 +41,36 @@ func TestApplyDashboardBannerMeta(t *testing.T) {
 				},
 			},
 			wantSubstrs: []string{
-				"stage",
-				"CLAUDE-OPUS-4-7", // plan model uppercased
-				"CLAUDE-SONNET-4-6",
-				"github",
-				"telegram",
-				"slack",
+				"STAGE",      // env uppercased in banner
+				"OPUS-4-7",   // plan model
+				"SONNET-4-6", // exec model
+				"GH",         // github abbreviated
+				"TG",         // telegram abbreviated
+				"SLACK",      // slack full
+				"DAEMON",     // always shown
 			},
 		},
 		{
 			name: "single model — no slash separator",
 			cfg: &config.Config{
-				Executor: &executor.BackendConfig{DefaultModel: "claude-sonnet-4-6"},
+				Executor: &executor.BackendConfig{DefaultModel: "sonnet-4-6"},
 				Adapters: &config.AdaptersConfig{
 					Discord: &discord.Config{Enabled: true},
 				},
 			},
-			wantSubstrs: []string{"CLAUDE-SONNET-4-6", "discord"},
+			wantSubstrs: []string{"SONNET-4-6", "DISCORD"},
 			notSubstrs:  []string{" / "},
 		},
 		{
 			name: "complex == default — collapse to single label, no slash",
 			cfg: &config.Config{
 				Executor: &executor.BackendConfig{
-					DefaultModel: "claude-opus-4-7",
-					ModelRouting: &executor.ModelRoutingConfig{Complex: "claude-opus-4-7"},
+					DefaultModel: "opus-4-7",
+					ModelRouting: &executor.ModelRoutingConfig{Complex: "opus-4-7"},
 				},
 				Adapters: &config.AdaptersConfig{},
 			},
-			wantSubstrs: []string{"CLAUDE-OPUS-4-7"},
+			wantSubstrs: []string{"OPUS-4-7"},
 			notSubstrs:  []string{" / "},
 		},
 		{
@@ -80,22 +81,31 @@ func TestApplyDashboardBannerMeta(t *testing.T) {
 			wantSubstrs: []string{"v9.9.9", "UTC"},
 		},
 		{
-			name: "disabled adapters are excluded",
+			name: "configured-but-disabled adapter still appears as inactive chip",
 			cfg: &config.Config{
 				Adapters: &config.AdaptersConfig{
 					GitHub:   &ghadapter.Config{Enabled: false},
 					Telegram: &telegram.Config{Enabled: true},
 				},
 			},
-			wantSubstrs: []string{"telegram"},
-			notSubstrs:  []string{"github"},
+			// Both chips render — Active vs inactive only changes the dot,
+			// not whether the adapter name appears.
+			wantSubstrs: []string{"GH", "TG"},
+		},
+		{
+			name: "no Adapters config — only DAEMON chip + version",
+			cfg:  &config.Config{
+				// Adapters: nil intentionally
+			},
+			wantSubstrs: []string{"DAEMON", "v9.9.9"},
+			notSubstrs:  []string{"GH", "TG", "SLACK"},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			model := dashboard.NewModel("9.9.9")
-			applyDashboardBannerMeta(&model, tt.cfg)
+			applyDashboardBannerMeta(&model, tt.cfg, nil)
 
 			out := model.RenderBannerForTest()
 

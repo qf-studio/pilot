@@ -1342,19 +1342,18 @@ func TestStoreRefreshCmd_QueriesDB(t *testing.T) {
 func TestRenderBanner(t *testing.T) {
 	m := NewModel("2.102.3")
 	start := time.Now().Add(-90 * time.Minute) // 1h30m ago
-	m.SetBannerMeta("prod", "opus:plan | sonnet:exec", []string{"github", "slack"}, start)
+	m.SetBannerMeta("prod", "opus:plan | sonnet:exec", nil, start)
+	m.SetBannerAdapters([]AdapterStatus{
+		{Name: "GH", Active: true},
+		{Name: "SLACK", Active: false},
+	})
 
 	out := m.renderBanner()
 
-	for _, want := range []string{"v2.102.3", "prod", "opus:plan", "UTC", "github", "slack"} {
-		if !strings.Contains(lipgloss.NewStyle().Render(out), out) {
-			// Use plain string comparison without ANSI codes
-			_ = want
-		}
-		// Strip ANSI codes for assertion (lipgloss.Width strips them conceptually;
-		// the easiest approach here is checking the raw output before any stripping).
+	// Banner uppercases env, MODEL/ENV labels, and adapter names.
+	for _, want := range []string{"v2.102.3", "PROD", "opus:plan", "UTC", "GH", "SLACK", "DAEMON"} {
 		if !strings.Contains(out, want) {
-			t.Errorf("renderBanner() missing %q", want)
+			t.Errorf("renderBanner() missing %q\nout:\n%s", want, out)
 		}
 	}
 
@@ -1406,11 +1405,11 @@ func TestRenderAutopilotRailPositions(t *testing.T) {
 	// New rail uses lamp-per-node: ✓ (done) / ● (current) / ○ (pending).
 	// Each rail has exactly one ● (the current stage), N done lamps, M pending lamps.
 	tests := []struct {
-		stage      autopilot.PRStage
-		wantDone   int // count of ✓
-		wantBull   int // count of ● (always 1 for active stages)
-		wantPend   int // count of ○
-		nodeName   string
+		stage    autopilot.PRStage
+		wantDone int // count of ✓
+		wantBull int // count of ● (always 1 for active stages)
+		wantPend int // count of ○
+		nodeName string
 	}{
 		{autopilot.StageWaitingCI, 0, 1, 4, "ci-wait"},
 		{autopilot.StageMerging, 2, 1, 2, "merge"},
@@ -1439,9 +1438,9 @@ func TestRenderAutopilotRailPositions(t *testing.T) {
 
 func TestRenderAutopilotBar(t *testing.T) {
 	tests := []struct {
-		pct      int
-		barWidth int
-		wantFull int // count of filled █ chars
+		pct       int
+		barWidth  int
+		wantFull  int // count of filled █ chars
 		wantEmpty int
 	}{
 		{0, 8, 0, 8},

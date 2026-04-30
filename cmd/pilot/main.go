@@ -291,7 +291,7 @@ Examples:
 
 			hasPollingAdapter := hasTelegram || hasGithubPolling
 			if noGateway || hasPollingAdapter {
-				return runPollingMode(cfg, projectPath, replace, dashboardMode, noGateway)
+				return runPollingMode(cmd, cfg, projectPath, replace, dashboardMode, noGateway)
 			}
 
 			// Full daemon mode with gateway
@@ -571,7 +571,7 @@ Examples:
 					}
 					model := dashboard.NewModelWithOptions(version, gwStore, gwAutopilotController, nil)
 					model.SetProjectPath(projectPath)
-					applyDashboardBannerMeta(&model, cfg)
+					applyDashboardBannerMeta(&model, cfg, cmd)
 					gwProgram = tea.NewProgram(model,
 						tea.WithAltScreen(),
 						tea.WithInput(os.Stdin),
@@ -1246,7 +1246,7 @@ func applyTeamOverrides(cfg *config.Config, cmd *cobra.Command, teamID, teamMemb
 // runPollingMode runs lightweight polling-only mode.
 // When noGateway is false, the HTTP gateway starts in the background so the
 // desktop app (and any other client hitting /health) can reach the daemon.
-func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMode, noGateway bool) error {
+func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, replace, dashboardMode, noGateway bool) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -1599,7 +1599,7 @@ func runPollingMode(cfg *config.Config, projectPath string, replace, dashboardMo
 		upgradeRequestCh = make(chan struct{}, 1)
 		model := dashboard.NewModelWithOptions(version, store, autopilotController, upgradeRequestCh)
 		model.SetProjectPath(projectPath)
-		applyDashboardBannerMeta(&model, cfg)
+		applyDashboardBannerMeta(&model, cfg, cmd)
 		program = tea.NewProgram(model,
 			tea.WithAltScreen(),
 			tea.WithInput(os.Stdin),
@@ -2647,10 +2647,14 @@ func (s storeTaskChecker) IsTaskQueued(taskID string) bool {
 
 // countGitHubRepos counts unique GitHub repos from the default config and project-level entries.
 // applyDashboardBannerMeta populates the dashboard banner with env name,
-// model stack (plan/exec), and the list of active adapters so the compact
-// banner frame renders meaningful runtime info instead of placeholders.
-// (GH-2459 — fix-up to GH-2455.)
-func applyDashboardBannerMeta(model *dashboard.Model, cfg *config.Config) {
+// model stack (plan/exec), session code, and a per-adapter active/configured
+// list so the banner reflects what's actually running this session.
+// (GH-2459 — rework of the wiring shipped in GH-2455.)
+//
+// An adapter contributes a chip to the banner when it is configured (non-nil
+// + Enabled) in cfg. Active=true when the corresponding CLI flag was passed
+// on this invocation; Active=false renders an empty circle.
+func applyDashboardBannerMeta(model *dashboard.Model, cfg *config.Config, cmd *cobra.Command) {
 	envName := ""
 	if cfg.Orchestrator != nil && cfg.Orchestrator.Autopilot != nil {
 		envName = string(cfg.Orchestrator.Autopilot.Environment)
@@ -2673,32 +2677,93 @@ func applyDashboardBannerMeta(model *dashboard.Model, cfg *config.Config) {
 		}
 	}
 
-	var adapters []string
+	flagPassed := func(name string) bool {
+		if cmd == nil {
+			return true // no cobra context — assume runtime active for back-compat
+		}
+		f := cmd.Flags().Lookup(name)
+		if f == nil {
+			return false
+		}
+		return f.Changed
+	}
+
+	var adapters []dashboard.AdapterStatus
 	if cfg.Adapters != nil {
-		if cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.Enabled {
-			adapters = append(adapters, "github")
+		if cfg.Adapters.GitHub != nil {
+			adapters = append(adapters, dashboard.AdapterStatus{
+				Name:   "GH",
+				Active: cfg.Adapters.GitHub.Enabled && flagPassed("github"),
+			})
 		}
-		if cfg.Adapters.Telegram != nil && cfg.Adapters.Telegram.Enabled {
-			adapters = append(adapters, "telegram")
+		if cfg.Adapters.Telegram != nil {
+			adapters = append(adapters, dashboard.AdapterStatus{
+				Name:   "TG",
+				Active: cfg.Adapters.Telegram.Enabled && flagPassed("telegram"),
+			})
 		}
-		if cfg.Adapters.Slack != nil && cfg.Adapters.Slack.Enabled {
-			adapters = append(adapters, "slack")
+		if cfg.Adapters.Slack != nil {
+			adapters = append(adapters, dashboard.AdapterStatus{
+				Name:   "SLACK",
+				Active: cfg.Adapters.Slack.Enabled && flagPassed("slack"),
+			})
 		}
-		if cfg.Adapters.Discord != nil && cfg.Adapters.Discord.Enabled {
-			adapters = append(adapters, "discord")
+		if cfg.Adapters.Discord != nil {
+			adapters = append(adapters, dashboard.AdapterStatus{
+				Name:   "DISCORD",
+				Active: cfg.Adapters.Discord.Enabled && flagPassed("discord"),
+			})
 		}
-		if cfg.Adapters.Linear != nil && cfg.Adapters.Linear.Enabled {
-			adapters = append(adapters, "linear")
+		if cfg.Adapters.Linear != nil {
+			adapters = append(adapters, dashboard.AdapterStatus{
+				Name:   "LINEAR",
+				Active: cfg.Adapters.Linear.Enabled && flagPassed("linear"),
+			})
 		}
-		if cfg.Adapters.Jira != nil && cfg.Adapters.Jira.Enabled {
-			adapters = append(adapters, "jira")
+		if cfg.Adapters.Jira != nil {
+			adapters = append(adapters, dashboard.AdapterStatus{
+				Name:   "JIRA",
+				Active: cfg.Adapters.Jira.Enabled,
+			})
 		}
-		if cfg.Adapters.GitLab != nil && cfg.Adapters.GitLab.Enabled {
-			adapters = append(adapters, "gitlab")
+		if cfg.Adapters.GitLab != nil {
+			adapters = append(adapters, dashboard.AdapterStatus{
+				Name:   "GL",
+				Active: cfg.Adapters.GitLab.Enabled,
+			})
+		}
+		if cfg.Adapters.Plane != nil {
+			adapters = append(adapters, dashboard.AdapterStatus{
+				Name:   "PLANE",
+				Active: cfg.Adapters.Plane.Enabled && flagPassed("plane"),
+			})
 		}
 	}
 
-	model.SetBannerMeta(envName, modelStack, adapters, time.Now())
+	model.SetBannerMeta(envName, modelStack, nil, time.Now())
+	model.SetBannerAdapters(adapters)
+	model.SetBannerSessionCode(deriveSessionCode())
+}
+
+// deriveSessionCode returns a short identifier for the banner's flight-code
+// prefix. Uses the short git SHA from the build version if present (e.g.
+// "v2.103.0-2-g6700a399-dirty" → "6700a39/"), otherwise falls back to the
+// process start time formatted as HHMM/.
+func deriveSessionCode() string {
+	if idx := strings.Index(version, "-g"); idx >= 0 {
+		rest := version[idx+2:]
+		// Trim trailing "-dirty" or similar suffixes.
+		if dash := strings.Index(rest, "-"); dash >= 0 {
+			rest = rest[:dash]
+		}
+		if len(rest) >= 4 {
+			if len(rest) > 7 {
+				rest = rest[:7]
+			}
+			return rest + "/"
+		}
+	}
+	return time.Now().UTC().Format("1504") + "/"
 }
 
 func countGitHubRepos(cfg *config.Config) int {
