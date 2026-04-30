@@ -128,94 +128,168 @@ func NewAutopilotPanel(controller *autopilot.Controller) *AutopilotPanel {
 	return &AutopilotPanel{controller: controller, panelWidth: panelTotalWidth}
 }
 
-// View renders the autopilot panel content.
+// View renders the autopilot panel content (GH-2455 avionics redesign).
+// Active PR: STATE/PR/AGE + CI/MERGE/RETRY gauges + pipeline rail.
+// Idle: compact single-line STATE IDLE indicator.
 func (p *AutopilotPanel) View() string {
-	var content strings.Builder
 	tw := p.panelWidth
 	if tw < panelTotalWidth {
 		tw = panelTotalWidth
 	}
-	w := tw - 4
 
 	if p.controller == nil {
-		content.WriteString("  Disabled")
-		return renderPanel("AUTOPILOT", content.String(), tw)
+		return renderPanel("AUTOPILOT", "  Disabled", tw)
 	}
 
-	cfg := p.controller.Config()
-
-	// Environment/Mode
-	content.WriteString(dotLeader("Environment", cfg.EnvironmentName(), w))
-	content.WriteString("\n")
-
-	// Target branch
-	if cfg.Release != nil && cfg.Release.TagPrefix != "" {
-		content.WriteString(dotLeader("Tag prefix", cfg.Release.TagPrefix, w))
-		content.WriteString("\n")
-	}
-
-	// Post-merge action
-	postMerge := "none"
-	if cfg.Release != nil && cfg.Release.Enabled {
-		postMerge = "auto-release"
-	}
-	content.WriteString(dotLeader("Post-merge", postMerge, w))
-	content.WriteString("\n")
-
-	// Release status
-	if cfg.Release != nil && cfg.Release.Enabled {
-		content.WriteString(dotLeader("Auto-release", "enabled", w))
-	} else {
-		content.WriteString(dotLeader("Auto-release", "disabled", w))
-	}
-	content.WriteString("\n")
-
-	// Active PRs
 	prs := p.controller.GetActivePRs()
 	if len(prs) == 0 {
-		content.WriteString(dotLeader("Active PRs", "0", w))
-	} else {
-		content.WriteString(dotLeader("Active PRs", fmt.Sprintf("%d", len(prs)), w))
-		content.WriteString("\n")
-
-		for _, pr := range prs {
-			icon := p.stageIcon(pr.Stage)
-			label := p.stageLabel(pr.Stage)
-			// Show PR number and stage with time in stage
-			timeInStage := p.formatDuration(time.Since(pr.CreatedAt))
-			prLine := fmt.Sprintf("  %s #%d: %s (%s)", icon, pr.PRNumber, label, timeInStage)
-			content.WriteString(prLine)
-			content.WriteString("\n")
-
-			// Show CI status if waiting for CI
-			if pr.Stage == autopilot.StageWaitingCI {
-				ciLine := fmt.Sprintf("     CI: %s", pr.CIStatus)
-				content.WriteString(ciLine)
-				content.WriteString("\n")
-			}
-
-			// Show error if in failed state
-			if pr.Stage == autopilot.StageFailed && pr.Error != "" {
-				errLine := fmt.Sprintf("     Error: %s", truncateString(pr.Error, 30))
-				content.WriteString(errLine)
-				content.WriteString("\n")
-			}
-		}
+		idle := "  " + labelStyle.Render("STATE") + "  " + dimStyle.Render("IDLE") + "  ─  no active PR"
+		return renderPanel("AUTOPILOT", idle, tw)
 	}
 
-	// Circuit breaker status (sum of all per-PR failures)
-	failures := p.controller.TotalFailures()
-	if failures > 0 {
+	// Render first active PR with full detail; summarise additional PRs below.
+	pr := prs[0]
+	var content strings.Builder
+
+	// STATE / PR / AGE block
+	age := p.formatDuration(time.Since(pr.CreatedAt))
+	content.WriteString(fmt.Sprintf("  %s  %s    %s  #%d    %s  %s",
+		labelStyle.Render("STATE"), statusRunningStyle.Render(string(pr.Stage)),
+		labelStyle.Render("PR"), pr.PRNumber,
+		labelStyle.Render("AGE"), age))
+	content.WriteString("\n")
+
+	// CI / MERGE / RETRY gauges
+	cfg := p.controller.Config()
+	maxFailures := cfg.MaxFailures
+	if maxFailures <= 0 {
+		maxFailures = 5
+	}
+	failures := p.controller.GetPRFailures(pr.PRNumber)
+
+	ciPct := autopilotCIProgressPct(pr.CIStatus)
+	mergePct := 0
+	if pr.Stage == autopilot.StageMerging || pr.Stage == autopilot.StageMerged ||
+		pr.Stage == autopilot.StagePostMergeCI || pr.Stage == autopilot.StageReleasing {
+		mergePct = 100
+	}
+	retryPct := 0
+	if maxFailures > 0 {
+		retryPct = failures * 100 / maxFailures
+	}
+
+	ciBar := renderAutopilotBar(ciPct, 8)
+	mergeBar := renderAutopilotBar(mergePct, 8)
+	retryBar := renderAutopilotBar(retryPct, 8)
+
+	content.WriteString(fmt.Sprintf("  CI [%s]  MRG [%s]  RTY [%s] %d/%d",
+		ciBar, mergeBar, retryBar, failures, maxFailures))
+	content.WriteString("\n")
+
+	// Pipeline rail
+	content.WriteString("  " + renderAutopilotRail(pr.Stage))
+
+	// Error annotation if failed
+	if pr.Stage == autopilot.StageFailed && pr.Error != "" {
 		content.WriteString("\n")
-		failStr := fmt.Sprintf("%d/%d", failures, cfg.MaxFailures)
-		content.WriteString(dotLeaderStyled("Failures", failStr, warningStyle, w))
+		content.WriteString("  " + statusFailedStyle.Render("!") + " " + truncateString(pr.Error, 55))
+	}
+
+	// Additional PRs count
+	if len(prs) > 1 {
+		content.WriteString("\n")
+		content.WriteString(fmt.Sprintf("  + %d more PR(s)", len(prs)-1))
 	}
 
 	return renderPanel("AUTOPILOT", content.String(), tw)
 }
 
-// formatDuration formats a duration for display (e.g., "2m", "1h30m").
-func (p *AutopilotPanel) formatDuration(d time.Duration) string {
+// autopilotCIProgressPct maps CIStatus to a 0–100 progress percentage.
+func autopilotCIProgressPct(status autopilot.CIStatus) int {
+	switch status {
+	case autopilot.CIPending:
+		return 0
+	case autopilot.CIRunning:
+		return 50
+	case autopilot.CISuccess:
+		return 100
+	case autopilot.CIFailure:
+		return 0
+	}
+	return 0
+}
+
+// renderAutopilotBar renders a mini progress bar of the given width (in filled chars).
+// Uses █ for filled and ░ for empty, coloured with existing progress styles.
+func renderAutopilotBar(pct, barWidth int) string {
+	if pct < 0 {
+		pct = 0
+	}
+	if pct > 100 {
+		pct = 100
+	}
+	filled := barWidth * pct / 100
+	var b strings.Builder
+	if filled > 0 {
+		b.WriteString(progressBarStyle.Render(strings.Repeat("█", filled)))
+	}
+	if barWidth-filled > 0 {
+		b.WriteString(progressEmptyStyle.Render(strings.Repeat("░", barWidth-filled)))
+	}
+	return b.String()
+}
+
+// pipelineStagePosition maps a PRStage to its 0-based position in the 5-node rail.
+func pipelineStagePosition(stage autopilot.PRStage) int {
+	switch stage {
+	case autopilot.StagePRCreated, autopilot.StageWaitingCI,
+		autopilot.StageCIPassed, autopilot.StageCIFailed:
+		return 0
+	case autopilot.StageAwaitApproval, autopilot.StageReviewRequested:
+		return 1
+	case autopilot.StageMerging, autopilot.StageMerged:
+		return 2
+	case autopilot.StagePostMergeCI:
+		return 3
+	case autopilot.StageReleasing:
+		return 4
+	case autopilot.StageFailed:
+		return 0
+	}
+	return 0
+}
+
+// renderAutopilotRail renders the 5-node pipeline progress rail.
+// The connector after the current stage shows ● (active); future connectors show ○.
+// Format: ci-wait ──●── rebase ──○── merge ──○── tag ──○── release
+func renderAutopilotRail(stage autopilot.PRStage) string {
+	nodes := []string{"ci-wait", "rebase", "merge", "tag", "release"}
+	pos := pipelineStagePosition(stage)
+	var sb strings.Builder
+	for i, name := range nodes {
+		if i == pos {
+			sb.WriteString(titleStyle.Render(name))
+		} else {
+			sb.WriteString(dimStyle.Render(name))
+		}
+		if i < len(nodes)-1 {
+			// Connector between node i and i+1
+			if i < pos {
+				// Already passed this connector
+				sb.WriteString(statusCompletedStyle.Render(" ──●── "))
+			} else if i == pos {
+				// Currently at this connector (leaving current node)
+				sb.WriteString(statusRunningStyle.Render(" ──●── "))
+			} else {
+				sb.WriteString(dimStyle.Render(" ──○── "))
+			}
+		}
+	}
+	return sb.String()
+}
+
+// formatDurationShort formats a duration compactly (e.g., "2m", "1h30m").
+func formatDurationShort(d time.Duration) string {
 	if d < time.Minute {
 		return fmt.Sprintf("%ds", int(d.Seconds()))
 	}
@@ -228,6 +302,11 @@ func (p *AutopilotPanel) formatDuration(d time.Duration) string {
 		return fmt.Sprintf("%dh", hours)
 	}
 	return fmt.Sprintf("%dh%dm", hours, mins)
+}
+
+// formatDuration wraps formatDurationShort for AutopilotPanel methods.
+func (p *AutopilotPanel) formatDuration(d time.Duration) string {
+	return formatDurationShort(d)
 }
 
 // truncateString truncates a string to maxLen, adding "..." if truncated.
@@ -379,6 +458,12 @@ type Model struct {
 
 	// Banner toggle (GH-1520)
 	showBanner bool
+
+	// Banner metadata (GH-2455): env name, model routing description, active adapter names
+	startTime     time.Time
+	modelStack    string
+	envName       string
+	activeAdapters []string
 
 	// Git graph panel (GH-1506)
 	gitGraphMode   GitGraphMode
@@ -660,6 +745,21 @@ func (m *Model) SetProjectPath(path string) {
 	m.projectPath = path
 	if m.defaultProjectPath == "" {
 		m.defaultProjectPath = path
+	}
+}
+
+// SetBannerMeta configures optional metadata shown in the dashboard banner (GH-2455).
+// envName is the active environment (e.g. "prod"), modelStack describes the routing
+// config (e.g. "opus:plan │ sonnet:exec"), adapters is the list of active adapter names.
+// startTime is used to compute uptime; if zero, time.Now() is used.
+func (m *Model) SetBannerMeta(envName, modelStack string, adapters []string, startTime time.Time) {
+	m.envName = envName
+	m.modelStack = modelStack
+	m.activeAdapters = adapters
+	if startTime.IsZero() {
+		m.startTime = time.Now()
+	} else {
+		m.startTime = startTime
 	}
 }
 
@@ -1071,6 +1171,68 @@ func (m Model) View() string {
 	return result
 }
 
+// renderBanner returns a compact 3-line bordered frame with version, env, model
+// stack, adapter status, uptime, and a live UTC clock (GH-2455).
+func (m Model) renderBanner() string {
+	tw := m.effectivePanelTotalWidth()
+	w := tw - 4 // inner width (content area between borders)
+
+	envStr := m.envName
+	if envStr == "" {
+		envStr = "─"
+	}
+
+	// Line 1: version  env  [model stack if set]
+	line1 := labelStyle.Render("v"+m.version) + "  " + dimStyle.Render(envStr)
+	if m.modelStack != "" {
+		line1 += "  " + borderStyle.Render("│") + "  " + dimStyle.Render(m.modelStack)
+	}
+
+	// Line 2: adapter status dots    uptime  HH:MM UTC
+	var adapterParts []string
+	for _, a := range m.activeAdapters {
+		adapterParts = append(adapterParts, statusRunningStyle.Render("●")+" "+a)
+	}
+	adapterStr := strings.Join(adapterParts, "  ")
+
+	uptime := ""
+	if !m.startTime.IsZero() {
+		uptime = "up " + formatDurationShort(time.Since(m.startTime))
+	}
+	clock := time.Now().UTC().Format("15:04") + " UTC"
+
+	rightPart := uptime
+	if uptime != "" {
+		rightPart += "   "
+	}
+	rightPart += clock
+
+	// Pad adapter dots left, clock/uptime right
+	line2 := adapterStr
+	gap := w - lipgloss.Width(line2) - lipgloss.Width(rightPart)
+	if gap > 0 {
+		line2 += strings.Repeat(" ", gap) + rightPart
+	} else {
+		line2 = rightPart
+	}
+
+	// Empty line 3 keeps 3-line structure; use a separator dot row if no adapters
+	line3 := ""
+
+	content := line1 + "\n" + line2
+	if line3 != "" {
+		content += "\n" + line3
+	}
+
+	var lines []string
+	lines = append(lines, buildTopBorder("PILOT", tw))
+	for _, cl := range strings.Split(content, "\n") {
+		lines = append(lines, buildContentLine(cl, tw))
+	}
+	lines = append(lines, buildBottomBorder(tw))
+	return strings.Join(lines, "\n")
+}
+
 // renderDashboard builds the left-side dashboard column (all existing panels).
 func (m Model) renderDashboard() string {
 	var b strings.Builder
@@ -1080,12 +1242,12 @@ func (m Model) renderDashboard() string {
 		m.autopilotPanel.panelWidth = m.effectivePanelTotalWidth()
 	}
 
-	// Header with ASCII logo
+	// Header: ASCII logo + bordered banner frame (GH-2455)
 	if m.showBanner {
 		b.WriteString("\n")
 		logo := strings.TrimPrefix(banner.Logo, "\n")
 		b.WriteString(titleStyle.Render(logo))
-		b.WriteString(titleStyle.Render(fmt.Sprintf("   Pilot %s", m.version)))
+		b.WriteString(m.renderBanner())
 		b.WriteString("\n")
 	}
 

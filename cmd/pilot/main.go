@@ -129,6 +129,7 @@ func newStartCmd() *cobra.Command {
 		teamID       string // Optional team ID for scoping execution
 		teamMember   string // Member email for project access scoping
 		logFormat    string // Log output format: text or json (GH-847)
+		noSplash     bool   // Skip startup splash animation (GH-2455)
 	)
 
 	cmd := &cobra.Command{
@@ -278,6 +279,16 @@ Examples:
 			//
 			// Note: Linear/Jira webhooks require gateway but don't block polling adapters.
 			// When both are needed, gateway starts in background within polling mode.
+			// Run startup splash when dashboard mode is active, unless --no-splash
+			// or CI=true (non-interactive) (GH-2455).
+			if dashboardMode && !noSplash && os.Getenv("CI") != "true" {
+				splashProg := tea.NewProgram(dashboard.NewSplashModel(), tea.WithAltScreen())
+				if _, err := splashProg.Run(); err != nil {
+					// Splash is non-critical — log and continue
+					logging.WithComponent("dashboard").Debug("splash screen error", "error", err)
+				}
+			}
+
 			hasPollingAdapter := hasTelegram || hasGithubPolling
 			if noGateway || hasPollingAdapter {
 				return runPollingMode(cfg, projectPath, replace, dashboardMode, noGateway)
@@ -1120,6 +1131,7 @@ cmd.Flags().BoolVar(&dashboardMode, "dashboard", false, "Show TUI dashboard for 
 	cmd.Flags().StringVar(&teamID, "team", "", "Team ID or name for project access scoping (overrides config)")
 	cmd.Flags().StringVar(&teamMember, "team-member", "", "Member email for team access scoping (overrides config)")
 	cmd.Flags().StringVar(&logFormat, "log-format", "text", "Log output format: text or json (for log aggregation systems)")
+	cmd.Flags().BoolVar(&noSplash, "no-splash", false, "Skip the startup splash animation")
 
 	return cmd
 }
