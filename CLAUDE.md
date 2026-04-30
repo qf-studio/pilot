@@ -230,4 +230,19 @@ Documentation in `.agent/`:
 
 **Docs:** Nextra v4 at pilot.quantflow.studio, auto-deploy via GitLab CI
 
+## Documentation Maintenance
+
+`.agent/DEVELOPMENT-README.md` is the Navigator session index — keep it lean (≤300 lines).
+
+**Never append release notes or changelogs to DEVELOPMENT-README.md.** Use these instead:
+
+| What | Where |
+|------|-------|
+| Release notes | `git log` / GitHub Releases |
+| Quarterly changelog | `.agent/tasks/archive/CHANGELOG-2026-QN.md` |
+| Feature inventory | `.agent/system/FEATURE-MATRIX.md` |
+| Architecture detail | `.agent/system/ARCHITECTURE.md` |
+
+If DEVELOPMENT-README.md grows past 300 lines, extract the oldest `## Completed Log` entries into the matching quarterly archive file and replace with a single pointer line.
+
 <!-- GitHub integration verified -->
