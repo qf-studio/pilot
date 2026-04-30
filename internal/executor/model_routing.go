@@ -187,6 +187,29 @@ func (r *ModelRouter) GetTimeoutForComplexity(complexity Complexity) time.Durati
 	return duration
 }
 
+// resolveExecutionModel returns the model name to use for the executor's
+// main and self-review phases. It prefers a non-empty model_routing result
+// over default_model so explicit routing config is not clobbered by a
+// catch-all default_model (GH-2448/GH-2450). When routing is disabled or
+// returns empty, falls back to default_model — except for the claude-code
+// backend, which uses an empty passthrough so CC honors its own settings.
+func resolveExecutionModel(router *ModelRouter, cfg *BackendConfig, task *Task) string {
+	var routed string
+	if router != nil {
+		routed = router.SelectModel(task)
+	}
+	if routed != "" {
+		return routed
+	}
+	if cfg != nil && cfg.DefaultModel != "" {
+		if cfg.Type == BackendTypeClaudeCode {
+			return ""
+		}
+		return cfg.DefaultModel
+	}
+	return ""
+}
+
 // IsRoutingEnabled returns true if model routing is enabled.
 func (r *ModelRouter) IsRoutingEnabled() bool {
 	return r.modelConfig != nil && r.modelConfig.Enabled

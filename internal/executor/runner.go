@@ -1380,15 +1380,7 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 		slog.Duration("timeout", timeout),
 	)
 
-	// Select model if routing is enabled
-	selectedModel := r.modelRouter.SelectModel(task)
-	if r.config != nil && r.config.DefaultModel != "" {
-		if r.config.Type == BackendTypeClaudeCode {
-			selectedModel = ""
-		} else {
-			selectedModel = r.config.DefaultModel
-		}
-	}
+	selectedModel := resolveExecutionModel(r.modelRouter, r.config, task)
 	if selectedModel != "" {
 		log = log.With(slog.String("routed_model", selectedModel))
 	}
@@ -3320,15 +3312,8 @@ func (r *Runner) runSelfReview(ctx context.Context, task *Task, state *progressS
 	reviewCtx, cancel := context.WithTimeout(ctx, r.selfReviewTimeout())
 	defer cancel()
 
-	// Select model and effort (use same routing as main execution)
-	selectedModel := r.modelRouter.SelectModel(task)
-	if r.config != nil && r.config.DefaultModel != "" {
-		if r.config.Type == BackendTypeClaudeCode {
-			selectedModel = ""
-		} else {
-			selectedModel = r.config.DefaultModel
-		}
-	}
+	// Select model and effort (use same routing as main execution).
+	selectedModel := resolveExecutionModel(r.modelRouter, r.config, task)
 	selectedEffort := r.modelRouter.SelectEffort(task)
 
 	// GH-1265: Determine if session resume is enabled and session ID is available
