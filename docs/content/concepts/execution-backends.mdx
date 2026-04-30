@@ -189,6 +189,35 @@ executor:
 - **Raw HTTP**: Errors are not classified (rate limit, API, timeout all appear as HTTP errors)
 - **SSE streaming**: Uses HTTP Server-Sent Events instead of JSON streaming
 
+### Attached Mode (multi-project / non-CWD execution)
+
+OpenCode runs as a long-lived HTTP server, so a single server instance can drive sessions across multiple project directories. To do that the server has to know **which** directory each request targets — its own `cwd` is not enough.
+
+Pilot sends the `X-OpenCode-Directory` header on the two endpoints that need it:
+
+- `POST /session` — directory the new session should attach to
+- `POST /session/:id/message` — directory the message executes against
+
+Without the header, OpenCode resolves sessions against the server process `cwd` and any tool calls (file reads, edits, shell commands) run in the wrong tree. Symptom: PRs land empty or commits target an unrelated repo. Fixed in [GH-2415](https://github.com/qf-studio/pilot/issues/2415) (v2.102.0).
+
+<Callout type="info">
+The header value is the URL-encoded absolute path. OpenCode also accepts a `directory=` query parameter; Pilot uses the header form. The legacy JSON `path` field on `POST /session` is no longer authoritative in OpenCode v1.4.x+.
+</Callout>
+
+When you run a single-project Pilot pointed at the project directory, attached mode is invisible — Pilot still sends the header, OpenCode resolves to the same path the server happens to be in, and behavior is identical to detached mode. The header is required, not optional, the moment you point one OpenCode server at multiple worktrees or run the server from a directory other than the project root.
+
+### Request Timeout
+
+OpenCode session creation and SSE response streaming go over HTTP, so they're bound by an explicit timeout. Default is **10 minutes** (the SSE phase frequently runs longer than a Claude Code subprocess; a 2-minute cap surfaces as spurious cancellations). Tune via `executor.opencode.request_timeout`:
+
+```yaml
+executor:
+  opencode:
+    request_timeout: "10m"   # default; raise for very long planning passes
+```
+
+The same timeout applies to session creation, message send, and SSE response headers. Tracked under [GH-2410](https://github.com/qf-studio/pilot/issues/2410) (v2.102.0) and [GH-2416](https://github.com/qf-studio/pilot/issues/2416) (v2.102.1).
+
 ### Strengths
 
 - ✅ Flexible server architecture (can be remote)

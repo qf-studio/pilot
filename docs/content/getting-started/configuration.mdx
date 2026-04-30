@@ -288,6 +288,7 @@ executor:
     provider: "anthropic"
     auto_start_server: false
     server_command: "opencode serve"
+    request_timeout: "10m"
 ```
 
 </Tabs>
@@ -301,6 +302,31 @@ executor:
 | `opencode.provider` | string | `"anthropic"` | LLM provider name |
 | `opencode.auto_start_server` | bool | `true` | Auto-start OpenCode server if not running |
 | `opencode.server_command` | string | `"opencode serve"` | Command to start the server |
+| `opencode.request_timeout` | duration | `"10m"` | HTTP timeout for session creation, message send, and SSE response headers ([GH-2410](https://github.com/qf-studio/pilot/issues/2410)) |
+
+<Callout type="info">
+**Self-review timeout is backend-aware.** The self-review phase is capped at **10 minutes** for OpenCode and **2 minutes** for Claude Code / Qwen Code. OpenCode's SSE streaming legitimately runs slower than a Claude Code subprocess; a 2-minute cap cancels review while the backend is still working and surfaces as a false regression ([GH-2416](https://github.com/qf-studio/pilot/issues/2416)). The cap is not user-configurable today.
+</Callout>
+
+### Tool Restriction (per-subprocess token control)
+
+`executor.claude_code.allowed_tools` and `executor.claude_code.mcp_config_path` scope the toolbox each Claude Code subprocess can use. Both flow through to `ExecuteOptions.AllowedTools` / `ExecuteOptions.MCPConfigPath` and are applied to every backend call site (execution, self-review, retry, intent judge, feedback). Trimming the toolbox shaves the per-turn token cost — Claude Code replays the full tool definition list on every turn, and an unused MCP config is the single largest replayed payload.
+
+```yaml
+executor:
+  claude_code:
+    allowed_tools: ["Read", "Write", "Edit", "Bash", "Grep", "Glob", "Task"]
+    mcp_config_path: ""        # empty = no MCP servers loaded
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `claude_code.allowed_tools` | []string | `["Read","Write","Edit","Bash","Grep","Glob","Task"]` | Whitelist passed via `--allowedTools`. Excludes MCP and Web* tools by default to cut per-turn context bloat ([GH-2432](https://github.com/qf-studio/pilot/issues/2432)). |
+| `claude_code.mcp_config_path` | string | `""` | Path passed via `--mcp-config`. When empty, the subprocess loads **no** MCP servers. |
+
+<Callout type="warning">
+Empty `mcp_config_path` is the recommended default. Loading an MCP config you don't use can replay tens of thousands of tool-definition tokens on every turn. Only set this when a subprocess legitimately needs MCP-backed tools.
+</Callout>
 
 ### Hooks
 
