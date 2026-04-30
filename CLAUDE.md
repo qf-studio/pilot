@@ -230,4 +230,18 @@ Documentation in `.agent/`:
 
 **Docs:** Nextra v4 at pilot.quantflow.studio, auto-deploy via GitLab CI
 
+## Documentation Maintenance
+
+Keep `.agent/*.md` files lean. Alternative locations for long-lived content:
+
+- **Changelog / release notes** → `git log` or GitHub Releases
+- **Architectural decisions** → `.agent/system/` (one file per decision)
+- **Completed task history** → `.agent/tasks/archive/`
+- **Active task plans** → `.agent/tasks/` (remove when merged)
+
+Rules:
+
+- Do **not** append to `## Recent` blocks — replace the block content instead.
+- Do **not** let any `.agent/*.md` section grow append-only; prune or archive instead.
+
 <!-- GitHub integration verified -->
