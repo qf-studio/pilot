@@ -41,7 +41,6 @@ const (
 // over thinking budgets, tool dispatch, and retry logic.
 type AnthropicBackend struct {
 	apiKey string
-	model  string
 	apiURL string
 	config *BackendConfig
 }
@@ -359,7 +358,7 @@ func (b *AnthropicBackend) callAPI(ctx context.Context, req *apiRequest) (*apiRe
 
 		// Handle non-200 responses
 		if resp.StatusCode == 429 || resp.StatusCode == 529 || resp.StatusCode >= 500 {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			if attempt < apiMaxRetries {
 				wait := backoffs[min(attempt, len(backoffs)-1)]
 				slog.Warn("API error, retrying", slog.Int("status", resp.StatusCode), slog.Duration("wait", wait))
@@ -371,13 +370,13 @@ func (b *AnthropicBackend) callAPI(ctx context.Context, req *apiRequest) (*apiRe
 
 		if resp.StatusCode != 200 {
 			respBody, _ := io.ReadAll(resp.Body)
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			return nil, fmt.Errorf("API returned %d: %s", resp.StatusCode, string(respBody[:min(len(respBody), 500)]))
 		}
 
 		// Parse SSE stream → accumulate into final response
 		result, err := b.parseSSEStream(resp.Body)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 
 		if err != nil {
 			// Retry on overloaded errors in response body
@@ -403,8 +402,8 @@ func (b *AnthropicBackend) parseSSEStream(body io.Reader) (*apiResponse, error) 
 
 	var result apiResponse
 	var currentBlocks []apiContentBlock
-	var currentBlockTexts map[int]strings.Builder = make(map[int]strings.Builder)
-	var currentBlockInputs map[int]strings.Builder = make(map[int]strings.Builder)
+	currentBlockTexts := make(map[int]strings.Builder)
+	currentBlockInputs := make(map[int]strings.Builder)
 
 	for scanner.Scan() {
 		line := scanner.Text()

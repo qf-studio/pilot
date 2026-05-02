@@ -34,6 +34,9 @@ func NewBackend(config *BackendConfig) (Backend, error) {
 	case BackendTypeAnthropicAPI:
 		return NewAnthropicBackend(config), nil
 
+	case BackendTypeOpenAIAPI:
+		return NewOpenAIBackend(config), nil
+
 	default:
 		return nil, fmt.Errorf("unknown backend type: %s", config.Type)
 	}

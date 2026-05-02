@@ -245,6 +245,9 @@ type BackendConfig struct {
 	// QwenCode contains Qwen Code specific settings
 	QwenCode *QwenCodeConfig `yaml:"qwen_code,omitempty"`
 
+	// OpenAI contains OpenAI-compatible direct HTTP backend settings
+	OpenAI *OpenAIConfig `yaml:"openai,omitempty"`
+
 	// ModelRouting contains model selection based on task complexity
 	ModelRouting *ModelRoutingConfig `yaml:"model_routing,omitempty"`
 
@@ -803,6 +806,22 @@ func DefaultStagnationConfig() *StagnationConfig {
 		GracePeriod:              30 * time.Second,
 		CommitPartialWork:        true,
 	}
+}
+
+// OpenAIConfig contains configuration for the openai-api direct HTTP backend.
+// Supports any provider exposing an OpenAI-compatible /v1/chat/completions endpoint:
+// OpenAI, OpenRouter, Groq, Together, Synthetic, vLLM, Ollama, etc.
+type OpenAIConfig struct {
+	// APIKey is the Bearer token. Supports ${ENV_VAR} expansion.
+	// Falls back to OPENAI_API_KEY env var when empty.
+	APIKey string `yaml:"api_key,omitempty"`
+
+	// BaseURL is the provider base URL (default: https://api.openai.com/v1).
+	// Must expose /chat/completions under this prefix.
+	BaseURL string `yaml:"base_url,omitempty"`
+
+	// Model is the default model name (default: gpt-4o).
+	Model string `yaml:"model,omitempty"`
 }
 
 // BackendType constants for configuration.

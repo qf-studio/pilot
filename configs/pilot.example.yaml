@@ -141,7 +141,7 @@ orchestrator:
 
 # Executor settings
 executor:
-  type: "claude-code"          # "claude-code" or "opencode"
+  type: "claude-code"          # "claude-code", "opencode", "anthropic-api", or "openai-api"
   auto_create_pr: true         # Create PR by default after task completion
                                # Use --no-pr flag to disable for individual tasks
   # direct_commit: false       # DANGER: Enable direct commit to main (requires --direct-commit flag)
@@ -155,6 +155,39 @@ executor:
   # api_base_url: "https://api.z.ai/api/anthropic"   # e.g. Z.AI GLM, OpenRouter Anthropic-compat
   # api_auth_token: "${ZAI_API_KEY}"                  # ${ENV_VAR} is expanded on load
   # default_model: "glm-4.6"                          # model name for the configured provider
+
+  # OpenAI-compatible direct HTTP backend (GH-2382)
+  # Use type: "openai-api" to drive Pilot with any OpenAI /v1/chat/completions provider
+  # without a CLI wrapper. Supports OpenAI, Synthetic, OpenRouter, Groq, Together,
+  # vLLM, Ollama, and any other OpenAI-compatible endpoint.
+  #
+  # Example: OpenAI
+  # type: "openai-api"
+  # openai:
+  #   api_key: "${OPENAI_API_KEY}"          # ${ENV_VAR} is expanded on load
+  #   base_url: "https://api.openai.com/v1" # default
+  #   model: "gpt-4o"                       # default
+  #
+  # Example: Synthetic (hf:moonshotai/Kimi-K2-Instruct)
+  # type: "openai-api"
+  # openai:
+  #   api_key: "${SYNTHETIC_API_KEY}"
+  #   base_url: "https://api.synthetic.new/v1"
+  #   model: "hf:moonshotai/Kimi-K2-Instruct"
+  #
+  # Example: OpenRouter
+  # type: "openai-api"
+  # openai:
+  #   api_key: "${OPENROUTER_API_KEY}"
+  #   base_url: "https://openrouter.ai/api/v1"
+  #   model: "anthropic/claude-sonnet-4"
+  #
+  # Example: local vLLM / Ollama (no auth needed)
+  # type: "openai-api"
+  # openai:
+  #   api_key: "no-key"
+  #   base_url: "http://localhost:11434/v1"
+  #   model: "llama3"
 
   # Worktree isolation - execute tasks in temporary git worktree
   # use_worktree: false        # When true, creates isolated worktree per task
