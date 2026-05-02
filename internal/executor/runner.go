@@ -324,6 +324,14 @@ type SubIssueLinker interface {
 	LinkSubIssue(ctx context.Context, owner, repo string, parentNum, childNum int) error
 }
 
+// PRVerifier confirms that a created pull/merge request is observable via the remote API.
+// When set, the runner calls GetPRByURL after PR creation; if the PR cannot be fetched,
+// the execution is marked failed instead of completed. GH-2478.
+// *github.Client satisfies this interface via its GetPRByURL method.
+type PRVerifier interface {
+	GetPRByURL(ctx context.Context, prURL string) (int, error)
+}
+
 // Runner executes development tasks using an AI backend (Claude Code, OpenCode, etc.).
 // It manages task lifecycle including branch creation, AI invocation,
 // progress tracking, PR creation, and execution recording. Runner is safe for
@@ -389,6 +397,9 @@ type Runner struct {
 	// GH-2363: Track consecutive title-rejection failures per issue so we stop
 	// retrying and post a helpful comment after the 2nd identical rejection.
 	titleRejections      *titleRejectionTracker
+	// GH-2478: Optional PR verifier — fetches the PR via API after creation to confirm
+	// it is observable before writing completed. Prevents ghost-completed rows.
+	prVerifier           PRVerifier
 }
 
 // NewRunner creates a new Runner instance with Claude Code backend by default.
@@ -782,6 +793,13 @@ func (r *Runner) SetPRCreator(creator PRCreator) {
 // (warn-level log only) — the text "Parent: GH-N" body marker remains as fallback.
 func (r *Runner) SetSubIssueLinker(linker SubIssueLinker) {
 	r.subIssueLinker = linker
+}
+
+// SetPRVerifier sets the verifier used to confirm a PR is observable via the remote API
+// after creation. When set, the runner calls GetPRByURL after each PR is created;
+// if the call fails, the execution is marked failed instead of completed (GH-2478).
+func (r *Runner) SetPRVerifier(v PRVerifier) {
+	r.prVerifier = v
 }
 
 // SetIntentJudge sets the intent judge for diff-vs-ticket alignment verification (GH-624).
@@ -2951,6 +2969,31 @@ The previous execution completed but made no code changes. This task requires ac
 					r.reportProgress(task.ID, "PR Failed", 100, result.Error)
 					return result, nil
 				}
+			}
+
+			// GH-2478: Guard against success-flag-true but empty URL (gh CLI quirk).
+			if prURL == "" {
+				result.Success = false
+				result.Error = "PR creation reported success but returned empty URL"
+				r.reportProgress(task.ID, "PR Failed", 100, result.Error)
+				return result, nil
+			}
+
+			// GH-2478: Confirm the PR is observable via the API before marking completed.
+			if r.prVerifier != nil {
+				prNum, verErr := r.prVerifier.GetPRByURL(ctx, prURL)
+				if verErr != nil {
+					result.Success = false
+					result.Error = fmt.Sprintf("PR created but not observable via API: %v", verErr)
+					log.Warn("PR not observable after creation",
+						slog.String("task_id", task.ID),
+						slog.String("pr_url", prURL),
+						slog.Any("error", verErr),
+					)
+					r.reportProgress(task.ID, "PR Failed", 100, result.Error)
+					return result, nil
+				}
+				log.Info("PR verified as observable", slog.String("pr_url", prURL), slog.Int("pr_number", prNum))
 			}
 
 			result.PRUrl = prURL

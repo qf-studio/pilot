@@ -3184,3 +3184,137 @@ func TestUpdateRelease(t *testing.T) {
 		})
 	}
 }
+
+func TestParsePRURL(t *testing.T) {
+	tests := []struct {
+		name       string
+		url        string
+		wantOwner  string
+		wantRepo   string
+		wantNumber int
+		wantErr    bool
+	}{
+		{
+			name:       "standard github PR",
+			url:        "https://github.com/owner/repo/pull/123",
+			wantOwner:  "owner",
+			wantRepo:   "repo",
+			wantNumber: 123,
+		},
+		{
+			name:       "github enterprise",
+			url:        "https://github.example.com/org/myrepo/pull/456",
+			wantOwner:  "org",
+			wantRepo:   "myrepo",
+			wantNumber: 456,
+		},
+		{
+			name:       "URL with trailing path",
+			url:        "https://github.com/owner/repo/pull/42/files",
+			wantOwner:  "owner",
+			wantRepo:   "repo",
+			wantNumber: 42,
+		},
+		{
+			name:    "empty URL",
+			url:     "",
+			wantErr: true,
+		},
+		{
+			name:    "issue URL not PR",
+			url:     "https://github.com/owner/repo/issues/123",
+			wantErr: true,
+		},
+		{
+			name:    "malformed URL",
+			url:     "not-a-url",
+			wantErr: true,
+		},
+		{
+			name:    "zero PR number",
+			url:     "https://github.com/owner/repo/pull/0",
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			owner, repo, number, err := parsePRURL(tt.url)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("parsePRURL(%q) error = %v, wantErr %v", tt.url, err, tt.wantErr)
+				return
+			}
+			if !tt.wantErr {
+				if owner != tt.wantOwner {
+					t.Errorf("owner = %q, want %q", owner, tt.wantOwner)
+				}
+				if repo != tt.wantRepo {
+					t.Errorf("repo = %q, want %q", repo, tt.wantRepo)
+				}
+				if number != tt.wantNumber {
+					t.Errorf("number = %d, want %d", number, tt.wantNumber)
+				}
+			}
+		})
+	}
+}
+
+func TestGetPRByURL(t *testing.T) {
+	tests := []struct {
+		name       string
+		prURL      string
+		statusCode int
+		response   interface{}
+		wantNum    int
+		wantErr    bool
+	}{
+		{
+			name:       "success",
+			prURL:      "/owner/repo/pull/7",
+			statusCode: http.StatusOK,
+			response:   PullRequest{Number: 7, State: "open"},
+			wantNum:    7,
+		},
+		{
+			name:       "PR not found",
+			prURL:      "/owner/repo/pull/99",
+			statusCode: http.StatusNotFound,
+			response:   map[string]string{"message": "Not Found"},
+			wantErr:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tt.statusCode)
+				_, _ = fmt.Fprintf(w, "%s", mustJSON(tt.response))
+			}))
+			defer server.Close()
+
+			// Build a full URL using the test server
+			fullURL := server.URL + tt.prURL
+
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			num, err := client.GetPRByURL(context.Background(), fullURL)
+
+			if (err != nil) != tt.wantErr {
+				t.Errorf("GetPRByURL() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if !tt.wantErr && num != tt.wantNum {
+				t.Errorf("GetPRByURL() number = %d, want %d", num, tt.wantNum)
+			}
+		})
+	}
+}
+
+// mustJSON marshals v to JSON or panics.
+func mustJSON(v interface{}) string {
+	b, err := json.Marshal(v)
+	if err != nil {
+		panic(err)
+	}
+	return string(b)
+}

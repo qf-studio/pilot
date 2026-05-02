@@ -307,6 +307,43 @@ func (c *Client) GetPullRequest(ctx context.Context, owner, repo string, number 
 	return &result, nil
 }
 
+// GetPRByURL fetches a pull request by its HTML URL.
+// Parses "https://github.com/owner/repo/pull/123" to extract owner, repo, and number,
+// then calls GetPullRequest. Returns (prNumber, error).
+func (c *Client) GetPRByURL(ctx context.Context, prURL string) (int, error) {
+	owner, repo, number, err := parsePRURL(prURL)
+	if err != nil {
+		return 0, fmt.Errorf("invalid PR URL %q: %w", prURL, err)
+	}
+	pr, err := c.GetPullRequest(ctx, owner, repo, number)
+	if err != nil {
+		return 0, fmt.Errorf("PR %s not observable: %w", prURL, err)
+	}
+	return pr.Number, nil
+}
+
+// parsePRURL extracts owner, repo, and PR number from a GitHub PR HTML URL.
+// Handles "https://github.com/owner/repo/pull/123" and enterprise GitHub.
+func parsePRURL(prURL string) (owner, repo string, number int, err error) {
+	if prURL == "" {
+		return "", "", 0, fmt.Errorf("empty URL")
+	}
+	// Strip query string and fragment
+	u, parseErr := url.Parse(prURL)
+	if parseErr != nil {
+		return "", "", 0, fmt.Errorf("malformed URL: %w", parseErr)
+	}
+	// Path: /owner/repo/pull/123[/...]
+	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+	if len(parts) < 4 || parts[2] != "pull" {
+		return "", "", 0, fmt.Errorf("not a PR URL (expected /owner/repo/pull/N): %s", prURL)
+	}
+	if _, scanErr := fmt.Sscanf(parts[3], "%d", &number); scanErr != nil || number <= 0 {
+		return "", "", 0, fmt.Errorf("invalid PR number %q in URL", parts[3])
+	}
+	return parts[0], parts[1], number, nil
+}
+
 // ClosePullRequest closes a pull request without merging.
 // Used by autopilot to close failed PRs so the sequential poller can unblock.
 func (c *Client) ClosePullRequest(ctx context.Context, owner, repo string, number int) error {
