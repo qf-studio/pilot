@@ -118,20 +118,21 @@ func (f *FeedbackLoop) CreateFailureIssue(ctx context.Context, prState *PRState,
 }
 
 // generateTitle creates an issue title based on the failure type.
+// Titles follow conventional-commits format so Pilot's title validator accepts them.
 func (f *FeedbackLoop) generateTitle(prState *PRState, failureType FailureType) string {
 	switch failureType {
 	case FailureCIPreMerge:
-		return fmt.Sprintf("Fix CI failure from PR #%d", prState.PRNumber)
+		return fmt.Sprintf("fix(ci): resolve CI failure from PR #%d", prState.PRNumber)
 	case FailureCIPostMerge:
-		return fmt.Sprintf("Fix post-merge CI failure (PR #%d)", prState.PRNumber)
+		return fmt.Sprintf("fix(ci): resolve post-merge CI failure from PR #%d", prState.PRNumber)
 	case FailureMerge:
-		return fmt.Sprintf("Resolve merge conflict for PR #%d", prState.PRNumber)
+		return fmt.Sprintf("fix(merge): resolve merge conflict for PR #%d", prState.PRNumber)
 	case FailureDeployment:
-		return fmt.Sprintf("Fix deployment failure (PR #%d)", prState.PRNumber)
+		return fmt.Sprintf("fix(deploy): resolve deployment failure from PR #%d", prState.PRNumber)
 	case FailureReviewRequested:
-		return fmt.Sprintf("Address review feedback on PR #%d", prState.PRNumber)
+		return fmt.Sprintf("fix(review): address review feedback on PR #%d", prState.PRNumber)
 	default:
-		return fmt.Sprintf("Fix issue from PR #%d", prState.PRNumber)
+		return fmt.Sprintf("fix(autopilot): resolve issue from PR #%d", prState.PRNumber)
 	}
 }
 

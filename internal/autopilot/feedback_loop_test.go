@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -86,7 +87,7 @@ func TestFeedbackLoop_CreateFailureIssue_CIFailed(t *testing.T) {
 	}
 
 	// Verify title
-	expectedTitle := "Fix CI failure from PR #42"
+	expectedTitle := "fix(ci): resolve CI failure from PR #42"
 	if capturedTitle != expectedTitle {
 		t.Errorf("title = %q, want %q", capturedTitle, expectedTitle)
 	}
@@ -182,7 +183,7 @@ func TestFeedbackLoop_CreateFailureIssue_PostMerge(t *testing.T) {
 	}
 
 	// Verify different title for post-merge
-	expectedTitle := "Fix post-merge CI failure (PR #42)"
+	expectedTitle := "fix(ci): resolve post-merge CI failure from PR #42"
 	if capturedTitle != expectedTitle {
 		t.Errorf("title = %q, want %q", capturedTitle, expectedTitle)
 	}
@@ -239,7 +240,7 @@ func TestFeedbackLoop_CreateFailureIssue_MergeConflict(t *testing.T) {
 		t.Errorf("CreateFailureIssue() = %d, want 102", issueNum)
 	}
 
-	expectedTitle := "Resolve merge conflict for PR #42"
+	expectedTitle := "fix(merge): resolve merge conflict for PR #42"
 	if capturedTitle != expectedTitle {
 		t.Errorf("title = %q, want %q", capturedTitle, expectedTitle)
 	}
@@ -295,7 +296,7 @@ func TestFeedbackLoop_CreateFailureIssue_Deployment(t *testing.T) {
 		t.Errorf("CreateFailureIssue() = %d, want 103", issueNum)
 	}
 
-	expectedTitle := "Fix deployment failure (PR #42)"
+	expectedTitle := "fix(deploy): resolve deployment failure from PR #42"
 	if capturedTitle != expectedTitle {
 		t.Errorf("title = %q, want %q", capturedTitle, expectedTitle)
 	}
@@ -351,7 +352,7 @@ func TestFeedbackLoop_CreateFailureIssue_UnknownType(t *testing.T) {
 		t.Errorf("CreateFailureIssue() = %d, want 104", issueNum)
 	}
 
-	expectedTitle := "Fix issue from PR #42"
+	expectedTitle := "fix(autopilot): resolve issue from PR #42"
 	if capturedTitle != expectedTitle {
 		t.Errorf("title = %q, want %q", capturedTitle, expectedTitle)
 	}
@@ -736,31 +737,31 @@ func TestFeedbackLoop_GenerateTitle(t *testing.T) {
 			name:        "CI pre-merge",
 			failureType: FailureCIPreMerge,
 			prNumber:    42,
-			wantTitle:   "Fix CI failure from PR #42",
+			wantTitle:   "fix(ci): resolve CI failure from PR #42",
 		},
 		{
 			name:        "CI post-merge",
 			failureType: FailureCIPostMerge,
 			prNumber:    123,
-			wantTitle:   "Fix post-merge CI failure (PR #123)",
+			wantTitle:   "fix(ci): resolve post-merge CI failure from PR #123",
 		},
 		{
 			name:        "merge conflict",
 			failureType: FailureMerge,
 			prNumber:    99,
-			wantTitle:   "Resolve merge conflict for PR #99",
+			wantTitle:   "fix(merge): resolve merge conflict for PR #99",
 		},
 		{
 			name:        "deployment",
 			failureType: FailureDeployment,
 			prNumber:    1,
-			wantTitle:   "Fix deployment failure (PR #1)",
+			wantTitle:   "fix(deploy): resolve deployment failure from PR #1",
 		},
 		{
 			name:        "unknown type",
 			failureType: FailureType("unknown"),
 			prNumber:    50,
-			wantTitle:   "Fix issue from PR #50",
+			wantTitle:   "fix(autopilot): resolve issue from PR #50",
 		},
 	}
 
@@ -770,6 +771,36 @@ func TestFeedbackLoop_GenerateTitle(t *testing.T) {
 			got := fl.generateTitle(prState, tt.failureType)
 			if got != tt.wantTitle {
 				t.Errorf("generateTitle() = %q, want %q", got, tt.wantTitle)
+			}
+		})
+	}
+}
+
+// TestFeedbackLoop_GenerateTitle_ConventionalCommits verifies every failure type
+// produces a title matching the conventional-commits pattern so Pilot's title
+// validator never blocks autopilot-generated issues.
+func TestFeedbackLoop_GenerateTitle_ConventionalCommits(t *testing.T) {
+	conventionalRe := regexp.MustCompile(`^(feat|fix|chore|refactor|test|docs)(\([^)]+\))?: `)
+
+	ghClient := github.NewClient(testutil.FakeGitHubToken)
+	cfg := DefaultConfig()
+	fl := NewFeedbackLoop(ghClient, "owner", "repo", cfg)
+
+	failureTypes := []FailureType{
+		FailureCIPreMerge,
+		FailureCIPostMerge,
+		FailureMerge,
+		FailureDeployment,
+		FailureReviewRequested,
+		FailureType("unknown"),
+	}
+
+	for _, ft := range failureTypes {
+		t.Run(string(ft), func(t *testing.T) {
+			prState := &PRState{PRNumber: 42}
+			title := fl.generateTitle(prState, ft)
+			if !conventionalRe.MatchString(title) {
+				t.Errorf("title %q does not match conventional-commits pattern", title)
 			}
 		})
 	}
@@ -1130,7 +1161,7 @@ func TestGenerateTitle_ReviewRequested(t *testing.T) {
 	prState := &PRState{PRNumber: 42}
 	title := fl.generateTitle(prState, FailureReviewRequested)
 
-	expected := "Address review feedback on PR #42"
+	expected := "fix(review): address review feedback on PR #42"
 	if title != expected {
 		t.Errorf("title = %q, want %q", title, expected)
 	}
