@@ -496,6 +496,21 @@ func (s *Store) HasCompletedExecution(taskID, projectPath string) (bool, error) 
 	return count > 0, nil
 }
 
+// InvalidateCompletion deletes genuine completed execution records for the given task and
+// project, allowing re-dispatch. Targets only rows that HasCompletedExecution would count
+// (status='completed' with no error), leaving orphan-recovered rows untouched.
+func (s *Store) InvalidateCompletion(taskID, projectPath string) error {
+	_, err := s.db.Exec(`
+		DELETE FROM executions
+		WHERE task_id = ? AND project_path = ? AND status = 'completed'
+			AND (error IS NULL OR error = '')
+	`, taskID, projectPath)
+	if err != nil {
+		return fmt.Errorf("invalidate completion for %s at %s: %w", taskID, projectPath, err)
+	}
+	return nil
+}
+
 // GetRecentExecutions returns the most recent executions ordered by creation time.
 // The limit parameter specifies the maximum number of executions to return.
 func (s *Store) GetRecentExecutions(limit int) ([]*Execution, error) {

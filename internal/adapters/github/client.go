@@ -833,6 +833,46 @@ func (c *Client) ExecuteGraphQL(ctx context.Context, query string, variables map
 	return nil
 }
 
+// SearchPRsForIssue returns all PRs that reference the given issue number using the
+// GitHub Search API. It searches for PRs in the specified repo that mention #issueNumber.
+func (c *Client) SearchPRsForIssue(ctx context.Context, owner, repo string, issueNumber int) ([]*PullRequest, error) {
+	q := fmt.Sprintf("repo:%s/%s is:pr #%d", owner, repo, issueNumber)
+	path := fmt.Sprintf("/search/issues?q=%s&per_page=100", url.QueryEscape(q))
+
+	var result struct {
+		Items []struct {
+			ID      int64  `json:"id"`
+			Number  int    `json:"number"`
+			Title   string `json:"title"`
+			State   string `json:"state"`
+			HTMLURL string `json:"html_url"`
+			PullRequest *struct {
+				MergedAt string `json:"merged_at"`
+			} `json:"pull_request"`
+		} `json:"items"`
+	}
+	if err := c.doRequest(ctx, http.MethodGet, path, nil, &result); err != nil {
+		return nil, fmt.Errorf("search PRs for issue #%d: %w", issueNumber, err)
+	}
+
+	prs := make([]*PullRequest, 0, len(result.Items))
+	for _, item := range result.Items {
+		pr := &PullRequest{
+			ID:      item.ID,
+			Number:  item.Number,
+			Title:   item.Title,
+			State:   item.State,
+			HTMLURL: item.HTMLURL,
+		}
+		if item.PullRequest != nil && item.PullRequest.MergedAt != "" {
+			pr.MergedAt = item.PullRequest.MergedAt
+			pr.Merged = true
+		}
+		prs = append(prs, pr)
+	}
+	return prs, nil
+}
+
 // SearchMergedPRsForIssue checks if any merged PRs exist that reference the given
 // issue number in their title (e.g. "GH-123" pattern). Uses the GitHub Search API.
 // Returns true if at least one merged PR is found.
