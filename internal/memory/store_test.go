@@ -1805,3 +1805,75 @@ func TestRecentCompletedTelemetryStats(t *testing.T) {
 		t.Errorf("ZeroTokenRuns = %d, want 2", stats.ZeroTokenRuns)
 	}
 }
+
+func TestInvalidateCompletion(t *testing.T) {
+	tmpDir, _ := os.MkdirTemp("", "pilot-test-*")
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	store, _ := NewStore(tmpDir)
+	defer func() { _ = store.Close() }()
+
+	taskID := "GH-500"
+	projectPath := "/project"
+
+	// Insert a genuine completed execution (no error).
+	_ = store.SaveExecution(&Execution{
+		ID:          "exec-genuine",
+		TaskID:      taskID,
+		ProjectPath: projectPath,
+		Status:      "completed",
+	})
+
+	// Insert an orphan-recovered execution (status=completed, error set).
+	_ = store.SaveExecution(&Execution{
+		ID:          "exec-orphan",
+		TaskID:      taskID,
+		ProjectPath: projectPath,
+		Status:      "running",
+	})
+	_ = store.UpdateExecutionStatus("exec-orphan", "completed", "stale running task recovered (orphaned worker)")
+
+	// Confirm HasCompletedExecution sees the genuine one.
+	completed, err := store.HasCompletedExecution(taskID, projectPath)
+	if err != nil {
+		t.Fatalf("HasCompletedExecution: %v", err)
+	}
+	if !completed {
+		t.Fatal("expected true before invalidation")
+	}
+
+	// Invalidate: should remove the genuine row only.
+	if err := store.InvalidateCompletion(taskID, projectPath); err != nil {
+		t.Fatalf("InvalidateCompletion: %v", err)
+	}
+
+	// HasCompletedExecution should now return false.
+	completed, err = store.HasCompletedExecution(taskID, projectPath)
+	if err != nil {
+		t.Fatalf("HasCompletedExecution after invalidation: %v", err)
+	}
+	if completed {
+		t.Error("expected false after invalidation")
+	}
+
+	// Calling again on already-empty set should be a no-op (no error).
+	if err := store.InvalidateCompletion(taskID, projectPath); err != nil {
+		t.Errorf("InvalidateCompletion on empty set: %v", err)
+	}
+
+	// Different project path should be unaffected — add a new genuine row and check.
+	otherPath := "/other-project"
+	_ = store.SaveExecution(&Execution{
+		ID:          "exec-other",
+		TaskID:      taskID,
+		ProjectPath: otherPath,
+		Status:      "completed",
+	})
+	if err := store.InvalidateCompletion(taskID, projectPath); err != nil {
+		t.Fatalf("InvalidateCompletion: %v", err)
+	}
+	completed, _ = store.HasCompletedExecution(taskID, otherPath)
+	if !completed {
+		t.Error("InvalidateCompletion should not affect different project path")
+	}
+}
