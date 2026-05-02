@@ -267,7 +267,7 @@ func (b *OpenAIBackend) callAPI(ctx context.Context, req *openaiRequest) (*opena
 		}
 
 		if resp.StatusCode == 429 || resp.StatusCode >= 500 {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			if attempt < apiMaxRetries {
 				wait := backoffs[min(attempt, len(backoffs)-1)]
 				slog.Warn("API error, retrying", slog.Int("status", resp.StatusCode), slog.Duration("wait", wait))
@@ -279,12 +279,12 @@ func (b *OpenAIBackend) callAPI(ctx context.Context, req *openaiRequest) (*opena
 
 		if resp.StatusCode != 200 {
 			respBody, _ := io.ReadAll(resp.Body)
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			return nil, fmt.Errorf("API returned %d: %s", resp.StatusCode, string(respBody[:min(len(respBody), 500)]))
 		}
 
 		result, err := b.parseSSEStream(resp.Body)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if err != nil {
 			return nil, err
 		}

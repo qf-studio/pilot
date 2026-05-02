@@ -250,7 +250,7 @@ func (c *EffortClassifier) classifyViaAPI(ctx context.Context, task *Task) (stri
 	if err != nil {
 		return "", fmt.Errorf("API request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
