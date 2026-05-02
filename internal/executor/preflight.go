@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 )
@@ -63,13 +64,24 @@ func RunPreflightChecksWithOptions(ctx context.Context, projectPath string, opts
 		var filtered []PreflightCheck
 		for _, c := range checks {
 			if c.Name == "claude_available" {
-				filtered = append(filtered, PreflightCheck{
-					Name:        "backend_available",
-					Description: fmt.Sprintf("Verify %s CLI is available", opts.BackendType),
-					Check: func(ctx context.Context, _ string) error {
-						return checkBackendCLI(ctx, opts.BackendType)
-					},
-				})
+				if opts.BackendType == BackendTypeOpenAIAPI || opts.BackendType == BackendTypeAnthropicAPI {
+					// Direct HTTP backends have no CLI — verify API key is present instead
+					filtered = append(filtered, PreflightCheck{
+						Name:        "api_key_configured",
+						Description: fmt.Sprintf("Verify API key is configured for %s backend", opts.BackendType),
+						Check: func(ctx context.Context, _ string) error {
+							return checkOpenAIAPIKey(opts.BackendType)
+						},
+					})
+				} else {
+					filtered = append(filtered, PreflightCheck{
+						Name:        "backend_available",
+						Description: fmt.Sprintf("Verify %s CLI is available", opts.BackendType),
+						Check: func(ctx context.Context, _ string) error {
+							return checkBackendCLI(ctx, opts.BackendType)
+						},
+					})
+				}
 			} else {
 				filtered = append(filtered, c)
 			}
@@ -156,6 +168,18 @@ func checkBackendCLI(ctx context.Context, backendType string) error {
 		return fmt.Errorf("%s command not available: %w (output: %s)", info.command, err, strings.TrimSpace(string(output)))
 	}
 	return nil
+}
+
+// checkOpenAIAPIKey verifies that an API key is available for direct HTTP backends
+// (openai-api, anthropic-api). No network call — local env check only.
+func checkOpenAIAPIKey(backendType string) error {
+	keys := []string{"OPENAI_API_KEY", "ANTHROPIC_API_KEY", "PILOT_ENGINE_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"}
+	for _, k := range keys {
+		if v := os.Getenv(k); v != "" {
+			return nil
+		}
+	}
+	return fmt.Errorf("%s backend requires an API key: set OPENAI_API_KEY (or configure executor.openai.api_key)", backendType)
 }
 
 // checkGitClean verifies the git working directory has no uncommitted changes.

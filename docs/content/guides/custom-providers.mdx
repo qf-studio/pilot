@@ -183,6 +183,106 @@ executor:
     enabled: false
 ```
 
+## OpenAI-Compatible Direct Backend
+
+Use `type: "openai-api"` to drive Pilot with any provider that exposes an OpenAI-compatible `/v1/chat/completions` endpoint — **without a CLI wrapper**.
+
+<Callout type="info">
+  Shipped in v2.105.0 ([GH-2382](https://github.com/qf-studio/pilot/issues/2382)). Use this backend when you want direct HTTP control (no `claude`/`qwen` CLI installed) or when your provider speaks OpenAI wire format but not Anthropic format.
+</Callout>
+
+### When to use `openai-api` vs `claude-code` with `api_base_url`
+
+| Scenario | Recommended |
+|----------|-------------|
+| Provider speaks Anthropic format (Z.AI GLM, LiteLLM) | `claude-code` + `api_base_url` |
+| Provider speaks OpenAI format (OpenRouter, Groq, Together, Synthetic, vLLM, Ollama) | `openai-api` |
+| No CLI installed, pure API access | `openai-api` or `anthropic-api` |
+
+### Configuration Examples
+
+#### OpenAI
+
+```yaml
+executor:
+  type: "openai-api"
+  openai:
+    api_key: "${OPENAI_API_KEY}"
+    base_url: "https://api.openai.com/v1"  # default, can omit
+    model: "gpt-4o"                         # default, can omit
+```
+
+#### Synthetic (Kimi-K2)
+
+```yaml
+executor:
+  type: "openai-api"
+  openai:
+    api_key: "${SYNTHETIC_API_KEY}"
+    base_url: "https://api.synthetic.new/v1"
+    model: "hf:moonshotai/Kimi-K2-Instruct"
+```
+
+#### OpenRouter
+
+```yaml
+executor:
+  type: "openai-api"
+  openai:
+    api_key: "${OPENROUTER_API_KEY}"
+    base_url: "https://openrouter.ai/api/v1"
+    model: "anthropic/claude-sonnet-4"
+```
+
+#### Groq
+
+```yaml
+executor:
+  type: "openai-api"
+  openai:
+    api_key: "${GROQ_API_KEY}"
+    base_url: "https://api.groq.com/openai/v1"
+    model: "llama-3.1-70b-versatile"
+```
+
+#### Together AI
+
+```yaml
+executor:
+  type: "openai-api"
+  openai:
+    api_key: "${TOGETHER_API_KEY}"
+    base_url: "https://api.together.xyz/v1"
+    model: "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo"
+```
+
+#### Local vLLM or Ollama
+
+```yaml
+executor:
+  type: "openai-api"
+  openai:
+    api_key: "no-key"              # Ollama/vLLM typically ignore this
+    base_url: "http://localhost:11434/v1"
+    model: "llama3"
+```
+
+### Caveats
+
+- **No prompt caching** — OpenAI's API doesn't expose a compatible cache-pass-through interface. Cache token fields in the execution report are always 0.
+- **No thinking/reasoning budget** — The `thinking` field is Anthropic-specific and is not sent.
+- **Fixed tool set** — Only `bash`, `read_file`, `write_file`, and `edit_file` tools are available (same as the `anthropic-api` backend). MCP servers and Claude Code's extended toolbox are not loaded.
+- **Model names** — Use the provider's naming convention (e.g. `anthropic/claude-sonnet-4` on OpenRouter, not `claude-sonnet-4`).
+
+### Verification
+
+```bash
+export OPENAI_API_KEY=sk-...
+pilot task "Add a docstring to main.go" --verbose
+```
+
+Look for `OpenAI-compatible API backend initialized` in the log output and confirm the `Model:` line in the execution report shows your configured model.
+
 ## Related
 
 - [Execution Backends](/concepts/execution-backends) — backend selection (Claude Code, Qwen, OpenCode)
