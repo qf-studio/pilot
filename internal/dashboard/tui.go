@@ -322,61 +322,6 @@ func truncateString(s string, maxLen int) string {
 	return s[:maxLen-3] + "..."
 }
 
-// stageIcon returns an ASCII indicator for the PR stage.
-func (p *AutopilotPanel) stageIcon(stage autopilot.PRStage) string {
-	switch stage {
-	case autopilot.StagePRCreated:
-		return "+"
-	case autopilot.StageWaitingCI:
-		return "~"
-	case autopilot.StageCIPassed:
-		return "*"
-	case autopilot.StageCIFailed:
-		return "x"
-	case autopilot.StageAwaitApproval:
-		return "?"
-	case autopilot.StageMerging:
-		return ">"
-	case autopilot.StageMerged:
-		return "*"
-	case autopilot.StagePostMergeCI:
-		return "~"
-	case autopilot.StageReleasing:
-		return "^"
-	case autopilot.StageFailed:
-		return "!"
-	default:
-		return "-"
-	}
-}
-
-// stageLabel returns a human-readable label for the PR stage.
-func (p *AutopilotPanel) stageLabel(stage autopilot.PRStage) string {
-	switch stage {
-	case autopilot.StagePRCreated:
-		return "PR Created"
-	case autopilot.StageWaitingCI:
-		return "Waiting CI"
-	case autopilot.StageCIPassed:
-		return "CI Passed"
-	case autopilot.StageCIFailed:
-		return "CI Failed"
-	case autopilot.StageAwaitApproval:
-		return "Awaiting Approval"
-	case autopilot.StageMerging:
-		return "Merging"
-	case autopilot.StageMerged:
-		return "Merged"
-	case autopilot.StagePostMergeCI:
-		return "Post-Merge CI"
-	case autopilot.StageReleasing:
-		return "Releasing"
-	case autopilot.StageFailed:
-		return "Failed"
-	default:
-		return string(stage)
-	}
-}
 
 // TaskDisplay represents a task for display
 type TaskDisplay struct {
@@ -1881,34 +1826,6 @@ func truncateVisual(s string, targetWidth int) string {
 	return result + "..."
 }
 
-// dotLeader creates a dot-leader line: "  Label .............. Value"
-// Uses lipgloss.Width() for accurate visual width calculation
-func dotLeader(label string, value string, totalWidth int) string {
-	prefix := "  " + label + " "
-	suffix := " " + value
-	prefixWidth := lipgloss.Width(prefix)
-	suffixWidth := lipgloss.Width(suffix)
-	dotsNeeded := totalWidth - prefixWidth - suffixWidth
-	if dotsNeeded < 3 {
-		dotsNeeded = 3
-	}
-	return prefix + strings.Repeat(".", dotsNeeded) + suffix
-}
-
-// dotLeaderStyled creates a dot-leader with styled value
-// Calculates width using raw value, then applies style
-func dotLeaderStyled(label string, value string, style lipgloss.Style, totalWidth int) string {
-	prefix := "  " + label + " "
-	suffix := " " + value
-	prefixWidth := lipgloss.Width(prefix)
-	suffixWidth := lipgloss.Width(suffix)
-	dotsNeeded := totalWidth - prefixWidth - suffixWidth
-	if dotsNeeded < 3 {
-		dotsNeeded = 3
-	}
-	// Apply style to value only (dots and spaces remain unstyled)
-	return prefix + strings.Repeat(".", dotsNeeded) + " " + style.Render(value)
-}
 
 // formatCompact formats a number in compact form: 0, 999, 1.0K, 57.3K, 1.2M.
 func formatCompact(n int) string {
