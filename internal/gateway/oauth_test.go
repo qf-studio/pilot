@@ -52,6 +52,11 @@ func TestOAuthProviderEndpoints(t *testing.T) {
 			wantTokenURL: "https://oauth2.googleapis.com/token",
 		},
 		{
+			provider:     OAuthProviderMicrosoft,
+			wantAuthURL:  "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+			wantTokenURL: "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+		},
+		{
 			provider:       OAuthProviderGeneric,
 			customAuthURL:  "https://auth.example.com/oauth/authorize",
 			customTokenURL: "https://auth.example.com/oauth/token",
@@ -105,6 +110,14 @@ func TestOAuthResolvedScopes(t *testing.T) {
 		scopes := h.resolvedScopes()
 		if len(scopes) == 0 {
 			t.Error("expected default scopes for google provider")
+		}
+	})
+
+	t.Run("microsoft defaults when no scopes configured", func(t *testing.T) {
+		h := NewOAuthHandler(&OAuthConfig{Provider: OAuthProviderMicrosoft})
+		scopes := h.resolvedScopes()
+		if len(scopes) == 0 {
+			t.Error("expected default scopes for microsoft provider")
 		}
 	})
 

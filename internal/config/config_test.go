@@ -565,6 +565,161 @@ func TestValidate(t *testing.T) {
 			}(),
 			wantErr: false, // Nil auth is allowed
 		},
+		{
+			name: "OAuthAuthWithoutOAuthConfig",
+			config: func() *Config {
+				c := DefaultConfig()
+				c.Auth = &gateway.AuthConfig{
+					Type:  gateway.AuthTypeOAuth,
+					OAuth: nil,
+				}
+				return c
+			}(),
+			wantErr:     true,
+			errContains: "auth.oauth config is required",
+		},
+		{
+			name: "OAuthAuthWithoutClientID",
+			config: func() *Config {
+				c := DefaultConfig()
+				c.Auth = &gateway.AuthConfig{
+					Type: gateway.AuthTypeOAuth,
+					OAuth: &gateway.OAuthConfig{
+						Provider:     gateway.OAuthProviderGitHub,
+						ClientSecret: "secret",
+						RedirectURL:  "http://localhost/callback",
+					},
+				}
+				return c
+			}(),
+			wantErr:     true,
+			errContains: "auth.oauth.client_id is required",
+		},
+		{
+			name: "OAuthAuthWithoutClientSecret",
+			config: func() *Config {
+				c := DefaultConfig()
+				c.Auth = &gateway.AuthConfig{
+					Type: gateway.AuthTypeOAuth,
+					OAuth: &gateway.OAuthConfig{
+						Provider:    gateway.OAuthProviderGitHub,
+						ClientID:    "client-id",
+						RedirectURL: "http://localhost/callback",
+					},
+				}
+				return c
+			}(),
+			wantErr:     true,
+			errContains: "auth.oauth.client_secret is required",
+		},
+		{
+			name: "OAuthAuthWithoutRedirectURL",
+			config: func() *Config {
+				c := DefaultConfig()
+				c.Auth = &gateway.AuthConfig{
+					Type: gateway.AuthTypeOAuth,
+					OAuth: &gateway.OAuthConfig{
+						Provider:     gateway.OAuthProviderGitHub,
+						ClientID:     "client-id",
+						ClientSecret: "secret",
+					},
+				}
+				return c
+			}(),
+			wantErr:     true,
+			errContains: "auth.oauth.redirect_url is required",
+		},
+		{
+			name: "OAuthAuthGitHubProviderValid",
+			config: func() *Config {
+				c := DefaultConfig()
+				c.Auth = &gateway.AuthConfig{
+					Type: gateway.AuthTypeOAuth,
+					OAuth: &gateway.OAuthConfig{
+						Provider:     gateway.OAuthProviderGitHub,
+						ClientID:     "client-id",
+						ClientSecret: "secret",
+						RedirectURL:  "http://localhost/callback",
+					},
+				}
+				return c
+			}(),
+			wantErr: false,
+		},
+		{
+			name: "OAuthAuthMicrosoftProviderValid",
+			config: func() *Config {
+				c := DefaultConfig()
+				c.Auth = &gateway.AuthConfig{
+					Type: gateway.AuthTypeOAuth,
+					OAuth: &gateway.OAuthConfig{
+						Provider:     gateway.OAuthProviderMicrosoft,
+						ClientID:     "client-id",
+						ClientSecret: "secret",
+						RedirectURL:  "http://localhost/callback",
+					},
+				}
+				return c
+			}(),
+			wantErr: false,
+		},
+		{
+			name: "OAuthAuthGenericProviderWithoutAuthURL",
+			config: func() *Config {
+				c := DefaultConfig()
+				c.Auth = &gateway.AuthConfig{
+					Type: gateway.AuthTypeOAuth,
+					OAuth: &gateway.OAuthConfig{
+						Provider:     gateway.OAuthProviderGeneric,
+						ClientID:     "client-id",
+						ClientSecret: "secret",
+						RedirectURL:  "http://localhost/callback",
+						TokenURL:     "https://auth.example.com/token",
+					},
+				}
+				return c
+			}(),
+			wantErr:     true,
+			errContains: "auth.oauth.auth_url is required",
+		},
+		{
+			name: "OAuthAuthGenericProviderWithoutTokenURL",
+			config: func() *Config {
+				c := DefaultConfig()
+				c.Auth = &gateway.AuthConfig{
+					Type: gateway.AuthTypeOAuth,
+					OAuth: &gateway.OAuthConfig{
+						Provider:     gateway.OAuthProviderGeneric,
+						ClientID:     "client-id",
+						ClientSecret: "secret",
+						RedirectURL:  "http://localhost/callback",
+						AuthURL:      "https://auth.example.com/authorize",
+					},
+				}
+				return c
+			}(),
+			wantErr:     true,
+			errContains: "auth.oauth.token_url is required",
+		},
+		{
+			name: "OAuthAuthGenericProviderValid",
+			config: func() *Config {
+				c := DefaultConfig()
+				c.Auth = &gateway.AuthConfig{
+					Type: gateway.AuthTypeOAuth,
+					OAuth: &gateway.OAuthConfig{
+						Provider:     gateway.OAuthProviderGeneric,
+						ClientID:     "client-id",
+						ClientSecret: "secret",
+						RedirectURL:  "http://localhost/callback",
+						AuthURL:      "https://auth.example.com/authorize",
+						TokenURL:     "https://auth.example.com/token",
+					},
+				}
+				return c
+			}(),
+			wantErr: false,
+		},
 	}
 
 	for _, tt := range tests {

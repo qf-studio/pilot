@@ -19,9 +19,10 @@ import (
 type OAuthProvider string
 
 const (
-	OAuthProviderGitHub  OAuthProvider = "github"
-	OAuthProviderGoogle  OAuthProvider = "google"
-	OAuthProviderGeneric OAuthProvider = "generic"
+	OAuthProviderGitHub    OAuthProvider = "github"
+	OAuthProviderGoogle    OAuthProvider = "google"
+	OAuthProviderMicrosoft OAuthProvider = "microsoft"
+	OAuthProviderGeneric   OAuthProvider = "generic"
 )
 
 // OAuthConfig holds configuration for an OAuth2 provider.
@@ -47,12 +48,19 @@ var providerEndpoints = map[OAuthProvider]struct{ AuthURL, TokenURL string }{
 		AuthURL:  "https://accounts.google.com/o/oauth2/v2/auth",
 		TokenURL: "https://oauth2.googleapis.com/token",
 	},
+	// Uses the multi-tenant "common" endpoint; tenant-specific instances can
+	// override via AuthURL/TokenURL config fields.
+	OAuthProviderMicrosoft: {
+		AuthURL:  "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+		TokenURL: "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+	},
 }
 
 // providerDefaultScopes maps built-in providers to their default OAuth2 scopes.
 var providerDefaultScopes = map[OAuthProvider][]string{
-	OAuthProviderGitHub: {"read:user", "user:email"},
-	OAuthProviderGoogle: {"openid", "email", "profile"},
+	OAuthProviderGitHub:    {"read:user", "user:email"},
+	OAuthProviderGoogle:    {"openid", "email", "profile"},
+	OAuthProviderMicrosoft: {"openid", "email", "profile"},
 }
 
 // oauthState holds temporary state for an in-flight OAuth2 authorization.
