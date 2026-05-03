@@ -462,6 +462,60 @@ func TestParseTokenResponse(t *testing.T) {
 	}
 }
 
+func TestExchangeCode(t *testing.T) {
+	tests := []struct {
+		name       string
+		statusCode int
+		body       string
+		wantErr    bool
+	}{
+		{
+			name:       "success",
+			statusCode: http.StatusOK,
+			body:       `{"access_token":"tok","expires_in":3600,"scope":"read:user"}`,
+		},
+		{
+			name:       "non-200 status closes body without error check panic",
+			statusCode: http.StatusUnauthorized,
+			body:       `{"error":"bad_verification_code"}`,
+			wantErr:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tt.statusCode)
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer srv.Close()
+
+			h := NewOAuthHandler(&OAuthConfig{
+				Provider:     OAuthProviderGeneric,
+				ClientID:     "cid",
+				ClientSecret: "csec",
+				RedirectURL:  "http://localhost/callback",
+				TokenURL:     srv.URL,
+			})
+			h.HTTPClient = srv.Client()
+
+			tok, err := h.exchangeCode(t.Context(), "auth-code")
+			if tt.wantErr {
+				if err == nil {
+					t.Error("expected error, got nil")
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				if tok == nil || tok.Value == "" {
+					t.Error("expected non-empty token")
+				}
+			}
+		})
+	}
+}
+
 func TestGenerateRandomHex(t *testing.T) {
 	token1, err := generateRandomHex(16)
 	if err != nil {
