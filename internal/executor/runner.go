@@ -389,6 +389,9 @@ type Runner struct {
 	// GH-2363: Track consecutive title-rejection failures per issue so we stop
 	// retrying and post a helpful comment after the 2nd identical rejection.
 	titleRejections      *titleRejectionTracker
+	// openSubIssueCheck detects whether open sub-issues for a parent already exist.
+	// Injectable for testing; defaults to queryOpenSubIssues (gh CLI).
+	openSubIssueCheck func(ctx context.Context, dir, parentID string) (bool, error)
 }
 
 // NewRunner creates a new Runner instance with Claude Code backend by default.

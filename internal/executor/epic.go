@@ -4,7 +4,10 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"regexp"
@@ -254,6 +257,10 @@ func (r *Runner) PlanEpic(ctx context.Context, task *Task, executionPath string)
 		return nil, fmt.Errorf("no subtasks found in planning output")
 	}
 
+	// Validate and fix subtask titles: enforce conventional-commits format,
+	// reject placeholders, re-prompt via LLM or fall back to parent type/scope.
+	subtasks = validateAndFixSubtaskTitles(ctx, subtasks, task, r.subtaskParser, r.log)
+
 	return &EpicPlan{
 		ParentTask: task,
 		Subtasks:   subtasks,
@@ -268,6 +275,16 @@ func buildPlanningPrompt(task *Task) string {
 	sb.WriteString("You are a software architect planning an implementation.\n\n")
 	sb.WriteString("Break down this epic task into 3-5 sequential subtasks that can each be completed independently.\n")
 	sb.WriteString("Each subtask should be a concrete, implementable unit of work.\n\n")
+
+	sb.WriteString("## CRITICAL: Subtask Title Format\n\n")
+	sb.WriteString("Every subtask title MUST follow the conventional-commits format:\n\n")
+	sb.WriteString("  type(scope): description\n\n")
+	sb.WriteString("Accepted types: feat, fix, chore, refactor, test, docs, perf, build, ci, style\n")
+	sb.WriteString("Examples:\n")
+	sb.WriteString("  feat(auth): add OAuth provider integration\n")
+	sb.WriteString("  fix(api): handle nil response in webhook handler\n")
+	sb.WriteString("  chore(deps): upgrade go modules to latest\n\n")
+	sb.WriteString("Do NOT emit titles like \"GH-123: Subtask 1\" or plain action phrases without a type prefix.\n\n")
 
 	sb.WriteString("## CRITICAL: Avoid Single-Package Splits\n\n")
 	sb.WriteString("If all the work lives in one package or directory (e.g., all files in `cmd/pilot/`),\n")
@@ -497,6 +514,164 @@ func finalizeSubtask(subtask *PlannedSubtask, lines []string) {
 	}
 }
 
+// conventionalSubtaskTitleRE mirrors the conventional-commit regex from the github
+// package but is defined here to avoid an import cycle (adapters/github → executor).
+var conventionalSubtaskTitleRE = regexp.MustCompile(
+	`^(feat|fix|chore|refactor|test|docs|perf|build|ci|style)(\([^)]+\))?: .+$`,
+)
+
+// placeholderSubtaskTitleRE matches synthetic fallback titles like "GH-123: Subtask 1"
+// produced by syntheticSubtaskTitle. Their presence in a batch signals a re-prompt is needed.
+var placeholderSubtaskTitleRE = regexp.MustCompile(`^[A-Z][A-Z0-9]*-\d+:\s+Subtask\s+\d+$`)
+
+// parentTypeScopeRE extracts the conventional-commit prefix from a parent task title.
+// Used by Approach B fallback: "feat(auth):" → "feat(auth): " prepended to the subtask description.
+var parentTypeScopeRE = regexp.MustCompile(
+	`^(feat|fix|chore|refactor|test|docs|perf|build|ci|style)(\([^)]+\))?:`,
+)
+
+// ErrSubIssuesAlreadyExist is returned by CreateSubIssues when open sub-issues
+// referencing the parent already exist, preventing duplicate batch creation.
+var ErrSubIssuesAlreadyExist = errors.New("open sub-issues already exist for this parent")
+
+// isConventionalSubtaskTitle reports whether title is in conventional-commits format.
+func isConventionalSubtaskTitle(title string) bool {
+	return conventionalSubtaskTitleRE.MatchString(strings.TrimSpace(title))
+}
+
+// isPlaceholderSubtaskTitle reports whether title is a synthetic placeholder like "GH-123: Subtask 1".
+func isPlaceholderSubtaskTitle(title string) bool {
+	return placeholderSubtaskTitleRE.MatchString(strings.TrimSpace(title))
+}
+
+// extractParentTypeScope returns the conventional-commit prefix (e.g. "feat(auth):") from
+// parentTitle. Falls back to "chore:" when the parent title is not in conventional-commit format.
+func extractParentTypeScope(parentTitle string) string {
+	m := parentTypeScopeRE.FindString(strings.TrimSpace(parentTitle))
+	if m == "" {
+		return "chore:"
+	}
+	return m
+}
+
+// applyParentTypeScopeFallback rewrites the subtasks at invalidIdx using the parent's
+// conventional-commit prefix (Approach B). The result is guaranteed to satisfy
+// conventionalSubtaskTitleRE.
+func applyParentTypeScopeFallback(subtasks []PlannedSubtask, invalidIdx []int, parentTitle string) []PlannedSubtask {
+	prefix := extractParentTypeScope(parentTitle) // e.g. "feat(auth):"
+	result := make([]PlannedSubtask, len(subtasks))
+	copy(result, subtasks)
+	for _, idx := range invalidIdx {
+		if idx < 0 || idx >= len(result) {
+			continue
+		}
+		st := &result[idx]
+		raw := strings.TrimSpace(st.Title)
+		// Strip any existing issue-id prefix like "GH-N: "
+		raw = issuePrefixRegex.ReplaceAllString(raw, "")
+		// Replace bare "Subtask N" placeholders with a meaningful verb phrase
+		if raw == "" || strings.HasPrefix(strings.ToLower(raw), "subtask") {
+			raw = fmt.Sprintf("implement subtask %d", st.Order)
+		}
+		st.Title = prefix + " " + lowercaseFirstRune(raw)
+	}
+	return result
+}
+
+// findInvalidSubtaskTitleIdx returns the indices of subtasks whose titles are either
+// not in conventional-commits format or are synthetic placeholder strings.
+func findInvalidSubtaskTitleIdx(subtasks []PlannedSubtask) []int {
+	var invalid []int
+	for i, st := range subtasks {
+		if isPlaceholderSubtaskTitle(st.Title) || !isConventionalSubtaskTitle(st.Title) {
+			invalid = append(invalid, i)
+		}
+	}
+	return invalid
+}
+
+// validateAndFixSubtaskTitles ensures every subtask title follows conventional-commits
+// format (type(scope): description). Invalid or placeholder titles trigger a re-prompt
+// via SubtaskParser; if the re-prompt fails or no parser is available, Approach B
+// inherits the parent's type/scope prefix.
+func validateAndFixSubtaskTitles(ctx context.Context, subtasks []PlannedSubtask, parent *Task, parser *SubtaskParser, log *slog.Logger) []PlannedSubtask {
+	invalid := findInvalidSubtaskTitleIdx(subtasks)
+	if len(invalid) == 0 {
+		return subtasks
+	}
+
+	parentTitle := ""
+	if parent != nil {
+		parentTitle = parent.Title
+	}
+
+	// Attempt re-prompt via SubtaskParser API.
+	if parser != nil {
+		invalidSubtasks := make([]PlannedSubtask, 0, len(invalid))
+		for _, idx := range invalid {
+			invalidSubtasks = append(invalidSubtasks, subtasks[idx])
+		}
+
+		reformatted, err := parser.ReformatTitles(ctx, parentTitle, invalidSubtasks)
+		if err == nil && len(reformatted) > 0 {
+			// Merge reformatted titles back by order.
+			byOrder := make(map[int]string, len(reformatted))
+			for _, st := range reformatted {
+				byOrder[st.Order] = st.Title
+			}
+			updated := make([]PlannedSubtask, len(subtasks))
+			copy(updated, subtasks)
+			for _, idx := range invalid {
+				if t, ok := byOrder[updated[idx].Order]; ok && t != "" {
+					updated[idx].Title = t
+				}
+			}
+			// Re-check: if all valid after re-prompt, done.
+			if len(findInvalidSubtaskTitleIdx(updated)) == 0 {
+				return updated
+			}
+			// Partial fix — use the updated slice as base for Approach B.
+			subtasks = updated
+			invalid = findInvalidSubtaskTitleIdx(subtasks)
+		} else if log != nil {
+			log.Warn("subtask title re-prompt failed; applying Approach B fallback",
+				"invalid_count", len(invalid),
+				"error", err,
+			)
+		}
+	}
+
+	// Approach B: inherit parent's type/scope for remaining invalid titles.
+	return applyParentTypeScopeFallback(subtasks, invalid, parentTitle)
+}
+
+// queryOpenSubIssues returns true when there are open GitHub issues that include
+// "Parent: <parentID>" in their body. Used by CreateSubIssues as a dedup guard.
+// Non-fatal: if the gh CLI call fails the check returns (false, nil) to allow creation.
+func queryOpenSubIssues(ctx context.Context, dir, parentID string) (bool, error) {
+	args := []string{
+		"issue", "list",
+		"--state", "open",
+		"--search", fmt.Sprintf("\"Parent: %s\" in:body", parentID),
+		"--json", "number",
+		"--limit", "3",
+	}
+	cmd := exec.CommandContext(ctx, "gh", args...)
+	if dir != "" {
+		cmd.Dir = dir
+	}
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+	if err := cmd.Run(); err != nil {
+		return false, nil // non-fatal
+	}
+	var issues []struct{ Number int }
+	if err := json.Unmarshal(stdout.Bytes(), &issues); err != nil {
+		return false, nil
+	}
+	return len(issues) > 0, nil
+}
+
 // issueNumberRegex extracts the issue number from a GitHub issue URL.
 // Matches patterns like: https://github.com/owner/repo/issues/123
 var issueNumberRegex = regexp.MustCompile(`/issues/(\d+)`)
@@ -541,6 +716,21 @@ func parsePRNumberFromURL(url string) int {
 func (r *Runner) CreateSubIssues(ctx context.Context, plan *EpicPlan, executionPath string) ([]CreatedIssue, error) {
 	if plan == nil || len(plan.Subtasks) == 0 {
 		return nil, fmt.Errorf("plan has no subtasks to create issues from")
+	}
+
+	// Dedup guard: skip creation if open sub-issues referencing this parent already exist.
+	// Uses an injectable checker so tests can control the result without spawning gh CLI.
+	if plan.ParentTask != nil {
+		checker := r.openSubIssueCheck
+		if checker == nil {
+			checker = queryOpenSubIssues
+		}
+		if exists, _ := checker(ctx, executionPath, plan.ParentTask.ID); exists {
+			r.log.Info("Skipping sub-issue creation: open children already exist",
+				"parent_id", plan.ParentTask.ID,
+			)
+			return nil, ErrSubIssuesAlreadyExist
+		}
 	}
 
 	// GH-1471: Check if we should use the SubIssueCreator interface
@@ -590,11 +780,14 @@ func (r *Runner) createSubIssuesViaAdapter(ctx context.Context, plan *EpicPlan) 
 		title := truncateTitle(subtask.Title, 80)
 
 		// GH-2324: Reject LLM analysis-style titles before they reach the tracker.
-		// Falls back to a synthetic parent-derived title, emits an alert so the
-		// regression is visible.
+		// Falls back to a parent-scope conventional title (not a placeholder).
 		if err := validateSubtaskTitle(title); err != nil {
-			fallback := syntheticSubtaskTitle(plan.ParentTask, subtask.Order)
-			r.log.Warn("Rejected invalid LLM subtask title; using synthetic fallback",
+			fallback := applyParentTypeScopeFallback(
+				[]PlannedSubtask{{Title: title, Order: subtask.Order}},
+				[]int{0},
+				plan.ParentTask.Title,
+			)[0].Title
+			r.log.Warn("Rejected invalid LLM subtask title; using conventional fallback",
 				"original_title", subtask.Title,
 				"fallback_title", fallback,
 				"reason", err.Error(),
@@ -616,6 +809,15 @@ func (r *Runner) createSubIssuesViaAdapter(ctx context.Context, plan *EpicPlan) 
 				Timestamp: time.Now(),
 			})
 			title = fallback
+		}
+
+		// Final CC-format guard for adapter path.
+		if !isConventionalSubtaskTitle(title) {
+			title = applyParentTypeScopeFallback(
+				[]PlannedSubtask{{Title: title, Order: subtask.Order}},
+				[]int{0},
+				plan.ParentTask.Title,
+			)[0].Title
 		}
 
 		r.log.Debug("Creating sub-issue via adapter",
@@ -676,10 +878,8 @@ func (r *Runner) createSubIssuesViaGitHub(ctx context.Context, plan *EpicPlan, e
 		title := truncateTitle(subtask.Title, 80)
 
 		// GH-2324: Reject LLM analysis-style titles before they reach GitHub.
-		// Falls back to a synthetic parent-derived title, emits an alert so the
-		// regression is visible.
+		// Falls back to a parent-scope conventional title (not a placeholder).
 		if err := validateSubtaskTitle(title); err != nil {
-			fallback := syntheticSubtaskTitle(plan.ParentTask, subtask.Order)
 			parentID := ""
 			parentProject := ""
 			parentTitle := ""
@@ -688,7 +888,12 @@ func (r *Runner) createSubIssuesViaGitHub(ctx context.Context, plan *EpicPlan, e
 				parentProject = plan.ParentTask.ProjectPath
 				parentTitle = plan.ParentTask.Title
 			}
-			r.log.Warn("Rejected invalid LLM subtask title; using synthetic fallback",
+			fallback := applyParentTypeScopeFallback(
+				[]PlannedSubtask{{Title: title, Order: subtask.Order}},
+				[]int{0},
+				parentTitle,
+			)[0].Title
+			r.log.Warn("Rejected invalid LLM subtask title; using conventional fallback",
 				"original_title", subtask.Title,
 				"fallback_title", fallback,
 				"reason", err.Error(),
@@ -710,6 +915,20 @@ func (r *Runner) createSubIssuesViaGitHub(ctx context.Context, plan *EpicPlan, e
 				Timestamp: time.Now(),
 			})
 			title = fallback
+		}
+
+		// Final CC-format guard: ensures the title passed to gh is always conventional-commit.
+		// Catches titles that satisfy validateSubtaskTitle (action verb) but lack type prefix.
+		if !isConventionalSubtaskTitle(title) {
+			parentTitle := ""
+			if plan.ParentTask != nil {
+				parentTitle = plan.ParentTask.Title
+			}
+			title = applyParentTypeScopeFallback(
+				[]PlannedSubtask{{Title: title, Order: subtask.Order}},
+				[]int{0},
+				parentTitle,
+			)[0].Title
 		}
 
 		// Create issue using gh CLI

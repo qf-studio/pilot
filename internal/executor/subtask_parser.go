@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -149,6 +150,103 @@ Example response:
 		}
 	}
 
+	return result, nil
+}
+
+// ReformatTitles sends a batch of subtask titles to the LLM and asks it to rewrite
+// them in conventional-commits format. parentTitle provides type/scope context.
+// Only the titles are updated; Order and Description are preserved from the input.
+// Returns an error when the parser is nil, the API call fails, or the response is empty.
+func (p *SubtaskParser) ReformatTitles(ctx context.Context, parentTitle string, subtasks []PlannedSubtask) ([]PlannedSubtask, error) {
+	if p == nil {
+		return nil, fmt.Errorf("subtask parser is nil")
+	}
+
+	var sb strings.Builder
+	for _, st := range subtasks {
+		fmt.Fprintf(&sb, "- Order %d: %q\n", st.Order, st.Title)
+	}
+
+	userMsg := fmt.Sprintf(
+		"Parent task: %q\n\nReformat these subtask titles to conventional-commits format (type(scope): description):\n%s\n"+
+			`Return ONLY JSON: {"subtasks": [{"order": 1, "title": "feat(x): do y"}, ...]}`,
+		parentTitle, sb.String(),
+	)
+
+	systemPrompt := `Reformat subtask titles to conventional-commits format. Use the parent task title as context for type and scope. Return ONLY a JSON object with a "subtasks" array. Each subtask must have "order" (integer) and "title" (string) in conventional-commits format (type(scope): description).`
+
+	requestBody := map[string]interface{}{
+		"model":      p.model,
+		"max_tokens": 1024,
+		"system":     systemPrompt,
+		"messages": []map[string]string{
+			{"role": "user", "content": userMsg},
+		},
+	}
+
+	jsonBody, err := json.Marshal(requestBody)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	url := p.baseURL + "/v1/messages"
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(jsonBody))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-api-key", p.apiKey)
+	req.Header.Set("anthropic-version", "2023-06-01")
+
+	resp, err := p.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("API request failed: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("API returned status %d", resp.StatusCode)
+	}
+
+	var apiResp struct {
+		Content []struct {
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+	if len(apiResp.Content) == 0 {
+		return nil, fmt.Errorf("empty response from API")
+	}
+
+	var parsed struct {
+		Subtasks []struct {
+			Order int    `json:"order"`
+			Title string `json:"title"`
+		} `json:"subtasks"`
+	}
+	if err := json.Unmarshal([]byte(apiResp.Content[0].Text), &parsed); err != nil {
+		return nil, fmt.Errorf("failed to parse reformatted titles JSON: %w", err)
+	}
+	if len(parsed.Subtasks) == 0 {
+		return nil, fmt.Errorf("no reformatted titles in response")
+	}
+
+	// Build order→title map and apply back to the input subtasks (preserve Description/Order).
+	byOrder := make(map[int]string, len(parsed.Subtasks))
+	for _, s := range parsed.Subtasks {
+		byOrder[s.Order] = s.Title
+	}
+
+	result := make([]PlannedSubtask, len(subtasks))
+	copy(result, subtasks)
+	for i := range result {
+		if t, ok := byOrder[result[i].Order]; ok && t != "" {
+			result[i].Title = t
+		}
+	}
 	return result, nil
 }
 
