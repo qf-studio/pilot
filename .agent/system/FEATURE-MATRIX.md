@@ -289,6 +289,7 @@
 | Cloudflare tunnel | ✅ | tunnel | `pilot start --tunnel` | `tunnel` | Auto-start tunnel, prints webhook URLs |
 | Gateway HTTP | ✅ | gateway | `pilot start` | `gateway` | Internal server, wired in main.go |
 | Gateway WebSocket | ✅ | gateway | - | - | Session management active in gateway |
+| OAuth2 provider integration | ✅ | gateway | - | `auth.type=oauth` | GitHub/Google/Generic; /auth/login + /auth/callback; session tokens (v2.109.0, GH-2497) |
 | Health checks | ✅ | health | `pilot doctor` | - | System validation, 32 unit tests |
 | Agent doc size check | ✅ | health | `pilot doctor` | - | Warns >500 lines, errors >1000 lines per .agent/*.md (GH-2462) |
 | OpenCode backend | ✅ | executor | `--backend opencode` | `executor.backend` | HTTP/SSE alternative to Claude Code |
@@ -395,9 +396,6 @@
 | Sub-issue PR wiring | ✅ | executor | - | - | Sub-issue PR callbacks chain back to autopilot controller (v0.23.1) |
 | Linear sub-issue creation | ✅ | adapters/linear | - | `adapters.linear` | CreateIssue GraphQL mutation for decomposed epics (v1.27.0) |
 | Decompose on retry | ✅ | executor | - | `retry.decompose_on_kill` | Retry via decomposition when task killed (signal:killed) (v2.10.0, GH-1729) |
-| Conventional sub-issue titles | ✅ | executor | - | - | CC-format enforced on subtask titles: re-prompt → Approach B fallback → creation guard (GH-2494) |
-| Sub-issue dedup guard | ✅ | executor | - | - | CreateSubIssues skips if open children referencing parent already exist (GH-2494) |
-| createPilotIssue chokepoint | ✅ | adapters/github, autopilot | - | - | All Pilot-internal issue creation validated through CreatePilotIssue CC gate (GH-2494) |
 
 ## Test Coverage
 
