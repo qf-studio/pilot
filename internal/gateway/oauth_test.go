@@ -57,6 +57,23 @@ func TestOAuthProviderEndpoints(t *testing.T) {
 			wantTokenURL: "https://gitlab.com/oauth/token",
 		},
 		{
+			provider:     OAuthProviderMicrosoft,
+			wantAuthURL:  "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+			wantTokenURL: "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+		},
+		{
+			provider:       OAuthProviderMicrosoft,
+			customAuthURL:  "https://login.microsoftonline.com/mytenant/oauth2/v2.0/authorize",
+			customTokenURL: "https://login.microsoftonline.com/mytenant/oauth2/v2.0/token",
+			wantAuthURL:    "https://login.microsoftonline.com/mytenant/oauth2/v2.0/authorize",
+			wantTokenURL:   "https://login.microsoftonline.com/mytenant/oauth2/v2.0/token",
+		},
+		{
+			provider:     OAuthProviderDiscord,
+			wantAuthURL:  "https://discord.com/api/oauth2/authorize",
+			wantTokenURL: "https://discord.com/api/oauth2/token",
+		},
+		{
 			provider:       OAuthProviderGeneric,
 			customAuthURL:  "https://auth.example.com/oauth/authorize",
 			customTokenURL: "https://auth.example.com/oauth/token",
@@ -152,6 +169,42 @@ func TestOAuthResolvedScopes(t *testing.T) {
 		}
 	})
 
+	t.Run("microsoft defaults when no scopes configured", func(t *testing.T) {
+		h := NewOAuthHandler(&OAuthConfig{Provider: OAuthProviderMicrosoft})
+		scopes := h.resolvedScopes()
+		if len(scopes) == 0 {
+			t.Error("expected default scopes for microsoft provider")
+		}
+		found := false
+		for _, s := range scopes {
+			if s == "User.Read" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected User.Read in microsoft default scopes, got %v", scopes)
+		}
+	})
+
+	t.Run("discord defaults when no scopes configured", func(t *testing.T) {
+		h := NewOAuthHandler(&OAuthConfig{Provider: OAuthProviderDiscord})
+		scopes := h.resolvedScopes()
+		if len(scopes) == 0 {
+			t.Error("expected default scopes for discord provider")
+		}
+		found := false
+		for _, s := range scopes {
+			if s == "identify" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected identify in discord default scopes, got %v", scopes)
+		}
+	})
+
 	t.Run("generic provider with no scopes returns nil", func(t *testing.T) {
 		h := NewOAuthHandler(&OAuthConfig{Provider: OAuthProviderGeneric})
 		if scopes := h.resolvedScopes(); scopes != nil {
@@ -217,6 +270,83 @@ func TestHandleLogin_GitLab(t *testing.T) {
 		t.Errorf("Location %q does not point to GitLab authorize endpoint", loc)
 	}
 	if !strings.Contains(loc, "client_id=test-gitlab-client") {
+		t.Errorf("Location %q missing client_id", loc)
+	}
+}
+
+func TestHandleLogin_Microsoft(t *testing.T) {
+	h := NewOAuthHandler(&OAuthConfig{
+		Provider:     OAuthProviderMicrosoft,
+		ClientID:     "test-ms-client",
+		ClientSecret: "test-ms-secret",
+		RedirectURL:  "http://localhost:9090/auth/callback",
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/auth/login", nil)
+	w := httptest.NewRecorder()
+
+	h.HandleLogin(w, req)
+
+	if w.Code != http.StatusFound {
+		t.Errorf("HandleLogin(microsoft) status = %d, want %d", w.Code, http.StatusFound)
+	}
+
+	loc := w.Header().Get("Location")
+	if !strings.Contains(loc, "login.microsoftonline.com/common/oauth2/v2.0/authorize") {
+		t.Errorf("Location %q does not point to Microsoft authorize endpoint", loc)
+	}
+	if !strings.Contains(loc, "client_id=test-ms-client") {
+		t.Errorf("Location %q missing client_id", loc)
+	}
+}
+
+func TestHandleLogin_MicrosoftTenantOverride(t *testing.T) {
+	tenantAuth := "https://login.microsoftonline.com/mytenant/oauth2/v2.0/authorize"
+	h := NewOAuthHandler(&OAuthConfig{
+		Provider:     OAuthProviderMicrosoft,
+		ClientID:     "test-ms-client",
+		ClientSecret: "test-ms-secret",
+		RedirectURL:  "http://localhost:9090/auth/callback",
+		AuthURL:      tenantAuth,
+		TokenURL:     "https://login.microsoftonline.com/mytenant/oauth2/v2.0/token",
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/auth/login", nil)
+	w := httptest.NewRecorder()
+
+	h.HandleLogin(w, req)
+
+	loc := w.Header().Get("Location")
+	if !strings.HasPrefix(loc, tenantAuth) {
+		t.Errorf("Location %q does not start with tenant-specific URL %q", loc, tenantAuth)
+	}
+}
+
+func TestHandleLogin_Discord(t *testing.T) {
+	h := NewOAuthHandler(&OAuthConfig{
+		Provider:     OAuthProviderDiscord,
+		ClientID:     "test-discord-client",
+		ClientSecret: "test-discord-secret",
+		RedirectURL:  "http://localhost:9090/auth/callback",
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/auth/login", nil)
+	w := httptest.NewRecorder()
+
+	h.HandleLogin(w, req)
+
+	if w.Code != http.StatusFound {
+		t.Errorf("HandleLogin(discord) status = %d, want %d", w.Code, http.StatusFound)
+	}
+
+	loc := w.Header().Get("Location")
+	if !strings.Contains(loc, "discord.com/api/oauth2/authorize") {
+		t.Errorf("Location %q does not point to Discord authorize endpoint", loc)
+	}
+	if !strings.Contains(loc, "prompt=consent") {
+		t.Errorf("Location %q missing prompt=consent for Discord", loc)
+	}
+	if !strings.Contains(loc, "client_id=test-discord-client") {
 		t.Errorf("Location %q missing client_id", loc)
 	}
 }

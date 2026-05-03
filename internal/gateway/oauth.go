@@ -19,10 +19,12 @@ import (
 type OAuthProvider string
 
 const (
-	OAuthProviderGitHub  OAuthProvider = "github"
-	OAuthProviderGoogle  OAuthProvider = "google"
-	OAuthProviderGitLab  OAuthProvider = "gitlab"
-	OAuthProviderGeneric OAuthProvider = "generic"
+	OAuthProviderGitHub    OAuthProvider = "github"
+	OAuthProviderGoogle    OAuthProvider = "google"
+	OAuthProviderGitLab    OAuthProvider = "gitlab"
+	OAuthProviderMicrosoft OAuthProvider = "microsoft"
+	OAuthProviderDiscord   OAuthProvider = "discord"
+	OAuthProviderGeneric   OAuthProvider = "generic"
 )
 
 // OAuthConfig holds configuration for an OAuth2 provider.
@@ -41,6 +43,8 @@ type OAuthConfig struct {
 // providerEndpoints maps built-in providers to their well-known OAuth2 endpoints.
 // For GitLab, these point to gitlab.com; self-hosted instances should use OAuthProviderGeneric
 // with custom AuthURL/TokenURL, or set AuthURL/TokenURL alongside Provider: "gitlab".
+// For Microsoft, these use the "common" tenant; single-tenant apps should set AuthURL/TokenURL
+// with the specific tenant ID (e.g. https://login.microsoftonline.com/{tenant}/oauth2/v2.0/...).
 var providerEndpoints = map[OAuthProvider]struct{ AuthURL, TokenURL string }{
 	OAuthProviderGitHub: {
 		AuthURL:  "https://github.com/login/oauth/authorize",
@@ -54,13 +58,23 @@ var providerEndpoints = map[OAuthProvider]struct{ AuthURL, TokenURL string }{
 		AuthURL:  "https://gitlab.com/oauth/authorize",
 		TokenURL: "https://gitlab.com/oauth/token",
 	},
+	OAuthProviderMicrosoft: {
+		AuthURL:  "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+		TokenURL: "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+	},
+	OAuthProviderDiscord: {
+		AuthURL:  "https://discord.com/api/oauth2/authorize",
+		TokenURL: "https://discord.com/api/oauth2/token",
+	},
 }
 
 // providerDefaultScopes maps built-in providers to their default OAuth2 scopes.
 var providerDefaultScopes = map[OAuthProvider][]string{
-	OAuthProviderGitHub: {"read:user", "user:email"},
-	OAuthProviderGoogle: {"openid", "email", "profile"},
-	OAuthProviderGitLab: {"read_user", "openid", "email"},
+	OAuthProviderGitHub:    {"read:user", "user:email"},
+	OAuthProviderGoogle:    {"openid", "email", "profile"},
+	OAuthProviderGitLab:    {"read_user", "openid", "email"},
+	OAuthProviderMicrosoft: {"openid", "email", "profile", "User.Read"},
+	OAuthProviderDiscord:   {"identify", "email"},
 }
 
 // oauthState holds temporary state for an in-flight OAuth2 authorization.
@@ -114,8 +128,11 @@ func (h *OAuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		"state":         {state},
 		"response_type": {"code"},
 	}
-	if h.config.Provider == OAuthProviderGoogle {
+	switch h.config.Provider {
+	case OAuthProviderGoogle:
 		params.Set("access_type", "offline")
+	case OAuthProviderDiscord:
+		params.Set("prompt", "consent")
 	}
 
 	http.Redirect(w, r, h.resolvedAuthURL()+"?"+params.Encode(), http.StatusFound)
