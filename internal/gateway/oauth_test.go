@@ -52,6 +52,11 @@ func TestOAuthProviderEndpoints(t *testing.T) {
 			wantTokenURL: "https://oauth2.googleapis.com/token",
 		},
 		{
+			provider:     OAuthProviderGitLab,
+			wantAuthURL:  "https://gitlab.com/oauth/authorize",
+			wantTokenURL: "https://gitlab.com/oauth/token",
+		},
+		{
 			provider:       OAuthProviderGeneric,
 			customAuthURL:  "https://auth.example.com/oauth/authorize",
 			customTokenURL: "https://auth.example.com/oauth/token",
@@ -80,6 +85,26 @@ func TestOAuthProviderEndpoints(t *testing.T) {
 	}
 }
 
+func TestOAuthGitLabSelfHosted(t *testing.T) {
+	// Self-hosted GitLab overrides default gitlab.com endpoints via AuthURL/TokenURL.
+	customAuth := "https://gitlab.mycompany.com/oauth/authorize"
+	customToken := "https://gitlab.mycompany.com/oauth/token"
+	h := NewOAuthHandler(&OAuthConfig{
+		Provider:     OAuthProviderGitLab,
+		ClientID:     "test-client-id",
+		ClientSecret: "test-client-secret",
+		RedirectURL:  "http://localhost/callback",
+		AuthURL:      customAuth,
+		TokenURL:     customToken,
+	})
+	if got := h.resolvedAuthURL(); got != customAuth {
+		t.Errorf("resolvedAuthURL() = %q, want %q (self-hosted override)", got, customAuth)
+	}
+	if got := h.resolvedTokenURL(); got != customToken {
+		t.Errorf("resolvedTokenURL() = %q, want %q (self-hosted override)", got, customToken)
+	}
+}
+
 func TestOAuthResolvedScopes(t *testing.T) {
 	t.Run("custom scopes override defaults", func(t *testing.T) {
 		h := NewOAuthHandler(&OAuthConfig{
@@ -105,6 +130,25 @@ func TestOAuthResolvedScopes(t *testing.T) {
 		scopes := h.resolvedScopes()
 		if len(scopes) == 0 {
 			t.Error("expected default scopes for google provider")
+		}
+	})
+
+	t.Run("gitlab defaults when no scopes configured", func(t *testing.T) {
+		h := NewOAuthHandler(&OAuthConfig{Provider: OAuthProviderGitLab})
+		scopes := h.resolvedScopes()
+		if len(scopes) == 0 {
+			t.Error("expected default scopes for gitlab provider")
+		}
+		// Verify read_user is included as it's the primary GitLab scope
+		found := false
+		for _, s := range scopes {
+			if s == "read_user" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected read_user in gitlab default scopes, got %v", scopes)
 		}
 	})
 
@@ -148,6 +192,32 @@ func TestHandleLogin(t *testing.T) {
 	h.mu.Unlock()
 	if pendingCount != 1 {
 		t.Errorf("expected 1 pending state, got %d", pendingCount)
+	}
+}
+
+func TestHandleLogin_GitLab(t *testing.T) {
+	h := NewOAuthHandler(&OAuthConfig{
+		Provider:     OAuthProviderGitLab,
+		ClientID:     "test-gitlab-client",
+		ClientSecret: "test-gitlab-secret",
+		RedirectURL:  "http://localhost:9090/auth/callback",
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/auth/login", nil)
+	w := httptest.NewRecorder()
+
+	h.HandleLogin(w, req)
+
+	if w.Code != http.StatusFound {
+		t.Errorf("HandleLogin(gitlab) status = %d, want %d", w.Code, http.StatusFound)
+	}
+
+	loc := w.Header().Get("Location")
+	if !strings.Contains(loc, "gitlab.com/oauth/authorize") {
+		t.Errorf("Location %q does not point to GitLab authorize endpoint", loc)
+	}
+	if !strings.Contains(loc, "client_id=test-gitlab-client") {
+		t.Errorf("Location %q missing client_id", loc)
 	}
 }
 

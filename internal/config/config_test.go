@@ -565,6 +565,59 @@ func TestValidate(t *testing.T) {
 			}(),
 			wantErr: false, // Nil auth is allowed
 		},
+		{
+			name: "OAuthGitLab",
+			config: func() *Config {
+				c := DefaultConfig()
+				c.Auth = &gateway.AuthConfig{
+					Type: gateway.AuthTypeOAuth,
+					OAuth: &gateway.OAuthConfig{
+						Provider:     gateway.OAuthProviderGitLab,
+						ClientID:     "gitlab-client-id",
+						ClientSecret: "gitlab-client-secret",
+						RedirectURL:  "http://localhost:9090/auth/callback",
+					},
+				}
+				return c
+			}(),
+			wantErr: false,
+		},
+		{
+			name: "OAuthGitLabSelfHosted",
+			config: func() *Config {
+				c := DefaultConfig()
+				c.Auth = &gateway.AuthConfig{
+					Type: gateway.AuthTypeOAuth,
+					OAuth: &gateway.OAuthConfig{
+						Provider:     gateway.OAuthProviderGitLab,
+						ClientID:     "gitlab-client-id",
+						ClientSecret: "gitlab-client-secret",
+						RedirectURL:  "http://localhost:9090/auth/callback",
+						AuthURL:      "https://gitlab.mycompany.com/oauth/authorize",
+						TokenURL:     "https://gitlab.mycompany.com/oauth/token",
+					},
+				}
+				return c
+			}(),
+			wantErr: false,
+		},
+		{
+			name: "OAuthMissingClientID",
+			config: func() *Config {
+				c := DefaultConfig()
+				c.Auth = &gateway.AuthConfig{
+					Type: gateway.AuthTypeOAuth,
+					OAuth: &gateway.OAuthConfig{
+						Provider:     gateway.OAuthProviderGitLab,
+						ClientSecret: "gitlab-client-secret",
+						RedirectURL:  "http://localhost:9090/auth/callback",
+					},
+				}
+				return c
+			}(),
+			wantErr:     true,
+			errContains: "client_id is required",
+		},
 	}
 
 	for _, tt := range tests {
