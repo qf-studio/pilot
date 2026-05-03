@@ -410,6 +410,116 @@ func TestGenerateRandomHex(t *testing.T) {
 	}
 }
 
+func TestRevokeSession(t *testing.T) {
+	h := NewOAuthHandler(oauthTestConfig())
+
+	h.mu.Lock()
+	h.sessions["live-session"] = &Token{
+		Value:     "access-token",
+		ExpiresAt: time.Now().Add(1 * time.Hour),
+	}
+	h.mu.Unlock()
+
+	// Revoke the session
+	h.RevokeSession("live-session")
+
+	// Token must be gone
+	_, err := h.ValidateSessionToken("live-session")
+	if err == nil {
+		t.Error("expected error after RevokeSession, got nil")
+	}
+
+	// Revoking a non-existent token must not panic
+	h.RevokeSession("does-not-exist")
+}
+
+func TestHandleLogout(t *testing.T) {
+	t.Run("valid session is revoked and returns 204", func(t *testing.T) {
+		h := NewOAuthHandler(oauthTestConfig())
+
+		h.mu.Lock()
+		h.sessions["session-to-revoke"] = &Token{
+			Value:     "access-token",
+			ExpiresAt: time.Now().Add(1 * time.Hour),
+		}
+		h.mu.Unlock()
+
+		req := httptest.NewRequest(http.MethodPost, "/auth/logout", nil)
+		req.Header.Set("Authorization", "Bearer session-to-revoke")
+		w := httptest.NewRecorder()
+
+		h.HandleLogout(w, req)
+
+		if w.Code != http.StatusNoContent {
+			t.Errorf("HandleLogout() status = %d, want %d", w.Code, http.StatusNoContent)
+		}
+
+		// Session must be invalidated
+		_, err := h.ValidateSessionToken("session-to-revoke")
+		if err == nil {
+			t.Error("session should be invalid after logout")
+		}
+	})
+
+	t.Run("missing token still returns 204", func(t *testing.T) {
+		h := NewOAuthHandler(oauthTestConfig())
+		req := httptest.NewRequest(http.MethodPost, "/auth/logout", nil)
+		w := httptest.NewRecorder()
+
+		h.HandleLogout(w, req)
+
+		if w.Code != http.StatusNoContent {
+			t.Errorf("HandleLogout() without token: status = %d, want %d", w.Code, http.StatusNoContent)
+		}
+	})
+
+	t.Run("unknown token still returns 204", func(t *testing.T) {
+		h := NewOAuthHandler(oauthTestConfig())
+		req := httptest.NewRequest(http.MethodPost, "/auth/logout", nil)
+		req.Header.Set("Authorization", "Bearer unknown-token")
+		w := httptest.NewRecorder()
+
+		h.HandleLogout(w, req)
+
+		if w.Code != http.StatusNoContent {
+			t.Errorf("HandleLogout() with unknown token: status = %d, want %d", w.Code, http.StatusNoContent)
+		}
+	})
+}
+
+func TestRegisterOAuthRoutes_Logout(t *testing.T) {
+	cfg := &AuthConfig{
+		Type:  AuthTypeOAuth,
+		OAuth: oauthTestConfig(),
+	}
+	auth := NewAuthenticator(cfg)
+
+	// Plant a session to verify logout removes it
+	auth.oauthHandler.mu.Lock()
+	auth.oauthHandler.sessions["revoke-me"] = &Token{
+		Value:     "tok",
+		ExpiresAt: time.Now().Add(1 * time.Hour),
+	}
+	auth.oauthHandler.mu.Unlock()
+
+	mux := http.NewServeMux()
+	auth.RegisterOAuthRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodPost, "/auth/logout", nil)
+	req.Header.Set("Authorization", "Bearer revoke-me")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNoContent {
+		t.Errorf("/auth/logout status = %d, want %d", w.Code, http.StatusNoContent)
+	}
+
+	_, err := auth.oauthHandler.ValidateSessionToken("revoke-me")
+	if err == nil {
+		t.Error("session should be invalid after /auth/logout")
+	}
+}
+
 func TestAuthTypeOAuth(t *testing.T) {
 	if string(AuthTypeOAuth) != "oauth" {
 		t.Errorf("AuthTypeOAuth = %q, want %q", AuthTypeOAuth, "oauth")
