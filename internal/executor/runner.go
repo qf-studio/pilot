@@ -272,6 +272,9 @@ type ExecutionResult struct {
 	// guard and the runner has already posted a structured "how to fix" comment
 	// (GH-2363). Callers should skip their generic failure-comment path.
 	TitleRejected bool
+	// PRNumber is the numeric ID of the pull request created for this task (GH-2488).
+	// Populated only when CreatePR succeeded and the PR was verified via GetPRByURL.
+	PRNumber int
 }
 
 // ProgressCallback is a function called during execution with progress updates.
@@ -386,6 +389,8 @@ type Runner struct {
 	knowledgeGraph       KnowledgeGraphRecorder         // Optional knowledge graph for cross-project learnings
 	// GH-2256: Dry-run mode to suppress real gh CLI calls (issue close/comment)
 	dryRun               bool
+	// GH-2488: Optional PR verifier override; nil means use GitOperations.GetPRByURL.
+	prVerifier           PRVerifier
 	// GH-2363: Track consecutive title-rejection failures per issue so we stop
 	// retrying and post a helpful comment after the 2nd identical rejection.
 	titleRejections      *titleRejectionTracker
@@ -2939,6 +2944,15 @@ The previous execution completed but made no code changes. This task requires ac
 					r.reportProgress(task.ID, "MR Failed", 100, result.Error)
 					return result, nil
 				}
+				// GH-2488: verify URL is non-empty (no remote lookup for non-GitHub adapters)
+				mrInfo, verifyErr := verifyPRURL(ctx, prURL, nil)
+				if verifyErr != nil {
+					result.Success = false
+					result.Error = fmt.Sprintf("MR verification failed: %v", verifyErr)
+					r.reportProgress(task.ID, "MR Failed", 100, result.Error)
+					return result, nil
+				}
+				result.PRUrl = mrInfo.URL
 			} else {
 				// GitHub: use gh CLI with auto-close keyword
 				issueNum := strings.TrimPrefix(task.ID, "GH-")
@@ -2951,16 +2965,31 @@ The previous execution completed but made no code changes. This task requires ac
 					r.reportProgress(task.ID, "PR Failed", 100, result.Error)
 					return result, nil
 				}
+				// GH-2488: cross-check that the PR URL resolves to a real PR before
+				// recording status='completed'. Ghost-closes occur when gh reports a URL
+				// but no PR was actually created (e.g. extractPRURL parsing failures).
+				verifier := PRVerifier(git)
+				if r.prVerifier != nil {
+					verifier = r.prVerifier
+				}
+				pr, verifyErr := verifyPRURL(ctx, prURL, verifier)
+				if verifyErr != nil {
+					result.Success = false
+					result.Error = fmt.Sprintf("PR verification failed: %v", verifyErr)
+					r.reportProgress(task.ID, "PR Failed", 100, result.Error)
+					return result, nil
+				}
+				result.PRUrl = pr.URL
+				result.PRNumber = pr.Number
 			}
 
-			result.PRUrl = prURL
-			log.Info("Pull request created", slog.String("pr_url", prURL))
-			r.reportProgress(task.ID, "Completed", 100, fmt.Sprintf("PR created: %s", prURL))
-			r.saveLogEntry(task.ID, "info", "PR created: "+prURL)
+			log.Info("Pull request created", slog.String("pr_url", result.PRUrl))
+			r.reportProgress(task.ID, "Completed", 100, fmt.Sprintf("PR created: %s", result.PRUrl))
+			r.saveLogEntry(task.ID, "info", "PR created: "+result.PRUrl)
 
 			// Update recording with PR info
 			if recorder != nil {
-				recorder.SetPRUrl(prURL)
+				recorder.SetPRUrl(result.PRUrl)
 			}
 		} else {
 			r.reportProgress(task.ID, "Completed", 100, "Task completed successfully")
@@ -3115,6 +3144,27 @@ The previous execution completed but made no code changes. This task requires ac
 
 	return result, nil
 }
+
+// verifyPRURL validates that a PR URL is non-empty and, when a verifier is provided,
+// that the PR actually exists on the remote. Returns the resolved PRInfo or an error.
+// Passing a nil verifier skips the remote lookup and accepts the URL at face value.
+func verifyPRURL(ctx context.Context, url string, verifier PRVerifier) (*PRInfo, error) {
+	if url == "" {
+		return nil, fmt.Errorf("PR creation returned empty URL")
+	}
+	if verifier == nil {
+		return &PRInfo{URL: url}, nil
+	}
+	pr, err := verifier.GetPRByURL(ctx, url)
+	if err != nil {
+		return nil, fmt.Errorf("PR lookup failed: %w", err)
+	}
+	if pr == nil {
+		return nil, fmt.Errorf("PR not found at %s", url)
+	}
+	return pr, nil
+}
+
 // Cancel terminates a running task by killing its Claude Code process.
 // Returns an error if the task is not currently running.
 func (r *Runner) Cancel(taskID string) error {

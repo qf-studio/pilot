@@ -2,10 +2,53 @@ package executor
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os/exec"
 	"strings"
 )
+
+// PRInfo holds the resolved fields of a pull/merge request.
+type PRInfo struct {
+	Number int
+	URL    string
+}
+
+// PRVerifier looks up a PR by URL and returns its resolved fields.
+// The interface exists so tests can inject a mock without calling the gh CLI.
+type PRVerifier interface {
+	GetPRByURL(ctx context.Context, url string) (*PRInfo, error)
+}
+
+// GetPRByURL fetches a PR by URL using the gh CLI.
+// Returns nil (no error) when the PR does not exist.
+func (g *GitOperations) GetPRByURL(ctx context.Context, url string) (*PRInfo, error) {
+	cmd := exec.CommandContext(ctx, "gh", "pr", "view", url, "--json", "number,url")
+	cmd.Dir = g.projectPath
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		outputStr := strings.TrimSpace(string(output))
+		// gh exits non-zero when the PR is not found — treat as missing, not error
+		if strings.Contains(outputStr, "no pull requests found") ||
+			strings.Contains(outputStr, "Could not resolve") ||
+			strings.Contains(outputStr, "not found") {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("gh pr view: %w: %s", err, output)
+	}
+
+	var data struct {
+		Number int    `json:"number"`
+		URL    string `json:"url"`
+	}
+	if jsonErr := json.Unmarshal(output, &data); jsonErr != nil {
+		return nil, fmt.Errorf("parse pr view output: %w", jsonErr)
+	}
+	if data.Number == 0 {
+		return nil, nil
+	}
+	return &PRInfo{Number: data.Number, URL: data.URL}, nil
+}
 
 // GitOperations handles git operations for tasks
 type GitOperations struct {
