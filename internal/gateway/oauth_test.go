@@ -547,3 +547,113 @@ func TestRegisterOAuthRoutes_NonOAuthAuth(t *testing.T) {
 		t.Errorf("/auth/login without OAuth: status = %d, want %d", w.Code, http.StatusNotFound)
 	}
 }
+
+func TestRevokeSessionToken(t *testing.T) {
+	h := NewOAuthHandler(oauthTestConfig())
+
+	// Seed a session token directly
+	h.mu.Lock()
+	h.sessions["valid-session"] = &Token{
+		Value:     "access-token",
+		ExpiresAt: time.Now().Add(time.Hour),
+	}
+	h.mu.Unlock()
+
+	t.Run("revokes existing token", func(t *testing.T) {
+		if err := h.RevokeSessionToken("valid-session"); err != nil {
+			t.Fatalf("RevokeSessionToken: unexpected error: %v", err)
+		}
+		_, err := h.ValidateSessionToken("valid-session")
+		if err == nil {
+			t.Error("token still valid after revocation")
+		}
+	})
+
+	t.Run("returns error for unknown token", func(t *testing.T) {
+		if err := h.RevokeSessionToken("does-not-exist"); err == nil {
+			t.Error("expected error for unknown token, got nil")
+		}
+	})
+}
+
+func TestHandleLogout(t *testing.T) {
+	h := NewOAuthHandler(oauthTestConfig())
+
+	// Seed a session token directly
+	h.mu.Lock()
+	h.sessions["my-session-token"] = &Token{
+		Value:     "access-token",
+		ExpiresAt: time.Now().Add(time.Hour),
+	}
+	h.mu.Unlock()
+
+	t.Run("POST with valid token returns 204", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/auth/logout", nil)
+		req.Header.Set("Authorization", "Bearer my-session-token")
+		w := httptest.NewRecorder()
+		h.HandleLogout(w, req)
+		if w.Code != http.StatusNoContent {
+			t.Errorf("status = %d, want %d", w.Code, http.StatusNoContent)
+		}
+		// Token must no longer validate
+		if _, err := h.ValidateSessionToken("my-session-token"); err == nil {
+			t.Error("token still valid after logout")
+		}
+	})
+
+	t.Run("POST with unknown token returns 401", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/auth/logout", nil)
+		req.Header.Set("Authorization", "Bearer unknown-token")
+		w := httptest.NewRecorder()
+		h.HandleLogout(w, req)
+		if w.Code != http.StatusUnauthorized {
+			t.Errorf("status = %d, want %d", w.Code, http.StatusUnauthorized)
+		}
+	})
+
+	t.Run("POST with no token returns 400", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/auth/logout", nil)
+		w := httptest.NewRecorder()
+		h.HandleLogout(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
+		}
+	})
+
+	t.Run("GET method returns 405", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/auth/logout", nil)
+		req.Header.Set("Authorization", "Bearer some-token")
+		w := httptest.NewRecorder()
+		h.HandleLogout(w, req)
+		if w.Code != http.StatusMethodNotAllowed {
+			t.Errorf("status = %d, want %d", w.Code, http.StatusMethodNotAllowed)
+		}
+	})
+}
+
+func TestRegisterOAuthRoutes_Logout(t *testing.T) {
+	cfg := &AuthConfig{
+		Type:  AuthTypeOAuth,
+		OAuth: oauthTestConfig(),
+	}
+	auth := NewAuthenticator(cfg)
+
+	// Seed a session token directly
+	auth.oauthHandler.mu.Lock()
+	auth.oauthHandler.sessions["logout-token"] = &Token{
+		Value:     "access-token",
+		ExpiresAt: time.Now().Add(time.Hour),
+	}
+	auth.oauthHandler.mu.Unlock()
+
+	mux := http.NewServeMux()
+	auth.RegisterOAuthRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodPost, "/auth/logout", nil)
+	req.Header.Set("Authorization", "Bearer logout-token")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusNoContent {
+		t.Errorf("/auth/logout status = %d, want %d", w.Code, http.StatusNoContent)
+	}
+}

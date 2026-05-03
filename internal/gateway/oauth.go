@@ -183,6 +183,42 @@ func (h *OAuthHandler) ValidateSessionToken(sessionToken string) (*Token, error)
 	return t, nil
 }
 
+// RevokeSessionToken removes a session token from the store, effectively logging out.
+// Returns an error if the token does not exist.
+func (h *OAuthHandler) RevokeSessionToken(sessionToken string) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if _, ok := h.sessions[sessionToken]; !ok {
+		return errors.New("session token not found")
+	}
+	delete(h.sessions, sessionToken)
+	return nil
+}
+
+// HandleLogout revokes the bearer session token presented in the Authorization header.
+func (h *OAuthHandler) HandleLogout(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	auth := r.Header.Get("Authorization")
+	const prefix = "Bearer "
+	if len(auth) <= len(prefix) {
+		http.Error(w, "Missing authorization token", http.StatusBadRequest)
+		return
+	}
+	sessionToken := auth[len(prefix):]
+
+	if err := h.RevokeSessionToken(sessionToken); err != nil {
+		http.Error(w, "Invalid session token", http.StatusUnauthorized)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // exchangeCode sends the authorization code to the provider's token endpoint
 // and returns the resulting Token.
 func (h *OAuthHandler) exchangeCode(ctx context.Context, code string) (*Token, error) {

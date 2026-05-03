@@ -53,6 +53,7 @@ func (a *Authenticator) RegisterOAuthRoutes(mux *http.ServeMux) {
 	}
 	mux.HandleFunc("/auth/login", a.oauthHandler.HandleLogin)
 	mux.HandleFunc("/auth/callback", a.oauthHandler.HandleCallback)
+	mux.HandleFunc("/auth/logout", a.oauthHandler.HandleLogout)
 }
 
 // Authenticate validates a request
