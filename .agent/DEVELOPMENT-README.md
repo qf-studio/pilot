@@ -118,7 +118,7 @@ Disable via config: `executor.navigator.auto_init: false`
 
 ## Current State
 
-**Current Version:** v2.107.0 | **322 features working**
+**Current Version:** v2.108.0 | **322 features working**
 
 **Recent (v2.103.0 → v2.103.1, Apr 30 2026):**
 - `feat(dashboard)`: avionics-style TUI redesign — splash boot screen, compact 3-row banner with version/env/model stack/adapter chips, autopilot panel rework with CI/MERGE/RETRY gauges + 5-node pipeline rail (GH-2454, GH-2455, PR #2456 → v2.103.0)
