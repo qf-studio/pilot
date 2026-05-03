@@ -47,8 +47,10 @@ type TaskChecker interface {
 
 // ExecutionChecker verifies whether a completed execution exists for a task.
 // GH-2242: Prevents re-dispatch of completed tasks when pilot-done label is missing.
+// GH-2489: InvalidateCompletion enables the ghost-close self-healing path.
 type ExecutionChecker interface {
 	HasCompletedExecution(taskID, projectPath string) (bool, error)
+	InvalidateCompletion(taskID, projectPath string) error
 }
 
 // IssueResult is returned by the issue handler with PR information
@@ -912,6 +914,7 @@ func (p *Poller) checkForNewIssues(ctx context.Context) {
 
 		// GH-2242: Before dispatching, check if we already have a completed execution.
 		// This prevents re-dispatch when pilot-done label failed to apply.
+		// GH-2489: Cross-check PR existence to detect and self-heal ghost completions.
 		if p.execChecker != nil {
 			taskID := fmt.Sprintf("GH-%d", issue.Number)
 			completed, err := p.execChecker.HasCompletedExecution(taskID, p.projectPath)
@@ -920,11 +923,28 @@ func (p *Poller) checkForNewIssues(ctx context.Context) {
 					slog.Int("number", issue.Number),
 					slog.Any("error", err))
 			} else if completed {
-				p.logger.Info("Skipping re-dispatch — completed execution exists",
-					slog.Int("number", issue.Number),
-					slog.String("task_id", taskID))
-				p.markProcessed(issue.Number)
-				continue
+				// Verify a real PR exists — ghost-close leaves completed in DB with no PR.
+				prs, perr := p.client.SearchPRsForIssue(ctx, p.owner, p.repo, issue.Number)
+				if perr != nil {
+					p.logger.Warn("Failed to search PRs for ghost-close check — assuming completed",
+						slog.Int("issue", issue.Number),
+						slog.Any("error", perr))
+					p.markProcessed(issue.Number)
+					continue
+				}
+				if len(prs) == 0 {
+					p.logger.Warn("Ghost completion detected — execution marked completed but no PR exists, allowing re-dispatch",
+						slog.Int("issue", issue.Number),
+						slog.String("task_id", taskID))
+					_ = p.execChecker.InvalidateCompletion(taskID, p.projectPath)
+					// Fall through to dispatch
+				} else {
+					p.logger.Info("Skipping re-dispatch — completed execution exists",
+						slog.Int("number", issue.Number),
+						slog.String("task_id", taskID))
+					p.markProcessed(issue.Number)
+					continue
+				}
 			}
 		}
 

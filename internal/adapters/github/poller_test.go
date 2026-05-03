@@ -2498,21 +2498,41 @@ func TestPoller_WithMaxRetryReadyRetries(t *testing.T) {
 
 // mockExecutionChecker implements ExecutionChecker for testing.
 type mockExecutionChecker struct {
-	completed map[string]bool // key: "taskID:projectPath"
+	completed    map[string]bool // key: "taskID:projectPath"
+	invalidated  []string        // records of InvalidateCompletion calls ("taskID:projectPath")
 }
 
 func (m *mockExecutionChecker) HasCompletedExecution(taskID, projectPath string) (bool, error) {
 	return m.completed[taskID+":"+projectPath], nil
 }
 
+func (m *mockExecutionChecker) InvalidateCompletion(taskID, projectPath string) error {
+	m.invalidated = append(m.invalidated, taskID+":"+projectPath)
+	delete(m.completed, taskID+":"+projectPath)
+	return nil
+}
+
 func TestPoller_SkipsCompletedExecution(t *testing.T) {
-	// GH-2242: Issue is open, no pilot-done label, but has completed execution — should NOT dispatch
+	// GH-2242 + GH-2489: Issue has completed execution AND a real PR exists — should NOT dispatch.
 	issues := []*Issue{
 		{Number: 42, Title: "Issue 42", Labels: []Label{{Name: "pilot"}}},
+	}
+	// Simulate a merged PR in the search response.
+	searchResp := map[string]interface{}{
+		"items": []map[string]interface{}{
+			{
+				"id": 1, "number": 10, "title": "Fix #42", "state": "closed", "html_url": "https://github.com/owner/repo/pull/10",
+				"pull_request": map[string]interface{}{"merged_at": "2026-05-01T10:00:00Z"},
+			},
+		},
 	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/search/issues" {
+			_ = json.NewEncoder(w).Encode(searchResp)
+			return
+		}
 		if strings.Contains(r.URL.Path, "/issues") {
 			_ = json.NewEncoder(w).Encode(issues)
 			return
@@ -2542,12 +2562,69 @@ func TestPoller_SkipsCompletedExecution(t *testing.T) {
 	poller.WaitForActive()
 
 	if got := atomic.LoadInt32(&callCount); got != 0 {
-		t.Errorf("callback called %d times, want 0 (completed execution should skip dispatch)", got)
+		t.Errorf("callback called %d times, want 0 (completed execution with real PR should skip dispatch)", got)
 	}
 
 	// Should be marked as processed
 	if !poller.IsProcessed(42) {
-		t.Error("completed issue should be marked as processed")
+		t.Error("completed issue with real PR should be marked as processed")
+	}
+	// InvalidateCompletion must NOT have been called — PR exists, not a ghost.
+	if len(execChecker.invalidated) != 0 {
+		t.Errorf("InvalidateCompletion called unexpectedly: %v", execChecker.invalidated)
+	}
+}
+
+func TestPoller_GhostCloseDetected_AllowsRedispatch(t *testing.T) {
+	// GH-2489: Issue has completed execution in DB but NO PR — ghost-close.
+	// The poller should invalidate the stale row and allow re-dispatch.
+	issues := []*Issue{
+		{Number: 55, Title: "Issue 55", Labels: []Label{{Name: "pilot"}}},
+	}
+	// Search returns empty — no PR was ever created.
+	emptySearch := map[string]interface{}{"items": []interface{}{}}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/search/issues" {
+			_ = json.NewEncoder(w).Encode(emptySearch)
+			return
+		}
+		if strings.Contains(r.URL.Path, "/issues") {
+			_ = json.NewEncoder(w).Encode(issues)
+			return
+		}
+		_, _ = w.Write([]byte("[]"))
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+
+	execChecker := &mockExecutionChecker{
+		completed: map[string]bool{
+			"GH-55:/project": true,
+		},
+	}
+
+	var callCount int32
+	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second,
+		WithExecutionChecker(execChecker, "/project"),
+		WithOnIssue(func(ctx context.Context, issue *Issue) error {
+			atomic.AddInt32(&callCount, 1)
+			return nil
+		}),
+	)
+
+	poller.checkForNewIssues(context.Background())
+	poller.WaitForActive()
+
+	// Ghost-close detected: issue should have been dispatched.
+	if got := atomic.LoadInt32(&callCount); got != 1 {
+		t.Errorf("callback called %d times, want 1 (ghost-close should allow re-dispatch)", got)
+	}
+	// InvalidateCompletion must have been called to clean up the stale row.
+	if len(execChecker.invalidated) == 0 {
+		t.Error("InvalidateCompletion was not called — ghost completion row not cleaned up")
 	}
 }
 
