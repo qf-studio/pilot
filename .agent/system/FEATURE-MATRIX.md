@@ -1,6 +1,6 @@
 # Pilot Feature Matrix
 
-**Last Updated:** 2026-05-03 (v2.53.0)
+**Last Updated:** 2026-05-02 (v2.53.0)
 
 ## Legend
 
@@ -395,6 +395,9 @@
 | Sub-issue PR wiring | ✅ | executor | - | - | Sub-issue PR callbacks chain back to autopilot controller (v0.23.1) |
 | Linear sub-issue creation | ✅ | adapters/linear | - | `adapters.linear` | CreateIssue GraphQL mutation for decomposed epics (v1.27.0) |
 | Decompose on retry | ✅ | executor | - | `retry.decompose_on_kill` | Retry via decomposition when task killed (signal:killed) (v2.10.0, GH-1729) |
+| Conventional sub-issue titles | ✅ | executor | - | - | CC-format enforced on subtask titles: re-prompt → Approach B fallback → creation guard (GH-2494) |
+| Sub-issue dedup guard | ✅ | executor | - | - | CreateSubIssues skips if open children referencing parent already exist (GH-2494) |
+| createPilotIssue chokepoint | ✅ | adapters/github, autopilot | - | - | All Pilot-internal issue creation validated through CreatePilotIssue CC gate (GH-2494) |
 
 ## Test Coverage
 

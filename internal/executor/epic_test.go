@@ -568,17 +568,17 @@ func TestPlanEpicSuccess(t *testing.T) {
 
 	validOutput := `Here's the implementation plan:
 
-1. **Set up database schema** - Create migration files for users and sessions tables
-2. **Implement auth service** - Build JWT-based authentication with refresh tokens
-3. **Add API endpoints** - Create login, logout, and session management routes
-4. **Write integration tests** - End-to-end tests for the auth flow`
+1. **feat(db): set up database schema** - Create migration files for users and sessions tables
+2. **feat(auth): implement auth service** - Build JWT-based authentication with refresh tokens
+3. **feat(api): add API endpoints** - Create login, logout, and session management routes
+4. **test(auth): write integration tests** - End-to-end tests for the auth flow`
 
 	mockCmd := writeMockScript(t, tmpDir, validOutput, 0)
 
 	runner := newTestRunner(mockCmd)
 	task := &Task{
 		ID:          "GH-100",
-		Title:       "[epic] Implement user authentication",
+		Title:       "feat(auth): implement user authentication",
 		Description: "Full auth system with JWT tokens and session management",
 		ProjectPath: tmpDir,
 	}
@@ -601,10 +601,10 @@ func TestPlanEpicSuccess(t *testing.T) {
 	}
 
 	expectedTitles := []string{
-		"Set up database schema",
-		"Implement auth service",
-		"Add API endpoints",
-		"Write integration tests",
+		"feat(db): set up database schema",
+		"feat(auth): implement auth service",
+		"feat(api): add API endpoints",
+		"test(auth): write integration tests",
 	}
 
 	for i, expected := range expectedTitles {
@@ -736,17 +736,17 @@ Step 1: Set up project scaffolding
 Step 2: Implement core logic
 Step 3: Add tests`,
 			expectedCount:  3,
-			expectedTitles: []string{"Set up project scaffolding", "Implement core logic", "Add tests"},
+			expectedTitles: []string{"feat(fmt): set up project scaffolding", "feat(fmt): implement core logic", "feat(fmt): add tests"},
 		},
 		{
 			name: "bold-wrapped numbers (GH-490 format)",
 			output: `Analysis complete:
 
-**1. Create database migration** - Schema changes for user tables
-**2. Build API layer** - REST endpoints with validation
-**3. Add frontend components** - React forms and state management`,
+**1. chore(db): create database migration** - Schema changes for user tables
+**2. feat(api): build API layer** - REST endpoints with validation
+**3. feat(ui): add frontend components** - React forms and state management`,
 			expectedCount:  3,
-			expectedTitles: []string{"Create database migration", "Build API layer", "Add frontend components"},
+			expectedTitles: []string{"chore(db): create database migration", "feat(api): build API layer", "feat(ui): add frontend components"},
 		},
 		{
 			name: "parenthesis format",
@@ -755,23 +755,23 @@ Step 3: Add tests`,
 3) Implement feature
 4) Write tests`,
 			expectedCount:  4,
-			expectedTitles: []string{"Initialize project", "Add dependencies", "Implement feature", "Write tests"},
+			expectedTitles: []string{"feat(fmt): initialize project", "feat(fmt): add dependencies", "feat(fmt): implement feature", "feat(fmt): write tests"},
 		},
 		{
 			name: "markdown heading format (GH-542)",
-			output: `### 1. Create database migration - Schema changes
-### 2. Build API layer - REST endpoints
-### 3. Add frontend components - React forms`,
+			output: `### 1. chore(db): create database migration - Schema changes
+### 2. feat(api): build API layer - REST endpoints
+### 3. feat(ui): add frontend components - React forms`,
 			expectedCount:  3,
-			expectedTitles: []string{"Create database migration", "Build API layer", "Add frontend components"},
+			expectedTitles: []string{"chore(db): create database migration", "feat(api): build API layer", "feat(ui): add frontend components"},
 		},
 		{
 			name: "dash bullet format (GH-542)",
-			output: `- **1. Add migration** - Schema changes
-- **2. Build API** - REST endpoints
-- **3. Add frontend** - React forms`,
+			output: `- **1. chore(db): add migration** - Schema changes
+- **2. feat(api): build API** - REST endpoints
+- **3. feat(ui): add frontend** - React forms`,
 			expectedCount:  3,
-			expectedTitles: []string{"Add migration", "Build API", "Add frontend"},
+			expectedTitles: []string{"chore(db): add migration", "feat(api): build API", "feat(ui): add frontend"},
 		},
 	}
 
@@ -781,7 +781,7 @@ Step 3: Add tests`,
 			runner := newTestRunner(mockCmd)
 			task := &Task{
 				ID:          "GH-FMT",
-				Title:       "[epic] Format test",
+				Title:       "feat(fmt): test format parsing",
 				Description: "Test regex parsing of different formats",
 				ProjectPath: tmpDir,
 			}
@@ -1090,12 +1090,13 @@ func TestCreateSubIssues_UsesAdapterForNonGitHub(t *testing.T) {
 	plan := &EpicPlan{
 		ParentTask: &Task{
 			ID:            "APP-100",
+			Title:         "feat(linear): implement workflow",
 			SourceAdapter: "linear",
 			SourceIssueID: "APP-100",
 		},
 		Subtasks: []PlannedSubtask{
-			{Title: "Add first subtask", Description: "Do first thing", Order: 1},
-			{Title: "Add second subtask", Description: "Do second thing", Order: 2},
+			{Title: "feat(linear): add first subtask", Description: "Do first thing", Order: 1},
+			{Title: "feat(linear): add second subtask", Description: "Do second thing", Order: 2},
 		},
 	}
 
@@ -1115,8 +1116,8 @@ func TestCreateSubIssues_UsesAdapterForNonGitHub(t *testing.T) {
 	if mock.Called[0].ParentID != "APP-100" {
 		t.Errorf("First call parentID = %q, want APP-100", mock.Called[0].ParentID)
 	}
-	if mock.Called[0].Title != "Add first subtask" {
-		t.Errorf("First call title = %q, want 'Add first subtask'", mock.Called[0].Title)
+	if mock.Called[0].Title != "feat(linear): add first subtask" {
+		t.Errorf("First call title = %q, want 'feat(linear): add first subtask'", mock.Called[0].Title)
 	}
 
 	// Verify second call
@@ -1753,7 +1754,11 @@ func TestCreateSubIssues_RejectsAnalysisTitle(t *testing.T) {
 	if got == badTitle {
 		t.Errorf("analysis-style title was passed through unchanged: %q", got)
 	}
-	if got != "APP-100: Subtask 1" {
-		t.Errorf("fallback title = %q, want %q", got, "APP-100: Subtask 1")
+	// Fallback must be a valid conventional-commit title (not a placeholder).
+	if !isConventionalSubtaskTitle(got) {
+		t.Errorf("fallback title %q is not in conventional-commit format", got)
+	}
+	if isPlaceholderSubtaskTitle(got) {
+		t.Errorf("fallback title %q must not be a placeholder like 'GH-N: Subtask K'", got)
 	}
 }

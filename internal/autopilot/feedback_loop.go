@@ -97,13 +97,7 @@ func (f *FeedbackLoop) CreateFailureIssue(ctx context.Context, prState *PRState,
 
 	body := f.generateBody(prState, failureType, failedChecks, logs, iteration, knownPatterns)
 
-	input := &github.IssueInput{
-		Title:  title,
-		Body:   body,
-		Labels: f.issueLabels,
-	}
-
-	issue, err := f.ghClient.CreateIssue(ctx, f.owner, f.repo, input)
+	issue, err := github.CreatePilotIssue(ctx, f.ghClient, f.owner, f.repo, title, body, f.issueLabels)
 	if err != nil {
 		return 0, fmt.Errorf("failed to create issue: %w", err)
 	}
@@ -270,13 +264,7 @@ func (f *FeedbackLoop) CreateReviewIssue(ctx context.Context, prState *PRState, 
 
 	body := sb.String()
 
-	input := &github.IssueInput{
-		Title:  title,
-		Body:   body,
-		Labels: f.issueLabels,
-	}
-
-	issue, err := f.ghClient.CreateIssue(ctx, f.owner, f.repo, input)
+	issue, err := github.CreatePilotIssue(ctx, f.ghClient, f.owner, f.repo, title, body, f.issueLabels)
 	if err != nil {
 		return 0, fmt.Errorf("failed to create review issue: %w", err)
 	}
