@@ -206,6 +206,10 @@ func TestAutoMerger_MergePR_DevEnvironment(t *testing.T) {
 		case "/repos/owner/repo/pulls/42/reviews":
 			// Auto-review call
 			w.WriteHeader(http.StatusOK)
+		case "/repos/owner/repo/pulls/42/files":
+			// GH-2585: size-floor gate enumerates files. Return empty list.
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("[]"))
 		case "/repos/owner/repo/pulls/42/merge":
 			// Merge call
 			var body map[string]string
