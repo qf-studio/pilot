@@ -1533,9 +1533,6 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 		if autopilotController != nil {
 			gwServer.SetAutopilotProvider(&autopilotProviderAdapter{controller: autopilotController})
 		}
-		if cfg.OAuth != nil {
-			gwServer.SetOAuthManager(gateway.NewOAuthManager(cfg.OAuth))
-		}
 
 		// GH-2080: Wire PR review webhook events to autopilot controller in polling mode
 		if autopilotController != nil && cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.Enabled {
