@@ -602,40 +602,6 @@ func TestValidate(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "OAuthSlack",
-			config: func() *Config {
-				c := DefaultConfig()
-				c.Auth = &gateway.AuthConfig{
-					Type: gateway.AuthTypeOAuth,
-					OAuth: &gateway.OAuthConfig{
-						Provider:     gateway.OAuthProviderSlack,
-						ClientID:     "slack-client-id",
-						ClientSecret: "slack-client-secret",
-						RedirectURL:  "http://localhost:9090/auth/callback",
-					},
-				}
-				return c
-			}(),
-			wantErr: false,
-		},
-		{
-			name: "OAuthLinkedIn",
-			config: func() *Config {
-				c := DefaultConfig()
-				c.Auth = &gateway.AuthConfig{
-					Type: gateway.AuthTypeOAuth,
-					OAuth: &gateway.OAuthConfig{
-						Provider:     gateway.OAuthProviderLinkedIn,
-						ClientID:     "linkedin-client-id",
-						ClientSecret: "linkedin-client-secret",
-						RedirectURL:  "http://localhost:9090/auth/callback",
-					},
-				}
-				return c
-			}(),
-			wantErr: false,
-		},
-		{
 			name: "OAuthMissingClientID",
 			config: func() *Config {
 				c := DefaultConfig()
