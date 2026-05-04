@@ -14,46 +14,22 @@ type AuthType string
 const (
 	AuthTypeClaudeCode AuthType = "claude-code"
 	AuthTypeAPIToken   AuthType = "api-token"
-	AuthTypeOAuth      AuthType = "oauth"
 )
 
 // AuthConfig holds authentication configuration
 type AuthConfig struct {
-	Type  AuthType     `yaml:"type"`
-	Token string       `yaml:"token,omitempty"`
-	OAuth *OAuthConfig `yaml:"oauth,omitempty"`
+	Type  AuthType `yaml:"type"`
+	Token string   `yaml:"token,omitempty"`
 }
 
 // Authenticator handles authentication
 type Authenticator struct {
-	config       *AuthConfig
-	oauthHandler *OAuthHandler
+	config *AuthConfig
 }
 
-// NewAuthenticator creates a new authenticator.
-// If the config specifies OAuth authentication, an OAuthHandler is created automatically.
+// NewAuthenticator creates a new authenticator
 func NewAuthenticator(config *AuthConfig) *Authenticator {
-	a := &Authenticator{config: config}
-	if config.Type == AuthTypeOAuth && config.OAuth != nil {
-		a.oauthHandler = NewOAuthHandler(config.OAuth)
-	}
-	return a
-}
-
-// OAuthHandler returns the underlying OAuthHandler, or nil when OAuth is not configured.
-func (a *Authenticator) OAuthHandler() *OAuthHandler {
-	return a.oauthHandler
-}
-
-// RegisterOAuthRoutes registers the OAuth login and callback endpoints on mux.
-// Routes are only registered when OAuth authentication is configured.
-func (a *Authenticator) RegisterOAuthRoutes(mux *http.ServeMux) {
-	if a == nil || a.oauthHandler == nil {
-		return
-	}
-	mux.HandleFunc("/auth/login", a.oauthHandler.HandleLogin)
-	mux.HandleFunc("/auth/callback", a.oauthHandler.HandleCallback)
-	mux.HandleFunc("/auth/logout", a.oauthHandler.HandleLogout)
+	return &Authenticator{config: config}
 }
 
 // Authenticate validates a request
@@ -63,8 +39,6 @@ func (a *Authenticator) Authenticate(r *http.Request) error {
 		return a.authenticateClaudeCode(r)
 	case AuthTypeAPIToken:
 		return a.authenticateAPIToken(r)
-	case AuthTypeOAuth:
-		return a.authenticateOAuth(r)
 	default:
 		return errors.New("unknown auth type")
 	}
@@ -92,19 +66,6 @@ func (a *Authenticator) authenticateAPIToken(r *http.Request) error {
 	}
 
 	return nil
-}
-
-// authenticateOAuth validates a session token issued after a completed OAuth2 flow.
-func (a *Authenticator) authenticateOAuth(r *http.Request) error {
-	if a.oauthHandler == nil {
-		return errors.New("oauth not configured")
-	}
-	sessionToken := extractBearerToken(r)
-	if sessionToken == "" {
-		return errors.New("missing authorization token")
-	}
-	_, err := a.oauthHandler.ValidateSessionToken(sessionToken)
-	return err
 }
 
 // isLocalRequest checks if the request is from localhost

@@ -10,18 +10,9 @@ gateway:
 
 # Authentication
 auth:
-  type: "claude-code"  # "claude-code" (local) or "api-token" (remote) or "oauth"
+  type: "claude-code"  # "claude-code" (local) or "api-token" (remote)
   # token: "sk-ant-..."  # Required if type is "api-token"
   # ANTHROPIC_API_KEY env var enables Claude API features (Haiku subtask parsing, etc.)
-  # OAuth2 — set type: "oauth" and configure the provider below.
-  # Supported providers: github, google, gitlab, microsoft, discord, bitbucket, generic
-  # oauth:
-  #   provider: "bitbucket"
-  #   client_id: "${BITBUCKET_CLIENT_ID}"
-  #   client_secret: "${BITBUCKET_CLIENT_SECRET}"
-  #   redirect_url: "http://localhost:9090/auth/callback"
-  #   # scopes: ["account", "email"]  # optional; defaults applied per provider
-  #   # AuthURL/TokenURL optional — override for Bitbucket Server/Data Center deployments
 
 # Adapters
 adapters:
