@@ -734,6 +734,34 @@ func (c *Controller) handleCIFailed(ctx context.Context, prState *PRState) error
 		}
 	}
 
+	// GH-2588: Cascade-2 size-guard — if the failing PR already exceeds the size floor,
+	// it is a likely contamination cascade. Refuse to spawn another fix(ci) issue.
+	if c.config.MaxCIFixPRSize > 0 {
+		files, err := c.ghClient.ListPullRequestFiles(ctx, c.owner, c.repo, prState.PRNumber)
+		if err != nil {
+			c.log.Warn("CI fix size guard: ListPullRequestFiles failed, skipping guard (fail-open)",
+				"pr", prState.PRNumber, "error", err)
+			// Fall through — belt-and-suspenders: merge-time SizeFloor (#2594) still catches it.
+		} else {
+			netAdditions := 0
+			for _, f := range files {
+				netAdditions += f.Additions
+			}
+			if netAdditions > c.config.MaxCIFixPRSize {
+				c.log.Warn("CI fix size guard fired — failing PR exceeds size floor, refusing to spawn fix issue",
+					"pr", prState.PRNumber, "additions", netAdditions, "limit", c.config.MaxCIFixPRSize)
+				if err := c.ghClient.ClosePullRequest(ctx, c.owner, c.repo, prState.PRNumber); err != nil {
+					c.log.Warn("CI fix size guard: failed to close oversized failed PR",
+						"pr", prState.PRNumber, "error", err)
+				}
+				prState.Stage = StageFailed
+				prState.Error = fmt.Sprintf("CI fix size guard: PR has %d additions, over limit %d (likely cascade contamination — escalate to human)", netAdditions, c.config.MaxCIFixPRSize)
+				c.metrics.RecordPRFailed()
+				return nil
+			}
+		}
+	}
+
 	// GH-1567: Fetch actual CI error logs to include in fix issues.
 	// This prevents Pilot from having to rediscover errors by running linter/tests itself.
 	ciLogs := c.ciMonitor.GetFailedCheckLogs(ctx, prState.HeadSHA, 2000)
