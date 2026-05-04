@@ -545,11 +545,58 @@ func isPlaceholderSubtaskTitle(title string) bool {
 	return placeholderSubtaskTitleRE.MatchString(strings.TrimSpace(title))
 }
 
+// scopeKeywords returns body keywords that confirm a conventional-commit scope is legit.
+// Only covers scopes that have caused cascade contamination; all others return nil (always trusted).
+func scopeKeywords(scope string) []string {
+	switch scope {
+	case "auth":
+		return []string{"auth", "oauth", "login", "token", "session", "identity", "credential", "password", "jwt"}
+	default:
+		return nil
+	}
+}
+
+// extractScope pulls the scope name out of a conventional-commit prefix like "feat(auth):".
+// Returns "" when the prefix has no scope (e.g. "fix:").
+func extractScope(prefix string) string {
+	start := strings.Index(prefix, "(")
+	end := strings.Index(prefix, ")")
+	if start < 0 || end < 0 || end <= start+1 {
+		return ""
+	}
+	return prefix[start+1 : end]
+}
+
+// isCascadeArtefact returns true when the parent title carries a scoped prefix but
+// the parent body contains no keywords matching that scope — a signal that the title
+// was inherited from an unrelated earlier ticket (cascade-artefact pattern, GH-2587).
+func isCascadeArtefact(prefix, body string) bool {
+	scope := extractScope(prefix)
+	if scope == "" {
+		return false // no scope to verify
+	}
+	keywords := scopeKeywords(scope)
+	if keywords == nil {
+		return false // scope not in watchlist — trust it
+	}
+	bodyLower := strings.ToLower(body)
+	for _, kw := range keywords {
+		if strings.Contains(bodyLower, kw) {
+			return false // body confirms scope is legit
+		}
+	}
+	return true // title claims scope X but body never mentions X
+}
+
 // extractParentTypeScope returns the conventional-commit prefix (e.g. "feat(auth):") from
-// parentTitle. Falls back to "chore:" when the parent title is not in conventional-commit format.
-func extractParentTypeScope(parentTitle string) string {
+// parentTitle. Falls back to "chore:" when the parent title is not in conventional-commit format
+// or when the scoped prefix looks like a cascade artefact (GH-2587: title scope not reflected in body).
+func extractParentTypeScope(parentTitle, parentBody string) string {
 	m := parentTypeScopeRE.FindString(strings.TrimSpace(parentTitle))
 	if m == "" {
+		return "chore:"
+	}
+	if isCascadeArtefact(m, parentBody) {
 		return "chore:"
 	}
 	return m
@@ -558,8 +605,8 @@ func extractParentTypeScope(parentTitle string) string {
 // applyParentTypeScopeFallback rewrites the subtasks at invalidIdx using the parent's
 // conventional-commit prefix (Approach B). The result is guaranteed to satisfy
 // conventionalSubtaskTitleRE.
-func applyParentTypeScopeFallback(subtasks []PlannedSubtask, invalidIdx []int, parentTitle string) []PlannedSubtask {
-	prefix := extractParentTypeScope(parentTitle) // e.g. "feat(auth):"
+func applyParentTypeScopeFallback(subtasks []PlannedSubtask, invalidIdx []int, parentTitle, parentBody string) []PlannedSubtask {
+	prefix := extractParentTypeScope(parentTitle, parentBody) // e.g. "feat(auth):"
 	result := make([]PlannedSubtask, len(subtasks))
 	copy(result, subtasks)
 	for _, idx := range invalidIdx {
@@ -602,8 +649,10 @@ func validateAndFixSubtaskTitles(ctx context.Context, subtasks []PlannedSubtask,
 	}
 
 	parentTitle := ""
+	parentBody := ""
 	if parent != nil {
 		parentTitle = parent.Title
+		parentBody = parent.Description
 	}
 
 	// Attempt re-prompt via SubtaskParser API.
@@ -643,7 +692,7 @@ func validateAndFixSubtaskTitles(ctx context.Context, subtasks []PlannedSubtask,
 	}
 
 	// Approach B: inherit parent's type/scope for remaining invalid titles.
-	return applyParentTypeScopeFallback(subtasks, invalid, parentTitle)
+	return applyParentTypeScopeFallback(subtasks, invalid, parentTitle, parentBody)
 }
 
 // queryOpenSubIssues returns true when there are open GitHub issues that include
@@ -787,6 +836,7 @@ func (r *Runner) createSubIssuesViaAdapter(ctx context.Context, plan *EpicPlan) 
 				[]PlannedSubtask{{Title: title, Order: subtask.Order}},
 				[]int{0},
 				plan.ParentTask.Title,
+				plan.ParentTask.Description,
 			)[0].Title
 			r.log.Warn("Rejected invalid LLM subtask title; using conventional fallback",
 				"original_title", subtask.Title,
@@ -818,6 +868,7 @@ func (r *Runner) createSubIssuesViaAdapter(ctx context.Context, plan *EpicPlan) 
 				[]PlannedSubtask{{Title: title, Order: subtask.Order}},
 				[]int{0},
 				plan.ParentTask.Title,
+				plan.ParentTask.Description,
 			)[0].Title
 		}
 
@@ -884,15 +935,18 @@ func (r *Runner) createSubIssuesViaGitHub(ctx context.Context, plan *EpicPlan, e
 			parentID := ""
 			parentProject := ""
 			parentTitle := ""
+			parentBody := ""
 			if plan.ParentTask != nil {
 				parentID = plan.ParentTask.ID
 				parentProject = plan.ParentTask.ProjectPath
 				parentTitle = plan.ParentTask.Title
+				parentBody = plan.ParentTask.Description
 			}
 			fallback := applyParentTypeScopeFallback(
 				[]PlannedSubtask{{Title: title, Order: subtask.Order}},
 				[]int{0},
 				parentTitle,
+				parentBody,
 			)[0].Title
 			r.log.Warn("Rejected invalid LLM subtask title; using conventional fallback",
 				"original_title", subtask.Title,
@@ -922,13 +976,16 @@ func (r *Runner) createSubIssuesViaGitHub(ctx context.Context, plan *EpicPlan, e
 		// Catches titles that satisfy validateSubtaskTitle (action verb) but lack type prefix.
 		if !isConventionalSubtaskTitle(title) {
 			parentTitle := ""
+			parentBody := ""
 			if plan.ParentTask != nil {
 				parentTitle = plan.ParentTask.Title
+				parentBody = plan.ParentTask.Description
 			}
 			title = applyParentTypeScopeFallback(
 				[]PlannedSubtask{{Title: title, Order: subtask.Order}},
 				[]int{0},
 				parentTitle,
+				parentBody,
 			)[0].Title
 		}
 

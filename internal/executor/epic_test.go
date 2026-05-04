@@ -1731,6 +1731,89 @@ func TestSyntheticSubtaskTitle(t *testing.T) {
 	})
 }
 
+// TestExtractParentTypeScope_CascadeArtefactGuard covers GH-2587: when the parent title
+// carries a scoped prefix (e.g. "feat(auth):") but the body has no matching keywords,
+// extractParentTypeScope must fall back to "chore:" to avoid cascade contamination.
+func TestExtractParentTypeScope_CascadeArtefactGuard(t *testing.T) {
+	tests := []struct {
+		name        string
+		parentTitle string
+		parentBody  string
+		wantPrefix  string
+	}{
+		{
+			// Case 1 (cascade-2 repro): GH-201 — dashboard ticket whose title coincidentally
+			// started with "feat(auth):" but body was entirely about UI, not auth.
+			name:        "cascade-2 repro: auth prefix with unrelated body returns chore",
+			parentTitle: "feat(auth): dashboard sparkline retro",
+			parentBody:  "add sparkline cards for cost panel — see attached design",
+			wantPrefix:  "chore:",
+		},
+		{
+			// Case 2 (legit auth feature): body mentions auth-related keywords.
+			name:        "legit auth feature: body mentions oauth returns feat(auth):",
+			parentTitle: "feat(auth): add OAuth provider integration",
+			parentBody:  "Implement OAuth login flow using GitHub provider tokens for session management",
+			wantPrefix:  "feat(auth):",
+		},
+		{
+			// Case 3 (no scope): title has no scope — scope check doesn't apply; prefix kept as-is.
+			name:        "no scope: fix: prefix preserved regardless of body",
+			parentTitle: "fix: timeout in retry path",
+			parentBody:  "the retry loop does not honour context cancellation",
+			wantPrefix:  "fix:",
+		},
+		{
+			// Additional: scope not in watchlist — always trusted.
+			name:        "executor scope not in watchlist: trusted",
+			parentTitle: "feat(executor): add stream-json parser",
+			parentBody:  "completely unrelated body about dashboard widgets",
+			wantPrefix:  "feat(executor):",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := extractParentTypeScope(tc.parentTitle, tc.parentBody)
+			if got != tc.wantPrefix {
+				t.Errorf("extractParentTypeScope(%q, ...) = %q, want %q", tc.parentTitle, got, tc.wantPrefix)
+			}
+		})
+	}
+}
+
+// TestApplyParentTypeScopeFallback_CascadeGuardEndToEnd verifies that the cascade-artefact
+// guard flows through applyParentTypeScopeFallback: subtasks with invalid titles under a
+// cascade-artefact parent must receive "chore:" not the contaminated scope.
+func TestApplyParentTypeScopeFallback_CascadeGuardEndToEnd(t *testing.T) {
+	subtasks := []PlannedSubtask{
+		{Title: "Subtask 1", Order: 1},
+		{Title: "fix: valid title already", Order: 2},
+		{Title: "Subtask 3", Order: 3},
+	}
+	invalid := []int{0, 2}
+
+	// Cascade-artefact parent: auth prefix but body is about dashboard sparklines.
+	result := applyParentTypeScopeFallback(subtasks, invalid, "feat(auth): dashboard sparkline retro", "add sparkline cards for cost panel")
+
+	for _, idx := range invalid {
+		if !isConventionalSubtaskTitle(result[idx].Title) {
+			t.Errorf("result[%d].Title %q is not conventional-commit format", idx, result[idx].Title)
+		}
+		if strings.HasPrefix(result[idx].Title, "feat(auth):") {
+			t.Errorf("result[%d].Title %q must not inherit cascade-artefact auth scope", idx, result[idx].Title)
+		}
+		if !strings.HasPrefix(result[idx].Title, "chore:") {
+			t.Errorf("result[%d].Title %q should use chore: fallback, not %q", idx, result[idx].Title, result[idx].Title[:strings.Index(result[idx].Title, " ")+1])
+		}
+	}
+
+	// Untouched slot must be preserved.
+	if result[1].Title != "fix: valid title already" {
+		t.Errorf("untouched subtask title changed: got %q", result[1].Title)
+	}
+}
+
 // TestCreateSubIssues_RejectsAnalysisTitle ensures the GH-2324 guard kicks in
 // end-to-end through the adapter path: an LLM analysis sentence must not reach
 // the tracker verbatim; a synthetic fallback is used instead.
