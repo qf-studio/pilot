@@ -74,18 +74,6 @@ func TestOAuthProviderEndpoints(t *testing.T) {
 			wantTokenURL: "https://discord.com/api/oauth2/token",
 		},
 		{
-			provider:     OAuthProviderBitbucket,
-			wantAuthURL:  "https://bitbucket.org/site/oauth2/authorize",
-			wantTokenURL: "https://bitbucket.org/site/oauth2/access_token",
-		},
-		{
-			provider:       OAuthProviderBitbucket,
-			customAuthURL:  "https://bitbucket.example.com/rest/oauth2/1.0/authorize",
-			customTokenURL: "https://bitbucket.example.com/rest/oauth2/1.0/token",
-			wantAuthURL:    "https://bitbucket.example.com/rest/oauth2/1.0/authorize",
-			wantTokenURL:   "https://bitbucket.example.com/rest/oauth2/1.0/token",
-		},
-		{
 			provider:       OAuthProviderGeneric,
 			customAuthURL:  "https://auth.example.com/oauth/authorize",
 			customTokenURL: "https://auth.example.com/oauth/token",
@@ -120,26 +108,6 @@ func TestOAuthGitLabSelfHosted(t *testing.T) {
 	customToken := "https://gitlab.mycompany.com/oauth/token"
 	h := NewOAuthHandler(&OAuthConfig{
 		Provider:     OAuthProviderGitLab,
-		ClientID:     "test-client-id",
-		ClientSecret: "test-client-secret",
-		RedirectURL:  "http://localhost/callback",
-		AuthURL:      customAuth,
-		TokenURL:     customToken,
-	})
-	if got := h.resolvedAuthURL(); got != customAuth {
-		t.Errorf("resolvedAuthURL() = %q, want %q (self-hosted override)", got, customAuth)
-	}
-	if got := h.resolvedTokenURL(); got != customToken {
-		t.Errorf("resolvedTokenURL() = %q, want %q (self-hosted override)", got, customToken)
-	}
-}
-
-func TestOAuthBitbucketServerSelfHosted(t *testing.T) {
-	// Bitbucket Server/Data Center deployments override bitbucket.org endpoints via AuthURL/TokenURL.
-	customAuth := "https://bitbucket.mycompany.com/rest/oauth2/1.0/authorize"
-	customToken := "https://bitbucket.mycompany.com/rest/oauth2/1.0/token"
-	h := NewOAuthHandler(&OAuthConfig{
-		Provider:     OAuthProviderBitbucket,
 		ClientID:     "test-client-id",
 		ClientSecret: "test-client-secret",
 		RedirectURL:  "http://localhost/callback",
@@ -234,24 +202,6 @@ func TestOAuthResolvedScopes(t *testing.T) {
 		}
 		if !found {
 			t.Errorf("expected identify in discord default scopes, got %v", scopes)
-		}
-	})
-
-	t.Run("bitbucket defaults when no scopes configured", func(t *testing.T) {
-		h := NewOAuthHandler(&OAuthConfig{Provider: OAuthProviderBitbucket})
-		scopes := h.resolvedScopes()
-		if len(scopes) == 0 {
-			t.Error("expected default scopes for bitbucket provider")
-		}
-		found := false
-		for _, s := range scopes {
-			if s == "account" {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Errorf("expected account in bitbucket default scopes, got %v", scopes)
 		}
 	})
 
@@ -398,35 +348,6 @@ func TestHandleLogin_Discord(t *testing.T) {
 	}
 	if !strings.Contains(loc, "client_id=test-discord-client") {
 		t.Errorf("Location %q missing client_id", loc)
-	}
-}
-
-func TestHandleLogin_Bitbucket(t *testing.T) {
-	h := NewOAuthHandler(&OAuthConfig{
-		Provider:     OAuthProviderBitbucket,
-		ClientID:     "test-bitbucket-client",
-		ClientSecret: "test-bitbucket-secret",
-		RedirectURL:  "http://localhost:9090/auth/callback",
-	})
-
-	req := httptest.NewRequest(http.MethodGet, "/auth/login", nil)
-	w := httptest.NewRecorder()
-
-	h.HandleLogin(w, req)
-
-	if w.Code != http.StatusFound {
-		t.Errorf("HandleLogin(bitbucket) status = %d, want %d", w.Code, http.StatusFound)
-	}
-
-	loc := w.Header().Get("Location")
-	if !strings.Contains(loc, "bitbucket.org/site/oauth2/authorize") {
-		t.Errorf("Location %q does not point to Bitbucket authorize endpoint", loc)
-	}
-	if !strings.Contains(loc, "client_id=test-bitbucket-client") {
-		t.Errorf("Location %q missing client_id", loc)
-	}
-	if !strings.Contains(loc, "state=") {
-		t.Errorf("Location %q missing state parameter", loc)
 	}
 }
 

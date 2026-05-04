@@ -24,7 +24,6 @@ const (
 	OAuthProviderGitLab    OAuthProvider = "gitlab"
 	OAuthProviderMicrosoft OAuthProvider = "microsoft"
 	OAuthProviderDiscord   OAuthProvider = "discord"
-	OAuthProviderBitbucket OAuthProvider = "bitbucket"
 	OAuthProviderGeneric   OAuthProvider = "generic"
 )
 
@@ -46,8 +45,6 @@ type OAuthConfig struct {
 // with custom AuthURL/TokenURL, or set AuthURL/TokenURL alongside Provider: "gitlab".
 // For Microsoft, these use the "common" tenant; single-tenant apps should set AuthURL/TokenURL
 // with the specific tenant ID (e.g. https://login.microsoftonline.com/{tenant}/oauth2/v2.0/...).
-// For Bitbucket, these point to bitbucket.org (Bitbucket Cloud); Bitbucket Server/Data Center
-// deployments should set AuthURL/TokenURL alongside Provider: "bitbucket".
 var providerEndpoints = map[OAuthProvider]struct{ AuthURL, TokenURL string }{
 	OAuthProviderGitHub: {
 		AuthURL:  "https://github.com/login/oauth/authorize",
@@ -69,10 +66,6 @@ var providerEndpoints = map[OAuthProvider]struct{ AuthURL, TokenURL string }{
 		AuthURL:  "https://discord.com/api/oauth2/authorize",
 		TokenURL: "https://discord.com/api/oauth2/token",
 	},
-	OAuthProviderBitbucket: {
-		AuthURL:  "https://bitbucket.org/site/oauth2/authorize",
-		TokenURL: "https://bitbucket.org/site/oauth2/access_token",
-	},
 }
 
 // providerDefaultScopes maps built-in providers to their default OAuth2 scopes.
@@ -82,7 +75,6 @@ var providerDefaultScopes = map[OAuthProvider][]string{
 	OAuthProviderGitLab:    {"read_user", "openid", "email"},
 	OAuthProviderMicrosoft: {"openid", "email", "profile", "User.Read"},
 	OAuthProviderDiscord:   {"identify", "email"},
-	OAuthProviderBitbucket: {"account", "email"},
 }
 
 // oauthState holds temporary state for an in-flight OAuth2 authorization.
