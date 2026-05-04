@@ -1,6 +1,6 @@
 # Pilot Feature Matrix
 
-**Last Updated:** 2026-05-04 (v2.53.0)
+**Last Updated:** 2026-05-03 (v2.53.0)
 
 ## Legend
 
@@ -289,7 +289,7 @@
 | Cloudflare tunnel | ✅ | tunnel | `pilot start --tunnel` | `tunnel` | Auto-start tunnel, prints webhook URLs |
 | Gateway HTTP | ✅ | gateway | `pilot start` | `gateway` | Internal server, wired in main.go |
 | Gateway WebSocket | ✅ | gateway | - | - | Session management active in gateway |
-| OAuth2 provider integration | ✅ | gateway | - | `auth.type=oauth` | GitHub/Google/GitLab/Microsoft/Discord/Generic; /auth/login + /auth/callback; session tokens; tenant-specific URL override for Microsoft (v2.112.0, GH-2516) |
+| OAuth2 provider integration | ✅ | gateway | - | `auth.type=oauth` | GitHub/Google/GitLab/Microsoft/Discord/Bitbucket/Slack/LinkedIn/Generic; /auth/login + /auth/callback; session tokens; tenant-specific URL override for Microsoft; Slack uses OpenID Connect v2 (v2.113.0, GH-2530) |
 | Health checks | ✅ | health | `pilot doctor` | - | System validation, 32 unit tests |
 | Agent doc size check | ✅ | health | `pilot doctor` | - | Warns >500 lines, errors >1000 lines per .agent/*.md (GH-2462) |
 | OpenCode backend | ✅ | executor | `--backend opencode` | `executor.backend` | HTTP/SSE alternative to Claude Code |
