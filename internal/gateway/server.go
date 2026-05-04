@@ -80,6 +80,7 @@ type Server struct {
 	logStreamStore      LogStreamStore
 	gitGraphPath        string          // Project path for git graph API (defaults to ".")
 	gitGraphFetcher     GitGraphFetcher // Injected to avoid import cycle with internal/dashboard
+	oauthManager        *OAuthManager
 }
 
 // Config holds gateway server configuration including network binding options.
@@ -195,6 +196,20 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/live", s.handleLive)
 	mux.HandleFunc("/metrics", s.handleMetrics)
 
+	// OAuth2 endpoints (public — initiate and receive provider redirects)
+	s.mu.RLock()
+	oauthMgr := s.oauthManager
+	s.mu.RUnlock()
+	if oauthMgr != nil {
+		mux.HandleFunc("/auth/oauth/", func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasSuffix(r.URL.Path, "/callback") {
+				oauthMgr.CallbackHandler(w, r)
+			} else {
+				oauthMgr.StartHandler(w, r)
+			}
+		})
+	}
+
 	// Protected API endpoints (auth required when configured)
 	apiMux := http.NewServeMux()
 	apiMux.HandleFunc("/api/v1/status", s.handleStatus)
@@ -296,6 +311,15 @@ func (s *Server) SetGitGraphFetcher(f GitGraphFetcher) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.gitGraphFetcher = f
+}
+
+// SetOAuthManager wires an OAuthManager into the server.
+// Must be called before Start(). When set, /auth/oauth/{provider} and
+// /auth/oauth/{provider}/callback routes become active.
+func (s *Server) SetOAuthManager(m *OAuthManager) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.oauthManager = m
 }
 
 // Shutdown gracefully shuts down the server with a 30-second timeout.
