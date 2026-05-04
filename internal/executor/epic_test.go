@@ -262,6 +262,23 @@ func TestBuildPlanningPrompt(t *testing.T) {
 			t.Errorf("prompt missing required element: %q", r)
 		}
 	}
+
+	// GH-2559: Prompt examples must NOT include concrete strings the LLM can mistake
+	// for real subtasks. On 2026-05-03 the planner copied
+	// "feat(auth): add OAuth provider integration" verbatim from the prompt and
+	// Pilot improvised an OAuth implementation, triggering a 17-hour cascade
+	// across 12 providers (reverted in PR #2558). Examples must be ALL_CAPS
+	// placeholder slots, never plausible-sounding tasks.
+	forbidden := []string{
+		"feat(auth): add OAuth provider integration",
+		"fix(api): handle nil response in webhook handler",
+		"chore(deps): upgrade go modules to latest",
+	}
+	for _, f := range forbidden {
+		if strings.Contains(prompt, f) {
+			t.Errorf("prompt contains forbidden concrete example %q — must be a placeholder template (GH-2559)", f)
+		}
+	}
 }
 
 func TestIsSinglePackageScope(t *testing.T) {
