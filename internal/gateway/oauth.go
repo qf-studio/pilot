@@ -21,7 +21,6 @@ type OAuthProvider string
 const (
 	OAuthProviderGitHub  OAuthProvider = "github"
 	OAuthProviderGoogle  OAuthProvider = "google"
-	OAuthProviderGitLab  OAuthProvider = "gitlab"
 	OAuthProviderGeneric OAuthProvider = "generic"
 )
 
@@ -39,8 +38,6 @@ type OAuthConfig struct {
 }
 
 // providerEndpoints maps built-in providers to their well-known OAuth2 endpoints.
-// For GitLab, these point to gitlab.com; self-hosted instances should use OAuthProviderGeneric
-// with custom AuthURL/TokenURL, or set AuthURL/TokenURL alongside Provider: "gitlab".
 var providerEndpoints = map[OAuthProvider]struct{ AuthURL, TokenURL string }{
 	OAuthProviderGitHub: {
 		AuthURL:  "https://github.com/login/oauth/authorize",
@@ -50,17 +47,12 @@ var providerEndpoints = map[OAuthProvider]struct{ AuthURL, TokenURL string }{
 		AuthURL:  "https://accounts.google.com/o/oauth2/v2/auth",
 		TokenURL: "https://oauth2.googleapis.com/token",
 	},
-	OAuthProviderGitLab: {
-		AuthURL:  "https://gitlab.com/oauth/authorize",
-		TokenURL: "https://gitlab.com/oauth/token",
-	},
 }
 
 // providerDefaultScopes maps built-in providers to their default OAuth2 scopes.
 var providerDefaultScopes = map[OAuthProvider][]string{
 	OAuthProviderGitHub: {"read:user", "user:email"},
 	OAuthProviderGoogle: {"openid", "email", "profile"},
-	OAuthProviderGitLab: {"read_user", "openid", "email"},
 }
 
 // oauthState holds temporary state for an in-flight OAuth2 authorization.
@@ -253,29 +245,17 @@ func (h *OAuthHandler) exchangeCode(ctx context.Context, code string) (*Token, e
 }
 
 // resolvedAuthURL returns the provider's authorization endpoint URL.
-// For built-in providers, custom AuthURL overrides the default (allows self-hosted GitLab).
 func (h *OAuthHandler) resolvedAuthURL() string {
-	if h.config.Provider != OAuthProviderGeneric {
-		if h.config.AuthURL != "" {
-			return h.config.AuthURL
-		}
-		if ep, ok := providerEndpoints[h.config.Provider]; ok {
-			return ep.AuthURL
-		}
+	if ep, ok := providerEndpoints[h.config.Provider]; ok && h.config.Provider != OAuthProviderGeneric {
+		return ep.AuthURL
 	}
 	return h.config.AuthURL
 }
 
 // resolvedTokenURL returns the provider's token endpoint URL.
-// For built-in providers, custom TokenURL overrides the default (allows self-hosted GitLab).
 func (h *OAuthHandler) resolvedTokenURL() string {
-	if h.config.Provider != OAuthProviderGeneric {
-		if h.config.TokenURL != "" {
-			return h.config.TokenURL
-		}
-		if ep, ok := providerEndpoints[h.config.Provider]; ok {
-			return ep.TokenURL
-		}
+	if ep, ok := providerEndpoints[h.config.Provider]; ok && h.config.Provider != OAuthProviderGeneric {
+		return ep.TokenURL
 	}
 	return h.config.TokenURL
 }
