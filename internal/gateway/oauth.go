@@ -31,6 +31,8 @@ const (
 	OAuthProviderLinkedIn  OAuthProvider = "linkedin"
 	OAuthProviderFacebook  OAuthProvider = "facebook"
 	OAuthProviderTwitter   OAuthProvider = "twitter"
+	OAuthProviderApple     OAuthProvider = "apple"
+	OAuthProviderSpotify   OAuthProvider = "spotify"
 	OAuthProviderGeneric   OAuthProvider = "generic"
 )
 
@@ -102,6 +104,18 @@ var providerEndpoints = map[OAuthProvider]struct{ AuthURL, TokenURL string }{
 		AuthURL:  "https://twitter.com/i/oauth2/authorize",
 		TokenURL: "https://api.twitter.com/2/oauth2/token",
 	},
+	// Apple uses Sign in with Apple (OIDC) with mandatory PKCE (S256).
+	// Apps outside the Apple ecosystem should set response_mode=form_post when using a web redirect.
+	OAuthProviderApple: {
+		AuthURL:  "https://appleid.apple.com/auth/authorize",
+		TokenURL: "https://appleid.apple.com/auth/token",
+	},
+	// Spotify uses OAuth 2.0 with optional PKCE for user authorization.
+	// The accounts service issues short-lived access tokens with optional refresh tokens.
+	OAuthProviderSpotify: {
+		AuthURL:  "https://accounts.spotify.com/authorize",
+		TokenURL: "https://accounts.spotify.com/api/token",
+	},
 }
 
 // providerDefaultScopes maps built-in providers to their default OAuth2 scopes.
@@ -116,6 +130,8 @@ var providerDefaultScopes = map[OAuthProvider][]string{
 	OAuthProviderLinkedIn:  {"openid", "email", "profile"},
 	OAuthProviderFacebook:  {"email", "public_profile"},
 	OAuthProviderTwitter:   {"users.read", "tweet.read"},
+	OAuthProviderApple:     {"openid", "email", "name"},
+	OAuthProviderSpotify:   {"user-read-email", "user-read-private"},
 }
 
 // oauthState holds temporary state for an in-flight OAuth2 authorization.
@@ -173,8 +189,9 @@ func (h *OAuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		params.Set("access_type", "offline")
 	case OAuthProviderDiscord:
 		params.Set("prompt", "consent")
-	case OAuthProviderTwitter:
-		// Twitter OAuth 2.0 requires PKCE (S256 method).
+	case OAuthProviderTwitter, OAuthProviderApple:
+		// Twitter and Apple OAuth 2.0 require PKCE (S256 method).
+		// Apple additionally recommends response_mode=form_post for web apps.
 		verifier, challenge, pkceErr := generatePKCE()
 		if pkceErr != nil {
 			http.Error(w, "Internal server error", http.StatusInternalServerError)
@@ -183,6 +200,9 @@ func (h *OAuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		pending.codeVerifier = verifier
 		params.Set("code_challenge", challenge)
 		params.Set("code_challenge_method", "S256")
+		if h.config.Provider == OAuthProviderApple {
+			params.Set("response_mode", "form_post")
+		}
 	}
 
 	h.mu.Lock()
