@@ -239,18 +239,20 @@ func TestIsPlaceholderSubtaskTitle(t *testing.T) {
 func TestExtractParentTypeScope(t *testing.T) {
 	tests := []struct {
 		parent string
+		body   string
 		want   string
 	}{
-		{"feat(auth): add OAuth", "feat(auth):"},
-		{"fix: resolve nil panic", "fix:"},
-		{"chore(deps): bump versions", "chore(deps):"},
-		{"Add some feature", "chore:"},    // not conventional → default
-		{"", "chore:"},                    // empty → default
+		// auth scope with body confirming oauth — legit, keep prefix.
+		{"feat(auth): add OAuth", "implement oauth login flow with token session management", "feat(auth):"},
+		{"fix: resolve nil panic", "retry loop panics on nil pointer", "fix:"},
+		{"chore(deps): bump versions", "update go modules to latest", "chore(deps):"},
+		{"Add some feature", "some body", "chore:"},    // not conventional → default
+		{"", "", "chore:"},                             // empty → default
 	}
 	for _, tt := range tests {
-		got := extractParentTypeScope(tt.parent)
+		got := extractParentTypeScope(tt.parent, tt.body)
 		if got != tt.want {
-			t.Errorf("extractParentTypeScope(%q) = %q, want %q", tt.parent, got, tt.want)
+			t.Errorf("extractParentTypeScope(%q, ...) = %q, want %q", tt.parent, got, tt.want)
 		}
 	}
 }
@@ -265,7 +267,7 @@ func TestApplyParentTypeScopeFallback(t *testing.T) {
 	parent := &Task{Title: "feat(api): add REST endpoints"}
 	invalidIdx := []int{0, 1} // only fix the first two
 
-	result := applyParentTypeScopeFallback(subtasks, invalidIdx, parent.Title)
+	result := applyParentTypeScopeFallback(subtasks, invalidIdx, parent.Title, parent.Description)
 
 	for i := range result[:2] {
 		if !conventionalSubtaskTitleRE.MatchString(result[i].Title) {
