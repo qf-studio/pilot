@@ -86,6 +86,16 @@ func TestOAuthProviderEndpoints(t *testing.T) {
 			wantTokenURL:   "https://bitbucket.example.com/rest/oauth2/1.0/token",
 		},
 		{
+			provider:     OAuthProviderSlack,
+			wantAuthURL:  "https://slack.com/openid/connect/authorize",
+			wantTokenURL: "https://slack.com/api/openid.connect.token",
+		},
+		{
+			provider:     OAuthProviderLinkedIn,
+			wantAuthURL:  "https://www.linkedin.com/oauth/v2/authorization",
+			wantTokenURL: "https://www.linkedin.com/oauth/v2/accessToken",
+		},
+		{
 			provider:       OAuthProviderGeneric,
 			customAuthURL:  "https://auth.example.com/oauth/authorize",
 			customTokenURL: "https://auth.example.com/oauth/token",
@@ -252,6 +262,42 @@ func TestOAuthResolvedScopes(t *testing.T) {
 		}
 		if !found {
 			t.Errorf("expected account in bitbucket default scopes, got %v", scopes)
+		}
+	})
+
+	t.Run("slack defaults when no scopes configured", func(t *testing.T) {
+		h := NewOAuthHandler(&OAuthConfig{Provider: OAuthProviderSlack})
+		scopes := h.resolvedScopes()
+		if len(scopes) == 0 {
+			t.Error("expected default scopes for slack provider")
+		}
+		found := false
+		for _, s := range scopes {
+			if s == "openid" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected openid in slack default scopes, got %v", scopes)
+		}
+	})
+
+	t.Run("linkedin defaults when no scopes configured", func(t *testing.T) {
+		h := NewOAuthHandler(&OAuthConfig{Provider: OAuthProviderLinkedIn})
+		scopes := h.resolvedScopes()
+		if len(scopes) == 0 {
+			t.Error("expected default scopes for linkedin provider")
+		}
+		found := false
+		for _, s := range scopes {
+			if s == "openid" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected openid in linkedin default scopes, got %v", scopes)
 		}
 	})
 
@@ -423,6 +469,64 @@ func TestHandleLogin_Bitbucket(t *testing.T) {
 		t.Errorf("Location %q does not point to Bitbucket authorize endpoint", loc)
 	}
 	if !strings.Contains(loc, "client_id=test-bitbucket-client") {
+		t.Errorf("Location %q missing client_id", loc)
+	}
+	if !strings.Contains(loc, "state=") {
+		t.Errorf("Location %q missing state parameter", loc)
+	}
+}
+
+func TestHandleLogin_Slack(t *testing.T) {
+	h := NewOAuthHandler(&OAuthConfig{
+		Provider:     OAuthProviderSlack,
+		ClientID:     "test-slack-client",
+		ClientSecret: "test-slack-secret",
+		RedirectURL:  "http://localhost:9090/auth/callback",
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/auth/login", nil)
+	w := httptest.NewRecorder()
+
+	h.HandleLogin(w, req)
+
+	if w.Code != http.StatusFound {
+		t.Errorf("HandleLogin(slack) status = %d, want %d", w.Code, http.StatusFound)
+	}
+
+	loc := w.Header().Get("Location")
+	if !strings.Contains(loc, "slack.com/openid/connect/authorize") {
+		t.Errorf("Location %q does not point to Slack authorize endpoint", loc)
+	}
+	if !strings.Contains(loc, "client_id=test-slack-client") {
+		t.Errorf("Location %q missing client_id", loc)
+	}
+	if !strings.Contains(loc, "state=") {
+		t.Errorf("Location %q missing state parameter", loc)
+	}
+}
+
+func TestHandleLogin_LinkedIn(t *testing.T) {
+	h := NewOAuthHandler(&OAuthConfig{
+		Provider:     OAuthProviderLinkedIn,
+		ClientID:     "test-linkedin-client",
+		ClientSecret: "test-linkedin-secret",
+		RedirectURL:  "http://localhost:9090/auth/callback",
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/auth/login", nil)
+	w := httptest.NewRecorder()
+
+	h.HandleLogin(w, req)
+
+	if w.Code != http.StatusFound {
+		t.Errorf("HandleLogin(linkedin) status = %d, want %d", w.Code, http.StatusFound)
+	}
+
+	loc := w.Header().Get("Location")
+	if !strings.Contains(loc, "linkedin.com/oauth/v2/authorization") {
+		t.Errorf("Location %q does not point to LinkedIn authorize endpoint", loc)
+	}
+	if !strings.Contains(loc, "client_id=test-linkedin-client") {
 		t.Errorf("Location %q missing client_id", loc)
 	}
 	if !strings.Contains(loc, "state=") {
