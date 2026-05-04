@@ -57,6 +57,7 @@ type IssueResult struct {
 // have been processed across restarts. It uses string IDs for all adapters;
 // integer-based adapters convert their IDs to strings.
 type ProcessedStore interface {
+	// MarkAdapterProcessed records that issueID for the given adapter has been handled, preventing re-dispatch on restart.
 	MarkAdapterProcessed(adapter, issueID, result string) error
 	UnmarkAdapterProcessed(adapter, issueID string) error
 	IsAdapterProcessed(adapter, issueID string) (bool, error)
