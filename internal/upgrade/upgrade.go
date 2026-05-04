@@ -441,6 +441,48 @@ func (u *Upgrader) isZip(path string) bool {
 	return buf[0] == 0x50 && buf[1] == 0x4b && buf[2] == 0x03 && buf[3] == 0x04
 }
 
+// installToBinaryPath atomically installs a new binary using a temp file and rename.
+// expectedSize is the expected byte count of the written content; pass 0 to skip the check.
+// write is called with an open file to receive the binary content.
+func (u *Upgrader) installToBinaryPath(expectedSize int64, write func(w io.Writer) error) error {
+	dir := filepath.Dir(u.binaryPath)
+	tmp, err := os.CreateTemp(dir, ".pilot-upgrade-*")
+	if err != nil {
+		return fmt.Errorf("failed to create temp file: %w", err)
+	}
+	tmpName := tmp.Name()
+	defer func() { _ = os.Remove(tmpName) }()
+
+	if err := tmp.Chmod(0755); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("failed to chmod temp file: %w", err)
+	}
+
+	writeErr := write(tmp)
+	closeErr := tmp.Close()
+	if writeErr != nil {
+		return fmt.Errorf("failed to write binary: %w", writeErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("failed to close temp file: %w", closeErr)
+	}
+
+	if expectedSize > 0 {
+		info, err := os.Stat(tmpName)
+		if err != nil {
+			return fmt.Errorf("failed to stat temp file: %w", err)
+		}
+		if info.Size() != expectedSize {
+			return fmt.Errorf("truncated write: expected %d bytes, got %d", expectedSize, info.Size())
+		}
+	}
+
+	if err := os.Rename(tmpName, u.binaryPath); err != nil {
+		return fmt.Errorf("failed to install binary: %w", err)
+	}
+	return nil
+}
+
 // installFromTarGz extracts and installs from a tarball
 func (u *Upgrader) installFromTarGz(tarPath string) error {
 	f, err := os.Open(tarPath)
@@ -472,23 +514,10 @@ func (u *Upgrader) installFromTarGz(tarPath string) error {
 		if header.Typeflag == tar.TypeReg &&
 			(baseName == "pilot" || baseName == "pilot.exe") {
 
-			// Extract to binary path
-			out, err := os.OpenFile(u.binaryPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
-			if err != nil {
-				return fmt.Errorf("failed to create binary: %w", err)
-			}
-
-			_, copyErr := io.Copy(out, tr)
-			closeErr := out.Close()
-
-			if copyErr != nil {
-				return fmt.Errorf("failed to extract binary: %w", copyErr)
-			}
-			if closeErr != nil {
-				return fmt.Errorf("failed to close binary: %w", closeErr)
-			}
-
-			return nil
+			return u.installToBinaryPath(header.Size, func(w io.Writer) error {
+				_, err := io.Copy(w, tr)
+				return err
+			})
 		}
 	}
 }
@@ -513,25 +542,12 @@ func (u *Upgrader) installFromZip(zipPath string) error {
 			if err != nil {
 				return fmt.Errorf("failed to open zip entry: %w", err)
 			}
+			defer func() { _ = rc.Close() }()
 
-			out, err := os.OpenFile(u.binaryPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
-			if err != nil {
-				_ = rc.Close()
-				return fmt.Errorf("failed to create binary: %w", err)
-			}
-
-			_, copyErr := io.Copy(out, rc)
-			closeErr := out.Close()
-			_ = rc.Close()
-
-			if copyErr != nil {
-				return fmt.Errorf("failed to extract binary: %w", copyErr)
-			}
-			if closeErr != nil {
-				return fmt.Errorf("failed to close binary: %w", closeErr)
-			}
-
-			return nil
+			return u.installToBinaryPath(int64(f.UncompressedSize64), func(w io.Writer) error {
+				_, err := io.Copy(w, rc)
+				return err
+			})
 		}
 	}
 
@@ -546,17 +562,15 @@ func (u *Upgrader) installDirectBinary(srcPath string) error {
 	}
 	defer func() { _ = src.Close() }()
 
-	dst, err := os.OpenFile(u.binaryPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
+	info, err := src.Stat()
 	if err != nil {
-		return fmt.Errorf("failed to create binary: %w", err)
-	}
-	defer func() { _ = dst.Close() }()
-
-	if _, err := io.Copy(dst, src); err != nil {
-		return fmt.Errorf("failed to copy binary: %w", err)
+		return fmt.Errorf("failed to stat source: %w", err)
 	}
 
-	return nil
+	return u.installToBinaryPath(info.Size(), func(w io.Writer) error {
+		_, err := io.Copy(w, src)
+		return err
+	})
 }
 
 // compareVersions compares two semantic versions

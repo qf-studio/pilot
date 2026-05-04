@@ -8,11 +8,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -1390,6 +1392,71 @@ func TestUpgrader_installBinary_dispatch(t *testing.T) {
 		}
 		if string(got) != "plain" {
 			t.Errorf("Installed content = %q, want %q", string(got), "plain")
+		}
+	})
+}
+
+func TestUpgrader_installToBinaryPath_truncated(t *testing.T) {
+	tempDir := t.TempDir()
+	binaryPath := filepath.Join(tempDir, "pilot")
+	original := []byte("original-binary")
+	if err := os.WriteFile(binaryPath, original, 0755); err != nil {
+		t.Fatalf("WriteFile error: %v", err)
+	}
+
+	u := &Upgrader{binaryPath: binaryPath}
+
+	t.Run("short write returns error and preserves original", func(t *testing.T) {
+		err := u.installToBinaryPath(100, func(w io.Writer) error {
+			_, err := w.Write([]byte("short"))
+			return err
+		})
+		if err == nil {
+			t.Fatal("installToBinaryPath() should return error for truncated write")
+		}
+		if !strings.Contains(err.Error(), "truncated write") {
+			t.Errorf("error should mention truncated write, got: %v", err)
+		}
+
+		// Original binary must be untouched
+		got, err2 := os.ReadFile(binaryPath)
+		if err2 != nil {
+			t.Fatalf("ReadFile error: %v", err2)
+		}
+		if string(got) != string(original) {
+			t.Errorf("binary was modified: got %q, want %q", string(got), string(original))
+		}
+
+		// Temp file must be cleaned up
+		entries, _ := filepath.Glob(filepath.Join(tempDir, ".pilot-upgrade-*"))
+		if len(entries) != 0 {
+			t.Errorf("temp file not cleaned up: %v", entries)
+		}
+	})
+
+	t.Run("exact size succeeds", func(t *testing.T) {
+		content := []byte("new-binary-content")
+		err := u.installToBinaryPath(int64(len(content)), func(w io.Writer) error {
+			_, err := w.Write(content)
+			return err
+		})
+		if err != nil {
+			t.Fatalf("installToBinaryPath() error = %v", err)
+		}
+		got, _ := os.ReadFile(binaryPath)
+		if string(got) != string(content) {
+			t.Errorf("installed content = %q, want %q", string(got), string(content))
+		}
+	})
+
+	t.Run("zero expectedSize skips check", func(t *testing.T) {
+		content := []byte("any-size-binary")
+		err := u.installToBinaryPath(0, func(w io.Writer) error {
+			_, err := w.Write(content)
+			return err
+		})
+		if err != nil {
+			t.Fatalf("installToBinaryPath() with zero size error = %v", err)
 		}
 	})
 }
