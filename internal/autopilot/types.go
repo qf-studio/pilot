@@ -136,6 +136,11 @@ type Config struct {
 	// Prevents infinite fix cascades where each fix creates a new issue that also fails CI.
 	// Default: 3. Set to 0 to disable the limit.
 	MaxCIFixIterations int `yaml:"max_ci_fix_iterations"`
+	// MaxCIFixPRSize is the net-addition threshold above which autopilot refuses to spawn
+	// a fix(ci) issue for the failing PR. A large failing PR is a cascade-contamination
+	// signal — the same threshold (#2594) that gates auto-merge also gates fix-issue spawn.
+	// Default: 200. Set to 0 to disable the guard.
+	MaxCIFixPRSize int `yaml:"max_ci_fix_pr_size"`
 	// FailureResetTimeout is how long after the last failure before the per-PR counter resets.
 	// Default: 30 minutes.
 	FailureResetTimeout time.Duration `yaml:"failure_reset_timeout"`
@@ -311,6 +316,7 @@ func DefaultConfig() *Config {
 		NotifyOnFailure:     true,
 		MaxFailures:         3,
 		MaxCIFixIterations:  3,
+		MaxCIFixPRSize:      200,
 		FailureResetTimeout: 30 * time.Minute,
 		MaxMergesPerHour:    10,
 		ApprovalTimeout:     1 * time.Hour,
