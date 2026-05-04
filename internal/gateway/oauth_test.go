@@ -96,6 +96,16 @@ func TestOAuthProviderEndpoints(t *testing.T) {
 			wantTokenURL: "https://www.linkedin.com/oauth/v2/accessToken",
 		},
 		{
+			provider:     OAuthProviderFacebook,
+			wantAuthURL:  "https://www.facebook.com/v19.0/dialog/oauth",
+			wantTokenURL: "https://graph.facebook.com/v19.0/oauth/access_token",
+		},
+		{
+			provider:     OAuthProviderTwitter,
+			wantAuthURL:  "https://twitter.com/i/oauth2/authorize",
+			wantTokenURL: "https://api.twitter.com/2/oauth2/token",
+		},
+		{
 			provider:       OAuthProviderGeneric,
 			customAuthURL:  "https://auth.example.com/oauth/authorize",
 			customTokenURL: "https://auth.example.com/oauth/token",
@@ -812,7 +822,7 @@ func TestExchangeCode(t *testing.T) {
 			})
 			h.HTTPClient = srv.Client()
 
-			tok, err := h.exchangeCode(t.Context(), "auth-code")
+			tok, err := h.exchangeCode(t.Context(), "auth-code", "")
 			if tt.wantErr {
 				if err == nil {
 					t.Error("expected error, got nil")
@@ -1092,5 +1102,170 @@ func TestRegisterOAuthRoutes_NonOAuthAuth(t *testing.T) {
 	// Default mux returns 404 for unregistered paths
 	if w.Code != http.StatusNotFound {
 		t.Errorf("/auth/login without OAuth: status = %d, want %d", w.Code, http.StatusNotFound)
+	}
+}
+
+func TestHandleLogin_Facebook(t *testing.T) {
+	h := NewOAuthHandler(&OAuthConfig{
+		Provider:     OAuthProviderFacebook,
+		ClientID:     "test-facebook-client",
+		ClientSecret: "test-facebook-secret",
+		RedirectURL:  "http://localhost:9090/auth/callback",
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/auth/login", nil)
+	w := httptest.NewRecorder()
+
+	h.HandleLogin(w, req)
+
+	if w.Code != http.StatusFound {
+		t.Errorf("HandleLogin(facebook) status = %d, want %d", w.Code, http.StatusFound)
+	}
+
+	loc := w.Header().Get("Location")
+	if !strings.Contains(loc, "facebook.com/v19.0/dialog/oauth") {
+		t.Errorf("Location %q does not point to Facebook authorize endpoint", loc)
+	}
+	if !strings.Contains(loc, "client_id=test-facebook-client") {
+		t.Errorf("Location %q missing client_id", loc)
+	}
+	if !strings.Contains(loc, "state=") {
+		t.Errorf("Location %q missing state parameter", loc)
+	}
+}
+
+func TestHandleLogin_Twitter(t *testing.T) {
+	h := NewOAuthHandler(&OAuthConfig{
+		Provider:     OAuthProviderTwitter,
+		ClientID:     "test-twitter-client",
+		ClientSecret: "test-twitter-secret",
+		RedirectURL:  "http://localhost:9090/auth/callback",
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/auth/login", nil)
+	w := httptest.NewRecorder()
+
+	h.HandleLogin(w, req)
+
+	if w.Code != http.StatusFound {
+		t.Errorf("HandleLogin(twitter) status = %d, want %d", w.Code, http.StatusFound)
+	}
+
+	loc := w.Header().Get("Location")
+	if !strings.Contains(loc, "twitter.com/i/oauth2/authorize") {
+		t.Errorf("Location %q does not point to Twitter authorize endpoint", loc)
+	}
+	if !strings.Contains(loc, "client_id=test-twitter-client") {
+		t.Errorf("Location %q missing client_id", loc)
+	}
+	if !strings.Contains(loc, "state=") {
+		t.Errorf("Location %q missing state parameter", loc)
+	}
+	// Twitter requires PKCE
+	if !strings.Contains(loc, "code_challenge=") {
+		t.Errorf("Location %q missing PKCE code_challenge for Twitter", loc)
+	}
+	if !strings.Contains(loc, "code_challenge_method=S256") {
+		t.Errorf("Location %q missing code_challenge_method=S256 for Twitter", loc)
+	}
+
+	// Verify state was stored with a code_verifier
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, s := range h.pending {
+		if s.codeVerifier == "" {
+			t.Error("Twitter pending state missing codeVerifier")
+		}
+	}
+}
+
+func TestOAuthProviderEndpoints_Facebook(t *testing.T) {
+	h := NewOAuthHandler(&OAuthConfig{
+		Provider:     OAuthProviderFacebook,
+		ClientID:     "test-client-id",
+		ClientSecret: "test-client-secret",
+		RedirectURL:  "http://localhost/callback",
+	})
+	if got := h.resolvedAuthURL(); got != "https://www.facebook.com/v19.0/dialog/oauth" {
+		t.Errorf("resolvedAuthURL() = %q, want Facebook authorize URL", got)
+	}
+	if got := h.resolvedTokenURL(); got != "https://graph.facebook.com/v19.0/oauth/access_token" {
+		t.Errorf("resolvedTokenURL() = %q, want Facebook token URL", got)
+	}
+}
+
+func TestOAuthProviderEndpoints_Twitter(t *testing.T) {
+	h := NewOAuthHandler(&OAuthConfig{
+		Provider:     OAuthProviderTwitter,
+		ClientID:     "test-client-id",
+		ClientSecret: "test-client-secret",
+		RedirectURL:  "http://localhost/callback",
+	})
+	if got := h.resolvedAuthURL(); got != "https://twitter.com/i/oauth2/authorize" {
+		t.Errorf("resolvedAuthURL() = %q, want Twitter authorize URL", got)
+	}
+	if got := h.resolvedTokenURL(); got != "https://api.twitter.com/2/oauth2/token" {
+		t.Errorf("resolvedTokenURL() = %q, want Twitter token URL", got)
+	}
+}
+
+func TestOAuthResolvedScopes_Facebook(t *testing.T) {
+	h := NewOAuthHandler(&OAuthConfig{Provider: OAuthProviderFacebook})
+	scopes := h.resolvedScopes()
+	if len(scopes) == 0 {
+		t.Error("expected default scopes for facebook provider")
+	}
+	found := false
+	for _, s := range scopes {
+		if s == "email" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected email in facebook default scopes, got %v", scopes)
+	}
+}
+
+func TestOAuthResolvedScopes_Twitter(t *testing.T) {
+	h := NewOAuthHandler(&OAuthConfig{Provider: OAuthProviderTwitter})
+	scopes := h.resolvedScopes()
+	if len(scopes) == 0 {
+		t.Error("expected default scopes for twitter provider")
+	}
+	found := false
+	for _, s := range scopes {
+		if s == "users.read" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected users.read in twitter default scopes, got %v", scopes)
+	}
+}
+
+func TestGeneratePKCE(t *testing.T) {
+	verifier, challenge, err := generatePKCE()
+	if err != nil {
+		t.Fatalf("generatePKCE() error: %v", err)
+	}
+	if verifier == "" {
+		t.Error("expected non-empty verifier")
+	}
+	if challenge == "" {
+		t.Error("expected non-empty challenge")
+	}
+	if verifier == challenge {
+		t.Error("verifier and challenge should differ")
+	}
+
+	// Two calls must produce distinct verifiers
+	v2, c2, err := generatePKCE()
+	if err != nil {
+		t.Fatalf("generatePKCE() second call error: %v", err)
+	}
+	if verifier == v2 || challenge == c2 {
+		t.Error("generatePKCE() produced duplicate values")
 	}
 }
