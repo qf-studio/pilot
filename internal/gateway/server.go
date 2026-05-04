@@ -189,11 +189,6 @@ func (s *Server) Start(ctx context.Context) error {
 	// WebSocket endpoint for dashboard log streaming
 	mux.HandleFunc("/ws/dashboard", s.handleDashboardWebSocket)
 
-	// OAuth2 endpoints (no auth required — they are the auth entry points)
-	if s.auth != nil {
-		s.auth.RegisterOAuthRoutes(mux)
-	}
-
 	// Public endpoints (no auth required)
 	mux.HandleFunc("/health", s.handleHealth)
 	mux.HandleFunc("/ready", s.handleReady)

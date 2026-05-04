@@ -551,28 +551,6 @@ func (c *Config) Validate() error {
 	if c.Auth != nil && c.Auth.Type == gateway.AuthTypeAPIToken && c.Auth.Token == "" {
 		return fmt.Errorf("API token is required when auth type is api-token")
 	}
-	if c.Auth != nil && c.Auth.Type == gateway.AuthTypeOAuth {
-		if c.Auth.OAuth == nil {
-			return fmt.Errorf("auth.oauth config is required when auth type is oauth")
-		}
-		if c.Auth.OAuth.ClientID == "" {
-			return fmt.Errorf("auth.oauth.client_id is required")
-		}
-		if c.Auth.OAuth.ClientSecret == "" {
-			return fmt.Errorf("auth.oauth.client_secret is required")
-		}
-		if c.Auth.OAuth.RedirectURL == "" {
-			return fmt.Errorf("auth.oauth.redirect_url is required")
-		}
-		if c.Auth.OAuth.Provider == gateway.OAuthProviderGeneric {
-			if c.Auth.OAuth.AuthURL == "" {
-				return fmt.Errorf("auth.oauth.auth_url is required for generic provider")
-			}
-			if c.Auth.OAuth.TokenURL == "" {
-				return fmt.Errorf("auth.oauth.token_url is required for generic provider")
-			}
-		}
-	}
 
 	// GH-914: Validate effort routing if enabled
 	if c.Executor != nil && c.Executor.EffortRouting != nil && c.Executor.EffortRouting.Enabled {
