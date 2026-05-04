@@ -25,6 +25,8 @@ const (
 	OAuthProviderMicrosoft OAuthProvider = "microsoft"
 	OAuthProviderDiscord   OAuthProvider = "discord"
 	OAuthProviderBitbucket OAuthProvider = "bitbucket"
+	OAuthProviderSlack     OAuthProvider = "slack"
+	OAuthProviderLinkedIn  OAuthProvider = "linkedin"
 	OAuthProviderGeneric   OAuthProvider = "generic"
 )
 
@@ -48,6 +50,8 @@ type OAuthConfig struct {
 // with the specific tenant ID (e.g. https://login.microsoftonline.com/{tenant}/oauth2/v2.0/...).
 // For Bitbucket, these point to bitbucket.org (Bitbucket Cloud); Bitbucket Server/Data Center
 // deployments should set AuthURL/TokenURL alongside Provider: "bitbucket".
+// For Slack, these use the OpenID Connect flow (Sign In with Slack) for user identity.
+// For LinkedIn, these use the OpenID Connect v2 flow (Sign In with LinkedIn).
 var providerEndpoints = map[OAuthProvider]struct{ AuthURL, TokenURL string }{
 	OAuthProviderGitHub: {
 		AuthURL:  "https://github.com/login/oauth/authorize",
@@ -73,6 +77,16 @@ var providerEndpoints = map[OAuthProvider]struct{ AuthURL, TokenURL string }{
 		AuthURL:  "https://bitbucket.org/site/oauth2/authorize",
 		TokenURL: "https://bitbucket.org/site/oauth2/access_token",
 	},
+	// Slack uses the OpenID Connect flow for user identity (Sign In with Slack).
+	OAuthProviderSlack: {
+		AuthURL:  "https://slack.com/openid/connect/authorize",
+		TokenURL: "https://slack.com/api/openid.connect.token",
+	},
+	// LinkedIn uses Sign In with LinkedIn via OpenID Connect (v2).
+	OAuthProviderLinkedIn: {
+		AuthURL:  "https://www.linkedin.com/oauth/v2/authorization",
+		TokenURL: "https://www.linkedin.com/oauth/v2/accessToken",
+	},
 }
 
 // providerDefaultScopes maps built-in providers to their default OAuth2 scopes.
@@ -83,6 +97,8 @@ var providerDefaultScopes = map[OAuthProvider][]string{
 	OAuthProviderMicrosoft: {"openid", "email", "profile", "User.Read"},
 	OAuthProviderDiscord:   {"identify", "email"},
 	OAuthProviderBitbucket: {"account", "email"},
+	OAuthProviderSlack:     {"openid", "email", "profile"},
+	OAuthProviderLinkedIn:  {"openid", "profile", "email"},
 }
 
 // oauthState holds temporary state for an in-flight OAuth2 authorization.
