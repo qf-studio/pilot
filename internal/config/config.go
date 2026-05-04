@@ -39,6 +39,7 @@ type Config struct {
 	Version        string                  `yaml:"version"`
 	Gateway        *gateway.Config         `yaml:"gateway"`
 	Auth           *gateway.AuthConfig     `yaml:"auth"`
+	OAuth          *gateway.OAuthConfig    `yaml:"oauth"`
 	Adapters       *AdaptersConfig         `yaml:"adapters"`
 	Orchestrator   *OrchestratorConfig     `yaml:"orchestrator"`
 	Executor       *executor.BackendConfig `yaml:"executor"`
