@@ -3,6 +3,8 @@ package gateway
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -27,6 +29,8 @@ const (
 	OAuthProviderBitbucket OAuthProvider = "bitbucket"
 	OAuthProviderSlack     OAuthProvider = "slack"
 	OAuthProviderLinkedIn  OAuthProvider = "linkedin"
+	OAuthProviderFacebook  OAuthProvider = "facebook"
+	OAuthProviderTwitter   OAuthProvider = "twitter"
 	OAuthProviderGeneric   OAuthProvider = "generic"
 )
 
@@ -86,6 +90,18 @@ var providerEndpoints = map[OAuthProvider]struct{ AuthURL, TokenURL string }{
 		AuthURL:  "https://www.linkedin.com/oauth/v2/authorization",
 		TokenURL: "https://www.linkedin.com/oauth/v2/accessToken",
 	},
+	// Facebook uses Graph API v19.0 for OAuth2 authorization.
+	// Apps targeting EU users may need to add the openid scope.
+	OAuthProviderFacebook: {
+		AuthURL:  "https://www.facebook.com/v19.0/dialog/oauth",
+		TokenURL: "https://graph.facebook.com/v19.0/oauth/access_token",
+	},
+	// Twitter uses OAuth 2.0 with PKCE for user authentication.
+	// The token endpoint issues short-lived access tokens and optionally refresh tokens.
+	OAuthProviderTwitter: {
+		AuthURL:  "https://twitter.com/i/oauth2/authorize",
+		TokenURL: "https://api.twitter.com/2/oauth2/token",
+	},
 }
 
 // providerDefaultScopes maps built-in providers to their default OAuth2 scopes.
@@ -98,12 +114,15 @@ var providerDefaultScopes = map[OAuthProvider][]string{
 	OAuthProviderBitbucket: {"account", "email"},
 	OAuthProviderSlack:     {"openid", "email", "profile"},
 	OAuthProviderLinkedIn:  {"openid", "email", "profile"},
+	OAuthProviderFacebook:  {"email", "public_profile"},
+	OAuthProviderTwitter:   {"users.read", "tweet.read"},
 }
 
 // oauthState holds temporary state for an in-flight OAuth2 authorization.
 type oauthState struct {
-	provider  OAuthProvider
-	expiresAt time.Time
+	provider     OAuthProvider
+	expiresAt    time.Time
+	codeVerifier string // non-empty when PKCE is used (e.g. Twitter)
 }
 
 // OAuthHandler manages the OAuth2 authorization code flow.
@@ -137,12 +156,10 @@ func (h *OAuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.mu.Lock()
-	h.pending[state] = &oauthState{
+	pending := &oauthState{
 		provider:  h.config.Provider,
 		expiresAt: time.Now().Add(10 * time.Minute),
 	}
-	h.mu.Unlock()
 
 	params := url.Values{
 		"client_id":     {h.config.ClientID},
@@ -156,7 +173,21 @@ func (h *OAuthHandler) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		params.Set("access_type", "offline")
 	case OAuthProviderDiscord:
 		params.Set("prompt", "consent")
+	case OAuthProviderTwitter:
+		// Twitter OAuth 2.0 requires PKCE (S256 method).
+		verifier, challenge, pkceErr := generatePKCE()
+		if pkceErr != nil {
+			http.Error(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
+		pending.codeVerifier = verifier
+		params.Set("code_challenge", challenge)
+		params.Set("code_challenge_method", "S256")
 	}
+
+	h.mu.Lock()
+	h.pending[state] = pending
+	h.mu.Unlock()
 
 	http.Redirect(w, r, h.resolvedAuthURL()+"?"+params.Encode(), http.StatusFound)
 }
@@ -190,7 +221,7 @@ func (h *OAuthHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, err := h.exchangeCode(r.Context(), code)
+	token, err := h.exchangeCode(r.Context(), code, pending.codeVerifier)
 	if err != nil {
 		http.Error(w, "Token exchange failed", http.StatusInternalServerError)
 		return
@@ -251,14 +282,17 @@ func (h *OAuthHandler) ValidateSessionToken(sessionToken string) (*Token, error)
 }
 
 // exchangeCode sends the authorization code to the provider's token endpoint
-// and returns the resulting Token.
-func (h *OAuthHandler) exchangeCode(ctx context.Context, code string) (*Token, error) {
+// and returns the resulting Token. codeVerifier is non-empty for PKCE flows (e.g. Twitter).
+func (h *OAuthHandler) exchangeCode(ctx context.Context, code, codeVerifier string) (*Token, error) {
 	params := url.Values{
 		"client_id":     {h.config.ClientID},
 		"client_secret": {h.config.ClientSecret},
 		"code":          {code},
 		"redirect_uri":  {h.config.RedirectURL},
 		"grant_type":    {"authorization_code"},
+	}
+	if codeVerifier != "" {
+		params.Set("code_verifier", codeVerifier)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, h.resolvedTokenURL(),
@@ -375,4 +409,17 @@ func generateRandomHex(n int) (string, error) {
 		return "", fmt.Errorf("generating random token: %w", err)
 	}
 	return hex.EncodeToString(b), nil
+}
+
+// generatePKCE generates a PKCE code_verifier and its S256 code_challenge.
+// Used for providers that require PKCE (e.g. Twitter OAuth 2.0).
+func generatePKCE() (verifier, challenge string, err error) {
+	b := make([]byte, 32)
+	if _, err = rand.Read(b); err != nil {
+		return "", "", fmt.Errorf("generating PKCE verifier: %w", err)
+	}
+	verifier = base64.RawURLEncoding.EncodeToString(b)
+	h := sha256.Sum256([]byte(verifier))
+	challenge = base64.RawURLEncoding.EncodeToString(h[:])
+	return verifier, challenge, nil
 }
