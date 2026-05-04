@@ -166,25 +166,6 @@ func (h *OAuthHandler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// RevokeSession invalidates a previously-issued session token.
-// If the token does not exist, RevokeSession is a no-op.
-func (h *OAuthHandler) RevokeSession(sessionToken string) {
-	h.mu.Lock()
-	delete(h.sessions, sessionToken)
-	h.mu.Unlock()
-}
-
-// HandleLogout revokes the session token supplied in the Authorization header
-// and returns 204 No Content. If the token is missing or unknown the handler
-// still returns 204 to avoid leaking session existence information.
-func (h *OAuthHandler) HandleLogout(w http.ResponseWriter, r *http.Request) {
-	token := extractBearerToken(r)
-	if token != "" {
-		h.RevokeSession(token)
-	}
-	w.WriteHeader(http.StatusNoContent)
-}
-
 // ValidateSessionToken checks if the session token is valid and unexpired.
 // Expired tokens are removed from the store on first access.
 func (h *OAuthHandler) ValidateSessionToken(sessionToken string) (*Token, error) {
