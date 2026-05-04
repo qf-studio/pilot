@@ -39,6 +39,11 @@ type Cleaner struct {
 	// re-dispatched after a human resolves the blocking condition (GH-2402).
 	OnBlockedCleaned func(issueNumber int)
 
+	// OnStartupRecovered is called for each issue that has its pilot-in-progress
+	// label stripped during daemon startup recovery (GH-2589). Used to clear the
+	// issue from the poller's persistent processed store so it can be re-dispatched.
+	OnStartupRecovered func(issueNumber int)
+
 	mu      sync.Mutex
 	running bool
 	stopCh  chan struct{}
@@ -78,6 +83,16 @@ func WithOnInProgressCleaned(fn func(issueNumber int)) CleanerOption {
 func WithOnBlockedCleaned(fn func(issueNumber int)) CleanerOption {
 	return func(c *Cleaner) {
 		c.OnBlockedCleaned = fn
+	}
+}
+
+// WithOnStartupRecovered sets the callback invoked for each issue that has its
+// pilot-in-progress label stripped by StartupRecover (GH-2589). The callback
+// receives the issue number and should clear it from the poller's persistent
+// processed store so the issue can be re-dispatched on the next poll cycle.
+func WithOnStartupRecovered(fn func(issueNumber int)) CleanerOption {
+	return func(c *Cleaner) {
+		c.OnStartupRecovered = fn
 	}
 }
 
@@ -413,4 +428,81 @@ func (c *Cleaner) cleanupClosedInProgressLabels(ctx context.Context, activeTaskI
 // without starting the periodic loop. Useful for one-off cleanup operations.
 func (c *Cleaner) CleanupStaleLabels(ctx context.Context) error {
 	return c.Cleanup(ctx)
+}
+
+// StartupRecover scans for open issues carrying the pilot-in-progress label
+// that have no live execution row in the store. These issues are stuck from a
+// previous daemon run (e.g. daemon was killed while a task was in flight) and
+// must be unlabeled so they return to the queue on the next poll cycle.
+//
+// N=30min staleness floor: an execution row created less than 30 minutes ago is
+// treated as live even if the daemon just restarted — the previous process may
+// have exited seconds ago and the row status may not yet reflect completion.
+// Rows older than 30 minutes with status=running are considered orphaned and
+// the corresponding label is stripped.
+//
+// Returns the number of issues recovered and any error encountered.
+// GH-2589.
+func (c *Cleaner) StartupRecover(ctx context.Context) (int, error) {
+	const staleThreshold = 30 * time.Minute
+
+	activeExecutions, err := c.store.GetActiveExecutions()
+	if err != nil {
+		return 0, fmt.Errorf("startup recover: get active executions: %w", err)
+	}
+
+	// Index running executions that were created recently enough to be live.
+	liveByTaskID := make(map[string]bool)
+	for _, e := range activeExecutions {
+		if time.Since(e.CreatedAt) < staleThreshold {
+			liveByTaskID[e.TaskID] = true
+		}
+	}
+
+	issues, err := c.client.ListIssues(ctx, c.owner, c.repo, &ListIssuesOptions{
+		Labels: []string{LabelInProgress},
+		State:  StateOpen,
+	})
+	if err != nil {
+		return 0, fmt.Errorf("startup recover: list issues: %w", err)
+	}
+
+	cleaned := 0
+	for _, issue := range issues {
+		taskID := fmt.Sprintf("GH-%d", issue.Number)
+		if liveByTaskID[taskID] {
+			c.logger.Debug("startup recover: live execution found, skipping",
+				slog.String("task_id", taskID),
+			)
+			continue
+		}
+
+		c.logger.Info("startup recover: removing stuck pilot-in-progress label",
+			slog.Int("issue", issue.Number),
+			slog.String("title", issue.Title),
+		)
+
+		if err := c.client.RemoveLabel(ctx, c.owner, c.repo, issue.Number, LabelInProgress); err != nil {
+			c.logger.Warn("startup recover: failed to remove label",
+				slog.Int("issue", issue.Number),
+				slog.Any("error", err),
+			)
+			continue
+		}
+
+		if c.OnStartupRecovered != nil {
+			c.OnStartupRecovered(issue.Number)
+		}
+		if c.OnInProgressCleaned != nil {
+			c.OnInProgressCleaned(issue.Number)
+		}
+
+		cleaned++
+	}
+
+	c.logger.Info("daemon-startup recovery: cleaned up stuck pilot-in-progress labels",
+		slog.Int("count", cleaned),
+	)
+
+	return cleaned, nil
 }

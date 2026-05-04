@@ -2215,6 +2215,13 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 								p.ClearProcessed(issueNumber)
 							}
 						}))
+						// GH-2589: On startup recovery, clear the persistent processed store
+						// so the issue is re-dispatched on the next poll cycle.
+						cleanerOpts = append(cleanerOpts, github.WithOnStartupRecovered(func(issueNumber int) {
+							for _, p := range ghPollers {
+								p.ClearProcessed(issueNumber)
+							}
+						}))
 					}
 					// GH-2354: when pilot-in-progress is stripped from a closed
 					// issue, remove its task from the dashboard monitor so it
@@ -2235,6 +2242,15 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 								cfg.Adapters.GitHub.StaleLabelCleanup.Interval,
 								cfg.Adapters.GitHub.StaleLabelCleanup.Threshold,
 								cfg.Adapters.GitHub.StaleLabelCleanup.FailedThreshold)
+						}
+						// GH-2589: On daemon startup, strip pilot-in-progress labels
+						// that have no live execution row. Daemon restart leaves these
+						// stuck on issues whose executor was killed mid-flight.
+						if n, err := cleaner.StartupRecover(ctx); err != nil {
+							logging.WithComponent("github-cleanup").Warn("startup recovery failed",
+								slog.Any("error", err))
+						} else if !dashboardMode && n > 0 {
+							fmt.Printf("🔄 Startup recovery: cleared %d stuck pilot-in-progress label(s)\n", n)
 						}
 						go cleaner.Start(ctx)
 					}
