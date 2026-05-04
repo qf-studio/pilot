@@ -409,6 +409,55 @@ func (u *Upgrader) installBinary(downloadPath string) error {
 	return nil
 }
 
+// installToBinaryPath writes a new binary beside the current executable and
+// swaps it into place once the write completes. This avoids truncating a
+// running executable on Unix-like systems, which returns ETXTBSY.
+func (u *Upgrader) installToBinaryPath(write func(io.Writer) error) error {
+	dir := filepath.Dir(u.binaryPath)
+	tempFile, err := os.CreateTemp(dir, ".pilot-install-*")
+	if err != nil {
+		return fmt.Errorf("failed to create temp binary: %w", err)
+	}
+
+	tempPath := tempFile.Name()
+	closed := false
+	cleanup := true
+	defer func() {
+		if !closed {
+			_ = tempFile.Close()
+		}
+		if cleanup {
+			_ = os.Remove(tempPath)
+		}
+	}()
+
+	if err := tempFile.Chmod(0755); err != nil {
+		return fmt.Errorf("failed to set temp binary permissions: %w", err)
+	}
+
+	if err := write(tempFile); err != nil {
+		return err
+	}
+
+	if err := tempFile.Close(); err != nil {
+		return fmt.Errorf("failed to close binary: %w", err)
+	}
+	closed = true
+
+	if runtime.GOOS == "windows" {
+		if err := os.Remove(u.binaryPath); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("failed to remove existing binary: %w", err)
+		}
+	}
+
+	if err := os.Rename(tempPath, u.binaryPath); err != nil {
+		return fmt.Errorf("failed to replace binary: %w", err)
+	}
+
+	cleanup = false
+	return nil
+}
+
 // isTarGz checks if a file is a gzipped tarball
 func (u *Upgrader) isTarGz(path string) bool {
 	f, err := os.Open(path)
@@ -471,24 +520,12 @@ func (u *Upgrader) installFromTarGz(tarPath string) error {
 		baseName := filepath.Base(header.Name)
 		if header.Typeflag == tar.TypeReg &&
 			(baseName == "pilot" || baseName == "pilot.exe") {
-
-			// Extract to binary path
-			out, err := os.OpenFile(u.binaryPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
-			if err != nil {
-				return fmt.Errorf("failed to create binary: %w", err)
-			}
-
-			_, copyErr := io.Copy(out, tr)
-			closeErr := out.Close()
-
-			if copyErr != nil {
-				return fmt.Errorf("failed to extract binary: %w", copyErr)
-			}
-			if closeErr != nil {
-				return fmt.Errorf("failed to close binary: %w", closeErr)
-			}
-
-			return nil
+			return u.installToBinaryPath(func(out io.Writer) error {
+				if _, err := io.Copy(out, tr); err != nil {
+					return fmt.Errorf("failed to extract binary: %w", err)
+				}
+				return nil
+			})
 		}
 	}
 }
@@ -513,25 +550,14 @@ func (u *Upgrader) installFromZip(zipPath string) error {
 			if err != nil {
 				return fmt.Errorf("failed to open zip entry: %w", err)
 			}
+			defer func() { _ = rc.Close() }()
 
-			out, err := os.OpenFile(u.binaryPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
-			if err != nil {
-				_ = rc.Close()
-				return fmt.Errorf("failed to create binary: %w", err)
-			}
-
-			_, copyErr := io.Copy(out, rc)
-			closeErr := out.Close()
-			_ = rc.Close()
-
-			if copyErr != nil {
-				return fmt.Errorf("failed to extract binary: %w", copyErr)
-			}
-			if closeErr != nil {
-				return fmt.Errorf("failed to close binary: %w", closeErr)
-			}
-
-			return nil
+			return u.installToBinaryPath(func(out io.Writer) error {
+				if _, err := io.Copy(out, rc); err != nil {
+					return fmt.Errorf("failed to extract binary: %w", err)
+				}
+				return nil
+			})
 		}
 	}
 
@@ -546,17 +572,12 @@ func (u *Upgrader) installDirectBinary(srcPath string) error {
 	}
 	defer func() { _ = src.Close() }()
 
-	dst, err := os.OpenFile(u.binaryPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
-	if err != nil {
-		return fmt.Errorf("failed to create binary: %w", err)
-	}
-	defer func() { _ = dst.Close() }()
-
-	if _, err := io.Copy(dst, src); err != nil {
-		return fmt.Errorf("failed to copy binary: %w", err)
-	}
-
-	return nil
+	return u.installToBinaryPath(func(dst io.Writer) error {
+		if _, err := io.Copy(dst, src); err != nil {
+			return fmt.Errorf("failed to copy binary: %w", err)
+		}
+		return nil
+	})
 }
 
 // compareVersions compares two semantic versions
