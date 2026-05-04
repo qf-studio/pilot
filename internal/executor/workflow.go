@@ -159,10 +159,11 @@ After verification passes, before committing:
 ` + "```" + `
 type(scope): description
 
-Examples:
-- feat(auth): add OAuth provider integration
-- fix(api): handle nil response in webhook handler
-- refactor(executor): extract signal parsing to separate file
+Examples (templates only — DO NOT copy verbatim, write a description specific
+to the actual change you made):
+- feat(SCOPE): IMPERATIVE_SUMMARY_OF_THE_CHANGE
+- fix(SCOPE): IMPERATIVE_SUMMARY_OF_THE_BUG_FIX
+- refactor(SCOPE): IMPERATIVE_SUMMARY_OF_THE_REFACTOR
 ` + "```" + `
 
 **Exit signal** (REQUIRED):
