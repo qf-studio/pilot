@@ -2,6 +2,7 @@ package autopilot
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"regexp"
@@ -934,6 +935,22 @@ func (c *Controller) handleAwaitApproval(ctx context.Context, prState *PRState) 
 		if err.Error() == "merge rejected: approval denied" {
 			c.log.Info("merge approval denied", "pr", prState.PRNumber)
 			prState.Stage = StageFailed
+			return nil
+		}
+		// Misconfig: env requires approval but approval.pre_merge is disabled.
+		// Fail closed — do NOT retry. Post a single explanatory comment and stop.
+		if errors.Is(err, ErrApprovalNotConfigured) {
+			c.log.Error("approval misconfig detected: env requires approval but pre_merge stage is disabled",
+				"pr", prState.PRNumber,
+				"env", c.config.EnvironmentName(),
+			)
+			prState.Stage = StageFailed
+			prState.Error = fmt.Sprintf(
+				"approval-misconfig: env %q has require_approval=true but approval.pre_merge.enabled=false → deadlock until config fixed",
+				c.config.EnvironmentName(),
+			)
+			c.autoMerger.postMisconfigComment(ctx, prState)
+			c.metrics.RecordPRFailed()
 			return nil
 		}
 		return err

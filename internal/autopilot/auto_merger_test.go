@@ -3,6 +3,7 @@ package autopilot
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -1114,6 +1115,133 @@ func TestAutoMerger_MergePR_DevWithCIVerification(t *testing.T) {
 	}
 	if !mergeWasCalled {
 		t.Error("merge should have been called for dev environment")
+	}
+}
+
+func TestRequestApproval_MisconfigReturnsTypedError(t *testing.T) {
+	// Scenario: env has require_approval=true but approval.pre_merge.enabled=false.
+	// requestApproval must return ErrApprovalNotConfigured (wrapped), not a plain string.
+	ghClient := github.NewClient(testutil.FakeGitHubToken)
+
+	approvalCfg := approval.DefaultConfig()
+	approvalCfg.Enabled = true
+	approvalCfg.PreMerge.Enabled = false
+	approvalMgr := approval.NewManager(approvalCfg)
+
+	cfg := DefaultConfig()
+	// Use new-style env with require_approval=true.
+	cfg.Environments = map[string]*EnvironmentConfig{
+		"stage": {RequireApproval: true},
+	}
+	if err := cfg.SetActiveEnvironment("stage"); err != nil {
+		t.Fatalf("SetActiveEnvironment: %v", err)
+	}
+
+	merger := NewAutoMerger(ghClient, approvalMgr, nil, "owner", "repo", cfg)
+	prState := &PRState{PRNumber: 42, PRURL: "https://github.com/owner/repo/pull/42"}
+
+	_, err := merger.requestApproval(context.Background(), prState)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(err, ErrApprovalNotConfigured) {
+		t.Errorf("expected errors.Is(err, ErrApprovalNotConfigured), got %v", err)
+	}
+}
+
+func TestAutoMerger_MergePR_MisconfigBubblesTypedError(t *testing.T) {
+	// MergePR must wrap ErrApprovalNotConfigured so callers can detect it.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/owner/repo/pulls/42/files":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("[]"))
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+
+	approvalCfg := approval.DefaultConfig()
+	approvalCfg.Enabled = true
+	approvalCfg.PreMerge.Enabled = false
+	approvalMgr := approval.NewManager(approvalCfg)
+
+	cfg := DefaultConfig()
+	cfg.Environments = map[string]*EnvironmentConfig{
+		"stage": {RequireApproval: true},
+	}
+	if err := cfg.SetActiveEnvironment("stage"); err != nil {
+		t.Fatalf("SetActiveEnvironment: %v", err)
+	}
+
+	merger := NewAutoMerger(ghClient, approvalMgr, nil, "owner", "repo", cfg)
+	prState := &PRState{PRNumber: 42, PRURL: "https://github.com/owner/repo/pull/42"}
+
+	err := merger.MergePR(context.Background(), prState)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(err, ErrApprovalNotConfigured) {
+		t.Errorf("expected errors.Is(err, ErrApprovalNotConfigured) through wrapping, got: %v", err)
+	}
+}
+
+func TestAutoMerger_PostMisconfigComment_Idempotent(t *testing.T) {
+	// First call: no existing comments → comment is posted.
+	// Second call: marker present in comment list → posting is skipped.
+	postCount := 0
+	listCallCount := 0
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+		switch {
+		case r.Method == http.MethodGet && path == "/repos/owner/repo/issues/42/comments":
+			listCallCount++
+			if postCount == 0 {
+				// No comments yet.
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte("[]"))
+			} else {
+				// Return the previously posted comment with the marker.
+				resp := []map[string]interface{}{
+					{"id": 1, "body": misconfigCommentMarker + "\nsome text"},
+				}
+				w.WriteHeader(http.StatusOK)
+				_ = json.NewEncoder(w).Encode(resp)
+			}
+		case r.Method == http.MethodPost && path == "/repos/owner/repo/issues/42/comments":
+			postCount++
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"id":1,"body":"posted"}`))
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	merger := NewAutoMerger(ghClient, nil, nil, "owner", "repo", cfg)
+	prState := &PRState{PRNumber: 42}
+
+	// First call — should post the comment.
+	merger.postMisconfigComment(context.Background(), prState)
+	if postCount != 1 {
+		t.Errorf("first call: postCount = %d, want 1", postCount)
+	}
+
+	// Second call — marker in list, should NOT post again.
+	merger.postMisconfigComment(context.Background(), prState)
+	if postCount != 1 {
+		t.Errorf("second call: postCount = %d, want 1 (idempotent)", postCount)
+	}
+	if listCallCount != 2 {
+		t.Errorf("listCallCount = %d, want 2", listCallCount)
 	}
 }
 

@@ -529,6 +529,27 @@ func checkConfig(cfg *config.Config) []ConfigCheck {
 		}
 	}
 
+	// Detect approval/env mismatch: an env has require_approval=true but the
+	// approval.pre_merge stage is disabled → every PR in that env deadlocks.
+	if cfg.Orchestrator != nil && cfg.Orchestrator.Autopilot != nil &&
+		cfg.Orchestrator.Autopilot.Environments != nil {
+		preMergeEnabled := cfg.Approval != nil &&
+			cfg.Approval.Enabled &&
+			cfg.Approval.PreMerge != nil &&
+			cfg.Approval.PreMerge.Enabled
+		for envName, envCfg := range cfg.Orchestrator.Autopilot.Environments {
+			if envCfg != nil && envCfg.RequireApproval && !preMergeEnabled {
+				checks = append(checks, ConfigCheck{
+					Name:    "approval-misconfig",
+					Status:  StatusError,
+					Message: fmt.Sprintf("env %q has require_approval=true but approval.pre_merge.enabled=false → all PRs will deadlock until enabled or env is changed", envName),
+					Fix:     "Set approval.enabled: true + approval.pre_merge.enabled: true + add an approver, or set require_approval: false for the environment",
+				})
+				break // one diagnostic per run is enough
+			}
+		}
+	}
+
 	// Check daily brief schedule
 	if cfg.Orchestrator != nil && cfg.Orchestrator.DailyBrief != nil {
 		if cfg.Orchestrator.DailyBrief.Enabled {
