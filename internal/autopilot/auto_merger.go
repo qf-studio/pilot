@@ -51,8 +51,19 @@ func (m *AutoMerger) MergePR(ctx context.Context, prState *PRState) error {
 		"sha", ShortSHA(prState.HeadSHA),
 	)
 
-	// Check if approval required (prod only)
-	if m.requiresApproval(env) {
+	// GH-2584/GH-2585: structural escalation gates. Born from OAuth cascade #2.
+	// Force human approval for PRs that drift from their issue's scope OR
+	// exceed the size floor, regardless of env config.
+	requireApproval := m.requiresApproval(env)
+	if !requireApproval {
+		if reason := m.evaluateEscalationGates(ctx, prState); reason != "" {
+			m.log.Warn("escalation gate fired — forcing human approval despite env config",
+				"pr", prState.PRNumber, "reason", reason)
+			requireApproval = true
+		}
+	}
+
+	if requireApproval {
 		approved, err := m.requestApproval(ctx, prState)
 		if err != nil {
 			return fmt.Errorf("approval request failed: %w", err)
@@ -115,6 +126,35 @@ func (m *AutoMerger) MergePR(ctx context.Context, prState *PRState) error {
 	}
 
 	return nil
+}
+
+// evaluateEscalationGates runs the GH-2584/GH-2585 structural rails. Returns
+// the first reason that fires, or "" if none. A failure to fetch the issue or
+// PR files is treated as "abstain" (returns "") — these gates must never break
+// a working merge path on transient API errors. We log+continue.
+func (m *AutoMerger) evaluateEscalationGates(ctx context.Context, prState *PRState) string {
+	// Scope-drift gate (#2584) — only meaningful when an issue is linked.
+	if prState.IssueNumber > 0 && prState.PRTitle != "" {
+		issue, err := m.ghClient.GetIssue(ctx, m.owner, m.repo, prState.IssueNumber)
+		if err != nil {
+			m.log.Warn("scope-drift gate: GetIssue failed, abstaining",
+				"pr", prState.PRNumber, "issue", prState.IssueNumber, "error", err)
+		} else if reason := ScopeDriftReason(prState.PRTitle, issue.Title); reason != "" {
+			return reason
+		}
+	}
+
+	// Size-floor gate (#2585) — independent of issue link.
+	files, err := m.ghClient.ListPullRequestFiles(ctx, m.owner, m.repo, prState.PRNumber)
+	if err != nil {
+		m.log.Warn("size-floor gate: ListPullRequestFiles failed, abstaining",
+			"pr", prState.PRNumber, "error", err)
+		return ""
+	}
+	if reason := SizeFloorReason(files); reason != "" {
+		return reason
+	}
+	return ""
 }
 
 // requiresApproval checks if the active environment requires human approval before merge.

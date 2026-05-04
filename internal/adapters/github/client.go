@@ -731,8 +731,10 @@ func (c *Client) ListPullRequestReviews(ctx context.Context, owner, repo string,
 
 // PRFile represents a file changed in a pull request.
 type PRFile struct {
-	Filename string `json:"filename"`
-	Status   string `json:"status"` // "added", "removed", "modified", "renamed"
+	Filename  string `json:"filename"`
+	Status    string `json:"status"` // "added", "removed", "modified", "renamed"
+	Additions int    `json:"additions"`
+	Deletions int    `json:"deletions"`
 }
 
 // ListPullRequestFiles returns the list of files changed in a pull request.
