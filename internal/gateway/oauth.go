@@ -31,6 +31,8 @@ const (
 	OAuthProviderLinkedIn  OAuthProvider = "linkedin"
 	OAuthProviderFacebook  OAuthProvider = "facebook"
 	OAuthProviderTwitter   OAuthProvider = "twitter"
+	OAuthProviderApple     OAuthProvider = "apple"
+	OAuthProviderSpotify   OAuthProvider = "spotify"
 	OAuthProviderGeneric   OAuthProvider = "generic"
 )
 
@@ -102,6 +104,21 @@ var providerEndpoints = map[OAuthProvider]struct{ AuthURL, TokenURL string }{
 		AuthURL:  "https://twitter.com/i/oauth2/authorize",
 		TokenURL: "https://api.twitter.com/2/oauth2/token",
 	},
+	// Apple uses Sign in with Apple (SIWA) with OpenID Connect.
+	// Client secrets must be JWT-signed with an Apple private key; this provider handles
+	// the standard authorization redirect and token exchange steps only.
+	// Web flows that need the user's name/email in the first response should add
+	// response_mode=form_post via a custom AuthURL.
+	OAuthProviderApple: {
+		AuthURL:  "https://appleid.apple.com/auth/authorize",
+		TokenURL: "https://appleid.apple.com/auth/token",
+	},
+	// Spotify uses OAuth 2.0 with standard authorization code flow.
+	// Refresh tokens are long-lived; access tokens expire after 1 hour.
+	OAuthProviderSpotify: {
+		AuthURL:  "https://accounts.spotify.com/authorize",
+		TokenURL: "https://accounts.spotify.com/api/token",
+	},
 }
 
 // providerDefaultScopes maps built-in providers to their default OAuth2 scopes.
@@ -116,6 +133,8 @@ var providerDefaultScopes = map[OAuthProvider][]string{
 	OAuthProviderLinkedIn:  {"openid", "email", "profile"},
 	OAuthProviderFacebook:  {"email", "public_profile"},
 	OAuthProviderTwitter:   {"users.read", "tweet.read"},
+	OAuthProviderApple:     {"openid", "name", "email"},
+	OAuthProviderSpotify:   {"user-read-email", "user-read-private"},
 }
 
 // oauthState holds temporary state for an in-flight OAuth2 authorization.

@@ -106,6 +106,16 @@ func TestOAuthProviderEndpoints(t *testing.T) {
 			wantTokenURL: "https://api.twitter.com/2/oauth2/token",
 		},
 		{
+			provider:     OAuthProviderApple,
+			wantAuthURL:  "https://appleid.apple.com/auth/authorize",
+			wantTokenURL: "https://appleid.apple.com/auth/token",
+		},
+		{
+			provider:     OAuthProviderSpotify,
+			wantAuthURL:  "https://accounts.spotify.com/authorize",
+			wantTokenURL: "https://accounts.spotify.com/api/token",
+		},
+		{
 			provider:       OAuthProviderGeneric,
 			customAuthURL:  "https://auth.example.com/oauth/authorize",
 			customTokenURL: "https://auth.example.com/oauth/token",
@@ -1242,6 +1252,166 @@ func TestOAuthResolvedScopes_Twitter(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("expected users.read in twitter default scopes, got %v", scopes)
+	}
+}
+
+func TestHandleLogin_Apple(t *testing.T) {
+	h := NewOAuthHandler(&OAuthConfig{
+		Provider:     OAuthProviderApple,
+		ClientID:     "test-apple-client",
+		ClientSecret: "test-apple-secret",
+		RedirectURL:  "http://localhost:9090/auth/callback",
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/auth/login", nil)
+	w := httptest.NewRecorder()
+
+	h.HandleLogin(w, req)
+
+	if w.Code != http.StatusFound {
+		t.Errorf("HandleLogin(apple) status = %d, want %d", w.Code, http.StatusFound)
+	}
+
+	loc := w.Header().Get("Location")
+	if !strings.Contains(loc, "appleid.apple.com/auth/authorize") {
+		t.Errorf("Location %q does not point to Apple authorize endpoint", loc)
+	}
+	if !strings.Contains(loc, "client_id=test-apple-client") {
+		t.Errorf("Location %q missing client_id", loc)
+	}
+	if !strings.Contains(loc, "state=") {
+		t.Errorf("Location %q missing state parameter", loc)
+	}
+}
+
+func TestHandleLogin_Spotify(t *testing.T) {
+	h := NewOAuthHandler(&OAuthConfig{
+		Provider:     OAuthProviderSpotify,
+		ClientID:     "test-spotify-client",
+		ClientSecret: "test-spotify-secret",
+		RedirectURL:  "http://localhost:9090/auth/callback",
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/auth/login", nil)
+	w := httptest.NewRecorder()
+
+	h.HandleLogin(w, req)
+
+	if w.Code != http.StatusFound {
+		t.Errorf("HandleLogin(spotify) status = %d, want %d", w.Code, http.StatusFound)
+	}
+
+	loc := w.Header().Get("Location")
+	if !strings.Contains(loc, "accounts.spotify.com/authorize") {
+		t.Errorf("Location %q does not point to Spotify authorize endpoint", loc)
+	}
+	if !strings.Contains(loc, "client_id=test-spotify-client") {
+		t.Errorf("Location %q missing client_id", loc)
+	}
+	if !strings.Contains(loc, "state=") {
+		t.Errorf("Location %q missing state parameter", loc)
+	}
+}
+
+func TestOAuthProviderEndpoints_Apple(t *testing.T) {
+	h := NewOAuthHandler(&OAuthConfig{
+		Provider:     OAuthProviderApple,
+		ClientID:     "test-client-id",
+		ClientSecret: "test-client-secret",
+		RedirectURL:  "http://localhost/callback",
+	})
+	if got := h.resolvedAuthURL(); got != "https://appleid.apple.com/auth/authorize" {
+		t.Errorf("resolvedAuthURL() = %q, want Apple authorize URL", got)
+	}
+	if got := h.resolvedTokenURL(); got != "https://appleid.apple.com/auth/token" {
+		t.Errorf("resolvedTokenURL() = %q, want Apple token URL", got)
+	}
+}
+
+func TestOAuthProviderEndpoints_Spotify(t *testing.T) {
+	h := NewOAuthHandler(&OAuthConfig{
+		Provider:     OAuthProviderSpotify,
+		ClientID:     "test-client-id",
+		ClientSecret: "test-client-secret",
+		RedirectURL:  "http://localhost/callback",
+	})
+	if got := h.resolvedAuthURL(); got != "https://accounts.spotify.com/authorize" {
+		t.Errorf("resolvedAuthURL() = %q, want Spotify authorize URL", got)
+	}
+	if got := h.resolvedTokenURL(); got != "https://accounts.spotify.com/api/token" {
+		t.Errorf("resolvedTokenURL() = %q, want Spotify token URL", got)
+	}
+}
+
+func TestOAuthResolvedScopes_Apple(t *testing.T) {
+	h := NewOAuthHandler(&OAuthConfig{Provider: OAuthProviderApple})
+	scopes := h.resolvedScopes()
+	if len(scopes) == 0 {
+		t.Error("expected default scopes for apple provider")
+	}
+	found := false
+	for _, s := range scopes {
+		if s == "email" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected email in apple default scopes, got %v", scopes)
+	}
+}
+
+func TestOAuthResolvedScopes_Spotify(t *testing.T) {
+	h := NewOAuthHandler(&OAuthConfig{Provider: OAuthProviderSpotify})
+	scopes := h.resolvedScopes()
+	if len(scopes) == 0 {
+		t.Error("expected default scopes for spotify provider")
+	}
+	found := false
+	for _, s := range scopes {
+		if s == "user-read-email" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected user-read-email in spotify default scopes, got %v", scopes)
+	}
+}
+
+func TestOAuthProviderEndpoints_TableAppleSpotify(t *testing.T) {
+	tests := []struct {
+		provider     OAuthProvider
+		wantAuthURL  string
+		wantTokenURL string
+	}{
+		{
+			provider:     OAuthProviderApple,
+			wantAuthURL:  "https://appleid.apple.com/auth/authorize",
+			wantTokenURL: "https://appleid.apple.com/auth/token",
+		},
+		{
+			provider:     OAuthProviderSpotify,
+			wantAuthURL:  "https://accounts.spotify.com/authorize",
+			wantTokenURL: "https://accounts.spotify.com/api/token",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(string(tt.provider), func(t *testing.T) {
+			h := NewOAuthHandler(&OAuthConfig{
+				Provider:     tt.provider,
+				ClientID:     "test-client-id",
+				ClientSecret: "test-client-secret",
+				RedirectURL:  "http://localhost/callback",
+			})
+			if got := h.resolvedAuthURL(); got != tt.wantAuthURL {
+				t.Errorf("resolvedAuthURL() = %q, want %q", got, tt.wantAuthURL)
+			}
+			if got := h.resolvedTokenURL(); got != tt.wantTokenURL {
+				t.Errorf("resolvedTokenURL() = %q, want %q", got, tt.wantTokenURL)
+			}
+		})
 	}
 }
 
