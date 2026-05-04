@@ -2,6 +2,7 @@ package autopilot
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -9,6 +10,14 @@ import (
 	"github.com/qf-studio/pilot/internal/adapters/github"
 	"github.com/qf-studio/pilot/internal/approval"
 )
+
+// ErrApprovalNotConfigured is returned when an environment requires pre-merge
+// approval but the approval.pre_merge stage is not enabled in config.
+var ErrApprovalNotConfigured = errors.New("approval not configured for required environment")
+
+// misconfigCommentMarker is embedded in the PR comment so the idempotency
+// check can detect it on repeated calls without scanning comment text.
+const misconfigCommentMarker = "<!-- pilot-approval-misconfig -->"
 
 // AutoMerger handles PR merging with environment-aware safety.
 // Environment behavior:
@@ -189,7 +198,7 @@ func (m *AutoMerger) requestApproval(ctx context.Context, prState *PRState) (boo
 				"Enable approval.pre_merge.enabled or switch to an environment without require_approval",
 				"pr", prState.PRNumber,
 				"env", m.config.EnvironmentName())
-			return false, fmt.Errorf("environment %q requires pre_merge approval to be enabled", m.config.EnvironmentName())
+			return false, fmt.Errorf("env %q: %w", m.config.EnvironmentName(), ErrApprovalNotConfigured)
 		}
 		m.log.Warn("pre-merge approval stage not enabled, auto-approving",
 			"pr", prState.PRNumber)
@@ -224,6 +233,40 @@ func (m *AutoMerger) requestApproval(ctx context.Context, prState *PRState) (boo
 		"approved_by", result.ApprovedBy)
 
 	return approved, nil
+}
+
+// postMisconfigComment posts a single explanatory comment on the PR when
+// approval is required by the environment but not enabled in config.
+// Idempotent: skips posting if the marker comment already exists.
+func (m *AutoMerger) postMisconfigComment(ctx context.Context, prState *PRState) {
+	existing, err := m.ghClient.ListIssueComments(ctx, m.owner, m.repo, prState.PRNumber)
+	if err != nil {
+		m.log.Warn("postMisconfigComment: failed to list PR comments, will post anyway",
+			"pr", prState.PRNumber, "error", err)
+	} else {
+		for _, c := range existing {
+			if strings.Contains(c.Body, misconfigCommentMarker) {
+				m.log.Debug("postMisconfigComment: already posted, skipping", "pr", prState.PRNumber)
+				return
+			}
+		}
+	}
+
+	envName := m.config.EnvironmentName()
+	body := fmt.Sprintf(`%s
+🚧 **Merge blocked: approval not wired**
+
+Environment `+"`%s`"+` requires pre-merge approval (`+"`environments.%s.require_approval: true`"+`) but the approval system is disabled (`+"`approval.enabled: false`"+` and/or `+"`approval.pre_merge.enabled: false`"+`).
+
+To unblock: either enable approval in `+"`~/.pilot/config.yaml`"+` (set `+"`approval.enabled: true`"+` + `+"`approval.pre_merge.enabled: true`"+` + add an approver), or merge manually with `+"`gh pr merge %d`"+`.
+
+Tracked in #2598.`,
+		misconfigCommentMarker, envName, envName, prState.PRNumber)
+
+	if _, postErr := m.ghClient.AddPRComment(ctx, m.owner, m.repo, prState.PRNumber, body); postErr != nil {
+		m.log.Warn("postMisconfigComment: failed to post PR comment",
+			"pr", prState.PRNumber, "error", postErr)
+	}
 }
 
 // approvePR creates an approval review on the PR.

@@ -10,6 +10,8 @@ import (
 	"github.com/qf-studio/pilot/internal/adapters/github"
 	"github.com/qf-studio/pilot/internal/adapters/slack"
 	"github.com/qf-studio/pilot/internal/adapters/telegram"
+	"github.com/qf-studio/pilot/internal/approval"
+	"github.com/qf-studio/pilot/internal/autopilot"
 	"github.com/qf-studio/pilot/internal/config"
 	"github.com/qf-studio/pilot/internal/transcription"
 )
@@ -957,5 +959,77 @@ func TestCheckAgentDocSize_SubdirFile(t *testing.T) {
 	}
 	if checks[0].Status != StatusError {
 		t.Errorf("expected StatusError, got %v", checks[0].Status)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Approval misconfig doctor check
+// ---------------------------------------------------------------------------
+
+func TestCheckConfig_ApprovalMisconfig_Detected(t *testing.T) {
+	// env has require_approval=true but approval.pre_merge is disabled → StatusError
+	cfg := config.DefaultConfig()
+	cfg.Orchestrator.Autopilot = autopilot.DefaultConfig()
+	cfg.Orchestrator.Autopilot.Environments = map[string]*autopilot.EnvironmentConfig{
+		"stage": {RequireApproval: true},
+	}
+	approvalCfg := approval.DefaultConfig()
+	approvalCfg.Enabled = false
+	cfg.Approval = approvalCfg
+
+	checks := checkConfig(cfg)
+	found := false
+	for _, c := range checks {
+		if c.Name == "approval-misconfig" {
+			found = true
+			if c.Status != StatusError {
+				t.Errorf("approval-misconfig status = %v, want StatusError", c.Status)
+			}
+			if !strings.Contains(c.Message, "stage") {
+				t.Errorf("approval-misconfig message should mention env name, got: %s", c.Message)
+			}
+		}
+	}
+	if !found {
+		t.Error("expected approval-misconfig check to appear in ConfigChecks")
+	}
+}
+
+func TestCheckConfig_ApprovalMisconfig_NotReported_WhenPreMergeEnabled(t *testing.T) {
+	// env has require_approval=true AND approval.pre_merge is enabled → no misconfig check
+	cfg := config.DefaultConfig()
+	cfg.Orchestrator.Autopilot = autopilot.DefaultConfig()
+	cfg.Orchestrator.Autopilot.Environments = map[string]*autopilot.EnvironmentConfig{
+		"stage": {RequireApproval: true},
+	}
+	approvalCfg := approval.DefaultConfig()
+	approvalCfg.Enabled = true
+	approvalCfg.PreMerge = &approval.StageConfig{Enabled: true}
+	cfg.Approval = approvalCfg
+
+	checks := checkConfig(cfg)
+	for _, c := range checks {
+		if c.Name == "approval-misconfig" {
+			t.Errorf("unexpected approval-misconfig check when pre_merge is enabled: %+v", c)
+		}
+	}
+}
+
+func TestCheckConfig_ApprovalMisconfig_NotReported_WhenNoEnvRequiresApproval(t *testing.T) {
+	// No env requires approval → no misconfig check even if approval is disabled
+	cfg := config.DefaultConfig()
+	cfg.Orchestrator.Autopilot = autopilot.DefaultConfig()
+	cfg.Orchestrator.Autopilot.Environments = map[string]*autopilot.EnvironmentConfig{
+		"stage": {RequireApproval: false},
+	}
+	approvalCfg := approval.DefaultConfig()
+	approvalCfg.Enabled = false
+	cfg.Approval = approvalCfg
+
+	checks := checkConfig(cfg)
+	for _, c := range checks {
+		if c.Name == "approval-misconfig" {
+			t.Errorf("unexpected approval-misconfig check when no env requires approval: %+v", c)
+		}
 	}
 }

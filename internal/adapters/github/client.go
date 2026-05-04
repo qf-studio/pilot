@@ -173,6 +173,16 @@ func (c *Client) GetIssue(ctx context.Context, owner, repo string, number int) (
 	return &issue, nil
 }
 
+// ListIssueComments returns all comments on an issue or PR.
+func (c *Client) ListIssueComments(ctx context.Context, owner, repo string, number int) ([]*Comment, error) {
+	path := fmt.Sprintf("/repos/%s/%s/issues/%d/comments", owner, repo, number)
+	var comments []*Comment
+	if err := c.doRequest(ctx, http.MethodGet, path, nil, &comments); err != nil {
+		return nil, err
+	}
+	return comments, nil
+}
+
 // AddComment adds a comment to an issue
 func (c *Client) AddComment(ctx context.Context, owner, repo string, number int, body string) (*Comment, error) {
 	return WithRetry(ctx, func() (*Comment, error) {
