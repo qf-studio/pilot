@@ -955,9 +955,131 @@ func (c *Controller) hasChangesRequested(ctx context.Context, prState *PRState) 
 	return false
 }
 
-// handleAwaitApproval waits for human approval (prod only).
+// handleAwaitApproval is a non-blocking tick handler for StageAwaitApproval.
+//
+// Tick 1 (no ApprovalRequestID): submits the request via SubmitApprovalRequest,
+// persists the returned ID + ApprovalRequestedAt, stays in StageAwaitApproval.
+//
+// Tick N with decision recorded: advances to StageMerging (approved) or
+// StageFailed (rejected/timeout).
+//
+// Tick N with no decision: checks wall-clock expiry against the stage timeout and
+// applies default_action when expired (belt-and-suspenders for post-restart cases).
+//
+// Legacy path (async_dispatch == false): delegates to the old blocking
+// autoMerger.MergePR call to preserve backward compatibility.
 func (c *Controller) handleAwaitApproval(ctx context.Context, prState *PRState) error {
-	// This will block until approval received or timeout
+	// Legacy blocking path — kept for one release cycle while async_dispatch rolls out.
+	if c.approvalMgr == nil || !c.approvalMgr.IsAsyncDispatch() {
+		return c.handleAwaitApprovalLegacy(ctx, prState)
+	}
+
+	// Path 1: submit request on first tick.
+	if prState.ApprovalRequestID == "" {
+		return c.submitAsyncApprovalRequest(ctx, prState)
+	}
+
+	// Path 2: decision already recorded — advance the state machine.
+	if prState.ApprovalDecision != "" {
+		return c.applyApprovalDecision(prState)
+	}
+
+	// Path 3: still waiting — check wall-clock expiry as a guard for post-restart
+	// cases where the background goroutine in SubmitApprovalRequest is gone.
+	timeout := c.approvalMgr.PreMergeTimeout()
+	if !prState.ApprovalRequestedAt.IsZero() && time.Since(prState.ApprovalRequestedAt) > timeout {
+		defaultAction := c.approvalMgr.PreMergeDefaultAction()
+		c.log.Warn("approval request expired in controller (post-restart guard)",
+			"pr", prState.PRNumber,
+			"request_id", prState.ApprovalRequestID,
+			"elapsed", time.Since(prState.ApprovalRequestedAt).Round(time.Second),
+			"default_action", defaultAction)
+		prState.ApprovalDecision = string(defaultAction)
+		return c.applyApprovalDecision(prState)
+	}
+
+	// Still waiting for user input — stay in StageAwaitApproval.
+	return nil
+}
+
+// submitAsyncApprovalRequest submits the first async approval request for a PR.
+func (c *Controller) submitAsyncApprovalRequest(ctx context.Context, prState *PRState) error {
+	// Fail closed: if approval stage is not enabled, do NOT auto-approve when
+	// the env requires approval. Matches the legacy ErrApprovalNotConfigured behaviour.
+	if c.approvalMgr == nil || !c.approvalMgr.IsStageEnabled(approval.StagePreMerge) {
+		c.log.Error("approval misconfig: env requires approval but pre_merge.enabled=false",
+			"pr", prState.PRNumber, "env", c.config.EnvironmentName())
+		prState.Stage = StageFailed
+		prState.Error = fmt.Sprintf(
+			"approval-misconfig: env %q has require_approval=true but approval.pre_merge.enabled=false → deadlock until config fixed",
+			c.config.EnvironmentName(),
+		)
+		c.autoMerger.postMisconfigComment(ctx, prState)
+		c.metrics.RecordPRFailed()
+		return nil
+	}
+
+	taskID := fmt.Sprintf("GH-%d", prState.IssueNumber)
+	if prState.IssueNumber == 0 {
+		taskID = fmt.Sprintf("PR-%d", prState.PRNumber)
+	}
+	req := &approval.Request{
+		ID:     fmt.Sprintf("pr-%d-%d", prState.PRNumber, time.Now().UnixNano()),
+		TaskID: taskID,
+		Stage:  approval.StagePreMerge,
+		Title:  fmt.Sprintf("Merge approval for PR #%d", prState.PRNumber),
+		Metadata: map[string]interface{}{
+			"pr_url":    prState.PRURL,
+			"pr_title":  prState.PRTitle,
+			"pr_number": prState.PRNumber,
+		},
+	}
+
+	requestID, err := c.approvalMgr.SubmitApprovalRequest(ctx, req)
+	if err != nil {
+		return fmt.Errorf("submit approval request for PR %d: %w", prState.PRNumber, err)
+	}
+
+	prState.ApprovalRequestID = requestID
+	prState.ApprovalRequestedAt = time.Now()
+	// Stage intentionally stays at StageAwaitApproval.
+
+	if c.stateStore != nil {
+		if serr := c.stateStore.SavePRState(prState); serr != nil {
+			c.log.Warn("failed to persist approval request state", "pr", prState.PRNumber, "error", serr)
+		}
+	}
+
+	c.log.Info("async approval request submitted",
+		"pr", prState.PRNumber, "request_id", requestID)
+	return nil
+}
+
+// applyApprovalDecision advances the state machine based on the recorded decision.
+func (c *Controller) applyApprovalDecision(prState *PRState) error {
+	switch approval.Decision(prState.ApprovalDecision) {
+	case approval.DecisionApproved:
+		c.log.Info("approval granted — advancing to merging stage", "pr", prState.PRNumber)
+		prState.Stage = StageMerging
+	case approval.DecisionRejected, approval.DecisionTimeout:
+		c.log.Info("approval not granted — failing PR",
+			"pr", prState.PRNumber, "decision", prState.ApprovalDecision)
+		prState.Stage = StageFailed
+		prState.Error = fmt.Sprintf("merge rejected: approval %s", prState.ApprovalDecision)
+		c.metrics.RecordPRFailed()
+	default:
+		c.log.Warn("unknown approval decision — failing PR",
+			"pr", prState.PRNumber, "decision", prState.ApprovalDecision)
+		prState.Stage = StageFailed
+		prState.Error = fmt.Sprintf("unknown approval decision: %q", prState.ApprovalDecision)
+		c.metrics.RecordPRFailed()
+	}
+	return nil
+}
+
+// handleAwaitApprovalLegacy is the original blocking path, preserved for
+// async_dispatch=false deployments during the rollout window.
+func (c *Controller) handleAwaitApprovalLegacy(ctx context.Context, prState *PRState) error {
 	err := c.autoMerger.MergePR(ctx, prState)
 	if err != nil {
 		if err.Error() == "merge rejected: approval denied" {
@@ -985,13 +1107,38 @@ func (c *Controller) handleAwaitApproval(ctx context.Context, prState *PRState) 
 	}
 	prState.Stage = StageMerged
 
-	// Notify merge success after approval
 	if c.notifier != nil {
 		if err := c.notifier.NotifyMerged(ctx, prState); err != nil {
 			c.log.Warn("failed to send merge notification", "error", err)
 		}
 	}
 
+	return nil
+}
+
+// SetApprovalDecision implements approval.PRStateWriter. It finds the in-memory
+// PRState whose ApprovalRequestID matches and records the decision, then persists
+// via stateStore. Called by the approval.Manager's background goroutine when a
+// handler fires (e.g. Telegram button tap).
+func (c *Controller) SetApprovalDecision(_ context.Context, requestID string, decision string, by string) error {
+	if requestID == "" {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, pr := range c.activePRs {
+		if pr.ApprovalRequestID == requestID {
+			pr.ApprovalDecision = decision
+			if c.stateStore != nil {
+				_ = c.stateStore.SavePRState(pr)
+			}
+			c.log.Info("approval decision applied to PR state",
+				"pr", pr.PRNumber, "request_id", requestID,
+				"decision", decision, "by", by)
+			return nil
+		}
+	}
+	// requestID not found in this controller — normal in multi-repo deployments.
 	return nil
 }
 
@@ -2230,4 +2377,27 @@ func (c *Controller) notifyExternalClose(ctx context.Context, prState *PRState) 
 	// GH-2198: Close parent epic when all sub-issues are done (even if this one
 	// was closed without merge). maybeCloseParentIssue no-ops for non-sub-issues.
 	c.maybeCloseParentIssue(ctx, prState)
+}
+
+// MultiControllerStateWriter routes approval decisions to whichever controller
+// owns the matching ApprovalRequestID. Use this when multiple controllers share
+// a single approval.Manager (multi-repo deployments).
+type MultiControllerStateWriter struct {
+	controllers []*Controller
+}
+
+// NewMultiControllerStateWriter creates a writer that delegates SetApprovalDecision
+// to each controller in order, stopping at the first match.
+func NewMultiControllerStateWriter(controllers ...*Controller) *MultiControllerStateWriter {
+	return &MultiControllerStateWriter{controllers: controllers}
+}
+
+// SetApprovalDecision implements approval.PRStateWriter by trying each controller.
+func (w *MultiControllerStateWriter) SetApprovalDecision(ctx context.Context, requestID string, decision string, by string) error {
+	for _, c := range w.controllers {
+		if err := c.SetApprovalDecision(ctx, requestID, decision, by); err != nil {
+			return err
+		}
+	}
+	return nil
 }

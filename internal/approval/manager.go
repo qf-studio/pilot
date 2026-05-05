@@ -485,6 +485,36 @@ func (m *Manager) SubmitApprovalRequest(ctx context.Context, req *Request) (stri
 	return req.ID, nil
 }
 
+// IsAsyncDispatch reports whether the non-blocking async dispatch path is enabled.
+func (m *Manager) IsAsyncDispatch() bool {
+	return m.config != nil && m.config.AsyncDispatch
+}
+
+// PreMergeTimeout returns the effective timeout for the pre-merge approval stage.
+func (m *Manager) PreMergeTimeout() time.Duration {
+	if m.config == nil {
+		return 24 * time.Hour
+	}
+	if m.config.PreMerge != nil && m.config.PreMerge.Timeout > 0 {
+		return m.config.PreMerge.Timeout
+	}
+	if m.config.DefaultTimeout > 0 {
+		return m.config.DefaultTimeout
+	}
+	return 24 * time.Hour
+}
+
+// PreMergeDefaultAction returns the default decision on timeout for the pre-merge stage.
+func (m *Manager) PreMergeDefaultAction() Decision {
+	if m.config == nil {
+		return DecisionRejected
+	}
+	if m.config.PreMerge != nil && m.config.PreMerge.DefaultAction != "" {
+		return m.config.PreMerge.DefaultAction
+	}
+	return m.config.DefaultAction
+}
+
 // RecordDecision records the outcome of a pending approval request.
 // It persists the decision via the state writer (if configured) and cancels
 // any background goroutine waiting on this request. Safe to call from

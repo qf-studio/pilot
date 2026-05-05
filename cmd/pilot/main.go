@@ -487,6 +487,9 @@ Examples:
 								parts[1],
 								gwBoardOpts...,
 							)
+							// GH-2685: wire the controller as the approval state writer so
+							// async approval decisions update the in-memory PRState.
+							approvalMgr.WithStateWriter(gwAutopilotController)
 						}
 					}
 				}
@@ -1433,6 +1436,16 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 				)
 			}
 		}
+	}
+
+	// GH-2685: wire all controllers as the approval state writer so async approval
+	// decisions update the correct in-memory PRState across multi-repo deployments.
+	if len(autopilotControllers) > 0 {
+		var allControllers []*autopilot.Controller
+		for _, c := range autopilotControllers {
+			allControllers = append(allControllers, c)
+		}
+		approvalMgr.WithStateWriter(autopilot.NewMultiControllerStateWriter(allControllers...))
 	}
 
 	// Initialize memory store early for dashboard persistence (GH-367)
