@@ -6,6 +6,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/qf-studio/pilot/internal/memory"
 )
 
 // mockTelegramClient implements TelegramClient for testing
@@ -925,6 +927,303 @@ func TestTelegramHandler_ApproverRouting(t *testing.T) {
 			t.Errorf("expected edit chat_id '99999', got '%s'", edited[0].ChatID)
 		}
 	})
+}
+
+// --- mock store for persistence tests ---
+
+type mockApprovalStore struct {
+	mu          sync.Mutex
+	rows        map[string]memory.PendingApproval
+	insertCalls []memory.PendingApproval
+	deleteCalls []string
+	insertErr   error
+	deleteErr   error
+}
+
+func newMockApprovalStore() *mockApprovalStore {
+	return &mockApprovalStore{rows: make(map[string]memory.PendingApproval)}
+}
+
+func (m *mockApprovalStore) InsertPendingApproval(_ context.Context, p memory.PendingApproval) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.insertErr != nil {
+		return m.insertErr
+	}
+	m.insertCalls = append(m.insertCalls, p)
+	m.rows[p.RequestID] = p
+	return nil
+}
+
+func (m *mockApprovalStore) DeletePendingApproval(_ context.Context, requestID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.deleteErr != nil {
+		return m.deleteErr
+	}
+	m.deleteCalls = append(m.deleteCalls, requestID)
+	delete(m.rows, requestID)
+	return nil
+}
+
+func (m *mockApprovalStore) LoadPendingApprovals(_ context.Context) ([]memory.PendingApproval, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	result := make([]memory.PendingApproval, 0, len(m.rows))
+	for _, r := range m.rows {
+		result = append(result, r)
+	}
+	return result, nil
+}
+
+func (m *mockApprovalStore) inserts() []memory.PendingApproval {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cp := make([]memory.PendingApproval, len(m.insertCalls))
+	copy(cp, m.insertCalls)
+	return cp
+}
+
+func (m *mockApprovalStore) deletes() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cp := make([]string, len(m.deleteCalls))
+	copy(cp, m.deleteCalls)
+	return cp
+}
+
+// --- persistence tests ---
+
+func TestTelegramHandler_PersistsOnSend(t *testing.T) {
+	client := &mockTelegramClient{}
+	store := newMockApprovalStore()
+	handler := NewTelegramHandler(client, "chat123").WithStore(store)
+
+	req := &Request{
+		ID:        "req-persist",
+		TaskID:    "TASK-42",
+		Stage:     StagePreMerge,
+		Title:     "Deploy",
+		ExpiresAt: time.Now().Add(time.Hour),
+	}
+
+	_, err := handler.SendApprovalRequest(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	inserts := store.inserts()
+	if len(inserts) != 1 {
+		t.Fatalf("expected 1 InsertPendingApproval call, got %d", len(inserts))
+	}
+	if inserts[0].RequestID != "req-persist" {
+		t.Errorf("expected RequestID 'req-persist', got %q", inserts[0].RequestID)
+	}
+	if inserts[0].ChatID != "chat123" {
+		t.Errorf("expected ChatID 'chat123', got %q", inserts[0].ChatID)
+	}
+	if inserts[0].Stage != "pre_merge" {
+		t.Errorf("expected Stage 'pre_merge', got %q", inserts[0].Stage)
+	}
+}
+
+func TestTelegramHandler_PersistsOnSend_NoStore(t *testing.T) {
+	// Without a store, SendApprovalRequest must still succeed.
+	client := &mockTelegramClient{}
+	handler := NewTelegramHandler(client, "chat123")
+
+	req := &Request{
+		ID:        "req-nostore",
+		TaskID:    "TASK-01",
+		Stage:     StagePreExecution,
+		Title:     "Test",
+		ExpiresAt: time.Now().Add(time.Hour),
+	}
+	_, err := handler.SendApprovalRequest(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error without store: %v", err)
+	}
+}
+
+func TestTelegramHandler_PersistsOnSend_StoreError(t *testing.T) {
+	// A store insert error must NOT fail SendApprovalRequest (best-effort).
+	client := &mockTelegramClient{}
+	store := newMockApprovalStore()
+	store.insertErr = errors.New("db unavailable")
+	handler := NewTelegramHandler(client, "chat123").WithStore(store)
+
+	req := &Request{
+		ID:        "req-store-err",
+		TaskID:    "TASK-01",
+		Stage:     StagePreExecution,
+		Title:     "Test",
+		ExpiresAt: time.Now().Add(time.Hour),
+	}
+	_, err := handler.SendApprovalRequest(context.Background(), req)
+	if err != nil {
+		t.Fatalf("expected no error on best-effort persist failure, got: %v", err)
+	}
+}
+
+func TestTelegramHandler_DeletesOnApprove(t *testing.T) {
+	client := &mockTelegramClient{}
+	store := newMockApprovalStore()
+	handler := NewTelegramHandler(client, "chat123").WithStore(store)
+
+	req := &Request{
+		ID:        "req-approve-del",
+		TaskID:    "TASK-01",
+		Stage:     StagePreMerge,
+		Title:     "Test",
+		ExpiresAt: time.Now().Add(time.Hour),
+	}
+	_, err := handler.SendApprovalRequest(context.Background(), req)
+	if err != nil {
+		t.Fatalf("send: %v", err)
+	}
+
+	handler.HandleCallback(context.Background(), "cb1", "approve:req-approve-del", "user", "tester")
+
+	dels := store.deletes()
+	if len(dels) != 1 || dels[0] != "req-approve-del" {
+		t.Errorf("expected delete call for 'req-approve-del', got %v", dels)
+	}
+}
+
+func TestTelegramHandler_DeletesOnReject(t *testing.T) {
+	client := &mockTelegramClient{}
+	store := newMockApprovalStore()
+	handler := NewTelegramHandler(client, "chat123").WithStore(store)
+
+	req := &Request{
+		ID:        "req-reject-del",
+		TaskID:    "TASK-01",
+		Stage:     StagePreMerge,
+		Title:     "Test",
+		ExpiresAt: time.Now().Add(time.Hour),
+	}
+	_, err := handler.SendApprovalRequest(context.Background(), req)
+	if err != nil {
+		t.Fatalf("send: %v", err)
+	}
+
+	handler.HandleCallback(context.Background(), "cb1", "reject:req-reject-del", "user", "tester")
+
+	dels := store.deletes()
+	if len(dels) != 1 || dels[0] != "req-reject-del" {
+		t.Errorf("expected delete call for 'req-reject-del', got %v", dels)
+	}
+}
+
+func TestTelegramHandler_DeletesOnCancel(t *testing.T) {
+	client := &mockTelegramClient{}
+	store := newMockApprovalStore()
+	handler := NewTelegramHandler(client, "chat123").WithStore(store)
+
+	req := &Request{
+		ID:        "req-cancel-del",
+		TaskID:    "TASK-01",
+		Stage:     StagePreExecution,
+		Title:     "Test",
+		ExpiresAt: time.Now().Add(time.Hour),
+	}
+	_, err := handler.SendApprovalRequest(context.Background(), req)
+	if err != nil {
+		t.Fatalf("send: %v", err)
+	}
+
+	if err := handler.CancelRequest(context.Background(), "req-cancel-del"); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+
+	dels := store.deletes()
+	if len(dels) != 1 || dels[0] != "req-cancel-del" {
+		t.Errorf("expected delete call for 'req-cancel-del', got %v", dels)
+	}
+}
+
+func TestTelegramHandler_Rehydrate_RestoresPending(t *testing.T) {
+	client := &mockTelegramClient{}
+	store := newMockApprovalStore()
+
+	// Pre-populate the store with a non-expired row.
+	_ = store.InsertPendingApproval(context.Background(), memory.PendingApproval{
+		RequestID: "req-rehydrate",
+		TaskID:    "TASK-99",
+		Stage:     "pre_merge",
+		Title:     "Rehydrated",
+		ChatID:    "chat-rehydrate",
+		MessageID: 42,
+		Approvers: []string{"user-1"},
+		ExpiresAt: time.Now().Add(time.Hour),
+		CreatedAt: time.Now().Add(-time.Minute),
+	})
+
+	handler := NewTelegramHandler(client, "chat123").WithStore(store)
+	if err := handler.Rehydrate(context.Background()); err != nil {
+		t.Fatalf("Rehydrate: %v", err)
+	}
+
+	// The pending map should be populated.
+	handler.mu.RLock()
+	_, exists := handler.pending["req-rehydrate"]
+	handler.mu.RUnlock()
+	if !exists {
+		t.Fatal("expected 'req-rehydrate' to be in pending map after Rehydrate")
+	}
+
+	// A tap on the restored entry must succeed (not return "expired").
+	handled := handler.HandleCallback(context.Background(), "cb-rehydrate", "approve:req-rehydrate", "user", "tester")
+	if !handled {
+		t.Error("expected callback to be handled for rehydrated entry")
+	}
+
+	cbs := client.getAnsweredCallbacks()
+	if len(cbs) == 0 {
+		t.Fatal("expected at least one answered callback")
+	}
+	if containsString(cbs[0].Text, "expired") {
+		t.Errorf("expected non-expired answer, got: %q", cbs[0].Text)
+	}
+}
+
+func TestTelegramHandler_Rehydrate_SkipsExpired(t *testing.T) {
+	client := &mockTelegramClient{}
+	store := newMockApprovalStore()
+
+	// Insert an already-expired row.
+	_ = store.InsertPendingApproval(context.Background(), memory.PendingApproval{
+		RequestID: "req-expired",
+		TaskID:    "TASK-old",
+		Stage:     "pre_merge",
+		Title:     "Old",
+		ChatID:    "chat-x",
+		MessageID: 1,
+		ExpiresAt: time.Now().Add(-time.Minute), // already expired
+		CreatedAt: time.Now().Add(-2 * time.Hour),
+	})
+
+	handler := NewTelegramHandler(client, "chat123").WithStore(store)
+	if err := handler.Rehydrate(context.Background()); err != nil {
+		t.Fatalf("Rehydrate: %v", err)
+	}
+
+	handler.mu.RLock()
+	_, exists := handler.pending["req-expired"]
+	handler.mu.RUnlock()
+	if exists {
+		t.Error("expired entry should not be rehydrated into pending map")
+	}
+}
+
+func TestTelegramHandler_Rehydrate_NoStore(t *testing.T) {
+	client := &mockTelegramClient{}
+	handler := NewTelegramHandler(client, "chat123")
+
+	// Rehydrate without a store must be a no-op, not panic.
+	if err := handler.Rehydrate(context.Background()); err != nil {
+		t.Errorf("expected nil error without store, got: %v", err)
+	}
 }
 
 // containsString is a helper to check if a string contains a substring

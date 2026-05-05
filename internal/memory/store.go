@@ -299,6 +299,9 @@ func (s *Store) migrate() error {
 		`CREATE INDEX IF NOT EXISTS idx_eval_results_task ON eval_results(task_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_eval_results_model ON eval_results(model)`,
 		`CREATE INDEX IF NOT EXISTS idx_eval_results_created ON eval_results(created_at)`,
+		// Pending approval requests for cross-restart durability (GH-2658)
+		approvalPendingMigration,
+		`CREATE INDEX IF NOT EXISTS idx_approval_pending_expires ON approval_pending(expires_at)`,
 	}
 
 	for _, migration := range migrations {
