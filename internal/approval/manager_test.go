@@ -8,6 +8,27 @@ import (
 	"time"
 )
 
+// mockPRStateWriter records SetApprovalDecision calls for test assertions.
+type mockPRStateWriter struct {
+	mu    sync.Mutex
+	calls []struct{ requestID, decision, by string }
+}
+
+func (w *mockPRStateWriter) SetApprovalDecision(_ context.Context, requestID, decision, by string) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.calls = append(w.calls, struct{ requestID, decision, by string }{requestID, decision, by})
+	return nil
+}
+
+func (w *mockPRStateWriter) getCalls() []struct{ requestID, decision, by string } {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	result := make([]struct{ requestID, decision, by string }, len(w.calls))
+	copy(result, w.calls)
+	return result
+}
+
 // mockHandler is a test double for Handler
 type mockHandler struct {
 	name        string
@@ -1225,6 +1246,265 @@ func TestManager_RuleTrigger_WrongStage_NoMatch(t *testing.T) {
 	}
 	if resp.Decision != DecisionApproved {
 		t.Errorf("expected auto-approve, got %s", resp.Decision)
+	}
+}
+
+// --- async_dispatch tests ---
+
+func TestDefaultConfig_AsyncDispatch_True(t *testing.T) {
+	cfg := DefaultConfig()
+	if !cfg.AsyncDispatch {
+		t.Error("expected AsyncDispatch to be true by default")
+	}
+}
+
+func TestManager_SubmitApprovalRequest_NonBlocking(t *testing.T) {
+	config := DefaultConfig()
+	config.Enabled = true
+	config.PreExecution.Enabled = true
+	config.PreExecution.Timeout = 5 * time.Second
+
+	m := NewManager(config)
+
+	handler := &mockHandler{name: "test"}
+	m.RegisterHandler(handler)
+
+	req := &Request{
+		ID:        "async-nb-1",
+		TaskID:    "TASK-01",
+		Stage:     StagePreExecution,
+		Title:     "Test task",
+		CreatedAt: time.Now(),
+	}
+
+	start := time.Now()
+	requestID, err := m.SubmitApprovalRequest(context.Background(), req)
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if requestID != req.ID {
+		t.Errorf("expected request ID %q, got %q", req.ID, requestID)
+	}
+	if elapsed > 500*time.Millisecond {
+		t.Errorf("SubmitApprovalRequest should return immediately, took %v", elapsed)
+	}
+	if len(handler.sentReqs) != 1 {
+		t.Errorf("expected 1 request sent to handler, got %d", len(handler.sentReqs))
+	}
+}
+
+func TestManager_SubmitApprovalRequest_AutoApprove_StageDisabled(t *testing.T) {
+	config := DefaultConfig()
+	config.Enabled = true
+	// PreExecution disabled — should auto-approve without touching handler
+
+	m := NewManager(config)
+	handler := &mockHandler{name: "test"}
+	m.RegisterHandler(handler)
+
+	req := &Request{
+		ID:        "async-auto-1",
+		TaskID:    "TASK-02",
+		Stage:     StagePreExecution,
+		CreatedAt: time.Now(),
+	}
+
+	requestID, err := m.SubmitApprovalRequest(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if requestID != req.ID {
+		t.Errorf("expected %q, got %q", req.ID, requestID)
+	}
+	if len(handler.sentReqs) != 0 {
+		t.Errorf("expected no handler calls for auto-approve, got %d", len(handler.sentReqs))
+	}
+}
+
+func TestManager_SubmitApprovalRequest_PersistsResponseViaWriter(t *testing.T) {
+	config := DefaultConfig()
+	config.Enabled = true
+	config.PreExecution.Enabled = true
+	config.PreExecution.Timeout = 2 * time.Second
+
+	m := NewManager(config)
+	writer := &mockPRStateWriter{}
+	m.WithStateWriter(writer)
+
+	handler := &mockHandler{
+		name: "test",
+		respondWith: &Response{
+			RequestID:  "async-write-1",
+			Decision:   DecisionApproved,
+			ApprovedBy: "alice",
+		},
+	}
+	m.RegisterHandler(handler)
+
+	req := &Request{
+		ID:        "async-write-1",
+		TaskID:    "TASK-03",
+		Stage:     StagePreExecution,
+		CreatedAt: time.Now(),
+	}
+
+	_, err := m.SubmitApprovalRequest(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Wait for background goroutine to record the decision
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if calls := writer.getCalls(); len(calls) > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	calls := writer.getCalls()
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 writer call, got %d", len(calls))
+	}
+	if calls[0].requestID != "async-write-1" {
+		t.Errorf("expected request ID async-write-1, got %s", calls[0].requestID)
+	}
+	if calls[0].decision != "approved" {
+		t.Errorf("expected approved, got %s", calls[0].decision)
+	}
+	if calls[0].by != "alice" {
+		t.Errorf("expected alice, got %s", calls[0].by)
+	}
+}
+
+func TestManager_RecordDecision_PersistsViaWriter(t *testing.T) {
+	m := NewManager(nil)
+	writer := &mockPRStateWriter{}
+	m.WithStateWriter(writer)
+
+	err := m.RecordDecision(context.Background(), "req-42", DecisionApproved, "user123")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	calls := writer.getCalls()
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 writer call, got %d", len(calls))
+	}
+	if calls[0].requestID != "req-42" {
+		t.Errorf("expected req-42, got %s", calls[0].requestID)
+	}
+	if calls[0].decision != "approved" {
+		t.Errorf("expected approved, got %s", calls[0].decision)
+	}
+	if calls[0].by != "user123" {
+		t.Errorf("expected user123, got %s", calls[0].by)
+	}
+}
+
+func TestManager_RecordDecision_NoWriter_NoError(t *testing.T) {
+	m := NewManager(nil)
+	// No state writer attached
+	if err := m.RecordDecision(context.Background(), "req-no-writer", DecisionRejected, "bot"); err != nil {
+		t.Errorf("unexpected error without writer: %v", err)
+	}
+}
+
+func TestManager_RecordDecision_CancelsPendingRequest(t *testing.T) {
+	config := DefaultConfig()
+	config.Enabled = true
+	config.PreExecution.Enabled = true
+	config.PreExecution.Timeout = 10 * time.Second
+
+	m := NewManager(config)
+	handler := &mockHandler{name: "test"} // never responds
+	m.RegisterHandler(handler)
+
+	req := &Request{
+		ID:        "async-cancel-1",
+		TaskID:    "TASK-05",
+		Stage:     StagePreExecution,
+		CreatedAt: time.Now(),
+	}
+	_, err := m.SubmitApprovalRequest(context.Background(), req)
+	if err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+
+	// Verify request is tracked as pending
+	time.Sleep(20 * time.Millisecond)
+	pending := m.GetPendingRequests()
+	if len(pending) != 1 {
+		t.Errorf("expected 1 pending after submit, got %d", len(pending))
+	}
+
+	// Record decision externally — should remove from pending
+	if err := m.RecordDecision(context.Background(), req.ID, DecisionApproved, "admin"); err != nil {
+		t.Fatalf("record decision: %v", err)
+	}
+
+	time.Sleep(20 * time.Millisecond)
+	pending = m.GetPendingRequests()
+	if len(pending) != 0 {
+		t.Errorf("expected 0 pending after RecordDecision, got %d", len(pending))
+	}
+}
+
+func TestManager_RecordDecision_NoDoubleWrite_WhenCancelsBackgroundGoroutine(t *testing.T) {
+	config := DefaultConfig()
+	config.Enabled = true
+	config.PreExecution.Enabled = true
+	config.PreExecution.Timeout = 10 * time.Second
+
+	m := NewManager(config)
+	writer := &mockPRStateWriter{}
+	m.WithStateWriter(writer)
+
+	handler := &mockHandler{name: "test"} // never responds
+	m.RegisterHandler(handler)
+
+	req := &Request{
+		ID:        "no-double-write-1",
+		TaskID:    "TASK-06",
+		Stage:     StagePreExecution,
+		CreatedAt: time.Now(),
+	}
+	_, err := m.SubmitApprovalRequest(context.Background(), req)
+	if err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+
+	time.Sleep(20 * time.Millisecond) // let goroutine start
+
+	// RecordDecision records the real decision and cancels the background goroutine.
+	if err := m.RecordDecision(context.Background(), req.ID, DecisionApproved, "admin"); err != nil {
+		t.Fatalf("record decision: %v", err)
+	}
+
+	// Give background goroutine time to react to context cancellation.
+	time.Sleep(50 * time.Millisecond)
+
+	// Only one write should have happened (from RecordDecision, not the goroutine).
+	calls := writer.getCalls()
+	if len(calls) != 1 {
+		t.Errorf("expected exactly 1 writer call, got %d (possible double-write)", len(calls))
+	}
+	if len(calls) > 0 && calls[0].decision != "approved" {
+		t.Errorf("expected approved, got %s", calls[0].decision)
+	}
+}
+
+func TestManager_WithStateWriter_Chaining(t *testing.T) {
+	m := NewManager(nil)
+	writer := &mockPRStateWriter{}
+	returned := m.WithStateWriter(writer)
+	if returned != m {
+		t.Error("WithStateWriter should return the same Manager for chaining")
+	}
+	if m.stateWriter != writer {
+		t.Error("stateWriter not set after WithStateWriter")
 	}
 }
 

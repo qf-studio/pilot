@@ -241,6 +241,33 @@ executor:
   #   grace_period: 30s           # Grace period before killing
   #   commit_partial_work: true   # Save partial progress before abort
 
+# Approval workflow settings
+# Pilot can require human approval before executing tasks, merging PRs, or retrying failures.
+# approval:
+#   enabled: false
+#   async_dispatch: true        # Dispatch requests without blocking (default: true).
+#                               # The response is recorded later via RecordDecision when
+#                               # the user taps Approve/Reject. Set to false to use the
+#                               # legacy blocking path (kept for one release for compatibility).
+#   default_timeout: 1h         # Fallback timeout when stage has no explicit timeout
+#   default_action: rejected    # "approved" or "rejected" on timeout
+#   pre_merge:
+#     enabled: false
+#     approvers:
+#       - "${TELEGRAM_APPROVER_CHAT_ID}"   # Chat ID of the approver
+#     timeout: 24h
+#     default_action: rejected
+#   pre_execution:
+#     enabled: false
+#     approvers: []
+#     timeout: 1h
+#     default_action: rejected
+#   post_failure:
+#     enabled: false
+#     approvers: []
+#     timeout: 1h
+#     default_action: rejected
+
 # Daily briefs configuration
 briefs:
   enabled: false
