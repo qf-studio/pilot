@@ -839,6 +839,94 @@ func TestTelegramHandler_HandleCallbackWithZeroMessageID(t *testing.T) {
 	}
 }
 
+// TestTelegramHandler_ApproverRouting verifies that the destination chat_id is
+// resolved from req.Approvers[0] when set, and falls back to the constructor
+// chat_id when the slice is empty.
+func TestTelegramHandler_ApproverRouting(t *testing.T) {
+	t.Run("uses approver chat_id when set", func(t *testing.T) {
+		client := &mockTelegramClient{}
+		handler := NewTelegramHandler(client, "constructor-chat")
+
+		req := &Request{
+			ID:        "req-approver",
+			TaskID:    "TASK-01",
+			Stage:     StagePreMerge,
+			Title:     "Test",
+			Approvers: []string{"99999"},
+			ExpiresAt: time.Now().Add(1 * time.Hour),
+		}
+
+		_, err := handler.SendApprovalRequest(context.Background(), req)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		msgs := client.getSentMessages()
+		if len(msgs) != 1 {
+			t.Fatalf("expected 1 message sent, got %d", len(msgs))
+		}
+		if msgs[0].ChatID != "99999" {
+			t.Errorf("expected chat_id '99999', got '%s'", msgs[0].ChatID)
+		}
+	})
+
+	t.Run("falls back to constructor chat_id when approvers empty", func(t *testing.T) {
+		client := &mockTelegramClient{}
+		handler := NewTelegramHandler(client, "constructor-chat")
+
+		req := &Request{
+			ID:        "req-no-approver",
+			TaskID:    "TASK-01",
+			Stage:     StagePreMerge,
+			Title:     "Test",
+			Approvers: []string{},
+			ExpiresAt: time.Now().Add(1 * time.Hour),
+		}
+
+		_, err := handler.SendApprovalRequest(context.Background(), req)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		msgs := client.getSentMessages()
+		if len(msgs) != 1 {
+			t.Fatalf("expected 1 message sent, got %d", len(msgs))
+		}
+		if msgs[0].ChatID != "constructor-chat" {
+			t.Errorf("expected chat_id 'constructor-chat', got '%s'", msgs[0].ChatID)
+		}
+	})
+
+	t.Run("edit after callback uses same chat_id as original send", func(t *testing.T) {
+		client := &mockTelegramClient{}
+		handler := NewTelegramHandler(client, "constructor-chat")
+
+		req := &Request{
+			ID:        "req-edit-routing",
+			TaskID:    "TASK-01",
+			Stage:     StagePreMerge,
+			Title:     "Test",
+			Approvers: []string{"99999"},
+			ExpiresAt: time.Now().Add(1 * time.Hour),
+		}
+
+		_, err := handler.SendApprovalRequest(context.Background(), req)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		handler.HandleCallback(context.Background(), "cb1", "approve:req-edit-routing", "user", "tester")
+
+		edited := client.getEditedMessages()
+		if len(edited) != 1 {
+			t.Fatalf("expected 1 edited message, got %d", len(edited))
+		}
+		if edited[0].ChatID != "99999" {
+			t.Errorf("expected edit chat_id '99999', got '%s'", edited[0].ChatID)
+		}
+	})
+}
+
 // containsString is a helper to check if a string contains a substring
 func containsString(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||
