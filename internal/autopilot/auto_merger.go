@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/qf-studio/pilot/internal/adapters/github"
 	"github.com/qf-studio/pilot/internal/approval"
@@ -60,25 +61,30 @@ func (m *AutoMerger) MergePR(ctx context.Context, prState *PRState) error {
 		"sha", ShortSHA(prState.HeadSHA),
 	)
 
-	// GH-2584/GH-2585: structural escalation gates. Born from OAuth cascade #2.
-	// Force human approval for PRs that drift from their issue's scope OR
-	// exceed the size floor, regardless of env config.
-	requireApproval := m.requiresApproval(env)
-	if !requireApproval {
-		if reason := m.evaluateEscalationGates(ctx, prState); reason != "" {
-			m.log.Warn("escalation gate fired — forcing human approval despite env config",
-				"pr", prState.PRNumber, "reason", reason)
-			requireApproval = true
+	// ApprovalGranted is set by handleAwaitApproval (non-blocking flow) once the
+	// human has already approved via the three-path polling loop. Skip the blocking
+	// approval path entirely so handleMerging cannot stall processAllPRs.
+	if !prState.ApprovalGranted {
+		// GH-2584/GH-2585: structural escalation gates. Born from OAuth cascade #2.
+		// Force human approval for PRs that drift from their issue's scope OR
+		// exceed the size floor, regardless of env config.
+		requireApproval := m.requiresApproval(env)
+		if !requireApproval {
+			if reason := m.evaluateEscalationGates(ctx, prState); reason != "" {
+				m.log.Warn("escalation gate fired — forcing human approval despite env config",
+					"pr", prState.PRNumber, "reason", reason)
+				requireApproval = true
+			}
 		}
-	}
 
-	if requireApproval {
-		approved, err := m.requestApproval(ctx, prState)
-		if err != nil {
-			return fmt.Errorf("approval request failed: %w", err)
-		}
-		if !approved {
-			return fmt.Errorf("merge rejected: approval denied")
+		if requireApproval {
+			approved, err := m.requestApproval(ctx, prState)
+			if err != nil {
+				return fmt.Errorf("approval request failed: %w", err)
+			}
+			if !approved {
+				return fmt.Errorf("merge rejected: approval denied")
+			}
 		}
 	}
 
@@ -295,6 +301,77 @@ func (m *AutoMerger) CanMerge(ctx context.Context, prNumber int) (bool, string, 
 	}
 
 	return true, "", nil
+}
+
+// submitMergeApprovalRequest starts a non-blocking pre-merge approval request and
+// returns the request ID. The sentinel "auto-approved" is returned when the stage
+// is disabled and the environment does not require approval. Returns
+// ErrApprovalNotConfigured when the environment requires approval but the pre-merge
+// stage is disabled.
+func (m *AutoMerger) submitMergeApprovalRequest(ctx context.Context, prState *PRState) (string, error) {
+	if m.approvalMgr == nil {
+		return "", fmt.Errorf("approval manager not configured")
+	}
+
+	if !m.approvalMgr.IsStageEnabled(approval.StagePreMerge) {
+		if m.config.ResolvedEnv().RequireApproval {
+			m.log.Error("pre-merge approval stage not enabled in environment requiring approval",
+				"pr", prState.PRNumber, "env", m.config.EnvironmentName())
+			return "", fmt.Errorf("env %q: %w", m.config.EnvironmentName(), ErrApprovalNotConfigured)
+		}
+		// Stage not enabled and env does not require approval: auto-approve.
+		return "auto-approved", nil
+	}
+
+	req := &approval.Request{
+		ID:               fmt.Sprintf("merge-pr-%d-%d", prState.PRNumber, time.Now().UnixNano()),
+		TaskID:           fmt.Sprintf("merge-pr-%d", prState.PRNumber),
+		Stage:            approval.StagePreMerge,
+		Title:            fmt.Sprintf("PR #%d Merge Approval", prState.PRNumber),
+		Description:      fmt.Sprintf("Approve merge of PR #%d to production?", prState.PRNumber),
+		PreferredChannel: string(m.config.ApprovalSource),
+		Metadata: map[string]interface{}{
+			"pr_url":    prState.PRURL,
+			"pr_number": prState.PRNumber,
+			"head_sha":  prState.HeadSHA,
+		},
+	}
+
+	return m.approvalMgr.SubmitApprovalRequest(ctx, req)
+}
+
+// checkMergeApprovalDecision does a non-blocking check for a pre-merge approval decision.
+// The sentinel "auto-approved" immediately returns an approved response.
+func (m *AutoMerger) checkMergeApprovalDecision(requestID string) (*approval.Response, bool) {
+	if requestID == "auto-approved" {
+		return &approval.Response{
+			RequestID:   requestID,
+			Decision:    approval.DecisionApproved,
+			ApprovedBy:  "system",
+			Comment:     "Auto-approved: stage not enabled",
+			RespondedAt: time.Now(),
+		}, true
+	}
+	if m.approvalMgr == nil {
+		return nil, false
+	}
+	return m.approvalMgr.CheckDecision(requestID)
+}
+
+// mergeApprovalTimeout returns the configured timeout for the pre-merge stage.
+func (m *AutoMerger) mergeApprovalTimeout() time.Duration {
+	if m.approvalMgr == nil {
+		return 24 * time.Hour
+	}
+	return m.approvalMgr.PreMergeTimeout()
+}
+
+// mergeApprovalDefaultAction returns the configured default action on pre-merge timeout.
+func (m *AutoMerger) mergeApprovalDefaultAction() approval.Decision {
+	if m.approvalMgr == nil {
+		return approval.DecisionRejected
+	}
+	return m.approvalMgr.PreMergeDefaultAction()
 }
 
 // ShouldWaitForCI returns true if the environment requires CI to pass before merge.

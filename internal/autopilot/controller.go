@@ -955,43 +955,86 @@ func (c *Controller) hasChangesRequested(ctx context.Context, prState *PRState) 
 	return false
 }
 
-// handleAwaitApproval waits for human approval (prod only).
+// handleAwaitApproval implements a non-blocking three-path approval loop so that
+// processAllPRs is never starved by a single PR waiting for human input.
+//
+// Path 1 — no request yet: submit via the approval manager and return immediately.
+// Path 2 — request pending, no decision: check whether the configured timeout has
+// elapsed; if so apply the default action, otherwise stay in StageAwaitApproval.
+// Path 3 — decision recorded: advance to StageMerging (approved) or StageFailed.
 func (c *Controller) handleAwaitApproval(ctx context.Context, prState *PRState) error {
-	// This will block until approval received or timeout
-	err := c.autoMerger.MergePR(ctx, prState)
-	if err != nil {
-		if err.Error() == "merge rejected: approval denied" {
-			c.log.Info("merge approval denied", "pr", prState.PRNumber)
-			prState.Stage = StageFailed
-			return nil
+	// Path 1: submit the approval request (non-blocking).
+	if prState.ApprovalRequestID == "" {
+		reqID, err := c.autoMerger.submitMergeApprovalRequest(ctx, prState)
+		if err != nil {
+			if errors.Is(err, ErrApprovalNotConfigured) {
+				c.log.Error("approval misconfig: env requires approval but pre_merge stage is disabled",
+					"pr", prState.PRNumber,
+					"env", c.config.EnvironmentName(),
+				)
+				prState.Stage = StageFailed
+				prState.Error = fmt.Sprintf(
+					"approval-misconfig: env %q has require_approval=true but approval.pre_merge.enabled=false → deadlock until config fixed",
+					c.config.EnvironmentName(),
+				)
+				c.autoMerger.postMisconfigComment(ctx, prState)
+				c.metrics.RecordPRFailed()
+				return nil
+			}
+			return err
 		}
-		// Misconfig: env requires approval but approval.pre_merge is disabled.
-		// Fail closed — do NOT retry. Post a single explanatory comment and stop.
-		if errors.Is(err, ErrApprovalNotConfigured) {
-			c.log.Error("approval misconfig detected: env requires approval but pre_merge stage is disabled",
+		prState.ApprovalRequestID = reqID
+		prState.ApprovalRequestAt = time.Now()
+		c.log.Info("approval request submitted, awaiting decision",
+			"pr", prState.PRNumber,
+			"request_id", reqID,
+		)
+		return nil // stay in StageAwaitApproval
+	}
+
+	// Path 2: request already submitted — poll for a decision (non-blocking).
+	resp, decided := c.autoMerger.checkMergeApprovalDecision(prState.ApprovalRequestID)
+	if !decided {
+		timeout := c.autoMerger.mergeApprovalTimeout()
+		if !prState.ApprovalRequestAt.IsZero() && time.Since(prState.ApprovalRequestAt) >= timeout {
+			defaultAction := c.autoMerger.mergeApprovalDefaultAction()
+			c.log.Warn("pre-merge approval timed out, applying default action",
 				"pr", prState.PRNumber,
-				"env", c.config.EnvironmentName(),
+				"default_action", defaultAction,
+				"elapsed", time.Since(prState.ApprovalRequestAt).Round(time.Second),
 			)
-			prState.Stage = StageFailed
-			prState.Error = fmt.Sprintf(
-				"approval-misconfig: env %q has require_approval=true but approval.pre_merge.enabled=false → deadlock until config fixed",
-				c.config.EnvironmentName(),
-			)
-			c.autoMerger.postMisconfigComment(ctx, prState)
-			c.metrics.RecordPRFailed()
-			return nil
+			// Cancel the pending request so the handler goroutine can be cleaned up.
+			if c.approvalMgr != nil {
+				c.approvalMgr.CancelPending(ctx, fmt.Sprintf("merge-pr-%d", prState.PRNumber))
+			}
+			if defaultAction == approval.DecisionApproved {
+				prState.ApprovalGranted = true
+				prState.Stage = StageMerging
+			} else {
+				prState.Stage = StageFailed
+				prState.Error = "pre-merge approval timed out"
+				c.metrics.RecordPRFailed()
+			}
 		}
-		return err
-	}
-	prState.Stage = StageMerged
-
-	// Notify merge success after approval
-	if c.notifier != nil {
-		if err := c.notifier.NotifyMerged(ctx, prState); err != nil {
-			c.log.Warn("failed to send merge notification", "error", err)
-		}
+		// No timeout yet — stay in StageAwaitApproval until the next poll cycle.
+		return nil
 	}
 
+	// Path 3: decision received — advance or abort.
+	c.log.Info("pre-merge approval decision received",
+		"pr", prState.PRNumber,
+		"decision", resp.Decision,
+		"by", resp.ApprovedBy,
+	)
+	switch resp.Decision {
+	case approval.DecisionApproved:
+		prState.ApprovalGranted = true
+		prState.Stage = StageMerging
+	default:
+		prState.Stage = StageFailed
+		prState.Error = fmt.Sprintf("pre-merge approval %s by %s", resp.Decision, resp.ApprovedBy)
+		c.metrics.RecordPRFailed()
+	}
 	return nil
 }
 

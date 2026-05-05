@@ -23,7 +23,8 @@ type Manager struct {
 // pendingRequest tracks an active approval request
 type pendingRequest struct {
 	Request    *Request
-	ResponseCh chan *Response
+	ResponseCh chan *Response    // legacy: unused in non-blocking flow
+	HandlerCh  <-chan *Response  // actual channel from handler (used by CheckDecision)
 	Handler    Handler
 	CancelFn   context.CancelFunc
 }
@@ -310,8 +311,12 @@ func (m *Manager) CancelPending(ctx context.Context, taskID string) {
 	m.mu.Unlock()
 
 	for _, pr := range toCancel {
-		pr.CancelFn()
-		_ = pr.Handler.CancelRequest(ctx, pr.Request.ID)
+		if pr.CancelFn != nil {
+			pr.CancelFn()
+		}
+		if pr.Handler != nil {
+			_ = pr.Handler.CancelRequest(ctx, pr.Request.ID)
+		}
 		m.log.Debug("Cancelled pending approval",
 			slog.String("request_id", pr.Request.ID),
 			slog.String("task_id", taskID))
@@ -328,4 +333,156 @@ func (m *Manager) GetPendingRequests() []*Request {
 		requests = append(requests, pr.Request)
 	}
 	return requests
+}
+
+// SubmitApprovalRequest sends an approval request without blocking and returns
+// the assigned request ID. Callers use CheckDecision to poll for a response on
+// subsequent ticks instead of waiting on a channel.
+func (m *Manager) SubmitApprovalRequest(ctx context.Context, req *Request) (string, error) {
+	if req.ID == "" {
+		req.ID = fmt.Sprintf("req-%d", time.Now().UnixNano())
+	}
+	req.CreatedAt = time.Now()
+
+	stageEnabled := m.IsStageEnabled(req.Stage)
+	if !stageEnabled {
+		if rule := m.checkRuleTriggers(req); rule == nil {
+			// Stage disabled and no rule triggered: auto-approve immediately.
+			ch := make(chan *Response, 1)
+			ch <- &Response{
+				RequestID:   req.ID,
+				Decision:    DecisionApproved,
+				ApprovedBy:  "system",
+				Comment:     "Auto-approved: stage not enabled",
+				RespondedAt: time.Now(),
+			}
+			m.mu.Lock()
+			m.pending[req.ID] = &pendingRequest{Request: req, HandlerCh: ch}
+			m.mu.Unlock()
+			return req.ID, nil
+		}
+		// A rule triggered — fall through to normal approval flow.
+	}
+
+	stageConfig := m.getStageConfig(req.Stage)
+	if stageConfig == nil {
+		stageConfig = &StageConfig{
+			Timeout:       m.config.DefaultTimeout,
+			DefaultAction: m.config.DefaultAction,
+		}
+	}
+
+	timeout := stageConfig.Timeout
+	if timeout == 0 {
+		timeout = m.config.DefaultTimeout
+	}
+	req.ExpiresAt = time.Now().Add(timeout)
+	if len(req.Approvers) == 0 {
+		req.Approvers = stageConfig.Approvers
+	}
+
+	m.mu.RLock()
+	var handler Handler
+	if req.PreferredChannel != "" {
+		if h, ok := m.handlers[req.PreferredChannel]; ok {
+			handler = h
+		} else {
+			m.log.Warn("preferred approval channel not registered, falling back to first-available",
+				slog.String("preferred_channel", req.PreferredChannel),
+				slog.String("task_id", req.TaskID))
+			for _, h := range m.handlers {
+				handler = h
+				break
+			}
+		}
+	} else {
+		for _, h := range m.handlers {
+			handler = h
+			break
+		}
+	}
+	m.mu.RUnlock()
+
+	if handler == nil {
+		// No handlers registered — pre-fill with default action.
+		ch := make(chan *Response, 1)
+		ch <- &Response{
+			RequestID:   req.ID,
+			Decision:    stageConfig.DefaultAction,
+			ApprovedBy:  "system",
+			Comment:     "No approval handlers configured",
+			RespondedAt: time.Now(),
+		}
+		m.mu.Lock()
+		m.pending[req.ID] = &pendingRequest{Request: req, HandlerCh: ch}
+		m.mu.Unlock()
+		return req.ID, nil
+	}
+
+	handlerCh, err := handler.SendApprovalRequest(ctx, req)
+	if err != nil {
+		return "", fmt.Errorf("failed to send approval request: %w", err)
+	}
+
+	m.log.Info("Submitted approval request",
+		slog.String("request_id", req.ID),
+		slog.String("task_id", req.TaskID),
+		slog.String("stage", string(req.Stage)),
+		slog.String("channel", handler.Name()))
+
+	m.mu.Lock()
+	m.pending[req.ID] = &pendingRequest{
+		Request:   req,
+		HandlerCh: handlerCh,
+		Handler:   handler,
+	}
+	m.mu.Unlock()
+
+	return req.ID, nil
+}
+
+// CheckDecision does a non-blocking poll for a decision on a pending approval request.
+// Returns (response, true) if a decision has arrived; (nil, false) if still waiting.
+func (m *Manager) CheckDecision(requestID string) (*Response, bool) {
+	m.mu.RLock()
+	pr, ok := m.pending[requestID]
+	m.mu.RUnlock()
+	if !ok {
+		return nil, false
+	}
+
+	select {
+	case resp := <-pr.HandlerCh:
+		m.mu.Lock()
+		delete(m.pending, requestID)
+		m.mu.Unlock()
+		m.log.Info("CheckDecision: decision received",
+			slog.String("request_id", requestID),
+			slog.String("decision", string(resp.Decision)))
+		return resp, true
+	default:
+		return nil, false
+	}
+}
+
+// PreMergeTimeout returns the configured timeout for the pre-merge approval stage.
+func (m *Manager) PreMergeTimeout() time.Duration {
+	if m.config.PreMerge != nil && m.config.PreMerge.Timeout > 0 {
+		return m.config.PreMerge.Timeout
+	}
+	if m.config.DefaultTimeout > 0 {
+		return m.config.DefaultTimeout
+	}
+	return 24 * time.Hour
+}
+
+// PreMergeDefaultAction returns the configured default action for pre-merge timeout.
+func (m *Manager) PreMergeDefaultAction() Decision {
+	if m.config.PreMerge != nil && m.config.PreMerge.DefaultAction != "" {
+		return m.config.PreMerge.DefaultAction
+	}
+	if m.config.DefaultAction != "" {
+		return m.config.DefaultAction
+	}
+	return DecisionRejected
 }

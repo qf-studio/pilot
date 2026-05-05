@@ -470,6 +470,15 @@ type PRState struct {
 	// posted to the linked issue. Prevents duplicate comments on state-machine
 	// re-entry for an already-merged PR (GH-2345).
 	MergeNotificationPosted bool
+	// ApprovalRequestID is the pending approval request ID used by the non-blocking
+	// handleAwaitApproval three-path flow. Empty means no request has been submitted yet.
+	ApprovalRequestID string
+	// ApprovalRequestAt is when the approval request was submitted, used to compare
+	// against the configured timeout without blocking processAllPRs.
+	ApprovalRequestAt time.Time
+	// ApprovalGranted is set to true once the pre-merge approval was explicitly given.
+	// handleMerging → MergePR skips re-requesting approval when this flag is set.
+	ApprovalGranted bool
 }
 
 // RepoOwnerAndName extracts the repository owner and name from the PR URL.

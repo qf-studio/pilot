@@ -4916,3 +4916,260 @@ func TestCIFixSizeGuard_APIError_FailOpen(t *testing.T) {
 		t.Error("fix issue MUST be created when ListPullRequestFiles fails (fail-open)")
 	}
 }
+
+// mockApprovalHandler is a controllable Handler for controller-level approval tests.
+type mockApprovalHandler struct {
+	name string
+	ch   chan *approval.Response
+}
+
+func newMockApprovalHandler(name string) *mockApprovalHandler {
+	return &mockApprovalHandler{name: name, ch: make(chan *approval.Response, 1)}
+}
+
+func (h *mockApprovalHandler) Name() string { return h.name }
+
+func (h *mockApprovalHandler) SendApprovalRequest(_ context.Context, _ *approval.Request) (<-chan *approval.Response, error) {
+	return h.ch, nil
+}
+
+func (h *mockApprovalHandler) CancelRequest(_ context.Context, _ string) error { return nil }
+
+func (h *mockApprovalHandler) sendDecision(resp *approval.Response) {
+	h.ch <- resp
+}
+
+// TestController_AwaitApproval_StaysInStageUntilDecision verifies that a PR in
+// StageAwaitApproval stays there across multiple ProcessPR calls while no decision
+// has been recorded, and advances to StageMerging once approval arrives.
+func TestController_AwaitApproval_StaysInStageUntilDecision(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Return a simple PR for the merge attempt
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("{}"))
+	}))
+	defer server.Close()
+
+	handler := newMockApprovalHandler("test")
+
+	approvalCfg := approval.DefaultConfig()
+	approvalCfg.Enabled = true
+	approvalCfg.PreMerge = &approval.StageConfig{
+		Enabled:       true,
+		Timeout:       1 * time.Hour, // long timeout — won't fire in test
+		DefaultAction: approval.DecisionRejected,
+	}
+	mgr := approval.NewManager(approvalCfg)
+	mgr.RegisterHandler(handler)
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.Environment = EnvProd // defaultEnvironments()["prod"].RequireApproval == true
+
+	c := NewController(cfg, ghClient, mgr, "owner", "repo")
+
+	prState := &PRState{
+		PRNumber: 77,
+		PRURL:    "https://github.com/owner/repo/pull/77",
+		HeadSHA:  "sha77",
+		Stage:    StageAwaitApproval,
+	}
+	c.mu.Lock()
+	c.activePRs[77] = prState
+	c.mu.Unlock()
+
+	ctx := context.Background()
+
+	// First call: submit the request, stay in StageAwaitApproval.
+	if err := c.handleAwaitApproval(ctx, prState); err != nil {
+		t.Fatalf("first handleAwaitApproval error: %v", err)
+	}
+	if prState.Stage != StageAwaitApproval {
+		t.Errorf("after first call: Stage = %s, want %s", prState.Stage, StageAwaitApproval)
+	}
+	if prState.ApprovalRequestID == "" {
+		t.Error("ApprovalRequestID should be set after first call")
+	}
+
+	// Second call (no decision yet): must still stay in StageAwaitApproval.
+	if err := c.handleAwaitApproval(ctx, prState); err != nil {
+		t.Fatalf("second handleAwaitApproval error: %v", err)
+	}
+	if prState.Stage != StageAwaitApproval {
+		t.Errorf("after second call (no decision): Stage = %s, want %s", prState.Stage, StageAwaitApproval)
+	}
+
+	// Inject an approval decision.
+	handler.sendDecision(&approval.Response{
+		RequestID:   prState.ApprovalRequestID,
+		Decision:    approval.DecisionApproved,
+		ApprovedBy:  "alice",
+		RespondedAt: time.Now(),
+	})
+
+	// Third call: decision is ready — must advance to StageMerging.
+	if err := c.handleAwaitApproval(ctx, prState); err != nil {
+		t.Fatalf("third handleAwaitApproval error: %v", err)
+	}
+	if prState.Stage != StageMerging {
+		t.Errorf("after approval: Stage = %s, want %s", prState.Stage, StageMerging)
+	}
+	if !prState.ApprovalGranted {
+		t.Error("ApprovalGranted should be true after approval")
+	}
+}
+
+// TestController_AwaitApproval_AppliesDefaultActionAtTimeout verifies that when
+// the configured timeout elapses without a decision, the default action is applied.
+func TestController_AwaitApproval_AppliesDefaultActionAtTimeout(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("{}"))
+	}))
+	defer server.Close()
+
+	handler := newMockApprovalHandler("test")
+
+	approvalCfg := approval.DefaultConfig()
+	approvalCfg.Enabled = true
+	approvalCfg.PreMerge = &approval.StageConfig{
+		Enabled:       true,
+		Timeout:       1 * time.Millisecond, // fires immediately
+		DefaultAction: approval.DecisionRejected,
+	}
+	mgr := approval.NewManager(approvalCfg)
+	mgr.RegisterHandler(handler)
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.Environment = EnvProd
+
+	c := NewController(cfg, ghClient, mgr, "owner", "repo")
+
+	prState := &PRState{
+		PRNumber:          88,
+		PRURL:             "https://github.com/owner/repo/pull/88",
+		HeadSHA:           "sha88",
+		Stage:             StageAwaitApproval,
+		ApprovalRequestID: "stale-req",
+		ApprovalRequestAt: time.Now().Add(-1 * time.Hour), // well past the 1ms timeout
+	}
+	c.mu.Lock()
+	c.activePRs[88] = prState
+	c.mu.Unlock()
+
+	ctx := context.Background()
+
+	if err := c.handleAwaitApproval(ctx, prState); err != nil {
+		t.Fatalf("handleAwaitApproval error: %v", err)
+	}
+
+	// Default action is DecisionRejected → StageFailed.
+	if prState.Stage != StageFailed {
+		t.Errorf("Stage = %s, want %s after timeout with default=rejected", prState.Stage, StageFailed)
+	}
+}
+
+// TestController_QueueNotStarved verifies that a PR stalled in StageAwaitApproval
+// (waiting for human input) does not block the processing of a second PR in the queue.
+func TestController_QueueNotStarved(t *testing.T) {
+	mergeCallCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/repos/owner/repo/pulls/11":
+			_, _ = w.Write(mustJSON(t, map[string]interface{}{"number": 11, "state": "open"}))
+		case r.URL.Path == "/repos/owner/repo/pulls/22":
+			_, _ = w.Write(mustJSON(t, map[string]interface{}{"number": 22, "state": "open"}))
+		case r.URL.Path == "/repos/owner/repo/pulls/11/merge":
+			mergeCallCount++
+			w.WriteHeader(http.StatusOK)
+		case r.URL.Path == "/repos/owner/repo/pulls/22/merge":
+			mergeCallCount++
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("{}"))
+		}
+	}))
+	defer server.Close()
+
+	// Handler for PR 11 never responds (simulates a pending human approval).
+	handler11 := newMockApprovalHandler("test")
+
+	approvalCfg := approval.DefaultConfig()
+	approvalCfg.Enabled = true
+	approvalCfg.PreMerge = &approval.StageConfig{
+		Enabled:       true,
+		Timeout:       1 * time.Hour, // long — won't fire
+		DefaultAction: approval.DecisionRejected,
+	}
+	mgr := approval.NewManager(approvalCfg)
+	mgr.RegisterHandler(handler11)
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.Environment = EnvProd
+
+	c := NewController(cfg, ghClient, mgr, "owner", "repo")
+
+	// PR 11: approval request already submitted, waiting for human (no decision).
+	pr11 := &PRState{
+		PRNumber:          11,
+		PRURL:             "https://github.com/owner/repo/pull/11",
+		HeadSHA:           "sha11",
+		Stage:             StageAwaitApproval,
+		ApprovalRequestID: "pending-req-11",
+		ApprovalRequestAt: time.Now(),
+	}
+	// PR 22: approval already granted, ready to merge.
+	pr22 := &PRState{
+		PRNumber:        22,
+		PRURL:           "https://github.com/owner/repo/pull/22",
+		HeadSHA:         "sha22",
+		Stage:           StageAwaitApproval,
+		ApprovalGranted: false,
+	}
+
+	c.mu.Lock()
+	c.activePRs[11] = pr11
+	c.activePRs[22] = pr22
+	c.mu.Unlock()
+
+	ctx := context.Background()
+
+	// Process PR 11: must return quickly (no decision → stay in StageAwaitApproval).
+	start := time.Now()
+	if err := c.handleAwaitApproval(ctx, pr11); err != nil {
+		t.Fatalf("handleAwaitApproval PR11 error: %v", err)
+	}
+	elapsed := time.Since(start)
+	if elapsed > 200*time.Millisecond {
+		t.Errorf("handleAwaitApproval blocked for %s; expected non-blocking (<200ms)", elapsed)
+	}
+	if pr11.Stage != StageAwaitApproval {
+		t.Errorf("PR11 stage = %s, want %s (should stay pending)", pr11.Stage, StageAwaitApproval)
+	}
+
+	// Process PR 22: first call submits the request and stays in StageAwaitApproval.
+	if err := c.handleAwaitApproval(ctx, pr22); err != nil {
+		t.Fatalf("handleAwaitApproval PR22 submit error: %v", err)
+	}
+	// Inject approval for PR 22.
+	handler11.sendDecision(&approval.Response{
+		RequestID:   pr22.ApprovalRequestID,
+		Decision:    approval.DecisionApproved,
+		ApprovedBy:  "bob",
+		RespondedAt: time.Now(),
+	})
+	// Second call: decision arrives, PR 22 must advance.
+	if err := c.handleAwaitApproval(ctx, pr22); err != nil {
+		t.Fatalf("handleAwaitApproval PR22 decision error: %v", err)
+	}
+	if pr22.Stage != StageMerging {
+		t.Errorf("PR22 stage = %s, want %s after approval", pr22.Stage, StageMerging)
+	}
+	// PR 11 must remain untouched.
+	if pr11.Stage != StageAwaitApproval {
+		t.Errorf("PR11 stage changed to %s; approval stall must not affect other PRs", pr11.Stage)
+	}
+}

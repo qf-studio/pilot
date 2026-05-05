@@ -122,6 +122,10 @@ func (s *StateStore) migrate() error {
 			result TEXT DEFAULT '',
 			PRIMARY KEY (adapter, issue_id)
 		)`,
+		// GH-2669: Non-blocking approval fields for handleAwaitApproval three-path flow.
+		`ALTER TABLE autopilot_pr_state ADD COLUMN approval_request_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE autopilot_pr_state ADD COLUMN approval_request_at DATETIME`,
+		`ALTER TABLE autopilot_pr_state ADD COLUMN approval_granted INTEGER NOT NULL DEFAULT 0`,
 	}
 
 	for _, m := range migrations {
@@ -143,8 +147,9 @@ func (s *StateStore) SavePRState(pr *PRState) error {
 			pr_number, pr_url, issue_number, branch_name, head_sha,
 			stage, ci_status, last_checked, ci_wait_started_at,
 			merge_attempts, error, created_at, updated_at,
-			release_version, release_bump_type, merge_notification_posted
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?)
+			release_version, release_bump_type, merge_notification_posted,
+			approval_request_id, approval_request_at, approval_granted
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(pr_number) DO UPDATE SET
 			pr_url = excluded.pr_url,
 			issue_number = excluded.issue_number,
@@ -159,13 +164,17 @@ func (s *StateStore) SavePRState(pr *PRState) error {
 			updated_at = CURRENT_TIMESTAMP,
 			release_version = excluded.release_version,
 			release_bump_type = excluded.release_bump_type,
-			merge_notification_posted = excluded.merge_notification_posted
+			merge_notification_posted = excluded.merge_notification_posted,
+			approval_request_id = excluded.approval_request_id,
+			approval_request_at = excluded.approval_request_at,
+			approval_granted = excluded.approval_granted
 	`,
 		pr.PRNumber, pr.PRURL, pr.IssueNumber, pr.BranchName, pr.HeadSHA,
 		string(pr.Stage), string(pr.CIStatus),
 		nullTime(pr.LastChecked), nullTime(pr.CIWaitStartedAt),
 		pr.MergeAttempts, pr.Error, nullTime(pr.CreatedAt),
 		pr.ReleaseVersion, string(pr.ReleaseBumpType), pr.MergeNotificationPosted,
+		pr.ApprovalRequestID, nullTime(pr.ApprovalRequestAt), pr.ApprovalGranted,
 	)
 	return err
 }
@@ -177,7 +186,8 @@ func (s *StateStore) GetPRState(prNumber int) (*PRState, error) {
 		SELECT pr_number, pr_url, issue_number, branch_name, head_sha,
 			stage, ci_status, last_checked, ci_wait_started_at,
 			merge_attempts, error, created_at,
-			release_version, release_bump_type, merge_notification_posted
+			release_version, release_bump_type, merge_notification_posted,
+			approval_request_id, approval_request_at, approval_granted
 		FROM autopilot_pr_state WHERE pr_number = ?
 	`, prNumber)
 
@@ -197,7 +207,8 @@ func (s *StateStore) LoadAllPRStates() ([]*PRState, error) {
 		SELECT pr_number, pr_url, issue_number, branch_name, head_sha,
 			stage, ci_status, last_checked, ci_wait_started_at,
 			merge_attempts, error, created_at,
-			release_version, release_bump_type, merge_notification_posted
+			release_version, release_bump_type, merge_notification_posted,
+			approval_request_id, approval_request_at, approval_granted
 		FROM autopilot_pr_state
 	`)
 	if err != nil {
@@ -208,7 +219,7 @@ func (s *StateStore) LoadAllPRStates() ([]*PRState, error) {
 	var states []*PRState
 	for rows.Next() {
 		var pr PRState
-		var lastChecked, ciWaitStartedAt, createdAt sql.NullTime
+		var lastChecked, ciWaitStartedAt, createdAt, approvalRequestAt sql.NullTime
 		var stage, ciStatus, relBumpType string
 
 		if err := rows.Scan(
@@ -216,6 +227,7 @@ func (s *StateStore) LoadAllPRStates() ([]*PRState, error) {
 			&stage, &ciStatus, &lastChecked, &ciWaitStartedAt,
 			&pr.MergeAttempts, &pr.Error, &createdAt,
 			&pr.ReleaseVersion, &relBumpType, &pr.MergeNotificationPosted,
+			&pr.ApprovalRequestID, &approvalRequestAt, &pr.ApprovalGranted,
 		); err != nil {
 			return nil, err
 		}
@@ -231,6 +243,9 @@ func (s *StateStore) LoadAllPRStates() ([]*PRState, error) {
 		}
 		if createdAt.Valid {
 			pr.CreatedAt = createdAt.Time
+		}
+		if approvalRequestAt.Valid {
+			pr.ApprovalRequestAt = approvalRequestAt.Time
 		}
 		states = append(states, &pr)
 	}
@@ -800,7 +815,7 @@ func (s *StateStore) PurgeTerminalPRStates(olderThan time.Duration) (int64, erro
 // scanPRState scans a single row into a PRState.
 func scanPRState(row *sql.Row) (*PRState, error) {
 	var pr PRState
-	var lastChecked, ciWaitStartedAt, createdAt sql.NullTime
+	var lastChecked, ciWaitStartedAt, createdAt, approvalRequestAt sql.NullTime
 	var stage, ciStatus, relBumpType string
 
 	err := row.Scan(
@@ -808,6 +823,7 @@ func scanPRState(row *sql.Row) (*PRState, error) {
 		&stage, &ciStatus, &lastChecked, &ciWaitStartedAt,
 		&pr.MergeAttempts, &pr.Error, &createdAt,
 		&pr.ReleaseVersion, &relBumpType, &pr.MergeNotificationPosted,
+		&pr.ApprovalRequestID, &approvalRequestAt, &pr.ApprovalGranted,
 	)
 	if err != nil {
 		return nil, err
@@ -824,6 +840,9 @@ func scanPRState(row *sql.Row) (*PRState, error) {
 	}
 	if createdAt.Valid {
 		pr.CreatedAt = createdAt.Time
+	}
+	if approvalRequestAt.Valid {
+		pr.ApprovalRequestAt = approvalRequestAt.Time
 	}
 	return &pr, nil
 }
