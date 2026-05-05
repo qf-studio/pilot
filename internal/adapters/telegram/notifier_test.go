@@ -394,6 +394,17 @@ func TestEscapeMarkdownNotifier(t *testing.T) {
 	}
 }
 
+// TestDefaultApprovalConfig asserts approval is enabled by default for back-compat
+func TestDefaultApprovalConfig(t *testing.T) {
+	cfg := DefaultApprovalConfig()
+	if cfg == nil {
+		t.Fatal("DefaultApprovalConfig returned nil")
+	}
+	if !cfg.Enabled {
+		t.Error("Enabled should be true by default")
+	}
+}
+
 // TestDefaultConfigPlainTextMode tests that PlainTextMode defaults to true
 func TestDefaultConfigPlainTextMode(t *testing.T) {
 	config := DefaultConfig()
