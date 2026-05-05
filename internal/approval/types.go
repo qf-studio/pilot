@@ -52,6 +52,15 @@ type Response struct {
 	RespondedAt time.Time // When response was given
 }
 
+// PRStateWriter is the storage interface used by the approval package to record
+// decisions back onto the execution (PR state) row. The memory.Store satisfies
+// this interface; callers may also provide test doubles.
+type PRStateWriter interface {
+	// SetApprovalDecision persists the approval decision for the execution
+	// linked to requestID. Returns sql.ErrNoRows if no matching execution exists.
+	SetApprovalDecision(ctx context.Context, requestID string, decision string, by string) error
+}
+
 // Handler is the interface for approval channel handlers
 // Each channel (Telegram, Slack, etc.) implements this interface
 type Handler interface {
