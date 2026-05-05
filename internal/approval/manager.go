@@ -345,6 +345,10 @@ func (m *Manager) WithStateWriter(w PRStateWriter) *Manager {
 // (called externally, e.g. from a Telegram callback) or by the background
 // goroutine when the handler's response channel fires.
 //
+// Decision retrieval: RecordDecision persists the outcome to the executions
+// table via PRStateWriter. Callers should poll PRState.ApprovalDecision on
+// subsequent ticks rather than awaiting a channel (see controller.handleAwaitApproval).
+//
 // This is the async counterpart to RequestApproval. Both coexist; the
 // config.async_dispatch flag indicates which path callers should prefer.
 func (m *Manager) SubmitApprovalRequest(ctx context.Context, req *Request) (string, error) {
