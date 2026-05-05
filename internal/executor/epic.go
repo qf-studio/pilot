@@ -816,7 +816,9 @@ func (r *Runner) createSubIssuesViaAdapter(ctx context.Context, plan *EpicPlan) 
 		// Build the issue body
 		body := subtask.Description
 		if plan.ParentTask.ID != "" {
-			body = fmt.Sprintf("Parent: %s\n\n%s", plan.ParentTask.ID, body)
+			// GH-2695: mirror the GitHub path — inject autopilot-meta marker for parity.
+			body = fmt.Sprintf("<!--autopilot-meta\nparent: %s\ninherited-spec: true\n-->\n\nParent: %s\n\n%s",
+				plan.ParentTask.ID, plan.ParentTask.ID, body)
 		}
 
 		// Wire DependsOn annotations into the body (GH-1794)
@@ -916,7 +918,11 @@ func (r *Runner) createSubIssuesViaGitHub(ctx context.Context, plan *EpicPlan, e
 		// Build the issue body
 		body := subtask.Description
 		if plan.ParentTask != nil && plan.ParentTask.ID != "" {
-			body = fmt.Sprintf("Parent: %s\n\n%s", plan.ParentTask.ID, body)
+			// GH-2695: inject autopilot-meta marker so spec_validator's inherited-spec
+			// bailout path recognises this as a decomposer-generated sub-issue and skips
+			// the full spec check, delegating to the parent's validation result instead.
+			body = fmt.Sprintf("<!--autopilot-meta\nparent: %s\ninherited-spec: true\n-->\n\nParent: %s\n\n%s",
+				plan.ParentTask.ID, plan.ParentTask.ID, body)
 		}
 
 		// Wire DependsOn annotations into the body (GH-1794)
