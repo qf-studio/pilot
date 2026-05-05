@@ -9,7 +9,16 @@ import (
 	"time"
 
 	"github.com/qf-studio/pilot/internal/logging"
+	"github.com/qf-studio/pilot/internal/memory"
 )
+
+// PendingApprovalStore persists pending approval requests across restarts.
+// *memory.Store satisfies this interface directly.
+type PendingApprovalStore interface {
+	InsertPendingApproval(*memory.PendingApproval) error
+	DeletePendingApproval(id string) error
+	LoadPendingApprovals() ([]*memory.PendingApproval, error)
+}
 
 // TelegramClient defines the interface for Telegram operations
 // This allows the approval handler to use the existing Telegram client
@@ -42,6 +51,7 @@ type TelegramHandler struct {
 	pending map[string]*telegramPending // requestID -> pending state
 	mu      sync.RWMutex
 	log     *slog.Logger
+	store   PendingApprovalStore // optional; enables restart persistence
 }
 
 // telegramPending tracks a pending Telegram approval request
@@ -65,6 +75,66 @@ func NewTelegramHandler(client TelegramClient, chatID string) *TelegramHandler {
 // Name returns the handler name
 func (h *TelegramHandler) Name() string {
 	return "telegram"
+}
+
+// WithStore attaches a persistence store so pending approvals survive restarts.
+// Returns h to allow builder-style chaining after NewTelegramHandler.
+func (h *TelegramHandler) WithStore(store PendingApprovalStore) *TelegramHandler {
+	h.store = store
+	return h
+}
+
+// Rehydrate loads persisted pending approvals from the store and re-inserts them
+// into the in-memory map so that button taps that arrive after a restart are
+// processed rather than answered with "expired". Expired rows are pruned.
+// No-op when no store is attached.
+func (h *TelegramHandler) Rehydrate(ctx context.Context) error {
+	if h.store == nil {
+		return nil
+	}
+	rows, err := h.store.LoadPendingApprovals()
+	if err != nil {
+		return fmt.Errorf("rehydrate: load pending approvals: %w", err)
+	}
+	now := time.Now()
+	rehydrated := 0
+	for _, row := range rows {
+		if row.ExpiresAt.Before(now) {
+			_ = h.store.DeletePendingApproval(row.ID)
+			continue
+		}
+		req := &Request{
+			ID:               row.ID,
+			TaskID:           row.TaskID,
+			Stage:            Stage(row.Stage),
+			Title:            row.Title,
+			Description:      row.Description,
+			Metadata:         row.Metadata,
+			Approvers:        row.Approvers,
+			PreferredChannel: row.PreferredChannel,
+			CreatedAt:        row.CreatedAt,
+			ExpiresAt:        row.ExpiresAt,
+		}
+		destChatID := h.chatID
+		if len(req.Approvers) > 0 {
+			destChatID = req.Approvers[0]
+		}
+		responseCh := make(chan *Response, 1)
+		h.mu.Lock()
+		if _, exists := h.pending[req.ID]; !exists {
+			h.pending[req.ID] = &telegramPending{
+				Request:    req,
+				ChatID:     destChatID,
+				ResponseCh: responseCh,
+			}
+			rehydrated++
+		}
+		h.mu.Unlock()
+	}
+	if rehydrated > 0 {
+		h.log.Info("rehydrated pending approvals", slog.Int("count", rehydrated))
+	}
+	return nil
 }
 
 // SendApprovalRequest sends an approval request via Telegram
@@ -104,6 +174,25 @@ func (h *TelegramHandler) SendApprovalRequest(ctx context.Context, req *Request)
 	}
 	h.mu.Unlock()
 
+	// Best-effort persistence so the request survives a restart.
+	if h.store != nil {
+		row := &memory.PendingApproval{
+			ID:               req.ID,
+			TaskID:           req.TaskID,
+			Stage:            string(req.Stage),
+			Title:            req.Title,
+			Description:      req.Description,
+			Metadata:         req.Metadata,
+			Approvers:        req.Approvers,
+			PreferredChannel: req.PreferredChannel,
+			CreatedAt:        req.CreatedAt,
+			ExpiresAt:        req.ExpiresAt,
+		}
+		if err := h.store.InsertPendingApproval(row); err != nil {
+			h.log.Warn("failed to persist pending approval", slog.String("request_id", req.ID), slog.Any("error", err))
+		}
+	}
+
 	h.log.Debug("Sent approval request",
 		slog.String("request_id", req.ID),
 		slog.String("chat_id", destChatID),
@@ -123,6 +212,12 @@ func (h *TelegramHandler) CancelRequest(ctx context.Context, requestID string) e
 
 	if !exists {
 		return nil
+	}
+
+	if h.store != nil {
+		if err := h.store.DeletePendingApproval(requestID); err != nil {
+			h.log.Warn("failed to delete persisted approval on cancel", slog.String("request_id", requestID), slog.Any("error", err))
+		}
 	}
 
 	// Update message to show cancelled
@@ -166,6 +261,12 @@ func (h *TelegramHandler) HandleCallback(ctx context.Context, callbackID, data, 
 	if !exists {
 		_ = h.client.AnswerCallback(ctx, callbackID, "Request expired or already processed")
 		return true
+	}
+
+	if h.store != nil {
+		if err := h.store.DeletePendingApproval(requestID); err != nil {
+			h.log.Warn("failed to delete persisted approval on callback", slog.String("request_id", requestID), slog.Any("error", err))
+		}
 	}
 
 	// Answer callback
