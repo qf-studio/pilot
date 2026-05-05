@@ -48,6 +48,7 @@ type TelegramHandler struct {
 type telegramPending struct {
 	Request    *Request
 	MessageID  int64
+	ChatID     string // resolved destination — may differ from h.chatID when approvers are set
 	ResponseCh chan *Response
 }
 
@@ -76,8 +77,14 @@ func (h *TelegramHandler) SendApprovalRequest(ctx context.Context, req *Request)
 	// Create inline keyboard with approve/reject buttons
 	keyboard := h.createApprovalKeyboard(req)
 
+	// Resolve destination: use first approver's chat_id when available
+	destChatID := h.chatID
+	if len(req.Approvers) > 0 {
+		destChatID = req.Approvers[0]
+	}
+
 	// Send message
-	resp, err := h.client.SendMessageWithKeyboard(ctx, h.chatID, text, "", keyboard)
+	resp, err := h.client.SendMessageWithKeyboard(ctx, destChatID, text, "", keyboard)
 	if err != nil {
 		return nil, fmt.Errorf("failed to send Telegram message: %w", err)
 	}
@@ -92,12 +99,14 @@ func (h *TelegramHandler) SendApprovalRequest(ctx context.Context, req *Request)
 	h.pending[req.ID] = &telegramPending{
 		Request:    req,
 		MessageID:  messageID,
+		ChatID:     destChatID,
 		ResponseCh: responseCh,
 	}
 	h.mu.Unlock()
 
 	h.log.Debug("Sent approval request",
 		slog.String("request_id", req.ID),
+		slog.String("chat_id", destChatID),
 		slog.Int64("message_id", messageID))
 
 	return responseCh, nil
@@ -119,7 +128,7 @@ func (h *TelegramHandler) CancelRequest(ctx context.Context, requestID string) e
 	// Update message to show cancelled
 	if pending.MessageID != 0 {
 		text := h.formatCancelledMessage(pending.Request)
-		if err := h.client.EditMessage(ctx, h.chatID, pending.MessageID, text, ""); err != nil {
+		if err := h.client.EditMessage(ctx, pending.ChatID, pending.MessageID, text, ""); err != nil {
 			h.log.Warn("Failed to edit cancelled message", slog.Any("error", err))
 		}
 	}
@@ -171,7 +180,7 @@ func (h *TelegramHandler) HandleCallback(ctx context.Context, callbackID, data, 
 	// Update message to show result
 	if pending.MessageID != 0 {
 		text := h.formatResponseMessage(pending.Request, decision, username)
-		if err := h.client.EditMessage(ctx, h.chatID, pending.MessageID, text, ""); err != nil {
+		if err := h.client.EditMessage(ctx, pending.ChatID, pending.MessageID, text, ""); err != nil {
 			h.log.Warn("Failed to edit response message", slog.Any("error", err))
 		}
 	}
