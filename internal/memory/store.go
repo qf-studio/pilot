@@ -299,6 +299,20 @@ func (s *Store) migrate() error {
 		`CREATE INDEX IF NOT EXISTS idx_eval_results_task ON eval_results(task_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_eval_results_model ON eval_results(model)`,
 		`CREATE INDEX IF NOT EXISTS idx_eval_results_created ON eval_results(created_at)`,
+		// Pending approval requests awaiting human decision (GH-2657)
+		`CREATE TABLE IF NOT EXISTS approval_pending (
+			id TEXT PRIMARY KEY,
+			task_id TEXT NOT NULL,
+			stage TEXT NOT NULL,
+			title TEXT NOT NULL,
+			description TEXT DEFAULT '',
+			metadata TEXT DEFAULT '',
+			approvers TEXT DEFAULT '',
+			preferred_channel TEXT DEFAULT '',
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			expires_at DATETIME NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_approval_pending_expires ON approval_pending(expires_at)`,
 	}
 
 	for _, migration := range migrations {
