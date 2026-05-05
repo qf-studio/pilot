@@ -470,6 +470,12 @@ type PRState struct {
 	// posted to the linked issue. Prevents duplicate comments on state-machine
 	// re-entry for an already-merged PR (GH-2345).
 	MergeNotificationPosted bool
+	// ApprovalRequestID holds the ID of the submitted async approval request (set on first tick in StageAwaitApproval).
+	ApprovalRequestID string
+	// ApprovalDecision holds the recorded async approval decision ("approved", "rejected", "timeout").
+	ApprovalDecision string
+	// ApprovalRequestedAt is when the async approval request was first submitted.
+	ApprovalRequestedAt time.Time
 }
 
 // RepoOwnerAndName extracts the repository owner and name from the PR URL.

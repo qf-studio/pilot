@@ -72,6 +72,14 @@ func (m *AutoMerger) MergePR(ctx context.Context, prState *PRState) error {
 		}
 	}
 
+	// GH-2685: async dispatch path already obtained human approval on a prior tick.
+	// Skip the blocking requestApproval call so handleMerging is non-blocking.
+	if requireApproval && prState.ApprovalDecision == string(approval.DecisionApproved) {
+		m.log.Info("async approval already granted, skipping blocking request",
+			"pr", prState.PRNumber, "request_id", prState.ApprovalRequestID)
+		requireApproval = false
+	}
+
 	if requireApproval {
 		approved, err := m.requestApproval(ctx, prState)
 		if err != nil {
