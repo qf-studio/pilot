@@ -340,6 +340,7 @@
 | Slack approval | ✅ | approval | - | `adapters.slack.approval` | Interactive messages, registered in main.go |
 | Telegram approval | ✅ | approval | - | - | Inline keyboards, registered in main.go |
 | Rule-based triggers | ✅ | approval | - | `approval.rules[]` | RuleEvaluator with 4 matchers wired into Manager (GH-636) |
+| Async dispatch | ✅ | approval | - | `approval.async_dispatch` | SubmitApprovalRequest + RecordDecision; coexists with blocking path (GH-2670) |
 
 ## Autopilot (v0.19.1+)
 
