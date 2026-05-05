@@ -45,6 +45,11 @@ func (a *MemberResolverAdapter) ResolveIdentity(senderID string) (string, error)
 	return a.Inner.ResolveTelegramIdentity(id, "")
 }
 
+// ApprovalCallbackHandler handles approve:/reject: inline-keyboard callbacks dispatched from Telegram.
+type ApprovalCallbackHandler interface {
+	HandleCallback(ctx context.Context, callbackID, data, userID, username string) bool
+}
+
 // PendingTask represents a task awaiting confirmation
 type PendingTask struct {
 	TaskID      string
@@ -81,6 +86,7 @@ type Handler struct {
 	plainTextMode    bool                   // Use plain text instead of Markdown
 	botUsername      string                 // Bot username for mention stripping (GH-2129)
 	commsHandler     *comms.Handler         // Shared message handler (GH-2143)
+	approvalHandler  ApprovalCallbackHandler // Routes approve:/reject: callbacks (GH-2651)
 }
 
 // HandlerConfig holds configuration for the Telegram handler
@@ -95,8 +101,9 @@ type HandlerConfig struct {
 	RateLimit      *comms.RateLimitConfig // Rate limiting config (optional)
 	LLMClassifier  *LLMClassifierConfig   // LLM intent classification config (optional)
 	MemberResolver MemberResolver         // Team member resolver for RBAC (optional, GH-634)
-	CommsHandler   *comms.Handler         // Shared message handler (optional, GH-2143)
-	Client         *Client                // Optional reuse of existing client
+	CommsHandler    *comms.Handler          // Shared message handler (optional, GH-2143)
+	Client          *Client                 // Optional reuse of existing client
+	ApprovalHandler ApprovalCallbackHandler // Routes approve:/reject: callbacks (optional, GH-2651)
 }
 
 // NewHandler creates a new Telegram message handler
@@ -121,15 +128,16 @@ func NewHandler(config *HandlerConfig, runner *executor.Runner) *Handler {
 	}
 
 	h := &Handler{
-		client:        client,
-		runner:        runner,
-		projects:      config.Projects,
-		projectPath:   projectPath,
-		allowedIDs:    allowedIDs,
-		stopCh:        make(chan struct{}),
-		store:         config.Store,
-		plainTextMode: config.PlainTextMode,
-		commsHandler:  config.CommsHandler,
+		client:          client,
+		runner:          runner,
+		projects:        config.Projects,
+		projectPath:     projectPath,
+		allowedIDs:      allowedIDs,
+		stopCh:          make(chan struct{}),
+		store:           config.Store,
+		plainTextMode:   config.PlainTextMode,
+		commsHandler:    config.CommsHandler,
+		approvalHandler: config.ApprovalHandler,
 	}
 
 	// Initialize command handler
@@ -417,6 +425,19 @@ func (h *Handler) handleCallback(ctx context.Context, callback *CallbackQuery) {
 		h.cmdHandler.HandleCallbackSwitch(ctx, chatID, projectName)
 	case data == "voice_check_status":
 		h.sendVoiceSetupPrompt(ctx, chatID)
+	case strings.HasPrefix(data, "approve:") || strings.HasPrefix(data, "reject:"):
+		if h.approvalHandler != nil {
+			userID := ""
+			username := ""
+			if callback.From != nil {
+				userID = strconv.FormatInt(callback.From.ID, 10)
+				username = callback.From.Username
+				if username == "" {
+					username = callback.From.FirstName
+				}
+			}
+			h.approvalHandler.HandleCallback(ctx, callback.ID, data, userID, username)
+		}
 	}
 }
 

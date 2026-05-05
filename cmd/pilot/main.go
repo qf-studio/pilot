@@ -332,6 +332,7 @@ Examples:
 			var gwAutopilotController *autopilot.Controller
 			var gwAutopilotStateStore *autopilot.StateStore
 			var gwAlertsEngine *alerts.Engine
+			var gwTgApprovalHandler *approval.TelegramHandler
 
 			if needsPollingInfra {
 				// Create shared runner with config (GH-956: enables worktree isolation)
@@ -421,8 +422,8 @@ Examples:
 				if cfg.Adapters.Telegram != nil && cfg.Adapters.Telegram.Enabled && cfg.Adapters.Telegram.BotToken != "" &&
 					(cfg.Adapters.Telegram.Approval == nil || cfg.Adapters.Telegram.Approval.Enabled) {
 					tgClient := telegram.NewClient(cfg.Adapters.Telegram.BotToken)
-					tgApprovalHandler := approval.NewTelegramHandler(&telegramApprovalAdapter{client: tgClient}, cfg.Adapters.Telegram.ChatID)
-					approvalMgr.RegisterHandler(tgApprovalHandler)
+					gwTgApprovalHandler = approval.NewTelegramHandler(&telegramApprovalAdapter{client: tgClient}, cfg.Adapters.Telegram.ChatID)
+					approvalMgr.RegisterHandler(gwTgApprovalHandler)
 				}
 
 				// Register Slack approval handler if enabled
@@ -595,6 +596,10 @@ Examples:
 				// GH-634: Wire team member resolver for Telegram RBAC in gateway mode
 				if teamAdapter != nil {
 					pilotOpts = append(pilotOpts, pilot.WithTelegramMemberResolver(teamAdapter))
+				}
+				// GH-2651: Wire approval handler so approve:/reject: button taps are dispatched
+				if gwTgApprovalHandler != nil {
+					pilotOpts = append(pilotOpts, pilot.WithTelegramApprovalHandler(gwTgApprovalHandler))
 				}
 				logging.WithComponent("start").Info("Telegram polling enabled in gateway mode")
 			}
@@ -1313,11 +1318,13 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 	approvalMgr := approval.NewManager(cfg.Approval)
 
 	// Register Telegram approval handler if enabled
+	var tgApprovalHandler telegram.ApprovalCallbackHandler
 	if cfg.Adapters.Telegram != nil && cfg.Adapters.Telegram.Enabled && cfg.Adapters.Telegram.BotToken != "" &&
 		(cfg.Adapters.Telegram.Approval == nil || cfg.Adapters.Telegram.Approval.Enabled) {
-		tgClient := telegram.NewClient(cfg.Adapters.Telegram.BotToken)
-		tgApprovalHandler := approval.NewTelegramHandler(&telegramApprovalAdapter{client: tgClient}, cfg.Adapters.Telegram.ChatID)
-		approvalMgr.RegisterHandler(tgApprovalHandler)
+		tgApprovalClient := telegram.NewClient(cfg.Adapters.Telegram.BotToken)
+		tgApprovalHandlerImpl := approval.NewTelegramHandler(&telegramApprovalAdapter{client: tgApprovalClient}, cfg.Adapters.Telegram.ChatID)
+		approvalMgr.RegisterHandler(tgApprovalHandlerImpl)
+		tgApprovalHandler = tgApprovalHandlerImpl
 		logging.WithComponent("start").Info("registered Telegram approval handler")
 	}
 
@@ -1725,13 +1732,14 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 		})
 
 		tgConfig := &telegram.HandlerConfig{
-			Client:        tgClient,
-			CommsHandler:  tgCommsHandler,
-			ProjectPath:   projectPath,
-			Projects:      config.NewProjectSource(cfg),
-			AllowedIDs:    allowedIDs,
-			Transcription: cfg.Adapters.Telegram.Transcription,
-			Store:         store,
+			Client:          tgClient,
+			CommsHandler:    tgCommsHandler,
+			ProjectPath:     projectPath,
+			Projects:        config.NewProjectSource(cfg),
+			AllowedIDs:      allowedIDs,
+			Transcription:   cfg.Adapters.Telegram.Transcription,
+			Store:           store,
+			ApprovalHandler: tgApprovalHandler,
 		}
 		tgHandler = telegram.NewHandler(tgConfig, runner)
 
