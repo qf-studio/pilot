@@ -28,10 +28,10 @@ type GitHubHandler struct {
 
 // githubPending tracks a pending GitHub approval request
 type githubPending struct {
-	Request    *Request
-	PRNumber   int
-	ResponseCh chan *Response
-	CancelFn   context.CancelFunc
+	Request  *Request
+	PRNumber int
+	recorder RecordDecisionFunc // called when PR is approved or changes requested
+	CancelFn context.CancelFunc // cancels the polling goroutine
 }
 
 // GitHubHandlerConfig holds configuration for the GitHub approval handler
@@ -63,31 +63,31 @@ func (h *GitHubHandler) Name() string {
 	return "github"
 }
 
-// SendApprovalRequest starts polling for PR approval reviews
-func (h *GitHubHandler) SendApprovalRequest(ctx context.Context, req *Request) (<-chan *Response, error) {
-	responseCh := make(chan *Response, 1)
+// setRecorder wires the manager's RecordDecision as the default recorder.
+// Called automatically by Manager.RegisterHandler. GitHub has no rehydrate path
+// so this is a no-op; recorder is always passed per-request via SendApprovalRequest.
+func (h *GitHubHandler) setRecorder(_ RecordDecisionFunc) {}
 
-	// Extract PR number from metadata
+// SendApprovalRequest starts polling for PR approval reviews (non-blocking).
+// recorder is called when the PR is approved or changes are requested.
+func (h *GitHubHandler) SendApprovalRequest(ctx context.Context, req *Request, recorder RecordDecisionFunc) error {
 	prNumber, ok := req.Metadata["pr_number"].(int)
 	if !ok {
-		// Try float64 (JSON unmarshaling)
 		if prFloat, ok := req.Metadata["pr_number"].(float64); ok {
 			prNumber = int(prFloat)
 		} else {
-			return nil, fmt.Errorf("pr_number missing from approval request metadata")
+			return fmt.Errorf("pr_number missing from approval request metadata")
 		}
 	}
 
-	// Create cancellable context for polling
 	pollCtx, cancelFn := context.WithCancel(ctx)
 
-	// Track pending request
 	h.mu.Lock()
 	h.pending[req.ID] = &githubPending{
-		Request:    req,
-		PRNumber:   prNumber,
-		ResponseCh: responseCh,
-		CancelFn:   cancelFn,
+		Request:  req,
+		PRNumber: prNumber,
+		recorder: recorder,
+		CancelFn: cancelFn,
 	}
 	h.mu.Unlock()
 
@@ -96,10 +96,9 @@ func (h *GitHubHandler) SendApprovalRequest(ctx context.Context, req *Request) (
 		slog.Int("pr_number", prNumber),
 		slog.Duration("poll_interval", h.pollInterval))
 
-	// Start polling goroutine
 	go h.pollForApproval(pollCtx, req.ID)
 
-	return responseCh, nil
+	return nil
 }
 
 // pollForApproval polls GitHub for approval reviews
@@ -107,7 +106,6 @@ func (h *GitHubHandler) pollForApproval(ctx context.Context, requestID string) {
 	ticker := time.NewTicker(h.pollInterval)
 	defer ticker.Stop()
 
-	// Check immediately first
 	if h.checkApproval(ctx, requestID) {
 		return
 	}
@@ -126,14 +124,14 @@ func (h *GitHubHandler) pollForApproval(ctx context.Context, requestID string) {
 	}
 }
 
-// checkApproval checks if the PR has been approved and sends response if so
+// checkApproval checks if the PR has been approved and calls recorder if so
 func (h *GitHubHandler) checkApproval(ctx context.Context, requestID string) bool {
 	h.mu.RLock()
 	pending, exists := h.pending[requestID]
 	h.mu.RUnlock()
 
 	if !exists {
-		return true // Request was cancelled/removed
+		return true
 	}
 
 	approved, approver, err := h.client.HasApprovalReview(ctx, h.owner, h.repo, pending.PRNumber)
@@ -151,24 +149,17 @@ func (h *GitHubHandler) checkApproval(ctx context.Context, requestID string) boo
 			slog.Int("pr_number", pending.PRNumber),
 			slog.String("approver", approver))
 
-		// Remove from pending
 		h.mu.Lock()
 		delete(h.pending, requestID)
 		h.mu.Unlock()
 
-		// Send response
-		response := &Response{
-			RequestID:   requestID,
-			Decision:    DecisionApproved,
-			ApprovedBy:  approver,
-			RespondedAt: time.Now(),
-		}
+		pending.CancelFn()
 
-		select {
-		case pending.ResponseCh <- response:
-		default:
+		if pending.recorder != nil {
+			if err := pending.recorder(ctx, requestID, DecisionApproved, approver); err != nil {
+				h.log.Warn("recorder call failed", slog.String("request_id", requestID), slog.Any("error", err))
+			}
 		}
-		close(pending.ResponseCh)
 
 		return true
 	}
@@ -176,7 +167,7 @@ func (h *GitHubHandler) checkApproval(ctx context.Context, requestID string) boo
 	return false
 }
 
-// CancelRequest cancels a pending approval request
+// CancelRequest cancels a pending approval request and stops polling
 func (h *GitHubHandler) CancelRequest(ctx context.Context, requestID string) error {
 	h.mu.Lock()
 	pending, exists := h.pending[requestID]
@@ -189,11 +180,7 @@ func (h *GitHubHandler) CancelRequest(ctx context.Context, requestID string) err
 		return nil
 	}
 
-	// Cancel polling
 	pending.CancelFn()
-
-	// Close response channel
-	close(pending.ResponseCh)
 
 	h.log.Debug("Cancelled GitHub approval request",
 		slog.String("request_id", requestID))
@@ -201,15 +188,13 @@ func (h *GitHubHandler) CancelRequest(ctx context.Context, requestID string) err
 	return nil
 }
 
-// HandleReviewEvent handles a GitHub pull_request_review webhook event
-// This provides instant response instead of waiting for poll
+// HandleReviewEvent handles a GitHub pull_request_review webhook event.
+// This provides instant response instead of waiting for poll.
 func (h *GitHubHandler) HandleReviewEvent(ctx context.Context, prNumber int, action, state, reviewer string) bool {
-	// Only process submitted reviews that are approvals
 	if action != "submitted" || state != "approved" {
 		return false
 	}
 
-	// Find pending request for this PR
 	h.mu.Lock()
 	var foundID string
 	var foundPending *githubPending
@@ -232,30 +217,20 @@ func (h *GitHubHandler) HandleReviewEvent(ctx context.Context, prNumber int, act
 		slog.Int("pr_number", prNumber),
 		slog.String("reviewer", reviewer))
 
-	// Cancel polling
 	foundPending.CancelFn()
 
-	// Send response
-	response := &Response{
-		RequestID:   foundID,
-		Decision:    DecisionApproved,
-		ApprovedBy:  reviewer,
-		RespondedAt: time.Now(),
+	if foundPending.recorder != nil {
+		if err := foundPending.recorder(ctx, foundID, DecisionApproved, reviewer); err != nil {
+			h.log.Warn("recorder call failed", slog.String("request_id", foundID), slog.Any("error", err))
+		}
 	}
-
-	select {
-	case foundPending.ResponseCh <- response:
-	default:
-	}
-	close(foundPending.ResponseCh)
 
 	return true
 }
 
-// HandleChangesRequestedEvent handles when changes are requested on a PR
-// This rejects the approval request
+// HandleChangesRequestedEvent handles when changes are requested on a PR.
+// This rejects the approval request.
 func (h *GitHubHandler) HandleChangesRequestedEvent(ctx context.Context, prNumber int, reviewer string) bool {
-	// Find pending request for this PR
 	h.mu.Lock()
 	var foundID string
 	var foundPending *githubPending
@@ -278,23 +253,13 @@ func (h *GitHubHandler) HandleChangesRequestedEvent(ctx context.Context, prNumbe
 		slog.Int("pr_number", prNumber),
 		slog.String("reviewer", reviewer))
 
-	// Cancel polling
 	foundPending.CancelFn()
 
-	// Send rejection response
-	response := &Response{
-		RequestID:   foundID,
-		Decision:    DecisionRejected,
-		ApprovedBy:  reviewer,
-		Comment:     "Changes requested",
-		RespondedAt: time.Now(),
+	if foundPending.recorder != nil {
+		if err := foundPending.recorder(ctx, foundID, DecisionRejected, reviewer); err != nil {
+			h.log.Warn("recorder call failed", slog.String("request_id", foundID), slog.Any("error", err))
+		}
 	}
-
-	select {
-	case foundPending.ResponseCh <- response:
-	default:
-	}
-	close(foundPending.ResponseCh)
 
 	return true
 }

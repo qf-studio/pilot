@@ -62,12 +62,8 @@ func TestSlackHandler_SendApprovalRequest(t *testing.T) {
 				ExpiresAt:   time.Now().Add(time.Hour),
 			}
 
-			responseCh, err := handler.SendApprovalRequest(context.Background(), req)
-			if err != nil {
+			if err := handler.SendApprovalRequest(context.Background(), req, nil); err != nil {
 				t.Fatalf("unexpected error: %v", err)
-			}
-			if responseCh == nil {
-				t.Fatal("expected response channel")
 			}
 
 			if client.lastMessage == nil {
@@ -110,8 +106,12 @@ func TestSlackHandler_HandleInteraction_Approve(t *testing.T) {
 		ExpiresAt: time.Now().Add(time.Hour),
 	}
 
-	responseCh, err := handler.SendApprovalRequest(context.Background(), req)
-	if err != nil {
+	respCh := make(chan *Response, 1)
+	recorder := func(_ context.Context, requestID string, decision Decision, by string) error {
+		respCh <- &Response{RequestID: requestID, Decision: decision, ApprovedBy: by, RespondedAt: time.Now()}
+		return nil
+	}
+	if err := handler.SendApprovalRequest(context.Background(), req, recorder); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -129,9 +129,9 @@ func TestSlackHandler_HandleInteraction_Approve(t *testing.T) {
 		t.Error("expected interaction to be handled")
 	}
 
-	// Check response was sent
+	// Check response via recorder
 	select {
-	case resp := <-responseCh:
+	case resp := <-respCh:
 		if resp.Decision != DecisionApproved {
 			t.Errorf("expected approved, got %v", resp.Decision)
 		}
@@ -155,8 +155,12 @@ func TestSlackHandler_HandleInteraction_Reject(t *testing.T) {
 		ExpiresAt: time.Now().Add(time.Hour),
 	}
 
-	responseCh, err := handler.SendApprovalRequest(context.Background(), req)
-	if err != nil {
+	respCh := make(chan *Response, 1)
+	recorder := func(_ context.Context, requestID string, decision Decision, by string) error {
+		respCh <- &Response{RequestID: requestID, Decision: decision, ApprovedBy: by, RespondedAt: time.Now()}
+		return nil
+	}
+	if err := handler.SendApprovalRequest(context.Background(), req, recorder); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -175,7 +179,7 @@ func TestSlackHandler_HandleInteraction_Reject(t *testing.T) {
 	}
 
 	select {
-	case resp := <-responseCh:
+	case resp := <-respCh:
 		if resp.Decision != DecisionRejected {
 			t.Errorf("expected rejected, got %v", resp.Decision)
 		}
@@ -238,25 +242,21 @@ func TestSlackHandler_CancelRequest(t *testing.T) {
 		ExpiresAt: time.Now().Add(time.Hour),
 	}
 
-	responseCh, err := handler.SendApprovalRequest(context.Background(), req)
-	if err != nil {
+	if err := handler.SendApprovalRequest(context.Background(), req, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	// Cancel the request
-	err = handler.CancelRequest(context.Background(), "test-cancel")
-	if err != nil {
+	if err := handler.CancelRequest(context.Background(), "test-cancel"); err != nil {
 		t.Fatalf("unexpected error cancelling: %v", err)
 	}
 
-	// Response channel should be closed
-	select {
-	case _, ok := <-responseCh:
-		if ok {
-			t.Error("expected channel to be closed")
-		}
-	case <-time.After(time.Second):
-		t.Error("timeout waiting for channel close")
+	// Verify pending is cleared
+	handler.mu.RLock()
+	_, stillPending := handler.pending["test-cancel"]
+	handler.mu.RUnlock()
+	if stillPending {
+		t.Error("expected pending to be cleared after cancel")
 	}
 }
 

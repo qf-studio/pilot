@@ -81,7 +81,7 @@ func TestGitHubHandler_SendApprovalRequest_MissingPRNumber(t *testing.T) {
 		Metadata: map[string]interface{}{}, // Missing pr_number
 	}
 
-	_, err := handler.SendApprovalRequest(context.Background(), req)
+	err := handler.SendApprovalRequest(context.Background(), req, nil)
 	if err == nil {
 		t.Error("expected error for missing pr_number")
 	}
@@ -108,14 +108,18 @@ func TestGitHubHandler_SendApprovalRequest_ImmediateApproval(t *testing.T) {
 		},
 	}
 
-	responseCh, err := handler.SendApprovalRequest(context.Background(), req)
-	if err != nil {
+	respCh := make(chan *Response, 1)
+	recorder := func(_ context.Context, requestID string, decision Decision, by string) error {
+		respCh <- &Response{RequestID: requestID, Decision: decision, ApprovedBy: by, RespondedAt: time.Now()}
+		return nil
+	}
+	if err := handler.SendApprovalRequest(context.Background(), req, recorder); err != nil {
 		t.Fatalf("SendApprovalRequest failed: %v", err)
 	}
 
 	// Wait for response with timeout
 	select {
-	case resp := <-responseCh:
+	case resp := <-respCh:
 		if resp.Decision != DecisionApproved {
 			t.Errorf("response.Decision = %s, want approved", resp.Decision)
 		}
@@ -149,13 +153,17 @@ func TestGitHubHandler_SendApprovalRequest_PRNumberAsFloat64(t *testing.T) {
 		},
 	}
 
-	responseCh, err := handler.SendApprovalRequest(context.Background(), req)
-	if err != nil {
+	respCh := make(chan *Response, 1)
+	recorder := func(_ context.Context, requestID string, decision Decision, by string) error {
+		respCh <- &Response{RequestID: requestID, Decision: decision, ApprovedBy: by, RespondedAt: time.Now()}
+		return nil
+	}
+	if err := handler.SendApprovalRequest(context.Background(), req, recorder); err != nil {
 		t.Fatalf("SendApprovalRequest failed: %v", err)
 	}
 
 	select {
-	case resp := <-responseCh:
+	case resp := <-respCh:
 		if resp.Decision != DecisionApproved {
 			t.Errorf("response.Decision = %s, want approved", resp.Decision)
 		}
@@ -184,25 +192,21 @@ func TestGitHubHandler_CancelRequest(t *testing.T) {
 		},
 	}
 
-	responseCh, err := handler.SendApprovalRequest(context.Background(), req)
-	if err != nil {
+	if err := handler.SendApprovalRequest(context.Background(), req, nil); err != nil {
 		t.Fatalf("SendApprovalRequest failed: %v", err)
 	}
 
 	// Cancel the request
-	err = handler.CancelRequest(context.Background(), "test-cancel")
-	if err != nil {
+	if err := handler.CancelRequest(context.Background(), "test-cancel"); err != nil {
 		t.Fatalf("CancelRequest failed: %v", err)
 	}
 
-	// Channel should be closed
-	select {
-	case _, ok := <-responseCh:
-		if ok {
-			t.Error("expected channel to be closed after cancel")
-		}
-	case <-time.After(time.Second):
-		t.Error("timeout waiting for channel close")
+	// Pending should be cleared
+	handler.mu.RLock()
+	_, stillPending := handler.pending["test-cancel"]
+	handler.mu.RUnlock()
+	if stillPending {
+		t.Error("expected pending to be cleared after cancel")
 	}
 }
 
@@ -228,13 +232,16 @@ func TestGitHubHandler_HandleReviewEvent_Approved(t *testing.T) {
 	handler := NewGitHubHandler(client, cfg)
 
 	// Create a pending request
-	responseCh := make(chan *Response, 1)
+	respCh := make(chan *Response, 1)
 	_, cancel := context.WithCancel(context.Background())
 	handler.pending["test-webhook"] = &githubPending{
-		Request:    &Request{ID: "test-webhook"},
-		PRNumber:   42,
-		ResponseCh: responseCh,
-		CancelFn:   cancel,
+		Request:  &Request{ID: "test-webhook"},
+		PRNumber: 42,
+		recorder: func(_ context.Context, requestID string, decision Decision, by string) error {
+			respCh <- &Response{RequestID: requestID, Decision: decision, ApprovedBy: by, RespondedAt: time.Now()}
+			return nil
+		},
+		CancelFn: cancel,
 	}
 
 	// Simulate webhook event
@@ -245,7 +252,7 @@ func TestGitHubHandler_HandleReviewEvent_Approved(t *testing.T) {
 	}
 
 	select {
-	case resp := <-responseCh:
+	case resp := <-respCh:
 		if resp.Decision != DecisionApproved {
 			t.Errorf("response.Decision = %s, want approved", resp.Decision)
 		}
@@ -306,13 +313,16 @@ func TestGitHubHandler_HandleChangesRequestedEvent(t *testing.T) {
 	handler := NewGitHubHandler(client, cfg)
 
 	// Create a pending request
-	responseCh := make(chan *Response, 1)
+	respCh := make(chan *Response, 1)
 	_, cancel := context.WithCancel(context.Background())
 	handler.pending["test-changes"] = &githubPending{
-		Request:    &Request{ID: "test-changes"},
-		PRNumber:   42,
-		ResponseCh: responseCh,
-		CancelFn:   cancel,
+		Request:  &Request{ID: "test-changes"},
+		PRNumber: 42,
+		recorder: func(_ context.Context, requestID string, decision Decision, by string) error {
+			respCh <- &Response{RequestID: requestID, Decision: decision, ApprovedBy: by, RespondedAt: time.Now()}
+			return nil
+		},
+		CancelFn: cancel,
 	}
 
 	// Simulate changes requested event
@@ -323,7 +333,7 @@ func TestGitHubHandler_HandleChangesRequestedEvent(t *testing.T) {
 	}
 
 	select {
-	case resp := <-responseCh:
+	case resp := <-respCh:
 		if resp.Decision != DecisionRejected {
 			t.Errorf("response.Decision = %s, want rejected", resp.Decision)
 		}

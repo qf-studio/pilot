@@ -171,13 +171,8 @@ func TestTelegramHandler_SendApprovalRequest(t *testing.T) {
 				ExpiresAt: time.Now().Add(1 * time.Hour),
 			}
 
-			respCh, err := handler.SendApprovalRequest(context.Background(), req)
-			if err != nil {
+			if err := handler.SendApprovalRequest(context.Background(), req, nil); err != nil {
 				t.Fatalf("unexpected error: %v", err)
-			}
-
-			if respCh == nil {
-				t.Fatal("expected non-nil response channel")
 			}
 
 			// Verify message was sent
@@ -225,8 +220,7 @@ func TestTelegramHandler_SendApprovalRequest_WithMetadata(t *testing.T) {
 		ExpiresAt: time.Now().Add(1 * time.Hour),
 	}
 
-	_, err := handler.SendApprovalRequest(context.Background(), req)
-	if err != nil {
+	if err := handler.SendApprovalRequest(context.Background(), req, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -259,7 +253,7 @@ func TestTelegramHandler_SendApprovalRequest_Error(t *testing.T) {
 		ExpiresAt: time.Now().Add(1 * time.Hour),
 	}
 
-	_, err := handler.SendApprovalRequest(context.Background(), req)
+	err := handler.SendApprovalRequest(context.Background(), req, nil)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -282,13 +276,12 @@ func TestTelegramHandler_CancelRequest(t *testing.T) {
 	}
 
 	// Send request first
-	_, err := handler.SendApprovalRequest(context.Background(), req)
-	if err != nil {
+	if err := handler.SendApprovalRequest(context.Background(), req, nil); err != nil {
 		t.Fatalf("unexpected error sending request: %v", err)
 	}
 
 	// Now cancel it
-	err = handler.CancelRequest(context.Background(), "req-cancel")
+	err := handler.CancelRequest(context.Background(), "req-cancel")
 	if err != nil {
 		t.Fatalf("unexpected error cancelling: %v", err)
 	}
@@ -335,13 +328,12 @@ func TestTelegramHandler_CancelRequest_EditError(t *testing.T) {
 		ExpiresAt: time.Now().Add(1 * time.Hour),
 	}
 
-	_, err := handler.SendApprovalRequest(context.Background(), req)
-	if err != nil {
+	if err := handler.SendApprovalRequest(context.Background(), req, nil); err != nil {
 		t.Fatalf("unexpected error sending request: %v", err)
 	}
 
 	// Cancel should not fail even if edit fails (just logs warning)
-	err = handler.CancelRequest(context.Background(), "req-edit-err")
+	err := handler.CancelRequest(context.Background(), "req-edit-err")
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
@@ -359,8 +351,12 @@ func TestTelegramHandler_HandleCallback_Approve(t *testing.T) {
 		ExpiresAt: time.Now().Add(1 * time.Hour),
 	}
 
-	respCh, err := handler.SendApprovalRequest(context.Background(), req)
-	if err != nil {
+	respCh := make(chan *Response, 1)
+	recorder := func(_ context.Context, requestID string, decision Decision, by string) error {
+		respCh <- &Response{RequestID: requestID, Decision: decision, ApprovedBy: by, RespondedAt: time.Now()}
+		return nil
+	}
+	if err := handler.SendApprovalRequest(context.Background(), req, recorder); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -370,7 +366,7 @@ func TestTelegramHandler_HandleCallback_Approve(t *testing.T) {
 		t.Error("expected callback to be handled")
 	}
 
-	// Wait for response
+	// Wait for response via recorder
 	select {
 	case resp := <-respCh:
 		if resp == nil {
@@ -417,8 +413,12 @@ func TestTelegramHandler_HandleCallback_Reject(t *testing.T) {
 		ExpiresAt: time.Now().Add(1 * time.Hour),
 	}
 
-	respCh, err := handler.SendApprovalRequest(context.Background(), req)
-	if err != nil {
+	respCh := make(chan *Response, 1)
+	recorder := func(_ context.Context, requestID string, decision Decision, by string) error {
+		respCh <- &Response{RequestID: requestID, Decision: decision, ApprovedBy: by, RespondedAt: time.Now()}
+		return nil
+	}
+	if err := handler.SendApprovalRequest(context.Background(), req, recorder); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -428,7 +428,7 @@ func TestTelegramHandler_HandleCallback_Reject(t *testing.T) {
 		t.Error("expected callback to be handled")
 	}
 
-	// Wait for response
+	// Wait for response via recorder
 	select {
 	case resp := <-respCh:
 		if resp == nil {
@@ -507,8 +507,12 @@ func TestTelegramHandler_HandleCallback_EditError(t *testing.T) {
 		ExpiresAt: time.Now().Add(1 * time.Hour),
 	}
 
-	respCh, err := handler.SendApprovalRequest(context.Background(), req)
-	if err != nil {
+	respCh := make(chan *Response, 1)
+	recorder := func(_ context.Context, requestID string, decision Decision, by string) error {
+		respCh <- &Response{RequestID: requestID, Decision: decision, ApprovedBy: by, RespondedAt: time.Now()}
+		return nil
+	}
+	if err := handler.SendApprovalRequest(context.Background(), req, recorder); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -518,7 +522,7 @@ func TestTelegramHandler_HandleCallback_EditError(t *testing.T) {
 		t.Error("expected callback to be handled")
 	}
 
-	// Should still receive response
+	// Should still receive response via recorder
 	select {
 	case resp := <-respCh:
 		if resp.Decision != DecisionApproved {
@@ -760,12 +764,8 @@ func TestTelegramHandler_NilMessageResponse(t *testing.T) {
 	}
 
 	// Should handle gracefully even with message ID 0
-	respCh, err := handler.SendApprovalRequest(context.Background(), req)
-	if err != nil {
+	if err := handler.SendApprovalRequest(context.Background(), req, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
-	}
-	if respCh == nil {
-		t.Fatal("expected non-nil response channel")
 	}
 }
 
@@ -782,8 +782,7 @@ func TestTelegramHandler_CancelWithZeroMessageID(t *testing.T) {
 			TaskID: "TASK-01",
 			Title:  "Test",
 		},
-		MessageID:  0, // Zero message ID
-		ResponseCh: make(chan *Response, 1),
+		MessageID: 0, // Zero message ID
 	}
 	handler.mu.Unlock()
 
@@ -813,8 +812,11 @@ func TestTelegramHandler_HandleCallbackWithZeroMessageID(t *testing.T) {
 			TaskID: "TASK-01",
 			Title:  "Test",
 		},
-		MessageID:  0,
-		ResponseCh: respCh,
+		MessageID: 0,
+		recorder: func(_ context.Context, requestID string, decision Decision, by string) error {
+			respCh <- &Response{RequestID: requestID, Decision: decision, ApprovedBy: by, RespondedAt: time.Now()}
+			return nil
+		},
 	}
 	handler.mu.Unlock()
 
@@ -824,7 +826,7 @@ func TestTelegramHandler_HandleCallbackWithZeroMessageID(t *testing.T) {
 		t.Error("expected callback to be handled")
 	}
 
-	// Should still receive response
+	// Should still receive response via recorder
 	select {
 	case resp := <-respCh:
 		if resp.Decision != DecisionApproved {
@@ -858,7 +860,7 @@ func TestTelegramHandler_ApproverRouting(t *testing.T) {
 			ExpiresAt: time.Now().Add(1 * time.Hour),
 		}
 
-		_, err := handler.SendApprovalRequest(context.Background(), req)
+		err := handler.SendApprovalRequest(context.Background(), req, nil)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -885,7 +887,7 @@ func TestTelegramHandler_ApproverRouting(t *testing.T) {
 			ExpiresAt: time.Now().Add(1 * time.Hour),
 		}
 
-		_, err := handler.SendApprovalRequest(context.Background(), req)
+		err := handler.SendApprovalRequest(context.Background(), req, nil)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -912,7 +914,7 @@ func TestTelegramHandler_ApproverRouting(t *testing.T) {
 			ExpiresAt: time.Now().Add(1 * time.Hour),
 		}
 
-		_, err := handler.SendApprovalRequest(context.Background(), req)
+		err := handler.SendApprovalRequest(context.Background(), req, nil)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -1001,7 +1003,7 @@ func TestTelegramHandler_WithStore_PersistOnSend(t *testing.T) {
 		ID: "persist-1", TaskID: "T-1", Stage: StagePreMerge,
 		Title: "Test", ExpiresAt: time.Now().Add(time.Hour),
 	}
-	if _, err := handler.SendApprovalRequest(context.Background(), req); err != nil {
+	if err := handler.SendApprovalRequest(context.Background(), req, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -1026,7 +1028,7 @@ func TestTelegramHandler_WithStore_DeleteOnCallback(t *testing.T) {
 		ID: "del-cb-1", TaskID: "T-2", Stage: StagePreMerge,
 		Title: "Test", ExpiresAt: time.Now().Add(time.Hour),
 	}
-	if _, err := handler.SendApprovalRequest(context.Background(), req); err != nil {
+	if err := handler.SendApprovalRequest(context.Background(), req, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if store.len() != 1 {
@@ -1049,7 +1051,7 @@ func TestTelegramHandler_WithStore_DeleteOnCancel(t *testing.T) {
 		ID: "del-cancel-1", TaskID: "T-3", Stage: StagePreMerge,
 		Title: "Test", ExpiresAt: time.Now().Add(time.Hour),
 	}
-	if _, err := handler.SendApprovalRequest(context.Background(), req); err != nil {
+	if err := handler.SendApprovalRequest(context.Background(), req, nil); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 

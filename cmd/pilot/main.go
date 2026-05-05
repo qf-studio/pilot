@@ -423,13 +423,13 @@ Examples:
 					(cfg.Adapters.Telegram.Approval == nil || cfg.Adapters.Telegram.Approval.Enabled) {
 					tgClient := telegram.NewClient(cfg.Adapters.Telegram.BotToken)
 					gwTgApprovalHandler = approval.NewTelegramHandler(&telegramApprovalAdapter{client: tgClient}, cfg.Adapters.Telegram.ChatID)
+					approvalMgr.RegisterHandler(gwTgApprovalHandler) // wires RecordDecision recorder before Rehydrate
 					if gwStore != nil {
 						gwTgApprovalHandler.WithStore(gwStore)
 						if rErr := gwTgApprovalHandler.Rehydrate(context.Background()); rErr != nil {
 							logging.WithComponent("approval").Warn("telegram approval rehydrate failed", slog.Any("error", rErr))
 						}
 					}
-					approvalMgr.RegisterHandler(gwTgApprovalHandler)
 				}
 
 				// Register Slack approval handler if enabled

@@ -46,20 +46,21 @@ type MessageResult struct {
 
 // TelegramHandler handles approval requests via Telegram
 type TelegramHandler struct {
-	client  TelegramClient
-	chatID  string
-	pending map[string]*telegramPending // requestID -> pending state
-	mu      sync.RWMutex
-	log     *slog.Logger
-	store   PendingApprovalStore // optional; enables restart persistence
+	client   TelegramClient
+	chatID   string
+	pending  map[string]*telegramPending // requestID -> pending state
+	recorder RecordDecisionFunc          // default recorder wired by Manager.RegisterHandler
+	mu       sync.RWMutex
+	log      *slog.Logger
+	store    PendingApprovalStore // optional; enables restart persistence
 }
 
 // telegramPending tracks a pending Telegram approval request
 type telegramPending struct {
-	Request    *Request
-	MessageID  int64
-	ChatID     string // resolved destination — may differ from h.chatID when approvers are set
-	ResponseCh chan *Response
+	Request   *Request
+	MessageID int64
+	ChatID    string             // resolved destination — may differ from h.chatID when approvers are set
+	recorder  RecordDecisionFunc // called when user taps approve/reject
 }
 
 // NewTelegramHandler creates a new Telegram approval handler
@@ -82,6 +83,12 @@ func (h *TelegramHandler) Name() string {
 func (h *TelegramHandler) WithStore(store PendingApprovalStore) *TelegramHandler {
 	h.store = store
 	return h
+}
+
+// setRecorder wires the manager's RecordDecision as the default recorder used
+// by Rehydrate. Called automatically by Manager.RegisterHandler.
+func (h *TelegramHandler) setRecorder(recorder RecordDecisionFunc) {
+	h.recorder = recorder
 }
 
 // Rehydrate loads persisted pending approvals from the store and re-inserts them
@@ -119,13 +126,12 @@ func (h *TelegramHandler) Rehydrate(ctx context.Context) error {
 		if len(req.Approvers) > 0 {
 			destChatID = req.Approvers[0]
 		}
-		responseCh := make(chan *Response, 1)
 		h.mu.Lock()
 		if _, exists := h.pending[req.ID]; !exists {
 			h.pending[req.ID] = &telegramPending{
-				Request:    req,
-				ChatID:     destChatID,
-				ResponseCh: responseCh,
+				Request:  req,
+				ChatID:   destChatID,
+				recorder: h.recorder, // may be nil if RegisterHandler hasn't run yet
 			}
 			rehydrated++
 		}
@@ -137,29 +143,22 @@ func (h *TelegramHandler) Rehydrate(ctx context.Context) error {
 	return nil
 }
 
-// SendApprovalRequest sends an approval request via Telegram
-func (h *TelegramHandler) SendApprovalRequest(ctx context.Context, req *Request) (<-chan *Response, error) {
-	responseCh := make(chan *Response, 1)
-
-	// Format message based on stage
+// SendApprovalRequest sends an approval request via Telegram (non-blocking).
+// recorder is called when the user taps approve or reject.
+func (h *TelegramHandler) SendApprovalRequest(ctx context.Context, req *Request, recorder RecordDecisionFunc) error {
 	text := h.formatApprovalMessage(req)
-
-	// Create inline keyboard with approve/reject buttons
 	keyboard := h.createApprovalKeyboard(req)
 
-	// Resolve destination: use first approver's chat_id when available
 	destChatID := h.chatID
 	if len(req.Approvers) > 0 {
 		destChatID = req.Approvers[0]
 	}
 
-	// Send message
 	resp, err := h.client.SendMessageWithKeyboard(ctx, destChatID, text, "", keyboard)
 	if err != nil {
-		return nil, fmt.Errorf("failed to send Telegram message: %w", err)
+		return fmt.Errorf("failed to send Telegram message: %w", err)
 	}
 
-	// Track pending request
 	var messageID int64
 	if resp != nil && resp.Result != nil {
 		messageID = resp.Result.MessageID
@@ -167,10 +166,10 @@ func (h *TelegramHandler) SendApprovalRequest(ctx context.Context, req *Request)
 
 	h.mu.Lock()
 	h.pending[req.ID] = &telegramPending{
-		Request:    req,
-		MessageID:  messageID,
-		ChatID:     destChatID,
-		ResponseCh: responseCh,
+		Request:   req,
+		MessageID: messageID,
+		ChatID:    destChatID,
+		recorder:  recorder,
 	}
 	h.mu.Unlock()
 
@@ -198,7 +197,7 @@ func (h *TelegramHandler) SendApprovalRequest(ctx context.Context, req *Request)
 		slog.String("chat_id", destChatID),
 		slog.Int64("message_id", messageID))
 
-	return responseCh, nil
+	return nil
 }
 
 // CancelRequest cancels a pending approval request
@@ -220,7 +219,6 @@ func (h *TelegramHandler) CancelRequest(ctx context.Context, requestID string) e
 		}
 	}
 
-	// Update message to show cancelled
 	if pending.MessageID != 0 {
 		text := h.formatCancelledMessage(pending.Request)
 		if err := h.client.EditMessage(ctx, pending.ChatID, pending.MessageID, text, ""); err != nil {
@@ -228,16 +226,12 @@ func (h *TelegramHandler) CancelRequest(ctx context.Context, requestID string) e
 		}
 	}
 
-	// Close response channel
-	close(pending.ResponseCh)
-
 	return nil
 }
 
-// HandleCallback processes a Telegram callback (button press)
-// This should be called by the main Telegram handler when receiving callbacks
+// HandleCallback processes a Telegram callback (button press).
+// This should be called by the main Telegram handler when receiving callbacks.
 func (h *TelegramHandler) HandleCallback(ctx context.Context, callbackID, data, userID, username string) bool {
-	// Parse callback data: "approve:<requestID>" or "reject:<requestID>"
 	var decision Decision
 	var requestID string
 
@@ -248,7 +242,7 @@ func (h *TelegramHandler) HandleCallback(ctx context.Context, callbackID, data, 
 		decision = DecisionRejected
 		requestID = data[7:]
 	} else {
-		return false // Not an approval callback
+		return false
 	}
 
 	h.mu.Lock()
@@ -269,7 +263,6 @@ func (h *TelegramHandler) HandleCallback(ctx context.Context, callbackID, data, 
 		}
 	}
 
-	// Answer callback
 	var answerText string
 	if decision == DecisionApproved {
 		answerText = "Approved!"
@@ -278,7 +271,6 @@ func (h *TelegramHandler) HandleCallback(ctx context.Context, callbackID, data, 
 	}
 	_ = h.client.AnswerCallback(ctx, callbackID, answerText)
 
-	// Update message to show result
 	if pending.MessageID != 0 {
 		text := h.formatResponseMessage(pending.Request, decision, username)
 		if err := h.client.EditMessage(ctx, pending.ChatID, pending.MessageID, text, ""); err != nil {
@@ -286,24 +278,17 @@ func (h *TelegramHandler) HandleCallback(ctx context.Context, callbackID, data, 
 		}
 	}
 
-	// Send response
-	response := &Response{
-		RequestID:   requestID,
-		Decision:    decision,
-		ApprovedBy:  username,
-		RespondedAt: time.Now(),
-	}
-
-	select {
-	case pending.ResponseCh <- response:
-	default:
-	}
-	close(pending.ResponseCh)
-
 	h.log.Info("Approval callback handled",
 		slog.String("request_id", requestID),
 		slog.String("decision", string(decision)),
 		slog.String("user", username))
+
+	// Notify manager via recorder.
+	if pending.recorder != nil {
+		if err := pending.recorder(ctx, requestID, decision, username); err != nil {
+			h.log.Warn("recorder call failed", slog.String("request_id", requestID), slog.Any("error", err))
+		}
+	}
 
 	return true
 }
@@ -333,7 +318,6 @@ func (h *TelegramHandler) formatApprovalMessage(req *Request) string {
 		text += fmt.Sprintf("\n\n%s", truncateForTelegram(req.Description, 500))
 	}
 
-	// Add metadata
 	if prURL, ok := req.Metadata["pr_url"].(string); ok && prURL != "" {
 		text += fmt.Sprintf("\n\nPR: %s", prURL)
 	}
@@ -341,7 +325,6 @@ func (h *TelegramHandler) formatApprovalMessage(req *Request) string {
 		text += fmt.Sprintf("\n\nError: %s", truncateForTelegram(errorMsg, 200))
 	}
 
-	// Add timeout info
 	timeLeft := time.Until(req.ExpiresAt).Round(time.Minute)
 	text += fmt.Sprintf("\n\nExpires in: %s", formatDuration(timeLeft))
 

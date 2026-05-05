@@ -72,10 +72,10 @@ type SlackHandler struct {
 
 // slackPending tracks a pending Slack approval request
 type slackPending struct {
-	Request    *Request
-	TS         string // Slack message timestamp (used as message ID)
-	Channel    string
-	ResponseCh chan *Response
+	Request  *Request
+	TS       string             // Slack message timestamp (used as message ID)
+	Channel  string
+	recorder RecordDecisionFunc // called when user presses approve/reject
 }
 
 // NewSlackHandler creates a new Slack approval handler
@@ -93,33 +93,35 @@ func (h *SlackHandler) Name() string {
 	return "slack"
 }
 
-// SendApprovalRequest sends an approval request via Slack
-func (h *SlackHandler) SendApprovalRequest(ctx context.Context, req *Request) (<-chan *Response, error) {
-	responseCh := make(chan *Response, 1)
+// setRecorder wires the manager's RecordDecision as the default recorder.
+// Called automatically by Manager.RegisterHandler.
+func (h *SlackHandler) setRecorder(_ RecordDecisionFunc) {
+	// SlackHandler has no rehydrate path; recorder is always passed per-request
+	// via SendApprovalRequest. This satisfies the recorderSetter interface.
+}
 
-	// Build message blocks
+// SendApprovalRequest sends an approval request via Slack (non-blocking).
+// recorder is called when the user presses approve or reject.
+func (h *SlackHandler) SendApprovalRequest(ctx context.Context, req *Request, recorder RecordDecisionFunc) error {
 	blocks := h.buildApprovalBlocks(req)
 
-	// Create interactive message
 	msg := &SlackInteractiveMessage{
 		Channel: h.channel,
-		Text:    h.formatFallbackText(req), // Fallback for notifications
+		Text:    h.formatFallbackText(req),
 		Blocks:  blocks,
 	}
 
-	// Send message
 	resp, err := h.client.PostInteractiveMessage(ctx, msg)
 	if err != nil {
-		return nil, fmt.Errorf("failed to send Slack message: %w", err)
+		return fmt.Errorf("failed to send Slack message: %w", err)
 	}
 
-	// Track pending request
 	h.mu.Lock()
 	h.pending[req.ID] = &slackPending{
-		Request:    req,
-		TS:         resp.TS,
-		Channel:    resp.Channel,
-		ResponseCh: responseCh,
+		Request:  req,
+		TS:       resp.TS,
+		Channel:  resp.Channel,
+		recorder: recorder,
 	}
 	h.mu.Unlock()
 
@@ -127,7 +129,7 @@ func (h *SlackHandler) SendApprovalRequest(ctx context.Context, req *Request) (<
 		slog.String("request_id", req.ID),
 		slog.String("ts", resp.TS))
 
-	return responseCh, nil
+	return nil
 }
 
 // CancelRequest cancels a pending approval request
@@ -143,7 +145,6 @@ func (h *SlackHandler) CancelRequest(ctx context.Context, requestID string) erro
 		return nil
 	}
 
-	// Update message to show cancelled
 	if pending.TS != "" {
 		blocks := h.buildCancelledBlocks(pending.Request)
 		text := h.formatCancelledText(pending.Request)
@@ -152,16 +153,12 @@ func (h *SlackHandler) CancelRequest(ctx context.Context, requestID string) erro
 		}
 	}
 
-	// Close response channel
-	close(pending.ResponseCh)
-
 	return nil
 }
 
-// HandleInteraction processes a Slack interaction (button press)
-// This should be called by the Slack webhook handler when receiving interactions
+// HandleInteraction processes a Slack interaction (button press).
+// This should be called by the Slack webhook handler when receiving interactions.
 func (h *SlackHandler) HandleInteraction(ctx context.Context, actionID, value, userID, username, responseURL string) bool {
-	// Parse value: "approve:<requestID>" or "reject:<requestID>"
 	var decision Decision
 	var requestID string
 
@@ -172,7 +169,7 @@ func (h *SlackHandler) HandleInteraction(ctx context.Context, actionID, value, u
 		decision = DecisionRejected
 		requestID = value[7:]
 	} else {
-		return false // Not an approval action
+		return false
 	}
 
 	h.mu.Lock()
@@ -185,10 +182,9 @@ func (h *SlackHandler) HandleInteraction(ctx context.Context, actionID, value, u
 	if !exists {
 		h.log.Debug("Approval request not found or already processed",
 			slog.String("request_id", requestID))
-		return true // Still handled, just expired
+		return true
 	}
 
-	// Update message to show result
 	if pending.TS != "" {
 		blocks := h.buildResponseBlocks(pending.Request, decision, username)
 		text := h.formatResponseText(pending.Request, decision, username)
@@ -197,24 +193,17 @@ func (h *SlackHandler) HandleInteraction(ctx context.Context, actionID, value, u
 		}
 	}
 
-	// Send response
-	response := &Response{
-		RequestID:   requestID,
-		Decision:    decision,
-		ApprovedBy:  username,
-		RespondedAt: time.Now(),
-	}
-
-	select {
-	case pending.ResponseCh <- response:
-	default:
-	}
-	close(pending.ResponseCh)
-
 	h.log.Info("Approval interaction handled",
 		slog.String("request_id", requestID),
 		slog.String("decision", string(decision)),
 		slog.String("user", username))
+
+	// Notify manager via recorder.
+	if pending.recorder != nil {
+		if err := pending.recorder(ctx, requestID, decision, username); err != nil {
+			h.log.Warn("recorder call failed", slog.String("request_id", requestID), slog.Any("error", err))
+		}
+	}
 
 	return true
 }
@@ -238,7 +227,6 @@ func (h *SlackHandler) buildApprovalBlocks(req *Request) []interface{} {
 		stageLabel = "Approval Required"
 	}
 
-	// Header section
 	headerText := fmt.Sprintf("%s *%s*\n\n*Task:* `%s`\n*Title:* %s",
 		icon, stageLabel, req.TaskID, req.Title)
 
@@ -246,7 +234,6 @@ func (h *SlackHandler) buildApprovalBlocks(req *Request) []interface{} {
 		headerText += fmt.Sprintf("\n\n%s", truncateForSlack(req.Description, 500))
 	}
 
-	// Add metadata
 	if prURL, ok := req.Metadata["pr_url"].(string); ok && prURL != "" {
 		headerText += fmt.Sprintf("\n\n*PR:* <%s|View Pull Request>", prURL)
 	}
@@ -254,7 +241,6 @@ func (h *SlackHandler) buildApprovalBlocks(req *Request) []interface{} {
 		headerText += fmt.Sprintf("\n\n*Error:* ```%s```", truncateForSlack(errorMsg, 200))
 	}
 
-	// Add timeout info
 	timeLeft := time.Until(req.ExpiresAt).Round(time.Minute)
 	headerText += fmt.Sprintf("\n\n_Expires in: %s_", formatDuration(timeLeft))
 
@@ -268,7 +254,6 @@ func (h *SlackHandler) buildApprovalBlocks(req *Request) []interface{} {
 		},
 	}
 
-	// Add approval buttons
 	var approveText, rejectText string
 	switch req.Stage {
 	case StagePreExecution:

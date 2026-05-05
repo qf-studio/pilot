@@ -52,12 +52,22 @@ type Response struct {
 	RespondedAt time.Time // When response was given
 }
 
+// RecordDecisionFunc is the callback that handlers invoke when a user responds.
+// The manager's RecordDecision method satisfies this signature.
+type RecordDecisionFunc func(ctx context.Context, requestID string, decision Decision, by string) error
+
+// PRStateWriter persists approval decisions to PR state.
+// autopilot.StateStore satisfies this interface.
+type PRStateWriter interface {
+	SetApprovalDecision(ctx context.Context, requestID string, d Decision, by string) error
+}
+
 // Handler is the interface for approval channel handlers
 // Each channel (Telegram, Slack, etc.) implements this interface
 type Handler interface {
-	// SendApprovalRequest sends an approval request to the channel
-	// Returns a channel that receives the response when user responds
-	SendApprovalRequest(ctx context.Context, req *Request) (<-chan *Response, error)
+	// SendApprovalRequest sends an approval request to the channel (non-blocking).
+	// recorder is called when the user responds via the channel.
+	SendApprovalRequest(ctx context.Context, req *Request, recorder RecordDecisionFunc) error
 
 	// CancelRequest cancels a pending approval request
 	CancelRequest(ctx context.Context, requestID string) error

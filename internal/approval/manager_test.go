@@ -21,18 +21,18 @@ func (m *mockHandler) Name() string {
 	return m.name
 }
 
-func (m *mockHandler) SendApprovalRequest(ctx context.Context, req *Request) (<-chan *Response, error) {
+func (m *mockHandler) SendApprovalRequest(ctx context.Context, req *Request, recorder RecordDecisionFunc) error {
 	m.mu.Lock()
 	m.sentReqs = append(m.sentReqs, req)
 	m.mu.Unlock()
-	ch := make(chan *Response, 1)
-	if m.respondWith != nil {
+	if m.respondWith != nil && recorder != nil {
+		resp := m.respondWith
 		go func() {
 			time.Sleep(10 * time.Millisecond) // Simulate async response
-			ch <- m.respondWith
+			_ = recorder(ctx, resp.RequestID, resp.Decision, resp.ApprovedBy)
 		}()
 	}
-	return ch, nil
+	return nil
 }
 
 func (m *mockHandler) CancelRequest(ctx context.Context, requestID string) error {
@@ -1363,5 +1363,263 @@ func TestManager_RuleTrigger_MultipleRules_FirstMatchWins(t *testing.T) {
 	}
 	if resp.Decision != DecisionApproved {
 		t.Errorf("expected approved, got %s", resp.Decision)
+	}
+}
+
+// --- Tests for SubmitApprovalRequest and RecordDecision ---
+
+// mockStateWriter captures SetApprovalDecision calls for assertions.
+type mockStateWriter struct {
+	mu      sync.Mutex
+	calls   []stateWriterCall
+	callErr error
+}
+
+type stateWriterCall struct {
+	requestID string
+	decision  Decision
+	by        string
+}
+
+func (w *mockStateWriter) SetApprovalDecision(_ context.Context, requestID string, d Decision, by string) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.calls = append(w.calls, stateWriterCall{requestID: requestID, decision: d, by: by})
+	return w.callErr
+}
+
+func (w *mockStateWriter) getCalls() []stateWriterCall {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	result := make([]stateWriterCall, len(w.calls))
+	copy(result, w.calls)
+	return result
+}
+
+func TestManager_RecordDecision_WritesToStateWriter(t *testing.T) {
+	config := DefaultConfig()
+	config.Enabled = true
+	config.PreMerge.Enabled = true
+	config.PreMerge.Timeout = time.Second
+
+	writer := &mockStateWriter{}
+	m := NewManager(config)
+	m.WithStateWriter(writer)
+
+	handler := &mockHandler{name: "test"}
+	m.RegisterHandler(handler)
+
+	req := &Request{
+		ID:        "rd-1",
+		TaskID:    "TASK-01",
+		Stage:     StagePreMerge,
+		Title:     "Test",
+		CreatedAt: time.Now(),
+	}
+
+	reqID, err := m.SubmitApprovalRequest(context.Background(), req)
+	if err != nil {
+		t.Fatalf("SubmitApprovalRequest: %v", err)
+	}
+	if reqID != req.ID {
+		t.Errorf("expected req ID %q, got %q", req.ID, reqID)
+	}
+
+	if err := m.RecordDecision(context.Background(), req.ID, DecisionApproved, "alice"); err != nil {
+		t.Fatalf("RecordDecision: %v", err)
+	}
+
+	calls := writer.getCalls()
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 state write, got %d", len(calls))
+	}
+	if calls[0].requestID != req.ID {
+		t.Errorf("expected requestID %q, got %q", req.ID, calls[0].requestID)
+	}
+	if calls[0].decision != DecisionApproved {
+		t.Errorf("expected approved, got %s", calls[0].decision)
+	}
+	if calls[0].by != "alice" {
+		t.Errorf("expected by=alice, got %q", calls[0].by)
+	}
+}
+
+func TestManager_RecordDecision_NoStateWriter_NoError(t *testing.T) {
+	config := DefaultConfig()
+	config.Enabled = true
+	config.PreMerge.Enabled = true
+	config.PreMerge.Timeout = time.Second
+
+	m := NewManager(config)
+
+	handler := &mockHandler{name: "test"}
+	m.RegisterHandler(handler)
+
+	req := &Request{
+		ID: "rd-nowriter", TaskID: "TASK-01", Stage: StagePreMerge,
+		Title: "Test", CreatedAt: time.Now(),
+	}
+
+	if _, err := m.SubmitApprovalRequest(context.Background(), req); err != nil {
+		t.Fatalf("SubmitApprovalRequest: %v", err)
+	}
+
+	if err := m.RecordDecision(context.Background(), req.ID, DecisionRejected, "bob"); err != nil {
+		t.Errorf("unexpected error without state writer: %v", err)
+	}
+}
+
+func TestManager_RecordDecision_UnknownRequest_NoError(t *testing.T) {
+	// RecordDecision for a request not in manager pending should not error
+	// (handles rehydrated handler entries or double-call scenarios).
+	m := NewManager(nil)
+	if err := m.RecordDecision(context.Background(), "nonexistent", DecisionApproved, "system"); err != nil {
+		t.Errorf("unexpected error for unknown request: %v", err)
+	}
+}
+
+func TestManager_RecordDecision_StateWriteError_Propagates(t *testing.T) {
+	config := DefaultConfig()
+	config.Enabled = true
+	config.PreMerge.Enabled = true
+	config.PreMerge.Timeout = time.Second
+
+	writer := &mockStateWriter{callErr: fmt.Errorf("db gone")}
+	m := NewManager(config)
+	m.WithStateWriter(writer)
+
+	handler := &mockHandler{name: "test"}
+	m.RegisterHandler(handler)
+
+	req := &Request{
+		ID: "rd-err", TaskID: "TASK-01", Stage: StagePreMerge,
+		Title: "Test", CreatedAt: time.Now(),
+	}
+
+	if _, err := m.SubmitApprovalRequest(context.Background(), req); err != nil {
+		t.Fatalf("SubmitApprovalRequest: %v", err)
+	}
+
+	if err := m.RecordDecision(context.Background(), req.ID, DecisionApproved, "carol"); err == nil {
+		t.Error("expected error from state writer, got nil")
+	}
+}
+
+func TestManager_SubmitApprovalRequest_NonBlocking(t *testing.T) {
+	config := DefaultConfig()
+	config.Enabled = true
+	config.PreExecution.Enabled = true
+	config.PreExecution.Timeout = 10 * time.Second
+
+	m := NewManager(config)
+
+	handler := &mockHandler{name: "test"} // no respondWith — never fires
+	m.RegisterHandler(handler)
+
+	req := &Request{
+		ID: "nb-1", TaskID: "TASK-01", Stage: StagePreExecution,
+		Title: "Test", CreatedAt: time.Now(),
+	}
+
+	start := time.Now()
+	reqID, err := m.SubmitApprovalRequest(context.Background(), req)
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if reqID != req.ID {
+		t.Errorf("expected %q, got %q", req.ID, reqID)
+	}
+	// Must return in well under 1 second (non-blocking)
+	if elapsed > 500*time.Millisecond {
+		t.Errorf("SubmitApprovalRequest blocked for %v, expected non-blocking", elapsed)
+	}
+	if len(handler.sentReqs) != 1 {
+		t.Errorf("expected 1 request sent to handler, got %d", len(handler.sentReqs))
+	}
+}
+
+func TestManager_SubmitApprovalRequest_DisabledStage_AutoRecords(t *testing.T) {
+	config := DefaultConfig()
+	config.Enabled = true
+	// Stage disabled
+
+	writer := &mockStateWriter{}
+	m := NewManager(config)
+	m.WithStateWriter(writer)
+
+	req := &Request{
+		ID: "sub-auto", TaskID: "TASK-01", Stage: StagePreExecution,
+		Title: "Test", CreatedAt: time.Now(),
+	}
+
+	reqID, err := m.SubmitApprovalRequest(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if reqID != req.ID {
+		t.Errorf("expected %q, got %q", req.ID, reqID)
+	}
+
+	// Auto-approval should have been recorded via stateWriter
+	calls := writer.getCalls()
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 auto-approval state write, got %d", len(calls))
+	}
+	if calls[0].decision != DecisionApproved {
+		t.Errorf("expected auto-approved, got %s", calls[0].decision)
+	}
+}
+
+func TestManager_HandlerDispatch_RecorderWiredViaRegister(t *testing.T) {
+	// Verify that RecordDecision is called when a handler fires the recorder,
+	// and the decision is forwarded to the state writer.
+	config := DefaultConfig()
+	config.Enabled = true
+	config.PreExecution.Enabled = true
+	config.PreExecution.Timeout = time.Second
+
+	writer := &mockStateWriter{}
+	m := NewManager(config)
+	m.WithStateWriter(writer)
+
+	handler := &mockHandler{
+		name: "test",
+		respondWith: &Response{
+			RequestID:  "dispatch-1",
+			Decision:   DecisionApproved,
+			ApprovedBy: "dispatcher",
+		},
+	}
+	m.RegisterHandler(handler)
+
+	req := &Request{
+		ID: "dispatch-1", TaskID: "TASK-01", Stage: StagePreExecution,
+		Title: "Test", CreatedAt: time.Now(),
+	}
+
+	if _, err := m.SubmitApprovalRequest(context.Background(), req); err != nil {
+		t.Fatalf("SubmitApprovalRequest: %v", err)
+	}
+
+	// Wait for async recorder call from mock handler
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if len(writer.getCalls()) > 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	calls := writer.getCalls()
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 state write from handler dispatch, got %d", len(calls))
+	}
+	if calls[0].decision != DecisionApproved {
+		t.Errorf("expected approved, got %s", calls[0].decision)
+	}
+	if calls[0].by != "dispatcher" {
+		t.Errorf("expected by=dispatcher, got %q", calls[0].by)
 	}
 }
