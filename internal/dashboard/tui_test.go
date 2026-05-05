@@ -1497,13 +1497,13 @@ func TestAutopilotPanelView_AllStates(t *testing.T) {
 		{
 			name:        "disabled",
 			ctl:         nil,
-			wantLines:   3, // top border + content + bottom border
+			wantLines:   5, // top border + empty + content + empty + bottom border
 			wantContain: "Disabled",
 		},
 		{
 			name:        "idle",
 			ctl:         newFakeCtl(nil, 3, nil),
-			wantLines:   3,
+			wantLines:   5, // top border + empty + content + empty + bottom border
 			wantContain: "idle · no active PR",
 			wantAbsent:  "STATE",
 		},
@@ -1516,7 +1516,7 @@ func TestAutopilotPanelView_AllStates(t *testing.T) {
 				CIStatus:  autopilot.CIRunning,
 				CreatedAt: now.Add(-90 * time.Second),
 			}}, 3, nil),
-			wantLines:   4, // border + line1 + line2 + border
+			wantLines:   6, // border + empty + line1 + line2 + empty + border
 			wantContain: "#2565",
 			wantAbsent:  "[█",
 		},
@@ -1530,7 +1530,7 @@ func TestAutopilotPanelView_AllStates(t *testing.T) {
 				Error:     "TestInstallToBinaryPath_Cleanup failed · linux-amd64",
 				CreatedAt: now.Add(-4 * time.Minute),
 			}}, 3, map[int]int{2565: 2}),
-			wantLines:   5, // border + line1 + line2 + line3(error) + border
+			wantLines:   7, // border + empty + line1 + line2 + line3(error) + empty + border
 			wantContain: "↳",
 			wantAbsent:  "STATE",
 		},
@@ -1543,7 +1543,7 @@ func TestAutopilotPanelView_AllStates(t *testing.T) {
 				CIStatus:  autopilot.CISuccess,
 				CreatedAt: now.Add(-3 * time.Minute),
 			}}, 3, nil),
-			wantLines:   4,
+			wantLines:   6, // border + empty + line1 + line2 + empty + border
 			wantContain: "✓",
 			wantAbsent:  "[░",
 		},
@@ -1556,7 +1556,7 @@ func TestAutopilotPanelView_AllStates(t *testing.T) {
 				CIStatus:  autopilot.CISuccess,
 				CreatedAt: now.Add(-10 * time.Minute),
 			}}, 3, nil),
-			wantLines:   4,
+			wantLines:   6, // border + empty + line1 + line2 + empty + border
 			wantContain: "release",
 			wantAbsent:  "STATE",
 		},
@@ -1570,7 +1570,7 @@ func TestAutopilotPanelView_AllStates(t *testing.T) {
 				Error:     "",
 				CreatedAt: now.Add(-2 * time.Minute),
 			}}, 3, nil),
-			wantLines:   4, // no line 3 without error message
+			wantLines:   6, // border + empty + line1 + line2 + empty + border (no error line)
 			wantAbsent:  "↳",
 		},
 	}
