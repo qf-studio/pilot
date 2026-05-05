@@ -423,6 +423,12 @@ Examples:
 					(cfg.Adapters.Telegram.Approval == nil || cfg.Adapters.Telegram.Approval.Enabled) {
 					tgClient := telegram.NewClient(cfg.Adapters.Telegram.BotToken)
 					gwTgApprovalHandler = approval.NewTelegramHandler(&telegramApprovalAdapter{client: tgClient}, cfg.Adapters.Telegram.ChatID)
+					if gwStore != nil {
+						gwTgApprovalHandler.WithStore(gwStore)
+						if rErr := gwTgApprovalHandler.Rehydrate(context.Background()); rErr != nil {
+							logging.WithComponent("approval").Warn("telegram approval rehydrate failed", slog.Any("error", rErr))
+						}
+					}
 					approvalMgr.RegisterHandler(gwTgApprovalHandler)
 				}
 
@@ -1319,10 +1325,11 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 
 	// Register Telegram approval handler if enabled
 	var tgApprovalHandler telegram.ApprovalCallbackHandler
+	var tgApprovalHandlerImpl *approval.TelegramHandler
 	if cfg.Adapters.Telegram != nil && cfg.Adapters.Telegram.Enabled && cfg.Adapters.Telegram.BotToken != "" &&
 		(cfg.Adapters.Telegram.Approval == nil || cfg.Adapters.Telegram.Approval.Enabled) {
 		tgApprovalClient := telegram.NewClient(cfg.Adapters.Telegram.BotToken)
-		tgApprovalHandlerImpl := approval.NewTelegramHandler(&telegramApprovalAdapter{client: tgApprovalClient}, cfg.Adapters.Telegram.ChatID)
+		tgApprovalHandlerImpl = approval.NewTelegramHandler(&telegramApprovalAdapter{client: tgApprovalClient}, cfg.Adapters.Telegram.ChatID)
 		approvalMgr.RegisterHandler(tgApprovalHandlerImpl)
 		tgApprovalHandler = tgApprovalHandlerImpl
 		logging.WithComponent("start").Info("registered Telegram approval handler")
@@ -1439,6 +1446,14 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 				_ = store.Close()
 			}
 		}()
+	}
+
+	// Attach persistence store and rehydrate pending approvals after restart.
+	if store != nil && tgApprovalHandlerImpl != nil {
+		tgApprovalHandlerImpl.WithStore(store)
+		if rErr := tgApprovalHandlerImpl.Rehydrate(ctx); rErr != nil {
+			logging.WithComponent("approval").Warn("telegram approval rehydrate failed", slog.Any("error", rErr))
+		}
 	}
 
 	// GH-726: Initialize autopilot state store for crash recovery
