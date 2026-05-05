@@ -451,6 +451,19 @@ Examples:
 						parts := strings.SplitN(cfg.Adapters.GitHub.Repo, "/", 2)
 						if len(parts) == 2 {
 							ghClient := github.NewClient(ghToken)
+
+							// Register GitHub approval handler if enabled
+							if cfg.Adapters.GitHub.Approval != nil && cfg.Adapters.GitHub.Approval.Enabled {
+								pollInterval := cfg.Adapters.GitHub.Approval.PollInterval
+								if pollInterval == 0 {
+									pollInterval = 30 * time.Second
+								}
+								ghApprovalHandler := approval.NewGitHubHandler(ghClient, &approval.GitHubHandlerConfig{
+									Owner: parts[0], Repo: parts[1], PollInterval: pollInterval,
+								})
+								approvalMgr.RegisterHandler(ghApprovalHandler)
+							}
+
 							// GH-1870: Board sync option for gateway autopilot controller.
 							var gwBoardOpts []autopilot.ControllerOption
 							if cfg.Adapters.GitHub.ProjectBoard != nil && cfg.Adapters.GitHub.ProjectBoard.Enabled {
@@ -1353,6 +1366,20 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 			if cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.Repo != "" {
 				parts := strings.SplitN(cfg.Adapters.GitHub.Repo, "/", 2)
 				if len(parts) == 2 {
+					// Register GitHub approval handler if enabled
+					if cfg.Adapters.GitHub.Approval != nil && cfg.Adapters.GitHub.Approval.Enabled {
+						pollInterval := cfg.Adapters.GitHub.Approval.PollInterval
+						if pollInterval == 0 {
+							pollInterval = 30 * time.Second
+						}
+						ghApprovalHandler := approval.NewGitHubHandler(ghClient, &approval.GitHubHandlerConfig{
+							Owner: parts[0], Repo: parts[1], PollInterval: pollInterval,
+						})
+						approvalMgr.RegisterHandler(ghApprovalHandler)
+						logging.WithComponent("start").Info("registered GitHub approval handler",
+							slog.String("repo", cfg.Adapters.GitHub.Repo))
+					}
+
 					controller := autopilot.NewController(
 						cfg.Orchestrator.Autopilot,
 						ghClient,
