@@ -248,6 +248,18 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 
 	parts := strings.Split(sourceRepo, "/")
 
+	// GH-2619: Pre-dispatch spec quality gate — block issues whose bodies are too thin to execute.
+	if len(parts) == 2 {
+		parentResolver := func(parentNum int) (*github.Issue, error) {
+			return client.GetIssue(ctx, parts[0], parts[1], parentNum)
+		}
+		specResult := github.ValidateSpec(issue, parentResolver)
+		if !specResult.Valid && specResult.SkipReason == "" {
+			applySpecGuard(ctx, client, parts[0], parts[1], issue, specResult.FailureReasons)
+			return &github.IssueResult{Success: false}, nil
+		}
+	}
+
 	// Add pilot-in-progress label before execution begins
 	if len(parts) == 2 {
 		if err := client.AddLabels(ctx, parts[0], parts[1], issue.Number, []string{github.LabelInProgress}); err != nil {
