@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -1860,5 +1861,113 @@ func TestCreateSubIssues_RejectsAnalysisTitle(t *testing.T) {
 	}
 	if isPlaceholderSubtaskTitle(got) {
 		t.Errorf("fallback title %q must not be a placeholder like 'GH-N: Subtask K'", got)
+	}
+}
+
+// TestCreateSubIssuesViaGitHub_InjectsAutopilotMetaMarker verifies GH-2695:
+// createSubIssuesViaGitHub must inject the <!--autopilot-meta marker into every
+// sub-issue body so spec_validator's inherited-spec bailout path can skip the
+// full spec check and delegate to the parent's validation result.
+func TestCreateSubIssuesViaGitHub_InjectsAutopilotMetaMarker(t *testing.T) {
+	bodyFile := filepath.Join(t.TempDir(), "captured_body.txt")
+
+	// Fake "gh" binary that captures the --body argument and returns a valid URL.
+	fakeBin := t.TempDir()
+	script := filepath.Join(fakeBin, "gh")
+	scriptContent := fmt.Sprintf("#!/bin/sh\nprintf '%%s' \"$6\" > %q\necho https://github.com/owner/repo/issues/77\n", bodyFile)
+	if err := os.WriteFile(script, []byte(scriptContent), 0o755); err != nil {
+		t.Fatalf("write fake gh: %v", err)
+	}
+	origPATH := os.Getenv("PATH")
+	t.Setenv("PATH", fakeBin+string(filepath.ListSeparator)+origPATH)
+
+	runner := NewRunner()
+	plan := &EpicPlan{
+		ParentTask: &Task{
+			ID:            "GH-42",
+			SourceRepo:    "owner/repo",
+			SourceIssueID: "42",
+		},
+		Subtasks: []PlannedSubtask{
+			{Title: "feat(epic): add marker injection", Description: "Inject the autopilot-meta comment.", Order: 1},
+		},
+	}
+
+	ctx := context.Background()
+	created, err := runner.CreateSubIssues(ctx, plan, t.TempDir())
+	if err != nil {
+		t.Fatalf("CreateSubIssues failed: %v", err)
+	}
+	if len(created) != 1 {
+		t.Fatalf("expected 1 created issue, got %d", len(created))
+	}
+
+	rawBody, err := os.ReadFile(bodyFile)
+	if err != nil {
+		t.Fatalf("read captured body: %v", err)
+	}
+	body := string(rawBody)
+
+	// autopilotMetaRe pattern from internal/adapters/github/spec_validator.go:20
+	autopilotMetaRe := regexp.MustCompile(`<!--\s*autopilot-meta\s`)
+	if !autopilotMetaRe.MatchString(body) {
+		t.Errorf("body does not contain autopilot-meta marker; body = %q", body)
+	}
+
+	// parentRefRe pattern: the inherited-spec bailout extracts the parent number from this.
+	parentRefRe := regexp.MustCompile(`(?i)Parent:\s*GH-(\d+)`)
+	m := parentRefRe.FindStringSubmatch(body)
+	if len(m) < 2 {
+		t.Errorf("body does not contain a GH-NNN parent reference; body = %q", body)
+	} else if m[1] != "42" {
+		t.Errorf("parent ref extracted %q, want 42; body = %q", m[1], body)
+	}
+
+	// The human-readable "Parent: GH-NNN" prose must also appear below the marker.
+	if !strings.Contains(body, "\n\nParent: GH-42\n\n") {
+		t.Errorf("human-readable parent prose missing from body; body = %q", body)
+	}
+}
+
+// TestCreateSubIssuesViaAdapter_InjectsAutopilotMetaMarker verifies parity with the
+// GitHub path: the adapter path must also inject the autopilot-meta marker (GH-2695).
+func TestCreateSubIssuesViaAdapter_InjectsAutopilotMetaMarker(t *testing.T) {
+	mock := &mockSubIssueCreator{
+		Returns: []mockCreateIssueReturn{
+			{Identifier: "APP-55", URL: "https://linear.app/team/issue/APP-55"},
+		},
+	}
+
+	runner := NewRunner()
+	runner.SetSubIssueCreator(mock)
+
+	plan := &EpicPlan{
+		ParentTask: &Task{
+			ID:            "APP-10",
+			SourceAdapter: "linear",
+			SourceIssueID: "APP-10",
+			Title:         "Parent epic",
+		},
+		Subtasks: []PlannedSubtask{
+			{Title: "feat(api): add endpoint", Description: "Implement the endpoint.", Order: 1},
+		},
+	}
+
+	ctx := context.Background()
+	if _, err := runner.CreateSubIssues(ctx, plan, ""); err != nil {
+		t.Fatalf("CreateSubIssues failed: %v", err)
+	}
+	if len(mock.Called) != 1 {
+		t.Fatalf("expected 1 CreateIssue call, got %d", len(mock.Called))
+	}
+
+	body := mock.Called[0].Body
+	autopilotMetaRe := regexp.MustCompile(`<!--\s*autopilot-meta\s`)
+	if !autopilotMetaRe.MatchString(body) {
+		t.Errorf("adapter body does not contain autopilot-meta marker; body = %q", body)
+	}
+
+	if !strings.Contains(body, "\n\nParent: APP-10\n\n") {
+		t.Errorf("human-readable parent prose missing from adapter body; body = %q", body)
 	}
 }
