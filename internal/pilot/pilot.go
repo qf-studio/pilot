@@ -56,10 +56,11 @@ type Pilot struct {
 	slackClient            *slack.Client
 	slackInteractionWH     *slack.InteractionHandler
 	slackApprovalHdlr      *approval.SlackHandler
-	telegramClient         *telegram.Client
-	telegramHandler        *telegram.Handler       // Telegram polling handler (GH-349)
-	telegramRunner         *executor.Runner        // Runner for Telegram tasks (GH-349)
-	telegramMemberResolver telegram.MemberResolver // Team member resolver for Telegram RBAC (GH-634)
+	telegramClient          *telegram.Client
+	telegramHandler         *telegram.Handler               // Telegram polling handler (GH-349)
+	telegramRunner          *executor.Runner                // Runner for Telegram tasks (GH-349)
+	telegramMemberResolver  telegram.MemberResolver         // Team member resolver for Telegram RBAC (GH-634)
+	telegramApprovalHdlr    telegram.ApprovalCallbackHandler // Routes approve:/reject: callbacks (GH-2651)
 	slackHandler           *slack.Handler          // Slack Socket Mode handler (GH-652)
 	slackRunner            *executor.Runner        // Runner for Slack tasks (GH-652)
 	slackMemberResolver    slack.MemberResolver    // Team member resolver for Slack RBAC (GH-786)
@@ -134,6 +135,14 @@ func WithTelegramHandler(runner *executor.Runner, projectPath string) Option {
 func WithTelegramMemberResolver(resolver telegram.MemberResolver) Option {
 	return func(p *Pilot) {
 		p.telegramMemberResolver = resolver
+	}
+}
+
+// WithTelegramApprovalHandler wires an approval callback handler into the Telegram message handler (GH-2651).
+// When set, approve:/reject: button taps are dispatched to this handler instead of being silently dropped.
+func WithTelegramApprovalHandler(h telegram.ApprovalCallbackHandler) Option {
+	return func(p *Pilot) {
+		p.telegramApprovalHdlr = h
 	}
 }
 
@@ -572,13 +581,14 @@ func New(cfg *config.Config, opts ...Option) (*Pilot, error) {
 		})
 
 		p.telegramHandler = telegram.NewHandler(&telegram.HandlerConfig{
-			Client:        tgClient,
-			CommsHandler:  tgCommsHandler,
-			ProjectPath:   projectPath,
-			Projects:      config.NewProjectSource(cfg),
-			AllowedIDs:    allowedIDs,
-			Transcription: cfg.Adapters.Telegram.Transcription,
-			Store:         p.store,
+			Client:          tgClient,
+			CommsHandler:    tgCommsHandler,
+			ProjectPath:     projectPath,
+			Projects:        config.NewProjectSource(cfg),
+			AllowedIDs:      allowedIDs,
+			Transcription:   cfg.Adapters.Telegram.Transcription,
+			Store:           p.store,
+			ApprovalHandler: p.telegramApprovalHdlr,
 		}, p.telegramRunner)
 
 		if len(allowedIDs) == 0 {

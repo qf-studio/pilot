@@ -1556,6 +1556,114 @@ func TestActiveProjectUsedInTaskPaths(t *testing.T) {
 	}
 }
 
+// mockApprovalHandler records HandleCallback invocations for test assertions.
+type mockApprovalHandler struct {
+	calls []approvalCall
+	mu    sync.Mutex
+	ret   bool
+}
+
+type approvalCall struct {
+	callbackID string
+	data       string
+	userID     string
+	username   string
+}
+
+func (m *mockApprovalHandler) HandleCallback(_ context.Context, callbackID, data, userID, username string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.calls = append(m.calls, approvalCall{callbackID: callbackID, data: data, userID: userID, username: username})
+	return m.ret
+}
+
+// newCallbackTestHandler creates a Handler backed by a test HTTP server that accepts answerCallbackQuery.
+func newCallbackTestHandler(t *testing.T, approvalHandler ApprovalCallbackHandler) (*Handler, func()) {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	h := &Handler{
+		client:          NewClientWithBaseURL(testutil.FakeTelegramBotToken, srv.URL),
+		stopCh:          make(chan struct{}),
+		approvalHandler: approvalHandler,
+	}
+	return h, srv.Close
+}
+
+// TestHandleCallback_ApprovalCallbacks covers approve:, reject:, and nil-handler paths.
+func TestHandleCallback_ApprovalCallbacks(t *testing.T) {
+	makeCallback := func(id, data string, fromID int64, username, firstName string) *CallbackQuery {
+		cb := &CallbackQuery{
+			ID:   id,
+			Data: data,
+			Message: &Message{
+				Chat: &Chat{ID: 999},
+			},
+		}
+		if fromID != 0 || username != "" || firstName != "" {
+			cb.From = &User{ID: fromID, Username: username, FirstName: firstName}
+		}
+		return cb
+	}
+
+	t.Run("approve dispatches with correct args", func(t *testing.T) {
+		mock := &mockApprovalHandler{ret: true}
+		h, cleanup := newCallbackTestHandler(t, mock)
+		defer cleanup()
+
+		cb := makeCallback("cbid-1", "approve:req-abc", 42, "alice", "Alice")
+		h.handleCallback(context.Background(), cb)
+
+		mock.mu.Lock()
+		defer mock.mu.Unlock()
+		if len(mock.calls) != 1 {
+			t.Fatalf("HandleCallback called %d times, want 1", len(mock.calls))
+		}
+		got := mock.calls[0]
+		if got.callbackID != "cbid-1" {
+			t.Errorf("callbackID = %q, want cbid-1", got.callbackID)
+		}
+		if got.data != "approve:req-abc" {
+			t.Errorf("data = %q, want approve:req-abc", got.data)
+		}
+		if got.userID != "42" {
+			t.Errorf("userID = %q, want 42", got.userID)
+		}
+		if got.username != "alice" {
+			t.Errorf("username = %q, want alice", got.username)
+		}
+	})
+
+	t.Run("reject dispatches correctly", func(t *testing.T) {
+		mock := &mockApprovalHandler{ret: true}
+		h, cleanup := newCallbackTestHandler(t, mock)
+		defer cleanup()
+
+		cb := makeCallback("cbid-2", "reject:req-xyz", 99, "bob", "Bob")
+		h.handleCallback(context.Background(), cb)
+
+		mock.mu.Lock()
+		defer mock.mu.Unlock()
+		if len(mock.calls) != 1 {
+			t.Fatalf("HandleCallback called %d times, want 1", len(mock.calls))
+		}
+		if mock.calls[0].data != "reject:req-xyz" {
+			t.Errorf("data = %q, want reject:req-xyz", mock.calls[0].data)
+		}
+	})
+
+	t.Run("nil handler does not panic", func(t *testing.T) {
+		h, cleanup := newCallbackTestHandler(t, nil)
+		defer cleanup()
+
+		cb := makeCallback("cbid-3", "approve:req-nil", 0, "", "")
+		// Must not panic.
+		h.handleCallback(context.Background(), cb)
+	})
+}
+
 func TestStripBotMention(t *testing.T) {
 	tests := []struct {
 		name        string
