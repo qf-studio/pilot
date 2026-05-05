@@ -61,6 +61,15 @@ type PRStateWriter interface {
 	SetApprovalDecision(ctx context.Context, requestID string, decision string, by string) error
 }
 
+// DecisionReader is an optional extension of PRStateWriter that allows callers
+// to read back a decision by request ID. memory.Store satisfies this interface.
+// Used by the autopilot controller to poll for async approval outcomes on each tick.
+type DecisionReader interface {
+	// GetApprovalDecision returns the stored approval decision for the given
+	// requestID. Returns ("", nil) if no decision has been recorded yet.
+	GetApprovalDecision(ctx context.Context, requestID string) (string, error)
+}
+
 // Handler is the interface for approval channel handlers
 // Each channel (Telegram, Slack, etc.) implements this interface
 type Handler interface {

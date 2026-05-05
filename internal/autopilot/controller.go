@@ -955,9 +955,112 @@ func (c *Controller) hasChangesRequested(ctx context.Context, prState *PRState) 
 	return false
 }
 
-// handleAwaitApproval waits for human approval (prod only).
+// handleAwaitApproval is a non-blocking tick handler for StageAwaitApproval.
+//
+// Async path (approval.async_dispatch = true, the default):
+//   - First tick: submit via Manager.SubmitApprovalRequest, persist the returned
+//     ID and timestamp on prState, return immediately (stays in StageAwaitApproval).
+//   - Subsequent ticks: refresh prState.ApprovalDecision from storage via
+//     Manager.LookupDecision, then branch:
+//     "approved"         → advance to StageMerging
+//     "rejected"/"timeout" → transition to StageFailed
+//     "" / "pending"     → check wall-clock timeout, apply default_action on expiry.
+//
+// Legacy sync path (approval.async_dispatch = false):
+//   - Delegates to handleAwaitApprovalSync (old blocking MergePR call) so that
+//     existing deployments can opt out for one release without code changes.
+//
+// ErrApprovalNotConfigured is always fail-closed regardless of dispatch mode.
 func (c *Controller) handleAwaitApproval(ctx context.Context, prState *PRState) error {
-	// This will block until approval received or timeout
+	// Use legacy blocking path when async dispatch is disabled or no manager.
+	if c.approvalMgr == nil || !c.approvalMgr.IsAsyncDispatch() {
+		return c.handleAwaitApprovalSync(ctx, prState)
+	}
+
+	// Misconfig guard: env requires approval but pre_merge stage is not enabled.
+	// Fail closed — do NOT retry or auto-approve. Post a single explanatory comment.
+	if c.config.ResolvedEnv().RequireApproval && !c.approvalMgr.IsStageEnabled(approval.StagePreMerge) {
+		c.log.Error("approval misconfig detected: env requires approval but pre_merge stage is disabled",
+			"pr", prState.PRNumber,
+			"env", c.config.EnvironmentName(),
+		)
+		prState.Stage = StageFailed
+		prState.Error = fmt.Sprintf(
+			"approval-misconfig: env %q has require_approval=true but approval.pre_merge.enabled=false → deadlock until config fixed",
+			c.config.EnvironmentName(),
+		)
+		c.autoMerger.postMisconfigComment(ctx, prState)
+		c.metrics.RecordPRFailed()
+		return nil
+	}
+
+	// First tick: submit the approval request and persist the returned ID.
+	if prState.ApprovalRequestID == "" {
+		reqID, err := c.submitApprovalRequest(ctx, prState)
+		if err != nil {
+			return fmt.Errorf("submit approval request: %w", err)
+		}
+		prState.ApprovalRequestID = reqID
+		prState.ApprovalRequestedAt = time.Now()
+		c.log.Info("async approval request submitted",
+			"pr", prState.PRNumber,
+			"request_id", reqID,
+		)
+		return nil // Stay in StageAwaitApproval; decision polled on next tick.
+	}
+
+	// Subsequent ticks: refresh decision from storage when still pending.
+	if prState.ApprovalDecision == "" {
+		if d := c.approvalMgr.LookupDecision(ctx, prState.ApprovalRequestID); d != "" {
+			prState.ApprovalDecision = d
+			c.log.Info("async approval decision refreshed",
+				"pr", prState.PRNumber,
+				"request_id", prState.ApprovalRequestID,
+				"decision", d,
+			)
+		}
+	}
+
+	// Branch on the current decision.
+	switch prState.ApprovalDecision {
+	case string(approval.DecisionApproved):
+		c.log.Info("approval granted, advancing to merging stage", "pr", prState.PRNumber)
+		prState.Stage = StageMerging
+
+	case string(approval.DecisionRejected), "expired", string(approval.DecisionTimeout):
+		c.log.Info("approval denied or timed out",
+			"pr", prState.PRNumber,
+			"decision", prState.ApprovalDecision,
+		)
+		prState.Stage = StageFailed
+		prState.Error = fmt.Sprintf("merge approval %s", prState.ApprovalDecision)
+
+	default:
+		// Decision still pending — check controller-side timeout.
+		timeout := c.approvalTimeout()
+		if !prState.ApprovalRequestedAt.IsZero() && time.Since(prState.ApprovalRequestedAt) > timeout {
+			defaultAction := c.approvalMgr.PreMergeDefaultAction()
+			c.log.Warn("approval request timed out at controller level, applying default action",
+				"pr", prState.PRNumber,
+				"waited", time.Since(prState.ApprovalRequestedAt),
+				"default_action", defaultAction,
+			)
+			if defaultAction == approval.DecisionApproved {
+				prState.Stage = StageMerging
+			} else {
+				prState.Stage = StageFailed
+				prState.Error = "approval timed out"
+			}
+		}
+		// else: still within timeout window — stay in StageAwaitApproval.
+	}
+	return nil
+}
+
+// handleAwaitApprovalSync is the legacy blocking path for StageAwaitApproval.
+// Used when approval.async_dispatch = false. Kept for one-release backward
+// compatibility; remove after the async path is validated in production.
+func (c *Controller) handleAwaitApprovalSync(ctx context.Context, prState *PRState) error {
 	err := c.autoMerger.MergePR(ctx, prState)
 	if err != nil {
 		if err.Error() == "merge rejected: approval denied" {
@@ -965,8 +1068,6 @@ func (c *Controller) handleAwaitApproval(ctx context.Context, prState *PRState) 
 			prState.Stage = StageFailed
 			return nil
 		}
-		// Misconfig: env requires approval but approval.pre_merge is disabled.
-		// Fail closed — do NOT retry. Post a single explanatory comment and stop.
 		if errors.Is(err, ErrApprovalNotConfigured) {
 			c.log.Error("approval misconfig detected: env requires approval but pre_merge stage is disabled",
 				"pr", prState.PRNumber,
@@ -985,14 +1086,43 @@ func (c *Controller) handleAwaitApproval(ctx context.Context, prState *PRState) 
 	}
 	prState.Stage = StageMerged
 
-	// Notify merge success after approval
 	if c.notifier != nil {
 		if err := c.notifier.NotifyMerged(ctx, prState); err != nil {
 			c.log.Warn("failed to send merge notification", "error", err)
 		}
 	}
-
 	return nil
+}
+
+// submitApprovalRequest builds and dispatches an async approval request for a PR.
+func (c *Controller) submitApprovalRequest(ctx context.Context, prState *PRState) (string, error) {
+	reqID := fmt.Sprintf("merge-pr-%d-%d", prState.PRNumber, time.Now().UnixNano())
+	req := &approval.Request{
+		ID:               reqID,
+		TaskID:           fmt.Sprintf("merge-pr-%d", prState.PRNumber),
+		Stage:            approval.StagePreMerge,
+		Title:            fmt.Sprintf("PR #%d Merge Approval", prState.PRNumber),
+		Description:      fmt.Sprintf("Approve merge of PR #%d to production?", prState.PRNumber),
+		PreferredChannel: string(c.config.ApprovalSource),
+		CreatedAt:        time.Now(),
+		Metadata: map[string]interface{}{
+			"pr_url":    prState.PRURL,
+			"pr_number": prState.PRNumber,
+			"head_sha":  prState.HeadSHA,
+		},
+	}
+	return c.approvalMgr.SubmitApprovalRequest(ctx, req)
+}
+
+// approvalTimeout returns the wall-clock timeout for controller-side expiry of
+// a pending approval request. Uses the autopilot-level ApprovalTimeout as an
+// outer bound; the approval manager's own goroutine applies the stage-level
+// timeout independently.
+func (c *Controller) approvalTimeout() time.Duration {
+	if c.config.ApprovalTimeout > 0 {
+		return c.config.ApprovalTimeout
+	}
+	return 1 * time.Hour
 }
 
 // handleMerging merges the PR.

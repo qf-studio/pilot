@@ -65,6 +65,13 @@ func (m *Manager) IsEnabled() bool {
 	return m.config != nil && m.config.Enabled
 }
 
+// IsAsyncDispatch returns true when non-blocking async approval dispatch is
+// configured (approval.async_dispatch = true, the default). When false, callers
+// should use the legacy blocking RequestApproval path instead.
+func (m *Manager) IsAsyncDispatch() bool {
+	return m.config == nil || m.config.AsyncDispatch
+}
+
 // IsStageEnabled checks if a specific stage requires approval
 func (m *Manager) IsStageEnabled(stage Stage) bool {
 	if !m.IsEnabled() {
@@ -483,6 +490,42 @@ func (m *Manager) SubmitApprovalRequest(ctx context.Context, req *Request) (stri
 		slog.Duration("timeout", timeout))
 
 	return req.ID, nil
+}
+
+// LookupDecision queries the state writer for the decision associated with
+// requestID. Returns "" if no decision has been recorded yet or if the state
+// writer does not implement DecisionReader. Safe to call from any goroutine.
+func (m *Manager) LookupDecision(ctx context.Context, requestID string) string {
+	dr, ok := m.stateWriter.(DecisionReader)
+	if !ok || dr == nil {
+		return ""
+	}
+	decision, err := dr.GetApprovalDecision(ctx, requestID)
+	if err != nil {
+		m.log.Warn("LookupDecision: read failed", slog.String("request_id", requestID), slog.Any("error", err))
+		return ""
+	}
+	return decision
+}
+
+// PreMergeTimeout returns the configured timeout for the pre_merge stage.
+// Falls back to DefaultTimeout when no stage-specific timeout is set.
+func (m *Manager) PreMergeTimeout() time.Duration {
+	if m.config.PreMerge != nil && m.config.PreMerge.Timeout > 0 {
+		return m.config.PreMerge.Timeout
+	}
+	if m.config.DefaultTimeout > 0 {
+		return m.config.DefaultTimeout
+	}
+	return 24 * time.Hour
+}
+
+// PreMergeDefaultAction returns the action to take when the pre_merge stage times out.
+func (m *Manager) PreMergeDefaultAction() Decision {
+	if m.config.PreMerge != nil && m.config.PreMerge.DefaultAction != "" {
+		return m.config.PreMerge.DefaultAction
+	}
+	return m.config.DefaultAction
 }
 
 // RecordDecision records the outcome of a pending approval request.

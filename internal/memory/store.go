@@ -576,6 +576,30 @@ func (s *Store) SetApprovalDecision(ctx context.Context, requestID string, decis
 	})
 }
 
+// GetApprovalDecision returns the stored approval decision for the given requestID.
+// Returns ("", nil) when no decision has been recorded yet (row exists but
+// approval_decision is empty). Returns ("", sql.ErrNoRows) if no execution row
+// matches the requestID.
+func (s *Store) GetApprovalDecision(ctx context.Context, requestID string) (string, error) {
+	if requestID == "" {
+		return "", nil
+	}
+	var decision string
+	err := s.db.QueryRowContext(ctx, `
+		SELECT COALESCE(approval_decision, '')
+		FROM executions
+		WHERE approval_request_id = ?
+		LIMIT 1
+	`, requestID).Scan(&decision)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("GetApprovalDecision: %w", err)
+	}
+	return decision, nil
+}
+
 // GetRecentExecutions returns the most recent executions ordered by creation time.
 // The limit parameter specifies the maximum number of executions to return.
 func (s *Store) GetRecentExecutions(limit int) ([]*Execution, error) {

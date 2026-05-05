@@ -417,6 +417,10 @@ Examples:
 
 				// Create approval manager for autopilot
 				approvalMgr := approval.NewManager(cfg.Approval)
+				// GH-2689: wire state writer so async RecordDecision persists decisions.
+				if gwStore != nil {
+					approvalMgr.WithStateWriter(gwStore)
+				}
 
 				// Register Telegram approval handler if enabled
 				if cfg.Adapters.Telegram != nil && cfg.Adapters.Telegram.Enabled && cfg.Adapters.Telegram.BotToken != "" &&
@@ -1454,6 +1458,11 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 		if rErr := tgApprovalHandlerImpl.Rehydrate(ctx); rErr != nil {
 			logging.WithComponent("approval").Warn("telegram approval rehydrate failed", slog.Any("error", rErr))
 		}
+	}
+
+	// GH-2689: wire state writer so async RecordDecision persists decisions.
+	if store != nil {
+		approvalMgr.WithStateWriter(store)
 	}
 
 	// GH-726: Initialize autopilot state store for crash recovery

@@ -72,6 +72,16 @@ func (m *AutoMerger) MergePR(ctx context.Context, prState *PRState) error {
 		}
 	}
 
+	// GH-2689: async approval path records the decision on prState before
+	// advancing to StageMerging. Skip the blocking requestApproval when the
+	// controller has already obtained approval via SubmitApprovalRequest.
+	if requireApproval && prState.ApprovalDecision == string(approval.DecisionApproved) {
+		m.log.Info("MergePR: skipping approval check — already approved via async flow",
+			"pr", prState.PRNumber,
+		)
+		requireApproval = false
+	}
+
 	if requireApproval {
 		approved, err := m.requestApproval(ctx, prState)
 		if err != nil {

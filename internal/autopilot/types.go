@@ -470,6 +470,19 @@ type PRState struct {
 	// posted to the linked issue. Prevents duplicate comments on state-machine
 	// re-entry for an already-merged PR (GH-2345).
 	MergeNotificationPosted bool
+
+	// ApprovalRequestID is the ID returned by Manager.SubmitApprovalRequest on
+	// the first tick of StageAwaitApproval. Non-empty signals that a request has
+	// already been submitted so subsequent ticks poll for the decision instead of
+	// re-submitting.
+	ApprovalRequestID string
+	// ApprovalRequestedAt is when the approval request was first submitted.
+	// Used for controller-side timeout calculation in the async path.
+	ApprovalRequestedAt time.Time
+	// ApprovalDecision is the outcome recorded by Manager.RecordDecision / the
+	// background goroutine: "approved", "rejected", or "timeout".
+	// Empty means the decision is still pending.
+	ApprovalDecision string
 }
 
 // RepoOwnerAndName extracts the repository owner and name from the PR URL.
