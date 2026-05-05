@@ -206,10 +206,11 @@ func (m *AutoMerger) requestApproval(ctx context.Context, prState *PRState) (boo
 	}
 
 	req := &approval.Request{
-		TaskID:      fmt.Sprintf("merge-pr-%d", prState.PRNumber),
-		Stage:       approval.StagePreMerge,
-		Title:       fmt.Sprintf("PR #%d Merge Approval", prState.PRNumber),
-		Description: fmt.Sprintf("Approve merge of PR #%d to production?", prState.PRNumber),
+		TaskID:           fmt.Sprintf("merge-pr-%d", prState.PRNumber),
+		Stage:            approval.StagePreMerge,
+		Title:            fmt.Sprintf("PR #%d Merge Approval", prState.PRNumber),
+		Description:      fmt.Sprintf("Approve merge of PR #%d to production?", prState.PRNumber),
+		PreferredChannel: string(m.config.ApprovalSource),
 		Metadata: map[string]interface{}{
 			"pr_url":    prState.PRURL,
 			"pr_number": prState.PRNumber,

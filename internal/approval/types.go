@@ -31,15 +31,16 @@ const (
 
 // Request represents an approval request
 type Request struct {
-	ID          string                 // Unique request identifier
-	TaskID      string                 // Associated task ID
-	Stage       Stage                  // Approval stage
-	Title       string                 // Short description
-	Description string                 // Detailed description
-	Metadata    map[string]interface{} // Additional context (PR URL, error details, etc.)
-	CreatedAt   time.Time              // When request was created
-	ExpiresAt   time.Time              // When request expires (timeout)
-	Approvers   []string               // Required approvers (user IDs, handles)
+	ID               string                 // Unique request identifier
+	TaskID           string                 // Associated task ID
+	Stage            Stage                  // Approval stage
+	Title            string                 // Short description
+	Description      string                 // Detailed description
+	Metadata         map[string]interface{} // Additional context (PR URL, error details, etc.)
+	CreatedAt        time.Time              // When request was created
+	ExpiresAt        time.Time              // When request expires (timeout)
+	Approvers        []string               // Required approvers (user IDs, handles)
+	PreferredChannel string                 `json:",omitempty"` // Preferred approval channel (e.g., "telegram", "slack"); falls back to first-available when unset or unregistered
 }
 
 // Response represents an approval response
