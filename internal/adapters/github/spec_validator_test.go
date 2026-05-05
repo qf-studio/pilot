@@ -1,0 +1,161 @@
+package github
+
+import (
+	"errors"
+	"strings"
+	"testing"
+)
+
+// validBody returns a body with a section header and >= 100 chars to pass all rules.
+func validBody() string {
+	return strings.Repeat("x", 60) + "\n\n## Acceptance\n\n- [ ] Does the thing correctly\n"
+}
+
+func TestValidateSpec_ValidBody(t *testing.T) {
+	issue := &Issue{
+		Number: 1,
+		Title:  "feat(foo): do something",
+		Body:   validBody(),
+	}
+	result := ValidateSpec(issue, nil)
+	if !result.Valid {
+		t.Errorf("expected Valid=true, got reasons=%v", result.FailureReasons)
+	}
+	if result.SkipReason != "" {
+		t.Errorf("expected no SkipReason, got %q", result.SkipReason)
+	}
+}
+
+func TestValidateSpec_BodyTooShort(t *testing.T) {
+	issue := &Issue{
+		Number: 2,
+		Title:  "cascade-2 repro",
+		Body:   "cascade-2 repro", // 15 chars — mirrors the real cascade-2 sub-issues
+	}
+	result := ValidateSpec(issue, nil)
+	if result.Valid {
+		t.Fatal("expected Valid=false for 15-char body")
+	}
+	foundShort := false
+	for _, r := range result.FailureReasons {
+		if strings.Contains(r, "body too short") {
+			foundShort = true
+		}
+	}
+	if !foundShort {
+		t.Errorf("expected 'body too short' reason, got %v", result.FailureReasons)
+	}
+}
+
+func TestValidateSpec_ParentOnlyBody(t *testing.T) {
+	issue := &Issue{
+		Number: 3,
+		Body:   "Parent: GH-201",
+	}
+	result := ValidateSpec(issue, nil)
+	if result.Valid {
+		t.Fatal("expected Valid=false for parent-only body")
+	}
+	foundParent := false
+	for _, r := range result.FailureReasons {
+		if strings.Contains(r, "parent reference") {
+			foundParent = true
+		}
+	}
+	if !foundParent {
+		t.Errorf("expected 'parent reference' reason, got %v", result.FailureReasons)
+	}
+}
+
+func TestValidateSpec_NoSectionHeader(t *testing.T) {
+	// 200 chars, no section header
+	body := strings.Repeat("This is a long body without any structural section header. ", 4)
+	issue := &Issue{
+		Number: 4,
+		Body:   body,
+	}
+	result := ValidateSpec(issue, nil)
+	if result.Valid {
+		t.Fatal("expected Valid=false for body without section header")
+	}
+	foundHeader := false
+	for _, r := range result.FailureReasons {
+		if strings.Contains(r, "structural section header") {
+			foundHeader = true
+		}
+	}
+	if !foundHeader {
+		t.Errorf("expected 'structural section header' reason, got %v", result.FailureReasons)
+	}
+}
+
+func TestValidateSpec_SkipLabelOptOut(t *testing.T) {
+	// Body fails all rules — but the skip label is present.
+	issue := &Issue{
+		Number: 5,
+		Body:   "too short",
+		Labels: []Label{{Name: LabelSkipSpecCheck}},
+	}
+	result := ValidateSpec(issue, nil)
+	if !result.Valid {
+		t.Errorf("expected Valid=true (opted out), got reasons=%v", result.FailureReasons)
+	}
+	if result.SkipReason == "" {
+		t.Error("expected non-empty SkipReason for opted-out issue")
+	}
+}
+
+func TestValidateSpec_SubIssueParentPasses(t *testing.T) {
+	// Child body is "see parent" (terse) but has autopilot-meta marker and the
+	// parent is well-specced → child should pass.
+	parentBody := validBody()
+	parentResolver := func(num int) (*Issue, error) {
+		if num == 201 {
+			return &Issue{Number: 201, Body: parentBody}, nil
+		}
+		return nil, errors.New("not found")
+	}
+
+	child := &Issue{
+		Number: 6,
+		Body:   "see parent\nParent: GH-201\n<!-- autopilot-meta branch:pilot/GH-200 pr:99 iteration:1 -->",
+	}
+	result := ValidateSpec(child, parentResolver)
+	if !result.Valid {
+		t.Errorf("expected Valid=true (parent passes), got reasons=%v", result.FailureReasons)
+	}
+	if !strings.Contains(result.SkipReason, "parent GH-201") {
+		t.Errorf("expected SkipReason to mention parent GH-201, got %q", result.SkipReason)
+	}
+}
+
+func TestValidateSpec_SubIssueParentFails(t *testing.T) {
+	// Child has autopilot-meta marker but parent also fails — child should fail.
+	parentResolver := func(num int) (*Issue, error) {
+		return &Issue{Number: num, Body: "too short"}, nil
+	}
+
+	child := &Issue{
+		Number: 7,
+		Body:   "see parent\nParent: GH-300\n<!-- autopilot-meta branch:pilot/GH-299 pr:88 iteration:1 -->",
+	}
+	result := ValidateSpec(child, parentResolver)
+	if result.Valid {
+		t.Error("expected Valid=false when both child and parent fail")
+	}
+}
+
+func TestValidateSpec_SectionHeaderVariants(t *testing.T) {
+	headers := []string{
+		"## Acceptance", "## Implementation", "## Context",
+		"## Background", "## Approach", "## Design", "## Refs",
+	}
+	for _, h := range headers {
+		body := strings.Repeat("x", 80) + "\n\n" + h + "\n\nsome content here and there\n"
+		issue := &Issue{Number: 8, Body: body}
+		result := ValidateSpec(issue, nil)
+		if !result.Valid {
+			t.Errorf("header %q should make body valid, got reasons=%v", h, result.FailureReasons)
+		}
+	}
+}
