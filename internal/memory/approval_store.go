@@ -25,7 +25,14 @@ type PendingApproval struct {
 
 // InsertPendingApproval persists a new pending approval record.
 // Replaces any existing row with the same ID.
+// CreatedAt defaults to now when zero; ExpiresAt must be set by the caller (schema NOT NULL).
 func (s *Store) InsertPendingApproval(a *PendingApproval) error {
+	if a.CreatedAt.IsZero() {
+		a.CreatedAt = time.Now().UTC()
+	}
+	if a.ExpiresAt.IsZero() {
+		return fmt.Errorf("InsertPendingApproval: ExpiresAt must be set (id=%s)", a.ID)
+	}
 	metaJSON, err := json.Marshal(a.Metadata)
 	if err != nil {
 		return fmt.Errorf("InsertPendingApproval: marshal metadata: %w", err)
@@ -47,7 +54,6 @@ func (s *Store) InsertPendingApproval(a *PendingApproval) error {
 				metadata          = excluded.metadata,
 				approvers         = excluded.approvers,
 				preferred_channel = excluded.preferred_channel,
-				created_at        = excluded.created_at,
 				expires_at        = excluded.expires_at
 		`,
 			a.ID, a.TaskID, a.Stage, a.Title, a.Description,

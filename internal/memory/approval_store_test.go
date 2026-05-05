@@ -214,3 +214,91 @@ func TestLoadPendingApprovals_Empty(t *testing.T) {
 		t.Errorf("expected 0 records, got %d", len(all))
 	}
 }
+
+func TestInsertPendingApproval_DefaultsCreatedAt(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+
+	before := time.Now().UTC().Add(-time.Second)
+	a := &PendingApproval{
+		ID:        "zero-created",
+		TaskID:    "GH-600",
+		Stage:     "pre_merge",
+		Title:     "t",
+		ExpiresAt: time.Now().UTC().Add(time.Hour),
+		// CreatedAt deliberately zero
+	}
+	if err := s.InsertPendingApproval(a); err != nil {
+		t.Fatalf("InsertPendingApproval: %v", err)
+	}
+
+	all, err := s.LoadPendingApprovals()
+	if err != nil {
+		t.Fatalf("LoadPendingApprovals: %v", err)
+	}
+	if len(all) != 1 {
+		t.Fatalf("expected 1 record, got %d", len(all))
+	}
+	if all[0].CreatedAt.IsZero() {
+		t.Error("CreatedAt should not be zero after insert")
+	}
+	if all[0].CreatedAt.Before(before) {
+		t.Errorf("CreatedAt %v is before test start %v", all[0].CreatedAt, before)
+	}
+}
+
+func TestInsertPendingApproval_ZeroExpiresAtReturnsError(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+
+	a := &PendingApproval{
+		ID:     "zero-expires",
+		TaskID: "GH-601",
+		Stage:  "pre_merge",
+		Title:  "t",
+		// ExpiresAt deliberately zero
+	}
+	err := s.InsertPendingApproval(a)
+	if err == nil {
+		t.Fatal("expected error for zero ExpiresAt, got nil")
+	}
+}
+
+func TestInsertPendingApproval_UpsertPreservesCreatedAt(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+
+	original := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
+	a := &PendingApproval{
+		ID:        "freeze-created",
+		TaskID:    "GH-602",
+		Stage:     "pre_merge",
+		Title:     "original",
+		CreatedAt: original,
+		ExpiresAt: time.Now().UTC().Add(time.Hour),
+	}
+	if err := s.InsertPendingApproval(a); err != nil {
+		t.Fatalf("first insert: %v", err)
+	}
+
+	// Re-insert with a different CreatedAt — UPSERT must not overwrite the stored value.
+	a.Title = "updated"
+	a.CreatedAt = time.Now().UTC()
+	if err := s.InsertPendingApproval(a); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	all, err := s.LoadPendingApprovals()
+	if err != nil {
+		t.Fatalf("LoadPendingApprovals: %v", err)
+	}
+	if len(all) != 1 {
+		t.Fatalf("expected 1 record after upsert, got %d", len(all))
+	}
+	if !all[0].CreatedAt.Equal(original) {
+		t.Errorf("CreatedAt changed on upsert: got %v, want %v", all[0].CreatedAt, original)
+	}
+	if all[0].Title != "updated" {
+		t.Errorf("Title not updated: got %q", all[0].Title)
+	}
+}
