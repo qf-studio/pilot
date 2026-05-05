@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -313,6 +314,12 @@ func (s *Store) migrate() error {
 			expires_at DATETIME NOT NULL
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_approval_pending_expires ON approval_pending(expires_at)`,
+		// Approval decision columns on executions (GH-2667)
+		`ALTER TABLE executions ADD COLUMN approval_request_id TEXT DEFAULT ''`,
+		`ALTER TABLE executions ADD COLUMN approval_decision TEXT DEFAULT ''`,
+		`ALTER TABLE executions ADD COLUMN approval_decision_at DATETIME`,
+		`ALTER TABLE executions ADD COLUMN approval_decision_by TEXT DEFAULT ''`,
+		`CREATE INDEX IF NOT EXISTS idx_executions_approval_request ON executions(approval_request_id)`,
 	}
 
 	for _, migration := range migrations {
@@ -407,6 +414,11 @@ type Execution struct {
 	// GH-2326: persisted Task.Labels so label-driven gates (no-decompose, autopilot-fix, etc.)
 	// survive the dispatcher queue → worker round-trip.
 	TaskLabels []string
+	// Approval decision fields (GH-2667)
+	ApprovalRequestID  string
+	ApprovalDecision   string
+	ApprovalDecisionAt *time.Time
+	ApprovalDecisionBy string
 }
 
 // SaveExecution saves an execution record to the database.
@@ -421,12 +433,14 @@ func (s *Store) SaveExecution(exec *Execution) error {
 			INSERT INTO executions (id, task_id, project_path, status, output, error, duration_ms, pr_url, commit_sha, completed_at,
 				tokens_input, tokens_output, tokens_total, estimated_cost_usd, files_changed, lines_added, lines_removed, model_name,
 				task_title, task_description, task_branch, task_base_branch, task_create_pr, task_verbose,
-				task_source_adapter, task_source_issue_id, task_labels)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				task_source_adapter, task_source_issue_id, task_labels,
+				approval_request_id)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`, exec.ID, exec.TaskID, exec.ProjectPath, exec.Status, exec.Output, exec.Error, exec.DurationMs, exec.PRUrl, exec.CommitSHA, exec.CompletedAt,
 			exec.TokensInput, exec.TokensOutput, exec.TokensTotal, exec.EstimatedCostUSD, exec.FilesChanged, exec.LinesAdded, exec.LinesRemoved, exec.ModelName,
 			exec.TaskTitle, exec.TaskDescription, exec.TaskBranch, exec.TaskBaseBranch, exec.TaskCreatePR, exec.TaskVerbose,
-			exec.TaskSourceAdapter, exec.TaskSourceIssueID, labelsJSON)
+			exec.TaskSourceAdapter, exec.TaskSourceIssueID, labelsJSON,
+			exec.ApprovalRequestID)
 		return err
 	})
 }
@@ -469,21 +483,29 @@ func (s *Store) GetExecution(id string) (*Execution, error) {
 			COALESCE(task_title, ''), COALESCE(task_description, ''), COALESCE(task_branch, ''),
 			COALESCE(task_base_branch, ''), COALESCE(task_create_pr, 0), COALESCE(task_verbose, 0),
 			COALESCE(task_source_adapter, ''), COALESCE(task_source_issue_id, ''),
-			COALESCE(task_labels, '')
+			COALESCE(task_labels, ''),
+			COALESCE(approval_request_id, ''), COALESCE(approval_decision, ''),
+			approval_decision_at,
+			COALESCE(approval_decision_by, '')
 		FROM executions WHERE id = ?
 	`, id)
 
 	var exec Execution
 	var completedAt sql.NullTime
+	var approvalDecisionAt sql.NullTime
 	var labelsJSON string
 	err := row.Scan(&exec.ID, &exec.TaskID, &exec.ProjectPath, &exec.Status, &exec.Output, &exec.Error, &exec.DurationMs, &exec.PRUrl, &exec.CommitSHA, &exec.CreatedAt, &completedAt,
 		&exec.TokensInput, &exec.TokensOutput, &exec.TokensTotal, &exec.EstimatedCostUSD, &exec.FilesChanged, &exec.LinesAdded, &exec.LinesRemoved, &exec.ModelName,
 		&exec.TaskTitle, &exec.TaskDescription, &exec.TaskBranch, &exec.TaskBaseBranch, &exec.TaskCreatePR, &exec.TaskVerbose,
-		&exec.TaskSourceAdapter, &exec.TaskSourceIssueID, &labelsJSON)
+		&exec.TaskSourceAdapter, &exec.TaskSourceIssueID, &labelsJSON,
+		&exec.ApprovalRequestID, &exec.ApprovalDecision, &approvalDecisionAt, &exec.ApprovalDecisionBy)
 	if err != nil {
 		return nil, err
 	}
 	exec.TaskLabels = unmarshalLabels(labelsJSON)
+	if approvalDecisionAt.Valid {
+		exec.ApprovalDecisionAt = &approvalDecisionAt.Time
+	}
 
 	if completedAt.Valid {
 		exec.CompletedAt = &completedAt.Time
@@ -523,6 +545,35 @@ func (s *Store) InvalidateCompletion(taskID, projectPath string) error {
 		return fmt.Errorf("invalidate completion for %s at %s: %w", taskID, projectPath, err)
 	}
 	return nil
+}
+
+// SetApprovalDecision records an approval decision on the execution linked to requestID.
+// It sets approval_decision, approval_decision_at, and approval_decision_by on the row
+// whose approval_request_id matches. Returns sql.ErrNoRows if no matching row is found.
+func (s *Store) SetApprovalDecision(ctx context.Context, requestID string, decision string, by string) error {
+	if requestID == "" {
+		return sql.ErrNoRows
+	}
+	return s.withRetry("SetApprovalDecision", func() error {
+		result, err := s.db.ExecContext(ctx, `
+			UPDATE executions
+			SET approval_decision    = ?,
+			    approval_decision_at = CURRENT_TIMESTAMP,
+			    approval_decision_by = ?
+			WHERE approval_request_id = ?
+		`, decision, by, requestID)
+		if err != nil {
+			return fmt.Errorf("SetApprovalDecision: %w", err)
+		}
+		rows, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("SetApprovalDecision rows affected: %w", err)
+		}
+		if rows == 0 {
+			return sql.ErrNoRows
+		}
+		return nil
+	})
 }
 
 // GetRecentExecutions returns the most recent executions ordered by creation time.
