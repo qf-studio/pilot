@@ -424,7 +424,7 @@ func ShortSHA(sha string) string {
 	return sha[:7]
 }
 
-// PRState tracks a PR through the autopilot pipeline.
+// PRState tracks the lifecycle state of a pull request through the autopilot pipeline.
 type PRState struct {
 	// PRNumber is the GitHub PR number.
 	PRNumber int
