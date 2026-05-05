@@ -13,6 +13,7 @@ type Config struct {
 	Polling           *PollingConfig           `yaml:"polling"`             // Polling configuration
 	StaleLabelCleanup *StaleLabelCleanupConfig `yaml:"stale_label_cleanup"` // Auto-cleanup stale labels
 	ProjectBoard      *ProjectBoardConfig      `yaml:"project_board"`       // GitHub Projects V2 board sync
+	Approval          *ApprovalConfig          `yaml:"approval"`            // GitHub PR-review approval handler
 }
 
 // PollingConfig holds GitHub polling settings
