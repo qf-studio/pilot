@@ -216,6 +216,70 @@ When CI passes on a PR in `prod` mode:
 3. Pilot blocks until approved, rejected, or timed out
 4. On approval, the PR is merged. On rejection, the PR is marked as failed.
 
+## How async approval works
+
+Since v2.121.0, approval dispatch is non-blocking. The controller submits a request and
+immediately returns, while the Telegram handler processes the user's tap independently.
+The sequence below shows the full round-trip.
+
+```mermaid
+sequenceDiagram
+    participant Ctrl as Controller
+    participant Mgr as Manager
+    participant TG as Telegram Bot
+    participant User as User
+    participant DB as SQLite
+
+    Ctrl->>Mgr: SubmitApprovalRequest(ctx, req)
+    Note right of Mgr: Returns request ID immediately<br/>(non-blocking since v2.121)
+    Mgr-->>Ctrl: requestID
+
+    Mgr->>DB: InsertPendingApproval(row)
+    Mgr->>TG: Send message with buttons<br/>callback_data: approve:<id> / reject:<id>
+
+    User->>TG: Tap ✅ Merge (or ❌ Reject)
+    TG->>Mgr: HandleCallback → RecordDecision(id, decision, by)
+    Mgr->>DB: SetApprovalDecision(requestID, decision, by)
+    Note right of DB: Writes executions.approval_decision
+
+    loop Controller tick (every ~10s)
+        Ctrl->>DB: Read prState.ApprovalDecision
+        alt decision present
+            Ctrl->>Ctrl: handleAwaitApproval → advance stage
+            Ctrl->>Ctrl: Merge → tag → release pipeline
+        end
+    end
+```
+
+### Daemon-restart resilience
+
+Pending approval requests survive a daemon restart:
+
+- **v2.122**: `InsertPendingApproval` writes each request to the `approval_pending` SQLite table on dispatch.
+- **v2.123**: On startup, `tgApprovalHandler.RehydratePending` loads all non-expired rows from `approval_pending` and re-registers them in the in-memory map.
+
+A user can tap **Approve** minutes after a daemon restart and the callback lands correctly.
+
+<Callout type="info">
+  The `approval_pending` table is pruned automatically when requests expire or are decided. It is safe to inspect with `sqlite3 ~/.pilot/data/pilot.db "SELECT * FROM approval_pending"`.
+</Callout>
+
+### Configuration
+
+```yaml
+# ~/.pilot/config.yaml
+approval:
+  async_dispatch: true    # default since v2.125; set false to restore legacy blocking path
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `async_dispatch` | bool | `true` | When true, `SubmitApprovalRequest` returns the request ID immediately and the controller reads the decision on the next tick. When false, the legacy blocking `RequestApproval` channel is used instead. |
+
+<Callout type="warning">
+  The legacy blocking path (`async_dispatch: false`) is preserved for one release of bake time and will be removed in a future version. Migrate to async dispatch before that removal.
+</Callout>
+
 ## Disabling Approval
 
 Approval is disabled by default. To explicitly skip it:

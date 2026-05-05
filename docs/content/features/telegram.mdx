@@ -70,6 +70,12 @@ Pilot: 🎉 PR created: #456
        - Added tests
 ```
 
+## Approval Callbacks
+
+When `approval.pre_merge` is enabled, Pilot sends inline-keyboard messages to Telegram. Tapping **✅ Merge** or **❌ Reject** triggers a callback that resolves the pending approval asynchronously — no polling, no re-send on restart.
+
+See also: [How async approval works](/features/approval-workflows#how-async-approval-works)
+
 ## Security
 
 - Only `allowed_users` can interact with the bot
