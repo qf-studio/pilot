@@ -116,49 +116,72 @@ var (
 				Foreground(lipgloss.Color("#d4a054")) // amber
 )
 
+// autopilotController is the subset of autopilot.Controller used by AutopilotPanel.
+// Defined as an interface so tests can inject fakes without a real Controller.
+type autopilotController interface {
+	GetActivePRs() []*autopilot.PRState
+	Config() *autopilot.Config
+	GetPRFailures(prNumber int) int
+}
+
 // AutopilotPanel displays autopilot status in the dashboard.
 type AutopilotPanel struct {
-	controller *autopilot.Controller
+	controller autopilotController
 	panelWidth int // dynamic panel width, set before View()
+	tick       int // increments per 1s animation tick, drives ◐ rotation
 }
 
 // NewAutopilotPanel creates an autopilot panel.
 func NewAutopilotPanel(controller *autopilot.Controller) *AutopilotPanel {
+	if controller == nil {
+		return &AutopilotPanel{controller: nil, panelWidth: panelTotalWidth}
+	}
 	return &AutopilotPanel{controller: controller, panelWidth: panelTotalWidth}
 }
 
-// View renders the autopilot panel content (GH-2455 avionics redesign).
-// Active PR: STATE/PR/AGE + CI/MERGE/RETRY gauges + pipeline rail.
-// Idle: compact single-line STATE IDLE indicator.
+// SetTick updates the animation tick counter (called from the parent model's tickMsg handler).
+func (p *AutopilotPanel) SetTick(t int) { p.tick = t }
+
+// View renders the autopilot panel (GH-2620 variant A redesign).
+// Compact layout: no empty-line padding rows.
+// Idle: 3 lines (border, content, border).
+// Active: 4 lines (+ PR identity + pipeline rail).
+// Failed: 5 lines (+ error reason on line 3).
 func (p *AutopilotPanel) View() string {
 	tw := p.panelWidth
 	if tw < panelTotalWidth {
 		tw = panelTotalWidth
 	}
+	inner := tw - 4 // content width: tw minus 2 borders and 2 padding spaces
 
 	if p.controller == nil {
-		return renderPanel("AUTOPILOT", "  Disabled", tw)
+		return p.buildCompactPanel(tw, "  Disabled")
 	}
 
 	prs := p.controller.GetActivePRs()
 	if len(prs) == 0 {
-		idle := "  " + labelStyle.Render("STATE") + "  " + dimStyle.Render("IDLE") + "  ─  no active PR"
-		return renderPanel("AUTOPILOT", idle, tw)
+		return p.buildCompactPanel(tw, "  "+dimStyle.Render("idle · no active PR"))
 	}
 
-	// Render first active PR with full detail; summarise additional PRs below.
 	pr := prs[0]
-	var content strings.Builder
 
-	// STATE / PR / AGE block
+	// Line 1: "  #NNNN  {title}{padding}{age}"
 	age := p.formatDuration(time.Since(pr.CreatedAt))
-	content.WriteString(fmt.Sprintf("  %s  %s    %s  #%d    %s  %s",
-		labelStyle.Render("STATE"), statusRunningStyle.Render(string(pr.Stage)),
-		labelStyle.Render("PR"), pr.PRNumber,
-		labelStyle.Render("AGE"), age))
-	content.WriteString("\n")
+	prefix1 := fmt.Sprintf("  #%d  ", pr.PRNumber)
+	prefix1Len := lipgloss.Width(prefix1)
+	ageLen := len(age)
+	titleMaxLen := inner - prefix1Len - ageLen - 1 // 1 space before age
+	if titleMaxLen < 5 {
+		titleMaxLen = 5
+	}
+	title := truncateString(pr.PRTitle, titleMaxLen)
+	pad1 := inner - prefix1Len - len(title) - ageLen
+	if pad1 < 1 {
+		pad1 = 1
+	}
+	line1 := prefix1 + title + strings.Repeat(" ", pad1) + age
 
-	// CI / MERGE / RETRY gauges
+	// Line 2: "  {rail}{padding}{N/M[ ⟲]}"
 	cfg := p.controller.Config()
 	maxFailures := cfg.MaxFailures
 	if maxFailures <= 0 {
@@ -166,76 +189,54 @@ func (p *AutopilotPanel) View() string {
 	}
 	failures := p.controller.GetPRFailures(pr.PRNumber)
 
-	ciPct := autopilotCIProgressPct(pr.CIStatus)
-	mergePct := 0
-	if pr.Stage == autopilot.StageMerging || pr.Stage == autopilot.StageMerged ||
-		pr.Stage == autopilot.StagePostMergeCI || pr.Stage == autopilot.StageReleasing {
-		mergePct = 100
+	rail := renderAutopilotRail(pr.Stage, pr.CIStatus, p.tick)
+
+	retryNum := fmt.Sprintf("%d/%d", failures, maxFailures)
+	var retryStr string
+	if failures > 0 {
+		retryStr = dimStyle.Render(retryNum) + " " + warningStyle.Render("⟲")
+	} else {
+		retryStr = dimStyle.Render(retryNum) + " "
 	}
-	retryPct := 0
-	if maxFailures > 0 {
-		retryPct = failures * 100 / maxFailures
+
+	pad2 := inner - 2 - lipgloss.Width(rail) - lipgloss.Width(retryStr)
+	if pad2 < 1 {
+		pad2 = 1
 	}
+	line2 := "  " + rail + strings.Repeat(" ", pad2) + retryStr
 
-	ciBar := renderAutopilotBar(ciPct, 8)
-	mergeBar := renderAutopilotBar(mergePct, 8)
-	retryBar := renderAutopilotBar(retryPct, 8)
+	lines := []string{line1, line2}
 
-	content.WriteString(fmt.Sprintf("  CI [%s]  MRG [%s]  RTY [%s] %d/%d",
-		ciBar, mergeBar, retryBar, failures, maxFailures))
-	content.WriteString("\n")
-
-	// Pipeline rail
-	content.WriteString("  " + renderAutopilotRail(pr.Stage))
-
-	// Error annotation if failed
+	// Line 3 (conditional): "  ↳ {truncated error}" — only on failure with message
 	if pr.Stage == autopilot.StageFailed && pr.Error != "" {
-		content.WriteString("\n")
-		content.WriteString("  " + statusFailedStyle.Render("!") + " " + truncateString(pr.Error, 55))
+		const errPrefix = "  ↳ "
+		errMax := inner - len(errPrefix)
+		if errMax < 5 {
+			errMax = 5
+		}
+		lines = append(lines, errPrefix+truncateString(pr.Error, errMax))
 	}
 
-	// Additional PRs count
+	// Overflow: additional active PRs
 	if len(prs) > 1 {
-		content.WriteString("\n")
-		content.WriteString(fmt.Sprintf("  + %d more PR(s)", len(prs)-1))
+		lines = append(lines, fmt.Sprintf("  + %d more PR(s)", len(prs)-1))
 	}
 
-	return renderPanel("AUTOPILOT", content.String(), tw)
+	return p.buildCompactPanel(tw, lines...)
 }
 
-// autopilotCIProgressPct maps CIStatus to a 0–100 progress percentage.
-func autopilotCIProgressPct(status autopilot.CIStatus) int {
-	switch status {
-	case autopilot.CIPending:
-		return 0
-	case autopilot.CIRunning:
-		return 50
-	case autopilot.CISuccess:
-		return 100
-	case autopilot.CIFailure:
-		return 0
+// buildCompactPanel renders a bordered panel without empty-line padding rows.
+// This produces exactly len(lines)+2 output lines (top border, content lines, bottom border).
+func (p *AutopilotPanel) buildCompactPanel(tw int, lines ...string) string {
+	var sb strings.Builder
+	sb.WriteString(buildTopBorder("AUTOPILOT", tw))
+	for _, line := range lines {
+		sb.WriteString("\n")
+		sb.WriteString(buildContentLine(line, tw))
 	}
-	return 0
-}
-
-// renderAutopilotBar renders a mini progress bar of the given width (in filled chars).
-// Uses █ for filled and ░ for empty, coloured with existing progress styles.
-func renderAutopilotBar(pct, barWidth int) string {
-	if pct < 0 {
-		pct = 0
-	}
-	if pct > 100 {
-		pct = 100
-	}
-	filled := barWidth * pct / 100
-	var b strings.Builder
-	if filled > 0 {
-		b.WriteString(progressBarStyle.Render(strings.Repeat("█", filled)))
-	}
-	if barWidth-filled > 0 {
-		b.WriteString(progressEmptyStyle.Render(strings.Repeat("░", barWidth-filled)))
-	}
-	return b.String()
+	sb.WriteString("\n")
+	sb.WriteString(buildBottomBorder(tw))
+	return sb.String()
 }
 
 // pipelineStagePosition maps a PRStage to its 0-based position in the 5-node rail.
@@ -258,34 +259,45 @@ func pipelineStagePosition(stage autopilot.PRStage) int {
 	return 0
 }
 
-// renderAutopilotRail renders the 5-node pipeline progress rail with a status
-// lamp before each node: ✓ (done, sage), ● (current, steel blue), ○ (pending,
-// dim slate). Connectors are plain dim "──" separators.
+// renderAutopilotRail renders the 5-node pipeline rail with glyph-per-node status.
+// Glyphs: ✓ done (sage), ◐◓◑◒ in-progress animated (steel blue), ○ pending (gray), ✗ failed (rose).
+// tick drives the spinner rotation; ciStatus allows the ci node to show ✗ independently of stage.
 // Format example for stage=releasing:
 //
-//	✓ ci-wait ── ✓ rebase ── ✓ merge ── ✓ tag ── ● release
-func renderAutopilotRail(stage autopilot.PRStage) string {
-	nodes := []string{"ci-wait", "rebase", "merge", "tag", "release"}
+//	✓ ci ── ✓ rebase ── ✓ merge ── ✓ tag ── ◐ release
+func renderAutopilotRail(stage autopilot.PRStage, ciStatus autopilot.CIStatus, tick int) string {
+	nodes := []string{"ci", "rebase", "merge", "tag", "release"}
+	spinner := []rune{'◐', '◓', '◑', '◒'}
 	pos := pipelineStagePosition(stage)
+
 	var sb strings.Builder
 	for i, name := range nodes {
-		var lamp, label string
-		var lampStyle, labelStyle lipgloss.Style
+		var glyph string
+		var glyphStyle, nameStyle lipgloss.Style
+
 		switch {
+		case i == 0 && ciStatus == autopilot.CIFailure:
+			// CI check failed — show ✗ on the ci node regardless of current stage
+			glyph = "✗"
+			glyphStyle, nameStyle = statusFailedStyle, statusFailedStyle
+		case stage == autopilot.StageFailed && i == pos:
+			// Pipeline failed at current position — show ✗
+			glyph = "✗"
+			glyphStyle, nameStyle = statusFailedStyle, statusFailedStyle
 		case i < pos:
-			lamp, lampStyle = "✓", statusCompletedStyle
-			labelStyle = statusCompletedStyle
+			glyph = "✓"
+			glyphStyle, nameStyle = statusCompletedStyle, statusCompletedStyle
 		case i == pos:
-			lamp, lampStyle = "●", statusRunningStyle
-			labelStyle = titleStyle
+			glyph = string(spinner[tick%4])
+			glyphStyle, nameStyle = statusRunningStyle, titleStyle
 		default:
-			lamp, lampStyle = "○", dimStyle
-			labelStyle = dimStyle
+			glyph = "○"
+			glyphStyle, nameStyle = dimStyle, dimStyle
 		}
-		label = name
-		sb.WriteString(lampStyle.Render(lamp))
+
+		sb.WriteString(glyphStyle.Render(glyph))
 		sb.WriteString(" ")
-		sb.WriteString(labelStyle.Render(label))
+		sb.WriteString(nameStyle.Render(name))
 		if i < len(nodes)-1 {
 			sb.WriteString(dimStyle.Render(" ── "))
 		}
@@ -999,6 +1011,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sparklineTick = !m.sparklineTick
 		m.shimmerTick++
 		m.dbSyncTick++
+		if m.autopilotPanel != nil {
+			m.autopilotPanel.SetTick(m.autopilotPanel.tick + 1)
+		}
 		// GH-2248: Re-sync history and metrics from SQLite every 5 seconds
 		// so external DB changes (orphan cleanup, manual edits) are reflected.
 		if m.store != nil && m.dbSyncTick%5 == 0 {
