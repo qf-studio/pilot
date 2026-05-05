@@ -143,10 +143,10 @@ func NewAutopilotPanel(controller *autopilot.Controller) *AutopilotPanel {
 func (p *AutopilotPanel) SetTick(t int) { p.tick = t }
 
 // View renders the autopilot panel (GH-2620 variant A redesign).
-// Compact layout: no empty-line padding rows.
-// Idle: 3 lines (border, content, border).
-// Active: 4 lines (+ PR identity + pipeline rail).
-// Failed: 5 lines (+ error reason on line 3).
+// Uses renderPanel so the card has the same 1-line top/bottom padding as QUEUE/HISTORY/LOGS.
+// Idle: 5 lines (border, empty, content, empty, border).
+// Active: 6 lines (+ PR identity + pipeline rail).
+// Failed: 7 lines (+ error reason on line 3).
 func (p *AutopilotPanel) View() string {
 	tw := p.panelWidth
 	if tw < panelTotalWidth {
@@ -155,12 +155,12 @@ func (p *AutopilotPanel) View() string {
 	inner := tw - 4 // content width: tw minus 2 borders and 2 padding spaces
 
 	if p.controller == nil {
-		return p.buildCompactPanel(tw, "  Disabled")
+		return renderPanel("AUTOPILOT", "  Disabled", tw)
 	}
 
 	prs := p.controller.GetActivePRs()
 	if len(prs) == 0 {
-		return p.buildCompactPanel(tw, "  "+dimStyle.Render("idle · no active PR"))
+		return renderPanel("AUTOPILOT", "  "+dimStyle.Render("idle · no active PR"), tw)
 	}
 
 	pr := prs[0]
@@ -222,21 +222,7 @@ func (p *AutopilotPanel) View() string {
 		lines = append(lines, fmt.Sprintf("  + %d more PR(s)", len(prs)-1))
 	}
 
-	return p.buildCompactPanel(tw, lines...)
-}
-
-// buildCompactPanel renders a bordered panel without empty-line padding rows.
-// This produces exactly len(lines)+2 output lines (top border, content lines, bottom border).
-func (p *AutopilotPanel) buildCompactPanel(tw int, lines ...string) string {
-	var sb strings.Builder
-	sb.WriteString(buildTopBorder("AUTOPILOT", tw))
-	for _, line := range lines {
-		sb.WriteString("\n")
-		sb.WriteString(buildContentLine(line, tw))
-	}
-	sb.WriteString("\n")
-	sb.WriteString(buildBottomBorder(tw))
-	return sb.String()
+	return renderPanel("AUTOPILOT", strings.Join(lines, "\n"), tw)
 }
 
 // pipelineStagePosition maps a PRStage to its 0-based position in the 5-node rail.
