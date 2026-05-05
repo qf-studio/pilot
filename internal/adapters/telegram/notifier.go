@@ -20,6 +20,17 @@ type Config struct {
 	Transcription *transcription.Config `yaml:"transcription"`   // Voice message transcription config
 	RateLimit     *comms.RateLimitConfig `yaml:"rate_limit"`      // Rate limiting config (optional)
 	LLMClassifier *LLMClassifierConfig  `yaml:"llm_classifier"`  // LLM intent classification config (optional)
+	Approval      *ApprovalConfig       `yaml:"approval"`        // Approval-specific config (nil = enabled by default)
+}
+
+// ApprovalConfig holds Telegram approval-specific configuration
+type ApprovalConfig struct {
+	Enabled bool `yaml:"enabled"`
+}
+
+// DefaultApprovalConfig returns default Telegram approval configuration
+func DefaultApprovalConfig() *ApprovalConfig {
+	return &ApprovalConfig{Enabled: true}
 }
 
 // LLMClassifierConfig configures LLM-based intent classification

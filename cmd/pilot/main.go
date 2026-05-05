@@ -418,7 +418,8 @@ Examples:
 				approvalMgr := approval.NewManager(cfg.Approval)
 
 				// Register Telegram approval handler if enabled
-				if cfg.Adapters.Telegram != nil && cfg.Adapters.Telegram.Enabled && cfg.Adapters.Telegram.BotToken != "" {
+				if cfg.Adapters.Telegram != nil && cfg.Adapters.Telegram.Enabled && cfg.Adapters.Telegram.BotToken != "" &&
+					(cfg.Adapters.Telegram.Approval == nil || cfg.Adapters.Telegram.Approval.Enabled) {
 					tgClient := telegram.NewClient(cfg.Adapters.Telegram.BotToken)
 					tgApprovalHandler := approval.NewTelegramHandler(&telegramApprovalAdapter{client: tgClient}, cfg.Adapters.Telegram.ChatID)
 					approvalMgr.RegisterHandler(tgApprovalHandler)
@@ -1312,7 +1313,8 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 	approvalMgr := approval.NewManager(cfg.Approval)
 
 	// Register Telegram approval handler if enabled
-	if cfg.Adapters.Telegram != nil && cfg.Adapters.Telegram.Enabled && cfg.Adapters.Telegram.BotToken != "" {
+	if cfg.Adapters.Telegram != nil && cfg.Adapters.Telegram.Enabled && cfg.Adapters.Telegram.BotToken != "" &&
+		(cfg.Adapters.Telegram.Approval == nil || cfg.Adapters.Telegram.Approval.Enabled) {
 		tgClient := telegram.NewClient(cfg.Adapters.Telegram.BotToken)
 		tgApprovalHandler := approval.NewTelegramHandler(&telegramApprovalAdapter{client: tgClient}, cfg.Adapters.Telegram.ChatID)
 		approvalMgr.RegisterHandler(tgApprovalHandler)
