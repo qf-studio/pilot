@@ -731,6 +731,7 @@ func TestManager_MultipleHandlers(t *testing.T) {
 	m.RegisterHandler(handler1)
 	m.RegisterHandler(handler2)
 
+	// Unset PreferredChannel: first-available path — exactly one handler receives the request.
 	req := &Request{
 		ID:        "test-multi",
 		TaskID:    "TASK-01",
@@ -744,7 +745,6 @@ func TestManager_MultipleHandlers(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Should use one of the handlers (implementation uses first available)
 	if resp.Decision != DecisionApproved {
 		t.Errorf("expected approved, got %s", resp.Decision)
 	}
@@ -753,6 +753,107 @@ func TestManager_MultipleHandlers(t *testing.T) {
 	totalSent := len(handler1.sentReqs) + len(handler2.sentReqs)
 	if totalSent != 1 {
 		t.Errorf("expected exactly 1 request sent to handlers, got %d", totalSent)
+	}
+}
+
+func TestManager_PreferredChannel_Deterministic(t *testing.T) {
+	config := DefaultConfig()
+	config.Enabled = true
+	config.PreExecution.Enabled = true
+	config.PreExecution.Timeout = 500 * time.Millisecond
+
+	m := NewManager(config)
+
+	handler1 := &mockHandler{
+		name: "handler1",
+		respondWith: &Response{
+			RequestID:  "test-preferred",
+			Decision:   DecisionApproved,
+			ApprovedBy: "handler1-user",
+		},
+	}
+	handler2 := &mockHandler{
+		name: "handler2",
+		respondWith: &Response{
+			RequestID:  "test-preferred",
+			Decision:   DecisionApproved,
+			ApprovedBy: "handler2-user",
+		},
+	}
+
+	m.RegisterHandler(handler1)
+	m.RegisterHandler(handler2)
+
+	// Set PreferredChannel = "handler2": must use handler2, not handler1.
+	req := &Request{
+		ID:               "test-preferred",
+		TaskID:           "TASK-01",
+		Stage:            StagePreExecution,
+		Title:            "Test task",
+		PreferredChannel: "handler2",
+		CreatedAt:        time.Now(),
+	}
+
+	resp, err := m.RequestApproval(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if resp.Decision != DecisionApproved {
+		t.Errorf("expected approved, got %s", resp.Decision)
+	}
+
+	if len(handler2.sentReqs) != 1 {
+		t.Errorf("expected handler2 to receive the request, got %d", len(handler2.sentReqs))
+	}
+	if len(handler1.sentReqs) != 0 {
+		t.Errorf("expected handler1 to receive no requests, got %d", len(handler1.sentReqs))
+	}
+	if resp.ApprovedBy != "handler2-user" {
+		t.Errorf("expected handler2-user, got %s", resp.ApprovedBy)
+	}
+}
+
+func TestManager_PreferredChannel_FallbackWarning(t *testing.T) {
+	config := DefaultConfig()
+	config.Enabled = true
+	config.PreExecution.Enabled = true
+	config.PreExecution.Timeout = 500 * time.Millisecond
+
+	m := NewManager(config)
+
+	handler1 := &mockHandler{
+		name: "handler1",
+		respondWith: &Response{
+			RequestID:  "test-fallback",
+			Decision:   DecisionApproved,
+			ApprovedBy: "handler1-user",
+		},
+	}
+	m.RegisterHandler(handler1)
+
+	// PreferredChannel names a handler that is not registered: must fall back to first-available.
+	req := &Request{
+		ID:               "test-fallback",
+		TaskID:           "TASK-01",
+		Stage:            StagePreExecution,
+		Title:            "Test task",
+		PreferredChannel: "nonexistent-channel",
+		CreatedAt:        time.Now(),
+	}
+
+	resp, err := m.RequestApproval(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Falls back to first-available handler and still completes.
+	if resp.Decision != DecisionApproved {
+		t.Errorf("expected approved via fallback, got %s", resp.Decision)
+	}
+
+	if len(handler1.sentReqs) != 1 {
+		t.Errorf("expected handler1 to receive the fallback request, got %d", len(handler1.sentReqs))
 	}
 }
 

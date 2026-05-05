@@ -147,9 +147,23 @@ func (m *Manager) RequestApproval(ctx context.Context, req *Request) (*Response,
 	// Find available handler
 	m.mu.RLock()
 	var handler Handler
-	for _, h := range m.handlers {
-		handler = h // Use first available handler
-		break
+	if req.PreferredChannel != "" {
+		if h, ok := m.handlers[req.PreferredChannel]; ok {
+			handler = h
+		} else {
+			m.log.Warn("preferred approval channel not registered, falling back to first-available",
+				slog.String("preferred_channel", req.PreferredChannel),
+				slog.String("task_id", req.TaskID))
+			for _, h := range m.handlers {
+				handler = h
+				break
+			}
+		}
+	} else {
+		for _, h := range m.handlers {
+			handler = h
+			break
+		}
 	}
 	m.mu.RUnlock()
 
