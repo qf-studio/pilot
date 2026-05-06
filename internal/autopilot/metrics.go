@@ -11,13 +11,14 @@ type Metrics struct {
 	mu sync.RWMutex
 
 	// Counters
-	IssuesProcessed     map[string]int64 // result → count (success, failed, rate_limited)
-	PRsMerged           int64
-	PRsFailed           int64
-	PRsConflicting      int64
-	CircuitBreakerTrips int64
-	APIErrors           map[string]int64 // endpoint → count
-	LabelCleanups       map[string]int64 // label → count
+	IssuesProcessed       map[string]int64 // result → count (success, failed, rate_limited)
+	PRsMerged             int64
+	PRsFailed             int64
+	PRsConflicting        int64
+	CircuitBreakerTrips   int64
+	APIErrors             map[string]int64 // endpoint → count
+	LabelCleanups         map[string]int64 // label → count
+	ApprovalPersistMisses map[string]int64 // kind → count (request_id, decision)
 
 	// Gauges (point-in-time values)
 	ActivePRsByStage map[PRStage]int
@@ -39,9 +40,10 @@ type Metrics struct {
 // NewMetrics creates a new Metrics instance.
 func NewMetrics() *Metrics {
 	return &Metrics{
-		IssuesProcessed:    make(map[string]int64),
-		APIErrors:          make(map[string]int64),
-		LabelCleanups:      make(map[string]int64),
+		IssuesProcessed:       make(map[string]int64),
+		APIErrors:             make(map[string]int64),
+		LabelCleanups:         make(map[string]int64),
+		ApprovalPersistMisses: make(map[string]int64),
 		ActivePRsByStage:   make(map[PRStage]int),
 		PRTimeToMerge:      make([]time.Duration, 0, 100),
 		CIWaitDurations:    make([]time.Duration, 0, 100),
@@ -105,6 +107,14 @@ func (m *Metrics) RecordLabelCleanup(label string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.LabelCleanups[label]++
+}
+
+// RecordApprovalPersistMiss increments the counter for zero-row approval UPDATE misses.
+// kind is "request_id" or "decision".
+func (m *Metrics) RecordApprovalPersistMiss(kind string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ApprovalPersistMisses[kind]++
 }
 
 // --- Gauge updates ---
@@ -175,14 +185,15 @@ func (m *Metrics) Snapshot() MetricsSnapshot {
 	defer m.mu.RUnlock()
 
 	snap := MetricsSnapshot{
-		IssuesProcessed:      copyStringIntMap(m.IssuesProcessed),
-		PRsMerged:            m.PRsMerged,
-		PRsFailed:            m.PRsFailed,
-		PRsConflicting:       m.PRsConflicting,
-		CircuitBreakerTrips:  m.CircuitBreakerTrips,
-		APIErrors:            copyStringIntMap(m.APIErrors),
-		LabelCleanups:        copyStringIntMap(m.LabelCleanups),
-		ActivePRsByStage:     copyStageIntMap(m.ActivePRsByStage),
+		IssuesProcessed:       copyStringIntMap(m.IssuesProcessed),
+		PRsMerged:             m.PRsMerged,
+		PRsFailed:             m.PRsFailed,
+		PRsConflicting:        m.PRsConflicting,
+		CircuitBreakerTrips:   m.CircuitBreakerTrips,
+		APIErrors:             copyStringIntMap(m.APIErrors),
+		LabelCleanups:         copyStringIntMap(m.LabelCleanups),
+		ApprovalPersistMisses: copyStringIntMap(m.ApprovalPersistMisses),
+		ActivePRsByStage:      copyStageIntMap(m.ActivePRsByStage),
 		QueueDepth:           m.QueueDepth,
 		FailedQueueDepth:     m.FailedQueueDepth,
 		TotalActivePRs:       sumStageMap(m.ActivePRsByStage),
@@ -221,13 +232,14 @@ func (m *Metrics) apiErrorRate() float64 {
 // MetricsSnapshot is a read-only copy of metrics at a point in time.
 type MetricsSnapshot struct {
 	// Counters
-	IssuesProcessed     map[string]int64
-	PRsMerged           int64
-	PRsFailed           int64
-	PRsConflicting      int64
-	CircuitBreakerTrips int64
-	APIErrors           map[string]int64
-	LabelCleanups       map[string]int64
+	IssuesProcessed       map[string]int64
+	PRsMerged             int64
+	PRsFailed             int64
+	PRsConflicting        int64
+	CircuitBreakerTrips   int64
+	APIErrors             map[string]int64
+	LabelCleanups         map[string]int64
+	ApprovalPersistMisses map[string]int64
 
 	// Gauges
 	ActivePRsByStage map[PRStage]int

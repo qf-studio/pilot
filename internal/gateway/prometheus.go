@@ -79,6 +79,18 @@ func (e *PrometheusExporter) WritePrometheus(w io.Writer) error {
 		writeCounter(w, "pilot_label_cleanups_total", count, "label", label)
 	}
 
+	// pilot_approval_persist_misses_total
+	writeHelp(w, "pilot_approval_persist_misses_total", "Total zero-row approval UPDATE misses by kind (request_id, decision)")
+	writeType(w, "pilot_approval_persist_misses_total", "counter")
+	for kind, count := range snap.ApprovalPersistMisses {
+		writeCounter(w, "pilot_approval_persist_misses_total", count, "kind", kind)
+	}
+	for _, kind := range []string{"request_id", "decision"} {
+		if _, exists := snap.ApprovalPersistMisses[kind]; !exists {
+			writeCounter(w, "pilot_approval_persist_misses_total", 0, "kind", kind)
+		}
+	}
+
 	// --- Gauges ---
 
 	// pilot_queue_depth
