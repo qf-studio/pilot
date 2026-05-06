@@ -1482,34 +1482,71 @@ func (c *Controller) maybeCloseParentIssue(ctx context.Context, prState *PRState
 	}
 }
 
-// handlePostMergeCI monitors deployment/post-merge checks.
+// handlePostMergeCI monitors deployment/post-merge checks (non-blocking).
+// Each tick calls CheckCI once and either advances the stage or returns to wait
+// for the next tick, mirroring the pattern used by handleWaitingCI.
 func (c *Controller) handlePostMergeCI(ctx context.Context, prState *PRState) error {
-	// Get merge commit SHA from main branch
-	// For now, use head SHA - in production, should get actual merge commit
-	mainSHA, err := c.getMainBranchSHA(ctx)
-	if err != nil {
-		c.log.Warn("failed to get main branch SHA, using head SHA", "error", err)
-		mainSHA = prState.HeadSHA
-	}
-
-	status, err := c.ciMonitor.WaitForCI(ctx, mainSHA)
-	if err != nil {
-		return err
-	}
-
-	if status == CIFailure {
-		c.log.Warn("post-merge CI failed", "pr", prState.PRNumber)
-		failedChecks, _ := c.ciMonitor.GetFailedChecks(ctx, mainSHA)
-		// GH-1567: Fetch CI error logs for post-merge failures too
-		ciLogs := c.ciMonitor.GetFailedCheckLogs(ctx, mainSHA, 2000)
-		// Post-merge failures start a new lineage (iteration 1), not part of pre-merge cascade
-		issueNum, err := c.feedbackLoop.CreateFailureIssue(ctx, prState, FailureCIPostMerge, failedChecks, ciLogs, 1)
+	// Capture main branch SHA on first entry; persisted so daemon restarts resume
+	// monitoring the same commit rather than picking up a newer one.
+	if prState.PostMergeSHA == "" {
+		sha, err := c.getMainBranchSHA(ctx)
 		if err != nil {
-			c.log.Error("failed to create post-merge fix issue", "error", err)
+			c.log.Warn("failed to get main branch SHA, using head SHA", "error", err)
+			sha = prState.HeadSHA
+		}
+		prState.PostMergeSHA = sha
+	}
+
+	// Start the CI timer on first tick.
+	if prState.PostMergeCIStartedAt.IsZero() {
+		prState.PostMergeCIStartedAt = time.Now()
+	}
+
+	// Enforce timeout using same logic as handleWaitingCI.
+	ciTimeout := c.config.CIWaitTimeout
+	envCITimeout := c.config.ResolvedEnv().CITimeout
+	if envCITimeout > 0 && (ciTimeout == 0 || envCITimeout < ciTimeout) {
+		ciTimeout = envCITimeout
+	}
+	if time.Since(prState.PostMergeCIStartedAt) > ciTimeout {
+		c.log.Warn("post-merge CI timeout", "pr", prState.PRNumber, "waited", time.Since(prState.PostMergeCIStartedAt))
+		prState.Stage = StageFailed
+		prState.Error = fmt.Sprintf("post-merge CI timeout after %v", ciTimeout)
+		return nil
+	}
+
+	mainSHA := prState.PostMergeSHA
+	status, err := c.ciMonitor.CheckCI(ctx, mainSHA)
+	if err != nil {
+		// Transient API error — log and retry next tick without failing the PR.
+		c.log.Warn("post-merge CI status check failed", "pr", prState.PRNumber, "sha", ShortSHA(mainSHA), "error", err)
+		return nil
+	}
+
+	prState.CIStatus = status
+	prState.LastChecked = time.Now()
+
+	switch status {
+	case CISuccess:
+		c.log.Info("post-merge CI passed", "pr", prState.PRNumber, "sha", ShortSHA(mainSHA))
+		if c.shouldTriggerRelease() {
+			prState.Stage = StageReleasing
+			return nil
+		}
+		c.removePR(prState.PRNumber)
+
+	case CIFailure:
+		c.log.Warn("post-merge CI failed", "pr", prState.PRNumber, "sha", ShortSHA(mainSHA))
+		failedChecks, _ := c.ciMonitor.GetFailedChecks(ctx, mainSHA)
+		// GH-1567: Fetch CI error logs for post-merge failures too.
+		ciLogs := c.ciMonitor.GetFailedCheckLogs(ctx, mainSHA, 2000)
+		// Post-merge failures start a new lineage (iteration 1), not part of pre-merge cascade.
+		issueNum, issueErr := c.feedbackLoop.CreateFailureIssue(ctx, prState, FailureCIPostMerge, failedChecks, ciLogs, 1)
+		if issueErr != nil {
+			c.log.Error("failed to create post-merge fix issue", "error", issueErr)
 		} else {
 			c.log.Info("created fix issue for post-merge CI failure", "pr", prState.PRNumber, "issue", issueNum)
 		}
-
 		// GH-1964/GH-1979: Learn from post-merge CI failure patterns (self-improvement).
 		// Guard: skip learning when CI logs are empty/whitespace (nothing to extract).
 		if c.learningLoop != nil && strings.TrimSpace(ciLogs) != "" {
@@ -1518,19 +1555,13 @@ func (c *Controller) handlePostMergeCI(ctx context.Context, prState *PRState) er
 				c.log.Warn("Failed to learn from post-merge CI failure", slog.Any("error", learnErr))
 			}
 		}
-
 		c.removePR(prState.PRNumber)
-		return nil
+
+	default:
+		// CIPending or CIRunning — stay in StagePostMergeCI and wait for next tick.
+		c.log.Debug("post-merge CI still running", "pr", prState.PRNumber, "sha", ShortSHA(mainSHA), "status", status)
 	}
 
-	// CI passed - check if we should release
-	if c.shouldTriggerRelease() {
-		prState.Stage = StageReleasing
-		return nil
-	}
-
-	c.log.Info("post-merge CI passed", "pr", prState.PRNumber)
-	c.removePR(prState.PRNumber)
 	return nil
 }
 
