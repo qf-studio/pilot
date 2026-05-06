@@ -280,8 +280,9 @@ type ExecutionResult struct {
 type ProgressCallback func(taskID string, phase string, progress int, message string)
 
 // TokenCallback is a function called during execution with token usage updates.
-// It receives the task ID, input tokens, and output tokens.
-type TokenCallback func(taskID string, inputTokens, outputTokens int64)
+// It receives the task ID, input tokens, output tokens, and the model name (may be empty
+// before the first stream event arrives — callers should fall back to a default).
+type TokenCallback func(taskID string, inputTokens, outputTokens int64, modelName string)
 
 // TokenLimitCallback is called during execution with per-event token deltas.
 // It returns true if execution should continue, false if the per-task token/duration
@@ -1024,11 +1025,11 @@ func (r *Runner) RemoveTokenCallback(name string) {
 }
 
 // reportTokens sends token usage updates to all registered callbacks.
-func (r *Runner) reportTokens(taskID string, inputTokens, outputTokens int64) {
+func (r *Runner) reportTokens(taskID string, inputTokens, outputTokens int64, modelName string) {
 	r.tokenMu.RLock()
 	defer r.tokenMu.RUnlock()
 	for _, cb := range r.tokenCallbacks {
-		cb(taskID, inputTokens, outputTokens)
+		cb(taskID, inputTokens, outputTokens, modelName)
 	}
 }
 
@@ -3491,6 +3492,10 @@ func (r *Runner) parseStreamEvent(taskID, line string, state *progressState) (st
 		return event.Result, ""
 	}
 
+	// Capture model name before reporting tokens so the callback receives the correct model.
+	if event.Model != "" && state.modelName == "" {
+		state.modelName = event.Model
+	}
 	// Track usage from any event with usage info
 	if event.Usage != nil {
 		state.tokensInput += event.Usage.InputTokens
@@ -3498,10 +3503,7 @@ func (r *Runner) parseStreamEvent(taskID, line string, state *progressState) (st
 		state.cacheCreationInputTokens += event.Usage.CacheCreationInputTokens
 		state.cacheReadInputTokens += event.Usage.CacheReadInputTokens
 		// Report token usage to callbacks (e.g., dashboard)
-		r.reportTokens(taskID, state.tokensInput, state.tokensOutput)
-	}
-	if event.Model != "" && state.modelName == "" {
-		state.modelName = event.Model
+		r.reportTokens(taskID, state.tokensInput, state.tokensOutput, state.modelName)
 	}
 
 	return "", ""
@@ -3521,7 +3523,7 @@ func (r *Runner) processBackendEvent(taskID string, event BackendEvent, state *p
 
 	// Report token usage to callbacks (e.g., dashboard)
 	if event.TokensInput > 0 || event.TokensOutput > 0 {
-		r.reportTokens(taskID, state.tokensInput, state.tokensOutput)
+		r.reportTokens(taskID, state.tokensInput, state.tokensOutput, state.modelName)
 	}
 
 	// GH-539: Check per-task token/duration limit on each event

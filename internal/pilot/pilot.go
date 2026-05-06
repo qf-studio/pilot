@@ -1014,7 +1014,7 @@ func (p *Pilot) OnProgress(callback func(taskID, phase string, progress int, mes
 }
 
 // OnToken registers a callback for token usage updates
-func (p *Pilot) OnToken(name string, callback func(taskID string, inputTokens, outputTokens int64)) {
+func (p *Pilot) OnToken(name string, callback func(taskID string, inputTokens, outputTokens int64, modelName string)) {
 	p.orchestrator.OnToken(name, callback)
 }
 

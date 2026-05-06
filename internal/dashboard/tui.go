@@ -340,6 +340,7 @@ type TokenUsage struct {
 	InputTokens  int
 	OutputTokens int
 	TotalTokens  int
+	Model        string // model that produced these tokens; empty until first stream event
 }
 
 // CompletedTask represents a finished task for history
@@ -1055,10 +1056,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.metricsCard.InputTokens += inputDelta
 		m.metricsCard.OutputTokens += outputDelta
 		m.metricsCard.TotalTokens += inputDelta + outputDelta
+		costModel := msg.Model
+		if costModel == "" {
+			costModel = memory.DefaultModel
+		}
 		m.metricsCard.TotalCostUSD += memory.EstimateCost(
 			int64(inputDelta),
 			int64(outputDelta),
-			memory.DefaultModel,
+			costModel,
 		)
 		if m.metricsCard.TotalTasks > 0 {
 			m.metricsCard.CostPerTask = m.metricsCard.TotalCostUSD / float64(m.metricsCard.TotalTasks)
@@ -2654,13 +2659,16 @@ func AddLog(log string) tea.Cmd {
 	}
 }
 
-// UpdateTokens sends updated token usage to the TUI
-func UpdateTokens(input, output int) tea.Cmd {
+// UpdateTokens sends updated token usage to the TUI.
+// model is the model name that produced the tokens; may be empty before the first
+// stream event, in which case the handler falls back to memory.DefaultModel.
+func UpdateTokens(input, output int, model string) tea.Cmd {
 	return func() tea.Msg {
 		return updateTokensMsg(TokenUsage{
 			InputTokens:  input,
 			OutputTokens: output,
 			TotalTokens:  input + output,
+			Model:        model,
 		})
 	}
 }

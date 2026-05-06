@@ -1586,6 +1586,8 @@ type LifetimeTokens struct {
 
 // GetLifetimeTokens returns cumulative token usage and cost across all executions.
 // Unlike session-scoped data, this survives restarts by querying the executions table directly.
+// Rows with zero tokens (dispatcher queue rows, early-failure rows) are excluded so they
+// don't dilute per-task averages.
 func (s *Store) GetLifetimeTokens() (*LifetimeTokens, error) {
 	row := s.db.QueryRow(`
 		SELECT
@@ -1594,6 +1596,7 @@ func (s *Store) GetLifetimeTokens() (*LifetimeTokens, error) {
 			COALESCE(SUM(tokens_total), 0),
 			COALESCE(SUM(estimated_cost_usd), 0)
 		FROM executions
+		WHERE tokens_total > 0
 	`)
 
 	var lt LifetimeTokens

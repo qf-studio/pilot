@@ -1688,8 +1688,8 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 		})
 
 		// Wire token usage updates to dashboard (GH-156 fix)
-		runner.AddTokenCallback("dashboard", func(taskID string, inputTokens, outputTokens int64) {
-			program.Send(dashboard.UpdateTokens(int(inputTokens), int(outputTokens))())
+		runner.AddTokenCallback("dashboard", func(taskID string, inputTokens, outputTokens int64, modelName string) {
+			program.Send(dashboard.UpdateTokens(int(inputTokens), int(outputTokens), modelName)())
 		})
 	}
 
