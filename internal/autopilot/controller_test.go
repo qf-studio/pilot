@@ -5109,3 +5109,88 @@ func TestController_TwoPRQueue_StalledApprovalDoesNotBlockOther(t *testing.T) {
 		t.Errorf("PR-B should have advanced past %s (was blocked by PR-A)", StagePRCreated)
 	}
 }
+
+// mockApprovalPersister records calls to SetApprovalRequestID and SetApprovalDecision
+// so tests can verify that the controller wires through to the memory store.
+type mockApprovalPersister struct {
+	requestIDCalls []struct{ taskID, requestID string }
+	decisionCalls  []struct{ requestID, decision, by string }
+}
+
+func (m *mockApprovalPersister) SetApprovalRequestID(_ context.Context, taskID, requestID string) error {
+	m.requestIDCalls = append(m.requestIDCalls, struct{ taskID, requestID string }{taskID, requestID})
+	return nil
+}
+
+func (m *mockApprovalPersister) SetApprovalDecision(_ context.Context, requestID, decision, by string) error {
+	m.decisionCalls = append(m.decisionCalls, struct{ requestID, decision, by string }{requestID, decision, by})
+	return nil
+}
+
+// TestController_SetApprovalDecision_PersistsToMemoryStore verifies that
+// Controller.SetApprovalDecision updates in-memory PRState AND calls the
+// injected approvalPersister (executions table write path).
+func TestController_SetApprovalDecision_PersistsToMemoryStore(t *testing.T) {
+	ghClient := github.NewClient(testutil.FakeGitHubToken)
+	cfg := DefaultConfig()
+	mgr := approval.NewManager(nil)
+	c := NewController(cfg, ghClient, mgr, "owner", "repo")
+
+	mock := &mockApprovalPersister{}
+	c.memoryStore = mock
+
+	c.mu.Lock()
+	c.activePRs[99] = &PRState{
+		PRNumber:          99,
+		IssueNumber:       10,
+		ApprovalRequestID: "req-test-123",
+	}
+	c.mu.Unlock()
+
+	ctx := context.Background()
+	if err := c.SetApprovalDecision(ctx, "req-test-123", "approved", "reviewer"); err != nil {
+		t.Fatalf("SetApprovalDecision: %v", err)
+	}
+
+	// In-memory state updated.
+	pr, ok := c.GetPRState(99)
+	if !ok {
+		t.Fatal("PR state not found")
+	}
+	if pr.ApprovalDecision != "approved" {
+		t.Errorf("in-memory ApprovalDecision = %q, want %q", pr.ApprovalDecision, "approved")
+	}
+
+	// Memory store called with correct args.
+	if len(mock.decisionCalls) != 1 {
+		t.Fatalf("expected 1 SetApprovalDecision call, got %d", len(mock.decisionCalls))
+	}
+	call := mock.decisionCalls[0]
+	if call.requestID != "req-test-123" || call.decision != "approved" || call.by != "reviewer" {
+		t.Errorf("unexpected call args: %+v", call)
+	}
+}
+
+// TestController_SetApprovalDecision_NoStoreNoPanic verifies that the controller
+// works correctly when no memory store is wired (nil-safe).
+func TestController_SetApprovalDecision_NoStoreNoPanic(t *testing.T) {
+	ghClient := github.NewClient(testutil.FakeGitHubToken)
+	c := NewController(DefaultConfig(), ghClient, approval.NewManager(nil), "owner", "repo")
+
+	c.mu.Lock()
+	c.activePRs[1] = &PRState{
+		PRNumber:          1,
+		ApprovalRequestID: "req-nil-store",
+	}
+	c.mu.Unlock()
+
+	// Should not panic with nil memoryStore.
+	err := c.SetApprovalDecision(context.Background(), "req-nil-store", "approved", "bot")
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+	pr, _ := c.GetPRState(1)
+	if pr.ApprovalDecision != "approved" {
+		t.Errorf("in-memory decision not set: %q", pr.ApprovalDecision)
+	}
+}

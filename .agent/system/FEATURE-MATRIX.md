@@ -1,6 +1,6 @@
 # Pilot Feature Matrix
 
-**Last Updated:** 2026-05-06 (v2.53.0)
+**Last Updated:** 2026-05-05 (v2.53.0)
 
 ## Legend
 
@@ -341,6 +341,7 @@
 | Telegram approval | ✅ | approval | - | - | Inline keyboards, registered in main.go |
 | Rule-based triggers | ✅ | approval | - | `approval.rules[]` | RuleEvaluator with 4 matchers wired into Manager (GH-636) |
 | Non-blocking async approval | ✅ | autopilot | - | `approval.async_dispatch` | handleAwaitApproval tick-handler; PR-A stall no longer blocks PR-B (GH-2685) |
+| Approval persistence in executions | ✅ | autopilot/memory | - | - | approval_request_id + decision written to executions table (GH-2712) |
 
 ## Autopilot (v0.19.1+)
 

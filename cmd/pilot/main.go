@@ -496,6 +496,8 @@ Examples:
 
 				// GH-726: Initialize autopilot state store for gateway mode
 				if gwStore != nil && gwAutopilotController != nil {
+					gwAutopilotController.SetMemoryStore(gwStore)
+
 					var gwStoreErr error
 					gwAutopilotStateStore, gwStoreErr = autopilot.NewStateStore(gwStore.DB())
 					if gwStoreErr != nil {
@@ -1472,6 +1474,11 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 	// GH-726: Initialize autopilot state store for crash recovery
 	var autopilotStateStore *autopilot.StateStore
 	if store != nil && len(autopilotControllers) > 0 {
+		// GH-2712: Wire memory store for approval_request_id / approval_decision persistence.
+		for _, controller := range autopilotControllers {
+			controller.SetMemoryStore(store)
+		}
+
 		var storeErr error
 		autopilotStateStore, storeErr = autopilot.NewStateStore(store.DB())
 		if storeErr != nil {

@@ -2,6 +2,7 @@ package autopilot
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -15,6 +16,13 @@ import (
 	"github.com/qf-studio/pilot/internal/approval"
 	"github.com/qf-studio/pilot/internal/memory"
 )
+
+// approvalPersister is the subset of memory.Store used for approval persistence
+// in the executions table.
+type approvalPersister interface {
+	SetApprovalRequestID(ctx context.Context, taskID, requestID string) error
+	SetApprovalDecision(ctx context.Context, requestID, decision, by string) error
+}
 
 // iterationRe matches the iteration field in autopilot-meta comments.
 var iterationRe = regexp.MustCompile(`<!-- autopilot-meta.*?iteration:(\d+).*?-->`)
@@ -104,6 +112,14 @@ func WithProjectBoardSync(bs *github.ProjectBoardSync, doneStatus, failStatus st
 	}
 }
 
+// WithMemoryStore wires an execution-level approval persister so that
+// approval_request_id and approval_decision are written to the executions table.
+func WithMemoryStore(s *memory.Store) ControllerOption {
+	return func(c *Controller) {
+		c.memoryStore = s
+	}
+}
+
 // Controller orchestrates the autopilot loop for PR processing.
 // It manages the state machine: PR created → CI check → merge → post-merge CI → feedback loop.
 type Controller struct {
@@ -134,6 +150,9 @@ type Controller struct {
 
 	// Eval store for capturing eval tasks from merged PRs (optional, nil = eval disabled)
 	evalStore EvalStore
+
+	// Execution-level approval persistence (optional, nil = audit trail disabled)
+	memoryStore approvalPersister
 
 	// Per-PR circuit breaker: each PR has independent failure tracking.
 	// A failure on one PR does not block other PRs.
@@ -223,6 +242,12 @@ func (c *Controller) SetLearningLoop(loop *memory.LearningLoop) {
 // SetEvalStore sets the eval store for capturing eval tasks from merged PRs.
 func (c *Controller) SetEvalStore(store EvalStore) {
 	c.evalStore = store
+}
+
+// SetMemoryStore wires an execution-level approval persister so that
+// approval_request_id and approval_decision are written to the executions table.
+func (c *Controller) SetMemoryStore(s *memory.Store) {
+	c.memoryStore = s
 }
 
 // SetReleaseSummaryGenerator sets the LLM release summary generator.
@@ -1050,6 +1075,13 @@ func (c *Controller) submitAsyncApprovalRequest(ctx context.Context, prState *PR
 		}
 	}
 
+	if c.memoryStore != nil {
+		if merr := c.memoryStore.SetApprovalRequestID(ctx, taskID, requestID); merr != nil {
+			c.log.Warn("failed to persist approval_request_id to executions",
+				"pr", prState.PRNumber, "task_id", taskID, "error", merr)
+		}
+	}
+
 	c.log.Info("async approval request submitted",
 		"pr", prState.PRNumber, "request_id", requestID)
 	return nil
@@ -1120,7 +1152,7 @@ func (c *Controller) handleAwaitApprovalLegacy(ctx context.Context, prState *PRS
 // PRState whose ApprovalRequestID matches and records the decision, then persists
 // via stateStore. Called by the approval.Manager's background goroutine when a
 // handler fires (e.g. Telegram button tap).
-func (c *Controller) SetApprovalDecision(_ context.Context, requestID string, decision string, by string) error {
+func (c *Controller) SetApprovalDecision(ctx context.Context, requestID string, decision string, by string) error {
 	if requestID == "" {
 		return nil
 	}
@@ -1131,6 +1163,12 @@ func (c *Controller) SetApprovalDecision(_ context.Context, requestID string, de
 			pr.ApprovalDecision = decision
 			if c.stateStore != nil {
 				_ = c.stateStore.SavePRState(pr)
+			}
+			if c.memoryStore != nil {
+				if merr := c.memoryStore.SetApprovalDecision(ctx, requestID, decision, by); merr != nil && !errors.Is(merr, sql.ErrNoRows) {
+					c.log.Warn("failed to persist approval decision to executions",
+						"pr", pr.PRNumber, "request_id", requestID, "error", merr)
+				}
 			}
 			c.log.Info("approval decision applied to PR state",
 				"pr", pr.PRNumber, "request_id", requestID,
