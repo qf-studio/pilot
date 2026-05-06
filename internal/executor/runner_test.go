@@ -3379,7 +3379,8 @@ func TestIsPermanentFailure(t *testing.T) {
 		{"transient network error", "connection refused: dial tcp", false},
 		{"rate limit hit", "rate limit exceeded, retry after 60s", false},
 		{"non-conventional title", "PR creation refused: title is not a conventional commit: 'Implement test thing'", true},
-		{"could not auto-correct title", "title is invalid: could not auto-correct to a conventional commit", true},
+		// GH-2735: "could not auto-correct" removed from permanentFailurePatterns; normalizeTitle now always produces a valid title.
+		{"could not auto-correct title", "title is invalid: could not auto-correct to a conventional commit", false},
 		{"PR creation refused (catch-all)", "PR creation refused: some reason", true},
 		{"random failure", "no_changes: Claude completed but made no code changes", false},
 	}

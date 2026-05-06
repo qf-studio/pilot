@@ -25,8 +25,6 @@ import (
 // failures which won't change between retries (e.g. invalid issue title).
 // GH-2402: terminal-classify these so the poller stops the retry loop.
 var permanentFailurePatterns = []string{
-	"title is not a conventional commit",
-	"could not auto-correct",
 	"PR creation refused",
 }
 
@@ -2884,8 +2882,9 @@ The previous execution completed but made no code changes. This task requires ac
 
 			// GH-2325: ensure the subject passed through to the PR (and the squash
 			// commit on main) is a conventional commit. Falls back to a
-			// label-derived prefix; aborts if neither applies.
-			normalizedTitle, titleErr := normalizeTitle(task.Title, task.Labels)
+			// label-derived prefix, then diff heuristic (GH-2735).
+			diffStats, _ := git.GetDiffStats(ctx, baseBranch)
+			normalizedTitle, titleErr := normalizeTitle(task.Title, task.Labels, diffStats)
 			if titleErr != nil {
 				result.Success = false
 				result.Error = fmt.Sprintf("PR creation refused: %v", titleErr)
