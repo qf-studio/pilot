@@ -193,9 +193,10 @@ func NewController(cfg *Config, ghClient *github.Client, approvalMgr *approval.M
 	c.autoMerger = NewAutoMerger(ghClient, approvalMgr, c.ciMonitor, owner, repo, cfg)
 	c.feedbackLoop = NewFeedbackLoop(ghClient, owner, repo, cfg)
 
-	// Initialize releaser if release config exists
-	if cfg.Release != nil && cfg.Release.Enabled {
-		c.releaser = NewReleaser(ghClient, owner, repo, cfg.Release)
+	// Initialize releaser from resolved release config (env-scoped wins over global).
+	// Mirrors resolvedRelease() so construction matches runtime decision path.
+	if relCfg := resolveRelease(cfg); relCfg != nil && relCfg.Enabled {
+		c.releaser = NewReleaser(ghClient, owner, repo, relCfg)
 	}
 
 	// Initialize deployer if post-merge config exists
@@ -1542,13 +1543,19 @@ func (c *Controller) getMainBranchSHA(ctx context.Context) (string, error) {
 	return branch.SHA(), nil
 }
 
+// resolveRelease is a package-level helper used during construction (before Controller
+// exists) and by the resolvedRelease method below. Env-scoped config wins over global.
+func resolveRelease(cfg *Config) *ReleaseConfig {
+	if env := cfg.ResolvedEnv(); env != nil && env.Release != nil {
+		return env.Release
+	}
+	return cfg.Release
+}
+
 // resolvedRelease returns the effective release config, preferring per-environment
 // config over global. Returns nil if neither is set.
 func (c *Controller) resolvedRelease() *ReleaseConfig {
-	if env := c.config.ResolvedEnv(); env != nil && env.Release != nil {
-		return env.Release
-	}
-	return c.config.Release
+	return resolveRelease(c.config)
 }
 
 // shouldTriggerRelease returns true if auto-release is configured.
