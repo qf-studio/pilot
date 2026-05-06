@@ -79,13 +79,6 @@ type Handler interface {
 type Config struct {
 	Enabled bool `yaml:"enabled"`
 
-	// AsyncDispatch enables non-blocking approval dispatch (default: true).
-	// When true, SubmitApprovalRequest dispatches the request and returns
-	// immediately; the decision is recorded asynchronously via RecordDecision.
-	// When false, RequestApproval blocks until the user responds (legacy path).
-	// Both paths coexist; async_dispatch selects which the Manager defaults to.
-	AsyncDispatch bool `yaml:"async_dispatch"`
-
 	// Stage-specific configurations
 	PreExecution *StageConfig `yaml:"pre_execution"`
 	PreMerge     *StageConfig `yaml:"pre_merge"`
@@ -138,7 +131,6 @@ type RuleContext struct {
 func DefaultConfig() *Config {
 	return &Config{
 		Enabled:        false,
-		AsyncDispatch:  true,
 		DefaultTimeout: 1 * time.Hour,
 		DefaultAction:  DecisionRejected,
 		PreExecution: &StageConfig{

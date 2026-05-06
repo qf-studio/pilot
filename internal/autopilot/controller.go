@@ -991,15 +991,7 @@ func (c *Controller) hasChangesRequested(ctx context.Context, prState *PRState) 
 //
 // Tick N with no decision: checks wall-clock expiry against the stage timeout and
 // applies default_action when expired (belt-and-suspenders for post-restart cases).
-//
-// Legacy path (async_dispatch == false): delegates to the old blocking
-// autoMerger.MergePR call to preserve backward compatibility.
 func (c *Controller) handleAwaitApproval(ctx context.Context, prState *PRState) error {
-	// Legacy blocking path — kept for one release cycle while async_dispatch rolls out.
-	if c.approvalMgr == nil || !c.approvalMgr.IsAsyncDispatch() {
-		return c.handleAwaitApprovalLegacy(ctx, prState)
-	}
-
 	// Path 1: submit request on first tick.
 	if prState.ApprovalRequestID == "" {
 		return c.submitAsyncApprovalRequest(ctx, prState)
@@ -1030,8 +1022,7 @@ func (c *Controller) handleAwaitApproval(ctx context.Context, prState *PRState) 
 
 // submitAsyncApprovalRequest submits the first async approval request for a PR.
 func (c *Controller) submitAsyncApprovalRequest(ctx context.Context, prState *PRState) error {
-	// Fail closed: if approval stage is not enabled, do NOT auto-approve when
-	// the env requires approval. Matches the legacy ErrApprovalNotConfigured behaviour.
+	// Fail closed: if approval stage is not enabled, do NOT auto-approve when the env requires approval.
 	if c.approvalMgr == nil || !c.approvalMgr.IsStageEnabled(approval.StagePreMerge) {
 		c.log.Error("approval misconfig: env requires approval but pre_merge.enabled=false",
 			"pr", prState.PRNumber, "env", c.config.EnvironmentName())
@@ -1107,45 +1098,6 @@ func (c *Controller) applyApprovalDecision(prState *PRState) error {
 		prState.Error = fmt.Sprintf("unknown approval decision: %q", prState.ApprovalDecision)
 		c.metrics.RecordPRFailed()
 	}
-	return nil
-}
-
-// handleAwaitApprovalLegacy is the original blocking path, preserved for
-// async_dispatch=false deployments during the rollout window.
-func (c *Controller) handleAwaitApprovalLegacy(ctx context.Context, prState *PRState) error {
-	err := c.autoMerger.MergePR(ctx, prState)
-	if err != nil {
-		if err.Error() == "merge rejected: approval denied" {
-			c.log.Info("merge approval denied", "pr", prState.PRNumber)
-			prState.Stage = StageFailed
-			return nil
-		}
-		// Misconfig: env requires approval but approval.pre_merge is disabled.
-		// Fail closed — do NOT retry. Post a single explanatory comment and stop.
-		if errors.Is(err, ErrApprovalNotConfigured) {
-			c.log.Error("approval misconfig detected: env requires approval but pre_merge stage is disabled",
-				"pr", prState.PRNumber,
-				"env", c.config.EnvironmentName(),
-			)
-			prState.Stage = StageFailed
-			prState.Error = fmt.Sprintf(
-				"approval-misconfig: env %q has require_approval=true but approval.pre_merge.enabled=false → deadlock until config fixed",
-				c.config.EnvironmentName(),
-			)
-			c.autoMerger.postMisconfigComment(ctx, prState)
-			c.metrics.RecordPRFailed()
-			return nil
-		}
-		return err
-	}
-	prState.Stage = StageMerged
-
-	if c.notifier != nil {
-		if err := c.notifier.NotifyMerged(ctx, prState); err != nil {
-			c.log.Warn("failed to send merge notification", "error", err)
-		}
-	}
-
 	return nil
 }
 

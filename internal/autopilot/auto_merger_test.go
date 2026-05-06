@@ -3,7 +3,6 @@ package autopilot
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -29,31 +28,6 @@ func TestNewAutoMerger(t *testing.T) {
 	}
 	if merger.repo != "repo" {
 		t.Errorf("repo = %s, want repo", merger.repo)
-	}
-}
-
-func TestAutoMerger_RequiresApproval(t *testing.T) {
-	tests := []struct {
-		name     string
-		env      Environment
-		wantAppr bool
-	}{
-		{"dev - no approval", EnvDev, false},
-		{"stage - no approval", EnvStage, false},
-		{"prod - requires approval", EnvProd, true},
-	}
-
-	ghClient := github.NewClient(testutil.FakeGitHubToken)
-	cfg := DefaultConfig()
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			merger := NewAutoMerger(ghClient, nil, nil, "owner", "repo", cfg)
-			got := merger.requiresApproval(tt.env)
-			if got != tt.wantAppr {
-				t.Errorf("requiresApproval(%s) = %v, want %v", tt.env, got, tt.wantAppr)
-			}
-		})
 	}
 }
 
@@ -245,78 +219,6 @@ func TestAutoMerger_MergePR_DevEnvironment(t *testing.T) {
 
 	if mergeCalledWith != github.MergeMethodSquash {
 		t.Errorf("merge called with method = %s, want squash", mergeCalledWith)
-	}
-}
-
-func TestAutoMerger_MergePR_ProdRequiresApproval(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Errorf("unexpected request to %s - should have failed before calling GitHub", r.URL.Path)
-		w.WriteHeader(http.StatusInternalServerError)
-	}))
-	defer server.Close()
-
-	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
-	cfg := DefaultConfig()
-	cfg.Environment = EnvProd
-
-	// No approval manager configured
-	merger := NewAutoMerger(ghClient, nil, nil, "owner", "repo", cfg)
-
-	prState := &PRState{
-		PRNumber: 42,
-		PRURL:    "https://github.com/owner/repo/pull/42",
-	}
-
-	err := merger.MergePR(context.Background(), prState)
-	if err == nil {
-		t.Error("MergePR() should fail when prod requires approval but no manager configured")
-	}
-}
-
-func TestAutoMerger_MergePR_ProdWithApprovalDisabled(t *testing.T) {
-	// Scenario: Prod environment but pre-merge approval stage is disabled
-	// Should BLOCK merge in prod — not silently auto-approve
-	mergeWasCalled := false
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/repos/owner/repo/pulls/42/reviews":
-			w.WriteHeader(http.StatusOK)
-		case "/repos/owner/repo/pulls/42/merge":
-			mergeWasCalled = true
-			w.WriteHeader(http.StatusOK)
-		default:
-			w.WriteHeader(http.StatusNotFound)
-		}
-	}))
-	defer server.Close()
-
-	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
-
-	// Approval manager with pre-merge disabled
-	approvalCfg := approval.DefaultConfig()
-	approvalCfg.Enabled = true
-	approvalCfg.PreMerge.Enabled = false
-	approvalMgr := approval.NewManager(approvalCfg)
-
-	cfg := DefaultConfig()
-	cfg.Environment = EnvProd
-	cfg.AutoReview = true
-
-	merger := NewAutoMerger(ghClient, approvalMgr, nil, "owner", "repo", cfg)
-
-	prState := &PRState{
-		PRNumber: 42,
-		PRURL:    "https://github.com/owner/repo/pull/42",
-	}
-
-	err := merger.MergePR(context.Background(), prState)
-	if err == nil {
-		t.Error("MergePR() should fail in prod when pre-merge approval is disabled")
-	}
-
-	if mergeWasCalled {
-		t.Error("merge should NOT have been called in prod when approval stage is disabled")
 	}
 }
 
@@ -536,27 +438,6 @@ func TestAutoMerger_ApprovePR(t *testing.T) {
 	}
 }
 
-func TestAutoMerger_RequestApproval_NoManager(t *testing.T) {
-	ghClient := github.NewClient(testutil.FakeGitHubToken)
-	cfg := DefaultConfig()
-	cfg.Environment = EnvProd
-
-	merger := NewAutoMerger(ghClient, nil, nil, "owner", "repo", cfg)
-
-	prState := &PRState{
-		PRNumber: 42,
-		PRURL:    "https://github.com/owner/repo/pull/42",
-	}
-
-	approved, err := merger.requestApproval(context.Background(), prState)
-	if err == nil {
-		t.Error("requestApproval() should fail when no manager configured")
-	}
-	if approved {
-		t.Error("should not be approved when no manager configured")
-	}
-}
-
 func TestEnvironmentBehaviorMatrix(t *testing.T) {
 	// Verify the environment behavior matrix
 	// All environments now wait for CI to prevent broken code from merging
@@ -564,14 +445,12 @@ func TestEnvironmentBehaviorMatrix(t *testing.T) {
 	cfg := DefaultConfig()
 
 	tests := []struct {
-		env              Environment
-		autoReview       bool
-		waitForCI        bool // all environments now wait for CI
-		requiresApproval bool
+		env       Environment
+		waitForCI bool // all environments now wait for CI
 	}{
-		{EnvDev, true, true, false},   // dev: Auto-Review Yes, Wait for CI, No approval
-		{EnvStage, true, true, false}, // stage: Auto-Review Yes, Wait for CI, No approval
-		{EnvProd, false, true, true},  // prod: No auto-review, Wait for CI, Requires approval
+		{EnvDev, true},
+		{EnvStage, true},
+		{EnvProd, true},
 	}
 
 	for _, tt := range tests {
@@ -581,11 +460,6 @@ func TestEnvironmentBehaviorMatrix(t *testing.T) {
 			shouldWait := merger.ShouldWaitForCI(tt.env)
 			if shouldWait != tt.waitForCI {
 				t.Errorf("ShouldWaitForCI(%s) = %v, want %v", tt.env, shouldWait, tt.waitForCI)
-			}
-
-			requiresApproval := merger.requiresApproval(tt.env)
-			if requiresApproval != tt.requiresApproval {
-				t.Errorf("requiresApproval(%s) = %v, want %v", tt.env, requiresApproval, tt.requiresApproval)
 			}
 		})
 	}
@@ -1115,78 +989,6 @@ func TestAutoMerger_MergePR_DevWithCIVerification(t *testing.T) {
 	}
 	if !mergeWasCalled {
 		t.Error("merge should have been called for dev environment")
-	}
-}
-
-func TestRequestApproval_MisconfigReturnsTypedError(t *testing.T) {
-	// Scenario: env has require_approval=true but approval.pre_merge.enabled=false.
-	// requestApproval must return ErrApprovalNotConfigured (wrapped), not a plain string.
-	ghClient := github.NewClient(testutil.FakeGitHubToken)
-
-	approvalCfg := approval.DefaultConfig()
-	approvalCfg.Enabled = true
-	approvalCfg.PreMerge.Enabled = false
-	approvalMgr := approval.NewManager(approvalCfg)
-
-	cfg := DefaultConfig()
-	// Use new-style env with require_approval=true.
-	cfg.Environments = map[string]*EnvironmentConfig{
-		"stage": {RequireApproval: true},
-	}
-	if err := cfg.SetActiveEnvironment("stage"); err != nil {
-		t.Fatalf("SetActiveEnvironment: %v", err)
-	}
-
-	merger := NewAutoMerger(ghClient, approvalMgr, nil, "owner", "repo", cfg)
-	prState := &PRState{PRNumber: 42, PRURL: "https://github.com/owner/repo/pull/42"}
-
-	_, err := merger.requestApproval(context.Background(), prState)
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	if !errors.Is(err, ErrApprovalNotConfigured) {
-		t.Errorf("expected errors.Is(err, ErrApprovalNotConfigured), got %v", err)
-	}
-}
-
-func TestAutoMerger_MergePR_MisconfigBubblesTypedError(t *testing.T) {
-	// MergePR must wrap ErrApprovalNotConfigured so callers can detect it.
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/repos/owner/repo/pulls/42/files":
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte("[]"))
-		default:
-			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
-			w.WriteHeader(http.StatusInternalServerError)
-		}
-	}))
-	defer server.Close()
-
-	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
-
-	approvalCfg := approval.DefaultConfig()
-	approvalCfg.Enabled = true
-	approvalCfg.PreMerge.Enabled = false
-	approvalMgr := approval.NewManager(approvalCfg)
-
-	cfg := DefaultConfig()
-	cfg.Environments = map[string]*EnvironmentConfig{
-		"stage": {RequireApproval: true},
-	}
-	if err := cfg.SetActiveEnvironment("stage"); err != nil {
-		t.Fatalf("SetActiveEnvironment: %v", err)
-	}
-
-	merger := NewAutoMerger(ghClient, approvalMgr, nil, "owner", "repo", cfg)
-	prState := &PRState{PRNumber: 42, PRURL: "https://github.com/owner/repo/pull/42"}
-
-	err := merger.MergePR(context.Background(), prState)
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	if !errors.Is(err, ErrApprovalNotConfigured) {
-		t.Errorf("expected errors.Is(err, ErrApprovalNotConfigured) through wrapping, got: %v", err)
 	}
 }
 

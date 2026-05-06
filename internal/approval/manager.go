@@ -97,154 +97,6 @@ func (m *Manager) ShouldRequireApproval(ruleCtx RuleContext) *Rule {
 	return m.ruleEvaluator.Evaluate(ruleCtx)
 }
 
-// RequestApproval sends an approval request and waits for response
-// Returns the decision and any error
-func (m *Manager) RequestApproval(ctx context.Context, req *Request) (*Response, error) {
-	if !m.IsStageEnabled(req.Stage) {
-		// Check rule-based triggers before auto-approving
-		if rule := m.checkRuleTriggers(req); rule != nil {
-			m.log.Info("Rule-triggered approval required",
-				slog.String("rule", rule.Name),
-				slog.String("task_id", req.TaskID),
-				slog.String("stage", string(req.Stage)))
-			// Fall through to normal approval flow
-		} else {
-			// Stage not enabled and no rule triggered, auto-approve
-			m.log.Debug("Auto-approving (stage disabled)",
-				slog.String("task_id", req.TaskID),
-				slog.String("stage", string(req.Stage)))
-			return &Response{
-				RequestID:   req.ID,
-				Decision:    DecisionApproved,
-				ApprovedBy:  "system",
-				Comment:     "Auto-approved: stage not enabled",
-				RespondedAt: time.Now(),
-			}, nil
-		}
-	}
-
-	// Get stage config (use defaults if rule-triggered but no stage config exists)
-	stageConfig := m.getStageConfig(req.Stage)
-	if stageConfig == nil {
-		stageConfig = &StageConfig{
-			Enabled:       false,
-			Timeout:       m.config.DefaultTimeout,
-			DefaultAction: m.config.DefaultAction,
-		}
-	}
-
-	// Set expiration based on stage timeout
-	timeout := stageConfig.Timeout
-	if timeout == 0 {
-		timeout = m.config.DefaultTimeout
-	}
-	req.ExpiresAt = time.Now().Add(timeout)
-
-	// Set approvers from config if not specified
-	if len(req.Approvers) == 0 {
-		req.Approvers = stageConfig.Approvers
-	}
-
-	// Find available handler
-	m.mu.RLock()
-	var handler Handler
-	if req.PreferredChannel != "" {
-		if h, ok := m.handlers[req.PreferredChannel]; ok {
-			handler = h
-		} else {
-			m.log.Warn("preferred approval channel not registered, falling back to first-available",
-				slog.String("preferred_channel", req.PreferredChannel),
-				slog.String("task_id", req.TaskID))
-			for _, h := range m.handlers {
-				handler = h
-				break
-			}
-		}
-	} else {
-		for _, h := range m.handlers {
-			handler = h
-			break
-		}
-	}
-	m.mu.RUnlock()
-
-	if handler == nil {
-		// No handlers registered - use default action
-		m.log.Warn("No approval handlers registered, using default action",
-			slog.String("task_id", req.TaskID),
-			slog.String("stage", string(req.Stage)),
-			slog.String("default_action", string(stageConfig.DefaultAction)))
-		return &Response{
-			RequestID:   req.ID,
-			Decision:    stageConfig.DefaultAction,
-			ApprovedBy:  "system",
-			Comment:     "No approval handlers configured",
-			RespondedAt: time.Now(),
-		}, nil
-	}
-
-	m.log.Info("Requesting approval",
-		slog.String("request_id", req.ID),
-		slog.String("task_id", req.TaskID),
-		slog.String("stage", string(req.Stage)),
-		slog.String("channel", handler.Name()),
-		slog.Duration("timeout", timeout))
-
-	// Create timeout context
-	timeoutCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	// Send request through handler
-	responseCh, err := handler.SendApprovalRequest(timeoutCtx, req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to send approval request: %w", err)
-	}
-
-	// Track pending request
-	m.mu.Lock()
-	m.pending[req.ID] = &pendingRequest{
-		Request:    req,
-		ResponseCh: make(chan *Response, 1),
-		Handler:    handler,
-		CancelFn:   cancel,
-	}
-	m.mu.Unlock()
-
-	defer func() {
-		m.mu.Lock()
-		delete(m.pending, req.ID)
-		m.mu.Unlock()
-	}()
-
-	// Wait for response or timeout
-	select {
-	case resp := <-responseCh:
-		m.log.Info("Approval response received",
-			slog.String("request_id", req.ID),
-			slog.String("decision", string(resp.Decision)),
-			slog.String("approved_by", resp.ApprovedBy))
-		return resp, nil
-
-	case <-timeoutCtx.Done():
-		// Timeout - use default action
-		m.log.Warn("Approval request timed out",
-			slog.String("request_id", req.ID),
-			slog.String("task_id", req.TaskID),
-			slog.String("default_action", string(stageConfig.DefaultAction)))
-
-		// Cancel the pending request
-		_ = handler.CancelRequest(ctx, req.ID)
-
-		return &Response{
-			RequestID:   req.ID,
-			Decision:    stageConfig.DefaultAction,
-			ApprovedBy:  "system",
-			Comment:     "Approval timed out",
-			RespondedAt: time.Now(),
-		}, nil
-	}
-}
-
 // getStageConfig returns the configuration for a specific stage
 func (m *Manager) getStageConfig(stage Stage) *StageConfig {
 	switch stage {
@@ -348,9 +200,6 @@ func (m *Manager) WithStateWriter(w PRStateWriter) *Manager {
 // Decision retrieval: RecordDecision persists the outcome to the executions
 // table via PRStateWriter. Callers should poll PRState.ApprovalDecision on
 // subsequent ticks rather than awaiting a channel (see controller.handleAwaitApproval).
-//
-// This is the async counterpart to RequestApproval. Both coexist; the
-// config.async_dispatch flag indicates which path callers should prefer.
 func (m *Manager) SubmitApprovalRequest(ctx context.Context, req *Request) (string, error) {
 	stageEnabled := m.IsStageEnabled(req.Stage)
 	ruleFired := false
@@ -487,11 +336,6 @@ func (m *Manager) SubmitApprovalRequest(ctx context.Context, req *Request) (stri
 		slog.Duration("timeout", timeout))
 
 	return req.ID, nil
-}
-
-// IsAsyncDispatch reports whether the non-blocking async dispatch path is enabled.
-func (m *Manager) IsAsyncDispatch() bool {
-	return m.config != nil && m.config.AsyncDispatch
 }
 
 // PreMergeTimeout returns the effective timeout for the pre-merge approval stage.
