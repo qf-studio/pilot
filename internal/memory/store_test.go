@@ -1877,3 +1877,74 @@ func TestInvalidateCompletion(t *testing.T) {
 		t.Error("InvalidateCompletion should not affect different project path")
 	}
 }
+
+func TestGetLifetimeTokens_ExcludesZeroTokenRows(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	// Row with real tokens
+	if err := store.SaveExecution(&Execution{ID: "exec-real", TaskID: "T-1", ProjectPath: "/p", Status: "completed"}); err != nil {
+		t.Fatalf("SaveExecution: %v", err)
+	}
+	if err := store.SaveExecutionMetrics(&ExecutionMetrics{ExecutionID: "exec-real", TokensInput: 5000, TokensOutput: 2000, TokensTotal: 7000, EstimatedCostUSD: 0.50}); err != nil {
+		t.Fatalf("SaveExecutionMetrics: %v", err)
+	}
+
+	// Dispatcher queue / early-failure row with zero tokens
+	if err := store.SaveExecution(&Execution{ID: "exec-zero", TaskID: "T-2", ProjectPath: "/p", Status: "failed"}); err != nil {
+		t.Fatalf("SaveExecution: %v", err)
+	}
+
+	lt, err := store.GetLifetimeTokens()
+	if err != nil {
+		t.Fatalf("GetLifetimeTokens: %v", err)
+	}
+	if lt.TotalTokens != 7000 {
+		t.Errorf("TotalTokens = %d, want 7000 (zero-token row must be excluded)", lt.TotalTokens)
+	}
+	if lt.TotalCostUSD != 0.50 {
+		t.Errorf("TotalCostUSD = %.4f, want 0.5000", lt.TotalCostUSD)
+	}
+}
+
+func TestGetDailyMetrics_ExcludesZeroTokenRows(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	now := time.Now().UTC()
+	yesterday := now.Add(-24 * time.Hour)
+
+	// Real execution
+	if err := store.SaveExecution(&Execution{ID: "dm-real", TaskID: "T-1", ProjectPath: "/p", Status: "completed", CreatedAt: yesterday}); err != nil {
+		t.Fatalf("SaveExecution: %v", err)
+	}
+	if err := store.SaveExecutionMetrics(&ExecutionMetrics{ExecutionID: "dm-real", TokensInput: 3000, TokensOutput: 1000, TokensTotal: 4000, EstimatedCostUSD: 0.30}); err != nil {
+		t.Fatalf("SaveExecutionMetrics: %v", err)
+	}
+
+	// Zero-token row (same day) — should not appear in daily metrics
+	if err := store.SaveExecution(&Execution{ID: "dm-zero", TaskID: "T-2", ProjectPath: "/p", Status: "failed", CreatedAt: yesterday}); err != nil {
+		t.Fatalf("SaveExecution: %v", err)
+	}
+
+	q := MetricsQuery{Start: yesterday.Add(-time.Hour), End: now.Add(time.Hour)}
+	days, err := store.GetDailyMetrics(q)
+	if err != nil {
+		t.Fatalf("GetDailyMetrics: %v", err)
+	}
+	if len(days) == 0 {
+		t.Fatal("GetDailyMetrics: want at least 1 day row")
+	}
+	// Only the real execution should be counted
+	if days[0].ExecutionCount != 1 {
+		t.Errorf("ExecutionCount = %d, want 1 (zero-token row must be excluded)", days[0].ExecutionCount)
+	}
+}

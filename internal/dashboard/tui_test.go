@@ -1631,3 +1631,40 @@ func TestAutopilotPanelTick_RotatesSpinner(t *testing.T) {
 		}
 	}
 }
+
+func TestUpdateTokens_ModelAwareCost(t *testing.T) {
+	m := NewModel("test")
+
+	// Sonnet pricing: $3/M input, $15/M output
+	// 1M input + 1M output = $3 + $15 = $18
+	updated, _ := m.Update(updateTokensMsg{InputTokens: 1_000_000, OutputTokens: 1_000_000, TotalTokens: 2_000_000, Model: "claude-sonnet-4-6"})
+	sonnetModel := updated.(Model)
+	wantSonnet := memory.EstimateCost(1_000_000, 1_000_000, "claude-sonnet-4-6")
+	if sonnetModel.metricsCard.TotalCostUSD != wantSonnet {
+		t.Errorf("Sonnet cost = %.4f, want %.4f", sonnetModel.metricsCard.TotalCostUSD, wantSonnet)
+	}
+
+	// Opus pricing: $5/M input, $25/M output = $30 for same token count
+	m2 := NewModel("test")
+	updated2, _ := m2.Update(updateTokensMsg{InputTokens: 1_000_000, OutputTokens: 1_000_000, TotalTokens: 2_000_000, Model: "claude-opus-4-6"})
+	opusModel := updated2.(Model)
+	wantOpus := memory.EstimateCost(1_000_000, 1_000_000, "claude-opus-4-6")
+	if opusModel.metricsCard.TotalCostUSD != wantOpus {
+		t.Errorf("Opus cost = %.4f, want %.4f", opusModel.metricsCard.TotalCostUSD, wantOpus)
+	}
+
+	// Sonnet cost must be less than Opus cost for the same token count
+	if wantSonnet >= wantOpus {
+		t.Errorf("expected Sonnet ($%.4f) < Opus ($%.4f)", wantSonnet, wantOpus)
+	}
+}
+
+func TestUpdateTokens_EmptyModelFallsBackToDefault(t *testing.T) {
+	m := NewModel("test")
+	updated, _ := m.Update(updateTokensMsg{InputTokens: 100_000, OutputTokens: 50_000, TotalTokens: 150_000, Model: ""})
+	model := updated.(Model)
+	want := memory.EstimateCost(100_000, 50_000, memory.DefaultModel)
+	if model.metricsCard.TotalCostUSD != want {
+		t.Errorf("cost with empty model = %.6f, want %.6f (DefaultModel=%s)", model.metricsCard.TotalCostUSD, want, memory.DefaultModel)
+	}
+}

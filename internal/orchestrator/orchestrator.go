@@ -299,7 +299,7 @@ func (o *Orchestrator) OnCompletion(callback func(taskID, prURL string, success 
 }
 
 // OnToken registers a callback for token usage updates on the underlying runner.
-func (o *Orchestrator) OnToken(name string, callback func(taskID string, inputTokens, outputTokens int64)) {
+func (o *Orchestrator) OnToken(name string, callback func(taskID string, inputTokens, outputTokens int64, modelName string)) {
 	o.runner.AddTokenCallback(name, callback)
 }
 

@@ -2297,8 +2297,8 @@ func runDashboardMode(p *pilot.Pilot, cfg *config.Config, gwProgram *tea.Program
 			program.Send(dashboard.AddLog(logMsg)())
 		})
 
-		gwRunner.AddTokenCallback("dashboard", func(taskID string, inputTokens, outputTokens int64) {
-			program.Send(dashboard.UpdateTokens(int(inputTokens), int(outputTokens))())
+		gwRunner.AddTokenCallback("dashboard", func(taskID string, inputTokens, outputTokens int64, modelName string) {
+			program.Send(dashboard.UpdateTokens(int(inputTokens), int(outputTokens), modelName)())
 		})
 	}
 
@@ -2323,8 +2323,8 @@ func runDashboardMode(p *pilot.Pilot, cfg *config.Config, gwProgram *tea.Program
 	})
 
 	// Register token usage callback for dashboard updates (GH-156 fix)
-	p.OnToken("dashboard", func(taskID string, inputTokens, outputTokens int64) {
-		program.Send(dashboard.UpdateTokens(int(inputTokens), int(outputTokens))())
+	p.OnToken("dashboard", func(taskID string, inputTokens, outputTokens int64, modelName string) {
+		program.Send(dashboard.UpdateTokens(int(inputTokens), int(outputTokens), modelName)())
 	})
 
 	// Periodic refresh to catch any missed updates
