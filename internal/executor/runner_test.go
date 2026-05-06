@@ -3513,6 +3513,7 @@ func TestRunner_PRCreate_EmptyBranch_TriggersRetry(t *testing.T) {
 	}
 	runner := NewRunnerWithBackend(backend)
 	runner.SetRecordingEnabled(false)
+	runner.skipPreflightChecks = true
 	runner.config = &BackendConfig{SkipSelfReview: true}
 
 	task := &Task{
@@ -3558,6 +3559,7 @@ func TestRunner_PRCreate_HasCommits_ProceedsToCreate(t *testing.T) {
 	}
 	runner := NewRunnerWithBackend(backend)
 	runner.SetRecordingEnabled(false)
+	runner.skipPreflightChecks = true
 	runner.config = &BackendConfig{SkipSelfReview: true}
 
 	task := &Task{
