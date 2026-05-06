@@ -264,22 +264,6 @@ A user can tap **Approve** minutes after a daemon restart and the callback lands
   The `approval_pending` table is pruned automatically when requests expire or are decided. It is safe to inspect with `sqlite3 ~/.pilot/data/pilot.db "SELECT * FROM approval_pending"`.
 </Callout>
 
-### Configuration
-
-```yaml
-# ~/.pilot/config.yaml
-approval:
-  async_dispatch: true    # default since v2.125; set false to restore legacy blocking path
-```
-
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `async_dispatch` | bool | `true` | When true, `SubmitApprovalRequest` returns the request ID immediately and the controller reads the decision on the next tick. When false, the legacy blocking `RequestApproval` channel is used instead. |
-
-<Callout type="warning">
-  The legacy blocking path (`async_dispatch: false`) is preserved for one release of bake time and will be removed in a future version. Migrate to async dispatch before that removal.
-</Callout>
-
 ## Disabling Approval
 
 Approval is disabled by default. To explicitly skip it:

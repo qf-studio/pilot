@@ -5193,7 +5193,7 @@ func TestCIFixSizeGuard_APIError_FailOpen(t *testing.T) {
 func asyncApprovalManager() *approval.Manager {
 	cfg := &approval.Config{
 		Enabled:        true,
-		AsyncDispatch:  true,
+
 		DefaultTimeout: 1 * time.Hour,
 		DefaultAction:  approval.DecisionRejected,
 		PreMerge: &approval.StageConfig{
@@ -5277,7 +5277,7 @@ func TestController_AwaitApproval_AppliesDefaultActionAtTimeout(t *testing.T) {
 	// Short timeout so the test can simulate expiry without sleeping.
 	approvalCfg := &approval.Config{
 		Enabled:        true,
-		AsyncDispatch:  true,
+
 		DefaultTimeout: 1 * time.Millisecond,
 		DefaultAction:  approval.DecisionRejected,
 		PreMerge: &approval.StageConfig{

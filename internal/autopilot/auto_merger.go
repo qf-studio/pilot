@@ -48,10 +48,8 @@ func NewAutoMerger(ghClient *github.Client, approvalMgr *approval.Manager, ciMon
 }
 
 // MergePR merges a PR with environment-appropriate safety checks.
-// For environments with RequireApproval, requests human approval before merge.
+// Approval is obtained upstream by the controller's handleAwaitApproval before MergePR is called.
 func (m *AutoMerger) MergePR(ctx context.Context, prState *PRState) error {
-	env := m.config.Environment
-
 	m.log.Info("MergePR: starting merge process",
 		"pr", prState.PRNumber,
 		"env", m.config.EnvironmentName(),
@@ -59,36 +57,6 @@ func (m *AutoMerger) MergePR(ctx context.Context, prState *PRState) error {
 		"auto_review", m.config.AutoReview,
 		"sha", ShortSHA(prState.HeadSHA),
 	)
-
-	// GH-2584/GH-2585: structural escalation gates. Born from OAuth cascade #2.
-	// Force human approval for PRs that drift from their issue's scope OR
-	// exceed the size floor, regardless of env config.
-	requireApproval := m.requiresApproval(env)
-	if !requireApproval {
-		if reason := m.evaluateEscalationGates(ctx, prState); reason != "" {
-			m.log.Warn("escalation gate fired — forcing human approval despite env config",
-				"pr", prState.PRNumber, "reason", reason)
-			requireApproval = true
-		}
-	}
-
-	// GH-2685: async dispatch path already obtained human approval on a prior tick.
-	// Skip the blocking requestApproval call so handleMerging is non-blocking.
-	if requireApproval && prState.ApprovalDecision == string(approval.DecisionApproved) {
-		m.log.Info("async approval already granted, skipping blocking request",
-			"pr", prState.PRNumber, "request_id", prState.ApprovalRequestID)
-		requireApproval = false
-	}
-
-	if requireApproval {
-		approved, err := m.requestApproval(ctx, prState)
-		if err != nil {
-			return fmt.Errorf("approval request failed: %w", err)
-		}
-		if !approved {
-			return fmt.Errorf("merge rejected: approval denied")
-		}
-	}
 
 	// Auto-review if enabled (creates approval review on the PR)
 	if m.config.AutoReview {
@@ -100,7 +68,7 @@ func (m *AutoMerger) MergePR(ctx context.Context, prState *PRState) error {
 
 	// Final CI verification immediately before merge to prevent race conditions.
 	// CI status can change between initial check and merge, so we verify again.
-	if m.ShouldWaitForCI(env) {
+	if m.ShouldWaitForCI(m.config.Environment) {
 		if err := m.verifyCIBeforeMerge(ctx, prState); err != nil {
 			return fmt.Errorf("pre-merge CI verification failed: %w", err)
 		}
@@ -143,105 +111,6 @@ func (m *AutoMerger) MergePR(ctx context.Context, prState *PRState) error {
 	}
 
 	return nil
-}
-
-// evaluateEscalationGates runs the GH-2584/GH-2585 structural rails. Returns
-// the first reason that fires, or "" if none. A failure to fetch the issue or
-// PR files is treated as "abstain" (returns "") — these gates must never break
-// a working merge path on transient API errors. We log+continue.
-func (m *AutoMerger) evaluateEscalationGates(ctx context.Context, prState *PRState) string {
-	// Scope-drift gate (#2584) — only meaningful when an issue is linked.
-	if prState.IssueNumber > 0 && prState.PRTitle != "" {
-		issue, err := m.ghClient.GetIssue(ctx, m.owner, m.repo, prState.IssueNumber)
-		if err != nil {
-			m.log.Warn("scope-drift gate: GetIssue failed, abstaining",
-				"pr", prState.PRNumber, "issue", prState.IssueNumber, "error", err)
-		} else if reason := ScopeDriftReason(prState.PRTitle, issue.Title); reason != "" {
-			return reason
-		}
-	}
-
-	// Size-floor gate (#2585) — independent of issue link.
-	files, err := m.ghClient.ListPullRequestFiles(ctx, m.owner, m.repo, prState.PRNumber)
-	if err != nil {
-		m.log.Warn("size-floor gate: ListPullRequestFiles failed, abstaining",
-			"pr", prState.PRNumber, "error", err)
-		return ""
-	}
-	if reason := SizeFloorReason(files); reason != "" {
-		return reason
-	}
-	return ""
-}
-
-// requiresApproval checks if the active environment requires human approval before merge.
-// When a new-style environment is active (activeEnvName set), uses ResolvedEnv().RequireApproval.
-// Otherwise falls back to the default environment table keyed by the passed env name,
-// preserving legacy behavior where the caller passes m.config.Environment.
-func (m *AutoMerger) requiresApproval(env Environment) bool {
-	if m.config.activeEnvName != "" {
-		return m.config.ResolvedEnv().RequireApproval
-	}
-	// Legacy: look up in built-in defaults using the passed environment name.
-	defaults := defaultEnvironments()
-	if envCfg, ok := defaults[string(env)]; ok {
-		return envCfg.RequireApproval
-	}
-	return false
-}
-
-// requestApproval requests human approval via the approval manager.
-func (m *AutoMerger) requestApproval(ctx context.Context, prState *PRState) (bool, error) {
-	if m.approvalMgr == nil {
-		return false, fmt.Errorf("approval manager not configured")
-	}
-
-	// Check if approval stage is enabled
-	if !m.approvalMgr.IsStageEnabled(approval.StagePreMerge) {
-		// When the environment requires approval, do NOT auto-approve if the approval
-		// stage is disabled. This is a safety measure: environments with RequireApproval
-		// must have explicit approval configuration.
-		if m.config.ResolvedEnv().RequireApproval {
-			m.log.Error("pre-merge approval stage not enabled in environment requiring approval, blocking merge. "+
-				"Enable approval.pre_merge.enabled or switch to an environment without require_approval",
-				"pr", prState.PRNumber,
-				"env", m.config.EnvironmentName())
-			return false, fmt.Errorf("env %q: %w", m.config.EnvironmentName(), ErrApprovalNotConfigured)
-		}
-		m.log.Warn("pre-merge approval stage not enabled, auto-approving",
-			"pr", prState.PRNumber)
-		return true, nil
-	}
-
-	req := &approval.Request{
-		TaskID:           fmt.Sprintf("merge-pr-%d", prState.PRNumber),
-		Stage:            approval.StagePreMerge,
-		Title:            fmt.Sprintf("PR #%d Merge Approval", prState.PRNumber),
-		Description:      fmt.Sprintf("Approve merge of PR #%d to production?", prState.PRNumber),
-		PreferredChannel: string(m.config.ApprovalSource),
-		Metadata: map[string]interface{}{
-			"pr_url":    prState.PRURL,
-			"pr_number": prState.PRNumber,
-			"head_sha":  prState.HeadSHA,
-		},
-	}
-
-	m.log.Info("requesting merge approval",
-		"pr", prState.PRNumber,
-		"url", prState.PRURL)
-
-	result, err := m.approvalMgr.RequestApproval(ctx, req)
-	if err != nil {
-		return false, err
-	}
-
-	approved := result.Decision == approval.DecisionApproved
-	m.log.Info("approval response",
-		"pr", prState.PRNumber,
-		"decision", result.Decision,
-		"approved_by", result.ApprovedBy)
-
-	return approved, nil
 }
 
 // postMisconfigComment posts a single explanatory comment on the PR when
