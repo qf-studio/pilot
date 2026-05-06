@@ -2820,6 +2820,28 @@ The previous execution completed but made no code changes. This task requires ac
 			// Create PR if requested and we have commits
 			r.reportProgress(task.ID, "Creating PR", 96, "Pushing branch...")
 
+			// Determine base branch before the no-commits guard.
+			baseBranch := task.BaseBranch
+			if baseBranch == "" {
+				baseBranch, _ = git.GetDefaultBranch(ctx)
+				if baseBranch == "" {
+					baseBranch = "main"
+				}
+			}
+
+			// GH-2743: pre-CreatePR no-commits guard.
+			// The no-commit check at ~line 2151 only runs when result.Success==true.
+			// If the initial execution fails, that check is bypassed and gh pr create
+			// receives an empty branch, producing "No commits between main and <branch>".
+			if guardCount, _ := git.CountNewCommits(ctx, baseBranch); guardCount == 0 {
+				result.Success = false
+				result.Error = "no_changes: branch has no commits relative to base (PR guard)"
+				if backendResult != nil {
+					backendResult.ErrorType = string(ErrorTypeNoChanges)
+				}
+				r.reportProgress(task.ID, "PR Failed", 100, result.Error)
+				return result, nil
+			}
 
 			// Pre-push lint gate (GH-1376)
 			if r.config != nil && r.config.PrePushLint != nil && *r.config.PrePushLint {
@@ -2870,15 +2892,6 @@ The previous execution completed but made no code changes. This task requires ac
 			}
 
 			r.reportProgress(task.ID, "Creating PR", 98, "Creating pull request...")
-
-			// Determine base branch
-			baseBranch := task.BaseBranch
-			if baseBranch == "" {
-				baseBranch, _ = git.GetDefaultBranch(ctx)
-				if baseBranch == "" {
-					baseBranch = "main"
-				}
-			}
 
 			// GH-2325: ensure the subject passed through to the PR (and the squash
 			// commit on main) is a conventional commit. Falls back to a
