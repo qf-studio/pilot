@@ -3,8 +3,10 @@ package executor
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"strings"
+	"unicode"
 )
 
 // conventionalCommitRegex matches titles in the form:
@@ -80,19 +82,147 @@ func autoPrefixTitle(title string, labels []string) (string, bool) {
 	return trimmed, false
 }
 
-// normalizeTitle returns a conventional-commit title derived from title and
-// labels. If title already conforms it is returned as-is. Otherwise auto-prefix
-// is attempted from labels. If neither succeeds the result wraps
-// ErrNonConventionalTitle so callers can abort PR creation.
-func normalizeTitle(title string, labels []string) (string, error) {
+// inferConventionalPrefix derives a conventional commit type from file-level
+// diff stats and issue labels. First-match-wins across the priority order
+// defined in the acceptance criteria (GH-2735).
+func inferConventionalPrefix(diff GitDiff, labels []string) string {
+	files := diff.Files
+
+	if len(files) > 0 {
+		if allFilesMatch(files, func(f string) bool {
+			ext := strings.ToLower(filepath.Ext(f))
+			base := strings.ToLower(filepath.Base(f))
+			return ext == ".md" || ext == ".mdx" || base == "readme" || base == "readme.md" || base == "readme.mdx"
+		}) {
+			return "docs"
+		}
+
+		if allFilesMatch(files, func(f string) bool {
+			base := filepath.Base(f)
+			return strings.HasSuffix(base, "_test.go") ||
+				strings.HasSuffix(base, "_test.ts") ||
+				strings.Contains(base, ".test.")
+		}) {
+			return "test"
+		}
+	}
+
+	for _, label := range labels {
+		key := strings.ToLower(strings.TrimSpace(label))
+		if prefix, ok := labelPrefixMap[key]; ok {
+			return prefix
+		}
+	}
+
+	if len(files) > 0 {
+		if allFilesMatch(files, func(f string) bool {
+			return strings.HasPrefix(f, ".github/workflows/") ||
+				strings.HasPrefix(f, ".gitlab-ci") ||
+				f == ".gitlab-ci.yml"
+		}) {
+			return "ci"
+		}
+
+		buildFiles := map[string]bool{
+			"dockerfile": true, "makefile": true, "go.mod": true, "go.sum": true,
+			"package.json": true, "package-lock.json": true,
+		}
+		if allFilesMatch(files, func(f string) bool {
+			return buildFiles[strings.ToLower(filepath.Base(f))]
+		}) {
+			return "build"
+		}
+
+		total := diff.Added + diff.Removed
+		if total > 0 && hasCodeFile(files) {
+			if diff.Added >= 2*diff.Removed {
+				return "feat"
+			}
+			ratio := float64(abs(diff.Added-diff.Removed)) / float64(total)
+			if ratio < 0.2 {
+				return "refactor"
+			}
+		}
+	}
+
+	return "chore"
+}
+
+func allFilesMatch(files []string, pred func(string) bool) bool {
+	if len(files) == 0 {
+		return false
+	}
+	for _, f := range files {
+		if !pred(f) {
+			return false
+		}
+	}
+	return true
+}
+
+func hasCodeFile(files []string) bool {
+	nonCodeExts := map[string]bool{".md": true, ".mdx": true, ".txt": true, ".json": true, ".yaml": true, ".yml": true}
+	for _, f := range files {
+		ext := strings.ToLower(filepath.Ext(f))
+		if !nonCodeExts[ext] {
+			return true
+		}
+	}
+	return false
+}
+
+func abs(n int) int {
+	if n < 0 {
+		return -n
+	}
+	return n
+}
+
+// normalizeTitle returns a conventional-commit title derived from title, labels,
+// and diff stats. If title already conforms it is returned as-is. Otherwise
+// auto-prefix is attempted from labels, then from the diff heuristic.
+// Only errors on empty title.
+func normalizeTitle(title string, labels []string, diff GitDiff) (string, error) {
 	trimmed := strings.TrimSpace(title)
+	if trimmed == "" {
+		return "", fmt.Errorf("%w: empty title", ErrNonConventionalTitle)
+	}
+
+	// Strip leading issue-id prefix (e.g. "GH-2735: ") before trying to normalize.
+	subject := issuePrefixRegex.ReplaceAllString(trimmed, "")
+	// Lowercase first word of subject for consistency.
+	subject = lowercaseFirst(subject)
+	// Truncate to 72 chars.
+	subject = truncateTitle(subject, 72)
+
+	// 1. Already a valid conventional commit — return as-is (preserving original casing/prefix).
 	if err := validatePRTitle(trimmed); err == nil {
 		return trimmed, nil
 	}
-	if prefixed, ok := autoPrefixTitle(trimmed, labels); ok {
+
+	// 2. Label-derived prefix.
+	if prefixed, ok := autoPrefixTitle(subject, labels); ok {
 		if err := validatePRTitle(prefixed); err == nil {
 			return prefixed, nil
 		}
 	}
+
+	// 3. Diff-derived prefix (last-ditch fallback, GH-2735).
+	prefix := inferConventionalPrefix(diff, labels)
+	candidate := prefix + ": " + subject
+	if err := validatePRTitle(candidate); err == nil {
+		return candidate, nil
+	}
+
 	return trimmed, fmt.Errorf("%w: could not auto-correct %q", ErrNonConventionalTitle, truncateTitle(trimmed, 80))
+}
+
+// lowercaseFirst lowercases the first rune of s, leaving the rest unchanged.
+func lowercaseFirst(s string) string {
+	if s == "" {
+		return s
+	}
+	runes := []rune(s)
+	runes[0] = unicode.ToLower(runes[0])
+	return string(runes)
 }

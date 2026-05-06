@@ -380,6 +380,43 @@ func (g *GitOperations) DeleteBranch(ctx context.Context, branchName string) err
 	return nil
 }
 
+// GitDiff holds numstat output from `git diff --numstat origin/main...HEAD`.
+type GitDiff struct {
+	// Files is the list of changed file paths.
+	Files []string
+	// Added is the total number of inserted lines across all changed files.
+	Added int
+	// Removed is the total number of deleted lines across all changed files.
+	Removed int
+}
+
+// GetDiffStats returns line-level diff statistics between origin/baseBranch and HEAD.
+// Uses three-dot notation so only commits on the current branch are counted.
+func (g *GitOperations) GetDiffStats(ctx context.Context, baseBranch string) (GitDiff, error) {
+	cmd := exec.CommandContext(ctx, "git", "diff", "--numstat", "origin/"+baseBranch+"...HEAD")
+	cmd.Dir = g.projectPath
+	output, err := cmd.Output()
+	if err != nil {
+		return GitDiff{}, fmt.Errorf("git diff --numstat failed: %w", err)
+	}
+
+	var diff GitDiff
+	for _, line := range strings.Split(strings.TrimSpace(string(output)), "\n") {
+		if line == "" {
+			continue
+		}
+		var added, removed int
+		var path string
+		if _, scanErr := fmt.Sscanf(line, "%d %d %s", &added, &removed, &path); scanErr != nil {
+			continue
+		}
+		diff.Files = append(diff.Files, path)
+		diff.Added += added
+		diff.Removed += removed
+	}
+	return diff, nil
+}
+
 // RemoteBranchExists checks if a branch exists on the remote (origin).
 // GH-1389: Used to verify if push actually succeeded despite worktree chdir errors.
 func (g *GitOperations) RemoteBranchExists(ctx context.Context, branchName string) bool {

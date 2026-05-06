@@ -342,10 +342,11 @@ func TestAutoCorrector_Unaffected(t *testing.T) {
 		{"fix(api): handle nil", nil, false, "fix(api):"},
 		{"feat: add login", nil, false, "feat:"},
 		{"Add login feature", []string{"enhancement"}, false, "feat:"},
-		{"this is unrecognizable", nil, true, ""},
+		// GH-2735: diff fallback now produces "chore:" instead of erroring.
+		{"this is unrecognizable", nil, false, "chore:"},
 	}
 	for _, tt := range tests {
-		got, err := normalizeTitle(tt.title, tt.labels)
+		got, err := normalizeTitle(tt.title, tt.labels, GitDiff{})
 		if (err != nil) != tt.wantErr {
 			t.Errorf("normalizeTitle(%q) error = %v, wantErr %v", tt.title, err, tt.wantErr)
 			continue
