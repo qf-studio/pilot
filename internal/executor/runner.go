@@ -1344,6 +1344,16 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 						}
 					}
 
+					// GH-2743: no-commits guard for epic PR path.
+					if guardCount, _ := epicGit.CountNewCommits(ctx, baseBranch); guardCount == 0 {
+						r.log.Warn("Epic branch has no commits vs base, skipping PR creation",
+							slog.String("task_id", task.ID),
+							slog.String("base_branch", baseBranch),
+						)
+						r.reportProgress(task.ID, "PR Skipped", 97, "epic branch has no commits relative to base")
+						return epicResult, nil
+					}
+
 					// Create PR with GitHub auto-close keyword
 					epicIssueNum := strings.TrimPrefix(task.ID, "GH-")
 					prBody := fmt.Sprintf("## Summary\n\nAutomated PR created by Pilot for epic task %s.\n\nCloses #%s\n\n## Changes\n\n%s", task.ID, epicIssueNum, task.Description)
@@ -2820,6 +2830,28 @@ The previous execution completed but made no code changes. This task requires ac
 			// Create PR if requested and we have commits
 			r.reportProgress(task.ID, "Creating PR", 96, "Pushing branch...")
 
+			// Determine base branch before the no-commits guard.
+			baseBranch := task.BaseBranch
+			if baseBranch == "" {
+				baseBranch, _ = git.GetDefaultBranch(ctx)
+				if baseBranch == "" {
+					baseBranch = "main"
+				}
+			}
+
+			// GH-2743: pre-CreatePR no-commits guard.
+			// The no-commit check at ~line 2151 only runs when result.Success==true.
+			// If the initial execution fails, that check is bypassed and gh pr create
+			// receives an empty branch, producing "No commits between main and <branch>".
+			if guardCount, _ := git.CountNewCommits(ctx, baseBranch); guardCount == 0 {
+				result.Success = false
+				result.Error = "no_changes: branch has no commits relative to base (PR guard)"
+				if backendResult != nil {
+					backendResult.ErrorType = string(ErrorTypeNoChanges)
+				}
+				r.reportProgress(task.ID, "PR Failed", 100, result.Error)
+				return result, nil
+			}
 
 			// Pre-push lint gate (GH-1376)
 			if r.config != nil && r.config.PrePushLint != nil && *r.config.PrePushLint {
@@ -2870,15 +2902,6 @@ The previous execution completed but made no code changes. This task requires ac
 			}
 
 			r.reportProgress(task.ID, "Creating PR", 98, "Creating pull request...")
-
-			// Determine base branch
-			baseBranch := task.BaseBranch
-			if baseBranch == "" {
-				baseBranch, _ = git.GetDefaultBranch(ctx)
-				if baseBranch == "" {
-					baseBranch = "main"
-				}
-			}
 
 			// GH-2325: ensure the subject passed through to the PR (and the squash
 			// commit on main) is a conventional commit. Falls back to a

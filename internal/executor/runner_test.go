@@ -3439,3 +3439,152 @@ func TestRunnerFallbackModelName(t *testing.T) {
 		})
 	}
 }
+
+// mockFixedBackend returns a fixed BackendResult for every Execute call and tracks count.
+type mockFixedBackend struct {
+	mu        sync.Mutex
+	result    *BackendResult
+	execCount int
+}
+
+func (m *mockFixedBackend) Name() string     { return "mock-fixed" }
+func (m *mockFixedBackend) IsAvailable() bool { return true }
+func (m *mockFixedBackend) Execute(_ context.Context, _ ExecuteOptions) (*BackendResult, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.execCount++
+	return m.result, nil
+}
+
+// setupPRGuardRepo creates a temp git repo with an initial commit on main and
+// checks out the given branch. If addCommit is true, one additional commit is
+// added on the branch (simulating real work).
+func setupPRGuardRepo(t *testing.T, branch string, addCommit bool) string {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	dir, err := os.MkdirTemp("", "pilot-pr-guard-*")
+	if err != nil {
+		t.Fatalf("setupPRGuardRepo: MkdirTemp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	run("init")
+	run("config", "user.email", "test@pilot.local")
+	run("config", "user.name", "Pilot Test")
+
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("# test\n"), 0644); err != nil {
+		t.Fatalf("setupPRGuardRepo: WriteFile: %v", err)
+	}
+	run("add", ".")
+	run("commit", "-m", "initial commit")
+	run("checkout", "-b", branch)
+
+	if addCommit {
+		if err := os.WriteFile(filepath.Join(dir, "change.go"), []byte("package main\n"), 0644); err != nil {
+			t.Fatalf("setupPRGuardRepo: WriteFile change.go: %v", err)
+		}
+		run("add", ".")
+		run("commit", "-m", "fix(executor): implement change")
+	}
+	return dir
+}
+
+// TestRunner_PRCreate_EmptyBranch_TriggersRetry verifies that when a branch has
+// no commits relative to base, the no-commit retry path fires and gh pr create is
+// never reached. The backend succeeds but makes no git commits, so the guard at
+// ~line 2151 detects this, retries once, and returns no_changes when still empty.
+func TestRunner_PRCreate_EmptyBranch_TriggersRetry(t *testing.T) {
+	const branch = "pilot/GH-9999"
+	dir := setupPRGuardRepo(t, branch, false) // no additional commits
+
+	// Backend always succeeds but makes no git commits.
+	backend := &mockFixedBackend{
+		result: &BackendResult{Success: true, Output: "analysis complete"},
+	}
+	runner := NewRunnerWithBackend(backend)
+	runner.SetRecordingEnabled(false)
+	runner.skipPreflightChecks = true
+	runner.config = &BackendConfig{SkipSelfReview: true}
+
+	task := &Task{
+		ID:          "GH-9999",
+		Title:       "fix(executor): no-commits guard test",
+		Description: "Verify retry fires on empty branch and CreatePR is not called",
+		ProjectPath: dir,
+		Branch:      branch,
+		CreatePR:    true,
+	}
+
+	result, err := runner.Execute(context.Background(), task)
+	if err != nil {
+		t.Fatalf("Execute() returned error: %v", err)
+	}
+	if result.Success {
+		t.Error("Expected failure, got success")
+	}
+	if !strings.HasPrefix(result.Error, "no_changes:") {
+		t.Errorf("Expected no_changes error (retry path), got: %q", result.Error)
+	}
+	// Backend called twice: initial execution + no-commit retry (GH-916).
+	// CreatePR is not called because the retry path returns early.
+	backend.mu.Lock()
+	count := backend.execCount
+	backend.mu.Unlock()
+	if count != 2 {
+		t.Errorf("Expected backend called 2 times (initial + retry), got %d", count)
+	}
+}
+
+// TestRunner_PRCreate_HasCommits_ProceedsToCreate verifies the GH-2743 guard
+// does NOT fire when the branch has commits, allowing PR creation to proceed past
+// the guard. Execution reaches the push step (which fails without a remote),
+// confirming the guard was not the source of failure.
+func TestRunner_PRCreate_HasCommits_ProceedsToCreate(t *testing.T) {
+	const branch = "pilot/GH-9998"
+	dir := setupPRGuardRepo(t, branch, true) // one commit on branch
+
+	// Backend always succeeds; the pre-made commit satisfies the no-commit check.
+	backend := &mockFixedBackend{
+		result: &BackendResult{Success: true, Output: "implementation complete"},
+	}
+	runner := NewRunnerWithBackend(backend)
+	runner.SetRecordingEnabled(false)
+	runner.skipPreflightChecks = true
+	runner.config = &BackendConfig{SkipSelfReview: true}
+
+	task := &Task{
+		ID:          "GH-9998",
+		Title:       "fix(executor): no-commits guard test with commits",
+		Description: "Verify guard passes and execution proceeds toward CreatePR",
+		ProjectPath: dir,
+		Branch:      branch,
+		CreatePR:    true,
+	}
+
+	result, err := runner.Execute(context.Background(), task)
+	if err != nil {
+		t.Fatalf("Execute() returned error: %v", err)
+	}
+	if result.Success {
+		t.Error("Expected failure (push has no remote), got success")
+	}
+	// Guard must NOT have fired — error must come from push or PR creation, not the guard.
+	if strings.HasPrefix(result.Error, "no_changes:") {
+		t.Errorf("Guard fired unexpectedly on branch with commits: %q", result.Error)
+	}
+	// Error comes from the push step (no remote configured), proving execution
+	// proceeded past both the no-commit check and the GH-2743 guard.
+	if !strings.HasPrefix(result.Error, "push failed:") {
+		t.Errorf("Expected push failed error (guard passed), got: %q", result.Error)
+	}
+}
