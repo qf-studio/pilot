@@ -1344,6 +1344,16 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 						}
 					}
 
+					// GH-2743: no-commits guard for epic PR path.
+					if guardCount, _ := epicGit.CountNewCommits(ctx, baseBranch); guardCount == 0 {
+						r.log.Warn("Epic branch has no commits vs base, skipping PR creation",
+							slog.String("task_id", task.ID),
+							slog.String("base_branch", baseBranch),
+						)
+						r.reportProgress(task.ID, "PR Skipped", 97, "epic branch has no commits relative to base")
+						return epicResult, nil
+					}
+
 					// Create PR with GitHub auto-close keyword
 					epicIssueNum := strings.TrimPrefix(task.ID, "GH-")
 					prBody := fmt.Sprintf("## Summary\n\nAutomated PR created by Pilot for epic task %s.\n\nCloses #%s\n\n## Changes\n\n%s", task.ID, epicIssueNum, task.Description)
