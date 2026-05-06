@@ -476,6 +476,11 @@ type PRState struct {
 	ApprovalDecision string
 	// ApprovalRequestedAt is when the async approval request was first submitted.
 	ApprovalRequestedAt time.Time
+	// PostMergeSHA is the main branch SHA captured on first entry to StagePostMergeCI.
+	// Persisted so a daemon restart resumes monitoring the same commit.
+	PostMergeSHA string
+	// PostMergeCIStartedAt is when StagePostMergeCI monitoring began (for timeout tracking).
+	PostMergeCIStartedAt time.Time
 }
 
 // RepoOwnerAndName extracts the repository owner and name from the PR URL.
