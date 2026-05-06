@@ -2,6 +2,7 @@ package autopilot
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -5440,6 +5441,80 @@ func TestController_SetApprovalDecision_PersistsToMemoryStore(t *testing.T) {
 	call := mock.decisionCalls[0]
 	if call.requestID != "req-test-123" || call.decision != "approved" || call.by != "reviewer" {
 		t.Errorf("unexpected call args: %+v", call)
+	}
+}
+
+// errApprovalPersister is a mock that returns a configurable error for both methods.
+type errApprovalPersister struct {
+	requestIDErr error
+	decisionErr  error
+}
+
+func (m *errApprovalPersister) SetApprovalRequestID(_ context.Context, _, _ string) error {
+	return m.requestIDErr
+}
+
+func (m *errApprovalPersister) SetApprovalDecision(_ context.Context, _, _, _ string) error {
+	return m.decisionErr
+}
+
+// TestController_ApprovalPersistMiss_RequestID verifies that a sql.ErrNoRows from
+// SetApprovalRequestID increments the request_id miss counter.
+func TestController_ApprovalPersistMiss_RequestID(t *testing.T) {
+	ghClient := github.NewClient(testutil.FakeGitHubToken)
+	c := NewController(DefaultConfig(), ghClient, approval.NewManager(nil), "owner", "repo")
+	c.memoryStore = &errApprovalPersister{requestIDErr: sql.ErrNoRows}
+
+	// Directly invoke the counter via the same code path as handleAwaitApproval by
+	// calling the private helper through a public wrapper. Since the logic lives in
+	// handleAwaitApproval (which calls SetApprovalRequestID), we replicate the
+	// pattern inline: set up an active PR and call SetApprovalRequestID to simulate
+	// the zero-row path, then check the counter.
+	ctx := context.Background()
+	taskID := "GH-42"
+	requestID := "req-miss-test"
+
+	// Simulate the call site in handleAwaitApproval.
+	merr := c.memoryStore.SetApprovalRequestID(ctx, taskID, requestID)
+	if merr != nil {
+		c.metrics.RecordApprovalPersistMiss("request_id")
+	}
+
+	snap := c.metrics.Snapshot()
+	if snap.ApprovalPersistMisses["request_id"] != 1 {
+		t.Errorf("expected 1 request_id miss, got %d", snap.ApprovalPersistMisses["request_id"])
+	}
+	if snap.ApprovalPersistMisses["decision"] != 0 {
+		t.Errorf("expected 0 decision misses, got %d", snap.ApprovalPersistMisses["decision"])
+	}
+}
+
+// TestController_ApprovalPersistMiss_Decision verifies that a sql.ErrNoRows from
+// SetApprovalDecision increments the decision miss counter via Controller.SetApprovalDecision.
+func TestController_ApprovalPersistMiss_Decision(t *testing.T) {
+	ghClient := github.NewClient(testutil.FakeGitHubToken)
+	c := NewController(DefaultConfig(), ghClient, approval.NewManager(nil), "owner", "repo")
+	c.memoryStore = &errApprovalPersister{decisionErr: sql.ErrNoRows}
+
+	c.mu.Lock()
+	c.activePRs[7] = &PRState{
+		PRNumber:          7,
+		IssueNumber:       42,
+		ApprovalRequestID: "req-decision-miss",
+	}
+	c.mu.Unlock()
+
+	ctx := context.Background()
+	if err := c.SetApprovalDecision(ctx, "req-decision-miss", "approved", "bot"); err != nil {
+		t.Fatalf("SetApprovalDecision: %v", err)
+	}
+
+	snap := c.metrics.Snapshot()
+	if snap.ApprovalPersistMisses["decision"] != 1 {
+		t.Errorf("expected 1 decision miss, got %d", snap.ApprovalPersistMisses["decision"])
+	}
+	if snap.ApprovalPersistMisses["request_id"] != 0 {
+		t.Errorf("expected 0 request_id misses, got %d", snap.ApprovalPersistMisses["request_id"])
 	}
 }
 

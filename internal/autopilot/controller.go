@@ -1070,7 +1070,11 @@ func (c *Controller) submitAsyncApprovalRequest(ctx context.Context, prState *PR
 	if c.memoryStore != nil {
 		if merr := c.memoryStore.SetApprovalRequestID(ctx, taskID, requestID); merr != nil {
 			c.log.Warn("failed to persist approval_request_id to executions",
-				"pr", prState.PRNumber, "task_id", taskID, "error", merr)
+				"pr", prState.PRNumber, "task_id", taskID, "request_id", requestID,
+				"op", "SetApprovalRequestID", "error", merr)
+			if errors.Is(merr, sql.ErrNoRows) {
+				c.metrics.RecordApprovalPersistMiss("request_id")
+			}
 		}
 	}
 
@@ -1118,9 +1122,18 @@ func (c *Controller) SetApprovalDecision(ctx context.Context, requestID string, 
 				_ = c.stateStore.SavePRState(pr)
 			}
 			if c.memoryStore != nil {
-				if merr := c.memoryStore.SetApprovalDecision(ctx, requestID, decision, by); merr != nil && !errors.Is(merr, sql.ErrNoRows) {
-					c.log.Warn("failed to persist approval decision to executions",
-						"pr", pr.PRNumber, "request_id", requestID, "error", merr)
+				if merr := c.memoryStore.SetApprovalDecision(ctx, requestID, decision, by); merr != nil {
+					taskIDStr := fmt.Sprintf("GH-%d", pr.IssueNumber)
+					if errors.Is(merr, sql.ErrNoRows) {
+						c.log.Warn("failed to persist approval decision to executions (no matching row)",
+							"pr", pr.PRNumber, "task_id", taskIDStr, "request_id", requestID,
+							"op", "SetApprovalDecision", "decision", decision, "error", merr)
+						c.metrics.RecordApprovalPersistMiss("decision")
+					} else {
+						c.log.Warn("failed to persist approval decision to executions",
+							"pr", pr.PRNumber, "task_id", taskIDStr, "request_id", requestID,
+							"op", "SetApprovalDecision", "decision", decision, "error", merr)
+					}
 				}
 			}
 			c.log.Info("approval decision applied to PR state",
