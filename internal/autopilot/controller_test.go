@@ -43,6 +43,66 @@ func TestNewController(t *testing.T) {
 	}
 }
 
+func TestNewController_ReleaserInit(t *testing.T) {
+	ghClient := github.NewClient(testutil.FakeGitHubToken)
+
+	enabledRelease := &ReleaseConfig{Enabled: true, Trigger: "on_merge"}
+	disabledRelease := &ReleaseConfig{Enabled: false}
+
+	tests := []struct {
+		name           string
+		globalRelease  *ReleaseConfig
+		envRelease     *ReleaseConfig
+		wantReleaser   bool
+	}{
+		{
+			name:          "global only enabled",
+			globalRelease: enabledRelease,
+			envRelease:    nil,
+			wantReleaser:  true,
+		},
+		{
+			name:          "env only enabled",
+			globalRelease: nil,
+			envRelease:    enabledRelease,
+			wantReleaser:  true,
+		},
+		{
+			name:          "both set — env wins (enabled)",
+			globalRelease: disabledRelease,
+			envRelease:    enabledRelease,
+			wantReleaser:  true,
+		},
+		{
+			name:          "neither set",
+			globalRelease: nil,
+			envRelease:    nil,
+			wantReleaser:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.Release = tt.globalRelease
+			if tt.envRelease != nil {
+				envCfg := &EnvironmentConfig{Release: tt.envRelease}
+				cfg.activeEnvName = "test"
+				cfg.activeEnvConfig = envCfg
+			}
+
+			c := NewController(cfg, ghClient, nil, "owner", "repo")
+
+			if tt.wantReleaser && c.releaser == nil {
+				t.Errorf("releaser should be non-nil")
+			}
+			if !tt.wantReleaser && c.releaser != nil {
+				t.Errorf("releaser should be nil")
+			}
+		})
+	}
+}
+
 func TestController_OnPRCreated(t *testing.T) {
 	ghClient := github.NewClient(testutil.FakeGitHubToken)
 	cfg := DefaultConfig()
