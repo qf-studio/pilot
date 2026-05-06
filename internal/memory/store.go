@@ -576,6 +576,39 @@ func (s *Store) SetApprovalDecision(ctx context.Context, requestID string, decis
 	})
 }
 
+// SetApprovalRequestID records the approval request ID on the most-recent execution
+// row for the given task. Must be called after SubmitApprovalRequest succeeds so
+// that SetApprovalDecision's WHERE clause can later match the row.
+// Returns sql.ErrNoRows when no execution row exists for taskID yet.
+func (s *Store) SetApprovalRequestID(ctx context.Context, taskID, requestID string) error {
+	if taskID == "" || requestID == "" {
+		return nil
+	}
+	return s.withRetry("SetApprovalRequestID", func() error {
+		result, err := s.db.ExecContext(ctx, `
+			UPDATE executions
+			SET approval_request_id = ?
+			WHERE id = (
+				SELECT id FROM executions
+				WHERE task_id = ?
+				ORDER BY created_at DESC
+				LIMIT 1
+			)
+		`, requestID, taskID)
+		if err != nil {
+			return fmt.Errorf("SetApprovalRequestID: %w", err)
+		}
+		rows, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("SetApprovalRequestID rows affected: %w", err)
+		}
+		if rows == 0 {
+			return sql.ErrNoRows
+		}
+		return nil
+	})
+}
+
 // GetRecentExecutions returns the most recent executions ordered by creation time.
 // The limit parameter specifies the maximum number of executions to return.
 func (s *Store) GetRecentExecutions(limit int) ([]*Execution, error) {

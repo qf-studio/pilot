@@ -2,6 +2,9 @@ package memory
 
 import (
 	"bytes"
+	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -1395,6 +1398,65 @@ func TestStore_ConnectionPoolSettings(t *testing.T) {
 	// MaxOpenConns should be 1
 	if stats.MaxOpenConnections != 1 {
 		t.Errorf("MaxOpenConnections = %d, want 1", stats.MaxOpenConnections)
+	}
+}
+
+func TestStore_SetApprovalRequestID_HappyPath(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	ctx := context.Background()
+
+	exec := &Execution{
+		ID:          "exec-approval-1",
+		TaskID:      "GH-999",
+		ProjectPath: "/proj",
+		Status:      "completed",
+	}
+	if err := store.SaveExecution(exec); err != nil {
+		t.Fatalf("SaveExecution: %v", err)
+	}
+
+	if err := store.SetApprovalRequestID(ctx, "GH-999", "req-abc"); err != nil {
+		t.Fatalf("SetApprovalRequestID: %v", err)
+	}
+
+	// Verify via SetApprovalDecision — it matches on approval_request_id.
+	if err := store.SetApprovalDecision(ctx, "req-abc", "approved", "tester"); err != nil {
+		t.Fatalf("SetApprovalDecision after SetApprovalRequestID: %v", err)
+	}
+
+	got, err := store.GetExecution("exec-approval-1")
+	if err != nil {
+		t.Fatalf("GetExecution: %v", err)
+	}
+	if got.ApprovalRequestID != "req-abc" {
+		t.Errorf("ApprovalRequestID = %q, want %q", got.ApprovalRequestID, "req-abc")
+	}
+	if got.ApprovalDecision != "approved" {
+		t.Errorf("ApprovalDecision = %q, want %q", got.ApprovalDecision, "approved")
+	}
+	if got.ApprovalDecisionBy != "tester" {
+		t.Errorf("ApprovalDecisionBy = %q, want %q", got.ApprovalDecisionBy, "tester")
+	}
+}
+
+func TestStore_SetApprovalRequestID_ZeroRowCase(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	ctx := context.Background()
+
+	// No execution row exists for this task.
+	err = store.SetApprovalRequestID(ctx, "GH-000", "req-xyz")
+	if !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("expected sql.ErrNoRows for missing task, got %v", err)
 	}
 }
 
