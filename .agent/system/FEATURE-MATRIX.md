@@ -1,6 +1,6 @@
 # Pilot Feature Matrix
 
-**Last Updated:** 2026-05-07 (v2.53.0)
+**Last Updated:** 2026-05-06 (v2.53.0)
 
 ## Legend
 
@@ -19,6 +19,7 @@
 |---------|--------|---------|-------------|------------|-------|
 | Task execution | ✅ | executor | `pilot task` | - | Claude Code subprocess |
 | Branch creation | ✅ | executor | `--no-branch` disables | - | Auto `pilot/TASK-XXX` |
+| Scoped commit staging | ✅ | executor | - | - | Excludes `.agent/`, `.claude/`, lock files etc. from auto-stage (GH-2797, v2.131.3) |
 | PR creation | ✅ | executor | `--create-pr` | - | Via `gh pr create` |
 | Progress display | ✅ | executor | - | - | Lipgloss visual bar |
 | Navigator detection | ✅ | executor | - | - | Auto-prefix if `.agent/` exists |
@@ -52,7 +53,6 @@
 | Navigator context bridge | ✅ | executor | - | - | Load project context (key files, components) into execution prompt (v1.18.0, GH-1387) |
 | Navigator docs auto-update | ✅ | executor | - | - | Auto-update feature matrix + knowledge capture post-execution (v1.19.0, GH-1388) |
 | No-decompose defense | ✅ | executor | - | - | `detectEpic` checks `no-decompose` label as defense-in-depth (v1.57.0, GH-1568) |
-| Parent label propagation | ✅ | executor | - | - | `filterPropagatableLabels` propagates `no-decompose`, `no-plan`, `area:*`, `priority:*`, `scope:*` from parent to sub-issues (v2.132.0, GH-2792) |
 | Incremental lint | ✅ | executor | - | - | `golangci-lint --new-from-rev` prevents unrelated lint blocking PRs (v1.57.0, GH-1569) |
 | Decompose for retry | ✅ | executor | - | `retry.decompose_on_kill` | Retry-with-decomposition on signal:killed (v2.10.0, GH-1729) |
 | LLM classifier gate fix | ✅ | executor | - | - | Word count gate conditional on classifier type (v2.10.0, GH-1728) |
