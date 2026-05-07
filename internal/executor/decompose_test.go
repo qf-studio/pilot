@@ -676,6 +676,62 @@ improving the overall design.`,
 	}
 }
 
+func TestHasNoDecomposePhrase(t *testing.T) {
+	tests := []struct {
+		name     string
+		title    string
+		body     string
+		expected bool
+	}{
+		// Each canonical phrase in body → true
+		{name: "single AC list in body", body: "This is a single AC list for the task.", expected: true},
+		{name: "do not decompose in body", body: "Please do not decompose this issue.", expected: true},
+		{name: "do not split in body", body: "do not split this task.", expected: true},
+		{name: "single Pilot issue in body", body: "This is a single Pilot issue.", expected: true},
+		{name: "keep as ... single in body", body: "Keep as one single task.", expected: true},
+		{name: "splitting this would in body", body: "Splitting this would fragment the changes.", expected: true},
+		{name: "HTML marker in body", body: "<!-- pilot:no-decompose -->", expected: true},
+		// Each canonical phrase in title → true
+		{name: "do not decompose in title", title: "do not decompose this", expected: true},
+		{name: "do not split in title", title: "do not split this", expected: true},
+		{name: "single Pilot issue in title", title: "single Pilot issue with multiple steps", expected: true},
+		{name: "splitting this would in title", title: "splitting this would break things", expected: true},
+		// Mixed-case → true
+		{name: "mixed case single AC list", body: "This has a Single AC List of criteria.", expected: true},
+		{name: "mixed case do not decompose", body: "DO NOT DECOMPOSE this task.", expected: true},
+		{name: "mixed case HTML marker", body: "<!-- Pilot:No-Decompose -->", expected: true},
+		// HTML marker with extra whitespace → true
+		{name: "HTML marker with spaces", body: "<!--  pilot:no-decompose  -->", expected: true},
+		// Phrase as unrelated substring → false
+		{name: "single word only", body: "This is a single change to a file.", expected: false},
+		{name: "split without do not", body: "We should split this into modules.", expected: false},
+		{name: "pilot issue without single", body: "This is a pilot issue for adding auth.", expected: false},
+		{name: "keep without single", body: "Keep as is without further changes.", expected: false},
+		// Empty → false
+		{name: "empty body", title: "", body: "", expected: false},
+		// Genuine multi-scope body without opt-out → false
+		{
+			name:     "genuine multi-scope body",
+			title:    "Refactor auth and payments",
+			body:     "Update internal/auth/handler.go and internal/payments/service.go to use the new middleware.",
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			task := &Task{
+				Title:       tt.title,
+				Description: tt.body,
+			}
+			got := HasNoDecomposePhrase(task)
+			if got != tt.expected {
+				t.Errorf("HasNoDecomposePhrase() = %v, want %v", got, tt.expected)
+			}
+		})
+	}
+}
+
 func TestBuildSubtaskDescription(t *testing.T) {
 	parent := &Task{
 		ID:    "GH-150",
