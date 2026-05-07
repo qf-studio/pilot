@@ -1,0 +1,55 @@
+name: Brew Tap Token Canary
+
+on:
+  schedule:
+    - cron: '0 8 * * *'  # daily at 08:00 UTC
+
+# No push trigger — canary only, not part of release runs.
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check HOMEBREW_TAP_GITHUB_TOKEN
+        env:
+          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            -H "Authorization: token $HOMEBREW_TAP_GITHUB_TOKEN" \
+            "https://api.github.com/repos/qf-studio/homebrew-pilot")
+
+          echo "Homebrew tap API status: $HTTP_STATUS"
+
+          if [ "$HTTP_STATUS" != "200" ]; then
+            TITLE="chore(release): brew tap token expired — rotate \`HOMEBREW_TAP_GITHUB_TOKEN\`"
+
+            # Find an existing open issue with this title (idempotent).
+            EXISTING=$(gh issue list \
+              --repo qf-studio/pilot \
+              --state open \
+              --search "brew tap token expired in:title" \
+              --json number,title \
+              --jq ".[] | select(.title == \"$TITLE\") | .number" | head -1)
+
+            if [ -n "$EXISTING" ]; then
+              echo "Issue #$EXISTING already open — adding status comment."
+              gh issue comment "$EXISTING" \
+                --repo qf-studio/pilot \
+                --body "Canary re-triggered $(date -u '+%Y-%m-%d'): token still invalid (HTTP $HTTP_STATUS). Rotate \`HOMEBREW_TAP_GITHUB_TOKEN\` in repo secrets."
+            else
+              echo "Creating new issue."
+              gh issue create \
+                --repo qf-studio/pilot \
+                --title "$TITLE" \
+                --body "Daily canary detected \`HOMEBREW_TAP_GITHUB_TOKEN\` is invalid (HTTP $HTTP_STATUS). Rotate the token in GitHub repo secrets before the next release attempt."
+            fi
+
+            exit 1
+          fi
+
+          echo "Token valid."

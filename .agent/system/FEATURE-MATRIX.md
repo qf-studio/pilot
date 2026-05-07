@@ -1,6 +1,6 @@
 # Pilot Feature Matrix
 
-**Last Updated:** 2026-05-07 (v2.53.0)
+**Last Updated:** 2026-05-06 (v2.53.0)
 
 ## Legend
 
@@ -82,7 +82,7 @@
 | Model routing | ✅ | executor | - | - | Haiku (trivial), Opus 4.6 (complex), Sonnet 4.6 (simple/medium) (v0.20.0) |
 | Effort routing | ✅ | executor | - | - | Map complexity to Claude thinking depth (v0.20.0) |
 | LLM intent classification | ✅ | adapters/telegram | - | - | Pattern-based intent detection for Telegram messages |
-| Intent judge (pipeline) | ✅ | executor | - | - | Wired into execution pipeline for task classification (v0.24.0); uses CC subprocess, no API key (v2.133.1, GH-2817) |
+| Intent judge (pipeline) | ✅ | executor | - | - | Wired into execution pipeline for task classification (v0.24.0) |
 | Research subagents | ✅ | executor | - | - | Haiku-powered parallel codebase exploration |
 | Drift detection | ✅ | executor | - | - | Collaboration alignment monitor with re-anchoring (v0.61.0) |
 | Workflow enforcement | ✅ | executor | - | - | Embedded autonomous execution instructions (v0.61.0) |
@@ -291,6 +291,8 @@
 | Gateway WebSocket | ✅ | gateway | - | - | Session management active in gateway |
 | Health checks | ✅ | health | `pilot doctor` | - | System validation, 32 unit tests |
 | Agent doc size check | ✅ | health | `pilot doctor` | - | Warns >500 lines, errors >1000 lines per .agent/*.md (GH-2462) |
+| Brew tap token health check | ✅ | health | `pilot doctor` | - | Warns when last release.yml failed at a homebrew step (GH-2614) |
+| Brew tap token canary | ✅ | ci | `.github/workflows/brew-tap-token-canary.yml` | - | Daily cron; opens issue on 401 from HOMEBREW_TAP_GITHUB_TOKEN (GH-2614) |
 | OpenCode backend | ✅ | executor | `--backend opencode` | `executor.backend` | HTTP/SSE alternative to Claude Code |
 | OpenAI-compatible direct backend | ✅ | executor | `type: openai-api` | `executor.openai` | Direct /v1/chat/completions for OpenAI, OpenRouter, Groq, Synthetic, vLLM, Ollama (v2.105.0, GH-2382) |
 | K8s health probes | ✅ | gateway | - | - | `/ready` and `/live` endpoints for Kubernetes (v0.37.0) |
