@@ -3620,3 +3620,117 @@ func TestRunner_PRCreate_HasCommits_ProceedsToCreate(t *testing.T) {
 		t.Errorf("Expected push failed error (guard passed), got: %q", result.Error)
 	}
 }
+
+// mockSequentialBackend returns results from a slice in order, cycling on the
+// last entry when the list is exhausted. Used to simulate first-exec vs retry.
+type mockSequentialBackend struct {
+	mu      sync.Mutex
+	results []*BackendResult
+	idx     int
+}
+
+func (m *mockSequentialBackend) Name() string      { return "mock-sequential" }
+func (m *mockSequentialBackend) IsAvailable() bool { return true }
+func (m *mockSequentialBackend) Execute(_ context.Context, _ ExecuteOptions) (*BackendResult, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	r := m.results[m.idx]
+	if m.idx < len(m.results)-1 {
+		m.idx++
+	}
+	return r, nil
+}
+
+// TestRunner_DECLINED_Path verifies that when the retry backend response contains
+// a DECLINED:<reason> marker, the runner sets result.Declined=true and
+// result.DeclinedReason without falling through to the generic no_changes error.
+// GH-2754.
+func TestRunner_DECLINED_Path(t *testing.T) {
+	const branch = "pilot/GH-7777"
+	dir := setupPRGuardRepo(t, branch, false) // no commits → triggers retry
+
+	const declinedMsg = "DECLINED: Feature does not exist in this codebase."
+	backend := &mockSequentialBackend{
+		results: []*BackendResult{
+			// First call: succeeds but commits nothing.
+			{Success: true, Output: "analysis complete"},
+			// Retry call: model signals decline.
+			{Success: true, Output: "", LastAssistantText: declinedMsg},
+		},
+	}
+	runner := NewRunnerWithBackend(backend)
+	runner.SetRecordingEnabled(false)
+	runner.skipPreflightChecks = true
+	runner.config = &BackendConfig{SkipSelfReview: true}
+
+	task := &Task{
+		ID:          "GH-7777",
+		Title:       "fix(executor): declined path test",
+		Description: "Verify DECLINED marker propagates to result",
+		ProjectPath: dir,
+		Branch:      branch,
+		CreatePR:    true,
+	}
+
+	result, err := runner.Execute(context.Background(), task)
+	if err != nil {
+		t.Fatalf("Execute() returned unexpected error: %v", err)
+	}
+	if result.Success {
+		t.Error("Expected result.Success=false on declined task")
+	}
+	if !result.Declined {
+		t.Error("Expected result.Declined=true, got false")
+	}
+	const wantReason = "Feature does not exist in this codebase."
+	if result.DeclinedReason != wantReason {
+		t.Errorf("result.DeclinedReason = %q, want %q", result.DeclinedReason, wantReason)
+	}
+	if !strings.HasPrefix(result.Error, "declined:") {
+		t.Errorf("result.Error should start with 'declined:', got %q", result.Error)
+	}
+}
+
+// TestRunner_NoChanges_NoDecline verifies that when the retry response contains
+// no DECLINED marker, the runner falls through to the generic no_changes error
+// and leaves result.Declined=false. GH-2754.
+func TestRunner_NoChanges_NoDecline(t *testing.T) {
+	const branch = "pilot/GH-7776"
+	dir := setupPRGuardRepo(t, branch, false) // no commits → triggers retry
+
+	backend := &mockSequentialBackend{
+		results: []*BackendResult{
+			// First call: succeeds but commits nothing.
+			{Success: true, Output: "analysis complete"},
+			// Retry call: plain refusal without DECLINED marker.
+			{Success: true, Output: "", LastAssistantText: "I analyzed the code but could not determine what to change."},
+		},
+	}
+	runner := NewRunnerWithBackend(backend)
+	runner.SetRecordingEnabled(false)
+	runner.skipPreflightChecks = true
+	runner.config = &BackendConfig{SkipSelfReview: true}
+
+	task := &Task{
+		ID:          "GH-7776",
+		Title:       "fix(executor): no-decline fallthrough test",
+		Description: "Verify no_changes error when DECLINED marker absent",
+		ProjectPath: dir,
+		Branch:      branch,
+		CreatePR:    true,
+	}
+
+	result, err := runner.Execute(context.Background(), task)
+	if err != nil {
+		t.Fatalf("Execute() returned unexpected error: %v", err)
+	}
+	if result.Success {
+		t.Error("Expected result.Success=false on no-changes task")
+	}
+	if result.Declined {
+		t.Error("Expected result.Declined=false when no DECLINED marker present")
+	}
+	if !strings.HasPrefix(result.Error, "no_changes:") {
+		t.Errorf("Expected no_changes error, got %q", result.Error)
+	}
+}

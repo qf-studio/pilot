@@ -129,6 +129,22 @@ func (n *Notifier) NotifyTaskFailed(ctx context.Context, owner, repo string, iss
 	return nil
 }
 
+// NotifyTaskDeclined posts a comment and applies the pilot-needs-clarification
+// label when the model explicitly declined the task as unactionable. GH-2754.
+func (n *Notifier) NotifyTaskDeclined(ctx context.Context, owner, repo string, issueNum int, reason string) error {
+	if err := n.client.RemoveLabel(ctx, owner, repo, issueNum, LabelInProgress); err != nil {
+		_ = err // label may not exist
+	}
+	if err := n.client.AddLabels(ctx, owner, repo, issueNum, []string{LabelNeedsClari}); err != nil {
+		return fmt.Errorf("failed to add needs-clarification label: %w", err)
+	}
+	comment := fmt.Sprintf("🤔 **Pilot needs clarification**\n\n**Reason**: %s\n\n_The model determined this task cannot be implemented as specified. Please clarify the requirements and remove the `pilot-needs-clarification` label to retry._", reason)
+	if _, err := n.client.AddComment(ctx, owner, repo, issueNum, comment); err != nil {
+		return fmt.Errorf("failed to add declined comment: %w", err)
+	}
+	return nil
+}
+
 // LinkPR adds a comment linking the created PR
 func (n *Notifier) LinkPR(ctx context.Context, owner, repo string, issueNum int, prNumber int, prURL string) error {
 	comment := fmt.Sprintf("🔗 **Pull Request Created**: #%d\n\n%s\n\n_This PR implements the changes for this issue._", prNumber, prURL)

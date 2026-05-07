@@ -380,6 +380,17 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 					logGitHubAPIError("AddComment", parts[0], parts[1], issue.Number, err)
 				}
 			}
+		} else if hr.Result != nil && hr.Result.Declined {
+			// GH-2754: model explicitly declined — apply needs-clarification label
+			// instead of pilot-failed so the poller doesn't auto-retry.
+			if err := client.AddLabels(ctx, parts[0], parts[1], issue.Number, []string{github.LabelNeedsClari}); err != nil {
+				logGitHubAPIError("AddLabels", parts[0], parts[1], issue.Number, err)
+			}
+			syncBoardStatus(ctx, boardSync, issue.NodeID, boardStatuses.Failed)
+			comment := fmt.Sprintf("🤔 **Pilot needs clarification**\n\n**Reason**: %s\n\n_The model determined this task cannot be implemented as specified. Please clarify the requirements and remove the `pilot-needs-clarification` label to retry._", hr.Result.DeclinedReason)
+			if _, err := client.AddComment(ctx, parts[0], parts[1], issue.Number, comment); err != nil {
+				logGitHubAPIError("AddComment", parts[0], parts[1], issue.Number, err)
+			}
 		} else if hr.Result != nil {
 			// GH-2363: Title-guard escalation already posted its own structured
 			// comment and added pilot-failed + pilot-title-rejected. Skip the

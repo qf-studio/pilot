@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -158,6 +159,19 @@ func handleIssueGeneric(ctx context.Context, deps HandlerDeps, info IssueInfo, t
 				execErr = fmt.Errorf("failed waiting for execution: %w", waitErr)
 			} else if exec.Status == "failed" {
 				execErr = fmt.Errorf("execution failed: %s", exec.Error)
+			} else if exec.Status == "declined" {
+				// GH-2754: propagate declined state so adapter handlers can apply
+				// pilot-needs-clarification instead of pilot-failed.
+				declinedReason := strings.TrimPrefix(exec.Error, "declined: ")
+				result = &executor.ExecutionResult{
+					TaskID:         task.ID,
+					Success:        false,
+					Output:         exec.Output,
+					Error:          exec.Error,
+					Declined:       true,
+					DeclinedReason: declinedReason,
+					Duration:       time.Duration(exec.DurationMs) * time.Millisecond,
+				}
 			} else {
 				result = &executor.ExecutionResult{
 					TaskID:    task.ID,

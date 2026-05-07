@@ -484,7 +484,7 @@ func (d *Dispatcher) WaitForExecution(ctx context.Context, execID string, pollIn
 
 			// Check if terminal state
 			switch exec.Status {
-			case "completed", "failed", "cancelled":
+			case "completed", "failed", "cancelled", "declined":
 				return exec, nil
 			}
 		}
@@ -668,16 +668,28 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 			// Emit progress callback for task failed
 			w.runner.EmitProgress(exec.TaskID, "Failed", 100, fmt.Sprintf("Execution error: %s", truncateForLog(execErr.Error(), 60)))
 		} else if !result.Success {
-			w.log.Warn("Task completed with failure",
-				slog.String("task_id", exec.TaskID),
-				slog.String("error", result.Error),
-				slog.Duration("duration", duration),
-			)
-			if err := w.store.UpdateExecutionStatus(exec.ID, "failed", result.Error); err != nil {
-				w.log.Error("Failed to update status to failed", slog.Any("error", err))
+			if result.Declined {
+				// GH-2754: model explicitly declined the task as unactionable.
+				w.log.Info("Task declined by model",
+					slog.String("task_id", exec.TaskID),
+					slog.String("reason", result.DeclinedReason),
+					slog.Duration("duration", duration),
+				)
+				if err := w.store.UpdateExecutionStatus(exec.ID, "declined", result.Error); err != nil {
+					w.log.Error("Failed to update status to declined", slog.Any("error", err))
+				}
+				w.runner.EmitProgress(exec.TaskID, "Declined", 100, fmt.Sprintf("Task declined: %s", truncateForLog(result.DeclinedReason, 60)))
+			} else {
+				w.log.Warn("Task completed with failure",
+					slog.String("task_id", exec.TaskID),
+					slog.String("error", result.Error),
+					slog.Duration("duration", duration),
+				)
+				if err := w.store.UpdateExecutionStatus(exec.ID, "failed", result.Error); err != nil {
+					w.log.Error("Failed to update status to failed", slog.Any("error", err))
+				}
+				w.runner.EmitProgress(exec.TaskID, "Failed", 100, fmt.Sprintf("Task failed: %s", truncateForLog(result.Error, 60)))
 			}
-			// Emit progress callback for task failed
-			w.runner.EmitProgress(exec.TaskID, "Failed", 100, fmt.Sprintf("Task failed: %s", truncateForLog(result.Error, 60)))
 		} else {
 			w.log.Info("Task completed successfully",
 				slog.String("task_id", exec.TaskID),
