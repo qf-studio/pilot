@@ -266,6 +266,11 @@ type BackendConfig struct {
 	// IntentJudge contains intent alignment settings for diff-vs-ticket verification
 	IntentJudge *IntentJudgeConfig `yaml:"intent_judge,omitempty"`
 
+	// PreFlightJudge contains pre-flight issue quality judge settings (GH-2802).
+	// When enabled, each issue is evaluated by Haiku before dispatch; vague/question/
+	// conflicting/stale/out-of-scope issues are declined without burning a worker slot.
+	PreFlightJudge *PreFlightJudgeConfig `yaml:"pre_flight_judge,omitempty"`
+
 	// Navigator contains Navigator auto-init settings
 	Navigator *NavigatorConfig `yaml:"navigator,omitempty"`
 
@@ -537,6 +542,25 @@ func DefaultIntentJudgeConfig() *IntentJudgeConfig {
 		Model:        "claude-haiku-4-5-20251001",
 		MaxDiffChars: 8000,
 	}
+}
+
+// PreFlightJudgeConfig configures the pre-flight issue quality judge (GH-2802).
+// When enabled, Haiku evaluates each issue before dispatch and declines
+// vague/question/conflicting/stale/out-of-scope issues without burning a worker slot.
+//
+// Example YAML configuration:
+//
+//	executor:
+//	  pre_flight_judge:
+//	    enabled: true
+//	    api_key: "${ANTHROPIC_API_KEY}"
+type PreFlightJudgeConfig struct {
+	// Enabled controls whether the pre-flight judge runs before dispatch. Default: false.
+	Enabled bool `yaml:"enabled"`
+
+	// APIKey is the Anthropic API key for the pre-flight judge.
+	// Falls back to ANTHROPIC_API_KEY env var when empty.
+	APIKey string `yaml:"api_key,omitempty"`
 }
 
 // ClaudeCodeConfig contains Claude Code backend configuration.

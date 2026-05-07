@@ -51,6 +51,28 @@ type ExecutionChecker interface {
 	HasCompletedExecution(taskID, projectPath string) (bool, error)
 }
 
+// Verdict is the poller-side result of a pre-flight judgment.
+// Mirrors executor.PreFlightVerdict but keeps the poller decoupled from the executor
+// package to avoid import cycles.
+type Verdict struct {
+	Accepted   bool
+	Decision   string
+	Reason     string
+	Confidence float64
+}
+
+// PreFlightJudger evaluates issues before dispatch to avoid burning worker slots on
+// vague, ambiguous, or otherwise unactionable issues (GH-2802).
+// Implemented by a shim in cmd/pilot/main.go that wraps *executor.IntentJudge.
+type PreFlightJudger interface {
+	JudgeIssue(ctx context.Context, title, body, repoContext string) (Verdict, error)
+}
+
+// ExecutionSaver persists pre-flight rejection records for observability.
+type ExecutionSaver interface {
+	SaveDeclinedExecution(taskID, projectPath, status, reason string) error
+}
+
 // IssueResult is returned by the issue handler with PR information
 type IssueResult struct {
 	Success    bool
@@ -121,6 +143,11 @@ type Poller struct {
 	// when pilot-done label failed to apply.
 	execChecker ExecutionChecker
 	projectPath string
+
+	// GH-2802: Pre-flight judge evaluates issues before dispatch.
+	// nil means disabled (config flag executor.pre_flight_judge.enabled=false).
+	preFlightJudge PreFlightJudger
+	execSaver      ExecutionSaver
 }
 
 // PollerOption configures a Poller
@@ -241,6 +268,21 @@ func WithMaxConcurrent(n int) PollerOption {
 			n = 1
 		}
 		p.maxConcurrent = n
+	}
+}
+
+// WithPreFlightJudge sets the pre-flight issue quality judge (GH-2802).
+// Pass nil to disable (same as not calling this option).
+func WithPreFlightJudge(judge PreFlightJudger) PollerOption {
+	return func(p *Poller) {
+		p.preFlightJudge = judge
+	}
+}
+
+// WithExecutionSaver sets the store used to persist pre-flight rejection records.
+func WithExecutionSaver(saver ExecutionSaver) PollerOption {
+	return func(p *Poller) {
+		p.execSaver = saver
 	}
 }
 
@@ -437,6 +479,23 @@ func (p *Poller) startSequential(ctx context.Context) {
 			slog.Int("number", issue.Number),
 			slog.String("title", issue.Title),
 		)
+
+		// GH-2802: Pre-flight judge — evaluate issue quality before burning a worker slot.
+		if p.preFlightJudge != nil {
+			verdict, pfErr := p.preFlightJudge.JudgeIssue(ctx, issue.Title, issue.Body, "")
+			if pfErr != nil {
+				p.logger.Warn("pre-flight judge error (fail-open)",
+					slog.Int("issue", issue.Number),
+					slog.Any("error", pfErr))
+			} else if !verdict.Accepted {
+				p.logger.Info("pre-flight rejected issue",
+					slog.Int("issue", issue.Number),
+					slog.String("decision", verdict.Decision),
+					slog.String("reason", verdict.Reason))
+				p.handlePreFlightReject(ctx, issue, verdict)
+				continue // skip dispatch; label removal re-triggers on next poll
+			}
+		}
 
 		result, err := p.processIssueSequential(ctx, issue)
 		if err != nil {
@@ -984,6 +1043,23 @@ func (p *Poller) checkForNewIssues(ctx context.Context) {
 			)
 		}
 
+		// GH-2802: Pre-flight judge — evaluate issue quality before burning a worker slot.
+		if p.preFlightJudge != nil {
+			verdict, pfErr := p.preFlightJudge.JudgeIssue(ctx, issue.Title, issue.Body, "")
+			if pfErr != nil {
+				p.logger.Warn("pre-flight judge error (fail-open)",
+					slog.Int("issue", issue.Number),
+					slog.Any("error", pfErr))
+			} else if !verdict.Accepted {
+				p.logger.Info("pre-flight rejected issue",
+					slog.Int("issue", issue.Number),
+					slog.String("decision", verdict.Decision),
+					slog.String("reason", verdict.Reason))
+				p.handlePreFlightReject(ctx, issue, verdict)
+				continue // skip markProcessed so label removal re-triggers dispatch
+			}
+		}
+
 		// Mark processed immediately to prevent duplicate dispatch on next tick
 		p.markProcessed(issue.Number)
 
@@ -1074,6 +1150,44 @@ func (p *Poller) unmarkProcessed(number int) {
 	if p.processedStore != nil {
 		if err := p.processedStore.UnmarkIssueProcessed(number); err != nil {
 			p.logger.Warn("Failed to unmark processed issue", slog.Int("issue", number), slog.Any("error", err))
+		}
+	}
+}
+
+// handlePreFlightReject handles an issue rejected by the pre-flight judge (GH-2802):
+//   - adds pilot-needs-clarification label so the issue is filtered on subsequent polls
+//   - posts a comment explaining the decision and how to re-trigger
+//   - saves a declined-preflight execution record if an ExecutionSaver is wired
+//
+// The caller must NOT call markProcessed after this so that label removal re-triggers dispatch.
+func (p *Poller) handlePreFlightReject(ctx context.Context, issue *Issue, verdict Verdict) {
+	taskID := fmt.Sprintf("GH-%d", issue.Number)
+
+	if err := p.client.AddLabels(ctx, p.owner, p.repo, issue.Number, []string{LabelNeedsClarification}); err != nil {
+		p.logger.Warn("pre-flight: failed to add needs-clarification label",
+			slog.Int("issue", issue.Number),
+			slog.Any("error", err))
+	}
+
+	comment := fmt.Sprintf(
+		"**Pre-flight check declined this issue.**\n\n"+
+			"**Decision:** `%s`\n"+
+			"**Reason:** %s\n"+
+			"**Confidence:** %.0f%%\n\n"+
+			"To re-trigger: edit the issue to address the above, then remove the `%s` label.",
+		verdict.Decision, verdict.Reason, verdict.Confidence*100, LabelNeedsClarification,
+	)
+	if _, err := p.client.AddComment(ctx, p.owner, p.repo, issue.Number, comment); err != nil {
+		p.logger.Warn("pre-flight: failed to post rejection comment",
+			slog.Int("issue", issue.Number),
+			slog.Any("error", err))
+	}
+
+	if p.execSaver != nil {
+		if err := p.execSaver.SaveDeclinedExecution(taskID, p.projectPath, "declined-preflight", verdict.Reason); err != nil {
+			p.logger.Warn("pre-flight: failed to save execution record",
+				slog.Int("issue", issue.Number),
+				slog.Any("error", err))
 		}
 	}
 }
