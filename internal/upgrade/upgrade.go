@@ -412,7 +412,9 @@ func (u *Upgrader) installBinary(downloadPath string) error {
 // installToBinaryPath writes a new binary beside the current executable and
 // swaps it into place once the write completes. This avoids truncating a
 // running executable on Unix-like systems, which returns ETXTBSY.
-func (u *Upgrader) installToBinaryPath(write func(io.Writer) error) error {
+// expectedSize is the number of bytes the write callback must produce; pass 0
+// to skip the check (no caller currently needs this).
+func (u *Upgrader) installToBinaryPath(write func(io.Writer) error, expectedSize int64) error {
 	dir := filepath.Dir(u.binaryPath)
 	tempFile, err := os.CreateTemp(dir, ".pilot-install-*")
 	if err != nil {
@@ -443,6 +445,16 @@ func (u *Upgrader) installToBinaryPath(write func(io.Writer) error) error {
 		return fmt.Errorf("failed to close binary: %w", err)
 	}
 	closed = true
+
+	if expectedSize > 0 {
+		fi, err := os.Stat(tempPath)
+		if err != nil {
+			return fmt.Errorf("failed to stat written binary: %w", err)
+		}
+		if fi.Size() != expectedSize {
+			return fmt.Errorf("truncated write: wrote %d bytes, expected %d", fi.Size(), expectedSize)
+		}
+	}
 
 	if runtime.GOOS == "windows" {
 		if err := os.Remove(u.binaryPath); err != nil && !os.IsNotExist(err) {
@@ -525,7 +537,7 @@ func (u *Upgrader) installFromTarGz(tarPath string) error {
 					return fmt.Errorf("failed to extract binary: %w", err)
 				}
 				return nil
-			})
+			}, header.Size)
 		}
 	}
 }
@@ -557,7 +569,7 @@ func (u *Upgrader) installFromZip(zipPath string) error {
 					return fmt.Errorf("failed to extract binary: %w", err)
 				}
 				return nil
-			})
+			}, int64(f.UncompressedSize64))
 		}
 	}
 
@@ -572,12 +584,17 @@ func (u *Upgrader) installDirectBinary(srcPath string) error {
 	}
 	defer func() { _ = src.Close() }()
 
+	srcInfo, err := src.Stat()
+	if err != nil {
+		return fmt.Errorf("failed to stat source binary: %w", err)
+	}
+
 	return u.installToBinaryPath(func(dst io.Writer) error {
 		if _, err := io.Copy(dst, src); err != nil {
 			return fmt.Errorf("failed to copy binary: %w", err)
 		}
 		return nil
-	})
+	}, srcInfo.Size())
 }
 
 // compareVersions compares two semantic versions
