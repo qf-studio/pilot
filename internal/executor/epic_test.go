@@ -1971,3 +1971,182 @@ func TestCreateSubIssuesViaAdapter_InjectsAutopilotMetaMarker(t *testing.T) {
 		t.Errorf("human-readable parent prose missing from adapter body; body = %q", body)
 	}
 }
+
+func TestFilterPropagatableLabels(t *testing.T) {
+	tests := []struct {
+		name   string
+		input  []string
+		want   []string
+	}{
+		{
+			name:  "empty input",
+			input: []string{},
+			want:  []string{},
+		},
+		{
+			name:  "pilot and no-decompose: keeps no-decompose",
+			input: []string{"pilot", "no-decompose"},
+			want:  []string{"no-decompose"},
+		},
+		{
+			name:  "all lifecycle labels blocked",
+			input: []string{"pilot", "pilot-done", "pilot-failed"},
+			want:  []string{},
+		},
+		{
+			name:  "mixed case normalized",
+			input: []string{"No-Decompose"},
+			want:  []string{"no-decompose"},
+		},
+		{
+			name:  "prefix matches propagate",
+			input: []string{"area:executor", "priority:p1", "scope:autopilot", "random-label"},
+			want:  []string{"area:executor", "priority:p1", "scope:autopilot"},
+		},
+		{
+			name:  "whitespace trimmed",
+			input: []string{"  no-decompose  "},
+			want:  []string{"no-decompose"},
+		},
+		{
+			name:  "empty strings skipped",
+			input: []string{"", "  ", "no-decompose"},
+			want:  []string{"no-decompose"},
+		},
+		{
+			name:  "all lifecycle variants blocked",
+			input: []string{"pilot", "pilot-done", "pilot-failed", "pilot-in-progress", "pilot-superseded", "pilot-needs-clarification"},
+			want:  []string{},
+		},
+		{
+			name:  "no-plan propagates",
+			input: []string{"pilot", "no-plan"},
+			want:  []string{"no-plan"},
+		},
+		{
+			name:  "mixed allow and block",
+			input: []string{"pilot", "no-decompose", "area:executor", "pilot-done", "priority:p1", "scope:autopilot", "random-label"},
+			want:  []string{"no-decompose", "area:executor", "priority:p1", "scope:autopilot"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := filterPropagatableLabels(tc.input)
+			if len(got) != len(tc.want) {
+				t.Fatalf("filterPropagatableLabels(%v) = %v, want %v", tc.input, got, tc.want)
+			}
+			for i := range tc.want {
+				if got[i] != tc.want[i] {
+					t.Errorf("index %d: got %q, want %q", i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}
+
+// TestCreateSubIssuesViaGitHub_PropagatesNoDecomposeLabel verifies that a parent
+// carrying the no-decompose label causes createSubIssuesViaGitHub to pass
+// --label no-decompose to the gh CLI in addition to --label pilot.
+func TestCreateSubIssuesViaGitHub_PropagatesNoDecomposeLabel(t *testing.T) {
+	argsFile := filepath.Join(t.TempDir(), "captured_args.txt")
+
+	fakeBin := t.TempDir()
+	script := filepath.Join(fakeBin, "gh")
+	// Write all CLI arguments to argsFile, one per line, then emit a valid URL.
+	scriptContent := fmt.Sprintf(`#!/bin/sh
+for arg in "$@"; do printf '%%s\n' "$arg"; done > %q
+echo https://github.com/owner/repo/issues/99
+`, argsFile)
+	if err := os.WriteFile(script, []byte(scriptContent), 0o755); err != nil {
+		t.Fatalf("write fake gh: %v", err)
+	}
+	origPATH := os.Getenv("PATH")
+	t.Setenv("PATH", fakeBin+string(filepath.ListSeparator)+origPATH)
+
+	runner := NewRunner()
+	plan := &EpicPlan{
+		ParentTask: &Task{
+			ID:            "GH-99",
+			SourceRepo:    "owner/repo",
+			SourceIssueID: "99",
+			Labels:        []string{"pilot", "no-decompose"},
+		},
+		Subtasks: []PlannedSubtask{
+			{Title: "feat(epic): implement sub-task", Description: "Do the thing.", Order: 1},
+		},
+	}
+
+	ctx := context.Background()
+	created, err := runner.CreateSubIssues(ctx, plan, t.TempDir())
+	if err != nil {
+		t.Fatalf("CreateSubIssues failed: %v", err)
+	}
+	if len(created) != 1 {
+		t.Fatalf("expected 1 created issue, got %d", len(created))
+	}
+
+	raw, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatalf("read captured args: %v", err)
+	}
+	args := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
+
+	foundPilot, foundNoDecompose := false, false
+	for i, a := range args {
+		if a == "--label" && i+1 < len(args) {
+			switch args[i+1] {
+			case "pilot":
+				foundPilot = true
+			case "no-decompose":
+				foundNoDecompose = true
+			}
+		}
+	}
+	if !foundPilot {
+		t.Errorf("gh args missing --label pilot; args = %v", args)
+	}
+	if !foundNoDecompose {
+		t.Errorf("gh args missing --label no-decompose; args = %v", args)
+	}
+}
+
+// TestCreateSubIssuesViaAdapter_PropagatesParentLabels verifies that the adapter
+// path passes propagatable parent labels (area:foo) to CreateIssue alongside pilot.
+func TestCreateSubIssuesViaAdapter_PropagatesParentLabels(t *testing.T) {
+	mock := &mockSubIssueCreator{
+		Returns: []mockCreateIssueReturn{
+			{Identifier: "APP-77", URL: "https://linear.app/team/issue/APP-77"},
+		},
+	}
+
+	runner := NewRunner()
+	runner.SetSubIssueCreator(mock)
+
+	plan := &EpicPlan{
+		ParentTask: &Task{
+			ID:            "APP-50",
+			SourceAdapter: "linear",
+			SourceIssueID: "APP-50",
+			Title:         "Parent epic",
+			Labels:        []string{"pilot", "area:foo"},
+		},
+		Subtasks: []PlannedSubtask{
+			{Title: "feat(api): add endpoint", Description: "Implement endpoint.", Order: 1},
+		},
+	}
+
+	ctx := context.Background()
+	if _, err := runner.CreateSubIssues(ctx, plan, ""); err != nil {
+		t.Fatalf("CreateSubIssues failed: %v", err)
+	}
+	if len(mock.Called) != 1 {
+		t.Fatalf("expected 1 CreateIssue call, got %d", len(mock.Called))
+	}
+
+	gotLabels := mock.Called[0].Labels
+	wantLabels := []string{"pilot", "area:foo"}
+	if !reflect.DeepEqual(gotLabels, wantLabels) {
+		t.Errorf("CreateIssue labels = %v, want %v", gotLabels, wantLabels)
+	}
+}
