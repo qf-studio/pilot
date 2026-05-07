@@ -483,7 +483,7 @@ func TestInstallToBinaryPath_CleansUpTempOnWriterError(t *testing.T) {
 	err := u.installToBinaryPath(func(out io.Writer) error {
 		_, _ = out.Write([]byte("partial"))
 		return errBoom
-	})
+	}, 0)
 	if err == nil {
 		t.Fatal("installToBinaryPath() expected error, got nil")
 	}
@@ -499,6 +499,41 @@ func TestInstallToBinaryPath_CleansUpTempOnWriterError(t *testing.T) {
 		t.Errorf("content = %q, want %q", got, "old-binary")
 	}
 
+	matches, globErr := filepath.Glob(filepath.Join(dir, ".pilot-install-*"))
+	if globErr != nil {
+		t.Fatalf("glob temp files: %v", globErr)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("temp install files left behind: %v", matches)
+	}
+}
+
+func TestInstallToBinaryPath_TruncatedWrite(t *testing.T) {
+	dir := t.TempDir()
+	binPath := filepath.Join(dir, "pilot")
+	if err := os.WriteFile(binPath, []byte("original-binary"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	u := &Upgrader{binaryPath: binPath}
+	err := u.installToBinaryPath(func(out io.Writer) error {
+		_, _ = out.Write([]byte("short"))
+		return nil
+	}, 100)
+	if err == nil {
+		t.Fatal("installToBinaryPath() expected error for truncated write, got nil")
+	}
+
+	// Original binary must be preserved.
+	got, readErr := os.ReadFile(binPath)
+	if readErr != nil {
+		t.Fatalf("failed to read existing binary: %v", readErr)
+	}
+	if string(got) != "original-binary" {
+		t.Errorf("content = %q, want %q", got, "original-binary")
+	}
+
+	// Temp file must be cleaned up.
 	matches, globErr := filepath.Glob(filepath.Join(dir, ".pilot-install-*"))
 	if globErr != nil {
 		t.Fatalf("glob temp files: %v", globErr)
