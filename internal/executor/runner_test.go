@@ -3770,3 +3770,56 @@ func TestRunner_NoChanges_NoDecline(t *testing.T) {
 		t.Errorf("Expected no_changes error, got: %q", result.Error)
 	}
 }
+
+// TestExecute_PopulatesEffortAndComplexityOnResult verifies that after Execute() returns,
+// the ExecutionResult contains non-empty EffortLevel and ComplexityLevel when model routing
+// is enabled. GH-2807: these values flow to the executions DB via dispatcher.
+func TestExecute_PopulatesEffortAndComplexityOnResult(t *testing.T) {
+	projectDir := t.TempDir()
+
+	backend := &mockSelfReviewBackend{output: "done"}
+	runner := NewRunnerWithBackend(backend)
+	runner.skipPreflightChecks = true
+	// Enable effort routing so SelectEffort returns a non-empty string.
+	runner.modelRouter = NewModelRouterWithEffort(
+		&ModelRoutingConfig{
+			Enabled: true,
+			Trivial: "claude-haiku",
+			Simple:  "claude-sonnet-4-6",
+			Medium:  "claude-sonnet-4-6",
+			Complex: "claude-sonnet-4-6",
+		},
+		DefaultTimeoutConfig(),
+		&EffortRoutingConfig{
+			Enabled: true,
+			Trivial: "low",
+			Simple:  "medium",
+			Medium:  "medium",
+			Complex: "high",
+		},
+	)
+
+	task := &Task{
+		ID:          "RT-EFFORT-001",
+		Title:       "Fix typo in comment",
+		Description: "Fix typo in comment",
+		ProjectPath: projectDir,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	result, err := runner.Execute(ctx, task)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+	if !result.Success {
+		t.Fatalf("Execute() not successful: %s", result.Error)
+	}
+	if result.ComplexityLevel == "" {
+		t.Error("result.ComplexityLevel is empty; want a non-empty tier string")
+	}
+	if result.EffortLevel == "" {
+		t.Error("result.EffortLevel is empty; want a non-empty effort string (routing was enabled)")
+	}
+}

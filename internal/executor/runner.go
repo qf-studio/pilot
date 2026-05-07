@@ -257,6 +257,10 @@ type ExecutionResult struct {
 	LinesRemoved int
 	// ModelName is the Claude model used for execution.
 	ModelName string
+	// EffortLevel is the API effort level used (e.g., "low", "medium", "high"). GH-2807.
+	EffortLevel string
+	// ComplexityLevel is the detected task complexity tier (e.g., "trivial", "simple", "medium", "complex"). GH-2807.
+	ComplexityLevel string
 	// QualityGates contains the results of quality gate checks (if enabled)
 	QualityGates *QualityGatesResult
 	// IsEpic indicates this result is from epic planning (not execution)
@@ -1729,8 +1733,10 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 
 	// Build execution result
 	result := &ExecutionResult{
-		TaskID:   task.ID,
-		Duration: duration,
+		TaskID:          task.ID,
+		Duration:        duration,
+		EffortLevel:     selectedEffort,
+		ComplexityLevel: complexity.String(),
 	}
 
 	if err != nil {

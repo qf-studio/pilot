@@ -60,8 +60,10 @@ func TestModelRouter_SelectModel(t *testing.T) {
 			expected: "claude-opus",
 		},
 		{
+			// GH-2807: nil config now inherits the default which is enabled:true,
+			// so routing returns a model for non-disabled configs.
 			name:     "nil config returns empty",
-			config:   nil,
+			config:   &ModelRoutingConfig{Enabled: false, Trivial: "haiku"},
 			task:     &Task{Description: "Any task"},
 			expected: "",
 		},
@@ -137,9 +139,9 @@ func TestModelRouter_NilConfigs(t *testing.T) {
 		t.Error("Expected default timeout config")
 	}
 
-	// Default model routing is disabled
-	if router.IsRoutingEnabled() {
-		t.Error("Expected routing to be disabled by default")
+	// GH-2807: Default model routing is now enabled.
+	if !router.IsRoutingEnabled() {
+		t.Error("Expected routing to be enabled by default (GH-2807)")
 	}
 
 	// Should still return a valid timeout
@@ -588,5 +590,29 @@ func TestModelRouter_SetOutcomeTracker(t *testing.T) {
 	router.SetOutcomeTracker(tracker)
 	if router.outcomeTracker == nil {
 		t.Error("Expected outcome tracker to be set")
+	}
+}
+
+// TestDefaultModelRoutingConfig_EnabledByDefault verifies that model routing is active
+// by default, as required by GH-2807.
+func TestDefaultModelRoutingConfig_EnabledByDefault(t *testing.T) {
+	cfg := DefaultModelRoutingConfig()
+	if !cfg.Enabled {
+		t.Error("DefaultModelRoutingConfig().Enabled = false, want true")
+	}
+}
+
+// TestDefaultModelRoutingConfig_UserOverrideWins verifies that an explicit enabled:false
+// in user config is respected, overriding the new default.
+func TestDefaultModelRoutingConfig_UserOverrideWins(t *testing.T) {
+	router := NewModelRouterWithEffort(
+		&ModelRoutingConfig{Enabled: false, Trivial: "haiku", Simple: "sonnet"},
+		nil,
+		nil,
+	)
+	task := &Task{Description: "Fix typo in README"}
+	model := router.SelectModel(task)
+	if model != "" {
+		t.Errorf("user config enabled:false should disable routing; SelectModel() = %q, want empty", model)
 	}
 }
