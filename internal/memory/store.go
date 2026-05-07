@@ -1639,11 +1639,12 @@ func (s *Store) GetLifetimeTokens() (*LifetimeTokens, error) {
 	return &lt, nil
 }
 
-// LifetimeTaskCounts holds cumulative succeeded/failed counts from all executions.
+// LifetimeTaskCounts holds cumulative succeeded/failed/declined counts from all executions.
 type LifetimeTaskCounts struct {
 	Total     int
 	Succeeded int
 	Failed    int
+	Declined  int
 }
 
 // GetLifetimeTaskCounts returns cumulative task counts across all executions.
@@ -1653,12 +1654,13 @@ func (s *Store) GetLifetimeTaskCounts() (*LifetimeTaskCounts, error) {
 		SELECT
 			COUNT(*),
 			COALESCE(SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END), 0),
-			COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0)
+			COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN status = 'declined' THEN 1 ELSE 0 END), 0)
 		FROM executions
 	`)
 
 	var tc LifetimeTaskCounts
-	if err := row.Scan(&tc.Total, &tc.Succeeded, &tc.Failed); err != nil {
+	if err := row.Scan(&tc.Total, &tc.Succeeded, &tc.Failed, &tc.Declined); err != nil {
 		return nil, fmt.Errorf("failed to get lifetime task counts: %w", err)
 	}
 	return &tc, nil

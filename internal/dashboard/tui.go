@@ -38,7 +38,7 @@ var sparkBlocks = []rune{' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '
 type MetricsCardData struct {
 	TotalTokens, InputTokens, OutputTokens int
 	TotalCostUSD, CostPerTask              float64
-	TotalTasks, Succeeded, Failed          int
+	TotalTasks, Succeeded, Failed, Declined int
 	TokenHistory                           []int64   // 7 days
 	CostHistory                            []float64 // 7 days
 	TaskHistory                            []int     // 7 days
@@ -600,6 +600,7 @@ func (m *Model) hydrateFromStore() {
 		m.metricsCard.TotalTasks = taskCounts.Total
 		m.metricsCard.Succeeded = taskCounts.Succeeded
 		m.metricsCard.Failed = taskCounts.Failed
+		m.metricsCard.Declined = taskCounts.Declined
 	}
 
 	// Populate history panel from recent executions (most recent 5)
@@ -874,6 +875,7 @@ func storeRefreshCmd(store *memory.Store) tea.Cmd {
 			msg.metricsCard.TotalTasks = taskCounts.Total
 			msg.metricsCard.Succeeded = taskCounts.Succeeded
 			msg.metricsCard.Failed = taskCounts.Failed
+			msg.metricsCard.Declined = taskCounts.Declined
 		}
 
 		if msg.metricsCard.TotalTasks > 0 {
@@ -2032,7 +2034,11 @@ func (m Model) renderTaskCard(cw int) string {
 	ciw := cw - 6
 	value := fmt.Sprintf("%d", len(m.tasks))
 	detail1 := statusCompletedStyle.Render(fmt.Sprintf("✓ %d succeeded", m.metricsCard.Succeeded))
-	detail2 := statusFailedStyle.Render(fmt.Sprintf("✗ %d failed", m.metricsCard.Failed))
+	declinedSuffix := ""
+	if m.metricsCard.Declined > 0 {
+		declinedSuffix = fmt.Sprintf(" (%d declined)", m.metricsCard.Declined)
+	}
+	detail2 := statusFailedStyle.Render(fmt.Sprintf("✗ %d failed%s", m.metricsCard.Failed, declinedSuffix))
 
 	// Convert int history to float64
 	floats := make([]float64, len(m.metricsCard.TaskHistory))
