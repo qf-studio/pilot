@@ -13,6 +13,7 @@ export default {
   teams: "Teams & Permissions",
   budget: "Budget & Cost Controls",
   alerts: "Alerts & Notifications",
+  "effort-routing": "Effort-Based Routing",
   "quality-gates": "Quality Gates",
   "self-improvement": "Self-Improvement",
   "evaluation-system": "Evaluation System",

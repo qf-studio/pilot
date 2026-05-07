@@ -158,6 +158,9 @@ func (s *Store) migrate() error {
 		`ALTER TABLE executions ADD COLUMN task_source_issue_id TEXT DEFAULT ''`,
 		// GH-2326: persist Task.Labels across queue round-trip so no-decompose survives dispatch
 		`ALTER TABLE executions ADD COLUMN task_labels TEXT DEFAULT ''`,
+		// GH-2807: effort and complexity columns for cost-by-tier observability
+		`ALTER TABLE executions ADD COLUMN effort_level TEXT`,
+		`ALTER TABLE executions ADD COLUMN complexity_level TEXT`,
 		`CREATE INDEX IF NOT EXISTS idx_executions_status ON executions(status)`,
 		`CREATE INDEX IF NOT EXISTS idx_patterns_project ON patterns(project_path)`,
 		// Cross-project pattern indexes
@@ -402,6 +405,9 @@ type Execution struct {
 	LinesAdded       int
 	LinesRemoved     int
 	ModelName        string
+	// GH-2807: effort and complexity for cost-by-tier observability
+	EffortLevel     string `json:"effort_level,omitempty"`
+	ComplexityLevel string `json:"complexity_level,omitempty"`
 	// Task queue fields (GH-46) - store task details for deferred execution
 	TaskTitle         string
 	TaskDescription   string
@@ -434,13 +440,13 @@ func (s *Store) SaveExecution(exec *Execution) error {
 				tokens_input, tokens_output, tokens_total, estimated_cost_usd, files_changed, lines_added, lines_removed, model_name,
 				task_title, task_description, task_branch, task_base_branch, task_create_pr, task_verbose,
 				task_source_adapter, task_source_issue_id, task_labels,
-				approval_request_id)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				approval_request_id, effort_level, complexity_level)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`, exec.ID, exec.TaskID, exec.ProjectPath, exec.Status, exec.Output, exec.Error, exec.DurationMs, exec.PRUrl, exec.CommitSHA, exec.CompletedAt,
 			exec.TokensInput, exec.TokensOutput, exec.TokensTotal, exec.EstimatedCostUSD, exec.FilesChanged, exec.LinesAdded, exec.LinesRemoved, exec.ModelName,
 			exec.TaskTitle, exec.TaskDescription, exec.TaskBranch, exec.TaskBaseBranch, exec.TaskCreatePR, exec.TaskVerbose,
 			exec.TaskSourceAdapter, exec.TaskSourceIssueID, labelsJSON,
-			exec.ApprovalRequestID)
+			exec.ApprovalRequestID, exec.EffortLevel, exec.ComplexityLevel)
 		return err
 	})
 }
@@ -486,7 +492,8 @@ func (s *Store) GetExecution(id string) (*Execution, error) {
 			COALESCE(task_labels, ''),
 			COALESCE(approval_request_id, ''), COALESCE(approval_decision, ''),
 			approval_decision_at,
-			COALESCE(approval_decision_by, '')
+			COALESCE(approval_decision_by, ''),
+			COALESCE(effort_level, ''), COALESCE(complexity_level, '')
 		FROM executions WHERE id = ?
 	`, id)
 
@@ -498,7 +505,8 @@ func (s *Store) GetExecution(id string) (*Execution, error) {
 		&exec.TokensInput, &exec.TokensOutput, &exec.TokensTotal, &exec.EstimatedCostUSD, &exec.FilesChanged, &exec.LinesAdded, &exec.LinesRemoved, &exec.ModelName,
 		&exec.TaskTitle, &exec.TaskDescription, &exec.TaskBranch, &exec.TaskBaseBranch, &exec.TaskCreatePR, &exec.TaskVerbose,
 		&exec.TaskSourceAdapter, &exec.TaskSourceIssueID, &labelsJSON,
-		&exec.ApprovalRequestID, &exec.ApprovalDecision, &approvalDecisionAt, &exec.ApprovalDecisionBy)
+		&exec.ApprovalRequestID, &exec.ApprovalDecision, &approvalDecisionAt, &exec.ApprovalDecisionBy,
+		&exec.EffortLevel, &exec.ComplexityLevel)
 	if err != nil {
 		return nil, err
 	}
@@ -1084,6 +1092,19 @@ func (s *Store) UpdateExecutionResult(id string, prURL, commitSHA string, durati
 			SET pr_url = ?, commit_sha = ?, duration_ms = ?
 			WHERE id = ?
 		`, prURL, commitSHA, durationMs, id)
+		return err
+	})
+}
+
+// UpdateExecutionEffort records the resolved effort and complexity levels for a completed execution.
+// Called after execution finishes so cost-by-tier queries can group rows by tier.
+func (s *Store) UpdateExecutionEffort(id, effortLevel, complexityLevel string) error {
+	return s.withRetry("UpdateExecutionEffort", func() error {
+		_, err := s.db.Exec(`
+			UPDATE executions
+			SET effort_level = ?, complexity_level = ?
+			WHERE id = ?
+		`, effortLevel, complexityLevel, id)
 		return err
 	})
 }

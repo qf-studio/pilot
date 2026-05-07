@@ -1,6 +1,6 @@
 # Pilot Feature Matrix
 
-**Last Updated:** 2026-05-07 (v2.53.0)
+**Last Updated:** 2026-05-06 (v2.53.0)
 
 ## Legend
 
@@ -28,7 +28,8 @@
 | Task dispatcher | ✅ | executor | - | - | Per-project queue (GH-46) |
 | Sequential execution | ✅ | executor | `--sequential` | `orchestrator.execution.mode` | Wait for PR merge before next issue |
 | Self-review | ✅ | executor | - | - | Auto code review before PR push (v0.13.0) |
-| Pre-flight intent judge | ✅ | executor/github | - | `executor.pre_flight_judge.enabled` | Haiku evaluates issue before dispatch; rejects vague/question/conflicting/stale/out-of-scope issues (v2.132.0, GH-2802) |
+| Effort-based model routing | ✅ | executor | - | `model_routing`, `effort_routing` | On by default v2.132.1 (GH-2807); Haiku/Sonnet/Opus by tier |
+| Cost-by-tier observability | ✅ | memory | - | - | `effort_level`+`complexity_level` columns in executions DB (GH-2807) |
 | Auto build gate | ✅ | executor | - | - | Minimal build gate when none configured (v0.13.0) |
 | Epic decomposition | ✅ | executor | - | `decompose.enabled` | PlanEpic + CreateSubIssues for complex tasks (v0.20.2) |
 | Epic scope guard | ✅ | executor | - | - | Consolidate single-package epics to prevent conflict cascade (v1.0.11) |

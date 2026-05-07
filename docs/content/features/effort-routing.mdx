@@ -1,0 +1,109 @@
+import { Callout, Tabs } from 'nextra/components'
+
+# Effort-Based Model Routing
+
+Effort routing selects the right Claude model and API effort level for each task based on detected complexity. This reduces cost on simple tasks while preserving quality on complex ones.
+
+<Callout type="info">
+  Model routing is **enabled by default** as of v2.132.1. Tasks are automatically classified and routed to the appropriate model tier. Set `model_routing.enabled: false` in your config to opt out.
+</Callout>
+
+## 3-Tier Model Mapping
+
+| Tier | Complexity | Default Model | API Effort |
+|------|-----------|---------------|------------|
+| Trivial | Typos, log additions, renames | `claude-haiku` | `low` |
+| Simple / Medium | New fields, small fixes, features | `claude-sonnet-4-6` | `medium` |
+| Complex | Architecture changes, multi-file refactors | `claude-sonnet-4-6` | `high` |
+
+<Callout type="warning">
+  Opus is reserved for **planning** (epic decomposition), not execution. The `complex` execution tier uses Sonnet 4.6 — see [GH-2432](https://github.com/qf-studio/pilot/issues/2432) for the reasoning.
+</Callout>
+
+## How Classification Works
+
+Classification is a two-stage pipeline:
+
+1. **Heuristic floor** (`DetectComplexity`): Counts words, file references, and structural keywords in the task title and description to produce a baseline tier.
+2. **LLM upgrade** (`EffortClassifier`, default enabled): A fast Haiku call re-evaluates the heuristic result and can escalate (never downgrade) the tier if the task is more complex than word-count suggests.
+
+The LLM classifier uses a 30-second timeout and falls back to the heuristic result on failure.
+
+## Configuration
+
+```yaml
+executor:
+  model_routing:
+    enabled: true          # default: true (GH-2807)
+    trivial: "claude-haiku"
+    simple: "claude-sonnet-4-6"
+    medium: "claude-sonnet-4-6"
+    complex: "claude-sonnet-4-6"   # Opus reserved for planning
+
+  effort_routing:
+    enabled: true
+    trivial: "low"
+    simple: "medium"
+    medium: "medium"
+    complex: "high"
+
+  effort_classifier:
+    enabled: true          # LLM-based upgrade pass (Haiku)
+    model: "claude-haiku-4-5-20251001"
+    timeout: "30s"
+```
+
+## How to Disable
+
+To opt out of routing entirely and use a fixed model for all tasks:
+
+```yaml
+executor:
+  model_routing:
+    enabled: false
+  default_model: "claude-sonnet-4-6"
+```
+
+## Cost Telemetry
+
+Each completed execution records `effort_level` and `complexity_level` in the SQLite database. Use these columns to understand cost distribution by tier:
+
+```sql
+-- Cost breakdown by complexity tier
+SELECT
+  complexity_level,
+  COUNT(*)                           AS executions,
+  ROUND(SUM(estimated_cost_usd), 4) AS total_cost_usd,
+  ROUND(AVG(estimated_cost_usd), 4) AS avg_cost_usd
+FROM executions
+WHERE status = 'completed'
+  AND complexity_level IS NOT NULL
+GROUP BY complexity_level
+ORDER BY total_cost_usd DESC;
+
+-- Cost breakdown by API effort level
+SELECT
+  effort_level,
+  COUNT(*)                           AS executions,
+  ROUND(SUM(estimated_cost_usd), 4) AS total_cost_usd
+FROM executions
+WHERE status = 'completed'
+  AND effort_level IS NOT NULL
+GROUP BY effort_level;
+```
+
+The database is at `~/.pilot/data/pilot.db`.
+
+## The `default_model` Precedence Landmine
+
+<Callout type="warning">
+  **Do not set both `default_model` and `model_routing.enabled: true` for Claude Code backends.** The routing result wins, but for non-Claude-Code backends `default_model` is used as the fallback when the router returns empty. See [`runner.go:688-701`](https://github.com/qf-studio/pilot/blob/main/internal/executor/runner.go) for the exact precedence logic (GH-2450).
+</Callout>
+
+Precedence for Claude Code backend:
+1. `model_routing` result (when enabled) — **always wins**
+2. Empty string passed to CC (CC reads `ANTHROPIC_MODEL` / its own settings)
+
+Precedence for other backends (OpenCode, etc.):
+1. `model_routing` result (when non-empty)
+2. `default_model` (fallback when router returns empty or routing is disabled)

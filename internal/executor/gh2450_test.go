@@ -40,8 +40,10 @@ func TestResolveSelectedModel_GH2450(t *testing.T) {
 			want: "claude-sonnet-4-6",
 		},
 		{
+			// GH-2807: use explicit Enabled:false to represent "user disabled routing".
+			// nil routing now uses the default which is enabled:true.
 			name:    "model_routing unset + CC backend → passthrough",
-			routing: nil,
+			routing: &ModelRoutingConfig{Enabled: false},
 			config: &BackendConfig{
 				Type:         BackendTypeClaudeCode,
 				DefaultModel: "claude-opus-4-7",
@@ -49,8 +51,9 @@ func TestResolveSelectedModel_GH2450(t *testing.T) {
 			want: "",
 		},
 		{
+			// GH-2807: use explicit Enabled:false to represent "user disabled routing".
 			name:    "non-CC backend falls back to default_model when router empty",
-			routing: nil,
+			routing: &ModelRoutingConfig{Enabled: false},
 			config: &BackendConfig{
 				Type:         BackendTypeOpenCode,
 				DefaultModel: "claude-opus-4-7",

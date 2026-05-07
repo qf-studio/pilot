@@ -743,7 +743,7 @@ func DefaultBackendConfig() *BackendConfig {
 //   - Complex: Architecture changes, multi-file refactors, migrations
 func DefaultModelRoutingConfig() *ModelRoutingConfig {
 	return &ModelRoutingConfig{
-		Enabled: false,
+		Enabled: true,
 		Trivial: "claude-haiku",
 		Simple:  "claude-sonnet-4-6",
 		Medium:  "claude-sonnet-4-6",

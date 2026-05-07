@@ -702,6 +702,12 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 		// Persist execution metrics (tokens, cost, code changes) so they survive restarts.
 		// This is needed for GetLifetimeTokens() to return real data (GH-533).
 		if result != nil {
+			// GH-2807: persist effort/complexity tier for cost-by-tier observability.
+			if result.EffortLevel != "" || result.ComplexityLevel != "" {
+				if err := w.store.UpdateExecutionEffort(exec.ID, result.EffortLevel, result.ComplexityLevel); err != nil {
+					w.log.Error("Failed to update execution effort", slog.Any("error", err))
+				}
+			}
 			if err := w.store.SaveExecutionMetrics(&memory.ExecutionMetrics{
 				ExecutionID:      exec.ID,
 				TokensInput:      result.TokensInput,
