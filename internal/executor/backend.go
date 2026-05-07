@@ -558,8 +558,9 @@ type PreFlightJudgeConfig struct {
 	// Enabled controls whether the pre-flight judge runs before dispatch. Default: false.
 	Enabled bool `yaml:"enabled"`
 
-	// APIKey is the Anthropic API key for the pre-flight judge.
-	// Falls back to ANTHROPIC_API_KEY env var when empty.
+	// Deprecated: API key is no longer used. Pre-flight judge calls Claude Code subprocess
+	// and bills to the operator's subscription. Field retained for backwards-compatible YAML
+	// parsing; will be removed in a future major version.
 	APIKey string `yaml:"api_key,omitempty"`
 }
 

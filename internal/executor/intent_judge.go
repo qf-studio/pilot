@@ -1,11 +1,10 @@
 package executor
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
-	"net/http"
+	"log/slog"
+	"os/exec"
 	"regexp"
 	"strconv"
 	"strings"
@@ -23,31 +22,45 @@ type JudgeVerdict struct {
 }
 
 // IntentJudge compares git diffs against the original issue to catch scope creep,
-// missing requirements, and unrelated changes. Uses Claude Haiku for fast, cheap evaluation.
+// missing requirements, and unrelated changes. Uses Claude Code subprocess so
+// calls bill to the operator's CC subscription — no separate API key required.
 // Industry research (Spotify) shows this catches ~25% of PRs that would ship wrong code.
 type IntentJudge struct {
-	apiKey     string
-	apiURL     string
-	model      string
-	httpClient *http.Client
+	claudeCmd        string
+	model            string
+	judgeTimeout     time.Duration
+	preflightTimeout time.Duration
+	log              *slog.Logger
+	cmdRunner        func(ctx context.Context, args ...string) ([]byte, error)
 }
 
-// NewIntentJudge creates a new IntentJudge that calls the Anthropic API directly.
-func NewIntentJudge(apiKey string) *IntentJudge {
-	return &IntentJudge{
-		apiKey: apiKey,
-		apiURL: "https://api.anthropic.com/v1/messages",
-		model:  "claude-haiku-4-5-20251001",
-		httpClient: &http.Client{
-			Timeout: 15 * time.Second,
-		},
+// NewIntentJudge creates a new IntentJudge that calls Claude Code subprocess.
+// claudeCmd defaults to "claude" when empty.
+func NewIntentJudge(claudeCmd string) *IntentJudge {
+	if claudeCmd == "" {
+		claudeCmd = "claude"
 	}
+	j := &IntentJudge{
+		claudeCmd:        claudeCmd,
+		model:            "claude-haiku-4-5-20251001",
+		judgeTimeout:     30 * time.Second,
+		preflightTimeout: 20 * time.Second,
+		log:              slog.Default(),
+	}
+	j.cmdRunner = j.defaultCmdRunner
+	return j
 }
 
-// newIntentJudgeWithURL creates an IntentJudge with a custom API URL for testing.
-func newIntentJudgeWithURL(apiKey, url string) *IntentJudge {
-	j := NewIntentJudge(apiKey)
-	j.apiURL = url
+// defaultCmdRunner executes the claude command.
+func (j *IntentJudge) defaultCmdRunner(ctx context.Context, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, j.claudeCmd, args...)
+	return cmd.Output()
+}
+
+// newIntentJudgeWithRunner creates an IntentJudge with a custom command runner for testing.
+func newIntentJudgeWithRunner(runner func(ctx context.Context, args ...string) ([]byte, error)) *IntentJudge {
+	j := NewIntentJudge("claude")
+	j.cmdRunner = runner
 	return j
 }
 
@@ -55,12 +68,12 @@ func newIntentJudgeWithURL(apiKey, url string) *IntentJudge {
 type PreFlightDecision string
 
 const (
-	PreFlightAccept           PreFlightDecision = "accept"
-	PreFlightRejectQuestion   PreFlightDecision = "reject_question"
-	PreFlightRejectVague      PreFlightDecision = "reject_vague"
+	PreFlightAccept            PreFlightDecision = "accept"
+	PreFlightRejectQuestion    PreFlightDecision = "reject_question"
+	PreFlightRejectVague       PreFlightDecision = "reject_vague"
 	PreFlightRejectConflicting PreFlightDecision = "reject_conflicting"
-	PreFlightRejectStale      PreFlightDecision = "reject_stale"
-	PreFlightRejectOutOfScope PreFlightDecision = "reject_out_of_scope"
+	PreFlightRejectStale       PreFlightDecision = "reject_stale"
+	PreFlightRejectOutOfScope  PreFlightDecision = "reject_out_of_scope"
 )
 
 // PreFlightVerdict is the result of a pre-flight issue evaluation.
@@ -125,51 +138,18 @@ func (j *IntentJudge) Judge(ctx context.Context, issueTitle, issueBody, diff str
 		diff = diff[:maxChars] + "\n...[truncated]"
 	}
 
-	userContent := fmt.Sprintf("## Issue Title\n%s\n\n## Issue Description\n%s\n\n## Git Diff\n```diff\n%s\n```",
-		issueTitle, issueBody, diff)
+	prompt := fmt.Sprintf("%s\n\n## Issue Title\n%s\n\n## Issue Description\n%s\n\n## Git Diff\n```diff\n%s\n```",
+		intentJudgeSystemPrompt, issueTitle, issueBody, diff)
 
-	reqBody := haikuRequest{
-		Model:     j.model,
-		MaxTokens: 512,
-		System:    intentJudgeSystemPrompt,
-		Messages: []haikuMessage{
-			{Role: "user", Content: userContent},
-		},
-	}
+	judgeCtx, cancel := context.WithTimeout(ctx, j.judgeTimeout)
+	defer cancel()
 
-	jsonData, err := json.Marshal(reqBody)
+	output, err := j.cmdRunner(judgeCtx, "--print", "-p", prompt, "--model", j.model, "--output-format", "text")
 	if err != nil {
-		return nil, fmt.Errorf("marshal request: %w", err)
+		return nil, fmt.Errorf("intent judge subprocess: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, j.apiURL, bytes.NewReader(jsonData))
-	if err != nil {
-		return nil, fmt.Errorf("create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-api-key", j.apiKey)
-	req.Header.Set("anthropic-version", "2023-06-01")
-
-	resp, err := j.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("API request failed: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("API returned status %d", resp.StatusCode)
-	}
-
-	var apiResp haikuResponse
-	if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
-		return nil, fmt.Errorf("decode response: %w", err)
-	}
-
-	if len(apiResp.Content) == 0 || apiResp.Content[0].Text == "" {
-		return nil, fmt.Errorf("empty response from API")
-	}
-
-	return parseJudgeResponse(apiResp.Content[0].Text)
+	return parseJudgeResponse(string(output))
 }
 
 // JudgeIssue evaluates whether a GitHub issue is actionable before dispatching to a worker.
@@ -186,48 +166,17 @@ func (j *IntentJudge) JudgeIssue(ctx context.Context, title, body, repoContext s
 		userContent += fmt.Sprintf("\n\n## Repository Context\n%s", repoContext)
 	}
 
-	reqBody := haikuRequest{
-		Model:     j.model,
-		MaxTokens: 256,
-		System:    preflightJudgeSystemPrompt,
-		Messages: []haikuMessage{
-			{Role: "user", Content: userContent},
-		},
-	}
+	prompt := fmt.Sprintf("%s\n\n%s", preflightJudgeSystemPrompt, userContent)
 
-	jsonData, err := json.Marshal(reqBody)
+	preflightCtx, cancel := context.WithTimeout(ctx, j.preflightTimeout)
+	defer cancel()
+
+	output, err := j.cmdRunner(preflightCtx, "--print", "-p", prompt, "--model", j.model, "--output-format", "text")
 	if err != nil {
-		return nil, fmt.Errorf("marshal request: %w", err)
+		return nil, fmt.Errorf("intent judge subprocess: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, j.apiURL, bytes.NewReader(jsonData))
-	if err != nil {
-		return nil, fmt.Errorf("create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-api-key", j.apiKey)
-	req.Header.Set("anthropic-version", "2023-06-01")
-
-	resp, err := j.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("API request failed: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("API returned status %d", resp.StatusCode)
-	}
-
-	var apiResp haikuResponse
-	if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
-		return nil, fmt.Errorf("decode response: %w", err)
-	}
-
-	if len(apiResp.Content) == 0 || apiResp.Content[0].Text == "" {
-		return nil, fmt.Errorf("empty response from API")
-	}
-
-	return parsePreFlightResponse(apiResp.Content[0].Text)
+	return parsePreFlightResponse(string(output))
 }
 
 // parsePreFlightResponse extracts decision, reason, and confidence from the pre-flight judge's response.

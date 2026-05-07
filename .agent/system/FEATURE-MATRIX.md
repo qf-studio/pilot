@@ -1,6 +1,6 @@
 # Pilot Feature Matrix
 
-**Last Updated:** 2026-05-07 (v2.53.0)
+**Last Updated:** 2026-05-06 (v2.53.0)
 
 ## Legend
 
@@ -28,8 +28,6 @@
 | Task dispatcher | ✅ | executor | - | - | Per-project queue (GH-46) |
 | Sequential execution | ✅ | executor | `--sequential` | `orchestrator.execution.mode` | Wait for PR merge before next issue |
 | Self-review | ✅ | executor | - | - | Auto code review before PR push (v0.13.0) |
-| Effort-based model routing | ✅ | executor | - | `model_routing`, `effort_routing` | On by default v2.132.1 (GH-2807); Haiku/Sonnet/Opus by tier |
-| Cost-by-tier observability | ✅ | memory | - | - | `effort_level`+`complexity_level` columns in executions DB (GH-2807) |
 | Auto build gate | ✅ | executor | - | - | Minimal build gate when none configured (v0.13.0) |
 | Epic decomposition | ✅ | executor | - | `decompose.enabled` | PlanEpic + CreateSubIssues for complex tasks (v0.20.2) |
 | Epic scope guard | ✅ | executor | - | - | Consolidate single-package epics to prevent conflict cascade (v1.0.11) |
@@ -84,7 +82,7 @@
 | Model routing | ✅ | executor | - | - | Haiku (trivial), Opus 4.6 (complex), Sonnet 4.6 (simple/medium) (v0.20.0) |
 | Effort routing | ✅ | executor | - | - | Map complexity to Claude thinking depth (v0.20.0) |
 | LLM intent classification | ✅ | adapters/telegram | - | - | Pattern-based intent detection for Telegram messages |
-| Intent judge (pipeline) | ✅ | executor | - | - | Wired into execution pipeline for task classification (v0.24.0) |
+| Intent judge (pipeline) | ✅ | executor | - | - | Wired into execution pipeline for task classification (v0.24.0); uses CC subprocess, no API key (v2.133.1, GH-2817) |
 | Research subagents | ✅ | executor | - | - | Haiku-powered parallel codebase exploration |
 | Drift detection | ✅ | executor | - | - | Collaboration alignment monitor with re-anchoring (v0.61.0) |
 | Workflow enforcement | ✅ | executor | - | - | Embedded autonomous execution instructions (v0.61.0) |
