@@ -57,6 +57,7 @@
 | LLM classifier gate fix | ✅ | executor | - | - | Word count gate conditional on classifier type (v2.10.0, GH-1728) |
 | Execution mode auto-switch | ✅ | executor | - | - | Scope-based auto parallel/sequential via union-find (v2.25.0) |
 | Pattern compliance check | ✅ | executor | - | - | Self-review validates learned patterns from memory (v2.43.0, GH-1941) |
+| DECLINED structured output | ✅ | executor | - | - | Explicit DECLINED:<reason> marker; adds pilot-needs-clarification, avoids pilot-failed (v2.131.0, GH-2777) |
 | Self-review pattern extraction | ✅ | executor | - | - | Extract new patterns from self-review results and store (v2.44.0, GH-1955) |
 | Case-insensitive label matching | ✅ | executor | - | - | `Pilot` and `pilot` labels treated identically (v0.33.3) |
 | Commit SHA git fallback | ✅ | executor | - | - | Recover SHA via git log when output parsing misses it (v0.23.3) |

@@ -67,6 +67,9 @@ const (
 	// a refusal or "task already done" response. The final assistant message holds
 	// the refusal reason. GH-2328.
 	ErrorTypeNoChanges ClaudeCodeErrorType = "no_changes"
+	// ErrorTypeDeclined indicates Claude explicitly declined the task as unactionable,
+	// emitting a structured DECLINED:<reason> marker in its response. GH-2777.
+	ErrorTypeDeclined ClaudeCodeErrorType = "declined"
 	// ErrorTypeUnknown indicates an unclassified error
 	ErrorTypeUnknown ClaudeCodeErrorType = "unknown"
 )

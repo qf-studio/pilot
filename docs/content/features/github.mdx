@@ -75,6 +75,27 @@ When Pilot completes a task:
 | `pilot` | Queue for execution |
 | `pilot:urgent` | Process before other tasks |
 | `pilot:hold` | Skip this issue |
+| `pilot-needs-clarification` | Task was declined as unactionable; blocks dispatch until removed |
+
+## Declined Tasks
+
+When Pilot determines a task cannot be implemented as specified — because the requirements are ambiguous, the feature already exists, or the necessary context is unavailable — it explicitly declines rather than silently producing no changes.
+
+**What happens:**
+
+1. Pilot adds the `pilot-needs-clarification` label and removes `pilot-in-progress`
+2. A comment is posted explaining the reason
+3. The issue is not marked as failed; it stays open
+
+**To resume:** Clarify the requirements in the issue body, then remove the `pilot-needs-clarification` label. Pilot will re-pick the issue on the next poll cycle.
+
+**Example decline comment:**
+
+> 🤔 **Pilot needs clarification before implementing this task**
+>
+> **Reason**: The authentication module requested already exists in `internal/auth/jwt.go`.
+>
+> To resume, clarify the requirements and remove the `pilot-needs-clarification` label.
 
 ## Webhooks (Advanced)
 

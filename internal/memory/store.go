@@ -1022,7 +1022,7 @@ func (s *Store) UpdateExecutionStatus(id, status string, errorMsg ...string) err
 	}
 
 	// Set completed_at for terminal states
-	if status == "completed" || status == "failed" || status == "cancelled" {
+	if status == "completed" || status == "failed" || status == "cancelled" || status == "declined" {
 		return s.withRetry("UpdateExecutionStatus", func() error {
 			_, err := s.db.Exec(`
 				UPDATE executions
