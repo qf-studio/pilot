@@ -99,8 +99,9 @@ const (
 	LabelTitleRejected = "pilot-title-rejected" // GH-2363: title guard escalation; blocks auto-retry until human edits title
 	LabelSuperseded    = "pilot-superseded"     // GH-2402: sub-issue auto-closed because parent epic already shipped the work
 	LabelBlocked       = "pilot-blocked"        // GH-2402: deterministic failure that won't change between retries (e.g. non-conventional title)
-	LabelSpecIncomplete = "pilot-spec-incomplete" // GH-2619: issue body too thin to dispatch; first-strike warning
-	LabelSkipSpecCheck  = "pilot-skip-spec-check" // GH-2619: opt-out from spec quality gate (trivial micro-issues)
+	LabelNeedsClarification = "pilot-needs-clarification" // GH-2768: executor declined task as unactionable; blocks dispatch until label removed
+	LabelSpecIncomplete     = "pilot-spec-incomplete"     // GH-2619: issue body too thin to dispatch; first-strike warning
+	LabelSkipSpecCheck      = "pilot-skip-spec-check"     // GH-2619: opt-out from spec quality gate (trivial micro-issues)
 
 	// GH-2432: Retry-counter labels persist retry state across `pilot start`
 	// restarts (the in-memory retryReadyCount map was lost on restart, letting

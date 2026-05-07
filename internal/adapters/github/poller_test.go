@@ -2280,6 +2280,62 @@ func TestPoller_AutoRetryFailedIssue_ParallelMode_LimitReached(t *testing.T) {
 	}
 }
 
+// GH-2768: Skip issues with pilot-needs-clarification label
+
+func TestPoller_SkipsNeedsClarification(t *testing.T) {
+	now := time.Now()
+	issues := []*Issue{
+		// Has pilot-needs-clarification — should be skipped until label is removed
+		{Number: 42, State: "open", Title: "Declined issue", Labels: []Label{{Name: "pilot"}, {Name: LabelNeedsClarification}}, CreatedAt: now.Add(-1 * time.Hour)},
+		{Number: 43, State: "open", Title: "Available issue", Labels: []Label{{Name: "pilot"}}, CreatedAt: now},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(issues)
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second)
+
+	// Test findOldestUnprocessedIssue skips #42
+	issue, err := poller.findOldestUnprocessedIssue(context.Background())
+	if err != nil {
+		t.Fatalf("findOldestUnprocessedIssue() error = %v", err)
+	}
+	if issue == nil {
+		t.Fatal("issue should not be nil — #43 should be picked")
+	}
+	if issue.Number != 43 {
+		t.Errorf("findOldestUnprocessedIssue: got issue #%d, want #43 (should skip #42 with pilot-needs-clarification)", issue.Number)
+	}
+
+	// Test checkForNewIssues (parallel mode) also skips #42
+	var processedIssues []*Issue
+	var mu sync.Mutex
+	poller2, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second,
+		WithOnIssue(func(ctx context.Context, iss *Issue) error {
+			mu.Lock()
+			processedIssues = append(processedIssues, iss)
+			mu.Unlock()
+			return nil
+		}),
+	)
+	poller2.checkForNewIssues(context.Background())
+	poller2.WaitForActive()
+
+	mu.Lock()
+	got := processedIssues
+	mu.Unlock()
+	if len(got) != 1 {
+		t.Fatalf("checkForNewIssues: dispatched %d issues, want 1", len(got))
+	}
+	if got[0].Number != 43 {
+		t.Errorf("checkForNewIssues: dispatched issue #%d, want #43", got[0].Number)
+	}
+}
+
 // GH-2276: Auto-retry issues with pilot-retry-ready (PR closed without merge)
 
 func TestPoller_AutoRetryRetryReadyIssue_FirstRetry(t *testing.T) {

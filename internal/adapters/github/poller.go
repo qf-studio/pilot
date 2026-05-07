@@ -618,6 +618,11 @@ func (p *Poller) findOldestUnprocessedIssue(ctx context.Context) (*Issue, error)
 			continue
 		}
 
+		// GH-2768: Skip issues declined as unactionable. Remove the label to re-enable dispatch.
+		if HasLabel(issue, LabelNeedsClarification) {
+			continue
+		}
+
 		// GH-2402: Auto-close sub-issues whose parent epic already shipped.
 		if p.skipSupersededByParent(ctx, issue) {
 			continue
@@ -826,6 +831,11 @@ func (p *Poller) checkForNewIssues(ctx context.Context) {
 		// GH-2402: Skip permanently-blocked issues. The user must remove
 		// the pilot-blocked label to retry (e.g. after fixing a non-conventional title).
 		if HasLabel(issue, LabelBlocked) {
+			continue
+		}
+
+		// GH-2768: Skip issues declined as unactionable. Remove the label to re-enable dispatch.
+		if HasLabel(issue, LabelNeedsClarification) {
 			continue
 		}
 

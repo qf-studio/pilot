@@ -144,6 +144,10 @@ These three mechanisms work together to create a closed-loop system:
 └─────────────────────────────────────────────────────────────┘
 ```
 
+## DECLINED: Unactionable Task Handling
+
+When Pilot determines that an issue cannot be implemented as written — for example, it contradicts the codebase design, references missing context, or is too ambiguous to act on safely — the executor emits a DECLINED result instead of creating a partial or broken PR. Pilot adds the `pilot-needs-clarification` label to the issue and posts a comment explaining what information is needed. The GitHub poller treats `pilot-needs-clarification` as a permanent skip: the issue will not be dispatched again until a human removes the label. Once removed, the issue re-enters the normal dispatch queue on the next poll cycle.
+
 ## Related Features
 
 - [Autopilot](/features/autopilot) — CI monitoring and auto-merge
