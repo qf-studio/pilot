@@ -520,23 +520,24 @@ func NewRunnerWithConfig(config *BackendConfig) (*Runner, error) {
 		}
 	}
 
-	// Initialize intent judge for diff-vs-ticket alignment (GH-624)
+	// Initialize intent judge for diff-vs-ticket alignment (GH-624, GH-2817)
+	// Uses Claude Code subprocess — bills to operator's CC subscription, no API key required.
 	if config != nil && config.IntentJudge != nil && (config.IntentJudge.Enabled == nil || *config.IntentJudge.Enabled) {
-		apiKey := os.Getenv("ANTHROPIC_API_KEY")
-		if apiKey != "" {
-			runner.intentJudge = NewIntentJudge(apiKey)
+		claudeCmd := ""
+		if config.ClaudeCode != nil {
+			claudeCmd = config.ClaudeCode.Command
+		}
+		if claudeCmd == "" {
+			claudeCmd = "claude"
+		}
+		if _, err := exec.LookPath(claudeCmd); err != nil {
+			runner.log.Warn("Intent judge disabled: claude binary not found", slog.String("command", claudeCmd))
+		} else {
+			runner.intentJudge = NewIntentJudge(claudeCmd)
 			if config.IntentJudge.Model != "" {
 				runner.intentJudge.model = config.IntentJudge.Model
 			}
-			if config.DefaultModel != "" {
-				runner.intentJudge.model = config.DefaultModel
-			}
-			if config.APIBaseURL != "" {
-				runner.intentJudge.apiURL = config.ResolveAPIBaseURL() + "/v1/messages"
-			}
 			runner.log.Info("Intent judge initialized", slog.String("model", runner.intentJudge.model))
-		} else {
-			runner.log.Warn("Intent judge disabled: ANTHROPIC_API_KEY not set")
 		}
 	} else if config != nil && config.IntentJudge == nil {
 		runner.log.Debug("Intent judge disabled: no config")

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -760,16 +761,23 @@ Examples:
 						pollerOpts = append(pollerOpts, github.WithExecutionChecker(gwStore, projectPath))
 					}
 
-					// GH-2802: Wire pre-flight judge when enabled
+					// GH-2802: Wire pre-flight judge when enabled (GH-2817: uses CC subprocess, no API key)
 					if cfg.Executor != nil && cfg.Executor.PreFlightJudge != nil && cfg.Executor.PreFlightJudge.Enabled {
-						apiKey := cfg.Executor.PreFlightJudge.APIKey
-						if apiKey == "" {
-							apiKey = os.Getenv("ANTHROPIC_API_KEY")
+						claudeCmd := ""
+						if cfg.Executor.ClaudeCode != nil {
+							claudeCmd = cfg.Executor.ClaudeCode.Command
 						}
-						pfJudge := executor.NewIntentJudge(apiKey)
-						pollerOpts = append(pollerOpts, github.WithPreFlightJudge(preFlightJudgeShim{judge: pfJudge}))
-						if gwStore != nil {
-							pollerOpts = append(pollerOpts, github.WithExecutionSaver(storeExecutionSaver{store: gwStore}))
+						if claudeCmd == "" {
+							claudeCmd = "claude"
+						}
+						if _, err := exec.LookPath(claudeCmd); err != nil {
+							slog.Warn("Pre-flight judge disabled: claude binary not found", slog.String("command", claudeCmd))
+						} else {
+							pfJudge := executor.NewIntentJudge(claudeCmd)
+							pollerOpts = append(pollerOpts, github.WithPreFlightJudge(preFlightJudgeShim{judge: pfJudge}))
+							if gwStore != nil {
+								pollerOpts = append(pollerOpts, github.WithExecutionSaver(storeExecutionSaver{store: gwStore}))
+							}
 						}
 					}
 
@@ -2088,16 +2096,23 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 					pollerOpts = append(pollerOpts, github.WithExecutionChecker(store, projPath))
 				}
 
-				// GH-2802: Wire pre-flight judge when enabled
+				// GH-2802: Wire pre-flight judge when enabled (GH-2817: uses CC subprocess, no API key)
 				if cfg.Executor != nil && cfg.Executor.PreFlightJudge != nil && cfg.Executor.PreFlightJudge.Enabled {
-					apiKey := cfg.Executor.PreFlightJudge.APIKey
-					if apiKey == "" {
-						apiKey = os.Getenv("ANTHROPIC_API_KEY")
+					claudeCmd := ""
+					if cfg.Executor.ClaudeCode != nil {
+						claudeCmd = cfg.Executor.ClaudeCode.Command
 					}
-					pfJudge := executor.NewIntentJudge(apiKey)
-					pollerOpts = append(pollerOpts, github.WithPreFlightJudge(preFlightJudgeShim{judge: pfJudge}))
-					if store != nil {
-						pollerOpts = append(pollerOpts, github.WithExecutionSaver(storeExecutionSaver{store: store}))
+					if claudeCmd == "" {
+						claudeCmd = "claude"
+					}
+					if _, err := exec.LookPath(claudeCmd); err != nil {
+						slog.Warn("Pre-flight judge disabled: claude binary not found", slog.String("command", claudeCmd))
+					} else {
+						pfJudge := executor.NewIntentJudge(claudeCmd)
+						pollerOpts = append(pollerOpts, github.WithPreFlightJudge(preFlightJudgeShim{judge: pfJudge}))
+						if store != nil {
+							pollerOpts = append(pollerOpts, github.WithExecutionSaver(storeExecutionSaver{store: store}))
+						}
 					}
 				}
 
