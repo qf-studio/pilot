@@ -62,6 +62,54 @@ var subtaskProseIndicators = []string{
 	"the status appears", "the current code",
 }
 
+// propagatableLabelAllowlist contains exact label names that survive parent→child
+// propagation during epic decomposition.
+var propagatableLabelAllowlist = map[string]struct{}{
+	"no-decompose": {},
+	"no-plan":      {},
+}
+
+// propagatableLabelPrefixes are prefix patterns whose matching labels survive propagation.
+var propagatableLabelPrefixes = []string{"area:", "priority:", "scope:"}
+
+// alwaysBlockedLabels are pilot lifecycle markers that must never propagate to sub-issues.
+var alwaysBlockedLabels = map[string]struct{}{
+	"pilot":                     {},
+	"pilot-done":                {},
+	"pilot-failed":              {},
+	"pilot-in-progress":         {},
+	"pilot-superseded":          {},
+	"pilot-needs-clarification": {},
+}
+
+// filterPropagatableLabels returns the subset of parent labels that sub-issues
+// should inherit during epic decomposition. It lowercases and trims each label,
+// drops empties, drops lifecycle labels, and keeps anything in the allow-list or
+// matching a propagatable prefix.
+func filterPropagatableLabels(parentLabels []string) []string {
+	out := make([]string, 0, len(parentLabels))
+	for _, raw := range parentLabels {
+		l := strings.ToLower(strings.TrimSpace(raw))
+		if l == "" {
+			continue
+		}
+		if _, blocked := alwaysBlockedLabels[l]; blocked {
+			continue
+		}
+		if _, ok := propagatableLabelAllowlist[l]; ok {
+			out = append(out, l)
+			continue
+		}
+		for _, p := range propagatableLabelPrefixes {
+			if strings.HasPrefix(l, p) {
+				out = append(out, l)
+				break
+			}
+		}
+	}
+	return out
+}
+
 // validateSubtaskTitle reports an error when a subtask title extracted from LLM
 // planning output is structurally unsuitable for use as a GitHub issue title.
 //
@@ -880,7 +928,8 @@ func (r *Runner) createSubIssuesViaAdapter(ctx context.Context, plan *EpicPlan) 
 			"parent_id", parentID,
 		)
 
-		identifier, url, err := r.subIssueCreator.CreateIssue(ctx, parentID, title, body, []string{"pilot"})
+		subLabels := append([]string{"pilot"}, filterPropagatableLabels(plan.ParentTask.Labels)...)
+		identifier, url, err := r.subIssueCreator.CreateIssue(ctx, parentID, title, body, subLabels)
 		if err != nil {
 			return created, fmt.Errorf("failed to create sub-issue for subtask %d via %s adapter: %w",
 				subtask.Order, plan.ParentTask.SourceAdapter, err)
@@ -996,11 +1045,10 @@ func (r *Runner) createSubIssuesViaGitHub(ctx context.Context, plan *EpicPlan, e
 		}
 
 		// Create issue using gh CLI
-		args := []string{
-			"issue", "create",
-			"--title", title,
-			"--body", body,
-			"--label", "pilot",
+		subLabels := append([]string{"pilot"}, filterPropagatableLabels(plan.ParentTask.Labels)...)
+		args := []string{"issue", "create", "--title", title, "--body", body}
+		for _, l := range subLabels {
+			args = append(args, "--label", l)
 		}
 
 		cmd := exec.CommandContext(ctx, "gh", args...)
