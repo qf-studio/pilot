@@ -386,6 +386,25 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 			// generic failure-comment path to avoid duplicate noise.
 			if hr.Result.TitleRejected {
 				syncBoardStatus(ctx, boardSync, issue.NodeID, boardStatuses.Failed)
+			} else if hr.Result.Declined {
+				// GH-2777: Claude explicitly declined the task as unactionable.
+				// Add pilot-needs-clarification instead of pilot-failed so the poller
+				// blocks without incrementing the retry counter.
+				if err := client.RemoveLabel(ctx, parts[0], parts[1], issue.Number, github.LabelInProgress); err != nil {
+					slog.Debug("pilot-in-progress removal (declined)", "issue", issue.Number, "error", err)
+				}
+				if err := client.AddLabels(ctx, parts[0], parts[1], issue.Number, []string{github.LabelNeedsClarification}); err != nil {
+					logGitHubAPIError("AddLabels(needs-clarification)", parts[0], parts[1], issue.Number, err)
+				}
+				syncBoardStatus(ctx, boardSync, issue.NodeID, boardStatuses.Failed)
+				reason := hr.Result.DeclinedReason
+				if reason == "" {
+					reason = "task could not be implemented as specified"
+				}
+				comment := fmt.Sprintf("🤔 **Pilot needs clarification before implementing this task**\n\n**Reason**: %s\n\nTo resume, clarify the requirements and remove the `%s` label.", reason, github.LabelNeedsClarification)
+				if _, err := client.AddComment(ctx, parts[0], parts[1], issue.Number, comment); err != nil {
+					logGitHubAPIError("AddComment(declined)", parts[0], parts[1], issue.Number, err)
+				}
 			} else {
 				// result exists but Success is false - mark as failed
 				// GH-2402: Use pilot-blocked for deterministic failures so we don't retry.

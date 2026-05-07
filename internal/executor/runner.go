@@ -270,6 +270,12 @@ type ExecutionResult struct {
 	// guard and the runner has already posted a structured "how to fix" comment
 	// (GH-2363). Callers should skip their generic failure-comment path.
 	TitleRejected bool
+	// Declined is true when Claude explicitly refused the task as unactionable,
+	// emitting a DECLINED:<reason> marker in its response (GH-2777).
+	// When true, callers should add pilot-needs-clarification instead of pilot-failed.
+	Declined bool
+	// DeclinedReason is the human-readable reason Claude provided for the decline.
+	DeclinedReason string
 }
 
 // ProgressCallback is a function called during execution with progress updates.
@@ -941,6 +947,26 @@ func truncateDiagnostic(s string, max int) string {
 		return s
 	}
 	return s[:max] + "\n[...truncated]"
+}
+
+// parseDeclinedReason extracts the reason from a DECLINED:<reason> marker
+// emitted by Claude when a task is explicitly unactionable. Returns the reason
+// and true if found, or ("", false) if no marker is present. GH-2777.
+func parseDeclinedReason(text string) (string, bool) {
+	const marker = "DECLINED:"
+	idx := strings.Index(text, marker)
+	if idx == -1 {
+		return "", false
+	}
+	reason := strings.TrimSpace(text[idx+len(marker):])
+	// Trim to the first newline so we don't swallow prose that follows.
+	if nl := strings.Index(reason, "\n"); nl != -1 {
+		reason = strings.TrimSpace(reason[:nl])
+	}
+	if reason == "" {
+		return "", false
+	}
+	return reason, true
 }
 
 // persistBackendDiagnostics writes the backend's stderr, error type, and final
@@ -2180,20 +2206,33 @@ retrySucceeded:
 				)
 				r.reportProgress(task.ID, "Retry", 91, "No commits detected, retrying...")
 
-				// Build retry prompt with explicit instruction
+				// Build retry prompt with explicit instruction.
+				// GH-2777: Offer DECLINED:<reason> as an escape hatch so Claude can
+				// signal that a task is genuinely unactionable rather than silently
+				// producing no output. The DECLINED path avoids the pilot-failed label
+				// and adds pilot-needs-clarification instead.
 				retryPrompt := fmt.Sprintf(`## Retry: No Changes Detected
 
-The previous execution completed but made no code changes. This task requires actual implementation.
+The previous execution completed but made no code changes.
 
 **Original Task:** %s
 
-**Instructions:**
-1. Read the task requirements carefully
-2. Implement the required changes
-3. Create at least one commit with your changes
-4. Do NOT just analyze or plan - actually write and commit code
+%s
 
-%s`, task.Title, task.Description)
+**You have two options:**
+
+**Option A — Implement:** If this task is actionable, implement the required changes and create at least one git commit. Do NOT just analyze or plan — actually write and commit code.
+
+**Option B — Decline:** If this task is genuinely unactionable (e.g. the requirements are ambiguous, the requested feature already exists, or it would require information you don't have), output exactly one line in this format and nothing else after it:
+
+  DECLINED:<concise reason — one sentence>
+
+Examples of valid DECLINED lines:
+  DECLINED: The authentication module requested already exists in internal/auth/jwt.go.
+  DECLINED: The issue asks to "improve performance" without specifying which endpoint or metric.
+  DECLINED: This requires production database credentials that are not available in this environment.
+
+Only use DECLINED if implementation is truly impossible or undefined. Do not decline due to difficulty alone.`, task.Title, task.Description)
 
 				// Execute retry
 				noopRetryAllowed, noopRetryMCP := r.executionToolOptions()
@@ -2235,16 +2274,46 @@ The previous execution completed but made no code changes. This task requires ac
 				commitCount, _ = git.CountNewCommits(ctx, baseBranch)
 				if commitCount == 0 {
 					result.Success = false
-					// GH-2328: classify this as ErrorTypeNoChanges and carry the
-					// final assistant message so the failure comment surfaces the
-					// refusal reason instead of a generic "no changes" string.
+
+					// GH-2777: Collect the last assistant text from the retry response
+					// so we can check for an explicit DECLINED marker first.
 					refusal := ""
 					if backendResult != nil {
 						refusal = strings.TrimSpace(backendResult.LastAssistantText)
-						if retryResult != nil && strings.TrimSpace(retryResult.LastAssistantText) != "" {
-							refusal = strings.TrimSpace(retryResult.LastAssistantText)
-						}
 					}
+					if retryResult != nil && strings.TrimSpace(retryResult.LastAssistantText) != "" {
+						refusal = strings.TrimSpace(retryResult.LastAssistantText)
+					}
+
+					// GH-2777: Check for an explicit DECLINED:<reason> marker before
+					// classifying as a generic no_changes failure. DECLINED avoids
+					// pilot-failed and instead adds pilot-needs-clarification.
+					if declinedReason, ok := parseDeclinedReason(refusal); ok {
+						result.Declined = true
+						result.DeclinedReason = declinedReason
+						if backendResult != nil {
+							backendResult.ErrorType = string(ErrorTypeDeclined)
+						}
+						log.Warn("Task declined by executor",
+							slog.String("task_id", task.ID),
+							slog.String("reason", declinedReason),
+						)
+						r.reportProgress(task.ID, "Declined", 100, "Task declined: "+declinedReason)
+						r.persistBackendDiagnostics(task.ID, backendResult)
+
+						if recorder != nil {
+							recorder.SetModel(result.ModelName)
+							recorder.SetNavigator(state.hasNavigator)
+							if finErr := recorder.Finish("declined"); finErr != nil {
+								log.Warn("Failed to finish recording", slog.Any("error", finErr))
+							}
+						}
+						return result, nil
+					}
+
+					// GH-2328: classify this as ErrorTypeNoChanges and carry the
+					// final assistant message so the failure comment surfaces the
+					// refusal reason instead of a generic "no changes" string.
 					if refusal != "" {
 						result.Error = fmt.Sprintf("no_changes: Claude completed but made no code changes after retry — %s", refusal)
 					} else {
@@ -3162,7 +3231,9 @@ func (r *Runner) recordLearning(ctx context.Context, task *Task, result *Executi
 		return
 	}
 	statusStr := "completed"
-	if !result.Success {
+	if result.Declined {
+		statusStr = "declined"
+	} else if !result.Success {
 		statusStr = "failed"
 	}
 	exec := &memory.Execution{
