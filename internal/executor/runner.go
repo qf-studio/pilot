@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -42,6 +43,22 @@ func IsPermanentFailure(errStr string) bool {
 		}
 	}
 	return false
+}
+
+// declinedLineRe matches a DECLINED:<reason> marker that the model may emit
+// to signal the task is unactionable. GH-2754.
+var declinedLineRe = regexp.MustCompile(`(?m)^DECLINED:\s*(.+?)\s*$`)
+
+// parseDeclinedReason scans the last 20 lines of text for a DECLINED:<reason>
+// marker. Returns the reason and true when found. The last match wins so the
+// model can revise mid-response.
+func parseDeclinedReason(text string) (string, bool) {
+	matches := declinedLineRe.FindAllStringSubmatch(text, -1)
+	if len(matches) == 0 {
+		return "", false
+	}
+	last := matches[len(matches)-1]
+	return last[1], true
 }
 
 // StreamEvent represents a Claude Code stream-json event
@@ -270,6 +287,12 @@ type ExecutionResult struct {
 	// guard and the runner has already posted a structured "how to fix" comment
 	// (GH-2363). Callers should skip their generic failure-comment path.
 	TitleRejected bool
+	// Declined indicates the model explicitly signalled DECLINED:<reason>,
+	// meaning it judged the task unactionable. Callers should apply the
+	// pilot-needs-clarification label instead of pilot-failed. GH-2754.
+	Declined bool
+	// DeclinedReason is the model-provided explanation from the DECLINED marker.
+	DeclinedReason string
 }
 
 // ProgressCallback is a function called during execution with progress updates.
@@ -2180,18 +2203,32 @@ retrySucceeded:
 				)
 				r.reportProgress(task.ID, "Retry", 91, "No commits detected, retrying...")
 
-				// Build retry prompt with explicit instruction
+				// Build retry prompt with explicit instruction.
+				// GH-2754: offer DECLINED as structured output so the model can
+				// signal unactionable tasks instead of silently producing no commits.
 				retryPrompt := fmt.Sprintf(`## Retry: No Changes Detected
 
-The previous execution completed but made no code changes. This task requires actual implementation.
+The previous execution completed but made no code changes.
 
 **Original Task:** %s
 
-**Instructions:**
-1. Read the task requirements carefully
-2. Implement the required changes
-3. Create at least one commit with your changes
-4. Do NOT just analyze or plan - actually write and commit code
+You have two valid paths:
+
+**Path A — Implement**: If the task is actionable, implement the required changes
+and create at least one commit. Do NOT just analyze or plan — write and commit code.
+
+**Path B — Decline**: If the task is genuinely unactionable (ambiguous, out of scope,
+requires missing context, contradicts existing code, or is already done), end your
+response with EXACTLY this line as the last non-empty line:
+
+    DECLINED: <concise reason in one sentence>
+
+Examples of valid declines:
+- DECLINED: Issue asks to remove a feature that does not exist in this codebase.
+- DECLINED: Requirements are contradictory — cannot both add and remove the cache layer.
+- DECLINED: Task requires credentials not available in this environment.
+
+Do NOT emit DECLINED if the task is implementable, even if difficult.
 
 %s`, task.Title, task.Description)
 
@@ -2245,6 +2282,44 @@ The previous execution completed but made no code changes. This task requires ac
 							refusal = strings.TrimSpace(retryResult.LastAssistantText)
 						}
 					}
+
+					// GH-2754: check for explicit DECLINED marker before falling
+					// back to the generic no_changes failure path.
+					if reason, ok := parseDeclinedReason(refusal); ok {
+						result.Declined = true
+						result.DeclinedReason = reason
+						result.Error = fmt.Sprintf("declined: %s", reason)
+						if backendResult != nil {
+							backendResult.ErrorType = string(ErrorTypeDeclined)
+						}
+						log.Info("Task declined by model",
+							slog.String("task_id", task.ID),
+							slog.String("reason", reason),
+						)
+						r.reportProgress(task.ID, "Declined", 100, fmt.Sprintf("Task declined: %s", reason))
+						r.persistBackendDiagnostics(task.ID, backendResult)
+						r.emitAlertEvent(AlertEvent{
+							Type:      AlertEventTypeTaskFailed,
+							TaskID:    task.ID,
+							TaskTitle: task.Title,
+							Project:   task.ProjectPath,
+							Error:     result.Error,
+							Metadata: map[string]string{
+								"reason":          "declined",
+								"declined_reason": reason,
+							},
+							Timestamp: time.Now(),
+						})
+						if recorder != nil {
+							recorder.SetModel(result.ModelName)
+							recorder.SetNavigator(state.hasNavigator)
+							if finErr := recorder.Finish("declined"); finErr != nil {
+								log.Warn("Failed to finish recording", slog.Any("error", finErr))
+							}
+						}
+						return result, nil
+					}
+
 					if refusal != "" {
 						result.Error = fmt.Sprintf("no_changes: Claude completed but made no code changes after retry — %s", refusal)
 					} else {

@@ -3394,6 +3394,38 @@ func TestIsPermanentFailure(t *testing.T) {
 	}
 }
 
+// TestParseDeclinedReason verifies that parseDeclinedReason correctly
+// extracts DECLINED:<reason> markers from model output. GH-2754.
+func TestParseDeclinedReason(t *testing.T) {
+	tests := []struct {
+		name       string
+		text       string
+		wantReason string
+		wantOK     bool
+	}{
+		{"empty string", "", "", false},
+		{"no marker", "I have implemented the changes and committed them.", "", false},
+		{"marker at end", "Looked at the code.\nDECLINED: Feature does not exist in this codebase.", "Feature does not exist in this codebase.", true},
+		{"marker with extra whitespace", "Some text.\nDECLINED:   trailing spaces   \nmore text", "trailing spaces", true},
+		{"marker mid-text (last wins)", "DECLINED: first reason\nSome implementation.\nDECLINED: revised reason", "revised reason", true},
+		{"partial word not matched", "I declined to do this.", "", false},
+		{"lowercase declined not matched", "declined: not a structured signal", "", false},
+		{"marker alone", "DECLINED: requires credentials not in this environment", "requires credentials not in this environment", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reason, ok := parseDeclinedReason(tt.text)
+			if ok != tt.wantOK {
+				t.Errorf("parseDeclinedReason(%q) ok = %v, want %v", tt.text, ok, tt.wantOK)
+			}
+			if reason != tt.wantReason {
+				t.Errorf("parseDeclinedReason(%q) reason = %q, want %q", tt.text, reason, tt.wantReason)
+			}
+		})
+	}
+}
+
 // TestRunnerFallbackModelName verifies that the telemetry fallback model name
 // reflects the configured backend, not a hardcoded default. GH-2428.
 func TestRunnerFallbackModelName(t *testing.T) {
