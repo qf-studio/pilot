@@ -760,6 +760,19 @@ Examples:
 						pollerOpts = append(pollerOpts, github.WithExecutionChecker(gwStore, projectPath))
 					}
 
+					// GH-2802: Wire pre-flight judge when enabled
+					if cfg.Executor != nil && cfg.Executor.PreFlightJudge != nil && cfg.Executor.PreFlightJudge.Enabled {
+						apiKey := cfg.Executor.PreFlightJudge.APIKey
+						if apiKey == "" {
+							apiKey = os.Getenv("ANTHROPIC_API_KEY")
+						}
+						pfJudge := executor.NewIntentJudge(apiKey)
+						pollerOpts = append(pollerOpts, github.WithPreFlightJudge(preFlightJudgeShim{judge: pfJudge}))
+						if gwStore != nil {
+							pollerOpts = append(pollerOpts, github.WithExecutionSaver(storeExecutionSaver{store: gwStore}))
+						}
+					}
+
 					// Create rate limit retry scheduler
 					repoParts := strings.Split(cfg.Adapters.GitHub.Repo, "/")
 					if len(repoParts) != 2 {
@@ -2075,6 +2088,19 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 					pollerOpts = append(pollerOpts, github.WithExecutionChecker(store, projPath))
 				}
 
+				// GH-2802: Wire pre-flight judge when enabled
+				if cfg.Executor != nil && cfg.Executor.PreFlightJudge != nil && cfg.Executor.PreFlightJudge.Enabled {
+					apiKey := cfg.Executor.PreFlightJudge.APIKey
+					if apiKey == "" {
+						apiKey = os.Getenv("ANTHROPIC_API_KEY")
+					}
+					pfJudge := executor.NewIntentJudge(apiKey)
+					pollerOpts = append(pollerOpts, github.WithPreFlightJudge(preFlightJudgeShim{judge: pfJudge}))
+					if store != nil {
+						pollerOpts = append(pollerOpts, github.WithExecutionSaver(storeExecutionSaver{store: store}))
+					}
+				}
+
 				// Capture variables for closures
 				sourceRepo := repoFullName
 				projPathCapture := projPath
@@ -2724,6 +2750,44 @@ func (s storeTaskChecker) IsTaskQueued(taskID string) bool {
 		return false // Don't block retry on DB errors
 	}
 	return queued
+}
+
+// preFlightJudgeShim adapts *executor.IntentJudge to the github.PreFlightJudger interface.
+// GH-2802: Keeps the poller package decoupled from the executor package.
+type preFlightJudgeShim struct {
+	judge *executor.IntentJudge
+}
+
+func (s preFlightJudgeShim) JudgeIssue(ctx context.Context, title, body, repoContext string) (github.Verdict, error) {
+	v, err := s.judge.JudgeIssue(ctx, title, body, repoContext)
+	if err != nil {
+		return github.Verdict{}, err
+	}
+	return github.Verdict{
+		Accepted:   !v.IsRejection(),
+		Decision:   string(v.Decision),
+		Reason:     v.Reason,
+		Confidence: v.Confidence,
+	}, nil
+}
+
+// storeExecutionSaver adapts *memory.Store to the github.ExecutionSaver interface.
+// GH-2802: Persists pre-flight rejection records for observability.
+type storeExecutionSaver struct {
+	store *memory.Store
+}
+
+func (s storeExecutionSaver) SaveDeclinedExecution(taskID, projectPath, status, reason string) error {
+	now := time.Now()
+	return s.store.SaveExecution(&memory.Execution{
+		ID:          fmt.Sprintf("%s-preflight-%d", taskID, now.UnixNano()),
+		TaskID:      taskID,
+		ProjectPath: projectPath,
+		Status:      status,
+		Error:       reason,
+		CreatedAt:   now,
+		CompletedAt: &now,
+	})
 }
 
 // countGitHubRepos counts unique GitHub repos from the default config and project-level entries.
