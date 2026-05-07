@@ -55,6 +55,30 @@ const NoDecomposeLabel = "no-decompose"
 // to bypass epic planning and decomposition (GH-1687).
 const NoPlanKeyword = "[no-plan]"
 
+// noDecomposePhrases are precompiled patterns that signal a task must not be split.
+// Matched against lowercased title + description (GH-2783).
+var noDecomposePhrases = []*regexp.Regexp{
+	regexp.MustCompile(`single ac list`),
+	regexp.MustCompile(`do not decompose`),
+	regexp.MustCompile(`do not split`),
+	regexp.MustCompile(`single pilot issue`),
+	regexp.MustCompile(`keep as .+ single`),
+	regexp.MustCompile(`splitting this would`),
+	regexp.MustCompile(`<!--\s*pilot:no-decompose\s*-->`),
+}
+
+// HasNoDecomposePhrase returns true when the task title or description contains
+// prose that signals the task must not be split into subtasks (GH-2783).
+func HasNoDecomposePhrase(task *Task) bool {
+	haystack := strings.ToLower(task.Title + " " + task.Description)
+	for _, re := range noDecomposePhrases {
+		if re.MatchString(haystack) {
+			return true
+		}
+	}
+	return false
+}
+
 // TaskDecomposer handles breaking complex tasks into smaller subtasks.
 type TaskDecomposer struct {
 	config     *DecomposeConfig

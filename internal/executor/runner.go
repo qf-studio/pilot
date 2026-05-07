@@ -1247,6 +1247,9 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 	if !hasNoDecompose && HasNoPlanKeyword(task) {
 		hasNoDecompose = true
 	}
+	if !hasNoDecompose && HasNoDecomposePhrase(task) {
+		hasNoDecompose = true
+	}
 
 	// GH-1588: Diagnostic logging for epic detection
 	r.log.Info("Epic detection check",
