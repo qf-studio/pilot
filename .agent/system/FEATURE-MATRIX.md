@@ -1,6 +1,6 @@
 # Pilot Feature Matrix
 
-**Last Updated:** 2026-05-08 (v2.53.0)
+**Last Updated:** 2026-05-06 (v2.53.0)
 
 ## Legend
 
@@ -190,7 +190,6 @@
 |---------|--------|---------|-------------|------------|-------|
 | Execution history | ✅ | memory | - | `memory.path` | SQLite store |
 | Lifetime metrics | ✅ | memory | - | - | Token/cost/task counts persist across restarts (v0.21.2) |
-| Autopilot metrics map persistence | ✅ | memory/autopilot | - | - | TokensConsumed/ExecutionCostUSD/ExecutionsByResult round-trip via JSON columns (GH-2856) |
 | Cross-project patterns | ✅ | memory | `pilot patterns` | - | Pattern learning |
 | Pattern search | ✅ | memory | `pilot patterns search` | - | Keyword search |
 | Pattern stats | ✅ | memory | `pilot patterns stats` | - | Usage analytics |
@@ -400,6 +399,7 @@
 | Decompose on retry | ✅ | executor | - | `retry.decompose_on_kill` | Retry via decomposition when task killed (signal:killed) (v2.10.0, GH-1729) |
 | Conventional sub-issue titles | ✅ | executor | - | - | CC-format enforced on subtask titles: re-prompt → Approach B fallback → creation guard (GH-2494) |
 | Sub-issue dedup guard | ✅ | executor | - | - | CreateSubIssues skips if open children referencing parent already exist (GH-2494) |
+| Epic sub-issue recovery | ✅ | executor | - | - | On ErrSubIssuesAlreadyExist: recover existing children; no-op if all closed, execute open ones (GH-2883) |
 | createPilotIssue chokepoint | ✅ | adapters/github, autopilot | - | - | All Pilot-internal issue creation validated through CreatePilotIssue CC gate (GH-2494) |
 
 ## Test Coverage
