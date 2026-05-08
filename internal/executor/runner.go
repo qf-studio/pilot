@@ -404,6 +404,8 @@ type Runner struct {
 	// openSubIssueCheck detects whether recent sub-issues for a parent already exist.
 	// Injectable for testing; defaults to queryRecentSubIssues (gh CLI).
 	openSubIssueCheck func(ctx context.Context, dir, parentID string) (bool, error)
+	// GH-2855: Prometheus counters for tokens, cost, and executions.
+	metricsRecorder MetricsRecorder
 }
 
 // NewRunner creates a new Runner instance with Claude Code backend by default.
@@ -838,6 +840,11 @@ func (r *Runner) SetLogStore(store *memory.Store) {
 // SetLearningLoop sets the learning loop for post-execution pattern learning.
 func (r *Runner) SetLearningLoop(loop LearningRecorder) {
 	r.learningLoop = loop
+}
+
+// SetMetricsRecorder wires the Prometheus metrics recorder for token/cost/execution counters (GH-2855).
+func (r *Runner) SetMetricsRecorder(rec MetricsRecorder) {
+	r.metricsRecorder = rec
 }
 
 // SetPatternContext sets the pattern context for pre-execution pattern injection.
@@ -2127,6 +2134,25 @@ retrySucceeded:
 	}
 	// Estimate cost based on token usage (including research tokens) with cache-aware pricing (GH-2164)
 	result.EstimatedCostUSD = estimateCostWithCache(result.TokensInput+result.ResearchTokens, result.TokensOutput, result.CacheCreationInputTokens, result.CacheReadInputTokens, result.ModelName)
+
+	// Emit Prometheus counters for token usage, cost, and execution outcome (GH-2855).
+	if r.metricsRecorder != nil {
+		model := result.ModelName
+		r.metricsRecorder.RecordTokens(model, "input", result.TokensInput+result.ResearchTokens)
+		r.metricsRecorder.RecordTokens(model, "output", result.TokensOutput)
+		if result.CacheCreationInputTokens > 0 {
+			r.metricsRecorder.RecordTokens(model, "cache_creation", result.CacheCreationInputTokens)
+		}
+		if result.CacheReadInputTokens > 0 {
+			r.metricsRecorder.RecordTokens(model, "cache_read", result.CacheReadInputTokens)
+		}
+		r.metricsRecorder.RecordCost(model, result.EstimatedCostUSD)
+		outcomeLabel := "success"
+		if !result.Success {
+			outcomeLabel = "failed"
+		}
+		r.metricsRecorder.RecordExecution(model, outcomeLabel)
+	}
 
 	if !result.Success {
 		log.Error("Task execution failed",

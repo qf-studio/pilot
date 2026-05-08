@@ -91,6 +91,27 @@ func (e *PrometheusExporter) WritePrometheus(w io.Writer) error {
 		}
 	}
 
+	// pilot_tokens_consumed_total
+	writeHelp(w, "pilot_tokens_consumed_total", "Total tokens consumed by model and direction")
+	writeType(w, "pilot_tokens_consumed_total", "counter")
+	for k, v := range snap.TokensConsumed {
+		writeCounter(w, "pilot_tokens_consumed_total", v, "model", k.Model, "direction", k.Direction)
+	}
+
+	// pilot_execution_cost_usd_total
+	writeHelp(w, "pilot_execution_cost_usd_total", "Total execution cost in USD by model")
+	writeType(w, "pilot_execution_cost_usd_total", "counter")
+	for model, cost := range snap.ExecutionCostUSD {
+		writeFloatCounter(w, "pilot_execution_cost_usd_total", cost, "model", model)
+	}
+
+	// pilot_executions_total
+	writeHelp(w, "pilot_executions_total", "Total executions by model and result")
+	writeType(w, "pilot_executions_total", "counter")
+	for k, v := range snap.ExecutionsByResult {
+		writeCounter(w, "pilot_executions_total", v, "model", k.Model, "result", k.Result)
+	}
+
 	// --- Gauges ---
 
 	// pilot_queue_depth
@@ -166,6 +187,16 @@ func writeCounter(w io.Writer, name string, value int64, labelPairs ...string) {
 	}
 	labels := formatLabels(labelPairs)
 	_, _ = fmt.Fprintf(w, "%s{%s} %d\n", name, labels, value)
+}
+
+// writeFloatCounter writes a counter metric line with a float64 value.
+func writeFloatCounter(w io.Writer, name string, value float64, labelPairs ...string) {
+	if len(labelPairs) == 0 {
+		_, _ = fmt.Fprintf(w, "%s %g\n", name, value)
+		return
+	}
+	labels := formatLabels(labelPairs)
+	_, _ = fmt.Fprintf(w, "%s{%s} %g\n", name, labels, value)
 }
 
 // writeGauge writes a gauge metric line.
