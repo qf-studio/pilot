@@ -127,6 +127,49 @@ Legend: `{{stage}}`
 
 ---
 
+## Local Dev Stack
+
+Spin up a self-contained Prometheus + Grafana stack against a locally-running Pilot daemon with a single command.
+
+### Quick Start
+
+```bash
+cd deploy/grafana
+docker compose up -d
+
+# Prometheus UI
+open http://localhost:9093
+
+# Grafana (admin / admin) — Pilot dashboard auto-loads
+open http://localhost:3334/d/pilot
+```
+
+### Ports
+
+| Service    | Host Port | Notes                              |
+|------------|-----------|-------------------------------------|
+| Prometheus | 9093      | Avoids Navigator's 9092             |
+| Grafana    | 3334      | Avoids Navigator's 3333             |
+| Pilot      | 9091      | Scraped via `host.docker.internal` |
+
+### Linux Note
+
+On Linux, add `--add-host=host.docker.internal:host-gateway` or use Docker Engine 20.10+ (the compose file already includes `extra_hosts: host.docker.internal:host-gateway` for the Prometheus service).
+
+### Stop and Clean
+
+```bash
+# Stop (keep volumes)
+docker compose down
+
+# Stop and remove all data
+docker compose down -v
+```
+
+See [`deploy/grafana/README.md`](https://github.com/qf-studio/pilot/blob/main/deploy/grafana/README.md) for the full panel reference and troubleshooting guide.
+
+---
+
 ## Alerting Rules
 
 ```yaml
