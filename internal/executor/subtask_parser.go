@@ -1,58 +1,71 @@
 package executor
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"net/http"
-	"os"
+	"os/exec"
 	"strings"
 	"time"
 )
 
-// SubtaskParser extracts subtasks from planning output using the Anthropic Haiku API.
+const subtaskExtractionSystemPrompt = `Extract subtasks from this planning output as JSON. Return ONLY a JSON object with a "subtasks" array. Each subtask must have: "order" (integer), "title" (string), "description" (string).
+
+Example response:
+{"subtasks": [{"order": 1, "title": "Set up database", "description": "Create tables and migrations"}, {"order": 2, "title": "Add API endpoints", "description": "REST endpoints for CRUD operations"}]}`
+
+const subtaskReformatSystemPrompt = `Reformat subtask titles to conventional-commits format. Use the parent task title as context for type and scope. Return ONLY a JSON object with a "subtasks" array. Each subtask must have "order" (integer) and "title" (string) in conventional-commits format (type(scope): description).`
+
+// SubtaskParser extracts subtasks from planning output using the claude subprocess.
 // Part of the epic planning pipeline: PlanEpic → parseSubtasksWithFallback → SubtaskParser.
-// When the API is unavailable or fails, parseSubtasksWithFallback falls back to
+// When the claude binary is missing or fails, parseSubtasksWithFallback falls back to
 // regex-based parseSubtasks() in epic.go.
 type SubtaskParser struct {
-	apiKey     string
-	baseURL    string // Base URL for API (default: https://api.anthropic.com)
-	httpClient *http.Client
-	model      string
-	log        *slog.Logger
+	claudeCmd string
+	model     string
+	timeout   time.Duration
+	log       *slog.Logger
+	cmdRunner func(ctx context.Context, args ...string) ([]byte, error)
 }
 
-// NewSubtaskParser creates a SubtaskParser using the ANTHROPIC_API_KEY env var.
-// Returns nil if the API key is not set (caller should use regex fallback).
-func NewSubtaskParser(log *slog.Logger) *SubtaskParser {
-	apiKey := os.Getenv("ANTHROPIC_API_KEY")
-	if apiKey == "" {
+// NewSubtaskParser creates a SubtaskParser using the claude subprocess.
+// Returns nil when the claude binary is not on PATH (caller should use regex fallback).
+func NewSubtaskParser(claudeCmd string, log *slog.Logger) *SubtaskParser {
+	if claudeCmd == "" {
+		claudeCmd = "claude"
+	}
+	if _, err := exec.LookPath(claudeCmd); err != nil {
+		if log != nil {
+			log.Warn("claude binary not found, subtask parser disabled (regex fallback will be used)",
+				"command", claudeCmd, "error", err)
+		}
 		return nil
 	}
+	p := &SubtaskParser{
+		claudeCmd: claudeCmd,
+		model:     "claude-haiku-4-5-20251001",
+		timeout:   30 * time.Second,
+		log:       log,
+	}
+	p.cmdRunner = p.defaultRunner
+	return p
+}
+
+// newSubtaskParserWithRunner creates a SubtaskParser with an injectable runner for testing.
+func newSubtaskParserWithRunner(runner func(ctx context.Context, args ...string) ([]byte, error), log *slog.Logger) *SubtaskParser {
 	return &SubtaskParser{
-		apiKey:  apiKey,
-		baseURL: "https://api.anthropic.com",
-		httpClient: &http.Client{
-			Timeout: 10 * time.Second,
-		},
-		model: "claude-haiku-4-5-20251001",
-		log:   log,
+		claudeCmd: "claude",
+		model:     "claude-haiku-4-5-20251001",
+		timeout:   30 * time.Second,
+		log:       log,
+		cmdRunner: runner,
 	}
 }
 
-// newSubtaskParserWithURL creates a SubtaskParser with a custom base URL (for testing).
-func newSubtaskParserWithURL(apiKey, baseURL string, log *slog.Logger) *SubtaskParser {
-	return &SubtaskParser{
-		apiKey:  apiKey,
-		baseURL: baseURL,
-		httpClient: &http.Client{
-			Timeout: 10 * time.Second,
-		},
-		model: "claude-haiku-4-5-20251001",
-		log:   log,
-	}
+func (p *SubtaskParser) defaultRunner(ctx context.Context, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, p.claudeCmd, args...)
+	return cmd.Output()
 }
 
 // subtaskJSON is the JSON schema for subtask extraction.
@@ -62,85 +75,46 @@ type subtaskJSON struct {
 	Description string `json:"description"`
 }
 
-// subtasksResponse wraps the array of subtasks in the API response.
+// subtasksResponse wraps the array of subtasks in the response.
 type subtasksResponse struct {
 	Subtasks []subtaskJSON `json:"subtasks"`
 }
 
-// Parse sends the planning output to Haiku for structured extraction.
-// Returns the extracted subtasks or an error if the API call fails.
+// stripJSONFences removes markdown code fence wrappers that Claude sometimes adds.
+func stripJSONFences(b []byte) []byte {
+	s := strings.TrimSpace(string(b))
+	s = strings.TrimPrefix(s, "```json")
+	s = strings.TrimPrefix(s, "```")
+	s = strings.TrimSuffix(s, "```")
+	return []byte(strings.TrimSpace(s))
+}
+
+// Parse sends the planning output to claude subprocess for structured extraction.
+// Returns the extracted subtasks or an error if the subprocess call fails.
 func (p *SubtaskParser) Parse(ctx context.Context, output string) ([]PlannedSubtask, error) {
 	if p == nil {
 		return nil, fmt.Errorf("subtask parser is nil")
 	}
 
-	systemPrompt := `Extract subtasks from this planning output as JSON. Return ONLY a JSON object with a "subtasks" array. Each subtask must have: "order" (integer), "title" (string), "description" (string).
+	prompt := fmt.Sprintf("%s\n\n---\n\n%s", subtaskExtractionSystemPrompt, output)
 
-Example response:
-{"subtasks": [{"order": 1, "title": "Set up database", "description": "Create tables and migrations"}, {"order": 2, "title": "Add API endpoints", "description": "REST endpoints for CRUD operations"}]}`
+	ctx, cancel := context.WithTimeout(ctx, p.timeout)
+	defer cancel()
 
-	requestBody := map[string]interface{}{
-		"model":      p.model,
-		"max_tokens": 4096,
-		"system":     systemPrompt,
-		"messages": []map[string]string{
-			{
-				"role":    "user",
-				"content": output,
-			},
-		},
-	}
-
-	jsonBody, err := json.Marshal(requestBody)
+	out, err := p.cmdRunner(ctx, "--print", "-p", prompt, "--model", p.model, "--output-format", "text")
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
+		return nil, fmt.Errorf("subtask parser subprocess: %w", err)
 	}
 
-	url := p.baseURL + "/v1/messages"
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(jsonBody))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-api-key", p.apiKey)
-	req.Header.Set("anthropic-version", "2023-06-01")
-
-	resp, err := p.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("API request failed: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("API returned status %d", resp.StatusCode)
-	}
-
-	// Parse the Anthropic API response envelope
-	var apiResp struct {
-		Content []struct {
-			Text string `json:"text"`
-		} `json:"content"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
-	}
-
-	if len(apiResp.Content) == 0 {
-		return nil, fmt.Errorf("empty response from API")
-	}
-
-	// Parse the JSON subtasks from the response text
 	var parsed subtasksResponse
-	if err := json.Unmarshal([]byte(apiResp.Content[0].Text), &parsed); err != nil {
+	if err := json.Unmarshal(stripJSONFences(out), &parsed); err != nil {
 		return nil, fmt.Errorf("failed to parse subtasks JSON: %w", err)
 	}
 
 	if len(parsed.Subtasks) == 0 {
-		return nil, fmt.Errorf("no subtasks in API response")
+		return nil, fmt.Errorf("no subtasks in subprocess response")
 	}
 
-	// Convert to PlannedSubtask slice
 	result := make([]PlannedSubtask, len(parsed.Subtasks))
 	for i, s := range parsed.Subtasks {
 		result[i] = PlannedSubtask{
@@ -153,10 +127,9 @@ Example response:
 	return result, nil
 }
 
-// ReformatTitles sends a batch of subtask titles to the LLM and asks it to rewrite
-// them in conventional-commits format. parentTitle provides type/scope context.
+// ReformatTitles sends a batch of subtask titles to the claude subprocess and asks it to
+// rewrite them in conventional-commits format. parentTitle provides type/scope context.
 // Only the titles are updated; Order and Description are preserved from the input.
-// Returns an error when the parser is nil, the API call fails, or the response is empty.
 func (p *SubtaskParser) ReformatTitles(ctx context.Context, parentTitle string, subtasks []PlannedSubtask) ([]PlannedSubtask, error) {
 	if p == nil {
 		return nil, fmt.Errorf("subtask parser is nil")
@@ -167,58 +140,18 @@ func (p *SubtaskParser) ReformatTitles(ctx context.Context, parentTitle string, 
 		fmt.Fprintf(&sb, "- Order %d: %q\n", st.Order, st.Title)
 	}
 
-	userMsg := fmt.Sprintf(
-		"Parent task: %q\n\nReformat these subtask titles to conventional-commits format (type(scope): description):\n%s\n"+
+	prompt := fmt.Sprintf(
+		"%s\n\n---\n\nParent task: %q\n\nReformat these subtask titles to conventional-commits format (type(scope): description):\n%s\n"+
 			`Return ONLY JSON: {"subtasks": [{"order": 1, "title": "feat(x): do y"}, ...]}`,
-		parentTitle, sb.String(),
+		subtaskReformatSystemPrompt, parentTitle, sb.String(),
 	)
 
-	systemPrompt := `Reformat subtask titles to conventional-commits format. Use the parent task title as context for type and scope. Return ONLY a JSON object with a "subtasks" array. Each subtask must have "order" (integer) and "title" (string) in conventional-commits format (type(scope): description).`
+	ctx, cancel := context.WithTimeout(ctx, p.timeout)
+	defer cancel()
 
-	requestBody := map[string]interface{}{
-		"model":      p.model,
-		"max_tokens": 1024,
-		"system":     systemPrompt,
-		"messages": []map[string]string{
-			{"role": "user", "content": userMsg},
-		},
-	}
-
-	jsonBody, err := json.Marshal(requestBody)
+	out, err := p.cmdRunner(ctx, "--print", "-p", prompt, "--model", p.model, "--output-format", "text")
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
-	}
-
-	url := p.baseURL + "/v1/messages"
-	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(jsonBody))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-api-key", p.apiKey)
-	req.Header.Set("anthropic-version", "2023-06-01")
-
-	resp, err := p.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("API request failed: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("API returned status %d", resp.StatusCode)
-	}
-
-	var apiResp struct {
-		Content []struct {
-			Text string `json:"text"`
-		} `json:"content"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
-	}
-	if len(apiResp.Content) == 0 {
-		return nil, fmt.Errorf("empty response from API")
+		return nil, fmt.Errorf("subtask reformat subprocess: %w", err)
 	}
 
 	var parsed struct {
@@ -227,14 +160,13 @@ func (p *SubtaskParser) ReformatTitles(ctx context.Context, parentTitle string, 
 			Title string `json:"title"`
 		} `json:"subtasks"`
 	}
-	if err := json.Unmarshal([]byte(apiResp.Content[0].Text), &parsed); err != nil {
+	if err := json.Unmarshal(stripJSONFences(out), &parsed); err != nil {
 		return nil, fmt.Errorf("failed to parse reformatted titles JSON: %w", err)
 	}
 	if len(parsed.Subtasks) == 0 {
 		return nil, fmt.Errorf("no reformatted titles in response")
 	}
 
-	// Build order→title map and apply back to the input subtasks (preserve Description/Order).
 	byOrder := make(map[int]string, len(parsed.Subtasks))
 	for _, s := range parsed.Subtasks {
 		byOrder[s.Order] = s.Title
@@ -251,8 +183,8 @@ func (p *SubtaskParser) ReformatTitles(ctx context.Context, parentTitle string, 
 }
 
 // parseSubtasksWithFallback is the primary entry point for subtask extraction.
-// Tries Haiku structured extraction first (SubtaskParser.Parse), then falls back
-// to regex-based parseSubtasks() in epic.go if the API is unavailable or fails.
+// Tries claude subprocess extraction first (SubtaskParser.Parse), then falls back
+// to regex-based parseSubtasks() in epic.go if the subprocess is unavailable or fails.
 func parseSubtasksWithFallback(parser *SubtaskParser, output string) []PlannedSubtask {
 	if parser != nil {
 		subtasks, err := parser.Parse(context.Background(), output)

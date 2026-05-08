@@ -2,9 +2,7 @@ package executor
 
 import (
 	"context"
-	"encoding/json"
-	"net/http"
-	"net/http/httptest"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -63,21 +61,10 @@ func TestValidateAndFixSubtaskTitles_PlaceholderFallback(t *testing.T) {
 // TestValidateAndFixSubtaskTitles_RepromptSucceeds verifies that a SubtaskParser
 // re-prompt can fix non-conventional titles via the LLM before Approach B is needed.
 func TestValidateAndFixSubtaskTitles_RepromptSucceeds(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		resp := map[string]interface{}{
-			"content": []map[string]interface{}{
-				{
-					"type": "text",
-					"text": `{"subtasks": [{"order": 1, "title": "feat(auth): add OAuth integration"}, {"order": 2, "title": "fix(api): handle nil response"}]}`,
-				},
-			},
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(resp)
-	}))
-	defer server.Close()
-
-	parser := newSubtaskParserWithURL("test-api-key", server.URL, nil)
+	runner := func(_ context.Context, args ...string) ([]byte, error) {
+		return []byte(`{"subtasks": [{"order": 1, "title": "feat(auth): add OAuth integration"}, {"order": 2, "title": "fix(api): handle nil response"}]}`), nil
+	}
+	parser := newSubtaskParserWithRunner(runner, nil)
 
 	subtasks := []PlannedSubtask{
 		{Order: 1, Title: "Add OAuth integration"},  // not conventional
@@ -95,22 +82,19 @@ func TestValidateAndFixSubtaskTitles_RepromptSucceeds(t *testing.T) {
 			t.Errorf("subtask %d title %q: expected conventional-commit format after re-prompt", i+1, st.Title)
 		}
 	}
-	// Verify these are the API-returned titles, not Approach B fallbacks
 	if result[0].Title != "feat(auth): add OAuth integration" {
 		t.Errorf("subtask 1 title = %q; want re-prompt result", result[0].Title)
 	}
 }
 
 // TestValidateAndFixSubtaskTitles_ParentInheritanceFallback verifies Approach B:
-// when the LLM re-prompt fails (server 500), the parent's type/scope is inherited
+// when the LLM re-prompt fails, the parent's type/scope is inherited
 // and the resulting title is valid conventional-commit format.
 func TestValidateAndFixSubtaskTitles_ParentInheritanceFallback(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-	}))
-	defer server.Close()
-
-	parser := newSubtaskParserWithURL("test-api-key", server.URL, nil)
+	runner := func(_ context.Context, args ...string) ([]byte, error) {
+		return nil, errors.New("subprocess failed: exit status 1")
+	}
+	parser := newSubtaskParserWithRunner(runner, nil)
 
 	subtasks := []PlannedSubtask{
 		{Order: 1, Title: "GH-100: Subtask 1"}, // placeholder
@@ -281,23 +265,12 @@ func TestApplyParentTypeScopeFallback(t *testing.T) {
 }
 
 // TestReformatTitles_SubtaskParser verifies that ReformatTitles correctly parses
-// the LLM response and updates titles by order.
+// the subprocess response and updates titles by order.
 func TestReformatTitles_SubtaskParser(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		resp := map[string]interface{}{
-			"content": []map[string]interface{}{
-				{
-					"type": "text",
-					"text": `{"subtasks": [{"order": 1, "title": "feat(db): add migration"}, {"order": 2, "title": "chore(api): wire endpoint"}]}`,
-				},
-			},
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(resp)
-	}))
-	defer server.Close()
-
-	parser := newSubtaskParserWithURL("test-api-key", server.URL, nil)
+	runner := func(_ context.Context, args ...string) ([]byte, error) {
+		return []byte(`{"subtasks": [{"order": 1, "title": "feat(db): add migration"}, {"order": 2, "title": "chore(api): wire endpoint"}]}`), nil
+	}
+	parser := newSubtaskParserWithRunner(runner, nil)
 
 	subtasks := []PlannedSubtask{
 		{Order: 1, Title: "Add migration", Description: "Create user table"},
@@ -311,7 +284,6 @@ func TestReformatTitles_SubtaskParser(t *testing.T) {
 	if len(result) != 2 {
 		t.Fatalf("expected 2 subtasks, got %d", len(result))
 	}
-	// Titles should be updated
 	if result[0].Title != "feat(db): add migration" {
 		t.Errorf("subtask 1 title = %q, want %q", result[0].Title, "feat(db): add migration")
 	}
