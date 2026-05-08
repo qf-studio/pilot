@@ -2215,11 +2215,12 @@ func TestCreateSubIssues_RefusesRecentlyClosedSiblings(t *testing.T) {
 	}
 }
 
-// TestIsParentDone_LiveFallback exercises the GH-201 defensive path: when
-// State and Labels are both empty but the task ID looks like a GitHub issue,
-// isParentDone consults a live lookup. Without this fallback, stale dispatcher
-// rows that drop State/Labels bypass the gate and spawn spurious sub-issues
-// (the 2026-05-08 GH-201 OAuth incident, 70+ dupes).
+// TestIsParentDone_LiveFallback exercises the GH-201 defensive path: whenever
+// State is empty and the task ID looks like a GitHub issue, isParentDone must
+// consult a live lookup — Labels alone are inconclusive because dispatcher-
+// restored Tasks carry stale labels from queue time. Without this fallback,
+// stale rows bypass the gate and spawn spurious sub-issues (the 2026-05-08
+// GH-201 OAuth incident, 70+ dupes).
 func TestIsParentDone_LiveFallback(t *testing.T) {
 	cases := []struct {
 		name           string
@@ -2257,14 +2258,24 @@ func TestIsParentDone_LiveFallback(t *testing.T) {
 			want:           false,
 		},
 		{
-			name:           "populated labels skip fallback",
-			task:           &Task{ID: "GH-201", Labels: []string{"area:executor"}},
+			// Stale-labels case — the GH-201 residual hole. Labels populated
+			// with non-terminal values from queue time, current GitHub state
+			// is closed. Must consult fallback because labels are inconclusive.
+			name:           "non-terminal labels still consult fallback when state empty",
+			task:           &Task{ID: "GH-201", Labels: []string{"pilot", "area:executor"}},
 			fallbackResult: true,
-			fallbackCalled: false,
+			fallbackCalled: true,
+			want:           true,
+		},
+		{
+			name:           "non-terminal labels + live says open → not done",
+			task:           &Task{ID: "GH-201", Labels: []string{"pilot"}},
+			fallbackResult: false,
+			fallbackCalled: true,
 			want:           false,
 		},
 		{
-			name: "terminal label still wins without fallback",
+			name: "terminal label short-circuits before fallback",
 			task: &Task{ID: "GH-201", Labels: []string{"pilot-done"}},
 			// fallback should not be reached when a terminal label is present
 			fallbackResult: false,
