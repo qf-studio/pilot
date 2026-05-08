@@ -5,20 +5,35 @@ import (
 	"time"
 )
 
+// tokenKey identifies a token bucket by model and direction (input/output/cache_read/etc).
+type tokenKey struct {
+	Model     string
+	Direction string
+}
+
+// execKey identifies an execution bucket by model and result (success/failed/etc).
+type execKey struct {
+	Model  string
+	Result string
+}
+
 // Metrics collects autopilot operational metrics.
 // All methods are goroutine-safe.
 type Metrics struct {
 	mu sync.RWMutex
 
 	// Counters
-	IssuesProcessed       map[string]int64 // result → count (success, failed, rate_limited)
+	IssuesProcessed       map[string]int64    // result → count (success, failed, rate_limited)
 	PRsMerged             int64
 	PRsFailed             int64
 	PRsConflicting        int64
 	CircuitBreakerTrips   int64
-	APIErrors             map[string]int64 // endpoint → count
-	LabelCleanups         map[string]int64 // label → count
-	ApprovalPersistMisses map[string]int64 // kind → count (request_id, decision)
+	APIErrors             map[string]int64    // endpoint → count
+	LabelCleanups         map[string]int64    // label → count
+	ApprovalPersistMisses map[string]int64    // kind → count (request_id, decision)
+	TokensConsumed        map[tokenKey]int64  // {model,direction} → token count
+	ExecutionCostUSD      map[string]float64  // model → cumulative USD cost
+	ExecutionsByResult    map[execKey]int64   // {model,result} → execution count
 
 	// Gauges (point-in-time values)
 	ActivePRsByStage map[PRStage]int
@@ -44,12 +59,15 @@ func NewMetrics() *Metrics {
 		APIErrors:             make(map[string]int64),
 		LabelCleanups:         make(map[string]int64),
 		ApprovalPersistMisses: make(map[string]int64),
-		ActivePRsByStage:   make(map[PRStage]int),
-		PRTimeToMerge:      make([]time.Duration, 0, 100),
-		CIWaitDurations:    make([]time.Duration, 0, 100),
-		ExecutionDurations: make([]time.Duration, 0, 100),
-		apiErrorTimes:      make([]time.Time, 0, 100),
-		maxSamples:         1000,
+		TokensConsumed:        make(map[tokenKey]int64),
+		ExecutionCostUSD:      make(map[string]float64),
+		ExecutionsByResult:    make(map[execKey]int64),
+		ActivePRsByStage:      make(map[PRStage]int),
+		PRTimeToMerge:         make([]time.Duration, 0, 100),
+		CIWaitDurations:       make([]time.Duration, 0, 100),
+		ExecutionDurations:    make([]time.Duration, 0, 100),
+		apiErrorTimes:         make([]time.Time, 0, 100),
+		maxSamples:            1000,
 	}
 }
 
@@ -115,6 +133,27 @@ func (m *Metrics) RecordApprovalPersistMiss(kind string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.ApprovalPersistMisses[kind]++
+}
+
+// RecordTokens adds n tokens to the {model, direction} bucket.
+func (m *Metrics) RecordTokens(model, direction string, n int64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.TokensConsumed[tokenKey{Model: model, Direction: direction}] += n
+}
+
+// RecordCost adds costUSD to the per-model cumulative cost.
+func (m *Metrics) RecordCost(model string, costUSD float64) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ExecutionCostUSD[model] += costUSD
+}
+
+// RecordExecution increments the {model, result} execution counter.
+func (m *Metrics) RecordExecution(model, result string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ExecutionsByResult[execKey{Model: model, Result: result}]++
 }
 
 // --- Gauge updates ---
@@ -193,15 +232,18 @@ func (m *Metrics) Snapshot() MetricsSnapshot {
 		APIErrors:             copyStringIntMap(m.APIErrors),
 		LabelCleanups:         copyStringIntMap(m.LabelCleanups),
 		ApprovalPersistMisses: copyStringIntMap(m.ApprovalPersistMisses),
+		TokensConsumed:        copyTokenKeyMap(m.TokensConsumed),
+		ExecutionCostUSD:      copyStringFloatMap(m.ExecutionCostUSD),
+		ExecutionsByResult:    copyExecKeyMap(m.ExecutionsByResult),
 		ActivePRsByStage:      copyStageIntMap(m.ActivePRsByStage),
-		QueueDepth:           m.QueueDepth,
-		FailedQueueDepth:     m.FailedQueueDepth,
-		TotalActivePRs:       sumStageMap(m.ActivePRsByStage),
-		AvgPRTimeToMerge:     avgDuration(m.PRTimeToMerge),
-		AvgCIWaitDuration:    avgDuration(m.CIWaitDurations),
-		AvgExecutionDuration: avgDuration(m.ExecutionDurations),
-		APIErrorRate:         m.apiErrorRate(),
-		SnapshotAt:           time.Now(),
+		QueueDepth:            m.QueueDepth,
+		FailedQueueDepth:      m.FailedQueueDepth,
+		TotalActivePRs:        sumStageMap(m.ActivePRsByStage),
+		AvgPRTimeToMerge:      avgDuration(m.PRTimeToMerge),
+		AvgCIWaitDuration:     avgDuration(m.CIWaitDurations),
+		AvgExecutionDuration:  avgDuration(m.ExecutionDurations),
+		APIErrorRate:          m.apiErrorRate(),
+		SnapshotAt:            time.Now(),
 	}
 
 	// Calculate success rate
@@ -240,6 +282,9 @@ type MetricsSnapshot struct {
 	APIErrors             map[string]int64
 	LabelCleanups         map[string]int64
 	ApprovalPersistMisses map[string]int64
+	TokensConsumed        map[tokenKey]int64
+	ExecutionCostUSD      map[string]float64
+	ExecutionsByResult    map[execKey]int64
 
 	// Gauges
 	ActivePRsByStage map[PRStage]int
@@ -329,4 +374,28 @@ func avgDuration(samples []time.Duration) time.Duration {
 		sum += d
 	}
 	return sum / time.Duration(len(samples))
+}
+
+func copyTokenKeyMap(src map[tokenKey]int64) map[tokenKey]int64 {
+	dst := make(map[tokenKey]int64, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
+}
+
+func copyStringFloatMap(src map[string]float64) map[string]float64 {
+	dst := make(map[string]float64, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
+}
+
+func copyExecKeyMap(src map[execKey]int64) map[execKey]int64 {
+	dst := make(map[execKey]int64, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
 }
