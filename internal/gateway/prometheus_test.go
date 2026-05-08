@@ -2,6 +2,8 @@ package gateway
 
 import (
 	"bytes"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -227,4 +229,51 @@ func TestFormatLabels(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestMetricsEndpointWiring verifies that /metrics returns Prometheus text when
+// SetMetricsSource is called, and the fallback response when it is not.
+func TestMetricsEndpointWiring(t *testing.T) {
+	t.Run("with metrics source returns 200 and pilot counters", func(t *testing.T) {
+		srv := NewServer(&Config{Host: "127.0.0.1", Port: 0})
+		m := autopilot.NewMetrics()
+		m.RecordIssueProcessed("success")
+		srv.SetMetricsSource(m)
+
+		req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+		w := httptest.NewRecorder()
+		srv.handleMetrics(w, req)
+
+		resp := w.Result()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("expected 200, got %d", resp.StatusCode)
+		}
+		body := w.Body.String()
+		for _, want := range []string{
+			"pilot_issues_processed_total",
+			"pilot_prs_merged_total",
+			"pilot_prs_failed_total",
+			"pilot_prs_conflicting_total",
+		} {
+			if !strings.Contains(body, want) {
+				t.Errorf("body missing %q", want)
+			}
+		}
+	})
+
+	t.Run("without metrics source returns 503 fallback", func(t *testing.T) {
+		srv := NewServer(&Config{Host: "127.0.0.1", Port: 0})
+
+		req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+		w := httptest.NewRecorder()
+		srv.handleMetrics(w, req)
+
+		resp := w.Result()
+		if resp.StatusCode != http.StatusServiceUnavailable {
+			t.Fatalf("expected 503, got %d", resp.StatusCode)
+		}
+		if !strings.Contains(w.Body.String(), "Metrics not configured") {
+			t.Errorf("expected 'Metrics not configured' in body, got: %s", w.Body.String())
+		}
+	})
 }
