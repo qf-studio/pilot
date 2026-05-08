@@ -3826,10 +3826,11 @@ func TestExecute_PopulatesEffortAndComplexityOnResult(t *testing.T) {
 
 // fakeMetricsRecorder captures calls to the MetricsRecorder interface for assertions.
 type fakeMetricsRecorder struct {
-	mu         sync.Mutex
-	tokenCalls []struct{ model, direction string; n int64 }
-	costCalls  []struct{ model string; costUSD float64 }
-	execCalls  []struct{ model, result string }
+	mu            sync.Mutex
+	tokenCalls    []struct{ model, direction string; n int64 }
+	costCalls     []struct{ model string; costUSD float64 }
+	execCalls     []struct{ model, result string }
+	durationCalls []time.Duration
 }
 
 func (f *fakeMetricsRecorder) RecordTokens(model, direction string, n int64) {
@@ -3848,6 +3849,12 @@ func (f *fakeMetricsRecorder) RecordExecution(model, result string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.execCalls = append(f.execCalls, struct{ model, result string }{model, result})
+}
+
+func (f *fakeMetricsRecorder) RecordExecutionDuration(d time.Duration) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.durationCalls = append(f.durationCalls, d)
 }
 
 // TestMetricsRecorder_CalledOncePerExecution verifies that SetMetricsRecorder
@@ -3913,5 +3920,11 @@ func TestMetricsRecorder_CalledOncePerExecution(t *testing.T) {
 
 	if len(rec.tokenCalls) == 0 {
 		t.Error("RecordTokens not called; want at least one call for input tokens")
+	}
+
+	if len(rec.durationCalls) != 1 {
+		t.Errorf("RecordExecutionDuration called %d times, want exactly 1", len(rec.durationCalls))
+	} else if rec.durationCalls[0] <= 0 {
+		t.Errorf("RecordExecutionDuration got %v, want positive duration", rec.durationCalls[0])
 	}
 }

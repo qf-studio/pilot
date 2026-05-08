@@ -1112,6 +1112,11 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 // This prevents recursive worktree creation in sub-issues and decomposed tasks.
 func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktree bool) (*ExecutionResult, error) {
 	start := time.Now()
+	defer func() {
+		if r.metricsRecorder != nil {
+			r.metricsRecorder.RecordExecutionDuration(time.Since(start))
+		}
+	}()
 
 	// Signal monitor that execution is actually starting (queued→running transition)
 	if r.monitor != nil {
