@@ -2,12 +2,11 @@ package executor
 
 import (
 	"context"
-	"encoding/json"
+	"fmt"
 	"log/slog"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"testing"
+	"time"
 )
 
 // samplePlanningOutput is realistic Claude --print output used across tests.
@@ -19,37 +18,12 @@ const samplePlanningOutput = `Based on the codebase analysis, here is the implem
 **4. Add frontend settings page** - React component with form controls bound to the API`
 
 func TestSubtaskParserParse_HappyPath(t *testing.T) {
-	// Mock Haiku endpoint returns structured JSON
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/messages" {
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-		if r.Header.Get("x-api-key") != "test-api-key" {
-			w.WriteHeader(http.StatusUnauthorized)
-			return
-		}
-		if r.Header.Get("anthropic-version") != "2023-06-01" {
-			w.WriteHeader(http.StatusBadRequest)
-			return
-		}
-
-		// Return structured subtasks via Anthropic API response format
-		resp := map[string]interface{}{
-			"content": []map[string]interface{}{
-				{
-					"type": "text",
-					"text": `{"subtasks": [{"order": 1, "title": "Add database migration", "description": "Create new table for user preferences"}, {"order": 2, "title": "Implement repository layer", "description": "Add CRUD methods for user preferences"}, {"order": 3, "title": "Create API endpoints", "description": "REST endpoints for reading and updating"}, {"order": 4, "title": "Add frontend settings page", "description": "React component with form controls"}]}`,
-				},
-			},
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(resp)
-	}))
-	defer server.Close()
+	runner := func(_ context.Context, args ...string) ([]byte, error) {
+		return []byte(`{"subtasks": [{"order": 1, "title": "Add database migration", "description": "Create new table for user preferences"}, {"order": 2, "title": "Implement repository layer", "description": "Add CRUD methods for user preferences"}, {"order": 3, "title": "Create API endpoints", "description": "REST endpoints for reading and updating"}, {"order": 4, "title": "Add frontend settings page", "description": "React component with form controls"}]}`), nil
+	}
 
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	parser := newSubtaskParserWithURL("test-api-key", server.URL, log)
+	parser := newSubtaskParserWithRunner(runner, log)
 
 	subtasks, err := parser.Parse(context.Background(), samplePlanningOutput)
 	if err != nil {
@@ -60,7 +34,6 @@ func TestSubtaskParserParse_HappyPath(t *testing.T) {
 		t.Fatalf("expected 4 subtasks, got %d", len(subtasks))
 	}
 
-	// Verify structured extraction
 	expected := []struct {
 		order int
 		title string
@@ -84,65 +57,41 @@ func TestSubtaskParserParse_HappyPath(t *testing.T) {
 	}
 }
 
-func TestSubtaskParserParse_APIError(t *testing.T) {
-	// Mock Haiku endpoint returns 500
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-	}))
-	defer server.Close()
+func TestSubtaskParserParse_SubprocessError(t *testing.T) {
+	runner := func(_ context.Context, args ...string) ([]byte, error) {
+		return nil, fmt.Errorf("subprocess exited with code 1")
+	}
 
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
-	parser := newSubtaskParserWithURL("test-api-key", server.URL, log)
+	parser := newSubtaskParserWithRunner(runner, log)
 
 	_, err := parser.Parse(context.Background(), samplePlanningOutput)
 	if err == nil {
-		t.Fatal("expected error from 500 response, got nil")
+		t.Fatal("expected error from subprocess failure, got nil")
 	}
 }
 
-func TestSubtaskParserParse_InvalidJSON(t *testing.T) {
-	// Mock returns 200 but with non-JSON text content
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		resp := map[string]interface{}{
-			"content": []map[string]interface{}{
-				{
-					"type": "text",
-					"text": "This is not JSON at all",
-				},
-			},
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(resp)
-	}))
-	defer server.Close()
+func TestSubtaskParserParse_MalformedJSON(t *testing.T) {
+	runner := func(_ context.Context, args ...string) ([]byte, error) {
+		return []byte("This is not JSON at all"), nil
+	}
 
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
-	parser := newSubtaskParserWithURL("test-api-key", server.URL, log)
+	parser := newSubtaskParserWithRunner(runner, log)
 
 	_, err := parser.Parse(context.Background(), samplePlanningOutput)
 	if err == nil {
-		t.Fatal("expected error from invalid JSON response, got nil")
+		t.Fatal("expected error from malformed JSON response, got nil")
 	}
 }
 
 func TestSubtaskParserParse_EmptySubtasks(t *testing.T) {
-	// Mock returns valid JSON but empty subtasks array
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		resp := map[string]interface{}{
-			"content": []map[string]interface{}{
-				{
-					"type": "text",
-					"text": `{"subtasks": []}`,
-				},
-			},
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(resp)
-	}))
-	defer server.Close()
+	runner := func(_ context.Context, args ...string) ([]byte, error) {
+		return []byte(`{"subtasks": []}`), nil
+	}
 
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
-	parser := newSubtaskParserWithURL("test-api-key", server.URL, log)
+	parser := newSubtaskParserWithRunner(runner, log)
 
 	_, err := parser.Parse(context.Background(), samplePlanningOutput)
 	if err == nil {
@@ -158,49 +107,90 @@ func TestSubtaskParserParse_NilParser(t *testing.T) {
 	}
 }
 
-func TestParseSubtasksWithFallback_HaikuSucceeds(t *testing.T) {
-	// When Haiku API succeeds, its structured results are used
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		resp := map[string]interface{}{
-			"content": []map[string]interface{}{
-				{
-					"type": "text",
-					"text": `{"subtasks": [{"order": 1, "title": "API-extracted task one", "description": "From Haiku"}, {"order": 2, "title": "API-extracted task two", "description": "From Haiku"}]}`,
-				},
-			},
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(resp)
-	}))
-	defer server.Close()
+func TestSubtaskParserParse_CodeFenceStripping(t *testing.T) {
+	runner := func(_ context.Context, args ...string) ([]byte, error) {
+		// Simulate claude wrapping JSON in a code fence
+		return []byte("```json\n{\"subtasks\": [{\"order\": 1, \"title\": \"feat(db): add migration\", \"description\": \"Create schema\"}]}\n```"), nil
+	}
 
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	parser := newSubtaskParserWithURL("test-api-key", server.URL, log)
+	parser := newSubtaskParserWithRunner(runner, log)
+
+	subtasks, err := parser.Parse(context.Background(), samplePlanningOutput)
+	if err != nil {
+		t.Fatalf("expected code fence to be stripped, got error: %v", err)
+	}
+	if len(subtasks) != 1 {
+		t.Fatalf("expected 1 subtask, got %d", len(subtasks))
+	}
+	if subtasks[0].Title != "feat(db): add migration" {
+		t.Errorf("subtask title = %q, want %q", subtasks[0].Title, "feat(db): add migration")
+	}
+}
+
+func TestSubtaskParserParse_Timeout(t *testing.T) {
+	runner := func(ctx context.Context, args ...string) ([]byte, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+
+	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	parser := newSubtaskParserWithRunner(runner, log)
+	parser.timeout = 5 * time.Millisecond // very short timeout to trigger quickly
+
+	_, err := parser.Parse(context.Background(), samplePlanningOutput)
+	if err == nil {
+		t.Fatal("expected error from timeout, got nil")
+	}
+}
+
+func TestSubtaskParserParse_ContextCancelled(t *testing.T) {
+	runner := func(ctx context.Context, args ...string) ([]byte, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+
+	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	parser := newSubtaskParserWithRunner(runner, log)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // Cancel immediately
+
+	_, err := parser.Parse(ctx, samplePlanningOutput)
+	if err == nil {
+		t.Fatal("expected error from cancelled context, got nil")
+	}
+}
+
+func TestParseSubtasksWithFallback_SubprocessSucceeds(t *testing.T) {
+	runner := func(_ context.Context, args ...string) ([]byte, error) {
+		return []byte(`{"subtasks": [{"order": 1, "title": "API-extracted task one", "description": "From subprocess"}, {"order": 2, "title": "API-extracted task two", "description": "From subprocess"}]}`), nil
+	}
+
+	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	parser := newSubtaskParserWithRunner(runner, log)
 
 	subtasks := parseSubtasksWithFallback(parser, samplePlanningOutput)
 
 	if len(subtasks) != 2 {
-		t.Fatalf("expected 2 subtasks from Haiku, got %d", len(subtasks))
+		t.Fatalf("expected 2 subtasks from subprocess, got %d", len(subtasks))
 	}
 
-	// Verify these are from the API (unique titles), not regex
 	if subtasks[0].Title != "API-extracted task one" {
-		t.Errorf("subtask 0 title = %q, want %q (should be from API, not regex)", subtasks[0].Title, "API-extracted task one")
+		t.Errorf("subtask 0 title = %q, want %q (should be from subprocess, not regex)", subtasks[0].Title, "API-extracted task one")
 	}
 	if subtasks[1].Title != "API-extracted task two" {
-		t.Errorf("subtask 1 title = %q, want %q (should be from API, not regex)", subtasks[1].Title, "API-extracted task two")
+		t.Errorf("subtask 1 title = %q, want %q (should be from subprocess, not regex)", subtasks[1].Title, "API-extracted task two")
 	}
 }
 
-func TestParseSubtasksWithFallback_HaikuFails_FallsBackToRegex(t *testing.T) {
-	// When Haiku API returns 500, fallback to regex parsing
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-	}))
-	defer server.Close()
+func TestParseSubtasksWithFallback_SubprocessError_FallsBackToRegex(t *testing.T) {
+	runner := func(_ context.Context, args ...string) ([]byte, error) {
+		return nil, fmt.Errorf("subprocess error")
+	}
 
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
-	parser := newSubtaskParserWithURL("test-api-key", server.URL, log)
+	parser := newSubtaskParserWithRunner(runner, log)
 
 	subtasks := parseSubtasksWithFallback(parser, samplePlanningOutput)
 
@@ -209,7 +199,6 @@ func TestParseSubtasksWithFallback_HaikuFails_FallsBackToRegex(t *testing.T) {
 		t.Fatalf("expected 4 subtasks from regex fallback, got %d", len(subtasks))
 	}
 
-	// Verify these are from regex (titles parsed from the bold-wrapped output)
 	if subtasks[0].Title != "Add database migration" {
 		t.Errorf("subtask 0 title = %q, want %q (should be from regex fallback)", subtasks[0].Title, "Add database migration")
 	}
@@ -219,7 +208,6 @@ func TestParseSubtasksWithFallback_HaikuFails_FallsBackToRegex(t *testing.T) {
 }
 
 func TestParseSubtasksWithFallback_NilParser_FallsBackToRegex(t *testing.T) {
-	// When parser is nil (no API key), regex is used directly
 	subtasks := parseSubtasksWithFallback(nil, samplePlanningOutput)
 
 	if len(subtasks) != 4 {
@@ -231,24 +219,13 @@ func TestParseSubtasksWithFallback_NilParser_FallsBackToRegex(t *testing.T) {
 	}
 }
 
-func TestParseSubtasksWithFallback_HaikuReturnsInvalidJSON_FallsBackToRegex(t *testing.T) {
-	// When Haiku returns invalid JSON, fallback to regex
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		resp := map[string]interface{}{
-			"content": []map[string]interface{}{
-				{
-					"type": "text",
-					"text": "not valid json",
-				},
-			},
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(resp)
-	}))
-	defer server.Close()
+func TestParseSubtasksWithFallback_MalformedJSON_FallsBackToRegex(t *testing.T) {
+	runner := func(_ context.Context, args ...string) ([]byte, error) {
+		return []byte("not valid json"), nil
+	}
 
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
-	parser := newSubtaskParserWithURL("test-api-key", server.URL, log)
+	parser := newSubtaskParserWithRunner(runner, log)
 
 	subtasks := parseSubtasksWithFallback(parser, samplePlanningOutput)
 
@@ -257,24 +234,13 @@ func TestParseSubtasksWithFallback_HaikuReturnsInvalidJSON_FallsBackToRegex(t *t
 	}
 }
 
-func TestParseSubtasksWithFallback_HaikuReturnsEmptySubtasks_FallsBackToRegex(t *testing.T) {
-	// When Haiku returns empty subtasks array, fallback to regex
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		resp := map[string]interface{}{
-			"content": []map[string]interface{}{
-				{
-					"type": "text",
-					"text": `{"subtasks": []}`,
-				},
-			},
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(resp)
-	}))
-	defer server.Close()
+func TestParseSubtasksWithFallback_EmptySubtasks_FallsBackToRegex(t *testing.T) {
+	runner := func(_ context.Context, args ...string) ([]byte, error) {
+		return []byte(`{"subtasks": []}`), nil
+	}
 
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
-	parser := newSubtaskParserWithURL("test-api-key", server.URL, log)
+	parser := newSubtaskParserWithRunner(runner, log)
 
 	subtasks := parseSubtasksWithFallback(parser, samplePlanningOutput)
 
@@ -283,39 +249,10 @@ func TestParseSubtasksWithFallback_HaikuReturnsEmptySubtasks_FallsBackToRegex(t 
 	}
 }
 
-func TestNewSubtaskParser_NoAPIKey(t *testing.T) {
-	// Temporarily unset the env var
-	original := os.Getenv("ANTHROPIC_API_KEY")
-	_ = os.Unsetenv("ANTHROPIC_API_KEY")
-	defer func() {
-		if original != "" {
-			_ = os.Setenv("ANTHROPIC_API_KEY", original)
-		}
-	}()
-
+func TestNewSubtaskParser_BinaryMissing(t *testing.T) {
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
-	parser := NewSubtaskParser(log)
+	parser := NewSubtaskParser("this-binary-does-not-exist-on-path-xyz-abc", log)
 	if parser != nil {
-		t.Error("expected nil parser when ANTHROPIC_API_KEY is not set")
-	}
-}
-
-func TestSubtaskParserParse_ContextCancelled(t *testing.T) {
-	// Mock server that blocks (simulating slow response)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Wait for context cancellation
-		<-r.Context().Done()
-	}))
-	defer server.Close()
-
-	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
-	parser := newSubtaskParserWithURL("test-api-key", server.URL, log)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // Cancel immediately
-
-	_, err := parser.Parse(ctx, samplePlanningOutput)
-	if err == nil {
-		t.Fatal("expected error from cancelled context, got nil")
+		t.Error("expected nil parser when binary is not found on PATH")
 	}
 }
