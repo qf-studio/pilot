@@ -61,6 +61,18 @@ func (mp *MetricsPersister) persist() {
 		apiErrorsTotal += count
 	}
 
+	// Convert tokenKey map to string-keyed map for storage (key: "model|direction").
+	tokensConsumed := make(map[string]int64, len(snap.TokensConsumed))
+	for k, v := range snap.TokensConsumed {
+		tokensConsumed[k.Model+"|"+k.Direction] = v
+	}
+
+	// Convert execKey map to string-keyed map for storage (key: "model|result").
+	executionsByResult := make(map[string]int64, len(snap.ExecutionsByResult))
+	for k, v := range snap.ExecutionsByResult {
+		executionsByResult[k.Model+"|"+k.Result] = v
+	}
+
 	row := &memory.AutopilotMetricsRow{
 		SnapshotAt:          snap.SnapshotAt,
 		IssuesSuccess:       int(snap.IssuesProcessed["success"]),
@@ -79,6 +91,9 @@ func (mp *MetricsPersister) persist() {
 		AvgCIWaitMs:         snap.AvgCIWaitDuration.Milliseconds(),
 		AvgMergeTimeMs:      snap.AvgPRTimeToMerge.Milliseconds(),
 		AvgExecutionMs:      snap.AvgExecutionDuration.Milliseconds(),
+		TokensConsumed:      tokensConsumed,
+		ExecutionCostUSD:    snap.ExecutionCostUSD,
+		ExecutionsByResult:  executionsByResult,
 	}
 
 	if err := mp.store.SaveAutopilotMetrics(row); err != nil {
