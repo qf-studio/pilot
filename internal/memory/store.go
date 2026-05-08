@@ -323,6 +323,10 @@ func (s *Store) migrate() error {
 		`ALTER TABLE executions ADD COLUMN approval_decision_at DATETIME`,
 		`ALTER TABLE executions ADD COLUMN approval_decision_by TEXT DEFAULT ''`,
 		`CREATE INDEX IF NOT EXISTS idx_executions_approval_request ON executions(approval_request_id)`,
+		// Per-model token/cost/execution counters on autopilot_metrics (GH-2856)
+		`ALTER TABLE autopilot_metrics ADD COLUMN tokens_consumed_json TEXT DEFAULT '{}'`,
+		`ALTER TABLE autopilot_metrics ADD COLUMN execution_cost_usd_json TEXT DEFAULT '{}'`,
+		`ALTER TABLE autopilot_metrics ADD COLUMN executions_by_result_json TEXT DEFAULT '{}'`,
 	}
 
 	for _, migration := range migrations {
@@ -1717,18 +1721,28 @@ type AutopilotMetricsRow struct {
 	AvgCIWaitMs         int64
 	AvgMergeTimeMs      int64
 	AvgExecutionMs      int64
+	// Per-model/direction counters added in GH-2856. Keys use "model|direction"
+	// (TokensConsumed, ExecutionsByResult) or plain model string (ExecutionCostUSD).
+	TokensConsumed     map[string]int64   // "model|direction" → token count
+	ExecutionCostUSD   map[string]float64 // model → cumulative USD cost
+	ExecutionsByResult map[string]int64   // "model|result" → execution count
 }
 
 // SaveAutopilotMetrics persists an autopilot metrics snapshot to SQLite.
 func (s *Store) SaveAutopilotMetrics(row *AutopilotMetricsRow) error {
+	tokensJSON := marshalMapJSON(row.TokensConsumed)
+	costJSON := marshalMapJSON(row.ExecutionCostUSD)
+	execsJSON := marshalMapJSON(row.ExecutionsByResult)
+
 	return s.withRetry("SaveAutopilotMetrics", func() error {
 		_, err := s.db.Exec(`
 			INSERT INTO autopilot_metrics (
 				snapshot_at, issues_success, issues_failed, issues_rate_limited,
 				prs_merged, prs_failed, prs_conflicting, circuit_breaker_trips,
 				api_errors_total, api_error_rate, queue_depth, failed_queue_depth,
-				active_prs, success_rate, avg_ci_wait_ms, avg_merge_time_ms, avg_execution_ms
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				active_prs, success_rate, avg_ci_wait_ms, avg_merge_time_ms, avg_execution_ms,
+				tokens_consumed_json, execution_cost_usd_json, executions_by_result_json
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`,
 			row.SnapshotAt,
 			row.IssuesSuccess, row.IssuesFailed, row.IssuesRateLimited,
@@ -1736,6 +1750,7 @@ func (s *Store) SaveAutopilotMetrics(row *AutopilotMetricsRow) error {
 			row.CircuitBreakerTrips, row.APIErrorsTotal, row.APIErrorRate,
 			row.QueueDepth, row.FailedQueueDepth, row.ActivePRs,
 			row.SuccessRate, row.AvgCIWaitMs, row.AvgMergeTimeMs, row.AvgExecutionMs,
+			tokensJSON, costJSON, execsJSON,
 		)
 		return err
 	})
@@ -1747,7 +1762,8 @@ func (s *Store) GetRecentAutopilotMetrics(limit int) ([]*AutopilotMetricsRow, er
 		SELECT id, snapshot_at, issues_success, issues_failed, issues_rate_limited,
 			prs_merged, prs_failed, prs_conflicting, circuit_breaker_trips,
 			api_errors_total, api_error_rate, queue_depth, failed_queue_depth,
-			active_prs, success_rate, avg_ci_wait_ms, avg_merge_time_ms, avg_execution_ms
+			active_prs, success_rate, avg_ci_wait_ms, avg_merge_time_ms, avg_execution_ms,
+			tokens_consumed_json, execution_cost_usd_json, executions_by_result_json
 		FROM autopilot_metrics
 		ORDER BY snapshot_at DESC
 		LIMIT ?
@@ -1760,14 +1776,19 @@ func (s *Store) GetRecentAutopilotMetrics(limit int) ([]*AutopilotMetricsRow, er
 	var result []*AutopilotMetricsRow
 	for rows.Next() {
 		r := &AutopilotMetricsRow{}
+		var tokensJSON, costJSON, execsJSON sql.NullString
 		if err := rows.Scan(
 			&r.ID, &r.SnapshotAt, &r.IssuesSuccess, &r.IssuesFailed, &r.IssuesRateLimited,
 			&r.PRsMerged, &r.PRsFailed, &r.PRsConflicting, &r.CircuitBreakerTrips,
 			&r.APIErrorsTotal, &r.APIErrorRate, &r.QueueDepth, &r.FailedQueueDepth,
 			&r.ActivePRs, &r.SuccessRate, &r.AvgCIWaitMs, &r.AvgMergeTimeMs, &r.AvgExecutionMs,
+			&tokensJSON, &costJSON, &execsJSON,
 		); err != nil {
 			return nil, fmt.Errorf("failed to scan autopilot metrics: %w", err)
 		}
+		r.TokensConsumed = unmarshalStringIntMap(tokensJSON.String)
+		r.ExecutionCostUSD = unmarshalStringFloatMap(costJSON.String)
+		r.ExecutionsByResult = unmarshalStringIntMap(execsJSON.String)
 		result = append(result, r)
 	}
 	return result, rows.Err()
@@ -1779,17 +1800,20 @@ func (s *Store) LatestAutopilotMetrics() (*AutopilotMetricsRow, error) {
 		SELECT id, snapshot_at, issues_success, issues_failed, issues_rate_limited,
 			prs_merged, prs_failed, prs_conflicting, circuit_breaker_trips,
 			api_errors_total, api_error_rate, queue_depth, failed_queue_depth,
-			active_prs, success_rate, avg_ci_wait_ms, avg_merge_time_ms, avg_execution_ms
+			active_prs, success_rate, avg_ci_wait_ms, avg_merge_time_ms, avg_execution_ms,
+			tokens_consumed_json, execution_cost_usd_json, executions_by_result_json
 		FROM autopilot_metrics
 		ORDER BY snapshot_at DESC
 		LIMIT 1
 	`)
 	r := &AutopilotMetricsRow{}
+	var tokensJSON, costJSON, execsJSON sql.NullString
 	err := row.Scan(
 		&r.ID, &r.SnapshotAt, &r.IssuesSuccess, &r.IssuesFailed, &r.IssuesRateLimited,
 		&r.PRsMerged, &r.PRsFailed, &r.PRsConflicting, &r.CircuitBreakerTrips,
 		&r.APIErrorsTotal, &r.APIErrorRate, &r.QueueDepth, &r.FailedQueueDepth,
 		&r.ActivePRs, &r.SuccessRate, &r.AvgCIWaitMs, &r.AvgMergeTimeMs, &r.AvgExecutionMs,
+		&tokensJSON, &costJSON, &execsJSON,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -1797,6 +1821,9 @@ func (s *Store) LatestAutopilotMetrics() (*AutopilotMetricsRow, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to scan latest autopilot metrics: %w", err)
 	}
+	r.TokensConsumed = unmarshalStringIntMap(tokensJSON.String)
+	r.ExecutionCostUSD = unmarshalStringFloatMap(costJSON.String)
+	r.ExecutionsByResult = unmarshalStringIntMap(execsJSON.String)
 	return r, nil
 }
 
@@ -1813,6 +1840,41 @@ func (s *Store) PruneAutopilotMetrics(olderThan time.Duration) (int64, error) {
 		return 0, err
 	}
 	return result.RowsAffected()
+}
+
+// marshalMapJSON serializes any JSON-serializable value to a string.
+// Returns "{}" on nil input, nil map, or marshal error (safe default for DB storage).
+func marshalMapJSON(v any) string {
+	if v == nil {
+		return "{}"
+	}
+	b, err := json.Marshal(v)
+	if err != nil || string(b) == "null" {
+		return "{}"
+	}
+	return string(b)
+}
+
+// unmarshalStringIntMap deserializes a JSON string into map[string]int64.
+// Returns an empty map on empty or invalid JSON.
+func unmarshalStringIntMap(s string) map[string]int64 {
+	m := make(map[string]int64)
+	if s == "" || s == "{}" {
+		return m
+	}
+	_ = json.Unmarshal([]byte(s), &m)
+	return m
+}
+
+// unmarshalStringFloatMap deserializes a JSON string into map[string]float64.
+// Returns an empty map on empty or invalid JSON.
+func unmarshalStringFloatMap(s string) map[string]float64 {
+	m := make(map[string]float64)
+	if s == "" || s == "{}" {
+		return m
+	}
+	_ = json.Unmarshal([]byte(s), &m)
+	return m
 }
 
 // BriefRecord represents a record of a brief that was sent.

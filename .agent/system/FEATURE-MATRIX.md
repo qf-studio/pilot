@@ -1,6 +1,6 @@
 # Pilot Feature Matrix
 
-**Last Updated:** 2026-05-08 (v2.53.0)
+**Last Updated:** 2026-05-06 (v2.53.0)
 
 ## Legend
 
@@ -190,6 +190,7 @@
 |---------|--------|---------|-------------|------------|-------|
 | Execution history | ✅ | memory | - | `memory.path` | SQLite store |
 | Lifetime metrics | ✅ | memory | - | - | Token/cost/task counts persist across restarts (v0.21.2) |
+| Autopilot metrics map persistence | ✅ | memory/autopilot | - | - | TokensConsumed/ExecutionCostUSD/ExecutionsByResult round-trip via JSON columns (GH-2856) |
 | Cross-project patterns | ✅ | memory | `pilot patterns` | - | Pattern learning |
 | Pattern search | ✅ | memory | `pilot patterns search` | - | Keyword search |
 | Pattern stats | ✅ | memory | `pilot patterns stats` | - | Usage analytics |
@@ -295,7 +296,6 @@
 | OpenAI-compatible direct backend | ✅ | executor | `type: openai-api` | `executor.openai` | Direct /v1/chat/completions for OpenAI, OpenRouter, Groq, Synthetic, vLLM, Ollama (v2.105.0, GH-2382) |
 | K8s health probes | ✅ | gateway | - | - | `/ready` and `/live` endpoints for Kubernetes (v0.37.0) |
 | Prometheus metrics | ✅ | gateway | - | - | `/metrics` endpoint in Prometheus text format (v0.37.0) |
-| Prometheus token/cost/execution counters | ✅ | gateway | - | - | `pilot_tokens_consumed_total`, `pilot_execution_cost_usd_total`, `pilot_executions_total` wired from executor (v2.138.0, GH-2855) |
 | JSON structured logging | ✅ | - | - | `logging.format` | Optional JSON log output mode (v0.38.0) |
 | Qwen Code backend | ✅ | executor | `--backend qwen` | `executor.backend` | Alibaba Qwen Code CLI with stream-json (v1.9.0, GH-1314) |
 | Docker support | ✅ | - | - | - | Dockerfile + deployment guide (v1.46.0) |
