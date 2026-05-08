@@ -187,6 +187,9 @@ type Task struct {
 	// When true, BuildPrompt skips Navigator detection and uses a focused
 	// problem-solving prompt suitable for local execution.
 	LocalMode bool
+	// State is the current issue state in the source adapter (GH-2867).
+	// Examples: "open", "closed", "merged"
+	State string
 }
 
 // QualityGateResult represents the result of a single quality gate check.
@@ -398,8 +401,8 @@ type Runner struct {
 	// GH-2363: Track consecutive title-rejection failures per issue so we stop
 	// retrying and post a helpful comment after the 2nd identical rejection.
 	titleRejections      *titleRejectionTracker
-	// openSubIssueCheck detects whether open sub-issues for a parent already exist.
-	// Injectable for testing; defaults to queryOpenSubIssues (gh CLI).
+	// openSubIssueCheck detects whether recent sub-issues for a parent already exist.
+	// Injectable for testing; defaults to queryRecentSubIssues (gh CLI).
 	openSubIssueCheck func(ctx context.Context, dir, parentID string) (bool, error)
 }
 

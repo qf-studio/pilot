@@ -2150,3 +2150,67 @@ func TestCreateSubIssuesViaAdapter_PropagatesParentLabels(t *testing.T) {
 		t.Errorf("CreateIssue labels = %v, want %v", gotLabels, wantLabels)
 	}
 }
+
+// TestCreateSubIssues_RefusesClosedParent verifies that CreateSubIssues returns
+// ErrParentDone when the parent task carries a terminal label or closed state.
+func TestCreateSubIssues_RefusesClosedParent(t *testing.T) {
+	cases := []struct {
+		name   string
+		labels []string
+		state  string
+	}{
+		{name: "pilot-done label", labels: []string{"pilot-done"}},
+		{name: "pilot-skip label", labels: []string{"pilot-skip"}},
+		{name: "closed state", state: "closed"},
+		{name: "merged state", state: "merged"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := NewRunner()
+			r.dryRun = true
+			r.openSubIssueCheck = func(_ context.Context, _, _ string) (bool, error) {
+				return false, nil // dedup guard must not be reached
+			}
+			plan := &EpicPlan{
+				ParentTask: &Task{
+					ID:     "GH-999",
+					Title:  "feat(scope): some epic",
+					Labels: tc.labels,
+					State:  tc.state,
+				},
+				Subtasks: []PlannedSubtask{
+					{Order: 1, Title: "feat(scope): sub-task one"},
+				},
+			}
+			_, err := r.CreateSubIssues(context.Background(), plan, "")
+			if err != ErrParentDone {
+				t.Errorf("expected ErrParentDone, got %v", err)
+			}
+		})
+	}
+}
+
+// TestCreateSubIssues_RefusesRecentlyClosedSiblings verifies that CreateSubIssues returns
+// ErrSubIssuesAlreadyExist when the injectable checker reports a recent sibling exists,
+// even when the parent itself is open.
+func TestCreateSubIssues_RefusesRecentlyClosedSiblings(t *testing.T) {
+	r := NewRunner()
+	r.dryRun = true
+	r.openSubIssueCheck = func(_ context.Context, _, _ string) (bool, error) {
+		return true, nil // simulate a recently-closed sibling
+	}
+	plan := &EpicPlan{
+		ParentTask: &Task{
+			ID:    "GH-1000",
+			Title: "feat(scope): another epic",
+			State: "open",
+		},
+		Subtasks: []PlannedSubtask{
+			{Order: 1, Title: "feat(scope): sub-task one"},
+		},
+	}
+	_, err := r.CreateSubIssues(context.Background(), plan, "")
+	if err != ErrSubIssuesAlreadyExist {
+		t.Errorf("expected ErrSubIssuesAlreadyExist, got %v", err)
+	}
+}

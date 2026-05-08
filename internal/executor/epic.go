@@ -583,6 +583,21 @@ var parentTypeScopeRE = regexp.MustCompile(
 // referencing the parent already exist, preventing duplicate batch creation.
 var ErrSubIssuesAlreadyExist = errors.New("open sub-issues already exist for this parent")
 
+// ErrParentDone is returned by CreateSubIssues when the parent task is already
+// closed or skipped, so spawning sub-issues would be wasteful (GH-2867).
+var ErrParentDone = errors.New("parent task is already done; refusing to create sub-issues")
+
+// isParentDone reports whether a task should be treated as done based on its
+// labels (pilot-done, pilot-skip) or its state (closed, merged).
+func isParentDone(t *Task) bool {
+	for _, label := range t.Labels {
+		if label == "pilot-done" || label == "pilot-skip" {
+			return true
+		}
+	}
+	return t.State == "closed" || t.State == "merged"
+}
+
 // isConventionalSubtaskTitle reports whether title is in conventional-commits format.
 func isConventionalSubtaskTitle(title string) bool {
 	return conventionalSubtaskTitleRE.MatchString(strings.TrimSpace(title))
@@ -743,14 +758,16 @@ func validateAndFixSubtaskTitles(ctx context.Context, subtasks []PlannedSubtask,
 	return applyParentTypeScopeFallback(subtasks, invalid, parentTitle, parentBody)
 }
 
-// queryOpenSubIssues returns true when there are open GitHub issues that include
-// "Parent: <parentID>" in their body. Used by CreateSubIssues as a dedup guard.
+// queryRecentSubIssues returns true when there are open or recently-closed GitHub
+// issues (created within the last 24 hours) that include "Parent: <parentID>" in
+// their body. Used by CreateSubIssues as a dedup guard (GH-2867).
 // Non-fatal: if the gh CLI call fails the check returns (false, nil) to allow creation.
-func queryOpenSubIssues(ctx context.Context, dir, parentID string) (bool, error) {
+func queryRecentSubIssues(ctx context.Context, dir, parentID string) (bool, error) {
+	since := time.Now().UTC().Add(-24 * time.Hour).Format("2006-01-02T15:04:05Z")
 	args := []string{
 		"issue", "list",
-		"--state", "open",
-		"--search", fmt.Sprintf("\"Parent: %s\" in:body", parentID),
+		"--state", "all",
+		"--search", fmt.Sprintf("\"Parent: %s\" in:body created:>=%s", parentID, since),
 		"--json", "number",
 		"--limit", "3",
 	}
@@ -816,12 +833,22 @@ func (r *Runner) CreateSubIssues(ctx context.Context, plan *EpicPlan, executionP
 		return nil, fmt.Errorf("plan has no subtasks to create issues from")
 	}
 
-	// Dedup guard: skip creation if open sub-issues referencing this parent already exist.
-	// Uses an injectable checker so tests can control the result without spawning gh CLI.
 	if plan.ParentTask != nil {
+		// GH-2867: refuse to spawn sub-issues for a parent that is already done.
+		if isParentDone(plan.ParentTask) {
+			r.log.Info("Skipping sub-issue creation: parent is already done",
+				"parent_id", plan.ParentTask.ID,
+				"state", plan.ParentTask.State,
+				"labels", plan.ParentTask.Labels,
+			)
+			return nil, ErrParentDone
+		}
+
+		// Dedup guard: skip creation if recent sub-issues referencing this parent already exist.
+		// Uses an injectable checker so tests can control the result without spawning gh CLI.
 		checker := r.openSubIssueCheck
 		if checker == nil {
-			checker = queryOpenSubIssues
+			checker = queryRecentSubIssues
 		}
 		if exists, _ := checker(ctx, executionPath, plan.ParentTask.ID); exists {
 			r.log.Info("Skipping sub-issue creation: open children already exist",
