@@ -597,13 +597,21 @@ var ErrParentDone = errors.New("parent task is already done; refusing to create 
 // isParentDone reports whether a task should be treated as done based on its
 // labels (pilot-done, pilot-skip) or its state (closed, merged).
 //
-// Defensive fallback: when both State and Labels are empty AND the task ID
-// looks like a GitHub issue ("GH-N"), this function shells out to `gh issue
-// view` to fetch the live state. This catches stale dispatcher rows and
-// upstream constructors that drop those fields — the GH-201 spurious
-// dispatch loop on 2026-05-08 spawned 70+ OAuth sub-issues this way.
-// Non-fatal on lookup error: returns the original (empty-fields → false)
-// decision so this never blocks legitimate dispatches.
+// Defensive fallback: whenever `State` is empty and the task ID looks like a
+// GitHub issue ("GH-N"), this function shells out to `gh issue view` to fetch
+// the authoritative state. This catches every code path that produces a Task
+// without `State`:
+//
+//   - The dispatcher worker (`dispatcher.go:639`) reconstructs Task from a
+//     persisted execution row; the `executions` schema has no `task_state`
+//     column.
+//   - The `task_labels` column may be populated but stale (frozen at queue
+//     time) — a parent queued with `["pilot"]` and later closed with
+//     `pilot-done` produces a Task whose labels still say `["pilot"]`.
+//
+// Both cases bypassed the gate during the 2026-05-08 GH-201 incident
+// (70+ spurious OAuth sub-issues). Non-fatal on lookup error: returns false
+// so this never blocks legitimate dispatches.
 //
 // Tests can override this var to assert the fallback path or to keep the
 // production default no-op when constructing tasks with deterministic GH-* IDs.
@@ -628,7 +636,11 @@ func isParentDone(t *Task) bool {
 	if t.State == "closed" || t.State == "merged" {
 		return true
 	}
-	if t.State == "" && len(t.Labels) == 0 && strings.HasPrefix(t.ID, "GH-") {
+	// Live fallback when State is missing — Labels alone are not authoritative
+	// because dispatcher-restored Tasks carry stale labels from queue time.
+	// We only reach here when no terminal label was found above; the remaining
+	// label values are non-terminal and therefore inconclusive.
+	if t.State == "" && strings.HasPrefix(t.ID, "GH-") {
 		if isParentDoneLiveFallback(t.ID, t.ProjectPath) {
 			return true
 		}
