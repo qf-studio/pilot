@@ -520,14 +520,18 @@ func NewRunnerWithConfig(config *BackendConfig) (*Runner, error) {
 		}
 	}
 
-	// Initialize Haiku subtask parser; nil if ANTHROPIC_API_KEY unset (GH-501)
-	runner.subtaskParser = NewSubtaskParser(runner.log)
-	if runner.subtaskParser != nil && config != nil {
-		if config.DefaultModel != "" {
-			runner.subtaskParser.model = config.DefaultModel
+	// Initialize subtask parser using claude subprocess; nil if binary missing (GH-501, GH-2931)
+	{
+		claudeCmd := ""
+		if config != nil && config.ClaudeCode != nil {
+			claudeCmd = config.ClaudeCode.Command
 		}
-		if config.APIBaseURL != "" {
-			runner.subtaskParser.baseURL = config.ResolveAPIBaseURL()
+		if claudeCmd == "" {
+			claudeCmd = "claude"
+		}
+		runner.subtaskParser = NewSubtaskParser(claudeCmd, runner.log)
+		if runner.subtaskParser != nil && config != nil && config.DefaultModel != "" {
+			runner.subtaskParser.model = config.DefaultModel
 		}
 	}
 
