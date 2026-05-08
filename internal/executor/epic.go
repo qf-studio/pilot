@@ -444,6 +444,9 @@ func detectSameComponentFromTitles(subtasks []PlannedSubtask) bool {
 		"to": true, "in": true, "of": true, "with": true, "from": true, "by": true,
 		"add": true, "create": true, "implement": true, "update": true, "fix": true,
 		"setup": true, "set": true, "up": true, "new": true, "test": true, "tests": true,
+		// conventional-commit type prefixes are not component names
+		"feat": true, "chore": true, "refactor": true, "docs": true, "perf": true,
+		"build": true, "ci": true, "style": true, "revert": true,
 	}
 
 	for _, st := range subtasks {
