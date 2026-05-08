@@ -2127,3 +2127,65 @@ func TestEffortLevelColumns_RoundTrip(t *testing.T) {
 		t.Errorf("after update: ComplexityLevel = %q, want %q", got2.ComplexityLevel, "complex")
 	}
 }
+
+func TestLatestAutopilotMetrics_Empty(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "latest-metrics-test-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	row, err := store.LatestAutopilotMetrics()
+	if err != nil {
+		t.Fatalf("LatestAutopilotMetrics on empty table returned error: %v", err)
+	}
+	if row != nil {
+		t.Fatalf("expected nil row on empty table, got %+v", row)
+	}
+}
+
+func TestLatestAutopilotMetrics_ReturnsNewest(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "latest-metrics-test-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	older := &AutopilotMetricsRow{
+		SnapshotAt:    time.Now().Add(-10 * time.Minute),
+		IssuesSuccess: 3,
+	}
+	newer := &AutopilotMetricsRow{
+		SnapshotAt:    time.Now().Add(-1 * time.Minute),
+		IssuesSuccess: 42,
+	}
+	if err := store.SaveAutopilotMetrics(older); err != nil {
+		t.Fatalf("SaveAutopilotMetrics(older): %v", err)
+	}
+	if err := store.SaveAutopilotMetrics(newer); err != nil {
+		t.Fatalf("SaveAutopilotMetrics(newer): %v", err)
+	}
+
+	row, err := store.LatestAutopilotMetrics()
+	if err != nil {
+		t.Fatalf("LatestAutopilotMetrics: %v", err)
+	}
+	if row == nil {
+		t.Fatal("expected non-nil row, got nil")
+	}
+	if row.IssuesSuccess != 42 {
+		t.Errorf("IssuesSuccess: want 42, got %d", row.IssuesSuccess)
+	}
+}

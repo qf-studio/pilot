@@ -29,11 +29,20 @@ func NewMetricsPersister(controller *Controller, store *memory.Store) *MetricsPe
 	}
 }
 
-// Run starts the persister loop.
+// Run starts the persister loop. On startup it attempts to restore the latest
+// persisted snapshot into Metrics. Restoration is best-effort: failures are
+// logged at debug level and the daemon proceeds with zero-state counters.
 func (mp *MetricsPersister) Run(ctx context.Context) {
 	if mp.store == nil {
 		mp.log.Debug("no store configured, metrics persistence disabled")
 		return
+	}
+
+	if row, err := mp.store.LatestAutopilotMetrics(); err != nil {
+		mp.log.Debug("could not load metrics snapshot for restore", slog.Any("error", err))
+	} else if row != nil {
+		mp.controller.Metrics().RestoreFromRow(row)
+		mp.log.Info("restored autopilot metrics from snapshot", slog.Time("snapshot_at", row.SnapshotAt))
 	}
 
 	ticker := time.NewTicker(mp.interval)

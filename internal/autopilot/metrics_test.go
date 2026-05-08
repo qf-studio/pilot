@@ -3,6 +3,8 @@ package autopilot
 import (
 	"testing"
 	"time"
+
+	"github.com/qf-studio/pilot/internal/memory"
 )
 
 func TestNewMetrics(t *testing.T) {
@@ -175,6 +177,62 @@ func TestSnapshotIsolation(t *testing.T) {
 	snap2 := m.Snapshot()
 	if snap2.PRsMerged != 2 {
 		t.Errorf("new snapshot should reflect mutation, expected 2, got %d", snap2.PRsMerged)
+	}
+}
+
+func TestRestoreFromRow(t *testing.T) {
+	m := NewMetrics()
+	row := &memory.AutopilotMetricsRow{
+		IssuesSuccess:       10,
+		IssuesFailed:        3,
+		IssuesRateLimited:   1,
+		PRsMerged:           7,
+		PRsFailed:           2,
+		PRsConflicting:      4,
+		CircuitBreakerTrips: 5,
+	}
+	m.RestoreFromRow(row)
+	snap := m.Snapshot()
+
+	if snap.IssuesProcessed["success"] != 10 {
+		t.Errorf("IssuesProcessed[success]: want 10, got %d", snap.IssuesProcessed["success"])
+	}
+	if snap.IssuesProcessed["failed"] != 3 {
+		t.Errorf("IssuesProcessed[failed]: want 3, got %d", snap.IssuesProcessed["failed"])
+	}
+	if snap.IssuesProcessed["rate_limited"] != 1 {
+		t.Errorf("IssuesProcessed[rate_limited]: want 1, got %d", snap.IssuesProcessed["rate_limited"])
+	}
+	if snap.PRsMerged != 7 {
+		t.Errorf("PRsMerged: want 7, got %d", snap.PRsMerged)
+	}
+	if snap.PRsFailed != 2 {
+		t.Errorf("PRsFailed: want 2, got %d", snap.PRsFailed)
+	}
+	if snap.PRsConflicting != 4 {
+		t.Errorf("PRsConflicting: want 4, got %d", snap.PRsConflicting)
+	}
+	if snap.CircuitBreakerTrips != 5 {
+		t.Errorf("CircuitBreakerTrips: want 5, got %d", snap.CircuitBreakerTrips)
+	}
+}
+
+func TestRestoreFromRowThenIncrement(t *testing.T) {
+	m := NewMetrics()
+	row := &memory.AutopilotMetricsRow{
+		IssuesSuccess: 10,
+		PRsMerged:     7,
+	}
+	m.RestoreFromRow(row)
+	m.RecordIssueProcessed("success")
+	m.RecordPRMerged()
+
+	snap := m.Snapshot()
+	if snap.IssuesProcessed["success"] != 11 {
+		t.Errorf("IssuesProcessed[success] after increment: want 11, got %d", snap.IssuesProcessed["success"])
+	}
+	if snap.PRsMerged != 8 {
+		t.Errorf("PRsMerged after increment: want 8, got %d", snap.PRsMerged)
 	}
 }
 

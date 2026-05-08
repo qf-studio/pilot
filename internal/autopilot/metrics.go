@@ -3,6 +3,8 @@ package autopilot
 import (
 	"sync"
 	"time"
+
+	"github.com/qf-studio/pilot/internal/memory"
 )
 
 // Metrics collects autopilot operational metrics.
@@ -51,6 +53,24 @@ func NewMetrics() *Metrics {
 		apiErrorTimes:      make([]time.Time, 0, 100),
 		maxSamples:         1000,
 	}
+}
+
+// RestoreFromRow rehydrates counters from a persisted snapshot row.
+// Histograms are NOT restored — they are a rolling window and stale samples
+// would give misleading quantiles. Gauges (queue depth, active PRs) are also
+// skipped because they are re-populated on the first poll cycle.
+func (m *Metrics) RestoreFromRow(row *memory.AutopilotMetricsRow) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.IssuesProcessed["success"] = int64(row.IssuesSuccess)
+	m.IssuesProcessed["failed"] = int64(row.IssuesFailed)
+	m.IssuesProcessed["rate_limited"] = int64(row.IssuesRateLimited)
+	m.PRsMerged = int64(row.PRsMerged)
+	m.PRsFailed = int64(row.PRsFailed)
+	m.PRsConflicting = int64(row.PRsConflicting)
+	m.CircuitBreakerTrips = int64(row.CircuitBreakerTrips)
+	// APIErrors map[endpoint]int64 is not persisted per-endpoint; skip restoration.
+	// SuccessRate is a derived gauge recomputed by Snapshot().
 }
 
 // --- Counter increments ---
