@@ -1,6 +1,6 @@
 # Pilot Feature Matrix
 
-**Last Updated:** 2026-05-08 (v2.53.0)
+**Last Updated:** 2026-05-06 (v2.53.0)
 
 ## Legend
 
@@ -295,6 +295,7 @@
 | OpenAI-compatible direct backend | ✅ | executor | `type: openai-api` | `executor.openai` | Direct /v1/chat/completions for OpenAI, OpenRouter, Groq, Synthetic, vLLM, Ollama (v2.105.0, GH-2382) |
 | K8s health probes | ✅ | gateway | - | - | `/ready` and `/live` endpoints for Kubernetes (v0.37.0) |
 | Prometheus metrics | ✅ | gateway | - | - | `/metrics` endpoint in Prometheus text format (v0.37.0) |
+| Issue processed metrics | ✅ | autopilot | - | - | RecordIssueProcessed(success/failed/rate_limited) at terminal outcomes (GH-2943) |
 | JSON structured logging | ✅ | - | - | `logging.format` | Optional JSON log output mode (v0.38.0) |
 | Qwen Code backend | ✅ | executor | `--backend qwen` | `executor.backend` | Alibaba Qwen Code CLI with stream-json (v1.9.0, GH-1314) |
 | Docker support | ✅ | - | - | - | Dockerfile + deployment guide (v1.46.0) |
@@ -399,7 +400,6 @@
 | Decompose on retry | ✅ | executor | - | `retry.decompose_on_kill` | Retry via decomposition when task killed (signal:killed) (v2.10.0, GH-1729) |
 | Conventional sub-issue titles | ✅ | executor | - | - | CC-format enforced on subtask titles: re-prompt → Approach B fallback → creation guard (GH-2494) |
 | Sub-issue dedup guard | ✅ | executor | - | - | CreateSubIssues skips if open children referencing parent already exist (GH-2494) |
-| Epic sub-issue recovery | ✅ | executor | - | - | On ErrSubIssuesAlreadyExist: recover existing children; no-op if all closed, execute open ones (GH-2883) |
 | createPilotIssue chokepoint | ✅ | adapters/github, autopilot | - | - | All Pilot-internal issue creation validated through CreatePilotIssue CC gate (GH-2494) |
 
 ## Test Coverage

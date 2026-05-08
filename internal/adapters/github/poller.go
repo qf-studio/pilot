@@ -73,6 +73,12 @@ type ExecutionSaver interface {
 	SaveDeclinedExecution(taskID, projectPath, status, reason string) error
 }
 
+// IssueMetricsRecorder records issue processing outcomes.
+// Implemented by *autopilot.Metrics; kept as an interface here to avoid circular imports.
+type IssueMetricsRecorder interface {
+	RecordIssueProcessed(result string)
+}
+
 // IssueResult is returned by the issue handler with PR information
 type IssueResult struct {
 	Success    bool
@@ -148,6 +154,9 @@ type Poller struct {
 	// nil means disabled (config flag executor.pre_flight_judge.enabled=false).
 	preFlightJudge PreFlightJudger
 	execSaver      ExecutionSaver
+
+	// metricsRecorder records issue processing outcomes (optional).
+	metricsRecorder IssueMetricsRecorder
 }
 
 // PollerOption configures a Poller
@@ -283,6 +292,14 @@ func WithPreFlightJudge(judge PreFlightJudger) PollerOption {
 func WithExecutionSaver(saver ExecutionSaver) PollerOption {
 	return func(p *Poller) {
 		p.execSaver = saver
+	}
+}
+
+// WithIssueMetricsRecorder sets the recorder for issue processing outcomes.
+// Pass nil to disable (same as not calling this option).
+func WithIssueMetricsRecorder(rec IssueMetricsRecorder) PollerOption {
+	return func(p *Poller) {
+		p.metricsRecorder = rec
 	}
 }
 
@@ -527,6 +544,9 @@ func (p *Poller) startSequential(ctx context.Context) {
 						slog.Time("retry_at", rlInfo.ResetTime.Add(5*time.Minute)),
 						slog.String("reset_time", rlInfo.ResetTimeFormatted()),
 					)
+					if p.metricsRecorder != nil {
+						p.metricsRecorder.RecordIssueProcessed("rate_limited")
+					}
 					// Don't mark as processed - will retry via scheduler
 					continue
 				}

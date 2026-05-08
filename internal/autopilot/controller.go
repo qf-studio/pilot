@@ -756,6 +756,7 @@ func (c *Controller) handleCIFailed(ctx context.Context, prState *PRState) error
 			prState.Stage = StageFailed
 			prState.Error = fmt.Sprintf("CI fix iteration limit reached (%d/%d): stopping cascade to prevent infinite loop", iteration, c.config.MaxCIFixIterations)
 			c.metrics.RecordPRFailed()
+			c.metrics.RecordIssueProcessed("failed")
 			return nil
 		}
 	}
@@ -783,6 +784,7 @@ func (c *Controller) handleCIFailed(ctx context.Context, prState *PRState) error
 				prState.Stage = StageFailed
 				prState.Error = fmt.Sprintf("CI fix size guard: PR has %d additions, over limit %d (likely cascade contamination — escalate to human)", netAdditions, c.config.MaxCIFixPRSize)
 				c.metrics.RecordPRFailed()
+				c.metrics.RecordIssueProcessed("failed")
 				return nil
 			}
 		}
@@ -881,6 +883,7 @@ func (c *Controller) handleReviewRequested(ctx context.Context, prState *PRState
 			prState.Stage = StageFailed
 			prState.Error = fmt.Sprintf("review feedback iteration limit reached (%d/%d)", iteration, c.config.ReviewFeedback.MaxIterations)
 			c.metrics.RecordPRFailed()
+			c.metrics.RecordIssueProcessed("failed")
 			return nil
 		}
 	}
@@ -1033,6 +1036,7 @@ func (c *Controller) submitAsyncApprovalRequest(ctx context.Context, prState *PR
 		)
 		c.autoMerger.postMisconfigComment(ctx, prState)
 		c.metrics.RecordPRFailed()
+		c.metrics.RecordIssueProcessed("failed")
 		return nil
 	}
 
@@ -1095,12 +1099,14 @@ func (c *Controller) applyApprovalDecision(prState *PRState) error {
 		prState.Stage = StageFailed
 		prState.Error = fmt.Sprintf("merge rejected: approval %s", prState.ApprovalDecision)
 		c.metrics.RecordPRFailed()
+		c.metrics.RecordIssueProcessed("failed")
 	default:
 		c.log.Warn("unknown approval decision — failing PR",
 			"pr", prState.PRNumber, "decision", prState.ApprovalDecision)
 		prState.Stage = StageFailed
 		prState.Error = fmt.Sprintf("unknown approval decision: %q", prState.ApprovalDecision)
 		c.metrics.RecordPRFailed()
+		c.metrics.RecordIssueProcessed("failed")
 	}
 	return nil
 }
@@ -1177,6 +1183,7 @@ func (c *Controller) handleMerging(ctx context.Context, prState *PRState) error 
 	c.log.Info("PR merged successfully", "pr", prState.PRNumber)
 	prState.Stage = StageMerged
 	c.metrics.RecordPRMerged()
+	c.metrics.RecordIssueProcessed("success")
 	c.metrics.RecordPRTimeToMerge(time.Since(prState.CreatedAt))
 
 	// GH-1015: Add pilot-done label after successful merge (not at PR creation)

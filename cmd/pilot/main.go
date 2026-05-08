@@ -761,6 +761,11 @@ Examples:
 						pollerOpts = append(pollerOpts, github.WithExecutionChecker(gwStore, projectPath))
 					}
 
+					// Wire issue metrics recorder for rate-limit tracking.
+					if gwAutopilotController != nil {
+						pollerOpts = append(pollerOpts, github.WithIssueMetricsRecorder(gwAutopilotController.Metrics()))
+					}
+
 					// GH-2802: Wire pre-flight judge when enabled (GH-2817: uses CC subprocess, no API key)
 					if cfg.Executor != nil && cfg.Executor.PreFlightJudge != nil && cfg.Executor.PreFlightJudge.Enabled {
 						claudeCmd := ""
@@ -2102,6 +2107,11 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 				// GH-2242: Wire execution checker to prevent re-dispatch of completed tasks
 				if store != nil {
 					pollerOpts = append(pollerOpts, github.WithExecutionChecker(store, projPath))
+				}
+
+				// Wire issue metrics recorder for rate-limit tracking.
+				if controller != nil {
+					pollerOpts = append(pollerOpts, github.WithIssueMetricsRecorder(controller.Metrics()))
 				}
 
 				// GH-2802: Wire pre-flight judge when enabled (GH-2817: uses CC subprocess, no API key)
