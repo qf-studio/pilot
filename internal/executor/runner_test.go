@@ -3823,3 +3823,206 @@ func TestExecute_PopulatesEffortAndComplexityOnResult(t *testing.T) {
 		t.Error("result.EffortLevel is empty; want a non-empty effort string (routing was enabled)")
 	}
 }
+
+// --- GH-2854: MetricsRecorder interface ---
+
+// fakeMetricsRecorder captures RecordTokens / RecordCost / RecordExecution calls.
+type fakeMetricsRecorder struct {
+	mu         sync.Mutex
+	tokenCalls []metricsTokenCall
+	costCalls  []metricsCostCall
+	execCalls  []metricsExecCall
+}
+
+type metricsTokenCall struct {
+	model                    string
+	tokensIn, tokensOut      int64
+	cacheCreation, cacheRead int64
+}
+
+type metricsCostCall struct {
+	model   string
+	costUSD float64
+}
+
+type metricsExecCall struct {
+	model  string
+	result string
+}
+
+func (f *fakeMetricsRecorder) RecordTokens(model string, tokensIn, tokensOut, cacheCreation, cacheRead int64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.tokenCalls = append(f.tokenCalls, metricsTokenCall{model, tokensIn, tokensOut, cacheCreation, cacheRead})
+}
+
+func (f *fakeMetricsRecorder) RecordCost(model string, costUSD float64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.costCalls = append(f.costCalls, metricsCostCall{model, costUSD})
+}
+
+func (f *fakeMetricsRecorder) RecordExecution(model string, result string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.execCalls = append(f.execCalls, metricsExecCall{model, result})
+}
+
+// mockErrBackend returns a configurable error (or success) from Execute.
+type mockErrBackend struct {
+	err error
+}
+
+func (m *mockErrBackend) Name() string     { return "mock-err" }
+func (m *mockErrBackend) IsAvailable() bool { return true }
+func (m *mockErrBackend) Execute(_ context.Context, _ ExecuteOptions) (*BackendResult, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	return &BackendResult{Success: true}, nil
+}
+
+// mockCtxAwareBackend blocks until ctx is done then returns ctx.Err().
+type mockCtxAwareBackend struct{}
+
+func (m *mockCtxAwareBackend) Name() string     { return "mock-ctx" }
+func (m *mockCtxAwareBackend) IsAvailable() bool { return true }
+func (m *mockCtxAwareBackend) Execute(ctx context.Context, _ ExecuteOptions) (*BackendResult, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+// newMetricsTestRunner returns a minimal runner wired with a fakeMetricsRecorder.
+func newMetricsTestRunner(t *testing.T, backend Backend) (*Runner, *fakeMetricsRecorder) {
+	t.Helper()
+	rec := &fakeMetricsRecorder{}
+	r := NewRunnerWithBackend(backend)
+	r.SetRecordingEnabled(false)
+	r.skipPreflightChecks = true
+	r.config = &BackendConfig{SkipSelfReview: true}
+	r.SetMetricsRecorder(rec)
+	return r, rec
+}
+
+// minimalMetricsTask returns a task that avoids branch creation and PR creation.
+func minimalMetricsTask(t *testing.T) *Task {
+	t.Helper()
+	return &Task{
+		ID:          "GH-9000",
+		Title:       "fix: metrics recorder test",
+		Description: "test task",
+		ProjectPath: t.TempDir(),
+	}
+}
+
+func TestMetricsRecorder_SuccessPath(t *testing.T) {
+	backend := &mockErrBackend{} // nil err → success
+	runner, rec := newMetricsTestRunner(t, backend)
+	task := minimalMetricsTask(t)
+
+	result, err := runner.Execute(context.Background(), task)
+	if err != nil {
+		t.Fatalf("Execute() returned unexpected error: %v", err)
+	}
+	if !result.Success {
+		t.Fatalf("Execute() result.Success = false, want true; err: %q", result.Error)
+	}
+
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+
+	if got := len(rec.tokenCalls); got != 1 {
+		t.Errorf("RecordTokens called %d times, want 1", got)
+	}
+	if got := len(rec.costCalls); got != 1 {
+		t.Errorf("RecordCost called %d times, want 1", got)
+	}
+	if got := len(rec.execCalls); got != 1 {
+		t.Errorf("RecordExecution called %d times, want 1", got)
+	}
+	if len(rec.execCalls) > 0 && rec.execCalls[0].result != "success" {
+		t.Errorf("RecordExecution result = %q, want %q", rec.execCalls[0].result, "success")
+	}
+}
+
+func TestMetricsRecorder_FailurePath(t *testing.T) {
+	backend := &mockErrBackend{err: fmt.Errorf("simulated backend failure")}
+	runner, rec := newMetricsTestRunner(t, backend)
+	task := minimalMetricsTask(t)
+
+	result, err := runner.Execute(context.Background(), task)
+	if err != nil {
+		t.Fatalf("Execute() returned unexpected error: %v", err)
+	}
+	if result.Success {
+		t.Fatal("Execute() result.Success = true, want false")
+	}
+
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+
+	if got := len(rec.tokenCalls); got != 1 {
+		t.Errorf("RecordTokens called %d times, want 1", got)
+	}
+	if got := len(rec.costCalls); got != 1 {
+		t.Errorf("RecordCost called %d times, want 1", got)
+	}
+	if got := len(rec.execCalls); got != 1 {
+		t.Errorf("RecordExecution called %d times, want 1", got)
+	}
+	if len(rec.execCalls) > 0 && rec.execCalls[0].result != "failed" {
+		t.Errorf("RecordExecution result = %q, want %q", rec.execCalls[0].result, "failed")
+	}
+}
+
+func TestMetricsRecorder_TimeoutPath(t *testing.T) {
+	backend := &mockCtxAwareBackend{}
+	runner, rec := newMetricsTestRunner(t, backend)
+	task := minimalMetricsTask(t)
+
+	// A context whose deadline is already past causes context.WithTimeout at
+	// line ~1439 to inherit the expiry. The inner ctx.Err() is therefore
+	// context.DeadlineExceeded when the backend checks it, which sets timedOut=true.
+	pastDeadline := time.Now().Add(-1 * time.Second)
+	ctx, cancel := context.WithDeadline(context.Background(), pastDeadline)
+	defer cancel()
+
+	result, err := runner.Execute(ctx, task)
+	if err != nil {
+		t.Fatalf("Execute() returned unexpected error: %v", err)
+	}
+	if result.Success {
+		t.Fatal("Execute() result.Success = true, want false (timed out)")
+	}
+
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+
+	if got := len(rec.tokenCalls); got != 1 {
+		t.Errorf("RecordTokens called %d times, want 1", got)
+	}
+	if got := len(rec.costCalls); got != 1 {
+		t.Errorf("RecordCost called %d times, want 1", got)
+	}
+	if got := len(rec.execCalls); got != 1 {
+		t.Errorf("RecordExecution called %d times, want 1", got)
+	}
+	if len(rec.execCalls) > 0 && rec.execCalls[0].result != "timed_out" {
+		t.Errorf("RecordExecution result = %q, want %q", rec.execCalls[0].result, "timed_out")
+	}
+}
+
+func TestMetricsRecorder_NilRecorderDoesNotPanic(t *testing.T) {
+	backend := &mockErrBackend{}
+	runner := NewRunnerWithBackend(backend)
+	runner.SetRecordingEnabled(false)
+	runner.skipPreflightChecks = true
+	runner.config = &BackendConfig{SkipSelfReview: true}
+	// metricsRecorder intentionally left nil
+
+	task := minimalMetricsTask(t)
+	_, err := runner.Execute(context.Background(), task)
+	if err != nil {
+		t.Fatalf("Execute() with nil recorder returned unexpected error: %v", err)
+	}
+}

@@ -401,6 +401,9 @@ type Runner struct {
 	// openSubIssueCheck detects whether open sub-issues for a parent already exist.
 	// Injectable for testing; defaults to queryOpenSubIssues (gh CLI).
 	openSubIssueCheck func(ctx context.Context, dir, parentID string) (bool, error)
+	// metricsRecorder is an optional sink for per-execution token/cost/result metrics.
+	// Injected by autopilot via SetMetricsRecorder to avoid an import cycle.
+	metricsRecorder MetricsRecorder
 }
 
 // NewRunner creates a new Runner instance with Claude Code backend by default.
@@ -835,6 +838,11 @@ func (r *Runner) SetLogStore(store *memory.Store) {
 // SetLearningLoop sets the learning loop for post-execution pattern learning.
 func (r *Runner) SetLearningLoop(loop LearningRecorder) {
 	r.learningLoop = loop
+}
+
+// SetMetricsRecorder sets the metrics recorder for per-execution token/cost/result tracking.
+func (r *Runner) SetMetricsRecorder(rec MetricsRecorder) {
+	r.metricsRecorder = rec
 }
 
 // SetPatternContext sets the pattern context for pre-execution pattern injection.
@@ -2041,6 +2049,20 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 				log.Warn("Failed to finish recording", slog.Any("error", finErr))
 			}
 		}
+		if r.metricsRecorder != nil {
+			model := state.modelName
+			if model == "" {
+				model = r.fallbackModelName()
+			}
+			errMetrics := NewExecutionMetrics(task.ID, complexity, model, duration, state, timeout, timedOut)
+			r.metricsRecorder.RecordTokens(errMetrics.Model, errMetrics.TokensIn, errMetrics.TokensOut, errMetrics.CacheCreationTokens, errMetrics.CacheReadTokens)
+			r.metricsRecorder.RecordCost(errMetrics.Model, errMetrics.EstimatedCostUSD)
+			execResult := "failed"
+			if timedOut {
+				execResult = "timed_out"
+			}
+			r.metricsRecorder.RecordExecution(errMetrics.Model, execResult)
+		}
 		return result, nil
 	}
 
@@ -2164,6 +2186,12 @@ retrySucceeded:
 				log.Warn("Failed to finish recording", slog.Any("error", finErr))
 			}
 		}
+		if r.metricsRecorder != nil {
+			failMetrics := NewExecutionMetrics(task.ID, complexity, result.ModelName, duration, state, timeout, false)
+			r.metricsRecorder.RecordTokens(failMetrics.Model, failMetrics.TokensIn, failMetrics.TokensOut, failMetrics.CacheCreationTokens, failMetrics.CacheReadTokens)
+			r.metricsRecorder.RecordCost(failMetrics.Model, failMetrics.EstimatedCostUSD)
+			r.metricsRecorder.RecordExecution(failMetrics.Model, "failed")
+		}
 	} else {
 		result.Success = true
 
@@ -2189,6 +2217,11 @@ retrySucceeded:
 			slog.Int("files_read", metrics.FilesRead),
 			slog.Int("files_written", metrics.FilesWritten),
 		)
+		if r.metricsRecorder != nil {
+			r.metricsRecorder.RecordTokens(metrics.Model, metrics.TokensIn, metrics.TokensOut, metrics.CacheCreationTokens, metrics.CacheReadTokens)
+			r.metricsRecorder.RecordCost(metrics.Model, metrics.EstimatedCostUSD)
+			r.metricsRecorder.RecordExecution(metrics.Model, "success")
+		}
 		r.reportProgress(task.ID, "Completed", 90, "Execution completed")
 
 		// No-commit detection and retry (GH-916)
