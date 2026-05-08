@@ -127,6 +127,34 @@ Legend: `{{stage}}`
 
 ---
 
+## Local Dev Stack
+
+Spin up a local Prometheus + Grafana stack against a running `pilot start` daemon in one command:
+
+```bash
+cd deploy/grafana
+docker compose up -d
+```
+
+| Service    | URL                        | Notes                         |
+|------------|----------------------------|-------------------------------|
+| Grafana    | http://localhost:3334      | admin / admin — Pilot dashboard pre-loaded |
+| Prometheus | http://localhost:9093      | Targets: http://localhost:9093/targets |
+
+**Port coexistence:** Prometheus runs on `9093` and Grafana on `3334` to avoid conflicts with Navigator (`9092`/`3333`) and the Pilot gateway (`9091`).
+
+The stack scrapes `host.docker.internal:9091/metrics`. On Linux, Docker resolves `host.docker.internal` via the `extra_hosts: host-gateway` entry in `docker-compose.yml` — no manual configuration needed.
+
+Stop and remove volumes:
+
+```bash
+docker compose -f deploy/grafana/docker-compose.yml down -v
+```
+
+See `deploy/grafana/README.md` for the full quick-start guide, troubleshooting steps, and PromQL reference.
+
+---
+
 ## Alerting Rules
 
 ```yaml
