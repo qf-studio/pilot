@@ -3823,3 +3823,95 @@ func TestExecute_PopulatesEffortAndComplexityOnResult(t *testing.T) {
 		t.Error("result.EffortLevel is empty; want a non-empty effort string (routing was enabled)")
 	}
 }
+
+// fakeMetricsRecorder captures calls to the MetricsRecorder interface for assertions.
+type fakeMetricsRecorder struct {
+	mu         sync.Mutex
+	tokenCalls []struct{ model, direction string; n int64 }
+	costCalls  []struct{ model string; costUSD float64 }
+	execCalls  []struct{ model, result string }
+}
+
+func (f *fakeMetricsRecorder) RecordTokens(model, direction string, n int64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.tokenCalls = append(f.tokenCalls, struct{ model, direction string; n int64 }{model, direction, n})
+}
+
+func (f *fakeMetricsRecorder) RecordCost(model string, costUSD float64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.costCalls = append(f.costCalls, struct{ model string; costUSD float64 }{model, costUSD})
+}
+
+func (f *fakeMetricsRecorder) RecordExecution(model, result string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.execCalls = append(f.execCalls, struct{ model, result string }{model, result})
+}
+
+// TestMetricsRecorder_CalledOncePerExecution verifies that SetMetricsRecorder
+// wires the recorder and that all three Record methods are called exactly once
+// per execution (GH-2855).
+func TestMetricsRecorder_CalledOncePerExecution(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	const branch = "pilot/GH-test-metrics"
+	dir := setupPRGuardRepo(t, branch, true) // adds a real commit so no-commit guard doesn't fire
+
+	backend := &mockFixedBackend{
+		result: &BackendResult{
+			Success:      true,
+			Output:       "done",
+			TokensInput:  500,
+			TokensOutput: 150,
+			Model:        "claude-sonnet-test",
+		},
+	}
+
+	rec := &fakeMetricsRecorder{}
+	runner := NewRunnerWithBackend(backend)
+	runner.SetRecordingEnabled(false)
+	runner.skipPreflightChecks = true
+	runner.config = &BackendConfig{SkipSelfReview: true}
+	runner.SetMetricsRecorder(rec)
+
+	task := &Task{
+		ID:          "GH-test-metrics",
+		Title:       "test metrics recording",
+		Description: "verify recorder is called",
+		ProjectPath: dir,
+		Branch:      branch,
+		CreatePR:    false,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	result, err := runner.Execute(ctx, task)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+	if !result.Success {
+		t.Fatalf("Execute() not successful: %s", result.Error)
+	}
+
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+
+	if len(rec.execCalls) != 1 {
+		t.Errorf("RecordExecution called %d times, want exactly 1", len(rec.execCalls))
+	} else if rec.execCalls[0].result != "success" {
+		t.Errorf("RecordExecution result = %q, want %q", rec.execCalls[0].result, "success")
+	}
+
+	if len(rec.costCalls) != 1 {
+		t.Errorf("RecordCost called %d times, want exactly 1", len(rec.costCalls))
+	}
+
+	if len(rec.tokenCalls) == 0 {
+		t.Error("RecordTokens not called; want at least one call for input tokens")
+	}
+}

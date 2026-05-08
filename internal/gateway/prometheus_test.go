@@ -187,6 +187,40 @@ func TestPrometheusExporter_WritePrometheus(t *testing.T) {
 	}
 }
 
+func TestPrometheusExporter_TokenCostExecutionMetrics(t *testing.T) {
+	m := autopilot.NewMetrics()
+	m.RecordTokens("claude-sonnet-4-5", "input", 1000)
+	m.RecordTokens("claude-sonnet-4-5", "output", 250)
+	m.RecordCost("claude-sonnet-4-5", 0.005)
+	m.RecordExecution("claude-sonnet-4-5", "success")
+	m.RecordExecution("claude-sonnet-4-5", "failed")
+
+	exporter := NewPrometheusExporter(m)
+	var buf bytes.Buffer
+	if err := exporter.WritePrometheus(&buf); err != nil {
+		t.Fatalf("WritePrometheus() error = %v", err)
+	}
+	output := buf.String()
+
+	for _, want := range []string{
+		"# HELP pilot_tokens_consumed_total Total tokens consumed by model and direction",
+		"# TYPE pilot_tokens_consumed_total counter",
+		`pilot_tokens_consumed_total{model="claude-sonnet-4-5",direction="input"} 1000`,
+		`pilot_tokens_consumed_total{model="claude-sonnet-4-5",direction="output"} 250`,
+		"# HELP pilot_execution_cost_usd_total Total execution cost in USD by model",
+		"# TYPE pilot_execution_cost_usd_total counter",
+		`pilot_execution_cost_usd_total{model="claude-sonnet-4-5"} 0.005`,
+		"# HELP pilot_executions_total Total executions by model and result",
+		"# TYPE pilot_executions_total counter",
+		`pilot_executions_total{model="claude-sonnet-4-5",result="success"} 1`,
+		`pilot_executions_total{model="claude-sonnet-4-5",result="failed"} 1`,
+	} {
+		if !strings.Contains(output, want) {
+			t.Errorf("Output missing expected string: %q\nGot:\n%s", want, output)
+		}
+	}
+}
+
 func TestEscapeLabel(t *testing.T) {
 	tests := []struct {
 		input    string
