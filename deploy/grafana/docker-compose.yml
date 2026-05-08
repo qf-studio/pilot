@@ -1,0 +1,42 @@
+services:
+  prometheus:
+    image: prom/prometheus:v2.52.0
+    container_name: pilot-prometheus
+    ports:
+      - "9093:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    networks:
+      - pilot-monitoring
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  grafana:
+    image: grafana/grafana:11.0.0
+    container_name: pilot-grafana
+    ports:
+      - "3334:3000"
+    volumes:
+      - ./grafana-datasource.yml:/etc/grafana/provisioning/datasources/datasource.yml:ro
+      - ./grafana-dashboards.yml:/etc/grafana/provisioning/dashboards/dashboards.yml:ro
+      - ./pilot-dashboard.json:/var/lib/grafana/dashboards/pilot-dashboard.json:ro
+      - grafana-data:/var/lib/grafana
+    networks:
+      - pilot-monitoring
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/var/lib/grafana/dashboards/pilot-dashboard.json
+
+volumes:
+  prometheus-data:
+  grafana-data:
+
+networks:
+  pilot-monitoring:
+    driver: bridge

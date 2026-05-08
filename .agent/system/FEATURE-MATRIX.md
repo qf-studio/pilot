@@ -1,6 +1,6 @@
 # Pilot Feature Matrix
 
-**Last Updated:** 2026-05-08 (v2.53.0)
+**Last Updated:** 2026-05-06 (v2.53.0)
 
 ## Legend
 
@@ -291,12 +291,11 @@
 | Gateway WebSocket | ✅ | gateway | - | - | Session management active in gateway |
 | Health checks | ✅ | health | `pilot doctor` | - | System validation, 32 unit tests |
 | Agent doc size check | ✅ | health | `pilot doctor` | - | Warns >500 lines, errors >1000 lines per .agent/*.md (GH-2462) |
-| Brew tap token health check | ✅ | health | `pilot doctor` | - | Warns when last release.yml failed at a homebrew step (GH-2614) |
-| Brew tap token canary | ✅ | ci | `.github/workflows/brew-tap-token-canary.yml` | - | Daily cron; opens issue on 401 from HOMEBREW_TAP_GITHUB_TOKEN (GH-2614) |
 | OpenCode backend | ✅ | executor | `--backend opencode` | `executor.backend` | HTTP/SSE alternative to Claude Code |
 | OpenAI-compatible direct backend | ✅ | executor | `type: openai-api` | `executor.openai` | Direct /v1/chat/completions for OpenAI, OpenRouter, Groq, Synthetic, vLLM, Ollama (v2.105.0, GH-2382) |
 | K8s health probes | ✅ | gateway | - | - | `/ready` and `/live` endpoints for Kubernetes (v0.37.0) |
 | Prometheus metrics | ✅ | gateway | - | - | `/metrics` endpoint in Prometheus text format (v0.37.0) |
+| Local monitoring stack | ✅ | deploy/grafana | - | - | Docker Compose Prometheus+Grafana stack with 8-panel dashboard, ports 9093/3334 (v2.134.2, GH-2835) |
 | JSON structured logging | ✅ | - | - | `logging.format` | Optional JSON log output mode (v0.38.0) |
 | Qwen Code backend | ✅ | executor | `--backend qwen` | `executor.backend` | Alibaba Qwen Code CLI with stream-json (v1.9.0, GH-1314) |
 | Docker support | ✅ | - | - | - | Dockerfile + deployment guide (v1.46.0) |
