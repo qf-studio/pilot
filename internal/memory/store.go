@@ -1773,6 +1773,33 @@ func (s *Store) GetRecentAutopilotMetrics(limit int) ([]*AutopilotMetricsRow, er
 	return result, rows.Err()
 }
 
+// LatestAutopilotMetrics returns the most recent persisted snapshot, or (nil, nil) if none.
+func (s *Store) LatestAutopilotMetrics() (*AutopilotMetricsRow, error) {
+	row := s.db.QueryRow(`
+		SELECT id, snapshot_at, issues_success, issues_failed, issues_rate_limited,
+			prs_merged, prs_failed, prs_conflicting, circuit_breaker_trips,
+			api_errors_total, api_error_rate, queue_depth, failed_queue_depth,
+			active_prs, success_rate, avg_ci_wait_ms, avg_merge_time_ms, avg_execution_ms
+		FROM autopilot_metrics
+		ORDER BY snapshot_at DESC
+		LIMIT 1
+	`)
+	r := &AutopilotMetricsRow{}
+	err := row.Scan(
+		&r.ID, &r.SnapshotAt, &r.IssuesSuccess, &r.IssuesFailed, &r.IssuesRateLimited,
+		&r.PRsMerged, &r.PRsFailed, &r.PRsConflicting, &r.CircuitBreakerTrips,
+		&r.APIErrorsTotal, &r.APIErrorRate, &r.QueueDepth, &r.FailedQueueDepth,
+		&r.ActivePRs, &r.SuccessRate, &r.AvgCIWaitMs, &r.AvgMergeTimeMs, &r.AvgExecutionMs,
+	)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to scan latest autopilot metrics: %w", err)
+	}
+	return r, nil
+}
+
 // PruneAutopilotMetrics deletes snapshots older than the given duration.
 func (s *Store) PruneAutopilotMetrics(olderThan time.Duration) (int64, error) {
 	cutoff := time.Now().Add(-olderThan)
