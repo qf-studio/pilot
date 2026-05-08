@@ -178,6 +178,165 @@ func TestSnapshotIsolation(t *testing.T) {
 	}
 }
 
+func TestRecordTokens(t *testing.T) {
+	m := NewMetrics()
+
+	m.RecordTokens("claude-sonnet-4-5", "input", 500)
+	m.RecordTokens("claude-sonnet-4-5", "input", 300)
+	m.RecordTokens("claude-sonnet-4-5", "output", 200)
+	m.RecordTokens("claude-opus-4-5", "input", 100)
+
+	snap := m.Snapshot()
+
+	k1 := tokenKey{Model: "claude-sonnet-4-5", Direction: "input"}
+	if snap.TokensConsumed[k1] != 800 {
+		t.Errorf("expected 800 input tokens for sonnet, got %d", snap.TokensConsumed[k1])
+	}
+	k2 := tokenKey{Model: "claude-sonnet-4-5", Direction: "output"}
+	if snap.TokensConsumed[k2] != 200 {
+		t.Errorf("expected 200 output tokens for sonnet, got %d", snap.TokensConsumed[k2])
+	}
+	k3 := tokenKey{Model: "claude-opus-4-5", Direction: "input"}
+	if snap.TokensConsumed[k3] != 100 {
+		t.Errorf("expected 100 input tokens for opus, got %d", snap.TokensConsumed[k3])
+	}
+}
+
+func TestRecordCost(t *testing.T) {
+	m := NewMetrics()
+
+	m.RecordCost("claude-sonnet-4-5", 0.01)
+	m.RecordCost("claude-sonnet-4-5", 0.02)
+	m.RecordCost("claude-opus-4-5", 0.05)
+
+	snap := m.Snapshot()
+
+	const epsilon = 1e-9
+	if diff := snap.ExecutionCostUSD["claude-sonnet-4-5"] - 0.03; diff > epsilon || diff < -epsilon {
+		t.Errorf("expected sonnet cost 0.03, got %f", snap.ExecutionCostUSD["claude-sonnet-4-5"])
+	}
+	if diff := snap.ExecutionCostUSD["claude-opus-4-5"] - 0.05; diff > epsilon || diff < -epsilon {
+		t.Errorf("expected opus cost 0.05, got %f", snap.ExecutionCostUSD["claude-opus-4-5"])
+	}
+}
+
+func TestRecordExecution(t *testing.T) {
+	m := NewMetrics()
+
+	m.RecordExecution("claude-sonnet-4-5", "success")
+	m.RecordExecution("claude-sonnet-4-5", "success")
+	m.RecordExecution("claude-sonnet-4-5", "failed")
+	m.RecordExecution("claude-opus-4-5", "success")
+
+	snap := m.Snapshot()
+
+	k1 := execKey{Model: "claude-sonnet-4-5", Result: "success"}
+	if snap.ExecutionsByResult[k1] != 2 {
+		t.Errorf("expected 2 sonnet successes, got %d", snap.ExecutionsByResult[k1])
+	}
+	k2 := execKey{Model: "claude-sonnet-4-5", Result: "failed"}
+	if snap.ExecutionsByResult[k2] != 1 {
+		t.Errorf("expected 1 sonnet failure, got %d", snap.ExecutionsByResult[k2])
+	}
+	k3 := execKey{Model: "claude-opus-4-5", Result: "success"}
+	if snap.ExecutionsByResult[k3] != 1 {
+		t.Errorf("expected 1 opus success, got %d", snap.ExecutionsByResult[k3])
+	}
+}
+
+func TestSnapshotIsolationNewMaps(t *testing.T) {
+	m := NewMetrics()
+	m.RecordTokens("model-a", "input", 100)
+	m.RecordCost("model-a", 0.01)
+	m.RecordExecution("model-a", "success")
+
+	snap := m.Snapshot()
+
+	// Mutate after snapshot
+	m.RecordTokens("model-a", "input", 900)
+	m.RecordCost("model-a", 0.99)
+	m.RecordExecution("model-a", "success")
+
+	tk := tokenKey{Model: "model-a", Direction: "input"}
+	if snap.TokensConsumed[tk] != 100 {
+		t.Errorf("snapshot TokensConsumed should be isolated; expected 100, got %d", snap.TokensConsumed[tk])
+	}
+	const epsilon = 1e-9
+	if diff := snap.ExecutionCostUSD["model-a"] - 0.01; diff > epsilon || diff < -epsilon {
+		t.Errorf("snapshot ExecutionCostUSD should be isolated; expected 0.01, got %f", snap.ExecutionCostUSD["model-a"])
+	}
+	ek := execKey{Model: "model-a", Result: "success"}
+	if snap.ExecutionsByResult[ek] != 1 {
+		t.Errorf("snapshot ExecutionsByResult should be isolated; expected 1, got %d", snap.ExecutionsByResult[ek])
+	}
+
+	snap2 := m.Snapshot()
+	if snap2.TokensConsumed[tk] != 1000 {
+		t.Errorf("new snapshot should reflect mutations; expected 1000, got %d", snap2.TokensConsumed[tk])
+	}
+}
+
+func TestRecordTokensRace(t *testing.T) {
+	m := NewMetrics()
+	done := make(chan struct{})
+	for i := 0; i < 10; i++ {
+		go func() {
+			for j := 0; j < 100; j++ {
+				m.RecordTokens("model", "input", 1)
+				_ = m.Snapshot()
+			}
+			done <- struct{}{}
+		}()
+	}
+	for i := 0; i < 10; i++ {
+		<-done
+	}
+	snap := m.Snapshot()
+	tk := tokenKey{Model: "model", Direction: "input"}
+	if snap.TokensConsumed[tk] != 1000 {
+		t.Errorf("expected 1000 tokens after concurrent writes, got %d", snap.TokensConsumed[tk])
+	}
+}
+
+func TestRecordCostRace(t *testing.T) {
+	m := NewMetrics()
+	done := make(chan struct{})
+	for i := 0; i < 10; i++ {
+		go func() {
+			for j := 0; j < 100; j++ {
+				m.RecordCost("model", 0.001)
+				_ = m.Snapshot()
+			}
+			done <- struct{}{}
+		}()
+	}
+	for i := 0; i < 10; i++ {
+		<-done
+	}
+}
+
+func TestRecordExecutionRace(t *testing.T) {
+	m := NewMetrics()
+	done := make(chan struct{})
+	for i := 0; i < 10; i++ {
+		go func() {
+			for j := 0; j < 100; j++ {
+				m.RecordExecution("model", "success")
+				_ = m.Snapshot()
+			}
+			done <- struct{}{}
+		}()
+	}
+	for i := 0; i < 10; i++ {
+		<-done
+	}
+	snap := m.Snapshot()
+	ek := execKey{Model: "model", Result: "success"}
+	if snap.ExecutionsByResult[ek] != 1000 {
+		t.Errorf("expected 1000 executions after concurrent writes, got %d", snap.ExecutionsByResult[ek])
+	}
+}
+
 func TestUpdateActivePRsReset(t *testing.T) {
 	m := NewMetrics()
 
