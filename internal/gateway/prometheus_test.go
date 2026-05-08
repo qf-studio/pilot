@@ -221,6 +221,32 @@ func TestPrometheusExporter_TokenCostExecutionMetrics(t *testing.T) {
 	}
 }
 
+// TestPrometheusExporter_IssuesProcessedCounter verifies that a real *autopilot.Metrics
+// wired to the exporter surfaces pilot_issues_processed_total, pilot_execution_duration_seconds_count,
+// and pilot_success_rate with correct non-zero values after recording one success + one duration.
+func TestPrometheusExporter_IssuesProcessedCounter(t *testing.T) {
+	m := autopilot.NewMetrics()
+	m.RecordIssueProcessed("success")
+	m.RecordExecutionDuration(30 * time.Second)
+
+	exporter := NewPrometheusExporter(m)
+	var buf bytes.Buffer
+	if err := exporter.WritePrometheus(&buf); err != nil {
+		t.Fatalf("WritePrometheus() error = %v", err)
+	}
+	output := buf.String()
+
+	for _, want := range []string{
+		`pilot_issues_processed_total{result="success"} 1`,
+		"pilot_execution_duration_seconds_count 1",
+		"pilot_success_rate 1",
+	} {
+		if !strings.Contains(output, want) {
+			t.Errorf("Output missing expected string: %q\nGot:\n%s", want, output)
+		}
+	}
+}
+
 func TestEscapeLabel(t *testing.T) {
 	tests := []struct {
 		input    string
