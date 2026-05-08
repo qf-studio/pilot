@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"testing"
 	"time"
 )
 
@@ -595,13 +596,85 @@ var ErrParentDone = errors.New("parent task is already done; refusing to create 
 
 // isParentDone reports whether a task should be treated as done based on its
 // labels (pilot-done, pilot-skip) or its state (closed, merged).
+//
+// Defensive fallback: when both State and Labels are empty AND the task ID
+// looks like a GitHub issue ("GH-N"), this function shells out to `gh issue
+// view` to fetch the live state. This catches stale dispatcher rows and
+// upstream constructors that drop those fields — the GH-201 spurious
+// dispatch loop on 2026-05-08 spawned 70+ OAuth sub-issues this way.
+// Non-fatal on lookup error: returns the original (empty-fields → false)
+// decision so this never blocks legitimate dispatches.
+//
+// Tests can override this var to assert the fallback path or to keep the
+// production default no-op when constructing tasks with deterministic GH-* IDs.
+var isParentDoneLiveFallback = func(taskID, dir string) bool {
+	// Never shell out during `go test` — tests override this var explicitly
+	// when they want to exercise the fallback path.
+	if testing.Testing() {
+		return false
+	}
+	return queryParentDoneViaGitHub(taskID, dir)
+}
+
 func isParentDone(t *Task) bool {
+	if t == nil {
+		return false
+	}
 	for _, label := range t.Labels {
 		if label == "pilot-done" || label == "pilot-skip" {
 			return true
 		}
 	}
-	return t.State == "closed" || t.State == "merged"
+	if t.State == "closed" || t.State == "merged" {
+		return true
+	}
+	if t.State == "" && len(t.Labels) == 0 && strings.HasPrefix(t.ID, "GH-") {
+		if isParentDoneLiveFallback(t.ID, t.ProjectPath) {
+			return true
+		}
+	}
+	return false
+}
+
+// queryParentDoneViaGitHub returns true when the GitHub issue identified by
+// taskID ("GH-N") is closed/merged or carries pilot-done / pilot-skip labels.
+// Non-fatal: any subprocess or parse error returns false so the caller falls
+// back to the default decision.
+func queryParentDoneViaGitHub(taskID, dir string) bool {
+	issueNum := strings.TrimPrefix(taskID, "GH-")
+	if issueNum == "" || issueNum == taskID {
+		return false
+	}
+	args := []string{"issue", "view", issueNum, "--json", "state,labels"}
+	cmd := exec.Command("gh", args...)
+	if dir != "" {
+		cmd.Dir = dir
+	}
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+	if err := cmd.Run(); err != nil {
+		return false
+	}
+	var resp struct {
+		State  string `json:"state"`
+		Labels []struct {
+			Name string `json:"name"`
+		} `json:"labels"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &resp); err != nil {
+		return false
+	}
+	state := strings.ToLower(strings.TrimSpace(resp.State))
+	if state == "closed" || state == "merged" {
+		return true
+	}
+	for _, l := range resp.Labels {
+		switch strings.ToLower(strings.TrimSpace(l.Name)) {
+		case "pilot-done", "pilot-skip":
+			return true
+		}
+	}
+	return false
 }
 
 // isConventionalSubtaskTitle reports whether title is in conventional-commits format.

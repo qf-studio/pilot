@@ -244,6 +244,11 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 		// GH-2290: honor project.default_branch / branch_from so branching and PR target
 		// follow the configured integration branch (e.g. `dev` in main → dev → feature).
 		BaseBranch: cfg.FindProjectByRepo(sourceRepo).ResolveBaseBranch(),
+		// Propagate parent state so isParentDone() can refuse sub-issue creation
+		// when the daemon re-dispatches a closed/merged parent. Without this, an
+		// empty State + empty Labels combo bypasses the gate at epic.go and
+		// permits spurious sub-issue spawning (GH-201 OAuth dispatch loop).
+		State: issue.State,
 	}
 
 	parts := strings.Split(sourceRepo, "/")

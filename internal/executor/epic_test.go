@@ -254,7 +254,7 @@ func TestBuildPlanningPrompt(t *testing.T) {
 		"Implement user authentication",
 		"Add login, logout, and session management",
 		"Output Format",
-		"Single-Package Splits",       // GH-1265: anti-cascade instruction
+		"Single-Package Splits",         // GH-1265: anti-cascade instruction
 		"NEVER split work that belongs", // GH-1265: footer reminder
 	}
 
@@ -1446,9 +1446,9 @@ func TestCreatedIssue_IdentifierField(t *testing.T) {
 
 // mockSubIssueLinker records LinkSubIssue calls for test assertions.
 type mockSubIssueLinker struct {
-	mu     sync.Mutex
-	Calls  []mockLinkSubIssueCall
-	ErrFn  func(owner, repo string, parentNum, childNum int) error // optional error injection
+	mu    sync.Mutex
+	Calls []mockLinkSubIssueCall
+	ErrFn func(owner, repo string, parentNum, childNum int) error // optional error injection
 }
 
 type mockLinkSubIssueCall struct {
@@ -1974,9 +1974,9 @@ func TestCreateSubIssuesViaAdapter_InjectsAutopilotMetaMarker(t *testing.T) {
 
 func TestFilterPropagatableLabels(t *testing.T) {
 	tests := []struct {
-		name   string
-		input  []string
-		want   []string
+		name  string
+		input []string
+		want  []string
 	}{
 		{
 			name:  "empty input",
@@ -2212,6 +2212,84 @@ func TestCreateSubIssues_RefusesRecentlyClosedSiblings(t *testing.T) {
 	_, err := r.CreateSubIssues(context.Background(), plan, "")
 	if err != ErrSubIssuesAlreadyExist {
 		t.Errorf("expected ErrSubIssuesAlreadyExist, got %v", err)
+	}
+}
+
+// TestIsParentDone_LiveFallback exercises the GH-201 defensive path: when
+// State and Labels are both empty but the task ID looks like a GitHub issue,
+// isParentDone consults a live lookup. Without this fallback, stale dispatcher
+// rows that drop State/Labels bypass the gate and spawn spurious sub-issues
+// (the 2026-05-08 GH-201 OAuth incident, 70+ dupes).
+func TestIsParentDone_LiveFallback(t *testing.T) {
+	cases := []struct {
+		name           string
+		task           *Task
+		fallbackResult bool
+		fallbackCalled bool
+		want           bool
+	}{
+		{
+			name:           "empty fields + GH- id + live says done",
+			task:           &Task{ID: "GH-201"},
+			fallbackResult: true,
+			fallbackCalled: true,
+			want:           true,
+		},
+		{
+			name:           "empty fields + GH- id + live says open",
+			task:           &Task{ID: "GH-201"},
+			fallbackResult: false,
+			fallbackCalled: true,
+			want:           false,
+		},
+		{
+			name:           "non-GH id skips fallback",
+			task:           &Task{ID: "LIN-42"},
+			fallbackResult: true,
+			fallbackCalled: false,
+			want:           false,
+		},
+		{
+			name:           "populated state skips fallback",
+			task:           &Task{ID: "GH-201", State: "open"},
+			fallbackResult: true,
+			fallbackCalled: false,
+			want:           false,
+		},
+		{
+			name:           "populated labels skip fallback",
+			task:           &Task{ID: "GH-201", Labels: []string{"area:executor"}},
+			fallbackResult: true,
+			fallbackCalled: false,
+			want:           false,
+		},
+		{
+			name: "terminal label still wins without fallback",
+			task: &Task{ID: "GH-201", Labels: []string{"pilot-done"}},
+			// fallback should not be reached when a terminal label is present
+			fallbackResult: false,
+			fallbackCalled: false,
+			want:           true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			called := false
+			orig := isParentDoneLiveFallback
+			isParentDoneLiveFallback = func(taskID, dir string) bool {
+				called = true
+				return tc.fallbackResult
+			}
+			t.Cleanup(func() { isParentDoneLiveFallback = orig })
+
+			got := isParentDone(tc.task)
+			if got != tc.want {
+				t.Errorf("isParentDone = %v, want %v", got, tc.want)
+			}
+			if called != tc.fallbackCalled {
+				t.Errorf("fallback called = %v, want %v", called, tc.fallbackCalled)
+			}
+		})
 	}
 }
 
