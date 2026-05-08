@@ -227,6 +227,9 @@ type CreatedIssue struct {
 	// URL is the full issue URL
 	URL string
 
+	// State is the issue state ("open" or "closed") populated by recoverExistingSubIssues.
+	State string
+
 	// Subtask is the planned subtask this issue was created from
 	Subtask PlannedSubtask
 }
@@ -441,6 +444,9 @@ func detectSameComponentFromTitles(subtasks []PlannedSubtask) bool {
 		"to": true, "in": true, "of": true, "with": true, "from": true, "by": true,
 		"add": true, "create": true, "implement": true, "update": true, "fix": true,
 		"setup": true, "set": true, "up": true, "new": true, "test": true, "tests": true,
+		// conventional-commit type prefixes are not component names
+		"feat": true, "chore": true, "refactor": true, "docs": true, "perf": true,
+		"build": true, "ci": true, "style": true, "revert": true,
 	}
 
 	for _, st := range subtasks {
@@ -785,6 +791,57 @@ func queryRecentSubIssues(ctx context.Context, dir, parentID string) (bool, erro
 		return false, nil
 	}
 	return len(issues) > 0, nil
+}
+
+// recoverExistingSubIssues lists all issues (any state) whose body contains
+// "Parent: <parentID>" and reconstructs them as []CreatedIssue so the epic
+// orchestrator can decide whether to no-op or continue executing open children.
+// Non-fatal: returns an empty slice on gh CLI failure.
+func recoverExistingSubIssues(ctx context.Context, dir, parentID string) ([]CreatedIssue, error) {
+	args := []string{
+		"issue", "list",
+		"--state", "all",
+		"--search", fmt.Sprintf("\"Parent: %s\" in:body", parentID),
+		"--json", "number,url,state",
+		"--limit", "50",
+	}
+	cmd := exec.CommandContext(ctx, "gh", args...)
+	if dir != "" {
+		cmd.Dir = dir
+	}
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+	if err := cmd.Run(); err != nil {
+		return nil, nil // non-fatal
+	}
+	var raw []struct {
+		Number int    `json:"number"`
+		URL    string `json:"url"`
+		State  string `json:"state"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &raw); err != nil {
+		return nil, nil
+	}
+	out := make([]CreatedIssue, 0, len(raw))
+	for _, r := range raw {
+		out = append(out, CreatedIssue{
+			Number:     r.Number,
+			Identifier: strconv.Itoa(r.Number),
+			URL:        r.URL,
+			State:      r.State,
+		})
+	}
+	return out, nil
+}
+
+// allChildrenDone reports whether every issue in the slice is in a non-open state.
+func allChildrenDone(issues []CreatedIssue) bool {
+	for _, iss := range issues {
+		if strings.ToLower(iss.State) == "open" {
+			return false
+		}
+	}
+	return true
 }
 
 // issueNumberRegex extracts the issue number from a GitHub issue URL.

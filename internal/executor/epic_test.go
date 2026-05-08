@@ -2214,3 +2214,126 @@ func TestCreateSubIssues_RefusesRecentlyClosedSiblings(t *testing.T) {
 		t.Errorf("expected ErrSubIssuesAlreadyExist, got %v", err)
 	}
 }
+
+// TestRunner_Execute_EpicRecoversExistingSubIssues verifies that when
+// CreateSubIssues returns ErrSubIssuesAlreadyExist and all recovered sub-issues
+// are already closed, Execute returns a successful no-op without calling ExecuteSubIssues.
+func TestRunner_Execute_EpicRecoversExistingSubIssues(t *testing.T) {
+	r := NewRunner()
+	r.skipPreflightChecks = true
+	r.dryRun = true
+
+	// openSubIssueCheck returns true → CreateSubIssues returns ErrSubIssuesAlreadyExist.
+	r.openSubIssueCheck = func(_ context.Context, _, _ string) (bool, error) {
+		return true, nil
+	}
+
+	// All recovered children are already closed — epic is done.
+	r.recoverSubIssuesFn = func(_ context.Context, _, _ string) ([]CreatedIssue, error) {
+		return []CreatedIssue{
+			{Number: 10, Identifier: "10", URL: "https://github.com/o/r/issues/10", State: "closed"},
+			{Number: 11, Identifier: "11", URL: "https://github.com/o/r/issues/11", State: "closed"},
+		}, nil
+	}
+
+	// Track whether ExecuteSubIssues was entered — it must NOT be called.
+	execCalled := false
+	r.executeFunc = func(_ context.Context, _ *Task) (*ExecutionResult, error) {
+		execCalled = true
+		return &ExecutionResult{Success: true}, nil
+	}
+
+	// planEpicFn returns a multi-package plan (different directories) so CreateSubIssues is attempted.
+	// Descriptions include file paths with surrounding text so isSinglePackageScope sees 2 directories.
+	r.planEpicFn = func(_ context.Context, _ *Task, _ string) (*EpicPlan, error) {
+		return &EpicPlan{
+			ParentTask: &Task{ID: "GH-9000"},
+			Subtasks: []PlannedSubtask{
+				{Order: 1, Title: "feat(gateway): add websocket handler", Description: "Implement upgrade handler in internal/gateway/server.go"},
+				{Order: 2, Title: "feat(adapters): add telegram bot", Description: "Wire bot client in internal/adapters/telegram/bot.go"},
+			},
+		}, nil
+	}
+
+	task := &Task{
+		ID:    "GH-9000",
+		Title: "[epic] recover closed sub-issues test",
+	}
+
+	result, err := r.Execute(context.Background(), task)
+	if err != nil {
+		t.Fatalf("Execute returned unexpected error: %v", err)
+	}
+	if result == nil || !result.Success {
+		t.Fatalf("expected successful result, got: %+v", result)
+	}
+	if execCalled {
+		t.Error("ExecuteSubIssues should NOT have been called when all children are closed")
+	}
+	if !result.IsEpic {
+		t.Error("expected IsEpic=true on recovered epic result")
+	}
+}
+
+// TestRunner_Execute_EpicRecoversThenExecutesOpenChildren verifies that when
+// CreateSubIssues returns ErrSubIssuesAlreadyExist and some recovered sub-issues
+// are still open, Execute calls ExecuteSubIssues with only the open children.
+func TestRunner_Execute_EpicRecoversThenExecutesOpenChildren(t *testing.T) {
+	r := NewRunner()
+	r.skipPreflightChecks = true
+	r.dryRun = true
+
+	// openSubIssueCheck returns true → CreateSubIssues returns ErrSubIssuesAlreadyExist.
+	r.openSubIssueCheck = func(_ context.Context, _, _ string) (bool, error) {
+		return true, nil
+	}
+
+	// Mix of open and closed children — only the open one should be executed.
+	r.recoverSubIssuesFn = func(_ context.Context, _, _ string) ([]CreatedIssue, error) {
+		return []CreatedIssue{
+			{Number: 20, Identifier: "20", URL: "https://github.com/o/r/issues/20", State: "closed"},
+			{Number: 21, Identifier: "21", URL: "https://github.com/o/r/issues/21", State: "open"},
+		}, nil
+	}
+
+	// Capture which issue IDs were executed.
+	var executedIDs []string
+	r.executeFunc = func(_ context.Context, task *Task) (*ExecutionResult, error) {
+		executedIDs = append(executedIDs, task.ID)
+		return &ExecutionResult{TaskID: task.ID, Success: true}, nil
+	}
+
+	// planEpicFn returns a multi-package plan (different directories) so CreateSubIssues is attempted.
+	// Descriptions include file paths with surrounding text so isSinglePackageScope sees 2 directories.
+	r.planEpicFn = func(_ context.Context, _ *Task, _ string) (*EpicPlan, error) {
+		return &EpicPlan{
+			ParentTask: &Task{ID: "GH-9001"},
+			Subtasks: []PlannedSubtask{
+				{Order: 1, Title: "feat(gateway): add websocket handler", Description: "Implement upgrade handler in internal/gateway/server.go"},
+				{Order: 2, Title: "feat(adapters): add telegram bot", Description: "Wire bot client in internal/adapters/telegram/bot.go"},
+			},
+		}, nil
+	}
+
+	task := &Task{
+		ID:    "GH-9001",
+		Title: "[epic] recover open sub-issues test",
+	}
+
+	result, err := r.Execute(context.Background(), task)
+	if err != nil {
+		t.Fatalf("Execute returned unexpected error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if len(executedIDs) == 0 {
+		t.Error("ExecuteSubIssues should have been called for the open child")
+	}
+	// Exactly one execution: the open child GH-21. IDs are formatted as "GH-<number>".
+	for _, id := range executedIDs {
+		if id == "GH-20" {
+			t.Errorf("closed child GH-20 should not have been executed")
+		}
+	}
+}

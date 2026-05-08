@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -404,6 +405,11 @@ type Runner struct {
 	// openSubIssueCheck detects whether recent sub-issues for a parent already exist.
 	// Injectable for testing; defaults to queryRecentSubIssues (gh CLI).
 	openSubIssueCheck func(ctx context.Context, dir, parentID string) (bool, error)
+	// recoverSubIssuesFn reconstructs existing sub-issues when ErrSubIssuesAlreadyExist is hit.
+	// Injectable for testing; defaults to recoverExistingSubIssues (gh CLI).
+	recoverSubIssuesFn func(ctx context.Context, dir, parentID string) ([]CreatedIssue, error)
+	// planEpicFn overrides PlanEpic for testing; nil uses the real PlanEpic implementation.
+	planEpicFn func(ctx context.Context, task *Task, executionPath string) (*EpicPlan, error)
 	// GH-2855: Prometheus counters for tokens, cost, and executions.
 	metricsRecorder MetricsRecorder
 }
@@ -1284,7 +1290,11 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 		)
 		r.reportProgress(task.ID, "Planning", 10, "Running epic planning...")
 
-		plan, err := r.PlanEpic(ctx, task, executionPath)
+		planFn := r.planEpicFn
+		if planFn == nil {
+			planFn = r.PlanEpic
+		}
+		plan, err := planFn(ctx, task, executionPath)
 		if err != nil {
 			// GH-1687: Planning failure is non-fatal — fall through to direct execution
 			r.log.Warn("Epic planning failed, falling back to direct execution",
@@ -1321,14 +1331,56 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 
 			issues, err := r.CreateSubIssues(ctx, plan, executionPath)
 			if err != nil {
-				return &ExecutionResult{
-					TaskID:   task.ID,
-					Success:  false,
-					Error:    fmt.Sprintf("failed to create sub-issues: %v", err),
-					Duration: time.Since(start),
-					IsEpic:   true,
-					EpicPlan: plan,
-				}, nil
+				// GH-2883: Recover existing sub-issues instead of failing hard when they
+				// were already created by a prior run (e.g., Pilot restarted mid-epic).
+				if errors.Is(err, ErrSubIssuesAlreadyExist) {
+					r.log.Info("Sub-issues already exist, attempting recovery",
+						slog.String("task_id", task.ID),
+						slog.String("parent_id", plan.ParentTask.ID),
+					)
+					recover := r.recoverSubIssuesFn
+					if recover == nil {
+						recover = recoverExistingSubIssues
+					}
+					recovered, _ := recover(ctx, executionPath, plan.ParentTask.ID)
+					if allChildrenDone(recovered) {
+						r.log.Info("All recovered sub-issues are done, treating epic as complete",
+							slog.String("task_id", task.ID),
+							slog.Int("recovered_count", len(recovered)),
+						)
+						r.reportProgress(task.ID, "Complete", 100, "All sub-issues already completed")
+						return &ExecutionResult{
+							TaskID:    task.ID,
+							Success:   true,
+							Output:    fmt.Sprintf("Epic already completed: %d sub-issues recovered", len(recovered)),
+							Duration:  time.Since(start),
+							IsEpic:    true,
+							EpicPlan:  plan,
+							ModelName: r.fallbackModelName(),
+						}, nil
+					}
+					// Filter to open children only and continue execution.
+					var open []CreatedIssue
+					for _, iss := range recovered {
+						if strings.ToLower(iss.State) == "open" {
+							open = append(open, iss)
+						}
+					}
+					r.log.Info("Executing recovered open sub-issues",
+						slog.String("task_id", task.ID),
+						slog.Int("open_count", len(open)),
+					)
+					issues = open
+				} else {
+					return &ExecutionResult{
+						TaskID:   task.ID,
+						Success:  false,
+						Error:    fmt.Sprintf("failed to create sub-issues: %v", err),
+						Duration: time.Since(start),
+						IsEpic:   true,
+						EpicPlan: plan,
+					}, nil
+				}
 			}
 
 			r.reportProgress(task.ID, "Executing", 50, fmt.Sprintf("Executing %d sub-issues sequentially...", len(issues)))
