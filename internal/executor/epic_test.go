@@ -2214,3 +2214,114 @@ func TestCreateSubIssues_RefusesRecentlyClosedSiblings(t *testing.T) {
 		t.Errorf("expected ErrSubIssuesAlreadyExist, got %v", err)
 	}
 }
+
+// TestRunner_Execute_EpicRecoversExistingSubIssues verifies that when CreateSubIssues
+// returns ErrSubIssuesAlreadyExist and all recovered children are closed, Execute
+// returns a success no-op without invoking ExecuteSubIssues (GH-2883).
+func TestRunner_Execute_EpicRecoversExistingSubIssues(t *testing.T) {
+	r := newTestRunnerWithExecFunc(func(_ context.Context, _ *Task) (*ExecutionResult, error) {
+		t.Error("ExecuteSubIssues must NOT be called when all children are closed")
+		return &ExecutionResult{Success: true}, nil
+	})
+	r.skipPreflightChecks = true
+
+	// Make CreateSubIssues return ErrSubIssuesAlreadyExist.
+	r.openSubIssueCheck = func(_ context.Context, _, _ string) (bool, error) {
+		return true, nil
+	}
+
+	// Inject recovery that returns all-closed children.
+	r.recoverSubIssuesFn = func(_ context.Context, _, _ string) ([]CreatedIssue, error) {
+		return []CreatedIssue{
+			{Number: 101, Identifier: "101", State: "closed", Subtask: PlannedSubtask{Title: "feat(scope): sub one"}},
+			{Number: 102, Identifier: "102", State: "closed", Subtask: PlannedSubtask{Title: "feat(scope): sub two"}},
+		}, nil
+	}
+
+	// Inject PlanEpic so the test doesn't shell out to Claude Code.
+	r.planEpicFn = func(_ context.Context, task *Task, _ string) (*EpicPlan, error) {
+		return &EpicPlan{
+			ParentTask: task,
+			Subtasks: []PlannedSubtask{
+				{Order: 1, Title: "feat(auth): migrate database schema", Description: "internal/auth/schema.go"},
+				{Order: 2, Title: "feat(billing): expose payment endpoint", Description: "internal/billing/handler.go"},
+			},
+		}, nil
+	}
+
+	task := &Task{
+		ID:    "GH-2883",
+		Title: "[epic] recover existing sub-issues",
+		Labels: []string{"epic"},
+	}
+
+	result, err := r.Execute(context.Background(), task)
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	if result == nil || !result.Success {
+		t.Fatalf("expected success result, got %+v", result)
+	}
+	if !result.IsEpic {
+		t.Error("expected IsEpic=true")
+	}
+}
+
+// TestRunner_Execute_EpicRecoversThenExecutesOpenChildren verifies that when
+// CreateSubIssues returns ErrSubIssuesAlreadyExist and some recovered children
+// are still open, Execute calls ExecuteSubIssues with only the open ones (GH-2883).
+func TestRunner_Execute_EpicRecoversThenExecutesOpenChildren(t *testing.T) {
+	var executedIDs []string
+
+	r := newTestRunnerWithExecFunc(func(_ context.Context, task *Task) (*ExecutionResult, error) {
+		executedIDs = append(executedIDs, task.ID)
+		return &ExecutionResult{TaskID: task.ID, Success: true}, nil
+	})
+	r.skipPreflightChecks = true
+
+	// Make CreateSubIssues return ErrSubIssuesAlreadyExist.
+	r.openSubIssueCheck = func(_ context.Context, _, _ string) (bool, error) {
+		return true, nil
+	}
+
+	// Inject recovery: one closed, one open.
+	r.recoverSubIssuesFn = func(_ context.Context, _, _ string) ([]CreatedIssue, error) {
+		return []CreatedIssue{
+			{Number: 201, Identifier: "201", State: "closed", Subtask: PlannedSubtask{Title: "feat(scope): sub closed"}},
+			{Number: 202, Identifier: "202", State: "open", Subtask: PlannedSubtask{Title: "feat(scope): sub open"}},
+		}, nil
+	}
+
+	// Inject PlanEpic so the test doesn't shell out to Claude Code.
+	r.planEpicFn = func(_ context.Context, task *Task, _ string) (*EpicPlan, error) {
+		return &EpicPlan{
+			ParentTask: task,
+			Subtasks: []PlannedSubtask{
+				{Order: 1, Title: "feat(auth): migrate database schema", Description: "internal/auth/schema.go"},
+				{Order: 2, Title: "feat(billing): expose payment endpoint", Description: "internal/billing/handler.go"},
+			},
+		}, nil
+	}
+
+	task := &Task{
+		ID:    "GH-2883",
+		Title: "[epic] recover then execute open children",
+		Labels: []string{"epic"},
+	}
+
+	result, err := r.Execute(context.Background(), task)
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	if result == nil || !result.Success {
+		t.Fatalf("expected success result, got %+v", result)
+	}
+
+	// Only the open child (GH-202) should have been executed.
+	if len(executedIDs) != 1 {
+		t.Fatalf("expected 1 ExecuteSubIssues call, got %d: %v", len(executedIDs), executedIDs)
+	}
+	if executedIDs[0] != "GH-202" {
+		t.Errorf("expected GH-202 to be executed, got %q", executedIDs[0])
+	}
+}

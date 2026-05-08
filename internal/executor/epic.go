@@ -229,6 +229,9 @@ type CreatedIssue struct {
 
 	// Subtask is the planned subtask this issue was created from
 	Subtask PlannedSubtask
+
+	// State is "open" or "closed"; populated by recoverExistingSubIssues (GH-2883).
+	State string
 }
 
 // numberedListRegex matches numbered patterns: "1. ", "1) ", "Step 1:", "Phase 1:", "**1.", etc.
@@ -785,6 +788,63 @@ func queryRecentSubIssues(ctx context.Context, dir, parentID string) (bool, erro
 		return false, nil
 	}
 	return len(issues) > 0, nil
+}
+
+// recoverExistingSubIssues queries GitHub for all issues (open or closed) that
+// reference the given parentID in their body, and returns them as CreatedIssue
+// with the State field populated. Used by the runner when CreateSubIssues returns
+// ErrSubIssuesAlreadyExist so execution can resume rather than fail (GH-2883).
+func recoverExistingSubIssues(ctx context.Context, dir, parentID string) ([]CreatedIssue, error) {
+	args := []string{
+		"issue", "list",
+		"--state", "all",
+		"--search", fmt.Sprintf("\"Parent: %s\" in:body", parentID),
+		"--json", "number,url,title,state",
+		"--limit", "100",
+	}
+	cmd := exec.CommandContext(ctx, "gh", args...)
+	if dir != "" {
+		cmd.Dir = dir
+	}
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("gh issue list failed: %w", err)
+	}
+	var items []struct {
+		Number int    `json:"number"`
+		URL    string `json:"url"`
+		Title  string `json:"title"`
+		State  string `json:"state"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &items); err != nil {
+		return nil, fmt.Errorf("parse gh output: %w", err)
+	}
+	issues := make([]CreatedIssue, 0, len(items))
+	for _, item := range items {
+		issues = append(issues, CreatedIssue{
+			Number:     item.Number,
+			Identifier: strconv.Itoa(item.Number),
+			URL:        item.URL,
+			State:      item.State,
+			Subtask:    PlannedSubtask{Title: item.Title},
+		})
+	}
+	return issues, nil
+}
+
+// allChildrenDone returns true when every issue in the slice has State "closed".
+// An empty slice returns false so callers don't treat a recovery miss as done.
+func allChildrenDone(issues []CreatedIssue) bool {
+	if len(issues) == 0 {
+		return false
+	}
+	for _, iss := range issues {
+		if iss.State != "closed" {
+			return false
+		}
+	}
+	return true
 }
 
 // issueNumberRegex extracts the issue number from a GitHub issue URL.
