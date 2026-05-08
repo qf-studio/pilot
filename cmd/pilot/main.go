@@ -965,6 +965,7 @@ Examples:
 			// GH-1585: Wire autopilot provider to gateway so /api/v1/autopilot returns live PR data
 			if gwAutopilotController != nil {
 				p.Gateway().SetAutopilotProvider(&autopilotProviderAdapter{controller: gwAutopilotController})
+				p.Gateway().SetMetricsSource(gwAutopilotController.Metrics())
 
 				// GH-2080: Wire PR review events to autopilot controller
 				p.SetOnPRReview(func(ctx context.Context, prNumber int, action, state, reviewer string, repo *github.Repository) error {
@@ -1624,6 +1625,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 		gwServer := gateway.NewServer(cfg.Gateway)
 		if autopilotController != nil {
 			gwServer.SetAutopilotProvider(&autopilotProviderAdapter{controller: autopilotController})
+			gwServer.SetMetricsSource(autopilotController.Metrics())
 		}
 
 		// GH-2080: Wire PR review webhook events to autopilot controller in polling mode
