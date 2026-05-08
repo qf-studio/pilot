@@ -2244,13 +2244,13 @@ func TestRunner_Execute_EpicRecoversExistingSubIssues(t *testing.T) {
 	}
 
 	// planEpicFn returns a multi-package plan (different directories) so CreateSubIssues is attempted.
-	// File paths from distinct directories prevent isSinglePackageScope from returning true.
+	// Descriptions include file paths with surrounding text so isSinglePackageScope sees 2 directories.
 	r.planEpicFn = func(_ context.Context, _ *Task, _ string) (*EpicPlan, error) {
 		return &EpicPlan{
 			ParentTask: &Task{ID: "GH-9000"},
 			Subtasks: []PlannedSubtask{
-				{Order: 1, Title: "feat(gateway): add websocket handler", Description: "internal/gateway/server.go"},
-				{Order: 2, Title: "feat(adapters): add telegram bot", Description: "internal/adapters/telegram/bot.go"},
+				{Order: 1, Title: "feat(gateway): add websocket handler", Description: "Implement upgrade handler in internal/gateway/server.go"},
+				{Order: 2, Title: "feat(adapters): add telegram bot", Description: "Wire bot client in internal/adapters/telegram/bot.go"},
 			},
 		}, nil
 	}
@@ -2304,12 +2304,13 @@ func TestRunner_Execute_EpicRecoversThenExecutesOpenChildren(t *testing.T) {
 	}
 
 	// planEpicFn returns a multi-package plan (different directories) so CreateSubIssues is attempted.
+	// Descriptions include file paths with surrounding text so isSinglePackageScope sees 2 directories.
 	r.planEpicFn = func(_ context.Context, _ *Task, _ string) (*EpicPlan, error) {
 		return &EpicPlan{
 			ParentTask: &Task{ID: "GH-9001"},
 			Subtasks: []PlannedSubtask{
-				{Order: 1, Title: "feat(gateway): add websocket handler", Description: "internal/gateway/server.go"},
-				{Order: 2, Title: "feat(adapters): add telegram bot", Description: "internal/adapters/telegram/bot.go"},
+				{Order: 1, Title: "feat(gateway): add websocket handler", Description: "Implement upgrade handler in internal/gateway/server.go"},
+				{Order: 2, Title: "feat(adapters): add telegram bot", Description: "Wire bot client in internal/adapters/telegram/bot.go"},
 			},
 		}, nil
 	}
