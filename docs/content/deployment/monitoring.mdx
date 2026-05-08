@@ -125,6 +125,30 @@ pilot_active_prs
 ```
 Legend: `{{stage}}`
 
+**8. Token Consumption Rate (per model and direction)**
+```promql
+rate(pilot_tokens_consumed_total[5m])
+```
+Legend: `{{model}}/{{direction}}` — stacked area, unit: short
+
+**9. Cumulative Execution Cost**
+```promql
+sum(pilot_execution_cost_usd_total)
+```
+Unit: currencyUSD, decimals: 4. Thresholds: green < $1, yellow < $10, red ≥ $10.
+
+**10. Cost per Hour (by model)**
+```promql
+rate(pilot_execution_cost_usd_total[5m]) * 3600
+```
+Legend: `{{model}}` — unit: currencyUSD, axis label: USD/hour
+
+**11. Executions by Result**
+```promql
+pilot_executions_total
+```
+Legend: `{{model}}/{{result}}` — bargauge showing cumulative execution counts split by model and outcome.
+
 ---
 
 ## Local Dev Stack

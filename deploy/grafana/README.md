@@ -55,18 +55,22 @@ docker compose down -v
 
 ## Dashboard Panels
 
-The `pilot-dashboard.json` (uid: `pilot`) contains 8 panels in a 4×2 grid:
+The `pilot-dashboard.json` (uid: `pilot`) contains 12 panels across 5 rows (y=0..32):
 
-| Panel | Type | Query |
-|-------|------|-------|
-| Success Rate | stat | `pilot_success_rate` |
-| Queue Depth | timeseries | `pilot_queue_depth`, `pilot_failed_queue_depth` |
-| Issue Throughput | timeseries | `rate(pilot_issues_processed_total[5m])` |
-| Active PRs | bargauge | `pilot_active_prs` |
-| Execution Duration P95 | timeseries | `histogram_quantile(0.95, rate(pilot_execution_duration_seconds_bucket[5m]))` |
-| CI Wait P50 | timeseries | `histogram_quantile(0.50, rate(pilot_ci_wait_duration_seconds_bucket[5m]))` |
-| PR Outcomes | timeseries (stacked) | `rate(pilot_prs_merged_total[1h])`, failed, conflicting |
-| Circuit Breaker & API Errors | timeseries | `rate(pilot_circuit_breaker_trips_total[5m])`, `rate(pilot_api_errors_total[5m])` |
+| # | Panel | Type | PromQL |
+|---|-------|------|--------|
+| 1 | Success Rate | stat | `pilot_success_rate` |
+| 2 | Queue Depth | timeseries | `pilot_queue_depth`, `pilot_failed_queue_depth` |
+| 3 | Issue Throughput | timeseries | `rate(pilot_issues_processed_total[5m])` |
+| 4 | Active PRs | bargauge | `pilot_active_prs` |
+| 5 | Execution Duration P95 | timeseries | `histogram_quantile(0.95, rate(pilot_execution_duration_seconds_bucket[5m]))` |
+| 6 | CI Wait P50 | timeseries | `histogram_quantile(0.50, rate(pilot_ci_wait_duration_seconds_bucket[5m]))` |
+| 7 | PR Outcomes | timeseries (stacked) | `rate(pilot_prs_merged_total[1h])`, failed, conflicting |
+| 8 | Circuit Breaker & API Errors | timeseries | `rate(pilot_circuit_breaker_trips_total[5m])`, `rate(pilot_api_errors_total[5m])` |
+| 9 | Tokens/5m | timeseries (stacked area) | `rate(pilot_tokens_consumed_total[5m])` legend `{{model}}/{{direction}}` |
+| 10 | Cumulative Cost (USD) | stat | `sum(pilot_execution_cost_usd_total)` |
+| 11 | Cost/hour | timeseries | `rate(pilot_execution_cost_usd_total[5m]) * 3600` legend `{{model}}` |
+| 12 | Executions by Result | bargauge | `pilot_executions_total` legend `{{model}}/{{result}}` |
 
 ## Troubleshooting
 
