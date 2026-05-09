@@ -2281,6 +2281,9 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 						)
 					}
 
+					// GH-2970: startup recovery sweep for stale parent issues
+					controller.Start(ctx)
+
 					// Start controller run loop
 					go func(c *autopilot.Controller, repo string) {
 						if err := c.Run(ctx); err != nil && err != context.Canceled {
