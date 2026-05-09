@@ -1429,29 +1429,71 @@ func (c *Controller) maybeCloseParentIssue(ctx context.Context, prState *PRState
 		return
 	}
 
-	// All sub-issues closed — close the parent.
-	c.log.Info("maybeCloseParentIssue: all sub-issues done, closing parent", slog.Int("parent", parentNum))
+	c.closeParentNow(ctx, parentNum)
+}
+
+// closeParentNow adds pilot-done, removes stale labels, posts a summary comment,
+// and closes the parent issue. All errors are logged as warnings without propagating.
+func (c *Controller) closeParentNow(ctx context.Context, parentNum int) {
+	c.log.Info("closeParentNow: all sub-issues done, closing parent", slog.Int("parent", parentNum))
 
 	// Label cleanup: add pilot-done, remove stale labels.
 	if err := c.ghClient.AddLabels(ctx, c.owner, c.repo, parentNum, []string{"pilot-done"}); err != nil {
-		c.log.Warn("maybeCloseParentIssue: failed to add pilot-done label", slog.Int("parent", parentNum), slog.Any("error", err))
+		c.log.Warn("closeParentNow: failed to add pilot-done label", slog.Int("parent", parentNum), slog.Any("error", err))
 	}
-	for _, stale := range []string{"pilot-failed", "pilot-in-progress"} {
+	for _, stale := range []string{"pilot-failed", "pilot-in-progress", "pilot-blocked"} {
 		if err := c.ghClient.RemoveLabel(ctx, c.owner, c.repo, parentNum, stale); err != nil {
-			c.log.Warn("maybeCloseParentIssue: failed to remove label", slog.String("label", stale), slog.Int("parent", parentNum), slog.Any("error", err))
+			c.log.Warn("closeParentNow: failed to remove label", slog.String("label", stale), slog.Int("parent", parentNum), slog.Any("error", err))
 		}
 	}
 
 	// Post summary comment.
 	comment := fmt.Sprintf("All sub-issues for GH-%d are complete. Closing parent issue automatically.", parentNum)
 	if _, err := c.ghClient.AddComment(ctx, c.owner, c.repo, parentNum, comment); err != nil {
-		c.log.Warn("maybeCloseParentIssue: failed to post comment", slog.Int("parent", parentNum), slog.Any("error", err))
+		c.log.Warn("closeParentNow: failed to post comment", slog.Int("parent", parentNum), slog.Any("error", err))
 	}
 
 	// Close the parent issue.
 	if err := c.ghClient.UpdateIssueState(ctx, c.owner, c.repo, parentNum, "closed"); err != nil {
-		c.log.Warn("maybeCloseParentIssue: failed to close parent issue", slog.Int("parent", parentNum), slog.Any("error", err))
+		c.log.Warn("closeParentNow: failed to close parent issue", slog.Int("parent", parentNum), slog.Any("error", err))
 	}
+}
+
+// recoverStaleParentIssues scans open pilot parent issues at startup and closes any
+// whose sub-issues are all done. Catches parents orphaned when the daemon was down.
+func (c *Controller) recoverStaleParentIssues(ctx context.Context) {
+	const maxRecover = 50
+
+	candidates, err := c.ghClient.SearchOpenPilotIssuesWithSubIssues(ctx, c.owner, c.repo, maxRecover)
+	if err != nil {
+		c.log.Warn("recoverStaleParentIssues: search failed", slog.Any("error", err))
+		return
+	}
+
+	if len(candidates) == maxRecover {
+		c.log.Info("recoverStaleParentIssues: hit limit, some candidates may be skipped", slog.Int("limit", maxRecover))
+	}
+
+	closed := 0
+	for _, parentNum := range candidates {
+		openCount, _, err := c.ghClient.GetOpenSubIssueCount(ctx, c.owner, c.repo, parentNum)
+		if err != nil {
+			c.log.Warn("recoverStaleParentIssues: failed to count sub-issues", slog.Int("parent", parentNum), slog.Any("error", err))
+			continue
+		}
+		if openCount > 0 {
+			continue
+		}
+		c.closeParentNow(ctx, parentNum)
+		closed++
+	}
+
+	c.log.Info("recoverStaleParentIssues: done", slog.Int("closed", closed))
+}
+
+// Start runs one-time startup recovery sweeps. Call before the main Run loop.
+func (c *Controller) Start(ctx context.Context) {
+	c.recoverStaleParentIssues(ctx)
 }
 
 // handlePostMergeCI monitors deployment/post-merge checks (non-blocking).
