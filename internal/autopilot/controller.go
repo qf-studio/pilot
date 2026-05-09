@@ -1182,9 +1182,7 @@ func (c *Controller) handleMerging(ctx context.Context, prState *PRState) error 
 
 	c.log.Info("PR merged successfully", "pr", prState.PRNumber)
 	prState.Stage = StageMerged
-	c.metrics.RecordPRMerged()
-	c.metrics.RecordIssueProcessed("success")
-	c.metrics.RecordPRTimeToMerge(time.Since(prState.CreatedAt))
+	c.recordMergeSuccess(prState)
 
 	// GH-1015: Add pilot-done label after successful merge (not at PR creation)
 	// This prevents false positives where PRs are closed without merging
@@ -2004,6 +2002,16 @@ func (c *Controller) Metrics() *Metrics {
 	return c.metrics
 }
 
+// recordMergeSuccess fires the three merge-success metrics counters.
+// Skips the time-to-merge histogram if prState.CreatedAt is zero (defensive).
+func (c *Controller) recordMergeSuccess(prState *PRState) {
+	c.metrics.RecordPRMerged()
+	c.metrics.RecordIssueProcessed("success")
+	if !prState.CreatedAt.IsZero() {
+		c.metrics.RecordPRTimeToMerge(time.Since(prState.CreatedAt))
+	}
+}
+
 // GetLastProgressAt returns the timestamp of the last PR state transition.
 // Used by MetricsAlerter for deadlock detection (GH-849).
 func (c *Controller) GetLastProgressAt() time.Time {
@@ -2206,6 +2214,21 @@ func (c *Controller) ScanRecentlyMergedPRs(ctx context.Context) error {
 			EnvironmentName: c.config.EnvironmentName(),
 			PRTitle:         pr.Title,
 			TargetBranch:    pr.Base.Ref,
+		}
+
+		// Record merge metrics for externally-merged PRs that we haven't seen
+		// before. If a prior row already exists at StageReleasing or StageMerged
+		// this is a re-discovery on a subsequent scan tick — skip to stay idempotent.
+		if c.stateStore != nil {
+			prior, err := c.stateStore.GetPRState(pr.Number)
+			if err != nil {
+				c.log.Warn("failed to check prior PR state for metrics", "pr", pr.Number, "error", err)
+			} else if prior == nil {
+				c.recordMergeSuccess(prState)
+			}
+		} else {
+			// No state store — fire on first (and only) in-memory encounter.
+			c.recordMergeSuccess(prState)
 		}
 
 		// Register and trigger release

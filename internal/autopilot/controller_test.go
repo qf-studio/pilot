@@ -5912,3 +5912,82 @@ func TestController_IssuesProcessed_TerminalFailure(t *testing.T) {
 		t.Errorf("IssuesProcessed[success] = %d, want 0", snap.IssuesProcessed["success"])
 	}
 }
+
+// TestController_ScanRecentlyMergedPRs_RecordsMetrics verifies that
+// ScanRecentlyMergedPRs fires merge metrics on first discovery (GH-2981)
+// and is idempotent on subsequent scans.
+func TestController_ScanRecentlyMergedPRs_RecordsMetrics(t *testing.T) {
+	recentMergedAt := time.Now().Add(-5 * time.Minute).UTC().Format(time.RFC3339)
+
+	pilotPR := github.PullRequest{
+		Number:         77,
+		Head:           github.PRRef{Ref: "pilot/GH-300", SHA: "sha77"},
+		Base:           github.PRRef{Ref: "main"},
+		HTMLURL:        "https://github.com/owner/repo/pull/77",
+		Title:          "feat(api): new endpoint",
+		Merged:         true,
+		MergedAt:       recentMergedAt,
+		MergeCommitSHA: "merge-sha-77",
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/repos/owner/repo/pulls"):
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode([]*github.PullRequest{&pilotPR})
+		case strings.HasPrefix(r.URL.Path, "/repos/owner/repo/releases"):
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("[]"))
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.Release = &ReleaseConfig{
+		Enabled:   true,
+		Trigger:   "on_merge",
+		TagPrefix: "v",
+	}
+	cfg.MergedPRScanWindow = 30 * time.Minute
+
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+	store := newTestStateStore(t)
+	c.SetStateStore(store)
+
+	// First scan: PR not in state store → metrics must be recorded.
+	if err := c.ScanRecentlyMergedPRs(context.Background()); err != nil {
+		t.Fatalf("first ScanRecentlyMergedPRs() error = %v", err)
+	}
+
+	snap := c.metrics.Snapshot()
+	if snap.PRsMerged != 1 {
+		t.Errorf("after first scan: PRsMerged = %d, want 1", snap.PRsMerged)
+	}
+	if snap.IssuesProcessed["success"] != 1 {
+		t.Errorf("after first scan: IssuesProcessed[success] = %d, want 1", snap.IssuesProcessed["success"])
+	}
+	hist := c.metrics.HistogramSnapshot()
+	if len(hist.PRTimeToMerge) != 1 {
+		t.Errorf("after first scan: PRTimeToMerge samples = %d, want 1", len(hist.PRTimeToMerge))
+	}
+
+	// Second scan: PR is now in state store at StageReleasing → counts must not change.
+	if err := c.ScanRecentlyMergedPRs(context.Background()); err != nil {
+		t.Fatalf("second ScanRecentlyMergedPRs() error = %v", err)
+	}
+
+	snap2 := c.metrics.Snapshot()
+	if snap2.PRsMerged != 1 {
+		t.Errorf("after second scan (idempotency): PRsMerged = %d, want 1", snap2.PRsMerged)
+	}
+	if snap2.IssuesProcessed["success"] != 1 {
+		t.Errorf("after second scan (idempotency): IssuesProcessed[success] = %d, want 1", snap2.IssuesProcessed["success"])
+	}
+	hist2 := c.metrics.HistogramSnapshot()
+	if len(hist2.PRTimeToMerge) != 1 {
+		t.Errorf("after second scan (idempotency): PRTimeToMerge samples = %d, want 1", len(hist2.PRTimeToMerge))
+	}
+}

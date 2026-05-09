@@ -1,6 +1,6 @@
 # Pilot Feature Matrix
 
-**Last Updated:** 2026-05-09 (v2.53.0)
+**Last Updated:** 2026-05-06 (v2.53.0)
 
 ## Legend
 
@@ -295,7 +295,7 @@
 | OpenAI-compatible direct backend | ✅ | executor | `type: openai-api` | `executor.openai` | Direct /v1/chat/completions for OpenAI, OpenRouter, Groq, Synthetic, vLLM, Ollama (v2.105.0, GH-2382) |
 | K8s health probes | ✅ | gateway | - | - | `/ready` and `/live` endpoints for Kubernetes (v0.37.0) |
 | Prometheus metrics | ✅ | gateway | - | - | `/metrics` endpoint in Prometheus text format (v0.37.0) |
-| Issue processed metrics | ✅ | autopilot | - | - | RecordIssueProcessed(success/failed/rate_limited) at terminal outcomes (GH-2943) |
+| External-merge metrics | ✅ | autopilot | - | - | Record PRsMerged/IssuesProcessed/PRTimeToMerge for externally-merged PRs via scanner (v2.147.0, GH-2981) |
 | JSON structured logging | ✅ | - | - | `logging.format` | Optional JSON log output mode (v0.38.0) |
 | Qwen Code backend | ✅ | executor | `--backend qwen` | `executor.backend` | Alibaba Qwen Code CLI with stream-json (v1.9.0, GH-1314) |
 | Docker support | ✅ | - | - | - | Dockerfile + deployment guide (v1.46.0) |
