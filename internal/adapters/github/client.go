@@ -1039,3 +1039,54 @@ func (c *Client) GetOpenSubIssueCount(ctx context.Context, owner, repo string, p
 	}
 	return openCount, true, nil
 }
+
+// SearchOpenPilotIssuesWithSubIssues returns issue numbers for open issues labeled "pilot"
+// in the given repo that have at least one sub-issue (subIssuesSummary.total > 0).
+// limit controls the maximum number of issues fetched from the API via the GraphQL first argument.
+func (c *Client) SearchOpenPilotIssuesWithSubIssues(ctx context.Context, owner, repo string, limit int) ([]int, error) {
+	const query = `query($owner: String!, $repo: String!, $first: Int!) {
+		repository(owner: $owner, name: $repo) {
+			issues(first: $first, states: [OPEN], labels: ["pilot"]) {
+				nodes {
+					number
+					subIssuesSummary {
+						total
+						completed
+					}
+				}
+			}
+		}
+	}`
+
+	var result struct {
+		Repository struct {
+			Issues struct {
+				Nodes []struct {
+					Number           int `json:"number"`
+					SubIssuesSummary struct {
+						Total     int `json:"total"`
+						Completed int `json:"completed"`
+					} `json:"subIssuesSummary"`
+				} `json:"nodes"`
+			} `json:"issues"`
+		} `json:"repository"`
+	}
+
+	variables := map[string]interface{}{
+		"owner": owner,
+		"repo":  repo,
+		"first": limit,
+	}
+
+	if err := c.ExecuteGraphQL(ctx, query, variables, &result); err != nil {
+		return nil, fmt.Errorf("search pilot issues with sub-issues for %s/%s: %w", owner, repo, err)
+	}
+
+	var numbers []int
+	for _, node := range result.Repository.Issues.Nodes {
+		if node.SubIssuesSummary.Total > 0 {
+			numbers = append(numbers, node.Number)
+		}
+	}
+	return numbers, nil
+}
