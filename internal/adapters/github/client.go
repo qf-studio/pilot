@@ -1039,3 +1039,52 @@ func (c *Client) GetOpenSubIssueCount(ctx context.Context, owner, repo string, p
 	}
 	return openCount, true, nil
 }
+
+// SearchOpenPilotIssuesWithSubIssues returns issue numbers of open issues with
+// the "pilot" label that have at least one native sub-issue link (total > 0).
+// Used by Controller.recoverStaleParentIssues for the startup recovery sweep.
+// Results are bounded by limit.
+func (c *Client) SearchOpenPilotIssuesWithSubIssues(ctx context.Context, owner, repo string, limit int) ([]int, error) {
+	// GraphQL: search for open pilot-labelled issues; include subIssuesSummary
+	// so we can filter to those with ≥1 sub-issue without N+1 round-trips.
+	const query = `query($q: String!, $limit: Int!) {
+		search(query: $q, type: ISSUE, first: $limit) {
+			nodes {
+				... on Issue {
+					number
+					subIssuesSummary {
+						total
+					}
+				}
+			}
+		}
+	}`
+
+	variables := map[string]interface{}{
+		"q":     fmt.Sprintf("repo:%s/%s label:pilot state:open", owner, repo),
+		"limit": limit,
+	}
+
+	var result struct {
+		Search struct {
+			Nodes []struct {
+				Number            int `json:"number"`
+				SubIssuesSummary  struct {
+					Total int `json:"total"`
+				} `json:"subIssuesSummary"`
+			} `json:"nodes"`
+		} `json:"search"`
+	}
+
+	if err := c.ExecuteGraphQL(ctx, query, variables, &result); err != nil {
+		return nil, fmt.Errorf("SearchOpenPilotIssuesWithSubIssues %s/%s: %w", owner, repo, err)
+	}
+
+	var issues []int
+	for _, n := range result.Search.Nodes {
+		if n.SubIssuesSummary.Total > 0 {
+			issues = append(issues, n.Number)
+		}
+	}
+	return issues, nil
+}

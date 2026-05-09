@@ -5639,3 +5639,343 @@ func TestController_IssuesProcessed_TerminalFailure(t *testing.T) {
 		t.Errorf("IssuesProcessed[success] = %d, want 0", snap.IssuesProcessed["success"])
 	}
 }
+
+// graphqlSearchResponse builds a GraphQL search result with the given issue nodes
+// in the format expected by SearchOpenPilotIssuesWithSubIssues.
+func graphqlSearchResponse(nodes []map[string]interface{}) map[string]interface{} {
+	return map[string]interface{}{
+		"data": map[string]interface{}{
+			"search": map[string]interface{}{
+				"nodes": nodes,
+			},
+		},
+	}
+}
+
+// graphqlSubIssuesResponse builds a GraphQL node result with sub-issues in the
+// format expected by GetOpenSubIssueCount.
+func graphqlSubIssuesResponse(totalCount int, states []string) map[string]interface{} {
+	nodes := make([]map[string]string, len(states))
+	for i, s := range states {
+		nodes[i] = map[string]string{"state": s}
+	}
+	return map[string]interface{}{
+		"data": map[string]interface{}{
+			"node": map[string]interface{}{
+				"subIssues": map[string]interface{}{
+					"totalCount": totalCount,
+					"nodes":      nodes,
+				},
+			},
+		},
+	}
+}
+
+// TestMaybeCloseParentIssue_RemovesPilotBlocked verifies that pilot-blocked is
+// removed alongside pilot-failed and pilot-in-progress when a parent is closed.
+func TestMaybeCloseParentIssue_RemovesPilotBlocked(t *testing.T) {
+	var removeLabelCalls []string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/repos/owner/repo/issues/10" && r.Method == http.MethodGet:
+			issue := github.Issue{Number: 10, Body: "Fix\n\nParent: GH-5\n", State: "closed"}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(issue)
+
+		case r.URL.Path == "/repos/owner/repo/issues/5" && r.Method == http.MethodGet:
+			// Return node_id so GetOpenSubIssueCount can proceed.
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"node_id":"I_parent_node","number":5}`))
+
+		case r.URL.Path == "/graphql" && r.Method == http.MethodPost:
+			// All sub-issues closed (native path).
+			resp := graphqlSubIssuesResponse(2, []string{"CLOSED", "CLOSED"})
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(resp)
+
+		case r.URL.Path == "/repos/owner/repo/issues/5/labels" && r.Method == http.MethodPost:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("[]"))
+
+		case strings.HasPrefix(r.URL.Path, "/repos/owner/repo/issues/5/labels/") && r.Method == http.MethodDelete:
+			label := strings.TrimPrefix(r.URL.Path, "/repos/owner/repo/issues/5/labels/")
+			removeLabelCalls = append(removeLabelCalls, label)
+			w.WriteHeader(http.StatusOK)
+
+		case r.URL.Path == "/repos/owner/repo/issues/5/comments" && r.Method == http.MethodPost:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"id":1}`))
+
+		case r.URL.Path == "/repos/owner/repo/issues/5" && r.Method == http.MethodPatch:
+			w.WriteHeader(http.StatusOK)
+
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	c := NewController(DefaultConfig(), ghClient, nil, "owner", "repo")
+	prState := &PRState{PRNumber: 42, IssueNumber: 10}
+
+	c.maybeCloseParentIssue(context.Background(), prState)
+
+	for _, want := range []string{"pilot-failed", "pilot-in-progress", "pilot-blocked"} {
+		found := false
+		for _, got := range removeLabelCalls {
+			if got == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected label %q to be removed, removeLabelCalls = %v", want, removeLabelCalls)
+		}
+	}
+}
+
+// TestRecoverStaleParentIssues_ClosesOrphanedParent verifies that the startup
+// sweep closes a parent whose sub-issues are all done.
+func TestRecoverStaleParentIssues_ClosesOrphanedParent(t *testing.T) {
+	closeCalled := false
+	graphqlCallCount := 0
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/graphql" && r.Method == http.MethodPost {
+			graphqlCallCount++
+			var req map[string]interface{}
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			q, _ := req["query"].(string)
+
+			if strings.Contains(q, "search(") {
+				// SearchOpenPilotIssuesWithSubIssues: return one candidate (issue 5).
+				resp := graphqlSearchResponse([]map[string]interface{}{
+					{"number": 5, "subIssuesSummary": map[string]interface{}{"total": 2}},
+				})
+				w.WriteHeader(http.StatusOK)
+				_ = json.NewEncoder(w).Encode(resp)
+				return
+			}
+			// GetOpenSubIssueCount: parent 5 has no open sub-issues.
+			resp := graphqlSubIssuesResponse(2, []string{"CLOSED", "CLOSED"})
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(resp)
+			return
+		}
+
+		switch {
+		case r.URL.Path == "/repos/owner/repo/issues/5" && r.Method == http.MethodGet:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"node_id":"I_parent_node","number":5}`))
+
+		case r.URL.Path == "/repos/owner/repo/issues/5/labels" && r.Method == http.MethodPost:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("[]"))
+
+		case strings.HasPrefix(r.URL.Path, "/repos/owner/repo/issues/5/labels/") && r.Method == http.MethodDelete:
+			w.WriteHeader(http.StatusOK)
+
+		case r.URL.Path == "/repos/owner/repo/issues/5/comments" && r.Method == http.MethodPost:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"id":1}`))
+
+		case r.URL.Path == "/repos/owner/repo/issues/5" && r.Method == http.MethodPatch:
+			closeCalled = true
+			w.WriteHeader(http.StatusOK)
+
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	c := NewController(DefaultConfig(), ghClient, nil, "owner", "repo")
+
+	c.recoverStaleParentIssues(context.Background())
+
+	if !closeCalled {
+		t.Error("expected orphaned parent issue to be closed, but PATCH was not called")
+	}
+}
+
+// TestRecoverStaleParentIssues_SkipsParentWithOpenSiblings verifies that the
+// sweep does not close a parent that still has open sub-issues.
+func TestRecoverStaleParentIssues_SkipsParentWithOpenSiblings(t *testing.T) {
+	closeCalled := false
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/graphql" && r.Method == http.MethodPost {
+			var req map[string]interface{}
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			q, _ := req["query"].(string)
+
+			if strings.Contains(q, "search(") {
+				resp := graphqlSearchResponse([]map[string]interface{}{
+					{"number": 5, "subIssuesSummary": map[string]interface{}{"total": 2}},
+				})
+				w.WriteHeader(http.StatusOK)
+				_ = json.NewEncoder(w).Encode(resp)
+				return
+			}
+			// GetOpenSubIssueCount: one sub-issue is still OPEN.
+			resp := graphqlSubIssuesResponse(2, []string{"OPEN", "CLOSED"})
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(resp)
+			return
+		}
+
+		switch {
+		case r.URL.Path == "/repos/owner/repo/issues/5" && r.Method == http.MethodGet:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"node_id":"I_parent_node","number":5}`))
+
+		case r.URL.Path == "/repos/owner/repo/issues/5" && r.Method == http.MethodPatch:
+			closeCalled = true
+			w.WriteHeader(http.StatusOK)
+
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	c := NewController(DefaultConfig(), ghClient, nil, "owner", "repo")
+
+	c.recoverStaleParentIssues(context.Background())
+
+	if closeCalled {
+		t.Error("expected parent with open siblings to be skipped, but PATCH was called")
+	}
+}
+
+// TestRecoverStaleParentIssues_NoOpWhenNoSubIssues verifies that the sweep skips
+// issues returned by search but having zero sub-issues in the summary.
+func TestRecoverStaleParentIssues_NoOpWhenNoSubIssues(t *testing.T) {
+	closeCalled := false
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/graphql" && r.Method == http.MethodPost {
+			var req map[string]interface{}
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			q, _ := req["query"].(string)
+
+			if strings.Contains(q, "search(") {
+				// Return an issue with total=0 — SearchOpenPilotIssuesWithSubIssues
+				// filters it out before calling GetOpenSubIssueCount.
+				resp := graphqlSearchResponse([]map[string]interface{}{
+					{"number": 5, "subIssuesSummary": map[string]interface{}{"total": 0}},
+				})
+				w.WriteHeader(http.StatusOK)
+				_ = json.NewEncoder(w).Encode(resp)
+				return
+			}
+			// Should not be reached, but return empty to be safe.
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(graphqlSubIssuesResponse(0, nil))
+			return
+		}
+
+		if r.URL.Path == "/repos/owner/repo/issues/5" && r.Method == http.MethodPatch {
+			closeCalled = true
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	c := NewController(DefaultConfig(), ghClient, nil, "owner", "repo")
+
+	c.recoverStaleParentIssues(context.Background())
+
+	if closeCalled {
+		t.Error("expected no-op for issue with no sub-issues, but PATCH was called")
+	}
+}
+
+// TestRecoverStaleParentIssues_TruncatesAt50 verifies that the sweep caps at 50
+// candidates and logs an Info message when more are available.
+func TestRecoverStaleParentIssues_TruncatesAt50(t *testing.T) {
+	const maxRecover = 50
+	patchCalls := 0
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/graphql" && r.Method == http.MethodPost {
+			var req map[string]interface{}
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			q, _ := req["query"].(string)
+
+			if strings.Contains(q, "search(") {
+				// Return maxRecover+1 candidates so truncation kicks in.
+				nodes := make([]map[string]interface{}, maxRecover+1)
+				for i := range nodes {
+					nodes[i] = map[string]interface{}{
+						"number":           i + 100,
+						"subIssuesSummary": map[string]interface{}{"total": 1},
+					}
+				}
+				resp := graphqlSearchResponse(nodes)
+				w.WriteHeader(http.StatusOK)
+				_ = json.NewEncoder(w).Encode(resp)
+				return
+			}
+			// GetOpenSubIssueCount for each candidate: no open sub-issues.
+			resp := graphqlSubIssuesResponse(1, []string{"CLOSED"})
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(resp)
+			return
+		}
+
+		// GetIssueNodeID REST call for each candidate.
+		if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/repos/owner/repo/issues/") {
+			num := strings.TrimPrefix(r.URL.Path, "/repos/owner/repo/issues/")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"node_id":"I_node_` + num + `","number":` + num + `}`))
+			return
+		}
+
+		// Label add for each candidate.
+		if r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/labels") {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("[]"))
+			return
+		}
+
+		// Label remove for each candidate.
+		if r.Method == http.MethodDelete && strings.Contains(r.URL.Path, "/labels/") {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		// Comment for each candidate.
+		if r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/comments") {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"id":1}`))
+			return
+		}
+
+		// PATCH = close issue.
+		if r.Method == http.MethodPatch {
+			patchCalls++
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	c := NewController(DefaultConfig(), ghClient, nil, "owner", "repo")
+
+	c.recoverStaleParentIssues(context.Background())
+
+	if patchCalls != maxRecover {
+		t.Errorf("expected exactly %d PATCH calls (truncated at max), got %d", maxRecover, patchCalls)
+	}
+}
