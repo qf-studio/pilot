@@ -3130,6 +3130,124 @@ func TestGetOpenSubIssueCount(t *testing.T) {
 	}
 }
 
+func TestSearchOpenPilotIssuesWithSubIssues(t *testing.T) {
+	tests := []struct {
+		name            string
+		graphqlResponse string
+		graphqlStatus   int
+		limit           int
+		wantNumbers     []int
+		wantErr         bool
+		errContains     string
+	}{
+		{
+			name:  "returns issues with sub-issues",
+			limit: 10,
+			graphqlResponse: `{"data":{"repository":{"issues":{"nodes":[
+				{"number":1,"subIssuesSummary":{"total":3,"completed":1}},
+				{"number":2,"subIssuesSummary":{"total":0,"completed":0}},
+				{"number":3,"subIssuesSummary":{"total":2,"completed":2}}
+			]}}}}`,
+			graphqlStatus: http.StatusOK,
+			wantNumbers:   []int{1, 3},
+		},
+		{
+			name:  "empty results when no sub-issues",
+			limit: 10,
+			graphqlResponse: `{"data":{"repository":{"issues":{"nodes":[
+				{"number":5,"subIssuesSummary":{"total":0,"completed":0}},
+				{"number":6,"subIssuesSummary":{"total":0,"completed":0}}
+			]}}}}`,
+			graphqlStatus: http.StatusOK,
+			wantNumbers:   nil,
+		},
+		{
+			name:            "empty results when no issues",
+			limit:           10,
+			graphqlResponse: `{"data":{"repository":{"issues":{"nodes":[]}}}}`,
+			graphqlStatus:   http.StatusOK,
+			wantNumbers:     nil,
+		},
+		{
+			name:  "limit truncation applied to API request",
+			limit: 2,
+			graphqlResponse: `{"data":{"repository":{"issues":{"nodes":[
+				{"number":10,"subIssuesSummary":{"total":1,"completed":0}},
+				{"number":11,"subIssuesSummary":{"total":4,"completed":2}}
+			]}}}}`,
+			graphqlStatus: http.StatusOK,
+			wantNumbers:   []int{10, 11},
+		},
+		{
+			name:            "API error propagation",
+			limit:           10,
+			graphqlResponse: `{"data":null,"errors":[{"message":"could not resolve repository"}]}`,
+			graphqlStatus:   http.StatusOK,
+			wantErr:         true,
+			errContains:     "search pilot issues with sub-issues",
+		},
+		{
+			name:          "HTTP error propagation",
+			limit:         10,
+			graphqlStatus: http.StatusInternalServerError,
+			graphqlResponse: `internal error`,
+			wantErr:         true,
+			errContains:     "search pilot issues with sub-issues",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var capturedFirst int
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/graphql" && r.Method == http.MethodPost {
+					var req GraphQLRequest
+					if err := json.NewDecoder(r.Body).Decode(&req); err == nil {
+						if v, ok := req.Variables["first"]; ok {
+							switch n := v.(type) {
+							case float64:
+								capturedFirst = int(n)
+							}
+						}
+					}
+					w.WriteHeader(tt.graphqlStatus)
+					_, _ = w.Write([]byte(tt.graphqlResponse))
+					return
+				}
+				t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+				w.WriteHeader(http.StatusNotFound)
+			}))
+			defer server.Close()
+
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			numbers, err := client.SearchOpenPilotIssuesWithSubIssues(context.Background(), "owner", "repo", tt.limit)
+
+			if (err != nil) != tt.wantErr {
+				t.Errorf("SearchOpenPilotIssuesWithSubIssues() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if tt.wantErr && tt.errContains != "" {
+				if !strings.Contains(err.Error(), tt.errContains) {
+					t.Errorf("error = %q, want containing %q", err.Error(), tt.errContains)
+				}
+				return
+			}
+			if !tt.wantErr && capturedFirst != tt.limit {
+				t.Errorf("GraphQL first = %d, want %d (limit not forwarded)", capturedFirst, tt.limit)
+			}
+			if len(numbers) != len(tt.wantNumbers) {
+				t.Errorf("SearchOpenPilotIssuesWithSubIssues() = %v, want %v", numbers, tt.wantNumbers)
+				return
+			}
+			for i, n := range numbers {
+				if n != tt.wantNumbers[i] {
+					t.Errorf("numbers[%d] = %d, want %d", i, n, tt.wantNumbers[i])
+				}
+			}
+		})
+	}
+}
+
 func TestUpdateRelease(t *testing.T) {
 	tests := []struct {
 		name       string
