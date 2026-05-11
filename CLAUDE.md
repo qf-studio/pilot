@@ -70,6 +70,31 @@ and push — that's their entire job.
 
 ---
 
+## Memory: Navigator only (auto-memory disabled for this project)
+
+**This project uses Navigator's memory system as the single source of truth for persistent knowledge.** The Claude Code auto-memory system at `~/.claude/projects/-Users-aleks-petrov-Projects-startups-pilot/memory/` is **deprecated for new writes** in this project.
+
+**Rules:**
+
+- ❌ **Do not write to** `~/.claude/projects/.../memory/MEMORY.md` or any file under that directory. Treat the auto-memory `MEMORY.md` index as read-only legacy context.
+- ❌ Do not invoke the auto-memory "save a memory" flow described in the user's global instructions (the `user`/`feedback`/`project`/`reference` taxonomy under `~/.claude/projects/...`).
+- ✅ **Write all new memory to Navigator:**
+  - **Experiential knowledge** (patterns, pitfalls, decisions, learnings) → `.agent/knowledge/memories/{type}s/{slug}.md`, with the entry indexed in `.agent/knowledge/graph.json`. The four types are `pattern`, `pitfall`, `decision`, `learning` (see `nav-graph` skill / `memory_writer.py` for the file template).
+  - **Architecture / long-lived system docs** → `.agent/system/{topic}.md`
+  - **Operational procedures** → `.agent/sops/{category}/{slug}.md`
+  - **Active task plans** → `.agent/tasks/TASK-{N}-{slug}.md`; archive to `.agent/tasks/archive/` when done
+  - **Session checkpoints** → `.agent/.context-markers/{date}_{slug}.md`
+- ✅ **Read both** during sessions. The legacy auto-memory `MEMORY.md` index is still loaded into context automatically and contains months of accumulated nuance — use it as you would Navigator memory, but route any *new* entry to Navigator.
+- ✅ When you would have updated a legacy auto-memory file, instead:
+  1. Find the equivalent Navigator location (or create one),
+  2. Write the new entry there,
+  3. Optionally leave a `→ moved to .agent/knowledge/memories/...` pointer in the old file so future searches don't miss the update.
+- ✅ Use `nav-graph` skill for graph queries (`/nav-graph "what do we know about X?"`) rather than grepping the auto-memory directory.
+
+**Migration status:** legacy auto-memory contents are being ported into Navigator. Until that migration finishes, treat the auto-memory directory as a frozen archive — readable, not writable.
+
+---
+
 ## Project Overview
 
 Pilot is an autonomous AI development pipeline that:
