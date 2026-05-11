@@ -1,8 +1,8 @@
 {
   "uid": "pilot",
-  "title": "Pilot Dashboard",
+  "title": "Pilot Pipeline",
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "refresh": "30s",
   "time": {
     "from": "now-6h",
@@ -21,9 +21,9 @@
   "panels": [
     {
       "id": 1,
-      "title": "Success Rate",
+      "title": "Success Rate (1h)",
       "type": "stat",
-      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+      "gridPos": { "x": 0, "y": 0, "w": 6, "h": 4 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "options": {
         "reduceOptions": {
@@ -34,31 +34,30 @@
         "orientation": "auto",
         "textMode": "auto",
         "colorMode": "background",
-        "graphMode": "area",
+        "graphMode": "none",
         "justifyMode": "auto"
       },
       "fieldConfig": {
         "defaults": {
-          "unit": "percentunit",
+          "unit": "percent",
+          "decimals": 1,
           "thresholds": {
             "mode": "absolute",
             "steps": [
               { "color": "red", "value": null },
-              { "color": "yellow", "value": 0.7 },
-              { "color": "green", "value": 0.9 }
+              { "color": "yellow", "value": 50 },
+              { "color": "green", "value": 80 }
             ]
           },
           "mappings": [],
-          "color": {
-            "mode": "thresholds"
-          }
+          "color": { "mode": "thresholds" }
         },
         "overrides": []
       },
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "pilot_success_rate",
+          "expr": "(sum(increase(pilot_executions_total{result=\"success\"}[1h])) or vector(0)) / clamp_min(sum(increase(pilot_executions_total[1h])), 1) * 100",
           "legendFormat": "Success Rate",
           "refId": "A"
         }
@@ -66,67 +65,52 @@
     },
     {
       "id": 2,
-      "title": "Queue Depth",
-      "type": "timeseries",
-      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+      "title": "Active PRs",
+      "type": "stat",
+      "gridPos": { "x": 6, "y": 0, "w": 6, "h": 4 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "options": {
-        "tooltip": { "mode": "multi", "sort": "none" },
-        "legend": { "displayMode": "list", "placement": "bottom" }
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "auto"
       },
       "fieldConfig": {
         "defaults": {
           "unit": "short",
-          "color": { "mode": "palette-classic" }
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 5 },
+              { "color": "red", "value": 10 }
+            ]
+          },
+          "mappings": [],
+          "color": { "mode": "thresholds" }
         },
         "overrides": []
       },
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "pilot_queue_depth",
-          "legendFormat": "Queue Depth",
+          "expr": "pilot_active_prs_total",
+          "legendFormat": "Active PRs",
           "refId": "A"
-        },
-        {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "pilot_failed_queue_depth",
-          "legendFormat": "Failed Queue Depth",
-          "refId": "B"
         }
       ]
     },
     {
       "id": 3,
-      "title": "Issue Throughput",
-      "type": "timeseries",
-      "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 },
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "options": {
-        "tooltip": { "mode": "multi", "sort": "none" },
-        "legend": { "displayMode": "list", "placement": "bottom" }
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "reqps",
-          "color": { "mode": "palette-classic" }
-        },
-        "overrides": []
-      },
-      "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "rate(pilot_issues_processed_total[5m])",
-          "legendFormat": "{{result}}",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "id": 4,
-      "title": "Active PRs",
-      "type": "bargauge",
-      "gridPos": { "x": 12, "y": 8, "w": 12, "h": 8 },
+      "title": "Queue Depth",
+      "type": "stat",
+      "gridPos": { "x": 12, "y": 0, "w": 6, "h": 4 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "options": {
         "reduceOptions": {
@@ -135,14 +119,14 @@
           "values": false
         },
         "orientation": "horizontal",
-        "displayMode": "gradient",
-        "valueMode": "color",
-        "showUnfilled": true
+        "textMode": "auto",
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "auto"
       },
       "fieldConfig": {
         "defaults": {
           "unit": "short",
-          "color": { "mode": "palette-classic" },
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -150,180 +134,42 @@
               { "color": "yellow", "value": 5 },
               { "color": "red", "value": 10 }
             ]
+          },
+          "mappings": [],
+          "color": { "mode": "thresholds" }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Failed" },
+            "properties": [
+              {
+                "id": "color",
+                "value": { "fixedColor": "red", "mode": "fixed" }
+              }
+            ]
           }
-        },
-        "overrides": []
+        ]
       },
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "pilot_active_prs",
-          "legendFormat": "{{stage}}",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "id": 5,
-      "title": "Execution Duration P95",
-      "type": "timeseries",
-      "gridPos": { "x": 0, "y": 16, "w": 12, "h": 8 },
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "options": {
-        "tooltip": { "mode": "single", "sort": "none" },
-        "legend": { "displayMode": "list", "placement": "bottom" }
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "s",
-          "color": { "mode": "palette-classic" }
-        },
-        "overrides": []
-      },
-      "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "histogram_quantile(0.95, rate(pilot_execution_duration_seconds_bucket[5m]))",
-          "legendFormat": "P95",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "id": 6,
-      "title": "CI Wait P50",
-      "type": "timeseries",
-      "gridPos": { "x": 12, "y": 16, "w": 12, "h": 8 },
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "options": {
-        "tooltip": { "mode": "single", "sort": "none" },
-        "legend": { "displayMode": "list", "placement": "bottom" }
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "s",
-          "color": { "mode": "palette-classic" }
-        },
-        "overrides": []
-      },
-      "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "histogram_quantile(0.50, rate(pilot_ci_wait_duration_seconds_bucket[5m]))",
-          "legendFormat": "P50",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "id": 7,
-      "title": "PR Outcomes",
-      "type": "timeseries",
-      "gridPos": { "x": 0, "y": 24, "w": 12, "h": 8 },
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "options": {
-        "tooltip": { "mode": "multi", "sort": "none" },
-        "legend": { "displayMode": "list", "placement": "bottom" }
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "reqps",
-          "color": { "mode": "palette-classic" },
-          "custom": {
-            "fillOpacity": 20,
-            "stacking": { "mode": "normal", "group": "A" }
-          }
-        },
-        "overrides": []
-      },
-      "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "rate(pilot_prs_merged_total[1h]) * 3600",
-          "legendFormat": "Merged",
+          "expr": "pilot_queue_depth",
+          "legendFormat": "Active",
           "refId": "A"
         },
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "rate(pilot_prs_failed_total[1h]) * 3600",
+          "expr": "pilot_failed_queue_depth",
           "legendFormat": "Failed",
           "refId": "B"
-        },
-        {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "rate(pilot_prs_conflicting_total[1h]) * 3600",
-          "legendFormat": "Conflicting",
-          "refId": "C"
         }
       ]
     },
     {
-      "id": 8,
-      "title": "Circuit Breaker & API Errors",
-      "type": "timeseries",
-      "gridPos": { "x": 12, "y": 24, "w": 12, "h": 8 },
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "options": {
-        "tooltip": { "mode": "multi", "sort": "none" },
-        "legend": { "displayMode": "list", "placement": "bottom" }
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "color": { "mode": "palette-classic" }
-        },
-        "overrides": []
-      },
-      "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "rate(pilot_circuit_breaker_trips_total[5m])",
-          "legendFormat": "Circuit Breaker Trips",
-          "refId": "A"
-        },
-        {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "rate(pilot_api_errors_total[5m])",
-          "legendFormat": "API Errors ({{endpoint}})",
-          "refId": "B"
-        }
-      ]
-    },
-    {
-      "id": 9,
-      "title": "Tokens/5m",
-      "type": "timeseries",
-      "gridPos": { "x": 0, "y": 32, "w": 6, "h": 8 },
-      "datasource": { "type": "prometheus", "uid": "prometheus" },
-      "options": {
-        "tooltip": { "mode": "multi", "sort": "none" },
-        "legend": { "displayMode": "list", "placement": "bottom" }
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "color": { "mode": "palette-classic" },
-          "custom": {
-            "fillOpacity": 20,
-            "stacking": { "mode": "normal", "group": "A" }
-          }
-        },
-        "overrides": []
-      },
-      "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "rate(pilot_tokens_consumed_total[5m])",
-          "legendFormat": "{{model}}/{{direction}}",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "id": 10,
-      "title": "Cumulative Cost (USD)",
+      "id": 4,
+      "title": "Cost (last 1h)",
       "type": "stat",
-      "gridPos": { "x": 6, "y": 32, "w": 6, "h": 8 },
+      "gridPos": { "x": 18, "y": 0, "w": 6, "h": 4 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "options": {
         "reduceOptions": {
@@ -340,13 +186,13 @@
       "fieldConfig": {
         "defaults": {
           "unit": "currencyUSD",
-          "decimals": 4,
+          "decimals": 2,
           "thresholds": {
             "mode": "absolute",
             "steps": [
               { "color": "green", "value": null },
               { "color": "yellow", "value": 1 },
-              { "color": "red", "value": 10 }
+              { "color": "red", "value": 5 }
             ]
           },
           "mappings": [],
@@ -357,17 +203,301 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "sum(pilot_execution_cost_usd_total)",
-          "legendFormat": "Total Cost",
+          "expr": "sum(increase(pilot_execution_cost_usd_total[1h]))",
+          "legendFormat": "Cost/1h",
           "refId": "A"
         }
       ]
     },
     {
-      "id": 11,
-      "title": "Cost/hour",
+      "id": 5,
+      "title": "PR Time-to-Merge",
       "type": "timeseries",
-      "gridPos": { "x": 12, "y": 32, "w": 6, "h": 8 },
+      "gridPos": { "x": 0, "y": 4, "w": 6, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": {
+        "tooltip": { "mode": "multi", "sort": "none" },
+        "legend": { "displayMode": "list", "placement": "bottom" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "color": { "mode": "palette-classic" }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.50, sum(rate(pilot_pr_time_to_merge_seconds_bucket[15m])) by (le))",
+          "legendFormat": "P50",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.95, sum(rate(pilot_pr_time_to_merge_seconds_bucket[15m])) by (le))",
+          "legendFormat": "P95",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Execution Duration",
+      "type": "timeseries",
+      "gridPos": { "x": 6, "y": 4, "w": 6, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": {
+        "tooltip": { "mode": "multi", "sort": "none" },
+        "legend": { "displayMode": "list", "placement": "bottom" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "color": { "mode": "palette-classic" }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.50, sum(rate(pilot_execution_duration_seconds_bucket[15m])) by (le))",
+          "legendFormat": "P50",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.95, sum(rate(pilot_execution_duration_seconds_bucket[15m])) by (le))",
+          "legendFormat": "P95",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "CI Wait Duration",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 4, "w": 6, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": {
+        "tooltip": { "mode": "multi", "sort": "none" },
+        "legend": { "displayMode": "list", "placement": "bottom" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "color": { "mode": "palette-classic" }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.50, sum(rate(pilot_ci_wait_duration_seconds_bucket[15m])) by (le))",
+          "legendFormat": "P50",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "histogram_quantile(0.95, sum(rate(pilot_ci_wait_duration_seconds_bucket[15m])) by (le))",
+          "legendFormat": "P95",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "Active PRs by Stage",
+      "type": "timeseries",
+      "gridPos": { "x": 18, "y": 4, "w": 6, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": {
+        "tooltip": { "mode": "multi", "sort": "none" },
+        "legend": { "displayMode": "list", "placement": "bottom" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "fillOpacity": 20,
+            "stacking": { "mode": "normal", "group": "A" }
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "pilot_active_prs",
+          "legendFormat": "{{stage}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "title": "Executions / Hour",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 12, "w": 6, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": {
+        "tooltip": { "mode": "multi", "sort": "none" },
+        "legend": { "displayMode": "list", "placement": "bottom" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "fillOpacity": 20,
+            "stacking": { "mode": "normal", "group": "A" }
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (result) (increase(pilot_executions_total[1h]))",
+          "legendFormat": "{{result}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "title": "PR Outcomes / Hour",
+      "type": "timeseries",
+      "gridPos": { "x": 6, "y": 12, "w": 6, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": {
+        "tooltip": { "mode": "multi", "sort": "none" },
+        "legend": { "displayMode": "list", "placement": "bottom" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "fillOpacity": 20,
+            "stacking": { "mode": "normal", "group": "A" }
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "increase(pilot_prs_merged_total[1h])",
+          "legendFormat": "Merged",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "increase(pilot_prs_failed_total[1h])",
+          "legendFormat": "Failed",
+          "refId": "B"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "increase(pilot_prs_conflicting_total[1h])",
+          "legendFormat": "Conflicting",
+          "refId": "C"
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "title": "API Errors / Hour",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 12, "w": 6, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": {
+        "tooltip": { "mode": "multi", "sort": "none" },
+        "legend": { "displayMode": "list", "placement": "bottom" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (endpoint) (increase(pilot_api_errors_total[1h]))",
+          "legendFormat": "{{endpoint}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "title": "Circuit Breaker Trips / Hour",
+      "type": "timeseries",
+      "gridPos": { "x": 18, "y": 12, "w": 6, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": {
+        "tooltip": { "mode": "single", "sort": "none" },
+        "legend": { "displayMode": "list", "placement": "bottom" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "fixedColor": "orange", "mode": "fixed" }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "increase(pilot_circuit_breaker_trips_total[1h])",
+          "legendFormat": "Trips/hr",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "title": "Cumulative Cost (USD)",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 20, "w": 6, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": {
+        "tooltip": { "mode": "single", "sort": "none" },
+        "legend": { "displayMode": "list", "placement": "bottom" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 2,
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "fillOpacity": 20,
+            "lineWidth": 2
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum(pilot_execution_cost_usd_total)",
+          "legendFormat": "Total",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 14,
+      "title": "Cost / Hour by Model",
+      "type": "timeseries",
+      "gridPos": { "x": 6, "y": 20, "w": 6, "h": 8 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "options": {
         "tooltip": { "mode": "multi", "sort": "none" },
@@ -376,9 +506,11 @@
       "fieldConfig": {
         "defaults": {
           "unit": "currencyUSD",
+          "decimals": 2,
           "color": { "mode": "palette-classic" },
           "custom": {
-            "axisLabel": "USD/hour"
+            "fillOpacity": 20,
+            "stacking": { "mode": "normal", "group": "A" }
           }
         },
         "overrides": []
@@ -386,28 +518,51 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "rate(pilot_execution_cost_usd_total[5m]) * 3600",
+          "expr": "sum by (model) (increase(pilot_execution_cost_usd_total[1h]))",
           "legendFormat": "{{model}}",
           "refId": "A"
         }
       ]
     },
     {
-      "id": 12,
-      "title": "Executions by Result",
-      "type": "bargauge",
-      "gridPos": { "x": 18, "y": 32, "w": 6, "h": 8 },
+      "id": 15,
+      "title": "Tokens / 5m by Model",
+      "type": "timeseries",
+      "gridPos": { "x": 12, "y": 20, "w": 6, "h": 8 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "options": {
-        "reduceOptions": {
-          "calcs": ["lastNotNull"],
-          "fields": "",
-          "values": false
+        "tooltip": { "mode": "multi", "sort": "none" },
+        "legend": { "displayMode": "list", "placement": "bottom" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "fillOpacity": 20,
+            "stacking": { "mode": "normal", "group": "A" }
+          }
         },
-        "orientation": "horizontal",
-        "displayMode": "gradient",
-        "valueMode": "color",
-        "showUnfilled": true
+        "overrides": []
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (model, direction) (increase(pilot_tokens_consumed_total[5m]))",
+          "legendFormat": "{{model}}/{{direction}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 16,
+      "title": "Approval Persist Misses",
+      "type": "timeseries",
+      "gridPos": { "x": 18, "y": 20, "w": 6, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": {
+        "tooltip": { "mode": "multi", "sort": "none" },
+        "legend": { "displayMode": "list", "placement": "bottom" }
       },
       "fieldConfig": {
         "defaults": {
@@ -416,8 +571,12 @@
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green", "value": null }
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
             ]
+          },
+          "custom": {
+            "thresholdsStyle": { "mode": "area" }
           }
         },
         "overrides": []
@@ -425,8 +584,8 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "pilot_executions_total",
-          "legendFormat": "{{model}}/{{result}}",
+          "expr": "sum by (kind) (increase(pilot_approval_persist_misses_total[1h]))",
+          "legendFormat": "{{kind}}",
           "refId": "A"
         }
       ]
