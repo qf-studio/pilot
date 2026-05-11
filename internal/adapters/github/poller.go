@@ -561,6 +561,24 @@ func (p *Poller) startSequential(ctx context.Context) {
 			continue
 		}
 
+		// Diagnostic: surface why OnPRCreated may not fire (GH-2999 Phase 1)
+		if result == nil {
+			p.logger.Info("OnPRCreated skipped: result is nil",
+				slog.Int("issue_number", issue.Number),
+			)
+		} else if result.PRNumber == 0 {
+			p.logger.Info("OnPRCreated skipped: PRNumber=0",
+				slog.Int("issue_number", issue.Number),
+				slog.String("pr_url", result.PRURL),
+				slog.String("branch", result.BranchName),
+				slog.String("head_sha", result.HeadSHA),
+			)
+		} else if p.OnPRCreated == nil {
+			p.logger.Info("OnPRCreated skipped: callback not wired",
+				slog.Int("pr_number", result.PRNumber),
+				slog.Int("issue_number", issue.Number),
+			)
+		}
 		// Notify autopilot controller of new PR (if callback registered)
 		if result != nil && result.PRNumber > 0 && p.OnPRCreated != nil {
 			p.logger.Info("Notifying autopilot of PR creation",
@@ -1128,8 +1146,31 @@ func (p *Poller) checkForNewIssues(ctx context.Context) {
 					p.unmarkProcessed(issue.Number)
 				}
 
+				// Diagnostic: surface why OnPRCreated may not fire (GH-2999 Phase 1)
+				if result == nil {
+					p.logger.Info("OnPRCreated skipped: result is nil",
+						slog.Int("issue_number", issue.Number),
+					)
+				} else if result.PRNumber == 0 {
+					p.logger.Info("OnPRCreated skipped: PRNumber=0",
+						slog.Int("issue_number", issue.Number),
+						slog.String("pr_url", result.PRURL),
+						slog.String("branch", result.BranchName),
+						slog.String("head_sha", result.HeadSHA),
+					)
+				} else if p.OnPRCreated == nil {
+					p.logger.Info("OnPRCreated skipped: callback not wired",
+						slog.Int("pr_number", result.PRNumber),
+						slog.Int("issue_number", issue.Number),
+					)
+				}
 				// Notify autopilot controller of new PR
 				if result != nil && result.PRNumber > 0 && p.OnPRCreated != nil {
+					p.logger.Info("Notifying autopilot of PR creation (parallel path)",
+						slog.Int("pr_number", result.PRNumber),
+						slog.Int("issue_number", issue.Number),
+						slog.String("branch", result.BranchName),
+					)
 					p.OnPRCreated(result.PRNumber, result.PRURL, issue.Number, result.HeadSHA, result.BranchName, issue.NodeID)
 				}
 			} else if p.onIssue != nil {
