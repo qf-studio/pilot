@@ -579,6 +579,7 @@ func (p *Poller) startSequential(ctx context.Context) {
 				slog.Int("issue_number", issue.Number),
 			)
 		}
+		// Gate: PRNumber > 0 implies executor surfaced a valid PR URL via runner.go:3151. Empty PRUrl (no-commits guard, push-fail, title-rejection) leaves PRNumber=0 and we silently skip — see TASK-60 for the upstream chain.
 		// Notify autopilot controller of new PR (if callback registered)
 		if result != nil && result.PRNumber > 0 && p.OnPRCreated != nil {
 			p.logger.Info("Notifying autopilot of PR creation",
@@ -1164,6 +1165,7 @@ func (p *Poller) checkForNewIssues(ctx context.Context) {
 						slog.Int("issue_number", issue.Number),
 					)
 				}
+				// Gate: PRNumber > 0 implies executor surfaced a valid PR URL via runner.go:3151. Empty PRUrl (no-commits guard, push-fail, title-rejection) leaves PRNumber=0 and we silently skip — see TASK-60 for the upstream chain.
 				// Notify autopilot controller of new PR
 				if result != nil && result.PRNumber > 0 && p.OnPRCreated != nil {
 					p.logger.Info("Notifying autopilot of PR creation (parallel path)",
