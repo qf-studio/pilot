@@ -142,6 +142,11 @@ type Controller struct {
 	activePRs map[int]*PRState
 	mu        sync.RWMutex
 
+	// Merge-metric idempotency: tracks PR numbers we've already recorded
+	// merge-success metrics for, so handleMerging + ScanRecentlyMergedPRs
+	// can both call recordMergeSuccess without double-counting.
+	recordedMerges map[int]bool
+
 	// Persistent state store (optional, nil = in-memory only)
 	stateStore *StateStore
 
@@ -183,6 +188,7 @@ func NewController(cfg *Config, ghClient *github.Client, approvalMgr *approval.M
 		owner:          owner,
 		repo:           repo,
 		activePRs:      make(map[int]*PRState),
+		recordedMerges: make(map[int]bool),
 		prFailures:     make(map[int]*prFailureState),
 		lastProgressAt: time.Now(), // Initialize to now to avoid false alarm on startup
 		metrics:        NewMetrics(),
@@ -2002,9 +2008,20 @@ func (c *Controller) Metrics() *Metrics {
 	return c.metrics
 }
 
-// recordMergeSuccess fires the three merge-success metrics counters.
+// recordMergeSuccess fires the three merge-success metrics counters exactly
+// once per PR number per daemon lifetime. Safe to call from any path that
+// observes a Pilot PR transitioning to merged (handleMerging for
+// autopilot-driven merges, ScanRecentlyMergedPRs for externally-merged PRs).
 // Skips the time-to-merge histogram if prState.CreatedAt is zero (defensive).
 func (c *Controller) recordMergeSuccess(prState *PRState) {
+	c.mu.Lock()
+	if c.recordedMerges[prState.PRNumber] {
+		c.mu.Unlock()
+		return
+	}
+	c.recordedMerges[prState.PRNumber] = true
+	c.mu.Unlock()
+
 	c.metrics.RecordPRMerged()
 	c.metrics.RecordIssueProcessed("success")
 	if !prState.CreatedAt.IsZero() {
@@ -2171,6 +2188,26 @@ func (c *Controller) ScanRecentlyMergedPRs(ctx context.Context) error {
 			continue
 		}
 
+		// Extract issue number from branch name (optional)
+		var issueNum int
+		if strings.HasPrefix(pr.Head.Ref, "pilot/GH-") {
+			_, _ = fmt.Sscanf(pr.Head.Ref, "pilot/GH-%d", &issueNum)
+		}
+
+		// Record merge metrics BEFORE the activePRs/release-exists skip gates
+		// below — those gates exist to avoid duplicate release triggering, but
+		// the metric must fire on every discovered merged Pilot PR regardless
+		// of whether a release tag already exists or whether autopilot tracked
+		// the PR through creation. recordMergeSuccess is idempotent via
+		// recordedMerges so handleMerging + scanner can both call it.
+		// Use pr.CreatedAt for a meaningful time-to-merge sample; fall back to
+		// mergedAt so the histogram still records on PRs missing CreatedAt.
+		createdAt, _ := time.Parse(time.RFC3339, pr.CreatedAt)
+		if createdAt.IsZero() {
+			createdAt = mergedAt
+		}
+		c.recordMergeSuccess(&PRState{PRNumber: pr.Number, CreatedAt: createdAt})
+
 		// Skip if already tracked in activePRs (avoid duplicate processing)
 		c.mu.RLock()
 		_, alreadyTracked := c.activePRs[pr.Number]
@@ -2186,12 +2223,6 @@ func (c *Controller) ScanRecentlyMergedPRs(ctx context.Context) error {
 				"merge_sha", ShortSHA(pr.MergeCommitSHA),
 			)
 			continue
-		}
-
-		// Extract issue number from branch name (optional)
-		var issueNum int
-		if strings.HasPrefix(pr.Head.Ref, "pilot/GH-") {
-			_, _ = fmt.Sscanf(pr.Head.Ref, "pilot/GH-%d", &issueNum)
 		}
 
 		c.log.Info("found merged Pilot PR needing release",
@@ -2214,21 +2245,6 @@ func (c *Controller) ScanRecentlyMergedPRs(ctx context.Context) error {
 			EnvironmentName: c.config.EnvironmentName(),
 			PRTitle:         pr.Title,
 			TargetBranch:    pr.Base.Ref,
-		}
-
-		// Record merge metrics for externally-merged PRs that we haven't seen
-		// before. If a prior row already exists at StageReleasing or StageMerged
-		// this is a re-discovery on a subsequent scan tick — skip to stay idempotent.
-		if c.stateStore != nil {
-			prior, err := c.stateStore.GetPRState(pr.Number)
-			if err != nil {
-				c.log.Warn("failed to check prior PR state for metrics", "pr", pr.Number, "error", err)
-			} else if prior == nil {
-				c.recordMergeSuccess(prState)
-			}
-		} else {
-			// No state store — fire on first (and only) in-memory encounter.
-			c.recordMergeSuccess(prState)
 		}
 
 		// Register and trigger release

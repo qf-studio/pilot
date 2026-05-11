@@ -5991,3 +5991,129 @@ func TestController_ScanRecentlyMergedPRs_RecordsMetrics(t *testing.T) {
 		t.Errorf("after second scan (idempotency): PRTimeToMerge samples = %d, want 1", len(hist2.PRTimeToMerge))
 	}
 }
+
+// TestController_ScanRecentlyMergedPRs_RecordsMetricsDespiteExistingRelease
+// reproduces the bug where Pilot's own self-release pipeline always tags every
+// merge within ~1min, so by the time the ~5-15min scanner tick runs the
+// "release already exists" gate at line 2186 skips the PR before metrics
+// fire. The recorder must fire BEFORE the gate so counters move in
+// stage-mode auto-merge.
+func TestController_ScanRecentlyMergedPRs_RecordsMetricsDespiteExistingRelease(t *testing.T) {
+	recentMergedAt := time.Now().Add(-2 * time.Minute).UTC().Format(time.RFC3339)
+	recentCreatedAt := time.Now().Add(-12 * time.Minute).UTC().Format(time.RFC3339)
+	mergeSHA := "merge-sha-99"
+
+	pilotPR := github.PullRequest{
+		Number:         99,
+		Head:           github.PRRef{Ref: "pilot/GH-501", SHA: "headsha99"},
+		Base:           github.PRRef{Ref: "main"},
+		HTMLURL:        "https://github.com/owner/repo/pull/99",
+		Title:          "feat(api): another endpoint",
+		Merged:         true,
+		CreatedAt:      recentCreatedAt,
+		MergedAt:       recentMergedAt,
+		MergeCommitSHA: mergeSHA,
+	}
+
+	// Release already exists for the merge SHA (Pilot's self-shipping pattern).
+	existingRelease := github.Release{
+		TagName:         "v9.9.9",
+		TargetCommitish: mergeSHA,
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/repos/owner/repo/pulls"):
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode([]*github.PullRequest{&pilotPR})
+		case strings.HasPrefix(r.URL.Path, "/repos/owner/repo/releases"):
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode([]*github.Release{&existingRelease})
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.Release = &ReleaseConfig{
+		Enabled:   true,
+		Trigger:   "on_merge",
+		TagPrefix: "v",
+	}
+	cfg.MergedPRScanWindow = 30 * time.Minute
+
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+	store := newTestStateStore(t)
+	c.SetStateStore(store)
+
+	if err := c.ScanRecentlyMergedPRs(context.Background()); err != nil {
+		t.Fatalf("first ScanRecentlyMergedPRs() error = %v", err)
+	}
+
+	snap := c.metrics.Snapshot()
+	if snap.PRsMerged != 1 {
+		t.Errorf("PRsMerged = %d, want 1 (recorder must fire even when release tag exists)", snap.PRsMerged)
+	}
+	if snap.IssuesProcessed["success"] != 1 {
+		t.Errorf("IssuesProcessed[success] = %d, want 1", snap.IssuesProcessed["success"])
+	}
+	hist := c.metrics.HistogramSnapshot()
+	if len(hist.PRTimeToMerge) != 1 {
+		t.Errorf("PRTimeToMerge samples = %d, want 1", len(hist.PRTimeToMerge))
+	}
+
+	// Verify release-exists gate still suppresses release triggering: PR should
+	// NOT have been added to activePRs (would happen if scanner proceeded past
+	// the gate).
+	c.mu.RLock()
+	_, tracked := c.activePRs[99]
+	c.mu.RUnlock()
+	if tracked {
+		t.Error("PR 99 was added to activePRs; release-exists gate should still suppress release triggering")
+	}
+
+	// Second scan: counts unchanged (idempotency).
+	if err := c.ScanRecentlyMergedPRs(context.Background()); err != nil {
+		t.Fatalf("second ScanRecentlyMergedPRs() error = %v", err)
+	}
+	snap2 := c.metrics.Snapshot()
+	if snap2.PRsMerged != 1 {
+		t.Errorf("after second scan: PRsMerged = %d, want 1 (idempotent)", snap2.PRsMerged)
+	}
+}
+
+// TestController_RecordMergeSuccess_Idempotency verifies recordMergeSuccess
+// fires exactly once per PR number even when called multiple times from
+// different code paths (e.g. handleMerging + ScanRecentlyMergedPRs both
+// observing the same PR).
+func TestController_RecordMergeSuccess_Idempotency(t *testing.T) {
+	c := NewController(DefaultConfig(), nil, nil, "owner", "repo")
+
+	createdAt := time.Now().Add(-10 * time.Minute)
+	prState := &PRState{PRNumber: 42, CreatedAt: createdAt}
+
+	c.recordMergeSuccess(prState)
+	c.recordMergeSuccess(prState)
+	c.recordMergeSuccess(prState)
+
+	snap := c.metrics.Snapshot()
+	if snap.PRsMerged != 1 {
+		t.Errorf("PRsMerged = %d after 3 calls, want 1", snap.PRsMerged)
+	}
+	if snap.IssuesProcessed["success"] != 1 {
+		t.Errorf("IssuesProcessed[success] = %d after 3 calls, want 1", snap.IssuesProcessed["success"])
+	}
+	hist := c.metrics.HistogramSnapshot()
+	if len(hist.PRTimeToMerge) != 1 {
+		t.Errorf("PRTimeToMerge samples = %d after 3 calls, want 1", len(hist.PRTimeToMerge))
+	}
+
+	// Different PR number → fires independently.
+	c.recordMergeSuccess(&PRState{PRNumber: 43, CreatedAt: createdAt})
+	snap2 := c.metrics.Snapshot()
+	if snap2.PRsMerged != 2 {
+		t.Errorf("PRsMerged = %d after second PR, want 2", snap2.PRsMerged)
+	}
+}
