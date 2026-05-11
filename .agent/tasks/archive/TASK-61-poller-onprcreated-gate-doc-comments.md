@@ -1,8 +1,9 @@
 # TASK-61: Document the OnPRCreated gate in poller.go
 
-**Status**: 🚧 Pending Pilot pickup
+**Status**: ✅ Completed (2026-05-11)
 **Created**: 2026-05-11
 **Assignee**: Pilot
+**Resolution**: GH-3014 closed by commit `19b50cba` — comments added at `poller.go:582` and `:1168`.
 
 ---
 
