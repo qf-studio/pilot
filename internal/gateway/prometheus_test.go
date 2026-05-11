@@ -123,6 +123,26 @@ func TestPrometheusExporter_WritePrometheus(t *testing.T) {
 			},
 		},
 		{
+			name: "absent stages emitted as zero",
+			source: &mockMetricsSource{
+				snapshot: autopilot.MetricsSnapshot{
+					IssuesProcessed: make(map[string]int64),
+					APIErrors:       make(map[string]int64),
+					LabelCleanups:   make(map[string]int64),
+					ActivePRsByStage: map[autopilot.PRStage]int{
+						autopilot.StageCIPassed: 1,
+					},
+				},
+				histogramSnapshot: autopilot.HistogramData{},
+			},
+			contains: []string{
+				`pilot_active_prs{stage="ci_passed"} 1`,
+				`pilot_active_prs{stage="waiting_ci"} 0`,
+				`pilot_active_prs{stage="merging"} 0`,
+				`pilot_active_prs{stage="merged"} 0`,
+			},
+		},
+		{
 			name: "histogram with samples",
 			source: &mockMetricsSource{
 				snapshot: autopilot.MetricsSnapshot{

@@ -388,6 +388,25 @@ const (
 	StageFailed PRStage = "failed"
 )
 
+// AllPRStages returns every defined PRStage value. Used by the Prometheus exporter
+// to emit zero-values for stages absent from the current snapshot, preventing
+// Prometheus's 5-min lookback from holding stale non-zero values.
+func AllPRStages() []PRStage {
+	return []PRStage{
+		StagePRCreated,
+		StageWaitingCI,
+		StageCIPassed,
+		StageCIFailed,
+		StageAwaitApproval,
+		StageMerging,
+		StageMerged,
+		StagePostMergeCI,
+		StageReleasing,
+		StageReviewRequested,
+		StageFailed,
+	}
+}
+
 // CIStatus represents the current CI check state.
 type CIStatus string
 
