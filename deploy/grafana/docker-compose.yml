@@ -21,7 +21,7 @@ services:
     volumes:
       - ./grafana-datasource.yml:/etc/grafana/provisioning/datasources/datasource.yml:ro
       - ./grafana-dashboards.yml:/etc/grafana/provisioning/dashboards/dashboards.yml:ro
-      - ./pilot-dashboard.json:/var/lib/grafana/dashboards/pilot-dashboard.json:ro
+      - ./pilot-dashboard.json:/etc/grafana/dashboards/pilot-dashboard.json:ro
       - grafana-data:/var/lib/grafana
     networks:
       - pilot-monitoring
@@ -31,7 +31,7 @@ services:
     environment:
       - GF_SECURITY_ADMIN_PASSWORD=admin
       - GF_USERS_ALLOW_SIGN_UP=false
-      - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/var/lib/grafana/dashboards/pilot-dashboard.json
+      - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/etc/grafana/dashboards/pilot-dashboard.json
 
 volumes:
   prometheus-data:
