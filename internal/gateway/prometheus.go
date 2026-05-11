@@ -130,6 +130,15 @@ func (e *PrometheusExporter) WritePrometheus(w io.Writer) error {
 	for stage, count := range snap.ActivePRsByStage {
 		writeGaugeLabeled(w, "pilot_active_prs", float64(count), "stage", string(stage))
 	}
+	// Emit zero for every defined stage not present in the snapshot so that
+	// Prometheus's 5-min lookback does not hold stale non-zero values after a
+	// stage transition. Mirrors the pattern at lines 41-46 (pilot_issues_processed_total)
+	// and lines 88-92 (pilot_approval_persist_misses_total).
+	for _, stage := range autopilot.AllPRStages() {
+		if _, exists := snap.ActivePRsByStage[stage]; !exists {
+			writeGaugeLabeled(w, "pilot_active_prs", 0, "stage", string(stage))
+		}
+	}
 
 	// pilot_active_prs_total
 	writeHelp(w, "pilot_active_prs_total", "Total number of active PRs")
