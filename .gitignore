@@ -67,6 +67,13 @@ logs/
 # Navigator context markers (session-specific)
 .agent/.context-markers/
 
+# Navigator session-scoped runtime state (regenerated per session)
+.agent/.nav-read-counter.json
+.agent/.nav-workflow-state.json
+
+# Claude Code worktrees (full repo clones, never commit)
+.claude/worktrees/
+
 # Secrets
 *.pem
 *.key
