@@ -73,6 +73,7 @@ logs/
 
 # Claude Code worktrees (full repo clones, never commit)
 .claude/worktrees/
+.claude/scripts/
 
 # Secrets
 *.pem
