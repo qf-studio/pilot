@@ -44,11 +44,11 @@ type GitGraphState struct {
 
 // GitGraphLine represents one parsed line of git log --graph output.
 type GitGraphLine struct {
-	GraphChars string `json:"graph_chars"`           // Branch drawing characters (│ ├╌╮ etc.)
-	Refs       string `json:"refs,omitempty"`        // Branch/tag decorations
-	Message    string `json:"message,omitempty"`     // Commit message
-	Author     string `json:"author,omitempty"`      // Author name (short)
-	SHA        string `json:"sha,omitempty"`         // Short SHA (7 chars)
+	GraphChars string `json:"graph_chars"`       // Branch drawing characters (│ ├╌╮ etc.)
+	Refs       string `json:"refs,omitempty"`    // Branch/tag decorations
+	Message    string `json:"message,omitempty"` // Commit message
+	Author     string `json:"author,omitempty"`  // Author name (short)
+	SHA        string `json:"sha,omitempty"`     // Short SHA (7 chars)
 }
 
 // branchColors cycles per track column (left → right).
@@ -63,13 +63,13 @@ var branchColors = []string{
 
 // Graph line styles (initialized once).
 var (
-	graphMsgStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#c9d1d9")) // light gray
-	graphAuthorStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#8b949e")) // mid gray
-	graphSHAStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#6e7681")) // gray dim
-	graphBranchStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#7ec699")) // sage green
+	graphMsgStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#c9d1d9"))            // light gray
+	graphAuthorStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#8b949e"))            // mid gray
+	graphSHAStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#6e7681"))            // gray dim
+	graphBranchStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#7ec699"))            // sage green
 	graphTagStyle    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#d4a054")) // amber bold
 	graphHEADStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#7eb8da")) // steel bold
-	graphScrollStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#8b949e"))             // mid gray
+	graphScrollStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#8b949e"))            // mid gray
 )
 
 // FetchGitGraph runs git fetch --prune then git log --graph, returns parsed state.
@@ -177,9 +177,10 @@ func ParseGitGraphOutput(raw string) []GitGraphLine {
 // Our set:     ● │ ╮ ╯ ╌
 //
 // The tricky part is branch-off and merge patterns:
-//   git: |\ → our: ├╌╮
-//   git: |/ → our: ├╌╯
-//   git: |_ → our: ├╌╌
+//
+//	git: |\ → our: ├╌╮
+//	git: |/ → our: ├╌╯
+//	git: |_ → our: ├╌╌
 func TranslateGraphChars(s string) string {
 	// Replace git graph chars with our aesthetic set.
 	// Process character by character to handle multi-byte sequences.
@@ -300,7 +301,8 @@ func colorizeRefs(refs string) string {
 }
 
 // renderGraphLineFull renders one line in Full mode:
-//   graph + refs + message + author + SHA (fills width)
+//
+//	graph + refs + message + author + SHA (fills width)
 func renderGraphLineFull(line GitGraphLine, width int) string {
 	graphColored := colorizeGraphChars(line.GraphChars)
 	graphWidth := lipgloss.Width(line.GraphChars) // visual width without ANSI
@@ -344,7 +346,8 @@ func renderGraphLineFull(line GitGraphLine, width int) string {
 }
 
 // renderGraphLineSmall renders one line in Small mode:
-//   graph + truncated message only (no refs/author/SHA)
+//
+//	graph + truncated message only (no refs/author/SHA)
 func renderGraphLineSmall(line GitGraphLine, width int) string {
 	graphColored := colorizeGraphChars(line.GraphChars)
 	graphWidth := lipgloss.Width(line.GraphChars)
@@ -366,7 +369,8 @@ func renderGraphLineSmall(line GitGraphLine, width int) string {
 }
 
 // renderGraphLineMedium renders one line in Medium mode:
-//   graph + refs + message (no author/SHA)
+//
+//	graph + refs + message (no author/SHA)
 func renderGraphLineMedium(line GitGraphLine, width int) string {
 	graphColored := colorizeGraphChars(line.GraphChars)
 	graphWidth := lipgloss.Width(line.GraphChars)

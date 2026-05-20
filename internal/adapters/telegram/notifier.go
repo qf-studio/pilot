@@ -11,16 +11,16 @@ import (
 
 // Config holds Telegram adapter configuration
 type Config struct {
-	Enabled       bool                  `yaml:"enabled"`
-	BotToken      string                `yaml:"bot_token"`
-	ChatID        string                `yaml:"chat_id"`
-	Polling       bool                  `yaml:"polling"`         // Enable inbound polling
-	AllowedIDs    []int64               `yaml:"allowed_ids"`     // User/chat IDs allowed to send tasks
-	PlainTextMode bool                  `yaml:"plain_text_mode"` // Use plain text instead of Markdown (default: true for messaging apps)
-	Transcription *transcription.Config `yaml:"transcription"`   // Voice message transcription config
+	Enabled       bool                   `yaml:"enabled"`
+	BotToken      string                 `yaml:"bot_token"`
+	ChatID        string                 `yaml:"chat_id"`
+	Polling       bool                   `yaml:"polling"`         // Enable inbound polling
+	AllowedIDs    []int64                `yaml:"allowed_ids"`     // User/chat IDs allowed to send tasks
+	PlainTextMode bool                   `yaml:"plain_text_mode"` // Use plain text instead of Markdown (default: true for messaging apps)
+	Transcription *transcription.Config  `yaml:"transcription"`   // Voice message transcription config
 	RateLimit     *comms.RateLimitConfig `yaml:"rate_limit"`      // Rate limiting config (optional)
-	LLMClassifier *LLMClassifierConfig  `yaml:"llm_classifier"`  // LLM intent classification config (optional)
-	Approval      *ApprovalConfig       `yaml:"approval"`        // Approval-specific config (nil = enabled by default)
+	LLMClassifier *LLMClassifierConfig   `yaml:"llm_classifier"`  // LLM intent classification config (optional)
+	Approval      *ApprovalConfig        `yaml:"approval"`        // Approval-specific config (nil = enabled by default)
 }
 
 // ApprovalConfig holds Telegram approval-specific configuration

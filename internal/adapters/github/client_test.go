@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/url"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -2503,12 +2503,12 @@ func TestUpdatePullRequestBranch(t *testing.T) {
 
 func TestExecuteGraphQL(t *testing.T) {
 	tests := []struct {
-		name       string
-		query      string
-		variables  map[string]interface{}
-		statusCode int
-		response   string
-		wantErr    bool
+		name        string
+		query       string
+		variables   map[string]interface{}
+		statusCode  int
+		response    string
+		wantErr     bool
 		errContains string
 	}{
 		{
@@ -2961,11 +2961,11 @@ func TestLinkSubIssue(t *testing.T) {
 			graphqlStatus:   http.StatusOK,
 		},
 		{
-			name:         "parent not found",
-			parentStatus: http.StatusNotFound,
+			name:           "parent not found",
+			parentStatus:   http.StatusNotFound,
 			parentResponse: `{"message":"Not Found"}`,
-			wantErr:      true,
-			errContains:  "resolve parent node ID",
+			wantErr:        true,
+			errContains:    "resolve parent node ID",
 		},
 		{
 			name:           "child not found",
@@ -3035,38 +3035,38 @@ func TestLinkSubIssue(t *testing.T) {
 
 func TestGetOpenSubIssueCount(t *testing.T) {
 	tests := []struct {
-		name             string
-		restResponse     string
-		restStatus       int
-		graphqlResponse  string
-		graphqlStatus    int
-		wantCount        int
-		wantNativeLinks  bool
-		wantErr          bool
-		errContains      string
+		name            string
+		restResponse    string
+		restStatus      int
+		graphqlResponse string
+		graphqlStatus   int
+		wantCount       int
+		wantNativeLinks bool
+		wantErr         bool
+		errContains     string
 	}{
 		{
-			name:         "some open sub-issues",
-			restResponse: `{"node_id":"I_parent123","number":50}`,
-			restStatus:   http.StatusOK,
+			name:            "some open sub-issues",
+			restResponse:    `{"node_id":"I_parent123","number":50}`,
+			restStatus:      http.StatusOK,
 			graphqlResponse: `{"data":{"node":{"subIssues":{"totalCount":3,"nodes":[{"state":"OPEN"},{"state":"CLOSED"},{"state":"OPEN"}]}}}}`,
 			graphqlStatus:   http.StatusOK,
 			wantCount:       2,
 			wantNativeLinks: true,
 		},
 		{
-			name:         "all closed",
-			restResponse: `{"node_id":"I_parent123","number":50}`,
-			restStatus:   http.StatusOK,
+			name:            "all closed",
+			restResponse:    `{"node_id":"I_parent123","number":50}`,
+			restStatus:      http.StatusOK,
 			graphqlResponse: `{"data":{"node":{"subIssues":{"totalCount":2,"nodes":[{"state":"CLOSED"},{"state":"CLOSED"}]}}}}`,
 			graphqlStatus:   http.StatusOK,
 			wantCount:       0,
 			wantNativeLinks: true,
 		},
 		{
-			name:         "no native links",
-			restResponse: `{"node_id":"I_parent123","number":50}`,
-			restStatus:   http.StatusOK,
+			name:            "no native links",
+			restResponse:    `{"node_id":"I_parent123","number":50}`,
+			restStatus:      http.StatusOK,
 			graphqlResponse: `{"data":{"node":{"subIssues":{"totalCount":0,"nodes":[]}}}}`,
 			graphqlStatus:   http.StatusOK,
 			wantCount:       0,
@@ -3187,9 +3187,9 @@ func TestSearchOpenPilotIssuesWithSubIssues(t *testing.T) {
 			errContains:     "search pilot issues with sub-issues",
 		},
 		{
-			name:          "HTTP error propagation",
-			limit:         10,
-			graphqlStatus: http.StatusInternalServerError,
+			name:            "HTTP error propagation",
+			limit:           10,
+			graphqlStatus:   http.StatusInternalServerError,
 			graphqlResponse: `internal error`,
 			wantErr:         true,
 			errContains:     "search pilot issues with sub-issues",

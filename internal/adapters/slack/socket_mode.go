@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/qf-studio/pilot/internal/logging"
 	"github.com/gorilla/websocket"
+	"github.com/qf-studio/pilot/internal/logging"
 )
 
 // SocketEventType identifies the kind of event received over Socket Mode.

@@ -317,10 +317,10 @@ func printOnboardSummary(state *OnboardState) {
 
 // SummaryCard represents a summary card
 type SummaryCard struct {
-	Title    string
-	Value    string
-	Line1    string
-	Line2    string
+	Title      string
+	Value      string
+	Line1      string
+	Line2      string
 	Configured bool
 }
 

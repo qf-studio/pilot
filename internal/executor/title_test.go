@@ -48,11 +48,11 @@ func TestValidatePRTitle(t *testing.T) {
 
 func TestAutoPrefixTitle(t *testing.T) {
 	tests := []struct {
-		name    string
-		title   string
-		labels  []string
-		want    string
-		wantOK  bool
+		name   string
+		title  string
+		labels []string
+		want   string
+		wantOK bool
 	}{
 		{"bug label", "handle nil response", []string{"bug"}, "fix: handle nil response", true},
 		{"enhancement label", "add rate limiting", []string{"enhancement"}, "feat: add rate limiting", true},

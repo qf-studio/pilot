@@ -49,10 +49,10 @@ func NewReleaseSummaryGenerator(ghClient *github.Client, apiKey string, log *slo
 		return nil
 	}
 	return &ReleaseSummaryGenerator{
-		ghClient:   ghClient,
-		apiKey:     apiKey,
-		model:      releaseSummaryModel,
-		apiURL:     anthropicAPIURL,
+		ghClient: ghClient,
+		apiKey:   apiKey,
+		model:    releaseSummaryModel,
+		apiURL:   anthropicAPIURL,
 		httpClient: &http.Client{
 			Timeout: releaseSummaryTimeout,
 		},

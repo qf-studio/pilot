@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/qf-studio/pilot/internal/logging"
 	"github.com/gorilla/websocket"
+	"github.com/qf-studio/pilot/internal/logging"
 )
 
 // GatewayClient connects to Discord Gateway and handles event streaming.

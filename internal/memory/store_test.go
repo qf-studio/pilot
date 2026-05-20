@@ -1826,17 +1826,17 @@ func TestRecentCompletedTelemetryStats(t *testing.T) {
 	defer func() { _ = store.Close() }()
 
 	type rec struct {
-		id        string
-		status    string
-		commit    string
-		tokens    int64
+		id     string
+		status string
+		commit string
+		tokens int64
 	}
 	rows := []rec{
-		{"a", "completed", "deadbeef", 100},  // counts, not zero
-		{"b", "completed", "cafe1234", 0},    // counts, zero
-		{"c", "completed", "ba5eba11", 0},    // counts, zero
-		{"d", "completed", "", 0},            // SKIPPED (no commit — epic orchestrator)
-		{"e", "failed", "feedface", 0},       // SKIPPED (not completed)
+		{"a", "completed", "deadbeef", 100}, // counts, not zero
+		{"b", "completed", "cafe1234", 0},   // counts, zero
+		{"c", "completed", "ba5eba11", 0},   // counts, zero
+		{"d", "completed", "", 0},           // SKIPPED (no commit — epic orchestrator)
+		{"e", "failed", "feedface", 0},      // SKIPPED (not completed)
 	}
 	for _, r := range rows {
 		if err := store.SaveExecution(&Execution{

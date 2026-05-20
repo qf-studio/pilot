@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/qf-studio/pilot/internal/memory"
 	"github.com/gorilla/websocket"
+	"github.com/qf-studio/pilot/internal/memory"
 )
 
 // mockLogStreamStore implements LogStreamStore for testing.

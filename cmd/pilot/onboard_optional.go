@@ -350,4 +350,3 @@ func parseTimeToCron(timeStr string) string {
 
 	return fmt.Sprintf("%s %s * * 1-5", minute, hour)
 }
-

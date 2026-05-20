@@ -169,26 +169,26 @@ type Project struct {
 
 // MergeRequest represents a GitLab merge request
 type MergeRequest struct {
-	ID             int       `json:"id"`
-	IID            int       `json:"iid"` // Project-scoped ID
-	ProjectID      int       `json:"project_id"`
-	Title          string    `json:"title"`
-	Description    string    `json:"description"`
-	State          string    `json:"state"` // opened, closed, merged
-	SourceBranch   string    `json:"source_branch"`
-	TargetBranch   string    `json:"target_branch"`
-	WebURL         string    `json:"web_url"`
-	MergeStatus    string    `json:"merge_status"` // can_be_merged, cannot_be_merged, checking, etc.
-	HasConflicts   bool      `json:"has_conflicts"`
-	SHA            string    `json:"sha"` // Head commit SHA
-	MergedAt       time.Time `json:"merged_at,omitempty"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
-	Author         *User     `json:"author,omitempty"`
-	Labels         []string  `json:"labels"`
-	Draft          bool      `json:"draft"`
-	HeadPipeline   *Pipeline `json:"head_pipeline,omitempty"`
-	DetailedMergeStatus string `json:"detailed_merge_status,omitempty"`
+	ID                  int       `json:"id"`
+	IID                 int       `json:"iid"` // Project-scoped ID
+	ProjectID           int       `json:"project_id"`
+	Title               string    `json:"title"`
+	Description         string    `json:"description"`
+	State               string    `json:"state"` // opened, closed, merged
+	SourceBranch        string    `json:"source_branch"`
+	TargetBranch        string    `json:"target_branch"`
+	WebURL              string    `json:"web_url"`
+	MergeStatus         string    `json:"merge_status"` // can_be_merged, cannot_be_merged, checking, etc.
+	HasConflicts        bool      `json:"has_conflicts"`
+	SHA                 string    `json:"sha"` // Head commit SHA
+	MergedAt            time.Time `json:"merged_at,omitempty"`
+	CreatedAt           time.Time `json:"created_at"`
+	UpdatedAt           time.Time `json:"updated_at"`
+	Author              *User     `json:"author,omitempty"`
+	Labels              []string  `json:"labels"`
+	Draft               bool      `json:"draft"`
+	HeadPipeline        *Pipeline `json:"head_pipeline,omitempty"`
+	DetailedMergeStatus string    `json:"detailed_merge_status,omitempty"`
 }
 
 // MergeRequestInput is used for creating merge requests

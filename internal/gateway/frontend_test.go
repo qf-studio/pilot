@@ -31,9 +31,9 @@ func TestSPAHandler_ServesIndexHTML(t *testing.T) {
 
 func TestSPAHandler_ServesStaticAssets(t *testing.T) {
 	fs := fstest.MapFS{
-		"index.html":        &fstest.MapFile{Data: []byte("<html>dashboard</html>")},
-		"assets/index.js":   &fstest.MapFile{Data: []byte("console.log('app')")},
-		"assets/index.css":  &fstest.MapFile{Data: []byte("body{}")},
+		"index.html":       &fstest.MapFile{Data: []byte("<html>dashboard</html>")},
+		"assets/index.js":  &fstest.MapFile{Data: []byte("console.log('app')")},
+		"assets/index.css": &fstest.MapFile{Data: []byte("body{}")},
 	}
 
 	handler := &spaHandler{fs: fs, prefix: "/dashboard/"}
@@ -98,8 +98,8 @@ func TestServeDashboard_WithFS(t *testing.T) {
 	s := NewServer(&Config{Host: "127.0.0.1", Port: 0})
 
 	fs := fstest.MapFS{
-		"dashboard_dist/index.html":       &fstest.MapFile{Data: []byte("<html>test</html>")},
-		"dashboard_dist/assets/app.js":    &fstest.MapFile{Data: []byte("app()")},
+		"dashboard_dist/index.html":    &fstest.MapFile{Data: []byte("<html>test</html>")},
+		"dashboard_dist/assets/app.js": &fstest.MapFile{Data: []byte("app()")},
 	}
 	s.SetDashboardFS(fs)
 

@@ -14,7 +14,7 @@ type ModelRouter struct {
 	modelConfig      *ModelRoutingConfig
 	timeoutConfig    *TimeoutConfig
 	effortConfig     *EffortRoutingConfig
-	effortClassifier *EffortClassifier          // LLM-based effort classifier (GH-727)
+	effortClassifier *EffortClassifier           // LLM-based effort classifier (GH-727)
 	outcomeTracker   *memory.ModelOutcomeTracker // Outcome-based escalation (GH-1991)
 }
 

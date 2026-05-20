@@ -57,7 +57,9 @@ func getTicketSourcesForPersona(persona Persona) []TicketSource {
 			Name:        "Azure DevOps",
 			Description: "Microsoft's DevOps work items",
 			SetupFunc:   onboardAzureDevOpsTickets,
-			IsEnabled:   func(cfg *config.Config) bool { return cfg.Adapters.AzureDevOps != nil && cfg.Adapters.AzureDevOps.Enabled },
+			IsEnabled: func(cfg *config.Config) bool {
+				return cfg.Adapters.AzureDevOps != nil && cfg.Adapters.AzureDevOps.Enabled
+			},
 		},
 		{
 			Name:        "Asana",

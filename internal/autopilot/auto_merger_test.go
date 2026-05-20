@@ -513,10 +513,10 @@ func TestAutoMerger_MergePR_AllMergeMethods(t *testing.T) {
 
 func TestAutoMerger_MergePR_SquashUsePRTitle(t *testing.T) {
 	tests := []struct {
-		name        string
-		method      string
-		prTitle     string
-		wantTitle   string
+		name      string
+		method    string
+		prTitle   string
+		wantTitle string
 	}{
 		{
 			name:      "squash with PR title uses PR title",
@@ -639,7 +639,7 @@ func TestAutoMerger_MergePR_SquashStripsIssuePrefix(t *testing.T) {
 			err := merger.MergePR(context.Background(), &PRState{
 				PRNumber:    42,
 				PRTitle:     tt.prTitle,
-					IssueNumber: tt.issueNumber,
+				IssueNumber: tt.issueNumber,
 			})
 			if err != nil {
 				t.Errorf("MergePR() error = %v", err)

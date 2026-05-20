@@ -626,4 +626,3 @@ func TestRuleEvaluator_Complexity_DisabledSkipped(t *testing.T) {
 		t.Error("disabled rule should not match")
 	}
 }
-

@@ -1570,8 +1570,8 @@ func TestAutopilotPanelView_AllStates(t *testing.T) {
 				Error:     "",
 				CreatedAt: now.Add(-2 * time.Minute),
 			}}, 3, nil),
-			wantLines:   6, // border + empty + line1 + line2 + empty + border (no error line)
-			wantAbsent:  "↳",
+			wantLines:  6, // border + empty + line1 + line2 + empty + border (no error line)
+			wantAbsent: "↳",
 		},
 	}
 

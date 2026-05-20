@@ -95,22 +95,22 @@ func NewExecutionMetrics(
 	timedOut bool,
 ) *ExecutionMetrics {
 	return &ExecutionMetrics{
-		TaskID:           taskID,
-		Complexity:       complexity,
-		Model:            model,
-		Duration:         duration,
-		NavigatorSkipped: complexity.ShouldSkipNavigator(),
+		TaskID:              taskID,
+		Complexity:          complexity,
+		Model:               model,
+		Duration:            duration,
+		NavigatorSkipped:    complexity.ShouldSkipNavigator(),
 		TokensIn:            state.tokensInput,
 		TokensOut:           state.tokensOutput,
 		CacheCreationTokens: state.cacheCreationInputTokens,
 		CacheReadTokens:     state.cacheReadInputTokens,
 		EstimatedCostUSD:    estimateCostWithCache(state.tokensInput, state.tokensOutput, state.cacheCreationInputTokens, state.cacheReadInputTokens, model),
-		Phase:            state.phase,
-		FilesRead:        state.filesRead,
-		FilesWritten:     state.filesWrite,
-		CommitSHA:        lastCommitSHA(state.commitSHAs),
-		Timeout:          timeout,
-		TimedOut:         timedOut,
+		Phase:               state.phase,
+		FilesRead:           state.filesRead,
+		FilesWritten:        state.filesWrite,
+		CommitSHA:           lastCommitSHA(state.commitSHAs),
+		Timeout:             timeout,
+		TimedOut:            timedOut,
 	}
 }
 

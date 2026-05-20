@@ -589,4 +589,3 @@ func TestManager_ShouldRequireApproval_WithConfigRules(t *testing.T) {
 		t.Errorf("expected no match, got rule %s", rule.Name)
 	}
 }
-

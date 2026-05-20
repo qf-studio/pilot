@@ -43,10 +43,10 @@ type ProfileManager struct {
 	globalPath  string // e.g., ~/.pilot/profile.json
 	projectPath string // e.g., .agent/.user-profile.json
 	// GH-1077: Profile caching with TTL
-	mu          sync.RWMutex
-	cached      *UserProfile
-	lastLoaded  time.Time
-	cacheTTL    time.Duration
+	mu         sync.RWMutex
+	cached     *UserProfile
+	lastLoaded time.Time
+	cacheTTL   time.Duration
 }
 
 // NewProfileManager creates a profile manager with the given paths.

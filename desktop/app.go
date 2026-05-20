@@ -334,6 +334,7 @@ func (a *App) fetchAutopilotFromDaemon() (AutopilotStatus, bool) {
 		FailureCount: data.FailureCount,
 	}, true
 }
+
 // GetServerStatus checks whether the pilot daemon gateway is reachable.
 // It hits the unauthenticated /health endpoint and, on success, fetches
 // version info from /api/v1/status.

@@ -17,8 +17,8 @@ func TestNewProjectBoardSync(t *testing.T) {
 	client := NewClient(testutil.FakeGitHubToken)
 
 	tests := []struct {
-		name   string
-		config *ProjectBoardConfig
+		name    string
+		config  *ProjectBoardConfig
 		wantNil bool
 	}{
 		{
@@ -164,13 +164,13 @@ func TestUpdateProjectItemStatus_CachesIDs(t *testing.T) {
 
 func TestResolveProjectID_OrgFirstUserFallback(t *testing.T) {
 	tests := []struct {
-		name        string
-		orgResp     string
-		orgStatus   int
-		userResp    string
-		userStatus  int
-		wantID      string
-		wantErr     bool
+		name       string
+		orgResp    string
+		orgStatus  int
+		userResp   string
+		userStatus int
+		wantID     string
+		wantErr    bool
 	}{
 		{
 			name:      "org found",

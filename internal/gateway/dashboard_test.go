@@ -64,8 +64,8 @@ func TestHandleDashboardMetrics(t *testing.T) {
 		checkBody      func(t *testing.T, body []byte)
 	}{
 		{
-			name:           "success with data",
-			method:         http.MethodGet,
+			name:   "success with data",
+			method: http.MethodGet,
 			store: &mockDashboardStore{
 				lifetimeTokens: &memory.LifetimeTokens{
 					InputTokens:  1000,

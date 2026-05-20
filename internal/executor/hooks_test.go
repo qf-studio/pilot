@@ -33,8 +33,8 @@ func TestGenerateClaudeSettings(t *testing.T) {
 	}{
 		{"nil config", nil, 0},
 		{"disabled config", &HooksConfig{Enabled: false}, 0},
-		{"enabled with defaults", &HooksConfig{Enabled: true}, 2},                // Stop + PreToolUse
-		{"enabled with lint", &HooksConfig{Enabled: true, LintOnSave: true}, 3},  // Stop + PreToolUse + PostToolUse
+		{"enabled with defaults", &HooksConfig{Enabled: true}, 2},               // Stop + PreToolUse
+		{"enabled with lint", &HooksConfig{Enabled: true, LintOnSave: true}, 3}, // Stop + PreToolUse + PostToolUse
 		{"all disabled", &HooksConfig{Enabled: true, RunTestsOnStop: boolPtr(false), BlockDestructive: boolPtr(false)}, 0},
 	}
 
@@ -482,14 +482,14 @@ func TestIsPilotManagedHook(t *testing.T) {
 
 func TestCleanStalePilotHooks(t *testing.T) {
 	type testCase struct {
-		name         string
-		buildJSON    func(scriptDir string) string
-		validate     func(t *testing.T, settingsPath string, scriptDir string)
+		name      string
+		buildJSON func(scriptDir string) string
+		validate  func(t *testing.T, settingsPath string, scriptDir string)
 	}
 
 	tests := []testCase{
 		{
-			name: "no-op when settings file does not exist",
+			name:      "no-op when settings file does not exist",
 			buildJSON: func(scriptDir string) string { return "" },
 			validate: func(t *testing.T, settingsPath string, scriptDir string) {
 				if _, err := os.ReadFile(settingsPath); !os.IsNotExist(err) {

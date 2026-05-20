@@ -28,8 +28,8 @@ import (
 // prompt-leak-fix-checklist SOP (.agent/sops/integrations/prompt-leak-fix-checklist.md).
 func TestNoPromptLeakStrings(t *testing.T) {
 	roots := []string{
-		mustResolve(t, "."),                  // internal/executor
-		mustResolve(t, "../autopilot"),       // internal/autopilot
+		mustResolve(t, "."),            // internal/executor
+		mustResolve(t, "../autopilot"), // internal/autopilot
 	}
 
 	literalForbidden := []string{

@@ -11,9 +11,9 @@ type DashboardMetrics struct {
 	TotalCostUSD float64 `json:"totalCostUSD"`
 
 	// Task counts
-	TotalTasks    int `json:"totalTasks"`
+	TotalTasks     int `json:"totalTasks"`
 	SucceededTasks int `json:"succeededTasks"`
-	FailedTasks   int `json:"failedTasks"`
+	FailedTasks    int `json:"failedTasks"`
 
 	// 7-day sparkline data (oldest first)
 	TokenSparkline []int64   `json:"tokenSparkline"`
@@ -51,20 +51,20 @@ type HistoryEntry struct {
 
 // AutopilotStatus holds the autopilot state for the autopilot panel.
 type AutopilotStatus struct {
-	Enabled     bool        `json:"enabled"`
-	Environment string      `json:"environment"`
-	AutoRelease bool        `json:"autoRelease"`
-	ActivePRs   []ActivePR  `json:"activePRs"`
+	Enabled      bool       `json:"enabled"`
+	Environment  string     `json:"environment"`
+	AutoRelease  bool       `json:"autoRelease"`
+	ActivePRs    []ActivePR `json:"activePRs"`
 	FailureCount int        `json:"failureCount"`
 }
 
 // ActivePR represents a PR being tracked by autopilot.
 type ActivePR struct {
-	Number    int    `json:"number"`
-	URL       string `json:"url"`
-	Stage     string `json:"stage"`
-	CIStatus  string `json:"ciStatus,omitempty"`
-	Error     string `json:"error,omitempty"`
+	Number     int    `json:"number"`
+	URL        string `json:"url"`
+	Stage      string `json:"stage"`
+	CIStatus   string `json:"ciStatus,omitempty"`
+	Error      string `json:"error,omitempty"`
 	BranchName string `json:"branchName"`
 }
 
@@ -78,8 +78,8 @@ type LogEntry struct {
 
 // ServerStatus holds the connection status of the running pilot daemon.
 type ServerStatus struct {
-	Running   bool   `json:"running"`
-	Version   string `json:"version,omitempty"`
+	Running    bool   `json:"running"`
+	Version    string `json:"version,omitempty"`
 	GatewayURL string `json:"gatewayURL,omitempty"`
 }
 

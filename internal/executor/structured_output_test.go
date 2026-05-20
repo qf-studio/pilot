@@ -102,8 +102,8 @@ func TestExtractStructuredOutput(t *testing.T) {
 func TestJSONSchemaConstants(t *testing.T) {
 	// Test that schema constants are valid JSON
 	schemas := map[string]string{
-		"ClassificationSchema":      ClassificationSchema,
-		"EffortSchema":              EffortSchema,
+		"ClassificationSchema":       ClassificationSchema,
+		"EffortSchema":               EffortSchema,
 		"PostExecutionSummarySchema": PostExecutionSummarySchema,
 	}
 

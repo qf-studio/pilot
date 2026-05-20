@@ -79,28 +79,28 @@ type Handler struct {
 	mu               sync.Mutex
 	stopCh           chan struct{}
 	wg               sync.WaitGroup
-	transcriber      *transcription.Service // Voice transcription service (optional)
-	transcriptionErr error                  // Error from transcription init (for guidance)
-	store            *memory.Store          // Memory store for history/queue/budget (optional)
-	cmdHandler       *CommandHandler        // Command handler for /commands
-	plainTextMode    bool                   // Use plain text instead of Markdown
-	botUsername      string                 // Bot username for mention stripping (GH-2129)
-	commsHandler     *comms.Handler         // Shared message handler (GH-2143)
+	transcriber      *transcription.Service  // Voice transcription service (optional)
+	transcriptionErr error                   // Error from transcription init (for guidance)
+	store            *memory.Store           // Memory store for history/queue/budget (optional)
+	cmdHandler       *CommandHandler         // Command handler for /commands
+	plainTextMode    bool                    // Use plain text instead of Markdown
+	botUsername      string                  // Bot username for mention stripping (GH-2129)
+	commsHandler     *comms.Handler          // Shared message handler (GH-2143)
 	approvalHandler  ApprovalCallbackHandler // Routes approve:/reject: callbacks (GH-2651)
 }
 
 // HandlerConfig holds configuration for the Telegram handler
 type HandlerConfig struct {
-	BotToken       string
-	ProjectPath    string                 // Default/fallback project path
-	Projects       comms.ProjectSource    // Project source for multi-project support
-	AllowedIDs     []int64                // User/chat IDs allowed to send tasks
-	Transcription  *transcription.Config  // Voice transcription config (optional)
-	Store          *memory.Store          // Memory store for history/queue/budget (optional)
-	PlainTextMode  bool                   // Use plain text instead of Markdown (default: true)
-	RateLimit      *comms.RateLimitConfig // Rate limiting config (optional)
-	LLMClassifier  *LLMClassifierConfig   // LLM intent classification config (optional)
-	MemberResolver MemberResolver         // Team member resolver for RBAC (optional, GH-634)
+	BotToken        string
+	ProjectPath     string                  // Default/fallback project path
+	Projects        comms.ProjectSource     // Project source for multi-project support
+	AllowedIDs      []int64                 // User/chat IDs allowed to send tasks
+	Transcription   *transcription.Config   // Voice transcription config (optional)
+	Store           *memory.Store           // Memory store for history/queue/budget (optional)
+	PlainTextMode   bool                    // Use plain text instead of Markdown (default: true)
+	RateLimit       *comms.RateLimitConfig  // Rate limiting config (optional)
+	LLMClassifier   *LLMClassifierConfig    // LLM intent classification config (optional)
+	MemberResolver  MemberResolver          // Team member resolver for RBAC (optional, GH-634)
 	CommsHandler    *comms.Handler          // Shared message handler (optional, GH-2143)
 	Client          *Client                 // Optional reuse of existing client
 	ApprovalHandler ApprovalCallbackHandler // Routes approve:/reject: callbacks (optional, GH-2651)

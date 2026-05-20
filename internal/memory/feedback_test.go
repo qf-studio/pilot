@@ -1031,13 +1031,13 @@ func TestRecordPatternOutcomeAndContextualConfidence(t *testing.T) {
 	defer func() { _ = store.Close() }()
 
 	tests := []struct {
-		name       string
-		setup      func(t *testing.T)
-		patternID  string
-		projectID  string
-		taskType   string
-		wantMin    float64
-		wantMax    float64
+		name      string
+		setup     func(t *testing.T)
+		patternID string
+		projectID string
+		taskType  string
+		wantMin   float64
+		wantMax   float64
 	}{
 		{
 			name:      "fresh pattern returns default 0.5",

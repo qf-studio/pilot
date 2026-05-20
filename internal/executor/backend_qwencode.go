@@ -48,12 +48,12 @@ func normalizeQwenToolName(name string) string {
 type QwenCodeErrorType string
 
 const (
-	QwenErrorTypeRateLimit        QwenCodeErrorType = "rate_limit"
-	QwenErrorTypeAPIError         QwenCodeErrorType = "api_error"
-	QwenErrorTypeTimeout          QwenCodeErrorType = "timeout"
-	QwenErrorTypeInvalidConfig    QwenCodeErrorType = "invalid_config"
-	QwenErrorTypeSessionNotFound  QwenCodeErrorType = "session_not_found"
-	QwenErrorTypeUnknown          QwenCodeErrorType = "unknown"
+	QwenErrorTypeRateLimit       QwenCodeErrorType = "rate_limit"
+	QwenErrorTypeAPIError        QwenCodeErrorType = "api_error"
+	QwenErrorTypeTimeout         QwenCodeErrorType = "timeout"
+	QwenErrorTypeInvalidConfig   QwenCodeErrorType = "invalid_config"
+	QwenErrorTypeSessionNotFound QwenCodeErrorType = "session_not_found"
+	QwenErrorTypeUnknown         QwenCodeErrorType = "unknown"
 )
 
 // QwenCodeError represents a classified error from Qwen Code.

@@ -17,8 +17,8 @@ import (
 type Handler struct {
 	gatewayClient   *GatewayClient
 	apiClient       *Client
-	notifier        *Notifier       // GH-2132: task lifecycle notifications
-	commsHandler    *comms.Handler  // Shared message handler for intent dispatch + task execution
+	notifier        *Notifier      // GH-2132: task lifecycle notifications
+	commsHandler    *comms.Handler // Shared message handler for intent dispatch + task execution
 	allowedGuilds   map[string]bool
 	allowedChannels map[string]bool
 	stopCh          chan struct{}

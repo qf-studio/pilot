@@ -36,12 +36,12 @@ var sparkBlocks = []rune{' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '
 
 // MetricsCardData holds aggregated metrics for the dashboard metrics cards.
 type MetricsCardData struct {
-	TotalTokens, InputTokens, OutputTokens int
-	TotalCostUSD, CostPerTask              float64
+	TotalTokens, InputTokens, OutputTokens  int
+	TotalCostUSD, CostPerTask               float64
 	TotalTasks, Succeeded, Failed, Declined int
-	TokenHistory                           []int64   // 7 days
-	CostHistory                            []float64 // 7 days
-	TaskHistory                            []int     // 7 days
+	TokenHistory                            []int64   // 7 days
+	CostHistory                             []float64 // 7 days
+	TaskHistory                             []int     // 7 days
 }
 
 // Styles (muted terminal aesthetic)
@@ -319,7 +319,6 @@ func truncateString(s string, maxLen int) string {
 	}
 	return s[:maxLen-3] + "..."
 }
-
 
 // TaskDisplay represents a task for display
 type TaskDisplay struct {
@@ -1833,7 +1832,6 @@ func truncateVisual(s string, targetWidth int) string {
 
 	return result + "..."
 }
-
 
 // formatCompact formats a number in compact form: 0, 999, 1.0K, 57.3K, 1.2M.
 func formatCompact(n int) string {

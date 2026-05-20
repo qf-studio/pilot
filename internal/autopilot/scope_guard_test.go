@@ -14,7 +14,7 @@ func TestExtractTypeScope(t *testing.T) {
 	}{
 		{"feat(auth): add OAuth", "feat", "auth"},
 		{"fix(upgrade): cherry-pick atomic binary replacement", "fix", "upgrade"},
-		{"chore: bump deps", "", ""},                        // missing scope
+		{"chore: bump deps", "", ""}, // missing scope
 		{"refactor(internal/executor): clean", "refactor", "internal/executor"},
 		{"feat(auth)!: breaking change", "feat", "auth"},
 		{"random title", "", ""},

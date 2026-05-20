@@ -13,16 +13,16 @@ import (
 // CommandHandler processes bot commands with access to messenger and memory store.
 // It provides a platform-agnostic implementation of all slash commands.
 type CommandHandler struct {
-	messenger         Messenger
-	store             *memory.Store
-	runCommandFunc    func(ctx context.Context, contextID, taskID string)
-	statusQueryFunc   func(contextID string) (pending, running interface{})
-	activeProjectFunc func(contextID string) (name, path string)
-	projectListFunc   func() []interface{}
-	setProjectFunc    func(contextID, projectName string) error
-	cancelTaskFunc    func(ctx context.Context, contextID string) error
-	stopTaskFunc      func(ctx context.Context, contextID string) error
-	listTasksFunc     func() string
+	messenger          Messenger
+	store              *memory.Store
+	runCommandFunc     func(ctx context.Context, contextID, taskID string)
+	statusQueryFunc    func(contextID string) (pending, running interface{})
+	activeProjectFunc  func(contextID string) (name, path string)
+	projectListFunc    func() []interface{}
+	setProjectFunc     func(contextID, projectName string) error
+	cancelTaskFunc     func(ctx context.Context, contextID string) error
+	stopTaskFunc       func(ctx context.Context, contextID string) error
+	listTasksFunc      func() string
 	briefGeneratorFunc func(ctx context.Context, contextID string) error // Platform-specific brief generation
 }
 

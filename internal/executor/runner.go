@@ -378,30 +378,30 @@ type Runner struct {
 	taskProgress          map[string]int                                                  // Per-task progress high-water mark (monotonic enforcement)
 	taskProgressMu        sync.RWMutex                                                    // Protects taskProgress
 	// GH-1077: AGENTS.md caching
-	agentsContent         string // Cached AGENTS.md content, loaded once per Runner
-	agentsProjectPath     string // Project path for agents cache (invalidate on change)
-	agentsMu              sync.RWMutex // Protects agents cache
+	agentsContent     string       // Cached AGENTS.md content, loaded once per Runner
+	agentsProjectPath string       // Project path for agents cache (invalidate on change)
+	agentsMu          sync.RWMutex // Protects agents cache
 	// GH-1078: Worktree pooling
-	worktreeManager       *WorktreeManager // Optional worktree manager with pool support
+	worktreeManager *WorktreeManager // Optional worktree manager with pool support
 	// GH-1471: SubIssueCreator for non-GitHub adapters
-	subIssueCreator       SubIssueCreator // Optional creator for sub-issues in external trackers
-	prCreator             PRCreator       // Optional creator for MRs/PRs in external forges
+	subIssueCreator SubIssueCreator // Optional creator for sub-issues in external trackers
+	prCreator       PRCreator       // Optional creator for MRs/PRs in external forges
 	// GH-2211: SubIssueLinker for native GitHub sub-issue API linking
-	subIssueLinker        SubIssueLinker // Optional linker for native GitHub parent→child wiring
+	subIssueLinker SubIssueLinker // Optional linker for native GitHub parent→child wiring
 	// GH-1599: Execution log store for milestone entries
-	logStore              *memory.Store // Optional log store for writing execution milestones
+	logStore *memory.Store // Optional log store for writing execution milestones
 	// GH-1811: Learning system (self-improvement)
-	learningLoop         LearningRecorder              // Optional learning loop for pattern extraction + feedback
-	patternContext       *PatternContext                // Optional pattern context for prompt injection
-	selfReviewExtractor  SelfReviewExtractor            // Optional extractor for self-review pattern learning (GH-1955)
-	outcomeTracker       *memory.ModelOutcomeTracker    // Optional outcome tracker for model escalation (GH-1991)
+	learningLoop        LearningRecorder            // Optional learning loop for pattern extraction + feedback
+	patternContext      *PatternContext             // Optional pattern context for prompt injection
+	selfReviewExtractor SelfReviewExtractor         // Optional extractor for self-review pattern learning (GH-1955)
+	outcomeTracker      *memory.ModelOutcomeTracker // Optional outcome tracker for model escalation (GH-1991)
 	// GH-2015: Knowledge graph integration for execution learnings
-	knowledgeGraph       KnowledgeGraphRecorder         // Optional knowledge graph for cross-project learnings
+	knowledgeGraph KnowledgeGraphRecorder // Optional knowledge graph for cross-project learnings
 	// GH-2256: Dry-run mode to suppress real gh CLI calls (issue close/comment)
-	dryRun               bool
+	dryRun bool
 	// GH-2363: Track consecutive title-rejection failures per issue so we stop
 	// retrying and post a helpful comment after the 2nd identical rejection.
-	titleRejections      *titleRejectionTracker
+	titleRejections *titleRejectionTracker
 	// openSubIssueCheck detects whether recent sub-issues for a parent already exist.
 	// Injectable for testing; defaults to queryRecentSubIssues (gh CLI).
 	openSubIssueCheck func(ctx context.Context, dir, parentID string) (bool, error)
@@ -1315,170 +1315,170 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 		} else {
 			r.reportProgress(task.ID, "Planning", 30, fmt.Sprintf("Epic planned: %d subtasks", len(plan.Subtasks)))
 
-		// GH-1265: Detect single-package scope — if all subtasks target the same
-		// directory/package, consolidate into a single task instead of creating
-		// separate GitHub issues. Creating N sub-issues that all touch the same
-		// package causes merge conflicts because each sub-issue branches from main
-		// independently and redeclares shared types (e.g., the "pilot onboard" cascade).
-		if isSinglePackageScope(plan.Subtasks, task.Description) {
-			r.log.Info("Single-package scope detected, skipping epic decomposition — executing as single task",
-				slog.String("task_id", task.ID),
-				slog.Int("planned_subtasks", len(plan.Subtasks)),
-			)
-			r.reportProgress(task.ID, "Planning", 35, "Single-package scope detected, running as single task...")
+			// GH-1265: Detect single-package scope — if all subtasks target the same
+			// directory/package, consolidate into a single task instead of creating
+			// separate GitHub issues. Creating N sub-issues that all touch the same
+			// package causes merge conflicts because each sub-issue branches from main
+			// independently and redeclares shared types (e.g., the "pilot onboard" cascade).
+			if isSinglePackageScope(plan.Subtasks, task.Description) {
+				r.log.Info("Single-package scope detected, skipping epic decomposition — executing as single task",
+					slog.String("task_id", task.ID),
+					slog.Int("planned_subtasks", len(plan.Subtasks)),
+				)
+				r.reportProgress(task.ID, "Planning", 35, "Single-package scope detected, running as single task...")
 
-			// Enrich the task description with the planned steps so the executor
-			// has the full implementation plan but executes it as one unit.
-			task.Description = consolidateEpicPlan(task.Description, plan.Subtasks)
+				// Enrich the task description with the planned steps so the executor
+				// has the full implementation plan but executes it as one unit.
+				task.Description = consolidateEpicPlan(task.Description, plan.Subtasks)
 
-			// Fall through to normal execution below (past epic and decomposer blocks)
-		} else {
-			// Multi-package epic: safe to create separate GitHub issues
+				// Fall through to normal execution below (past epic and decomposer blocks)
+			} else {
+				// Multi-package epic: safe to create separate GitHub issues
 
-			// GH-412: Create sub-issues from the plan
-			r.reportProgress(task.ID, "Creating Issues", 40, "Creating GitHub sub-issues...")
+				// GH-412: Create sub-issues from the plan
+				r.reportProgress(task.ID, "Creating Issues", 40, "Creating GitHub sub-issues...")
 
-			issues, err := r.CreateSubIssues(ctx, plan, executionPath)
-			if err != nil {
-				// GH-2883: Recover existing sub-issues instead of failing hard when they
-				// were already created by a prior run (e.g., Pilot restarted mid-epic).
-				if errors.Is(err, ErrSubIssuesAlreadyExist) {
-					r.log.Info("Sub-issues already exist, attempting recovery",
-						slog.String("task_id", task.ID),
-						slog.String("parent_id", plan.ParentTask.ID),
-					)
-					recover := r.recoverSubIssuesFn
-					if recover == nil {
-						recover = recoverExistingSubIssues
-					}
-					recovered, _ := recover(ctx, executionPath, plan.ParentTask.ID)
-					if allChildrenDone(recovered) {
-						r.log.Info("All recovered sub-issues are done, treating epic as complete",
+				issues, err := r.CreateSubIssues(ctx, plan, executionPath)
+				if err != nil {
+					// GH-2883: Recover existing sub-issues instead of failing hard when they
+					// were already created by a prior run (e.g., Pilot restarted mid-epic).
+					if errors.Is(err, ErrSubIssuesAlreadyExist) {
+						r.log.Info("Sub-issues already exist, attempting recovery",
 							slog.String("task_id", task.ID),
-							slog.Int("recovered_count", len(recovered)),
+							slog.String("parent_id", plan.ParentTask.ID),
 						)
-						r.reportProgress(task.ID, "Complete", 100, "All sub-issues already completed")
+						recover := r.recoverSubIssuesFn
+						if recover == nil {
+							recover = recoverExistingSubIssues
+						}
+						recovered, _ := recover(ctx, executionPath, plan.ParentTask.ID)
+						if allChildrenDone(recovered) {
+							r.log.Info("All recovered sub-issues are done, treating epic as complete",
+								slog.String("task_id", task.ID),
+								slog.Int("recovered_count", len(recovered)),
+							)
+							r.reportProgress(task.ID, "Complete", 100, "All sub-issues already completed")
+							return &ExecutionResult{
+								TaskID:    task.ID,
+								Success:   true,
+								Output:    fmt.Sprintf("Epic already completed: %d sub-issues recovered", len(recovered)),
+								Duration:  time.Since(start),
+								IsEpic:    true,
+								EpicPlan:  plan,
+								ModelName: r.fallbackModelName(),
+							}, nil
+						}
+						// Filter to open children only and continue execution.
+						var open []CreatedIssue
+						for _, iss := range recovered {
+							if strings.ToLower(iss.State) == "open" {
+								open = append(open, iss)
+							}
+						}
+						r.log.Info("Executing recovered open sub-issues",
+							slog.String("task_id", task.ID),
+							slog.Int("open_count", len(open)),
+						)
+						issues = open
+					} else {
 						return &ExecutionResult{
-							TaskID:    task.ID,
-							Success:   true,
-							Output:    fmt.Sprintf("Epic already completed: %d sub-issues recovered", len(recovered)),
-							Duration:  time.Since(start),
-							IsEpic:    true,
-							EpicPlan:  plan,
-							ModelName: r.fallbackModelName(),
+							TaskID:   task.ID,
+							Success:  false,
+							Error:    fmt.Sprintf("failed to create sub-issues: %v", err),
+							Duration: time.Since(start),
+							IsEpic:   true,
+							EpicPlan: plan,
 						}, nil
 					}
-					// Filter to open children only and continue execution.
-					var open []CreatedIssue
-					for _, iss := range recovered {
-						if strings.ToLower(iss.State) == "open" {
-							open = append(open, iss)
-						}
-					}
-					r.log.Info("Executing recovered open sub-issues",
-						slog.String("task_id", task.ID),
-						slog.Int("open_count", len(open)),
-					)
-					issues = open
-				} else {
+				}
+
+				r.reportProgress(task.ID, "Executing", 50, fmt.Sprintf("Executing %d sub-issues sequentially...", len(issues)))
+
+				// GH-412: Execute sub-issues sequentially
+				// GH-2177: Pass task.ProjectPath as repoPath so sub-issues branch from
+				// the real repo, not the parent's worktree path.
+				if err := r.ExecuteSubIssues(ctx, task, issues, executionPath, task.ProjectPath); err != nil {
 					return &ExecutionResult{
 						TaskID:   task.ID,
 						Success:  false,
-						Error:    fmt.Sprintf("failed to create sub-issues: %v", err),
+						Error:    fmt.Sprintf("sub-issue execution failed: %v", err),
 						Duration: time.Since(start),
 						IsEpic:   true,
 						EpicPlan: plan,
 					}, nil
 				}
-			}
 
-			r.reportProgress(task.ID, "Executing", 50, fmt.Sprintf("Executing %d sub-issues sequentially...", len(issues)))
+				// GH-539: Epic sub-executions may have created commits on the branch.
+				// Push branch and create PR to propagate deliverables.
+				// GH-2428: Set ModelName so the saved row distinguishes "epic
+				// orchestrator (no backend call)" from "telemetry-missing".
+				epicResult := &ExecutionResult{
+					TaskID:    task.ID,
+					Success:   true,
+					Output:    fmt.Sprintf("Epic completed: %d sub-issues executed", len(issues)),
+					Duration:  time.Since(start),
+					IsEpic:    true,
+					EpicPlan:  plan,
+					ModelName: r.fallbackModelName(),
+				}
 
-			// GH-412: Execute sub-issues sequentially
-			// GH-2177: Pass task.ProjectPath as repoPath so sub-issues branch from
-			// the real repo, not the parent's worktree path.
-			if err := r.ExecuteSubIssues(ctx, task, issues, executionPath, task.ProjectPath); err != nil {
-				return &ExecutionResult{
-					TaskID:   task.ID,
-					Success:  false,
-					Error:    fmt.Sprintf("sub-issue execution failed: %v", err),
-					Duration: time.Since(start),
-					IsEpic:   true,
-					EpicPlan: plan,
-				}, nil
-			}
+				if task.CreatePR && task.Branch != "" {
+					epicGit := NewGitOperations(executionPath)
 
-			// GH-539: Epic sub-executions may have created commits on the branch.
-			// Push branch and create PR to propagate deliverables.
-			// GH-2428: Set ModelName so the saved row distinguishes "epic
-			// orchestrator (no backend call)" from "telemetry-missing".
-			epicResult := &ExecutionResult{
-				TaskID:    task.ID,
-				Success:   true,
-				Output:    fmt.Sprintf("Epic completed: %d sub-issues executed", len(issues)),
-				Duration:  time.Since(start),
-				IsEpic:    true,
-				EpicPlan:  plan,
-				ModelName: r.fallbackModelName(),
-			}
+					r.reportProgress(task.ID, "Creating PR", 96, "Pushing epic branch...")
 
-			if task.CreatePR && task.Branch != "" {
-				epicGit := NewGitOperations(executionPath)
+					if err := epicGit.Push(ctx, task.Branch); err != nil {
+						r.log.Warn("Epic branch push failed",
+							slog.String("task_id", task.ID),
+							slog.String("branch", task.Branch),
+							slog.Any("error", err),
+						)
+						// Don't fail the epic — sub-issues may have their own PRs
+					} else {
+						// Get commit SHA
+						if sha, shaErr := epicGit.GetCurrentCommitSHA(ctx); shaErr == nil && sha != "" {
+							epicResult.CommitSHA = sha
+						}
 
-				r.reportProgress(task.ID, "Creating PR", 96, "Pushing epic branch...")
-
-				if err := epicGit.Push(ctx, task.Branch); err != nil {
-					r.log.Warn("Epic branch push failed",
-						slog.String("task_id", task.ID),
-						slog.String("branch", task.Branch),
-						slog.Any("error", err),
-					)
-					// Don't fail the epic — sub-issues may have their own PRs
-				} else {
-					// Get commit SHA
-					if sha, shaErr := epicGit.GetCurrentCommitSHA(ctx); shaErr == nil && sha != "" {
-						epicResult.CommitSHA = sha
-					}
-
-					// Determine base branch
-					baseBranch := task.BaseBranch
-					if baseBranch == "" {
-						baseBranch, _ = epicGit.GetDefaultBranch(ctx)
+						// Determine base branch
+						baseBranch := task.BaseBranch
 						if baseBranch == "" {
-							baseBranch = "main"
+							baseBranch, _ = epicGit.GetDefaultBranch(ctx)
+							if baseBranch == "" {
+								baseBranch = "main"
+							}
+						}
+
+						// GH-2743: no-commits guard for epic PR path.
+						if guardCount, _ := epicGit.CountNewCommits(ctx, baseBranch); guardCount == 0 {
+							r.log.Warn("Epic branch has no commits vs base, skipping PR creation",
+								slog.String("task_id", task.ID),
+								slog.String("base_branch", baseBranch),
+							)
+							r.reportProgress(task.ID, "PR Skipped", 97, "epic branch has no commits relative to base")
+							return epicResult, nil
+						}
+
+						// Create PR with GitHub auto-close keyword
+						epicIssueNum := strings.TrimPrefix(task.ID, "GH-")
+						prBody := fmt.Sprintf("## Summary\n\nAutomated PR created by Pilot for epic task %s.\n\nCloses #%s\n\n## Changes\n\n%s", task.ID, epicIssueNum, task.Description)
+						epicPRTitle := fmt.Sprintf("%s: %s", task.ID, task.Title)
+						prURL, prErr := epicGit.CreatePR(ctx, epicPRTitle, prBody, baseBranch)
+						if prErr != nil {
+							r.log.Warn("Epic PR creation failed",
+								slog.String("task_id", task.ID),
+								slog.Any("error", prErr),
+							)
+						} else {
+							epicResult.PRUrl = prURL
+							r.log.Info("Epic PR created", slog.String("pr_url", prURL))
 						}
 					}
-
-					// GH-2743: no-commits guard for epic PR path.
-					if guardCount, _ := epicGit.CountNewCommits(ctx, baseBranch); guardCount == 0 {
-						r.log.Warn("Epic branch has no commits vs base, skipping PR creation",
-							slog.String("task_id", task.ID),
-							slog.String("base_branch", baseBranch),
-						)
-						r.reportProgress(task.ID, "PR Skipped", 97, "epic branch has no commits relative to base")
-						return epicResult, nil
-					}
-
-					// Create PR with GitHub auto-close keyword
-					epicIssueNum := strings.TrimPrefix(task.ID, "GH-")
-					prBody := fmt.Sprintf("## Summary\n\nAutomated PR created by Pilot for epic task %s.\n\nCloses #%s\n\n## Changes\n\n%s", task.ID, epicIssueNum, task.Description)
-					epicPRTitle := fmt.Sprintf("%s: %s", task.ID, task.Title)
-				prURL, prErr := epicGit.CreatePR(ctx, epicPRTitle, prBody, baseBranch)
-					if prErr != nil {
-						r.log.Warn("Epic PR creation failed",
-							slog.String("task_id", task.ID),
-							slog.Any("error", prErr),
-						)
-					} else {
-						epicResult.PRUrl = prURL
-						r.log.Info("Epic PR created", slog.String("pr_url", prURL))
-					}
 				}
-			}
 
-			r.reportProgress(task.ID, "Complete", 100, "Epic completed successfully")
-			return epicResult, nil
-		}
+				r.reportProgress(task.ID, "Complete", 100, "Epic completed successfully")
+				return epicResult, nil
+			}
 		} // else: plan succeeded
 	}
 
@@ -3310,6 +3310,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 
 	return result, nil
 }
+
 // Cancel terminates a running task by killing its Claude Code process.
 // Returns an error if the task is not currently running.
 func (r *Runner) Cancel(taskID string) error {
@@ -3499,8 +3500,6 @@ func (r *Runner) IsRunning(taskID string) bool {
 	return ok
 }
 
-
-
 // runSelfReview executes a self-review phase where Claude examines its changes.
 // This catches issues like unwired config, undefined methods, or incomplete implementations.
 // Returns nil if review passes or is skipped, error only for critical failures.
@@ -3620,8 +3619,6 @@ func (r *Runner) runSelfReview(ctx context.Context, task *Task, state *progressS
 
 	return nil
 }
-
-
 
 // parseStreamEvent parses a stream-json event and reports progress
 // Returns (finalResult, errorMessage) - non-empty when task completes

@@ -610,10 +610,10 @@ func TestExtractFromSelfReview(t *testing.T) {
 	ctx := context.Background()
 
 	tests := []struct {
-		name              string
-		selfReviewOutput  string
-		wantAntiPatterns  int
-		wantPatternTypes  []PatternType // expected types in anti-patterns (order-independent)
+		name             string
+		selfReviewOutput string
+		wantAntiPatterns int
+		wantPatternTypes []PatternType // expected types in anti-patterns (order-independent)
 	}{
 		{
 			name: "multiple finding types",
@@ -1160,7 +1160,7 @@ func TestExtractCIErrorPatterns(t *testing.T) {
 		{
 			name:           "mixed: compilation + test failure",
 			ciLogs:         "--- FAIL: TestProcess (0.05s)\npanic: runtime error: nil pointer\nundefined: handler",
-			wantMinCount:   3, // FAIL + runtime panic + undefined
+			wantMinCount:   3,  // FAIL + runtime panic + undefined
 			wantCategory:   "", // mixed, skip category check
 			wantConfidence: 0.5,
 			wantCIContext:  true,
@@ -1657,10 +1657,10 @@ func TestNewCodePatternCategories(t *testing.T) {
 	extractor := NewPatternExtractor(patternStore, store)
 
 	tests := []struct {
-		name        string
-		output      string
-		wantTitle   string // substring of expected pattern title
-		wantMatch   bool
+		name      string
+		output    string
+		wantTitle string // substring of expected pattern title
+		wantMatch bool
 	}{
 		// --- API Design ---
 		{

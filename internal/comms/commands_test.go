@@ -350,10 +350,10 @@ func TestCommandHandler_HandleRun(t *testing.T) {
 // TestCommandHandler_HandleSwitch tests the /switch command.
 func TestCommandHandler_HandleSwitch(t *testing.T) {
 	tests := []struct {
-		name       string
-		input      string
-		setupFunc  func(cmd *CommandHandler)
-		wantText   string
+		name      string
+		input     string
+		setupFunc func(cmd *CommandHandler)
+		wantText  string
 	}{
 		{
 			name:      "no setup",
@@ -543,4 +543,3 @@ func mustCreateMemoryStore(t *testing.T) *memory.Store {
 	}
 	return store
 }
-

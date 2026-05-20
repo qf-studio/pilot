@@ -323,10 +323,10 @@ func TestUpdateIssueState(t *testing.T) {
 
 func TestResolveStateByGroup(t *testing.T) {
 	tests := []struct {
-		name     string
-		group    StateGroup
-		states   []State
-		wantID   string
+		name      string
+		group     StateGroup
+		states    []State
+		wantID    string
 		wantEmpty bool
 	}{
 		{

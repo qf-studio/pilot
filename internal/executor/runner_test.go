@@ -2957,19 +2957,19 @@ type mockSelfReviewBackend struct {
 	output string
 }
 
-func (m *mockSelfReviewBackend) Name() string        { return "mock" }
-func (m *mockSelfReviewBackend) IsAvailable() bool    { return true }
+func (m *mockSelfReviewBackend) Name() string      { return "mock" }
+func (m *mockSelfReviewBackend) IsAvailable() bool { return true }
 func (m *mockSelfReviewBackend) Execute(_ context.Context, _ ExecuteOptions) (*BackendResult, error) {
 	return &BackendResult{Success: true, Output: m.output}, nil
 }
 
 // mockSelfReviewExtractor implements SelfReviewExtractor for testing.
 type mockSelfReviewExtractor struct {
-	mu             sync.Mutex
-	extractCalls   int
-	saveCalls      int
-	lastResult     *memory.ExtractionResult
-	extractFunc    func(ctx context.Context, output string, projectPath string) (*memory.ExtractionResult, error)
+	mu           sync.Mutex
+	extractCalls int
+	saveCalls    int
+	lastResult   *memory.ExtractionResult
+	extractFunc  func(ctx context.Context, output string, projectPath string) (*memory.ExtractionResult, error)
 }
 
 func (m *mockSelfReviewExtractor) ExtractFromSelfReview(ctx context.Context, output string, projectPath string) (*memory.ExtractionResult, error) {
@@ -3447,7 +3447,7 @@ type mockFixedBackend struct {
 	execCount int
 }
 
-func (m *mockFixedBackend) Name() string     { return "mock-fixed" }
+func (m *mockFixedBackend) Name() string      { return "mock-fixed" }
 func (m *mockFixedBackend) IsAvailable() bool { return true }
 func (m *mockFixedBackend) Execute(_ context.Context, _ ExecuteOptions) (*BackendResult, error) {
 	m.mu.Lock()
@@ -3663,7 +3663,7 @@ type mockSequentialBackend struct {
 	idx     int
 }
 
-func (m *mockSequentialBackend) Name() string     { return "mock-sequential" }
+func (m *mockSequentialBackend) Name() string      { return "mock-sequential" }
 func (m *mockSequentialBackend) IsAvailable() bool { return true }
 func (m *mockSequentialBackend) Execute(_ context.Context, _ ExecuteOptions) (*BackendResult, error) {
 	m.mu.Lock()
@@ -3826,9 +3826,15 @@ func TestExecute_PopulatesEffortAndComplexityOnResult(t *testing.T) {
 
 // fakeMetricsRecorder captures calls to the MetricsRecorder interface for assertions.
 type fakeMetricsRecorder struct {
-	mu            sync.Mutex
-	tokenCalls    []struct{ model, direction string; n int64 }
-	costCalls     []struct{ model string; costUSD float64 }
+	mu         sync.Mutex
+	tokenCalls []struct {
+		model, direction string
+		n                int64
+	}
+	costCalls []struct {
+		model   string
+		costUSD float64
+	}
 	execCalls     []struct{ model, result string }
 	durationCalls []time.Duration
 }
@@ -3836,13 +3842,19 @@ type fakeMetricsRecorder struct {
 func (f *fakeMetricsRecorder) RecordTokens(model, direction string, n int64) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.tokenCalls = append(f.tokenCalls, struct{ model, direction string; n int64 }{model, direction, n})
+	f.tokenCalls = append(f.tokenCalls, struct {
+		model, direction string
+		n                int64
+	}{model, direction, n})
 }
 
 func (f *fakeMetricsRecorder) RecordCost(model string, costUSD float64) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.costCalls = append(f.costCalls, struct{ model string; costUSD float64 }{model, costUSD})
+	f.costCalls = append(f.costCalls, struct {
+		model   string
+		costUSD float64
+	}{model, costUSD})
 }
 
 func (f *fakeMetricsRecorder) RecordExecution(model, result string) {

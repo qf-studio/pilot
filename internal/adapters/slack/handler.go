@@ -34,10 +34,10 @@ func (a *MemberResolverAdapter) ResolveIdentity(senderID string) (string, error)
 // Delegates intent detection and task lifecycle to the shared comms.Handler (GH-2143).
 type Handler struct {
 	socketClient    *SocketModeClient
-	apiClient       *Client           // Kept for client access; Messenger wraps this
-	commsHandler    *comms.Handler    // Shared message handler for intent dispatch + task execution
-	allowedChannels map[string]bool   // Allowed channel IDs for security
-	allowedUsers    map[string]bool   // Allowed user IDs for security
+	apiClient       *Client         // Kept for client access; Messenger wraps this
+	commsHandler    *comms.Handler  // Shared message handler for intent dispatch + task execution
+	allowedChannels map[string]bool // Allowed channel IDs for security
+	allowedUsers    map[string]bool // Allowed user IDs for security
 	stopCh          chan struct{}
 	wg              sync.WaitGroup
 	log             *slog.Logger
@@ -45,12 +45,12 @@ type Handler struct {
 
 // HandlerConfig holds configuration for the Slack handler.
 type HandlerConfig struct {
-	AppToken        string            // Slack app-level token (xapp-...)
-	BotToken        string            // Slack bot token (xoxb-...)
-	Client          *Client           // Optional: reuse existing API client
-	CommsHandler    *comms.Handler    // Shared handler for intent dispatch + task lifecycle
-	AllowedChannels []string          // Channel IDs allowed to send tasks
-	AllowedUsers    []string          // User IDs allowed to send tasks
+	AppToken        string         // Slack app-level token (xapp-...)
+	BotToken        string         // Slack bot token (xoxb-...)
+	Client          *Client        // Optional: reuse existing API client
+	CommsHandler    *comms.Handler // Shared handler for intent dispatch + task lifecycle
+	AllowedChannels []string       // Channel IDs allowed to send tasks
+	AllowedUsers    []string       // User IDs allowed to send tasks
 }
 
 // LLMClassifierConfig holds configuration for the LLM classifier.
@@ -174,12 +174,12 @@ func (h *Handler) processEvent(ctx context.Context, event *SocketEvent) {
 	// Delegate to shared comms.Handler for intent detection + dispatch
 	if h.commsHandler != nil {
 		h.commsHandler.HandleMessage(ctx, &comms.IncomingMessage{
-			ContextID:  channelID,
-			SenderID:   userID,
-			Text:       text,
-			ThreadID:   event.ThreadTS,
-			Platform:   "slack",
-			Timestamp:  time.Now(),
+			ContextID: channelID,
+			SenderID:  userID,
+			Text:      text,
+			ThreadID:  event.ThreadTS,
+			Platform:  "slack",
+			Timestamp: time.Now(),
 		})
 	}
 }

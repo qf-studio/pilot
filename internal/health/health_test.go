@@ -713,10 +713,10 @@ func findCheck(checks []Check, name string) *Check {
 
 func TestCheckConfig_GitHubChecks(t *testing.T) {
 	tests := []struct {
-		name           string
-		cfg            *config.Config
-		wantCheckName  string
-		wantStatus     Status
+		name          string
+		cfg           *config.Config
+		wantCheckName string
+		wantStatus    Status
 	}{
 		{
 			name: "enabled no token no gh auth",
@@ -736,9 +736,9 @@ func TestCheckConfig_GitHubChecks(t *testing.T) {
 			cfg: &config.Config{
 				Adapters: &config.AdaptersConfig{
 					GitHub: &github.Config{
-						Enabled:  true,
-						Token:    "test-gh-token",
-						Polling:  &github.PollingConfig{Enabled: true},
+						Enabled: true,
+						Token:   "test-gh-token",
+						Polling: &github.PollingConfig{Enabled: true},
 					},
 				},
 			},

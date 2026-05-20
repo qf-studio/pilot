@@ -6,9 +6,9 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/qf-studio/pilot/internal/logging"
 	"github.com/qf-studio/pilot/internal/memory"
-	"github.com/gorilla/websocket"
 )
 
 const (

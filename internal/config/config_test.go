@@ -736,10 +736,10 @@ func TestGetProjectByLinearID(t *testing.T) {
 	}
 
 	tests := []struct {
-		name      string
-		linearID  string
-		wantPath  string
-		wantNil   bool
+		name     string
+		linearID string
+		wantPath string
+		wantNil  bool
 	}{
 		{
 			name:     "match first project",
@@ -752,14 +752,14 @@ func TestGetProjectByLinearID(t *testing.T) {
 			wantPath: "/path/to/pilot",
 		},
 		{
-			name:    "no match",
+			name:     "no match",
 			linearID: "proj-unknown",
-			wantNil: true,
+			wantNil:  true,
 		},
 		{
-			name:    "empty ID",
+			name:     "empty ID",
 			linearID: "",
-			wantNil: true,
+			wantNil:  true,
 		},
 	}
 

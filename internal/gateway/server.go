@@ -14,9 +14,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/qf-studio/pilot/internal/adapters/github"
 	"github.com/qf-studio/pilot/internal/logging"
-	"github.com/gorilla/websocket"
 )
 
 // ReadinessChecker is an interface for components that can report their readiness.

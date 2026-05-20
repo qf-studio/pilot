@@ -52,10 +52,10 @@ func TestNewController_ReleaserInit(t *testing.T) {
 	disabledRelease := &ReleaseConfig{Enabled: false}
 
 	tests := []struct {
-		name           string
-		globalRelease  *ReleaseConfig
-		envRelease     *ReleaseConfig
-		wantReleaser   bool
+		name          string
+		globalRelease *ReleaseConfig
+		envRelease    *ReleaseConfig
+		wantReleaser  bool
 	}{
 		{
 			name:          "global only enabled",
@@ -1256,10 +1256,10 @@ func TestController_CheckExternalMerge_WithNotifier(t *testing.T) {
 // GH-1486: Test that external merge closes the associated issue
 func TestController_CheckExternalMerge_ClosesIssue(t *testing.T) {
 	var (
-		addLabelsCalled     bool
-		removeLabelInProg   bool
-		removeLabelFailed   bool
-		issueStateClosed    bool
+		addLabelsCalled   bool
+		removeLabelInProg bool
+		removeLabelFailed bool
+		issueStateClosed  bool
 	)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -3535,12 +3535,12 @@ func TestHandlePostMergeCI_LearnsFromCIFailure(t *testing.T) {
 // and a daemon restart resumes from the persisted PostMergeSHA. (GH-2717)
 func TestHandlePostMergeCI_NonBlocking(t *testing.T) {
 	tests := []struct {
-		name          string
-		checkStatus   string
-		checkConc     string
+		name           string
+		checkStatus    string
+		checkConc      string
 		releaseEnabled bool
-		wantStage     PRStage
-		wantRemoved   bool
+		wantStage      PRStage
+		wantRemoved    bool
 	}{
 		{
 			name:        "pending stays in stage",
@@ -3549,19 +3549,19 @@ func TestHandlePostMergeCI_NonBlocking(t *testing.T) {
 			wantRemoved: false,
 		},
 		{
-			name:          "success without release removes PR",
-			checkStatus:   "completed",
-			checkConc:     "success",
+			name:           "success without release removes PR",
+			checkStatus:    "completed",
+			checkConc:      "success",
 			releaseEnabled: false,
-			wantRemoved:   true,
+			wantRemoved:    true,
 		},
 		{
-			name:          "success with release advances to StageReleasing",
-			checkStatus:   "completed",
-			checkConc:     "success",
+			name:           "success with release advances to StageReleasing",
+			checkStatus:    "completed",
+			checkConc:      "success",
 			releaseEnabled: true,
-			wantStage:     StageReleasing,
-			wantRemoved:   false,
+			wantStage:      StageReleasing,
+			wantRemoved:    false,
 		},
 	}
 
@@ -4207,17 +4207,17 @@ func TestController_HasChangesRequested_FilterByTime(t *testing.T) {
 
 func TestMaybeCloseParentIssue(t *testing.T) {
 	tests := []struct {
-		name              string
-		issueNumber       int
-		issueBody         string
-		openSubIssues     int // used by text-search fallback
-		getIssueErr       bool
-		searchErr         bool
-		nativeTotal       int    // totalCount returned by GraphQL native sub-issues
-		nativeOpenStates  []string // states of natively linked sub-issues
-		wantClosed        bool
-		wantLabeled       bool
-		wantCommented     bool
+		name             string
+		issueNumber      int
+		issueBody        string
+		openSubIssues    int // used by text-search fallback
+		getIssueErr      bool
+		searchErr        bool
+		nativeTotal      int      // totalCount returned by GraphQL native sub-issues
+		nativeOpenStates []string // states of natively linked sub-issues
+		wantClosed       bool
+		wantLabeled      bool
+		wantCommented    bool
 	}{
 		{
 			name:          "last sub-issue triggers parent close (text-search path)",
@@ -4637,7 +4637,7 @@ func TestRecoverStaleParentIssues_TruncatesAt50(t *testing.T) {
 				nodes := make([]map[string]interface{}, maxRecover)
 				for i, num := range candidates {
 					nodes[i] = map[string]interface{}{
-						"number": num,
+						"number":           num,
 						"subIssuesSummary": map[string]int{"total": 1, "completed": 1},
 					}
 				}
@@ -4801,9 +4801,9 @@ func TestNotifyExternalClose_MaybeCloseParent(t *testing.T) {
 // skips non-open issues).
 func TestNotifyExternalClose_SkipsRetryReadyWhenDone(t *testing.T) {
 	tests := []struct {
-		name              string
-		issueLabels       []github.Label
-		wantRetryAdded    bool
+		name           string
+		issueLabels    []github.Label
+		wantRetryAdded bool
 	}{
 		{
 			name:           "issue already pilot-done - skip retry-ready",
@@ -4871,11 +4871,11 @@ func TestController_ScanRecentlyMergedPRs(t *testing.T) {
 	oldMergedAt := time.Now().Add(-2 * time.Hour).UTC().Format(time.RFC3339)
 
 	tests := []struct {
-		name             string
-		prs              []github.PullRequest
-		existingTracked  []int // PR numbers already in activePRs
-		wantTriggered    int
-		wantPRNumbers    []int
+		name            string
+		prs             []github.PullRequest
+		existingTracked []int // PR numbers already in activePRs
+		wantTriggered   int
+		wantPRNumbers   []int
 	}{
 		{
 			name: "discovers externally merged pilot PR",
@@ -5466,7 +5466,7 @@ func TestCIFixSizeGuard_APIError_FailOpen(t *testing.T) {
 // asyncApprovalManager returns an approval.Manager configured for async pre-merge approval.
 func asyncApprovalManager() *approval.Manager {
 	cfg := &approval.Config{
-		Enabled:        true,
+		Enabled: true,
 
 		DefaultTimeout: 1 * time.Hour,
 		DefaultAction:  approval.DecisionRejected,
@@ -5550,7 +5550,7 @@ func TestController_AwaitApproval_AppliesDefaultActionAtTimeout(t *testing.T) {
 
 	// Short timeout so the test can simulate expiry without sleeping.
 	approvalCfg := &approval.Config{
-		Enabled:        true,
+		Enabled: true,
 
 		DefaultTimeout: 1 * time.Millisecond,
 		DefaultAction:  approval.DecisionRejected,

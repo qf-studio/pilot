@@ -18,8 +18,8 @@ import (
 	"github.com/qf-studio/pilot/internal/adapters/slack"
 	"github.com/qf-studio/pilot/internal/adapters/telegram"
 	"github.com/qf-studio/pilot/internal/alerts"
-	"github.com/qf-studio/pilot/internal/comms"
 	"github.com/qf-studio/pilot/internal/approval"
+	"github.com/qf-studio/pilot/internal/comms"
 	"github.com/qf-studio/pilot/internal/config"
 	"github.com/qf-studio/pilot/internal/executor"
 	"github.com/qf-studio/pilot/internal/gateway"
@@ -56,15 +56,15 @@ type Pilot struct {
 	slackClient            *slack.Client
 	slackInteractionWH     *slack.InteractionHandler
 	slackApprovalHdlr      *approval.SlackHandler
-	telegramClient          *telegram.Client
-	telegramHandler         *telegram.Handler               // Telegram polling handler (GH-349)
-	telegramRunner          *executor.Runner                // Runner for Telegram tasks (GH-349)
-	telegramMemberResolver  telegram.MemberResolver         // Team member resolver for Telegram RBAC (GH-634)
-	telegramApprovalHdlr    telegram.ApprovalCallbackHandler // Routes approve:/reject: callbacks (GH-2651)
-	slackHandler           *slack.Handler          // Slack Socket Mode handler (GH-652)
-	slackRunner            *executor.Runner        // Runner for Slack tasks (GH-652)
-	slackMemberResolver    slack.MemberResolver    // Team member resolver for Slack RBAC (GH-786)
-	githubPoller           *github.Poller          // GitHub polling handler (GH-350)
+	telegramClient         *telegram.Client
+	telegramHandler        *telegram.Handler                // Telegram polling handler (GH-349)
+	telegramRunner         *executor.Runner                 // Runner for Telegram tasks (GH-349)
+	telegramMemberResolver telegram.MemberResolver          // Team member resolver for Telegram RBAC (GH-634)
+	telegramApprovalHdlr   telegram.ApprovalCallbackHandler // Routes approve:/reject: callbacks (GH-2651)
+	slackHandler           *slack.Handler                   // Slack Socket Mode handler (GH-652)
+	slackRunner            *executor.Runner                 // Runner for Slack tasks (GH-652)
+	slackMemberResolver    slack.MemberResolver             // Team member resolver for Slack RBAC (GH-786)
+	githubPoller           *github.Poller                   // GitHub polling handler (GH-350)
 	alertEngine            *alerts.Engine
 	teamsService           *teams.Service // Teams RBAC service (GH-633)
 	store                  *memory.Store

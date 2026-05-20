@@ -15,9 +15,9 @@ import (
 )
 
 const (
-	BackendTypeOpenAIAPI  = "openai-api"
-	openaiDefaultBaseURL  = "https://api.openai.com/v1"
-	openaiDefaultModel    = "gpt-4o"
+	BackendTypeOpenAIAPI = "openai-api"
+	openaiDefaultBaseURL = "https://api.openai.com/v1"
+	openaiDefaultModel   = "gpt-4o"
 )
 
 // OpenAIBackend implements Backend using direct OpenAI-compatible /v1/chat/completions API.
@@ -80,9 +80,9 @@ type openaiMsg struct {
 }
 
 type openaiToolCall struct {
-	ID       string            `json:"id"`
-	Type     string            `json:"type"` // "function"
-	Function openaiCallFunc    `json:"function"`
+	ID       string         `json:"id"`
+	Type     string         `json:"type"` // "function"
+	Function openaiCallFunc `json:"function"`
 }
 
 // openaiCallFunc carries the resolved call (name + argument JSON string).
@@ -93,8 +93,8 @@ type openaiCallFunc struct {
 
 // openaiToolDef describes a tool in the request.
 type openaiToolDef struct {
-	Type     string         `json:"type"` // "function"
-	Function openaiFuncDef  `json:"function"`
+	Type     string        `json:"type"` // "function"
+	Function openaiFuncDef `json:"function"`
 }
 
 type openaiFuncDef struct {
@@ -104,26 +104,26 @@ type openaiFuncDef struct {
 }
 
 type openaiRequest struct {
-	Model    string         `json:"model"`
-	Messages []openaiMsg    `json:"messages"`
+	Model    string          `json:"model"`
+	Messages []openaiMsg     `json:"messages"`
 	Tools    []openaiToolDef `json:"tools,omitempty"`
-	Stream   bool           `json:"stream"`
+	Stream   bool            `json:"stream"`
 }
 
 // SSE streaming types
 
 type openaiChunk struct {
-	ID      string          `json:"id"`
-	Object  string          `json:"object"`
-	Model   string          `json:"model"`
-	Choices []openaiChoice  `json:"choices"`
-	Usage   *openaiUsage    `json:"usage,omitempty"`
+	ID      string         `json:"id"`
+	Object  string         `json:"object"`
+	Model   string         `json:"model"`
+	Choices []openaiChoice `json:"choices"`
+	Usage   *openaiUsage   `json:"usage,omitempty"`
 }
 
 type openaiChoice struct {
-	Index        int          `json:"index"`
-	Delta        openaiDelta  `json:"delta"`
-	FinishReason *string      `json:"finish_reason"` // pointer — null vs "stop"/"tool_calls"
+	Index        int         `json:"index"`
+	Delta        openaiDelta `json:"delta"`
+	FinishReason *string     `json:"finish_reason"` // pointer — null vs "stop"/"tool_calls"
 }
 
 type openaiDelta struct {
@@ -133,10 +133,10 @@ type openaiDelta struct {
 }
 
 type openaiDeltaToolCall struct {
-	Index    int                    `json:"index"`
-	ID       string                 `json:"id,omitempty"`
-	Type     string                 `json:"type,omitempty"`
-	Function openaiDeltaFunc        `json:"function"`
+	Index    int             `json:"index"`
+	ID       string          `json:"id,omitempty"`
+	Type     string          `json:"type,omitempty"`
+	Function openaiDeltaFunc `json:"function"`
 }
 
 type openaiDeltaFunc struct {
@@ -152,10 +152,10 @@ type openaiUsage struct {
 
 // openaiAccum collects the fully parsed result of one SSE stream.
 type openaiAccum struct {
-	Model        string
-	Content      string
-	ToolCalls    []openaiToolCall
-	FinishReason string
+	Model            string
+	Content          string
+	ToolCalls        []openaiToolCall
+	FinishReason     string
 	PromptTokens     int64
 	CompletionTokens int64
 }
@@ -423,12 +423,12 @@ func (b *OpenAIBackend) Execute(ctx context.Context, opts ExecuteOptions) (*Back
 	for turn := 0; turn < apiMaxTurns; turn++ {
 		if ctx.Err() != nil {
 			return &BackendResult{
-				Success:      sawSuccess,
-				Output:       lastOutput,
-				Error:        "context cancelled",
-				TokensInput:  totalPromptTokens,
-				TokensOutput: totalCompletionTokens,
-				Model:        model,
+				Success:          sawSuccess,
+				Output:           lastOutput,
+				Error:            "context cancelled",
+				TokensInput:      totalPromptTokens,
+				TokensOutput:     totalCompletionTokens,
+				Model:            model,
 				SawSuccessResult: sawSuccess,
 			}, nil
 		}
@@ -455,12 +455,12 @@ func (b *OpenAIBackend) Execute(ctx context.Context, opts ExecuteOptions) (*Back
 			}
 
 			return &BackendResult{
-				Success:      sawSuccess,
-				Output:       lastOutput,
-				Error:        err.Error(),
-				TokensInput:  totalPromptTokens,
-				TokensOutput: totalCompletionTokens,
-				Model:        model,
+				Success:          sawSuccess,
+				Output:           lastOutput,
+				Error:            err.Error(),
+				TokensInput:      totalPromptTokens,
+				TokensOutput:     totalCompletionTokens,
+				Model:            model,
 				SawSuccessResult: sawSuccess,
 			}, nil
 		}
@@ -599,7 +599,7 @@ type OpenAIAPIError struct {
 	Msg     string
 }
 
-func (e *OpenAIAPIError) Error() string       { return e.Msg }
-func (e *OpenAIAPIError) ErrorType() string   { return e.ErrType }
+func (e *OpenAIAPIError) Error() string        { return e.Msg }
+func (e *OpenAIAPIError) ErrorType() string    { return e.ErrType }
 func (e *OpenAIAPIError) ErrorMessage() string { return e.Msg }
 func (e *OpenAIAPIError) ErrorStderr() string  { return "" }

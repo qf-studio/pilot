@@ -67,8 +67,8 @@ func TestValidateAndFixSubtaskTitles_RepromptSucceeds(t *testing.T) {
 	parser := newSubtaskParserWithRunner(runner, nil)
 
 	subtasks := []PlannedSubtask{
-		{Order: 1, Title: "Add OAuth integration"},  // not conventional
-		{Order: 2, Title: "Handle nil response"},    // not conventional
+		{Order: 1, Title: "Add OAuth integration"}, // not conventional
+		{Order: 2, Title: "Handle nil response"},   // not conventional
 	}
 	parent := &Task{ID: "GH-100", Title: "feat(auth): add OAuth provider"}
 
@@ -209,8 +209,8 @@ func TestIsPlaceholderSubtaskTitle(t *testing.T) {
 		"feat(auth): add OAuth provider",
 		"fix: handle nil response",
 		"Add OAuth provider",
-		"GH-123: fix the bug",    // not "Subtask N"
-		"GH-123: Subtask",        // no number
+		"GH-123: fix the bug", // not "Subtask N"
+		"GH-123: Subtask",     // no number
 	}
 	for _, title := range reject {
 		if isPlaceholderSubtaskTitle(title) {
@@ -230,8 +230,8 @@ func TestExtractParentTypeScope(t *testing.T) {
 		{"feat(auth): add OAuth", "implement oauth login flow with token session management", "feat(auth):"},
 		{"fix: resolve nil panic", "retry loop panics on nil pointer", "fix:"},
 		{"chore(deps): bump versions", "update go modules to latest", "chore(deps):"},
-		{"Add some feature", "some body", "chore:"},    // not conventional → default
-		{"", "", "chore:"},                             // empty → default
+		{"Add some feature", "some body", "chore:"}, // not conventional → default
+		{"", "", "chore:"}, // empty → default
 	}
 	for _, tt := range tests {
 		got := extractParentTypeScope(tt.parent, tt.body)

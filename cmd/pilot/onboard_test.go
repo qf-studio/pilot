@@ -142,27 +142,27 @@ func TestSelectOption(t *testing.T) {
 // TestPersonaRouting tests that persona selection routes to correct stage counts.
 func TestPersonaRouting(t *testing.T) {
 	tests := []struct {
-		name             string
-		persona          Persona
-		wantStagesTotal  int
+		name              string
+		persona           Persona
+		wantStagesTotal   int
 		wantTicketSources int
 	}{
 		{
-			name:             "Solo persona",
-			persona:          PersonaSolo,
-			wantStagesTotal:  4,
+			name:              "Solo persona",
+			persona:           PersonaSolo,
+			wantStagesTotal:   4,
 			wantTicketSources: 1, // GitHub only
 		},
 		{
-			name:             "Team persona",
-			persona:          PersonaTeam,
-			wantStagesTotal:  5,
+			name:              "Team persona",
+			persona:           PersonaTeam,
+			wantStagesTotal:   5,
 			wantTicketSources: 3, // GitHub, Linear, Jira
 		},
 		{
-			name:             "Enterprise persona",
-			persona:          PersonaEnterprise,
-			wantStagesTotal:  5,
+			name:              "Enterprise persona",
+			persona:           PersonaEnterprise,
+			wantStagesTotal:   5,
 			wantTicketSources: 6, // All sources
 		},
 	}
@@ -604,4 +604,3 @@ func TestHasTicketSource(t *testing.T) {
 		})
 	}
 }
-

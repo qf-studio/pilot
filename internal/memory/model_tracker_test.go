@@ -122,11 +122,11 @@ func TestFailureRateEmptyData(t *testing.T) {
 
 func TestShouldEscalate(t *testing.T) {
 	tests := []struct {
-		name        string
-		model       string
-		outcomes    []string
-		wantEscal   bool
-		wantTarget  string
+		name       string
+		model      string
+		outcomes   []string
+		wantEscal  bool
+		wantTarget string
 	}{
 		{
 			name:       "haiku high failure -> sonnet",

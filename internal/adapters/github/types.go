@@ -92,13 +92,13 @@ const (
 
 // Label names used by Pilot
 const (
-	LabelInProgress = "pilot-in-progress"
-	LabelDone       = "pilot-done"
-	LabelFailed     = "pilot-failed"
-	LabelRetryReady    = "pilot-retry-ready"    // PR closed without merge, issue ready for retry
-	LabelTitleRejected = "pilot-title-rejected" // GH-2363: title guard escalation; blocks auto-retry until human edits title
-	LabelSuperseded    = "pilot-superseded"     // GH-2402: sub-issue auto-closed because parent epic already shipped the work
-	LabelBlocked       = "pilot-blocked"        // GH-2402: deterministic failure that won't change between retries (e.g. non-conventional title)
+	LabelInProgress         = "pilot-in-progress"
+	LabelDone               = "pilot-done"
+	LabelFailed             = "pilot-failed"
+	LabelRetryReady         = "pilot-retry-ready"         // PR closed without merge, issue ready for retry
+	LabelTitleRejected      = "pilot-title-rejected"      // GH-2363: title guard escalation; blocks auto-retry until human edits title
+	LabelSuperseded         = "pilot-superseded"          // GH-2402: sub-issue auto-closed because parent epic already shipped the work
+	LabelBlocked            = "pilot-blocked"             // GH-2402: deterministic failure that won't change between retries (e.g. non-conventional title)
 	LabelNeedsClarification = "pilot-needs-clarification" // GH-2768: executor declined task as unactionable; blocks dispatch until label removed
 	LabelSpecIncomplete     = "pilot-spec-incomplete"     // GH-2619: issue body too thin to dispatch; first-strike warning
 	LabelSkipSpecCheck      = "pilot-skip-spec-check"     // GH-2619: opt-out from spec quality gate (trivial micro-issues)
@@ -316,11 +316,11 @@ type PullRequestReview struct {
 // See: https://docs.github.com/en/rest/pulls/comments#list-review-comments-on-a-pull-request
 type PRReviewComment struct {
 	ID        int64  `json:"id"`
-	Body      string `json:"body"`       // Comment text — primary learning source
-	Path      string `json:"path"`       // File path commented on
-	Line      int    `json:"line"`       // Line number (may be 0 if null in API)
-	Side      string `json:"side"`       // "LEFT" or "RIGHT"
-	User      User   `json:"user"`       // Commenter
+	Body      string `json:"body"` // Comment text — primary learning source
+	Path      string `json:"path"` // File path commented on
+	Line      int    `json:"line"` // Line number (may be 0 if null in API)
+	Side      string `json:"side"` // "LEFT" or "RIGHT"
+	User      User   `json:"user"` // Commenter
 	CreatedAt string `json:"created_at"`
 	HTMLURL   string `json:"html_url"`
 }

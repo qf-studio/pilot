@@ -478,7 +478,7 @@ func TestSchedulerCatchUpMechanism(t *testing.T) {
 			name:             "missed brief - more than 1 interval ago",
 			useStore:         true,
 			lastBriefSent:    &[]time.Time{time.Now().Add(-25 * time.Hour)}[0], // Yesterday's brief missed
-			scheduleInterval: "0 9 * * *",                                        // Daily at 9am
+			scheduleInterval: "0 9 * * *",                                      // Daily at 9am
 			expectCatchUp:    true,
 			description:      "Brief sent 25 hours ago should trigger catch-up for daily schedule",
 		},
@@ -486,7 +486,7 @@ func TestSchedulerCatchUpMechanism(t *testing.T) {
 			name:             "current brief - within interval",
 			useStore:         true,
 			lastBriefSent:    &[]time.Time{time.Now().Add(-2 * time.Hour)}[0], // Recent brief
-			scheduleInterval: "0 9 * * *",                                       // Daily at 9am
+			scheduleInterval: "0 9 * * *",                                     // Daily at 9am
 			expectCatchUp:    false,
 			description:      "Brief sent 2 hours ago should not trigger catch-up",
 		},
@@ -643,4 +643,3 @@ func TestSchedulerRunNowRecordsToHistory(t *testing.T) {
 		}
 	}
 }
-

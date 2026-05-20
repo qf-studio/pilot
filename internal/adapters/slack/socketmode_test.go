@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/qf-studio/pilot/internal/testutil"
 	"github.com/gorilla/websocket"
+	"github.com/qf-studio/pilot/internal/testutil"
 )
 
 func TestOpenConnection(t *testing.T) {

@@ -34,8 +34,8 @@ func TestHandleIssueGeneric_BudgetExceeded(t *testing.T) {
 		LogEmoji: "📥",
 	}
 	task := &executor.Task{
-		ID:    "GH-999",
-		Title: "Test Issue",
+		ID:     "GH-999",
+		Title:  "Test Issue",
 		Branch: "pilot/GH-999",
 	}
 

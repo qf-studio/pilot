@@ -186,11 +186,11 @@ func TestFindRelevantSOPs(t *testing.T) {
 
 	// Create test SOP files
 	testFiles := map[string]string{
-		"debugging/sqlite-busy.md":        "SQLite debugging guide",
-		"integrations/github-api.md":      "GitHub API integration",
-		"integrations/telegram-bot.md":    "Telegram bot setup",
-		"development/testing-guide.md":    "Testing guidelines",
-		"database-migrations.md":          "Database migration SOP",
+		"debugging/sqlite-busy.md":     "SQLite debugging guide",
+		"integrations/github-api.md":   "GitHub API integration",
+		"integrations/telegram-bot.md": "Telegram bot setup",
+		"development/testing-guide.md": "Testing guidelines",
+		"database-migrations.md":       "Database migration SOP",
 	}
 
 	for filePath, content := range testFiles {

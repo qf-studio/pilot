@@ -437,10 +437,10 @@ func TestInteractionDelegatedToCommsHandler(t *testing.T) {
 	// Inject a pending task into comms.Handler
 	ctx := context.Background()
 	ch.HandleMessage(ctx, &comms.IncomingMessage{
-		ContextID:  "chan123",
-		SenderID:   "user123",
-		Text:       "add a feature",
-		Platform:   "discord",
+		ContextID: "chan123",
+		SenderID:  "user123",
+		Text:      "add a feature",
+		Platform:  "discord",
 	})
 
 	// Verify pending task exists

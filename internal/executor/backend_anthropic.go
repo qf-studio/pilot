@@ -32,7 +32,7 @@ const (
 	apiMaxTurns       = 60
 	apiBashTimeout    = 120 // seconds per bash command
 	apiMaxRetries     = 5
-	apiOutputCap      = 50000 // bytes, cap tool output to prevent context bloat
+	apiOutputCap      = 50000  // bytes, cap tool output to prevent context bloat
 	apiContextPruneAt = 150000 // estimated tokens before pruning
 )
 
@@ -93,29 +93,29 @@ type apiToolDef struct {
 }
 
 type apiRequest struct {
-	Model     string          `json:"model"`
-	MaxTokens int             `json:"max_tokens"`
-	System    string          `json:"system,omitempty"`
-	Messages  []apiMessage    `json:"messages"`
-	Tools     []apiToolDef    `json:"tools,omitempty"`
-	Stream    bool            `json:"stream"`
-	Thinking  *apiThinking    `json:"thinking,omitempty"`
+	Model     string       `json:"model"`
+	MaxTokens int          `json:"max_tokens"`
+	System    string       `json:"system,omitempty"`
+	Messages  []apiMessage `json:"messages"`
+	Tools     []apiToolDef `json:"tools,omitempty"`
+	Stream    bool         `json:"stream"`
+	Thinking  *apiThinking `json:"thinking,omitempty"`
 }
 
 type apiThinking struct {
-	Type        string `json:"type"`
-	BudgetTokens int   `json:"budget_tokens"`
+	Type         string `json:"type"`
+	BudgetTokens int    `json:"budget_tokens"`
 }
 
 type apiResponse struct {
-	ID           string            `json:"id"`
-	Type         string            `json:"type"`
-	Role         string            `json:"role"`
-	Content      []apiContentBlock `json:"content"`
-	Model        string            `json:"model"`
-	StopReason   string            `json:"stop_reason"`
-	Usage        apiUsage          `json:"usage"`
-	Error        *apiError         `json:"error,omitempty"`
+	ID         string            `json:"id"`
+	Type       string            `json:"type"`
+	Role       string            `json:"role"`
+	Content    []apiContentBlock `json:"content"`
+	Model      string            `json:"model"`
+	StopReason string            `json:"stop_reason"`
+	Usage      apiUsage          `json:"usage"`
+	Error      *apiError         `json:"error,omitempty"`
 }
 
 type apiUsage struct {
@@ -132,18 +132,18 @@ type apiError struct {
 type sseEvent struct {
 	Type string `json:"type"`
 	// Various data fields depending on type
-	Index        int             `json:"index,omitempty"`
+	Index        int              `json:"index,omitempty"`
 	ContentBlock *apiContentBlock `json:"content_block,omitempty"`
-	Delta        *sseDelta       `json:"delta,omitempty"`
-	Message      *apiResponse    `json:"message,omitempty"`
-	Usage        *apiUsage       `json:"usage,omitempty"`
+	Delta        *sseDelta        `json:"delta,omitempty"`
+	Message      *apiResponse     `json:"message,omitempty"`
+	Usage        *apiUsage        `json:"usage,omitempty"`
 }
 
 type sseDelta struct {
-	Type         string `json:"type,omitempty"`
-	Text         string `json:"text,omitempty"`
-	PartialJSON  string `json:"partial_json,omitempty"`
-	StopReason   string `json:"stop_reason,omitempty"`
+	Type        string `json:"type,omitempty"`
+	Text        string `json:"text,omitempty"`
+	PartialJSON string `json:"partial_json,omitempty"`
+	StopReason  string `json:"stop_reason,omitempty"`
 }
 
 // --- Tool Definitions ---
@@ -548,12 +548,12 @@ func (b *AnthropicBackend) Execute(ctx context.Context, opts ExecuteOptions) (*B
 		// Check context
 		if ctx.Err() != nil {
 			return &BackendResult{
-				Success:     sawSuccess,
-				Output:      lastOutput,
-				Error:       "context cancelled",
-				TokensInput: totalInputTokens,
-				TokensOutput: totalOutputTokens,
-				Model:       model,
+				Success:          sawSuccess,
+				Output:           lastOutput,
+				Error:            "context cancelled",
+				TokensInput:      totalInputTokens,
+				TokensOutput:     totalOutputTokens,
+				Model:            model,
 				SawSuccessResult: sawSuccess,
 			}, nil
 		}
@@ -618,12 +618,12 @@ func (b *AnthropicBackend) Execute(ctx context.Context, opts ExecuteOptions) (*B
 			}
 
 			return &BackendResult{
-				Success:     sawSuccess,
-				Output:      lastOutput,
-				Error:       err.Error(),
-				TokensInput: totalInputTokens,
-				TokensOutput: totalOutputTokens,
-				Model:       model,
+				Success:          sawSuccess,
+				Output:           lastOutput,
+				Error:            err.Error(),
+				TokensInput:      totalInputTokens,
+				TokensOutput:     totalOutputTokens,
+				Model:            model,
 				SawSuccessResult: sawSuccess,
 			}, nil
 		}
@@ -778,7 +778,7 @@ type AnthropicAPIError struct {
 	Msg     string
 }
 
-func (e *AnthropicAPIError) Error() string       { return e.Msg }
+func (e *AnthropicAPIError) Error() string        { return e.Msg }
 func (e *AnthropicAPIError) ErrorType() string    { return e.ErrType }
 func (e *AnthropicAPIError) ErrorMessage() string { return e.Msg }
 func (e *AnthropicAPIError) ErrorStderr() string  { return "" }

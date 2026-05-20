@@ -65,16 +65,16 @@ func NewClientWithBaseURL(token, baseURL string) *Client {
 
 // Issue represents a GitHub issue
 type Issue struct {
-	ID        int64     `json:"id"`
-	NodeID    string    `json:"node_id"` // GraphQL global node ID
-	Number    int       `json:"number"`
-	Title     string    `json:"title"`
-	Body      string    `json:"body"`
-	State     string    `json:"state"`
-	Labels    []Label   `json:"labels"`
-	Assignee  *User     `json:"assignee"`
-	Assignees []User    `json:"assignees"`
-	User      User      `json:"user"` // Issue author
+	ID          int64     `json:"id"`
+	NodeID      string    `json:"node_id"` // GraphQL global node ID
+	Number      int       `json:"number"`
+	Title       string    `json:"title"`
+	Body        string    `json:"body"`
+	State       string    `json:"state"`
+	Labels      []Label   `json:"labels"`
+	Assignee    *User     `json:"assignee"`
+	Assignees   []User    `json:"assignees"`
+	User        User      `json:"user"` // Issue author
 	HTMLURL     string    `json:"html_url"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
@@ -853,11 +853,11 @@ func (c *Client) SearchPRsForIssue(ctx context.Context, owner, repo string, issu
 
 	var result struct {
 		Items []struct {
-			ID      int64  `json:"id"`
-			Number  int    `json:"number"`
-			Title   string `json:"title"`
-			State   string `json:"state"`
-			HTMLURL string `json:"html_url"`
+			ID          int64  `json:"id"`
+			Number      int    `json:"number"`
+			Title       string `json:"title"`
+			State       string `json:"state"`
+			HTMLURL     string `json:"html_url"`
 			PullRequest *struct {
 				MergedAt string `json:"merged_at"`
 			} `json:"pull_request"`
@@ -935,7 +935,6 @@ func (c *Client) SearchOpenSubIssues(ctx context.Context, owner, repo string, pa
 	}
 	return result.TotalCount, nil
 }
-
 
 // UpdatePullRequestBranch updates the PR branch with the latest base branch.
 // Uses GitHub API: PUT /repos/{owner}/{repo}/pulls/{number}/update-branch

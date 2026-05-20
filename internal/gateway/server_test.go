@@ -1253,10 +1253,10 @@ type mockAutopilotProvider struct {
 	autoRelease  bool
 }
 
-func (m *mockAutopilotProvider) GetEnvironment() string           { return m.environment }
+func (m *mockAutopilotProvider) GetEnvironment() string            { return m.environment }
 func (m *mockAutopilotProvider) GetActivePRs() []*AutopilotPRState { return m.activePRs }
-func (m *mockAutopilotProvider) GetFailureCount() int             { return m.failureCount }
-func (m *mockAutopilotProvider) IsAutoReleaseEnabled() bool       { return m.autoRelease }
+func (m *mockAutopilotProvider) GetFailureCount() int              { return m.failureCount }
+func (m *mockAutopilotProvider) IsAutoReleaseEnabled() bool        { return m.autoRelease }
 
 func TestHandleAutopilotNoProvider(t *testing.T) {
 	server := NewServer(&Config{Host: "127.0.0.1", Port: 9090})

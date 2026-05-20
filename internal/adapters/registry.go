@@ -35,8 +35,8 @@ type Poller interface {
 
 // IssueEvent is the normalized issue event emitted by all adapters.
 type IssueEvent struct {
-	Action    string   // "created", "updated"
-	IssueID   string   // Adapter-specific ID (issue key, number, GID, etc.)
+	Action    string // "created", "updated"
+	IssueID   string // Adapter-specific ID (issue key, number, GID, etc.)
 	Title     string
 	Body      string
 	Labels    []string

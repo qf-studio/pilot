@@ -9,8 +9,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/qf-studio/pilot/internal/logging"
 	"github.com/gorilla/websocket"
+	"github.com/qf-studio/pilot/internal/logging"
 )
 
 // wsDialer abstracts WebSocket dialing for testing.

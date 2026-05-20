@@ -169,10 +169,10 @@ type MemoryConfig struct {
 
 // ProjectConfig holds configuration for a registered project.
 type ProjectConfig struct {
-	Name          string               `yaml:"name"`
-	Path          string               `yaml:"path"`
-	Navigator     bool                 `yaml:"navigator"`
-	DefaultBranch string               `yaml:"default_branch"`
+	Name          string `yaml:"name"`
+	Path          string `yaml:"path"`
+	Navigator     bool   `yaml:"navigator"`
+	DefaultBranch string `yaml:"default_branch"`
 	// BranchFrom is an alias for DefaultBranch. When both are set, BranchFrom wins.
 	// Lets users express "branch from (and PR target) this branch" more intuitively
 	// in workflows like main → dev → feature, where dev is the integration branch (GH-2290).

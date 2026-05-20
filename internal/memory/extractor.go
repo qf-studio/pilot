@@ -93,12 +93,12 @@ func (e *PatternExtractor) ExtractFromReviewComments(ctx context.Context,
 
 	// Review comment matchers for anti-patterns and positive feedback
 	reviewMatchers := []struct {
-		patterns    []string // Keywords to match
-		pType       PatternType
-		title       string
-		desc        string
-		isAnti      bool
-		confidence  float64
+		patterns   []string // Keywords to match
+		pType      PatternType
+		title      string
+		desc       string
+		isAnti     bool
+		confidence float64
 	}{
 		{
 			patterns:   []string{"add test", "test coverage", "missing test"},

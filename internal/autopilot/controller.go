@@ -2421,11 +2421,11 @@ func (c *Controller) checkExternalMergeOrClose(ctx context.Context, prState *PRS
 			} else {
 				c.log.Info("closed issue after external merge", "issue", prState.IssueNumber, "pr", prState.PRNumber)
 
-			// GH-2297: Post success comment so last comment isn't stale failure
-			comment := buildMergeCompletionComment(prState)
-			if _, err := c.ghClient.AddComment(ctx, c.owner, c.repo, prState.IssueNumber, comment); err != nil {
-				c.log.Warn("failed to post merge completion comment on external merge", "issue", prState.IssueNumber, "error", err)
-			}
+				// GH-2297: Post success comment so last comment isn't stale failure
+				comment := buildMergeCompletionComment(prState)
+				if _, err := c.ghClient.AddComment(ctx, c.owner, c.repo, prState.IssueNumber, comment); err != nil {
+					c.log.Warn("failed to post merge completion comment on external merge", "issue", prState.IssueNumber, "error", err)
+				}
 			}
 		}
 
