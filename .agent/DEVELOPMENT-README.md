@@ -118,12 +118,11 @@ Disable via config: `executor.navigator.auto_init: false`
 
 ## Current State
 
-**Current Version:** v2.146.7 | **322 features working**
+**Current Version:** v2.146.7 | **323 features working**
 
-**Recent (v2.103.0 → v2.103.1, Apr 30 2026):**
-- `feat(dashboard)`: avionics-style TUI redesign — splash boot screen, compact 3-row banner with version/env/model stack/adapter chips, autopilot panel rework with CI/MERGE/RETRY gauges + 5-node pipeline rail (GH-2454, GH-2455, PR #2456 → v2.103.0)
-- `fix(dashboard)`: wire avionics banner meta + rework pipeline rail with status lamps (PR #2459 → v2.103.1)
-- `refactor(dashboard)`: banner polish + reintegrate splash inside main tea.Program (v2.103.1)
+**Recent (v2.146.7, May 20 2026):**
+- `fix(executor)`: **P0 data-loss fix** — `syncMainBranch` swaps destructive `reset --hard origin/main` for `merge --ff-only origin/<currentBranch>`. Surfaced during the 2026-05-20 workshop demo when GitHub push-propagation lag let the post-task sync silently rewind Pilot's just-committed work. Also fixes latent master-branch hardcode. 6 new unit tests, new SOP, safety comment on pooled-worktree reset. (GH-3018, [TASK-283](tasks/archive/TASK-283-sync-main-after-task-data-loss.md))
+- `chore(fmt)`: gofmt struct-field alignment normalized across 71 files.
 
 **Full implementation status:** `.agent/system/FEATURE-MATRIX.md`
 
@@ -166,7 +165,7 @@ gh pr list --state open
 | P2 | Mobile-responsive dashboard | Primary use case is phone access |
 | P3 | GitHub App auth | PAT → installable GitHub App |
 | P3 | `pilot project add` gh wizard | Interactive repo picker + token seed from `gh auth` — [TASK-282](tasks/TASK-282-project-add-gh-wizard.md) → [#3017](https://github.com/qf-studio/pilot/issues/3017) (not yet `pilot`-labeled) |
-| P0 | **`syncMainBranch` data loss** | Destructive `reset --hard origin/main` wipes Pilot's local commits when push hasn't landed. Reflog evidence from 2026-05-20 workshop demo — [TASK-283](tasks/TASK-283-sync-main-after-task-data-loss.md) → [#3018](https://github.com/qf-studio/pilot/issues/3018) (not yet `pilot`-labeled — needs design review) |
+| P3 | Makefile `release` target — quote `$(NOTES)` | Multi-line release notes break the `gh release create` recipe (broke during v2.146.7 cut). Fix: wrap in quotes or switch to `--notes-file`. |
 
 ---
 

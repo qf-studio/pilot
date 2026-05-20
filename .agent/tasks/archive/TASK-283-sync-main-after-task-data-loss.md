@@ -1,8 +1,11 @@
 # TASK-283: Fix destructive `syncMainBranch` reset that wipes Pilot's local commits
 
-**Status**: 🚧 Queued
+**Status**: ✅ Shipped in v2.146.7 (2026-05-20)
 **Created**: 2026-05-20
-**Assignee**: Manual (no `pilot` label — needs human design review before execution)
+**Shipped**: 2026-05-20
+**Commit**: `e43a2a45` — `fix(executor): syncMainBranch uses merge --ff-only to prevent silent commit loss`
+**Release**: https://github.com/qf-studio/pilot/releases/tag/v2.146.7
+**Closes**: #3018
 
 ---
 
