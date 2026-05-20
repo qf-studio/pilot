@@ -23,10 +23,10 @@ type PooledWorktree struct {
 // GH-936: Enables Pilot to work in repos where users have uncommitted changes.
 // GH-1078: Supports worktree pooling for sequential mode to save 500ms-2s per task.
 type WorktreeManager struct {
-	repoPath  string
-	mu        sync.Mutex
-	active    map[string]string // taskID -> worktreePath
-	createMu  sync.Mutex        // GH-1312: Serializes worktree creation to avoid git race conditions
+	repoPath string
+	mu       sync.Mutex
+	active   map[string]string // taskID -> worktreePath
+	createMu sync.Mutex        // GH-1312: Serializes worktree creation to avoid git race conditions
 
 	// Pool support (GH-1078)
 	pool     []*PooledWorktree // Pre-created worktrees for reuse
@@ -345,7 +345,11 @@ func (m *WorktreeManager) preparePooledWorktree(ctx context.Context, wt *PooledW
 		return fmt.Errorf("git clean failed: %w: %s", err, output)
 	}
 
-	// Reset to base ref (discard any local changes)
+	// Reset to base ref (discard any local changes).
+	// SAFE: this is an isolated pooled worktree (tmp dir), not a user-facing
+	// branch. Unlike syncMainBranch (GH-3018), there are no local commits
+	// that could be silently lost here — the worktree is reused across tasks
+	// and reset to baseRef at the start of each one by design.
 	resetCmd := exec.CommandContext(ctx, "git", "reset", "--hard", baseRef)
 	resetCmd.Dir = wt.Path
 	if output, err := resetCmd.CombinedOutput(); err != nil {
