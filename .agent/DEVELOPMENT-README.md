@@ -145,25 +145,6 @@ pilot start --env=stage --telegram --github  # Balanced (recommended)
 
 ## Active Work
 
-### TASK-25: Stale Recovery Queue Drain Fix (Planned)
-
-**Problem**: `recoverStaleTasks()` marks queued tasks older than 5 min as failed. When `runner.Execute()` blocks for 10-20 min (GLM-5.1, complex tasks), queued tasks behind it get nuked even though the worker is actively processing.
-
-**Fix**: Add `isWorkerProcessing()` helper and guard in `recoverStaleTasks()` — skip tasks for projects with active workers (`processing == true`).
-
-**Plan**: `.agent/tasks/TASK-25-stale-recovery-queue-drain-fix.md`
-
-**Changes**:
-- `internal/executor/dispatcher.go` — `isWorkerProcessing()` + guard (~16 lines)
-- `internal/executor/dispatcher_test.go` — 2 new tests (~85 lines)
-
-### Discord Intent Classification (GH-2121/2122/2123)
-
-All I/O channels should use Haiku LLM classifier. Discord has none (every message = task). Slack falls back to unreliable regex on LLM timeout.
-- **GH-2121**: Wire Haiku classifier into Discord handler
-- **GH-2122**: Replace Slack's regex fallback with `IntentChat` default
-- **GH-2123**: Remove dead `DetectIntent()` regex classifier (after 2121+2122)
-
 **Source of truth: GitHub Issues with `pilot` label**
 
 ```bash
@@ -184,6 +165,8 @@ gh pr list --state open
 | P2 | Web dashboard auth | Token-based auth for remote access |
 | P2 | Mobile-responsive dashboard | Primary use case is phone access |
 | P3 | GitHub App auth | PAT → installable GitHub App |
+| P3 | `pilot project add` gh wizard | Interactive repo picker + token seed from `gh auth` — [TASK-282](tasks/TASK-282-project-add-gh-wizard.md) → [#3017](https://github.com/qf-studio/pilot/issues/3017) (not yet `pilot`-labeled) |
+| P0 | **`syncMainBranch` data loss** | Destructive `reset --hard origin/main` wipes Pilot's local commits when push hasn't landed. Reflog evidence from 2026-05-20 workshop demo — [TASK-283](tasks/TASK-283-sync-main-after-task-data-loss.md) → [#3018](https://github.com/qf-studio/pilot/issues/3018) (not yet `pilot`-labeled — needs design review) |
 
 ---
 

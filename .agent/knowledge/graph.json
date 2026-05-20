@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "updated": "2026-01-27T12:45:00Z",
+  "updated": "2026-05-20T00:00:00Z",
   "nodes": {
     "concepts": {
       "pilot-architecture": {
@@ -49,6 +49,12 @@
         "label": "pilot task Command",
         "description": "New command to execute tasks from terminal (replacing pilot test)",
         "status": "planned"
+      },
+      "git-operations": {
+        "label": "Git Operations",
+        "description": "Git command wrappers in executor — clone, fetch, push, sync, worktree management. Source of data-loss risk if destructive ops (reset --hard, push --force) are used without divergence checks.",
+        "related": ["executor"],
+        "files": ["internal/executor/runner_git.go", "internal/executor/git.go", "internal/executor/worktree.go", "internal/executor/epic.go"]
       }
     },
     "tasks": {
@@ -143,6 +149,17 @@
         "concepts": ["pilot-architecture"],
         "confidence": 1.0,
         "created": "2026-01-27"
+      },
+      "mem-011": {
+        "type": "pitfall",
+        "summary": "CRITICAL: syncMainBranch() uses git reset --hard origin/main after every task. When GitHub push propagation lags behind the immediately-following fetch+reset, local commits are silently destroyed (only reflog-recoverable, 90d window). Race is in remote propagation, not push failure — reordering does NOT fix it. Fix: replace with merge --ff-only. Two call sites: runner.go:3258 (config-gated) and epic.go:1498 (NOT gated).",
+        "concepts": ["executor", "git-operations"],
+        "confidence": 1.0,
+        "severity": "critical",
+        "created": "2026-05-20",
+        "incident": "2026-05-20: gitnation-companion-pilot workshop demo. Two Pilot commits wiped from local main. TASK-283 / GH-3018.",
+        "files": ["internal/executor/runner_git.go:45", "internal/executor/epic.go:1498", "internal/executor/runner.go:3258"],
+        "memory_file": ".agent/knowledge/memories/pitfalls/pitfall_git_reset_hard_in_automated_sync.md"
       }
     }
   },
