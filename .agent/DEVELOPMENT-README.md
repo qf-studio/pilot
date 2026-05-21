@@ -120,9 +120,8 @@ Disable via config: `executor.navigator.auto_init: false`
 
 **Current Version:** v2.147.0 | **323 features working**
 
-**Recent (v2.146.7, May 20 2026):**
-- `fix(executor)`: **P0 data-loss fix** — `syncMainBranch` swaps destructive `reset --hard origin/main` for `merge --ff-only origin/<currentBranch>`. Surfaced during the 2026-05-20 workshop demo when GitHub push-propagation lag let the post-task sync silently rewind Pilot's just-committed work. Also fixes latent master-branch hardcode. 6 new unit tests, new SOP, safety comment on pooled-worktree reset. (GH-3018, [TASK-283](tasks/archive/TASK-283-sync-main-after-task-data-loss.md))
-- `chore(fmt)`: gofmt struct-field alignment normalized across 71 files.
+**Recent (v2.147.0, May 21 2026):**
+- `feat(executor)`: **Repo-allowlist guardrail** — `internal/executor/repo_guardrail.go` resolves the worktree's `origin` remote and refuses `gh issue create` (parent and sub-issues) unless the resolved `owner/repo` is in the user's configured `projects[]`. Wired into `Runner` via `SetRepoAllowlist`, set from `cmd/pilot/repo_allowlist.go` at every `NewRunnerWithConfig` site. `PILOT_ALLOW_UNMANAGED_REPO=1` documented bypass (always logs WARN with the resolved repo). Closes the 2026-05-20 incident where an external user's misconfigured Pilot fired 6 duplicate sub-issues on this repo (#3021–#3026). (GH-3027 / [TASK-286](tasks/archive/TASK-286-guardrail-external-repo-issue-create.md))
 
 **Full implementation status:** `.agent/system/FEATURE-MATRIX.md`
 
@@ -160,8 +159,8 @@ gh pr list --state open
 | P1 | Public launch prep | Landing page, onboarding, pricing, billing |
 | P1 | Web dashboard polish | React UI functional but needs design pass |
 | P1 | Fix `shouldTriggerRelease()` | Doesn't check `ResolvedEnv().Release` — only top-level config |
-| P1 | Guardrail: refuse issue creation on unmanaged repos | 2026-05-20 incident — external user's Pilot fired 6 dupes on upstream `qf-studio/pilot` (#3021-#3026). Sub-issue path lacks `owner/repo` validation — [TASK-286](tasks/TASK-286-guardrail-external-repo-issue-create.md) → [#3027](https://github.com/qf-studio/pilot/issues/3027) (handed off) |
 | P1 | Harden Claude Code subprocess against OOM-kills | 3 kernel SIGKILLs in 24h on workshop project (GH-1/17, GH-21/42, GH-22/43), all during RESEARCH phase. No memory limit, no OOM in smart-retry, no RSS telemetry — [TASK-287](tasks/TASK-287-claude-code-subprocess-oom-hardening.md) → [#3028](https://github.com/qf-studio/pilot/issues/3028) (handed off) |
+| P2 | Flip `quality.parallel` default to false (or auto-detect JS) | 2026-05-21 workshop hit 11 spurious "quality gates failed after 2 auto-retries" in 3h. Root cause: parallel `make build` / `make test` / `make lint` in `internal/quality/runner.go:74` races on vite/next cache. User config patched (`parallel: false`) — Pilot-wide default change pending. |
 | P2 | E2E test suite | No integration tests — reliability untested |
 | P2 | Web dashboard auth | Token-based auth for remote access |
 | P2 | Mobile-responsive dashboard | Primary use case is phone access |
