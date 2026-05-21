@@ -43,6 +43,11 @@ Pilot delegates AI execution to **Claude Code**, which manages its own authentic
 | `SLACK_BOT_TOKEN` | Slack bot token for notifications | No |
 | `DISCORD_BOT_TOKEN` | Discord bot token for chat interface | No |
 | `PLANE_API_KEY` | Plane.so API key for work item management | No |
+| `PILOT_ALLOW_UNMANAGED_REPO` | Set to `1` to bypass the repo allowlist guardrail (logs WARN) | No |
+
+<Callout type="warning">
+**`PILOT_ALLOW_UNMANAGED_REPO=1`** bypasses the safety guardrail that prevents Pilot from creating issues on repos not in your `~/.pilot/config.yaml` project list. The bypass is always logged as a WARN so it appears in dashboards and audit logs. Only use it for one-off CLI invocations against unregistered repos — never set it permanently in production.
+</Callout>
 
 <Callout type="info">
 Use `${VAR_NAME}` in any string field to reference environment variables. Pilot expands them at load time. Paths starting with `~` are expanded to your home directory.

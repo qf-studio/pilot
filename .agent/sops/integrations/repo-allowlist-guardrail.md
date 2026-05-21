@@ -1,26 +1,31 @@
 # SOP: Repo allowlist guardrail (TASK-286 / GH-3027)
 
 > **When to read this:** you see `sub-issue guardrail rejected target repo`
-> in Pilot logs, or `ErrRepoNotInConfig` surfaced in a task error.
+> or `CreatePilotIssue repo guardrail` in Pilot logs, or `ErrRepoNotInConfig`
+> surfaced in a task error.
 
 ## What it does
 
-Before Pilot's epic decomposer shells out to `gh issue create` (or even
-`gh issue list` for the dedup check), it resolves the worktree's `origin`
-remote to `owner/repo` and refuses to proceed unless that pair matches a
-project in the user's `~/.pilot/config.yaml`.
+Pilot refuses to create a GitHub issue when the resolved `owner/repo` is
+not in `~/.pilot/config.yaml`'s `projects[]` list. Two layers enforce this:
 
-Filed after the 2026-05-20 incident on the upstream `qf-studio/pilot`,
-where an external user's misconfigured Pilot fired 6 duplicate sub-issues
-(#3021–#3026) before the decomposer ran out of subtasks.
+| Layer | Where | What it guards |
+|---|---|---|
+| **Primary** — sub-issue path | `internal/executor/repo_guardrail.go::ValidateTargetRepo`, called from `internal/executor/epic.go::CreateSubIssues` | The epic decomposer. Resolves `executionPath`'s git origin and rejects before any `gh issue list` or `gh issue create` fires. |
+| **Defense in depth** — adapter | `internal/adapters/github/issue_create.go::validateIssueRepo`, called from `CreatePilotIssue` | Any direct caller of the GitHub adapter (autopilot feedback loop, future paths). |
 
-Chokepoint: `internal/executor/repo_guardrail.go::ValidateTargetRepo`,
-invoked from `internal/executor/epic.go::CreateSubIssues` before any `gh`
-call. Wired onto the Runner via `cmd/pilot/repo_allowlist.go`.
+The two layers use distinct interfaces (`executor.RepoAllowlist` and
+`github.IssueAllowlist`) only to avoid the executor→github import cycle —
+they have the same shape and the same concrete `configRepoAllowlist`
+implementation in `cmd/pilot/repo_allowlist.go` satisfies both.
 
-## Symptom
+Filed after the 2026-05-20 incident on `qf-studio/pilot`, where
+@tenlisboa's misconfigured Pilot fired 6 duplicate sub-issues
+(#3021–#3026) before the decomposer ran out of subtasks. `gh issue
+create` had been inferring the target from the directory's `origin`
+remote with no allowlist cross-check.
 
-Pilot logs one of:
+## Symptoms
 
 ```
 ERROR sub-issue guardrail rejected target repo
@@ -28,11 +33,13 @@ ERROR sub-issue guardrail rejected target repo
   error="target repo is not in user's configured project list: qf-studio/pilot not in configured projects [alice/site]"
 ```
 
-or:
-
 ```
 ERROR sub-issue guardrail: could not resolve origin remote
   execution_path=... error="no origin remote found: ..."
+```
+
+```
+ERROR CreatePilotIssue repo guardrail: owner/repo not in configured projects [...]
 ```
 
 The task fails with an error wrapping `executor.ErrRepoNotInConfig`
@@ -40,31 +47,30 @@ The task fails with an error wrapping `executor.ErrRepoNotInConfig`
 
 ## Diagnosis checklist
 
-1. **Confirm the target repo is what you expect.**
+1. **Confirm which repo Pilot resolved.**
    ```sh
+   grep -E "guardrail" ~/.pilot/logs/pilot.log | tail -10
+   # or for the executionPath in question:
    git -C <executionPath> remote get-url origin
    ```
-   The output's `owner/repo` is what Pilot resolved. If it surprises you
-   (e.g. it's the upstream rather than your fork), the bug is in your
-   `~/.pilot/config.yaml` or local clone, not in Pilot.
+   If the resolved `owner/repo` surprises you (e.g. upstream instead of
+   your fork), the bug is in your config or local clone — not Pilot.
 
 2. **List configured projects.**
    ```sh
    yq '.projects[] | "\(.github.owner)/\(.github.repo) -> \(.path)"' \
      ~/.pilot/config.yaml
    ```
-   Each `owner/repo` listed here is allowed. If the rejected pair isn't
-   here, that's the immediate cause.
+   Each entry is an allowed pair. Missing from the list = rejection.
 
 3. **Check for projectPath drift.**
-   The guardrail also rejects "right repo, wrong working tree" — i.e.
-   the configured project's `path` does not match the directory Pilot
-   is executing in. This usually means you have a fork in a different
-   path than the project entry expects.
+   The primary guardrail also rejects "right repo, wrong working tree" —
+   i.e. the configured project's `path` differs from the directory Pilot
+   is executing in. Often means a fork in an unexpected path.
 
 ## Fix paths
 
-**Most common — user pointed Pilot at the wrong repo:**
+**Most common — register the repo:**
 
 ```yaml
 # ~/.pilot/config.yaml
@@ -72,11 +78,11 @@ projects:
   - name: my-fork
     path: /Users/me/projects/my-fork
     github:
-      owner: my-username     # ← was previously upstream owner
-      repo:  pilot-fork      # ← was previously upstream repo
+      owner: my-username
+      repo:  my-fork
 ```
 
-Re-run; the guardrail will accept.
+Re-run; the guardrail accepts.
 
 **Ad-hoc one-off (testing, recovery, debugging):**
 
@@ -84,8 +90,8 @@ Re-run; the guardrail will accept.
 PILOT_ALLOW_UNMANAGED_REPO=1 pilot run ...
 ```
 
-The bypass always logs a WARN with the resolved owner/repo so the action
-remains visible in dashboards and the daemon log:
+The bypass always logs WARN with the resolved owner/repo. Never set
+permanently in production or in a long-lived shell env.
 
 ```
 WARN PILOT_ALLOW_UNMANAGED_REPO=1 bypassed repo allowlist
@@ -93,40 +99,54 @@ WARN PILOT_ALLOW_UNMANAGED_REPO=1 bypassed repo allowlist
   owner=... repo=... project_path=... configured_repos=...
 ```
 
-Never set this in `~/.pilot/config.yaml` or a long-lived shell env —
-it disables the safety net.
-
 **Library/SDK use (no allowlist wired):**
 
-If you're calling `executor.NewRunnerWithConfig` directly and didn't
-plumb a `RepoAllowlist`, you'll see:
+Calling `executor.NewRunnerWithConfig` or `github.CreatePilotIssue`
+directly without an allowlist logs:
 
 ```
 WARN sub-issue guardrail skipped: no RepoAllowlist configured on Runner;
   production callers must invoke Runner.SetRepoAllowlist
 ```
 
-In production this means cmd/pilot's wiring regressed — fix the
-construction site. In a one-off script, either wire one or accept the
-WARN (the call falls through to the existing `gh` error path, same as
-pre-guardrail).
+```
+WARN CreatePilotIssue: no IssueAllowlist configured; repo check skipped
+```
 
-## What was wrong before this guardrail
+The autopilot feedback loop intentionally passes `nil` because its
+`f.owner` / `f.repo` come from explicit config at construction time —
+already constrained. New non-feedback-loop callers must pass a non-nil
+allowlist.
+
+## Code locations
+
+| Symbol | File |
+|--------|------|
+| `RepoAllowlist` interface | `internal/executor/repo_guardrail.go` |
+| `ValidateTargetRepo` | `internal/executor/repo_guardrail.go` |
+| `resolveGitRemote` / `parseGitHubRemoteURL` | `internal/executor/repo_guardrail.go` |
+| `Runner.SetRepoAllowlist` | `internal/executor/runner.go` |
+| Primary guardrail call site | `internal/executor/epic.go::CreateSubIssues` |
+| `IssueAllowlist` interface | `internal/adapters/github/issue_create.go` |
+| Adapter guardrail (`validateIssueRepo`) | `internal/adapters/github/issue_create.go` |
+| `configRepoAllowlist` (satisfies both) | `cmd/pilot/repo_allowlist.go` |
+| Wiring (production) | `cmd/pilot/main.go`, `cmd/pilot/commands.go`, `cmd/pilot/interactive.go` |
+| Bypass env var | `PILOT_ALLOW_UNMANAGED_REPO=1` |
+
+## What was wrong before
 
 `internal/executor/epic.go::createSubIssuesViaGitHub` ran
 `exec.CommandContext(ctx, "gh", "issue", "create", ...)` with
-`cmd.Dir = executionPath` and **no `owner/repo` validation**. `gh`
-infers the target from the directory's `origin` remote, with no
-cross-check against the user's configured projects. A misconfigured
-worktree silently became a write-target for sub-issues.
-
-A partial guard at `internal/executor/runner.go::ValidateRepoProjectMatch`
-existed for the parent task but did not apply to the sub-issue creation
-path.
+`cmd.Dir = executionPath` and no owner/repo validation. `gh` inferred
+the target from the directory's `origin` remote with no cross-check. A
+partial guard at `internal/executor/runner.go::ValidateRepoProjectMatch`
+existed for the *parent* task but did not apply to the sub-issue path
+or to the adapter.
 
 ## Related
 
-- Incident comment: `qf-studio/pilot#3021#issuecomment-4508477616`
-- Task plan: `.agent/tasks/TASK-286-guardrail-external-repo-issue-create.md`
-- Pattern memory: `.agent/knowledge/memories/patterns/pattern_target_repo_validation.md` *(write after merge)*
-- Pitfall memory: `.agent/knowledge/memories/pitfalls/pitfall_external_repo_issue_create.md` *(write after merge)*
+- Incident: `qf-studio/pilot#3021`–`#3026` (all closed as dupes)
+- Diagnosis comment: `qf-studio/pilot#3021#issuecomment-4508477616`
+- Task plan (archived): `.agent/tasks/archive/TASK-286-guardrail-external-repo-issue-create.md`
+- Primary PR (v2.147.0): `qf-studio/pilot#3033` — sub-issue path + executor-side guardrail
+- Phase B PR (this change): adapter-level guardrail + `IssueAllowlist`
