@@ -118,7 +118,7 @@ Disable via config: `executor.navigator.auto_init: false`
 
 ## Current State
 
-**Current Version:** v2.148.0 | **323 features working**
+**Current Version:** v2.149.0 | **323 features working**
 
 **Recent (v2.148.0, May 21 2026):**
 - `feat(executor)`: **Subprocess OOM hardening** — Claude Code subprocess gains an RSS sampler (`internal/executor/rss_sampler.go` + `rss_sampler_{linux,darwin,other}.go`) that polls `/proc/<pid>/status` (or platform equivalent) every 10 s and persists `peak_rss_mb` / `final_rss_mb` to the `executions` table. `oom_killed` now retries via `Retrier.Evaluate` with 2 attempts at 10 s flat backoff (data point: GH-22/sub-43 succeeded in 33 s on retry). `RLIMIT_AS` cap behind `executor.subprocess_limits.enabled` flag — disabled by default until ≥1 week of telemetry is collected. Closes the 3-OOMs-in-24h incident from 2026-05-21. (GH-3028 / TASK-287 + #3046, plus tuning SOP at `.agent/sops/subprocess-oom-tuning.md` via #3048)
