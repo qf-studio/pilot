@@ -18,6 +18,9 @@ type ExecutionMetrics struct {
 	LinesAdded       int
 	LinesRemoved     int
 	ModelName        string
+	// GH-3028: RSS telemetry — zero on non-Linux/darwin or before Step 1 deploy.
+	PeakRSSMB  int
+	FinalRSSMB int
 }
 
 // MetricsQuery holds parameters for querying metrics
@@ -209,11 +212,15 @@ func (s *Store) SaveExecutionMetrics(metrics *ExecutionMetrics) error {
 				files_changed = ?,
 				lines_added = ?,
 				lines_removed = ?,
-				model_name = ?
+				model_name = ?,
+				peak_rss_mb = ?,
+				final_rss_mb = ?
 			WHERE id = ?
 		`, metrics.TokensInput, metrics.TokensOutput, metrics.TokensTotal,
 			metrics.EstimatedCostUSD, metrics.FilesChanged, metrics.LinesAdded,
-			metrics.LinesRemoved, metrics.ModelName, metrics.ExecutionID)
+			metrics.LinesRemoved, metrics.ModelName,
+			metrics.PeakRSSMB, metrics.FinalRSSMB,
+			metrics.ExecutionID)
 		return err
 	})
 }

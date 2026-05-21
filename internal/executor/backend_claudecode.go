@@ -224,6 +224,9 @@ type ClaudeCodeBackend struct {
 	apiBaseURL   string
 	apiAuthToken string
 	defaultModel string
+
+	// subprocessLimits configures RSS telemetry and optional RLIMIT_AS cap. GH-3028.
+	subprocessLimits *SubprocessLimitsConfig
 }
 
 // NewClaudeCodeBackend creates a new Claude Code backend.
@@ -244,6 +247,12 @@ func NewClaudeCodeBackend(config *ClaudeCodeConfig) *ClaudeCodeBackend {
 // SetHeartbeatTimeout sets a custom heartbeat timeout for this backend.
 func (b *ClaudeCodeBackend) SetHeartbeatTimeout(d time.Duration) {
 	b.heartbeatTimeout = d
+}
+
+// SetSubprocessLimits configures RSS telemetry and optional memory cap for the
+// Claude Code subprocess. GH-3028.
+func (b *ClaudeCodeBackend) SetSubprocessLimits(cfg *SubprocessLimitsConfig) {
+	b.subprocessLimits = cfg
 }
 
 // SetProviderEnv configures provider-routing env vars injected into the
@@ -419,6 +428,17 @@ func (b *ClaudeCodeBackend) executeWithFromPR(ctx context.Context, opts ExecuteO
 		return nil, fmt.Errorf("failed to start Claude Code: %w", err)
 	}
 	b.log.Debug("Claude Code started", slog.Int("pid", cmd.Process.Pid))
+
+	// GH-3028: apply RSS cap (Linux: RLIMIT_AS via prlimit64; darwin/other: no-op).
+	applyResourceLimits(cmd.Process.Pid, b.subprocessLimits)
+
+	// GH-3028: start RSS sampler — collects peak/final RSS for telemetry.
+	sampleInterval := 10 * time.Second
+	if b.subprocessLimits != nil && b.subprocessLimits.SampleIntervalSec > 0 {
+		sampleInterval = time.Duration(b.subprocessLimits.SampleIntervalSec) * time.Second
+	}
+	rssSamplerCtx, cancelRSSSampler := context.WithCancel(context.Background())
+	rssCh := StartRSSSampler(rssSamplerCtx, cmd.Process.Pid, sampleInterval)
 
 	// Track results
 	result := &BackendResult{}
@@ -650,6 +670,19 @@ func (b *ClaudeCodeBackend) executeWithFromPR(ctx context.Context, opts ExecuteO
 	// Wait for command to complete
 	err = cmd.Wait()
 	close(cmdDone) // Signal that command is done
+
+	// GH-3028: collect RSS sample (cancelling the sampler goroutine triggers final read).
+	cancelRSSSampler()
+	if rssSample, ok := <-rssCh; ok {
+		result.PeakRSSMB = rssSample.PeakMB
+		result.FinalRSSMB = rssSample.FinalMB
+		if rssSample.PeakMB > 0 {
+			b.log.Debug("Subprocess RSS telemetry",
+				slog.Int("peak_rss_mb", rssSample.PeakMB),
+				slog.Int("final_rss_mb", rssSample.FinalMB),
+			)
+		}
+	}
 
 	if err != nil {
 		// GH-2107: If a successful result event was seen before the process exited with

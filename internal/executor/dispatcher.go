@@ -718,6 +718,8 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 				LinesAdded:       result.LinesAdded,
 				LinesRemoved:     result.LinesRemoved,
 				ModelName:        result.ModelName,
+				PeakRSSMB:        result.PeakRSSMB,
+				FinalRSSMB:       result.FinalRSSMB,
 			}); err != nil {
 				w.log.Error("Failed to save execution metrics", slog.Any("error", err))
 			}

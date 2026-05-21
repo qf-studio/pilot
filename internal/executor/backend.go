@@ -210,6 +210,13 @@ type BackendResult struct {
 	// ErrorType classifies the failure (rate_limit, api_error, oom_killed,
 	// session_not_found, timeout, invalid_config, unknown). GH-2328.
 	ErrorType string
+
+	// PeakRSSMB is the peak resident set size of the subprocess in MiB. GH-3028.
+	// Zero when RSS sampling is unavailable (non-Linux/darwin platforms).
+	PeakRSSMB int
+
+	// FinalRSSMB is the RSS at subprocess exit. GH-3028.
+	FinalRSSMB int
 }
 
 // BackendConfig contains configuration for executor backends.
@@ -306,6 +313,11 @@ type BackendConfig struct {
 
 	// Stagnation contains stagnation detection settings (GH-925)
 	Stagnation *StagnationConfig `yaml:"stagnation,omitempty"`
+
+	// SubprocessLimits controls memory caps and RSS telemetry for the Claude Code
+	// subprocess. Enabled=false by default; flip after collecting a baseline week of
+	// peak_rss_mb data to choose a safe cap. GH-3028.
+	SubprocessLimits *SubprocessLimitsConfig `yaml:"subprocess_limits,omitempty"`
 
 	// Simplification contains code simplification settings (GH-995)
 	// When enabled, Pilot auto-simplifies code after implementation for clarity.
@@ -729,6 +741,7 @@ func DefaultBackendConfig() *BackendConfig {
 		Retry:            DefaultRetryConfig(),
 		Stagnation:       DefaultStagnationConfig(),
 		Simplification:   DefaultSimplifyConfig(),
+		SubprocessLimits: DefaultSubprocessLimitsConfig(),
 	}
 }
 
@@ -847,6 +860,41 @@ type OpenAIConfig struct {
 
 	// Model is the default model name (default: gpt-4o).
 	Model string `yaml:"model,omitempty"`
+}
+
+// SubprocessLimitsConfig controls RSS telemetry and optional memory cap for the
+// Claude Code subprocess. GH-3028.
+//
+// Example YAML configuration:
+//
+//	executor:
+//	  subprocess_limits:
+//	    enabled: false           # flip to true after one baseline bench cycle
+//	    max_rss_mb: 4096         # cap at 4 GiB virtual address space (Linux only)
+//	    sample_interval_sec: 10  # how often to poll /proc/<pid>/status
+type SubprocessLimitsConfig struct {
+	// Enabled controls whether RLIMIT_AS is applied to the subprocess.
+	// Default: false. Flip to true after collecting a baseline week of peak_rss_mb
+	// data to choose a safe cap (recommended: p99 × 1.5).
+	Enabled bool `yaml:"enabled"`
+
+	// MaxRSSMB is the virtual address space limit in MiB applied via RLIMIT_AS on Linux.
+	// Ignored when Enabled=false or on non-Linux platforms.
+	// Default: 4096 (4 GiB).
+	MaxRSSMB int `yaml:"max_rss_mb,omitempty"`
+
+	// SampleIntervalSec controls how often (in seconds) the RSS sampler polls the subprocess.
+	// Default: 10.
+	SampleIntervalSec int `yaml:"sample_interval_sec,omitempty"`
+}
+
+// DefaultSubprocessLimitsConfig returns safe defaults: telemetry on, cap off.
+func DefaultSubprocessLimitsConfig() *SubprocessLimitsConfig {
+	return &SubprocessLimitsConfig{
+		Enabled:           false,
+		MaxRSSMB:          4096,
+		SampleIntervalSec: 10,
+	}
 }
 
 // BackendType constants for configuration.

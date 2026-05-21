@@ -46,6 +46,10 @@ type RetryStrategy struct {
 //	      max_attempts: 2
 //	      extend_timeout: true
 //	      timeout_multiplier: 1.5
+//	    oom_killed:
+//	      max_attempts: 2
+//	      initial_backoff: 10s
+//	      backoff_multiplier: 1.0
 type RetryConfig struct {
 	// Enabled controls whether smart retry is active
 	Enabled bool `yaml:"enabled"`
@@ -58,6 +62,11 @@ type RetryConfig struct {
 
 	// Timeout strategy for timeout errors (retry with extended timeout)
 	Timeout *RetryStrategy `yaml:"timeout,omitempty"`
+
+	// OOMKilled strategy for OOM-killed subprocess errors. GH-3028.
+	// Retry once after 10s — GH-22/sub-43 proved the task itself is small;
+	// the waste is in over-reading context on the first attempt.
+	OOMKilled *RetryStrategy `yaml:"oom_killed,omitempty"`
 
 	// DecomposeOnKill enables automatic decomposition when execution is killed
 	// (OOM, signal:killed, timeout). Instead of plain retry, the task is decomposed
@@ -86,6 +95,11 @@ func DefaultRetryConfig() *RetryConfig {
 			MaxAttempts:       2, // Retry once
 			ExtendTimeout:     true,
 			TimeoutMultiplier: 1.5,
+		},
+		OOMKilled: &RetryStrategy{
+			MaxAttempts:       2,    // Retry once — GH-22/sub-43 succeeded in 33s on first retry
+			InitialBackoff:    10 * time.Second,
+			BackoffMultiplier: 1.0, // flat backoff; OOM is not time-sensitive
 		},
 	}
 }
@@ -153,6 +167,11 @@ func (r *Retrier) Evaluate(err error, attempt int, originalTimeout time.Duration
 	case "timeout":
 		strategy = r.config.Timeout
 		errorName = "timeout"
+	case "oom_killed":
+		// GH-3028: OOM retry — subprocess killed by kernel or our own limiter.
+		// GH-22/sub-43 proved a clean retry succeeded in 33s; don't decompose first.
+		strategy = r.config.OOMKilled
+		errorName = "oom_killed"
 	case "invalid_config":
 		// Invalid config should never be retried - fail fast
 		return RetryDecision{

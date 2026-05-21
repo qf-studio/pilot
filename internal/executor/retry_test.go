@@ -186,6 +186,65 @@ func TestRetrier_Sleep_Success(t *testing.T) {
 	}
 }
 
+func TestRetrier_Evaluate_OOMKilled_RetryOnce(t *testing.T) {
+	config := &RetryConfig{
+		Enabled: true,
+		OOMKilled: &RetryStrategy{
+			MaxAttempts:       2,
+			InitialBackoff:    10 * time.Second,
+			BackoffMultiplier: 1.0,
+		},
+	}
+	retrier := NewRetrier(config)
+	err := &ClaudeCodeError{Type: ErrorTypeOOM, Message: "Process killed by SIGKILL (exit code 137)"}
+
+	// First attempt should retry with 10s backoff
+	decision := retrier.Evaluate(err, 0, 10*time.Minute)
+	if !decision.ShouldRetry {
+		t.Error("Expected ShouldRetry=true for first OOM attempt")
+	}
+	if decision.BackoffDuration != 10*time.Second {
+		t.Errorf("Expected 10s backoff, got %v", decision.BackoffDuration)
+	}
+}
+
+func TestRetrier_Evaluate_OOMKilled_GiveUpAfterMax(t *testing.T) {
+	config := &RetryConfig{
+		Enabled: true,
+		OOMKilled: &RetryStrategy{
+			MaxAttempts:       2,
+			InitialBackoff:    10 * time.Second,
+			BackoffMultiplier: 1.0,
+		},
+	}
+	retrier := NewRetrier(config)
+	err := &ClaudeCodeError{Type: ErrorTypeOOM, Message: "Process killed by SIGKILL (exit code 137)"}
+
+	// Second attempt (attempt=2) should NOT retry — max reached
+	decision := retrier.Evaluate(err, 2, 10*time.Minute)
+	if decision.ShouldRetry {
+		t.Error("Expected ShouldRetry=false after max OOM attempts")
+	}
+}
+
+func TestRetrier_Evaluate_OOMKilled_NotRetriedWhenNoStrategy(t *testing.T) {
+	// Retry config without OOMKilled strategy = no retry for OOM
+	config := &RetryConfig{
+		Enabled: true,
+		RateLimit: &RetryStrategy{
+			MaxAttempts: 3,
+		},
+		// OOMKilled intentionally omitted
+	}
+	retrier := NewRetrier(config)
+	err := &ClaudeCodeError{Type: ErrorTypeOOM, Message: "oom"}
+
+	decision := retrier.Evaluate(err, 0, 10*time.Minute)
+	if decision.ShouldRetry {
+		t.Error("Expected ShouldRetry=false when OOMKilled strategy is not configured")
+	}
+}
+
 func TestDefaultRetryConfig(t *testing.T) {
 	config := DefaultRetryConfig()
 
@@ -200,5 +259,11 @@ func TestDefaultRetryConfig(t *testing.T) {
 	}
 	if config.Timeout == nil {
 		t.Error("Expected Timeout to be configured")
+	}
+	if config.OOMKilled == nil {
+		t.Error("Expected OOMKilled to be configured")
+	}
+	if config.OOMKilled.MaxAttempts != 2 {
+		t.Errorf("Expected OOMKilled.MaxAttempts=2, got %d", config.OOMKilled.MaxAttempts)
 	}
 }
