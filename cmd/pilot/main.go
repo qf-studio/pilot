@@ -342,6 +342,8 @@ Examples:
 				if runnerErr != nil {
 					return fmt.Errorf("failed to create executor runner: %w", runnerErr)
 				}
+				// TASK-286 / GH-3027: refuse sub-issue creation on unmanaged repos.
+				gwRunner.SetRepoAllowlist(newConfigRepoAllowlist(cfg))
 
 				// Set up quality gates on runner if configured
 				if cfg.Quality != nil && cfg.Quality.Enabled {
@@ -1326,6 +1328,8 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 	if err != nil {
 		return fmt.Errorf("failed to create executor runner: %w", err)
 	}
+	// TASK-286 / GH-3027: refuse sub-issue creation on unmanaged repos.
+	runner.SetRepoAllowlist(newConfigRepoAllowlist(cfg))
 
 	// Set up quality gates if configured (GH-207)
 	if cfg.Quality != nil && cfg.Quality.Enabled {
