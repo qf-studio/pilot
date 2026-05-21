@@ -16,6 +16,34 @@ import (
 	"time"
 )
 
+// TestAllChildrenDone covers GH-3053: empty slice must NOT vacuously satisfy
+// "all done". The original implementation returned true for the empty case,
+// causing recoverExistingSubIssues failures (network blip, gh search hiccup,
+// no sub-issues yet) to be silently interpreted as "epic complete" — leading
+// to the false 100% completion log + exit-without-work on the parent issue.
+func TestAllChildrenDone(t *testing.T) {
+	tests := []struct {
+		name   string
+		issues []CreatedIssue
+		want   bool
+	}{
+		{"empty slice: not done", nil, false},
+		{"empty slice literal: not done", []CreatedIssue{}, false},
+		{"single open: not done", []CreatedIssue{{State: "open"}}, false},
+		{"single closed: done", []CreatedIssue{{State: "closed"}}, true},
+		{"mixed open+closed: not done", []CreatedIssue{{State: "closed"}, {State: "open"}}, false},
+		{"all closed: done", []CreatedIssue{{State: "closed"}, {State: "CLOSED"}}, true},
+		{"case-insensitive open detection", []CreatedIssue{{State: "OPEN"}}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := allChildrenDone(tt.issues); got != tt.want {
+				t.Errorf("allChildrenDone(%v) = %v, want %v", tt.issues, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestParseSubtasks(t *testing.T) {
 	tests := []struct {
 		name     string

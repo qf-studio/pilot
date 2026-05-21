@@ -921,6 +921,14 @@ func recoverExistingSubIssues(ctx context.Context, dir, parentID string) ([]Crea
 
 // allChildrenDone reports whether every issue in the slice is in a non-open state.
 func allChildrenDone(issues []CreatedIssue) bool {
+	// GH-3053: empty slice must not vacuously satisfy "all done". A
+	// recoverExistingSubIssues call that returns zero issues (gh search
+	// hiccup, no sub-issues created yet, network blip) would otherwise
+	// trip the false epic-complete path in runner.go: empty → true →
+	// "All sub-issues already completed (100%)" → exit without work.
+	if len(issues) == 0 {
+		return false
+	}
 	for _, iss := range issues {
 		if strings.ToLower(iss.State) == "open" {
 			return false

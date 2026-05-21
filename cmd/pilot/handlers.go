@@ -335,8 +335,9 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 				logGitHubAPIError("AddComment", parts[0], parts[1], issue.Number, err)
 			}
 		} else if hr.Result != nil && hr.Result.Success {
-			// Validate deliverables before marking as done
-			if hr.Result.CommitSHA == "" && hr.Result.PRUrl == "" {
+			// Validate deliverables before marking as done.
+			// GH-3053: skip for epic-parent results — sub-issues handle the work.
+			if !hr.Result.IsEpic && hr.Result.CommitSHA == "" && hr.Result.PRUrl == "" {
 				// No commits and no PR - mark as failed
 				if err := client.AddLabels(ctx, parts[0], parts[1], issue.Number, []string{github.LabelFailed}); err != nil {
 					logGitHubAPIError("AddLabels", parts[0], parts[1], issue.Number, err)
@@ -501,7 +502,7 @@ func handleLinearIssueWithResult(ctx context.Context, cfg *config.Config, client
 		}
 	} else if hr.Result != nil && hr.Result.Success {
 		// Validate deliverables before marking as done
-		if hr.Result.CommitSHA == "" && hr.Result.PRUrl == "" {
+		if !hr.Result.IsEpic && hr.Result.CommitSHA == "" && hr.Result.PRUrl == "" { // GH-3053
 			comment := fmt.Sprintf("⚠️ Pilot execution completed but no changes were made.\n\n**Duration:** %s\n**Branch:** `%s`\n\nNo commits or PR were created. The task may need clarification or manual intervention.",
 				hr.Result.Duration, branchName)
 			if err := client.AddComment(ctx, issue.ID, comment); err != nil {
@@ -607,7 +608,7 @@ func handleJiraIssueWithResult(ctx context.Context, cfg *config.Config, client *
 		}
 	} else if hr.Result != nil && hr.Result.Success {
 		// Validate deliverables before marking as done
-		if hr.Result.CommitSHA == "" && hr.Result.PRUrl == "" {
+		if !hr.Result.IsEpic && hr.Result.CommitSHA == "" && hr.Result.PRUrl == "" { // GH-3053
 			comment := fmt.Sprintf("⚠️ Pilot execution completed but no changes were made.\n\nDuration: %s\nBranch: %s\n\nNo commits or PR were created. The task may need clarification or manual intervention.",
 				hr.Result.Duration, branchName)
 			if _, err := client.AddComment(ctx, issue.Key, comment); err != nil {
@@ -754,7 +755,7 @@ func handleAsanaTaskWithResult(ctx context.Context, cfg *config.Config, client *
 		}
 	} else if hr.Result != nil && hr.Result.Success {
 		// Validate deliverables before marking as done
-		if hr.Result.CommitSHA == "" && hr.Result.PRUrl == "" {
+		if !hr.Result.IsEpic && hr.Result.CommitSHA == "" && hr.Result.PRUrl == "" { // GH-3053
 			comment := fmt.Sprintf("⚠️ Pilot execution completed but no changes were made.\n\nDuration: %s\nBranch: %s\n\nNo commits or PR were created. The task may need clarification or manual intervention.",
 				hr.Result.Duration, branchName)
 			if _, err := client.AddComment(ctx, task.GID, comment); err != nil {
@@ -988,7 +989,7 @@ func handlePlaneIssueWithResult(ctx context.Context, cfg *config.Config, client 
 			)
 		}
 	} else if hr.Result != nil && hr.Result.Success {
-		if hr.Result.CommitSHA == "" && hr.Result.PRUrl == "" {
+		if !hr.Result.IsEpic && hr.Result.CommitSHA == "" && hr.Result.PRUrl == "" { // GH-3053
 			comment := fmt.Sprintf("<p>⚠️ Pilot execution completed but no changes were made.</p><p>Duration: %s<br>Branch: <code>%s</code></p><p>No commits or PR were created. The task may need clarification or manual intervention.</p>",
 				hr.Result.Duration, branchName)
 			if err := client.AddComment(ctx, workspaceSlug, projectID, issue.ID, comment); err != nil {
@@ -1095,7 +1096,7 @@ func handleGitLabIssueWithResult(ctx context.Context, cfg *config.Config, client
 			)
 		}
 	} else if hr.Result != nil && hr.Result.Success {
-		if hr.Result.CommitSHA == "" && hr.Result.PRUrl == "" {
+		if !hr.Result.IsEpic && hr.Result.CommitSHA == "" && hr.Result.PRUrl == "" { // GH-3053
 			note := fmt.Sprintf("⚠️ Pilot execution completed but no changes were made.\n\nDuration: %s\nBranch: %s\n\nNo commits or MR were created. The task may need clarification or manual intervention.",
 				hr.Result.Duration, branchName)
 			if _, err := client.AddIssueNote(ctx, issue.IID, note); err != nil {
@@ -1206,7 +1207,7 @@ func handleAzureDevOpsWorkItemWithResult(ctx context.Context, cfg *config.Config
 				)
 			}
 		} else if hr.Result != nil && hr.Result.Success {
-			if hr.Result.CommitSHA == "" && hr.Result.PRUrl == "" {
+			if !hr.Result.IsEpic && hr.Result.CommitSHA == "" && hr.Result.PRUrl == "" { // GH-3053
 				if err := notifier.NotifyTaskFailed(ctx, wi.ID, "Execution completed but no changes were made"); err != nil {
 					logging.WithComponent("azuredevops").Warn("Failed to notify no-changes",
 						slog.Int("work_item_id", wi.ID),
