@@ -1159,7 +1159,10 @@ Examples:
 			}
 
 			// Validate deliverables - execution succeeded but did it produce anything?
-			if result.CommitSHA == "" && result.PRUrl == "" {
+			// GH-3053: skip for epic-parent results. The parent legitimately
+			// produces no commit/PR when sub-issues handle the work; flagging
+			// it as failed mislabels the issue and posts a misleading comment.
+			if !result.IsEpic && result.CommitSHA == "" && result.PRUrl == "" {
 				// No commits and no PR - mark as failed
 				if err := client.AddLabels(ctx, owner, repoName, int(issueNum), []string{"pilot-failed"}); err != nil {
 					logGitHubAPIError("AddLabels", owner, repoName, int(issueNum), err)
