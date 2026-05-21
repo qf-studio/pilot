@@ -160,10 +160,14 @@ gh pr list --state open
 | P1 | Public launch prep | Landing page, onboarding, pricing, billing |
 | P1 | Web dashboard polish | React UI functional but needs design pass |
 | P1 | Fix `shouldTriggerRelease()` | Doesn't check `ResolvedEnv().Release` — only top-level config |
+| P1 | Guardrail: refuse issue creation on unmanaged repos | 2026-05-20 incident — external user's Pilot fired 6 dupes on upstream `qf-studio/pilot` (#3021-#3026). Sub-issue path lacks `owner/repo` validation — [TASK-286](tasks/TASK-286-guardrail-external-repo-issue-create.md) → [#3027](https://github.com/qf-studio/pilot/issues/3027) (handed off) |
+| P1 | Harden Claude Code subprocess against OOM-kills | 3 kernel SIGKILLs in 24h on workshop project (GH-1/17, GH-21/42, GH-22/43), all during RESEARCH phase. No memory limit, no OOM in smart-retry, no RSS telemetry — [TASK-287](tasks/TASK-287-claude-code-subprocess-oom-hardening.md) → [#3028](https://github.com/qf-studio/pilot/issues/3028) (handed off) |
 | P2 | E2E test suite | No integration tests — reliability untested |
 | P2 | Web dashboard auth | Token-based auth for remote access |
 | P2 | Mobile-responsive dashboard | Primary use case is phone access |
+| P2 | Scope TUI dashboard to single project | Today `-p` scopes execution only; metrics/sparklines mix all projects — [TASK-284](tasks/TASK-284-dashboard-project-scope.md) |
 | P3 | GitHub App auth | PAT → installable GitHub App |
+| P3 | Add `project_path` to `eval_tasks` + scope eval panel | Follow-up to TASK-284; lets eval/bench panel scope per-project instead of `[global]` label — [TASK-285](tasks/TASK-285-eval-tasks-project-path.md) (blocked by TASK-284) |
 | P3 | `pilot project add` gh wizard | Interactive repo picker + token seed from `gh auth` — [TASK-282](tasks/TASK-282-project-add-gh-wizard.md) → [#3017](https://github.com/qf-studio/pilot/issues/3017) (not yet `pilot`-labeled) |
 | P3 | Makefile `release` target — quote `$(NOTES)` | Multi-line release notes break the `gh release create` recipe (broke during v2.146.7 cut). Fix: wrap in quotes or switch to `--notes-file`. |
 

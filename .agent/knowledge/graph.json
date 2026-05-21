@@ -1,37 +1,56 @@
 {
   "version": "1.0.0",
-  "updated": "2026-05-20T00:00:00Z",
+  "updated": "2026-05-21T00:00:00Z",
   "nodes": {
     "concepts": {
       "pilot-architecture": {
         "label": "Pilot Architecture",
         "description": "Go daemon + Python orchestrator pattern",
-        "related": ["gateway", "executor", "orchestrator", "memory"]
+        "related": [
+          "gateway",
+          "executor",
+          "orchestrator",
+          "memory"
+        ]
       },
       "gateway": {
         "label": "Gateway",
         "description": "WebSocket control plane + HTTP API on :9090",
-        "files": ["internal/gateway/server.go", "internal/gateway/router.go"]
+        "files": [
+          "internal/gateway/server.go",
+          "internal/gateway/router.go"
+        ]
       },
       "executor": {
         "label": "Executor",
         "description": "Claude Code process spawner and manager",
-        "files": ["internal/executor/runner.go", "internal/executor/git.go"]
+        "files": [
+          "internal/executor/runner.go",
+          "internal/executor/git.go"
+        ]
       },
       "orchestrator": {
         "label": "Orchestrator",
         "description": "Python bridge for LLM task planning",
-        "files": ["internal/orchestrator/bridge.go", "orchestrator/"]
+        "files": [
+          "internal/orchestrator/bridge.go",
+          "orchestrator/"
+        ]
       },
       "claude-code-integration": {
         "label": "Claude Code Integration",
         "description": "Spawns `claude -p <prompt>` with Navigator instructions",
-        "files": ["internal/executor/runner.go:174-191"]
+        "files": [
+          "internal/executor/runner.go:174-191"
+        ]
       },
       "navigator-integration": {
         "label": "Navigator Integration",
         "description": "Prompt includes 'Start my Navigator session' which triggers: 1) Navigator index load (~2k tokens), 2) WORKFLOW CHECK with complexity detection, 3) Autonomous completion protocol. Navigator handles documentation loading, task workflow, and commit automation.",
-        "related": ["executor", "autonomous-completion"],
+        "related": [
+          "executor",
+          "autonomous-completion"
+        ],
         "key_concepts": [
           "Session start loads .agent/DEVELOPMENT-README.md",
           "WORKFLOW CHECK determines LOOP/TASK/DIRECT mode",
@@ -43,7 +62,9 @@
       "terminal-workflow": {
         "label": "Terminal Workflow",
         "description": "Run tasks via CLI without Linear webhooks",
-        "related": ["pilot-task-command"]
+        "related": [
+          "pilot-task-command"
+        ]
       },
       "pilot-task-command": {
         "label": "pilot task Command",
@@ -52,54 +73,118 @@
       },
       "git-operations": {
         "label": "Git Operations",
-        "description": "Git command wrappers in executor — clone, fetch, push, sync, worktree management. Source of data-loss risk if destructive ops (reset --hard, push --force) are used without divergence checks.",
-        "related": ["executor"],
-        "files": ["internal/executor/runner_git.go", "internal/executor/git.go", "internal/executor/worktree.go", "internal/executor/epic.go"]
+        "description": "Git command wrappers in executor \u2014 clone, fetch, push, sync, worktree management. Source of data-loss risk if destructive ops (reset --hard, push --force) are used without divergence checks.",
+        "related": [
+          "executor"
+        ],
+        "files": [
+          "internal/executor/runner_git.go",
+          "internal/executor/git.go",
+          "internal/executor/worktree.go",
+          "internal/executor/epic.go"
+        ]
+      },
+      "dashboard-project-scoping": {
+        "label": "Dashboard Project Scoping",
+        "description": "Filter TUI/HTTP dashboard panels by daemon's -p project path",
+        "files": [
+          "internal/dashboard/tui.go",
+          "internal/memory/store.go",
+          "internal/memory/metrics.go"
+        ],
+        "related": [
+          "executor",
+          "gateway"
+        ]
       }
     },
     "tasks": {
       "TASK-01": {
         "title": "Gateway Foundation",
         "status": "completed",
-        "concepts": ["gateway", "pilot-architecture"]
+        "concepts": [
+          "gateway",
+          "pilot-architecture"
+        ]
       },
       "TASK-02": {
         "title": "Orchestrator Integration",
         "status": "completed",
-        "concepts": ["orchestrator", "pilot-architecture"]
+        "concepts": [
+          "orchestrator",
+          "pilot-architecture"
+        ]
       },
       "TASK-03": {
         "title": "Replace pilot test with pilot task",
         "status": "planned",
-        "concepts": ["terminal-workflow", "pilot-task-command", "executor"]
+        "concepts": [
+          "terminal-workflow",
+          "pilot-task-command",
+          "executor"
+        ]
+      },
+      "TASK-284": {
+        "label": "Scope TUI dashboard to single project",
+        "status": "ready",
+        "file": ".agent/tasks/TASK-284-dashboard-project-scope.md",
+        "priority": "P2",
+        "concepts": [
+          "dashboard-project-scoping"
+        ]
+      },
+      "TASK-285": {
+        "label": "Add project_path to eval_tasks + scope eval panel",
+        "status": "stub",
+        "file": ".agent/tasks/TASK-285-eval-tasks-project-path.md",
+        "priority": "P3",
+        "concepts": [
+          "dashboard-project-scoping"
+        ],
+        "blocked_by": [
+          "TASK-284"
+        ]
       }
     },
     "memories": {
       "mem-001": {
         "type": "decision",
         "summary": "Go for daemon (single binary), Python for AI logic (flexibility)",
-        "concepts": ["pilot-architecture"],
+        "concepts": [
+          "pilot-architecture"
+        ],
         "confidence": 0.95,
         "created": "2026-01-26"
       },
       "mem-002": {
         "type": "pattern",
         "summary": "Executor builds prompt with 'Start my Navigator session' prefix for Claude Code",
-        "concepts": ["executor", "navigator-integration", "claude-code-integration"],
+        "concepts": [
+          "executor",
+          "navigator-integration",
+          "claude-code-integration"
+        ],
         "confidence": 0.95,
         "created": "2026-01-26"
       },
       "mem-003": {
         "type": "decision",
         "summary": "pilot test was dry-run only, replacing with pilot task for real execution",
-        "concepts": ["terminal-workflow", "pilot-task-command"],
+        "concepts": [
+          "terminal-workflow",
+          "pilot-task-command"
+        ],
         "confidence": 0.9,
         "created": "2026-01-26"
       },
       "mem-004": {
         "type": "pitfall",
         "summary": "CRITICAL: Navigator integration in executor prompt is THE CORE VALUE of Pilot. When refactoring BuildPrompt(), ALWAYS preserve 'Start my Navigator session' prefix. This was accidentally removed during 'simplification' - broke the entire system. Pilot without Navigator = just another Claude Code wrapper with no value.",
-        "concepts": ["executor", "navigator-integration", "claude-code-integration"],
+        "concepts": [
+          "executor",
+          "navigator-integration",
+          "claude-code-integration"
+        ],
         "confidence": 1.0,
         "severity": "critical",
         "created": "2026-01-26",
@@ -108,28 +193,39 @@
       "mem-005": {
         "type": "pattern",
         "summary": "BuildPrompt checks for .agent/ folder to conditionally add Navigator session start. This auto-detects Navigator-enabled projects.",
-        "concepts": ["executor", "navigator-integration"],
+        "concepts": [
+          "executor",
+          "navigator-integration"
+        ],
         "confidence": 0.95,
         "created": "2026-01-26"
       },
       "mem-006": {
         "type": "pattern",
-        "summary": "Navigator prompt should use 'Run until done' to trigger Loop Mode. Navigator then handles WORKFLOW CHECK, phase transitions (RESEARCH→PLAN→IMPL→VERIFY→COMPLETE), and EXIT_SIGNAL for completion.",
-        "concepts": ["executor", "navigator-integration"],
+        "summary": "Navigator prompt should use 'Run until done' to trigger Loop Mode. Navigator then handles WORKFLOW CHECK, phase transitions (RESEARCH\u2192PLAN\u2192IMPL\u2192VERIFY\u2192COMPLETE), and EXIT_SIGNAL for completion.",
+        "concepts": [
+          "executor",
+          "navigator-integration"
+        ],
         "confidence": 0.95,
         "created": "2026-01-26"
       },
       "mem-007": {
         "type": "learning",
         "summary": "Pilot can detect Navigator progress by parsing: 'Phase:', 'Progress:', 'EXIT_SIGNAL: true', 'Mode: LOOP/TASK'. These appear in Claude Code stdout when Navigator is active.",
-        "concepts": ["executor", "navigator-integration"],
+        "concepts": [
+          "executor",
+          "navigator-integration"
+        ],
         "confidence": 0.9,
         "created": "2026-01-26"
       },
       "mem-008": {
         "type": "pitfall",
         "summary": "Task status drift: Pilot updates individual task files (TASK-XX.md) but NOT DEVELOPMENT-README.md index. Causes confusion where task files show complete but index shows planned. TASK-32 created to auto-sync.",
-        "concepts": ["navigator-integration"],
+        "concepts": [
+          "navigator-integration"
+        ],
         "confidence": 1.0,
         "severity": "high",
         "created": "2026-01-27",
@@ -138,36 +234,149 @@
       "mem-009": {
         "type": "pitfall",
         "summary": "Logging with Info level goes to stdout and breaks CLI UX (banner display). Use Debug level for operational logs in interactive commands like 'pilot telegram'.",
-        "concepts": ["pilot-architecture"],
+        "concepts": [
+          "pilot-architecture"
+        ],
         "confidence": 0.95,
         "created": "2026-01-27",
-        "files": ["internal/adapters/telegram/handler.go"]
+        "files": [
+          "internal/adapters/telegram/handler.go"
+        ]
       },
       "mem-010": {
         "type": "pattern",
         "summary": "For development builds: 'brew uninstall pilot && brew install --HEAD pilot'. The --HEAD flag builds from main branch. Regular 'brew install' uses pinned tag in formula.",
-        "concepts": ["pilot-architecture"],
+        "concepts": [
+          "pilot-architecture"
+        ],
         "confidence": 1.0,
         "created": "2026-01-27"
       },
       "mem-011": {
         "type": "pitfall",
-        "summary": "CRITICAL: syncMainBranch() uses git reset --hard origin/main after every task. When GitHub push propagation lags behind the immediately-following fetch+reset, local commits are silently destroyed (only reflog-recoverable, 90d window). Race is in remote propagation, not push failure — reordering does NOT fix it. Fix: replace with merge --ff-only. Two call sites: runner.go:3258 (config-gated) and epic.go:1498 (NOT gated).",
-        "concepts": ["executor", "git-operations"],
+        "summary": "CRITICAL: syncMainBranch() uses git reset --hard origin/main after every task. When GitHub push propagation lags behind the immediately-following fetch+reset, local commits are silently destroyed (only reflog-recoverable, 90d window). Race is in remote propagation, not push failure \u2014 reordering does NOT fix it. Fix: replace with merge --ff-only. Two call sites: runner.go:3258 (config-gated) and epic.go:1498 (NOT gated).",
+        "concepts": [
+          "executor",
+          "git-operations"
+        ],
         "confidence": 1.0,
         "severity": "critical",
         "created": "2026-05-20",
         "incident": "2026-05-20: gitnation-companion-pilot workshop demo. Two Pilot commits wiped from local main. TASK-283 / GH-3018.",
-        "files": ["internal/executor/runner_git.go:45", "internal/executor/epic.go:1498", "internal/executor/runner.go:3258"],
+        "files": [
+          "internal/executor/runner_git.go:45",
+          "internal/executor/epic.go:1498",
+          "internal/executor/runner.go:3258"
+        ],
         "memory_file": ".agent/knowledge/memories/pitfalls/pitfall_git_reset_hard_in_automated_sync.md"
+      },
+      "mem-012": {
+        "type": "pattern",
+        "summary": "MetricsQuery.Projects []string is the established WHERE project_path IN (?) idiom for executions table; reuse, don't invent new filter shapes",
+        "concepts": [
+          "dashboard-project-scoping",
+          "executor"
+        ],
+        "files": [
+          "internal/memory/metrics.go:24-28"
+        ],
+        "confidence": 0.95,
+        "created": "2026-05-21"
+      },
+      "mem-013": {
+        "type": "pitfall",
+        "summary": "pilot start -p scopes execution + git-graph only; dashboard cards, sparklines, recent executions, in-flight tasks mix all projects; in-memory metricsCard increments drift up to 5s before storeRefreshCmd corrects",
+        "concepts": [
+          "dashboard-project-scoping"
+        ],
+        "files": [
+          "internal/dashboard/tui.go:575",
+          "internal/dashboard/tui.go:1049-1089"
+        ],
+        "confidence": 0.9,
+        "created": "2026-05-21"
+      },
+      "mem-014": {
+        "type": "decision",
+        "summary": "TASK-284 design: always-on scope when -p set (no opt-out flag); gateway HTTP inherits daemon scope (no ?project= param); eval panel gets [global] label (schema migration deferred to TASK-285); in-memory callback drift accepted as eventual consistency",
+        "concepts": [
+          "dashboard-project-scoping"
+        ],
+        "confidence": 0.9,
+        "created": "2026-05-21"
       }
     }
   },
   "edges": [
-    {"from": "executor", "to": "claude-code-integration", "type": "implements"},
-    {"from": "claude-code-integration", "to": "navigator-integration", "type": "uses"},
-    {"from": "pilot-task-command", "to": "executor", "type": "uses"},
-    {"from": "pilot-task-command", "to": "terminal-workflow", "type": "enables"},
-    {"from": "TASK-03", "to": "pilot-task-command", "type": "implements"}
+    {
+      "from": "executor",
+      "to": "claude-code-integration",
+      "type": "implements"
+    },
+    {
+      "from": "claude-code-integration",
+      "to": "navigator-integration",
+      "type": "uses"
+    },
+    {
+      "from": "pilot-task-command",
+      "to": "executor",
+      "type": "uses"
+    },
+    {
+      "from": "pilot-task-command",
+      "to": "terminal-workflow",
+      "type": "enables"
+    },
+    {
+      "from": "TASK-03",
+      "to": "pilot-task-command",
+      "type": "implements"
+    },
+    {
+      "from": "mem-012",
+      "to": "dashboard-project-scoping",
+      "type": "describes"
+    },
+    {
+      "from": "mem-013",
+      "to": "dashboard-project-scoping",
+      "type": "describes"
+    },
+    {
+      "from": "mem-014",
+      "to": "dashboard-project-scoping",
+      "type": "describes"
+    },
+    {
+      "from": "mem-012",
+      "to": "mem-013",
+      "type": "related"
+    },
+    {
+      "from": "mem-014",
+      "to": "mem-012",
+      "type": "applies"
+    },
+    {
+      "from": "mem-014",
+      "to": "mem-013",
+      "type": "resolves"
+    },
+    {
+      "from": "TASK-284",
+      "to": "dashboard-project-scoping",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-285",
+      "to": "TASK-284",
+      "type": "follows"
+    },
+    {
+      "from": "TASK-284",
+      "to": "mem-014",
+      "type": "decided-by"
+    }
   ]
 }
