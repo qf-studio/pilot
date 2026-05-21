@@ -120,8 +120,12 @@ Disable via config: `executor.navigator.auto_init: false`
 
 **Current Version:** v2.148.0 | **323 features working**
 
-**Recent (v2.147.0, May 21 2026):**
-- `feat(executor)`: **Repo-allowlist guardrail** — `internal/executor/repo_guardrail.go` resolves the worktree's `origin` remote and refuses `gh issue create` (parent and sub-issues) unless the resolved `owner/repo` is in the user's configured `projects[]`. Wired into `Runner` via `SetRepoAllowlist`, set from `cmd/pilot/repo_allowlist.go` at every `NewRunnerWithConfig` site. `PILOT_ALLOW_UNMANAGED_REPO=1` documented bypass (always logs WARN with the resolved repo). Closes the 2026-05-20 incident where an external user's misconfigured Pilot fired 6 duplicate sub-issues on this repo (#3021–#3026). (GH-3027 / [TASK-286](tasks/archive/TASK-286-guardrail-external-repo-issue-create.md))
+**Recent (v2.148.0, May 21 2026):**
+- `feat(executor)`: **Subprocess OOM hardening** — Claude Code subprocess gains an RSS sampler (`internal/executor/rss_sampler.go` + `rss_sampler_{linux,darwin,other}.go`) that polls `/proc/<pid>/status` (or platform equivalent) every 10 s and persists `peak_rss_mb` / `final_rss_mb` to the `executions` table. `oom_killed` now retries via `Retrier.Evaluate` with 2 attempts at 10 s flat backoff (data point: GH-22/sub-43 succeeded in 33 s on retry). `RLIMIT_AS` cap behind `executor.subprocess_limits.enabled` flag — disabled by default until ≥1 week of telemetry is collected. Closes the 3-OOMs-in-24h incident from 2026-05-21. (GH-3028 / TASK-287 + #3046, plus tuning SOP at `.agent/sops/subprocess-oom-tuning.md` via #3048)
+- `feat(adapters/github)`: **Phase B — adapter-level repo allowlist guardrail** — `CreatePilotIssue` now takes an `IssueAllowlist` parameter and refuses unconfigured repos via `validateIssueRepo`. `IssueAllowlist` defined locally in `internal/adapters/github` to avoid the executor→github import cycle; `cmd/pilot/repo_allowlist.go::configRepoAllowlist` satisfies both interfaces transparently. `autopilot.FeedbackLoop` passes `nil` (its owner/repo come from explicit config at construction — already constrained). Closes the defense-in-depth gap from v2.147.0. (#3047, follow-up to GH-3027)
+
+**Previous (v2.147.0, May 21 2026):**
+- `feat(executor)`: **Repo-allowlist guardrail (Phase A)** — `internal/executor/repo_guardrail.go` resolves the worktree's `origin` remote and refuses `gh issue create` (parent and sub-issues) unless the resolved `owner/repo` is in the user's configured `projects[]`. `PILOT_ALLOW_UNMANAGED_REPO=1` documented bypass (always logs WARN with the resolved repo). Closes the 2026-05-20 incident where an external user's misconfigured Pilot fired 6 duplicate sub-issues on this repo (#3021–#3026). (GH-3027 / [TASK-286](tasks/archive/TASK-286-guardrail-external-repo-issue-create.md))
 
 **Full implementation status:** `.agent/system/FEATURE-MATRIX.md`
 
@@ -159,7 +163,6 @@ gh pr list --state open
 | P1 | Public launch prep | Landing page, onboarding, pricing, billing |
 | P1 | Web dashboard polish | React UI functional but needs design pass |
 | P1 | Fix `shouldTriggerRelease()` | Doesn't check `ResolvedEnv().Release` — only top-level config |
-| P1 | Harden Claude Code subprocess against OOM-kills | 3 kernel SIGKILLs in 24h on workshop project (GH-1/17, GH-21/42, GH-22/43), all during RESEARCH phase. No memory limit, no OOM in smart-retry, no RSS telemetry — [TASK-287](tasks/TASK-287-claude-code-subprocess-oom-hardening.md) → [#3028](https://github.com/qf-studio/pilot/issues/3028) (handed off) |
 | P2 | Flip `quality.parallel` default to false (or auto-detect JS) | 2026-05-21 workshop hit 11 spurious "quality gates failed after 2 auto-retries" in 3h. Root cause: parallel `make build` / `make test` / `make lint` in `internal/quality/runner.go:74` races on vite/next cache. User config patched (`parallel: false`) — Pilot-wide default change pending. |
 | P2 | E2E test suite | No integration tests — reliability untested |
 | P2 | Web dashboard auth | Token-based auth for remote access |
