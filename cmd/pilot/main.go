@@ -1403,6 +1403,15 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 				ghToken = os.Getenv("GITHUB_TOKEN")
 			}
 		}
+		if ghToken == "" {
+			// GH-3050: surface silent autopilot disable when token is missing.
+			// Without this warning, --env=<...> appears accepted but autopilot
+			// never starts because controller creation is skipped here.
+			logging.WithComponent("autopilot").Warn(
+				"autopilot enabled but no GitHub token resolved — autopilot will not start (set adapters.github.token or GITHUB_TOKEN)",
+				slog.String("env", string(cfg.Orchestrator.Autopilot.Environment)),
+			)
+		}
 		if ghToken != "" {
 			ghClient := github.NewClient(ghToken)
 
@@ -2260,6 +2269,14 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 			if len(ghPollers) == 0 {
 				logging.WithComponent("github").Warn("GitHub polling enabled but no repos configured — set adapters.github.repo or add project-level github.owner/github.repo",
 					slog.Int("pollers", 0))
+				// GH-3050: surface second silent autopilot gate. Controllers
+				// were created but will not Start because there are no pollers.
+				if len(autopilotControllers) > 0 {
+					logging.WithComponent("autopilot").Warn(
+						"autopilot controllers created but no GitHub pollers configured — autopilot will not start",
+						slog.Int("controllers", len(autopilotControllers)),
+					)
+				}
 			}
 
 			if len(ghPollers) > 0 {
