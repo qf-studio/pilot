@@ -118,7 +118,7 @@ Disable via config: `executor.navigator.auto_init: false`
 
 ## Current State
 
-**Current Version:** v2.147.0 | **323 features working**
+**Current Version:** v2.148.0 | **323 features working**
 
 **Recent (v2.147.0, May 21 2026):**
 - `feat(executor)`: **Repo-allowlist guardrail** — `internal/executor/repo_guardrail.go` resolves the worktree's `origin` remote and refuses `gh issue create` (parent and sub-issues) unless the resolved `owner/repo` is in the user's configured `projects[]`. Wired into `Runner` via `SetRepoAllowlist`, set from `cmd/pilot/repo_allowlist.go` at every `NewRunnerWithConfig` site. `PILOT_ALLOW_UNMANAGED_REPO=1` documented bypass (always logs WARN with the resolved repo). Closes the 2026-05-20 incident where an external user's misconfigured Pilot fired 6 duplicate sub-issues on this repo (#3021–#3026). (GH-3027 / [TASK-286](tasks/archive/TASK-286-guardrail-external-repo-issue-create.md))
