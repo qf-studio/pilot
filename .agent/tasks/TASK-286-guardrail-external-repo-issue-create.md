@@ -1,6 +1,6 @@
 # TASK-286: Guardrail — refuse issue creation on repos outside the user's project list
 
-**Status**: in-progress (handed off to Pilot as [#3027](https://github.com/qf-studio/pilot/issues/3027))
+**Status**: implemented in [feat/task-286-repo-guardrail](https://github.com/qf-studio/pilot/tree/feat/task-286-repo-guardrail), pending PR review (closes [#3027](https://github.com/qf-studio/pilot/issues/3027))
 **Priority**: P1 (data-integrity / reputation)
 **Estimated Effort**: S (3-4 person-hours)
 **Risk Level**: Low (additive validation; opt-out via env var for power users)

@@ -975,17 +975,54 @@ func (r *Runner) CreateSubIssues(ctx context.Context, plan *EpicPlan, executionP
 		return nil, fmt.Errorf("plan has no subtasks to create issues from")
 	}
 
-	if plan.ParentTask != nil {
+	if plan.ParentTask != nil && isParentDone(plan.ParentTask) {
 		// GH-2867: refuse to spawn sub-issues for a parent that is already done.
-		if isParentDone(plan.ParentTask) {
-			r.log.Info("Skipping sub-issue creation: parent is already done",
-				"parent_id", plan.ParentTask.ID,
-				"state", plan.ParentTask.State,
-				"labels", plan.ParentTask.Labels,
-			)
-			return nil, ErrParentDone
-		}
+		r.log.Info("Skipping sub-issue creation: parent is already done",
+			"parent_id", plan.ParentTask.ID,
+			"state", plan.ParentTask.State,
+			"labels", plan.ParentTask.Labels,
+		)
+		return nil, ErrParentDone
+	}
 
+	// GH-1471: pick the creation backend up front. The adapter path is
+	// non-GitHub (Linear, Jira, …) and uses its own per-adapter auth, so
+	// the repo allowlist guardrail below is skipped for that branch.
+	useAdapterCreator := r.subIssueCreator != nil &&
+		plan.ParentTask != nil &&
+		plan.ParentTask.SourceAdapter != "" &&
+		plan.ParentTask.SourceAdapter != "github"
+
+	// TASK-286 / GH-3027: guardrail must run BEFORE queryRecentSubIssues
+	// because that helper also shells out to `gh` against the worktree's
+	// inferred origin remote. Without this ordering, a misconfigured Pilot
+	// would still leak `gh issue list` calls to an unmanaged repo even if
+	// no sub-issue was created. Only enforced when a RepoAllowlist has been
+	// wired onto the Runner; production callers do this in cmd/pilot via
+	// SetRepoAllowlist(newConfigRepoAllowlist(cfg)).
+	if !useAdapterCreator && r.repoAllowlist != nil && executionPath != "" {
+		owner, repo, remoteErr := resolveGitRemote(ctx, executionPath)
+		if remoteErr != nil {
+			r.log.Error("sub-issue guardrail: could not resolve origin remote",
+				"execution_path", executionPath, "error", remoteErr)
+			if err := ValidateTargetRepo(r.repoAllowlist, "", "", executionPath); err != nil {
+				return nil, fmt.Errorf("sub-issue guardrail (no origin remote at %s): %w", executionPath, err)
+			}
+		} else if err := ValidateTargetRepo(r.repoAllowlist, owner, repo, executionPath); err != nil {
+			r.log.Error("sub-issue guardrail rejected target repo",
+				"owner", owner, "repo", repo,
+				"execution_path", executionPath, "error", err)
+			return nil, fmt.Errorf("sub-issue guardrail: %w", err)
+		} else {
+			r.log.Debug("sub-issue guardrail passed",
+				"owner", owner, "repo", repo, "execution_path", executionPath)
+		}
+	} else if !useAdapterCreator && r.repoAllowlist == nil {
+		r.log.Warn("sub-issue guardrail skipped: no RepoAllowlist configured on Runner; production callers must invoke Runner.SetRepoAllowlist",
+			"execution_path", executionPath)
+	}
+
+	if plan.ParentTask != nil {
 		// Dedup guard: skip creation if recent sub-issues referencing this parent already exist.
 		// Uses an injectable checker so tests can control the result without spawning gh CLI.
 		checker := r.openSubIssueCheck
@@ -999,13 +1036,6 @@ func (r *Runner) CreateSubIssues(ctx context.Context, plan *EpicPlan, executionP
 			return nil, ErrSubIssuesAlreadyExist
 		}
 	}
-
-	// GH-1471: Check if we should use the SubIssueCreator interface
-	// Conditions: non-nil creator AND non-empty SourceAdapter AND not "github"
-	useAdapterCreator := r.subIssueCreator != nil &&
-		plan.ParentTask != nil &&
-		plan.ParentTask.SourceAdapter != "" &&
-		plan.ParentTask.SourceAdapter != "github"
 
 	if useAdapterCreator {
 		return r.createSubIssuesViaAdapter(ctx, plan)
@@ -1126,6 +1156,9 @@ func (r *Runner) createSubIssuesViaAdapter(ctx context.Context, plan *EpicPlan) 
 
 // createSubIssuesViaGitHub creates sub-issues using the gh CLI.
 // This is the original implementation and fallback path.
+//
+// The TASK-286 / GH-3027 repo guardrail runs one level up in CreateSubIssues
+// (it must fire before queryRecentSubIssues, which also shells out to gh).
 func (r *Runner) createSubIssuesViaGitHub(ctx context.Context, plan *EpicPlan, executionPath string) ([]CreatedIssue, error) {
 	var created []CreatedIssue
 

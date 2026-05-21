@@ -173,6 +173,8 @@ func interactiveNewTask(cfg *config.Config) error {
 	if err != nil {
 		return fmt.Errorf("failed to create runner: %w", err)
 	}
+	// TASK-286 / GH-3027: refuse sub-issue creation on unmanaged repos.
+	runner.SetRepoAllowlist(newConfigRepoAllowlist(cfg))
 	progress := executor.NewProgressDisplay(task.ID, taskDesc, true)
 
 	// Suppress slog progress output when visual display is active

@@ -1747,6 +1747,30 @@ memory:
 | `projects[].github.repo` | string | — | GitHub repository name |
 | `default_project` | string | — | Name of the project used when none is specified |
 
+**Repo allowlist guardrail**
+
+Pilot refuses to create GitHub issues (including sub-issues from the epic
+decomposer) on repositories that are **not** listed under `projects[]`.
+The check resolves the worktree's `origin` remote to `owner/repo` and
+matches against every configured `projects[].github.owner` /
+`projects[].github.repo` pair.
+
+This closed a 2026-05-20 incident where a misconfigured external user
+accidentally created 6 duplicate sub-issues on the upstream
+`qf-studio/pilot` repo. See SOP
+`.agent/sops/integrations/repo-allowlist-guardrail.md` for the diagnosis
+runbook.
+
+**Bypass for ad-hoc one-off use:**
+
+```sh
+PILOT_ALLOW_UNMANAGED_REPO=1 pilot run ...
+```
+
+The bypass always emits a `WARN` log line naming the resolved owner/repo
+so the action is visible in dashboards and the daemon log. Never set
+this in your shell profile — it disables the safety net.
+
 **Memory**
 
 | Field | Type | Default | Description |
