@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -2424,5 +2425,153 @@ func TestRunner_Execute_EpicRecoversThenExecutesOpenChildren(t *testing.T) {
 		if id == "GH-20" {
 			t.Errorf("closed child GH-20 should not have been executed")
 		}
+	}
+}
+
+
+// staticAllowlist is a test helper that allows a fixed set of "owner/repo"
+// pairs. projectPath comparison is ignored (tests don't need that dimension).
+type staticAllowlist struct {
+	repos []string // "owner/repo"
+}
+
+func (s *staticAllowlist) RepoIsAllowed(owner, repo, projectPath string) bool {
+	want := owner + "/" + repo
+	for _, r := range s.repos {
+		if r == want {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *staticAllowlist) ConfiguredRepos() []string { return s.repos }
+
+// TestCreateSubIssuesViaGitHub_GuardrailAllowsConfiguredRepo verifies the
+// TASK-286 / GH-3027 guardrail: when a RepoAllowlist is wired AND the
+// worktree's origin remote resolves to a configured repo, the gh CLI call
+// proceeds normally.
+func TestCreateSubIssuesViaGitHub_GuardrailAllowsConfiguredRepo(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+
+	worktree := t.TempDir()
+	runGitForGuardrail(t, worktree, "init", "-q")
+	runGitForGuardrail(t, worktree, "remote", "add", "origin", "https://github.com/qf-studio/pilot.git")
+
+	fakeBin := t.TempDir()
+	script := filepath.Join(fakeBin, "gh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\necho https://github.com/qf-studio/pilot/issues/9999\n"), 0o755); err != nil {
+		t.Fatalf("write fake gh: %v", err)
+	}
+	t.Setenv("PATH", fakeBin+string(filepath.ListSeparator)+os.Getenv("PATH"))
+
+	runner := NewRunner()
+	runner.SetRepoAllowlist(&staticAllowlist{repos: []string{"qf-studio/pilot"}})
+
+	plan := &EpicPlan{
+		ParentTask: &Task{ID: "GH-42"},
+		Subtasks: []PlannedSubtask{
+			{Title: "feat(guardrail): allow happy path", Description: "ok", Order: 1},
+		},
+	}
+
+	created, err := runner.CreateSubIssues(context.Background(), plan, worktree)
+	if err != nil {
+		t.Fatalf("guardrail unexpectedly blocked configured repo: %v", err)
+	}
+	if len(created) != 1 {
+		t.Fatalf("expected 1 created issue, got %d", len(created))
+	}
+}
+
+// TestCreateSubIssuesViaGitHub_GuardrailBlocksUnmanagedRepo proves the
+// incident-driving path is now closed: when the worktree's origin remote is
+// NOT in the user's configured projects, no `gh issue create` call is fired
+// and the error wraps ErrRepoNotInConfig.
+//
+// Without this guardrail, an external user pointing his Pilot at
+// `qf-studio/pilot` created 6 dupes (#3021-#3026) on 2026-05-20.
+func TestCreateSubIssuesViaGitHub_GuardrailBlocksUnmanagedRepo(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+
+	worktree := t.TempDir()
+	runGitForGuardrail(t, worktree, "init", "-q")
+	runGitForGuardrail(t, worktree, "remote", "add", "origin", "https://github.com/qf-studio/pilot.git")
+
+	// A `gh` shim that records its invocation. If the guardrail does its job,
+	// this file must not exist after CreateSubIssues returns.
+	callMarker := filepath.Join(t.TempDir(), "gh_was_called")
+	fakeBin := t.TempDir()
+	script := filepath.Join(fakeBin, "gh")
+	scriptBody := fmt.Sprintf("#!/bin/sh\ntouch %q\necho https://example/issues/0\n", callMarker)
+	if err := os.WriteFile(script, []byte(scriptBody), 0o755); err != nil {
+		t.Fatalf("write fake gh: %v", err)
+	}
+	t.Setenv("PATH", fakeBin+string(filepath.ListSeparator)+os.Getenv("PATH"))
+	t.Setenv(envBypassRepoAllowlist, "") // belt-and-braces: no stray bypass
+
+	runner := NewRunner()
+	runner.SetRepoAllowlist(&staticAllowlist{repos: []string{"alice/site"}}) // qf-studio/pilot intentionally missing
+
+	plan := &EpicPlan{
+		ParentTask: &Task{ID: "GH-42"},
+		Subtasks: []PlannedSubtask{
+			{Title: "feat(guardrail): should not run", Description: "blocked", Order: 1},
+		},
+	}
+
+	_, err := runner.CreateSubIssues(context.Background(), plan, worktree)
+	if err == nil {
+		t.Fatal("expected guardrail to block unmanaged repo, got nil error")
+	}
+	if !errors.Is(err, ErrRepoNotInConfig) {
+		t.Fatalf("error %v should wrap ErrRepoNotInConfig", err)
+	}
+	if _, statErr := os.Stat(callMarker); statErr == nil {
+		t.Errorf("guardrail did not fire before `gh issue create`: marker %s exists", callMarker)
+	}
+}
+
+// TestCreateSubIssuesViaGitHub_GuardrailBypassEnvVar documents that the
+// PILOT_ALLOW_UNMANAGED_REPO=1 env var lets the call proceed even when the
+// repo is not in the allowlist. The bypass logs a WARN inside
+// ValidateTargetRepo; here we verify behavior (no error + gh fires).
+func TestCreateSubIssuesViaGitHub_GuardrailBypassEnvVar(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+
+	worktree := t.TempDir()
+	runGitForGuardrail(t, worktree, "init", "-q")
+	runGitForGuardrail(t, worktree, "remote", "add", "origin", "https://github.com/qf-studio/pilot.git")
+
+	fakeBin := t.TempDir()
+	script := filepath.Join(fakeBin, "gh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\necho https://example/issues/1\n"), 0o755); err != nil {
+		t.Fatalf("write fake gh: %v", err)
+	}
+	t.Setenv("PATH", fakeBin+string(filepath.ListSeparator)+os.Getenv("PATH"))
+	t.Setenv(envBypassRepoAllowlist, "1")
+
+	runner := NewRunner()
+	runner.SetRepoAllowlist(&staticAllowlist{repos: []string{"alice/site"}})
+
+	plan := &EpicPlan{
+		ParentTask: &Task{ID: "GH-42"},
+		Subtasks: []PlannedSubtask{
+			{Title: "feat(guardrail): bypass should proceed", Description: "ok via env", Order: 1},
+		},
+	}
+
+	created, err := runner.CreateSubIssues(context.Background(), plan, worktree)
+	if err != nil {
+		t.Fatalf("PILOT_ALLOW_UNMANAGED_REPO=1 should let the call proceed: %v", err)
+	}
+	if len(created) != 1 {
+		t.Fatalf("expected 1 issue created via bypass, got %d", len(created))
 	}
 }

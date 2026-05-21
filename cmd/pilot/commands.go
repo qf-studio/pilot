@@ -435,6 +435,9 @@ Examples:
 				if runnerErr != nil {
 					return fmt.Errorf("failed to create runner for dry-run: %w", runnerErr)
 				}
+				// TASK-286 / GH-3027: harmless on the dry-run path (no gh calls),
+				// but kept for consistency so the wiring is uniform across sites.
+				runner.SetRepoAllowlist(newConfigRepoAllowlist(dryRunCfg))
 				prompt := runner.BuildPrompt(task, task.ProjectPath)
 				fmt.Println(prompt)
 				fmt.Println("─────────────────────────────────────")
@@ -578,6 +581,8 @@ Examples:
 			if runnerErr != nil {
 				return fmt.Errorf("failed to create executor runner: %w", runnerErr)
 			}
+			// TASK-286 / GH-3027: refuse sub-issue creation on unmanaged repos.
+			runner.SetRepoAllowlist(newConfigRepoAllowlist(cfg))
 
 			// GH-962: Clean up orphaned worktree directories from previous crashed executions
 			if cfg.Executor != nil && cfg.Executor.UseWorktree {
@@ -1089,6 +1094,8 @@ Examples:
 				if runnerErr != nil {
 					return fmt.Errorf("failed to create runner for dry-run: %w", runnerErr)
 				}
+				// TASK-286 / GH-3027: harmless on the dry-run path (no gh calls).
+				runner.SetRepoAllowlist(newConfigRepoAllowlist(cfg))
 				prompt := runner.BuildPrompt(task, task.ProjectPath)
 				fmt.Println("Prompt:")
 				fmt.Println("─────────────────────────────────────")
@@ -1108,6 +1115,8 @@ Examples:
 			if runnerErr != nil {
 				return fmt.Errorf("failed to create executor runner: %w", runnerErr)
 			}
+			// TASK-286 / GH-3027: refuse sub-issue creation on unmanaged repos.
+			runner.SetRepoAllowlist(newConfigRepoAllowlist(cfg))
 
 			// GH-962: Clean up orphaned worktree directories from previous crashed executions
 			if cfg.Executor != nil && cfg.Executor.UseWorktree {

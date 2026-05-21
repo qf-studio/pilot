@@ -412,6 +412,21 @@ type Runner struct {
 	planEpicFn func(ctx context.Context, task *Task, executionPath string) (*EpicPlan, error)
 	// GH-2855: Prometheus counters for tokens, cost, and executions.
 	metricsRecorder MetricsRecorder
+	// GH-3027 / TASK-286: Allowlist used to refuse `gh issue create` calls on
+	// repos that are not in the user's configured project list. Set via
+	// SetRepoAllowlist at construction time by cmd/pilot. When nil the
+	// guardrail logs a one-shot WARN and (without PILOT_ALLOW_UNMANAGED_REPO=1)
+	// refuses to create sub-issues — safe default for newly-wired call paths.
+	repoAllowlist RepoAllowlist
+}
+
+// SetRepoAllowlist injects the allowlist used by the sub-issue creation
+// guardrail (TASK-286 / GH-3027). cmd/pilot wires this from the top-level
+// *config.Config so the executor stays decoupled from concrete config types.
+// Passing nil disables the allowlist (the guardrail then refuses unless
+// PILOT_ALLOW_UNMANAGED_REPO=1 is set, which logs a WARN).
+func (r *Runner) SetRepoAllowlist(allow RepoAllowlist) {
+	r.repoAllowlist = allow
 }
 
 // NewRunner creates a new Runner instance with Claude Code backend by default.
