@@ -284,6 +284,11 @@ type ExecutionResult struct {
 	Declined bool
 	// DeclinedReason is the human-readable reason Claude provided for the decline.
 	DeclinedReason string
+	// PeakRSSMB is the peak subprocess RSS in MiB collected by the RSS sampler. GH-3028.
+	// Zero on non-Linux/darwin platforms or when the sampler had no data.
+	PeakRSSMB int
+	// FinalRSSMB is the subprocess RSS at exit. GH-3028.
+	FinalRSSMB int
 }
 
 // ProgressCallback is a function called during execution with progress updates.
@@ -2139,6 +2144,9 @@ retrySucceeded:
 	result.TokensOutput = backendResult.TokensOutput
 	result.TokensTotal = backendResult.TokensInput + backendResult.TokensOutput
 	result.ModelName = backendResult.Model
+	// GH-3028: propagate RSS telemetry from backend to execution result.
+	result.PeakRSSMB = backendResult.PeakRSSMB
+	result.FinalRSSMB = backendResult.FinalRSSMB
 
 	// Track research phase tokens (GH-217)
 	if researchResult != nil {

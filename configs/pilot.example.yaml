@@ -225,7 +225,20 @@ executor:
   #     max_attempts: 2           # Retry once
   #     extend_timeout: true      # Use 1.5x original timeout on retry
   #     timeout_multiplier: 1.5
+  #   oom_killed:                 # OOM-killed subprocess (exit 137/139) (GH-3028)
+  #     max_attempts: 2           # Retry once — most OOM tasks succeed on a clean retry
+  #     initial_backoff: 10s      # flat backoff; OOM is not time-sensitive
+  #     backoff_multiplier: 1.0
   # Note: invalid_config errors always fail fast (no retry)
+
+  # Subprocess memory limits + RSS telemetry (GH-3028)
+  # RSS sampler runs on every execution (Linux: /proc/<pid>/status, macOS: ps).
+  # Memory cap (Enabled=true) applies RLIMIT_AS on Linux only; macOS degrades to
+  # telemetry-only. Collect one week of peak_rss_mb data before enabling the cap.
+  # subprocess_limits:
+  #   enabled: false              # flip to true after tuning max_rss_mb
+  #   max_rss_mb: 4096            # virtual address space cap in MiB (Linux only)
+  #   sample_interval_sec: 10     # how often to poll RSS
 
   # Stagnation detection (GH-925) - detect and recover from stuck tasks
   # stagnation:

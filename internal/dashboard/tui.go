@@ -354,6 +354,9 @@ type CompletedTask struct {
 	TotalSubs   int      // Total number of sub-issues (epic tracking)
 	DoneSubs    int      // Number of completed sub-issues (epic tracking)
 	IsEpic      bool     // Whether this task was decomposed into sub-issues
+	// PeakRSSMB is the peak subprocess RSS in MiB from the RSS sampler. GH-3028.
+	// Zero when the sampler had no data (pre-3028 executions, non-Linux/darwin).
+	PeakRSSMB int
 }
 
 // UpdateInfo contains information about an available update
@@ -621,6 +624,7 @@ func (m *Model) hydrateFromStore() {
 			Status:      status,
 			Duration:    fmt.Sprintf("%dms", exec.DurationMs),
 			CompletedAt: completedAt,
+			PeakRSSMB:   exec.PeakRSSMB,
 		})
 	}
 
@@ -854,6 +858,7 @@ func storeRefreshCmd(store *memory.Store) tea.Cmd {
 				Status:      status,
 				Duration:    fmt.Sprintf("%dms", exec.DurationMs),
 				CompletedAt: completedAt,
+				PeakRSSMB:   exec.PeakRSSMB,
 			})
 		}
 
@@ -2476,18 +2481,43 @@ func (m Model) renderHistory() string {
 // renderStandaloneLine renders a standalone (non-epic) task line.
 // Layout: "  + GH-156  Title...                                    2m ago"
 // indent(2) + icon(1) + space(1) + id(7) + space(2) + title + space(2) + timeAgo(8) = iw
+// When PeakRSSMB > 0 (GH-3028), an RSS indicator ("4.2G") is appended after the time.
 func renderStandaloneLine(task CompletedTask, iw int) string {
-	titleWidth := iw - 23
 	icon, style := statusIconStyle(task.Status)
 	timeAgoStr := formatTimeAgo(task.CompletedAt)
+
+	var rssStr string
+	if task.PeakRSSMB > 0 {
+		rssStr = fmt.Sprintf(" %s", formatRSSMB(task.PeakRSSMB))
+	}
+
+	// Reserve space: indent(2)+icon(1)+sp(1)+id(7)+sp(2)+sp(2)+time(8)+rss = 23+len(rssStr)
+	titleWidth := iw - 23 - len(rssStr)
+	if titleWidth < 10 {
+		titleWidth = 10
+	}
 	titleStr := padOrTruncate(task.Title, titleWidth)
 
-	return fmt.Sprintf("  %s %-7s  %s  %8s",
+	return fmt.Sprintf("  %s %-7s  %s  %8s%s",
 		style.Render(icon),
 		task.ID,
 		titleStr,
 		dimStyle.Render(timeAgoStr),
+		dimStyle.Render(rssStr),
 	)
+}
+
+// formatRSSMB formats a RSS value in MiB as a compact human-readable string.
+// 512 → "512M", 2048 → "2.0G", 10240 → "10G".
+func formatRSSMB(mb int) string {
+	if mb < 1024 {
+		return fmt.Sprintf("%dM", mb)
+	}
+	gb := float64(mb) / 1024.0
+	if gb < 10 {
+		return fmt.Sprintf("%.1fG", gb)
+	}
+	return fmt.Sprintf("%.0fG", gb)
 }
 
 // renderActiveEpicLine renders the parent line for an active epic.

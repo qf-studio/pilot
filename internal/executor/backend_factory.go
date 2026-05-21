@@ -21,6 +21,8 @@ func NewBackend(config *BackendConfig) (Backend, error) {
 		// subprocess env so users don't need to also edit
 		// ~/.claude/settings.json.
 		b.SetProviderEnv(config.APIBaseURL, config.APIAuthToken, config.DefaultModel)
+		// GH-3028: wire RSS telemetry + optional memory cap.
+		b.SetSubprocessLimits(config.SubprocessLimits)
 		return b, nil
 
 	case BackendTypeOpenCode:

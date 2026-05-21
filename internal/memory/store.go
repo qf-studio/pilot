@@ -327,6 +327,9 @@ func (s *Store) migrate() error {
 		`ALTER TABLE autopilot_metrics ADD COLUMN tokens_consumed_json TEXT DEFAULT '{}'`,
 		`ALTER TABLE autopilot_metrics ADD COLUMN execution_cost_usd_json TEXT DEFAULT '{}'`,
 		`ALTER TABLE autopilot_metrics ADD COLUMN executions_by_result_json TEXT DEFAULT '{}'`,
+		// GH-3028: RSS telemetry — peak and final resident set size for subprocess OOM diagnostics.
+		`ALTER TABLE executions ADD COLUMN peak_rss_mb INTEGER DEFAULT 0`,
+		`ALTER TABLE executions ADD COLUMN final_rss_mb INTEGER DEFAULT 0`,
 	}
 
 	for _, migration := range migrations {
@@ -429,6 +432,9 @@ type Execution struct {
 	ApprovalDecision   string
 	ApprovalDecisionAt *time.Time
 	ApprovalDecisionBy string
+	// GH-3028: RSS telemetry
+	PeakRSSMB  int
+	FinalRSSMB int
 }
 
 // SaveExecution saves an execution record to the database.
@@ -627,7 +633,8 @@ func (s *Store) GetRecentExecutions(limit int) ([]*Execution, error) {
 	rows, err := s.db.Query(`
 		SELECT id, task_id, project_path, status, output, error, duration_ms, pr_url, commit_sha, created_at, completed_at,
 			COALESCE(task_title, ''), COALESCE(task_description, ''), COALESCE(task_branch, ''),
-			COALESCE(task_base_branch, ''), COALESCE(task_create_pr, 0), COALESCE(task_verbose, 0)
+			COALESCE(task_base_branch, ''), COALESCE(task_create_pr, 0), COALESCE(task_verbose, 0),
+			COALESCE(peak_rss_mb, 0), COALESCE(final_rss_mb, 0)
 		FROM executions ORDER BY created_at DESC LIMIT ?
 	`, limit)
 	if err != nil {
@@ -640,7 +647,8 @@ func (s *Store) GetRecentExecutions(limit int) ([]*Execution, error) {
 		var exec Execution
 		var completedAt sql.NullTime
 		if err := rows.Scan(&exec.ID, &exec.TaskID, &exec.ProjectPath, &exec.Status, &exec.Output, &exec.Error, &exec.DurationMs, &exec.PRUrl, &exec.CommitSHA, &exec.CreatedAt, &completedAt,
-			&exec.TaskTitle, &exec.TaskDescription, &exec.TaskBranch, &exec.TaskBaseBranch, &exec.TaskCreatePR, &exec.TaskVerbose); err != nil {
+			&exec.TaskTitle, &exec.TaskDescription, &exec.TaskBranch, &exec.TaskBaseBranch, &exec.TaskCreatePR, &exec.TaskVerbose,
+			&exec.PeakRSSMB, &exec.FinalRSSMB); err != nil {
 			return nil, err
 		}
 		if completedAt.Valid {
