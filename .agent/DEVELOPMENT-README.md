@@ -118,7 +118,7 @@ Disable via config: `executor.navigator.auto_init: false`
 
 ## Current State
 
-**Current Version:** v2.146.7 | **323 features working**
+**Current Version:** v2.147.0 | **323 features working**
 
 **Recent (v2.146.7, May 20 2026):**
 - `fix(executor)`: **P0 data-loss fix** — `syncMainBranch` swaps destructive `reset --hard origin/main` for `merge --ff-only origin/<currentBranch>`. Surfaced during the 2026-05-20 workshop demo when GitHub push-propagation lag let the post-task sync silently rewind Pilot's just-committed work. Also fixes latent master-branch hardcode. 6 new unit tests, new SOP, safety comment on pooled-worktree reset. (GH-3018, [TASK-283](tasks/archive/TASK-283-sync-main-after-task-data-loss.md))
