@@ -8,7 +8,12 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"time"
 
 	"github.com/qf-studio/pilot/internal/config"
 	"github.com/qf-studio/pilot/internal/executor"
@@ -36,9 +41,17 @@ func newConfigRepoAllowlist(cfg *config.Config) executor.RepoAllowlist {
 //
 // A repo is allowed if some configured project matches both:
 //   - GitHub owner+repo (case-sensitive match against ProjectGitHubConfig)
-//   - When projectPath is non-empty, the matched project's filesystem Path
-//     equals projectPath. This blocks the "right repo, wrong working tree"
-//     misconfiguration class.
+//   - When projectPath is non-empty, projectPath either equals the matched
+//     project's filesystem Path OR is a git worktree of it (shares the same
+//     git common-dir). The worktree case is the common path in production:
+//     Pilot creates ephemeral worktrees under /tmp/pilot-worktree-* for
+//     each task (see internal/executor/worktree.go), and the original
+//     strict equality check rejected all of them. GH-3050 follow-up.
+//
+// The "right repo, wrong working tree" guard is preserved: an unrelated
+// clone of the same upstream repo at a different path will fail BOTH the
+// equality check and the worktree check (its git common-dir is its own
+// .git, not the configured project's).
 func (a *configRepoAllowlist) RepoIsAllowed(owner, repo, projectPath string) bool {
 	if a == nil || a.cfg == nil {
 		return false
@@ -47,10 +60,43 @@ func (a *configRepoAllowlist) RepoIsAllowed(owner, repo, projectPath string) boo
 	if match == nil {
 		return false
 	}
-	if projectPath == "" {
+	if projectPath == "" || match.Path == projectPath {
 		return true
 	}
-	return match.Path == projectPath
+	return isWorktreeOf(projectPath, match.Path)
+}
+
+// isWorktreeOf reports whether worktreePath is a git worktree whose common
+// .git directory belongs to projectPath. Uses `git rev-parse
+// --git-common-dir`, which returns the canonical .git location shared by
+// all worktrees of a repository. A 2s context bounds the git call.
+//
+// Returns false (deny) on any error — git missing, path not a repo,
+// timeout. The guardrail prefers false negatives (reject worktree) over
+// false positives (allow unmanaged repo).
+func isWorktreeOf(worktreePath, projectPath string) bool {
+	if worktreePath == "" || projectPath == "" {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "git", "-C", worktreePath, "rev-parse", "--git-common-dir").Output()
+	if err != nil {
+		return false
+	}
+	commonDir := strings.TrimSpace(string(out))
+	if !filepath.IsAbs(commonDir) {
+		commonDir = filepath.Join(worktreePath, commonDir)
+	}
+	commonDir, err = filepath.EvalSymlinks(commonDir)
+	if err != nil {
+		return false
+	}
+	expected, err := filepath.EvalSymlinks(filepath.Join(projectPath, ".git"))
+	if err != nil {
+		return false
+	}
+	return commonDir == expected
 }
 
 // ConfiguredRepos returns all configured "owner/repo" pairs. Used only for
