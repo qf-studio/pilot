@@ -482,19 +482,36 @@ func Load(path string) (*Config, error) {
 
 // Save writes the configuration to a YAML file at the given path.
 // It creates the parent directory if it does not exist.
+//
+// TASK-290: file mode is 0600 and parent dir is 0700 because the config
+// contains GitHub PAT, Linear API key, Slack bot token, and (optionally)
+// Anthropic API key — none of which should be world- or group-readable.
+// If a config already exists on disk with looser perms, this Save call will
+// tighten them on the next write (existing 0644 files are rewritten 0600).
 func Save(config *Config, path string) error {
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0700); err != nil {
 		return fmt.Errorf("failed to create config directory: %w", err)
 	}
+
+	// If the directory already existed with looser perms (e.g. an older
+	// install left ~/.pilot at 0755), tighten it. Ignore errors — best effort.
+	_ = os.Chmod(dir, 0700)
 
 	data, err := yaml.Marshal(config)
 	if err != nil {
 		return fmt.Errorf("failed to marshal config: %w", err)
 	}
 
-	if err := os.WriteFile(path, data, 0644); err != nil {
+	if err := os.WriteFile(path, data, 0600); err != nil {
 		return fmt.Errorf("failed to write config: %w", err)
+	}
+
+	// os.WriteFile does NOT change permissions of an existing file — it only
+	// applies the mode on create. Explicit Chmod ensures we tighten perms even
+	// when a previous version of Pilot left the file at 0644 on disk.
+	if err := os.Chmod(path, 0600); err != nil {
+		return fmt.Errorf("failed to chmod config to 0600: %w", err)
 	}
 
 	return nil
