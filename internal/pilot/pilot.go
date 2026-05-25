@@ -402,6 +402,16 @@ func New(cfg *config.Config, opts ...Option) (*Pilot, error) {
 	if cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.WebhookSecret != "" {
 		gatewayCfg.GithubWebhookSecret = cfg.Adapters.GitHub.WebhookSecret
 	}
+	if cfg.Adapters.Linear != nil && cfg.Adapters.Linear.WebhookPublicKey != "" {
+		key, err := parseLinearWebhookKey(cfg.Adapters.Linear.WebhookPublicKey)
+		if err != nil {
+			logging.WithComponent("pilot").Error("Linear webhook public key invalid — signature verification disabled", slog.Any("error", err))
+		} else {
+			gatewayCfg.LinearWebhookPublicKey = key
+		}
+	} else {
+		logging.WithComponent("pilot").Info("Linear webhook signature verification disabled — set adapters.linear.webhook_public_key to enable")
+	}
 	p.gateway = gateway.NewServer(gatewayCfg)
 
 	// Register webhook handlers

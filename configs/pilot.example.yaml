@@ -94,6 +94,10 @@ adapters:
     team_id: "your-team-id"
     pilot_label: "pilot"    # Issues with this label are picked up
     auto_assign: true        # Auto-assign issues to Pilot
+    # webhook_public_key: |  # Ed25519 public key from Linear workspace settings → API → Webhooks
+    #   -----BEGIN PUBLIC KEY-----
+    #   MCowBQYDK2VwAyEA...
+    #   -----END PUBLIC KEY-----
 
   # Plane.so - Open-source project planning (cloud or self-hosted)
   plane:
