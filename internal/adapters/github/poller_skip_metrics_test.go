@@ -117,7 +117,7 @@ func TestPoller_SkipMetric_IncrementsByReason(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 			m := newFakePollerMetrics()
 
 			poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second,
@@ -171,7 +171,7 @@ func TestPoller_ScopeOverlapDeferral_IncrementsMetric(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 	m := newFakePollerMetrics()
 
 	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second,
@@ -206,7 +206,7 @@ func TestPoller_NoMetrics_NoPanic(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 	// No WithPollerMetrics — pollerMetrics is nil
 	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second,
 		WithOnIssue(func(ctx context.Context, issue *Issue) error { return nil }),

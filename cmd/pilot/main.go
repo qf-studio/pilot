@@ -691,6 +691,9 @@ Examples:
 
 				if token != "" && cfg.Adapters.GitHub.Repo != "" {
 					client := github.NewClient(token)
+					if gwAutopilotController != nil {
+						client.SetMetricsRecorder(gwAutopilotController.Metrics())
+					}
 					label := cfg.Adapters.GitHub.Polling.Label
 					if label == "" {
 						label = cfg.Adapters.GitHub.PilotLabel
@@ -1455,6 +1458,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 					)
 					autopilotControllers[cfg.Adapters.GitHub.Repo] = controller
 					autopilotController = controller // Default for backwards compat
+					ghClient.SetMetricsRecorder(controller.Metrics())
 				}
 			}
 
@@ -1661,6 +1665,9 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 			}
 			if token != "" {
 				ghClient := github.NewClient(token)
+				if autopilotController != nil {
+					ghClient.SetMetricsRecorder(autopilotController.Metrics())
+				}
 				ghWH := github.NewWebhookHandler(ghClient, cfg.Adapters.GitHub.WebhookSecret, cfg.Adapters.GitHub.PilotLabel)
 				ghWH.OnPRReview(func(ctx context.Context, prNumber int, action, state, reviewer string, repo *github.Repository) error {
 					if action == "submitted" {
@@ -2048,6 +2055,9 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 
 		if token != "" {
 			client := github.NewClient(token)
+			if autopilotController != nil {
+				client.SetMetricsRecorder(autopilotController.Metrics())
+			}
 			label := cfg.Adapters.GitHub.Polling.Label
 			if label == "" {
 				label = cfg.Adapters.GitHub.PilotLabel

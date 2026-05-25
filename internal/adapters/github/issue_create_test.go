@@ -72,7 +72,7 @@ func TestCreatePilotIssue_TitleValidation(t *testing.T) {
 			}))
 			defer server.Close()
 
-			c := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			c := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 			_, err := CreatePilotIssue(context.Background(), c, nil, "owner", "repo", tt.title, "body", []string{"pilot"})
 			if (err != nil) != tt.wantErr {
 				t.Errorf("createPilotIssue(%q) error = %v, wantErr %v", tt.title, err, tt.wantErr)
@@ -112,7 +112,7 @@ func TestCreatePilotIssue_APIForwarding(t *testing.T) {
 	}))
 	defer server.Close()
 
-	c := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	c := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 	issue, err := CreatePilotIssue(context.Background(), c, nil, "owner", "repo", wantTitle, wantBody, []string{"pilot"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

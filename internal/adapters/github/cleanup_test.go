@@ -143,7 +143,7 @@ func TestCleaner_Cleanup_NoIssues(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 	cleaner, _ := NewCleaner(client, store, "owner/repo", &StaleLabelCleanupConfig{
 		Enabled:   true,
 		Interval:  30 * time.Minute,
@@ -205,7 +205,7 @@ func TestCleaner_Cleanup_StaleIssuesRemoved(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 	cleaner, _ := NewCleaner(client, store, "owner/repo", &StaleLabelCleanupConfig{
 		Enabled:   true,
 		Interval:  30 * time.Minute,
@@ -263,7 +263,7 @@ func TestCleaner_Cleanup_RecentIssuesSkipped(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 	cleaner, _ := NewCleaner(client, store, "owner/repo", &StaleLabelCleanupConfig{
 		Enabled:   true,
 		Interval:  30 * time.Minute,
@@ -326,7 +326,7 @@ func TestCleaner_Cleanup_ActiveExecutionsSkipped(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 	cleaner, _ := NewCleaner(client, store, "owner/repo", &StaleLabelCleanupConfig{
 		Enabled:   true,
 		Interval:  30 * time.Minute,
@@ -352,7 +352,7 @@ func TestCleaner_Cleanup_APIError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 	cleaner, _ := NewCleaner(client, store, "owner/repo", &StaleLabelCleanupConfig{
 		Enabled:   true,
 		Interval:  30 * time.Minute,
@@ -375,7 +375,7 @@ func TestCleaner_StartStop(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 	cleaner, _ := NewCleaner(client, store, "owner/repo", &StaleLabelCleanupConfig{
 		Enabled:   true,
 		Interval:  50 * time.Millisecond,
@@ -416,7 +416,7 @@ func TestCleaner_Stop(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 	cleaner, _ := NewCleaner(client, store, "owner/repo", &StaleLabelCleanupConfig{
 		Enabled:   true,
 		Interval:  50 * time.Millisecond,
@@ -457,7 +457,7 @@ func TestCleaner_DoubleStart(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 	cleaner, _ := NewCleaner(client, store, "owner/repo", &StaleLabelCleanupConfig{
 		Enabled:   true,
 		Interval:  100 * time.Millisecond,
@@ -553,7 +553,7 @@ func TestCleaner_Cleanup_StaleFailedLabelsRemoved(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 	cleaner, _ := NewCleaner(client, store, "owner/repo", &StaleLabelCleanupConfig{
 		Enabled:         true,
 		Interval:        30 * time.Minute,
@@ -635,7 +635,7 @@ func TestCleaner_Cleanup_StaleBlockedLabelsRemoved(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 	cleaner, _ := NewCleaner(client, store, "owner/repo", &StaleLabelCleanupConfig{
 		Enabled:         true,
 		Interval:        30 * time.Minute,
@@ -703,7 +703,7 @@ func TestCleaner_Cleanup_RecentFailedIssuesSkipped(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 	cleaner, _ := NewCleaner(client, store, "owner/repo", &StaleLabelCleanupConfig{
 		Enabled:         true,
 		Interval:        30 * time.Minute,
@@ -802,7 +802,7 @@ func TestCleaner_Cleanup_ClosedInProgressIssueCleaned(t *testing.T) {
 	defer server.Close()
 
 	var callbackIssue int
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 	cleaner, _ := NewCleaner(client, store, "owner/repo", &StaleLabelCleanupConfig{
 		Enabled:   true,
 		Interval:  30 * time.Minute,
@@ -868,7 +868,7 @@ func TestCleaner_Cleanup_ClosedInProgressWithActiveExecutionSkipped(t *testing.T
 	defer server.Close()
 
 	callbackFired := false
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 	cleaner, _ := NewCleaner(client, store, "owner/repo", &StaleLabelCleanupConfig{
 		Enabled: true, Interval: 30 * time.Minute, Threshold: 1 * time.Hour,
 	}, WithOnInProgressCleaned(func(int) { callbackFired = true }))
@@ -923,7 +923,7 @@ func TestCleaner_StartupRecover_StuckIssueUnlabeled(t *testing.T) {
 	defer server.Close()
 
 	var callbackIssue int
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 	cleaner, _ := NewCleaner(client, store, "owner/repo", &StaleLabelCleanupConfig{
 		Enabled: true, Interval: 30 * time.Minute, Threshold: 1 * time.Hour,
 	}, WithOnStartupRecovered(func(n int) { callbackIssue = n }))
@@ -988,7 +988,7 @@ func TestCleaner_StartupRecover_LiveExecutionSkipped(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 	cleaner, _ := NewCleaner(client, store, "owner/repo", &StaleLabelCleanupConfig{
 		Enabled: true, Interval: 30 * time.Minute, Threshold: 1 * time.Hour,
 	})
@@ -1058,7 +1058,7 @@ func TestCleaner_StartupRecover_StaleExecutionStripped(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 	cleaner, _ := NewCleaner(client, store, "owner/repo", &StaleLabelCleanupConfig{
 		Enabled: true, Interval: 30 * time.Minute, Threshold: 1 * time.Hour,
 	})
@@ -1091,7 +1091,7 @@ func TestCleaner_StartupRecover_NoIssues(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 	cleaner, _ := NewCleaner(client, store, "owner/repo", &StaleLabelCleanupConfig{
 		Enabled: true, Interval: 30 * time.Minute, Threshold: 1 * time.Hour,
 	})

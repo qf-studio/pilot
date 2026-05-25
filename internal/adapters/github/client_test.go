@@ -96,7 +96,7 @@ func TestGetIssue(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 			issue, err := client.GetIssue(context.Background(), "owner", "repo", 42)
 
 			if (err != nil) != tt.wantErr {
@@ -161,7 +161,7 @@ func TestAddComment(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 			comment, err := client.AddComment(context.Background(), "owner", "repo", 42, tt.commentBody)
 
 			if (err != nil) != tt.wantErr {
@@ -222,7 +222,7 @@ func TestAddLabels(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 			err := client.AddLabels(context.Background(), "owner", "repo", 42, tt.labels)
 
 			if (err != nil) != tt.wantErr {
@@ -274,7 +274,7 @@ func TestRemoveLabel(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 			err := client.RemoveLabel(context.Background(), "owner", "repo", 42, tt.label)
 
 			if (err != nil) != tt.wantErr {
@@ -293,7 +293,7 @@ func TestRemoveLabel_NormalizesToLowercase(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 	_ = client.RemoveLabel(context.Background(), "owner", "repo", 42, "Pilot-Failed")
 
 	expectedPath := "/repos/owner/repo/issues/42/labels/pilot-failed"
@@ -349,7 +349,7 @@ func TestUpdateIssueState(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 			err := client.UpdateIssueState(context.Background(), "owner", "repo", 42, tt.state)
 
 			if (err != nil) != tt.wantErr {
@@ -397,7 +397,7 @@ func TestGetRepository(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 			repo, err := client.GetRepository(context.Background(), "owner", "repo")
 
 			if (err != nil) != tt.wantErr {
@@ -486,7 +486,7 @@ func TestCreateCommitStatus(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 			result, err := client.CreateCommitStatus(context.Background(), "owner", "repo", "abc123def", tt.status)
 
 			if (err != nil) != tt.wantErr {
@@ -565,7 +565,7 @@ func TestCreateCheckRun(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 			result, err := client.CreateCheckRun(context.Background(), "owner", "repo", tt.checkRun)
 
 			if (err != nil) != tt.wantErr {
@@ -642,7 +642,7 @@ func TestUpdateCheckRun(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 			result, err := client.UpdateCheckRun(context.Background(), "owner", "repo", tt.checkRunID, tt.checkRun)
 
 			if (err != nil) != tt.wantErr {
@@ -732,7 +732,7 @@ func TestCreatePullRequest(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 			result, err := client.CreatePullRequest(context.Background(), "owner", "repo", tt.input)
 
 			if (err != nil) != tt.wantErr {
@@ -793,7 +793,7 @@ func TestGetPullRequest(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 			result, err := client.GetPullRequest(context.Background(), "owner", "repo", 42)
 
 			if (err != nil) != tt.wantErr {
@@ -838,7 +838,7 @@ func TestClosePullRequest(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 			err := client.ClosePullRequest(context.Background(), "owner", "repo", 42)
 
 			if (err != nil) != tt.wantErr {
@@ -901,7 +901,7 @@ func TestAddPRComment(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 			result, err := client.AddPRComment(context.Background(), "owner", "repo", 42, tt.commentBody)
 
 			if (err != nil) != tt.wantErr {
@@ -1002,7 +1002,7 @@ func TestListIssues(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 			issues, err := client.ListIssues(context.Background(), "owner", "repo", tt.opts)
 
 			if (err != nil) != tt.wantErr {
@@ -1032,7 +1032,7 @@ func TestListIssues_LabelsFilteredCaseInsensitively(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 	issues, err := client.ListIssues(context.Background(), "owner", "repo", &ListIssuesOptions{
 		Labels: []string{"Pilot"}, // Request with mixed case
 	})
@@ -1187,7 +1187,8 @@ func TestDoRequest_ErrorHandling(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			// Use fast retry opts so retryable status codes (500) don't slow down the test.
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(fastRetryOpts()))
 			_, err := client.GetIssue(context.Background(), "owner", "repo", 1)
 
 			if (err != nil) != tt.wantErr {
@@ -1207,7 +1208,7 @@ func TestDoRequest_InvalidJSON(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 	_, err := client.GetIssue(context.Background(), "owner", "repo", 1)
 
 	if err == nil {
@@ -1427,7 +1428,7 @@ func TestMergePullRequest(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 			err := client.MergePullRequest(context.Background(), "owner", "repo", 42, tt.method, tt.commitTitle)
 
 			if (err != nil) != tt.wantErr {
@@ -1524,7 +1525,7 @@ func TestGetCombinedStatus(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 			status, err := client.GetCombinedStatus(context.Background(), "owner", "repo", "abc123def456")
 
 			if (err != nil) != tt.wantErr {
@@ -1609,7 +1610,7 @@ func TestListCheckRuns(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 			result, err := client.ListCheckRuns(context.Background(), "owner", "repo", "abc123def456")
 
 			if (err != nil) != tt.wantErr {
@@ -1691,7 +1692,7 @@ func TestApprovePullRequest(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 			err := client.ApprovePullRequest(context.Background(), "owner", "repo", 42, tt.body)
 
 			if (err != nil) != tt.wantErr {
@@ -1802,7 +1803,7 @@ func TestListPullRequestReviews(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 			reviews, err := client.ListPullRequestReviews(context.Background(), "owner", "repo", 42)
 
 			if (err != nil) != tt.wantErr {
@@ -1902,7 +1903,7 @@ func TestHasApprovalReview(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 			approved, approver, err := client.HasApprovalReview(context.Background(), "owner", "repo", 42)
 
 			if (err != nil) != tt.wantErr {
@@ -1989,7 +1990,7 @@ func TestRequestReviewers(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 			err := client.RequestReviewers(context.Background(), "owner", "repo", 42, tt.reviewers, tt.teamReviewers)
 
 			if (err != nil) != tt.wantErr {
@@ -2089,7 +2090,7 @@ func TestListPullRequests(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 			prs, err := client.ListPullRequests(context.Background(), "owner", "repo", tt.state)
 
 			if (err != nil) != tt.wantErr {
@@ -2174,7 +2175,7 @@ func TestGetTagForSHA(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 			tagName, err := client.GetTagForSHA(context.Background(), "owner", "repo", tt.sha)
 
 			if (err != nil) != tt.wantErr {
@@ -2238,7 +2239,7 @@ func TestDeleteBranch(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 			err := client.DeleteBranch(context.Background(), "owner", "repo", tt.branch)
 
 			if (err != nil) != tt.wantErr {
@@ -2335,7 +2336,7 @@ func TestGetJobLogs(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 			logs, err := client.GetJobLogs(context.Background(), "owner", "repo", 123)
 
 			if tt.wantErr {
@@ -2420,7 +2421,7 @@ func TestGetPullRequestComments(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 			comments, err := client.GetPullRequestComments(context.Background(), "owner", "repo", 10)
 
 			if (err != nil) != tt.wantErr {
@@ -2491,7 +2492,7 @@ func TestUpdatePullRequestBranch(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 			err := client.UpdatePullRequestBranch(context.Background(), "owner", "repo", 42)
 
 			if (err != nil) != tt.wantErr {
@@ -2577,7 +2578,7 @@ func TestExecuteGraphQL(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 
 			if tt.name == "nil result ignores data" {
 				err := client.ExecuteGraphQL(context.Background(), tt.query, tt.variables, nil)
@@ -2663,7 +2664,7 @@ func TestSearchMergedPRsForIssue(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 			found, err := client.SearchMergedPRsForIssue(context.Background(), "owner", "repo", tt.issueNumber)
 
 			if (err != nil) != tt.wantErr {
@@ -2734,7 +2735,7 @@ func TestFindMergedPRByBranch(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 			found, err := client.FindMergedPRByBranch(context.Background(), "owner", "repo", tt.branch)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("FindMergedPRByBranch() error = %v, wantErr %v", err, tt.wantErr)
@@ -2797,7 +2798,7 @@ func TestSearchOpenSubIssues(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 			count, err := client.SearchOpenSubIssues(context.Background(), "owner", "repo", tt.parentNum)
 
 			if (err != nil) != tt.wantErr {
@@ -2860,7 +2861,7 @@ func TestGetReleaseByTag(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 			release, err := client.GetReleaseByTag(context.Background(), "owner", "repo", "v1.0.0")
 
 			if (err != nil) != tt.wantErr {
@@ -2919,7 +2920,7 @@ func TestGetIssueNodeID(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 			nodeID, err := client.GetIssueNodeID(context.Background(), "owner", "repo", 42)
 
 			if (err != nil) != tt.wantErr {
@@ -3017,7 +3018,7 @@ func TestLinkSubIssue(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 			err := client.LinkSubIssue(context.Background(), "owner", "repo", 10, 20)
 
 			if (err != nil) != tt.wantErr {
@@ -3107,7 +3108,7 @@ func TestGetOpenSubIssueCount(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 			count, hasNative, err := client.GetOpenSubIssueCount(context.Background(), "owner", "repo", 50)
 
 			if (err != nil) != tt.wantErr {
@@ -3219,7 +3220,7 @@ func TestSearchOpenPilotIssuesWithSubIssues(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 			numbers, err := client.SearchOpenPilotIssuesWithSubIssues(context.Background(), "owner", "repo", tt.limit)
 
 			if (err != nil) != tt.wantErr {
@@ -3282,7 +3283,7 @@ func TestUpdateRelease(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 			release, err := client.UpdateRelease(context.Background(), "owner", "repo", 123, &ReleaseInput{
 				Body: "enriched changelog",
 			})
@@ -3356,7 +3357,7 @@ func TestSearchPRsForIssue(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 			prs, err := client.SearchPRsForIssue(context.Background(), "owner", "repo", tt.issueNumber)
 
 			if (err != nil) != tt.wantErr {
@@ -3388,5 +3389,152 @@ func TestSearchPRsForIssue(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// fastRetryOpts returns retry options with minimal delays for unit tests.
+func fastRetryOpts() RetryOptions {
+	return RetryOptions{MaxRetries: 2, BaseDelay: time.Millisecond, MaxDelay: time.Millisecond}
+}
+
+// stubMetricsRecorder counts RecordAPIError calls.
+type stubMetricsRecorder struct {
+	calls    int
+	endpoint string
+}
+
+func (s *stubMetricsRecorder) RecordAPIError(endpoint string) {
+	s.calls++
+	s.endpoint = endpoint
+}
+
+func TestDoRequest_RetriesOn429(t *testing.T) {
+	attempt := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempt++
+		if attempt == 1 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"message":"rate limited"}`))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"number":1}`))
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(fastRetryOpts()))
+	var result struct{ Number int `json:"number"` }
+	err := client.doRequest(context.Background(), http.MethodGet, "/repos/o/r/issues/1", nil, &result)
+	if err != nil {
+		t.Fatalf("expected success after retry, got: %v", err)
+	}
+	if attempt != 2 {
+		t.Errorf("expected 2 attempts, got %d", attempt)
+	}
+}
+
+func TestDoRequest_RetriesOn5xx(t *testing.T) {
+	attempt := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempt++
+		if attempt == 1 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"message":"service unavailable"}`))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"number":2}`))
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(fastRetryOpts()))
+	var result struct{ Number int `json:"number"` }
+	err := client.doRequest(context.Background(), http.MethodGet, "/repos/o/r/issues/2", nil, &result)
+	if err != nil {
+		t.Fatalf("expected success after retry, got: %v", err)
+	}
+	if attempt != 2 {
+		t.Errorf("expected 2 attempts, got %d", attempt)
+	}
+}
+
+func TestDoRequest_RecordsAPIErrorOnRetryableExhausted(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"message":"service unavailable"}`))
+	}))
+	defer server.Close()
+
+	rec := &stubMetricsRecorder{}
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL,
+		WithRetryOptions(fastRetryOpts()),
+		WithMetricsRecorder(rec),
+	)
+	err := client.doRequest(context.Background(), http.MethodGet, "/repos/o/r/issues/42", nil, nil)
+	if err == nil {
+		t.Fatal("expected error after exhausted retries")
+	}
+	if rec.calls != 1 {
+		t.Errorf("RecordAPIError called %d times, want 1", rec.calls)
+	}
+	if rec.endpoint != "/repos/o/r/issues/:id" {
+		t.Errorf("RecordAPIError endpoint = %q, want /repos/o/r/issues/:id", rec.endpoint)
+	}
+}
+
+func TestDoRequest_NoRetryOn4xx(t *testing.T) {
+	attempt := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempt++
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"message":"not found"}`))
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(fastRetryOpts()))
+	err := client.doRequest(context.Background(), http.MethodGet, "/repos/o/r/issues/99", nil, nil)
+	if err == nil {
+		t.Fatal("expected error for 404")
+	}
+	if attempt != 1 {
+		t.Errorf("expected exactly 1 attempt for 404, got %d", attempt)
+	}
+}
+
+func TestDoRequest_NoMetricRecordedFor4xx(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer server.Close()
+
+	rec := &stubMetricsRecorder{}
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL,
+		WithRetryOptions(fastRetryOpts()),
+		WithMetricsRecorder(rec),
+	)
+	_ = client.doRequest(context.Background(), http.MethodGet, "/repos/o/r/issues/1", nil, nil)
+	if rec.calls != 0 {
+		t.Errorf("RecordAPIError should not be called for 404, got %d calls", rec.calls)
+	}
+}
+
+func TestNormalizePathLabel(t *testing.T) {
+	tests := []struct {
+		path string
+		want string
+	}{
+		{"/repos/owner/repo/issues/42", "/repos/owner/repo/issues/:id"},
+		{"/repos/owner/repo/pulls/123/merge", "/repos/owner/repo/pulls/:id/merge"},
+		{"/repos/owner/repo/commits/abc123456789012345678901234567890123456a/status", "/repos/owner/repo/commits/:sha/status"},
+		{"/repos/owner/repo/releases?per_page=10", "/repos/owner/repo/releases"},
+		{"/repos/owner/repo/issues", "/repos/owner/repo/issues"},
+		{"/repos/owner/repo/check-runs/987654", "/repos/owner/repo/check-runs/:id"},
+	}
+	for _, tt := range tests {
+		got := normalizePathLabel(tt.path)
+		if got != tt.want {
+			t.Errorf("normalizePathLabel(%q) = %q, want %q", tt.path, got, tt.want)
+		}
 	}
 }

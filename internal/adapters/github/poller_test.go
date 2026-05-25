@@ -350,7 +350,7 @@ func TestPoller_CheckForNewIssues(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 
 			processedIssues := []*Issue{}
 			var mu sync.Mutex
@@ -387,7 +387,7 @@ func TestPoller_CheckForNewIssues_APIError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 
 	callbackCalled := false
 	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second,
@@ -417,7 +417,7 @@ func TestPoller_CheckForNewIssues_CallbackError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 
 	var callCount int32
 	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second,
@@ -456,7 +456,7 @@ func TestPoller_CheckForNewIssues_NoCallback(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 
 	// Create poller without callback
 	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second)
@@ -485,7 +485,7 @@ func TestPoller_CheckForNewIssues_SkipsAlreadyProcessed(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 
 	var callCount int32
 	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second,
@@ -522,7 +522,7 @@ func TestPoller_CheckForNewIssues_AllowsRetryWhenLabelsRemoved(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 
 	var callCount int32
 	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second,
@@ -585,7 +585,7 @@ func TestPoller_Start_InitialCheck(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 
 	callbackCalled := make(chan struct{}, 1)
 	poller, _ := NewPoller(client, "owner/repo", "pilot", 1*time.Hour, // Long interval
@@ -739,7 +739,7 @@ func TestPoller_FindOldestUnprocessedIssue(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second)
 
 	issue, err := poller.findOldestUnprocessedIssue(context.Background())
@@ -768,7 +768,7 @@ func TestPoller_FindOldestUnprocessedIssue_SkipsProcessedWithDoneLabel(t *testin
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second)
 
 	issue, err := poller.findOldestUnprocessedIssue(context.Background())
@@ -797,7 +797,7 @@ func TestPoller_FindOldestUnprocessedIssue_AllowsRetryWhenFailedLabelRemoved(t *
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second,
 		WithRetryGracePeriod(0), // GH-2201: disable grace period for test
 	)
@@ -836,7 +836,7 @@ func TestPoller_FindOldestUnprocessedIssue_SkipsInProgress(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second)
 
 	issue, err := poller.findOldestUnprocessedIssue(context.Background())
@@ -859,7 +859,7 @@ func TestPoller_FindOldestUnprocessedIssue_ReturnsNilWhenEmpty(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second)
 
 	issue, err := poller.findOldestUnprocessedIssue(context.Background())
@@ -938,7 +938,7 @@ func TestPoller_StartSequential_ProcessesOneAtATime(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 
 	processedOrder := []int{}
 	var mu sync.Mutex
@@ -1111,7 +1111,7 @@ func TestPoller_HasPendingDependencies(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 			poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second)
 
 			issue := &Issue{Number: 1, Body: tt.issueBody}
@@ -1130,7 +1130,7 @@ func TestPoller_HasPendingDependencies_APIError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second)
 
 	issue := &Issue{Number: 1, Body: "Depends on: #100"}
@@ -1164,7 +1164,7 @@ func TestPoller_FindOldestUnprocessedIssue_SkipsPendingDependencies(t *testing.T
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second)
 
 	issue, err := poller.findOldestUnprocessedIssue(context.Background())
@@ -1203,7 +1203,7 @@ func TestPoller_FindOldestUnprocessedIssue_PicksClosedDependency(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second)
 
 	issue, err := poller.findOldestUnprocessedIssue(context.Background())
@@ -1242,7 +1242,7 @@ func TestPoller_FindOldestUnprocessedIssue_AllDepsOpen(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second)
 
 	issue, err := poller.findOldestUnprocessedIssue(context.Background())
@@ -1293,7 +1293,7 @@ func TestPoller_RecoverOrphanedIssues(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second)
 
 	// Call recovery directly
@@ -1317,7 +1317,7 @@ func TestPoller_RecoverOrphanedIssues_NoOrphanedIssues(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second)
 
 	// Should not panic or error with empty result
@@ -1331,7 +1331,7 @@ func TestPoller_RecoverOrphanedIssues_APIError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second)
 
 	// Should not panic - errors are logged but not returned
@@ -1426,7 +1426,7 @@ func TestPoller_OverlapGrouping_AllOverlap(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 
 	var dispatched []int
 	var mu sync.Mutex
@@ -1467,7 +1467,7 @@ func TestPoller_OverlapGrouping_NoOverlap(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 
 	var callCount int32
 	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second,
@@ -1502,7 +1502,7 @@ func TestPoller_OverlapGrouping_MixedGroups(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 
 	var dispatched []int
 	var mu sync.Mutex
@@ -1555,7 +1555,7 @@ func TestPoller_AutoMode_NonOverlapping(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 
 	var callCount int32
 	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second,
@@ -1590,7 +1590,7 @@ func TestPoller_AutoMode_OverlappingDispatchesOldestOnly(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 
 	var dispatched []int
 	var mu sync.Mutex
@@ -1656,7 +1656,7 @@ func TestPoller_HasMergedWork(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 			poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second)
 
 			issue := &Issue{Number: 42, Title: "Test issue"}
@@ -1682,7 +1682,7 @@ func TestPoller_HasMergedWork_APIError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second)
 
 	issue := &Issue{Number: 42, Title: "Test issue"}
@@ -1712,7 +1712,7 @@ func TestPoller_CheckForNewIssues_SkipsRetryWithMergedPRs(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 
 	var callCount int32
 	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second,
@@ -1758,7 +1758,7 @@ func TestPoller_FindOldestUnprocessedIssue_SkipsRetryWithMergedPRs(t *testing.T)
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second,
 		WithExecutionMode(ExecutionModeSequential),
 		WithRetryGracePeriod(0), // GH-2201: disable grace period for test
@@ -1790,7 +1790,7 @@ func TestPoller_CheckForNewIssues_SkipsPullRequests(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 
 	var dispatched []int
 	var mu sync.Mutex
@@ -1835,7 +1835,7 @@ func TestPoller_FindOldestUnprocessedIssue_SkipsPullRequests(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second)
 
 	issue, err := poller.findOldestUnprocessedIssue(context.Background())
@@ -1872,7 +1872,7 @@ func TestPoller_SkipsRecentlyProcessed(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 
 	var callCount int32
 	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second,
@@ -1910,7 +1910,7 @@ func TestPoller_AllowsRetryAfterGrace(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 
 	var callCount int32
 	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second,
@@ -1945,7 +1945,7 @@ func TestPoller_SkipsQueuedTask(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 
 	checker := &mockTaskChecker{queued: map[string]bool{"GH-42": true}}
 
@@ -1986,7 +1986,7 @@ func TestPoller_AllowsRetryCompletedTask(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 
 	checker := &mockTaskChecker{queued: map[string]bool{}} // Not queued
 
@@ -2071,7 +2071,7 @@ func TestPoller_AutoRetryFailedIssue_FirstFailure(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second,
 		WithRetryGracePeriod(0),
 	)
@@ -2112,7 +2112,7 @@ func TestPoller_AutoRetryFailedIssue_RetryLimitReached(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second,
 		WithMaxFailedRetries(3),
 	)
@@ -2148,7 +2148,7 @@ func TestPoller_AutoRetryFailedIssue_SkipsDoneIssues(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second)
 
 	issue, err := poller.findOldestUnprocessedIssue(context.Background())
@@ -2177,7 +2177,7 @@ func TestPoller_AutoRetryFailedIssue_SkipsClosedIssues(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second)
 
 	issue, err := poller.findOldestUnprocessedIssue(context.Background())
@@ -2214,7 +2214,7 @@ func TestPoller_AutoRetryFailedIssue_ParallelMode(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 
 	var processedIssues []*Issue
 	var mu sync.Mutex
@@ -2256,7 +2256,7 @@ func TestPoller_AutoRetryFailedIssue_ParallelMode_LimitReached(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 
 	var processedCount atomic.Int32
 	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second,
@@ -2296,7 +2296,7 @@ func TestPoller_SkipsNeedsClarification(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second)
 
 	// Test findOldestUnprocessedIssue skips #42
@@ -2363,7 +2363,7 @@ func TestPoller_AutoRetryRetryReadyIssue_FirstRetry(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second,
 		WithRetryGracePeriod(0),
 	)
@@ -2407,7 +2407,7 @@ func TestPoller_AutoRetryRetryReadyIssue_RetryLimitReached(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second,
 		WithMaxRetryReadyRetries(3),
 	)
@@ -2438,7 +2438,7 @@ func TestPoller_AutoRetryRetryReadyIssue_SkipsDoneIssues(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second)
 
 	issue, err := poller.findOldestUnprocessedIssue(context.Background())
@@ -2467,7 +2467,7 @@ func TestPoller_AutoRetryRetryReadyIssue_SkipsClosedIssues(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second)
 
 	issue, err := poller.findOldestUnprocessedIssue(context.Background())
@@ -2504,7 +2504,7 @@ func TestPoller_AutoRetryRetryReadyIssue_ParallelMode(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 
 	var processedIssues []*Issue
 	var mu sync.Mutex
@@ -2577,7 +2577,7 @@ func TestPoller_SkipsCompletedExecution(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 
 	execChecker := &mockExecutionChecker{
 		completed: map[string]bool{
@@ -2623,7 +2623,7 @@ func TestPoller_DispatchesWhenNoCompletedExecution(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 
 	execChecker := &mockExecutionChecker{
 		completed: map[string]bool{}, // No completed executions
@@ -2673,7 +2673,7 @@ func TestPoller_HasMergedWork_SearchLag_BranchFallback(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second)
 
 	issue := &Issue{Number: 42, Title: "Test issue"}
@@ -2703,7 +2703,7 @@ func TestPoller_HasMergedWork_NoMerges_NoFallbackBlock(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second)
 
 	issue := &Issue{Number: 42, Title: "Test issue"}
@@ -2743,7 +2743,7 @@ func TestPoller_CheckForNewIssues_StaleSnapshot_RefreshesLabels(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second,
 		WithOnIssue(func(ctx context.Context, issue *Issue) error {
 			atomic.AddInt32(&dispatches, 1)
@@ -2826,7 +2826,7 @@ func TestPoller_CheckForNewIssues_SkipsSupersededByParent(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second,
 		WithOnIssue(func(ctx context.Context, issue *Issue) error {
 			atomic.AddInt32(&dispatches, 1)
@@ -2892,7 +2892,7 @@ func TestPoller_CheckForNewIssues_DoesNotSupersedeWhenParentNotDone(t *testing.T
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second,
 		WithOnIssue(func(ctx context.Context, issue *Issue) error {
 			atomic.AddInt32(&dispatches, 1)
@@ -2924,7 +2924,7 @@ func TestPoller_CheckForNewIssues_SkipsBlockedIssues(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second,
 		WithOnIssue(func(ctx context.Context, issue *Issue) error {
 			atomic.AddInt32(&dispatches, 1)

@@ -97,7 +97,7 @@ func TestUpdateProjectItemStatus_FullFlow(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 	pbs := NewProjectBoardSync(client, &ProjectBoardConfig{
 		Enabled:       true,
 		ProjectNumber: 5,
@@ -142,7 +142,7 @@ func TestUpdateProjectItemStatus_CachesIDs(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 	pbs := NewProjectBoardSync(client, &ProjectBoardConfig{
 		Enabled:       true,
 		ProjectNumber: 1,
@@ -224,7 +224,7 @@ func TestResolveProjectID_OrgFirstUserFallback(t *testing.T) {
 			}))
 			defer server.Close()
 
-			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 			pbs := &ProjectBoardSync{
 				client: client,
 				config: &ProjectBoardConfig{ProjectNumber: 3},
@@ -266,7 +266,7 @@ func TestUpdateProjectItemStatus_IssueNotInProject(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 	pbs := NewProjectBoardSync(client, &ProjectBoardConfig{
 		Enabled:       true,
 		ProjectNumber: 1,
@@ -300,7 +300,7 @@ func TestUpdateProjectItemStatus_StatusNotFound(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 	pbs := NewProjectBoardSync(client, &ProjectBoardConfig{
 		Enabled:       true,
 		ProjectNumber: 1,
@@ -343,7 +343,7 @@ func TestUpdateProjectItemStatus_CaseInsensitiveMatch(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 	pbs := NewProjectBoardSync(client, &ProjectBoardConfig{
 		Enabled:       true,
 		ProjectNumber: 1,
@@ -364,7 +364,7 @@ func TestUpdateProjectItemStatus_GraphQLError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 	pbs := NewProjectBoardSync(client, &ProjectBoardConfig{
 		Enabled:       true,
 		ProjectNumber: 1,
@@ -405,7 +405,7 @@ func TestEnsureResolved_ConcurrentAccess(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 	pbs := &ProjectBoardSync{
 		client: client,
 		config: &ProjectBoardConfig{ProjectNumber: 1, StatusField: "Status"},
@@ -435,7 +435,7 @@ func TestExecuteGraphQL_Success(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 
 	var result map[string]string
 	err := client.ExecuteGraphQL(context.Background(), `{ test }`, nil, &result)
@@ -454,7 +454,7 @@ func TestExecuteGraphQL_GraphQLErrors(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 
 	err := client.ExecuteGraphQL(context.Background(), `{ test }`, nil, nil)
 	if err == nil {
@@ -472,7 +472,7 @@ func TestExecuteGraphQL_HTTPError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 
 	err := client.ExecuteGraphQL(context.Background(), `{ test }`, nil, nil)
 	if err == nil {
@@ -501,7 +501,7 @@ func TestResolveFieldAndOptions_DefaultFieldName(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 	pbs := &ProjectBoardSync{
 		client:    client,
 		config:    &ProjectBoardConfig{StatusField: ""}, // empty — should default to "Status"

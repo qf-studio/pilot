@@ -59,7 +59,7 @@ func TestMergeWaiter_WaitForMerge_AlreadyMerged(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 	waiter := NewMergeWaiter(client, "owner", "repo", &MergeWaiterConfig{
 		PollInterval: 10 * time.Millisecond,
 		Timeout:      1 * time.Second,
@@ -95,7 +95,7 @@ func TestMergeWaiter_WaitForMerge_ClosedWithoutMerge(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 	waiter := NewMergeWaiter(client, "owner", "repo", &MergeWaiterConfig{
 		PollInterval: 10 * time.Millisecond,
 		Timeout:      1 * time.Second,
@@ -130,7 +130,7 @@ func TestMergeWaiter_WaitForMerge_Conflicting(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 	waiter := NewMergeWaiter(client, "owner", "repo", &MergeWaiterConfig{
 		PollInterval: 10 * time.Millisecond,
 		Timeout:      1 * time.Second,
@@ -163,7 +163,7 @@ func TestMergeWaiter_WaitForMerge_Timeout(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 	waiter := NewMergeWaiter(client, "owner", "repo", &MergeWaiterConfig{
 		PollInterval: 10 * time.Millisecond,
 		Timeout:      50 * time.Millisecond,
@@ -199,7 +199,7 @@ func TestMergeWaiter_WaitForMerge_ContextCancelled(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 	waiter := NewMergeWaiter(client, "owner", "repo", &MergeWaiterConfig{
 		PollInterval: 50 * time.Millisecond,
 		Timeout:      10 * time.Second, // Long timeout
@@ -248,7 +248,7 @@ func TestMergeWaiter_WaitForMerge_EventuallyMerges(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 	waiter := NewMergeWaiter(client, "owner", "repo", &MergeWaiterConfig{
 		PollInterval: 10 * time.Millisecond,
 		Timeout:      1 * time.Second,
@@ -293,7 +293,7 @@ func TestMergeWaiter_WaitWithCallback(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 	waiter := NewMergeWaiter(client, "owner", "repo", &MergeWaiterConfig{
 		PollInterval: 10 * time.Millisecond,
 		Timeout:      1 * time.Second,

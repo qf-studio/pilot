@@ -50,7 +50,7 @@ func TestPoller_RetryLabel_FirstAttemptAddsRetry1(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second, WithRetryGracePeriod(0))
 
 	issue, err := poller.findOldestUnprocessedIssue(context.Background())
@@ -108,7 +108,7 @@ func TestPoller_RetryLabel_Retry2EscalatesToExhausted(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second, WithRetryGracePeriod(0))
 
 	issue, err := poller.findOldestUnprocessedIssue(context.Background())
@@ -148,7 +148,7 @@ func TestPoller_RetryLabel_ExhaustedIsTerminal(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL, WithRetryOptions(RetryOptions{MaxRetries: 0}))
 	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second, WithRetryGracePeriod(0))
 
 	issue, err := poller.findOldestUnprocessedIssue(context.Background())

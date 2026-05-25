@@ -52,9 +52,13 @@ func WithRetry[T any](ctx context.Context, op func() (T, error), opts RetryOptio
 			delay = opts.MaxDelay
 		}
 
-		// Check for Retry-After header in rate limit errors
+		// Check for Retry-After header in rate limit errors, but cap by MaxDelay
 		if retryAfter := extractRetryAfter(lastErr); retryAfter > 0 {
-			delay = retryAfter
+			if opts.MaxDelay > 0 && retryAfter > opts.MaxDelay {
+				delay = opts.MaxDelay
+			} else {
+				delay = retryAfter
+			}
 		}
 
 		// Wait with context cancellation support
