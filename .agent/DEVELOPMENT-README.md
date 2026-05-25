@@ -118,7 +118,7 @@ Disable via config: `executor.navigator.auto_init: false`
 
 ## Current State
 
-**Current Version:** v2.149.3 | **323 features working**
+**Current Version:** v2.149.4 | **323 features working**
 
 **Recent (v2.149.0, May 21 2026):**
 - `feat(adapters/github)`: **Repo-allowlist guardrail — Phase B (adapter)** — `CreatePilotIssue` now takes an `IssueAllowlist` parameter and refuses unconfigured repos via `validateIssueRepo`. `IssueAllowlist` defined locally in `internal/adapters/github` to avoid the executor→github import cycle; `cmd/pilot/repo_allowlist.go::configRepoAllowlist` satisfies both interfaces transparently. `autopilot.FeedbackLoop` passes `nil` (its owner/repo come from explicit config at construction — already constrained). Closes the defense-in-depth gap from v2.147.0. (#3047, follow-up to GH-3027)
