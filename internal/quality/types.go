@@ -123,16 +123,20 @@ func (cr *CheckResults) GetFailedGates() []*Result {
 // Config holds quality gates configuration
 type Config struct {
 	Enabled   bool          `yaml:"enabled" json:"enabled"`
-	Parallel  *bool         `yaml:"parallel" json:"parallel"` // Run gates in parallel (default: true)
+	Parallel  *bool         `yaml:"parallel" json:"parallel"` // Run gates in parallel (default: false; see TASK-289 / SOP parallel-gate-cache-race)
 	Gates     []*Gate       `yaml:"gates" json:"gates"`
 	OnFailure FailureConfig `yaml:"on_failure" json:"on_failure"`
 }
 
 // IsParallel returns whether gates should run in parallel.
-// Defaults to true if not explicitly set.
+//
+// Defaults to false: concurrent `make build` / `make test` / `make lint` race on the
+// shared `~/.cache/go-build` and `~/.cache/golangci-lint` caches, producing spurious
+// gate failures (see .agent/sops/quality/parallel-gate-cache-race.md and TASK-289).
+// Set `quality.parallel: true` explicitly only when per-gate cache isolation is in place.
 func (c *Config) IsParallel() bool {
 	if c.Parallel == nil {
-		return true // Default to parallel execution
+		return false // Default to sequential — avoids shared-cache races (TASK-289)
 	}
 	return *c.Parallel
 }
