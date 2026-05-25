@@ -2,10 +2,65 @@ package linear
 
 import (
 	"context"
+	"crypto/ed25519"
+	"encoding/hex"
+	"errors"
+	"fmt"
 	"log/slog"
 
 	"github.com/qf-studio/pilot/internal/logging"
 )
+
+// Errors returned by VerifyLinearSignature. Callers can use errors.Is to
+// distinguish between misconfiguration (no public key) and tampering
+// (signature mismatch) so they can choose to log-and-allow vs. reject.
+var (
+	// ErrLinearNoPublicKey is returned when the public key is empty.
+	// Treat as "verification disabled" — the caller decides whether to
+	// reject or to log a warning and allow the request through.
+	ErrLinearNoPublicKey = errors.New("linear: webhook public key not configured")
+	// ErrLinearMissingSignature is returned when the request has no
+	// linear-signature header. Always a hard reject.
+	ErrLinearMissingSignature = errors.New("linear: missing webhook signature header")
+	// ErrLinearInvalidSignatureEncoding is returned when the header value
+	// is present but not valid hex. Hard reject.
+	ErrLinearInvalidSignatureEncoding = errors.New("linear: invalid signature encoding")
+	// ErrLinearSignatureMismatch is returned when the signature does not
+	// match the body under the configured public key. Hard reject.
+	ErrLinearSignatureMismatch = errors.New("linear: signature verification failed")
+)
+
+// VerifyLinearSignature verifies that the given signature is a valid Ed25519
+// signature over body, produced by the private key corresponding to publicKey.
+//
+// Linear's webhook signing convention (TASK-295):
+//   - Header name: "linear-signature"
+//   - Header value: hex-encoded Ed25519 signature
+//   - Signed data: the raw HTTP request body bytes (BEFORE JSON parsing)
+//
+// Returns nil on successful verification. On failure, returns a sentinel error
+// (see ErrLinear* above) so callers can match with errors.Is.
+//
+// Asymmetry note (TASK-295): Linear and Azure DevOps webhook auth are
+// intentionally NOT shared — Linear uses asymmetric Ed25519, Azure uses
+// symmetric Basic Auth. A combined helper would obscure the verification
+// model and risk one platform's auth being applied to the other's traffic.
+func VerifyLinearSignature(publicKey ed25519.PublicKey, signatureHex string, body []byte) error {
+	if len(publicKey) == 0 {
+		return ErrLinearNoPublicKey
+	}
+	if signatureHex == "" {
+		return ErrLinearMissingSignature
+	}
+	sig, err := hex.DecodeString(signatureHex)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrLinearInvalidSignatureEncoding, err)
+	}
+	if !ed25519.Verify(publicKey, body, sig) {
+		return ErrLinearSignatureMismatch
+	}
+	return nil
+}
 
 // WebhookEventType represents the type of webhook event
 type WebhookEventType string
