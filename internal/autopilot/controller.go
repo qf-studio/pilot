@@ -1584,12 +1584,37 @@ func (c *Controller) handlePostMergeCI(ctx context.Context, prState *PRState) er
 }
 
 // getMainBranchSHA returns the current SHA of the main branch.
+//
+// TASK-291: previously hardcoded "main" — this silently broke post-merge CI
+// monitoring on repos defaulting to develop/master/trunk (releases could fire
+// before main-branch CI completed). Now reads ResolvedEnv().Branch and falls
+// back to literal "main" with a WARN log when no environment branch is set.
 func (c *Controller) getMainBranchSHA(ctx context.Context) (string, error) {
-	branch, err := c.ghClient.GetBranch(ctx, c.owner, c.repo, "main")
+	branchName := c.resolveMainBranchName()
+	branch, err := c.ghClient.GetBranch(ctx, c.owner, c.repo, branchName)
 	if err != nil {
 		return "", err
 	}
 	return branch.SHA(), nil
+}
+
+// resolveMainBranchName returns the branch name post-merge CI should track.
+// Preference order:
+//  1. c.config.ResolvedEnv().Branch — the per-environment branch (prod=main, stage=develop, etc.)
+//  2. Literal "main" with a WARN log — last-resort fallback so we never block a release on an empty branch name.
+//
+// A broader fallback through ProjectConfig (BranchFrom/DefaultBranch) would
+// require wiring the pilot global Config into autopilot.Controller — deferred
+// to a follow-up; not needed for the workshop-scope incident this fix targets.
+func (c *Controller) resolveMainBranchName() string {
+	if env := c.config.ResolvedEnv(); env != nil && env.Branch != "" {
+		return env.Branch
+	}
+	c.log.Warn("resolveMainBranchName: no environment branch configured, falling back to literal \"main\" — set environments.<env>.branch to silence this warning",
+		"owner", c.owner,
+		"repo", c.repo,
+	)
+	return "main"
 }
 
 // resolveRelease is a package-level helper used during construction (before Controller
