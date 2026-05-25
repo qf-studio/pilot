@@ -120,12 +120,17 @@ Disable via config: `executor.navigator.auto_init: false`
 
 **Current Version:** v2.149.4 | **323 features working**
 
-**Recent (v2.149.0, May 21 2026):**
-- `feat(adapters/github)`: **Repo-allowlist guardrail — Phase B (adapter)** — `CreatePilotIssue` now takes an `IssueAllowlist` parameter and refuses unconfigured repos via `validateIssueRepo`. `IssueAllowlist` defined locally in `internal/adapters/github` to avoid the executor→github import cycle; `cmd/pilot/repo_allowlist.go::configRepoAllowlist` satisfies both interfaces transparently. `autopilot.FeedbackLoop` passes `nil` (its owner/repo come from explicit config at construction — already constrained). Closes the defense-in-depth gap from v2.147.0. (#3047, follow-up to GH-3027)
-- `docs(sops)`: Subprocess OOM tuning runbook at `.agent/sops/subprocess-oom-tuning.md` — companion to the v2.148.0 RSS telemetry, documents how to set `subprocess_limits.max_rss_mb` from observed `peak_rss_mb` data. (#3048)
+**Recent (v2.149.4, May 25 2026):** Wave 1 hardening sweep + Linear webhook signature verification (from `.agent/audits/AUDIT-2026-05-25.md`).
+- `fix(quality)`: Default `quality.parallel` → `false`. Eliminates the shared `~/.cache/go-build` / `~/.cache/golangci-lint` race that produced 11 spurious gate failures in 3h at the 2026-05-21 workshop. Opt-back-in via explicit `quality.parallel: true`. New SOP: `.agent/sops/quality/parallel-gate-cache-race.md`. (TASK-289 / #3057)
+- `fix(config)`: `~/.pilot/config.yaml` now writes mode `0600` (was `0644`) + parent dir `0700`. Existing `0644` configs tightened on next save via explicit `os.Chmod` (since `os.WriteFile` leaves existing-file modes alone). The file holds GitHub PAT, Linear API key, Slack bot token, Anthropic key — was world-readable on shared workstations. (TASK-290 / #3058)
+- `fix(autopilot)`: `getMainBranchSHA` reads `c.config.ResolvedEnv().Branch` instead of the hardcoded `"main"` literal. Repos defaulting to `develop` / `master` / `trunk` now get correct post-merge CI monitoring; previously releases could fire before the real default branch's CI completed. (TASK-291 / #3059)
+- `fix(linear)`: New `VerifyLinearSignature` primitive (Ed25519 over raw request body) + gateway wiring. `handleLinearWebhook` rejects 401 on bad signatures when a public key is configured. **Caveat:** `gateway.Config.LinearWebhookPublicKey` has no YAML decode in `cmd/pilot/main.go` yet — verification is gated behind a field nothing can set. Follow-up in backlog. (TASK-295 / #3060)
+- `fix(security)`: `scripts/check-secret-patterns.sh` broadened from `--include='*_test.go'` (~50 files) to all tracked files (1086) with an explicit allowlist for the 4 educational files (CLAUDE.md / CONTRIBUTING.md / testutil/tokens.go / TASK-41 postmortem). Plus: GitHub-side `secret_scanning` + `push_protection` enabled on the repo (was disabled). (TASK-299 / #3062)
+- `chore(ci)`: Deleted dead `.github/workflows/ci-autofix.yml` + the `notify-failure` job in `ci.yml` that fed it. The workflow had been emitting phantom 0-job "failure" run records on every push for 4+ days, generating alert-email noise. (#3063)
 
-**Previous (v2.148.0, May 21 2026):**
-- `feat(executor)`: **Subprocess OOM hardening** — Claude Code subprocess gains an RSS sampler (`internal/executor/rss_sampler{,_linux,_darwin,_other}.go`) that polls `/proc/<pid>/status` (or platform equivalent) every 10 s and persists `peak_rss_mb` / `final_rss_mb` to `executions`. `oom_killed` retries via `Retrier.Evaluate` (2 attempts, 10 s flat backoff — GH-22/sub-43 succeeded in 33 s on retry). `RLIMIT_AS` cap behind `executor.subprocess_limits.enabled` flag (default off; enable after ≥1 week of telemetry). Closes the 3-OOMs-in-24h incident from 2026-05-21. (GH-3028 / TASK-287 / #3046)
+**Previous (v2.149.0, May 21 2026):**
+- `feat(adapters/github)`: **Repo-allowlist guardrail — Phase B (adapter)** — `CreatePilotIssue` now takes an `IssueAllowlist` parameter and refuses unconfigured repos via `validateIssueRepo`. `IssueAllowlist` defined locally in `internal/adapters/github` to avoid the executor→github import cycle; `cmd/pilot/repo_allowlist.go::configRepoAllowlist` satisfies both interfaces transparently. (#3047, follow-up to GH-3027)
+- `docs(sops)`: Subprocess OOM tuning runbook at `.agent/sops/subprocess-oom-tuning.md` — companion to the v2.148.0 RSS telemetry. (#3048)
 
 **Full implementation status:** `.agent/system/FEATURE-MATRIX.md`
 
@@ -163,7 +168,11 @@ gh pr list --state open
 | P1 | Public launch prep | Landing page, onboarding, pricing, billing |
 | P1 | Web dashboard polish | React UI functional but needs design pass |
 | P1 | Fix `shouldTriggerRelease()` | Doesn't check `ResolvedEnv().Release` — only top-level config |
-| P2 | Flip `quality.parallel` default to false (or auto-detect JS) | 2026-05-21 workshop hit 11 spurious "quality gates failed after 2 auto-retries" in 3h. Root cause: parallel `make build` / `make test` / `make lint` in `internal/quality/runner.go:74` races on vite/next cache. User config patched (`parallel: false`) — Pilot-wide default change pending. |
+| P1 | **Wave 2 (from 2026-05-25 audit)** — 3 S-sized refactors ready to ship | `safeGo()` panic-recovery sweep [TASK-292](tasks/TASK-292-safego-panic-recovery-sweep.md) · Poller skip-reason counters [TASK-293](tasks/TASK-293-poller-skip-reason-counters.md) · Centralize `WithRetry` in github `doRequest` [TASK-294](tasks/TASK-294-github-retry-in-dorequest.md). Merge order: 293 before 292 (both touch poller.go); 294 independent. Resumption marker: `.agent/.context-markers/2026-05-25-wave1-and-task295-shipped.md`. |
+| P1 | TASK-295 follow-up: wire `linear.webhook_public_key` YAML → `gateway.Config.LinearWebhookPublicKey` | Without this glue in `cmd/pilot/main.go`, the v2.149.4 Ed25519 verification is gated behind a config field that has no decode path. Small (≤30 LOC); blocks the security improvement from being active. |
+| P2 | **Wave 3 (from 2026-05-25 audit)** — 3 M-sized refactors | `IsTaskShipped` predicate + cross-site invariant test [TASK-296](tasks/TASK-296-istaskshipped-predicate.md) · Docs drift sweep + `{CURRENT_VERSION}` interpolation [TASK-297](tasks/TASK-297-docs-drift-sweep.md) · Consolidate 7 `*_processed` SQLite tables into `adapter_processed` [TASK-298](tasks/TASK-298-consolidate-processed-tables.md). Merge order: 296 before 298 (both touch `state_store.go`). |
+| P2 | TASK-288 (poller dispatch false-positive) — keep open until Wave 3 closes | Split across [TASK-296](tasks/TASK-296-istaskshipped-predicate.md) (steps 1+3) and [TASK-298](tasks/TASK-298-consolidate-processed-tables.md) (step 2). Close manually via `gh issue close` with links to both PRs. [TASK-288](tasks/TASK-288-poller-dispatch-false-positive-fix.md) |
+| P2 | Pick one release pipeline: `make release` vs goreleaser-on-tag | They raced on v2.149.4 — `make release` uploaded 5 assets first, goreleaser hit `422 already_exists` on the same names, exited 1. Release succeeded (10 total assets across both); only the goreleaser workflow showed FAILED. Decide: keep goreleaser (just `git tag && git push`), or keep `make release` (delete `.github/workflows/release.yml`), or make them idempotent. Also: Makefile `release` target multi-line `NOTES=` still breaks the shell parse — same bug as v2.146.7 cut. |
 | P2 | E2E test suite | No integration tests — reliability untested |
 | P2 | Web dashboard auth | Token-based auth for remote access |
 | P2 | Mobile-responsive dashboard | Primary use case is phone access |
@@ -171,7 +180,7 @@ gh pr list --state open
 | P3 | GitHub App auth | PAT → installable GitHub App |
 | P3 | Add `project_path` to `eval_tasks` + scope eval panel | Follow-up to TASK-284; lets eval/bench panel scope per-project instead of `[global]` label — [TASK-285](tasks/TASK-285-eval-tasks-project-path.md) (blocked by TASK-284) |
 | P3 | `pilot project add` gh wizard | Interactive repo picker + token seed from `gh auth` — [TASK-282](tasks/TASK-282-project-add-gh-wizard.md) → [#3017](https://github.com/qf-studio/pilot/issues/3017) (not yet `pilot`-labeled) |
-| P3 | Makefile `release` target — quote `$(NOTES)` | Multi-line release notes break the `gh release create` recipe (broke during v2.146.7 cut). Fix: wrap in quotes or switch to `--notes-file`. |
+| P3 | Audit §3 Wave 4+ candidates | Not in Top 10 / not yet decomposed: `RecordAPIError` wiring beyond github · `AlertTypeOOMKilled` · multi-gate scanner phase discipline · subprocess migration end-to-end validation · `autopilot` adapter coupling refactor · SQL `withTx` helper · generic `Poller[T]` extraction · `Releaser` frozen-at-startup fix. Source: `.agent/audits/AUDIT-2026-05-25.md` §3. |
 
 ---
 

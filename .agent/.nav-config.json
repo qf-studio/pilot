@@ -13,7 +13,7 @@
   "auto_update": {
     "enabled": true,
     "check_interval_hours": 1,
-    "last_check": "2026-05-21T16:50:45.943244"
+    "last_check": "2026-05-25T15:59:21.012524"
   },
   "loop_mode": {
     "enabled": false,
