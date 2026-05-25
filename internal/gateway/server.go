@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/qf-studio/pilot/internal/adapters/github"
+	"github.com/qf-studio/pilot/internal/adapters/linear"
 	"github.com/qf-studio/pilot/internal/logging"
 )
 
@@ -61,25 +63,26 @@ type AutopilotProvider interface {
 // from external services (Linear, GitHub, Jira, Asana), and exposes REST APIs for status
 // and task management. Server is safe for concurrent use.
 type Server struct {
-	config              *Config
-	auth                *Authenticator
-	sessions            *SessionManager
-	router              *Router
-	upgrader            websocket.Upgrader
-	server              *http.Server
-	mu                  sync.RWMutex
-	running             bool
-	customHandlers      map[string]http.Handler
-	githubWebhookSecret string // Secret for GitHub webhook signature validation
-	dashboardFS         fs.FS  // Embedded React frontend (nil if not embedded)
-	readinessCheckers   []ReadinessChecker
-	liveness            *livenessState
-	prometheusExporter  *PrometheusExporter
-	autopilotProvider   AutopilotProvider
-	dashboardStore      DashboardStore
-	logStreamStore      LogStreamStore
-	gitGraphPath        string          // Project path for git graph API (defaults to ".")
-	gitGraphFetcher     GitGraphFetcher // Injected to avoid import cycle with internal/dashboard
+	config                 *Config
+	auth                   *Authenticator
+	sessions               *SessionManager
+	router                 *Router
+	upgrader               websocket.Upgrader
+	server                 *http.Server
+	mu                     sync.RWMutex
+	running                bool
+	customHandlers         map[string]http.Handler
+	githubWebhookSecret    string             // Secret for GitHub webhook signature validation
+	linearWebhookPublicKey ed25519.PublicKey  // Ed25519 public key for Linear webhook signature validation (TASK-295). Nil = verification disabled.
+	dashboardFS            fs.FS              // Embedded React frontend (nil if not embedded)
+	readinessCheckers      []ReadinessChecker
+	liveness               *livenessState
+	prometheusExporter     *PrometheusExporter
+	autopilotProvider      AutopilotProvider
+	dashboardStore         DashboardStore
+	logStreamStore         LogStreamStore
+	gitGraphPath           string          // Project path for git graph API (defaults to ".")
+	gitGraphFetcher        GitGraphFetcher // Injected to avoid import cycle with internal/dashboard
 }
 
 // Config holds gateway server configuration including network binding options.
@@ -91,6 +94,11 @@ type Config struct {
 	// GithubWebhookSecret is the secret for GitHub webhook signature validation.
 	// If set, incoming GitHub webhooks must have valid HMAC-SHA256 signatures.
 	GithubWebhookSecret string `yaml:"-"` // Set programmatically from adapters config
+	// LinearWebhookPublicKey is the Ed25519 public key for Linear webhook
+	// signature validation (TASK-295). If non-nil, incoming Linear webhooks
+	// without a valid linear-signature header are rejected with 401. If nil,
+	// signature verification is skipped and a startup warning is logged.
+	LinearWebhookPublicKey ed25519.PublicKey `yaml:"-"` // Set programmatically from adapters config
 }
 
 // localhostPrefixes are the allowed origin prefixes for localhost connections.
@@ -133,13 +141,14 @@ func NewServerWithAuth(config *Config, authConfig *AuthConfig) *Server {
 	}
 
 	s := &Server{
-		config:              config,
-		auth:                auth,
-		sessions:            NewSessionManager(),
-		router:              NewRouter(),
-		customHandlers:      make(map[string]http.Handler),
-		githubWebhookSecret: config.GithubWebhookSecret,
-		readinessCheckers:   make([]ReadinessChecker, 0),
+		config:                 config,
+		auth:                   auth,
+		sessions:               NewSessionManager(),
+		router:                 NewRouter(),
+		customHandlers:         make(map[string]http.Handler),
+		githubWebhookSecret:    config.GithubWebhookSecret,
+		linearWebhookPublicKey: config.LinearWebhookPublicKey,
+		readinessCheckers:      make([]ReadinessChecker, 0),
 		liveness: &livenessState{
 			maxGoroutines:   1000,
 			panicWindowSecs: 300, // 5 minutes
@@ -526,15 +535,48 @@ func (s *Server) Router() *Router {
 	return s.router
 }
 
-// handleLinearWebhook receives webhooks from Linear
+// handleLinearWebhook receives webhooks from Linear.
+//
+// TASK-295: if linearWebhookPublicKey is configured, the body's Ed25519
+// signature (sent in the linear-signature header, hex-encoded) is verified
+// before JSON parsing. Requests without a valid signature are rejected 401.
+// If the public key is not configured, verification is skipped and the
+// request is processed as before (logged at WARN so operators notice).
 func (s *Server) handleLinearWebhook(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
+	// Read raw body — required for Ed25519 verification (signature covers the
+	// exact bytes sent, before JSON parsing normalizes them).
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "Failed to read request body", http.StatusBadRequest)
+		return
+	}
+
+	signature := r.Header.Get("linear-signature")
+
+	if s.linearWebhookPublicKey != nil {
+		if verr := linear.VerifyLinearSignature(s.linearWebhookPublicKey, signature, body); verr != nil {
+			logging.WithComponent("gateway").Warn("Linear webhook signature verification failed",
+				slog.String("error", verr.Error()),
+				slog.String("remote_addr", r.RemoteAddr),
+			)
+			http.Error(w, "Invalid signature", http.StatusUnauthorized)
+			return
+		}
+	} else {
+		// Public key not configured — log once-per-request at WARN so the
+		// operator notices that they are running with verification disabled.
+		// Pilot won't refuse the request (development & migration friendliness),
+		// but the audit trail makes the gap visible.
+		logging.WithComponent("gateway").Warn("Linear webhook signature verification SKIPPED — linearWebhookPublicKey not configured. Set adapters.linear.webhook_public_key to enable Ed25519 verification (TASK-295).")
+	}
+
 	var payload map[string]interface{}
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+	if err := json.Unmarshal(body, &payload); err != nil {
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
 		return
 	}
