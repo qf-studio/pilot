@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/qf-studio/pilot/internal/adapters/skipreason"
 	"github.com/qf-studio/pilot/internal/logging"
 )
 
@@ -31,6 +32,13 @@ type WorkItemResult struct {
 	HeadSHA    string // Head commit SHA of the PR
 	BranchName string // Head branch name (e.g. "pilot/GH-123")
 	Error      error
+}
+
+// PollerMetricsRecorder records per-repo poller skip/dispatch counters.
+// Implemented by *autopilot.Metrics; kept as interface to avoid circular imports.
+type PollerMetricsRecorder interface {
+	RecordPollerSkipped(repo, reason string)
+	RecordPollerDispatched(repo string)
 }
 
 // ProcessedStore persists which Azure DevOps work items have been processed across restarts.
@@ -76,6 +84,11 @@ type Poller struct {
 	activeWg      sync.WaitGroup
 	stopping      atomic.Bool
 	wgMu          sync.Mutex // protects stopping + activeWg Add/Wait coordination
+
+	// pollerMetrics records per-repo skip/dispatch counters (optional).
+	pollerMetrics PollerMetricsRecorder
+	// repoKeyStr identifies this project in Prometheus labels.
+	repoKeyStr string
 }
 
 // PollerOption configures a Poller
@@ -148,6 +161,14 @@ func WithMaxConcurrent(n int) PollerOption {
 			n = 1
 		}
 		p.maxConcurrent = n
+	}
+}
+
+// WithPollerMetricsRecorder sets the recorder for per-repo poller skip/dispatch counters.
+func WithPollerMetricsRecorder(rec PollerMetricsRecorder, repoKey string) PollerOption {
+	return func(p *Poller) {
+		p.pollerMetrics = rec
+		p.repoKeyStr = repoKey
 	}
 }
 
@@ -517,11 +538,24 @@ func (p *Poller) checkForNewWorkItems(ctx context.Context) {
 		p.mu.RUnlock()
 
 		if processed {
+			if p.pollerMetrics != nil {
+				p.pollerMetrics.RecordPollerSkipped(p.repoKeyStr, skipreason.ReasonProcessedGrace)
+			}
 			continue
 		}
 
 		// Skip if has in-progress, done, or failed tag
 		if p.hasStatusTag(wi) {
+			if p.pollerMetrics != nil {
+				switch {
+				case HasTag(wi, TagInProgress):
+					p.pollerMetrics.RecordPollerSkipped(p.repoKeyStr, skipreason.ReasonInProgress)
+				case HasTag(wi, TagDone):
+					p.pollerMetrics.RecordPollerSkipped(p.repoKeyStr, skipreason.ReasonDone)
+				default:
+					p.pollerMetrics.RecordPollerSkipped(p.repoKeyStr, skipreason.ReasonFailedSkip)
+				}
+			}
 			p.markProcessed(wi.ID)
 			continue
 		}
@@ -540,6 +574,9 @@ func (p *Poller) checkForNewWorkItems(ctx context.Context) {
 			slog.Int("id", wi.ID),
 			slog.String("title", wi.GetTitle()),
 		)
+		if p.pollerMetrics != nil {
+			p.pollerMetrics.RecordPollerDispatched(p.repoKeyStr)
+		}
 
 		// Use mutex to coordinate stopping flag check with WaitGroup Add
 		p.wgMu.Lock()

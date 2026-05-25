@@ -41,6 +41,11 @@ type Metrics struct {
 	ExecutionCostUSD   map[string]float64 // model → cumulative USD cost
 	ExecutionsByResult map[execKey]int64  // {model,result} → execution count
 
+	// Poller counters (GH-3064): per-repo skip/dispatch visibility
+	PollerSkipped              map[string]map[string]int64 // repo → reason → count
+	PollerDispatched           map[string]int64             // repo → count
+	PollerDeferredScopeOverlap map[string]int64             // repo → count
+
 	// Gauges (point-in-time values)
 	ActivePRsByStage map[PRStage]int
 	QueueDepth       int // issues with `pilot` label, no `pilot-in-progress`
@@ -61,19 +66,22 @@ type Metrics struct {
 // NewMetrics creates a new Metrics instance.
 func NewMetrics() *Metrics {
 	return &Metrics{
-		IssuesProcessed:       make(map[string]int64),
-		APIErrors:             make(map[string]int64),
-		LabelCleanups:         make(map[string]int64),
-		ApprovalPersistMisses: make(map[string]int64),
-		TokensConsumed:        make(map[tokenKey]int64),
-		ExecutionCostUSD:      make(map[string]float64),
-		ExecutionsByResult:    make(map[execKey]int64),
-		ActivePRsByStage:      make(map[PRStage]int),
-		PRTimeToMerge:         make([]time.Duration, 0, 100),
-		CIWaitDurations:       make([]time.Duration, 0, 100),
-		ExecutionDurations:    make([]time.Duration, 0, 100),
-		apiErrorTimes:         make([]time.Time, 0, 100),
-		maxSamples:            1000,
+		IssuesProcessed:            make(map[string]int64),
+		APIErrors:                  make(map[string]int64),
+		LabelCleanups:              make(map[string]int64),
+		ApprovalPersistMisses:      make(map[string]int64),
+		TokensConsumed:             make(map[tokenKey]int64),
+		ExecutionCostUSD:           make(map[string]float64),
+		ExecutionsByResult:         make(map[execKey]int64),
+		PollerSkipped:              make(map[string]map[string]int64),
+		PollerDispatched:           make(map[string]int64),
+		PollerDeferredScopeOverlap: make(map[string]int64),
+		ActivePRsByStage:           make(map[PRStage]int),
+		PRTimeToMerge:              make([]time.Duration, 0, 100),
+		CIWaitDurations:            make([]time.Duration, 0, 100),
+		ExecutionDurations:         make([]time.Duration, 0, 100),
+		apiErrorTimes:              make([]time.Time, 0, 100),
+		maxSamples:                 1000,
 	}
 }
 
@@ -162,6 +170,30 @@ func (m *Metrics) RecordExecution(model, result string) {
 	m.ExecutionsByResult[execKey{Model: model, Result: result}]++
 }
 
+// RecordPollerSkipped increments the skip counter for the given repo and reason.
+func (m *Metrics) RecordPollerSkipped(repo, reason string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.PollerSkipped[repo] == nil {
+		m.PollerSkipped[repo] = make(map[string]int64)
+	}
+	m.PollerSkipped[repo][reason]++
+}
+
+// RecordPollerDispatched increments the dispatched counter for the given repo.
+func (m *Metrics) RecordPollerDispatched(repo string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.PollerDispatched[repo]++
+}
+
+// RecordPollerDeferredScopeOverlap increments the scope-overlap deferral counter for the given repo.
+func (m *Metrics) RecordPollerDeferredScopeOverlap(repo string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.PollerDeferredScopeOverlap[repo]++
+}
+
 // --- Gauge updates ---
 
 // UpdateActivePRs recalculates active PR counts by stage from a snapshot.
@@ -238,10 +270,13 @@ func (m *Metrics) Snapshot() MetricsSnapshot {
 		APIErrors:             copyStringIntMap(m.APIErrors),
 		LabelCleanups:         copyStringIntMap(m.LabelCleanups),
 		ApprovalPersistMisses: copyStringIntMap(m.ApprovalPersistMisses),
-		TokensConsumed:        copyTokenKeyMap(m.TokensConsumed),
-		ExecutionCostUSD:      copyStringFloatMap(m.ExecutionCostUSD),
-		ExecutionsByResult:    copyExecKeyMap(m.ExecutionsByResult),
-		ActivePRsByStage:      copyStageIntMap(m.ActivePRsByStage),
+		TokensConsumed:             copyTokenKeyMap(m.TokensConsumed),
+		ExecutionCostUSD:           copyStringFloatMap(m.ExecutionCostUSD),
+		ExecutionsByResult:         copyExecKeyMap(m.ExecutionsByResult),
+		PollerSkipped:              copyRepoReasonMap(m.PollerSkipped),
+		PollerDispatched:           copyStringIntMap(m.PollerDispatched),
+		PollerDeferredScopeOverlap: copyStringIntMap(m.PollerDeferredScopeOverlap),
+		ActivePRsByStage:           copyStageIntMap(m.ActivePRsByStage),
 		QueueDepth:            m.QueueDepth,
 		FailedQueueDepth:      m.FailedQueueDepth,
 		TotalActivePRs:        sumStageMap(m.ActivePRsByStage),
@@ -291,6 +326,11 @@ type MetricsSnapshot struct {
 	TokensConsumed        map[tokenKey]int64
 	ExecutionCostUSD      map[string]float64
 	ExecutionsByResult    map[execKey]int64
+
+	// Poller counters
+	PollerSkipped              map[string]map[string]int64
+	PollerDispatched           map[string]int64
+	PollerDeferredScopeOverlap map[string]int64
 
 	// Gauges
 	ActivePRsByStage map[PRStage]int
@@ -402,6 +442,17 @@ func copyExecKeyMap(src map[execKey]int64) map[execKey]int64 {
 	dst := make(map[execKey]int64, len(src))
 	for k, v := range src {
 		dst[k] = v
+	}
+	return dst
+}
+
+func copyRepoReasonMap(src map[string]map[string]int64) map[string]map[string]int64 {
+	if src == nil {
+		return nil
+	}
+	dst := make(map[string]map[string]int64, len(src))
+	for repo, reasons := range src {
+		dst[repo] = copyStringIntMap(reasons)
 	}
 	return dst
 }

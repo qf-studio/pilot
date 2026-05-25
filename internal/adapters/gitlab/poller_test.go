@@ -1,6 +1,11 @@
 package gitlab
 
 import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 )
@@ -390,5 +395,111 @@ func TestPollerWithProcessedStore(t *testing.T) {
 	// Verify it was removed from store
 	if store.processed[100] {
 		t.Error("expected issue 100 to be removed from store")
+	}
+}
+
+// mockPollerMetrics satisfies PollerMetricsRecorder for GitLab poller tests.
+type mockPollerMetrics struct {
+	mu         sync.Mutex
+	skipped    map[string]int64
+	dispatched int64
+}
+
+func newMockPollerMetrics() *mockPollerMetrics {
+	return &mockPollerMetrics{skipped: make(map[string]int64)}
+}
+
+func (m *mockPollerMetrics) RecordPollerSkipped(_, reason string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.skipped[reason]++
+}
+
+func (m *mockPollerMetrics) RecordPollerDispatched(_ string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.dispatched++
+}
+
+func TestPoller_SkipMetric_IncrementsByReason(t *testing.T) {
+	tests := []struct {
+		name         string
+		issue        *Issue
+		wantReason   string
+		wantSkipped  int64
+		wantDispatch int64
+	}{
+		{
+			name:        "already processed → ReasonProcessedGrace",
+			issue:       &Issue{IID: 1, Title: "T", Labels: []string{"pilot"}},
+			wantReason:  "processed_grace",
+			wantSkipped: 1,
+			// Issue will be pre-marked in the test below
+		},
+		{
+			name:        "in_progress label → ReasonInProgress",
+			issue:       &Issue{IID: 2, Title: "T", Labels: []string{"pilot", LabelInProgress}},
+			wantReason:  "in_progress",
+			wantSkipped: 1,
+		},
+		{
+			name:        "done label → ReasonDone",
+			issue:       &Issue{IID: 3, Title: "T", Labels: []string{"pilot", LabelDone}},
+			wantReason:  "done",
+			wantSkipped: 1,
+		},
+		{
+			name:        "failed label → ReasonFailedSkip",
+			issue:       &Issue{IID: 4, Title: "T", Labels: []string{"pilot", LabelFailed}},
+			wantReason:  "failed_skip",
+			wantSkipped: 1,
+		},
+		{
+			name:         "clean issue → dispatch counter",
+			issue:        &Issue{IID: 5, Title: "T", Labels: []string{"pilot"}},
+			wantDispatch: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode([]*Issue{tt.issue})
+			}))
+			defer server.Close()
+
+			rec := newMockPollerMetrics()
+			client := NewClientWithBaseURL("test-token", "ns/proj", server.URL)
+			poller := NewPoller(client, "pilot", 30*time.Second,
+				WithPollerMetricsRecorder(rec, "ns/proj"),
+				WithOnIssue(func(_ context.Context, _ *Issue) error { return nil }),
+			)
+
+			// Pre-mark for the "already processed" test case
+			if tt.wantReason == "processed_grace" {
+				poller.markProcessed(tt.issue.IID)
+			}
+
+			poller.checkForNewIssues(context.Background())
+			poller.WaitForActive()
+
+			if tt.wantSkipped > 0 {
+				rec.mu.Lock()
+				got := rec.skipped[tt.wantReason]
+				rec.mu.Unlock()
+				if got != tt.wantSkipped {
+					t.Errorf("skipped[%q] = %d, want %d", tt.wantReason, got, tt.wantSkipped)
+				}
+			}
+			if tt.wantDispatch > 0 {
+				rec.mu.Lock()
+				got := rec.dispatched
+				rec.mu.Unlock()
+				if got != tt.wantDispatch {
+					t.Errorf("dispatched = %d, want %d", got, tt.wantDispatch)
+				}
+			}
+		})
 	}
 }

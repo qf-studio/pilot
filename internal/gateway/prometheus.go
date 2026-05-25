@@ -112,6 +112,29 @@ func (e *PrometheusExporter) WritePrometheus(w io.Writer) error {
 		writeCounter(w, "pilot_executions_total", v, "model", k.Model, "result", k.Result)
 	}
 
+	// pilot_poller_skipped_total
+	writeHelp(w, "pilot_poller_skipped_total", "Total poller dispatch skips by repo and reason")
+	writeType(w, "pilot_poller_skipped_total", "counter")
+	for repo, reasons := range snap.PollerSkipped {
+		for reason, count := range reasons {
+			writeCounter(w, "pilot_poller_skipped_total", count, "repo", repo, "reason", reason)
+		}
+	}
+
+	// pilot_poller_dispatched_total
+	writeHelp(w, "pilot_poller_dispatched_total", "Total issues dispatched by repo")
+	writeType(w, "pilot_poller_dispatched_total", "counter")
+	for repo, count := range snap.PollerDispatched {
+		writeCounter(w, "pilot_poller_dispatched_total", count, "repo", repo)
+	}
+
+	// pilot_poller_deferred_scope_overlap_total
+	writeHelp(w, "pilot_poller_deferred_scope_overlap_total", "Total issues deferred due to overlapping scope by repo")
+	writeType(w, "pilot_poller_deferred_scope_overlap_total", "counter")
+	for repo, count := range snap.PollerDeferredScopeOverlap {
+		writeCounter(w, "pilot_poller_deferred_scope_overlap_total", count, "repo", repo)
+	}
+
 	// --- Gauges ---
 
 	// pilot_queue_depth

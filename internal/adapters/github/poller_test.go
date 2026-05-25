@@ -2938,3 +2938,118 @@ func TestPoller_CheckForNewIssues_SkipsBlockedIssues(t *testing.T) {
 		t.Errorf("dispatched %d times, want 0 (pilot-blocked must skip)", got)
 	}
 }
+
+// mockPollerMetrics captures calls to the PollerMetricsRecorder interface for testing.
+type mockPollerMetrics struct {
+	mu                    sync.Mutex
+	skipped               map[string]int64 // reason → count
+	dispatched            int64
+	deferredScopeOverlap  int64
+}
+
+func newMockPollerMetrics() *mockPollerMetrics {
+	return &mockPollerMetrics{skipped: make(map[string]int64)}
+}
+
+func (m *mockPollerMetrics) RecordPollerSkipped(_, reason string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.skipped[reason]++
+}
+
+func (m *mockPollerMetrics) RecordPollerDispatched(_ string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.dispatched++
+}
+
+func (m *mockPollerMetrics) RecordPollerDeferredScopeOverlap(_ string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.deferredScopeOverlap++
+}
+
+func (m *mockPollerMetrics) getSkipped(reason string) int64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.skipped[reason]
+}
+
+func TestPoller_SkipMetric_IncrementsByReason(t *testing.T) {
+	tests := []struct {
+		name         string
+		issue        *Issue
+		wantReason   string
+		wantSkipped  int64
+		wantDispatch int64
+	}{
+		{
+			name:        "in_progress label → ReasonInProgress",
+			issue:       &Issue{Number: 1, Title: "T", Labels: []Label{{Name: "pilot"}, {Name: LabelInProgress}}},
+			wantReason:  "in_progress",
+			wantSkipped: 1,
+		},
+		{
+			name:        "blocked label → ReasonBlocked",
+			issue:       &Issue{Number: 1, Title: "T", Labels: []Label{{Name: "pilot"}, {Name: LabelBlocked}}},
+			wantReason:  "blocked",
+			wantSkipped: 1,
+		},
+		{
+			name:        "needs_clarification label → ReasonNeedsClarification",
+			issue:       &Issue{Number: 1, Title: "T", Labels: []Label{{Name: "pilot"}, {Name: LabelNeedsClarification}}},
+			wantReason:  "needs_clarification",
+			wantSkipped: 1,
+		},
+		{
+			name:        "done label → ReasonDone",
+			issue:       &Issue{Number: 1, Title: "T", Labels: []Label{{Name: "pilot"}, {Name: LabelDone}}},
+			wantReason:  "done",
+			wantSkipped: 1,
+		},
+		{
+			name:         "clean issue → dispatch counter",
+			issue:        &Issue{Number: 1, Title: "T", Labels: []Label{{Name: "pilot"}}},
+			wantDispatch: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				// Serve the issue as both list and single-object responses.
+				if strings.Contains(r.URL.Path, "/issues/") {
+					_ = json.NewEncoder(w).Encode(tt.issue)
+				} else {
+					_ = json.NewEncoder(w).Encode([]*Issue{tt.issue})
+				}
+			}))
+			defer server.Close()
+
+			rec := newMockPollerMetrics()
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second,
+				WithPollerMetricsRecorder(rec),
+				WithOnIssue(func(_ context.Context, _ *Issue) error { return nil }),
+			)
+
+			poller.checkForNewIssues(context.Background())
+			poller.WaitForActive()
+
+			if tt.wantSkipped > 0 {
+				if got := rec.getSkipped(tt.wantReason); got != tt.wantSkipped {
+					t.Errorf("skipped[%q] = %d, want %d", tt.wantReason, got, tt.wantSkipped)
+				}
+			}
+			if tt.wantDispatch > 0 {
+				rec.mu.Lock()
+				got := rec.dispatched
+				rec.mu.Unlock()
+				if got != tt.wantDispatch {
+					t.Errorf("dispatched = %d, want %d", got, tt.wantDispatch)
+				}
+			}
+		})
+	}
+}

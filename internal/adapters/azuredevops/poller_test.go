@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -456,5 +457,136 @@ func TestPollerWithProcessedStore(t *testing.T) {
 	// Verify it was removed from store
 	if store.processed[100] {
 		t.Error("expected work item 100 to be removed from store")
+	}
+}
+
+// mockPollerMetrics satisfies PollerMetricsRecorder for Azure DevOps poller tests.
+type mockPollerMetrics struct {
+	mu         sync.Mutex
+	skipped    map[string]int64
+	dispatched int64
+}
+
+func newMockPollerMetrics() *mockPollerMetrics {
+	return &mockPollerMetrics{skipped: make(map[string]int64)}
+}
+
+func (m *mockPollerMetrics) RecordPollerSkipped(_, reason string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.skipped[reason]++
+}
+
+func (m *mockPollerMetrics) RecordPollerDispatched(_ string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.dispatched++
+}
+
+func makeAzureTestServer(t *testing.T, wi *WorkItem) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodPost {
+			// WIQL query → return one work item reference
+			_ = json.NewEncoder(w).Encode(WIQLQueryResult{
+				WorkItems: []WIQLWorkItemRef{{ID: wi.ID}},
+			})
+		} else {
+			// Batch GET → return the work item
+			resp := struct {
+				Count int         `json:"count"`
+				Value []*WorkItem `json:"value"`
+			}{Count: 1, Value: []*WorkItem{wi}}
+			_ = json.NewEncoder(w).Encode(resp)
+		}
+	}))
+}
+
+func TestPoller_SkipMetric_IncrementsByReason(t *testing.T) {
+	tests := []struct {
+		name         string
+		tags         string
+		preProcessed bool
+		wantReason   string
+		wantSkipped  int64
+		wantDispatch int64
+	}{
+		{
+			name:         "already processed → ReasonProcessedGrace",
+			tags:         "pilot",
+			preProcessed: true,
+			wantReason:   "processed_grace",
+			wantSkipped:  1,
+		},
+		{
+			name:        "in_progress tag → ReasonInProgress",
+			tags:        "pilot; " + TagInProgress,
+			wantReason:  "in_progress",
+			wantSkipped: 1,
+		},
+		{
+			name:        "done tag → ReasonDone",
+			tags:        "pilot; " + TagDone,
+			wantReason:  "done",
+			wantSkipped: 1,
+		},
+		{
+			name:        "failed tag → ReasonFailedSkip",
+			tags:        "pilot; " + TagFailed,
+			wantReason:  "failed_skip",
+			wantSkipped: 1,
+		},
+		{
+			name:         "clean work item → dispatch counter",
+			tags:         "pilot",
+			wantDispatch: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			wi := &WorkItem{
+				ID: 1,
+				Fields: map[string]interface{}{
+					"System.Title":       "Test Work Item",
+					"System.CreatedDate": "2024-01-01T10:00:00Z",
+					"System.Tags":        tt.tags,
+				},
+			}
+			server := makeAzureTestServer(t, wi)
+			defer server.Close()
+
+			rec := newMockPollerMetrics()
+			client := NewClientWithBaseURL(testutil.FakeAzureDevOpsPAT, "org", "project", server.URL)
+			poller := NewPoller(client, "pilot", 30*time.Second,
+				WithPollerMetricsRecorder(rec, "org/project"),
+				WithOnWorkItem(func(_ context.Context, _ *WorkItem) error { return nil }),
+			)
+
+			if tt.preProcessed {
+				poller.markProcessed(wi.ID)
+			}
+
+			poller.checkForNewWorkItems(context.Background())
+			poller.WaitForActive()
+
+			if tt.wantSkipped > 0 {
+				rec.mu.Lock()
+				got := rec.skipped[tt.wantReason]
+				rec.mu.Unlock()
+				if got != tt.wantSkipped {
+					t.Errorf("skipped[%q] = %d, want %d", tt.wantReason, got, tt.wantSkipped)
+				}
+			}
+			if tt.wantDispatch > 0 {
+				rec.mu.Lock()
+				got := rec.dispatched
+				rec.mu.Unlock()
+				if got != tt.wantDispatch {
+					t.Errorf("dispatched = %d, want %d", got, tt.wantDispatch)
+				}
+			}
+		})
 	}
 }

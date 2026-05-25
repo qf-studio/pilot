@@ -299,6 +299,7 @@
 | K8s health probes | ✅ | gateway | - | - | `/ready` and `/live` endpoints for Kubernetes (v0.37.0) |
 | Prometheus metrics | ✅ | gateway | - | - | `/metrics` endpoint in Prometheus text format (v0.37.0) |
 | External-merge metrics | ✅ | autopilot | - | - | Record PRsMerged/IssuesProcessed/PRTimeToMerge for externally-merged PRs via scanner (v2.147.0, GH-2981) |
+| Poller skip-by-reason counters | ✅ | gateway/adapters | - | - | `pilot_poller_skipped_total{repo,reason}`, `pilot_poller_dispatched_total{repo}`, `pilot_poller_deferred_scope_overlap_total{repo}` for GitHub/GitLab/Azure (v2.149.6, GH-3064) |
 | JSON structured logging | ✅ | - | - | `logging.format` | Optional JSON log output mode (v0.38.0) |
 | Qwen Code backend | ✅ | executor | `--backend qwen` | `executor.backend` | Alibaba Qwen Code CLI with stream-json (v1.9.0, GH-1314) |
 | Docker support | ✅ | - | - | - | Dockerfile + deployment guide (v1.46.0) |

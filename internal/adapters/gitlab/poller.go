@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/qf-studio/pilot/internal/adapters/skipreason"
 	"github.com/qf-studio/pilot/internal/logging"
 )
 
@@ -31,6 +32,13 @@ type IssueResult struct {
 	HeadSHA    string // Head commit SHA of the MR
 	BranchName string // Head branch name (e.g. "pilot/GH-123")
 	Error      error
+}
+
+// PollerMetricsRecorder records per-repo poller skip/dispatch counters.
+// Implemented by *autopilot.Metrics; kept as interface to avoid circular imports.
+type PollerMetricsRecorder interface {
+	RecordPollerSkipped(repo, reason string)
+	RecordPollerDispatched(repo string)
 }
 
 // ProcessedStore persists which GitLab issues have been processed across restarts.
@@ -73,6 +81,11 @@ type Poller struct {
 	activeWg      sync.WaitGroup
 	stopping      atomic.Bool
 	wgMu          sync.Mutex // protects stopping + activeWg Add/Wait coordination
+
+	// pollerMetrics records per-repo skip/dispatch counters (optional).
+	pollerMetrics PollerMetricsRecorder
+	// repoKeyStr identifies this repo/project in Prometheus labels.
+	repoKeyStr string
 }
 
 // PollerOption configures a Poller
@@ -138,6 +151,14 @@ func WithMaxConcurrent(n int) PollerOption {
 			n = 1
 		}
 		p.maxConcurrent = n
+	}
+}
+
+// WithPollerMetricsRecorder sets the recorder for per-repo poller skip/dispatch counters.
+func WithPollerMetricsRecorder(rec PollerMetricsRecorder, repoKey string) PollerOption {
+	return func(p *Poller) {
+		p.pollerMetrics = rec
+		p.repoKeyStr = repoKey
 	}
 }
 
@@ -507,11 +528,24 @@ func (p *Poller) checkForNewIssues(ctx context.Context) {
 		p.mu.RUnlock()
 
 		if processed {
+			if p.pollerMetrics != nil {
+				p.pollerMetrics.RecordPollerSkipped(p.repoKeyStr, skipreason.ReasonProcessedGrace)
+			}
 			continue
 		}
 
 		// Skip if has in-progress, done, or failed label
 		if p.hasStatusLabel(issue) {
+			if p.pollerMetrics != nil {
+				switch {
+				case HasLabel(issue, LabelInProgress):
+					p.pollerMetrics.RecordPollerSkipped(p.repoKeyStr, skipreason.ReasonInProgress)
+				case HasLabel(issue, LabelDone):
+					p.pollerMetrics.RecordPollerSkipped(p.repoKeyStr, skipreason.ReasonDone)
+				default:
+					p.pollerMetrics.RecordPollerSkipped(p.repoKeyStr, skipreason.ReasonFailedSkip)
+				}
+			}
 			p.markProcessed(issue.IID)
 			continue
 		}
@@ -530,6 +564,9 @@ func (p *Poller) checkForNewIssues(ctx context.Context) {
 			slog.Int("iid", issue.IID),
 			slog.String("title", issue.Title),
 		)
+		if p.pollerMetrics != nil {
+			p.pollerMetrics.RecordPollerDispatched(p.repoKeyStr)
+		}
 
 		// Use mutex to coordinate stopping flag check with WaitGroup Add
 		p.wgMu.Lock()
