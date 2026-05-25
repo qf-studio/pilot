@@ -758,8 +758,11 @@ func TestShouldRetry_ActionWarn(t *testing.T) {
 func TestRunner_RunAll_ParallelExecution(t *testing.T) {
 	// Each gate sleeps for 100ms. In parallel, total time should be ~100ms.
 	// In sequential, total time would be ~300ms.
+	// TASK-289: parallel default flipped to false, so this test must opt in explicitly.
+	parallelTrue := true
 	config := &Config{
-		Enabled: true,
+		Enabled:  true,
+		Parallel: &parallelTrue,
 		Gates: []*Gate{
 			{Name: "gate1", Type: GateCustom, Command: "sleep 0.1", Required: true, Timeout: 5 * time.Second},
 			{Name: "gate2", Type: GateCustom, Command: "sleep 0.1", Required: true, Timeout: 5 * time.Second},
@@ -815,12 +818,13 @@ func TestRunner_RunAll_SequentialExecution(t *testing.T) {
 }
 
 func TestConfig_IsParallel(t *testing.T) {
+	// TASK-289: nil now defaults to false (was true) — see SOP parallel-gate-cache-race.
 	tests := []struct {
 		name     string
 		parallel *bool
 		expected bool
 	}{
-		{name: "nil defaults to true", parallel: nil, expected: true},
+		{name: "nil defaults to false (TASK-289)", parallel: nil, expected: false},
 		{name: "explicit true", parallel: boolPtr(true), expected: true},
 		{name: "explicit false", parallel: boolPtr(false), expected: false},
 	}
@@ -832,6 +836,42 @@ func TestConfig_IsParallel(t *testing.T) {
 				t.Errorf("IsParallel() = %v, want %v", got, tt.expected)
 			}
 		})
+	}
+}
+
+// TestRunner_RunAll_DefaultsToSequential asserts that a Config with no explicit
+// Parallel setting runs gates sequentially. TASK-289: prevents regression of the
+// 2026-05-21 workshop incident where 11 spurious quality-gate failures hit in 3h
+// due to concurrent gates racing on ~/.cache/go-build and ~/.cache/golangci-lint.
+func TestRunner_RunAll_DefaultsToSequential(t *testing.T) {
+	// Each gate sleeps for 50ms. Sequential: ~150ms; parallel would be ~50ms.
+	// No Parallel field set → must default to sequential.
+	config := &Config{
+		Enabled: true,
+		Gates: []*Gate{
+			{Name: "gate1", Type: GateCustom, Command: "sleep 0.05", Required: true, Timeout: 5 * time.Second},
+			{Name: "gate2", Type: GateCustom, Command: "sleep 0.05", Required: true, Timeout: 5 * time.Second},
+			{Name: "gate3", Type: GateCustom, Command: "sleep 0.05", Required: true, Timeout: 5 * time.Second},
+		},
+	}
+
+	if config.IsParallel() {
+		t.Fatal("Config with nil Parallel must default to sequential (TASK-289)")
+	}
+
+	runner := NewRunner(config, "/tmp")
+	start := time.Now()
+	results, err := runner.RunAll(context.Background(), "default-sequential-test")
+	elapsed := time.Since(start)
+
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !results.AllPassed {
+		t.Error("expected all gates to pass")
+	}
+	if elapsed < 140*time.Millisecond {
+		t.Errorf("expected sequential (default) execution to take at least 140ms, took %v", elapsed)
 	}
 }
 
