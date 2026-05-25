@@ -74,6 +74,7 @@ logs/
 # Claude Code worktrees (full repo clones, never commit)
 .claude/worktrees/
 .claude/scripts/
+.claude/scheduled_tasks.lock
 
 # Secrets
 *.pem
