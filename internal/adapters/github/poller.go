@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/qf-studio/pilot/internal/adapters/skipreason"
 	"github.com/qf-studio/pilot/internal/executor"
 	"github.com/qf-studio/pilot/internal/logging"
 	"github.com/qf-studio/pilot/internal/text"
@@ -157,6 +158,9 @@ type Poller struct {
 
 	// metricsRecorder records issue processing outcomes (optional).
 	metricsRecorder IssueMetricsRecorder
+
+	// pollerMetrics records per-repo dispatch/skip counters (TASK-293, GH-3064).
+	pollerMetrics skipreason.PollerMetricsRecorder
 }
 
 // PollerOption configures a Poller
@@ -300,6 +304,13 @@ func WithExecutionSaver(saver ExecutionSaver) PollerOption {
 func WithIssueMetricsRecorder(rec IssueMetricsRecorder) PollerOption {
 	return func(p *Poller) {
 		p.metricsRecorder = rec
+	}
+}
+
+// WithPollerMetrics sets the recorder for per-repo dispatch/skip counters (TASK-293).
+func WithPollerMetrics(rec skipreason.PollerMetricsRecorder) PollerOption {
+	return func(p *Poller) {
+		p.pollerMetrics = rec
 	}
 }
 
@@ -902,6 +913,30 @@ func groupByOverlappingScope(candidates []*Issue) [][]*Issue {
 	return result
 }
 
+// repoKey returns "owner/repo" for use as the Prometheus `repo` label.
+func (p *Poller) repoKey() string { return p.owner + "/" + p.repo }
+
+// recordSkip increments the skip counter when pollerMetrics is configured.
+func (p *Poller) recordSkip(reason string) {
+	if p.pollerMetrics != nil {
+		p.pollerMetrics.RecordPollerSkipped(p.repoKey(), reason)
+	}
+}
+
+// recordDispatched increments the dispatch counter when pollerMetrics is configured.
+func (p *Poller) recordDispatched() {
+	if p.pollerMetrics != nil {
+		p.pollerMetrics.RecordPollerDispatched(p.repoKey())
+	}
+}
+
+// recordDeferredScopeOverlap increments the scope-overlap deferral counter when pollerMetrics is configured.
+func (p *Poller) recordDeferredScopeOverlap() {
+	if p.pollerMetrics != nil {
+		p.pollerMetrics.RecordPollerDeferredScopeOverlap(p.repoKey())
+	}
+}
+
 // checkForNewIssues fetches issues and dispatches new ones concurrently (parallel mode)
 func (p *Poller) checkForNewIssues(ctx context.Context) {
 	issues, err := p.client.ListIssues(ctx, p.owner, p.repo, &ListIssuesOptions{
@@ -924,28 +959,33 @@ func (p *Poller) checkForNewIssues(ctx context.Context) {
 
 		// Skip if already in progress
 		if HasLabel(issue, LabelInProgress) {
+			p.recordSkip(skipreason.ReasonInProgress)
 			continue
 		}
 
 		// GH-2402: Skip permanently-blocked issues. The user must remove
 		// the pilot-blocked label to retry (e.g. after fixing a non-conventional title).
 		if HasLabel(issue, LabelBlocked) {
+			p.recordSkip(skipreason.ReasonBlocked)
 			continue
 		}
 
 		// GH-2768: Skip issues declined as unactionable. Remove the label to re-enable dispatch.
 		if HasLabel(issue, LabelNeedsClarification) {
+			p.recordSkip(skipreason.ReasonNeedsClarification)
 			continue
 		}
 
 		// GH-2402: Auto-close sub-issues whose parent epic already shipped.
 		if p.skipSupersededByParent(ctx, issue) {
+			p.recordSkip(skipreason.ReasonSuperseded)
 			continue
 		}
 
 		// GH-2176: Auto-retry issues stuck with pilot-failed (no pilot-done)
 		if HasLabel(issue, LabelFailed) {
 			if !p.shouldRetryFailedIssue(ctx, issue) {
+				p.recordSkip(skipreason.ReasonFailedSkip)
 				continue
 			}
 			// Label removed, fall through to candidate selection
@@ -954,6 +994,7 @@ func (p *Poller) checkForNewIssues(ctx context.Context) {
 		// GH-2276: Auto-retry issues with pilot-retry-ready (PR closed without merge)
 		if HasLabel(issue, LabelRetryReady) {
 			if !p.shouldRetryRetryReadyIssue(ctx, issue) {
+				p.recordSkip(skipreason.ReasonRetryReadySkip)
 				continue
 			}
 			// Label removed, fall through to candidate selection
@@ -962,6 +1003,7 @@ func (p *Poller) checkForNewIssues(ctx context.Context) {
 		// Skip and mark done issues as permanently processed
 		if HasLabel(issue, LabelDone) {
 			p.markProcessed(issue.Number)
+			p.recordSkip(skipreason.ReasonDone)
 			continue
 		}
 
@@ -978,6 +1020,7 @@ func (p *Poller) checkForNewIssues(ctx context.Context) {
 					slog.Int("number", issue.Number),
 					slog.Duration("elapsed", time.Since(processedAt)),
 					slog.Duration("grace_period", p.retryGracePeriod))
+				p.recordSkip(skipreason.ReasonProcessedGrace)
 				continue
 			}
 
@@ -988,6 +1031,7 @@ func (p *Poller) checkForNewIssues(ctx context.Context) {
 					p.logger.Debug("Issue still queued/in-progress, skipping retry",
 						slog.Int("number", issue.Number),
 						slog.String("task_id", taskID))
+					p.recordSkip(skipreason.ReasonTaskQueued)
 					continue
 				}
 			}
@@ -1007,6 +1051,7 @@ func (p *Poller) checkForNewIssues(ctx context.Context) {
 
 			// GH-1983: Before retrying, check if merged PRs already exist
 			if p.hasMergedWork(ctx, issue) {
+				p.recordSkip(skipreason.ReasonHasMergedWork)
 				continue
 			}
 		}
@@ -1016,6 +1061,7 @@ func (p *Poller) checkForNewIssues(ctx context.Context) {
 			p.logger.Debug("Skipping issue with pending dependencies in parallel mode",
 				slog.Int("number", issue.Number),
 			)
+			p.recordSkip(skipreason.ReasonPendingDependency)
 			continue
 		}
 
@@ -1033,6 +1079,7 @@ func (p *Poller) checkForNewIssues(ctx context.Context) {
 					slog.Int("number", issue.Number),
 					slog.String("task_id", taskID))
 				p.markProcessed(issue.Number)
+				p.recordSkip(skipreason.ReasonCompletedExecution)
 				continue
 			}
 		}
@@ -1057,6 +1104,7 @@ func (p *Poller) checkForNewIssues(ctx context.Context) {
 					slog.Int("number", deferred.Number),
 					slog.Int("dispatched", group[0].Number),
 				)
+				p.recordDeferredScopeOverlap()
 			}
 		}
 	}
@@ -1074,6 +1122,7 @@ func (p *Poller) checkForNewIssues(ctx context.Context) {
 					slog.Bool("in_progress", HasLabel(fresh, LabelInProgress)),
 				)
 				p.markProcessed(issue.Number)
+				p.recordSkip(skipreason.ReasonFreshLabelCheck)
 				continue
 			}
 		} else if ferr != nil {
@@ -1096,6 +1145,7 @@ func (p *Poller) checkForNewIssues(ctx context.Context) {
 					slog.String("decision", verdict.Decision),
 					slog.String("reason", verdict.Reason))
 				p.handlePreFlightReject(ctx, issue, verdict)
+				p.recordSkip(skipreason.ReasonPreFlightReject)
 				continue // skip markProcessed so label removal re-triggers dispatch
 			}
 		}
@@ -1110,6 +1160,7 @@ func (p *Poller) checkForNewIssues(ctx context.Context) {
 		case p.semaphore <- struct{}{}:
 		}
 
+		p.recordDispatched()
 		p.logger.Info("Dispatching issue for parallel execution",
 			slog.Int("number", issue.Number),
 			slog.String("title", issue.Title),

@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/qf-studio/pilot/internal/adapters/skipreason"
 	"github.com/qf-studio/pilot/internal/logging"
 )
 
@@ -73,6 +74,10 @@ type Poller struct {
 	activeWg      sync.WaitGroup
 	stopping      atomic.Bool
 	wgMu          sync.Mutex // protects stopping + activeWg Add/Wait coordination
+
+	// pollerMetrics records per-repo dispatch/skip counters (TASK-293, GH-3064).
+	pollerMetrics skipreason.PollerMetricsRecorder
+	repoKey       string // label value for the `repo` dimension in poller metrics
 }
 
 // PollerOption configures a Poller
@@ -138,6 +143,20 @@ func WithMaxConcurrent(n int) PollerOption {
 			n = 1
 		}
 		p.maxConcurrent = n
+	}
+}
+
+// WithPollerMetrics sets the recorder for per-repo dispatch/skip counters (TASK-293).
+func WithPollerMetrics(rec skipreason.PollerMetricsRecorder) PollerOption {
+	return func(p *Poller) {
+		p.pollerMetrics = rec
+	}
+}
+
+// WithPollerRepoKey sets the `repo` label value used in poller metrics.
+func WithPollerRepoKey(key string) PollerOption {
+	return func(p *Poller) {
+		p.repoKey = key
 	}
 }
 
@@ -445,6 +464,7 @@ func (p *Poller) findOldestUnprocessedIssue(ctx context.Context) (*Issue, error)
 		}
 
 		if HasLabel(issue, LabelInProgress) || HasLabel(issue, LabelDone) {
+			p.recordSkip(skipreason.ReasonStatusLabel)
 			continue
 		}
 
@@ -482,6 +502,20 @@ func (p *Poller) processIssueSequential(ctx context.Context, issue *Issue) (*Iss
 	return nil, fmt.Errorf("no issue handler configured")
 }
 
+// recordSkip increments the skip counter when pollerMetrics is configured.
+func (p *Poller) recordSkip(reason string) {
+	if p.pollerMetrics != nil {
+		p.pollerMetrics.RecordPollerSkipped(p.repoKey, reason)
+	}
+}
+
+// recordDispatched increments the dispatch counter when pollerMetrics is configured.
+func (p *Poller) recordDispatched() {
+	if p.pollerMetrics != nil {
+		p.pollerMetrics.RecordPollerDispatched(p.repoKey)
+	}
+}
+
 // checkForNewIssues fetches issues and dispatches them for parallel execution
 func (p *Poller) checkForNewIssues(ctx context.Context) {
 	issues, err := p.client.ListIssues(ctx, &ListIssuesOptions{
@@ -513,6 +547,7 @@ func (p *Poller) checkForNewIssues(ctx context.Context) {
 		// Skip if has in-progress, done, or failed label
 		if p.hasStatusLabel(issue) {
 			p.markProcessed(issue.IID)
+			p.recordSkip(skipreason.ReasonStatusLabel)
 			continue
 		}
 
@@ -526,6 +561,7 @@ func (p *Poller) checkForNewIssues(ctx context.Context) {
 		case p.semaphore <- struct{}{}:
 		}
 
+		p.recordDispatched()
 		p.logger.Info("Dispatching GitLab issue for parallel execution",
 			slog.Int("iid", issue.IID),
 			slog.String("title", issue.Title),

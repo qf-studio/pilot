@@ -17,6 +17,12 @@ type execKey struct {
 	Result string
 }
 
+// pollerSkipKey identifies a poller skip event by repo and reason.
+type pollerSkipKey struct {
+	Repo   string
+	Reason string
+}
+
 // Metrics collects autopilot operational metrics.
 // All methods are goroutine-safe.
 type Metrics struct {
@@ -40,6 +46,11 @@ type Metrics struct {
 	TokensConsumed     map[tokenKey]int64 // {model,direction} → token count
 	ExecutionCostUSD   map[string]float64 // model → cumulative USD cost
 	ExecutionsByResult map[execKey]int64  // {model,result} → execution count
+
+	// Poller dispatch/skip counters (GH-3064, TASK-293)
+	PollerSkipped              map[pollerSkipKey]int64 // {repo,reason} → skip count
+	PollerDispatched           map[string]int64        // repo → dispatch count
+	PollerDeferredScopeOverlap map[string]int64        // repo → deferred-scope-overlap count
 
 	// Gauges (point-in-time values)
 	ActivePRsByStage map[PRStage]int
@@ -65,10 +76,13 @@ func NewMetrics() *Metrics {
 		APIErrors:             make(map[string]int64),
 		LabelCleanups:         make(map[string]int64),
 		ApprovalPersistMisses: make(map[string]int64),
-		TokensConsumed:        make(map[tokenKey]int64),
-		ExecutionCostUSD:      make(map[string]float64),
-		ExecutionsByResult:    make(map[execKey]int64),
-		ActivePRsByStage:      make(map[PRStage]int),
+		TokensConsumed:             make(map[tokenKey]int64),
+		ExecutionCostUSD:           make(map[string]float64),
+		ExecutionsByResult:         make(map[execKey]int64),
+		PollerSkipped:              make(map[pollerSkipKey]int64),
+		PollerDispatched:           make(map[string]int64),
+		PollerDeferredScopeOverlap: make(map[string]int64),
+		ActivePRsByStage:           make(map[PRStage]int),
 		PRTimeToMerge:         make([]time.Duration, 0, 100),
 		CIWaitDurations:       make([]time.Duration, 0, 100),
 		ExecutionDurations:    make([]time.Duration, 0, 100),
@@ -84,6 +98,27 @@ func (m *Metrics) RecordIssueProcessed(result string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.IssuesProcessed[result]++
+}
+
+// RecordPollerSkipped increments the poller skip counter for a given repo and reason.
+func (m *Metrics) RecordPollerSkipped(repo, reason string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.PollerSkipped[pollerSkipKey{Repo: repo, Reason: reason}]++
+}
+
+// RecordPollerDispatched increments the dispatch counter for a repo.
+func (m *Metrics) RecordPollerDispatched(repo string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.PollerDispatched[repo]++
+}
+
+// RecordPollerDeferredScopeOverlap increments the scope-overlap deferral counter for a repo.
+func (m *Metrics) RecordPollerDeferredScopeOverlap(repo string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.PollerDeferredScopeOverlap[repo]++
 }
 
 // RecordPRMerged increments the merged PR counter.
@@ -238,10 +273,13 @@ func (m *Metrics) Snapshot() MetricsSnapshot {
 		APIErrors:             copyStringIntMap(m.APIErrors),
 		LabelCleanups:         copyStringIntMap(m.LabelCleanups),
 		ApprovalPersistMisses: copyStringIntMap(m.ApprovalPersistMisses),
-		TokensConsumed:        copyTokenKeyMap(m.TokensConsumed),
-		ExecutionCostUSD:      copyStringFloatMap(m.ExecutionCostUSD),
-		ExecutionsByResult:    copyExecKeyMap(m.ExecutionsByResult),
-		ActivePRsByStage:      copyStageIntMap(m.ActivePRsByStage),
+		TokensConsumed:             copyTokenKeyMap(m.TokensConsumed),
+		ExecutionCostUSD:           copyStringFloatMap(m.ExecutionCostUSD),
+		ExecutionsByResult:         copyExecKeyMap(m.ExecutionsByResult),
+		PollerSkipped:              copyPollerSkipKeyMap(m.PollerSkipped),
+		PollerDispatched:           copyStringIntMap(m.PollerDispatched),
+		PollerDeferredScopeOverlap: copyStringIntMap(m.PollerDeferredScopeOverlap),
+		ActivePRsByStage:           copyStageIntMap(m.ActivePRsByStage),
 		QueueDepth:            m.QueueDepth,
 		FailedQueueDepth:      m.FailedQueueDepth,
 		TotalActivePRs:        sumStageMap(m.ActivePRsByStage),
@@ -291,6 +329,11 @@ type MetricsSnapshot struct {
 	TokensConsumed        map[tokenKey]int64
 	ExecutionCostUSD      map[string]float64
 	ExecutionsByResult    map[execKey]int64
+
+	// Poller dispatch/skip counters (TASK-293)
+	PollerSkipped              map[pollerSkipKey]int64
+	PollerDispatched           map[string]int64
+	PollerDeferredScopeOverlap map[string]int64
 
 	// Gauges
 	ActivePRsByStage map[PRStage]int
@@ -400,6 +443,14 @@ func copyStringFloatMap(src map[string]float64) map[string]float64 {
 
 func copyExecKeyMap(src map[execKey]int64) map[execKey]int64 {
 	dst := make(map[execKey]int64, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
+}
+
+func copyPollerSkipKeyMap(src map[pollerSkipKey]int64) map[pollerSkipKey]int64 {
+	dst := make(map[pollerSkipKey]int64, len(src))
 	for k, v := range src {
 		dst[k] = v
 	}
