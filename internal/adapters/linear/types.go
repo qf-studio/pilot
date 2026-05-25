@@ -14,6 +14,11 @@ type Config struct {
 	PilotLabel string   `yaml:"pilot_label,omitempty"`
 	ProjectIDs []string `yaml:"project_ids,omitempty"` // Filter issues by project ID(s)
 
+	// WebhookPublicKey is the PEM-encoded Ed25519 public key used to verify
+	// incoming Linear webhook signatures (TASK-295). If empty, signature
+	// verification is disabled and a WARN is logged at startup.
+	WebhookPublicKey string `yaml:"webhook_public_key,omitempty"`
+
 	// Polling configuration
 	Polling *PollingConfig `yaml:"polling,omitempty"`
 }

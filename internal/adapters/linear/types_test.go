@@ -1,7 +1,10 @@
 package linear
 
 import (
+	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 func TestDefaultConfig(t *testing.T) {
@@ -297,6 +300,41 @@ func TestDuplicateTeamIDError_Error(t *testing.T) {
 	expected := "duplicate team_id 'APP' in workspaces 'appbooster' and 'another'"
 	if err.Error() != expected {
 		t.Errorf("error message = %q, want %q", err.Error(), expected)
+	}
+}
+
+func TestConfig_WebhookPublicKey_YAMLRoundTrip(t *testing.T) {
+	const pemKey = `-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEA4b9cK6RiTxhGnWZZBxAfW3AjBn3GxM5pUzA1bBn5OkI=
+-----END PUBLIC KEY-----
+`
+	raw := "enabled: true\nwebhook_public_key: |\n  -----BEGIN PUBLIC KEY-----\n  MCowBQYDK2VwAyEA4b9cK6RiTxhGnWZZBxAfW3AjBn3GxM5pUzA1bBn5OkI=\n  -----END PUBLIC KEY-----\n"
+
+	var cfg Config
+	if err := yaml.Unmarshal([]byte(raw), &cfg); err != nil {
+		t.Fatalf("yaml.Unmarshal: %v", err)
+	}
+
+	want := "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA4b9cK6RiTxhGnWZZBxAfW3AjBn3GxM5pUzA1bBn5OkI=\n-----END PUBLIC KEY-----\n"
+	_ = pemKey // suppress unused warning
+	if cfg.WebhookPublicKey != want {
+		t.Errorf("WebhookPublicKey after unmarshal =\n%q\nwant\n%q", cfg.WebhookPublicKey, want)
+	}
+
+	// Re-marshal and check the field is present
+	out, err := yaml.Marshal(&cfg)
+	if err != nil {
+		t.Fatalf("yaml.Marshal: %v", err)
+	}
+	if !strings.Contains(string(out), "webhook_public_key") {
+		t.Errorf("re-marshaled YAML missing webhook_public_key:\n%s", out)
+	}
+}
+
+func TestConfig_WebhookPublicKey_Empty(t *testing.T) {
+	cfg := &Config{Enabled: true}
+	if cfg.WebhookPublicKey != "" {
+		t.Errorf("default WebhookPublicKey should be empty, got %q", cfg.WebhookPublicKey)
 	}
 }
 
