@@ -52,7 +52,7 @@ Pilot starts polling for issues labeled `pilot` on the configured repository wit
 docker pull ghcr.io/qf-studio/pilot:latest
 
 # Pin to a specific version (recommended for production)
-docker pull ghcr.io/qf-studio/pilot:v2.102.2
+docker pull ghcr.io/qf-studio/pilot:v2.151.0
 ```
 
 ### Build from Source
@@ -119,7 +119,7 @@ services:
     environment:
       - ANTHROPIC_API_KEY
       - GITHUB_TOKEN
-    command: ["start", "--github", "--autopilot=dev"]
+    command: ["start", "--github", "--env=dev"]
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:9090/health"]
@@ -139,7 +139,7 @@ For production use with Telegram, Slack, and multiple adapters:
 ```yaml
 services:
   pilot:
-    image: ghcr.io/qf-studio/pilot:v2.102.2
+    image: ghcr.io/qf-studio/pilot:v2.151.0
     ports:
       - "9090:9090"
     environment:
@@ -157,7 +157,7 @@ services:
       - pilot-data:/home/pilot/.pilot/data
       - ./config.yaml:/home/pilot/.pilot/config.yaml:ro
       - ./gitconfig:/home/pilot/.gitconfig:ro   # optional: git identity
-    command: ["start", "--github", "--telegram", "--autopilot=stage"]
+    command: ["start", "--github", "--telegram", "--env=stage"]
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:9090/health"]
@@ -252,7 +252,7 @@ helm install pilot ./helm/pilot \
 
 ```bash
 helm upgrade pilot ./helm/pilot --reuse-values \
-  --set image.tag=v2.102.2
+  --set image.tag=v2.151.0
 ```
 
 ### values.yaml Reference
@@ -261,7 +261,7 @@ helm upgrade pilot ./helm/pilot --reuse-values \
 # Image
 image:
   repository: ghcr.io/qf-studio/pilot
-  tag: v2.102.2           # pin to a specific version in production
+  tag: v2.151.0           # pin to a specific version in production
   pullPolicy: IfNotPresent
 
 # Replica count — always 1 (SQLite constraint)
@@ -338,7 +338,7 @@ podSecurityContext:
 
 ```bash
 # Change image tag
-helm upgrade pilot ./helm/pilot --set image.tag=v2.102.2
+helm upgrade pilot ./helm/pilot --set image.tag=v2.151.0
 
 # Enable ingress
 helm upgrade pilot ./helm/pilot \

@@ -184,13 +184,13 @@ Control how much autonomy Pilot has:
 
 ```bash
 # Fast iteration - skip CI, auto-merge
-pilot start --autopilot=dev --github
+pilot start --env=dev --github
 
 # Balanced - wait for CI, then auto-merge
-pilot start --autopilot=stage --github
+pilot start --env=stage --github
 
 # Safe - wait for CI + human approval
-pilot start --autopilot=prod --github
+pilot start --env=prod --github
 ```
 
 ## Telegram Integration
@@ -332,7 +332,7 @@ pilot start --telegram --github      # Enable both
 pilot start --dashboard              # With TUI dashboard
 pilot start --no-gateway             # Polling only (no HTTP server)
 pilot start --sequential             # Sequential execution mode
-pilot start --autopilot=stage        # Autopilot mode (dev/stage/prod)
+pilot start --env=stage        # Autopilot mode (dev/stage/prod)
 pilot start -p ~/Projects/myapp      # Specify project
 pilot start --replace                # Kill existing instance first
 ```

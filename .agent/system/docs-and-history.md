@@ -2,8 +2,8 @@
 
 ## Documentation & Docs Site
 
-### Docs Architecture (2026-02-06)
-- **Docs site**: Nextra v2.13.0 + Next.js 14, lives in `pilot/docs/`
+### Docs Architecture (updated 2026-05-26)
+- **Docs site**: Nextra v4 + Next.js 15, lives in `pilot/docs/`
 - **Separate GitLab repo**: `git@gitlab.com:quant-flow/pilot-docs.git`
 - **Sync**: GitHub Action (`.github/workflows/sync-docs.yml`) clones GitLab, replaces content from `docs/`, normal push (no force)
 - **Deploy**: GitLab CI builds Docker image → **auto-deploy via `prod-{version}` tag** at `pilot.quantflow.studio`
@@ -21,8 +21,7 @@
 - `git init` on GitHub runners defaults to `master` — use `git init -b main`
 - GitLab protected branches/tags block deploy keys — unprotect `prod-*` tags
 - Nextra needs `output: 'standalone'` in next.config.mjs for Docker
-- **Nextra v2 deps must be pinned** — `^2.13.0` resolves to v4.x, use `~2.13.0`
-- MDX v1: markdown lists inside `<Tabs.Tab>` cause compile errors
+- MDX: markdown lists inside `<Tabs.Tab>` cause compile errors in Nextra v4
 - Deploy tag must be decoupled from content diff
 
 ## Stability Plan (COMPLETED 2026-02-11)

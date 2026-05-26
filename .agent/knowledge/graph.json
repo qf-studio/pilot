@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "updated": "2026-05-21T00:00:00Z",
+  "updated": "2026-05-26T00:00:00Z",
   "nodes": {
     "concepts": {
       "pilot-architecture": {
@@ -268,7 +268,8 @@
           "internal/executor/epic.go:1498",
           "internal/executor/runner.go:3258"
         ],
-        "memory_file": ".agent/knowledge/memories/pitfalls/pitfall_git_reset_hard_in_automated_sync.md"
+        "memory_file": ".agent/knowledge/memories/pitfalls/resolved/pitfall_git_reset_hard_in_automated_sync.md",
+        "resolved": "2026-05-20 (v2.146.7)"
       },
       "mem-012": {
         "type": "pattern",
