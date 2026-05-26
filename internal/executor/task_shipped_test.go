@@ -13,18 +13,18 @@ func TestIsTaskShipped(t *testing.T) {
 		want bool
 	}{
 		{
-			name: "completed with commit_sha",
-			row:  memory.Execution{Status: "completed", CommitSHA: "abc123"},
-			want: true,
-		},
-		{
-			name: "completed with pr_url",
+			name: "completed with pr_url (primary signal)",
 			row:  memory.Execution{Status: "completed", PRUrl: "https://github.com/x/y/pull/1"},
 			want: true,
 		},
 		{
 			name: "completed with both commit_sha and pr_url",
 			row:  memory.Execution{Status: "completed", CommitSHA: "abc123", PRUrl: "https://github.com/x/y/pull/1"},
+			want: true,
+		},
+		{
+			name: "completed with commit_sha only and no error (backwards-compat direct-commit path)",
+			row:  memory.Execution{Status: "completed", CommitSHA: "abc123"},
 			want: true,
 		},
 		{
@@ -53,8 +53,19 @@ func TestIsTaskShipped(t *testing.T) {
 			want: false,
 		},
 		{
-			name: "completed with error and commit_sha (orphan recovery)",
+			// GH-3126: orphan-recovery rows have a non-empty Error field.
+			// IsTaskShipped now requires Error=="" for CommitSHA-only trust — consistent with
+			// HasCompletedExecution SQL which also excludes error!='' rows. Previously these
+			// two sites diverged; now both return false, eliminating the known divergence.
+			name: "completed with error and commit_sha but no pr_url (orphan recovery — not shipped)",
 			row:  memory.Execution{Status: "completed", Error: "stale running task recovered", CommitSHA: "abc123"},
+			want: false,
+		},
+		{
+			// A row with both pr_url and an error IS still considered shipped: the PR was created,
+			// the error may be from a post-PR step (e.g. comment failed). PRUrl is the primary signal.
+			name: "completed with error and pr_url (PR created despite error)",
+			row:  memory.Execution{Status: "completed", Error: "comment failed", PRUrl: "https://github.com/x/y/pull/2"},
 			want: true,
 		},
 	}
