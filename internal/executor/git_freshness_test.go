@@ -37,7 +37,9 @@ func setupFreshnessTestRepo(t *testing.T) (workDir string, mainSHA string) {
 		return string(out)
 	}
 
-	run("init")
+	// Use -b main to explicitly name the initial branch (default varies by git config).
+	// Requires git ≥ 2.28 (Aug 2020); CI runners satisfy this.
+	run("init", "-b", "main")
 	run("config", "user.email", "test@pilot.test")
 	run("config", "user.name", "Pilot Test")
 	run("remote", "add", "origin", originDir)
