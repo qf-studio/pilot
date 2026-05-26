@@ -3390,3 +3390,82 @@ func TestSearchPRsForIssue(t *testing.T) {
 		})
 	}
 }
+
+// TestListPullRequests_Pagination verifies that ListPullRequests fetches
+// multiple pages when a page returns the full per_page count.
+func TestListPullRequests_Pagination(t *testing.T) {
+	// Build two pages: page 1 has 100 PRs, page 2 has 3 PRs.
+	page1 := make([]*PullRequest, 100)
+	for i := range page1 {
+		n := i + 1
+		page1[i] = &PullRequest{
+			Number:  n,
+			HTMLURL: fmt.Sprintf("https://github.com/owner/repo/pull/%d", n),
+			Head:    PRRef{Ref: fmt.Sprintf("pilot/GH-%d", n), SHA: "sha"},
+		}
+	}
+	page2 := []*PullRequest{
+		{Number: 101, HTMLURL: "url101", Head: PRRef{Ref: "pilot/GH-101", SHA: "sha"}},
+		{Number: 102, HTMLURL: "url102", Head: PRRef{Ref: "pilot/GH-102", SHA: "sha"}},
+		{Number: 103, HTMLURL: "url103", Head: PRRef{Ref: "pilot/GH-103", SHA: "sha"}},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/owner/repo/pulls" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		q := r.URL.Query()
+		pageParam := q.Get("page")
+		perPage := q.Get("per_page")
+		if perPage != "100" {
+			t.Errorf("per_page = %q, want 100", perPage)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		if pageParam == "2" {
+			_ = json.NewEncoder(w).Encode(page2)
+		} else {
+			_ = json.NewEncoder(w).Encode(page1)
+		}
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	prs, err := client.ListPullRequests(context.Background(), "owner", "repo", "open")
+	if err != nil {
+		t.Fatalf("ListPullRequests() error = %v", err)
+	}
+	if len(prs) != 103 {
+		t.Errorf("got %d PRs, want 103", len(prs))
+	}
+}
+
+// TestListPullRequests_SinglePage verifies that a response shorter than
+// per_page stops pagination after one request.
+func TestListPullRequests_SinglePage(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		prs := []*PullRequest{
+			{Number: 1, HTMLURL: "url1", Head: PRRef{Ref: "pilot/GH-1", SHA: "sha"}},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(prs)
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	prs, err := client.ListPullRequests(context.Background(), "owner", "repo", "open")
+	if err != nil {
+		t.Fatalf("ListPullRequests() error = %v", err)
+	}
+	if len(prs) != 1 {
+		t.Errorf("got %d PRs, want 1", len(prs))
+	}
+	if calls != 1 {
+		t.Errorf("server called %d times, want 1 (single page should stop)", calls)
+	}
+}

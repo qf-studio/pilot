@@ -52,6 +52,11 @@ type Metrics struct {
 	PollerDispatched           map[string]int64        // repo → dispatch count
 	PollerDeferredScopeOverlap map[string]int64        // repo → deferred-scope-overlap count
 
+	// Orphan PR registration counters (GH-3113, TASK-302)
+	// trigger is "reconciler" or "startup_scan".
+	// Sustained spikes indicate OnPRCreated is missing fires.
+	OrphanPRsRegistered map[string]int64 // trigger → count
+
 	// Gauges (point-in-time values)
 	ActivePRsByStage map[PRStage]int
 	QueueDepth       int // issues with `pilot` label, no `pilot-in-progress`
@@ -82,6 +87,7 @@ func NewMetrics() *Metrics {
 		PollerSkipped:              make(map[pollerSkipKey]int64),
 		PollerDispatched:           make(map[string]int64),
 		PollerDeferredScopeOverlap: make(map[string]int64),
+		OrphanPRsRegistered:        make(map[string]int64),
 		ActivePRsByStage:           make(map[PRStage]int),
 		PRTimeToMerge:         make([]time.Duration, 0, 100),
 		CIWaitDurations:       make([]time.Duration, 0, 100),
@@ -119,6 +125,14 @@ func (m *Metrics) RecordPollerDeferredScopeOverlap(repo string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.PollerDeferredScopeOverlap[repo]++
+}
+
+// RecordOrphanPRRegistered increments the orphan-PR registration counter.
+// trigger is "reconciler" (periodic loop) or "startup_scan" (ScanExistingPRs).
+func (m *Metrics) RecordOrphanPRRegistered(trigger string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.OrphanPRsRegistered[trigger]++
 }
 
 // RecordPRMerged increments the merged PR counter.
@@ -279,6 +293,7 @@ func (m *Metrics) Snapshot() MetricsSnapshot {
 		PollerSkipped:              copyPollerSkipKeyMap(m.PollerSkipped),
 		PollerDispatched:           copyStringIntMap(m.PollerDispatched),
 		PollerDeferredScopeOverlap: copyStringIntMap(m.PollerDeferredScopeOverlap),
+		OrphanPRsRegistered:        copyStringIntMap(m.OrphanPRsRegistered),
 		ActivePRsByStage:           copyStageIntMap(m.ActivePRsByStage),
 		QueueDepth:            m.QueueDepth,
 		FailedQueueDepth:      m.FailedQueueDepth,
@@ -334,6 +349,9 @@ type MetricsSnapshot struct {
 	PollerSkipped              map[pollerSkipKey]int64
 	PollerDispatched           map[string]int64
 	PollerDeferredScopeOverlap map[string]int64
+
+	// Orphan PR registration (TASK-302)
+	OrphanPRsRegistered map[string]int64 // trigger → count
 
 	// Gauges
 	ActivePRsByStage map[PRStage]int

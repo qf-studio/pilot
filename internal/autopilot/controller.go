@@ -2133,11 +2133,66 @@ func (c *Controller) ScanExistingPRs(ctx context.Context) error {
 
 		// Register PR via existing mechanism
 		c.OnPRCreated(pr.Number, pr.HTMLURL, issueNum, pr.Head.SHA, pr.Head.Ref, "")
+		c.metrics.RecordOrphanPRRegistered("startup_scan")
 		restored++
 	}
 
 	c.log.Info("completed PR scan", "restored", restored, "env", c.config.EnvironmentName())
 	return nil
+}
+
+// startReconciler runs a periodic loop that calls reconcileOrphanPRs once per
+// minute. It is launched as a goroutine by Run and exits when ctx is cancelled.
+func (c *Controller) startReconciler(ctx context.Context) {
+	ticker := time.NewTicker(60 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			c.reconcileOrphanPRs(ctx)
+		}
+	}
+}
+
+// reconcileOrphanPRs lists all open pilot/ PRs and registers any that are not
+// currently tracked in activePRs. A PR is orphaned when OnPRCreated was never
+// fired — e.g. the executor returned pr_url="" or the poller gate filtered it.
+// The function is idempotent and safe to call concurrently with processAllPRs.
+func (c *Controller) reconcileOrphanPRs(ctx context.Context) {
+	prs, err := c.ghClient.ListPullRequests(ctx, c.owner, c.repo, "open")
+	if err != nil {
+		c.log.Warn("reconciler: failed to list open PRs", "error", err)
+		return
+	}
+
+	for _, pr := range prs {
+		if !strings.HasPrefix(pr.Head.Ref, "pilot/GH-") {
+			continue
+		}
+
+		c.mu.RLock()
+		_, tracked := c.activePRs[pr.Number]
+		c.mu.RUnlock()
+		if tracked {
+			continue
+		}
+
+		var issueNum int
+		if _, err := fmt.Sscanf(pr.Head.Ref, "pilot/GH-%d", &issueNum); err != nil {
+			c.log.Warn("reconciler: failed to parse branch name", "branch", pr.Head.Ref, "error", err)
+			continue
+		}
+
+		c.log.Warn("reconciler: registering orphan PR",
+			"pr", pr.Number,
+			"branch", pr.Head.Ref,
+			"issue", issueNum,
+		)
+		c.OnPRCreated(pr.Number, pr.HTMLURL, issueNum, pr.Head.SHA, pr.Head.Ref, "")
+		c.metrics.RecordOrphanPRRegistered("reconciler")
+	}
 }
 
 // ScanRecentlyMergedPRs scans for Pilot PRs that were merged externally.
@@ -2305,6 +2360,9 @@ func (c *Controller) Run(ctx context.Context) error {
 	fastPollInterval := 10 * time.Second
 	idlePollInterval := 60 * time.Second
 	currentInterval := basePollInterval
+
+	// GH-3113: Periodic reconciliation loop — registers orphan PRs that OnPRCreated missed.
+	go c.startReconciler(ctx)
 
 	// GH-2251: Periodic scan for externally-merged PRs.
 	// Use half the scan window as the interval so merges are detected well within the window.
