@@ -52,8 +52,12 @@ func WithRetry[T any](ctx context.Context, op func() (T, error), opts RetryOptio
 			delay = opts.MaxDelay
 		}
 
-		// Check for Retry-After header in rate limit errors
+		// Check for Retry-After header in rate limit errors; cap at MaxDelay so
+		// a runaway "Retry-After: 3600" can't stall the worker for an hour.
 		if retryAfter := extractRetryAfter(lastErr); retryAfter > 0 {
+			if retryAfter > opts.MaxDelay {
+				retryAfter = opts.MaxDelay
+			}
 			delay = retryAfter
 		}
 
