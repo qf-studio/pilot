@@ -2615,6 +2615,8 @@ func statusIconStyle(status string) (string, lipgloss.Style) {
 		return "+", statusCompletedStyle
 	case "failed":
 		return "x", statusFailedStyle
+	case "stalled":
+		return "~", statusFailedStyle
 	case "running":
 		return "~", statusRunningStyle
 	default:

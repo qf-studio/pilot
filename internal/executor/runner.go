@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -120,6 +121,8 @@ type progressState struct {
 	budgetExceeded bool               // Set when per-task token/duration limit is exceeded
 	budgetReason   string             // Human-readable reason for budget cancellation
 	budgetCancel   context.CancelFunc // Cancel function to terminate execution on budget breach
+	// Stall detection (TASK-308)
+	stallDetected bool // Set by stall watchdog when no event for stall_timeout
 	// Smart retry tracking (GH-920)
 	smartRetryAttempt int // Current retry attempt for error-based retries
 	// Session resume support (GH-1265)
@@ -614,6 +617,13 @@ func (r *Runner) backendType() string {
 // OpenCode runs are legitimately slower than Claude Code (server-managed
 // session, larger streaming overhead); a 2-minute cap cancels review while the
 // backend is still working and surfaces as a false regression. GH-2416.
+// effectiveStallTimeout returns the stall detection threshold from config.
+// Delegates to BackendConfig.EffectiveStallTimeout(); returns the 3m default when
+// no config is set. TASK-308.
+func (r *Runner) effectiveStallTimeout() time.Duration {
+	return r.config.EffectiveStallTimeout()
+}
+
 func (r *Runner) selfReviewTimeout() time.Duration {
 	if r.backendType() == BackendTypeOpenCode {
 		return 10 * time.Minute
@@ -1769,12 +1779,30 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 	// GH-1599: Log implementation phase
 	r.saveLogEntry(task.ID, "info", "Implementing changes...")
 
+	// TASK-308: Stall detection — track last event time and spawn a watchdog.
+	var (
+		lastEventAt   atomic.Int64
+		stallDetectedFlag atomic.Bool
+		stallDone     = make(chan struct{})
+	)
+	lastEventAt.Store(time.Now().UnixNano())
+	stallTimeout := r.effectiveStallTimeout()
+	var stallExecutionCtx context.Context
+	var stallCancel context.CancelFunc
+	if stallTimeout > 0 {
+		stallExecutionCtx, stallCancel = context.WithCancel(ctx)
+		go r.runStallWatchdog(task.ID, &lastEventAt, &stallDetectedFlag, stallTimeout, stallDone, stallCancel)
+	} else {
+		stallExecutionCtx = ctx
+		stallCancel = func() {}
+	}
+
 	// Execute via backend with watchdog (GH-882)
 	// Watchdog kills subprocess after 2x timeout as a safety net for processes
 	// that ignore context cancellation.
 	watchdogTimeout := 2 * timeout
 	allowedTools, mcpConfigPath := r.executionToolOptions()
-	backendResult, err := r.backend.Execute(ctx, ExecuteOptions{
+	backendResult, err := r.backend.Execute(stallExecutionCtx, ExecuteOptions{
 		Prompt:          prompt,
 		ProjectPath:     executionPath, // Use worktree path if active
 		Verbose:         task.Verbose,
@@ -1809,6 +1837,9 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 			})
 		},
 		EventHandler: func(event BackendEvent) {
+			// TASK-308: touch the last-event timestamp so the stall watchdog resets.
+			lastEventAt.Store(time.Now().UnixNano())
+
 			// Record the event
 			if recorder != nil {
 				if recErr := recorder.RecordEvent(event.Raw); recErr != nil {
@@ -1820,6 +1851,15 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 			r.processBackendEvent(task.ID, event, state)
 		},
 	})
+
+	// Stop stall watchdog and release stall context resources.
+	close(stallDone)
+	stallCancel()
+
+	// Transfer stallDetected flag to progressState for post-Execute checks.
+	if stallDetectedFlag.Load() {
+		state.stallDetected = true
+	}
 
 	duration := time.Since(start)
 
@@ -1875,6 +1915,54 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 				recorder.SetModel(state.modelName)
 				recorder.SetNavigator(state.hasNavigator)
 				if finErr := recorder.Finish("budget_exceeded"); finErr != nil {
+					log.Warn("Failed to finish recording", slog.Any("error", finErr))
+				}
+			}
+			return result, nil
+		}
+
+		// TASK-308: Check if this was a stall (no event activity for stall_timeout).
+		if state.stallDetected {
+			result.Error = fmt.Sprintf("session stalled: no agent event for >%v", stallTimeout)
+			result.TokensInput = state.tokensInput
+			result.TokensOutput = state.tokensOutput
+			result.TokensTotal = state.tokensInput + state.tokensOutput
+			result.CacheCreationInputTokens = state.cacheCreationInputTokens
+			result.CacheReadInputTokens = state.cacheReadInputTokens
+			result.ModelName = state.modelName
+			if result.ModelName == "" {
+				result.ModelName = r.fallbackModelName()
+			}
+			result.EstimatedCostUSD = estimateCostWithCache(result.TokensInput, result.TokensOutput, result.CacheCreationInputTokens, result.CacheReadInputTokens, result.ModelName)
+			log.Warn("Task stalled: no agent event activity",
+				slog.String("task_id", task.ID),
+				slog.Duration("stall_timeout", stallTimeout),
+				slog.Duration("duration", duration),
+			)
+			r.reportProgress(task.ID, "Stalled", 100, result.Error)
+			if r.monitor != nil {
+				r.monitor.Stall(task.ID, result.Error)
+			}
+			r.emitAlertEvent(AlertEvent{
+				Type:      AlertEventTypeTaskFailed,
+				TaskID:    task.ID,
+				TaskTitle: task.Title,
+				Project:   task.ProjectPath,
+				Error:     result.Error,
+				Metadata: map[string]string{
+					"reason":       "stalled",
+					"stall_timeout": stallTimeout.String(),
+					"duration_ms":  fmt.Sprintf("%d", duration.Milliseconds()),
+				},
+				Timestamp: time.Now(),
+			})
+			if r.metricsRecorder != nil {
+				r.metricsRecorder.RecordExecution(result.ModelName, "stalled")
+			}
+			if recorder != nil {
+				recorder.SetModel(state.modelName)
+				recorder.SetNavigator(state.hasNavigator)
+				if finErr := recorder.Finish("stalled"); finErr != nil {
 					log.Warn("Failed to finish recording", slog.Any("error", finErr))
 				}
 			}
@@ -3358,7 +3446,12 @@ func (r *Runner) recordLearning(ctx context.Context, task *Task, result *Executi
 	if result.Declined {
 		statusStr = "declined"
 	} else if !result.Success {
-		statusStr = "failed"
+		// Distinguish stalled from generic failure for pattern learning.
+		if strings.Contains(result.Error, "session stalled") {
+			statusStr = "stalled"
+		} else {
+			statusStr = "failed"
+		}
 	}
 	exec := &memory.Execution{
 		ID:           task.ID,
