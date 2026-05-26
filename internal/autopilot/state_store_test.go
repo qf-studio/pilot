@@ -1378,3 +1378,70 @@ func TestStateStore_PurgeOldAdapterProcessed(t *testing.T) {
 		t.Errorf("expected 0 after purge, got %d", len(remaining))
 	}
 }
+
+// TestStateStore_MigrateLegacyProcessedTables verifies that migrateLegacyProcessedTables
+// copies rows from each of the 7 legacy tables into adapter_processed and is idempotent.
+func TestStateStore_MigrateLegacyProcessedTables(t *testing.T) {
+	store := newTestStateStore(t)
+
+	// Seed the 7 legacy tables using existing helper methods (tables exist on fresh DB).
+	if err := store.MarkIssueProcessed(101, "success"); err != nil {
+		t.Fatalf("seed github: %v", err)
+	}
+	if err := store.MarkLinearIssueProcessed("LIN-42", "success"); err != nil {
+		t.Fatalf("seed linear: %v", err)
+	}
+	if err := store.MarkGitLabIssueProcessed(202, "success"); err != nil {
+		t.Fatalf("seed gitlab: %v", err)
+	}
+	if err := store.MarkJiraIssueProcessed("PROJ-7", "success"); err != nil {
+		t.Fatalf("seed jira: %v", err)
+	}
+	if err := store.MarkAsanaTaskProcessed("asana-gid-1", "success"); err != nil {
+		t.Fatalf("seed asana: %v", err)
+	}
+	if err := store.MarkAzureDevOpsWorkItemProcessed(303, "success"); err != nil {
+		t.Fatalf("seed azuredevops: %v", err)
+	}
+	if err := store.MarkPlaneIssueProcessed("plane-uuid-x", "success"); err != nil {
+		t.Fatalf("seed plane: %v", err)
+	}
+
+	// Run the migration (second time — first ran in NewStateStoreFromPath on empty tables).
+	if err := store.migrateLegacyProcessedTables(); err != nil {
+		t.Fatalf("migrateLegacyProcessedTables: %v", err)
+	}
+
+	// Each seeded row should appear in adapter_processed.
+	cases := []struct{ adapter, id string }{
+		{"github", "101"},
+		{"linear", "LIN-42"},
+		{"gitlab", "202"},
+		{"jira", "PROJ-7"},
+		{"asana", "asana-gid-1"},
+		{"azuredevops", "303"},
+		{"plane", "plane-uuid-x"},
+	}
+	for _, c := range cases {
+		ok, err := store.IsAdapterProcessed(c.adapter, c.id)
+		if err != nil {
+			t.Errorf("IsAdapterProcessed(%s, %s): %v", c.adapter, c.id, err)
+			continue
+		}
+		if !ok {
+			t.Errorf("expected %s/%s to be in adapter_processed after migration", c.adapter, c.id)
+		}
+	}
+
+	// Idempotency: running again must not error or duplicate rows.
+	if err := store.migrateLegacyProcessedTables(); err != nil {
+		t.Fatalf("second migrateLegacyProcessedTables: %v", err)
+	}
+	all, err := store.LoadAdapterProcessed("github")
+	if err != nil {
+		t.Fatalf("LoadAdapterProcessed: %v", err)
+	}
+	if len(all) != 1 {
+		t.Errorf("expected 1 github row after idempotent re-run, got %d", len(all))
+	}
+}

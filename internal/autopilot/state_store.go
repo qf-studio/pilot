@@ -131,6 +131,9 @@ func (s *StateStore) migrate() error {
 		// daemon restarts resume monitoring the same commit without re-fetching.
 		`ALTER TABLE autopilot_pr_state ADD COLUMN post_merge_sha TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE autopilot_pr_state ADD COLUMN post_merge_ci_started_at DATETIME`,
+		// TASK-298: Add repo column to adapter_processed for cross-repo dedup (TASK-288 Step 2).
+		// Repo defaults to '' for tracker-style adapters (linear, jira, asana, etc.).
+		`ALTER TABLE adapter_processed ADD COLUMN repo TEXT NOT NULL DEFAULT ''`,
 	}
 
 	for _, m := range migrations {
@@ -142,7 +145,70 @@ func (s *StateStore) migrate() error {
 			return fmt.Errorf("migration failed: %w", err)
 		}
 	}
+
+	// TASK-298: Consolidate 7 legacy per-adapter tables into adapter_processed.
+	if err := s.migrateLegacyProcessedTables(); err != nil {
+		return fmt.Errorf("legacy processed tables migration failed: %w", err)
+	}
+
 	return nil
+}
+
+// migrateLegacyProcessedTables copies rows from the 7 legacy per-adapter tables
+// into adapter_processed. It does NOT drop the legacy tables — that is handled by
+// a later migration step once all callers have been switched to the generic API.
+// Safe to run multiple times: checks table existence and uses INSERT OR IGNORE.
+func (s *StateStore) migrateLegacyProcessedTables() error {
+	type legacyTable struct {
+		table   string
+		adapter string
+		idCol   string
+		castInt bool // true when the PK column is INTEGER and must be cast to TEXT
+	}
+	tables := []legacyTable{
+		{"autopilot_processed", "github", "issue_number", true},
+		{"linear_processed", "linear", "issue_id", false},
+		{"gitlab_processed", "gitlab", "issue_number", true},
+		{"jira_processed", "jira", "issue_key", false},
+		{"asana_processed", "asana", "task_gid", false},
+		{"azuredevops_processed", "azuredevops", "work_item_id", true},
+		{"plane_processed", "plane", "issue_id", false},
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	for _, lt := range tables {
+		// Skip if legacy table does not exist (fresh install or already dropped).
+		var exists int
+		if err := tx.QueryRow(
+			`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, lt.table,
+		).Scan(&exists); err != nil {
+			return fmt.Errorf("check table %s: %w", lt.table, err)
+		}
+		if exists == 0 {
+			continue
+		}
+
+		idExpr := lt.idCol
+		if lt.castInt {
+			idExpr = fmt.Sprintf("CAST(%s AS TEXT)", lt.idCol)
+		}
+
+		// Copy rows; OR IGNORE skips rows already present in adapter_processed.
+		q := fmt.Sprintf(`
+			INSERT OR IGNORE INTO adapter_processed (adapter, repo, issue_id, processed_at, result)
+			SELECT ?, '', %s, processed_at, COALESCE(result, '') FROM %s
+		`, idExpr, lt.table)
+		if _, err := tx.Exec(q, lt.adapter); err != nil {
+			return fmt.Errorf("copy %s: %w", lt.table, err)
+		}
+	}
+
+	return tx.Commit()
 }
 
 // SavePRState persists a PR state to the database (upsert).
