@@ -311,19 +311,35 @@ func TestHasCompletedExecution(t *testing.T) {
 		t.Error("expected false for running task")
 	}
 
-	// Save a completed execution
+	// Save a completed execution with a deliverable (commit_sha set).
 	_ = store.SaveExecution(&Execution{
 		ID:          "exec-done",
 		TaskID:      "GH-42",
 		ProjectPath: "/project",
 		Status:      "completed",
+		CommitSHA:   "abc123",
 	})
 	completed, err = store.HasCompletedExecution("GH-42", "/project")
 	if err != nil {
 		t.Fatalf("HasCompletedExecution failed: %v", err)
 	}
 	if !completed {
-		t.Error("expected true for completed task")
+		t.Error("expected true for completed task with deliverable")
+	}
+
+	// Completed but no deliverables (epic-parent false-positive pattern, TASK-296).
+	_ = store.SaveExecution(&Execution{
+		ID:          "exec-epic",
+		TaskID:      "GH-43",
+		ProjectPath: "/project",
+		Status:      "completed",
+	})
+	completed, err = store.HasCompletedExecution("GH-43", "/project")
+	if err != nil {
+		t.Fatalf("HasCompletedExecution failed: %v", err)
+	}
+	if completed {
+		t.Error("expected false for completed task with no deliverable (epic-parent false-positive)")
 	}
 
 	// Different project path — should return false
@@ -377,19 +393,20 @@ func TestHasCompletedExecution_OrphanRecovery(t *testing.T) {
 		t.Error("expected false — orphan-recovered execution with error should not block re-dispatch")
 	}
 
-	// Now add a genuine completed execution (no error)
+	// Now add a genuine completed execution (no error, has deliverable).
 	_ = store.SaveExecution(&Execution{
 		ID:          "exec-genuine",
 		TaskID:      taskID,
 		ProjectPath: projectPath,
 		Status:      "completed",
+		CommitSHA:   "deadbeef",
 	})
 	completed, err = store.HasCompletedExecution(taskID, projectPath)
 	if err != nil {
 		t.Fatalf("HasCompletedExecution failed: %v", err)
 	}
 	if !completed {
-		t.Error("expected true — genuine completed execution should be found")
+		t.Error("expected true — genuine completed execution with deliverable should be found")
 	}
 }
 
@@ -1878,12 +1895,13 @@ func TestInvalidateCompletion(t *testing.T) {
 	taskID := "GH-500"
 	projectPath := "/project"
 
-	// Insert a genuine completed execution (no error).
+	// Insert a genuine completed execution (no error, with deliverable).
 	_ = store.SaveExecution(&Execution{
 		ID:          "exec-genuine",
 		TaskID:      taskID,
 		ProjectPath: projectPath,
 		Status:      "completed",
+		CommitSHA:   "sha-genuine",
 	})
 
 	// Insert an orphan-recovered execution (status=completed, error set).
@@ -1930,6 +1948,7 @@ func TestInvalidateCompletion(t *testing.T) {
 		TaskID:      taskID,
 		ProjectPath: otherPath,
 		Status:      "completed",
+		CommitSHA:   "sha-other",
 	})
 	if err := store.InvalidateCompletion(taskID, projectPath); err != nil {
 		t.Fatalf("InvalidateCompletion: %v", err)

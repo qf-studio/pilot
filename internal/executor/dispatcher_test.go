@@ -733,7 +733,7 @@ func TestRecoverStaleTasks_DeletesOrphanWhenCompleted(t *testing.T) {
 
 	// Scenario: same TaskID has a completed row AND an orphan running/queued row.
 	executions := []*memory.Execution{
-		{ID: "exec-completed", TaskID: "TASK-ORPHAN", ProjectPath: "/project", Status: "completed"},
+		{ID: "exec-completed", TaskID: "TASK-ORPHAN", ProjectPath: "/project", Status: "completed", CommitSHA: "abc"},
 		{ID: "exec-orphan-run", TaskID: "TASK-ORPHAN", ProjectPath: "/project", Status: "running"},
 		{ID: "exec-orphan-q", TaskID: "TASK-ORPHAN", ProjectPath: "/project", Status: "queued"},
 	}
@@ -858,7 +858,7 @@ func TestStore_HasCompletedExecution(t *testing.T) {
 	defer cleanup()
 
 	executions := []*memory.Execution{
-		{ID: "exec-hce-1", TaskID: "TASK-HCE", ProjectPath: "/project-a", Status: "completed"},
+		{ID: "exec-hce-1", TaskID: "TASK-HCE", ProjectPath: "/project-a", Status: "completed", CommitSHA: "abc"},
 		{ID: "exec-hce-2", TaskID: "TASK-HCE", ProjectPath: "/project-b", Status: "running"},
 		{ID: "exec-hce-3", TaskID: "TASK-HCE-NONE", ProjectPath: "/project-a", Status: "failed"},
 	}
