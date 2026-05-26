@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/qf-studio/pilot/internal/executor/workflow"
 	"github.com/qf-studio/pilot/internal/logging"
 	"github.com/qf-studio/pilot/internal/memory"
 	"github.com/qf-studio/pilot/internal/quality"
@@ -1680,8 +1681,34 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 		}
 	}
 
+	// Load per-repo workflow override (.pilot/workflow.yaml) — TASK-304.
+	// Applied before prompt construction so overrides are visible immediately.
+	var workflowMaxTurns int
+	repoWorkflow, wfErr := workflow.Load(executionPath)
+	if wfErr != nil {
+		log.Warn("Failed to load .pilot/workflow.yaml, using defaults",
+			slog.String("task_id", task.ID),
+			slog.Any("error", wfErr),
+		)
+	} else if repoWorkflow != nil {
+		log.Info("Loaded .pilot/workflow.yaml",
+			slog.String("task_id", task.ID),
+			slog.Int("max_turns", repoWorkflow.Agent.MaxTurns),
+			slog.String("reasoning_effort", repoWorkflow.Agent.ReasoningEffort),
+		)
+		if repoWorkflow.Agent.ReasoningEffort != "" {
+			selectedEffort = repoWorkflow.Agent.ReasoningEffort
+		}
+		workflowMaxTurns = repoWorkflow.Agent.MaxTurns
+	}
+
 	// Build the prompt
 	prompt := r.BuildPrompt(task, executionPath)
+
+	// Append per-repo workflow prompt appendix if present (TASK-304).
+	if repoWorkflow != nil && repoWorkflow.PromptAppendix != "" {
+		prompt += "\n\n## Project Workflow\n\n" + repoWorkflow.PromptAppendix
+	}
 
 	// Append research context if available (GH-217)
 	if researchResult != nil && len(researchResult.Findings) > 0 {
@@ -1808,6 +1835,7 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 		Verbose:         task.Verbose,
 		Model:           selectedModel,
 		Effort:          selectedEffort,
+		MaxTurns:        workflowMaxTurns, // TASK-304: per-repo .pilot/workflow.yaml override
 		FromPR:          task.FromPR, // GH-1267: session resumption from PR context
 		WatchdogTimeout: watchdogTimeout,
 		AllowedTools:    allowedTools,

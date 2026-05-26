@@ -360,6 +360,12 @@ func (b *ClaudeCodeBackend) executeWithFromPR(ctx context.Context, opts ExecuteO
 		b.log.Info("Using routed model", slog.String("model", opts.Model))
 	}
 
+	// Add max-turns flag if set by .pilot/workflow.yaml agent.max_turns (TASK-304)
+	if opts.MaxTurns > 0 {
+		args = append(args, "--max-turns", strconv.Itoa(opts.MaxTurns))
+		b.log.Info("Using workflow max_turns override", slog.Int("max_turns", opts.MaxTurns))
+	}
+
 	// Add effort flag if specified (effort routing)
 	// Note: Claude Code CLI may not support --effort yet; this is future-proofed.
 	if opts.Effort != "" {
