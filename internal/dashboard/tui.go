@@ -2745,14 +2745,21 @@ func (m Model) renderUpdateNotification() string {
 		title = "* UPGRADING"
 		bar := m.renderProgressBar(m.upgradeProgress, 30)
 		content.WriteString(fmt.Sprintf("  Installing %s... %s %d%%", m.updateInfo.LatestVersion, bar, m.upgradeProgress))
+		if m.upgradeMessage != "" {
+			content.WriteString("\n  " + m.upgradeMessage)
+		}
 
 	case UpgradeStateComplete:
 		title = "+ UPGRADED"
-		content.WriteString(fmt.Sprintf("  Now running %s - Restarting...", m.updateInfo.LatestVersion))
+		content.WriteString(fmt.Sprintf("  Upgrade to %s installed — restart Pilot manually to apply.", m.updateInfo.LatestVersion))
 
 	case UpgradeStateFailed:
 		title = "! UPGRADE FAILED"
-		content.WriteString("  " + m.upgradeError)
+		if m.upgradeError != "" {
+			content.WriteString("  " + m.upgradeError)
+		} else {
+			content.WriteString("  " + m.upgradeMessage)
+		}
 
 	default:
 		return ""
