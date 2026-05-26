@@ -65,16 +65,15 @@ func TestTaskCompletionInvariant(t *testing.T) {
 			wantShipped: false,
 		},
 		{
-			// Orphan-recovery row: status=completed with error, and a commit. HasCompletedExecution
-			// excludes error!='' rows (GH-2315), so it returns false. IsTaskShipped ignores the
-			// error field — it only checks status+deliverables. These diverge intentionally:
-			// the SQL guard is for dispatch decisions (conservative), the Go predicate is for
-			// post-flight label checks. This case is documented here so future maintainers
-			// know the divergence is expected, not a bug.
-			// Skipped from the invariant loop — see comment below.
-			name:        "orphan-recovery (known divergence, not in invariant loop)",
+			// GH-3126: orphan-recovery rows are no longer a divergence between IsTaskShipped and
+			// HasCompletedExecution. Both now return false for error!='' rows without a pr_url:
+			// - HasCompletedExecution SQL excludes error!='' (GH-2315 guard)
+			// - IsTaskShipped requires error=='' for CommitSHA-only trust (GH-3126 hardening)
+			// This closes the ghost-SHA ghost-close variant where a parent SHA was accepted as proof
+			// of shipped work.
+			name:        "orphan-recovery: completed with error and commit_sha only (not shipped)",
 			exec:        memory.Execution{ID: "inv-7", TaskID: "GH-999", ProjectPath: "/proj", Status: "completed", Error: "stale running task recovered", CommitSHA: "xyz"},
-			wantShipped: true, // IsTaskShipped returns true; HasCompletedExecution returns false
+			wantShipped: false,
 		},
 	}
 
@@ -84,15 +83,8 @@ func TestTaskCompletionInvariant(t *testing.T) {
 		}
 	}
 
-	// Invariant check: for each non-divergence row, IsTaskShipped and HasCompletedExecution must agree.
+	// Invariant check: IsTaskShipped and HasCompletedExecution must agree on every row.
 	for _, tc := range rows {
-		if tc.exec.ID == "inv-7" {
-			// Known intentional divergence: orphan-recovery rows with deliverables.
-			// IsTaskShipped=true, HasCompletedExecution=false (excludes error!='').
-			// Verified separately below.
-			continue
-		}
-
 		t.Run(tc.name, func(t *testing.T) {
 			goResult := IsTaskShipped(tc.exec)
 			sqlResult, err := store.HasCompletedExecution(tc.exec.TaskID, tc.exec.ProjectPath)
@@ -112,20 +104,4 @@ func TestTaskCompletionInvariant(t *testing.T) {
 			}
 		})
 	}
-
-	// Verify the known divergence for orphan-recovery rows.
-	t.Run("orphan-recovery divergence is expected", func(t *testing.T) {
-		orphan := rows[len(rows)-1].exec
-		goResult := IsTaskShipped(orphan)
-		sqlResult, err := store.HasCompletedExecution(orphan.TaskID, orphan.ProjectPath)
-		if err != nil {
-			t.Fatalf("HasCompletedExecution: %v", err)
-		}
-		if !goResult {
-			t.Errorf("IsTaskShipped should be true for completed+deliverable row (ignores error field), got false")
-		}
-		if sqlResult {
-			t.Errorf("HasCompletedExecution should be false for error!='' row (GH-2315 guard), got true")
-		}
-	})
 }

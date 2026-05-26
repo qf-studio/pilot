@@ -1,15 +1,27 @@
 package executor
 
-import "github.com/qf-studio/pilot/internal/memory"
+import (
+	"log/slog"
 
-// IsTaskShipped reports whether an execution row represents real shipped work:
-// status must be "completed" AND at least one deliverable (commit_sha or pr_url) must be set.
-// Epic-parent rows (status=completed, no deliverable) correctly return false — sub-issues own the work.
-// This predicate mirrors the SQL filter in HasCompletedExecution; the cross-site invariant test
-// in internal/integration ensures both always agree.
+	"github.com/qf-studio/pilot/internal/memory"
+)
+
+// IsTaskShipped reports whether an execution row represents real shipped work.
+// PRUrl is the primary signal — it proves a PR was opened against the remote.
+// CommitSHA alone is accepted for backwards-compat (direct-commit workflows) but
+// logs a warning because it can be a parent SHA if the ghost-SHA guard was bypassed.
+// Epic-parent rows (status=completed, no deliverable) correctly return false.
 func IsTaskShipped(row memory.Execution) bool {
 	if row.Status != "completed" {
 		return false
 	}
-	return row.CommitSHA != "" || row.PRUrl != ""
+	if row.PRUrl != "" {
+		return true
+	}
+	if row.CommitSHA != "" && row.Error == "" {
+		slog.Warn("IsTaskShipped: trusting CommitSHA without PRUrl — verify freshness",
+			"sha", row.CommitSHA)
+		return true
+	}
+	return false
 }

@@ -2318,6 +2318,38 @@ retrySucceeded:
 		}
 	}
 
+	// GH-3126: Ghost-SHA guard — reject SHAs that are already on the base branch.
+	// When Claude makes no new commit, git log returns the parent (pre-execution) SHA.
+	// Recording that as CommitSHA causes IsTaskShipped to return true on a no-op run,
+	// triggering pilot-done + issue close with no actual work delivered.
+	// Fail open on check errors (e.g. no origin configured in test repos): only reject
+	// when the check conclusively shows the SHA is already on origin/<base>.
+	if result.CommitSHA != "" && result.Success {
+		ghostBase := task.BaseBranch
+		if ghostBase == "" {
+			ghostBase, _ = git.GetDefaultBranch(ctx)
+			if ghostBase == "" {
+				ghostBase = "main"
+			}
+		}
+		if isNew, checkErr := commitSHAIsNew(ctx, executionPath, result.CommitSHA, ghostBase); checkErr != nil {
+			log.Warn("executor: ghost-SHA check skipped (will not block)",
+				slog.String("task_id", task.ID),
+				slog.String("sha", result.CommitSHA[:min(7, len(result.CommitSHA))]),
+				slog.Any("error", checkErr),
+			)
+		} else if !isNew {
+			log.Warn("executor: harvested SHA is already on base branch — no new commit",
+				slog.String("task_id", task.ID),
+				slog.String("sha", result.CommitSHA[:min(7, len(result.CommitSHA))]),
+				slog.String("base", ghostBase),
+			)
+			result.CommitSHA = ""
+			result.Success = false
+			result.Error = "no new commit produced — worktree HEAD matches base branch parent"
+		}
+	}
+
 	// Fill in additional metrics from state
 	result.FilesChanged = state.filesWrite
 	result.CacheCreationInputTokens = state.cacheCreationInputTokens
@@ -3207,6 +3239,31 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 					slog.String("task_id", task.ID),
 					slog.Any("error", pushErr),
 				)
+			}
+
+			// GH-3126: Defense-in-depth ghost-SHA guard after push.
+			// The pre-push guard above clears parent SHAs, but re-check here since
+			// post-push SHA is the authoritative value that flows into autopilot CI polling.
+			// Fail open on errors (missing origin ref) — only block on conclusive stale result.
+			if result.CommitSHA != "" {
+				if isNew, checkErr := commitSHAIsNew(ctx, executionPath, result.CommitSHA, baseBranch); checkErr != nil {
+					log.Warn("executor: post-push ghost-SHA check skipped (will not block)",
+						slog.String("task_id", task.ID),
+						slog.String("sha", result.CommitSHA[:min(7, len(result.CommitSHA))]),
+						slog.Any("error", checkErr),
+					)
+				} else if !isNew {
+					log.Warn("executor: post-push SHA is already on base branch — aborting PR creation",
+						slog.String("task_id", task.ID),
+						slog.String("sha", result.CommitSHA[:min(7, len(result.CommitSHA))]),
+						slog.String("base", baseBranch),
+					)
+					result.CommitSHA = ""
+					result.Success = false
+					result.Error = "no new commit produced — post-push SHA matches base branch"
+					r.reportProgress(task.ID, "PR Failed", 100, result.Error)
+					return result, nil
+				}
 			}
 
 			r.reportProgress(task.ID, "Creating PR", 98, "Creating pull request...")

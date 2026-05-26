@@ -571,5 +571,4 @@ quality:
 | Repo allowlist Phase B | v2.149.0 | adapters/github | `CreatePilotIssue` validates against allowlist (GH-3047) |
 | `safeGo()` panic-recovery wrapper | v2.150.x | executor + adapters | All goroutine spawns wrapped (TASK-292) |
 | `IsTaskShipped` predicate | v2.151.x | autopilot | Cross-site invariant preventing double-dispatch (TASK-296 / GH-3091) |
-| Ghost-SHA guard | v2.151.x | executor | Fail-closed when commit_sha already on base branch (TASK-300 / GH-3099) |
-| Gate pilot-done on merge | v2.155.x | autopilot + cmd/pilot | pilot-done + issue close deferred to PR merge; handleMergeConflict re-adds pilot label + guards pilot-done (TASK-301 / GH-3139) |
+| Ghost-SHA guard | v2.155.x | executor | `commitSHAIsNew` blocks parent-SHA ghost-closes; `IsTaskShipped` requires error="" for SHA-only trust; orphan-recovery divergence resolved (TASK-300 / GH-3126) |
