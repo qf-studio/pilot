@@ -92,6 +92,7 @@ const (
 
 // Label names used by Pilot
 const (
+	LabelPilot              = "pilot"
 	LabelInProgress         = "pilot-in-progress"
 	LabelDone               = "pilot-done"
 	LabelFailed             = "pilot-failed"

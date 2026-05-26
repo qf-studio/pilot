@@ -1794,10 +1794,20 @@ func (c *Controller) handleMergeConflict(ctx context.Context, prState *PRState) 
 		c.log.Warn("failed to close conflicting PR", "pr", prState.PRNumber, "error", err)
 	}
 
-	// Remove pilot-in-progress label from the issue so poller can re-pick it
+	// Restore issue to dispatch-ready state after conflict.
+	// GH-3139/TASK-301: issue must remain OPEN with pilot label so the poller
+	// can re-dispatch. Do NOT close the issue or add pilot-done here.
 	if prState.IssueNumber > 0 {
 		if err := c.ghClient.RemoveLabel(ctx, c.owner, c.repo, prState.IssueNumber, github.LabelInProgress); err != nil {
 			c.log.Warn("failed to remove in-progress label", "issue", prState.IssueNumber, "error", err)
+		}
+		// Re-add pilot label so poller can pick up the issue on the next cycle.
+		if err := c.ghClient.AddLabels(ctx, c.owner, c.repo, prState.IssueNumber, []string{github.LabelPilot}); err != nil {
+			c.log.Warn("failed to re-add pilot label on conflict", "issue", prState.IssueNumber, "error", err)
+		}
+		// Guard: remove pilot-done if somehow present — prevents ghost-close.
+		if err := c.ghClient.RemoveLabel(ctx, c.owner, c.repo, prState.IssueNumber, github.LabelDone); err != nil {
+			c.log.Debug("pilot-done cleanup on conflict (may not exist)", "issue", prState.IssueNumber, "error", err)
 		}
 	}
 
