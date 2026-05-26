@@ -61,10 +61,11 @@ type VersionInfo struct {
 
 // Upgrader handles version checking and self-update
 type Upgrader struct {
-	currentVersion string
-	httpClient     *http.Client
-	binaryPath     string
-	backupPath     string
+	currentVersion      string
+	httpClient          *http.Client
+	binaryPath          string
+	backupPath          string
+	prepareForExecution func(string) error // injectable for testing; defaults to PrepareForExecution
 }
 
 // NewUpgrader creates a new Upgrader instance
@@ -93,10 +94,11 @@ func NewUpgrader(currentVersion string) (*Upgrader, error) {
 	}
 
 	return &Upgrader{
-		currentVersion: currentVersion,
-		httpClient:     &http.Client{Timeout: DefaultTimeout},
-		binaryPath:     resolvedPath,
-		backupPath:     resolvedPath + BackupSuffix,
+		currentVersion:      currentVersion,
+		httpClient:          &http.Client{Timeout: DefaultTimeout},
+		binaryPath:          resolvedPath,
+		backupPath:          resolvedPath + BackupSuffix,
+		prepareForExecution: PrepareForExecution,
 	}, nil
 }
 
@@ -402,9 +404,16 @@ func (u *Upgrader) installBinary(downloadPath string) error {
 		return err
 	}
 
-	// Prepare binary for execution (removes quarantine, signs on macOS)
-	// Errors are non-fatal - binary may still work
-	_ = PrepareForExecution(u.binaryPath)
+	// On Darwin, a codesign failure means Gatekeeper will kill the binary on
+	// first launch — surface it so callers can transition to UpgradeStateFailed.
+	prepare := PrepareForExecution
+	if u.prepareForExecution != nil {
+		prepare = u.prepareForExecution
+	}
+	if err := prepare(u.binaryPath); err != nil {
+		return fmt.Errorf("codesign failed — macOS Gatekeeper may block this binary "+
+			"(run: xattr -d com.apple.quarantine %s): %w", u.binaryPath, err)
+	}
 
 	return nil
 }
