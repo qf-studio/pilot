@@ -2,6 +2,7 @@ package autopilot
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -176,63 +177,63 @@ func TestStateStore_ProcessedIssues(t *testing.T) {
 	store := newTestStateStore(t)
 
 	// Not processed initially
-	processed, err := store.IsIssueProcessed(100)
+	processed, err := store.IsProcessed("github", "owner/repo", "100")
 	if err != nil {
-		t.Fatalf("IsIssueProcessed failed: %v", err)
+		t.Fatalf("IsProcessed failed: %v", err)
 	}
 	if processed {
 		t.Error("issue should not be processed initially")
 	}
 
 	// Mark processed
-	if err := store.MarkIssueProcessed(100, "success"); err != nil {
-		t.Fatalf("MarkIssueProcessed failed: %v", err)
+	if err := store.Mark("github", "owner/repo", "100"); err != nil {
+		t.Fatalf("Mark failed: %v", err)
 	}
 
-	processed, err = store.IsIssueProcessed(100)
+	processed, err = store.IsProcessed("github", "owner/repo", "100")
 	if err != nil {
-		t.Fatalf("IsIssueProcessed failed: %v", err)
+		t.Fatalf("IsProcessed failed: %v", err)
 	}
 	if !processed {
 		t.Error("issue should be processed after marking")
 	}
 
 	// Load all
-	all, err := store.LoadProcessedIssues()
+	all, err := store.Load("github", "owner/repo")
 	if err != nil {
-		t.Fatalf("LoadProcessedIssues failed: %v", err)
+		t.Fatalf("Load failed: %v", err)
 	}
 	if len(all) != 1 {
 		t.Errorf("got %d processed, want 1", len(all))
 	}
-	if !all[100] {
+	if _, ok := all["100"]; !ok {
 		t.Error("issue 100 should be in processed map")
 	}
 
 	// Idempotent mark
-	if err := store.MarkIssueProcessed(100, "failed"); err != nil {
-		t.Fatalf("idempotent MarkIssueProcessed failed: %v", err)
+	if err := store.Mark("github", "owner/repo", "100"); err != nil {
+		t.Fatalf("idempotent Mark failed: %v", err)
 	}
-	all, _ = store.LoadProcessedIssues()
+	all, _ = store.Load("github", "owner/repo")
 	if len(all) != 1 {
 		t.Errorf("got %d processed after idempotent mark, want 1", len(all))
 	}
 
 	// Unmark processed (for retry when pilot-failed label removed)
-	if err := store.UnmarkIssueProcessed(100); err != nil {
-		t.Fatalf("UnmarkIssueProcessed failed: %v", err)
+	if err := store.Unmark("github", "owner/repo", "100"); err != nil {
+		t.Fatalf("Unmark failed: %v", err)
 	}
-	processed, err = store.IsIssueProcessed(100)
+	processed, err = store.IsProcessed("github", "owner/repo", "100")
 	if err != nil {
-		t.Fatalf("IsIssueProcessed after unmark failed: %v", err)
+		t.Fatalf("IsProcessed after unmark failed: %v", err)
 	}
 	if processed {
 		t.Error("issue should not be processed after unmarking")
 	}
 
 	// Unmark non-existent issue should not error
-	if err := store.UnmarkIssueProcessed(999); err != nil {
-		t.Fatalf("UnmarkIssueProcessed for non-existent issue failed: %v", err)
+	if err := store.Unmark("github", "owner/repo", "999"); err != nil {
+		t.Fatalf("Unmark for non-existent issue failed: %v", err)
 	}
 }
 
@@ -271,26 +272,24 @@ func TestStateStore_Metadata(t *testing.T) {
 	}
 }
 
-func TestStateStore_PurgeOldProcessedIssues(t *testing.T) {
+func TestStateStore_Purge(t *testing.T) {
 	store := newTestStateStore(t)
 
-	// Mark some issues
 	for i := 1; i <= 5; i++ {
-		if err := store.MarkIssueProcessed(i, "success"); err != nil {
-			t.Fatalf("MarkIssueProcessed(%d) failed: %v", i, err)
+		if err := store.Mark("github", "owner/repo", fmt.Sprintf("%d", i)); err != nil {
+			t.Fatalf("Mark(%d) failed: %v", i, err)
 		}
 	}
 
-	// Purge older than 0 (all should be purged)
-	purged, err := store.PurgeOldProcessedIssues(0)
+	purged, err := store.Purge("github", 0)
 	if err != nil {
-		t.Fatalf("PurgeOldProcessedIssues failed: %v", err)
+		t.Fatalf("Purge failed: %v", err)
 	}
 	if purged != 5 {
 		t.Errorf("purged = %d, want 5", purged)
 	}
 
-	all, _ := store.LoadProcessedIssues()
+	all, _ := store.Load("github", "owner/repo")
 	if len(all) != 0 {
 		t.Errorf("got %d after purge, want 0", len(all))
 	}
@@ -635,746 +634,114 @@ func TestController_RemovePR_RemovesFailures(t *testing.T) {
 	}
 }
 
-// GH-1351: Test Linear processed issues (string IDs).
-func TestStateStore_LinearProcessedIssues(t *testing.T) {
-	store := newTestStateStore(t)
-
-	// Not processed initially
-	processed, err := store.IsLinearIssueProcessed("abc-123-def")
-	if err != nil {
-		t.Fatalf("IsLinearIssueProcessed failed: %v", err)
-	}
-	if processed {
-		t.Error("issue should not be processed initially")
-	}
-
-	// Mark processed
-	if err := store.MarkLinearIssueProcessed("abc-123-def", "success"); err != nil {
-		t.Fatalf("MarkLinearIssueProcessed failed: %v", err)
-	}
-
-	processed, err = store.IsLinearIssueProcessed("abc-123-def")
-	if err != nil {
-		t.Fatalf("IsLinearIssueProcessed failed: %v", err)
-	}
-	if !processed {
-		t.Error("issue should be processed after marking")
-	}
-
-	// Load all
-	all, err := store.LoadLinearProcessedIssues()
-	if err != nil {
-		t.Fatalf("LoadLinearProcessedIssues failed: %v", err)
-	}
-	if len(all) != 1 {
-		t.Errorf("got %d processed, want 1", len(all))
-	}
-	if !all["abc-123-def"] {
-		t.Error("issue abc-123-def should be in processed map")
-	}
-
-	// Idempotent mark
-	if err := store.MarkLinearIssueProcessed("abc-123-def", "failed"); err != nil {
-		t.Fatalf("idempotent MarkLinearIssueProcessed failed: %v", err)
-	}
-	all, _ = store.LoadLinearProcessedIssues()
-	if len(all) != 1 {
-		t.Errorf("got %d processed after idempotent mark, want 1", len(all))
-	}
-
-	// Unmark processed (for retry when pilot-failed label removed)
-	if err := store.UnmarkLinearIssueProcessed("abc-123-def"); err != nil {
-		t.Fatalf("UnmarkLinearIssueProcessed failed: %v", err)
-	}
-	processed, err = store.IsLinearIssueProcessed("abc-123-def")
-	if err != nil {
-		t.Fatalf("IsLinearIssueProcessed after unmark failed: %v", err)
-	}
-	if processed {
-		t.Error("issue should not be processed after unmarking")
-	}
-
-	// Unmark non-existent issue should not error
-	if err := store.UnmarkLinearIssueProcessed("nonexistent-id"); err != nil {
-		t.Fatalf("UnmarkLinearIssueProcessed for non-existent issue failed: %v", err)
-	}
-}
-
-// GH-1351: Test Linear processed issues purge.
-func TestStateStore_PurgeOldLinearProcessedIssues(t *testing.T) {
-	store := newTestStateStore(t)
-
-	// Mark some issues
-	for i := 1; i <= 5; i++ {
-		id := "linear-issue-" + string(rune('a'+i-1))
-		if err := store.MarkLinearIssueProcessed(id, "success"); err != nil {
-			t.Fatalf("MarkLinearIssueProcessed(%s) failed: %v", id, err)
-		}
-	}
-
-	// Purge older than 0 (all should be purged)
-	purged, err := store.PurgeOldLinearProcessedIssues(0)
-	if err != nil {
-		t.Fatalf("PurgeOldLinearProcessedIssues failed: %v", err)
-	}
-	if purged != 5 {
-		t.Errorf("purged = %d, want 5", purged)
-	}
-
-	all, _ := store.LoadLinearProcessedIssues()
-	if len(all) != 0 {
-		t.Errorf("got %d after purge, want 0", len(all))
-	}
-}
-
-// GH-1351: Test Linear and GitHub processed stores are independent.
-func TestStateStore_LinearAndGitHubProcessedIndependent(t *testing.T) {
-	store := newTestStateStore(t)
-
-	// Mark a GitHub issue (integer ID)
-	if err := store.MarkIssueProcessed(100, "success"); err != nil {
-		t.Fatalf("MarkIssueProcessed failed: %v", err)
-	}
-
-	// Mark a Linear issue (string ID)
-	if err := store.MarkLinearIssueProcessed("linear-abc-123", "success"); err != nil {
-		t.Fatalf("MarkLinearIssueProcessed failed: %v", err)
-	}
-
-	// Verify both are independent
-	ghProcessed, _ := store.LoadProcessedIssues()
-	linearProcessed, _ := store.LoadLinearProcessedIssues()
-
-	if len(ghProcessed) != 1 {
-		t.Errorf("GitHub processed = %d, want 1", len(ghProcessed))
-	}
-	if len(linearProcessed) != 1 {
-		t.Errorf("Linear processed = %d, want 1", len(linearProcessed))
-	}
-
-	if !ghProcessed[100] {
-		t.Error("GitHub issue 100 should be in processed map")
-	}
-	if !linearProcessed["linear-abc-123"] {
-		t.Error("Linear issue linear-abc-123 should be in processed map")
-	}
-}
-
-// GH-1356: Test GitLab processed issues (integer IDs like GitHub).
-func TestStateStore_GitLabProcessedIssues(t *testing.T) {
-	store := newTestStateStore(t)
-
-	// Not processed initially
-	processed, err := store.IsGitLabIssueProcessed(200)
-	if err != nil {
-		t.Fatalf("IsGitLabIssueProcessed failed: %v", err)
-	}
-	if processed {
-		t.Error("issue should not be processed initially")
-	}
-
-	// Mark processed
-	if err := store.MarkGitLabIssueProcessed(200, "success"); err != nil {
-		t.Fatalf("MarkGitLabIssueProcessed failed: %v", err)
-	}
-
-	processed, err = store.IsGitLabIssueProcessed(200)
-	if err != nil {
-		t.Fatalf("IsGitLabIssueProcessed failed: %v", err)
-	}
-	if !processed {
-		t.Error("issue should be processed after marking")
-	}
-
-	// Load all
-	all, err := store.LoadGitLabProcessedIssues()
-	if err != nil {
-		t.Fatalf("LoadGitLabProcessedIssues failed: %v", err)
-	}
-	if len(all) != 1 {
-		t.Errorf("got %d processed, want 1", len(all))
-	}
-	if !all[200] {
-		t.Error("issue 200 should be in processed map")
-	}
-
-	// Idempotent mark
-	if err := store.MarkGitLabIssueProcessed(200, "failed"); err != nil {
-		t.Fatalf("idempotent MarkGitLabIssueProcessed failed: %v", err)
-	}
-	all, _ = store.LoadGitLabProcessedIssues()
-	if len(all) != 1 {
-		t.Errorf("got %d processed after idempotent mark, want 1", len(all))
-	}
-
-	// Unmark processed (for retry when pilot-failed label removed)
-	if err := store.UnmarkGitLabIssueProcessed(200); err != nil {
-		t.Fatalf("UnmarkGitLabIssueProcessed failed: %v", err)
-	}
-	processed, err = store.IsGitLabIssueProcessed(200)
-	if err != nil {
-		t.Fatalf("IsGitLabIssueProcessed after unmark failed: %v", err)
-	}
-	if processed {
-		t.Error("issue should not be processed after unmarking")
-	}
-
-	// Unmark non-existent issue should not error
-	if err := store.UnmarkGitLabIssueProcessed(999); err != nil {
-		t.Fatalf("UnmarkGitLabIssueProcessed for non-existent issue failed: %v", err)
-	}
-}
-
-// GH-1356: Test GitLab processed issues purge.
-func TestStateStore_PurgeOldGitLabProcessedIssues(t *testing.T) {
-	store := newTestStateStore(t)
-
-	// Mark some issues
-	for i := 1; i <= 3; i++ {
-		if err := store.MarkGitLabIssueProcessed(200+i, "success"); err != nil {
-			t.Fatalf("MarkGitLabIssueProcessed(%d) failed: %v", 200+i, err)
-		}
-	}
-
-	// Purge older than 0 (all should be purged)
-	purged, err := store.PurgeOldGitLabProcessedIssues(0)
-	if err != nil {
-		t.Fatalf("PurgeOldGitLabProcessedIssues failed: %v", err)
-	}
-	if purged != 3 {
-		t.Errorf("purged = %d, want 3", purged)
-	}
-
-	all, _ := store.LoadGitLabProcessedIssues()
-	if len(all) != 0 {
-		t.Errorf("got %d after purge, want 0", len(all))
-	}
-}
-
-// GH-1356: Test Jira processed issues (string keys).
-func TestStateStore_JiraProcessedIssues(t *testing.T) {
-	store := newTestStateStore(t)
-
-	// Not processed initially
-	processed, err := store.IsJiraIssueProcessed("PROJ-123")
-	if err != nil {
-		t.Fatalf("IsJiraIssueProcessed failed: %v", err)
-	}
-	if processed {
-		t.Error("issue should not be processed initially")
-	}
-
-	// Mark processed
-	if err := store.MarkJiraIssueProcessed("PROJ-123", "success"); err != nil {
-		t.Fatalf("MarkJiraIssueProcessed failed: %v", err)
-	}
-
-	processed, err = store.IsJiraIssueProcessed("PROJ-123")
-	if err != nil {
-		t.Fatalf("IsJiraIssueProcessed failed: %v", err)
-	}
-	if !processed {
-		t.Error("issue should be processed after marking")
-	}
-
-	// Load all
-	all, err := store.LoadJiraProcessedIssues()
-	if err != nil {
-		t.Fatalf("LoadJiraProcessedIssues failed: %v", err)
-	}
-	if len(all) != 1 {
-		t.Errorf("got %d processed, want 1", len(all))
-	}
-	if !all["PROJ-123"] {
-		t.Error("issue PROJ-123 should be in processed map")
-	}
-
-	// Idempotent mark
-	if err := store.MarkJiraIssueProcessed("PROJ-123", "failed"); err != nil {
-		t.Fatalf("idempotent MarkJiraIssueProcessed failed: %v", err)
-	}
-	all, _ = store.LoadJiraProcessedIssues()
-	if len(all) != 1 {
-		t.Errorf("got %d processed after idempotent mark, want 1", len(all))
-	}
-
-	// Unmark processed (for retry when pilot-failed label removed)
-	if err := store.UnmarkJiraIssueProcessed("PROJ-123"); err != nil {
-		t.Fatalf("UnmarkJiraIssueProcessed failed: %v", err)
-	}
-	processed, err = store.IsJiraIssueProcessed("PROJ-123")
-	if err != nil {
-		t.Fatalf("IsJiraIssueProcessed after unmark failed: %v", err)
-	}
-	if processed {
-		t.Error("issue should not be processed after unmarking")
-	}
-
-	// Unmark non-existent issue should not error
-	if err := store.UnmarkJiraIssueProcessed("NONEXIST-999"); err != nil {
-		t.Fatalf("UnmarkJiraIssueProcessed for non-existent issue failed: %v", err)
-	}
-}
-
-// GH-1356: Test Jira processed issues purge.
-func TestStateStore_PurgeOldJiraProcessedIssues(t *testing.T) {
-	store := newTestStateStore(t)
-
-	// Mark some issues
-	jiraKeys := []string{"PROJ-100", "PROJ-101", "PROJ-102"}
-	for _, key := range jiraKeys {
-		if err := store.MarkJiraIssueProcessed(key, "success"); err != nil {
-			t.Fatalf("MarkJiraIssueProcessed(%s) failed: %v", key, err)
-		}
-	}
-
-	// Purge older than 0 (all should be purged)
-	purged, err := store.PurgeOldJiraProcessedIssues(0)
-	if err != nil {
-		t.Fatalf("PurgeOldJiraProcessedIssues failed: %v", err)
-	}
-	if purged != 3 {
-		t.Errorf("purged = %d, want 3", purged)
-	}
-
-	all, _ := store.LoadJiraProcessedIssues()
-	if len(all) != 0 {
-		t.Errorf("got %d after purge, want 0", len(all))
-	}
-}
-
-// GH-1356: Test Asana processed tasks (string GIDs).
-func TestStateStore_AsanaProcessedTasks(t *testing.T) {
-	store := newTestStateStore(t)
-
-	// Not processed initially
-	processed, err := store.IsAsanaTaskProcessed("1234567890123456")
-	if err != nil {
-		t.Fatalf("IsAsanaTaskProcessed failed: %v", err)
-	}
-	if processed {
-		t.Error("task should not be processed initially")
-	}
-
-	// Mark processed
-	if err := store.MarkAsanaTaskProcessed("1234567890123456", "success"); err != nil {
-		t.Fatalf("MarkAsanaTaskProcessed failed: %v", err)
-	}
-
-	processed, err = store.IsAsanaTaskProcessed("1234567890123456")
-	if err != nil {
-		t.Fatalf("IsAsanaTaskProcessed failed: %v", err)
-	}
-	if !processed {
-		t.Error("task should be processed after marking")
-	}
-
-	// Load all
-	all, err := store.LoadAsanaProcessedTasks()
-	if err != nil {
-		t.Fatalf("LoadAsanaProcessedTasks failed: %v", err)
-	}
-	if len(all) != 1 {
-		t.Errorf("got %d processed, want 1", len(all))
-	}
-	if !all["1234567890123456"] {
-		t.Error("task 1234567890123456 should be in processed map")
-	}
-
-	// Idempotent mark
-	if err := store.MarkAsanaTaskProcessed("1234567890123456", "failed"); err != nil {
-		t.Fatalf("idempotent MarkAsanaTaskProcessed failed: %v", err)
-	}
-	all, _ = store.LoadAsanaProcessedTasks()
-	if len(all) != 1 {
-		t.Errorf("got %d processed after idempotent mark, want 1", len(all))
-	}
-
-	// Unmark processed (for retry when pilot-failed label removed)
-	if err := store.UnmarkAsanaTaskProcessed("1234567890123456"); err != nil {
-		t.Fatalf("UnmarkAsanaTaskProcessed failed: %v", err)
-	}
-	processed, err = store.IsAsanaTaskProcessed("1234567890123456")
-	if err != nil {
-		t.Fatalf("IsAsanaTaskProcessed after unmark failed: %v", err)
-	}
-	if processed {
-		t.Error("task should not be processed after unmarking")
-	}
-
-	// Unmark non-existent task should not error
-	if err := store.UnmarkAsanaTaskProcessed("9999999999999999"); err != nil {
-		t.Fatalf("UnmarkAsanaTaskProcessed for non-existent task failed: %v", err)
-	}
-}
-
-// GH-1356: Test Asana processed tasks purge.
-func TestStateStore_PurgeOldAsanaProcessedTasks(t *testing.T) {
-	store := newTestStateStore(t)
-
-	// Mark some tasks
-	asanaGIDs := []string{"1111111111111111", "2222222222222222", "3333333333333333"}
-	for _, gid := range asanaGIDs {
-		if err := store.MarkAsanaTaskProcessed(gid, "success"); err != nil {
-			t.Fatalf("MarkAsanaTaskProcessed(%s) failed: %v", gid, err)
-		}
-	}
-
-	// Purge older than 0 (all should be purged)
-	purged, err := store.PurgeOldAsanaProcessedTasks(0)
-	if err != nil {
-		t.Fatalf("PurgeOldAsanaProcessedTasks failed: %v", err)
-	}
-	if purged != 3 {
-		t.Errorf("purged = %d, want 3", purged)
-	}
-
-	all, _ := store.LoadAsanaProcessedTasks()
-	if len(all) != 0 {
-		t.Errorf("got %d after purge, want 0", len(all))
-	}
-}
-
-// GH-1356: Test Azure DevOps processed work items (integer IDs).
-func TestStateStore_AzureDevOpsProcessedWorkItems(t *testing.T) {
-	store := newTestStateStore(t)
-
-	// Not processed initially
-	processed, err := store.IsAzureDevOpsWorkItemProcessed(5000)
-	if err != nil {
-		t.Fatalf("IsAzureDevOpsWorkItemProcessed failed: %v", err)
-	}
-	if processed {
-		t.Error("work item should not be processed initially")
-	}
-
-	// Mark processed
-	if err := store.MarkAzureDevOpsWorkItemProcessed(5000, "success"); err != nil {
-		t.Fatalf("MarkAzureDevOpsWorkItemProcessed failed: %v", err)
-	}
-
-	processed, err = store.IsAzureDevOpsWorkItemProcessed(5000)
-	if err != nil {
-		t.Fatalf("IsAzureDevOpsWorkItemProcessed failed: %v", err)
-	}
-	if !processed {
-		t.Error("work item should be processed after marking")
-	}
-
-	// Load all
-	all, err := store.LoadAzureDevOpsProcessedWorkItems()
-	if err != nil {
-		t.Fatalf("LoadAzureDevOpsProcessedWorkItems failed: %v", err)
-	}
-	if len(all) != 1 {
-		t.Errorf("got %d processed, want 1", len(all))
-	}
-	if !all[5000] {
-		t.Error("work item 5000 should be in processed map")
-	}
-
-	// Idempotent mark
-	if err := store.MarkAzureDevOpsWorkItemProcessed(5000, "failed"); err != nil {
-		t.Fatalf("idempotent MarkAzureDevOpsWorkItemProcessed failed: %v", err)
-	}
-	all, _ = store.LoadAzureDevOpsProcessedWorkItems()
-	if len(all) != 1 {
-		t.Errorf("got %d processed after idempotent mark, want 1", len(all))
-	}
-
-	// Unmark processed (for retry when pilot-failed label removed)
-	if err := store.UnmarkAzureDevOpsWorkItemProcessed(5000); err != nil {
-		t.Fatalf("UnmarkAzureDevOpsWorkItemProcessed failed: %v", err)
-	}
-	processed, err = store.IsAzureDevOpsWorkItemProcessed(5000)
-	if err != nil {
-		t.Fatalf("IsAzureDevOpsWorkItemProcessed after unmark failed: %v", err)
-	}
-	if processed {
-		t.Error("work item should not be processed after unmarking")
-	}
-
-	// Unmark non-existent work item should not error
-	if err := store.UnmarkAzureDevOpsWorkItemProcessed(9999); err != nil {
-		t.Fatalf("UnmarkAzureDevOpsWorkItemProcessed for non-existent work item failed: %v", err)
-	}
-}
-
-// GH-1356: Test Azure DevOps processed work items purge.
-func TestStateStore_PurgeOldAzureDevOpsProcessedWorkItems(t *testing.T) {
-	store := newTestStateStore(t)
-
-	// Mark some work items
-	for i := 1; i <= 4; i++ {
-		workItemID := 5000 + i
-		if err := store.MarkAzureDevOpsWorkItemProcessed(workItemID, "success"); err != nil {
-			t.Fatalf("MarkAzureDevOpsWorkItemProcessed(%d) failed: %v", workItemID, err)
-		}
-	}
-
-	// Purge older than 0 (all should be purged)
-	purged, err := store.PurgeOldAzureDevOpsProcessedWorkItems(0)
-	if err != nil {
-		t.Fatalf("PurgeOldAzureDevOpsProcessedWorkItems failed: %v", err)
-	}
-	if purged != 4 {
-		t.Errorf("purged = %d, want 4", purged)
-	}
-
-	all, _ := store.LoadAzureDevOpsProcessedWorkItems()
-	if len(all) != 0 {
-		t.Errorf("got %d after purge, want 0", len(all))
-	}
-}
-
-// GH-1356: Test all new processed stores are independent.
-func TestStateStore_AllProcessedStoresIndependent(t *testing.T) {
-	store := newTestStateStore(t)
-
-	// Mark issues in all platforms
-	if err := store.MarkGitLabIssueProcessed(300, "success"); err != nil {
-		t.Fatalf("MarkGitLabIssueProcessed failed: %v", err)
-	}
-	if err := store.MarkJiraIssueProcessed("TEST-456", "success"); err != nil {
-		t.Fatalf("MarkJiraIssueProcessed failed: %v", err)
-	}
-	if err := store.MarkAsanaTaskProcessed("4444444444444444", "success"); err != nil {
-		t.Fatalf("MarkAsanaTaskProcessed failed: %v", err)
-	}
-	if err := store.MarkAzureDevOpsWorkItemProcessed(6000, "success"); err != nil {
-		t.Fatalf("MarkAzureDevOpsWorkItemProcessed failed: %v", err)
-	}
-
-	// Verify all are independent
-	gitlabProcessed, _ := store.LoadGitLabProcessedIssues()
-	jiraProcessed, _ := store.LoadJiraProcessedIssues()
-	asanaProcessed, _ := store.LoadAsanaProcessedTasks()
-	azureProcessed, _ := store.LoadAzureDevOpsProcessedWorkItems()
-
-	if len(gitlabProcessed) != 1 || !gitlabProcessed[300] {
-		t.Error("GitLab issue 300 should be processed")
-	}
-	if len(jiraProcessed) != 1 || !jiraProcessed["TEST-456"] {
-		t.Error("Jira issue TEST-456 should be processed")
-	}
-	if len(asanaProcessed) != 1 || !asanaProcessed["4444444444444444"] {
-		t.Error("Asana task 4444444444444444 should be processed")
-	}
-	if len(azureProcessed) != 1 || !azureProcessed[6000] {
-		t.Error("Azure DevOps work item 6000 should be processed")
-	}
-
-	// Plane
-	if err := store.MarkPlaneIssueProcessed("plane-issue-uuid-1", "success"); err != nil {
-		t.Fatalf("MarkPlaneIssueProcessed failed: %v", err)
-	}
-	planeProcessed, _ := store.LoadPlaneProcessedIssues()
-	if len(planeProcessed) != 1 || !planeProcessed["plane-issue-uuid-1"] {
-		t.Error("Plane issue plane-issue-uuid-1 should be processed")
-	}
-}
-
-// GH-1829: Test Plane.so processed issues (string IDs).
-func TestStateStore_PlaneProcessedIssues(t *testing.T) {
-	store := newTestStateStore(t)
-
-	// Initially not processed
-	processed, err := store.IsPlaneIssueProcessed("plane-uuid-123")
-	if err != nil {
-		t.Fatalf("IsPlaneIssueProcessed failed: %v", err)
-	}
-	if processed {
-		t.Error("issue should not be processed initially")
-	}
-
-	// Mark as processed
-	if err := store.MarkPlaneIssueProcessed("plane-uuid-123", "success"); err != nil {
-		t.Fatalf("MarkPlaneIssueProcessed failed: %v", err)
-	}
-
-	processed, err = store.IsPlaneIssueProcessed("plane-uuid-123")
-	if err != nil {
-		t.Fatalf("IsPlaneIssueProcessed failed: %v", err)
-	}
-	if !processed {
-		t.Error("issue should be processed after marking")
-	}
-
-	// Load all
-	all, err := store.LoadPlaneProcessedIssues()
-	if err != nil {
-		t.Fatalf("LoadPlaneProcessedIssues failed: %v", err)
-	}
-	if len(all) != 1 || !all["plane-uuid-123"] {
-		t.Errorf("LoadPlaneProcessedIssues = %v, want {plane-uuid-123: true}", all)
-	}
-
-	// Idempotent mark (update result)
-	if err := store.MarkPlaneIssueProcessed("plane-uuid-123", "failed"); err != nil {
-		t.Fatalf("idempotent MarkPlaneIssueProcessed failed: %v", err)
-	}
-	all, _ = store.LoadPlaneProcessedIssues()
-	if len(all) != 1 {
-		t.Errorf("expected 1 processed issue after idempotent mark, got %d", len(all))
-	}
-
-	// Unmark
-	if err := store.UnmarkPlaneIssueProcessed("plane-uuid-123"); err != nil {
-		t.Fatalf("UnmarkPlaneIssueProcessed failed: %v", err)
-	}
-	processed, err = store.IsPlaneIssueProcessed("plane-uuid-123")
-	if err != nil {
-		t.Fatalf("IsPlaneIssueProcessed after unmark failed: %v", err)
-	}
-	if processed {
-		t.Error("issue should not be processed after unmarking")
-	}
-
-	// Unmark non-existent issue should not error
-	if err := store.UnmarkPlaneIssueProcessed("nonexist-uuid"); err != nil {
-		t.Fatalf("UnmarkPlaneIssueProcessed for non-existent issue failed: %v", err)
-	}
-}
-
-// GH-1829: Test Plane.so processed issues purge.
-func TestStateStore_PurgeOldPlaneProcessedIssues(t *testing.T) {
-	store := newTestStateStore(t)
-
-	ids := []string{"plane-uuid-1", "plane-uuid-2", "plane-uuid-3"}
-	for _, id := range ids {
-		if err := store.MarkPlaneIssueProcessed(id, "success"); err != nil {
-			t.Fatalf("MarkPlaneIssueProcessed(%s) failed: %v", id, err)
-		}
-	}
-
-	// Purge older than 0 (all should be purged)
-	purged, err := store.PurgeOldPlaneProcessedIssues(0)
-	if err != nil {
-		t.Fatalf("PurgeOldPlaneProcessedIssues failed: %v", err)
-	}
-	if purged != 3 {
-		t.Errorf("purged = %d, want 3", purged)
-	}
-
-	all, _ := store.LoadPlaneProcessedIssues()
-	if len(all) != 0 {
-		t.Errorf("expected 0 after purge, got %d", len(all))
-	}
-}
-
 // --- GH-1838: Generic adapter_processed tests ---
 
 func TestStateStore_GenericAdapterProcessed(t *testing.T) {
 	store := newTestStateStore(t)
 
-	// Mark processed
-	if err := store.MarkAdapterProcessed("jira", "PROJ-1", "success"); err != nil {
-		t.Fatalf("MarkAdapterProcessed failed: %v", err)
+	if err := store.Mark("jira", "", "PROJ-1"); err != nil {
+		t.Fatalf("Mark failed: %v", err)
 	}
-	if err := store.MarkAdapterProcessed("jira", "PROJ-2", "failed"); err != nil {
-		t.Fatalf("MarkAdapterProcessed failed: %v", err)
+	if err := store.Mark("jira", "", "PROJ-2"); err != nil {
+		t.Fatalf("Mark failed: %v", err)
 	}
-	if err := store.MarkAdapterProcessed("linear", "LIN-ABC", "success"); err != nil {
-		t.Fatalf("MarkAdapterProcessed failed: %v", err)
+	if err := store.Mark("linear", "", "LIN-ABC"); err != nil {
+		t.Fatalf("Mark failed: %v", err)
 	}
 
-	// Check processed
-	ok, err := store.IsAdapterProcessed("jira", "PROJ-1")
+	ok, err := store.IsProcessed("jira", "", "PROJ-1")
 	if err != nil {
-		t.Fatalf("IsAdapterProcessed failed: %v", err)
+		t.Fatalf("IsProcessed failed: %v", err)
 	}
 	if !ok {
 		t.Error("PROJ-1 should be processed for jira")
 	}
 
-	ok, err = store.IsAdapterProcessed("jira", "PROJ-999")
+	ok, err = store.IsProcessed("jira", "", "PROJ-999")
 	if err != nil {
-		t.Fatalf("IsAdapterProcessed failed: %v", err)
+		t.Fatalf("IsProcessed failed: %v", err)
 	}
 	if ok {
 		t.Error("PROJ-999 should not be processed for jira")
 	}
 
-	// Same issue ID different adapter should not conflict
-	ok, err = store.IsAdapterProcessed("linear", "PROJ-1")
+	// Same issue ID, different adapter — should not conflict
+	ok, err = store.IsProcessed("linear", "", "PROJ-1")
 	if err != nil {
-		t.Fatalf("IsAdapterProcessed failed: %v", err)
+		t.Fatalf("IsProcessed failed: %v", err)
 	}
 	if ok {
 		t.Error("PROJ-1 should not be processed for linear adapter")
 	}
 
-	// Load all for adapter
-	jiraProcessed, err := store.LoadAdapterProcessed("jira")
+	jiraProcessed, err := store.Load("jira", "")
 	if err != nil {
-		t.Fatalf("LoadAdapterProcessed failed: %v", err)
+		t.Fatalf("Load failed: %v", err)
 	}
 	if len(jiraProcessed) != 2 {
 		t.Errorf("jira processed count = %d, want 2", len(jiraProcessed))
 	}
-	if !jiraProcessed["PROJ-1"] || !jiraProcessed["PROJ-2"] {
-		t.Error("jira processed map missing expected keys")
+	if _, ok := jiraProcessed["PROJ-1"]; !ok {
+		t.Error("jira processed map missing PROJ-1")
+	}
+	if _, ok := jiraProcessed["PROJ-2"]; !ok {
+		t.Error("jira processed map missing PROJ-2")
 	}
 
-	linearProcessed, err := store.LoadAdapterProcessed("linear")
+	linearProcessed, err := store.Load("linear", "")
 	if err != nil {
-		t.Fatalf("LoadAdapterProcessed failed: %v", err)
+		t.Fatalf("Load failed: %v", err)
 	}
 	if len(linearProcessed) != 1 {
 		t.Errorf("linear processed count = %d, want 1", len(linearProcessed))
 	}
 
-	// Unmark
-	if err := store.UnmarkAdapterProcessed("jira", "PROJ-1"); err != nil {
-		t.Fatalf("UnmarkAdapterProcessed failed: %v", err)
+	if err := store.Unmark("jira", "", "PROJ-1"); err != nil {
+		t.Fatalf("Unmark failed: %v", err)
 	}
-	ok, _ = store.IsAdapterProcessed("jira", "PROJ-1")
+	ok, _ = store.IsProcessed("jira", "", "PROJ-1")
 	if ok {
-		t.Error("PROJ-1 should be unmarked after UnmarkAdapterProcessed")
+		t.Error("PROJ-1 should be unmarked after Unmark")
 	}
 }
 
 func TestStateStore_GenericAdapterProcessed_Upsert(t *testing.T) {
 	store := newTestStateStore(t)
 
-	// Mark, then re-mark with different result (upsert)
-	if err := store.MarkAdapterProcessed("github", "42", "pending"); err != nil {
-		t.Fatalf("MarkAdapterProcessed failed: %v", err)
+	if err := store.Mark("github", "owner/repo", "42"); err != nil {
+		t.Fatalf("Mark failed: %v", err)
 	}
-	if err := store.MarkAdapterProcessed("github", "42", "success"); err != nil {
-		t.Fatalf("MarkAdapterProcessed (upsert) failed: %v", err)
+	// Re-mark (upsert) — should update processed_at, not add a duplicate
+	if err := store.Mark("github", "owner/repo", "42"); err != nil {
+		t.Fatalf("Mark (upsert) failed: %v", err)
 	}
 
-	// Should still be one entry
-	all, err := store.LoadAdapterProcessed("github")
+	all, err := store.Load("github", "owner/repo")
 	if err != nil {
-		t.Fatalf("LoadAdapterProcessed failed: %v", err)
+		t.Fatalf("Load failed: %v", err)
 	}
 	if len(all) != 1 {
 		t.Errorf("expected 1 entry after upsert, got %d", len(all))
 	}
 }
 
-func TestStateStore_PurgeOldAdapterProcessed(t *testing.T) {
+func TestStateStore_MigrateLegacyProcessedTables(t *testing.T) {
+	// Migration test: seed adapter_processed directly (legacy tables are dropped on migrate).
 	store := newTestStateStore(t)
 
-	for _, id := range []string{"A", "B", "C"} {
-		if err := store.MarkAdapterProcessed("test", id, "ok"); err != nil {
-			t.Fatalf("MarkAdapterProcessed failed: %v", err)
+	// Verify migration is idempotent (already ran in NewStateStoreFromPath).
+	if err := store.migrateLegacyProcessedTables(); err != nil {
+		t.Fatalf("second migrateLegacyProcessedTables: %v", err)
+	}
+
+	// After migration on a fresh DB, adapter_processed should be empty.
+	for _, src := range []string{"github", "linear", "gitlab", "jira", "asana", "azuredevops", "plane"} {
+		rows, err := store.Load(src, "")
+		if err != nil {
+			t.Errorf("Load(%s): %v", src, err)
 		}
-	}
-
-	// Purge with 0 duration (all should be purged)
-	purged, err := store.PurgeOldAdapterProcessed("test", 0)
-	if err != nil {
-		t.Fatalf("PurgeOldAdapterProcessed failed: %v", err)
-	}
-	if purged != 3 {
-		t.Errorf("purged = %d, want 3", purged)
-	}
-
-	remaining, _ := store.LoadAdapterProcessed("test")
-	if len(remaining) != 0 {
-		t.Errorf("expected 0 after purge, got %d", len(remaining))
+		if len(rows) != 0 {
+			t.Errorf("expected 0 rows for %s after fresh migration, got %d", src, len(rows))
+		}
 	}
 }

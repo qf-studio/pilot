@@ -31,12 +31,11 @@ type IssueResult struct {
 }
 
 // ProcessedStore persists which Jira issues have been processed across restarts.
-// GH-1357: Jira uses string IDs (issue keys like PROJ-123).
 type ProcessedStore interface {
-	MarkJiraIssueProcessed(issueKey string, result string) error
-	UnmarkJiraIssueProcessed(issueKey string) error
-	IsJiraIssueProcessed(issueKey string) (bool, error)
-	LoadJiraProcessedIssues() (map[string]bool, error)
+	Mark(source, repo, issueID string) error
+	Unmark(source, repo, issueID string) error
+	IsProcessed(source, repo, issueID string) (bool, error)
+	Load(source, repo string) (map[string]time.Time, error)
 }
 
 // Poller polls Jira for issues with the pilot label
@@ -119,7 +118,7 @@ func NewPoller(client *Client, config *Config, interval time.Duration, opts ...P
 
 	// GH-1357: Load processed issues from persistent store if available
 	if p.processedStore != nil {
-		loaded, err := p.processedStore.LoadJiraProcessedIssues()
+		loaded, err := p.processedStore.Load("jira", "")
 		if err != nil {
 			p.logger.Warn("Failed to load processed issues from store", slog.Any("error", err))
 		} else if len(loaded) > 0 {
@@ -356,7 +355,7 @@ func (p *Poller) markProcessed(key string) {
 
 	// GH-1357: Persist to store if available
 	if p.processedStore != nil {
-		if err := p.processedStore.MarkJiraIssueProcessed(key, "processed"); err != nil {
+		if err := p.processedStore.Mark("jira", "", key); err != nil {
 			p.logger.Warn("Failed to persist processed issue", slog.String("issue", key), slog.Any("error", err))
 		}
 	}
@@ -391,7 +390,7 @@ func (p *Poller) ClearProcessed(key string) {
 
 	// GH-1357: Also clear from persistent store
 	if p.processedStore != nil {
-		if err := p.processedStore.UnmarkJiraIssueProcessed(key); err != nil {
+		if err := p.processedStore.Unmark("jira", "", key); err != nil {
 			p.logger.Warn("Failed to unmark issue in store",
 				slog.String("key", key),
 				slog.Any("error", err))

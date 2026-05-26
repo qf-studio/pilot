@@ -62,11 +62,6 @@ func (s *StateStore) migrate() error {
 		// so re-entry into StageMerging (e.g. after crash recovery) does not
 		// emit duplicate "PR merged" comments on the linked issue.
 		`ALTER TABLE autopilot_pr_state ADD COLUMN merge_notification_posted INTEGER NOT NULL DEFAULT 0`,
-		`CREATE TABLE IF NOT EXISTS autopilot_processed (
-			issue_number INTEGER PRIMARY KEY,
-			processed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-			result TEXT DEFAULT ''
-		)`,
 		`CREATE TABLE IF NOT EXISTS autopilot_metadata (
 			key TEXT PRIMARY KEY,
 			value TEXT NOT NULL DEFAULT '',
@@ -77,44 +72,8 @@ func (s *StateStore) migrate() error {
 			failure_count INTEGER NOT NULL DEFAULT 0,
 			last_failure_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)`,
-		// GH-1351: Linear processed issues table (uses string IDs unlike GitHub's integer IDs)
-		`CREATE TABLE IF NOT EXISTS linear_processed (
-			issue_id TEXT PRIMARY KEY,
-			processed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-			result TEXT DEFAULT ''
-		)`,
-		// GH-1356: GitLab processed issues table (uses integer IDs like GitHub)
-		`CREATE TABLE IF NOT EXISTS gitlab_processed (
-			issue_number INTEGER PRIMARY KEY,
-			processed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-			result TEXT DEFAULT ''
-		)`,
-		// GH-1356: Jira processed issues table (uses string keys)
-		`CREATE TABLE IF NOT EXISTS jira_processed (
-			issue_key TEXT PRIMARY KEY,
-			processed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-			result TEXT DEFAULT ''
-		)`,
-		// GH-1356: Asana processed tasks table (uses string GIDs)
-		`CREATE TABLE IF NOT EXISTS asana_processed (
-			task_gid TEXT PRIMARY KEY,
-			processed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-			result TEXT DEFAULT ''
-		)`,
-		// GH-1356: Azure DevOps processed work items table (uses integer IDs)
-		`CREATE TABLE IF NOT EXISTS azuredevops_processed (
-			work_item_id INTEGER PRIMARY KEY,
-			processed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-			result TEXT DEFAULT ''
-		)`,
-		// GH-1829: Plane.so processed issues table (uses string IDs)
-		`CREATE TABLE IF NOT EXISTS plane_processed (
-			issue_id TEXT PRIMARY KEY,
-			processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-			result TEXT DEFAULT ''
-		)`,
-		// GH-1838: Generic adapter_processed table — new adapters use this instead of per-adapter tables.
-		// Existing per-adapter tables are kept for backward compatibility.
+		// GH-1838: Generic adapter_processed table — replaces 7 per-adapter tables.
+		// Source and repo form the namespace; repo is '' for tracker-style adapters.
 		`CREATE TABLE IF NOT EXISTS adapter_processed (
 			adapter TEXT NOT NULL,
 			issue_id TEXT NOT NULL,
@@ -131,6 +90,9 @@ func (s *StateStore) migrate() error {
 		// daemon restarts resume monitoring the same commit without re-fetching.
 		`ALTER TABLE autopilot_pr_state ADD COLUMN post_merge_sha TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE autopilot_pr_state ADD COLUMN post_merge_ci_started_at DATETIME`,
+		// TASK-298: Add repo column to adapter_processed for cross-repo dedup (TASK-288 Step 2).
+		// Repo defaults to '' for tracker-style adapters (linear, jira, asana, etc.).
+		`ALTER TABLE adapter_processed ADD COLUMN repo TEXT NOT NULL DEFAULT ''`,
 	}
 
 	for _, m := range migrations {
@@ -142,7 +104,73 @@ func (s *StateStore) migrate() error {
 			return fmt.Errorf("migration failed: %w", err)
 		}
 	}
+
+	// TASK-298: Consolidate 7 legacy per-adapter tables into adapter_processed.
+	if err := s.migrateLegacyProcessedTables(); err != nil {
+		return fmt.Errorf("legacy processed tables migration failed: %w", err)
+	}
+
 	return nil
+}
+
+// migrateLegacyProcessedTables copies rows from the 7 legacy per-adapter tables
+// into adapter_processed, then drops the legacy tables.
+// Safe to run multiple times: checks table existence and uses INSERT OR IGNORE.
+func (s *StateStore) migrateLegacyProcessedTables() error {
+	type legacyTable struct {
+		table   string
+		adapter string
+		idCol   string
+		castInt bool // true when the PK column is INTEGER and must be cast to TEXT
+	}
+	tables := []legacyTable{
+		{"autopilot_processed", "github", "issue_number", true},
+		{"linear_processed", "linear", "issue_id", false},
+		{"gitlab_processed", "gitlab", "issue_number", true},
+		{"jira_processed", "jira", "issue_key", false},
+		{"asana_processed", "asana", "task_gid", false},
+		{"azuredevops_processed", "azuredevops", "work_item_id", true},
+		{"plane_processed", "plane", "issue_id", false},
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	for _, lt := range tables {
+		// Skip if legacy table does not exist (fresh install or already dropped).
+		var exists int
+		if err := tx.QueryRow(
+			`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, lt.table,
+		).Scan(&exists); err != nil {
+			return fmt.Errorf("check table %s: %w", lt.table, err)
+		}
+		if exists == 0 {
+			continue
+		}
+
+		idExpr := lt.idCol
+		if lt.castInt {
+			idExpr = fmt.Sprintf("CAST(%s AS TEXT)", lt.idCol)
+		}
+
+		// Copy rows; OR IGNORE skips rows already present in adapter_processed.
+		q := fmt.Sprintf(`
+			INSERT OR IGNORE INTO adapter_processed (adapter, repo, issue_id, processed_at, result)
+			SELECT ?, '', %s, processed_at, COALESCE(result, '') FROM %s
+		`, idExpr, lt.table)
+		if _, err := tx.Exec(q, lt.adapter); err != nil {
+			return fmt.Errorf("copy %s: %w", lt.table, err)
+		}
+
+		if _, err := tx.Exec(`DROP TABLE IF EXISTS ` + lt.table); err != nil {
+			return fmt.Errorf("drop %s: %w", lt.table, err)
+		}
+	}
+
+	return tx.Commit()
 }
 
 // SavePRState persists a PR state to the database (upsert).
@@ -273,461 +301,73 @@ func (s *StateStore) RemovePRState(prNumber int) error {
 	return err
 }
 
-// MarkIssueProcessed records that an issue has been processed.
-func (s *StateStore) MarkIssueProcessed(issueNumber int, result string) error {
+// Mark records that an issue has been processed for the given source adapter and repo.
+// For tracker-style adapters (linear, jira, asana, etc.) pass repo="".
+// For VCS-hosted adapters (github, gitlab) pass repo as "owner/repo".
+func (s *StateStore) Mark(source, repo, issueID string) error {
 	_, err := s.db.Exec(`
-		INSERT INTO autopilot_processed (issue_number, processed_at, result)
-		VALUES (?, CURRENT_TIMESTAMP, ?)
-		ON CONFLICT(issue_number) DO UPDATE SET
-			processed_at = CURRENT_TIMESTAMP,
-			result = excluded.result
-	`, issueNumber, result)
-	return err
-}
-
-// UnmarkIssueProcessed removes an issue from the processed table.
-// Used when pilot-failed label is removed to allow retry.
-func (s *StateStore) UnmarkIssueProcessed(issueNumber int) error {
-	_, err := s.db.Exec(`DELETE FROM autopilot_processed WHERE issue_number = ?`, issueNumber)
-	return err
-}
-
-// IsIssueProcessed checks if an issue has been previously processed.
-func (s *StateStore) IsIssueProcessed(issueNumber int) (bool, error) {
-	var count int
-	err := s.db.QueryRow(`SELECT COUNT(*) FROM autopilot_processed WHERE issue_number = ?`, issueNumber).Scan(&count)
-	if err != nil {
-		return false, err
-	}
-	return count > 0, nil
-}
-
-// LoadProcessedIssues returns a map of all processed issue numbers.
-func (s *StateStore) LoadProcessedIssues() (map[int]bool, error) {
-	rows, err := s.db.Query(`SELECT issue_number FROM autopilot_processed`)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = rows.Close() }()
-
-	processed := make(map[int]bool)
-	for rows.Next() {
-		var num int
-		if err := rows.Scan(&num); err != nil {
-			return nil, err
-		}
-		processed[num] = true
-	}
-	return processed, nil
-}
-
-// MarkLinearIssueProcessed records that a Linear issue has been processed.
-// GH-1351: Linear uses string IDs unlike GitHub's integer IDs.
-func (s *StateStore) MarkLinearIssueProcessed(issueID string, result string) error {
-	_, err := s.db.Exec(`
-		INSERT INTO linear_processed (issue_id, processed_at, result)
-		VALUES (?, CURRENT_TIMESTAMP, ?)
-		ON CONFLICT(issue_id) DO UPDATE SET
-			processed_at = CURRENT_TIMESTAMP,
-			result = excluded.result
-	`, issueID, result)
-	return err
-}
-
-// UnmarkLinearIssueProcessed removes a Linear issue from the processed table.
-// Used when pilot-failed label is removed to allow retry.
-func (s *StateStore) UnmarkLinearIssueProcessed(issueID string) error {
-	_, err := s.db.Exec(`DELETE FROM linear_processed WHERE issue_id = ?`, issueID)
-	return err
-}
-
-// IsLinearIssueProcessed checks if a Linear issue has been previously processed.
-func (s *StateStore) IsLinearIssueProcessed(issueID string) (bool, error) {
-	var count int
-	err := s.db.QueryRow(`SELECT COUNT(*) FROM linear_processed WHERE issue_id = ?`, issueID).Scan(&count)
-	if err != nil {
-		return false, err
-	}
-	return count > 0, nil
-}
-
-// LoadLinearProcessedIssues returns a map of all processed Linear issue IDs.
-func (s *StateStore) LoadLinearProcessedIssues() (map[string]bool, error) {
-	rows, err := s.db.Query(`SELECT issue_id FROM linear_processed`)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = rows.Close() }()
-
-	processed := make(map[string]bool)
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		processed[id] = true
-	}
-	return processed, nil
-}
-
-// PurgeOldLinearProcessedIssues removes Linear processed issue records older than the given duration.
-func (s *StateStore) PurgeOldLinearProcessedIssues(olderThan time.Duration) (int64, error) {
-	cutoff := time.Now().Add(-olderThan)
-	result, err := s.db.Exec(`DELETE FROM linear_processed WHERE processed_at < ?`, cutoff)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected()
-}
-
-// MarkGitLabIssueProcessed records that a GitLab issue has been processed.
-// GitLab uses integer IDs like GitHub.
-func (s *StateStore) MarkGitLabIssueProcessed(issueNumber int, result string) error {
-	_, err := s.db.Exec(`
-		INSERT INTO gitlab_processed (issue_number, processed_at, result)
-		VALUES (?, CURRENT_TIMESTAMP, ?)
-		ON CONFLICT(issue_number) DO UPDATE SET
-			processed_at = CURRENT_TIMESTAMP,
-			result = excluded.result
-	`, issueNumber, result)
-	return err
-}
-
-// UnmarkGitLabIssueProcessed removes a GitLab issue from the processed table.
-// Used when pilot-failed label is removed to allow retry.
-func (s *StateStore) UnmarkGitLabIssueProcessed(issueNumber int) error {
-	_, err := s.db.Exec(`DELETE FROM gitlab_processed WHERE issue_number = ?`, issueNumber)
-	return err
-}
-
-// IsGitLabIssueProcessed checks if a GitLab issue has been previously processed.
-func (s *StateStore) IsGitLabIssueProcessed(issueNumber int) (bool, error) {
-	var count int
-	err := s.db.QueryRow(`SELECT COUNT(*) FROM gitlab_processed WHERE issue_number = ?`, issueNumber).Scan(&count)
-	if err != nil {
-		return false, err
-	}
-	return count > 0, nil
-}
-
-// LoadGitLabProcessedIssues returns a map of all processed GitLab issue numbers.
-func (s *StateStore) LoadGitLabProcessedIssues() (map[int]bool, error) {
-	rows, err := s.db.Query(`SELECT issue_number FROM gitlab_processed`)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = rows.Close() }()
-
-	processed := make(map[int]bool)
-	for rows.Next() {
-		var num int
-		if err := rows.Scan(&num); err != nil {
-			return nil, err
-		}
-		processed[num] = true
-	}
-	return processed, nil
-}
-
-// PurgeOldGitLabProcessedIssues removes GitLab processed issue records older than the given duration.
-func (s *StateStore) PurgeOldGitLabProcessedIssues(olderThan time.Duration) (int64, error) {
-	cutoff := time.Now().Add(-olderThan)
-	result, err := s.db.Exec(`DELETE FROM gitlab_processed WHERE processed_at < ?`, cutoff)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected()
-}
-
-// MarkJiraIssueProcessed records that a Jira issue has been processed.
-// Jira uses string keys (e.g., "PROJECT-123").
-func (s *StateStore) MarkJiraIssueProcessed(issueKey string, result string) error {
-	_, err := s.db.Exec(`
-		INSERT INTO jira_processed (issue_key, processed_at, result)
-		VALUES (?, CURRENT_TIMESTAMP, ?)
-		ON CONFLICT(issue_key) DO UPDATE SET
-			processed_at = CURRENT_TIMESTAMP,
-			result = excluded.result
-	`, issueKey, result)
-	return err
-}
-
-// UnmarkJiraIssueProcessed removes a Jira issue from the processed table.
-// Used when pilot-failed label is removed to allow retry.
-func (s *StateStore) UnmarkJiraIssueProcessed(issueKey string) error {
-	_, err := s.db.Exec(`DELETE FROM jira_processed WHERE issue_key = ?`, issueKey)
-	return err
-}
-
-// IsJiraIssueProcessed checks if a Jira issue has been previously processed.
-func (s *StateStore) IsJiraIssueProcessed(issueKey string) (bool, error) {
-	var count int
-	err := s.db.QueryRow(`SELECT COUNT(*) FROM jira_processed WHERE issue_key = ?`, issueKey).Scan(&count)
-	if err != nil {
-		return false, err
-	}
-	return count > 0, nil
-}
-
-// LoadJiraProcessedIssues returns a map of all processed Jira issue keys.
-func (s *StateStore) LoadJiraProcessedIssues() (map[string]bool, error) {
-	rows, err := s.db.Query(`SELECT issue_key FROM jira_processed`)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = rows.Close() }()
-
-	processed := make(map[string]bool)
-	for rows.Next() {
-		var key string
-		if err := rows.Scan(&key); err != nil {
-			return nil, err
-		}
-		processed[key] = true
-	}
-	return processed, nil
-}
-
-// PurgeOldJiraProcessedIssues removes Jira processed issue records older than the given duration.
-func (s *StateStore) PurgeOldJiraProcessedIssues(olderThan time.Duration) (int64, error) {
-	cutoff := time.Now().Add(-olderThan)
-	result, err := s.db.Exec(`DELETE FROM jira_processed WHERE processed_at < ?`, cutoff)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected()
-}
-
-// MarkAsanaTaskProcessed records that an Asana task has been processed.
-// Asana uses string GIDs (Global IDs).
-func (s *StateStore) MarkAsanaTaskProcessed(taskGID string, result string) error {
-	_, err := s.db.Exec(`
-		INSERT INTO asana_processed (task_gid, processed_at, result)
-		VALUES (?, CURRENT_TIMESTAMP, ?)
-		ON CONFLICT(task_gid) DO UPDATE SET
-			processed_at = CURRENT_TIMESTAMP,
-			result = excluded.result
-	`, taskGID, result)
-	return err
-}
-
-// UnmarkAsanaTaskProcessed removes an Asana task from the processed table.
-// Used when pilot-failed label is removed to allow retry.
-func (s *StateStore) UnmarkAsanaTaskProcessed(taskGID string) error {
-	_, err := s.db.Exec(`DELETE FROM asana_processed WHERE task_gid = ?`, taskGID)
-	return err
-}
-
-// IsAsanaTaskProcessed checks if an Asana task has been previously processed.
-func (s *StateStore) IsAsanaTaskProcessed(taskGID string) (bool, error) {
-	var count int
-	err := s.db.QueryRow(`SELECT COUNT(*) FROM asana_processed WHERE task_gid = ?`, taskGID).Scan(&count)
-	if err != nil {
-		return false, err
-	}
-	return count > 0, nil
-}
-
-// LoadAsanaProcessedTasks returns a map of all processed Asana task GIDs.
-func (s *StateStore) LoadAsanaProcessedTasks() (map[string]bool, error) {
-	rows, err := s.db.Query(`SELECT task_gid FROM asana_processed`)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = rows.Close() }()
-
-	processed := make(map[string]bool)
-	for rows.Next() {
-		var gid string
-		if err := rows.Scan(&gid); err != nil {
-			return nil, err
-		}
-		processed[gid] = true
-	}
-	return processed, nil
-}
-
-// PurgeOldAsanaProcessedTasks removes Asana processed task records older than the given duration.
-func (s *StateStore) PurgeOldAsanaProcessedTasks(olderThan time.Duration) (int64, error) {
-	cutoff := time.Now().Add(-olderThan)
-	result, err := s.db.Exec(`DELETE FROM asana_processed WHERE processed_at < ?`, cutoff)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected()
-}
-
-// MarkAzureDevOpsWorkItemProcessed records that an Azure DevOps work item has been processed.
-// Azure DevOps uses integer work item IDs.
-func (s *StateStore) MarkAzureDevOpsWorkItemProcessed(workItemID int, result string) error {
-	_, err := s.db.Exec(`
-		INSERT INTO azuredevops_processed (work_item_id, processed_at, result)
-		VALUES (?, CURRENT_TIMESTAMP, ?)
-		ON CONFLICT(work_item_id) DO UPDATE SET
-			processed_at = CURRENT_TIMESTAMP,
-			result = excluded.result
-	`, workItemID, result)
-	return err
-}
-
-// UnmarkAzureDevOpsWorkItemProcessed removes an Azure DevOps work item from the processed table.
-// Used when pilot-failed label is removed to allow retry.
-func (s *StateStore) UnmarkAzureDevOpsWorkItemProcessed(workItemID int) error {
-	_, err := s.db.Exec(`DELETE FROM azuredevops_processed WHERE work_item_id = ?`, workItemID)
-	return err
-}
-
-// IsAzureDevOpsWorkItemProcessed checks if an Azure DevOps work item has been previously processed.
-func (s *StateStore) IsAzureDevOpsWorkItemProcessed(workItemID int) (bool, error) {
-	var count int
-	err := s.db.QueryRow(`SELECT COUNT(*) FROM azuredevops_processed WHERE work_item_id = ?`, workItemID).Scan(&count)
-	if err != nil {
-		return false, err
-	}
-	return count > 0, nil
-}
-
-// LoadAzureDevOpsProcessedWorkItems returns a map of all processed Azure DevOps work item IDs.
-func (s *StateStore) LoadAzureDevOpsProcessedWorkItems() (map[int]bool, error) {
-	rows, err := s.db.Query(`SELECT work_item_id FROM azuredevops_processed`)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = rows.Close() }()
-
-	processed := make(map[int]bool)
-	for rows.Next() {
-		var id int
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		processed[id] = true
-	}
-	return processed, nil
-}
-
-// PurgeOldAzureDevOpsProcessedWorkItems removes Azure DevOps processed work item records older than the given duration.
-func (s *StateStore) PurgeOldAzureDevOpsProcessedWorkItems(olderThan time.Duration) (int64, error) {
-	cutoff := time.Now().Add(-olderThan)
-	result, err := s.db.Exec(`DELETE FROM azuredevops_processed WHERE processed_at < ?`, cutoff)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected()
-}
-
-// MarkPlaneIssueProcessed records that a Plane.so issue has been processed.
-// Plane uses string IDs.
-func (s *StateStore) MarkPlaneIssueProcessed(issueID string, result string) error {
-	_, err := s.db.Exec(`
-		INSERT INTO plane_processed (issue_id, processed_at, result)
-		VALUES (?, CURRENT_TIMESTAMP, ?)
-		ON CONFLICT(issue_id) DO UPDATE SET
-			processed_at = CURRENT_TIMESTAMP,
-			result = excluded.result
-	`, issueID, result)
-	return err
-}
-
-// UnmarkPlaneIssueProcessed removes a Plane.so issue from the processed table.
-// Used when pilot-failed label is removed to allow retry.
-func (s *StateStore) UnmarkPlaneIssueProcessed(issueID string) error {
-	_, err := s.db.Exec(`DELETE FROM plane_processed WHERE issue_id = ?`, issueID)
-	return err
-}
-
-// IsPlaneIssueProcessed checks if a Plane.so issue has been previously processed.
-func (s *StateStore) IsPlaneIssueProcessed(issueID string) (bool, error) {
-	var count int
-	err := s.db.QueryRow(`SELECT COUNT(*) FROM plane_processed WHERE issue_id = ?`, issueID).Scan(&count)
-	if err != nil {
-		return false, err
-	}
-	return count > 0, nil
-}
-
-// LoadPlaneProcessedIssues returns a map of all processed Plane.so issue IDs.
-func (s *StateStore) LoadPlaneProcessedIssues() (map[string]bool, error) {
-	rows, err := s.db.Query(`SELECT issue_id FROM plane_processed`)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = rows.Close() }()
-
-	processed := make(map[string]bool)
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		processed[id] = true
-	}
-	return processed, nil
-}
-
-// PurgeOldPlaneProcessedIssues removes Plane processed issue records older than the given duration.
-func (s *StateStore) PurgeOldPlaneProcessedIssues(olderThan time.Duration) (int64, error) {
-	cutoff := time.Now().Add(-olderThan)
-	result, err := s.db.Exec(`DELETE FROM plane_processed WHERE processed_at < ?`, cutoff)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected()
-}
-
-// --- Generic adapter_processed methods (GH-1838) ---
-
-// MarkAdapterProcessed records that an issue has been processed for a given adapter.
-func (s *StateStore) MarkAdapterProcessed(adapter, issueID, result string) error {
-	_, err := s.db.Exec(`
-		INSERT INTO adapter_processed (adapter, issue_id, processed_at, result)
-		VALUES (?, ?, CURRENT_TIMESTAMP, ?)
+		INSERT INTO adapter_processed (adapter, repo, issue_id, processed_at, result)
+		VALUES (?, ?, ?, CURRENT_TIMESTAMP, '')
 		ON CONFLICT(adapter, issue_id) DO UPDATE SET
-			processed_at = CURRENT_TIMESTAMP,
-			result = excluded.result
-	`, adapter, issueID, result)
+			repo = excluded.repo,
+			processed_at = CURRENT_TIMESTAMP
+	`, source, repo, issueID)
 	return err
 }
 
-// UnmarkAdapterProcessed removes a processed record for a given adapter and issue.
-func (s *StateStore) UnmarkAdapterProcessed(adapter, issueID string) error {
-	_, err := s.db.Exec(`DELETE FROM adapter_processed WHERE adapter = ? AND issue_id = ?`, adapter, issueID)
+// Unmark removes the processed record for the given source, repo, and issue.
+// Used when a failed-label is removed to allow retry.
+func (s *StateStore) Unmark(source, repo, issueID string) error {
+	_, err := s.db.Exec(
+		`DELETE FROM adapter_processed WHERE adapter = ? AND repo = ? AND issue_id = ?`,
+		source, repo, issueID,
+	)
 	return err
 }
 
-// IsAdapterProcessed checks if an issue has been processed for a given adapter.
-func (s *StateStore) IsAdapterProcessed(adapter, issueID string) (bool, error) {
+// IsProcessed reports whether the given issue has been processed.
+func (s *StateStore) IsProcessed(source, repo, issueID string) (bool, error) {
 	var count int
-	err := s.db.QueryRow(`SELECT COUNT(*) FROM adapter_processed WHERE adapter = ? AND issue_id = ?`, adapter, issueID).Scan(&count)
+	err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM adapter_processed WHERE adapter = ? AND repo = ? AND issue_id = ?`,
+		source, repo, issueID,
+	).Scan(&count)
 	if err != nil {
 		return false, err
 	}
 	return count > 0, nil
 }
 
-// LoadAdapterProcessed returns a map of all processed issue IDs for a given adapter.
-func (s *StateStore) LoadAdapterProcessed(adapter string) (map[string]bool, error) {
-	rows, err := s.db.Query(`SELECT issue_id FROM adapter_processed WHERE adapter = ?`, adapter)
+// Load returns all processed issue IDs (and their timestamps) for the given source and repo.
+func (s *StateStore) Load(source, repo string) (map[string]time.Time, error) {
+	rows, err := s.db.Query(
+		`SELECT issue_id, processed_at FROM adapter_processed WHERE adapter = ? AND repo = ?`,
+		source, repo,
+	)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
 
-	processed := make(map[string]bool)
+	processed := make(map[string]time.Time)
 	for rows.Next() {
 		var id string
-		if err := rows.Scan(&id); err != nil {
+		var ts time.Time
+		if err := rows.Scan(&id, &ts); err != nil {
 			return nil, err
 		}
-		processed[id] = true
+		processed[id] = ts
 	}
 	return processed, nil
 }
 
-// PurgeOldAdapterProcessed removes processed records older than the given duration for a specific adapter.
-func (s *StateStore) PurgeOldAdapterProcessed(adapter string, olderThan time.Duration) (int64, error) {
+// Purge removes processed records for the given source that are older than olderThan.
+func (s *StateStore) Purge(source string, olderThan time.Duration) (int64, error) {
 	cutoff := time.Now().Add(-olderThan)
-	result, err := s.db.Exec(`DELETE FROM adapter_processed WHERE adapter = ? AND processed_at < ?`, adapter, cutoff)
+	result, err := s.db.Exec(
+		`DELETE FROM adapter_processed WHERE adapter = ? AND processed_at < ?`,
+		source, cutoff,
+	)
 	if err != nil {
 		return 0, err
 	}
@@ -801,16 +441,6 @@ func (s *StateStore) LoadAllPRFailures() (map[int]*prFailureState, error) {
 		}
 	}
 	return failures, nil
-}
-
-// PurgeOldProcessedIssues removes processed issue records older than the given duration.
-func (s *StateStore) PurgeOldProcessedIssues(olderThan time.Duration) (int64, error) {
-	cutoff := time.Now().Add(-olderThan)
-	result, err := s.db.Exec(`DELETE FROM autopilot_processed WHERE processed_at < ?`, cutoff)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected()
 }
 
 // PurgeTerminalPRStates removes PR states in terminal stages (failed, merged+removed).

@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -33,10 +34,10 @@ const (
 // ProcessedStore persists which issues have been processed across restarts.
 // Implemented by autopilot.StateStore to avoid circular imports.
 type ProcessedStore interface {
-	MarkIssueProcessed(issueNumber int, result string) error
-	UnmarkIssueProcessed(issueNumber int) error
-	IsIssueProcessed(issueNumber int) (bool, error)
-	LoadProcessedIssues() (map[int]bool, error)
+	Mark(source, repo, issueID string) error
+	Unmark(source, repo, issueID string) error
+	IsProcessed(source, repo, issueID string) (bool, error)
+	Load(source, repo string) (map[string]time.Time, error)
 }
 
 // TaskChecker checks whether a task is currently queued or in-progress.
@@ -354,13 +355,15 @@ func NewPoller(client *Client, repo string, label string, interval time.Duration
 
 	// Load processed issues from persistent store if available
 	if p.processedStore != nil {
-		loaded, err := p.processedStore.LoadProcessedIssues()
+		loaded, err := p.processedStore.Load("github", p.repoKey())
 		if err != nil {
 			p.logger.Warn("Failed to load processed issues from store", slog.Any("error", err))
 		} else if len(loaded) > 0 {
 			p.mu.Lock()
-			for num := range loaded {
-				p.processed[num] = time.Now()
+			for idStr, t := range loaded {
+				if num, parseErr := strconv.Atoi(idStr); parseErr == nil {
+					p.processed[num] = t
+				}
 			}
 			p.mu.Unlock()
 			p.logger.Info("Loaded processed issues from store", slog.Int("count", len(loaded)))
@@ -788,7 +791,7 @@ func (p *Poller) findOldestUnprocessedIssue(ctx context.Context) (*Issue, error)
 			p.mu.Unlock()
 			// Also clear from persistent store
 			if p.processedStore != nil {
-				if err := p.processedStore.UnmarkIssueProcessed(issue.Number); err != nil {
+				if err := p.processedStore.Unmark("github", p.repoKey(), strconv.Itoa(issue.Number)); err != nil {
 					p.logger.Warn("Failed to unmark issue in store",
 						slog.Int("number", issue.Number),
 						slog.Any("error", err))
@@ -1042,7 +1045,7 @@ func (p *Poller) checkForNewIssues(ctx context.Context) {
 			delete(p.processed, issue.Number)
 			p.mu.Unlock()
 			if p.processedStore != nil {
-				if err := p.processedStore.UnmarkIssueProcessed(issue.Number); err != nil {
+				if err := p.processedStore.Unmark("github", p.repoKey(), strconv.Itoa(issue.Number)); err != nil {
 					p.logger.Warn("Failed to unmark issue in store",
 						slog.Int("number", issue.Number),
 						slog.Any("error", err))
@@ -1250,7 +1253,7 @@ func (p *Poller) markProcessed(number int) {
 
 	// Persist to store if available
 	if p.processedStore != nil {
-		if err := p.processedStore.MarkIssueProcessed(number, "processed"); err != nil {
+		if err := p.processedStore.Mark("github", p.repoKey(), strconv.Itoa(number)); err != nil {
 			p.logger.Warn("Failed to persist processed issue", slog.Int("issue", number), slog.Any("error", err))
 		}
 	}
@@ -1264,7 +1267,7 @@ func (p *Poller) unmarkProcessed(number int) {
 	p.mu.Unlock()
 
 	if p.processedStore != nil {
-		if err := p.processedStore.UnmarkIssueProcessed(number); err != nil {
+		if err := p.processedStore.Unmark("github", p.repoKey(), strconv.Itoa(number)); err != nil {
 			p.logger.Warn("Failed to unmark processed issue", slog.Int("issue", number), slog.Any("error", err))
 		}
 	}
@@ -1360,7 +1363,7 @@ func (p *Poller) ClearProcessed(number int) {
 
 	// Also clear from persistent store
 	if p.processedStore != nil {
-		if err := p.processedStore.UnmarkIssueProcessed(number); err != nil {
+		if err := p.processedStore.Unmark("github", p.repoKey(), strconv.Itoa(number)); err != nil {
 			p.logger.Warn("Failed to unmark issue in store",
 				slog.Int("number", number),
 				slog.Any("error", err))

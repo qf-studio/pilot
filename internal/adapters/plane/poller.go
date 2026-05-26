@@ -32,12 +32,11 @@ type IssueResult struct {
 }
 
 // ProcessedStore persists which Plane work items have been processed across restarts.
-// GH-1830: Plane uses string UUIDs for work item IDs.
 type ProcessedStore interface {
-	MarkPlaneIssueProcessed(issueID string, result string) error
-	UnmarkPlaneIssueProcessed(issueID string) error
-	IsPlaneIssueProcessed(issueID string) (bool, error)
-	LoadPlaneProcessedIssues() (map[string]bool, error)
+	Mark(source, repo, issueID string) error
+	Unmark(source, repo, issueID string) error
+	IsProcessed(source, repo, issueID string) (bool, error)
+	Load(source, repo string) (map[string]time.Time, error)
 }
 
 // Poller polls Plane.so for work items with the pilot label.
@@ -134,7 +133,7 @@ func NewPoller(client *Client, config *Config, interval time.Duration, opts ...P
 
 	// GH-1830: Load processed items from persistent store if available
 	if p.processedStore != nil {
-		loaded, err := p.processedStore.LoadPlaneProcessedIssues()
+		loaded, err := p.processedStore.Load("plane", "")
 		if err != nil {
 			p.logger.Warn("Failed to load processed issues from store", slog.Any("error", err))
 		} else if len(loaded) > 0 {
@@ -513,7 +512,7 @@ func (p *Poller) markProcessed(id string) {
 
 	// GH-1830: Persist to store if available
 	if p.processedStore != nil {
-		if err := p.processedStore.MarkPlaneIssueProcessed(id, "processed"); err != nil {
+		if err := p.processedStore.Mark("plane", "", id); err != nil {
 			p.logger.Warn("Failed to persist processed issue", slog.String("id", id), slog.Any("error", err))
 		}
 	}
@@ -549,7 +548,7 @@ func (p *Poller) ClearProcessed(id string) {
 
 	// Also clear from persistent store
 	if p.processedStore != nil {
-		if err := p.processedStore.UnmarkPlaneIssueProcessed(id); err != nil {
+		if err := p.processedStore.Unmark("plane", "", id); err != nil {
 			p.logger.Warn("Failed to unmark issue in store",
 				slog.String("id", id),
 				slog.Any("error", err))

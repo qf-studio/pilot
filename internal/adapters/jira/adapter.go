@@ -41,10 +41,7 @@ func (a *JiraAdapter) CreatePoller(deps adapters.PollerDeps, onIssue func(ctx co
 	}
 
 	if deps.ProcessedStore != nil {
-		opts = append(opts, WithProcessedStore(&genericStoreShim{
-			store:   deps.ProcessedStore,
-			adapter: AdapterName,
-		}))
+		opts = append(opts, WithProcessedStore(deps.ProcessedStore))
 	}
 
 	if deps.MaxConcurrent > 0 {
@@ -63,28 +60,4 @@ func (a *JiraAdapter) Config() *Config { return a.config }
 // PollingEnabled returns whether polling is configured and enabled.
 func (a *JiraAdapter) PollingEnabled() bool {
 	return a.config.Polling != nil && a.config.Polling.Enabled
-}
-
-// genericStoreShim bridges adapters.ProcessedStore to the Jira-specific ProcessedStore interface.
-// This allows the Jira poller to use the generic adapter_processed table without
-// changing the poller's internal ProcessedStore interface.
-type genericStoreShim struct {
-	store   adapters.ProcessedStore
-	adapter string
-}
-
-func (s *genericStoreShim) MarkJiraIssueProcessed(issueKey string, result string) error {
-	return s.store.MarkAdapterProcessed(s.adapter, issueKey, result)
-}
-
-func (s *genericStoreShim) UnmarkJiraIssueProcessed(issueKey string) error {
-	return s.store.UnmarkAdapterProcessed(s.adapter, issueKey)
-}
-
-func (s *genericStoreShim) IsJiraIssueProcessed(issueKey string) (bool, error) {
-	return s.store.IsAdapterProcessed(s.adapter, issueKey)
-}
-
-func (s *genericStoreShim) LoadJiraProcessedIssues() (map[string]bool, error) {
-	return s.store.LoadAdapterProcessed(s.adapter)
 }

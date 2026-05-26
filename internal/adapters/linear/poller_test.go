@@ -22,33 +22,33 @@ func newMockProcessedStore() *mockProcessedStore {
 	}
 }
 
-func (m *mockProcessedStore) MarkLinearIssueProcessed(issueID string, result string) error {
+func (m *mockProcessedStore) Mark(source, repo, issueID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.processed[issueID] = result
+	m.processed[issueID] = "processed"
 	return nil
 }
 
-func (m *mockProcessedStore) UnmarkLinearIssueProcessed(issueID string) error {
+func (m *mockProcessedStore) Unmark(source, repo, issueID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.processed, issueID)
 	return nil
 }
 
-func (m *mockProcessedStore) IsLinearIssueProcessed(issueID string) (bool, error) {
+func (m *mockProcessedStore) IsProcessed(source, repo, issueID string) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	_, ok := m.processed[issueID]
 	return ok, nil
 }
 
-func (m *mockProcessedStore) LoadLinearProcessedIssues() (map[string]bool, error) {
+func (m *mockProcessedStore) Load(source, repo string) (map[string]time.Time, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	result := make(map[string]bool)
+	result := make(map[string]time.Time)
 	for id := range m.processed {
-		result[id] = true
+		result[id] = time.Now()
 	}
 	return result, nil
 }

@@ -23,12 +23,11 @@ type IssueResult struct {
 }
 
 // ProcessedStore persists which Linear issues have been processed across restarts.
-// GH-1351: Linear uses string IDs unlike GitHub's integer IDs.
 type ProcessedStore interface {
-	MarkLinearIssueProcessed(issueID string, result string) error
-	UnmarkLinearIssueProcessed(issueID string) error
-	IsLinearIssueProcessed(issueID string) (bool, error)
-	LoadLinearProcessedIssues() (map[string]bool, error)
+	Mark(source, repo, issueID string) error
+	Unmark(source, repo, issueID string) error
+	IsProcessed(source, repo, issueID string) (bool, error)
+	Load(source, repo string) (map[string]time.Time, error)
 }
 
 // Poller polls Linear for issues with a specific label
@@ -121,7 +120,7 @@ func NewPoller(client *Client, config *WorkspaceConfig, interval time.Duration, 
 
 	// GH-1351: Load processed issues from persistent store if available
 	if p.processedStore != nil {
-		loaded, err := p.processedStore.LoadLinearProcessedIssues()
+		loaded, err := p.processedStore.Load("linear", "")
 		if err != nil {
 			p.logger.Warn("Failed to load processed issues from store", slog.Any("error", err))
 		} else if len(loaded) > 0 {
@@ -384,7 +383,7 @@ func (p *Poller) markProcessed(id string) {
 
 	// GH-1351: Persist to store if available
 	if p.processedStore != nil {
-		if err := p.processedStore.MarkLinearIssueProcessed(id, "processed"); err != nil {
+		if err := p.processedStore.Mark("linear", "", id); err != nil {
 			p.logger.Warn("Failed to persist processed issue", slog.String("issue", id), slog.Any("error", err))
 		}
 	}
@@ -420,7 +419,7 @@ func (p *Poller) ClearProcessed(id string) {
 
 	// Also clear from persistent store
 	if p.processedStore != nil {
-		if err := p.processedStore.UnmarkLinearIssueProcessed(id); err != nil {
+		if err := p.processedStore.Unmark("linear", "", id); err != nil {
 			p.logger.Warn("Failed to unmark issue in store",
 				slog.String("id", id),
 				slog.Any("error", err))
