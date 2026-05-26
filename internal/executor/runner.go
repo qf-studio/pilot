@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/qf-studio/pilot/internal/executor/workflow"
 	"github.com/qf-studio/pilot/internal/logging"
 	"github.com/qf-studio/pilot/internal/memory"
 	"github.com/qf-studio/pilot/internal/quality"
@@ -292,6 +293,9 @@ type ExecutionResult struct {
 	PeakRSSMB int
 	// FinalRSSMB is the subprocess RSS at exit. GH-3028.
 	FinalRSSMB int
+	// SetupFailed is true when a lifecycle hook (after_create or before_run) aborted
+	// the run. Callers should persist status="setup_failed" instead of "failed". TASK-305.
+	SetupFailed bool
 }
 
 // ProgressCallback is a function called during execution with progress updates.
@@ -1183,6 +1187,10 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 	executionPath := task.ProjectPath
 	var cleanupWorktree func()
 
+	// TASK-305: lifecycleHooks is populated after executionPath is finalized.
+	// The before_remove defer captures this variable by reference.
+	var lifecycleHooks *workflow.WorkflowHooks
+
 	// Debug: log worktree condition state
 	r.log.Info("Worktree condition check",
 		slog.Bool("allowWorktree", allowWorktree),
@@ -1254,9 +1262,51 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 		r.reportProgress(task.ID, "Worktree", 2, "Worktree ready")
 	}
 
+	// TASK-305: before_remove runs just before teardown — always, whether or not a
+	// worktree is in use. The defer fires before cleanupWorktree (LIFO order) because
+	// it is registered first. lifecycleHooks is populated below; nil means no-op.
+	defer func() {
+		if lifecycleHooks != nil {
+			hookCtx, hookCancel := context.WithTimeout(context.Background(), lifecycleHooks.Timeout())
+			defer hookCancel()
+			if hookErr := workflow.RunHook(hookCtx, "before_remove", lifecycleHooks,
+				buildHookEnv(task, executionPath), executionPath, r.log); hookErr != nil {
+				r.log.Warn("before_remove hook failed (non-fatal)",
+					slog.String("task_id", task.ID),
+					slog.Any("error", hookErr),
+				)
+			}
+		}
+	}()
+
 	// Ensure worktree cleanup on exit (handles panic, early return, success)
 	if cleanupWorktree != nil {
 		defer cleanupWorktree()
+	}
+
+	// TASK-305: Load .pilot/workflow.yaml hooks from the execution directory, then
+	// run after_create (abort on failure with setup_failed status).
+	if wh, loadErr := workflow.Load(executionPath); loadErr != nil {
+		r.log.Warn("Failed to load .pilot/workflow.yaml hooks (non-fatal)",
+			slog.String("task_id", task.ID),
+			slog.Any("error", loadErr),
+		)
+	} else if wh != nil {
+		lifecycleHooks = wh
+		r.reportProgress(task.ID, "Setup", 2, "Running after_create hook...")
+		if hookErr := workflow.RunHook(ctx, "after_create", lifecycleHooks,
+			buildHookEnv(task, executionPath), executionPath, r.log); hookErr != nil {
+			r.log.Error("after_create hook failed, aborting run",
+				slog.String("task_id", task.ID),
+				slog.Any("error", hookErr),
+			)
+			return &ExecutionResult{
+				TaskID:      task.ID,
+				Success:     false,
+				SetupFailed: true,
+				Error:       fmt.Sprintf("after_create hook failed: %v", hookErr),
+			}, fmt.Errorf("after_create hook: %w", hookErr)
+		}
 	}
 
 	// GH-915: Run pre-flight checks to catch environmental issues early
@@ -1797,6 +1847,24 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 		stallCancel = func() {}
 	}
 
+	// TASK-305: before_run hook — abort on failure with setup_failed status.
+	if lifecycleHooks != nil {
+		r.reportProgress(task.ID, "Setup", 3, "Running before_run hook...")
+		if hookErr := workflow.RunHook(ctx, "before_run", lifecycleHooks,
+			buildHookEnv(task, executionPath), executionPath, r.log); hookErr != nil {
+			r.log.Error("before_run hook failed, aborting run",
+				slog.String("task_id", task.ID),
+				slog.Any("error", hookErr),
+			)
+			return &ExecutionResult{
+				TaskID:      task.ID,
+				Success:     false,
+				SetupFailed: true,
+				Error:       fmt.Sprintf("before_run hook failed: %v", hookErr),
+			}, fmt.Errorf("before_run hook: %w", hookErr)
+		}
+	}
+
 	// Execute via backend with watchdog (GH-882)
 	// Watchdog kills subprocess after 2x timeout as a safety net for processes
 	// that ignore context cancellation.
@@ -1855,6 +1923,20 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 	// Stop stall watchdog and release stall context resources.
 	close(stallDone)
 	stallCancel()
+
+	// TASK-305: after_run hook — best-effort; failure logs a warning but does not
+	// change the run's success status (artifact snapshot / cleanup should not fail the task).
+	if lifecycleHooks != nil {
+		hookCtx, hookCancel := context.WithTimeout(context.Background(), lifecycleHooks.Timeout())
+		if hookErr := workflow.RunHook(hookCtx, "after_run", lifecycleHooks,
+			buildHookEnv(task, executionPath), executionPath, r.log); hookErr != nil {
+			r.log.Warn("after_run hook failed (non-fatal)",
+				slog.String("task_id", task.ID),
+				slog.Any("error", hookErr),
+			)
+		}
+		hookCancel()
+	}
 
 	// Transfer stallDetected flag to progressState for post-Execute checks.
 	if stallDetectedFlag.Load() {
@@ -4646,4 +4728,18 @@ func (r *Runner) getPostExecutionSummary(ctx context.Context) (*PostExecutionSum
 	}
 
 	return &summary, nil
+}
+
+// buildHookEnv constructs the PILOT_* environment variables for lifecycle hooks. TASK-305.
+func buildHookEnv(task *Task, worktreePath string) workflow.HookEnv {
+	issueURL := ""
+	if task.SourceAdapter == "github" && task.SourceRepo != "" && task.SourceIssueID != "" {
+		issueURL = "https://github.com/" + task.SourceRepo + "/issues/" + task.SourceIssueID
+	}
+	return workflow.HookEnv{
+		TaskID:   task.ID,
+		Branch:   task.Branch,
+		IssueURL: issueURL,
+		Worktree: worktreePath,
+	}
 }

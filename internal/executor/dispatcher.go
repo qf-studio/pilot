@@ -682,13 +682,20 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 			// Emit progress callback for task failed
 			w.runner.EmitProgress(exec.TaskID, "Failed", 100, fmt.Sprintf("Execution error: %s", truncateForLog(execErr.Error(), 60)))
 		} else if !result.Success {
+			// TASK-305: lifecycle hook aborts use "setup_failed" status so the dashboard
+			// and history can distinguish infra failures from code-quality failures.
+			status := "failed"
+			if result.SetupFailed {
+				status = "setup_failed"
+			}
 			w.log.Warn("Task completed with failure",
 				slog.String("task_id", exec.TaskID),
+				slog.String("status", status),
 				slog.String("error", result.Error),
 				slog.Duration("duration", duration),
 			)
-			if err := w.store.UpdateExecutionStatus(exec.ID, "failed", result.Error); err != nil {
-				w.log.Error("Failed to update status to failed", slog.Any("error", err))
+			if err := w.store.UpdateExecutionStatus(exec.ID, status, result.Error); err != nil {
+				w.log.Error("Failed to update execution status", slog.Any("error", err))
 			}
 			// Emit progress callback for task failed
 			w.runner.EmitProgress(exec.TaskID, "Failed", 100, fmt.Sprintf("Task failed: %s", truncateForLog(result.Error, 60)))

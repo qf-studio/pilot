@@ -572,3 +572,4 @@ quality:
 | `safeGo()` panic-recovery wrapper | v2.150.x | executor + adapters | All goroutine spawns wrapped (TASK-292) |
 | `IsTaskShipped` predicate | v2.151.x | autopilot | Cross-site invariant preventing double-dispatch (TASK-296 / GH-3091) |
 | Ghost-SHA guard | v2.151.x | executor | Fail-closed when commit_sha already on base branch (TASK-300 / GH-3099) |
+| Workspace lifecycle hooks | v2.154.x | executor/workflow | `after_create`/`before_run`/`after_run`/`before_remove` hooks from `.pilot/workflow.yaml`; abort-on-failure for setup hooks; `setup_failed` DB status (TASK-305 / GH-3125) |

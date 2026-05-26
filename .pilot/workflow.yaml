@@ -1,0 +1,18 @@
+# Pilot's per-repo workflow configuration (TASK-304/305).
+# Pilot reads this file from the target repo at the start of each run.
+#
+# hooks: lifecycle hooks executed around each worktree session (TASK-305).
+#   after_create  — runs after the worktree is created (bootstrap: deps, tools)
+#   before_run    — runs just before the AI agent starts (env warmup)
+#   after_run     — runs after the AI agent finishes (artifact snapshot)
+#   before_remove — runs just before the worktree is destroyed (log archive)
+#
+#   Each hook is a shell snippet (or list) executed via: bash -lc "<script>"
+#   Available env vars: PILOT_TASK_ID, PILOT_BRANCH, PILOT_ISSUE_URL, PILOT_WORKTREE
+#
+# timeout_sec: per-hook timeout in seconds (default 300).
+
+hooks:
+  after_create:
+    - "go build ./... 2>&1 | head -20 || true"
+  timeout_sec: 300
