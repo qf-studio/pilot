@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"regexp"
 	"sort"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -35,12 +36,11 @@ type IssueResult struct {
 }
 
 // ProcessedStore persists which GitLab issues have been processed across restarts.
-// GH-1358: GitLab uses integer IDs like GitHub.
 type ProcessedStore interface {
-	MarkGitLabIssueProcessed(issueNumber int, result string) error
-	UnmarkGitLabIssueProcessed(issueNumber int) error
-	IsGitLabIssueProcessed(issueNumber int) (bool, error)
-	LoadGitLabProcessedIssues() (map[int]bool, error)
+	Mark(source, repo, issueID string) error
+	Unmark(source, repo, issueID string) error
+	IsProcessed(source, repo, issueID string) (bool, error)
+	Load(source, repo string) (map[string]time.Time, error)
 }
 
 // Poller polls GitLab for issues with a specific label
@@ -180,13 +180,15 @@ func NewPoller(client *Client, label string, interval time.Duration, opts ...Pol
 
 	// GH-1358: Load processed issues from persistent store if available
 	if p.processedStore != nil {
-		loaded, err := p.processedStore.LoadGitLabProcessedIssues()
+		loaded, err := p.processedStore.Load("gitlab", p.repoKey)
 		if err != nil {
 			p.logger.Warn("Failed to load processed issues from store", slog.Any("error", err))
 		} else if len(loaded) > 0 {
 			p.mu.Lock()
-			for id := range loaded {
-				p.processed[id] = true
+			for idStr := range loaded {
+				if id, parseErr := strconv.Atoi(idStr); parseErr == nil {
+					p.processed[id] = true
+				}
 			}
 			p.mu.Unlock()
 			p.logger.Info("Loaded processed issues from store", slog.Int("count", len(loaded)))
@@ -661,7 +663,7 @@ func (p *Poller) markProcessed(iid int) {
 
 	// GH-1358: Persist to store if available
 	if p.processedStore != nil {
-		if err := p.processedStore.MarkGitLabIssueProcessed(iid, "processed"); err != nil {
+		if err := p.processedStore.Mark("gitlab", p.repoKey, strconv.Itoa(iid)); err != nil {
 			p.logger.Warn("Failed to persist processed issue", slog.Int("iid", iid), slog.Any("error", err))
 		}
 	}
@@ -697,7 +699,7 @@ func (p *Poller) ClearProcessed(iid int) {
 
 	// Also clear from persistent store
 	if p.processedStore != nil {
-		if err := p.processedStore.UnmarkGitLabIssueProcessed(iid); err != nil {
+		if err := p.processedStore.Unmark("gitlab", p.repoKey, strconv.Itoa(iid)); err != nil {
 			p.logger.Warn("Failed to unmark issue in store",
 				slog.Int("iid", iid),
 				slog.Any("error", err))

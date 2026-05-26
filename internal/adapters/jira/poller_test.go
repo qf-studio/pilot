@@ -421,33 +421,33 @@ func newMockProcessedStore() *mockProcessedStore {
 	}
 }
 
-func (m *mockProcessedStore) MarkJiraIssueProcessed(issueKey string, result string) error {
+func (m *mockProcessedStore) Mark(source, repo, issueID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.processed[issueKey] = result
+	m.processed[issueID] = "processed"
 	return nil
 }
 
-func (m *mockProcessedStore) UnmarkJiraIssueProcessed(issueKey string) error {
+func (m *mockProcessedStore) Unmark(source, repo, issueID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	delete(m.processed, issueKey)
+	delete(m.processed, issueID)
 	return nil
 }
 
-func (m *mockProcessedStore) IsJiraIssueProcessed(issueKey string) (bool, error) {
+func (m *mockProcessedStore) IsProcessed(source, repo, issueID string) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	_, ok := m.processed[issueKey]
+	_, ok := m.processed[issueID]
 	return ok, nil
 }
 
-func (m *mockProcessedStore) LoadJiraProcessedIssues() (map[string]bool, error) {
+func (m *mockProcessedStore) Load(source, repo string) (map[string]time.Time, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	result := make(map[string]bool)
+	result := make(map[string]time.Time)
 	for key := range m.processed {
-		result[key] = true
+		result[key] = time.Now()
 	}
 	return result, nil
 }

@@ -3,6 +3,7 @@ package adapters
 import (
 	"context"
 	"sync"
+	"time"
 )
 
 // Adapter is the common interface all ticket-source adapters implement.
@@ -54,14 +55,14 @@ type IssueResult struct {
 }
 
 // ProcessedStore is the generic interface for tracking which issues
-// have been processed across restarts. It uses string IDs for all adapters;
-// integer-based adapters convert their IDs to strings.
+// have been processed across restarts. Source identifies the adapter (e.g. "github"),
+// repo identifies the repository namespace (e.g. "owner/repo"), and issueID is the
+// adapter-native identifier converted to a string. Tracker-style adapters pass repo="".
 type ProcessedStore interface {
-	// MarkAdapterProcessed records that issueID for the given adapter has been handled, preventing re-dispatch on restart.
-	MarkAdapterProcessed(adapter, issueID, result string) error
-	UnmarkAdapterProcessed(adapter, issueID string) error
-	IsAdapterProcessed(adapter, issueID string) (bool, error)
-	LoadAdapterProcessed(adapter string) (map[string]bool, error)
+	Mark(source, repo, issueID string) error
+	Unmark(source, repo, issueID string) error
+	IsProcessed(source, repo, issueID string) (bool, error)
+	Load(source, repo string) (map[string]time.Time, error)
 }
 
 // PollerDeps provides shared infrastructure to adapter pollers.

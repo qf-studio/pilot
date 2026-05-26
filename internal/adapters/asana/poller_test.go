@@ -584,32 +584,32 @@ func NewMockProcessedStore() *MockProcessedStore {
 	}
 }
 
-func (m *MockProcessedStore) MarkAsanaTaskProcessed(taskGID string, result string) error {
+func (m *MockProcessedStore) Mark(source, repo, issueID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.processed[taskGID] = true
+	m.processed[issueID] = true
 	return nil
 }
 
-func (m *MockProcessedStore) UnmarkAsanaTaskProcessed(taskGID string) error {
+func (m *MockProcessedStore) Unmark(source, repo, issueID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	delete(m.processed, taskGID)
+	delete(m.processed, issueID)
 	return nil
 }
 
-func (m *MockProcessedStore) IsAsanaTaskProcessed(taskGID string) (bool, error) {
+func (m *MockProcessedStore) IsProcessed(source, repo, issueID string) (bool, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return m.processed[taskGID], nil
+	return m.processed[issueID], nil
 }
 
-func (m *MockProcessedStore) LoadAsanaProcessedTasks() (map[string]bool, error) {
+func (m *MockProcessedStore) Load(source, repo string) (map[string]time.Time, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	result := make(map[string]bool)
-	for k, v := range m.processed {
-		result[k] = v
+	result := make(map[string]time.Time)
+	for k := range m.processed {
+		result[k] = time.Now()
 	}
 	return result, nil
 }
@@ -620,8 +620,8 @@ func TestPollerWithProcessedStore(t *testing.T) {
 	store := NewMockProcessedStore()
 
 	// Pre-populate store
-	_ = store.MarkAsanaTaskProcessed("task-1", "processed")
-	_ = store.MarkAsanaTaskProcessed("task-2", "processed")
+	_ = store.Mark("asana", "", "task-1")
+	_ = store.Mark("asana", "", "task-2")
 
 	poller := NewPoller(client, config, 30*time.Second,
 		WithProcessedStore(store),
@@ -732,7 +732,7 @@ func TestPollerClearProcessedWithStore(t *testing.T) {
 	if !poller.IsProcessed("task-1") {
 		t.Error("expected task-1 to be processed in memory")
 	}
-	processed, _ := store.IsAsanaTaskProcessed("task-1")
+	processed, _ := store.IsProcessed("asana", "", "task-1")
 	if !processed {
 		t.Error("expected task-1 to be processed in store")
 	}
@@ -744,7 +744,7 @@ func TestPollerClearProcessedWithStore(t *testing.T) {
 	if poller.IsProcessed("task-1") {
 		t.Error("expected task-1 to be cleared from memory")
 	}
-	processed, _ = store.IsAsanaTaskProcessed("task-1")
+	processed, _ = store.IsProcessed("asana", "", "task-1")
 	if processed {
 		t.Error("expected task-1 to be cleared from store")
 	}

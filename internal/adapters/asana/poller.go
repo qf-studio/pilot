@@ -31,12 +31,11 @@ type TaskResult struct {
 }
 
 // ProcessedStore persists which Asana tasks have been processed across restarts.
-// GH-1359: Asana uses string GIDs.
 type ProcessedStore interface {
-	MarkAsanaTaskProcessed(taskGID string, result string) error
-	UnmarkAsanaTaskProcessed(taskGID string) error
-	IsAsanaTaskProcessed(taskGID string) (bool, error)
-	LoadAsanaProcessedTasks() (map[string]bool, error)
+	Mark(source, repo, issueID string) error
+	Unmark(source, repo, issueID string) error
+	IsProcessed(source, repo, issueID string) (bool, error)
+	Load(source, repo string) (map[string]time.Time, error)
 }
 
 // Poller polls Asana for tasks with the pilot tag
@@ -118,7 +117,7 @@ func NewPoller(client *Client, config *Config, interval time.Duration, opts ...P
 
 	// GH-1359: Load processed tasks from persistent store if available
 	if p.processedStore != nil {
-		loaded, err := p.processedStore.LoadAsanaProcessedTasks()
+		loaded, err := p.processedStore.Load("asana", "")
 		if err != nil {
 			p.logger.Warn("Failed to load processed tasks from store", slog.Any("error", err))
 		} else if len(loaded) > 0 {
@@ -385,7 +384,7 @@ func (p *Poller) markProcessed(gid string) {
 
 	// GH-1359: Persist to store if available
 	if p.processedStore != nil {
-		if err := p.processedStore.MarkAsanaTaskProcessed(gid, "processed"); err != nil {
+		if err := p.processedStore.Mark("asana", "", gid); err != nil {
 			p.logger.Warn("Failed to persist processed task", slog.String("gid", gid), slog.Any("error", err))
 		}
 	}
@@ -421,7 +420,7 @@ func (p *Poller) ClearProcessed(gid string) {
 
 	// Also clear from persistent store
 	if p.processedStore != nil {
-		if err := p.processedStore.UnmarkAsanaTaskProcessed(gid); err != nil {
+		if err := p.processedStore.Unmark("asana", "", gid); err != nil {
 			p.logger.Warn("Failed to unmark task in store",
 				slog.String("gid", gid),
 				slog.Any("error", err))

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 	"time"
 
@@ -397,24 +398,31 @@ func NewMockProcessedStore() *MockProcessedStore {
 	}
 }
 
-func (m *MockProcessedStore) MarkAzureDevOpsWorkItemProcessed(workItemID int, result string) error {
-	m.processed[workItemID] = true
+func (m *MockProcessedStore) Mark(source, repo, issueID string) error {
+	if id, err := strconv.Atoi(issueID); err == nil {
+		m.processed[id] = true
+	}
 	return nil
 }
 
-func (m *MockProcessedStore) UnmarkAzureDevOpsWorkItemProcessed(workItemID int) error {
-	delete(m.processed, workItemID)
+func (m *MockProcessedStore) Unmark(source, repo, issueID string) error {
+	if id, err := strconv.Atoi(issueID); err == nil {
+		delete(m.processed, id)
+	}
 	return nil
 }
 
-func (m *MockProcessedStore) IsAzureDevOpsWorkItemProcessed(workItemID int) (bool, error) {
-	return m.processed[workItemID], nil
+func (m *MockProcessedStore) IsProcessed(source, repo, issueID string) (bool, error) {
+	if id, err := strconv.Atoi(issueID); err == nil {
+		return m.processed[id], nil
+	}
+	return false, nil
 }
 
-func (m *MockProcessedStore) LoadAzureDevOpsProcessedWorkItems() (map[int]bool, error) {
-	result := make(map[int]bool)
-	for k, v := range m.processed {
-		result[k] = v
+func (m *MockProcessedStore) Load(source, repo string) (map[string]time.Time, error) {
+	result := make(map[string]time.Time)
+	for k := range m.processed {
+		result[strconv.Itoa(k)] = time.Now()
 	}
 	return result, nil
 }

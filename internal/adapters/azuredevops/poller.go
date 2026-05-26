@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"regexp"
 	"sort"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -35,12 +36,11 @@ type WorkItemResult struct {
 }
 
 // ProcessedStore persists which Azure DevOps work items have been processed across restarts.
-// GH-1358: Azure DevOps uses integer work item IDs.
 type ProcessedStore interface {
-	MarkAzureDevOpsWorkItemProcessed(workItemID int, result string) error
-	UnmarkAzureDevOpsWorkItemProcessed(workItemID int) error
-	IsAzureDevOpsWorkItemProcessed(workItemID int) (bool, error)
-	LoadAzureDevOpsProcessedWorkItems() (map[int]bool, error)
+	Mark(source, repo, issueID string) error
+	Unmark(source, repo, issueID string) error
+	IsProcessed(source, repo, issueID string) (bool, error)
+	Load(source, repo string) (map[string]time.Time, error)
 }
 
 // Poller polls Azure DevOps for work items with a specific tag
@@ -191,13 +191,15 @@ func NewPoller(client *Client, tag string, interval time.Duration, opts ...Polle
 
 	// GH-1358: Load processed work items from persistent store if available
 	if p.processedStore != nil {
-		loaded, err := p.processedStore.LoadAzureDevOpsProcessedWorkItems()
+		loaded, err := p.processedStore.Load("azuredevops", p.repoKey)
 		if err != nil {
 			p.logger.Warn("Failed to load processed work items from store", slog.Any("error", err))
 		} else if len(loaded) > 0 {
 			p.mu.Lock()
-			for id := range loaded {
-				p.processed[id] = true
+			for idStr := range loaded {
+				if id, parseErr := strconv.Atoi(idStr); parseErr == nil {
+					p.processed[id] = true
+				}
 			}
 			p.mu.Unlock()
 			p.logger.Info("Loaded processed work items from store", slog.Int("count", len(loaded)))
@@ -642,7 +644,7 @@ func (p *Poller) markProcessed(id int) {
 
 	// GH-1358: Persist to store if available
 	if p.processedStore != nil {
-		if err := p.processedStore.MarkAzureDevOpsWorkItemProcessed(id, "processed"); err != nil {
+		if err := p.processedStore.Mark("azuredevops", p.repoKey, strconv.Itoa(id)); err != nil {
 			p.logger.Warn("Failed to persist processed work item", slog.Int("id", id), slog.Any("error", err))
 		}
 	}
@@ -678,7 +680,7 @@ func (p *Poller) ClearProcessed(id int) {
 
 	// Also clear from persistent store
 	if p.processedStore != nil {
-		if err := p.processedStore.UnmarkAzureDevOpsWorkItemProcessed(id); err != nil {
+		if err := p.processedStore.Unmark("azuredevops", p.repoKey, strconv.Itoa(id)); err != nil {
 			p.logger.Warn("Failed to unmark work item in store",
 				slog.Int("id", id),
 				slog.Any("error", err))

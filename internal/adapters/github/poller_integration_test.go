@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -541,32 +542,39 @@ type mockProcessedStore struct {
 	processed map[int]bool
 }
 
-func (m *mockProcessedStore) MarkIssueProcessed(issueNumber int, result string) error {
+func (m *mockProcessedStore) Mark(source, repo, issueID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.processed[issueNumber] = true
+	if id, err := strconv.Atoi(issueID); err == nil {
+		m.processed[id] = true
+	}
 	return nil
 }
 
-func (m *mockProcessedStore) UnmarkIssueProcessed(issueNumber int) error {
+func (m *mockProcessedStore) Unmark(source, repo, issueID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	delete(m.processed, issueNumber)
+	if id, err := strconv.Atoi(issueID); err == nil {
+		delete(m.processed, id)
+	}
 	return nil
 }
 
-func (m *mockProcessedStore) IsIssueProcessed(issueNumber int) (bool, error) {
+func (m *mockProcessedStore) IsProcessed(source, repo, issueID string) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.processed[issueNumber], nil
+	if id, err := strconv.Atoi(issueID); err == nil {
+		return m.processed[id], nil
+	}
+	return false, nil
 }
 
-func (m *mockProcessedStore) LoadProcessedIssues() (map[int]bool, error) {
+func (m *mockProcessedStore) Load(source, repo string) (map[string]time.Time, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	result := make(map[int]bool)
-	for k, v := range m.processed {
-		result[k] = v
+	result := make(map[string]time.Time)
+	for k := range m.processed {
+		result[strconv.Itoa(k)] = time.Now()
 	}
 	return result, nil
 }

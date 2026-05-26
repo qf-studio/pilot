@@ -1,6 +1,7 @@
 package gitlab
 
 import (
+	"strconv"
 	"testing"
 	"time"
 )
@@ -331,24 +332,31 @@ func NewMockProcessedStore() *MockProcessedStore {
 	}
 }
 
-func (m *MockProcessedStore) MarkGitLabIssueProcessed(issueNumber int, result string) error {
-	m.processed[issueNumber] = true
+func (m *MockProcessedStore) Mark(source, repo, issueID string) error {
+	if id, err := strconv.Atoi(issueID); err == nil {
+		m.processed[id] = true
+	}
 	return nil
 }
 
-func (m *MockProcessedStore) UnmarkGitLabIssueProcessed(issueNumber int) error {
-	delete(m.processed, issueNumber)
+func (m *MockProcessedStore) Unmark(source, repo, issueID string) error {
+	if id, err := strconv.Atoi(issueID); err == nil {
+		delete(m.processed, id)
+	}
 	return nil
 }
 
-func (m *MockProcessedStore) IsGitLabIssueProcessed(issueNumber int) (bool, error) {
-	return m.processed[issueNumber], nil
+func (m *MockProcessedStore) IsProcessed(source, repo, issueID string) (bool, error) {
+	if id, err := strconv.Atoi(issueID); err == nil {
+		return m.processed[id], nil
+	}
+	return false, nil
 }
 
-func (m *MockProcessedStore) LoadGitLabProcessedIssues() (map[int]bool, error) {
-	result := make(map[int]bool)
-	for k, v := range m.processed {
-		result[k] = v
+func (m *MockProcessedStore) Load(source, repo string) (map[string]time.Time, error) {
+	result := make(map[string]time.Time)
+	for k := range m.processed {
+		result[strconv.Itoa(k)] = time.Now()
 	}
 	return result, nil
 }
