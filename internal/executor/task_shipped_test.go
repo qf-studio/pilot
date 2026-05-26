@@ -57,6 +57,19 @@ func TestIsTaskShipped(t *testing.T) {
 			row:  memory.Execution{Status: "completed", Error: "stale running task recovered", CommitSHA: "abc123"},
 			want: true,
 		},
+		{
+			// GH-3112: ghost-SHA scenario — the upstream guard in runner.go clears CommitSHA
+			// before the row is recorded, so a completed row with no deliverables is correctly
+			// treated as not-shipped (epic-parent pattern). PRUrl is the stronger signal.
+			name: "completed with no deliverables (ghost-SHA cleared upstream)",
+			row:  memory.Execution{Status: "completed"},
+			want: false,
+		},
+		{
+			name: "completed with pr_url only (strongest signal)",
+			row:  memory.Execution{Status: "completed", PRUrl: "https://github.com/x/y/pull/99"},
+			want: true,
+		},
 	}
 
 	for _, tc := range tests {

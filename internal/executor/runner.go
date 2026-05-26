@@ -2202,6 +2202,30 @@ retrySucceeded:
 		}
 	}
 
+	// GH-3112: Ghost-SHA guard — fail closed when the harvested SHA is already on
+	// the base branch. This means Claude made no new commit; the SHA is the parent
+	// (base branch tip) that was HEAD at worktree creation time.
+	if result.CommitSHA != "" && result.Success {
+		ghostBase := task.BaseBranch
+		if ghostBase == "" {
+			if db, _ := git.GetDefaultBranch(ctx); db != "" {
+				ghostBase = db
+			} else {
+				ghostBase = "main"
+			}
+		}
+		if isNew, checkErr := commitSHAIsNew(ctx, executionPath, result.CommitSHA, ghostBase); checkErr == nil && !isNew {
+			log.Warn("ghost-SHA detected: harvested SHA is already on base branch — no new commit",
+				slog.String("task_id", task.ID),
+				slog.String("sha", result.CommitSHA[:min(7, len(result.CommitSHA))]),
+				slog.String("base", ghostBase),
+			)
+			result.CommitSHA = ""
+			result.Success = false
+			result.Error = "no new commit produced — worktree HEAD matches base branch parent"
+		}
+	}
+
 	// Fill in additional metrics from state
 	result.FilesChanged = state.filesWrite
 	result.CacheCreationInputTokens = state.cacheCreationInputTokens
@@ -3086,6 +3110,20 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 					)
 				}
 				result.CommitSHA = pushedSHA
+				// GH-3112: Defense in depth — re-validate after push.
+				// The pre-push guard should catch ghost SHAs earlier, but re-check
+				// here in case fetch state was stale at the first check.
+				if isNew, checkErr := commitSHAIsNew(ctx, executionPath, result.CommitSHA, baseBranch); checkErr == nil && !isNew {
+					log.Warn("ghost-SHA detected post-push: pushed SHA is already on base branch",
+						slog.String("task_id", task.ID),
+						slog.String("sha", result.CommitSHA[:min(7, len(result.CommitSHA))]),
+						slog.String("base", baseBranch),
+					)
+					result.CommitSHA = ""
+					result.Success = false
+					result.Error = "no new commit produced — post-push HEAD matches base branch parent"
+					return result, nil
+				}
 			} else if pushErr != nil {
 				log.Warn("Failed to get pushed HEAD SHA, using tracked SHA",
 					slog.String("task_id", task.ID),
