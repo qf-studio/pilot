@@ -23,6 +23,7 @@
 | Progress display | ✅ | executor | - | - | Lipgloss visual bar |
 | Navigator detection | ✅ | executor | - | - | Auto-prefix if `.agent/` exists |
 | AGENTS.md loading | ✅ | executor | - | - | LoadAgentsFile reads project AGENTS.md (v0.24.1) |
+| Per-repo workflow override | ✅ | executor/workflow | - | `.pilot/workflow.yaml` | YAML front-matter + Markdown prompt appendix; overrides agent.max_turns, agent.reasoning_effort, policy.* (TASK-304, v2.153.2) |
 | Dry run mode | ✅ | executor | `--dry-run` | - | Show prompt only |
 | Verbose output | ✅ | executor | `--verbose` | - | Stream raw JSON |
 | Task dispatcher | ✅ | executor | - | - | Per-project queue (GH-46) |

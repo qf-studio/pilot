@@ -1,0 +1,57 @@
+---
+version: 1
+
+agent:
+  reasoning_effort: high
+
+policy:
+  commit_format: conventional
+  branch_prefix: pilot/GH-
+
+hooks:
+  after_create: null
+  before_run: null
+  after_run: null
+  before_remove: null
+---
+
+## Project: Pilot
+
+Pilot is a Go monorepo. Follow these conventions on every task.
+
+### Commit Format
+
+Use conventional commits: `type(scope): description (TASK-XX)`
+Types: feat, fix, refactor, test, docs, chore
+
+### Branch Naming
+
+Branches: `pilot/GH-<issue-number>`
+
+### Test Tokens
+
+Never use realistic-looking API tokens in test files — they trigger GitHub push
+protection. Use obviously fake values or constants from `internal/testutil/tokens.go`.
+
+### Lint
+
+All return values must be checked in test files, including `w.Write()`,
+`json.NewEncoder().Encode()`, and `fmt.Fprintf(w, ...)` in HTTP mock handlers.
+Use `_, _ = w.Write(...)` or assign to an `err` variable.
+
+The golangci-lint `errcheck` linter is enabled globally, including test files.
+Run `golangci-lint run --new-from-rev=origin/main ./...` before committing.
+
+### Config Wiring
+
+Any new config struct fields must flow: YAML file → `config.Load()` → struct → caller.
+Fields that are defined but never wired will be silently ignored — always verify.
+
+### Build and Test Commands
+
+```bash
+make build      # go build ./...
+make test       # go test ./...
+make lint       # golangci-lint run
+make fmt        # go fmt + goimports
+```

@@ -41,6 +41,11 @@ type ExecuteOptions struct {
 	// Maps to Claude API output_config.effort or Claude Code --effort flag.
 	Effort string
 
+	// MaxTurns limits the number of agentic turns Claude Code may take.
+	// When > 0, passed as --max-turns to the Claude Code subprocess.
+	// Zero means no limit (Claude Code default).
+	MaxTurns int
+
 	// ResumeSessionID enables session resume for continued context (GH-1265).
 	// When set, uses --resume <session_id> to continue an existing Claude Code session,
 	// eliminating context rebuild overhead (~40% token savings for self-review).

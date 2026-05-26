@@ -1,0 +1,56 @@
+---
+# .pilot/workflow.yaml — per-repo Pilot configuration
+# Place this file at .pilot/workflow.yaml in your repository root.
+#
+# Schema version — must be 1. Unknown top-level keys produce a warning, not an error.
+version: 1
+
+# agent: override executor agent settings for this repo
+agent:
+  # max_turns: maximum agentic turns (maps to --max-turns in Claude Code).
+  # Omit or set to 0 to use Pilot's default (no limit).
+  max_turns: 20
+
+  # reasoning_effort: effort level for execution.
+  # Valid values: "low", "medium", "high", "max"
+  # Omit to use Pilot's default effort routing.
+  reasoning_effort: high
+
+# policy: structured fields exposed to the executor prompt
+policy:
+  # commit_format: expected commit message format (informational, included in prompt).
+  commit_format: conventional
+
+  # branch_prefix: prefix for branches Pilot creates (informational, included in prompt).
+  branch_prefix: pilot/GH-
+
+  # pr_template: path (relative to repo root) of the PR template file.
+  pr_template: .github/pull_request_template.md
+
+# hooks: lifecycle hooks — parsed but not yet executed (TASK-305).
+hooks:
+  after_create: null
+  before_run: null
+  after_run: null
+  before_remove: null
+---
+
+# Project Workflow
+
+Anything below this line is appended to the executor's system prompt under a
+"## Project Workflow" header. Use it to give Pilot project-specific conventions,
+definition-of-done, test commands, or any instructions your team follows.
+
+## Conventions
+
+- Follow conventional commits: `type(scope): description`
+- Run `make test` before committing
+- All PRs must pass CI before merge
+
+## Definition of Done
+
+- [ ] Implementation complete
+- [ ] Tests added for new code
+- [ ] Build passes (`go build ./...`)
+- [ ] Tests pass (`go test ./...`)
+- [ ] PR created with a clear description
