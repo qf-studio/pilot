@@ -111,14 +111,14 @@ Disable via config: `executor.navigator.auto_init: false`
 | This file | Every session (navigator index) |
 | `.agent/system/FEATURE-MATRIX.md` | What's implemented vs not |
 | `.agent/system/ARCHITECTURE.md` | System design, data flow |
-| `.agent/system/PR-CHECKLIST.md` | Before merging PRs in `--autopilot=prod` mode |
+| `.agent/system/PR-CHECKLIST.md` | Before merging PRs in `--env=prod` mode |
 | `.agent/tasks/TASK-XX.md` | Active task details |
 | `.agent/sops/*.md` | Before modifying integrations |
 | `.agent/.context-markers/` | Resume after break |
 
 ## Current State
 
-**Current Version:** v2.151.0 | **323 features working**
+**Current Version:** v2.149.5 | **323 features working**
 
 **Recent (v2.149.4, May 25 2026):** Wave 1 hardening sweep + Linear webhook signature verification (from `.agent/audits/AUDIT-2026-05-25.md`).
 - `fix(quality)`: Default `quality.parallel` → `false`. Eliminates the shared `~/.cache/go-build` / `~/.cache/golangci-lint` race that produced 11 spurious gate failures in 3h at the 2026-05-21 workshop. Opt-back-in via explicit `quality.parallel: true`. New SOP: `.agent/sops/quality/parallel-gate-cache-race.md`. (TASK-289 / #3057)
@@ -272,14 +272,16 @@ curl -fsSL https://raw.githubusercontent.com/qf-studio/pilot/main/install.sh | b
 
 Copy `configs/pilot.example.yaml` to `~/.pilot/config.yaml`.
 
-Required environment variables:
-- `LINEAR_API_KEY` - Linear API key
-- `SLACK_BOT_TOKEN` - Slack bot token
+Key per-adapter env vars:
+- `GITHUB_TOKEN` - GitHub polling + PR creation
+- `LINEAR_API_KEY` - Linear webhook adapter
+- `SLACK_BOT_TOKEN` - Slack Socket Mode adapter
+- `TELEGRAM_BOT_TOKEN` - Telegram adapter
 
 ## CLI Flags
 
 ### `pilot start`
-- `--autopilot=ENV` - Enable autopilot mode: `dev`, `stage`, `prod`
+- `--env=ENV` - Enable autopilot mode: `dev`, `stage`, `prod`
 - `--dashboard` - Launch TUI dashboard with live task monitoring
 - `--telegram` - Enable Telegram polling
 - `--github` - Enable GitHub polling

@@ -4,7 +4,7 @@ description: handleMergeConflict only closes PR + strips pilot-in-progress. What
 type: feedback
 originSessionId: 89fe3897-6bc2-4725-a1f2-8635b79860b3
 ---
-`internal/autopilot/controller.go:1688-1729` (`handleMergeConflict`) only does:
+`internal/autopilot/controller.go:1766` (`handleMergeConflict`) only does:
 
 1. Try GitHub auto-update (rebase) first
 2. On rebase failure: close the PR

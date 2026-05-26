@@ -38,7 +38,7 @@ Verify:
 
 ```bash
 pilot --version
-# pilot version v2.102.2
+# pilot version v2.151.0
 ```
 
 ### Run the Setup Wizard
@@ -220,7 +220,7 @@ glab mr merge 13
 </Tabs>
 
 <Callout type="info">
-With `--autopilot=stage`, Pilot monitors CI automatically and merges once tests pass — no manual merge needed. See [Autopilot](/features/autopilot).
+With `--env=stage`, Pilot monitors CI automatically and merges once tests pass — no manual merge needed. See [Autopilot](/features/autopilot).
 </Callout>
 
 ---
@@ -262,7 +262,7 @@ For production environments, enable webhooks via tunnel for instant issue detect
 pilot tunnel setup
 
 # Start with webhook-based detection
-pilot start --tunnel --github --autopilot=stage
+pilot start --tunnel --github --env=stage
 ```
 
 <Callout type="info">

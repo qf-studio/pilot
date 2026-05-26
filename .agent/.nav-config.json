@@ -13,7 +13,7 @@
   "auto_update": {
     "enabled": true,
     "check_interval_hours": 1,
-    "last_check": "2026-05-25T15:59:21.012524"
+    "last_check": "2026-05-26T13:20:15.189723"
   },
   "loop_mode": {
     "enabled": false,
@@ -34,6 +34,10 @@
     "profile_enabled": true,
     "diagnose_enabled": true,
     "belief_anchors": false
+  },
+  "read_guard_hook": {
+    "escalate_threshold": 30,
+    "strict_block": false
   },
   "knowledge_graph": {
     "enabled": true,

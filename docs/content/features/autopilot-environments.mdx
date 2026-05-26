@@ -24,7 +24,7 @@ Pilot's autopilot mode operates in three environments — `dev`, `stage`, and `p
 The fastest path from issue to merged PR. Pilot executes the task, runs quality gates, creates a PR, waits for CI, and merges immediately on success.
 
 ```bash
-pilot start --github --autopilot=dev
+pilot start --github --env=dev
 ```
 
 ### Behavior
@@ -78,7 +78,7 @@ orchestrator:
 Balanced automation with safety margins. Pilot creates PRs and merges after CI passes, but adds delays and monitoring to catch issues before they compound.
 
 ```bash
-pilot start --github --autopilot=stage
+pilot start --github --env=stage
 ```
 
 ### Behavior
@@ -131,7 +131,7 @@ orchestrator:
 - Open-source projects where you review PRs asynchronously
 
 <Callout type="info">
-  `stage` is the **default environment**. If you don't specify `--autopilot=dev` or `--autopilot=prod`, Pilot uses `stage` behavior.
+  `stage` is the **default environment**. If you don't specify `--env=dev` or `--env=prod`, Pilot uses `stage` behavior.
 </Callout>
 
 ---
@@ -141,7 +141,7 @@ orchestrator:
 Maximum safety. Pilot creates PRs but requires explicit human approval before merging. Use this when deploying directly to production or when regulatory/compliance requirements demand a human in the loop.
 
 ```bash
-pilot start --github --autopilot=prod
+pilot start --github --env=prod
 ```
 
 ### Behavior
@@ -262,10 +262,10 @@ The `--autopilot` flag overrides the YAML `environment` setting:
 
 ```bash
 # Config says stage, but run as dev for this session
-pilot start --github --autopilot=dev
+pilot start --github --env=dev
 
 # Config says dev, but run as prod for a careful deploy
-pilot start --github --autopilot=prod
+pilot start --github --env=prod
 ```
 
 This is useful for temporarily changing behavior without editing `config.yaml` — for example, running in `prod` mode for a high-risk release, then switching back to `stage` for normal work.
@@ -295,5 +295,5 @@ When you're deploying to production:
 6. Consider adding `notify_on_release: true` for visibility
 
 <Callout type="info">
-  You can run multiple Pilot instances with different environments. For example, run `--autopilot=dev` for feature branches and `--autopilot=prod` for the `main` branch by using separate config files or CLI overrides.
+  You can run multiple Pilot instances with different environments. For example, run `--env=dev` for feature branches and `--env=prod` for the `main` branch by using separate config files or CLI overrides.
 </Callout>

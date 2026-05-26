@@ -1,6 +1,6 @@
 # Pilot Architecture
 
-**Last Updated:** 2026-03-04 (v2.56.0 - Multi-backend, dashboard, environment pipelines)
+**Last Updated:** 2026-05-26 (v2.151.0)
 
 ## System Overview
 
@@ -371,7 +371,7 @@ Automatic GraphQL board sync with 3-column layout:
 - Lazy ID resolution (org-first discovery)
 - Concurrent issue moves
 - Custom field updates
-- Key files: `internal/autopilot/board_sync.go`
+- Key files: `internal/adapters/github/project_board.go`
 
 ## Key Integration Points
 

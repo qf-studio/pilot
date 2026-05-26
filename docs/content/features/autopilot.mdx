@@ -37,13 +37,13 @@ autopilot:
 
 ```bash
 # Development - fast iteration
-pilot start --github --autopilot=dev
+pilot start --github --env=dev
 
 # Staging - with safety delay
-pilot start --github --autopilot=stage
+pilot start --github --env=stage
 
 # Production - no auto-merge
-pilot start --github --autopilot=prod
+pilot start --github --env=prod
 ```
 
 ## Safety Features
@@ -79,7 +79,7 @@ Track autopilot activity:
 pilot logs --autopilot
 
 # Dashboard with real-time updates
-pilot start --github --autopilot=dev --dashboard
+pilot start --github --env=dev --dashboard
 ```
 
 ## Rollback

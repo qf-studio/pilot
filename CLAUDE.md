@@ -142,7 +142,7 @@ pilot/
 │   ├── config/          # YAML config
 │   ├── dashboard/       # TUI (bubbletea)
 │   └── testutil/        # Safe test token constants
-├── docs/                # Nextra v2 documentation site
+├── docs/                # Nextra v4 documentation site
 └── .agent/              # Navigator docs
 ```
 
@@ -193,9 +193,13 @@ make check-secrets  # Check for secret patterns in tests
 
 Config file: `~/.pilot/config.yaml`
 
-Required env vars:
-- `LINEAR_API_KEY`
-- `SLACK_BOT_TOKEN`
+Key per-adapter env vars (only what each adapter needs):
+- `GITHUB_TOKEN` — GitHub polling + PR creation
+- `LINEAR_API_KEY` — Linear webhook adapter
+- `SLACK_BOT_TOKEN` — Slack Socket Mode adapter
+- `TELEGRAM_BOT_TOKEN` — Telegram adapter
+
+Full reference: `configs/pilot.example.yaml`
 
 ## Commit Guidelines
 
@@ -236,24 +240,7 @@ Documentation in `.agent/`:
 
 ## Current Status
 
-**Version:** v2.53.0 | **316 features implemented**
-
-**Core:**
-- ✅ Task execution with Navigator integration
-- ✅ Autopilot: CI monitor, auto-merge, auto-rebase, feedback loop, tag-only release
-- ✅ Intent judge in execution pipeline
-- ✅ Rich PR comments with execution metrics
-- ✅ Epic decomposition with sub-issue PR wiring
-- ✅ Self-review, quality gates, effort routing
-- ✅ Pattern learning from PR reviews
-- ✅ GitHub Projects V2 board sync
-- ✅ Execution mode auto-switching (scope-based)
-
-**Adapters:** Telegram (voice, images, 5 modes), GitHub, GitLab, Azure DevOps, Linear, Jira, Slack, Discord, Plane
-
-**Dashboard:** Sparkline cards, SQLite persistence, epic-aware history, state-aware queue, hot upgrade, git graph
-
-**Docs:** Nextra v4 at pilot.quantflow.studio, auto-deploy via GitLab CI
+See `docs/lib/version.ts` for the current release and `.agent/DEVELOPMENT-README.md` § "Current State" for recent feature history.
 
 ## Documentation Maintenance
 

@@ -1,6 +1,6 @@
 # Pilot Feature Matrix
 
-**Last Updated:** 2026-05-26 (v2.53.0)
+**Last Updated:** 2026-05-26 (v2.151.0)
 
 ## Legend
 
@@ -552,3 +552,23 @@ quality:
       type: lint
       command: "make lint"
 ```
+
+---
+
+## Recent Additions (v2.149–v2.151)
+
+> For full history run: `git log --oneline --grep="^feat" v2.149.0..HEAD`
+> GitHub Releases: `gh release list`
+
+| Feature | Version | Package | Notes |
+|---------|---------|---------|-------|
+| Poller skip-by-reason counters | v2.150.0 | adapters/github | `pilot_poller_skipped/dispatched/deferred` Prometheus counters (TASK-293 / GH-3064) |
+| `WithRetry` centralized in `doRequest` | v2.150.0 | adapters/github | All GitHub client methods now get retry; `RecordAPIError` wired (TASK-294 / GH-3065) |
+| Linear webhook Ed25519 verification | v2.149.4 | gateway + adapters/linear | `VerifyLinearSignature`; YAML wiring added in v2.151.0 (TASK-295 / GH-3060, GH-3066) |
+| `quality.parallel` defaults to `false` | v2.149.4 | executor | Eliminates shared build-cache race (TASK-289 / GH-3057) |
+| Config file mode 0600 | v2.149.4 | config | `~/.pilot/config.yaml` world-readable fixed (TASK-290 / GH-3058) |
+| Branch-aware post-CI monitoring | v2.149.4 | autopilot | Uses `ResolvedEnv().Branch` instead of hardcoded `main` (TASK-291 / GH-3059) |
+| Repo allowlist Phase B | v2.149.0 | adapters/github | `CreatePilotIssue` validates against allowlist (GH-3047) |
+| `safeGo()` panic-recovery wrapper | v2.150.x | executor + adapters | All goroutine spawns wrapped (TASK-292) |
+| `IsTaskShipped` predicate | v2.151.x | autopilot | Cross-site invariant preventing double-dispatch (TASK-296 / GH-3091) |
+| Ghost-SHA guard | v2.151.x | executor | Fail-closed when commit_sha already on base branch (TASK-300 / GH-3099) |
