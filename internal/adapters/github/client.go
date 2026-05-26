@@ -499,15 +499,27 @@ func (c *Client) GetBranch(ctx context.Context, owner, repo, branch string) (*Br
 	return &result, nil
 }
 
-// ListPullRequests lists pull requests for a repository
-// state can be "open", "closed", or "all"
+// ListPullRequests lists pull requests for a repository.
+// state can be "open", "closed", or "all".
+// Results are paginated at 100 per page (GitHub default is 30). A safety cap
+// of 50 pages (5 000 PRs) prevents runaway loops on very large repos.
 func (c *Client) ListPullRequests(ctx context.Context, owner, repo, state string) ([]*PullRequest, error) {
-	path := fmt.Sprintf("/repos/%s/%s/pulls?state=%s", owner, repo, state)
-	var result []*PullRequest
-	if err := c.doRequest(ctx, http.MethodGet, path, nil, &result); err != nil {
-		return nil, err
+	const perPage = 100
+	const maxPages = 50
+
+	var all []*PullRequest
+	for page := 1; page <= maxPages; page++ {
+		path := fmt.Sprintf("/repos/%s/%s/pulls?state=%s&per_page=%d&page=%d", owner, repo, state, perPage, page)
+		var batch []*PullRequest
+		if err := c.doRequest(ctx, http.MethodGet, path, nil, &batch); err != nil {
+			return nil, err
+		}
+		all = append(all, batch...)
+		if len(batch) < perPage {
+			break
+		}
 	}
-	return result, nil
+	return all, nil
 }
 
 // CreateRelease creates a new release
