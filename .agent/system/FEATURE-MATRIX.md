@@ -23,7 +23,6 @@
 | Progress display | ✅ | executor | - | - | Lipgloss visual bar |
 | Navigator detection | ✅ | executor | - | - | Auto-prefix if `.agent/` exists |
 | AGENTS.md loading | ✅ | executor | - | - | LoadAgentsFile reads project AGENTS.md (v0.24.1) |
-| Per-repo workflow override | ✅ | executor/workflow | - | `.pilot/workflow.yaml` | YAML front-matter + Markdown prompt appendix; overrides agent.max_turns, agent.reasoning_effort, policy.* (TASK-304, v2.153.2) |
 | Dry run mode | ✅ | executor | `--dry-run` | - | Show prompt only |
 | Verbose output | ✅ | executor | `--verbose` | - | Stream raw JSON |
 | Task dispatcher | ✅ | executor | - | - | Per-project queue (GH-46) |
@@ -573,3 +572,4 @@ quality:
 | `safeGo()` panic-recovery wrapper | v2.150.x | executor + adapters | All goroutine spawns wrapped (TASK-292) |
 | `IsTaskShipped` predicate | v2.151.x | autopilot | Cross-site invariant preventing double-dispatch (TASK-296 / GH-3091) |
 | Ghost-SHA guard | v2.151.x | executor | Fail-closed when commit_sha already on base branch (TASK-300 / GH-3099) |
+| Gate pilot-done on merge | v2.155.x | autopilot + cmd/pilot | pilot-done + issue close deferred to PR merge; handleMergeConflict re-adds pilot label + guards pilot-done (TASK-301 / GH-3139) |

@@ -351,13 +351,10 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 				// Update issueResult to reflect failure
 				issueResult.Success = false
 			} else {
-				// Has deliverables — add pilot-done immediately to close label gap
-				// GH-1350: Prevents parallel poller re-dispatch race during the window
-				// between execution complete and autopilot merge handler
-				// GH-1015: Autopilot also adds pilot-done after merge (idempotent)
-				if err := client.AddLabels(ctx, parts[0], parts[1], issue.Number, []string{github.LabelDone}); err != nil {
-					logGitHubAPIError("AddLabels", parts[0], parts[1], issue.Number, err)
-				}
+				// Has deliverables — PR created, awaiting merge.
+				// GH-3139/TASK-301: pilot-done + issue close are deferred to merge
+				// (handleMerging in autopilot) so a later merge conflict cannot
+				// ghost-close the issue before any code reaches main.
 				// GH-1869: Move to Review column when PR is created
 				if hr.PRNumber > 0 {
 					syncBoardStatus(ctx, boardSync, issue.NodeID, boardStatuses.Review)
@@ -365,7 +362,6 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 					// GH-2099: Auto-assign PR reviewers from project config
 					requestReviewersFromConfig(ctx, cfg, client, sourceRepo, parts[0], parts[1], hr.PRNumber)
 				}
-				syncBoardStatus(ctx, boardSync, issue.NodeID, boardStatuses.Done) // GH-1853
 
 				// GH-1302/GH-2402: Clean up stale pilot-failed label from prior failed attempt.
 				// Removed unconditionally — the in-memory `issue` object is the snapshot
@@ -374,11 +370,6 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 				if err := client.RemoveLabel(ctx, parts[0], parts[1], issue.Number, github.LabelFailed); err != nil {
 					// 404 is expected if label doesn't exist — log at debug level
 					slog.Debug("pilot-failed label cleanup", "issue", issue.Number, "error", err)
-				}
-
-				// Close the issue so dependent issues can proceed
-				if err := client.UpdateIssueState(ctx, parts[0], parts[1], issue.Number, "closed"); err != nil {
-					logGitHubAPIError("UpdateIssueState", parts[0], parts[1], issue.Number, err)
 				}
 
 				comment := buildExecutionComment(hr.Result, branchName)
