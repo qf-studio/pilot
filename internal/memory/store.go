@@ -532,17 +532,24 @@ func (s *Store) GetExecution(id string) (*Execution, error) {
 	return &exec, nil
 }
 
-// HasCompletedExecution checks whether a completed execution exists for the given task and project.
-// It returns true if at least one execution with status "completed" exists AND has no error.
-// Executions marked "completed" but with a non-empty error field (e.g., orphan recovery) are
-// excluded — they didn't genuinely succeed and should not block re-dispatch.
-// GH-2315: Defense-in-depth against orphan recovery blocking re-dispatch.
+// HasCompletedExecution checks whether a genuine completed execution exists for the given task
+// and project. "Genuine" means: status=completed, no error, AND at least one deliverable
+// (commit_sha or pr_url is set). This mirrors IsTaskShipped in the executor package.
+//
+// Rows excluded from the count:
+//   - status != "completed" (still running/queued/failed)
+//   - non-empty error field (orphan recovery, GH-2315)
+//   - no commit_sha AND no pr_url (epic-parent rows that produced no real work, TASK-296)
+//
+// The cross-site invariant — HasCompletedExecution and IsTaskShipped always agree — is enforced
+// by internal/integration/task_completion_invariant_test.go.
 func (s *Store) HasCompletedExecution(taskID, projectPath string) (bool, error) {
 	var count int
 	err := s.db.QueryRow(`
 		SELECT COUNT(*) FROM executions
 		WHERE task_id = ? AND project_path = ? AND status = 'completed'
 			AND (error IS NULL OR error = '')
+			AND (commit_sha != '' OR pr_url != '')
 	`, taskID, projectPath).Scan(&count)
 	if err != nil {
 		return false, err
@@ -552,12 +559,14 @@ func (s *Store) HasCompletedExecution(taskID, projectPath string) (bool, error) 
 
 // InvalidateCompletion deletes genuine completed execution records for the given task and
 // project, allowing re-dispatch. Targets only rows that HasCompletedExecution would count
-// (status='completed' with no error), leaving orphan-recovered rows untouched.
+// (status='completed', no error, at least one deliverable), leaving orphan-recovered rows
+// and epic-parent no-deliverable rows untouched.
 func (s *Store) InvalidateCompletion(taskID, projectPath string) error {
 	_, err := s.db.Exec(`
 		DELETE FROM executions
 		WHERE task_id = ? AND project_path = ? AND status = 'completed'
 			AND (error IS NULL OR error = '')
+			AND (commit_sha != '' OR pr_url != '')
 	`, taskID, projectPath)
 	if err != nil {
 		return fmt.Errorf("invalidate completion for %s at %s: %w", taskID, projectPath, err)
