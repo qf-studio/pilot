@@ -335,6 +335,11 @@ type BackendConfig struct {
 	// Valid range: 1m to 30m. Default: 5m.
 	HeartbeatTimeout time.Duration `yaml:"heartbeat_timeout,omitempty"`
 
+	// StallTimeoutMs is the duration (in milliseconds) without any agent event
+	// before a session is considered stalled and killed. 0 disables stall detection.
+	// Default: 180000 (3 minutes). TASK-308.
+	StallTimeoutMs int `yaml:"stall_timeout_ms,omitempty"`
+
 	// PlanningTimeout is the maximum time to wait for epic planning (PlanEpic).
 	// If planning exceeds this timeout, execution falls through to direct (non-epic) mode.
 	// Default: 2m
@@ -365,6 +370,20 @@ type BackendConfig struct {
 	// Version is the Pilot binary version, set at startup from the build-time version var.
 	// Used for feature matrix updates and execution reports. Not a config file field.
 	Version string `yaml:"-"`
+}
+
+// EffectiveStallTimeout returns the stall detection threshold, applying the
+// default of 3 minutes when StallTimeoutMs is zero or unset.
+// Returns 0 only when StallTimeoutMs is explicitly set to a negative value,
+// which disables stall detection entirely.
+func (c *BackendConfig) EffectiveStallTimeout() time.Duration {
+	if c == nil || c.StallTimeoutMs == 0 {
+		return 3 * time.Minute
+	}
+	if c.StallTimeoutMs < 0 {
+		return 0
+	}
+	return time.Duration(c.StallTimeoutMs) * time.Millisecond
 }
 
 // EffectiveHeartbeatTimeout returns the heartbeat timeout to use, applying

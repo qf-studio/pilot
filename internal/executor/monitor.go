@@ -18,6 +18,7 @@ const (
 	StatusCompleted TaskStatus = "completed"
 	StatusFailed    TaskStatus = "failed"
 	StatusCancelled TaskStatus = "cancelled"
+	StatusStalled   TaskStatus = "stalled"
 )
 
 // TaskState holds the current state of a task
@@ -145,6 +146,20 @@ func (m *Monitor) Fail(taskID, errorMsg string) {
 		state.CompletedAt = &now
 		state.Phase = "Failed"
 		state.Error = errorMsg
+	}
+}
+
+// Stall marks a task as stalled (no event activity for stall_timeout). TASK-308.
+func (m *Monitor) Stall(taskID, reason string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if state, ok := m.tasks[taskID]; ok {
+		now := time.Now()
+		state.Status = StatusStalled
+		state.CompletedAt = &now
+		state.Phase = "Stalled"
+		state.Error = reason
 	}
 }
 
