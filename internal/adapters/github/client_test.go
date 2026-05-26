@@ -3469,3 +3469,78 @@ func TestListPullRequests_SinglePage(t *testing.T) {
 		t.Errorf("server called %d times, want 1 (single page should stop)", calls)
 	}
 }
+
+// fastRetryOpts returns retry options suitable for tests: no real sleeping.
+func fastRetryOpts(maxRetries int) RetryOptions {
+	return RetryOptions{
+		MaxRetries: maxRetries,
+		BaseDelay:  1 * time.Millisecond,
+		MaxDelay:   5 * time.Millisecond,
+	}
+}
+
+// TestDoRequest_RetryOn429 verifies that doRequest automatically retries on 429
+// and succeeds when the server eventually returns 200.
+func TestDoRequest_RetryOn429(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls == 1 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"message":"rate limited"}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"number":42,"title":"Test"}`))
+	}))
+	defer server.Close()
+
+	opts := fastRetryOpts(3)
+	client := &Client{
+		token:      testutil.FakeGitHubToken,
+		baseURL:    server.URL,
+		httpClient: server.Client(),
+		retryOpts:  &opts,
+	}
+
+	issue, err := client.GetIssue(context.Background(), "owner", "repo", 42)
+	if err != nil {
+		t.Fatalf("GetIssue() unexpected error after retry: %v", err)
+	}
+	if issue.Number != 42 {
+		t.Errorf("issue.Number = %d, want 42", issue.Number)
+	}
+	if calls != 2 {
+		t.Errorf("server called %d times, want 2 (1 rate-limit + 1 success)", calls)
+	}
+}
+
+// TestDoRequest_ExhaustsRetries verifies that doRequest returns an error after
+// all retries are exhausted on persistent 429.
+func TestDoRequest_ExhaustsRetries(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"message":"rate limited"}`))
+	}))
+	defer server.Close()
+
+	opts := fastRetryOpts(2)
+	client := &Client{
+		token:      testutil.FakeGitHubToken,
+		baseURL:    server.URL,
+		httpClient: server.Client(),
+		retryOpts:  &opts,
+	}
+
+	_, err := client.GetIssue(context.Background(), "owner", "repo", 42)
+	if err == nil {
+		t.Fatal("expected error after exhausting retries, got nil")
+	}
+	// 1 initial + 2 retries = 3 total calls
+	if calls != 3 {
+		t.Errorf("server called %d times, want 3 (1 initial + 2 retries)", calls)
+	}
+}

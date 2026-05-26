@@ -227,6 +227,36 @@ func TestDefaultRetryOptions(t *testing.T) {
 	}
 }
 
+// TestWithRetry_RetryAfterCappedAtMaxDelay verifies that a Retry-After value
+// larger than MaxDelay is capped rather than honored verbatim.
+func TestWithRetry_RetryAfterCappedAtMaxDelay(t *testing.T) {
+	calls := 0
+	start := time.Now()
+
+	_, _ = WithRetry(context.Background(), func() (string, error) {
+		calls++
+		if calls == 1 {
+			// Error message that triggers extractRetryAfter to return 999s
+			return "", errors.New("API error (status 429): rate limited, retry after 999 seconds")
+		}
+		return "ok", nil
+	}, RetryOptions{
+		MaxRetries: 3,
+		BaseDelay:  1 * time.Millisecond,
+		MaxDelay:   10 * time.Millisecond, // cap at 10ms, not 999s
+	})
+
+	elapsed := time.Since(start)
+	// If Retry-After 999s was honored without cap, this would sleep ~999s.
+	// With cap at 10ms, the total should be well under 1s.
+	if elapsed > 500*time.Millisecond {
+		t.Errorf("Retry-After was not capped: elapsed %v, expected <500ms", elapsed)
+	}
+	if calls != 2 {
+		t.Errorf("expected 2 calls, got %d", calls)
+	}
+}
+
 func TestWithRetry_ExponentialBackoff(t *testing.T) {
 	// Test that delays increase exponentially (approximately)
 	delays := []time.Duration{}

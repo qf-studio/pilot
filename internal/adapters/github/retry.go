@@ -2,6 +2,7 @@ package github
 
 import (
 	"context"
+	"log/slog"
 	"regexp"
 	"strconv"
 	"strings"
@@ -52,10 +53,20 @@ func WithRetry[T any](ctx context.Context, op func() (T, error), opts RetryOptio
 			delay = opts.MaxDelay
 		}
 
-		// Check for Retry-After header in rate limit errors
+		// Check for Retry-After header in rate limit errors; cap at MaxDelay.
 		if retryAfter := extractRetryAfter(lastErr); retryAfter > 0 {
 			delay = retryAfter
+			if delay > opts.MaxDelay {
+				delay = opts.MaxDelay
+			}
 		}
+
+		slog.Warn("github API request retrying",
+			"attempt", attempt+1,
+			"max_retries", opts.MaxRetries,
+			"delay_ms", delay.Milliseconds(),
+			"error", lastErr,
+		)
 
 		// Wait with context cancellation support
 		select {
