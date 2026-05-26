@@ -118,7 +118,7 @@ Disable via config: `executor.navigator.auto_init: false`
 
 ## Current State
 
-**Current Version:** v2.150.0 | **323 features working**
+**Current Version:** v2.151.0 | **323 features working**
 
 **Recent (v2.149.4, May 25 2026):** Wave 1 hardening sweep + Linear webhook signature verification (from `.agent/audits/AUDIT-2026-05-25.md`).
 - `fix(quality)`: Default `quality.parallel` → `false`. Eliminates the shared `~/.cache/go-build` / `~/.cache/golangci-lint` race that produced 11 spurious gate failures in 3h at the 2026-05-21 workshop. Opt-back-in via explicit `quality.parallel: true`. New SOP: `.agent/sops/quality/parallel-gate-cache-race.md`. (TASK-289 / #3057)
