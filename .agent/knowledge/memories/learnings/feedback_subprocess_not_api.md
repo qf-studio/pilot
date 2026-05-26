@@ -21,6 +21,6 @@ Read `claudeCmd` from `config.ClaudeCode.Command` (defaults to `"claude"`). Use 
 
 **How to apply**: When implementing a new LLM primitive — or auditing an existing one — grep for `api.anthropic.com` and `os.Getenv("ANTHROPIC_API_KEY")` in `internal/executor/`. Any hit outside `bench/` is suspect. The right pattern is `cmdRunner func(ctx, args ...string) ([]byte, error)` field with a default subprocess runner and a test-injectable mock.
 
-**Known violators still pending fix (as of 2026-05-07)**: `internal/executor/subtask_parser.go:15-40` has the same direct-API bug. Track as TASK-48.
+**Known violators still pending fix (as of 2026-05-07)**: `internal/executor/subtask_parser.go:15-40` was flagged but the file still exists as of v2.150.0 — verify with `grep api.anthropic.com internal/executor/subtask_parser.go` before assuming it is fixed. Track under TASK-48 if not yet resolved.
 
 **Verification**: After any LLM primitive change, file a test issue that should trigger it and verify in `executions` table (e.g., `status='declined-preflight'` or similar). Don't just read code — confirm runtime behavior. The TASK-45 silent-disable went undetected from ship to next-day testing.

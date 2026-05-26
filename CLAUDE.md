@@ -66,8 +66,6 @@ gh pr view <number> && gh pr merge <number>
 Pilot-executor sessions are the exception: they MUST write code, commit,
 and push — that's their entire job.
 
-**Pilot runs in a separate terminal** (`pilot start --telegram --github`) and auto-picks issues labeled `pilot`.
-
 ---
 
 ## Memory: Navigator only (auto-memory disabled for this project)
@@ -98,10 +96,10 @@ and push — that's their entire job.
 ## Project Overview
 
 Pilot is an autonomous AI development pipeline that:
-- Receives tickets from Linear/Jira/Asana
-- Plans and executes implementation using Claude Code
-- Creates PRs and notifies via Slack
-- Learns patterns across projects
+- Receives tickets from GitHub, Linear, GitLab, Azure DevOps, Jira, Asana, Slack, Discord, Telegram, Plane
+- Plans and executes implementation using Claude Code, Qwen Code, or OpenCode
+- Creates PRs, monitors CI, and notifies via Slack/Telegram
+- Learns patterns from PR reviews and applies them to future tasks
 
 ## Quick Start
 
@@ -142,7 +140,7 @@ pilot/
 │   ├── config/          # YAML config
 │   ├── dashboard/       # TUI (bubbletea)
 │   └── testutil/        # Safe test token constants
-├── docs/                # Nextra v2 documentation site
+├── docs/                # Nextra v4 documentation site
 └── .agent/              # Navigator docs
 ```
 
@@ -193,9 +191,11 @@ make check-secrets  # Check for secret patterns in tests
 
 Config file: `~/.pilot/config.yaml`
 
-Required env vars:
-- `LINEAR_API_KEY`
-- `SLACK_BOT_TOKEN`
+Per-adapter env vars (only needed when adapter is enabled):
+- `LINEAR_API_KEY` — Linear adapter
+- `SLACK_BOT_TOKEN` — Slack adapter
+- `GITHUB_TOKEN` — GitHub adapter
+- `TELEGRAM_BOT_TOKEN` — Telegram adapter
 
 ## Commit Guidelines
 
@@ -221,9 +221,8 @@ Documentation in `.agent/`:
 ## Forbidden Actions
 
 - ❌ No secrets in code
-- ❌ No package.json modifications without approval
-- ❌ No bulk doc loading (use Navigator lazy loading)
 - ❌ No Claude Code mentions in commits
+- ❌ No bulk doc loading (use Navigator lazy loading)
 
 ## Development Workflow
 
@@ -236,24 +235,8 @@ Documentation in `.agent/`:
 
 ## Current Status
 
-**Version:** v2.53.0 | **316 features implemented**
-
-**Core:**
-- ✅ Task execution with Navigator integration
-- ✅ Autopilot: CI monitor, auto-merge, auto-rebase, feedback loop, tag-only release
-- ✅ Intent judge in execution pipeline
-- ✅ Rich PR comments with execution metrics
-- ✅ Epic decomposition with sub-issue PR wiring
-- ✅ Self-review, quality gates, effort routing
-- ✅ Pattern learning from PR reviews
-- ✅ GitHub Projects V2 board sync
-- ✅ Execution mode auto-switching (scope-based)
-
-**Adapters:** Telegram (voice, images, 5 modes), GitHub, GitLab, Azure DevOps, Linear, Jira, Slack, Discord, Plane
-
-**Dashboard:** Sparkline cards, SQLite persistence, epic-aware history, state-aware queue, hot upgrade, git graph
-
-**Docs:** Nextra v4 at pilot.quantflow.studio, auto-deploy via GitLab CI
+See `.agent/DEVELOPMENT-README.md` "Current State" for the authoritative version + feature list.
+Docs version source of truth: `docs/lib/version.ts`.
 
 ## Documentation Maintenance
 

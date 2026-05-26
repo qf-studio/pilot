@@ -1,4 +1,5 @@
 import { Callout } from 'nextra/components'
+import { CURRENT_VERSION } from '@/lib/version'
 
 # Dashboard TUI
 
@@ -15,7 +16,7 @@ Looking for a graphical interface? The [Desktop App](/deployment/desktop-app) pr
 pilot start --dashboard
 
 # Combined with other modes
-pilot start --github --autopilot=dev --dashboard
+pilot start --github --env=dev --dashboard
 pilot start --telegram --dashboard
 ```
 
@@ -203,11 +204,11 @@ When the terminal is narrow (less than ~90 columns) and the git graph is visible
 
 ## Hot Upgrade
 
-When a new Pilot version is detected, an orange notification appears:
+When a new Pilot version is detected (latest: **{CURRENT_VERSION}**), an orange notification appears:
 
 ```
 ╭─ ^ UPDATE ──────────────────────────────────────────────────────╮
-│  v2.55.0 -> v2.102.2 available                                  │
+│  v2.149.0 -> v2.150.0 available                                 │
 ╰─────────────────────────────────────────────────────────────────╯
                                                          u: upgrade
 ```
@@ -216,7 +217,7 @@ Press `u` to upgrade in-place. Progress is shown during download:
 
 ```
 ╭─ * UPGRADING ───────────────────────────────────────────────────╮
-│  Installing v2.102.2... [████████████░░░░░░] 65%                │
+│  Installing v2.150.0... [████████████░░░░░░] 65%                │
 ╰─────────────────────────────────────────────────────────────────╯
 ```
 

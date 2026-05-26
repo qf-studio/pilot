@@ -1,6 +1,6 @@
 # Pilot Feature Matrix
 
-**Last Updated:** 2026-05-25 (v2.53.0)
+**Last Updated:** 2026-05-26 (v2.150.0)
 
 ## Legend
 
@@ -37,9 +37,9 @@
 | Navigator auto-init | ✅ | executor | - | `executor.navigator.auto_init` | Auto-creates .agent/ on first task execution (v0.33.16) |
 | Preflight checks | ✅ | executor | - | - | Claude available, git clean, git repo validation (v0.48.0) |
 | Smart retry | ✅ | executor | - | - | Error-type-specific retry with exponential backoff (v0.51.0) |
-| OOM smart-retry | ✅ | executor | - | `executor.retry.oom_killed` | Retry OOM-killed subprocess once after 10s (GH-3028, v2.147.0) |
-| RSS telemetry | ✅ | executor | - | `executor.subprocess_limits` | Peak/final RSS sampled per execution; stored in DB + shown in history (GH-3028, v2.147.0) |
-| Subprocess memory cap | ✅ | executor | - | `executor.subprocess_limits.enabled` | RLIMIT_AS via prlimit64 on Linux (default off; tune after RSS baseline) (GH-3028, v2.147.0) |
+| OOM smart-retry | ✅ | executor | - | `executor.retry.oom_killed` | Retry OOM-killed subprocess once after 10s (GH-3028, v2.148.0) |
+| RSS telemetry | ✅ | executor | - | `executor.subprocess_limits` | Peak/final RSS sampled per execution; stored in DB + shown in history (GH-3028, v2.148.0) |
+| Subprocess memory cap | ✅ | executor | - | `executor.subprocess_limits.enabled` | RLIMIT_AS via prlimit64 on Linux (default off; tune after RSS baseline) (GH-3028, v2.148.0) |
 | Acceptance criteria | ✅ | executor | - | - | Extract from issue body, include in prompts (v0.51.0) |
 | Worktree isolation | ✅ | executor | - | `executor.use_worktree` | Execute in git worktree, allows uncommitted changes (v0.53.2) |
 | Signal parser v2 | ✅ | executor | - | - | JSON pilot-signal blocks with validation (v0.56.0) |
@@ -460,7 +460,23 @@
 | Self-Management | 10 | 0 | 0 | 0 |
 | **Total** | **316** | **0** | **0** | **0** |
 
+> Note: Feature count above reflects the v2.53.0 baseline. v2.149.x additions are listed below.
+
 ---
+
+## Recent Additions (v2.149.x — v2.150.0)
+
+| Feature | Version | Notes |
+|---------|---------|-------|
+| Quality gate `parallel` defaults to `false` | v2.149.4 | Eliminates shared go-build/golangci-lint cache race (TASK-289 / #3057) |
+| Config file written mode `0600` | v2.149.4 | Was `0644`; file holds API keys (TASK-290 / #3058) |
+| Branch-aware post-CI monitoring | v2.149.4 | `getMainBranchSHA` reads resolved branch from config (TASK-291 / #3059) |
+| Linear webhook Ed25519 signature verification | v2.149.4 | `VerifyLinearSignature` + gateway wiring; YAML decode pending (TASK-295 / #3060) |
+| Linear webhook_public_key YAML wiring | v2.149.5 | `cmd/pilot/main.go` → `gateway.Config.LinearWebhookPublicKey` (GH-3066) |
+| Secret pattern scanner broadened | v2.149.4 | All tracked files (1086); allowlist for 4 educational files (TASK-299 / #3062) |
+| Repo allowlist Phase B (adapter) | v2.149.0 | `CreatePilotIssue` validates against `IssueAllowlist` (#3047) |
+| Subprocess OOM hardening | v2.148.0 | OOM retry, RSS telemetry, RLIMIT_AS cap (GH-3028 / #3046) |
+| Poller skip-by-reason counters | v2.150.0 | `pilot_poller_skipped/dispatched/deferred` Prometheus counters (TASK-293 / #3064) |
 
 ## Usage Patterns
 

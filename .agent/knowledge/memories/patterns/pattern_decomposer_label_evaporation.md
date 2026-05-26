@@ -4,10 +4,10 @@ description: Sub-issue creation in epic.go hardcodes ["pilot"] — no parent lab
 type: project
 originSessionId: 89fe3897-6bc2-4725-a1f2-8635b79860b3
 ---
-Both decomposer sub-issue creation paths hardcode the label set to `["pilot"]`:
+Both decomposer sub-issue creation paths hardcode `"pilot"` as the first label. As of v2.150.0 these lines propagate parent labels too via `filterPropagatableLabels`:
 
-- `internal/executor/epic.go:883` — adapter path: `r.subIssueCreator.CreateIssue(ctx, parentID, title, body, []string{"pilot"})`
-- `internal/executor/epic.go:1003` — GitHub CLI path: `args := [..., "--label", "pilot"]`
+- `internal/executor/epic.go:1138` — adapter path: `subLabels := append([]string{"pilot"}, filterPropagatableLabels(...))`
+- `internal/executor/epic.go:1258` — GitHub CLI path: same pattern with `--label` args appended
 
 **Why:** No parent label propagates to children — including `no-decompose`, `area:*`, `priority:*`, anything. The runner's opt-out at `runner.go:1214-1216` checks `task.Labels`; sub-issues filed without `no-decompose` get re-classified as fresh epics by the poller, and the decomposer fires again. Once cascading starts, every level loses the opt-out further.
 

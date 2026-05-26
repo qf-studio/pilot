@@ -1,6 +1,6 @@
 # Pilot Architecture
 
-**Last Updated:** 2026-03-04 (v2.56.0 - Multi-backend, dashboard, environment pipelines)
+**Last Updated:** 2026-05-26 (v2.150.0)
 
 ## System Overview
 
@@ -371,7 +371,7 @@ Automatic GraphQL board sync with 3-column layout:
 - Lazy ID resolution (org-first discovery)
 - Concurrent issue moves
 - Custom field updates
-- Key files: `internal/autopilot/board_sync.go`
+- Key files: `internal/adapters/github/project_board.go`
 
 ## Key Integration Points
 
@@ -643,7 +643,10 @@ git tag v2.X.Y && git push origin v2.X.Y  # GoReleaser CI handles rest
 | v2.25.0 | Pattern learning, auto-rebase, Discord | 2026-02-25 |
 | v2.30.0 | Common adapter registry, board sync | 2026-02-26 |
 | v2.53.0 | Merged PR guard, CI error patterns | 2026-02-28 |
-| v2.56.0 | Current (this doc) | 2026-03-04 |
+| v2.56.0 | Multi-backend, dashboard, environment pipelines | 2026-03-04 |
+| v2.148.0 | Subprocess OOM hardening (RSS telemetry, RLIMIT_AS, retry) | 2026-05-21 |
+| v2.149.4 | Security hardening sweep: config 0600, branch-aware CI, Linear Ed25519 | 2026-05-25 |
+| v2.150.0 | Poller metrics, Linear webhook_public_key wiring | 2026-05-26 |
 
 ## Appendix: Full Package Audit
 

@@ -2,6 +2,7 @@
 name: git reset --hard in automated post-task sync silently destroys local commits
 description: syncMainBranch() uses git reset --hard origin/main after every task. When push propagation to GitHub is slower than the immediately-following fetch+reset, local commits are silently destroyed. Fix: replace with merge --ff-only.
 type: pitfall
+resolved: 2026-05-20 (v2.146.7)
 incident: 2026-05-20 gitnation-companion-pilot workshop demo (TASK-283 / GH-3018)
 severity: critical
 files:
@@ -9,6 +10,8 @@ files:
   - internal/executor/epic.go:1498
   - internal/executor/runner.go:3258
 ---
+
+> **Resolved in v2.146.7** — Fix shipped in TASK-283 / GH-3018. See SOP: `.agent/sops/git/never-reset-hard-in-automated-flows.md`. This file is kept as historical context only.
 
 **Symptom**: Pilot completes a task, commits to `main`, pushes, then `main` rewinds and the just-committed work is gone. Only recoverable via `git reflog` within 90 days.
 

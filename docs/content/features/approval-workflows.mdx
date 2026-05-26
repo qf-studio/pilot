@@ -177,7 +177,7 @@ Pilot polls for review status at a configurable interval (default: 30s). Webhook
 
 ```yaml
 # GitHub approval is automatic when using --github flag
-pilot start --github --autopilot=prod
+pilot start --github --env=prod
 ```
 
 No additional configuration needed — Pilot monitors PR reviews on any PR it creates.
@@ -207,7 +207,7 @@ Task → Execute → PR → CI Passes → Await Approval → Merge
 Start Pilot with approval-gated production mode:
 
 ```bash
-pilot start --github --autopilot=prod
+pilot start --github --env=prod
 ```
 
 When CI passes on a PR in `prod` mode:

@@ -1,4 +1,5 @@
 import { Callout, Tabs } from 'nextra/components'
+import { CURRENT_VERSION } from '@/lib/version'
 
 # Installation
 
@@ -43,9 +44,11 @@ cp ./bin/pilot ~/.local/bin/pilot
 
 ## Verify Installation
 
+The current release is **{CURRENT_VERSION}**. After installing, confirm it matches:
+
 ```bash
 pilot --version
-# pilot version v2.102.2
+# pilot version vX.Y.Z
 ```
 
 Run the health check to verify all dependencies:
