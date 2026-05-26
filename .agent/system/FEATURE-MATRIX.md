@@ -96,7 +96,6 @@
 | CI-specific error matchers | ✅ | memory | - | - | Add CI-specific error matchers to PatternExtractor (v2.47.0, PR #1973) |
 | CI pattern confidence boost | ✅ | memory | - | - | Confidence boosting for recurring CI patterns (v2.48.0, PR #1975) |
 | CI log learning pipeline | ✅ | autopilot | - | - | Wire CI log learning into autopilot controller and feedback loop (v2.50.0, PR #1977) |
-| Autopilot orphan PR reconciler | ✅ | autopilot | - | - | 60s reconciliation loop registers pilot/ PRs missed by OnPRCreated; ListPullRequests paginated to 100/page (v2.153.0, GH-3113, TASK-302) |
 | Expanded pattern extractors (11 categories) | ✅ | memory | - | - | Added API design, concurrency, config wiring, test patterns, performance, security matchers (v2.54.0, GH-1989) |
 
 ## Input Adapters
@@ -564,7 +563,7 @@ quality:
 | Feature | Version | Package | Notes |
 |---------|---------|---------|-------|
 | Poller skip-by-reason counters | v2.150.0 | adapters/github | `pilot_poller_skipped/dispatched/deferred` Prometheus counters (TASK-293 / GH-3064) |
-| `WithRetry` centralized in `doRequest` | v2.150.0 | adapters/github | All GitHub client methods now get retry; `RecordAPIError` wired (TASK-294 / GH-3065) |
+| `WithRetry` centralized in `doRequest` | v2.152.0 | adapters/github | All 51 GitHub client methods get uniform retry via `doRequest`; Retry-After capped at MaxDelay (TASK-294-redo / GH-3114) |
 | Linear webhook Ed25519 verification | v2.149.4 | gateway + adapters/linear | `VerifyLinearSignature`; YAML wiring added in v2.151.0 (TASK-295 / GH-3060, GH-3066) |
 | `quality.parallel` defaults to `false` | v2.149.4 | executor | Eliminates shared build-cache race (TASK-289 / GH-3057) |
 | Config file mode 0600 | v2.149.4 | config | `~/.pilot/config.yaml` world-readable fixed (TASK-290 / GH-3058) |

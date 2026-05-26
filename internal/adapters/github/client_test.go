@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -3467,5 +3468,99 @@ func TestListPullRequests_SinglePage(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Errorf("server called %d times, want 1 (single page should stop)", calls)
+	}
+}
+
+// TestDoRequest_RetryOn429 verifies that doRequest retries once on 429 and succeeds.
+func TestDoRequest_RetryOn429(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls == 1 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte("rate limited"))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(Issue{Number: 1})
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	// Use fast retry so the test doesn't sleep for 1s
+	client.retryOpts = RetryOptions{MaxRetries: 3, BaseDelay: 1 * time.Millisecond, MaxDelay: 10 * time.Millisecond}
+
+	var issue Issue
+	err := client.doRequest(context.Background(), "GET", "/repos/owner/repo/issues/1", nil, &issue)
+	if err != nil {
+		t.Fatalf("doRequest() error = %v, want nil", err)
+	}
+	if calls != 2 {
+		t.Errorf("server called %d times, want 2 (1 initial + 1 retry)", calls)
+	}
+	if issue.Number != 1 {
+		t.Errorf("issue.Number = %d, want 1", issue.Number)
+	}
+}
+
+// TestDoRequest_NoRetryOn404 verifies that doRequest does not retry non-retriable errors.
+func TestDoRequest_NoRetryOn404(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte("not found"))
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client.retryOpts = RetryOptions{MaxRetries: 3, BaseDelay: 1 * time.Millisecond, MaxDelay: 10 * time.Millisecond}
+
+	err := client.doRequest(context.Background(), "GET", "/repos/owner/repo/issues/999", nil, nil)
+	if err == nil {
+		t.Fatal("doRequest() expected error for 404, got nil")
+	}
+	if calls != 1 {
+		t.Errorf("server called %d times, want 1 (no retry on 404)", calls)
+	}
+}
+
+// TestDoRequest_ReplayBodyOnRetry verifies that POST body is replayed correctly on retry.
+func TestDoRequest_ReplayBodyOnRetry(t *testing.T) {
+	calls := 0
+	var receivedBodies []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		buf := new(strings.Builder)
+		_, _ = io.Copy(buf, r.Body)
+		receivedBodies = append(receivedBodies, buf.String())
+		if calls == 1 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(Comment{ID: 42, Body: "hello"})
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	client.retryOpts = RetryOptions{MaxRetries: 3, BaseDelay: 1 * time.Millisecond, MaxDelay: 10 * time.Millisecond}
+
+	var comment Comment
+	err := client.doRequest(context.Background(), "POST", "/repos/owner/repo/issues/1/comments",
+		map[string]string{"body": "hello"}, &comment)
+	if err != nil {
+		t.Fatalf("doRequest() error = %v", err)
+	}
+	if calls != 2 {
+		t.Errorf("server called %d times, want 2", calls)
+	}
+	// Both attempts should have sent the same body
+	for i, body := range receivedBodies {
+		if !strings.Contains(body, "hello") {
+			t.Errorf("attempt %d body %q does not contain 'hello'", i+1, body)
+		}
 	}
 }
