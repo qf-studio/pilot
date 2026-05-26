@@ -23,10 +23,11 @@ func newTestHotUpgrader(t *testing.T, tc TaskChecker) (*HotUpgrader, string) {
 	statePath := filepath.Join(dir, "upgrade-state.json")
 
 	u := &Upgrader{
-		currentVersion: "1.0.0",
-		httpClient:     &http.Client{Timeout: 5 * time.Second},
-		binaryPath:     binPath,
-		backupPath:     binPath + BackupSuffix,
+		currentVersion:      "1.0.0",
+		httpClient:          &http.Client{Timeout: 5 * time.Second},
+		binaryPath:          binPath,
+		backupPath:          binPath + BackupSuffix,
+		prepareForExecution: func(string) error { return nil },
 	}
 
 	graceful := &GracefulUpgrader{

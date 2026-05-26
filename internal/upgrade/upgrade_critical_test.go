@@ -221,7 +221,7 @@ func TestInstallBinary_DirectBinary(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	u := &Upgrader{binaryPath: binPath}
+	u := &Upgrader{binaryPath: binPath, prepareForExecution: func(string) error { return nil }}
 	if err := u.installBinary(srcPath); err != nil {
 		t.Fatalf("installBinary() error = %v", err)
 	}
@@ -244,7 +244,7 @@ func TestInstallBinary_TarGz(t *testing.T) {
 
 	createTestTarGz(t, tarPath, "pilot", []byte("tar-binary-content"))
 
-	u := &Upgrader{binaryPath: binPath}
+	u := &Upgrader{binaryPath: binPath, prepareForExecution: func(string) error { return nil }}
 	if err := u.installBinary(tarPath); err != nil {
 		t.Fatalf("installBinary() error = %v", err)
 	}
@@ -787,10 +787,11 @@ func TestUpgrade_EndToEnd(t *testing.T) {
 	defer server.Close()
 
 	u := &Upgrader{
-		currentVersion: "1.0.0",
-		httpClient:     server.Client(),
-		binaryPath:     binPath,
-		backupPath:     backupPath,
+		currentVersion:      "1.0.0",
+		httpClient:          server.Client(),
+		binaryPath:          binPath,
+		backupPath:          backupPath,
+		prepareForExecution: func(string) error { return nil },
 	}
 
 	release := &Release{
@@ -866,10 +867,11 @@ func TestUpgrade_WithTarGzAsset(t *testing.T) {
 	defer server.Close()
 
 	u := &Upgrader{
-		currentVersion: "1.0.0",
-		httpClient:     server.Client(),
-		binaryPath:     binPath,
-		backupPath:     backupPath,
+		currentVersion:      "1.0.0",
+		httpClient:          server.Client(),
+		binaryPath:          binPath,
+		backupPath:          backupPath,
+		prepareForExecution: func(string) error { return nil },
 	}
 
 	tarName := fmt.Sprintf("pilot-%s-%s.tar.gz", runtime.GOOS, runtime.GOARCH)

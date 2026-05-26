@@ -6,10 +6,27 @@
 package upgrade
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"syscall"
+	"time"
 )
+
+// runSmokeTest verifies the new binary starts cleanly before we exec into it.
+// Overridable in tests.
+var runSmokeTest = func(binaryPath string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := exec.CommandContext(ctx, binaryPath, "--version").Run(); err != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("timed out after 5s: %w", ctx.Err())
+		}
+		return err
+	}
+	return nil
+}
 
 // RestartWithNewBinary replaces the current process with the new binary.
 // This uses syscall.Exec which replaces the current process in-place,
@@ -46,6 +63,11 @@ func RestartWithNewBinary(binaryPath string, args []string, previousVersion stri
 	// Add previous version for upgrade notification
 	if previousVersion != "" {
 		env = append(env, fmt.Sprintf("PILOT_PREVIOUS_VERSION=%s", previousVersion))
+	}
+
+	// Verify the new binary boots before replacing the process.
+	if err := runSmokeTest(binaryPath); err != nil {
+		return fmt.Errorf("pre-exec smoke test failed: %w", err)
 	}
 
 	// Replace current process with the new binary
