@@ -1255,9 +1255,16 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 		r.reportProgress(task.ID, "Worktree", 2, "Worktree ready")
 	}
 
-	// Ensure worktree cleanup on exit (handles panic, early return, success)
+	// Ensure worktree cleanup on exit (handles panic, early return, success).
+	// before_remove hook fires just before worktree teardown (TASK-305).
+	var beforeRemoveHookFn func()
 	if cleanupWorktree != nil {
-		defer cleanupWorktree()
+		defer func() {
+			if beforeRemoveHookFn != nil {
+				beforeRemoveHookFn()
+			}
+			cleanupWorktree()
+		}()
 	}
 
 	// GH-915: Run pre-flight checks to catch environmental issues early
@@ -1702,6 +1709,20 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 		workflowMaxTurns = repoWorkflow.Agent.MaxTurns
 	}
 
+	// TASK-305: fire after_create and wire before_remove now that the workflow is loaded.
+	var hookEnv []string
+	if repoWorkflow != nil {
+		hookEnv = append(os.Environ(), "PILOT_TASK_ID="+task.ID)
+		runWorkflowHook(ctx, "after_create", repoWorkflow.Hooks.AfterCreate, executionPath, hookEnv, log)
+		if len(repoWorkflow.Hooks.BeforeRemove) > 0 {
+			scripts := repoWorkflow.Hooks.BeforeRemove
+			env := hookEnv
+			beforeRemoveHookFn = func() {
+				runWorkflowHook(context.Background(), "before_remove", scripts, executionPath, env, log)
+			}
+		}
+	}
+
 	// Build the prompt
 	prompt := r.BuildPrompt(task, executionPath)
 
@@ -1827,6 +1848,11 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 	// Execute via backend with watchdog (GH-882)
 	// Watchdog kills subprocess after 2x timeout as a safety net for processes
 	// that ignore context cancellation.
+	// TASK-305: before_run hook fires just before agent execution.
+	if repoWorkflow != nil {
+		runWorkflowHook(ctx, "before_run", repoWorkflow.Hooks.BeforeRun, executionPath, hookEnv, log)
+	}
+
 	watchdogTimeout := 2 * timeout
 	allowedTools, mcpConfigPath := r.executionToolOptions()
 	backendResult, err := r.backend.Execute(stallExecutionCtx, ExecuteOptions{
@@ -1883,6 +1909,11 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 	// Stop stall watchdog and release stall context resources.
 	close(stallDone)
 	stallCancel()
+
+	// TASK-305: after_run hook fires as soon as the agent finishes (success or error).
+	if repoWorkflow != nil {
+		runWorkflowHook(ctx, "after_run", repoWorkflow.Hooks.AfterRun, executionPath, hookEnv, log)
+	}
 
 	// Transfer stallDetected flag to progressState for post-Execute checks.
 	if stallDetectedFlag.Load() {
@@ -4731,4 +4762,18 @@ func (r *Runner) getPostExecutionSummary(ctx context.Context) (*PostExecutionSum
 	}
 
 	return &summary, nil
+}
+
+// runWorkflowHook executes a workflow lifecycle hook, logging output and warning on failure.
+// It is a no-op when scripts is empty.
+func runWorkflowHook(ctx context.Context, name string, scripts workflow.HookValue, dir string, env []string, log *slog.Logger) {
+	if len(scripts) == 0 {
+		return
+	}
+	logFn := func(output string) {
+		log.Info("hook output", slog.String("hook", name), slog.String("output", strings.TrimSpace(output)))
+	}
+	if err := workflow.RunHook(ctx, name, scripts, dir, env, 0, logFn); err != nil {
+		log.Warn("workflow hook failed", slog.String("hook", name), slog.Any("error", err))
+	}
 }
