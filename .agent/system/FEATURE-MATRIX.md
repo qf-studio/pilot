@@ -51,6 +51,8 @@
 | Claude Code hooks v2 | ✅ | executor | - | - | Matcher-based hook format for CC 2.1.42+ (v1.14.0, GH-1366) |
 | Claude Code hooks v3 | ✅ | executor | - | - | Regex matcher string, Stop hooks no matcher field (v1.50.0) |
 | Stale hook cleanup | ✅ | executor | - | - | Cleanup on startup regardless of hooks config (v2.10.1, GH-1749) |
+| Per-repo workflow.yaml | ✅ | executor/workflow | - | - | `.pilot/workflow.yaml` overrides max_turns, reasoning_effort, policy, appends prompt (TASK-304, GH-3203) |
+| Workflow lifecycle hooks | ✅ | executor/workflow | - | - | `after_create`, `before_run`, `after_run`, `before_remove` bash scripts in `.pilot/workflow.yaml` (TASK-305, GH-3203) |
 | Pre-push lint gate | ✅ | executor | - | - | Run golangci-lint before creating PRs (v1.15.0, GH-1376) |
 | Navigator context bridge | ✅ | executor | - | - | Load project context (key files, components) into execution prompt (v1.18.0, GH-1387) |
 | Navigator docs auto-update | ✅ | executor | - | - | Auto-update feature matrix + knowledge capture post-execution (v1.19.0, GH-1388) |
@@ -563,7 +565,7 @@ quality:
 | Feature | Version | Package | Notes |
 |---------|---------|---------|-------|
 | Poller skip-by-reason counters | v2.150.0 | adapters/github | `pilot_poller_skipped/dispatched/deferred` Prometheus counters (TASK-293 / GH-3064) |
-| `WithRetry` centralized in `doRequest` | v2.152.0 | adapters/github | All 51 GitHub client methods get uniform retry via `doRequest`; Retry-After capped at MaxDelay (TASK-294-redo / GH-3114) |
+| `WithRetry` centralized in `doRequest` | v2.150.0 | adapters/github | All GitHub client methods now get retry; `RecordAPIError` wired (TASK-294 / GH-3065) |
 | Linear webhook Ed25519 verification | v2.149.4 | gateway + adapters/linear | `VerifyLinearSignature`; YAML wiring added in v2.151.0 (TASK-295 / GH-3060, GH-3066) |
 | `quality.parallel` defaults to `false` | v2.149.4 | executor | Eliminates shared build-cache race (TASK-289 / GH-3057) |
 | Config file mode 0600 | v2.149.4 | config | `~/.pilot/config.yaml` world-readable fixed (TASK-290 / GH-3058) |
@@ -571,4 +573,4 @@ quality:
 | Repo allowlist Phase B | v2.149.0 | adapters/github | `CreatePilotIssue` validates against allowlist (GH-3047) |
 | `safeGo()` panic-recovery wrapper | v2.150.x | executor + adapters | All goroutine spawns wrapped (TASK-292) |
 | `IsTaskShipped` predicate | v2.151.x | autopilot | Cross-site invariant preventing double-dispatch (TASK-296 / GH-3091) |
-| Ghost-SHA guard | v2.155.x | executor | `commitSHAIsNew` blocks parent-SHA ghost-closes; `IsTaskShipped` requires error="" for SHA-only trust; orphan-recovery divergence resolved (TASK-300 / GH-3126) |
+| Ghost-SHA guard | v2.151.x | executor | Fail-closed when commit_sha already on base branch (TASK-300 / GH-3099) |

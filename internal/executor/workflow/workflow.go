@@ -45,13 +45,13 @@ type PolicyOverrides struct {
 	PRTemplate string `yaml:"pr_template,omitempty"`
 }
 
-// HookConfig holds hook definitions. Parsed for forward-compatibility;
-// hook execution is implemented in TASK-305.
+// HookConfig holds lifecycle hook scripts for the workflow.
+// Each field accepts null, a single string, or a list of strings in YAML.
 type HookConfig struct {
-	AfterCreate  interface{} `yaml:"after_create,omitempty"`
-	BeforeRun    interface{} `yaml:"before_run,omitempty"`
-	AfterRun     interface{} `yaml:"after_run,omitempty"`
-	BeforeRemove interface{} `yaml:"before_remove,omitempty"`
+	AfterCreate  HookValue `yaml:"after_create,omitempty"`
+	BeforeRun    HookValue `yaml:"before_run,omitempty"`
+	AfterRun     HookValue `yaml:"after_run,omitempty"`
+	BeforeRemove HookValue `yaml:"before_remove,omitempty"`
 }
 
 // Workflow is the parsed representation of .pilot/workflow.yaml.
@@ -65,7 +65,7 @@ type Workflow struct {
 	// Policy contains policy fields exposed to the prompt.
 	Policy PolicyOverrides `yaml:"policy,omitempty"`
 
-	// Hooks is parsed but not executed in this version (TASK-305).
+	// Hooks defines lifecycle scripts executed at specific points in the task lifecycle.
 	Hooks HookConfig `yaml:"hooks,omitempty"`
 
 	// PromptAppendix is the Markdown body after the closing --- delimiter.
