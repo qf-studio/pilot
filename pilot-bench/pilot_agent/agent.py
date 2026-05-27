@@ -247,12 +247,19 @@ VERIFICATION PROTOCOL (mandatory before finishing):
                 fcntl.flock(lock, fcntl.LOCK_UN)
 
     def _build_env(self) -> dict[str, str]:
-        """Collect auth environment variables."""
+        """Collect non-secret env vars to pass to the agent subprocess.
+
+        WARNING: keys here are serialized verbatim into Harbor's
+        config.json / result.json (AgentConfig.env is a plain dict with
+        no masking) and end up in committed/published submission
+        artifacts. NEVER add auth tokens here. The subprocess inherits
+        ambient secrets (ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN,
+        CLAUDE_CODE_OAUTH_TOKEN) automatically — they just must not be
+        captured into this serialized dict.
+        """
         env: dict[str, str] = {}
         for key in [
-            "ANTHROPIC_API_KEY",
-            "PILOT_ENGINE_API_KEY",
-            "CLAUDE_CODE_OAUTH_TOKEN",
+            "PILOT_ENGINE_API_KEY",  # non-secret routing key, safe to record
         ]:
             if key in os.environ:
                 env[key] = os.environ[key]
