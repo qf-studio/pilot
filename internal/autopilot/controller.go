@@ -2235,21 +2235,6 @@ func (c *Controller) ScanRecentlyMergedPRs(ctx context.Context) error {
 
 	c.log.Debug("found closed PRs", "total", len(prs))
 
-	// Get recent releases to check for existing releases
-	releases, err := c.ghClient.ListReleases(ctx, c.owner, c.repo, 20)
-	if err != nil {
-		c.log.Warn("failed to list releases, continuing without release check", "error", err)
-		releases = nil
-	}
-
-	// Build set of release target commits for quick lookup
-	releasedCommits := make(map[string]bool)
-	for _, rel := range releases {
-		if rel.TargetCommitish != "" {
-			releasedCommits[rel.TargetCommitish] = true
-		}
-	}
-
 	cutoff := time.Now().Add(-scanWindow)
 	triggered := 0
 
@@ -2306,13 +2291,26 @@ func (c *Controller) ScanRecentlyMergedPRs(ctx context.Context) error {
 			continue
 		}
 
-		// Skip if release already exists for this merge commit
-		if pr.MergeCommitSHA != "" && releasedCommits[pr.MergeCommitSHA] {
-			c.log.Debug("skipping PR: release already exists",
-				"pr", pr.Number,
-				"merge_sha", ShortSHA(pr.MergeCommitSHA),
-			)
-			continue
+		// Skip if this merge commit already has a release tag.
+		// GitHub releases set target_commitish to the branch ref ("main"), not the merge
+		// SHA, so the former map-based check was unreliable. GetTagForSHA (same primitive
+		// handleReleasing uses) is the reliable check.
+		if pr.MergeCommitSHA != "" {
+			existingTag, tagErr := c.ghClient.GetTagForSHA(ctx, c.owner, c.repo, pr.MergeCommitSHA)
+			if tagErr != nil {
+				c.log.Warn("failed to check existing tag for PR, will track to be safe",
+					"pr", pr.Number,
+					"merge_sha", ShortSHA(pr.MergeCommitSHA),
+					"error", tagErr,
+				)
+			} else if existingTag != "" {
+				c.log.Debug("skipping PR: merge commit already tagged",
+					"pr", pr.Number,
+					"merge_sha", ShortSHA(pr.MergeCommitSHA),
+					"tag", existingTag,
+				)
+				continue
+			}
 		}
 
 		c.log.Info("found merged Pilot PR needing release",
