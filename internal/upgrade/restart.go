@@ -19,7 +19,10 @@ import (
 var runSmokeTest = func(binaryPath string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := exec.CommandContext(ctx, binaryPath, "--version").Run(); err != nil {
+	// Use the `version` subcommand, not a `--version` flag: pilot's root
+	// command does not register a --version flag, so the flag form exits
+	// non-zero ("unknown flag") and would fail every hot upgrade (GH-3222).
+	if err := exec.CommandContext(ctx, binaryPath, "version").Run(); err != nil {
 		if ctx.Err() != nil {
 			return fmt.Errorf("timed out after 5s: %w", ctx.Err())
 		}
