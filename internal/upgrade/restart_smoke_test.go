@@ -55,3 +55,26 @@ func TestRunSmokeTest(t *testing.T) {
 		})
 	}
 }
+
+// TestRunSmokeTest_UsesVersionSubcommand is a regression guard for GH-3222.
+// pilot exposes a `version` subcommand but no `--version` flag; the latter
+// exits non-zero ("unknown flag"). This fake mimics that contract: it accepts
+// `version` and rejects `--version`. The real runSmokeTest must invoke the
+// form pilot actually supports, or every hot upgrade fails at the smoke test.
+func TestRunSmokeTest_UsesVersionSubcommand(t *testing.T) {
+	// Mimics pilot's cobra CLI: `version` → exit 0, any unknown flag → exit 1.
+	script := "#!/bin/sh\n" +
+		"if [ \"$1\" = \"version\" ]; then echo 'Pilot 9.9.9'; exit 0; fi\n" +
+		"echo \"Error: unknown flag: $1\" >&2; exit 1\n"
+
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "pilot")
+	if err := os.WriteFile(bin, []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := runSmokeTest(bin); err != nil {
+		t.Errorf("runSmokeTest() must invoke the `version` subcommand that pilot "+
+			"supports; got error = %v (likely still using the unsupported --version flag)", err)
+	}
+}
