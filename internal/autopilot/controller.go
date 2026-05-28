@@ -1658,9 +1658,14 @@ func (c *Controller) handleReleasing(ctx context.Context, prState *PRState) erro
 	// is already tagged (by an earlier release) and skip.
 	existingTag, err := c.ghClient.GetTagForSHA(ctx, owner, repo, prState.HeadSHA)
 	if err != nil {
-		c.log.Warn("failed to check existing tags", "error", err)
-		// Continue anyway - worst case we get a duplicate tag error
-	} else if existingTag != "" {
+		// Transient lookup failure: do NOT fall through to CreateTagForRepo. If a
+		// tag already exists but we couldn't see it, the create call fails with
+		// "Reference already exists", returns an error, and the PR stays in
+		// StageReleasing forever (re-tried every poll). Return the error so this
+		// PR is retried cleanly on the next poll once the lookup recovers. (TASK-316)
+		return fmt.Errorf("failed to check existing tags for PR #%d: %w", prState.PRNumber, err)
+	}
+	if existingTag != "" {
 		c.log.Info("commit already tagged, skipping release",
 			"pr", prState.PRNumber,
 			"sha", ShortSHA(prState.HeadSHA),
@@ -1708,6 +1713,18 @@ func (c *Controller) handleReleasing(ctx context.Context, prState *PRState) erro
 	// Create git tag in the correct repo
 	tagName, err := c.releaser.CreateTagForRepo(ctx, owner, repo, prState, newVersion)
 	if err != nil {
+		// A duplicate-tag error means the commit is already released (e.g. a
+		// racing PR tagged it, or our GetTagForSHA check raced the create).
+		// Treat it as success so the PR drains from activePRs instead of
+		// looping forever on a tag it can never re-create. (TASK-316)
+		if isDuplicateTagError(err) {
+			c.log.Info("tag already exists at HEAD SHA — treating as released",
+				"pr", prState.PRNumber,
+				"sha", ShortSHA(prState.HeadSHA),
+			)
+			c.removePR(prState.PRNumber)
+			return nil
+		}
 		return fmt.Errorf("failed to create tag: %w", err)
 	}
 
@@ -1742,6 +1759,18 @@ func (c *Controller) handleReleasing(ctx context.Context, prState *PRState) erro
 
 	c.removePR(prState.PRNumber)
 	return nil
+}
+
+// isDuplicateTagError reports whether err indicates the git tag already exists.
+// GitHub returns HTTP 422 with body {"message":"Reference already exists"} when
+// POSTing /git/refs for a ref that is already present. The predicate is kept
+// deliberately narrow — it matches the "already exists" signal, not generic 422s
+// (e.g. validation failures), so we never swallow a real release failure. (TASK-316)
+func isDuplicateTagError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "already exists")
 }
 
 // isMergeConflict returns true if the PR has merge conflicts.
