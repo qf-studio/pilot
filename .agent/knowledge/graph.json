@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "updated": "2026-05-26T00:00:00Z",
+  "updated": "2026-05-28T00:00:00Z",
   "nodes": {
     "concepts": {
       "pilot-architecture": {
@@ -95,6 +95,15 @@
         "related": [
           "executor",
           "gateway"
+        ]
+      },
+      "hot-upgrade": {
+        "label": "Hot Upgrade",
+        "description": "In-place self-update: download release, codesign, pre-exec smoke test, syscall.Exec to replace the running process",
+        "related": [
+          "self-update",
+          "executor",
+          "dashboard"
         ]
       }
     },
@@ -305,6 +314,39 @@
         ],
         "confidence": 0.9,
         "created": "2026-05-21"
+      },
+      "mem-015": {
+        "type": "pitfall",
+        "summary": "Self-test command must match the binary's real CLI contract: the pre-exec smoke test ran 'pilot --version' (a flag pilot doesn't register -> exit 1) instead of the 'version' subcommand, blocking every hot upgrade. Arg-agnostic test fakes hid it. File: bug_smoke_test_wrong_cli_contract.md (GH-3222/#3223).",
+        "concepts": [
+          "hot-upgrade",
+          "smoke-test",
+          "cli-contract",
+          "testing"
+        ],
+        "confidence": 0.9,
+        "created": "2026-05-28"
+      },
+      "mem-016": {
+        "type": "pitfall",
+        "summary": "macOS codesign error swallowed in upgrade.go PrepareForExecution (`_ =`), producing an unsigned binary Gatekeeper refuses to syscall.Exec -> silent hot-upgrade failure. File: bug_hot_upgrade_silent_codesign.md (TASK-303).",
+        "concepts": [
+          "hot-upgrade",
+          "codesign",
+          "macos"
+        ],
+        "confidence": 0.9,
+        "created": "2026-05-26"
+      },
+      "mem-017": {
+        "type": "pitfall",
+        "summary": "TUI rendered 'Now running X - Restarting...' / 'Installing 100%' without surfacing upgradeMessage, hiding hot-upgrade failures behind a success-looking panel. File: bug_hot_upgrade_restarting_ui_trap.md (TASK-303).",
+        "concepts": [
+          "hot-upgrade",
+          "dashboard"
+        ],
+        "confidence": 0.9,
+        "created": "2026-05-26"
       }
     }
   },
@@ -378,6 +420,36 @@
       "from": "TASK-284",
       "to": "mem-014",
       "type": "decided-by"
+    },
+    {
+      "from": "mem-015",
+      "to": "hot-upgrade",
+      "type": "relates-to"
+    },
+    {
+      "from": "mem-016",
+      "to": "hot-upgrade",
+      "type": "relates-to"
+    },
+    {
+      "from": "mem-017",
+      "to": "hot-upgrade",
+      "type": "relates-to"
+    },
+    {
+      "from": "mem-015",
+      "to": "mem-016",
+      "type": "related"
+    },
+    {
+      "from": "mem-016",
+      "to": "mem-017",
+      "type": "related"
+    },
+    {
+      "from": "mem-015",
+      "to": "mem-017",
+      "type": "related"
     }
   ]
 }
