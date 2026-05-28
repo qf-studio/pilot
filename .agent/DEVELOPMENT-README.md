@@ -118,21 +118,18 @@ Disable via config: `executor.navigator.auto_init: false`
 
 ## Current State
 
-**Current Version:** v2.155.2 | **323 features working**
+**Current Version:** v2.159.3 | full status in `.agent/system/FEATURE-MATRIX.md`
 
-**Recent (v2.149.4, May 25 2026):** Wave 1 hardening sweep + Linear webhook signature verification (from `.agent/audits/AUDIT-2026-05-25.md`).
-- `fix(quality)`: Default `quality.parallel` → `false`. Eliminates the shared `~/.cache/go-build` / `~/.cache/golangci-lint` race that produced 11 spurious gate failures in 3h at the 2026-05-21 workshop. Opt-back-in via explicit `quality.parallel: true`. New SOP: `.agent/sops/quality/parallel-gate-cache-race.md`. (TASK-289 / #3057)
-- `fix(config)`: `~/.pilot/config.yaml` now writes mode `0600` (was `0644`) + parent dir `0700`. Existing `0644` configs tightened on next save via explicit `os.Chmod` (since `os.WriteFile` leaves existing-file modes alone). The file holds GitHub PAT, Linear API key, Slack bot token, Anthropic key — was world-readable on shared workstations. (TASK-290 / #3058)
-- `fix(autopilot)`: `getMainBranchSHA` reads `c.config.ResolvedEnv().Branch` instead of the hardcoded `"main"` literal. Repos defaulting to `develop` / `master` / `trunk` now get correct post-merge CI monitoring; previously releases could fire before the real default branch's CI completed. (TASK-291 / #3059)
-- `fix(linear)`: New `VerifyLinearSignature` primitive (Ed25519 over raw request body) + gateway wiring. `handleLinearWebhook` rejects 401 on bad signatures when a public key is configured. **Caveat:** `gateway.Config.LinearWebhookPublicKey` has no YAML decode in `cmd/pilot/main.go` yet — verification is gated behind a field nothing can set. Follow-up in backlog. (TASK-295 / #3060)
-- `fix(security)`: `scripts/check-secret-patterns.sh` broadened from `--include='*_test.go'` (~50 files) to all tracked files (1086) with an explicit allowlist for the 4 educational files (CLAUDE.md / CONTRIBUTING.md / testutil/tokens.go / TASK-41 postmortem). Plus: GitHub-side `secret_scanning` + `push_protection` enabled on the repo (was disabled). (TASK-299 / #3062)
-- `chore(ci)`: Deleted dead `.github/workflows/ci-autofix.yml` + the `notify-failure` job in `ci.yml` that fed it. The workflow had been emitting phantom 0-job "failure" run records on every push for 4+ days, generating alert-email noise. (#3063)
+**Recent (v2.159.3, May 28 2026):** Hot-upgrade subsystem repair + autopilot release-pipeline reliability.
+- `fix(upgrade)`: Pre-exec smoke test invoked `pilot --version` (a flag the root cobra command never registers → exit 1), so it failed **every** hot upgrade before `syscall.Exec`. Switched to the `version` subcommand pilot actually implements, plus a regression guard (`TestRunSmokeTest_UsesVersionSubcommand`) using a fake that mimics the real CLI — prior tests used arg-agnostic scripts and missed it. Chicken-and-egg: the fix lives inside the path it repairs, so it required one manual reinstall to land. (GH-3222 / #3223). Pitfall: `.agent/knowledge/memories/pitfalls/bug_smoke_test_wrong_cli_contract.md`. Executor's inability to self-fix this one-liner (it second-guessed the obvious-looking `--version`) tracked in GH-3224.
+- `fix(upgrade)` **(TASK-303, v2.155.1)**: Stopped swallowing macOS codesign errors (`upgrade.go` `PrepareForExecution`), added the pre-exec smoke test, and made the TUI render upgrade progress / completion / failure **honestly** (no more silent "old version still running"). This turned the long-standing silent hot-upgrade failure into a visible one — which is what surfaced the #3222 smoke-test bug. Pitfalls: `bug_hot_upgrade_silent_codesign.md`, `bug_hot_upgrade_restarting_ui_trap.md`.
+- `fix(autopilot)`: Ghost-SHA guard — fail closed when `commit_sha` is already on the base branch (worktree HEAD == base parent → no ghost-close) + `IsTaskShipped` prefers `PRUrl` as the primary signal. (TASK-300 / #3193)
+- `fix(autopilot)`: Gate `pilot-done` + issue close on PR **merge**, not PR creation — stops premature done-marking. (TASK-301 / #3186)
+- `fix(autopilot)`: Release scanner replaced the in-memory `releasedCommits` map with `GetTagForSHA`; `handleReleasing` now handles tag-lookup errors + duplicate-tag races (a manually-pushed tag won't double-release). (TASK-314 / TASK-316 / #3221)
+- `feat(workflow)`: `.pilot/workflow.yaml` per-repo prompt + policy override; lifecycle hooks (`after_create`, `before_run`, `after_run`, `before_remove`). (TASK-304 / TASK-305)
+- `feat(executor)`: OpenRouter backend wired into the factory, then **reverted** (#3214) pending TASK-310 spike findings — net not shipped.
 
-**Previous (v2.149.0, May 21 2026):**
-- `feat(adapters/github)`: **Repo-allowlist guardrail — Phase B (adapter)** — `CreatePilotIssue` now takes an `IssueAllowlist` parameter and refuses unconfigured repos via `validateIssueRepo`. `IssueAllowlist` defined locally in `internal/adapters/github` to avoid the executor→github import cycle; `cmd/pilot/repo_allowlist.go::configRepoAllowlist` satisfies both interfaces transparently. (#3047, follow-up to GH-3027)
-- `docs(sops)`: Subprocess OOM tuning runbook at `.agent/sops/subprocess-oom-tuning.md` — companion to the v2.148.0 RSS telemetry. (#3048)
-
-**Full implementation status:** `.agent/system/FEATURE-MATRIX.md`
+**Previous (v2.149.4, May 25 2026):** Wave 1 hardening sweep + Linear Ed25519 webhook verification (TASK-289/290/291/295/299). Detail in `.agent/audits/AUDIT-2026-05-25.md`. **Open caveat:** `gateway.Config.LinearWebhookPublicKey` still has no YAML decode in `cmd/pilot/main.go` — Ed25519 verification is gated behind a field nothing can set (TASK-295 follow-up).
 
 ### Autopilot Environments (v1.59.0+)
 
