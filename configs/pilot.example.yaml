@@ -47,6 +47,18 @@ adapters:
       enabled: true
       interval: 30s
       label: "pilot"
+    # GitHub Projects V2 board integration
+    # project_board:
+    #   enabled: true                  # Sync issue status to the board (write path)
+    #   project_number: 1              # Project number from the board URL
+    #   status_field: "Status"         # Name of the single-select status field
+    #   statuses:
+    #     in_progress: "In Progress"
+    #     review: "In Review"
+    #     done: "Done"
+    #     failed: "Blocked"
+    #   source_enabled: false          # Pull work FROM the board instead of by label
+    #   source_status: "Todo"          # Board column to source issues from (default "Todo")
 
   # GitLab - Issue polling and MR creation
   gitlab:

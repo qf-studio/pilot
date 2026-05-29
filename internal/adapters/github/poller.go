@@ -162,6 +162,10 @@ type Poller struct {
 
 	// pollerMetrics records per-repo dispatch/skip counters (TASK-293, GH-3064).
 	pollerMetrics skipreason.PollerMetricsRecorder
+
+	// projectBoardSource sources candidates from a Projects V2 board column (GH-3228).
+	// When non-nil, replaces label-based ListIssues in findOldestUnprocessedIssue.
+	projectBoardSource *ProjectBoardSource
 }
 
 // PollerOption configures a Poller
@@ -312,6 +316,15 @@ func WithIssueMetricsRecorder(rec IssueMetricsRecorder) PollerOption {
 func WithPollerMetrics(rec skipreason.PollerMetricsRecorder) PollerOption {
 	return func(p *Poller) {
 		p.pollerMetrics = rec
+	}
+}
+
+// WithProjectBoardSource configures the poller to source candidates from a Projects V2
+// board column instead of by label. When set, FindIssuesFromProject replaces ListIssues
+// as the candidate fetch in findOldestUnprocessedIssue; all downstream filters are unchanged.
+func WithProjectBoardSource(src *ProjectBoardSource) PollerOption {
+	return func(p *Poller) {
+		p.projectBoardSource = src
 	}
 }
 
@@ -702,12 +715,25 @@ func (p *Poller) startSequential(ctx context.Context) {
 
 // findOldestUnprocessedIssue finds the oldest issue with the pilot label
 // that hasn't been processed yet and has no pending dependencies.
+// When projectBoardSource is set, candidates are fetched from the board column
+// instead of by label; all downstream filters remain identical.
 func (p *Poller) findOldestUnprocessedIssue(ctx context.Context) (*Issue, error) {
-	issues, err := p.client.ListIssues(ctx, p.owner, p.repo, &ListIssuesOptions{
-		Labels: []string{p.label},
-		State:  StateOpen,
-		Sort:   "created", // Sort by creation date to get oldest first
-	})
+	var issues []*Issue
+	var err error
+
+	if p.projectBoardSource != nil {
+		sourceStatus := p.projectBoardSource.config.SourceStatus
+		if sourceStatus == "" {
+			sourceStatus = "Todo"
+		}
+		issues, err = p.projectBoardSource.FindIssuesFromProject(ctx, sourceStatus)
+	} else {
+		issues, err = p.client.ListIssues(ctx, p.owner, p.repo, &ListIssuesOptions{
+			Labels: []string{p.label},
+			State:  StateOpen,
+			Sort:   "created", // Sort by creation date to get oldest first
+		})
+	}
 	if err != nil {
 		return nil, err
 	}

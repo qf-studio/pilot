@@ -179,31 +179,35 @@ func (p *ProjectBoardSync) ensureResolved(ctx context.Context) error {
 	return nil
 }
 
-// resolveProjectID queries for the project ID, trying organization first then user.
-func (p *ProjectBoardSync) resolveProjectID(ctx context.Context) (string, error) {
+// resolveProjectID queries for the project node ID, trying organization first then user fallback.
+// This is a shared package-level helper used by both ProjectBoardSync and ProjectBoardSource.
+func resolveProjectID(ctx context.Context, client *Client, owner string, projectNumber int) (string, error) {
 	vars := map[string]interface{}{
-		"owner":  p.owner,
-		"number": p.config.ProjectNumber,
+		"owner":  owner,
+		"number": projectNumber,
 	}
 
 	// Try organization first.
 	var orgResp projectByOrgResponse
-	err := p.client.ExecuteGraphQL(ctx, queryProjectByOrg, vars, &orgResp)
-	if err == nil && orgResp.Organization.ProjectV2.ID != "" {
+	if err := client.ExecuteGraphQL(ctx, queryProjectByOrg, vars, &orgResp); err == nil && orgResp.Organization.ProjectV2.ID != "" {
 		return orgResp.Organization.ProjectV2.ID, nil
 	}
 
 	// Fallback to user.
 	var userResp projectByUserResponse
-	err = p.client.ExecuteGraphQL(ctx, queryProjectByUser, vars, &userResp)
-	if err != nil {
-		return "", fmt.Errorf("resolve project ID for %s #%d: %w", p.owner, p.config.ProjectNumber, err)
+	if err := client.ExecuteGraphQL(ctx, queryProjectByUser, vars, &userResp); err != nil {
+		return "", fmt.Errorf("resolve project ID for %s #%d: %w", owner, projectNumber, err)
 	}
 	if userResp.User.ProjectV2.ID == "" {
-		return "", fmt.Errorf("project #%d not found for owner %s", p.config.ProjectNumber, p.owner)
+		return "", fmt.Errorf("project #%d not found for owner %s", projectNumber, owner)
 	}
 
 	return userResp.User.ProjectV2.ID, nil
+}
+
+// resolveProjectID resolves the project ID for this sync instance using the shared helper.
+func (p *ProjectBoardSync) resolveProjectID(ctx context.Context) (string, error) {
+	return resolveProjectID(ctx, p.client, p.owner, p.config.ProjectNumber)
 }
 
 // resolveFieldAndOptions fetches the Status field ID and all option name→ID mappings.

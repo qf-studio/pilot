@@ -838,6 +838,12 @@ Examples:
 						logging.WithComponent("start").Warn("Failed to start rate limit scheduler", slog.Any("error", schErr))
 					}
 
+					// GH-3228: Wire board source when source_enabled=true.
+					if cfg.Adapters.GitHub.ProjectBoard != nil && cfg.Adapters.GitHub.ProjectBoard.SourceEnabled {
+						boardSrc := github.NewProjectBoardSource(client, cfg.Adapters.GitHub.ProjectBoard, repoOwner, repoName)
+						pollerOpts = append(pollerOpts, github.WithProjectBoardSource(boardSrc))
+					}
+
 					// GH-392: Configure with actual issue processing callbacks (same as polling mode)
 					if execMode == github.ExecutionModeSequential {
 						pollerOpts = append(pollerOpts,
@@ -2189,6 +2195,13 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 					logging.WithComponent("start").Warn("Failed to start rate limit scheduler",
 						slog.String("repo", repoFullName),
 						slog.Any("error", err))
+				}
+
+				// GH-3228: Wire board source for the adapter-level repo when source_enabled=true.
+				if cfg.Adapters.GitHub.ProjectBoard != nil && cfg.Adapters.GitHub.ProjectBoard.SourceEnabled &&
+					repoFullName == cfg.Adapters.GitHub.Repo {
+					boardSrc := github.NewProjectBoardSource(client, cfg.Adapters.GitHub.ProjectBoard, repoOwner, repoName)
+					pollerOpts = append(pollerOpts, github.WithProjectBoardSource(boardSrc))
 				}
 
 				// Configure based on execution mode

@@ -131,6 +131,7 @@
 | Linear OnPRCreated | ✅ | adapters/linear | - | - | Wire Linear PRs to autopilot for CI monitor + auto-merge (v1.13.0, GH-1361) |
 | Jira/Asana autopilot wire | ✅ | adapters | - | - | OnPRCreated + HeadSHA/BranchName for Jira + Asana (v1.19.0, GH-1397) |
 | GitHub Projects V2 Board | ✅ | adapters/github | - | `adapters.github.project_board` | GraphQL board sync: Review/Done/Failed columns (v2.30.0, PR #1863) |
+| GitHub Projects V2 Board Source | ✅ | adapters/github | - | `adapters.github.project_board.source_enabled` | Pull work FROM a board column (FindIssuesFromProject); opt-in via source_enabled/source_status (GH-3228) |
 | Common Adapter Registry | ✅ | adapters | - | - | Unified Adapter interface, generic ProcessedStore table (v2.30.0, PR #1845) |
 | Linear workspace mode | ✅ | adapters/linear | - | `adapters.linear.projects` | Project-scoped routing via project_ids mapping for multi-project setups |
 | Plane.so state transitions | ✅ | adapters/plane | - | - | State transitions and PR comments on Plane.so issues (v2.25.0, PR #1843) |
