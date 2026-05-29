@@ -166,6 +166,11 @@ type Poller struct {
 	// projectBoardSource sources candidates from a Projects V2 board column (GH-3228).
 	// When non-nil, replaces label-based ListIssues in findOldestUnprocessedIssue.
 	projectBoardSource *ProjectBoardSource
+
+	// boardSync moves the issue card to inProgressStatus on confirmed dispatch (GH-3252).
+	// nil or empty inProgressStatus disables the write-back, keeping label-mode identical.
+	boardSync        *ProjectBoardSync
+	inProgressStatus string
 }
 
 // PollerOption configures a Poller
@@ -325,6 +330,15 @@ func WithPollerMetrics(rec skipreason.PollerMetricsRecorder) PollerOption {
 func WithProjectBoardSource(src *ProjectBoardSource) PollerOption {
 	return func(p *Poller) {
 		p.projectBoardSource = src
+	}
+}
+
+// WithBoardSync configures the poller to move the issue card to inProgressStatus on the
+// Projects V2 board after confirmed dispatch. No-op when bs is nil or inProgressStatus is "".
+func WithBoardSync(bs *ProjectBoardSync, inProgressStatus string) PollerOption {
+	return func(p *Poller) {
+		p.boardSync = bs
+		p.inProgressStatus = inProgressStatus
 	}
 }
 
@@ -540,6 +554,9 @@ func (p *Poller) startSequential(ctx context.Context) {
 				continue // skip dispatch; label removal re-triggers on next poll
 			}
 		}
+
+		// Board sync: move card to in-progress on confirmed dispatch (GH-3252).
+		p.syncBoardStatusInProgress(ctx, issue)
 
 		result, err := p.processIssueSequential(ctx, issue)
 		if err != nil {
@@ -966,6 +983,35 @@ func (p *Poller) recordDeferredScopeOverlap() {
 	}
 }
 
+// syncBoardStatusInProgress moves the issue card to the configured in-progress status
+// on the Projects V2 board. Called once after confirmed dispatch, before execution starts.
+// Logs errors but does not fail the dispatch — board sync is best-effort.
+// No-op when boardSync is nil or inProgressStatus is empty.
+func (p *Poller) syncBoardStatusInProgress(ctx context.Context, issue *Issue) {
+	if p.boardSync == nil || p.inProgressStatus == "" {
+		return
+	}
+
+	nodeID := issue.NodeID
+	if nodeID == "" {
+		var err error
+		nodeID, err = p.client.GetIssueNodeID(ctx, p.owner, p.repo, issue.Number)
+		if err != nil {
+			p.logger.Warn("board sync: failed to resolve issue node ID",
+				slog.Int("issue", issue.Number),
+				slog.Any("error", err))
+			return
+		}
+	}
+
+	if err := p.boardSync.UpdateProjectItemStatus(ctx, nodeID, p.inProgressStatus); err != nil {
+		p.logger.Warn("board sync: failed to update project item status",
+			slog.Int("issue", issue.Number),
+			slog.String("status", p.inProgressStatus),
+			slog.Any("error", err))
+	}
+}
+
 // checkForNewIssues fetches issues and dispatches new ones concurrently (parallel mode)
 func (p *Poller) checkForNewIssues(ctx context.Context) {
 	issues, err := p.client.ListIssues(ctx, p.owner, p.repo, &ListIssuesOptions{
@@ -1207,6 +1253,9 @@ func (p *Poller) checkForNewIssues(ctx context.Context) {
 		go func(issue *Issue) {
 			defer p.activeWg.Done()
 			defer func() { <-p.semaphore }() // release slot
+
+			// Board sync: move card to in-progress on confirmed dispatch (GH-3252).
+			p.syncBoardStatusInProgress(ctx, issue)
 
 			if p.onIssueWithResult != nil {
 				result, err := p.onIssueWithResult(ctx, issue)
