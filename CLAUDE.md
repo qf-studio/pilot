@@ -25,6 +25,32 @@ When in doubt, look at the incoming prompt: if it hands you a specific
 task with file paths and expected outputs, implement it. If it's a human
 asking open-ended questions about the project, plan via Navigator.
 
+## ⚠️ Git & Worktree Discipline (ALL sessions)
+
+Multiple sessions (interactive terminals, Claude Code sessions, and the
+Pilot daemon) operate on this repo **concurrently**. Running `git checkout`
+in the shared repo root rips the branch out from under every other session
+— this has repeatedly left the root on a stranger's PR branch with orphaned
+uncommitted changes and a graveyard of stashes.
+
+**Rules:**
+
+- ❌ **NEVER `git checkout <branch>` / `git switch` in the repo root**
+  (`/Users/.../startups/pilot`). Keep the root pinned to `main`; treat it as
+  reference + build-from-main only.
+- ✅ **Do all branch work in your own worktree.** Interactive Claude sessions:
+  use the worktree flow (sessions land in `.claude/worktrees/<name>`). The
+  Pilot daemon already isolates via `pilot-worktree-GH-*` — leave those alone.
+- ✅ Base worktrees on `origin/main` (fresh), not on whatever the root
+  happens to be pointing at.
+- ✅ Commit in your worktree branch; push it; open a PR. Never pile unrelated
+  work onto someone else's branch/PR.
+- ❌ Do not `git stash pop` blindly in the root — a pathspec-limited stash or
+  a worktree is safer when other sessions may have uncommitted work there.
+- If you find the root on a non-`main` branch with uncommitted changes you
+  did not make, **STOP** — that's another session's work. Don't checkout,
+  don't reset, don't commit it. Flag it.
+
 ## ⚠️ WORKFLOW: Navigator + Pilot Pipeline (interactive sessions only)
 
 **If this is an interactive dev session**, use Navigator to plan and Pilot
@@ -228,6 +254,7 @@ Documentation in `.agent/`:
 - ❌ No package.json modifications without approval
 - ❌ No bulk doc loading (use Navigator lazy loading)
 - ❌ No Claude Code mentions in commits
+- ❌ No `git checkout`/`git switch` in the repo root — work in a worktree (see "Git & Worktree Discipline")
 
 ## Development Workflow
 

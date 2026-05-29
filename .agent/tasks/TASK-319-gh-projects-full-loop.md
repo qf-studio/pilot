@@ -1,10 +1,52 @@
 # TASK-319: GitHub Projects V2 — full board-driven lifecycle loop
 
-**Status:** planned (ready to decompose into PR-sized issues for Pilot)
+**Status:** planned — Option B locked; board-setup + issue drafts ready; execution gated on #3228 merge
 **Priority:** P1 — completes the board-as-source-of-truth roadmap (Studio SDK)
 **Repo:** `qf-studio/pilot` (code) — drives `qf-studio/studio-sdk` work via `qf-studio/projects/1`
 **Depends on:** #3228 / TASK-317 (`FindIssuesFromProject`, read path) — must merge first
-**Decisions (2026-05-29):** full lifecycle loop · Studio SDK board only · fine-grained PAT for auth
+**Decisions (2026-05-29):** **full 5-state loop (Option B)** · Studio SDK board only · the `ghp_` PAT in `~/.pilot/config.yaml` (scopes `project, read:org, repo`) is the board token
+
+## Locked status mapping (Option B — 5 columns)
+
+Board today has 3 columns (`Todo | In Progress | Done`); Option B adds **In Review** + **Blocked**.
+
+| Column | Color | Pilot event | Source/Write |
+|---|---|---|---|
+| Todo | GREEN | queued work | `source_status` (read, #3228) |
+| In Progress | YELLOW | issue picked up / executing | write on dispatch (PR-1) |
+| In Review | ORANGE | PR opened | write on `OnPRCreated` (PR-2) |
+| Done | PURPLE | PR merged | write on merge (exists) |
+| Blocked | RED | exec-fail / CI-fail | write on failure (PR-2) |
+
+```yaml
+# configs/pilot.example.yaml — full board-driven block
+adapters:
+  github:
+    repo: qf-studio/studio-sdk
+    project_board:
+      enabled: true
+      project_number: 1
+      status_field: Status
+      source_enabled: true     # from #3228 — pull work FROM the board
+      source_status: "Todo"
+      statuses:
+        in_progress: "In Progress"
+        review: "In Review"
+        done: "Done"
+        failed: "Blocked"
+```
+
+## Board setup (do once, before go-live)
+
+**Recommended — web UI (zero risk):** open https://github.com/orgs/qf-studio/projects/1
+→ Status field settings → add two options: **In Review** (orange, place between In Progress and Done) and **Blocked** (red, last). Preserves all 10 existing items.
+
+**Alternative — GraphQL (⚠ caveat):** `updateProjectV2Field` rewrites the whole option
+set and can detach items from columns. If used, pass ALL options (existing + new) in
+the desired order. Field ID `PVTSSF_lADOD34yzs4BZIGzzhUJB8o`, project ID
+`PVT_kwDOD34yzs4BZIGz`. Existing: Todo(GREEN,"This item hasn't been started"),
+In Progress(YELLOW,"This is actively being worked on"), Done(PURPLE,"This has been completed").
+Prefer the UI unless scripting board provisioning.
 
 ---
 
@@ -119,10 +161,27 @@ Fine-grained PAT (chosen). Document in an SOP (`.agent/sops/integrations/`):
 - [ ] `make test` + `make lint` green.
 - [ ] SOP for the fine-grained PAT exists.
 
-## Open items (need from you)
+## Pre-execution checklist (prep state 2026-05-29)
 
-1. **Actual column names** on `qf-studio/projects/1` (Todo / In Progress / In Review / Done / Blocked?) — I can't read the board (no `read:project`). Needed for the config example + status mappings.
-2. **Token separation** — one GitHub token for everything, or a dedicated `GITHUB_PROJECT_TOKEN` for board ops? (Lean: one PAT with all needed scopes; revisit only if least-privilege separation is wanted.)
+- [x] Decisions locked: Option B (5-state), Studio SDK board only, PAT identified
+- [x] Board read confirmed via `ghp_` PAT (`project` scope present)
+- [x] Status mapping + config block finalized (see top of doc)
+- [x] PR-sized issue drafts ready (see "Execution-ready issues" below)
+- [ ] **#3228 merged** (read path) — user tracking, will signal
+- [ ] **Board columns added**: In Review (orange) + Blocked (red) — web UI, see "Board setup"
+- [ ] **Board hygiene**: move stale CLOSED #6 from In Progress → Done; Todo currently empty (no queued work yet)
+- [ ] File the 4 issues into `qf-studio/pilot`, drop into the board's Todo column once sourcing is live
+
+**Token note:** the dev `gh` CLI uses a keyring token (`gho_`) lacking project scope. For direct `gh project ...` use `gh auth refresh -s read:project,project`, or `export GH_TOKEN=<ghp_ PAT>`. Pilot itself reads the `ghp_` PAT from config, so the daemon is unaffected.
+
+## Execution-ready issues (file once #3228 lands + columns added)
+
+Each becomes a `pilot`-labeled issue in `qf-studio/pilot`. Sequencing per the diagram below.
+
+1. **`feat(github): move board card to In Progress on issue pickup`** — workstream B / PR-1. Add `WithBoardSync` poller option; on accepted dispatch call `UpdateProjectItemStatus(nodeID, statuses.InProgress)`; node ID from `Issue.NodeID` (board read) or `GetIssueNodeID` fallback; no-op when board disabled/nodeID empty. Tests: fake GraphQL transport.
+2. **`feat(autopilot): move card to In Review on PR open + Blocked on failure`** — workstream C+D / PR-2. In `OnPRCreated` write `statuses.Review`; extend failure handling (exec-fail + CI-fail) to write `statuses.Failed`; extend `WithProjectBoardSync` to carry InProgress/Review (backward-compatible). Tests for both transitions.
+3. **`feat(github): board-sync idempotency + off-board/cross-repo safety`** — workstream E / PR-3. `UpdateProjectItemStatus` no-ops if already in target column; skip (debug-log) when item not on board; tolerate cross-repo items; document full block in `pilot.example.yaml`. Tests for short-circuit + off-board skip.
+4. **`docs(sops): fine-grained PAT + board provisioning runbook`** — workstream F / PR-4. SOP under `.agent/sops/integrations/`: PAT scopes (Projects R/W, Issues R/W), board column setup, config block, go-live checklist.
 
 ## Sequencing
 
