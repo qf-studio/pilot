@@ -217,6 +217,49 @@ func TestFindIssuesFromProject_LabelHydration(t *testing.T) {
 	}
 }
 
+func TestFindIssuesFromProject_ClosedIssueExclusion(t *testing.T) {
+	cases := []struct {
+		name        string
+		state       string
+		wantInclude bool
+	}{
+		{"open uppercase", "OPEN", true},
+		{"open lowercase", "open", true},
+		{"closed", "CLOSED", false},
+		{"closed lowercase", "closed", false},
+		{"merged", "MERGED", false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server := fakeProjectSourceServer(t, []string{
+				orgProjectResp("PVT_closed"),
+				itemsResp([]map[string]interface{}{
+					issueNode(42, "I_42", "Some issue", "", tc.state, "org/repo", "Todo"),
+				}, false, ""),
+			})
+			defer server.Close()
+
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			src := NewProjectBoardSource(client, &ProjectBoardConfig{
+				ProjectNumber: 99,
+				StatusField:   "Status",
+			}, "org", "repo")
+
+			issues, err := src.FindIssuesFromProject(context.Background(), "Todo")
+			if err != nil {
+				t.Fatalf("FindIssuesFromProject() error = %v", err)
+			}
+			if tc.wantInclude && len(issues) != 1 {
+				t.Errorf("state=%q: expected issue to be included, got %d issues", tc.state, len(issues))
+			}
+			if !tc.wantInclude && len(issues) != 0 {
+				t.Errorf("state=%q: expected issue to be excluded, got %d issues", tc.state, len(issues))
+			}
+		})
+	}
+}
+
 func TestFindIssuesFromProject_DraftIssuesSkipped(t *testing.T) {
 	server := fakeProjectSourceServer(t, []string{
 		orgProjectResp("PVT_draft"),
