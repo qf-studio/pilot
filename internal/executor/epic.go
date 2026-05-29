@@ -1293,6 +1293,12 @@ func (r *Runner) createSubIssuesViaGitHub(ctx context.Context, plan *EpicPlan, e
 			Subtask:    subtask,
 		})
 
+		// GH-3240: pre-mark in the poller so the sub-issue is not re-dispatched
+		// on the next poll cycle (the epic will execute it directly via ExecuteSubIssues).
+		if r.subIssuePollerSkip != nil && issueNumber > 0 {
+			r.subIssuePollerSkip(issueNumber)
+		}
+
 		// Track order → issue number for dependency resolution (GH-1794)
 		orderToIssueNumber[subtask.Order] = issueNumber
 

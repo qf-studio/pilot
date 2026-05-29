@@ -2603,3 +2603,70 @@ func TestCreateSubIssuesViaGitHub_GuardrailBypassEnvVar(t *testing.T) {
 		t.Fatalf("expected 1 issue created via bypass, got %d", len(created))
 	}
 }
+
+// TestCreateSubIssues_PollerSkipCalledForGitHubIssues verifies GH-3240: after
+// createSubIssuesViaGitHub creates each sub-issue, it must call the
+// SubIssuePollerSkipFn callback with the issue number so the poller marks it
+// as processed and does not re-dispatch it on the next poll cycle.
+func TestCreateSubIssues_PollerSkipCalledForGitHubIssues(t *testing.T) {
+	// Fake "gh" binary that returns successive issue URLs.
+	fakeBin := t.TempDir()
+	script := filepath.Join(fakeBin, "gh")
+	scriptContent := "#!/bin/sh\n" +
+		// Each call prints the next issue number (101, 102, …) by counting invocations
+		// via a temp counter file, then emits a valid GitHub issue URL.
+		`COUNT_FILE="` + filepath.Join(t.TempDir(), "count") + `"
+if [ -f "$COUNT_FILE" ]; then
+  N=$(cat "$COUNT_FILE")
+else
+  N=100
+fi
+N=$((N+1))
+echo $N > "$COUNT_FILE"
+echo "https://github.com/owner/repo/issues/$N"
+`
+	if err := os.WriteFile(script, []byte(scriptContent), 0o755); err != nil {
+		t.Fatalf("write fake gh: %v", err)
+	}
+	origPATH := os.Getenv("PATH")
+	t.Setenv("PATH", fakeBin+string(filepath.ListSeparator)+origPATH)
+
+	runner := NewRunner()
+
+	var mu sync.Mutex
+	var skipped []int
+	runner.SetSubIssuePollerSkip(func(n int) {
+		mu.Lock()
+		skipped = append(skipped, n)
+		mu.Unlock()
+	})
+
+	plan := &EpicPlan{
+		ParentTask: &Task{ID: "GH-99"},
+		Subtasks: []PlannedSubtask{
+			{Title: "feat(sub): first subtask", Description: "First", Order: 1},
+			{Title: "feat(sub): second subtask", Description: "Second", Order: 2},
+		},
+	}
+
+	created, err := runner.CreateSubIssues(context.Background(), plan, t.TempDir())
+	if err != nil {
+		t.Fatalf("CreateSubIssues failed: %v", err)
+	}
+	if len(created) != 2 {
+		t.Fatalf("expected 2 created issues, got %d", len(created))
+	}
+
+	mu.Lock()
+	got := append([]int(nil), skipped...)
+	mu.Unlock()
+
+	if len(got) != 2 {
+		t.Fatalf("SubIssuePollerSkipFn called %d times, want 2; skipped=%v", len(got), got)
+	}
+	for i, issue := range created {
+		if got[i] != issue.Number {
+			t.Errorf("skipped[%d] = %d, want %d (issue.Number)", i, got[i], issue.Number)
+		}
+	}
+}

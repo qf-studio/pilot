@@ -2350,6 +2350,14 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 					runner.SetOnSubIssuePRCreated(autopilotController.OnPRCreated)
 				}
 
+				// GH-3240: mark epic-created sub-issues as processed in all pollers so
+				// findOldestUnprocessedIssue does not re-dispatch them.
+				runner.SetSubIssuePollerSkip(func(n int) {
+					for _, p := range ghPollers {
+						p.MarkProcessed(n)
+					}
+				})
+
 				// Wire sub-issue merge-wait so epic sub-issues block until their PR merges (GH-2179)
 				if waitForMerge && cfg.Adapters.GitHub.Repo != "" {
 					parts := strings.SplitN(cfg.Adapters.GitHub.Repo, "/", 2)

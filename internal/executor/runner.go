@@ -326,6 +326,10 @@ type SubIssuePRCallback func(prNumber int, prURL string, issueNumber int, headSH
 // to enforce sequential ordering: sub-issue N+1 only starts after sub-issue N is merged.
 type SubIssueMergeWaitFn func(ctx context.Context, prNumber int) error
 
+// SubIssuePollerSkipFn is called with each newly-created GitHub sub-issue number so the
+// poller marks it as already-processed and does not re-dispatch it (GH-3240).
+type SubIssuePollerSkipFn func(issueNumber int)
+
 // SubIssueCreator is an interface for creating sub-issues in external issue trackers.
 // Adapters like Linear, Jira, GitLab, and Azure DevOps can implement this interface
 // to allow epic decomposition to create sub-issues in the source tracker rather than GitHub.
@@ -381,6 +385,7 @@ type Runner struct {
 	tokenLimitCheck       TokenLimitCallback                                              // Optional per-task token/duration limit check (GH-539)
 	onSubIssuePRCreated   SubIssuePRCallback                                              // Optional callback when a sub-issue PR is created (GH-596)
 	subIssueMergeWait     SubIssueMergeWaitFn                                             // Optional fn to block between sub-issues until PR is merged (GH-2178)
+	subIssuePollerSkip    SubIssuePollerSkipFn                                            // GH-3240: marks sub-issues in poller so they aren't re-dispatched
 	intentJudge           *IntentJudge                                                    // Optional intent judge for diff-vs-ticket alignment (GH-624)
 	teamChecker           TeamChecker                                                     // Optional team RBAC checker (GH-633)
 	executeFunc           func(ctx context.Context, task *Task) (*ExecutionResult, error) // Internal override for testing
@@ -829,6 +834,12 @@ func (r *Runner) SetSubIssueMergeWait(fn SubIssueMergeWaitFn) {
 
 // HasSubIssueMergeWait reports whether a merge-wait function is wired.
 func (r *Runner) HasSubIssueMergeWait() bool { return r.subIssueMergeWait != nil }
+
+// SetSubIssuePollerSkip wires the callback that marks a newly-created GitHub
+// sub-issue as already-processed in the poller so it is not re-dispatched (GH-3240).
+func (r *Runner) SetSubIssuePollerSkip(fn SubIssuePollerSkipFn) {
+	r.subIssuePollerSkip = fn
+}
 
 // SetSubIssueCreator sets the creator for sub-issues in external issue trackers (GH-1471).
 // When set and the task's SourceAdapter is non-GitHub, CreateSubIssues will dispatch
