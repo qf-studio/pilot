@@ -842,6 +842,10 @@ Examples:
 					if cfg.Adapters.GitHub.ProjectBoard != nil && cfg.Adapters.GitHub.ProjectBoard.SourceEnabled {
 						boardSrc := github.NewProjectBoardSource(client, cfg.Adapters.GitHub.ProjectBoard, repoOwner, repoName)
 						pollerOpts = append(pollerOpts, github.WithProjectBoardSource(boardSrc))
+						// TASK-319: complete the loop — move the card Todo→In Progress on
+						// confirmed pickup. WithBoardSync is a no-op when InProgress is "".
+						boardWB := github.NewProjectBoardSync(client, cfg.Adapters.GitHub.ProjectBoard, repoOwner)
+						pollerOpts = append(pollerOpts, github.WithBoardSync(boardWB, cfg.Adapters.GitHub.ProjectBoard.GetStatuses().InProgress))
 					}
 
 					// GH-392: Configure with actual issue processing callbacks (same as polling mode)
@@ -2202,6 +2206,10 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 					repoFullName == cfg.Adapters.GitHub.Repo {
 					boardSrc := github.NewProjectBoardSource(client, cfg.Adapters.GitHub.ProjectBoard, repoOwner, repoName)
 					pollerOpts = append(pollerOpts, github.WithProjectBoardSource(boardSrc))
+					// TASK-319: complete the loop — move the card Todo→In Progress on
+					// confirmed pickup. WithBoardSync is a no-op when InProgress is "".
+					boardWB := github.NewProjectBoardSync(client, cfg.Adapters.GitHub.ProjectBoard, repoOwner)
+					pollerOpts = append(pollerOpts, github.WithBoardSync(boardWB, cfg.Adapters.GitHub.ProjectBoard.GetStatuses().InProgress))
 				}
 
 				// Configure based on execution mode
