@@ -38,6 +38,8 @@ type ProjectBoardConfig struct {
 	ProjectNumber int             `yaml:"project_number"` // Project number from URL
 	StatusField   string          `yaml:"status_field"`   // Field name, e.g. "Status"
 	Statuses      ProjectStatuses `yaml:"statuses"`
+	SourceEnabled bool            `yaml:"source_enabled"` // Pull work FROM the board instead of by label
+	SourceStatus  string          `yaml:"source_status"`  // Board column to source issues from (default "Todo")
 }
 
 // ProjectStatuses maps Pilot lifecycle events to board column names.
