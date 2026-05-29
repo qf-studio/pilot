@@ -112,6 +112,17 @@ func WithProjectBoardSync(bs *github.ProjectBoardSync, doneStatus, failStatus st
 	}
 }
 
+// WithBoardSync wires a GitHub Projects V2 board sync and the "In Progress"
+// column name into the controller. The inProgressStatus field is reserved for
+// future transitions (e.g. marking an issue as In Progress when execution begins);
+// it no-ops when empty, so callers in label-mode need not provide a value.
+func WithBoardSync(bs *github.ProjectBoardSync, inProgressStatus string) ControllerOption {
+	return func(c *Controller) {
+		c.boardSync = bs
+		c.inProgressStatus = inProgressStatus
+	}
+}
+
 // WithMemoryStore wires an execution-level approval persister so that
 // approval_request_id and approval_decision are written to the executions table.
 func WithMemoryStore(s *memory.Store) ControllerOption {
@@ -133,10 +144,11 @@ type Controller struct {
 	deployer     *Deployer
 	notifier     Notifier
 	monitor      TaskMonitor // GH-1336: sync dashboard state on merge
-	boardSync    *github.ProjectBoardSync
-	doneStatus   string
-	failStatus   string
-	log          *slog.Logger
+	boardSync        *github.ProjectBoardSync
+	doneStatus       string
+	failStatus       string
+	inProgressStatus string // GH-3253: reserved for future In Progress transition
+	log              *slog.Logger
 
 	// State tracking
 	activePRs map[int]*PRState

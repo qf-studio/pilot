@@ -481,6 +481,7 @@ Examples:
 								bs := github.NewProjectBoardSync(ghClient, cfg.Adapters.GitHub.ProjectBoard, parts[0])
 								statuses := cfg.Adapters.GitHub.ProjectBoard.GetStatuses()
 								gwBoardOpts = append(gwBoardOpts, autopilot.WithProjectBoardSync(bs, statuses.Done, statuses.Failed))
+								gwBoardOpts = append(gwBoardOpts, autopilot.WithBoardSync(bs, statuses.InProgress))
 							}
 							gwAutopilotController = autopilot.NewController(
 								cfg.Orchestrator.Autopilot,
@@ -1431,6 +1432,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 				bs := github.NewProjectBoardSync(ghClient, cfg.Adapters.GitHub.ProjectBoard, owner)
 				statuses := cfg.Adapters.GitHub.ProjectBoard.GetStatuses()
 				autopilotBoardOpts = append(autopilotBoardOpts, autopilot.WithProjectBoardSync(bs, statuses.Done, statuses.Failed))
+				autopilotBoardOpts = append(autopilotBoardOpts, autopilot.WithBoardSync(bs, statuses.InProgress))
 			}
 
 			// Create controller for default repo (adapters.github.repo)
