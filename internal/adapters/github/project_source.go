@@ -130,6 +130,9 @@ func (s *ProjectBoardSource) FindIssuesFromProject(ctx context.Context, statusCo
 			if strings.ToLower(c.Repository.NameWithOwner) != targetRepo {
 				continue // cross-repo filter
 			}
+			if strings.ToUpper(c.State) != "OPEN" {
+				continue // skip closed/merged issues
+			}
 			if !strings.EqualFold(node.FieldValueByName.Name, statusColumn) {
 				continue // wrong status column
 			}
