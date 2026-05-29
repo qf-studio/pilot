@@ -1293,12 +1293,22 @@ func (p *Poller) checkForNewIssues(ctx context.Context) {
 					return
 				}
 
-				// GH-2176: Unmark if execution failed without creating a PR
+				// GH-2176: Unmark if execution failed without creating a PR (unless permanent).
+				// GH-3270: Permanent/no-op failures already carry pilot-blocked; retaining the
+				// durable row is defense-in-depth so a daemon restart cannot re-dispatch until
+				// the human removes pilot-blocked (which clears the mark via the retry path).
 				if result != nil && !result.Success && result.PRNumber == 0 {
-					p.logger.Info("Execution failed without PR, unmarking for retry",
-						slog.Int("number", issue.Number),
-					)
-					p.unmarkProcessed(issue.Number)
+					if result.Error != nil && executor.IsPermanentFailure(result.Error.Error()) {
+						p.logger.Info("Permanent failure — retaining adapter_processed marker",
+							slog.Int("number", issue.Number),
+							slog.String("error", result.Error.Error()),
+						)
+					} else {
+						p.logger.Info("Execution failed without PR, unmarking for retry",
+							slog.Int("number", issue.Number),
+						)
+						p.unmarkProcessed(issue.Number)
+					}
 				}
 
 				// Diagnostic: surface why OnPRCreated may not fire (GH-2999 Phase 1)
