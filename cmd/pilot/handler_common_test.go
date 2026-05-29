@@ -174,6 +174,28 @@ func TestAdapterSpecificPRNumberExtraction(t *testing.T) {
 	}
 }
 
+// TestExecFailureMsg_EmptyBody asserts that an empty exec.Error is replaced with a
+// descriptive default, so no bare "execution failed:" comment body is produced.
+func TestExecFailureMsg_EmptyBody(t *testing.T) {
+	got := execFailureMsg("")
+	if got == "" {
+		t.Fatal("expected non-empty default message for empty exec error")
+	}
+	// Verify the full comment body would not be bare.
+	full := "execution failed: " + got
+	if strings.HasSuffix(full, ": ") {
+		t.Errorf("bare failure comment produced for empty exec error: %q", full)
+	}
+}
+
+// TestExecFailureMsg_NonEmptyPassthrough verifies that a non-empty error string is passed through unchanged.
+func TestExecFailureMsg_NonEmptyPassthrough(t *testing.T) {
+	in := "build failed: undefined reference to foo"
+	if got := execFailureMsg(in); got != in {
+		t.Errorf("expected passthrough %q, got %q", in, got)
+	}
+}
+
 // TestHandleIssueGeneric_NilEnforcer verifies that nil enforcer skips budget check
 // and proceeds. Because runner is also nil, it should fail at execution.
 func TestHandleIssueGeneric_NilEnforcer(t *testing.T) {
