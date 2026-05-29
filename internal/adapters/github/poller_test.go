@@ -3164,3 +3164,61 @@ func TestPollerBoardSync_NodeIDFallback(t *testing.T) {
 		t.Errorf("GraphQL used nodeID %q, want %q (should use GetIssueNodeID fallback)", capturedNodeID, "I_fallback_node")
 	}
 }
+
+// TestPoller_MergeDoneWindow_MarkProcessedAfterGrace verifies that calling
+// MarkProcessed (as the onIssueDone callback does) re-enters the grace window
+// and prevents phantom re-dispatch during the merge→pilot-done label lag.
+// GH-3271 / TASK-321 PR-4.
+func TestPoller_MergeDoneWindow_MarkProcessedAfterGrace(t *testing.T) {
+	// Issue is open with pilot label, no pilot-done / pilot-in-progress.
+	// This is the state during the merge→pilot-done window.
+	issues := []*Issue{
+		{Number: 77, Title: "Issue 77", Labels: []Label{{Name: "pilot"}}},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(r.URL.Path, "/repos/owner/repo/issues") && r.Method == http.MethodGet:
+			_ = json.NewEncoder(w).Encode(issues)
+		case r.URL.Path == "/search/issues":
+			// Search API: no merged PR found (simulates index lag)
+			_, _ = w.Write([]byte(`{"total_count": 0}`))
+		case r.URL.Path == "/repos/owner/repo/pulls":
+			// Branch REST lookup: no merged PR (simulates the window before GitHub propagates)
+			_, _ = w.Write([]byte(`[]`))
+		default:
+			_, _ = w.Write([]byte("{}"))
+		}
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+
+	var callCount atomic.Int32
+	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second,
+		WithRetryGracePeriod(5*time.Millisecond),
+		WithOnIssue(func(ctx context.Context, issue *Issue) error {
+			callCount.Add(1)
+			return nil
+		}),
+	)
+
+	// Step 1: initial dispatch — markProcessed at T=0
+	poller.markProcessed(77)
+
+	// Step 2: grace period expires
+	time.Sleep(15 * time.Millisecond)
+
+	// Step 3: MarkProcessed called by onIssueDone (autopilot merge callback)
+	// — refreshes the timestamp, re-entering the grace window
+	poller.MarkProcessed(77)
+
+	// Step 4: poll tick fires during merge→pilot-done window
+	poller.checkForNewIssues(context.Background())
+	poller.WaitForActive()
+
+	if got := callCount.Load(); got != 0 {
+		t.Errorf("dispatch callback called %d times, want 0 — MarkProcessed should prevent re-dispatch in merge→done window", got)
+	}
+}
