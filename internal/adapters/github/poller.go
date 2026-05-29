@@ -847,6 +847,30 @@ func (p *Poller) findOldestUnprocessedIssue(ctx context.Context) (*Issue, error)
 			}
 		}
 
+		// GH-3269: Fresh candidates (never processed / post-unmark) bypass the
+		// retry block above, so apply the merged-work guard unconditionally for them.
+		if !processed && p.hasMergedWork(ctx, issue) {
+			continue
+		}
+
+		// GH-3269: Mirror the parallel-mode HasCompletedExecution guard — prevents
+		// re-dispatch when the pilot-done label failed to apply after execution.
+		if p.execChecker != nil {
+			taskID := fmt.Sprintf("GH-%d", issue.Number)
+			completed, err := p.execChecker.HasCompletedExecution(taskID, p.projectPath)
+			if err != nil {
+				p.logger.Warn("Failed to check execution status",
+					slog.Int("number", issue.Number),
+					slog.Any("error", err))
+			} else if completed {
+				p.logger.Info("Skipping re-dispatch — completed execution exists",
+					slog.Int("number", issue.Number),
+					slog.String("task_id", taskID))
+				p.markProcessed(issue.Number)
+				continue
+			}
+		}
+
 		candidates = append(candidates, issue)
 	}
 
