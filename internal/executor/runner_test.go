@@ -3383,6 +3383,9 @@ func TestIsPermanentFailure(t *testing.T) {
 		{"could not auto-correct title", "title is invalid: could not auto-correct to a conventional commit", false},
 		{"PR creation refused (catch-all)", "PR creation refused: some reason", true},
 		{"random failure", "no_changes: Claude completed but made no code changes", false},
+		// GH-3224: no-op runs (ghost-SHA guard) are deterministic — terminal.
+		{"no-op worktree HEAD", "no new commit produced — worktree HEAD matches base branch parent", true},
+		{"no-op post-push SHA", "no new commit produced — post-push SHA matches base branch", true},
 	}
 
 	for _, tt := range tests {

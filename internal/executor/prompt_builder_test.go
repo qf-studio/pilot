@@ -487,6 +487,49 @@ func TestBuildPromptContainsErrcheckGuidance(t *testing.T) {
 	}
 }
 
+// GH-3224: every executor prompt must carry the evidence-backed-spec directive
+// so the model does not silently no-op on explicit changes that "look correct."
+func TestBuildPromptContainsEvidenceBackedSpecDirective(t *testing.T) {
+	runner := NewRunner()
+
+	cases := []struct {
+		name string
+		task *Task
+	}{
+		{
+			name: "navigator path",
+			task: &Task{ID: "GH-3224", Title: "fix no-op", Description: "Change line 22", Branch: "pilot/GH-3224"},
+		},
+		{
+			name: "with acceptance criteria",
+			task: &Task{ID: "GH-3224", Title: "fix no-op", Description: "Create new file", AcceptanceCriteria: []string{"file exists"}},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tempDir, err := os.MkdirTemp("", "pilot-test-noop")
+			if err != nil {
+				t.Fatalf("Failed to create temp dir: %v", err)
+			}
+			defer func() { _ = os.RemoveAll(tempDir) }()
+			tc.task.ProjectPath = tempDir
+
+			prompt := runner.BuildPrompt(tc.task, tempDir)
+
+			for _, want := range []string{
+				"NON-NEGOTIABLE",
+				"evidence-backed",
+				"NO-OP RATIONALE",
+			} {
+				if !strings.Contains(prompt, want) {
+					t.Errorf("BuildPrompt missing %q from EvidenceBackedSpecDirective", want)
+				}
+			}
+		})
+	}
+}
+
 func TestBuildSelfReviewPromptContainsLintCheck(t *testing.T) {
 	runner := NewRunner()
 	task := &Task{
