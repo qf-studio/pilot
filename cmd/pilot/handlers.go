@@ -297,14 +297,20 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 	// when execution actually begins, enabling accurate queued→running dashboard transitions.
 	hr, execErr := handleIssueGeneric(ctx, deps, info, task)
 
-	// Build the issue result
+	// Build the issue result. GH-3270: when the outer error is nil but the executor
+	// recorded a failure string (e.g. "no new commit produced"), surface it as the
+	// IssueResult.Error so the poller can call IsPermanentFailure on it.
+	issueErr := hr.Error
+	if issueErr == nil && hr.Result != nil && hr.Result.Error != "" {
+		issueErr = fmt.Errorf("%s", hr.Result.Error)
+	}
 	issueResult := &github.IssueResult{
 		Success:    hr.Success,
 		BranchName: hr.BranchName,
 		PRNumber:   hr.PRNumber,
 		PRURL:      hr.PRURL,
 		HeadSHA:    hr.HeadSHA,
-		Error:      hr.Error,
+		Error:      issueErr,
 	}
 
 	// Post-execution: label management, close issue, add rich execution comment
