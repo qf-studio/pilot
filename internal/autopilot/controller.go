@@ -24,6 +24,12 @@ type approvalPersister interface {
 	SetApprovalDecision(ctx context.Context, requestID, decision, by string) error
 }
 
+// projectBoardSyncer abstracts GitHub Projects V2 board status updates.
+// *github.ProjectBoardSync implements this interface; tests substitute a mock.
+type projectBoardSyncer interface {
+	UpdateProjectItemStatus(ctx context.Context, issueNodeID string, statusName string) error
+}
+
 // iterationRe matches the iteration field in autopilot-meta comments.
 var iterationRe = regexp.MustCompile(`<!-- autopilot-meta.*?iteration:(\d+).*?-->`)
 
@@ -103,12 +109,15 @@ type EvalStore interface {
 type ControllerOption func(*Controller)
 
 // WithProjectBoardSync wires a GitHub Projects V2 board sync into the controller.
-// doneStatus is the board column name for merged PRs; failStatus for CI failures (may be empty).
-func WithProjectBoardSync(bs *github.ProjectBoardSync, doneStatus, failStatus string) ControllerOption {
+// doneStatus: merged PRs; failStatus: CI/exec failures; reviewStatus: PR created (In Progress → Review);
+// inProgressStatus: reserved for future use (wired for symmetry, not yet emitted).
+func WithProjectBoardSync(bs *github.ProjectBoardSync, doneStatus, failStatus, reviewStatus, inProgressStatus string) ControllerOption {
 	return func(c *Controller) {
 		c.boardSync = bs
 		c.doneStatus = doneStatus
 		c.failStatus = failStatus
+		c.reviewStatus = reviewStatus
+		c.inProgressStatus = inProgressStatus
 	}
 }
 
@@ -131,12 +140,14 @@ type Controller struct {
 	feedbackLoop *FeedbackLoop
 	releaser     *Releaser
 	deployer     *Deployer
-	notifier     Notifier
-	monitor      TaskMonitor // GH-1336: sync dashboard state on merge
-	boardSync    *github.ProjectBoardSync
-	doneStatus   string
-	failStatus   string
-	log          *slog.Logger
+	notifier         Notifier
+	monitor          TaskMonitor // GH-1336: sync dashboard state on merge
+	boardSync        projectBoardSyncer
+	doneStatus       string
+	failStatus       string
+	reviewStatus     string // GH-3260: board column for PR-created (In Progress → Review)
+	inProgressStatus string // GH-3260: reserved for symmetry; not yet emitted
+	log              *slog.Logger
 
 	// State tracking
 	activePRs map[int]*PRState
@@ -353,8 +364,6 @@ func (c *Controller) RestoreState() (int, error) {
 // OnPRCreated registers a new PR for autopilot processing.
 func (c *Controller) OnPRCreated(prNumber int, prURL string, issueNumber int, headSHA string, branchName string, issueNodeID string) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	prState := &PRState{
 		PRNumber:        prNumber,
 		PRURL:           prURL,
@@ -368,8 +377,9 @@ func (c *Controller) OnPRCreated(prNumber int, prURL string, issueNumber int, he
 		IssueNodeID:     issueNodeID,
 	}
 	c.activePRs[prNumber] = prState
+	c.mu.Unlock()
 
-	// Persist to SQLite (outside lock is fine, persist is idempotent)
+	// Persist to SQLite (idempotent, safe outside lock)
 	c.persistPRState(prState)
 
 	c.log.Info("PR registered for autopilot",
@@ -381,6 +391,14 @@ func (c *Controller) OnPRCreated(prNumber int, prURL string, issueNumber int, he
 		"stage", StagePRCreated,
 		"env", c.config.EnvironmentName(),
 	)
+
+	// GH-3260: Sync board card to "In Review" column when PR is created (In Progress → Review).
+	// Board sync is a non-critical side-effect; failure is logged but does not block registration.
+	if c.boardSync != nil && issueNodeID != "" && c.reviewStatus != "" {
+		if err := c.boardSync.UpdateProjectItemStatus(context.Background(), issueNodeID, c.reviewStatus); err != nil {
+			c.log.Warn("board sync on PR created failed", "pr", prNumber, "error", err)
+		}
+	}
 }
 
 // OnReviewRequested handles PR review events from GitHub webhooks.
@@ -759,6 +777,13 @@ func (c *Controller) handleCIFailed(ctx context.Context, prState *PRState) error
 				c.log.Warn("failed to close failed PR", "pr", prState.PRNumber, "error", err)
 			}
 
+			// GH-3260: Sync board card to "Blocked/Failed" column on execution failure (iteration limit).
+			if c.boardSync != nil && prState.IssueNodeID != "" && c.failStatus != "" {
+				if err := c.boardSync.UpdateProjectItemStatus(ctx, prState.IssueNodeID, c.failStatus); err != nil {
+					c.log.Warn("board sync on exec failure (iteration limit) failed", "pr", prState.PRNumber, "error", err)
+				}
+			}
+
 			prState.Stage = StageFailed
 			prState.Error = fmt.Sprintf("CI fix iteration limit reached (%d/%d): stopping cascade to prevent infinite loop", iteration, c.config.MaxCIFixIterations)
 			c.metrics.RecordPRFailed()
@@ -786,6 +811,12 @@ func (c *Controller) handleCIFailed(ctx context.Context, prState *PRState) error
 				if err := c.ghClient.ClosePullRequest(ctx, c.owner, c.repo, prState.PRNumber); err != nil {
 					c.log.Warn("CI fix size guard: failed to close oversized failed PR",
 						"pr", prState.PRNumber, "error", err)
+				}
+				// GH-3260: Sync board card to "Blocked/Failed" column on execution failure (size guard).
+				if c.boardSync != nil && prState.IssueNodeID != "" && c.failStatus != "" {
+					if err := c.boardSync.UpdateProjectItemStatus(ctx, prState.IssueNodeID, c.failStatus); err != nil {
+						c.log.Warn("board sync on exec failure (size guard) failed", "pr", prState.PRNumber, "error", err)
+					}
 				}
 				prState.Stage = StageFailed
 				prState.Error = fmt.Sprintf("CI fix size guard: PR has %d additions, over limit %d (likely cascade contamination — escalate to human)", netAdditions, c.config.MaxCIFixPRSize)
