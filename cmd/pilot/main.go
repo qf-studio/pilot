@@ -2366,6 +2366,17 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 					}
 				})
 
+				// GH-3271: when autopilot marks an issue done after PR-merge, immediately
+				// re-mark it processed in all pollers so a poll tick during the
+				// merge→pilot-done label propagation window cannot re-dispatch it.
+				for _, ctrl := range autopilotControllers {
+					ctrl.SetOnIssueDone(func(n int) {
+						for _, p := range ghPollers {
+							p.MarkProcessed(n)
+						}
+					})
+				}
+
 				// Wire sub-issue merge-wait so epic sub-issues block until their PR merges (GH-2179)
 				if waitForMerge && cfg.Adapters.GitHub.Repo != "" {
 					parts := strings.SplitN(cfg.Adapters.GitHub.Repo, "/", 2)

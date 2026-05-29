@@ -188,6 +188,11 @@ type Controller struct {
 	// Owner and repo for GitHub operations
 	owner string
 	repo  string
+
+	// GH-3271: called after a PR merges and pilot-done is applied so pollers
+	// can immediately re-mark the issue as processed, closing the merge→done
+	// race window before label propagation catches up.
+	onIssueDone func(issueNumber int)
 }
 
 // NewController creates an autopilot controller with all required components.
@@ -359,6 +364,14 @@ func (c *Controller) RestoreState() (int, error) {
 	}
 
 	return restored, nil
+}
+
+// SetOnIssueDone registers a callback invoked after a PR merges and pilot-done
+// is applied. The callback receives the issue number and should mark it as
+// processed in every active poller so the merge→done window cannot trigger
+// phantom re-dispatch. GH-3271.
+func (c *Controller) SetOnIssueDone(fn func(issueNumber int)) {
+	c.onIssueDone = fn
 }
 
 // OnPRCreated registers a new PR for autopilot processing.
@@ -1224,6 +1237,12 @@ func (c *Controller) handleMerging(ctx context.Context, prState *PRState) error 
 	// GH-1015: Add pilot-done label after successful merge (not at PR creation)
 	// This prevents false positives where PRs are closed without merging
 	if prState.IssueNumber > 0 {
+		// GH-3271: mark issue processed in all pollers before any label updates so
+		// a poll tick that fires during the merge→pilot-done propagation window
+		// cannot re-dispatch the issue (phantom pilot-blocked).
+		if c.onIssueDone != nil {
+			c.onIssueDone(prState.IssueNumber)
+		}
 		if err := c.ghClient.AddLabels(ctx, c.owner, c.repo, prState.IssueNumber, []string{github.LabelDone}); err != nil {
 			c.log.Warn("failed to add pilot-done label after merge", "issue", prState.IssueNumber, "error", err)
 		}

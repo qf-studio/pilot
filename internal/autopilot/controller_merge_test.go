@@ -230,3 +230,74 @@ func TestController_HandleMerging_ClosesIssueWithPilotDone(t *testing.T) {
 		t.Error("pilot-in-progress should be removed after merge")
 	}
 }
+
+// TestController_HandleMerging_CallsOnIssueDone verifies that the SetOnIssueDone
+// callback fires with the correct issue number after a successful PR merge. GH-3271.
+func TestController_HandleMerging_CallsOnIssueDone(t *testing.T) {
+	var doneCalled []int
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/repos/owner/repo/commits/sha77/check-runs":
+			resp := github.CheckRunsResponse{
+				TotalCount: 1,
+				CheckRuns: []github.CheckRun{
+					{Name: "ci", Status: github.CheckRunCompleted, Conclusion: github.ConclusionSuccess},
+				},
+			}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(resp)
+
+		case r.URL.Path == "/repos/owner/repo/pulls/77/merge" && r.Method == http.MethodPost:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"sha":"mergedSHA","merged":true,"message":"merged"}`))
+
+		case r.URL.Path == "/repos/owner/repo/issues/55/labels" && r.Method == http.MethodPost:
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode([]github.Label{})
+
+		case r.URL.Path == "/repos/owner/repo/issues/55" && r.Method == http.MethodPatch:
+			w.WriteHeader(http.StatusOK)
+
+		default:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("{}"))
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.Environment = EnvDev
+	cfg.AutoMerge = true
+	cfg.AutoReview = false
+	cfg.RequiredChecks = []string{"ci"}
+
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+	c.SetOnIssueDone(func(issueNumber int) {
+		doneCalled = append(doneCalled, issueNumber)
+	})
+	c.mu.Lock()
+	c.activePRs[77] = &PRState{
+		PRNumber:    77,
+		PRURL:       "https://github.com/owner/repo/pull/77",
+		IssueNumber: 55,
+		BranchName:  "pilot/GH-55",
+		HeadSHA:     "sha77",
+		Stage:       StageMerging,
+		CreatedAt:   time.Now(),
+	}
+	c.mu.Unlock()
+
+	if err := c.ProcessPR(context.Background(), 77, nil); err != nil {
+		t.Fatalf("ProcessPR returned error: %v", err)
+	}
+
+	pr, _ := c.GetPRState(77)
+	if pr.Stage != StageMerged {
+		t.Errorf("Stage = %s, want %s", pr.Stage, StageMerged)
+	}
+	if len(doneCalled) != 1 || doneCalled[0] != 55 {
+		t.Errorf("onIssueDone called with %v, want [55]", doneCalled)
+	}
+}
