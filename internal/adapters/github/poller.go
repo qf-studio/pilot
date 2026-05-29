@@ -1379,6 +1379,12 @@ func (p *Poller) Reset() {
 	p.mu.Unlock()
 }
 
+// MarkProcessed marks an issue as processed so findOldestUnprocessedIssue skips it.
+// Called by the executor after epic sub-issues are created to prevent re-dispatch (GH-3240).
+func (p *Poller) MarkProcessed(number int) {
+	p.markProcessed(number)
+}
+
 // ClearProcessed removes a single issue from the processed map.
 // Used by the stale label cleaner when removing pilot-failed labels
 // to allow the issue to be retried without restarting Pilot.
