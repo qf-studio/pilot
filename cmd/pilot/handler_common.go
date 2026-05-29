@@ -157,7 +157,7 @@ func handleIssueGeneric(ctx context.Context, deps HandlerDeps, info IssueInfo, t
 			if waitErr != nil {
 				execErr = fmt.Errorf("failed waiting for execution: %w", waitErr)
 			} else if exec.Status == "failed" {
-				execErr = fmt.Errorf("execution failed: %s", exec.Error)
+				execErr = fmt.Errorf("execution failed: %s", execFailureMsg(exec.Error))
 			} else {
 				result = &executor.ExecutionResult{
 					TaskID:    task.ID,
@@ -271,4 +271,14 @@ func handleIssueGeneric(ctx context.Context, deps HandlerDeps, info IssueInfo, t
 	}
 
 	return hr, execErr
+}
+
+// execFailureMsg returns the error detail for a failed dispatcher execution.
+// When exec.Error is empty (the executor failed silently), a descriptive default
+// is substituted so callers never build a bare "execution failed: " comment.
+func execFailureMsg(execError string) string {
+	if execError == "" {
+		return "executor reported failure without providing an error message"
+	}
+	return execError
 }
