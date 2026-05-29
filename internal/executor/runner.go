@@ -29,6 +29,13 @@ import (
 // GH-2402: terminal-classify these so the poller stops the retry loop.
 var permanentFailurePatterns = []string{
 	"PR creation refused",
+	// GH-3224: a no-op run (ghost-SHA guard tripped — both the worktree-HEAD and
+	// post-push variants begin with this prefix) is deterministic: retrying the
+	// identical prompt reproduces it (observed 4× on GH-3228). Classify terminal
+	// so the poller labels pilot-blocked instead of burning cycles on pilot-failed
+	// retries. A human (or a re-dispatch carrying the EvidenceBackedSpecDirective)
+	// resolves it.
+	"no new commit produced",
 }
 
 // IsPermanentFailure reports whether an error message represents a
