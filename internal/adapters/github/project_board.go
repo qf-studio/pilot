@@ -28,9 +28,19 @@ const (
   }
 }`
 
-	queryIssueProjectItems = `query($issueID: ID!) {
+	queryIssueProjectItems = `query($issueID: ID!, $fieldName: String!) {
   node(id: $issueID) {
-    ... on Issue { projectItems(first: 20) { nodes { id project { id } } } }
+    ... on Issue {
+      projectItems(first: 20) {
+        nodes {
+          id
+          project { id }
+          fieldValueByName(name: $fieldName) {
+            ... on ProjectV2ItemFieldSingleSelectValue { optionId }
+          }
+        }
+      }
+    }
   }
 }`
 
@@ -80,6 +90,10 @@ type (
 					Project struct {
 						ID string `json:"id"`
 					} `json:"project"`
+					// FieldValueByName is the item's current Status option; null/empty when unset.
+					FieldValueByName struct {
+						OptionID string `json:"optionId"`
+					} `json:"fieldValueByName"`
 				} `json:"nodes"`
 			} `json:"projectItems"`
 		} `json:"node"`
@@ -129,12 +143,23 @@ func (p *ProjectBoardSync) UpdateProjectItemStatus(ctx context.Context, issueNod
 		return nil
 	}
 
-	itemID, err := p.getIssueProjectItemID(ctx, issueNodeID)
+	itemID, currentOptionID, err := p.getIssueProjectItem(ctx, issueNodeID)
 	if err != nil {
 		return fmt.Errorf("get issue project item: %w", err)
 	}
 	if itemID == "" {
-		slog.Warn("issue not found in project board", "issue_node_id", issueNodeID, "project_id", p.projectID)
+		// Off-board item (org-level boards span repos; not every issue is added).
+		// Skip silently — never hard-fail the lifecycle on a missing card.
+		slog.Debug("issue not on project board; skipping status update",
+			"issue_node_id", issueNodeID, "project_id", p.projectID, "status", statusName)
+		return nil
+	}
+
+	// Idempotency: skip the write (and its GraphQL call) when the card is already
+	// in the target column. Avoids board thrash on repeated transitions.
+	if currentOptionID == optionID {
+		slog.Debug("project card already in target status; skipping update",
+			"issue_node_id", issueNodeID, "status", statusName)
 		return nil
 	}
 
@@ -210,12 +235,17 @@ func (p *ProjectBoardSync) resolveProjectID(ctx context.Context) (string, error)
 	return resolveProjectID(ctx, p.client, p.owner, p.config.ProjectNumber)
 }
 
+// statusFieldName returns the configured Status field name, defaulting to "Status".
+func (p *ProjectBoardSync) statusFieldName() string {
+	if p.config.StatusField != "" {
+		return p.config.StatusField
+	}
+	return "Status"
+}
+
 // resolveFieldAndOptions fetches the Status field ID and all option name→ID mappings.
 func (p *ProjectBoardSync) resolveFieldAndOptions(ctx context.Context) (string, map[string]string, error) {
-	fieldName := p.config.StatusField
-	if fieldName == "" {
-		fieldName = "Status"
-	}
+	fieldName := p.statusFieldName()
 
 	vars := map[string]interface{}{
 		"projectID": p.projectID,
@@ -239,25 +269,28 @@ func (p *ProjectBoardSync) resolveFieldAndOptions(ctx context.Context) (string, 
 	return resp.Node.Field.ID, optionIDs, nil
 }
 
-// getIssueProjectItemID finds the project item ID for the given issue in this project.
-// Returns "" if the issue is not in the project.
-func (p *ProjectBoardSync) getIssueProjectItemID(ctx context.Context, issueNodeID string) (string, error) {
+// getIssueProjectItem finds the project item for the given issue in this project,
+// returning the item ID and its current Status option ID. Matching is by project ID,
+// so it tolerates org-level boards spanning multiple repos. Returns ("", "", nil) when
+// the issue is not on this board.
+func (p *ProjectBoardSync) getIssueProjectItem(ctx context.Context, issueNodeID string) (itemID, currentOptionID string, err error) {
 	vars := map[string]interface{}{
-		"issueID": issueNodeID,
+		"issueID":   issueNodeID,
+		"fieldName": p.statusFieldName(),
 	}
 
 	var resp issueProjectItemsResponse
 	if err := p.client.ExecuteGraphQL(ctx, queryIssueProjectItems, vars, &resp); err != nil {
-		return "", fmt.Errorf("query issue project items: %w", err)
+		return "", "", fmt.Errorf("query issue project items: %w", err)
 	}
 
 	for _, item := range resp.Node.ProjectItems.Nodes {
 		if item.Project.ID == p.projectID {
-			return item.ID, nil
+			return item.ID, item.FieldValueByName.OptionID, nil
 		}
 	}
 
-	return "", nil
+	return "", "", nil
 }
 
 // setItemFieldValue calls the updateProjectV2ItemFieldValue mutation.
