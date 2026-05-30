@@ -6,12 +6,14 @@ import (
 	"sort"
 	"time"
 
+	"github.com/qf-studio/pilot/internal/alerts"
 	"github.com/qf-studio/pilot/internal/autopilot"
 )
 
 // PrometheusExporter formats metrics for Prometheus scraping.
 type PrometheusExporter struct {
 	metricsSource MetricsSource
+	alertsSource  AlertMetricsSource
 }
 
 // MetricsSource provides metrics data for the exporter.
@@ -20,9 +22,20 @@ type MetricsSource interface {
 	HistogramSnapshot() autopilot.HistogramData
 }
 
+// AlertMetricsSource provides alert metrics for the exporter.
+// *alerts.Engine satisfies this interface via its AlertSnapshot method.
+type AlertMetricsSource interface {
+	AlertSnapshot() alerts.AlertMetricsSnapshot
+}
+
 // NewPrometheusExporter creates a new Prometheus exporter.
 func NewPrometheusExporter(source MetricsSource) *PrometheusExporter {
 	return &PrometheusExporter{metricsSource: source}
+}
+
+// SetAlertsSource wires an alert metrics source into the exporter.
+func (e *PrometheusExporter) SetAlertsSource(s AlertMetricsSource) {
+	e.alertsSource = s
 }
 
 // WritePrometheus writes metrics in Prometheus text format to the writer.
@@ -195,6 +208,35 @@ func (e *PrometheusExporter) WritePrometheus(w io.Writer) error {
 		"CI wait duration",
 		hist.CIWaitDurations,
 		[]float64{30, 60, 120, 300, 600, 900, 1200, 1800, 3600}) // 30s, 1m, 2m, 5m, 10m, 15m, 20m, 30m, 1h
+
+	// --- Alert metrics (optional; only emitted when an AlertMetricsSource is wired) ---
+	if e.alertsSource != nil {
+		asnap := e.alertsSource.AlertSnapshot()
+
+		// alerts_fired_total{rule, severity}
+		writeHelp(w, "alerts_fired_total", "Total alerts fired by rule and severity")
+		writeType(w, "alerts_fired_total", "counter")
+		for k, v := range asnap.FiredTotal {
+			writeCounter(w, "alerts_fired_total", v, "rule", k.Rule, "severity", k.Severity)
+		}
+
+		// alert_delivery_total{channel, type, result}
+		writeHelp(w, "alert_delivery_total", "Total alert delivery attempts by channel, type, and result")
+		writeType(w, "alert_delivery_total", "counter")
+		for k, v := range asnap.DeliveryTotal {
+			writeCounter(w, "alert_delivery_total", v, "channel", k.Channel, "type", k.Type, "result", k.Result)
+		}
+
+		// alert_events_dropped_total
+		writeHelp(w, "alert_events_dropped_total", "Total alert events dropped due to a full event queue")
+		writeType(w, "alert_events_dropped_total", "counter")
+		writeCounter(w, "alert_events_dropped_total", asnap.DroppedTotal)
+
+		// alert_queue_depth
+		writeHelp(w, "alert_queue_depth", "Current number of events waiting in the alert event queue")
+		writeType(w, "alert_queue_depth", "gauge")
+		writeGauge(w, "alert_queue_depth", float64(asnap.QueueDepth))
+	}
 
 	return nil
 }
