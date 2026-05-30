@@ -179,6 +179,18 @@ func TestMemory_ProcessedMapGrowth(t *testing.T) {
 				return
 			}
 		}
+		// TASK-321 PR-4: parallel checkForNewIssues now runs the fresh-candidate
+		// merged-work guard, which probes /search/issues + /pulls per candidate.
+		// Answer "no merged work" cheaply so the guard is a fast no-op — otherwise
+		// it would decode the 1000-element list per issue and starve the 30s poll.
+		if strings.HasPrefix(r.URL.Path, "/search/issues") {
+			_, _ = w.Write([]byte(`{"total_count":0,"items":[]}`))
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/pulls") {
+			_, _ = w.Write([]byte(`[]`))
+			return
+		}
 		n := atomic.AddInt64(&pollCount, 1)
 		if n <= 2 {
 			// Call 1: recoverOrphanedIssues, Call 2: first checkForNewIssues
