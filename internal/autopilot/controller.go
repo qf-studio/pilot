@@ -280,6 +280,13 @@ func (c *Controller) SetReleaseSummaryGenerator(gen *ReleaseSummaryGenerator) {
 }
 
 // persistPRState saves a PR state to the store if available.
+//
+// TASK-324 concurrency contract: this method is LOCK-FREE with respect to the
+// per-PR mutex. The CALLER MUST hold prState.mu (so the fields read by
+// stateStore.SavePRState are stable) — OR the prState must not yet be published in
+// c.activePRs (e.g. freshly constructed). It must NOT take prState.mu itself: every
+// caller that holds the live pointer already owns prState.mu, and re-locking would
+// deadlock (Go's sync.Mutex is non-reentrant).
 func (c *Controller) persistPRState(prState *PRState) {
 	if c.stateStore == nil {
 		return
@@ -392,8 +399,14 @@ func (c *Controller) OnPRCreated(prNumber int, prURL string, issueNumber int, he
 	c.activePRs[prNumber] = prState
 	c.mu.Unlock()
 
-	// Persist to SQLite (idempotent, safe outside lock)
+	// Persist to SQLite (idempotent, safe outside lock).
+	// TASK-324: prState is now published in activePRs, so a concurrent ProcessPR or
+	// webhook could already hold a reference. Take prState.mu for the persist to honor
+	// the persistPRState contract (caller holds prState.mu). c.mu is already released,
+	// so the prState.mu→c.mu ordering invariant holds.
+	prState.mu.Lock()
 	c.persistPRState(prState)
+	prState.mu.Unlock()
 
 	c.log.Info("PR registered for autopilot",
 		"pr", prNumber,
@@ -448,17 +461,19 @@ func (c *Controller) OnReviewRequested(prNumber int, action, state, reviewer str
 		return
 	}
 
+	// TASK-324: guard the read of prState.Stage (for the log), the Stage write, and
+	// the persist under the per-PR mutex. The pointer was fetched under c.mu above and
+	// c.mu has since been released, so taking prState.mu here keeps the no-deadlock
+	// invariant (prState.mu before c.mu, never the reverse).
+	prState.mu.Lock()
 	c.log.Warn("Changes requested on PR, transitioning to review_requested stage",
 		"pr", prNumber,
 		"reviewer", reviewer,
 		"current_stage", prState.Stage,
 	)
-
-	c.mu.Lock()
 	prState.Stage = StageReviewRequested
-	c.mu.Unlock()
-
 	c.persistPRState(prState)
+	prState.mu.Unlock()
 }
 
 // ProcessPR processes a single PR through the state machine.
@@ -472,6 +487,16 @@ func (c *Controller) ProcessPR(ctx context.Context, prNumber int, ghPR *github.P
 	if !ok {
 		return fmt.Errorf("PR %d not tracked", prNumber)
 	}
+
+	// TASK-324: hold the per-PR mutex for the entire processing body. This single
+	// lock covers all 11 handleX(prState) handlers, the inline PRTitle/TargetBranch/
+	// Error writes, and the persistPRState call, serialising the main loop against
+	// webhook writers (OnReviewRequested, SetApprovalDecision) on the same PR.
+	// Lock ordering: we hold prState.mu and may take c.mu below (isPRCircuitOpen,
+	// recordPRFailure/resetPRFailures, the lastProgressAt update, removePR via
+	// handlers). Never the reverse — see the no-deadlock invariant on PRState.
+	prState.mu.Lock()
+	defer prState.mu.Unlock()
 
 	// Per-PR circuit breaker check
 	if c.isPRCircuitOpen(prNumber) {
@@ -1169,34 +1194,53 @@ func (c *Controller) SetApprovalDecision(ctx context.Context, requestID string, 
 	if requestID == "" {
 		return nil
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
+
+	// TASK-324: collect the live pointers under c.mu, then RELEASE c.mu before taking
+	// any prState.mu (no-deadlock invariant: prState.mu before c.mu, never reverse).
+	// ApprovalRequestID is written under prState.mu (submitAsyncApprovalRequest), so we
+	// also read it under prState.mu to find the match.
+	c.mu.RLock()
+	live := make([]*PRState, 0, len(c.activePRs))
 	for _, pr := range c.activePRs {
-		if pr.ApprovalRequestID == requestID {
-			pr.ApprovalDecision = decision
-			if c.stateStore != nil {
-				_ = c.stateStore.SavePRState(pr)
-			}
-			if c.memoryStore != nil {
-				if merr := c.memoryStore.SetApprovalDecision(ctx, requestID, decision, by); merr != nil {
-					taskIDStr := fmt.Sprintf("GH-%d", pr.IssueNumber)
-					if errors.Is(merr, sql.ErrNoRows) {
-						c.log.Warn("failed to persist approval decision to executions (no matching row)",
-							"pr", pr.PRNumber, "task_id", taskIDStr, "request_id", requestID,
-							"op", "SetApprovalDecision", "decision", decision, "error", merr)
-						c.metrics.RecordApprovalPersistMiss("decision")
-					} else {
-						c.log.Warn("failed to persist approval decision to executions",
-							"pr", pr.PRNumber, "task_id", taskIDStr, "request_id", requestID,
-							"op", "SetApprovalDecision", "decision", decision, "error", merr)
-					}
+		live = append(live, pr)
+	}
+	c.mu.RUnlock()
+
+	for _, pr := range live {
+		pr.mu.Lock()
+		if pr.ApprovalRequestID != requestID {
+			pr.mu.Unlock()
+			continue
+		}
+		pr.ApprovalDecision = decision
+		if c.stateStore != nil {
+			_ = c.stateStore.SavePRState(pr)
+		}
+		prNumber := pr.PRNumber
+		issueNumber := pr.IssueNumber
+		pr.mu.Unlock()
+
+		// memoryStore persistence is keyed by requestID, not by the live PRState
+		// fields, so it is safe (and preferable) to run it outside prState.mu.
+		if c.memoryStore != nil {
+			if merr := c.memoryStore.SetApprovalDecision(ctx, requestID, decision, by); merr != nil {
+				taskIDStr := fmt.Sprintf("GH-%d", issueNumber)
+				if errors.Is(merr, sql.ErrNoRows) {
+					c.log.Warn("failed to persist approval decision to executions (no matching row)",
+						"pr", prNumber, "task_id", taskIDStr, "request_id", requestID,
+						"op", "SetApprovalDecision", "decision", decision, "error", merr)
+					c.metrics.RecordApprovalPersistMiss("decision")
+				} else {
+					c.log.Warn("failed to persist approval decision to executions",
+						"pr", prNumber, "task_id", taskIDStr, "request_id", requestID,
+						"op", "SetApprovalDecision", "decision", decision, "error", merr)
 				}
 			}
-			c.log.Info("approval decision applied to PR state",
-				"pr", pr.PRNumber, "request_id", requestID,
-				"decision", decision, "by", by)
-			return nil
 		}
+		c.log.Info("approval decision applied to PR state",
+			"pr", prNumber, "request_id", requestID,
+			"decision", decision, "by", by)
+		return nil
 	}
 	// requestID not found in this controller — normal in multi-repo deployments.
 	return nil
@@ -1925,14 +1969,31 @@ func (c *Controller) removePR(prNumber int) {
 	c.log.Info("PR removed from tracking", "pr", prNumber)
 }
 
-// GetActivePRs returns all tracked PRs.
+// GetActivePRs returns detached snapshots of all tracked PRs.
+//
+// TASK-324: each returned *PRState is a field-by-field copy taken under that PR's
+// own mu (via snapshot()), so every read-only consumer (metrics.UpdateActivePRs,
+// metrics_alerter, dashboard/tui, gateway/server, cmd/pilot/adapters) is race-free
+// for free and can never observe a torn write. The returned pointers are NOT the
+// live map entries; callers that must mutate state (e.g. processAllPRs) re-fetch the
+// live pointer by PRNumber under c.mu and take that pr.mu themselves.
+//
+// Lock ordering: we collect the live pointers under c.mu.RLock, RELEASE c.mu, then
+// take each pr.mu to snapshot. This preserves the no-deadlock invariant (never hold
+// c.mu while acquiring a prState.mu).
 func (c *Controller) GetActivePRs() []*PRState {
 	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	prs := make([]*PRState, 0, len(c.activePRs))
+	live := make([]*PRState, 0, len(c.activePRs))
 	for _, pr := range c.activePRs {
-		prs = append(prs, pr)
+		live = append(live, pr)
+	}
+	c.mu.RUnlock()
+
+	prs := make([]*PRState, 0, len(live))
+	for _, pr := range live {
+		pr.mu.Lock()
+		prs = append(prs, pr.snapshot())
+		pr.mu.Unlock()
 	}
 	return prs
 }
@@ -2418,7 +2479,12 @@ func (c *Controller) ScanRecentlyMergedPRs(ctx context.Context) error {
 		c.mu.Lock()
 		c.activePRs[pr.Number] = prState
 		c.mu.Unlock()
+		// prState is now published in activePRs, so a concurrent ProcessPR or
+		// webhook could already hold the pointer — persist under prState.mu per
+		// the caller-holds-the-lock contract (mirrors OnPRCreated).
+		prState.mu.Lock()
 		c.persistPRState(prState)
+		prState.mu.Unlock()
 
 		triggered++
 	}
@@ -2514,16 +2580,27 @@ func (c *Controller) processAllPRs(ctx context.Context) {
 
 	c.log.Info("processing active PRs", "count", len(prs))
 
-	for _, pr := range prs {
+	for _, snap := range prs {
 		select {
 		case <-ctx.Done():
 			return
 		default:
 			c.log.Debug("checking PR",
-				"pr", pr.PRNumber,
-				"stage", pr.Stage,
-				"ci_status", pr.CIStatus,
+				"pr", snap.PRNumber,
+				"stage", snap.Stage,
+				"ci_status", snap.CIStatus,
 			)
+
+			// TASK-324: `snap` is a detached snapshot from GetActivePRs. Re-fetch the
+			// LIVE pointer by number so the pre-ProcessPR mutations below (and
+			// checkExternalMergeOrClose) operate on the shared state under its mutex.
+			c.mu.RLock()
+			pr, ok := c.activePRs[snap.PRNumber]
+			c.mu.RUnlock()
+			if !ok {
+				// PR was removed between snapshot and now — skip.
+				continue
+			}
 
 			// Fetch PR once, use twice - cache to avoid redundant API calls
 			ghPR, err := c.ghClient.GetPullRequest(ctx, c.owner, c.repo, pr.PRNumber)
@@ -2532,8 +2609,15 @@ func (c *Controller) processAllPRs(ctx context.Context) {
 				continue
 			}
 
-			// Check if PR was merged/closed externally before processing
-			if c.checkExternalMergeOrClose(ctx, pr, ghPR) {
+			// TASK-324: hold pr.mu around the external-merge/close check and the
+			// polling-mode changes-requested read-modify-write + persist. Release it
+			// BEFORE calling ProcessPR, which re-acquires pr.mu for its whole body
+			// (Go's sync.Mutex is non-reentrant). Lock ordering preserved: pr.mu is
+			// taken before any c.mu that checkExternalMergeOrClose→removePR acquires.
+			pr.mu.Lock()
+			externallyResolved := c.checkExternalMergeOrClose(ctx, pr, ghPR)
+			if externallyResolved {
+				pr.mu.Unlock()
 				continue
 			}
 
@@ -2546,12 +2630,11 @@ func (c *Controller) processAllPRs(ctx context.Context) {
 						"pr", pr.PRNumber,
 						"stage", pr.Stage,
 					)
-					c.mu.Lock()
 					pr.Stage = StageReviewRequested
-					c.mu.Unlock()
 					c.persistPRState(pr)
 				}
 			}
+			pr.mu.Unlock()
 
 			if err := c.ProcessPR(ctx, pr.PRNumber, ghPR); err != nil {
 				// Error already logged in ProcessPR
