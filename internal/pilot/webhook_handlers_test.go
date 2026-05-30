@@ -22,8 +22,9 @@ func computeTestHMAC(secret string, payload []byte) string {
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
-// TestJiraWebhookSignatureGating asserts that Handle is NOT reached when the
-// signature is invalid — mirroring pilot.go's registered jira handler.
+// TestJiraWebhookSignatureGating asserts that Handle is gated on a body-HMAC
+// computed over the exact raw request body the gateway buffered (TASK-333),
+// mirroring pilot.go's registered jira handler.
 func TestJiraWebhookSignatureGating(t *testing.T) {
 	router := gateway.NewRouter()
 	wh := jira.NewWebhookHandler(nil, testutil.FakeWebhookSecret, "pilot")
@@ -35,42 +36,59 @@ func TestJiraWebhookSignatureGating(t *testing.T) {
 	})
 
 	ctx := context.Background()
+	// Mirror pilot.go: verify over payload["_raw_body"], not a re-marshaled map.
 	router.RegisterWebhookHandler("jira", func(payload map[string]interface{}) {
 		signature, _ := payload["_signature"].(string)
-		sigBytes, err := marshalWebhookPayload(payload)
-		if err != nil {
-			return
-		}
-		if !wh.VerifySignature(sigBytes, signature) {
+		rawBody, _ := payload["_raw_body"].(string)
+		if !wh.VerifySignature([]byte(rawBody), signature) {
 			return
 		}
 		_ = wh.Handle(ctx, payload)
 	})
 
+	// Non-canonical body (whitespace + key order json.Marshal would not
+	// reproduce). The pre-TASK-333 re-marshal path would reject a valid HMAC
+	// over these bytes; raw-body verification accepts it.
+	rawBody := `{ "webhookEvent":  "jira:issue_updated", "issue": {"key":"PROJ-1"} }`
+	validSig := computeTestHMAC(testutil.FakeWebhookSecret, []byte(rawBody))
+
 	t.Run("bad signature blocks Handle", func(t *testing.T) {
+		handleCalled = false
 		router.HandleWebhook("jira", map[string]interface{}{
-			"_signature":   "bad-signature",
-			"webhookEvent": "jira:issue_created",
+			"_signature": "bad-signature",
+			"_raw_body":  rawBody,
 		})
 		if handleCalled {
 			t.Error("Handle must not be called when signature is invalid")
 		}
 	})
 
-	t.Run("valid signature reaches Handle", func(t *testing.T) {
-		// Build the payload that pilot's marshalWebhookPayload will see (no _ keys).
-		inner := map[string]interface{}{"webhookEvent": "jira:issue_updated"}
-		innerBytes, _ := json.Marshal(inner)
-		sig := computeTestHMAC(testutil.FakeWebhookSecret, innerBytes)
-
+	t.Run("tampered body blocks Handle", func(t *testing.T) {
 		handleCalled = false
 		router.HandleWebhook("jira", map[string]interface{}{
-			"_signature":   sig,
-			"webhookEvent": "jira:issue_updated",
+			"_signature": validSig,
+			"_raw_body":  rawBody + " ", // mutated after signing
 		})
-		// Handle is reached (event type is unsupported so onIssue won't fire, but
-		// Handle itself returns nil without error — the gate was passed).
-		_ = handleCalled // gate check: no panic / early return from the handler
+		if handleCalled {
+			t.Error("Handle must not be called when the body was tampered after signing")
+		}
+	})
+
+	t.Run("valid body-HMAC over raw bytes passes the gate", func(t *testing.T) {
+		// The whole point of TASK-333: an HMAC over the exact raw bytes passes.
+		if !wh.VerifySignature([]byte(rawBody), validSig) {
+			t.Fatal("valid HMAC over the raw body must pass — TASK-333 regression")
+		}
+		// Decode the buffered bytes into the routed map exactly as server.go does,
+		// then route. issue_updated with no changelog returns before any client
+		// call, so this asserts the gate passed without panicking.
+		var payload map[string]interface{}
+		if err := json.Unmarshal([]byte(rawBody), &payload); err != nil {
+			t.Fatalf("raw body must decode: %v", err)
+		}
+		payload["_signature"] = validSig
+		payload["_raw_body"] = rawBody
+		router.HandleWebhook("jira", payload)
 	})
 }
 
@@ -87,13 +105,11 @@ func TestAsanaWebhookSignatureGating(t *testing.T) {
 	})
 
 	ctx := context.Background()
+	// Mirror pilot.go: verify over payload["_raw_body"], not a re-marshaled map.
 	router.RegisterWebhookHandler("asana", func(payload map[string]interface{}) {
 		signature, _ := payload["_signature"].(string)
-		sigBytes, err := marshalWebhookPayload(payload)
-		if err != nil {
-			return
-		}
-		if !wh.VerifySignature(sigBytes, signature) {
+		rawBody, _ := payload["_raw_body"].(string)
+		if !wh.VerifySignature([]byte(rawBody), signature) {
 			return
 		}
 		payloadBytes, err := json.Marshal(payload)
@@ -107,14 +123,43 @@ func TestAsanaWebhookSignatureGating(t *testing.T) {
 		_ = wh.Handle(ctx, &wp)
 	})
 
+	// Non-canonical body whose re-marshaling would differ from the raw bytes.
+	rawBody := `{ "events": [] }`
+	validSig := computeTestHMAC(testutil.FakeAsanaWebhookSecret, []byte(rawBody))
+
 	t.Run("bad signature blocks Handle", func(t *testing.T) {
+		handleCalled = false
 		router.HandleWebhook("asana", map[string]interface{}{
 			"_signature": "bad-signature",
-			"events":     []interface{}{},
+			"_raw_body":  rawBody,
 		})
 		if handleCalled {
 			t.Error("Handle must not be called when signature is invalid")
 		}
+	})
+
+	t.Run("tampered body blocks Handle", func(t *testing.T) {
+		handleCalled = false
+		router.HandleWebhook("asana", map[string]interface{}{
+			"_signature": validSig,
+			"_raw_body":  rawBody + " ", // mutated after signing
+		})
+		if handleCalled {
+			t.Error("Handle must not be called when the body was tampered after signing")
+		}
+	})
+
+	t.Run("valid body-HMAC over raw bytes passes the gate", func(t *testing.T) {
+		if !wh.VerifySignature([]byte(rawBody), validSig) {
+			t.Fatal("valid HMAC over the raw body must pass — TASK-333 regression")
+		}
+		var payload map[string]interface{}
+		if err := json.Unmarshal([]byte(rawBody), &payload); err != nil {
+			t.Fatalf("raw body must decode: %v", err)
+		}
+		payload["_signature"] = validSig
+		payload["_raw_body"] = rawBody
+		router.HandleWebhook("asana", payload) // gate passed; empty events → no callback
 	})
 }
 

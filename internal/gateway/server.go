@@ -660,14 +660,24 @@ func (s *Server) handleJiraWebhook(w http.ResponseWriter, r *http.Request) {
 	// Jira may send signature in header (if configured)
 	signature := r.Header.Get("X-Hub-Signature")
 
+	// Read the raw body once. Body-HMAC verification (TASK-333) must run over
+	// the exact bytes Jira signed; decoding into a map and re-marshaling would
+	// not reproduce them. Decode from the buffered bytes after stashing them.
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "Failed to read request body", http.StatusBadRequest)
+		return
+	}
+
 	var payload map[string]interface{}
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+	if err := json.Unmarshal(body, &payload); err != nil {
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
 		return
 	}
 
 	// Add metadata to payload for handler
 	payload["_signature"] = signature
+	payload["_raw_body"] = string(body)
 
 	webhookEvent, _ := payload["webhookEvent"].(string)
 	logging.WithComponent("gateway").Info("Received Jira webhook", slog.String("event", webhookEvent))
@@ -725,14 +735,24 @@ func (s *Server) handleAsanaWebhook(w http.ResponseWriter, r *http.Request) {
 	// Asana sends signature in X-Hook-Signature header
 	signature := r.Header.Get("X-Hook-Signature")
 
+	// Read the raw body once. Body-HMAC verification (TASK-333) must run over
+	// the exact bytes Asana signed; decoding into a map and re-marshaling would
+	// not reproduce them. Decode from the buffered bytes after stashing them.
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "Failed to read request body", http.StatusBadRequest)
+		return
+	}
+
 	var payload map[string]interface{}
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+	if err := json.Unmarshal(body, &payload); err != nil {
 		http.Error(w, "Invalid JSON", http.StatusBadRequest)
 		return
 	}
 
 	// Add metadata to payload for handler
 	payload["_signature"] = signature
+	payload["_raw_body"] = string(body)
 
 	logging.WithComponent("gateway").Info("Received Asana webhook")
 

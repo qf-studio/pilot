@@ -7,7 +7,6 @@ import (
 	"io/fs"
 	"log/slog"
 	"os"
-	"strings"
 	"sync"
 
 	"github.com/qf-studio/pilot/internal/adapters/asana"
@@ -474,15 +473,11 @@ func New(cfg *config.Config, opts ...Option) (*Pilot, error) {
 	if p.jiraWH != nil {
 		p.gateway.Router().RegisterWebhookHandler("jira", func(payload map[string]interface{}) {
 			signature, _ := payload["_signature"].(string)
-			// TODO(F2): The gateway currently JSON-decodes before calling handlers, so
-			// VerifySignature runs on re-marshaled bytes that may differ from the original
-			// body. This is best-effort verification until raw-body preservation is added.
-			sigBytes, err := marshalWebhookPayload(payload)
-			if err != nil {
-				logging.WithComponent("pilot").Error("Failed to marshal Jira payload for signature check", slog.Any("error", err))
-				return
-			}
-			if !p.jiraWH.VerifySignature(sigBytes, signature) {
+			// TASK-333: verify the HMAC over the exact raw request body the gateway
+			// buffered, not a re-marshaled map (which would not reproduce the bytes
+			// Jira signed).
+			rawBody, _ := payload["_raw_body"].(string)
+			if !p.jiraWH.VerifySignature([]byte(rawBody), signature) {
 				logging.WithComponent("pilot").Warn("Jira webhook signature verification failed")
 				return
 			}
@@ -525,15 +520,11 @@ func New(cfg *config.Config, opts ...Option) (*Pilot, error) {
 	if p.asanaWH != nil {
 		p.gateway.Router().RegisterWebhookHandler("asana", func(payload map[string]interface{}) {
 			signature, _ := payload["_signature"].(string)
-			// TODO(F2): The gateway currently JSON-decodes before calling handlers, so
-			// VerifySignature runs on re-marshaled bytes that may differ from the original
-			// body. This is best-effort verification until raw-body preservation is added.
-			sigBytes, err := marshalWebhookPayload(payload)
-			if err != nil {
-				logging.WithComponent("pilot").Error("Failed to marshal Asana payload for signature check", slog.Any("error", err))
-				return
-			}
-			if !p.asanaWH.VerifySignature(sigBytes, signature) {
+			// TASK-333: verify the HMAC over the exact raw request body the gateway
+			// buffered, not a re-marshaled map (which would not reproduce the bytes
+			// Asana signed).
+			rawBody, _ := payload["_raw_body"].(string)
+			if !p.asanaWH.VerifySignature([]byte(rawBody), signature) {
 				logging.WithComponent("pilot").Warn("Asana webhook signature verification failed")
 				return
 			}
@@ -1541,17 +1532,4 @@ func (p *Pilot) convertAlertsConfig(cfg *config.AlertsConfig) *alerts.AlertConfi
 	}
 
 	return alerts.FromConfigAlerts(cfg.Enabled, channels, rules, defaults)
-}
-
-// marshalWebhookPayload marshals a gateway payload map to JSON, excluding internal
-// metadata keys (prefixed with "_") injected by the gateway layer. Used to produce
-// canonical bytes for HMAC verification before signature material is mixed in.
-func marshalWebhookPayload(payload map[string]interface{}) ([]byte, error) {
-	filtered := make(map[string]interface{}, len(payload))
-	for k, v := range payload {
-		if !strings.HasPrefix(k, "_") {
-			filtered[k] = v
-		}
-	}
-	return json.Marshal(filtered)
 }
