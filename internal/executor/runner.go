@@ -2194,7 +2194,7 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 						smartAllowed, smartMCP := r.executionToolOptions()
 						retryResult, retryErr := r.backend.Execute(retryCtx, ExecuteOptions{
 							Prompt:          prompt,
-							ProjectPath:     task.ProjectPath,
+							ProjectPath:     executionPath, // TASK-323: retry in the worktree, not the user's real repo
 							Verbose:         task.Verbose,
 							Model:           selectedModel,
 							Effort:          selectedEffort,
@@ -2558,7 +2558,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 				noopRetryAllowed, noopRetryMCP := r.executionToolOptions()
 				retryResult, retryErr := r.backend.Execute(ctx, ExecuteOptions{
 					Prompt:          retryPrompt,
-					ProjectPath:     task.ProjectPath,
+					ProjectPath:     executionPath, // TASK-323: retry in the worktree so CountNewCommits can see its commits
 					Verbose:         task.Verbose,
 					Model:           selectedModel,
 					Effort:          selectedEffort,
