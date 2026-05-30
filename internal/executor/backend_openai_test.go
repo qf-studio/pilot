@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 // sseChunk formats a single SSE data line.
@@ -95,7 +96,10 @@ func newTestOpenAIBackend(t *testing.T, serverURL string) *OpenAIBackend {
 			Model:   "test-model",
 		},
 	}
-	return NewOpenAIBackend(cfg)
+	b := NewOpenAIBackend(cfg)
+	// Inject zero-duration backoffs so retry tests are instant.
+	b.retryWaits = []time.Duration{0, 0, 0, 0, 0}
+	return b
 }
 
 // --- Text-Only Streaming ---
@@ -392,14 +396,9 @@ func TestOpenAIBackend_Retry429(t *testing.T) {
 	defer srv.Close()
 
 	b := newTestOpenAIBackend(t, srv.URL)
-	// Override backoffs to zero for fast test
-	origBackoffs := []int{0} // We can't easily override the backoff slice, so just verify attempts
-	_ = origBackoffs
+	// Inject zero-duration backoffs so the retry is instant.
+	b.retryWaits = []time.Duration{0, 0, 0, 0, 0}
 
-	// The actual retry uses exponential backoff. To keep the test fast, we just
-	// verify that the backend eventually succeeds after a 429.
-	// Note: this test will be slow if it actually sleeps the full backoff.
-	// In practice the test is used to verify retry logic, not timing.
 	result, err := b.Execute(context.Background(), ExecuteOptions{
 		Prompt:      "test",
 		ProjectPath: t.TempDir(),
@@ -414,6 +413,60 @@ func TestOpenAIBackend_Retry429(t *testing.T) {
 		t.Errorf("expected at least 2 attempts, got %d", attempts)
 	}
 }
+
+// --- Context cancellation during 429 backoff ---
+//
+// Verifies that cancelling ctx while callAPI is waiting between retries returns
+// ctx.Err() promptly — not after the full backoff duration.
+
+func TestOpenAIBackend_CtxCancelDuring429Backoff(t *testing.T) {
+	longWait := 5 * time.Second
+
+	readyCh := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		select {
+		case readyCh <- struct{}{}:
+		default:
+		}
+	}))
+	defer srv.Close()
+
+	b := &OpenAIBackend{
+		apiKey:     "test-key",
+		model:      "test-model",
+		apiURL:     srv.URL + "/chat/completions",
+		config:     &BackendConfig{},
+		retryWaits: []time.Duration{longWait, longWait, longWait, longWait, longWait},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		<-readyCh
+		cancel()
+	}()
+
+	start := time.Now()
+	req := &openaiRequest{
+		Model:    "test-model",
+		Messages: []openaiMsg{{Role: "user", Content: strPtr("hi")}},
+	}
+	_, err := b.callAPI(ctx, req)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected error on context cancellation, got nil")
+	}
+	if err != context.Canceled {
+		t.Errorf("error = %v, want context.Canceled", err)
+	}
+	if elapsed >= longWait {
+		t.Errorf("callAPI took %v, want << %v (backoff not honouring ctx)", elapsed, longWait)
+	}
+}
+
+// strPtr returns a pointer to s; used in test message construction.
+func strPtr(s string) *string { return &s }
 
 // --- Retry on 500 ---
 
