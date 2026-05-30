@@ -948,6 +948,81 @@ func TestJiraWebhookTableDriven(t *testing.T) {
 	}
 }
 
+// TestJiraWebhookPreservesRawBody asserts the gateway buffers the exact request
+// body into payload["_raw_body"] (TASK-333) so downstream body-HMAC verification
+// runs over the bytes Jira signed, and that JSON still decodes from the buffer.
+func TestJiraWebhookPreservesRawBody(t *testing.T) {
+	config := &Config{Host: "127.0.0.1", Port: 9090}
+	server := NewServer(config)
+
+	var captured map[string]interface{}
+	server.Router().RegisterWebhookHandler("jira", func(payload map[string]interface{}) {
+		captured = payload
+	})
+
+	// Non-canonical formatting (whitespace + key order) that json.Marshal would
+	// not reproduce — proves the raw bytes are preserved verbatim.
+	rawBody := `{ "webhookEvent":  "jira:issue_created", "issue": {"key":"PROJ-9"} }`
+	req := httptest.NewRequest(http.MethodPost, "/webhooks/jira", strings.NewReader(rawBody))
+	req.Header.Set("X-Hub-Signature", "sha256=deadbeef")
+	w := httptest.NewRecorder()
+
+	server.handleJiraWebhook(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if captured == nil {
+		t.Fatal("webhook was not routed to the registered handler")
+	}
+	if got := captured["_raw_body"]; got != rawBody {
+		t.Errorf("_raw_body = %q, want exact request body %q", got, rawBody)
+	}
+	if got := captured["_signature"]; got != "sha256=deadbeef" {
+		t.Errorf("_signature = %q, want propagated header", got)
+	}
+	// JSON still decoded from the buffered bytes.
+	if got := captured["webhookEvent"]; got != "jira:issue_created" {
+		t.Errorf("decoded webhookEvent = %q, want jira:issue_created", got)
+	}
+}
+
+// TestAsanaWebhookPreservesRawBody asserts the gateway buffers the exact request
+// body into payload["_raw_body"] (TASK-333) for body-HMAC verification, and that
+// JSON still decodes from the buffer.
+func TestAsanaWebhookPreservesRawBody(t *testing.T) {
+	config := &Config{Host: "127.0.0.1", Port: 9090}
+	server := NewServer(config)
+
+	var captured map[string]interface{}
+	server.Router().RegisterWebhookHandler("asana", func(payload map[string]interface{}) {
+		captured = payload
+	})
+
+	rawBody := `{ "events":  [ {"action":"changed"} ] }`
+	req := httptest.NewRequest(http.MethodPost, "/webhooks/asana", strings.NewReader(rawBody))
+	req.Header.Set("X-Hook-Signature", "abc123")
+	w := httptest.NewRecorder()
+
+	server.handleAsanaWebhook(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	if captured == nil {
+		t.Fatal("webhook was not routed to the registered handler")
+	}
+	if got := captured["_raw_body"]; got != rawBody {
+		t.Errorf("_raw_body = %q, want exact request body %q", got, rawBody)
+	}
+	if got := captured["_signature"]; got != "abc123" {
+		t.Errorf("_signature = %q, want propagated header", got)
+	}
+	if _, ok := captured["events"]; !ok {
+		t.Error("decoded payload missing 'events' — JSON did not decode from buffer")
+	}
+}
+
 func TestLinearWebhookTableDriven(t *testing.T) {
 	config := &Config{Host: "127.0.0.1", Port: 9090}
 	server := NewServer(config)
