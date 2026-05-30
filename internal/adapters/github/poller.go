@@ -1155,6 +1155,16 @@ func (p *Poller) checkForNewIssues(ctx context.Context) {
 			}
 		}
 
+		// GH-3269 / TASK-321 PR-4: Fresh candidates (never processed / post-unmark)
+		// bypass the retry block above, so apply the merged-work guard
+		// unconditionally for them — mirrors the sequential
+		// findOldestUnprocessedIssue guard and prevents phantom
+		// "no new commit produced" redispatch in parallel mode.
+		if !processed && p.hasMergedWork(ctx, issue) {
+			p.recordSkip(skipreason.ReasonHasMergedWork)
+			continue
+		}
+
 		// Skip issues with pending dependencies
 		if p.hasPendingDependencies(ctx, issue) {
 			p.logger.Debug("Skipping issue with pending dependencies in parallel mode",
