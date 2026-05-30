@@ -380,6 +380,99 @@ func TestUpdateProjectItemStatus_GraphQLError(t *testing.T) {
 	}
 }
 
+func TestUpdateProjectItemStatus_AlreadyInTargetStatus(t *testing.T) {
+	var updateCalled bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req GraphQLRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+
+		var resp string
+		switch {
+		case strings.Contains(req.Query, "organization"):
+			resp = `{"data":{"organization":{"projectV2":{"id":"PVT_p1"}}}}`
+		case strings.Contains(req.Query, "field(name:"):
+			resp = `{"data":{"node":{"field":{"id":"PVTSSF_f1","options":[{"id":"OPT_done","name":"Done"}]}}}}`
+		case strings.Contains(req.Query, "projectItems"):
+			// Card already sits in the target column (OPT_done).
+			resp = `{"data":{"node":{"projectItems":{"nodes":[{"id":"PVTI_i1","project":{"id":"PVT_p1"},"fieldValueByName":{"optionId":"OPT_done"}}]}}}}`
+		case strings.Contains(req.Query, "updateProjectV2ItemFieldValue"):
+			updateCalled = true
+			resp = `{"data":{"updateProjectV2ItemFieldValue":{"projectV2Item":{"id":"PVTI_i1"}}}}`
+		default:
+			t.Fatalf("unexpected query: %s", req.Query)
+		}
+
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(resp))
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	pbs := NewProjectBoardSync(client, &ProjectBoardConfig{
+		Enabled:       true,
+		ProjectNumber: 1,
+		StatusField:   "Status",
+	}, "testorg")
+
+	err := pbs.UpdateProjectItemStatus(context.Background(), "ISSUE_1", "Done")
+	if err != nil {
+		t.Fatalf("UpdateProjectItemStatus() error = %v", err)
+	}
+	if updateCalled {
+		t.Error("expected no field-update mutation when card is already in target status")
+	}
+}
+
+func TestUpdateProjectItemStatus_DifferentStatusWritesUpdate(t *testing.T) {
+	var updateCalled bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req GraphQLRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+
+		var resp string
+		switch {
+		case strings.Contains(req.Query, "organization"):
+			resp = `{"data":{"organization":{"projectV2":{"id":"PVT_p1"}}}}`
+		case strings.Contains(req.Query, "field(name:"):
+			resp = `{"data":{"node":{"field":{"id":"PVTSSF_f1","options":[{"id":"OPT_todo","name":"Todo"},{"id":"OPT_done","name":"Done"}]}}}}`
+		case strings.Contains(req.Query, "projectItems"):
+			// Card currently in Todo; target is Done — should write.
+			resp = `{"data":{"node":{"projectItems":{"nodes":[{"id":"PVTI_i1","project":{"id":"PVT_p1"},"fieldValueByName":{"optionId":"OPT_todo"}}]}}}}`
+		case strings.Contains(req.Query, "updateProjectV2ItemFieldValue"):
+			updateCalled = true
+			if req.Variables["optionID"] != "OPT_done" {
+				t.Errorf("expected optionID OPT_done, got %v", req.Variables["optionID"])
+			}
+			resp = `{"data":{"updateProjectV2ItemFieldValue":{"projectV2Item":{"id":"PVTI_i1"}}}}`
+		default:
+			t.Fatalf("unexpected query: %s", req.Query)
+		}
+
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(resp))
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	pbs := NewProjectBoardSync(client, &ProjectBoardConfig{
+		Enabled:       true,
+		ProjectNumber: 1,
+		StatusField:   "Status",
+	}, "testorg")
+
+	err := pbs.UpdateProjectItemStatus(context.Background(), "ISSUE_1", "Done")
+	if err != nil {
+		t.Fatalf("UpdateProjectItemStatus() error = %v", err)
+	}
+	if !updateCalled {
+		t.Error("expected a field-update mutation when card is in a different status")
+	}
+}
+
 func TestEnsureResolved_ConcurrentAccess(t *testing.T) {
 	var resolveCount atomic.Int32
 

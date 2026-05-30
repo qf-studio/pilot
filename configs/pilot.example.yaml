@@ -47,16 +47,20 @@ adapters:
       enabled: true
       interval: 30s
       label: "pilot"
-    # GitHub Projects V2 board integration
+    # GitHub Projects V2 board integration — full board-driven lifecycle loop.
+    # When source_enabled is true, the board (not the pilot label) is the source of
+    # truth: cards flow Todo -> In Progress -> In Review -> Done, and -> Blocked on
+    # failure. All transitions no-op safely when the board is disabled, the issue is
+    # off-board, or the card is already in the target column (idempotent).
     # project_board:
     #   enabled: true                  # Sync issue status to the board (write path)
     #   project_number: 1              # Project number from the board URL
     #   status_field: "Status"         # Name of the single-select status field
     #   statuses:
-    #     in_progress: "In Progress"
-    #     review: "In Review"
-    #     done: "Done"
-    #     failed: "Blocked"
+    #     in_progress: "In Progress"   # written on issue pickup
+    #     review: "In Review"          # written on PR open
+    #     done: "Done"                 # written on PR merge
+    #     failed: "Blocked"            # written on exec / CI failure
     #   source_enabled: false          # Pull work FROM the board instead of by label
     #   source_status: "Todo"          # Board column to source issues from (default "Todo")
 
