@@ -118,7 +118,7 @@ Disable via config: `executor.navigator.auto_init: false`
 
 ## Current State
 
-**Current Version:** v2.162.7 | full status in `.agent/system/FEATURE-MATRIX.md`
+**Current Version:** v2.163.0 | full status in `.agent/system/FEATURE-MATRIX.md`
 
 **Recent (v2.159.3, May 28 2026):** Hot-upgrade subsystem repair + autopilot release-pipeline reliability.
 - `fix(upgrade)`: Pre-exec smoke test invoked `pilot --version` (a flag the root cobra command never registers → exit 1), so it failed **every** hot upgrade before `syscall.Exec`. Switched to the `version` subcommand pilot actually implements, plus a regression guard (`TestRunSmokeTest_UsesVersionSubcommand`) using a fake that mimics the real CLI — prior tests used arg-agnostic scripts and missed it. Chicken-and-egg: the fix lives inside the path it repairs, so it required one manual reinstall to land. (GH-3222 / #3223). Pitfall: `.agent/knowledge/memories/pitfalls/bug_smoke_test_wrong_cli_contract.md`. Executor's inability to self-fix this one-liner (it second-guessed the obvious-looking `--version`) tracked in GH-3224.
