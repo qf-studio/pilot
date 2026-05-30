@@ -3,8 +3,10 @@ package alerts
 import (
 	"context"
 	"net"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // =============================================================================
@@ -145,6 +147,7 @@ func TestSMTPSender_Send_WithFakeServer(t *testing.T) {
 	}
 
 	s := NewSMTPSender(host, port, "from@example.com", "", "")
+	s.SetAllowInsecure(true) // plaintext fake server: exercise protocol behavior
 
 	err := s.Send(
 		context.Background(),
@@ -185,6 +188,7 @@ func TestSMTPSender_Send_MultipleRecipients(t *testing.T) {
 	}
 
 	s := NewSMTPSender(host, port, "from@example.com", "", "")
+	s.SetAllowInsecure(true) // plaintext fake server
 
 	err := s.Send(
 		context.Background(),
@@ -213,6 +217,7 @@ func TestSMTPSender_Send_MIMEHeaders(t *testing.T) {
 	}
 
 	s := NewSMTPSender(host, port, "alerts@pilot.dev", "", "")
+	s.SetAllowInsecure(true) // plaintext fake server
 
 	err := s.Send(
 		context.Background(),
@@ -238,6 +243,65 @@ func TestSMTPSender_ImplementsEmailSender(t *testing.T) {
 	var _ EmailSender = (*SMTPSender)(nil)
 }
 
+// TASK-331: by default (allowInsecure=false) a server that does not advertise
+// STARTTLS must be refused rather than sent to in cleartext.
+func TestSMTPSender_Send_RefusesCleartextByDefault(t *testing.T) {
+	addr, _, cleanup := fakeSMTPServer(t) // plaintext fake server, no STARTTLS
+	defer cleanup()
+
+	host, portStr, _ := net.SplitHostPort(addr)
+	port, _ := strconv.Atoi(portStr)
+
+	s := NewSMTPSender(host, port, "from@example.com", "user", "pass") // allowInsecure defaults to false
+
+	err := s.Send(context.Background(), []string{"to@example.com"}, "Test", "<h1>Hi</h1>")
+	if err == nil {
+		t.Fatal("expected Send to refuse a non-STARTTLS server by default")
+	}
+	if !strings.Contains(err.Error(), "STARTTLS") {
+		t.Errorf("expected a STARTTLS-refusal error, got: %v", err)
+	}
+}
+
+// TASK-331: Send must honor the context deadline so a wedged server cannot block
+// the dispatch worker past the dispatcher's per-channel timeout.
+func TestSMTPSender_Send_HonorsContextDeadline(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer func() { _ = ln.Close() }()
+
+	// Accept the connection but never send the SMTP greeting — the client read
+	// must time out at the context deadline rather than hanging.
+	go func() {
+		conn, aerr := ln.Accept()
+		if aerr != nil {
+			return
+		}
+		time.Sleep(3 * time.Second)
+		_ = conn.Close()
+	}()
+
+	host, portStr, _ := net.SplitHostPort(ln.Addr().String())
+	port, _ := strconv.Atoi(portStr)
+	s := NewSMTPSender(host, port, "from@example.com", "", "")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	err = s.Send(ctx, []string{"to@example.com"}, "Test", "<h1>Hi</h1>")
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected error from a stalled server")
+	}
+	if elapsed > 2*time.Second {
+		t.Errorf("Send did not honor the context deadline; took %v (want well under 2s)", elapsed)
+	}
+}
+
 // =============================================================================
 // Integration with EmailChannel
 // =============================================================================
@@ -253,6 +317,7 @@ func TestSMTPSender_WithEmailChannel(t *testing.T) {
 	}
 
 	sender := NewSMTPSender(host, port, "alerts@pilot.dev", "", "")
+	sender.SetAllowInsecure(true) // plaintext fake server
 
 	config := &EmailChannelConfig{
 		To:      []string{"admin@example.com"},
