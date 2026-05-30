@@ -48,6 +48,25 @@ func logGitHubAPIError(operation string, owner, repo string, issueNum int, err e
 	}
 }
 
+// noOpErrorMarker is the shared prefix of the executor's ghost-SHA guard errors
+// ("no new commit produced — …", both the worktree-HEAD and post-push variants).
+// TASK-321: used to recognize an ambiguous no-op that may actually be already-merged work.
+const noOpErrorMarker = "no new commit produced"
+
+// issueAlreadyMerged reports whether a merged PR already exists for the issue,
+// using the same Search + branch-lookup strategy as the poller's pre-dispatch
+// guard (Search API has ~30s indexing lag, so we supplement with a strongly-
+// consistent branch lookup). Read-only — labeling/closing is the caller's job.
+// TASK-321: distinguishes a re-dispatch of shipped work from a genuine no-op.
+func issueAlreadyMerged(ctx context.Context, client *github.Client, owner, repo string, issueNumber int) bool {
+	if found, err := client.SearchMergedPRsForIssue(ctx, owner, repo, issueNumber); err == nil && found {
+		return true
+	}
+	branch := fmt.Sprintf("pilot/GH-%d", issueNumber)
+	found, err := client.FindMergedPRByBranch(ctx, owner, repo, branch)
+	return err == nil && found
+}
+
 // requestReviewersFromConfig looks up the project config for the given sourceRepo
 // and requests PR reviewers if configured. Errors are logged but not propagated.
 func requestReviewersFromConfig(ctx context.Context, cfg *config.Config, client *github.Client, sourceRepo, owner, repo string, prNumber int) {
@@ -408,6 +427,28 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 				if _, err := client.AddComment(ctx, parts[0], parts[1], issue.Number, comment); err != nil {
 					logGitHubAPIError("AddComment(declined)", parts[0], parts[1], issue.Number, err)
 				}
+			} else if hr.Result.Error != "" && strings.Contains(hr.Result.Error, noOpErrorMarker) &&
+				issueAlreadyMerged(ctx, client, parts[0], parts[1], issue.Number) {
+				// TASK-321: a "no new commit produced" no-op is ambiguous — it can mean
+				// the work was ALREADY merged to main (a re-dispatch of a shipped issue),
+				// not a genuine failure. When a merged PR already exists for this issue,
+				// the correct outcome is done+closed, NOT pilot-blocked. (A genuine
+				// no-op with no merged PR falls through to the blocked path below.)
+				if err := client.AddLabels(ctx, parts[0], parts[1], issue.Number, []string{github.LabelDone}); err != nil {
+					logGitHubAPIError("AddLabels(done)", parts[0], parts[1], issue.Number, err)
+				}
+				if err := client.RemoveLabel(ctx, parts[0], parts[1], issue.Number, github.LabelBlocked); err != nil {
+					slog.Debug("pilot-blocked cleanup (already-merged)", "issue", issue.Number, "error", err)
+				}
+				syncBoardStatus(ctx, boardSync, issue.NodeID, boardStatuses.Done)
+				if err := client.UpdateIssueState(ctx, parts[0], parts[1], issue.Number, "closed"); err != nil {
+					logGitHubAPIError("UpdateIssueState(closed)", parts[0], parts[1], issue.Number, err)
+				}
+				comment := "✅ No new commit was produced because the work for this issue is **already merged to `main`**. This was a re-dispatch of completed work, not a failure — closing as done. (TASK-321)"
+				if _, err := client.AddComment(ctx, parts[0], parts[1], issue.Number, comment); err != nil {
+					logGitHubAPIError("AddComment(already-merged)", parts[0], parts[1], issue.Number, err)
+				}
+				issueResult.Success = true
 			} else {
 				// result exists but Success is false - mark as failed
 				// GH-2402: Use pilot-blocked for deterministic failures so we don't retry.
