@@ -635,6 +635,88 @@ func TestLearningLoop(t *testing.T) {
 	}
 }
 
+func TestDeleteCrossPatternCascade(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "pilot-test-cascade-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	// Insert a cross_pattern with child rows in pattern_projects and pattern_feedback.
+	pattern := &CrossPattern{
+		ID:         "cascade_pattern_1",
+		Type:       "code",
+		Title:      "Cascade test",
+		Confidence: 0.7,
+		Scope:      "org",
+	}
+	if err := store.SaveCrossPattern(pattern); err != nil {
+		t.Fatalf("SaveCrossPattern: %v", err)
+	}
+	if err := store.LinkPatternToProject("cascade_pattern_1", "/cascade/project"); err != nil {
+		t.Fatalf("LinkPatternToProject: %v", err)
+	}
+
+	exec := &Execution{
+		ID:          "cascade_exec_1",
+		TaskID:      "cascade_task_1",
+		ProjectPath: "/cascade/project",
+		Status:      "completed",
+	}
+	if err := store.SaveExecution(exec); err != nil {
+		t.Fatalf("SaveExecution: %v", err)
+	}
+	if err := store.RecordPatternFeedback(&PatternFeedback{
+		PatternID:       "cascade_pattern_1",
+		ExecutionID:     "cascade_exec_1",
+		ProjectPath:     "/cascade/project",
+		Outcome:         "success",
+		ConfidenceDelta: 0.05,
+	}); err != nil {
+		t.Fatalf("RecordPatternFeedback: %v", err)
+	}
+
+	// Sanity-check: children exist before delete.
+	links, err := store.GetProjectsForPattern("cascade_pattern_1")
+	if err != nil {
+		t.Fatalf("GetProjectsForPattern (before): %v", err)
+	}
+	if len(links) != 1 {
+		t.Fatalf("expected 1 project link before delete, got %d", len(links))
+	}
+
+	// Delete the parent.
+	if err := store.DeleteCrossPattern("cascade_pattern_1"); err != nil {
+		t.Fatalf("DeleteCrossPattern: %v", err)
+	}
+
+	// pattern_projects children must be gone (FK cascade).
+	links, err = store.GetProjectsForPattern("cascade_pattern_1")
+	if err != nil {
+		t.Fatalf("GetProjectsForPattern (after): %v", err)
+	}
+	if len(links) != 0 {
+		t.Errorf("expected 0 pattern_projects rows after cascade delete, got %d", len(links))
+	}
+
+	// pattern_feedback children must be gone (FK cascade).
+	var feedbackCount int
+	if err := store.db.QueryRow(
+		`SELECT COUNT(*) FROM pattern_feedback WHERE pattern_id = ?`, "cascade_pattern_1",
+	).Scan(&feedbackCount); err != nil {
+		t.Fatalf("count pattern_feedback: %v", err)
+	}
+	if feedbackCount != 0 {
+		t.Errorf("expected 0 pattern_feedback rows after cascade delete, got %d", feedbackCount)
+	}
+}
+
 func TestPatternSync(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "pilot-test-sync-*")
 	if err != nil {

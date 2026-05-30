@@ -41,8 +41,10 @@ func NewStore(dataPath string) (*Store, error) {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
 
-	// Enable WAL mode and busy timeout for better concurrency
-	if _, err := db.Exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=10000;"); err != nil {
+	// Enable WAL mode, busy timeout, and foreign key enforcement.
+	// Foreign keys default to OFF in SQLite; ON DELETE CASCADE on pattern_projects
+	// and pattern_feedback only fires once this pragma is set.
+	if _, err := db.Exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=10000; PRAGMA foreign_keys=ON;"); err != nil {
 		return nil, fmt.Errorf("failed to set database pragmas: %w", err)
 	}
 
