@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"os"
 	"strings"
 
 	"github.com/qf-studio/pilot/internal/logging"
@@ -67,8 +68,8 @@ func (h *WebhookHandler) OnPRReview(callback PRReviewCallback) {
 // VerifySignature verifies the GitHub webhook signature
 func (h *WebhookHandler) VerifySignature(payload []byte, signature string) bool {
 	if h.webhookSecret == "" {
-		// No secret configured, skip verification (development mode)
-		return true
+		// Fail-closed: no secret means reject unless the dev escape hatch is set.
+		return os.Getenv("PILOT_ALLOW_UNSIGNED_WEBHOOKS") == "1"
 	}
 
 	return VerifyWebhookSignature(payload, signature, h.webhookSecret)
@@ -79,8 +80,8 @@ func (h *WebhookHandler) VerifySignature(payload []byte, signature string) bool 
 // Returns true if signature is valid, false otherwise.
 func VerifyWebhookSignature(payload []byte, signature, secret string) bool {
 	if secret == "" {
-		// No secret configured, skip verification (development mode)
-		return true
+		// Fail-closed: no secret means reject unless the dev escape hatch is set.
+		return os.Getenv("PILOT_ALLOW_UNSIGNED_WEBHOOKS") == "1"
 	}
 
 	if !strings.HasPrefix(signature, "sha256=") {

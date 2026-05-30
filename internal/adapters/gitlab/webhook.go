@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"fmt"
 	"log/slog"
+	"os"
 
 	"github.com/qf-studio/pilot/internal/logging"
 )
@@ -35,8 +36,8 @@ func (h *WebhookHandler) OnIssue(callback func(context.Context, *Issue, *Project
 // GitLab uses simple token comparison via X-Gitlab-Token header (not HMAC)
 func (h *WebhookHandler) VerifyToken(token string) bool {
 	if h.webhookSecret == "" {
-		// No secret configured, skip verification (development mode)
-		return true
+		// Fail-closed: no secret means reject unless the dev escape hatch is set.
+		return os.Getenv("PILOT_ALLOW_UNSIGNED_WEBHOOKS") == "1"
 	}
 
 	// Use constant-time comparison to prevent timing attacks

@@ -2,6 +2,9 @@ package jira
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -23,37 +26,45 @@ func TestNewWebhookHandler(t *testing.T) {
 }
 
 func TestVerifySignature(t *testing.T) {
-	tests := []struct {
-		name      string
-		secret    string
-		signature string
-		want      bool
-	}{
-		{
-			name:      "no secret configured",
-			secret:    "",
-			signature: "anything",
-			want:      true,
-		},
-		{
-			name:      "valid signature",
-			secret:    testutil.FakeWebhookSecret,
-			signature: "5d8e1c2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d",
-			want:      false, // Won't match unless we compute actual HMAC
-		},
-	}
+	payload := []byte(`{"webhookEvent":"jira:issue_created"}`)
 
-	client := NewClient("https://jira.example.com", "user", "token", PlatformCloud)
+	t.Run("valid HMAC signature", func(t *testing.T) {
+		secret := testutil.FakeWebhookSecret
+		sig := computeJiraHMAC(secret, payload)
+		h := NewWebhookHandler(nil, secret, "pilot")
+		if !h.VerifySignature(payload, sig) {
+			t.Error("expected valid signature to pass")
+		}
+	})
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			handler := NewWebhookHandler(client, tt.secret, "pilot")
-			got := handler.VerifySignature([]byte("payload"), tt.signature)
-			if got != tt.want {
-				t.Errorf("VerifySignature() = %v, want %v", got, tt.want)
-			}
-		})
-	}
+	t.Run("wrong signature", func(t *testing.T) {
+		h := NewWebhookHandler(nil, testutil.FakeWebhookSecret, "pilot")
+		if h.VerifySignature(payload, "badhex") {
+			t.Error("expected wrong signature to fail")
+		}
+	})
+
+	t.Run("empty secret fail-closed", func(t *testing.T) {
+		h := NewWebhookHandler(nil, "", "pilot")
+		if h.VerifySignature(payload, "anything") {
+			t.Error("expected empty secret to fail closed without dev flag")
+		}
+	})
+
+	t.Run("empty secret allowed with dev flag", func(t *testing.T) {
+		t.Setenv("PILOT_ALLOW_UNSIGNED_WEBHOOKS", "1")
+		h := NewWebhookHandler(nil, "", "pilot")
+		if !h.VerifySignature(payload, "anything") {
+			t.Error("expected empty secret to pass when PILOT_ALLOW_UNSIGNED_WEBHOOKS=1")
+		}
+	})
+}
+
+// computeJiraHMAC computes the expected HMAC-SHA256 signature for testing.
+func computeJiraHMAC(secret string, payload []byte) string {
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(payload)
+	return hex.EncodeToString(mac.Sum(nil))
 }
 
 func TestHandle_IssueCreated(t *testing.T) {

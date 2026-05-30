@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"os"
 	"strings"
 
 	"github.com/qf-studio/pilot/internal/logging"
@@ -74,8 +75,8 @@ func (h *WebhookHandler) OnIssue(callback func(context.Context, *Issue) error) {
 // VerifySignature verifies the Jira webhook signature
 func (h *WebhookHandler) VerifySignature(payload []byte, signature string) bool {
 	if h.webhookSecret == "" {
-		// No secret configured, skip verification (development mode)
-		return true
+		// Fail-closed: no secret means reject unless the dev escape hatch is set.
+		return os.Getenv("PILOT_ALLOW_UNSIGNED_WEBHOOKS") == "1"
 	}
 
 	mac := hmac.New(sha256.New, []byte(h.webhookSecret))

@@ -2,6 +2,9 @@ package asana
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -23,48 +26,52 @@ func TestNewWebhookHandler(t *testing.T) {
 }
 
 func TestVerifySignature(t *testing.T) {
-	client := NewClient(testutil.FakeAsanaAccessToken, testutil.FakeAsanaWorkspaceID)
-	handler := NewWebhookHandler(client, testutil.FakeAsanaWebhookSecret, "pilot")
+	payload := []byte(`{"events":[]}`)
+	secret := testutil.FakeAsanaWebhookSecret
 
-	tests := []struct {
-		name      string
-		payload   []byte
-		signature string
-		want      bool
-	}{
-		{
-			name:      "valid signature",
-			payload:   []byte(`{"events":[]}`),
-			signature: "5d8d5c5f7a8d5c5f7a8d5c5f7a8d5c5f7a8d5c5f7a8d5c5f7a8d5c5f7a8d5c5f", // This won't match but tests the flow
-			want:      false,
-		},
-		{
-			name:      "empty signature",
-			payload:   []byte(`{"events":[]}`),
-			signature: "",
-			want:      false,
-		},
-	}
+	t.Run("valid HMAC signature", func(t *testing.T) {
+		sig := computeAsanaHMAC(secret, payload)
+		h := NewWebhookHandler(nil, secret, "pilot")
+		if !h.VerifySignature(payload, sig) {
+			t.Error("expected valid signature to pass")
+		}
+	})
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := handler.VerifySignature(tt.payload, tt.signature)
-			if got != tt.want {
-				t.Errorf("VerifySignature() = %v, want %v", got, tt.want)
-			}
-		})
-	}
+	t.Run("wrong signature", func(t *testing.T) {
+		h := NewWebhookHandler(nil, secret, "pilot")
+		if h.VerifySignature(payload, "badhex") {
+			t.Error("expected wrong signature to fail")
+		}
+	})
+
+	t.Run("empty signature with valid secret", func(t *testing.T) {
+		h := NewWebhookHandler(nil, secret, "pilot")
+		if h.VerifySignature(payload, "") {
+			t.Error("expected empty signature to fail when secret is configured")
+		}
+	})
+
+	t.Run("empty secret fail-closed", func(t *testing.T) {
+		h := NewWebhookHandler(nil, "", "pilot")
+		if h.VerifySignature(payload, "any-signature") {
+			t.Error("expected empty secret to fail closed without dev flag")
+		}
+	})
+
+	t.Run("empty secret allowed with dev flag", func(t *testing.T) {
+		t.Setenv("PILOT_ALLOW_UNSIGNED_WEBHOOKS", "1")
+		h := NewWebhookHandler(nil, "", "pilot")
+		if !h.VerifySignature(payload, "any-signature") {
+			t.Error("expected empty secret to pass when PILOT_ALLOW_UNSIGNED_WEBHOOKS=1")
+		}
+	})
 }
 
-func TestVerifySignature_NoSecret(t *testing.T) {
-	client := NewClient(testutil.FakeAsanaAccessToken, testutil.FakeAsanaWorkspaceID)
-	handler := NewWebhookHandler(client, "", "pilot") // No secret = dev mode
-
-	// Should always return true in dev mode
-	got := handler.VerifySignature([]byte(`{"events":[]}`), "any-signature")
-	if !got {
-		t.Error("expected VerifySignature to return true when no secret configured")
-	}
+// computeAsanaHMAC computes the expected HMAC-SHA256 signature for testing.
+func computeAsanaHMAC(secret string, payload []byte) string {
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(payload)
+	return hex.EncodeToString(mac.Sum(nil))
 }
 
 func TestHandleHandshake(t *testing.T) {
