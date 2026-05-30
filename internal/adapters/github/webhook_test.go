@@ -51,6 +51,7 @@ func TestVerifySignature(t *testing.T) {
 		payload   string
 		signature string
 		want      bool
+		setEnv    bool
 	}{
 		{
 			name:      "valid signature",
@@ -67,11 +68,19 @@ func TestVerifySignature(t *testing.T) {
 			want:      false,
 		},
 		{
-			name:      "empty secret - skip verification",
+			name:      "empty secret fail-closed",
+			secret:    "",
+			payload:   `{"action":"opened"}`,
+			signature: "anything",
+			want:      false,
+		},
+		{
+			name:      "empty secret allowed with dev flag",
 			secret:    "",
 			payload:   `{"action":"opened"}`,
 			signature: "anything",
 			want:      true,
+			setEnv:    true,
 		},
 		{
 			name:      "missing sha256 prefix",
@@ -98,6 +107,9 @@ func TestVerifySignature(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			if tt.setEnv {
+				t.Setenv("PILOT_ALLOW_UNSIGNED_WEBHOOKS", "1")
+			}
 			h := NewWebhookHandler(nil, tt.secret, "pilot")
 			got := h.VerifySignature([]byte(tt.payload), tt.signature)
 			if got != tt.want {
@@ -1135,6 +1147,7 @@ func TestVerifyWebhookSignatureStandalone(t *testing.T) {
 		payload   string
 		signature string
 		want      bool
+		setEnv    bool
 	}{
 		{
 			name:      "valid signature",
@@ -1151,11 +1164,19 @@ func TestVerifyWebhookSignatureStandalone(t *testing.T) {
 			want:      false,
 		},
 		{
-			name:      "empty secret - skip verification",
+			name:      "empty secret fail-closed",
+			secret:    "",
+			payload:   `{"action":"opened"}`,
+			signature: "anything",
+			want:      false,
+		},
+		{
+			name:      "empty secret allowed with dev flag",
 			secret:    "",
 			payload:   `{"action":"opened"}`,
 			signature: "anything",
 			want:      true,
+			setEnv:    true,
 		},
 		{
 			name:      "missing sha256 prefix",
@@ -1182,6 +1203,9 @@ func TestVerifyWebhookSignatureStandalone(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			if tt.setEnv {
+				t.Setenv("PILOT_ALLOW_UNSIGNED_WEBHOOKS", "1")
+			}
 			got := VerifyWebhookSignature([]byte(tt.payload), tt.signature, tt.secret)
 			if got != tt.want {
 				t.Errorf("VerifyWebhookSignature() = %v, want %v", got, tt.want)

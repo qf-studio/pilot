@@ -16,12 +16,20 @@ func TestWebhookHandlerVerifySecret(t *testing.T) {
 		configuredSecret string
 		providedSecret   string
 		expected         bool
+		setEnv           bool
 	}{
 		{
-			name:             "no secret configured",
+			name:             "no secret configured fail-closed",
+			configuredSecret: "",
+			providedSecret:   "anything",
+			expected:         false,
+		},
+		{
+			name:             "no secret, dev flag allows through",
 			configuredSecret: "",
 			providedSecret:   "anything",
 			expected:         true,
+			setEnv:           true,
 		},
 		{
 			name:             "correct secret",
@@ -45,6 +53,9 @@ func TestWebhookHandlerVerifySecret(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			if tt.setEnv {
+				t.Setenv("PILOT_ALLOW_UNSIGNED_WEBHOOKS", "1")
+			}
 			handler := NewWebhookHandler(nil, tt.configuredSecret, "pilot")
 			result := handler.VerifySecret(tt.providedSecret)
 			if result != tt.expected {

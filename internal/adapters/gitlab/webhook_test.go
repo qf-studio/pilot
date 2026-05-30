@@ -13,6 +13,7 @@ func TestVerifyToken(t *testing.T) {
 		secret    string
 		token     string
 		wantValid bool
+		setEnv    bool
 	}{
 		{
 			name:      "valid token",
@@ -33,21 +34,31 @@ func TestVerifyToken(t *testing.T) {
 			wantValid: false,
 		},
 		{
-			name:      "no secret configured - development mode",
+			name:      "no secret configured fail-closed",
+			secret:    "",
+			token:     "any-token",
+			wantValid: false,
+		},
+		{
+			name:      "no secret configured - empty token - fail-closed",
+			secret:    "",
+			token:     "",
+			wantValid: false,
+		},
+		{
+			name:      "no secret, dev flag allows through",
 			secret:    "",
 			token:     "any-token",
 			wantValid: true,
-		},
-		{
-			name:      "no secret configured - empty token",
-			secret:    "",
-			token:     "",
-			wantValid: true,
+			setEnv:    true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			if tt.setEnv {
+				t.Setenv("PILOT_ALLOW_UNSIGNED_WEBHOOKS", "1")
+			}
 			client := NewClient(testutil.FakeGitLabToken, "namespace/project")
 			handler := NewWebhookHandler(client, tt.secret, "pilot")
 

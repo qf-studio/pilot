@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
 
 	"github.com/qf-studio/pilot/internal/logging"
 )
@@ -43,8 +44,8 @@ func (h *WebhookHandler) OnWorkItem(callback func(context.Context, *WorkItem) er
 // Azure DevOps service hooks support basic authentication
 func (h *WebhookHandler) VerifySecret(providedSecret string) bool {
 	if h.webhookSecret == "" {
-		// No secret configured, skip verification (development mode)
-		return true
+		// Fail-closed: no secret means reject unless the dev escape hatch is set.
+		return os.Getenv("PILOT_ALLOW_UNSIGNED_WEBHOOKS") == "1"
 	}
 
 	// Use constant-time comparison to prevent timing attacks

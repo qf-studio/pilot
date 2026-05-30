@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"os"
 	"strings"
 
 	"github.com/qf-studio/pilot/internal/logging"
@@ -38,8 +39,8 @@ func (h *WebhookHandler) OnTask(callback func(context.Context, *Task) error) {
 // Asana uses HMAC-SHA256 for webhook signature verification
 func (h *WebhookHandler) VerifySignature(payload []byte, signature string) bool {
 	if h.webhookSecret == "" {
-		// No secret configured, skip verification (development mode)
-		return true
+		// Fail-closed: no secret means reject unless the dev escape hatch is set.
+		return os.Getenv("PILOT_ALLOW_UNSIGNED_WEBHOOKS") == "1"
 	}
 
 	mac := hmac.New(sha256.New, []byte(h.webhookSecret))
