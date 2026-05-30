@@ -40,9 +40,10 @@ const (
 // Replaces Claude Code CLI subprocess with HTTP streaming, giving full control
 // over thinking budgets, tool dispatch, and retry logic.
 type AnthropicBackend struct {
-	apiKey string
-	apiURL string
-	config *BackendConfig
+	apiKey     string
+	apiURL     string
+	config     *BackendConfig
+	retryWaits []time.Duration // nil = use hardcoded defaults; overridden in tests
 }
 
 // NewAnthropicBackend creates a new direct API backend.
@@ -325,7 +326,10 @@ func (b *AnthropicBackend) callAPI(ctx context.Context, req *apiRequest) (*apiRe
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	backoffs := []time.Duration{30 * time.Second, 60 * time.Second, 90 * time.Second, 120 * time.Second, 180 * time.Second}
+	backoffs := b.retryWaits
+	if backoffs == nil {
+		backoffs = []time.Duration{30 * time.Second, 60 * time.Second, 90 * time.Second, 120 * time.Second, 180 * time.Second}
+	}
 
 	for attempt := 0; attempt <= apiMaxRetries; attempt++ {
 		httpReq, err := http.NewRequestWithContext(ctx, "POST", b.apiURL, bytes.NewReader(body))
@@ -350,7 +354,11 @@ func (b *AnthropicBackend) callAPI(ctx context.Context, req *apiRequest) (*apiRe
 		if err != nil {
 			if attempt < apiMaxRetries {
 				slog.Warn("HTTP error, retrying", slog.Int("attempt", attempt+1), slog.Any("error", err))
-				time.Sleep(backoffs[min(attempt, len(backoffs)-1)])
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-time.After(backoffs[min(attempt, len(backoffs)-1)]):
+				}
 				continue
 			}
 			return nil, fmt.Errorf("HTTP request failed: %w", err)
@@ -362,7 +370,11 @@ func (b *AnthropicBackend) callAPI(ctx context.Context, req *apiRequest) (*apiRe
 			if attempt < apiMaxRetries {
 				wait := backoffs[min(attempt, len(backoffs)-1)]
 				slog.Warn("API error, retrying", slog.Int("status", resp.StatusCode), slog.Duration("wait", wait))
-				time.Sleep(wait)
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-time.After(wait):
+				}
 				continue
 			}
 			return nil, fmt.Errorf("API returned %d after %d retries", resp.StatusCode, apiMaxRetries)
@@ -383,7 +395,11 @@ func (b *AnthropicBackend) callAPI(ctx context.Context, req *apiRequest) (*apiRe
 			if strings.Contains(err.Error(), "overloaded") && attempt < apiMaxRetries {
 				wait := backoffs[min(attempt, len(backoffs)-1)]
 				slog.Warn("Overloaded in response, retrying", slog.Duration("wait", wait))
-				time.Sleep(wait)
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-time.After(wait):
+				}
 				continue
 			}
 			return nil, err

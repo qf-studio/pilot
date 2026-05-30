@@ -24,10 +24,11 @@ const (
 // Supports OpenAI, OpenRouter, Groq, Together, Synthetic, vLLM, Ollama, and any provider
 // exposing an OpenAI-compatible endpoint — without a CLI wrapper.
 type OpenAIBackend struct {
-	apiKey string
-	model  string
-	apiURL string // full endpoint URL
-	config *BackendConfig
+	apiKey     string
+	model      string
+	apiURL     string // full endpoint URL
+	config     *BackendConfig
+	retryWaits []time.Duration // nil = use hardcoded defaults; overridden in tests
 }
 
 // NewOpenAIBackend creates a new OpenAI-compatible direct HTTP backend.
@@ -244,7 +245,10 @@ func (b *OpenAIBackend) callAPI(ctx context.Context, req *openaiRequest) (*opena
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	backoffs := []time.Duration{30 * time.Second, 60 * time.Second, 90 * time.Second, 120 * time.Second, 180 * time.Second}
+	backoffs := b.retryWaits
+	if backoffs == nil {
+		backoffs = []time.Duration{30 * time.Second, 60 * time.Second, 90 * time.Second, 120 * time.Second, 180 * time.Second}
+	}
 
 	for attempt := 0; attempt <= apiMaxRetries; attempt++ {
 		httpReq, err := http.NewRequestWithContext(ctx, "POST", b.apiURL, bytes.NewReader(body))
@@ -260,7 +264,11 @@ func (b *OpenAIBackend) callAPI(ctx context.Context, req *openaiRequest) (*opena
 		if err != nil {
 			if attempt < apiMaxRetries {
 				slog.Warn("HTTP error, retrying", slog.Int("attempt", attempt+1), slog.Any("error", err))
-				time.Sleep(backoffs[min(attempt, len(backoffs)-1)])
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-time.After(backoffs[min(attempt, len(backoffs)-1)]):
+				}
 				continue
 			}
 			return nil, fmt.Errorf("HTTP request failed: %w", err)
@@ -271,7 +279,11 @@ func (b *OpenAIBackend) callAPI(ctx context.Context, req *openaiRequest) (*opena
 			if attempt < apiMaxRetries {
 				wait := backoffs[min(attempt, len(backoffs)-1)]
 				slog.Warn("API error, retrying", slog.Int("status", resp.StatusCode), slog.Duration("wait", wait))
-				time.Sleep(wait)
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-time.After(wait):
+				}
 				continue
 			}
 			return nil, fmt.Errorf("API returned %d after %d retries", resp.StatusCode, apiMaxRetries)
