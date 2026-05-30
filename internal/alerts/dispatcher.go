@@ -25,6 +25,7 @@ type Dispatcher struct {
 	config   *AlertConfig
 	logger   *slog.Logger
 	mu       sync.RWMutex
+	metrics  *AlertMetrics
 }
 
 // DispatcherOption configures the Dispatcher
@@ -37,12 +38,22 @@ func WithDispatcherLogger(logger *slog.Logger) DispatcherOption {
 	}
 }
 
+// WithDispatcherMetrics injects a shared AlertMetrics instance.
+// Pass the same instance to WithAlertMetrics on the Engine so delivery counters
+// are visible in Engine.AlertSnapshot().
+func WithDispatcherMetrics(m *AlertMetrics) DispatcherOption {
+	return func(d *Dispatcher) {
+		d.metrics = m
+	}
+}
+
 // NewDispatcher creates a new alert dispatcher
 func NewDispatcher(config *AlertConfig, opts ...DispatcherOption) *Dispatcher {
 	d := &Dispatcher{
 		channels: make(map[string]Channel),
 		config:   config,
 		logger:   slog.Default(),
+		metrics:  NewAlertMetrics(),
 	}
 
 	for _, opt := range opts {
@@ -102,6 +113,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, alert *Alert, channelNames []
 	for _, name := range channelNames {
 		channel, ok := d.channels[name]
 		if !ok {
+			d.metrics.RecordDelivery(name, "unknown", "failure")
 			results = append(results, DeliveryResult{
 				ChannelName: name,
 				Success:     false,
@@ -182,6 +194,7 @@ func (d *Dispatcher) sendToChannel(ctx context.Context, ch Channel, alert *Alert
 	if err != nil {
 		result.Success = false
 		result.Error = err
+		d.metrics.RecordDelivery(ch.Name(), ch.Type(), "failure")
 		d.logger.Error("failed to send alert",
 			"channel", ch.Name(),
 			"channel_type", ch.Type(),
@@ -190,6 +203,7 @@ func (d *Dispatcher) sendToChannel(ctx context.Context, ch Channel, alert *Alert
 		)
 	} else {
 		result.Success = true
+		d.metrics.RecordDelivery(ch.Name(), ch.Type(), "success")
 		d.logger.Debug("alert sent successfully",
 			"channel", ch.Name(),
 			"alert_id", alert.ID,

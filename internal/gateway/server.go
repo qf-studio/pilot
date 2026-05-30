@@ -78,6 +78,7 @@ type Server struct {
 	readinessCheckers      []ReadinessChecker
 	liveness               *livenessState
 	prometheusExporter     *PrometheusExporter
+	alertsSource           AlertMetricsSource
 	autopilotProvider      AutopilotProvider
 	dashboardStore         DashboardStore
 	logStreamStore         LogStreamStore
@@ -281,6 +282,20 @@ func (s *Server) SetMetricsSource(source MetricsSource) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.prometheusExporter = NewPrometheusExporter(source)
+	if s.alertsSource != nil {
+		s.prometheusExporter.SetAlertsSource(s.alertsSource)
+	}
+}
+
+// SetAlertsMetricsSource wires an alert metrics source into the Prometheus exporter.
+// Safe to call before or after SetMetricsSource.
+func (s *Server) SetAlertsMetricsSource(source AlertMetricsSource) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.alertsSource = source
+	if s.prometheusExporter != nil {
+		s.prometheusExporter.SetAlertsSource(source)
+	}
 }
 
 // SetAutopilotProvider sets the autopilot provider for the /api/v1/autopilot endpoint.

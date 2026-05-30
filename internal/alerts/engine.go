@@ -27,6 +27,11 @@ type Engine struct {
 	// Channels for events
 	eventCh chan Event
 	done    chan struct{}
+
+	// metrics accumulates fired/dropped counters; share the same instance with the
+	// Dispatcher via WithAlertMetrics+WithDispatcherMetrics so delivery counts appear
+	// in AlertSnapshot too.
+	metrics *AlertMetrics
 }
 
 type progressState struct {
@@ -94,6 +99,15 @@ func WithDispatcher(d *Dispatcher) EngineOption {
 	}
 }
 
+// WithAlertMetrics injects a shared AlertMetrics instance.
+// Pass the same instance to WithDispatcherMetrics so delivery counters from the
+// Dispatcher appear in Engine.AlertSnapshot().
+func WithAlertMetrics(m *AlertMetrics) EngineOption {
+	return func(e *Engine) {
+		e.metrics = m
+	}
+}
+
 // NewEngine creates a new alerting engine
 func NewEngine(config *AlertConfig, opts ...EngineOption) *Engine {
 	e := &Engine{
@@ -106,6 +120,7 @@ func NewEngine(config *AlertConfig, opts ...EngineOption) *Engine {
 		retryTracker:        make(map[string]int),
 		eventCh:             make(chan Event, 100),
 		done:                make(chan struct{}),
+		metrics:             NewAlertMetrics(),
 	}
 
 	for _, opt := range opts {
@@ -154,6 +169,7 @@ func (e *Engine) ProcessEvent(event Event) {
 			"type", event.Type,
 			"task_id", event.TaskID,
 		)
+		e.metrics.RecordDropped()
 	}
 }
 
@@ -521,6 +537,8 @@ func (e *Engine) fireAlert(ctx context.Context, rule AlertRule, alert *Alert) {
 	e.lastAlertTimes[rule.Name] = time.Now()
 	e.mu.Unlock()
 
+	e.metrics.RecordFired(rule.Name, string(alert.Severity))
+
 	if e.dispatcher == nil {
 		e.logger.Warn("no dispatcher configured, alert not sent",
 			"rule", rule.Name,
@@ -793,4 +811,13 @@ func (e *Engine) handleEscalation(ctx context.Context, event Event) {
 		alert.Severity = SeverityCritical
 		e.fireAlert(ctx, rule, alert)
 	}
+}
+
+// AlertSnapshot returns a point-in-time copy of alert metrics including the current
+// event queue depth. When the same AlertMetrics instance is shared with the Dispatcher
+// via WithAlertMetrics + WithDispatcherMetrics, the snapshot also includes delivery counters.
+func (e *Engine) AlertSnapshot() AlertMetricsSnapshot {
+	snap := e.metrics.Snapshot()
+	snap.QueueDepth = len(e.eventCh)
+	return snap
 }

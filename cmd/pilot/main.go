@@ -519,7 +519,8 @@ Examples:
 				// Create alerts engine if configured
 				alertsCfg := getAlertsConfig(cfg)
 				if alertsCfg != nil && alertsCfg.Enabled {
-					alertsDispatcher := alerts.NewDispatcher(alertsCfg)
+					alertsMetrics := alerts.NewAlertMetrics()
+					alertsDispatcher := alerts.NewDispatcher(alertsCfg, alerts.WithDispatcherMetrics(alertsMetrics))
 
 					// Register Slack channel if configured
 					if cfg.Adapters.Slack != nil && cfg.Adapters.Slack.Enabled && cfg.Adapters.Slack.BotToken != "" {
@@ -574,7 +575,7 @@ Examples:
 					}
 
 					ctx := context.Background()
-					gwAlertsEngine = alerts.NewEngine(alertsCfg, alerts.WithDispatcher(alertsDispatcher))
+					gwAlertsEngine = alerts.NewEngine(alertsCfg, alerts.WithDispatcher(alertsDispatcher), alerts.WithAlertMetrics(alertsMetrics))
 					if alertErr := gwAlertsEngine.Start(ctx); alertErr != nil {
 						logging.WithComponent("start").Warn("failed to start alerts engine for gateway polling", slog.Any("error", alertErr))
 						gwAlertsEngine = nil
@@ -987,6 +988,12 @@ Examples:
 				if gwRunner != nil {
 					gwRunner.SetMetricsRecorder(gwAutopilotController.Metrics())
 				}
+			}
+			// TASK-332: Wire alert metrics into the Prometheus exporter
+			if gwAlertsEngine != nil {
+				p.Gateway().SetAlertsMetricsSource(gwAlertsEngine)
+			}
+			if gwAutopilotController != nil {
 
 				// GH-2080: Wire PR review events to autopilot controller
 				p.SetOnPRReview(func(ctx context.Context, prNumber int, action, state, reviewer string, repo *github.Repository) error {
@@ -1653,8 +1660,9 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 	}
 
 	// GH-1662: Start gateway in background so desktop app can reach /health
+	var gwServer *gateway.Server // hoisted so TASK-332 alert-metrics wiring can run after alerts engine is created
 	if !noGateway && cfg.Gateway != nil {
-		gwServer := gateway.NewServer(cfg.Gateway)
+		gwServer = gateway.NewServer(cfg.Gateway)
 		if autopilotController != nil {
 			gwServer.SetAutopilotProvider(&autopilotProviderAdapter{controller: autopilotController})
 			gwServer.SetMetricsSource(autopilotController.Metrics())
@@ -1904,7 +1912,8 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 	alertsCfg := getAlertsConfig(cfg)
 	if alertsCfg != nil && alertsCfg.Enabled {
 		// Create dispatcher and register channels
-		alertsDispatcher := alerts.NewDispatcher(alertsCfg)
+		alertsMetrics := alerts.NewAlertMetrics()
+		alertsDispatcher := alerts.NewDispatcher(alertsCfg, alerts.WithDispatcherMetrics(alertsMetrics))
 
 		// Register Slack channel if configured
 		if cfg.Adapters.Slack != nil && cfg.Adapters.Slack.Enabled && cfg.Adapters.Slack.BotToken != "" {
@@ -1958,7 +1967,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 			}
 		}
 
-		alertsEngine = alerts.NewEngine(alertsCfg, alerts.WithDispatcher(alertsDispatcher))
+		alertsEngine = alerts.NewEngine(alertsCfg, alerts.WithDispatcher(alertsDispatcher), alerts.WithAlertMetrics(alertsMetrics))
 		if err := alertsEngine.Start(ctx); err != nil {
 			logging.WithComponent("start").Warn("failed to start alerts engine", slog.Any("error", err))
 			alertsEngine = nil
@@ -1967,6 +1976,11 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 				slog.Int("channels", len(alertsDispatcher.ListChannels())),
 			)
 		}
+	}
+
+	// TASK-332: Wire alert metrics into the Prometheus exporter (polling mode)
+	if gwServer != nil && alertsEngine != nil {
+		gwServer.SetAlertsMetricsSource(alertsEngine)
 	}
 
 	// Initialize dispatcher for task queue (uses store created earlier)

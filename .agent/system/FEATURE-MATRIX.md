@@ -1,6 +1,6 @@
 # Pilot Feature Matrix
 
-**Last Updated:** 2026-05-30 (v2.151.0)
+**Last Updated:** 2026-05-29 (v2.151.0)
 
 ## Legend
 
@@ -178,6 +178,7 @@
 | Cooldown periods | ✅ | alerts | - | `alerts.defaults.cooldown` | Avoid spam |
 | PagerDuty escalation | ✅ | alerts | - | - | Auto-escalate after 3 retries (v0.38.0, GH-848) |
 | Deadlock detector | ✅ | autopilot | - | - | Alert after 1h with no progress on PR (v0.38.0, GH-849) |
+| Alert dispatch metrics | ✅ | alerts/gateway | - | - | alerts_fired_total, alert_delivery_total, alert_events_dropped_total, alert_queue_depth on /metrics (TASK-332) |
 | Rate limit detection | ✅ | executor | - | - | Detect GitHub API rate limits, pause + resume at reset time (v0.34.0) |
 
 ## Quality Gates
@@ -576,4 +577,3 @@ quality:
 | `IsTaskShipped` predicate | v2.151.x | autopilot | Cross-site invariant preventing double-dispatch (TASK-296 / GH-3091) |
 | Ghost-SHA guard | v2.151.x | executor | Fail-closed when commit_sha already on base branch (TASK-300 / GH-3099) |
 | Merge→done race window closed | v2.163.0 | autopilot + adapters/github | `Controller.SetOnIssueDone` fires `MarkProcessed` on all pollers at PR-merge, preventing phantom re-dispatch during label propagation lag (TASK-321 PR-4 / GH-3271) |
-| Webhook fail-closed + jira/asana verification wired | v2.163.x | adapters/* + pilot | All verifiers fail-closed on empty secret; jira/asana VerifySignature now called before Handle; `PILOT_ALLOW_UNSIGNED_WEBHOOKS=1` escape hatch (TASK-326 / GH-3288) |
