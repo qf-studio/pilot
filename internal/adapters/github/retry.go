@@ -2,6 +2,7 @@ package github
 
 import (
 	"context"
+	"errors"
 	"regexp"
 	"strconv"
 	"strings"
@@ -25,7 +26,8 @@ func DefaultRetryOptions() RetryOptions {
 }
 
 // WithRetry executes an operation with exponential backoff retry.
-// It respects context cancellation and GitHub's Retry-After header.
+// It respects context cancellation and any Retry-After delay carried
+// by a *RateLimitError returned from the operation.
 func WithRetry[T any](ctx context.Context, op func() (T, error), opts RetryOptions) (T, error) {
 	var result T
 	var lastErr error
@@ -97,6 +99,12 @@ func isRetryableError(err error) bool {
 		return false
 	}
 
+	// RateLimitError (403 secondary rate-limit or 429) is always retryable.
+	var rlErr *RateLimitError
+	if errors.As(err, &rlErr) {
+		return true
+	}
+
 	errStr := err.Error()
 
 	// Check for retryable HTTP status codes
@@ -143,9 +151,19 @@ func extractRetryAfter(err error) time.Duration {
 		return 0
 	}
 
+	// Prefer the header-parsed duration encoded in the typed error.
+	var rlErr *RateLimitError
+	if errors.As(err, &rlErr) {
+		if rlErr.RetryAfter > 0 {
+			return rlErr.RetryAfter
+		}
+		// No header present: use a sensible default for any rate limit.
+		return 60 * time.Second
+	}
+
 	errStr := err.Error()
 
-	// GitHub API sometimes includes retry-after info in error response
+	// Legacy string-scanning path for errors not produced by doRequest.
 	// Look for patterns like "retry after X seconds" or "Retry-After: X"
 	patterns := []string{
 		`retry.after[:\s]+(\d+)`,

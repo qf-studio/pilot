@@ -169,6 +169,8 @@ func TestIsRetryableError(t *testing.T) {
 		{"400 bad request", errors.New("API error (status 400): bad request"), false},
 		{"401 unauthorized", errors.New("API error (status 401): unauthorized"), false},
 		{"403 forbidden", errors.New("API error (status 403): forbidden"), false},
+		{"403 secondary rate limit via RateLimitError", &RateLimitError{StatusCode: 403, Message: "secondary rate limit"}, true},
+		{"429 via RateLimitError", &RateLimitError{StatusCode: 429, Message: "rate limited"}, true},
 		{"404 not found", errors.New("API error (status 404): not found"), false},
 		{"422 unprocessable", errors.New("API error (status 422): unprocessable entity"), false},
 		{"connection refused", errors.New("dial tcp: connection refused"), true},
@@ -201,6 +203,9 @@ func TestExtractRetryAfter(t *testing.T) {
 		{"retry-after seconds", errors.New("retry after 30 seconds"), 30 * time.Second},
 		{"Retry-After header", errors.New("Retry-After: 45"), 45 * time.Second},
 		{"rate limit message", errors.New("rate limit exceeded, retry in 120 seconds"), 120 * time.Second},
+		{"RateLimitError with RetryAfter", &RateLimitError{StatusCode: 403, RetryAfter: 30 * time.Second}, 30 * time.Second},
+		{"RateLimitError no RetryAfter defaults to 60s", &RateLimitError{StatusCode: 403}, 60 * time.Second},
+		{"RateLimitError 429 no RetryAfter defaults to 60s", &RateLimitError{StatusCode: 429}, 60 * time.Second},
 	}
 
 	for _, tt := range tests {

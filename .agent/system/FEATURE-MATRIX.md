@@ -1,6 +1,6 @@
 # Pilot Feature Matrix
 
-**Last Updated:** 2026-05-30 (v2.151.0)
+**Last Updated:** 2026-05-29 (v2.151.0)
 
 ## Legend
 
@@ -369,6 +369,7 @@
 | Per-PR circuit breaker | ✅ | autopilot | - | - | Independent failure tracking per PR (v0.34.0) |
 | Stale label cleanup | ✅ | adapters/github | - | - | Clean pilot-failed labels, allow retry (v0.34.0) |
 | GitHub API retry | ✅ | adapters/github | - | - | Exponential backoff, Retry-After header respect (v0.34.0) |
+| GitHub 403 secondary rate-limit retry | ✅ | adapters/github | - | - | 403 secondary rate-limits retried; Retry-After/X-RateLimit-Reset headers honored via RateLimitError (TASK-330, v2.162.8) |
 | CI auto-discovery | ✅ | autopilot | - | - | Auto-detect check names from GitHub API (v0.41.0) |
 | Stagnation monitor | ✅ | executor | - | - | State hash tracking, escalation: warn → pause → abort (v0.56.0) |
 | URL-encode branch names | ✅ | adapters/github | - | - | `url.PathEscape(branch)` in DeleteBranch/GetBranch — fixes 404 on slash branches (v1.28.0) |
@@ -576,4 +577,3 @@ quality:
 | `IsTaskShipped` predicate | v2.151.x | autopilot | Cross-site invariant preventing double-dispatch (TASK-296 / GH-3091) |
 | Ghost-SHA guard | v2.151.x | executor | Fail-closed when commit_sha already on base branch (TASK-300 / GH-3099) |
 | Merge→done race window closed | v2.163.0 | autopilot + adapters/github | `Controller.SetOnIssueDone` fires `MarkProcessed` on all pollers at PR-merge, preventing phantom re-dispatch during label propagation lag (TASK-321 PR-4 / GH-3271) |
-| Webhook fail-closed + jira/asana verification wired | v2.163.x | adapters/* + pilot | All verifiers fail-closed on empty secret; jira/asana VerifySignature now called before Handle; `PILOT_ALLOW_UNSIGNED_WEBHOOKS=1` escape hatch (TASK-326 / GH-3288) |
