@@ -1,6 +1,6 @@
 # Pilot Feature Matrix
 
-**Last Updated:** 2026-05-30 (v2.151.0)
+**Last Updated:** 2026-05-29 (v2.151.0)
 
 ## Legend
 
@@ -370,6 +370,7 @@
 | Per-PR circuit breaker | ✅ | autopilot | - | - | Independent failure tracking per PR (v0.34.0) |
 | Stale label cleanup | ✅ | adapters/github | - | - | Clean pilot-failed labels, allow retry (v0.34.0) |
 | GitHub API retry | ✅ | adapters/github | - | - | Exponential backoff, Retry-After header respect (v0.34.0) |
+| GitHub 403 secondary rate-limit retry | ✅ | adapters/github | - | - | 403 secondary rate-limits retried; Retry-After/X-RateLimit-Reset headers honored via RateLimitError (TASK-330, v2.162.8) |
 | CI auto-discovery | ✅ | autopilot | - | - | Auto-detect check names from GitHub API (v0.41.0) |
 | Stagnation monitor | ✅ | executor | - | - | State hash tracking, escalation: warn → pause → abort (v0.56.0) |
 | URL-encode branch names | ✅ | adapters/github | - | - | `url.PathEscape(branch)` in DeleteBranch/GetBranch — fixes 404 on slash branches (v1.28.0) |
