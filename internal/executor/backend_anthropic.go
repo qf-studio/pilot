@@ -138,6 +138,10 @@ type sseEvent struct {
 	Delta        *sseDelta        `json:"delta,omitempty"`
 	Message      *apiResponse     `json:"message,omitempty"`
 	Usage        *apiUsage        `json:"usage,omitempty"`
+	// Error carries the nested {"error": {...}} of an in-stream "error" event.
+	// Without it, marshaling the event drops the detail and retry classification
+	// (callAPI checks for "overloaded") cannot see an in-stream overloaded_error.
+	Error *apiError `json:"error,omitempty"`
 }
 
 type sseDelta struct {
@@ -499,7 +503,17 @@ func (b *AnthropicBackend) parseSSEStream(body io.Reader) (*apiResponse, error) 
 			// Final event
 
 		case "error":
-			// Error in stream
+			// Error in stream. Surface the inner error type/message so the retry
+			// classification in callAPI (Contains "overloaded") works for in-stream
+			// errors, not just HTTP-status ones — otherwise an overloaded_error
+			// delivered mid-stream is returned immediately instead of retried.
+			if event.Error != nil {
+				detail := strings.TrimSpace(event.Error.Type + ": " + event.Error.Message)
+				if strings.Contains(strings.ToLower(detail), "overloaded") {
+					return nil, fmt.Errorf("overloaded: %s", detail)
+				}
+				return nil, fmt.Errorf("stream error: %s", detail)
+			}
 			errData, _ := json.Marshal(event)
 			return nil, fmt.Errorf("stream error: %s", string(errData))
 		}
