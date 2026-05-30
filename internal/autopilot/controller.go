@@ -742,13 +742,49 @@ func (c *Controller) handleWaitingCI(ctx context.Context, prState *PRState, ghPR
 	return nil
 }
 
-// handleCIPassed proceeds to merge (with approval if required by environment config).
+// handleCIPassed proceeds to merge (with approval if required by environment config
+// or by the scope-drift / size-floor defense-in-depth rails).
 func (c *Controller) handleCIPassed(ctx context.Context, prState *PRState) error {
 	c.log.Info("handleCIPassed: CI passed, determining next stage",
 		"pr", prState.PRNumber,
 		"env", c.config.EnvironmentName(),
 		"auto_merge", c.config.AutoMerge,
 	)
+
+	// Defense-in-depth: scope-drift and size-floor gates escalate to human approval
+	// regardless of env RequireApproval config. Born from OAuth cascade #2
+	// (#2572/#2584/#2585): a runaway executor must not land oversized or scope-drifting
+	// code unsupervised even when env config drops require_approval.
+	var escalateReason string
+	files, listErr := c.ghClient.ListPullRequestFiles(ctx, c.owner, c.repo, prState.PRNumber)
+	if listErr != nil {
+		c.log.Warn("handleCIPassed: ListPullRequestFiles failed, skipping size-floor gate (fail-open)",
+			"pr", prState.PRNumber, "error", listErr)
+	} else if reason := SizeFloorReason(files); reason != "" {
+		escalateReason = reason
+	}
+
+	if escalateReason == "" && prState.IssueNumber > 0 {
+		issue, issueErr := c.ghClient.GetIssue(ctx, c.owner, c.repo, prState.IssueNumber)
+		if issueErr != nil {
+			c.log.Warn("handleCIPassed: GetIssue failed, skipping scope-drift gate (fail-open)",
+				"pr", prState.PRNumber, "issue", prState.IssueNumber, "error", issueErr)
+		} else if reason := ScopeDriftReason(prState.PRTitle, issue.Title); reason != "" {
+			escalateReason = reason
+		}
+	}
+
+	if escalateReason != "" {
+		c.log.Warn("merge gate escalated: requiring human approval",
+			"pr", prState.PRNumber, "reason", escalateReason)
+		prState.Stage = StageAwaitApproval
+		if c.notifier != nil {
+			if err := c.notifier.NotifyApprovalRequired(ctx, prState); err != nil {
+				c.log.Warn("failed to send approval notification", "error", err)
+			}
+		}
+		return nil
+	}
 
 	if c.config.ResolvedEnv().RequireApproval {
 		c.log.Info("awaiting approval before merge", "pr", prState.PRNumber)
@@ -837,7 +873,7 @@ func (c *Controller) handleCIFailed(ctx context.Context, prState *PRState) error
 		if err != nil {
 			c.log.Warn("CI fix size guard: ListPullRequestFiles failed, skipping guard (fail-open)",
 				"pr", prState.PRNumber, "error", err)
-			// Fall through — belt-and-suspenders: merge-time SizeFloor (#2594) still catches it.
+			// Fall through — belt-and-suspenders: merge-time SizeFloor gate in handleCIPassed catches it.
 		} else {
 			netAdditions := 0
 			for _, f := range files {
