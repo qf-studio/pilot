@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "updated": "2026-05-28T00:00:00Z",
+  "updated": "2026-05-30T00:00:00Z",
   "nodes": {
     "concepts": {
       "pilot-architecture": {
@@ -73,7 +73,7 @@
       },
       "git-operations": {
         "label": "Git Operations",
-        "description": "Git command wrappers in executor \u2014 clone, fetch, push, sync, worktree management. Source of data-loss risk if destructive ops (reset --hard, push --force) are used without divergence checks.",
+        "description": "Git command wrappers in executor — clone, fetch, push, sync, worktree management. Source of data-loss risk if destructive ops (reset --hard, push --force) are used without divergence checks.",
         "related": [
           "executor"
         ],
@@ -211,7 +211,7 @@
       },
       "mem-006": {
         "type": "pattern",
-        "summary": "Navigator prompt should use 'Run until done' to trigger Loop Mode. Navigator then handles WORKFLOW CHECK, phase transitions (RESEARCH\u2192PLAN\u2192IMPL\u2192VERIFY\u2192COMPLETE), and EXIT_SIGNAL for completion.",
+        "summary": "Navigator prompt should use 'Run until done' to trigger Loop Mode. Navigator then handles WORKFLOW CHECK, phase transitions (RESEARCH→PLAN→IMPL→VERIFY→COMPLETE), and EXIT_SIGNAL for completion.",
         "concepts": [
           "executor",
           "navigator-integration"
@@ -263,7 +263,7 @@
       },
       "mem-011": {
         "type": "pitfall",
-        "summary": "CRITICAL: syncMainBranch() uses git reset --hard origin/main after every task. When GitHub push propagation lags behind the immediately-following fetch+reset, local commits are silently destroyed (only reflog-recoverable, 90d window). Race is in remote propagation, not push failure \u2014 reordering does NOT fix it. Fix: replace with merge --ff-only. Two call sites: runner.go:3258 (config-gated) and epic.go:1498 (NOT gated).",
+        "summary": "CRITICAL: syncMainBranch() uses git reset --hard origin/main after every task. When GitHub push propagation lags behind the immediately-following fetch+reset, local commits are silently destroyed (only reflog-recoverable, 90d window). Race is in remote propagation, not push failure — reordering does NOT fix it. Fix: replace with merge --ff-only. Two call sites: runner.go:3258 (config-gated) and epic.go:1498 (NOT gated).",
         "concepts": [
           "executor",
           "git-operations"
@@ -347,6 +347,17 @@
         ],
         "confidence": 0.9,
         "created": "2026-05-26"
+      },
+      "mem-018": {
+        "type": "learning",
+        "summary": "AUP/cyber-safeguard kills security-audit model output mid-run, but Workflow tool persists findings to /tmp/claude-501/.../<wfId>.output — recover via jq, never re-summarize via the model. File: learning_audit_safeguard_bypass.md (TASK-322).",
+        "concepts": [
+          "workflow-tool",
+          "security-audit",
+          "anthropic-aup"
+        ],
+        "confidence": 0.95,
+        "created": "2026-05-30"
       }
     }
   },
