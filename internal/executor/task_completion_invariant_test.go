@@ -75,6 +75,14 @@ func TestTaskCompletionInvariant(t *testing.T) {
 			exec:        memory.Execution{ID: "inv-7", TaskID: "GH-999", ProjectPath: "/proj", Status: "completed", Error: "stale running task recovered", CommitSHA: "xyz"},
 			wantShipped: false,
 		},
+		{
+			// TASK-334: the {pr_url, error} combination must NOT be treated as shipped by either
+			// site. HasCompletedExecution SQL excludes error!='' unconditionally; IsTaskShipped
+			// must agree. Without this row the agreement was unverified and could silently regress.
+			name:        "TASK-334: completed with pr_url AND error (both sites must agree: not shipped)",
+			exec:        memory.Execution{ID: "inv-8", TaskID: "GH-334", ProjectPath: "/proj", Status: "completed", PRUrl: "https://github.com/x/y/pull/3", Error: "post-PR comment failed"},
+			wantShipped: false,
+		},
 	}
 
 	for i, tc := range rows {

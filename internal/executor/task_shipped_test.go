@@ -62,11 +62,14 @@ func TestIsTaskShipped(t *testing.T) {
 			want: false,
 		},
 		{
-			// A row with both pr_url and an error IS still considered shipped: the PR was created,
-			// the error may be from a post-PR step (e.g. comment failed). PRUrl is the primary signal.
-			name: "completed with error and pr_url (PR created despite error)",
+			// TASK-334: rows with pr_url AND a non-empty error are NOT shipped.
+			// HasCompletedExecution SQL excludes error!='' unconditionally; IsTaskShipped must
+			// agree to prevent invariant divergence. The error may indicate a partial failure
+			// (e.g. comment failed after PR creation), but the cross-site invariant takes
+			// precedence — callers that need finer-grained distinction must query pr_url directly.
+			name: "completed with error and pr_url (error present — not shipped, TASK-334)",
 			row:  memory.Execution{Status: "completed", Error: "comment failed", PRUrl: "https://github.com/x/y/pull/2"},
-			want: true,
+			want: false,
 		},
 	}
 
