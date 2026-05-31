@@ -1307,6 +1307,35 @@ func (c *Controller) handleMerging(ctx context.Context, prState *PRState) error 
 			return c.handleMergeConflict(ctx, prState)
 		}
 
+		// B5 (TASK-336): Hard cap on non-conflict merge retries. The circuit breaker
+		// (MaxFailures) auto-resets after FailureResetTimeout, so without this cap a
+		// PR blocked by branch-protection or a stuck status check retries indefinitely.
+		// Once MergeAttempts reaches MaxMergeAttempts the failure is terminal and a
+		// human must intervene.
+		if prState.MergeAttempts >= c.config.MaxMergeAttempts {
+			errMsg := fmt.Sprintf("merge failed after %d/%d attempts: %v — manual intervention required",
+				prState.MergeAttempts, c.config.MaxMergeAttempts, err)
+			c.log.Error("handleMerging: merge attempt cap reached — escalating to StageFailed",
+				"pr", prState.PRNumber,
+				"attempts", prState.MergeAttempts,
+				"max", c.config.MaxMergeAttempts,
+				"error", err,
+			)
+			if prState.IssueNumber > 0 {
+				comment := fmt.Sprintf(
+					"⚠️ **Merge escalation**: PR #%d failed to merge after %d attempts.\n\nLast error: `%v`\n\nManual intervention is required — no further automatic retries will be made.",
+					prState.PRNumber, prState.MergeAttempts, err)
+				if _, cerr := c.ghClient.AddComment(ctx, c.owner, c.repo, prState.IssueNumber, comment); cerr != nil {
+					c.log.Warn("failed to post merge escalation comment", "issue", prState.IssueNumber, "error", cerr)
+				}
+			}
+			prState.Stage = StageFailed
+			prState.Error = errMsg
+			c.metrics.RecordPRFailed()
+			c.metrics.RecordIssueProcessed("failed")
+			return nil
+		}
+
 		return fmt.Errorf("merge attempt %d failed: %w", prState.MergeAttempts, err)
 	}
 
