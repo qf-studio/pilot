@@ -732,25 +732,33 @@ func (p *Poller) startSequential(ctx context.Context) {
 
 // findOldestUnprocessedIssue finds the oldest issue with the pilot label
 // that hasn't been processed yet and has no pending dependencies.
-// When projectBoardSource is set, candidates are fetched from the board column
-// instead of by label; all downstream filters remain identical.
-func (p *Poller) findOldestUnprocessedIssue(ctx context.Context) (*Issue, error) {
-	var issues []*Issue
-	var err error
-
+// fetchCandidates returns the raw candidate issues for this poll cycle. When a
+// projectBoardSource is configured it sources from the board column (GH-3228);
+// otherwise it lists open issues by label. This is the single source-selection
+// point used by BOTH dispatch paths — findOldestUnprocessedIssue (sequential)
+// and checkForNewIssues (parallel/auto) — so the board source is honored
+// regardless of execution mode (TASK-338). Previously only the sequential path
+// consulted the board source, so source_enabled + mode:parallel silently
+// reverted to label polling.
+func (p *Poller) fetchCandidates(ctx context.Context) ([]*Issue, error) {
 	if p.projectBoardSource != nil {
 		sourceStatus := p.projectBoardSource.config.SourceStatus
 		if sourceStatus == "" {
 			sourceStatus = "Todo"
 		}
-		issues, err = p.projectBoardSource.FindIssuesFromProject(ctx, sourceStatus)
-	} else {
-		issues, err = p.client.ListIssues(ctx, p.owner, p.repo, &ListIssuesOptions{
-			Labels: []string{p.label},
-			State:  StateOpen,
-			Sort:   "created", // Sort by creation date to get oldest first
-		})
+		return p.projectBoardSource.FindIssuesFromProject(ctx, sourceStatus)
 	}
+	return p.client.ListIssues(ctx, p.owner, p.repo, &ListIssuesOptions{
+		Labels: []string{p.label},
+		State:  StateOpen,
+		Sort:   "created", // oldest first
+	})
+}
+
+// When projectBoardSource is set, candidates are fetched from the board column
+// instead of by label; all downstream filters remain identical.
+func (p *Poller) findOldestUnprocessedIssue(ctx context.Context) (*Issue, error) {
+	issues, err := p.fetchCandidates(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -1038,11 +1046,7 @@ func (p *Poller) syncBoardStatusInProgress(ctx context.Context, issue *Issue) {
 
 // checkForNewIssues fetches issues and dispatches new ones concurrently (parallel mode)
 func (p *Poller) checkForNewIssues(ctx context.Context) {
-	issues, err := p.client.ListIssues(ctx, p.owner, p.repo, &ListIssuesOptions{
-		Labels: []string{p.label},
-		State:  StateOpen,
-		Sort:   "created",
-	})
+	issues, err := p.fetchCandidates(ctx)
 	if err != nil {
 		p.logger.Warn("Failed to fetch issues", slog.Any("error", err))
 		return
