@@ -147,6 +147,11 @@ type Config struct {
 	FailureResetTimeout time.Duration `yaml:"failure_reset_timeout"`
 	// MaxMergesPerHour limits merge rate to prevent runaway automation.
 	MaxMergesPerHour int `yaml:"max_merges_per_hour"`
+	// MaxMergeAttempts is the hard cap on non-conflict merge retries before the PR
+	// is transitioned to StageFailed and escalated to a human. The circuit breaker
+	// (MaxFailures) provides transient backoff; this cap makes persistent failures
+	// terminal so they don't loop indefinitely. Default: 5.
+	MaxMergeAttempts int `yaml:"max_merge_attempts"`
 	// ApprovalTimeout is how long to wait for human approval in prod.
 	ApprovalTimeout time.Duration `yaml:"approval_timeout"`
 
@@ -320,6 +325,7 @@ func DefaultConfig() *Config {
 		MaxCIFixPRSize:      200,
 		FailureResetTimeout: 30 * time.Minute,
 		MaxMergesPerHour:    10,
+		MaxMergeAttempts:    5,
 		ApprovalTimeout:     1 * time.Hour,
 		Release:             nil, // Disabled by default
 		MergedPRScanWindow:  30 * time.Minute,
