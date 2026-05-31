@@ -967,6 +967,31 @@ func (c *Client) FindMergedPRByBranch(ctx context.Context, owner, repo, branch s
 	return false, nil
 }
 
+// FindOpenPRByBranch looks up OPEN PRs by head branch via the strongly-consistent
+// REST API (no Search API indexing lag). Returns true if any open PR exists on
+// that branch. TASK-341: counterpart to FindMergedPRByBranch for the
+// PR-created-but-not-yet-merged window, so a re-dispatch no-op can be classified
+// as awaiting-merge rather than pilot-blocked.
+func (c *Client) FindOpenPRByBranch(ctx context.Context, owner, repo, branch string) (bool, error) {
+	head := fmt.Sprintf("%s:%s", owner, branch)
+	path := fmt.Sprintf("/repos/%s/%s/pulls?head=%s&state=open&per_page=10",
+		owner, repo, url.QueryEscape(head))
+
+	var prs []*PullRequest
+	if err := c.doRequest(ctx, http.MethodGet, path, nil, &prs); err != nil {
+		return false, fmt.Errorf("list open PRs by branch %s: %w", branch, err)
+	}
+	// The server filters by head=owner:branch&state=open, so a matching PR has
+	// state=="open" and head.ref==branch. Re-check both rather than trusting the
+	// array length, mirroring FindMergedPRByBranch's field inspection.
+	for _, pr := range prs {
+		if pr.State == "open" && pr.Head.Ref == branch {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // SearchOpenSubIssues counts open issues in a repo whose body contains "Parent: GH-{parentNum}".
 // Uses the GitHub Search API to find sub-issues referencing the given parent.
 func (c *Client) SearchOpenSubIssues(ctx context.Context, owner, repo string, parentNum int) (int, error) {

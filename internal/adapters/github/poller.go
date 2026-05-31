@@ -879,6 +879,19 @@ func (p *Poller) findOldestUnprocessedIssue(ctx context.Context) (*Issue, error)
 			}
 		}
 
+		// TASK-341: skip re-dispatch when an OPEN pilot PR already exists. Between
+		// PR-created and merged, pilot-done + close are deferred (GH-3139/TASK-301),
+		// so the issue still looks like a fresh candidate; re-dispatching it produces
+		// a "no new commit produced" no-op that the handler used to mislabel
+		// pilot-blocked. The merged case is handled by hasMergedWork above; this
+		// covers the awaiting-merge window. Read-only — leave it for the merge flow.
+		if p.hasOpenPRAwaitingMerge(ctx, issue) {
+			p.logger.Info("Skipping re-dispatch — open PR awaiting merge",
+				slog.Int("number", issue.Number))
+			p.recordSkip(skipreason.ReasonHasOpenPR)
+			continue
+		}
+
 		candidates = append(candidates, issue)
 	}
 
@@ -1195,6 +1208,18 @@ func (p *Poller) checkForNewIssues(ctx context.Context) {
 				p.recordSkip(skipreason.ReasonCompletedExecution)
 				continue
 			}
+		}
+
+		// TASK-341: skip re-dispatch when an OPEN pilot PR already exists (parallel
+		// mode). Mirrors the sequential findOldestUnprocessedIssue guard — between
+		// PR-created and merged, pilot-done + close are deferred (GH-3139/TASK-301),
+		// so a re-dispatch produces a "no new commit produced" no-op that used to be
+		// mislabeled pilot-blocked. Read-only — leave the open PR for the merge flow.
+		if p.hasOpenPRAwaitingMerge(ctx, issue) {
+			p.logger.Info("Skipping re-dispatch — open PR awaiting merge",
+				slog.Int("number", issue.Number))
+			p.recordSkip(skipreason.ReasonHasOpenPR)
+			continue
 		}
 
 		candidates = append(candidates, issue)
@@ -1621,6 +1646,35 @@ func (p *Poller) hasMergedWork(ctx context.Context, issue *Issue) bool {
 	}
 	p.markProcessed(issue.Number)
 	return true
+}
+
+// hasOpenPRAwaitingMerge reports whether an OPEN pilot PR already exists for the
+// issue. Unlike hasMergedWork it is read-only — it mutates no labels and marks
+// nothing processed, because the awaiting-merge state is transient (the PR will
+// merge → hasMergedWork closes it, or close-without-merge → the retry-ready path
+// re-picks it). TASK-321/TASK-341: skip the redundant re-dispatch that would
+// otherwise produce a "no new commit produced" no-op during the
+// PR-created-but-not-yet-merged window. Branch lookup is strongly consistent
+// (no Search API lag), which matters here because the PR may have been created
+// only one poll cycle earlier.
+func (p *Poller) hasOpenPRAwaitingMerge(ctx context.Context, issue *Issue) bool {
+	branch := fmt.Sprintf("pilot/GH-%d", issue.Number)
+	found, err := p.client.FindOpenPRByBranch(ctx, p.owner, p.repo, branch)
+	if err != nil {
+		p.logger.Warn("Failed to check for open PRs by branch",
+			slog.Int("issue", issue.Number),
+			slog.String("branch", branch),
+			slog.Any("error", err),
+		)
+		return false
+	}
+	if found {
+		p.logger.Info("Issue has an open PR awaiting merge",
+			slog.Int("issue", issue.Number),
+			slog.String("branch", branch),
+		)
+	}
+	return found
 }
 
 // shouldRetryFailedIssue checks if a pilot-failed issue should be auto-retried.
