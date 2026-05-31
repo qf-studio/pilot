@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -24,9 +25,26 @@ type Engine struct {
 	alertHistory        []AlertHistory
 	retryTracker        map[string]int // source (issue/PR) -> consecutive failure count (GH-848)
 
-	// Channels for events
-	eventCh chan Event
-	done    chan struct{}
+	// Channels for events. priorityCh carries high-severity events
+	// (escalation / OOM / budget / security) on a dedicated buffer so a flood of
+	// ordinary task events filling eventCh cannot starve a critical alert (E1).
+	eventCh    chan Event
+	priorityCh chan Event
+	done       chan struct{}
+
+	// dispatchCh feeds a single background delivery worker. fireAlert enqueues
+	// here instead of calling Dispatch inline, so a slow/hung channel can never
+	// block the event loop (E1). Sequential delivery keeps ordering and adds no
+	// new concurrency. dispatchWG tracks in-flight deliveries for WaitForDispatch.
+	dispatchCh chan dispatchJob
+	dispatchWG sync.WaitGroup
+	// started is set once Start() launches the dispatch worker. Before that
+	// (direct callers / tests) fireAlert delivers inline so behavior is synchronous.
+	started atomic.Bool
+
+	// recentAlerts deduplicates identical alerts ({rule|source|message}) within
+	// duplicateSuppressTTL when config.Defaults.SuppressDuplicates is set (E5).
+	recentAlerts map[string]time.Time
 
 	// metrics accumulates fired/dropped counters; share the same instance with the
 	// Dispatcher via WithAlertMetrics+WithDispatcherMetrics so delivery counts appear
@@ -82,6 +100,23 @@ const (
 	EventTypeOOMKilled EventType = "oom_killed"
 )
 
+const (
+	// dispatchBacklog bounds the delivery queue feeding the dispatch worker (E1).
+	// When the worker is stuck on a hung channel and the backlog fills, further
+	// deliveries are dropped with a counter rather than blocking the event loop.
+	dispatchBacklog = 256
+	// duplicateSuppressTTL is the window within which an identical alert
+	// ({rule|source|message}) is suppressed when SuppressDuplicates is enabled (E5).
+	duplicateSuppressTTL = 5 * time.Minute
+)
+
+// dispatchJob is a queued alert delivery handled by the dispatch worker (E1).
+type dispatchJob struct {
+	rule     AlertRule
+	alert    *Alert
+	channels []string
+}
+
 // EngineOption configures the Engine
 type EngineOption func(*Engine)
 
@@ -119,7 +154,10 @@ func NewEngine(config *AlertConfig, opts ...EngineOption) *Engine {
 		alertHistory:        make([]AlertHistory, 0),
 		retryTracker:        make(map[string]int),
 		eventCh:             make(chan Event, 100),
+		priorityCh:          make(chan Event, 100),
 		done:                make(chan struct{}),
+		dispatchCh:          make(chan dispatchJob, dispatchBacklog),
+		recentAlerts:        make(map[string]time.Time),
 		metrics:             NewAlertMetrics(),
 	}
 
@@ -145,10 +183,37 @@ func (e *Engine) Start(ctx context.Context) error {
 	// Start event processor
 	go e.processEvents(ctx)
 
+	// Start the delivery worker that drains dispatchCh (E1).
+	go e.dispatchWorker(ctx)
+
 	// Start stuck task checker
 	go e.checkStuckTasks(ctx)
 
+	e.started.Store(true)
+
 	return nil
+}
+
+// dispatchWorker drains queued deliveries sequentially so channel I/O never
+// blocks the event loop (E1).
+func (e *Engine) dispatchWorker(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-e.done:
+			return
+		case job := <-e.dispatchCh:
+			e.dispatchAndRecord(ctx, job.rule, job.alert, job.channels)
+			e.dispatchWG.Done()
+		}
+	}
+}
+
+// WaitForDispatch blocks until all enqueued alert deliveries have completed.
+// Useful for graceful shutdown and for deterministic tests.
+func (e *Engine) WaitForDispatch() {
+	e.dispatchWG.Wait()
 }
 
 // Stop stops the alerting engine
@@ -156,9 +221,26 @@ func (e *Engine) Stop() {
 	close(e.done)
 }
 
-// ProcessEvent adds an event to the processing queue
+// ProcessEvent adds an event to the processing queue. High-severity events
+// (escalation / OOM / budget / security) go on a dedicated priority queue so a
+// flood of ordinary events that fills eventCh cannot drop them (E1).
 func (e *Engine) ProcessEvent(event Event) {
 	if !e.config.Enabled {
+		return
+	}
+
+	if isHighPriorityEvent(event.Type) {
+		select {
+		case e.priorityCh <- event:
+		default:
+			// The priority queue is independent of eventCh, so this only happens
+			// under a sustained critical-event storm. Log loudly and count it.
+			e.logger.Error("CRITICAL alert event dropped — priority queue full",
+				"type", event.Type,
+				"task_id", event.TaskID,
+			)
+			e.metrics.RecordDropped()
+		}
 		return
 	}
 
@@ -173,14 +255,39 @@ func (e *Engine) ProcessEvent(event Event) {
 	}
 }
 
-// processEvents processes incoming events
+// isHighPriorityEvent reports whether an event must not be lost under load.
+func isHighPriorityEvent(t EventType) bool {
+	switch t {
+	case EventTypeEscalation, EventTypeOOMKilled, EventTypeBudgetExceeded, EventTypeSecurityEvent:
+		return true
+	default:
+		return false
+	}
+}
+
+// processEvents processes incoming events. The priority queue is drained ahead
+// of the normal queue so critical alerts are handled first under load.
 func (e *Engine) processEvents(ctx context.Context) {
 	for {
+		// Fast path: always prefer a pending priority event.
 		select {
 		case <-ctx.Done():
 			return
 		case <-e.done:
 			return
+		case event := <-e.priorityCh:
+			e.handleEvent(ctx, event)
+			continue
+		default:
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-e.done:
+			return
+		case event := <-e.priorityCh:
+			e.handleEvent(ctx, event)
 		case event := <-e.eventCh:
 			e.handleEvent(ctx, event)
 		}
@@ -531,10 +638,30 @@ func (e *Engine) createEscalationAlert(rule AlertRule, event Event, source strin
 	}
 }
 
-// fireAlert sends an alert through configured channels
+// fireAlert sends an alert through configured channels. Delivery is handed to a
+// bounded background goroutine so a slow/hung channel cannot block the event
+// loop (E1); identical alerts are suppressed within a TTL window (E5).
 func (e *Engine) fireAlert(ctx context.Context, rule AlertRule, alert *Alert) {
+	now := time.Now()
+
 	e.mu.Lock()
-	e.lastAlertTimes[rule.Name] = time.Now()
+	// E5: suppress identical alerts ({rule|source|message}) within the TTL window.
+	if e.config.Defaults.SuppressDuplicates {
+		key := dedupeKey(rule.Name, alert.Source, alert.Message)
+		if last, ok := e.recentAlerts[key]; ok && now.Sub(last) < duplicateSuppressTTL {
+			e.mu.Unlock()
+			e.metrics.RecordDropped()
+			e.logger.Debug("duplicate alert suppressed",
+				"rule", rule.Name,
+				"source", alert.Source,
+				"alert_id", alert.ID,
+			)
+			return
+		}
+		e.recentAlerts[key] = now
+		e.pruneRecentAlertsLocked(now)
+	}
+	e.lastAlertTimes[rule.Name] = now
 	e.mu.Unlock()
 
 	e.metrics.RecordFired(rule.Name, string(alert.Severity))
@@ -558,6 +685,30 @@ func (e *Engine) fireAlert(ctx context.Context, rule AlertRule, alert *Alert) {
 		}
 	}
 
+	// E1: once running, hand delivery to the background worker so a slow/hung
+	// channel can never block the event loop. Before Start() (direct callers /
+	// tests) deliver inline so the path stays synchronous.
+	if !e.started.Load() {
+		e.dispatchAndRecord(ctx, rule, alert, channels)
+		return
+	}
+	e.dispatchWG.Add(1)
+	select {
+	case e.dispatchCh <- dispatchJob{rule: rule, alert: alert, channels: channels}:
+	default:
+		e.dispatchWG.Done()
+		e.metrics.RecordDropped()
+		e.logger.Warn("alert dispatch backlog full, dropping delivery",
+			"rule", rule.Name,
+			"alert_id", alert.ID,
+			"severity", alert.Severity,
+		)
+	}
+}
+
+// dispatchAndRecord delivers an alert to its channels and records delivery
+// history. Runs in its own goroutine, bounded by dispatchSem (E1).
+func (e *Engine) dispatchAndRecord(ctx context.Context, rule AlertRule, alert *Alert, channels []string) {
 	results := e.dispatcher.Dispatch(ctx, alert, channels)
 
 	// Track delivery history
@@ -593,6 +744,21 @@ func (e *Engine) fireAlert(ctx context.Context, rule AlertRule, alert *Alert) {
 		"severity", alert.Severity,
 		"delivered_to", deliveredTo,
 	)
+}
+
+// dedupeKey builds the suppression key for an alert (E5).
+func dedupeKey(rule, source, message string) string {
+	return rule + "|" + source + "|" + message
+}
+
+// pruneRecentAlertsLocked removes dedupe entries older than the TTL.
+// The caller must hold e.mu.
+func (e *Engine) pruneRecentAlertsLocked(now time.Time) {
+	for k, t := range e.recentAlerts {
+		if now.Sub(t) >= duplicateSuppressTTL {
+			delete(e.recentAlerts, k)
+		}
+	}
 }
 
 func (e *Engine) channelAcceptsSeverity(ch ChannelConfig, severity Severity) bool {
