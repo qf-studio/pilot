@@ -32,9 +32,16 @@ sequenced into severity-ordered waves.
 **SHIPPED:** F2 raw-body body-HMAC (TASK-333, #3306) → merged **manual** as #3325 (gateway buffers
 raw jira/asana body before decode; pilot.go verifies HMAC over exact bytes; dead `marshalWebhookPayload`
 removed). **This was the last open Wave 0–2 remediation item — Waves 0–2 complete.**
-**Held for next batch** (avoid same-file conflicts / gated): B3 CI-commit-status + B5 merge-retry-cap
-(`controller.go` — after M2 #3301 + TASK-325 land) · E1 alert event-loop + E5 SuppressDuplicates
-(`engine.go` — after E3 #3305) · C2/C3/C4→T319 board trio (`client.go`/`poller.go` — after C5 #3303).
+**Held batch — FILED 2026-05-31** (blockers all merged; grouped by file to avoid parallel-Pilot collisions):
+- B3 CI-commit-status fallback (`ci_monitor.go`) → **#3326 / TASK-335**
+- B5 merge-retry hard cap (`controller.go`) → **#3327 / TASK-336**
+- E1 alert event-loop decouple **+** E5 SuppressDuplicates (both `engine.go`, **combined**) → **#3328 / TASK-337**
+- C2 board-source-in-parallel-mode (`poller.go`) → **#3329 / TASK-338**
+- C3 ExecuteGraphQL retry (`client.go`) → **#3330 / TASK-339**
+- C4 board CreatedAt oldest-first (`project_source.go`) → **#3331 / TASK-340**
+
+⚠️ E1/#3328 is timeout/hang-adjacent (deliberately-blocking channel under test) — if Pilot self-stalls
+(see process learning), take it manually like E2/SMTP. All distinct files; rebase on main before push.
 
 ## Wave 3 — Mediums (Pilot)
 A3 watchdog-interval · B4 premature-CIFailure · B5 merge-retry-cap · C6 ListIssues-pagination ·
