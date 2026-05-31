@@ -122,6 +122,12 @@ func isRetryableError(err error) bool {
 		}
 	}
 
+	// GraphQL rate limit errors: HTTP 200 but error body signals rate-limiting.
+	// GitHub Projects V2 returns these as GraphQL errors rather than HTTP 429.
+	if strings.Contains(errStr, "RATE_LIMITED") || strings.Contains(errStr, "was submitted too quickly") {
+		return true
+	}
+
 	// Check for network errors (these don't have HTTP status)
 	networkErrors := []string{
 		"connection refused",
