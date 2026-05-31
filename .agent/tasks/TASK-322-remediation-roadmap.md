@@ -33,8 +33,8 @@ sequenced into severity-ordered waves.
 raw jira/asana body before decode; pilot.go verifies HMAC over exact bytes; dead `marshalWebhookPayload`
 removed). **This was the last open Wave 0–2 remediation item — Waves 0–2 complete.**
 **Held batch — FILED 2026-05-31** (blockers all merged; grouped by file to avoid parallel-Pilot collisions):
-- B3 CI-commit-status fallback (`ci_monitor.go`) → **#3326 / TASK-335**
-- B5 merge-retry hard cap (`controller.go`) → **#3327 / TASK-336**
+- B3 CI-commit-status fallback (`ci_monitor.go`) → **#3326 / TASK-335** → ✅ **SHIPPED** (Pilot PR #3332)
+- B5 merge-retry hard cap (`controller.go`) → **#3327 / TASK-336** → ✅ **SHIPPED** (Pilot PR #3333, `MaxMergeAttempts` default 5)
 - E1 alert event-loop decouple **+** E5 SuppressDuplicates (both `engine.go`, **combined**) → **#3328 / TASK-337**
 - C2 board-source-in-parallel-mode (`poller.go`) → **#3329 / TASK-338**
 - C3 ExecuteGraphQL retry (`client.go`) → **#3330 / TASK-339**
