@@ -2723,6 +2723,7 @@ func TestHandleEvalRegression(t *testing.T) {
 		}
 
 		engine.handleEvalRegression(ctx, event)
+		engine.WaitForDispatch()
 
 		mock.mu.Lock()
 		defer mock.mu.Unlock()
@@ -2760,6 +2761,7 @@ func TestHandleEvalRegression(t *testing.T) {
 		}
 
 		engine.handleEvalRegression(ctx, event)
+		engine.WaitForDispatch()
 
 		mock.mu.Lock()
 		defer mock.mu.Unlock()
