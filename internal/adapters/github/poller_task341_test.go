@@ -56,10 +56,12 @@ func task341Server(t *testing.T, issue *Issue, hasOpenPR bool, labeled *atomic.B
 }
 
 // TestPoller_Sequential_OpenPRAwaitingMergeGuard is the TASK-341 sequential-mode
-// regression: findOldestUnprocessedIssue must skip a candidate whose pilot PR is
-// open and awaiting merge (pilot-done/close are deferred to merge time per
-// GH-3139/TASK-301), and must do so WITHOUT marking it processed or done — the
-// state is transient (merge → done, or close → retry).
+// regression: a RE-dispatch candidate (already processed, grace elapsed) whose
+// pilot PR is open and awaiting merge must be skipped (pilot-done/close are
+// deferred to merge time per GH-3139/TASK-301). The guard lives in the
+// processed-retry path because a never-dispatched issue has no PR yet. It
+// re-marks the issue (so the grace window throttles re-checks) but never labels
+// it — the merge flow owns it.
 func TestPoller_Sequential_OpenPRAwaitingMergeGuard(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -67,14 +69,14 @@ func TestPoller_Sequential_OpenPRAwaitingMergeGuard(t *testing.T) {
 		wantNil   bool // findOldestUnprocessedIssue returns nil (skipped)?
 	}{
 		{name: "open PR awaiting merge is skipped", hasOpenPR: true, wantNil: true},
-		{name: "no open PR dispatches normally", hasOpenPR: false, wantNil: false},
+		{name: "no open PR re-dispatches normally", hasOpenPR: false, wantNil: false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			issue := &Issue{
 				Number:    55,
-				Title:     "GH-55 fresh feature",
+				Title:     "GH-55 feature",
 				State:     "open",
 				Labels:    []Label{{Name: "pilot"}},
 				CreatedAt: time.Now().Add(-1 * time.Hour),
@@ -84,7 +86,10 @@ func TestPoller_Sequential_OpenPRAwaitingMergeGuard(t *testing.T) {
 			defer server.Close()
 
 			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
-			poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second)
+			// grace=0 so the processed issue proceeds straight to the retry path.
+			poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second,
+				WithRetryGracePeriod(0))
+			poller.markProcessed(55) // simulate a prior dispatch (PR already created)
 
 			got, err := poller.findOldestUnprocessedIssue(context.Background())
 			if err != nil {
@@ -96,20 +101,20 @@ func TestPoller_Sequential_OpenPRAwaitingMergeGuard(t *testing.T) {
 			}
 			if !tt.wantNil {
 				if got == nil {
-					t.Fatal("got nil, want issue #55 (no open PR should dispatch)")
+					t.Fatal("got nil, want issue #55 (no open PR should re-dispatch)")
 				}
 				if got.Number != 55 {
 					t.Errorf("got issue #%d, want #55", got.Number)
 				}
 			}
 
-			// Read-only guard: never marks processed or labels the issue done.
 			if tt.hasOpenPR {
-				if poller.IsProcessed(55) {
-					t.Error("issue must NOT be marked processed for an open PR awaiting merge (transient state)")
+				// Re-marked (grace throttle) but never labeled.
+				if !poller.IsProcessed(55) {
+					t.Error("issue should be re-marked processed when skipped for an open PR (grace throttle)")
 				}
 				if labeled.Load() {
-					t.Error("issue must NOT be labeled when skipped for an open PR (read-only guard)")
+					t.Error("issue must NOT be labeled when skipped for an open PR (merge flow owns it)")
 				}
 			}
 		})
@@ -125,14 +130,14 @@ func TestPoller_Parallel_OpenPRAwaitingMergeGuard(t *testing.T) {
 		wantDispatch bool
 	}{
 		{name: "open PR awaiting merge is NOT dispatched", hasOpenPR: true, wantDispatch: false},
-		{name: "no open PR dispatches normally", hasOpenPR: false, wantDispatch: true},
+		{name: "no open PR re-dispatches normally", hasOpenPR: false, wantDispatch: true},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			issue := &Issue{
 				Number:    55,
-				Title:     "GH-55 fresh feature",
+				Title:     "GH-55 feature",
 				State:     "open",
 				Labels:    []Label{{Name: "pilot"}},
 				CreatedAt: time.Now().Add(-1 * time.Hour),
@@ -145,6 +150,7 @@ func TestPoller_Parallel_OpenPRAwaitingMergeGuard(t *testing.T) {
 
 			var dispatched55 atomic.Bool
 			poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second,
+				WithRetryGracePeriod(0),
 				WithOnIssue(func(ctx context.Context, iss *Issue) error {
 					if iss.Number == 55 {
 						dispatched55.Store(true)
@@ -152,6 +158,7 @@ func TestPoller_Parallel_OpenPRAwaitingMergeGuard(t *testing.T) {
 					return nil
 				}),
 			)
+			poller.markProcessed(55) // simulate a prior dispatch (PR already created)
 
 			poller.checkForNewIssues(context.Background())
 			poller.WaitForActive()
@@ -159,8 +166,8 @@ func TestPoller_Parallel_OpenPRAwaitingMergeGuard(t *testing.T) {
 			if got := dispatched55.Load(); got != tt.wantDispatch {
 				t.Errorf("dispatched #55 = %v, want %v (open-PR guard must skip awaiting-merge candidates in parallel mode)", got, tt.wantDispatch)
 			}
-			if tt.hasOpenPR && poller.IsProcessed(55) {
-				t.Error("issue must NOT be marked processed for an open PR awaiting merge (transient state)")
+			if tt.hasOpenPR && !poller.IsProcessed(55) {
+				t.Error("issue should be re-marked processed when skipped for an open PR (grace throttle)")
 			}
 		})
 	}

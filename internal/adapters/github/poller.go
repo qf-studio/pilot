@@ -853,6 +853,17 @@ func (p *Poller) findOldestUnprocessedIssue(ctx context.Context) (*Issue, error)
 			if p.hasMergedWork(ctx, issue) {
 				continue
 			}
+
+			// TASK-341: a re-dispatch whose pilot/GH-N PR is still OPEN (created but
+			// not yet merged — pilot-done/close are deferred to merge time per
+			// GH-3139/TASK-301) would only produce a "no new commit produced" no-op
+			// that the handler used to mislabel pilot-blocked. Re-mark so the grace
+			// window throttles re-checks (mirrors hasMergedWork); do NOT label — the
+			// autopilot merge flow owns this issue until the PR merges or closes.
+			if p.hasOpenPRAwaitingMerge(ctx, issue) {
+				p.markProcessed(issue.Number)
+				continue
+			}
 		}
 
 		// GH-3269: Fresh candidates (never processed / post-unmark) bypass the
@@ -877,19 +888,6 @@ func (p *Poller) findOldestUnprocessedIssue(ctx context.Context) (*Issue, error)
 				p.markProcessed(issue.Number)
 				continue
 			}
-		}
-
-		// TASK-341: skip re-dispatch when an OPEN pilot PR already exists. Between
-		// PR-created and merged, pilot-done + close are deferred (GH-3139/TASK-301),
-		// so the issue still looks like a fresh candidate; re-dispatching it produces
-		// a "no new commit produced" no-op that the handler used to mislabel
-		// pilot-blocked. The merged case is handled by hasMergedWork above; this
-		// covers the awaiting-merge window. Read-only — leave it for the merge flow.
-		if p.hasOpenPRAwaitingMerge(ctx, issue) {
-			p.logger.Info("Skipping re-dispatch — open PR awaiting merge",
-				slog.Int("number", issue.Number))
-			p.recordSkip(skipreason.ReasonHasOpenPR)
-			continue
 		}
 
 		candidates = append(candidates, issue)
@@ -1170,6 +1168,18 @@ func (p *Poller) checkForNewIssues(ctx context.Context) {
 				p.recordSkip(skipreason.ReasonHasMergedWork)
 				continue
 			}
+
+			// TASK-341: skip a re-dispatch whose pilot/GH-N PR is still OPEN (parallel
+			// mode). Mirrors the sequential guard — the open PR is awaiting merge
+			// (pilot-done/close deferred per GH-3139/TASK-301), so re-dispatch would
+			// only no-op ("no new commit produced") and used to be mislabeled
+			// pilot-blocked. Re-mark so the grace window throttles re-checks; do NOT
+			// label — leave the open PR for the autopilot merge flow.
+			if p.hasOpenPRAwaitingMerge(ctx, issue) {
+				p.markProcessed(issue.Number)
+				p.recordSkip(skipreason.ReasonHasOpenPR)
+				continue
+			}
 		}
 
 		// GH-3269 / TASK-321 PR-4: Fresh candidates (never processed / post-unmark)
@@ -1208,18 +1218,6 @@ func (p *Poller) checkForNewIssues(ctx context.Context) {
 				p.recordSkip(skipreason.ReasonCompletedExecution)
 				continue
 			}
-		}
-
-		// TASK-341: skip re-dispatch when an OPEN pilot PR already exists (parallel
-		// mode). Mirrors the sequential findOldestUnprocessedIssue guard — between
-		// PR-created and merged, pilot-done + close are deferred (GH-3139/TASK-301),
-		// so a re-dispatch produces a "no new commit produced" no-op that used to be
-		// mislabeled pilot-blocked. Read-only — leave the open PR for the merge flow.
-		if p.hasOpenPRAwaitingMerge(ctx, issue) {
-			p.logger.Info("Skipping re-dispatch — open PR awaiting merge",
-				slog.Int("number", issue.Number))
-			p.recordSkip(skipreason.ReasonHasOpenPR)
-			continue
 		}
 
 		candidates = append(candidates, issue)
