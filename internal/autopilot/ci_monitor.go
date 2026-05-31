@@ -154,7 +154,7 @@ func (m *CIMonitor) checkStatus(ctx context.Context, sha string) (CIStatus, erro
 
 	// Auto mode: use discovered checks with exclusions and grace period
 	if m.ciChecks != nil && m.ciChecks.Mode == "auto" {
-		return m.checkAutoDiscoveredRuns(sha, checkRuns)
+		return m.checkAutoDiscoveredRuns(ctx, sha, checkRuns)
 	}
 
 	// Manual mode: If no required checks configured, check all runs
@@ -208,8 +208,9 @@ func (m *CIMonitor) checkAllRuns(checkRuns *github.CheckRunsResponse) CIStatus {
 }
 
 // checkAutoDiscoveredRuns checks CI status in auto mode with exclusion filtering.
-// It waits during the grace period if no checks are found yet.
-func (m *CIMonitor) checkAutoDiscoveredRuns(sha string, checkRuns *github.CheckRunsResponse) (CIStatus, error) {
+// It waits during the grace period if no checks are found yet, then falls back
+// to the commit-status API before treating a SHA as having no CI configured.
+func (m *CIMonitor) checkAutoDiscoveredRuns(ctx context.Context, sha string, checkRuns *github.CheckRunsResponse) (CIStatus, error) {
 	// Filter checks by exclusion patterns
 	var filteredRuns []github.CheckRun
 	for _, run := range checkRuns.CheckRuns {
@@ -245,12 +246,25 @@ func (m *CIMonitor) checkAutoDiscoveredRuns(sha string, checkRuns *github.CheckR
 			return CIPending, nil
 		}
 
-		// Grace period expired with no checks - treat as success (no CI configured)
-		m.log.Info("grace period expired with no CI checks, treating as success",
+		// Grace period expired with no check runs — query commit-status API before
+		// concluding that no CI is configured. Providers like CircleCI, Jenkins,
+		// Travis, and Buildkite report exclusively via the statuses API.
+		combined, err := m.ghClient.GetCombinedStatus(ctx, m.owner, m.repo, sha)
+		if err != nil {
+			m.log.Warn("grace period expired; combined-status lookup failed, treating as no CI",
+				"sha", ShortSHA(sha),
+				"error", err,
+			)
+			return CISuccess, nil
+		}
+		status := m.mapCombinedStatus(combined)
+		m.log.Info("grace period expired with no check runs; using commit-status API",
 			"sha", ShortSHA(sha),
-			"grace_period", m.ciChecks.DiscoveryGracePeriod,
+			"combined_state", combined.State,
+			"total_count", combined.TotalCount,
+			"status", status,
 		)
-		return CISuccess, nil
+		return status, nil
 	}
 
 	// Clear discovery start since we found checks
@@ -279,6 +293,22 @@ func (m *CIMonitor) checkAutoDiscoveredRuns(sha string, checkRuns *github.CheckR
 		return CIPending, nil
 	}
 	return CISuccess, nil
+}
+
+// mapCombinedStatus converts a GitHub combined commit-status response into CIStatus.
+// TotalCount==0 means no status contexts exist → genuine no-CI repo → CISuccess.
+func (m *CIMonitor) mapCombinedStatus(combined *github.CombinedStatus) CIStatus {
+	if combined.TotalCount == 0 {
+		return CISuccess
+	}
+	switch combined.State {
+	case github.StatusFailure, github.StatusError:
+		return CIFailure
+	case github.StatusPending:
+		return CIPending
+	default:
+		return CISuccess
+	}
 }
 
 // matchesExclude checks if a check name matches any exclusion pattern.
