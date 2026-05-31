@@ -967,13 +967,21 @@ func TestCIMonitor_AutoDiscovery_GracePeriod(t *testing.T) {
 
 func TestCIMonitor_AutoDiscovery_GracePeriodExpired(t *testing.T) {
 	// Test that auto mode returns success if grace period expires with no checks
+	// and no commit statuses (genuine no-CI repo).
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		resp := github.CheckRunsResponse{
-			TotalCount: 0,
-			CheckRuns:  []github.CheckRun{},
+		switch r.URL.Path {
+		case "/repos/owner/repo/commits/abc1234/check-runs":
+			resp := github.CheckRunsResponse{TotalCount: 0, CheckRuns: []github.CheckRun{}}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(resp)
+		case "/repos/owner/repo/commits/abc1234/status":
+			// No commit statuses → genuine no-CI repo
+			resp := github.CombinedStatus{State: github.StatusPending, TotalCount: 0, Statuses: []github.CommitStatus{}}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(resp)
+		default:
+			w.WriteHeader(http.StatusNotFound)
 		}
-		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer server.Close()
 
@@ -1180,6 +1188,159 @@ func TestCIMonitor_GetFailedCheckLogs(t *testing.T) {
 			t.Errorf("expected empty logs when no failed checks, got %q", logs)
 		}
 	})
+}
+
+// TestCIMonitor_CommitStatusFallback tests the fallback to the GitHub commit-status
+// API when check-runs returns empty. Providers like CircleCI, Jenkins, and Travis
+// use the statuses API exclusively, so empty check-runs must not auto-approve.
+func TestCIMonitor_CommitStatusFallback(t *testing.T) {
+	tests := []struct {
+		name           string
+		combinedState  string
+		totalCount     int
+		wantStatus     CIStatus
+	}{
+		{
+			name:          "failing combined status → CIFailure",
+			combinedState: github.StatusFailure,
+			totalCount:    1,
+			wantStatus:    CIFailure,
+		},
+		{
+			name:          "error combined status → CIFailure",
+			combinedState: github.StatusError,
+			totalCount:    1,
+			wantStatus:    CIFailure,
+		},
+		{
+			name:          "pending combined status → CIPending",
+			combinedState: github.StatusPending,
+			totalCount:    1,
+			wantStatus:    CIPending,
+		},
+		{
+			name:          "empty combined statuses (TotalCount=0) → CISuccess",
+			combinedState: github.StatusPending, // GitHub returns "pending" with no statuses
+			totalCount:    0,
+			wantStatus:    CISuccess,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/repos/owner/repo/commits/abc1234/check-runs":
+					resp := github.CheckRunsResponse{TotalCount: 0, CheckRuns: []github.CheckRun{}}
+					w.WriteHeader(http.StatusOK)
+					_ = json.NewEncoder(w).Encode(resp)
+				case "/repos/owner/repo/commits/abc1234/status":
+					resp := github.CombinedStatus{
+						State:      tt.combinedState,
+						TotalCount: tt.totalCount,
+					}
+					w.WriteHeader(http.StatusOK)
+					_ = json.NewEncoder(w).Encode(resp)
+				default:
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer server.Close()
+
+			ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			cfg := DefaultConfig()
+			cfg.RequiredChecks = nil
+			cfg.CIChecks = &CIChecksConfig{
+				Mode:                 "auto",
+				DiscoveryGracePeriod: 20 * time.Millisecond,
+			}
+			monitor := NewCIMonitor(ghClient, "owner", "repo", cfg)
+
+			// First call starts grace period
+			firstStatus, _ := monitor.CheckCI(context.Background(), "abc1234")
+			if firstStatus != CIPending {
+				t.Errorf("first CheckCI() = %s, want %s", firstStatus, CIPending)
+			}
+
+			// Wait for grace period to expire
+			time.Sleep(30 * time.Millisecond)
+
+			// Second call: grace period expired, fallback to commit-status API
+			status, err := monitor.CheckCI(context.Background(), "abc1234")
+			if err != nil {
+				t.Fatalf("CheckCI() error = %v", err)
+			}
+			if status != tt.wantStatus {
+				t.Errorf("CheckCI() after grace period = %s, want %s", status, tt.wantStatus)
+			}
+		})
+	}
+}
+
+func TestCIMonitor_CommitStatusFallback_APIError(t *testing.T) {
+	// When GetCombinedStatus fails, treat as no CI configured (success).
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/owner/repo/commits/abc1234/check-runs":
+			resp := github.CheckRunsResponse{TotalCount: 0, CheckRuns: []github.CheckRun{}}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(resp)
+		case "/repos/owner/repo/commits/abc1234/status":
+			w.WriteHeader(http.StatusInternalServerError)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.RequiredChecks = nil
+	cfg.CIChecks = &CIChecksConfig{
+		Mode:                 "auto",
+		DiscoveryGracePeriod: 20 * time.Millisecond,
+	}
+	monitor := NewCIMonitor(ghClient, "owner", "repo", cfg)
+
+	// Start grace period
+	_, _ = monitor.CheckCI(context.Background(), "abc1234")
+	time.Sleep(30 * time.Millisecond)
+
+	// After grace period, status API fails → treat as no CI (success)
+	status, err := monitor.CheckCI(context.Background(), "abc1234")
+	if err != nil {
+		t.Fatalf("CheckCI() error = %v", err)
+	}
+	if status != CISuccess {
+		t.Errorf("CheckCI() on status API error = %s, want %s (degrade gracefully)", status, CISuccess)
+	}
+}
+
+func TestCIMonitor_MapCombinedStatus(t *testing.T) {
+	ghClient := github.NewClient(testutil.FakeGitHubToken)
+	cfg := DefaultConfig()
+	monitor := NewCIMonitor(ghClient, "owner", "repo", cfg)
+
+	tests := []struct {
+		name       string
+		combined   *github.CombinedStatus
+		wantStatus CIStatus
+	}{
+		{"failure state", &github.CombinedStatus{State: github.StatusFailure, TotalCount: 2}, CIFailure},
+		{"error state", &github.CombinedStatus{State: github.StatusError, TotalCount: 1}, CIFailure},
+		{"pending state", &github.CombinedStatus{State: github.StatusPending, TotalCount: 1}, CIPending},
+		{"success state", &github.CombinedStatus{State: github.StatusSuccess, TotalCount: 2}, CISuccess},
+		{"zero total count (no statuses)", &github.CombinedStatus{State: github.StatusPending, TotalCount: 0}, CISuccess},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := monitor.mapCombinedStatus(tt.combined)
+			if got != tt.wantStatus {
+				t.Errorf("mapCombinedStatus(%+v) = %s, want %s", tt.combined, got, tt.wantStatus)
+			}
+		})
+	}
 }
 
 func contains(s, substr string) bool {
