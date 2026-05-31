@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 )
 
 const queryProjectBoardItems = `query($projectID: ID!, $statusField: String!, $cursor: String) {
@@ -20,6 +21,7 @@ const queryProjectBoardItems = `query($projectID: ID!, $statusField: String!, $c
               title
               body
               state
+              createdAt
               labels(first: 30) { nodes { name } }
               repository { nameWithOwner }
             }
@@ -48,12 +50,13 @@ type projectBoardItemsResponse struct {
 
 type projectBoardItemNode struct {
 	Content struct {
-		Number     int    `json:"number"`
-		ID         string `json:"id"`
-		Title      string `json:"title"`
-		Body       string `json:"body"`
-		State      string `json:"state"`
-		Labels     struct {
+		Number    int    `json:"number"`
+		ID        string `json:"id"`
+		Title     string `json:"title"`
+		Body      string `json:"body"`
+		State     string `json:"state"`
+		CreatedAt string `json:"createdAt"`
+		Labels    struct {
 			Nodes []struct {
 				Name string `json:"name"`
 			} `json:"nodes"`
@@ -142,13 +145,21 @@ func (s *ProjectBoardSource) FindIssuesFromProject(ctx context.Context, statusCo
 				labels[i] = Label{Name: l.Name}
 			}
 
+			var createdAt time.Time
+			if c.CreatedAt != "" {
+				if t, err := time.Parse(time.RFC3339, c.CreatedAt); err == nil {
+					createdAt = t
+				}
+			}
+
 			issues = append(issues, &Issue{
-				NodeID: c.ID,
-				Number: c.Number,
-				Title:  c.Title,
-				Body:   c.Body,
-				State:  strings.ToLower(c.State),
-				Labels: labels,
+				NodeID:    c.ID,
+				Number:    c.Number,
+				Title:     c.Title,
+				Body:      c.Body,
+				State:     strings.ToLower(c.State),
+				Labels:    labels,
+				CreatedAt: createdAt,
 			})
 		}
 
