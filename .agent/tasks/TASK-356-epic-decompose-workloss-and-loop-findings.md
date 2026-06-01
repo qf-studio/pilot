@@ -1,6 +1,6 @@
 # TASK-356: Pilot-core findings from the SDK M2 board-loop run (2026-06-01)
 
-**Status:** Finding #1 🟡 **in review — PR #3383** (`fix/task-356-epic-decompose-workloss`); #2/#3 open.
+**Status:** Finding #1 ✅ **SHIPPED — PR #3383, released v2.166.7** (2026-06-01); #2/#3 open.
 **Priority:** P1 (finding #1) + P2/ops (#2, #3)
 **Related:** [[TASK-319]] (board loop), [[TASK-354]] (orphaned cards / non-PR transitions), [[TASK-355]] (no-op false-positive class), [[TASK-325]] (scope/size merge gate)
 **Source:** interactive loop session — drove `qf-studio/studio-sdk` #11 epic to done (M2.1 #15, M2.2 #19+#21, M2.3 #23+#25 all merged).
