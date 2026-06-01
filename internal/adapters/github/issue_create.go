@@ -31,15 +31,28 @@ type IssueAllowlist interface {
 	ConfiguredRepos() []string
 }
 
+// allowAllIssueRepos is an IssueAllowlist that permits any (owner, repo). Use it
+// at call sites where owner/repo are already constrained by explicit config (e.g.
+// the autopilot feedback loop) so the intent is encoded at the call site rather
+// than relying on a permissive nil default. TASK-347.
+type allowAllIssueRepos struct{}
+
+func (allowAllIssueRepos) RepoIsAllowed(string, string, string) bool { return true }
+func (allowAllIssueRepos) ConfiguredRepos() []string                 { return []string{"*"} }
+
+// AllowAllIssueRepos returns an IssueAllowlist that permits any repo, for callers
+// whose target is already constrained by their own configuration. TASK-347.
+func AllowAllIssueRepos() IssueAllowlist { return allowAllIssueRepos{} }
+
 // CreatePilotIssue validates the title against the conventional-commits format and
 // creates a GitHub issue with the given labels.
 //
 // allow is the repo allowlist for TASK-286 / GH-3027 defense-in-depth. Pass a non-nil
-// IssueAllowlist to enforce that (owner, repo) is a configured Pilot project. Pass nil
-// only when the owner/repo is already constrained by caller configuration (e.g., the
-// autopilot feedback loop, which uses explicit owner/repo from its own config). When nil,
-// a WARN is logged so the omission is visible. Set PILOT_ALLOW_UNMANAGED_REPO=1 to bypass
-// a non-nil allowlist that would otherwise reject the repo (also logs WARN).
+// IssueAllowlist to enforce that (owner, repo) is a configured Pilot project. A nil
+// allowlist now FAILS CLOSED (TASK-347) to match executor.ValidateTargetRepo — for a
+// caller whose owner/repo is already constrained by its own config, pass
+// AllowAllIssueRepos() to encode that intent. Set PILOT_ALLOW_UNMANAGED_REPO=1 to bypass
+// (covers both the nil case and a non-nil allowlist that would otherwise reject the repo).
 //
 // Returns an error if the title does not match conventional-commits format, if the
 // allowlist rejects the repo, or if the GitHub API call fails.
@@ -60,20 +73,30 @@ func CreatePilotIssue(ctx context.Context, c *Client, allow IssueAllowlist, owne
 // validateIssueRepo enforces the repo allowlist. Mirrors executor.ValidateTargetRepo
 // but is defined here to avoid the executor→github import cycle.
 func validateIssueRepo(allow IssueAllowlist, owner, repo string) error {
+	bypass := os.Getenv(envBypassIssueAllowlist) == "1"
+
 	if allow == nil {
-		slog.Warn("CreatePilotIssue: no IssueAllowlist configured; repo check skipped — pass an allowlist or set PILOT_ALLOW_UNMANAGED_REPO=1 to silence",
-			"component", "adapters.github.issue_create",
-			"owner", owner,
-			"repo", repo,
-		)
-		return nil
+		// C7 (TASK-347): fail closed to match executor.ValidateTargetRepo — a future
+		// caller that forgets to wire an allowlist must not silently get zero
+		// enforcement (the GH-3027 cross-repo-leak class). Known-safe callers pass
+		// AllowAllIssueRepos() to encode "intentionally unrestricted" explicitly.
+		if bypass {
+			slog.Warn("CreatePilotIssue: no IssueAllowlist configured; PILOT_ALLOW_UNMANAGED_REPO=1 bypassed the repo check",
+				"component", "adapters.github.issue_create",
+				"owner", owner,
+				"repo", repo,
+			)
+			return nil
+		}
+		return fmt.Errorf("no IssueAllowlist configured for %s/%s — pass an allowlist (or AllowAllIssueRepos()) or set %s=1",
+			owner, repo, envBypassIssueAllowlist)
 	}
 
 	if allow.RepoIsAllowed(owner, repo, "") {
 		return nil
 	}
 
-	if os.Getenv(envBypassIssueAllowlist) == "1" {
+	if bypass {
 		slog.Warn("PILOT_ALLOW_UNMANAGED_REPO=1 bypassed IssueAllowlist",
 			"component", "adapters.github.issue_create",
 			"owner", owner,
