@@ -67,20 +67,32 @@ all spec-guard'd (passed — `pilot` only, no `-spec-incomplete`):
 | TASK-350 | E6 rotation cleanup serialize | `logging/rotation.go` | #3351 |
 | TASK-351 | E8 engine_test deterministic sync (test-only) | `alerts/engine_test.go` | #3352 |
 
-**Wave-3 outcome (2026-06-01, watch loop):**
-- ✅ **TASK-343** (store cluster D3/D5/D6/D7) — shipped via sub-issue #3353/PR #3354 → **v2.166.2**.
-- ✅ **TASK-350** (E6 rotation) — shipped PR #3360 → **v2.166.3**.
-- 🟡 **TASK-348** (D4 KG) + **TASK-351** (E8) — in autopilot flight (D4 hit the flaky `internal/briefs`
-  test → premature-CIFailure close + phantom CI-fix #3359; see [[learning_flaky_briefs_generator_test]]).
-- 🔴 **Manual no-op set (5):** TASK-344 (A3), TASK-345 (B4), TASK-346 (C6), TASK-347 (C7), TASK-349 (E4)
-  — all `pilot-blocked` no-ops (no commit produced), retries paused, no PR. Pilot can't one-shot these;
-  take them manually in a worktree (same flow as TASK-352). ~half the mediums, matching the standing pattern.
-- 🩹 **Self-heal regression surfaced + fixed:** the D3 self-heal scope shipped with the wrong discriminator
-  (owner/repo vs the FS `project_path`), silently showing shipped work as `failed` on the dashboard →
-  **TASK-352 / #3363 → v2.166.4**. See [[learning_selfheal_projectpath_discriminator]].
+## ✅ Wave 3 COMPLETE (2026-06-01) — all 12 mediums shipped
 
-Watch-and-merge: defer `pilot/GH-*` merges to the daemon's `auto_merge`; intervene only on phantom
-`pilot-blocked`+open-PR (TASK-341 guard shipped). Manual no-op set is the remaining Wave-3 work.
+| Finding | Task | PR | Released |
+|---|---|---|---|
+| D3/D5/D6/D7 store cluster | TASK-343 | #3354 (Pilot, via sub #3353) | v2.166.2 |
+| E6 rotation cleanup | TASK-350 | #3360 (Pilot) | v2.166.3 |
+| E8 engine_test sync | TASK-351 | #3365 (Pilot) | — |
+| D4 KG atomic write | TASK-348 | #3366 (manual) | v2.166.5 |
+| A3 watchdog interval | TASK-344 | #3367 (manual) | v2.166.5 |
+| B4 premature CIFailure | TASK-345 | #3368 (manual) | v2.166.5 |
+| C6 ListIssues pagination | TASK-346 | #3369 (manual) | v2.166.5 |
+| C7 allowlist fail-closed | TASK-347 | #3370 (manual) | v2.166.5 |
+| E4 Telegram MarkdownV2 | TASK-349 | #3371 (manual) | v2.166.5 |
+
+**Execution notes:**
+- 6 of 12 (A3/B4/C6/C7/D4/E4) were **manual** — Pilot no-op'd them (the standing "~half the mediums
+  Pilot can't one-shot" pattern). Done via nav-loop/task mode in one worktree, one PR each → v2.166.5.
+- **Self-heal regression** surfaced + fixed mid-wave: D3 self-heal scoped by `owner/repo` vs the FS
+  `project_path` → dashboard showed shipped work as `failed` → **TASK-352 / #3363 → v2.166.4**. See
+  [[learning_selfheal_projectpath_discriminator]].
+- **C6 broke the `stress` test mocks** (fixed-list mocks don't paginate) → 600s CI timeouts + email
+  noise → **TASK-353 / #3374** (pagination-aware mocks + bounded waits + briefs panic guard). See
+  [[learning_flaky_briefs_generator_test]].
+
+**TASK-322 remediation status:** Waves 0–3 complete (3 crit · 14 high · 17 med all shipped). Only
+**Wave 4 (13 low)** remains — re-audit ~2 weeks out per the Gates section.
 
 ## Wave 4 — Lows + tests (Pilot)
 A4 hook-tmp + subagent-argv · B6 recordedMerges/discoveryStart eviction · E7 retryTracker-TTL ·
