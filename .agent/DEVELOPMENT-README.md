@@ -120,16 +120,13 @@ Disable via config: `executor.navigator.auto_init: false`
 
 **Current Version:** v2.166.6 | full status in `.agent/system/FEATURE-MATRIX.md`
 
-**Recent (v2.159.3, May 28 2026):** Hot-upgrade subsystem repair + autopilot release-pipeline reliability.
-- `fix(upgrade)`: Pre-exec smoke test invoked `pilot --version` (a flag the root cobra command never registers → exit 1), so it failed **every** hot upgrade before `syscall.Exec`. Switched to the `version` subcommand pilot actually implements, plus a regression guard (`TestRunSmokeTest_UsesVersionSubcommand`) using a fake that mimics the real CLI — prior tests used arg-agnostic scripts and missed it. Chicken-and-egg: the fix lives inside the path it repairs, so it required one manual reinstall to land. (GH-3222 / #3223). Pitfall: `.agent/knowledge/memories/pitfalls/bug_smoke_test_wrong_cli_contract.md`. Executor's inability to self-fix this one-liner (it second-guessed the obvious-looking `--version`) tracked in GH-3224.
-- `fix(upgrade)` **(TASK-303, v2.155.1)**: Stopped swallowing macOS codesign errors (`upgrade.go` `PrepareForExecution`), added the pre-exec smoke test, and made the TUI render upgrade progress / completion / failure **honestly** (no more silent "old version still running"). This turned the long-standing silent hot-upgrade failure into a visible one — which is what surfaced the #3222 smoke-test bug. Pitfalls: `bug_hot_upgrade_silent_codesign.md`, `bug_hot_upgrade_restarting_ui_trap.md`.
-- `fix(autopilot)`: Ghost-SHA guard — fail closed when `commit_sha` is already on the base branch (worktree HEAD == base parent → no ghost-close) + `IsTaskShipped` prefers `PRUrl` as the primary signal. (TASK-300 / #3193)
-- `fix(autopilot)`: Gate `pilot-done` + issue close on PR **merge**, not PR creation — stops premature done-marking. (TASK-301 / #3186)
-- `fix(autopilot)`: Release scanner replaced the in-memory `releasedCommits` map with `GetTagForSHA`; `handleReleasing` now handles tag-lookup errors + duplicate-tag races (a manually-pushed tag won't double-release). (TASK-314 / TASK-316 / #3221)
-- `feat(workflow)`: `.pilot/workflow.yaml` per-repo prompt + policy override; lifecycle hooks (`after_create`, `before_run`, `after_run`, `before_remove`). (TASK-304 / TASK-305)
-- `feat(executor)`: OpenRouter backend wired into the factory, then **reverted** (#3214) pending TASK-310 spike findings — net not shipped.
+**Recent (v2.166.6, June 1 2026):** TASK-322 self-audit remediation **Waves 0–3 complete** + release-pipeline hardening.
+- **TASK-322 audit (3 crit · 14 high · 17 med all shipped, ~v2.162→v2.166):** criticals (retry-path→worktree, `*PRState` cross-goroutine race, scope/size merge-gate), security cluster (jira/asana/gitlab webhook fail-closed + raw-body HMAC ordering, Slack sig tests, `PRAGMA foreign_keys=ON`), and 17 mediums. Only **Wave 4 (13 lows)** remains — gated on a ~2-week re-audit. Roadmap + findings ledger: `.agent/tasks/TASK-322-remediation-roadmap.md`.
+- `fix(autopilot)` **(TASK-309 / #3188 → #3375):** releasing-stage defense-in-depth. `PurgeTerminalPRStates` now reaps stale `releasing` rows (+ fixes a latent UTC-vs-local purge-comparison bug, now `datetime('now',?)`); `ScanRecentlyMergedPRs` gains a DB-aware skip gate (`StateStore.PersistedReleasingAge`) so a release persisted-but-absent-from-`activePRs` (e.g. post-restart) isn't re-triggered every scan. The acute P1 (eject-before-`handleReleasing`, B1) was already fixed; the freeze (B2) was mitigated by TASK-316; B2 attempt-cap deemed out of scope.
+- `chore(build)` **(#3377):** `make release` is now **tag-only**. It previously did a local `gh release create` that 422-collided with the goreleaser CI (`release.yml`), which then skipped the Homebrew formula publish. Goreleaser is the **sole publisher** now — resolves the long-standing P2 release-pipeline race (bit v2.149.4 *and* v2.166.6; the v2.166.6 tap was bumped to 2.166.6 by hand after the collision).
+- `test` **(TASK-353 / #3374):** flaky CI fixed (pagination-aware stress mocks + bounded waits + briefs panic guard); CI now stable across many green runs.
 
-**Previous (v2.149.4, May 25 2026):** Wave 1 hardening sweep + Linear Ed25519 webhook verification (TASK-289/290/291/295/299). Detail in `.agent/audits/AUDIT-2026-05-25.md`. **Open caveat:** `gateway.Config.LinearWebhookPublicKey` still has no YAML decode in `cmd/pilot/main.go` — Ed25519 verification is gated behind a field nothing can set (TASK-295 follow-up).
+**Previous (v2.159.3, May 28 2026):** Hot-upgrade subsystem repair (smoke-test CLI-contract fix #3223; TASK-303 honest upgrade UI / codesign errors) + release scanner `GetTagForSHA` + tag-lookup/dup-tag handling (TASK-314/316). Pitfalls in `.agent/knowledge/memories/pitfalls/`. **Open caveat (since v2.149.4):** `gateway.Config.LinearWebhookPublicKey` still has no YAML decode in `cmd/pilot/main.go` — Ed25519 verification is gated behind a field nothing can set (TASK-295 follow-up; backlog below).
 
 ### Autopilot Environments (v1.59.0+)
 
@@ -168,7 +165,6 @@ gh pr list --state open
 | P1 | **GH Projects board as work source** — Studio SDK roadmap | Read path `FindIssuesFromProject` [TASK-317](tasks/TASK-317-github-board-as-source.md) (queued) → full board-driven lifecycle loop [TASK-319](tasks/TASK-319-gh-projects-full-loop.md) (planned, depends on 317) → SDK M1 Plane adapter extraction [TASK-318](tasks/TASK-318-sdk-m1-plane-extraction.md) (drafted). |
 | P1 | `safeGo()` panic-recovery sweep | Last open Wave 2 refactor — 73 bare `go func()` in `internal/` lack recover(). [TASK-292](tasks/TASK-292-safego-panic-recovery-sweep.md) |
 | P1 | TASK-295 follow-up: wire `linear.webhook_public_key` YAML → `gateway.Config.LinearWebhookPublicKey` | Without this glue in `cmd/pilot/main.go`, the v2.149.4 Ed25519 verification is gated behind a config field that has no decode path. Small (≤30 LOC); blocks the security improvement from being active. |
-| P2 | Pick one release pipeline: `make release` vs goreleaser-on-tag | They raced on v2.149.4 — `make release` uploaded 5 assets first, goreleaser hit `422 already_exists` on the same names, exited 1. Release succeeded (10 total assets across both); only the goreleaser workflow showed FAILED. Decide: keep goreleaser (just `git tag && git push`), or keep `make release` (delete `.github/workflows/release.yml`), or make them idempotent. Also: Makefile `release` target multi-line `NOTES=` still breaks the shell parse — same bug as v2.146.7 cut. |
 | P2 | E2E test suite | No integration tests — reliability untested |
 | P2 | Web dashboard auth | Token-based auth for remote access |
 | P2 | Mobile-responsive dashboard | Primary use case is phone access |
@@ -179,6 +175,7 @@ gh pr list --state open
 | P3 | Audit §3 Wave 4+ candidates | Not in Top 10 / not yet decomposed: `RecordAPIError` wiring beyond github · `AlertTypeOOMKilled` · multi-gate scanner phase discipline · subprocess migration end-to-end validation · `autopilot` adapter coupling refactor · SQL `withTx` helper · generic `Poller[T]` extraction · `Releaser` frozen-at-startup fix. Source: `.agent/audits/AUDIT-2026-05-25.md` §3. |
 
 > **Shipped (was Wave 2/3, now archived):** TASK-293 poller counters · TASK-294 `WithRetry` in `doRequest` · TASK-296 `IsTaskShipped` · TASK-297/gh-3099 docs drift · TASK-298 consolidate `*_processed` (incl. TASK-288 Steps 1+2) · TASK-314/316 release scanner. Plans in `.agent/tasks/archive/`.
+> **Shipped (June 1):** release pipeline de-raced — `make release` is now tag-only, goreleaser is sole publisher (#3377), closing the P2 `make release` vs goreleaser collision · TASK-309 releasing-stage B3/B4 defense-in-depth (#3375, closes #3188) · TASK-353 flaky-CI fix (#3374).
 
 ---
 

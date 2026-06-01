@@ -17,9 +17,11 @@ How a fix actually reaches the running Pilot daemon (learned cutting v2.166.4 fo
   A **manually-merged `fix/*` PR sits on `main` unreleased** — it rides out with the *next* pilot release,
   or you cut one manually.
 - **Manual release:** `git tag vX.Y.Z <sha> && git push origin vX.Y.Z` (tag the exact SHA — no root
-  checkout/clean-tree needed; `release.yml` does the build in CI). **Do NOT also run `make release`** —
-  it pushes a tag AND does a local `gh release create`, which double-publishes / collides with the CI
-  GoReleaser. Patch bump for a `fix:`.
+  checkout/clean-tree needed; `release.yml` does the build in CI). `make release V=X.Y.Z` is now
+  equivalent and safe — **as of #3377 (after v2.166.6) it is tag-only** and no longer does a local
+  `gh release create`. (Previously it did, which 422-collided with the CI GoReleaser and made goreleaser
+  skip the Homebrew formula publish — the v2.166.6 tap had to be bumped by hand.) Patch bump for a `fix:`.
+  See [[decision_release_pipeline_tag_only]].
 - `make build` → `./bin/pilot`; `make install` → `go install` → `~/go/bin` (GOBIN unset).
 
 **The daemon binary.** It runs from **`~/.local/bin/pilot`** (a plain 20MB file, not a brew symlink, not

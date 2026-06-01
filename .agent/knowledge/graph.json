@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "updated": "2026-05-30T00:00:00Z",
+  "updated": "2026-06-01T00:00:00Z",
   "nodes": {
     "concepts": {
       "pilot-architecture": {
@@ -391,6 +391,18 @@
         ],
         "confidence": 0.95,
         "created": "2026-06-01"
+      },
+      "mem-022": {
+        "type": "decision",
+        "summary": "Release pipeline is tag-only — goreleaser (release.yml) is the SOLE publisher. As of #3377 (after v2.166.6) `make release` only pushes the version tag; it no longer does a local `gh release create`, which had 422-collided with goreleaser and made it skip the Homebrew formula publish (bit v2.149.4 and v2.166.6). Never publish assets before goreleaser. File: decision_release_pipeline_tag_only.md.",
+        "concepts": [
+          "release",
+          "homebrew",
+          "build"
+        ],
+        "confidence": 0.95,
+        "created": "2026-06-01",
+        "memory_file": ".agent/knowledge/memories/decisions/decision_release_pipeline_tag_only.md"
       }
     }
   },
@@ -494,6 +506,11 @@
       "from": "mem-015",
       "to": "mem-017",
       "type": "related"
+    },
+    {
+      "from": "mem-022",
+      "to": "mem-020",
+      "type": "refines"
     }
   ]
 }
