@@ -147,7 +147,11 @@ func (c *TelegramChannel) Type() string { return "telegram" }
 func (c *TelegramChannel) Send(ctx context.Context, alert *Alert) error {
 	text := c.formatMessage(alert)
 	chatID := fmt.Sprintf("%d", c.chatID)
-	_, err := c.client.SendMessage(ctx, chatID, text, "Markdown")
+	// E4 (TASK-349): use MarkdownV2 to match escapeMarkdown, which escapes the
+	// MarkdownV2 metacharacter set. Legacy "Markdown" left those escapes as literal
+	// backslashes (e.g. "50\.00") or rejected the entities outright ("can't parse
+	// entities"), silently dropping cost/failure alerts.
+	_, err := c.client.SendMessage(ctx, chatID, text, "MarkdownV2")
 	return err
 }
 

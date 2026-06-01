@@ -6,9 +6,11 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/qf-studio/pilot/internal/adapters/telegram"
 	"github.com/qf-studio/pilot/internal/testutil"
 )
 
@@ -563,6 +565,57 @@ func TestTelegramChannel_FormatMessage(t *testing.T) {
 	// Should contain severity
 	if len(msg) < 50 {
 		t.Error("expected substantial message content")
+	}
+}
+
+// TestTelegramChannel_UsesMarkdownV2_E4 verifies E4 (TASK-349): the channel sends
+// with parse_mode=MarkdownV2 to match escapeMarkdown's MarkdownV2 escaping, so a
+// period/'!'-heavy cost alert isn't rejected with "can't parse entities".
+func TestTelegramChannel_UsesMarkdownV2_E4(t *testing.T) {
+	var gotParseMode string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ParseMode string `json:"parse_mode"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		gotParseMode = req.ParseMode
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true,"result":{"message_id":1}}`))
+	}))
+	defer server.Close()
+
+	client := telegram.NewClientWithBaseURL("test-telegram-token", server.URL)
+	ch := NewTelegramChannel("test", client, 123456789)
+
+	alert := &Alert{
+		ID:          "a1",
+		Type:        AlertTypeTaskFailed,
+		Severity:    SeverityCritical,
+		Title:       "Daily spend $50.00 exceeds threshold $25.00!",
+		Message:     "cost-limit - investigate now.",
+		Source:      "task:TASK-1",
+		ProjectPath: "/my/project",
+		CreatedAt:   time.Now(),
+	}
+	if err := ch.Send(context.Background(), alert); err != nil {
+		t.Fatalf("Send() error = %v", err)
+	}
+	if gotParseMode != "MarkdownV2" {
+		t.Errorf("parse_mode = %q, want MarkdownV2", gotParseMode)
+	}
+}
+
+// TestEscapeMarkdown_CoversMarkdownV2Specials_E4 verifies escapeMarkdown escapes the
+// full MarkdownV2 metacharacter set (the premise that makes the parse-mode switch correct).
+func TestEscapeMarkdown_CoversMarkdownV2Specials_E4(t *testing.T) {
+	out := escapeMarkdown("Daily spend $50.00!")
+	if !strings.Contains(out, `50\.00`) || !strings.HasSuffix(out, `\!`) {
+		t.Errorf("period/'!' not escaped for MarkdownV2: %q", out)
+	}
+	for _, r := range "_*[]()~`>#+-=|{}.!" {
+		if got := escapeMarkdown(string(r)); got != "\\"+string(r) {
+			t.Errorf("escapeMarkdown(%q) = %q, want escaped", string(r), got)
+		}
 	}
 }
 
