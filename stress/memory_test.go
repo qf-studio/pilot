@@ -17,6 +17,21 @@ import (
 	"github.com/qf-studio/pilot/internal/testutil"
 )
 
+// waitForProcessed busy-waits until get() reaches want, failing fast with a clear
+// message when timeout elapses instead of hanging until the whole-package test
+// timeout (600s). The unbounded version of this loop made these stress tests red
+// CI on unrelated PRs whenever dispatch was slow under load. TASK-353.
+func waitForProcessed(t *testing.T, get func() int64, want int64, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for get() < want {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out after %v waiting for processed count: got %d, want %d", timeout, get(), want)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
 // TestMemory_NoUnboundedGrowth verifies memory doesn't grow unbounded during processing.
 func TestMemory_NoUnboundedGrowth(t *testing.T) {
 	if testing.Short() {
@@ -53,6 +68,12 @@ func TestMemory_NoUnboundedGrowth(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		// C6/TASK-346: paginate-aware mock — full list on page 1, empty after, so
+		// ListIssues pagination terminates instead of looping to maxPages. TASK-353.
+		if p := r.URL.Query().Get("page"); p != "" && p != "1" {
+			_, _ = w.Write([]byte(`[]`))
+			return
+		}
 		_ = json.NewEncoder(w).Encode(issues)
 	}))
 	defer server.Close()
@@ -101,9 +122,7 @@ func TestMemory_NoUnboundedGrowth(t *testing.T) {
 	}()
 
 	// Wait for processing
-	for atomic.LoadInt64(&processedCount) < int64(numIssues) {
-		time.Sleep(50 * time.Millisecond)
-	}
+	waitForProcessed(t, func() int64 { return atomic.LoadInt64(&processedCount) }, int64(numIssues), 25*time.Second)
 
 	close(done)
 	cancel()
@@ -191,6 +210,14 @@ func TestMemory_ProcessedMapGrowth(t *testing.T) {
 			_, _ = w.Write([]byte(`[]`))
 			return
 		}
+		// C6/TASK-346: ListIssues now paginates (per_page=100&page=N). Return the
+		// full list only on page 1 and an empty page after, so pagination terminates;
+		// otherwise the mock would return 1000 per page up to maxPages (50k items),
+		// starving the poll. TASK-353.
+		if p := r.URL.Query().Get("page"); p != "" && p != "1" {
+			_, _ = w.Write([]byte(`[]`))
+			return
+		}
 		n := atomic.AddInt64(&pollCount, 1)
 		if n <= 2 {
 			// Call 1: recoverOrphanedIssues, Call 2: first checkForNewIssues
@@ -225,9 +252,7 @@ func TestMemory_ProcessedMapGrowth(t *testing.T) {
 	go poller.Start(ctx)
 
 	// Wait for all to be processed
-	for atomic.LoadInt64(&processedCount) < int64(numIssues) {
-		time.Sleep(50 * time.Millisecond)
-	}
+	waitForProcessed(t, func() int64 { return atomic.LoadInt64(&processedCount) }, int64(numIssues), 25*time.Second)
 
 	cancel()
 	poller.WaitForActive()
@@ -277,6 +302,12 @@ func TestMemory_LargePayloads(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		// C6/TASK-346: paginate-aware mock — full list on page 1, empty after, so
+		// ListIssues pagination terminates instead of looping to maxPages. TASK-353.
+		if p := r.URL.Query().Get("page"); p != "" && p != "1" {
+			_, _ = w.Write([]byte(`[]`))
+			return
+		}
 		_ = json.NewEncoder(w).Encode(issues)
 	}))
 	defer server.Close()
@@ -366,6 +397,11 @@ func TestMemory_RepeatedStartStop(t *testing.T) {
 
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
+			// C6/TASK-346: paginate-aware mock — full list on page 1, empty after.
+			if p := r.URL.Query().Get("page"); p != "" && p != "1" {
+				_, _ = w.Write([]byte(`[]`))
+				return
+			}
 			_ = json.NewEncoder(w).Encode(issues)
 		}))
 
