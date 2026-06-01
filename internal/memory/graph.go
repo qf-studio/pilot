@@ -3,11 +3,13 @@ package memory
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -25,9 +27,10 @@ type GraphNode struct {
 
 // KnowledgeGraph provides cross-project knowledge management
 type KnowledgeGraph struct {
-	nodes map[string]*GraphNode
-	path  string
-	mu    sync.RWMutex
+	nodes     map[string]*GraphNode
+	path      string
+	mu        sync.RWMutex
+	saveCount int64 // incremented by saveUnlocked on each successful disk write
 }
 
 // NewKnowledgeGraph creates a new knowledge graph
@@ -44,7 +47,7 @@ func NewKnowledgeGraph(dataPath string) (*KnowledgeGraph, error) {
 	return kg, nil
 }
 
-// load loads the graph from disk
+// load loads the graph from disk, falling back to knowledge.json.bak on parse failure.
 func (kg *KnowledgeGraph) load() error {
 	data, err := os.ReadFile(kg.path)
 	if err != nil {
@@ -52,8 +55,21 @@ func (kg *KnowledgeGraph) load() error {
 	}
 
 	var nodes []*GraphNode
-	if err := json.Unmarshal(data, &nodes); err != nil {
-		return err
+	if parseErr := json.Unmarshal(data, &nodes); parseErr != nil {
+		bakPath := kg.path + ".bak"
+		bakData, bakErr := os.ReadFile(bakPath)
+		if bakErr != nil {
+			return parseErr
+		}
+		var bakNodes []*GraphNode
+		if bakErr = json.Unmarshal(bakData, &bakNodes); bakErr != nil {
+			return parseErr
+		}
+		slog.Warn("knowledge.json corrupt; recovering from backup", "err", parseErr)
+		nodes = bakNodes
+		if renameErr := os.Rename(bakPath, kg.path); renameErr != nil {
+			slog.Warn("failed to promote knowledge.json.bak to primary", "err", renameErr)
+		}
 	}
 
 	kg.mu.Lock()
@@ -66,7 +82,9 @@ func (kg *KnowledgeGraph) load() error {
 	return nil
 }
 
-// saveUnlocked persists the graph to disk (caller must hold lock)
+// saveUnlocked persists the graph atomically (caller must hold lock).
+// It writes to a temp file in the same directory, fsyncs, backs up the current
+// knowledge.json to knowledge.json.bak, then renames the temp file over knowledge.json.
 func (kg *KnowledgeGraph) saveUnlocked() error {
 	nodes := make([]*GraphNode, 0, len(kg.nodes))
 	for _, node := range kg.nodes {
@@ -78,7 +96,52 @@ func (kg *KnowledgeGraph) saveUnlocked() error {
 		return err
 	}
 
-	return os.WriteFile(kg.path, data, 0644)
+	dir := filepath.Dir(kg.path)
+	tmp, err := os.CreateTemp(dir, "knowledge-*.json.tmp")
+	if err != nil {
+		return fmt.Errorf("create temp file: %w", err)
+	}
+	tmpName := tmp.Name()
+
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("write temp file: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("sync temp file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("close temp file: %w", err)
+	}
+
+	// Back up current file before replacing (best-effort).
+	if existing, readErr := os.ReadFile(kg.path); readErr == nil {
+		_ = os.WriteFile(kg.path+".bak", existing, 0644)
+	}
+
+	if err := os.Rename(tmpName, kg.path); err != nil {
+		_ = os.Remove(tmpName)
+		return fmt.Errorf("rename temp to knowledge.json: %w", err)
+	}
+
+	atomic.AddInt64(&kg.saveCount, 1)
+	return nil
+}
+
+// addUnlocked mutates the in-memory node map without persisting (caller must hold write lock).
+func (kg *KnowledgeGraph) addUnlocked(node *GraphNode) {
+	now := time.Now()
+	if existing, ok := kg.nodes[node.ID]; ok {
+		node.CreatedAt = existing.CreatedAt
+	} else {
+		node.CreatedAt = now
+	}
+	node.UpdatedAt = now
+	kg.nodes[node.ID] = node
 }
 
 // Add adds or updates a node
@@ -210,64 +273,55 @@ func (kg *KnowledgeGraph) AddLearning(title, content string, metadata map[string
 // AddExecutionLearning adds a learning node with relations linking task→files,
 // files→patterns, patterns→outcome. Unlike AddLearning which creates flat nodes,
 // this populates the Relations field to connect related concept nodes.
+// All nodes are staged via addUnlocked, then flushed with a single saveUnlocked call.
 func (kg *KnowledgeGraph) AddExecutionLearning(title, content string, filesChanged []string, patterns []string, outcome string) error {
+	kg.mu.Lock()
+	defer kg.mu.Unlock()
+
 	now := time.Now()
 	nano := now.UnixNano()
 
 	learningID := fmt.Sprintf("exec_learning_%d", nano)
 	var relationIDs []string
 
-	// Create file nodes and collect their IDs
 	for i, file := range filesChanged {
 		fileID := fmt.Sprintf("file_%d_%d", nano, i)
-		fileNode := &GraphNode{
+		kg.addUnlocked(&GraphNode{
 			ID:    fileID,
 			Type:  "file",
 			Title: file,
 			Metadata: map[string]interface{}{
 				"learning_id": learningID,
 			},
-		}
-		if err := kg.Add(fileNode); err != nil {
-			return fmt.Errorf("add file node %q: %w", file, err)
-		}
+		})
 		relationIDs = append(relationIDs, fileID)
 	}
 
-	// Create pattern nodes and collect their IDs
 	for i, pattern := range patterns {
 		patternID := fmt.Sprintf("exec_pattern_%d_%d", nano, i)
-		patternNode := &GraphNode{
+		kg.addUnlocked(&GraphNode{
 			ID:    patternID,
 			Type:  "pattern",
 			Title: pattern,
 			Metadata: map[string]interface{}{
 				"learning_id": learningID,
 			},
-		}
-		if err := kg.Add(patternNode); err != nil {
-			return fmt.Errorf("add pattern node %q: %w", pattern, err)
-		}
+		})
 		relationIDs = append(relationIDs, patternID)
 	}
 
-	// Create outcome node
 	outcomeID := fmt.Sprintf("outcome_%d", nano)
-	outcomeNode := &GraphNode{
+	kg.addUnlocked(&GraphNode{
 		ID:    outcomeID,
 		Type:  "outcome",
 		Title: outcome,
 		Metadata: map[string]interface{}{
 			"learning_id": learningID,
 		},
-	}
-	if err := kg.Add(outcomeNode); err != nil {
-		return fmt.Errorf("add outcome node: %w", err)
-	}
+	})
 	relationIDs = append(relationIDs, outcomeID)
 
-	// Create the learning node with all relations
-	learningNode := &GraphNode{
+	kg.addUnlocked(&GraphNode{
 		ID:      learningID,
 		Type:    "execution_learning",
 		Title:   title,
@@ -278,8 +332,9 @@ func (kg *KnowledgeGraph) AddExecutionLearning(title, content string, filesChang
 			"outcome":       outcome,
 		},
 		Relations: relationIDs,
-	}
-	return kg.Add(learningNode)
+	})
+
+	return kg.saveUnlocked()
 }
 
 // GetRelatedByKeywords searches nodes by keywords across title, content, and
