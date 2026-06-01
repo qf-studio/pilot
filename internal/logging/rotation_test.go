@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -426,5 +427,61 @@ func TestRotatingWriterMaxBackups(t *testing.T) {
 	// MaxBackups is 1, so at most 1 backup should exist (might be cleaned up)
 	if len(matches) > 1 {
 		t.Errorf("expected at most 1 backup file, found %d: %v", len(matches), matches)
+	}
+}
+
+// TestCleanOldLogsConcurrency verifies that concurrent rotations do not race on
+// cleanOldLogs and never delete the active log file.  Run with -race to catch
+// data races introduced by the fix regression.
+func TestCleanOldLogsConcurrency(t *testing.T) {
+	tmpDir := t.TempDir()
+	logFile := filepath.Join(tmpDir, "test.log")
+
+	cfg := &RotationConfig{
+		MaxSize:    "100B",
+		MaxAge:     "1d",
+		MaxBackups: 2,
+	}
+
+	writer, err := newRotatingWriter(logFile, cfg)
+	if err != nil {
+		t.Fatalf("failed to create rotating writer: %v", err)
+	}
+
+	rw := writer.(*rotatingWriter)
+	defer func() { _ = rw.Close() }()
+
+	// Drive many concurrent writes to trigger parallel rotation+cleanup paths.
+	const goroutines = 10
+	const writesPerGoroutine = 20
+	msg := strings.Repeat("x", 60) + "\n"
+
+	var wg sync.WaitGroup
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < writesPerGoroutine; j++ {
+				_, _ = rw.Write([]byte(msg))
+			}
+		}()
+	}
+	wg.Wait()
+
+	// Allow any in-flight cleanup to finish.
+	time.Sleep(50 * time.Millisecond)
+
+	// The active log file must not have been deleted by cleanup.
+	if _, statErr := os.Stat(logFile); os.IsNotExist(statErr) {
+		t.Error("active log file was deleted by cleanOldLogs")
+	}
+
+	// Backup count must not exceed maxBackups.
+	matches, err := filepath.Glob(filepath.Join(tmpDir, "test.*.log"))
+	if err != nil {
+		t.Fatalf("failed to glob backup files: %v", err)
+	}
+	if len(matches) > cfg.MaxBackups {
+		t.Errorf("expected at most %d backup files, found %d: %v", cfg.MaxBackups, len(matches), matches)
 	}
 }
