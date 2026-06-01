@@ -482,6 +482,9 @@ Examples:
 								statuses := cfg.Adapters.GitHub.ProjectBoard.GetStatuses()
 								gwBoardOpts = append(gwBoardOpts, autopilot.WithProjectBoardSync(bs, statuses.Done, statuses.Failed, statuses.Review, statuses.InProgress))
 							}
+							// TASK-352: scope self-heal to the project's fs path (matches
+							// executions.project_path) so merged work flips failed→completed.
+							gwBoardOpts = append(gwBoardOpts, autopilot.WithProjectPath(projectPath))
 							gwAutopilotController = autopilot.NewController(
 								cfg.Orchestrator.Autopilot,
 								ghClient,
@@ -1462,13 +1465,16 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 							slog.String("repo", cfg.Adapters.GitHub.Repo))
 					}
 
+					// TASK-352: scope self-heal to the project's fs path. Fresh slice so
+					// the per-project loop below does not alias this controller's option.
+					ctrlOpts := append(append([]autopilot.ControllerOption{}, autopilotBoardOpts...), autopilot.WithProjectPath(projectPath))
 					controller := autopilot.NewController(
 						cfg.Orchestrator.Autopilot,
 						ghClient,
 						approvalMgr,
 						parts[0],
 						parts[1],
-						autopilotBoardOpts...,
+						ctrlOpts...,
 					)
 					autopilotControllers[cfg.Adapters.GitHub.Repo] = controller
 					autopilotController = controller // Default for backwards compat
@@ -1484,13 +1490,16 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 				if _, exists := autopilotControllers[repoFullName]; exists {
 					continue // Skip duplicates
 				}
+				// TASK-352: scope self-heal to this project's fs path (matches
+				// executions.project_path). Fresh slice to avoid aliasing the shared opts.
+				ctrlOpts := append(append([]autopilot.ControllerOption{}, autopilotBoardOpts...), autopilot.WithProjectPath(proj.Path))
 				controller := autopilot.NewController(
 					cfg.Orchestrator.Autopilot,
 					ghClient,
 					approvalMgr,
 					proj.GitHub.Owner,
 					proj.GitHub.Repo,
-					autopilotBoardOpts...,
+					ctrlOpts...,
 				)
 				autopilotControllers[repoFullName] = controller
 				logging.WithComponent("autopilot").Info("created controller for project",
