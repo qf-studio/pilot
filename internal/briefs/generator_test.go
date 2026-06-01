@@ -207,9 +207,11 @@ func TestGeneratorWithProjectFilter(t *testing.T) {
 		t.Fatalf("failed to generate brief: %v", err)
 	}
 
-	// Should only have alpha project
+	// Should only have alpha project. Fatalf (not Errorf) so the rare SQLite timing
+	// flake that yields 0 rows fails cleanly here instead of panicking on Completed[0]
+	// below (the "index out of range [0]" red). TASK-353 / learning_flaky_briefs_generator_test.
 	if len(brief.Completed) != 1 {
-		t.Errorf("expected 1 completed task (filtered), got %d", len(brief.Completed))
+		t.Fatalf("expected 1 completed task (filtered), got %d", len(brief.Completed))
 	}
 
 	if brief.Completed[0].ProjectPath != "/project/alpha" {
