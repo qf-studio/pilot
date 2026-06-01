@@ -9,6 +9,28 @@ import (
 	"time"
 )
 
+// TestWatchdogTickInterval verifies the tick interval is derived from stallTimeout
+// (min(30s, stallTimeout/3), floored at 1s) so small timeouts are honored. TASK-344.
+func TestWatchdogTickInterval(t *testing.T) {
+	tests := []struct {
+		name         string
+		stallTimeout time.Duration
+		want         time.Duration
+	}{
+		{"sub-30s honored", 9 * time.Second, 3 * time.Second},
+		{"floored at 1s", 900 * time.Millisecond, time.Second},
+		{"large caps at default", 90 * time.Second, defaultStallWatchdogInterval},
+		{"default boundary", 90 * time.Second, 30 * time.Second},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := watchdogTickInterval(tt.stallTimeout); got != tt.want {
+				t.Errorf("watchdogTickInterval(%v) = %v, want %v", tt.stallTimeout, got, tt.want)
+			}
+		})
+	}
+}
+
 // TestStallWatchdog_FiresOnIdle verifies the watchdog cancels the context
 // when no event is received within stallTimeout.
 func TestStallWatchdog_FiresOnIdle(t *testing.T) {
