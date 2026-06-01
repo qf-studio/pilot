@@ -342,6 +342,96 @@ func TestStateStore_PurgeTerminalPRStates(t *testing.T) {
 	}
 }
 
+// B4 (TASK-309): PurgeTerminalPRStates also reaps 'releasing' rows stuck past
+// releasingStaleThreshold, while leaving fresh releases-in-flight alone.
+func TestStateStore_PurgeTerminalPRStates_Releasing(t *testing.T) {
+	store := newTestStateStore(t)
+
+	freshReleasing := &PRState{
+		PRNumber:   1,
+		BranchName: "pilot/GH-1",
+		Stage:      StageReleasing,
+		CreatedAt:  time.Now(),
+	}
+	staleReleasing := &PRState{
+		PRNumber:   2,
+		BranchName: "pilot/GH-2",
+		Stage:      StageReleasing,
+		CreatedAt:  time.Now(),
+	}
+	for _, pr := range []*PRState{freshReleasing, staleReleasing} {
+		if err := store.SavePRState(pr); err != nil {
+			t.Fatalf("SavePRState(%d): %v", pr.PRNumber, err)
+		}
+	}
+	// Backdate PR 2 well past the 30-min staleness threshold.
+	if _, err := store.db.Exec(
+		`UPDATE autopilot_pr_state SET updated_at = datetime('now', '-2 hours') WHERE pr_number = ?`, 2,
+	); err != nil {
+		t.Fatalf("backdate: %v", err)
+	}
+
+	// A large olderThan keeps any 'failed' row out of scope, so the only eligible
+	// row is the stale 'releasing' one (reaped on its own 30-min threshold).
+	purged, err := store.PurgeTerminalPRStates(24 * time.Hour)
+	if err != nil {
+		t.Fatalf("PurgeTerminalPRStates: %v", err)
+	}
+	if purged != 1 {
+		t.Errorf("purged = %d, want 1 (only the stale releasing row)", purged)
+	}
+
+	states, _ := store.LoadAllPRStates()
+	if len(states) != 1 || states[0].PRNumber != 1 {
+		t.Errorf("remaining states = %+v, want only the fresh releasing PR 1", states)
+	}
+}
+
+// B3 (TASK-309): PersistedReleasingAge reports whether a PR already has a release
+// in flight in the state store, and how stale that row is.
+func TestStateStore_PersistedReleasingAge(t *testing.T) {
+	store := newTestStateStore(t)
+
+	// (a) no row → not found.
+	if _, found, err := store.PersistedReleasingAge(99); err != nil || found {
+		t.Errorf("missing row: got found=%v err=%v, want found=false err=nil", found, err)
+	}
+
+	// (b) non-releasing stage → not found.
+	if err := store.SavePRState(&PRState{PRNumber: 10, BranchName: "pilot/GH-10", Stage: StageWaitingCI, CreatedAt: time.Now()}); err != nil {
+		t.Fatalf("SavePRState(waiting): %v", err)
+	}
+	if _, found, err := store.PersistedReleasingAge(10); err != nil || found {
+		t.Errorf("non-releasing row: got found=%v err=%v, want found=false", found, err)
+	}
+
+	// (c) fresh releasing row → found, age below threshold.
+	if err := store.SavePRState(&PRState{PRNumber: 20, BranchName: "pilot/GH-20", Stage: StageReleasing, CreatedAt: time.Now()}); err != nil {
+		t.Fatalf("SavePRState(releasing): %v", err)
+	}
+	age, found, err := store.PersistedReleasingAge(20)
+	if err != nil || !found {
+		t.Fatalf("fresh releasing: got found=%v err=%v, want found=true", found, err)
+	}
+	if age >= releasingStaleThreshold {
+		t.Errorf("fresh releasing age = %v, want < %v", age, releasingStaleThreshold)
+	}
+
+	// (d) stale releasing row → found, age above threshold.
+	if _, err := store.db.Exec(
+		`UPDATE autopilot_pr_state SET updated_at = datetime('now', '-2 hours') WHERE pr_number = ?`, 20,
+	); err != nil {
+		t.Fatalf("backdate: %v", err)
+	}
+	age, found, err = store.PersistedReleasingAge(20)
+	if err != nil || !found {
+		t.Fatalf("stale releasing: got found=%v err=%v, want found=true", found, err)
+	}
+	if age < releasingStaleThreshold {
+		t.Errorf("stale releasing age = %v, want >= %v", age, releasingStaleThreshold)
+	}
+}
+
 func TestController_RestoreState(t *testing.T) {
 	store := newTestStateStore(t)
 
