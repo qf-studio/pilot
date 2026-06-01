@@ -11,8 +11,6 @@ services:
       - "traefik.docker.network=balancer"
     expose:
       - 3000
-    volumes:
-      - /data/quantflow/pilot_cache:/app/.next/cache
     networks:
       - balancer
 
