@@ -9,10 +9,30 @@ import (
 
 const defaultStallWatchdogInterval = 30 * time.Second
 
-// runStallWatchdog ticks every watchdogInterval and cancels stallCancel if no
-// backend event has been seen for longer than stallTimeout. Sets stallDetected
-// before canceling so callers can distinguish a stall from other cancellations.
-// Returns when done is closed (i.e., the execution has ended).
+// minStallWatchdogInterval floors the derived tick interval so a tiny configured
+// stall timeout can't spin the watchdog hot.
+const minStallWatchdogInterval = time.Second
+
+// watchdogTickInterval derives the watchdog poll interval from stallTimeout so a
+// small configured timeout is actually honored (detection latency ≈ one tick).
+// It is min(defaultStallWatchdogInterval, stallTimeout/3), floored at
+// minStallWatchdogInterval. TASK-344.
+func watchdogTickInterval(stallTimeout time.Duration) time.Duration {
+	interval := defaultStallWatchdogInterval
+	if third := stallTimeout / 3; third < interval {
+		interval = third
+	}
+	if interval < minStallWatchdogInterval {
+		interval = minStallWatchdogInterval
+	}
+	return interval
+}
+
+// runStallWatchdog ticks at an interval derived from stallTimeout
+// (watchdogTickInterval: min(30s, stallTimeout/3), floored at 1s) and cancels
+// stallCancel if no backend event has been seen for longer than stallTimeout.
+// Sets stallDetected before canceling so callers can distinguish a stall from
+// other cancellations. Returns when done is closed (i.e., the execution has ended).
 func (r *Runner) runStallWatchdog(
 	taskID string,
 	lastEventAt *atomic.Int64,
@@ -21,7 +41,7 @@ func (r *Runner) runStallWatchdog(
 	done <-chan struct{},
 	stallCancel context.CancelFunc,
 ) {
-	ticker := time.NewTicker(defaultStallWatchdogInterval)
+	ticker := time.NewTicker(watchdogTickInterval(stallTimeout))
 	defer ticker.Stop()
 	for {
 		select {
