@@ -235,15 +235,19 @@ func TestSequentialEpicFlow(t *testing.T) {
 			},
 		},
 		{
-			name:         "sub-issue succeeds but no PR URL - callback skipped",
+			// TASK-356 #1: a child commits real work but produces no PR — its work is
+			// stranded in a worktree cleanup will discard. The work-loss guard halts the
+			// epic loudly so the issue stays open for recovery, rather than silently
+			// closing it and marching on (which lost the studio-sdk #17 port).
+			name:         "sub-issue commits but no PR URL - work-loss guard halts epic",
 			numSubIssues: 2,
 			resultFn: func(idx int, task *Task) (*ExecutionResult, error) {
 				if idx == 0 {
-					// First sub-issue: success but no PR (docs-only change)
+					// First sub-issue: committed work but PR creation never landed.
 					return &ExecutionResult{
 						TaskID:    task.ID,
 						Success:   true,
-						Output:    "docs updated",
+						Output:    "committed but no PR",
 						PRUrl:     "",
 						CommitSHA: "sha-docs",
 					}, nil
@@ -256,13 +260,12 @@ func TestSequentialEpicFlow(t *testing.T) {
 					CommitSHA: "sha-code",
 				}, nil
 			},
-			wantErr:             false,
-			wantExecCount:       2,
-			wantPRCallbackCount: 1, // Only second sub-issue triggers callback
-			wantPRNumbers:       []int{500},
+			wantErr:             true,
+			wantErrContains:     "no PR",
+			wantExecCount:       1, // halts after the first child; second never runs
+			wantPRCallbackCount: 0, // callback never fires for a PR-less child
 			wantBranches: []string{
 				"pilot/GH-100",
-				"pilot/GH-101",
 			},
 		},
 	}
