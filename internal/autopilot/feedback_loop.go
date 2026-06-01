@@ -97,9 +97,10 @@ func (f *FeedbackLoop) CreateFailureIssue(ctx context.Context, prState *PRState,
 
 	body := f.generateBody(prState, failureType, failedChecks, logs, iteration, knownPatterns)
 
-	// nil allowlist: FeedbackLoop's owner/repo are set from explicit config at construction,
-	// so they are already constrained to a configured project (TASK-286 / GH-3027).
-	issue, err := github.CreatePilotIssue(ctx, f.ghClient, nil, f.owner, f.repo, title, body, f.issueLabels)
+	// AllowAllIssueRepos: FeedbackLoop's owner/repo are set from explicit config at
+	// construction, so they're already constrained to a configured project. The
+	// explicit sentinel encodes that intent (vs a nil-means-skip default). TASK-286 / GH-3027 / TASK-347.
+	issue, err := github.CreatePilotIssue(ctx, f.ghClient, github.AllowAllIssueRepos(), f.owner, f.repo, title, body, f.issueLabels)
 	if err != nil {
 		return 0, fmt.Errorf("failed to create issue: %w", err)
 	}
@@ -266,8 +267,9 @@ func (f *FeedbackLoop) CreateReviewIssue(ctx context.Context, prState *PRState, 
 
 	body := sb.String()
 
-	// nil allowlist: owner/repo set from explicit config at construction (TASK-286 / GH-3027).
-	issue, err := github.CreatePilotIssue(ctx, f.ghClient, nil, f.owner, f.repo, title, body, f.issueLabels)
+	// AllowAllIssueRepos: owner/repo set from explicit config at construction; explicit
+	// sentinel encodes intent vs a nil-means-skip default (TASK-286 / GH-3027 / TASK-347).
+	issue, err := github.CreatePilotIssue(ctx, f.ghClient, github.AllowAllIssueRepos(), f.owner, f.repo, title, body, f.issueLabels)
 	if err != nil {
 		return 0, fmt.Errorf("failed to create review issue: %w", err)
 	}

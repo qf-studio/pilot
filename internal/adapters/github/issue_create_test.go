@@ -11,6 +11,36 @@ import (
 	"github.com/qf-studio/pilot/internal/testutil"
 )
 
+type fakeIssueAllowlist struct{ allowed bool }
+
+func (f fakeIssueAllowlist) RepoIsAllowed(string, string, string) bool { return f.allowed }
+func (f fakeIssueAllowlist) ConfiguredRepos() []string                 { return []string{"owner/allowed"} }
+
+// TestValidateIssueRepo_FailClosed_C7 verifies C7 (TASK-347): a nil allowlist fails
+// closed (unless PILOT_ALLOW_UNMANAGED_REPO=1); the AllowAllIssueRepos sentinel and a
+// matching allowlist pass; a non-matching allowlist errors — matching executor's default.
+func TestValidateIssueRepo_FailClosed_C7(t *testing.T) {
+	if err := validateIssueRepo(nil, "owner", "repo"); err == nil {
+		t.Error("nil allowlist must fail closed, got nil error")
+	}
+
+	t.Setenv(envBypassIssueAllowlist, "1")
+	if err := validateIssueRepo(nil, "owner", "repo"); err != nil {
+		t.Errorf("nil allowlist + bypass env should pass, got %v", err)
+	}
+	t.Setenv(envBypassIssueAllowlist, "") // disable bypass for the rest
+
+	if err := validateIssueRepo(AllowAllIssueRepos(), "owner", "repo"); err != nil {
+		t.Errorf("AllowAllIssueRepos should pass, got %v", err)
+	}
+	if err := validateIssueRepo(fakeIssueAllowlist{allowed: true}, "owner", "repo"); err != nil {
+		t.Errorf("allowed repo should pass, got %v", err)
+	}
+	if err := validateIssueRepo(fakeIssueAllowlist{allowed: false}, "owner", "repo"); err == nil {
+		t.Error("disallowed repo must error")
+	}
+}
+
 func TestConventionalCommitRE(t *testing.T) {
 	accept := []string{
 		"feat: add OAuth login",
@@ -73,7 +103,7 @@ func TestCreatePilotIssue_TitleValidation(t *testing.T) {
 			defer server.Close()
 
 			c := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
-			_, err := CreatePilotIssue(context.Background(), c, nil, "owner", "repo", tt.title, "body", []string{"pilot"})
+			_, err := CreatePilotIssue(context.Background(), c, AllowAllIssueRepos(), "owner", "repo", tt.title, "body", []string{"pilot"})
 			if (err != nil) != tt.wantErr {
 				t.Errorf("createPilotIssue(%q) error = %v, wantErr %v", tt.title, err, tt.wantErr)
 			}
@@ -113,7 +143,7 @@ func TestCreatePilotIssue_APIForwarding(t *testing.T) {
 	defer server.Close()
 
 	c := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
-	issue, err := CreatePilotIssue(context.Background(), c, nil, "owner", "repo", wantTitle, wantBody, []string{"pilot"})
+	issue, err := CreatePilotIssue(context.Background(), c, AllowAllIssueRepos(), "owner", "repo", wantTitle, wantBody, []string{"pilot"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
