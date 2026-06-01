@@ -12,18 +12,20 @@ import (
 
 // mockChannel is a test mock for the Channel interface
 type mockChannel struct {
-	name   string
-	typ    string
-	alerts []*Alert
-	mu     sync.Mutex
-	err    error
+	name     string
+	typ      string
+	alerts   []*Alert
+	mu       sync.Mutex
+	err      error
+	received chan struct{} // buffered; signaled on every dispatched alert
 }
 
 func newMockChannel(name, typ string) *mockChannel {
 	return &mockChannel{
-		name:   name,
-		typ:    typ,
-		alerts: make([]*Alert, 0),
+		name:     name,
+		typ:      typ,
+		alerts:   make([]*Alert, 0),
+		received: make(chan struct{}, 64),
 	}
 }
 
@@ -37,6 +39,10 @@ func (m *mockChannel) Send(ctx context.Context, alert *Alert) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.alerts = append(m.alerts, alert)
+	select {
+	case m.received <- struct{}{}:
+	default:
+	}
 	return nil
 }
 
@@ -52,6 +58,19 @@ func (m *mockChannel) setError(err error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.err = err
+}
+
+// waitForAlerts drains n items from ch.received within timeout and calls
+// t.Fatal on timeout. Use for positive-assertion tests (expect N alerts).
+func waitForAlerts(t *testing.T, ch *mockChannel, n int, timeout time.Duration) {
+	t.Helper()
+	for i := 0; i < n; i++ {
+		select {
+		case <-ch.received:
+		case <-time.After(timeout):
+			t.Fatalf("timeout waiting for alert %d/%d after %v", i+1, n, timeout)
+		}
+	}
 }
 
 // =============================================================================
@@ -148,9 +167,6 @@ func TestEngine_ProcessEvent_Disabled(t *testing.T) {
 		Timestamp: time.Now(),
 	})
 
-	// Give time for any potential processing
-	time.Sleep(50 * time.Millisecond)
-
 	if len(mockCh.getAlerts()) != 0 {
 		t.Error("expected no alerts when engine is disabled")
 	}
@@ -210,8 +226,7 @@ func TestEngine_ProcessTaskFailedEvent(t *testing.T) {
 		Timestamp: time.Now(),
 	})
 
-	// Wait for event processing
-	time.Sleep(100 * time.Millisecond)
+	waitForAlerts(t, mockCh, 1, 2*time.Second)
 
 	alerts := mockCh.getAlerts()
 	if len(alerts) != 1 {
@@ -252,7 +267,7 @@ func TestEngine_TaskStartedEvent(t *testing.T) {
 		Timestamp: now,
 	})
 
-	time.Sleep(50 * time.Millisecond)
+	engine.flushForTest()
 
 	engine.mu.RLock()
 	state, exists := engine.taskLastProgress["TASK-100"]
@@ -359,7 +374,7 @@ func TestEngine_TaskProgressEvent(t *testing.T) {
 			}
 
 			engine.ProcessEvent(tt.event)
-			time.Sleep(50 * time.Millisecond)
+			engine.flushForTest()
 
 			engine.mu.RLock()
 			state := engine.taskLastProgress[tt.event.TaskID]
@@ -432,7 +447,7 @@ func TestEngine_ConsecutiveFailures(t *testing.T) {
 	}
 
 	// Wait for event processing
-	time.Sleep(100 * time.Millisecond)
+	waitForAlerts(t, mockCh, 1, 2*time.Second)
 
 	alerts := mockCh.getAlerts()
 	if len(alerts) != 1 {
@@ -499,7 +514,7 @@ func TestEngine_CooldownRespected(t *testing.T) {
 		Timestamp: time.Now(),
 	})
 
-	time.Sleep(50 * time.Millisecond)
+	waitForAlerts(t, mockCh, 1, 2*time.Second)
 
 	// Send second failure - should be suppressed due to cooldown
 	engine.ProcessEvent(Event{
@@ -511,7 +526,7 @@ func TestEngine_CooldownRespected(t *testing.T) {
 		Timestamp: time.Now(),
 	})
 
-	time.Sleep(50 * time.Millisecond)
+	engine.flushForTest()
 
 	alerts := mockCh.getAlerts()
 	if len(alerts) != 1 {
@@ -564,10 +579,9 @@ func TestEngine_ZeroCooldown(t *testing.T) {
 			Error:     "test error",
 			Timestamp: time.Now(),
 		})
-		time.Sleep(20 * time.Millisecond)
 	}
 
-	time.Sleep(100 * time.Millisecond)
+	waitForAlerts(t, mockCh, 3, 2*time.Second)
 
 	alerts := mockCh.getAlerts()
 	if len(alerts) != 3 {
@@ -630,8 +644,7 @@ func TestEngine_TaskCompletedResetsFails(t *testing.T) {
 		})
 	}
 
-	time.Sleep(50 * time.Millisecond)
-
+	engine.flushForTest()
 	// Send a success - should reset counter
 	engine.ProcessEvent(Event{
 		Type:      EventTypeTaskCompleted,
@@ -640,8 +653,7 @@ func TestEngine_TaskCompletedResetsFails(t *testing.T) {
 		Timestamp: time.Now(),
 	})
 
-	time.Sleep(50 * time.Millisecond)
-
+	engine.flushForTest()
 	// Send 2 more failures - should not trigger (counter was reset)
 	for i := 4; i <= 5; i++ {
 		engine.ProcessEvent(Event{
@@ -653,8 +665,7 @@ func TestEngine_TaskCompletedResetsFails(t *testing.T) {
 		})
 	}
 
-	time.Sleep(100 * time.Millisecond)
-
+	engine.flushForTest()
 	alerts := mockCh.getAlerts()
 	if len(alerts) != 0 {
 		t.Errorf("expected 0 alerts (success reset the counter), got %d", len(alerts))
@@ -710,8 +721,7 @@ func TestEngine_DisabledRulesIgnored(t *testing.T) {
 		Timestamp: time.Now(),
 	})
 
-	time.Sleep(100 * time.Millisecond)
-
+	engine.flushForTest()
 	alerts := mockCh.getAlerts()
 	if len(alerts) != 0 {
 		t.Errorf("expected 0 alerts (rule disabled), got %d", len(alerts))
@@ -778,8 +788,7 @@ func TestEngine_CostUpdate_DailySpend(t *testing.T) {
 				Timestamp: time.Now(),
 			})
 
-			time.Sleep(100 * time.Millisecond)
-
+			engine.flushForTest()
 			alerts := mockCh.getAlerts()
 			if len(alerts) != tt.expectAlerts {
 				t.Errorf("expected %d alerts, got %d", tt.expectAlerts, len(alerts))
@@ -828,8 +837,7 @@ func TestEngine_CostUpdate_BudgetDepleted(t *testing.T) {
 		Timestamp: time.Now(),
 	})
 
-	time.Sleep(100 * time.Millisecond)
-
+	waitForAlerts(t, mockCh, 1, 2*time.Second)
 	alerts := mockCh.getAlerts()
 	if len(alerts) != 1 {
 		t.Errorf("expected 1 budget depleted alert, got %d", len(alerts))
@@ -888,8 +896,7 @@ func TestEngine_BudgetExceeded_RoutesToCostRules(t *testing.T) {
 		Timestamp: time.Now(),
 	})
 
-	time.Sleep(100 * time.Millisecond)
-
+	waitForAlerts(t, mockCh, 1, 2*time.Second)
 	alerts := mockCh.getAlerts()
 	if len(alerts) != 1 {
 		t.Errorf("expected 1 budget depleted alert from BudgetExceeded event, got %d", len(alerts))
@@ -945,8 +952,7 @@ func TestEngine_BudgetWarning_RoutesToCostRules(t *testing.T) {
 		Timestamp: time.Now(),
 	})
 
-	time.Sleep(100 * time.Millisecond)
-
+	waitForAlerts(t, mockCh, 1, 2*time.Second)
 	alerts := mockCh.getAlerts()
 	if len(alerts) != 1 {
 		t.Errorf("expected 1 daily spend alert from BudgetWarning event, got %d", len(alerts))
@@ -1011,8 +1017,7 @@ func TestEngine_SecurityEvent(t *testing.T) {
 				Timestamp: time.Now(),
 			})
 
-			time.Sleep(100 * time.Millisecond)
-
+			waitForAlerts(t, mockCh, 1, 2*time.Second)
 			alerts := mockCh.getAlerts()
 			if len(alerts) != 1 {
 				t.Errorf("expected 1 alert, got %d", len(alerts))
@@ -1104,8 +1109,7 @@ func TestEngine_FireAlertWithoutDispatcher(t *testing.T) {
 		Timestamp: time.Now(),
 	})
 
-	time.Sleep(100 * time.Millisecond)
-
+	engine.flushForTest()
 	// Verify history is still recorded
 	history := engine.GetAlertHistory(10)
 	// No history recorded because dispatcher is nil
@@ -1152,8 +1156,7 @@ func TestEngine_EmptyChannelList(t *testing.T) {
 		Timestamp: time.Now(),
 	})
 
-	time.Sleep(100 * time.Millisecond)
-
+	waitForAlerts(t, mockEnabled, 1, 2*time.Second)
 	if len(mockEnabled.getAlerts()) != 1 {
 		t.Error("expected enabled channel to receive alert")
 	}
@@ -1207,10 +1210,8 @@ func TestAlertHistory(t *testing.T) {
 			Error:     "test error",
 			Timestamp: time.Now(),
 		})
-		time.Sleep(10 * time.Millisecond)
 	}
-
-	time.Sleep(100 * time.Millisecond)
+	engine.flushForTest()
 
 	history := engine.GetAlertHistory(10)
 	if len(history) != 3 {
@@ -1258,9 +1259,8 @@ func TestEngine_GetAlertHistory_LimitBehavior(t *testing.T) {
 			TaskID:    "TASK-" + string(rune('0'+i)),
 			Timestamp: time.Now(),
 		})
-		time.Sleep(10 * time.Millisecond)
 	}
-	time.Sleep(100 * time.Millisecond)
+	engine.flushForTest()
 
 	tests := []struct {
 		name      string
@@ -1718,7 +1718,7 @@ func TestEngine_EvaluateStuckTasks(t *testing.T) {
 	ctx := context.Background()
 	engine.evaluateStuckTasks(ctx)
 
-	time.Sleep(50 * time.Millisecond)
+	waitForAlerts(t, mockCh, 1, 2*time.Second)
 
 	alerts := mockCh.getAlerts()
 	if len(alerts) != 1 {
@@ -1771,7 +1771,7 @@ func TestEngine_EvaluateStuckTasks_DefaultThreshold(t *testing.T) {
 	ctx := context.Background()
 	engine.evaluateStuckTasks(ctx)
 
-	time.Sleep(50 * time.Millisecond)
+	engine.WaitForDispatch()
 
 	alerts := mockCh.getAlerts()
 	if len(alerts) != 0 {
@@ -1819,7 +1819,7 @@ func TestEngine_EvaluateStuckTasks_DisabledRule(t *testing.T) {
 	ctx := context.Background()
 	engine.evaluateStuckTasks(ctx)
 
-	time.Sleep(50 * time.Millisecond)
+	engine.WaitForDispatch()
 
 	alerts := mockCh.getAlerts()
 	if len(alerts) != 0 {
@@ -1864,7 +1864,7 @@ func TestEngine_EvaluateStuckTasks_WrongRuleType(t *testing.T) {
 	ctx := context.Background()
 	engine.evaluateStuckTasks(ctx)
 
-	time.Sleep(50 * time.Millisecond)
+	engine.WaitForDispatch()
 
 	alerts := mockCh.getAlerts()
 	if len(alerts) != 0 {
@@ -1919,7 +1919,7 @@ func TestEngine_EvaluateStuckTasks_MultipleTasksAllFire(t *testing.T) {
 	ctx := context.Background()
 	engine.evaluateStuckTasks(ctx)
 
-	time.Sleep(50 * time.Millisecond)
+	waitForAlerts(t, mockCh, 10, 2*time.Second)
 
 	alerts := mockCh.getAlerts()
 	if len(alerts) != 10 {
@@ -1966,7 +1966,7 @@ func TestEngine_EvaluateStuckTasks_PerTaskCooldown(t *testing.T) {
 
 	// First cycle: should fire
 	engine.evaluateStuckTasks(ctx)
-	time.Sleep(50 * time.Millisecond)
+	waitForAlerts(t, mockCh, 1, 2*time.Second)
 
 	alerts := mockCh.getAlerts()
 	if len(alerts) != 1 {
@@ -1975,7 +1975,7 @@ func TestEngine_EvaluateStuckTasks_PerTaskCooldown(t *testing.T) {
 
 	// Second cycle immediately after: should NOT fire (per-task cooldown)
 	engine.evaluateStuckTasks(ctx)
-	time.Sleep(50 * time.Millisecond)
+	engine.WaitForDispatch()
 
 	alerts = mockCh.getAlerts()
 	if len(alerts) != 1 {
@@ -2022,7 +2022,7 @@ func TestEngine_EvaluateStuckTasks_ProgressResetsCooldown(t *testing.T) {
 
 	// First cycle: fires
 	engine.evaluateStuckTasks(ctx)
-	time.Sleep(50 * time.Millisecond)
+	waitForAlerts(t, mockCh, 1, 2*time.Second)
 
 	alerts := mockCh.getAlerts()
 	if len(alerts) != 1 {
@@ -2047,7 +2047,7 @@ func TestEngine_EvaluateStuckTasks_ProgressResetsCooldown(t *testing.T) {
 
 	// Should fire again because progress reset the cooldown
 	engine.evaluateStuckTasks(ctx)
-	time.Sleep(50 * time.Millisecond)
+	waitForAlerts(t, mockCh, 1, 2*time.Second)
 
 	alerts = mockCh.getAlerts()
 	if len(alerts) != 2 {
@@ -2100,7 +2100,7 @@ func TestEngine_EvaluateStuckTasks_OrphanEviction(t *testing.T) {
 	ctx := context.Background()
 	engine.evaluateStuckTasks(ctx)
 
-	time.Sleep(50 * time.Millisecond)
+	waitForAlerts(t, mockCh, 1, 2*time.Second)
 
 	// Orphan should be evicted, non-orphan should alert
 	engine.mu.RLock()
@@ -2167,7 +2167,7 @@ func TestEngine_TaskProgressUpdatesStuckState(t *testing.T) {
 
 	ctx := context.Background()
 	engine.evaluateStuckTasks(ctx)
-	time.Sleep(50 * time.Millisecond)
+	engine.WaitForDispatch()
 
 	alerts := mockCh.getAlerts()
 	if len(alerts) != 0 {
@@ -2248,10 +2248,9 @@ func TestEngine_Escalation_AfterThreeFailures(t *testing.T) {
 			Metadata:  map[string]string{"source": source},
 			Timestamp: time.Now(),
 		})
-		time.Sleep(20 * time.Millisecond)
 	}
 
-	time.Sleep(100 * time.Millisecond)
+	waitForAlerts(t, mockCh, 1, 2*time.Second)
 
 	alerts := mockCh.getAlerts()
 	if len(alerts) != 1 {
@@ -2323,10 +2322,9 @@ func TestEngine_Escalation_NoEscalationBeforeThreshold(t *testing.T) {
 			Metadata:  map[string]string{"source": source},
 			Timestamp: time.Now(),
 		})
-		time.Sleep(20 * time.Millisecond)
 	}
 
-	time.Sleep(100 * time.Millisecond)
+	engine.flushForTest()
 
 	alerts := mockCh.getAlerts()
 	if len(alerts) != 0 {
@@ -2384,7 +2382,7 @@ func TestEngine_Escalation_ResetOnSuccess(t *testing.T) {
 			Timestamp: time.Now(),
 		})
 	}
-	time.Sleep(50 * time.Millisecond)
+	engine.flushForTest()
 
 	// Send success - should reset counter
 	engine.ProcessEvent(Event{
@@ -2394,7 +2392,7 @@ func TestEngine_Escalation_ResetOnSuccess(t *testing.T) {
 		Metadata:  map[string]string{"source": source},
 		Timestamp: time.Now(),
 	})
-	time.Sleep(50 * time.Millisecond)
+	engine.flushForTest()
 
 	// Send 2 more failures - should not escalate (counter was reset)
 	for i := 4; i <= 5; i++ {
@@ -2407,7 +2405,7 @@ func TestEngine_Escalation_ResetOnSuccess(t *testing.T) {
 			Timestamp: time.Now(),
 		})
 	}
-	time.Sleep(100 * time.Millisecond)
+	engine.flushForTest()
 
 	alerts := mockCh.getAlerts()
 	if len(alerts) != 0 {
@@ -2476,7 +2474,7 @@ func TestEngine_Escalation_DifferentSourcesTrackedSeparately(t *testing.T) {
 		})
 	}
 
-	time.Sleep(100 * time.Millisecond)
+	engine.flushForTest()
 
 	// Neither should have escalated (both at 2 failures)
 	alerts := mockCh.getAlerts()
@@ -2494,7 +2492,7 @@ func TestEngine_Escalation_DifferentSourcesTrackedSeparately(t *testing.T) {
 		Timestamp: time.Now(),
 	})
 
-	time.Sleep(100 * time.Millisecond)
+	waitForAlerts(t, mockCh, 1, 2*time.Second)
 
 	alerts = mockCh.getAlerts()
 	if len(alerts) != 1 {
@@ -2556,10 +2554,9 @@ func TestEngine_Escalation_DefaultThreshold(t *testing.T) {
 			Metadata:  map[string]string{"source": source},
 			Timestamp: time.Now(),
 		})
-		time.Sleep(20 * time.Millisecond)
 	}
 
-	time.Sleep(100 * time.Millisecond)
+	waitForAlerts(t, mockCh, 1, 2*time.Second)
 
 	alerts := mockCh.getAlerts()
 	if len(alerts) != 1 {
@@ -2614,10 +2611,9 @@ func TestEngine_Escalation_FallbackToTaskIDAsSource(t *testing.T) {
 			Error:     "test error",
 			Timestamp: time.Now(),
 		})
-		time.Sleep(20 * time.Millisecond)
 	}
 
-	time.Sleep(100 * time.Millisecond)
+	waitForAlerts(t, mockCh, 1, 2*time.Second)
 
 	alerts := mockCh.getAlerts()
 	if len(alerts) != 1 {

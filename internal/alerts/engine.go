@@ -70,6 +70,8 @@ type Event struct {
 	Error     string
 	Metadata  map[string]string
 	Timestamp time.Time
+	// test-only: set by flushForTest to drain the event queue
+	testFlushResp chan struct{}
 }
 
 // EventType categorizes incoming events
@@ -216,6 +218,15 @@ func (e *Engine) WaitForDispatch() {
 	e.dispatchWG.Wait()
 }
 
+// flushForTest blocks until all events currently in the event queue have been
+// processed and all in-flight dispatches complete. test-only: requires Start().
+func (e *Engine) flushForTest() {
+	resp := make(chan struct{})
+	e.eventCh <- Event{testFlushResp: resp}
+	<-resp
+	e.WaitForDispatch()
+}
+
 // Stop stops the alerting engine
 func (e *Engine) Stop() {
 	close(e.done)
@@ -296,6 +307,10 @@ func (e *Engine) processEvents(ctx context.Context) {
 
 // handleEvent processes a single event
 func (e *Engine) handleEvent(ctx context.Context, event Event) {
+	if event.testFlushResp != nil {
+		close(event.testFlushResp)
+		return
+	}
 	switch event.Type {
 	case EventTypeTaskStarted:
 		e.handleTaskStarted(event)
