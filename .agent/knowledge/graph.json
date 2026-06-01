@@ -358,6 +358,28 @@
         ],
         "confidence": 0.95,
         "created": "2026-05-30"
+      },
+      "mem-019": {
+        "type": "learning",
+        "summary": "Dashboard QUEUE shows shipped work as 'failed' when SelfHealExecutionAfterMerge is mis-scoped. executions.project_path stores an ABSOLUTE FS PATH, not owner/repo (D3/#3354 regression matched 0 rows). Also: the merged-PR scan never self-healed and parent epics weren't healed. Fixed v2.166.4/#3363. File: learning_selfheal_projectpath_discriminator.md (TASK-352).",
+        "concepts": [
+          "autopilot",
+          "memory",
+          "dashboard"
+        ],
+        "confidence": 0.95,
+        "created": "2026-06-01"
+      },
+      "mem-020": {
+        "type": "learning",
+        "summary": "Releasing Pilot: autopilot auto-cuts releases only on pilot/GH-* merges, so a manual fix/* PR sits on main unreleased. Manual release = push a v* tag (release.yml GoReleaser → Homebrew); do NOT also `make release`. Daemon runs ~/.local/bin/pilot (not make-install ~/go/bin, not brew) — update via `pilot upgrade`. Version string lags the commit; check `go version -m <bin> | grep vcs.revision`. File: learning_pilot_release_and_binary_path.md.",
+        "concepts": [
+          "release",
+          "autopilot",
+          "homebrew"
+        ],
+        "confidence": 0.95,
+        "created": "2026-06-01"
       }
     }
   },

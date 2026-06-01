@@ -1,6 +1,6 @@
 # TASK-352: self-heal is broken — dashboard shows merged work as `failed`
 
-**Status:** in progress (MANUAL — autopilot-core, self-modifying) · **Created:** 2026-06-01 · **Found via:** TASK-322 Wave 3 watch loop (dashboard QUEUE showed GH-3344/3353/3349 as `✗ failed` after they shipped as v2.166.2).
+**Status:** ✅ SHIPPED — PR #3363 merged → released **v2.166.4** (2026-06-01); stale rows GH-3344/3353 backfilled. Knowledge: [[learning_selfheal_projectpath_discriminator]]. · **Created:** 2026-06-01 · **Found via:** TASK-322 Wave 3 watch loop (dashboard QUEUE showed GH-3344/3353/3349 as `✗ failed` after they shipped as v2.166.2).
 
 ## Context
 
