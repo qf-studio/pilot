@@ -12,6 +12,37 @@ import (
 	"github.com/qf-studio/pilot/internal/testutil"
 )
 
+// TestCIAggregation_PendingBeatsFailure_B4 verifies the B4 debounce (TASK-345):
+// a failure alongside a still-pending check yields CIPending (wait), not a
+// premature CIFailure; a failure with all siblings terminal yields CIFailure.
+func TestCIAggregation_PendingBeatsFailure_B4(t *testing.T) {
+	m := &CIMonitor{}
+
+	// aggregateStatus (map-based)
+	if got := m.aggregateStatus(map[string]CIStatus{"a": CIFailure, "b": CIPending}); got != CIPending {
+		t.Errorf("aggregateStatus failure+pending = %v, want CIPending", got)
+	}
+	if got := m.aggregateStatus(map[string]CIStatus{"a": CIFailure, "b": CISuccess}); got != CIFailure {
+		t.Errorf("aggregateStatus failure+success = %v, want CIFailure", got)
+	}
+
+	// checkAllRuns (CheckRunsResponse-based)
+	failPending := &github.CheckRunsResponse{TotalCount: 2, CheckRuns: []github.CheckRun{
+		{Name: "a", Status: github.CheckRunCompleted, Conclusion: github.ConclusionFailure},
+		{Name: "b", Status: github.CheckRunInProgress},
+	}}
+	if got := m.checkAllRuns(failPending); got != CIPending {
+		t.Errorf("checkAllRuns failed+in_progress = %v, want CIPending", got)
+	}
+	failDone := &github.CheckRunsResponse{TotalCount: 2, CheckRuns: []github.CheckRun{
+		{Name: "a", Status: github.CheckRunCompleted, Conclusion: github.ConclusionFailure},
+		{Name: "b", Status: github.CheckRunCompleted, Conclusion: github.ConclusionSuccess},
+	}}
+	if got := m.checkAllRuns(failDone); got != CIFailure {
+		t.Errorf("checkAllRuns failed+success = %v, want CIFailure", got)
+	}
+}
+
 func TestNewCIMonitor(t *testing.T) {
 	ghClient := github.NewClient(testutil.FakeGitHubToken)
 	cfg := DefaultConfig()
@@ -545,8 +576,15 @@ func TestCIMonitor_AggregateStatus(t *testing.T) {
 			want:     CIPending,
 		},
 		{
-			name:     "failure takes precedence over pending",
+			// B4 (TASK-345): a failure while a sibling is still pending must NOT
+			// declare CIFailure — wait for the suite to finish (premature-close fix).
+			name:     "pending defers failure (B4 debounce)",
 			statuses: map[string]CIStatus{"build": CIFailure, "test": CIPending},
+			want:     CIPending,
+		},
+		{
+			name:     "failure with all siblings terminal",
+			statuses: map[string]CIStatus{"build": CIFailure, "test": CISuccess},
 			want:     CIFailure,
 		},
 		{
@@ -1195,10 +1233,10 @@ func TestCIMonitor_GetFailedCheckLogs(t *testing.T) {
 // use the statuses API exclusively, so empty check-runs must not auto-approve.
 func TestCIMonitor_CommitStatusFallback(t *testing.T) {
 	tests := []struct {
-		name           string
-		combinedState  string
-		totalCount     int
-		wantStatus     CIStatus
+		name          string
+		combinedState string
+		totalCount    int
+		wantStatus    CIStatus
 	}{
 		{
 			name:          "failing combined status → CIFailure",

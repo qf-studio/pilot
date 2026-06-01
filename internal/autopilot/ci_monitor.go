@@ -198,7 +198,10 @@ func (m *CIMonitor) checkAllRuns(checkRuns *github.CheckRunsResponse) CIStatus {
 		}
 	}
 
-	if hasFailure {
+	// B4 (TASK-345): only declare failure once no check is still pending — a
+	// fail-fast matrix leg or flaky check can report failure before siblings
+	// finish; wait (CIPending) so the suite completes / flaky checks auto-rerun.
+	if hasFailure && !hasPending {
 		return CIFailure
 	}
 	if hasPending {
@@ -286,7 +289,10 @@ func (m *CIMonitor) checkAutoDiscoveredRuns(ctx context.Context, sha string, che
 		}
 	}
 
-	if hasFailure {
+	// B4 (TASK-345): only declare failure once no check is still pending — a
+	// fail-fast matrix leg or flaky check can report failure before siblings
+	// finish; wait (CIPending) so the suite completes / flaky checks auto-rerun.
+	if hasFailure && !hasPending {
 		return CIFailure, nil
 	}
 	if hasPending {
@@ -345,7 +351,10 @@ func (m *CIMonitor) aggregateStatus(statuses map[string]CIStatus) CIStatus {
 		}
 	}
 
-	if hasFailure {
+	// B4 (TASK-345): only declare failure once no check is still pending — a
+	// fail-fast matrix leg or flaky check can report failure before siblings
+	// finish; wait (CIPending) so the suite completes / flaky checks auto-rerun.
+	if hasFailure && !hasPending {
 		return CIFailure
 	}
 	if hasPending {
