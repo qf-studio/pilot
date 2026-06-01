@@ -9,7 +9,7 @@ metadata:
 
 # TASK-316: `handleReleasing` fallthrough on `GetTagForSHA` error
 
-**Status**: 🚧 Open
+**Status**: ✅ Shipped (commit `e77a94bf`) — both paths landed (GetTagForSHA transient-retry + duplicate-tag→success). Archived 2026-06-01. Verified live on `main` during TASK-309/#3188 triage; the B2 attempt-cap was deemed out of scope (TASK-316 stopped the freeze).
 **Created**: 2026-05-27
 **Priority**: P1 (defense-in-depth — the loop only triggers if TASK-314 isn't fixed, but the bug is real and worth hardening)
 **Area**: `internal/autopilot/controller.go`
