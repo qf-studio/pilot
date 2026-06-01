@@ -44,9 +44,11 @@ removed). **This was the last open Wave 0–2 remediation item — Waves 0–2 c
 PR then a redundant re-dispatch no-op'd ("no new commit produced") and false-flagged the issue; cleared the
 label + merged each. C2/E1 produced **no branch at all** (genuine no-op) → taken manually. Follow-up still
 open: executor should treat "no new commit + an OPEN pilot PR exists" as benign-awaiting-merge, not blocked
-(the TASK-321 guard only covers already-*merged* PRs) → **filed #3342 / TASK-341** (no `pilot` label —
-MANUAL-candidate, self-modifying classifier). Filing all 6 also surfaced the **spec-guard header
-requirement** (`## Context|Approach|Acceptance|…`) — see `learnings/learning_pilot_issue_spec_guard_headers`.
+(the TASK-321 guard only covers already-*merged* PRs) → **✅ shipped manually, PR #3343 (TASK-341)**: Layer 1
+(`handlers.go`) classifies the no-op-with-open-PR as awaiting-merge (no `pilot-blocked`); Layer 2 (`poller.go`)
+skips the re-dispatch in the processed-retry path via `FindOpenPRByBranch` + `ReasonHasOpenPR`. Filing all 6
+also surfaced the **spec-guard header requirement** (`## Context|Approach|Acceptance|…`) — see
+`learnings/learning_pilot_issue_spec_guard_headers`.
 
 ## Wave 3 — Mediums (Pilot)
 A3 watchdog-interval · B4 premature-CIFailure · B5 merge-retry-cap · C6 ListIssues-pagination ·
