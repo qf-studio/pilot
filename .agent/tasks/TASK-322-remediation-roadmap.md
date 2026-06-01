@@ -94,7 +94,10 @@ all spec-guard'd (passed — `pilot` only, no `-spec-incomplete`):
 **TASK-322 remediation status:** Waves 0–3 complete (3 crit · 14 high · 17 med all shipped). Only
 **Wave 4 (13 low)** remains — re-audit ~2 weeks out per the Gates section.
 
-## Wave 4 — Lows + tests (Pilot)
+## Wave 4 — Lows + tests (Pilot) — ⏳ PARKED, GATE ~2026-06-15
+**→ [[TASK-357-wave4-lows-reaudit]]** owns this tranche. Deferred behind the re-audit gate (≈2 weeks
+after Wave 3 closed 2026-06-01). All 13 are low severity (slow leaks, error-wrap, test gap) — no urgency.
+**Re-verify each against `main` before filing** (Waves 2–3 shipped some adjacent fixes).
 A4 hook-tmp + subagent-argv · B6 recordedMerges/discoveryStart eviction · E7 retryTracker-TTL ·
 G1 cleanup-return · G2 %w-wrap · G3 discord-heartbeat · G4 transcription-tests.
 
@@ -105,4 +108,5 @@ G1 cleanup-return · G2 %w-wrap · G3 discord-heartbeat · G4 transcription-test
 ## Gates
 Wave 0 merges & soaks first (TASK-325/B5 share `controller.go` with TASK-324). 24–48h soak between
 Pilot waves. Archive each task to `.agent/tasks/archive/` on merge; tick the finding off in TASK-322;
-re-audit ~2 weeks after Wave 3.
+re-audit ~2 weeks after Wave 3 → **gate date ~2026-06-15** (Wave 3 closed 2026-06-01), tracked in
+[[TASK-357-wave4-lows-reaudit]].

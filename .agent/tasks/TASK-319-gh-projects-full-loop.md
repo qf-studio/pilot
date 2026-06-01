@@ -1,6 +1,6 @@
 # TASK-319: GitHub Projects V2 — full board-driven lifecycle loop
 
-**Status:** ✅ CODE-COMPLETE + GO-LIVE CONFIGURED (2026-06-01) — board provisioned (5 cols), global adapter dedicated to studio-sdk, gitnation-companion excluded, `pilot config validate` green. **Only the live end-to-end smoke test remains** — user-driven (gated on PAT rotation + executing real work). Verified against `main` 2026-06-01.
+**Status:** ✅ **DONE — full lifecycle LIVE-VERIFIED end-to-end (2026-06-01)**. Board-sourced `studio-sdk#12` walked `Todo → In Progress → In Review → Done` automatically (~5 min board-placement → squash-merge); `Blocked` verified manually last session. All five columns exercised. Code complete + go-live configured (board 5 cols, global adapter dedicated to studio-sdk, gitnation-companion excluded). Closeable.
 **Priority:** P1 — completes the board-as-source-of-truth roadmap (Studio SDK)
 **Repo:** `qf-studio/pilot` (code) — drives `qf-studio/studio-sdk` work via `qf-studio/projects/1`
 **Depends on:** #3228 / TASK-317 (`FindIssuesFromProject`, read path) — must merge first
@@ -150,11 +150,11 @@ Fine-grained PAT (chosen). Document in an SOP (`.agent/sops/integrations/`):
 
 ## Acceptance criteria (whole task)
 
-- [ ] #3228 merged (read path live).
-- [ ] Picking up a board-sourced issue moves its card `Todo → In Progress`.
-- [ ] Opening a PR moves the card `In Progress → Review`.
-- [ ] Merging the PR moves the card `Review → Done` (existing — regression-guard).
-- [ ] An execution failure (no-commit, crash, gate fail) moves the card `→ Blocked`.
+- [x] #3228 merged (read path live).
+- [x] Picking up a board-sourced issue moves its card `Todo → In Progress`. **(live: #11, #12)**
+- [x] Opening a PR moves the card `In Progress → Review`. **(live: #12 → PR #13)**
+- [x] Merging the PR moves the card `Review → Done`. **(live: #12, PR #13 squash-merged → main `18d2a02`)**
+- [x] An execution failure (no-commit, crash, gate fail) moves the card `→ Blocked`. **(manual-verified last session; auto-Blocked on non-PR paths still gapped — see [[TASK-354]])**
 - [ ] All transitions no-op safely when board disabled, node ID missing, item off-board, or already in target column.
 - [ ] `configs/pilot.example.yaml` documents the full board-driven block.
 - [ ] Table-driven tests with a fake GraphQL transport for each new transition + the idempotency short-circuit (use `internal/testutil` fake tokens — no realistic strings).
@@ -178,15 +178,16 @@ All four workstreams are implemented and merged. Do **not** re-file these:
 - [x] PAT present in `~/.pilot/config.yaml` (`ghp_`, scopes `project, read:org, repo`)
 - [x] **Board columns** (done 2026-06-01 via GraphQL): `In Review` (orange) + `Blocked` (red) added → 5-column board. ⚠️ `updateProjectV2Field` recreated all option IDs and detached all 11 items; repaired from snapshot (#11→Todo, #1–10→Done; stale CLOSED #6 hygiene folded in). New option IDs: Todo `0b0c1283` · In Progress `d6697251` · In Review `188f46d0` · Done `5dbe80c0` · Blocked `4b9ca35e`. **Lesson: use the web UI next time — GraphQL field-update is destructive to option IDs.**
 - [x] **Live config** (done 2026-06-01): resolved the global-only constraint by **dedicating** the global `adapters.github` adapter to studio-sdk. `repo → qf-studio/studio-sdk`, `project_path → …/startups/studio-sdk`, full `project_board` block added (source_enabled, Todo→In Progress→In Review→Done→Blocked). Per user: **gitnation-companion excluded** (removed from `projects:` list + global adapter; `default_project → studio-sdk`). `pilot config validate` → Syntax OK / Validation OK. Backup: `~/.pilot/config.yaml.bak-pre-task319`.
-- [~] **Smoke test — VERIFIED-PARTIAL (2026-06-01, live daemon `--env stage --dashboard`):**
-  - ✅ Board sourcing (daemon pulled `studio-sdk#11` from Todo) — **live-verified**
-  - ✅ `Todo → In Progress` write-back (+ `pilot-in-progress` label) — **live-verified**
-  - ✅ `Blocked` column write — verified **manually** (moved #11 there to un-orphan)
-  - ❌ `In Progress → In Review` (PR open) — **not reached**: the #11 execution **no-op'd** (15m5s, 0 lines, no commit pushed, no PR; recorded `completed` with `commit_sha=ee238476` = pilot's HEAD). See [[TASK-355]].
-  - ❌ `→ Done` (merge) — not reached (no PR).
-  - **Gaps found → filed:** [[TASK-354]] (non-PR outcomes orphan the card in In Progress — no terminal transition on spec-block/no-op paths) · [[TASK-355]] (board-sourced no-op false-positive + wrong-repo SHA; possible project_path mis-resolution — **MANUAL**).
+- [x] **Smoke test — ✅ COMPLETE end-to-end (2026-06-01, live daemon `--env stage --dashboard`):**
+  - ✅ Board sourcing (daemon pulled `studio-sdk#11` then `#12` from Todo) — **live-verified**
+  - ✅ `Todo → In Progress` write-back (+ `pilot-in-progress` label) — **live-verified** (#11, #12)
+  - ✅ `In Progress → In Review` (PR open) — **live-verified**: #12 → PR #13 (`pilot/GH-12`), card auto-moved to In Review
+  - ✅ `→ Done` (merge) — **live-verified**: PR #13 CI green (`build-test`+`lint`), autopilot squash-merged → `main 18d2a02`, card → Done, issue CLOSED + `pilot-done`. `on_merge` release correctly did NOT bump (`test:` commit). ~5 min total.
+  - ✅ `Blocked` column write — verified **manually** last session (moved #11 there to un-orphan)
+  - **Clean-issue recipe that worked:** spec-valid (`## Context`/`## Implementation`/`## Acceptance`), same-repo, *test-only* throwaway (`test(skipreason): add guard test`) — small, deterministic, one-shot-able. SDK M2 #11 failed only because it was a hard cross-repo port, not a board bug.
+  - **Gaps still open (separate tasks):** [[TASK-354]] (non-PR outcomes orphan the card in In Progress — no terminal `→ Blocked` on spec-block/no-op paths) · [[TASK-355]] (no-op false-positive: recorded `completed` with the daemon's own HEAD as `commit_sha`; **project_path mis-resolution REFUTED** by #12 — see that task).
   - **#11 spec fix applied:** renamed `## Review gates` → `## Acceptance` to clear `pilot-spec-incomplete` (spec-guard needs `^## (Acceptance|Implementation|Context|Background|Approach|Design|Refs)`).
-  - **Outstanding ops:** (a) **rotate the `ghp_` PAT** — leaked in session transcript; (b) pre-existing `approval-misconfig` doctor error; (c) a clean full-flow smoke test still needs a *spec-valid, executable* (ideally throwaway, same-repo) issue — SDK M2 #11 was too hard/cross-repo to one-shot.
+  - **Outstanding ops (not blocking lifecycle):** (a) **rotate the `ghp_` PAT** — leaked in session transcript; (b) pre-existing `approval-misconfig` doctor error.
 - **Follow-up gap (filed/recommended):** board config is global-only (`ProjectGitHubConfig` has no board field). To run studio-sdk board-driven *alongside* other label-driven projects without dedicating the global adapter, add a per-project board config + poller wiring.
 
 > The "Execution-ready issues" section below is **historical** — all 4 already shipped (see Code status table). Retained for traceability only.

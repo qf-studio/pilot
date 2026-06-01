@@ -1,10 +1,37 @@
 # TASK-355: Board-sourced execution no-op'd, recorded `completed` with the wrong-repo commit SHA
 
-**Status:** open — found during TASK-319 go-live smoke test (2026-06-01)
+**Status:** open — **scope narrowed 2026-06-01** (TASK-319 #12 smoke test refuted the project_path hypothesis)
 **Priority:** P1 — false-positive completion is the TASK-320/321 class; corrupts the lifecycle
 **Severity:** high (executor correctness)
 **Pilot:** ⚠️ **MANUAL candidate** — self-modifying executor/no-op core (TASK-320 B2 / TASK-323 precedent)
 **Related:** [[TASK-319]], [[TASK-354]], TASK-320 (executor false-negative no-op), TASK-321 (phantom redispatch)
+
+## ⤴ Update (2026-06-01) — hypothesis #1 REFUTED by the #12 control run
+
+The TASK-319 follow-up smoke test dispatched a **trivial, one-shot-able** board issue
+(`studio-sdk#12`, test-only) as a control. Both runs recorded `project_path =
+/Users/aleks.petrov/Projects/startups/studio-sdk` (correct). Outcomes:
+
+| run | issue | outcome | project_path | commit_sha | line stats | PR |
+|---|---|---|---|---|---|---|
+| `afb3b68d` | #11 | no-op | studio-sdk ✅ | `ee238476` ❌ (**pilot daemon's own HEAD**) | 0/0 | none |
+| `7809982c` | #12 | success | studio-sdk ✅ | `ad0a4d48` ✅ (real studio-sdk worktree HEAD) | 0/0 ❌ | #13 (merged → `18d2a02`) |
+
+**Conclusions:**
+- **Hypothesis #1 (wrong `project_path` resolution) is REFUTED.** Board-sourced dispatch
+  runs in the *correct* studio-sdk worktree — #12 produced a genuine same-repo commit,
+  pushed branch, and merged PR. Drop the `main.go:846-852` / project_path investigation.
+- **Hypothesis #2 (no-op recorded `completed` + foreign SHA) CONFIRMED + localized.** On a
+  real commit the SHA is captured correctly; **only on the no-op path** does it fall back to
+  the daemon's own process HEAD (`ee238476` = pilot's `main`). That foreign, non-empty SHA is
+  exactly why the "worktree HEAD == base parent" no-op guard was bypassed — it compared
+  against the wrong git context. Fix: capture the SHA from the issue's worktree (and treat
+  "no new commit in the worktree" as the no-op signal) instead of falling back to the
+  orchestrator's CWD/HEAD.
+- **New corroborating bug: line/file stats are mis-captured even on success.** #12 recorded
+  `0 lines / 0 files` despite PR #13 being `+66/-0` (one new file). The diff-stat stage isn't
+  reading the worktree diff — same wrong-git-context root cause as the SHA fallback. Fold the
+  stats capture into the same fix.
 
 ## Context
 
@@ -52,9 +79,10 @@ the no-op path.
 
 ## Acceptance
 
-- [ ] A board-sourced issue executes in the correct project's worktree (verified by logged path + a real same-repo commit SHA).
-- [ ] A genuine no-op is recorded `failed` (no-deliverable), never `completed` with a foreign `commit_sha`.
-- [ ] Regression test covering the board-sourced dispatch project_path resolution.
+- [x] A board-sourced issue executes in the correct project's worktree (verified by logged path + a real same-repo commit SHA). **— DONE: #12 → studio-sdk commit `ad0a4d48`, PR #13 merged.**
+- [ ] A genuine no-op is recorded `failed` (no-deliverable), never `completed` with a foreign `commit_sha`. **(primary remaining fix — SHA/no-op detection reads worktree HEAD, not the daemon's CWD/HEAD.)**
+- [ ] Line/file diff stats are computed from the issue's worktree diff (#12 recorded 0/0 for a +66 PR).
+- [ ] Regression test covering the no-op detection + SHA/stat capture from the worktree (not the orchestrator's git context).
 - [ ] `make test` + `make lint` green; `-race` clean if touching the runner.
 
 ## Out of scope
