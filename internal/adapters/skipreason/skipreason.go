@@ -15,6 +15,7 @@ const (
 	ReasonProcessedGrace     = "processed_grace"
 	ReasonTaskQueued         = "task_queued"
 	ReasonHasMergedWork      = "has_merged_work"
+	ReasonHasOpenPR          = "has_open_pr" // TASK-341: PR created, awaiting merge
 	ReasonPendingDependency  = "pending_dependency"
 	ReasonCompletedExecution = "completed_execution"
 	ReasonFreshLabelCheck    = "fresh_label_check"

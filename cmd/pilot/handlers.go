@@ -67,6 +67,32 @@ func issueAlreadyMerged(ctx context.Context, client *github.Client, owner, repo 
 	return err == nil && found
 }
 
+// issueHasOpenPR reports whether an OPEN pilot PR already exists for the issue.
+// Counterpart to issueAlreadyMerged for the awaiting-merge window: pilot-done +
+// issue close are deferred to merge time (GH-3139/TASK-301), so between PR
+// creation and merge a re-dispatch finds the work already on the pilot/GH-N
+// branch and produces a "no new commit produced" no-op even though a healthy PR
+// is open. TASK-341: used to classify that no-op as awaiting-merge rather than
+// pilot-blocked. Branch lookup is strongly consistent (no Search API lag); the
+// Search fallback catches PRs whose head deviates from the pilot/GH-N convention.
+// Read-only.
+func issueHasOpenPR(ctx context.Context, client *github.Client, owner, repo string, issueNumber int) bool {
+	branch := fmt.Sprintf("pilot/GH-%d", issueNumber)
+	if found, err := client.FindOpenPRByBranch(ctx, owner, repo, branch); err == nil && found {
+		return true
+	}
+	prs, err := client.SearchPRsForIssue(ctx, owner, repo, issueNumber)
+	if err != nil {
+		return false
+	}
+	for _, pr := range prs {
+		if pr.State == "open" && !pr.Merged {
+			return true
+		}
+	}
+	return false
+}
+
 // requestReviewersFromConfig looks up the project config for the given sourceRepo
 // and requests PR reviewers if configured. Errors are logged but not propagated.
 func requestReviewersFromConfig(ctx context.Context, cfg *config.Config, client *github.Client, sourceRepo, owner, repo string, prNumber int) {
@@ -449,6 +475,28 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 					logGitHubAPIError("AddComment(already-merged)", parts[0], parts[1], issue.Number, err)
 				}
 				issueResult.Success = true
+			} else if hr.Result.Error != "" && strings.Contains(hr.Result.Error, noOpErrorMarker) &&
+				issueHasOpenPR(ctx, client, parts[0], parts[1], issue.Number) {
+				// TASK-341: a "no new commit produced" no-op with an OPEN pilot PR is
+				// the awaiting-merge window — pilot-done + close are deferred to merge
+				// time (GH-3139/TASK-301), so a re-dispatch finds the work already on
+				// the branch and produces this no-op even though a healthy PR is open.
+				// This is a redundant re-dispatch of shipped work, NOT a failure: leave
+				// it for the autopilot merge flow and do NOT add pilot-blocked. (The
+				// already-merged case is handled by the branch above; a genuine no-op
+				// with neither a merged nor an open PR falls through to the blocked
+				// path below.) No comment is posted — the run can repeat before merge
+				// and we must not spam the issue.
+				slog.Info("no-op re-dispatch with open PR — awaiting merge, not blocked (TASK-341)",
+					slog.Int("issue", issue.Number),
+				)
+				// Defense-in-depth: clear a stale pilot-blocked from a prior phantom
+				// classification so the open PR is not held out of the merge flow.
+				if err := client.RemoveLabel(ctx, parts[0], parts[1], issue.Number, github.LabelBlocked); err != nil {
+					slog.Debug("pilot-blocked cleanup (awaiting-merge)", "issue", issue.Number, "error", err)
+				}
+				// issueResult.Success stays false (no new deliverable this run), but no
+				// failure/blocked label is applied — the open PR is the deliverable.
 			} else {
 				// result exists but Success is false - mark as failed
 				// GH-2402: Use pilot-blocked for deterministic failures so we don't retry.
