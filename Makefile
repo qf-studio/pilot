@@ -159,13 +159,21 @@ auto-fix:
 gate:
 	@./scripts/pre-push-gate.sh
 
-# Release - creates tag, builds, packages, and publishes to GitHub
-# Usage: make release V=0.14.6 NOTES="Release notes here"
+# Release - creates and pushes the version tag. CI is the sole publisher.
+# Usage: make release V=0.14.6
+#
+# Tag-only by design: the tag push triggers .github/workflows/release.yml
+# (goreleaser), which builds the binaries and publishes the GitHub release,
+# the Homebrew tap, and Docker images; release-desktop.yml ships the desktop
+# bundles. Do NOT create the GitHub release or upload assets here — a local
+# `gh release create` races goreleaser and makes it fail with 422
+# "asset already_exists", which also skips the Homebrew formula publish.
+# (That broke v2.166.6's Release run; v2.166.0–166.5 shipped clean as tag-only.)
 release:
 ifndef V
-	$(error V is required. Usage: make release V=0.14.6 NOTES="Release notes")
+	$(error V is required. Usage: make release V=0.14.6)
 endif
-	@echo "🚀 Creating release v$(V)..."
+	@echo "🚀 Releasing v$(V)..."
 	@if [ -n "$$(git status --porcelain)" ]; then \
 		echo "❌ Error: Working directory not clean. Commit or stash changes first."; \
 		exit 1; \
@@ -177,19 +185,9 @@ endif
 	@echo "📌 Creating and pushing git tag v$(V)..."
 	git tag v$(V)
 	git push origin v$(V)
-	@echo "🔨 Building and packaging binaries..."
-	$(MAKE) package VERSION=v$(V)
-	@echo "📦 Creating GitHub release..."
-	gh release create v$(V) \
-		bin/$(BINARY_NAME)-darwin-amd64.tar.gz \
-		bin/$(BINARY_NAME)-darwin-arm64.tar.gz \
-		bin/$(BINARY_NAME)-linux-amd64.tar.gz \
-		bin/$(BINARY_NAME)-linux-arm64.tar.gz \
-		bin/checksums.txt \
-		--title "pilot v$(V)" \
-		--notes "$(if $(NOTES),$(NOTES),Release v$(V))"
-	@echo "✅ Released v$(V)"
-	@echo "   Run 'pilot upgrade' to update"
+	@echo "✅ Tag v$(V) pushed. CI (goreleaser) now builds binaries and publishes"
+	@echo "   the GitHub release, Homebrew tap, and Docker/Desktop bundles."
+	@echo "   Track it: gh run list --workflow=Release"
 
 # Build Docker image for standalone Pilot
 docker-build:
