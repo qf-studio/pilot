@@ -2,6 +2,7 @@ package autopilot
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -443,18 +444,64 @@ func (s *StateStore) LoadAllPRFailures() (map[int]*prFailureState, error) {
 	return failures, nil
 }
 
-// PurgeTerminalPRStates removes PR states in terminal stages (failed, merged+removed).
-// This is for housekeeping — active PRs are never purged.
+// releasingStaleThreshold bounds how long a PR row may sit at stage='releasing'
+// before it is treated as wedged. 'releasing' is not a terminal stage, but a row
+// stuck past this threshold indicates a release that never completed (B4/TASK-309).
+// Shared by PurgeTerminalPRStates (B4 housekeeping purge) and the scanner skip
+// gate (B3, PersistedReleasingAge) so both agree on what "stale" means.
+const releasingStaleThreshold = 30 * time.Minute
+
+// PurgeTerminalPRStates removes housekeeping-eligible PR state rows: terminal
+// 'failed' rows older than olderThan, plus 'releasing' rows untouched for longer
+// than releasingStaleThreshold. A 'releasing' row is not strictly terminal, but
+// one stuck past the threshold is a wedged release (B4/TASK-309) — purging it is a
+// safety net so the row cannot live forever and suppress re-discovery by
+// ScanRecentlyMergedPRs. Active PRs (fresh rows, other stages) are never purged.
 func (s *StateStore) PurgeTerminalPRStates(olderThan time.Duration) (int64, error) {
-	cutoff := time.Now().Add(-olderThan)
+	// updated_at is written as CURRENT_TIMESTAMP (SQLite UTC), so the cutoffs must
+	// be evaluated against SQLite's own UTC clock — binding a Go (local) time.Time
+	// here mis-compares by the host's tz offset. <= keeps the olderThan=0 degenerate
+	// case ("purge all terminal rows now") reaping same-second rows.
 	result, err := s.db.Exec(`
 		DELETE FROM autopilot_pr_state
-		WHERE stage IN ('failed') AND updated_at < ?
-	`, cutoff)
+		WHERE (stage = 'failed'    AND updated_at <= datetime('now', ?))
+		   OR (stage = 'releasing' AND updated_at <= datetime('now', ?))
+	`,
+		fmt.Sprintf("-%d seconds", int64(olderThan.Seconds())),
+		fmt.Sprintf("-%d seconds", int64(releasingStaleThreshold.Seconds())),
+	)
 	if err != nil {
 		return 0, err
 	}
 	return result.RowsAffected()
+}
+
+// PersistedReleasingAge reports the age (time since last update) of a persisted PR
+// row at stage='releasing'. found is false when no row exists for prNumber or the
+// row is in a different stage. The scanner uses this (B3/TASK-309) to skip
+// re-registering a release that is already in flight in the state store but absent
+// from the in-memory activePRs map (e.g. after a daemon restart), without relying
+// on the in-memory map alone. Returning the age (rather than a bool) lets the
+// caller ignore genuinely wedged rows so they can be re-driven.
+func (s *StateStore) PersistedReleasingAge(prNumber int) (age time.Duration, found bool, err error) {
+	var stage string
+	var updatedAt sql.NullTime
+	row := s.db.QueryRow(`SELECT stage, updated_at FROM autopilot_pr_state WHERE pr_number = ?`, prNumber)
+	if scanErr := row.Scan(&stage, &updatedAt); scanErr != nil {
+		if errors.Is(scanErr, sql.ErrNoRows) {
+			return 0, false, nil
+		}
+		return 0, false, scanErr
+	}
+	if PRStage(stage) != StageReleasing {
+		return 0, false, nil
+	}
+	if !updatedAt.Valid {
+		// Row exists at 'releasing' but has no timestamp (should not happen given
+		// the CURRENT_TIMESTAMP default); treat as wedged so it is not skipped.
+		return releasingStaleThreshold, true, nil
+	}
+	return time.Since(updatedAt.Time), true, nil
 }
 
 // scanPRState scans a single row into a PRState.

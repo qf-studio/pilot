@@ -616,6 +616,87 @@ func TestController_ScanRecentlyMergedPRs_SelfHeals(t *testing.T) {
 	}
 }
 
+// B3 (TASK-309): a PR persisted at stage='releasing' but absent from the in-memory
+// activePRs map (e.g. after a daemon restart) must not be re-registered by the
+// scanner while the release is fresh. A 'releasing' row stuck past
+// releasingStaleThreshold is re-driven so a wedged release can recover.
+func TestController_ScanRecentlyMergedPRs_SkipsPersistedReleasing(t *testing.T) {
+	mergedAt := time.Now().Add(-5 * time.Minute).UTC().Format(time.RFC3339)
+	pr := github.PullRequest{
+		Number:         77,
+		Head:           github.PRRef{Ref: "pilot/GH-770", SHA: "sha77"},
+		Base:           github.PRRef{Ref: "main"},
+		HTMLURL:        "https://github.com/owner/repo/pull/77",
+		Title:          "fix(api): retry",
+		Merged:         true,
+		MergedAt:       mergedAt,
+		MergeCommitSHA: "merge-sha-77",
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/repos/owner/repo/pulls"):
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode([]*github.PullRequest{&pr})
+		default:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("[]"))
+		}
+	}))
+	defer server.Close()
+
+	newScanController := func(t *testing.T) (*Controller, *StateStore) {
+		t.Helper()
+		ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+		cfg := DefaultConfig()
+		cfg.Release = &ReleaseConfig{Enabled: true, Trigger: "on_merge", TagPrefix: "v"}
+		cfg.MergedPRScanWindow = 30 * time.Minute
+		c := NewController(cfg, ghClient, nil, "owner", "repo")
+		store := newTestStateStore(t)
+		c.SetStateStore(store)
+		return c, store
+	}
+
+	isTracked := func(c *Controller, prNumber int) bool {
+		for _, p := range c.GetActivePRs() {
+			if p.PRNumber == prNumber {
+				return true
+			}
+		}
+		return false
+	}
+
+	t.Run("fresh persisted releasing row is skipped", func(t *testing.T) {
+		c, store := newScanController(t)
+		if err := store.SavePRState(&PRState{PRNumber: 77, BranchName: "pilot/GH-770", Stage: StageReleasing, CreatedAt: time.Now()}); err != nil {
+			t.Fatalf("SavePRState: %v", err)
+		}
+		if err := c.ScanRecentlyMergedPRs(context.Background()); err != nil {
+			t.Fatalf("ScanRecentlyMergedPRs: %v", err)
+		}
+		if isTracked(c, 77) {
+			t.Error("PR 77 was re-registered despite a fresh persisted releasing row; B3 skip gate did not fire")
+		}
+	})
+
+	t.Run("stale persisted releasing row is re-driven", func(t *testing.T) {
+		c, store := newScanController(t)
+		if err := store.SavePRState(&PRState{PRNumber: 77, BranchName: "pilot/GH-770", Stage: StageReleasing, CreatedAt: time.Now()}); err != nil {
+			t.Fatalf("SavePRState: %v", err)
+		}
+		if _, err := store.db.Exec(
+			`UPDATE autopilot_pr_state SET updated_at = datetime('now', '-2 hours') WHERE pr_number = ?`, 77,
+		); err != nil {
+			t.Fatalf("backdate: %v", err)
+		}
+		if err := c.ScanRecentlyMergedPRs(context.Background()); err != nil {
+			t.Fatalf("ScanRecentlyMergedPRs: %v", err)
+		}
+		if !isTracked(c, 77) {
+			t.Error("PR 77 was not re-driven despite a stale persisted releasing row; wedged release cannot recover")
+		}
+	})
+}
+
 func TestController_CircuitBreaker(t *testing.T) {
 	// Test per-PR circuit breaker trips after max failures for that specific PR
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

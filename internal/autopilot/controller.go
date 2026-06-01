@@ -2559,6 +2559,28 @@ func (c *Controller) ScanRecentlyMergedPRs(ctx context.Context) error {
 			continue
 		}
 
+		// B3 (TASK-309): activePRs is in-memory only. After a daemon restart a PR
+		// can be persisted at stage='releasing' yet be absent from activePRs, so the
+		// in-memory gate above would re-register and re-trigger the release on every
+		// scan. Consult the persistent state: if a recent 'releasing' row exists, the
+		// release is already in flight — skip it. Stale rows (age past
+		// releasingStaleThreshold) are intentionally NOT skipped so a genuinely
+		// wedged release can be re-driven.
+		if c.stateStore != nil {
+			if age, found, err := c.stateStore.PersistedReleasingAge(pr.Number); err != nil {
+				c.log.Warn("failed to check persisted releasing state, will track to be safe",
+					"pr", pr.Number,
+					"error", err,
+				)
+			} else if found && age < releasingStaleThreshold {
+				c.log.Debug("skipping PR: release already in flight (persisted at releasing)",
+					"pr", pr.Number,
+					"age", age,
+				)
+				continue
+			}
+		}
+
 		// Skip if this merge commit already has a release tag.
 		// GitHub releases set target_commitish to the branch ref ("main"), not the merge
 		// SHA, so the former map-based check was unreliable. GetTagForSHA (same primitive
