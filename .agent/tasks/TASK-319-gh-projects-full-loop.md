@@ -1,6 +1,6 @@
 # TASK-319: GitHub Projects V2 — full board-driven lifecycle loop
 
-**Status:** planned — Option B locked; board-setup + issue drafts ready; execution gated on #3228 merge
+**Status:** ✅ CODE-COMPLETE + GO-LIVE CONFIGURED (2026-06-01) — board provisioned (5 cols), global adapter dedicated to studio-sdk, gitnation-companion excluded, `pilot config validate` green. **Only the live end-to-end smoke test remains** — user-driven (gated on PAT rotation + executing real work). Verified against `main` 2026-06-01.
 **Priority:** P1 — completes the board-as-source-of-truth roadmap (Studio SDK)
 **Repo:** `qf-studio/pilot` (code) — drives `qf-studio/studio-sdk` work via `qf-studio/projects/1`
 **Depends on:** #3228 / TASK-317 (`FindIssuesFromProject`, read path) — must merge first
@@ -161,16 +161,35 @@ Fine-grained PAT (chosen). Document in an SOP (`.agent/sops/integrations/`):
 - [ ] `make test` + `make lint` green.
 - [ ] SOP for the fine-grained PAT exists.
 
-## Pre-execution checklist (prep state 2026-05-29)
+## Code status — ✅ ALL SHIPPED (verified against `main` 2026-06-01)
 
-- [x] Decisions locked: Option B (5-state), Studio SDK board only, PAT identified
-- [x] Board read confirmed via `ghp_` PAT (`project` scope present)
-- [x] Status mapping + config block finalized (see top of doc)
-- [x] PR-sized issue drafts ready (see "Execution-ready issues" below)
-- [ ] **#3228 merged** (read path) — user tracking, will signal
-- [ ] **Board columns added**: In Review (orange) + Blocked (red) — web UI, see "Board setup"
-- [ ] **Board hygiene**: move stale CLOSED #6 from In Progress → Done; Todo currently empty (no queued work yet)
-- [ ] File the 4 issues into `qf-studio/pilot`, drop into the board's Todo column once sourcing is live
+All four workstreams are implemented and merged. Do **not** re-file these:
+
+| Workstream | PR(s) | Evidence |
+|---|---|---|
+| PR-1 In-Progress on pickup | #3252 / #3273 | `poller.go` `WithBoardSync` + `syncBoardStatusInProgress()` (seq `:559` + parallel `:1319`); wired `main.go:846-852` |
+| PR-2 Review on PR-open + Blocked on exec/CI failure | #3260 | `controller.go` `OnPRCreated`→Review (`:446-490`); failStatus on iteration-limit/size-guard/CI-fail (`:917,:951,:1004`); `WithProjectBoardSync` carries all 4 statuses |
+| PR-3 idempotency / off-board / cross-repo | #3276 | `project_board.go:131-171` reads current status, no-ops if already in target; skips off-board items (debug log); org-level board matches by project ID not repo |
+| PR-4 SOP runbook | #3261 | `.agent/sops/integrations/github-projects-pat.md` |
+
+## Remaining: operational go-live (NOT code — needs live board + daemon)
+
+- [x] #3228 merged (read path live — `FindIssuesFromProject` in `project_source.go`)
+- [x] PAT present in `~/.pilot/config.yaml` (`ghp_`, scopes `project, read:org, repo`)
+- [x] **Board columns** (done 2026-06-01 via GraphQL): `In Review` (orange) + `Blocked` (red) added → 5-column board. ⚠️ `updateProjectV2Field` recreated all option IDs and detached all 11 items; repaired from snapshot (#11→Todo, #1–10→Done; stale CLOSED #6 hygiene folded in). New option IDs: Todo `0b0c1283` · In Progress `d6697251` · In Review `188f46d0` · Done `5dbe80c0` · Blocked `4b9ca35e`. **Lesson: use the web UI next time — GraphQL field-update is destructive to option IDs.**
+- [x] **Live config** (done 2026-06-01): resolved the global-only constraint by **dedicating** the global `adapters.github` adapter to studio-sdk. `repo → qf-studio/studio-sdk`, `project_path → …/startups/studio-sdk`, full `project_board` block added (source_enabled, Todo→In Progress→In Review→Done→Blocked). Per user: **gitnation-companion excluded** (removed from `projects:` list + global adapter; `default_project → studio-sdk`). `pilot config validate` → Syntax OK / Validation OK. Backup: `~/.pilot/config.yaml.bak-pre-task319`.
+- [~] **Smoke test — VERIFIED-PARTIAL (2026-06-01, live daemon `--env stage --dashboard`):**
+  - ✅ Board sourcing (daemon pulled `studio-sdk#11` from Todo) — **live-verified**
+  - ✅ `Todo → In Progress` write-back (+ `pilot-in-progress` label) — **live-verified**
+  - ✅ `Blocked` column write — verified **manually** (moved #11 there to un-orphan)
+  - ❌ `In Progress → In Review` (PR open) — **not reached**: the #11 execution **no-op'd** (15m5s, 0 lines, no commit pushed, no PR; recorded `completed` with `commit_sha=ee238476` = pilot's HEAD). See [[TASK-355]].
+  - ❌ `→ Done` (merge) — not reached (no PR).
+  - **Gaps found → filed:** [[TASK-354]] (non-PR outcomes orphan the card in In Progress — no terminal transition on spec-block/no-op paths) · [[TASK-355]] (board-sourced no-op false-positive + wrong-repo SHA; possible project_path mis-resolution — **MANUAL**).
+  - **#11 spec fix applied:** renamed `## Review gates` → `## Acceptance` to clear `pilot-spec-incomplete` (spec-guard needs `^## (Acceptance|Implementation|Context|Background|Approach|Design|Refs)`).
+  - **Outstanding ops:** (a) **rotate the `ghp_` PAT** — leaked in session transcript; (b) pre-existing `approval-misconfig` doctor error; (c) a clean full-flow smoke test still needs a *spec-valid, executable* (ideally throwaway, same-repo) issue — SDK M2 #11 was too hard/cross-repo to one-shot.
+- **Follow-up gap (filed/recommended):** board config is global-only (`ProjectGitHubConfig` has no board field). To run studio-sdk board-driven *alongside* other label-driven projects without dedicating the global adapter, add a per-project board config + poller wiring.
+
+> The "Execution-ready issues" section below is **historical** — all 4 already shipped (see Code status table). Retained for traceability only.
 
 **Token note:** the dev `gh` CLI uses a keyring token (`gho_`) lacking project scope. For direct `gh project ...` use `gh auth refresh -s read:project,project`, or `export GH_TOKEN=<ghp_ PAT>`. Pilot itself reads the `ghp_` PAT from config, so the daemon is unaffected.
 
