@@ -51,10 +51,23 @@ also surfaced the **spec-guard header requirement** (`## Context|Approach|Accept
 `learnings/learning_pilot_issue_spec_guard_headers`.
 
 ## Wave 3 — Mediums (Pilot)
-A3 watchdog-interval · B4 premature-CIFailure · B5 merge-retry-cap · C6 ListIssues-pagination ·
-C7 allowlist-fail-closed · D3 project_path-scope · D4 KG-atomic-write · D5 log-retention ·
-D6 feedback-tx · D7 rows.Err-sweep · E4 Telegram-markdown · E5 SuppressDuplicates · E6 rotation-race ·
-E8 alert-test-sync.
+Re-verified against `main` 2026-06-01: B5/E5/C4 + SMTP-twin already shipped in Wave 2 (NOT re-filed).
+12 confirmed-live mediums decomposed (TASK-342 kickoff) and **FILED 2026-06-01** with `pilot` label,
+all spec-guard'd (passed — `pilot` only, no `-spec-incomplete`):
+
+| Task | Finding | File(s) | Issue |
+|---|---|---|---|
+| TASK-343 | D3 task_id scope · D5 log-retention · D6 feedback-tx · D7 rows.Err — **batched** (same-file) | `memory/store.go`,`metrics.go`,`metering.go` | #3344 |
+| TASK-344 | A3 watchdog-interval from stallTimeout | `executor/watchdog.go` | #3345 |
+| TASK-345 | B4 premature-CIFailure debounce (`hasFailure && !hasPending`) | `autopilot/ci_monitor.go` | #3346 |
+| TASK-346 | C6 ListIssues pagination (`per_page=100`) | `github/client.go` | #3347 |
+| TASK-347 | C7 allowlist fail-closed on nil | `github/issue_create.go` | #3348 |
+| TASK-348 | D4 KG atomic write + batch + `.bak` | `memory/graph.go` | #3349 |
+| TASK-349 | E4 Telegram MarkdownV2 parse_mode | `alerts/channels.go` | #3350 |
+| TASK-350 | E6 rotation cleanup serialize | `logging/rotation.go` | #3351 |
+| TASK-351 | E8 engine_test deterministic sync (test-only) | `alerts/engine_test.go` | #3352 |
+
+Watch-and-merge per the standard loop; clear phantom `pilot-blocked`+open-PR (TASK-341 guard shipped).
 
 ## Wave 4 — Lows + tests (Pilot)
 A4 hook-tmp + subagent-argv · B6 recordedMerges/discoveryStart eviction · E7 retryTracker-TTL ·

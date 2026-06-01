@@ -1,6 +1,6 @@
 # TASK-342: TASK-322 Wave 3 kickoff — decompose the 12 verified-live mediums
 
-**Status:** ready to decompose · **Created:** 2026-06-01 · **Source of truth:** `.agent/tasks/TASK-322-remediation-roadmap.md` (§ Wave 3) + findings ledger `.agent/tasks/TASK-322-security-audit-findings.md`
+**Status:** ✅ DISPATCHED 2026-06-01 — 9 `pilot` issues filed (#3344–#3352), all spec-guard'd (passed). · **Created:** 2026-06-01 · **Source of truth:** `.agent/tasks/TASK-322-remediation-roadmap.md` (§ Wave 3) + findings ledger `.agent/tasks/TASK-322-security-audit-findings.md`
 
 Waves 0–2 are complete (all 3 crit + 14 high merged, v2.166.1). TASK-341 (open-PR phantom-block guard) shipped manually via PR #3343. This task captures the **verified** Wave-3 starting state so decomposition can begin cold.
 
@@ -41,5 +41,22 @@ Waves 0–2 are complete (all 3 crit + 14 high merged, v2.166.1). TASK-341 (open
 ## Doc-collision flag
 Stray worktree `fix/task319-wire-boardsync` also edits the roadmap + findings ledger — Wave-3 task-doc edits there will conflict on merge (that branch rebases, not us).
 
+## Dispatched (2026-06-01)
+1 batched `store.go` issue (D3/D5/D6/D7) + 8 individual issues (Batch A), all spec-guard'd, filed with `pilot` label:
+
+| Task | Finding | Issue |
+|---|---|---|
+| TASK-343 | store.go cluster D3/D5/D6/D7 | #3344 |
+| TASK-344 | A3 watchdog interval | #3345 |
+| TASK-345 | B4 premature CIFailure | #3346 |
+| TASK-346 | C6 ListIssues pagination | #3347 |
+| TASK-347 | C7 allowlist fail-closed | #3348 |
+| TASK-348 | D4 KG atomic write | #3349 |
+| TASK-349 | E4 Telegram parse_mode | #3350 |
+| TASK-350 | E6 rotation cleanup race | #3351 |
+| TASK-351 | E8 engine_test flaky | #3352 |
+
 ## Next action
-Decompose: 1 batched `store.go` issue (D3/D5/D6/D7) + 8 individual issues (Batch A), all spec-guard'd, filed with `pilot` label in collision-safe order.
+Watch-and-merge loop (90s `gh pr list`/`gh issue list`): merge green PRs, clear any phantom
+`pilot-blocked`+open-PR (TASK-341 guard is live so this should be rare). Archive each TASK-3XX on merge;
+tick the finding in TASK-322 findings ledger. 24–48h soak before Wave 4 (lows).
