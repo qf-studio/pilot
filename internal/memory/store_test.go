@@ -1776,7 +1776,7 @@ func TestUpdateExecutionStatusByTaskID_UpdatesFailedToCompleted(t *testing.T) {
 		Error:       "quality gate failed",
 	})
 
-	if err := store.UpdateExecutionStatusByTaskID("GH-100", "completed"); err != nil {
+	if err := store.UpdateExecutionStatusByTaskID("GH-100", "/tmp/proj", "completed"); err != nil {
 		t.Fatalf("UpdateExecutionStatusByTaskID failed: %v", err)
 	}
 
@@ -1806,7 +1806,7 @@ func TestUpdateExecutionStatusByTaskID_SkipsNonFailed(t *testing.T) {
 		Status:      "completed",
 	})
 
-	if err := store.UpdateExecutionStatusByTaskID("GH-200", "completed"); err != nil {
+	if err := store.UpdateExecutionStatusByTaskID("GH-200", "/tmp/proj", "completed"); err != nil {
 		t.Fatalf("UpdateExecutionStatusByTaskID failed: %v", err)
 	}
 
@@ -1825,8 +1825,65 @@ func TestUpdateExecutionStatusByTaskID_NoMatchingTask(t *testing.T) {
 	defer func() { _ = store.Close() }()
 
 	// Should not error even with no matching rows
-	if err := store.UpdateExecutionStatusByTaskID("GH-999", "completed"); err != nil {
+	if err := store.UpdateExecutionStatusByTaskID("GH-999", "/tmp/proj", "completed"); err != nil {
 		t.Fatalf("expected no error for non-existent task, got: %v", err)
+	}
+}
+
+// TestUpdateExecutionStatusByTaskID_ScopedToProject verifies that updating by task ID
+// only affects rows matching the given project path (D3 regression).
+func TestUpdateExecutionStatusByTaskID_ScopedToProject(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	// Same task ID, different projects
+	_ = store.SaveExecution(&Execution{ID: "exec-a", TaskID: "GH-300", ProjectPath: "/proj/a", Status: "failed"})
+	_ = store.SaveExecution(&Execution{ID: "exec-b", TaskID: "GH-300", ProjectPath: "/proj/b", Status: "failed"})
+
+	// Only heal project a
+	if err := store.UpdateExecutionStatusByTaskID("GH-300", "/proj/a", "completed"); err != nil {
+		t.Fatalf("UpdateExecutionStatusByTaskID: %v", err)
+	}
+
+	execA, _ := store.GetExecution("exec-a")
+	if execA.Status != "completed" {
+		t.Errorf("exec-a: expected 'completed', got %q", execA.Status)
+	}
+	execB, _ := store.GetExecution("exec-b")
+	if execB.Status != "failed" {
+		t.Errorf("exec-b: expected 'failed' (unaffected), got %q", execB.Status)
+	}
+}
+
+// TestSelfHealExecutionAfterMerge_ScopedToProject verifies that self-heal only
+// promotes rows matching the given project path (D3 regression).
+func TestSelfHealExecutionAfterMerge_ScopedToProject(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	_ = store.SaveExecution(&Execution{ID: "heal-a", TaskID: "GH-400", ProjectPath: "/proj/a", Status: "failed"})
+	_ = store.SaveExecution(&Execution{ID: "heal-b", TaskID: "GH-400", ProjectPath: "/proj/b", Status: "failed"})
+
+	if err := store.SelfHealExecutionAfterMerge("GH-400", "/proj/a", "https://github.com/org/repo/pull/1"); err != nil {
+		t.Fatalf("SelfHealExecutionAfterMerge: %v", err)
+	}
+
+	execA, _ := store.GetExecution("heal-a")
+	if execA.Status != "completed" {
+		t.Errorf("heal-a: expected 'completed', got %q", execA.Status)
+	}
+	if execA.PRUrl != "https://github.com/org/repo/pull/1" {
+		t.Errorf("heal-a: expected pr_url to be stamped, got %q", execA.PRUrl)
+	}
+	execB, _ := store.GetExecution("heal-b")
+	if execB.Status != "failed" {
+		t.Errorf("heal-b: expected 'failed' (unaffected), got %q", execB.Status)
 	}
 }
 
@@ -2144,5 +2201,118 @@ func TestEffortLevelColumns_RoundTrip(t *testing.T) {
 	}
 	if got2.ComplexityLevel != "complex" {
 		t.Errorf("after update: ComplexityLevel = %q, want %q", got2.ComplexityLevel, "complex")
+	}
+}
+
+// TestPruneExecutionLogs verifies D5: deletes logs older than the cutoff and
+// leaves newer ones untouched.
+func TestPruneExecutionLogs(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	old := time.Now().Add(-2 * time.Hour)
+	recent := time.Now().Add(-10 * time.Minute)
+
+	// Insert two old entries and one recent entry directly.
+	_, err = store.db.Exec(`INSERT INTO execution_logs (timestamp, level, message, component) VALUES (?, 'info', 'old1', 'test')`, old)
+	if err != nil {
+		t.Fatalf("insert old1: %v", err)
+	}
+	_, err = store.db.Exec(`INSERT INTO execution_logs (timestamp, level, message, component) VALUES (?, 'info', 'old2', 'test')`, old)
+	if err != nil {
+		t.Fatalf("insert old2: %v", err)
+	}
+	_, err = store.db.Exec(`INSERT INTO execution_logs (timestamp, level, message, component) VALUES (?, 'info', 'recent', 'test')`, recent)
+	if err != nil {
+		t.Fatalf("insert recent: %v", err)
+	}
+
+	deleted, err := store.PruneExecutionLogs(time.Hour)
+	if err != nil {
+		t.Fatalf("PruneExecutionLogs: %v", err)
+	}
+	if deleted != 2 {
+		t.Errorf("deleted = %d, want 2", deleted)
+	}
+
+	var count int
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM execution_logs`).Scan(&count); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if count != 1 {
+		t.Errorf("remaining rows = %d, want 1", count)
+	}
+}
+
+// TestRecordPatternFeedback_TransactionAtomicity verifies D6: all three writes
+// inside RecordPatternFeedback succeed together — the feedback row, the
+// confidence update, and the project-link update.
+func TestRecordPatternFeedback_TransactionAtomicity(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	// Prerequisites: a cross pattern and a project link must exist for the
+	// confidence/link UPDATE statements to match rows.
+	pattern := &CrossPattern{
+		ID:          "pat-tx-1",
+		Type:        "code",
+		Title:       "test pattern",
+		Description: "desc",
+		Confidence:  0.5,
+		Occurrences: 1,
+		Scope:       "org",
+	}
+	if err := store.SaveCrossPattern(pattern); err != nil {
+		t.Fatalf("SaveCrossPattern: %v", err)
+	}
+	if err := store.LinkPatternToProject("pat-tx-1", "/proj/tx"); err != nil {
+		t.Fatalf("LinkPatternToProject: %v", err)
+	}
+	// Seed an execution row so the FK constraint on pattern_feedback is satisfied.
+	if err := store.SaveExecution(&Execution{ID: "exec-tx-1", TaskID: "GH-TX", ProjectPath: "/proj/tx", Status: "completed"}); err != nil {
+		t.Fatalf("SaveExecution: %v", err)
+	}
+
+	fb := &PatternFeedback{
+		PatternID:       "pat-tx-1",
+		ExecutionID:     "exec-tx-1",
+		ProjectPath:     "/proj/tx",
+		Outcome:         "success",
+		ConfidenceDelta: 0.1,
+	}
+	if err := store.RecordPatternFeedback(fb); err != nil {
+		t.Fatalf("RecordPatternFeedback: %v", err)
+	}
+	if fb.ID == 0 {
+		t.Error("expected feedback ID to be set after insert")
+	}
+
+	// Confidence should have increased.
+	updated, err := store.GetCrossPattern("pat-tx-1")
+	if err != nil {
+		t.Fatalf("GetCrossPattern: %v", err)
+	}
+	if updated.Confidence <= 0.5 {
+		t.Errorf("confidence = %.3f, want > 0.5", updated.Confidence)
+	}
+
+	// Project link success_count should be 1.
+	links, err := store.GetProjectsForPattern("pat-tx-1")
+	if err != nil {
+		t.Fatalf("GetProjectsForPattern: %v", err)
+	}
+	if len(links) == 0 || links[0].SuccessCount != 1 {
+		t.Errorf("success_count = %d, want 1", func() int {
+			if len(links) > 0 {
+				return links[0].SuccessCount
+			}
+			return -1
+		}())
 	}
 }

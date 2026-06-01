@@ -97,12 +97,13 @@ type TaskMonitor interface {
 // EvalStore persists eval tasks extracted from merged PRs.
 type EvalStore interface {
 	SaveEvalTask(task *memory.EvalTask) error
-	// UpdateExecutionStatusByTaskID updates execution status by task ID.
+	// UpdateExecutionStatusByTaskID updates execution status by task ID and project path.
 	// Used to mark failed executions as completed when the PR is merged.
-	UpdateExecutionStatusByTaskID(taskID, status string) error
+	UpdateExecutionStatusByTaskID(taskID, projectPath, status string) error
 	// SelfHealExecutionAfterMerge promotes failed rows to completed and
-	// stamps the PR URL after a successful merge. GH-2402.
-	SelfHealExecutionAfterMerge(taskID, prURL string) error
+	// stamps the PR URL after a successful merge. projectPath scopes the update
+	// to prevent cross-repo clobbering. GH-2402.
+	SelfHealExecutionAfterMerge(taskID, projectPath, prURL string) error
 }
 
 // ControllerOption is a functional option for Controller configuration.
@@ -1393,7 +1394,8 @@ func (c *Controller) handleMerging(ctx context.Context, prState *PRState) error 
 		// merged via parent, etc.).
 		if c.evalStore != nil {
 			taskID := fmt.Sprintf("GH-%d", prState.IssueNumber)
-			if err := c.evalStore.SelfHealExecutionAfterMerge(taskID, prState.PRURL); err != nil {
+			projectPath := c.owner + "/" + c.repo
+			if err := c.evalStore.SelfHealExecutionAfterMerge(taskID, projectPath, prState.PRURL); err != nil {
 				c.log.Warn("failed to self-heal execution on merge",
 					"task_id", taskID, "error", err)
 			}

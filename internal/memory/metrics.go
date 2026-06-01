@@ -364,7 +364,7 @@ func (s *Store) GetDailyMetrics(query MetricsQuery) ([]*DailyMetrics, error) {
 		metrics = append(metrics, &m)
 	}
 
-	return metrics, nil
+	return metrics, rows.Err()
 }
 
 // GetProjectMetrics returns metrics aggregated by project
@@ -429,7 +429,7 @@ func (s *Store) GetProjectMetrics(query MetricsQuery) ([]*ProjectMetrics, error)
 		metrics = append(metrics, &m)
 	}
 
-	return metrics, nil
+	return metrics, rows.Err()
 }
 
 // GetFailureReasons returns breakdown of failure reasons
@@ -477,7 +477,7 @@ func (s *Store) GetFailureReasons(query MetricsQuery, limit int) ([]*FailureReas
 		reasons = append(reasons, &r)
 	}
 
-	return reasons, nil
+	return reasons, rows.Err()
 }
 
 // GetPeakUsageHours returns execution counts by hour of day
@@ -521,7 +521,7 @@ func (s *Store) GetPeakUsageHours(query MetricsQuery) (map[int]int, error) {
 		hours[hour] = count
 	}
 
-	return hours, nil
+	return hours, rows.Err()
 }
 
 // ExportMetrics exports execution data for external analytics
@@ -612,7 +612,7 @@ func (s *Store) ExportMetrics(query MetricsQuery) ([]*ExportedExecution, error) 
 		exports = append(exports, &e)
 	}
 
-	return exports, nil
+	return exports, rows.Err()
 }
 
 // ExportedExecution represents an execution record for export

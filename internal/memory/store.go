@@ -668,7 +668,7 @@ func (s *Store) GetRecentExecutions(limit int) ([]*Execution, error) {
 		executions = append(executions, &exec)
 	}
 
-	return executions, nil
+	return executions, rows.Err()
 }
 
 // Pattern represents a learned pattern from project executions.
@@ -738,7 +738,7 @@ func (s *Store) GetPatterns(projectPath string) ([]*Pattern, error) {
 		patterns = append(patterns, &p)
 	}
 
-	return patterns, nil
+	return patterns, rows.Err()
 }
 
 // Project represents a registered project in Pilot.
@@ -822,7 +822,7 @@ func (s *Store) GetAllProjects() ([]*Project, error) {
 		projects = append(projects, &p)
 	}
 
-	return projects, nil
+	return projects, rows.Err()
 }
 
 // BriefQuery holds parameters for querying execution data within a time period.
@@ -884,7 +884,7 @@ func (s *Store) GetExecutionsInPeriod(query BriefQuery) ([]*Execution, error) {
 		executions = append(executions, &exec)
 	}
 
-	return executions, nil
+	return executions, rows.Err()
 }
 
 // GetActiveExecutions retrieves all executions with status "running".
@@ -913,7 +913,7 @@ func (s *Store) GetActiveExecutions() ([]*Execution, error) {
 		executions = append(executions, &exec)
 	}
 
-	return executions, nil
+	return executions, rows.Err()
 }
 
 // GetBriefMetrics calculates aggregate metrics for a time period including
@@ -1001,7 +1001,7 @@ func (s *Store) GetQueuedTasks(limit int) ([]*Execution, error) {
 		executions = append(executions, &exec)
 	}
 
-	return executions, nil
+	return executions, rows.Err()
 }
 
 // GetQueuedTasksForProject returns queued/pending tasks for a specific project.
@@ -1041,7 +1041,7 @@ func (s *Store) GetQueuedTasksForProject(projectPath string, limit int) ([]*Exec
 		executions = append(executions, &exec)
 	}
 
-	return executions, nil
+	return executions, rows.Err()
 }
 
 // UpdateExecutionStatus updates the status of an execution record.
@@ -1075,33 +1075,37 @@ func (s *Store) UpdateExecutionStatus(id, status string, errorMsg ...string) err
 }
 
 // UpdateExecutionStatusByTaskID updates the status of the most recent execution
-// for a given task ID. Used by autopilot to mark failed executions as completed
-// when the PR is merged externally.
-func (s *Store) UpdateExecutionStatusByTaskID(taskID, status string) error {
+// for a given task ID and project path. Used by autopilot to mark failed
+// executions as completed when the PR is merged externally.
+// The projectPath scope prevents cross-project clobbering when the same task ID
+// appears in multiple repos.
+func (s *Store) UpdateExecutionStatusByTaskID(taskID, projectPath, status string) error {
 	return s.withRetry("UpdateExecutionStatusByTaskID", func() error {
 		_, err := s.db.Exec(`
 			UPDATE executions
 			SET status = ?, completed_at = CURRENT_TIMESTAMP
-			WHERE task_id = ? AND status = 'failed'
-		`, status, taskID)
+			WHERE task_id = ? AND project_path = ? AND status = 'failed'
+		`, status, taskID, projectPath)
 		return err
 	})
 }
 
 // SelfHealExecutionAfterMerge promotes any "failed" rows for the given task ID
-// to "completed" and stamps the PR URL so the dashboard reflects the merged
-// outcome. Used when autopilot observes a merge for an issue whose previous
-// execution row was recorded as failed (e.g. user-pushed commits, sub-issue
-// shipped via parent epic). GH-2402.
-func (s *Store) SelfHealExecutionAfterMerge(taskID, prURL string) error {
+// and project path to "completed" and stamps the PR URL so the dashboard
+// reflects the merged outcome. Used when autopilot observes a merge for an
+// issue whose previous execution row was recorded as failed (e.g. user-pushed
+// commits, sub-issue shipped via parent epic). GH-2402.
+// The projectPath scope prevents cross-project clobbering when the same task ID
+// appears in multiple repos.
+func (s *Store) SelfHealExecutionAfterMerge(taskID, projectPath, prURL string) error {
 	return s.withRetry("SelfHealExecutionAfterMerge", func() error {
 		_, err := s.db.Exec(`
 			UPDATE executions
 			SET status = 'completed',
 				completed_at = CURRENT_TIMESTAMP,
 				pr_url = CASE WHEN ? <> '' THEN ? ELSE pr_url END
-			WHERE task_id = ? AND status = 'failed'
-		`, prURL, prURL, taskID)
+			WHERE task_id = ? AND project_path = ? AND status = 'failed'
+		`, prURL, prURL, taskID, projectPath)
 		return err
 	})
 }
@@ -1160,7 +1164,7 @@ func (s *Store) GetStaleRunningExecutions(staleDuration time.Duration) ([]*Execu
 		executions = append(executions, &exec)
 	}
 
-	return executions, nil
+	return executions, rows.Err()
 }
 
 // GetStaleQueuedExecutions returns executions that have been in "queued" status
@@ -1191,7 +1195,7 @@ func (s *Store) GetStaleQueuedExecutions(staleDuration time.Duration) ([]*Execut
 		executions = append(executions, &exec)
 	}
 
-	return executions, nil
+	return executions, rows.Err()
 }
 
 // DeleteExecution removes an execution row by ID. Used to clean up orphan rows
@@ -1382,7 +1386,7 @@ func (s *Store) scanCrossPatterns(rows *sql.Rows) ([]*CrossPattern, error) {
 		}
 		patterns = append(patterns, &p)
 	}
-	return patterns, nil
+	return patterns, rows.Err()
 }
 
 // LinkPatternToProject creates or updates a relationship between a pattern and a project.
@@ -1422,61 +1426,59 @@ func (s *Store) GetProjectsForPattern(patternID string) ([]*PatternProjectLink, 
 		}
 		links = append(links, &link)
 	}
-	return links, nil
+	return links, rows.Err()
 }
 
 // RecordPatternFeedback records feedback when a pattern is applied during an execution.
 // Based on the outcome ("success", "failure", or "neutral"), it adjusts the pattern's
 // confidence score and updates project-level success/failure counts.
+// All three writes (insert feedback, update confidence, update project link) run
+// in a single transaction so a partial failure cannot leave the tables inconsistent.
 func (s *Store) RecordPatternFeedback(feedback *PatternFeedback) error {
-	err := s.withRetry("RecordPatternFeedback", func() error {
-		result, err := s.db.Exec(`
+	return s.withRetry("RecordPatternFeedback", func() error {
+		tx, err := s.db.BeginTx(context.Background(), nil)
+		if err != nil {
+			return fmt.Errorf("begin tx: %w", err)
+		}
+		defer func() { _ = tx.Rollback() }()
+
+		result, err := tx.Exec(`
 			INSERT INTO pattern_feedback (pattern_id, execution_id, project_path, outcome, confidence_delta)
 			VALUES (?, ?, ?, ?, ?)
 		`, feedback.PatternID, feedback.ExecutionID, feedback.ProjectPath, feedback.Outcome, feedback.ConfidenceDelta)
 		if err != nil {
 			return err
 		}
-
 		id, _ := result.LastInsertId()
 		feedback.ID = id
-		return nil
-	})
-	if err != nil {
-		return err
-	}
 
-	// Update pattern confidence and project link based on outcome
-	switch feedback.Outcome {
-	case "success":
-		_ = s.withRetry("RecordPatternFeedback:updateConfidence", func() error {
-			_, err := s.db.Exec(`
+		switch feedback.Outcome {
+		case "success":
+			if _, err := tx.Exec(`
 				UPDATE cross_patterns SET confidence = min(0.95, max(0.1, confidence + ?)) WHERE id = ?
-			`, feedback.ConfidenceDelta, feedback.PatternID)
-			return err
-		})
-		_ = s.withRetry("RecordPatternFeedback:updateSuccess", func() error {
-			_, err := s.db.Exec(`
+			`, feedback.ConfidenceDelta, feedback.PatternID); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(`
 				UPDATE pattern_projects SET success_count = success_count + 1 WHERE pattern_id = ? AND project_path = ?
-			`, feedback.PatternID, feedback.ProjectPath)
-			return err
-		})
-	case "failure":
-		_ = s.withRetry("RecordPatternFeedback:updateConfidence", func() error {
-			_, err := s.db.Exec(`
+			`, feedback.PatternID, feedback.ProjectPath); err != nil {
+				return err
+			}
+		case "failure":
+			if _, err := tx.Exec(`
 				UPDATE cross_patterns SET confidence = max(0.1, min(0.95, confidence - ?)) WHERE id = ?
-			`, feedback.ConfidenceDelta, feedback.PatternID)
-			return err
-		})
-		_ = s.withRetry("RecordPatternFeedback:updateFailure", func() error {
-			_, err := s.db.Exec(`
+			`, feedback.ConfidenceDelta, feedback.PatternID); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(`
 				UPDATE pattern_projects SET failure_count = failure_count + 1 WHERE pattern_id = ? AND project_path = ?
-			`, feedback.PatternID, feedback.ProjectPath)
-			return err
-		})
-	}
+			`, feedback.PatternID, feedback.ProjectPath); err != nil {
+				return err
+			}
+		}
 
-	return nil
+		return tx.Commit()
+	})
 }
 
 // SearchCrossPatterns searches patterns by title, description, or context using substring matching.
@@ -1545,6 +1547,9 @@ func (s *Store) GetCrossPatternStats() (*CrossPatternStats, error) {
 			return nil, err
 		}
 		stats.ByType[pType] = count
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 
 	// Get project count
@@ -1844,6 +1849,30 @@ func (s *Store) LatestAutopilotMetrics() (*AutopilotMetricsRow, error) {
 	r.ExecutionCostUSD = unmarshalStringFloatMap(costJSON.String)
 	r.ExecutionsByResult = unmarshalStringIntMap(execsJSON.String)
 	return r, nil
+}
+
+// PruneExecutionLogs deletes execution log entries older than the given duration.
+// Returns the number of rows deleted. Runs a WAL checkpoint after a large
+// prune (>1000 rows) to reclaim disk space promptly.
+func (s *Store) PruneExecutionLogs(olderThan time.Duration) (int64, error) {
+	cutoff := time.Now().Add(-olderThan)
+	var result sql.Result
+	err := s.withRetry("PruneExecutionLogs", func() error {
+		var execErr error
+		result, execErr = s.db.Exec(`DELETE FROM execution_logs WHERE timestamp < ?`, cutoff)
+		return execErr
+	})
+	if err != nil {
+		return 0, err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	if n > 1000 {
+		_, _ = s.db.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`)
+	}
+	return n, nil
 }
 
 // PruneAutopilotMetrics deletes snapshots older than the given duration.

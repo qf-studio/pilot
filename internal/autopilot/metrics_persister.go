@@ -108,4 +108,11 @@ func (mp *MetricsPersister) prune() {
 	} else if deleted > 0 {
 		mp.log.Debug("pruned old autopilot metrics", slog.Int64("deleted", deleted))
 	}
+
+	deletedLogs, err := mp.store.PruneExecutionLogs(mp.retention)
+	if err != nil {
+		mp.log.Warn("failed to prune execution logs", slog.Any("error", err))
+	} else if deletedLogs > 0 {
+		mp.log.Debug("pruned old execution logs", slog.Int64("deleted", deletedLogs))
+	}
 }
