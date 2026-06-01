@@ -1060,6 +1060,50 @@ func TestListIssues_LabelsFilteredCaseInsensitively(t *testing.T) {
 	}
 }
 
+// TestListIssues_Paginates verifies C6 (TASK-346): ListIssues requests per_page=100
+// and follows pages until a short page, returning the full set (not just the first ~30).
+func TestListIssues_Paginates(t *testing.T) {
+	var perPageSeen string
+	var pageRequests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		pageRequests++
+		perPageSeen = r.URL.Query().Get("per_page")
+		var batch []*Issue
+		switch r.URL.Query().Get("page") {
+		case "1":
+			batch = make([]*Issue, 100) // full page → keep paging
+			for i := range batch {
+				batch[i] = &Issue{Number: i + 1}
+			}
+		case "2":
+			batch = make([]*Issue, 15) // short page → stop
+			for i := range batch {
+				batch[i] = &Issue{Number: 101 + i}
+			}
+		default:
+			batch = []*Issue{}
+		}
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(batch)
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	issues, err := client.ListIssues(context.Background(), "owner", "repo", nil)
+	if err != nil {
+		t.Fatalf("ListIssues() error = %v", err)
+	}
+	if len(issues) != 115 {
+		t.Errorf("expected 115 issues across 2 pages, got %d", len(issues))
+	}
+	if perPageSeen != "100" {
+		t.Errorf("expected per_page=100, got %q", perPageSeen)
+	}
+	if pageRequests != 2 {
+		t.Errorf("expected 2 page requests (100 + short 15 stops paging), got %d", pageRequests)
+	}
+}
+
 func TestHasLabel(t *testing.T) {
 	tests := []struct {
 		name      string

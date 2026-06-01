@@ -390,9 +390,10 @@ func (c *Client) AddPRComment(ctx context.Context, owner, repo string, number in
 // Note: Labels are filtered case-insensitively in Go code after fetching,
 // because GitHub API label queries are case-sensitive.
 func (c *Client) ListIssues(ctx context.Context, owner, repo string, opts *ListIssuesOptions) ([]*Issue, error) {
-	path := fmt.Sprintf("/repos/%s/%s/issues?", owner, repo)
+	const perPage = 100
+	const maxPages = 50
 
-	// Build query parameters
+	// Build query parameters (pagination is added per-page below).
 	// Note: We intentionally skip passing labels to the API because GitHub's
 	// label query is case-sensitive. Instead, we filter in code after fetching.
 	params := []string{}
@@ -409,17 +410,25 @@ func (c *Client) ListIssues(ctx context.Context, owner, repo string, opts *ListI
 			params = append(params, "since="+opts.Since.Format(time.RFC3339))
 		}
 	}
+	baseQuery := strings.Join(params, "&")
 
-	for i, p := range params {
-		if i > 0 {
-			path += "&"
-		}
-		path += p
-	}
-
+	// Paginate (GitHub defaults to 30/page, caps at 100). Without this the
+	// candidate set was silently truncated to the first ~30 issues, breaking the
+	// oldest-first dispatch contract on repos with more open issues. TASK-346 (C6).
 	var issues []*Issue
-	if err := c.doRequest(ctx, http.MethodGet, path, nil, &issues); err != nil {
-		return nil, err
+	for page := 1; page <= maxPages; page++ {
+		path := fmt.Sprintf("/repos/%s/%s/issues?per_page=%d&page=%d", owner, repo, perPage, page)
+		if baseQuery != "" {
+			path += "&" + baseQuery
+		}
+		var batch []*Issue
+		if err := c.doRequest(ctx, http.MethodGet, path, nil, &batch); err != nil {
+			return nil, err
+		}
+		issues = append(issues, batch...)
+		if len(batch) < perPage {
+			break
+		}
 	}
 
 	// Filter by labels case-insensitively
