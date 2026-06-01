@@ -1887,6 +1887,32 @@ func TestSelfHealExecutionAfterMerge_ScopedToProject(t *testing.T) {
 	}
 }
 
+// TestSelfHealExecutionAfterMerge_EmptyProjectPath verifies that an empty
+// projectPath falls back to task_id-only matching (legacy single-repo behavior),
+// so a caller that cannot supply the discriminator still heals every matching row
+// rather than silently matching nothing. TASK-352.
+func TestSelfHealExecutionAfterMerge_EmptyProjectPath(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	_ = store.SaveExecution(&Execution{ID: "e1", TaskID: "GH-500", ProjectPath: "/proj/a", Status: "failed"})
+	_ = store.SaveExecution(&Execution{ID: "e2", TaskID: "GH-500", ProjectPath: "/proj/b", Status: "failed"})
+
+	if err := store.SelfHealExecutionAfterMerge("GH-500", "", "https://github.com/org/repo/pull/9"); err != nil {
+		t.Fatalf("SelfHealExecutionAfterMerge: %v", err)
+	}
+
+	for _, id := range []string{"e1", "e2"} {
+		ex, _ := store.GetExecution(id)
+		if ex.Status != "completed" {
+			t.Errorf("%s: expected 'completed' with empty projectPath fallback, got %q", id, ex.Status)
+		}
+	}
+}
+
 // TestRecentCompletedTelemetryStats verifies the zero-token telemetry gap
 // query: rows are filtered to completed runs with a real commit, and rows
 // without commit_sha (e.g. epic orchestrators) are excluded so they don't

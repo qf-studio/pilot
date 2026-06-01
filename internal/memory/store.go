@@ -1091,12 +1091,18 @@ func (s *Store) UpdateExecutionStatusByTaskID(taskID, projectPath, status string
 }
 
 // SelfHealExecutionAfterMerge promotes any "failed" rows for the given task ID
-// and project path to "completed" and stamps the PR URL so the dashboard
+// (scoped to projectPath) to "completed" and stamps the PR URL so the dashboard
 // reflects the merged outcome. Used when autopilot observes a merge for an
 // issue whose previous execution row was recorded as failed (e.g. user-pushed
 // commits, sub-issue shipped via parent epic). GH-2402.
-// The projectPath scope prevents cross-project clobbering when the same task ID
-// appears in multiple repos.
+//
+// projectPath MUST be the same value the executor stored in executions.project_path
+// — an absolute filesystem path (e.g. /Users/me/proj), NOT an owner/repo slug. The
+// scope prevents cross-project clobbering when the same task ID (GH-N is only unique
+// per repo) appears in multiple repos. When projectPath is empty the scope is
+// dropped and rows match by task_id alone (legacy single-repo behavior); this also
+// guards against a caller passing the wrong discriminator silently healing nothing.
+// TASK-352.
 func (s *Store) SelfHealExecutionAfterMerge(taskID, projectPath, prURL string) error {
 	return s.withRetry("SelfHealExecutionAfterMerge", func() error {
 		_, err := s.db.Exec(`
@@ -1104,8 +1110,8 @@ func (s *Store) SelfHealExecutionAfterMerge(taskID, projectPath, prURL string) e
 			SET status = 'completed',
 				completed_at = CURRENT_TIMESTAMP,
 				pr_url = CASE WHEN ? <> '' THEN ? ELSE pr_url END
-			WHERE task_id = ? AND project_path = ? AND status = 'failed'
-		`, prURL, prURL, taskID, projectPath)
+			WHERE task_id = ? AND status = 'failed' AND (? = '' OR project_path = ?)
+		`, prURL, prURL, taskID, projectPath, projectPath)
 		return err
 	})
 }

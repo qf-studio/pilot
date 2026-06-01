@@ -130,17 +130,28 @@ func WithMemoryStore(s *memory.Store) ControllerOption {
 	}
 }
 
+// WithProjectPath sets the filesystem project path used to scope execution
+// self-heal (SelfHealExecutionAfterMerge) to this project's rows. It MUST match
+// the value the executor stored in executions.project_path — an absolute fs path
+// (e.g. /Users/me/proj), NOT owner/repo. Empty falls back to task_id-only match.
+// TASK-352.
+func WithProjectPath(path string) ControllerOption {
+	return func(c *Controller) {
+		c.projectPath = path
+	}
+}
+
 // Controller orchestrates the autopilot loop for PR processing.
 // It manages the state machine: PR created → CI check → merge → post-merge CI → feedback loop.
 type Controller struct {
-	config       *Config
-	ghClient     *github.Client
-	approvalMgr  *approval.Manager
-	ciMonitor    *CIMonitor
-	autoMerger   *AutoMerger
-	feedbackLoop *FeedbackLoop
-	releaser     *Releaser
-	deployer     *Deployer
+	config           *Config
+	ghClient         *github.Client
+	approvalMgr      *approval.Manager
+	ciMonitor        *CIMonitor
+	autoMerger       *AutoMerger
+	feedbackLoop     *FeedbackLoop
+	releaser         *Releaser
+	deployer         *Deployer
 	notifier         Notifier
 	monitor          TaskMonitor // GH-1336: sync dashboard state on merge
 	boardSync        projectBoardSyncer
@@ -190,6 +201,11 @@ type Controller struct {
 	owner string
 	repo  string
 
+	// projectPath is the absolute filesystem path the executor stored in
+	// executions.project_path. Used to scope self-heal to this project's rows.
+	// Empty = match by task_id only (single-repo / tests). TASK-352.
+	projectPath string
+
 	// GH-3271: called after a PR merges and pilot-done is applied so pollers
 	// can immediately re-mark the issue as processed, closing the merge→done
 	// race window before label propagation catches up.
@@ -232,6 +248,51 @@ func NewController(cfg *Config, ghClient *github.Client, approvalMgr *approval.M
 	}
 
 	return c
+}
+
+// parentIssueRe extracts a parent issue number from a sub-issue body line like
+// "Parent: GH-3344" — the convention epic.go writes when decomposing an issue
+// into sub-issues. TASK-352.
+var parentIssueRe = regexp.MustCompile(`(?i)Parent:\s*GH-(\d+)`)
+
+// selfHealForPR promotes any prior "failed" execution rows for the merged PR's
+// issue — and its parent epic, if it is a sub-issue — to "completed", stamping the
+// PR URL so the dashboard reflects the merged outcome. Safe to call from any merge
+// path (controller-driven handleMerging or the externally-merged scan). No-op when
+// the eval store is unset or issueNum is zero. TASK-352.
+func (c *Controller) selfHealForPR(ctx context.Context, issueNum int, prURL string) {
+	if c.evalStore == nil || issueNum == 0 {
+		return
+	}
+	c.selfHealTask(fmt.Sprintf("GH-%d", issueNum), prURL)
+	// Pilot decomposes a parent issue into sub-issues; only the sub-issue's PR
+	// merges, so the parent's no-op "failed" row would never heal otherwise.
+	if parent := c.resolveParentIssue(ctx, issueNum); parent != 0 && parent != issueNum {
+		c.selfHealTask(fmt.Sprintf("GH-%d", parent), prURL)
+	}
+}
+
+// selfHealTask runs SelfHealExecutionAfterMerge for one task ID, scoped to this
+// controller's project path (empty = task_id-only match). TASK-352.
+func (c *Controller) selfHealTask(taskID, prURL string) {
+	if err := c.evalStore.SelfHealExecutionAfterMerge(taskID, c.projectPath, prURL); err != nil {
+		c.log.Warn("failed to self-heal execution on merge", "task_id", taskID, "error", err)
+	}
+}
+
+// resolveParentIssue returns the parent issue number for a sub-issue by parsing
+// the "Parent: GH-N" line epic.go writes into sub-issue bodies, or 0 if the issue
+// has no parent or cannot be fetched (best-effort, fail-open). TASK-352.
+func (c *Controller) resolveParentIssue(ctx context.Context, issueNum int) int {
+	issue, err := c.ghClient.GetIssue(ctx, c.owner, c.repo, issueNum)
+	if err != nil || issue == nil {
+		return 0
+	}
+	if m := parentIssueRe.FindStringSubmatch(issue.Body); len(m) == 2 {
+		n, _ := strconv.Atoi(m[1])
+		return n
+	}
+	return 0
 }
 
 // SetNotifier sets the notifier for autopilot events.
@@ -1388,18 +1449,11 @@ func (c *Controller) handleMerging(ctx context.Context, prState *PRState) error 
 			c.log.Debug("updated monitor state to completed", "task", taskID, "pr", prState.PRNumber)
 		}
 
-		// GH-2279/GH-2402: Self-heal execution record on merge. Promotes any prior
-		// "failed" row to "completed" and stamps the PR URL so the dashboard
-		// reflects the merged outcome (handles user-pushed commits, sub-issues
-		// merged via parent, etc.).
-		if c.evalStore != nil {
-			taskID := fmt.Sprintf("GH-%d", prState.IssueNumber)
-			projectPath := c.owner + "/" + c.repo
-			if err := c.evalStore.SelfHealExecutionAfterMerge(taskID, projectPath, prState.PRURL); err != nil {
-				c.log.Warn("failed to self-heal execution on merge",
-					"task_id", taskID, "error", err)
-			}
-		}
+		// GH-2279/GH-2402 + TASK-352: Self-heal execution records on merge.
+		// Promotes prior "failed" rows (for the issue AND its parent epic) to
+		// "completed" and stamps the PR URL so the dashboard reflects the merged
+		// outcome (handles user-pushed commits, sub-issues merged via parent, etc.).
+		c.selfHealForPR(ctx, prState.IssueNumber, prState.PRURL)
 
 		// GH-1870: Sync board card to "Done" column on merge
 		if c.boardSync != nil && prState.IssueNodeID != "" {
@@ -2489,6 +2543,13 @@ func (c *Controller) ScanRecentlyMergedPRs(ctx context.Context) error {
 			createdAt = mergedAt
 		}
 		c.recordMergeSuccess(&PRState{PRNumber: pr.Number, CreatedAt: createdAt})
+
+		// TASK-352: Self-heal execution records for externally-merged PRs (gh pr
+		// merge / GitHub UI). These never pass through handleMerging, so their
+		// "failed" rows would otherwise never flip to "completed". Like
+		// recordMergeSuccess above, this fires before the release-tag/activePRs skip
+		// gates because the heal must happen on every discovered merged Pilot PR.
+		c.selfHealForPR(ctx, issueNum, pr.HTMLURL)
 
 		// Skip if already tracked in activePRs (avoid duplicate processing)
 		c.mu.RLock()
