@@ -1491,11 +1491,6 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 						)
 						// Don't fail the epic — sub-issues may have their own PRs
 					} else {
-						// Get commit SHA
-						if sha, shaErr := epicGit.GetCurrentCommitSHA(ctx); shaErr == nil && sha != "" {
-							epicResult.CommitSHA = sha
-						}
-
 						// Determine base branch
 						baseBranch := task.BaseBranch
 						if baseBranch == "" {
@@ -1506,6 +1501,11 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 						}
 
 						// GH-2743: no-commits guard for epic PR path.
+						// TASK-356 #1: harvest CommitSHA ONLY after this guard passes. The epic
+						// parent runs in an orchestrator-only worktree whose HEAD == base HEAD,
+						// so reading the SHA before the guard recorded that foreign base SHA as
+						// the epic's CommitSHA — making a no-deliverable epic look "completed"
+						// (a false-positive no-op that hid the loss of the child's real work).
 						if guardCount, _ := epicGit.CountNewCommits(ctx, baseBranch); guardCount == 0 {
 							r.log.Warn("Epic branch has no commits vs base, skipping PR creation",
 								slog.String("task_id", task.ID),
@@ -1513,6 +1513,12 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 							)
 							r.reportProgress(task.ID, "PR Skipped", 97, "epic branch has no commits relative to base")
 							return epicResult, nil
+						}
+
+						// Parent branch carries real commits — safe to record its HEAD as the
+						// epic's deliverable SHA (it is no longer the foreign base SHA).
+						if sha, shaErr := epicGit.GetCurrentCommitSHA(ctx); shaErr == nil && sha != "" {
+							epicResult.CommitSHA = sha
 						}
 
 						// Create PR with GitHub auto-close keyword

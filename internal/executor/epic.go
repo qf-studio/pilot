@@ -1506,6 +1506,27 @@ func (r *Runner) ExecuteSubIssues(ctx context.Context, parent *Task, issues []Cr
 			return fmt.Errorf("sub-issue %s failed: %s", issueRef, result.Error)
 		}
 
+		// TASK-356 #1: work-loss guard. A sub-issue runs with CreatePR=true, so a
+		// successful child MUST yield a PR. When it instead reports success with real
+		// commits (CommitSHA set) but no PR (empty PRUrl), its work is stranded in a
+		// worktree that cleanup will discard — the failure mode that silently lost 26
+		// minutes of a real port (studio-sdk #17). Refuse to close the issue or report
+		// epic success: fail loud so the child issue stays OPEN for recovery/retry
+		// instead of the work vanishing behind a false "completed" record.
+		if result.PRUrl == "" && result.CommitSHA != "" {
+			shortSHA := result.CommitSHA[:min(7, len(result.CommitSHA))]
+			warnMsg := fmt.Sprintf("⚠️ %d/%d produced commits (%s) but no PR — work not delivered; leaving issue open for retry: %s",
+				i+1, total, shortSHA, issue.Subtask.Title)
+			_ = r.UpdateIssueProgress(ctx, projectPath, parent.ID, warnMsg)
+			r.log.Error("sub-issue committed work but produced no PR — refusing to discard",
+				"parent_id", parent.ID,
+				"sub_issue", issueRef,
+				"commit_sha", shortSHA,
+				"branch", subTask.Branch,
+			)
+			return fmt.Errorf("sub-issue %s committed work (sha %s) but produced no PR — work would be lost, halting epic", issueRef, shortSHA)
+		}
+
 		// Register sub-issue PR with autopilot controller (GH-596)
 		// Note: PR callback uses int issueNumber for GitHub compatibility
 		if result.PRUrl != "" && r.onSubIssuePRCreated != nil {

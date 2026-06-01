@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -171,15 +172,19 @@ func TestExecuteSubIssues_NilCallbackNoPanic(t *testing.T) {
 	}
 }
 
-func TestExecuteSubIssues_CallbackNotFiredOnNoPRUrl(t *testing.T) {
-	// Execution succeeds but no PR URL (e.g., CreatePR was false or PR creation failed)
+// TASK-356 #1: epic sub-issues run with CreatePR=true, so a successful child that
+// reports real commits but NO PR URL means its work is stranded in a worktree that
+// cleanup will discard (the studio-sdk #17 work-loss). ExecuteSubIssues must fail
+// loud — not silently close the issue and report epic success — so the child issue
+// stays open for recovery. The PR callback must not fire either.
+func TestExecuteSubIssues_WorkLossGuard_CommitsButNoPR(t *testing.T) {
 	execFn := func(ctx context.Context, task *Task) (*ExecutionResult, error) {
 		return &ExecutionResult{
 			TaskID:    task.ID,
 			Success:   true,
 			Output:    "done",
-			PRUrl:     "", // No PR
-			CommitSHA: "abc123",
+			PRUrl:     "",          // PR creation failed / never happened
+			CommitSHA: "abc123def", // ...but real work WAS committed
 		}, nil
 	}
 
@@ -204,10 +209,52 @@ func TestExecuteSubIssues_CallbackNotFiredOnNoPRUrl(t *testing.T) {
 	}
 
 	err := runner.ExecuteSubIssues(context.Background(), parent, issues, parent.ProjectPath, "")
-	if err != nil {
-		t.Fatalf("ExecuteSubIssues returned error: %v", err)
+	if err == nil {
+		t.Fatal("expected work-loss guard error when a sub-issue commits but produces no PR, got nil")
+	}
+	if !strings.Contains(err.Error(), "no PR") {
+		t.Errorf("error should explain the missing PR / work loss, got: %v", err)
+	}
+	if callbackFired {
+		t.Error("callback should not fire when PRUrl is empty")
+	}
+}
+
+// TASK-356 #1 (counterpart): a child that legitimately produced no commits AND no
+// PR is benign — the ghost-SHA guard would already have failed a real no-op, so an
+// empty CommitSHA here means there is simply nothing to lose. The work-loss guard
+// must NOT fire (it keys on commits-without-delivery), and the callback stays silent.
+func TestExecuteSubIssues_NoCommitsNoPR_NoGuard(t *testing.T) {
+	execFn := func(ctx context.Context, task *Task) (*ExecutionResult, error) {
+		return &ExecutionResult{
+			TaskID:    task.ID,
+			Success:   true,
+			Output:    "no changes needed",
+			PRUrl:     "",
+			CommitSHA: "", // no work committed → nothing to lose
+		}, nil
 	}
 
+	runner := newTestRunnerWithExecFunc(execFn)
+
+	callbackFired := false
+	runner.SetOnSubIssuePRCreated(func(prNumber int, prURL string, issueNumber int, commitSHA, branchName string, issueNodeID string) {
+		callbackFired = true
+	})
+
+	parent := &Task{ID: "GH-71", Title: "[epic] No-op child"}
+	issues := []CreatedIssue{
+		{
+			Number:  31,
+			URL:     "https://github.com/owner/repo/issues/31",
+			Subtask: PlannedSubtask{Title: "No-op task", Description: "desc", Order: 1},
+		},
+	}
+
+	err := runner.ExecuteSubIssues(context.Background(), parent, issues, parent.ProjectPath, "")
+	if err != nil {
+		t.Fatalf("benign no-commits/no-PR child must not trip the work-loss guard: %v", err)
+	}
 	if callbackFired {
 		t.Error("callback should not fire when PRUrl is empty")
 	}
