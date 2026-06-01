@@ -335,6 +335,9 @@ func (s *Store) GetDailyUsage(query UsageQuery) ([]*DailyUsage, error) {
 			du.ComputeCost = cost
 		}
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 
 	// Convert to slice
 	var result []*DailyUsage
@@ -394,7 +397,7 @@ func (s *Store) GetUsageByProject(query UsageQuery) ([]*ProjectUsage, error) {
 		result = append(result, &pu)
 	}
 
-	return result, nil
+	return result, rows.Err()
 }
 
 // ProjectUsage represents usage for a single project
@@ -460,7 +463,7 @@ func (s *Store) GetUsageEvents(query UsageQuery, limit int) ([]*UsageEvent, erro
 		events = append(events, &e)
 	}
 
-	return events, nil
+	return events, rows.Err()
 }
 
 // UsageThreshold defines an alert threshold for usage

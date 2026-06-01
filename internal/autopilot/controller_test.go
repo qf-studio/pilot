@@ -533,6 +533,9 @@ func TestController_HandleMerging_SelfHealsExecution(t *testing.T) {
 	if got.TaskID != "GH-99" {
 		t.Errorf("self-heal task ID = %q, want GH-99", got.TaskID)
 	}
+	if got.ProjectPath != "owner/repo" {
+		t.Errorf("self-heal project path = %q, want owner/repo", got.ProjectPath)
+	}
 	if got.PRURL != "https://github.com/owner/repo/pull/42" {
 		t.Errorf("self-heal PR URL = %q, want PR URL", got.PRURL)
 	}
@@ -3838,13 +3841,15 @@ type mockEvalStore struct {
 }
 
 type selfHealCall struct {
-	TaskID string
-	PRURL  string
+	TaskID      string
+	ProjectPath string
+	PRURL       string
 }
 
 type updateStatusCall struct {
-	TaskID string
-	Status string
+	TaskID      string
+	ProjectPath string
+	Status      string
 }
 
 func (m *mockEvalStore) SaveEvalTask(task *memory.EvalTask) error {
@@ -3852,13 +3857,13 @@ func (m *mockEvalStore) SaveEvalTask(task *memory.EvalTask) error {
 	return nil
 }
 
-func (m *mockEvalStore) UpdateExecutionStatusByTaskID(taskID, status string) error {
-	m.updateStatus = append(m.updateStatus, updateStatusCall{TaskID: taskID, Status: status})
+func (m *mockEvalStore) UpdateExecutionStatusByTaskID(taskID, projectPath, status string) error {
+	m.updateStatus = append(m.updateStatus, updateStatusCall{TaskID: taskID, ProjectPath: projectPath, Status: status})
 	return nil
 }
 
-func (m *mockEvalStore) SelfHealExecutionAfterMerge(taskID, prURL string) error {
-	m.selfHealed = append(m.selfHealed, selfHealCall{TaskID: taskID, PRURL: prURL})
+func (m *mockEvalStore) SelfHealExecutionAfterMerge(taskID, projectPath, prURL string) error {
+	m.selfHealed = append(m.selfHealed, selfHealCall{TaskID: taskID, ProjectPath: projectPath, PRURL: prURL})
 	return nil
 }
 

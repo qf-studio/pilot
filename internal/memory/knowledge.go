@@ -271,6 +271,9 @@ func (k *KnowledgeStore) GetMemoryStats() (*MemoryStats, error) {
 		}
 		stats.ByType[memType] = count
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 
 	return stats, nil
 }
