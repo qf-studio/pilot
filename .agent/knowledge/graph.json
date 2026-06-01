@@ -380,6 +380,17 @@
         ],
         "confidence": 0.95,
         "created": "2026-06-01"
+      },
+      "mem-021": {
+        "type": "learning",
+        "summary": "Making a client method paginate (per_page+page until short page) silently breaks fixed-list httptest mocks that return the full list per request — they loop to maxPages (N×pages items) and starve callers, hanging tests to the 600s package timeout. C6/#3369 did this to the stress mocks. Fix: mocks return [] for page>=2, and ALWAYS bound test busy-waits with a deadline. A 600s 'FAIL <pkg>' with no '--- FAIL: Test' = a hang, not an assertion. File: learning_paginated_client_breaks_fixedlist_mocks.md (TASK-353).",
+        "concepts": [
+          "github-adapter",
+          "testing",
+          "ci"
+        ],
+        "confidence": 0.95,
+        "created": "2026-06-01"
       }
     }
   },
