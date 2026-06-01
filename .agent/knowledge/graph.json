@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "updated": "2026-06-01T00:00:00Z",
+  "updated": "2026-06-01",
   "nodes": {
     "concepts": {
       "pilot-architecture": {
@@ -104,6 +104,22 @@
           "self-update",
           "executor",
           "dashboard"
+        ]
+      },
+      "epic-decomposition": {
+        "label": "Epic Decomposition",
+        "description": "Auto-splitting epic-classified issues into child issues; parent orchestrates in an empty worktree while children execute the real work",
+        "related": [
+          "executor",
+          "worktree",
+          "orchestrator"
+        ]
+      },
+      "worktree": {
+        "label": "Worktree",
+        "description": "Per-execution git worktree isolation",
+        "related": [
+          "executor"
         ]
       }
     },
@@ -403,6 +419,20 @@
         "confidence": 0.95,
         "created": "2026-06-01",
         "memory_file": ".agent/knowledge/memories/decisions/decision_release_pipeline_tag_only.md"
+      },
+      "mem-023": {
+        "type": "pitfall",
+        "summary": "Epic auto-decomposition could silently discard a child's completed work and record a false 'completed' no-op against a foreign base SHA. Parent epic runs in an empty orchestrator worktree; a child that commits real work but produces no PR has that work discarded on worktree cleanup. Fixed PR #3383 (TASK-356): ExecuteSubIssues fails loud on commits-without-PR; runner.go harvests epic CommitSHA only after the no-commits guard. The no-decompose label is the reliable escape hatch.",
+        "concepts": [
+          "executor",
+          "epic-decomposition",
+          "worktree"
+        ],
+        "confidence": 0.9,
+        "severity": "high",
+        "created": "2026-06-01",
+        "incident": "2026-06-01: studio-sdk #16 epic spawned child #17 which committed ~7 files over 26 min; child closed unmerged, branch never pushed, parent recorded completed+foreign-SHA no-op. 26 min of work lost.",
+        "file": ".agent/knowledge/memories/pitfalls/pitfall_epic_decompose_discards_child_work.md"
       }
     }
   },
@@ -511,6 +541,21 @@
       "from": "mem-022",
       "to": "mem-020",
       "type": "refines"
+    },
+    {
+      "from": "mem-023",
+      "to": "executor",
+      "type": "describes"
+    },
+    {
+      "from": "mem-023",
+      "to": "epic-decomposition",
+      "type": "describes"
+    },
+    {
+      "from": "mem-023",
+      "to": "worktree",
+      "type": "describes"
     }
   ]
 }

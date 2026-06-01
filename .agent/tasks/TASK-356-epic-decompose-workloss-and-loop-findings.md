@@ -1,6 +1,6 @@
 # TASK-356: Pilot-core findings from the SDK M2 board-loop run (2026-06-01)
 
-**Status:** open — three distinct findings surfaced while driving `studio-sdk` SDK M2 end-to-end via the GH Projects board loop.
+**Status:** Finding #1 🟡 **in review — PR #3383** (`fix/task-356-epic-decompose-workloss`); #2/#3 open.
 **Priority:** P1 (finding #1) + P2/ops (#2, #3)
 **Related:** [[TASK-319]] (board loop), [[TASK-354]] (orphaned cards / non-PR transitions), [[TASK-355]] (no-op false-positive class), [[TASK-325]] (scope/size merge gate)
 **Source:** interactive loop session — drove `qf-studio/studio-sdk` #11 epic to done (M2.1 #15, M2.2 #19+#21, M2.3 #23+#25 all merged).
@@ -38,6 +38,18 @@ child, produced real PRs).
 **Fix directions:** (a) push/merge the child branch before closing it (don't discard); (b) the parent must
 adopt the child's commits, not finalize an empty worktree; (c) at minimum, never record `completed`+foreign-SHA
 when 0 commits were produced (fold into [[TASK-355]]).
+
+**✅ Implemented — PR #3383 (manual; Pilot can't fix its own execution guard, Wave 0 / TASK-320 B2 precedent):**
+- **`epic.go ExecuteSubIssues`** — work-loss guard: a child runs with `CreatePR=true`, so `Success && CommitSHA!="" && PRUrl==""`
+  means committed-but-undelivered work. Fail loud + halt the epic, leaving the child issue **open for recovery**
+  instead of closing it (covers fix direction (c), and stops the silent discard half of (a)).
+- **`runner.go` epic finalization** — harvest the parent `CommitSHA` only **after** the no-commits guard passes,
+  so the orchestrator worktree's foreign base SHA is never recorded as the epic deliverable (fix direction (c)).
+- Tests: `TestExecuteSubIssues_WorkLossGuard_CommitsButNoPR` + `_NoCommitsNoPR_NoGuard`; `TestSequentialEpicFlow`
+  no-PR case updated to the corrected contract. Full `internal/executor` package green.
+- **Still open (follow-up):** fix direction (a)/(b) auto-recovery — actually push/adopt the stranded child branch
+  rather than only failing loud. The `no-decompose` label remains the reliable escape hatch in the meantime.
+- Knowledge: [[epic-decompose-discards-child-work]] (graph `mem-023`).
 
 ---
 
