@@ -20,6 +20,7 @@ type rotatingWriter struct {
 	maxBackups int
 
 	mu          sync.Mutex
+	cleanMu     sync.Mutex // serializes cleanOldLogs; TryLock skips redundant concurrent spawns
 	file        *os.File
 	currentSize int64
 }
@@ -144,9 +145,23 @@ func (w *rotatingWriter) rotate() error {
 }
 
 // cleanOldLogs removes old backup files.
+// At most one invocation runs at a time; concurrent spawns are skipped via TryLock.
 func (w *rotatingWriter) cleanOldLogs() {
-	dir := filepath.Dir(w.filename)
-	base := filepath.Base(w.filename)
+	// Skip if a cleanup is already in progress.
+	if !w.cleanMu.TryLock() {
+		return
+	}
+	defer w.cleanMu.Unlock()
+
+	// Snapshot config fields under the writer lock to avoid a race with Write/rotate.
+	w.mu.Lock()
+	filename := w.filename
+	maxAge := w.maxAge
+	maxBackups := w.maxBackups
+	w.mu.Unlock()
+
+	dir := filepath.Dir(filename)
+	base := filepath.Base(filename)
 	ext := filepath.Ext(base)
 	prefix := strings.TrimSuffix(base, ext)
 
@@ -165,7 +180,7 @@ func (w *rotatingWriter) cleanOldLogs() {
 
 	now := time.Now()
 	for _, match := range matches {
-		if match == w.filename {
+		if match == filename {
 			continue
 		}
 		info, err := os.Stat(match)
@@ -173,8 +188,8 @@ func (w *rotatingWriter) cleanOldLogs() {
 			continue
 		}
 
-		// Skip if too old
-		if now.Sub(info.ModTime()) > w.maxAge {
+		// Remove files older than maxAge.
+		if now.Sub(info.ModTime()) > maxAge {
 			_ = os.Remove(match)
 			continue
 		}
@@ -182,13 +197,13 @@ func (w *rotatingWriter) cleanOldLogs() {
 		files = append(files, fileInfo{path: match, modTime: info.ModTime()})
 	}
 
-	// Sort by mod time, oldest first
+	// Sort by mod time, oldest first.
 	sort.Slice(files, func(i, j int) bool {
 		return files[i].modTime.Before(files[j].modTime)
 	})
 
-	// Remove excess backups
-	for len(files) > w.maxBackups {
+	// Remove excess backups beyond maxBackups.
+	for len(files) > maxBackups {
 		_ = os.Remove(files[0].path)
 		files = files[1:]
 	}
