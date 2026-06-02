@@ -6148,6 +6148,66 @@ func TestController_ScanRecentlyMergedPRs_RecordsMetrics(t *testing.T) {
 	}
 }
 
+// TestController_ScanRecentlyMergedPRs_BoardWriteBack verifies TASK-356 #2: an
+// externally-merged Pilot PR (manual `gh pr merge`, never through handleMerging)
+// still has its board card moved to Done by the scanner. Large PRs blocked by the
+// stage approval-misconfig are merged manually, so without this the card stays
+// stuck "In Review".
+func TestController_ScanRecentlyMergedPRs_BoardWriteBack(t *testing.T) {
+	recentMergedAt := time.Now().Add(-3 * time.Minute).UTC().Format(time.RFC3339)
+
+	pilotPR := github.PullRequest{
+		Number:         123,
+		Head:           github.PRRef{Ref: "pilot/GH-456", SHA: "headsha123"},
+		Base:           github.PRRef{Ref: "main"},
+		HTMLURL:        "https://github.com/owner/repo/pull/123",
+		Title:          "feat: big change merged manually",
+		Merged:         true,
+		MergedAt:       recentMergedAt,
+		MergeCommitSHA: "merge-sha-123",
+	}
+
+	const issueNodeID = "I_kwDOissue456"
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/repos/owner/repo/pulls"):
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode([]*github.PullRequest{&pilotPR})
+		case r.URL.Path == "/repos/owner/repo/issues/456":
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]string{"node_id": issueNodeID})
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.Release = &ReleaseConfig{Enabled: true, Trigger: "on_merge", TagPrefix: "v"}
+	cfg.MergedPRScanWindow = 30 * time.Minute
+
+	mock := &mockBoardSyncer{}
+	c := NewController(cfg, ghClient, nil, "owner", "repo",
+		withBoardSyncerForTest(mock, "Done", "Failed", "In Review", "In Dev"))
+	c.SetStateStore(newTestStateStore(t))
+
+	if err := c.ScanRecentlyMergedPRs(context.Background()); err != nil {
+		t.Fatalf("ScanRecentlyMergedPRs() error = %v", err)
+	}
+
+	if len(mock.calls) != 1 {
+		t.Fatalf("board sync calls = %d, want 1 (externally-merged PR card should move to Done)", len(mock.calls))
+	}
+	if mock.calls[0].issueNodeID != issueNodeID {
+		t.Errorf("board sync issueNodeID = %q, want %q", mock.calls[0].issueNodeID, issueNodeID)
+	}
+	if mock.calls[0].statusName != "Done" {
+		t.Errorf("board sync statusName = %q, want %q", mock.calls[0].statusName, "Done")
+	}
+}
+
 // TestController_ScanRecentlyMergedPRs_RecordsMetricsDespiteExistingRelease
 // reproduces the bug where Pilot's own self-release pipeline always tags every
 // merge within ~1min, so by the time the ~5-15min scanner tick runs the

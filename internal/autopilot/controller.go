@@ -2551,6 +2551,26 @@ func (c *Controller) ScanRecentlyMergedPRs(ctx context.Context) error {
 		// gates because the heal must happen on every discovered merged Pilot PR.
 		c.selfHealForPR(ctx, issueNum, pr.HTMLURL)
 
+		// TASK-356 #2: board write-back for externally-merged PRs. Large PRs that
+		// hit the stage approval-misconfig (require_approval=true + approval disabled)
+		// are merged manually (`gh pr merge` / GitHub UI) and never pass through
+		// handleMerging, so their board card stays stuck "In Review". Move it to Done
+		// here, mirroring the on-merge write-back in handleMerging. Like
+		// recordMergeSuccess/selfHealForPR above, this fires on every discovered merged
+		// Pilot PR (before the release-tag/activePRs skip gates). The scanner only runs
+		// when on_merge release is enabled (see shouldTriggerRelease at the top), so
+		// fully decoupling board sync from release is a follow-up. UpdateProjectItemStatus
+		// is idempotent and silently skips issues that aren't on the board.
+		if c.boardSync != nil && c.doneStatus != "" && issueNum > 0 {
+			if nodeID, nodeErr := c.ghClient.GetIssueNodeID(ctx, c.owner, c.repo, issueNum); nodeErr != nil {
+				c.log.Warn("board sync on external merge: failed to resolve issue node id",
+					"pr", pr.Number, "issue", issueNum, "error", nodeErr)
+			} else if err := c.boardSync.UpdateProjectItemStatus(ctx, nodeID, c.doneStatus); err != nil {
+				c.log.Warn("board sync on external merge failed",
+					"pr", pr.Number, "issue", issueNum, "error", err)
+			}
+		}
+
 		// Skip if already tracked in activePRs (avoid duplicate processing)
 		c.mu.RLock()
 		_, alreadyTracked := c.activePRs[pr.Number]
