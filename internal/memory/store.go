@@ -358,28 +358,59 @@ func (s *Store) migrate() error {
 
 // reclassifyLegacyOutcomes corrects executions that the dispatcher previously
 // recorded as status='failed' when they were actually non-failure terminal
-// outcomes — a no-op (the work was already on base, or the agent made no edits)
-// or a stalled/budget-capped run. Before TASK-358 every !Success result collapsed
-// into "failed", inflating the dashboard's QUEUE "failed" count.
+// outcomes — no-op (work already on base / no edits), rate-limited, skipped
+// (never ran / cancelled), stalled/budget, or infra/plumbing (resource kill,
+// push/PR/worktree/branch). Before TASK-358 every !Success result collapsed into
+// "failed", inflating the dashboard's QUEUE "failed" count.
 //
+// Each UPDATE is guarded by status='failed' and the statements run in the same
+// precedence order as TerminalStatus (no-op first, infra last) so a row matching
+// more than one signature lands in the most "this isn't a failure" bucket.
 // Classification uses the deterministic error signatures the runner writes, so it
-// only touches rows it can positively identify; genuine failures (compile/test
-// errors, crashes) carry none of these signatures and are left as "failed".
-// Idempotent: after the first pass no 'failed' row matches, so re-running on every
-// startup is a cheap, indexed no-op. Declined rows cannot be recovered here
-// because the decline reason was never persisted to executions.error.
+// only touches rows it can positively identify; genuine failures (quality gates,
+// planning, unknown exit-1) carry none of these signatures and are left as
+// "failed". Idempotent: after the first pass no 'failed' row matches, so running
+// on every startup is a cheap, indexed no-op. Declined rows cannot be recovered
+// here because the decline reason was never persisted to executions.error.
+//
+// Keep the LIKE patterns in sync with the signature lists in executor/runner.go.
 func (s *Store) reclassifyLegacyOutcomes() error {
 	stmts := []string{
 		`UPDATE executions SET status = 'no_op'
 		 WHERE status = 'failed' AND (
 			error LIKE '%no new commit produced%' OR
+			error LIKE '%no commits relative to base%' OR
 			error LIKE '%no_changes%' OR
-			error LIKE '%no commits relative to base%'
+			error LIKE '%made no code changes%'
+		 )`,
+		`UPDATE executions SET status = 'rate_limited'
+		 WHERE status = 'failed' AND (
+			error LIKE '%hit your limit%' OR
+			error LIKE '%rate limit%' OR
+			error LIKE '%usage limit%'
+		 )`,
+		`UPDATE executions SET status = 'skipped'
+		 WHERE status = 'failed' AND (
+			error LIKE '%stale queued task recovered%' OR
+			error LIKE '%context canceled%' OR
+			error LIKE '%context cancelled%'
 		 )`,
 		`UPDATE executions SET status = 'stalled'
 		 WHERE status = 'failed' AND (
 			error LIKE '%session stalled%' OR
 			error LIKE '%budget limit exceeded%'
+		 )`,
+		`UPDATE executions SET status = 'infra'
+		 WHERE status = 'failed' AND (
+			error LIKE '%oom_killed%' OR
+			error LIKE '%exit code 137%' OR
+			error LIKE '%SIGKILL%' OR
+			error LIKE '%signal: killed%' OR
+			error LIKE '%push failed%' OR
+			error LIKE '%PR creation failed%' OR
+			error LIKE '%worktree creation failed%' OR
+			error LIKE '%create/switch branch%' OR
+			error LIKE '%branch switch failed%'
 		 )`,
 	}
 	for _, stmt := range stmts {
@@ -1093,7 +1124,7 @@ func (s *Store) UpdateExecutionStatus(id, status string, errorMsg ...string) err
 	}
 
 	// Set completed_at for terminal states
-	if status == "completed" || status == "failed" || status == "cancelled" || status == "declined" || status == "stalled" || status == "no_op" {
+	if status == "completed" || status == "failed" || status == "cancelled" || status == "declined" || status == "stalled" || status == "no_op" || status == "rate_limited" || status == "infra" || status == "skipped" {
 		return s.withRetry("UpdateExecutionStatus", func() error {
 			_, err := s.db.Exec(`
 				UPDATE executions
@@ -1128,7 +1159,7 @@ func (s *Store) UpdateExecutionStatusByTaskID(taskID, projectPath, status string
 		_, err := s.db.Exec(`
 			UPDATE executions
 			SET status = ?, completed_at = CURRENT_TIMESTAMP
-			WHERE task_id = ? AND project_path = ? AND status IN ('failed', 'no_op', 'stalled')
+			WHERE task_id = ? AND project_path = ? AND status IN ('failed', 'no_op', 'stalled', 'rate_limited', 'infra', 'skipped')
 		`, status, taskID, projectPath)
 		return err
 	})
@@ -1155,7 +1186,7 @@ func (s *Store) SelfHealExecutionAfterMerge(taskID, projectPath, prURL string) e
 			SET status = 'completed',
 				completed_at = CURRENT_TIMESTAMP,
 				pr_url = CASE WHEN ? <> '' THEN ? ELSE pr_url END
-			WHERE task_id = ? AND status IN ('failed', 'no_op', 'stalled') AND (? = '' OR project_path = ?)
+			WHERE task_id = ? AND status IN ('failed', 'no_op', 'stalled', 'rate_limited', 'infra', 'skipped') AND (? = '' OR project_path = ?)
 		`, prURL, prURL, taskID, projectPath, projectPath)
 		return err
 	})
@@ -1740,16 +1771,25 @@ func (s *Store) GetLifetimeTokens() (*LifetimeTokens, error) {
 }
 
 // LifetimeTaskCounts holds cumulative outcome counts from all executions.
-// TASK-358: Failed counts genuine failures only; non-failure terminal outcomes
-// (no-op, stalled, declined) are broken out separately so the dashboard does not
-// inflate the failed count by lumping them in.
+// TASK-358: Failed counts genuine task failures only; non-failure terminal
+// outcomes (no-op, stalled, declined, rate-limited, infra, skipped) are broken
+// out separately so the dashboard does not inflate the failed count.
 type LifetimeTaskCounts struct {
-	Total     int
-	Succeeded int
-	Failed    int
-	Declined  int
-	NoOp      int
-	Stalled   int
+	Total       int
+	Succeeded   int
+	Failed      int
+	Declined    int
+	NoOp        int
+	Stalled     int
+	RateLimited int
+	Infra       int
+	Skipped     int
+}
+
+// NonFailure returns the total of all non-failure terminal outcomes (everything
+// that is neither succeeded nor a genuine failure). TASK-358.
+func (c LifetimeTaskCounts) NonFailure() int {
+	return c.NoOp + c.Stalled + c.Declined + c.RateLimited + c.Infra + c.Skipped
 }
 
 // GetLifetimeTaskCounts returns cumulative task counts across all executions.
@@ -1762,12 +1802,16 @@ func (s *Store) GetLifetimeTaskCounts() (*LifetimeTaskCounts, error) {
 			COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN status = 'declined' THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN status = 'no_op' THEN 1 ELSE 0 END), 0),
-			COALESCE(SUM(CASE WHEN status = 'stalled' THEN 1 ELSE 0 END), 0)
+			COALESCE(SUM(CASE WHEN status = 'stalled' THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN status = 'rate_limited' THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN status = 'infra' THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN status = 'skipped' THEN 1 ELSE 0 END), 0)
 		FROM executions
 	`)
 
 	var tc LifetimeTaskCounts
-	if err := row.Scan(&tc.Total, &tc.Succeeded, &tc.Failed, &tc.Declined, &tc.NoOp, &tc.Stalled); err != nil {
+	if err := row.Scan(&tc.Total, &tc.Succeeded, &tc.Failed, &tc.Declined, &tc.NoOp, &tc.Stalled,
+		&tc.RateLimited, &tc.Infra, &tc.Skipped); err != nil {
 		return nil, fmt.Errorf("failed to get lifetime task counts: %w", err)
 	}
 	return &tc, nil

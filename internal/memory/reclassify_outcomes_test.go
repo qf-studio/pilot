@@ -19,15 +19,32 @@ func TestReclassifyLegacyOutcomes(t *testing.T) {
 	}
 	defer func() { _ = store.Close() }()
 
-	// All inserted as the legacy collapsed status='failed'.
+	// All inserted as the legacy collapsed status='failed', one row per real-world
+	// error signature observed in production (TASK-358 categorization).
 	seed := []Execution{
+		// no-op
 		{ID: "e1", TaskID: "GH-1", ProjectPath: "/p", Status: "failed", Error: "no new commit produced — post-push SHA matches base branch"},
 		{ID: "e2", TaskID: "GH-2", ProjectPath: "/p", Status: "failed", Error: "no_changes: Claude completed but made no code changes after retry"},
 		{ID: "e3", TaskID: "GH-3", ProjectPath: "/p", Status: "failed", Error: "no_changes: branch has no commits relative to base (PR guard)"},
+		{ID: "e3b", TaskID: "GH-3b", ProjectPath: "/p", Status: "failed", Error: "Claude completed but made no code changes after retry"}, // legacy, no prefix
+		// stalled
 		{ID: "e4", TaskID: "GH-4", ProjectPath: "/p", Status: "failed", Error: "session stalled: no agent event for >10m0s"},
 		{ID: "e5", TaskID: "GH-5", ProjectPath: "/p", Status: "failed", Error: "per-task budget limit exceeded: tokens"},
-		{ID: "e6", TaskID: "GH-6", ProjectPath: "/p", Status: "failed", Error: "go build: undefined: Foo"}, // genuine failure
-		{ID: "e7", TaskID: "GH-7", ProjectPath: "/p", Status: "completed"},                                 // untouched
+		// rate-limited
+		{ID: "e8", TaskID: "GH-8", ProjectPath: "/p", Status: "failed", Error: "You've hit your limit · resets 3pm (Europe/Podgorica)"},
+		// skipped
+		{ID: "e9", TaskID: "GH-9", ProjectPath: "/p", Status: "failed", Error: "stale queued task recovered (no worker picked up)"},
+		{ID: "e10", TaskID: "GH-10", ProjectPath: "/p", Status: "failed", Error: "failed to start Claude Code: context canceled"},
+		// infra
+		{ID: "e11", TaskID: "GH-11", ProjectPath: "/p", Status: "failed", Error: "oom_killed: Process killed by SIGKILL (exit code 137)"},
+		{ID: "e12", TaskID: "GH-12", ProjectPath: "/p", Status: "failed", Error: "push failed: failed to push: exit status 1"},
+		{ID: "e13", TaskID: "GH-13", ProjectPath: "/p", Status: "failed", Error: "PR creation failed: failed to create PR: exit status 1"},
+		// genuine failures (stay failed)
+		{ID: "e6", TaskID: "GH-6", ProjectPath: "/p", Status: "failed", Error: "go build: undefined: Foo"},
+		{ID: "e14", TaskID: "GH-14", ProjectPath: "/p", Status: "failed", Error: "PR creation refused: title is not a conventional commit"},
+		{ID: "e15", TaskID: "GH-15", ProjectPath: "/p", Status: "failed", Error: "unknown: exit status 1"},
+		// untouched
+		{ID: "e7", TaskID: "GH-7", ProjectPath: "/p", Status: "completed"},
 	}
 	for i := range seed {
 		if err := store.SaveExecution(&seed[i]); err != nil {
@@ -40,12 +57,12 @@ func TestReclassifyLegacyOutcomes(t *testing.T) {
 	}
 
 	wantStatus := map[string]string{
-		"e1": "no_op",
-		"e2": "no_op",
-		"e3": "no_op",
-		"e4": "stalled",
-		"e5": "stalled",
-		"e6": "failed",    // genuine failure stays failed
+		"e1": "no_op", "e2": "no_op", "e3": "no_op", "e3b": "no_op",
+		"e4": "stalled", "e5": "stalled",
+		"e8": "rate_limited",
+		"e9": "skipped", "e10": "skipped",
+		"e11": "infra", "e12": "infra", "e13": "infra",
+		"e6": "failed", "e14": "failed", "e15": "failed", // genuine failures stay failed
 		"e7": "completed", // untouched
 	}
 	for id, want := range wantStatus {
@@ -62,21 +79,20 @@ func TestReclassifyLegacyOutcomes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetLifetimeTaskCounts: %v", err)
 	}
-	if counts.Failed != 1 {
-		t.Errorf("Failed = %d, want 1 (only the genuine build failure)", counts.Failed)
+	assertCount := func(name string, got, want int) {
+		if got != want {
+			t.Errorf("%s = %d, want %d", name, got, want)
+		}
 	}
-	if counts.NoOp != 3 {
-		t.Errorf("NoOp = %d, want 3", counts.NoOp)
-	}
-	if counts.Stalled != 2 {
-		t.Errorf("Stalled = %d, want 2", counts.Stalled)
-	}
-	if counts.Succeeded != 1 {
-		t.Errorf("Succeeded = %d, want 1", counts.Succeeded)
-	}
-	if counts.Total != len(seed) {
-		t.Errorf("Total = %d, want %d", counts.Total, len(seed))
-	}
+	assertCount("Failed", counts.Failed, 3) // build error, title-refused, unknown exit
+	assertCount("NoOp", counts.NoOp, 4)
+	assertCount("Stalled", counts.Stalled, 2)
+	assertCount("RateLimited", counts.RateLimited, 1)
+	assertCount("Skipped", counts.Skipped, 2)
+	assertCount("Infra", counts.Infra, 3)
+	assertCount("Succeeded", counts.Succeeded, 1)
+	assertCount("Total", counts.Total, len(seed))
+	assertCount("NonFailure", counts.NonFailure(), 12)
 }
 
 // TestReclassifyLegacyOutcomesIdempotent verifies re-running the backfill makes
