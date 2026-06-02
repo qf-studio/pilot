@@ -1,10 +1,16 @@
 # TASK-358: Dashboard "failed" count inflated by misclassified outcomes
 
-**Status:** 🟢 shipped in two PRs · 2026-06-02
-- #3401 (`fix/dashboard-failed-classification`) — mechanism: classifier + 2 buckets (`no_op`, `stalled`) + backfill.
-- #2 (`fix/dashboard-outcome-buckets`) — widen to production reality: 3 more buckets (`infra`, `skipped`, `rate_limited`), real-DB-validated.
+**Status:** ✅ SHIPPED & live-verified · 2026-06-02 · released v2.166.10–11
+- **#3401** — mechanism: `TerminalStatus()` classifier + 2 buckets (`no_op`, `stalled`) + idempotent `reclassifyLegacyOutcomes()` backfill + widened heal-on-merge scope.
+- **#3404** — widen to production reality: 3 more buckets (`infra`, `skipped`, `rate_limited`), validated against the live DB.
+- **#3407** — TUI render fix: the wide breakdown suffix overflowed the mini-card and `truncateVisual` (counted ANSI bytes as visible width) blanked the failed line on v2.166.10. Now: append the suffix only when it fits the card; `truncateVisual` made ANSI-aware.
+- **Live-verified:** daemon on v2.166.11 → QUEUE card shows `✗ 234 failed` correctly. DB backfilled in place 784→234 (backup `~/.pilot/data/pilot.db.bak-task358-20260602-125509`).
 
-**Refs:** [[TASK-320]] (executor false-negative no-op) · [[TASK-321]] (phantom blocked on already-merged) · [[TASK-355]] (board-sourced no-op false positive)
+**Refs:** [[TASK-320]] (executor false-negative no-op) · [[TASK-321]] (phantom blocked on already-merged) · [[TASK-355]] (board-sourced no-op false positive) · pitfall [[pitfall_dashboard_failed_count_conflation]] · learning [[learn_restart_vs_rebuild_stale_binary]]
+
+## Operational lesson (cost us 3 restarts)
+
+The daemon ran a **stale binary** built from an un-pulled root `main` (`7658f6b0`, pre-fix) — so "restart" kept showing 784. **A restart only picks up new code if the binary was rebuilt AND the running process was started after the rebuild.** Verify with `pilot version` + the process start time vs the binary mtime, not just "I restarted." Released v2.166.10 then v2.166.11 (render fix) via `make release V=…` (tag-only; goreleaser is sole publisher). See [[learn_restart_vs_rebuild_stale_binary]].
 
 ## Symptom
 

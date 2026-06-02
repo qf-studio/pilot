@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "updated": "2026-06-01",
+  "updated": "2026-06-02",
   "nodes": {
     "concepts": {
       "pilot-architecture": {
@@ -169,6 +169,18 @@
         "blocked_by": [
           "TASK-284"
         ]
+      },
+      "TASK-358": {
+        "label": "Dashboard 'failed' count classification (outcome buckets + ANSI-safe render)",
+        "status": "shipped",
+        "file": ".agent/tasks/archive/TASK-358-dashboard-failed-count-classification.md",
+        "priority": "P1",
+        "concepts": [
+          "dashboard",
+          "executor",
+          "memory"
+        ],
+        "released": "v2.166.10-11"
       }
     },
     "memories": {
@@ -433,6 +445,29 @@
         "created": "2026-06-01",
         "incident": "2026-06-01: studio-sdk #16 epic spawned child #17 which committed ~7 files over 26 min; child closed unmerged, branch never pushed, parent recorded completed+foreign-SHA no-op. 26 min of work lost.",
         "file": ".agent/knowledge/memories/pitfalls/pitfall_epic_decompose_discards_child_work.md"
+      },
+      "mem-024": {
+        "type": "pitfall",
+        "summary": "Dashboard QUEUE 'failed' count inflated (784 vs 234 real): dispatcher collapsed every non-success outcome (declined/no-op/stalled/budget/infra/rate-limit/skipped) into status='failed'. Fix: TerminalStatus() classifier + distinct statuses + idempotent reclassifyLegacyOutcomes() backfill + widened heal-on-merge. Plus a TUI truncateVisual ANSI bug that blanked the styled failed line when the breakdown suffix overflowed the mini-card (fixed v2.166.11).",
+        "concepts": [
+          "dashboard",
+          "executor",
+          "memory"
+        ],
+        "confidence": 0.95,
+        "created": "2026-06-02",
+        "file": ".agent/knowledge/memories/pitfalls/pitfall_dashboard_failed_count_conflation.md"
+      },
+      "mem-025": {
+        "type": "learning",
+        "summary": "'Restart != rebuild': a daemon restart picks up new code only if the binary was rebuilt from updated source AND the process started after that build. Stale ~/.local/bin/pilot (built from un-pulled root main, pre-fix) showed old data through 3 restarts. Verify via pilot version + ps start-time vs binary mtime + query the store directly; a startup-gated backfill can be applied as SQL directly (with backup) if the daemon is stale.",
+        "concepts": [
+          "executor",
+          "memory"
+        ],
+        "confidence": 0.9,
+        "created": "2026-06-02",
+        "file": ".agent/knowledge/memories/learnings/learn_restart_vs_rebuild_stale_binary.md"
       }
     }
   },
@@ -556,6 +591,31 @@
       "from": "mem-023",
       "to": "worktree",
       "type": "describes"
+    },
+    {
+      "from": "mem-024",
+      "to": "dashboard",
+      "type": "about"
+    },
+    {
+      "from": "mem-024",
+      "to": "executor",
+      "type": "about"
+    },
+    {
+      "from": "mem-025",
+      "to": "mem-024",
+      "type": "relates_to"
+    },
+    {
+      "from": "TASK-358",
+      "to": "mem-024",
+      "type": "produced"
+    },
+    {
+      "from": "TASK-358",
+      "to": "mem-025",
+      "type": "produced"
     }
   ]
 }
