@@ -118,7 +118,7 @@ Disable via config: `executor.navigator.auto_init: false`
 
 ## Current State
 
-**Current Version:** v2.166.7 | full status in `.agent/system/FEATURE-MATRIX.md`
+**Current Version:** v2.166.8 | full status in `.agent/system/FEATURE-MATRIX.md`
 
 **Recent (v2.166.6, June 1 2026):** TASK-322 self-audit remediation **Waves 0–3 complete** + release-pipeline hardening.
 - **TASK-322 audit (3 crit · 14 high · 17 med all shipped, ~v2.162→v2.166):** criticals (retry-path→worktree, `*PRState` cross-goroutine race, scope/size merge-gate), security cluster (jira/asana/gitlab webhook fail-closed + raw-body HMAC ordering, Slack sig tests, `PRAGMA foreign_keys=ON`), and 17 mediums. Only **Wave 4 (13 lows)** remains — gated on a ~2-week re-audit. Roadmap + findings ledger: `.agent/tasks/TASK-322-remediation-roadmap.md`.
