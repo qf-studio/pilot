@@ -118,7 +118,7 @@ Disable via config: `executor.navigator.auto_init: false`
 
 ## Current State
 
-**Current Version:** v2.166.8 | full status in `.agent/system/FEATURE-MATRIX.md`
+**Current Version:** v2.166.9 | full status in `.agent/system/FEATURE-MATRIX.md`
 
 **Recent (v2.166.8, June 2 2026):** TASK-356 daemon-loop fixes surfaced by the SDK board-loop run.
 - **#1 epic-decompose work-loss (v2.166.7, PR #3383):** epic auto-decomposition silently discarded a child's commits and recorded a false `completed`+foreign-SHA no-op (lost a 26-min port). `ExecuteSubIssues` now fails loud when a child commits but produces no PR (issue left **OPEN** for recovery); epic finalization harvests `CommitSHA` only **after** the no-commits guard. Pitfall `pitfall_epic_decompose_discards_child_work` (graph `mem-023`); `no-decompose` label remains the escape hatch.
