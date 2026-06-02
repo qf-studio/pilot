@@ -1829,10 +1829,27 @@ func truncateVisual(s string, targetWidth int) string {
 		return strings.Repeat(".", targetWidth)
 	}
 
-	// We need to truncate to targetWidth-3 and add "..."
+	// We need to truncate to targetWidth-3 and add "...".
+	// ANSI escape sequences (e.g. lipgloss color codes) are copied through with
+	// zero visible width — counting their bytes as visible (the old behavior) made
+	// styled strings break mid-escape and render blank. A CSI sequence starts at
+	// ESC (0x1b) and ends at a byte in 0x40–0x7e.
 	result := ""
 	width := 0
+	inEsc := false
 	for _, r := range s {
+		if inEsc {
+			result += string(r)
+			if r >= 0x40 && r <= 0x7e {
+				inEsc = false
+			}
+			continue
+		}
+		if r == 0x1b {
+			inEsc = true
+			result += string(r)
+			continue
+		}
 		runeWidth := lipgloss.Width(string(r))
 		if width+runeWidth > targetWidth-3 {
 			break
@@ -2079,11 +2096,18 @@ func (m Model) renderTaskCard(cw int) string {
 	value := fmt.Sprintf("%d", len(m.tasks))
 	detail1 := statusCompletedStyle.Render(fmt.Sprintf("✓ %d succeeded", m.metricsCard.Succeeded))
 	// TASK-358: "failed" counts genuine failures only. Non-failure terminal
-	// outcomes (no-op / stalled / declined) are shown as a muted suffix so the
-	// numbers reconcile and a no-op is no longer miscounted as a failure.
+	// outcomes (no-op / infra / …) are shown as a muted suffix so the numbers
+	// reconcile and a no-op is no longer miscounted as a failure. Only append the
+	// suffix when the whole line fits the card — otherwise show just the headline.
+	// The breakdown is wider than a mini-card on narrow terminals, and truncating
+	// a styled multi-segment string blanks the line (the empty "failed" row seen
+	// on v2.166.10).
 	detail2 := statusFailedStyle.Render(fmt.Sprintf("✗ %d failed", m.metricsCard.Failed))
 	if suffix := nonFailureSuffix(m.metricsCard); suffix != "" {
-		detail2 += statusPendingStyle.Render(suffix)
+		withSuffix := detail2 + statusPendingStyle.Render(suffix)
+		if lipgloss.Width(withSuffix) <= ciw {
+			detail2 = withSuffix
+		}
 	}
 
 	// Convert int history to float64
