@@ -54,6 +54,60 @@ func IsPermanentFailure(errStr string) bool {
 	return false
 }
 
+// noOpErrorSignatures are deterministic error-message fragments the runner writes
+// when an execution produced no code change for a *non-failure* reason — the work
+// was already present on the base branch (TASK-321 phantom no-op), or the agent
+// completed but made no edits. These are not code failures and must not inflate
+// the dashboard's "failed" count. Used as a fallback when Outcome was not set
+// explicitly (e.g. older rows, or terminal paths that pre-date Outcome). TASK-358.
+var noOpErrorSignatures = []string{
+	"no new commit produced",      // ghost-SHA guard: HEAD/post-push SHA matches base
+	"no_changes",                  // agent completed but made no edits
+	"no commits relative to base", // PR guard: empty branch
+}
+
+// stalledErrorSignatures mark an execution that ran out of budget or stalled —
+// an incomplete run, not a code failure.
+var stalledErrorSignatures = []string{
+	"session stalled",
+	"budget limit exceeded",
+}
+
+// TerminalStatus maps a finished ExecutionResult to the status persisted in the
+// executions table. It exists so the dashboard's "failed" count reflects genuine
+// failures only: declined / no-op / stalled outcomes get their own status instead
+// of collapsing into "failed", which historically inflated the QUEUE card. TASK-358.
+//
+// Precedence: Success → Declined flag → explicit Outcome tag → error-signature
+// fallback → "failed". A genuine failure (compile/test error, crash) has none of
+// the non-failure signals and correctly falls through to "failed".
+func TerminalStatus(result *ExecutionResult) string {
+	if result == nil {
+		return "failed"
+	}
+	if result.Success {
+		return "completed"
+	}
+	if result.Declined {
+		return "declined"
+	}
+	switch result.Outcome {
+	case "declined":
+		return "declined"
+	case "no_op", "no_commits":
+		return "no_op"
+	case "stalled", "budget_exceeded":
+		return "stalled"
+	}
+	if containsAny(result.Error, noOpErrorSignatures) {
+		return "no_op"
+	}
+	if containsAny(result.Error, stalledErrorSignatures) {
+		return "stalled"
+	}
+	return "failed"
+}
+
 // StreamEvent represents a Claude Code stream-json event
 type StreamEvent struct {
 	Type          string          `json:"type"`
@@ -295,6 +349,11 @@ type ExecutionResult struct {
 	Declined bool
 	// DeclinedReason is the human-readable reason Claude provided for the decline.
 	DeclinedReason string
+	// Outcome is a fine-grained terminal classification ("declined", "no_op",
+	// "no_commits", "stalled", "budget_exceeded") used by the dispatcher to pick
+	// the persisted execution status instead of collapsing every !Success result
+	// into "failed". Empty means "classify from Success/Declined/Error". TASK-358.
+	Outcome string
 	// PeakRSSMB is the peak subprocess RSS in MiB collected by the RSS sampler. GH-3028.
 	// Zero on non-Linux/darwin platforms or when the sampler had no data.
 	PeakRSSMB int
@@ -1853,9 +1912,9 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 
 	// TASK-308: Stall detection — track last event time and spawn a watchdog.
 	var (
-		lastEventAt   atomic.Int64
+		lastEventAt       atomic.Int64
 		stallDetectedFlag atomic.Bool
-		stallDone     = make(chan struct{})
+		stallDone         = make(chan struct{})
 	)
 	lastEventAt.Store(time.Now().UnixNano())
 	stallTimeout := r.effectiveStallTimeout()
@@ -1886,7 +1945,7 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 		Model:           selectedModel,
 		Effort:          selectedEffort,
 		MaxTurns:        workflowMaxTurns, // TASK-304: per-repo .pilot/workflow.yaml override
-		FromPR:          task.FromPR, // GH-1267: session resumption from PR context
+		FromPR:          task.FromPR,      // GH-1267: session resumption from PR context
 		WatchdogTimeout: watchdogTimeout,
 		AllowedTools:    allowedTools,
 		MCPConfigPath:   mcpConfigPath,
@@ -1959,6 +2018,7 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 
 		// GH-539: Check if this was a per-task budget limit breach
 		if state.budgetExceeded {
+			result.Outcome = "budget_exceeded" // TASK-358: not a code failure
 			result.Error = fmt.Sprintf("per-task budget limit exceeded: %s", state.budgetReason)
 			result.TokensInput = state.tokensInput
 			result.TokensOutput = state.tokensOutput
@@ -2006,6 +2066,7 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 
 		// TASK-308: Check if this was a stall (no event activity for stall_timeout).
 		if state.stallDetected {
+			result.Outcome = "stalled" // TASK-358: incomplete run, not a code failure
 			result.Error = fmt.Sprintf("session stalled: no agent event for >%v", stallTimeout)
 			result.TokensInput = state.tokensInput
 			result.TokensOutput = state.tokensOutput
@@ -2033,9 +2094,9 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 				Project:   task.ProjectPath,
 				Error:     result.Error,
 				Metadata: map[string]string{
-					"reason":       "stalled",
+					"reason":        "stalled",
 					"stall_timeout": stallTimeout.String(),
-					"duration_ms":  fmt.Sprintf("%d", duration.Milliseconds()),
+					"duration_ms":   fmt.Sprintf("%d", duration.Milliseconds()),
 				},
 				Timestamp: time.Now(),
 			})
@@ -2617,6 +2678,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 					if declinedReason, ok := parseDeclinedReason(refusal); ok {
 						result.Declined = true
 						result.DeclinedReason = declinedReason
+						result.Outcome = "declined" // TASK-358
 						if backendResult != nil {
 							backendResult.ErrorType = string(ErrorTypeDeclined)
 						}
@@ -2640,6 +2702,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 					// GH-2328: classify this as ErrorTypeNoChanges and carry the
 					// final assistant message so the failure comment surfaces the
 					// refusal reason instead of a generic "no changes" string.
+					result.Outcome = "no_op" // TASK-358: no edits made, not a code failure
 					if refusal != "" {
 						result.Error = fmt.Sprintf("no_changes: Claude completed but made no code changes after retry — %s", refusal)
 					} else {
