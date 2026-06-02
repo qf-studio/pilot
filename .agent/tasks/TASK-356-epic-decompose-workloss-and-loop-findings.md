@@ -1,6 +1,7 @@
 # TASK-356: Pilot-core findings from the SDK M2 board-loop run (2026-06-01)
 
-**Status:** Finding #1 ✅ **SHIPPED — PR #3383, released v2.166.7** (2026-06-01); #2/#3 open.
+**Status:** #1 ✅ **SHIPPED — PR #3383, released v2.166.7**. #2 🟡 **in review — PR #3391** (board write-back half).
+#2-A (degrade approval gate) = deliberate no-code; #3 = config-only (GitHub Project auto-add). See per-finding notes.
 **Priority:** P1 (finding #1) + P2/ops (#2, #3)
 **Related:** [[TASK-319]] (board loop), [[TASK-354]] (orphaned cards / non-PR transitions), [[TASK-355]] (no-op false-positive class), [[TASK-325]] (scope/size merge gate)
 **Source:** interactive loop session — drove `qf-studio/studio-sdk` #11 epic to done (M2.1 #15, M2.2 #19+#21, M2.3 #23+#25 all merged).
@@ -67,6 +68,17 @@ card stays In Review even though the issue is closed `pilot-done` → needs a **
 **Fix directions:** wire approval (enable + approver) OR make the stage approval gate degrade gracefully when
 approval is disabled; and make the on-merge board write-back fire for externally-merged PRs.
 
+**Status:**
+- **Board write-back half → 🟡 PR #3391** (`fix/task-356-board-writeback-external-merge`): `ScanRecentlyMergedPRs`
+  now resolves the issue node ID (`GetIssueNodeID`) and calls `boardSync.UpdateProjectItemStatus(...,doneStatus)`
+  for each externally-merged Pilot PR, alongside `recordMergeSuccess`/`selfHealForPR` (before the release skip
+  gates). Idempotent; nil-guarded. Test `TestController_ScanRecentlyMergedPRs_BoardWriteBack`.
+  *Known limitation:* scanner only runs when on_merge release is enabled → board sync still coupled to release
+  (follow-up: decouple).
+- **Approval-gate half (#2-A) → deliberate NO-CODE:** auto-merging around a deliberately-set `require_approval:true`
+  is a policy decision, not a mechanical fix. Resolution = wire approval OR fix the config; the health check already
+  flags `approval-misconfig` (`health.go`). Left as-is by design.
+
 ---
 
 ## Finding #3 — Autopilot adds PR cards with NO Status to the board (P2)
@@ -77,6 +89,12 @@ all needed manual removal. Recurs on every PR.
 
 **Fix directions:** don't add PRs to the board (track issues only), OR set the PR card's Status to mirror the
 issue, OR disable the project's PR auto-add workflow.
+
+**Status — CONFIG-ONLY (not a repo change):** code audit found **no `addProjectV2ItemById` / project-add call
+anywhere in the repo** — Pilot only *updates* issue cards (`UpdateProjectItemStatus`), it never adds PRs. The
+no-status PR cards come from the **GitHub Project's built-in auto-add workflow**, outside Pilot's control. Fix =
+disable "auto-add to project" in the project's workflow settings (one click). Building PR-card management into
+Pilot (fetch PR card item ID, set/clear status on merge) is possible but unwarranted vs. the settings toggle.
 
 ---
 
