@@ -6208,6 +6208,70 @@ func TestController_ScanRecentlyMergedPRs_BoardWriteBack(t *testing.T) {
 	}
 }
 
+// TestController_ScanRecentlyMergedPRs_BoardWriteBack_NoRelease verifies TASK-356 #2
+// (decouple): board write-back fires even when on_merge release is DISABLED, and the
+// release-triggering tail is skipped (PR not added to activePRs). A board-sourced,
+// non-releasing setup must still move a manually-merged PR's card to Done.
+func TestController_ScanRecentlyMergedPRs_BoardWriteBack_NoRelease(t *testing.T) {
+	recentMergedAt := time.Now().Add(-3 * time.Minute).UTC().Format(time.RFC3339)
+
+	pilotPR := github.PullRequest{
+		Number:         321,
+		Head:           github.PRRef{Ref: "pilot/GH-654", SHA: "headsha321"},
+		Base:           github.PRRef{Ref: "main"},
+		HTMLURL:        "https://github.com/owner/repo/pull/321",
+		Title:          "feat: merged manually, release off",
+		Merged:         true,
+		MergedAt:       recentMergedAt,
+		MergeCommitSHA: "merge-sha-321",
+	}
+
+	const issueNodeID = "I_kwDOissue654"
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/repos/owner/repo/pulls"):
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode([]*github.PullRequest{&pilotPR})
+		case r.URL.Path == "/repos/owner/repo/issues/654":
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]string{"node_id": issueNodeID})
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.Release = &ReleaseConfig{Enabled: false} // release OFF
+	cfg.MergedPRScanWindow = 30 * time.Minute
+
+	mock := &mockBoardSyncer{}
+	c := NewController(cfg, ghClient, nil, "owner", "repo",
+		withBoardSyncerForTest(mock, "Done", "Failed", "In Review", "In Dev"))
+	c.SetStateStore(newTestStateStore(t))
+
+	if err := c.ScanRecentlyMergedPRs(context.Background()); err != nil {
+		t.Fatalf("ScanRecentlyMergedPRs() error = %v", err)
+	}
+
+	if len(mock.calls) != 1 {
+		t.Fatalf("board sync calls = %d, want 1 (card should move to Done even with release off)", len(mock.calls))
+	}
+	if mock.calls[0].issueNodeID != issueNodeID || mock.calls[0].statusName != "Done" {
+		t.Errorf("board sync call = %+v, want {%q, Done}", mock.calls[0], issueNodeID)
+	}
+
+	// Release tail must be skipped: PR not registered for release triggering.
+	c.mu.RLock()
+	_, tracked := c.activePRs[321]
+	c.mu.RUnlock()
+	if tracked {
+		t.Error("PR 321 was added to activePRs; release tail must be skipped when release is disabled")
+	}
+}
+
 // TestController_ScanRecentlyMergedPRs_RecordsMetricsDespiteExistingRelease
 // reproduces the bug where Pilot's own self-release pipeline always tags every
 // merge within ~1min, so by the time the ~5-15min scanner tick runs the

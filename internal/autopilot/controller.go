@@ -2471,9 +2471,16 @@ func (c *Controller) reconcileOrphanPRs(ctx context.Context) {
 // autopilot (e.g. via `gh pr merge` or the GitHub UI).
 // Called on startup and periodically from the Run loop.
 func (c *Controller) ScanRecentlyMergedPRs(ctx context.Context) error {
-	// Skip if auto-release is not enabled
-	if !c.shouldTriggerRelease() {
-		c.log.Debug("skipping merged PR scan: auto-release not enabled")
+	// TASK-356 #2 (decouple): the scan reconciles externally-merged Pilot PRs —
+	// release triggering, merge metrics, execution-row self-heal, AND board
+	// write-back. Run it whenever EITHER auto-release OR board sync is enabled, so
+	// a board-sourced (non-releasing) setup still gets its cards moved to Done on a
+	// manual merge. The release-triggering tail below is separately gated on
+	// releaseEnabled so nothing tries to tag a release when release is off.
+	releaseEnabled := c.shouldTriggerRelease()
+	boardEnabled := c.boardSync != nil && c.doneStatus != ""
+	if !releaseEnabled && !boardEnabled {
+		c.log.Debug("skipping merged PR scan: neither auto-release nor board sync enabled")
 		return nil
 	}
 
@@ -2557,11 +2564,10 @@ func (c *Controller) ScanRecentlyMergedPRs(ctx context.Context) error {
 		// handleMerging, so their board card stays stuck "In Review". Move it to Done
 		// here, mirroring the on-merge write-back in handleMerging. Like
 		// recordMergeSuccess/selfHealForPR above, this fires on every discovered merged
-		// Pilot PR (before the release-tag/activePRs skip gates). The scanner only runs
-		// when on_merge release is enabled (see shouldTriggerRelease at the top), so
-		// fully decoupling board sync from release is a follow-up. UpdateProjectItemStatus
-		// is idempotent and silently skips issues that aren't on the board.
-		if c.boardSync != nil && c.doneStatus != "" && issueNum > 0 {
+		// Pilot PR (before the release-tag/activePRs skip gates) and is independent of
+		// whether release is enabled. UpdateProjectItemStatus is idempotent and silently
+		// skips issues that aren't on the board.
+		if boardEnabled && issueNum > 0 {
 			if nodeID, nodeErr := c.ghClient.GetIssueNodeID(ctx, c.owner, c.repo, issueNum); nodeErr != nil {
 				c.log.Warn("board sync on external merge: failed to resolve issue node id",
 					"pr", pr.Number, "issue", issueNum, "error", nodeErr)
@@ -2569,6 +2575,12 @@ func (c *Controller) ScanRecentlyMergedPRs(ctx context.Context) error {
 				c.log.Warn("board sync on external merge failed",
 					"pr", pr.Number, "issue", issueNum, "error", err)
 			}
+		}
+
+		// Everything below is release-triggering machinery — skip it entirely when
+		// release is disabled (the scan may be running for board sync alone).
+		if !releaseEnabled {
+			continue
 		}
 
 		// Skip if already tracked in activePRs (avoid duplicate processing)
