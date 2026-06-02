@@ -1,8 +1,15 @@
 # TASK-356: Pilot-core findings from the SDK M2 board-loop run (2026-06-01)
 
-**Status:** #1 ✅ **SHIPPED — PR #3383, v2.166.7**. #2 ✅ **board write-back SHIPPED — PR #3391, v2.166.8**
-(2026-06-02). #2-A (degrade approval gate) = deliberate no-code; #3 = config-only (GitHub Project auto-add).
-**Open follow-ups:** decouple board sync from on_merge release; #1 auto-recover stranded child branch. See per-finding notes.
+**Status:** ✅ **DONE / CLOSED (2026-06-02).** All findings resolved (shipped or reasoned-closed):
+- **#1** epic work-loss → ✅ PR #3383, **v2.166.7** (loud-fail guard + no foreign-SHA completion).
+- **#2** board write-back → ✅ PR #3391, **v2.166.8**; decouple-from-release follow-up → ✅ PR #3395, **v2.166.9**.
+- **#2-A** degrade approval gate → ⛔ **no-code** (policy/config decision; health check already flags it).
+- **#3** no-status PR cards → 🔧 **config-only** (GitHub Project auto-add workflow — not our code; one-click toggle).
+- **#1 auto-recover stranded branch** → ⛔ **closed as mitigated**: the shipped #1 guard already converts silent
+  loss into a loud, recoverable failure (issue left open). Code audit shows the normal child PR path already
+  fails-loud (`Success=false`) on every push/PR error; the only true-loss path is push-failure, where the
+  worktree handle is gone by the time `ExecuteSubIssues` sees the result. Forcing commit-adoption into the
+  execution core for a failure mode that can't be reproduced would add risk, not safety → **not pursued**.
 **Priority:** P1 (finding #1) + P2/ops (#2, #3)
 **Related:** [[TASK-319]] (board loop), [[TASK-354]] (orphaned cards / non-PR transitions), [[TASK-355]] (no-op false-positive class), [[TASK-325]] (scope/size merge gate)
 **Source:** interactive loop session — drove `qf-studio/studio-sdk` #11 epic to done (M2.1 #15, M2.2 #19+#21, M2.3 #23+#25 all merged).
