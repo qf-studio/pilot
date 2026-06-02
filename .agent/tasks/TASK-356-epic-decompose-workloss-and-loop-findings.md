@@ -1,7 +1,8 @@
 # TASK-356: Pilot-core findings from the SDK M2 board-loop run (2026-06-01)
 
-**Status:** #1 ✅ **SHIPPED — PR #3383, released v2.166.7**. #2 🟡 **in review — PR #3391** (board write-back half).
-#2-A (degrade approval gate) = deliberate no-code; #3 = config-only (GitHub Project auto-add). See per-finding notes.
+**Status:** #1 ✅ **SHIPPED — PR #3383, v2.166.7**. #2 ✅ **board write-back SHIPPED — PR #3391, v2.166.8**
+(2026-06-02). #2-A (degrade approval gate) = deliberate no-code; #3 = config-only (GitHub Project auto-add).
+**Open follow-ups:** decouple board sync from on_merge release; #1 auto-recover stranded child branch. See per-finding notes.
 **Priority:** P1 (finding #1) + P2/ops (#2, #3)
 **Related:** [[TASK-319]] (board loop), [[TASK-354]] (orphaned cards / non-PR transitions), [[TASK-355]] (no-op false-positive class), [[TASK-325]] (scope/size merge gate)
 **Source:** interactive loop session — drove `qf-studio/studio-sdk` #11 epic to done (M2.1 #15, M2.2 #19+#21, M2.3 #23+#25 all merged).
@@ -69,7 +70,7 @@ card stays In Review even though the issue is closed `pilot-done` → needs a **
 approval is disabled; and make the on-merge board write-back fire for externally-merged PRs.
 
 **Status:**
-- **Board write-back half → 🟡 PR #3391** (`fix/task-356-board-writeback-external-merge`): `ScanRecentlyMergedPRs`
+- **Board write-back half → ✅ PR #3391, released v2.166.8** (`fix/task-356-board-writeback-external-merge`): `ScanRecentlyMergedPRs`
   now resolves the issue node ID (`GetIssueNodeID`) and calls `boardSync.UpdateProjectItemStatus(...,doneStatus)`
   for each externally-merged Pilot PR, alongside `recordMergeSuccess`/`selfHealForPR` (before the release skip
   gates). Idempotent; nil-guarded. Test `TestController_ScanRecentlyMergedPRs_BoardWriteBack`.
