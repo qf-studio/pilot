@@ -39,10 +39,11 @@ type MetricsCardData struct {
 	TotalTokens, InputTokens, OutputTokens  int
 	TotalCostUSD, CostPerTask               float64
 	TotalTasks, Succeeded, Failed, Declined int
-	NoOp, Stalled                           int       // TASK-358: non-failure terminal outcomes
-	TokenHistory                            []int64   // 7 days
-	CostHistory                             []float64 // 7 days
-	TaskHistory                             []int     // 7 days
+	// TASK-358: non-failure terminal outcomes, split out of "failed".
+	NoOp, Stalled, RateLimited, Infra, Skipped int
+	TokenHistory                               []int64   // 7 days
+	CostHistory                                []float64 // 7 days
+	TaskHistory                                []int     // 7 days
 }
 
 // Styles (muted terminal aesthetic)
@@ -606,6 +607,9 @@ func (m *Model) hydrateFromStore() {
 		m.metricsCard.Declined = taskCounts.Declined
 		m.metricsCard.NoOp = taskCounts.NoOp
 		m.metricsCard.Stalled = taskCounts.Stalled
+		m.metricsCard.RateLimited = taskCounts.RateLimited
+		m.metricsCard.Infra = taskCounts.Infra
+		m.metricsCard.Skipped = taskCounts.Skipped
 	}
 
 	// Populate history panel from recent executions (most recent 5)
@@ -885,6 +889,9 @@ func storeRefreshCmd(store *memory.Store) tea.Cmd {
 			msg.metricsCard.Declined = taskCounts.Declined
 			msg.metricsCard.NoOp = taskCounts.NoOp
 			msg.metricsCard.Stalled = taskCounts.Stalled
+			msg.metricsCard.RateLimited = taskCounts.RateLimited
+			msg.metricsCard.Infra = taskCounts.Infra
+			msg.metricsCard.Skipped = taskCounts.Skipped
 		}
 
 		if msg.metricsCard.TotalTasks > 0 {
@@ -2036,19 +2043,28 @@ func (m Model) renderCostCard(cw int) string {
 	return buildMiniCard("cost", value, detail1, detail2, spark, cw)
 }
 
-// nonFailureSuffix builds the muted " (N no-op · M stalled · K declined)" suffix
+// nonFailureSuffix builds the muted " (N no-op · M infra · …)" breakdown suffix
 // for the QUEUE card, omitting any zero buckets. Returns "" when all are zero.
-// TASK-358: these are non-failure terminal outcomes split out of "failed".
+// On narrow cards the line truncates after the "✗ N failed" headline, which is
+// always preserved. TASK-358: these are non-failure terminal outcomes split out
+// of "failed".
 func nonFailureSuffix(c MetricsCardData) string {
+	buckets := []struct {
+		n     int
+		label string
+	}{
+		{c.NoOp, "no-op"},
+		{c.Infra, "infra"},
+		{c.Skipped, "skipped"},
+		{c.RateLimited, "rate-limited"},
+		{c.Stalled, "stalled"},
+		{c.Declined, "declined"},
+	}
 	var parts []string
-	if c.NoOp > 0 {
-		parts = append(parts, fmt.Sprintf("%d no-op", c.NoOp))
-	}
-	if c.Stalled > 0 {
-		parts = append(parts, fmt.Sprintf("%d stalled", c.Stalled))
-	}
-	if c.Declined > 0 {
-		parts = append(parts, fmt.Sprintf("%d declined", c.Declined))
+	for _, b := range buckets {
+		if b.n > 0 {
+			parts = append(parts, fmt.Sprintf("%d %s", b.n, b.label))
+		}
 	}
 	if len(parts) == 0 {
 		return ""
@@ -2648,6 +2664,12 @@ func statusIconStyle(status string) (string, lipgloss.Style) {
 		return "=", statusPendingStyle // TASK-358: no-change run, not a failure
 	case "declined":
 		return "-", statusPendingStyle // TASK-358: agent declined as unactionable
+	case "rate_limited":
+		return "%", statusPendingStyle // TASK-358: provider quota hit, transient
+	case "infra":
+		return "!", statusPendingStyle // TASK-358: plumbing/resource failure, not the work
+	case "skipped":
+		return ".", statusPendingStyle // TASK-358: never ran / cancelled
 	case "running":
 		return "~", statusRunningStyle
 	default:
