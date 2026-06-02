@@ -347,6 +347,46 @@ func (s *Store) migrate() error {
 		}
 	}
 
+	// TASK-358: correct historically-misclassified outcomes (declined/no-op/stalled
+	// that were collapsed into status='failed' before the dispatcher classified them).
+	if err := s.reclassifyLegacyOutcomes(); err != nil {
+		return fmt.Errorf("reclassify legacy outcomes: %w", err)
+	}
+
+	return nil
+}
+
+// reclassifyLegacyOutcomes corrects executions that the dispatcher previously
+// recorded as status='failed' when they were actually non-failure terminal
+// outcomes — a no-op (the work was already on base, or the agent made no edits)
+// or a stalled/budget-capped run. Before TASK-358 every !Success result collapsed
+// into "failed", inflating the dashboard's QUEUE "failed" count.
+//
+// Classification uses the deterministic error signatures the runner writes, so it
+// only touches rows it can positively identify; genuine failures (compile/test
+// errors, crashes) carry none of these signatures and are left as "failed".
+// Idempotent: after the first pass no 'failed' row matches, so re-running on every
+// startup is a cheap, indexed no-op. Declined rows cannot be recovered here
+// because the decline reason was never persisted to executions.error.
+func (s *Store) reclassifyLegacyOutcomes() error {
+	stmts := []string{
+		`UPDATE executions SET status = 'no_op'
+		 WHERE status = 'failed' AND (
+			error LIKE '%no new commit produced%' OR
+			error LIKE '%no_changes%' OR
+			error LIKE '%no commits relative to base%'
+		 )`,
+		`UPDATE executions SET status = 'stalled'
+		 WHERE status = 'failed' AND (
+			error LIKE '%session stalled%' OR
+			error LIKE '%budget limit exceeded%'
+		 )`,
+	}
+	for _, stmt := range stmts {
+		if _, err := s.db.Exec(stmt); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -1053,7 +1093,7 @@ func (s *Store) UpdateExecutionStatus(id, status string, errorMsg ...string) err
 	}
 
 	// Set completed_at for terminal states
-	if status == "completed" || status == "failed" || status == "cancelled" || status == "declined" || status == "stalled" {
+	if status == "completed" || status == "failed" || status == "cancelled" || status == "declined" || status == "stalled" || status == "no_op" {
 		return s.withRetry("UpdateExecutionStatus", func() error {
 			_, err := s.db.Exec(`
 				UPDATE executions
@@ -1079,22 +1119,27 @@ func (s *Store) UpdateExecutionStatus(id, status string, errorMsg ...string) err
 // executions as completed when the PR is merged externally.
 // The projectPath scope prevents cross-project clobbering when the same task ID
 // appears in multiple repos.
+//
+// TASK-358: the source scope is the non-success set ('failed', 'no_op', 'stalled')
+// rather than 'failed' alone, so an execution the dispatcher now classifies as a
+// no-op/stalled outcome still heals to the merged status when its PR lands.
 func (s *Store) UpdateExecutionStatusByTaskID(taskID, projectPath, status string) error {
 	return s.withRetry("UpdateExecutionStatusByTaskID", func() error {
 		_, err := s.db.Exec(`
 			UPDATE executions
 			SET status = ?, completed_at = CURRENT_TIMESTAMP
-			WHERE task_id = ? AND project_path = ? AND status = 'failed'
+			WHERE task_id = ? AND project_path = ? AND status IN ('failed', 'no_op', 'stalled')
 		`, status, taskID, projectPath)
 		return err
 	})
 }
 
-// SelfHealExecutionAfterMerge promotes any "failed" rows for the given task ID
-// (scoped to projectPath) to "completed" and stamps the PR URL so the dashboard
-// reflects the merged outcome. Used when autopilot observes a merge for an
-// issue whose previous execution row was recorded as failed (e.g. user-pushed
-// commits, sub-issue shipped via parent epic). GH-2402.
+// SelfHealExecutionAfterMerge promotes any non-success row ("failed", "no_op",
+// "stalled" — TASK-358) for the given task ID (scoped to projectPath) to
+// "completed" and stamps the PR URL so the dashboard reflects the merged outcome.
+// Used when autopilot observes a merge for an issue whose previous execution row
+// was recorded as a non-success (e.g. user-pushed commits, sub-issue shipped via
+// parent epic, or a phantom no-op whose work was already on base). GH-2402.
 //
 // projectPath MUST be the same value the executor stored in executions.project_path
 // — an absolute filesystem path (e.g. /Users/me/proj), NOT an owner/repo slug. The
@@ -1110,7 +1155,7 @@ func (s *Store) SelfHealExecutionAfterMerge(taskID, projectPath, prURL string) e
 			SET status = 'completed',
 				completed_at = CURRENT_TIMESTAMP,
 				pr_url = CASE WHEN ? <> '' THEN ? ELSE pr_url END
-			WHERE task_id = ? AND status = 'failed' AND (? = '' OR project_path = ?)
+			WHERE task_id = ? AND status IN ('failed', 'no_op', 'stalled') AND (? = '' OR project_path = ?)
 		`, prURL, prURL, taskID, projectPath, projectPath)
 		return err
 	})
@@ -1694,12 +1739,17 @@ func (s *Store) GetLifetimeTokens() (*LifetimeTokens, error) {
 	return &lt, nil
 }
 
-// LifetimeTaskCounts holds cumulative succeeded/failed/declined counts from all executions.
+// LifetimeTaskCounts holds cumulative outcome counts from all executions.
+// TASK-358: Failed counts genuine failures only; non-failure terminal outcomes
+// (no-op, stalled, declined) are broken out separately so the dashboard does not
+// inflate the failed count by lumping them in.
 type LifetimeTaskCounts struct {
 	Total     int
 	Succeeded int
 	Failed    int
 	Declined  int
+	NoOp      int
+	Stalled   int
 }
 
 // GetLifetimeTaskCounts returns cumulative task counts across all executions.
@@ -1710,12 +1760,14 @@ func (s *Store) GetLifetimeTaskCounts() (*LifetimeTaskCounts, error) {
 			COUNT(*),
 			COALESCE(SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0),
-			COALESCE(SUM(CASE WHEN status = 'declined' THEN 1 ELSE 0 END), 0)
+			COALESCE(SUM(CASE WHEN status = 'declined' THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN status = 'no_op' THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN status = 'stalled' THEN 1 ELSE 0 END), 0)
 		FROM executions
 	`)
 
 	var tc LifetimeTaskCounts
-	if err := row.Scan(&tc.Total, &tc.Succeeded, &tc.Failed, &tc.Declined); err != nil {
+	if err := row.Scan(&tc.Total, &tc.Succeeded, &tc.Failed, &tc.Declined, &tc.NoOp, &tc.Stalled); err != nil {
 		return nil, fmt.Errorf("failed to get lifetime task counts: %w", err)
 	}
 	return &tc, nil

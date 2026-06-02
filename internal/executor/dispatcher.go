@@ -682,16 +682,23 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 			// Emit progress callback for task failed
 			w.runner.EmitProgress(exec.TaskID, "Failed", 100, fmt.Sprintf("Execution error: %s", truncateForLog(execErr.Error(), 60)))
 		} else if !result.Success {
-			w.log.Warn("Task completed with failure",
+			// TASK-358: classify the terminal outcome instead of collapsing every
+			// non-success into "failed". declined / no-op / stalled get their own
+			// status so the dashboard's "failed" count reflects genuine failures.
+			status := TerminalStatus(result)
+			w.log.Warn("Task ended without success",
 				slog.String("task_id", exec.TaskID),
+				slog.String("status", status),
 				slog.String("error", result.Error),
 				slog.Duration("duration", duration),
 			)
-			if err := w.store.UpdateExecutionStatus(exec.ID, "failed", result.Error); err != nil {
-				w.log.Error("Failed to update status to failed", slog.Any("error", err))
+			if err := w.store.UpdateExecutionStatus(exec.ID, status, result.Error); err != nil {
+				w.log.Error("Failed to update execution status",
+					slog.String("status", status), slog.Any("error", err))
 			}
-			// Emit progress callback for task failed
-			w.runner.EmitProgress(exec.TaskID, "Failed", 100, fmt.Sprintf("Task failed: %s", truncateForLog(result.Error, 60)))
+			// Emit progress callback with a phase that matches the classified outcome.
+			w.runner.EmitProgress(exec.TaskID, terminalPhaseLabel(status), 100,
+				fmt.Sprintf("%s: %s", status, truncateForLog(result.Error, 60)))
 		} else {
 			w.log.Info("Task completed successfully",
 				slog.String("task_id", exec.TaskID),
@@ -766,4 +773,19 @@ func truncateForLog(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen-3] + "..."
+}
+
+// terminalPhaseLabel maps a classified execution status to the human-readable
+// progress phase shown in the dashboard. TASK-358.
+func terminalPhaseLabel(status string) string {
+	switch status {
+	case "no_op":
+		return "No-op"
+	case "stalled":
+		return "Stalled"
+	case "declined":
+		return "Declined"
+	default:
+		return "Failed"
+	}
 }

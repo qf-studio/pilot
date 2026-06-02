@@ -39,6 +39,7 @@ type MetricsCardData struct {
 	TotalTokens, InputTokens, OutputTokens  int
 	TotalCostUSD, CostPerTask               float64
 	TotalTasks, Succeeded, Failed, Declined int
+	NoOp, Stalled                           int       // TASK-358: non-failure terminal outcomes
 	TokenHistory                            []int64   // 7 days
 	CostHistory                             []float64 // 7 days
 	TaskHistory                             []int     // 7 days
@@ -603,6 +604,8 @@ func (m *Model) hydrateFromStore() {
 		m.metricsCard.Succeeded = taskCounts.Succeeded
 		m.metricsCard.Failed = taskCounts.Failed
 		m.metricsCard.Declined = taskCounts.Declined
+		m.metricsCard.NoOp = taskCounts.NoOp
+		m.metricsCard.Stalled = taskCounts.Stalled
 	}
 
 	// Populate history panel from recent executions (most recent 5)
@@ -880,6 +883,8 @@ func storeRefreshCmd(store *memory.Store) tea.Cmd {
 			msg.metricsCard.Succeeded = taskCounts.Succeeded
 			msg.metricsCard.Failed = taskCounts.Failed
 			msg.metricsCard.Declined = taskCounts.Declined
+			msg.metricsCard.NoOp = taskCounts.NoOp
+			msg.metricsCard.Stalled = taskCounts.Stalled
 		}
 
 		if msg.metricsCard.TotalTasks > 0 {
@@ -2031,17 +2036,39 @@ func (m Model) renderCostCard(cw int) string {
 	return buildMiniCard("cost", value, detail1, detail2, spark, cw)
 }
 
+// nonFailureSuffix builds the muted " (N no-op · M stalled · K declined)" suffix
+// for the QUEUE card, omitting any zero buckets. Returns "" when all are zero.
+// TASK-358: these are non-failure terminal outcomes split out of "failed".
+func nonFailureSuffix(c MetricsCardData) string {
+	var parts []string
+	if c.NoOp > 0 {
+		parts = append(parts, fmt.Sprintf("%d no-op", c.NoOp))
+	}
+	if c.Stalled > 0 {
+		parts = append(parts, fmt.Sprintf("%d stalled", c.Stalled))
+	}
+	if c.Declined > 0 {
+		parts = append(parts, fmt.Sprintf("%d declined", c.Declined))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return " (" + strings.Join(parts, " · ") + ")"
+}
+
 // renderTaskCard renders the QUEUE mini-card with the given card width.
 // Value shows current queue depth (pending + running), not lifetime totals.
 func (m Model) renderTaskCard(cw int) string {
 	ciw := cw - 6
 	value := fmt.Sprintf("%d", len(m.tasks))
 	detail1 := statusCompletedStyle.Render(fmt.Sprintf("✓ %d succeeded", m.metricsCard.Succeeded))
-	declinedSuffix := ""
-	if m.metricsCard.Declined > 0 {
-		declinedSuffix = fmt.Sprintf(" (%d declined)", m.metricsCard.Declined)
+	// TASK-358: "failed" counts genuine failures only. Non-failure terminal
+	// outcomes (no-op / stalled / declined) are shown as a muted suffix so the
+	// numbers reconcile and a no-op is no longer miscounted as a failure.
+	detail2 := statusFailedStyle.Render(fmt.Sprintf("✗ %d failed", m.metricsCard.Failed))
+	if suffix := nonFailureSuffix(m.metricsCard); suffix != "" {
+		detail2 += statusPendingStyle.Render(suffix)
 	}
-	detail2 := statusFailedStyle.Render(fmt.Sprintf("✗ %d failed%s", m.metricsCard.Failed, declinedSuffix))
 
 	// Convert int history to float64
 	floats := make([]float64, len(m.metricsCard.TaskHistory))
@@ -2617,6 +2644,10 @@ func statusIconStyle(status string) (string, lipgloss.Style) {
 		return "x", statusFailedStyle
 	case "stalled":
 		return "~", statusFailedStyle
+	case "no_op":
+		return "=", statusPendingStyle // TASK-358: no-change run, not a failure
+	case "declined":
+		return "-", statusPendingStyle // TASK-358: agent declined as unactionable
 	case "running":
 		return "~", statusRunningStyle
 	default:
