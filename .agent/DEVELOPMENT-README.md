@@ -162,7 +162,7 @@ gh pr list --state open
 | P1 | Public launch prep | Landing page, onboarding, pricing, billing |
 | P1 | Web dashboard polish | React UI functional but needs design pass |
 | P1 | Fix `shouldTriggerRelease()` | Doesn't check `ResolvedEnv().Release` — only top-level config |
-| P1 | **GH Projects board as work source** — Studio SDK roadmap | Read path `FindIssuesFromProject` [TASK-317](tasks/TASK-317-github-board-as-source.md) (queued) → full board-driven lifecycle loop [TASK-319](tasks/TASK-319-gh-projects-full-loop.md) (planned, depends on 317) → SDK M1 Plane adapter extraction [TASK-318](tasks/TASK-318-sdk-m1-plane-extraction.md) (drafted). |
+| P1 | **GH Projects board as work source** — Studio SDK roadmap | ✅ Read path (TASK-317) + full board-driven lifecycle loop (TASK-319, LIVE-verified) + daemon-loop hardening (TASK-356, v2.166.7–9) all **shipped & archived**. Remaining: SDK connector extraction — 3/10 done (plane/gitlab/azuredevops); next github/linear ([TASK-318](tasks/TASK-318-sdk-m1-plane-extraction.md)). Open board-loop tails: [TASK-354](tasks/TASK-354-board-orphan-in-progress.md) (orphan In-Progress cards) · [TASK-355](tasks/TASK-355-board-sourced-noop-false-positive.md) (no-op false-positive). |
 | P1 | `safeGo()` panic-recovery sweep | Last open Wave 2 refactor — 73 bare `go func()` in `internal/` lack recover(). [TASK-292](tasks/TASK-292-safego-panic-recovery-sweep.md) |
 | P1 | TASK-295 follow-up: wire `linear.webhook_public_key` YAML → `gateway.Config.LinearWebhookPublicKey` | Without this glue in `cmd/pilot/main.go`, the v2.149.4 Ed25519 verification is gated behind a config field that has no decode path. Small (≤30 LOC); blocks the security improvement from being active. |
 | P2 | E2E test suite | No integration tests — reliability untested |
@@ -176,6 +176,7 @@ gh pr list --state open
 
 > **Shipped (was Wave 2/3, now archived):** TASK-293 poller counters · TASK-294 `WithRetry` in `doRequest` · TASK-296 `IsTaskShipped` · TASK-297/gh-3099 docs drift · TASK-298 consolidate `*_processed` (incl. TASK-288 Steps 1+2) · TASK-314/316 release scanner. Plans in `.agent/tasks/archive/`.
 > **Shipped (June 1):** release pipeline de-raced — `make release` is now tag-only, goreleaser is sole publisher (#3377), closing the P2 `make release` vs goreleaser collision · TASK-309 releasing-stage B3/B4 defense-in-depth (#3375, closes #3188) · TASK-353 flaky-CI fix (#3374).
+> **Shipped (June 2):** TASK-356 daemon-loop fixes — epic-decompose work-loss (#3383), board write-back for externally-merged PRs (#3391) + decoupled from on_merge release (#3395) → **v2.166.7–9**. TASK-322 Wave 3 mediums (TASK-343/350/351) + Waves 0–1 (TASK-323–334) archived. Only **Wave 4 lows** remain (TASK-357, gated ~June 15).
 
 ---
 
