@@ -1,6 +1,6 @@
 # TASK-321: Phantom `pilot-blocked` on already-merged work — durable fix
 
-**Status:** planned (root-caused; ready to decompose into PR-sized `pilot` issues)
+**Status:** ⚠️ **SUPERSEDED by [TASK-359](TASK-359-daemon-finalization-hardening.md) (2026-06-03)** — the four PRs proposed below are absorbed into TASK-359 layers (see mapping at the end). Keep this doc as the **root-cause record** for the dispatch-idempotency / no-op-guard symptom; do not file the PRs from here. **Active plan: TASK-359.**
 **Priority:** P1 — autopilot marks *completed* work as failed; pollutes the board/queue and erodes trust in the signal
 **Repo:** `qf-studio/pilot`
 **Origin:** 2026-05-29 — 7 queue entries (#3238/3240/3243/3244/3252/3253/3257/3260) all failed with the same error after their PRs had already merged. Investigated via Navigator research (2 agents). Sibling of TASK-320 (which shipped Layers A+B1) and TASK-288 (poller false-positive).
@@ -82,3 +82,18 @@ Handing this to Pilot is **recursively risky**: PR-1 edits the very no-op guard 
 - [[TASK-320-executor-false-negative-noop-fix]] — shipped Layers A+B1; B2 still deferred.
 - TASK-288 (poller false-positive, archived), TASK-298 (`adapter_processed` consolidation).
 - Research agents (2026-05-29): dispatch-idempotency + no-op-classification traces with file:line evidence.
+
+---
+
+## ⇒ Mapping into TASK-359 (2026-06-03)
+
+TASK-359's research surfaced the same symptom from a different angle (studio-sdk extraction Shapes A/B/C, 9/10 connectors) and identified the **structural** cause (epic vs direct finalize-path divergence in `runner.go`) that TASK-321 missed. The 4 PRs proposed above land inside TASK-359:
+
+| TASK-321 PR | Absorbed into |
+|---|---|
+| PR-1 — already-merged ⇒ success in the guard | **TASK-359 Layer 1** — pre-create `FindMergedPRByBranch` check inside the unified `finalizeExecution()` (`runner.go`) |
+| PR-2 — guard fresh candidates + sequential mode | **TASK-359 Layer 3** — `hasMergedWork` DB fallback (`poller.go:1596`); plus the sequential-mode guard remains a clean follow-up that can ship as part of the same Pilot issue |
+| PR-3 — don't unmark on permanent failure | **TASK-359 Layer 2** — `InvalidateCompletion` on `pilot-retry-ready` re-dispatch (`poller.go:1748–1862`) addresses the same durable-marker concern from the other end |
+| PR-4 — close merge→done window | **TASK-359 Layer 3** — ungate `ScanRecentlyMergedPRs` (`controller.go:2480–2485`) makes the window observable; close-on-merge atomicity is downstream of that |
+
+**Net change vs TASK-321:** the fix now goes through one unified `finalizeExecution()` instead of two separate guard-site patches (PR-1 at `runner.go:2365` + `:3286`). Better blast-radius profile + closes Shapes A & B that TASK-321 didn't see.

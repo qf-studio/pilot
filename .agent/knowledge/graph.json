@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "updated": "2026-06-02",
+  "updated": "2026-06-03",
   "nodes": {
     "concepts": {
       "pilot-architecture": {
@@ -73,7 +73,7 @@
       },
       "git-operations": {
         "label": "Git Operations",
-        "description": "Git command wrappers in executor — clone, fetch, push, sync, worktree management. Source of data-loss risk if destructive ops (reset --hard, push --force) are used without divergence checks.",
+        "description": "Git command wrappers in executor \u2014 clone, fetch, push, sync, worktree management. Source of data-loss risk if destructive ops (reset --hard, push --force) are used without divergence checks.",
         "related": [
           "executor"
         ],
@@ -181,6 +181,13 @@
           "memory"
         ],
         "released": "v2.166.10-11"
+      },
+      "TASK-359": {
+        "title": "Daemon finalization hardening \u2014 Shapes A/B/C closure",
+        "status": "planned",
+        "priority": "P1",
+        "file": ".agent/tasks/TASK-359-daemon-finalization-hardening.md",
+        "created": "2026-06-03"
       }
     },
     "memories": {
@@ -239,7 +246,7 @@
       },
       "mem-006": {
         "type": "pattern",
-        "summary": "Navigator prompt should use 'Run until done' to trigger Loop Mode. Navigator then handles WORKFLOW CHECK, phase transitions (RESEARCH→PLAN→IMPL→VERIFY→COMPLETE), and EXIT_SIGNAL for completion.",
+        "summary": "Navigator prompt should use 'Run until done' to trigger Loop Mode. Navigator then handles WORKFLOW CHECK, phase transitions (RESEARCH\u2192PLAN\u2192IMPL\u2192VERIFY\u2192COMPLETE), and EXIT_SIGNAL for completion.",
         "concepts": [
           "executor",
           "navigator-integration"
@@ -291,7 +298,7 @@
       },
       "mem-011": {
         "type": "pitfall",
-        "summary": "CRITICAL: syncMainBranch() uses git reset --hard origin/main after every task. When GitHub push propagation lags behind the immediately-following fetch+reset, local commits are silently destroyed (only reflog-recoverable, 90d window). Race is in remote propagation, not push failure — reordering does NOT fix it. Fix: replace with merge --ff-only. Two call sites: runner.go:3258 (config-gated) and epic.go:1498 (NOT gated).",
+        "summary": "CRITICAL: syncMainBranch() uses git reset --hard origin/main after every task. When GitHub push propagation lags behind the immediately-following fetch+reset, local commits are silently destroyed (only reflog-recoverable, 90d window). Race is in remote propagation, not push failure \u2014 reordering does NOT fix it. Fix: replace with merge --ff-only. Two call sites: runner.go:3258 (config-gated) and epic.go:1498 (NOT gated).",
         "concepts": [
           "executor",
           "git-operations"
@@ -378,7 +385,7 @@
       },
       "mem-018": {
         "type": "learning",
-        "summary": "AUP/cyber-safeguard kills security-audit model output mid-run, but Workflow tool persists findings to /tmp/claude-501/.../<wfId>.output — recover via jq, never re-summarize via the model. File: learning_audit_safeguard_bypass.md (TASK-322).",
+        "summary": "AUP/cyber-safeguard kills security-audit model output mid-run, but Workflow tool persists findings to /tmp/claude-501/.../<wfId>.output \u2014 recover via jq, never re-summarize via the model. File: learning_audit_safeguard_bypass.md (TASK-322).",
         "concepts": [
           "workflow-tool",
           "security-audit",
@@ -400,7 +407,7 @@
       },
       "mem-020": {
         "type": "learning",
-        "summary": "Releasing Pilot: autopilot auto-cuts releases only on pilot/GH-* merges, so a manual fix/* PR sits on main unreleased. Manual release = push a v* tag (release.yml GoReleaser → Homebrew); do NOT also `make release`. Daemon runs ~/.local/bin/pilot (not make-install ~/go/bin, not brew) — update via `pilot upgrade`. Version string lags the commit; check `go version -m <bin> | grep vcs.revision`. File: learning_pilot_release_and_binary_path.md.",
+        "summary": "Releasing Pilot: autopilot auto-cuts releases only on pilot/GH-* merges, so a manual fix/* PR sits on main unreleased. Manual release = push a v* tag (release.yml GoReleaser \u2192 Homebrew); do NOT also `make release`. Daemon runs ~/.local/bin/pilot (not make-install ~/go/bin, not brew) \u2014 update via `pilot upgrade`. Version string lags the commit; check `go version -m <bin> | grep vcs.revision`. File: learning_pilot_release_and_binary_path.md.",
         "concepts": [
           "release",
           "autopilot",
@@ -411,7 +418,7 @@
       },
       "mem-021": {
         "type": "learning",
-        "summary": "Making a client method paginate (per_page+page until short page) silently breaks fixed-list httptest mocks that return the full list per request — they loop to maxPages (N×pages items) and starve callers, hanging tests to the 600s package timeout. C6/#3369 did this to the stress mocks. Fix: mocks return [] for page>=2, and ALWAYS bound test busy-waits with a deadline. A 600s 'FAIL <pkg>' with no '--- FAIL: Test' = a hang, not an assertion. File: learning_paginated_client_breaks_fixedlist_mocks.md (TASK-353).",
+        "summary": "Making a client method paginate (per_page+page until short page) silently breaks fixed-list httptest mocks that return the full list per request \u2014 they loop to maxPages (N\u00d7pages items) and starve callers, hanging tests to the 600s package timeout. C6/#3369 did this to the stress mocks. Fix: mocks return [] for page>=2, and ALWAYS bound test busy-waits with a deadline. A 600s 'FAIL <pkg>' with no '--- FAIL: Test' = a hang, not an assertion. File: learning_paginated_client_breaks_fixedlist_mocks.md (TASK-353).",
         "concepts": [
           "github-adapter",
           "testing",
@@ -422,7 +429,7 @@
       },
       "mem-022": {
         "type": "decision",
-        "summary": "Release pipeline is tag-only — goreleaser (release.yml) is the SOLE publisher. As of #3377 (after v2.166.6) `make release` only pushes the version tag; it no longer does a local `gh release create`, which had 422-collided with goreleaser and made it skip the Homebrew formula publish (bit v2.149.4 and v2.166.6). Never publish assets before goreleaser. File: decision_release_pipeline_tag_only.md.",
+        "summary": "Release pipeline is tag-only \u2014 goreleaser (release.yml) is the SOLE publisher. As of #3377 (after v2.166.6) `make release` only pushes the version tag; it no longer does a local `gh release create`, which had 422-collided with goreleaser and made it skip the Homebrew formula publish (bit v2.149.4 and v2.166.6). Never publish assets before goreleaser. File: decision_release_pipeline_tag_only.md.",
         "concepts": [
           "release",
           "homebrew",
@@ -468,6 +475,18 @@
         "confidence": 0.9,
         "created": "2026-06-02",
         "file": ".agent/knowledge/memories/learnings/learn_restart_vs_rebuild_stale_binary.md"
+      },
+      "mem-026": {
+        "type": "learning",
+        "summary": "The Pilot daemon's *finalization* path (push -> PR-create -> label) is the active reliability bottleneck \u2014 the *execution* path (Claude Code subprocess) is reliable. Studio-sdk extraction (PRs #28-#56, 2026-06-02/-03): 9/10 connectors shipped, but ~7/12 finalization runs needed manual recovery (Shape A stall-before-push), 2 hit a retry-race vs human recovery PRs (Shape B), 1 late-duplicate-PR (Shape C). The harness + review gates carried the outcome, not daemon finalization reliability. `no-decompose` label routes through the direct path (fatal error handling) instead of the epic path (warn-only) and was empirically reliable. Canonical fix: TASK-359 (3-layer plan: unified finalizeExecution MANUAL + 4 no-decompose Pilot issues for boundary fixes).",
+        "concepts": [
+          "executor",
+          "autopilot",
+          "github-adapter"
+        ],
+        "confidence": 0.95,
+        "created": "2026-06-03",
+        "file": ".agent/knowledge/memories/learnings/learn_pilot_finalization_bottleneck.md"
       }
     }
   },
@@ -616,6 +635,21 @@
       "from": "TASK-358",
       "to": "mem-025",
       "type": "produced"
+    },
+    {
+      "from": "mem-026",
+      "to": "TASK-359",
+      "type": "documents"
+    },
+    {
+      "from": "mem-026",
+      "to": "TASK-321",
+      "type": "supersedes-record"
+    },
+    {
+      "from": "TASK-359",
+      "to": "TASK-321",
+      "type": "supersedes"
     }
   ]
 }
