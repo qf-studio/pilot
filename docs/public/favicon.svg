@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- Derived from logo.svg: P lettermark of the PILOT wordmark, centered on 512×512 canvas -->
+  <g transform="translate(118.5 56) scale(5)">
+    <path fill-rule="evenodd" d="M47 16H55V32H47V48.5H15V80H0V0H47V16ZM15 16V32H39V16H15Z" fill="#6BADD3"/>
+  </g>
+</svg>
