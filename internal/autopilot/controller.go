@@ -2471,18 +2471,12 @@ func (c *Controller) reconcileOrphanPRs(ctx context.Context) {
 // autopilot (e.g. via `gh pr merge` or the GitHub UI).
 // Called on startup and periodically from the Run loop.
 func (c *Controller) ScanRecentlyMergedPRs(ctx context.Context) error {
-	// TASK-356 #2 (decouple): the scan reconciles externally-merged Pilot PRs —
-	// release triggering, merge metrics, execution-row self-heal, AND board
-	// write-back. Run it whenever EITHER auto-release OR board sync is enabled, so
-	// a board-sourced (non-releasing) setup still gets its cards moved to Done on a
-	// manual merge. The release-triggering tail below is separately gated on
-	// releaseEnabled so nothing tries to tag a release when release is off.
+	// Run the scan unconditionally — it covers self-heal + merge metrics even when
+	// neither auto-release nor board sync is enabled (e.g. a plain GH-issue-source
+	// deployment). Internal gates below handle release-trigger and board-writeback
+	// per-mode; both are idempotent so duplicate calls are safe.
 	releaseEnabled := c.shouldTriggerRelease()
 	boardEnabled := c.boardSync != nil && c.doneStatus != ""
-	if !releaseEnabled && !boardEnabled {
-		c.log.Debug("skipping merged PR scan: neither auto-release nor board sync enabled")
-		return nil
-	}
 
 	scanWindow := c.config.MergedPRScanWindow
 	if scanWindow == 0 {

@@ -6491,6 +6491,140 @@ func TestController_ScanRecentlyMergedPRs_TracksOrphanMerge(t *testing.T) {
 	}
 }
 
+// TestController_ScanRecentlyMergedPRs_FlagMatrix verifies GH-3419: the scan
+// runs unconditionally across all {release, board} flag combinations. Self-heal
+// fires in every case; release triggering and board write-back are gated
+// internally per-mode.
+func TestController_ScanRecentlyMergedPRs_FlagMatrix(t *testing.T) {
+	recentMergedAt := time.Now().Add(-5 * time.Minute).UTC().Format(time.RFC3339)
+	const (
+		prNum       = 77
+		issueNum    = 400
+		issueNodeID = "I_kwDOissue400"
+	)
+	pilotPR := github.PullRequest{
+		Number:         prNum,
+		Head:           github.PRRef{Ref: fmt.Sprintf("pilot/GH-%d", issueNum), SHA: "headsha77"},
+		Base:           github.PRRef{Ref: "main"},
+		HTMLURL:        fmt.Sprintf("https://github.com/owner/repo/pull/%d", prNum),
+		Title:          "feat: matrix test PR",
+		Merged:         true,
+		MergedAt:       recentMergedAt,
+		MergeCommitSHA: "merge-sha-77",
+	}
+
+	tests := []struct {
+		name           string
+		releaseEnabled bool
+		boardEnabled   bool
+		wantSelfHeal   bool
+		wantActivePR   bool // PR registered for release
+		wantBoardCalls int
+	}{
+		{
+			name:           "off,off: scan still runs self-heal, no release, no board",
+			releaseEnabled: false,
+			boardEnabled:   false,
+			wantSelfHeal:   true,
+			wantActivePR:   false,
+			wantBoardCalls: 0,
+		},
+		{
+			name:           "off,on: no release but board write-back fires",
+			releaseEnabled: false,
+			boardEnabled:   true,
+			wantSelfHeal:   true,
+			wantActivePR:   false,
+			wantBoardCalls: 1,
+		},
+		{
+			name:           "on,off: release triggered, no board",
+			releaseEnabled: true,
+			boardEnabled:   false,
+			wantSelfHeal:   true,
+			wantActivePR:   true,
+			wantBoardCalls: 0,
+		},
+		{
+			name:           "on,on: release triggered AND board write-back fires",
+			releaseEnabled: true,
+			boardEnabled:   true,
+			wantSelfHeal:   true,
+			wantActivePR:   true,
+			wantBoardCalls: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case strings.HasPrefix(r.URL.Path, "/repos/owner/repo/pulls"):
+					w.WriteHeader(http.StatusOK)
+					_ = json.NewEncoder(w).Encode([]*github.PullRequest{&pilotPR})
+				case r.URL.Path == fmt.Sprintf("/repos/owner/repo/issues/%d", issueNum):
+					w.WriteHeader(http.StatusOK)
+					_ = json.NewEncoder(w).Encode(map[string]string{"node_id": issueNodeID})
+				case strings.HasPrefix(r.URL.Path, "/repos/owner/repo/tags"):
+					// No tags for merge SHA — PR triggers release when enabled.
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write([]byte("[]"))
+				default:
+					w.WriteHeader(http.StatusOK)
+				}
+			}))
+			defer server.Close()
+
+			ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			cfg := DefaultConfig()
+			if tt.releaseEnabled {
+				cfg.Release = &ReleaseConfig{Enabled: true, Trigger: "on_merge", TagPrefix: "v"}
+			} else {
+				cfg.Release = &ReleaseConfig{Enabled: false}
+			}
+			cfg.MergedPRScanWindow = 30 * time.Minute
+
+			var opts []ControllerOption
+			var boardMock *mockBoardSyncer
+			if tt.boardEnabled {
+				boardMock = &mockBoardSyncer{}
+				opts = append(opts, withBoardSyncerForTest(boardMock, "Done", "Failed", "In Review", "In Dev"))
+			}
+
+			c := NewController(cfg, ghClient, nil, "owner", "repo", opts...)
+			c.SetStateStore(newTestStateStore(t))
+			evalMock := &mockEvalStore{}
+			c.SetEvalStore(evalMock)
+
+			if err := c.ScanRecentlyMergedPRs(context.Background()); err != nil {
+				t.Fatalf("ScanRecentlyMergedPRs() error = %v", err)
+			}
+
+			// Self-heal must fire in every flag combination.
+			if got, want := len(evalMock.selfHealed) > 0, tt.wantSelfHeal; got != want {
+				t.Errorf("selfHealed entries = %d (healed=%v), want %v", len(evalMock.selfHealed), got, want)
+			}
+
+			// Release-trigger: PR registered in activePRs only when release is enabled.
+			c.mu.RLock()
+			_, tracked := c.activePRs[prNum]
+			c.mu.RUnlock()
+			if tracked != tt.wantActivePR {
+				t.Errorf("activePRs[%d] tracked = %v, want %v", prNum, tracked, tt.wantActivePR)
+			}
+
+			// Board write-back: called only when board is enabled.
+			var boardCalls int
+			if boardMock != nil {
+				boardCalls = len(boardMock.calls)
+			}
+			if boardCalls != tt.wantBoardCalls {
+				t.Errorf("board sync calls = %d, want %d", boardCalls, tt.wantBoardCalls)
+			}
+		})
+	}
+}
+
 // TestController_RecordMergeSuccess_Idempotency verifies recordMergeSuccess
 // fires exactly once per PR number even when called multiple times from
 // different code paths (e.g. handleMerging + ScanRecentlyMergedPRs both
