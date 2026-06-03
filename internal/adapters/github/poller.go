@@ -51,6 +51,9 @@ type TaskChecker interface {
 // GH-2242: Prevents re-dispatch of completed tasks when pilot-done label is missing.
 type ExecutionChecker interface {
 	HasCompletedExecution(taskID, projectPath string) (bool, error)
+	// InvalidateCompletion deletes stale completed execution records so a
+	// retry-ready re-dispatch is not silently no-op'd (GH-3418).
+	InvalidateCompletion(taskID, projectPath string) error
 }
 
 // Verdict is the poller-side result of a pre-flight judgment.
@@ -1850,6 +1853,19 @@ func (p *Poller) shouldRetryRetryReadyIssue(ctx context.Context, issue *Issue) b
 	p.mu.Lock()
 	p.retryReadyCount[issue.Number]++
 	p.mu.Unlock()
+
+	// GH-3418: Delete any stale completed execution row so HasCompletedExecution
+	// doesn't cause the re-dispatch to silently no-op. Must happen before
+	// ClearProcessed so the issue can actually reach the dispatch gate.
+	if p.execChecker != nil {
+		taskID := fmt.Sprintf("GH-%d", issue.Number)
+		if err := p.execChecker.InvalidateCompletion(taskID, p.projectPath); err != nil {
+			p.logger.Warn("InvalidateCompletion failed on retry-ready re-dispatch — proceeding",
+				slog.String("task_id", taskID),
+				slog.Any("error", err),
+			)
+		}
+	}
 
 	// Clear from processed map so the issue can be re-picked
 	p.ClearProcessed(issue.Number)
