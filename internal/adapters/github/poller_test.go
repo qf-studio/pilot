@@ -2554,11 +2554,19 @@ func TestPoller_WithMaxRetryReadyRetries(t *testing.T) {
 
 // mockExecutionChecker implements ExecutionChecker for testing.
 type mockExecutionChecker struct {
-	completed map[string]bool // key: "taskID:projectPath"
+	completed   map[string]bool // key: "taskID:projectPath"
+	invalidated []string        // keys passed to InvalidateCompletion, in order
 }
 
 func (m *mockExecutionChecker) HasCompletedExecution(taskID, projectPath string) (bool, error) {
 	return m.completed[taskID+":"+projectPath], nil
+}
+
+func (m *mockExecutionChecker) InvalidateCompletion(taskID, projectPath string) error {
+	key := taskID + ":" + projectPath
+	m.invalidated = append(m.invalidated, key)
+	delete(m.completed, key)
+	return nil
 }
 
 func TestPoller_SkipsCompletedExecution(t *testing.T) {
@@ -2643,6 +2651,66 @@ func TestPoller_DispatchesWhenNoCompletedExecution(t *testing.T) {
 
 	if got := atomic.LoadInt32(&callCount); got != 1 {
 		t.Errorf("callback called %d times, want 1 (should dispatch when no completed execution)", got)
+	}
+}
+
+// GH-3418: pilot-retry-ready re-dispatch must invalidate any stale completed
+// execution row, otherwise HasCompletedExecution silently no-ops the re-dispatch.
+func TestPoller_RetryReady_InvalidatesCompletedExecution(t *testing.T) {
+	now := time.Now()
+	issues := []*Issue{
+		{Number: 42, State: "open", Title: "Retry-ready with completed row",
+			Labels: []Label{{Name: "pilot"}, {Name: LabelRetryReady}},
+			CreatedAt: now.Add(-1 * time.Hour)},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodDelete {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		if r.URL.Path == "/search/issues" {
+			_, _ = w.Write([]byte(`{"total_count": 0}`))
+			return
+		}
+		_ = json.NewEncoder(w).Encode(issues)
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+
+	// Seed: issue has a prior completed execution row.
+	execChecker := &mockExecutionChecker{
+		completed: map[string]bool{
+			"GH-42:/project": true,
+		},
+	}
+
+	var callCount int32
+	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second,
+		WithRetryGracePeriod(0),
+		WithExecutionChecker(execChecker, "/project"),
+		WithOnIssue(func(ctx context.Context, issue *Issue) error {
+			atomic.AddInt32(&callCount, 1)
+			return nil
+		}),
+	)
+
+	poller.checkForNewIssues(context.Background())
+	poller.WaitForActive()
+
+	// InvalidateCompletion must have been called for the re-dispatched issue.
+	if len(execChecker.invalidated) == 0 {
+		t.Fatal("InvalidateCompletion was not called — stale completed row would block re-dispatch")
+	}
+	if execChecker.invalidated[0] != "GH-42:/project" {
+		t.Errorf("InvalidateCompletion called with %q, want %q", execChecker.invalidated[0], "GH-42:/project")
+	}
+
+	// After invalidation the completed map is empty, so dispatch must proceed.
+	if got := atomic.LoadInt32(&callCount); got != 1 {
+		t.Errorf("OnIssue called %d times, want 1 (retry-ready should re-dispatch after invalidation)", got)
 	}
 }
 
