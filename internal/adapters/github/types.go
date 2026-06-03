@@ -242,6 +242,7 @@ type PullRequest struct {
 	CreatedAt      string `json:"created_at,omitempty"`
 	UpdatedAt      string `json:"updated_at,omitempty"`
 	MergedAt       string `json:"merged_at,omitempty"`
+	User           *User  `json:"user,omitempty"` // PR author (populated by search results and GetPullRequest)
 }
 
 // PullRequestInput is used for creating pull requests

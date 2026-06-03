@@ -5020,6 +5020,133 @@ func TestNotifyExternalClose_SkipsRetryReadyWhenDone(t *testing.T) {
 	}
 }
 
+// GH-3417: notifyExternalClose must not stamp pilot-retry-ready when a human
+// recovery PR is already open for the issue. Re-dispatching would overwrite
+// the human's branch via git checkout -B in the worktree.
+func TestNotifyExternalClose_SkipsRetryReadyForHumanRecoveryPR(t *testing.T) {
+	const botLogin = "pilot-bot"
+
+	tests := []struct {
+		name            string
+		openPRs         []github.PullRequest // PRs returned by SearchOpenPRsForIssue
+		wantRetryAdded  bool
+		wantSkipLogged  bool // expect the "human recovery PR" log path
+	}{
+		{
+			name:           "no open PRs — retry-ready applied",
+			openPRs:        nil,
+			wantRetryAdded: true,
+		},
+		{
+			name: "human PR open — retry-ready skipped",
+			openPRs: []github.PullRequest{
+				{
+					Number:  99,
+					State:   "open",
+					HTMLURL: "https://github.com/owner/repo/pull/99",
+					User:    &github.User{Login: "alice"},
+				},
+			},
+			wantRetryAdded: false,
+			wantSkipLogged: true,
+		},
+		{
+			name: "only bot PR open — retry-ready applied",
+			openPRs: []github.PullRequest{
+				{
+					Number:  100,
+					State:   "open",
+					HTMLURL: "https://github.com/owner/repo/pull/100",
+					User:    &github.User{Login: botLogin},
+				},
+			},
+			wantRetryAdded: true,
+		},
+		{
+			name: "mixed: bot PR and human PR — retry-ready skipped",
+			openPRs: []github.PullRequest{
+				{Number: 100, State: "open", HTMLURL: "https://github.com/owner/repo/pull/100", User: &github.User{Login: botLogin}},
+				{Number: 101, State: "open", HTMLURL: "https://github.com/owner/repo/pull/101", User: &github.User{Login: "bob"}},
+			},
+			wantRetryAdded: false,
+			wantSkipLogged: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var retryReadyAdded bool
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.URL.Path == "/user" && r.Method == http.MethodGet:
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write([]byte(`{"login":"` + botLogin + `","id":1}`))
+
+				case r.URL.Path == "/repos/owner/repo/issues/10" && r.Method == http.MethodGet:
+					issue := github.Issue{Number: 10, State: "open", Labels: []github.Label{}}
+					w.WriteHeader(http.StatusOK)
+					_ = json.NewEncoder(w).Encode(issue)
+
+				case strings.HasPrefix(r.URL.Path, "/search/issues") && r.Method == http.MethodGet:
+					// SearchOpenPRsForIssue — return the configured open PRs.
+					items := make([]map[string]interface{}, 0, len(tt.openPRs))
+					for _, pr := range tt.openPRs {
+						item := map[string]interface{}{
+							"id":       pr.Number,
+							"number":   pr.Number,
+							"title":    pr.Title,
+							"state":    pr.State,
+							"html_url": pr.HTMLURL,
+						}
+						if pr.User != nil {
+							item["user"] = map[string]interface{}{"login": pr.User.Login, "id": 0}
+						}
+						items = append(items, item)
+					}
+					resp := map[string]interface{}{
+						"total_count": len(items),
+						"items":       items,
+					}
+					w.WriteHeader(http.StatusOK)
+					_ = json.NewEncoder(w).Encode(resp)
+
+				case r.URL.Path == "/repos/owner/repo/issues/10/labels" && r.Method == http.MethodPost:
+					var body struct {
+						Labels []string `json:"labels"`
+					}
+					_ = json.NewDecoder(r.Body).Decode(&body)
+					for _, l := range body.Labels {
+						if l == github.LabelRetryReady {
+							retryReadyAdded = true
+						}
+					}
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write([]byte("[]"))
+
+				case strings.HasPrefix(r.URL.Path, "/repos/owner/repo/issues/10/labels/") && r.Method == http.MethodDelete:
+					w.WriteHeader(http.StatusOK)
+
+				default:
+					w.WriteHeader(http.StatusOK)
+				}
+			}))
+			defer server.Close()
+
+			ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			cfg := DefaultConfig()
+			c := NewController(cfg, ghClient, nil, "owner", "repo")
+
+			prState := &PRState{PRNumber: 42, IssueNumber: 10}
+			c.notifyExternalClose(context.Background(), prState)
+
+			if retryReadyAdded != tt.wantRetryAdded {
+				t.Errorf("pilot-retry-ready added = %v, want %v", retryReadyAdded, tt.wantRetryAdded)
+			}
+		})
+	}
+}
+
 // GH-2251: Test that ScanRecentlyMergedPRs discovers externally-merged PRs
 // and skips those already tracked.
 func TestController_ScanRecentlyMergedPRs(t *testing.T) {

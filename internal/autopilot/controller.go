@@ -210,6 +210,10 @@ type Controller struct {
 	// can immediately re-mark the issue as processed, closing the merge→done
 	// race window before label propagation catches up.
 	onIssueDone func(issueNumber int)
+
+	// cachedBotLogin holds the authenticated GitHub login for the Pilot token.
+	// Populated lazily by getBotLogin; protected by mu. GH-3417.
+	cachedBotLogin string
 }
 
 // NewController creates an autopilot controller with all required components.
@@ -2897,6 +2901,28 @@ func (c *Controller) notifyExternalMerge(ctx context.Context, prState *PRState) 
 	}
 }
 
+// getBotLogin returns the authenticated GitHub login of the Pilot token.
+// The value is resolved lazily on first call and then cached. Returns "" when the
+// login cannot be determined; callers must skip the human-recovery-PR guard in that case.
+func (c *Controller) getBotLogin(ctx context.Context) string {
+	c.mu.RLock()
+	login := c.cachedBotLogin
+	c.mu.RUnlock()
+	if login != "" {
+		return login
+	}
+
+	user, err := c.ghClient.GetAuthenticatedUser(ctx)
+	if err != nil {
+		c.log.Debug("could not fetch authenticated user login for bot-guard", "error", err)
+		return ""
+	}
+	c.mu.Lock()
+	c.cachedBotLogin = user.Login
+	c.mu.Unlock()
+	return user.Login
+}
+
 // notifyExternalClose sends notification when a PR is closed externally without merge.
 // GH-1015: Marks the issue as pilot-retry-ready so it can be re-picked by the poller.
 func (c *Controller) notifyExternalClose(ctx context.Context, prState *PRState) {
@@ -2917,6 +2943,27 @@ func (c *Controller) notifyExternalClose(ctx context.Context, prState *PRState) 
 			c.log.Info("skipping pilot-retry-ready: issue already pilot-done", "issue", prState.IssueNumber, "pr", prState.PRNumber)
 			c.maybeCloseParentIssue(ctx, prState)
 			return
+		}
+
+		// GH-3417: Skip pilot-retry-ready when a human recovery PR is already open
+		// for this issue. Re-dispatching via retry-ready would overwrite the human's
+		// branch (git checkout -B in worktree.go). Guard only fires when we can
+		// resolve the bot's own login; if the lookup fails, fall through to the
+		// existing retry-ready behaviour (safe default).
+		if botLogin := c.getBotLogin(ctx); botLogin != "" {
+			prs, searchErr := c.ghClient.SearchOpenPRsForIssue(ctx, c.owner, c.repo, prState.IssueNumber)
+			if searchErr == nil {
+				for _, pr := range prs {
+					if pr.User != nil && pr.User.Login != botLogin {
+						c.log.Info("skipping pilot-retry-ready: human recovery PR already open",
+							"issue", prState.IssueNumber,
+							"recovery_pr", pr.HTMLURL,
+							"author", pr.User.Login)
+						c.maybeCloseParentIssue(ctx, prState)
+						return
+					}
+				}
+			}
 		}
 
 		if err := c.ghClient.AddLabels(ctx, c.owner, c.repo, prState.IssueNumber, []string{github.LabelRetryReady}); err != nil {

@@ -940,6 +940,50 @@ func (c *Client) SearchPRsForIssue(ctx context.Context, owner, repo string, issu
 	return prs, nil
 }
 
+// SearchOpenPRsForIssue returns open PRs that reference the given issue number.
+// The returned PullRequest values include the User (author) field so callers can
+// distinguish Pilot-bot PRs from human recovery PRs.
+func (c *Client) SearchOpenPRsForIssue(ctx context.Context, owner, repo string, issueNumber int) ([]*PullRequest, error) {
+	q := fmt.Sprintf("repo:%s/%s is:pr is:open #%d", owner, repo, issueNumber)
+	path := fmt.Sprintf("/search/issues?q=%s&per_page=100", url.QueryEscape(q))
+
+	var result struct {
+		Items []struct {
+			ID      int64  `json:"id"`
+			Number  int    `json:"number"`
+			Title   string `json:"title"`
+			State   string `json:"state"`
+			HTMLURL string `json:"html_url"`
+			User    *User  `json:"user"`
+		} `json:"items"`
+	}
+	if err := c.doRequest(ctx, http.MethodGet, path, nil, &result); err != nil {
+		return nil, fmt.Errorf("search open PRs for issue #%d: %w", issueNumber, err)
+	}
+
+	prs := make([]*PullRequest, 0, len(result.Items))
+	for _, item := range result.Items {
+		prs = append(prs, &PullRequest{
+			ID:      item.ID,
+			Number:  item.Number,
+			Title:   item.Title,
+			State:   item.State,
+			HTMLURL: item.HTMLURL,
+			User:    item.User,
+		})
+	}
+	return prs, nil
+}
+
+// GetAuthenticatedUser returns the GitHub user associated with the current token.
+func (c *Client) GetAuthenticatedUser(ctx context.Context) (*User, error) {
+	var user User
+	if err := c.doRequest(ctx, http.MethodGet, "/user", nil, &user); err != nil {
+		return nil, fmt.Errorf("get authenticated user: %w", err)
+	}
+	return &user, nil
+}
+
 // SearchMergedPRsForIssue checks if any merged PRs exist that reference the given
 // issue number in their title (e.g. "GH-123" pattern). Uses the GitHub Search API.
 // Returns true if at least one merged PR is found.
