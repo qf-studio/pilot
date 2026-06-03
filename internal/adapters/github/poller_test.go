@@ -2780,6 +2780,70 @@ func TestPoller_HasMergedWork_NoMerges_NoFallbackBlock(t *testing.T) {
 	}
 }
 
+// GH-3420 / TASK-359 Layer 3b: Search API empty + branch REST empty + completed DB row → true.
+func TestPoller_HasMergedWork_DBFallback_CompletedRow(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/search/issues":
+			_, _ = w.Write([]byte(`{"total_count": 0}`))
+		case "/repos/owner/repo/pulls":
+			_, _ = w.Write([]byte(`[]`))
+		case "/repos/owner/repo/issues/42/labels":
+			if r.Method == http.MethodPost {
+				w.WriteHeader(http.StatusOK)
+			}
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	execChecker := &mockExecutionChecker{
+		completed: map[string]bool{
+			"GH-42:/project": true,
+		},
+	}
+	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second,
+		WithExecutionChecker(execChecker, "/project"),
+	)
+
+	issue := &Issue{Number: 42, Title: "Test issue"}
+	if !poller.hasMergedWork(context.Background(), issue) {
+		t.Error("hasMergedWork() should return true when DB has completed row (even with Search + branch empty)")
+	}
+}
+
+// GH-3420: Search empty + branch empty + no DB row → false (no regression).
+func TestPoller_HasMergedWork_DBFallback_NoRow(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/search/issues":
+			_, _ = w.Write([]byte(`{"total_count": 0}`))
+		case "/repos/owner/repo/pulls":
+			_, _ = w.Write([]byte(`[]`))
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	execChecker := &mockExecutionChecker{
+		completed: map[string]bool{}, // no rows
+	}
+	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second,
+		WithExecutionChecker(execChecker, "/project"),
+	)
+
+	issue := &Issue{Number: 42, Title: "Test issue"}
+	if poller.hasMergedWork(context.Background(), issue) {
+		t.Error("hasMergedWork() should return false when Search, branch, and DB all return empty")
+	}
+}
+
 // GH-2341: Fresh label fetch before dispatch blocks re-dispatch when the
 // ListIssues snapshot is stale and pilot-done was added in between.
 func TestPoller_CheckForNewIssues_StaleSnapshot_RefreshesLabels(t *testing.T) {
