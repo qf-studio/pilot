@@ -8,7 +8,19 @@ services:
       - "traefik.http.routers.pilot-docs.rule=Host(`pilot.quantflow.studio`)"
       - "traefik.http.routers.pilot-docs.entrypoints=websecure"
       - "traefik.http.routers.pilot-docs.tls=true"
+      - "traefik.http.routers.pilot-docs.middlewares=docs-compress,docs-secheaders"
       - "traefik.docker.network=balancer"
+      # gzip compression — Traefik v2.11 (brotli requires v3.x; upgrade tracked in #3380)
+      - "traefik.http.middlewares.docs-compress.compress=true"
+      # security headers
+      - "traefik.http.middlewares.docs-secheaders.headers.stsSeconds=63072000"
+      - "traefik.http.middlewares.docs-secheaders.headers.stsIncludeSubdomains=true"
+      - "traefik.http.middlewares.docs-secheaders.headers.contentTypeNosniff=true"
+      - "traefik.http.middlewares.docs-secheaders.headers.referrerPolicy=strict-origin-when-cross-origin"
+      - "traefik.http.middlewares.docs-secheaders.headers.permissionsPolicy=geolocation=(), microphone=(), camera=(), payment=()"
+      # CSP in report-only mode — Nextra v4 inlines styles so 'unsafe-inline' is required;
+      # harden to nonces/hashes in a follow-up once the report stream is clean.
+      - "traefik.http.middlewares.docs-secheaders.headers.contentSecurityPolicyReportOnly=default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' data:; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
     expose:
       - 3000
     networks:
