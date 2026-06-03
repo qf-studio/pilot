@@ -705,12 +705,11 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 				slog.Duration("duration", duration),
 				slog.String("pr_url", result.PRUrl),
 			)
-			if err := w.store.UpdateExecutionStatus(exec.ID, "completed"); err != nil {
-				w.log.Error("Failed to update status to completed", slog.Any("error", err))
-			}
-			// Update result fields (PR URL, commit SHA, duration)
-			if err := w.store.UpdateExecutionResult(exec.ID, result.PRUrl, result.CommitSHA, duration.Milliseconds()); err != nil {
-				w.log.Error("Failed to update execution result", slog.Any("error", err))
+			// TASK-359 Layer 1: one atomic write (status + result fields) instead of
+			// UpdateExecutionStatus("completed") then UpdateExecutionResult — the gap
+			// between those two could leave a 'completed' row with an empty pr_url.
+			if err := w.store.MarkExecutionCompleted(exec.ID, result.PRUrl, result.CommitSHA, duration.Milliseconds()); err != nil {
+				w.log.Error("Failed to mark execution completed", slog.Any("error", err))
 			}
 			// Emit progress callback for task completed
 			msg := fmt.Sprintf("Completed in %s", duration.Round(time.Second))
