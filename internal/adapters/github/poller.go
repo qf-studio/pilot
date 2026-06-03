@@ -1620,7 +1620,24 @@ func (p *Poller) hasMergedWork(ctx context.Context, issue *Issue) bool {
 			return false
 		}
 		if !branchFound {
-			return false
+			// GH-3420 / TASK-359 Layer 3b: DB fallback — no Search API indexing lag.
+			// A completed execution row with a deliverable (commit_sha or pr_url) is
+			// strong evidence work shipped, even when the ~30s Search window is open.
+			// Skip for pilot-retry-ready: that label means the prior execution's PR was
+			// closed without merge, so the completed row is stale. shouldRetryRetryReadyIssue
+			// invalidates it explicitly before re-dispatch.
+			if p.execChecker != nil && !HasLabel(issue, LabelRetryReady) {
+				taskID := fmt.Sprintf("GH-%d", issue.Number)
+				if completed, cerr := p.execChecker.HasCompletedExecution(taskID, p.projectPath); cerr == nil && completed {
+					p.logger.Debug("hasMergedWork: DB fallback hit — execution previously completed",
+						slog.String("task_id", taskID))
+					// fall through to mark-as-done below
+				} else {
+					return false
+				}
+			} else {
+				return false
+			}
 		}
 		p.logger.Info("Merged PR found via branch lookup (Search API lag)",
 			slog.Int("issue", issue.Number),
