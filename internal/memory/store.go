@@ -1205,6 +1205,27 @@ func (s *Store) UpdateExecutionResult(id string, prURL, commitSHA string, durati
 	})
 }
 
+// MarkExecutionCompleted atomically marks an execution completed with its result
+// fields in a single UPDATE. TASK-359 Layer 1: replaces the prior two-call
+// sequence (UpdateExecutionStatus("completed") then UpdateExecutionResult) whose
+// non-atomic gap could leave a 'completed' row with an empty pr_url if the
+// process died between the writes — a row HasCompletedExecution then accepted via
+// its OR-clause, stranding the issue. A single SQLite UPDATE is atomic.
+func (s *Store) MarkExecutionCompleted(id, prURL, commitSHA string, durationMs int64) error {
+	return s.withRetry("MarkExecutionCompleted", func() error {
+		_, err := s.db.Exec(`
+			UPDATE executions
+			SET status = 'completed',
+				pr_url = ?,
+				commit_sha = ?,
+				duration_ms = ?,
+				completed_at = CURRENT_TIMESTAMP
+			WHERE id = ?
+		`, prURL, commitSHA, durationMs, id)
+		return err
+	})
+}
+
 // UpdateExecutionEffort records the resolved effort and complexity levels for a completed execution.
 // Called after execution finishes so cost-by-tier queries can group rows by tier.
 func (s *Store) UpdateExecutionEffort(id, effortLevel, complexityLevel string) error {

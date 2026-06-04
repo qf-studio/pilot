@@ -1264,6 +1264,118 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 	return r.executeWithOptions(ctx, task, true)
 }
 
+// finalizeEpicBranchPR runs the epic parent's push → PR-create finalization with
+// the SAME error contract as the direct path (executeWithOptions ~runner.go:3336):
+// any non-recoverable failure sets result.Success=false (Shape A), and an
+// already-merged branch short-circuits PR creation (Shape C). TASK-359 Layer 1.
+//
+// Before TASK-359 this logic was inline and warn-only: a push or PR-create
+// failure logged a warning and continued, leaving epicResult.Success=true. The
+// dispatcher then wrote a "completed" row with an empty pr_url and the issue was
+// stranded open.
+//
+// Ordering mirrors the direct path: the no-commits guard runs BEFORE push, so an
+// epic whose deliverables shipped via child PRs (empty parent branch) is a clean
+// success, while a parent branch carrying real commits MUST push and PR
+// successfully or the epic is reported as failed.
+func (r *Runner) finalizeEpicBranchPR(ctx context.Context, task *Task, git *GitOperations, result *ExecutionResult) {
+	// Determine base branch before the no-commits guard.
+	baseBranch := task.BaseBranch
+	if baseBranch == "" {
+		baseBranch, _ = git.GetDefaultBranch(ctx)
+		if baseBranch == "" {
+			baseBranch = "main"
+		}
+	}
+
+	// GH-2743 / TASK-356 #1: no-commits guard. An orchestrator-only epic worktree
+	// whose HEAD == base HEAD produced no parent-branch deliverable (work, if any,
+	// shipped via child PRs). Skipping PR creation here is a legitimate success —
+	// and we must NOT harvest the (foreign base) SHA in that case.
+	if guardCount, _ := git.CountNewCommits(ctx, baseBranch); guardCount == 0 {
+		r.log.Warn("Epic branch has no commits vs base, skipping PR creation",
+			slog.String("task_id", task.ID),
+			slog.String("base_branch", baseBranch),
+		)
+		r.reportProgress(task.ID, "PR Skipped", 97, "epic branch has no commits relative to base")
+		return
+	}
+
+	r.reportProgress(task.ID, "Creating PR", 96, "Pushing epic branch...")
+
+	// Push the parent branch. TASK-359: a real deliverable that fails to push is a
+	// failure, not an advisory warning (was warn+continue pre-TASK-359 — Shape A).
+	if err := git.Push(ctx, task.Branch); err != nil {
+		// GH-1389: a worktree push may report a chdir error even though the data
+		// reached the remote. Treat the branch existing on the remote as success.
+		if git.RemoteBranchExists(ctx, task.Branch) {
+			r.log.Warn("Epic push reported error but branch exists on remote, continuing",
+				slog.String("task_id", task.ID),
+				slog.String("branch", task.Branch),
+				slog.Any("error", err),
+			)
+		} else {
+			result.Success = false
+			result.Error = fmt.Sprintf("epic branch push failed: %v", err)
+			r.log.Warn("Epic branch push failed",
+				slog.String("task_id", task.ID),
+				slog.String("branch", task.Branch),
+				slog.Any("error", err),
+			)
+			r.reportProgress(task.ID, "PR Failed", 100, result.Error)
+			return
+		}
+	}
+
+	// Parent branch carries real commits — safe to record its HEAD as the epic's
+	// deliverable SHA (no longer the foreign base SHA). TASK-356 #1.
+	if sha, shaErr := git.GetCurrentCommitSHA(ctx); shaErr == nil && sha != "" {
+		result.CommitSHA = sha
+	}
+
+	// TASK-359 Layer 1 (Shape C): if this branch's work is already merged, do not
+	// open a duplicate PR. Record the existing merged PR's URL and finish.
+	if mergedURL, mergedErr := git.FindMergedPRByBranch(ctx, task.Branch); mergedErr == nil && mergedURL != "" {
+		result.PRUrl = mergedURL
+		r.log.Info("Epic branch already merged, skipping duplicate PR",
+			slog.String("task_id", task.ID),
+			slog.String("pr_url", mergedURL),
+		)
+		r.reportProgress(task.ID, "Complete", 100, "epic work already merged")
+		return
+	}
+
+	// Create the parent PR with a GitHub auto-close keyword.
+	epicIssueNum := strings.TrimPrefix(task.ID, "GH-")
+	prBody := fmt.Sprintf("## Summary\n\nAutomated PR created by Pilot for epic task %s.\n\nCloses #%s\n\n## Changes\n\n%s", task.ID, epicIssueNum, task.Description)
+	epicPRTitle := fmt.Sprintf("%s: %s", task.ID, task.Title)
+	prURL, prErr := git.CreatePR(ctx, epicPRTitle, prBody, baseBranch)
+	if prErr != nil {
+		result.Success = false
+		result.Error = fmt.Sprintf("epic PR creation failed: %v", prErr)
+		r.log.Warn("Epic PR creation failed",
+			slog.String("task_id", task.ID),
+			slog.Any("error", prErr),
+		)
+		r.reportProgress(task.ID, "PR Failed", 100, result.Error)
+		return
+	}
+	result.PRUrl = prURL
+	r.log.Info("Epic PR created", slog.String("pr_url", prURL))
+
+	// TASK-359 Layer 1 invariant: a PR-mode task that finished without a PR URL is
+	// NOT a success (the direct path enforces the same). Guards against CreatePR
+	// returning a non-error empty URL.
+	if task.CreatePR && result.PRUrl == "" {
+		result.Success = false
+		result.Error = "epic finalize produced no PR URL"
+		r.reportProgress(task.ID, "PR Failed", 100, result.Error)
+		return
+	}
+
+	r.reportProgress(task.ID, "Complete", 100, "Epic completed successfully")
+}
+
 // executeWithOptions is the internal implementation that allows controlling worktree creation.
 // When allowWorktree is false, it skips worktree creation even if configured.
 // This prevents recursive worktree creation in sub-issues and decomposed tasks.
@@ -1587,66 +1699,16 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 				}
 
 				if task.CreatePR && task.Branch != "" {
-					epicGit := NewGitOperations(executionPath)
-
-					r.reportProgress(task.ID, "Creating PR", 96, "Pushing epic branch...")
-
-					if err := epicGit.Push(ctx, task.Branch); err != nil {
-						r.log.Warn("Epic branch push failed",
-							slog.String("task_id", task.ID),
-							slog.String("branch", task.Branch),
-							slog.Any("error", err),
-						)
-						// Don't fail the epic — sub-issues may have their own PRs
-					} else {
-						// Determine base branch
-						baseBranch := task.BaseBranch
-						if baseBranch == "" {
-							baseBranch, _ = epicGit.GetDefaultBranch(ctx)
-							if baseBranch == "" {
-								baseBranch = "main"
-							}
-						}
-
-						// GH-2743: no-commits guard for epic PR path.
-						// TASK-356 #1: harvest CommitSHA ONLY after this guard passes. The epic
-						// parent runs in an orchestrator-only worktree whose HEAD == base HEAD,
-						// so reading the SHA before the guard recorded that foreign base SHA as
-						// the epic's CommitSHA — making a no-deliverable epic look "completed"
-						// (a false-positive no-op that hid the loss of the child's real work).
-						if guardCount, _ := epicGit.CountNewCommits(ctx, baseBranch); guardCount == 0 {
-							r.log.Warn("Epic branch has no commits vs base, skipping PR creation",
-								slog.String("task_id", task.ID),
-								slog.String("base_branch", baseBranch),
-							)
-							r.reportProgress(task.ID, "PR Skipped", 97, "epic branch has no commits relative to base")
-							return epicResult, nil
-						}
-
-						// Parent branch carries real commits — safe to record its HEAD as the
-						// epic's deliverable SHA (it is no longer the foreign base SHA).
-						if sha, shaErr := epicGit.GetCurrentCommitSHA(ctx); shaErr == nil && sha != "" {
-							epicResult.CommitSHA = sha
-						}
-
-						// Create PR with GitHub auto-close keyword
-						epicIssueNum := strings.TrimPrefix(task.ID, "GH-")
-						prBody := fmt.Sprintf("## Summary\n\nAutomated PR created by Pilot for epic task %s.\n\nCloses #%s\n\n## Changes\n\n%s", task.ID, epicIssueNum, task.Description)
-						epicPRTitle := fmt.Sprintf("%s: %s", task.ID, task.Title)
-						prURL, prErr := epicGit.CreatePR(ctx, epicPRTitle, prBody, baseBranch)
-						if prErr != nil {
-							r.log.Warn("Epic PR creation failed",
-								slog.String("task_id", task.ID),
-								slog.Any("error", prErr),
-							)
-						} else {
-							epicResult.PRUrl = prURL
-							r.log.Info("Epic PR created", slog.String("pr_url", prURL))
-						}
-					}
+					// TASK-359 Layer 1: route epic finalization through the same error
+					// contract as the direct path (executeWithOptions ~runner.go:3336).
+					// A failed push or PR-create now sets epicResult.Success=false
+					// instead of warn-and-continue, so a stranded epic is never recorded
+					// as a "completed" row with an empty PR (Shape A). A pre-create
+					// merged-work check avoids opening a duplicate PR (Shape C).
+					r.finalizeEpicBranchPR(ctx, task, NewGitOperations(executionPath), epicResult)
+				} else {
+					r.reportProgress(task.ID, "Complete", 100, "Epic completed successfully")
 				}
-
-				r.reportProgress(task.ID, "Complete", 100, "Epic completed successfully")
 				return epicResult, nil
 			}
 		} // else: plan succeeded

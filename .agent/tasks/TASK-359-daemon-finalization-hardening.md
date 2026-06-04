@@ -1,6 +1,31 @@
 # TASK-359: Daemon finalization hardening — close Shapes A/B/C
 
-**Status:** 🟡 partial (3/4 Pilot-eligible layers SHIPPED in v2.166.13–14; Layer 1 still MANUAL; #3420 status TBD). Updated 2026-06-03 after origin/main moved.
+**Status:** 🟢 boundary fixes COMPLETE (4/4 Pilot-eligible layers shipped, v2.166.13–16). **Layer 1 IMPLEMENTED (MANUAL)** on `fix/task-359-layer1-finalize` (2026-06-03) — see "Layer 1 — as built" below. Updated 2026-06-03.
+
+---
+
+## Layer 1 — as built (`fix/task-359-layer1-finalize`, 2026-06-03)
+
+Implemented as a **focused hardening of the epic finalization path** (not a full
+direct-path extraction). A `navigator-research` pass refuted two of the original
+plan's assumptions and flagged a third as high-risk; the build follows the
+evidence:
+
+| Original step | Finding | As built |
+|---|---|---|
+| 4 — `git.FindMergedPRByBranch` on `GitOperations` | **REFUTED** — that method is on `*github.Client`; the executor holds no github client | Added a new `GitOperations.FindMergedPRByBranch(ctx, branch)` shelling `gh pr list --head <branch> --state merged --json url` (same `gh` dependency `CreatePR` already uses) + pure `parseFirstPRURL` helper |
+| 1–2 — extract direct path into `finalizeExecution(ctx,task,path,result,isEpic)` | **PARTIAL** — epic block lacks `git`/`log`/`recorder`/`backendResult` in scope; full extraction needs 4 extra params and rewires the daemon's hot path | New `Runner.finalizeEpicBranchPR(ctx, task, git, result)` gives the **epic** path the direct path's error contract. Direct path (`runner.go:~3336`, already correct) left untouched — lower regression risk |
+| 7 — tighten `HasCompletedExecution` to require `pr_url` | **REFUTED** — breaks direct-commit-to-main rows (commit_sha set, pr_url='') and violates `TestTaskCompletionInvariant` | **Deferred.** Layer 1's invariant prevents the empty-PR `completed` row from ever being written, so the OR-clause is no longer reachable for the bug. SQL/schema left unchanged (defense-in-depth follow-up only) |
+
+**What changed:**
+- `internal/executor/runner.go` — new `finalizeEpicBranchPR` method; epic block (`~runner.go:1589`) now routes through it. Reordered to **guard → push → harvest → idempotency → CreatePR → invariant** (matches the direct path). Push fail / PR-create fail now set `result.Success=false` instead of warn+continue (Shape A). Pre-create `FindMergedPRByBranch` short-circuit (Shape C). Invariant: `task.CreatePR && PRUrl=="" ⇒ Success=false`.
+- `internal/executor/git.go` — `FindMergedPRByBranch` + `parseFirstPRURL`.
+- `internal/memory/store.go` — `MarkExecutionCompleted(id, prURL, commitSHA, durationMs)`: one atomic `UPDATE` (status + result fields) replacing the non-atomic two-call write.
+- `internal/executor/dispatcher.go` — completion write (`~:708`) now calls `MarkExecutionCompleted`.
+
+**Tests (green):** `TestFinalizeEpicBranchPR_PushFailIsFailure` (Shape A), `TestFinalizeEpicBranchPR_NoCommitsIsCleanSuccess` (reordered guard), `TestParseFirstPRURL`, `TestMarkExecutionCompleted{,_EmptyPRUrl}`. `go test ./internal/executor/ ./internal/memory/`, `go vet`, `gofmt`, and `golangci-lint` all clean.
+
+**Not in this PR (follow-ups):** direct-path GH-3126 ghost-SHA guard parity for the epic path; the step-7 `is_direct_commit` column (defense-in-depth); full single-`finalizeExecution` unification (Option ii) if/when the direct path is next refactored.
 **Priority:** P1 — drove ~70% of finalization failures in the studio-sdk extraction; #1 item on Pilot's own roadmap per `pilot-known-bugs` memory
 **Repo:** `qf-studio/pilot`
 **Area:** `internal/executor/`, `internal/autopilot/`, `internal/adapters/github/`, `internal/memory/`

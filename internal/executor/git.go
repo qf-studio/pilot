@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os/exec"
 	"path/filepath"
@@ -236,6 +237,42 @@ func extractPRURL(text string) string {
 		}
 	}
 	return ""
+}
+
+// FindMergedPRByBranch returns the URL of a merged PR whose head is branch, or
+// "" if none exists. TASK-359 Layer 1 (Shape C): lets the executor skip opening
+// a duplicate PR for work that is already merged. It uses the gh CLI — the same
+// dependency CreatePR already relies on — so the executor needs no github.Client
+// wiring (the merge-detection API lives only on *github.Client).
+func (g *GitOperations) FindMergedPRByBranch(ctx context.Context, branch string) (string, error) {
+	cmd := exec.CommandContext(ctx, "gh", "pr", "list",
+		"--head", branch,
+		"--state", "merged",
+		"--json", "url",
+		"--limit", "1",
+	)
+	cmd.Dir = g.projectPath
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("failed to list merged PRs for %s: %w: %s", branch, err, output)
+	}
+	return parseFirstPRURL(output), nil
+}
+
+// parseFirstPRURL extracts the first "url" field from `gh pr list --json url`
+// output (a JSON array like [{"url":"https://github.com/o/r/pull/1"}]). Returns
+// "" for an empty array or unparseable input.
+func parseFirstPRURL(jsonOutput []byte) string {
+	var prs []struct {
+		URL string `json:"url"`
+	}
+	if err := json.Unmarshal(jsonOutput, &prs); err != nil {
+		return ""
+	}
+	if len(prs) == 0 {
+		return ""
+	}
+	return prs[0].URL
 }
 
 // GetCurrentBranch returns the current branch name
