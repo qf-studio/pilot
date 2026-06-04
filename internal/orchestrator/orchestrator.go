@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 
 	sdkcore "github.com/qf-studio/studio-sdk/sdk/core"
@@ -506,9 +507,10 @@ func (o *Orchestrator) ProcessAsanaTicket(ctx context.Context, task *asana.TaskI
 
 // ProcessPlaneTicket processes a new ticket from Plane (GH-2044)
 func (o *Orchestrator) ProcessPlaneTicket(ctx context.Context, item *plane.WebhookWorkItemData, projectPath string) error {
+	seqStr := "PLANE-" + strconv.Itoa(item.SequenceID)
 	ticket := &TicketData{
 		ID:         item.ID,
-		Identifier: fmt.Sprintf("PLANE-%d", item.SequenceID),
+		Identifier: seqStr,
 		Title:      item.Name,
 	}
 
@@ -525,7 +527,7 @@ func (o *Orchestrator) ProcessPlaneTicket(ctx context.Context, item *plane.Webho
 		ID:          doc.ID,
 		Document:    doc,
 		ProjectPath: projectPath,
-		Branch:      fmt.Sprintf("pilot/PLANE-%d", item.SequenceID),
+		Branch:      "pilot/" + seqStr,
 	}
 
 	o.QueueTask(internalTask)
