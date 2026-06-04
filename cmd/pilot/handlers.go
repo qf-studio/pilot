@@ -10,6 +10,8 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	sdkcore "github.com/qf-studio/studio-sdk/sdk/core"
+	planeSDK "github.com/qf-studio/studio-sdk/sdk/integrations/plane"
 
 	"github.com/qf-studio/pilot/internal/adapters/asana"
 	"github.com/qf-studio/pilot/internal/adapters/azuredevops"
@@ -17,7 +19,7 @@ import (
 	"github.com/qf-studio/pilot/internal/adapters/gitlab"
 	"github.com/qf-studio/pilot/internal/adapters/jira"
 	"github.com/qf-studio/pilot/internal/adapters/linear"
-	"github.com/qf-studio/pilot/internal/adapters/plane"
+	"github.com/qf-studio/pilot/internal/adapters/sdkshim"
 	"github.com/qf-studio/pilot/internal/alerts"
 	"github.com/qf-studio/pilot/internal/budget"
 	"github.com/qf-studio/pilot/internal/config"
@@ -1002,14 +1004,22 @@ func formatTokenCountComment(tokens int64) string {
 	return fmt.Sprintf("%d", tokens)
 }
 
-// handlePlaneIssueWithResult processes a Plane.so work item picked up by the poller (GH-1833).
-func handlePlaneIssueWithResult(ctx context.Context, cfg *config.Config, client *plane.Client, issue *plane.WorkItem, projectPath string, dispatcher *executor.Dispatcher, runner *executor.Runner, monitor *executor.Monitor, program *tea.Program, alertsEngine *alerts.Engine, enforcer *budget.Enforcer) (*plane.IssueResult, error) {
-	// Use first 8 chars of UUID as short task ID for display
-	taskID := "PLANE-" + issue.ID[:8]
-	title := issue.Name
+// handlePlaneIssueWithResult processes a Plane.so work item delivered as a SDK core.IssueEvent.
+// ev.SequenceID is already prefixed ("PLANE-42") by the SDK adapter — use it directly.
+func handlePlaneIssueWithResult(ctx context.Context, cfg *config.Config, client *planeSDK.Client, ev sdkcore.IssueEvent, projectPath string, dispatcher *executor.Dispatcher, runner *executor.Runner, monitor *executor.Monitor, program *tea.Program, alertsEngine *alerts.Engine, enforcer *budget.Enforcer) (*sdkcore.IssueResult, error) {
+	taskID := ev.SequenceID // "PLANE-42"; already prefixed by the SDK adapter
+	title := ev.Title
 
-	taskDesc := fmt.Sprintf("Plane Issue %s: %s\n\n%s", taskID, title, issue.Description)
+	taskDesc := fmt.Sprintf("Plane Issue %s: %s\n\n%s", taskID, title, ev.Body)
 	branchName := fmt.Sprintf("pilot/%s", taskID)
+
+	// ResolveRepoForEvent is Phase-0 stub; ErrRepoNotResolved is expected — log and continue.
+	if _, _, _, err := sdkshim.ResolveRepoForEvent(cfg, "plane", ev); err != nil && err.Error() != sdkshim.ErrRepoNotResolved.Error() {
+		logging.WithComponent("plane").Warn("Unexpected repo resolution error",
+			slog.String("task_id", taskID),
+			slog.Any("error", err),
+		)
+	}
 
 	task := &executor.Task{
 		ID:            taskID,
@@ -1019,17 +1029,17 @@ func handlePlaneIssueWithResult(ctx context.Context, cfg *config.Config, client 
 		Branch:        branchName,
 		CreatePR:      true,
 		SourceAdapter: "plane",
-		SourceIssueID: issue.ID,
+		SourceIssueID: ev.IssueID,
+		Priority:      sdkshim.PriorityFromSDK(ev.Priority),
 		BaseBranch:    resolveProjectBaseBranch(cfg, projectPath), // GH-2290
 	}
 
-	// Wire Plane client as SubIssueCreator for epic decomposition (GH-1833)
-	// Configure workspace slug and default project on the client for CreateIssue calls
-	subCreatorClient := plane.NewClient(
+	// Wire SDK client as SubIssueCreator for epic decomposition (GH-1833)
+	subCreatorClient := planeSDK.NewClient(
 		cfg.Adapters.Plane.BaseURL,
 		cfg.Adapters.Plane.APIKey,
-		plane.WithWorkspaceSlug(cfg.Adapters.Plane.WorkspaceSlug),
-		plane.WithDefaultProjectID(issue.ProjectID),
+		planeSDK.WithWorkspaceSlug(cfg.Adapters.Plane.WorkspaceSlug),
+		planeSDK.WithDefaultProjectID(ev.ProjectID),
 	)
 	runner.SetSubIssueCreator(subCreatorClient)
 
@@ -1046,15 +1056,14 @@ func handlePlaneIssueWithResult(ctx context.Context, cfg *config.Config, client 
 	info := IssueInfo{
 		TaskID:   taskID,
 		Title:    title,
-		URL:      fmt.Sprintf("%s/workspaces/%s/projects/%s/work-items/%s", cfg.Adapters.Plane.BaseURL, cfg.Adapters.Plane.WorkspaceSlug, issue.ProjectID, issue.ID),
+		URL:      fmt.Sprintf("%s/workspaces/%s/projects/%s/work-items/%s", cfg.Adapters.Plane.BaseURL, cfg.Adapters.Plane.WorkspaceSlug, ev.ProjectID, ev.IssueID),
 		Adapter:  "plane",
 		LogEmoji: "📊",
 	}
 
 	hr, execErr := handleIssueGeneric(ctx, deps, info, task)
 
-	// Build issue result
-	issueResult := &plane.IssueResult{
+	issueResult := &sdkcore.IssueResult{
 		Success:    hr.Success,
 		BranchName: hr.BranchName,
 		PRNumber:   hr.PRNumber,
@@ -1063,14 +1072,15 @@ func handlePlaneIssueWithResult(ctx context.Context, cfg *config.Config, client 
 		Error:      hr.Error,
 	}
 
-	// Post-execution: add HTML comment, transition work item state
+	// Post-execution: add HTML comment
 	workspaceSlug := cfg.Adapters.Plane.WorkspaceSlug
-	projectID := issue.ProjectID
+	projectID := ev.ProjectID
+	issueID := ev.IssueID
 	if execErr != nil {
 		comment := fmt.Sprintf("<p>❌ Pilot execution failed:</p><pre>%s</pre>", execErr.Error())
-		if err := client.AddComment(ctx, workspaceSlug, projectID, issue.ID, comment); err != nil {
+		if err := client.AddComment(ctx, workspaceSlug, projectID, issueID, comment); err != nil {
 			logging.WithComponent("plane").Warn("Failed to add failure comment",
-				slog.String("issue_id", issue.ID),
+				slog.String("issue_id", issueID),
 				slog.Any("error", err),
 			)
 		}
@@ -1078,27 +1088,27 @@ func handlePlaneIssueWithResult(ctx context.Context, cfg *config.Config, client 
 		if !hr.Result.IsEpic && hr.Result.CommitSHA == "" && hr.Result.PRUrl == "" { // GH-3053
 			comment := fmt.Sprintf("<p>⚠️ Pilot execution completed but no changes were made.</p><p>Duration: %s<br>Branch: <code>%s</code></p><p>No commits or PR were created. The task may need clarification or manual intervention.</p>",
 				hr.Result.Duration, branchName)
-			if err := client.AddComment(ctx, workspaceSlug, projectID, issue.ID, comment); err != nil {
+			if err := client.AddComment(ctx, workspaceSlug, projectID, issueID, comment); err != nil {
 				logging.WithComponent("plane").Warn("Failed to add comment",
-					slog.String("issue_id", issue.ID),
+					slog.String("issue_id", issueID),
 					slog.Any("error", err),
 				)
 			}
 			issueResult.Success = false
 		} else {
 			comment := buildPlaneExecutionComment(hr.Result, branchName)
-			if err := client.AddComment(ctx, workspaceSlug, projectID, issue.ID, comment); err != nil {
+			if err := client.AddComment(ctx, workspaceSlug, projectID, issueID, comment); err != nil {
 				logging.WithComponent("plane").Warn("Failed to add success comment",
-					slog.String("issue_id", issue.ID),
+					slog.String("issue_id", issueID),
 					slog.Any("error", err),
 				)
 			}
 		}
 	} else if hr.Result != nil {
 		comment := fmt.Sprintf("<p>❌ Pilot execution failed:</p><pre>%s</pre>", hr.Result.Error)
-		if err := client.AddComment(ctx, workspaceSlug, projectID, issue.ID, comment); err != nil {
+		if err := client.AddComment(ctx, workspaceSlug, projectID, issueID, comment); err != nil {
 			logging.WithComponent("plane").Warn("Failed to add failure comment",
-				slog.String("issue_id", issue.ID),
+				slog.String("issue_id", issueID),
 				slog.Any("error", err),
 			)
 		}
