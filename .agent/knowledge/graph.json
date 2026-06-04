@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "updated": "2026-06-03",
+  "updated": "2026-06-04",
   "nodes": {
     "concepts": {
       "pilot-architecture": {
@@ -487,6 +487,19 @@
         "confidence": 0.95,
         "created": "2026-06-03",
         "file": ".agent/knowledge/memories/learnings/learn_pilot_finalization_bottleneck.md"
+      },
+      "mem-027": {
+        "type": "learning",
+        "summary": "TASK-359 Layer 1 (unified epic finalization error contract) SHIPPED in v2.166.16 (PR #3441, merged 2026-06-04 11:46 CET). Closes the boundary layers of the finalization-bottleneck (mem-026). New Runner.finalizeEpicBranchPR matches the direct-path ordering (guard -> push -> harvest -> idempotency -> CreatePR -> invariant); push/PR-create failures now mark Success=false (was log.Warn+continue, root cause of Shape A ~70% failure mode); pre-create FindMergedPRByBranch short-circuit (Shape C); atomic MarkExecutionCompleted in store.go. Smoke green (full short test + lint + new unit tests). Live Shape A/B/C verification deferred to the next SDK extraction batch (github -> linear -> jira -> asana) -- the SDK work IS the verification. Original spec Step 7 (tighten HasCompletedExecution) was REFUTED -- would break direct-commit rows + TestTaskCompletionInvariant.",
+        "concepts": [
+          "executor",
+          "autopilot",
+          "github-adapter",
+          "memory"
+        ],
+        "confidence": 0.95,
+        "created": "2026-06-04",
+        "file": ".agent/knowledge/memories/learnings/learn_task359_layer1_shipped.md"
       }
     }
   },

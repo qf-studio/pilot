@@ -1,6 +1,6 @@
 # TASK-359: Daemon finalization hardening — close Shapes A/B/C
 
-**Status:** 🟢 boundary fixes COMPLETE (4/4 Pilot-eligible layers shipped, v2.166.13–16). **Layer 1 IMPLEMENTED (MANUAL)** on `fix/task-359-layer1-finalize` (2026-06-03) — see "Layer 1 — as built" below. Updated 2026-06-03.
+**Status:** 🟢 **ALL 5 layers SHIPPED.** Boundary 2a/2b/3a/3b in v2.166.13–15; **Layer 1 (MANUAL) SHIPPED in v2.166.16** (PR [#3441](https://github.com/qf-studio/pilot/pull/3441), merged 2026-06-04 11:46 CET; stage daemon restarted on v2.166.16, PID 95677). Smoke verified (`make test-short`, `make lint` — 0 issues; new Layer 1 unit tests pass). **Live Shape A/B/C verification deferred to the next SDK extraction batch** (`github` → `linear` → `jira` → `asana`) — the SDK work IS the verification per § End-to-end. Updated 2026-06-04.
 
 ---
 
