@@ -1,6 +1,6 @@
 ---
 name: TASK-359 Layer 1 shipped — unified epic finalization
-description: TASK-359 Layer 1 (unified epic finalize error contract) merged in v2.166.16; smoke-verified; live Shape A/B/C verification deferred to next SDK extraction batch.
+description: TASK-359 Layer 1 (unified epic finalize error contract) merged in v2.166.16; smoke-verified AND Shape A/C live-verified on the v2.166.16 daemon via studio-sdk #63/PR#64 (2026-06-04). Destructive Shape B + negative token-revoke remain deferred.
 type: learning
 originSessionId: nav-start-resume-2026-06-04
 ---
@@ -39,9 +39,10 @@ Atomic completion write: `internal/memory/store.go` adds `MarkExecutionCompleted
 ### Verification status
 
 - ✅ **Smoke green** (2026-06-04): `go test ./internal/executor/ ./internal/memory/`, `make test-short`, `make lint` (0 issues), `go vet`, `gofmt -l` clean. New tests pass: `TestFinalizeEpicBranchPR_{PushFailIsFailure,NoCommitsIsCleanSuccess}`, `TestParseFirstPRURL`, `TestMarkExecutionCompleted{,_EmptyPRUrl}`.
-- ✅ **Daemon live**: PID 95677, `pilot start --github --env stage --dashboard`, v2.166.16 (built 09:49 UTC).
-- ⏳ **Live Shape A/B/C verification deferred to next SDK batch** (`github` → `linear` → `jira` → `asana` per [[learn_sdk_extraction_recipe]]). The SDK extraction itself IS the verification — re-run the proven `no-decompose` 2-PR recipe per connector and watch finalize.
-- ⏳ **Negative test deferred** — covered by unit `TestFinalizeEpicBranchPR_PushFailIsFailure`; live revoke-token test pending.
+- ✅ **Daemon live**: `pilot start --github --env stage --dashboard`, v2.166.16 (built 09:49 UTC).
+- ✅ **Shape A + C LIVE-VERIFIED** (2026-06-04, v2.166.16 daemon): dispatched bounded studio-sdk issue [#63](https://github.com/qf-studio/studio-sdk/issues/63) (`add doc.go to github connector`) via board #1 `Todo`. Daemon executed (exec `af2bbf8b`) and finalized in ~100s **clean**: execution row `status=completed` **with** non-empty `pr_url` (`.../studio-sdk/pull/64`) + `commit_sha` — i.e. the atomic `MarkExecutionCompleted` write, **no stranded empty-`pr_url` row** (Shape A). Exactly **one** PR on `pilot/GH-63` (no Shape C duplicate); PR scope bounded to the single `doc.go` (+5/−0). Board card `Todo → In Progress → In Review`; `pilot-in-progress` label cleared (no orphan In-Progress).
+- ⏳ **Destructive Shape B (force-close vs human recovery PR), external-merge Shape C, and negative token-revoke remain deferred** — intentionally out of scope for the non-destructive live run; Shape B/negative are unit-covered (`TestFinalizeEpicBranchPR_PushFailIsFailure`).
+- ⚠️ **Manual-merge caveat reconfirmed**: PR #64 was merged by hand (`gh pr merge`) → the daemon's on-merge board writeback did **not** fire (board stuck `In Review` ~4.5min); set `Done` by hand. Known carry-forward (manual merges skip on-merge writeback), NOT a Layer 1 regression — the executor finalize path is what Layer 1 fixed and it passed.
 
 ### How to apply
 

@@ -1,6 +1,6 @@
 # TASK-359: Daemon finalization hardening — close Shapes A/B/C
 
-**Status:** 🟢 **ALL 5 layers SHIPPED.** Boundary 2a/2b/3a/3b in v2.166.13–15; **Layer 1 (MANUAL) SHIPPED in v2.166.16** (PR [#3441](https://github.com/qf-studio/pilot/pull/3441), merged 2026-06-04 11:46 CET; stage daemon restarted on v2.166.16, PID 95677). Smoke verified (`make test-short`, `make lint` — 0 issues; new Layer 1 unit tests pass). **Live Shape A/B/C verification deferred to the next SDK extraction batch** (`github` → `linear` → `jira` → `asana`) — the SDK work IS the verification per § End-to-end. Updated 2026-06-04.
+**Status:** 🟢 **ALL 5 layers SHIPPED.** Boundary 2a/2b/3a/3b in v2.166.13–15; **Layer 1 (MANUAL) SHIPPED in v2.166.16** (PR [#3441](https://github.com/qf-studio/pilot/pull/3441), merged 2026-06-04 11:46 CET; stage daemon restarted on v2.166.16, PID 95677). Smoke verified (`make test-short`, `make lint` — 0 issues; new Layer 1 unit tests pass). **Shape A + C LIVE-VERIFIED on the v2.166.16 daemon** (2026-06-04) via bounded studio-sdk [#63](https://github.com/qf-studio/studio-sdk/issues/63) → [PR #64](https://github.com/qf-studio/studio-sdk/pull/64): exec finalized `completed` **with** `pr_url`+`commit_sha` (no stranded row), one PR (no duplicate), board `Todo→In Progress→In Review`. Destructive Shape B + external-merge Shape C + negative token-revoke still deferred (out of scope for the non-destructive run). See § End-to-end. Updated 2026-06-04.
 
 ---
 
@@ -358,6 +358,30 @@ After Layers 1–3 land:
 4. **Memory update**: on successful verification, write a Navigator
    `learning` memory: "Daemon finalization unified — Shapes A/B/C closed
    in v<release>". Update `pilot-known-bugs` to remove the three shapes.
+
+### Result — Shape A + C live-verified (2026-06-04, v2.166.16)
+
+The planned 4-connector batch was already extracted **before** Layer 1 shipped,
+so verification rode a single bounded dispatch instead: studio-sdk
+[#63](https://github.com/qf-studio/studio-sdk/issues/63) (`add doc.go to github
+connector`) → board #1 `Todo`. Daemon (v2.166.16) executed `af2bbf8b` and
+finalized in ~100s:
+
+- **Shape A ✅** — execution row `status=completed` **with** non-empty `pr_url`
+  (`.../studio-sdk/pull/64`) + `commit_sha`; the atomic `MarkExecutionCompleted`
+  write produced **no stranded empty-`pr_url` row**.
+- **Shape C ✅** — exactly one PR on `pilot/GH-63`; PR scope bounded to the
+  single `doc.go` (+5/−0).
+- **Board lifecycle ✅** — `Todo → In Progress → In Review`; `pilot-in-progress`
+  label cleared (no orphan In-Progress). On manual merge the board card stayed
+  `In Review` (known manual-merge writeback gap — set `Done` by hand; not a
+  Layer 1 issue).
+
+**Still open (deferred, out of scope for the non-destructive run):** destructive
+Shape B (force-close vs human recovery PR), external-merge Shape C, and the
+negative token-revoke test (the latter is unit-covered by
+`TestFinalizeEpicBranchPR_PushFailIsFailure`). See
+[[learn_task359_layer1_shipped]].
 
 ---
 
