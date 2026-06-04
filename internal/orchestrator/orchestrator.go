@@ -434,6 +434,40 @@ func (o *Orchestrator) ProcessGitlabTicket(ctx context.Context, task *gitlab.Tas
 	return nil
 }
 
+// ProcessGitlabIssueEvent processes a normalized SDK IssueEvent from the GitLab polling path.
+// ev.SequenceID is already in "GL-42" form — used directly as Identifier.
+func (o *Orchestrator) ProcessGitlabIssueEvent(ctx context.Context, ev sdkcore.IssueEvent, projectPath string) error {
+	ticket := &TicketData{
+		ID:          ev.IssueID,
+		Identifier:  ev.SequenceID,
+		Title:       ev.Title,
+		Description: ev.Body,
+		Priority:    sdkshim.PriorityFromSDK(ev.Priority),
+		Labels:      ev.Labels,
+	}
+
+	doc, err := o.bridge.PlanTicket(ctx, ticket)
+	if err != nil {
+		return fmt.Errorf("failed to plan ticket: %w", err)
+	}
+
+	if err := o.saveTaskDocument(projectPath, doc); err != nil {
+		logging.WithComponent("orchestrator").Warn("Failed to save task document", slog.Any("error", err))
+	}
+
+	internalTask := &Task{
+		ID:          doc.ID,
+		Document:    doc,
+		ProjectPath: projectPath,
+		Branch:      fmt.Sprintf("pilot/%s", ev.SequenceID),
+		Priority:    float64(sdkshim.PriorityFromSDK(ev.Priority)),
+	}
+
+	o.QueueTask(internalTask)
+
+	return nil
+}
+
 // ProcessJiraTicket processes a new ticket from Jira
 func (o *Orchestrator) ProcessJiraTicket(ctx context.Context, task *jira.TaskInfo, projectPath string) error {
 	// Convert Jira task to task document via bridge
