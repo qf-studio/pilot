@@ -19,6 +19,13 @@ Studio-sdk extraction (2026-06-02 / 2026-06-03, PRs #28–#56). 9/10 connectors 
 
 **Canonical fix plan:** [[TASK-359]] (daemon finalization hardening — Shapes A/B/C closure). Three layers: Layer 1 unified `finalizeExecution()` in `executor.Runner` (MANUAL — Pilot can't refactor its own execution path), Layer 2 boundary fixes in autopilot/poller (Pilot-eligible via `no-decompose` 2-way split), Layer 3 defense-in-depth on top of v2.166.9. [[TASK-321]] is the older root-cause record for the dispatch-idempotency symptom and is superseded by TASK-359.
 
+**RESOLUTION STATUS (2026-06-04 — all TASK-359 layers shipped, v2.166.13–16):**
+- **Shape A (stall-before-push) — CLOSED + live-verified.** Layer 1 ([[learn_task359_layer1_shipped]], v2.166.16) made the epic finalize path's push/PR-create failures fatal (`Success=false`) + atomic `MarkExecutionCompleted`. Live-verified on the v2.166.16 daemon via studio-sdk #63 → PR #64: clean finalize, `completed` row carried `pr_url`+`commit_sha`, no stranded row.
+- **Shape C (late-duplicate-PR) — CLOSED + live-verified.** Pre-create `FindMergedPRByBranch` short-circuit (Layer 1) + `ScanRecentlyMergedPRs` ungate (Layer 3a). The #63 run produced exactly one PR.
+- **Shape B (retry-race vs human recovery PR) — fix shipped (Layer 2b `InvalidateCompletion`, v2.166.14), NOT yet live-verified.** Destructive force-close-vs-recovery test deferred.
+- **Negative test (revoke push token mid-run → `status='failed'`, no `completed` row) — unit-covered (`TestFinalizeEpicBranchPR_PushFailIsFailure`), live test deferred.**
+- Don't grade all three as fully closed until Shape B + the negative test get a live destructive pass. The `no-decompose` workaround is no longer *required* for Shape A, but remains the safe default while [[bug_epic_decompose_work_loss]] (decompose work-loss — a different bug) is open.
+
 **How to apply** when prioritizing daemon work: finalization-path bugs outrank executor-path bugs by frequency *and* by user-visible cost. A finalization stall produces a stranded issue with apparent "successful" execution-DB state — silently wrong and invisible until the user notices the missing PR. An executor-path bug produces a loud failure. Triage finalization concerns first.
 
 Cross-refs: [[TASK-320-executor-false-negative-noop-fix]] (Layer B2 deferred for the same MANUAL reason), [[TASK-355]] (foreign-SHA root cause shipped v2.166.7), [[TASK-356]] (v2.166.7–9 partial fixes; warn-only contract + non-atomic dispatcher writes not addressed).
