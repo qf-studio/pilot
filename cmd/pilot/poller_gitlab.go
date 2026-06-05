@@ -5,7 +5,9 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/qf-studio/pilot/internal/adapters/gitlab"
+	sdkcore "github.com/qf-studio/studio-sdk/sdk/core"
+	gitlabSDK "github.com/qf-studio/studio-sdk/sdk/integrations/gitlab"
+
 	"github.com/qf-studio/pilot/internal/config"
 	"github.com/qf-studio/pilot/internal/logging"
 )
@@ -24,56 +26,72 @@ func gitlabPollerRegistration() PollerRegistration {
 				interval = deps.Cfg.Adapters.GitLab.Polling.Interval
 			}
 
-			gitlabClient := gitlab.NewClientWithBaseURL(
-				deps.Cfg.Adapters.GitLab.Token,
-				deps.Cfg.Adapters.GitLab.Project,
-				deps.Cfg.Adapters.GitLab.BaseURL,
-			)
-
-			label := deps.Cfg.Adapters.GitLab.PilotLabel
-			if label == "" {
-				label = "pilot"
+			// Map internal config → SDK config (field names differ: PilotLabel vs TriggerLabel).
+			pilotLabel := deps.Cfg.Adapters.GitLab.PilotLabel
+			if pilotLabel == "" {
+				pilotLabel = "pilot"
+			}
+			sdkCfg := &gitlabSDK.Config{
+				Enabled:       deps.Cfg.Adapters.GitLab.Enabled,
+				Token:         deps.Cfg.Adapters.GitLab.Token,
+				BaseURL:       deps.Cfg.Adapters.GitLab.BaseURL,
+				WebhookSecret: deps.Cfg.Adapters.GitLab.WebhookSecret,
+				Project:       deps.Cfg.Adapters.GitLab.Project,
+				TriggerLabel:  pilotLabel,
+				Polling: &gitlabSDK.PollingConfig{
+					Enabled:  true,
+					Interval: interval,
+				},
 			}
 
-			gitlabPollerOpts := []gitlab.PollerOption{
-				gitlab.WithOnIssueWithResult(func(issueCtx context.Context, issue *gitlab.Issue) (*gitlab.IssueResult, error) {
-					result, err := handleGitLabIssueWithResult(issueCtx, deps.Cfg, gitlabClient, issue, deps.ProjectPath, deps.Dispatcher, deps.Runner, deps.Monitor, deps.Program, deps.AlertsEngine, deps.Enforcer)
+			// Separate client for handler calls (AddIssueNote, SetPRCreator).
+			var gitlabClient *gitlabSDK.Client
+			if deps.Cfg.Adapters.GitLab.BaseURL != "" {
+				gitlabClient = gitlabSDK.NewClientWithBaseURL(
+					deps.Cfg.Adapters.GitLab.Token,
+					deps.Cfg.Adapters.GitLab.Project,
+					deps.Cfg.Adapters.GitLab.BaseURL,
+				)
+			} else {
+				gitlabClient = gitlabSDK.NewClient(
+					deps.Cfg.Adapters.GitLab.Token,
+					deps.Cfg.Adapters.GitLab.Project,
+				)
+			}
 
-					// Wire MR to autopilot for CI monitoring + auto-merge
-					if result != nil && result.MRNumber > 0 && deps.AutopilotController != nil {
-						deps.AutopilotController.OnPRCreated(result.MRNumber, result.MRURL, 0, result.HeadSHA, result.BranchName, "")
-					}
-
-					return result, err
+			pollerDeps := sdkcore.PollerDeps{
+				Handler: sdkcore.IssueHandlerFunc(func(issueCtx context.Context, ev sdkcore.IssueEvent) (*sdkcore.IssueResult, error) {
+					return handleGitlabIssueWithResult(issueCtx, deps.Cfg, gitlabClient, ev, deps.ProjectPath, deps.Dispatcher, deps.Runner, deps.Monitor, deps.Program, deps.AlertsEngine, deps.Enforcer)
 				}),
 			}
 
 			if deps.AutopilotStateStore != nil {
-				gitlabPollerOpts = append(gitlabPollerOpts, gitlab.WithProcessedStore(deps.AutopilotStateStore))
+				pollerDeps.ProcessedStore = deps.AutopilotStateStore
 			}
-
-			// Wire OnMRCreated for autopilot controller
+			if deps.Cfg.Orchestrator.MaxConcurrent > 0 {
+				pollerDeps.MaxConcurrent = deps.Cfg.Orchestrator.MaxConcurrent
+			}
 			if deps.AutopilotController != nil {
 				ctrl := deps.AutopilotController
-				gitlabPollerOpts = append(gitlabPollerOpts, gitlab.WithOnMRCreated(func(mrIID int, mrURL string, issueIID int, headSHA string, branchName string) {
-					ctrl.OnPRCreated(mrIID, mrURL, issueIID, headSHA, branchName, "")
-				}))
+				pollerDeps.OnPRCreated = func(prEv sdkcore.PRCreatedEvent) {
+					ctrl.OnPRCreated(prEv.PRNumber, prEv.PRURL, 0, prEv.HeadSHA, prEv.BranchName, "")
+				}
 			}
 
-			if deps.Cfg.Orchestrator.MaxConcurrent > 0 {
-				gitlabPollerOpts = append(gitlabPollerOpts, gitlab.WithMaxConcurrent(deps.Cfg.Orchestrator.MaxConcurrent))
-			}
-
-			gitlabPoller := gitlab.NewPoller(gitlabClient, label, interval, gitlabPollerOpts...)
+			gitlabPoller := gitlabSDK.New(sdkCfg).NewPoller(pollerDeps)
 
 			logging.WithComponent("start").Info("GitLab polling enabled",
 				slog.String("project", deps.Cfg.Adapters.GitLab.Project),
-				slog.String("label", label),
+				slog.String("label", pilotLabel),
 				slog.Duration("interval", interval),
 			)
-			go func(p *gitlab.Poller) {
-				p.Start(ctx)
-			}(gitlabPoller)
+			go func() {
+				if err := gitlabPoller.Start(ctx); err != nil {
+					logging.WithComponent("gitlab").Error("GitLab poller failed",
+						slog.Any("error", err),
+					)
+				}
+			}()
 		},
 	}
 }
