@@ -51,12 +51,13 @@ type Orchestrator struct {
 
 // Task represents a task to be processed
 type Task struct {
-	ID          string
-	Ticket      *linear.Issue
-	Document    *TaskDocument
-	ProjectPath string
-	Branch      string
-	Priority    float64
+	ID            string
+	Ticket        *linear.Issue
+	Document      *TaskDocument
+	ProjectPath   string
+	Branch        string
+	Priority      float64
+	SourceAdapter string // identifies the originating adapter (e.g. "jira", "asana")
 }
 
 // NewOrchestrator creates a new orchestrator
@@ -219,12 +220,13 @@ func (o *Orchestrator) processTask(task *Task) {
 		priority = task.Ticket.Priority
 	}
 	execTask := &executor.Task{
-		ID:          task.ID,
-		Title:       task.Document.Title,
-		Description: task.Document.Markdown,
-		Priority:    priority,
-		ProjectPath: task.ProjectPath,
-		Branch:      task.Branch,
+		ID:            task.ID,
+		Title:         task.Document.Title,
+		Description:   task.Document.Markdown,
+		Priority:      priority,
+		ProjectPath:   task.ProjectPath,
+		Branch:        task.Branch,
+		SourceAdapter: task.SourceAdapter,
 	}
 
 	result, err := o.runner.Execute(o.ctx, execTask)
@@ -500,6 +502,42 @@ func (o *Orchestrator) ProcessJiraTicket(ctx context.Context, task *jira.TaskInf
 	}
 
 	// Queue task
+	o.QueueTask(internalTask)
+
+	return nil
+}
+
+// ProcessJiraIssueEvent processes a normalized SDK IssueEvent from the Jira polling path.
+// ev.SequenceID is already in "PROJ-42" form (prefixed by the SDK adapter) — used directly
+// as Identifier to avoid double-prefixing. SourceAdapter is set to "jira" unconditionally.
+func (o *Orchestrator) ProcessJiraIssueEvent(ctx context.Context, ev sdkcore.IssueEvent, projectPath string) error {
+	ticket := &TicketData{
+		ID:          ev.IssueID,
+		Identifier:  ev.SequenceID,
+		Title:       ev.Title,
+		Description: ev.Body,
+		Priority:    sdkshim.PriorityFromSDK(ev.Priority),
+		Labels:      ev.Labels,
+	}
+
+	doc, err := o.bridge.PlanTicket(ctx, ticket)
+	if err != nil {
+		return fmt.Errorf("failed to plan ticket: %w", err)
+	}
+
+	if err := o.saveTaskDocument(projectPath, doc); err != nil {
+		logging.WithComponent("orchestrator").Warn("Failed to save task document", slog.Any("error", err))
+	}
+
+	internalTask := &Task{
+		ID:            doc.ID,
+		Document:      doc,
+		ProjectPath:   projectPath,
+		Branch:        fmt.Sprintf("pilot/%s", ev.SequenceID),
+		Priority:      float64(sdkshim.PriorityFromSDK(ev.Priority)),
+		SourceAdapter: "jira",
+	}
+
 	o.QueueTask(internalTask)
 
 	return nil
