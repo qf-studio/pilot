@@ -23,8 +23,11 @@ import (
 	"github.com/qf-studio/pilot/internal/adapters/github"
 	"github.com/qf-studio/pilot/internal/adapters/linear"
 	"github.com/qf-studio/pilot/internal/adapters/plane"
+	"github.com/qf-studio/pilot/internal/adapters/sdkshim"
 	"github.com/qf-studio/pilot/internal/adapters/slack"
 	"github.com/qf-studio/pilot/internal/adapters/telegram"
+	sdkCore "github.com/qf-studio/studio-sdk/sdk/core"
+	sdkSlack "github.com/qf-studio/studio-sdk/sdk/integrations/slack"
 	"github.com/qf-studio/pilot/internal/alerts"
 	"github.com/qf-studio/pilot/internal/approval"
 	"github.com/qf-studio/pilot/internal/autopilot"
@@ -2502,19 +2505,32 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 	}
 
 	// Start Slack Socket Mode if enabled (GH-652: wire into polling mode)
-	var slackHandler *slack.Handler
 	if cfg.Adapters.Slack != nil && cfg.Adapters.Slack.Enabled && cfg.Adapters.Slack.SocketMode &&
 		cfg.Adapters.Slack.AppToken != "" && cfg.Adapters.Slack.BotToken != "" {
-		slackClient := slack.NewClient(cfg.Adapters.Slack.BotToken)
-		slackMessenger := slack.NewMessenger(slackClient)
 
 		var slackMemberResolver comms.MemberResolver
 		if teamAdapter != nil {
 			slackMemberResolver = &slack.MemberResolverAdapter{Inner: teamAdapter}
 		}
 
+		// slackChatHandler is the pilotChatHandler: it shims SDK events into
+		// comms.IncomingMessage and forwards them to slackCommsHandler.
+		// SetCommsHandler is called after the bridge messenger is created to
+		// break the bridge ↔ Messenger circular dependency.
+		slackChatHandler := slack.NewHandler(&slack.HandlerConfig{
+			AllowedChannels: cfg.Adapters.Slack.AllowedChannels,
+			AllowedUsers:    cfg.Adapters.Slack.AllowedUsers,
+		})
+
+		slackBridge := sdkSlack.New(sdkSlack.Config{
+			AppToken:        cfg.Adapters.Slack.AppToken,
+			BotToken:        cfg.Adapters.Slack.BotToken,
+			AllowedChannels: cfg.Adapters.Slack.AllowedChannels,
+			AllowedUsers:    cfg.Adapters.Slack.AllowedUsers,
+		}, nil).NewChatBridge(sdkCore.ChatDeps{Handler: slackChatHandler})
+
 		slackCommsHandler := comms.NewHandler(&comms.HandlerConfig{
-			Messenger:      slackMessenger,
+			Messenger:      sdkshim.MessengerToBridge(slackBridge),
 			Runner:         runner,
 			Projects:       config.NewSlackProjectSource(cfg),
 			ProjectPath:    projectPath,
@@ -2522,17 +2538,10 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 			Store:          store,
 			TaskIDPrefix:   "SLACK",
 		})
-
-		slackHandler = slack.NewHandler(&slack.HandlerConfig{
-			AppToken:        cfg.Adapters.Slack.AppToken,
-			Client:          slackClient,
-			CommsHandler:    slackCommsHandler,
-			AllowedChannels: cfg.Adapters.Slack.AllowedChannels,
-			AllowedUsers:    cfg.Adapters.Slack.AllowedUsers,
-		})
+		slackChatHandler.SetCommsHandler(slackCommsHandler)
 
 		go func() {
-			if err := slackHandler.StartListening(ctx); err != nil {
+			if err := slackBridge.Start(ctx); err != nil {
 				logging.WithComponent("slack").Error("Slack Socket Mode error", slog.Any("error", err))
 			}
 		}()
