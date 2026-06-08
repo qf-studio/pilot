@@ -1,6 +1,6 @@
 # Pilot Feature Matrix
 
-**Last Updated:** 2026-06-08 (v2.151.0)
+**Last Updated:** 2026-06-04 (v2.151.0)
 
 ## Legend
 
@@ -117,6 +117,7 @@
 | Linear webhooks | ✅ | adapters/linear | - | `adapters.linear` | Wired in pilot.go, gateway route + handler registered |
 | Linear sub-issue creation | ✅ | adapters/linear | - | `adapters.linear` | CreateIssue GraphQL mutation for epic decomposition (v1.27.0) |
 | Jira webhooks | ✅ | adapters/jira | - | `adapters.jira` | Wired in pilot.go, gateway route + handler + orchestrator |
+| Jira poll path → studio-sdk | ✅ | cmd/pilot | - | `adapters.jira.polling` | poller_jira.go rewritten to jiraSDK.New(cfg).NewPoller; SourceAdapter="jira", PriorityFromSDK, ResolveRepoForEvent (v2.172.0, GH-3477) |
 | Slack Socket Mode | ✅ | adapters/slack | `pilot start --slack` | `adapters.slack.app_token` | Listen() with auto-reconnect, wired in main.go (v0.29.0) |
 | Parallel GitHub polling | ✅ | adapters/github | - | `orchestrator.max_concurrent` | Goroutines + semaphore for concurrent issue processing (v0.26.1) |
 | Multi-repo polling | ✅ | adapters/github | - | `projects[].github` | Poll issues from all projects with GitHub config (v0.54.0) |
@@ -578,4 +579,3 @@ quality:
 | `IsTaskShipped` predicate | v2.151.x | autopilot | Cross-site invariant preventing double-dispatch (TASK-296 / GH-3091) |
 | Ghost-SHA guard | v2.151.x | executor | Fail-closed when commit_sha already on base branch (TASK-300 / GH-3099) |
 | Merge→done race window closed | v2.163.0 | autopilot + adapters/github | `Controller.SetOnIssueDone` fires `MarkProcessed` on all pollers at PR-merge, preventing phantom re-dispatch during label propagation lag (TASK-321 PR-4 / GH-3271) |
-| Jira SDK poll path — `ProcessJiraIssueEvent` | Done | orchestrator | - | - | `ProcessJiraIssueEvent` in orchestrator; SourceAdapter="jira", no re-prefixing of SequenceID (GH-3476) |
