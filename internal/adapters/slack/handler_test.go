@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/qf-studio/pilot/internal/comms"
+	"github.com/qf-studio/studio-sdk/sdk/core"
 )
 
 func TestNewHandler(t *testing.T) {
@@ -159,6 +160,133 @@ func (m *mockMemberResolver) ResolveSlackIdentity(slackUserID, email string) (st
 		return "", nil
 	}
 	return m.mappings[slackUserID], nil
+}
+
+// mockCommsHandler records HandleMessage calls for shim path tests.
+type mockCommsHandler struct {
+	got []*comms.IncomingMessage
+}
+
+func (m *mockCommsHandler) HandleMessage(_ context.Context, msg *comms.IncomingMessage) {
+	m.got = append(m.got, msg)
+}
+
+func (m *mockCommsHandler) CleanupLoop(_ context.Context) {}
+
+func TestHandler_HandleMessage_MessageAction(t *testing.T) {
+	mock := &mockCommsHandler{}
+	h := NewHandler(&HandlerConfig{
+		AppToken: "xapp-test-token",
+		BotToken: "xoxb-test-token",
+	})
+	h.commsHandler = mock
+
+	ev := core.MessageEvent{
+		Action:    "message",
+		ChannelID: "C123",
+		ThreadID:  "T456",
+		Text:      "deploy the app",
+		Sender:    core.Identity{UserID: "U789"},
+	}
+
+	if err := h.HandleMessage(context.Background(), ev); err != nil {
+		t.Fatalf("HandleMessage() error = %v", err)
+	}
+	if len(mock.got) != 1 {
+		t.Fatalf("HandleMessage() delivered %d messages, want 1", len(mock.got))
+	}
+	got := mock.got[0]
+	if got.ContextID != "C123" {
+		t.Errorf("ContextID = %q, want C123", got.ContextID)
+	}
+	if got.SenderID != "U789" {
+		t.Errorf("SenderID = %q, want U789", got.SenderID)
+	}
+	if got.Text != "deploy the app" {
+		t.Errorf("Text = %q, want %q", got.Text, "deploy the app")
+	}
+	if got.Platform != "slack" {
+		t.Errorf("Platform = %q, want slack", got.Platform)
+	}
+	if got.IsCallback {
+		t.Error("IsCallback should be false for message action")
+	}
+}
+
+func TestHandler_HandleMessage_CommandAction(t *testing.T) {
+	mock := &mockCommsHandler{}
+	h := NewHandler(&HandlerConfig{
+		AppToken: "xapp-test-token",
+		BotToken: "xoxb-test-token",
+	})
+	h.commsHandler = mock
+
+	ev := core.MessageEvent{
+		Action:    "command",
+		ChannelID: "C123",
+		Command:   "/status",
+		Sender:    core.Identity{UserID: "U789"},
+	}
+
+	if err := h.HandleMessage(context.Background(), ev); err != nil {
+		t.Fatalf("HandleMessage() error = %v", err)
+	}
+	if len(mock.got) != 1 {
+		t.Fatalf("HandleMessage() delivered %d messages, want 1", len(mock.got))
+	}
+	got := mock.got[0]
+	if got.Platform != "slack" {
+		t.Errorf("Platform = %q, want slack", got.Platform)
+	}
+	if got.IsCallback {
+		t.Error("IsCallback should be false for command action")
+	}
+}
+
+func TestHandler_HandleMessage_CallbackAction(t *testing.T) {
+	mock := &mockCommsHandler{}
+	h := NewHandler(&HandlerConfig{
+		AppToken: "xapp-test-token",
+		BotToken: "xoxb-test-token",
+	})
+	h.commsHandler = mock
+
+	ev := core.MessageEvent{
+		Action:     "callback",
+		ChannelID:  "C123",
+		CallbackID: "execute",
+		Data:       "execute",
+		Sender:     core.Identity{UserID: "U789"},
+	}
+
+	if err := h.HandleMessage(context.Background(), ev); err != nil {
+		t.Fatalf("HandleMessage() error = %v", err)
+	}
+	if len(mock.got) != 1 {
+		t.Fatalf("HandleMessage() delivered %d messages, want 1", len(mock.got))
+	}
+	got := mock.got[0]
+	if !got.IsCallback {
+		t.Error("IsCallback should be true for callback action")
+	}
+	if got.ActionID != "execute" {
+		t.Errorf("ActionID = %q, want execute", got.ActionID)
+	}
+	if got.CallbackID != "execute" {
+		t.Errorf("CallbackID = %q, want execute", got.CallbackID)
+	}
+}
+
+func TestHandler_HandleMessage_NilCommsHandler(t *testing.T) {
+	h := NewHandler(&HandlerConfig{
+		AppToken: "xapp-test-token",
+		BotToken: "xoxb-test-token",
+	})
+	// commsHandler is nil — HandleMessage must not panic.
+	ev := core.MessageEvent{Action: "message", Text: "hello", ChannelID: "C1"}
+	if err := h.HandleMessage(context.Background(), ev); err != nil {
+		t.Fatalf("HandleMessage() with nil commsHandler error = %v", err)
+	}
 }
 
 func TestRateLimiter(t *testing.T) {
