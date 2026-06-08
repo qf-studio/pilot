@@ -159,6 +159,41 @@ func (o *Orchestrator) ProcessTicket(ctx context.Context, issue *linear.Issue, p
 	return nil
 }
 
+// ProcessLinearIssueEvent processes a normalized SDK IssueEvent from the Linear polling path (GH-3467).
+// ev.SequenceID is already "LIN-APP-123" (prefixed by the SDK adapter) — used directly to avoid
+// the LIN-LIN-APP-123 double-prefix that would result from re-applying a prefix.
+func (o *Orchestrator) ProcessLinearIssueEvent(ctx context.Context, ev sdkcore.IssueEvent, projectPath string) error {
+	ticket := &TicketData{
+		ID:          ev.IssueID,
+		Identifier:  ev.SequenceID,
+		Title:       ev.Title,
+		Description: ev.Body,
+		Priority:    sdkshim.PriorityFromSDK(ev.Priority),
+		Labels:      ev.Labels,
+	}
+
+	doc, err := o.bridge.PlanTicket(ctx, ticket)
+	if err != nil {
+		return fmt.Errorf("failed to plan ticket: %w", err)
+	}
+
+	if err := o.saveTaskDocument(projectPath, doc); err != nil {
+		logging.WithComponent("orchestrator").Warn("Failed to save task document", slog.Any("error", err))
+	}
+
+	internalTask := &Task{
+		ID:          doc.ID,
+		Document:    doc,
+		ProjectPath: projectPath,
+		Branch:      fmt.Sprintf("pilot/%s", ev.SequenceID),
+		Priority:    float64(sdkshim.PriorityFromSDK(ev.Priority)),
+	}
+
+	o.QueueTask(internalTask)
+
+	return nil
+}
+
 // QueueTask adds a task to the processing queue
 func (o *Orchestrator) QueueTask(task *Task) {
 	o.monitor.Register(task.ID, task.Document.Title, "")

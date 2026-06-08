@@ -524,32 +524,45 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 	return issueResult, execErr
 }
 
-// handleLinearIssueWithResult processes a Linear issue picked up by the poller (GH-393)
-func handleLinearIssueWithResult(ctx context.Context, cfg *config.Config, client *linear.Client, issue *linear.Issue, projectPath string, dispatcher *executor.Dispatcher, runner *executor.Runner, monitor *executor.Monitor, program *tea.Program, alertsEngine *alerts.Engine, enforcer *budget.Enforcer) (*linear.IssueResult, error) {
-	taskID := issue.Identifier // e.g., "APP-123"
+// handleLinearIssueWithResult processes a Linear issue delivered as a SDK core.IssueEvent (GH-3467).
+// ev.SequenceID is already prefixed ("LIN-APP-123") by the SDK adapter — use it directly.
+// apiKey is the workspace API key used for Linear API calls and SubIssueCreator injection.
+// teamKey is the Linear team key (e.g., "APP") used for state-transition lookups.
+func handleLinearIssueWithResult(ctx context.Context, cfg *config.Config, apiKey, teamKey string, ev sdkcore.IssueEvent, projectPath string, dispatcher *executor.Dispatcher, runner *executor.Runner, monitor *executor.Monitor, program *tea.Program, alertsEngine *alerts.Engine, enforcer *budget.Enforcer) (*sdkcore.IssueResult, error) {
+	taskID := ev.SequenceID // "LIN-APP-123"; already prefixed by the SDK adapter
+	title := ev.Title
 
-	taskDesc := fmt.Sprintf("Linear Issue %s: %s\n\n%s", issue.Identifier, issue.Title, issue.Description)
+	taskDesc := fmt.Sprintf("Linear Issue %s: %s\n\n%s", taskID, title, ev.Body)
 	branchName := fmt.Sprintf("pilot/%s", taskID)
 
-	// GH-920: Extract acceptance criteria from Linear issue description
-	// GH-1472: Set SourceAdapter/SourceIssueID for sub-issue creation via Linear API
+	// ResolveRepoForEvent is Phase-0 stub; ErrRepoNotResolved is expected — log and continue.
+	if _, _, _, err := sdkshim.ResolveRepoForEvent(cfg, "linear", ev); err != nil && err.Error() != sdkshim.ErrRepoNotResolved.Error() {
+		logging.WithComponent("linear").Warn("Unexpected repo resolution error",
+			slog.String("task_id", taskID),
+			slog.Any("error", err),
+		)
+	}
+
 	task := &executor.Task{
 		ID:                 taskID,
-		Title:              issue.Title,
+		Title:              title,
 		Description:        taskDesc,
 		ProjectPath:        projectPath,
 		Branch:             branchName,
 		CreatePR:           true,
-		AcceptanceCriteria: github.ExtractAcceptanceCriteria(issue.Description),
+		AcceptanceCriteria: github.ExtractAcceptanceCriteria(ev.Body),
 		SourceAdapter:      "linear",
-		SourceIssueID:      issue.ID,
+		SourceIssueID:      ev.IssueID,
+		Priority:           sdkshim.PriorityFromSDK(ev.Priority),
 		BaseBranch:         resolveProjectBaseBranch(cfg, projectPath), // GH-2290
 	}
 
-	// GH-1472: Wire Linear client as SubIssueCreator for epic decomposition
-	runner.SetSubIssueCreator(client)
+	// GH-1472: Wire Linear client as SubIssueCreator for epic decomposition.
+	// The SDK linear.Client lacks CreateIssue; use the in-tree client which satisfies the interface.
+	linearClient := linear.NewClient(apiKey)
+	runner.SetSubIssueCreator(linearClient)
 
-	deps := HandlerDeps{
+	handlerDeps := HandlerDeps{
 		Cfg:          cfg,
 		Dispatcher:   dispatcher,
 		Runner:       runner,
@@ -559,32 +572,33 @@ func handleLinearIssueWithResult(ctx context.Context, cfg *config.Config, client
 		Enforcer:     enforcer,
 		ProjectPath:  projectPath,
 	}
+	// Strip "LIN-" prefix to build the canonical Linear issue URL (e.g., APP-123).
+	linearIdentifier := strings.TrimPrefix(taskID, "LIN-")
 	info := IssueInfo{
 		TaskID:   taskID,
-		Title:    issue.Title,
-		URL:      fmt.Sprintf("https://linear.app/issue/%s", issue.Identifier),
+		Title:    title,
+		URL:      fmt.Sprintf("https://linear.app/issue/%s", linearIdentifier),
 		Adapter:  "linear",
 		LogEmoji: "📊",
 	}
 
-	hr, execErr := handleIssueGeneric(ctx, deps, info, task)
+	hr, execErr := handleIssueGeneric(ctx, handlerDeps, info, task)
 
-	// Build issue result
-	issueResult := &linear.IssueResult{
+	issueResult := &sdkcore.IssueResult{
 		Success:    hr.Success,
-		BranchName: hr.BranchName, // GH-1361: always set branch for autopilot wiring
+		BranchName: hr.BranchName,
 		PRNumber:   hr.PRNumber,
 		PRURL:      hr.PRURL,
-		HeadSHA:    hr.HeadSHA, // GH-1361: for autopilot CI monitoring
+		HeadSHA:    hr.HeadSHA,
 		Error:      hr.Error,
 	}
 
 	// Post-execution: add comment, transition issue to Done state
 	if execErr != nil {
 		comment := fmt.Sprintf("❌ Pilot execution failed:\n\n```\n%s\n```", execErr.Error())
-		if err := client.AddComment(ctx, issue.ID, comment); err != nil {
+		if err := linearClient.AddComment(ctx, ev.IssueID, comment); err != nil {
 			logging.WithComponent("linear").Warn("Failed to add comment",
-				slog.String("issue", issue.Identifier),
+				slog.String("issue", taskID),
 				slog.Any("error", err),
 			)
 		}
@@ -593,33 +607,33 @@ func handleLinearIssueWithResult(ctx context.Context, cfg *config.Config, client
 		if !hr.Result.IsEpic && hr.Result.CommitSHA == "" && hr.Result.PRUrl == "" { // GH-3053
 			comment := fmt.Sprintf("⚠️ Pilot execution completed but no changes were made.\n\n**Duration:** %s\n**Branch:** `%s`\n\nNo commits or PR were created. The task may need clarification or manual intervention.",
 				hr.Result.Duration, branchName)
-			if err := client.AddComment(ctx, issue.ID, comment); err != nil {
+			if err := linearClient.AddComment(ctx, ev.IssueID, comment); err != nil {
 				logging.WithComponent("linear").Warn("Failed to add comment",
-					slog.String("issue", issue.Identifier),
+					slog.String("issue", taskID),
 					slog.Any("error", err),
 				)
 			}
 			issueResult.Success = false
 		} else {
 			comment := buildExecutionComment(hr.Result, branchName)
-			if err := client.AddComment(ctx, issue.ID, comment); err != nil {
+			if err := linearClient.AddComment(ctx, ev.IssueID, comment); err != nil {
 				logging.WithComponent("linear").Warn("Failed to add comment",
-					slog.String("issue", issue.Identifier),
+					slog.String("issue", taskID),
 					slog.Any("error", err),
 				)
 			}
 
 			// GH-1403: Best-effort state transition to Done
-			doneStateID, err := client.GetTeamDoneStateID(ctx, issue.Team.Key)
+			doneStateID, err := linearClient.GetTeamDoneStateID(ctx, teamKey)
 			if err != nil {
 				logging.WithComponent("linear").Warn("failed to get done state ID for team",
-					slog.String("issue", issue.Identifier),
-					slog.String("team", issue.Team.Key),
+					slog.String("issue", taskID),
+					slog.String("team", teamKey),
 					slog.Any("error", err),
 				)
-			} else if err := client.UpdateIssueState(ctx, issue.ID, doneStateID); err != nil {
+			} else if err := linearClient.UpdateIssueState(ctx, ev.IssueID, doneStateID); err != nil {
 				logging.WithComponent("linear").Warn("failed to transition issue to done state",
-					slog.String("issue", issue.Identifier),
+					slog.String("issue", taskID),
 					slog.String("state_id", doneStateID),
 					slog.Any("error", err),
 				)
@@ -627,9 +641,9 @@ func handleLinearIssueWithResult(ctx context.Context, cfg *config.Config, client
 		}
 	} else if hr.Result != nil {
 		comment := buildFailureComment(hr.Result)
-		if err := client.AddComment(ctx, issue.ID, comment); err != nil {
+		if err := linearClient.AddComment(ctx, ev.IssueID, comment); err != nil {
 			logging.WithComponent("linear").Warn("Failed to add comment",
-				slog.String("issue", issue.Identifier),
+				slog.String("issue", taskID),
 				slog.Any("error", err),
 			)
 		}
