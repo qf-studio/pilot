@@ -1353,3 +1353,65 @@ func handleAzureDevOpsWorkItemWithResult(ctx context.Context, cfg *config.Config
 
 	return wiResult, execErr
 }
+
+// handleAzureDevOpsIssueWithResult processes an Azure DevOps work item delivered as a SDK core.IssueEvent
+// from the poll path. ev.SequenceID is already "AZDO-42" (prefixed by the SDK adapter) — use directly.
+func handleAzureDevOpsIssueWithResult(ctx context.Context, cfg *config.Config, ev sdkcore.IssueEvent, projectPath string, dispatcher *executor.Dispatcher, runner *executor.Runner, monitor *executor.Monitor, program *tea.Program, alertsEngine *alerts.Engine, enforcer *budget.Enforcer) (*sdkcore.IssueResult, error) {
+	taskID := ev.SequenceID // "AZDO-42"; already prefixed by the SDK adapter
+	title := ev.Title
+
+	taskDesc := fmt.Sprintf("Azure DevOps Work Item %s: %s\n\n%s", taskID, title, ev.Body)
+	branchName := fmt.Sprintf("pilot/%s", taskID)
+
+	// ResolveRepoForEvent is Phase-0 stub; ErrRepoNotResolved is expected — log and continue.
+	if _, _, _, err := sdkshim.ResolveRepoForEvent(cfg, "azuredevops", ev); err != nil && err.Error() != sdkshim.ErrRepoNotResolved.Error() {
+		logging.WithComponent("azuredevops").Warn("Unexpected repo resolution error",
+			slog.String("task_id", taskID),
+			slog.Any("error", err),
+		)
+	}
+
+	task := &executor.Task{
+		ID:            taskID,
+		Title:         title,
+		Description:   taskDesc,
+		ProjectPath:   projectPath,
+		Branch:        branchName,
+		CreatePR:      true,
+		SourceAdapter: "azuredevops",
+		SourceIssueID: ev.IssueID,
+		Priority:      sdkshim.PriorityFromSDK(ev.Priority),
+		BaseBranch:    resolveProjectBaseBranch(cfg, projectPath), // GH-2290
+	}
+
+	deps := HandlerDeps{
+		Cfg:          cfg,
+		Dispatcher:   dispatcher,
+		Runner:       runner,
+		Monitor:      monitor,
+		Program:      program,
+		AlertsEngine: alertsEngine,
+		Enforcer:     enforcer,
+		ProjectPath:  projectPath,
+	}
+	info := IssueInfo{
+		TaskID:   taskID,
+		Title:    title,
+		URL:      fmt.Sprintf("https://dev.azure.com/_workitems/edit/%s", ev.IssueID),
+		Adapter:  "azuredevops",
+		LogEmoji: "🔷",
+	}
+
+	hr, execErr := handleIssueGeneric(ctx, deps, info, task)
+
+	issueResult := &sdkcore.IssueResult{
+		Success:    hr.Success,
+		BranchName: hr.BranchName,
+		PRNumber:   hr.PRNumber,
+		PRURL:      hr.PRURL,
+		HeadSHA:    hr.HeadSHA,
+		Error:      hr.Error,
+	}
+
+	return issueResult, execErr
+}
