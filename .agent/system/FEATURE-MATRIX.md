@@ -1,6 +1,6 @@
 # Pilot Feature Matrix
 
-**Last Updated:** 2026-06-08 (v2.151.0)
+**Last Updated:** 2026-06-04 (v2.151.0)
 
 ## Legend
 
@@ -578,3 +578,4 @@ quality:
 | `IsTaskShipped` predicate | v2.151.x | autopilot | Cross-site invariant preventing double-dispatch (TASK-296 / GH-3091) |
 | Ghost-SHA guard | v2.151.x | executor | Fail-closed when commit_sha already on base branch (TASK-300 / GH-3099) |
 | Merge→done race window closed | v2.163.0 | autopilot + adapters/github | `Controller.SetOnIssueDone` fires `MarkProcessed` on all pollers at PR-merge, preventing phantom re-dispatch during label propagation lag (TASK-321 PR-4 / GH-3271) |
+| Asana SDK poll path (M7 Phase 5c) | v2.171.0 | cmd/pilot + orchestrator | `poller_asana.go` migrated to `asanaSDK.New(cfg).NewPoller(pollerDeps)`; `handleAsanaIssueWithResult` + `ProcessAsanaIssueEvent` added; SourceAdapter unconditional; PriorityFromSDK (GH-3469) |

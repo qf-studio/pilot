@@ -915,6 +915,68 @@ func buildAsanaFailureComment(result *executor.ExecutionResult) string {
 	return strings.Join(parts, "\n")
 }
 
+// handleAsanaIssueWithResult processes an Asana task delivered as a SDK core.IssueEvent.
+// ev.SequenceID is already prefixed ("ASANA-<GID>") by the SDK adapter — use it directly.
+func handleAsanaIssueWithResult(ctx context.Context, cfg *config.Config, ev sdkcore.IssueEvent, projectPath string, dispatcher *executor.Dispatcher, runner *executor.Runner, monitor *executor.Monitor, program *tea.Program, alertsEngine *alerts.Engine, enforcer *budget.Enforcer) (*sdkcore.IssueResult, error) {
+	taskID := ev.SequenceID // "ASANA-<GID>"; already prefixed by the SDK adapter
+	title := ev.Title
+
+	taskDesc := fmt.Sprintf("Asana Task %s: %s\n\n%s", taskID, title, ev.Body)
+	branchName := fmt.Sprintf("pilot/%s", taskID)
+
+	// ResolveRepoForEvent is Phase-0 stub; ErrRepoNotResolved is expected — log and continue.
+	if _, _, _, err := sdkshim.ResolveRepoForEvent(cfg, "asana", ev); err != nil && err.Error() != sdkshim.ErrRepoNotResolved.Error() {
+		logging.WithComponent("asana").Warn("Unexpected repo resolution error",
+			slog.String("task_id", taskID),
+			slog.Any("error", err),
+		)
+	}
+
+	task := &executor.Task{
+		ID:            taskID,
+		Title:         title,
+		Description:   taskDesc,
+		ProjectPath:   projectPath,
+		Branch:        branchName,
+		CreatePR:      true,
+		SourceAdapter: "asana",
+		SourceIssueID: ev.IssueID,
+		Priority:      sdkshim.PriorityFromSDK(ev.Priority),
+		BaseBranch:    resolveProjectBaseBranch(cfg, projectPath), // GH-2290
+	}
+
+	deps := HandlerDeps{
+		Cfg:          cfg,
+		Dispatcher:   dispatcher,
+		Runner:       runner,
+		Monitor:      monitor,
+		Program:      program,
+		AlertsEngine: alertsEngine,
+		Enforcer:     enforcer,
+		ProjectPath:  projectPath,
+	}
+	info := IssueInfo{
+		TaskID:   taskID,
+		Title:    title,
+		URL:      fmt.Sprintf("https://app.asana.com/0/0/%s", ev.IssueID),
+		Adapter:  "asana",
+		LogEmoji: "📦",
+	}
+
+	hr, execErr := handleIssueGeneric(ctx, deps, info, task)
+
+	issueResult := &sdkcore.IssueResult{
+		Success:    hr.Success,
+		BranchName: hr.BranchName,
+		PRNumber:   hr.PRNumber,
+		PRURL:      hr.PRURL,
+		HeadSHA:    hr.HeadSHA,
+		Error:      hr.Error,
+	}
+
+	return issueResult, execErr
+}
+
 // buildExecutionComment formats a comment for successful executions.
 func buildExecutionComment(result *executor.ExecutionResult, branchName string) string {
 	var sb strings.Builder
