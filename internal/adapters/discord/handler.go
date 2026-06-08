@@ -10,15 +10,23 @@ import (
 
 	"github.com/qf-studio/pilot/internal/comms"
 	"github.com/qf-studio/pilot/internal/logging"
+	sdkCore "github.com/qf-studio/studio-sdk/sdk/core"
 )
+
+// commsHandlerIface is the subset of *comms.Handler that Handler calls.
+// Using an interface allows test doubles without a full comms stack.
+type commsHandlerIface interface {
+	HandleMessage(ctx context.Context, msg *comms.IncomingMessage)
+	CleanupLoop(ctx context.Context)
+}
 
 // Handler processes incoming Discord events and coordinates task execution
 // by delegating message handling to the shared comms.Handler.
 type Handler struct {
 	gatewayClient   *GatewayClient
 	apiClient       *Client
-	notifier        *Notifier      // GH-2132: task lifecycle notifications
-	commsHandler    *comms.Handler // Shared message handler for intent dispatch + task execution
+	notifier        *Notifier         // GH-2132: task lifecycle notifications
+	commsHandler    commsHandlerIface // Shared message handler for intent dispatch + task execution
 	allowedGuilds   map[string]bool
 	allowedChannels map[string]bool
 	stopCh          chan struct{}
@@ -49,16 +57,58 @@ func NewHandler(config *HandlerConfig, commsHandler *comms.Handler) *Handler {
 		allowedChannels[id] = true
 	}
 
+	// Store as interface only when non-nil to avoid a non-nil interface holding a nil pointer.
+	var commsH commsHandlerIface
+	if commsHandler != nil {
+		commsH = commsHandler
+	}
+
 	return &Handler{
 		gatewayClient:   NewGatewayClient(config.BotToken, DefaultIntents),
 		apiClient:       NewClient(config.BotToken),
-		commsHandler:    commsHandler,
+		commsHandler:    commsH,
 		allowedGuilds:   allowedGuilds,
 		allowedChannels: allowedChannels,
 		stopCh:          make(chan struct{}),
 		log:             logging.WithComponent("discord.handler"),
 		botID:           config.BotID,
 	}
+}
+
+// HandleMessage implements core.MessageHandler. It converts the normalized SDK
+// event to comms.IncomingMessage and delegates to the shared comms.Handler.
+// Discord sender IDs are already strings so no conversion is needed.
+//
+// The conversion mirrors sdkshim.MessageEventToIncomingMessage; it is inlined
+// here to avoid the sdkshim → config → discord → sdkshim import cycle.
+func (h *Handler) HandleMessage(ctx context.Context, ev sdkCore.MessageEvent) error {
+	msg := &comms.IncomingMessage{
+		ContextID:  ev.ChannelID,
+		SenderID:   ev.Sender.UserID,
+		SenderName: ev.Sender.DisplayName,
+		Text:       ev.Text,
+		ThreadID:   ev.ThreadID,
+		Platform:   "discord",
+		RawEvent:   &ev,
+	}
+	if ev.Action == "callback" {
+		msg.IsCallback = true
+		msg.CallbackID = ev.CallbackID
+		// ev.Data carries the button ActionID; bridge sets Data=="execute"/"cancel"
+		// so comms.Handler can route directly without normalization.
+		msg.ActionID = ev.Data
+	}
+	if h.commsHandler != nil {
+		h.commsHandler.HandleMessage(ctx, msg)
+	}
+	return nil
+}
+
+// SetCommsHandler wires the shared comms handler after construction. Used
+// when the bridge messenger must be created before the comms handler, avoiding
+// the chicken-and-egg dependency between the bridge and its Messenger.
+func (h *Handler) SetCommsHandler(ch *comms.Handler) {
+	h.commsHandler = ch
 }
 
 // SetNotifier sets the notifier for task lifecycle messages (GH-2132).

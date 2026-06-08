@@ -12,7 +12,22 @@ import (
 
 	"github.com/qf-studio/pilot/internal/comms"
 	"github.com/qf-studio/pilot/internal/testutil"
+	sdkCore "github.com/qf-studio/studio-sdk/sdk/core"
 )
+
+// mockCommsHandler records HandleMessage calls for shim path tests.
+type mockCommsHandler struct {
+	mu  sync.Mutex
+	got []*comms.IncomingMessage
+}
+
+func (m *mockCommsHandler) HandleMessage(_ context.Context, msg *comms.IncomingMessage) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.got = append(m.got, msg)
+}
+
+func (m *mockCommsHandler) CleanupLoop(_ context.Context) {}
 
 // --- noopMessenger for tests ---
 
@@ -1006,6 +1021,121 @@ func TestNonButtonInteractionIgnored(t *testing.T) {
 
 	ctx := context.Background()
 	h.handleInteractionCreate(ctx, event) // should not panic or delegate
+}
+
+// --- SDK shim path (core.MessageHandler.HandleMessage) ---
+
+func TestHandler_HandleMessage_MessageAction(t *testing.T) {
+	mock := &mockCommsHandler{}
+	h := NewHandler(&HandlerConfig{BotToken: testutil.FakeBearerToken}, nil)
+	h.commsHandler = mock
+
+	ev := sdkCore.MessageEvent{
+		Action:    "message",
+		ChannelID: "chan1",
+		ThreadID:  "thread1",
+		Text:      "deploy the app",
+		Sender:    sdkCore.Identity{UserID: "user1", DisplayName: "Alice"},
+	}
+	if err := h.HandleMessage(context.Background(), ev); err != nil {
+		t.Fatalf("HandleMessage() error = %v", err)
+	}
+
+	mock.mu.Lock()
+	defer mock.mu.Unlock()
+	if len(mock.got) != 1 {
+		t.Fatalf("HandleMessage() delivered %d messages, want 1", len(mock.got))
+	}
+	got := mock.got[0]
+	if got.ContextID != "chan1" {
+		t.Errorf("ContextID = %q, want chan1", got.ContextID)
+	}
+	if got.SenderID != "user1" {
+		t.Errorf("SenderID = %q, want user1", got.SenderID)
+	}
+	if got.Text != "deploy the app" {
+		t.Errorf("Text = %q, want %q", got.Text, "deploy the app")
+	}
+	if got.Platform != "discord" {
+		t.Errorf("Platform = %q, want discord", got.Platform)
+	}
+	if got.IsCallback {
+		t.Error("IsCallback should be false for message action")
+	}
+}
+
+func TestHandler_HandleMessage_CommandAction(t *testing.T) {
+	mock := &mockCommsHandler{}
+	h := NewHandler(&HandlerConfig{BotToken: testutil.FakeBearerToken}, nil)
+	h.commsHandler = mock
+
+	ev := sdkCore.MessageEvent{
+		Action:    "command",
+		ChannelID: "chan1",
+		Command:   "/status",
+		Sender:    sdkCore.Identity{UserID: "user1"},
+	}
+	if err := h.HandleMessage(context.Background(), ev); err != nil {
+		t.Fatalf("HandleMessage() error = %v", err)
+	}
+
+	mock.mu.Lock()
+	defer mock.mu.Unlock()
+	if len(mock.got) != 1 {
+		t.Fatalf("HandleMessage() delivered %d messages, want 1", len(mock.got))
+	}
+	got := mock.got[0]
+	if got.Platform != "discord" {
+		t.Errorf("Platform = %q, want discord", got.Platform)
+	}
+	if got.IsCallback {
+		t.Error("IsCallback should be false for command action")
+	}
+}
+
+func TestHandler_HandleMessage_CallbackAction(t *testing.T) {
+	mock := &mockCommsHandler{}
+	h := NewHandler(&HandlerConfig{BotToken: testutil.FakeBearerToken}, nil)
+	h.commsHandler = mock
+
+	ev := sdkCore.MessageEvent{
+		Action:     "callback",
+		ChannelID:  "chan1",
+		CallbackID: "int123/token456",
+		Data:       "execute",
+		Sender:     sdkCore.Identity{UserID: "user1"},
+	}
+	if err := h.HandleMessage(context.Background(), ev); err != nil {
+		t.Fatalf("HandleMessage() error = %v", err)
+	}
+
+	mock.mu.Lock()
+	defer mock.mu.Unlock()
+	if len(mock.got) != 1 {
+		t.Fatalf("HandleMessage() delivered %d messages, want 1", len(mock.got))
+	}
+	got := mock.got[0]
+	if !got.IsCallback {
+		t.Error("IsCallback should be true for callback action")
+	}
+	if got.ActionID != "execute" {
+		t.Errorf("ActionID = %q, want execute", got.ActionID)
+	}
+	if got.CallbackID != "int123/token456" {
+		t.Errorf("CallbackID = %q, want int123/token456", got.CallbackID)
+	}
+	if got.Platform != "discord" {
+		t.Errorf("Platform = %q, want discord", got.Platform)
+	}
+}
+
+func TestHandler_HandleMessage_NilCommsHandler(t *testing.T) {
+	h := NewHandler(&HandlerConfig{BotToken: testutil.FakeBearerToken}, nil)
+	// commsHandler is nil — HandleMessage must not panic.
+	ev := sdkCore.MessageEvent{Action: "message", Text: "hello", ChannelID: "chan1"}
+	if err := h.HandleMessage(context.Background(), ev); err != nil {
+		t.Fatalf("HandleMessage() with nil commsHandler error = %v", err)
+	}
 }
 
 // Helper functions
