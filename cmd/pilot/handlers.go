@@ -11,12 +11,12 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	sdkcore "github.com/qf-studio/studio-sdk/sdk/core"
+	gitlabSDK "github.com/qf-studio/studio-sdk/sdk/integrations/gitlab"
 	planeSDK "github.com/qf-studio/studio-sdk/sdk/integrations/plane"
 
 	"github.com/qf-studio/pilot/internal/adapters/asana"
 	"github.com/qf-studio/pilot/internal/adapters/azuredevops"
 	"github.com/qf-studio/pilot/internal/adapters/github"
-	"github.com/qf-studio/pilot/internal/adapters/gitlab"
 	"github.com/qf-studio/pilot/internal/adapters/jira"
 	"github.com/qf-studio/pilot/internal/adapters/linear"
 	"github.com/qf-studio/pilot/internal/adapters/sdkshim"
@@ -1130,27 +1130,37 @@ func buildPlaneExecutionComment(result *executor.ExecutionResult, branchName str
 	return comment
 }
 
-func handleGitLabIssueWithResult(ctx context.Context, cfg *config.Config, client *gitlab.Client, issue *gitlab.Issue, projectPath string, dispatcher *executor.Dispatcher, runner *executor.Runner, monitor *executor.Monitor, program *tea.Program, alertsEngine *alerts.Engine, enforcer *budget.Enforcer) (*gitlab.IssueResult, error) {
-	taskID := fmt.Sprintf("GL-%d", issue.IID)
+// handleGitlabIssueWithResult processes a GitLab issue delivered as a SDK core.IssueEvent.
+// ev.SequenceID is already prefixed ("GL-42") by the SDK adapter — use it directly.
+func handleGitlabIssueWithResult(ctx context.Context, cfg *config.Config, client *gitlabSDK.Client, ev sdkcore.IssueEvent, projectPath string, dispatcher *executor.Dispatcher, runner *executor.Runner, monitor *executor.Monitor, program *tea.Program, alertsEngine *alerts.Engine, enforcer *budget.Enforcer) (*sdkcore.IssueResult, error) {
+	taskID := ev.SequenceID // "GL-42"; already prefixed by the SDK adapter
+	title := ev.Title
+
+	taskDesc := fmt.Sprintf("GitLab Issue %s: %s\n\n%s", taskID, title, ev.Body)
 	branchName := fmt.Sprintf("pilot/%s", taskID)
 
-	taskDesc := fmt.Sprintf("GitLab Issue %s: %s\n\n%s", taskID, issue.Title, issue.Description)
+	// ResolveRepoForEvent is Phase-0 stub; ErrRepoNotResolved is expected — log and continue.
+	if _, _, _, err := sdkshim.ResolveRepoForEvent(cfg, "gitlab", ev); err != nil && err.Error() != sdkshim.ErrRepoNotResolved.Error() {
+		logging.WithComponent("gitlab").Warn("Unexpected repo resolution error",
+			slog.String("task_id", taskID),
+			slog.Any("error", err),
+		)
+	}
 
 	task := &executor.Task{
 		ID:            taskID,
-		Title:         issue.Title,
+		Title:         title,
 		Description:   taskDesc,
 		ProjectPath:   projectPath,
 		Branch:        branchName,
 		CreatePR:      true,
 		SourceAdapter: "gitlab",
-		SourceIssueID: fmt.Sprintf("%d", issue.IID),
-		// GH-2290: honor project.default_branch / branch_from for GitLab MRs too —
-		// this is the reporter's exact case (main → dev → feature).
-		BaseBranch: cfg.FindProjectByPath(projectPath).ResolveBaseBranch(),
+		SourceIssueID: ev.IssueID,
+		Priority:      sdkshim.PriorityFromSDK(ev.Priority),
+		BaseBranch:    resolveProjectBaseBranch(cfg, projectPath), // GH-2290
 	}
 
-	// Wire GitLab client as PRCreator so the runner creates MRs via
+	// Wire SDK client directly as PRCreator so the runner creates MRs via
 	// the GitLab API instead of the gh CLI.
 	runner.SetPRCreator(client)
 
@@ -1166,28 +1176,30 @@ func handleGitLabIssueWithResult(ctx context.Context, cfg *config.Config, client
 	}
 	info := IssueInfo{
 		TaskID:   taskID,
-		Title:    issue.Title,
-		URL:      issue.WebURL,
+		Title:    title,
+		URL:      fmt.Sprintf("%s/%s/-/issues/%s", cfg.Adapters.GitLab.BaseURL, cfg.Adapters.GitLab.Project, ev.IssueID),
 		Adapter:  "gitlab",
 		LogEmoji: "🦊",
 	}
 
 	hr, execErr := handleIssueGeneric(ctx, deps, info, task)
 
-	issueResult := &gitlab.IssueResult{
+	issueResult := &sdkcore.IssueResult{
 		Success:    hr.Success,
 		BranchName: hr.BranchName,
-		MRNumber:   hr.PRNumber,
-		MRURL:      hr.PRURL,
+		PRNumber:   hr.PRNumber,
+		PRURL:      hr.PRURL,
 		HeadSHA:    hr.HeadSHA,
 		Error:      hr.Error,
 	}
 
+	// Post-execution: add issue note via SDK client.
+	issueIID, _ := strconv.Atoi(ev.IssueID)
 	if execErr != nil {
 		note := fmt.Sprintf("❌ Pilot execution failed:\n\n%s", execErr.Error())
-		if _, err := client.AddIssueNote(ctx, issue.IID, note); err != nil {
+		if _, err := client.AddIssueNote(ctx, issueIID, note); err != nil {
 			logging.WithComponent("gitlab").Warn("Failed to add failure note",
-				slog.Int("iid", issue.IID),
+				slog.String("task_id", taskID),
 				slog.Any("error", err),
 			)
 		}
@@ -1195,9 +1207,9 @@ func handleGitLabIssueWithResult(ctx context.Context, cfg *config.Config, client
 		if !hr.Result.IsEpic && hr.Result.CommitSHA == "" && hr.Result.PRUrl == "" { // GH-3053
 			note := fmt.Sprintf("⚠️ Pilot execution completed but no changes were made.\n\nDuration: %s\nBranch: %s\n\nNo commits or MR were created. The task may need clarification or manual intervention.",
 				hr.Result.Duration, branchName)
-			if _, err := client.AddIssueNote(ctx, issue.IID, note); err != nil {
+			if _, err := client.AddIssueNote(ctx, issueIID, note); err != nil {
 				logging.WithComponent("gitlab").Warn("Failed to add note",
-					slog.Int("iid", issue.IID),
+					slog.String("task_id", taskID),
 					slog.Any("error", err),
 				)
 			}
@@ -1215,18 +1227,18 @@ func handleGitLabIssueWithResult(ctx context.Context, cfg *config.Config, client
 			parts = append(parts, fmt.Sprintf("Branch: %s", branchName))
 			parts = append(parts, fmt.Sprintf("Duration: %s", hr.Result.Duration))
 			note := strings.Join(parts, "\n")
-			if _, err := client.AddIssueNote(ctx, issue.IID, note); err != nil {
+			if _, err := client.AddIssueNote(ctx, issueIID, note); err != nil {
 				logging.WithComponent("gitlab").Warn("Failed to add success note",
-					slog.Int("iid", issue.IID),
+					slog.String("task_id", taskID),
 					slog.Any("error", err),
 				)
 			}
 		}
 	} else if hr.Result != nil {
 		note := fmt.Sprintf("❌ Pilot execution failed\n\nError: %s\nDuration: %s", hr.Result.Error, hr.Result.Duration)
-		if _, err := client.AddIssueNote(ctx, issue.IID, note); err != nil {
+		if _, err := client.AddIssueNote(ctx, issueIID, note); err != nil {
 			logging.WithComponent("gitlab").Warn("Failed to add failure note",
-				slog.Int("iid", issue.IID),
+				slog.String("task_id", taskID),
 				slog.Any("error", err),
 			)
 		}
