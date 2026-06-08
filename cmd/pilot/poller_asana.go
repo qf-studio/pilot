@@ -5,7 +5,9 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/qf-studio/pilot/internal/adapters/asana"
+	sdkcore "github.com/qf-studio/studio-sdk/sdk/core"
+	asanaSDK "github.com/qf-studio/studio-sdk/sdk/integrations/asana"
+
 	"github.com/qf-studio/pilot/internal/config"
 	"github.com/qf-studio/pilot/internal/logging"
 )
@@ -18,75 +20,61 @@ func asanaPollerRegistration() PollerRegistration {
 				cfg.Adapters.Asana.Polling != nil && cfg.Adapters.Asana.Polling.Enabled
 		},
 		CreateAndStart: func(ctx context.Context, deps *PollerDeps) {
-			// Determine interval
 			interval := 30 * time.Second
 			if deps.Cfg.Adapters.Asana.Polling.Interval > 0 {
 				interval = deps.Cfg.Adapters.Asana.Polling.Interval
 			}
 
-			asanaClient := asana.NewClient(
-				deps.Cfg.Adapters.Asana.AccessToken,
-				deps.Cfg.Adapters.Asana.WorkspaceID,
-			)
-
-			// GH-2132: Create notifier for task lifecycle notifications
-			asanaPilotTag := deps.Cfg.Adapters.Asana.PilotTag
-			if asanaPilotTag == "" {
-				asanaPilotTag = "pilot"
+			// Map internal config → SDK config (field names differ: PilotTag vs TriggerLabel).
+			pilotTag := deps.Cfg.Adapters.Asana.PilotTag
+			if pilotTag == "" {
+				pilotTag = "pilot"
 			}
-			asanaNotifier := asana.NewNotifier(asanaClient, asanaPilotTag)
+			sdkCfg := &asanaSDK.Config{
+				Enabled:       deps.Cfg.Adapters.Asana.Enabled,
+				AccessToken:   deps.Cfg.Adapters.Asana.AccessToken,
+				WorkspaceID:   deps.Cfg.Adapters.Asana.WorkspaceID,
+				WebhookSecret: deps.Cfg.Adapters.Asana.WebhookSecret,
+				TriggerLabel:  pilotTag,
+				Polling: &asanaSDK.PollingConfig{
+					Enabled:  true,
+					Interval: interval,
+				},
+			}
 
-			// GH-1701: Wire processed store for dedup persistence across restarts
-			asanaPollerOpts := []asana.PollerOption{
-				asana.WithOnAsanaTask(func(taskCtx context.Context, task *asana.Task) (*asana.TaskResult, error) {
-					taskID := "ASANA-" + task.GID
-
-					// GH-2132: Notify task started
-					if err := asanaNotifier.NotifyTaskStarted(taskCtx, task.GID, taskID); err != nil {
-						logging.WithComponent("asana").Warn("Failed to notify task started",
-							slog.String("task_gid", task.GID),
-							slog.Any("error", err),
-						)
-					}
-
-					result, err := handleAsanaTaskWithResult(taskCtx, deps.Cfg, asanaClient, task, deps.ProjectPath, deps.Dispatcher, deps.Runner, deps.Monitor, deps.Program, deps.AlertsEngine, deps.Enforcer)
-
-					// GH-2132: Link PR via notifier
-					if result != nil && result.PRNumber > 0 {
-						if linkErr := asanaNotifier.LinkPR(taskCtx, task.GID, result.PRNumber, result.PRURL); linkErr != nil {
-							logging.WithComponent("asana").Warn("Failed to link PR",
-								slog.String("task_gid", task.GID),
-								slog.Any("error", linkErr),
-							)
-						}
-					}
-
-					// GH-1399: Wire PR to autopilot for CI monitoring + auto-merge
-					if result != nil && result.PRNumber > 0 && deps.AutopilotController != nil {
-						// issueNumber=0 because Asana tasks don't have GitHub issue numbers
-						deps.AutopilotController.OnPRCreated(result.PRNumber, result.PRURL, 0, result.HeadSHA, result.BranchName, "")
-					}
-
-					return result, err
+			pollerDeps := sdkcore.PollerDeps{
+				Handler: sdkcore.IssueHandlerFunc(func(issueCtx context.Context, ev sdkcore.IssueEvent) (*sdkcore.IssueResult, error) {
+					return handleAsanaIssueWithResult(issueCtx, deps.Cfg, ev, deps.ProjectPath, deps.Dispatcher, deps.Runner, deps.Monitor, deps.Program, deps.AlertsEngine, deps.Enforcer)
 				}),
 			}
+
 			if deps.AutopilotStateStore != nil {
-				asanaPollerOpts = append(asanaPollerOpts, asana.WithProcessedStore(deps.AutopilotStateStore))
+				pollerDeps.ProcessedStore = deps.AutopilotStateStore
 			}
-			asanaPoller := asana.NewPoller(asanaClient, deps.Cfg.Adapters.Asana, interval, asanaPollerOpts...)
+			if deps.Cfg.Orchestrator.MaxConcurrent > 0 {
+				pollerDeps.MaxConcurrent = deps.Cfg.Orchestrator.MaxConcurrent
+			}
+			if deps.AutopilotController != nil {
+				ctrl := deps.AutopilotController
+				pollerDeps.OnPRCreated = func(prEv sdkcore.PRCreatedEvent) {
+					ctrl.OnPRCreated(prEv.PRNumber, prEv.PRURL, 0, prEv.HeadSHA, prEv.BranchName, "")
+				}
+			}
+
+			asanaPoller := asanaSDK.New(sdkCfg).NewPoller(pollerDeps)
 
 			logging.WithComponent("start").Info("Asana polling enabled",
 				slog.String("workspace", deps.Cfg.Adapters.Asana.WorkspaceID),
-				slog.String("tag", deps.Cfg.Adapters.Asana.PilotTag),
+				slog.String("tag", pilotTag),
 				slog.Duration("interval", interval),
 			)
-			go func(p *asana.Poller) {
-				if err := p.Start(ctx); err != nil {
+			go func() {
+				if err := asanaPoller.Start(ctx); err != nil {
 					logging.WithComponent("asana").Error("Asana poller failed",
 						slog.Any("error", err),
 					)
 				}
-			}(asanaPoller)
+			}()
 		},
 	}
 }
