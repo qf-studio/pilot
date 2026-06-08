@@ -569,6 +569,40 @@ func (o *Orchestrator) ProcessPlaneTicket(ctx context.Context, item *plane.Webho
 	return nil
 }
 
+// ProcessAzureDevOpsIssueEvent processes a normalized SDK IssueEvent from the AzureDevOps polling path.
+// ev.SequenceID is already in "AZDO-42" form — used directly as Identifier.
+func (o *Orchestrator) ProcessAzureDevOpsIssueEvent(ctx context.Context, ev sdkcore.IssueEvent, projectPath string) error {
+	ticket := &TicketData{
+		ID:          ev.IssueID,
+		Identifier:  ev.SequenceID,
+		Title:       ev.Title,
+		Description: ev.Body,
+		Priority:    sdkshim.PriorityFromSDK(ev.Priority),
+		Labels:      ev.Labels,
+	}
+
+	doc, err := o.bridge.PlanTicket(ctx, ticket)
+	if err != nil {
+		return fmt.Errorf("failed to plan ticket: %w", err)
+	}
+
+	if err := o.saveTaskDocument(projectPath, doc); err != nil {
+		logging.WithComponent("orchestrator").Warn("Failed to save task document", slog.Any("error", err))
+	}
+
+	internalTask := &Task{
+		ID:          doc.ID,
+		Document:    doc,
+		ProjectPath: projectPath,
+		Branch:      fmt.Sprintf("pilot/%s", ev.SequenceID),
+		Priority:    float64(sdkshim.PriorityFromSDK(ev.Priority)),
+	}
+
+	o.QueueTask(internalTask)
+
+	return nil
+}
+
 // ProcessPlaneIssueEvent processes a normalized SDK IssueEvent from the Plane polling path.
 // ev.SequenceID is already "PLANE-42" (prefixed by the SDK adapter) — used directly to avoid
 // the PLANE-PLANE-N double-prefix that would result from re-applying fmt.Sprintf("PLANE-%d",...).
