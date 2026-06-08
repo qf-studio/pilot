@@ -160,6 +160,35 @@ func TestGitlabPollerNoLegacyImport(t *testing.T) {
 	}
 }
 
+// TestGitlabHandlerTaskSourceAdapter verifies Invariant 6: handlers.go unconditionally
+// sets Task.SourceAdapter = "gitlab" in handleGitlabIssueWithResult, so every task
+// routed through the SDK poll path carries the correct adapter label.
+func TestGitlabHandlerTaskSourceAdapter(t *testing.T) {
+	content, err := os.ReadFile("handlers.go")
+	if err != nil {
+		t.Fatalf("failed to read handlers.go: %v", err)
+	}
+	if !strings.Contains(string(content), `SourceAdapter: "gitlab"`) {
+		t.Error(`handlers.go must unconditionally set SourceAdapter: "gitlab" in handleGitlabIssueWithResult`)
+	}
+}
+
+// TestGitlabHandlerSDKRoutingPath verifies Invariant 7: handleGitlabIssueWithResult routes
+// through the SDK event path — it must NOT call the legacy ProcessGitlabTicket orchestrator
+// function, and must use sdkshim.PriorityFromSDK for priority conversion.
+func TestGitlabHandlerSDKRoutingPath(t *testing.T) {
+	content, err := os.ReadFile("handlers.go")
+	if err != nil {
+		t.Fatalf("failed to read handlers.go: %v", err)
+	}
+	if strings.Contains(string(content), "ProcessGitlabTicket") {
+		t.Error("handlers.go must not call legacy ProcessGitlabTicket; SDK poll path must not use the legacy orchestrator function")
+	}
+	if !strings.Contains(string(content), "sdkshim.PriorityFromSDK") {
+		t.Error("handlers.go must use sdkshim.PriorityFromSDK for priority conversion in handleGitlabIssueWithResult")
+	}
+}
+
 // gitlabItoa converts an int to a decimal string (avoids importing strconv in test).
 func gitlabItoa(n int) string {
 	if n == 0 {
