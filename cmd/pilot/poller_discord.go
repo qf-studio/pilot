@@ -8,10 +8,13 @@ import (
 	"time"
 
 	"github.com/qf-studio/pilot/internal/adapters/discord"
+	"github.com/qf-studio/pilot/internal/adapters/sdkshim"
 	"github.com/qf-studio/pilot/internal/comms"
 	"github.com/qf-studio/pilot/internal/config"
 	"github.com/qf-studio/pilot/internal/intent"
 	"github.com/qf-studio/pilot/internal/logging"
+	sdkCore "github.com/qf-studio/studio-sdk/sdk/core"
+	sdkDiscord "github.com/qf-studio/studio-sdk/sdk/integrations/discord"
 )
 
 func discordPollerRegistration() PollerRegistration {
@@ -54,12 +57,26 @@ func discordPollerRegistration() PollerRegistration {
 				}
 			}
 
-			// Build DiscordMessenger + comms.Handler
-			discordClient := discord.NewClient(discordCfg.BotToken)
-			messenger := discord.NewMessenger(discordClient)
+			// discordChatHandler is the core.MessageHandler: it shims SDK events
+			// into comms.IncomingMessage and forwards them to discordCommsHandler.
+			// SetCommsHandler is called after the bridge messenger is created to
+			// break the bridge ↔ Messenger circular dependency.
+			discordChatHandler := discord.NewHandler(&discord.HandlerConfig{
+				BotToken:        discordCfg.BotToken,
+				BotID:           discordCfg.BotID,
+				AllowedGuilds:   discordCfg.AllowedGuilds,
+				AllowedChannels: discordCfg.AllowedChannels,
+			}, nil)
 
-			commsHandler := comms.NewHandler(&comms.HandlerConfig{
-				Messenger:     messenger,
+			discordBridge := sdkDiscord.New(sdkDiscord.Config{
+				BotToken:        discordCfg.BotToken,
+				BotID:           discordCfg.BotID,
+				AllowedGuilds:   discordCfg.AllowedGuilds,
+				AllowedChannels: discordCfg.AllowedChannels,
+			}, nil).NewChatBridge(sdkCore.ChatDeps{Handler: discordChatHandler})
+
+			discordCommsHandler := comms.NewHandler(&comms.HandlerConfig{
+				Messenger:     sdkshim.MessengerToBridge(discordBridge),
 				Runner:        deps.Runner,
 				Projects:      config.NewProjectSource(deps.Cfg),
 				ProjectPath:   deps.ProjectPath,
@@ -67,19 +84,10 @@ func discordPollerRegistration() PollerRegistration {
 				ConvStore:     convStore,
 				TaskIDPrefix:  "DISCORD",
 			})
-
-			handler := discord.NewHandler(&discord.HandlerConfig{
-				BotToken:        discordCfg.BotToken,
-				BotID:           discordCfg.BotID,
-				AllowedGuilds:   discordCfg.AllowedGuilds,
-				AllowedChannels: discordCfg.AllowedChannels,
-			}, commsHandler)
-
-			// GH-2132: Wire notifier for task lifecycle messages
-			handler.SetNotifier(discord.NewNotifier(discordClient))
+			discordChatHandler.SetCommsHandler(discordCommsHandler)
 
 			go func() {
-				if err := handler.StartListening(ctx); err != nil {
+				if err := discordBridge.Start(ctx); err != nil {
 					logging.WithComponent("discord").Error("Discord listener error",
 						slog.Any("error", err),
 					)
