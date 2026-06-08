@@ -118,7 +118,7 @@ Disable via config: `executor.navigator.auto_init: false`
 
 ## Current State
 
-**Current Version:** v2.172.0 | full status in `.agent/system/FEATURE-MATRIX.md`
+**Current Version:** v2.173.0 | full status in `.agent/system/FEATURE-MATRIX.md`
 
 **Recent (v2.166.10–11, June 2 2026):** **TASK-358 dashboard "failed" count fixed — SHIPPED & live-verified.** The QUEUE card showed `✗ 784 failed`, wildly inflated. Root cause: `dispatcher.go` collapsed *every* `result.Success==false` outcome (declined / no-op / stalled / budget / infra / rate-limit / skipped) into `status='failed'`, and `GetLifetimeTaskCounts` summed `status='failed'`. Fix: a `TerminalStatus()` classifier (ordered error-signature table) writes distinct statuses; an idempotent `reclassifyLegacyOutcomes()` backfill runs in `migrate()`; heal-on-merge scope widened to the non-failure statuses. **Live DB: 784 → 234 genuine failures** (infra 305 · no-op 120 · skipped 81 · rate-limited 34 · stalled 10; conservation verified). A v2.166.11 follow-up (#3407) fixed a TUI render bug where the wide breakdown suffix overflowed the mini-card and `truncateVisual` (not ANSI-aware) blanked the failed line. PRs #3401/#3404/#3407. Pitfall `pitfall_dashboard_failed_count_conflation` (`mem-024`); learning `learn_restart_vs_rebuild_stale_binary` (`mem-025`). Plan archived: `.agent/tasks/archive/TASK-358-dashboard-failed-count-classification.md`.
 
