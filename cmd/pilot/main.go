@@ -1016,6 +1016,7 @@ Examples:
 				p.Gateway().SetDashboardStore(gwStore)
 				p.Gateway().SetLogStreamStore(gwStore)
 			}
+			p.Gateway().SetDashboardProjectPath("") // GH-3515: subtask 3 wires real project path
 
 			// GH-1633: Wire git graph fetcher to gateway so /api/v1/gitgraph returns live git data
 			p.Gateway().SetGitGraphFetcher(func(path string, limit int) interface{} {
@@ -1711,6 +1712,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 			gwServer.SetDashboardStore(store)
 			gwServer.SetLogStreamStore(store)
 		}
+		gwServer.SetDashboardProjectPath("") // GH-3515: subtask 3 wires real project path
 		gwServer.SetGitGraphFetcher(func(path string, limit int) interface{} {
 			return dashboard.FetchGitGraph(path, limit)
 		})
