@@ -156,3 +156,98 @@ func TestHandleReleasing_DuplicateTagTreatedAsReleased(t *testing.T) {
 		t.Error("PR must be removed from tracking once the tag is confirmed to exist")
 	}
 }
+
+// tagAt builds a github.Tag pointing a tag name at a commit SHA. It avoids
+// spelling out the anonymous Commit struct literal at each call site.
+func tagAt(name, sha string) github.Tag {
+	tag := github.Tag{Name: name}
+	tag.Commit.SHA = sha
+	return tag
+}
+
+// TestHandleReleasing_AncestorTagDedup verifies handleReleasing treats a PR
+// whose HeadSHA is already covered by an existing tag — tagged exactly, or an
+// ANCESTOR of a tag's commit — as already released: the PR drains from
+// activePRs WITHOUT cutting a new tag. Only a genuinely uncovered commit
+// (diverged/behind the existing tags) proceeds to a release. This guards the
+// spurious-v2.178.0 case where an ancestor commit cut a redundant release.
+func TestHandleReleasing_AncestorTagDedup(t *testing.T) {
+	const headSHA = "headsha000"
+	tests := []struct {
+		name          string
+		tags          []github.Tag
+		compareStatus string // status the compare API returns for headSHA...tagSHA
+		wantTagCreate bool   // expect POST /git/refs (a new release tag)
+		wantTracked   bool   // expect the PR still tracked afterward
+	}{
+		{
+			name:          "exact SHA match skips release",
+			tags:          []github.Tag{tagAt("v2.0.0", headSHA)},
+			wantTagCreate: false,
+			wantTracked:   false,
+		},
+		{
+			name: "ancestor of existing tag skips release",
+			tags: []github.Tag{tagAt("v2.0.0", "descendantsha")},
+			// base=headSHA...head=tagSHA is "ahead": the tag contains headSHA
+			// plus more commits, so headSHA is already shipped inside the tag.
+			compareStatus: "ahead",
+			wantTagCreate: false,
+			wantTracked:   false,
+		},
+		{
+			name:          "diverged commit cuts a release",
+			tags:          []github.Tag{tagAt("v2.0.0", "unrelatedsha")},
+			compareStatus: "diverged",
+			wantTagCreate: true,
+			wantTracked:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tagCreated := false
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/tags"):
+					w.WriteHeader(http.StatusOK)
+					_ = json.NewEncoder(w).Encode(tt.tags)
+				case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/compare/"):
+					w.WriteHeader(http.StatusOK)
+					_ = json.NewEncoder(w).Encode(map[string]string{"status": tt.compareStatus})
+				case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/releases/latest"):
+					w.WriteHeader(http.StatusOK)
+					_ = json.NewEncoder(w).Encode(github.Release{TagName: "v2.0.0"})
+				case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/pulls/") && strings.HasSuffix(r.URL.Path, "/commits"):
+					w.WriteHeader(http.StatusOK)
+					_ = json.NewEncoder(w).Encode([]*github.Commit{makeCommit("feat: add a thing")})
+				case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/git/refs"):
+					tagCreated = true
+					w.WriteHeader(http.StatusCreated)
+				default:
+					w.WriteHeader(http.StatusOK)
+				}
+			}))
+			defer server.Close()
+
+			c := newReleasingController(t, server.URL)
+			prState := &PRState{PRNumber: 200, HeadSHA: headSHA, Stage: StageReleasing}
+			c.mu.Lock()
+			c.activePRs[200] = prState
+			c.mu.Unlock()
+
+			if err := c.handleReleasing(context.Background(), prState); err != nil {
+				t.Fatalf("handleReleasing returned error: %v", err)
+			}
+			if tagCreated != tt.wantTagCreate {
+				t.Errorf("tag created = %v, want %v", tagCreated, tt.wantTagCreate)
+			}
+			c.mu.RLock()
+			_, tracked := c.activePRs[200]
+			c.mu.RUnlock()
+			if tracked != tt.wantTracked {
+				t.Errorf("PR tracked = %v, want %v", tracked, tt.wantTracked)
+			}
+		})
+	}
+}

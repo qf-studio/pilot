@@ -1857,6 +1857,40 @@ func (c *Controller) shouldTriggerRelease() bool {
 	return rel != nil && rel.Enabled && rel.Trigger == "on_merge"
 }
 
+// tagCoveringCommit returns the name of an existing release tag that already
+// covers sha, or "" if none does. A tag "covers" sha when sha is the tag's
+// commit (exact match) OR sha is an ancestor of the tag's commit — i.e. the
+// commit was already shipped inside a later release. This is a superset of
+// GetTagForSHA's exact-match dedup and guards handleReleasing against cutting a
+// redundant, lower-content release for already-released work.
+//
+// The ancestor probe uses the compare API (base=sha, head=tag): "ahead" means
+// the tag contains sha plus more commits, "identical" means same commit —
+// either way sha is covered. Any lookup error is propagated so the caller
+// retries on the next poll rather than tagging on uncertain state (TASK-316).
+func (c *Controller) tagCoveringCommit(ctx context.Context, owner, repo, sha string) (string, error) {
+	// 10 most recent tags: a redundant release only happens when sha is an
+	// ancestor of a recent tag (the current release line), so a bounded list
+	// keeps the compare-call fan-out small.
+	tags, err := c.ghClient.ListTags(ctx, owner, repo, 10)
+	if err != nil {
+		return "", err
+	}
+	for _, tag := range tags {
+		if tag.Commit.SHA == sha {
+			return tag.Name, nil
+		}
+		status, err := c.ghClient.CompareStatus(ctx, owner, repo, sha, tag.Commit.SHA)
+		if err != nil {
+			return "", err
+		}
+		if status == "ahead" || status == "identical" {
+			return tag.Name, nil
+		}
+	}
+	return "", nil
+}
+
 // handleReleasing creates a release after successful merge and CI.
 func (c *Controller) handleReleasing(ctx context.Context, prState *PRState) error {
 	if c.releaser == nil {
@@ -1871,11 +1905,16 @@ func (c *Controller) handleReleasing(ctx context.Context, prState *PRState) erro
 	// correct repo to avoid stuck-forever releasing state.
 	owner, repo := prState.RepoOwnerAndName(c.owner, c.repo)
 
-	// Race condition guard: Check if this commit already has a tag.
+	// Race condition guard: Check if this commit is already covered by a tag.
 	// When multiple PRs merge rapidly, each triggers handleReleasing but only
-	// the first should create a tag. Subsequent PRs will see their merge commit
-	// is already tagged (by an earlier release) and skip.
-	existingTag, err := c.ghClient.GetTagForSHA(ctx, owner, repo, prState.HeadSHA)
+	// the first should create a tag. Subsequent PRs see their commit is already
+	// covered (by an earlier release) and skip. "Covered" means either the
+	// commit is tagged exactly, OR it is an ANCESTOR of an existing release
+	// tag's commit — e.g. it was already shipped inside a later squash-merge or
+	// a manual tag on a descendant commit. Without the ancestor check we cut a
+	// redundant, lower-content release for already-shipped work (the spurious
+	// v2.178.0 incident: #3494's commit was an ancestor of v2.177.0).
+	existingTag, err := c.tagCoveringCommit(ctx, owner, repo, prState.HeadSHA)
 	if err != nil {
 		// Transient lookup failure: do NOT fall through to CreateTagForRepo. If a
 		// tag already exists but we couldn't see it, the create call fails with
@@ -1885,7 +1924,7 @@ func (c *Controller) handleReleasing(ctx context.Context, prState *PRState) erro
 		return fmt.Errorf("failed to check existing tags for PR #%d: %w", prState.PRNumber, err)
 	}
 	if existingTag != "" {
-		c.log.Info("commit already tagged, skipping release",
+		c.log.Info("commit already covered by existing tag, skipping release",
 			"pr", prState.PRNumber,
 			"sha", ShortSHA(prState.HeadSHA),
 			"tag", existingTag,
