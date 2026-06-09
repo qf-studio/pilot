@@ -577,7 +577,7 @@ func (m *Model) hydrateFromStore() {
 	}
 
 	// Load recent executions as completed tasks
-	executions, err := m.store.GetRecentExecutions(20)
+	executions, err := m.store.GetRecentExecutions(20, "")
 	if err != nil {
 		slog.Warn("failed to load recent executions", slog.Any("error", err))
 		return
@@ -585,7 +585,7 @@ func (m *Model) hydrateFromStore() {
 
 	// Initialize metrics card from lifetime execution data (survives restarts).
 	// Session tokens only track the current process; executions table has the real totals.
-	lifetime, err := m.store.GetLifetimeTokens()
+	lifetime, err := m.store.GetLifetimeTokens("")
 	if err != nil {
 		slog.Warn("failed to load lifetime tokens", slog.Any("error", err))
 	} else {
@@ -597,7 +597,7 @@ func (m *Model) hydrateFromStore() {
 
 	// Initialize task counts from lifetime data (survives restarts).
 	// Previous code sampled from GetRecentExecutions(20), showing only last 20 results.
-	taskCounts, err := m.store.GetLifetimeTaskCounts()
+	taskCounts, err := m.store.GetLifetimeTaskCounts("")
 	if err != nil {
 		slog.Warn("failed to load lifetime task counts", slog.Any("error", err))
 	} else {
@@ -842,7 +842,7 @@ func storeRefreshCmd(store *memory.Store) tea.Cmd {
 	return func() tea.Msg {
 		msg := storeRefreshMsg{}
 
-		executions, err := store.GetRecentExecutions(20)
+		executions, err := store.GetRecentExecutions(20, "")
 		if err != nil {
 			slog.Warn("store refresh: failed to load executions", slog.Any("error", err))
 			return msg
@@ -869,7 +869,7 @@ func storeRefreshCmd(store *memory.Store) tea.Cmd {
 			})
 		}
 
-		lifetime, err := store.GetLifetimeTokens()
+		lifetime, err := store.GetLifetimeTokens("")
 		if err != nil {
 			slog.Warn("store refresh: failed to load lifetime tokens", slog.Any("error", err))
 		} else {
@@ -879,7 +879,7 @@ func storeRefreshCmd(store *memory.Store) tea.Cmd {
 			msg.metricsCard.TotalCostUSD = lifetime.TotalCostUSD
 		}
 
-		taskCounts, err := store.GetLifetimeTaskCounts()
+		taskCounts, err := store.GetLifetimeTaskCounts("")
 		if err != nil {
 			slog.Warn("store refresh: failed to load task counts", slog.Any("error", err))
 		} else {
