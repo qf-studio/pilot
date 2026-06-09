@@ -26,8 +26,6 @@ import (
 	"github.com/qf-studio/pilot/internal/adapters/sdkshim"
 	"github.com/qf-studio/pilot/internal/adapters/slack"
 	"github.com/qf-studio/pilot/internal/adapters/telegram"
-	sdkCore "github.com/qf-studio/studio-sdk/sdk/core"
-	sdkSlack "github.com/qf-studio/studio-sdk/sdk/integrations/slack"
 	"github.com/qf-studio/pilot/internal/alerts"
 	"github.com/qf-studio/pilot/internal/approval"
 	"github.com/qf-studio/pilot/internal/autopilot"
@@ -47,6 +45,9 @@ import (
 	"github.com/qf-studio/pilot/internal/teams"
 	"github.com/qf-studio/pilot/internal/tunnel"
 	"github.com/qf-studio/pilot/internal/upgrade"
+	sdkCore "github.com/qf-studio/studio-sdk/sdk/core"
+	sdkSlack "github.com/qf-studio/studio-sdk/sdk/integrations/slack"
+	sdkTelegram "github.com/qf-studio/studio-sdk/sdk/integrations/telegram"
 )
 
 var (
@@ -2496,12 +2497,36 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 	}
 	StartAdapterPollers(ctx, pollingDeps, adapterPollerRegistrations())
 
-	// Start Telegram polling if enabled
+	// Start Telegram inbound if enabled.
 	if tgHandler != nil {
-		if !dashboardMode {
-			fmt.Println("📱 Telegram polling started")
+		if cfg.Adapters.Telegram != nil && cfg.Adapters.Telegram.SDKBridge {
+			// M7 Phase 6 (GH-3470), opt-in: drive inbound through the studio-sdk
+			// chat bridge instead of the local long-poll loop. tgHandler implements
+			// core.MessageHandler (telegram/sdk_chat.go) and routes through the same
+			// comms.Handler, so command + intent handling is unchanged. Outbound
+			// stays on the existing messenger, and commands.go + the host-side
+			// photo/voice paths are untouched — the full cutover (delete commands.go,
+			// rewire the notifier) is a soak-gated follow-up. Default off: when
+			// sdk_bridge is unset the original StartPolling path runs verbatim.
+			tgBridge := sdkTelegram.New(sdkTelegram.Config{
+				BotToken:   cfg.Adapters.Telegram.BotToken,
+				AllowedIDs: cfg.Adapters.Telegram.AllowedIDs,
+			}, nil).NewChatBridge(sdkCore.ChatDeps{Handler: tgHandler})
+			if !dashboardMode {
+				fmt.Println("📱 Telegram SDK chat bridge started")
+			}
+			logging.WithComponent("start").Info("Telegram studio-sdk chat bridge started (sdk_bridge=true)")
+			go func() {
+				if err := tgBridge.Start(ctx); err != nil {
+					logging.WithComponent("telegram").Error("Telegram SDK bridge error", slog.Any("error", err))
+				}
+			}()
+		} else {
+			if !dashboardMode {
+				fmt.Println("📱 Telegram polling started")
+			}
+			tgHandler.StartPolling(ctx)
 		}
-		tgHandler.StartPolling(ctx)
 	}
 
 	// Start Slack Socket Mode if enabled (GH-652: wire into polling mode)
