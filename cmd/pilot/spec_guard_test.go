@@ -3,114 +3,123 @@ package main
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/qf-studio/pilot/internal/adapters/github"
 	"github.com/qf-studio/pilot/internal/testutil"
 )
 
-// mockBoardSyncer is a test double for projectBoardSyncer.
-type mockBoardSyncer struct {
-	called    bool
-	nodeID    string
-	status    string
-	returnErr error
+// stubBoardSyncer is a minimal projectBoardSyncer for testing.
+type stubBoardSyncer struct {
+	err   error
+	calls []string // accumulated nodeID+status pairs, joined as "nodeID:status"
 }
 
-func (m *mockBoardSyncer) UpdateProjectItemStatus(_ context.Context, nodeID, status string) error {
-	m.called = true
-	m.nodeID = nodeID
-	m.status = status
-	return m.returnErr
+func (s *stubBoardSyncer) UpdateProjectItemStatus(_ context.Context, nodeID, status string) error {
+	s.calls = append(s.calls, nodeID+":"+status)
+	return s.err
+}
+
+// newSpecGuardServer returns a minimal HTTP server that satisfies the GitHub API
+// calls made by applySpecGuard: list comments (returns empty list) and accept
+// POST label / comment requests without error.
+func newSpecGuardServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/comments"):
+			_, _ = w.Write([]byte(`[]`))
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/comments"):
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"id":1,"body":"ok"}`))
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/labels"):
+			_, _ = w.Write([]byte(`[]`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{}`))
+		}
+	}))
 }
 
 func TestApplySpecGuard_BoardSync(t *testing.T) {
-	tests := []struct {
-		name          string
-		boardSync     projectBoardSyncer
-		nodeID        string
-		failedStatus  string
-		boardCallWant bool
-		wantNodeID    string
-		wantStatus    string
+	cases := []struct {
+		name         string
+		nodeID       string
+		failedStatus string
+		syncer       *stubBoardSyncer // nil means pass nil interface
+		wantCalls    int              // expected number of UpdateProjectItemStatus calls
+		wantErr      bool             // syncer.err set to non-nil
 	}{
 		{
-			name:          "happy-path write",
-			boardSync:     &mockBoardSyncer{},
-			nodeID:        "NODE_42",
-			failedStatus:  "Failed",
-			boardCallWant: true,
-			wantNodeID:    "NODE_42",
-			wantStatus:    "Failed",
+			name:         "happy-path write",
+			nodeID:       "I_node1",
+			failedStatus: "Failed",
+			syncer:       &stubBoardSyncer{},
+			wantCalls:    1,
 		},
 		{
-			name:          "nil syncer skip",
-			boardSync:     nil,
-			nodeID:        "NODE_42",
-			failedStatus:  "Failed",
-			boardCallWant: false,
+			name:         "nil syncer skip",
+			nodeID:       "I_node1",
+			failedStatus: "Failed",
+			syncer:       nil,
+			wantCalls:    0,
 		},
 		{
-			name:          "empty NodeID skip",
-			boardSync:     &mockBoardSyncer{},
-			nodeID:        "",
-			failedStatus:  "Failed",
-			boardCallWant: false,
+			name:         "empty NodeID skip",
+			nodeID:       "",
+			failedStatus: "Failed",
+			syncer:       &stubBoardSyncer{},
+			wantCalls:    0,
 		},
 		{
-			name:          "empty failedStatus skip",
-			boardSync:     &mockBoardSyncer{},
-			nodeID:        "NODE_42",
-			failedStatus:  "",
-			boardCallWant: false,
+			name:         "empty failedStatus skip",
+			nodeID:       "I_node1",
+			failedStatus: "",
+			syncer:       &stubBoardSyncer{},
+			wantCalls:    0,
 		},
 		{
-			name:          "transport-error swallow",
-			boardSync:     &mockBoardSyncer{returnErr: errors.New("graphql: timeout")},
-			nodeID:        "NODE_42",
-			failedStatus:  "Failed",
-			boardCallWant: true,
-			wantNodeID:    "NODE_42",
-			wantStatus:    "Failed",
+			name:         "transport-error swallow",
+			nodeID:       "I_node1",
+			failedStatus: "Failed",
+			syncer:       &stubBoardSyncer{err: errors.New("network timeout")},
+			wantCalls:    1,
+			wantErr:      true,
 		},
 	}
 
-	for _, tc := range tests {
+	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			var labelsAdded []string
-			srv := newSpecTestServer(t, `[]`, &labelsAdded)
+			srv := newSpecGuardServer(t)
 			defer srv.Close()
 
 			client := github.NewClientWithBaseURL(testutil.FakeGitHubToken, srv.URL)
 			issue := &github.Issue{Number: 42, NodeID: tc.nodeID}
 
-			result := applySpecGuard(
-				context.Background(), client, "owner", "repo",
-				issue, []string{"body too short"},
-				tc.boardSync, tc.failedStatus,
-			)
-
-			if !result {
-				t.Fatal("expected applySpecGuard to return true (guard fired)")
+			var syncer projectBoardSyncer
+			if tc.syncer != nil {
+				syncer = tc.syncer
 			}
 
-			// For nil syncer, there is no mock to inspect.
-			if tc.boardSync == nil {
+			got := applySpecGuard(context.Background(), client, "owner", "repo", issue, []string{"thin body"}, syncer, tc.failedStatus)
+			if !got {
+				t.Fatal("applySpecGuard returned false (no-skip); expected true")
+			}
+
+			if tc.syncer == nil {
 				return
 			}
-			mock, ok := tc.boardSync.(*mockBoardSyncer)
-			if !ok {
-				return
+			if len(tc.syncer.calls) != tc.wantCalls {
+				t.Errorf("UpdateProjectItemStatus called %d times, want %d", len(tc.syncer.calls), tc.wantCalls)
 			}
-			if mock.called != tc.boardCallWant {
-				t.Errorf("UpdateProjectItemStatus called=%v, want %v", mock.called, tc.boardCallWant)
-			}
-			if tc.boardCallWant {
-				if mock.nodeID != tc.wantNodeID {
-					t.Errorf("nodeID=%q, want %q", mock.nodeID, tc.wantNodeID)
-				}
-				if mock.status != tc.wantStatus {
-					t.Errorf("status=%q, want %q", mock.status, tc.wantStatus)
+			if tc.wantCalls > 0 && len(tc.syncer.calls) > 0 {
+				want := tc.nodeID + ":" + tc.failedStatus
+				if tc.syncer.calls[0] != want {
+					t.Errorf("UpdateProjectItemStatus called with %q, want %q", tc.syncer.calls[0], want)
 				}
 			}
 		})
