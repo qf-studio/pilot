@@ -118,7 +118,7 @@ Disable via config: `executor.navigator.auto_init: false`
 
 ## Current State
 
-**Current Version:** v2.177.0 | full status in `.agent/system/FEATURE-MATRIX.md`
+**Current Version:** v2.179.0 | full status in `.agent/system/FEATURE-MATRIX.md`
 
 **Recent (v2.177.0, June 9 2026):** **M7 chat-contract wrap-up + daemon self-heal — SHIPPED & live-verified.** Closed the M7 SDK batch (Azure/Linear/Jira/Asana/GitLab/Discord) and hardened the two defects that had stranded Telegram #3470 for an hour. **TASK-354** — periodic stranded-issue sweep: the poller now clears orphaned `pilot-in-progress` *mid-session* via an in-flight-gated 10-min ticker (no daemon restart needed; `recoverOrphanedIssues` was startup-only). #3495; **live-verified** (added the label to a throwaway issue → swept within the interval, terminal label preserved, no execution). **TASK-320 Layer B2** — decomposed-task no-op tolerance: a no-commit subtask (analysis/verify/already-present) no longer aborts the whole task; only a task that delivers *zero* commits fails, after one escalated retry with the evidence-backed directive. #3497. **Telegram #3470** landed as SDK chat-contract conformance on the handler (#3494) + an **opt-in** `telegram.sdk_bridge` flag (#3498, default off; full `commands.go` cutover soak-gated per the issue's Scope-OUT). **Incident:** hand-merging the four PRs + one manual `v2.177.0` tag made the autopilot reconciler adopt #3494's `pilot/` branch and cut a **spurious v2.178.0** (ancestor of v2.177.0, wrongly "Latest") — deleted, `version.ts` reverted (#3502); v2.177.0 is the correct Latest. Pitfall `bug_manual_merge_spurious_release` (`mem-028`): don't hand-merge `pilot/GH-*` PRs while the daemon runs.
 
