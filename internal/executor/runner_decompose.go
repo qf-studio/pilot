@@ -128,6 +128,23 @@ func (r *Runner) executeDecomposedTask(ctx context.Context, parentTask *Task, su
 		}
 
 		if !subtaskResult.Success {
+			// TASK-320 B2: a subtask that produced no commit (analysis, verification,
+			// or a change already present on the branch) is NOT a task failure. The
+			// ghost-SHA guard flags every no-commit run as !Success, which previously
+			// aborted the whole decomposed task on the FIRST such subtask (the
+			// "subtask 1/5 failed: no new commit produced" freeze, GH-3470/GH-3228).
+			// Aggregate its cost and continue; the task only no-ops if NO subtask
+			// delivers a commit, checked after the loop.
+			if isNoOpResult(subtaskResult) {
+				aggregateSubtaskCost(aggregateResult, subtaskResult)
+				r.log.Info("Subtask produced no commit; continuing decomposition (TASK-320 B2)",
+					slog.String("subtask_id", subtask.ID),
+					slog.Int("index", subtaskNum),
+					slog.Int("total", totalSubtasks),
+					slog.String("reason", subtaskResult.Error),
+				)
+				continue
+			}
 			r.log.Warn("Subtask failed",
 				slog.String("subtask_id", subtask.ID),
 				slog.String("error", subtaskResult.Error),
@@ -169,6 +186,15 @@ func (r *Runner) executeDecomposedTask(ctx context.Context, parentTask *Task, su
 			slog.Int("index", subtaskNum),
 			slog.Int("total", totalSubtasks),
 		)
+	}
+
+	// TASK-320 B2: every subtask ran without a hard error, but none delivered a
+	// commit — the decomposed task is a genuine no-op. Escalate the final subtask
+	// once with the evidence-backed directive before declaring a terminal no-op,
+	// so a model that silently refused an explicit spec gets one firm re-prompt.
+	// Never surface an empty error string for this path (acceptance: descriptive).
+	if aggregateResult.Success && aggregateResult.CommitSHA == "" && aggregateResult.PRUrl == "" && len(subtasks) > 0 {
+		r.escalateDecomposedNoOp(ctx, parentTask, subtasks, executionPath, aggregateResult)
 	}
 
 	aggregateResult.Duration = time.Since(start)
@@ -229,4 +255,81 @@ func (r *Runner) executeDecomposedTask(ctx context.Context, parentTask *Task, su
 	}
 
 	return aggregateResult, nil
+}
+
+// isNoOpResult reports whether a subtask result is a no-commit no-op (analysis,
+// verification, or a change already present) rather than a real failure. The
+// ghost-SHA guard marks every no-commit run as !Success; this distinguishes the
+// benign case from a genuine error so a decomposed task is not aborted by an
+// early non-delivering subtask. TASK-320 B2.
+func isNoOpResult(res *ExecutionResult) bool {
+	if res == nil || res.Success {
+		return false
+	}
+	return res.Outcome == "no_op" || containsAny(res.Error, noOpErrorSignatures)
+}
+
+// aggregateSubtaskCost folds a subtask's token/research usage into the aggregate.
+// Cost accrues even for no-op subtasks (the model still ran); commit/PR/quality
+// are aggregated separately, only on delivery.
+func aggregateSubtaskCost(agg, sub *ExecutionResult) {
+	agg.TokensInput += sub.TokensInput
+	agg.TokensOutput += sub.TokensOutput
+	agg.TokensTotal += sub.TokensTotal
+	agg.CacheCreationInputTokens += sub.CacheCreationInputTokens
+	agg.CacheReadInputTokens += sub.CacheReadInputTokens
+	agg.ResearchTokens += sub.ResearchTokens
+	if sub.ModelName != "" {
+		agg.ModelName = sub.ModelName
+	}
+}
+
+// escalateDecomposedNoOp re-runs the final subtask exactly once with the
+// evidence-backed directive when the whole decomposed task delivered no commit.
+// On recovery it folds the commit/PR into agg; otherwise it sets a descriptive
+// terminal no-op error (never empty). TASK-320 B2.
+//
+// This lives at the decomposition layer — it re-invokes executeWithOptions rather
+// than duplicating the ghost-SHA/SHA-harvest logic inside that ~1700-line function
+// (the in-executor variant the task doc flagged as needing a structured refactor).
+func (r *Runner) escalateDecomposedNoOp(ctx context.Context, parentTask *Task, subtasks []*Task, executionPath string, agg *ExecutionResult) {
+	final := subtasks[len(subtasks)-1]
+
+	escalated := *final // shallow copy; only value fields below are mutated
+	escalated.Branch = ""
+	escalated.ProjectPath = executionPath
+	escalated.Description = final.Description + "\n\n" + EvidenceBackedSpecDirective
+
+	r.log.Warn("Decomposed task produced no commit; escalating final subtask once (TASK-320 B2)",
+		slog.String("parent_id", parentTask.ID),
+		slog.String("subtask_id", final.ID),
+	)
+
+	savedDecomposer := r.decomposer
+	r.decomposer = nil
+	retryResult, err := r.executeWithOptions(ctx, &escalated, false)
+	r.decomposer = savedDecomposer
+
+	if err == nil && retryResult != nil && retryResult.Success && retryResult.CommitSHA != "" {
+		aggregateSubtaskCost(agg, retryResult)
+		agg.CommitSHA = retryResult.CommitSHA
+		agg.PRUrl = retryResult.PRUrl
+		agg.FilesChanged += retryResult.FilesChanged
+		agg.LinesAdded += retryResult.LinesAdded
+		agg.LinesRemoved += retryResult.LinesRemoved
+		if retryResult.QualityGates != nil {
+			agg.QualityGates = retryResult.QualityGates
+		}
+		r.log.Info("Escalated retry recovered the no-op (TASK-320 B2)",
+			slog.String("parent_id", parentTask.ID),
+			slog.String("commit_sha", retryResult.CommitSHA),
+		)
+		return
+	}
+
+	if retryResult != nil {
+		aggregateSubtaskCost(agg, retryResult)
+	}
+	agg.Success = false
+	agg.Error = fmt.Sprintf("no new commit produced — all %d subtask(s) were no-ops after one escalated retry (task %s)", len(subtasks), parentTask.ID)
 }
