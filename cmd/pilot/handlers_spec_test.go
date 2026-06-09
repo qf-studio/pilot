@@ -59,7 +59,7 @@ func TestApplySpecGuard_FirstStrike(t *testing.T) {
 	issue := &github.Issue{Number: 42}
 	reasons := []string{"body too short (10 chars, need 100)"}
 
-	skipped := applySpecGuard(context.Background(), client, "owner", "repo", issue, reasons)
+	skipped := applySpecGuard(context.Background(), client, "owner", "repo", issue, reasons, nil, "")
 	if !skipped {
 		t.Fatal("expected applySpecGuard to return true (skip dispatch)")
 	}
@@ -86,7 +86,7 @@ func TestApplySpecGuard_SecondStrike(t *testing.T) {
 	issue := &github.Issue{Number: 42}
 	reasons := []string{"body too short (10 chars, need 100)"}
 
-	skipped := applySpecGuard(context.Background(), client, "owner", "repo", issue, reasons)
+	skipped := applySpecGuard(context.Background(), client, "owner", "repo", issue, reasons, nil, "")
 	if !skipped {
 		t.Fatal("expected applySpecGuard to return true (skip dispatch)")
 	}
@@ -110,7 +110,7 @@ func TestApplySpecGuard_SkippedWhenCommentListFails(t *testing.T) {
 	issue := &github.Issue{Number: 42}
 	reasons := []string{"body too short"}
 
-	skipped := applySpecGuard(context.Background(), client, "owner", "repo", issue, reasons)
+	skipped := applySpecGuard(context.Background(), client, "owner", "repo", issue, reasons, nil, "")
 	if skipped {
 		t.Error("expected applySpecGuard to return false (don't block) when comment listing fails")
 	}

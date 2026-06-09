@@ -307,7 +307,11 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 		}
 		specResult := github.ValidateSpec(issue, parentResolver)
 		if !specResult.Valid && specResult.SkipReason == "" {
-			applySpecGuard(ctx, client, parts[0], parts[1], issue, specResult.FailureReasons)
+			var specBoardSync projectBoardSyncer
+			if boardSync != nil {
+				specBoardSync = boardSync
+			}
+			applySpecGuard(ctx, client, parts[0], parts[1], issue, specResult.FailureReasons, specBoardSync, cfg.Adapters.GitHub.ProjectBoard.GetStatuses().Failed)
 			return &github.IssueResult{Success: false}, nil
 		}
 	}
