@@ -1,6 +1,6 @@
 # TASK-354: Board card orphans in "In Progress" on non-PR outcomes (no terminal transition)
 
-**Status:** open — found during TASK-319 go-live smoke test (2026-06-01)
+**Status:** 🟡 partially shipped — the **GitHub-label variant SHIPPED** 2026-06-09 (PR #3495 → v2.177.0, live-verified): `poller.go` now runs a periodic in-flight-gated stranded-issue sweep that clears orphaned `pilot-in-progress` mid-session (previously `recoverOrphanedIssues` was startup-only, which froze GH-3470 for an hour). The **board-column** terminal transition (the original acceptance below — write `Blocked` on spec-guard/no-op) is **still open**. Related pitfall: `mem-028`.
 **Priority:** P2 — board-as-source-of-truth is misleading without it
 **Severity:** medium (correctness of the board lifecycle)
 **Pilot:** yes (poller/controller wiring; not executor core)
