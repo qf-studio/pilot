@@ -21,11 +21,11 @@ type mockDashboardStore struct {
 	logEntries     []*memory.LogEntry
 }
 
-func (m *mockDashboardStore) GetLifetimeTokens() (*memory.LifetimeTokens, error) {
+func (m *mockDashboardStore) GetLifetimeTokens(_ string) (*memory.LifetimeTokens, error) {
 	return m.lifetimeTokens, nil
 }
 
-func (m *mockDashboardStore) GetLifetimeTaskCounts() (*memory.LifetimeTaskCounts, error) {
+func (m *mockDashboardStore) GetLifetimeTaskCounts(_ string) (*memory.LifetimeTaskCounts, error) {
 	return m.taskCounts, nil
 }
 
@@ -33,7 +33,7 @@ func (m *mockDashboardStore) GetDailyMetrics(_ memory.MetricsQuery) ([]*memory.D
 	return m.dailyMetrics, nil
 }
 
-func (m *mockDashboardStore) GetRecentExecutions(_ int) ([]*memory.Execution, error) {
+func (m *mockDashboardStore) GetRecentExecutions(_ int, _ string) ([]*memory.Execution, error) {
 	return m.executions, nil
 }
 

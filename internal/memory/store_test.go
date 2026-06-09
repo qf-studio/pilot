@@ -93,7 +93,7 @@ func TestGetRecentExecutions(t *testing.T) {
 		_ = store.SaveExecution(exec)
 	}
 
-	recent, err := store.GetRecentExecutions(3)
+	recent, err := store.GetRecentExecutions(3, "")
 	if err != nil {
 		t.Fatalf("GetRecentExecutions failed: %v", err)
 	}
@@ -776,7 +776,7 @@ func TestGetExecutionsInPeriod(t *testing.T) {
 	})
 
 	// Verify the executions were created
-	allExecs, _ := store.GetRecentExecutions(100)
+	allExecs, _ := store.GetRecentExecutions(100, "")
 	t.Logf("Total executions in DB: %d", len(allExecs))
 
 	tests := []struct {
@@ -1016,7 +1016,7 @@ func TestGetLifetimeTokens(t *testing.T) {
 	defer func() { _ = store.Close() }()
 
 	// Empty table should return zeros
-	lt, err := store.GetLifetimeTokens()
+	lt, err := store.GetLifetimeTokens("")
 	if err != nil {
 		t.Fatalf("GetLifetimeTokens (empty): %v", err)
 	}
@@ -1055,7 +1055,7 @@ func TestGetLifetimeTokens(t *testing.T) {
 		}
 	}
 
-	lt, err = store.GetLifetimeTokens()
+	lt, err = store.GetLifetimeTokens("")
 	if err != nil {
 		t.Fatalf("GetLifetimeTokens: %v", err)
 	}
@@ -1089,7 +1089,7 @@ func TestGetLifetimeTaskCounts(t *testing.T) {
 	defer func() { _ = store.Close() }()
 
 	// Empty table should return zeros
-	tc, err := store.GetLifetimeTaskCounts()
+	tc, err := store.GetLifetimeTaskCounts("")
 	if err != nil {
 		t.Fatalf("GetLifetimeTaskCounts (empty): %v", err)
 	}
@@ -1119,7 +1119,7 @@ func TestGetLifetimeTaskCounts(t *testing.T) {
 		}
 	}
 
-	tc, err = store.GetLifetimeTaskCounts()
+	tc, err = store.GetLifetimeTaskCounts("")
 	if err != nil {
 		t.Fatalf("GetLifetimeTaskCounts: %v", err)
 	}
@@ -2063,7 +2063,7 @@ func TestGetLifetimeTokens_ExcludesZeroTokenRows(t *testing.T) {
 		t.Fatalf("SaveExecution: %v", err)
 	}
 
-	lt, err := store.GetLifetimeTokens()
+	lt, err := store.GetLifetimeTokens("")
 	if err != nil {
 		t.Fatalf("GetLifetimeTokens: %v", err)
 	}
@@ -2072,6 +2072,27 @@ func TestGetLifetimeTokens_ExcludesZeroTokenRows(t *testing.T) {
 	}
 	if lt.TotalCostUSD != 0.50 {
 		t.Errorf("TotalCostUSD = %.4f, want 0.5000", lt.TotalCostUSD)
+	}
+
+	// Verify zero-token exclusion also applies under a project filter.
+	ltFiltered, err := store.GetLifetimeTokens("/p")
+	if err != nil {
+		t.Fatalf("GetLifetimeTokens (filtered): %v", err)
+	}
+	if ltFiltered.TotalTokens != 7000 {
+		t.Errorf("filtered TotalTokens = %d, want 7000 (zero-token row must be excluded under filter)", ltFiltered.TotalTokens)
+	}
+	if ltFiltered.TotalCostUSD != 0.50 {
+		t.Errorf("filtered TotalCostUSD = %.4f, want 0.5000", ltFiltered.TotalCostUSD)
+	}
+
+	// A different project path should return zeros.
+	ltOther, err := store.GetLifetimeTokens("/other")
+	if err != nil {
+		t.Fatalf("GetLifetimeTokens (other project): %v", err)
+	}
+	if ltOther.TotalTokens != 0 {
+		t.Errorf("other project TotalTokens = %d, want 0", ltOther.TotalTokens)
 	}
 }
 
@@ -2340,5 +2361,224 @@ func TestRecordPatternFeedback_TransactionAtomicity(t *testing.T) {
 			}
 			return -1
 		}())
+	}
+}
+
+// TestGetRecentExecutions_ProjectFilter verifies that a non-empty projectPath
+// restricts results to that project while "" returns all projects.
+func TestGetRecentExecutions_ProjectFilter(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	for i, proj := range []string{"/proj/a", "/proj/a", "/proj/b"} {
+		if err := store.SaveExecution(&Execution{
+			ID:          fmt.Sprintf("exec-pf-%d", i),
+			TaskID:      fmt.Sprintf("GH-%d", i),
+			ProjectPath: proj,
+			Status:      "completed",
+		}); err != nil {
+			t.Fatalf("SaveExecution: %v", err)
+		}
+	}
+
+	// No filter — all 3 rows.
+	all, err := store.GetRecentExecutions(10, "")
+	if err != nil {
+		t.Fatalf("GetRecentExecutions (all): %v", err)
+	}
+	if len(all) != 3 {
+		t.Errorf("GetRecentExecutions(\"\") = %d rows, want 3", len(all))
+	}
+
+	// Filter to project a — 2 rows.
+	projA, err := store.GetRecentExecutions(10, "/proj/a")
+	if err != nil {
+		t.Fatalf("GetRecentExecutions (proj/a): %v", err)
+	}
+	if len(projA) != 2 {
+		t.Errorf("GetRecentExecutions(\"/proj/a\") = %d rows, want 2", len(projA))
+	}
+	for _, e := range projA {
+		if e.ProjectPath != "/proj/a" {
+			t.Errorf("unexpected project_path %q, want /proj/a", e.ProjectPath)
+		}
+	}
+
+	// Filter to project b — 1 row.
+	projB, err := store.GetRecentExecutions(10, "/proj/b")
+	if err != nil {
+		t.Fatalf("GetRecentExecutions (proj/b): %v", err)
+	}
+	if len(projB) != 1 {
+		t.Errorf("GetRecentExecutions(\"/proj/b\") = %d rows, want 1", len(projB))
+	}
+
+	// Filter to non-existent project — 0 rows.
+	none, err := store.GetRecentExecutions(10, "/proj/c")
+	if err != nil {
+		t.Fatalf("GetRecentExecutions (proj/c): %v", err)
+	}
+	if len(none) != 0 {
+		t.Errorf("GetRecentExecutions(\"/proj/c\") = %d rows, want 0", len(none))
+	}
+}
+
+// TestGetLifetimeTokens_ProjectFilter verifies per-project token aggregation.
+func TestGetLifetimeTokens_ProjectFilter(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	type row struct {
+		id    string
+		proj  string
+		input int64
+		out   int64
+		cost  float64
+	}
+	rows := []row{
+		{"lt-pf-a1", "/proj/a", 1000, 500, 0.10},
+		{"lt-pf-a2", "/proj/a", 2000, 1000, 0.20},
+		{"lt-pf-b1", "/proj/b", 500, 250, 0.05},
+	}
+	for _, r := range rows {
+		if err := store.SaveExecution(&Execution{
+			ID: r.id, TaskID: "T-" + r.id, ProjectPath: r.proj, Status: "completed",
+		}); err != nil {
+			t.Fatalf("SaveExecution %s: %v", r.id, err)
+		}
+		if err := store.SaveExecutionMetrics(&ExecutionMetrics{
+			ExecutionID:      r.id,
+			TokensInput:      r.input,
+			TokensOutput:     r.out,
+			TokensTotal:      r.input + r.out,
+			EstimatedCostUSD: r.cost,
+		}); err != nil {
+			t.Fatalf("SaveExecutionMetrics %s: %v", r.id, err)
+		}
+	}
+
+	// All projects — sum of all rows.
+	ltAll, err := store.GetLifetimeTokens("")
+	if err != nil {
+		t.Fatalf("GetLifetimeTokens (all): %v", err)
+	}
+	if ltAll.TotalTokens != 5250 {
+		t.Errorf("all: TotalTokens = %d, want 5250", ltAll.TotalTokens)
+	}
+
+	// Project A only.
+	ltA, err := store.GetLifetimeTokens("/proj/a")
+	if err != nil {
+		t.Fatalf("GetLifetimeTokens (proj/a): %v", err)
+	}
+	if ltA.TotalTokens != 4500 {
+		t.Errorf("proj/a: TotalTokens = %d, want 4500", ltA.TotalTokens)
+	}
+	if ltA.TotalCostUSD < 0.299 || ltA.TotalCostUSD > 0.301 {
+		t.Errorf("proj/a: TotalCostUSD = %.6f, want ~0.30", ltA.TotalCostUSD)
+	}
+
+	// Project B only.
+	ltB, err := store.GetLifetimeTokens("/proj/b")
+	if err != nil {
+		t.Fatalf("GetLifetimeTokens (proj/b): %v", err)
+	}
+	if ltB.TotalTokens != 750 {
+		t.Errorf("proj/b: TotalTokens = %d, want 750", ltB.TotalTokens)
+	}
+
+	// Non-existent project — zeros.
+	ltNone, err := store.GetLifetimeTokens("/proj/c")
+	if err != nil {
+		t.Fatalf("GetLifetimeTokens (proj/c): %v", err)
+	}
+	if ltNone.TotalTokens != 0 {
+		t.Errorf("proj/c: TotalTokens = %d, want 0", ltNone.TotalTokens)
+	}
+}
+
+// TestGetLifetimeTaskCounts_ProjectFilter verifies per-project task count aggregation.
+func TestGetLifetimeTaskCounts_ProjectFilter(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	type row struct {
+		id     string
+		proj   string
+		status string
+	}
+	rows := []row{
+		{"tc-pf-a1", "/proj/a", "completed"},
+		{"tc-pf-a2", "/proj/a", "completed"},
+		{"tc-pf-a3", "/proj/a", "failed"},
+		{"tc-pf-b1", "/proj/b", "completed"},
+		{"tc-pf-b2", "/proj/b", "no_op"},
+	}
+	for _, r := range rows {
+		if err := store.SaveExecution(&Execution{
+			ID: r.id, TaskID: "T-" + r.id, ProjectPath: r.proj, Status: r.status,
+		}); err != nil {
+			t.Fatalf("SaveExecution %s: %v", r.id, err)
+		}
+	}
+
+	// All projects.
+	tcAll, err := store.GetLifetimeTaskCounts("")
+	if err != nil {
+		t.Fatalf("GetLifetimeTaskCounts (all): %v", err)
+	}
+	if tcAll.Total != 5 {
+		t.Errorf("all: Total = %d, want 5", tcAll.Total)
+	}
+
+	// Project A — 3 tasks: 2 completed, 1 failed.
+	tcA, err := store.GetLifetimeTaskCounts("/proj/a")
+	if err != nil {
+		t.Fatalf("GetLifetimeTaskCounts (proj/a): %v", err)
+	}
+	if tcA.Total != 3 {
+		t.Errorf("proj/a: Total = %d, want 3", tcA.Total)
+	}
+	if tcA.Succeeded != 2 {
+		t.Errorf("proj/a: Succeeded = %d, want 2", tcA.Succeeded)
+	}
+	if tcA.Failed != 1 {
+		t.Errorf("proj/a: Failed = %d, want 1", tcA.Failed)
+	}
+	if tcA.NoOp != 0 {
+		t.Errorf("proj/a: NoOp = %d, want 0", tcA.NoOp)
+	}
+
+	// Project B — 2 tasks: 1 completed, 1 no_op.
+	tcB, err := store.GetLifetimeTaskCounts("/proj/b")
+	if err != nil {
+		t.Fatalf("GetLifetimeTaskCounts (proj/b): %v", err)
+	}
+	if tcB.Total != 2 {
+		t.Errorf("proj/b: Total = %d, want 2", tcB.Total)
+	}
+	if tcB.Succeeded != 1 {
+		t.Errorf("proj/b: Succeeded = %d, want 1", tcB.Succeeded)
+	}
+	if tcB.NoOp != 1 {
+		t.Errorf("proj/b: NoOp = %d, want 1", tcB.NoOp)
+	}
+
+	// Non-existent project — zeros.
+	tcNone, err := store.GetLifetimeTaskCounts("/proj/c")
+	if err != nil {
+		t.Fatalf("GetLifetimeTaskCounts (proj/c): %v", err)
+	}
+	if tcNone.Total != 0 {
+		t.Errorf("proj/c: Total = %d, want 0", tcNone.Total)
 	}
 }

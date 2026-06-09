@@ -18,10 +18,10 @@ type GitGraphFetcher func(projectPath string, limit int) interface{}
 
 // DashboardStore provides read access to execution and metrics data for the dashboard API.
 type DashboardStore interface {
-	GetLifetimeTokens() (*memory.LifetimeTokens, error)
-	GetLifetimeTaskCounts() (*memory.LifetimeTaskCounts, error)
+	GetLifetimeTokens(projectPath string) (*memory.LifetimeTokens, error)
+	GetLifetimeTaskCounts(projectPath string) (*memory.LifetimeTaskCounts, error)
 	GetDailyMetrics(query memory.MetricsQuery) ([]*memory.DailyMetrics, error)
-	GetRecentExecutions(limit int) ([]*memory.Execution, error)
+	GetRecentExecutions(limit int, projectPath string) ([]*memory.Execution, error)
 	GetQueuedTasks(limit int) ([]*memory.Execution, error)
 	GetActiveExecutions() ([]*memory.Execution, error)
 	GetRecentLogs(limit int) ([]*memory.LogEntry, error)
@@ -96,12 +96,12 @@ func (s *Server) handleDashboardMetrics(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	lt, err := store.GetLifetimeTokens()
+	lt, err := store.GetLifetimeTokens("")
 	if err != nil {
 		lt = &memory.LifetimeTokens{}
 	}
 
-	tc, err := store.GetLifetimeTaskCounts()
+	tc, err := store.GetLifetimeTaskCounts("")
 	if err != nil {
 		tc = &memory.LifetimeTaskCounts{}
 	}
@@ -162,7 +162,7 @@ func (s *Server) handleDashboardQueue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	execs, err := store.GetRecentExecutions(50)
+	execs, err := store.GetRecentExecutions(50, "")
 	if err != nil {
 		http.Error(w, "failed to fetch queue", http.StatusInternalServerError)
 		return
@@ -216,7 +216,7 @@ func (s *Server) handleDashboardHistory(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	execs, err := store.GetRecentExecutions(limit)
+	execs, err := store.GetRecentExecutions(limit, "")
 	if err != nil {
 		http.Error(w, "failed to fetch history", http.StatusInternalServerError)
 		return
