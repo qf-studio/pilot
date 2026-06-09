@@ -102,8 +102,13 @@ type Poller struct {
 	label     string
 	interval  time.Duration
 	processed map[int]time.Time
-	mu        sync.RWMutex
-	onIssue   func(ctx context.Context, issue *Issue) error
+	// inFlight tracks issues whose dispatch goroutine is currently executing
+	// (set for the lifetime of the goroutine, including label finalization).
+	// TASK-354: the periodic stranded-issue sweep skips in-flight issues so a
+	// live execution is never disturbed.
+	inFlight map[int]struct{}
+	mu       sync.RWMutex
+	onIssue  func(ctx context.Context, issue *Issue) error
 	// onIssueWithResult is called for sequential mode, returns PR info
 	onIssueWithResult func(ctx context.Context, issue *Issue) (*IssueResult, error)
 	// OnPRCreated is called when a PR is created after issue processing
@@ -135,6 +140,11 @@ type Poller struct {
 	// When a processed issue's status labels are removed, the poller waits this duration
 	// before allowing retry. Default: 5 minutes.
 	retryGracePeriod time.Duration
+
+	// TASK-354: interval for the periodic stranded-issue sweep that clears
+	// pilot-in-progress from issues whose execution goroutine has ended without
+	// a terminal transition (mid-session orphan recovery). Default: 10 minutes.
+	strandSweepInterval time.Duration
 
 	// GH-2201: TaskChecker verifies whether an issue is still queued/in-progress
 	// before allowing retry after the grace period expires.
@@ -359,12 +369,14 @@ func NewPoller(client *Client, repo string, label string, interval time.Duration
 		label:                label,
 		interval:             interval,
 		processed:            make(map[int]time.Time),
+		inFlight:             make(map[int]struct{}),
 		logger:               logging.WithComponent("github-poller"),
 		executionMode:        ExecutionModeAuto, // Default matches config.DefaultExecutionConfig()
 		waitForMerge:         true,
 		prPollInterval:       30 * time.Second,
 		prTimeout:            1 * time.Hour,
-		retryGracePeriod:     5 * time.Minute, // GH-2201: default grace period
+		retryGracePeriod:     5 * time.Minute,  // GH-2201: default grace period
+		strandSweepInterval:  10 * time.Minute, // TASK-354: default stranded-issue sweep cadence
 		failedRetryCount:     make(map[int]int),
 		maxFailedRetries:     3, // GH-2176: default max retries for pilot-failed issues
 		retryReadyCount:      make(map[int]int),
@@ -469,6 +481,82 @@ func (p *Poller) recoverOrphanedIssues(ctx context.Context) {
 	}
 }
 
+// markInFlight records that issue's dispatch goroutine is executing. Held for the
+// goroutine's lifetime (including label finalization) so sweepStrandedIssues never
+// disturbs a live execution. TASK-354.
+func (p *Poller) markInFlight(number int) {
+	p.mu.Lock()
+	p.inFlight[number] = struct{}{}
+	p.mu.Unlock()
+}
+
+// unmarkInFlight clears the in-flight marker once the dispatch goroutine returns.
+func (p *Poller) unmarkInFlight(number int) {
+	p.mu.Lock()
+	delete(p.inFlight, number)
+	p.mu.Unlock()
+}
+
+// isInFlight reports whether issue's dispatch goroutine is currently executing.
+func (p *Poller) isInFlight(number int) bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	_, ok := p.inFlight[number]
+	return ok
+}
+
+// sweepStrandedIssues clears pilot-in-progress from issues whose execution
+// goroutine has ended without performing a terminal transition. Unlike
+// recoverOrphanedIssues (which runs once at startup), this runs periodically so a
+// mid-session strand — e.g. a no_op/terminal path that failed to remove the label
+// (TASK-354) — self-heals without a daemon restart.
+//
+// Safety:
+//   - Issues currently in-flight are skipped, so a live execution is never touched
+//     (the in-progress label is added inside the dispatch goroutine, which is
+//     marked in-flight, so the label can only exist for a live or already-finished
+//     run).
+//   - When a terminal label (blocked/done/failed) is already present alongside
+//     pilot-in-progress, the strand is a contradictory leftover: the label is
+//     cleaned up but the issue is NOT re-armed (no unmarkProcessed), so a
+//     deterministically-failing issue does not re-dispatch on a loop.
+//   - Otherwise (in-progress only, goroutine gone — e.g. a crash mid-run) the issue
+//     is re-armed for pickup, mirroring recoverOrphanedIssues.
+func (p *Poller) sweepStrandedIssues(ctx context.Context) {
+	issues, err := p.client.ListIssues(ctx, p.owner, p.repo, &ListIssuesOptions{
+		Labels: []string{p.label, LabelInProgress},
+		State:  StateOpen,
+	})
+	if err != nil {
+		p.logger.Warn("Stranded-issue sweep: list failed", slog.Any("error", err))
+		return
+	}
+
+	for _, issue := range issues {
+		if p.isInFlight(issue.Number) {
+			continue // live execution — leave it alone
+		}
+		if err := p.client.RemoveLabel(ctx, p.owner, p.repo, issue.Number, LabelInProgress); err != nil {
+			p.logger.Warn("Stranded-issue sweep: failed to remove in-progress label",
+				slog.Int("number", issue.Number),
+				slog.Any("error", err),
+			)
+			continue
+		}
+
+		terminal := HasLabel(issue, LabelBlocked) || HasLabel(issue, LabelDone) || HasLabel(issue, LabelFailed)
+		if !terminal {
+			// Pure orphan (crash mid-run): re-arm for pickup.
+			p.unmarkProcessed(issue.Number)
+		}
+		p.logger.Info("Swept stranded in-progress issue",
+			slog.Int("number", issue.Number),
+			slog.String("title", issue.Title),
+			slog.Bool("rearmed", !terminal),
+		)
+	}
+}
+
 // startParallel runs concurrent issue execution with a semaphore limiter.
 // Used by both "parallel" and "auto" modes. In "auto" mode, checkForNewIssues
 // applies the scope-overlap guard so that overlapping issues are held back.
@@ -484,6 +572,14 @@ func (p *Poller) startParallel(ctx context.Context) {
 	ticker := time.NewTicker(p.interval)
 	defer ticker.Stop()
 
+	// TASK-354: periodic stranded-issue sweep (mid-session orphan recovery).
+	sweepInterval := p.strandSweepInterval
+	if sweepInterval <= 0 {
+		sweepInterval = 10 * time.Minute
+	}
+	sweepTicker := time.NewTicker(sweepInterval)
+	defer sweepTicker.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -496,6 +592,8 @@ func (p *Poller) startParallel(ctx context.Context) {
 			return
 		case <-ticker.C:
 			p.checkForNewIssues(ctx)
+		case <-sweepTicker.C:
+			p.sweepStrandedIssues(ctx)
 		}
 	}
 }
@@ -1317,6 +1415,11 @@ func (p *Poller) checkForNewIssues(ctx context.Context) {
 		go func(issue *Issue) {
 			defer p.activeWg.Done()
 			defer func() { <-p.semaphore }() // release slot
+
+			// TASK-354: mark in-flight for the whole execution (incl. label
+			// finalization) so the stranded-issue sweep never touches a live run.
+			p.markInFlight(issue.Number)
+			defer p.unmarkInFlight(issue.Number)
 
 			// Board sync: move card to in-progress on confirmed dispatch (GH-3252).
 			p.syncBoardStatusInProgress(ctx, issue)
