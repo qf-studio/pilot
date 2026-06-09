@@ -687,6 +687,22 @@ func (c *Client) CompareCommits(ctx context.Context, owner, repo, base, head str
 	return result.Commits, nil
 }
 
+// CompareStatus returns GitHub's relationship of head to base for base...head:
+// one of "ahead", "behind", "identical", or "diverged". It is the cheapest way
+// to ask "is base an ancestor of head?" — base...head is "ahead" when head
+// contains base plus more commits, and "identical" when they are the same
+// commit. Used to detect a commit already covered by an existing release tag.
+func (c *Client) CompareStatus(ctx context.Context, owner, repo, base, head string) (string, error) {
+	path := fmt.Sprintf("/repos/%s/%s/compare/%s...%s", owner, repo, base, head)
+	var result struct {
+		Status string `json:"status"`
+	}
+	if err := c.doRequest(ctx, http.MethodGet, path, nil, &result); err != nil {
+		return "", err
+	}
+	return result.Status, nil
+}
+
 // GetJobLogs fetches the logs for a GitHub Actions job (check run).
 // Uses GET /repos/{owner}/{repo}/actions/jobs/{job_id}/logs which returns
 // a 302 redirect to a log download URL. Returns the raw log text.
