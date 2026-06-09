@@ -15,6 +15,7 @@ type Config struct {
 	BotToken      string                 `yaml:"bot_token"`
 	ChatID        string                 `yaml:"chat_id"`
 	Polling       bool                   `yaml:"polling"`         // Enable inbound polling
+	SDKBridge     bool                   `yaml:"sdk_bridge"`      // GH-3470: drive inbound via the studio-sdk chat bridge instead of the local long-poll loop (opt-in; default off)
 	AllowedIDs    []int64                `yaml:"allowed_ids"`     // User/chat IDs allowed to send tasks
 	PlainTextMode bool                   `yaml:"plain_text_mode"` // Use plain text instead of Markdown (default: true for messaging apps)
 	Transcription *transcription.Config  `yaml:"transcription"`   // Voice message transcription config
