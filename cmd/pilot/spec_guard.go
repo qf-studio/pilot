@@ -9,12 +9,18 @@ import (
 	"github.com/qf-studio/pilot/internal/adapters/github"
 )
 
+// projectBoardSyncer abstracts board-status writes so applySpecGuard can be tested without a real GitHub client.
+type projectBoardSyncer interface {
+	UpdateProjectItemStatus(ctx context.Context, nodeID string, status string) error
+}
+
 // applySpecGuard runs the two-strike spec validation gate for a GitHub issue.
 // Returns true when dispatch should be skipped (guard fired), false to proceed.
 //
 // First call with a failing issue adds pilot-spec-incomplete and posts a structured comment.
 // Subsequent call (comment marker already present) escalates to pilot-blocked.
-func applySpecGuard(ctx context.Context, client *github.Client, owner, repo string, issue *github.Issue, reasons []string) bool {
+// boardSync and failedStatus are optional: when non-nil/non-empty the issue card is moved to the Failed column.
+func applySpecGuard(ctx context.Context, client *github.Client, owner, repo string, issue *github.Issue, reasons []string, boardSync projectBoardSyncer, failedStatus string) bool {
 	comments, err := client.ListIssueComments(ctx, owner, repo, issue.Number)
 	if err != nil {
 		slog.Warn("spec-guard: failed to list comments, skipping guard",
@@ -49,6 +55,14 @@ func applySpecGuard(ctx context.Context, client *github.Client, owner, repo stri
 		slog.Warn("spec-guard: second strike — escalating to pilot-blocked",
 			slog.Int("issue", issue.Number))
 	}
+
+	if boardSync != nil && issue.NodeID != "" && failedStatus != "" {
+		if err := boardSync.UpdateProjectItemStatus(ctx, issue.NodeID, failedStatus); err != nil {
+			slog.Warn("spec-guard: board sync failed",
+				slog.Int("issue", issue.Number), slog.Any("error", err))
+		}
+	}
+
 	return true
 }
 
