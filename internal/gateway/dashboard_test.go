@@ -19,13 +19,20 @@ type mockDashboardStore struct {
 	queuedTasks    []*memory.Execution
 	activeExecs    []*memory.Execution
 	logEntries     []*memory.LogEntry
+
+	// Capture last projectPath arg passed to each scoped method.
+	gotTokensPath     string
+	gotTaskCountsPath string
+	gotExecsPaths     []string // appended on each GetRecentExecutions call
 }
 
-func (m *mockDashboardStore) GetLifetimeTokens() (*memory.LifetimeTokens, error) {
+func (m *mockDashboardStore) GetLifetimeTokens(projectPath string) (*memory.LifetimeTokens, error) {
+	m.gotTokensPath = projectPath
 	return m.lifetimeTokens, nil
 }
 
-func (m *mockDashboardStore) GetLifetimeTaskCounts() (*memory.LifetimeTaskCounts, error) {
+func (m *mockDashboardStore) GetLifetimeTaskCounts(projectPath string) (*memory.LifetimeTaskCounts, error) {
+	m.gotTaskCountsPath = projectPath
 	return m.taskCounts, nil
 }
 
@@ -33,7 +40,8 @@ func (m *mockDashboardStore) GetDailyMetrics(_ memory.MetricsQuery) ([]*memory.D
 	return m.dailyMetrics, nil
 }
 
-func (m *mockDashboardStore) GetRecentExecutions(_ int) ([]*memory.Execution, error) {
+func (m *mockDashboardStore) GetRecentExecutions(_ int, projectPath string) ([]*memory.Execution, error) {
+	m.gotExecsPaths = append(m.gotExecsPaths, projectPath)
 	return m.executions, nil
 }
 
@@ -590,6 +598,61 @@ func TestDashboardIssueURL(t *testing.T) {
 		got := dashboardIssueURL(tt.input)
 		if got != tt.expected {
 			t.Errorf("dashboardIssueURL(%q) = %q, want %q", tt.input, got, tt.expected)
+		}
+	}
+}
+
+// TestDashboardProjectPathScoping verifies that SetDashboardProjectPath propagates
+// the configured path to all four store call sites across the three affected endpoints.
+func TestDashboardProjectPathScoping(t *testing.T) {
+	const wantPath = "/opt/projects/myrepo"
+
+	store := &mockDashboardStore{
+		lifetimeTokens: &memory.LifetimeTokens{},
+		taskCounts:     &memory.LifetimeTaskCounts{},
+		executions:     []*memory.Execution{},
+	}
+
+	s := newTestServerWithDashboard(store)
+	s.SetDashboardProjectPath(wantPath)
+
+	// Hit /api/v1/metrics — calls GetLifetimeTokens + GetLifetimeTaskCounts.
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/metrics", nil)
+	w := httptest.NewRecorder()
+	s.handleDashboardMetrics(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("metrics: expected 200, got %d", w.Code)
+	}
+	if store.gotTokensPath != wantPath {
+		t.Errorf("metrics: GetLifetimeTokens got projectPath %q, want %q", store.gotTokensPath, wantPath)
+	}
+	if store.gotTaskCountsPath != wantPath {
+		t.Errorf("metrics: GetLifetimeTaskCounts got projectPath %q, want %q", store.gotTaskCountsPath, wantPath)
+	}
+
+	// Hit /api/v1/queue — calls GetRecentExecutions once.
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/queue", nil)
+	w = httptest.NewRecorder()
+	s.handleDashboardQueue(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("queue: expected 200, got %d", w.Code)
+	}
+
+	// Hit /api/v1/history — calls GetRecentExecutions again.
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/history", nil)
+	w = httptest.NewRecorder()
+	s.handleDashboardHistory(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("history: expected 200, got %d", w.Code)
+	}
+
+	// Both queue and history should have forwarded wantPath.
+	if len(store.gotExecsPaths) != 2 {
+		t.Fatalf("expected 2 GetRecentExecutions calls, got %d", len(store.gotExecsPaths))
+	}
+	for i, got := range store.gotExecsPaths {
+		if got != wantPath {
+			t.Errorf("GetRecentExecutions call %d: projectPath %q, want %q", i, got, wantPath)
 		}
 	}
 }

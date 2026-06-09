@@ -415,7 +415,7 @@ func (c *CommandHandler) handleHistory(ctx context.Context, chatID string) {
 		return
 	}
 
-	executions, err := c.store.GetRecentExecutions(10)
+	executions, err := c.store.GetRecentExecutions(10, "")
 	if err != nil {
 		_, _ = c.handler.client.SendMessage(ctx, chatID, "❌ Failed to fetch history", "")
 		return
