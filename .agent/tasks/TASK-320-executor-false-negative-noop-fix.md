@@ -1,6 +1,6 @@
 # TASK-320: Executor false-negative no-op fix (evidence-backed specs)
 
-**Status:** 🟡 in review — Layer A + B1 shipped (PR on `fix/task-320-executor-noop-guard`); Layer B2 deferred — **MANUAL** (Pilot cannot fix its own execution guard)
+**Status:** ✅ SHIPPED — Layer A + B1 shipped earlier; **Layer B2 shipped 2026-06-09** (PR #3497 → v2.177.0). B2 as built differs from the original in-executor-retry plan: instead of bolting a second backend call onto the ~1700-line `executeWithOptions` (the doc's deferral reason), the fix lives at the **decomposition layer** (`runner_decompose.go`) — a no-commit subtask (analysis/verify/already-present) is tolerated via `isNoOpResult`; the task only no-ops if **no** subtask delivers a commit, after one escalated retry of the final subtask with `EvidenceBackedSpecDirective`, ending in a descriptive (never-empty) error. This was the actual cause of GH-3470's deterministic no_op. Pairs with TASK-354's sweep. (Move to `archive/` once confirmed in the next decomposed-task run.)
 **Priority:** P1 — systemic; blocks/poisons every explicit-spec task (GH-3222, GH-3228 class)
 **Repo:** `qf-studio/pilot`
 **Area:** `internal/executor/`
