@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "updated": "2026-06-04",
+  "updated": "2026-06-09",
   "nodes": {
     "concepts": {
       "pilot-architecture": {
@@ -120,6 +120,18 @@
         "description": "Per-execution git worktree isolation",
         "related": [
           "executor"
+        ]
+      },
+      "autopilot-release": {
+        "label": "Autopilot Release Pipeline",
+        "description": "Controller stages CI->merge->tag->release; reconcileOrphanPRs adopts open pilot/ PRs; handleReleasing cuts a per-PR release at HeadSHA with exact-SHA tag dedup.",
+        "files": [
+          "internal/autopilot/controller.go:1861",
+          "internal/autopilot/controller.go:2434"
+        ],
+        "related": [
+          "orchestrator",
+          "gateway"
         ]
       }
     },
@@ -500,6 +512,20 @@
         "confidence": 0.95,
         "created": "2026-06-04",
         "file": ".agent/knowledge/memories/learnings/learn_task359_layer1_shipped.md"
+      },
+      "mem-028": {
+        "type": "pitfall",
+        "summary": "Hand-merging a pilot/GH-* PR while the daemon runs makes the autopilot reconciler adopt it and cut a spurious per-PR release at the PR's own commit (exact-SHA dedup misses a tag on a descendant commit). 2026-06-09: manual v2.177.0 tag at #3498 -> controller cut v2.178.0 at #3494's ancestor commit, wrongly 'Latest'. Use fix/feat branch names or stop the daemon before hand-merging.",
+        "incident": "2026-06-09: manually merged #3494/95/97/98 + one manual v2.177.0 tag; only #3494 (pilot/ branch) was adopted; controller released it as spurious v2.178.0 (ancestor of v2.177.0). Cleaned up: deleted v2.178.0 release+tag, reverted version.ts (PR #3502).",
+        "severity": "high",
+        "concepts": [
+          "autopilot-release",
+          "orchestrator",
+          "worktree"
+        ],
+        "memory_file": ".agent/knowledge/memories/pitfalls/bug_manual_merge_spurious_release.md",
+        "created": "2026-06-09",
+        "confidence": 1.0
       }
     }
   },
@@ -663,6 +689,16 @@
       "from": "TASK-359",
       "to": "TASK-321",
       "type": "supersedes"
+    },
+    {
+      "from": "mem-028",
+      "to": "autopilot-release",
+      "type": "concerns"
+    },
+    {
+      "from": "mem-028",
+      "to": "orchestrator",
+      "type": "concerns"
     }
   ]
 }

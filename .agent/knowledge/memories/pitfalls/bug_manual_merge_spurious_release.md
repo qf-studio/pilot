@@ -1,0 +1,18 @@
+---
+name: Hand-merging pilot/ PRs while the daemon runs → spurious per-PR releases
+description: The autopilot reconciler (reconcileOrphanPRs) adopts any open pilot/-prefixed PR; after merge, handleReleasing cuts a release per adopted PR at that PR's own commit. Its dedup is exact-SHA (GetTagForSHA(HeadSHA)), so a manual merge + single manual tag on a different (descendant) commit makes it cut an extra, lower-content release labeled higher. Hit 2026-06-09: manual v2.177.0 tag at #3498's merge commit → controller cut spurious v2.178.0 at #3494's ancestor commit, wrongly "Latest".
+type: pitfall
+---
+When you hand-merge a `pilot/GH-*`-branch PR with `gh pr merge` while the Pilot daemon is running, the autopilot controller will **re-release it on its own** — even though you already merged (and maybe released) it. Symptom: an extra GitHub release/tag appears at a commit that is an **ancestor** of your intended release, marked "Latest" despite containing **less** than the real head; `version.ts` auto-bumps to the wrong (higher) version via the `docs-version-sync` workflow.
+
+**Why:** `internal/autopilot/controller.go` `reconcileOrphanPRs` (~:2434) lists all **open `pilot/`-prefixed** PRs every reconcile tick and adopts any not already tracked via `OnPRCreated`. Once adopted and merged, the PR walks to `StageReleasing`, and `handleReleasing` (~:1861) cuts a release **per PR at `prState.HeadSHA`**. The dedup guard is exact-SHA: `GetTagForSHA(ctx, owner, repo, prState.HeadSHA)` (~:1878). If a tag exists at the PR's *own* commit it skips; otherwise it bumps and tags. So tagging a **descendant** commit (e.g. the squash-merge of a later PR) does **not** dedup an earlier adopted PR — it gets its own release.
+
+**Why (the 2026-06-09 incident):** I manually merged #3494/#3495/#3497/#3498 and cut **one** manual tag `v2.177.0` at `origin/main` (= #3498's merge commit `a417b768`). Only #3494's branch was `pilot/GH-3470-manual` (the others were `fix/…`/`feat/…`), so **only #3494 was adopted**. The controller cut **`v2.178.0` at #3494's merge commit `4f8abd0f`** — an ancestor of v2.177.0 — making "Latest" a strict subset (missing the TASK-354/TASK-320/bridge fixes) and bumping `version.ts` to v2.178.0 (PR #3500). It then wedged at `active_prs=1`, "going nowhere" on the release stage.
+
+**How to apply:**
+- **Prefer letting the daemon merge `pilot/GH-*` PRs.** If you must hand-merge while it runs, either (a) stop the daemon first, or (b) use a non-`pilot/` branch name (`fix/…`, `feat/…`) — those are NOT adopted by `reconcileOrphanPRs`.
+- Symptom to watch: a release tag/`version.ts` at a version higher than your intended one, "Latest" pointing at an **ancestor** of `main` HEAD. Verify with `git merge-base --is-ancestor <spurious-sha> <main-head-sha>`.
+- Cleanup: stop the daemon → `gh release delete <vX> --yes` + `git push origin :refs/tags/<vX>` → revert `version.ts` via a `fix/…`-branch PR → restart (clean: reconciler finds no open `pilot/` PRs, in-memory `active_prs` resets).
+- Recovery is safe to do with the daemon **stopped** only — if it's live, it re-creates the tag the moment `GetTagForSHA` returns empty.
+
+**Latent code weakness (follow-up):** `handleReleasing`'s dedup should treat a `HeadSHA` that is an **ancestor of any existing release tag** as already-released (not just exact-SHA). Today an adopted-but-already-shipped PR gets a redundant release. See [[bug_goreleaser_cancellation]] for other release-stage edge cases.
