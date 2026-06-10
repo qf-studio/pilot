@@ -1630,21 +1630,10 @@ func (c *Controller) maybeCloseParentIssue(ctx context.Context, prState *PRState
 		return
 	}
 
-	// Check how many sibling sub-issues are still open.
-	// Tier 1: try native GitHub sub-issues GraphQL API (more reliable, works even without text patterns).
-	// Tier 2: fall back to text search when native links are absent (legacy repos use body "Parent: GH-N" only).
-	openCount, hasNativeLinks, err := c.ghClient.GetOpenSubIssueCount(ctx, c.owner, c.repo, parentNum)
-	if err != nil || !hasNativeLinks {
-		if err != nil {
-			c.log.Warn("maybeCloseParentIssue: native sub-issue count failed, falling back to search", slog.Int("parent", parentNum), slog.Any("error", err))
-		} else {
-			c.log.Debug("maybeCloseParentIssue: no native sub-issue links, falling back to search", slog.Int("parent", parentNum))
-		}
-		openCount, err = c.ghClient.SearchOpenSubIssues(ctx, c.owner, c.repo, parentNum)
-		if err != nil {
-			c.log.Warn("maybeCloseParentIssue: failed to search open sub-issues", slog.Int("parent", parentNum), slog.Any("error", err))
-			return
-		}
+	openCount, err := c.openSubIssueCount(ctx, parentNum)
+	if err != nil {
+		c.log.Warn("maybeCloseParentIssue: failed to count open sub-issues", slog.Int("parent", parentNum), slog.Any("error", err))
+		return
 	}
 
 	if openCount > 0 {
@@ -1653,6 +1642,45 @@ func (c *Controller) maybeCloseParentIssue(ctx context.Context, prState *PRState
 	}
 
 	c.closeParentNow(ctx, parentNum)
+}
+
+// openSubIssueCount returns the number of open sub-issues for a parent,
+// combining both lookup tiers:
+//   - Tier 1: native GitHub sub-issues GraphQL API (works even without text patterns).
+//   - Tier 2: text search for body "Parent: GH-N" references.
+//
+// GH-3513 incident: LinkSubIssue is non-fatal at creation time, so the native
+// link set can cover only a SUBSET of children. A native count of 0 then looks
+// like "all done" while unlinked siblings are still open — the parent gets
+// closed prematurely and the poller later supersedes the live children.
+// Therefore a native count of 0 is never trusted alone: it must be confirmed
+// by the text search before the caller may close the parent. The max of both
+// tiers is returned.
+func (c *Controller) openSubIssueCount(ctx context.Context, parentNum int) (int, error) {
+	nativeCount, hasNativeLinks, err := c.ghClient.GetOpenSubIssueCount(ctx, c.owner, c.repo, parentNum)
+	if err != nil || !hasNativeLinks {
+		if err != nil {
+			c.log.Warn("openSubIssueCount: native sub-issue count failed, falling back to search", slog.Int("parent", parentNum), slog.Any("error", err))
+		} else {
+			c.log.Debug("openSubIssueCount: no native sub-issue links, falling back to search", slog.Int("parent", parentNum))
+		}
+		return c.ghClient.SearchOpenSubIssues(ctx, c.owner, c.repo, parentNum)
+	}
+
+	if nativeCount > 0 {
+		return nativeCount, nil
+	}
+
+	// Native says 0 — cross-check text search to catch unlinked open siblings.
+	textCount, err := c.ghClient.SearchOpenSubIssues(ctx, c.owner, c.repo, parentNum)
+	if err != nil {
+		return 0, fmt.Errorf("native count is 0 but confirmation search failed: %w", err)
+	}
+	if textCount > 0 {
+		c.log.Info("openSubIssueCount: native links report 0 open but text search found unlinked open siblings, deferring close",
+			slog.Int("parent", parentNum), slog.Int("text_open", textCount))
+	}
+	return textCount, nil
 }
 
 // closeParentNow adds pilot-done, removes stale labels, posts a summary comment,
@@ -1699,7 +1727,7 @@ func (c *Controller) recoverStaleParentIssues(ctx context.Context) {
 
 	closed := 0
 	for _, parentNum := range candidates {
-		openCount, _, err := c.ghClient.GetOpenSubIssueCount(ctx, c.owner, c.repo, parentNum)
+		openCount, err := c.openSubIssueCount(ctx, parentNum)
 		if err != nil {
 			c.log.Warn("recoverStaleParentIssues: failed to count sub-issues", slog.Int("parent", parentNum), slog.Any("error", err))
 			continue

@@ -1956,6 +1956,33 @@ func TestCreateSubIssuesViaGitHub_InjectsAutopilotMetaMarker(t *testing.T) {
 	if !strings.Contains(body, "\n\nParent: GH-42\n\n") {
 		t.Errorf("human-readable parent prose missing from body; body = %q", body)
 	}
+
+	// GH-3513: the scope fence must pin the executor to this subtask's slice so
+	// it doesn't re-implement the full parent spec.
+	if !strings.Contains(body, "## Scope fence") {
+		t.Errorf("scope fence section missing from body; body = %q", body)
+	}
+	if !strings.Contains(body, "Implement ONLY the slice described above") {
+		t.Errorf("scope fence constraint missing from body; body = %q", body)
+	}
+}
+
+// subIssueBody must keep the subtask description ABOVE the scope fence and
+// reference the parent ID inside the fence text.
+func TestSubIssueBody_ScopeFence(t *testing.T) {
+	body := subIssueBody("GH-99", "Add the projectPath filter to the store layer.")
+
+	descIdx := strings.Index(body, "Add the projectPath filter")
+	fenceIdx := strings.Index(body, "## Scope fence")
+	if descIdx == -1 || fenceIdx == -1 {
+		t.Fatalf("body missing description (%d) or fence (%d); body = %q", descIdx, fenceIdx, body)
+	}
+	if descIdx > fenceIdx {
+		t.Errorf("description must precede the scope fence; body = %q", body)
+	}
+	if !strings.Contains(body[fenceIdx:], "GH-99") {
+		t.Errorf("fence must name the parent issue; body = %q", body)
+	}
 }
 
 // TestCreateSubIssuesViaAdapter_InjectsAutopilotMetaMarker verifies parity with the
@@ -2455,7 +2482,6 @@ func TestRunner_Execute_EpicRecoversThenExecutesOpenChildren(t *testing.T) {
 		}
 	}
 }
-
 
 // staticAllowlist is a test helper that allows a fixed set of "owner/repo"
 // pairs. projectPath comparison is ignored (tests don't need that dimension).

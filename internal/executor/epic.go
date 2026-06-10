@@ -1071,9 +1071,7 @@ func (r *Runner) createSubIssuesViaAdapter(ctx context.Context, plan *EpicPlan) 
 		// Build the issue body
 		body := subtask.Description
 		if plan.ParentTask.ID != "" {
-			// GH-2695: mirror the GitHub path — inject autopilot-meta marker for parity.
-			body = fmt.Sprintf("<!--autopilot-meta\nparent: %s\ninherited-spec: true\n-->\n\nParent: %s\n\n%s",
-				plan.ParentTask.ID, plan.ParentTask.ID, body)
+			body = subIssueBody(plan.ParentTask.ID, body)
 		}
 
 		// Wire DependsOn annotations into the body (GH-1794)
@@ -1162,6 +1160,33 @@ func (r *Runner) createSubIssuesViaAdapter(ctx context.Context, plan *EpicPlan) 
 	return created, nil
 }
 
+// subIssueBody assembles a decomposer-generated sub-issue body: the
+// autopilot-meta marker (GH-2695, lets spec_validator's inherited-spec bailout
+// recognise the issue), the parent reference, the subtask's planned slice, and
+// a scope fence.
+//
+// The fence exists because of the GH-3513 incident: executors that see
+// "Parent: GH-N" fetch the parent issue and treat its full spec as their task,
+// so every sibling re-implements the entire feature and the redundant PRs
+// collide. The fence pins the executor to this subtask's slice.
+func subIssueBody(parentID, description string) string {
+	return fmt.Sprintf(`<!--autopilot-meta
+parent: %[1]s
+inherited-spec: true
+-->
+
+Parent: %[1]s
+
+%[2]s
+
+## Scope fence
+
+Implement ONLY the slice described above. The parent issue %[1]s is decomposed
+into sibling sub-issues that cover the rest of its spec — consult the parent
+for context, but do NOT implement parts of it that fall outside this subtask.`,
+		parentID, description)
+}
+
 // createSubIssuesViaGitHub creates sub-issues using the gh CLI.
 // This is the original implementation and fallback path.
 //
@@ -1177,11 +1202,7 @@ func (r *Runner) createSubIssuesViaGitHub(ctx context.Context, plan *EpicPlan, e
 		// Build the issue body
 		body := subtask.Description
 		if plan.ParentTask != nil && plan.ParentTask.ID != "" {
-			// GH-2695: inject autopilot-meta marker so spec_validator's inherited-spec
-			// bailout path recognises this as a decomposer-generated sub-issue and skips
-			// the full spec check, delegating to the parent's validation result instead.
-			body = fmt.Sprintf("<!--autopilot-meta\nparent: %s\ninherited-spec: true\n-->\n\nParent: %s\n\n%s",
-				plan.ParentTask.ID, plan.ParentTask.ID, body)
+			body = subIssueBody(plan.ParentTask.ID, body)
 		}
 
 		// Wire DependsOn annotations into the body (GH-1794)

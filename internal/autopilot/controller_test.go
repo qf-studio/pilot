@@ -4580,9 +4580,11 @@ func TestMaybeCloseParentIssue(t *testing.T) {
 
 func TestRecoverStaleParentIssues(t *testing.T) {
 	type parentCandidate struct {
-		num      int
-		openSubs int // open sub-issue count from GetOpenSubIssueCount
-		subErr   bool
+		num          int
+		openSubs     int  // open sub-issue count from GetOpenSubIssueCount (native links)
+		subErr       bool // native GraphQL count fails
+		textOpenSubs int  // open sub-issue count from SearchOpenSubIssues (text search)
+		textErr      bool // text search fails
 	}
 
 	tests := []struct {
@@ -4615,10 +4617,34 @@ func TestRecoverStaleParentIssues(t *testing.T) {
 		{
 			name: "continues on per-item error, closes others",
 			candidates: []parentCandidate{
-				{num: 100, subErr: true},
+				{num: 100, subErr: true, textErr: true},
 				{num: 200, openSubs: 0},
 			},
 			wantClosed:  []int{200},
+			wantSkipped: []int{100},
+		},
+		{
+			name: "native count error falls back to text search, skips when siblings open",
+			candidates: []parentCandidate{
+				{num: 100, subErr: true, textOpenSubs: 1},
+			},
+			wantSkipped: []int{100},
+		},
+		{
+			// GH-3513 regression: LinkSubIssue partially failed, so native links
+			// cover only closed children (native open = 0) while unlinked siblings
+			// are still open. The text-search cross-check must veto the close.
+			name: "native 0 vetoed by text search finding unlinked open siblings",
+			candidates: []parentCandidate{
+				{num: 100, openSubs: 0, textOpenSubs: 2},
+			},
+			wantSkipped: []int{100},
+		},
+		{
+			name: "native 0 with failing confirmation search defers close",
+			candidates: []parentCandidate{
+				{num: 100, openSubs: 0, textErr: true},
+			},
 			wantSkipped: []int{100},
 		},
 		{
@@ -4740,6 +4766,19 @@ func TestRecoverStaleParentIssues(t *testing.T) {
 					_, _ = fmt.Sscanf(path, "%d", &num)
 					closedParents[num] = true
 					w.WriteHeader(http.StatusOK)
+
+				case r.Method == http.MethodGet && r.URL.Path == "/search/issues":
+					// SearchOpenSubIssues — parent number is embedded in the q param
+					// as `"Parent: GH-<num>"`.
+					var num int
+					_, _ = fmt.Sscanf(r.URL.Query().Get("q"), `repo:owner/repo "Parent: GH-%d"`, &num)
+					cand, ok := candidateMap[num]
+					if !ok || cand.textErr {
+						w.WriteHeader(http.StatusBadGateway)
+						return
+					}
+					w.WriteHeader(http.StatusOK)
+					_, _ = fmt.Fprintf(w, `{"total_count":%d}`, cand.textOpenSubs)
 
 				default:
 					w.WriteHeader(http.StatusOK)
@@ -5027,10 +5066,10 @@ func TestNotifyExternalClose_SkipsRetryReadyForHumanRecoveryPR(t *testing.T) {
 	const botLogin = "pilot-bot"
 
 	tests := []struct {
-		name            string
-		openPRs         []github.PullRequest // PRs returned by SearchOpenPRsForIssue
-		wantRetryAdded  bool
-		wantSkipLogged  bool // expect the "human recovery PR" log path
+		name           string
+		openPRs        []github.PullRequest // PRs returned by SearchOpenPRsForIssue
+		wantRetryAdded bool
+		wantSkipLogged bool // expect the "human recovery PR" log path
 	}{
 		{
 			name:           "no open PRs — retry-ready applied",
