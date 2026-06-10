@@ -33,9 +33,10 @@ func newEvalCmd() *cobra.Command {
 
 func newEvalRunCmd() *cobra.Command {
 	var (
-		repo  string
-		model string
-		limit int
+		repo    string
+		project string
+		model   string
+		limit   int
 	)
 
 	cmd := &cobra.Command{
@@ -55,8 +56,9 @@ Selects tasks by repository, optionally overriding the model used.`,
 			defer cleanup()
 
 			tasks, err := store.ListEvalTasks(memory.EvalTaskFilter{
-				Repo:  repo,
-				Limit: limit,
+				Repo:        repo,
+				ProjectPath: project,
+				Limit:       limit,
 			})
 			if err != nil {
 				return fmt.Errorf("failed to load eval tasks: %w", err)
@@ -99,6 +101,7 @@ Selects tasks by repository, optionally overriding the model used.`,
 	}
 
 	cmd.Flags().StringVar(&repo, "repo", "", "Repository (owner/name) to evaluate")
+	cmd.Flags().StringVar(&project, "project", "", "Filter by project path")
 	cmd.Flags().StringVar(&model, "model", "", "Model to use for evaluation (default: config model)")
 	cmd.Flags().IntVar(&limit, "limit", 100, "Maximum number of tasks to run")
 
@@ -108,6 +111,7 @@ Selects tasks by repository, optionally overriding the model used.`,
 func newEvalListCmd() *cobra.Command {
 	var (
 		repo        string
+		project     string
 		limit       int
 		successOnly bool
 		failedOnly  bool
@@ -126,6 +130,7 @@ func newEvalListCmd() *cobra.Command {
 
 			tasks, err := store.ListEvalTasks(memory.EvalTaskFilter{
 				Repo:        repo,
+				ProjectPath: project,
 				SuccessOnly: successOnly,
 				FailedOnly:  failedOnly,
 				Limit:       limit,
@@ -165,6 +170,7 @@ func newEvalListCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&repo, "repo", "", "Filter by repository (owner/name)")
+	cmd.Flags().StringVar(&project, "project", "", "Filter by project path")
 	cmd.Flags().IntVar(&limit, "limit", 100, "Maximum number of tasks to show")
 	cmd.Flags().BoolVar(&successOnly, "success", false, "Show only successful tasks")
 	cmd.Flags().BoolVar(&failedOnly, "failed", false, "Show only failed tasks")
@@ -173,7 +179,10 @@ func newEvalListCmd() *cobra.Command {
 }
 
 func newEvalStatsCmd() *cobra.Command {
-	var repo string
+	var (
+		repo    string
+		project string
+	)
 
 	cmd := &cobra.Command{
 		Use:   "stats",
@@ -188,8 +197,9 @@ Shows per-repository breakdown and overall statistics.`,
 			defer cleanup()
 
 			tasks, err := store.ListEvalTasks(memory.EvalTaskFilter{
-				Repo:  repo,
-				Limit: 10000,
+				Repo:        repo,
+				ProjectPath: project,
+				Limit:       10000,
 			})
 			if err != nil {
 				return fmt.Errorf("failed to load eval tasks: %w", err)
@@ -206,6 +216,7 @@ Shows per-repository breakdown and overall statistics.`,
 	}
 
 	cmd.Flags().StringVar(&repo, "repo", "", "Filter by repository (owner/name)")
+	cmd.Flags().StringVar(&project, "project", "", "Filter by project path")
 
 	return cmd
 }
