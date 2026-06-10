@@ -133,7 +133,8 @@ func newStartCmd() *cobra.Command {
 		enableTunnel bool   // Enable public tunnel (Cloudflare/ngrok)
 		teamID       string // Optional team ID for scoping execution
 		teamMember   string // Member email for project access scoping
-		logFormat    string // Log output format: text or json (GH-847)
+		logFormat      string // Log output format: text or json (GH-847)
+		dashboardScope string // Dashboard metrics scope: "project" (default) or "all" (GH-3534)
 	)
 
 	cmd := &cobra.Command{
@@ -229,6 +230,11 @@ Examples:
 			if strings.HasPrefix(projectPath, "~") {
 				home, _ := os.UserHomeDir()
 				projectPath = strings.Replace(projectPath, "~", home, 1)
+			}
+
+			// Validate --dashboard-scope (GH-3534)
+			if dashboardScope != "project" && dashboardScope != "all" {
+				return fmt.Errorf("invalid --dashboard-scope %q: must be one of [project, all]", dashboardScope)
 			}
 
 			// Clean stale pilot hooks on startup (GH-1883)
@@ -1016,7 +1022,7 @@ Examples:
 				p.Gateway().SetDashboardStore(gwStore)
 				p.Gateway().SetLogStreamStore(gwStore)
 			}
-			p.Gateway().SetDashboardProjectPath(projectPath)
+			p.Gateway().SetDashboardProjectPath(scopedProjectPath(dashboardScope, projectPath))
 
 			// GH-1633: Wire git graph fetcher to gateway so /api/v1/gitgraph returns live git data
 			p.Gateway().SetGitGraphFetcher(func(path string, limit int) interface{} {
@@ -1092,7 +1098,7 @@ Examples:
 			if dashboardMode {
 				// GH-2291: Pass adapter poller infrastructure so the dashboard
 				// merges task states from both adapter pollers and gateway webhooks.
-				return runDashboardMode(p, cfg, gwProgram, gwMonitor, gwRunner, projectPath)
+				return runDashboardMode(p, cfg, gwProgram, gwMonitor, gwRunner, scopedProjectPath(dashboardScope, projectPath))
 			}
 
 			// Show startup banner (headless mode)
@@ -1191,6 +1197,7 @@ Examples:
 	}
 
 	cmd.Flags().BoolVar(&dashboardMode, "dashboard", false, "Show TUI dashboard for real-time task monitoring")
+	cmd.Flags().StringVar(&dashboardScope, "dashboard-scope", "project", "Scope dashboard metrics: project (current project only) or all (all projects)")
 	cmd.Flags().StringVarP(&projectPath, "project", "p", "", "Project path (default: config default or cwd)")
 	cmd.Flags().BoolVar(&replace, "replace", false, "Kill existing bot instance before starting")
 	cmd.Flags().BoolVar(&noGateway, "no-gateway", false, "Run polling adapters only (no HTTP gateway)")
