@@ -118,7 +118,7 @@ Disable via config: `executor.navigator.auto_init: false`
 
 ## Current State
 
-**Current Version:** v2.186.1 | full status in `.agent/system/FEATURE-MATRIX.md`
+**Current Version:** v2.186.2 | full status in `.agent/system/FEATURE-MATRIX.md`
 
 **Recent (v2.179.0, June 9 2026):** **Autopilot ancestor-tag release dedup — SHIPPED.** `handleReleasing` dedup'd releases by **exact-SHA** only (`GetTagForSHA(HeadSHA)`), so a PR whose `HeadSHA` was an **ancestor** of an existing release tag's commit (already shipped inside a later squash-merge, or a tag on a descendant) slipped through and cut a **redundant, lower-content release** — the v2.178.0 incident. Fix: `tagCoveringCommit()` + a new `github.Client.CompareStatus()` treat exact-match **or** ancestor-of-recent-tag (`base...head` == `ahead`/`identical`) as already-released → the PR drains from `activePRs` without a new tag; table-driven test (exact / ancestor / diverged). #3506. **Released as v2.179.0, skipping a *phantom* `v2.178.0`:** the deleted spurious tag had left the daemon binary reporting `2.178.0`, which **blocked `pilot upgrade`** (it looked newer than the real Latest v2.177.0) — cutting v2.179.0 cleared the deadlock; daemon upgraded + restarted on the fix. Pitfalls: `bug_manual_merge_spurious_release` (`mem-028`, now marked fixed) + new `bug_phantom_version_blocks_upgrade` (`mem-029`).
 
