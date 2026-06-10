@@ -520,6 +520,12 @@ type PRState struct {
 	PostMergeSHA string
 	// PostMergeCIStartedAt is when StagePostMergeCI monitoring began (for timeout tracking).
 	PostMergeCIStartedAt time.Time
+	// ReleasingAttempts counts how many times handleReleasing has been invoked for this PR.
+	// Used for a bounded retry cap so StageReleasing never loops indefinitely. (GH-3558)
+	ReleasingAttempts int
+	// ReleasingFirstAt is when the first release attempt started. Used with maxReleasingDuration
+	// for a wall-clock cap on StageReleasing. (GH-3558)
+	ReleasingFirstAt time.Time
 }
 
 // snapshot returns a detached, field-by-field copy of the PRState with a fresh
@@ -555,6 +561,8 @@ func (ps *PRState) snapshot() *PRState {
 		ApprovalRequestedAt:     ps.ApprovalRequestedAt,
 		PostMergeSHA:            ps.PostMergeSHA,
 		PostMergeCIStartedAt:    ps.PostMergeCIStartedAt,
+		ReleasingAttempts:       ps.ReleasingAttempts,
+		ReleasingFirstAt:        ps.ReleasingFirstAt,
 	}
 	// DiscoveredChecks is a slice — copy the backing array so consumers can't
 	// mutate the live PR's slice through the snapshot.

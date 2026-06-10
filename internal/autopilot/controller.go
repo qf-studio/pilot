@@ -30,6 +30,17 @@ type projectBoardSyncer interface {
 	UpdateProjectItemStatus(ctx context.Context, issueNodeID string, statusName string) error
 }
 
+// maxReleasingAttempts is the hard cap on handleReleasing retries before the PR
+// transitions to StageFailed. Prevents StageReleasing from looping indefinitely
+// when transient API failures (tag lookup, commit fetch) persist across many polls.
+// At the default 30 s poll interval this allows ~10 minutes of retrying. (GH-3558)
+const maxReleasingAttempts = 20
+
+// maxReleasingDuration is the wall-clock cap on time spent in StageReleasing from the
+// first tagging attempt. Complements maxReleasingAttempts for cases where the daemon
+// restarts (resetting the count) but the underlying issue persists. (GH-3558)
+const maxReleasingDuration = 30 * time.Minute
+
 // iterationRe matches the iteration field in autopilot-meta comments.
 var iterationRe = regexp.MustCompile(`<!-- autopilot-meta.*?iteration:(\d+).*?-->`)
 
@@ -1922,6 +1933,11 @@ func (c *Controller) tagCoveringCommit(ctx context.Context, owner, repo, sha str
 
 // handleReleasing creates a release after successful merge and CI.
 func (c *Controller) handleReleasing(ctx context.Context, prState *PRState) error {
+	prState.ReleasingAttempts++
+	if prState.ReleasingFirstAt.IsZero() {
+		prState.ReleasingFirstAt = time.Now()
+	}
+
 	if c.releaser == nil {
 		c.log.Debug("releaser not configured, skipping release", "pr", prState.PRNumber)
 		c.removePR(prState.PRNumber)
@@ -1933,6 +1949,40 @@ func (c *Controller) handleReleasing(ctx context.Context, prState *PRState) erro
 	// than c.owner/c.repo (the pilot repo). All release API calls must target the
 	// correct repo to avoid stuck-forever releasing state.
 	owner, repo := prState.RepoOwnerAndName(c.owner, c.repo)
+
+	// Refresh HeadSHA to the merge commit SHA. For squash-merged PRs the PR branch
+	// head is NOT on the default branch; tagging it would place the tag on a commit
+	// unreachable from main. Best-effort: if the fetch fails we proceed with the
+	// existing SHA (the reachability guard below is gated on a successful refresh). (GH-3558)
+	headSHARefreshed := false
+	if ghPR, fetchErr := c.ghClient.GetPullRequest(ctx, owner, repo, prState.PRNumber); fetchErr == nil && ghPR.MergeCommitSHA != "" {
+		if ghPR.MergeCommitSHA != prState.HeadSHA {
+			c.log.Debug("handleReleasing: refreshed HeadSHA to merge commit",
+				"pr", prState.PRNumber,
+				"old", ShortSHA(prState.HeadSHA),
+				"new", ShortSHA(ghPR.MergeCommitSHA),
+			)
+			prState.HeadSHA = ghPR.MergeCommitSHA
+		}
+		headSHARefreshed = true
+	}
+
+	// Fast-path drain: if a published GitHub Release already exists for HeadSHA,
+	// we are done — avoid any further API calls and drain the PR. This guards the
+	// retry-loop case where a prior Pilot instance (or a human) already released
+	// the commit. Uses the fixed exhaustive GetTagForSHA. (GH-3558)
+	if tag, tagErr := c.ghClient.GetTagForSHA(ctx, owner, repo, prState.HeadSHA); tagErr == nil && tag != "" {
+		if rel, relErr := c.ghClient.GetReleaseByTag(ctx, owner, repo, tag); relErr == nil && rel != nil && rel.ID != 0 && !rel.Draft {
+			c.log.Info("published release already exists for HeadSHA, draining",
+				"pr", prState.PRNumber,
+				"sha", ShortSHA(prState.HeadSHA),
+				"tag", tag,
+				"release_url", rel.HTMLURL,
+			)
+			c.removePR(prState.PRNumber)
+			return nil
+		}
+	}
 
 	// Race condition guard: Check if this commit is already covered by a tag.
 	// When multiple PRs merge rapidly, each triggers handleReleasing but only
@@ -1950,7 +2000,8 @@ func (c *Controller) handleReleasing(ctx context.Context, prState *PRState) erro
 		// "Reference already exists", returns an error, and the PR stays in
 		// StageReleasing forever (re-tried every poll). Return the error so this
 		// PR is retried cleanly on the next poll once the lookup recovers. (TASK-316)
-		return fmt.Errorf("failed to check existing tags for PR #%d: %w", prState.PRNumber, err)
+		return c.releasingErrorOrFail(ctx, prState,
+			fmt.Errorf("failed to check existing tags for PR #%d: %w", prState.PRNumber, err))
 	}
 	if existingTag != "" {
 		c.log.Info("commit already covered by existing tag, skipping release",
@@ -1960,6 +2011,44 @@ func (c *Controller) handleReleasing(ctx context.Context, prState *PRState) erro
 		)
 		c.removePR(prState.PRNumber)
 		return nil
+	}
+
+	// Reachability guard: refuse to tag a SHA that is not reachable from the
+	// default branch. A diverged or "behind" status means the commit was never
+	// actually merged into the release branch — tagging it would publish the wrong
+	// content. Only applied when HeadSHA was successfully refreshed to the merge
+	// commit SHA above; the branch-head SHA would falsely fail for squash merges. (GH-3558)
+	if headSHARefreshed {
+		defaultBranch := c.resolveMainBranchName()
+		reachStatus, reachErr := c.ghClient.CompareStatus(ctx, owner, repo, prState.HeadSHA, defaultBranch)
+		if reachErr != nil {
+			return c.releasingErrorOrFail(ctx, prState,
+				fmt.Errorf("reachability check failed for PR #%d: %w", prState.PRNumber, reachErr))
+		}
+		if reachStatus != "ahead" && reachStatus != "identical" {
+			errMsg := fmt.Sprintf(
+				"refusing to release PR #%d: HeadSHA %s is not reachable from %s (compare status: %s) — manual intervention required",
+				prState.PRNumber, ShortSHA(prState.HeadSHA), defaultBranch, reachStatus)
+			c.log.Error("handleReleasing: SHA not reachable from default branch — escalating to StageFailed",
+				"pr", prState.PRNumber,
+				"sha", ShortSHA(prState.HeadSHA),
+				"branch", defaultBranch,
+				"status", reachStatus,
+			)
+			if prState.IssueNumber > 0 {
+				comment := fmt.Sprintf(
+					"⚠️ **Release blocked**: PR #%d HeadSHA `%s` is not reachable from `%s` (compare status: `%s`).\n\nThis usually means the PR was not actually merged into the release branch. Manual intervention is required.",
+					prState.PRNumber, ShortSHA(prState.HeadSHA), defaultBranch, reachStatus)
+				if _, cerr := c.ghClient.AddComment(ctx, c.owner, c.repo, prState.IssueNumber, comment); cerr != nil {
+					c.log.Warn("failed to post reachability failure comment", "issue", prState.IssueNumber, "error", cerr)
+				}
+			}
+			prState.Stage = StageFailed
+			prState.Error = errMsg
+			c.metrics.RecordPRFailed()
+			c.metrics.RecordIssueProcessed("failed")
+			return nil
+		}
 	}
 
 	// Get current version from the target repo
@@ -1972,7 +2061,7 @@ func (c *Controller) handleReleasing(ctx context.Context, prState *PRState) erro
 	// Get PR commits for bump detection
 	commits, err := c.ghClient.GetPRCommits(ctx, owner, repo, prState.PRNumber)
 	if err != nil {
-		return fmt.Errorf("failed to get PR commits: %w", err)
+		return c.releasingErrorOrFail(ctx, prState, fmt.Errorf("failed to get PR commits: %w", err))
 	}
 
 	// Detect bump type from commits
@@ -2012,7 +2101,7 @@ func (c *Controller) handleReleasing(ctx context.Context, prState *PRState) erro
 			c.removePR(prState.PRNumber)
 			return nil
 		}
-		return fmt.Errorf("failed to create tag: %w", err)
+		return c.releasingErrorOrFail(ctx, prState, fmt.Errorf("failed to create tag: %w", err))
 	}
 
 	releaseURL := fmt.Sprintf("https://github.com/%s/%s/releases/tag/%s", owner, repo, tagName)
@@ -2058,6 +2147,43 @@ func isDuplicateTagError(err error) bool {
 		return false
 	}
 	return strings.Contains(strings.ToLower(err.Error()), "already exists")
+}
+
+// releasingErrorOrFail returns causeErr if the PR is still within the retry cap, or
+// escalates to StageFailed once maxReleasingAttempts or maxReleasingDuration is reached.
+// The transition to StageFailed posts a GitHub issue comment (if linked) and records
+// failure metrics. It always returns nil on escalation so the caller's error path is
+// suppressed and ProcessPR treats the state change as a clean (non-retried) transition.
+// maxReleasingDuration guards against the restart-and-reset scenario where the attempt
+// counter resets but the underlying issue persists. (GH-3558)
+func (c *Controller) releasingErrorOrFail(ctx context.Context, prState *PRState, causeErr error) error {
+	elapsed := time.Since(prState.ReleasingFirstAt)
+	if prState.ReleasingAttempts < maxReleasingAttempts && elapsed < maxReleasingDuration {
+		return causeErr
+	}
+	errMsg := fmt.Sprintf("release failed after %d/%d attempts (%.0fm elapsed): %v — manual intervention required",
+		prState.ReleasingAttempts, maxReleasingAttempts, elapsed.Minutes(), causeErr)
+	c.log.Error("handleReleasing: cap reached — escalating to StageFailed",
+		"pr", prState.PRNumber,
+		"attempts", prState.ReleasingAttempts,
+		"max_attempts", maxReleasingAttempts,
+		"elapsed", elapsed.Round(time.Second),
+		"max_duration", maxReleasingDuration,
+		"error", causeErr,
+	)
+	if prState.IssueNumber > 0 {
+		comment := fmt.Sprintf(
+			"⚠️ **Release escalation**: PR #%d failed to release after %d attempts (%.0f min elapsed).\n\nLast error: `%v`\n\nManual intervention is required — no further automatic retries will be made.",
+			prState.PRNumber, prState.ReleasingAttempts, elapsed.Minutes(), causeErr)
+		if _, cerr := c.ghClient.AddComment(ctx, c.owner, c.repo, prState.IssueNumber, comment); cerr != nil {
+			c.log.Warn("failed to post release escalation comment", "issue", prState.IssueNumber, "error", cerr)
+		}
+	}
+	prState.Stage = StageFailed
+	prState.Error = errMsg
+	c.metrics.RecordPRFailed()
+	c.metrics.RecordIssueProcessed("failed")
+	return nil
 }
 
 // isMergeConflict returns true if the PR has merge conflicts.
