@@ -1225,6 +1225,76 @@ func TestRenderEvalStats(t *testing.T) {
 	})
 }
 
+// TestRenderEvalStats_ProjectFilter verifies that renderEvalStats scopes its
+// ListEvalTasks query to m.defaultProjectPath when set and returns all tasks
+// when defaultProjectPath is empty (global mode).
+func TestRenderEvalStats_ProjectFilter(t *testing.T) {
+	store, err := memory.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 4 tasks for alpha (all pass) + 6 tasks for beta (all fail)
+	for i := 1; i <= 4; i++ {
+		if err := store.SaveEvalTask(&memory.EvalTask{
+			ID:          fmt.Sprintf("alpha-%d", i),
+			IssueNumber: i,
+			IssueTitle:  fmt.Sprintf("Alpha %d", i),
+			Repo:        "test/repo",
+			ProjectPath: "/proj/alpha",
+			Success:     true,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 5; i <= 10; i++ {
+		if err := store.SaveEvalTask(&memory.EvalTask{
+			ID:          fmt.Sprintf("beta-%d", i),
+			IssueNumber: i,
+			IssueTitle:  fmt.Sprintf("Beta %d", i),
+			Repo:        "test/repo",
+			ProjectPath: "/proj/beta",
+			Success:     false,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	tests := []struct {
+		name            string
+		defaultProject  string
+		wantRate        string
+		wantTaskCount   string
+	}{
+		{
+			name:           "scoped to alpha: only 4 passing tasks",
+			defaultProject: "/proj/alpha",
+			wantRate:       "100.0%",
+			wantTaskCount:  "(4 tasks)",
+		},
+		{
+			name:           "global mode: all 10 tasks, 40% pass",
+			defaultProject: "",
+			wantRate:       "40.0%",
+			wantTaskCount:  "(10 tasks)",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := Model{store: store, defaultProjectPath: tt.defaultProject}
+			got := m.renderEvalStats()
+			plain := stripANSI(got)
+			if !strings.Contains(plain, tt.wantRate) {
+				t.Errorf("expected rate %q in output, got:\n%s", tt.wantRate, plain)
+			}
+			if !strings.Contains(plain, tt.wantTaskCount) {
+				t.Errorf("expected task count %q in output, got:\n%s", tt.wantTaskCount, plain)
+			}
+		})
+	}
+}
+
 // TestStoreRefreshMsg_UpdatesHistoryAndMetrics verifies that storeRefreshMsg
 // replaces stale in-memory history and metrics with live DB state (GH-2248).
 func TestStoreRefreshMsg_UpdatesHistoryAndMetrics(t *testing.T) {
@@ -1796,5 +1866,66 @@ func TestUpgradeRender_FailedShowsError(t *testing.T) {
 	}
 	if strings.Contains(out, "Restarting") {
 		t.Errorf("Failed render must not contain 'Restarting'; got:\n%s", out)
+	}
+}
+
+func TestRenderEvalStats_ProjectPathFilter(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "pilot-eval-scope-test-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	store, err := memory.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	// Seed: alpha (success), beta (failure). Only alpha should appear when scoped.
+	tasks := []*memory.EvalTask{
+		{ID: "eval-alpha", Repo: "org/repo", IssueNumber: 1, Success: true, ProjectPath: "/projects/alpha"},
+		{ID: "eval-beta", Repo: "org/repo", IssueNumber: 2, Success: false, ProjectPath: "/projects/beta"},
+	}
+	for _, task := range tasks {
+		if err := store.SaveEvalTask(task); err != nil {
+			t.Fatalf("SaveEvalTask %s: %v", task.ID, err)
+		}
+	}
+
+	tests := []struct {
+		name            string
+		defaultProjPath string
+		wantTaskCount   string // substring of "(N tasks)"
+		wantRate        string // substring of "X.X%"
+	}{
+		{
+			name:            "scoped to alpha sees only alpha task (100%)",
+			defaultProjPath: "/projects/alpha",
+			wantTaskCount:   "(1 tasks)",
+			wantRate:        "100.0%",
+		},
+		{
+			name:            "global mode (empty path) sees all tasks (50%)",
+			defaultProjPath: "",
+			wantTaskCount:   "(2 tasks)",
+			wantRate:        "50.0%",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := NewModelWithStore("test", store)
+			m.defaultProjectPath = tt.defaultProjPath
+
+			out := stripANSI(m.renderEvalStats())
+
+			if !strings.Contains(out, tt.wantTaskCount) {
+				t.Errorf("renderEvalStats(%q): want %q in output; got:\n%s", tt.defaultProjPath, tt.wantTaskCount, out)
+			}
+			if !strings.Contains(out, tt.wantRate) {
+				t.Errorf("renderEvalStats(%q): want %q in output; got:\n%s", tt.defaultProjPath, tt.wantRate, out)
+			}
+		})
 	}
 }
