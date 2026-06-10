@@ -114,8 +114,8 @@ func (m *AutoMerger) MergePR(ctx context.Context, prState *PRState) error {
 }
 
 // postMisconfigComment posts a single explanatory comment on the PR when
-// approval is required by the environment but not enabled in config.
-// Idempotent: skips posting if the marker comment already exists.
+// approval is required (by an escalation gate or the environment) but not
+// enabled in config. Idempotent: skips posting if the marker comment exists.
 func (m *AutoMerger) postMisconfigComment(ctx context.Context, prState *PRState) {
 	existing, err := m.ghClient.ListIssueComments(ctx, m.owner, m.repo, prState.PRNumber)
 	if err != nil {
@@ -130,16 +130,21 @@ func (m *AutoMerger) postMisconfigComment(ctx context.Context, prState *PRState)
 		}
 	}
 
-	envName := m.config.EnvironmentName()
+	// GH-3569: name the actual escalation trigger (size-floor / scope-drift /
+	// env require_approval) instead of always blaming require_approval.
+	reason := prState.EscalationReason
+	if reason == "" {
+		reason = fmt.Sprintf("environments.%s.require_approval=true", m.config.EnvironmentName())
+	}
 	body := fmt.Sprintf(`%s
 🚧 **Merge blocked: approval not wired**
 
-Environment `+"`%s`"+` requires pre-merge approval (`+"`environments.%s.require_approval: true`"+`) but the approval system is disabled (`+"`approval.enabled: false`"+` and/or `+"`approval.pre_merge.enabled: false`"+`).
+This PR requires pre-merge approval (**%s**) but the approval system is disabled (`+"`approval.enabled: false`"+` and/or `+"`approval.pre_merge.enabled: false`"+`).
 
 To unblock: either enable approval in `+"`~/.pilot/config.yaml`"+` (set `+"`approval.enabled: true`"+` + `+"`approval.pre_merge.enabled: true`"+` + add an approver), or merge manually with `+"`gh pr merge %d`"+`.
 
 Tracked in #2598.`,
-		misconfigCommentMarker, envName, envName, prState.PRNumber)
+		misconfigCommentMarker, reason, prState.PRNumber)
 
 	if _, postErr := m.ghClient.AddPRComment(ctx, m.owner, m.repo, prState.PRNumber, body); postErr != nil {
 		m.log.Warn("postMisconfigComment: failed to post PR comment",

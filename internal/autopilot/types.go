@@ -322,20 +322,20 @@ func DefaultConfig() *Config {
 			Enabled:       true,
 			MaxIterations: 3,
 		},
-		AutoCreateIssues:    true,
-		IssueLabels:         []string{"pilot", "autopilot-fix"},
-		NotifyOnFailure:     true,
-		MaxFailures:         3,
-		MaxCIFixIterations:  3,
-		MaxCIFixPRSize:      200,
-		FailureResetTimeout: 30 * time.Minute,
-		MaxMergesPerHour:    10,
-		MaxMergeAttempts:    5,
+		AutoCreateIssues:     true,
+		IssueLabels:          []string{"pilot", "autopilot-fix"},
+		NotifyOnFailure:      true,
+		MaxFailures:          3,
+		MaxCIFixIterations:   3,
+		MaxCIFixPRSize:       200,
+		FailureResetTimeout:  30 * time.Minute,
+		MaxMergesPerHour:     10,
+		MaxMergeAttempts:     5,
 		MaxReleasingAttempts: 10,
-		ApprovalTimeout:     1 * time.Hour,
-		Release:             nil, // Disabled by default
-		MergedPRScanWindow:  30 * time.Minute,
-		Environments:        defaultEnvironments(),
+		ApprovalTimeout:      1 * time.Hour,
+		Release:              nil, // Disabled by default
+		MergedPRScanWindow:   30 * time.Minute,
+		Environments:         defaultEnvironments(),
 	}
 }
 
@@ -531,6 +531,11 @@ type PRState struct {
 	ReleasingAttempts int
 	// ReleasingFirstAt is when StageReleasing was first attempted. Set on the first call.
 	ReleasingFirstAt time.Time
+	// EscalationReason records why the PR entered StageAwaitApproval (size-floor
+	// gate, scope-drift gate, or env require_approval) so misconfig reporting
+	// names the actual trigger (GH-3569). In-memory only; lost on restart, which
+	// degrades to the env-based fallback wording.
+	EscalationReason string
 }
 
 // snapshot returns a detached, field-by-field copy of the PRState with a fresh
@@ -568,6 +573,7 @@ func (ps *PRState) snapshot() *PRState {
 		PostMergeCIStartedAt:    ps.PostMergeCIStartedAt,
 		ReleasingAttempts:       ps.ReleasingAttempts,
 		ReleasingFirstAt:        ps.ReleasingFirstAt,
+		EscalationReason:        ps.EscalationReason,
 	}
 	// DiscoveredChecks is a slice — copy the backing array so consumers can't
 	// mutate the live PR's slice through the snapshot.

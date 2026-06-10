@@ -88,17 +88,24 @@ func TestSizeFloorReason(t *testing.T) {
 			},
 		},
 		{
-			name: "200 LoC exactly — no floor (strict >)",
+			name: "500 LoC exactly — no floor (strict >)",
 			files: []*github.PRFile{
-				{Filename: "a.go", Status: "modified", Additions: 200},
+				{Filename: "a.go", Status: "modified", Additions: 500},
 			},
 		},
 		{
-			name: "201 LoC — floor fires",
+			name: "501 LoC — floor fires",
 			files: []*github.PRFile{
-				{Filename: "a.go", Status: "modified", Additions: 201},
+				{Filename: "a.go", Status: "modified", Additions: 501},
 			},
 			want: true,
+		},
+		{
+			name: "routine multi-file fix with tests (#3559 class, ~450) — no floor",
+			files: []*github.PRFile{
+				{Filename: "internal/autopilot/controller.go", Status: "modified", Additions: 110},
+				{Filename: "internal/autopilot/controller_test.go", Status: "modified", Additions: 340},
+			},
 		},
 		{
 			name: "cascade-2 contaminating PR (~512 LoC)",

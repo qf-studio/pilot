@@ -860,6 +860,10 @@ func (c *Controller) handleCIPassed(ctx context.Context, prState *PRState) error
 		c.log.Warn("merge gate escalated: requiring human approval",
 			"pr", prState.PRNumber, "reason", escalateReason)
 		prState.Stage = StageAwaitApproval
+		// GH-3569: record WHY this PR awaits approval so downstream reporting
+		// (misconfig error, PR comment) names the actual trigger instead of
+		// blaming env require_approval.
+		prState.EscalationReason = escalateReason
 		if c.notifier != nil {
 			if err := c.notifier.NotifyApprovalRequired(ctx, prState); err != nil {
 				c.log.Warn("failed to send approval notification", "error", err)
@@ -871,6 +875,7 @@ func (c *Controller) handleCIPassed(ctx context.Context, prState *PRState) error
 	if c.config.ResolvedEnv().RequireApproval {
 		c.log.Info("awaiting approval before merge", "pr", prState.PRNumber)
 		prState.Stage = StageAwaitApproval
+		prState.EscalationReason = fmt.Sprintf("environments.%s.require_approval=true", c.config.EnvironmentName())
 
 		// Notify approval required
 		if c.notifier != nil {
@@ -1218,14 +1223,22 @@ func (c *Controller) handleAwaitApproval(ctx context.Context, prState *PRState) 
 
 // submitAsyncApprovalRequest submits the first async approval request for a PR.
 func (c *Controller) submitAsyncApprovalRequest(ctx context.Context, prState *PRState) error {
-	// Fail closed: if approval stage is not enabled, do NOT auto-approve when the env requires approval.
+	// Fail closed: if approval stage is not enabled, do NOT auto-approve when approval is required.
 	if c.approvalMgr == nil || !c.approvalMgr.IsStageEnabled(approval.StagePreMerge) {
-		c.log.Error("approval misconfig: env requires approval but pre_merge.enabled=false",
-			"pr", prState.PRNumber, "env", c.config.EnvironmentName())
+		// GH-3569: PRs reach StageAwaitApproval via three paths (size-floor gate,
+		// scope-drift gate, env require_approval). The old hardcoded message
+		// blamed require_approval=true even when the env had it false and a
+		// defense-in-depth gate did the escalating — observed on PR #3559.
+		reason := prState.EscalationReason
+		if reason == "" {
+			reason = fmt.Sprintf("environments.%s.require_approval=true", c.config.EnvironmentName())
+		}
+		c.log.Error("approval misconfig: approval required but pre_merge.enabled=false",
+			"pr", prState.PRNumber, "env", c.config.EnvironmentName(), "escalation_reason", reason)
 		prState.Stage = StageFailed
 		prState.Error = fmt.Sprintf(
-			"approval-misconfig: env %q has require_approval=true but approval.pre_merge.enabled=false → deadlock until config fixed",
-			c.config.EnvironmentName(),
+			"approval-misconfig: PR requires approval (%s) but approval.pre_merge.enabled=false → deadlock until config fixed",
+			reason,
 		)
 		c.autoMerger.postMisconfigComment(ctx, prState)
 		c.metrics.RecordPRFailed()
