@@ -2443,7 +2443,7 @@ func (m Model) renderEvalStats() string {
 
 	tw := m.effectivePanelTotalWidth()
 
-	tasks, err := m.store.ListEvalTasks(memory.EvalTaskFilter{Limit: 200})
+	tasks, err := m.store.ListEvalTasks(memory.EvalTaskFilter{ProjectPath: m.defaultProjectPath, Limit: 200})
 	if err != nil || len(tasks) == 0 {
 		return ""
 	}

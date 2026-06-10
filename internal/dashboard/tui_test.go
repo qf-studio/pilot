@@ -1798,3 +1798,64 @@ func TestUpgradeRender_FailedShowsError(t *testing.T) {
 		t.Errorf("Failed render must not contain 'Restarting'; got:\n%s", out)
 	}
 }
+
+func TestRenderEvalStats_ProjectPathFilter(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "pilot-eval-scope-test-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	store, err := memory.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	// Seed: alpha (success), beta (failure). Only alpha should appear when scoped.
+	tasks := []*memory.EvalTask{
+		{ID: "eval-alpha", Repo: "org/repo", IssueNumber: 1, Success: true, ProjectPath: "/projects/alpha"},
+		{ID: "eval-beta", Repo: "org/repo", IssueNumber: 2, Success: false, ProjectPath: "/projects/beta"},
+	}
+	for _, task := range tasks {
+		if err := store.SaveEvalTask(task); err != nil {
+			t.Fatalf("SaveEvalTask %s: %v", task.ID, err)
+		}
+	}
+
+	tests := []struct {
+		name            string
+		defaultProjPath string
+		wantTaskCount   string // substring of "(N tasks)"
+		wantRate        string // substring of "X.X%"
+	}{
+		{
+			name:            "scoped to alpha sees only alpha task (100%)",
+			defaultProjPath: "/projects/alpha",
+			wantTaskCount:   "(1 tasks)",
+			wantRate:        "100.0%",
+		},
+		{
+			name:            "global mode (empty path) sees all tasks (50%)",
+			defaultProjPath: "",
+			wantTaskCount:   "(2 tasks)",
+			wantRate:        "50.0%",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := NewModelWithStore("test", store)
+			m.defaultProjectPath = tt.defaultProjPath
+
+			out := stripANSI(m.renderEvalStats())
+
+			if !strings.Contains(out, tt.wantTaskCount) {
+				t.Errorf("renderEvalStats(%q): want %q in output; got:\n%s", tt.defaultProjPath, tt.wantTaskCount, out)
+			}
+			if !strings.Contains(out, tt.wantRate) {
+				t.Errorf("renderEvalStats(%q): want %q in output; got:\n%s", tt.defaultProjPath, tt.wantRate, out)
+			}
+		})
+	}
+}
