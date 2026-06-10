@@ -1225,6 +1225,76 @@ func TestRenderEvalStats(t *testing.T) {
 	})
 }
 
+// TestRenderEvalStats_ProjectFilter verifies that renderEvalStats scopes its
+// ListEvalTasks query to m.defaultProjectPath when set and returns all tasks
+// when defaultProjectPath is empty (global mode).
+func TestRenderEvalStats_ProjectFilter(t *testing.T) {
+	store, err := memory.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 4 tasks for alpha (all pass) + 6 tasks for beta (all fail)
+	for i := 1; i <= 4; i++ {
+		if err := store.SaveEvalTask(&memory.EvalTask{
+			ID:          fmt.Sprintf("alpha-%d", i),
+			IssueNumber: i,
+			IssueTitle:  fmt.Sprintf("Alpha %d", i),
+			Repo:        "test/repo",
+			ProjectPath: "/proj/alpha",
+			Success:     true,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 5; i <= 10; i++ {
+		if err := store.SaveEvalTask(&memory.EvalTask{
+			ID:          fmt.Sprintf("beta-%d", i),
+			IssueNumber: i,
+			IssueTitle:  fmt.Sprintf("Beta %d", i),
+			Repo:        "test/repo",
+			ProjectPath: "/proj/beta",
+			Success:     false,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	tests := []struct {
+		name            string
+		defaultProject  string
+		wantRate        string
+		wantTaskCount   string
+	}{
+		{
+			name:           "scoped to alpha: only 4 passing tasks",
+			defaultProject: "/proj/alpha",
+			wantRate:       "100.0%",
+			wantTaskCount:  "(4 tasks)",
+		},
+		{
+			name:           "global mode: all 10 tasks, 40% pass",
+			defaultProject: "",
+			wantRate:       "40.0%",
+			wantTaskCount:  "(10 tasks)",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := Model{store: store, defaultProjectPath: tt.defaultProject}
+			got := m.renderEvalStats()
+			plain := stripANSI(got)
+			if !strings.Contains(plain, tt.wantRate) {
+				t.Errorf("expected rate %q in output, got:\n%s", tt.wantRate, plain)
+			}
+			if !strings.Contains(plain, tt.wantTaskCount) {
+				t.Errorf("expected task count %q in output, got:\n%s", tt.wantTaskCount, plain)
+			}
+		})
+	}
+}
+
 // TestStoreRefreshMsg_UpdatesHistoryAndMetrics verifies that storeRefreshMsg
 // replaces stale in-memory history and metrics with live DB state (GH-2248).
 func TestStoreRefreshMsg_UpdatesHistoryAndMetrics(t *testing.T) {
