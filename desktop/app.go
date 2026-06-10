@@ -71,12 +71,12 @@ func (a *App) GetMetrics() DashboardMetrics {
 		return DashboardMetrics{}
 	}
 
-	lt, err := a.store.GetLifetimeTokens()
+	lt, err := a.store.GetLifetimeTokens("")
 	if err != nil {
 		lt = &memory.LifetimeTokens{}
 	}
 
-	tc, err := a.store.GetLifetimeTaskCounts()
+	tc, err := a.store.GetLifetimeTaskCounts("")
 	if err != nil {
 		tc = &memory.LifetimeTaskCounts{}
 	}
@@ -128,7 +128,7 @@ func (a *App) GetQueueTasks() []QueueTask {
 		return nil
 	}
 
-	execs, err := a.store.GetRecentExecutions(50)
+	execs, err := a.store.GetRecentExecutions(50, "")
 	if err != nil {
 		return nil
 	}
@@ -183,7 +183,7 @@ func (a *App) GetHistory(limit int) []HistoryEntry {
 		limit = 5
 	}
 
-	execs, err := a.store.GetRecentExecutions(limit)
+	execs, err := a.store.GetRecentExecutions(limit, "")
 	if err != nil {
 		return nil
 	}

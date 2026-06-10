@@ -1296,7 +1296,7 @@ func TestStoreRefreshCmd_QueriesDB(t *testing.T) {
 	}
 
 	// Run the refresh command
-	cmd := storeRefreshCmd(store)
+	cmd := storeRefreshCmd(store, "")
 	rawMsg := cmd()
 	msg, ok := rawMsg.(storeRefreshMsg)
 	if !ok {
@@ -1325,7 +1325,7 @@ func TestStoreRefreshCmd_QueriesDB(t *testing.T) {
 		t.Fatalf("DELETE: %v", err)
 	}
 
-	cmd = storeRefreshCmd(store)
+	cmd = storeRefreshCmd(store, "")
 	rawMsg = cmd()
 	msg = rawMsg.(storeRefreshMsg)
 
@@ -1334,6 +1334,62 @@ func TestStoreRefreshCmd_QueriesDB(t *testing.T) {
 	}
 	if msg.metricsCard.TotalTasks != 0 {
 		t.Errorf("after DELETE: TotalTasks = %d, want 0", msg.metricsCard.TotalTasks)
+	}
+}
+
+// TestStoreRefreshCmd_ProjectFilter verifies that passing a non-empty projectPath
+// scopes the refresh query to that project only (GH-3517).
+func TestStoreRefreshCmd_ProjectFilter(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "pilot-dash-refresh-filter-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	store, err := memory.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	// Two executions from different projects
+	if err := store.SaveExecution(&memory.Execution{
+		ID: "exec-a", TaskID: "TASK-A", TaskTitle: "Project A Task",
+		ProjectPath: "/projects/alpha", Status: "completed",
+	}); err != nil {
+		t.Fatalf("SaveExecution A: %v", err)
+	}
+	if err := store.SaveExecution(&memory.Execution{
+		ID: "exec-b", TaskID: "TASK-B", TaskTitle: "Project B Task",
+		ProjectPath: "/projects/beta", Status: "completed",
+	}); err != nil {
+		t.Fatalf("SaveExecution B: %v", err)
+	}
+
+	// Scoped to alpha — should see only exec-a
+	cmd := storeRefreshCmd(store, "/projects/alpha")
+	msg, ok := cmd().(storeRefreshMsg)
+	if !ok {
+		t.Fatalf("expected storeRefreshMsg")
+	}
+	if len(msg.completedTasks) != 1 {
+		t.Fatalf("completedTasks len = %d, want 1 (alpha only)", len(msg.completedTasks))
+	}
+	if msg.completedTasks[0].ID != "TASK-A" {
+		t.Errorf("completedTasks[0].ID = %q, want TASK-A", msg.completedTasks[0].ID)
+	}
+	if msg.metricsCard.TotalTasks != 1 {
+		t.Errorf("TotalTasks = %d, want 1 (alpha only)", msg.metricsCard.TotalTasks)
+	}
+
+	// Unscoped — should see both
+	cmd = storeRefreshCmd(store, "")
+	msg, ok = cmd().(storeRefreshMsg)
+	if !ok {
+		t.Fatalf("expected storeRefreshMsg")
+	}
+	if msg.metricsCard.TotalTasks != 2 {
+		t.Errorf("unscoped TotalTasks = %d, want 2", msg.metricsCard.TotalTasks)
 	}
 }
 

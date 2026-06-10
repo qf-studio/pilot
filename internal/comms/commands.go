@@ -379,7 +379,7 @@ func (c *CommandHandler) handleHistory(ctx context.Context, contextID string) {
 		return
 	}
 
-	executions, err := c.store.GetRecentExecutions(10)
+	executions, err := c.store.GetRecentExecutions(10, "")
 	if err != nil {
 		_ = c.messenger.SendText(ctx, contextID, "❌ Failed to fetch history")
 		return

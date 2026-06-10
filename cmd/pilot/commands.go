@@ -2256,7 +2256,7 @@ func checkForUpdates() {
 }
 
 // runDashboardMode runs the TUI dashboard with live task updates
-func runDashboardMode(p *pilot.Pilot, cfg *config.Config, gwProgram *tea.Program, gwMonitor *executor.Monitor, gwRunner *executor.Runner) error {
+func runDashboardMode(p *pilot.Pilot, cfg *config.Config, gwProgram *tea.Program, gwMonitor *executor.Monitor, gwRunner *executor.Runner, projectPath string) error {
 	// Suppress slog output to prevent corrupting TUI display (GH-164)
 	logging.Suppress()
 	p.SuppressProgressLogs(true)
@@ -2284,6 +2284,15 @@ func runDashboardMode(p *pilot.Pilot, cfg *config.Config, gwProgram *tea.Program
 			allStates = append(allStates, gwMonitor.GetAll()...)
 		}
 		allStates = append(allStates, p.GetTaskStates()...)
+		if projectPath != "" {
+			filtered := allStates[:0]
+			for _, s := range allStates {
+				if s.ProjectPath == projectPath {
+					filtered = append(filtered, s)
+				}
+			}
+			allStates = filtered
+		}
 		return convertTaskStatesToDisplay(allStates)
 	}
 

@@ -81,6 +81,7 @@ type Server struct {
 	alertsSource           AlertMetricsSource
 	autopilotProvider      AutopilotProvider
 	dashboardStore         DashboardStore
+	dashboardProjectPath   string          // Project path filter for dashboard metrics/queue/history APIs ("" = all projects)
 	logStreamStore         LogStreamStore
 	gitGraphPath           string          // Project path for git graph API (defaults to ".")
 	gitGraphFetcher        GitGraphFetcher // Injected to avoid import cycle with internal/dashboard

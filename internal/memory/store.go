@@ -711,14 +711,21 @@ func (s *Store) SetApprovalRequestID(ctx context.Context, taskID, requestID stri
 
 // GetRecentExecutions returns the most recent executions ordered by creation time.
 // The limit parameter specifies the maximum number of executions to return.
-func (s *Store) GetRecentExecutions(limit int) ([]*Execution, error) {
-	rows, err := s.db.Query(`
+// If projectPath is non-empty, only executions for that project are returned.
+func (s *Store) GetRecentExecutions(limit int, projectPath string) ([]*Execution, error) {
+	const base = `
 		SELECT id, task_id, project_path, status, output, error, duration_ms, pr_url, commit_sha, created_at, completed_at,
 			COALESCE(task_title, ''), COALESCE(task_description, ''), COALESCE(task_branch, ''),
 			COALESCE(task_base_branch, ''), COALESCE(task_create_pr, 0), COALESCE(task_verbose, 0),
 			COALESCE(peak_rss_mb, 0), COALESCE(final_rss_mb, 0)
-		FROM executions ORDER BY created_at DESC LIMIT ?
-	`, limit)
+		FROM executions`
+	var rows *sql.Rows
+	var err error
+	if projectPath != "" {
+		rows, err = s.db.Query(base+` WHERE project_path = ? ORDER BY created_at DESC LIMIT ?`, projectPath, limit)
+	} else {
+		rows, err = s.db.Query(base+` ORDER BY created_at DESC LIMIT ?`, limit)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -1773,16 +1780,22 @@ type LifetimeTokens struct {
 // Unlike session-scoped data, this survives restarts by querying the executions table directly.
 // Rows with zero tokens (dispatcher queue rows, early-failure rows) are excluded so they
 // don't dilute per-task averages.
-func (s *Store) GetLifetimeTokens() (*LifetimeTokens, error) {
-	row := s.db.QueryRow(`
+// If projectPath is non-empty, only executions for that project are counted.
+func (s *Store) GetLifetimeTokens(projectPath string) (*LifetimeTokens, error) {
+	q := `
 		SELECT
 			COALESCE(SUM(tokens_input), 0),
 			COALESCE(SUM(tokens_output), 0),
 			COALESCE(SUM(tokens_total), 0),
 			COALESCE(SUM(estimated_cost_usd), 0)
 		FROM executions
-		WHERE tokens_total > 0
-	`)
+		WHERE tokens_total > 0`
+	var row *sql.Row
+	if projectPath != "" {
+		row = s.db.QueryRow(q+` AND project_path = ?`, projectPath)
+	} else {
+		row = s.db.QueryRow(q)
+	}
 
 	var lt LifetimeTokens
 	if err := row.Scan(&lt.InputTokens, &lt.OutputTokens, &lt.TotalTokens, &lt.TotalCostUSD); err != nil {
@@ -1815,8 +1828,9 @@ func (c LifetimeTaskCounts) NonFailure() int {
 
 // GetLifetimeTaskCounts returns cumulative task counts across all executions.
 // Parallels GetLifetimeTokens — survives restarts by querying executions table directly.
-func (s *Store) GetLifetimeTaskCounts() (*LifetimeTaskCounts, error) {
-	row := s.db.QueryRow(`
+// If projectPath is non-empty, only executions for that project are counted.
+func (s *Store) GetLifetimeTaskCounts(projectPath string) (*LifetimeTaskCounts, error) {
+	const cols = `
 		SELECT
 			COUNT(*),
 			COALESCE(SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END), 0),
@@ -1827,8 +1841,13 @@ func (s *Store) GetLifetimeTaskCounts() (*LifetimeTaskCounts, error) {
 			COALESCE(SUM(CASE WHEN status = 'rate_limited' THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN status = 'infra' THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN status = 'skipped' THEN 1 ELSE 0 END), 0)
-		FROM executions
-	`)
+		FROM executions`
+	var row *sql.Row
+	if projectPath != "" {
+		row = s.db.QueryRow(cols+` WHERE project_path = ?`, projectPath)
+	} else {
+		row = s.db.QueryRow(cols)
+	}
 
 	var tc LifetimeTaskCounts
 	if err := row.Scan(&tc.Total, &tc.Succeeded, &tc.Failed, &tc.Declined, &tc.NoOp, &tc.Stalled,

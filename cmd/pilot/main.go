@@ -1016,6 +1016,7 @@ Examples:
 				p.Gateway().SetDashboardStore(gwStore)
 				p.Gateway().SetLogStreamStore(gwStore)
 			}
+			p.Gateway().SetDashboardProjectPath(projectPath)
 
 			// GH-1633: Wire git graph fetcher to gateway so /api/v1/gitgraph returns live git data
 			p.Gateway().SetGitGraphFetcher(func(path string, limit int) interface{} {
@@ -1091,7 +1092,7 @@ Examples:
 			if dashboardMode {
 				// GH-2291: Pass adapter poller infrastructure so the dashboard
 				// merges task states from both adapter pollers and gateway webhooks.
-				return runDashboardMode(p, cfg, gwProgram, gwMonitor, gwRunner)
+				return runDashboardMode(p, cfg, gwProgram, gwMonitor, gwRunner, projectPath)
 			}
 
 			// Show startup banner (headless mode)
@@ -1711,6 +1712,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 			gwServer.SetDashboardStore(store)
 			gwServer.SetLogStreamStore(store)
 		}
+		gwServer.SetDashboardProjectPath(projectPath)
 		gwServer.SetGitGraphFetcher(func(path string, limit int) interface{} {
 			return dashboard.FetchGitGraph(path, limit)
 		})

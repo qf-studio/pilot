@@ -75,7 +75,7 @@ func TestReclassifyLegacyOutcomes(t *testing.T) {
 		}
 	}
 
-	counts, err := store.GetLifetimeTaskCounts()
+	counts, err := store.GetLifetimeTaskCounts("")
 	if err != nil {
 		t.Fatalf("GetLifetimeTaskCounts: %v", err)
 	}

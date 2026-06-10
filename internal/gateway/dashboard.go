@@ -18,10 +18,10 @@ type GitGraphFetcher func(projectPath string, limit int) interface{}
 
 // DashboardStore provides read access to execution and metrics data for the dashboard API.
 type DashboardStore interface {
-	GetLifetimeTokens() (*memory.LifetimeTokens, error)
-	GetLifetimeTaskCounts() (*memory.LifetimeTaskCounts, error)
+	GetLifetimeTokens(projectPath string) (*memory.LifetimeTokens, error)
+	GetLifetimeTaskCounts(projectPath string) (*memory.LifetimeTaskCounts, error)
 	GetDailyMetrics(query memory.MetricsQuery) ([]*memory.DailyMetrics, error)
-	GetRecentExecutions(limit int) ([]*memory.Execution, error)
+	GetRecentExecutions(limit int, projectPath string) ([]*memory.Execution, error)
 	GetQueuedTasks(limit int) ([]*memory.Execution, error)
 	GetActiveExecutions() ([]*memory.Execution, error)
 	GetRecentLogs(limit int) ([]*memory.LogEntry, error)
@@ -32,6 +32,14 @@ func (s *Server) SetDashboardStore(store DashboardStore) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.dashboardStore = store
+}
+
+// SetDashboardProjectPath scopes the dashboard metrics, queue, and history endpoints
+// to a single project directory. Pass "" to aggregate across all projects (daemon default).
+func (s *Server) SetDashboardProjectPath(path string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.dashboardProjectPath = path
 }
 
 // --- JSON response types (mirrors desktop/types.go) ---
@@ -89,6 +97,7 @@ func (s *Server) handleDashboardMetrics(w http.ResponseWriter, r *http.Request) 
 
 	s.mu.RLock()
 	store := s.dashboardStore
+	projectPath := s.dashboardProjectPath
 	s.mu.RUnlock()
 
 	if store == nil {
@@ -96,12 +105,12 @@ func (s *Server) handleDashboardMetrics(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	lt, err := store.GetLifetimeTokens()
+	lt, err := store.GetLifetimeTokens(projectPath)
 	if err != nil {
 		lt = &memory.LifetimeTokens{}
 	}
 
-	tc, err := store.GetLifetimeTaskCounts()
+	tc, err := store.GetLifetimeTaskCounts(projectPath)
 	if err != nil {
 		tc = &memory.LifetimeTaskCounts{}
 	}
@@ -155,6 +164,7 @@ func (s *Server) handleDashboardQueue(w http.ResponseWriter, r *http.Request) {
 
 	s.mu.RLock()
 	store := s.dashboardStore
+	projectPath := s.dashboardProjectPath
 	s.mu.RUnlock()
 
 	if store == nil {
@@ -162,7 +172,7 @@ func (s *Server) handleDashboardQueue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	execs, err := store.GetRecentExecutions(50)
+	execs, err := store.GetRecentExecutions(50, projectPath)
 	if err != nil {
 		http.Error(w, "failed to fetch queue", http.StatusInternalServerError)
 		return
@@ -202,6 +212,7 @@ func (s *Server) handleDashboardHistory(w http.ResponseWriter, r *http.Request) 
 
 	s.mu.RLock()
 	store := s.dashboardStore
+	projectPath := s.dashboardProjectPath
 	s.mu.RUnlock()
 
 	if store == nil {
@@ -216,7 +227,7 @@ func (s *Server) handleDashboardHistory(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 
-	execs, err := store.GetRecentExecutions(limit)
+	execs, err := store.GetRecentExecutions(limit, projectPath)
 	if err != nil {
 		http.Error(w, "failed to fetch history", http.StatusInternalServerError)
 		return

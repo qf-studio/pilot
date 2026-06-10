@@ -577,7 +577,7 @@ func (m *Model) hydrateFromStore() {
 	}
 
 	// Load recent executions as completed tasks
-	executions, err := m.store.GetRecentExecutions(20)
+	executions, err := m.store.GetRecentExecutions(20, m.defaultProjectPath)
 	if err != nil {
 		slog.Warn("failed to load recent executions", slog.Any("error", err))
 		return
@@ -585,7 +585,7 @@ func (m *Model) hydrateFromStore() {
 
 	// Initialize metrics card from lifetime execution data (survives restarts).
 	// Session tokens only track the current process; executions table has the real totals.
-	lifetime, err := m.store.GetLifetimeTokens()
+	lifetime, err := m.store.GetLifetimeTokens(m.defaultProjectPath)
 	if err != nil {
 		slog.Warn("failed to load lifetime tokens", slog.Any("error", err))
 	} else {
@@ -597,7 +597,7 @@ func (m *Model) hydrateFromStore() {
 
 	// Initialize task counts from lifetime data (survives restarts).
 	// Previous code sampled from GetRecentExecutions(20), showing only last 20 results.
-	taskCounts, err := m.store.GetLifetimeTaskCounts()
+	taskCounts, err := m.store.GetLifetimeTaskCounts(m.defaultProjectPath)
 	if err != nil {
 		slog.Warn("failed to load lifetime task counts", slog.Any("error", err))
 	} else {
@@ -663,6 +663,9 @@ func (m *Model) loadMetricsHistory() {
 	query := memory.MetricsQuery{
 		Start: now.AddDate(0, 0, -7),
 		End:   now,
+	}
+	if m.defaultProjectPath != "" {
+		query.Projects = []string{m.defaultProjectPath}
 	}
 	dailyMetrics, err := m.store.GetDailyMetrics(query)
 	if err != nil {
@@ -838,11 +841,11 @@ const splashFramesTotal = 10
 
 // storeRefreshCmd queries SQLite for current execution state (GH-2248).
 // Runs asynchronously so the TUI never blocks on DB I/O.
-func storeRefreshCmd(store *memory.Store) tea.Cmd {
+func storeRefreshCmd(store *memory.Store, projectPath string) tea.Cmd {
 	return func() tea.Msg {
 		msg := storeRefreshMsg{}
 
-		executions, err := store.GetRecentExecutions(20)
+		executions, err := store.GetRecentExecutions(20, projectPath)
 		if err != nil {
 			slog.Warn("store refresh: failed to load executions", slog.Any("error", err))
 			return msg
@@ -869,7 +872,7 @@ func storeRefreshCmd(store *memory.Store) tea.Cmd {
 			})
 		}
 
-		lifetime, err := store.GetLifetimeTokens()
+		lifetime, err := store.GetLifetimeTokens(projectPath)
 		if err != nil {
 			slog.Warn("store refresh: failed to load lifetime tokens", slog.Any("error", err))
 		} else {
@@ -879,7 +882,7 @@ func storeRefreshCmd(store *memory.Store) tea.Cmd {
 			msg.metricsCard.TotalCostUSD = lifetime.TotalCostUSD
 		}
 
-		taskCounts, err := store.GetLifetimeTaskCounts()
+		taskCounts, err := store.GetLifetimeTaskCounts(projectPath)
 		if err != nil {
 			slog.Warn("store refresh: failed to load task counts", slog.Any("error", err))
 		} else {
@@ -1022,7 +1025,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// GH-2248: Re-sync history and metrics from SQLite every 5 seconds
 		// so external DB changes (orphan cleanup, manual edits) are reflected.
 		if m.store != nil && m.dbSyncTick%5 == 0 {
-			return m, tea.Batch(tickCmd(), storeRefreshCmd(m.store))
+			return m, tea.Batch(tickCmd(), storeRefreshCmd(m.store, m.defaultProjectPath))
 		}
 		return m, tickCmd()
 
@@ -2492,7 +2495,11 @@ func (m Model) renderEvalStats() string {
 		)
 	}
 
-	return renderPanel("EVAL", line, tw)
+	evalTitle := "EVAL"
+	if m.defaultProjectPath != "" {
+		evalTitle = "EVAL [global]"
+	}
+	return renderPanel(evalTitle, line, tw)
 }
 
 // renderHistory renders completed tasks history with epic-aware grouping.
