@@ -2544,29 +2544,15 @@ retrySucceeded:
 		result.CommitSHA = state.commitSHAs[len(state.commitSHAs)-1] // Use last commit
 	}
 
-	// Post-execution summary via structured output (GH-1264)
-	// This replaces brittle regex parsing with reliable --json-schema output
-	if result.CommitSHA == "" && result.Success && r.config != nil && r.config.ClaudeCode != nil && r.config.ClaudeCode.UseStructuredOutput {
-		if summary, summaryErr := r.getPostExecutionSummary(ctx); summaryErr == nil {
-			if summary.CommitSHA != "" {
-				result.CommitSHA = summary.CommitSHA
-				log.Info("CommitSHA extracted via post-execution summary",
-					slog.String("task_id", task.ID),
-					slog.String("sha", summary.CommitSHA[:min(7, len(summary.CommitSHA))]),
-					slog.String("branch", summary.BranchName),
-				)
-			}
-		} else {
-			log.Debug("post-execution summary failed, falling back to git",
-				slog.String("task_id", task.ID),
-				slog.Any("error", summaryErr),
-			)
-		}
-	}
-
-	// Fallback: if output parsing missed the commit SHA, ask git directly.
-	// This handles cases where Claude's git commit output format doesn't match
-	// the extractCommitSHA() pattern (e.g. different flags, localized output).
+	// GH-3569/GH-3570 incident (TASK-320/TASK-355 root cause): harvest the SHA
+	// from git in the worktree BEFORE asking an LLM. The structured-output
+	// summary used to run first and, lacking cmd.Dir, executed `git log` in the
+	// daemon's CWD — reporting the daemon repo's HEAD as "the commit". When that
+	// HEAD was an ancestor of origin/main the ghost guard below discarded the
+	// worker's real commit as a no-op; when the daemon CWD was a different repo
+	// entirely, the foreign SHA failed the ancestor check open and was recorded
+	// as a wrong-repo "completed" SHA. Git in the worktree is deterministic and
+	// authoritative; the LLM summary is a last resort only.
 	if result.CommitSHA == "" && task.Branch != "" && result.Success {
 		baseBranch := task.BaseBranch
 		if baseBranch == "" {
@@ -2584,6 +2570,27 @@ retrySucceeded:
 				)
 				result.CommitSHA = sha
 			}
+		}
+	}
+
+	// Post-execution summary via structured output (GH-1264) — last resort when
+	// both stream parsing and the worktree git harvest came up empty. Pinned to
+	// executionPath so its git commands run in the worktree, never the daemon CWD.
+	if result.CommitSHA == "" && result.Success && r.config != nil && r.config.ClaudeCode != nil && r.config.ClaudeCode.UseStructuredOutput {
+		if summary, summaryErr := r.getPostExecutionSummary(ctx, executionPath); summaryErr == nil {
+			if summary.CommitSHA != "" {
+				result.CommitSHA = summary.CommitSHA
+				log.Info("CommitSHA extracted via post-execution summary",
+					slog.String("task_id", task.ID),
+					slog.String("sha", summary.CommitSHA[:min(7, len(summary.CommitSHA))]),
+					slog.String("branch", summary.BranchName),
+				)
+			}
+		} else {
+			log.Debug("post-execution summary failed",
+				slog.String("task_id", task.ID),
+				slog.Any("error", summaryErr),
+			)
 		}
 	}
 
@@ -4966,7 +4973,10 @@ type PostExecutionSummary struct {
 
 // getPostExecutionSummary runs a structured output query to extract git state information.
 // This replaces brittle regex parsing of git output with reliable --json-schema extraction.
-func (r *Runner) getPostExecutionSummary(ctx context.Context) (*PostExecutionSummary, error) {
+// dir pins the subprocess working directory to the execution worktree: without it the
+// git commands in the prompt ran in the daemon's CWD and reported the wrong repo's HEAD
+// (GH-3569/GH-3570 incident — false no-ops and wrong-repo completed SHAs).
+func (r *Runner) getPostExecutionSummary(ctx context.Context, dir string) (*PostExecutionSummary, error) {
 	if r.config == nil || r.config.ClaudeCode == nil {
 		return nil, fmt.Errorf("claude code backend not configured")
 	}
@@ -4985,6 +4995,7 @@ func (r *Runner) getPostExecutionSummary(ctx context.Context) (*PostExecutionSum
 		"--output-format", "json",
 		"--json-schema", PostExecutionSummarySchema,
 	)
+	cmd.Dir = dir
 
 	output, err := cmd.Output()
 	if err != nil {

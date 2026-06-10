@@ -57,15 +57,16 @@ func ScopeDriftReason(prTitle, issueTitle string) string {
 }
 
 // SizeFloorThreshold is the net-additions threshold above which a PR escalates
-// to human approval regardless of env config. Cascade #2's bad PR was 512 LoC;
-// 200 catches that with comfortable margin and only blocks PRs that genuinely
-// merit a second pair of eyes.
-const SizeFloorThreshold = 200
+// to human approval regardless of env config. Cascade #2's bad PR was 512 LoC.
+// GH-3570: raised from 200 to 500 — routine well-scoped Pilot PRs with tests
+// (e.g. #3559 at +656) tripped the old floor; 500 still catches the cascade-2
+// class while sparing ordinary multi-file fixes.
+const SizeFloorThreshold = 500
 
 // SizeFloorReason returns a non-empty reason if the PR's net additions exceed
 // SizeFloorThreshold. Pilot's median PR is well under 100 additions — anything
-// over 200 is large enough that auto-merge is too aggressive even on a passing
-// CI signal.
+// over the floor is large enough that auto-merge is too aggressive even on a
+// passing CI signal.
 func SizeFloorReason(files []*github.PRFile) string {
 	var net int
 	for _, f := range files {

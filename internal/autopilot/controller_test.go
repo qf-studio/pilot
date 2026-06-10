@@ -7169,13 +7169,13 @@ func TestController_handleCIFailed_BoardSync_Regression_NormalPath(t *testing.T)
 }
 
 // TestHandleCIPassed_SizeFloorEscalation verifies that a PR exceeding the size
-// floor (300 net additions > 200 threshold) is routed to StageAwaitApproval even
+// floor (600 net additions > 500 threshold) is routed to StageAwaitApproval even
 // when RequireApproval is false.
 func TestHandleCIPassed_SizeFloorEscalation(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/repos/owner/repo/pulls/77/files" && r.Method == http.MethodGet {
 			files := []*github.PRFile{
-				{Filename: "a.go", Status: "modified", Additions: 300},
+				{Filename: "a.go", Status: "modified", Additions: 600},
 			}
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write(mustJSON(t, files))
