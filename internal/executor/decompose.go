@@ -285,6 +285,10 @@ func (d *TaskDecomposer) createSubtasks(parent *Task, parts []string, partType s
 			continue
 		}
 
+		// GH-3540: BaseBranch is inherited from the parent. When the parent's
+		// BaseBranch is empty (e.g. project config omits default_branch), the
+		// runner resolves it from the main-repo git context before creating
+		// the worktree, so CreatePR always receives the repo default branch.
 		subtask := &Task{
 			ID:          generateSubtaskID(parent.ID, i+1),
 			Title:       truncateTitle(part, 80),

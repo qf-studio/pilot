@@ -1417,6 +1417,24 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 		}
 	}
 
+	// GH-3540: Resolve BaseBranch from the main-repo git context before any
+	// worktree is created. Decomposed children (decompose.go:294) inherit
+	// BaseBranch from their parent; when the parent's BaseBranch is empty
+	// (common when project config omits default_branch/branch_from), the
+	// subtask also inherits empty and the old code fell back to
+	// GetDefaultBranch inside the worktree — susceptible to concurrent
+	// execution or a stale worktree state returning an unexpected ref.
+	// Resolving here from task.ProjectPath (the real repo) guarantees
+	// CreatePR always receives the repo's true default branch.
+	if task.BaseBranch == "" && task.CreatePR && task.Branch != "" {
+		mainGit := NewGitOperations(task.ProjectPath)
+		if resolved, resolveErr := mainGit.GetDefaultBranch(ctx); resolveErr == nil && resolved != "" {
+			task.BaseBranch = resolved
+		} else {
+			task.BaseBranch = "main"
+		}
+	}
+
 	// GH-936: Create isolated worktree if configured
 	// This allows execution even when user has uncommitted changes in their working directory
 	executionPath := task.ProjectPath
