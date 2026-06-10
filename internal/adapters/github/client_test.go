@@ -2234,6 +2234,79 @@ func TestGetTagForSHA(t *testing.T) {
 	}
 }
 
+// TestGetTagForSHA_Paginated verifies that GetTagForSHA paginates exhaustively and
+// finds a tag that is NOT in the first page (i.e. beyond the old 20-tag window).
+func TestGetTagForSHA_Paginated(t *testing.T) {
+	const targetSHA = "targetsha001"
+	const targetTag = "v5.0.42-target"
+
+	// Page 1: 100 tags, none matching targetSHA.
+	page1 := make([]*Tag, 100)
+	for i := range page1 {
+		page1[i] = &Tag{Name: fmt.Sprintf("v5.0.%d", i)}
+		page1[i].Commit.SHA = fmt.Sprintf("bulksha%03d", i)
+	}
+	// Page 2: 50 tags; targetSHA is at position 7.
+	page2 := make([]*Tag, 50)
+	for i := range page2 {
+		page2[i] = &Tag{Name: fmt.Sprintf("v5.1.%d", i)}
+		page2[i].Commit.SHA = fmt.Sprintf("page2sha%03d", i)
+	}
+	page2[7].Commit.SHA = targetSHA
+	page2[7].Name = targetTag
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || !strings.HasPrefix(r.URL.Path, "/repos/owner/repo/tags") {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		page := r.URL.Query().Get("page")
+		w.WriteHeader(http.StatusOK)
+		if page == "2" {
+			_ = json.NewEncoder(w).Encode(page2)
+		} else {
+			_ = json.NewEncoder(w).Encode(page1)
+		}
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	tag, err := client.GetTagForSHA(context.Background(), "owner", "repo", targetSHA)
+	if err != nil {
+		t.Fatalf("GetTagForSHA() error = %v", err)
+	}
+	if tag != targetTag {
+		t.Errorf("GetTagForSHA() = %q, want %q", tag, targetTag)
+	}
+}
+
+// TestGetTagForSHA_NotFoundAfterFullScan verifies that GetTagForSHA returns empty
+// string (no error) when the SHA does not appear in any page.
+func TestGetTagForSHA_NotFoundAfterFullScan(t *testing.T) {
+	// Single page with 10 tags, none matching.
+	tags := make([]*Tag, 10)
+	for i := range tags {
+		tags[i] = &Tag{Name: fmt.Sprintf("v6.0.%d", i)}
+		tags[i].Commit.SHA = fmt.Sprintf("other%03d", i)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(tags)
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	tag, err := client.GetTagForSHA(context.Background(), "owner", "repo", "notpresent")
+	if err != nil {
+		t.Fatalf("GetTagForSHA() unexpected error: %v", err)
+	}
+	if tag != "" {
+		t.Errorf("GetTagForSHA() = %q, want empty string when SHA not found", tag)
+	}
+}
+
 func TestDeleteBranch(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -3820,23 +3893,3 @@ func TestGetTagForSHA_ExhaustivePagination(t *testing.T) {
 	}
 }
 
-// TestGetTagForSHA_NotFound verifies that GetTagForSHA returns empty string
-// when no tag matches, scanning all pages to exhaustion. GH-3558.
-func TestGetTagForSHA_NotFound(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Return a single page with one tag whose SHA does not match.
-		tag := Tag{Name: "v1.0.0"}
-		tag.Commit.SHA = "othershaabc"
-		_, _ = w.Write([]byte(`[{"name":"v1.0.0","commit":{"sha":"othershaabc"}}]`))
-	}))
-	defer server.Close()
-
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
-	got, err := client.GetTagForSHA(context.Background(), "owner", "repo", "notpresentsha")
-	if err != nil {
-		t.Fatalf("GetTagForSHA() error = %v", err)
-	}
-	if got != "" {
-		t.Errorf("GetTagForSHA() = %q, want empty string when SHA not found", got)
-	}
-}

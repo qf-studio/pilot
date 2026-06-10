@@ -4,11 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/qf-studio/pilot/internal/adapters/github"
 	"github.com/qf-studio/pilot/internal/testutil"
@@ -130,6 +130,16 @@ func TestHandleReleasing_DuplicateTagTreatedAsReleased(t *testing.T) {
 		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/pulls/") && strings.HasSuffix(r.URL.Path, "/commits"):
 			w.WriteHeader(http.StatusOK)
 			_ = json.NewEncoder(w).Encode([]*github.Commit{makeCommit("feat: add a thing")})
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/branches/"):
+			// Reachability guard: return a branch so CompareStatus is called.
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"name": "main",
+				"commit": map[string]string{"sha": "mainsha101"},
+			})
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/compare/"):
+			// Reachability guard: HeadSHA is reachable from main.
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]string{"status": "ahead"})
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/git/refs"):
 			// Tag already exists (racing release tagged this commit first).
 			w.WriteHeader(http.StatusUnprocessableEntity)
@@ -166,171 +176,6 @@ func tagAt(name, sha string) github.Tag {
 	return tag
 }
 
-// TestHandleReleasing_AlreadyPublishedReleaseDrains verifies that when a published
-// GitHub Release already exists for HeadSHA, handleReleasing drains the PR without
-// creating a new tag. This is the fast-path "existing published release" drain. (GH-3558)
-func TestHandleReleasing_AlreadyPublishedReleaseDrains(t *testing.T) {
-	const headSHA = "mergecommitabc"
-	const tagName = "v3.1.0"
-	tagCreateCalled := false
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch {
-		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/pulls/"):
-			// Return a merged PR with MergeCommitSHA == headSHA.
-			_ = json.NewEncoder(w).Encode(github.PullRequest{
-				Number:         300,
-				MergeCommitSHA: headSHA,
-				Merged:         true,
-			})
-		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/tags"):
-			// GetTagForSHA exhaustive search finds the tag.
-			tags := []github.Tag{tagAt(tagName, headSHA)}
-			_ = json.NewEncoder(w).Encode(tags)
-		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/releases/tags/"):
-			// A published release already exists for this tag.
-			_ = json.NewEncoder(w).Encode(github.Release{
-				ID:      12345,
-				TagName: tagName,
-				Draft:   false,
-				HTMLURL: "https://github.com/owner/repo/releases/tag/" + tagName,
-			})
-		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/git/refs"):
-			tagCreateCalled = true
-			w.WriteHeader(http.StatusCreated)
-		default:
-			w.WriteHeader(http.StatusOK)
-		}
-	}))
-	defer server.Close()
-
-	c := newReleasingController(t, server.URL)
-	prState := &PRState{PRNumber: 300, HeadSHA: headSHA, Stage: StageReleasing}
-	c.mu.Lock()
-	c.activePRs[300] = prState
-	c.mu.Unlock()
-
-	err := c.handleReleasing(context.Background(), prState)
-	if err != nil {
-		t.Fatalf("expected nil error when published release exists, got: %v", err)
-	}
-	if tagCreateCalled {
-		t.Error("CreateGitTag must NOT be called when a published release already exists")
-	}
-	c.mu.RLock()
-	_, stillTracked := c.activePRs[300]
-	c.mu.RUnlock()
-	if stillTracked {
-		t.Error("PR must be drained when published release exists")
-	}
-}
-
-// TestHandleReleasing_RetryCapEscalatesStageFailed verifies that once
-// ReleasingAttempts reaches maxReleasingAttempts, a transient tag-lookup error
-// causes StageFailed (not another retry). (GH-3558)
-func TestHandleReleasing_RetryCapEscalatesStageFailed(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/pulls/"):
-			// Return a merged PR with MergeCommitSHA so HeadSHA refresh succeeds.
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(github.PullRequest{
-				Number:         301,
-				MergeCommitSHA: "sha301",
-				Merged:         true,
-			})
-		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/tags"):
-			// Simulate a persistent transient failure on tag lookup.
-			w.WriteHeader(http.StatusInternalServerError)
-			_, _ = w.Write([]byte(`{"message":"server error"}`))
-		default:
-			w.WriteHeader(http.StatusOK)
-		}
-	}))
-	defer server.Close()
-
-	c := newReleasingController(t, server.URL)
-	prState := &PRState{
-		PRNumber:          301,
-		HeadSHA:           "sha301",
-		Stage:             StageReleasing,
-		ReleasingAttempts: maxReleasingAttempts - 1, // one more attempt will hit the cap
-	}
-	c.mu.Lock()
-	c.activePRs[301] = prState
-	c.mu.Unlock()
-
-	err := c.handleReleasing(context.Background(), prState)
-	if err != nil {
-		t.Fatalf("expected nil error on cap escalation, got: %v", err)
-	}
-	if prState.Stage != StageFailed {
-		t.Errorf("stage = %v, want StageFailed", prState.Stage)
-	}
-	if prState.Error == "" {
-		t.Error("prState.Error must be set on StageFailed escalation")
-	}
-	// StageFailed keeps the PR in activePRs (terminal but visible for observability),
-	// consistent with how handleMerging handles its attempt cap.
-	c.mu.RLock()
-	tracked, ok := c.activePRs[301]
-	c.mu.RUnlock()
-	if !ok || tracked == nil {
-		t.Error("PR should remain in activePRs (in StageFailed state) for observability")
-	}
-}
-
-// TestHandleReleasing_DivergedSHARefused verifies that a HeadSHA which is not
-// reachable from the default branch (compare status "diverged") causes StageFailed
-// rather than tagging a commit that was never actually merged. (GH-3558)
-func TestHandleReleasing_DivergedSHARefused(t *testing.T) {
-	const mergeCommit = "divergedcommit"
-	tagCreateCalled := false
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch {
-		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/pulls/"):
-			_ = json.NewEncoder(w).Encode(github.PullRequest{
-				Number:         302,
-				MergeCommitSHA: mergeCommit,
-				Merged:         true,
-			})
-		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/tags"):
-			// No existing tag for this SHA.
-			_ = json.NewEncoder(w).Encode([]github.Tag{})
-		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/compare/"):
-			// The compare of mergeCommit against the default branch returns "diverged"
-			// — the commit is not on the default branch.
-			_ = json.NewEncoder(w).Encode(map[string]string{"status": "diverged"})
-		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/git/refs"):
-			tagCreateCalled = true
-			w.WriteHeader(http.StatusCreated)
-		default:
-			w.WriteHeader(http.StatusOK)
-		}
-	}))
-	defer server.Close()
-
-	c := newReleasingController(t, server.URL)
-	prState := &PRState{PRNumber: 302, HeadSHA: "original-head", Stage: StageReleasing}
-	c.mu.Lock()
-	c.activePRs[302] = prState
-	c.mu.Unlock()
-
-	err := c.handleReleasing(context.Background(), prState)
-	if err != nil {
-		t.Fatalf("expected nil error on reachability failure, got: %v", err)
-	}
-	if tagCreateCalled {
-		t.Error("CreateGitTag must NOT be called for an unreachable SHA")
-	}
-	if prState.Stage != StageFailed {
-		t.Errorf("stage = %v, want StageFailed", prState.Stage)
-	}
-}
-
 // TestHandleReleasing_AncestorTagDedup verifies handleReleasing treats a PR
 // whose HeadSHA is already covered by an existing tag — tagged exactly, or an
 // ANCESTOR of a tag's commit — as already released: the PR drains from
@@ -339,6 +184,7 @@ func TestHandleReleasing_DivergedSHARefused(t *testing.T) {
 // spurious-v2.178.0 case where an ancestor commit cut a redundant release.
 func TestHandleReleasing_AncestorTagDedup(t *testing.T) {
 	const headSHA = "headsha000"
+	const mainBranchSHA = "mainsha200" // fixed SHA served by the branch endpoint
 	tests := []struct {
 		name          string
 		tags          []github.Tag
@@ -362,8 +208,10 @@ func TestHandleReleasing_AncestorTagDedup(t *testing.T) {
 			wantTracked:   false,
 		},
 		{
-			name:          "diverged commit cuts a release",
-			tags:          []github.Tag{tagAt("v2.0.0", "unrelatedsha")},
+			name: "diverged commit cuts a release",
+			tags: []github.Tag{tagAt("v2.0.0", "unrelatedsha")},
+			// tagCoveringCommit compare: headSHA...tagSHA → diverged (not covered by tag)
+			// reachability guard compare: headSHA...mainBranchSHA → handled separately → ahead
 			compareStatus: "diverged",
 			wantTagCreate: true,
 			wantTracked:   false,
@@ -378,9 +226,22 @@ func TestHandleReleasing_AncestorTagDedup(t *testing.T) {
 				case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/tags"):
 					w.WriteHeader(http.StatusOK)
 					_ = json.NewEncoder(w).Encode(tt.tags)
+				case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/branches/"):
+					// Reachability guard: return a fixed main branch SHA.
+					_ = json.NewEncoder(w).Encode(map[string]interface{}{
+						"name": "main",
+						"commit": map[string]string{"sha": mainBranchSHA},
+					})
 				case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/compare/"):
+					// Reachability guard compare (headSHA...mainBranchSHA) always returns
+					// "ahead" so the guard passes. tagCoveringCommit compare
+					// (headSHA...tagSHA) returns tt.compareStatus to exercise the dedup.
+					status := tt.compareStatus
+					if strings.HasSuffix(r.URL.Path, mainBranchSHA) {
+						status = "ahead"
+					}
 					w.WriteHeader(http.StatusOK)
-					_ = json.NewEncoder(w).Encode(map[string]string{"status": tt.compareStatus})
+					_ = json.NewEncoder(w).Encode(map[string]string{"status": status})
 				case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/releases/latest"):
 					w.WriteHeader(http.StatusOK)
 					_ = json.NewEncoder(w).Encode(github.Release{TagName: "v2.0.0"})
@@ -418,18 +279,42 @@ func TestHandleReleasing_AncestorTagDedup(t *testing.T) {
 	}
 }
 
-// TestHandleReleasing_DurationCapStageFailed verifies that a PR stuck in
-// StageReleasing longer than maxReleasingDuration escalates to StageFailed via
-// releasingErrorOrFail even if the attempt count is below maxReleasingAttempts.
-// This guards the daemon-restart scenario where the attempt counter resets but the
-// underlying API failure persists. GH-3558.
-func TestHandleReleasing_DurationCapStageFailed(t *testing.T) {
+// TestHandleReleasing_ExhaustiveTagDrain verifies that a PR whose HeadSHA is tagged
+// beyond position 10 (outside tagCoveringCommit's bounded window) is still drained
+// as "already released" via the exhaustive GetTagForSHA pagination path.
+func TestHandleReleasing_ExhaustiveTagDrain(t *testing.T) {
+	const headSHA = "oldsha001"
+	// Build a page of 10 tags that don't match headSHA (simulates tagCoveringCommit's window).
+	coveringTags := make([]github.Tag, 10)
+	for i := range coveringTags {
+		coveringTags[i] = tagAt(fmt.Sprintf("v3.0.%d", i), fmt.Sprintf("othersha%03d", i))
+	}
+	// Build a per_page=100 batch where headSHA appears at position 42.
+	exhaustiveTags := make([]*github.Tag, 100)
+	for i := range exhaustiveTags {
+		t2 := &github.Tag{Name: fmt.Sprintf("v4.0.%d", i)}
+		t2.Commit.SHA = fmt.Sprintf("bulksha%03d", i)
+		exhaustiveTags[i] = t2
+	}
+	exhaustiveTags[42].Commit.SHA = headSHA
+	exhaustiveTags[42].Name = "v4.0.42-target"
+
+	tagCreated := false
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/tags"):
-			// Simulate a transient tag-lookup error to trigger releasingErrorOrFail.
-			w.WriteHeader(http.StatusInternalServerError)
-			_, _ = w.Write([]byte(`{"message":"server error"}`))
+			if r.URL.Query().Get("per_page") == "100" {
+				// GetTagForSHA exhaustive path — headSHA is here.
+				w.WriteHeader(http.StatusOK)
+				_ = json.NewEncoder(w).Encode(exhaustiveTags)
+			} else {
+				// tagCoveringCommit bounded window — does NOT contain headSHA.
+				w.WriteHeader(http.StatusOK)
+				_ = json.NewEncoder(w).Encode(coveringTags)
+			}
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/git/refs"):
+			tagCreated = true
+			w.WriteHeader(http.StatusCreated)
 		default:
 			w.WriteHeader(http.StatusOK)
 		}
@@ -437,26 +322,172 @@ func TestHandleReleasing_DurationCapStageFailed(t *testing.T) {
 	defer server.Close()
 
 	c := newReleasingController(t, server.URL)
-	prState := &PRState{
-		PRNumber: 600,
-		HeadSHA:  "durshatagsig",
-		Stage:    StageReleasing,
-		// Attempt count is low but duration exceeds maxReleasingDuration.
-		ReleasingAttempts: 2,
-		ReleasingFirstAt:  time.Now().Add(-(maxReleasingDuration + time.Second)),
-	}
+	prState := &PRState{PRNumber: 300, HeadSHA: headSHA, Stage: StageReleasing}
 	c.mu.Lock()
-	c.activePRs[600] = prState
+	c.activePRs[300] = prState
 	c.mu.Unlock()
 
 	err := c.handleReleasing(context.Background(), prState)
 	if err != nil {
-		t.Fatalf("expected nil on duration cap escalation, got: %v", err)
+		t.Fatalf("handleReleasing returned unexpected error: %v", err)
+	}
+	if tagCreated {
+		t.Error("CreateGitTag must NOT be called — SHA was already tagged (beyond position 10)")
+	}
+	c.mu.RLock()
+	_, stillTracked := c.activePRs[300]
+	c.mu.RUnlock()
+	if stillTracked {
+		t.Error("PR must be drained once SHA is found in exhaustive tag lookup")
+	}
+}
+
+// TestHandleReleasing_RetryCapEscalates verifies that when handleReleasing fails
+// persistently and ReleasingAttempts reaches MaxReleasingAttempts, the PR transitions
+// to StageFailed (never retried) instead of returning an error for the next poll.
+func TestHandleReleasing_RetryCapEscalates(t *testing.T) {
+	issueCommentPosted := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/tags"):
+			// Persistent API failure on every tag lookup.
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"message":"server error"}`))
+		case r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/issues/") && strings.HasSuffix(r.URL.Path, "/comments"):
+			issueCommentPosted = true
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(github.PRComment{ID: 1})
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.Environment = EnvStage
+	cfg.MaxReleasingAttempts = 3
+	cfg.Release = &ReleaseConfig{Enabled: true, Trigger: "on_merge", TagPrefix: "v"}
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+	prState := &PRState{
+		PRNumber:    400,
+		HeadSHA:     "sha400",
+		IssueNumber: 40,
+		Stage:       StageReleasing,
+		// Pre-set to 2; next call increments to 3 == cap.
+		ReleasingAttempts: 2,
+	}
+	c.mu.Lock()
+	c.activePRs[400] = prState
+	c.mu.Unlock()
+
+	err := c.handleReleasing(context.Background(), prState)
+	if err != nil {
+		t.Fatalf("at cap, handleReleasing must return nil (not error), got: %v", err)
 	}
 	if prState.Stage != StageFailed {
-		t.Errorf("expected StageFailed after duration cap, got %q", prState.Stage)
+		t.Errorf("Stage = %s, want StageFailed after retry cap", prState.Stage)
 	}
-	if prState.Error == "" {
-		t.Error("expected non-empty Error on StageFailed transition")
+	if prState.ReleasingAttempts != 3 {
+		t.Errorf("ReleasingAttempts = %d, want 3", prState.ReleasingAttempts)
+	}
+	if !issueCommentPosted {
+		t.Error("escalation comment must be posted on the linked issue")
+	}
+}
+
+// TestHandleReleasing_RetryCapBelowCapReturnsError verifies that a failure when
+// ReleasingAttempts is still below MaxReleasingAttempts returns a retryable error
+// rather than escalating to StageFailed.
+func TestHandleReleasing_RetryCapBelowCapReturnsError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/tags") {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"message":"server error"}`))
+		} else {
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.Environment = EnvStage
+	cfg.MaxReleasingAttempts = 5
+	cfg.Release = &ReleaseConfig{Enabled: true, Trigger: "on_merge", TagPrefix: "v"}
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+	prState := &PRState{
+		PRNumber:          401,
+		HeadSHA:           "sha401",
+		Stage:             StageReleasing,
+		ReleasingAttempts: 1, // incremented to 2, below cap of 5
+	}
+	c.mu.Lock()
+	c.activePRs[401] = prState
+	c.mu.Unlock()
+
+	err := c.handleReleasing(context.Background(), prState)
+	if err == nil {
+		t.Fatal("below-cap failure must return a retryable error, got nil")
+	}
+	if prState.Stage == StageFailed {
+		t.Error("Stage must remain StageReleasing (retryable), not StageFailed")
+	}
+}
+
+// TestHandleReleasing_DivergedSHARefused verifies that a PR whose HeadSHA is not
+// reachable from the default branch is immediately escalated to StageFailed without
+// creating a release tag.
+func TestHandleReleasing_DivergedSHARefused(t *testing.T) {
+	tests := []struct {
+		name          string
+		compareStatus string
+	}{
+		{name: "diverged", compareStatus: "diverged"},
+		{name: "behind", compareStatus: "behind"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tagCreated := false
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/tags"):
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write([]byte(`[]`))
+				case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/branches/"):
+					_ = json.NewEncoder(w).Encode(map[string]interface{}{
+						"name":   "main",
+						"commit": map[string]string{"sha": "mainsha500"},
+					})
+				case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/compare/"):
+					w.WriteHeader(http.StatusOK)
+					_ = json.NewEncoder(w).Encode(map[string]string{"status": tt.compareStatus})
+				case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/git/refs"):
+					tagCreated = true
+					w.WriteHeader(http.StatusCreated)
+				default:
+					w.WriteHeader(http.StatusOK)
+				}
+			}))
+			defer server.Close()
+
+			c := newReleasingController(t, server.URL)
+			prState := &PRState{PRNumber: 500, HeadSHA: "divergedsha", Stage: StageReleasing}
+			c.mu.Lock()
+			c.activePRs[500] = prState
+			c.mu.Unlock()
+
+			err := c.handleReleasing(context.Background(), prState)
+			if err != nil {
+				t.Fatalf("diverged SHA must return nil (StageFailed not retryable error), got: %v", err)
+			}
+			if tagCreated {
+				t.Error("CreateGitTag must NOT be called for a diverged SHA")
+			}
+			if prState.Stage != StageFailed {
+				t.Errorf("Stage = %s, want StageFailed for unreachable SHA", prState.Stage)
+			}
+		})
 	}
 }

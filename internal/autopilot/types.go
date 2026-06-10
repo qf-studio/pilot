@@ -152,6 +152,11 @@ type Config struct {
 	// (MaxFailures) provides transient backoff; this cap makes persistent failures
 	// terminal so they don't loop indefinitely. Default: 5.
 	MaxMergeAttempts int `yaml:"max_merge_attempts"`
+	// MaxReleasingAttempts is the hard cap on handleReleasing retries before the PR
+	// is transitioned to StageFailed. Prevents a release that can never succeed (e.g.
+	// persistent GitHub API errors or a tag creation race) from looping indefinitely.
+	// Default: 10.
+	MaxReleasingAttempts int `yaml:"max_releasing_attempts"`
 	// ApprovalTimeout is how long to wait for human approval in prod.
 	ApprovalTimeout time.Duration `yaml:"approval_timeout"`
 
@@ -326,6 +331,7 @@ func DefaultConfig() *Config {
 		FailureResetTimeout: 30 * time.Minute,
 		MaxMergesPerHour:    10,
 		MaxMergeAttempts:    5,
+		MaxReleasingAttempts: 10,
 		ApprovalTimeout:     1 * time.Hour,
 		Release:             nil, // Disabled by default
 		MergedPRScanWindow:  30 * time.Minute,
@@ -520,11 +526,10 @@ type PRState struct {
 	PostMergeSHA string
 	// PostMergeCIStartedAt is when StagePostMergeCI monitoring began (for timeout tracking).
 	PostMergeCIStartedAt time.Time
-	// ReleasingAttempts counts how many times handleReleasing has been invoked for this PR.
-	// Used for a bounded retry cap so StageReleasing never loops indefinitely. (GH-3558)
+	// ReleasingAttempts counts how many times handleReleasing has been called for this PR.
+	// Used to cap retries before escalating to StageFailed.
 	ReleasingAttempts int
-	// ReleasingFirstAt is when the first release attempt started. Used with maxReleasingDuration
-	// for a wall-clock cap on StageReleasing. (GH-3558)
+	// ReleasingFirstAt is when StageReleasing was first attempted. Set on the first call.
 	ReleasingFirstAt time.Time
 }
 
