@@ -961,3 +961,40 @@ func TestQueueTask_AfterRecovery(t *testing.T) {
 		t.Error("expected non-empty execution ID")
 	}
 }
+
+// GH-3513 wave 2: every TASK-358 classified worker outcome must be terminal for
+// WaitForExecution. Treating them as in-flight left the handler hanging until a
+// later self-heal mutated the row — in the GH-3530 incident a child PR merge
+// promoted the PARENT's row to completed with the child's PR URL, and the woken
+// handler reported a false "✅ Pilot completed!".
+func TestWaitForExecution_ClassifiedOutcomesAreTerminal(t *testing.T) {
+	statuses := []string{"completed", "failed", "cancelled", "declined", "no_op", "rate_limited", "skipped", "stalled", "infra"}
+
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+	dispatcher := NewDispatcher(store, NewRunner(), nil)
+
+	for _, status := range statuses {
+		t.Run(status, func(t *testing.T) {
+			execID := "exec-" + status
+			if err := store.SaveExecution(&memory.Execution{
+				ID:          execID,
+				TaskID:      "GH-1",
+				ProjectPath: "/tmp/p",
+				Status:      status,
+			}); err != nil {
+				t.Fatalf("SaveExecution: %v", err)
+			}
+
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			exec, err := dispatcher.WaitForExecution(ctx, execID, 10*time.Millisecond)
+			if err != nil {
+				t.Fatalf("WaitForExecution(%s) returned error (hang→timeout?): %v", status, err)
+			}
+			if exec.Status != status {
+				t.Errorf("WaitForExecution(%s) returned status %q", status, exec.Status)
+			}
+		})
+	}
+}

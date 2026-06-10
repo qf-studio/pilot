@@ -271,7 +271,23 @@ func (c *Controller) selfHealForPR(ctx context.Context, issueNum int, prURL stri
 	c.selfHealTask(fmt.Sprintf("GH-%d", issueNum), prURL)
 	// Pilot decomposes a parent issue into sub-issues; only the sub-issue's PR
 	// merges, so the parent's no-op "failed" row would never heal otherwise.
+	// GH-3513/GH-3530: heal the parent ONLY once all its children are closed —
+	// healing on the first child's merge stamped that child's PR URL on the
+	// parent's row and marked it "completed", which woke a hung WaitForExecution
+	// with a false success and fed HasCompletedExecution dispatch-skips while
+	// sibling slices were still unshipped.
 	if parent := c.resolveParentIssue(ctx, issueNum); parent != 0 && parent != issueNum {
+		open, err := c.openSubIssueCount(ctx, parent)
+		if err != nil {
+			c.log.Warn("selfHealForPR: sub-issue count failed — not healing parent row",
+				"parent", parent, "child", issueNum, "error", err)
+			return
+		}
+		if open > 0 {
+			c.log.Info("selfHealForPR: parent has open children — not healing parent row",
+				"parent", parent, "child", issueNum, "open", open)
+			return
+		}
 		c.selfHealTask(fmt.Sprintf("GH-%d", parent), prURL)
 	}
 }
@@ -1349,6 +1365,28 @@ func (c *Controller) SetApprovalDecision(ctx context.Context, requestID string, 
 }
 
 // handleMerging merges the PR.
+// shouldDeferIssueClose reports whether the merged PR's issue is a decomposed
+// parent that still has open children. GH-3513/GH-3530 incidents: a child's PR
+// mis-registered under the parent's issue number made handleMerging close the
+// parent + pilot-done while siblings were open and unshipped. Decomposed
+// parents must only be closed by the count-verified path (maybeCloseParentIssue
+// / recoverStaleParentIssues). Fail-open on count errors so leaf issues keep
+// closing on transient API failures.
+func (c *Controller) shouldDeferIssueClose(ctx context.Context, issueNum, prNum int) bool {
+	open, err := c.openSubIssueCount(ctx, issueNum)
+	if err != nil {
+		c.log.Warn("shouldDeferIssueClose: sub-issue count failed — proceeding with close",
+			"issue", issueNum, "pr", prNum, "error", err)
+		return false
+	}
+	if open > 0 {
+		c.log.Info("handleMerging: issue is a decomposed parent with open children — deferring close to count-verified path",
+			"issue", issueNum, "open", open, "pr", prNum)
+		return true
+	}
+	return false
+}
+
 func (c *Controller) handleMerging(ctx context.Context, prState *PRState) error {
 	prState.MergeAttempts++
 
@@ -1411,7 +1449,7 @@ func (c *Controller) handleMerging(ctx context.Context, prState *PRState) error 
 
 	// GH-1015: Add pilot-done label after successful merge (not at PR creation)
 	// This prevents false positives where PRs are closed without merging
-	if prState.IssueNumber > 0 {
+	if prState.IssueNumber > 0 && !c.shouldDeferIssueClose(ctx, prState.IssueNumber, prState.PRNumber) {
 		// GH-3271: mark issue processed in all pollers before any label updates so
 		// a poll tick that fires during the merge→pilot-done propagation window
 		// cannot re-dispatch the issue (phantom pilot-blocked).

@@ -594,6 +594,16 @@ var ErrSubIssuesAlreadyExist = errors.New("open sub-issues already exist for thi
 // closed or skipped, so spawning sub-issues would be wasteful (GH-2867).
 var ErrParentDone = errors.New("parent task is already done; refusing to create sub-issues")
 
+// IsParentDoneSkip reports whether an execution error string stems from the
+// ErrParentDone guard. The error crosses process/DB boundaries as wrapped text
+// ("execution failed: failed to create sub-issues: ..."), so substring matching
+// is the only reliable detection. GH-3513 wave 2: callers treat this as a
+// benign skip — the parent is already closed + pilot-done — instead of a
+// failure that stacks pilot-failed on top.
+func IsParentDoneSkip(errStr string) bool {
+	return strings.Contains(errStr, ErrParentDone.Error())
+}
+
 // isParentDone reports whether a task should be treated as done based on its
 // labels (pilot-done, pilot-skip) or its state (closed, merged).
 //
@@ -1043,6 +1053,34 @@ func (r *Runner) CreateSubIssues(ctx context.Context, plan *EpicPlan, executionP
 			)
 			return nil, ErrSubIssuesAlreadyExist
 		}
+	}
+
+	// GH-3513 wave 2 (#3538/#3553): drop subtasks whose Description is empty —
+	// they produce junk sub-issues whose body is just the autopilot-meta marker
+	// and a scope fence wrapping nothing. Title validation already exists
+	// (validateSubtaskTitle); this is its Description counterpart, applied once
+	// here so both creator paths (adapter + gh CLI) are covered. Runs AFTER the
+	// dedup guard so recovery of already-created children is never blocked by
+	// plan quality. The plan is rebuilt rather than mutated so the caller's
+	// copy stays intact.
+	valid := make([]PlannedSubtask, 0, len(plan.Subtasks))
+	for _, st := range plan.Subtasks {
+		if strings.TrimSpace(st.Description) == "" {
+			parentID := ""
+			if plan.ParentTask != nil {
+				parentID = plan.ParentTask.ID
+			}
+			r.log.Warn("Skipping subtask with empty description",
+				"title", st.Title, "order", st.Order, "parent", parentID)
+			continue
+		}
+		valid = append(valid, st)
+	}
+	if len(valid) == 0 {
+		return nil, fmt.Errorf("decomposition produced %d subtasks but none had a description — refusing to create empty sub-issues", len(plan.Subtasks))
+	}
+	if len(valid) < len(plan.Subtasks) {
+		plan = &EpicPlan{ParentTask: plan.ParentTask, Subtasks: valid, TotalEffort: plan.TotalEffort, PlanOutput: plan.PlanOutput}
 	}
 
 	if useAdapterCreator {

@@ -496,9 +496,15 @@ func (d *Dispatcher) WaitForExecution(ctx context.Context, execID string, pollIn
 				return nil, fmt.Errorf("failed to get execution: %w", err)
 			}
 
-			// Check if terminal state
+			// Check if terminal state. The TASK-358 classified worker outcomes
+			// (no_op, declined, skipped, stalled, rate_limited, infra) are terminal
+			// too: treating them as in-flight left this loop hanging until something
+			// else mutated the row — in the GH-3513/GH-3530 incidents a child PR
+			// merge self-healed the PARENT's row to completed with the child's PR
+			// URL, and the woken handler reported a false "✅ Pilot completed!".
 			switch exec.Status {
-			case "completed", "failed", "cancelled":
+			case "completed", "failed", "cancelled",
+				"declined", "no_op", "rate_limited", "skipped", "stalled", "infra":
 				return exec, nil
 			}
 		}

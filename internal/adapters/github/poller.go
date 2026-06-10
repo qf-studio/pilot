@@ -2051,6 +2051,37 @@ func (p *Poller) skipSupersededByParent(ctx context.Context, issue *Issue) bool 
 		return false
 	}
 
+	// GH-3513 wave 2 (#3537): the open-PR veto above cannot protect a child
+	// that has not created its PR yet. Require POSITIVE evidence this child's
+	// own slice shipped — a merged PR on its branch or a completed execution
+	// row — before discarding it. A prematurely-closed parent must never
+	// cascade into closing children whose work never landed. Fail open on
+	// lookup errors (dispatch rather than lose work).
+	merged, merr := p.client.FindMergedPRByBranch(ctx, p.owner, p.repo, branch)
+	if merr != nil {
+		p.logger.Warn("Failed to check for merged PR before superseding, falling through to normal dispatch",
+			slog.Int("issue", issue.Number),
+			slog.String("branch", branch),
+			slog.Any("error", merr),
+		)
+		return false
+	}
+	completed := false
+	if !merged && p.execChecker != nil {
+		taskID := fmt.Sprintf("GH-%d", issue.Number)
+		if c, cerr := p.execChecker.HasCompletedExecution(taskID, p.projectPath); cerr == nil {
+			completed = c
+		}
+	}
+	if !merged && !completed {
+		p.logger.Info("Not superseding sub-issue: parent is done but child has no evidence of shipped work — dispatching",
+			slog.Int("issue", issue.Number),
+			slog.Int("parent", parentNum),
+			slog.String("branch", branch),
+		)
+		return false
+	}
+
 	p.logger.Info("Auto-closing sub-issue: parent epic already shipped",
 		slog.Int("issue", issue.Number),
 		slog.Int("parent", parentNum),
