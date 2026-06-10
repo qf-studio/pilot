@@ -291,7 +291,7 @@ func (d *TaskDecomposer) createSubtasks(parent *Task, parts []string, partType s
 			Description: buildSubtaskDescription(parent, part, i+1, len(parts)),
 			ProjectPath: parent.ProjectPath,
 			Branch:      parent.Branch,
-			BaseBranch:  parent.BaseBranch,
+			BaseBranch:  "", // always target repo default; runner resolves via GetDefaultBranch()
 			CreatePR:    false, // Only final subtask creates PR
 			Verbose:     parent.Verbose,
 		}

@@ -761,6 +761,59 @@ func TestBuildSubtaskDescription(t *testing.T) {
 	}
 }
 
+// TestCreateSubtasks_BaseBranchPinnedToEmpty verifies that decomposed children never
+// inherit the parent's BaseBranch value (GH-3540). The parent may carry a sibling's
+// work branch as BaseBranch (PR #3520 incident); pinning to "" lets the runner resolve
+// the repo default via GetDefaultBranch() instead of routing the PR to a wrong base.
+func TestCreateSubtasks_BaseBranchPinnedToEmpty(t *testing.T) {
+	config := &DecomposeConfig{
+		Enabled:             true,
+		MinComplexity:       "complex",
+		MaxSubtasks:         5,
+		MinDescriptionWords: 10,
+	}
+	decomposer := NewTaskDecomposer(config)
+
+	// Parent carries a sibling's branch as BaseBranch — the exact scenario that
+	// caused incorrect PR bases before the fix.
+	parent := &Task{
+		ID:         "GH-100",
+		Title:      "Implement multi-step feature across the executor layer",
+		BaseBranch: "pilot/GH-99-sibling", // wrong value that must NOT be inherited
+		Branch:     "pilot/GH-100",
+		ProjectPath: "/test/project",
+		CreatePR:   true,
+		Description: `Implement the feature with three distinct steps:
+
+1. Refactor the dispatcher to support new routing
+2. Update the runner to handle the new messages
+3. Add integration tests for the full flow
+
+This is a complex change that touches multiple executor components.`,
+	}
+
+	result := decomposer.Decompose(parent)
+
+	if !result.Decomposed {
+		t.Fatalf("Expected task to be decomposed, reason: %s", result.Reason)
+	}
+	if len(result.Subtasks) == 0 {
+		t.Fatal("Expected at least one subtask")
+	}
+
+	for i, st := range result.Subtasks {
+		if st.BaseBranch != "" {
+			t.Errorf("subtask[%d].BaseBranch = %q, want empty string (must not inherit sibling branch)", i, st.BaseBranch)
+		}
+	}
+
+	// Last subtask must still create the PR.
+	last := result.Subtasks[len(result.Subtasks)-1]
+	if !last.CreatePR {
+		t.Error("last subtask should inherit parent.CreatePR == true")
+	}
+}
+
 // TestDecomposeWithContext_LLMClassifierSkipsWordCountGate verifies that when an LLM
 // classifier returns COMPLEX, the word count gate is bypassed (GH-1728).
 func TestDecomposeWithContext_LLMClassifierSkipsWordCountGate(t *testing.T) {
