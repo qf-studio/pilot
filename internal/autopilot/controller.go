@@ -1966,6 +1966,13 @@ func (c *Controller) handleReleasing(ctx context.Context, prState *PRState) erro
 		return nil
 	}
 
+	// Track attempt count for retry cap. Drain paths (tag already exists) never
+	// reach the cap — only persistent error loops do.
+	prState.ReleasingAttempts++
+	if prState.ReleasingFirstAt.IsZero() {
+		prState.ReleasingFirstAt = time.Now()
+	}
+
 	// Resolve the actual repo owner/name from the PR URL.
 	// Cross-repo PRs (e.g. auth-service) have a PRURL pointing to a different repo
 	// than c.owner/c.repo (the pilot repo). All release API calls must target the
@@ -1988,7 +1995,8 @@ func (c *Controller) handleReleasing(ctx context.Context, prState *PRState) erro
 		// "Reference already exists", returns an error, and the PR stays in
 		// StageReleasing forever (re-tried every poll). Return the error so this
 		// PR is retried cleanly on the next poll once the lookup recovers. (TASK-316)
-		return fmt.Errorf("failed to check existing tags for PR #%d: %w", prState.PRNumber, err)
+		return c.checkReleasingRetryOrEscalate(ctx, prState,
+			fmt.Errorf("failed to check existing tags for PR #%d: %w", prState.PRNumber, err))
 	}
 	if existingTag != "" {
 		c.log.Info("commit already covered by existing tag, skipping release",
@@ -1997,6 +2005,33 @@ func (c *Controller) handleReleasing(ctx context.Context, prState *PRState) erro
 			"tag", existingTag,
 		)
 		c.removePR(prState.PRNumber)
+		return nil
+	}
+
+	// Published-release guard: tagCoveringCommit uses a bounded window of 10 tags.
+	// This exhaustive lookup (paginates all tags) catches the case where the SHA
+	// was tagged more than 10 releases ago and treats it as already released.
+	exactTag, err := c.ghClient.GetTagForSHA(ctx, owner, repo, prState.HeadSHA)
+	if err != nil {
+		return c.checkReleasingRetryOrEscalate(ctx, prState,
+			fmt.Errorf("failed to check published release for PR #%d: %w", prState.PRNumber, err))
+	}
+	if exactTag != "" {
+		c.log.Info("commit already tagged (exact match in full tag history) — treating as released",
+			"pr", prState.PRNumber,
+			"sha", ShortSHA(prState.HeadSHA),
+			"tag", exactTag,
+		)
+		c.removePR(prState.PRNumber)
+		return nil
+	}
+
+	// Reachability guard: refuse to tag a commit that is not reachable from the
+	// default branch. A diverged SHA (e.g. from a force-push or a PR merged to a
+	// non-main branch) can never be released from main; failing immediately avoids
+	// unbounded retries on a permanently unreleasable commit.
+	if reachErr := c.guardReleaseSHAReachable(ctx, owner, repo, prState); reachErr != nil {
+		c.escalateReleasingFailed(ctx, prState, reachErr.Error())
 		return nil
 	}
 
@@ -2010,7 +2045,8 @@ func (c *Controller) handleReleasing(ctx context.Context, prState *PRState) erro
 	// Get PR commits for bump detection
 	commits, err := c.ghClient.GetPRCommits(ctx, owner, repo, prState.PRNumber)
 	if err != nil {
-		return fmt.Errorf("failed to get PR commits: %w", err)
+		return c.checkReleasingRetryOrEscalate(ctx, prState,
+			fmt.Errorf("failed to get PR commits: %w", err))
 	}
 
 	// Detect bump type from commits
@@ -2050,7 +2086,8 @@ func (c *Controller) handleReleasing(ctx context.Context, prState *PRState) erro
 			c.removePR(prState.PRNumber)
 			return nil
 		}
-		return fmt.Errorf("failed to create tag: %w", err)
+		return c.checkReleasingRetryOrEscalate(ctx, prState,
+			fmt.Errorf("failed to create tag: %w", err))
 	}
 
 	releaseURL := fmt.Sprintf("https://github.com/%s/%s/releases/tag/%s", owner, repo, tagName)
@@ -2096,6 +2133,83 @@ func isDuplicateTagError(err error) bool {
 		return false
 	}
 	return strings.Contains(strings.ToLower(err.Error()), "already exists")
+}
+
+// checkReleasingRetryOrEscalate returns nil (transitioning prState to StageFailed) when
+// ReleasingAttempts has reached MaxReleasingAttempts; otherwise returns err so the caller
+// retries on the next poll.
+func (c *Controller) checkReleasingRetryOrEscalate(ctx context.Context, prState *PRState, err error) error {
+	if prState.ReleasingAttempts >= c.config.MaxReleasingAttempts {
+		msg := fmt.Sprintf("release failed after %d/%d attempts: %v — manual intervention required",
+			prState.ReleasingAttempts, c.config.MaxReleasingAttempts, err)
+		c.escalateReleasingFailed(ctx, prState, msg)
+		return nil
+	}
+	return err
+}
+
+// escalateReleasingFailed transitions a PR to StageFailed, posts a GitHub comment on the
+// linked issue, and records metrics. Used for both the retry cap and the reachability guard.
+func (c *Controller) escalateReleasingFailed(ctx context.Context, prState *PRState, reason string) {
+	c.log.Error("handleReleasing: escalating to StageFailed",
+		"pr", prState.PRNumber,
+		"sha", ShortSHA(prState.HeadSHA),
+		"attempts", prState.ReleasingAttempts,
+		"reason", reason,
+	)
+	if prState.IssueNumber > 0 {
+		comment := fmt.Sprintf(
+			"⚠️ **Release escalation**: PR #%d failed to release.\n\nReason: `%v`\n\nManual intervention is required — no further automatic retries will be made.",
+			prState.PRNumber, reason)
+		if _, cerr := c.ghClient.AddComment(ctx, c.owner, c.repo, prState.IssueNumber, comment); cerr != nil {
+			c.log.Warn("failed to post release escalation comment", "issue", prState.IssueNumber, "error", cerr)
+		}
+	}
+	prState.Stage = StageFailed
+	prState.Error = reason
+	c.metrics.RecordPRFailed()
+	c.metrics.RecordIssueProcessed("failed")
+}
+
+// guardReleaseSHAReachable verifies that prState.HeadSHA is reachable from the default
+// branch of the target repo before creating a release tag. A diverged SHA (from a
+// force-push or a PR merged to a non-main branch) cannot be released from main and would
+// loop forever without this guard. Fails open (returns nil) on transient API errors so
+// a temporary outage doesn't block a valid release.
+func (c *Controller) guardReleaseSHAReachable(ctx context.Context, owner, repo string, prState *PRState) error {
+	branchName := c.resolveMainBranchName()
+	branch, err := c.ghClient.GetBranch(ctx, owner, repo, branchName)
+	if err != nil {
+		// Transient — skip the guard rather than blocking a valid release.
+		c.log.Warn("reachability guard: could not fetch default branch, skipping check",
+			"pr", prState.PRNumber,
+			"branch", branchName,
+			"error", err,
+		)
+		return nil
+	}
+	mainSHA := branch.SHA()
+
+	// Compare base=HeadSHA, head=mainSHA:
+	//   "ahead"     → mainSHA contains HeadSHA as ancestor → reachable ✓
+	//   "identical" → same commit → reachable ✓
+	//   "behind"    → HeadSHA has commits main doesn't → not reachable from main ✗
+	//   "diverged"  → both have exclusive commits → not reachable ✗
+	status, err := c.ghClient.CompareStatus(ctx, owner, repo, prState.HeadSHA, mainSHA)
+	if err != nil {
+		// Transient — skip the guard.
+		c.log.Warn("reachability guard: CompareStatus failed, skipping check",
+			"pr", prState.PRNumber,
+			"sha", ShortSHA(prState.HeadSHA),
+			"error", err,
+		)
+		return nil
+	}
+	if status == "ahead" || status == "identical" {
+		return nil
+	}
+	return fmt.Errorf("SHA %s is not reachable from %s (compare status: %q) — SHA may be from a diverged or force-pushed branch",
+		ShortSHA(prState.HeadSHA), branchName, status)
 }
 
 // isMergeConflict returns true if the PR has merge conflicts.

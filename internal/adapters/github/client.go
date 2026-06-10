@@ -651,15 +651,24 @@ func (c *Client) ListTags(ctx context.Context, owner, repo string, perPage int) 
 }
 
 // GetTagForSHA returns the tag name if a tag exists at the given SHA, or empty string if none.
-// Used to detect if a commit has already been tagged (race condition prevention).
+// Paginates exhaustively (100 per page, up to 50 pages = 5 000 tags) so a SHA beyond the
+// first 20 newest tags is still found. Used to detect if a commit has already been tagged.
 func (c *Client) GetTagForSHA(ctx context.Context, owner, repo, sha string) (string, error) {
-	tags, err := c.ListTags(ctx, owner, repo, 20)
-	if err != nil {
-		return "", err
-	}
-	for _, tag := range tags {
-		if tag.Commit.SHA == sha {
-			return tag.Name, nil
+	const perPage = 100
+	const maxPages = 50
+	for page := 1; page <= maxPages; page++ {
+		path := fmt.Sprintf("/repos/%s/%s/tags?per_page=%d&page=%d", owner, repo, perPage, page)
+		var batch []*Tag
+		if err := c.doRequest(ctx, http.MethodGet, path, nil, &batch); err != nil {
+			return "", err
+		}
+		for _, tag := range batch {
+			if tag.Commit.SHA == sha {
+				return tag.Name, nil
+			}
+		}
+		if len(batch) < perPage {
+			break
 		}
 	}
 	return "", nil

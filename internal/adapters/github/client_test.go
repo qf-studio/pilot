@@ -2234,6 +2234,79 @@ func TestGetTagForSHA(t *testing.T) {
 	}
 }
 
+// TestGetTagForSHA_Paginated verifies that GetTagForSHA paginates exhaustively and
+// finds a tag that is NOT in the first page (i.e. beyond the old 20-tag window).
+func TestGetTagForSHA_Paginated(t *testing.T) {
+	const targetSHA = "targetsha001"
+	const targetTag = "v5.0.42-target"
+
+	// Page 1: 100 tags, none matching targetSHA.
+	page1 := make([]*Tag, 100)
+	for i := range page1 {
+		page1[i] = &Tag{Name: fmt.Sprintf("v5.0.%d", i)}
+		page1[i].Commit.SHA = fmt.Sprintf("bulksha%03d", i)
+	}
+	// Page 2: 50 tags; targetSHA is at position 7.
+	page2 := make([]*Tag, 50)
+	for i := range page2 {
+		page2[i] = &Tag{Name: fmt.Sprintf("v5.1.%d", i)}
+		page2[i].Commit.SHA = fmt.Sprintf("page2sha%03d", i)
+	}
+	page2[7].Commit.SHA = targetSHA
+	page2[7].Name = targetTag
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || !strings.HasPrefix(r.URL.Path, "/repos/owner/repo/tags") {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		page := r.URL.Query().Get("page")
+		w.WriteHeader(http.StatusOK)
+		if page == "2" {
+			_ = json.NewEncoder(w).Encode(page2)
+		} else {
+			_ = json.NewEncoder(w).Encode(page1)
+		}
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	tag, err := client.GetTagForSHA(context.Background(), "owner", "repo", targetSHA)
+	if err != nil {
+		t.Fatalf("GetTagForSHA() error = %v", err)
+	}
+	if tag != targetTag {
+		t.Errorf("GetTagForSHA() = %q, want %q", tag, targetTag)
+	}
+}
+
+// TestGetTagForSHA_NotFoundAfterFullScan verifies that GetTagForSHA returns empty
+// string (no error) when the SHA does not appear in any page.
+func TestGetTagForSHA_NotFoundAfterFullScan(t *testing.T) {
+	// Single page with 10 tags, none matching.
+	tags := make([]*Tag, 10)
+	for i := range tags {
+		tags[i] = &Tag{Name: fmt.Sprintf("v6.0.%d", i)}
+		tags[i].Commit.SHA = fmt.Sprintf("other%03d", i)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(tags)
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	tag, err := client.GetTagForSHA(context.Background(), "owner", "repo", "notpresent")
+	if err != nil {
+		t.Fatalf("GetTagForSHA() unexpected error: %v", err)
+	}
+	if tag != "" {
+		t.Errorf("GetTagForSHA() = %q, want empty string when SHA not found", tag)
+	}
+}
+
 func TestDeleteBranch(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -3769,3 +3842,54 @@ func TestDoRequest_ReplayBodyOnRetry(t *testing.T) {
 		}
 	}
 }
+
+// TestGetTagForSHA_ExhaustivePagination verifies that GetTagForSHA finds a tag
+// whose SHA sits beyond the first page of results (i.e. would have been missed
+// by the old ListTags(...,20) window). The test serves three pages of tags —
+// page 1 and 2 return 100 tags each, page 3 returns the target tag plus a
+// sentinel tag — and asserts the correct tag name is returned. GH-3558.
+func TestGetTagForSHA_ExhaustivePagination(t *testing.T) {
+	const targetSHA = "deeplypaginatedsha"
+	const targetTag = "v0.99.0"
+
+	// Build a full page of dummy tags (none match targetSHA).
+	makePage := func(n int, prefix string) []Tag {
+		tags := make([]Tag, n)
+		for i := range tags {
+			tags[i] = Tag{Name: fmt.Sprintf("%s-tag-%d", prefix, i)}
+			tags[i].Commit.SHA = fmt.Sprintf("%s-sha-%d", prefix, i)
+		}
+		return tags
+	}
+
+	page1 := makePage(100, "p1")
+	page2 := makePage(100, "p2")
+	// Page 3: target tag + one filler (fewer than 100 → last page).
+	targetTagObj := Tag{Name: targetTag}
+	targetTagObj.Commit.SHA = targetSHA
+	page3 := []Tag{targetTagObj, {Name: "extra"}}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		pageParam := r.URL.Query().Get("page")
+		w.Header().Set("Content-Type", "application/json")
+		switch pageParam {
+		case "1":
+			_ = json.NewEncoder(w).Encode(page1)
+		case "2":
+			_ = json.NewEncoder(w).Encode(page2)
+		default:
+			_ = json.NewEncoder(w).Encode(page3)
+		}
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	got, err := client.GetTagForSHA(context.Background(), "owner", "repo", targetSHA)
+	if err != nil {
+		t.Fatalf("GetTagForSHA() error = %v", err)
+	}
+	if got != targetTag {
+		t.Errorf("GetTagForSHA() = %q, want %q", got, targetTag)
+	}
+}
+
