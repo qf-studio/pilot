@@ -436,6 +436,7 @@ type Model struct {
 	dbSyncTick         int    // Counter for periodic DB re-sync (GH-2248)
 	projectPath        string // Working directory for git commands
 	defaultProjectPath string // Fallback project path from config (GH-2167)
+	metricsScopePath   string // Project path used to filter store/metrics queries (GH-3531)
 	gitProjectName     string // Current project name shown in git panel title (GH-2167)
 }
 
@@ -577,7 +578,7 @@ func (m *Model) hydrateFromStore() {
 	}
 
 	// Load recent executions as completed tasks
-	executions, err := m.store.GetRecentExecutions(20, m.defaultProjectPath)
+	executions, err := m.store.GetRecentExecutions(20, m.metricsScopePath)
 	if err != nil {
 		slog.Warn("failed to load recent executions", slog.Any("error", err))
 		return
@@ -585,7 +586,7 @@ func (m *Model) hydrateFromStore() {
 
 	// Initialize metrics card from lifetime execution data (survives restarts).
 	// Session tokens only track the current process; executions table has the real totals.
-	lifetime, err := m.store.GetLifetimeTokens(m.defaultProjectPath)
+	lifetime, err := m.store.GetLifetimeTokens(m.metricsScopePath)
 	if err != nil {
 		slog.Warn("failed to load lifetime tokens", slog.Any("error", err))
 	} else {
@@ -597,7 +598,7 @@ func (m *Model) hydrateFromStore() {
 
 	// Initialize task counts from lifetime data (survives restarts).
 	// Previous code sampled from GetRecentExecutions(20), showing only last 20 results.
-	taskCounts, err := m.store.GetLifetimeTaskCounts(m.defaultProjectPath)
+	taskCounts, err := m.store.GetLifetimeTaskCounts(m.metricsScopePath)
 	if err != nil {
 		slog.Warn("failed to load lifetime task counts", slog.Any("error", err))
 	} else {
@@ -664,8 +665,8 @@ func (m *Model) loadMetricsHistory() {
 		Start: now.AddDate(0, 0, -7),
 		End:   now,
 	}
-	if m.defaultProjectPath != "" {
-		query.Projects = []string{m.defaultProjectPath}
+	if m.metricsScopePath != "" {
+		query.Projects = []string{m.metricsScopePath}
 	}
 	dailyMetrics, err := m.store.GetDailyMetrics(query)
 	if err != nil {
@@ -712,12 +713,24 @@ func NewModelWithOptions(version string, store *memory.Store, controller *autopi
 }
 
 // SetProjectPath sets the working directory used for git graph commands.
-// The first call also sets the default fallback path (GH-2167).
+// The first call also sets the default fallback path (GH-2167) and seeds
+// metricsScopePath so callers that only call SetProjectPath retain their
+// current behavior (metrics scoped to the same project).
 func (m *Model) SetProjectPath(path string) {
 	m.projectPath = path
 	if m.defaultProjectPath == "" {
 		m.defaultProjectPath = path
 	}
+	if m.metricsScopePath == "" {
+		m.metricsScopePath = path
+	}
+}
+
+// SetMetricsScopePath sets the project path used to filter store queries
+// (recent executions, lifetime tokens, task counts, sparklines, eval panel).
+// Defaults to the value passed to SetProjectPath when not set explicitly.
+func (m *Model) SetMetricsScopePath(path string) {
+	m.metricsScopePath = path
 }
 
 // RenderBannerForTest exposes renderBanner for cross-package tests
@@ -1025,7 +1038,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// GH-2248: Re-sync history and metrics from SQLite every 5 seconds
 		// so external DB changes (orphan cleanup, manual edits) are reflected.
 		if m.store != nil && m.dbSyncTick%5 == 0 {
-			return m, tea.Batch(tickCmd(), storeRefreshCmd(m.store, m.defaultProjectPath))
+			return m, tea.Batch(tickCmd(), storeRefreshCmd(m.store, m.metricsScopePath))
 		}
 		return m, tickCmd()
 
@@ -2496,7 +2509,7 @@ func (m Model) renderEvalStats() string {
 	}
 
 	evalTitle := "EVAL"
-	if m.defaultProjectPath != "" {
+	if m.metricsScopePath != "" {
 		evalTitle = "EVAL [global]"
 	}
 	return renderPanel(evalTitle, line, tw)
