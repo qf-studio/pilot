@@ -776,6 +776,35 @@ func TestSetProjectPath(t *testing.T) {
 	}
 }
 
+// TestSetProjectPath_SeedsMetricsScopePath verifies that SetProjectPath also seeds
+// metricsScopePath on the first call so callers that never call SetMetricsScopePath
+// retain their previous behavior (metrics scoped to the same project as the git graph).
+func TestSetProjectPath_SeedsMetricsScopePath(t *testing.T) {
+	m := NewModel("test")
+	m.SetProjectPath("/tmp/myrepo")
+	if m.metricsScopePath != "/tmp/myrepo" {
+		t.Errorf("metricsScopePath = %q, want %q", m.metricsScopePath, "/tmp/myrepo")
+	}
+}
+
+// TestSetMetricsScopePath verifies SetMetricsScopePath updates only the metrics
+// scope and does not affect the git-graph project path or its fallback.
+func TestSetMetricsScopePath(t *testing.T) {
+	m := NewModel("test")
+	m.SetProjectPath("/tmp/repo")
+	m.SetMetricsScopePath("/tmp/metrics-scope")
+
+	if m.projectPath != "/tmp/repo" {
+		t.Errorf("projectPath = %q, want /tmp/repo", m.projectPath)
+	}
+	if m.defaultProjectPath != "/tmp/repo" {
+		t.Errorf("defaultProjectPath = %q, want /tmp/repo", m.defaultProjectPath)
+	}
+	if m.metricsScopePath != "/tmp/metrics-scope" {
+		t.Errorf("metricsScopePath = %q, want /tmp/metrics-scope", m.metricsScopePath)
+	}
+}
+
 // TestGitGraphState_ScrollIndicator verifies scroll indicator shows correct range.
 func TestGitGraphState_ScrollIndicator(t *testing.T) {
 	m := NewModel("test")
