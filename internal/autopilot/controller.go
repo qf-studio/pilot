@@ -1571,6 +1571,7 @@ func (c *Controller) handleMerged(ctx context.Context, prState *PRState) error {
 					IssueTitle:   issue.Title,
 					Repo:         fmt.Sprintf("%s/%s", c.owner, c.repo),
 					FilesChanged: filenames,
+					ProjectPath:  c.projectPath,
 				})
 				if saveErr := c.evalStore.SaveEvalTask(evalTask); saveErr != nil {
 					c.log.Warn("Failed to save eval task", slog.Any("error", saveErr))

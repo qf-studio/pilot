@@ -291,6 +291,83 @@ func TestSaveEvalTaskDuplicatePrevention(t *testing.T) {
 	}
 }
 
+func TestListEvalTasksProjectPathFilter(t *testing.T) {
+	store, cleanup := newTestStoreForEval(t)
+	defer cleanup()
+
+	taskA1 := &EvalTask{
+		ID: "eval-proj-a1", ExecutionID: "exec-pa1", IssueNumber: 101,
+		IssueTitle: "Alpha Feature 1", Repo: "org/repo",
+		ProjectPath: "/projects/alpha", Success: true, DurationMs: 1000,
+	}
+	taskA2 := &EvalTask{
+		ID: "eval-proj-a2", ExecutionID: "exec-pa2", IssueNumber: 102,
+		IssueTitle: "Alpha Feature 2", Repo: "org/repo",
+		ProjectPath: "/projects/alpha", Success: false, DurationMs: 2000,
+	}
+	taskB1 := &EvalTask{
+		ID: "eval-proj-b1", ExecutionID: "exec-pb1", IssueNumber: 201,
+		IssueTitle: "Beta Feature 1", Repo: "org/other",
+		ProjectPath: "/projects/beta", Success: true, DurationMs: 500,
+	}
+
+	for _, task := range []*EvalTask{taskA1, taskA2, taskB1} {
+		if err := store.SaveEvalTask(task); err != nil {
+			t.Fatalf("SaveEvalTask(%s): %v", task.ID, err)
+		}
+	}
+
+	// ProjectPath "A" returns only A's rows.
+	alphaRows, err := store.ListEvalTasks(EvalTaskFilter{ProjectPath: "/projects/alpha"})
+	if err != nil {
+		t.Fatalf("ListEvalTasks alpha: %v", err)
+	}
+	if len(alphaRows) != 2 {
+		t.Errorf("alpha: got %d tasks, want 2", len(alphaRows))
+	}
+	for _, row := range alphaRows {
+		if row.ProjectPath != "/projects/alpha" {
+			t.Errorf("expected ProjectPath=/projects/alpha, got %q", row.ProjectPath)
+		}
+	}
+
+	// ProjectPath "B" returns only B's rows.
+	betaRows, err := store.ListEvalTasks(EvalTaskFilter{ProjectPath: "/projects/beta"})
+	if err != nil {
+		t.Fatalf("ListEvalTasks beta: %v", err)
+	}
+	if len(betaRows) != 1 {
+		t.Fatalf("beta: got %d tasks, want 1", len(betaRows))
+	}
+	if betaRows[0].ID != "eval-proj-b1" {
+		t.Errorf("beta[0].ID = %q, want eval-proj-b1", betaRows[0].ID)
+	}
+	if betaRows[0].ProjectPath != "/projects/beta" {
+		t.Errorf("beta[0].ProjectPath = %q, want /projects/beta", betaRows[0].ProjectPath)
+	}
+
+	// Empty ProjectPath returns all rows.
+	allRows, err := store.ListEvalTasks(EvalTaskFilter{})
+	if err != nil {
+		t.Fatalf("ListEvalTasks all: %v", err)
+	}
+	if len(allRows) != 3 {
+		t.Errorf("all: got %d tasks, want 3", len(allRows))
+	}
+
+	// ProjectPath + SuccessOnly intersection.
+	alphaSuccess, err := store.ListEvalTasks(EvalTaskFilter{ProjectPath: "/projects/alpha", SuccessOnly: true})
+	if err != nil {
+		t.Fatalf("ListEvalTasks alpha+success: %v", err)
+	}
+	if len(alphaSuccess) != 1 {
+		t.Fatalf("alpha+success: got %d tasks, want 1", len(alphaSuccess))
+	}
+	if alphaSuccess[0].ID != "eval-proj-a1" {
+		t.Errorf("alpha+success[0].ID = %q, want eval-proj-a1", alphaSuccess[0].ID)
+	}
+}
+
 func TestEvalTaskPassCriteriaRoundTrip(t *testing.T) {
 	store, cleanup := newTestStoreForEval(t)
 	defer cleanup()

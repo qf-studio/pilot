@@ -282,6 +282,7 @@ func (s *Store) migrate() error {
 			pass_criteria TEXT,
 			files_changed TEXT,
 			duration_ms INTEGER DEFAULT 0,
+			project_path TEXT DEFAULT '',
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			UNIQUE(repo, issue_number)
 		)`,
@@ -332,6 +333,8 @@ func (s *Store) migrate() error {
 		// GH-3028: RSS telemetry — peak and final resident set size for subprocess OOM diagnostics.
 		`ALTER TABLE executions ADD COLUMN peak_rss_mb INTEGER DEFAULT 0`,
 		`ALTER TABLE executions ADD COLUMN final_rss_mb INTEGER DEFAULT 0`,
+		// GH-3536: project scoping for eval tasks
+		`ALTER TABLE eval_tasks ADD COLUMN project_path TEXT DEFAULT ''`,
 	}
 
 	for _, migration := range migrations {

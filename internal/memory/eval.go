@@ -16,6 +16,7 @@ type EvalTask struct {
 	IssueNumber  int            `json:"issue_number"`
 	IssueTitle   string         `json:"issue_title"`
 	Repo         string         `json:"repo"`
+	ProjectPath  string         `json:"project_path,omitempty"`
 	Success      bool           `json:"success"`
 	PassCriteria []PassCriteria `json:"pass_criteria,omitempty"`
 	FilesChanged []string       `json:"files_changed,omitempty"`
@@ -41,6 +42,7 @@ type EvalInput struct {
 	IssueNumber  int
 	IssueTitle   string
 	FilesChanged []string
+	ProjectPath  string
 }
 
 // EvalGateResult is a quality gate outcome, mirroring executor.QualityGateResult.
@@ -69,6 +71,7 @@ func ExtractEvalTask(in EvalInput) *EvalTask {
 		IssueNumber:  in.IssueNumber,
 		IssueTitle:   in.IssueTitle,
 		Repo:         in.Repo,
+		ProjectPath:  in.ProjectPath,
 		Success:      in.Success,
 		PassCriteria: criteria,
 		FilesChanged: in.FilesChanged,
@@ -90,16 +93,17 @@ func (s *Store) SaveEvalTask(task *EvalTask) error {
 
 	return s.withRetry("SaveEvalTask", func() error {
 		_, err := s.db.Exec(`
-			INSERT INTO eval_tasks (id, execution_id, issue_number, issue_title, repo, success, pass_criteria, files_changed, duration_ms)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+			INSERT INTO eval_tasks (id, execution_id, issue_number, issue_title, repo, success, pass_criteria, files_changed, duration_ms, project_path)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(repo, issue_number) DO UPDATE SET
 				execution_id = excluded.execution_id,
 				success = excluded.success,
 				pass_criteria = excluded.pass_criteria,
 				files_changed = excluded.files_changed,
-				duration_ms = excluded.duration_ms
+				duration_ms = excluded.duration_ms,
+				project_path = excluded.project_path
 		`, task.ID, task.ExecutionID, task.IssueNumber, task.IssueTitle, task.Repo, task.Success,
-			string(criteriaJSON), string(filesJSON), task.DurationMs)
+			string(criteriaJSON), string(filesJSON), task.DurationMs, task.ProjectPath)
 		return err
 	})
 }
@@ -238,6 +242,7 @@ func (s *Store) GetEvalStats(runID string) ([]*EvalStats, error) {
 type EvalTaskFilter struct {
 	Repo        string
 	ExecutionID string // Filter by execution_id (used as eval run identifier)
+	ProjectPath string // Filter by project path; empty returns all projects
 	SuccessOnly bool
 	FailedOnly  bool
 	Limit       int
@@ -256,6 +261,10 @@ func (s *Store) ListEvalTasks(filter EvalTaskFilter) ([]*EvalTask, error) {
 		conditions = append(conditions, "execution_id = ?")
 		args = append(args, filter.ExecutionID)
 	}
+	if filter.ProjectPath != "" {
+		conditions = append(conditions, "project_path = ?")
+		args = append(args, filter.ProjectPath)
+	}
 	if filter.SuccessOnly {
 		conditions = append(conditions, "success = 1")
 	}
@@ -263,7 +272,7 @@ func (s *Store) ListEvalTasks(filter EvalTaskFilter) ([]*EvalTask, error) {
 		conditions = append(conditions, "success = 0")
 	}
 
-	query := "SELECT id, execution_id, issue_number, issue_title, repo, success, pass_criteria, files_changed, duration_ms, created_at FROM eval_tasks"
+	query := "SELECT id, execution_id, issue_number, issue_title, repo, success, pass_criteria, files_changed, duration_ms, project_path, created_at FROM eval_tasks"
 	if len(conditions) > 0 {
 		query += " WHERE " + strings.Join(conditions, " AND ")
 	}
@@ -286,7 +295,7 @@ func (s *Store) ListEvalTasks(filter EvalTaskFilter) ([]*EvalTask, error) {
 		var t EvalTask
 		var criteriaJSON, filesJSON string
 		if err := rows.Scan(&t.ID, &t.ExecutionID, &t.IssueNumber, &t.IssueTitle, &t.Repo,
-			&t.Success, &criteriaJSON, &filesJSON, &t.DurationMs, &t.CreatedAt); err != nil {
+			&t.Success, &criteriaJSON, &filesJSON, &t.DurationMs, &t.ProjectPath, &t.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan eval_task: %w", err)
 		}
 		if criteriaJSON != "" {
