@@ -1629,6 +1629,30 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 			} else {
 				// Multi-package epic: safe to create separate GitHub issues
 
+				// GH-3513 wave 2 (#3538/#3553): refuse to create sub-issues from a
+				// plan whose ParentTask diverges from the dispatched task — children
+				// were observed claiming "parent: GH-201" while unrelated epics ran.
+				// CreateSubIssues' only production caller is here, so this assertion
+				// is equivalent to an entry guard with zero signature churn.
+				if plan.ParentTask == nil || plan.ParentTask.ID != task.ID {
+					planParent := "<nil>"
+					if plan.ParentTask != nil {
+						planParent = plan.ParentTask.ID
+					}
+					r.log.Error("epic plan parent mismatch — refusing sub-issue creation",
+						slog.String("dispatched", task.ID),
+						slog.String("plan_parent", planParent),
+					)
+					return &ExecutionResult{
+						TaskID:   task.ID,
+						Success:  false,
+						IsEpic:   true,
+						EpicPlan: plan,
+						Error:    fmt.Sprintf("epic plan parent %q does not match dispatched task %q — refusing sub-issue creation", planParent, task.ID),
+						Duration: time.Since(start),
+					}, nil
+				}
+
 				// GH-412: Create sub-issues from the plan
 				r.reportProgress(task.ID, "Creating Issues", 40, "Creating GitHub sub-issues...")
 

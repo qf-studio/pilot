@@ -2696,3 +2696,139 @@ echo "https://github.com/owner/repo/issues/$N"
 		}
 	}
 }
+
+// GH-3513 wave 2 (#3538/#3553): subtasks with empty descriptions produce junk
+// sub-issues (body = meta marker + scope fence wrapping nothing) and must be
+// dropped at creation time.
+func TestCreateSubIssues_SkipsEmptyDescriptionSubtasks(t *testing.T) {
+	runner := NewRunner()
+	runner.openSubIssueCheck = func(_ context.Context, _, _ string) (bool, error) { return false, nil }
+	mock := &mockSubIssueCreator{
+		Returns: []mockCreateIssueReturn{
+			{Identifier: "APP-101", URL: "https://linear.app/test/issue/APP-101"},
+			{Identifier: "APP-102", URL: "https://linear.app/test/issue/APP-102"},
+		},
+	}
+	runner.SetSubIssueCreator(mock)
+
+	plan := &EpicPlan{
+		ParentTask: &Task{ID: "APP-100", SourceAdapter: "linear", SourceIssueID: "APP-100"},
+		Subtasks: []PlannedSubtask{
+			{Title: "feat(linear): real slice one", Description: "Do first thing", Order: 1},
+			{Title: "feat(linear): hallucinated empty slice", Description: "   \n\t", Order: 2},
+			{Title: "feat(linear): real slice two", Description: "Do second thing", Order: 3},
+		},
+	}
+
+	created, err := runner.CreateSubIssues(context.Background(), plan, "")
+	if err != nil {
+		t.Fatalf("CreateSubIssues failed: %v", err)
+	}
+	if len(created) != 2 {
+		t.Fatalf("expected 2 created issues (empty-description subtask dropped), got %d", len(created))
+	}
+	if len(mock.Called) != 2 {
+		t.Fatalf("expected 2 creator calls, got %d", len(mock.Called))
+	}
+	for _, call := range mock.Called {
+		if strings.Contains(call.Title, "hallucinated") {
+			t.Errorf("empty-description subtask reached the creator: %q", call.Title)
+		}
+	}
+	// The caller's plan must not be mutated.
+	if len(plan.Subtasks) != 3 {
+		t.Errorf("caller's plan was mutated: %d subtasks, want 3", len(plan.Subtasks))
+	}
+}
+
+func TestCreateSubIssues_FailsWhenAllDescriptionsEmpty(t *testing.T) {
+	runner := NewRunner()
+	runner.openSubIssueCheck = func(_ context.Context, _, _ string) (bool, error) { return false, nil }
+	mock := &mockSubIssueCreator{}
+	runner.SetSubIssueCreator(mock)
+
+	plan := &EpicPlan{
+		ParentTask: &Task{ID: "APP-100", SourceAdapter: "linear", SourceIssueID: "APP-100"},
+		Subtasks: []PlannedSubtask{
+			{Title: "feat(linear): empty one", Description: "", Order: 1},
+			{Title: "feat(linear): empty two", Description: "  ", Order: 2},
+		},
+	}
+
+	_, err := runner.CreateSubIssues(context.Background(), plan, "")
+	if err == nil {
+		t.Fatal("expected error when all subtask descriptions are empty")
+	}
+	if !strings.Contains(err.Error(), "refusing to create empty sub-issues") {
+		t.Errorf("error %q does not mention empty sub-issues", err.Error())
+	}
+	if len(mock.Called) != 0 {
+		t.Errorf("creator was called %d times, want 0", len(mock.Called))
+	}
+}
+
+// GH-3513 wave 2 (#3538/#3553): a plan whose ParentTask diverges from the
+// dispatched task must never create sub-issues — children were observed
+// claiming "parent: GH-201" while unrelated epics ran.
+func TestRunner_Execute_EpicRejectsForeignParentPlan(t *testing.T) {
+	r := NewRunner()
+	r.skipPreflightChecks = true
+	r.dryRun = true
+
+	checkerCalled := false
+	r.openSubIssueCheck = func(_ context.Context, _, _ string) (bool, error) {
+		checkerCalled = true
+		return false, nil
+	}
+
+	// planEpicFn returns a plan for a DIFFERENT parent (GH-201) than the
+	// dispatched task (GH-9000); multi-package descriptions so decomposition
+	// is attempted rather than consolidated.
+	r.planEpicFn = func(_ context.Context, _ *Task, _ string) (*EpicPlan, error) {
+		return &EpicPlan{
+			ParentTask: &Task{ID: "GH-201"},
+			Subtasks: []PlannedSubtask{
+				{Order: 1, Title: "feat(gateway): add websocket handler", Description: "Implement upgrade handler in internal/gateway/server.go"},
+				{Order: 2, Title: "feat(adapters): add telegram bot", Description: "Wire bot client in internal/adapters/telegram/bot.go"},
+			},
+		}, nil
+	}
+
+	task := &Task{
+		ID:    "GH-9000",
+		Title: "[epic] foreign parent plan rejection test",
+	}
+
+	result, err := r.Execute(context.Background(), task)
+	if err != nil {
+		t.Fatalf("Execute returned unexpected error: %v", err)
+	}
+	if result == nil || result.Success {
+		t.Fatalf("expected failed result for foreign-parent plan, got: %+v", result)
+	}
+	if !strings.Contains(result.Error, "does not match dispatched task") {
+		t.Errorf("result error %q does not mention parent mismatch", result.Error)
+	}
+	if checkerCalled {
+		t.Error("sub-issue creation machinery was reached despite parent mismatch")
+	}
+}
+
+// GH-3513 wave 2: IsParentDoneSkip must detect the ErrParentDone guard through
+// the wrapped text it acquires crossing the runner/dispatcher/DB boundaries.
+func TestIsParentDoneSkip(t *testing.T) {
+	tests := []struct {
+		in   string
+		want bool
+	}{
+		{ErrParentDone.Error(), true},
+		{"execution failed: failed to create sub-issues: parent task is already done; refusing to create sub-issues", true},
+		{"failed to create sub-issues: something else", false},
+		{"", false},
+	}
+	for _, tt := range tests {
+		if got := IsParentDoneSkip(tt.in); got != tt.want {
+			t.Errorf("IsParentDoneSkip(%q) = %v, want %v", tt.in, got, tt.want)
+		}
+	}
+}

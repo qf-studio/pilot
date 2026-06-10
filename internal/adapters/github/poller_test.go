@@ -2925,6 +2925,16 @@ func TestPoller_CheckForNewIssues_SkipsSupersededByParent(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(parent)
 		case r.Method == http.MethodGet && r.URL.Path == "/repos/owner/repo/issues/200":
 			_ = json.NewEncoder(w).Encode(subIssue)
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/owner/repo/pulls" &&
+			r.URL.Query().Get("state") == "closed":
+			// Wave 2: supersession now requires positive evidence the child's own
+			// slice shipped — give it a merged PR on pilot/GH-200.
+			_ = json.NewEncoder(w).Encode([]*PullRequest{{
+				Number: 900,
+				State:  "closed",
+				Merged: true,
+				Head:   PRRef{Ref: "pilot/GH-200"},
+			}})
 		case r.Method == http.MethodPost && r.URL.Path == "/repos/owner/repo/issues/200/comments":
 			var payload struct {
 				Body string `json:"body"`
@@ -3417,5 +3427,150 @@ func TestPoller_MergeDoneWindow_MarkProcessedAfterGrace(t *testing.T) {
 
 	if got := callCount.Load(); got != 0 {
 		t.Errorf("dispatch callback called %d times, want 0 — MarkProcessed should prevent re-dispatch in merge→done window", got)
+	}
+}
+
+// GH-3513 wave 2 (#3537): a child with NO PR and NO completed execution must
+// not be superseded even when the parent is closed + pilot-done — the parent
+// close may be premature and the child's slice never shipped. It must fall
+// through to normal dispatch.
+func TestPoller_CheckForNewIssues_DoesNotSupersedeChildWithoutShippedEvidence(t *testing.T) {
+	subIssue := &Issue{
+		Number: 203,
+		Title:  "Sub-issue with no PR yet",
+		Body:   "Parent: GH-103\n\nUnshipped slice.",
+		State:  "open",
+		Labels: []Label{{Name: "pilot"}},
+	}
+	parent := &Issue{
+		Number: 103,
+		Title:  "Epic",
+		State:  "closed",
+		Labels: []Label{{Name: "pilot"}, {Name: LabelDone}},
+	}
+
+	var (
+		dispatches  int32
+		closedIssue int32
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/owner/repo/issues":
+			_ = json.NewEncoder(w).Encode([]*Issue{subIssue})
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/owner/repo/issues/103":
+			_ = json.NewEncoder(w).Encode(parent)
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/owner/repo/issues/203":
+			_ = json.NewEncoder(w).Encode(subIssue)
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/owner/repo/pulls":
+			// No PRs on the child's branch — open or merged.
+			_ = json.NewEncoder(w).Encode([]*PullRequest{})
+		case r.Method == http.MethodPatch && r.URL.Path == "/repos/owner/repo/issues/203":
+			atomic.AddInt32(&closedIssue, 1)
+			_, _ = w.Write([]byte(`{}`))
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second,
+		WithOnIssue(func(ctx context.Context, issue *Issue) error {
+			atomic.AddInt32(&dispatches, 1)
+			return nil
+		}),
+	)
+	poller.checkForNewIssues(context.Background())
+	poller.WaitForActive()
+
+	if got := atomic.LoadInt32(&closedIssue); got != 0 {
+		t.Errorf("sub-issue closed %d times, want 0 (no shipped evidence — must not supersede)", got)
+	}
+	if got := atomic.LoadInt32(&dispatches); got != 1 {
+		t.Errorf("dispatched %d times, want 1 (child must dispatch when its slice never shipped)", got)
+	}
+}
+
+// GH-3513 wave 2: a completed execution row is valid evidence the child's
+// slice shipped — supersession may proceed.
+func TestPoller_CheckForNewIssues_SupersedesChildWithCompletedExecution(t *testing.T) {
+	subIssue := &Issue{
+		Number: 204,
+		Title:  "Sub-issue shipped via execution row",
+		Body:   "Parent: GH-104\n\nShipped slice.",
+		State:  "open",
+		Labels: []Label{{Name: "pilot"}},
+	}
+	parent := &Issue{
+		Number: 104,
+		Title:  "Epic",
+		State:  "closed",
+		Labels: []Label{{Name: "pilot"}, {Name: LabelDone}},
+	}
+
+	var (
+		dispatches  int32
+		closedIssue int32
+		gotLabelsMu sync.Mutex
+		gotLabels   []string
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/owner/repo/issues":
+			_ = json.NewEncoder(w).Encode([]*Issue{subIssue})
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/owner/repo/issues/104":
+			_ = json.NewEncoder(w).Encode(parent)
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/owner/repo/issues/204":
+			_ = json.NewEncoder(w).Encode(subIssue)
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/owner/repo/pulls":
+			_ = json.NewEncoder(w).Encode([]*PullRequest{}) // no PRs at all
+		case r.Method == http.MethodPost && r.URL.Path == "/repos/owner/repo/issues/204/labels":
+			var payload struct {
+				Labels []string `json:"labels"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&payload)
+			gotLabelsMu.Lock()
+			gotLabels = append(gotLabels, payload.Labels...)
+			gotLabelsMu.Unlock()
+			_, _ = w.Write([]byte(`[]`))
+		case r.Method == http.MethodPatch && r.URL.Path == "/repos/owner/repo/issues/204":
+			atomic.AddInt32(&closedIssue, 1)
+			_, _ = w.Write([]byte(`{}`))
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	checker := &mockExecutionChecker{completed: map[string]bool{"GH-204:/proj/p": true}}
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second,
+		WithExecutionChecker(checker, "/proj/p"),
+		WithOnIssue(func(ctx context.Context, issue *Issue) error {
+			atomic.AddInt32(&dispatches, 1)
+			return nil
+		}),
+	)
+	poller.checkForNewIssues(context.Background())
+	poller.WaitForActive()
+
+	if got := atomic.LoadInt32(&closedIssue); got != 1 {
+		t.Errorf("sub-issue closed %d times, want 1 (completed execution = shipped evidence)", got)
+	}
+	if got := atomic.LoadInt32(&dispatches); got != 0 {
+		t.Errorf("dispatched %d times, want 0 (superseded)", got)
+	}
+	gotLabelsMu.Lock()
+	defer gotLabelsMu.Unlock()
+	found := false
+	for _, l := range gotLabels {
+		if l == LabelSuperseded {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected pilot-superseded label, got %v", gotLabels)
 	}
 }

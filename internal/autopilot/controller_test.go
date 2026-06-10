@@ -578,6 +578,19 @@ func TestController_ScanRecentlyMergedPRs_SelfHeals(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(github.Issue{
 				Body: "<!--autopilot-meta\nparent: GH-3344\n-->\n\nParent: GH-3344\n\nwork",
 			})
+		case r.URL.Path == "/repos/owner/repo/issues/3344":
+			// GetIssueNodeID lookup for the parent's open-children gate (wave 2).
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"node_id":"node_3344","number":3344}`))
+		case r.URL.Path == "/graphql" && r.Method == http.MethodPost:
+			// openSubIssueCount: the only child (GH-3353) is closed → open count 0,
+			// so the parent heal is allowed (preserves the TASK-352 scenario).
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"data":{"node":{"subIssues":{"totalCount":1,"nodes":[{"state":"CLOSED"}]}}}}`))
+		case r.URL.Path == "/search/issues":
+			// Wave-1 cross-check: native 0 must be confirmed by text search.
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"total_count":0}`))
 		default:
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte("[]"))
@@ -7277,5 +7290,155 @@ func TestHandleCIPassed_SmallInScopePRMerges(t *testing.T) {
 	}
 	if prState.Stage != StageMerging {
 		t.Errorf("expected StageMerging for small in-scope PR, got %v", prState.Stage)
+	}
+}
+
+// GH-3513 wave 2: a merged PR registered under a DECOMPOSED PARENT's issue
+// number must not close the parent while children are open — only the
+// count-verified path may close decomposed parents.
+func TestShouldDeferIssueClose(t *testing.T) {
+	tests := []struct {
+		name      string
+		graphqlOK bool   // false → GraphQL count errors
+		openSubs  int    // open children from native links (totalCount = openSubs+1)
+		textCount string // /search/issues total_count JSON
+		want      bool
+	}{
+		{name: "open children defer the close", graphqlOK: true, openSubs: 2, want: true},
+		{name: "leaf issue (no children) closes", graphqlOK: true, openSubs: 0, textCount: `{"total_count":0}`, want: false},
+		{name: "native 0 but text search finds unlinked open children", graphqlOK: true, openSubs: 0, textCount: `{"total_count":1}`, want: true},
+		{name: "count error fails open (close proceeds)", graphqlOK: false, textCount: `bad`, want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				switch {
+				case r.URL.Path == "/graphql" && r.Method == http.MethodPost:
+					if !tt.graphqlOK {
+						w.WriteHeader(http.StatusOK)
+						_, _ = w.Write([]byte(`{"errors":[{"message":"boom"}]}`))
+						return
+					}
+					states := make([]map[string]string, tt.openSubs)
+					for i := range states {
+						states[i] = map[string]string{"state": "OPEN"}
+					}
+					resp := map[string]interface{}{
+						"data": map[string]interface{}{
+							"node": map[string]interface{}{
+								"subIssues": map[string]interface{}{
+									"totalCount": tt.openSubs + 1,
+									"nodes":      states,
+								},
+							},
+						},
+					}
+					w.WriteHeader(http.StatusOK)
+					_ = json.NewEncoder(w).Encode(resp)
+				case r.URL.Path == "/search/issues":
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write([]byte(tt.textCount))
+				case strings.HasPrefix(r.URL.Path, "/repos/owner/repo/issues/"):
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write([]byte(`{"node_id":"node_77","number":77}`))
+				default:
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write([]byte("{}"))
+				}
+			}))
+			defer server.Close()
+
+			ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			c := NewController(DefaultConfig(), ghClient, nil, "owner", "repo")
+
+			if got := c.shouldDeferIssueClose(context.Background(), 77, 42); got != tt.want {
+				t.Errorf("shouldDeferIssueClose() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// GH-3513 wave 2: selfHealForPR must not promote a decomposed parent's
+// execution row (stamping a child's PR URL) while siblings are still open —
+// that false "completed" row woke hung handlers and fed dispatch-skips.
+func TestSelfHealForPR_ParentGate(t *testing.T) {
+	tests := []struct {
+		name       string
+		openSubs   int
+		graphqlOK  bool
+		searchJSON string
+		wantHealed []string
+	}{
+		{name: "open siblings: only the child heals", openSubs: 1, graphqlOK: true, searchJSON: `{"total_count":0}`, wantHealed: []string{"GH-50"}},
+		{name: "last child merged: parent heals too", openSubs: 0, graphqlOK: true, searchJSON: `{"total_count":0}`, wantHealed: []string{"GH-50", "GH-40"}},
+		{name: "count error: parent heal skipped (fail closed)", graphqlOK: false, searchJSON: `not json`, wantHealed: []string{"GH-50"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				switch {
+				case r.URL.Path == "/repos/owner/repo/issues/50":
+					// Child body carries the parent reference.
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write([]byte(`{"number":50,"body":"Parent: GH-40\n\nwork","node_id":"node_50"}`))
+				case r.URL.Path == "/repos/owner/repo/issues/40":
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write([]byte(`{"number":40,"body":"epic","node_id":"node_40"}`))
+				case r.URL.Path == "/graphql" && r.Method == http.MethodPost:
+					if !tt.graphqlOK {
+						w.WriteHeader(http.StatusOK)
+						_, _ = w.Write([]byte(`{"errors":[{"message":"boom"}]}`))
+						return
+					}
+					states := make([]map[string]string, tt.openSubs)
+					for i := range states {
+						states[i] = map[string]string{"state": "OPEN"}
+					}
+					resp := map[string]interface{}{
+						"data": map[string]interface{}{
+							"node": map[string]interface{}{
+								"subIssues": map[string]interface{}{
+									"totalCount": tt.openSubs + 1,
+									"nodes":      states,
+								},
+							},
+						},
+					}
+					w.WriteHeader(http.StatusOK)
+					_ = json.NewEncoder(w).Encode(resp)
+				case r.URL.Path == "/search/issues":
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write([]byte(tt.searchJSON))
+				default:
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write([]byte("{}"))
+				}
+			}))
+			defer server.Close()
+
+			ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			c := NewController(DefaultConfig(), ghClient, nil, "owner", "repo", WithProjectPath("/proj/p"))
+			evalMock := &mockEvalStore{}
+			c.SetEvalStore(evalMock)
+
+			c.selfHealForPR(context.Background(), 50, "https://github.com/owner/repo/pull/9")
+
+			var got []string
+			for _, h := range evalMock.selfHealed {
+				got = append(got, h.TaskID)
+			}
+			if len(got) != len(tt.wantHealed) {
+				t.Fatalf("healed %v, want %v", got, tt.wantHealed)
+			}
+			for i := range got {
+				if got[i] != tt.wantHealed[i] {
+					t.Errorf("healed[%d] = %s, want %s", i, got[i], tt.wantHealed[i])
+				}
+			}
+		})
 	}
 }

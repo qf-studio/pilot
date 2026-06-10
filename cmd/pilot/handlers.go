@@ -95,6 +95,22 @@ func issueHasOpenPR(ctx context.Context, client *github.Client, owner, repo stri
 	return false
 }
 
+// issueHasOpenChildren reports whether the issue is a decomposed parent with
+// open sub-issues, using the same two-tier strategy as the autopilot's
+// count-verified close path: native sub-issue links first, text search for
+// "Parent: GH-N" bodies as fallback/cross-check. A native count of 0 is never
+// trusted alone (LinkSubIssue is non-fatal, so native links can cover only a
+// subset of children — the GH-3513 incident). Fail-open returns false so leaf
+// issues keep their existing treatment on transient API errors. Read-only.
+func issueHasOpenChildren(ctx context.Context, client *github.Client, owner, repo string, issueNumber int) bool {
+	native, hasNativeLinks, err := client.GetOpenSubIssueCount(ctx, owner, repo, issueNumber)
+	if err == nil && hasNativeLinks && native > 0 {
+		return true
+	}
+	text, terr := client.SearchOpenSubIssues(ctx, owner, repo, issueNumber)
+	return terr == nil && text > 0
+}
+
 // requestReviewersFromConfig looks up the project config for the given sourceRepo
 // and requests PR reviewers if configured. Errors are logged but not propagated.
 func requestReviewersFromConfig(ctx context.Context, cfg *config.Config, client *github.Client, sourceRepo, owner, repo string, prNumber int) {
@@ -370,6 +386,20 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 			logGitHubAPIError("RemoveLabel", parts[0], parts[1], issue.Number, err)
 		}
 
+		// GH-3513 wave 2: a re-dispatch of an already-completed parent hits the
+		// ErrParentDone guard. That is a benign skip, not a failure — the parent
+		// is already closed + pilot-done. Stacking pilot-failed on top (and
+		// posting a ❌ comment) produced contradictory issue states on #3513 and
+		// #3546. Success=true so the poller marks it processed instead of
+		// re-dispatch-looping.
+		if (execErr != nil && executor.IsParentDoneSkip(execErr.Error())) ||
+			(hr.Result != nil && executor.IsParentDoneSkip(hr.Result.Error)) {
+			slog.Info("re-dispatch of completed parent hit ErrParentDone — benign skip, no labels/comments",
+				slog.Int("issue", issue.Number))
+			issueResult.Success = true
+			return issueResult, nil
+		}
+
 		// GH-1853: Resolve board statuses once for all paths (nil-safe via GetStatuses)
 		boardStatuses := cfg.Adapters.GitHub.ProjectBoard.GetStatuses()
 
@@ -458,6 +488,20 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 				comment := fmt.Sprintf("🤔 **Pilot needs clarification before implementing this task**\n\n**Reason**: %s\n\nTo resume, clarify the requirements and remove the `%s` label.", reason, github.LabelNeedsClarification)
 				if _, err := client.AddComment(ctx, parts[0], parts[1], issue.Number, comment); err != nil {
 					logGitHubAPIError("AddComment(declined)", parts[0], parts[1], issue.Number, err)
+				}
+			} else if hr.Result.Error != "" && strings.Contains(hr.Result.Error, noOpErrorMarker) &&
+				issueHasOpenChildren(ctx, client, parts[0], parts[1], issue.Number) {
+				// GH-3513 wave 2: a no-op on a DECOMPOSED PARENT with open children
+				// must not be classified by the already-merged branch below — the
+				// parent's own epic PR (or a child's PR matching the search) makes
+				// issueAlreadyMerged true while sibling slices are still unshipped,
+				// which closed parents prematurely. Leave the parent open; the
+				// autopilot's count-verified path closes it when the last child
+				// ships. No labels, no comment (re-dispatches can repeat).
+				slog.Info("no-op re-dispatch of decomposed parent with open children — deferring close to count-verified path",
+					slog.Int("issue", issue.Number))
+				if err := client.RemoveLabel(ctx, parts[0], parts[1], issue.Number, github.LabelBlocked); err != nil {
+					slog.Debug("pilot-blocked cleanup (open-children)", "issue", issue.Number, "error", err)
 				}
 			} else if hr.Result.Error != "" && strings.Contains(hr.Result.Error, noOpErrorMarker) &&
 				issueAlreadyMerged(ctx, client, parts[0], parts[1], issue.Number) {
