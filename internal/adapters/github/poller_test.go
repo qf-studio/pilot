@@ -2660,7 +2660,7 @@ func TestPoller_RetryReady_InvalidatesCompletedExecution(t *testing.T) {
 	now := time.Now()
 	issues := []*Issue{
 		{Number: 42, State: "open", Title: "Retry-ready with completed row",
-			Labels: []Label{{Name: "pilot"}, {Name: LabelRetryReady}},
+			Labels:    []Label{{Name: "pilot"}, {Name: LabelRetryReady}},
 			CreatedAt: now.Add(-1 * time.Hour)},
 	}
 
@@ -3036,6 +3036,71 @@ func TestPoller_CheckForNewIssues_DoesNotSupersedeWhenParentNotDone(t *testing.T
 
 	if got := atomic.LoadInt32(&dispatches); got != 1 {
 		t.Errorf("dispatched %d times, want 1 (parent closed but not done — should dispatch)", got)
+	}
+}
+
+// GH-3513: A sub-issue with an OPEN pilot/GH-N PR must never be superseded,
+// even when the parent is closed + pilot-done — the open PR is direct evidence
+// its implementation is still in flight (the parent close may be premature).
+func TestPoller_CheckForNewIssues_DoesNotSupersedeWithOpenPR(t *testing.T) {
+	subIssue := &Issue{
+		Number: 202,
+		Title:  "Sub-issue with live PR",
+		Body:   "Parent: GH-102\n\nSome work.",
+		State:  "open",
+		Labels: []Label{{Name: "pilot"}},
+	}
+	parent := &Issue{
+		Number: 102,
+		Title:  "Epic",
+		State:  "closed",
+		Labels: []Label{{Name: "pilot"}, {Name: LabelDone}},
+	}
+	openPR := &PullRequest{
+		Number: 900,
+		State:  "open",
+		Head:   PRRef{Ref: "pilot/GH-202"},
+	}
+
+	var (
+		dispatches  int32
+		closedIssue int32
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/owner/repo/issues":
+			_ = json.NewEncoder(w).Encode([]*Issue{subIssue})
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/owner/repo/issues/102":
+			_ = json.NewEncoder(w).Encode(parent)
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/owner/repo/issues/202":
+			_ = json.NewEncoder(w).Encode(subIssue)
+		case r.Method == http.MethodGet && r.URL.Path == "/repos/owner/repo/pulls":
+			_ = json.NewEncoder(w).Encode([]*PullRequest{openPR})
+		case r.Method == http.MethodPatch && r.URL.Path == "/repos/owner/repo/issues/202":
+			atomic.AddInt32(&closedIssue, 1)
+			_, _ = w.Write([]byte(`{}`))
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second,
+		WithOnIssue(func(ctx context.Context, issue *Issue) error {
+			atomic.AddInt32(&dispatches, 1)
+			return nil
+		}),
+	)
+	poller.checkForNewIssues(context.Background())
+	poller.WaitForActive()
+
+	if got := atomic.LoadInt32(&closedIssue); got != 0 {
+		t.Errorf("sub-issue was closed %d times, want 0 (open PR must veto supersession)", got)
+	}
+	if got := atomic.LoadInt32(&dispatches); got != 1 {
+		t.Errorf("dispatched %d times, want 1 (open PR means work in flight — fall through to dispatch)", got)
 	}
 }
 

@@ -2028,6 +2028,29 @@ func (p *Poller) skipSupersededByParent(ctx context.Context, issue *Issue) bool 
 		return false
 	}
 
+	// GH-3513 incident: pilot-done on the parent proves only that the parent
+	// ISSUE was closed, not that this child's work merged — premature parent
+	// closes (partial native sub-issue links) otherwise cascade into discarding
+	// live work. An open pilot/GH-N PR for this child is direct evidence its
+	// implementation is still in flight; never supersede over it. Fail open on
+	// lookup errors for the same reason as the parent GET above.
+	branch := fmt.Sprintf("pilot/GH-%d", issue.Number)
+	if openPR, perr := p.client.FindOpenPRByBranch(ctx, p.owner, p.repo, branch); perr != nil {
+		p.logger.Warn("Failed to check for open PR before superseding, falling through to normal dispatch",
+			slog.Int("issue", issue.Number),
+			slog.String("branch", branch),
+			slog.Any("error", perr),
+		)
+		return false
+	} else if openPR {
+		p.logger.Info("Not superseding sub-issue: open PR exists for its branch",
+			slog.Int("issue", issue.Number),
+			slog.Int("parent", parentNum),
+			slog.String("branch", branch),
+		)
+		return false
+	}
+
 	p.logger.Info("Auto-closing sub-issue: parent epic already shipped",
 		slog.Int("issue", issue.Number),
 		slog.Int("parent", parentNum),
