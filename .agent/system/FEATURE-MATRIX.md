@@ -1,6 +1,6 @@
 # Pilot Feature Matrix
 
-**Last Updated:** 2026-06-10 (v2.151.0)
+**Last Updated:** 2026-06-04 (v2.151.0)
 
 ## Legend
 
@@ -578,4 +578,4 @@ quality:
 | `IsTaskShipped` predicate | v2.151.x | autopilot | Cross-site invariant preventing double-dispatch (TASK-296 / GH-3091) |
 | Ghost-SHA guard | v2.151.x | executor | Fail-closed when commit_sha already on base branch (TASK-300 / GH-3099) |
 | Merge→done race window closed | v2.163.0 | autopilot + adapters/github | `Controller.SetOnIssueDone` fires `MarkProcessed` on all pollers at PR-merge, preventing phantom re-dispatch during label propagation lag (TASK-321 PR-4 / GH-3271) |
-| Discord chat → studio-sdk bridge (M7 Phase 8) | v2.176.0 | adapters/discord + cmd/pilot | Swapped bespoke Gateway wiring for `sdkDiscord.New(cfg).NewChatBridge`; `Handler.HandleMessage` shims `core.MessageEvent` → `comms.IncomingMessage`; outbound via `sdkshim.MessengerToBridge` (GH-3490) |
+| Decomposed-child base-branch pinning | v2.184.x | executor | Resolve `BaseBranch` from main-repo git context before worktree creation; decomposed children never PR against a sibling branch (GH-3540) |
