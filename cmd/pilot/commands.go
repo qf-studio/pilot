@@ -2255,6 +2255,16 @@ func checkForUpdates() {
 	}
 }
 
+// scopedProjectPath maps the --dashboard-scope flag value to the project path
+// used for metrics filtering. "all" returns "" (no filter); anything else
+// (including the default "project" and the empty string) returns projectPath.
+func scopedProjectPath(scope, projectPath string) string {
+	if scope == "all" {
+		return ""
+	}
+	return projectPath
+}
+
 // runDashboardMode runs the TUI dashboard with live task updates
 func runDashboardMode(p *pilot.Pilot, cfg *config.Config, gwProgram *tea.Program, gwMonitor *executor.Monitor, gwRunner *executor.Runner, projectPath string) error {
 	// Suppress slog output to prevent corrupting TUI display (GH-164)
