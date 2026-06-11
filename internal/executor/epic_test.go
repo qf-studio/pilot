@@ -2838,3 +2838,114 @@ func TestIsParentDoneSkip(t *testing.T) {
 		}
 	}
 }
+
+// TestSubIssueBody_ParentLineInjection covers TASK-364 Hole 4: subIssueBody
+// must stamp Parent: programmatically and strip any model-emitted Parent: lines
+// or autopilot-meta blocks from the description so the assembled body carries
+// exactly one human-readable parent reference and exactly one meta marker.
+func TestSubIssueBody_ParentLineInjection(t *testing.T) {
+	// Same pattern used by internal/adapters/github/grouping.go ParseParentIssueNumber.
+	parentRefRe := regexp.MustCompile(`(?m)^Parent:\s*\S+`)
+
+	tests := []struct {
+		name            string
+		parentID        string
+		description     string
+		wantParentCount int    // expected number of "Parent: ..." lines in assembled body
+		wantMetaCount   int    // expected number of <!--autopilot-meta blocks
+		wantDescSnippet string // snippet that must appear verbatim in the body
+	}{
+		{
+			name:            "clean description unchanged",
+			parentID:        "GH-42",
+			description:     "Implement the store layer filter.",
+			wantParentCount: 1,
+			wantMetaCount:   1,
+			wantDescSnippet: "Implement the store layer filter.",
+		},
+		{
+			name:            "description with Parent: GH-201 yields exactly one Parent: line",
+			parentID:        "GH-201",
+			description:     "Add the feature.\n\nParent: GH-201",
+			wantParentCount: 1,
+			wantMetaCount:   1,
+			wantDescSnippet: "Add the feature.",
+		},
+		{
+			name:            "model-emitted autopilot-meta block stripped, programmatic one kept",
+			parentID:        "GH-42",
+			description:     "Do the work.\n\n<!--autopilot-meta\nparent: GH-999\ninherited-spec: true\n-->\n\nParent: GH-999",
+			wantParentCount: 1,
+			wantMetaCount:   1,
+			wantDescSnippet: "Do the work.",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			body := subIssueBody(tc.parentID, tc.description)
+
+			gotParents := parentRefRe.FindAllString(body, -1)
+			if len(gotParents) != tc.wantParentCount {
+				t.Errorf("Parent: line count = %d, want %d; body = %q",
+					len(gotParents), tc.wantParentCount, body)
+			}
+
+			gotMeta := strings.Count(body, "<!--autopilot-meta")
+			if gotMeta != tc.wantMetaCount {
+				t.Errorf("<!--autopilot-meta block count = %d, want %d; body = %q",
+					gotMeta, tc.wantMetaCount, body)
+			}
+
+			if !strings.Contains(body, tc.wantDescSnippet) {
+				t.Errorf("body missing description snippet %q; body = %q",
+					tc.wantDescSnippet, body)
+			}
+		})
+	}
+}
+
+// TestSubIssueBody_ParseParentReturnsRealParent verifies that parsing the
+// assembled body extracts the real (programmatic) parent even when the
+// description carried a conflicting Parent: claim.
+func TestSubIssueBody_ParseParentReturnsRealParent(t *testing.T) {
+	// Inline the same (?m)^Parent:\s*(?:GH-|#)(\d+) pattern used by
+	// internal/adapters/github/grouping.go ParseParentIssueNumber.
+	parentNumRe := regexp.MustCompile(`(?m)^Parent:\s*(?:GH-|#)(\d+)`)
+
+	tests := []struct {
+		name        string
+		parentID    string
+		description string // may carry a conflicting Parent: claim
+		wantNum     int    // number that should be extracted
+	}{
+		{
+			name:        "real parent GH-42, description claims GH-999",
+			parentID:    "GH-42",
+			description: "Do the thing.\nParent: GH-999",
+			wantNum:     42,
+		},
+		{
+			name:        "no conflicting claim returns real parent",
+			parentID:    "GH-201",
+			description: "Implement the feature.",
+			wantNum:     201,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			body := subIssueBody(tc.parentID, tc.description)
+			m := parentNumRe.FindStringSubmatch(body)
+			if len(m) < 2 {
+				t.Fatalf("no Parent: GH-NNN reference found in body; body = %q", body)
+			}
+			var num int
+			_, _ = fmt.Sscanf(m[1], "%d", &num)
+			if num != tc.wantNum {
+				t.Errorf("extracted parent number = %d, want %d; match = %q",
+					num, tc.wantNum, m[0])
+			}
+		})
+	}
+}
