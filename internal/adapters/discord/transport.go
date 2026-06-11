@@ -175,7 +175,7 @@ func (g *GatewayClient) Listen(ctx context.Context) (<-chan GatewayEvent, error)
 
 	out := make(chan GatewayEvent, 64)
 
-	go func() {
+	logging.SafeGo("discord-transport", func() {
 		defer close(out)
 
 		for {
@@ -245,7 +245,7 @@ func (g *GatewayClient) Listen(ctx context.Context) (<-chan GatewayEvent, error)
 				return
 			}
 		}
-	}()
+	})
 
 	return out, nil
 }
@@ -262,7 +262,7 @@ func (g *GatewayClient) StartListening(ctx context.Context) (<-chan GatewayEvent
 		return nil, fmt.Errorf("initial connect: %w", err)
 	}
 
-	go func() {
+	logging.SafeGo("discord-transport", func() {
 		defer close(out)
 
 		const (
@@ -363,7 +363,7 @@ func (g *GatewayClient) StartListening(ctx context.Context) (<-chan GatewayEvent
 				}
 			}
 		}
-	}()
+	})
 
 	return out, nil
 }

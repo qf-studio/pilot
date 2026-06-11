@@ -76,10 +76,10 @@ func (r *Runner) RunAll(ctx context.Context, taskID string) (*CheckResults, erro
 		var wg sync.WaitGroup
 		for i, gate := range r.config.Gates {
 			wg.Add(1)
-			go func(idx int, g *Gate) {
+			logging.SafeGo("quality-runner", func() {
 				defer wg.Done()
-				results.Results[idx] = r.runGate(ctx, g)
-			}(i, gate)
+				results.Results[i] = r.runGate(ctx, gate)
+			})
 		}
 		wg.Wait()
 	} else {

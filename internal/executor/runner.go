@@ -3315,17 +3315,17 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 		if runSelfReview {
 			r.saveLogEntry(task.ID, "info", "Running self-review...")
 			wg.Add(1)
-			go func() {
+			logging.SafeGo("executor-runner", func() {
 				defer wg.Done()
 				if err := r.runSelfReview(ctx, task, state); err != nil {
 					selfReviewErr = err
 				}
-			}()
+			})
 		}
 
 		if runIntentJudge {
 			wg.Add(1)
-			go func() {
+			logging.SafeGo("executor-runner", func() {
 				defer wg.Done()
 				log.Info("Intent judge running",
 					slog.String("task_id", task.ID),
@@ -3333,7 +3333,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 				)
 				r.reportProgress(task.ID, "Intent Check", 96, "Verifying diff matches intent...")
 				intentVerdict, intentErr = r.intentJudge.Judge(ctx, task.Title, task.Description, intentDiff)
-			}()
+			})
 		}
 
 		wg.Wait()

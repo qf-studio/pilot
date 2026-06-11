@@ -149,13 +149,13 @@ func (h *Handler) cleanupLoop(ctx context.Context) {
 	// Create a context that's also cancelled by stopCh
 	cctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	go func() {
+	logging.SafeGo("slack-handler", func() {
 		select {
 		case <-h.stopCh:
 			cancel()
 		case <-cctx.Done():
 		}
-	}()
+	})
 	if h.commsHandler != nil {
 		h.commsHandler.CleanupLoop(cctx)
 	}

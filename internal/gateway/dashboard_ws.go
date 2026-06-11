@@ -77,7 +77,7 @@ func (s *Server) handleDashboardWebSocket(w http.ResponseWriter, r *http.Request
 
 	// Read pump: drain client messages (none expected) and detect disconnect.
 	done := make(chan struct{})
-	go func() {
+	logging.SafeGo("gateway-dashboard-ws", func() {
 		defer close(done)
 		for {
 			if _, _, err := conn.ReadMessage(); err != nil {
@@ -87,7 +87,7 @@ func (s *Server) handleDashboardWebSocket(w http.ResponseWriter, r *http.Request
 				return
 			}
 		}
-	}()
+	})
 
 	// Write pump: stream new entries and send pings.
 	ticker := time.NewTicker(wsPingInterval)

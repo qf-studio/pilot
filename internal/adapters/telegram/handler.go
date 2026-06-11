@@ -264,13 +264,13 @@ func (h *Handler) cleanupLoop(ctx context.Context) {
 	defer h.wg.Done()
 	cctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	go func() {
+	logging.SafeGo("telegram-handler", func() {
 		select {
 		case <-h.stopCh:
 			cancel()
 		case <-cctx.Done():
 		}
-	}()
+	})
 	if h.commsHandler != nil {
 		h.commsHandler.CleanupLoop(cctx)
 	}

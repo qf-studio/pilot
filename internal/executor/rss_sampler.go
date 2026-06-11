@@ -3,6 +3,8 @@ package executor
 import (
 	"context"
 	"time"
+
+	"github.com/qf-studio/pilot/internal/logging"
 )
 
 // RSSSample holds peak and final RSS readings from a subprocess.
@@ -17,7 +19,7 @@ type RSSSample struct {
 // `ps -o rss=`; rss_sampler_other.go is a no-op that always returns zero.
 func StartRSSSampler(ctx context.Context, pid int, interval time.Duration) <-chan RSSSample {
 	ch := make(chan RSSSample, 1)
-	go func() {
+	logging.SafeGo("executor-rss-sampler", func() {
 		var peak int
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
@@ -36,6 +38,6 @@ func StartRSSSampler(ctx context.Context, pid int, interval time.Duration) <-cha
 				}
 			}
 		}
-	}()
+	})
 	return ch
 }

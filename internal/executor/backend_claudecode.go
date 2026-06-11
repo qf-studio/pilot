@@ -462,7 +462,7 @@ func (b *ClaudeCodeBackend) executeWithFromPR(ctx context.Context, opts ExecuteO
 	// Heartbeat monitor goroutine
 	heartbeatCtx, cancelHeartbeat := context.WithCancel(context.Background())
 	defer cancelHeartbeat()
-	go func() {
+	logging.SafeGo("executor-backend-claudecode", func() {
 		ticker := time.NewTicker(HeartbeatCheckInterval)
 		defer ticker.Stop()
 		for {
@@ -504,12 +504,12 @@ func (b *ClaudeCodeBackend) executeWithFromPR(ctx context.Context, opts ExecuteO
 				}
 			}
 		}
-	}()
+	})
 
 	// Watchdog goroutine: hard kill after absolute timeout (GH-882)
 	// This is a safety net for processes that ignore context cancellation.
 	if opts.WatchdogTimeout > 0 {
-		go func() {
+		logging.SafeGo("executor-backend-claudecode", func() {
 			select {
 			case <-cmdDone:
 				// Command completed normally, watchdog not needed
@@ -542,12 +542,12 @@ func (b *ClaudeCodeBackend) executeWithFromPR(ctx context.Context, opts ExecuteO
 					)
 				}
 			}
-		}()
+		})
 	}
 
 	// Read stdout (stream-json events)
 	wg.Add(1)
-	go func() {
+	logging.SafeGo("executor-backend-claudecode", func() {
 		defer wg.Done()
 		scanner := bufio.NewScanner(stdout)
 		// Increase buffer size for large JSON events
@@ -607,11 +607,11 @@ func (b *ClaudeCodeBackend) executeWithFromPR(ctx context.Context, opts ExecuteO
 				result.Model = event.Model
 			}
 		}
-	}()
+	})
 
 	// Read stderr
 	wg.Add(1)
-	go func() {
+	logging.SafeGo("executor-backend-claudecode", func() {
 		defer wg.Done()
 		scanner := bufio.NewScanner(stderr)
 		for scanner.Scan() {
@@ -621,10 +621,10 @@ func (b *ClaudeCodeBackend) executeWithFromPR(ctx context.Context, opts ExecuteO
 				fmt.Printf("   [err] %s\n", line)
 			}
 		}
-	}()
+	})
 
 	// Monitor context for timeout and handle hard kill
-	go func() {
+	logging.SafeGo("executor-backend-claudecode", func() {
 		select {
 		case <-cmdDone:
 			// Command completed normally, nothing to do
@@ -668,7 +668,7 @@ func (b *ClaudeCodeBackend) executeWithFromPR(ctx context.Context, opts ExecuteO
 				}
 			}
 		}
-	}()
+	})
 
 	// Wait for output readers
 	wg.Wait()

@@ -13,6 +13,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/qf-studio/pilot/internal/logging"
 )
 
 // Manager handles webhook delivery to configured endpoints.
@@ -75,13 +77,13 @@ func (m *Manager) Dispatch(ctx context.Context, event *Event) []DeliveryResult {
 		}
 
 		wg.Add(1)
-		go func(ep *EndpointConfig) {
+		logging.SafeGo("webhooks-manager", func() {
 			defer wg.Done()
-			result := m.deliver(ctx, ep, event)
+			result := m.deliver(ctx, endpoint, event)
 			m.mu.Lock()
 			results = append(results, result)
 			m.mu.Unlock()
-		}(endpoint)
+		})
 	}
 
 	wg.Wait()
