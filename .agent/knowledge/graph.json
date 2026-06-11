@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "updated": "2026-06-09",
+  "updated": "2026-06-11",
   "nodes": {
     "concepts": {
       "pilot-architecture": {
@@ -120,18 +120,6 @@
         "description": "Per-execution git worktree isolation",
         "related": [
           "executor"
-        ]
-      },
-      "autopilot-release": {
-        "label": "Autopilot Release Pipeline",
-        "description": "Controller stages CI->merge->tag->release; reconcileOrphanPRs adopts open pilot/ PRs; handleReleasing cuts a per-PR release at HeadSHA with exact-SHA tag dedup.",
-        "files": [
-          "internal/autopilot/controller.go:1861",
-          "internal/autopilot/controller.go:2434"
-        ],
-        "related": [
-          "orchestrator",
-          "gateway"
         ]
       }
     },
@@ -514,30 +502,119 @@
         "file": ".agent/knowledge/memories/learnings/learn_task359_layer1_shipped.md"
       },
       "mem-028": {
-        "type": "pitfall",
-        "summary": "Hand-merging a pilot/GH-* PR while the daemon runs makes the autopilot reconciler adopt it and cut a spurious per-PR release at the PR's own commit (exact-SHA dedup misses a tag on a descendant commit). 2026-06-09: manual v2.177.0 tag at #3498 -> controller cut v2.178.0 at #3494's ancestor commit, wrongly 'Latest'. Use fix/feat branch names or stop the daemon before hand-merging. FIXED in v2.179.0 (#3506): handleReleasing now dedups ancestor-of-tag via tagCoveringCommit()+CompareStatus(). Aftermath: the deleted v2.178.0 left a phantom binary that blocked pilot upgrade (see mem-029).",
-        "incident": "2026-06-09: manually merged #3494/95/97/98 + one manual v2.177.0 tag; only #3494 (pilot/ branch) was adopted; controller released it as spurious v2.178.0 (ancestor of v2.177.0). Cleaned up: deleted v2.178.0 release+tag, reverted version.ts (PR #3502).",
-        "severity": "high",
+        "type": "learning",
+        "summary": "When grep for an alleged write API in internal/ returns zero, the root cause is external (config/another bot/GitHub workflow) — don't draft a Pilot fix",
         "concepts": [
-          "autopilot-release",
-          "orchestrator",
-          "worktree"
+          "task-investigation",
+          "github-adapter",
+          "board-source"
         ],
-        "memory_file": ".agent/knowledge/memories/pitfalls/bug_manual_merge_spurious_release.md",
+        "confidence": 0.9,
         "created": "2026-06-09",
-        "confidence": 1.0
+        "file": ".agent/knowledge/memories/learnings/learn_verify_write_callsite_before_fix.md",
+        "origin_task": "TASK-360"
       },
       "mem-029": {
-        "type": "pitfall",
-        "summary": "Phantom binary version blocks `pilot upgrade`. make build bakes VERSION from `git describe --tags`; a binary built while a tag existed keeps that version after the tag is deleted. `pilot upgrade check` only updates when latest release > embedded version, so a phantom >= latest pins the daemon forever (--force doesn't bypass the version gate). 2026-06-09: daemon `Pilot 2.178.0` (built from the since-deleted spurious v2.178.0) refused to upgrade to real Latest v2.177.0, stranding the #3506 fix. Fix: cut N+1 (v2.179.0) — NOT N (equal still no-ops) and NOT a plain rebuild (git describe -> v2.177.0-N-gSHA pre-release sorts below v2.177.0 -> downgrades to fix-less release).",
+        "type": "learning",
+        "summary": "For ad-hoc gh CLI writes to qf-studio (project board edits, etc.) use Pilot's PAT from ~/.pilot/config.yaml via GH_TOKEN env — OAuth refresh is silently blocked by SAML SSO",
         "concepts": [
-          "hot-upgrade",
-          "autopilot-release",
-          "git-operations"
+          "github-adapter",
+          "auth",
+          "operational"
         ],
-        "confidence": 1.0,
+        "confidence": 0.95,
         "created": "2026-06-09",
-        "file": ".agent/knowledge/memories/pitfalls/bug_phantom_version_blocks_upgrade.md"
+        "file": ".agent/knowledge/memories/learnings/learn_check_pilot_pat_before_gh_refresh.md",
+        "origin_task": "TASK-360"
+      },
+      "mem-030": {
+        "type": "pitfall",
+        "summary": "maybeCloseParentIssue trusted native sub-issue open-count alone; partial LinkSubIssue coverage makes count hit 0 while unlinked siblings are open — parent closes pilot-done with no PR-merge verification (GH-3513). Fixed PR #3527: native 0 must be confirmed by text search.",
+        "concepts": [
+          "autopilot",
+          "decomposition",
+          "pilot-done",
+          "premature-close",
+          "sub-issues"
+        ],
+        "confidence": 0.9,
+        "created": "2026-06-10",
+        "file": ".agent/knowledge/memories/pitfalls/bug_premature_parent_close_partial_links.md",
+        "origin_task": "TASK-361"
+      },
+      "mem-031": {
+        "type": "pitfall",
+        "summary": "skipSupersededByParent superseded live children off parent.State==closed && pilot-done label — no merge verification; orphaned complete green PRs in GH-3513. Fixed PR #3527: open pilot/GH-N PR vetoes supersession.",
+        "concepts": [
+          "autopilot",
+          "poller",
+          "pilot-superseded",
+          "label-trust",
+          "sub-issues"
+        ],
+        "confidence": 0.9,
+        "created": "2026-06-10",
+        "file": ".agent/knowledge/memories/pitfalls/bug_false_supersession_label_trust.md",
+        "origin_task": "TASK-361"
+      },
+      "mem-032": {
+        "type": "pitfall",
+        "summary": "inherited-spec:true children fetch the parent issue as their spec and re-implement the FULL feature — N redundant colliding PRs per epic (GH-3513). Fixed PR #3527 with a scope fence in subIssueBody(); sibling-branch PR base routing still unfixed.",
+        "concepts": [
+          "decomposition",
+          "inherited-spec",
+          "executor",
+          "prompt-scope",
+          "epic"
+        ],
+        "confidence": 0.85,
+        "created": "2026-06-10",
+        "file": ".agent/knowledge/memories/pitfalls/bug_inherited_spec_full_reimplement.md",
+        "origin_task": "TASK-361"
+      },
+      "mem-033": {
+        "type": "learning",
+        "summary": "Pilot done-states are claims, not evidence: GH-3513 read pilot-done with 0% of the feature on main; v2.181.0 tagged off a sibling branch (diverged from main). Verify the artifact: grep main for the expected signature, check pr.baseRefName, compare main...tag.",
+        "concepts": [
+          "verification",
+          "pilot-done",
+          "phantom-release",
+          "operational"
+        ],
+        "confidence": 0.9,
+        "created": "2026-06-10",
+        "file": ".agent/knowledge/memories/learnings/learn_verify_artifact_not_status.md",
+        "origin_task": "TASK-361"
+      },
+      "mem-034": {
+        "type": "pitfall",
+        "summary": "Subprocess without cmd.Dir: getPostExecutionSummary ran git in the daemon's CWD and reported the wrong repo's HEAD as the commit SHA — ghost guard then killed real worker commits (TASK-320 false no-ops) or recorded wrong-repo completed SHAs (TASK-355). One bug, both incident families. Fix v2.186.2: worktree git harvest first, summary pinned to executionPath. Lesson: every executor exec.Command must set cmd.Dir; never ask an LLM for what git answers deterministically.",
+        "concepts": [
+          "executor",
+          "commit-harvest",
+          "ghost-sha-guard",
+          "no-op-classification",
+          "subprocess-cwd"
+        ],
+        "confidence": 0.95,
+        "created": "2026-06-11",
+        "file": ".agent/knowledge/memories/pitfalls/bug_subprocess_cwd_sha_harvest.md",
+        "origin_task": "TASK-320"
+      },
+      "mem-035": {
+        "type": "learning",
+        "summary": "GH-201 'OAuth loop' ghost issues (#3562-64, #3576) were created by the TEST SUITE: TestCreateSubIssues_ProceedsWhenNoChildren drives CreateSubIssues past the dedup guard with fixture parent GH-201 and executionPath='' — createSubIssuesViaGitHub has no dryRun guard, so authed gh creates real issues; sibling tests spawn the real claude binary. Teammate/shared-PAT attribution was wrong: tests stamp the same autopilot-meta markers and bypass the DB (zero rows proves test path, not remote actor). Lessons: stub the exec boundary in tests; dryRun must guard every side-effecting path; verify the spawner not the signature. Fix: #3579.",
+        "concepts": [
+          "executor",
+          "testing",
+          "decomposition",
+          "attribution",
+          "gh-cli"
+        ],
+        "confidence": 0.95,
+        "created": "2026-06-11",
+        "file": ".agent/knowledge/memories/learnings/learn_test_suite_live_fire_ghost_issues.md",
+        "origin_task": "TASK-292"
       }
     }
   },
@@ -703,29 +780,39 @@
       "type": "supersedes"
     },
     {
-      "from": "mem-028",
-      "to": "autopilot-release",
-      "type": "concerns"
+      "from": "mem-030",
+      "to": "mem-031",
+      "type": "related"
     },
     {
-      "from": "mem-028",
-      "to": "orchestrator",
-      "type": "concerns"
+      "from": "mem-030",
+      "to": "mem-032",
+      "type": "related"
     },
     {
-      "from": "mem-029",
-      "to": "mem-028",
-      "type": "caused-by"
+      "from": "mem-031",
+      "to": "mem-033",
+      "type": "related"
     },
     {
-      "from": "mem-029",
-      "to": "mem-025",
-      "type": "related-to"
-    },
-    {
-      "from": "mem-028",
+      "from": "mem-033",
       "to": "mem-029",
-      "type": "led-to"
+      "type": "related"
+    },
+    {
+      "from": "mem-034",
+      "to": "mem-033",
+      "type": "applies"
+    },
+    {
+      "from": "mem-035",
+      "to": "mem-034",
+      "type": "related"
+    },
+    {
+      "from": "mem-035",
+      "to": "mem-033",
+      "type": "applies"
     }
   ]
 }

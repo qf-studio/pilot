@@ -1,6 +1,6 @@
 # TASK-355: Board-sourced execution no-op'd, recorded `completed` with the wrong-repo commit SHA
 
-**Status:** open — **scope narrowed 2026-06-01** (TASK-319 #12 smoke test refuted the project_path hypothesis)
+**Status:** 🎯 **ROOT-CAUSED 2026-06-11, fix in review — PR [#3571](https://github.com/qf-studio/pilot/pull/3571)** (shared root cause with TASK-320 B2): `getPostExecutionSummary` (runner.go) spawned `claude` with no `cmd.Dir` → its `git log -1` ran in the **daemon's CWD** and reported the **daemon repo's HEAD** as the commit SHA. That is exactly run `afb3b68d`'s `ee238476` ("pilot daemon's own HEAD") below: foreign SHA → ghost-guard `merge-base` errors in the studio-sdk worktree → fail-open → recorded `completed` with the wrong-repo SHA. Fix: worktree git harvest before the LLM summary + `cmd.Dir = executionPath`. Close this task when #3571 ships and a board-sourced no-op records either a real same-repo SHA or a clean no-op without a foreign SHA.
 **Priority:** P1 — false-positive completion is the TASK-320/321 class; corrupts the lifecycle
 **Severity:** high (executor correctness)
 **Pilot:** ⚠️ **MANUAL candidate** — self-modifying executor/no-op core (TASK-320 B2 / TASK-323 precedent)

@@ -1,18 +1,18 @@
 # TASK-284: Scope TUI Dashboard to a Single Project
 
-**Status**: ready (decisions resolved, awaiting handoff to Pilot)
+**Status**: ✅ SHIPPED to main 2026-06-10 — PR [#3523](https://github.com/qf-studio/pilot/pull/3523) squash-merged (hand-merge, daemon down, artifact-verified: store sigs 3/3 + `runDashboardMode(projectPath)` on main). Subset PR #3519 closed superseded. Release pending: next daemon release (≥v2.182.0) carries it and supersedes phantom v2.181.0. Incident history → TASK-361. Unblocks TASK-285.
 **Priority**: P2
-**Estimated Effort**: M (5.5-7 person-hours)
+**Estimated Effort**: M (6-7.5 person-hours)
 **Risk Level**: Low
 
 ## Problem
 
 When the user runs `pilot start -p <path> --dashboard ...`, only the execution side (which project's adapters poll, which issues run) and the git-graph panel are scoped to `<path>`. The dashboard's metrics cards — recent executions, lifetime tokens/cost, lifetime task counts, 7-day sparklines, in-flight task list — aggregate across **all** projects in the SQLite store. Users running pilot in a multi-project setup cannot see per-project numbers without dropping into `pilot metrics summary --projects <path>`.
 
-Evidence (from research, navigator-research agent):
-- `internal/dashboard/tui.go:592` — `model.SetProjectPath(projectPath)` is wired but only used by the git-graph panel.
-- `internal/dashboard/tui.go:575,583,595,652,834,860,870` — store calls have no project filter.
-- `cmd/pilot/commands.go:2269` — `collectTasks()` returns all `TaskState`s; `TaskState.ProjectPath` is populated but unused as a filter.
+Evidence (re-verified against `main` 2026-06-09 — line anchors refreshed):
+- `internal/dashboard/tui.go:713` — `SetProjectPath(projectPath)` sets `m.projectPath` + `m.defaultProjectPath` (field at :438); `defaultProjectPath` is currently read only at :783 by the git-graph path resolver.
+- `internal/dashboard/tui.go:580,588,600` (`hydrateFromStore`) and `:845,872,882` (`storeRefreshCmd`) — store calls have no project filter; `loadMetricsHistory` (:658) builds a `MetricsQuery` without `Projects` (query at :667).
+- `cmd/pilot/commands.go:2281` — `collectTasks()` returns all `TaskState`s; `TaskState.ProjectPath` is populated (`internal/executor/monitor.go:37`) but unused as a filter. ⚠️ `projectPath` is **not** in scope inside `runDashboardMode` (:2259) — see Step 4.
 
 ## Approach (one paragraph)
 
@@ -24,11 +24,11 @@ Three store method signatures change. All additive: empty `projectPath` = existi
 
 | Method | Old | New | File:line |
 |---|---|---|---|
-| GetRecentExecutions | `(limit int)` | `(limit int, projectPath string)` | `internal/memory/store.go:626` |
-| GetLifetimeTokens | `()` | `(projectPath string)` | `internal/memory/store.go:1649` |
-| GetLifetimeTaskCounts | `()` | `(projectPath string)` | `internal/memory/store.go:1677` |
+| GetRecentExecutions | `(limit int)` | `(limit int, projectPath string)` | `internal/memory/store.go:714` |
+| GetLifetimeTokens | `()` | `(projectPath string)` | `internal/memory/store.go:1776` |
+| GetLifetimeTaskCounts | `()` | `(projectPath string)` | `internal/memory/store.go:1818` |
 
-`GetDailyMetrics(MetricsQuery)` already accepts `Projects []string` — wire-up only at `tui.go:652`.
+`GetDailyMetrics(MetricsQuery)` already accepts `Projects []string` (`metrics.go:27-31`, branches at :309/:376/:441/:489/:533) — wire-up only at `tui.go:667`.
 
 Callers outside the TUI that need signature updates (all pass `""`, no behavior change):
 - `internal/gateway/dashboard.go` — `DashboardStore` interface + sites `:99, :104, :165, :219`
@@ -50,16 +50,17 @@ Callers outside the TUI that need signature updates (all pass `""`, no behavior 
 
 ### Step 3 — TUI wire-up (S, 1h)
 - `internal/dashboard/tui.go`:
-  - `hydrateFromStore` (~555-634): pass `m.defaultProjectPath` to all three lifetime queries
-  - `storeRefreshCmd` (~830-886): thread `projectPath` as a new parameter (it already takes `store *memory.Store`)
-  - `loadMetricsHistory` (~647-680): set `MetricsQuery.Projects` to `[]string{m.defaultProjectPath}` when non-empty
+  - `hydrateFromStore` (:561-651): pass `m.defaultProjectPath` to the three queries at :580 / :588 / :600
+  - `storeRefreshCmd` (:841-~903): thread `projectPath` as a new parameter (it already takes `store *memory.Store`); queries at :845 / :872 / :882
+  - `loadMetricsHistory` (:658-691): set `MetricsQuery.Projects` to `[]string{m.defaultProjectPath}` when non-empty (query built at :667)
 
-### Step 4 — Live task filter (S, 0.5h)
-- `cmd/pilot/commands.go` (~2269-2276): after gathering `allStates` from `gwMonitor.GetAll()` + `p.GetTaskStates()`, filter to states where `s.ProjectPath == projectPath` when `projectPath != ""`. `projectPath` already in scope.
+### Step 4 — Live task filter (S, 0.5-1h)
+- `cmd/pilot/commands.go` `collectTasks` (:2281, inside `runDashboardMode` at :2259): after gathering `allStates` from `gwMonitor.GetAll()` + `p.GetTaskStates()`, filter to states where `s.ProjectPath == projectPath` when `projectPath != ""`.
+- ⚠️ **`projectPath` is NOT in scope inside `runDashboardMode`** (this corrects the original plan). It lives in the `RunE` closure in `cmd/pilot/main.go` (:116) and is resolved to an absolute path before `runDashboardMode` is invoked (`main.go:1090`). **Add `projectPath string` as a new parameter to `runDashboardMode`** and pass it at the call site, then thread it into `collectTasks` and into the Step 3 `SetProjectPath`/store calls. Simpler than reading it back off the `gwProgram` model.
 
 ### Step 5 — Gateway HTTP API scoping (S, 1h) [OQ-4]
-- `internal/gateway/dashboard.go` — store the daemon's resolved `projectPath` on the `DashboardStore` struct at construction (plumb from `commands.go` where the dashboard service is wired up).
-- Use it as the `projectPath` argument to `GetRecentExecutions`, `GetLifetimeTokens`, `GetLifetimeTaskCounts` at `:99, :104, :165, :219` instead of `""`.
+- `internal/gateway/dashboard.go` — store the daemon's resolved `projectPath` on the `DashboardStore` struct at construction (plumb from `commands.go` where the dashboard service is wired up). Note: the `DashboardStore` **interface** (:20-28) declares 7 methods; only the 3 being changed need signature edits — the other 4 (`GetDailyMetrics`, `GetQueuedTasks`, `GetActiveExecutions`, `GetRecentLogs`) are untouched.
+- Use it as the `projectPath` argument to `GetLifetimeTokens` (:99), `GetLifetimeTaskCounts` (:104), `GetRecentExecutions` (:165, :219) instead of `""`. (Call sites verified unchanged 2026-06-09.)
 - `internal/gateway/dashboard_test.go` — add one test asserting endpoints scope when constructed with a non-empty `projectPath`.
 - No URL changes; no `?project=` query param. The daemon is single-project at startup, so all HTTP consumers inherit the same scope as the TUI.
 
@@ -95,20 +96,23 @@ Callers outside the TUI that need signature updates (all pass `""`, no behavior 
 | 1 — Store layer + tests | M (2-3h) |
 | 2 — Non-TUI caller updates | S (0.5h) |
 | 3 — TUI wire-up | S (1h) |
-| 4 — collectTasks filter | S (0.5h) |
+| 4 — collectTasks filter (+ `runDashboardMode` param) | S (0.5-1h) |
 | 5 — Gateway HTTP API scoping | S (1h) |
 | 6 — Eval panel `[global]` label | S (0.5h) |
-| **Total** | **M (5.5-7h)** |
+| **Total** | **M (6-7.5h)** |
 
 **Risk note**: Low. All changes are additive (empty string = existing behavior). The `DashboardStore` interface change is compile-time enforced — missed implementors fail to build before tests run.
 
 ## Key Files for Executor
 
-- `internal/memory/store.go` — :626, :1649, :1677
-- `internal/memory/store_test.go` — add tests after :78, :991, :1065
-- `internal/dashboard/tui.go` — :555-634, :647-680, :830-886
-- `cmd/pilot/commands.go` — :2269-2276
-- `internal/gateway/dashboard.go` — interface :20-27, call sites :99, :104, :165, :219
+_Anchors re-verified against `main` 2026-06-09. Store/TUI line numbers drift fast (store.go has grown ~140 lines since 2026-05-21) — confirm with `grep -n` before editing._
+
+- `internal/memory/store.go` — :714, :1776, :1818
+- `internal/memory/store_test.go` — add tests (line anchors stale; grep for the sibling tests)
+- `internal/dashboard/tui.go` — `hydrateFromStore` :561-651, `loadMetricsHistory` :658-691, `storeRefreshCmd` :841-~903; `SetProjectPath` :713, `defaultProjectPath` field :438
+- `cmd/pilot/commands.go` — `collectTasks` :2281 inside `runDashboardMode` :2259 (add `projectPath` param — see Step 4); call site `cmd/pilot/main.go:1090`, `projectPath` declared `main.go:116`
+- `internal/executor/monitor.go:37` — `TaskState.ProjectPath` (already populated)
+- `internal/gateway/dashboard.go` — interface :20-28 (7 methods), call sites :99, :104, :165, :219
 - `internal/gateway/dashboard_test.go` — :24, :28, :36
 - `desktop/app.go` — :74, :79, :131, :186
 - `internal/adapters/telegram/commands.go:418`

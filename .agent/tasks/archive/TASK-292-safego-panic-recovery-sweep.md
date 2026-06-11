@@ -1,6 +1,16 @@
 # TASK-292: `safeGo()` panic-recovery wrapper sweep
 
-**Wave:** 2 (S) · **⚠️ Merge AFTER TASK-293** (both touch `poller.go`) · **Audit ref:** §2 Action #2, §3.4 P1 (CS-3), §3.2 P1
+**Wave:** 2 (S) · ~~Merge AFTER TASK-293~~ ✅ TASK-293 done (archived, `84273ab8`) · **Audit ref:** §2 Action #2, §3.4 P1 (CS-3), §3.2 P1
+
+> **🚀 HANDED OFF 2026-06-11 — issue [#3573](https://github.com/qf-studio/pilot/issues/3573)** → **❌ FAILED ("quality gates failed after 2 auto-retries"), root-caused same day:**
+>
+> 1. **Test gate failed legitimately**: first-attempt `safego.go` had an unsynchronized `panicCounter` global → data race under the gate's `go test -race`. Worker self-validated with targeted `go test` (no `-race`, no full suite) + `golangci-lint --new-from-rev` → believed green. **Issue specs must require running the literal gate commands (`make test` = `go test -v -race ./...`).**
+> 2. **Lint gate failure is PRE-EXISTING on main**: clean `aee38002` (origin/main) fails `make lint` — 7 unused funcs in `cmd/pilot/handlers.go` (Jira/Asana/ADO `*WithResult` chain). Reproduced in a clean worktree. Didn't gate the run (`required: false`) but polluted retry feedback. Broken somewhere in `193dc2d6..aee38002`.
+> 3. **NEW DAEMON BUG — quality-retry CWD**: `runner.go:3045` re-invokes the backend with `ProjectPath: task.ProjectPath` (daemon repo root) instead of `executionPath` (worktree). Same bug at `:3324` (intent retry). TASK-323 fixed this for `:2375`/`:2739` but missed these two. Retry workers landed in the main repo root, followed interactive CLAUDE.md, created `.claude/worktrees/safego-sweep`, **reimplemented the task from scratch (correctly, with mutex)** — invisible to gates re-testing the unchanged temp worktree → guaranteed failure loop.
+> 4. **Retry feedback truncation**: gate output in the retry prompt is head-truncated — all PASS lines kept, the actual race/FAIL report cut off. Retry workers never saw what failed.
+> 5. Side finding: executor unit tests spawn the real `claude` binary (epic decomposition prompt, fire-and-forget) on every `make test` — needs mocking/guarding.
+>
+> **✅ SHIPPED 2026-06-11: PR [#3575](https://github.com/qf-studio/pilot/pull/3575) squash-merged to main (`141ba8a3`, 15:13Z)** — the retry worker's rewrite (`271df9ef`), recovered + merged manually after CI green (lint/test/secrets). Also fixes main's pre-existing lint break (deletes the 7 dead functions). #3573 auto-closed. Follow-ups filed: retry-CWD bug → [#3577](https://github.com/qf-studio/pilot/issues/3577), retry-feedback truncation → [#3578](https://github.com/qf-studio/pilot/issues/3578) (both MANUAL, no pilot label). TASK-320/355 live verification still pending — this run failed, so the next clean dispatched task carries it.
 
 ---
 

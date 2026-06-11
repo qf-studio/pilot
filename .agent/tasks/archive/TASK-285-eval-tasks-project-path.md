@@ -1,6 +1,12 @@
 # TASK-285: Add `project_path` to `eval_tasks` + scope eval panel
 
-**Status**: stub (blocked by TASK-284)
+**Status**: ✅ **FULLY SHIPPED 2026-06-10** — backend via PR [#3539](https://github.com/qf-studio/pilot/pull/3539); TUI wiring recovered via [#3552](https://github.com/qf-studio/pilot/issues/3552) → PR [#3561](https://github.com/qf-studio/pilot/pull/3561) (merged 15:20Z, CI green, artifact-verified: `tui.go:2446` passes `ProjectPath: m.defaultProjectPath`). Ready to archive. Incident history below preserved for reference.
+
+Original handoff record:
+- ✅ ON MAIN via child #3536 / PR [#3539](https://github.com/qf-studio/pilot/pull/3539) (base=main, artifact-verified): `project_path` column (CREATE + ALTER `store.go:337`), `EvalTaskFilter.ProjectPath` + WHERE clause, `SaveEvalTask`/`ExtractEvalTask` write path, autopilot write site (`controller.go` `ProjectPath: c.projectPath`), CLI `--project` on eval run/list/stats, eval_test coverage.
+- ❌ **MISSING**: TUI wiring — `internal/dashboard/tui.go:2446` still `ListEvalTasks(EvalTaskFilter{Limit: 200})`, no `m.defaultProjectPath`. Child #3537 was **falsely superseded** (closed "parent already shipped" — it hadn't; child had no PR so the #3527 open-PR veto couldn't fire).
+- 🚀 Recovery dispatched: standalone issue [#3552](https://github.com/qf-studio/pilot/issues/3552) (fresh issue, no `Parent:` line — reopening #3537 would be re-superseded on next poll since parent is closed+`pilot-done`). Verify per mem-033 on pilot-done: `tui.go` `ListEvalTasks` call passes `ProjectPath`, base==main.
+- Incident details → TASK-361 live-verification section; residual machinery holes → TASK-364.
 **Priority**: P3
 **Estimated Effort**: M (3-5 person-hours)
 **Risk Level**: Medium (schema migration on a populated table)
