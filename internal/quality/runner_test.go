@@ -631,6 +631,44 @@ func TestFormatErrorFeedback_TruncatesLongOutput(t *testing.T) {
 	}
 }
 
+func TestExtractFailureOutput_ShortPassthrough(t *testing.T) {
+	out := extractFailureOutput("--- FAIL: TestX\nshort output", 2000)
+	if out != "--- FAIL: TestX\nshort output" {
+		t.Errorf("short output must pass through unchanged, got %q", out)
+	}
+}
+
+func TestExtractFailureOutput_KeepsFailureLinesBeyondHead(t *testing.T) {
+	// 3000+ bytes of PASS noise followed by the actual failure — the old head
+	// truncation dropped everything that mattered (GH-3578).
+	noise := strings.Repeat("=== RUN   TestSomething\n--- PASS: TestSomething (0.01s)\n", 60)
+	failure := "--- FAIL: TestSafeGo_IncrementsCounter (0.05s)\n    safego_test.go:42: WARNING: DATA RACE\nFAIL\tgithub.com/qf-studio/pilot/internal/logging\t0.123s"
+	out := extractFailureOutput(noise+failure, 2000)
+
+	if !strings.Contains(out, "--- FAIL: TestSafeGo_IncrementsCounter") {
+		t.Errorf("extracted output must contain the FAIL line, got %q", out)
+	}
+	if !strings.Contains(out, "DATA RACE") {
+		t.Errorf("extracted output must contain the race report, got %q", out)
+	}
+	if strings.Count(out, "--- PASS") > 10 {
+		t.Errorf("extracted output should drop PASS noise, got %d PASS lines", strings.Count(out, "--- PASS"))
+	}
+}
+
+func TestExtractFailureOutput_TailFallbackWhenNoMarkers(t *testing.T) {
+	head := strings.Repeat("a", 2500)
+	tail := "the real summary lives at the end"
+	out := extractFailureOutput(head+"\n"+tail, 2000)
+
+	if !strings.Contains(out, tail) {
+		t.Errorf("tail fallback must keep the end of the output, got %q", out[:80])
+	}
+	if !strings.Contains(out, "head truncated") {
+		t.Error("tail fallback must carry a truncation notice")
+	}
+}
+
 func TestFormatErrorFeedback_NoFailedGates(t *testing.T) {
 	results := &CheckResults{
 		TaskID:    "all-passed",

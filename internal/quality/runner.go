@@ -327,20 +327,65 @@ func FormatErrorFeedback(results *CheckResults) string {
 
 		sb.WriteString(fmt.Sprintf("### %s Gate (FAILED)\n\n", result.GateName))
 		sb.WriteString("**Error Output:**\n```\n")
-
-		// Truncate output if too long
-		output := result.Output
-		maxLen := 2000
-		if len(output) > maxLen {
-			output = output[:maxLen] + "\n... (truncated)"
-		}
-		sb.WriteString(output)
+		sb.WriteString(extractFailureOutput(result.Output, 2000))
 		sb.WriteString("\n```\n\n")
 	}
 
 	sb.WriteString("Please fix these issues and ensure all quality gates pass.\n")
 
 	return sb.String()
+}
+
+// failureMarkerRE matches lines that carry the actual failure in gate output:
+// go test verdicts, race reports, panics, build/lint diagnostics.
+var failureMarkerRE = regexp.MustCompile(`^\s*(--- FAIL|FAIL\b|panic:|WARNING: DATA RACE|Error:|# )|\.go:\d+(:\d+)?: |race detected`)
+
+// extractFailureOutput reduces gate output to its failure-relevant portion.
+// go test prints failures and summaries AFTER potentially thousands of PASS
+// lines, so a head truncation hands the retry worker nothing but noise
+// (GH-3578). Lines matching failure markers are kept with trailing context;
+// when nothing matches, the tail is kept — that's where tools print summaries.
+func extractFailureOutput(output string, maxLen int) string {
+	if len(output) <= maxLen {
+		return output
+	}
+
+	lines := strings.Split(output, "\n")
+	const contextAfter = 6
+	keep := make([]bool, len(lines))
+	matched := false
+	for i, line := range lines {
+		if failureMarkerRE.MatchString(line) {
+			matched = true
+			for j := i; j < len(lines) && j <= i+contextAfter; j++ {
+				keep[j] = true
+			}
+		}
+	}
+
+	if !matched {
+		return "... (head truncated)\n" + output[len(output)-maxLen:]
+	}
+
+	var sb strings.Builder
+	skipping := false
+	for i, line := range lines {
+		if !keep[i] {
+			skipping = true
+			continue
+		}
+		if skipping {
+			sb.WriteString("...\n")
+			skipping = false
+		}
+		sb.WriteString(line)
+		sb.WriteByte('\n')
+		if sb.Len() >= maxLen {
+			sb.WriteString("... (truncated)")
+			break
+		}
+	}
+	return strings.TrimRight(sb.String(), "\n")
 }
 
 // ShouldRetry determines if gates should be retried with Claude

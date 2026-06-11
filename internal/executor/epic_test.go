@@ -893,12 +893,15 @@ func TestPlanEpicDefaultCommand(t *testing.T) {
 		modelRouter:       NewModelRouter(nil, nil),
 	}
 
-	// Use a short timeout so it doesn't hang if "claude" binary exists
+	// GH-3579: isolate PATH so the default "claude" command can never resolve.
+	// This test previously spawned a LIVE claude session (with the real
+	// decomposition prompt) on any machine where claude was installed.
+	t.Setenv("PATH", t.TempDir())
+
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
 	_, err = runner2.PlanEpic(ctx, task, task.ProjectPath)
-	// We expect either an error (binary not found) or timeout (binary exists but hangs)
 	if err == nil {
 		t.Fatal("PlanEpic with nil config should still attempt to run")
 	}
@@ -1196,6 +1199,7 @@ func TestCreateSubIssues_FallsBackToGitHubWhenNoAdapter(t *testing.T) {
 	// This test verifies the dispatch logic chooses GitHub path when SourceAdapter is empty.
 	// We test this by verifying the mock is NOT called, regardless of gh CLI outcome.
 	runner := NewRunner()
+	runner.dryRun = true // GH-3579: never let tests reach a live gh
 
 	mock := &mockSubIssueCreator{
 		Returns: []mockCreateIssueReturn{
@@ -1230,6 +1234,7 @@ func TestCreateSubIssues_FallsBackToGitHubWhenAdapterIsGitHub(t *testing.T) {
 	// This test verifies the dispatch logic chooses GitHub path when SourceAdapter is "github".
 	// We test this by verifying the mock is NOT called, regardless of gh CLI outcome.
 	runner := NewRunner()
+	runner.dryRun = true // GH-3579: never let tests reach a live gh
 
 	mock := &mockSubIssueCreator{
 		Returns: []mockCreateIssueReturn{
@@ -1265,6 +1270,7 @@ func TestCreateSubIssues_FallsBackToGitHubWhenNoCreator(t *testing.T) {
 	// This test verifies that when SubIssueCreator is nil, even with a non-GitHub
 	// SourceAdapter, we fall back to the GitHub path (and don't panic).
 	runner := NewRunner()
+	runner.dryRun = true // GH-3579: never let tests reach a live gh
 	// SubIssueCreator not set
 
 	plan := &EpicPlan{
@@ -1279,16 +1285,16 @@ func TestCreateSubIssues_FallsBackToGitHubWhenNoCreator(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	// Run in a non-existent directory to ensure gh CLI fails
-	_, err := runner.CreateSubIssues(ctx, plan, "/nonexistent/path")
-
-	// Should get an error from gh CLI, not from a nil creator panic
-	if err == nil {
-		t.Skip("gh CLI succeeded unexpectedly (test requires gh CLI to fail in non-repo dir)")
+	// GH-3579: with dryRun set, reaching the GitHub path returns (nil, nil)
+	// before any gh invocation. The assertion is that the nil creator falls
+	// through to the GitHub path without panicking — a non-nil error here
+	// would mean dispatch went somewhere else.
+	created, err := runner.CreateSubIssues(ctx, plan, "/nonexistent/path")
+	if err != nil {
+		t.Errorf("expected dry-run GitHub fallback to return nil error, got: %v", err)
 	}
-	// Verify it's a gh CLI error, not a nil pointer
-	if !strings.Contains(err.Error(), "failed to create issue") {
-		t.Errorf("Expected gh CLI error, got: %v", err)
+	if created != nil {
+		t.Errorf("expected no issues created in dry-run, got: %v", created)
 	}
 }
 
