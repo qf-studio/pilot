@@ -1208,6 +1208,7 @@ func (r *Runner) createSubIssuesViaAdapter(ctx context.Context, plan *EpicPlan) 
 // so every sibling re-implements the entire feature and the redundant PRs
 // collide. The fence pins the executor to this subtask's slice.
 func subIssueBody(parentID, description string) string {
+	description = sanitizeSubtaskDescription(description)
 	return fmt.Sprintf(`<!--autopilot-meta
 parent: %[1]s
 inherited-spec: true
@@ -1223,6 +1224,30 @@ Implement ONLY the slice described above. The parent issue %[1]s is decomposed
 into sibling sub-issues that cover the rest of its spec — consult the parent
 for context, but do NOT implement parts of it that fall outside this subtask.`,
 		parentID, description)
+}
+
+// sanitizeSubtaskDescription removes parent-reference artefacts that the
+// decomposing LLM may have echoed into a subtask description.
+//
+// Strips:
+//   - <!--autopilot-meta ... --> HTML comment blocks (subIssueBody re-stamps
+//     the correct one programmatically)
+//   - Bare "Parent: GH-N" / "Parent: #N" lines (subIssueBody re-stamps the
+//     correct programmatic reference)
+//
+// Without this, a model-emitted Parent: pointing at the wrong issue number
+// would survive into the final body and cause ParseParentIssueNumber to
+// return a stale or foreign parent — breaking epic grouping and the
+// inherited-spec bailout.
+var (
+	sanitizeMetaBlockRe  = regexp.MustCompile(`(?s)<!--autopilot-meta.*?-->`)
+	sanitizeParentLineRe = regexp.MustCompile(`(?m)^Parent:\s*(?:GH-|#)\d+[^\n]*\n?`)
+)
+
+func sanitizeSubtaskDescription(description string) string {
+	description = sanitizeMetaBlockRe.ReplaceAllString(description, "")
+	description = sanitizeParentLineRe.ReplaceAllString(description, "")
+	return strings.TrimSpace(description)
 }
 
 // createSubIssuesViaGitHub creates sub-issues using the gh CLI.
