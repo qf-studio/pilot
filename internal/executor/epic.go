@@ -951,6 +951,12 @@ func allChildrenDone(issues []CreatedIssue) bool {
 // Matches patterns like: https://github.com/owner/repo/issues/123
 var issueNumberRegex = regexp.MustCompile(`/issues/(\d+)`)
 
+// descSanitizeMetaRe strips model-emitted <!--autopilot-meta ... --> blocks.
+var descSanitizeMetaRe = regexp.MustCompile(`(?s)<!--autopilot-meta.*?-->`)
+
+// descSanitizeParentRe strips model-emitted "Parent: ..." lines.
+var descSanitizeParentRe = regexp.MustCompile(`(?m)^Parent:[ \t][^\n]*\n?`)
+
 // parseIssueNumber extracts the issue number from a GitHub issue URL.
 // Returns 0 if no issue number is found.
 func parseIssueNumber(url string) int {
@@ -1198,6 +1204,16 @@ func (r *Runner) createSubIssuesViaAdapter(ctx context.Context, plan *EpicPlan) 
 	return created, nil
 }
 
+// sanitizeDescription strips model-emitted autopilot-meta blocks and Parent:
+// lines from a subtask description before embedding it in a sub-issue body.
+// Without this, a model that copies boilerplate from its context would produce
+// duplicate autopilot-meta markers and/or conflicting Parent: references.
+func sanitizeDescription(description string) string {
+	s := descSanitizeMetaRe.ReplaceAllString(description, "")
+	s = descSanitizeParentRe.ReplaceAllString(s, "")
+	return strings.TrimSpace(s)
+}
+
 // subIssueBody assembles a decomposer-generated sub-issue body: the
 // autopilot-meta marker (GH-2695, lets spec_validator's inherited-spec bailout
 // recognise the issue), the parent reference, the subtask's planned slice, and
@@ -1222,7 +1238,7 @@ Parent: %[1]s
 Implement ONLY the slice described above. The parent issue %[1]s is decomposed
 into sibling sub-issues that cover the rest of its spec — consult the parent
 for context, but do NOT implement parts of it that fall outside this subtask.`,
-		parentID, description)
+		parentID, sanitizeDescription(description))
 }
 
 // createSubIssuesViaGitHub creates sub-issues using the gh CLI.
