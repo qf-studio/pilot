@@ -2838,3 +2838,90 @@ func TestIsParentDoneSkip(t *testing.T) {
 		}
 	}
 }
+
+// TestSanitizeSubtaskDescription verifies that model-emitted Parent: lines and
+// <!--autopilot-meta ... --> blocks are stripped from subtask descriptions before
+// they are embedded into sub-issue bodies.
+func TestSanitizeSubtaskDescription(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "plain description unchanged",
+			input: "Add rate limiting to the API endpoints",
+			want:  "Add rate limiting to the API endpoints",
+		},
+		{
+			name:  "strips bare Parent: GH-NNN line",
+			input: "Parent: GH-123\n\nAdd rate limiting to the API endpoints",
+			want:  "Add rate limiting to the API endpoints",
+		},
+		{
+			name:  "strips Parent: #NNN variant",
+			input: "Parent: #456\n\nFix the login bug",
+			want:  "Fix the login bug",
+		},
+		{
+			name:  "strips Parent: NNN (no prefix)",
+			input: "Some description\n\nParent: 789\n\nMore text",
+			want:  "Some description\n\nMore text",
+		},
+		{
+			name:  "case-insensitive: PARENT:",
+			input: "PARENT: GH-42\n\nDo the thing",
+			want:  "Do the thing",
+		},
+		{
+			name:  "strips autopilot-meta single-line block",
+			input: "<!--autopilot-meta parent: GH-1 inherited-spec: true -->\n\nDo the thing",
+			want:  "Do the thing",
+		},
+		{
+			name: "strips autopilot-meta multiline block",
+			input: `<!--autopilot-meta
+parent: GH-100
+inherited-spec: true
+-->
+
+Do the thing`,
+			want: "Do the thing",
+		},
+		{
+			name: "strips both autopilot-meta block and Parent: line",
+			input: `<!--autopilot-meta
+parent: GH-200
+inherited-spec: true
+-->
+
+Parent: GH-200
+
+Implement the feature`,
+			want: "Implement the feature",
+		},
+		{
+			name:  "collapses extra blank lines after stripping",
+			input: "First paragraph\n\nParent: GH-1\n\n\n\nSecond paragraph",
+			want:  "First paragraph\n\nSecond paragraph",
+		},
+		{
+			name:  "empty description stays empty",
+			input: "",
+			want:  "",
+		},
+		{
+			name:  "leading/trailing whitespace trimmed",
+			input: "\n\nParent: GH-5\n\nSome work\n\n",
+			want:  "Some work",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := sanitizeSubtaskDescription(tt.input)
+			if got != tt.want {
+				t.Errorf("sanitizeSubtaskDescription(%q)\n got:  %q\n want: %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}

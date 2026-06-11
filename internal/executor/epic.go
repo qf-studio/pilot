@@ -21,6 +21,19 @@ import (
 // "fix:", "feat(scope):", "chore(epic):" at the start of a title.
 var conventionalCommitPrefixRegex = regexp.MustCompile(`^(?i)(fix|feat|chore|docs|test|refactor|style|perf|ci|build|revert)(\([^)]+\))?:`)
 
+// parentLineRegex matches model-emitted "Parent: GH-NNN" / "Parent: #NNN" lines.
+// These are stripped from subtask descriptions by sanitizeSubtaskDescription before
+// subIssueBody stamps its own programmatic Parent: line, preventing duplicates.
+var parentLineRegex = regexp.MustCompile(`(?im)^\s*Parent:\s*(?:GH-|#)?\d+\s*$`)
+
+// autopilotMetaBlockRegex matches <!--autopilot-meta ... --> comment blocks (multiline).
+// Stripped from model-emitted descriptions so subIssueBody can stamp its own clean block.
+var autopilotMetaBlockRegex = regexp.MustCompile(`(?s)<!--autopilot-meta\b.*?-->`)
+
+// blankLineRunRegex matches three or more consecutive newlines (used to collapse gaps
+// left by sanitizeSubtaskDescription after removing lines/blocks).
+var blankLineRunRegex = regexp.MustCompile(`\n{3,}`)
+
 // subtaskActionVerbs is the allow-list of first words that identify a subtask
 // title as an action item (vs LLM analysis/prose). Kept intentionally broad to
 // cover normal engineering verbs without admitting analysis sentences.
@@ -1107,7 +1120,7 @@ func (r *Runner) createSubIssuesViaAdapter(ctx context.Context, plan *EpicPlan) 
 
 	for _, subtask := range plan.Subtasks {
 		// Build the issue body
-		body := subtask.Description
+		body := sanitizeSubtaskDescription(subtask.Description)
 		if plan.ParentTask.ID != "" {
 			body = subIssueBody(plan.ParentTask.ID, body)
 		}
@@ -1225,6 +1238,19 @@ for context, but do NOT implement parts of it that fall outside this subtask.`,
 		parentID, description)
 }
 
+// sanitizeSubtaskDescription strips model-emitted noise from a subtask description
+// before it is embedded into a sub-issue body via subIssueBody. Specifically:
+//   - <!--autopilot-meta ... --> blocks are removed (subIssueBody stamps its own)
+//   - "Parent: GH-NNN" / "Parent: #NNN" lines are removed (same reason)
+//
+// Runs of 3+ newlines left by removals are collapsed to a single blank line.
+func sanitizeSubtaskDescription(description string) string {
+	description = autopilotMetaBlockRegex.ReplaceAllString(description, "")
+	description = parentLineRegex.ReplaceAllString(description, "")
+	description = blankLineRunRegex.ReplaceAllString(description, "\n\n")
+	return strings.TrimSpace(description)
+}
+
 // createSubIssuesViaGitHub creates sub-issues using the gh CLI.
 // This is the original implementation and fallback path.
 //
@@ -1248,7 +1274,7 @@ func (r *Runner) createSubIssuesViaGitHub(ctx context.Context, plan *EpicPlan, e
 
 	for _, subtask := range plan.Subtasks {
 		// Build the issue body
-		body := subtask.Description
+		body := sanitizeSubtaskDescription(subtask.Description)
 		if plan.ParentTask != nil && plan.ParentTask.ID != "" {
 			body = subIssueBody(plan.ParentTask.ID, body)
 		}
