@@ -21,6 +21,12 @@ import (
 // "fix:", "feat(scope):", "chore(epic):" at the start of a title.
 var conventionalCommitPrefixRegex = regexp.MustCompile(`^(?i)(fix|feat|chore|docs|test|refactor|style|perf|ci|build|revert)(\([^)]+\))?:`)
 
+// parentLineRegex matches a model-emitted "Parent: GH-N" or "Parent: #N" line (GH-3582).
+var parentLineRegex = regexp.MustCompile(`(?im)^\s*parent:\s*(?:gh-|#)?\d+\s*$`)
+
+// autopilotMetaBlockRegex matches a <!--autopilot-meta ... --> block (GH-3582).
+var autopilotMetaBlockRegex = regexp.MustCompile(`(?s)<!--autopilot-meta.*?-->`)
+
 // subtaskActionVerbs is the allow-list of first words that identify a subtask
 // title as an action item (vs LLM analysis/prose). Kept intentionally broad to
 // cover normal engineering verbs without admitting analysis sentences.
@@ -1109,7 +1115,7 @@ func (r *Runner) createSubIssuesViaAdapter(ctx context.Context, plan *EpicPlan) 
 		// Build the issue body
 		body := subtask.Description
 		if plan.ParentTask.ID != "" {
-			body = subIssueBody(plan.ParentTask.ID, body)
+			body = subIssueBody(plan.ParentTask.ID, sanitizeSubtaskDescription(body))
 		}
 
 		// Wire DependsOn annotations into the body (GH-1794)
@@ -1198,6 +1204,16 @@ func (r *Runner) createSubIssuesViaAdapter(ctx context.Context, plan *EpicPlan) 
 	return created, nil
 }
 
+// sanitizeSubtaskDescription strips model-emitted Parent: lines and
+// autopilot-meta blocks from a planner-generated subtask description so that
+// subIssueBody's programmatic stamp is the sole parent reference in the body
+// (GH-3582 / TASK-364 Hole 4).
+func sanitizeSubtaskDescription(description string) string {
+	s := autopilotMetaBlockRegex.ReplaceAllString(description, "")
+	s = parentLineRegex.ReplaceAllString(s, "")
+	return strings.TrimSpace(s)
+}
+
 // subIssueBody assembles a decomposer-generated sub-issue body: the
 // autopilot-meta marker (GH-2695, lets spec_validator's inherited-spec bailout
 // recognise the issue), the parent reference, the subtask's planned slice, and
@@ -1250,7 +1266,7 @@ func (r *Runner) createSubIssuesViaGitHub(ctx context.Context, plan *EpicPlan, e
 		// Build the issue body
 		body := subtask.Description
 		if plan.ParentTask != nil && plan.ParentTask.ID != "" {
-			body = subIssueBody(plan.ParentTask.ID, body)
+			body = subIssueBody(plan.ParentTask.ID, sanitizeSubtaskDescription(body))
 		}
 
 		// Wire DependsOn annotations into the body (GH-1794)
