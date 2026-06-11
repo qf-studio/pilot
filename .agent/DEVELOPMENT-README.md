@@ -118,7 +118,7 @@ Disable via config: `executor.navigator.auto_init: false`
 
 ## Current State
 
-**Current Version:** v2.186.4 | full status in `.agent/system/FEATURE-MATRIX.md`
+**Current Version:** v2.186.5 | full status in `.agent/system/FEATURE-MATRIX.md`
 
 **Recent (v2.186.0–v2.186.3, June 10–11 2026):** **Decomposition integrity wave 2 + release-stage hardening + executor SHA-harvest fix + safeGo sweep + retry-machinery hardening — all SHIPPED.**
 - **v2.186.3 — safeGo sweep + retry hardening (June 11, PRs [#3575](https://github.com/qf-studio/pilot/pull/3575) + [#3580](https://github.com/qf-studio/pilot/pull/3580), both MANUAL-merged):** TASK-292 shipped — `logging.SafeGo` panic recovery on all 35 bare `internal/` goroutines + `pilot_panics_total{component}` (recovered from the failed #3573 run's retry-worker branch). Retry machinery: quality/intent retries now run in the worktree (GH-3577 — closes the structurally-unable-to-pass retry loop that burned #3573), gate feedback is failure-aware instead of head-truncated (GH-3578), `createSubIssuesViaGitHub` honors dryRun and tests can no longer live-fire gh/claude (GH-3579 — **the GH-201 "OAuth loop" ghosts were the test suite**, not a teammate PAT; mem-035). Also fixed the pre-existing main lint break (7 dead `cmd/pilot/handlers.go` functions).
