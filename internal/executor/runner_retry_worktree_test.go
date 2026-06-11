@@ -2,7 +2,10 @@ package executor
 
 import (
 	"context"
+	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -87,5 +90,100 @@ func TestRunner_NoCommitRetry_RunsInWorktree(t *testing.T) {
 	}
 	if !strings.Contains(retryPath, "pilot-worktree-") {
 		t.Errorf("retry ProjectPath %q should be the isolated worktree (contain 'pilot-worktree-')", retryPath)
+	}
+}
+
+// commitAndRecordBackend records the ProjectPath of every Execute call and
+// creates a real commit in that path, so the runner proceeds past the
+// no-commit checks into the quality-gate loop.
+type commitAndRecordBackend struct {
+	retryPathRecordingBackend
+	commits int
+}
+
+func (b *commitAndRecordBackend) Execute(ctx context.Context, opts ExecuteOptions) (*BackendResult, error) {
+	b.mu.Lock()
+	b.projectPaths = append(b.projectPaths, opts.ProjectPath)
+	b.commits++
+	n := b.commits
+	b.mu.Unlock()
+
+	fname := filepath.Join(opts.ProjectPath, fmt.Sprintf("change_%d.txt", n))
+	if err := os.WriteFile(fname, []byte("x"), 0o644); err != nil {
+		return nil, err
+	}
+	for _, args := range [][]string{{"add", "."}, {"commit", "-m", fmt.Sprintf("change %d", n)}} {
+		cmd := exec.CommandContext(ctx, "git", args...)
+		cmd.Dir = opts.ProjectPath
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return nil, fmt.Errorf("git %v: %v (%s)", args, err, out)
+		}
+	}
+	return &BackendResult{Success: true, Output: "done"}, nil
+}
+
+// failingQualityChecker always fails with ShouldRetry so the quality-gate
+// retry path fires.
+type failingQualityChecker struct{}
+
+func (c *failingQualityChecker) Check(_ context.Context) (*QualityOutcome, error) {
+	return &QualityOutcome{
+		Passed:        false,
+		ShouldRetry:   true,
+		RetryFeedback: "synthetic gate failure",
+		Attempt:       1,
+	}, nil
+}
+
+// TestRunner_QualityRetry_RunsInWorktree is the GH-3577 regression guard.
+//
+// Before the fix the quality-gate retry (and intent retry) passed
+// ProjectPath: task.ProjectPath — the daemon's repo root — so retry workers
+// executed outside the isolated worktree. Their fixes were invisible to the
+// gate loop re-testing the worktree, making quality retries structurally
+// unable to succeed, and the retry sessions ran loose in the user's real repo
+// (the GH-3573 incident: a retry reimplemented the whole task in a foreign
+// .claude/worktrees branch while gates kept failing against the worktree).
+func TestRunner_QualityRetry_RunsInWorktree(t *testing.T) {
+	localRepo, remoteRepo := setupTestRepoWithRemote(t)
+	defer func() { _ = os.RemoveAll(localRepo) }()
+	defer func() { _ = os.RemoveAll(remoteRepo) }()
+
+	backend := &commitAndRecordBackend{}
+	runner := NewRunnerWithBackend(backend)
+	runner.config = &BackendConfig{UseWorktree: true} // enable worktree isolation
+	runner.SetSkipPreflightChecks(true)
+	runner.SetRecordingEnabled(false)
+	runner.SetQualityCheckerFactory(func(taskID, projectPath string) QualityChecker {
+		return &failingQualityChecker{}
+	})
+
+	task := &Task{
+		ID:          "GH-3577",
+		Title:       "force a quality-gate retry in worktree mode",
+		Description: "gates always fail, so the quality retry fires",
+		ProjectPath: localRepo,
+		Branch:      "pilot/GH-3577",
+		CreatePR:    true,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	// The task fails (gates never pass) — we only care which path every
+	// backend invocation, including the quality retries, executed in.
+	_, _ = runner.Execute(ctx, task)
+
+	paths := backend.paths()
+	if len(paths) < 2 {
+		t.Fatalf("expected >=2 backend calls (initial + quality retry), got %d: %v", len(paths), paths)
+	}
+	for i, p := range paths {
+		if p == task.ProjectPath {
+			t.Errorf("backend call %d ran in task.ProjectPath %q; it must run in the worktree", i, p)
+		}
+		if !strings.Contains(p, "pilot-worktree-") {
+			t.Errorf("backend call %d ProjectPath %q should be the isolated worktree (contain 'pilot-worktree-')", i, p)
+		}
 	}
 }

@@ -1231,6 +1231,16 @@ for context, but do NOT implement parts of it that fall outside this subtask.`,
 // The TASK-286 / GH-3027 repo guardrail runs one level up in CreateSubIssues
 // (it must fire before queryRecentSubIssues, which also shells out to gh).
 func (r *Runner) createSubIssuesViaGitHub(ctx context.Context, plan *EpicPlan, executionPath string) ([]CreatedIssue, error) {
+	// GH-3579: dry-run must short-circuit BEFORE any gh invocation. Previously
+	// only the progress/close paths honored dryRun, so tests that set it still
+	// fired live `gh issue create` on machines with an authed gh — the source
+	// of the GH-201 fixture ghost issues (#3562-64, #3576).
+	if r.dryRun {
+		r.log.Info("dry-run: skipping createSubIssuesViaGitHub",
+			"subtasks", len(plan.Subtasks))
+		return nil, nil
+	}
+
 	var created []CreatedIssue
 
 	// Map subtask order → created GitHub issue number for dependency annotation (GH-1794)

@@ -3091,7 +3091,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 					feedbackAllowed, feedbackMCP := r.executionToolOptions()
 					retryResult, retryErr := r.backend.Execute(ctx, ExecuteOptions{
 						Prompt:        retryPrompt,
-						ProjectPath:   task.ProjectPath,
+						ProjectPath:   executionPath, // GH-3577: retry in the worktree, not the daemon's repo root
 						Verbose:       task.Verbose,
 						Model:         selectedModel,
 						Effort:        selectedEffort,
@@ -3370,7 +3370,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 					intentAllowed, intentMCP := r.executionToolOptions()
 					_, retryErr := r.backend.Execute(ctx, ExecuteOptions{
 						Prompt:        retryPrompt,
-						ProjectPath:   task.ProjectPath,
+						ProjectPath:   executionPath, // GH-3577: retry in the worktree, not the daemon's repo root
 						Verbose:       task.Verbose,
 						Model:         selectedModel,
 						Effort:        selectedEffort,
