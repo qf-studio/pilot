@@ -15,7 +15,7 @@
 | 4 — model-stamped `Parent:` refs | NOT covered — `subIssueBody()` should stamp `Parent:` programmatically and strip model-emitted lines | ❌ open (only residue) |
 | 5 — recovered children execute with empty prompts | NOT covered by wave 2 (the empty-description filter guards CREATION, not the `recoverExistingSubIssues` rehydration path) | ❌ open |
 
-**Remaining work**: Hole 4 (programmatic `Parent:` stamping), Hole 5 (rehydrate recovered children from issue body/DB), ops purge on teammate instances, PAT rotation/scoping. Live verification of wave 2 on next decomposed epic pending (checklist in TASK-361).
+**Remaining work — HANDED OFF 2026-06-11**: Hole 4 → pilot issue [#3582](https://github.com/qf-studio/pilot/issues/3582) (sanitize model-emitted `Parent:`/meta lines — programmatic stamping already shipped in wave 2, stripping is the residue); Hole 5 → pilot issue [#3583](https://github.com/qf-studio/pilot/issues/3583) (rehydrate recovered children + refuse empty-description execution). ~~Ops purge on teammate instances / PAT rotation~~ CANCELLED — the GH-201 feeder was the test suite (mem-035), killed in v2.186.3 (#3580); no teammate action needed. Live verification of wave 2 on next decomposed epic pending (checklist in TASK-361). These two runs on the v2.186.3 daemon double as TASK-320/355 live verification (real worker SHA + `completed`) and first live exercise of the fixed retry machinery (GH-3577/3578).
 
 ## Incident summary (all timestamps 2026-06-10 UTC, evidence on GitHub)
 
