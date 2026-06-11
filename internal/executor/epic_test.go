@@ -2820,6 +2820,122 @@ func TestRunner_Execute_EpicRejectsForeignParentPlan(t *testing.T) {
 	}
 }
 
+// TestSanitizeSubtaskDescription verifies that model-emitted parent artefacts
+// are stripped before the description is embedded in a sub-issue body (TASK-364
+// Hole 4).
+func TestSanitizeSubtaskDescription(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "clean description unchanged",
+			in:   "Implement the store layer.",
+			want: "Implement the store layer.",
+		},
+		{
+			name: "strips bare Parent: GH- line",
+			in:   "Parent: GH-201\n\nImplement the store layer.",
+			want: "Implement the store layer.",
+		},
+		{
+			name: "strips bare Parent: # line",
+			in:   "Parent: #201\n\nImplement the store layer.",
+			want: "Implement the store layer.",
+		},
+		{
+			name: "strips multiline autopilot-meta block",
+			in:   "<!--autopilot-meta\nparent: GH-999\ninherited-spec: true\n-->\n\nImplement the store layer.",
+			want: "Implement the store layer.",
+		},
+		{
+			name: "strips inline autopilot-meta block",
+			in:   "<!--autopilot-meta parent: GH-999 -->\n\nImplement the store layer.",
+			want: "Implement the store layer.",
+		},
+		{
+			name: "strips both meta block and bare Parent line",
+			in:   "<!--autopilot-meta\nparent: GH-999\n-->\n\nParent: GH-999\n\nImplement the store layer.",
+			want: "Implement the store layer.",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := sanitizeSubtaskDescription(tt.in)
+			if got != tt.want {
+				t.Errorf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestSubIssueBody_ExactlyOneParentLine verifies that subIssueBody produces
+// exactly one programmatic Parent: line even when the input description
+// contains model-emitted parent references.
+func TestSubIssueBody_ExactlyOneParentLine(t *testing.T) {
+	parentLineRe := regexp.MustCompile(`(?m)^Parent:\s*GH-\d+`)
+
+	tests := []struct {
+		name        string
+		parentID    string
+		description string
+	}{
+		{
+			name:        "description with bare Parent: line claiming wrong parent",
+			parentID:    "GH-300",
+			description: "Parent: GH-201\n\nImplement the store layer.",
+		},
+		{
+			name:        "description with autopilot-meta block claiming wrong parent",
+			parentID:    "GH-300",
+			description: "<!--autopilot-meta\nparent: GH-999\ninherited-spec: true\n-->\n\nImplement the store layer.",
+		},
+		{
+			name:        "clean description",
+			parentID:    "GH-300",
+			description: "Implement the store layer.",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := subIssueBody(tt.parentID, tt.description)
+
+			matches := parentLineRe.FindAllString(body, -1)
+			if len(matches) != 1 {
+				t.Errorf("expected exactly 1 Parent: line, got %d; body = %q", len(matches), body)
+				return
+			}
+			if !strings.Contains(matches[0], tt.parentID) {
+				t.Errorf("Parent: line references wrong parent; got %q, want %q in it", matches[0], tt.parentID)
+			}
+			if !strings.Contains(body, "Implement the store layer.") {
+				t.Errorf("body missing description content; body = %q", body)
+			}
+		})
+	}
+}
+
+// TestSubIssueBody_ParseParentExtractsCorrectParent verifies that the
+// parentRefRegex (mirroring github.ParseParentIssueNumber) extracts the
+// programmatic parent even when the description contained a conflicting
+// model-emitted reference.
+func TestSubIssueBody_ParseParentExtractsCorrectParent(t *testing.T) {
+	parentRefRe := regexp.MustCompile(`(?m)^Parent:\s*(?:GH-|#)(\d+)`)
+
+	description := "Parent: GH-201\n\nImplement the store layer."
+	body := subIssueBody("GH-300", description)
+
+	matches := parentRefRe.FindStringSubmatch(body)
+	if len(matches) < 2 {
+		t.Fatalf("no Parent: reference found in body; body = %q", body)
+	}
+	if matches[1] != "300" {
+		t.Errorf("ParseParentIssueNumber equivalent returns %s, want 300; body = %q", matches[1], body)
+	}
+}
+
 // GH-3513 wave 2: IsParentDoneSkip must detect the ErrParentDone guard through
 // the wrapped text it acquires crossing the runner/dispatcher/DB boundaries.
 func TestIsParentDoneSkip(t *testing.T) {
