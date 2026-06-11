@@ -255,11 +255,11 @@ func (s *Server) Start(ctx context.Context) error {
 	logging.WithComponent("gateway").Info("Gateway starting", slog.String("addr", addr))
 
 	errCh := make(chan error, 1)
-	go func() {
+	logging.SafeGo("gateway-server", func() {
 		if err := s.server.ListenAndServe(); err != http.ErrServerClosed {
 			errCh <- err
 		}
-	}()
+	})
 
 	select {
 	case err := <-errCh:

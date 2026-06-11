@@ -5,6 +5,8 @@ import (
 	"log/slog"
 	"sync"
 	"time"
+
+	"github.com/qf-studio/pilot/internal/logging"
 )
 
 // Channel is the interface for alert delivery channels
@@ -124,20 +126,20 @@ func (d *Dispatcher) Dispatch(ctx context.Context, alert *Alert, channelNames []
 		}
 
 		wg.Add(1)
-		go func(ch Channel, chName string) {
+		logging.SafeGo("alerts-dispatcher", func() {
 			defer wg.Done()
-			result := d.sendToChannel(ctx, ch, alert)
-			result.ChannelName = chName
+			result := d.sendToChannel(ctx, channel, alert)
+			result.ChannelName = name
 			resultCh <- result
-		}(channel, name)
+		})
 	}
 	d.mu.RUnlock()
 
 	// Wait for all deliveries to complete
-	go func() {
+	logging.SafeGo("alerts-dispatcher", func() {
 		wg.Wait()
 		close(resultCh)
-	}()
+	})
 
 	// Collect results
 	for result := range resultCh {

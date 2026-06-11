@@ -126,18 +126,18 @@ func (p *ParallelRunner) ExecuteResearchPhase(ctx context.Context, task *Task) (
 		}
 
 		wg.Add(1)
-		go func(subTask researchTask) {
+		logging.SafeGo("executor-parallel", func() {
 			defer wg.Done()
-			result := p.executeSubagent(researchCtx, task.ProjectPath, subTask)
+			result := p.executeSubagent(researchCtx, task.ProjectPath, rt)
 			results <- result
-		}(rt)
+		})
 	}
 
 	// Wait for all research to complete
-	go func() {
+	logging.SafeGo("executor-parallel", func() {
 		wg.Wait()
 		close(results)
-	}()
+	})
 
 	// Collect results
 	research := &ResearchResult{

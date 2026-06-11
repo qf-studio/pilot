@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/qf-studio/pilot/internal/logging"
 )
 
 const (
@@ -134,15 +136,15 @@ func (p *CloudflareProvider) Start(ctx context.Context) (string, error) {
 	urlChan := make(chan string, 1)
 	errChan := make(chan error, 1)
 
-	go func() {
+	logging.SafeGo("tunnel-cloudflare", func() {
 		scanner := bufio.NewScanner(stdout)
 		for scanner.Scan() {
 			line := scanner.Text()
 			p.logger.Debug("cloudflared stdout", "line", line)
 		}
-	}()
+	})
 
-	go func() {
+	logging.SafeGo("tunnel-cloudflare", func() {
 		scanner := bufio.NewScanner(stderr)
 		for scanner.Scan() {
 			line := scanner.Text()
@@ -162,7 +164,7 @@ func (p *CloudflareProvider) Start(ctx context.Context) (string, error) {
 				return
 			}
 		}
-	}()
+	})
 
 	select {
 	case url := <-urlChan:

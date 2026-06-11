@@ -701,12 +701,12 @@ func (p *Pilot) Start() error {
 
 	// Start gateway
 	p.wg.Add(1)
-	go func() {
+	logging.SafeGo("pilot-core", func() {
 		defer p.wg.Done()
 		if err := p.gateway.Start(p.ctx); err != nil {
 			logging.WithComponent("pilot").Error("Gateway error", slog.Any("error", err))
 		}
-	}()
+	})
 
 	// Start Telegram polling if handler is initialized (GH-349)
 	if p.telegramHandler != nil {
@@ -723,12 +723,12 @@ func (p *Pilot) Start() error {
 	// Start Slack Socket Mode if handler is initialized (GH-652)
 	if p.slackHandler != nil {
 		p.wg.Add(1)
-		go func() {
+		logging.SafeGo("pilot-core", func() {
 			defer p.wg.Done()
 			if err := p.slackHandler.StartListening(p.ctx); err != nil {
 				logging.WithComponent("pilot").Error("Slack Socket Mode error", slog.Any("error", err))
 			}
-		}()
+		})
 		logging.WithComponent("pilot").Info("Slack Socket Mode started in gateway mode")
 	}
 
