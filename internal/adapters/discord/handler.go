@@ -167,13 +167,13 @@ func (h *Handler) Stop() {
 func (h *Handler) cleanupLoop(ctx context.Context) {
 	defer h.wg.Done()
 	cctx, cancel := context.WithCancel(ctx)
-	go func() {
+	logging.SafeGo("discord-handler", func() {
 		select {
 		case <-h.stopCh:
 			cancel()
 		case <-cctx.Done():
 		}
-	}()
+	})
 	if h.commsHandler != nil {
 		h.commsHandler.CleanupLoop(cctx)
 	}

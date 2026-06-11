@@ -448,10 +448,10 @@ func (d *Dispatcher) ensureWorker(projectPath string) {
 
 	// Start worker in background
 	d.wg.Add(1)
-	go func() {
+	logging.SafeGo("executor-dispatcher", func() {
 		defer d.wg.Done()
 		worker.Run(d.ctx)
-	}()
+	})
 
 	d.log.Info("Started project worker", slog.String("project", projectPath))
 

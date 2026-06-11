@@ -1,6 +1,6 @@
 # Pilot Feature Matrix
 
-**Last Updated:** 2026-06-10 (v2.151.0)
+**Last Updated:** 2026-06-04 (v2.151.0)
 
 ## Legend
 
@@ -574,8 +574,7 @@ quality:
 | Config file mode 0600 | v2.149.4 | config | `~/.pilot/config.yaml` world-readable fixed (TASK-290 / GH-3058) |
 | Branch-aware post-CI monitoring | v2.149.4 | autopilot | Uses `ResolvedEnv().Branch` instead of hardcoded `main` (TASK-291 / GH-3059) |
 | Repo allowlist Phase B | v2.149.0 | adapters/github | `CreatePilotIssue` validates against allowlist (GH-3047) |
-| `safeGo()` panic-recovery wrapper | v2.150.x | executor + adapters | All goroutine spawns wrapped (TASK-292) |
+| `SafeGo()` panic-recovery wrapper | v2.187.0 | logging + all packages | `internal/logging.SafeGo` wraps all 35 bare goroutines; `pilot_panics_total{component}` counter in `/metrics` (TASK-292 / GH-3573) |
 | `IsTaskShipped` predicate | v2.151.x | autopilot | Cross-site invariant preventing double-dispatch (TASK-296 / GH-3091) |
 | Ghost-SHA guard | v2.151.x | executor | Fail-closed when commit_sha already on base branch (TASK-300 / GH-3099) |
 | Merge→done race window closed | v2.163.0 | autopilot + adapters/github | `Controller.SetOnIssueDone` fires `MarkProcessed` on all pollers at PR-merge, preventing phantom re-dispatch during label propagation lag (TASK-321 PR-4 / GH-3271) |
-| Decomposed-child base-branch pinning | v2.184.x | executor | Resolve `BaseBranch` from main-repo git context before worktree creation; decomposed children never PR against a sibling branch (GH-3540) |

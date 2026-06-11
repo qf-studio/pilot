@@ -4,16 +4,46 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/qf-studio/pilot/internal/alerts"
 	"github.com/qf-studio/pilot/internal/autopilot"
+	"github.com/qf-studio/pilot/internal/logging"
 )
+
+// goPanicCounter is the concrete PanicCounter wired into the logging package.
+// It accumulates per-component panic counts and is read by WritePrometheus.
+type goPanicCounter struct {
+	mu     sync.Mutex
+	counts map[string]int64
+}
+
+func newGoPanicCounter() *goPanicCounter {
+	return &goPanicCounter{counts: make(map[string]int64)}
+}
+
+func (c *goPanicCounter) Inc(component string) {
+	c.mu.Lock()
+	c.counts[component]++
+	c.mu.Unlock()
+}
+
+func (c *goPanicCounter) snapshot() map[string]int64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make(map[string]int64, len(c.counts))
+	for k, v := range c.counts {
+		out[k] = v
+	}
+	return out
+}
 
 // PrometheusExporter formats metrics for Prometheus scraping.
 type PrometheusExporter struct {
 	metricsSource MetricsSource
 	alertsSource  AlertMetricsSource
+	panicCtr      *goPanicCounter
 }
 
 // MetricsSource provides metrics data for the exporter.
@@ -28,9 +58,11 @@ type AlertMetricsSource interface {
 	AlertSnapshot() alerts.AlertMetricsSnapshot
 }
 
-// NewPrometheusExporter creates a new Prometheus exporter.
+// NewPrometheusExporter creates a new Prometheus exporter and wires the panic counter.
 func NewPrometheusExporter(source MetricsSource) *PrometheusExporter {
-	return &PrometheusExporter{metricsSource: source}
+	ctr := newGoPanicCounter()
+	logging.SetPanicCounter(ctr)
+	return &PrometheusExporter{metricsSource: source, panicCtr: ctr}
 }
 
 // SetAlertsSource wires an alert metrics source into the exporter.
@@ -208,6 +240,15 @@ func (e *PrometheusExporter) WritePrometheus(w io.Writer) error {
 		"CI wait duration",
 		hist.CIWaitDurations,
 		[]float64{30, 60, 120, 300, 600, 900, 1200, 1800, 3600}) // 30s, 1m, 2m, 5m, 10m, 15m, 20m, 30m, 1h
+
+	// pilot_panics_total — goroutine panics recovered by SafeGo, per component
+	writeHelp(w, "pilot_panics_total", "Total goroutine panics recovered by SafeGo, by component")
+	writeType(w, "pilot_panics_total", "counter")
+	if e.panicCtr != nil {
+		for component, count := range e.panicCtr.snapshot() {
+			writeCounter(w, "pilot_panics_total", count, "component", component)
+		}
+	}
 
 	// --- Alert metrics (optional; only emitted when an AlertMetricsSource is wired) ---
 	if e.alertsSource != nil {

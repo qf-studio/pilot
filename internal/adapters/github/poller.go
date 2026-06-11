@@ -1412,7 +1412,7 @@ func (p *Poller) checkForNewIssues(ctx context.Context) {
 		}
 		p.activeWg.Add(1)
 		p.wgMu.Unlock()
-		go func(issue *Issue) {
+		logging.SafeGo("github-poller", func() {
 			defer p.activeWg.Done()
 			defer func() { <-p.semaphore }() // release slot
 
@@ -1493,7 +1493,7 @@ func (p *Poller) checkForNewIssues(ctx context.Context) {
 					p.unmarkProcessed(issue.Number)
 				}
 			}
-		}(issue)
+		})
 	}
 }
 

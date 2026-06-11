@@ -1,0 +1,40 @@
+package logging
+
+import (
+	"log/slog"
+	"runtime/debug"
+)
+
+// PanicCounter is implemented by the metrics layer to count goroutine panics by component.
+// The logging package holds no implementation to avoid import cycles — wire via SetPanicCounter.
+type PanicCounter interface {
+	Inc(component string)
+}
+
+var panicCounter PanicCounter // nil until wired; recovery still happens regardless
+
+// SetPanicCounter wires a counter into SafeGo. Called once at startup from gateway.
+func SetPanicCounter(c PanicCounter) {
+	panicCounter = c
+}
+
+// SafeGo runs fn in a new goroutine. A deferred recover catches any panic, logs it
+// at error level with a full stack trace, and increments the pilot_panics_total counter
+// (when wired). Recovery is unconditional — the counter is optional.
+func SafeGo(component string, fn func()) {
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				stack := debug.Stack()
+				slog.Error("goroutine panic recovered",
+					"component", component,
+					"panic", r,
+					"stack", string(stack))
+				if panicCounter != nil {
+					panicCounter.Inc(component)
+				}
+			}
+		}()
+		fn()
+	}()
+}

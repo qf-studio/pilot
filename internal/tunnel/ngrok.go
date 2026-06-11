@@ -10,6 +10,8 @@ import (
 	"os/exec"
 	"sync"
 	"time"
+
+	"github.com/qf-studio/pilot/internal/logging"
 )
 
 const (
@@ -92,12 +94,12 @@ func (p *NgrokProvider) Start(ctx context.Context) (string, error) {
 	}
 
 	// Log stderr in background
-	go func() {
+	logging.SafeGo("tunnel-ngrok", func() {
 		scanner := bufio.NewScanner(stderr)
 		for scanner.Scan() {
 			p.logger.Debug("ngrok", "line", scanner.Text())
 		}
-	}()
+	})
 
 	// Wait for tunnel to be ready
 	url, err := p.waitForURL(ctx)

@@ -281,7 +281,7 @@ func (m *Manager) SubmitApprovalRequest(ctx context.Context, req *Request) (stri
 	m.mu.Unlock()
 
 	defaultAction := stageConfig.DefaultAction
-	go func() {
+	logging.SafeGo("approval-manager", func() {
 		defer cancel()
 		select {
 		case resp, ok := <-responseCh:
@@ -327,7 +327,7 @@ func (m *Manager) SubmitApprovalRequest(ctx context.Context, req *Request) (stri
 					slog.String("default_action", string(defaultAction)))
 			}
 		}
-	}()
+	})
 
 	m.log.Info("async approval request submitted",
 		slog.String("request_id", req.ID),
