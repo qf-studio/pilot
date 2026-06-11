@@ -299,8 +299,8 @@ func TestExecuteSubIssues_CallbackNotFiredOnFailure(t *testing.T) {
 	}
 
 	issues := []CreatedIssue{
-		{Number: 40, Subtask: PlannedSubtask{Title: "Good task", Order: 1}},
-		{Number: 41, Subtask: PlannedSubtask{Title: "Bad task", Order: 2}},
+		{Number: 40, Subtask: PlannedSubtask{Title: "Good task", Description: "Good task description", Order: 1}},
+		{Number: 41, Subtask: PlannedSubtask{Title: "Bad task", Description: "Bad task description", Order: 2}},
 	}
 
 	err := runner.ExecuteSubIssues(context.Background(), parent, issues, parent.ProjectPath, "")
@@ -335,7 +335,7 @@ func TestExecuteSubIssues_CallbackNotFiredOnExecError(t *testing.T) {
 
 	parent := &Task{ID: "GH-90", Title: "[epic] Exec error"}
 	issues := []CreatedIssue{
-		{Number: 50, Subtask: PlannedSubtask{Title: "Task", Order: 1}},
+		{Number: 50, Subtask: PlannedSubtask{Title: "Task", Description: "Task description", Order: 1}},
 	}
 
 	err := runner.ExecuteSubIssues(context.Background(), parent, issues, parent.ProjectPath, "")

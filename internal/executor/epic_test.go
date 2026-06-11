@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -2440,10 +2441,13 @@ func TestRunner_Execute_EpicRecoversThenExecutesOpenChildren(t *testing.T) {
 	}
 
 	// Mix of open and closed children — only the open one should be executed.
+	// GH-3583: Subtask must be populated so the empty-description guard doesn't skip.
 	r.recoverSubIssuesFn = func(_ context.Context, _, _ string) ([]CreatedIssue, error) {
 		return []CreatedIssue{
-			{Number: 20, Identifier: "20", URL: "https://github.com/o/r/issues/20", State: "closed"},
-			{Number: 21, Identifier: "21", URL: "https://github.com/o/r/issues/21", State: "open"},
+			{Number: 20, Identifier: "20", URL: "https://github.com/o/r/issues/20", State: "closed",
+				Subtask: PlannedSubtask{Title: "feat(gateway): add websocket handler", Description: "Implement upgrade handler in internal/gateway/server.go"}},
+			{Number: 21, Identifier: "21", URL: "https://github.com/o/r/issues/21", State: "open",
+				Subtask: PlannedSubtask{Title: "feat(adapters): add telegram bot", Description: "Wire bot client in internal/adapters/telegram/bot.go"}},
 		}, nil
 	}
 
@@ -3063,5 +3067,180 @@ func TestSubIssueBody_ParseParentReturnsRealParent(t *testing.T) {
 					num, tc.wantNum, m[0])
 			}
 		})
+	}
+}
+
+// writeFakeGhJSON writes a fake "gh" binary to fakeBin that prints jsonPayload
+// to stdout. Returns the path to the script.
+func writeFakeGhJSON(t *testing.T, fakeBin string, jsonPayload []byte) {
+	t.Helper()
+	jsonFile := filepath.Join(fakeBin, "response.json")
+	if err := os.WriteFile(jsonFile, jsonPayload, 0o644); err != nil {
+		t.Fatalf("write json file: %v", err)
+	}
+	script := filepath.Join(fakeBin, "gh")
+	if err := os.WriteFile(script, []byte(fmt.Sprintf("#!/bin/sh\ncat %s\n", jsonFile)), 0o755); err != nil {
+		t.Fatalf("write fake gh: %v", err)
+	}
+}
+
+// TestRecoverExistingSubIssues_PopulatesSubtask verifies that after a daemon
+// restart, recovered sub-issues have non-empty Subtask.Title and
+// Subtask.Description sourced from the GitHub issue JSON (GH-3583).
+func TestRecoverExistingSubIssues_PopulatesSubtask(t *testing.T) {
+	tests := []struct {
+		name             string
+		issueTitle       string
+		issueBody        string
+		wantTitleContain string
+		wantDescContain  string
+	}{
+		{
+			name:             "full subIssueBody wrapper",
+			issueTitle:       "feat(auth): implement JWT service",
+			issueBody:        subIssueBody("GH-100", "Implement JWT tokens and refresh flow."),
+			wantTitleContain: "JWT service",
+			wantDescContain:  "Implement JWT tokens",
+		},
+		{
+			name:             "plain body without wrapper",
+			issueTitle:       "fix: handle nil pointer in handler",
+			issueBody:        "Fix the nil pointer dereference in the request handler.",
+			wantTitleContain: "nil pointer",
+			wantDescContain:  "nil pointer dereference",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fakeBin := t.TempDir()
+			raw := []map[string]interface{}{
+				{
+					"number": 42,
+					"url":    "https://github.com/owner/repo/issues/42",
+					"state":  "open",
+					"title":  tt.issueTitle,
+					"body":   tt.issueBody,
+				},
+			}
+			jsonPayload, err := json.Marshal(raw)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			writeFakeGhJSON(t, fakeBin, jsonPayload)
+			origPATH := os.Getenv("PATH")
+			t.Setenv("PATH", fakeBin+string(filepath.ListSeparator)+origPATH)
+
+			issues, err := recoverExistingSubIssues(context.Background(), "", "GH-100")
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(issues) != 1 {
+				t.Fatalf("expected 1 issue, got %d", len(issues))
+			}
+			got := issues[0]
+			if got.Subtask.Title == "" {
+				t.Error("Subtask.Title must not be empty after recovery")
+			}
+			if !strings.Contains(got.Subtask.Title, tt.wantTitleContain) {
+				t.Errorf("Subtask.Title = %q, want it to contain %q", got.Subtask.Title, tt.wantTitleContain)
+			}
+			if got.Subtask.Description == "" {
+				t.Error("Subtask.Description must not be empty after recovery")
+			}
+			if !strings.Contains(got.Subtask.Description, tt.wantDescContain) {
+				t.Errorf("Subtask.Description does not contain %q; got: %q", tt.wantDescContain, got.Subtask.Description)
+			}
+		})
+	}
+}
+
+// TestExecuteSubIssues_SkipsEmptyDescription verifies that a recovered child
+// with an empty Subtask.Description is skipped — backend Execute is never
+// called for it — rather than launching a doomed empty-prompt run (GH-3583).
+func TestExecuteSubIssues_SkipsEmptyDescription(t *testing.T) {
+	var execCalled bool
+	runner := newTestRunnerWithExecFunc(func(ctx context.Context, task *Task) (*ExecutionResult, error) {
+		execCalled = true
+		return &ExecutionResult{Success: true, PRUrl: "https://github.com/owner/repo/pull/1"}, nil
+	})
+
+	issues := []CreatedIssue{
+		{
+			Number: 55,
+			URL:    "https://github.com/owner/repo/issues/55",
+			Subtask: PlannedSubtask{
+				Title:       "feat: something",
+				Description: "", // empty — simulates unhydrated recovery
+			},
+		},
+	}
+	parent := &Task{ID: "GH-50", Title: "[epic] parent"}
+
+	err := runner.ExecuteSubIssues(context.Background(), parent, issues, "", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if execCalled {
+		t.Error("backend Execute must NOT be called for an empty-description child")
+	}
+}
+
+// TestRecoveryToExecutionPath_RehydratesDescription is a regression test for
+// the GH-3558 incident shape: a recovered child that previously executed with
+// an empty prompt must now carry the real issue body text through to the Task
+// passed to the backend.
+func TestRecoveryToExecutionPath_RehydratesDescription(t *testing.T) {
+	realDesc := "Add rate limiting middleware to all API endpoints using token bucket algorithm."
+	issueBody := subIssueBody("GH-200", realDesc)
+
+	// Build fake gh binary.
+	fakeBin := t.TempDir()
+	raw := []map[string]interface{}{
+		{
+			"number": 77,
+			"url":    "https://github.com/owner/repo/issues/77",
+			"state":  "open",
+			"title":  "feat(api): add rate limiting",
+			"body":   issueBody,
+		},
+	}
+	jsonPayload, err := json.Marshal(raw)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	writeFakeGhJSON(t, fakeBin, jsonPayload)
+	origPATH := os.Getenv("PATH")
+	t.Setenv("PATH", fakeBin+string(filepath.ListSeparator)+origPATH)
+
+	// Recover sub-issues as the daemon would after restart.
+	recovered, err := recoverExistingSubIssues(context.Background(), "", "GH-200")
+	if err != nil {
+		t.Fatalf("recoverExistingSubIssues: %v", err)
+	}
+	if len(recovered) != 1 {
+		t.Fatalf("expected 1 recovered issue, got %d", len(recovered))
+	}
+
+	// Execute the recovered child and capture the Task passed to the backend.
+	var capturedDesc string
+	runner := newTestRunnerWithExecFunc(func(ctx context.Context, task *Task) (*ExecutionResult, error) {
+		capturedDesc = task.Description
+		return &ExecutionResult{
+			Success: true,
+			PRUrl:   "https://github.com/owner/repo/pull/99",
+		}, nil
+	})
+
+	parent := &Task{ID: "GH-200", Title: "[epic] add API rate limiting"}
+	if err := runner.ExecuteSubIssues(context.Background(), parent, recovered, "", ""); err != nil {
+		t.Fatalf("ExecuteSubIssues: %v", err)
+	}
+
+	if capturedDesc == "" {
+		t.Fatal("Task.Description passed to backend must not be empty after recovery")
+	}
+	if !strings.Contains(capturedDesc, realDesc) {
+		t.Errorf("Task.Description does not contain the real issue body text\ngot:  %q\nwant it to contain: %q",
+			capturedDesc, realDesc)
 	}
 }

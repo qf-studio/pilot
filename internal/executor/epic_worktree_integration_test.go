@@ -175,8 +175,8 @@ func TestEpicWorktreeIsolation_ExecuteWithOptionsTracking(t *testing.T) {
 
 	// Test scenario: Execute sub-issues like epic.go does
 	subIssues := []CreatedIssue{
-		{Number: 100, Subtask: PlannedSubtask{Title: "Task 1", Order: 1}},
-		{Number: 101, Subtask: PlannedSubtask{Title: "Task 2", Order: 2}},
+		{Number: 100, Subtask: PlannedSubtask{Title: "Task 1", Description: "First task description", Order: 1}},
+		{Number: 101, Subtask: PlannedSubtask{Title: "Task 2", Description: "Second task description", Order: 2}},
 	}
 
 	parent := &Task{
@@ -346,9 +346,9 @@ func TestNoRecursiveWorktreeInDecomposedTasks(t *testing.T) {
 
 	// Execute sub-issues
 	subIssues := []CreatedIssue{
-		{Number: 300, Subtask: PlannedSubtask{Title: "Decomposed 1", Order: 1}},
-		{Number: 301, Subtask: PlannedSubtask{Title: "Decomposed 2", Order: 2}},
-		{Number: 302, Subtask: PlannedSubtask{Title: "Decomposed 3", Order: 3}},
+		{Number: 300, Subtask: PlannedSubtask{Title: "Decomposed 1", Description: "Decomposed task 1", Order: 1}},
+		{Number: 301, Subtask: PlannedSubtask{Title: "Decomposed 2", Description: "Decomposed task 2", Order: 2}},
+		{Number: 302, Subtask: PlannedSubtask{Title: "Decomposed 3", Description: "Decomposed task 3", Order: 3}},
 	}
 
 	parent := &Task{
@@ -436,7 +436,7 @@ func TestWorktreeIsolationWithNavigatorCopy(t *testing.T) {
 	}
 
 	subIssues := []CreatedIssue{
-		{Number: 400, Subtask: PlannedSubtask{Title: "Nav test", Order: 1}},
+		{Number: 400, Subtask: PlannedSubtask{Title: "Nav test", Description: "Navigator copy test task", Order: 1}},
 	}
 
 	parent := &Task{

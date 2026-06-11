@@ -897,7 +897,7 @@ func recoverExistingSubIssues(ctx context.Context, dir, parentID string) ([]Crea
 		"issue", "list",
 		"--state", "all",
 		"--search", fmt.Sprintf("\"Parent: %s\" in:body", parentID),
-		"--json", "number,url,state",
+		"--json", "number,url,state,title,body",
 		"--limit", "50",
 	}
 	cmd := exec.CommandContext(ctx, "gh", args...)
@@ -913,6 +913,8 @@ func recoverExistingSubIssues(ctx context.Context, dir, parentID string) ([]Crea
 		Number int    `json:"number"`
 		URL    string `json:"url"`
 		State  string `json:"state"`
+		Title  string `json:"title"`
+		Body   string `json:"body"`
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &raw); err != nil {
 		return nil, nil
@@ -924,6 +926,10 @@ func recoverExistingSubIssues(ctx context.Context, dir, parentID string) ([]Crea
 			Identifier: strconv.Itoa(r.Number),
 			URL:        r.URL,
 			State:      r.State,
+			Subtask: PlannedSubtask{
+				Title:       r.Title,
+				Description: r.Body,
+			},
 		})
 	}
 	return out, nil
@@ -1561,6 +1567,20 @@ func (r *Runner) ExecuteSubIssues(ctx context.Context, parent *Task, issues []Cr
 			// Fallback (shouldn't happen)
 			taskID = "unknown"
 			issueRef = "unknown"
+		}
+
+		// Refuse to dispatch a child with no task description — a recovered child
+		// whose Subtask was never rehydrated would produce an empty-prompt run.
+		if strings.TrimSpace(issue.Subtask.Description) == "" {
+			r.log.Error("sub-issue has no task description — skipping to avoid empty-prompt run",
+				"parent_id", parent.ID,
+				"sub_issue", issueRef,
+			)
+			skipNote := "recovered child has no task description — manual dispatch needed"
+			_ = r.UpdateIssueProgress(ctx, projectPath, issueRef, skipNote)
+			_ = r.UpdateIssueProgress(ctx, projectPath, parent.ID,
+				fmt.Sprintf("⚠️ Skipped sub-issue #%s: no task description (manual dispatch needed)", issueRef))
+			continue
 		}
 
 		// Update parent with current progress
