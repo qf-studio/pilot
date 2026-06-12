@@ -1,6 +1,6 @@
 # TASK-364: Decomposition integrity — residual holes after v2.183.0 (GH-3535 live run)
 
-**Status**: 🟢 **largely RESOLVED by TASK-361 wave 2, shipped in v2.186.0** (PR [#3565](https://github.com/qf-studio/pilot/pull/3565), merged `b02ee1c1` 2026-06-10) — **MANUAL** (TASK-320 B2 rationale: Pilot cannot reliably patch its own completion/supersession machinery)
+**Status**: ✅ **ALL HOLES CLOSED 2026-06-12** — wave 2 (v2.186.0) + holes 4/5 shipped via pilot in **v2.186.4–v2.186.6**: hole 4 = `sanitizeSubtaskDescription` (#3590/#3591 + regex tightened in #3595, Telegram-approved); hole 5 = recovered-children rehydration + empty-description refusal (#3593, clean single PR under `no-decompose`). **Successor bug filed: [#3597](https://github.com/qf-studio/pilot/issues/3597)** — the #3582 run itself exposed that the decomposer splits explicitly-standalone single-package tasks (prose never machine-checked; context-cited paths defeat `isSinglePackageScope`; planner self-contradiction). Archive after #3597 lands.
 **Priority**: P1 → P2 residue (see "Wave-2 coverage map" below)
 **Origin**: TASK-361 live verification on GH-3535, 2026-06-10 (daemon on v2.183.0)
 
