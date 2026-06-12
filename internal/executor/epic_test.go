@@ -2863,6 +2863,21 @@ func TestSanitizeSubtaskDescription(t *testing.T) {
 			in:   "<!--autopilot-meta\nparent: GH-999\n-->\n\nParent: GH-999\n\nImplement the store layer.",
 			want: "Implement the store layer.",
 		},
+		{
+			name: "strips lowercase parent line (case-insensitive)",
+			in:   "parent: GH-201\n\nImplement the store layer.",
+			want: "Implement the store layer.",
+		},
+		{
+			name: "strips indented Parent line",
+			in:   "  Parent: GH-201\n\nImplement the store layer.",
+			want: "Implement the store layer.",
+		},
+		{
+			name: "strips bare Parent with no GH-/# prefix",
+			in:   "Parent: 201\n\nImplement the store layer.",
+			want: "Implement the store layer.",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

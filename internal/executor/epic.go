@@ -1263,7 +1263,7 @@ for context, but do NOT implement parts of it that fall outside this subtask.`,
 // inherited-spec bailout.
 var (
 	sanitizeMetaBlockRe  = regexp.MustCompile(`(?s)<!--autopilot-meta.*?-->`)
-	sanitizeParentLineRe = regexp.MustCompile(`(?m)^Parent:\s*(?:GH-|#)\d+[^\n]*\n?`)
+	sanitizeParentLineRe = regexp.MustCompile(`(?im)^\s*Parent:\s*(?:GH-|#)?\d+\s*$`)
 )
 
 func sanitizeSubtaskDescription(description string) string {
