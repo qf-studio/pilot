@@ -387,6 +387,30 @@ func TestIsSinglePackageScope(t *testing.T) {
 			description: "Cross-cutting change",
 			expected:    false,
 		},
+		{
+			// GH-3597: #3582 cited internal/adapters/github/grouping.go:38 as
+			// context (the parser being defended against) while every subtask's
+			// work was in internal/executor/ — the union of description+subtask
+			// paths saw 2 directories and bypassed the guard, splitting a
+			// single-PR task into 4 sub-issues.
+			name: "context-cited foreign path in parent description does not flip verdict (GH-3597)",
+			subtasks: []PlannedSubtask{
+				{Title: "Add sanitizeSubtaskDescription helper", Description: "Add the sanitizer in internal/executor/epic.go"},
+				{Title: "Wire sanitizer into body assembly", Description: "Call it at both subIssueBody call sites in internal/executor/epic.go"},
+				{Title: "Add table-driven tests", Description: "Cover parent-line and meta-block removal in internal/executor/epic_test.go"},
+			},
+			description: "Defend against ParseParentIssueNumber (internal/adapters/github/grouping.go:38) resolving a model-emitted parent claim. All work is in internal/executor/epic.go.",
+			expected:    true,
+		},
+		{
+			name: "subtasks genuinely span packages regardless of description",
+			subtasks: []PlannedSubtask{
+				{Title: "Update store", Description: "Modify internal/memory/store.go"},
+				{Title: "Update server", Description: "Modify internal/gateway/server.go"},
+			},
+			description: "Per the spec, persistence work lives in internal/memory/store.go.",
+			expected:    false,
+		},
 	}
 
 	for _, tt := range tests {
