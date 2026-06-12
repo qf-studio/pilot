@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -89,6 +90,95 @@ func TestHotUpgrader_PerformHotUpgrade_DefaultConfig(t *testing.T) {
 	// as the "binary" is not a real executable
 	if err != nil {
 		t.Logf("PerformHotUpgrade() error (expected in test): %v", err)
+	}
+}
+
+// GH-3600: a failed exec must leave durable evidence — restart_failed with the
+// error in the state file, never a state that reads like success.
+func TestHotUpgrader_PerformHotUpgrade_ExecFailurePersisted(t *testing.T) {
+	tc := &NoOpTaskChecker{}
+	h, dir := newTestHotUpgrader(t, tc)
+
+	newBinary := []byte("hot-upgraded-binary")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(newBinary)
+	}))
+	defer server.Close()
+
+	h.graceful.upgrader.httpClient = server.Client()
+
+	release := &Release{
+		TagName: "v2.0.0",
+		Assets: []Asset{
+			{
+				Name:               fmt.Sprintf("pilot-%s-%s", runtime.GOOS, runtime.GOARCH),
+				BrowserDownloadURL: server.URL + "/pilot",
+				Size:               int64(len(newBinary)),
+			},
+		},
+	}
+
+	// Fail the restart deterministically before syscall.Exec can run.
+	origSmoke := runSmokeTest
+	runSmokeTest = func(string) error { return fmt.Errorf("smoke test exploded") }
+	defer func() { runSmokeTest = origSmoke }()
+
+	err := h.PerformHotUpgrade(context.Background(), release, nil)
+	if err == nil || !strings.Contains(err.Error(), "restart failed") {
+		t.Fatalf("PerformHotUpgrade() error = %v, want wrapped restart failure", err)
+	}
+
+	state, lerr := LoadState(filepath.Join(dir, "upgrade-state.json"))
+	if lerr != nil || state == nil {
+		t.Fatalf("LoadState() = %v, %v", state, lerr)
+	}
+	if state.Status != StatusRestartFailed {
+		t.Errorf("state.Status = %q, want %q", state.Status, StatusRestartFailed)
+	}
+	if !strings.Contains(state.Error, "smoke test exploded") {
+		t.Errorf("state.Error = %q, want the exec failure recorded", state.Error)
+	}
+}
+
+// GH-3600: platforms without hot restart (Windows) install and return — state
+// must stay awaiting_restart so the manual restart reconciles at next boot.
+func TestHotUpgrader_PerformHotUpgrade_NoHotRestart_AwaitingRestart(t *testing.T) {
+	tc := &NoOpTaskChecker{}
+	h, dir := newTestHotUpgrader(t, tc)
+
+	newBinary := []byte("hot-upgraded-binary")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(newBinary)
+	}))
+	defer server.Close()
+
+	h.graceful.upgrader.httpClient = server.Client()
+
+	release := &Release{
+		TagName: "v2.0.0",
+		Assets: []Asset{
+			{
+				Name:               fmt.Sprintf("pilot-%s-%s", runtime.GOOS, runtime.GOARCH),
+				BrowserDownloadURL: server.URL + "/pilot",
+				Size:               int64(len(newBinary)),
+			},
+		},
+	}
+
+	origCan := canHotRestart
+	canHotRestart = func() bool { return false }
+	defer func() { canHotRestart = origCan }()
+
+	if err := h.PerformHotUpgrade(context.Background(), release, nil); err != nil {
+		t.Fatalf("PerformHotUpgrade() error = %v", err)
+	}
+
+	state, lerr := LoadState(filepath.Join(dir, "upgrade-state.json"))
+	if lerr != nil || state == nil {
+		t.Fatalf("LoadState() = %v, %v", state, lerr)
+	}
+	if state.Status != StatusAwaitingRestart {
+		t.Errorf("state.Status = %q, want %q", state.Status, StatusAwaitingRestart)
 	}
 }
 

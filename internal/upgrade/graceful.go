@@ -49,6 +49,12 @@ type UpgradeOptions struct {
 
 	// OnProgress callback for progress updates
 	OnProgress func(pct int, msg string)
+
+	// MarkAwaitingRestart records the install as awaiting_restart instead of
+	// completed (GH-3600). The hot path sets it because a process restart is
+	// still expected after install; the CLI path leaves it false — there,
+	// "completed" correctly means install done with no restart expected (GH-272).
+	MarkAwaitingRestart bool
 }
 
 // DefaultUpgradeOptions returns default upgrade options
@@ -115,8 +121,14 @@ func (g *GracefulUpgrader) PerformUpgrade(ctx context.Context, release *Release,
 		return err
 	}
 
-	// Mark completed
-	state.MarkCompleted()
+	// Mark completed — or awaiting_restart when the caller still has a process
+	// restart ahead (GH-3600: a hot upgrade whose exec fails must never read
+	// as completed on disk).
+	if opts.MarkAwaitingRestart {
+		state.MarkAwaitingRestart()
+	} else {
+		state.MarkCompleted()
+	}
 	if err := state.Save(g.statePath); err != nil {
 		return fmt.Errorf("failed to save completion state: %w", err)
 	}

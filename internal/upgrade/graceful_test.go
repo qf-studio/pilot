@@ -110,6 +110,53 @@ func TestGracefulUpgrader_PerformUpgrade_NoTasks(t *testing.T) {
 	}
 }
 
+// GH-3600: the hot path expects a restart after install — state must read
+// awaiting_restart, never completed, until boot reconciliation verifies it.
+func TestGracefulUpgrader_PerformUpgrade_MarkAwaitingRestart(t *testing.T) {
+	tc := &mockTaskChecker{}
+	g, dir := newTestGracefulUpgrader(t, tc)
+
+	newBinary := []byte("new-binary-v2")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(newBinary)
+	}))
+	defer server.Close()
+
+	g.upgrader.httpClient = server.Client()
+
+	release := &Release{
+		TagName: "v2.0.0",
+		Assets: []Asset{
+			{
+				Name:               fmt.Sprintf("pilot-%s-%s", runtime.GOOS, runtime.GOARCH),
+				BrowserDownloadURL: server.URL + "/pilot",
+				Size:               int64(len(newBinary)),
+			},
+		},
+	}
+
+	opts := &UpgradeOptions{
+		WaitForTasks:        false,
+		Force:               true,
+		MarkAwaitingRestart: true,
+	}
+
+	if err := g.PerformUpgrade(context.Background(), release, opts); err != nil {
+		t.Fatalf("PerformUpgrade() error = %v", err)
+	}
+
+	state, err := LoadState(filepath.Join(dir, "upgrade-state.json"))
+	if err != nil || state == nil {
+		t.Fatalf("LoadState() = %v, %v", state, err)
+	}
+	if state.Status != StatusAwaitingRestart {
+		t.Errorf("state.Status = %q, want %q", state.Status, StatusAwaitingRestart)
+	}
+	if !state.UpgradeCompleted.IsZero() {
+		t.Error("UpgradeCompleted should stay zero until boot reconciliation promotes the state")
+	}
+}
+
 func TestGracefulUpgrader_PerformUpgrade_DefaultOpts(t *testing.T) {
 	tc := &mockTaskChecker{}
 	g, _ := newTestGracefulUpgrader(t, tc)

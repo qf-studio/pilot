@@ -641,3 +641,50 @@ func TestLogLevelsWithArguments(t *testing.T) {
 		}
 	}
 }
+
+// GH-3600: dashboard mode redirects logs to a file instead of discarding them
+// so upgrade/restart failures stay diagnosable.
+func TestRedirectToFile(t *testing.T) {
+	origDefault := slog.Default()
+	loggerMu.RLock()
+	origPackage := defaultLogger
+	loggerMu.RUnlock()
+	defer func() {
+		slog.SetDefault(origDefault)
+		loggerMu.Lock()
+		defaultLogger = origPackage
+		loggerMu.Unlock()
+	}()
+
+	path := filepath.Join(t.TempDir(), "logs", "daemon.log")
+	if err := RedirectToFile(path, nil); err != nil {
+		t.Fatalf("RedirectToFile() error = %v", err)
+	}
+
+	// Both bare slog (used by internal/upgrade) and the package logger must land in the file.
+	slog.Info("bare slog message")
+	Logger().Info("package logger message")
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading log file: %v", err)
+	}
+	for _, want := range []string{"bare slog message", "package logger message"} {
+		if !strings.Contains(string(data), want) {
+			t.Errorf("log file missing %q; got:\n%s", want, data)
+		}
+	}
+}
+
+func TestRedirectToFile_InvalidPath(t *testing.T) {
+	dir := t.TempDir()
+	blocker := filepath.Join(dir, "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Parent "directory" is a regular file — MkdirAll must fail.
+	if err := RedirectToFile(filepath.Join(blocker, "daemon.log"), nil); err == nil {
+		t.Error("RedirectToFile() expected error for unwritable path")
+	}
+}
