@@ -104,6 +104,10 @@ func (h *HotUpgrader) PerformHotUpgrade(ctx context.Context, release *Release, c
 	upgradeOpts := &UpgradeOptions{
 		WaitForTasks: false, // Already handled above
 		Force:        true,  // Skip task check in graceful upgrader
+		// GH-3600: a restart is still ahead (exec below, or a manual restart on
+		// Windows) — state must read awaiting_restart, not completed, until the
+		// restarted process verifies the running version at boot.
+		MarkAwaitingRestart: true,
 		OnProgress: func(pct int, msg string) {
 			// Scale from 25-90%
 			scaledPct := 25 + (pct * 65 / 100)
@@ -116,7 +120,7 @@ func (h *HotUpgrader) PerformHotUpgrade(ctx context.Context, release *Release, c
 	}
 
 	// Step 4: Restart if supported, otherwise notify user
-	if !CanHotRestart() {
+	if !canHotRestart() {
 		progress(100, "Upgrade installed! Please restart Pilot manually.")
 		slog.Info("upgrade installed, manual restart required (Windows)",
 			slog.String("previous_version", currentVersion),
@@ -143,12 +147,27 @@ func (h *HotUpgrader) PerformHotUpgrade(ctx context.Context, release *Release, c
 
 	// Step 5: Exec into new binary (this never returns on success)
 	if err := RestartWithNewBinary(binaryPath, args, currentVersion); err != nil {
+		// GH-3600: persist the failure — without this the state file keeps
+		// claiming the upgrade landed while the old binary is still running.
+		if st, lerr := LoadState(h.graceful.statePath); lerr == nil && st != nil {
+			st.MarkRestartFailed(err)
+			_ = st.Save(h.graceful.statePath)
+		}
+		slog.Error("hot restart FAILED — daemon still running previous version",
+			slog.String("running_version", currentVersion),
+			slog.String("installed_version", release.TagName),
+			slog.Any("error", err),
+		)
 		return fmt.Errorf("restart failed: %w", err)
 	}
 
 	// This line is never reached on success
 	return nil
 }
+
+// canHotRestart is an overridable seam (mirrors runSmokeTest) so tests can
+// exercise the manual-restart branch on any platform.
+var canHotRestart = CanHotRestart
 
 // GetUpgrader returns the underlying Upgrader for version checks
 func (h *HotUpgrader) GetUpgrader() *Upgrader {

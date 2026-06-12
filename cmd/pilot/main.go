@@ -198,6 +198,37 @@ Examples:
 				}
 			}
 
+			// GH-3600: in dashboard mode daemon logs must not hit the terminal,
+			// but discarding them hid a failed hot restart entirely — redirect to
+			// a rotating file instead (logging.dashboard_log; "off" = old discard
+			// behavior). Must run BEFORE runner/gateway creation (GH-190/GH-351:
+			// components cache their logger) and before the reconciliation below
+			// so its outcome is durably logged.
+			if dashboardMode {
+				setupDashboardLogging(cfg)
+			}
+
+			// GH-3600: verify whether a pending upgrade actually took effect —
+			// the running version vs the state file is the ground truth; the
+			// PILOT_RESTARTED marker only tells how the restart happened.
+			bootReconcile, _ := upgrade.ReconcileBootState(version, "")
+			switch bootReconcile.Outcome {
+			case upgrade.BootUpgradeVerified:
+				via := "manual restart"
+				if bootReconcile.HotExec {
+					via = "hot restart"
+				}
+				logging.WithComponent("upgrade").Info("upgrade verified complete",
+					"from", bootReconcile.PreviousVersion,
+					"to", bootReconcile.NewVersion,
+					"via", via)
+			case upgrade.BootRestartFailed:
+				logging.WithComponent("upgrade").Error("previous upgrade did NOT take effect — still running old version",
+					"running", version,
+					"expected", bootReconcile.NewVersion,
+					"error", bootReconcile.RestartError)
+			}
+
 			// GH-879: Log config reload on hot upgrade
 			// After syscall.Exec, the new binary starts fresh and re-reads config from disk
 			if os.Getenv("PILOT_RESTARTED") == "1" {
@@ -294,7 +325,7 @@ Examples:
 
 			hasPollingAdapter := hasTelegram || hasGithubPolling
 			if noGateway || hasPollingAdapter {
-				return runPollingMode(cmd, cfg, projectPath, replace, dashboardMode, noGateway)
+				return runPollingMode(cmd, cfg, projectPath, replace, dashboardMode, noGateway, bootReconcile)
 			}
 
 			// Full daemon mode with gateway
@@ -302,10 +333,8 @@ Examples:
 				return fmt.Errorf("invalid config: %w", err)
 			}
 
-			// Suppress logging in dashboard mode BEFORE initialization (GH-351)
-			if dashboardMode {
-				logging.Suppress()
-			}
+			// Dashboard-mode log redirect already happened above (GH-3600),
+			// before initialization (GH-351 ordering preserved).
 
 			// Build Pilot options for gateway mode (GH-349)
 			var pilotOpts []pilot.Option
@@ -1330,10 +1359,36 @@ func applyTeamOverrides(cfg *config.Config, cmd *cobra.Command, teamID, teamMemb
 	}
 }
 
+// setupDashboardLogging redirects daemon logs to a rotating file in TUI
+// dashboard mode (GH-3600) so upgrade/restart failures stay diagnosable.
+// logging.dashboard_log config: "" = default ~/.pilot/logs/daemon.log,
+// "off" = discard (pre-GH-3600 behavior), anything else = custom path.
+// Falls back to Suppress on error — an unwritable log path must not corrupt
+// the TUI.
+func setupDashboardLogging(cfg *config.Config) {
+	path := logging.DefaultDaemonLogPath()
+	var rotation *logging.RotationConfig
+	if cfg.Logging != nil {
+		if cfg.Logging.DashboardLog == "off" {
+			logging.Suppress()
+			return
+		}
+		if cfg.Logging.DashboardLog != "" {
+			path = cfg.Logging.DashboardLog
+		}
+		rotation = cfg.Logging.Rotation
+	}
+	if err := logging.RedirectToFile(path, rotation); err != nil {
+		logging.Suppress()
+	}
+}
+
 // runPollingMode runs lightweight polling-only mode.
 // When noGateway is false, the HTTP gateway starts in the background so the
 // desktop app (and any other client hitting /health) can reach the daemon.
-func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, replace, dashboardMode, noGateway bool) error {
+// bootReconcile carries the GH-3600 upgrade verification outcome for the
+// dashboard to surface; may be nil.
+func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, replace, dashboardMode, noGateway bool, bootReconcile *upgrade.BootReconcileResult) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -1349,11 +1404,9 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 		cfg.Adapters.Slack.SocketMode = false
 	}
 
-	// Suppress logging BEFORE creating runner in dashboard mode (GH-190)
-	// Runner caches its logger at creation time, so suppression must happen first
-	if dashboardMode {
-		logging.Suppress()
-	}
+	// Dashboard-mode log redirect already happened in the start command before
+	// this call (GH-3600), which preserves the GH-190 ordering: the runner
+	// below caches its logger at creation time, so the redirect must precede it.
 
 	// Create runner with config (GH-956: enables worktree isolation, decomposer, model routing)
 	runner, err := executor.NewRunnerWithConfig(cfg.Executor)
@@ -2808,9 +2861,25 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 				program.Send(dashboard.AddLog("🎮 Discord gateway enabled")())
 			}
 
-			// Check for restart marker (set by hot upgrade)
-			// GH-879: Config is automatically reloaded because syscall.Exec starts a fresh process
-			if os.Getenv("PILOT_RESTARTED") == "1" {
+			// GH-3600: surface upgrade verification — running version vs the
+			// state file is the ground truth, not the env marker alone.
+			// GH-879: config is reloaded automatically because exec starts a
+			// fresh process.
+			switch {
+			case bootReconcile != nil && bootReconcile.Outcome == upgrade.BootUpgradeVerified:
+				via := "manual restart"
+				if bootReconcile.HotExec {
+					via = "hot restart, config reloaded"
+				}
+				program.Send(dashboard.AddLog(fmt.Sprintf("✅ Upgrade complete: %s → %s (%s)",
+					bootReconcile.PreviousVersion, bootReconcile.NewVersion, via))())
+			case bootReconcile != nil && bootReconcile.Outcome == upgrade.BootRestartFailed:
+				// Drives the sticky "! UPGRADE FAILED" panel.
+				program.Send(dashboard.NotifyUpgradeComplete(false, fmt.Sprintf(
+					"Upgrade to %s did not take effect — still running %s. See ~/.pilot/logs/daemon.log",
+					bootReconcile.NewVersion, version))())
+			case os.Getenv("PILOT_RESTARTED") == "1":
+				// Legacy: restart marker without a reconcilable state file
 				prevVersion := os.Getenv("PILOT_PREVIOUS_VERSION")
 				if prevVersion != "" {
 					program.Send(dashboard.AddLog(fmt.Sprintf("✅ Upgraded from %s to %s (config reloaded)", prevVersion, version))())

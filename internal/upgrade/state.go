@@ -46,6 +46,19 @@ const (
 	StatusCompleted   UpgradeStatus = "completed"
 	StatusFailed      UpgradeStatus = "failed"
 	StatusRolledBack  UpgradeStatus = "rolled_back"
+
+	// GH-3600: two-phase state for the hot-upgrade path. "completed" is only
+	// correct for the CLI graceful path where no restart is expected; the hot
+	// path must not claim success until the restarted process verifies it.
+
+	// StatusAwaitingRestart means the binary is installed but the restart has
+	// not been verified yet (hot path). Promoted to completed at next boot when
+	// the running version matches NewVersion.
+	StatusAwaitingRestart UpgradeStatus = "awaiting_restart"
+
+	// StatusRestartFailed means exec/smoke-test failed — the old binary is
+	// still running while the new one sits installed on disk.
+	StatusRestartFailed UpgradeStatus = "restart_failed"
 )
 
 // StateFile is the default state file name
@@ -147,4 +160,27 @@ func (s *State) MarkCompleted() {
 func (s *State) MarkRolledBack() {
 	s.Status = StatusRolledBack
 	s.UpgradeCompleted = time.Now()
+}
+
+// MarkAwaitingRestart marks the install as done with the restart still pending
+// (hot path). UpgradeCompleted stays zero until boot reconciliation promotes
+// the state to completed.
+func (s *State) MarkAwaitingRestart() {
+	s.Status = StatusAwaitingRestart
+}
+
+// MarkRestartFailed records that the post-install restart (exec or smoke test)
+// failed while the previous binary kept running.
+func (s *State) MarkRestartFailed(err error) {
+	s.Status = StatusRestartFailed
+	if err != nil {
+		s.Error = err.Error()
+	}
+}
+
+// NeedsBootReconcile returns true when the next process start must verify
+// whether the installed version actually took effect. Deliberately excludes
+// failed/rolled_back (the rollback domain) and legacy completed states.
+func (s *State) NeedsBootReconcile() bool {
+	return s.Status == StatusAwaitingRestart || s.Status == StatusRestartFailed
 }

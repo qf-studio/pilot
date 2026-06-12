@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"sync"
 )
 
@@ -39,6 +40,12 @@ type Config struct {
 	Format   string          `yaml:"format"`   // json, text
 	Output   string          `yaml:"output"`   // stdout, stderr, or file path
 	Rotation *RotationConfig `yaml:"rotation"` // Log rotation settings
+
+	// DashboardLog controls where daemon logs go in TUI dashboard mode, where
+	// terminal output would corrupt the display (GH-3600). "" = default file
+	// (~/.pilot/logs/daemon.log), "off" = discard (pre-GH-3600 behavior),
+	// anything else = custom file path.
+	DashboardLog string `yaml:"dashboard_log"`
 }
 
 // RotationConfig holds log rotation settings.
@@ -101,6 +108,38 @@ func Suppress() {
 
 	// Also set the global slog default to suppress any direct slog.Info() calls
 	slog.SetDefault(discardLogger)
+}
+
+// DefaultDaemonLogPath returns the default dashboard-mode log file,
+// ~/.pilot/logs/daemon.log.
+func DefaultDaemonLogPath() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".pilot", "logs", "daemon.log")
+}
+
+// RedirectToFile sends the global logger AND slog's default to a rotating
+// file. Used in TUI dashboard mode instead of Suppress so daemon events —
+// upgrade/restart failures in particular (GH-3600) — stay diagnosable.
+// Process-global via slog.SetDefault: only call from dashboard-mode startup,
+// never from library code.
+func RedirectToFile(path string, rotation *RotationConfig) error {
+	writer, err := newRotatingWriter(path, rotation)
+	if err != nil {
+		return err
+	}
+
+	fileLogger := slog.New(slog.NewTextHandler(writer, &slog.HandlerOptions{
+		Level: slog.LevelInfo,
+	}))
+
+	loggerMu.Lock()
+	defaultLogger = fileLogger
+	loggerMu.Unlock()
+
+	// Bare slog.Info()/slog.Error() calls (e.g. internal/upgrade) must land in
+	// the file too.
+	slog.SetDefault(fileLogger)
+	return nil
 }
 
 // parseLevel converts a string level to slog.Level.

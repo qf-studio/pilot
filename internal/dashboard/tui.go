@@ -2859,6 +2859,9 @@ func (m Model) renderUpdateNotification() string {
 		} else {
 			content.WriteString("  " + m.upgradeMessage)
 		}
+		// GH-3600: a failed upgrade means the old binary is still running —
+		// say so explicitly and point at the durable log.
+		content.WriteString(fmt.Sprintf("\n  Daemon still running %s — see ~/.pilot/logs/daemon.log", m.version))
 
 	default:
 		return ""
