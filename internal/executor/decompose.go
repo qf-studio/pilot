@@ -64,6 +64,12 @@ var noDecomposePhrases = []*regexp.Regexp{
 	regexp.MustCompile(`single pilot issue`),
 	regexp.MustCompile(`keep as .+ single`),
 	regexp.MustCompile(`splitting this would`),
+	// GH-3597: "must NOT be decomposed" — the way humans actually write it —
+	// reached only the planner LLM advisorily; #3582 split into 4 sub-issues
+	// despite opening with exactly this phrasing.
+	regexp.MustCompile(`(must|should) not be (decomposed|split)`),
+	regexp.MustCompile(`is a standalone task`),
+	regexp.MustCompile(`as a single pr\b`),
 	regexp.MustCompile(`<!--\s*pilot:no-decompose\s*-->`),
 }
 
@@ -134,6 +140,15 @@ func (d *TaskDecomposer) DecomposeWithContext(ctx context.Context, task *Task) *
 		}
 	}
 
+	// GH-3597: standalone prose gates exactly like the label
+	if HasNoDecomposePhrase(task) {
+		return &DecomposeResult{
+			Decomposed: false,
+			Subtasks:   []*Task{task},
+			Reason:     "skipped: no-decompose phrase in title/description",
+		}
+	}
+
 	// GH-727: Use LLM classifier if available, otherwise fall back to heuristic
 	var complexity Complexity
 	if d.classifier != nil {
@@ -193,6 +208,15 @@ func (d *TaskDecomposer) DecomposeForRetry(ctx context.Context, task *Task) *Dec
 			Decomposed: false,
 			Subtasks:   []*Task{task},
 			Reason:     "skipped: no-decompose label (even on retry)",
+		}
+	}
+
+	// GH-3597: standalone prose gates exactly like the label, even on retry
+	if HasNoDecomposePhrase(task) {
+		return &DecomposeResult{
+			Decomposed: false,
+			Subtasks:   []*Task{task},
+			Reason:     "skipped: no-decompose phrase (even on retry)",
 		}
 	}
 

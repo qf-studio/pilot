@@ -691,6 +691,13 @@ func TestHasNoDecomposePhrase(t *testing.T) {
 		{name: "keep as ... single in body", body: "Keep as one single task.", expected: true},
 		{name: "splitting this would in body", body: "Splitting this would fragment the changes.", expected: true},
 		{name: "HTML marker in body", body: "<!-- pilot:no-decompose -->", expected: true},
+		// GH-3597: standalone prose variants (the #3582 incident phrasing)
+		{name: "must not be decomposed", body: "It must NOT be decomposed into sub-issues.", expected: true},
+		{name: "must not be split", body: "This task must not be split.", expected: true},
+		{name: "should not be decomposed", body: "The work should not be decomposed further.", expected: true},
+		{name: "should not be split", body: "This should not be split across PRs.", expected: true},
+		{name: "is a standalone task", body: "This is a standalone task covering one package.", expected: true},
+		{name: "as a single PR", body: "Implement it as a single PR.", expected: true},
 		// Each canonical phrase in title → true
 		{name: "do not decompose in title", title: "do not decompose this", expected: true},
 		{name: "do not split in title", title: "do not split this", expected: true},
@@ -705,6 +712,8 @@ func TestHasNoDecomposePhrase(t *testing.T) {
 		// Phrase as unrelated substring → false
 		{name: "single word only", body: "This is a single change to a file.", expected: false},
 		{name: "split without do not", body: "We should split this into modules.", expected: false},
+		{name: "standalone without task context", body: "Build a standalone binary for darwin.", expected: false},
+		{name: "single PR mention without 'as a'", body: "The last single PR touched this file.", expected: false},
 		{name: "pilot issue without single", body: "This is a pilot issue for adding auth.", expected: false},
 		{name: "keep without single", body: "Keep as is without further changes.", expected: false},
 		// Empty → false
@@ -729,6 +738,79 @@ func TestHasNoDecomposePhrase(t *testing.T) {
 				t.Errorf("HasNoDecomposePhrase() = %v, want %v", got, tt.expected)
 			}
 		})
+	}
+}
+
+// gh3582BodyExcerpt reproduces the decision-relevant content of issue #3582
+// verbatim (markdown/backticks stripped): the standalone-prose opener that was
+// never machine-checked, a context citation of a foreign package (grouping.go),
+// and work scoped entirely to internal/executor/. The daemon split this task
+// into 4 sub-issues — the GH-3597 incident.
+const gh3582BodyExcerpt = "This is a standalone task. It must NOT be decomposed into sub-issues. Implement it as a single PR.\n\n" +
+	"## Problem\n\n" +
+	"subIssueBody() (internal/executor/epic.go, ~line 1210) stamps the Parent: reference and autopilot-meta block programmatically — but the model-written subtask description it embeds is NOT sanitized. When the planner LLM emits its own Parent: GH-N line, the assembled body carries TWO parent claims:\n\n" +
+	"- ParseParentIssueNumber (internal/adapters/github/grouping.go:38, regex ^Parent:\\s*(?:GH-|#)(\\d+)) can resolve the wrong one,\n" +
+	"- recovery searches (queryRecentSubIssues, recoverExistingSubIssues in epic.go) match the child into a FOREIGN epic's recovery set → cross-epic contamination.\n\n" +
+	"## Fix\n\n" +
+	"In internal/executor/epic.go:\n\n" +
+	"1. Add sanitizeSubtaskDescription(description string) string that removes parent lines and autopilot-meta blocks from model-supplied descriptions.\n" +
+	"2. Call it on the description at BOTH body-assembly call sites of subIssueBody(...).\n\n" +
+	"## Tests (table-driven, internal/executor/epic_test.go)\n\n" +
+	"- description containing Parent: GH-201 → assembled body contains exactly ONE Parent: line\n"
+
+// TestGH3582StandaloneBody_NeverDecomposes is the GH-3597 acceptance test:
+// re-filing #3582's body (prose only — no label, no HTML marker) must classify
+// as single-task execution at every gate.
+func TestGH3582StandaloneBody_NeverDecomposes(t *testing.T) {
+	task := &Task{
+		ID:          "GH-3582",
+		Title:       "Sanitize model-emitted parent refs in subtask bodies",
+		Description: gh3582BodyExcerpt,
+	}
+
+	if !HasNoDecomposePhrase(task) {
+		t.Fatal("expected standalone prose to match noDecomposePhrases")
+	}
+	if c := DetectComplexity(task); c == ComplexityEpic {
+		t.Errorf("DetectComplexity() = %v, want non-epic for standalone-prose body", c)
+	}
+
+	decomposer := NewTaskDecomposer(&DecomposeConfig{
+		Enabled:       true,
+		MinComplexity: "complex",
+		MaxSubtasks:   5,
+	})
+	result := decomposer.Decompose(task)
+	if result.Decomposed {
+		t.Errorf("Decompose() split a standalone-prose task: %s", result.Reason)
+	}
+	if result.Reason != "skipped: no-decompose phrase in title/description" {
+		t.Errorf("Unexpected reason: %q", result.Reason)
+	}
+}
+
+func TestDecomposeForRetry_RespectsNoDecomposePhrase(t *testing.T) {
+	decomposer := NewTaskDecomposer(&DecomposeConfig{
+		Enabled:     true,
+		MaxSubtasks: 5,
+	})
+
+	task := &Task{
+		ID:    "GH-3582",
+		Title: "Implement auth system",
+		Description: `This must not be split.
+1. Add user model
+2. Add login endpoint
+3. Add session middleware`,
+	}
+
+	result := decomposer.DecomposeForRetry(nil, task)
+
+	if result.Decomposed {
+		t.Error("Expected DecomposeForRetry to respect no-decompose phrase")
+	}
+	if result.Reason != "skipped: no-decompose phrase (even on retry)" {
+		t.Errorf("Unexpected reason: %q", result.Reason)
 	}
 }
 

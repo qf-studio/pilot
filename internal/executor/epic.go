@@ -390,25 +390,32 @@ func consolidateEpicPlan(originalDesc string, subtasks []PlannedSubtask) string 
 // would cause merge conflicts because each sub-issue branches from main independently.
 //
 // Detection strategy:
-// 1. Extract all file paths mentioned across subtask titles and descriptions
+// 1. Extract file paths from subtask titles and descriptions — they define the
+//    actual work scope. Paths cited only in the parent description are context
+//    (e.g. code being defended against) and must not flip the verdict (GH-3597:
+//    #3582 cited grouping.go as context while all work was in internal/executor/,
+//    which bypassed this guard and caused a 4-way split of a single-PR task).
 // 2. Compute unique parent directories
-// 3. If only 1 directory (or 0 files found), consider it single-package scope
+// 3. If only 1 directory → single-package scope. If subtasks cite no paths,
+//    fall back to the parent description, then to the title heuristic.
 //
 // GH-1265: This prevents the "serial conflict cascade" bug where N sub-issues
 // all touching cmd/pilot/ create N branches from main, each redeclaring shared types.
 func isSinglePackageScope(subtasks []PlannedSubtask, taskDescription string) bool {
-	// Collect all text to scan for file references
-	var allText strings.Builder
-	allText.WriteString(taskDescription)
-	allText.WriteString("\n")
+	var subtaskText strings.Builder
 	for _, st := range subtasks {
-		allText.WriteString(st.Title)
-		allText.WriteString("\n")
-		allText.WriteString(st.Description)
-		allText.WriteString("\n")
+		subtaskText.WriteString(st.Title)
+		subtaskText.WriteString("\n")
+		subtaskText.WriteString(st.Description)
+		subtaskText.WriteString("\n")
 	}
 
-	dirs := extractUniqueDirectories(allText.String())
+	dirs := extractUniqueDirectories(subtaskText.String())
+
+	// Subtasks cite no paths — fall back to the parent description (GH-1265 behavior)
+	if len(dirs) == 0 {
+		dirs = extractUniqueDirectories(taskDescription)
+	}
 
 	// If we found file references and they all point to 1 directory → single package
 	if len(dirs) == 1 {
