@@ -29,7 +29,7 @@
 | Step | Command | Action |
 |------|---------|--------|
 | 1. Plan | `/nav-task "feature description"` | Design solution, create implementation plan |
-| 2. Execute | `gh issue create --label pilot` | Hand off to Pilot for execution |
+| 2. Execute | `"dispatch TASK-XX to Pilot"` (auto-invokes `nav-pilot`, v6.16.0+) — or raw `gh issue create --label pilot` | Hand off to Pilot for execution |
 | 3. Review | `gh pr view <n>` | Check Pilot's PR |
 | 4. Ship | `gh pr merge <n>` | Merge when approved |
 
@@ -39,7 +39,9 @@
 # Plan a feature (Navigator does the thinking)
 /nav-task "Add rate limiting to API endpoints"
 
-# Hand off to Pilot (creates issue from plan)
+# Hand off to Pilot — preferred: nav-pilot skill (Navigator v6.16.0+)
+#   "dispatch TASK-XX to Pilot"          # auto-resolves doc → gh issue from H1 + --body-file
+# Raw equivalent (when bypassing the skill):
 gh issue create --title "Add rate limiting" --label pilot --body "..."
 
 # Check Pilot's queue

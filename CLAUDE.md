@@ -59,7 +59,7 @@ to execute:
 | Phase | Tool | Action |
 |-------|------|--------|
 | 1. Plan | `/nav-task` | Design solution, create implementation plan |
-| 2. Execute | GitHub Issue | Create issue with `pilot` label |
+| 2. Execute | `nav-pilot` skill (or raw `gh issue create`) | Hand off task doc as a `pilot`-labeled issue |
 | 3. Review | PR Review | Check Pilot's PR, request changes if needed |
 | 4. Ship | Merge | Merge PR when approved |
 
@@ -69,7 +69,9 @@ to execute:
 # Plan a feature (Navigator)
 /nav-task "Add rate limiting to API endpoints"
 
-# Hand off to Pilot
+# Hand off to Pilot — preferred: nav-pilot skill (Navigator v6.16.0+)
+#   "dispatch TASK-XX to Pilot"        # uses H1 as title + --body-file, writes URL into ## Refs
+# Raw fallback:
 gh issue create --title "Add rate limiting" --label pilot --body "..."
 
 # Check Pilot's queue

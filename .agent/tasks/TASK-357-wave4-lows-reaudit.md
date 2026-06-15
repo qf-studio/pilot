@@ -1,6 +1,6 @@
 # TASK-357: TASK-322 Wave 4 — Lows + tests (re-audit gated)
 
-**Status:** ⏳ PARKED until re-audit gate · **GATE DATE: ~2026-06-15** (≈2 weeks after Wave 3 closed 2026-06-01)
+**Status:** 🟢 **GATE REACHED 2026-06-15** — ready to re-verify the 13 lows against current `main` and file survivors. (Park lifted; the 2-week cool-down after Wave 3 closed 2026-06-01 elapsed today.)
 **Parent:** [[TASK-322-remediation-roadmap]] · final remaining tranche.
 
 > **Reminder context:** Waves 0–3 of the TASK-322 security audit are DONE (3 crit · 14 high · 17 med,
