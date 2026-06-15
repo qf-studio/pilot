@@ -63,7 +63,25 @@ type GraphQLResponse struct {
 
 // GraphQLError is a single error from a GraphQL response.
 type GraphQLError struct {
-	Message string `json:"message"`
+	Message string        `json:"message"`
+	Type    string        `json:"type,omitempty"`
+	Path    []interface{} `json:"path,omitempty"`
+}
+
+// String renders a GraphQLError with its type/path when present, for diagnostics.
+func (e GraphQLError) String() string {
+	s := e.Message
+	if e.Type != "" {
+		s = e.Type + ": " + s
+	}
+	if len(e.Path) > 0 {
+		parts := make([]string, len(e.Path))
+		for i, p := range e.Path {
+			parts[i] = fmt.Sprintf("%v", p)
+		}
+		s += " (path: " + strings.Join(parts, ".") + ")"
+	}
+	return s
 }
 
 // Client is a GitHub API client
@@ -912,7 +930,15 @@ func (c *Client) ExecuteGraphQL(ctx context.Context, query string, variables map
 		}
 
 		if len(gqlResp.Errors) > 0 {
-			return fmt.Errorf("graphql error: %s", gqlResp.Errors[0].Message)
+			// TASK-357 (board low): aggregate ALL errors (message + type + path), not
+			// just Errors[0]. GitHub Projects V2 frequently returns several per-node
+			// errors at once, and surfacing only the first made board flows hard to
+			// diagnose.
+			msgs := make([]string, len(gqlResp.Errors))
+			for i, ge := range gqlResp.Errors {
+				msgs[i] = ge.String()
+			}
+			return fmt.Errorf("graphql error: %s", strings.Join(msgs, "; "))
 		}
 
 		if result != nil && len(gqlResp.Data) > 0 {
