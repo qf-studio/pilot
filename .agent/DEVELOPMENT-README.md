@@ -120,7 +120,7 @@ Disable via config: `executor.navigator.auto_init: false`
 
 ## Current State
 
-**Current Version:** v2.186.8 | full status in `.agent/system/FEATURE-MATRIX.md`
+**Current Version:** v2.186.9 | full status in `.agent/system/FEATURE-MATRIX.md`
 
 **Recent (v2.186.0–v2.186.8, June 10–12 2026):** **Decomposition integrity wave 2 + release-stage hardening + executor SHA-harvest fix + safeGo sweep + retry-machinery hardening + TASK-364 holes 4/5 + standalone-split fix + hot-upgrade verification — all SHIPPED.**
 - **v2.186.8 — hot-upgrade silent-failure fix ([#3600](https://github.com/qf-studio/pilot/issues/3600), MANUAL PR [#3601](https://github.com/qf-studio/pilot/pull/3601), merged `259f2a93`):** two-phase upgrade state (`awaiting_restart`/`restart_failed`; hot path never writes `completed` pre-exec, CLI semantics untouched); exec failures persisted to `upgrade-state.json`; boot reconciliation (`ReconcileBootState`) verifies running version vs `state.NewVersion` as ground truth — match promotes+cleans, mismatch logs ERROR + sticky "! UPGRADE FAILED" TUI panel; dashboard mode no longer discards slog — redirected to rotating `~/.pilot/logs/daemon.log` (`logging.dashboard_log`, `"off"` = legacy discard). Live-verified in isolated HOME (all 3 scenarios) + artifact-verified at the tag. **Restart the daemon onto v2.186.8 manually** — the running v2.186.7 still has the old silent exec path; from v2.186.8 on, upgrades self-verify.
