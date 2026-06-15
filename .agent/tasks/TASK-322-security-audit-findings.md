@@ -222,6 +222,24 @@ from the chat:
 
 ### low
 
+> **✅ TASK-357 Wave 4 closure (2026-06-15) — re-audited against `main` @ ab15125b, all 10 actionable lows SHIPPED in [PR #3603](https://github.com/qf-studio/pilot/pull/3603).**
+> None were incidentally fixed by Waves 2–3 (re-verified before filing). Per-finding:
+>
+> | Finding | File | Status |
+> |---|---|---|
+> | A4a subagent `--model` single-argv bug | `executor/parallel.go` | ✅ fixed (#3603) |
+> | G1 `CleanupOrphanedWorktrees` success-as-error | `executor/worktree.go` | ✅ fixed — signature `(removed, freedBytes, err)` (#3603) |
+> | B6a `recordedMerges` unbounded | `autopilot/controller.go` | ✅ fixed — evict in `removePR` (#3603) |
+> | board-low GraphQL discards partial/aggregates only `Errors[0]` | `github/client.go` | ✅ partial — error aggregation done; partial-data tolerance → TASK-319 board track (#3603) |
+> | B6b `discoveryStart` leak on grace-expired | `autopilot/ci_monitor.go` | ✅ fixed (#3603) |
+> | A4b hook tmp dir leak on `WriteEmbeddedScripts` fail | `executor/runner.go` | ✅ fixed (#3603) |
+> | G2 `bridge.go` `%v` vs `%w` | `orchestrator/bridge.go` | ✅ fixed (#3603) |
+> | G3 discord heartbeat error discarded | `discord/transport.go` | ✅ fixed (#3603) |
+> | E7 `retryTracker` no TTL | `alerts/engine.go` | ✅ fixed — 24h TTL evict (#3603) |
+> | G4 `internal/transcription` 0 tests | `internal/transcription/*` | ✅ fixed — 3 test files added (#3603) |
+>
+> The 3 remaining `low` bullets below ("correctly engineered", "core HTTP/subprocess solid", "merge/idempotency well-tested") are **positive findings — no action**.
+
 - **Research subagent passes "--model X" as a single argv element, so the model flag is malformed**
   - dim: `executor-core` · file: `internal/executor/parallel.go:247` · cat: bug · conf: high
   - executeSubagent builds modelFlag as the string "--model " + model (e.g. "--model haiku") and then prepends it as one element: args = append([]string{modelFlag}, args...). exec.CommandContext passes each slice element as a separate argv entry, so the claude subprocess receives a single argument literally equal to "--model haiku" (including the embedded space) instead of two arguments "--model" and "haiku". Depending on the CLI's flag parser this either errors on an unknown flag or silently ignores the model selection, so parallel research subagents run on the default model rather than the intended fast haiku model (and may fail outright). The other two args entries ("-p", prompt) are correctly split, which is the giveaway that this one is wrong.
