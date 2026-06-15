@@ -29,19 +29,24 @@ type stubCounter struct {
 	component string
 	count     atomic.Int64
 	done      chan struct{}
+	once      sync.Once
+	want      string
 }
 
 func (s *stubCounter) Inc(component string) {
+	if s.want != "" && component != s.want {
+		return
+	}
 	s.mu.Lock()
 	s.component = component
 	s.mu.Unlock()
 	s.count.Add(1)
-	close(s.done)
+	s.once.Do(func() { close(s.done) })
 }
 
 func TestSafeGo_IncrementsCounter(t *testing.T) {
 	prev := panicCounter
-	ctr := &stubCounter{done: make(chan struct{})}
+	ctr := &stubCounter{done: make(chan struct{}), want: "counter-test"}
 	SetPanicCounter(ctr)
 	t.Cleanup(func() { SetPanicCounter(prev) })
 
