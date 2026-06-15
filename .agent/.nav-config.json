@@ -1,8 +1,13 @@
 {
-  "version": "6.15.7",
+  "version": "6.16.0",
   "project_management": "none",
   "task_prefix": "TASK",
   "team_chat": "none",
+  "pilot": {
+    "enabled": true,
+    "label": "pilot",
+    "repo": null
+  },
   "auto_load_navigator": true,
   "compact_strategy": "conservative",
   "simplification": {
