@@ -818,13 +818,13 @@ func TestCleanupOrphanedWorktrees(t *testing.T) {
 		t.Fatal("orphan2 should exist before cleanup")
 	}
 
-	// Run cleanup
-	err := CleanupOrphanedWorktrees(ctx, repoPath)
+	// Run cleanup — TASK-357 (G1): success returns nil err + a positive removed count.
+	removed, _, err := CleanupOrphanedWorktrees(ctx, repoPath)
 	if err != nil {
-		// Error should report number of cleaned directories and freed space
-		if !strings.Contains(err.Error(), "cleaned up") || !strings.Contains(err.Error(), "MB") {
-			t.Errorf("unexpected error format: %v", err)
-		}
+		t.Errorf("cleanup should not return an error on success: %v", err)
+	}
+	if removed < 2 {
+		t.Errorf("expected at least 2 orphans removed, got %d", removed)
 	}
 
 	// Verify orphaned pilot worktrees were removed
@@ -870,12 +870,14 @@ func TestCleanupOrphanedWorktrees_ValidWorktree(t *testing.T) {
 		t.Fatalf("worktree should exist before cleanup: %v", statErr)
 	}
 
-	// Run cleanup — GH-2168: should remove valid-but-stale worktrees at startup
-	err = CleanupOrphanedWorktrees(ctx, repoPath)
-	if err == nil {
-		t.Error("cleanup should report removed worktrees")
-	} else if !strings.Contains(err.Error(), "cleaned up") {
-		t.Errorf("unexpected error format: %v", err)
+	// Run cleanup — GH-2168: should remove valid-but-stale worktrees at startup.
+	// TASK-357 (G1): success returns nil err + a positive removed count.
+	removed, _, err := CleanupOrphanedWorktrees(ctx, repoPath)
+	if err != nil {
+		t.Errorf("cleanup should not return an error on success: %v", err)
+	}
+	if removed < 1 {
+		t.Error("cleanup should report at least one removed worktree")
 	}
 
 	// Verify the valid worktree was removed (it's stale at startup)
@@ -901,7 +903,7 @@ func TestCleanupOrphanedWorktrees_PoolSkipped(t *testing.T) {
 	defer func() { _ = os.RemoveAll(poolDir) }()
 
 	// Run cleanup
-	_ = CleanupOrphanedWorktrees(ctx, repoPath)
+	_, _, _ = CleanupOrphanedWorktrees(ctx, repoPath)
 
 	// Pool worktree should NOT be removed
 	if _, err := os.Stat(poolDir); os.IsNotExist(err) {
@@ -917,9 +919,12 @@ func TestCleanupOrphanedWorktrees_EmptyTmp(t *testing.T) {
 	ctx := context.Background()
 
 	// Run cleanup on clean system - should succeed with no action
-	err := CleanupOrphanedWorktrees(ctx, repoPath)
+	removed, _, err := CleanupOrphanedWorktrees(ctx, repoPath)
 	if err != nil {
 		t.Errorf("cleanup should succeed with no orphans: %v", err)
+	}
+	if removed != 0 {
+		t.Errorf("expected 0 removed on clean system, got %d", removed)
 	}
 }
 

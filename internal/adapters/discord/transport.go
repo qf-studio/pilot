@@ -142,7 +142,14 @@ func (g *GatewayClient) heartbeatLoop() {
 				D:  g.seq,
 			}
 
-			_ = g.conn.WriteJSON(hb)
+			// TASK-357 (G3): a heartbeat write failure is the earliest signal of a
+			// half-open socket. Surface it and stop the loop so reconnect happens
+			// immediately rather than only when the read loop next errors.
+			if err := g.conn.WriteJSON(hb); err != nil {
+				g.log.Warn("heartbeat write failed", slog.Any("error", err))
+				g.mu.Unlock()
+				return
+			}
 			g.mu.Unlock()
 		}
 	}

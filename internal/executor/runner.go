@@ -2019,6 +2019,12 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 			// Write embedded scripts
 			if err := WriteEmbeddedScripts(scriptDir); err != nil {
 				log.Error("Failed to write embedded hook scripts", slog.Any("error", err))
+				// TASK-357 (A4b): MkdirTemp already created scriptDir; this branch
+				// sets no hookRestoreFunc, so without cleanup the temp dir leaks for
+				// the process lifetime. Remove it now before falling through.
+				if rmErr := os.RemoveAll(scriptDir); rmErr != nil {
+					log.Warn("Failed to clean up hook scripts after write failure", slog.Any("error", rmErr))
+				}
 			} else {
 				// Generate Claude settings
 				hookSettings := GenerateClaudeSettings(r.config.Hooks, scriptDir)

@@ -907,11 +907,15 @@ func EnsureNavigatorInWorktree(sourceRepo, worktreePath string) error {
 //
 // This function is safe to call at startup. Pool worktrees (pilot-worktree-pool-*)
 // are excluded because they are managed by the WorktreeManager lifecycle.
-func CleanupOrphanedWorktrees(ctx context.Context, repoPath string) error {
+// TASK-357 (G1): returns (removedCount, freedBytes, err). err is reserved for
+// real failures (e.g. reading the temp dir); a successful cleanup of N orphans
+// returns a nil error so idiomatic `if err != nil { return err }` callers don't
+// abort startup whenever orphans were reclaimed.
+func CleanupOrphanedWorktrees(ctx context.Context, repoPath string) (int, int64, error) {
 	tmpDir := os.TempDir()
 	entries, err := os.ReadDir(tmpDir)
 	if err != nil {
-		return fmt.Errorf("failed to read temp directory %s: %w", tmpDir, err)
+		return 0, 0, fmt.Errorf("failed to read temp directory %s: %w", tmpDir, err)
 	}
 
 	// Resolve symlinks in repoPath for reliable comparison with gitdir values.
@@ -1017,10 +1021,9 @@ func CleanupOrphanedWorktrees(ctx context.Context, repoPath string) error {
 			slog.Int("removed", orphanCount),
 			slog.String("freed_mb", fmt.Sprintf("%.1f", float64(totalBytes)/(1024*1024))),
 		)
-		return fmt.Errorf("cleaned up %d orphaned pilot worktree directories (freed %.1f MB)", orphanCount, float64(totalBytes)/(1024*1024))
 	}
 
-	return nil
+	return orphanCount, totalBytes, nil
 }
 
 // dirSizeBytes returns the total size of a directory tree in bytes.
