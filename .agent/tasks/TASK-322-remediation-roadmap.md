@@ -91,15 +91,24 @@ all spec-guard'd (passed — `pilot` only, no `-spec-incomplete`):
   noise → **TASK-353 / #3374** (pagination-aware mocks + bounded waits + briefs panic guard). See
   [[learning_flaky_briefs_generator_test]].
 
-**TASK-322 remediation status:** Waves 0–3 complete (3 crit · 14 high · 17 med all shipped). Only
-**Wave 4 (13 low)** remains — re-audit ~2 weeks out per the Gates section.
+**TASK-322 remediation status:** ✅ **CLOSED 2026-06-15.** All waves shipped (3 crit · 14 high · 17 med ·
+10 actionable low). Wave 4 closed via PR #3603 (see below). One follow-up carried to the TASK-319 board
+track (board-GraphQL partial-data tolerance).
 
-## Wave 4 — Lows + tests (Pilot) — ⏳ PARKED, GATE ~2026-06-15
-**→ [[TASK-357-wave4-lows-reaudit]]** owns this tranche. Deferred behind the re-audit gate (≈2 weeks
-after Wave 3 closed 2026-06-01). All 13 are low severity (slow leaks, error-wrap, test gap) — no urgency.
-**Re-verify each against `main` before filing** (Waves 2–3 shipped some adjacent fixes).
-A4 hook-tmp + subagent-argv · B6 recordedMerges/discoveryStart eviction · E7 retryTracker-TTL ·
-G1 cleanup-return · G2 %w-wrap · G3 discord-heartbeat · G4 transcription-tests.
+## ✅ Wave 4 COMPLETE (2026-06-15) — TASK-322 audit CLOSED
+**[[TASK-357-wave4-lows-reaudit]]** (archived) owned this tranche. Re-audited against `main` @ ab15125b
+on the gate date — all 10 actionable lows survived (none pre-fixed by Waves 2–3) — and shipped manually
+via nav-loop in one worktree → **PR [#3603](https://github.com/qf-studio/pilot/pull/3603) (squash `cc30c4df`, merged 2026-06-15)**:
+A4a subagent-argv · A4b hook-tmp · B6a recordedMerges-evict · B6b discoveryStart-evict · E7 retryTracker-TTL ·
+G1 cleanup-return-signature · G2 %w-wrap · G3 discord-heartbeat · G4 transcription-tests · board-low GraphQL error-aggregation.
+The 3 remaining `low` bullets were positive "no-action" findings.
+
+**Carry-over (1) → TASK-319 board track:** board-low GraphQL **partial-data tolerance** is only half-done.
+#3603 shipped the *diagnosability* half (`ExecuteGraphQL` now aggregates all `gqlResp.Errors` with type/path,
+not just `Errors[0]`). Still TODO: unmarshal `gqlResp.Data` even when non-fatal node errors are present, and
+classify error `type` so `NOT_FOUND`/`FORBIDDEN` on optional nodes don't abort the whole page — plus make the
+board caller (`project_source.go` pagination loop) tolerate partial pages. Net-new behavior + tests; size it as
+its own task before implementing. Files: `github/client.go:~914`, `github/project_source.go:~121`.
 
 ## Resolved / no-action
 - `IsTaskShipped` error-guard — already fixed in `main` (`task_shipped.go:21`); only D2 test-row remains.
