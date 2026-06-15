@@ -174,7 +174,10 @@ func (b *Bridge) runPython(ctx context.Context, script string) (string, error) {
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("python error: %v: %s", err, stderr.String())
+		// TASK-357 (G2): wrap with %w so callers can errors.Is/As the underlying
+		// *exec.ExitError or context.DeadlineExceeded (the 30s timeout above) —
+		// distinguishing a python crash from a timeout requires the wrapped error.
+		return "", fmt.Errorf("python error: %w: %s", err, stderr.String())
 	}
 
 	return stdout.String(), nil

@@ -586,9 +586,12 @@ Examples:
 
 			// GH-962: Clean up orphaned worktree directories from previous crashed executions
 			if cfg.Executor != nil && cfg.Executor.UseWorktree {
-				if err := executor.CleanupOrphanedWorktrees(ctx, projectPath); err != nil {
-					// Log the cleanup but don't fail startup - this is best-effort cleanup
-					fmt.Printf("   Worktree:  ✓ cleanup completed (%s)\n", err.Error())
+				removed, freedBytes, err := executor.CleanupOrphanedWorktrees(ctx, projectPath)
+				if err != nil {
+					// Real failure (e.g. temp dir unreadable) — don't fail startup.
+					fmt.Printf("   Worktree:  ⚠ cleanup error (%s)\n", err.Error())
+				} else if removed > 0 {
+					fmt.Printf("   Worktree:  ✓ cleaned up %d orphaned worktrees (freed %.1f MB)\n", removed, float64(freedBytes)/(1024*1024))
 				}
 			}
 
@@ -1120,8 +1123,11 @@ Examples:
 
 			// GH-962: Clean up orphaned worktree directories from previous crashed executions
 			if cfg.Executor != nil && cfg.Executor.UseWorktree {
-				if err := executor.CleanupOrphanedWorktrees(ctx, projectPath); err != nil {
-					fmt.Printf("🧹 Worktree cleanup completed (%s)\n", err.Error())
+				removed, freedBytes, err := executor.CleanupOrphanedWorktrees(ctx, projectPath)
+				if err != nil {
+					fmt.Printf("🧹 Worktree cleanup error (%s)\n", err.Error())
+				} else if removed > 0 {
+					fmt.Printf("🧹 Cleaned up %d orphaned worktrees (freed %.1f MB)\n", removed, float64(freedBytes)/(1024*1024))
 				}
 			}
 

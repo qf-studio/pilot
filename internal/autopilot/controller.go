@@ -2312,6 +2312,11 @@ func (c *Controller) removePR(prNumber int) {
 		delete(c.activePRs, prNumber)
 	}
 	delete(c.prFailures, prNumber)
+	// TASK-357 (B6a): evict the merge-idempotency record alongside activePRs/prFailures.
+	// recordMergeSuccess sets recordedMerges[pr]=true and nothing else ever deleted it,
+	// so over a long-lived daemon it grew without bound. Idempotency is only needed
+	// while the PR is in flight; once removed it cannot be re-recorded by the live loop.
+	delete(c.recordedMerges, prNumber)
 	c.mu.Unlock()
 
 	// Clean up remote branch for closed/failed PRs (merged PRs already handled in handleMerging)

@@ -249,6 +249,14 @@ func (m *CIMonitor) checkAutoDiscoveredRuns(ctx context.Context, sha string, che
 			return CIPending, nil
 		}
 
+		// TASK-357 (B6b): the grace period is over and this is a terminal decision for
+		// the SHA — evict its discoveryStart entry so it does not leak for the daemon
+		// lifetime. Previously only the "checks found" path below deleted it, so every
+		// no-CI SHA (and every superseded intermediate commit) leaked an entry.
+		m.mu.Lock()
+		delete(m.discoveryStart, sha)
+		m.mu.Unlock()
+
 		// Grace period expired with no check runs — query commit-status API before
 		// concluding that no CI is configured. Providers like CircleCI, Jenkins,
 		// Travis, and Buildkite report exclusively via the statuses API.

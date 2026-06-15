@@ -404,9 +404,14 @@ Examples:
 
 				// GH-962: Clean up orphaned worktree directories from previous crashed executions
 				if cfg.Executor != nil && cfg.Executor.UseWorktree {
-					if err := executor.CleanupOrphanedWorktrees(context.Background(), projectPath); err != nil {
-						// Log the cleanup but don't fail startup - this is best-effort cleanup
-						logging.WithComponent("start").Info("worktree cleanup completed", slog.String("result", err.Error()))
+					removed, freedBytes, err := executor.CleanupOrphanedWorktrees(context.Background(), projectPath)
+					if err != nil {
+						// Real failure — don't fail startup, this is best-effort cleanup.
+						logging.WithComponent("start").Warn("worktree cleanup error", slog.String("error", err.Error()))
+					} else if removed > 0 {
+						logging.WithComponent("start").Info("worktree cleanup completed",
+							slog.Int("removed", removed),
+							slog.String("freed_mb", fmt.Sprintf("%.1f", float64(freedBytes)/(1024*1024))))
 					} else {
 						logging.WithComponent("start").Debug("worktree cleanup scan completed, no orphans found")
 					}
@@ -1437,9 +1442,14 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 
 	// GH-962: Clean up orphaned worktree directories from previous crashed executions
 	if cfg.Executor != nil && cfg.Executor.UseWorktree {
-		if err := executor.CleanupOrphanedWorktrees(ctx, projectPath); err != nil {
-			// Log the cleanup but don't fail startup - this is best-effort cleanup
-			logging.WithComponent("start").Info("worktree cleanup completed", slog.String("result", err.Error()))
+		removed, freedBytes, err := executor.CleanupOrphanedWorktrees(ctx, projectPath)
+		if err != nil {
+			// Real failure — don't fail startup, this is best-effort cleanup.
+			logging.WithComponent("start").Warn("worktree cleanup error", slog.String("error", err.Error()))
+		} else if removed > 0 {
+			logging.WithComponent("start").Info("worktree cleanup completed",
+				slog.Int("removed", removed),
+				slog.String("freed_mb", fmt.Sprintf("%.1f", float64(freedBytes)/(1024*1024))))
 		} else {
 			logging.WithComponent("start").Debug("worktree cleanup scan completed, no orphans found")
 		}

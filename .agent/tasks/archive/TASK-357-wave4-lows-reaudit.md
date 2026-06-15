@@ -1,6 +1,6 @@
 # TASK-357: TASK-322 Wave 4 — Lows + tests (re-audit gated)
 
-**Status:** 🟢 **GATE REACHED 2026-06-15** — ready to re-verify the 13 lows against current `main` and file survivors. (Park lifted; the 2-week cool-down after Wave 3 closed 2026-06-01 elapsed today.)
+**Status:** ✅ **DONE — TASK-322 audit closed.** Re-audited against `main` @ ab15125b (all 10 actionable lows survived; none pre-fixed by Waves 2–3), implemented manually via nav-loop in one worktree → [PR #3603](https://github.com/qf-studio/pilot/pull/3603). Gates: build ✅ · `make lint` 0 issues ✅ · changed-package tests ✅. Ledger ticked in `TASK-322-security-audit-findings.md` § `low`. Archived to `.agent/tasks/archive/` in PR #3603. **One carry-over:** board-GraphQL partial-data tolerance (unmarshal `Data` on partial errors + tolerant board caller) → TASK-319 board track; only error-aggregation shipped here.
 **Parent:** [[TASK-322-remediation-roadmap]] · final remaining tranche.
 
 > **Reminder context:** Waves 0–3 of the TASK-322 security audit are DONE (3 crit · 14 high · 17 med,

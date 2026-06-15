@@ -23,7 +23,8 @@ type Engine struct {
 	consecutiveFailures map[string]int           // project -> consecutive failure count
 	taskLastProgress    map[string]progressState // task ID -> last progress state
 	alertHistory        []AlertHistory
-	retryTracker        map[string]int // source (issue/PR) -> consecutive failure count (GH-848)
+	retryTracker        map[string]int       // source (issue/PR) -> consecutive failure count (GH-848)
+	retryLastSeen       map[string]time.Time // source -> last failure time, for TTL eviction (TASK-357 E7)
 
 	// Channels for events. priorityCh carries high-severity events
 	// (escalation / OOM / budget / security) on a dedicated buffer so a flood of
@@ -155,6 +156,7 @@ func NewEngine(config *AlertConfig, opts ...EngineOption) *Engine {
 		taskLastProgress:    make(map[string]progressState),
 		alertHistory:        make([]AlertHistory, 0),
 		retryTracker:        make(map[string]int),
+		retryLastSeen:       make(map[string]time.Time),
 		eventCh:             make(chan Event, 100),
 		priorityCh:          make(chan Event, 100),
 		done:                make(chan struct{}),
@@ -378,6 +380,7 @@ func (e *Engine) handleTaskCompleted(ctx context.Context, event Event) {
 	delete(e.taskLastProgress, event.TaskID)
 	// Reset per-source retry counter on success (GH-848)
 	delete(e.retryTracker, source)
+	delete(e.retryLastSeen, source) // TASK-357 (E7): keep TTL map in lockstep
 	e.mu.Unlock()
 }
 
@@ -397,6 +400,9 @@ func (e *Engine) handleTaskFailed(ctx context.Context, event Event) {
 	// Track per-source retries (GH-848)
 	e.retryTracker[source]++
 	retryCount := e.retryTracker[source]
+	// TASK-357 (E7): stamp last-seen so abandoned sources (failed, escalated, never
+	// re-attempted to success) can be evicted on a TTL instead of leaking forever.
+	e.retryLastSeen[source] = time.Now()
 	e.mu.Unlock()
 
 	// Check task_failed rule
@@ -591,6 +597,34 @@ func (e *Engine) evaluateStuckTasks(ctx context.Context) {
 			delete(e.taskLastProgress, id)
 		}
 		e.mu.Unlock()
+	}
+
+	// TASK-357 (E7): evict stale retryTracker entries. A source that fails, is
+	// escalated, and is then abandoned (never re-attempted to success) never hits
+	// the delete in handleTaskCompleted, so without a TTL its counter leaks for the
+	// daemon lifetime. Mirror the GH-2204 orphan-eviction for taskLastProgress.
+	e.evictStaleRetryTrackers(now)
+}
+
+// retryTrackerTTL bounds how long an idle per-source retry counter is retained.
+// A source with no failure for this long is treated as abandoned/resolved and
+// its retryTracker entry is evicted to keep the map bounded (TASK-357 E7).
+const retryTrackerTTL = 24 * time.Hour
+
+func (e *Engine) evictStaleRetryTrackers(now time.Time) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for source, lastSeen := range e.retryLastSeen {
+		if now.Sub(lastSeen) <= retryTrackerTTL {
+			continue
+		}
+		delete(e.retryTracker, source)
+		delete(e.retryLastSeen, source)
+		e.logger.Warn("evicting stale retry-tracker entry",
+			"source", source,
+			"idle_for", now.Sub(lastSeen).Round(time.Minute),
+			"ttl", retryTrackerTTL,
+		)
 	}
 }
 

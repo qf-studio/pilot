@@ -241,25 +241,25 @@ DO NOT make any changes. Research only.`, desc),
 func (p *ParallelRunner) executeSubagent(ctx context.Context, projectPath string, task researchTask) *SubagentResult {
 	start := time.Now()
 
-	// Determine model flag
-	modelFlag := ""
+	// TASK-357 (A4a): determine the bare model name. Previously this stored the
+	// joined string "--model haiku" and prepended it as a SINGLE argv element, so
+	// the claude subprocess received one argument literally equal to "--model haiku"
+	// (embedded space) instead of two — the flag parser then errored or silently
+	// ignored model selection, so subagents ran on the default model.
+	modelName := ""
 	if p.defaultModel != "" {
-		modelFlag = "--model " + p.defaultModel
+		modelName = p.defaultModel
 	} else {
 		switch task.Model {
-		case "haiku":
-			modelFlag = "--model haiku"
-		case "sonnet":
-			modelFlag = "--model sonnet"
-		case "opus":
-			modelFlag = "--model opus"
+		case "haiku", "sonnet", "opus":
+			modelName = task.Model
 		}
 	}
 
 	// Build command - use haiku for fast research
 	args := []string{"-p", task.Prompt, "--output-format", "text"}
-	if modelFlag != "" {
-		args = append([]string{modelFlag}, args...)
+	if modelName != "" {
+		args = append([]string{"--model", modelName}, args...)
 	}
 
 	cmd := exec.CommandContext(ctx, "claude", args...)
