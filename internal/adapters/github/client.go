@@ -84,6 +84,28 @@ func (e GraphQLError) String() string {
 	return s
 }
 
+// PartialGraphQLError is returned by ExecuteGraphQLTolerant when the response
+// contains only tolerable per-node errors (NOT_FOUND, FORBIDDEN). Data has been
+// unmarshalled into result; callers can inspect the dropped-node details via Errors.
+type PartialGraphQLError struct {
+	Errors []GraphQLError
+}
+
+func (e *PartialGraphQLError) Error() string {
+	msgs := make([]string, len(e.Errors))
+	for i, ge := range e.Errors {
+		msgs[i] = ge.String()
+	}
+	return "graphql partial error: " + strings.Join(msgs, "; ")
+}
+
+// isTolerable reports whether a GraphQL error type is a per-node access error
+// safe to skip on a partial board page. Only NOT_FOUND and FORBIDDEN qualify;
+// empty Type, RATE_LIMITED, auth, and syntax errors are all fatal.
+func isTolerable(errType string) bool {
+	return errType == "NOT_FOUND" || errType == "FORBIDDEN"
+}
+
 // Client is a GitHub API client
 type Client struct {
 	token      string
@@ -892,7 +914,29 @@ func (c *Client) GetPullRequestComments(ctx context.Context, owner, repo string,
 // Transient transport errors (5xx, network) and GraphQL-level rate limits
 // (HTTP 200 + RATE_LIMITED / "was submitted too quickly") are retried via
 // c.retryOpts, matching the behaviour of doRequest.
+// Any GraphQL error (regardless of type) aborts the call; use
+// ExecuteGraphQLTolerant for board pagination that must survive per-node
+// NOT_FOUND/FORBIDDEN errors.
 func (c *Client) ExecuteGraphQL(ctx context.Context, query string, variables map[string]interface{}, result interface{}) error {
+	return c.executeGraphQLCore(ctx, query, variables, result, false)
+}
+
+// ExecuteGraphQLTolerant is like ExecuteGraphQL but tolerates per-node
+// NOT_FOUND/FORBIDDEN errors in partial responses. When all errors are tolerable
+// it unmarshals Data into result and returns *PartialGraphQLError so the caller
+// can log/count the dropped nodes. A single non-tolerable error (e.g. RATE_LIMITED,
+// empty Type, auth, syntax) causes the whole call to fail exactly as ExecuteGraphQL
+// would, without unmarshalling Data.
+func (c *Client) ExecuteGraphQLTolerant(ctx context.Context, query string, variables map[string]interface{}, result interface{}) error {
+	return c.executeGraphQLCore(ctx, query, variables, result, true)
+}
+
+// executeGraphQLCore is the shared implementation for ExecuteGraphQL and
+// ExecuteGraphQLTolerant. When tolerant=false any error in the response is
+// fatal (strict mode). When tolerant=true, a response whose errors are all
+// NOT_FOUND/FORBIDDEN has its data unmarshalled and a *PartialGraphQLError
+// is returned; a single non-tolerable error makes the whole call fatal.
+func (c *Client) executeGraphQLCore(ctx context.Context, query string, variables map[string]interface{}, result interface{}, tolerant bool) error {
 	reqBody := GraphQLRequest{Query: query, Variables: variables}
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {
@@ -934,6 +978,28 @@ func (c *Client) ExecuteGraphQL(ctx context.Context, query string, variables map
 			// just Errors[0]. GitHub Projects V2 frequently returns several per-node
 			// errors at once, and surfacing only the first made board flows hard to
 			// diagnose.
+			//
+			// In tolerant mode: if all errors are NOT_FOUND/FORBIDDEN, unmarshal
+			// the good data and return *PartialGraphQLError. Any non-tolerable error
+			// (including mixed tolerable+fatal) makes the whole response fatal.
+			if tolerant {
+				allTolerable := true
+				for _, ge := range gqlResp.Errors {
+					if !isTolerable(ge.Type) {
+						allTolerable = false
+						break
+					}
+				}
+				if allTolerable {
+					if result != nil && len(gqlResp.Data) > 0 {
+						if err := json.Unmarshal(gqlResp.Data, result); err != nil {
+							return fmt.Errorf("unmarshal graphql data: %w", err)
+						}
+					}
+					return &PartialGraphQLError{Errors: gqlResp.Errors}
+				}
+			}
+
 			msgs := make([]string, len(gqlResp.Errors))
 			for i, ge := range gqlResp.Errors {
 				msgs[i] = ge.String()

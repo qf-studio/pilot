@@ -2,7 +2,9 @@ package github
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -121,8 +123,16 @@ func (s *ProjectBoardSource) FindIssuesFromProject(ctx context.Context, statusCo
 		}
 
 		var resp projectBoardItemsResponse
-		if err := s.client.ExecuteGraphQL(ctx, queryProjectBoardItems, vars, &resp); err != nil {
-			return nil, fmt.Errorf("list project board items: %w", err)
+		if err := s.client.ExecuteGraphQLTolerant(ctx, queryProjectBoardItems, vars, &resp); err != nil {
+			var partialErr *PartialGraphQLError
+			if errors.As(err, &partialErr) {
+				slog.Warn("board page has partial errors, some nodes dropped",
+					"dropped_count", len(partialErr.Errors),
+					"errors", partialErr.Error())
+				// resp already has the good nodes from the partial response — fall through.
+			} else {
+				return nil, fmt.Errorf("list project board items: %w", err)
+			}
 		}
 
 		for _, node := range resp.Node.Items.Nodes {

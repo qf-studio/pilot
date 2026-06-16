@@ -2725,6 +2725,152 @@ func TestExecuteGraphQL(t *testing.T) {
 	}
 }
 
+func TestExecuteGraphQLTolerant(t *testing.T) {
+	tests := []struct {
+		name           string
+		response       string
+		wantPartial    bool // want *PartialGraphQLError
+		wantFatal      bool // want a non-partial error
+		errContains    string
+		wantResultKey  string // key that must exist in unmarshalled result when wantPartial
+	}{
+		{
+			name:          "partial response: FORBIDDEN node error + good data",
+			response:      `{"data":{"items":{"nodes":[{"id":"good-1"}]}},"errors":[{"message":"Could not resolve","type":"FORBIDDEN","path":["node","items","nodes",1]}]}`,
+			wantPartial:   true,
+			errContains:   "FORBIDDEN",
+			wantResultKey: "items",
+		},
+		{
+			name:          "partial response: NOT_FOUND node error + good data",
+			response:      `{"data":{"items":{"nodes":[{"id":"good-2"}]}},"errors":[{"message":"Not found","type":"NOT_FOUND","path":["node","items","nodes",0]}]}`,
+			wantPartial:   true,
+			errContains:   "NOT_FOUND",
+			wantResultKey: "items",
+		},
+		{
+			name:        "fatal response: RATE_LIMITED error",
+			response:    `{"data":null,"errors":[{"message":"rate limit exceeded","type":"RATE_LIMITED"}]}`,
+			wantFatal:   true,
+			errContains: "RATE_LIMITED",
+		},
+		{
+			name:        "fatal response: empty Type (unknown error)",
+			response:    `{"data":null,"errors":[{"message":"something broke"}]}`,
+			wantFatal:   true,
+			errContains: "something broke",
+		},
+		{
+			name:        "mixed: one tolerable + one fatal → fatal",
+			response:    `{"data":{"x":1},"errors":[{"message":"not found","type":"NOT_FOUND"},{"message":"rate limit","type":"RATE_LIMITED"}]}`,
+			wantFatal:   true,
+			errContains: "RATE_LIMITED",
+		},
+		{
+			name:          "no errors: behaves same as strict",
+			response:      `{"data":{"viewer":{"login":"octocat"}}}`,
+			wantResultKey: "viewer",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(tt.response))
+			}))
+			defer server.Close()
+
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+
+			var result map[string]interface{}
+			err := client.ExecuteGraphQLTolerant(context.Background(), `query { x }`, nil, &result)
+
+			if tt.wantPartial {
+				var partialErr *PartialGraphQLError
+				if !errors.As(err, &partialErr) {
+					t.Fatalf("expected *PartialGraphQLError, got %T: %v", err, err)
+				}
+				if tt.errContains != "" && !strings.Contains(err.Error(), tt.errContains) {
+					t.Errorf("partial error = %q, want containing %q", err.Error(), tt.errContains)
+				}
+				if tt.wantResultKey != "" && result[tt.wantResultKey] == nil {
+					t.Errorf("result[%q] is nil — data should have been unmarshalled alongside partial error", tt.wantResultKey)
+				}
+				return
+			}
+
+			if tt.wantFatal {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				var partialErr *PartialGraphQLError
+				if errors.As(err, &partialErr) {
+					t.Fatalf("expected fatal error, got *PartialGraphQLError: %v", err)
+				}
+				if tt.errContains != "" && !strings.Contains(err.Error(), tt.errContains) {
+					t.Errorf("fatal error = %q, want containing %q", err.Error(), tt.errContains)
+				}
+				return
+			}
+
+			// No errors expected
+			if err != nil {
+				t.Fatalf("ExecuteGraphQLTolerant() unexpected error = %v", err)
+			}
+			if tt.wantResultKey != "" && result[tt.wantResultKey] == nil {
+				t.Errorf("result[%q] is nil, want populated", tt.wantResultKey)
+			}
+		})
+	}
+}
+
+// TestExecuteGraphQL_StrictUnchanged verifies that ExecuteGraphQL returns a fatal
+// error for any GraphQL error, including tolerable types like FORBIDDEN/NOT_FOUND.
+func TestExecuteGraphQL_StrictUnchanged(t *testing.T) {
+	tests := []struct {
+		name        string
+		response    string
+		errContains string
+	}{
+		{
+			name:        "FORBIDDEN is fatal in strict mode",
+			response:    `{"data":{"items":[{"id":"x"}]},"errors":[{"message":"no access","type":"FORBIDDEN"}]}`,
+			errContains: "graphql error",
+		},
+		{
+			name:        "NOT_FOUND is fatal in strict mode",
+			response:    `{"data":{"items":[{"id":"x"}]},"errors":[{"message":"gone","type":"NOT_FOUND"}]}`,
+			errContains: "graphql error",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(tt.response))
+			}))
+			defer server.Close()
+
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+
+			var result map[string]interface{}
+			err := client.ExecuteGraphQL(context.Background(), `query { x }`, nil, &result)
+			if err == nil {
+				t.Fatal("ExecuteGraphQL() should return error for any GraphQL error")
+			}
+			if !strings.Contains(err.Error(), tt.errContains) {
+				t.Errorf("error = %q, want containing %q", err.Error(), tt.errContains)
+			}
+			// result must not be populated — strict mode does not unmarshal on error
+			if result != nil {
+				t.Errorf("result should be nil when ExecuteGraphQL returns an error, got %v", result)
+			}
+		})
+	}
+}
+
 func TestSearchMergedPRsForIssue(t *testing.T) {
 	tests := []struct {
 		name        string
