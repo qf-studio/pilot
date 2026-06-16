@@ -444,6 +444,122 @@ func TestFindIssuesFromProject_OldestFirstOrdering(t *testing.T) {
 	}
 }
 
+// partialItemsResp builds a GraphQL response that contains both valid node data and one
+// per-node tolerable error, simulating a GitHub Projects V2 partial response.
+func partialItemsResp(nodes []map[string]interface{}, hasNextPage bool, endCursor string, errType string) string {
+	data := map[string]interface{}{
+		"node": map[string]interface{}{
+			"items": map[string]interface{}{
+				"pageInfo": map[string]interface{}{
+					"hasNextPage": hasNextPage,
+					"endCursor":   endCursor,
+				},
+				"nodes": nodes,
+			},
+		},
+	}
+	dataBytes, _ := json.Marshal(data)
+	resp := map[string]interface{}{
+		"data": json.RawMessage(dataBytes),
+		"errors": []map[string]interface{}{
+			{
+				"message": "Could not resolve to a node",
+				"type":    errType,
+				"path":    []interface{}{"node", "items", "nodes", 99},
+			},
+		},
+	}
+	b, _ := json.Marshal(resp)
+	return string(b)
+}
+
+// TestFindIssuesFromProject_PartialPage verifies that a partial board response
+// (valid data + one FORBIDDEN/NOT_FOUND node error) keeps the good nodes,
+// does not abort pagination, and returns results from all pages.
+func TestFindIssuesFromProject_PartialPage(t *testing.T) {
+	goodNode := issueNode(55, "I_55", "Good issue", "body", "OPEN", "org/repo", "Todo")
+	goodNode2 := issueNode(56, "I_56", "Good issue 2", "body2", "OPEN", "org/repo", "Todo")
+
+	server := fakeProjectSourceServer(t, []string{
+		orgProjectResp("PVT_partial"),
+		// Page 1: good node + FORBIDDEN error for an inaccessible node.
+		partialItemsResp([]map[string]interface{}{goodNode}, true, "cursor-partial", "FORBIDDEN"),
+		// Page 2: another good node, clean response — verifies pagination continues.
+		itemsResp([]map[string]interface{}{goodNode2}, false, ""),
+	})
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	src := NewProjectBoardSource(client, &ProjectBoardConfig{
+		ProjectNumber: 20,
+		StatusField:   "Status",
+	}, "org", "repo")
+
+	issues, err := src.FindIssuesFromProject(context.Background(), "Todo")
+	if err != nil {
+		t.Fatalf("FindIssuesFromProject() unexpected error = %v", err)
+	}
+	if len(issues) != 2 {
+		t.Fatalf("expected 2 issues (good nodes from both pages), got %d: %v", len(issues), issues)
+	}
+	numbers := map[int]bool{issues[0].Number: true, issues[1].Number: true}
+	if !numbers[55] || !numbers[56] {
+		t.Errorf("expected issue numbers 55 and 56, got %v", issues)
+	}
+}
+
+// TestFindIssuesFromProject_PartialNotFound mirrors TestFindIssuesFromProject_PartialPage
+// but uses a NOT_FOUND tolerable error instead of FORBIDDEN.
+func TestFindIssuesFromProject_PartialNotFound(t *testing.T) {
+	goodNode := issueNode(60, "I_60", "Surviving issue", "", "OPEN", "org/repo", "Todo")
+
+	server := fakeProjectSourceServer(t, []string{
+		orgProjectResp("PVT_notfound"),
+		partialItemsResp([]map[string]interface{}{goodNode}, false, "", "NOT_FOUND"),
+	})
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	src := NewProjectBoardSource(client, &ProjectBoardConfig{
+		ProjectNumber: 21,
+		StatusField:   "Status",
+	}, "org", "repo")
+
+	issues, err := src.FindIssuesFromProject(context.Background(), "Todo")
+	if err != nil {
+		t.Fatalf("FindIssuesFromProject() unexpected error = %v", err)
+	}
+	if len(issues) != 1 || issues[0].Number != 60 {
+		t.Errorf("expected issue #60, got %v", issues)
+	}
+}
+
+// TestFindIssuesFromProject_FatalErrorAborts verifies that a non-tolerable GraphQL
+// error (e.g. RATE_LIMITED) aborts pagination and returns an error.
+func TestFindIssuesFromProject_FatalErrorAborts(t *testing.T) {
+	fatalResp := `{"data":null,"errors":[{"message":"rate limit exceeded","type":"RATE_LIMITED"}]}`
+
+	server := fakeProjectSourceServer(t, []string{
+		orgProjectResp("PVT_fatal"),
+		fatalResp,
+	})
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	src := NewProjectBoardSource(client, &ProjectBoardConfig{
+		ProjectNumber: 22,
+		StatusField:   "Status",
+	}, "org", "repo")
+
+	_, err := src.FindIssuesFromProject(context.Background(), "Todo")
+	if err == nil {
+		t.Fatal("expected error on RATE_LIMITED response, got nil")
+	}
+	if !strings.Contains(err.Error(), "RATE_LIMITED") {
+		t.Errorf("error = %q, want containing RATE_LIMITED", err.Error())
+	}
+}
+
 // TestSourceEnabledFalse_UsesLabelPath is a regression guard: when source_enabled=false
 // (i.e. projectBoardSource is nil), findOldestUnprocessedIssue must reach the
 // label-based REST path (ListIssues), not the board GraphQL path.
