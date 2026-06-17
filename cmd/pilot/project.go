@@ -95,10 +95,11 @@ func newProjectAddCmd() *cobra.Command {
 	var (
 		name       string
 		path       string
-		github     string
+		ghRepo     string
 		branch     string
 		navigator  bool
 		setDefault bool
+		noWizard   bool
 	)
 
 	cmd := &cobra.Command{
@@ -106,140 +107,155 @@ func newProjectAddCmd() *cobra.Command {
 		Short: "Add a new project",
 		Long: `Add a new project to Pilot configuration.
 
-Auto-detection:
+Without flags on an interactive terminal, launches the interactive wizard
+which detects your gh CLI auth, lets you pick a repo, and prefills settings.
+
+Auto-detection (flag mode):
   - If --path is omitted, uses current working directory
   - If --branch is omitted, detects from git remote
   - If --navigator is omitted, checks for .agent/ directory
   - If --github is omitted, parses from git remote origin
 
 Examples:
+  pilot project add                            # interactive wizard (TTY only)
+  pilot project add --no-wizard                # force flag mode
   pilot project add --name my-app
   pilot project add --name my-app --github owner/repo
   pilot project add -n my-app -p /path/to/project -g owner/repo -b main`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if name == "" {
-				return fmt.Errorf("--name is required")
+			// Wizard mode: no --name and not explicitly disabled, and stdin is a terminal
+			if name == "" && !noWizard && isInteractiveTTY() {
+				return runProjectAddWizard(cmd)
 			}
-
-			configPath := cfgFile
-			if configPath == "" {
-				configPath = config.DefaultConfigPath()
-			}
-
-			cfg, err := config.Load(configPath)
-			if err != nil {
-				return fmt.Errorf("failed to load config: %w", err)
-			}
-
-			// Check for duplicate name
-			if cfg.GetProjectByName(name) != nil {
-				return fmt.Errorf("project '%s' already exists", name)
-			}
-
-			// Use current directory if path not specified
-			if path == "" {
-				cwd, err := os.Getwd()
-				if err != nil {
-					return fmt.Errorf("failed to get current directory: %w", err)
-				}
-				path = cwd
-			}
-
-			// Expand and validate path
-			path = expandProjectPath(path)
-			info, err := os.Stat(path)
-			if err != nil {
-				if os.IsNotExist(err) {
-					return fmt.Errorf("path does not exist: %s", path)
-				}
-				return fmt.Errorf("failed to access path: %w", err)
-			}
-			if !info.IsDir() {
-				return fmt.Errorf("path is not a directory: %s", path)
-			}
-
-			// Check for duplicate path
-			if cfg.GetProject(path) != nil {
-				return fmt.Errorf("path already configured: %s", path)
-			}
-
-			// Auto-detect GitHub if not specified
-			var ghConfig *config.ProjectGitHubConfig
-			if github != "" {
-				parts := strings.SplitN(github, "/", 2)
-				if len(parts) != 2 {
-					return fmt.Errorf("invalid GitHub format, expected owner/repo: %s", github)
-				}
-				ghConfig = &config.ProjectGitHubConfig{
-					Owner: parts[0],
-					Repo:  parts[1],
-				}
-			} else {
-				// Try to auto-detect from git remote
-				ghConfig = detectGitHubFromRemote(path)
-			}
-
-			// Auto-detect branch if not specified
-			if branch == "" {
-				branch = detectDefaultBranch(path)
-			}
-
-			// Auto-detect navigator if flag not explicitly set
-			if !cmd.Flags().Changed("navigator") {
-				navigator = detectNavigator(path)
-			}
-
-			// Create project config
-			proj := &config.ProjectConfig{
-				Name:          name,
-				Path:          path,
-				Navigator:     navigator,
-				DefaultBranch: branch,
-				GitHub:        ghConfig,
-			}
-
-			// Add to config
-			cfg.Projects = append(cfg.Projects, proj)
-
-			// Set as default if requested or if it's the only project
-			if setDefault || len(cfg.Projects) == 1 {
-				cfg.DefaultProject = name
-			}
-
-			// Save config
-			if err := config.Save(cfg, configPath); err != nil {
-				return fmt.Errorf("failed to save config: %w", err)
-			}
-
-			// Print success message
-			fmt.Printf("Project added: %s\n", name)
-			fmt.Printf("   Path:      %s\n", path)
-			if ghConfig != nil {
-				fmt.Printf("   GitHub:    %s/%s\n", ghConfig.Owner, ghConfig.Repo)
-			}
-			if branch != "" {
-				fmt.Printf("   Branch:    %s\n", branch)
-			}
-			navStr := "disabled"
-			if navigator {
-				navStr = "enabled"
-			}
-			fmt.Printf("   Navigator: %s\n", navStr)
-			fmt.Println()
-			fmt.Printf("   Start working: pilot start --project %s\n", name)
-
-			return nil
+			return runProjectAddFlags(cmd, name, path, ghRepo, branch, navigator, setDefault)
 		},
 	}
 
-	cmd.Flags().StringVarP(&name, "name", "n", "", "Project name (required)")
+	cmd.Flags().StringVarP(&name, "name", "n", "", "Project name (required in flag mode)")
 	cmd.Flags().StringVarP(&path, "path", "p", "", "Project path (default: current directory)")
-	cmd.Flags().StringVarP(&github, "github", "g", "", "GitHub repo (owner/repo)")
+	cmd.Flags().StringVarP(&ghRepo, "github", "g", "", "GitHub repo (owner/repo)")
 	cmd.Flags().StringVarP(&branch, "branch", "b", "", "Default branch (auto-detected)")
 	cmd.Flags().BoolVar(&navigator, "navigator", false, "Enable Navigator (auto-detected)")
 	cmd.Flags().BoolVarP(&setDefault, "set-default", "d", false, "Set as default project")
+	cmd.Flags().BoolVar(&noWizard, "no-wizard", false, "Force flag-driven mode (skip interactive wizard)")
 
 	return cmd
+}
+
+// runProjectAddFlags implements the flag-driven `pilot project add --name <n>` path.
+func runProjectAddFlags(cmd *cobra.Command, name, path, ghRepo, branch string, navigator, setDefault bool) error {
+	if name == "" {
+		return fmt.Errorf("--name is required")
+	}
+
+	configPath := cfgFile
+	if configPath == "" {
+		configPath = config.DefaultConfigPath()
+	}
+
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return fmt.Errorf("failed to load config: %w", err)
+	}
+
+	// Check for duplicate name
+	if cfg.GetProjectByName(name) != nil {
+		return fmt.Errorf("project '%s' already exists", name)
+	}
+
+	// Use current directory if path not specified
+	if path == "" {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return fmt.Errorf("failed to get current directory: %w", err)
+		}
+		path = cwd
+	}
+
+	// Expand and validate path
+	path = expandProjectPath(path)
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("path does not exist: %s", path)
+		}
+		return fmt.Errorf("failed to access path: %w", err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("path is not a directory: %s", path)
+	}
+
+	// Check for duplicate path
+	if cfg.GetProject(path) != nil {
+		return fmt.Errorf("path already configured: %s", path)
+	}
+
+	// Auto-detect GitHub if not specified
+	var ghConfig *config.ProjectGitHubConfig
+	if ghRepo != "" {
+		parts := strings.SplitN(ghRepo, "/", 2)
+		if len(parts) != 2 {
+			return fmt.Errorf("invalid GitHub format, expected owner/repo: %s", ghRepo)
+		}
+		ghConfig = &config.ProjectGitHubConfig{
+			Owner: parts[0],
+			Repo:  parts[1],
+		}
+	} else {
+		// Try to auto-detect from git remote
+		ghConfig = detectGitHubFromRemote(path)
+	}
+
+	// Auto-detect branch if not specified
+	if branch == "" {
+		branch = detectDefaultBranch(path)
+	}
+
+	// Auto-detect navigator if flag not explicitly set
+	if cmd == nil || !cmd.Flags().Changed("navigator") {
+		navigator = detectNavigator(path)
+	}
+
+	// Create project config
+	proj := &config.ProjectConfig{
+		Name:          name,
+		Path:          path,
+		Navigator:     navigator,
+		DefaultBranch: branch,
+		GitHub:        ghConfig,
+	}
+
+	// Add to config
+	cfg.Projects = append(cfg.Projects, proj)
+
+	// Set as default if requested or if it's the only project
+	if setDefault || len(cfg.Projects) == 1 {
+		cfg.DefaultProject = name
+	}
+
+	// Save config
+	if err := config.Save(cfg, configPath); err != nil {
+		return fmt.Errorf("failed to save config: %w", err)
+	}
+
+	// Print success message
+	fmt.Printf("Project added: %s\n", name)
+	fmt.Printf("   Path:      %s\n", path)
+	if ghConfig != nil {
+		fmt.Printf("   GitHub:    %s/%s\n", ghConfig.Owner, ghConfig.Repo)
+	}
+	if branch != "" {
+		fmt.Printf("   Branch:    %s\n", branch)
+	}
+	navStr := "disabled"
+	if navigator {
+		navStr = "enabled"
+	}
+	fmt.Printf("   Navigator: %s\n", navStr)
+	fmt.Println()
+	fmt.Printf("   Start working: pilot start --project %s\n", name)
+
+	return nil
 }
 
 func newProjectRemoveCmd() *cobra.Command {

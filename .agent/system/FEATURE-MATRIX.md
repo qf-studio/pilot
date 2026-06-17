@@ -1,6 +1,6 @@
 # Pilot Feature Matrix
 
-**Last Updated:** 2026-06-16 (v2.151.0)
+**Last Updated:** 2026-06-15 (v2.151.0)
 
 ## Legend
 
@@ -433,6 +433,7 @@
 | Hot upgrade | ✅ | upgrade | `u` key in dashboard | - | Graceful drain + restart, no orphaned tasks (v0.18.0, v0.63.0) |
 | Config init | ✅ | config | `pilot init` | - | Creates default |
 | Setup wizard | ✅ | main | `pilot setup` | - | Interactive config |
+| Project add wizard | ✅ | cli | `pilot project add` (no flags) | - | gh CLI auth, repo picker, token seeding; `--no-wizard` for CI (GH-3017, v2.187.1) |
 | Shell completion | ✅ | main | `pilot completion` | - | bash/zsh/fish |
 | Zip archive support | ✅ | upgrade | - | - | Windows self-upgrade handles .zip archives |
 | Pipeline hardening | ✅ | executor | - | - | 4 correctness checks: constants, parity, coverage, dropped features (v1.10.0, GH-1321) |
