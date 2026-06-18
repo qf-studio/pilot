@@ -71,6 +71,69 @@ func TestGetMetricsSummary_CacheTokens(t *testing.T) {
 	}
 }
 
+func TestSaveExecutionMetrics_CacheTokens(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "pilot-save-metrics-cache-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	now := time.Now().UTC()
+	exec := &Execution{
+		ID:          "ex-cache-1",
+		TaskID:      "T-cache-1",
+		ProjectPath: "/proj",
+		Status:      "completed",
+		DurationMs:  1000,
+		TokensTotal: 100,
+		CreatedAt:   now,
+	}
+	if err := store.SaveExecution(exec); err != nil {
+		t.Fatalf("SaveExecution: %v", err)
+	}
+
+	metrics := &ExecutionMetrics{
+		ExecutionID:      exec.ID,
+		TokensInput:      400,
+		TokensOutput:     600,
+		TokensTotal:      1000,
+		TokensCacheRead:  850,
+		TokensCacheWrite: 120,
+		EstimatedCostUSD: 0.01,
+		ModelName:        "claude-sonnet-4-6",
+	}
+	if err := store.SaveExecutionMetrics(metrics); err != nil {
+		t.Fatalf("SaveExecutionMetrics: %v", err)
+	}
+
+	q := MetricsQuery{
+		Start: now.Add(-time.Hour),
+		End:   now.Add(time.Hour),
+	}
+	summary, err := store.GetMetricsSummary(q)
+	if err != nil {
+		t.Fatalf("GetMetricsSummary: %v", err)
+	}
+	if summary.TotalTokensCacheRead == 0 {
+		t.Errorf("TotalTokensCacheRead = 0, want non-zero")
+	}
+	if summary.TotalTokensCacheRead != 850 {
+		t.Errorf("TotalTokensCacheRead = %d, want 850", summary.TotalTokensCacheRead)
+	}
+	if summary.TotalTokensCacheWrite == 0 {
+		t.Errorf("TotalTokensCacheWrite = 0, want non-zero")
+	}
+	if summary.TotalTokensCacheWrite != 120 {
+		t.Errorf("TotalTokensCacheWrite = %d, want 120", summary.TotalTokensCacheWrite)
+	}
+}
+
 func TestExportMetrics_CacheTokens(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "pilot-export-cache-*")
 	if err != nil {
