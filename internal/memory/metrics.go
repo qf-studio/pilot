@@ -45,10 +45,12 @@ type MetricsSummary struct {
 	MaxDurationMs   int64
 
 	// Tokens
-	TotalTokensInput  int64
-	TotalTokensOutput int64
-	TotalTokens       int64
-	AvgTokensPerTask  int64
+	TotalTokensInput      int64
+	TotalTokensOutput     int64
+	TotalTokens           int64
+	TotalTokensCacheRead  int64
+	TotalTokensCacheWrite int64
+	AvgTokensPerTask      int64
 
 	// Cost
 	TotalCostUSD float64
@@ -261,6 +263,8 @@ func (s *Store) GetMetricsSummary(query MetricsQuery) (*MetricsSummary, error) {
 			COALESCE(SUM(tokens_input), 0) as total_input,
 			COALESCE(SUM(tokens_output), 0) as total_output,
 			COALESCE(SUM(tokens_total), 0) as total_tokens,
+			COALESCE(SUM(tokens_cache_read), 0) as total_cache_read,
+			COALESCE(SUM(tokens_cache_write), 0) as total_cache_write,
 			COALESCE(SUM(estimated_cost_usd), 0) as total_cost,
 			COALESCE(SUM(files_changed), 0) as files_changed,
 			COALESCE(SUM(lines_added), 0) as lines_added,
@@ -280,6 +284,8 @@ func (s *Store) GetMetricsSummary(query MetricsQuery) (*MetricsSummary, error) {
 		&summary.TotalTokensInput,
 		&summary.TotalTokensOutput,
 		&summary.TotalTokens,
+		&summary.TotalTokensCacheRead,
+		&summary.TotalTokensCacheWrite,
 		&summary.TotalCostUSD,
 		&summary.TotalFilesChanged,
 		&summary.TotalLinesAdded,
@@ -545,7 +551,7 @@ func (s *Store) ExportMetrics(query MetricsQuery) ([]*ExportedExecution, error) 
 	rows, err := s.db.Query(`
 		SELECT
 			id, task_id, project_path, status, duration_ms,
-			tokens_input, tokens_output, tokens_total, estimated_cost_usd,
+			tokens_input, tokens_output, tokens_total, tokens_cache_read, tokens_cache_write, estimated_cost_usd,
 			files_changed, lines_added, lines_removed, model_name,
 			pr_url, commit_sha, created_at, completed_at
 		FROM executions
@@ -561,14 +567,14 @@ func (s *Store) ExportMetrics(query MetricsQuery) ([]*ExportedExecution, error) 
 	for rows.Next() {
 		var e ExportedExecution
 		var completedAt sql.NullTime
-		var tokensInput, tokensOutput, tokensTotal sql.NullInt64
+		var tokensInput, tokensOutput, tokensTotal, tokensCacheRead, tokensCacheWrite sql.NullInt64
 		var cost sql.NullFloat64
 		var filesChanged, linesAdded, linesRemoved sql.NullInt64
 		var modelName, prURL, commitSHA sql.NullString
 
 		if err := rows.Scan(
 			&e.ID, &e.TaskID, &e.ProjectPath, &e.Status, &e.DurationMs,
-			&tokensInput, &tokensOutput, &tokensTotal, &cost,
+			&tokensInput, &tokensOutput, &tokensTotal, &tokensCacheRead, &tokensCacheWrite, &cost,
 			&filesChanged, &linesAdded, &linesRemoved, &modelName,
 			&prURL, &commitSHA, &e.CreatedAt, &completedAt,
 		); err != nil {
@@ -583,6 +589,12 @@ func (s *Store) ExportMetrics(query MetricsQuery) ([]*ExportedExecution, error) 
 		}
 		if tokensTotal.Valid {
 			e.TokensTotal = tokensTotal.Int64
+		}
+		if tokensCacheRead.Valid {
+			e.TokensCacheRead = tokensCacheRead.Int64
+		}
+		if tokensCacheWrite.Valid {
+			e.TokensCacheWrite = tokensCacheWrite.Int64
 		}
 		if cost.Valid {
 			e.EstimatedCostUSD = cost.Float64
@@ -625,6 +637,8 @@ type ExportedExecution struct {
 	TokensInput      int64      `json:"tokens_input"`
 	TokensOutput     int64      `json:"tokens_output"`
 	TokensTotal      int64      `json:"tokens_total"`
+	TokensCacheRead  int64      `json:"tokens_cache_read"`
+	TokensCacheWrite int64      `json:"tokens_cache_write"`
 	EstimatedCostUSD float64    `json:"estimated_cost_usd"`
 	FilesChanged     int        `json:"files_changed"`
 	LinesAdded       int        `json:"lines_added"`
