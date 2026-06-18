@@ -1782,10 +1782,12 @@ func (s *Store) UpdateSessionTaskCount(sessionID string, completed, failed int) 
 
 // LifetimeTokens holds cumulative token and cost totals from all executions.
 type LifetimeTokens struct {
-	InputTokens  int64
-	OutputTokens int64
-	TotalTokens  int64
-	TotalCostUSD float64
+	InputTokens      int64
+	OutputTokens     int64
+	TotalTokens      int64
+	CacheReadTokens  int64
+	CacheWriteTokens int64
+	TotalCostUSD     float64
 }
 
 // GetLifetimeTokens returns cumulative token usage and cost across all executions.
@@ -1799,6 +1801,8 @@ func (s *Store) GetLifetimeTokens(projectPath string) (*LifetimeTokens, error) {
 			COALESCE(SUM(tokens_input), 0),
 			COALESCE(SUM(tokens_output), 0),
 			COALESCE(SUM(tokens_total), 0),
+			COALESCE(SUM(tokens_cache_read), 0),
+			COALESCE(SUM(tokens_cache_write), 0),
 			COALESCE(SUM(estimated_cost_usd), 0)
 		FROM executions
 		WHERE tokens_total > 0`
@@ -1810,7 +1814,8 @@ func (s *Store) GetLifetimeTokens(projectPath string) (*LifetimeTokens, error) {
 	}
 
 	var lt LifetimeTokens
-	if err := row.Scan(&lt.InputTokens, &lt.OutputTokens, &lt.TotalTokens, &lt.TotalCostUSD); err != nil {
+	if err := row.Scan(&lt.InputTokens, &lt.OutputTokens, &lt.TotalTokens,
+		&lt.CacheReadTokens, &lt.CacheWriteTokens, &lt.TotalCostUSD); err != nil {
 		return nil, fmt.Errorf("failed to get lifetime tokens: %w", err)
 	}
 	return &lt, nil

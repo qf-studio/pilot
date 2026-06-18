@@ -1079,6 +1079,61 @@ func TestGetLifetimeTokens(t *testing.T) {
 	}
 }
 
+func TestGetLifetimeTokens_CacheFields(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	// Insert two executions with cache token data via SaveExecution.
+	execs := []struct {
+		id         string
+		input      int64
+		output     int64
+		cacheRead  int64
+		cacheWrite int64
+	}{
+		{"lt-cache-1", 1000, 500, 80000, 3000},
+		{"lt-cache-2", 2000, 1000, 40000, 2000},
+	}
+	for _, e := range execs {
+		total := e.input + e.output
+		if err := store.SaveExecution(&Execution{
+			ID:               e.id,
+			TaskID:           "TASK-" + e.id,
+			ProjectPath:      "/p",
+			Status:           "completed",
+			TokensInput:      e.input,
+			TokensOutput:     e.output,
+			TokensTotal:      total,
+			TokensCacheRead:  e.cacheRead,
+			TokensCacheWrite: e.cacheWrite,
+			EstimatedCostUSD: 0.01,
+		}); err != nil {
+			t.Fatalf("SaveExecution %s: %v", e.id, err)
+		}
+	}
+
+	lt, err := store.GetLifetimeTokens("")
+	if err != nil {
+		t.Fatalf("GetLifetimeTokens: %v", err)
+	}
+
+	if lt.CacheReadTokens != 120000 {
+		t.Errorf("CacheReadTokens = %d, want 120000", lt.CacheReadTokens)
+	}
+	if lt.CacheWriteTokens != 5000 {
+		t.Errorf("CacheWriteTokens = %d, want 5000", lt.CacheWriteTokens)
+	}
+	// Regular token fields unaffected
+	if lt.TotalTokens != 4500 {
+		t.Errorf("TotalTokens = %d, want 4500", lt.TotalTokens)
+	}
+}
+
 func TestGetLifetimeTaskCounts(t *testing.T) {
 	tmpDir := t.TempDir()
 
