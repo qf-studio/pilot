@@ -36,9 +36,10 @@ var sparkBlocks = []rune{' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '
 
 // MetricsCardData holds aggregated metrics for the dashboard metrics cards.
 type MetricsCardData struct {
-	TotalTokens, InputTokens, OutputTokens  int
-	TotalCostUSD, CostPerTask               float64
-	TotalTasks, Succeeded, Failed, Declined int
+	TotalTokens, InputTokens, OutputTokens   int
+	CacheReadTokens, CacheWriteTokens        int
+	TotalCostUSD, CostPerTask                float64
+	TotalTasks, Succeeded, Failed, Declined  int
 	// TASK-358: non-failure terminal outcomes, split out of "failed".
 	NoOp, Stalled, RateLimited, Infra, Skipped int
 	TokenHistory                               []int64   // 7 days
@@ -593,6 +594,8 @@ func (m *Model) hydrateFromStore() {
 		m.metricsCard.TotalTokens = int(lifetime.TotalTokens)
 		m.metricsCard.InputTokens = int(lifetime.InputTokens)
 		m.metricsCard.OutputTokens = int(lifetime.OutputTokens)
+		m.metricsCard.CacheReadTokens = int(lifetime.CacheReadTokens)
+		m.metricsCard.CacheWriteTokens = int(lifetime.CacheWriteTokens)
 		m.metricsCard.TotalCostUSD = lifetime.TotalCostUSD
 	}
 
@@ -892,6 +895,8 @@ func storeRefreshCmd(store *memory.Store, projectPath string) tea.Cmd {
 			msg.metricsCard.TotalTokens = int(lifetime.TotalTokens)
 			msg.metricsCard.InputTokens = int(lifetime.InputTokens)
 			msg.metricsCard.OutputTokens = int(lifetime.OutputTokens)
+			msg.metricsCard.CacheReadTokens = int(lifetime.CacheReadTokens)
+			msg.metricsCard.CacheWriteTokens = int(lifetime.CacheWriteTokens)
 			msg.metricsCard.TotalCostUSD = lifetime.TotalCostUSD
 		}
 
@@ -2045,11 +2050,13 @@ func buildMiniCard(title, value, detail1, detail2, sparkline string, cw int) str
 // --- Card renderers ---
 
 // renderTokenCard renders the TOKENS mini-card with the given card width.
+// Shows a cached/uncached split: cached = cache_read tokens, uncached = input+output.
 func (m Model) renderTokenCard(cw int) string {
 	ciw := cw - 6
-	value := titleStyle.Render(formatCompact(m.metricsCard.TotalTokens))
-	detail1 := dimStyle.Render(fmt.Sprintf("↑ %s input", formatCompact(m.metricsCard.InputTokens)))
-	detail2 := dimStyle.Render(fmt.Sprintf("↓ %s output", formatCompact(m.metricsCard.OutputTokens)))
+	grandTotal := m.metricsCard.TotalTokens + m.metricsCard.CacheReadTokens + m.metricsCard.CacheWriteTokens
+	value := titleStyle.Render(formatCompact(grandTotal))
+	detail1 := dimStyle.Render(fmt.Sprintf("↑ %s cached", formatCompact(m.metricsCard.CacheReadTokens)))
+	detail2 := dimStyle.Render(fmt.Sprintf("↓ %s uncached", formatCompact(m.metricsCard.TotalTokens)))
 
 	// Convert int64 history to float64
 	floats := make([]float64, len(m.metricsCard.TokenHistory))

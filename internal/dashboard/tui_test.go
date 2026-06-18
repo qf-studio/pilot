@@ -219,6 +219,52 @@ func TestRenderMetricsCards_ZeroState(t *testing.T) {
 	}
 }
 
+func TestRenderTokenCard_CacheBreakdown(t *testing.T) {
+	m := NewModel("test")
+	m.metricsCard = MetricsCardData{
+		TotalTokens:      10_000, // input+output
+		InputTokens:      7_000,
+		OutputTokens:     3_000,
+		CacheReadTokens:  90_000, // dominates throughput
+		CacheWriteTokens: 5_000,
+		TokenHistory:     []int64{100, 200, 300, 400, 500, 600, 700},
+	}
+
+	out := m.renderTokenCard(cardWidth)
+
+	// Grand total = 10_000 + 90_000 + 5_000 = 105_000
+	if !strings.Contains(out, "105.0K") {
+		t.Errorf("renderTokenCard: expected grand total 105.0K in output, got:\n%s", out)
+	}
+	if !strings.Contains(out, "cached") {
+		t.Errorf("renderTokenCard: expected 'cached' label in output, got:\n%s", out)
+	}
+	if !strings.Contains(out, "uncached") {
+		t.Errorf("renderTokenCard: expected 'uncached' label in output, got:\n%s", out)
+	}
+}
+
+func TestRenderTokenCard_ZeroCacheTokens(t *testing.T) {
+	m := NewModel("test")
+	m.metricsCard = MetricsCardData{
+		TotalTokens:  50_000,
+		InputTokens:  30_000,
+		OutputTokens: 20_000,
+		// CacheReadTokens and CacheWriteTokens both zero
+		TokenHistory: []int64{100, 200, 300, 400, 500, 600, 700},
+	}
+
+	out := m.renderTokenCard(cardWidth)
+
+	// When cache is zero, grand total == TotalTokens
+	if !strings.Contains(out, "50.0K") {
+		t.Errorf("renderTokenCard zero-cache: expected 50.0K total, got:\n%s", out)
+	}
+	if !strings.Contains(out, "uncached") {
+		t.Errorf("renderTokenCard zero-cache: expected 'uncached' label, got:\n%s", out)
+	}
+}
+
 func TestRenderTaskCard_ShowsQueueDepth(t *testing.T) {
 	m := NewModel("test")
 	// Simulate 10 lifetime tasks (succeeded + failed) in metrics
