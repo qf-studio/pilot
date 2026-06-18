@@ -172,29 +172,44 @@ func TestBuildMiniCard(t *testing.T) {
 func TestRenderMetricsCards(t *testing.T) {
 	m := NewModel("test")
 	m.metricsCard = MetricsCardData{
-		TotalTokens:  50000,
-		InputTokens:  30000,
-		OutputTokens: 20000,
-		TotalCostUSD: 1.50,
-		CostPerTask:  0.25,
-		TotalTasks:   10,
-		Succeeded:    8,
-		Failed:       2,
-		TokenHistory: []int64{100, 200, 300, 400, 500, 600, 700},
-		CostHistory:  []float64{0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7},
-		TaskHistory:  []int{1, 2, 3, 2, 1, 3, 2},
+		TotalTokens:      50000,
+		InputTokens:      30000,
+		OutputTokens:     20000,
+		CacheReadTokens:  500000,
+		CacheWriteTokens: 25000,
+		TotalCostUSD:     1.50,
+		CostPerTask:      0.25,
+		TotalTasks:       10,
+		Succeeded:        8,
+		Failed:           2,
+		TokenHistory:     []int64{100, 200, 300, 400, 500, 600, 700},
+		CostHistory:      []float64{0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7},
+		TaskHistory:      []int{1, 2, 3, 2, 1, 3, 2},
 	}
 
 	output := m.renderMetricsCards()
+	plain := stripANSI(output)
 
-	if !strings.Contains(output, "TOKENS") {
+	if !strings.Contains(plain, "TOKENS") {
 		t.Error("output missing TOKENS card")
 	}
-	if !strings.Contains(output, "COST") {
+	if !strings.Contains(plain, "COST") {
 		t.Error("output missing COST card")
 	}
-	if !strings.Contains(output, "QUEUE") {
+	if !strings.Contains(plain, "QUEUE") {
 		t.Error("output missing TASKS card")
+	}
+
+	// TOKENS card must show cached/uncached split (not raw input/output labels).
+	if !strings.Contains(plain, "cached") {
+		t.Error("TOKENS card should show 'cached' label")
+	}
+	if !strings.Contains(plain, "uncached") {
+		t.Error("TOKENS card should show 'uncached' label")
+	}
+	// Old input/output labels should not appear in TOKENS card.
+	if strings.Contains(plain, "input") {
+		t.Error("TOKENS card should not show legacy 'input' label")
 	}
 }
 
@@ -216,6 +231,116 @@ func TestRenderMetricsCards_ZeroState(t *testing.T) {
 	}
 	if !strings.Contains(output, "QUEUE") {
 		t.Error("zero-state output missing TASKS card")
+	}
+}
+
+func TestRenderTokenCard_CachedUncachedSplit(t *testing.T) {
+	m := NewModel("test")
+	m.metricsCard = MetricsCardData{
+		TotalTokens:      50000,
+		InputTokens:      30000,
+		OutputTokens:     20000,
+		CacheReadTokens:  1200000,
+		CacheWriteTokens: 60000,
+	}
+
+	output := stripANSI(m.renderTokenCard(cardWidth))
+
+	// The "cached" detail line should appear with cache read count.
+	if !strings.Contains(output, "cached") {
+		t.Errorf("token card missing 'cached' label; got:\n%s", output)
+	}
+	// The "uncached" detail line should appear (input + output).
+	if !strings.Contains(output, "uncached") {
+		t.Errorf("token card missing 'uncached' label; got:\n%s", output)
+	}
+	// 1.2M cached reads should be visible.
+	if !strings.Contains(output, "1.2M") {
+		t.Errorf("token card should show '1.2M' for 1.2M cached reads; got:\n%s", output)
+	}
+	// Total uncached = 30000 + 20000 = 50000 → "50.0K"
+	if !strings.Contains(output, "50.0K") {
+		t.Errorf("token card should show '50.0K' for 50K uncached tokens; got:\n%s", output)
+	}
+}
+
+func TestHydrateFromStore_CacheTokensLoaded(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "pilot-dash-cache-test-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	store, err := memory.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	// Insert an execution with known cache token counts.
+	if err := store.SaveExecution(&memory.Execution{
+		ID:                      "exec-cache",
+		TaskID:                  "TASK-CACHE",
+		ProjectPath:             "/test",
+		Status:                  "completed",
+		TokensInput:             10000,
+		TokensOutput:            5000,
+		TokensTotal:             15000,
+		TokensCacheRead:         300000,
+		TokensCacheWrite:        15000,
+	}); err != nil {
+		t.Fatalf("SaveExecution: %v", err)
+	}
+
+	m := NewModelWithStore("test", store)
+
+	if m.metricsCard.CacheReadTokens != 300000 {
+		t.Errorf("CacheReadTokens = %d, want 300000", m.metricsCard.CacheReadTokens)
+	}
+	if m.metricsCard.CacheWriteTokens != 15000 {
+		t.Errorf("CacheWriteTokens = %d, want 15000", m.metricsCard.CacheWriteTokens)
+	}
+}
+
+func TestStoreRefreshCmd_CacheTokensRoundTrip(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "pilot-dash-cache-refresh-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	store, err := memory.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	if err := store.SaveExecution(&memory.Execution{
+		ID:               "exec-rt",
+		TaskID:           "TASK-RT",
+		ProjectPath:      "/test",
+		Status:           "completed",
+		TokensInput:      5000,
+		TokensOutput:     2500,
+		TokensTotal:      7500,
+		TokensCacheRead:  800000,
+		TokensCacheWrite: 40000,
+	}); err != nil {
+		t.Fatalf("SaveExecution: %v", err)
+	}
+
+	cmd := storeRefreshCmd(store, "")
+	rawMsg := cmd()
+	msg, ok := rawMsg.(storeRefreshMsg)
+	if !ok {
+		t.Fatalf("expected storeRefreshMsg, got %T", rawMsg)
+	}
+
+	if msg.metricsCard.CacheReadTokens != 800000 {
+		t.Errorf("CacheReadTokens = %d, want 800000", msg.metricsCard.CacheReadTokens)
+	}
+	if msg.metricsCard.CacheWriteTokens != 40000 {
+		t.Errorf("CacheWriteTokens = %d, want 40000", msg.metricsCard.CacheWriteTokens)
 	}
 }
 

@@ -37,6 +37,7 @@ var sparkBlocks = []rune{' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '
 // MetricsCardData holds aggregated metrics for the dashboard metrics cards.
 type MetricsCardData struct {
 	TotalTokens, InputTokens, OutputTokens  int
+	CacheReadTokens, CacheWriteTokens       int
 	TotalCostUSD, CostPerTask               float64
 	TotalTasks, Succeeded, Failed, Declined int
 	// TASK-358: non-failure terminal outcomes, split out of "failed".
@@ -594,6 +595,8 @@ func (m *Model) hydrateFromStore() {
 		m.metricsCard.InputTokens = int(lifetime.InputTokens)
 		m.metricsCard.OutputTokens = int(lifetime.OutputTokens)
 		m.metricsCard.TotalCostUSD = lifetime.TotalCostUSD
+		m.metricsCard.CacheReadTokens = int(lifetime.CacheReadTokens)
+		m.metricsCard.CacheWriteTokens = int(lifetime.CacheWriteTokens)
 	}
 
 	// Initialize task counts from lifetime data (survives restarts).
@@ -893,6 +896,8 @@ func storeRefreshCmd(store *memory.Store, projectPath string) tea.Cmd {
 			msg.metricsCard.InputTokens = int(lifetime.InputTokens)
 			msg.metricsCard.OutputTokens = int(lifetime.OutputTokens)
 			msg.metricsCard.TotalCostUSD = lifetime.TotalCostUSD
+			msg.metricsCard.CacheReadTokens = int(lifetime.CacheReadTokens)
+			msg.metricsCard.CacheWriteTokens = int(lifetime.CacheWriteTokens)
 		}
 
 		taskCounts, err := store.GetLifetimeTaskCounts(projectPath)
@@ -2048,8 +2053,8 @@ func buildMiniCard(title, value, detail1, detail2, sparkline string, cw int) str
 func (m Model) renderTokenCard(cw int) string {
 	ciw := cw - 6
 	value := titleStyle.Render(formatCompact(m.metricsCard.TotalTokens))
-	detail1 := dimStyle.Render(fmt.Sprintf("↑ %s input", formatCompact(m.metricsCard.InputTokens)))
-	detail2 := dimStyle.Render(fmt.Sprintf("↓ %s output", formatCompact(m.metricsCard.OutputTokens)))
+	detail1 := dimStyle.Render(fmt.Sprintf("⊙ %s cached", formatCompact(m.metricsCard.CacheReadTokens)))
+	detail2 := dimStyle.Render(fmt.Sprintf("↓ %s uncached", formatCompact(m.metricsCard.InputTokens+m.metricsCard.OutputTokens)))
 
 	// Convert int64 history to float64
 	floats := make([]float64, len(m.metricsCard.TokenHistory))
