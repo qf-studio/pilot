@@ -384,6 +384,106 @@ func TestHydrateFromStore_LifetimeTokens(t *testing.T) {
 	}
 }
 
+// TestHydrateFromStore_OldRowsCacheZero verifies that executions saved without
+// cache token fields (simulating pre-GH-3615 rows) result in zero cache token
+// counts in the metricsCard — i.e., the migration DEFAULT 0 is honoured.
+func TestHydrateFromStore_OldRowsCacheZero(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "pilot-dash-cache-zero-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	store, err := memory.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	// Save execution without cache token fields (they default to 0)
+	if err := store.SaveExecution(&memory.Execution{
+		ID: "old-exec", TaskID: "TASK-OLD", ProjectPath: "/test", Status: "completed",
+		TokensInput: 10000, TokensOutput: 5000, TokensTotal: 15000,
+	}); err != nil {
+		t.Fatalf("SaveExecution: %v", err)
+	}
+
+	m := NewModelWithStore("test", store)
+
+	if m.metricsCard.CacheReadTokens != 0 {
+		t.Errorf("CacheReadTokens = %d, want 0 for old-style row", m.metricsCard.CacheReadTokens)
+	}
+	if m.metricsCard.CacheWriteTokens != 0 {
+		t.Errorf("CacheWriteTokens = %d, want 0 for old-style row", m.metricsCard.CacheWriteTokens)
+	}
+	if m.metricsCard.TotalTokens != 15000 {
+		t.Errorf("TotalTokens = %d, want 15000", m.metricsCard.TotalTokens)
+	}
+}
+
+// TestHydrateFromStore_CacheTokensRoundTrip verifies that executions saved with
+// non-zero cache token fields are reflected correctly in metricsCard.
+func TestHydrateFromStore_CacheTokensRoundTrip(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "pilot-dash-cache-rt-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	store, err := memory.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	execs := []struct {
+		id         string
+		input      int64
+		output     int64
+		cacheRead  int64
+		cacheWrite int64
+	}{
+		{"exec-cache-1", 5000, 2000, 80000, 3000},
+		{"exec-cache-2", 3000, 1000, 40000, 2000},
+	}
+	for _, e := range execs {
+		if err := store.SaveExecution(&memory.Execution{
+			ID: e.id, TaskID: "TASK-" + e.id, ProjectPath: "/test", Status: "completed",
+			TokensInput:      e.input,
+			TokensOutput:     e.output,
+			TokensTotal:      e.input + e.output,
+			TokensCacheRead:  e.cacheRead,
+			TokensCacheWrite: e.cacheWrite,
+		}); err != nil {
+			t.Fatalf("SaveExecution %s: %v", e.id, err)
+		}
+	}
+
+	m := NewModelWithStore("test", store)
+
+	wantCacheRead := 120000  // 80000 + 40000
+	wantCacheWrite := 5000   // 3000 + 2000
+	wantTotal := 11000       // (5000+2000) + (3000+1000)
+
+	if m.metricsCard.CacheReadTokens != wantCacheRead {
+		t.Errorf("CacheReadTokens = %d, want %d", m.metricsCard.CacheReadTokens, wantCacheRead)
+	}
+	if m.metricsCard.CacheWriteTokens != wantCacheWrite {
+		t.Errorf("CacheWriteTokens = %d, want %d", m.metricsCard.CacheWriteTokens, wantCacheWrite)
+	}
+	if m.metricsCard.TotalTokens != wantTotal {
+		t.Errorf("TotalTokens = %d, want %d", m.metricsCard.TotalTokens, wantTotal)
+	}
+
+	// Verify the grand total in the rendered card includes cache tokens
+	out := m.renderTokenCard(cardWidth)
+	grandTotal := wantTotal + wantCacheRead + wantCacheWrite // 11000+120000+5000=136000
+	wantStr := formatCompact(grandTotal)
+	if !strings.Contains(out, wantStr) {
+		t.Errorf("renderTokenCard: expected grand total %s in output, got:\n%s", wantStr, out)
+	}
+}
+
 func TestUpdateTokensMsg_AddsToLifetimeTotals(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "pilot-dash-test-*")
 	if err != nil {
