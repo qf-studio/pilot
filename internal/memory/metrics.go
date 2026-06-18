@@ -13,6 +13,8 @@ type ExecutionMetrics struct {
 	TokensInput      int64
 	TokensOutput     int64
 	TokensTotal      int64
+	TokensCacheRead  int64
+	TokensCacheWrite int64
 	EstimatedCostUSD float64
 	FilesChanged     int
 	LinesAdded       int
@@ -210,6 +212,8 @@ func (s *Store) SaveExecutionMetrics(metrics *ExecutionMetrics) error {
 				tokens_input = ?,
 				tokens_output = ?,
 				tokens_total = ?,
+				tokens_cache_read = ?,
+				tokens_cache_write = ?,
 				estimated_cost_usd = ?,
 				files_changed = ?,
 				lines_added = ?,
@@ -219,6 +223,7 @@ func (s *Store) SaveExecutionMetrics(metrics *ExecutionMetrics) error {
 				final_rss_mb = ?
 			WHERE id = ?
 		`, metrics.TokensInput, metrics.TokensOutput, metrics.TokensTotal,
+			metrics.TokensCacheRead, metrics.TokensCacheWrite,
 			metrics.EstimatedCostUSD, metrics.FilesChanged, metrics.LinesAdded,
 			metrics.LinesRemoved, metrics.ModelName,
 			metrics.PeakRSSMB, metrics.FinalRSSMB,

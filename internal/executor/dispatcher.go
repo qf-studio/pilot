@@ -739,6 +739,8 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 				TokensInput:      result.TokensInput,
 				TokensOutput:     result.TokensOutput,
 				TokensTotal:      result.TokensTotal,
+				TokensCacheRead:  result.CacheReadInputTokens,
+				TokensCacheWrite: result.CacheCreationInputTokens,
 				EstimatedCostUSD: result.EstimatedCostUSD,
 				FilesChanged:     result.FilesChanged,
 				LinesAdded:       result.LinesAdded,
