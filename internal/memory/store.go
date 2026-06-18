@@ -333,6 +333,9 @@ func (s *Store) migrate() error {
 		// GH-3028: RSS telemetry — peak and final resident set size for subprocess OOM diagnostics.
 		`ALTER TABLE executions ADD COLUMN peak_rss_mb INTEGER DEFAULT 0`,
 		`ALTER TABLE executions ADD COLUMN final_rss_mb INTEGER DEFAULT 0`,
+		// GH-3615: prompt-caching token counts
+		`ALTER TABLE executions ADD COLUMN tokens_cache_read INTEGER DEFAULT 0`,
+		`ALTER TABLE executions ADD COLUMN tokens_cache_write INTEGER DEFAULT 0`,
 		// GH-3536: project scoping for eval tasks
 		`ALTER TABLE eval_tasks ADD COLUMN project_path TEXT DEFAULT ''`,
 	}
@@ -483,6 +486,8 @@ type Execution struct {
 	TokensInput      int64
 	TokensOutput     int64
 	TokensTotal      int64
+	TokensCacheRead  int64
+	TokensCacheWrite int64
 	EstimatedCostUSD float64
 	FilesChanged     int
 	LinesAdded       int
@@ -523,13 +528,15 @@ func (s *Store) SaveExecution(exec *Execution) error {
 	return s.withRetry("SaveExecution", func() error {
 		_, err := s.db.Exec(`
 			INSERT INTO executions (id, task_id, project_path, status, output, error, duration_ms, pr_url, commit_sha, completed_at,
-				tokens_input, tokens_output, tokens_total, estimated_cost_usd, files_changed, lines_added, lines_removed, model_name,
+				tokens_input, tokens_output, tokens_total, tokens_cache_read, tokens_cache_write,
+				estimated_cost_usd, files_changed, lines_added, lines_removed, model_name,
 				task_title, task_description, task_branch, task_base_branch, task_create_pr, task_verbose,
 				task_source_adapter, task_source_issue_id, task_labels,
 				approval_request_id, effort_level, complexity_level)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`, exec.ID, exec.TaskID, exec.ProjectPath, exec.Status, exec.Output, exec.Error, exec.DurationMs, exec.PRUrl, exec.CommitSHA, exec.CompletedAt,
-			exec.TokensInput, exec.TokensOutput, exec.TokensTotal, exec.EstimatedCostUSD, exec.FilesChanged, exec.LinesAdded, exec.LinesRemoved, exec.ModelName,
+			exec.TokensInput, exec.TokensOutput, exec.TokensTotal, exec.TokensCacheRead, exec.TokensCacheWrite,
+			exec.EstimatedCostUSD, exec.FilesChanged, exec.LinesAdded, exec.LinesRemoved, exec.ModelName,
 			exec.TaskTitle, exec.TaskDescription, exec.TaskBranch, exec.TaskBaseBranch, exec.TaskCreatePR, exec.TaskVerbose,
 			exec.TaskSourceAdapter, exec.TaskSourceIssueID, labelsJSON,
 			exec.ApprovalRequestID, exec.EffortLevel, exec.ComplexityLevel)
@@ -570,6 +577,7 @@ func (s *Store) GetExecution(id string) (*Execution, error) {
 	row := s.db.QueryRow(`
 		SELECT id, task_id, project_path, status, output, error, duration_ms, pr_url, commit_sha, created_at, completed_at,
 			COALESCE(tokens_input, 0), COALESCE(tokens_output, 0), COALESCE(tokens_total, 0),
+			COALESCE(tokens_cache_read, 0), COALESCE(tokens_cache_write, 0),
 			COALESCE(estimated_cost_usd, 0), COALESCE(files_changed, 0), COALESCE(lines_added, 0),
 			COALESCE(lines_removed, 0), COALESCE(model_name, ''),
 			COALESCE(task_title, ''), COALESCE(task_description, ''), COALESCE(task_branch, ''),
@@ -588,7 +596,8 @@ func (s *Store) GetExecution(id string) (*Execution, error) {
 	var approvalDecisionAt sql.NullTime
 	var labelsJSON string
 	err := row.Scan(&exec.ID, &exec.TaskID, &exec.ProjectPath, &exec.Status, &exec.Output, &exec.Error, &exec.DurationMs, &exec.PRUrl, &exec.CommitSHA, &exec.CreatedAt, &completedAt,
-		&exec.TokensInput, &exec.TokensOutput, &exec.TokensTotal, &exec.EstimatedCostUSD, &exec.FilesChanged, &exec.LinesAdded, &exec.LinesRemoved, &exec.ModelName,
+		&exec.TokensInput, &exec.TokensOutput, &exec.TokensTotal, &exec.TokensCacheRead, &exec.TokensCacheWrite,
+		&exec.EstimatedCostUSD, &exec.FilesChanged, &exec.LinesAdded, &exec.LinesRemoved, &exec.ModelName,
 		&exec.TaskTitle, &exec.TaskDescription, &exec.TaskBranch, &exec.TaskBaseBranch, &exec.TaskCreatePR, &exec.TaskVerbose,
 		&exec.TaskSourceAdapter, &exec.TaskSourceIssueID, &labelsJSON,
 		&exec.ApprovalRequestID, &exec.ApprovalDecision, &approvalDecisionAt, &exec.ApprovalDecisionBy,
