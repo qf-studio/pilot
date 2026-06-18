@@ -36,7 +36,8 @@ var sparkBlocks = []rune{' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '
 
 // MetricsCardData holds aggregated metrics for the dashboard metrics cards.
 type MetricsCardData struct {
-	TotalTokens, InputTokens, OutputTokens  int
+	TotalTokens, InputTokens, OutputTokens   int
+	CacheReadTokens, CacheWriteTokens        int
 	TotalCostUSD, CostPerTask               float64
 	TotalTasks, Succeeded, Failed, Declined int
 	// TASK-358: non-failure terminal outcomes, split out of "failed".
@@ -593,6 +594,8 @@ func (m *Model) hydrateFromStore() {
 		m.metricsCard.TotalTokens = int(lifetime.TotalTokens)
 		m.metricsCard.InputTokens = int(lifetime.InputTokens)
 		m.metricsCard.OutputTokens = int(lifetime.OutputTokens)
+		m.metricsCard.CacheReadTokens = int(lifetime.CacheReadTokens)
+		m.metricsCard.CacheWriteTokens = int(lifetime.CacheWriteTokens)
 		m.metricsCard.TotalCostUSD = lifetime.TotalCostUSD
 	}
 
@@ -892,6 +895,8 @@ func storeRefreshCmd(store *memory.Store, projectPath string) tea.Cmd {
 			msg.metricsCard.TotalTokens = int(lifetime.TotalTokens)
 			msg.metricsCard.InputTokens = int(lifetime.InputTokens)
 			msg.metricsCard.OutputTokens = int(lifetime.OutputTokens)
+			msg.metricsCard.CacheReadTokens = int(lifetime.CacheReadTokens)
+			msg.metricsCard.CacheWriteTokens = int(lifetime.CacheWriteTokens)
 			msg.metricsCard.TotalCostUSD = lifetime.TotalCostUSD
 		}
 
@@ -2047,9 +2052,11 @@ func buildMiniCard(title, value, detail1, detail2, sparkline string, cw int) str
 // renderTokenCard renders the TOKENS mini-card with the given card width.
 func (m Model) renderTokenCard(cw int) string {
 	ciw := cw - 6
-	value := titleStyle.Render(formatCompact(m.metricsCard.TotalTokens))
+	cacheTotal := m.metricsCard.CacheReadTokens + m.metricsCard.CacheWriteTokens
+	total := m.metricsCard.TotalTokens + cacheTotal
+	value := titleStyle.Render(formatCompact(total))
 	detail1 := dimStyle.Render(fmt.Sprintf("↑ %s input", formatCompact(m.metricsCard.InputTokens)))
-	detail2 := dimStyle.Render(fmt.Sprintf("↓ %s output", formatCompact(m.metricsCard.OutputTokens)))
+	detail2 := dimStyle.Render(fmt.Sprintf("⚡ %s cached", formatCompact(cacheTotal)))
 
 	// Convert int64 history to float64
 	floats := make([]float64, len(m.metricsCard.TokenHistory))

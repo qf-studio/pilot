@@ -3832,10 +3832,12 @@ func (r *Runner) recordLearning(ctx context.Context, task *Task, result *Executi
 		DurationMs:   result.Duration.Milliseconds(),
 		PRUrl:        result.PRUrl,
 		CommitSHA:    result.CommitSHA,
-		TokensInput:  result.TokensInput,
-		TokensOutput: result.TokensOutput,
-		FilesChanged: result.FilesChanged,
-		ModelName:    result.ModelName,
+		TokensInput:     result.TokensInput,
+		TokensOutput:    result.TokensOutput,
+		TokensCacheRead: result.CacheReadInputTokens,
+		TokensCacheWrite: result.CacheCreationInputTokens,
+		FilesChanged:    result.FilesChanged,
+		ModelName:       result.ModelName,
 	}
 	if learnErr := r.learningLoop.RecordExecution(ctx, exec, nil); learnErr != nil {
 		r.log.Warn("Failed to record execution for learning", slog.Any("error", learnErr))

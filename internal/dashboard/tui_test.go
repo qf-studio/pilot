@@ -172,17 +172,19 @@ func TestBuildMiniCard(t *testing.T) {
 func TestRenderMetricsCards(t *testing.T) {
 	m := NewModel("test")
 	m.metricsCard = MetricsCardData{
-		TotalTokens:  50000,
-		InputTokens:  30000,
-		OutputTokens: 20000,
-		TotalCostUSD: 1.50,
-		CostPerTask:  0.25,
-		TotalTasks:   10,
-		Succeeded:    8,
-		Failed:       2,
-		TokenHistory: []int64{100, 200, 300, 400, 500, 600, 700},
-		CostHistory:  []float64{0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7},
-		TaskHistory:  []int{1, 2, 3, 2, 1, 3, 2},
+		TotalTokens:      50000,
+		InputTokens:      30000,
+		OutputTokens:     20000,
+		CacheReadTokens:  100000,
+		CacheWriteTokens: 50000,
+		TotalCostUSD:     1.50,
+		CostPerTask:      0.25,
+		TotalTasks:       10,
+		Succeeded:        8,
+		Failed:           2,
+		TokenHistory:     []int64{100, 200, 300, 400, 500, 600, 700},
+		CostHistory:      []float64{0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7},
+		TaskHistory:      []int{1, 2, 3, 2, 1, 3, 2},
 	}
 
 	output := m.renderMetricsCards()
@@ -195,6 +197,29 @@ func TestRenderMetricsCards(t *testing.T) {
 	}
 	if !strings.Contains(output, "QUEUE") {
 		t.Error("output missing TASKS card")
+	}
+	// TOKENS card should include the cached line
+	if !strings.Contains(output, "cached") {
+		t.Error("TOKENS card missing cached line")
+	}
+}
+
+func TestRenderTokenCard_CacheInclusive(t *testing.T) {
+	m := NewModel("test")
+	m.metricsCard = MetricsCardData{
+		TotalTokens:      10000,
+		InputTokens:      10000,
+		OutputTokens:     0,
+		CacheReadTokens:  80000,
+		CacheWriteTokens: 20000,
+	}
+	card := m.renderTokenCard(23)
+	// Total shown should be cache-inclusive: 10000 + 80000 + 20000 = 110000 → "110.0K"
+	if !strings.Contains(card, "110.0K") {
+		t.Errorf("expected cache-inclusive total 110.0K in card, got:\n%s", card)
+	}
+	if !strings.Contains(card, "cached") {
+		t.Errorf("expected cached line in token card, got:\n%s", card)
 	}
 }
 
