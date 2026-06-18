@@ -1,15 +1,15 @@
 ---
-status: queued
+status: dispatched
 priority: P3
 created: 2026-05-19
-execution: queued
+execution: dispatched
 github_issue: 3017
 labels: [cli, ux, onboarding, github]
 ---
 
 # TASK-282: Interactive `pilot project add` wizard with `gh` CLI integration
 
-**Status**: Queued (issue filed, `pilot` label withheld — add manually to dispatch)
+**Status**: ✅ Completed (PR #3612 merged 2026-06-18)
 **Priority**: P3 — quality-of-life
 **Created**: 2026-05-19
 **GitHub Issue**: https://github.com/qf-studio/pilot/issues/3017
@@ -134,7 +134,7 @@ Hint: install gh (https://cli.github.com) for the interactive picker.
 
 | Decision | Options | Tentative | Reasoning |
 |----------|---------|-----------|-----------|
-| Picker UI library | `huh`, `promptui`, custom bubbletea | `huh` (already a TUI repo) | Bubbletea already a dep; `huh` integrates cleanly |
+| Picker UI library | `huh`, `promptui`, custom bubbletea | **bubbletea** (already a dep) | `huh` is NOT in go.mod (verified 2026-06-17); avoid adding a new dep — reuse the existing bubbletea-based picker from `cmd/pilot/onboard_project.go` / `interactive.go`. Adding `huh` is acceptable only if explicitly approved. |
 | gh invocation | shell out to `gh` CLI, use go-github with token | shell out | Avoids dep; gh CLI is the auth source-of-truth |
 | Token persistence | write to config, env var | write to `adapters.github.token` in config | Matches existing setup wizard behavior |
 | Fallback when no gh | Error, fall back to flag mode | Fall back with hint | Zero-friction degradation |
@@ -204,4 +204,4 @@ go test ./cmd/pilot/... -run TestProjectAddWizard
 
 ---
 
-**Last Updated**: 2026-05-19
+**Last Updated**: 2026-06-17 (dispatched to Pilot via #3017)
