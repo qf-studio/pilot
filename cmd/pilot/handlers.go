@@ -1154,3 +1154,85 @@ func handleAzureDevOpsIssueWithResult(ctx context.Context, cfg *config.Config, e
 
 	return issueResult, execErr
 }
+
+// handleGithubIssueEventSDK processes a GitHub issue delivered as a studio-sdk core.IssueEvent
+// (M7 Phase 4a). It runs ALONGSIDE the legacy in-tree handleGitHubIssueWithResult (which takes a
+// *github.Issue) and is exercised only when the dormant SDK poller is enabled
+// (adapters.github.use_sdk_poller — see cmd/pilot/poller_github.go).
+//
+// ev.SequenceID is already "GH-42" (prefixed by the SDK adapter) — used verbatim as the task ID to
+// avoid the GH-GH-42 double-prefix the legacy handler's fmt.Sprintf("GH-%d", ...) would create.
+// This minimal path does NOT carry board sync, spec-guard, or sub-issue handling — those remain
+// exclusively in the legacy in-tree handler until later M7 phases.
+func handleGithubIssueEventSDK(ctx context.Context, cfg *config.Config, ev sdkcore.IssueEvent, projectPath string, dispatcher *executor.Dispatcher, runner *executor.Runner, monitor *executor.Monitor, program *tea.Program, alertsEngine *alerts.Engine, enforcer *budget.Enforcer) (*sdkcore.IssueResult, error) {
+	taskID := ev.SequenceID // "GH-42"; already prefixed by the SDK adapter — do NOT re-prefix
+	title := ev.Title
+
+	taskDesc := fmt.Sprintf("GitHub Issue %s: %s\n\n%s", taskID, title, ev.Body)
+	branchName := fmt.Sprintf("pilot/%s", taskID)
+
+	// ResolveRepoForEvent is tolerated like the other SDK handlers; ErrRepoNotResolved is non-fatal here.
+	if _, _, _, err := sdkshim.ResolveRepoForEvent(cfg, "github", ev); err != nil && err.Error() != sdkshim.ErrRepoNotResolved.Error() {
+		logging.WithComponent("github").Warn("Unexpected repo resolution error",
+			slog.String("task_id", taskID),
+			slog.Any("error", err),
+		)
+	}
+
+	task := &executor.Task{
+		ID:            taskID,
+		Title:         title,
+		Description:   taskDesc,
+		ProjectPath:   projectPath,
+		Branch:        branchName,
+		CreatePR:      true,
+		SourceAdapter: "github",
+		SourceIssueID: ev.IssueID,
+		Priority:      sdkshim.PriorityFromSDK(ev.Priority),
+		BaseBranch:    resolveProjectBaseBranch(cfg, projectPath), // GH-2290
+	}
+
+	// NOTE: no runner.SetPRCreator here — the studio-sdk GitHub client does not implement
+	// executor.PRCreator, and the runner gates the PRCreator branch on SourceAdapter != "github".
+	// GitHub PRs continue to be created via the gh CLI, unchanged.
+
+	deps := HandlerDeps{
+		Cfg:          cfg,
+		Dispatcher:   dispatcher,
+		Runner:       runner,
+		Monitor:      monitor,
+		Program:      program,
+		AlertsEngine: alertsEngine,
+		Enforcer:     enforcer,
+		ProjectPath:  projectPath,
+	}
+	info := IssueInfo{
+		TaskID:   taskID,
+		Title:    title,
+		URL:      githubIssueURL(cfg, ev.IssueID),
+		Adapter:  "github",
+		LogEmoji: "🐙",
+	}
+
+	hr, execErr := handleIssueGeneric(ctx, deps, info, task)
+
+	issueResult := &sdkcore.IssueResult{
+		Success:    hr.Success,
+		BranchName: hr.BranchName,
+		PRNumber:   hr.PRNumber,
+		PRURL:      hr.PRURL,
+		HeadSHA:    hr.HeadSHA,
+		Error:      hr.Error,
+	}
+
+	return issueResult, execErr
+}
+
+// githubIssueURL builds the HTML URL for a GitHub issue from the default adapter repo
+// ("owner/repo"). Returns "" when no default repo is configured.
+func githubIssueURL(cfg *config.Config, issueID string) string {
+	if cfg.Adapters != nil && cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.Repo != "" {
+		return fmt.Sprintf("https://github.com/%s/issues/%s", cfg.Adapters.GitHub.Repo, issueID)
+	}
+	return ""
+}
