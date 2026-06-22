@@ -745,3 +745,46 @@ func (o *Orchestrator) ProcessAzureDevOpsIssueEvent(ctx context.Context, ev sdkc
 
 	return nil
 }
+
+// ProcessGithubIssueEvent processes a normalized SDK IssueEvent from the GitHub polling path
+// (M7 Phase 4a — studio-sdk cutover scaffolding). ev.SequenceID is already in "GH-42" form
+// (prefixed by the SDK adapter, adapter.go:143) — used directly as Identifier to avoid the
+// GH-GH-N double-prefix that fmt.Sprintf("GH-%d", ...) would produce. SourceAdapter is set to
+// "github" (matching the ProcessJiraIssueEvent pattern).
+//
+// NOTE: the LIVE GitHub poll path is still the in-tree handler-driven poller; this sibling
+// exists for parity with the other adapters and is exercised only when the SDK poller path is
+// enabled (dormant in Phase 4a — gated behind adapters.github.use_sdk_poller, and the SDK
+// registration is not yet wired into adapterPollerRegistrations(); see cmd/pilot/poller_github.go).
+func (o *Orchestrator) ProcessGithubIssueEvent(ctx context.Context, ev sdkcore.IssueEvent, projectPath string) error {
+	ticket := &TicketData{
+		ID:          ev.IssueID,
+		Identifier:  ev.SequenceID,
+		Title:       ev.Title,
+		Description: ev.Body,
+		Priority:    sdkshim.PriorityFromSDK(ev.Priority),
+		Labels:      ev.Labels,
+	}
+
+	doc, err := o.bridge.PlanTicket(ctx, ticket)
+	if err != nil {
+		return fmt.Errorf("failed to plan ticket: %w", err)
+	}
+
+	if err := o.saveTaskDocument(projectPath, doc); err != nil {
+		logging.WithComponent("orchestrator").Warn("Failed to save task document", slog.Any("error", err))
+	}
+
+	internalTask := &Task{
+		ID:            doc.ID,
+		Document:      doc,
+		ProjectPath:   projectPath,
+		Branch:        fmt.Sprintf("pilot/%s", ev.SequenceID),
+		Priority:      float64(sdkshim.PriorityFromSDK(ev.Priority)),
+		SourceAdapter: "github",
+	}
+
+	o.QueueTask(internalTask)
+
+	return nil
+}
