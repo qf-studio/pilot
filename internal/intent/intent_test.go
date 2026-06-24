@@ -104,6 +104,7 @@ func TestIntentDescription(t *testing.T) {
 		{IntentGreeting, "Greeting"},
 		{IntentResearch, "Research"},
 		{IntentPlanning, "Planning"},
+		{IntentOperational, "Operational"},
 		{IntentQuestion, "Question"},
 		{IntentChat, "Chat"},
 		{IntentTask, "Task"},
@@ -426,6 +427,7 @@ func TestIntentConstants(t *testing.T) {
 		{IntentGreeting, "greeting"},
 		{IntentResearch, "research"},
 		{IntentPlanning, "planning"},
+		{IntentOperational, "operational"},
 		{IntentQuestion, "question"},
 		{IntentChat, "chat"},
 		{IntentTask, "task"},
@@ -568,6 +570,7 @@ func TestIntentStringConversion(t *testing.T) {
 		{IntentGreeting, "greeting"},
 		{IntentResearch, "research"},
 		{IntentPlanning, "planning"},
+		{IntentOperational, "operational"},
 		{IntentQuestion, "question"},
 		{IntentChat, "chat"},
 		{IntentTask, "task"},
@@ -882,6 +885,91 @@ func TestIsClearQuestion(t *testing.T) {
 			got := IsClearQuestion(tt.input)
 			if got != tt.expected {
 				t.Errorf("IsClearQuestion(%q) = %v, want %v", tt.input, got, tt.expected)
+			}
+		})
+	}
+}
+
+// TestIsOperationalQuery tests live daemon/queue state detection
+func TestIsOperationalQuery(t *testing.T) {
+	tests := []struct {
+		message  string
+		expected bool
+	}{
+		// Positive: queue content queries
+		{"what's in the queue?", true},
+		{"what is in the queue", true},
+		{"whats in the queue", true},
+		// Positive: anything running
+		{"anything running?", true},
+		{"is anything running", true},
+		{"is something running", true},
+		// Positive: how many tasks
+		{"how many tasks", true},
+		{"how many jobs are there", true},
+		{"how many items", true},
+		// Positive: queue status
+		{"status of the queue", true},
+		{"status of queue", true},
+		{"queue status", true},
+		// Positive: what's running
+		{"what's running", true},
+		{"what's currently running", true},
+		// Positive: what tasks are queued
+		{"what tasks are queued", true},
+		{"what task is pending", true},
+		// Positive: queue size
+		{"queue size", true},
+		{"current queue length", true},
+
+		// Negative: code-structure questions
+		{"where is the queue implemented?", false},
+		{"how does the queue work?", false},
+		{"where is the queue defined", false},
+		{"what is the queue implementation", false},
+		// Negative: other intents
+		{"create a new file", false},
+		{"fix the bug", false},
+		{"hello", false},
+		{"research the queue algorithm", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.message, func(t *testing.T) {
+			got := IsOperationalQuery(tt.message)
+			if got != tt.expected {
+				t.Errorf("IsOperationalQuery(%q) = %v, want %v", tt.message, got, tt.expected)
+			}
+		})
+	}
+}
+
+// TestDetectIntentOperational tests that operational queries route to IntentOperational
+// and that code-structure questions about the queue route to IntentQuestion.
+func TestDetectIntentOperational(t *testing.T) {
+	tests := []struct {
+		name     string
+		message  string
+		expected Intent
+	}{
+		// Positive: live state queries → IntentOperational
+		{"queue content", "what's in the queue?", IntentOperational},
+		{"anything running", "anything running?", IntentOperational},
+		{"how many tasks", "how many tasks", IntentOperational},
+		{"queue status", "status of the queue", IntentOperational},
+		{"queue status variant", "queue status", IntentOperational},
+		{"what running", "what's running", IntentOperational},
+
+		// Negative: code-structure questions → IntentQuestion
+		{"queue implementation", "where is the queue implemented?", IntentQuestion},
+		{"queue mechanics", "how does the queue work?", IntentQuestion},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := DetectIntent(tt.message)
+			if got != tt.expected {
+				t.Errorf("DetectIntent(%q) = %v, want %v", tt.message, got, tt.expected)
 			}
 		})
 	}

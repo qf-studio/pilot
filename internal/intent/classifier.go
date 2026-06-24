@@ -65,6 +65,7 @@ func (c *AnthropicClient) Classify(ctx context.Context, messages []ConversationM
 - greeting: Simple greeting like "hi", "hello", "hey"
 - research: Requests for analysis/research (e.g., "research how X works", "analyze the auth flow")
 - planning: Requests for implementation plans (e.g., "plan how to add X", "design a solution for Y")
+- operational: Queries about live daemon or queue state (e.g., "what's in the queue?", "anything running?", "how many tasks", "status of the queue")
 - question: Questions about code/project (e.g., "what files handle auth?", "how does X work?")
 - chat: Conversational/opinion-seeking (e.g., "what do you think about...", "should I...")
 - task: Requests to make changes (e.g., "add a button", "fix the bug", "implement feature X")
@@ -73,6 +74,7 @@ IMPORTANT:
 - "What do you think about adding X?" is CHAT (asking opinion), not TASK
 - "Add X to the project" is TASK (direct instruction)
 - Questions that don't require code changes are QUESTION
+- "What's in the queue?" or "anything running?" are OPERATIONAL (live state), not QUESTION
 - Be conservative: when in doubt between task and chat, prefer chat
 
 Respond with JSON only: {"intent": "...", "confidence": 0.0-1.0}`
@@ -164,6 +166,8 @@ Respond with JSON only: {"intent": "...", "confidence": 0.0-1.0}`
 		return IntentResearch, nil
 	case "planning":
 		return IntentPlanning, nil
+	case "operational":
+		return IntentOperational, nil
 	case "question":
 		return IntentQuestion, nil
 	case "chat":
