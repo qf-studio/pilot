@@ -3,6 +3,7 @@ package comms
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -10,6 +11,7 @@ import (
 	"unicode"
 
 	"github.com/qf-studio/pilot/internal/intent"
+	"github.com/qf-studio/pilot/internal/memory"
 )
 
 // handlerMock records all Messenger calls for assertion in handler tests.
@@ -683,6 +685,150 @@ func hasAnyInvisible(s string) bool {
 		}
 	}
 	return false
+}
+
+// newTestStoreForHandler creates a real in-memory SQLite store for handler tests
+// and registers cleanup via t.Cleanup.
+func newTestStoreForHandler(t *testing.T) *memory.Store {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "comms-handler-test-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+
+	store, err := memory.NewStore(dir)
+	if err != nil {
+		t.Fatalf("memory.NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	return store
+}
+
+// ---------- operational intent tests ----------
+
+func TestDetectIntent_Operational_BeforeQuestion(t *testing.T) {
+	tests := []struct {
+		text string
+		want intent.Intent
+	}{
+		// These phrases match IsClearQuestion's "what's in" prefix WITHOUT the
+		// early operational check; verify they route to IntentOperational.
+		{"what's in the queue?", intent.IntentOperational},
+		{"what is in the queue?", intent.IntentOperational},
+		{"anything running?", intent.IntentOperational},
+		{"queue status", intent.IntentOperational},
+		// Sanity: non-operational queries still work.
+		{"hello", intent.IntentGreeting},
+		{"/help", intent.IntentCommand},
+	}
+
+	m := &handlerMock{}
+	h := newTestHandler(m)
+
+	for _, tt := range tests {
+		t.Run(tt.text, func(t *testing.T) {
+			got := h.detectIntent(context.Background(), "ch1", tt.text)
+			if got != tt.want {
+				t.Errorf("detectIntent(%q) = %s, want %s", tt.text, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestHandleOperational_WithStore_InlineText_RunnerNeverInvoked(t *testing.T) {
+	store := newTestStoreForHandler(t)
+
+	// Seed one running and one queued execution.
+	if err := store.SaveExecution(&memory.Execution{
+		ID:          "r1",
+		TaskID:      "TASK-100",
+		ProjectPath: "/proj/alpha",
+		Status:      "running",
+		CreatedAt:   time.Now().Add(-2 * time.Minute),
+	}); err != nil {
+		t.Fatalf("SaveExecution: %v", err)
+	}
+	if err := store.SaveExecution(&memory.Execution{
+		ID:          "q1",
+		TaskID:      "TASK-101",
+		ProjectPath: "/proj/alpha",
+		Status:      "queued",
+		CreatedAt:   time.Now().Add(-1 * time.Minute),
+	}); err != nil {
+		t.Fatalf("SaveExecution: %v", err)
+	}
+
+	m := &handlerMock{}
+	// Runner intentionally omitted — any call to Runner.Execute would panic.
+	h := NewHandler(&HandlerConfig{
+		Messenger:    m,
+		Store:        store,
+		TaskIDPrefix: "TEST",
+	})
+
+	h.handleOperational(context.Background(), "ch1", "", "what's in the queue?")
+
+	texts := m.getTexts()
+	if len(texts) == 0 {
+		t.Fatal("expected a text response from handleOperational")
+	}
+
+	reply := texts[0].text
+	if strings.Contains(reply, "Looking into") {
+		t.Errorf("handleOperational invoked the question handler (runner path): %q", reply)
+	}
+	if !strings.Contains(reply, "TASK-100") {
+		t.Errorf("expected running task TASK-100 in reply, got: %q", reply)
+	}
+	if !strings.Contains(reply, "TASK-101") {
+		t.Errorf("expected queued task TASK-101 in reply, got: %q", reply)
+	}
+}
+
+func TestHandleOperational_EmptyQueue(t *testing.T) {
+	store := newTestStoreForHandler(t)
+
+	m := &handlerMock{}
+	h := NewHandler(&HandlerConfig{
+		Messenger:    m,
+		Store:        store,
+		TaskIDPrefix: "TEST",
+	})
+
+	h.handleOperational(context.Background(), "ch1", "", "anything running?")
+
+	texts := m.getTexts()
+	if len(texts) == 0 {
+		t.Fatal("expected a text response")
+	}
+	if !strings.Contains(texts[0].text, "Queue is empty") {
+		t.Errorf("expected 'Queue is empty' message, got: %q", texts[0].text)
+	}
+}
+
+func TestHandleOperational_NilStore_FallsBackToQuestion(t *testing.T) {
+	m := &handlerMock{}
+	// No store, no runner — handler is intentionally minimal.
+	h := NewHandler(&HandlerConfig{
+		Messenger:    m,
+		TaskIDPrefix: "TEST",
+	})
+
+	h.handleOperational(context.Background(), "ch1", "", "what's in the queue?")
+
+	texts := m.getTexts()
+	// handleQuestion sends "🔍 Looking into that..." as its first reply,
+	// confirming the operational handler delegated to it.
+	found := false
+	for _, st := range texts {
+		if strings.Contains(st.text, "Looking into") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected 'Looking into' message from handleQuestion fallback; got texts: %v", texts)
+	}
 }
 
 func TestASCIISmuggling_HandleMessage_StripsTextAndVoice(t *testing.T) {
