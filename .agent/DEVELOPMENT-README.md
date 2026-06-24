@@ -120,7 +120,7 @@ Disable via config: `executor.navigator.auto_init: false`
 
 ## Current State
 
-**Current Version:** v2.192.1 | full status in `.agent/system/FEATURE-MATRIX.md`
+**Current Version:** v2.193.0 | full status in `.agent/system/FEATURE-MATRIX.md`
 
 **Recent (v2.187.0–v2.192.1, June 16–24 2026):** **Comms intent reliability (ghost-SHA guard fix + unified Handler factory) · cache-token persistence · M7 Phase 4a github scaffolding — all SHIPPED.**
 - **Comms intent reliability (v2.192.1, June 24):** read-only intents (`question`/`research`/`chat`) no longer fail the ghost-SHA commit guard in `UseWorktree` configs — `LocalMode`/`CreatePR:false` now set on read-only handlers ([TASK-369](tasks/archive/TASK-369-readonly-intents-ghost-sha-guard.md), PR [#3643](https://github.com/qf-studio/pilot/pull/3643)). Intent wiring unified across all adapters via a shared `comms.Handler` factory — Slack now gets the same LLMClassifier/ConvStore/RateLimit wiring as Telegram, closing per-adapter drift ([TASK-370](tasks/archive/TASK-370-unified-comms-handler-factory.md), PR [#3646](https://github.com/qf-studio/pilot/pull/3646)). Classifier is now *wireable* but still off by default (`adapters.*.llm_classifier: null`). Both archived.
