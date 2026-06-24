@@ -2601,36 +2601,8 @@ retrySucceeded:
 	}
 
 	// GH-3126: Ghost-SHA guard — reject SHAs that are already on the base branch.
-	// When Claude makes no new commit, git log returns the parent (pre-execution) SHA.
-	// Recording that as CommitSHA causes IsTaskShipped to return true on a no-op run,
-	// triggering pilot-done + issue close with no actual work delivered.
-	// Fail open on check errors (e.g. no origin configured in test repos): only reject
-	// when the check conclusively shows the SHA is already on origin/<base>.
-	if result.CommitSHA != "" && result.Success {
-		ghostBase := task.BaseBranch
-		if ghostBase == "" {
-			ghostBase, _ = git.GetDefaultBranch(ctx)
-			if ghostBase == "" {
-				ghostBase = "main"
-			}
-		}
-		if isNew, checkErr := commitSHAIsNew(ctx, executionPath, result.CommitSHA, ghostBase); checkErr != nil {
-			log.Warn("executor: ghost-SHA check skipped (will not block)",
-				slog.String("task_id", task.ID),
-				slog.String("sha", result.CommitSHA[:min(7, len(result.CommitSHA))]),
-				slog.Any("error", checkErr),
-			)
-		} else if !isNew {
-			log.Warn("executor: harvested SHA is already on base branch — no new commit",
-				slog.String("task_id", task.ID),
-				slog.String("sha", result.CommitSHA[:min(7, len(result.CommitSHA))]),
-				slog.String("base", ghostBase),
-			)
-			result.CommitSHA = ""
-			result.Success = false
-			result.Error = "no new commit produced — worktree HEAD matches base branch parent"
-		}
-	}
+	// Skipped for LocalMode tasks (read-only intents have no commit expectation — GH-3642).
+	applyGhostSHAGuard(ctx, task, result, executionPath, log)
 
 	// Fill in additional metrics from state
 	result.FilesChanged = state.filesWrite

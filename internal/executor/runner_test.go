@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -3942,4 +3943,67 @@ func TestMetricsRecorder_CalledOncePerExecution(t *testing.T) {
 	} else if rec.durationCalls[0] <= 0 {
 		t.Errorf("RecordExecutionDuration got %v, want positive duration", rec.durationCalls[0])
 	}
+}
+
+// TestGhostSHAGuard verifies applyGhostSHAGuard (GH-3126 + GH-3642).
+func TestGhostSHAGuard(t *testing.T) {
+	log := slog.Default()
+	ctx := context.Background()
+
+	t.Run("LocalMode_SkipsGuard", func(t *testing.T) {
+		// GH-3642: a LocalMode (read-only) task must not be rejected even when its
+		// CommitSHA is already on the base branch (no commit expected — no failure).
+		repoDir, _ := setupFreshnessRepo(t)
+		sha := strings.TrimSpace(gitOutput(t, repoDir, "rev-parse", "HEAD"))
+
+		result := &ExecutionResult{
+			TaskID:    "Q-1",
+			CommitSHA: sha,
+			Success:   true,
+			Output:    "here is your answer",
+		}
+		task := &Task{ID: "Q-1", LocalMode: true, BaseBranch: "main"}
+
+		applyGhostSHAGuard(ctx, task, result, repoDir, log)
+
+		if !result.Success {
+			t.Error("LocalMode task: Success should remain true, guard must be skipped")
+		}
+		if result.Error != "" {
+			t.Errorf("LocalMode task: Error should be empty, got %q", result.Error)
+		}
+		if result.Output != "here is your answer" {
+			t.Errorf("LocalMode task: Output should be preserved, got %q", result.Output)
+		}
+		if result.CommitSHA != sha {
+			t.Errorf("LocalMode task: CommitSHA should be unchanged, got %q", result.CommitSHA)
+		}
+	})
+
+	t.Run("NonLocalMode_RejectsAncestorSHA", func(t *testing.T) {
+		// GH-3126: a normal (non-LocalMode) PR task with a SHA already on origin/main
+		// must be rejected — proof no new commit was produced.
+		repoDir, _ := setupFreshnessRepo(t)
+		sha := strings.TrimSpace(gitOutput(t, repoDir, "rev-parse", "HEAD"))
+
+		result := &ExecutionResult{
+			TaskID:    "GH-1",
+			CommitSHA: sha,
+			Success:   true,
+			Output:    "changes applied",
+		}
+		task := &Task{ID: "GH-1", LocalMode: false, BaseBranch: "main"}
+
+		applyGhostSHAGuard(ctx, task, result, repoDir, log)
+
+		if result.Success {
+			t.Error("non-LocalMode task: Success should be false when SHA is already on base")
+		}
+		if result.CommitSHA != "" {
+			t.Errorf("non-LocalMode task: CommitSHA should be cleared, got %q", result.CommitSHA)
+		}
+		if result.Error != "no new commit produced — worktree HEAD matches base branch parent" {
+			t.Errorf("non-LocalMode task: unexpected error %q", result.Error)
+		}
+	})
 }
