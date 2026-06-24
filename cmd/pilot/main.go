@@ -37,7 +37,6 @@ import (
 	"github.com/qf-studio/pilot/internal/dashboard"
 	"github.com/qf-studio/pilot/internal/executor"
 	"github.com/qf-studio/pilot/internal/gateway"
-	"github.com/qf-studio/pilot/internal/intent"
 	"github.com/qf-studio/pilot/internal/logging"
 	"github.com/qf-studio/pilot/internal/memory"
 	"github.com/qf-studio/pilot/internal/pilot"
@@ -1866,54 +1865,33 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 		tgClient := telegram.NewClient(cfg.Adapters.Telegram.BotToken)
 		tgMessenger := telegram.NewMessenger(tgClient, cfg.Adapters.Telegram.PlainTextMode)
 
-		// Build LLM classifier + conversation store for comms.Handler
-		var tgLLMClassifier intent.Classifier
-		var tgConvStore *intent.ConversationStore
-		if cfg.Adapters.Telegram.LLMClassifier != nil && cfg.Adapters.Telegram.LLMClassifier.Enabled {
-			apiKey := cfg.Adapters.Telegram.LLMClassifier.APIKey
-			if apiKey == "" {
-				apiKey = os.Getenv("ANTHROPIC_API_KEY")
-			}
-			if apiKey != "" {
-				client := intent.NewAnthropicClient(apiKey)
-				if cfg.Executor != nil {
-					if cfg.Executor.DefaultModel != "" {
-						client.SetModel(cfg.Executor.DefaultModel)
-					}
-					if cfg.Executor.APIBaseURL != "" {
-						client.SetAPIURL(cfg.Executor.APIBaseURL + "/v1/messages")
-					}
-				}
-				tgLLMClassifier = client
-				historySize := 10
-				if cfg.Adapters.Telegram.LLMClassifier.HistorySize > 0 {
-					historySize = cfg.Adapters.Telegram.LLMClassifier.HistorySize
-				}
-				historyTTL := 30 * time.Minute
-				if cfg.Adapters.Telegram.LLMClassifier.HistoryTTL > 0 {
-					historyTTL = cfg.Adapters.Telegram.LLMClassifier.HistoryTTL
-				}
-				tgConvStore = intent.NewConversationStore(historySize, historyTTL)
-			}
-		}
-
 		// Build comms.MemberResolver wrapper (GH-634)
 		var tgMemberResolver comms.MemberResolver
 		if teamAdapter != nil {
 			tgMemberResolver = &telegram.MemberResolverAdapter{Inner: teamAdapter}
 		}
 
-		tgCommsHandler := comms.NewHandler(&comms.HandlerConfig{
-			Messenger:      tgMessenger,
-			Runner:         runner,
-			Projects:       config.NewProjectSource(cfg),
-			ProjectPath:    projectPath,
-			RateLimit:      cfg.Adapters.Telegram.RateLimit,
-			LLMClassifier:  tgLLMClassifier,
-			ConvStore:      tgConvStore,
-			MemberResolver: tgMemberResolver,
-			Store:          store,
-			TaskIDPrefix:   "TG",
+		var tgClassifierCfg *comms.ClassifierConfig
+		if cfg.Adapters.Telegram.LLMClassifier != nil {
+			tgClassifierCfg = &comms.ClassifierConfig{
+				Enabled:     cfg.Adapters.Telegram.LLMClassifier.Enabled,
+				APIKey:      cfg.Adapters.Telegram.LLMClassifier.APIKey,
+				HistorySize: cfg.Adapters.Telegram.LLMClassifier.HistorySize,
+				HistoryTTL:  cfg.Adapters.Telegram.LLMClassifier.HistoryTTL,
+			}
+		}
+
+		tgCommsHandler := comms.BuildHandler(comms.HandlerDeps{
+			Messenger:       tgMessenger,
+			Runner:          runner,
+			Projects:        config.NewProjectSource(cfg),
+			ProjectPath:     projectPath,
+			RateLimit:       cfg.Adapters.Telegram.RateLimit,
+			Classifier:      tgClassifierCfg,
+			MemberResolver:  tgMemberResolver,
+			Store:           store,
+			TaskIDPrefix:    "TG",
+			ExecutorBackend: cfg.Executor,
 		})
 
 		tgConfig := &telegram.HandlerConfig{
@@ -2563,6 +2541,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 		Program:              program,
 		AlertsEngine:         alertsEngine,
 		Enforcer:             enforcer,
+		Store:                store,
 		AutopilotController:  autopilotController,
 		AutopilotStateStore:  autopilotStateStore,
 		AutopilotControllers: autopilotControllers,
@@ -2626,14 +2605,26 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 			AllowedUsers:    cfg.Adapters.Slack.AllowedUsers,
 		}, nil).NewChatBridge(sdkCore.ChatDeps{Handler: slackChatHandler})
 
-		slackCommsHandler := comms.NewHandler(&comms.HandlerConfig{
-			Messenger:      sdkshim.MessengerToBridge(slackBridge),
-			Runner:         runner,
-			Projects:       config.NewSlackProjectSource(cfg),
-			ProjectPath:    projectPath,
-			MemberResolver: slackMemberResolver,
-			Store:          store,
-			TaskIDPrefix:   "SLACK",
+		var slackClassifierCfg *comms.ClassifierConfig
+		if cfg.Adapters.Slack.LLMClassifier != nil {
+			slackClassifierCfg = &comms.ClassifierConfig{
+				Enabled:     cfg.Adapters.Slack.LLMClassifier.Enabled,
+				APIKey:      cfg.Adapters.Slack.LLMClassifier.APIKey,
+				HistorySize: cfg.Adapters.Slack.LLMClassifier.HistorySize,
+				HistoryTTL:  cfg.Adapters.Slack.LLMClassifier.HistoryTTL,
+			}
+		}
+
+		slackCommsHandler := comms.BuildHandler(comms.HandlerDeps{
+			Messenger:       sdkshim.MessengerToBridge(slackBridge),
+			Runner:          runner,
+			Projects:        config.NewSlackProjectSource(cfg),
+			ProjectPath:     projectPath,
+			Classifier:      slackClassifierCfg,
+			MemberResolver:  slackMemberResolver,
+			Store:           store,
+			TaskIDPrefix:    "SLACK",
+			ExecutorBackend: cfg.Executor,
 		})
 		slackChatHandler.SetCommsHandler(slackCommsHandler)
 

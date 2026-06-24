@@ -61,15 +61,6 @@ type HandlerConfig struct {
 	AllowedUsers    []string       // User IDs allowed to send tasks
 }
 
-// LLMClassifierConfig holds configuration for the LLM classifier.
-// Retained for config compatibility; now handled by comms.Handler.
-type LLMClassifierConfig struct {
-	Enabled     bool
-	APIKey      string
-	HistorySize int
-	HistoryTTL  time.Duration
-}
-
 // NewHandler creates a new Slack event handler.
 func NewHandler(config *HandlerConfig) *Handler {
 	allowedChannels := make(map[string]bool)
