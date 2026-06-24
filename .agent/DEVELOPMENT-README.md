@@ -120,7 +120,7 @@ Disable via config: `executor.navigator.auto_init: false`
 
 ## Current State
 
-**Current Version:** v2.192.0 | full status in `.agent/system/FEATURE-MATRIX.md`
+**Current Version:** v2.192.1 | full status in `.agent/system/FEATURE-MATRIX.md`
 
 **Recent (v2.187.0–v2.192.0, June 16–22 2026):** **Board-GraphQL partial-data tolerance · `pilot project add` gh wizard · cache-token persistence · M7 Phase 4a github scaffolding — all SHIPPED.**
 - **M7 Phase 4a — github→studio-sdk poll-path scaffolding (MANUAL, PR [#3638](https://github.com/qf-studio/pilot/pull/3638)):** additive + **dormant** (default-off `adapters.github.use_sdk_poller`, NOT in `adapterPollerRegistrations()`) — `orchestrator.ProcessGithubIssueEvent`, the `sdkshim.ResolveRepoForEvent` github branch, `cmd/pilot/poller_github.go`, `handleGithubIssueEventSDK`. A 6-agent surface map verdict: **full retirement of `internal/adapters/github` is NOT possible at studio-sdk v0.24.0** — SDK lacks the ProjectV2 board layer, 5 Pilot-only client methods (`CompareStatus`/`GetAuthenticatedUser`/`SearchOpenPRsForIssue`/`FindOpenPRByBranch`/`ExecuteGraphQLTolerant`), and the poller-option surface; autopilot is hard-typed to the concrete `*github.Client`. Phases 4b–4d deferred → SDK v0.25.0+. Adversarially reviewed (verdict SHIP). [TASK-368](tasks/TASK-368-m7-github-cutover-phase4.md), tracking [#3423](https://github.com/qf-studio/pilot/issues/3423).
