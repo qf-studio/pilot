@@ -260,6 +260,8 @@ If the question is too broad, ask for clarification instead of exploring everyth
 		Title:       "Question: " + TruncateText(question, 40),
 		Description: prompt,
 		ProjectPath: h.getActiveProjectPath(contextID),
+		LocalMode:   true,
+		CreatePR:    false,
 		Verbose:     false,
 	}
 
@@ -300,6 +302,7 @@ Provide findings in a structured format with:
 
 DO NOT make any code changes. This is a read-only research task.`, query),
 		ProjectPath: h.getActiveProjectPath(contextID),
+		LocalMode:   true,
 		CreatePR:    false,
 	}
 
@@ -410,6 +413,7 @@ Be concise - this is a chat conversation, not a report. Keep response under 500 
 
 User message: %s`, h.getActiveProjectPath(contextID), message),
 		ProjectPath: h.getActiveProjectPath(contextID),
+		LocalMode:   true,
 		CreatePR:    false,
 	}
 
