@@ -225,11 +225,14 @@ func (c *CommandHandler) handleStatus(ctx context.Context, contextID string) {
 		}
 	}
 
-	// Queue info from memory store
+	// Queue/running info from memory store
 	if c.store != nil {
+		running, _ := c.store.GetActiveExecutions()
 		queued, err := c.store.GetQueuedTasks(10)
-		if err == nil && len(queued) > 0 {
-			sb.WriteString(fmt.Sprintf("\n📋 Queue: %d task(s)\n", len(queued)))
+		if err == nil && (len(running) > 0 || len(queued) > 0) {
+			sb.WriteString("\n")
+			sb.WriteString(formatQueueSummary(running, queued))
+			sb.WriteString("\n")
 		}
 	}
 
@@ -251,6 +254,38 @@ func (c *CommandHandler) handleCancel(ctx context.Context, contextID string) {
 	_ = c.messenger.SendText(ctx, contextID, "No task to cancel.")
 }
 
+// formatQueueSummary returns a human-readable summary of running and queued executions.
+// Called from /queue, /status, and the operational intent handler.
+func formatQueueSummary(running, queued []*memory.Execution) string {
+	if len(running) == 0 && len(queued) == 0 {
+		return "📋 Queue is empty"
+	}
+
+	var sb strings.Builder
+
+	if len(running) > 0 {
+		sb.WriteString(fmt.Sprintf("🔄 Running (%d)\n", len(running)))
+		for _, exec := range running {
+			elapsed := time.Since(exec.CreatedAt).Round(time.Second)
+			sb.WriteString(fmt.Sprintf("• %s (%s)\n", exec.TaskID, elapsed))
+		}
+		if len(queued) > 0 {
+			sb.WriteString("\n")
+		}
+	}
+
+	if len(queued) > 0 {
+		sb.WriteString(fmt.Sprintf("📋 Queued (%d)\n\n", len(queued)))
+		for i, exec := range queued {
+			age := time.Since(exec.CreatedAt).Round(time.Minute)
+			sb.WriteString(fmt.Sprintf("%d. %s\n", i+1, exec.TaskID))
+			sb.WriteString(fmt.Sprintf("   📁 %s • ⏱ %s ago\n\n", filepath.Base(exec.ProjectPath), age))
+		}
+	}
+
+	return strings.TrimRight(sb.String(), "\n")
+}
+
 // handleQueue shows queued tasks.
 func (c *CommandHandler) handleQueue(ctx context.Context, contextID string) {
 	if c.store == nil {
@@ -258,27 +293,14 @@ func (c *CommandHandler) handleQueue(ctx context.Context, contextID string) {
 		return
 	}
 
+	running, _ := c.store.GetActiveExecutions()
 	queued, err := c.store.GetQueuedTasks(10)
 	if err != nil {
 		_ = c.messenger.SendText(ctx, contextID, "❌ Failed to fetch queue")
 		return
 	}
 
-	if len(queued) == 0 {
-		_ = c.messenger.SendText(ctx, contextID, "📋 Queue is empty")
-		return
-	}
-
-	var sb strings.Builder
-	sb.WriteString("📋 Task Queue\n\n")
-
-	for i, task := range queued {
-		age := time.Since(task.CreatedAt).Round(time.Minute)
-		sb.WriteString(fmt.Sprintf("%d. %s\n", i+1, task.TaskID))
-		sb.WriteString(fmt.Sprintf("   📁 %s • ⏱ %s ago\n\n", filepath.Base(task.ProjectPath), age))
-	}
-
-	_ = c.messenger.SendText(ctx, contextID, sb.String())
+	_ = c.messenger.SendText(ctx, contextID, formatQueueSummary(running, queued))
 }
 
 // handleProjects lists configured projects.

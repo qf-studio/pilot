@@ -63,6 +63,7 @@ func (c *AnthropicClient) Classify(ctx context.Context, messages []ConversationM
 
 - command: Message starts with /
 - greeting: Simple greeting like "hi", "hello", "hey"
+- operational: Questions about live daemon state (e.g., "what's in the queue?", "anything running?", "how many tasks?")
 - research: Requests for analysis/research (e.g., "research how X works", "analyze the auth flow")
 - planning: Requests for implementation plans (e.g., "plan how to add X", "design a solution for Y")
 - question: Questions about code/project (e.g., "what files handle auth?", "how does X work?")
@@ -160,6 +161,8 @@ Respond with JSON only: {"intent": "...", "confidence": 0.0-1.0}`
 		return IntentCommand, nil
 	case "greeting":
 		return IntentGreeting, nil
+	case "operational":
+		return IntentOperational, nil
 	case "research":
 		return IntentResearch, nil
 	case "planning":

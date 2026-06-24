@@ -173,6 +173,8 @@ func (h *Handler) HandleMessage(ctx context.Context, msg *IncomingMessage) {
 	switch detected {
 	case intent.IntentGreeting:
 		h.handleGreeting(ctx, contextID)
+	case intent.IntentOperational:
+		h.handleOperational(ctx, contextID, msg.ThreadID, text)
 	case intent.IntentQuestion:
 		h.handleQuestion(ctx, contextID, msg.ThreadID, text)
 	case intent.IntentResearch:
@@ -195,6 +197,13 @@ func (h *Handler) detectIntent(ctx context.Context, contextID, text string) inte
 	// Fast path: commands
 	if strings.HasPrefix(text, "/") {
 		return intent.IntentCommand
+	}
+
+	// Fast path: operational queries about live daemon state (queue, running tasks).
+	// Must be checked before greeting/question fast-paths so that phrases like
+	// "what's in the queue?" route here instead of IntentQuestion.
+	if intent.IsOperationalQuery(text) {
+		return intent.IntentOperational
 	}
 
 	// Fast path: greeting-prefixed messages (e.g. "Hello! How is it going?")
@@ -241,7 +250,27 @@ func (h *Handler) handleGreeting(ctx context.Context, contextID string) {
 	_ = h.messenger.SendText(ctx, contextID, "👋 Hello! I'm Pilot — send me a task, question, or say /help.")
 }
 
+func (h *Handler) handleOperational(ctx context.Context, contextID, threadID, text string) {
+	if h.store == nil {
+		h.handleQuestion(ctx, contextID, threadID, text)
+		return
+	}
+
+	running, _ := h.store.GetActiveExecutions()
+	queued, err := h.store.GetQueuedTasks(10)
+	if err != nil {
+		_ = h.messenger.SendText(ctx, contextID, "❌ Failed to fetch queue status.")
+		return
+	}
+
+	_ = h.messenger.SendText(ctx, contextID, formatQueueSummary(running, queued))
+}
+
 func (h *Handler) handleQuestion(ctx context.Context, contextID, threadID, question string) {
+	if h.runner == nil {
+		_ = h.messenger.SendText(ctx, contextID, "❌ Executor not available.")
+		return
+	}
 	_ = h.messenger.SendText(ctx, contextID, "🔍 Looking into that...")
 
 	questionCtx, cancel := context.WithTimeout(ctx, 90*time.Second)

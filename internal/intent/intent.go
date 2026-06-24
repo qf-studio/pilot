@@ -9,14 +9,41 @@ import (
 type Intent string
 
 const (
-	IntentCommand  Intent = "command"
-	IntentGreeting Intent = "greeting"
-	IntentResearch Intent = "research"
-	IntentPlanning Intent = "planning"
-	IntentQuestion Intent = "question"
-	IntentChat     Intent = "chat"
-	IntentTask     Intent = "task"
+	IntentCommand     Intent = "command"
+	IntentGreeting    Intent = "greeting"
+	IntentOperational Intent = "operational"
+	IntentResearch    Intent = "research"
+	IntentPlanning    Intent = "planning"
+	IntentQuestion    Intent = "question"
+	IntentChat        Intent = "chat"
+	IntentTask        Intent = "task"
 )
+
+// operationalPatterns match questions about live daemon state (queue, running tasks).
+var operationalPatterns = []string{
+	`what(?:'?s| is)(?: in)? (?:the )?queue`,
+	`anything (?:running|in (?:the )?queue)`,
+	`is anything running`,
+	`how many (?:tasks?|jobs?)`,
+	`queue status`,
+	`show (?:me )?(?:the )?queue`,
+	`what(?:'?s| is) running`,
+	`what tasks? (?:are )?(?:running|queued|pending|waiting)`,
+	`active (?:tasks?|executions?)`,
+}
+
+// IsOperationalQuery returns true when the message is asking about live daemon state:
+// queue depth, running tasks, or task counts. These are answered from the memory store
+// without invoking the executor.
+func IsOperationalQuery(msg string) bool {
+	lower := strings.ToLower(strings.TrimSpace(msg))
+	for _, pattern := range operationalPatterns {
+		if matched, _ := regexp.MatchString(pattern, lower); matched {
+			return true
+		}
+	}
+	return false
+}
 
 // Common greeting patterns
 var greetingPatterns = []string{
@@ -84,7 +111,13 @@ func DetectIntent(message string) Intent {
 		return IntentGreeting
 	}
 
-	// 3. Check for research requests (research patterns with topic/URL)
+	// 3. Check for operational queries (queue/running status) before question patterns
+	// so "what's in the queue?" routes to operational, not question.
+	if IsOperationalQuery(msg) {
+		return IntentOperational
+	}
+
+	// 4. Check for research requests (research patterns with topic/URL)
 	if IsResearch(msg) {
 		return IntentResearch
 	}
@@ -348,6 +381,8 @@ func (i Intent) Description() string {
 		return "Command"
 	case IntentGreeting:
 		return "Greeting"
+	case IntentOperational:
+		return "Operational"
 	case IntentResearch:
 		return "Research"
 	case IntentPlanning:

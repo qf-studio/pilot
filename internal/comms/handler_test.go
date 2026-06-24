@@ -10,6 +10,7 @@ import (
 	"unicode"
 
 	"github.com/qf-studio/pilot/internal/intent"
+	"github.com/qf-studio/pilot/internal/memory"
 )
 
 // handlerMock records all Messenger calls for assertion in handler tests.
@@ -708,5 +709,146 @@ func TestASCIISmuggling_HandleMessage_StripsTextAndVoice(t *testing.T) {
 	}
 	if !strings.HasPrefix(msg.Text, "hello") {
 		t.Errorf("visible Text content corrupted: got %q", msg.Text)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Operational intent: detectIntent ordering + handleOperational
+// ---------------------------------------------------------------------------
+
+// TestDetectIntent_OperationalOrdering verifies that operational queries are
+// detected before greeting and question fast-paths.
+func TestDetectIntent_OperationalOrdering(t *testing.T) {
+	tests := []struct {
+		text string
+		want intent.Intent
+	}{
+		// Operational queries — must beat IsClearQuestion (ends with ?)
+		{"what's in the queue?", intent.IntentOperational},
+		{"what is in the queue?", intent.IntentOperational},
+		{"anything running?", intent.IntentOperational},
+		{"is anything running?", intent.IntentOperational},
+		{"what's running?", intent.IntentOperational},
+		{"how many tasks?", intent.IntentOperational},
+		{"show the queue", intent.IntentOperational},
+		{"queue status", intent.IntentOperational},
+		// Non-operational question still routes to question
+		{"What does the auth handler do?", intent.IntentQuestion},
+		// Command still wins over operational
+		{"/help", intent.IntentCommand},
+		// Greeting still wins after operational (no match)
+		{"hello", intent.IntentGreeting},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.text, func(t *testing.T) {
+			m := &handlerMock{}
+			h := newTestHandler(m)
+			got := h.detectIntent(context.Background(), "ch1", tt.text)
+			if got != tt.want {
+				t.Errorf("detectIntent(%q) = %s, want %s", tt.text, got, tt.want)
+			}
+		})
+	}
+}
+
+// mustNewStore creates an isolated SQLite store backed by a temp directory.
+// Unlike mustCreateMemoryStore (which uses ":memory:" mapping to a shared path),
+// this guarantees test isolation.
+func mustNewStore(t *testing.T) *memory.Store {
+	t.Helper()
+	store, err := memory.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+	return store
+}
+
+// TestHandleOperational_WithStore verifies that handleOperational sends inline
+// text from the store and never invokes the executor (runner is nil; a call
+// to runner.Execute would panic).
+func TestHandleOperational_WithStore(t *testing.T) {
+	store := mustNewStore(t)
+	if err := store.SaveExecution(&memory.Execution{
+		ID:          "exec-1",
+		TaskID:      "TASK-42",
+		ProjectPath: "/projects/pilot",
+		Status:      "queued",
+		CreatedAt:   time.Now(),
+	}); err != nil {
+		t.Fatalf("seed execution: %v", err)
+	}
+
+	m := &handlerMock{}
+	h := NewHandler(&HandlerConfig{
+		Messenger:    m,
+		Store:        store,
+		TaskIDPrefix: "TEST",
+		// No runner: if handleOperational called runner.Execute it would panic.
+	})
+
+	h.handleOperational(context.Background(), "ch1", "", "what's in the queue?")
+
+	texts := m.getTexts()
+	if len(texts) == 0 {
+		t.Fatal("expected text reply from handleOperational")
+	}
+	// Must contain the task ID from the store — confirms it's reading live state.
+	if !strings.Contains(texts[0].text, "TASK-42") {
+		t.Errorf("expected TASK-42 in reply, got: %s", texts[0].text)
+	}
+	// Must be a direct text reply, not a chunked/result/confirm message.
+	if len(m.results) > 0 || len(m.confirms) > 0 {
+		t.Error("handleOperational must not use result/confirm channels")
+	}
+}
+
+// TestHandleOperational_EmptyQueue verifies the "queue is empty" reply.
+func TestHandleOperational_EmptyQueue(t *testing.T) {
+	store := mustNewStore(t)
+
+	m := &handlerMock{}
+	h := NewHandler(&HandlerConfig{
+		Messenger:    m,
+		Store:        store,
+		TaskIDPrefix: "TEST",
+	})
+
+	h.handleOperational(context.Background(), "ch1", "", "what's in the queue?")
+
+	texts := m.getTexts()
+	if len(texts) == 0 {
+		t.Fatal("expected text reply")
+	}
+	if !strings.Contains(texts[0].text, "Queue is empty") {
+		t.Errorf("expected 'Queue is empty', got: %s", texts[0].text)
+	}
+}
+
+// TestHandleOperational_NilStore verifies that a nil store falls back to
+// handleQuestion (no queue output; executor-not-available guard fires instead).
+func TestHandleOperational_NilStore(t *testing.T) {
+	m := &handlerMock{}
+	h := NewHandler(&HandlerConfig{
+		Messenger:    m,
+		TaskIDPrefix: "TEST",
+		// No store, no runner.
+	})
+
+	h.handleOperational(context.Background(), "ch1", "", "what's in the queue?")
+
+	texts := m.getTexts()
+	if len(texts) == 0 {
+		t.Fatal("expected a response message")
+	}
+	// Must not produce queue-specific output (that would mean the operational path ran).
+	for _, st := range texts {
+		if strings.Contains(st.text, "Queue is empty") || strings.Contains(st.text, "Queued") {
+			t.Errorf("nil-store path must not produce queue output: %s", st.text)
+		}
+	}
+	// Should have fallen through to handleQuestion, which guards nil runner.
+	if texts[0].text != "❌ Executor not available." {
+		t.Errorf("expected executor-not-available fallback, got: %s", texts[0].text)
 	}
 }
