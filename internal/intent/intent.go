@@ -9,13 +9,14 @@ import (
 type Intent string
 
 const (
-	IntentCommand  Intent = "command"
-	IntentGreeting Intent = "greeting"
-	IntentResearch Intent = "research"
-	IntentPlanning Intent = "planning"
-	IntentQuestion Intent = "question"
-	IntentChat     Intent = "chat"
-	IntentTask     Intent = "task"
+	IntentCommand     Intent = "command"
+	IntentGreeting    Intent = "greeting"
+	IntentResearch    Intent = "research"
+	IntentPlanning    Intent = "planning"
+	IntentOperational Intent = "operational"
+	IntentQuestion    Intent = "question"
+	IntentChat        Intent = "chat"
+	IntentTask        Intent = "task"
 )
 
 // Common greeting patterns
@@ -54,6 +55,30 @@ var chatPatterns = []string{
 	"what do you think", "opinion on", "thoughts about",
 	"do you recommend", "should i", "is it better",
 	"discuss", "let's talk about", "lets talk about",
+}
+
+// Operational patterns - queries about live daemon/queue state.
+// Compiled once at init; matched case-insensitively via (?i) flags.
+var operationalPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)\bwhat(?:'s?|s?)?\s+(?:is\s+)?in\s+(the\s+)?queue\b`),
+	regexp.MustCompile(`(?i)\banything\s+running\b`),
+	regexp.MustCompile(`(?i)\bhow\s+many\s+(tasks?|jobs?|items?)\b`),
+	regexp.MustCompile(`(?i)\bstatus\s+of\s+(the\s+)?queue\b`),
+	regexp.MustCompile(`(?i)\bqueue\s+status\b`),
+	regexp.MustCompile(`(?i)\bwhat'?s?\s+(currently\s+)?running\b`),
+	regexp.MustCompile(`(?i)\bis\s+(anything|something)\s+running\b`),
+	regexp.MustCompile(`(?i)\bwhat\s+tasks?\s+(?:(?:are|is)\s+)?(in|queued|pending)\b`),
+	regexp.MustCompile(`(?i)\b(current\s+)?queue\s+(size|length|depth|count)\b`),
+}
+
+// IsOperationalQuery reports whether text is asking about live daemon or queue state.
+func IsOperationalQuery(text string) bool {
+	for _, re := range operationalPatterns {
+		if re.MatchString(text) {
+			return true
+		}
+	}
+	return false
 }
 
 // Task action words that indicate a task request
@@ -98,6 +123,13 @@ func DetectIntent(message string) Intent {
 	// Checked before questions because "what do you think" starts with "what"
 	if IsChat(msg) && !ContainsActionWord(msg) {
 		return IntentChat
+	}
+
+	// 5.5 Check for operational queries (live daemon/queue state) before
+	// the IsClearQuestion branch so phrasing like "what's in the queue?" is
+	// routed here rather than to IntentQuestion.
+	if IsOperationalQuery(msg) {
+		return IntentOperational
 	}
 
 	// 6. Check for questions (ends with ? or question starters)
@@ -352,6 +384,8 @@ func (i Intent) Description() string {
 		return "Research"
 	case IntentPlanning:
 		return "Planning"
+	case IntentOperational:
+		return "Operational"
 	case IntentQuestion:
 		return "Question"
 	case IntentChat:
