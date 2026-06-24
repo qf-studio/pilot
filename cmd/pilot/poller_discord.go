@@ -4,14 +4,11 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"os"
-	"time"
 
 	"github.com/qf-studio/pilot/internal/adapters/discord"
 	"github.com/qf-studio/pilot/internal/adapters/sdkshim"
 	"github.com/qf-studio/pilot/internal/comms"
 	"github.com/qf-studio/pilot/internal/config"
-	"github.com/qf-studio/pilot/internal/intent"
 	"github.com/qf-studio/pilot/internal/logging"
 	sdkCore "github.com/qf-studio/studio-sdk/sdk/core"
 	sdkDiscord "github.com/qf-studio/studio-sdk/sdk/integrations/discord"
@@ -26,34 +23,13 @@ func discordPollerRegistration() PollerRegistration {
 		CreateAndStart: func(ctx context.Context, deps *PollerDeps) {
 			discordCfg := deps.Cfg.Adapters.Discord
 
-			// Build LLM classifier + conversation store for comms.Handler
-			var llmClassifier intent.Classifier
-			var convStore *intent.ConversationStore
-			if discordCfg.LLMClassifier != nil && discordCfg.LLMClassifier.Enabled {
-				apiKey := discordCfg.LLMClassifier.APIKey
-				if apiKey == "" {
-					apiKey = os.Getenv("ANTHROPIC_API_KEY")
-				}
-				if apiKey != "" {
-					client := intent.NewAnthropicClient(apiKey)
-					if deps.Cfg.Executor != nil {
-						if deps.Cfg.Executor.DefaultModel != "" {
-							client.SetModel(deps.Cfg.Executor.DefaultModel)
-						}
-						if deps.Cfg.Executor.APIBaseURL != "" {
-							client.SetAPIURL(deps.Cfg.Executor.APIBaseURL + "/v1/messages")
-						}
-					}
-					llmClassifier = client
-					historySize := 10
-					if discordCfg.LLMClassifier.HistorySize > 0 {
-						historySize = discordCfg.LLMClassifier.HistorySize
-					}
-					historyTTL := 30 * time.Minute
-					if discordCfg.LLMClassifier.HistoryTTL > 0 {
-						historyTTL = discordCfg.LLMClassifier.HistoryTTL
-					}
-					convStore = intent.NewConversationStore(historySize, historyTTL)
+			var discordClassifierCfg *comms.ClassifierConfig
+			if discordCfg.LLMClassifier != nil {
+				discordClassifierCfg = &comms.ClassifierConfig{
+					Enabled:     discordCfg.LLMClassifier.Enabled,
+					APIKey:      discordCfg.LLMClassifier.APIKey,
+					HistorySize: discordCfg.LLMClassifier.HistorySize,
+					HistoryTTL:  discordCfg.LLMClassifier.HistoryTTL,
 				}
 			}
 
@@ -75,14 +51,16 @@ func discordPollerRegistration() PollerRegistration {
 				AllowedChannels: discordCfg.AllowedChannels,
 			}, nil).NewChatBridge(sdkCore.ChatDeps{Handler: discordChatHandler})
 
-			discordCommsHandler := comms.NewHandler(&comms.HandlerConfig{
-				Messenger:     sdkshim.MessengerToBridge(discordBridge),
-				Runner:        deps.Runner,
-				Projects:      config.NewProjectSource(deps.Cfg),
-				ProjectPath:   deps.ProjectPath,
-				LLMClassifier: llmClassifier,
-				ConvStore:     convStore,
-				TaskIDPrefix:  "DISCORD",
+			discordCommsHandler := comms.BuildHandler(comms.HandlerDeps{
+				Messenger:       sdkshim.MessengerToBridge(discordBridge),
+				Runner:          deps.Runner,
+				Projects:        config.NewProjectSource(deps.Cfg),
+				ProjectPath:     deps.ProjectPath,
+				RateLimit:       discordRateLimitToComms(discordCfg.RateLimit),
+				Classifier:      discordClassifierCfg,
+				Store:           deps.Store,
+				TaskIDPrefix:    "DISCORD",
+				ExecutorBackend: deps.Cfg.Executor,
 			})
 			discordChatHandler.SetCommsHandler(discordCommsHandler)
 
@@ -96,5 +74,19 @@ func discordPollerRegistration() PollerRegistration {
 			fmt.Println("🎮 Discord bot started")
 			logging.WithComponent("start").Info("Discord bot started")
 		},
+	}
+}
+
+// discordRateLimitToComms converts discord.RateLimitConfig units to comms.RateLimitConfig.
+// discord uses per-second messages and per-minute tasks; comms uses per-minute and per-hour.
+func discordRateLimitToComms(rl *discord.RateLimitConfig) *comms.RateLimitConfig {
+	if rl == nil {
+		return nil
+	}
+	return &comms.RateLimitConfig{
+		Enabled:           true,
+		MessagesPerMinute: rl.MessagesPerSecond * 60,
+		TasksPerHour:      rl.TasksPerMinute * 60,
+		BurstSize:         comms.DefaultRateLimitConfig().BurstSize,
 	}
 }

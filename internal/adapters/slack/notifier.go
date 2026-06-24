@@ -3,19 +3,29 @@ package slack
 import (
 	"context"
 	"fmt"
+	"time"
 )
 
 // Config holds Slack adapter configuration
 type Config struct {
-	Enabled         bool            `yaml:"enabled"`
-	BotToken        string          `yaml:"bot_token"`
-	AppToken        string          `yaml:"app_token"`
-	Channel         string          `yaml:"channel"`
-	SigningSecret   string          `yaml:"signing_secret"`
-	SocketMode      bool            `yaml:"socket_mode"`
-	AllowedUsers    []string        `yaml:"allowed_users"`
-	AllowedChannels []string        `yaml:"allowed_channels"`
-	Approval        *ApprovalConfig `yaml:"approval,omitempty"`
+	Enabled         bool                 `yaml:"enabled"`
+	BotToken        string               `yaml:"bot_token"`
+	AppToken        string               `yaml:"app_token"`
+	Channel         string               `yaml:"channel"`
+	SigningSecret   string               `yaml:"signing_secret"`
+	SocketMode      bool                 `yaml:"socket_mode"`
+	AllowedUsers    []string             `yaml:"allowed_users"`
+	AllowedChannels []string             `yaml:"allowed_channels"`
+	Approval        *ApprovalConfig      `yaml:"approval,omitempty"`
+	LLMClassifier   *LLMClassifierConfig `yaml:"llm_classifier,omitempty"`
+}
+
+// LLMClassifierConfig configures LLM-based intent classification for Slack.
+type LLMClassifierConfig struct {
+	Enabled     bool          `yaml:"enabled"`
+	APIKey      string        `yaml:"api_key"`
+	HistorySize int           `yaml:"history_size"`
+	HistoryTTL  time.Duration `yaml:"history_ttl"`
 }
 
 // DefaultConfig returns default Slack configuration

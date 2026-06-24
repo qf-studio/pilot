@@ -142,12 +142,26 @@ adapters:
     allowed_guilds: []       # Guild IDs (empty = all)
     allowed_channels: []     # Channel IDs (empty = all)
     command_prefix: "/"
+    # LLM-based intent classification (uses Claude Haiku for accurate intent detection)
+    llm_classifier:
+      enabled: false                   # Enable for better intent detection vs regex
+      # api_key: ""                    # Optional - uses ANTHROPIC_API_KEY env var if not set
+      history_size: 10                 # Messages to keep per channel for context
+      history_ttl: 30m                 # TTL for conversation history
 
-  # Slack - Notifications
+  # Slack - Notifications + Socket Mode chat
   slack:
     enabled: false
     bot_token: "${SLACK_BOT_TOKEN}"
     channel: "#dev-notifications"
+    # LLM-based intent classification (uses Claude Haiku for accurate intent detection)
+    # When enabled, phrases like "check the pilot queue" are classified correctly
+    # (as question/research) instead of defaulting to task via regex.
+    llm_classifier:
+      enabled: false                   # Enable for better intent detection vs regex
+      # api_key: ""                    # Optional - uses ANTHROPIC_API_KEY env var if not set
+      history_size: 10                 # Messages to keep per channel for context
+      history_ttl: 30m                 # TTL for conversation history
 
 # Orchestrator settings
 orchestrator:

@@ -604,15 +604,27 @@ func New(cfg *config.Config, opts ...Option) (*Pilot, error) {
 			tgMemberResolver = &telegram.MemberResolverAdapter{Inner: p.telegramMemberResolver}
 		}
 
-		tgCommsHandler := comms.NewHandler(&comms.HandlerConfig{
-			Messenger:      tgMessenger,
-			Runner:         p.telegramRunner,
-			Projects:       config.NewProjectSource(cfg),
-			ProjectPath:    projectPath,
-			RateLimit:      cfg.Adapters.Telegram.RateLimit,
-			MemberResolver: tgMemberResolver,
-			Store:          p.store,
-			TaskIDPrefix:   "TG",
+		var tgClassifierCfg *comms.ClassifierConfig
+		if cfg.Adapters.Telegram.LLMClassifier != nil {
+			tgClassifierCfg = &comms.ClassifierConfig{
+				Enabled:     cfg.Adapters.Telegram.LLMClassifier.Enabled,
+				APIKey:      cfg.Adapters.Telegram.LLMClassifier.APIKey,
+				HistorySize: cfg.Adapters.Telegram.LLMClassifier.HistorySize,
+				HistoryTTL:  cfg.Adapters.Telegram.LLMClassifier.HistoryTTL,
+			}
+		}
+
+		tgCommsHandler := comms.BuildHandler(comms.HandlerDeps{
+			Messenger:       tgMessenger,
+			Runner:          p.telegramRunner,
+			Projects:        config.NewProjectSource(cfg),
+			ProjectPath:     projectPath,
+			RateLimit:       cfg.Adapters.Telegram.RateLimit,
+			Classifier:      tgClassifierCfg,
+			MemberResolver:  tgMemberResolver,
+			Store:           p.store,
+			TaskIDPrefix:    "TG",
+			ExecutorBackend: cfg.Executor,
 		})
 
 		p.telegramHandler = telegram.NewHandler(&telegram.HandlerConfig{
@@ -650,14 +662,26 @@ func New(cfg *config.Config, opts ...Option) (*Pilot, error) {
 			slackMemberResolver = &slack.MemberResolverAdapter{Inner: p.slackMemberResolver}
 		}
 
-		slackCommsHandler := comms.NewHandler(&comms.HandlerConfig{
-			Messenger:      slackMessenger,
-			Runner:         p.slackRunner,
-			Projects:       config.NewSlackProjectSource(cfg),
-			ProjectPath:    projectPath,
-			MemberResolver: slackMemberResolver,
-			Store:          p.store,
-			TaskIDPrefix:   "SLACK",
+		var slackClassifierCfg *comms.ClassifierConfig
+		if cfg.Adapters.Slack.LLMClassifier != nil {
+			slackClassifierCfg = &comms.ClassifierConfig{
+				Enabled:     cfg.Adapters.Slack.LLMClassifier.Enabled,
+				APIKey:      cfg.Adapters.Slack.LLMClassifier.APIKey,
+				HistorySize: cfg.Adapters.Slack.LLMClassifier.HistorySize,
+				HistoryTTL:  cfg.Adapters.Slack.LLMClassifier.HistoryTTL,
+			}
+		}
+
+		slackCommsHandler := comms.BuildHandler(comms.HandlerDeps{
+			Messenger:       slackMessenger,
+			Runner:          p.slackRunner,
+			Projects:        config.NewSlackProjectSource(cfg),
+			ProjectPath:     projectPath,
+			Classifier:      slackClassifierCfg,
+			MemberResolver:  slackMemberResolver,
+			Store:           p.store,
+			TaskIDPrefix:    "SLACK",
+			ExecutorBackend: cfg.Executor,
 		})
 
 		p.slackHandler = slack.NewHandler(&slack.HandlerConfig{

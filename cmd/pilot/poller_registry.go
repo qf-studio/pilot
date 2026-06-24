@@ -12,6 +12,7 @@ import (
 	"github.com/qf-studio/pilot/internal/config"
 	"github.com/qf-studio/pilot/internal/executor"
 	"github.com/qf-studio/pilot/internal/logging"
+	"github.com/qf-studio/pilot/internal/memory"
 )
 
 // PollerDeps groups shared infrastructure used by all adapter poller startup blocks.
@@ -25,6 +26,7 @@ type PollerDeps struct {
 	Program      *tea.Program
 	AlertsEngine *alerts.Engine
 	Enforcer     *budget.Enforcer
+	Store        *memory.Store
 
 	AutopilotController  *autopilot.Controller
 	AutopilotStateStore  *autopilot.StateStore
