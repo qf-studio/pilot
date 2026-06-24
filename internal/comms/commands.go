@@ -182,6 +182,38 @@ Note: Ephemeral commands (serve, run, etc.) auto-skip PR creation.`
 	_ = c.messenger.SendText(ctx, contextID, helpText)
 }
 
+// formatQueueSummary formats active and queued executions into a concise status string.
+// Returns "📋 Queue is empty" when both slices are empty or nil.
+// Called by handleQueue, handleStatus, and the operational intent handler.
+func formatQueueSummary(running, queued []*memory.Execution) string {
+	if len(running) == 0 && len(queued) == 0 {
+		return "📋 Queue is empty"
+	}
+
+	var sb strings.Builder
+
+	if len(running) > 0 {
+		sb.WriteString(fmt.Sprintf("🔄 Running: %d\n", len(running)))
+		for _, exec := range running {
+			age := time.Since(exec.CreatedAt).Round(time.Second)
+			sb.WriteString(fmt.Sprintf("• %s (%s)\n", exec.TaskID, age))
+		}
+	}
+
+	if len(queued) > 0 {
+		if len(running) > 0 {
+			sb.WriteString("\n")
+		}
+		sb.WriteString(fmt.Sprintf("📋 Queued: %d\n", len(queued)))
+		for i, exec := range queued {
+			age := time.Since(exec.CreatedAt).Round(time.Minute)
+			sb.WriteString(fmt.Sprintf("%d. %s — %s (%s ago)\n", i+1, exec.TaskID, filepath.Base(exec.ProjectPath), age))
+		}
+	}
+
+	return strings.TrimRight(sb.String(), "\n")
+}
+
 // handleStatus shows current status with running/pending/queue info.
 func (c *CommandHandler) handleStatus(ctx context.Context, contextID string) {
 	var sb strings.Builder
@@ -228,8 +260,10 @@ func (c *CommandHandler) handleStatus(ctx context.Context, contextID string) {
 	// Queue info from memory store
 	if c.store != nil {
 		queued, err := c.store.GetQueuedTasks(10)
-		if err == nil && len(queued) > 0 {
-			sb.WriteString(fmt.Sprintf("\n📋 Queue: %d task(s)\n", len(queued)))
+		if err == nil {
+			sb.WriteString("\n")
+			sb.WriteString(formatQueueSummary(nil, queued))
+			sb.WriteString("\n")
 		}
 	}
 
@@ -264,21 +298,7 @@ func (c *CommandHandler) handleQueue(ctx context.Context, contextID string) {
 		return
 	}
 
-	if len(queued) == 0 {
-		_ = c.messenger.SendText(ctx, contextID, "📋 Queue is empty")
-		return
-	}
-
-	var sb strings.Builder
-	sb.WriteString("📋 Task Queue\n\n")
-
-	for i, task := range queued {
-		age := time.Since(task.CreatedAt).Round(time.Minute)
-		sb.WriteString(fmt.Sprintf("%d. %s\n", i+1, task.TaskID))
-		sb.WriteString(fmt.Sprintf("   📁 %s • ⏱ %s ago\n\n", filepath.Base(task.ProjectPath), age))
-	}
-
-	_ = c.messenger.SendText(ctx, contextID, sb.String())
+	_ = c.messenger.SendText(ctx, contextID, formatQueueSummary(nil, queued))
 }
 
 // handleProjects lists configured projects.

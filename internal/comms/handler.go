@@ -173,6 +173,8 @@ func (h *Handler) HandleMessage(ctx context.Context, msg *IncomingMessage) {
 	switch detected {
 	case intent.IntentGreeting:
 		h.handleGreeting(ctx, contextID)
+	case intent.IntentOperational:
+		h.handleOperational(ctx, contextID, msg.ThreadID, text)
 	case intent.IntentQuestion:
 		h.handleQuestion(ctx, contextID, msg.ThreadID, text)
 	case intent.IntentResearch:
@@ -195,6 +197,13 @@ func (h *Handler) detectIntent(ctx context.Context, contextID, text string) inte
 	// Fast path: commands
 	if strings.HasPrefix(text, "/") {
 		return intent.IntentCommand
+	}
+
+	// Fast path: operational queries (live daemon/queue state) — must precede
+	// the greeting and IsClearQuestion checks because phrases like
+	// "what's in the queue?" match IsClearQuestion's "what's in" prefix.
+	if intent.IsOperationalQuery(text) {
+		return intent.IntentOperational
 	}
 
 	// Fast path: greeting-prefixed messages (e.g. "Hello! How is it going?")
@@ -241,8 +250,34 @@ func (h *Handler) handleGreeting(ctx context.Context, contextID string) {
 	_ = h.messenger.SendText(ctx, contextID, "👋 Hello! I'm Pilot — send me a task, question, or say /help.")
 }
 
+func (h *Handler) handleOperational(ctx context.Context, contextID, threadID, text string) {
+	if h.store == nil {
+		h.handleQuestion(ctx, contextID, threadID, text)
+		return
+	}
+
+	running, err := h.store.GetActiveExecutions()
+	if err != nil {
+		_ = h.messenger.SendText(ctx, contextID, "❌ Failed to fetch queue status")
+		return
+	}
+
+	queued, err := h.store.GetQueuedTasks(10)
+	if err != nil {
+		_ = h.messenger.SendText(ctx, contextID, "❌ Failed to fetch queue status")
+		return
+	}
+
+	_ = h.messenger.SendText(ctx, contextID, formatQueueSummary(running, queued))
+}
+
 func (h *Handler) handleQuestion(ctx context.Context, contextID, threadID, question string) {
 	_ = h.messenger.SendText(ctx, contextID, "🔍 Looking into that...")
+
+	if h.runner == nil {
+		_ = h.messenger.SendText(ctx, contextID, "I couldn't answer that question.")
+		return
+	}
 
 	questionCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
