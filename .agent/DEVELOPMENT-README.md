@@ -120,7 +120,7 @@ Disable via config: `executor.navigator.auto_init: false`
 
 ## Current State
 
-**Current Version:** v2.194.0 | full status in `.agent/system/FEATURE-MATRIX.md`
+**Current Version:** v2.194.1 | full status in `.agent/system/FEATURE-MATRIX.md`
 
 **Recent (v2.187.0–v2.194.0, June 16–25 2026):** **Operational-intent live-queue answers · comms intent reliability (ghost-SHA guard fix + unified Handler factory) · M7 Phase 4a github scaffolding — all SHIPPED.**
 - **Operational-intent live-queue answers (v2.194.0, June 24–25):** natural-language ops queries ("what's in the queue?", "anything running?", "queue status") now answer **inline from the daemon's store** (`GetActiveExecutions` + `GetQueuedTasks`) in <1s — no Claude Code exec, no tokens. New `intent.IntentOperational` category detected *before* the `IsClearQuestion` fast-path (the ordering trap); store-backed `handleOperational`; shared `formatQueueSummary` reused by `/queue`, `/status`, and the NL path; patterns tightly scoped so "where is the queue implemented?" still routes to `IntentQuestion` ([TASK-371](tasks/archive/TASK-371-operational-intent-live-queue.md), issue #3648 → decomposed into GH-3649/GH-3650). ⚠️ **Shipped in two halves:** the intent layer merged alone in **v2.193.0** while the handler PR failed on a daemon queue-race (`task GH-3650 already queued or running`), so v2.193.0 briefly mis-routed ops queries to the dispatch switch `default:` ("treat as task") — the exact failure mode TASK-370 had just fixed. Re-dispatched; handler landed in **v2.194.0** (`62abeac7`), closing the regression. Archived.
