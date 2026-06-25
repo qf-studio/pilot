@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "updated": "2026-06-11",
+  "updated": "2026-06-25",
   "nodes": {
     "concepts": {
       "pilot-architecture": {
@@ -615,6 +615,23 @@
         "created": "2026-06-11",
         "file": ".agent/knowledge/memories/learnings/learn_test_suite_live_fire_ghost_issues.md",
         "origin_task": "TASK-292"
+      },
+      "mem-036": {
+        "type": "pitfall",
+        "summary": "studio-sdk chat bridge splits /-commands into core.MessageEvent{Action:\"command\",Command,Args,Text:\"\"} UPSTREAM. Pilot's two mapping sites (slack/handler.go HandleMessage + shared sdkshim.MessageEventToIncomingMessage) handled only Action==\"callback\" and copied the empty ev.Text -> /help reached comms as empty text -> handleTask. Live '@Pilot /help creates a task' 2026-06-25. TASK-372 fixed the wrong layer (comms dispatch) and merged GREEN because its tests fed comms already-/-prefixed text and never crossed the adapter->comms seam; pre-existing TestHandler_HandleMessage_CommandAction asserted only Platform/IsCallback, never Text. Real fix PR #3661: handle Action==\"command\" at both boundary sites (reconstruct Command+Args into Text) + assert the reconstructed Text + end-to-end /help->help. Live path is the studio-sdk NewChatBridge, NOT native processEvent (dead code for the daemon).",
+        "concepts": [
+          "comms-intent-dispatch",
+          "sdk-chat-bridge",
+          "slack-adapter",
+          "testing",
+          "verification"
+        ],
+        "confidence": 0.95,
+        "severity": "high",
+        "created": "2026-06-25",
+        "incident": "2026-06-25: '@Pilot /help' on Slack created a task (Task SLACK-... Execute/Cancel) despite TASK-372 (v2.194.1) being merged + live-verified in the running binary. Root cause was one layer up (SDK command-action drop), not comms dispatch.",
+        "file": ".agent/knowledge/memories/pitfalls/bug_sdk_command_action_dropped.md",
+        "origin_task": "TASK-372"
       }
     }
   },
