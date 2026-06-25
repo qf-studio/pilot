@@ -6,6 +6,9 @@ out/
 .env.local
 public/_pagefind/
 
+# Next.js generated type declarations (regenerated on every build)
+next-env.d.ts
+
 # misc
 .DS_Store
 *.pem
