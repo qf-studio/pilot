@@ -67,6 +67,44 @@ func TestMessageEventToIncomingMessage_Callback(t *testing.T) {
 	}
 }
 
+func TestMessageEventToIncomingMessage_Command(t *testing.T) {
+	// The SDK bridge delivers "/"-prefixed input as a command event with
+	// Command/Args set and Text empty. The shim must reconstruct the command
+	// line into Text so comms.detectIntent routes it via IntentCommand →
+	// CommandHandler rather than creating a task from empty text.
+	tests := []struct {
+		name    string
+		command string
+		args    []string
+		want    string
+	}{
+		{name: "help no args", command: "/help", args: nil, want: "/help"},
+		{name: "run with arg", command: "/run", args: []string{"42"}, want: "/run 42"},
+		{name: "multi arg", command: "/project", args: []string{"set", "pilot"}, want: "/project set pilot"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ev := &core.MessageEvent{
+				Action:    "command",
+				ChannelID: "C123",
+				Command:   tt.command,
+				Args:      tt.args,
+				Sender:    core.Identity{UserID: "U1"},
+			}
+			msg := MessageEventToIncomingMessage(ev, PlatformSlack, nil)
+			if msg == nil {
+				t.Fatal("expected non-nil message")
+			}
+			if msg.IsCallback {
+				t.Error("IsCallback should be false for command action")
+			}
+			if msg.Text != tt.want {
+				t.Errorf("Text = %q, want %q", msg.Text, tt.want)
+			}
+		})
+	}
+}
+
 func TestMessageEventToIncomingMessage_CustomConverter(t *testing.T) {
 	ev := &core.MessageEvent{
 		Sender: core.Identity{UserID: "raw-id"},

@@ -42,7 +42,7 @@ func (a *MemberResolverAdapter) ResolveIdentity(senderID string) (string, error)
 // Delegates intent detection and task lifecycle to the shared comms.Handler (GH-2143).
 type Handler struct {
 	socketClient    *SocketModeClient
-	apiClient       *Client          // Kept for client access; Messenger wraps this
+	apiClient       *Client           // Kept for client access; Messenger wraps this
 	commsHandler    commsHandlerIface // Shared message handler for intent dispatch + task execution
 	allowedChannels map[string]bool   // Allowed channel IDs for security
 	allowedUsers    map[string]bool   // Allowed user IDs for security
@@ -225,12 +225,22 @@ func (h *Handler) HandleMessage(ctx context.Context, ev core.MessageEvent) error
 		Platform:   "slack",
 		RawEvent:   &ev,
 	}
-	if ev.Action == "callback" {
+	switch ev.Action {
+	case "callback":
 		msg.IsCallback = true
 		msg.CallbackID = ev.CallbackID
 		// ev.Data carries the button Data payload; bridgeMessenger.SendConfirmation
 		// sets Data=="execute"/"cancel" so comms.Handler can route directly.
 		msg.ActionID = ev.Data
+	case "command":
+		// The SDK bridge detects "/"-prefixed input upstream and delivers it as a
+		// command event with Command/Args set and Text empty. Reconstruct the
+		// command line into Text so comms.detectIntent routes it via IntentCommand
+		// → CommandHandler. Without this, the empty Text creates an unintended
+		// task (the live "@Pilot /help creates a task" bug).
+		if ev.Text == "" && ev.Command != "" {
+			msg.Text = strings.TrimSpace(ev.Command + " " + strings.Join(ev.Args, " "))
+		}
 	}
 	if h.commsHandler != nil {
 		h.commsHandler.HandleMessage(ctx, msg)
