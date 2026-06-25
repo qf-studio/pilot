@@ -1,6 +1,8 @@
 package sdkshim
 
 import (
+	"strings"
+
 	"github.com/qf-studio/pilot/internal/comms"
 	"github.com/qf-studio/studio-sdk/sdk/core"
 )
@@ -35,9 +37,10 @@ func PassThroughSenderID(id string) string { return id }
 //   - core.MessageEvent.Text is pre-sanitized by the SDK adapter (live path).
 //   - Action ∈ {"message","command","callback"}: callback maps IsCallback=true
 //     plus CallbackID + ActionID (from Button.ActionID; the SDK exposes the
-//     callback ID via the dedicated CallbackID field). "command" is left as a
-//     plain message for Phase 0; Phase 6/7/8 will route Command/Args through
-//     comms.CommandHandler instead of the local Telegram parser.
+//     callback ID via the dedicated CallbackID field). "command" reconstructs
+//     the command line (Command + Args) into Text so comms.detectIntent routes
+//     it via IntentCommand → CommandHandler — the SDK bridge delivers commands
+//     with Command/Args set and Text empty, which would otherwise create a task.
 //   - Pilot-specific fields (ImagePath, VoiceText) are NOT in core.MessageEvent.
 //     The Telegram adapter retains photo + voice handling outside this shim
 //     and is responsible for filling those fields on its own host-side path.
@@ -62,7 +65,8 @@ func MessageEventToIncomingMessage(ev *core.MessageEvent, platform string, conv 
 		Platform:   platform,
 		RawEvent:   ev,
 	}
-	if ev.Action == "callback" {
+	switch ev.Action {
+	case "callback":
 		msg.IsCallback = true
 		msg.CallbackID = ev.CallbackID
 		// ActionID is conventionally encoded in ev.Data (e.g. "approve:TASK123").
@@ -70,6 +74,15 @@ func MessageEventToIncomingMessage(ev *core.MessageEvent, platform string, conv 
 		// before this shim — at the SDK boundary we just forward the raw payload
 		// and let comms route it.
 		msg.ActionID = ev.Data
+	case "command":
+		// The SDK chat bridge routes "/"-prefixed input as a structured command
+		// event (Command + Args set, Text empty). Reconstruct the command line so
+		// comms.detectIntent sees the "/" prefix and routes to IntentCommand →
+		// CommandHandler. Without this, the empty Text falls through comms' dispatch
+		// and an unintended task is created (the live "/help creates a task" bug).
+		if ev.Text == "" && ev.Command != "" {
+			msg.Text = strings.TrimSpace(ev.Command + " " + strings.Join(ev.Args, " "))
+		}
 	}
 	return msg
 }

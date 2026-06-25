@@ -224,7 +224,8 @@ func TestHandler_HandleMessage_CommandAction(t *testing.T) {
 	ev := core.MessageEvent{
 		Action:    "command",
 		ChannelID: "C123",
-		Command:   "/status",
+		Command:   "/run",
+		Args:      []string{"42"},
 		Sender:    core.Identity{UserID: "U789"},
 	}
 
@@ -240,6 +241,43 @@ func TestHandler_HandleMessage_CommandAction(t *testing.T) {
 	}
 	if got.IsCallback {
 		t.Error("IsCallback should be false for command action")
+	}
+	// The SDK bridge delivers commands with Text empty and Command/Args set.
+	// HandleMessage must reconstruct the command line so comms routes it via
+	// IntentCommand → CommandHandler instead of creating a task from empty text.
+	if got.Text != "/run 42" {
+		t.Errorf("Text = %q, want %q (command line must be reconstructed)", got.Text, "/run 42")
+	}
+}
+
+// TestHandler_HandleMessage_CommandHelpReconstructed is the regression test for
+// the live "@Pilot /help creates a task" bug. The SDK bridge intercepts the
+// "/" prefix upstream and delivers /help as a command event with empty Text;
+// HandleMessage must put "/help" into Text so comms.detectIntent returns
+// IntentCommand (→ CommandHandler) rather than defaulting an empty message to a task.
+func TestHandler_HandleMessage_CommandHelpReconstructed(t *testing.T) {
+	mock := &mockCommsHandler{}
+	h := NewHandler(&HandlerConfig{
+		AppToken: "xapp-test-token",
+		BotToken: "xoxb-test-token",
+	})
+	h.commsHandler = mock
+
+	ev := core.MessageEvent{
+		Action:    "command",
+		ChannelID: "C123",
+		Command:   "/help",
+		Sender:    core.Identity{UserID: "U789"},
+	}
+
+	if err := h.HandleMessage(context.Background(), ev); err != nil {
+		t.Fatalf("HandleMessage() error = %v", err)
+	}
+	if len(mock.got) != 1 {
+		t.Fatalf("HandleMessage() delivered %d messages, want 1", len(mock.got))
+	}
+	if got := mock.got[0].Text; got != "/help" {
+		t.Errorf("Text = %q, want %q (command must reach comms as /help, not empty)", got, "/help")
 	}
 }
 

@@ -298,6 +298,35 @@ func TestDetectIntent_Command(t *testing.T) {
 	}
 }
 
+// TestHandleMessage_SlashCommandRoutesToHelp is the end-to-end dispatch guard for
+// the "/help creates a task" bug. detectIntent → IntentCommand and CommandHandler
+// are each tested in isolation; this connects them through HandleMessage's dispatch
+// switch with a real (NewHandler-wired) cmdHandler: "/help" must produce help text
+// and must NOT create a task confirmation.
+func TestHandleMessage_SlashCommandRoutesToHelp(t *testing.T) {
+	m := &handlerMock{}
+	h := newTestHandler(m)
+
+	h.HandleMessage(context.Background(), &IncomingMessage{
+		ContextID: "ch1",
+		SenderID:  "u1",
+		Text:      "/help",
+	})
+
+	if len(m.confirms) != 0 {
+		t.Fatalf("/help created %d task confirmation(s); want 0 — command must not become a task", len(m.confirms))
+	}
+	var sawHelp bool
+	for _, st := range m.getTexts() {
+		if st.contextID == "ch1" && strings.Contains(st.text, "🤖 Pilot Bot") {
+			sawHelp = true
+		}
+	}
+	if !sawHelp {
+		t.Error("/help did not produce help text via CommandHandler")
+	}
+}
+
 func TestDetectIntent_ClearQuestion(t *testing.T) {
 	m := &handlerMock{}
 	h := newTestHandler(m)
