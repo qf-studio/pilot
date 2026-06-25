@@ -61,6 +61,12 @@ type PendingTask struct {
 	CreatedAt   time.Time
 }
 
+// GetTaskID satisfies duck-typed interface used by CommandHandler.handleStatus.
+func (p *PendingTask) GetTaskID() string { return p.TaskID }
+
+// GetCreatedAt satisfies duck-typed interface used by CommandHandler.handleStatus.
+func (p *PendingTask) GetCreatedAt() time.Time { return p.CreatedAt }
+
 // RunningTask represents a task currently being executed.
 type RunningTask struct {
 	TaskID    string
@@ -68,3 +74,9 @@ type RunningTask struct {
 	StartedAt time.Time
 	Cancel    context.CancelFunc
 }
+
+// GetTaskID satisfies duck-typed interface used by CommandHandler.handleStatus.
+func (r *RunningTask) GetTaskID() string { return r.TaskID }
+
+// GetStartedAt satisfies duck-typed interface used by CommandHandler.handleStatus.
+func (r *RunningTask) GetStartedAt() time.Time { return r.StartedAt }
