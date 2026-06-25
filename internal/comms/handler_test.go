@@ -856,3 +856,224 @@ func TestASCIISmuggling_HandleMessage_StripsTextAndVoice(t *testing.T) {
 		t.Errorf("visible Text content corrupted: got %q", msg.Text)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// IntentCommand routing tests — verifies /help, /status, /queue reach the
+// shared CommandHandler and never create a PendingTask or invoke the runner.
+// ---------------------------------------------------------------------------
+
+func TestHandleMessage_Command_RoutesToCommandHandler(t *testing.T) {
+	tests := []struct {
+		name        string
+		text        string
+		wantInReply string // substring expected in messenger reply
+	}{
+		{"/help prints help", "/help", "Pilot Bot"},
+		{"/start alias for help", "/start", "Pilot Bot"},
+		{"/status shows status", "/status", "Status"},
+		{"/queue shows queue", "/queue", "Queue"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := &handlerMock{}
+			h := newTestHandler(m)
+
+			h.HandleMessage(context.Background(), &IncomingMessage{
+				ContextID: "ch1",
+				SenderID:  "u1",
+				Text:      tt.text,
+			})
+
+			// Must NOT have created a pending task.
+			h.mu.Lock()
+			_, hasPending := h.pendingTasks["ch1"]
+			h.mu.Unlock()
+			if hasPending {
+				t.Errorf("%s: HandleMessage created a pending task — command was mis-routed to handleTask", tt.text)
+			}
+
+			// Must have produced at least one text reply.
+			texts := m.getTexts()
+			if len(texts) == 0 {
+				t.Fatalf("%s: expected a reply, got none", tt.text)
+			}
+
+			// Reply must contain the expected substring (not a task confirmation).
+			found := false
+			for _, st := range texts {
+				if strings.Contains(st.text, tt.wantInReply) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf("%s: expected reply containing %q; got texts: %v", tt.text, tt.wantInReply, texts)
+			}
+		})
+	}
+}
+
+func TestHandleMessage_Command_WithLeadingSpace(t *testing.T) {
+	// Leading-space "/help" must still be detected as IntentCommand.
+	m := &handlerMock{}
+	h := newTestHandler(m)
+
+	h.HandleMessage(context.Background(), &IncomingMessage{
+		ContextID: "ch1",
+		SenderID:  "u1",
+		Text:      "  /help  ",
+	})
+
+	h.mu.Lock()
+	_, hasPending := h.pendingTasks["ch1"]
+	h.mu.Unlock()
+	if hasPending {
+		t.Error("leading-space /help created a pending task — TrimSpace not applied in detectIntent")
+	}
+
+	texts := m.getTexts()
+	if len(texts) == 0 {
+		t.Fatal("expected at least one reply")
+	}
+	if !strings.Contains(texts[0].text, "Pilot Bot") {
+		t.Errorf("expected help text, got: %s", texts[0].text)
+	}
+}
+
+func TestHandleMessage_UnknownIntent_SafeDefault_NoPendingTask(t *testing.T) {
+	// Free text that the regex and no LLM classifier cannot classify should
+	// produce a clarify reply — never a task confirmation.
+	m := &handlerMock{}
+	// No LLM classifier, no runner — any executor call would panic.
+	h := newTestHandler(m)
+
+	// Force an intent that hits default: by using LLM classifier that returns
+	// an unknown/unhandled intent string.
+	h.llmClassifier = &hMockClassifier{result: "unknown_intent_xyz"}
+
+	h.HandleMessage(context.Background(), &IncomingMessage{
+		ContextID: "ch1",
+		SenderID:  "u1",
+		Text:      "do something weird",
+	})
+
+	h.mu.Lock()
+	_, hasPending := h.pendingTasks["ch1"]
+	h.mu.Unlock()
+	if hasPending {
+		t.Error("unknown intent produced a PendingTask — default is not safe")
+	}
+
+	texts := m.getTexts()
+	if len(texts) == 0 {
+		t.Fatal("expected a clarify reply")
+	}
+	found := false
+	for _, st := range texts {
+		if strings.Contains(st.text, "didn't quite catch") || strings.Contains(st.text, "/help") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected clarify message; got: %v", texts)
+	}
+}
+
+func TestHandleMessage_ExplicitTask_StillCreatesTask(t *testing.T) {
+	// Explicit task phrasing must still route to handleTask, creating a PendingTask.
+	m := &handlerMock{}
+	h := newTestHandler(m)
+
+	h.HandleMessage(context.Background(), &IncomingMessage{
+		ContextID: "ch1",
+		SenderID:  "u1",
+		Text:      "create a new login feature with OAuth support",
+	})
+
+	h.mu.Lock()
+	_, hasPending := h.pendingTasks["ch1"]
+	h.mu.Unlock()
+	if !hasPending {
+		t.Error("explicit task description did not create a PendingTask — task routing broken")
+	}
+
+	// Messenger should show a confirmation (SendConfirmation call), not a clarify.
+	m.mu.Lock()
+	confirms := len(m.confirms)
+	m.mu.Unlock()
+	if confirms == 0 {
+		t.Error("expected SendConfirmation for an explicit task, got none")
+	}
+}
+
+func TestHandleMessage_Command_NilCmdHandler_SafeFallback(t *testing.T) {
+	// When cmdHandler is nil (edge case: handler built without wiring),
+	// /help must produce a clarify reply, not a task confirmation.
+	m := &handlerMock{}
+	h := newTestHandler(m)
+	h.cmdHandler = nil // force the nil path
+
+	h.HandleMessage(context.Background(), &IncomingMessage{
+		ContextID: "ch1",
+		SenderID:  "u1",
+		Text:      "/help",
+	})
+
+	h.mu.Lock()
+	_, hasPending := h.pendingTasks["ch1"]
+	h.mu.Unlock()
+	if hasPending {
+		t.Error("nil cmdHandler created a pending task from /help")
+	}
+
+	texts := m.getTexts()
+	if len(texts) == 0 {
+		t.Fatal("expected a reply when cmdHandler is nil")
+	}
+	found := false
+	for _, st := range texts {
+		if strings.Contains(st.text, "didn't quite catch") || strings.Contains(st.text, "/help") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected clarify message from nil-cmdHandler path; got: %v", texts)
+	}
+}
+
+func TestHandleMessage_UnknownCommand_RepliesUnknown(t *testing.T) {
+	// An unknown /foo command must reply "Unknown command" — not drop silently.
+	m := &handlerMock{}
+	h := newTestHandler(m)
+
+	h.HandleMessage(context.Background(), &IncomingMessage{
+		ContextID: "ch1",
+		SenderID:  "u1",
+		Text:      "/foo",
+	})
+
+	h.mu.Lock()
+	_, hasPending := h.pendingTasks["ch1"]
+	h.mu.Unlock()
+	if hasPending {
+		t.Error("/foo created a pending task — unknown command not handled")
+	}
+
+	texts := m.getTexts()
+	if len(texts) == 0 {
+		t.Fatal("expected a reply for unknown command")
+	}
+	found := false
+	for _, st := range texts {
+		if strings.Contains(st.text, "Unknown command") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected 'Unknown command' reply; got: %v", texts)
+	}
+}

@@ -52,6 +52,7 @@ type Handler struct {
 	convStore      *intent.ConversationStore
 	memberResolver MemberResolver
 	store          *memory.Store
+	cmdHandler     *CommandHandler
 	taskIDPrefix   string
 	log            *slog.Logger
 
@@ -81,7 +82,7 @@ func NewHandler(cfg *HandlerConfig) *Handler {
 		lg = logging.WithComponent("comms.handler")
 	}
 
-	return &Handler{
+	h := &Handler{
 		messenger:      cfg.Messenger,
 		runner:         cfg.Runner,
 		projects:       cfg.Projects,
@@ -98,6 +99,45 @@ func NewHandler(cfg *HandlerConfig) *Handler {
 		runningTasks:   make(map[string]*RunningTask),
 		lastSender:     make(map[string]string),
 	}
+
+	// Wire command handler — must be built after h exists so callbacks can close over h.
+	cmd := NewCommandHandler(cfg.Messenger, cfg.Store)
+	cmd.SetStatusQueryFunc(func(contextID string) (pending, running interface{}) {
+		// Avoid wrapping typed nil pointers in interface{} — that produces a
+		// non-nil interface whose method calls panic (classic Go gotcha).
+		if p := h.GetPendingTask(contextID); p != nil {
+			pending = p
+		}
+		if r := h.GetRunningTask(contextID); r != nil {
+			running = r
+		}
+		return pending, running
+	})
+	cmd.SetActiveProjectFunc(func(contextID string) (name, path string) {
+		return h.GetActiveProject(contextID)
+	})
+	cmd.SetSetProjectFunc(func(contextID, projectName string) error {
+		return h.SetActiveProject(contextID, projectName)
+	})
+	cmd.SetCancelTaskFunc(func(ctx context.Context, contextID string) error {
+		return h.CancelTask(ctx, contextID)
+	})
+	cmd.SetStopTaskFunc(func(ctx context.Context, contextID string) error {
+		return h.CancelTask(ctx, contextID)
+	})
+	if cfg.Projects != nil {
+		cmd.SetProjectListFunc(func() []interface{} {
+			projs := cfg.Projects.ListProjects()
+			out := make([]interface{}, len(projs))
+			for i, p := range projs {
+				out[i] = p
+			}
+			return out
+		})
+	}
+	h.cmdHandler = cmd
+
+	return h
 }
 
 // HandleMessage is the main entry point for processing an incoming message.
@@ -173,6 +213,8 @@ func (h *Handler) HandleMessage(ctx context.Context, msg *IncomingMessage) {
 	switch detected {
 	case intent.IntentGreeting:
 		h.handleGreeting(ctx, contextID)
+	case intent.IntentCommand:
+		h.handleCommand(ctx, contextID, text)
 	case intent.IntentOperational:
 		h.handleOperational(ctx, contextID, msg.ThreadID, text)
 	case intent.IntentQuestion:
@@ -186,14 +228,16 @@ func (h *Handler) HandleMessage(ctx context.Context, msg *IncomingMessage) {
 	case intent.IntentTask:
 		h.handleTask(ctx, contextID, msg.ThreadID, text, msg.SenderID)
 	default:
-		// Fallback: treat as task
-		h.handleTask(ctx, contextID, msg.ThreadID, text, msg.SenderID)
+		// Unknown intent — clarify rather than auto-creating a task.
+		_ = h.messenger.SendText(ctx, contextID, "I didn't quite catch that — try /help, or rephrase your request.")
 	}
 }
 
 // ---------- intent detection ----------
 
 func (h *Handler) detectIntent(ctx context.Context, contextID, text string) intent.Intent {
+	text = strings.TrimSpace(text)
+
 	// Fast path: commands
 	if strings.HasPrefix(text, "/") {
 		return intent.IntentCommand
@@ -248,6 +292,14 @@ func (h *Handler) detectIntent(ctx context.Context, contextID, text string) inte
 
 func (h *Handler) handleGreeting(ctx context.Context, contextID string) {
 	_ = h.messenger.SendText(ctx, contextID, "👋 Hello! I'm Pilot — send me a task, question, or say /help.")
+}
+
+func (h *Handler) handleCommand(ctx context.Context, contextID, text string) {
+	if h.cmdHandler == nil {
+		_ = h.messenger.SendText(ctx, contextID, "I didn't quite catch that — try /help, or rephrase your request.")
+		return
+	}
+	h.cmdHandler.HandleCommand(ctx, contextID, text)
 }
 
 func (h *Handler) handleOperational(ctx context.Context, contextID, threadID, text string) {
