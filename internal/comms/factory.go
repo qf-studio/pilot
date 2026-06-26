@@ -68,6 +68,7 @@ type BotConfig struct {
 	AnswerModel string
 	APIKey      string
 	Persona     string
+	Retrieval   RetrievalConfig
 }
 
 // BuildResponder constructs a Responder from BotConfig.
@@ -92,7 +93,7 @@ func BuildResponder(cfg *BotConfig) *Responder {
 	if answerModel == "" {
 		answerModel = model
 	}
-	return newResponder(llm.NewClient(apiKey), answerModel, cfg.Persona)
+	return newResponder(llm.NewClient(apiKey), answerModel, cfg.Persona, cfg.Retrieval)
 }
 
 // HandlerDeps holds the per-adapter inputs needed to build a comms.Handler.

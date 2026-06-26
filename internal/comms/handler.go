@@ -333,6 +333,29 @@ func (h *Handler) handleOperational(ctx context.Context, contextID, threadID, te
 func (h *Handler) handleQuestion(ctx context.Context, contextID, threadID, question string) {
 	_ = h.messenger.SendText(ctx, contextID, "🔍 Looking into that...")
 
+	// Fast path: retrieval-grounded LLM answer (~2-4s, cites real file paths).
+	if h.responder != nil {
+		projectPath := h.getActiveProjectPath(contextID)
+		var history []intent.ConversationMessage
+		if h.convStore != nil {
+			history = h.convStore.Get(contextID)
+		}
+		answer, tooBroad, err := h.responder.Answer(ctx, history, question, projectPath)
+		if err != nil {
+			h.log.Warn("responder.Answer failed, falling back to executor", slog.Any("error", err))
+		} else if !tooBroad {
+			if answer == "" {
+				answer = "I couldn't find a clear answer to that question."
+			}
+			_ = h.messenger.SendChunked(ctx, contextID, threadID, answer, "")
+			if h.convStore != nil {
+				h.convStore.Add(contextID, "assistant", TruncateText(answer, 500))
+			}
+			return
+		}
+		// tooBroad → fall through to executor for a broader search.
+	}
+
 	if h.runner == nil {
 		_ = h.messenger.SendText(ctx, contextID, "I couldn't answer that question.")
 		return

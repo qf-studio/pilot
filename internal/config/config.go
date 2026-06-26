@@ -76,10 +76,20 @@ type BotConfig struct {
 	APIKey      string `yaml:"api_key"`
 	Persona     string `yaml:"persona"` // Injected into the system prompt
 
-	// Reserved for future phases (TASK-375/376/377); parsed but unused.
-	Retrieval   struct{} `yaml:"retrieval,omitempty"`
+	// Bounded file-retrieval for answering codebase questions (TASK-375).
+	Retrieval BotRetrievalConfig `yaml:"retrieval,omitempty"`
+	// Reserved for future phases (TASK-376/377); parsed but unused.
 	IssueIntake struct{} `yaml:"issue_intake,omitempty"`
 	Voice       struct{} `yaml:"voice,omitempty"`
+}
+
+// BotRetrievalConfig controls bounded file-retrieval for grounded Q&A (TASK-375).
+// When enabled, code questions are answered in ~2-4s via retrieval+LLM instead of
+// the 90s executor path. Too-broad questions fall back to the executor automatically.
+type BotRetrievalConfig struct {
+	Enabled  bool `yaml:"enabled"`
+	MaxFiles int  `yaml:"max_files"` // default 8
+	MaxBytes int  `yaml:"max_bytes"` // default 24000
 }
 
 

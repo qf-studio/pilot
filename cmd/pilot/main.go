@@ -1889,6 +1889,11 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 				AnswerModel: cfg.Bot.AnswerModel,
 				APIKey:      cfg.Bot.APIKey,
 				Persona:     cfg.Bot.Persona,
+				Retrieval: comms.RetrievalConfig{
+					Enabled:  cfg.Bot.Retrieval.Enabled,
+					MaxFiles: cfg.Bot.Retrieval.MaxFiles,
+					MaxBytes: cfg.Bot.Retrieval.MaxBytes,
+				},
 			}
 		}
 
@@ -2635,6 +2640,11 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 				AnswerModel: cfg.Bot.AnswerModel,
 				APIKey:      cfg.Bot.APIKey,
 				Persona:     cfg.Bot.Persona,
+				Retrieval: comms.RetrievalConfig{
+					Enabled:  cfg.Bot.Retrieval.Enabled,
+					MaxFiles: cfg.Bot.Retrieval.MaxFiles,
+					MaxBytes: cfg.Bot.Retrieval.MaxBytes,
+				},
 			}
 		}
 
