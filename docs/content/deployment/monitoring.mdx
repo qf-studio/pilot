@@ -368,6 +368,7 @@ Create a status page with health endpoints:
 
 | Endpoint | Check | Expected |
 |----------|-------|----------|
+| `/ping` | Lightweight alive check | 200 OK, body `pong` |
 | `/health` | Basic | 200 OK |
 | `/ready` | Component readiness | 200 when ready |
 | `/live` | Liveness | 200 when alive |

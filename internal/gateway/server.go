@@ -201,6 +201,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/ws/dashboard", s.handleDashboardWebSocket)
 
 	// Public endpoints (no auth required)
+	mux.HandleFunc("/ping", s.handlePing)
 	mux.HandleFunc("/health", s.handleHealth)
 	mux.HandleFunc("/ready", s.handleReady)
 	mux.HandleFunc("/live", s.handleLive)
@@ -364,6 +365,13 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 		s.router.HandleMessage(session, message)
 	}
+}
+
+// handlePing is a lightweight health check that returns "pong" without
+// touching the database or any external service.
+func (s *Server) handlePing(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	_, _ = w.Write([]byte("pong"))
 }
 
 // handleHealth returns server health status
