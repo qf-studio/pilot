@@ -111,6 +111,16 @@ func TestAnswer_WithHistory(t *testing.T) {
 	if len(msgs) != 3 {
 		t.Errorf("expected 3 messages (2 history + 1 user), got %d", len(msgs))
 	}
+
+	// max_tokens is REQUIRED by the Anthropic Messages API — omitting it 400s.
+	mt, ok := capturedBody["max_tokens"].(float64)
+	if !ok || mt <= 0 {
+		t.Errorf("expected positive max_tokens in request body, got %v", capturedBody["max_tokens"])
+	}
+	// output_config is non-standard and must not be sent.
+	if _, present := capturedBody["output_config"]; present {
+		t.Errorf("output_config must not be in request body")
+	}
 }
 
 func TestAnswer_Non200(t *testing.T) {
@@ -166,11 +176,14 @@ func TestAnswer_RequestShape(t *testing.T) {
 	if capturedBody["system"] != "my-system" {
 		t.Errorf("system: got %v, want my-system", capturedBody["system"])
 	}
-	cfg, ok := capturedBody["output_config"].(map[string]interface{})
-	if !ok {
-		t.Fatal("output_config missing or wrong type")
+	// max_tokens is REQUIRED by the Anthropic Messages API; omitting it 400s.
+	mt, ok := capturedBody["max_tokens"].(float64)
+	if !ok || mt <= 0 {
+		t.Errorf("max_tokens: got %v, want positive int", capturedBody["max_tokens"])
 	}
-	if cfg["effort"] != "low" {
-		t.Errorf("effort: got %v, want low", cfg["effort"])
+	// output_config is non-standard and must not be sent (it was the cause of the
+	// 400 "max_tokens: Field required" regression — see fix/llm-max-tokens).
+	if _, present := capturedBody["output_config"]; present {
+		t.Error("output_config must not be in request body")
 	}
 }

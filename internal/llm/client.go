@@ -14,6 +14,11 @@ import (
 
 const defaultAPIURL = "https://api.anthropic.com/v1/messages"
 
+// maxTokens caps the response length for bot replies (chat, grounded Q&A, issue
+// drafts). The Anthropic Messages API REQUIRES max_tokens — omitting it returns
+// HTTP 400 "max_tokens: Field required".
+const maxTokens = 2048
+
 // Client sends requests to the Anthropic Messages API.
 type Client struct {
 	apiKey     string
@@ -50,12 +55,10 @@ func (c *Client) Answer(ctx context.Context, model, system string, history []int
 	})
 
 	body := map[string]interface{}{
-		"model":    model,
-		"system":   system,
-		"messages": messages,
-		"output_config": map[string]interface{}{
-			"effort": "low",
-		},
+		"model":      model,
+		"max_tokens": maxTokens,
+		"system":     system,
+		"messages":   messages,
 	}
 
 	jsonBody, err := json.Marshal(body)
