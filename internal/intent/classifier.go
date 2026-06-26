@@ -63,22 +63,25 @@ func (c *AnthropicClient) Classify(ctx context.Context, messages []ConversationM
 
 - command: Message starts with /
 - greeting: Simple greeting like "hi", "hello", "hey"
-- research: Requests for analysis/research (e.g., "research how X works", "analyze the auth flow")
-- planning: Requests for implementation plans (e.g., "plan how to add X", "design a solution for Y")
+- research: Deep multi-file analysis/research (e.g., "research how X works across the codebase", "analyze the auth flow")
+- planning: Requests for an implementation PLAN before changing code (e.g., "plan how to add X", "design a solution for Y")
 - operational: Queries about live daemon or queue state (e.g., "what's in the queue?", "anything running?", "how many tasks", "status of the queue")
-- question: Questions about code/project (e.g., "what files handle auth?", "how does X work?")
+- question: Asking the bot to EXPLAIN, DESCRIBE, SHOW, DIAGRAM, DRAW, OUTLINE, SKETCH, VISUALIZE, or SUMMARIZE existing code/architecture (e.g., "what files handle auth?", "how does X work?", "draw the schema in ASCII", "diagram the intent flow", "show me how auth works"). The deliverable is a text/diagram ANSWER — NOT a code change.
 - chat: Conversational/opinion-seeking (e.g., "what do you think about...", "should I...")
-- task: Requests to make changes (e.g., "add a button", "fix the bug", "implement feature X")
+- task: Requests to CHANGE the codebase — add/fix/implement/refactor code that results in a commit or PR (e.g., "add a button", "fix the bug", "implement feature X")
 - issue_intake: Requests to file a new GitHub issue (e.g., "create an issue to...", "file a ticket for...", "open an issue about...", "raise a ticket")
 
+DELIVERABLE TEST (apply this first):
+- Does the user want the bot to MODIFY files / produce a PR? -> TASK (or ISSUE_INTAKE if they explicitly ask to file/open/raise a ticket or issue).
+- Does the user want an ANSWER, EXPLANATION, DIAGRAM, or OPINION? -> QUESTION (about the code) or CHAT (opinion). Verbs like draw/diagram/show/outline/sketch/visualize/explain/summarize produce an answer, NOT a code change -> QUESTION.
+
 IMPORTANT:
-- "What do you think about adding X?" is CHAT (asking opinion), not TASK
-- "Add X to the project" is TASK (direct instruction)
-- "Create an issue to add rate limiting" is ISSUE_INTAKE (file a ticket), not TASK
-- "File a ticket for the login bug" is ISSUE_INTAKE, not TASK
-- Questions that don't require code changes are QUESTION
-- "What's in the queue?" or "anything running?" are OPERATIONAL (live state), not QUESTION
-- Be conservative: when in doubt between task and chat, prefer chat
+- "draw the schema in ASCII" / "outline the intent flow" / "show me how auth works" are QUESTION (they produce a diagram/answer), NOT TASK.
+- "What do you think about adding X?" is CHAT (asking opinion), not TASK.
+- "Add X to the project" / "fix the login bug" is TASK (modify code).
+- "Create an issue to add rate limiting" / "file a ticket for the login bug" is ISSUE_INTAKE, not TASK.
+- "What's in the queue?" or "anything running?" are OPERATIONAL (live state), not QUESTION.
+- Be conservative: when in doubt between task and question/chat, prefer the non-mutating one (question/chat).
 
 Respond with JSON only: {"intent": "...", "confidence": 0.0-1.0}`
 
@@ -109,9 +112,6 @@ Respond with JSON only: {"intent": "...", "confidence": 0.0-1.0}`
 		"max_tokens": 100,
 		"system":     systemPrompt,
 		"messages":   apiMessages,
-		"output_config": map[string]interface{}{
-			"effort": "low", // Fast classification, minimize token spend
-		},
 	}
 
 	jsonBody, err := json.Marshal(requestBody)

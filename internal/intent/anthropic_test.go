@@ -239,13 +239,10 @@ func TestAnthropicClientClassifyRequestBody(t *testing.T) {
 		t.Error("system prompt is missing")
 	}
 
-	// Verify effort is set to "low" for fast classification
-	outputConfig, ok := receivedBody["output_config"].(map[string]interface{})
-	if !ok {
-		t.Fatal("output_config is missing or not an object")
-	}
-	if outputConfig["effort"] != "low" {
-		t.Errorf("effort = %v, want %v", outputConfig["effort"], "low")
+	// output_config{effort} is non-standard and rejected by the model
+	// ("This model does not support the effort parameter") — it must NOT be sent.
+	if _, present := receivedBody["output_config"]; present {
+		t.Error("output_config must not be in the request body (the model 400s on the effort param)")
 	}
 
 	// Verify messages array
