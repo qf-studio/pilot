@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "updated": "2026-06-25",
+  "updated": "2026-06-26",
   "nodes": {
     "concepts": {
       "pilot-architecture": {
@@ -120,6 +120,15 @@
         "description": "Per-execution git worktree isolation",
         "related": [
           "executor"
+        ]
+      },
+      "autopilot": {
+        "label": "Autopilot",
+        "description": "CI monitoring, auto-review, auto-merge, and release pipeline that finalizes pilot PRs without human action; env-scoped approval policy (dev/stage/prod)",
+        "related": [
+          "orchestrator",
+          "epic-decomposition",
+          "git-operations"
         ]
       }
     },
@@ -632,6 +641,21 @@
         "incident": "2026-06-25: '@Pilot /help' on Slack created a task (Task SLACK-... Execute/Cancel) despite TASK-372 (v2.194.1) being merged + live-verified in the running binary. Root cause was one layer up (SDK command-action drop), not comms dispatch.",
         "file": ".agent/knowledge/memories/pitfalls/bug_sdk_command_action_dropped.md",
         "origin_task": "TASK-372"
+      },
+      "mem-037": {
+        "type": "pitfall",
+        "summary": "Autopilot orphans the LAST epic child PRs: the epic's execution run owns child-PR merging, so children whose PRs are created late are left created-but-unmerged when the run ends. The standalone auto-merge loop won't reclaim them because their tracking issues are already CLOSED (it thinks the work is done) — so green/CLEAN child PRs sit with ZERO autopilot review/comment even under stage's require_approval:false + auto_merge:true + green test/lint. Epic stays OPEN+pilot-in-progress; any 'Blocked by: #<epic>' dependent is gated forever via poller hasPendingDependencies. Recover: merge the orphans in order yourself, then close the epic to release dependents. Late siblings often CONFLICT once one merges (same wiring) — close the conflicted PR and re-dispatch only its UNIQUE remainder vs updated main, don't hand-resolve in root. Observed 2026-06-26 epic #3665 (bot module): merged #3670/#3674 mid-run, orphaned #3678/#3679. TASK-359 finalization shape.",
+        "concepts": [
+          "autopilot",
+          "epic-decomposition",
+          "git-operations"
+        ],
+        "confidence": 0.9,
+        "severity": "high",
+        "created": "2026-06-26",
+        "incident": "2026-06-26: bot-module epic #3665 merged children #3670 (03:04) + #3674 (03:09) during its run, then ended ('completed but no changes made, 44m') leaving green/CLEAN #3678/#3679 unmerged with no autopilot review; epic stuck OPEN+pilot-in-progress, gating P3/P4 (#3671/#3672). Cleared by manual merge of #3678, close of conflicted #3679 (remainder re-dispatched as #3681), and manual close of #3665.",
+        "file": ".agent/knowledge/memories/pitfalls/bug_autopilot_epic_orphan_child_prs.md",
+        "origin_task": "TASK-373"
       }
     }
   },
@@ -830,6 +854,16 @@
       "from": "mem-035",
       "to": "mem-033",
       "type": "applies"
+    },
+    {
+      "from": "mem-037",
+      "to": "autopilot",
+      "type": "about"
+    },
+    {
+      "from": "mem-037",
+      "to": "epic-decomposition",
+      "type": "relates-to"
     }
   ]
 }
