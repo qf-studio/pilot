@@ -564,6 +564,11 @@ func (h *Handler) handleChat(ctx context.Context, contextID, threadID, message s
 	// Fallback: executor path (unchanged behavior when bot is disabled).
 	_ = h.messenger.SendText(ctx, contextID, "💬 Thinking...")
 
+	if h.runner == nil {
+		_ = h.messenger.SendText(ctx, contextID, "Sorry, I couldn't process that. Try rephrasing?")
+		return
+	}
+
 	taskID := fmt.Sprintf("CHAT-%d", time.Now().Unix())
 	task := &executor.Task{
 		ID:    taskID,

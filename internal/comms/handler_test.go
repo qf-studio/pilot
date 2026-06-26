@@ -1145,3 +1145,54 @@ func TestHandleMessage_VoiceTextFallback(t *testing.T) {
 		t.Errorf("VoiceText not routed through greeting intent via Responder; got texts: %v", texts)
 	}
 }
+
+// TestHandleChat_BotDisabled_FallsBackToExecutorPath verifies the regression guard:
+// when bot.enabled is false (h.responder == nil), handleChat falls through to the
+// executor path. With no runner configured the handler replies with a sorry message
+// rather than panicking.
+func TestHandleChat_BotDisabled_FallsBackToExecutorPath(t *testing.T) {
+	m := &handlerMock{}
+	h := newTestHandler(m) // no Responder, no Runner — bot.enabled: false scenario
+
+	h.handleChat(context.Background(), "ch1", "", "let's talk about the codebase")
+
+	texts := m.getTexts()
+	// Must see "💬 Thinking..." (executor-path indicator) and then a sorry/fallback reply.
+	sawThinking := false
+	sawSorry := false
+	for _, st := range texts {
+		if strings.Contains(st.text, "Thinking") {
+			sawThinking = true
+		}
+		if strings.Contains(st.text, "Sorry") || strings.Contains(st.text, "couldn't process") {
+			sawSorry = true
+		}
+	}
+	if !sawThinking {
+		t.Errorf("expected '💬 Thinking...' from executor path; got: %v", texts)
+	}
+	if !sawSorry {
+		t.Errorf("expected sorry/fallback reply when runner is nil; got: %v", texts)
+	}
+}
+
+// TestHandleIssueIntake_BotDisabled_SendsBotRequired verifies the regression guard:
+// when bot.enabled is false (h.responder == nil), issue intake sends a clear
+// "bot required" message instead of silently failing or panicking.
+func TestHandleIssueIntake_BotDisabled_SendsBotRequired(t *testing.T) {
+	m := &handlerMock{}
+	h := newTestHandler(m) // no Responder — bot.enabled: false
+
+	h.handleIssueIntake(context.Background(), "ch1", "", "create a task to fix the login bug")
+
+	texts := m.getTexts()
+	found := false
+	for _, st := range texts {
+		if strings.Contains(st.text, "bot.enabled") || strings.Contains(st.text, "bot module") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected 'bot required' message from handleIssueIntake with no responder; got: %v", texts)
+	}
+}
