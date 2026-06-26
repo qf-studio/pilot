@@ -578,6 +578,18 @@ func New(cfg *config.Config, opts ...Option) (*Pilot, error) {
 		p.gateway.SetDashboardFS(p.dashboardFS)
 	}
 
+	// Build comms.BotConfig once for all adapters (cfg.Bot is global, not per-adapter).
+	var pilotBotCfg *comms.BotConfig
+	if cfg.Bot != nil {
+		pilotBotCfg = &comms.BotConfig{
+			Enabled:     cfg.Bot.Enabled,
+			Model:       cfg.Bot.Model,
+			AnswerModel: cfg.Bot.AnswerModel,
+			APIKey:      cfg.Bot.APIKey,
+			Persona:     cfg.Bot.Persona,
+		}
+	}
+
 	// Initialize Telegram handler if runner was provided via options (GH-349)
 	// This enables Telegram polling in gateway mode alongside Linear/Jira webhooks
 	if p.telegramRunner != nil && cfg.Adapters.Telegram != nil && cfg.Adapters.Telegram.Enabled && cfg.Adapters.Telegram.Polling {
@@ -621,6 +633,7 @@ func New(cfg *config.Config, opts ...Option) (*Pilot, error) {
 			ProjectPath:     projectPath,
 			RateLimit:       cfg.Adapters.Telegram.RateLimit,
 			Classifier:      tgClassifierCfg,
+			Bot:             pilotBotCfg,
 			MemberResolver:  tgMemberResolver,
 			Store:           p.store,
 			TaskIDPrefix:    "TG",
@@ -678,6 +691,7 @@ func New(cfg *config.Config, opts ...Option) (*Pilot, error) {
 			Projects:        config.NewSlackProjectSource(cfg),
 			ProjectPath:     projectPath,
 			Classifier:      slackClassifierCfg,
+			Bot:             pilotBotCfg,
 			MemberResolver:  slackMemberResolver,
 			Store:           p.store,
 			TaskIDPrefix:    "SLACK",

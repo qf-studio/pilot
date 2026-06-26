@@ -19,6 +19,17 @@ type ClassifierConfig struct {
 	HistoryTTL  time.Duration
 }
 
+// BotConfig is the adapter-agnostic configuration for the conversational bot module.
+// Each call site maps its config.BotConfig into this struct before calling BuildHandler
+// (comms cannot import the config package directly — config imports comms).
+type BotConfig struct {
+	Enabled     bool
+	Model       string
+	AnswerModel string
+	APIKey      string
+	Persona     string
+}
+
 // BuildClassifier bootstraps an intent classifier and conversation store.
 // Returns (nil, nil) when disabled or no API key is available (env fallback included).
 // Call sites do not need to guard for nil — comms.Handler handles nil classifiers gracefully.
@@ -66,6 +77,7 @@ type HandlerDeps struct {
 	ProjectPath    string
 	RateLimit      *RateLimitConfig
 	Classifier     *ClassifierConfig
+	Bot            *BotConfig
 	MemberResolver MemberResolver
 	Store          *memory.Store
 	TaskIDPrefix   string
@@ -75,7 +87,7 @@ type HandlerDeps struct {
 }
 
 // BuildHandler creates a Handler from adapter deps.
-// This is the single assembly point for HandlerConfig; all 5 adapter call sites
+// This is the single assembly point for HandlerConfig; all adapter call sites
 // route through here so no field can be silently omitted per-adapter.
 func BuildHandler(deps HandlerDeps) *Handler {
 	classifier, convStore := BuildClassifier(deps.Classifier, deps.ExecutorBackend)
@@ -87,6 +99,7 @@ func BuildHandler(deps HandlerDeps) *Handler {
 		RateLimit:      deps.RateLimit,
 		LLMClassifier:  classifier,
 		ConvStore:      convStore,
+		Bot:            deps.Bot,
 		MemberResolver: deps.MemberResolver,
 		Store:          deps.Store,
 		TaskIDPrefix:   deps.TaskIDPrefix,

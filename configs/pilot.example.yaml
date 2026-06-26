@@ -431,6 +431,21 @@ autopilot:
     # required: []                # Only used in manual mode
     discovery_grace_period: 60s   # Wait for CI to start
 
+# Bot module — conversational Pilot assistant (GH-3665)
+# When enabled, the bot can answer questions and respond via comms adapters.
+bot:
+  enabled: false
+  model: claude-haiku-4-5-20251001     # Default model for classification and routing
+  answer_model: claude-haiku-4-5-20251001  # Override for answer calls; falls back to model
+  api_key: "${ANTHROPIC_API_KEY}"      # Falls back to ANTHROPIC_API_KEY env var when blank
+  persona: |
+    You are Pilot, an AI assistant that helps engineering teams ship faster.
+    Be concise, technical, and direct.
+  # Stub sections reserved for future phases:
+  retrieval: {}    # TASK-375: grounded Q&A retrieval
+  issue_intake: {} # TASK-376: conversational issue intake
+  voice: {}        # TASK-377: persona and voice scaffold
+
 # Dashboard settings
 dashboard:
   refresh_interval: 1000     # ms

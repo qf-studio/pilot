@@ -1849,6 +1849,18 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 		})
 	}
 
+	// Build comms.BotConfig once for all adapters (cfg.Bot is global, not per-adapter).
+	var commsBotCfg *comms.BotConfig
+	if cfg.Bot != nil {
+		commsBotCfg = &comms.BotConfig{
+			Enabled:     cfg.Bot.Enabled,
+			Model:       cfg.Bot.Model,
+			AnswerModel: cfg.Bot.AnswerModel,
+			APIKey:      cfg.Bot.APIKey,
+			Persona:     cfg.Bot.Persona,
+		}
+	}
+
 	// Initialize Telegram handler if enabled
 	var tgHandler *telegram.Handler
 	if hasTelegram {
@@ -1888,6 +1900,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 			ProjectPath:     projectPath,
 			RateLimit:       cfg.Adapters.Telegram.RateLimit,
 			Classifier:      tgClassifierCfg,
+			Bot:             commsBotCfg,
 			MemberResolver:  tgMemberResolver,
 			Store:           store,
 			TaskIDPrefix:    "TG",
@@ -2621,6 +2634,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 			Projects:        config.NewSlackProjectSource(cfg),
 			ProjectPath:     projectPath,
 			Classifier:      slackClassifierCfg,
+			Bot:             commsBotCfg,
 			MemberResolver:  slackMemberResolver,
 			Store:           store,
 			TaskIDPrefix:    "SLACK",

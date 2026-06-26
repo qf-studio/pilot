@@ -51,6 +51,17 @@ func discordPollerRegistration() PollerRegistration {
 				AllowedChannels: discordCfg.AllowedChannels,
 			}, nil).NewChatBridge(sdkCore.ChatDeps{Handler: discordChatHandler})
 
+			var discordBotCfg *comms.BotConfig
+			if deps.Cfg.Bot != nil {
+				discordBotCfg = &comms.BotConfig{
+					Enabled:     deps.Cfg.Bot.Enabled,
+					Model:       deps.Cfg.Bot.Model,
+					AnswerModel: deps.Cfg.Bot.AnswerModel,
+					APIKey:      deps.Cfg.Bot.APIKey,
+					Persona:     deps.Cfg.Bot.Persona,
+				}
+			}
+
 			discordCommsHandler := comms.BuildHandler(comms.HandlerDeps{
 				Messenger:       sdkshim.MessengerToBridge(discordBridge),
 				Runner:          deps.Runner,
@@ -58,6 +69,7 @@ func discordPollerRegistration() PollerRegistration {
 				ProjectPath:     deps.ProjectPath,
 				RateLimit:       discordRateLimitToComms(discordCfg.RateLimit),
 				Classifier:      discordClassifierCfg,
+				Bot:             discordBotCfg,
 				Store:           deps.Store,
 				TaskIDPrefix:    "DISCORD",
 				ExecutorBackend: deps.Cfg.Executor,

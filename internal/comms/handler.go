@@ -33,6 +33,7 @@ type HandlerConfig struct {
 	RateLimit      *RateLimitConfig
 	LLMClassifier  intent.Classifier
 	ConvStore      *intent.ConversationStore
+	Bot            *BotConfig
 	MemberResolver MemberResolver
 	Store          *memory.Store
 	// TaskIDPrefix is the adapter-specific prefix for task IDs (e.g., "TG", "SLACK").
@@ -50,6 +51,7 @@ type Handler struct {
 	rateLimit      *RateLimiter
 	llmClassifier  intent.Classifier
 	convStore      *intent.ConversationStore
+	bot            *BotConfig
 	memberResolver MemberResolver
 	store          *memory.Store
 	cmdHandler     *CommandHandler
@@ -90,6 +92,7 @@ func NewHandler(cfg *HandlerConfig) *Handler {
 		rateLimit:      rl,
 		llmClassifier:  cfg.LLMClassifier,
 		convStore:      cfg.ConvStore,
+		bot:            cfg.Bot,
 		memberResolver: cfg.MemberResolver,
 		store:          cfg.Store,
 		taskIDPrefix:   prefix,
