@@ -202,6 +202,33 @@ adapters:
       history_size: 10                 # Messages to keep per channel for context
       history_ttl: 30m                 # TTL for conversation history
 
+# Conversational bot module
+# When enabled, chat / greeting / question intents are answered directly via the
+# Anthropic API (~1-2s) instead of spinning up the Claude Code executor (15-30s).
+# Disabled (default) => behavior is identical to before: those intents use the executor.
+bot:
+  enabled: false                       # Master switch for the fast conversational path
+  model: "claude-haiku-4-5-20251001"   # Model for chat / greeting (fast, cheap)
+  answer_model: ""                     # Model for grounded code Q&A; defaults to `model` when empty
+  # api_key: ""                        # Optional - uses ANTHROPIC_API_KEY env var if not set
+  persona: ""                          # Optional - prepended to the system prompt (Pilot's "voice")
+
+  # Bounded file-retrieval for codebase questions (answers in ~2-4s; too-broad
+  # questions fall back to the executor automatically).
+  retrieval:
+    enabled: false
+    max_files: 8                       # Max files to read into the answer context
+    max_bytes: 24000                   # Max total bytes of file excerpts
+
+  # Conversational issue intake: turn a freeform message into a structured issue.
+  issue_intake:
+    auto_label_pilot: true             # Tag drafted issues "pilot" so the daemon auto-picks them
+
+  # Voice scaffold (transport deferred): when enabled, transcribed VoiceText flows
+  # through the same intent->responder path as text messages.
+  voice:
+    enabled: false
+
 # Orchestrator settings
 orchestrator:
   model: "claude-opus-4-6"
