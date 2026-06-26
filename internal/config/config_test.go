@@ -1495,6 +1495,127 @@ func TestSave_PermissionsAre0600(t *testing.T) {
 	}
 }
 
+// TestBotConfigRoundTrip verifies that a bot: YAML block parses into the
+// expected BotConfig struct, including the model default when omitted (GH-3667).
+func TestBotConfigRoundTrip(t *testing.T) {
+	t.Run("full bot block", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		configPath := filepath.Join(tmpDir, "config.yaml")
+
+		content := `
+version: "1.0"
+bot:
+  enabled: true
+  model: "claude-haiku-4-5-20251001"
+  answer_model: "claude-sonnet-4-6"
+  api_key: "test-api-key"
+  persona: "You are a helpful assistant."
+`
+		if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
+			t.Fatalf("write config: %v", err)
+		}
+
+		cfg, err := Load(configPath)
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+
+		if cfg.Bot == nil {
+			t.Fatal("Bot config should not be nil")
+		}
+		if !cfg.Bot.Enabled {
+			t.Error("Bot.Enabled should be true")
+		}
+		if cfg.Bot.Model != "claude-haiku-4-5-20251001" {
+			t.Errorf("Bot.Model = %q, want claude-haiku-4-5-20251001", cfg.Bot.Model)
+		}
+		if cfg.Bot.AnswerModel != "claude-sonnet-4-6" {
+			t.Errorf("Bot.AnswerModel = %q, want claude-sonnet-4-6", cfg.Bot.AnswerModel)
+		}
+		if cfg.Bot.APIKey != "test-api-key" {
+			t.Errorf("Bot.APIKey = %q, want test-api-key", cfg.Bot.APIKey)
+		}
+		if cfg.Bot.Persona != "You are a helpful assistant." {
+			t.Errorf("Bot.Persona = %q, want \"You are a helpful assistant.\"", cfg.Bot.Persona)
+		}
+	})
+
+	t.Run("model defaults to haiku when omitted", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		configPath := filepath.Join(tmpDir, "config.yaml")
+
+		content := `
+version: "1.0"
+bot:
+  enabled: true
+  persona: "Minimal bot."
+`
+		if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
+			t.Fatalf("write config: %v", err)
+		}
+
+		cfg, err := Load(configPath)
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+
+		if cfg.Bot == nil {
+			t.Fatal("Bot config should not be nil")
+		}
+		if cfg.Bot.Model != "claude-haiku-4-5-20251001" {
+			t.Errorf("Bot.Model = %q, want claude-haiku-4-5-20251001 (default)", cfg.Bot.Model)
+		}
+	})
+
+	t.Run("bot absent defaults to nil", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		configPath := filepath.Join(tmpDir, "config.yaml")
+
+		if err := os.WriteFile(configPath, []byte("version: \"1.0\"\n"), 0644); err != nil {
+			t.Fatalf("write config: %v", err)
+		}
+
+		cfg, err := Load(configPath)
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+
+		if cfg.Bot != nil {
+			t.Errorf("Bot config should be nil when not configured, got %+v", cfg.Bot)
+		}
+	})
+
+	t.Run("stub fields parse without error", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		configPath := filepath.Join(tmpDir, "config.yaml")
+
+		content := `
+version: "1.0"
+bot:
+  enabled: false
+  retrieval: {}
+  issue_intake: {}
+  voice: {}
+`
+		if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
+			t.Fatalf("write config: %v", err)
+		}
+
+		cfg, err := Load(configPath)
+		if err != nil {
+			t.Fatalf("Load with stub fields: %v", err)
+		}
+
+		if cfg.Bot == nil {
+			t.Fatal("Bot config should not be nil")
+		}
+		// Stub fields are empty structs — no fields to assert, just confirm no panic/error.
+		_ = cfg.Bot.Retrieval
+		_ = cfg.Bot.IssueIntake
+		_ = cfg.Bot.Voice
+	})
+}
+
 // TestSave_TightensExistingLoosePerms asserts that Save() rewrites a file
 // that previously existed with 0644 down to 0600. Covers the migration path
 // for users upgrading past TASK-290 with an existing 0644 config on disk.
