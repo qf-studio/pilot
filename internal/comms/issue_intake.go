@@ -101,6 +101,22 @@ func (h *Handler) handleIssueIntake(ctx context.Context, contextID, threadID, te
 		return
 	}
 
+	// Guard: prevent parallel intakes on the same context (mirrors pendingTasks pattern).
+	h.mu.Lock()
+	if _, inFlight := h.pendingIssues[contextID]; inFlight {
+		h.mu.Unlock()
+		_ = h.messenger.SendText(ctx, contextID, "⚠️ An issue is already being drafted for this context. Please wait.")
+		return
+	}
+	placeholder := &IssueDraft{}
+	h.pendingIssues[contextID] = placeholder
+	h.mu.Unlock()
+	defer func() {
+		h.mu.Lock()
+		delete(h.pendingIssues, contextID)
+		h.mu.Unlock()
+	}()
+
 	_ = h.messenger.SendText(ctx, contextID, "🎫 Drafting issue...")
 
 	var history []intent.ConversationMessage
