@@ -197,6 +197,139 @@ func TestBuildHandler_AdapterParity(t *testing.T) {
 	}
 }
 
+// --- BuildResponder tests ---
+
+func TestBuildResponder_NilConfig(t *testing.T) {
+	r := BuildResponder(nil)
+	if r != nil {
+		t.Error("expected nil responder for nil config")
+	}
+}
+
+func TestBuildResponder_Disabled(t *testing.T) {
+	r := BuildResponder(&BotConfig{Enabled: false, APIKey: "test-key"})
+	if r != nil {
+		t.Error("expected nil responder when disabled")
+	}
+}
+
+func TestBuildResponder_NoAPIKey(t *testing.T) {
+	// Enabled but no key — result depends on ANTHROPIC_API_KEY env; just verify no panic.
+	r := BuildResponder(&BotConfig{Enabled: true, APIKey: ""})
+	_ = r
+}
+
+func TestBuildResponder_Enabled(t *testing.T) {
+	r := BuildResponder(&BotConfig{
+		Enabled: true,
+		APIKey:  "test-api-key",
+		Model:   "claude-haiku-4-5-20251001",
+	})
+	if r == nil {
+		t.Fatal("expected non-nil responder when enabled with API key")
+	}
+}
+
+func TestBuildResponder_DefaultModel(t *testing.T) {
+	r := BuildResponder(&BotConfig{Enabled: true, APIKey: "test-key"})
+	if r == nil {
+		t.Fatal("expected non-nil responder")
+	}
+	if r.model != "claude-haiku-4-5-20251001" {
+		t.Errorf("expected default model claude-haiku-4-5-20251001, got %s", r.model)
+	}
+}
+
+func TestBuildResponder_PersonaAndAnswerModel(t *testing.T) {
+	r := BuildResponder(&BotConfig{
+		Enabled:     true,
+		APIKey:      "test-key",
+		Model:       "claude-haiku-4-5-20251001",
+		AnswerModel: "claude-sonnet-4-6",
+		Persona:     "You are a helpful DevOps assistant.",
+	})
+	if r == nil {
+		t.Fatal("expected non-nil responder")
+	}
+	if r.answerModel != "claude-sonnet-4-6" {
+		t.Errorf("expected answerModel claude-sonnet-4-6, got %s", r.answerModel)
+	}
+	if r.persona != "You are a helpful DevOps assistant." {
+		t.Errorf("unexpected persona: %s", r.persona)
+	}
+}
+
+func TestBuildResponder_SystemPrompt_DefaultWhenNoPersona(t *testing.T) {
+	r := BuildResponder(&BotConfig{Enabled: true, APIKey: "test-key"})
+	if r == nil {
+		t.Fatal("expected non-nil responder")
+	}
+	sp := r.systemPrompt()
+	if sp == "" {
+		t.Error("expected a non-empty default system prompt")
+	}
+}
+
+func TestBuildResponder_SystemPrompt_UsesPersona(t *testing.T) {
+	r := BuildResponder(&BotConfig{
+		Enabled: true,
+		APIKey:  "test-key",
+		Persona: "You are specialized in Go.",
+	})
+	if r == nil {
+		t.Fatal("expected non-nil responder")
+	}
+	if r.systemPrompt() != "You are specialized in Go." {
+		t.Errorf("expected persona as system prompt, got: %s", r.systemPrompt())
+	}
+}
+
+// --- BuildHandler bot wiring tests ---
+
+func TestBuildHandler_WithBot_WiresResponder(t *testing.T) {
+	m := &handlerMock{}
+	h := BuildHandler(HandlerDeps{
+		Messenger:    m,
+		TaskIDPrefix: "SLACK",
+		Bot: &BotConfig{
+			Enabled: true,
+			APIKey:  "test-bot-key",
+			Model:   "claude-haiku-4-5-20251001",
+			Persona: "You are TestBot.",
+		},
+	})
+	if h == nil {
+		t.Fatal("expected non-nil handler")
+	}
+	if h.responder == nil {
+		t.Error("expected responder to be wired when bot config is enabled")
+	}
+}
+
+func TestBuildHandler_NilBot_NilResponder(t *testing.T) {
+	m := &handlerMock{}
+	h := BuildHandler(HandlerDeps{
+		Messenger:    m,
+		TaskIDPrefix: "SLACK",
+		Bot:          nil,
+	})
+	if h.responder != nil {
+		t.Error("expected nil responder when bot config is nil")
+	}
+}
+
+func TestBuildHandler_DisabledBot_NilResponder(t *testing.T) {
+	m := &handlerMock{}
+	h := BuildHandler(HandlerDeps{
+		Messenger:    m,
+		TaskIDPrefix: "TG",
+		Bot:          &BotConfig{Enabled: false, APIKey: "test-key"},
+	})
+	if h.responder != nil {
+		t.Error("expected nil responder when bot is disabled")
+	}
+}
+
 // TestBuildHandler_ClassifierRoutedToHandler verifies that when a mock classifier
 // is wired, detectIntent uses it for messages that bypass the regex fast paths.
 // Slack regression: GH-3645 — "check the pilot queue" was classified as IntentTask

@@ -1,6 +1,6 @@
 # Pilot Feature Matrix
 
-**Last Updated:** 2026-06-26 (v2.151.0)
+**Last Updated:** 2026-06-25 (v2.151.0)
 
 ## Legend
 
@@ -164,6 +164,9 @@
 | Comms intent consolidation | ✅ | comms | - | - | Conversation store + LLM classifier consolidated into intent package (v2.25.0, PR #1789) |
 | Comms main.go wiring | ✅ | main | - | - | Updated main.go wiring for unified comms.Handler (v2.25.0, PR #1775) |
 | Comms BuildHandler factory | ✅ | comms | - | `llm_classifier` under slack/discord | Single assembly point for comms.HandlerConfig; all 5 adapter call sites route through it; Slack/Discord/gateway reach classifier parity with Telegram (v2.193.0, PR #3645) |
+| Bot module — llm.Client + Answer | ✅ | internal/llm | - | - | Direct Anthropic Messages API client; used by Responder (GH-3666, PR #4004) |
+| Bot module — BotConfig YAML struct | ✅ | internal/config | - | `bot:` block | BotConfig YAML struct with model/answer_model/api_key/persona/retrieval/issue_intake/voice (GH-3667) |
+| Bot module — Responder + fast chat path | ✅ | comms | - | `bot:` → HandlerDeps.Bot | Responder wraps llm.Client; handleChat fast path skips executor/worktree; handleGreeting uses persona; BuildResponder factory in comms (GH-3668) |
 
 ## Alerts & Monitoring
 

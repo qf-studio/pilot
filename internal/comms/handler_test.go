@@ -95,6 +95,21 @@ func (m *handlerMock) getTexts() []hSentText {
 	return cp
 }
 
+// mockChatResponder is a test double for chatResponder.
+type mockChatResponder struct {
+	mu    sync.Mutex
+	calls int
+	reply string
+	err   error
+}
+
+func (m *mockChatResponder) Chat(_ context.Context, _ []intent.ConversationMessage, _ string) (string, error) {
+	m.mu.Lock()
+	m.calls++
+	m.mu.Unlock()
+	return m.reply, m.err
+}
+
 // hMockClassifier returns a fixed intent.
 type hMockClassifier struct {
 	result intent.Intent
@@ -1104,5 +1119,148 @@ func TestHandleMessage_UnknownCommand_RepliesUnknown(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("expected 'Unknown command' reply; got: %v", texts)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Adapter→comms seam tests for the Responder fast chat path (GH-3668).
+//
+// (a) When a Responder is wired, handleChat must use it directly —
+//     no runner.Execute / worktree. Asserted by injecting a nil runner
+//     (any Execute call would panic) and verifying the mock reply arrives.
+//
+// (b) When Responder is nil, handleChat must fall through to the existing
+//     executor path with zero regression. Asserted by confirming "💬 Thinking…"
+//     is the first sent text (the executor path's leading indicator).
+// ---------------------------------------------------------------------------
+
+func TestHandleChat_ResponderPath_SkipsRunner(t *testing.T) {
+	m := &handlerMock{}
+	h := newTestHandler(m) // runner is nil — any Execute call would panic
+	mock := &mockChatResponder{reply: "hello from responder"}
+	h.responder = mock
+
+	h.handleChat(context.Background(), "ch1", "", "how are you?")
+
+	mock.mu.Lock()
+	calls := mock.calls
+	mock.mu.Unlock()
+	if calls == 0 {
+		t.Error("expected responder.Chat to be called")
+	}
+
+	texts := m.getTexts()
+	if len(texts) == 0 {
+		t.Fatal("expected a reply from responder")
+	}
+	if texts[0].text != "hello from responder" {
+		t.Errorf("expected responder reply, got: %q", texts[0].text)
+	}
+}
+
+func TestHandleChat_ResponderError_SendsErrorMessage(t *testing.T) {
+	m := &handlerMock{}
+	h := newTestHandler(m)
+	h.responder = &mockChatResponder{err: fmt.Errorf("api unavailable")}
+
+	h.handleChat(context.Background(), "ch1", "", "hello")
+
+	texts := m.getTexts()
+	if len(texts) == 0 {
+		t.Fatal("expected an error message")
+	}
+	if !strings.Contains(texts[0].text, "couldn't respond") {
+		t.Errorf("expected error message, got: %q", texts[0].text)
+	}
+}
+
+func TestHandleChat_ResponderPath_RecordsToConvStore(t *testing.T) {
+	m := &handlerMock{}
+	convStore := intent.NewConversationStore(10, 0)
+	h := NewHandler(&HandlerConfig{
+		Messenger:    m,
+		ConvStore:    convStore,
+		TaskIDPrefix: "TEST",
+	})
+	h.responder = &mockChatResponder{reply: "recorded reply"}
+
+	h.handleChat(context.Background(), "ch1", "", "remember this")
+
+	history := convStore.Get("ch1")
+	found := false
+	for _, msg := range history {
+		if msg.Role == "assistant" && strings.Contains(msg.Content, "recorded reply") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("responder reply was not recorded to convStore; history: %v", history)
+	}
+}
+
+func TestHandleChat_NilResponder_ExecutorPath(t *testing.T) {
+	// With nil responder and nil runner, handleChat must take the executor path
+	// (confirmed by "💬 Thinking…" as first text) and fail gracefully on nil runner.
+	m := &handlerMock{}
+	h := newTestHandler(m) // no responder, no runner
+
+	h.handleChat(context.Background(), "ch1", "", "how are you?")
+
+	texts := m.getTexts()
+	if len(texts) == 0 {
+		t.Fatal("expected at least one text message from executor path")
+	}
+	if texts[0].text != "💬 Thinking..." {
+		t.Errorf("expected executor-path thinking indicator as first text, got: %q", texts[0].text)
+	}
+}
+
+func TestHandleGreeting_WithResponder(t *testing.T) {
+	m := &handlerMock{}
+	h := newTestHandler(m)
+	h.responder = &mockChatResponder{reply: "Hi! I'm your custom bot persona."}
+
+	h.handleGreeting(context.Background(), "ch1")
+
+	texts := m.getTexts()
+	if len(texts) == 0 {
+		t.Fatal("expected a greeting reply")
+	}
+	if texts[0].text != "Hi! I'm your custom bot persona." {
+		t.Errorf("expected responder greeting, got: %q", texts[0].text)
+	}
+}
+
+func TestHandleGreeting_NilResponder_StaticText(t *testing.T) {
+	// Regression guard: nil responder must produce the unchanged static greeting.
+	m := &handlerMock{}
+	h := newTestHandler(m)
+
+	h.handleGreeting(context.Background(), "ch1")
+
+	texts := m.getTexts()
+	if len(texts) == 0 {
+		t.Fatal("expected static greeting")
+	}
+	want := "👋 Hello! I'm Pilot — send me a task, question, or say /help."
+	if texts[0].text != want {
+		t.Errorf("expected static greeting %q, got %q", want, texts[0].text)
+	}
+}
+
+func TestHandleGreeting_ResponderError_FallsBack(t *testing.T) {
+	m := &handlerMock{}
+	h := newTestHandler(m)
+	h.responder = &mockChatResponder{err: fmt.Errorf("api error")}
+
+	h.handleGreeting(context.Background(), "ch1")
+
+	texts := m.getTexts()
+	if len(texts) == 0 {
+		t.Fatal("expected fallback greeting")
+	}
+	want := "👋 Hello! I'm Pilot — send me a task, question, or say /help."
+	if texts[0].text != want {
+		t.Errorf("expected fallback greeting, got: %q", texts[0].text)
 	}
 }

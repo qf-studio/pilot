@@ -38,6 +38,9 @@ type HandlerConfig struct {
 	// TaskIDPrefix is the adapter-specific prefix for task IDs (e.g., "TG", "SLACK").
 	TaskIDPrefix string
 	Log          *slog.Logger
+	// Responder enables the fast chat path: direct API call, no executor/worktree.
+	// When nil, handleChat falls through to the executor path.
+	Responder *Responder
 }
 
 // Handler implements platform-agnostic message handling with intent dispatch,
@@ -53,6 +56,7 @@ type Handler struct {
 	memberResolver MemberResolver
 	store          *memory.Store
 	cmdHandler     *CommandHandler
+	responder      chatResponder // nil = executor path; non-nil = fast chat path
 	taskIDPrefix   string
 	log            *slog.Logger
 
@@ -98,6 +102,11 @@ func NewHandler(cfg *HandlerConfig) *Handler {
 		pendingTasks:   make(map[string]*PendingTask),
 		runningTasks:   make(map[string]*RunningTask),
 		lastSender:     make(map[string]string),
+	}
+	// Avoid wrapping a typed nil *Responder in the chatResponder interface — that
+	// would produce a non-nil interface whose Chat calls would panic.
+	if cfg.Responder != nil {
+		h.responder = cfg.Responder
 	}
 
 	// Wire command handler — must be built after h exists so callbacks can close over h.
@@ -291,6 +300,15 @@ func (h *Handler) detectIntent(ctx context.Context, contextID, text string) inte
 // ---------- intent handlers ----------
 
 func (h *Handler) handleGreeting(ctx context.Context, contextID string) {
+	if h.responder != nil {
+		greetCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		reply, err := h.responder.Chat(greetCtx, nil, "Hello!")
+		if err == nil && reply != "" {
+			_ = h.messenger.SendText(ctx, contextID, reply)
+			return
+		}
+	}
 	_ = h.messenger.SendText(ctx, contextID, "👋 Hello! I'm Pilot — send me a task, question, or say /help.")
 }
 
@@ -485,7 +503,37 @@ DO NOT make any code changes. Only explore and plan.`, request),
 }
 
 func (h *Handler) handleChat(ctx context.Context, contextID, threadID, message string) {
+	// Fast path: direct API call via Responder — no executor/worktree involved.
+	if h.responder != nil {
+		var history []intent.ConversationMessage
+		if h.convStore != nil {
+			history = h.convStore.Get(contextID)
+		}
+		chatCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		reply, err := h.responder.Chat(chatCtx, history, message)
+		if err != nil {
+			_ = h.messenger.SendText(ctx, contextID, "Sorry, I couldn't respond. Try again.")
+			return
+		}
+		maxLen := h.messenger.MaxMessageLength()
+		if maxLen > 0 && len(reply) > maxLen {
+			reply = reply[:maxLen-3] + "..."
+		}
+		_ = h.messenger.SendText(ctx, contextID, reply)
+		if h.convStore != nil {
+			h.convStore.Add(contextID, "assistant", TruncateText(reply, 500))
+		}
+		return
+	}
+
+	// Executor path: spawn Claude Code for conversational response.
 	_ = h.messenger.SendText(ctx, contextID, "💬 Thinking...")
+
+	if h.runner == nil {
+		_ = h.messenger.SendText(ctx, contextID, "Sorry, I couldn't process that. Try rephrasing?")
+		return
+	}
 
 	taskID := fmt.Sprintf("CHAT-%d", time.Now().Unix())
 	task := &executor.Task{

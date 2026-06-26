@@ -6,6 +6,7 @@ import (
 
 	"github.com/qf-studio/pilot/internal/executor"
 	"github.com/qf-studio/pilot/internal/intent"
+	"github.com/qf-studio/pilot/internal/llm"
 	"github.com/qf-studio/pilot/internal/memory"
 )
 
@@ -57,6 +58,42 @@ func BuildClassifier(cfg *ClassifierConfig, executorBackend *executor.BackendCon
 	return client, intent.NewConversationStore(historySize, historyTTL)
 }
 
+// BotConfig is the adapter-agnostic config for the Pilot bot module (GH-3665).
+// Adapters map their global bot: YAML block into this struct before calling BuildHandler.
+type BotConfig struct {
+	Enabled     bool
+	Model       string
+	AnswerModel string
+	APIKey      string
+	Persona     string
+}
+
+// BuildResponder bootstraps a Responder from bot config.
+// Returns nil when disabled or no API key is available (env fallback included).
+// Call sites do not need to guard for nil — comms.Handler handles nil responders gracefully.
+func BuildResponder(cfg *BotConfig) *Responder {
+	if cfg == nil || !cfg.Enabled {
+		return nil
+	}
+	apiKey := cfg.APIKey
+	if apiKey == "" {
+		apiKey = os.Getenv("ANTHROPIC_API_KEY")
+	}
+	if apiKey == "" {
+		return nil
+	}
+	model := cfg.Model
+	if model == "" {
+		model = "claude-haiku-4-5-20251001"
+	}
+	return &Responder{
+		client:      llm.NewClient(apiKey),
+		model:       model,
+		answerModel: cfg.AnswerModel,
+		persona:     cfg.Persona,
+	}
+}
+
 // HandlerDeps holds the per-adapter inputs needed to build a comms.Handler.
 // Pass this to BuildHandler — the only place HandlerConfig is assembled.
 type HandlerDeps struct {
@@ -66,6 +103,7 @@ type HandlerDeps struct {
 	ProjectPath    string
 	RateLimit      *RateLimitConfig
 	Classifier     *ClassifierConfig
+	Bot            *BotConfig
 	MemberResolver MemberResolver
 	Store          *memory.Store
 	TaskIDPrefix   string
@@ -79,6 +117,7 @@ type HandlerDeps struct {
 // route through here so no field can be silently omitted per-adapter.
 func BuildHandler(deps HandlerDeps) *Handler {
 	classifier, convStore := BuildClassifier(deps.Classifier, deps.ExecutorBackend)
+	responder := BuildResponder(deps.Bot)
 	return NewHandler(&HandlerConfig{
 		Messenger:      deps.Messenger,
 		Runner:         deps.Runner,
@@ -90,5 +129,6 @@ func BuildHandler(deps HandlerDeps) *Handler {
 		MemberResolver: deps.MemberResolver,
 		Store:          deps.Store,
 		TaskIDPrefix:   deps.TaskIDPrefix,
+		Responder:      responder,
 	})
 }
