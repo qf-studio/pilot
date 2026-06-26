@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "updated": "2026-06-26",
+  "updated": "2026-06-26T02:00:00Z",
   "nodes": {
     "concepts": {
       "pilot-architecture": {
@@ -129,6 +129,21 @@
           "orchestrator",
           "epic-decomposition",
           "git-operations"
+        ]
+      },
+      "comms-bot-module": {
+        "label": "Conversational Bot Module",
+        "description": "comms.Handler fast path: when bot.enabled=true, chat/Q&A/issue-intake call the Anthropic API directly (~1-4s) instead of spawning the Claude Code executor (15-30s). Persona applied across all three LLM call sites. Voice scaffold present; rate limit overridable via bot.rate_limit.",
+        "related": [
+          "executor",
+          "comms-intent-dispatch"
+        ],
+        "files": [
+          "internal/comms/handler.go",
+          "internal/comms/responder.go",
+          "internal/comms/issue_intake.go",
+          "internal/comms/factory.go",
+          "internal/config/config.go"
         ]
       }
     },
@@ -656,6 +671,20 @@
         "incident": "2026-06-26: bot-module epic #3665 merged children #3670 (03:04) + #3674 (03:09) during its run, then ended ('completed but no changes made, 44m') leaving green/CLEAN #3678/#3679 unmerged with no autopilot review; epic stuck OPEN+pilot-in-progress, gating P3/P4 (#3671/#3672). Cleared by manual merge of #3678, close of conflicted #3679 (remainder re-dispatched as #3681), and manual close of #3665.",
         "file": ".agent/knowledge/memories/pitfalls/bug_autopilot_epic_orphan_child_prs.md",
         "origin_task": "TASK-373"
+      },
+      "mem-038": {
+        "type": "pattern",
+        "summary": "Fast conversational path (bot.enabled: true) vs executor path (bot.enabled: false/nil): comms.Handler.responder is nil when bot is disabled — all chat/Q&A/issue-intake fall through to Claude Code exactly as before. When non-nil, Chat/Answer/DraftIssue call the Anthropic API directly (~1-4s). All three calls honor bot.persona via draftIssueSystemPrompt/systemPrompt/answerSystemPrompt. Test across the Handler→Responder boundary, not in isolation (ref: mem-036 test-at-the-seam lesson).",
+        "concepts": [
+          "comms-bot-module",
+          "fast-path",
+          "executor",
+          "testing"
+        ],
+        "confidence": 0.95,
+        "created": "2026-06-26",
+        "file": ".agent/knowledge/memories/patterns/pattern_fast_conversational_vs_executor.md",
+        "origin_task": "TASK-377"
       }
     }
   },
@@ -864,6 +893,21 @@
       "from": "mem-037",
       "to": "epic-decomposition",
       "type": "relates-to"
+    },
+    {
+      "from": "mem-038",
+      "to": "comms-bot-module",
+      "type": "describes"
+    },
+    {
+      "from": "mem-038",
+      "to": "executor",
+      "type": "contrasts"
+    },
+    {
+      "from": "mem-038",
+      "to": "mem-036",
+      "type": "applies"
     }
   ]
 }

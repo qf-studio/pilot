@@ -63,12 +63,13 @@ func BuildClassifier(cfg *ClassifierConfig, executorBackend *executor.BackendCon
 // the caller (cmd/pilot/main.go) maps between the two to avoid an import cycle
 // (config imports adapters, which import comms).
 type BotConfig struct {
-	Enabled     bool
-	Model       string
-	AnswerModel string
-	APIKey      string
-	Persona     string
-	Retrieval   RetrievalConfig
+	Enabled      bool
+	Model        string
+	AnswerModel  string
+	APIKey       string
+	Persona      string
+	Retrieval    RetrievalConfig
+	VoiceEnabled bool // scaffold: voice transport is deferred; VoiceText already flows through the chokepoint
 }
 
 // BuildResponder constructs a Responder from BotConfig.

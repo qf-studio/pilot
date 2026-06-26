@@ -36,11 +36,23 @@ func discordPollerRegistration() PollerRegistration {
 			var discordBotCfg *comms.BotConfig
 			if deps.Cfg.Bot != nil {
 				discordBotCfg = &comms.BotConfig{
-					Enabled:     deps.Cfg.Bot.Enabled,
-					Model:       deps.Cfg.Bot.Model,
-					AnswerModel: deps.Cfg.Bot.AnswerModel,
-					APIKey:      deps.Cfg.Bot.APIKey,
-					Persona:     deps.Cfg.Bot.Persona,
+					Enabled:      deps.Cfg.Bot.Enabled,
+					Model:        deps.Cfg.Bot.Model,
+					AnswerModel:  deps.Cfg.Bot.AnswerModel,
+					APIKey:       deps.Cfg.Bot.APIKey,
+					Persona:      deps.Cfg.Bot.Persona,
+					VoiceEnabled: deps.Cfg.Bot.Voice.Enabled,
+				}
+			}
+
+			// bot.rate_limit overrides the per-adapter rate limit when both bot and the field are set.
+			discordRateLimitOverride := discordRateLimitToComms(discordCfg.RateLimit)
+			if deps.Cfg.Bot != nil && deps.Cfg.Bot.Enabled && deps.Cfg.Bot.RateLimit != nil {
+				discordRateLimitOverride = &comms.RateLimitConfig{
+					Enabled:           deps.Cfg.Bot.RateLimit.Enabled,
+					MessagesPerMinute: deps.Cfg.Bot.RateLimit.MessagesPerMinute,
+					TasksPerHour:      deps.Cfg.Bot.RateLimit.TasksPerHour,
+					BurstSize:         deps.Cfg.Bot.RateLimit.BurstSize,
 				}
 			}
 
@@ -67,7 +79,7 @@ func discordPollerRegistration() PollerRegistration {
 				Runner:          deps.Runner,
 				Projects:        config.NewProjectSource(deps.Cfg),
 				ProjectPath:     deps.ProjectPath,
-				RateLimit:       discordRateLimitToComms(discordCfg.RateLimit),
+				RateLimit:       discordRateLimitOverride,
 				Classifier:      discordClassifierCfg,
 				Bot:             discordBotCfg,
 				Store:           deps.Store,

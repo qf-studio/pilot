@@ -112,6 +112,41 @@ func TestDraftIssue_CallsLLMAndParsesJSON(t *testing.T) {
 	}
 }
 
+// TestDraftIssue_PersonaInSystemPrompt verifies persona is honoured in DraftIssue.
+func TestDraftIssue_PersonaInSystemPrompt(t *testing.T) {
+	reply := `{"title":"feat(auth): add oauth","body":"body","labels":["pilot"]}`
+	r, a := newMockResponder(reply, "You are Aria, a Go expert assistant.")
+	_, err := r.DraftIssue(context.Background(), nil, "add oauth to the login flow")
+	if err != nil {
+		t.Fatalf("DraftIssue error: %v", err)
+	}
+	if len(a.calls) == 0 {
+		t.Fatal("expected LLM call")
+	}
+	if !strings.Contains(a.calls[0].system, "You are Aria") {
+		t.Errorf("persona not in DraftIssue system prompt; system = %q", a.calls[0].system)
+	}
+	if !strings.Contains(a.calls[0].system, "conventional-commit") {
+		t.Errorf("issue drafting rules missing from DraftIssue system prompt")
+	}
+}
+
+// TestDraftIssue_DefaultPersonaWhenEmpty verifies default identity when persona is unset.
+func TestDraftIssue_DefaultPersonaWhenEmpty(t *testing.T) {
+	reply := `{"title":"feat(auth): add oauth","body":"body","labels":["pilot"]}`
+	r, a := newMockResponder(reply, "")
+	_, err := r.DraftIssue(context.Background(), nil, "add oauth to the login flow")
+	if err != nil {
+		t.Fatalf("DraftIssue error: %v", err)
+	}
+	if len(a.calls) == 0 {
+		t.Fatal("expected LLM call")
+	}
+	if !strings.Contains(a.calls[0].system, "You are Pilot") {
+		t.Errorf("default identity missing from DraftIssue system prompt; system = %q", a.calls[0].system)
+	}
+}
+
 // TestDraftIssue_LLMError propagates errors.
 func TestDraftIssue_LLMError(t *testing.T) {
 	a := &mockAnswerer{err: errors.New("timeout")}

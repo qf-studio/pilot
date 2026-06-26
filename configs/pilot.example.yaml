@@ -15,19 +15,51 @@ auth:
   # ANTHROPIC_API_KEY env var enables Claude API features (Haiku subtask parsing, etc.)
 
 # Conversational Bot (GH-3665+)
-# When enabled, chat and greeting intents are answered directly via the Anthropic API
-# (~1-2s) instead of the full Claude Code executor (15-30s). Requires ANTHROPIC_API_KEY
-# or an explicit api_key. Leave disabled to keep existing executor-only behavior.
+# When enabled, chat/question/greeting intents are answered directly via the Anthropic
+# API (~1-2s) instead of spawning a full Claude Code executor session (15-30s).
+# Requires ANTHROPIC_API_KEY or an explicit api_key below.
+# Leave bot.enabled: false (or omit the block) to keep the existing executor-only behavior
+# — all intents fall through to Claude Code exactly as before.
 # bot:
 #   enabled: false
-#   model: "claude-haiku-4-5-20251001"   # Used for chat; Haiku is fast and cheap
-#   answer_model: ""                     # Override for answer calls (defaults to model)
-#   api_key: ""                          # Fallback: uses ANTHROPIC_API_KEY env var
-#   persona: ""                          # Optional voice/persona injected into system prompt
-#                                        # e.g. "You are a friendly Go development assistant."
-#   retrieval: {}                        # Reserved for TASK-375 (grounded Q&A retrieval)
-#   issue_intake: {}                     # Reserved for TASK-376 (conversational issue intake)
-#   voice: {}                            # Reserved for TASK-377 (persona/voice scaffold)
+#   model: "claude-haiku-4-5-20251001"   # Fast chat model (Haiku is cheap + low-latency)
+#   answer_model: ""                     # Override for codebase Q&A calls; defaults to model
+#   api_key: ""                          # Falls back to ANTHROPIC_API_KEY env var
+#
+#   # Persona — injected as a system-prompt prefix for Chat, Answer, and DraftIssue calls.
+#   # Leave empty for the default "You are Pilot, a helpful AI development assistant."
+#   persona: ""
+#   # Examples:
+#   #   persona: "You are Aria, a concise Go development assistant. Prefer short answers."
+#   #   persona: "You are Pilot. Be direct. Always cite file paths when referencing code."
+#
+#   # Grounded Q&A retrieval (GH-3671): bounded file search so code questions are answered
+#   # in ~2-4s via retrieval+LLM instead of the 90s executor path.
+#   # Too-broad questions automatically fall back to the executor.
+#   retrieval:
+#     enabled: false
+#     max_files: 8      # Max files loaded per question (default 8)
+#     max_bytes: 24000  # Max combined bytes of retrieved content (default 24000)
+#
+#   # Issue intake (GH-3672): freeform messages like "create an issue for the login bug"
+#   # are drafted into structured GitHub issues and labelled "pilot" for auto-execution.
+#   issue_intake:
+#     auto_label_pilot: true  # Always add the "pilot" label (default true)
+#
+#   # Voice scaffold (GH-3673): flag reserved for future call transport (Telegram calls,
+#   # Slack huddles). Setting enabled: true has no effect in v1 — transcribed voice already
+#   # flows through the same intent→responder path via IncomingMessage.VoiceText.
+#   voice:
+#     enabled: false
+#
+#   # Rate limiting for bot-driven LLM calls. When set, overrides the per-adapter
+#   # rate_limit for all contexts served by this bot instance.
+#   # Omit to inherit the per-adapter rate_limit (adapter.telegram.rate_limit, etc.).
+#   rate_limit:
+#     enabled: true
+#     messages_per_minute: 20  # Max messages per context per minute (default 20)
+#     tasks_per_hour: 10       # Max task submissions per context per hour (default 10)
+#     burst_size: 5            # Short-burst allowance (default 5)
 
 # Adapters
 adapters:

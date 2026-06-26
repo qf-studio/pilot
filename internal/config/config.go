@@ -80,8 +80,29 @@ type BotConfig struct {
 	Retrieval BotRetrievalConfig `yaml:"retrieval,omitempty"`
 	// Conversational issue intake (TASK-376 / GH-3672).
 	IssueIntake BotIssueIntakeConfig `yaml:"issue_intake,omitempty"`
-	// Reserved for future phases (TASK-377).
-	Voice struct{} `yaml:"voice,omitempty"`
+	// Voice scaffold (TASK-377 / GH-3673). Actual call transport is deferred.
+	Voice BotVoiceConfig `yaml:"voice,omitempty"`
+	// RateLimit overrides per-adapter rate limits for bot-driven LLM calls.
+	// When nil, the per-adapter rate_limit config is used.
+	RateLimit *BotRateLimitConfig `yaml:"rate_limit,omitempty"`
+}
+
+// BotVoiceConfig is the scaffold for future voice/call support (TASK-377).
+// voice.enabled signals that transcribed VoiceText should flow through the
+// intent→responder path. Actual call transport (Telegram calls, Slack huddles)
+// is deferred; the comms chokepoint already consumes IncomingMessage.VoiceText.
+type BotVoiceConfig struct {
+	Enabled bool `yaml:"enabled"` // Scaffold: reserved for future voice transport
+}
+
+// BotRateLimitConfig bounds per-context LLM calls when the bot module is active.
+// Fields mirror comms.RateLimitConfig; main.go maps one to the other to avoid
+// an import cycle (config imports adapters which import comms).
+type BotRateLimitConfig struct {
+	Enabled           bool `yaml:"enabled"`
+	MessagesPerMinute int  `yaml:"messages_per_minute"` // default 20
+	TasksPerHour      int  `yaml:"tasks_per_hour"`      // default 10
+	BurstSize         int  `yaml:"burst_size"`          // default 5
 }
 
 // BotRetrievalConfig controls bounded file-retrieval for grounded Q&A (TASK-375).

@@ -1909,11 +1909,12 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 		var tgBotCfg *comms.BotConfig
 		if cfg.Bot != nil {
 			tgBotCfg = &comms.BotConfig{
-				Enabled:     cfg.Bot.Enabled,
-				Model:       cfg.Bot.Model,
-				AnswerModel: cfg.Bot.AnswerModel,
-				APIKey:      cfg.Bot.APIKey,
-				Persona:     cfg.Bot.Persona,
+				Enabled:      cfg.Bot.Enabled,
+				Model:        cfg.Bot.Model,
+				AnswerModel:  cfg.Bot.AnswerModel,
+				APIKey:       cfg.Bot.APIKey,
+				Persona:      cfg.Bot.Persona,
+				VoiceEnabled: cfg.Bot.Voice.Enabled,
 				Retrieval: comms.RetrievalConfig{
 					Enabled:  cfg.Bot.Retrieval.Enabled,
 					MaxFiles: cfg.Bot.Retrieval.MaxFiles,
@@ -1922,12 +1923,23 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 			}
 		}
 
+		// bot.rate_limit overrides the per-adapter rate limit when both bot and the field are set.
+		tgRateLimit := cfg.Adapters.Telegram.RateLimit
+		if cfg.Bot != nil && cfg.Bot.Enabled && cfg.Bot.RateLimit != nil {
+			tgRateLimit = &comms.RateLimitConfig{
+				Enabled:           cfg.Bot.RateLimit.Enabled,
+				MessagesPerMinute: cfg.Bot.RateLimit.MessagesPerMinute,
+				TasksPerHour:      cfg.Bot.RateLimit.TasksPerHour,
+				BurstSize:         cfg.Bot.RateLimit.BurstSize,
+			}
+		}
+
 		tgCommsHandler := comms.BuildHandler(comms.HandlerDeps{
 			Messenger:       tgMessenger,
 			Runner:          runner,
 			Projects:        config.NewProjectSource(cfg),
 			ProjectPath:     projectPath,
-			RateLimit:       cfg.Adapters.Telegram.RateLimit,
+			RateLimit:       tgRateLimit,
 			Classifier:      tgClassifierCfg,
 			Bot:             tgBotCfg,
 			MemberResolver:  tgMemberResolver,
@@ -2661,11 +2673,12 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 		var slackBotCfg *comms.BotConfig
 		if cfg.Bot != nil {
 			slackBotCfg = &comms.BotConfig{
-				Enabled:     cfg.Bot.Enabled,
-				Model:       cfg.Bot.Model,
-				AnswerModel: cfg.Bot.AnswerModel,
-				APIKey:      cfg.Bot.APIKey,
-				Persona:     cfg.Bot.Persona,
+				Enabled:      cfg.Bot.Enabled,
+				Model:        cfg.Bot.Model,
+				AnswerModel:  cfg.Bot.AnswerModel,
+				APIKey:       cfg.Bot.APIKey,
+				Persona:      cfg.Bot.Persona,
+				VoiceEnabled: cfg.Bot.Voice.Enabled,
 				Retrieval: comms.RetrievalConfig{
 					Enabled:  cfg.Bot.Retrieval.Enabled,
 					MaxFiles: cfg.Bot.Retrieval.MaxFiles,
@@ -2674,11 +2687,23 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 			}
 		}
 
+		// bot.rate_limit overrides the per-adapter rate limit when both bot and the field are set.
+		var slackRateLimit *comms.RateLimitConfig
+		if cfg.Bot != nil && cfg.Bot.Enabled && cfg.Bot.RateLimit != nil {
+			slackRateLimit = &comms.RateLimitConfig{
+				Enabled:           cfg.Bot.RateLimit.Enabled,
+				MessagesPerMinute: cfg.Bot.RateLimit.MessagesPerMinute,
+				TasksPerHour:      cfg.Bot.RateLimit.TasksPerHour,
+				BurstSize:         cfg.Bot.RateLimit.BurstSize,
+			}
+		}
+
 		slackCommsHandler := comms.BuildHandler(comms.HandlerDeps{
 			Messenger:       sdkshim.MessengerToBridge(slackBridge),
 			Runner:          runner,
 			Projects:        config.NewSlackProjectSource(cfg),
 			ProjectPath:     projectPath,
+			RateLimit:       slackRateLimit,
 			Classifier:      slackClassifierCfg,
 			Bot:             slackBotCfg,
 			MemberResolver:  slackMemberResolver,

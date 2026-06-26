@@ -110,6 +110,10 @@
 | Telegram chat mode | ✅ | adapters/telegram | - | - | Conversational responses (v0.6.0) |
 | Telegram research | ✅ | adapters/telegram | - | - | Deep analysis to chat (v0.6.0) |
 | Telegram planning | ✅ | adapters/telegram | - | - | Plan with Execute/Cancel (v0.6.0) |
+| Conversational Bot Module — fast chat/Q&A | ✅ | comms/responder | - | `bot.enabled` | Direct Anthropic API ~1-2s vs executor 15-30s; P1+P2 (v2.196.x, GH-3665) |
+| Conversational Bot Module — grounded Q&A retrieval | ✅ | comms/retrieval | - | `bot.retrieval.enabled` | Bounded file search + LLM; too-broad falls back to executor; P3 (v2.197.0, GH-3671) |
+| Conversational Bot Module — issue intake | ✅ | comms/issue_intake | - | `bot.enabled` + `adapters.github` | DraftIssue via LLM → creates GH issue labelled pilot; P4 (v2.198.0, GH-3672) |
+| Conversational Bot Module — persona + voice scaffold | ✅ | comms/responder | - | `bot.persona`, `bot.voice.enabled`, `bot.rate_limit` | Persona in all LLM calls; voice scaffold; rate_limit override; P5 (GH-3673) |
 | GitHub polling | ✅ | adapters/github | `pilot start --github` | `adapters.github.polling` | 30s interval |
 | GitHub run issue | ✅ | adapters/github | `pilot github run` | `adapters.github` | Manual trigger |
 | GitLab polling | ✅ | adapters/gitlab | `pilot start --gitlab` | `adapters.gitlab` | Full adapter with webhook support |
@@ -164,7 +168,6 @@
 | Comms intent consolidation | ✅ | comms | - | - | Conversation store + LLM classifier consolidated into intent package (v2.25.0, PR #1789) |
 | Comms main.go wiring | ✅ | main | - | - | Updated main.go wiring for unified comms.Handler (v2.25.0, PR #1775) |
 | Comms BuildHandler factory | ✅ | comms | - | `llm_classifier` under slack/discord | Single assembly point for comms.HandlerConfig; all 5 adapter call sites route through it; Slack/Discord/gateway reach classifier parity with Telegram (v2.193.0, PR #3645) |
-| Bot Module P4 — issue intake | ✅ | comms, adapters/github | - | `bot.issue_intake` | NL + `/draft-issue` → LLM drafts conventional-commit title + body → creates `pilot`-labeled GitHub issue (GH-3672) |
 
 ## Alerts & Monitoring
 
