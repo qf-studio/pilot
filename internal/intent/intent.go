@@ -17,6 +17,7 @@ const (
 	IntentQuestion    Intent = "question"
 	IntentChat        Intent = "chat"
 	IntentTask        Intent = "task"
+	IntentIssueIntake Intent = "issue_intake"
 )
 
 // Common greeting patterns
@@ -48,6 +49,35 @@ var researchPatterns = []string{
 var planningPatterns = []string{
 	"plan", "design", "strategy", "how should we",
 	"approach for", "architect", "outline",
+}
+
+// Issue intake patterns — phrases that signal the user wants to file a ticket.
+// Checked before the generic task handler so "create an issue to..." routes here
+// rather than to IntentTask which would launch a full executor run.
+var issueIntakePatterns = []string{
+	"create an issue",
+	"file an issue",
+	"open an issue",
+	"draft an issue",
+	"create a ticket",
+	"file a ticket",
+	"open a ticket",
+	"draft a ticket",
+	"log an issue",
+	"raise an issue",
+	"report an issue",
+	"submit an issue",
+}
+
+// IsIssueIntake reports whether the message is asking to create a GitHub issue.
+func IsIssueIntake(msg string) bool {
+	lower := strings.ToLower(strings.TrimSpace(msg))
+	for _, pattern := range issueIntakePatterns {
+		if strings.Contains(lower, pattern) {
+			return true
+		}
+	}
+	return false
 }
 
 // Chat patterns - indicate conversational/opinion requests
@@ -137,7 +167,12 @@ func DetectIntent(message string) Intent {
 		return IntentQuestion
 	}
 
-	// 7. Check for task action words
+	// 7. Check for issue intake ("create an issue to…", "file a ticket…")
+	if IsIssueIntake(msg) {
+		return IntentIssueIntake
+	}
+
+	// 8. Check for task action words
 	if IsTask(msg) {
 		return IntentTask
 	}
@@ -392,6 +427,8 @@ func (i Intent) Description() string {
 		return "Chat"
 	case IntentTask:
 		return "Task"
+	case IntentIssueIntake:
+		return "IssueIntake"
 	default:
 		return "Unknown"
 	}

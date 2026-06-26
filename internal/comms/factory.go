@@ -63,11 +63,12 @@ func BuildClassifier(cfg *ClassifierConfig, executorBackend *executor.BackendCon
 // the caller (cmd/pilot/main.go) maps between the two to avoid an import cycle
 // (config imports adapters, which import comms).
 type BotConfig struct {
-	Enabled     bool
-	Model       string
-	AnswerModel string
-	APIKey      string
-	Persona     string
+	Enabled        bool
+	Model          string
+	AnswerModel    string
+	APIKey         string
+	Persona        string
+	AutoLabelPilot bool // When true, /draft-issue and NL issue intake always add "pilot" label.
 }
 
 // BuildResponder constructs a Responder from BotConfig.
@@ -106,6 +107,7 @@ type HandlerDeps struct {
 	Classifier     *ClassifierConfig
 	Bot            *BotConfig
 	MemberResolver MemberResolver
+	IssueCreator   IssueCreator
 	Store          *memory.Store
 	TaskIDPrefix   string
 	// ExecutorBackend is used by BuildClassifier to override the Anthropic model and URL.
@@ -119,6 +121,10 @@ type HandlerDeps struct {
 func BuildHandler(deps HandlerDeps) *Handler {
 	classifier, convStore := BuildClassifier(deps.Classifier, deps.ExecutorBackend)
 	responder := BuildResponder(deps.Bot)
+	autoLabel := true // default: always add "pilot" label to drafted issues
+	if deps.Bot != nil {
+		autoLabel = deps.Bot.AutoLabelPilot
+	}
 	return NewHandler(&HandlerConfig{
 		Messenger:      deps.Messenger,
 		Runner:         deps.Runner,
@@ -129,6 +135,8 @@ func BuildHandler(deps HandlerDeps) *Handler {
 		ConvStore:      convStore,
 		Responder:      responder,
 		MemberResolver: deps.MemberResolver,
+		IssueCreator:   deps.IssueCreator,
+		AutoLabelPilot: autoLabel,
 		Store:          deps.Store,
 		TaskIDPrefix:   deps.TaskIDPrefix,
 	})

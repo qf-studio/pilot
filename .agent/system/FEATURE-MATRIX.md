@@ -1,6 +1,6 @@
 # Pilot Feature Matrix
 
-**Last Updated:** 2026-06-26 (v2.151.0)
+**Last Updated:** 2026-06-25 (v2.151.0)
 
 ## Legend
 
@@ -164,7 +164,6 @@
 | Comms intent consolidation | ✅ | comms | - | - | Conversation store + LLM classifier consolidated into intent package (v2.25.0, PR #1789) |
 | Comms main.go wiring | ✅ | main | - | - | Updated main.go wiring for unified comms.Handler (v2.25.0, PR #1775) |
 | Comms BuildHandler factory | ✅ | comms | - | `llm_classifier` under slack/discord | Single assembly point for comms.HandlerConfig; all 5 adapter call sites route through it; Slack/Discord/gateway reach classifier parity with Telegram (v2.193.0, PR #3645) |
-| Bot Responder + fast chat | ✅ | comms, llm | - | `bot.enabled` | Responder wraps llm.Client; handleChat/handleGreeting bypass executor (~1–2s vs 15–30s); nil responder preserves executor fallback; persona-aware (GH-3668, v2.195.1) |
 
 ## Alerts & Monitoring
 
@@ -582,3 +581,4 @@ quality:
 | Ghost-SHA guard | v2.151.x | executor | Fail-closed when commit_sha already on base branch (TASK-300 / GH-3099) |
 | Merge→done race window closed | v2.163.0 | autopilot + adapters/github | `Controller.SetOnIssueDone` fires `MarkProcessed` on all pollers at PR-merge, preventing phantom re-dispatch during label propagation lag (TASK-321 PR-4 / GH-3271) |
 | Decomposed-child base-branch pinning | v2.184.x | executor | Resolve `BaseBranch` from main-repo git context before worktree creation; decomposed children never PR against a sibling branch (GH-3540) |
+| Bot P4 — conversational issue intake | v2.198.0 | comms + adapters/github | `IntentIssueIntake`, `IssueCreator` interface, `Responder.DraftIssue`, `/draft-issue` command, github `IssueCreatorAdapter` (GH-3672) |

@@ -13,17 +13,18 @@ import (
 // CommandHandler processes bot commands with access to messenger and memory store.
 // It provides a platform-agnostic implementation of all slash commands.
 type CommandHandler struct {
-	messenger          Messenger
-	store              *memory.Store
-	runCommandFunc     func(ctx context.Context, contextID, taskID string)
-	statusQueryFunc    func(contextID string) (pending, running interface{})
-	activeProjectFunc  func(contextID string) (name, path string)
-	projectListFunc    func() []interface{}
-	setProjectFunc     func(contextID, projectName string) error
-	cancelTaskFunc     func(ctx context.Context, contextID string) error
-	stopTaskFunc       func(ctx context.Context, contextID string) error
-	listTasksFunc      func() string
-	briefGeneratorFunc func(ctx context.Context, contextID string) error // Platform-specific brief generation
+	messenger            Messenger
+	store                *memory.Store
+	runCommandFunc       func(ctx context.Context, contextID, taskID string)
+	statusQueryFunc      func(contextID string) (pending, running interface{})
+	activeProjectFunc    func(contextID string) (name, path string)
+	projectListFunc      func() []interface{}
+	setProjectFunc       func(contextID, projectName string) error
+	cancelTaskFunc       func(ctx context.Context, contextID string) error
+	stopTaskFunc         func(ctx context.Context, contextID string) error
+	listTasksFunc        func() string
+	briefGeneratorFunc   func(ctx context.Context, contextID string) error // Platform-specific brief generation
+	draftIssueHandleFunc func(ctx context.Context, contextID, threadID, text string) // Issue intake
 }
 
 // NewCommandHandler creates a command handler with messenger and optional memory store.
@@ -77,6 +78,11 @@ func (c *CommandHandler) SetListTasksFunc(f func() string) {
 // SetBriefGeneratorFunc sets the brief generator function (platform-specific).
 func (c *CommandHandler) SetBriefGeneratorFunc(f func(ctx context.Context, contextID string) error) {
 	c.briefGeneratorFunc = f
+}
+
+// SetDraftIssueHandleFunc sets the /draft-issue handler (routes to handleIssueIntake).
+func (c *CommandHandler) SetDraftIssueHandleFunc(f func(ctx context.Context, contextID, threadID, text string)) {
+	c.draftIssueHandleFunc = f
 }
 
 // HandleCommand routes slash commands to their handlers.
@@ -138,6 +144,12 @@ func (c *CommandHandler) HandleCommand(ctx context.Context, contextID, text stri
 		} else {
 			_ = c.messenger.SendText(ctx, contextID, "Usage: /pr <task description>\nForces PR creation even for ephemeral-looking tasks.")
 		}
+	case "/draft-issue":
+		if len(args) > 0 {
+			c.handleDraftIssue(ctx, contextID, "", strings.Join(args, " "))
+		} else {
+			_ = c.messenger.SendText(ctx, contextID, "Usage: /draft-issue <description>\nDrafts and files a pilot-labeled GitHub issue.")
+		}
 	default:
 		_ = c.messenger.SendText(ctx, contextID, "Unknown command. Use /help for available commands.")
 	}
@@ -166,6 +178,7 @@ Task Commands
 /stop — Stop running task
 /nopr <task> — Execute without creating PR
 /pr <task> — Force PR creation
+/draft-issue <desc> — File a pilot-labeled GitHub issue
 
 Quick Patterns
 • 07 or task 07 — Run TASK-07
@@ -175,6 +188,7 @@ Quick Patterns
 What I Understand
 • Tasks: "Create a file...", "Add feature..."
 • Questions: "What handles auth?", "How does X work?"
+• Issues: "Create an issue to fix the login bug"
 • Greetings: "Hi", "Hello"
 
 Note: Ephemeral commands (serve, run, etc.) auto-skip PR creation.`
@@ -562,6 +576,15 @@ func (c *CommandHandler) handleNoPR(ctx context.Context, contextID, description 
 		_ = c.messenger.SendText(ctx, contextID,
 			fmt.Sprintf("🚀 Executing without PR: %s", TruncateText(description, 50)))
 	}
+}
+
+// handleDraftIssue handles the /draft-issue command by delegating to handleIssueIntake.
+func (c *CommandHandler) handleDraftIssue(ctx context.Context, contextID, threadID, text string) {
+	if c.draftIssueHandleFunc != nil {
+		c.draftIssueHandleFunc(ctx, contextID, threadID, text)
+		return
+	}
+	_ = c.messenger.SendText(ctx, contextID, "Issue intake not configured.")
 }
 
 // handleForcePR executes a task and forces PR creation.

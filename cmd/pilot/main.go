@@ -1883,12 +1883,17 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 
 		var tgBotCfg *comms.BotConfig
 		if cfg.Bot != nil {
+			autoLabelPilot := true // default on
+			if cfg.Bot.IssueIntake.AutoLabelPilot != nil {
+				autoLabelPilot = *cfg.Bot.IssueIntake.AutoLabelPilot
+			}
 			tgBotCfg = &comms.BotConfig{
-				Enabled:     cfg.Bot.Enabled,
-				Model:       cfg.Bot.Model,
-				AnswerModel: cfg.Bot.AnswerModel,
-				APIKey:      cfg.Bot.APIKey,
-				Persona:     cfg.Bot.Persona,
+				Enabled:        cfg.Bot.Enabled,
+				Model:          cfg.Bot.Model,
+				AnswerModel:    cfg.Bot.AnswerModel,
+				APIKey:         cfg.Bot.APIKey,
+				Persona:        cfg.Bot.Persona,
+				AutoLabelPilot: autoLabelPilot,
 			}
 		}
 
@@ -1901,6 +1906,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 			Classifier:      tgClassifierCfg,
 			Bot:             tgBotCfg,
 			MemberResolver:  tgMemberResolver,
+			IssueCreator:    buildIssueCreator(cfg),
 			Store:           store,
 			TaskIDPrefix:    "TG",
 			ExecutorBackend: cfg.Executor,
@@ -2629,12 +2635,17 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 
 		var slackBotCfg *comms.BotConfig
 		if cfg.Bot != nil {
+			autoLabelPilot := true // default on
+			if cfg.Bot.IssueIntake.AutoLabelPilot != nil {
+				autoLabelPilot = *cfg.Bot.IssueIntake.AutoLabelPilot
+			}
 			slackBotCfg = &comms.BotConfig{
-				Enabled:     cfg.Bot.Enabled,
-				Model:       cfg.Bot.Model,
-				AnswerModel: cfg.Bot.AnswerModel,
-				APIKey:      cfg.Bot.APIKey,
-				Persona:     cfg.Bot.Persona,
+				Enabled:        cfg.Bot.Enabled,
+				Model:          cfg.Bot.Model,
+				AnswerModel:    cfg.Bot.AnswerModel,
+				APIKey:         cfg.Bot.APIKey,
+				Persona:        cfg.Bot.Persona,
+				AutoLabelPilot: autoLabelPilot,
 			}
 		}
 
@@ -2646,6 +2657,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 			Classifier:      slackClassifierCfg,
 			Bot:             slackBotCfg,
 			MemberResolver:  slackMemberResolver,
+			IssueCreator:    buildIssueCreator(cfg),
 			Store:           store,
 			TaskIDPrefix:    "SLACK",
 			ExecutorBackend: cfg.Executor,

@@ -35,6 +35,8 @@ type HandlerConfig struct {
 	ConvStore      *intent.ConversationStore
 	Responder      *Responder
 	MemberResolver MemberResolver
+	IssueCreator   IssueCreator
+	AutoLabelPilot bool // passed to Responder.DraftIssue
 	Store          *memory.Store
 	// TaskIDPrefix is the adapter-specific prefix for task IDs (e.g., "TG", "SLACK").
 	TaskIDPrefix string
@@ -53,15 +55,18 @@ type Handler struct {
 	convStore      *intent.ConversationStore
 	responder      *Responder
 	memberResolver MemberResolver
+	issueCreator   IssueCreator
+	autoLabelPilot bool
 	store          *memory.Store
 	cmdHandler     *CommandHandler
 	taskIDPrefix   string
 	log            *slog.Logger
 
-	activeProject map[string]string       // contextID -> projectPath
-	pendingTasks  map[string]*PendingTask // contextID -> pending task
-	runningTasks  map[string]*RunningTask // contextID -> running task
-	lastSender    map[string]string       // contextID -> senderID
+	activeProject map[string]string        // contextID -> projectPath
+	pendingTasks  map[string]*PendingTask  // contextID -> pending task
+	pendingIssues map[string]*PendingIssue // contextID -> pending issue (state machine)
+	runningTasks  map[string]*RunningTask  // contextID -> running task
+	lastSender    map[string]string        // contextID -> senderID
 	mu            sync.Mutex
 }
 
@@ -94,17 +99,23 @@ func NewHandler(cfg *HandlerConfig) *Handler {
 		convStore:      cfg.ConvStore,
 		responder:      cfg.Responder,
 		memberResolver: cfg.MemberResolver,
+		issueCreator:   cfg.IssueCreator,
+		autoLabelPilot: cfg.AutoLabelPilot,
 		store:          cfg.Store,
 		taskIDPrefix:   prefix,
 		log:            lg,
 		activeProject:  make(map[string]string),
 		pendingTasks:   make(map[string]*PendingTask),
+		pendingIssues:  make(map[string]*PendingIssue),
 		runningTasks:   make(map[string]*RunningTask),
 		lastSender:     make(map[string]string),
 	}
 
 	// Wire command handler — must be built after h exists so callbacks can close over h.
 	cmd := NewCommandHandler(cfg.Messenger, cfg.Store)
+	cmd.SetDraftIssueHandleFunc(func(ctx context.Context, contextID, threadID, text string) {
+		h.handleIssueIntake(ctx, contextID, threadID, text)
+	})
 	cmd.SetStatusQueryFunc(func(contextID string) (pending, running interface{}) {
 		// Avoid wrapping typed nil pointers in interface{} — that produces a
 		// non-nil interface whose method calls panic (classic Go gotcha).
@@ -228,6 +239,8 @@ func (h *Handler) HandleMessage(ctx context.Context, msg *IncomingMessage) {
 		h.handlePlanning(ctx, contextID, msg.ThreadID, text)
 	case intent.IntentChat:
 		h.handleChat(ctx, contextID, msg.ThreadID, text)
+	case intent.IntentIssueIntake:
+		h.handleIssueIntake(ctx, contextID, msg.ThreadID, text)
 	case intent.IntentTask:
 		h.handleTask(ctx, contextID, msg.ThreadID, text, msg.SenderID)
 	default:
@@ -570,6 +583,45 @@ User message: %s`, h.getActiveProjectPath(contextID), message),
 	if h.convStore != nil {
 		h.convStore.Add(contextID, "assistant", TruncateText(response, 500))
 	}
+}
+
+func (h *Handler) handleIssueIntake(ctx context.Context, contextID, threadID, text string) {
+	if h.responder == nil {
+		_ = h.messenger.SendText(ctx, contextID, "Issue intake requires bot.enabled=true in config.")
+		return
+	}
+	if h.issueCreator == nil {
+		_ = h.messenger.SendText(ctx, contextID, "Issue creation not configured (no GitHub adapter).")
+		return
+	}
+
+	_ = h.messenger.SendText(ctx, contextID, "🎫 Drafting issue...")
+
+	var history []intent.ConversationMessage
+	if h.convStore != nil {
+		history = h.convStore.Get(contextID)
+	}
+
+	draft, err := h.responder.DraftIssue(ctx, history, text, h.autoLabelPilot)
+	if err != nil {
+		h.log.Warn("DraftIssue failed", slog.Any("error", err))
+		_ = h.messenger.SendText(ctx, contextID, "❌ Failed to draft issue: "+err.Error())
+		return
+	}
+
+	projectPath := h.getActiveProjectPath(contextID)
+	url, err := h.issueCreator.CreateIssue(ctx, projectPath, draft)
+	if err != nil {
+		h.log.Warn("CreateIssue failed", slog.Any("error", err))
+		_ = h.messenger.SendText(ctx, contextID, "❌ Failed to create issue: "+err.Error())
+		return
+	}
+
+	h.log.Info("Issue created via intake",
+		slog.String("context_id", contextID),
+		slog.String("url", url),
+		slog.String("title", draft.Title))
+	_ = h.messenger.SendText(ctx, contextID, fmt.Sprintf("✅ Issue created: %s", url))
 }
 
 func (h *Handler) handleTask(ctx context.Context, contextID, threadID, description, senderID string) {

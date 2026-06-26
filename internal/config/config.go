@@ -76,10 +76,18 @@ type BotConfig struct {
 	APIKey      string `yaml:"api_key"`
 	Persona     string `yaml:"persona"` // Injected into the system prompt
 
-	// Reserved for future phases (TASK-375/376/377); parsed but unused.
-	Retrieval   struct{} `yaml:"retrieval,omitempty"`
-	IssueIntake struct{} `yaml:"issue_intake,omitempty"`
-	Voice       struct{} `yaml:"voice,omitempty"`
+	// Reserved for future phases (TASK-375/377); parsed but unused.
+	Retrieval struct{} `yaml:"retrieval,omitempty"`
+	Voice     struct{} `yaml:"voice,omitempty"`
+	// IssueIntake configures the conversational issue-creation path (GH-3672).
+	IssueIntake IssueIntakeConfig `yaml:"issue_intake,omitempty"`
+}
+
+// IssueIntakeConfig holds settings for the bot issue intake flow (GH-3672).
+type IssueIntakeConfig struct {
+	// AutoLabelPilot adds the "pilot" label to every drafted issue (default true).
+	// Set to false to suppress the automatic label.
+	AutoLabelPilot *bool `yaml:"auto_label_pilot,omitempty"`
 }
 
 
