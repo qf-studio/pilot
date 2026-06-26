@@ -147,6 +147,23 @@
           "hot-upgrade",
           "git-operations"
         ]
+      },
+      "intent-routing": {
+        "label": "Intent Routing",
+        "description": "How inbound chat messages are classified (regex fast-paths + Haiku LLM classifier) and dispatched to chat/question/task/issue_intake/operational handlers in comms.Handler",
+        "related": [
+          "anthropic-api",
+          "conversational-bot",
+          "executor"
+        ]
+      },
+      "conversational-bot": {
+        "label": "Conversational Bot",
+        "description": "The bot module: fast direct-LLM chat/Q&A/issue-intake on comms.Handler, bypassing the executor for low-latency replies",
+        "related": [
+          "intent-routing",
+          "anthropic-api"
+        ]
       }
     },
     "tasks": {
@@ -718,6 +735,36 @@
         "incident": "2026-06-26: shipping the bot max_tokens fix — dev binary installs (12:32) auto-reverted to pre-fix v2.200.0 release (12:52); only cutting v2.200.1 and pilot-upgrading made the fix stick in the live daemon.",
         "file": ".agent/knowledge/memories/pitfalls/bug_daemon_autoupgrade_reverts_dev_binary.md",
         "origin_task": "TASK-374"
+      },
+      "mem-041": {
+        "type": "pitfall",
+        "summary": "LLM intent classifier was doubly broken so the bot misrouted open-ended input. (1) classifier.go sent output_config{effort} → Haiku 400 'does not support the effort parameter' → every Classify failed → silent regex fallback (same class as mem-039; a test asserted output_config present). (2) Prompt routed 'draw/outline/show' as code TASK → heavy executor + dangling tasks. Fixed v2.200.2 (#3703): drop output_config; add DELIVERABLE TEST (answer/diagram→question/chat, change-code→task, file-ticket→issue_intake). Haiku now primary NL router, regex only guards /-commands. Validate classifier prompts via curl (TUI logs ungreppable). 8/8 live.",
+        "concepts": [
+          "intent-routing",
+          "anthropic-api",
+          "testing"
+        ],
+        "confidence": 0.95,
+        "severity": "high",
+        "created": "2026-06-26",
+        "incident": "2026-06-26 bot bring-up: 'draw the schema' routed to TASK; enabling the classifier did nothing because it 400'd on the effort param and fell back to regex.",
+        "file": ".agent/knowledge/memories/pitfalls/bug_classifier_effort_param_and_taxonomy.md",
+        "origin_task": "TASK-374"
+      },
+      "mem-042": {
+        "type": "pitfall",
+        "summary": "Bot answers/issues hit the WRONG repo via two traps. (1) Intake (comms.IssueCreator) resolves owner/repo from a SINGLE hardwired NewIssueCreator entry = cfg.Adapters.GitHub.Repo; resolveRepo falls to repos[0] for unmatched paths, so intake ALWAYS targets adapters.github.repo and /switch doesn't change it. (2) The per-context active project is in-memory and RESETS to default_project on every daemon restart, so Q&A answers about the wrong repo until re-/switch'd. Demo fix: point default_project AND adapters.github.repo at the same repo (+ project_board.enabled:false for label polling). Proper fix: NewIssueCreator entry per cfg.Projects + persist active project across restarts. Board-source repos also need intake→board or label polling.",
+        "concepts": [
+          "conversational-bot",
+          "intent-routing",
+          "git-operations"
+        ],
+        "confidence": 0.9,
+        "severity": "medium",
+        "created": "2026-06-26",
+        "incident": "2026-06-26: Q&A answered studio-sdk not pilot; intake filed feat(api)/feat(gateway) issues on studio-sdk repeatedly despite /switch + default_project:pilot. Closed loop only after repointing adapters.github.repo to pilot.",
+        "file": ".agent/knowledge/memories/pitfalls/bug_bot_active_project_and_intake_repo.md",
+        "origin_task": "TASK-376"
       }
     }
   },
@@ -956,6 +1003,26 @@
       "from": "mem-040",
       "to": "release",
       "type": "about"
+    },
+    {
+      "from": "mem-041",
+      "to": "intent-routing",
+      "type": "about"
+    },
+    {
+      "from": "mem-041",
+      "to": "mem-039",
+      "type": "relates-to"
+    },
+    {
+      "from": "mem-042",
+      "to": "conversational-bot",
+      "type": "about"
+    },
+    {
+      "from": "mem-042",
+      "to": "mem-041",
+      "type": "relates-to"
     }
   ]
 }
