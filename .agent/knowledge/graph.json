@@ -130,6 +130,23 @@
           "epic-decomposition",
           "git-operations"
         ]
+      },
+      "anthropic-api": {
+        "label": "Anthropic API",
+        "description": "Direct Anthropic Messages API calls (x-api-key, max_tokens required) used by the bot module's llm.Client — distinct from the Claude Code subprocess the executor uses",
+        "related": [
+          "llm-integration",
+          "claude-code-integration"
+        ]
+      },
+      "release": {
+        "label": "Release / Versioning",
+        "description": "Tag-driven GoReleaser release pipeline (GitHub release + Homebrew); the daemon hot-upgrades to the latest release",
+        "related": [
+          "autopilot",
+          "hot-upgrade",
+          "git-operations"
+        ]
       }
     },
     "tasks": {
@@ -669,6 +686,38 @@
         "created": "2026-06-26",
         "file": ".agent/knowledge/memories/patterns/pattern_fast_conversational_path_vs_executor.md",
         "origin_task": "TASK-377"
+      },
+      "mem-039": {
+        "type": "pitfall",
+        "summary": "Bot's direct LLM client (internal/llm/client.go) omitted required max_tokens and sent non-standard output_config{effort:low}, so every Anthropic Messages call 400'd ('max_tokens: Field required') and the bot replied 'Sorry, I couldn't process that.' Shipped GREEN because TestAnswer_RequestShape asserted output_config present and never checked max_tokens — the test encoded the bug. Diagnose request-shape bugs with curl (real key): code's request → 400, +max_tokens/-output_config → 200, in 2 calls. Fixed v2.200.1 (#3700): add max_tokens(2048), drop output_config, tests assert both. Lesson (again, see mem-036): assert the REQUIRED fields, not the optional ones.",
+        "concepts": [
+          "anthropic-api",
+          "llm-integration",
+          "testing",
+          "verification"
+        ],
+        "confidence": 0.95,
+        "severity": "high",
+        "created": "2026-06-26",
+        "incident": "2026-06-26: conversational bot live on Slack returned 'Sorry, I couldn't process that' to every message. Root cause max_tokens missing from llm.Client.Answer; output_config non-standard. Fixed in #3700, shipped v2.200.1.",
+        "file": ".agent/knowledge/memories/pitfalls/bug_llm_missing_max_tokens.md",
+        "origin_task": "TASK-374"
+      },
+      "mem-040": {
+        "type": "pitfall",
+        "summary": "Daemon hot-upgrades to the latest GitHub RELEASE and re-execs (pid preserved → ps lstart looks unchanged while the on-disk binary swaps). A dev binary cp'd to ~/.local/bin/pilot reverts within ~20min to the last release. A fix merged to main is NOT in the running daemon until a release containing it is cut (autopilot shouldTriggerRelease gap). Observed 2026-06-26: 29MB dev fix at 12:32 reverted to 20.6MB v2.200.0 release by 12:52, bot kept failing. Durable fix: tag-driven release (mem-022) with the fix → pilot upgrade (prompts y/N) → restart. v2.200.1 held because it's the latest release. Confirm running binary via lsof txt + stat size + pilot version, not lstart alone.",
+        "concepts": [
+          "hot-upgrade",
+          "release",
+          "autopilot",
+          "git-operations"
+        ],
+        "confidence": 0.9,
+        "severity": "medium",
+        "created": "2026-06-26",
+        "incident": "2026-06-26: shipping the bot max_tokens fix — dev binary installs (12:32) auto-reverted to pre-fix v2.200.0 release (12:52); only cutting v2.200.1 and pilot-upgrading made the fix stick in the live daemon.",
+        "file": ".agent/knowledge/memories/pitfalls/bug_daemon_autoupgrade_reverts_dev_binary.md",
+        "origin_task": "TASK-374"
       }
     }
   },
@@ -887,6 +936,26 @@
       "from": "mem-038",
       "to": "mem-036",
       "type": "references"
+    },
+    {
+      "from": "mem-039",
+      "to": "anthropic-api",
+      "type": "about"
+    },
+    {
+      "from": "mem-039",
+      "to": "mem-036",
+      "type": "relates-to"
+    },
+    {
+      "from": "mem-040",
+      "to": "hot-upgrade",
+      "type": "about"
+    },
+    {
+      "from": "mem-040",
+      "to": "release",
+      "type": "about"
     }
   ]
 }
