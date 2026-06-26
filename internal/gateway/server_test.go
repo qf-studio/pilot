@@ -38,6 +38,30 @@ func TestNewServer(t *testing.T) {
 	}
 }
 
+func TestPingEndpoint(t *testing.T) {
+	config := &Config{Host: "127.0.0.1", Port: 9090}
+	server := NewServer(config)
+
+	req := httptest.NewRequest(http.MethodGet, "/ping", nil)
+	w := httptest.NewRecorder()
+
+	server.handlePing(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", w.Code)
+	}
+
+	body := w.Body.String()
+	if body != "pong" {
+		t.Errorf("Expected body 'pong', got '%s'", body)
+	}
+
+	ct := w.Header().Get("Content-Type")
+	if !strings.HasPrefix(ct, "text/plain") {
+		t.Errorf("Expected Content-Type text/plain, got '%s'", ct)
+	}
+}
+
 func TestHealthEndpoint(t *testing.T) {
 	config := &Config{Host: "127.0.0.1", Port: 9090}
 	server := NewServer(config)
