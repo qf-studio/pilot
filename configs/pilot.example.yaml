@@ -25,6 +25,9 @@ auth:
 #   api_key: ""                          # Fallback: uses ANTHROPIC_API_KEY env var
 #   persona: ""                          # Optional voice/persona injected into system prompt
 #                                        # e.g. "You are a friendly Go development assistant."
+#   retrieval: {}                        # Reserved for TASK-375 (grounded Q&A retrieval)
+#   issue_intake: {}                     # Reserved for TASK-376 (conversational issue intake)
+#   voice: {}                            # Reserved for TASK-377 (persona/voice scaffold)
 
 # Adapters
 adapters:
