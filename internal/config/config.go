@@ -66,34 +66,22 @@ type TeamConfig struct {
 	MemberEmail string `yaml:"member_email"` // Email of the member executing tasks
 }
 
-// BotConfig holds settings for the Pilot bot module (GH-3665).
-// When enabled, the bot can answer questions, handle issue intake, and respond via comms.
+// BotConfig holds configuration for the conversational bot module (GH-3665+).
+// When enabled, chat and greeting intents bypass the Claude Code executor and are
+// answered directly via the Anthropic API (~1–2s vs 15–30s for the executor path).
 type BotConfig struct {
-	Enabled     bool               `yaml:"enabled"`
-	Model       string             `yaml:"model"`        // Default: claude-haiku-4-5-20251001
-	AnswerModel string             `yaml:"answer_model"` // Override model for answer calls; falls back to Model
-	APIKey      string             `yaml:"api_key"`
-	Persona     string             `yaml:"persona"`
-	Retrieval   BotRetrievalConfig `yaml:"retrieval"`    // Reserved for TASK-375
-	IssueIntake BotIssueIntakeConfig `yaml:"issue_intake"` // Reserved for TASK-376
-	Voice       BotVoiceConfig     `yaml:"voice"`        // Reserved for TASK-377
+	Enabled     bool   `yaml:"enabled"`
+	Model       string `yaml:"model"`        // Default: claude-haiku-4-5-20251001
+	AnswerModel string `yaml:"answer_model"` // Defaults to Model when empty
+	APIKey      string `yaml:"api_key"`
+	Persona     string `yaml:"persona"` // Injected into the system prompt
+
+	// Reserved for future phases (TASK-375/376/377); parsed but unused.
+	Retrieval   struct{} `yaml:"retrieval,omitempty"`
+	IssueIntake struct{} `yaml:"issue_intake,omitempty"`
+	Voice       struct{} `yaml:"voice,omitempty"`
 }
 
-// BotRetrievalConfig is reserved for TASK-375 (grounded Q&A retrieval).
-type BotRetrievalConfig struct{}
-
-// BotIssueIntakeConfig is reserved for TASK-376 (conversational issue intake).
-type BotIssueIntakeConfig struct{}
-
-// BotVoiceConfig is reserved for TASK-377 (persona and voice scaffold).
-type BotVoiceConfig struct{}
-
-// DefaultBotConfig returns a BotConfig with sensible defaults.
-func DefaultBotConfig() *BotConfig {
-	return &BotConfig{
-		Model: "claude-haiku-4-5-20251001",
-	}
-}
 
 // AdaptersConfig holds configuration for external service adapters.
 // Each adapter connects Pilot to a different service (Linear, Slack, GitHub, GitLab, etc.).

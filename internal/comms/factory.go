@@ -6,6 +6,7 @@ import (
 
 	"github.com/qf-studio/pilot/internal/executor"
 	"github.com/qf-studio/pilot/internal/intent"
+	"github.com/qf-studio/pilot/internal/llm"
 	"github.com/qf-studio/pilot/internal/memory"
 )
 
@@ -57,6 +58,43 @@ func BuildClassifier(cfg *ClassifierConfig, executorBackend *executor.BackendCon
 	return client, intent.NewConversationStore(historySize, historyTTL)
 }
 
+// BotConfig holds the per-deployment bot configuration threaded from the root
+// YAML config into the comms layer. It mirrors the fields of config.BotConfig;
+// the caller (cmd/pilot/main.go) maps between the two to avoid an import cycle
+// (config imports adapters, which import comms).
+type BotConfig struct {
+	Enabled     bool
+	Model       string
+	AnswerModel string
+	APIKey      string
+	Persona     string
+}
+
+// BuildResponder constructs a Responder from BotConfig.
+// Returns nil when disabled or no API key is available (env fallback included).
+// Call sites do not need to guard for nil — comms.Handler handles nil gracefully.
+func BuildResponder(cfg *BotConfig) *Responder {
+	if cfg == nil || !cfg.Enabled {
+		return nil
+	}
+	apiKey := cfg.APIKey
+	if apiKey == "" {
+		apiKey = os.Getenv("ANTHROPIC_API_KEY")
+	}
+	if apiKey == "" {
+		return nil
+	}
+	model := cfg.Model
+	if model == "" {
+		model = "claude-haiku-4-5-20251001"
+	}
+	answerModel := cfg.AnswerModel
+	if answerModel == "" {
+		answerModel = model
+	}
+	return newResponder(llm.NewClient(apiKey), answerModel, cfg.Persona)
+}
+
 // HandlerDeps holds the per-adapter inputs needed to build a comms.Handler.
 // Pass this to BuildHandler — the only place HandlerConfig is assembled.
 type HandlerDeps struct {
@@ -66,6 +104,7 @@ type HandlerDeps struct {
 	ProjectPath    string
 	RateLimit      *RateLimitConfig
 	Classifier     *ClassifierConfig
+	Bot            *BotConfig
 	MemberResolver MemberResolver
 	Store          *memory.Store
 	TaskIDPrefix   string
@@ -75,10 +114,11 @@ type HandlerDeps struct {
 }
 
 // BuildHandler creates a Handler from adapter deps.
-// This is the single assembly point for HandlerConfig; all 5 adapter call sites
+// This is the single assembly point for HandlerConfig; all adapter call sites
 // route through here so no field can be silently omitted per-adapter.
 func BuildHandler(deps HandlerDeps) *Handler {
 	classifier, convStore := BuildClassifier(deps.Classifier, deps.ExecutorBackend)
+	responder := BuildResponder(deps.Bot)
 	return NewHandler(&HandlerConfig{
 		Messenger:      deps.Messenger,
 		Runner:         deps.Runner,
@@ -87,6 +127,7 @@ func BuildHandler(deps HandlerDeps) *Handler {
 		RateLimit:      deps.RateLimit,
 		LLMClassifier:  classifier,
 		ConvStore:      convStore,
+		Responder:      responder,
 		MemberResolver: deps.MemberResolver,
 		Store:          deps.Store,
 		TaskIDPrefix:   deps.TaskIDPrefix,

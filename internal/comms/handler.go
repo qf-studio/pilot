@@ -33,6 +33,7 @@ type HandlerConfig struct {
 	RateLimit      *RateLimitConfig
 	LLMClassifier  intent.Classifier
 	ConvStore      *intent.ConversationStore
+	Responder      *Responder
 	MemberResolver MemberResolver
 	Store          *memory.Store
 	// TaskIDPrefix is the adapter-specific prefix for task IDs (e.g., "TG", "SLACK").
@@ -50,6 +51,7 @@ type Handler struct {
 	rateLimit      *RateLimiter
 	llmClassifier  intent.Classifier
 	convStore      *intent.ConversationStore
+	responder      *Responder
 	memberResolver MemberResolver
 	store          *memory.Store
 	cmdHandler     *CommandHandler
@@ -90,6 +92,7 @@ func NewHandler(cfg *HandlerConfig) *Handler {
 		rateLimit:      rl,
 		llmClassifier:  cfg.LLMClassifier,
 		convStore:      cfg.ConvStore,
+		responder:      cfg.Responder,
 		memberResolver: cfg.MemberResolver,
 		store:          cfg.Store,
 		taskIDPrefix:   prefix,
@@ -291,6 +294,10 @@ func (h *Handler) detectIntent(ctx context.Context, contextID, text string) inte
 // ---------- intent handlers ----------
 
 func (h *Handler) handleGreeting(ctx context.Context, contextID string) {
+	if h.responder != nil {
+		_ = h.messenger.SendText(ctx, contextID, h.responder.Greeting())
+		return
+	}
 	_ = h.messenger.SendText(ctx, contextID, "👋 Hello! I'm Pilot — send me a task, question, or say /help.")
 }
 
@@ -485,6 +492,33 @@ DO NOT make any code changes. Only explore and plan.`, request),
 }
 
 func (h *Handler) handleChat(ctx context.Context, contextID, threadID, message string) {
+	// Fast path: direct-LLM responder (skips executor and worktree entirely).
+	if h.responder != nil {
+		var history []intent.ConversationMessage
+		if h.convStore != nil {
+			history = h.convStore.Get(contextID)
+		}
+		response, err := h.responder.Chat(ctx, history, message)
+		if err != nil {
+			h.log.Warn("responder.Chat failed", slog.Any("error", err))
+			_ = h.messenger.SendText(ctx, contextID, "Sorry, I couldn't process that. Try rephrasing?")
+			return
+		}
+		if response == "" {
+			response = "I'm not sure how to respond to that. Could you rephrase?"
+		}
+		maxLen := h.messenger.MaxMessageLength()
+		if maxLen > 0 && len(response) > maxLen {
+			response = response[:maxLen-3] + "..."
+		}
+		_ = h.messenger.SendText(ctx, contextID, response)
+		if h.convStore != nil {
+			h.convStore.Add(contextID, "assistant", TruncateText(response, 500))
+		}
+		return
+	}
+
+	// Fallback: executor path (unchanged behavior when bot is disabled).
 	_ = h.messenger.SendText(ctx, contextID, "💬 Thinking...")
 
 	taskID := fmt.Sprintf("CHAT-%d", time.Now().Unix())

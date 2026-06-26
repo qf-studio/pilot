@@ -189,6 +189,58 @@ func TestDefaultConfig(t *testing.T) {
 	})
 }
 
+func TestBotConfig_YAMLRoundTrip(t *testing.T) {
+	yaml := `
+version: "1.0"
+gateway:
+  host: "127.0.0.1"
+  port: 9090
+bot:
+  enabled: true
+  model: "claude-haiku-4-5-20251001"
+  answer_model: "claude-sonnet-4-6"
+  api_key: "test-api-key"
+  persona: "You are a Go expert."
+`
+	tmpDir := t.TempDir()
+	cfgPath := filepath.Join(tmpDir, "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte(yaml), 0600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if cfg.Bot == nil {
+		t.Fatal("Bot config is nil after parsing")
+	}
+	if !cfg.Bot.Enabled {
+		t.Error("Bot.Enabled should be true")
+	}
+	if cfg.Bot.Model != "claude-haiku-4-5-20251001" {
+		t.Errorf("Bot.Model = %q, want claude-haiku-4-5-20251001", cfg.Bot.Model)
+	}
+	if cfg.Bot.AnswerModel != "claude-sonnet-4-6" {
+		t.Errorf("Bot.AnswerModel = %q, want claude-sonnet-4-6", cfg.Bot.AnswerModel)
+	}
+	if cfg.Bot.APIKey != "test-api-key" {
+		t.Errorf("Bot.APIKey = %q, want test-api-key", cfg.Bot.APIKey)
+	}
+	if cfg.Bot.Persona != "You are a Go expert." {
+		t.Errorf("Bot.Persona = %q, want 'You are a Go expert.'", cfg.Bot.Persona)
+	}
+}
+
+func TestBotConfig_Nil_ByDefault(t *testing.T) {
+	// A config file without a bot: block should have nil Bot.
+	cfg := DefaultConfig()
+	if cfg.Bot != nil {
+		t.Errorf("DefaultConfig().Bot = %v, want nil", cfg.Bot)
+	}
+}
+
 func TestLoad(t *testing.T) {
 	t.Run("MissingFile", func(t *testing.T) {
 		config, err := Load("/nonexistent/path/config.yaml")

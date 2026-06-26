@@ -614,6 +614,17 @@ func New(cfg *config.Config, opts ...Option) (*Pilot, error) {
 			}
 		}
 
+		var tgBotCfg *comms.BotConfig
+		if cfg.Bot != nil {
+			tgBotCfg = &comms.BotConfig{
+				Enabled:     cfg.Bot.Enabled,
+				Model:       cfg.Bot.Model,
+				AnswerModel: cfg.Bot.AnswerModel,
+				APIKey:      cfg.Bot.APIKey,
+				Persona:     cfg.Bot.Persona,
+			}
+		}
+
 		tgCommsHandler := comms.BuildHandler(comms.HandlerDeps{
 			Messenger:       tgMessenger,
 			Runner:          p.telegramRunner,
@@ -621,6 +632,7 @@ func New(cfg *config.Config, opts ...Option) (*Pilot, error) {
 			ProjectPath:     projectPath,
 			RateLimit:       cfg.Adapters.Telegram.RateLimit,
 			Classifier:      tgClassifierCfg,
+			Bot:             tgBotCfg,
 			MemberResolver:  tgMemberResolver,
 			Store:           p.store,
 			TaskIDPrefix:    "TG",
@@ -672,12 +684,24 @@ func New(cfg *config.Config, opts ...Option) (*Pilot, error) {
 			}
 		}
 
+		var slackBotCfg *comms.BotConfig
+		if cfg.Bot != nil {
+			slackBotCfg = &comms.BotConfig{
+				Enabled:     cfg.Bot.Enabled,
+				Model:       cfg.Bot.Model,
+				AnswerModel: cfg.Bot.AnswerModel,
+				APIKey:      cfg.Bot.APIKey,
+				Persona:     cfg.Bot.Persona,
+			}
+		}
+
 		slackCommsHandler := comms.BuildHandler(comms.HandlerDeps{
 			Messenger:       slackMessenger,
 			Runner:          p.slackRunner,
 			Projects:        config.NewSlackProjectSource(cfg),
 			ProjectPath:     projectPath,
 			Classifier:      slackClassifierCfg,
+			Bot:             slackBotCfg,
 			MemberResolver:  slackMemberResolver,
 			Store:           p.store,
 			TaskIDPrefix:    "SLACK",
