@@ -617,11 +617,22 @@ func New(cfg *config.Config, opts ...Option) (*Pilot, error) {
 		var tgBotCfg *comms.BotConfig
 		if cfg.Bot != nil {
 			tgBotCfg = &comms.BotConfig{
-				Enabled:     cfg.Bot.Enabled,
-				Model:       cfg.Bot.Model,
-				AnswerModel: cfg.Bot.AnswerModel,
-				APIKey:      cfg.Bot.APIKey,
-				Persona:     cfg.Bot.Persona,
+				Enabled:      cfg.Bot.Enabled,
+				Model:        cfg.Bot.Model,
+				AnswerModel:  cfg.Bot.AnswerModel,
+				APIKey:       cfg.Bot.APIKey,
+				Persona:      cfg.Bot.Persona,
+				VoiceEnabled: cfg.Bot.Voice.Enabled,
+			}
+		}
+
+		tgRateLimit := cfg.Adapters.Telegram.RateLimit
+		if cfg.Bot != nil && cfg.Bot.Enabled && cfg.Bot.RateLimit != nil {
+			tgRateLimit = &comms.RateLimitConfig{
+				Enabled:           cfg.Bot.RateLimit.Enabled,
+				MessagesPerMinute: cfg.Bot.RateLimit.MessagesPerMinute,
+				TasksPerHour:      cfg.Bot.RateLimit.TasksPerHour,
+				BurstSize:         cfg.Bot.RateLimit.BurstSize,
 			}
 		}
 
@@ -630,7 +641,7 @@ func New(cfg *config.Config, opts ...Option) (*Pilot, error) {
 			Runner:          p.telegramRunner,
 			Projects:        config.NewProjectSource(cfg),
 			ProjectPath:     projectPath,
-			RateLimit:       cfg.Adapters.Telegram.RateLimit,
+			RateLimit:       tgRateLimit,
 			Classifier:      tgClassifierCfg,
 			Bot:             tgBotCfg,
 			MemberResolver:  tgMemberResolver,
@@ -687,11 +698,22 @@ func New(cfg *config.Config, opts ...Option) (*Pilot, error) {
 		var slackBotCfg *comms.BotConfig
 		if cfg.Bot != nil {
 			slackBotCfg = &comms.BotConfig{
-				Enabled:     cfg.Bot.Enabled,
-				Model:       cfg.Bot.Model,
-				AnswerModel: cfg.Bot.AnswerModel,
-				APIKey:      cfg.Bot.APIKey,
-				Persona:     cfg.Bot.Persona,
+				Enabled:      cfg.Bot.Enabled,
+				Model:        cfg.Bot.Model,
+				AnswerModel:  cfg.Bot.AnswerModel,
+				APIKey:       cfg.Bot.APIKey,
+				Persona:      cfg.Bot.Persona,
+				VoiceEnabled: cfg.Bot.Voice.Enabled,
+			}
+		}
+
+		var slackRateLimit *comms.RateLimitConfig
+		if cfg.Bot != nil && cfg.Bot.Enabled && cfg.Bot.RateLimit != nil {
+			slackRateLimit = &comms.RateLimitConfig{
+				Enabled:           cfg.Bot.RateLimit.Enabled,
+				MessagesPerMinute: cfg.Bot.RateLimit.MessagesPerMinute,
+				TasksPerHour:      cfg.Bot.RateLimit.TasksPerHour,
+				BurstSize:         cfg.Bot.RateLimit.BurstSize,
 			}
 		}
 
@@ -700,6 +722,7 @@ func New(cfg *config.Config, opts ...Option) (*Pilot, error) {
 			Runner:          p.slackRunner,
 			Projects:        config.NewSlackProjectSource(cfg),
 			ProjectPath:     projectPath,
+			RateLimit:       slackRateLimit,
 			Classifier:      slackClassifierCfg,
 			Bot:             slackBotCfg,
 			MemberResolver:  slackMemberResolver,
