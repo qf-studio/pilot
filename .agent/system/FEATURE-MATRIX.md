@@ -1,6 +1,6 @@
 # Pilot Feature Matrix
 
-**Last Updated:** 2026-06-26 (v2.151.0)
+**Last Updated:** 2026-06-25 (v2.151.0)
 
 ## Legend
 
@@ -164,9 +164,7 @@
 | Comms intent consolidation | ✅ | comms | - | - | Conversation store + LLM classifier consolidated into intent package (v2.25.0, PR #1789) |
 | Comms main.go wiring | ✅ | main | - | - | Updated main.go wiring for unified comms.Handler (v2.25.0, PR #1775) |
 | Comms BuildHandler factory | ✅ | comms | - | `llm_classifier` under slack/discord | Single assembly point for comms.HandlerConfig; all 5 adapter call sites route through it; Slack/Discord/gateway reach classifier parity with Telegram (v2.193.0, PR #3645) |
-| Bot module P1 — BotConfig | ✅ | config/comms | - | `bot:` | Root-level BotConfig struct with enabled/model/answer_model/api_key/persona; YAML round-trip test (v2.195.0, GH-3667) |
-| Bot module P2 — Responder + fast chat | ✅ | comms | - | `bot.enabled` | Responder wrapping llm.Client; handleChat/handleGreeting bypass executor; ~1-2s vs 15-30s (v2.196.0, GH-3668) |
-| Bot module P3 — grounded Q&A retrieval | ✅ | comms | - | `bot.retrieval.enabled` | Bounded filepath.WalkDir retrieval + LLM answer for code questions; ~2-4s; too-broad questions fall back to executor (v2.197.0, GH-3671) |
+| Bot Module P4 — issue intake | ✅ | comms, adapters/github | - | `bot.issue_intake` | NL + `/draft-issue` → LLM drafts conventional-commit title + body → creates `pilot`-labeled GitHub issue (GH-3672) |
 
 ## Alerts & Monitoring
 

@@ -24,6 +24,7 @@ type CommandHandler struct {
 	stopTaskFunc       func(ctx context.Context, contextID string) error
 	listTasksFunc      func() string
 	briefGeneratorFunc func(ctx context.Context, contextID string) error // Platform-specific brief generation
+	issueIntakeFunc    func(ctx context.Context, contextID, text string) // Issue intake from /draft-issue
 }
 
 // NewCommandHandler creates a command handler with messenger and optional memory store.
@@ -77,6 +78,11 @@ func (c *CommandHandler) SetListTasksFunc(f func() string) {
 // SetBriefGeneratorFunc sets the brief generator function (platform-specific).
 func (c *CommandHandler) SetBriefGeneratorFunc(f func(ctx context.Context, contextID string) error) {
 	c.briefGeneratorFunc = f
+}
+
+// SetIssueIntakeFunc sets the issue intake function invoked by /draft-issue.
+func (c *CommandHandler) SetIssueIntakeFunc(f func(ctx context.Context, contextID, text string)) {
+	c.issueIntakeFunc = f
 }
 
 // HandleCommand routes slash commands to their handlers.
@@ -138,6 +144,12 @@ func (c *CommandHandler) HandleCommand(ctx context.Context, contextID, text stri
 		} else {
 			_ = c.messenger.SendText(ctx, contextID, "Usage: /pr <task description>\nForces PR creation even for ephemeral-looking tasks.")
 		}
+	case "/draft-issue":
+		if len(args) > 0 {
+			c.handleDraftIssue(ctx, contextID, strings.Join(args, " "))
+		} else {
+			_ = c.messenger.SendText(ctx, contextID, "Usage: /draft-issue <description>\nDrafts and creates a pilot-labeled GitHub issue.")
+		}
 	default:
 		_ = c.messenger.SendText(ctx, contextID, "Unknown command. Use /help for available commands.")
 	}
@@ -166,6 +178,7 @@ Task Commands
 /stop — Stop running task
 /nopr <task> — Execute without creating PR
 /pr <task> — Force PR creation
+/draft-issue <desc> — Create a pilot-labeled GitHub issue
 
 Quick Patterns
 • 07 or task 07 — Run TASK-07
@@ -576,5 +589,15 @@ func (c *CommandHandler) handleForcePR(ctx context.Context, contextID, descripti
 	} else {
 		_ = c.messenger.SendText(ctx, contextID,
 			fmt.Sprintf("🚀 Executing with PR: %s", TruncateText(description, 50)))
+	}
+}
+
+// handleDraftIssue creates a pilot-labeled GitHub issue from a freeform description.
+func (c *CommandHandler) handleDraftIssue(ctx context.Context, contextID, description string) {
+	if c.issueIntakeFunc != nil {
+		c.issueIntakeFunc(ctx, contextID, description)
+	} else {
+		_ = c.messenger.SendText(ctx, contextID,
+			"Issue intake is not available. Ensure bot and GitHub adapter are configured.")
 	}
 }

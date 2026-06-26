@@ -17,6 +17,7 @@ const (
 	IntentQuestion    Intent = "question"
 	IntentChat        Intent = "chat"
 	IntentTask        Intent = "task"
+	IntentIssueIntake Intent = "issue_intake"
 )
 
 // Common greeting patterns
@@ -55,6 +56,28 @@ var chatPatterns = []string{
 	"what do you think", "opinion on", "thoughts about",
 	"do you recommend", "should i", "is it better",
 	"discuss", "let's talk about", "lets talk about",
+}
+
+// Issue intake patterns - requests to file a new GitHub issue via the bot.
+var issueIntakePatterns = []string{
+	"create an issue", "create issue", "create a ticket", "create ticket",
+	"file an issue", "file a ticket", "file issue", "file ticket",
+	"open an issue", "open a ticket", "open issue", "open ticket",
+	"raise an issue", "raise a ticket", "raise issue",
+	"log a ticket", "log an issue", "log ticket", "log issue",
+	"report an issue", "report a bug", "submit a ticket",
+	"draft an issue", "draft a ticket", "new issue for", "new ticket for",
+}
+
+// IsIssueIntakeRequest reports whether text is asking to file a new GitHub issue.
+func IsIssueIntakeRequest(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	for _, p := range issueIntakePatterns {
+		if strings.Contains(lower, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // Operational patterns - queries about live daemon/queue state.
@@ -119,7 +142,12 @@ func DetectIntent(message string) Intent {
 		return IntentPlanning
 	}
 
-	// 5. Check for chat/conversational (opinion-seeking, no action words)
+	// 5. Check for issue intake requests before chat/task (more specific).
+	if IsIssueIntakeRequest(msg) {
+		return IntentIssueIntake
+	}
+
+	// 5.1 Check for chat/conversational (opinion-seeking, no action words)
 	// Checked before questions because "what do you think" starts with "what"
 	if IsChat(msg) && !ContainsActionWord(msg) {
 		return IntentChat
@@ -392,6 +420,8 @@ func (i Intent) Description() string {
 		return "Chat"
 	case IntentTask:
 		return "Task"
+	case IntentIssueIntake:
+		return "IssueIntake"
 	default:
 		return "Unknown"
 	}

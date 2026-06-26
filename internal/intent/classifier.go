@@ -69,10 +69,13 @@ func (c *AnthropicClient) Classify(ctx context.Context, messages []ConversationM
 - question: Questions about code/project (e.g., "what files handle auth?", "how does X work?")
 - chat: Conversational/opinion-seeking (e.g., "what do you think about...", "should I...")
 - task: Requests to make changes (e.g., "add a button", "fix the bug", "implement feature X")
+- issue_intake: Requests to file a new GitHub issue (e.g., "create an issue to...", "file a ticket for...", "open an issue about...", "raise a ticket")
 
 IMPORTANT:
 - "What do you think about adding X?" is CHAT (asking opinion), not TASK
 - "Add X to the project" is TASK (direct instruction)
+- "Create an issue to add rate limiting" is ISSUE_INTAKE (file a ticket), not TASK
+- "File a ticket for the login bug" is ISSUE_INTAKE, not TASK
 - Questions that don't require code changes are QUESTION
 - "What's in the queue?" or "anything running?" are OPERATIONAL (live state), not QUESTION
 - Be conservative: when in doubt between task and chat, prefer chat
@@ -174,6 +177,8 @@ Respond with JSON only: {"intent": "...", "confidence": 0.0-1.0}`
 		return IntentChat, nil
 	case "task":
 		return IntentTask, nil
+	case "issue_intake":
+		return IntentIssueIntake, nil
 	default:
 		return IntentTask, nil // Default fallback
 	}
