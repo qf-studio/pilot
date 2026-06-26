@@ -112,6 +112,38 @@ func TestDraftIssue_CallsLLMAndParsesJSON(t *testing.T) {
 	}
 }
 
+// TestDraftIssue_PersonaInSystemPrompt verifies that a set persona is included.
+func TestDraftIssue_PersonaInSystemPrompt(t *testing.T) {
+	reply := `{"title":"feat(auth): add OAuth","body":"body","labels":["pilot"]}`
+	r, a := newMockResponder(reply, "You are an Acme platform expert.")
+	_, err := r.DraftIssue(context.Background(), nil, "add OAuth login")
+	if err != nil {
+		t.Fatalf("DraftIssue error: %v", err)
+	}
+	if len(a.calls) == 0 {
+		t.Fatal("expected LLM call")
+	}
+	if !strings.Contains(a.calls[0].system, "You are an Acme platform expert.") {
+		t.Errorf("persona not in DraftIssue system prompt; system = %q", a.calls[0].system)
+	}
+}
+
+// TestDraftIssue_NoPersonaDefaultPrompt verifies the default identity when no persona is set.
+func TestDraftIssue_NoPersonaDefaultPrompt(t *testing.T) {
+	reply := `{"title":"fix(db): handle nil pointer","body":"body","labels":["pilot"]}`
+	r, a := newMockResponder(reply, "")
+	_, err := r.DraftIssue(context.Background(), nil, "fix nil pointer in db layer")
+	if err != nil {
+		t.Fatalf("DraftIssue error: %v", err)
+	}
+	if len(a.calls) == 0 {
+		t.Fatal("expected LLM call")
+	}
+	if !strings.Contains(a.calls[0].system, "Pilot") {
+		t.Errorf("expected 'Pilot' identity in default DraftIssue system prompt; got %q", a.calls[0].system)
+	}
+}
+
 // TestDraftIssue_LLMError propagates errors.
 func TestDraftIssue_LLMError(t *testing.T) {
 	a := &mockAnswerer{err: errors.New("timeout")}

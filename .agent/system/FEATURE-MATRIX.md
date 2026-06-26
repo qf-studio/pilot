@@ -1,6 +1,6 @@
 # Pilot Feature Matrix
 
-**Last Updated:** 2026-06-26 (v2.151.0)
+**Last Updated:** 2026-06-25 (v2.151.0)
 
 ## Legend
 
@@ -164,7 +164,11 @@
 | Comms intent consolidation | ✅ | comms | - | - | Conversation store + LLM classifier consolidated into intent package (v2.25.0, PR #1789) |
 | Comms main.go wiring | ✅ | main | - | - | Updated main.go wiring for unified comms.Handler (v2.25.0, PR #1775) |
 | Comms BuildHandler factory | ✅ | comms | - | `llm_classifier` under slack/discord | Single assembly point for comms.HandlerConfig; all 5 adapter call sites route through it; Slack/Discord/gateway reach classifier parity with Telegram (v2.193.0, PR #3645) |
-| Bot Module P4 — issue intake | ✅ | comms, adapters/github | - | `bot.issue_intake` | NL + `/draft-issue` → LLM drafts conventional-commit title + body → creates `pilot`-labeled GitHub issue (GH-3672) |
+| Bot direct-LLM answer primitive | ✅ | internal/llm | - | `bot.api_key` | `llm.Client.Answer()` — direct Anthropic API, no executor spawn (~1-2s) (v2.194.2, GH-3665) |
+| Bot Responder + fast chat | ✅ | comms | - | `bot.enabled`, `bot.model` | `comms.Responder`, `handleGreeting`/`handleChat` fast path; executor fallback when disabled (v2.194.2, GH-3665) |
+| Bot grounded Q&A retrieval | ✅ | comms | - | `bot.retrieval` | `Responder.Answer()` + bounded file retrieval; falls back to executor for too-broad questions (v2.194.2, GH-3671) |
+| Bot conversational issue intake | ✅ | comms | - | `bot.enabled`, GitHub adapter | `Responder.DraftIssue()` + `handleIssueIntake`; creates GitHub issue with `pilot` label (v2.194.2, GH-3691) |
+| Bot persona + voice scaffold | ✅ | comms, config | - | `bot.persona`, `bot.voice.enabled` | Persona in Chat/Answer/DraftIssue; VoiceText seam in HandleMessage; fully commented example config (v2.194.2, GH-3673) |
 
 ## Alerts & Monitoring
 

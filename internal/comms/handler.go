@@ -177,7 +177,12 @@ func (h *Handler) HandleMessage(ctx context.Context, msg *IncomingMessage) {
 	}
 
 	contextID := msg.ContextID
+	// Voice messages arrive with Text="" and VoiceText=<transcript>.
+	// Route them through the same intent→responder path as regular text.
 	text := msg.Text
+	if text == "" && msg.VoiceText != "" {
+		text = msg.VoiceText
+	}
 
 	// Track sender for RBAC
 	if msg.SenderID != "" {

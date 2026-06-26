@@ -65,10 +65,15 @@ func parseIssueDraft(raw string) (IssueDraft, error) {
 	return IssueDraft{Title: d.Title, Body: d.Body, Labels: d.Labels}, nil
 }
 
-// DraftIssue uses the LLM to draft a GitHub issue from a freeform message.
-// The returned IssueDraft always includes the "pilot" label.
-func (r *Responder) DraftIssue(ctx context.Context, history []intent.ConversationMessage, msg string) (IssueDraft, error) {
-	system := `You are Pilot, a developer assistant. Draft a GitHub issue from the user's description.
+// draftIssueSystemPrompt returns the system prompt for DraftIssue, honoring r.persona.
+func (r *Responder) draftIssueSystemPrompt() string {
+	var header string
+	if r.persona != "" {
+		header = r.persona + "\n\n"
+	} else {
+		header = "You are Pilot, a developer assistant. "
+	}
+	return header + `Draft a GitHub issue from the user's description.
 
 Return ONLY a JSON object — no text before or after it:
 {
@@ -82,8 +87,12 @@ RULES for the title:
 - Format: type(scope): description  — e.g. "feat(gateway): add rate limiting"
 - scope is the affected subsystem (e.g. "gateway", "auth", "cli", "comms")
 - description is lowercase, imperative, no period at end`
+}
 
-	raw, err := r.client.Answer(ctx, r.answerModel, system, history, msg)
+// DraftIssue uses the LLM to draft a GitHub issue from a freeform message.
+// The returned IssueDraft always includes the "pilot" label.
+func (r *Responder) DraftIssue(ctx context.Context, history []intent.ConversationMessage, msg string) (IssueDraft, error) {
+	raw, err := r.client.Answer(ctx, r.answerModel, r.draftIssueSystemPrompt(), history, msg)
 	if err != nil {
 		return IssueDraft{}, fmt.Errorf("LLM draft failed: %w", err)
 	}
