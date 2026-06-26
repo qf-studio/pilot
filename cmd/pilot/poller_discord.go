@@ -33,6 +33,17 @@ func discordPollerRegistration() PollerRegistration {
 				}
 			}
 
+			var discordBotCfg *comms.BotConfig
+			if deps.Cfg.Bot != nil {
+				discordBotCfg = &comms.BotConfig{
+					Enabled:     deps.Cfg.Bot.Enabled,
+					Model:       deps.Cfg.Bot.Model,
+					AnswerModel: deps.Cfg.Bot.AnswerModel,
+					APIKey:      deps.Cfg.Bot.APIKey,
+					Persona:     deps.Cfg.Bot.Persona,
+				}
+			}
+
 			// discordChatHandler is the core.MessageHandler: it shims SDK events
 			// into comms.IncomingMessage and forwards them to discordCommsHandler.
 			// SetCommsHandler is called after the bridge messenger is created to
@@ -58,6 +69,7 @@ func discordPollerRegistration() PollerRegistration {
 				ProjectPath:     deps.ProjectPath,
 				RateLimit:       discordRateLimitToComms(discordCfg.RateLimit),
 				Classifier:      discordClassifierCfg,
+				Bot:             discordBotCfg,
 				Store:           deps.Store,
 				TaskIDPrefix:    "DISCORD",
 				ExecutorBackend: deps.Cfg.Executor,
