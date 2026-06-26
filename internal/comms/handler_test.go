@@ -1106,3 +1106,42 @@ func TestHandleMessage_UnknownCommand_RepliesUnknown(t *testing.T) {
 		t.Errorf("expected 'Unknown command' reply; got: %v", texts)
 	}
 }
+
+// TestHandleMessage_VoiceTextFallback verifies that a message with empty Text but
+// populated VoiceText routes through intent dispatch using the voice transcript.
+// This is the seam that makes transcribed voice flow through the same
+// intent→responder path as regular text (bot module P5 / TASK-377).
+func TestHandleMessage_VoiceTextFallback(t *testing.T) {
+	m := &handlerMock{}
+	// Use a persona so Responder.Greeting() produces identifiable text,
+	// distinguishing the responder path from the no-responder fallback.
+	r, _ := newMockResponder("", "Voice-test persona.")
+	h := NewHandler(&HandlerConfig{
+		Messenger:    m,
+		Responder:    r,
+		TaskIDPrefix: "TEST",
+	})
+
+	h.HandleMessage(context.Background(), &IncomingMessage{
+		ContextID: "ch1",
+		SenderID:  "u1",
+		Text:      "",
+		VoiceText: "hello pilot",
+	})
+
+	texts := m.getTexts()
+	if len(texts) == 0 {
+		t.Fatal("expected a reply for voice message")
+	}
+	// "hello pilot" → IntentGreeting → Responder.Greeting() → persona-formatted reply.
+	// The persona text proves the Responder path (not the static fallback) was taken.
+	found := false
+	for _, st := range texts {
+		if st.contextID == "ch1" && strings.Contains(st.text, "Voice-test persona.") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("VoiceText not routed through greeting intent via Responder; got texts: %v", texts)
+	}
+}

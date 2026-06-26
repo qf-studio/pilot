@@ -15,19 +15,43 @@ auth:
   # ANTHROPIC_API_KEY env var enables Claude API features (Haiku subtask parsing, etc.)
 
 # Conversational Bot (GH-3665+)
-# When enabled, chat and greeting intents are answered directly via the Anthropic API
-# (~1-2s) instead of the full Claude Code executor (15-30s). Requires ANTHROPIC_API_KEY
-# or an explicit api_key. Leave disabled to keep existing executor-only behavior.
+# When enabled, chat / greeting / Q&A / issue-intake intents are answered directly
+# via the Anthropic API (~1-2s) instead of the full Claude Code executor (15-30s).
+# Requires ANTHROPIC_API_KEY or an explicit api_key.
+# Leave disabled (default) to keep the existing executor-only behavior unchanged.
 # bot:
 #   enabled: false
-#   model: "claude-haiku-4-5-20251001"   # Used for chat; Haiku is fast and cheap
-#   answer_model: ""                     # Override for answer calls (defaults to model)
-#   api_key: ""                          # Fallback: uses ANTHROPIC_API_KEY env var
-#   persona: ""                          # Optional voice/persona injected into system prompt
-#                                        # e.g. "You are a friendly Go development assistant."
-#   retrieval: {}                        # Reserved for TASK-375 (grounded Q&A retrieval)
-#   issue_intake: {}                     # Reserved for TASK-376 (conversational issue intake)
-#   voice: {}                            # Reserved for TASK-377 (persona/voice scaffold)
+#
+#   model: "claude-haiku-4-5-20251001"   # Model for chat/intake; Haiku is fast & cheap
+#   answer_model: ""                     # Override for Q&A calls (defaults to model)
+#   api_key: ""                          # Explicit key; falls back to ANTHROPIC_API_KEY env var
+#
+#   # Persona: injected verbatim at the top of every system prompt
+#   # (Chat, Answer, DraftIssue). Leave blank for the built-in "You are Pilot…" default.
+#   # Example: "You are a friendly Go development assistant for the Acme team."
+#   persona: ""
+#
+#   # Bounded file-retrieval for grounded codebase Q&A (~2-4s, cites real file paths).
+#   # Questions too broad to answer with local context fall through to the executor.
+#   retrieval:
+#     enabled: false
+#     max_files: 8        # Max source files fed to the LLM per question
+#     max_bytes: 24000    # Max total bytes of file content per question
+#
+#   # Conversational issue intake: freeform "I need a task for X" → structured GitHub issue.
+#   # The drafted issue always receives the "pilot" label so the daemon picks it up.
+#   issue_intake:
+#     auto_label_pilot: true
+#
+#   # Voice scaffold: when enabled, transcribed voice messages (VoiceText field populated
+#   # by the adapter's transcription middleware) are routed through the same
+#   # intent→responder path as regular text. Actual call/audio wiring is deferred.
+#   voice:
+#     enabled: false
+#
+#   # Rate limiting: bot LLM calls are bounded by the adapter-level rate_limit config
+#   # (adapters.telegram.rate_limit / adapters.slack.rate_limit). The shared comms.Handler
+#   # applies AllowMessage() before every dispatch, so all bot paths are already capped.
 
 # Adapters
 adapters:

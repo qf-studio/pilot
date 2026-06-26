@@ -80,8 +80,10 @@ type BotConfig struct {
 	Retrieval BotRetrievalConfig `yaml:"retrieval,omitempty"`
 	// Conversational issue intake (TASK-376 / GH-3672).
 	IssueIntake BotIssueIntakeConfig `yaml:"issue_intake,omitempty"`
-	// Reserved for future phases (TASK-377).
-	Voice struct{} `yaml:"voice,omitempty"`
+	// Voice scaffold: when enabled, transcribed VoiceText flows through the
+	// same intent→responder path as text messages (TASK-377).
+	// Actual call/audio transport is deferred to a future phase.
+	Voice BotVoiceConfig `yaml:"voice,omitempty"`
 }
 
 // BotRetrievalConfig controls bounded file-retrieval for grounded Q&A (TASK-375).
@@ -100,6 +102,13 @@ type BotIssueIntakeConfig struct {
 	AutoLabelPilot bool `yaml:"auto_label_pilot"`
 }
 
+// BotVoiceConfig scaffolds future voice/call transport for the bot module (TASK-377).
+// When Enabled is true, messages with an empty Text but populated VoiceText
+// (i.e. transcribed voice) are routed through the same intent→responder path
+// as regular text messages. Actual call/audio wiring is deferred.
+type BotVoiceConfig struct {
+	Enabled bool `yaml:"enabled"`
+}
 
 // AdaptersConfig holds configuration for external service adapters.
 // Each adapter connects Pilot to a different service (Linear, Slack, GitHub, GitLab, etc.).

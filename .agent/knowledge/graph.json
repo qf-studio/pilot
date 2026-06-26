@@ -656,6 +656,19 @@
         "incident": "2026-06-26: bot-module epic #3665 merged children #3670 (03:04) + #3674 (03:09) during its run, then ended ('completed but no changes made, 44m') leaving green/CLEAN #3678/#3679 unmerged with no autopilot review; epic stuck OPEN+pilot-in-progress, gating P3/P4 (#3671/#3672). Cleared by manual merge of #3678, close of conflicted #3679 (remainder re-dispatched as #3681), and manual close of #3665.",
         "file": ".agent/knowledge/memories/pitfalls/bug_autopilot_epic_orphan_child_prs.md",
         "origin_task": "TASK-373"
+      },
+      "mem-038": {
+        "type": "pattern",
+        "summary": "Bot module dual-path: fast conversational path (~1-2s, direct LLM via Responder) vs executor path (~15-30s, Claude Code worktree). Intents: greeting/chat/question/issue-intake → Responder; task/research/planning → executor. Fallback guarantee: Responder nil (bot disabled) → identical-to-before executor path. Rate limit via AllowMessage() before all dispatch. Voice seam: VoiceText merged into text when Text empty. Test-at-the-seam lesson: tests must cross adapter→comms boundary (ref mem-036).",
+        "concepts": [
+          "comms-intent-dispatch",
+          "executor",
+          "testing"
+        ],
+        "confidence": 1.0,
+        "created": "2026-06-26",
+        "file": ".agent/knowledge/memories/patterns/pattern_fast_conversational_path_vs_executor.md",
+        "origin_task": "TASK-377"
       }
     }
   },
@@ -864,6 +877,16 @@
       "from": "mem-037",
       "to": "epic-decomposition",
       "type": "relates-to"
+    },
+    {
+      "from": "mem-038",
+      "to": "executor",
+      "type": "describes"
+    },
+    {
+      "from": "mem-038",
+      "to": "mem-036",
+      "type": "references"
     }
   ]
 }
