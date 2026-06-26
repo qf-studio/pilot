@@ -55,6 +55,7 @@ type Config struct {
 	Webhooks       *webhooks.Config        `yaml:"webhooks"`
 	TeamID         string                  `yaml:"team_id"` // Optional team ID for scoping execution
 	Team           *TeamConfig             `yaml:"team"`
+	Bot            *BotConfig              `yaml:"bot"`
 }
 
 // TeamConfig holds settings for team-based project access control (GH-635).
@@ -63,6 +64,22 @@ type TeamConfig struct {
 	Enabled     bool   `yaml:"enabled"`
 	TeamID      string `yaml:"team_id"`      // Team ID or name to scope execution
 	MemberEmail string `yaml:"member_email"` // Email of the member executing tasks
+}
+
+// BotConfig holds configuration for the conversational bot module (GH-3665+).
+// When enabled, chat and greeting intents bypass the Claude Code executor and are
+// answered directly via the Anthropic API (~1–2s vs 15–30s for the executor path).
+type BotConfig struct {
+	Enabled     bool   `yaml:"enabled"`
+	Model       string `yaml:"model"`        // Default: claude-haiku-4-5-20251001
+	AnswerModel string `yaml:"answer_model"` // Defaults to Model when empty
+	APIKey      string `yaml:"api_key"`
+	Persona     string `yaml:"persona"` // Injected into the system prompt
+
+	// Reserved for future phases (TASK-375/376/377); parsed but unused.
+	Retrieval   struct{} `yaml:"retrieval,omitempty"`
+	IssueIntake struct{} `yaml:"issue_intake,omitempty"`
+	Voice       struct{} `yaml:"voice,omitempty"`
 }
 
 // AdaptersConfig holds configuration for external service adapters.

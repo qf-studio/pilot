@@ -1881,6 +1881,17 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 			}
 		}
 
+		var tgBotCfg *comms.BotConfig
+		if cfg.Bot != nil {
+			tgBotCfg = &comms.BotConfig{
+				Enabled:     cfg.Bot.Enabled,
+				Model:       cfg.Bot.Model,
+				AnswerModel: cfg.Bot.AnswerModel,
+				APIKey:      cfg.Bot.APIKey,
+				Persona:     cfg.Bot.Persona,
+			}
+		}
+
 		tgCommsHandler := comms.BuildHandler(comms.HandlerDeps{
 			Messenger:       tgMessenger,
 			Runner:          runner,
@@ -1888,6 +1899,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 			ProjectPath:     projectPath,
 			RateLimit:       cfg.Adapters.Telegram.RateLimit,
 			Classifier:      tgClassifierCfg,
+			Bot:             tgBotCfg,
 			MemberResolver:  tgMemberResolver,
 			Store:           store,
 			TaskIDPrefix:    "TG",
@@ -2615,12 +2627,24 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 			}
 		}
 
+		var slackBotCfg *comms.BotConfig
+		if cfg.Bot != nil {
+			slackBotCfg = &comms.BotConfig{
+				Enabled:     cfg.Bot.Enabled,
+				Model:       cfg.Bot.Model,
+				AnswerModel: cfg.Bot.AnswerModel,
+				APIKey:      cfg.Bot.APIKey,
+				Persona:     cfg.Bot.Persona,
+			}
+		}
+
 		slackCommsHandler := comms.BuildHandler(comms.HandlerDeps{
 			Messenger:       sdkshim.MessengerToBridge(slackBridge),
 			Runner:          runner,
 			Projects:        config.NewSlackProjectSource(cfg),
 			ProjectPath:     projectPath,
 			Classifier:      slackClassifierCfg,
+			Bot:             slackBotCfg,
 			MemberResolver:  slackMemberResolver,
 			Store:           store,
 			TaskIDPrefix:    "SLACK",

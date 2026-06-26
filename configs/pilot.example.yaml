@@ -14,6 +14,18 @@ auth:
   # token: "sk-ant-..."  # Required if type is "api-token"
   # ANTHROPIC_API_KEY env var enables Claude API features (Haiku subtask parsing, etc.)
 
+# Conversational Bot (GH-3665+)
+# When enabled, chat and greeting intents are answered directly via the Anthropic API
+# (~1-2s) instead of the full Claude Code executor (15-30s). Requires ANTHROPIC_API_KEY
+# or an explicit api_key. Leave disabled to keep existing executor-only behavior.
+# bot:
+#   enabled: false
+#   model: "claude-haiku-4-5-20251001"   # Used for chat; Haiku is fast and cheap
+#   answer_model: ""                     # Override for answer calls (defaults to model)
+#   api_key: ""                          # Fallback: uses ANTHROPIC_API_KEY env var
+#   persona: ""                          # Optional voice/persona injected into system prompt
+#                                        # e.g. "You are a friendly Go development assistant."
+
 # Adapters
 adapters:
   # Telegram - Chat-based task execution
