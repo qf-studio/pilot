@@ -55,6 +55,7 @@ type Config struct {
 	Webhooks       *webhooks.Config        `yaml:"webhooks"`
 	TeamID         string                  `yaml:"team_id"` // Optional team ID for scoping execution
 	Team           *TeamConfig             `yaml:"team"`
+	Bot            *BotConfig              `yaml:"bot"`
 }
 
 // TeamConfig holds settings for team-based project access control (GH-635).
@@ -63,6 +64,35 @@ type TeamConfig struct {
 	Enabled     bool   `yaml:"enabled"`
 	TeamID      string `yaml:"team_id"`      // Team ID or name to scope execution
 	MemberEmail string `yaml:"member_email"` // Email of the member executing tasks
+}
+
+// BotConfig holds settings for the Pilot bot module (GH-3665).
+// When enabled, the bot can answer questions, handle issue intake, and respond via comms.
+type BotConfig struct {
+	Enabled     bool               `yaml:"enabled"`
+	Model       string             `yaml:"model"`        // Default: claude-haiku-4-5-20251001
+	AnswerModel string             `yaml:"answer_model"` // Override model for answer calls; falls back to Model
+	APIKey      string             `yaml:"api_key"`
+	Persona     string             `yaml:"persona"`
+	Retrieval   BotRetrievalConfig `yaml:"retrieval"`    // Reserved for TASK-375
+	IssueIntake BotIssueIntakeConfig `yaml:"issue_intake"` // Reserved for TASK-376
+	Voice       BotVoiceConfig     `yaml:"voice"`        // Reserved for TASK-377
+}
+
+// BotRetrievalConfig is reserved for TASK-375 (grounded Q&A retrieval).
+type BotRetrievalConfig struct{}
+
+// BotIssueIntakeConfig is reserved for TASK-376 (conversational issue intake).
+type BotIssueIntakeConfig struct{}
+
+// BotVoiceConfig is reserved for TASK-377 (persona and voice scaffold).
+type BotVoiceConfig struct{}
+
+// DefaultBotConfig returns a BotConfig with sensible defaults.
+func DefaultBotConfig() *BotConfig {
+	return &BotConfig{
+		Model: "claude-haiku-4-5-20251001",
+	}
 }
 
 // AdaptersConfig holds configuration for external service adapters.
@@ -467,6 +497,11 @@ func Load(path string) (*Config, error) {
 	}
 	for _, project := range config.Projects {
 		project.Path = expandPath(project.Path)
+	}
+
+	// Apply bot model default when bot is configured without an explicit model.
+	if config.Bot != nil && config.Bot.Model == "" {
+		config.Bot.Model = "claude-haiku-4-5-20251001"
 	}
 
 	// Log deprecation warnings
