@@ -1849,6 +1849,31 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 		})
 	}
 
+	// Build a shared IssueCreator for comms.Handler (bot /draft-issue + NL intake).
+	// Nil when GitHub is not configured — Handler degrades gracefully.
+	var commsIssueCreator comms.IssueCreator
+	if cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.Enabled && cfg.Adapters.GitHub.Repo != "" {
+		ghToken := cfg.Adapters.GitHub.Token
+		if ghToken == "" {
+			ghToken = os.Getenv("GITHUB_TOKEN")
+		}
+		if ghToken != "" {
+			repoParts := strings.SplitN(cfg.Adapters.GitHub.Repo, "/", 2)
+			if len(repoParts) == 2 {
+				ghIssueClient := github.NewClient(ghToken)
+				commsIssueCreator = github.NewIssueCreator(
+					ghIssueClient,
+					github.AllowAllIssueRepos(),
+					github.IssueCreatorEntry{
+						ProjectPath: cfg.Adapters.GitHub.ProjectPath,
+						Owner:       repoParts[0],
+						Repo:        repoParts[1],
+					},
+				)
+			}
+		}
+	}
+
 	// Initialize Telegram handler if enabled
 	var tgHandler *telegram.Handler
 	if hasTelegram {
@@ -1907,6 +1932,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 			Bot:             tgBotCfg,
 			MemberResolver:  tgMemberResolver,
 			Store:           store,
+			IssueCreator:    commsIssueCreator,
 			TaskIDPrefix:    "TG",
 			ExecutorBackend: cfg.Executor,
 		})
@@ -2657,6 +2683,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 			Bot:             slackBotCfg,
 			MemberResolver:  slackMemberResolver,
 			Store:           store,
+			IssueCreator:    commsIssueCreator,
 			TaskIDPrefix:    "SLACK",
 			ExecutorBackend: cfg.Executor,
 		})

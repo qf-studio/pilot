@@ -30,6 +30,7 @@ func (m *mockMessenger) SendResult(ctx context.Context, contextID, threadID, tas
 }
 
 func (m *mockMessenger) SendChunked(ctx context.Context, contextID, threadID, content, prefix string) error {
+	m.messages = append(m.messages, content)
 	return nil
 }
 

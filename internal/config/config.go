@@ -78,9 +78,10 @@ type BotConfig struct {
 
 	// Bounded file-retrieval for answering codebase questions (TASK-375).
 	Retrieval BotRetrievalConfig `yaml:"retrieval,omitempty"`
-	// Reserved for future phases (TASK-376/377); parsed but unused.
-	IssueIntake struct{} `yaml:"issue_intake,omitempty"`
-	Voice       struct{} `yaml:"voice,omitempty"`
+	// Conversational issue intake (TASK-376 / GH-3672).
+	IssueIntake BotIssueIntakeConfig `yaml:"issue_intake,omitempty"`
+	// Reserved for future phases (TASK-377).
+	Voice struct{} `yaml:"voice,omitempty"`
 }
 
 // BotRetrievalConfig controls bounded file-retrieval for grounded Q&A (TASK-375).
@@ -90,6 +91,13 @@ type BotRetrievalConfig struct {
 	Enabled  bool `yaml:"enabled"`
 	MaxFiles int  `yaml:"max_files"` // default 8
 	MaxBytes int  `yaml:"max_bytes"` // default 24000
+}
+
+// BotIssueIntakeConfig controls conversational issue intake (TASK-376).
+// When AutoLabelPilot is true (default), drafted issues are tagged "pilot"
+// so the daemon picks them up automatically.
+type BotIssueIntakeConfig struct {
+	AutoLabelPilot bool `yaml:"auto_label_pilot"`
 }
 
 

@@ -108,6 +108,7 @@ type HandlerDeps struct {
 	Bot            *BotConfig
 	MemberResolver MemberResolver
 	Store          *memory.Store
+	IssueCreator   IssueCreator
 	TaskIDPrefix   string
 	// ExecutorBackend is used by BuildClassifier to override the Anthropic model and URL.
 	// May be nil — the factory handles that gracefully.
@@ -131,6 +132,7 @@ func BuildHandler(deps HandlerDeps) *Handler {
 		Responder:      responder,
 		MemberResolver: deps.MemberResolver,
 		Store:          deps.Store,
+		IssueCreator:   deps.IssueCreator,
 		TaskIDPrefix:   deps.TaskIDPrefix,
 	})
 }

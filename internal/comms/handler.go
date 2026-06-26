@@ -36,6 +36,7 @@ type HandlerConfig struct {
 	Responder      *Responder
 	MemberResolver MemberResolver
 	Store          *memory.Store
+	IssueCreator   IssueCreator
 	// TaskIDPrefix is the adapter-specific prefix for task IDs (e.g., "TG", "SLACK").
 	TaskIDPrefix string
 	Log          *slog.Logger
@@ -54,12 +55,14 @@ type Handler struct {
 	responder      *Responder
 	memberResolver MemberResolver
 	store          *memory.Store
+	issueCreator   IssueCreator
 	cmdHandler     *CommandHandler
 	taskIDPrefix   string
 	log            *slog.Logger
 
 	activeProject map[string]string       // contextID -> projectPath
 	pendingTasks  map[string]*PendingTask // contextID -> pending task
+	pendingIssues map[string]*IssueDraft  // contextID -> in-progress issue draft
 	runningTasks  map[string]*RunningTask // contextID -> running task
 	lastSender    map[string]string       // contextID -> senderID
 	mu            sync.Mutex
@@ -95,10 +98,12 @@ func NewHandler(cfg *HandlerConfig) *Handler {
 		responder:      cfg.Responder,
 		memberResolver: cfg.MemberResolver,
 		store:          cfg.Store,
+		issueCreator:   cfg.IssueCreator,
 		taskIDPrefix:   prefix,
 		log:            lg,
 		activeProject:  make(map[string]string),
 		pendingTasks:   make(map[string]*PendingTask),
+		pendingIssues:  make(map[string]*IssueDraft),
 		runningTasks:   make(map[string]*RunningTask),
 		lastSender:     make(map[string]string),
 	}
@@ -138,6 +143,9 @@ func NewHandler(cfg *HandlerConfig) *Handler {
 			return out
 		})
 	}
+	cmd.SetIssueIntakeFunc(func(ctx context.Context, contextID, text string) {
+		h.handleIssueIntake(ctx, contextID, "", text)
+	})
 	h.cmdHandler = cmd
 
 	return h
@@ -230,6 +238,8 @@ func (h *Handler) HandleMessage(ctx context.Context, msg *IncomingMessage) {
 		h.handleChat(ctx, contextID, msg.ThreadID, text)
 	case intent.IntentTask:
 		h.handleTask(ctx, contextID, msg.ThreadID, text, msg.SenderID)
+	case intent.IntentIssueIntake:
+		h.handleIssueIntake(ctx, contextID, msg.ThreadID, text)
 	default:
 		// Unknown intent — clarify rather than auto-creating a task.
 		_ = h.messenger.SendText(ctx, contextID, "I didn't quite catch that — try /help, or rephrase your request.")
@@ -244,6 +254,11 @@ func (h *Handler) detectIntent(ctx context.Context, contextID, text string) inte
 	// Fast path: commands
 	if strings.HasPrefix(text, "/") {
 		return intent.IntentCommand
+	}
+
+	// Fast path: issue intake requests (before operational/question to avoid misclassification).
+	if intent.IsIssueIntakeRequest(text) {
+		return intent.IntentIssueIntake
 	}
 
 	// Fast path: operational queries (live daemon/queue state) — must precede
