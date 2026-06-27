@@ -2,7 +2,7 @@ import { Callout } from 'nextra/components'
 
 # Slack Integration
 
-Pilot sends real-time notifications to Slack channels as it works on issues. It supports progress updates, PR-ready alerts, failure reports, and interactive approval workflows.
+Pilot sends real-time notifications to Slack channels as it works on issues. It supports progress updates, PR-ready alerts, failure reports, and interactive approval workflows. With the [conversational bot](/features/conversational-bot) enabled, Slack also becomes a two-way interface — chat, ask code questions, and file issues by talking to Pilot.
 
 ## Setup
 
@@ -61,6 +61,43 @@ Pilot accepts several channel identifier formats:
 | Channel without `#` | `general` |
 | Channel ID | `C1234567890` |
 | DM channel ID | `D1234567890` |
+
+## Conversational Bot
+
+Beyond notifications, Slack can be a two-way interface. When the [conversational bot](/features/conversational-bot) and the Slack `llm_classifier` are both enabled, natural-language messages are classified by intent and answered on the fast path (~1–2s) instead of always spinning up the executor:
+
+- **Chat & greetings** — direct replies from a fast model
+- **Code questions** — grounded answers from bounded file retrieval
+- **Issue intake** — "create an issue to add a /ping endpoint" → a drafted, `pilot`-labeled GitHub issue the daemon then picks up
+
+```yaml
+# ~/.pilot/config.yaml
+slack:
+  enabled: true
+  bot_token: ${SLACK_BOT_TOKEN}
+  llm_classifier:
+    enabled: true                # classify NL messages by intent (vs regex)
+    api_key: ${ANTHROPIC_API_KEY} # falls back to ANTHROPIC_API_KEY env var
+    history_size: 10
+    history_ttl: 30m
+
+bot:
+  enabled: true                  # the conversational fast path (shared across adapters)
+  api_key: ${ANTHROPIC_API_KEY}
+  retrieval:
+    enabled: true
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `llm_classifier.enabled` | bool | `false` | Enable LLM-based intent classification for Slack |
+| `llm_classifier.api_key` | string | — | Anthropic API key (falls back to `ANTHROPIC_API_KEY`) |
+| `llm_classifier.history_size` | int | `10` | Messages to keep per channel for context |
+| `llm_classifier.history_ttl` | duration | `30m` | TTL for conversation history |
+
+<Callout type="info">
+The Slack `llm_classifier` is **separate** from the `bot:` block. The classifier decides *which path* a message takes; the bot is the conversational fast path itself. Both must be enabled for the two-way experience. Without the classifier, messages fall back to regex routing and most reach the executor. See the [Conversational Bot](/features/conversational-bot) feature page for the full reference and limitations.
+</Callout>
 
 ## Notification Types
 

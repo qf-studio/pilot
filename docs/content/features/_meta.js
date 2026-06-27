@@ -1,4 +1,5 @@
 export default {
+  "conversational-bot": "Conversational Bot",
   telegram: "Telegram Bot",
   github: "GitHub Integration",
   dashboard: "Dashboard TUI",

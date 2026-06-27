@@ -186,6 +186,49 @@ Always set `allowed_ids` to restrict who can trigger Pilot via Telegram. Without
 
 ---
 
+## Conversational Bot
+
+The fast conversational path. When enabled, chat, greeting, question, and issue-intake messages are answered directly via the Anthropic API (~1–2s) instead of the 15–30s executor. See the [Conversational Bot](/features/conversational-bot) feature guide for the full behavior, intent routing, and limitations.
+
+```yaml
+bot:
+  enabled: true                          # master switch for the conversational path
+  model: "claude-haiku-4-5-20251001"     # chat / greeting model (fast, cheap)
+  answer_model: "claude-sonnet-4-6"      # grounded Q&A model; defaults to `model` when empty
+  api_key: ${ANTHROPIC_API_KEY}          # optional — falls back to ANTHROPIC_API_KEY env var
+  persona: ""                            # optional — prepended to the system prompt (Pilot's voice)
+
+  retrieval:
+    enabled: true                        # bounded file-retrieval for code questions
+    max_files: 8
+    max_bytes: 24000
+
+  issue_intake:
+    auto_label_pilot: true               # reserved — `pilot` label is currently always applied
+
+  voice:
+    enabled: false                       # voice scaffold — transport deferred
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `false` | Master switch for the conversational path |
+| `model` | string | `claude-haiku-4-5-20251001` | Model for chat and greetings |
+| `answer_model` | string | `model` | Model for grounded Q&A; falls back to `model` when empty |
+| `api_key` | string | — | Anthropic API key (falls back to `ANTHROPIC_API_KEY`) |
+| `persona` | string | `""` | Text prepended to the system prompt — Pilot's voice |
+| `retrieval.enabled` | bool | `false` | Enable bounded file retrieval for code questions |
+| `retrieval.max_files` | int | `8` | Max files read into the answer context |
+| `retrieval.max_bytes` | int | `24000` | Max total bytes of file excerpts |
+| `issue_intake.auto_label_pilot` | bool | `true` | Reserved — drafted issues are currently always tagged `pilot` |
+| `voice.enabled` | bool | `false` | Route transcribed voice through the intent → responder path (scaffold) |
+
+<Callout type="info">
+The `bot:` block is the conversational engine, shared across adapters. To route natural-language messages to it, also enable the adapter's `llm_classifier` (see [Slack](/integrations/slack) and [Telegram](#telegram) above). Without the classifier, messages fall back to regex routing and most reach the executor.
+</Callout>
+
+---
+
 ## Executor
 
 Controls how Pilot runs execution backends (Claude Code, Qwen Code, or OpenCode) to execute tasks.

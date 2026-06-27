@@ -1,0 +1,201 @@
+import { Callout, Tabs } from 'nextra/components'
+
+# Conversational Bot
+
+The conversational bot is Pilot's **fast response path**. When enabled, chat, greeting, question, and issue-intake messages are answered directly through the Anthropic API in **~1–2 seconds** — instead of spinning up the full Claude Code executor, which takes **15–30 seconds** and is built for writing code, not holding a conversation.
+
+The result: you can talk to Pilot in Slack or Telegram like a teammate — ask what a function does, get a diagram, or turn a sentence into a tracked issue — without paying executor latency for every message.
+
+<Callout type="info">
+The bot is **opt-in** (`bot.enabled: false` by default). It needs an Anthropic API key, set via `bot.api_key` or the `ANTHROPIC_API_KEY` environment variable. Code execution still flows through Claude Code as usual — the bot only handles the conversational intents.
+</Callout>
+
+## Two Response Paths
+
+Every inbound message is classified by intent, then routed to one of two paths:
+
+| Path | Latency | Handles | Backed by |
+|------|---------|---------|-----------|
+| **Conversational** (bot) | ~1–2s chat, ~2–4s grounded Q&A | greetings, chat, code questions, issue intake | `internal/llm` → Anthropic API |
+| **Executor** (Claude Code) | 15–30s+ | tasks that change code, research, planning | Claude Code subprocess |
+
+When the bot is disabled, every message that isn't a `/`-command falls through to the executor — the pre-bot behavior.
+
+## Intent Routing
+
+Routing is driven by a **Haiku classifier** (`claude-haiku-4-5-20251001`). It is the natural-language router; a regex layer only fast-paths `/`-commands and obvious greetings.
+
+The classifier applies a **deliverable test** — *what does the user want to receive?*
+
+| The user wants… | Intent | Routed to |
+|-----------------|--------|-----------|
+| A greeting / small talk | `greeting`, `chat` | Bot — instant reply |
+| An answer, explanation, **diagram**, or summary about the code | `question` | Bot — grounded Q&A |
+| Files changed / a PR opened | `task` | Executor |
+| A new issue filed / ticket raised | `issue_intake` | Bot drafts → GitHub |
+| Live daemon or queue state | `operational` | Inline store-backed handler |
+| Deep multi-file analysis | `research` | Executor (research mode) |
+| An implementation plan before coding | `planning` | Executor (planning mode) |
+
+<Callout type="warning">
+Verbs like **draw, diagram, show, outline, sketch, explain, summarize** ask for an *answer*, not a code change — they route to `question`, not `task`. This is the deliverable test in action: an earlier classifier prompt misrouted "draw the architecture" to a code task ([#3703](https://github.com/qf-studio/pilot/issues/3703), v2.200.2).
+</Callout>
+
+The classifier runs with a **2-second timeout**. On timeout or API error it falls back to keyword matching, so the bot degrades gracefully rather than blocking.
+
+## The Three Capabilities
+
+### 1. Chat & Greeting
+
+The fast path. Greetings and conversational messages get a direct reply from the bot's `model` (Haiku by default) with a 2048-token cap. If a [persona](#persona) is configured, it's prepended to the system prompt so Pilot answers in a consistent voice.
+
+### 2. Grounded Q&A
+
+Code questions are answered against **bounded file retrieval** — the bot scores files in the active project by path relevance, reads the top matches into context (capped by `max_files` and `max_bytes`), and answers from that excerpt set in **~2–4 seconds**.
+
+```
+"how does the signal parser decide intent?"
+   → score files by path keywords
+   → read top 8 files (≤ 24 KB total)
+   → answer from excerpts
+```
+
+If a question is **too broad** (e.g. "explain the whole repo"), retrieval surfaces too many candidates and the bot automatically **falls back to the executor**, which has full codebase tools and a longer budget. You don't have to choose the path — the bot decides.
+
+<Callout type="info">
+Grounded Q&A defaults to the bot's `model`. For higher-quality code answers, set `answer_model: "claude-sonnet-4-6"` — Sonnet handles reasoning-heavy questions better while greetings stay cheap on Haiku.
+</Callout>
+
+### 3. Conversational Issue Intake
+
+Turn a freeform sentence into a structured, tracked issue. The bot drafts a `{title, body, labels}` payload from your message and opens it on GitHub.
+
+```
+You (Slack):  "create an issue to add a /ping health endpoint"
+Bot:          drafts issue → opens #3705 on GitHub (labeled `pilot`)
+Daemon:       picks up #3705 → implements → opens PR #3706 → merged
+```
+
+This is the full **talk → ticket → PR** loop: a sentence in chat became a merged pull request, hands-off. Drafted issues are always tagged `pilot` so the daemon auto-picks them.
+
+<Callout type="warning">
+Issue intake files to the repo configured under `adapters.github.repo`, **not** necessarily the chat session's active project — see [Limitations](#limitations--gotchas).
+</Callout>
+
+## Configuration
+
+```yaml
+# ~/.pilot/config.yaml
+bot:
+  enabled: true                          # master switch for the fast conversational path
+  model: "claude-haiku-4-5-20251001"     # chat / greeting model (fast, cheap)
+  answer_model: "claude-sonnet-4-6"      # grounded Q&A model; defaults to `model` when empty
+  api_key: ${ANTHROPIC_API_KEY}          # optional — falls back to ANTHROPIC_API_KEY env var
+  persona: ""                            # optional — prepended to the system prompt (Pilot's voice)
+
+  retrieval:
+    enabled: true                        # bounded file-retrieval for code questions
+    max_files: 8                         # max files read into the answer context
+    max_bytes: 24000                     # max total bytes of file excerpts
+
+  issue_intake:
+    auto_label_pilot: true               # drafted issues are tagged `pilot` (see note below)
+
+  voice:
+    enabled: false                       # voice scaffold — transport deferred
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `enabled` | bool | `false` | Master switch for the conversational path |
+| `model` | string | `claude-haiku-4-5-20251001` | Model for chat and greetings |
+| `answer_model` | string | `model` | Model for grounded Q&A; falls back to `model` when empty |
+| `api_key` | string | — | Anthropic API key (falls back to `ANTHROPIC_API_KEY`) |
+| `persona` | string | `""` | Text prepended to the system prompt — Pilot's voice |
+| `retrieval.enabled` | bool | `false` | Enable bounded file retrieval for code questions |
+| `retrieval.max_files` | int | `8` | Max files read into the answer context |
+| `retrieval.max_bytes` | int | `24000` | Max total bytes of file excerpts |
+| `issue_intake.auto_label_pilot` | bool | `true` | Reserved — the `pilot` label is currently always applied (see note) |
+| `voice.enabled` | bool | `false` | Route transcribed voice through the intent → responder path (scaffold) |
+
+The bot is shared across adapters. To make conversational messages reach it, also enable the per-adapter intent classifier — see [Enabling on Slack & Telegram](#enabling-on-slack--telegram).
+
+## Persona
+
+`persona` is prepended to the bot's system prompt and shapes every reply — tone, naming, house style. Keep it short and declarative:
+
+```yaml
+bot:
+  persona: "You are Pilot, a terse senior engineer. Answer in plain language, lead with the answer, skip pleasantries."
+```
+
+The persona applies to chat, greetings, and grounded Q&A. It does not affect the executor path.
+
+## Voice
+
+The `voice` block is a **scaffold**. When `voice.enabled: true`, a transcribed voice message (`VoiceText`) is routed through the same intent → responder pipeline as text. Audio transport — capturing and transcribing the call itself — is **deferred** and not wired up. Enabling the flag today only affects how already-transcribed text is handled.
+
+## Limitations & Gotchas
+
+<Callout type="warning">
+**Issue intake follows `adapters.github.repo`, not the active project.** Switching the chat's active project (e.g. `/switch`) does **not** redirect where drafted issues are filed. Make sure `adapters.github.repo` points at the repo you want issues created in.
+</Callout>
+
+- **Active project resets on restart.** The per-conversation active project is held in memory and resets to `default_project` every time the daemon restarts. Re-select it after a restart if you rely on it.
+- **The `pilot` label is always applied.** Drafted issues are unconditionally tagged `pilot`; the `issue_intake.auto_label_pilot` field is currently reserved and not yet read by the code. There is no way to suppress the label today.
+- **Broad questions cost executor latency.** A question that matches too many files falls back to the 15–30s executor path rather than answering instantly. Narrow the question to stay on the fast path.
+- **Voice transport is not implemented** — see [Voice](#voice).
+
+## Enabling on Slack & Telegram
+
+The bot answers messages that a per-adapter **LLM classifier** has routed to a conversational intent. Enable both the classifier and the bot:
+
+<Tabs items={['Slack', 'Telegram']}>
+
+```yaml
+adapters:
+  slack:
+    enabled: true
+    bot_token: ${SLACK_BOT_TOKEN}
+    llm_classifier:
+      enabled: true                # route NL messages by intent (vs regex)
+      api_key: ${ANTHROPIC_API_KEY}
+      history_size: 10
+      history_ttl: 30m
+
+bot:
+  enabled: true
+  api_key: ${ANTHROPIC_API_KEY}
+  retrieval:
+    enabled: true
+```
+
+
+```yaml
+adapters:
+  telegram:
+    enabled: true
+    bot_token: ${TELEGRAM_BOT_TOKEN}
+    llm_classifier:
+      enabled: true
+      api_key: ${ANTHROPIC_API_KEY}
+      timeout_seconds: 2
+      history_size: 10
+      history_ttl: 30m
+
+bot:
+  enabled: true
+  api_key: ${ANTHROPIC_API_KEY}
+  retrieval:
+    enabled: true
+```
+
+</Tabs>
+
+Without the adapter's `llm_classifier`, intent detection falls back to regex, which routes most natural-language messages to the executor — the conversational path never engages.
+
+## What's Next
+
+- **[Configuration → Conversational Bot](/getting-started/configuration#conversational-bot)** — the `bot:` block in the full config reference
+- **[Slack Integration](/integrations/slack)** — wiring the bot into Slack
+- **[Model Routing](/concepts/model-routing)** — how the executor path picks models (distinct from the bot's classifier)

@@ -4,6 +4,10 @@ import { Callout } from 'nextra/components'
 
 Pilot classifies every incoming task by complexity before execution begins. This classification drives three routing decisions: which model handles the task, how long it's allowed to run, and how much reasoning effort the model applies. The result is lower cost for simple work and deeper reasoning for architectural changes — automatically, with no manual intervention.
 
+<Callout type="info">
+This page covers the **executor path** — how code-writing tasks pick a model. Conversational messages (chat, questions, issue intake) take a separate, faster path with its own Haiku classifier. See the [Conversational Bot](/features/conversational-bot) feature guide.
+</Callout>
+
 ## The Five Complexity Levels
 
 Every task maps to one of five levels. Detection runs against the combined issue title and description.
@@ -391,3 +395,4 @@ Issue arrives
 
 - **[Architecture](/concepts/architecture)** — Full system architecture and autopilot state machine
 - **[Autopilot Mode](/features/autopilot)** — CI monitoring, auto-merge, and feedback loops
+- **[Conversational Bot](/features/conversational-bot)** — the separate fast path for chat, code Q&A, and issue intake
