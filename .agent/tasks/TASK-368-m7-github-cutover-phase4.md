@@ -1,7 +1,8 @@
 ---
-status: phase-4a-implemented
+status: phase-4a-complete
 priority: P3
 created: 2026-06-22
+sdk_version: v0.25.0
 execution: manual
 github_issue: 3423
 labels: [m7, sdk, github, adapter, human-led]
@@ -9,18 +10,22 @@ labels: [m7, sdk, github, adapter, human-led]
 
 # TASK-368: M7 Phase 4 — GitHub adapter → studio-sdk cutover (MANUAL)
 
-**Status**: ✅ Phase 4a IMPLEMENTED (additive scaffolding, dormant/flag-off). Verdict `poll-path-only`; full retirement blocked on studio-sdk v0.25.0+. Adversarially reviewed (verdict SHIP, 5 nits fixed). Phases 4b–4d deferred.
+**Status**: ✅ Phase 4a COMPLETE — artifacts verified present + correct; full test suite green (43 pkgs, 0 fail) and SDK-consuming packages green under `-race`, against **studio-sdk v0.25.0** (`go.mod` bumped from v0.24.0, 2026-06-30). Verdict `poll-path-only`; full retirement (4b–4d) **re-confirmed blocked at v0.25.0** — the github surface gap is unchanged from v0.24.0 (see Verdict). Adversarially reviewed (verdict SHIP, 5 nits fixed). Phases 4b–4d remain SDK-gated → now on **v0.26.0+**.
 **Assignee**: Manual (human-led per #3423 — daemon must NOT claim this)
 **Tracking issue**: https://github.com/qf-studio/pilot/issues/3423
 **Template**: GitLab cutover — commit `07467a9d` / GH-3456 / PR #3459
 
 ---
 
-## Verdict (verified against studio-sdk v0.24.0)
+## Verdict (re-verified against studio-sdk v0.25.0 — 2026-06-30)
 
-**Full retirement of `internal/adapters/github` is NOT possible at SDK v0.24.0.** Only an
-additive, feature-flagged *poll-path scaffolding* leg is achievable now; the live cutover
-is gated on SDK v0.25.0+. Four independently-verified blockers:
+**Full retirement of `internal/adapters/github` is STILL NOT possible at SDK v0.25.0.** v0.25.0
+shipped only `linear CreateIssue` — the github poll/board/PR surface is byte-for-byte the
+same gap as v0.24.0. Re-verified file-by-file in `sdk@v0.25.0/sdk/integrations/github/`:
+no `project_board.go`/`project_source.go`; 0/5 of the missing Client methods present;
+`core.PollerDeps` is still the 4-field subset (`ProcessedStore`, `MaxConcurrent`, `Handler`,
+`OnPRCreated`). Only the additive, feature-flagged *poll-path scaffolding* (Phase 4a) is
+achievable; the live cutover is now gated on **SDK v0.26.0+**. Four independently-verified blockers:
 
 1. **Board layer absent from SDK.** No `project_board.go`/`project_source.go` in the SDK
    github package (only the YAML `ProjectBoardConfig` type, `types.go:34`). Autopilot
@@ -57,15 +62,15 @@ all staying in-tree.
 
 ---
 
-## Acceptance Criteria (Phase 4a only)
+## Acceptance Criteria (Phase 4a only) — ✅ all verified 2026-06-30
 
-- [ ] `internal/orchestrator/orchestrator.go` gains `ProcessGithubIssueEvent(ctx, ev sdkcore.IssueEvent, projectPath string) error` mirroring `ProcessGitlabIssueEvent` (`:476`), placed after `ProcessAzureDevOpsIssueEvent` (`:717`). Uses `ev.SequenceID` **verbatim** (already `GH-`-prefixed by SDK `adapter.go:143` — NO `fmt.Sprintf("GH-%d", …)` re-prefix) and `sdkshim.PriorityFromSDK(ev.Priority)`.
-- [ ] `internal/adapters/sdkshim/repo_resolver.go` implements the `github` branch at the `TODO(phase-4)` (`:39`): per-project routing via `cfg.Projects[].GitHub.{Owner,Repo}` matched on `ev.ProjectID`, `cfg.Adapters.GitHub` fallback; `ErrRepoNotResolved` only when nothing matches. (This is the resolver's first real implementation — all branches are currently stubs.)
-- [ ] `cmd/pilot/poller_github.go` (NEW) defines `githubPollerRegistration()` gated on a NEW default-OFF flag `adapters.github.use_sdk_poller`; **NOT** added to `adapterPollerRegistrations()` (`cmd/pilot/poller_registry.go:43`).
-- [ ] `handleGithubIssueEventSDK(...)` (NEW) lives ALONGSIDE the legacy `handleGitHubIssueWithResult` (`cmd/pilot/handlers.go:222`); sets `SourceAdapter:"github"`, `taskID = ev.SequenceID` verbatim, tolerates `ErrRepoNotResolved`. Legacy handler untouched.
-- [ ] `internal/config/config.go`: additive `UseSDKPoller bool` (`use_sdk_poller`, default false) on the GitHub adapter config; documented in `configs/pilot.example.yaml`.
-- [ ] With the flag OFF, github polling/PR/board/autopilot behavior is **byte-identical** to today; existing `internal/adapters/github` tests stay green.
-- [ ] No edits under `.claude/worktrees`.
+- [x] `internal/orchestrator/orchestrator.go` gains `ProcessGithubIssueEvent(ctx, ev sdkcore.IssueEvent, projectPath string) error` mirroring `ProcessGitlabIssueEvent` — present at `orchestrator.go:759`. Uses `ev.SequenceID` **verbatim** (NO `GH-%d` re-prefix) and `sdkshim.PriorityFromSDK(ev.Priority)`.
+- [x] `internal/adapters/sdkshim/repo_resolver.go` implements the `github` branch (`resolveGithubRepo` / `githubCloneURL`): per-project routing via `cfg.Projects[].GitHub.{Owner,Repo}` matched on `ev.ProjectID`, `cfg.Adapters.GitHub` fallback; `ErrRepoNotResolved` only when nothing matches.
+- [x] `cmd/pilot/poller_github.go` defines `githubPollerRegistration()` (`:29`) gated on `adapters.github.use_sdk_poller`; **NOT** added to `adapterPollerRegistrations()` (confirmed: registry lists linear/jira/asana/azuredevops/plane/discord/gitlab — no github).
+- [x] `handleGithubIssueEventSDK(...)` lives alongside the legacy handler (`handlers.go:1167`); `taskID = ev.SequenceID` verbatim (explicit `// do NOT re-prefix` comment; branch `pilot/GH-42`).
+- [x] Additive `UseSDKPoller bool` on the GitHub adapter config (resolved by build at `poller_github.go:34`); documented in `configs/pilot.example.yaml:85`.
+- [x] With the flag OFF, github behavior is unchanged — `internal/adapters/github` tests green (10.5s, `-race`).
+- [x] No edits under `.claude/worktrees` (canonical tree only; work done in a fresh worktree off origin/main).
 
 ---
 
@@ -92,7 +97,7 @@ Create `cmd/pilot/poller_github.go` (mirror `poller_gitlab.go`): cfg→`sdkGithu
 
 ## Out of Scope (deferred phases, all SDK-blocked)
 
-- **4b** — SDK poller option parity (Scheduler/TaskChecker/ExecutionChecker/PreFlightJudge/ExecutionSaver/IssueMetricsRecorder) + flip flag on for single-repo. Blocked on SDK v0.25.0+.
+- **4b** — SDK poller option parity (Scheduler/TaskChecker/ExecutionChecker/PreFlightJudge/ExecutionSaver/IssueMetricsRecorder) + flip flag on for single-repo. Blocked on SDK v0.26.0+ (still absent at v0.25.0).
 - **4c** — board source/sync on SDK poller + `ExecuteGraphQLTolerant`; retire `project_source.go`/`project_board.go`. Blocked on SDK board support.
 - **4d** — autopilot client unification (`NewController` swap / interface seam), gh-CLI→SDK PR-create (`runner.go:3601` guard), spec-guard/CreatePilotIssue/label-vocab porting, **delete `internal/adapters/github`**.
 - Live `createPollerForRepo` / multi-repo loop (`cmd/pilot/main.go` ~2195-2400).
@@ -124,7 +129,7 @@ Create `cmd/pilot/poller_github.go` (mirror `poller_gitlab.go`): cfg→`sdkGithu
 
 ## Open Questions (gate later phases)
 
-1. Will SDK v0.25.0+ add the 5 missing Client methods + ProjectBoardSync runtime + `LabelPilot` + exported `ParseParentIssueNumber`? Gates 4b/4c/4d entirely.
+1. ~~Will SDK v0.25.0 add the 5 missing Client methods + ProjectBoardSync runtime + …?~~ **Answered (2026-06-30): NO — v0.25.0 added only `linear CreateIssue`; the github surface is unchanged.** The dependency is now spec'd as **qf-studio/studio-sdk#71** targeting **v0.26.0** (the 5 methods + board layer + 6 `PollerDeps` options + `ExecuteGraphQLTolerant`). Gates 4b/4c/4d entirely.
 2. How to augment the thin `sdkcore.IssueEvent` for github needs (issue.State for sub-issue gating, NodeID for board + OnPRCreated, per-issue owner/repo, assignee for RBAC) — grow IssueEvent in SDK, or re-fetch `*github.Issue` via `client.GetIssue` (doubles API calls)?
 3. Introduce a github-client **interface seam** in autopilot as a prerequisite PR before 4d?
 4. Is the board layer meant to move INTO the SDK, or stay host-side on generic `ExecuteGraphQL`? Biggest long-term gate.
@@ -146,15 +151,15 @@ grep -rl 'internal/adapters/github"' --include='*.go' cmd internal | grep -v _te
 
 ---
 
-## Done (Phase 4a)
+## Done (Phase 4a) — closed out 2026-06-30 @ studio-sdk v0.25.0
 
-- [ ] All gates green; `go test -race ./...` passes.
-- [ ] `ProcessGithubIssueEvent` present + tested; `ev.SequenceID` verbatim.
-- [ ] `ResolveRepoForEvent` github branch implemented + tested.
-- [ ] `githubPollerRegistration()` exists, default-OFF, NOT registered.
-- [ ] `handleGithubIssueEventSDK` sets `SourceAdapter:"github"`; legacy handler untouched.
-- [ ] Zero behavior change with flag off (staging smoke).
-- [ ] Daemon + executor build/roll together. No `.claude/worktrees` edits.
+- [x] Gates green: `go build ./...` + `go vet ./...` clean; `go test ./...` = EXIT 0 (43 pkgs, 0 fail); SDK-consuming pkgs (adapters/orchestrator/cmd) green under `-race`. _(Full `-race ./...` not re-run this session; CI covers it on the PR.)_
+- [x] `ProcessGithubIssueEvent` present (`orchestrator.go:759`); `ev.SequenceID` verbatim.
+- [x] `ResolveRepoForEvent` github branch implemented + tested (`sdkshim` green).
+- [x] `githubPollerRegistration()` exists, default-OFF, NOT registered.
+- [x] `handleGithubIssueEventSDK` sets `SourceAdapter:"github"`; legacy handler untouched.
+- [~] Zero behavior change with flag off — **code-verified** (flag default false, github not registered, github adapter tests green). Live staging smoke NOT run this session.
+- [x] Daemon + executor build together (`go build ./...`). No `.claude/worktrees` edits.
 
 ---
 
@@ -162,9 +167,10 @@ grep -rl 'internal/adapters/github"' --include='*.go' cmd internal | grep -v _te
 
 - Tracking: #3423 · plan `.agent/research/2026-06-03-m7-sdk-cutover.md`
 - Template: gitlab cutover `07467a9d` (GH-3456 / PR #3459)
-- SDK: `studio-sdk v0.24.0` (`go.mod`); github connector lacks board + 5 methods + poller options
+- SDK: `studio-sdk v0.25.0` (`go.mod`, bumped 2026-06-30); github connector still lacks board + 5 methods + poller options
+- SDK unblock spec (v0.26.0): qf-studio/studio-sdk#71 — github poll/board/PR surface for M7
 - Map workflow: `m7-github-cutover-map` (run `wf_e4f5bcdc-d3c`, 6 agents, 512k tokens)
 
 ---
 
-**Last Updated**: 2026-06-22
+**Last Updated**: 2026-06-30
