@@ -75,6 +75,92 @@ func resolveExecutionMode(mode string) github.ExecutionMode {
 	}
 }
 
+// githubTokenSource names where a resolved GitHub token came from, so a dead
+// token can be diagnosed without re-deriving the resolution chain (GH-3718).
+type githubTokenSource string
+
+const (
+	githubTokenSourceConfig githubTokenSource = "config (adapters.github.token)"
+	githubTokenSourceEnv    githubTokenSource = "env (GITHUB_TOKEN)"
+	githubTokenSourceGhCLI  githubTokenSource = "gh CLI (gh auth token)"
+	githubTokenSourceNone   githubTokenSource = "none"
+)
+
+// ghCLITokenCache memoizes the `gh auth token` fallback lookup for the process
+// lifetime — it forks a subprocess, and the credential can't change mid-run.
+// A pointer so tests can reset it by swapping in a fresh instance instead of
+// copying a sync.Once by value.
+type ghCLITokenCache struct {
+	once  sync.Once
+	token string
+	ok    bool
+}
+
+func (c *ghCLITokenCache) resolve() (string, bool) {
+	c.once.Do(func() {
+		tok, err := ghAuthToken()
+		if err == nil && tok != "" {
+			c.token = tok
+			c.ok = true
+		}
+	})
+	return c.token, c.ok
+}
+
+var ghTokenCache = &ghCLITokenCache{}
+
+// resolveGitHubToken resolves the GitHub token with precedence:
+// adapters.github.token config → GITHUB_TOKEN env → `gh auth token` CLI
+// fallback (GH-3718). It consolidates the pattern previously duplicated
+// across five call-sites in this file. The returned source lets callers log
+// which credential a startup 401 came from.
+func resolveGitHubToken(cfg *config.Config) (string, githubTokenSource) {
+	if cfg != nil && cfg.Adapters != nil && cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.Token != "" {
+		return cfg.Adapters.GitHub.Token, githubTokenSourceConfig
+	}
+	if tok := os.Getenv("GITHUB_TOKEN"); tok != "" {
+		return tok, githubTokenSourceEnv
+	}
+	if tok, ok := ghTokenCache.resolve(); ok {
+		return tok, githubTokenSourceGhCLI
+	}
+	return "", githubTokenSourceNone
+}
+
+// validateGitHubToken makes one authenticated API call to confirm the
+// resolved token actually works. A dead/expired token otherwise fails
+// silently on every subsequent poll (live incident 2026-06-30) — this makes
+// the failure loud at startup instead. Never returns an error: validation
+// failure is logged (and alerted, if alertsEngine is configured) but must not
+// block daemon startup, since other adapters may still work fine.
+func validateGitHubToken(ctx context.Context, client *github.Client, source githubTokenSource, alertsEngine *alerts.Engine) {
+	log := logging.WithComponent("github")
+	if _, err := client.GetAuthenticatedUser(ctx); err != nil {
+		var authErr *github.AuthError
+		if errors.As(err, &authErr) {
+			log.Error("GitHub token rejected by API (401) — polling and PR operations will silently fail until this is fixed",
+				slog.String("token_source", string(source)),
+				slog.String("fix", "rotate the token at its source and restart pilot"),
+			)
+			if alertsEngine != nil {
+				alertsEngine.ProcessEvent(alerts.Event{
+					Type:      alerts.EventTypeConfigError,
+					Error:     fmt.Sprintf("GitHub token (source: %s) is invalid or expired — 401 from GitHub API", source),
+					Timestamp: time.Now(),
+				})
+			}
+			return
+		}
+		// Network error, rate limit, etc. — not evidence the token itself is dead.
+		log.Warn("could not verify GitHub token validity at startup",
+			slog.String("token_source", string(source)),
+			slog.String("error", err.Error()),
+		)
+		return
+	}
+	log.Info("GitHub token validated", slog.String("token_source", string(source)))
+}
+
 func main() {
 	rootCmd := &cobra.Command{
 		Use:   "pilot",
@@ -502,13 +588,7 @@ Examples:
 
 				// Create autopilot controller if enabled
 				if cfg.Orchestrator.Autopilot != nil && cfg.Orchestrator.Autopilot.Enabled {
-					ghToken := ""
-					if cfg.Adapters.GitHub != nil {
-						ghToken = cfg.Adapters.GitHub.Token
-						if ghToken == "" {
-							ghToken = os.Getenv("GITHUB_TOKEN")
-						}
-					}
+					ghToken, _ := resolveGitHubToken(cfg)
 					if ghToken != "" && cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.Repo != "" {
 						parts := strings.SplitN(cfg.Adapters.GitHub.Repo, "/", 2)
 						if len(parts) == 2 {
@@ -739,13 +819,11 @@ Examples:
 			if githubFlagSet && hasGithubPolling && cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.Enabled &&
 				cfg.Adapters.GitHub.Polling != nil && cfg.Adapters.GitHub.Polling.Enabled {
 
-				token := cfg.Adapters.GitHub.Token
-				if token == "" {
-					token = os.Getenv("GITHUB_TOKEN")
-				}
+				token, tokenSource := resolveGitHubToken(cfg)
 
 				if token != "" && cfg.Adapters.GitHub.Repo != "" {
 					client := github.NewClient(token)
+					validateGitHubToken(context.Background(), client, tokenSource, gwAlertsEngine)
 					label := cfg.Adapters.GitHub.Polling.Label
 					if label == "" {
 						label = cfg.Adapters.GitHub.PilotLabel
@@ -1479,13 +1557,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 	var autopilotController *autopilot.Controller // Default controller for backwards compat
 	if cfg.Orchestrator.Autopilot != nil && cfg.Orchestrator.Autopilot.Enabled {
 		// Need GitHub client for autopilot
-		ghToken := ""
-		if cfg.Adapters.GitHub != nil {
-			ghToken = cfg.Adapters.GitHub.Token
-			if ghToken == "" {
-				ghToken = os.Getenv("GITHUB_TOKEN")
-			}
-		}
+		ghToken, _ := resolveGitHubToken(cfg)
 		if ghToken == "" {
 			// GH-3050: surface silent autopilot disable when token is missing.
 			// Without this warning, --env=<...> appears accepted but autopilot
@@ -1745,10 +1817,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 		// GH-2080: Wire PR review webhook events to autopilot controller in polling mode
 		if autopilotController != nil && cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.Enabled {
 			capturedController := autopilotController
-			token := cfg.Adapters.GitHub.Token
-			if token == "" {
-				token = os.Getenv("GITHUB_TOKEN")
-			}
+			token, _ := resolveGitHubToken(cfg)
 			if token != "" {
 				ghClient := github.NewClient(token)
 				ghWH := github.NewWebhookHandler(ghClient, cfg.Adapters.GitHub.WebhookSecret, cfg.Adapters.GitHub.PilotLabel)
@@ -1842,10 +1911,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 	// Nil when GitHub is not configured — Handler degrades gracefully.
 	var commsIssueCreator comms.IssueCreator
 	if cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.Enabled && cfg.Adapters.GitHub.Repo != "" {
-		ghToken := cfg.Adapters.GitHub.Token
-		if ghToken == "" {
-			ghToken = os.Getenv("GITHUB_TOKEN")
-		}
+		ghToken, _ := resolveGitHubToken(cfg)
 		if ghToken != "" {
 			repoParts := strings.SplitN(cfg.Adapters.GitHub.Repo, "/", 2)
 			if len(repoParts) == 2 {
@@ -2160,13 +2226,11 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 	if cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.Enabled &&
 		cfg.Adapters.GitHub.Polling != nil && cfg.Adapters.GitHub.Polling.Enabled {
 
-		token := cfg.Adapters.GitHub.Token
-		if token == "" {
-			token = os.Getenv("GITHUB_TOKEN")
-		}
+		token, tokenSource := resolveGitHubToken(cfg)
 
 		if token != "" {
 			client := github.NewClient(token)
+			validateGitHubToken(context.Background(), client, tokenSource, alertsEngine)
 			label := cfg.Adapters.GitHub.Polling.Label
 			if label == "" {
 				label = cfg.Adapters.GitHub.PilotLabel

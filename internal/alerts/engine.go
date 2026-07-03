@@ -101,6 +101,11 @@ const (
 	// handler so consecutive-failure tracking keeps working, but kept as a
 	// distinct type so rules and dashboards can single these out.
 	EventTypeOOMKilled EventType = "oom_killed"
+
+	// Config/credential health events (GH-3718): fired when a resolved
+	// credential (e.g. a GitHub token) fails an authenticated validation
+	// call at startup, so a dead credential doesn't fail silently.
+	EventTypeConfigError EventType = "config_error"
 )
 
 const (
@@ -271,7 +276,7 @@ func (e *Engine) ProcessEvent(event Event) {
 // isHighPriorityEvent reports whether an event must not be lost under load.
 func isHighPriorityEvent(t EventType) bool {
 	switch t {
-	case EventTypeEscalation, EventTypeOOMKilled, EventTypeBudgetExceeded, EventTypeSecurityEvent:
+	case EventTypeEscalation, EventTypeOOMKilled, EventTypeBudgetExceeded, EventTypeSecurityEvent, EventTypeConfigError:
 		return true
 	default:
 		return false
@@ -329,6 +334,8 @@ func (e *Engine) handleEvent(ctx context.Context, event Event) {
 		e.handleCostUpdate(ctx, event)
 	case EventTypeSecurityEvent:
 		e.handleSecurityEvent(ctx, event)
+	case EventTypeConfigError:
+		e.handleConfigError(ctx, event)
 	case EventTypeBudgetExceeded, EventTypeBudgetWarning:
 		e.handleBudgetEvent(ctx, event)
 	case EventTypeAutopilotMetrics:
@@ -499,6 +506,21 @@ func (e *Engine) handleSecurityEvent(ctx context.Context, event Event) {
 					fmt.Sprintf("Sensitive file modified: %s", filePath))
 				e.fireAlert(ctx, rule, alert)
 			}
+		}
+	}
+}
+
+// handleConfigError fires AlertTypeServiceUnhealthy rules when a resolved
+// credential fails validation (GH-3718), e.g. a dead GitHub token detected at
+// startup. Message comes from event.Error, set by the caller.
+func (e *Engine) handleConfigError(ctx context.Context, event Event) {
+	for _, rule := range e.config.Rules {
+		if !rule.Enabled {
+			continue
+		}
+		if rule.Type == AlertTypeServiceUnhealthy && e.shouldFire(rule) {
+			alert := e.createAlert(rule, event, event.Error)
+			e.fireAlert(ctx, rule, alert)
 		}
 	}
 }

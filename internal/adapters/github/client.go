@@ -31,6 +31,18 @@ func (e *RateLimitError) Error() string {
 	return fmt.Sprintf("API error (status %d): %s", e.StatusCode, e.Message)
 }
 
+// AuthError is returned by doRequest when GitHub rejects the token itself
+// (401 Unauthorized) — as opposed to a 403 which can mean rate-limited or
+// forbidden-but-authenticated. Callers use errors.As to distinguish a dead/
+// revoked token from other failures (GH-3718).
+type AuthError struct {
+	Message string
+}
+
+func (e *AuthError) Error() string {
+	return fmt.Sprintf("API error (status %d): %s", http.StatusUnauthorized, e.Message)
+}
+
 // parseRetryAfterHeader reads Retry-After and X-RateLimit-Reset headers and
 // returns the delay duration. Returns 0 when neither header is present.
 func parseRetryAfterHeader(h http.Header) time.Duration {
@@ -236,6 +248,9 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body interf
 
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			msg := string(respBody)
+			if resp.StatusCode == http.StatusUnauthorized {
+				return &AuthError{Message: msg}
+			}
 			if resp.StatusCode == http.StatusTooManyRequests {
 				return &RateLimitError{
 					StatusCode: http.StatusTooManyRequests,

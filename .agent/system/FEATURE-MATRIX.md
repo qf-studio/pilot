@@ -1,6 +1,6 @@
 # Pilot Feature Matrix
 
-**Last Updated:** 2026-07-03 (v2.151.0)
+**Last Updated:** 2026-06-26 (v2.151.0)
 
 ## Legend
 
@@ -186,6 +186,7 @@
 | Deadlock detector | ✅ | autopilot | - | - | Alert after 1h with no progress on PR (v0.38.0, GH-849) |
 | Alert dispatch metrics | ✅ | alerts/gateway | - | - | alerts_fired_total, alert_delivery_total, alert_events_dropped_total, alert_queue_depth on /metrics (TASK-332) |
 | Rate limit detection | ✅ | executor | - | - | Detect GitHub API rate limits, pause + resume at reset time (v0.34.0) |
+| GitHub token fallback + live validation | ✅ | cmd/pilot, health | `pilot doctor` | `adapters.github.token` | config → `GITHUB_TOKEN` env → `gh auth token` fallback; authenticated startup check logs ERROR + fires `config_error` alert on a dead/expired token (GH-3718) |
 
 ## Quality Gates
 
@@ -196,8 +197,6 @@
 | Lint gates | ✅ | quality | - | `quality.gates[].type=lint` | Run lint commands |
 | Build gates | ✅ | quality | - | `quality.gates[].type=build` | Compile check |
 | Retry on failure | ✅ | quality | - | `quality.max_retries` | Auto-retry with feedback |
-| Per-project quality gates | ✅ | config, quality | - | `projects[].quality` | Project overrides win over global `quality.*`, then auto-detect (v2.201.4, GH-3716) |
-| pnpm/yarn/bun auto-detection | ✅ | quality | - | - | Lockfile-based PM detection for auto-detected build/test gates (v2.201.4, GH-3716) |
 
 ## Memory & Learning
 
@@ -458,8 +457,8 @@
 | Intelligence | 15 | 0 | 0 | 0 |
 | Input Adapters | 35 | 0 | 0 | 0 |
 | Output/Notifications | 18 | 0 | 0 | 0 |
-| Alerts & Monitoring | 11 | 0 | 0 | 0 |
-| Quality Gates | 7 | 0 | 0 | 0 |
+| Alerts & Monitoring | 12 | 0 | 0 | 0 |
+| Quality Gates | 5 | 0 | 0 | 0 |
 | Memory & Learning | 23 | 0 | 0 | 0 |
 | Dashboard | 24 | 0 | 0 | 0 |
 | Replay & Debug | 6 | 0 | 0 | 0 |
