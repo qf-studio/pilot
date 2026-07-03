@@ -159,3 +159,38 @@ func TestValidateSpec_SectionHeaderVariants(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateSpec_H3ToH6SectionHeaders(t *testing.T) {
+	// H3–H6 headers must be accepted (relaxed from H2-only).
+	passCases := []string{
+		"### Acceptance criteria",
+		"### Acceptance",
+		"#### Implementation",
+		"###### Refs",
+	}
+	for _, h := range passCases {
+		body := strings.Repeat("x", 80) + "\n\n" + h + "\n\nsome content here and there\n"
+		issue := &Issue{Number: 9, Body: body}
+		result := ValidateSpec(issue, nil)
+		if !result.Valid {
+			t.Errorf("H3–H6 header %q should be accepted, got reasons=%v", h, result.FailureReasons)
+		}
+	}
+
+	// H1 must still be rejected.
+	h1Body := strings.Repeat("x", 80) + "\n\n# Acceptance\n\nsome content here and there\n"
+	issue := &Issue{Number: 10, Body: h1Body}
+	result := ValidateSpec(issue, nil)
+	if result.Valid {
+		t.Error("H1 header '# Acceptance' should NOT be accepted as a structural section header")
+	}
+	foundHeader := false
+	for _, r := range result.FailureReasons {
+		if strings.Contains(r, "structural section header") {
+			foundHeader = true
+		}
+	}
+	if !foundHeader {
+		t.Errorf("expected 'structural section header' failure reason for H1 body, got %v", result.FailureReasons)
+	}
+}
