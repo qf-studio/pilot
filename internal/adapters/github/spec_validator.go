@@ -18,8 +18,8 @@ var (
 	parentRefRe = regexp.MustCompile(`(?i)Parent:\s*GH-(\d+)`)
 	// autopilotMetaRe detects decomposer-generated sub-issues.
 	autopilotMetaRe = regexp.MustCompile(`<!--\s*autopilot-meta\s`)
-	// sectionHeaderRe requires at least one recognized structural section header.
-	sectionHeaderRe = regexp.MustCompile(`(?im)^##\s+(Acceptance|Implementation|Context|Background|Approach|Design|Refs)\b`)
+	// sectionHeaderRe requires at least one recognized structural section header (H2–H6).
+	sectionHeaderRe = regexp.MustCompile(`(?im)^#{2,6}\s+(Acceptance|Implementation|Context|Background|Approach|Design|Refs)\b`)
 )
 
 // SpecValidationResult holds the outcome of ValidateSpec.
@@ -75,7 +75,7 @@ func ValidateSpec(issue *Issue, parentResolver func(int) (*Issue, error)) SpecVa
 
 	if !sectionHeaderRe.MatchString(body) {
 		reasons = append(reasons,
-			"no structural section header (need one of: ## Acceptance, ## Implementation, ## Context, ## Background, ## Approach, ## Design, ## Refs)")
+			"no structural section header (need one of Acceptance, Implementation, Context, Background, Approach, Design, or Refs as an H2–H6 header)")
 	}
 
 	return SpecValidationResult{
