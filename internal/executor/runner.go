@@ -1309,7 +1309,11 @@ func (r *Runner) Execute(ctx context.Context, task *Task) (*ExecutionResult, err
 // epic whose deliverables shipped via child PRs (empty parent branch) is a clean
 // success, while a parent branch carrying real commits MUST push and PR
 // successfully or the epic is reported as failed.
-func (r *Runner) finalizeEpicBranchPR(ctx context.Context, task *Task, git *GitOperations, result *ExecutionResult) {
+//
+// childTerminalStates is each executed child sub-issue's TerminalStatus
+// ("completed", "no_op", ...); see evaluateEmptyBranchPRGuard (epic.go, GH-3779)
+// for how it's used to classify the parent when the branch guard trips.
+func (r *Runner) finalizeEpicBranchPR(ctx context.Context, task *Task, git *GitOperations, result *ExecutionResult, childTerminalStates []string) {
 	// Determine base branch before the no-commits guard.
 	baseBranch := task.BaseBranch
 	if baseBranch == "" {
@@ -1323,12 +1327,26 @@ func (r *Runner) finalizeEpicBranchPR(ctx context.Context, task *Task, git *GitO
 	// whose HEAD == base HEAD produced no parent-branch deliverable (work, if any,
 	// shipped via child PRs). Skipping PR creation here is a legitimate success —
 	// and we must NOT harvest the (foreign base) SHA in that case.
+	//
+	// GH-3779: classify the parent from its children's terminal states instead of
+	// always leaving Success untouched — a decomposed parent whose children ALL
+	// no-op'd shipped nothing anywhere and must record as no_op, not completed.
 	if guardCount, _ := git.CountNewCommits(ctx, baseBranch); guardCount == 0 {
-		r.log.Warn("Epic branch has no commits vs base, skipping PR creation",
-			slog.String("task_id", task.ID),
-			slog.String("base_branch", baseBranch),
-		)
-		r.reportProgress(task.ID, "PR Skipped", 97, "epic branch has no commits relative to base")
+		evaluateEmptyBranchPRGuard(true, childTerminalStates, result)
+		if result.Outcome == "no_op" {
+			r.log.Warn("Epic branch has no commits vs base and all children no-op'd, recording epic as no_op",
+				slog.String("task_id", task.ID),
+				slog.String("base_branch", baseBranch),
+				slog.String("summary", result.Error),
+			)
+			r.reportProgress(task.ID, "No-Op", 100, result.Error)
+		} else {
+			r.log.Warn("Epic branch has no commits vs base, skipping PR creation",
+				slog.String("task_id", task.ID),
+				slog.String("base_branch", baseBranch),
+			)
+			r.reportProgress(task.ID, "PR Skipped", 97, "epic branch has no commits relative to base")
+		}
 		return
 	}
 
@@ -1746,7 +1764,11 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 				// GH-412: Execute sub-issues sequentially
 				// GH-2177: Pass task.ProjectPath as repoPath so sub-issues branch from
 				// the real repo, not the parent's worktree path.
-				if err := r.ExecuteSubIssues(ctx, task, issues, executionPath, task.ProjectPath); err != nil {
+				// GH-3779: also collect each child's terminal state so the PR-finalize
+				// guard below can tell a genuine no-op epic (all children no-op'd) from
+				// one whose deliverables shipped entirely via child sub-issue PRs.
+				childStates, err := r.executeSubIssuesTracked(ctx, task, issues, executionPath, task.ProjectPath)
+				if err != nil {
 					return &ExecutionResult{
 						TaskID:   task.ID,
 						Success:  false,
@@ -1778,7 +1800,7 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 					// instead of warn-and-continue, so a stranded epic is never recorded
 					// as a "completed" row with an empty PR (Shape A). A pre-create
 					// merged-work check avoids opening a duplicate PR (Shape C).
-					r.finalizeEpicBranchPR(ctx, task, NewGitOperations(executionPath), epicResult)
+					r.finalizeEpicBranchPR(ctx, task, NewGitOperations(executionPath), epicResult, childStates)
 				} else {
 					r.reportProgress(task.ID, "Complete", 100, "Epic completed successfully")
 				}
@@ -3478,9 +3500,13 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 			// The no-commit check at ~line 2151 only runs when result.Success==true.
 			// If the initial execution fails, that check is bypassed and gh pr create
 			// receives an empty branch, producing "No commits between main and <branch>".
+			//
+			// GH-3779: this is the non-decomposed path — an empty branch here means the
+			// task genuinely produced nothing, so it stays a hard failure (unlike the
+			// decomposed/epic guard in finalizeEpicBranchPR, which treats an empty parent
+			// branch as a legitimate success when children shipped their own PRs).
 			if guardCount, _ := git.CountNewCommits(ctx, baseBranch); guardCount == 0 {
-				result.Success = false
-				result.Error = "no_changes: branch has no commits relative to base (PR guard)"
+				evaluateEmptyBranchPRGuard(false, nil, result)
 				if backendResult != nil {
 					backendResult.ErrorType = string(ErrorTypeNoChanges)
 				}

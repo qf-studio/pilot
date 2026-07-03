@@ -3283,3 +3283,258 @@ func TestRecoveryToExecutionPath_RehydratesDescription(t *testing.T) {
 			capturedDesc, realDesc)
 	}
 }
+
+// TestDecomposedChildTerminalStateSummary covers summarizeChildTerminalStates
+// (GH-3779): a decomposed parent's outcome is "no_op" only when every child
+// also no-op'd; any other mix — including no children at all — is "completed".
+func TestDecomposedChildTerminalStateSummary(t *testing.T) {
+	tests := []struct {
+		name        string
+		states      []string
+		wantOutcome string
+		wantSummary string
+	}{
+		{
+			name:        "no children recorded",
+			states:      nil,
+			wantOutcome: "completed",
+			wantSummary: "no child sub-issues to summarize",
+		},
+		{
+			name:        "single completed child",
+			states:      []string{"completed"},
+			wantOutcome: "completed",
+			wantSummary: "1 child sub-issue(s): completed=1",
+		},
+		{
+			name:        "all children no_op",
+			states:      []string{"no_op", "no_op", "no_op"},
+			wantOutcome: "no_op",
+			wantSummary: "3 child sub-issue(s): no_op=3",
+		},
+		{
+			name:        "mixed completed and no_op — not all no_op",
+			states:      []string{"completed", "no_op", "completed"},
+			wantOutcome: "completed",
+			wantSummary: "3 child sub-issue(s): completed=2, no_op=1",
+		},
+		{
+			name:        "one failed child among no_ops — not all no_op",
+			states:      []string{"no_op", "failed"},
+			wantOutcome: "completed",
+			wantSummary: "2 child sub-issue(s): no_op=1, failed=1",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			outcome, summary := summarizeChildTerminalStates(tt.states)
+			if outcome != tt.wantOutcome {
+				t.Errorf("outcome = %q, want %q", outcome, tt.wantOutcome)
+			}
+			if summary != tt.wantSummary {
+				t.Errorf("summary = %q, want %q", summary, tt.wantSummary)
+			}
+		})
+	}
+}
+
+// TestEpicEmptyBranchPRGuardDecision is the core GH-3779 regression: it drives
+// evaluateEmptyBranchPRGuard directly (no git, no PR creation) across the three
+// scenarios the task calls out —
+//
+//   - decomposed + empty branch, all children no_op: parent records no_op, not
+//     completed, with a summary of the child mix in the error.
+//   - decomposed + empty branch, mixed children: parent stays completed
+//     (deliverables shipped via child sub-issue PRs) with the summary recorded
+//     in Output — no failure comment risk since Success stays true.
+//   - non-decomposed + empty branch: existing GH-2743 behavior is byte-for-byte
+//     preserved, and child state data (if a caller mistakenly supplied any) is
+//     ignored — the case never legitimately arises since a non-decomposed task
+//     has no children, but the guard must not use it if it did.
+func TestEpicEmptyBranchPRGuardDecision(t *testing.T) {
+	tests := []struct {
+		name            string
+		decomposed      bool
+		childStates     []string
+		wantSuccess     bool
+		wantOutcome     string
+		wantErrContains string
+		wantOutContains string
+	}{
+		{
+			name:            "non-decomposed empty branch: existing behavior preserved",
+			decomposed:      false,
+			childStates:     nil,
+			wantSuccess:     false,
+			wantOutcome:     "",
+			wantErrContains: "no_changes: branch has no commits relative to base (PR guard)",
+		},
+		{
+			name:            "non-decomposed empty branch: child state data ignored",
+			decomposed:      false,
+			childStates:     []string{"no_op", "no_op"},
+			wantSuccess:     false,
+			wantOutcome:     "",
+			wantErrContains: "no_changes: branch has no commits relative to base (PR guard)",
+		},
+		{
+			name:            "decomposed empty branch: no child data defaults to completed",
+			decomposed:      true,
+			childStates:     nil,
+			wantSuccess:     true,
+			wantOutcome:     "",
+			wantOutContains: "no child sub-issues to summarize",
+		},
+		{
+			name:            "decomposed empty branch: all children no_op records no_op",
+			decomposed:      true,
+			childStates:     []string{"no_op", "no_op"},
+			wantSuccess:     false,
+			wantOutcome:     "no_op",
+			wantErrContains: "no new commit produced",
+		},
+		{
+			name:            "decomposed empty branch: mixed children stays completed",
+			decomposed:      true,
+			childStates:     []string{"completed", "no_op"},
+			wantSuccess:     true,
+			wantOutcome:     "",
+			wantOutContains: "completed=1, no_op=1",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Mirrors the caller's starting point: epicResult / direct-path result
+			// both start Success=true before the guard runs.
+			result := &ExecutionResult{TaskID: "GH-3779", Success: true, IsEpic: tt.decomposed}
+
+			evaluateEmptyBranchPRGuard(tt.decomposed, tt.childStates, result)
+
+			if result.Success != tt.wantSuccess {
+				t.Errorf("Success = %v, want %v (error=%q)", result.Success, tt.wantSuccess, result.Error)
+			}
+			if result.Outcome != tt.wantOutcome {
+				t.Errorf("Outcome = %q, want %q", result.Outcome, tt.wantOutcome)
+			}
+			if tt.wantErrContains != "" && !strings.Contains(result.Error, tt.wantErrContains) {
+				t.Errorf("Error = %q, want it to contain %q", result.Error, tt.wantErrContains)
+			}
+			if tt.wantOutContains != "" && !strings.Contains(result.Output, tt.wantOutContains) {
+				t.Errorf("Output = %q, want it to contain %q", result.Output, tt.wantOutContains)
+			}
+			// No-PR invariant: this guard only ever runs when gh pr create is about
+			// to be skipped, so PRUrl must never be populated by it.
+			if result.PRUrl != "" {
+				t.Errorf("PRUrl = %q, want empty — guard must never create a PR", result.PRUrl)
+			}
+			// GH-3779: "no failure comment" — the only way cmd/pilot posts a ❌
+			// failure comment for an epic-parent row is Success==false with an
+			// Error that ISN'T the recognized no-op marker. Every false-Success
+			// case above carries "no new commit produced" / "no_changes:" — both
+			// recognized no-op signatures (runner.go noOpErrorSignatures) — so
+			// none of them read as a generic failure downstream.
+			if !tt.wantSuccess {
+				if !containsAny(result.Error, noOpErrorSignatures) {
+					t.Errorf("Error = %q does not match any recognized no-op signature; would be misclassified as a generic failure", result.Error)
+				}
+			}
+		})
+	}
+}
+
+// TestEpicFinalizeDecomposedEmptyBranchSkipsPRCreation drives finalizeEpicBranchPR
+// end-to-end against a real git repo (no remote configured) with an empty parent
+// branch, proving GH-3779's "decomposed + empty branch" acceptance criteria: PR
+// creation is skipped entirely (a push attempt would fail loudly since there's no
+// remote — its absence here proves the guard short-circuited before push), and the
+// parent's terminal state matches the child mix.
+func TestEpicFinalizeDecomposedEmptyBranchSkipsPRCreation(t *testing.T) {
+	tests := []struct {
+		name        string
+		childStates []string
+		wantSuccess bool
+		wantOutcome string
+	}{
+		{
+			name:        "all children no_op: parent records no_op",
+			childStates: []string{"no_op", "no_op"},
+			wantSuccess: false,
+			wantOutcome: "no_op",
+		},
+		{
+			name:        "mixed children: parent stays completed",
+			childStates: []string{"completed", "no_op"},
+			wantSuccess: true,
+			wantOutcome: "",
+		},
+		{
+			name:        "all children completed: parent stays completed",
+			childStates: []string{"completed", "completed"},
+			wantSuccess: true,
+			wantOutcome: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := initRepoWithCommitTask359(t)
+
+			r := newSilentRunnerTask359()
+			result := &ExecutionResult{TaskID: "GH-3779", Success: true, IsEpic: true}
+			task := &Task{ID: "GH-3779", Title: "epic", Description: "d", Branch: "main", BaseBranch: "main", CreatePR: true}
+
+			r.finalizeEpicBranchPR(context.Background(), task, NewGitOperations(dir), result, tt.childStates)
+
+			if result.Success != tt.wantSuccess {
+				t.Errorf("Success = %v, want %v (error=%q)", result.Success, tt.wantSuccess, result.Error)
+			}
+			if result.Outcome != tt.wantOutcome {
+				t.Errorf("Outcome = %q, want %q", result.Outcome, tt.wantOutcome)
+			}
+			if result.PRUrl != "" {
+				t.Errorf("PRUrl = %q, want empty — branch has no commits, PR must not be created", result.PRUrl)
+			}
+			if result.CommitSHA != "" {
+				t.Errorf("CommitSHA = %q, want empty — no foreign SHA should be harvested when the guard skips", result.CommitSHA)
+			}
+		})
+	}
+}
+
+// TestEpicFinalizeDecomposedNonEmptyBranchUnchanged is GH-3779's "decomposed +
+// non-empty branch" acceptance criteria: when the parent branch DOES carry
+// commits vs base, the empty-branch guard must not fire regardless of child
+// terminal states, and finalizeEpicBranchPR proceeds exactly as before
+// (TestFinalizeEpicBranchPR_PushFailIsFailure) — push is attempted and fails
+// loud since no remote is configured.
+func TestEpicFinalizeDecomposedNonEmptyBranchUnchanged(t *testing.T) {
+	dir := initRepoWithCommitTask359(t)
+	runGit(t, dir, "checkout", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(dir, "f.txt"), []byte("work\n"), 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	runGit(t, dir, "add", "f.txt")
+	runGit(t, dir, "commit", "-m", "feature work")
+
+	r := newSilentRunnerTask359()
+	result := &ExecutionResult{TaskID: "GH-3779", Success: true, IsEpic: true}
+	task := &Task{ID: "GH-3779", Title: "feat: add f", Description: "d", Branch: "feature", BaseBranch: "main", CreatePR: true}
+
+	// Even a child mix that would force no_op on an EMPTY branch must have zero
+	// effect here — the guard only inspects childStates when guardCount == 0.
+	childStates := []string{"no_op", "no_op"}
+	r.finalizeEpicBranchPR(context.Background(), task, NewGitOperations(dir), result, childStates)
+
+	if result.Success {
+		t.Error("expected Success=false when epic push fails with no remote (unchanged non-empty-branch behavior)")
+	}
+	if result.Outcome != "" {
+		t.Errorf("Outcome = %q, want empty — non-empty-branch path does not classify via child states", result.Outcome)
+	}
+	if !strings.Contains(result.Error, "push failed") {
+		t.Errorf("expected push-failed error, got %q", result.Error)
+	}
+	if result.PRUrl != "" {
+		t.Errorf("expected no PR URL on push failure, got %q", result.PRUrl)
+	}
+}

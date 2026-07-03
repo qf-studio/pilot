@@ -1510,6 +1510,93 @@ func (r *Runner) CloseIssueWithComment(ctx context.Context, projectPath string, 
 	return nil
 }
 
+// childTerminalStateOrder fixes the iteration order summarizeChildTerminalStates
+// renders its per-state counts in, so the summary text is deterministic despite
+// being built from a map.
+var childTerminalStateOrder = []string{
+	"completed", "no_op", "skipped", "declined", "rate_limited", "stalled", "infra", "failed",
+}
+
+// summarizeChildTerminalStates classifies a decomposed parent from its
+// children's terminal states (each produced by TerminalStatus): "no_op" only
+// when every child no-op'd — nothing shipped anywhere — "completed" otherwise,
+// including when there are no children to summarize. GH-3779.
+func summarizeChildTerminalStates(states []string) (outcome string, summary string) {
+	if len(states) == 0 {
+		return "completed", "no child sub-issues to summarize"
+	}
+
+	counts := make(map[string]int, len(states))
+	allNoOp := true
+	for _, s := range states {
+		counts[s]++
+		if s != "no_op" {
+			allNoOp = false
+		}
+	}
+
+	parts := make([]string, 0, len(counts))
+	for _, s := range childTerminalStateOrder {
+		if c, ok := counts[s]; ok {
+			parts = append(parts, fmt.Sprintf("%s=%d", s, c))
+			delete(counts, s)
+		}
+	}
+	// Any state outside the known set still gets counted, just after the known ones.
+	for s, c := range counts {
+		parts = append(parts, fmt.Sprintf("%s=%d", s, c))
+	}
+
+	summary = fmt.Sprintf("%d child sub-issue(s): %s", len(states), strings.Join(parts, ", "))
+	if allNoOp {
+		return "no_op", summary
+	}
+	return "completed", summary
+}
+
+// evaluateEmptyBranchPRGuard decides what happens when a task's own branch
+// carries no commits relative to base, right before `gh pr create` would
+// otherwise run (git rev-list --count <base>..<branch> == 0 — see
+// GitOperations.CountNewCommits). GH-3779.
+//
+// Non-decomposed tasks (decomposed=false): unchanged GH-2743 behavior — an
+// empty branch means the task genuinely produced nothing, so it's a hard
+// failure. childTerminalStates is ignored in this case.
+//
+// Decomposed (epic) parents (decomposed=true): an empty parent branch is not
+// automatically a failure — the real deliverables may have shipped via child
+// sub-issue PRs. The parent records as "completed" unless every child also
+// no-op'd, in which case nothing shipped anywhere and the parent records as
+// "no_op" instead. Either way PR creation is skipped and no failure comment is
+// warranted — the caller must NOT push or call gh pr create when this returns.
+func evaluateEmptyBranchPRGuard(decomposed bool, childTerminalStates []string, result *ExecutionResult) {
+	if !decomposed {
+		result.Success = false
+		result.Error = "no_changes: branch has no commits relative to base (PR guard)"
+		return
+	}
+
+	outcome, summary := summarizeChildTerminalStates(childTerminalStates)
+	if outcome == "no_op" {
+		result.Success = false
+		result.Outcome = "no_op"
+		// "no new commit produced" matches noOpErrorSignatures (runner.go) so
+		// TerminalStatus classifies this row as no_op even if Outcome is ever
+		// dropped, and matches noOpErrorMarker (cmd/pilot/handlers.go) so the
+		// no-op re-dispatch paths there recognize it instead of posting a
+		// generic failure comment.
+		result.Error = fmt.Sprintf("no new commit produced — epic branch has no commits relative to base and %s", summary)
+		return
+	}
+
+	note := fmt.Sprintf("epic branch has no commits relative to base; deliverables shipped via child sub-issue PRs — %s", summary)
+	if result.Output == "" {
+		result.Output = note
+	} else {
+		result.Output = result.Output + " — " + note
+	}
+}
+
 // ExecuteSubIssues executes created sub-issues sequentially and tracks progress on the parent.
 // Each sub-issue is executed as a separate task, and the parent issue is updated with progress.
 // Returns an error if any sub-issue fails; completed sub-issues remain done.
@@ -1518,9 +1605,26 @@ func (r *Runner) CloseIssueWithComment(ctx context.Context, projectPath string, 
 // as their ProjectPath so they can create their own branches from the real repo.
 // executionPath is still used for gh CLI commands (issue comments) that need worktree context.
 func (r *Runner) ExecuteSubIssues(ctx context.Context, parent *Task, issues []CreatedIssue, executionPath string, repoPath string) error {
+	_, err := r.executeSubIssuesTracked(ctx, parent, issues, executionPath, repoPath)
+	return err
+}
+
+// executeSubIssuesTracked is ExecuteSubIssues plus each child's terminal state
+// (TerminalStatus of its ExecutionResult, e.g. "completed" / "no_op"). GH-3779:
+// the decomposed-parent PR-finalize guard (evaluateEmptyBranchPRGuard) needs this
+// to tell a genuine no-op epic (every child no-op'd — nothing shipped anywhere)
+// from one whose deliverables shipped entirely via child sub-issue PRs.
+//
+// A child that no-ops (isNoOpResult) is non-fatal here and the loop continues —
+// mirrors the TASK-320 B2 tolerance already applied to the in-process decomposer
+// (runner_decompose.go isNoOpResult). Any other child failure still aborts the
+// whole epic, unchanged from ExecuteSubIssues' prior behavior.
+func (r *Runner) executeSubIssuesTracked(ctx context.Context, parent *Task, issues []CreatedIssue, executionPath string, repoPath string) ([]string, error) {
 	if len(issues) == 0 {
-		return fmt.Errorf("no sub-issues to execute")
+		return nil, fmt.Errorf("no sub-issues to execute")
 	}
+
+	var childStates []string
 
 	total := len(issues)
 	// Use executionPath for gh CLI commands (respects worktree isolation)
@@ -1553,7 +1657,7 @@ func (r *Runner) ExecuteSubIssues(ctx context.Context, parent *Task, issues []Cr
 		// Check context cancellation
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("execution cancelled: %w", ctx.Err())
+			return childStates, fmt.Errorf("execution cancelled: %w", ctx.Err())
 		default:
 		}
 
@@ -1587,6 +1691,7 @@ func (r *Runner) ExecuteSubIssues(ctx context.Context, parent *Task, issues []Cr
 			_ = r.UpdateIssueProgress(ctx, projectPath, issueRef, skipNote)
 			_ = r.UpdateIssueProgress(ctx, projectPath, parent.ID,
 				fmt.Sprintf("⚠️ Skipped sub-issue #%s: no task description (manual dispatch needed)", issueRef))
+			childStates = append(childStates, "skipped")
 			continue
 		}
 
@@ -1633,15 +1738,33 @@ func (r *Runner) ExecuteSubIssues(ctx context.Context, parent *Task, issues []Cr
 			failMsg := fmt.Sprintf("❌ Failed on %d/%d: %s - Error: %v",
 				i+1, total, issue.Subtask.Title, err)
 			_ = r.UpdateIssueProgress(ctx, projectPath, parent.ID, failMsg)
-			return fmt.Errorf("sub-issue %s failed: %w", issueRef, err)
+			return childStates, fmt.Errorf("sub-issue %s failed: %w", issueRef, err)
 		}
 
 		if !result.Success {
+			// GH-3779: a genuine no-op child (isNoOpResult — same classification the
+			// in-process decomposer uses, TASK-320 B2) is not a failure; it just
+			// delivered nothing. Track it and keep executing the remaining children
+			// instead of aborting the whole epic.
+			if isNoOpResult(result) {
+				childStates = append(childStates, "no_op")
+				noOpMsg := fmt.Sprintf("↩️ %d/%d produced no changes (no-op): %s — %s",
+					i+1, total, issue.Subtask.Title, result.Error)
+				_ = r.UpdateIssueProgress(ctx, projectPath, parent.ID, noOpMsg)
+				r.log.Info("sub-issue no-op; continuing epic",
+					"parent_id", parent.ID,
+					"sub_issue", issueRef,
+					"error", result.Error,
+				)
+				continue
+			}
 			failMsg := fmt.Sprintf("❌ Failed on %d/%d: %s - %s",
 				i+1, total, issue.Subtask.Title, result.Error)
 			_ = r.UpdateIssueProgress(ctx, projectPath, parent.ID, failMsg)
-			return fmt.Errorf("sub-issue %s failed: %s", issueRef, result.Error)
+			return childStates, fmt.Errorf("sub-issue %s failed: %s", issueRef, result.Error)
 		}
+
+		childStates = append(childStates, TerminalStatus(result))
 
 		// TASK-356 #1: work-loss guard. A sub-issue runs with CreatePR=true, so a
 		// successful child MUST yield a PR. When it instead reports success with real
@@ -1661,7 +1784,7 @@ func (r *Runner) ExecuteSubIssues(ctx context.Context, parent *Task, issues []Cr
 				"commit_sha", shortSHA,
 				"branch", subTask.Branch,
 			)
-			return fmt.Errorf("sub-issue %s committed work (sha %s) but produced no PR — work would be lost, halting epic", issueRef, shortSHA)
+			return childStates, fmt.Errorf("sub-issue %s committed work (sha %s) but produced no PR — work would be lost, halting epic", issueRef, shortSHA)
 		}
 
 		// Register sub-issue PR with autopilot controller (GH-596)
@@ -1696,7 +1819,7 @@ func (r *Runner) ExecuteSubIssues(ctx context.Context, parent *Task, issues []Cr
 				if err := r.subIssueMergeWait(ctx, prNum); err != nil {
 					failMsg := fmt.Sprintf("❌ Merge wait failed for %s (PR #%d): %v", issueRef, prNum, err)
 					_ = r.UpdateIssueProgress(ctx, projectPath, parent.ID, failMsg)
-					return fmt.Errorf("merge wait failed for sub-issue %s (PR #%d): %w", issueRef, prNum, err)
+					return childStates, fmt.Errorf("merge wait failed for sub-issue %s (PR #%d): %w", issueRef, prNum, err)
 				}
 
 				// Sync local main branch so the next sub-issue branches from the merged state.
@@ -1742,5 +1865,5 @@ func (r *Runner) ExecuteSubIssues(ctx context.Context, parent *Task, issues []Cr
 		"total_completed", total,
 	)
 
-	return nil
+	return childStates, nil
 }
