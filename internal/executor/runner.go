@@ -3877,7 +3877,10 @@ func (r *Runner) recordPatternOutcomes(task *Task, result *ExecutionResult) {
 	taskType := inferTaskType(task)
 	model := result.ModelName
 	if model == "" {
-		model = "claude-opus-4-6"
+		// GH-3764: same stale-hardcode bug GH-2428 fixed for execution_metrics —
+		// pattern_performance.model (feedback.go RecordPatternOutcome) would
+		// otherwise silently mislabel OpenCode/GLM runs as Claude Opus.
+		model = r.fallbackModelName()
 	}
 
 	// Get patterns linked to this project to record outcomes

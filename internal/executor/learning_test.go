@@ -289,6 +289,47 @@ func TestRecordPatternOutcomes(t *testing.T) {
 	}
 }
 
+// TestRecordPatternOutcomes_EmptyModelName covers the GH-3764 fix: when the
+// backend stream never surfaced a model name, recordPatternOutcomes must fall
+// back through Runner.fallbackModelName() (config-derived) instead of the
+// stale hardcoded "claude-opus-4-6" literal that GH-2428 already eliminated
+// at the other execution_metrics call sites.
+func TestRecordPatternOutcomes_EmptyModelName(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "outcome-empty-model-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	store, err := memory.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	_ = store.SaveCrossPattern(&memory.CrossPattern{
+		ID: "pat-empty-model", Type: "code", Title: "P1", Confidence: 0.8, Scope: "org",
+	})
+	_ = store.LinkPatternToProject("pat-empty-model", "/test/project")
+
+	runner := NewRunner()
+	runner.SetLogStore(store)
+
+	task := &Task{
+		ID:          "task-empty-model",
+		Title:       "feat: add signup",
+		ProjectPath: "/test/project",
+	}
+	result := &ExecutionResult{Success: true, ModelName: ""}
+
+	runner.recordPatternOutcomes(task, result)
+
+	c := store.GetContextualConfidence("pat-empty-model", "/test/project", "feat")
+	if c <= 0 {
+		t.Errorf("expected positive contextual confidence for pat-empty-model, got %f", c)
+	}
+}
+
 func TestRecordPatternOutcomes_NilStore(t *testing.T) {
 	runner := NewRunner()
 	// logStore is nil by default
