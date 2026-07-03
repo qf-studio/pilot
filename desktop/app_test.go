@@ -13,6 +13,11 @@ import (
 // TestGetGitGraph_DefaultLimit verifies that passing limit=0 falls back to 100
 // and that the returned GitGraphData mirrors dashboard.GitGraphState fields.
 func TestGetGitGraph_DefaultLimit(t *testing.T) {
+	// Isolate from the real user config (~/.pilot/config.yaml), whose first
+	// configured project may point at a different repo entirely — App.GetGitGraph
+	// would then diff against that repo instead of ".".
+	t.Setenv("HOME", t.TempDir())
+
 	// Use "." as project path (current dir is inside a git repo during tests).
 	state := dashboard.FetchGitGraph(".", 100)
 	if state == nil {
@@ -32,6 +37,10 @@ func TestGetGitGraph_DefaultLimit(t *testing.T) {
 
 // TestGetGitGraph_LinesMapping verifies each GitGraphLine field is copied correctly.
 func TestGetGitGraph_LinesMapping(t *testing.T) {
+	// See TestGetGitGraph_DefaultLimit: isolate from the real user config so
+	// App.GetGitGraph resolves the same project path (".") as this test does.
+	t.Setenv("HOME", t.TempDir())
+
 	state := dashboard.FetchGitGraph(".", 5)
 	if state == nil || len(state.Lines) == 0 {
 		t.Skip("no git commits available in test environment")
