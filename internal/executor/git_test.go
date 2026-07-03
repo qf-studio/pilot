@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -843,4 +844,92 @@ func TestCommitScopedStaging(t *testing.T) {
 			t.Error("node_modules/some-pkg/bin.js should remain untracked after commit")
 		}
 	})
+}
+
+// TestCreateRecoveryRef verifies GH-3785's recovery-ref mechanism: a commit
+// pinned under refs/pilot-recovery/<taskID> resolves to the expected sha,
+// survives being looked up independent of any branch, and sanitizes the
+// task ID into a safe ref path.
+func TestCreateRecoveryRef(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	tmpDir, err := os.MkdirTemp("", "pilot-git-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	ctx := context.Background()
+	_ = exec.CommandContext(ctx, "git", "-C", tmpDir, "init").Run()
+	_ = exec.CommandContext(ctx, "git", "-C", tmpDir, "config", "user.email", "test@test.com").Run()
+	_ = exec.CommandContext(ctx, "git", "-C", tmpDir, "config", "user.name", "Test User").Run()
+	_ = os.WriteFile(filepath.Join(tmpDir, "test.txt"), []byte("initial"), 0644)
+	_ = exec.CommandContext(ctx, "git", "-C", tmpDir, "add", ".").Run()
+	_ = exec.CommandContext(ctx, "git", "-C", tmpDir, "commit", "-m", "initial").Run()
+
+	headSHA, err := exec.CommandContext(ctx, "git", "-C", tmpDir, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatalf("failed to resolve HEAD: %v", err)
+	}
+	wantSHA := trimNewline(string(headSHA))
+
+	git := NewGitOperations(tmpDir)
+
+	t.Run("pins HEAD under a stable ref name", func(t *testing.T) {
+		refName, err := git.CreateRecoveryRef(ctx, "GH-3764", "HEAD")
+		if err != nil {
+			t.Fatalf("CreateRecoveryRef failed: %v", err)
+		}
+		if refName != "refs/pilot-recovery/GH-3764" {
+			t.Errorf("refName = %q, want refs/pilot-recovery/GH-3764", refName)
+		}
+
+		resolved, err := exec.CommandContext(ctx, "git", "-C", tmpDir, "rev-parse", refName).Output()
+		if err != nil {
+			t.Fatalf("recovery ref did not resolve: %v", err)
+		}
+		if trimNewline(string(resolved)) != wantSHA {
+			t.Errorf("recovery ref resolved to %q, want %q", trimNewline(string(resolved)), wantSHA)
+		}
+	})
+
+	t.Run("sanitizes unsafe task IDs", func(t *testing.T) {
+		refName, err := git.CreateRecoveryRef(ctx, "weird/task id!", "HEAD")
+		if err != nil {
+			t.Fatalf("CreateRecoveryRef failed: %v", err)
+		}
+		if strings.ContainsAny(refName, " !") {
+			t.Errorf("refName not sanitized: %q", refName)
+		}
+	})
+
+	t.Run("defaults empty fromRef to HEAD", func(t *testing.T) {
+		refName, err := git.CreateRecoveryRef(ctx, "GH-9000", "")
+		if err != nil {
+			t.Fatalf("CreateRecoveryRef failed: %v", err)
+		}
+		resolved, err := exec.CommandContext(ctx, "git", "-C", tmpDir, "rev-parse", refName).Output()
+		if err != nil {
+			t.Fatalf("recovery ref did not resolve: %v", err)
+		}
+		if trimNewline(string(resolved)) != wantSHA {
+			t.Errorf("recovery ref resolved to %q, want %q", trimNewline(string(resolved)), wantSHA)
+		}
+	})
+
+	t.Run("fails cleanly on invalid fromRef", func(t *testing.T) {
+		_, err := git.CreateRecoveryRef(ctx, "GH-9001", "refs/heads/does-not-exist")
+		if err == nil {
+			t.Fatal("expected error for nonexistent fromRef, got nil")
+		}
+		if !strings.Contains(err.Error(), "failed to create recovery ref") {
+			t.Errorf("error missing context: %v", err)
+		}
+	})
+}
+
+func trimNewline(s string) string {
+	return strings.TrimRight(s, "\n")
 }

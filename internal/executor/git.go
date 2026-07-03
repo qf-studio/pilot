@@ -494,6 +494,31 @@ func (g *GitOperations) DeleteBranch(ctx context.Context, branchName string) err
 	return nil
 }
 
+// CreateRecoveryRef pins fromRef (typically "HEAD", or "refs/heads/<branch>"
+// when called from outside the worktree that made the commits) under a
+// dedicated ref namespace (refs/pilot-recovery/<taskID>) so committed work
+// survives even if push/PR creation never succeeds and the worktree is
+// later removed. Unlike a worktree's own branch, this ref lives in the
+// shared repository (not the per-worktree admin area), so `git worktree
+// remove` cannot take it with it — the commit stays reachable via `git
+// fetch <repo> <returned-ref>` or `git show <sha>` from the main repo.
+// GH-3785: prevents child-worker commits from being stranded in the object
+// store with no reachable ref once a push/PR failure leads to worktree
+// cleanup.
+func (g *GitOperations) CreateRecoveryRef(ctx context.Context, taskID, fromRef string) (string, error) {
+	if fromRef == "" {
+		fromRef = "HEAD"
+	}
+	refName := "refs/pilot-recovery/" + sanitizeBranchName(taskID)
+	cmd := exec.CommandContext(ctx, "git", "update-ref", refName, fromRef)
+	cmd.Dir = g.projectPath
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("failed to create recovery ref %s: %w: %s", refName, err, output)
+	}
+	return refName, nil
+}
+
 // GitDiff holds numstat output from `git diff --numstat origin/main...HEAD`.
 type GitDiff struct {
 	// Files is the list of changed file paths.

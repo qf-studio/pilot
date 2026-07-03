@@ -3672,6 +3672,13 @@ func TestRunner_PRCreate_EmptyBranch_TriggersRetry(t *testing.T) {
 // does NOT fire when the branch has commits, allowing PR creation to proceed past
 // the guard. Execution reaches the push step (which fails without a remote),
 // confirming the guard was not the source of failure.
+//
+// GH-3785: this also doubles as the "simulated push failure after commit"
+// acceptance test — no remote is configured, so every retry attempt fails
+// the same way, exhausting gitPushRetryAttempts. The assertions verify the
+// retried push names its step ("push"), includes the underlying git stderr,
+// and leaves a recovery ref pinning the commit so it survives worktree
+// cleanup.
 func TestRunner_PRCreate_HasCommits_ProceedsToCreate(t *testing.T) {
 	const branch = "pilot/GH-9998"
 	dir := setupPRGuardRepo(t, branch, true) // one commit on branch
@@ -3705,10 +3712,33 @@ func TestRunner_PRCreate_HasCommits_ProceedsToCreate(t *testing.T) {
 	if strings.HasPrefix(result.Error, "no_changes:") {
 		t.Errorf("Guard fired unexpectedly on branch with commits: %q", result.Error)
 	}
-	// Error comes from the push step (no remote configured), proving execution
-	// proceeded past both the no-commit check and the GH-2743 guard.
-	if !strings.HasPrefix(result.Error, "push failed:") {
-		t.Errorf("Expected push failed error (guard passed), got: %q", result.Error)
+	// Error names the failing step and attempt count (guard passed, retries exhausted).
+	wantPrefix := fmt.Sprintf("push failed after %d attempt(s):", gitPushRetryAttempts)
+	if !strings.HasPrefix(result.Error, wantPrefix) {
+		t.Errorf("Expected push-failed-after-retries error, got: %q", result.Error)
+	}
+	// Underlying git stderr ("No configured push destination" or similar) must
+	// survive into the message, not just a generic wrapper.
+	if !strings.Contains(result.Error, "push") {
+		t.Errorf("Expected git stderr detail in error, got: %q", result.Error)
+	}
+	// Recovery instructions (branch + sha) must be present for the parent/issue comment.
+	if !strings.Contains(result.Error, "recovery: branch="+branch) {
+		t.Errorf("Expected recovery instructions with branch name, got: %q", result.Error)
+	}
+	if !strings.Contains(result.Error, "recovery_ref=refs/pilot-recovery/GH-9998") {
+		t.Errorf("Expected recovery_ref in error, got: %q", result.Error)
+	}
+
+	// The recovery ref must actually exist in the repo and resolve to a commit,
+	// proving the work is recoverable even though push never succeeded.
+	verifyCmd := exec.Command("git", "-C", dir, "rev-parse", "refs/pilot-recovery/GH-9998")
+	out, verifyErr := verifyCmd.Output()
+	if verifyErr != nil {
+		t.Fatalf("recovery ref not found in repo: %v", verifyErr)
+	}
+	if strings.TrimSpace(string(out)) == "" {
+		t.Error("recovery ref resolved to empty sha")
 	}
 }
 
