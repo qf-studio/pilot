@@ -305,6 +305,7 @@
 | Gateway WebSocket | ✅ | gateway | - | - | Session management active in gateway |
 | Health checks | ✅ | health | `pilot doctor` | - | System validation, 32 unit tests |
 | Agent doc size check | ✅ | health | `pilot doctor` | - | Warns >500 lines, errors >1000 lines per .agent/*.md (GH-2462) |
+| Adapter Verifiable wiring | ✅ | health, gateway, cmd/pilot | `pilot doctor` | - | Per-adapter `Verify(ctx)` live probes wired into doctor red-checks, `/ready` readiness checkers, and a concurrent daemon-startup preflight that alerts (non-blocking) on failure (v2.207.0, GH-3769) |
 | OpenCode backend | ✅ | executor | `--backend opencode` | `executor.backend` | HTTP/SSE alternative to Claude Code |
 | OpenAI-compatible direct backend | ✅ | executor | `type: openai-api` | `executor.openai` | Direct /v1/chat/completions for OpenAI, OpenRouter, Groq, Synthetic, vLLM, Ollama (v2.105.0, GH-2382) |
 | K8s health probes | ✅ | gateway | - | - | `/ready` and `/live` endpoints for Kubernetes (v0.37.0) |

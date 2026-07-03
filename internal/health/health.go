@@ -7,7 +7,9 @@
 package health
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"net/http"
@@ -18,7 +20,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/qf-studio/pilot/internal/adapters/slack"
+	"github.com/qf-studio/pilot/internal/adapters/telegram"
 	"github.com/qf-studio/pilot/internal/config"
+	"github.com/qf-studio/pilot/internal/health/verify"
 )
 
 // Status represents feature or dependency status
@@ -228,6 +233,88 @@ func checkGitHubTokenLive(cfg *config.Config, check githubAuthChecker) *ConfigCh
 	}
 }
 
+// verifyProbeTimeout bounds each adapter's live Verify(ctx) call during
+// doctor checks so an unreachable API can't hang `pilot doctor`.
+const verifyProbeTimeout = 5 * time.Second
+
+// checkAdapterVerify runs a live verify.Verifiable probe and turns the
+// result into a single ConfigCheck, tagging failures with tokenSource so a
+// dead credential can be diagnosed without re-deriving where it was
+// resolved from. This generalizes the GitHub-only mechanism in
+// checkGitHubTokenLive (GH-3718) to any adapter that implements Verifiable
+// (GH-3769) — callers only call it once the fast, network-free presence
+// pre-check (token/config non-empty) has already passed.
+func checkAdapterVerify(checkName, tokenSource string, v verify.Verifiable) ConfigCheck {
+	ctx, cancel := context.WithTimeout(context.Background(), verifyProbeTimeout)
+	defer cancel()
+
+	err := v.Verify(ctx)
+	switch {
+	case err == nil:
+		msg := "valid"
+		if tokenSource != "" {
+			msg = fmt.Sprintf("valid (source: %s)", tokenSource)
+		}
+		return ConfigCheck{Name: checkName, Status: StatusOK, Message: msg}
+	case errors.Is(err, verify.ErrProbeNotImplemented):
+		// No live probe wired up for this adapter yet — presence already
+		// passed, so report configured-but-unchecked rather than red.
+		return ConfigCheck{Name: checkName, Status: StatusOK, Message: "configured (no live probe yet)"}
+	default:
+		msg := err.Error()
+		if tokenSource != "" {
+			msg = fmt.Sprintf("%s (source: %s)", msg, tokenSource)
+		}
+		return ConfigCheck{
+			Name:    checkName,
+			Status:  StatusError,
+			Message: msg,
+			Fix:     fmt.Sprintf("Check %s credentials are valid and not expired", checkName),
+		}
+	}
+}
+
+// checkTelegramTokenLive makes one live getUpdates call to confirm the
+// configured Telegram bot token actually works, mirroring
+// checkGitHubTokenLive for the Telegram adapter (GH-3769). Returns nil when
+// Telegram isn't enabled or has no token — those cases are already covered
+// by the telegram.bot_token presence check.
+func checkTelegramTokenLive(cfg *config.Config, newClient func(token string) verify.Verifiable) *ConfigCheck {
+	if cfg.Adapters == nil || cfg.Adapters.Telegram == nil || !cfg.Adapters.Telegram.Enabled {
+		return nil
+	}
+	token := cfg.Adapters.Telegram.BotToken
+	if token == "" {
+		return nil
+	}
+	check := checkAdapterVerify("telegram.token.live", "", newClient(token))
+	return &check
+}
+
+// checkSlackTokenLive makes one live auth.test call to confirm the
+// configured Slack bot token actually works, mirroring
+// checkGitHubTokenLive for the Slack adapter (GH-3769). Returns nil when
+// Slack isn't enabled or has no token — those cases are already covered by
+// the slack.bot_token presence check.
+func checkSlackTokenLive(cfg *config.Config, newClient func(token string) verify.Verifiable) *ConfigCheck {
+	if cfg.Adapters == nil || cfg.Adapters.Slack == nil || !cfg.Adapters.Slack.Enabled {
+		return nil
+	}
+	token := cfg.Adapters.Slack.BotToken
+	if token == "" {
+		return nil
+	}
+	check := checkAdapterVerify("slack.token.live", "", newClient(token))
+	return &check
+}
+
+// newTelegramVerifier and newSlackVerifier build the real live-probe client
+// for checkTelegramTokenLive/checkSlackTokenLive. Injectable so tests can
+// substitute fake verify.Verifiable implementations instead of hitting the
+// real Telegram/Slack APIs.
+var newTelegramVerifier = func(token string) verify.Verifiable { return telegram.NewClient(token) }
+var newSlackVerifier = func(token string) verify.Verifiable { return slack.NewClient(token) }
+
 // checkBrewTapHealth checks whether the last release.yml run failed at a
 // homebrew step, which indicates that HOMEBREW_TAP_GITHUB_TOKEN has expired.
 // Uses unauthenticated GitHub API calls (public repo, 60 req/hour limit).
@@ -326,6 +413,12 @@ func RunChecks(cfg *config.Config) *HealthReport {
 	}
 	configChecks = append(configChecks, checkBrewTapHealth(brewTapHTTPGet))
 	if liveCheck := checkGitHubTokenLive(cfg, githubAuthCheck); liveCheck != nil {
+		configChecks = append(configChecks, *liveCheck)
+	}
+	if liveCheck := checkTelegramTokenLive(cfg, newTelegramVerifier); liveCheck != nil {
+		configChecks = append(configChecks, *liveCheck)
+	}
+	if liveCheck := checkSlackTokenLive(cfg, newSlackVerifier); liveCheck != nil {
 		configChecks = append(configChecks, *liveCheck)
 	}
 

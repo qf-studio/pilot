@@ -37,6 +37,7 @@ import (
 	"github.com/qf-studio/pilot/internal/dashboard"
 	"github.com/qf-studio/pilot/internal/executor"
 	"github.com/qf-studio/pilot/internal/gateway"
+	"github.com/qf-studio/pilot/internal/health/verify"
 	"github.com/qf-studio/pilot/internal/logging"
 	"github.com/qf-studio/pilot/internal/memory"
 	"github.com/qf-studio/pilot/internal/pilot"
@@ -2218,6 +2219,15 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 			slog.Bool("store_nil", store == nil),
 		)
 	}
+
+	// GH-3769: Verify every enabled adapter's credentials concurrently
+	// before pollers start, so a dead token surfaces as a loud startup
+	// error/alert instead of silently failing on the first poll. Each
+	// verifier is also registered with the gateway so /ready reports real
+	// per-adapter status.
+	adapterVerifiers := buildAdapterVerifiers(cfg)
+	runAdapterPreflight(ctx, adapterVerifiers, alertsEngine)
+	registerAdapterReadiness(gwServer, adapterVerifiers, verify.DefaultTimeout)
 
 	// GH-929: Start GitHub polling for multiple repos if enabled
 	var ghPollers []*github.Poller
