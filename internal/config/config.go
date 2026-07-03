@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -489,6 +490,78 @@ func defaultAlertRules() []AlertRuleConfig {
 	}
 }
 
+// envVarRefPattern matches ${VAR} and $VAR references, the two forms
+// os.ExpandEnv supports.
+var envVarRefPattern = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)`)
+
+// sensitiveConfigKeyPattern matches YAML keys that hold sensitive values,
+// where an empty ${VAR} expansion is a load-time error rather than a warning.
+var sensitiveConfigKeyPattern = regexp.MustCompile(`(?i)(token|key|secret|password)`)
+
+// checkEnvVarExpansion pre-scans raw YAML for ${VAR} and $VAR references
+// before os.ExpandEnv runs, so an empty/unset variable can be reported with
+// the config key and line it was found on. os.ExpandEnv silently substitutes
+// unset or empty variables with "", which is dangerous for fields like
+// github.token: a typo'd env var name would otherwise load a config with a
+// silently empty credential instead of failing loudly.
+//
+// References that resolve to empty are handled based on the YAML key they
+// appear on: sensitive keys (matching token/key/secret/password, case
+// insensitive) cause Load to fail with an error naming both the variable and
+// the offending key/line; all other keys just get a log.Warn and expansion
+// proceeds as before. The returned warnings are the non-sensitive messages
+// that were logged, exposed for testing.
+func checkEnvVarExpansion(data string) ([]string, error) {
+	var warnings []string
+
+	lines := strings.Split(data, "\n")
+	for i, line := range lines {
+		matches := envVarRefPattern.FindAllStringSubmatch(line, -1)
+		if matches == nil {
+			continue
+		}
+
+		for _, match := range matches {
+			varName := match[1]
+			if varName == "" {
+				varName = match[2]
+			}
+
+			// os.LookupEnv mirrors what os.ExpandEnv effectively does:
+			// an unset var and a var set to "" both expand to "".
+			value, _ := os.LookupEnv(varName)
+			if value != "" {
+				continue
+			}
+
+			key := yamlKeyFromLine(line)
+			lineNum := i + 1
+
+			if sensitiveConfigKeyPattern.MatchString(key) {
+				return warnings, fmt.Errorf("config: environment variable %q referenced by %q on line %d is unset or empty; refusing to load a config with an empty sensitive value (line: %q)", varName, key, lineNum, strings.TrimSpace(line))
+			}
+
+			msg := fmt.Sprintf("config: environment variable %q referenced by %q on line %d is unset or empty; proceeding with empty expansion (line: %q)", varName, key, lineNum, strings.TrimSpace(line))
+			log.Printf("WARN: %s", msg)
+			warnings = append(warnings, msg)
+		}
+	}
+	return warnings, nil
+}
+
+// yamlKeyFromLine extracts the YAML key from a "key: value" line, trimming
+// list-item dashes and surrounding whitespace. Returns "" if the line has no
+// colon (e.g. a bare list item or a multi-line value continuation).
+func yamlKeyFromLine(line string) string {
+	idx := strings.Index(line, ":")
+	if idx == -1 {
+		return ""
+	}
+	key := strings.TrimSpace(line[:idx])
+	key = strings.TrimPrefix(key, "-")
+	return strings.TrimSpace(key)
+}
+
 // Load reads and parses configuration from a YAML file at the given path.
 // Environment variables in the file are expanded using os.ExpandEnv syntax.
 // If the file does not exist, default configuration is returned.
@@ -502,6 +575,11 @@ func Load(path string) (*Config, error) {
 			return config, nil // Return defaults if no config file
 		}
 		return nil, fmt.Errorf("failed to read config: %w", err)
+	}
+
+	// Fail loud on empty ${VAR}/$VAR expansion for sensitive fields (GH-3755)
+	if _, err := checkEnvVarExpansion(string(data)); err != nil {
+		return nil, err
 	}
 
 	// Expand environment variables

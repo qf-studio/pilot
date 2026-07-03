@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -355,6 +356,136 @@ adapters:
 
 		if config.Adapters.Linear.APIKey != testValue {
 			t.Errorf("Linear.APIKey = %q, want %q (env var expansion failed)", config.Adapters.Linear.APIKey, testValue)
+		}
+	})
+
+	t.Run("EmptySensitiveEnvVarFailsLoud", func(t *testing.T) {
+		// GH-3755: an unset env var referenced by a sensitive field (token,
+		// key, secret, password) must fail Load loudly instead of silently
+		// loading an empty credential.
+		if err := os.Unsetenv("GH3755_UNSET_TOKEN_VAR"); err != nil {
+			t.Fatalf("Unsetenv failed: %v", err)
+		}
+
+		tmpDir := t.TempDir()
+		configPath := filepath.Join(tmpDir, "config.yaml")
+
+		configContent := `
+version: "1.0"
+adapters:
+  github:
+    enabled: true
+    token: "${GH3755_UNSET_TOKEN_VAR}"
+`
+		if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+			t.Fatalf("Failed to write test config: %v", err)
+		}
+
+		_, err := Load(configPath)
+		if err == nil {
+			t.Fatal("Load should return an error for an unset env var referenced by a sensitive field")
+		}
+		if !strings.Contains(err.Error(), "GH3755_UNSET_TOKEN_VAR") {
+			t.Errorf("Load error = %q, want it to mention GH3755_UNSET_TOKEN_VAR", err.Error())
+		}
+		if !strings.Contains(err.Error(), "token") {
+			t.Errorf("Load error = %q, want it to mention the offending key %q", err.Error(), "token")
+		}
+	})
+
+	t.Run("EmptyNonSensitiveEnvVarWarnsAndLoads", func(t *testing.T) {
+		// A non-sensitive field with an unset env var should still load
+		// successfully, only logging a warning.
+		if err := os.Unsetenv("GH3755_UNSET_LABEL_VAR"); err != nil {
+			t.Fatalf("Unsetenv failed: %v", err)
+		}
+
+		tmpDir := t.TempDir()
+		configPath := filepath.Join(tmpDir, "config.yaml")
+
+		configContent := `
+version: "1.0"
+projects:
+  - name: "${GH3755_UNSET_LABEL_VAR}"
+    path: "/path/to/project"
+`
+		if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+			t.Fatalf("Failed to write test config: %v", err)
+		}
+
+		config, err := Load(configPath)
+		if err != nil {
+			t.Fatalf("Load should succeed for a non-sensitive field with an unset env var, got error: %v", err)
+		}
+		if len(config.Projects) != 1 {
+			t.Fatalf("Projects length = %d, want 1", len(config.Projects))
+		}
+		if config.Projects[0].Name != "" {
+			t.Errorf("Projects[0].Name = %q, want empty string (expanded from unset var)", config.Projects[0].Name)
+		}
+
+		warnings, err := checkEnvVarExpansion(configContent)
+		if err != nil {
+			t.Fatalf("checkEnvVarExpansion returned unexpected error: %v", err)
+		}
+		if len(warnings) != 1 {
+			t.Fatalf("checkEnvVarExpansion warnings = %d, want 1", len(warnings))
+		}
+		if !strings.Contains(warnings[0], "GH3755_UNSET_LABEL_VAR") {
+			t.Errorf("warning = %q, want it to mention GH3755_UNSET_LABEL_VAR", warnings[0])
+		}
+	})
+
+	t.Run("RealConfigStillLoadsUnchanged", func(t *testing.T) {
+		// GH-3755 regression guard: a realistic config with sensitive fields
+		// backed by properly set env vars must still load unchanged.
+		t.Setenv("GH3755_REAL_GITHUB_TOKEN", "gh-real-token")
+		t.Setenv("GH3755_REAL_LINEAR_KEY", "linear-real-key")
+
+		tmpDir := t.TempDir()
+		configPath := filepath.Join(tmpDir, "config.yaml")
+
+		configContent := `
+version: "2.0"
+gateway:
+  host: "0.0.0.0"
+  port: 8080
+adapters:
+  github:
+    enabled: true
+    token: "${GH3755_REAL_GITHUB_TOKEN}"
+  linear:
+    enabled: true
+    api_key: "${GH3755_REAL_LINEAR_KEY}"
+orchestrator:
+  model: "claude-opus"
+  max_concurrent: 4
+projects:
+  - name: "test-project"
+    path: "/path/to/project"
+    navigator: true
+    default_branch: "develop"
+default_project: "test-project"
+`
+		if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+			t.Fatalf("Failed to write test config: %v", err)
+		}
+
+		config, err := Load(configPath)
+		if err != nil {
+			t.Fatalf("Load failed for a real config with properly set env vars: %v", err)
+		}
+		if config.Adapters.GitHub.Token != "gh-real-token" {
+			t.Errorf("GitHub.Token = %q, want %q", config.Adapters.GitHub.Token, "gh-real-token")
+		}
+		if config.Adapters.Linear.APIKey != "linear-real-key" {
+			t.Errorf("Linear.APIKey = %q, want %q", config.Adapters.Linear.APIKey, "linear-real-key")
+		}
+		if config.Orchestrator.Model != "claude-opus" {
+			t.Errorf("Orchestrator.Model = %q, want %q", config.Orchestrator.Model, "claude-opus")
+		}
+		if config.DefaultProject != "test-project" {
+			t.Errorf("DefaultProject = %q, want %q", config.DefaultProject, "test-project")
 		}
 	})
 
