@@ -1,8 +1,10 @@
 package executor
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"runtime"
@@ -1069,5 +1071,64 @@ exit 2
 	}
 	if strings.Contains(lines[1], "--resume") {
 		t.Errorf("second invocation should not contain --resume: %q", lines[1])
+	}
+}
+
+// TestClaudeCodeBackendEmptyModelLogsAndOmitsFlag covers GH-3754: when
+// ExecuteOptions.Model is empty, the backend must not pass --model to the
+// worker (so it falls through to the worker's own default) and must log
+// that omission loudly, including the backend type and task ID, instead of
+// silently dropping the flag.
+func TestClaudeCodeBackendEmptyModelLogsAndOmitsFlag(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake-CLI test relies on shell scripts; skipping on windows")
+	}
+
+	tmpDir := t.TempDir()
+	logFile := tmpDir + "/calls.log"
+	script := tmpDir + "/fake-claude"
+
+	body := `#!/bin/sh
+printf '%s\n' "$*" >> ` + logFile + `
+exit 0
+`
+	if err := os.WriteFile(script, []byte(body), 0755); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+
+	var buf bytes.Buffer
+	backend := NewClaudeCodeBackend(&ClaudeCodeConfig{Command: script})
+	backend.log = slog.New(slog.NewTextHandler(&buf, nil))
+
+	opts := ExecuteOptions{
+		Prompt:       "hello",
+		ProjectPath:  tmpDir,
+		TaskID:       "GH-3754-test",
+		EventHandler: func(BackendEvent) {},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := backend.Execute(ctx, opts); err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+
+	data, readErr := os.ReadFile(logFile)
+	if readErr != nil {
+		t.Fatalf("read log: %v", readErr)
+	}
+	if strings.Contains(string(data), "--model") {
+		t.Errorf("expected no --model flag in argv when opts.Model is empty, got: %q", data)
+	}
+
+	logOutput := buf.String()
+	if !strings.Contains(logOutput, "Omitting --model flag") {
+		t.Errorf("expected empty-model log line, got log output: %s", logOutput)
+	}
+	if !strings.Contains(logOutput, BackendTypeClaudeCode) {
+		t.Errorf("expected backend type %q in log line, got: %s", BackendTypeClaudeCode, logOutput)
+	}
+	if !strings.Contains(logOutput, "GH-3754-test") {
+		t.Errorf("expected task_id in log line, got: %s", logOutput)
 	}
 }

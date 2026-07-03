@@ -2100,6 +2100,7 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 	allowedTools, mcpConfigPath := r.executionToolOptions()
 	backendResult, err := r.backend.Execute(stallExecutionCtx, ExecuteOptions{
 		Prompt:          prompt,
+		TaskID:          task.ID,
 		ProjectPath:     executionPath, // Use worktree path if active
 		Verbose:         task.Verbose,
 		Model:           selectedModel,
@@ -2421,6 +2422,7 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 						smartAllowed, smartMCP := r.executionToolOptions()
 						retryResult, retryErr := r.backend.Execute(retryCtx, ExecuteOptions{
 							Prompt:          prompt,
+							TaskID:          task.ID,
 							ProjectPath:     executionPath, // TASK-323: retry in the worktree, not the user's real repo
 							Verbose:         task.Verbose,
 							Model:           selectedModel,
@@ -2613,6 +2615,9 @@ retrySucceeded:
 		result.ModelName = state.modelName
 	}
 	if result.ModelName == "" {
+		log.Warn("Telemetry produced no model name; recording config-derived guess",
+			slog.String("task_id", task.ID),
+		)
 		// GH-2428: derive from config (DefaultModel/OpenCode.Model/backend type)
 		// instead of hardcoding "claude-opus-4-6". The hardcoded value was stale
 		// (Claude Code reports 4-7) and silently labelled OpenCode/GLM runs as
@@ -2764,6 +2769,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 				noopRetryAllowed, noopRetryMCP := r.executionToolOptions()
 				retryResult, retryErr := r.backend.Execute(ctx, ExecuteOptions{
 					Prompt:          retryPrompt,
+					TaskID:          task.ID,
 					ProjectPath:     executionPath, // TASK-323: retry in the worktree so CountNewCommits can see its commits
 					Verbose:         task.Verbose,
 					Model:           selectedModel,
@@ -3070,6 +3076,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 					feedbackAllowed, feedbackMCP := r.executionToolOptions()
 					retryResult, retryErr := r.backend.Execute(ctx, ExecuteOptions{
 						Prompt:        retryPrompt,
+						TaskID:        task.ID,
 						ProjectPath:   executionPath, // GH-3577: retry in the worktree, not the daemon's repo root
 						Verbose:       task.Verbose,
 						Model:         selectedModel,
@@ -3349,6 +3356,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 					intentAllowed, intentMCP := r.executionToolOptions()
 					_, retryErr := r.backend.Execute(ctx, ExecuteOptions{
 						Prompt:        retryPrompt,
+						TaskID:        task.ID,
 						ProjectPath:   executionPath, // GH-3577: retry in the worktree, not the daemon's repo root
 						Verbose:       task.Verbose,
 						Model:         selectedModel,
@@ -4005,6 +4013,7 @@ func (r *Runner) runSelfReview(ctx context.Context, task *Task, state *progressS
 	reviewAllowed, reviewMCP := r.executionToolOptions()
 	result, err := r.backend.Execute(reviewCtx, ExecuteOptions{
 		Prompt:          reviewPrompt,
+		TaskID:          task.ID,
 		ProjectPath:     task.ProjectPath,
 		Verbose:         task.Verbose,
 		Model:           selectedModel,

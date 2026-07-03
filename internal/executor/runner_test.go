@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -3441,6 +3442,61 @@ func TestRunnerFallbackModelName(t *testing.T) {
 				t.Errorf("fallbackModelName() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+// TestExecuteWithOptions_EmptyModelNameLogsWarn covers GH-3754: when telemetry
+// produces no model name (backend result and stream state both empty), the
+// fallbackModelName() guess must be preceded by a loud Warn log instead of
+// silently recording a config-derived value.
+func TestExecuteWithOptions_EmptyModelNameLogsWarn(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	const branch = "pilot/GH-3754-model-warn"
+	dir := setupPRGuardRepo(t, branch, true) // adds a real commit so no-commit guard doesn't fire
+
+	backend := &mockFixedBackend{
+		result: &BackendResult{Success: true, Output: "done", Model: ""},
+	}
+
+	var buf bytes.Buffer
+	runner := NewRunnerWithBackend(backend)
+	runner.log = slog.New(slog.NewTextHandler(&buf, nil))
+	runner.SetRecordingEnabled(false)
+	runner.skipPreflightChecks = true
+	runner.config = &BackendConfig{SkipSelfReview: true}
+
+	task := &Task{
+		ID:          "GH-3754-model-warn",
+		Title:       "test empty model name warns",
+		Description: "verify fallback model name logs loudly",
+		ProjectPath: dir,
+		Branch:      branch,
+		CreatePR:    false,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	result, err := runner.Execute(ctx, task)
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+	if !result.Success {
+		t.Fatalf("Execute() not successful: %s", result.Error)
+	}
+	if result.ModelName == "" {
+		t.Fatal("expected fallbackModelName() to populate ModelName")
+	}
+
+	logOutput := buf.String()
+	if !strings.Contains(logOutput, "Telemetry produced no model name") {
+		t.Errorf("expected fallback-model warn log line, got: %s", logOutput)
+	}
+	if !strings.Contains(logOutput, task.ID) {
+		t.Errorf("expected task_id in warn log line, got: %s", logOutput)
 	}
 }
 

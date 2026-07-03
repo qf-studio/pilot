@@ -101,6 +101,9 @@ func (r *ModelRouter) resolveComplexity(task *Task) Complexity {
 // When an outcome tracker is set, checks failure rates and escalates if needed (GH-1991).
 func (r *ModelRouter) SelectModel(task *Task) string {
 	if r.modelConfig == nil || !r.modelConfig.Enabled {
+		slog.Debug("Model routing nil/disabled, returning empty model for backend default",
+			slog.String("task_id", task.ID),
+		)
 		return ""
 	}
 

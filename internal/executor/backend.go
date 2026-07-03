@@ -26,6 +26,10 @@ type ExecuteOptions struct {
 	// Prompt is the full prompt to send to the AI backend
 	Prompt string
 
+	// TaskID identifies the task driving this execution, for correlating
+	// backend-level log lines (e.g. model-routing decisions) with the task.
+	TaskID string
+
 	// ProjectPath is the working directory for execution
 	ProjectPath string
 
