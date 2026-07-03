@@ -472,10 +472,10 @@ func TestPoller_CheckForNewIssues_NoCallback(t *testing.T) {
 }
 
 func TestPoller_CheckForNewIssues_SkipsAlreadyProcessed(t *testing.T) {
-	// Issue 1 has pilot-failed and is at max retries — should be skipped
-	// Issue 2 has only pilot so should be processed
+	// Issue 1 has pilot-failed and is at max retries (pilot-failed-retry-exhausted,
+	// GH-3715) — should be skipped. Issue 2 has only pilot so should be processed.
 	issues := []*Issue{
-		{Number: 1, Title: "Issue 1", Labels: []Label{{Name: "pilot"}, {Name: "pilot-failed"}}},
+		{Number: 1, Title: "Issue 1", Labels: []Label{{Name: "pilot"}, {Name: "pilot-failed"}, {Name: LabelFailedRetryExhausted}}},
 		{Number: 2, Title: "Issue 2", Labels: []Label{{Name: "pilot"}}},
 	}
 
@@ -493,13 +493,7 @@ func TestPoller_CheckForNewIssues_SkipsAlreadyProcessed(t *testing.T) {
 			atomic.AddInt32(&callCount, 1)
 			return nil
 		}),
-		WithMaxFailedRetries(3),
 	)
-
-	// GH-2176: Set retry count to max so issue is skipped (not auto-retried)
-	poller.mu.Lock()
-	poller.failedRetryCount[1] = 3
-	poller.mu.Unlock()
 
 	poller.checkForNewIssues(context.Background())
 	poller.WaitForActive()
@@ -2133,10 +2127,13 @@ func TestPoller_AutoRetryFailedIssue_FirstFailure(t *testing.T) {
 	}
 }
 
+// GH-3715: retry limit is now enforced via the pilot-failed-retry-exhausted
+// label (persisted across restarts) rather than the in-memory failedRetryCount
+// map. An issue already carrying the exhausted label must be skipped.
 func TestPoller_AutoRetryFailedIssue_RetryLimitReached(t *testing.T) {
 	now := time.Now()
 	issues := []*Issue{
-		{Number: 42, State: "open", Title: "Stuck issue", Labels: []Label{{Name: "pilot"}, {Name: LabelFailed}}, CreatedAt: now.Add(-1 * time.Hour)},
+		{Number: 42, State: "open", Title: "Stuck issue", Labels: []Label{{Name: "pilot"}, {Name: LabelFailed}, {Name: LabelFailedRetryExhausted}}, CreatedAt: now.Add(-1 * time.Hour)},
 		{Number: 43, State: "open", Title: "Available issue", Labels: []Label{{Name: "pilot"}}, CreatedAt: now},
 	}
 
@@ -2147,14 +2144,7 @@ func TestPoller_AutoRetryFailedIssue_RetryLimitReached(t *testing.T) {
 	defer server.Close()
 
 	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
-	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second,
-		WithMaxFailedRetries(3),
-	)
-
-	// Simulate: already retried 3 times
-	poller.mu.Lock()
-	poller.failedRetryCount[42] = 3
-	poller.mu.Unlock()
+	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second)
 
 	issue, err := poller.findOldestUnprocessedIssue(context.Background())
 	if err != nil {
@@ -2278,10 +2268,12 @@ func TestPoller_AutoRetryFailedIssue_ParallelMode(t *testing.T) {
 	}
 }
 
+// GH-3715: retry limit is now enforced via the pilot-failed-retry-exhausted
+// label rather than the in-memory failedRetryCount map, so it survives restarts.
 func TestPoller_AutoRetryFailedIssue_ParallelMode_LimitReached(t *testing.T) {
 	now := time.Now()
 	issues := []*Issue{
-		{Number: 42, State: "open", Title: "Stuck issue", Labels: []Label{{Name: "pilot"}, {Name: LabelFailed}}, CreatedAt: now.Add(-1 * time.Hour)},
+		{Number: 42, State: "open", Title: "Stuck issue", Labels: []Label{{Name: "pilot"}, {Name: LabelFailed}, {Name: LabelFailedRetryExhausted}}, CreatedAt: now.Add(-1 * time.Hour)},
 	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2298,13 +2290,7 @@ func TestPoller_AutoRetryFailedIssue_ParallelMode_LimitReached(t *testing.T) {
 			processedCount.Add(1)
 			return nil
 		}),
-		WithMaxFailedRetries(2),
 	)
-
-	// Simulate: already at max retries
-	poller.mu.Lock()
-	poller.failedRetryCount[42] = 2
-	poller.mu.Unlock()
 
 	poller.checkForNewIssues(context.Background())
 	poller.WaitForActive()

@@ -152,6 +152,13 @@ type Config struct {
 	// (MaxFailures) provides transient backoff; this cap makes persistent failures
 	// terminal so they don't loop indefinitely. Default: 5.
 	MaxMergeAttempts int `yaml:"max_merge_attempts"`
+	// MaxRebaseAttempts is the hard cap on successful auto-rebases (GitHub
+	// UpdatePullRequestBranch) for the same PR before autopilot stops
+	// re-rebasing and escalates to StageFailed for human attention. Without
+	// this cap a PR can cycle conflict -> rebase-success -> CI -> conflict
+	// indefinitely, since a successful rebase consumes no other retry budget.
+	// Default: 3.
+	MaxRebaseAttempts int `yaml:"max_rebase_attempts"`
 	// MaxReleasingAttempts is the hard cap on handleReleasing retries before the PR
 	// is transitioned to StageFailed. Prevents a release that can never succeed (e.g.
 	// persistent GitHub API errors or a tag creation race) from looping indefinitely.
@@ -331,6 +338,7 @@ func DefaultConfig() *Config {
 		FailureResetTimeout:  30 * time.Minute,
 		MaxMergesPerHour:     10,
 		MaxMergeAttempts:     5,
+		MaxRebaseAttempts:    3,
 		MaxReleasingAttempts: 10,
 		ApprovalTimeout:      1 * time.Hour,
 		Release:              nil, // Disabled by default
@@ -491,6 +499,12 @@ type PRState struct {
 	CIWaitStartedAt time.Time
 	// MergeAttempts counts how many times merge has been attempted.
 	MergeAttempts int
+	// RebaseAttempts counts how many times auto-rebase (UpdatePullRequestBranch)
+	// has succeeded for this PR. A successful rebase returns the PR to
+	// StageWaitingCI without consuming MergeAttempts, so without this counter
+	// a PR can cycle conflict -> rebase-success -> CI -> conflict indefinitely.
+	// Reset to 0 on merge success. Persisted so the cap survives restarts.
+	RebaseAttempts int
 	// Error holds the last error message if Stage is StageFailed.
 	Error string
 	// CreatedAt is when the PR entered the autopilot pipeline.
@@ -556,6 +570,7 @@ func (ps *PRState) snapshot() *PRState {
 		LastChecked:             ps.LastChecked,
 		CIWaitStartedAt:         ps.CIWaitStartedAt,
 		MergeAttempts:           ps.MergeAttempts,
+		RebaseAttempts:          ps.RebaseAttempts,
 		Error:                   ps.Error,
 		CreatedAt:               ps.CreatedAt,
 		ReleaseVersion:          ps.ReleaseVersion,

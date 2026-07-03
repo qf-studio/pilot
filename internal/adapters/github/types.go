@@ -119,10 +119,21 @@ const (
 	LabelRetry1         = "pilot-retry-1"
 	LabelRetry2         = "pilot-retry-2"
 	LabelRetryExhausted = "pilot-retry-exhausted"
+
+	// GH-3715: Failed-retry counter labels persist pilot-failed retry state
+	// across `pilot start` restarts (the in-memory failedRetryCount map was
+	// lost on restart, letting a persistently failing issue retry indefinitely).
+	LabelFailedRetry1         = "pilot-failed-retry-1"
+	LabelFailedRetry2         = "pilot-failed-retry-2"
+	LabelFailedRetryExhausted = "pilot-failed-retry-exhausted"
 )
 
 // RetryStateLabels lists the retry-counter labels in escalation order. GH-2432.
 var RetryStateLabels = []string{LabelRetry1, LabelRetry2, LabelRetryExhausted}
+
+// FailedRetryStateLabels lists the pilot-failed retry-counter labels in
+// escalation order. GH-3715.
+var FailedRetryStateLabels = []string{LabelFailedRetry1, LabelFailedRetry2, LabelFailedRetryExhausted}
 
 // Priority mapping from GitHub labels
 type Priority int
