@@ -962,6 +962,11 @@
       "type": "relates_to"
     },
     {
+      "from": "mem-040",
+      "to": "mem-044",
+      "type": "relates_to"
+    },
+    {
       "from": "TASK-358",
       "to": "mem-024",
       "type": "produced"
