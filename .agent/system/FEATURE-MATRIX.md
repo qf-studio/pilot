@@ -305,7 +305,6 @@
 | Gateway WebSocket | ✅ | gateway | - | - | Session management active in gateway |
 | Health checks | ✅ | health | `pilot doctor` | - | System validation, 32 unit tests |
 | Agent doc size check | ✅ | health | `pilot doctor` | - | Warns >500 lines, errors >1000 lines per .agent/*.md (GH-2462) |
-| Adapter Verifiable wiring | ✅ | health, gateway, cmd/pilot | `pilot doctor` | - | Per-adapter `Verify(ctx)` live probes wired into doctor red-checks, `/ready` readiness checkers, and a concurrent daemon-startup preflight that alerts (non-blocking) on failure (v2.207.0, GH-3769) |
 | OpenCode backend | ✅ | executor | `--backend opencode` | `executor.backend` | HTTP/SSE alternative to Claude Code |
 | OpenAI-compatible direct backend | ✅ | executor | `type: openai-api` | `executor.openai` | Direct /v1/chat/completions for OpenAI, OpenRouter, Groq, Synthetic, vLLM, Ollama (v2.105.0, GH-2382) |
 | K8s health probes | ✅ | gateway | - | - | `/ready` and `/live` endpoints for Kubernetes (v0.37.0) |
@@ -403,6 +402,7 @@
 | Board sync owner guard | ✅ | adapters/github | - | - | Guard owner extraction in board sync construction (v2.30.0, PR #1871) |
 | Board sync tests | ✅ | adapters/github | - | - | ProjectBoardSync and ExecuteGraphQL unit tests (v2.30.0, PR #1865) |
 | CI context wiring | ✅ | autopilot | - | - | Wire proper CI context from autopilot controller (v2.52.0, PR #1981) |
+| Rate-limit-aware PR loop backoff | ✅ | autopilot | - | - | processAllPRs + orphan-PR reconciler enter a bounded cooldown on GitHub 403 rate-limit instead of re-hitting the API every tick; poller logs Warn (not Info) when a created PR has no autopilot callback wired (v2.207.3, GH-3784) |
 
 ## Epic Management
 

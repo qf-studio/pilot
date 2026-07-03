@@ -220,6 +220,13 @@ type Controller struct {
 	// cachedBotLogin holds the authenticated GitHub login for the Pilot token.
 	// Populated lazily by getBotLogin; protected by mu. GH-3417.
 	cachedBotLogin string
+
+	// rateLimitedUntil holds off processAllPRs/reconcileOrphanPRs/ScanRecentlyMergedPRs
+	// after a GitHub primary-rate-limit response, instead of re-hitting the API on every
+	// PR on every tick until quota resets. Protected by mu. GH-3784: a sustained rate-limit
+	// window with no backoff left green, approved PRs unmerged for over an hour because
+	// every tick burned through the exhausted quota re-fetching every tracked PR.
+	rateLimitedUntil time.Time
 }
 
 // NewController creates an autopilot controller with all required components.
@@ -2752,8 +2759,19 @@ func (c *Controller) startReconciler(ctx context.Context) {
 // fired — e.g. the executor returned pr_url="" or the poller gate filtered it.
 // The function is idempotent and safe to call concurrently with processAllPRs.
 func (c *Controller) reconcileOrphanPRs(ctx context.Context) {
+	if c.rateLimitCooldownActive() {
+		return
+	}
+
 	prs, err := c.ghClient.ListPullRequests(ctx, c.owner, c.repo, "open")
 	if err != nil {
+		var rlErr *github.RateLimitError
+		if errors.As(err, &rlErr) {
+			wait := c.enterRateLimitCooldown(rlErr.RetryAfter)
+			c.log.Warn("reconciler: GitHub rate limit hit, pausing orphan-PR sweep until cooldown elapses",
+				"cooldown", wait, "error", err)
+			return
+		}
 		c.log.Warn("reconciler: failed to list open PRs", "error", err)
 		return
 	}
@@ -2776,7 +2794,9 @@ func (c *Controller) reconcileOrphanPRs(ctx context.Context) {
 			continue
 		}
 
-		c.log.Warn("reconciler: registering orphan PR",
+		// GH-3784: adopting an orphan PR within the 60s sweep interval is the
+		// self-heal working as designed, not an anomaly — log at Info.
+		c.log.Info("reconciler: adopting untracked open PR",
 			"pr", pr.Number,
 			"branch", pr.Head.Ref,
 			"issue", issueNum,
@@ -3063,8 +3083,46 @@ func (c *Controller) Run(ctx context.Context) error {
 	}
 }
 
+// rateLimitCooldownActive reports whether a prior GitHub primary-rate-limit
+// response is still within its backoff window. GH-3784.
+func (c *Controller) rateLimitCooldownActive() bool {
+	c.mu.RLock()
+	until := c.rateLimitedUntil
+	c.mu.RUnlock()
+	return time.Now().Before(until)
+}
+
+// enterRateLimitCooldown records a backoff window so processAllPRs and
+// reconcileOrphanPRs stop re-hitting the GitHub API on every tracked PR every
+// tick and instead wait out the reported quota reset. Returns the (bounded)
+// cooldown actually applied, for logging.
+//
+// GH-3784: PRs #3778/#3781 sat approved-and-green for 40-80 minutes because a
+// sustained "API rate limit exceeded" 403 window had no backoff — every 10-60s
+// tick re-fetched every tracked PR, burning the little quota headroom that
+// existed and extending the outage instead of waiting it out.
+func (c *Controller) enterRateLimitCooldown(retryAfter time.Duration) time.Duration {
+	const minCooldown = 30 * time.Second
+	const maxCooldown = 20 * time.Minute
+	if retryAfter < minCooldown {
+		retryAfter = minCooldown
+	}
+	if retryAfter > maxCooldown {
+		retryAfter = maxCooldown
+	}
+	c.mu.Lock()
+	c.rateLimitedUntil = time.Now().Add(retryAfter)
+	c.mu.Unlock()
+	return retryAfter
+}
+
 // processAllPRs processes all active PRs in one iteration.
 func (c *Controller) processAllPRs(ctx context.Context) {
+	if c.rateLimitCooldownActive() {
+		c.log.Debug("processAllPRs: skipping tick, GitHub rate-limit cooldown active")
+		return
+	}
+
 	prs := c.GetActivePRs()
 
 	// Update active PR gauges every tick
@@ -3101,6 +3159,13 @@ func (c *Controller) processAllPRs(ctx context.Context) {
 			// Fetch PR once, use twice - cache to avoid redundant API calls
 			ghPR, err := c.ghClient.GetPullRequest(ctx, c.owner, c.repo, pr.PRNumber)
 			if err != nil {
+				var rlErr *github.RateLimitError
+				if errors.As(err, &rlErr) {
+					wait := c.enterRateLimitCooldown(rlErr.RetryAfter)
+					c.log.Warn("processAllPRs: GitHub rate limit hit, pausing PR processing until cooldown elapses",
+						"pr", pr.PRNumber, "cooldown", wait, "error", err)
+					return
+				}
 				c.log.Warn("failed to fetch PR", "pr", pr.PRNumber, "error", err)
 				continue
 			}

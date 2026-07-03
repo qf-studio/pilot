@@ -1,10 +1,16 @@
 package wiring
 
 import (
+	"context"
 	"testing"
 
+	"github.com/qf-studio/pilot/e2e/mocks"
+	"github.com/qf-studio/pilot/internal/adapters/github"
+	"github.com/qf-studio/pilot/internal/approval"
+	"github.com/qf-studio/pilot/internal/autopilot"
 	"github.com/qf-studio/pilot/internal/config"
 	"github.com/qf-studio/pilot/internal/dashboard"
+	"github.com/qf-studio/pilot/internal/executor"
 )
 
 // TestOnPRCreatedCallbackWired verifies that the OnSubIssuePRCreated callback
@@ -24,6 +30,65 @@ func TestOnPRCreatedCallbackWired(t *testing.T) {
 				t.Fatal("OnSubIssuePRCreated callback not wired")
 			}
 		})
+	}
+}
+
+// TestOnPRCreatedWiredAcrossRestartShapedReconstruction simulates a daemon
+// restart: the pre-restart Runner+Controller pair is discarded (as happens
+// when the process exits and cmd/pilot/main.go runs again from scratch) and
+// a brand-new pair is constructed against the SAME GitHub state, mirroring
+// main.go's `runner.SetOnSubIssuePRCreated(autopilotController.OnPRCreated)`
+// wiring call. It verifies both that the callback is wired on the freshly
+// reconstructed Runner and that a PR already open in GitHub with no local
+// tracking state (e.g. created moments before or during the restart) is
+// still adopted once the reconstructed controller runs its boot scan —
+// GH-3784: the failure mode was such a PR being left permanently untracked.
+func TestOnPRCreatedWiredAcrossRestartShapedReconstruction(t *testing.T) {
+	ghMock := mocks.NewGitHubMock()
+	t.Cleanup(ghMock.Close)
+
+	newControllerRunnerPair := func() (*executor.Runner, *autopilot.Controller) {
+		ghClient := github.NewClientWithBaseURL("test-github-token", ghMock.URL())
+		runner, err := executor.NewRunnerWithConfig(nil)
+		if err != nil {
+			t.Fatalf("NewRunnerWithConfig: %v", err)
+		}
+		approvalMgr := approval.NewManager(nil)
+		ctrl := autopilot.NewController(autopilot.DefaultConfig(), ghClient, approvalMgr, "test-owner", "test-repo")
+
+		// Mirrors main.go's runPollingMode / gateway wiring: the sub-issue PR
+		// callback is set on the Runner every time this construction runs,
+		// restart or not — never conditional on prior process state.
+		runner.SetOnSubIssuePRCreated(ctrl.OnPRCreated)
+		return runner, ctrl
+	}
+
+	// "Pre-restart" process.
+	preRunner, _ := newControllerRunnerPair()
+	if !preRunner.HasOnSubIssuePRCreated() {
+		t.Fatal("pre-restart: OnSubIssuePRCreated callback not wired")
+	}
+
+	// A PR is open in GitHub with no local tracking state by the time the
+	// "process" comes back — e.g. created just before or during the restart
+	// window, so OnPRCreated was never delivered to any live controller.
+	ghMock.CreatePR(77, "Fix thing", "pilot/GH-500", "deadbeef")
+
+	// "Restart": fresh Runner + Controller, same GitHub backing state.
+	postRunner, postCtrl := newControllerRunnerPair()
+	if !postRunner.HasOnSubIssuePRCreated() {
+		t.Fatal("post-restart: OnSubIssuePRCreated callback not wired on reconstructed Runner")
+	}
+
+	if err := postCtrl.ScanExistingPRs(context.Background()); err != nil {
+		t.Fatalf("ScanExistingPRs: %v", err)
+	}
+	pr, ok := postCtrl.GetPRState(77)
+	if !ok {
+		t.Fatal("PR 77 (open before reconstruction, untracked) was not adopted by the post-restart boot scan")
+	}
+	if pr.IssueNumber != 500 {
+		t.Errorf("adopted PR IssueNumber = %d, want 500", pr.IssueNumber)
 	}
 }
 
