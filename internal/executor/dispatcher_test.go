@@ -1255,3 +1255,52 @@ func TestRecoverStaleQueuedTasks_MessageAccuracy(t *testing.T) {
 		})
 	}
 }
+
+// TestBuildTaskFromExecution_ThreadsExecutionUUID verifies GH-3764: the Task
+// handed to the runner carries the execution row's UUID (exec.ID) separately
+// from the human-readable task ID (exec.TaskID), so downstream log/diagnostic
+// writes can join against executions.id while WS live-tail filters (which key
+// on task.ID) keep working unchanged.
+func TestBuildTaskFromExecution_ThreadsExecutionUUID(t *testing.T) {
+	exec := &memory.Execution{
+		ID:                "11111111-1111-1111-1111-111111111111",
+		TaskID:            "GH-3764",
+		ProjectPath:       "/tmp/project",
+		TaskTitle:         "Test title",
+		TaskDescription:   "Test description",
+		TaskBranch:        "pilot/GH-3764",
+		TaskBaseBranch:    "main",
+		TaskCreatePR:      true,
+		TaskVerbose:       true,
+		TaskSourceAdapter: "github",
+		TaskSourceIssueID: "3764",
+		TaskLabels:        []string{"pilot"},
+	}
+
+	task := buildTaskFromExecution(exec)
+
+	if task.ExecutionID != exec.ID {
+		t.Errorf("expected ExecutionID %q, got %q", exec.ID, task.ExecutionID)
+	}
+	if task.ID != exec.TaskID {
+		t.Errorf("expected ID (task label) %q, got %q", exec.TaskID, task.ID)
+	}
+	if task.ExecutionID == task.ID {
+		t.Errorf("ExecutionID and ID must stay distinct fields, both were %q", task.ID)
+	}
+	if task.Title != exec.TaskTitle || task.Description != exec.TaskDescription {
+		t.Errorf("task title/description not carried over from execution")
+	}
+	if task.ProjectPath != exec.ProjectPath || task.Branch != exec.TaskBranch || task.BaseBranch != exec.TaskBaseBranch {
+		t.Errorf("task project/branch fields not carried over from execution")
+	}
+	if task.CreatePR != exec.TaskCreatePR || task.Verbose != exec.TaskVerbose {
+		t.Errorf("task CreatePR/Verbose flags not carried over from execution")
+	}
+	if task.SourceAdapter != exec.TaskSourceAdapter || task.SourceIssueID != exec.TaskSourceIssueID {
+		t.Errorf("task source adapter/issue ID not carried over from execution")
+	}
+	if len(task.Labels) != 1 || task.Labels[0] != "pilot" {
+		t.Errorf("expected labels [pilot], got %v", task.Labels)
+	}
+}

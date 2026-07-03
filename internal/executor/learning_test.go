@@ -98,6 +98,60 @@ func TestRecordLearning_Success(t *testing.T) {
 	}
 }
 
+// TestRecordLearning_UsesExecutionID verifies that when the dispatcher has set
+// Task.ExecutionID (the executions.id UUID), recordLearning uses it for
+// memory.Execution.ID instead of the human-readable task ID, so
+// pattern_feedback.execution_id (feedback.go:80) can join against executions.id.
+// GH-3764.
+func TestRecordLearning_UsesExecutionID(t *testing.T) {
+	runner := NewRunner()
+	mock := &mockLearningRecorder{}
+	runner.SetLearningLoop(mock)
+
+	task := &Task{
+		ID:          "GH-3714",
+		ExecutionID: "11111111-2222-3333-4444-555555555555",
+		Title:       "Test task",
+		ProjectPath: "/tmp/test-project",
+	}
+
+	result := &ExecutionResult{Success: true, Output: "done", Duration: time.Second}
+
+	runner.recordLearning(context.Background(), task, result)
+
+	if len(mock.calls) != 1 {
+		t.Fatalf("expected 1 RecordExecution call, got %d", len(mock.calls))
+	}
+	call := mock.calls[0]
+	if call.exec.ID != "11111111-2222-3333-4444-555555555555" {
+		t.Errorf("exec.ID = %q, want the execution UUID", call.exec.ID)
+	}
+	if call.exec.TaskID != "GH-3714" {
+		t.Errorf("exec.TaskID = %q, want the human-readable task ID", call.exec.TaskID)
+	}
+}
+
+// TestRecordLearning_FallsBackToTaskID verifies that tasks without a dedicated
+// executions row (decomposed subtasks, epic sub-issues, local/bench runs) still
+// get a non-empty memory.Execution.ID by falling back to task.ID. GH-3764.
+func TestRecordLearning_FallsBackToTaskID(t *testing.T) {
+	runner := NewRunner()
+	mock := &mockLearningRecorder{}
+	runner.SetLearningLoop(mock)
+
+	task := &Task{ID: "task-no-exec-id", Title: "Test task", ProjectPath: "/tmp/test-project"}
+	result := &ExecutionResult{Success: true, Output: "done", Duration: time.Second}
+
+	runner.recordLearning(context.Background(), task, result)
+
+	if len(mock.calls) != 1 {
+		t.Fatalf("expected 1 RecordExecution call, got %d", len(mock.calls))
+	}
+	if call := mock.calls[0]; call.exec.ID != "task-no-exec-id" {
+		t.Errorf("exec.ID = %q, want fallback to task.ID", call.exec.ID)
+	}
+}
+
 func TestRecordLearning_Failure(t *testing.T) {
 	runner := NewRunner()
 	mock := &mockLearningRecorder{}
@@ -232,6 +286,47 @@ func TestRecordPatternOutcomes(t *testing.T) {
 	c2 := store.GetContextualConfidence("pat-2", "/test/project", "feat")
 	if c2 <= 0 {
 		t.Errorf("expected positive contextual confidence for pat-2, got %f", c2)
+	}
+}
+
+// TestRecordPatternOutcomes_EmptyModelName covers the GH-3764 fix: when the
+// backend stream never surfaced a model name, recordPatternOutcomes must fall
+// back through Runner.fallbackModelName() (config-derived) instead of the
+// stale hardcoded "claude-opus-4-6" literal that GH-2428 already eliminated
+// at the other execution_metrics call sites.
+func TestRecordPatternOutcomes_EmptyModelName(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "outcome-empty-model-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	store, err := memory.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	_ = store.SaveCrossPattern(&memory.CrossPattern{
+		ID: "pat-empty-model", Type: "code", Title: "P1", Confidence: 0.8, Scope: "org",
+	})
+	_ = store.LinkPatternToProject("pat-empty-model", "/test/project")
+
+	runner := NewRunner()
+	runner.SetLogStore(store)
+
+	task := &Task{
+		ID:          "task-empty-model",
+		Title:       "feat: add signup",
+		ProjectPath: "/test/project",
+	}
+	result := &ExecutionResult{Success: true, ModelName: ""}
+
+	runner.recordPatternOutcomes(task, result)
+
+	c := store.GetContextualConfidence("pat-empty-model", "/test/project", "feat")
+	if c <= 0 {
+		t.Errorf("expected positive contextual confidence for pat-empty-model, got %f", c)
 	}
 }
 

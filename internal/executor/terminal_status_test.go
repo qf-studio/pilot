@@ -88,6 +88,11 @@ func TestTerminalStatus(t *testing.T) {
 			"skipped",
 		},
 		{
+			"skipped via stale-queued epic parent-done refusal (GH-3764)",
+			&ExecutionResult{Error: "execution failed: failed to create sub-issues: parent task is already done; refusing to create sub-issues"},
+			"skipped",
+		},
+		{
 			"PR creation REFUSED (title guard) stays a genuine failure",
 			&ExecutionResult{Error: "PR creation refused: title is not a conventional commit"},
 			"failed",

@@ -741,19 +741,7 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 		// Build task from execution record (full details stored when queued)
 		// GH-2326: restore Labels so runner-side no-decompose / autopilot-fix
 		// gates see the same labels the dispatch-time Decompose() saw.
-		task := &Task{
-			ID:            exec.TaskID,
-			Title:         exec.TaskTitle,
-			Description:   exec.TaskDescription,
-			ProjectPath:   exec.ProjectPath,
-			Branch:        exec.TaskBranch,
-			BaseBranch:    exec.TaskBaseBranch,
-			CreatePR:      exec.TaskCreatePR,
-			Verbose:       exec.TaskVerbose,
-			SourceAdapter: exec.TaskSourceAdapter,
-			SourceIssueID: exec.TaskSourceIssueID,
-			Labels:        exec.TaskLabels,
-		}
+		task := buildTaskFromExecution(exec)
 
 		// Execute (blocking)
 		start := time.Now()
@@ -853,6 +841,28 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 		}
 
 		w.currentTaskID.Store("")
+	}
+}
+
+// buildTaskFromExecution reconstructs a Task from its persisted memory.Execution
+// row before handing it to the runner. GH-3764: ExecutionID carries the exec's
+// UUID (exec.ID) through Execute() so log/diagnostic/learning writes can join
+// against executions.id — task.ID (the human-readable "GH-123" label) is kept
+// as a separate field rather than replaced, since WS live-tail filters key on it.
+func buildTaskFromExecution(exec *memory.Execution) *Task {
+	return &Task{
+		ID:            exec.TaskID,
+		ExecutionID:   exec.ID,
+		Title:         exec.TaskTitle,
+		Description:   exec.TaskDescription,
+		ProjectPath:   exec.ProjectPath,
+		Branch:        exec.TaskBranch,
+		BaseBranch:    exec.TaskBaseBranch,
+		CreatePR:      exec.TaskCreatePR,
+		Verbose:       exec.TaskVerbose,
+		SourceAdapter: exec.TaskSourceAdapter,
+		SourceIssueID: exec.TaskSourceIssueID,
+		Labels:        exec.TaskLabels,
 	}
 }
 

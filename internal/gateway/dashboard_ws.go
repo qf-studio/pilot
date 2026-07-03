@@ -122,6 +122,14 @@ func (s *Server) handleDashboardWebSocket(w http.ResponseWriter, r *http.Request
 }
 
 // sendInitialLogs sends the last N log entries to the newly connected client.
+//
+// The dashboard WS stream is global (unfiltered across tasks): logEntryResponse
+// deliberately omits an execution/task identifier. If task-scoped live-tail
+// filtering is added here later, filter by task.ID, not memory.LogEntry.ExecutionID
+// — since GH-3764 that field holds the dispatcher-assigned executions.id UUID for
+// any task with a persisted execution row (see Task.LogExecutionID in
+// internal/executor/runner.go), not the human-readable task ID, so it no longer
+// matches task.ID for most tasks.
 func sendInitialLogs(conn *websocket.Conn, store LogStreamStore) error {
 	entries, err := store.GetRecentLogs(wsInitialLogCount)
 	if err != nil {
