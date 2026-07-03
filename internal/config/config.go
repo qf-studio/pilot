@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -489,6 +490,53 @@ func defaultAlertRules() []AlertRuleConfig {
 	}
 }
 
+// envVarRefPattern matches ${VAR} and $VAR references the way os.ExpandEnv does.
+var envVarRefPattern = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)`)
+
+// sensitiveConfigKeyPattern flags config keys that should never silently
+// resolve to an empty string (GH-3755): a dead/typo'd env var here means
+// auth silently fails instead of erroring at load time.
+var sensitiveConfigKeyPattern = regexp.MustCompile(`(?i)(token|key|secret|password)`)
+
+// checkEnvVarReferences pre-scans raw config YAML for ${VAR}/$VAR references
+// before os.ExpandEnv runs, and reports any that resolve to an empty value.
+// If the reference sits on a line whose key looks sensitive (token, key,
+// secret, password — case-insensitive substring match), it returns an error
+// naming both the variable and the offending config key/line so the failure
+// is loud instead of silently expanding to "". For non-sensitive keys it
+// logs a warning and lets expansion proceed unchanged.
+func checkEnvVarReferences(raw string) error {
+	for i, line := range strings.Split(raw, "\n") {
+		for _, m := range envVarRefPattern.FindAllStringSubmatch(line, -1) {
+			varName := m[1]
+			if varName == "" {
+				varName = m[2]
+			}
+			if value, ok := os.LookupEnv(varName); ok && value != "" {
+				continue
+			}
+
+			key := configKeyFromLine(line)
+			if sensitiveConfigKeyPattern.MatchString(key) {
+				return fmt.Errorf("config: environment variable %q referenced by sensitive key %q at line %d is unset or empty: %s", varName, key, i+1, strings.TrimSpace(line))
+			}
+			log.Printf("WARN: config: environment variable %q at line %d is unset or empty: %s", varName, i+1, strings.TrimSpace(line))
+		}
+	}
+	return nil
+}
+
+// configKeyFromLine extracts the YAML key (if any) from a single line, e.g.
+// `  token: ${VAR}` -> "token", `- name: ${VAR}` -> "name".
+func configKeyFromLine(line string) string {
+	trimmed := strings.TrimSpace(line)
+	trimmed = strings.TrimPrefix(trimmed, "- ")
+	if idx := strings.Index(trimmed, ":"); idx != -1 {
+		return strings.TrimSpace(trimmed[:idx])
+	}
+	return trimmed
+}
+
 // Load reads and parses configuration from a YAML file at the given path.
 // Environment variables in the file are expanded using os.ExpandEnv syntax.
 // If the file does not exist, default configuration is returned.
@@ -502,6 +550,11 @@ func Load(path string) (*Config, error) {
 			return config, nil // Return defaults if no config file
 		}
 		return nil, fmt.Errorf("failed to read config: %w", err)
+	}
+
+	// Pre-scan for env var references that would silently expand to "" (GH-3755).
+	if err := checkEnvVarReferences(string(data)); err != nil {
+		return nil, err
 	}
 
 	// Expand environment variables
