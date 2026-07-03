@@ -719,9 +719,13 @@ func (p *Poller) startSequential(ctx context.Context) {
 				slog.String("head_sha", result.HeadSHA),
 			)
 		} else if p.OnPRCreated == nil {
-			p.logger.Info("OnPRCreated skipped: callback not wired",
+			// GH-3784: a real PR exists but no autopilot controller is wired to
+			// track it — it will never auto-merge unless the periodic orphan-PR
+			// reconciler (or a human) picks it up. Fail loud, not Info.
+			p.logger.Warn("OnPRCreated skipped: PR created but no autopilot callback wired",
 				slog.Int("pr_number", result.PRNumber),
 				slog.Int("issue_number", issue.Number),
+				slog.String("branch", result.BranchName),
 			)
 		}
 		// Gate: PRNumber > 0 implies executor surfaced a valid PR URL via runner.go:3151. Empty PRUrl (no-commits guard, push-fail, title-rejection) leaves PRNumber=0 and we silently skip — see TASK-60 for the upstream chain.
@@ -1496,9 +1500,13 @@ func (p *Poller) checkForNewIssues(ctx context.Context) {
 						slog.String("head_sha", result.HeadSHA),
 					)
 				} else if p.OnPRCreated == nil {
-					p.logger.Info("OnPRCreated skipped: callback not wired",
+					// GH-3784: a real PR exists but no autopilot controller is wired to
+					// track it — it will never auto-merge unless the periodic orphan-PR
+					// reconciler (or a human) picks it up. Fail loud, not Info.
+					p.logger.Warn("OnPRCreated skipped: PR created but no autopilot callback wired",
 						slog.Int("pr_number", result.PRNumber),
 						slog.Int("issue_number", issue.Number),
+						slog.String("branch", result.BranchName),
 					)
 				}
 				// Gate: PRNumber > 0 implies executor surfaced a valid PR URL via runner.go:3151. Empty PRUrl (no-commits guard, push-fail, title-rejection) leaves PRNumber=0 and we silently skip — see TASK-60 for the upstream chain.
