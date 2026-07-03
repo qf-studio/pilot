@@ -75,6 +75,12 @@ func (l *LearningLoop) RecordExecution(ctx context.Context, exec *Execution, app
 
 	// Record feedback for each applied pattern
 	for _, patternID := range appliedPatterns {
+		// GH-3764: pattern_feedback.execution_id has an FK to executions(id), so
+		// exec.ID here MUST be the dispatcher-assigned execution UUID, not a
+		// human-readable task ID — callers should pass the same ID they used for
+		// store.SaveExecution (see internal/executor/runner.go recordLearning,
+		// which sets exec.ID = task.LogExecutionID()). A mismatched ID makes this
+		// insert fail its FK constraint.
 		feedback := &PatternFeedback{
 			PatternID:       patternID,
 			ExecutionID:     exec.ID,
