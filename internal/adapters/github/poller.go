@@ -1038,7 +1038,11 @@ func (p *Poller) processIssueSequential(ctx context.Context, issue *Issue) (*Iss
 }
 
 // groupByOverlappingScope partitions issues into groups where members reference
-// at least one common directory (transitive closure). Within each group only the
+// at least one common directory (transitive closure), including a shared
+// root-level config/scaffold file (package.json, go.mod, Makefile, ...) since
+// those have no real parent directory to compare. Scaffold-flavored issues
+// (2+ distinct root config files mentioned) are treated as globally
+// overlapping and grouped with every candidate. Within each group only the
 // oldest issue should be dispatched to avoid merge conflicts.
 func groupByOverlappingScope(candidates []*Issue) [][]*Issue {
 	n := len(candidates)
@@ -1069,14 +1073,27 @@ func groupByOverlappingScope(candidates []*Issue) [][]*Issue {
 	// Comment bodies are attacker-controllable text; sanitize before parsing so
 	// smuggled paths cannot influence grouping decisions.
 	dirs := make([]map[string]bool, n)
+	scaffold := make([]bool, n)
 	for i, c := range candidates {
-		dirs[i] = executor.ExtractDirectoriesFromText(text.SanitizeUntrustedString(c.Body))
+		body := text.SanitizeUntrustedString(c.Body)
+		dirs[i] = executor.ExtractDirectoriesFromText(body)
+		// A body naming 2+ distinct root config/scaffold files (package.json,
+		// tsconfig.json, Makefile, lockfiles, ...) is bootstrapping project
+		// tooling from scratch — it collides with every other in-flight issue,
+		// not just ones sharing a directory (GH-3714).
+		scaffold[i] = len(executor.RootConfigFileMentions(body)) >= 2
 	}
 	for i := 0; i < n; i++ {
+		if scaffold[i] {
+			continue
+		}
 		if len(dirs[i]) == 0 {
 			continue
 		}
 		for j := i + 1; j < n; j++ {
+			if scaffold[j] {
+				continue
+			}
 			if len(dirs[j]) == 0 {
 				continue
 			}
@@ -1085,6 +1102,18 @@ func groupByOverlappingScope(candidates []*Issue) [][]*Issue {
 					union(i, j)
 					break
 				}
+			}
+		}
+	}
+
+	// Scaffold-flavored issues serialize against every other candidate.
+	for i := 0; i < n; i++ {
+		if !scaffold[i] {
+			continue
+		}
+		for j := 0; j < n; j++ {
+			if j != i {
+				union(i, j)
 			}
 		}
 	}

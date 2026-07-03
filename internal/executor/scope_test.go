@@ -65,6 +65,16 @@ func TestExtractDirectoriesFromText(t *testing.T) {
 			text: "Edit configs/app.json and configs/settings.toml",
 			want: map[string]bool{"configs": true},
 		},
+		{
+			name: "root-level package.json folds into RootScopeKey",
+			text: "Add a package.json with the base dependencies",
+			want: map[string]bool{RootScopeKey: true},
+		},
+		{
+			name: "root-level Makefile folds into RootScopeKey",
+			text: "Add a Makefile with build and test targets",
+			want: map[string]bool{RootScopeKey: true},
+		},
 	}
 
 	for _, tt := range tests {
@@ -133,6 +143,14 @@ func TestIssuesOverlap(t *testing.T) {
 			bodyB: "Update internal/alerts/dispatcher.go and internal/config/loader.go",
 			want:  true,
 		},
+		{
+			// GH-3714: root-level files share no directory, so this only
+			// overlaps because RootScopeKey folds them together.
+			name:  "both bodies name root-level package.json",
+			bodyA: "Add a package.json with the base dependencies",
+			bodyB: "Update package.json to add the lint script",
+			want:  true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -140,6 +158,67 @@ func TestIssuesOverlap(t *testing.T) {
 			got := IssuesOverlap(tt.bodyA, tt.bodyB)
 			if got != tt.want {
 				t.Errorf("IssuesOverlap() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRootConfigFileMentions(t *testing.T) {
+	tests := []struct {
+		name string
+		text string
+		want map[string]bool
+	}{
+		{
+			name: "no root config files",
+			text: "Add rate limiting to API endpoints",
+			want: map[string]bool{},
+		},
+		{
+			name: "single root config file",
+			text: "Add a package.json with the base dependencies",
+			want: map[string]bool{"package.json": true},
+		},
+		{
+			name: "scaffold body names two distinct root config files",
+			text: "Bootstrap the project: add package.json and tsconfig.json",
+			want: map[string]bool{"package.json": true, "tsconfig.json": true},
+		},
+		{
+			name: "repeated mention counts once",
+			text: "package.json needs updating; also update package.json again",
+			want: map[string]bool{"package.json": true},
+		},
+		{
+			name: "go and rust root manifests",
+			text: "Add go.mod, go.sum, Cargo.toml, and Cargo.lock",
+			want: map[string]bool{"go.mod": true, "go.sum": true, "Cargo.toml": true, "Cargo.lock": true},
+		},
+		{
+			name: "lockfiles and configs",
+			text: "Add pnpm-lock.yaml, yarn.lock, vitest.config.ts, eslint.config.js, and a Makefile",
+			want: map[string]bool{
+				"pnpm-lock.yaml":   true,
+				"yarn.lock":        true,
+				"vitest.config.ts": true,
+				"eslint.config.js": true,
+				"Makefile":         true,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := RootConfigFileMentions(tt.text)
+			if len(got) != len(tt.want) {
+				t.Errorf("RootConfigFileMentions() returned %d mentions, want %d\n  got:  %v\n  want: %v",
+					len(got), len(tt.want), got, tt.want)
+				return
+			}
+			for f := range tt.want {
+				if !got[f] {
+					t.Errorf("RootConfigFileMentions() missing %q\n  got: %v", f, got)
+				}
 			}
 		})
 	}
