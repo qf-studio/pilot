@@ -6,12 +6,19 @@ package verify
 
 import (
 	"context"
+	"errors"
 	"time"
 )
 
 // DefaultTimeout bounds a Verify call when NewReadinessAdapter is given a
 // non-positive timeout.
 const DefaultTimeout = 5 * time.Second
+
+// ErrProbeNotImplemented is returned by a Verifiable that has no live probe
+// wired up yet. Doctor and /ready renderers should treat it as "unchecked"
+// rather than a hard failure, so an adapter without a real check doesn't
+// masquerade as healthy (or as broken).
+var ErrProbeNotImplemented = errors.New("probe not implemented")
 
 // Verifiable is implemented by components that can self-check their health
 // via a context-bound call, allowing callers to bound the check's duration
@@ -44,6 +51,11 @@ func NewReadinessAdapter(v Verifiable, timeout time.Duration) *ReadinessAdapter 
 // Name returns the wrapped Verifiable's name.
 func (a *ReadinessAdapter) Name() string {
 	return a.v.Name()
+}
+
+// Timeout returns the bounded timeout applied to each Verify call.
+func (a *ReadinessAdapter) Timeout() time.Duration {
+	return a.timeout
 }
 
 // Ready calls Verify with a bounded timeout and reports true only if it
