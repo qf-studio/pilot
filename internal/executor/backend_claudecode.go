@@ -358,6 +358,11 @@ func (b *ClaudeCodeBackend) executeWithFromPR(ctx context.Context, opts ExecuteO
 	if opts.Model != "" {
 		args = append(args, "--model", opts.Model)
 		b.log.Info("Using routed model", slog.String("model", opts.Model))
+	} else {
+		b.log.Info("Omitting --model flag; worker will use its own default",
+			slog.String("backend", b.Name()),
+			slog.String("task_id", opts.TaskID),
+		)
 	}
 
 	// Add max-turns flag if set by .pilot/workflow.yaml agent.max_turns (TASK-304)

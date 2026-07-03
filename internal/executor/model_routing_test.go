@@ -1,9 +1,12 @@
 package executor
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -614,5 +617,57 @@ func TestDefaultModelRoutingConfig_UserOverrideWins(t *testing.T) {
 	model := router.SelectModel(task)
 	if model != "" {
 		t.Errorf("user config enabled:false should disable routing; SelectModel() = %q, want empty", model)
+	}
+}
+
+// TestModelRouter_SelectModel_LogsWhenRoutingDisabled covers GH-3754: SelectModel
+// must not silently return "" when routing is nil/disabled — it should log a
+// Debug line so the empty-routing path is visible in telemetry.
+func TestModelRouter_SelectModel_LogsWhenRoutingDisabled(t *testing.T) {
+	var buf bytes.Buffer
+	prevDefault := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	defer slog.SetDefault(prevDefault)
+
+	router := NewModelRouter(&ModelRoutingConfig{Enabled: false}, nil)
+	task := &Task{ID: "GH-3754-routing-test", Description: "Fix typo in README"}
+
+	got := router.SelectModel(task)
+	if got != "" {
+		t.Fatalf("SelectModel() = %q, want empty when routing disabled", got)
+	}
+
+	logOutput := buf.String()
+	if !strings.Contains(logOutput, "Model routing nil/disabled") {
+		t.Errorf("expected empty-routing debug log line, got: %s", logOutput)
+	}
+	if !strings.Contains(logOutput, "GH-3754-routing-test") {
+		t.Errorf("expected task_id in debug log line, got: %s", logOutput)
+	}
+}
+
+// TestModelRouter_SelectModel_NoLogWhenRoutingEnabled ensures the new debug
+// log is scoped to the nil/disabled branch and doesn't fire on the normal path.
+func TestModelRouter_SelectModel_NoLogWhenRoutingEnabled(t *testing.T) {
+	var buf bytes.Buffer
+	prevDefault := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	defer slog.SetDefault(prevDefault)
+
+	router := NewModelRouter(&ModelRoutingConfig{
+		Enabled: true,
+		Trivial: "claude-haiku",
+		Simple:  "claude-sonnet",
+		Medium:  "claude-sonnet",
+		Complex: "claude-opus",
+	}, nil)
+	task := &Task{ID: "GH-3754-routing-enabled", Description: "Fix typo in README"}
+
+	if got := router.SelectModel(task); got == "" {
+		t.Fatalf("SelectModel() returned empty, want a routed model")
+	}
+
+	if strings.Contains(buf.String(), "Model routing nil/disabled") {
+		t.Errorf("did not expect empty-routing debug log line when routing is enabled, got: %s", buf.String())
 	}
 }
