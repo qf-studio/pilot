@@ -16,6 +16,13 @@ type VersionChecker struct {
 	checkInterval  time.Duration
 	onUpdate       func(info *VersionInfo)
 
+	// staleThreshold and onStale implement the GH-3790 fail-loud check: if
+	// the daemon falls this many releases behind, self-upgrade has likely
+	// stopped firing (root cause: it previously only ran when a human
+	// pressed 'u' in the TUI) and someone needs to notice. 0 disables it.
+	staleThreshold int
+	onStale        func(info *VersionInfo)
+
 	mu          sync.RWMutex
 	latestInfo  *VersionInfo
 	lastCheck   time.Time
@@ -53,6 +60,25 @@ func (c *VersionChecker) OnUpdate(fn func(info *VersionInfo)) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.onUpdate = fn
+}
+
+// SetStaleThreshold configures the fail-loud staleness check (GH-3790): once
+// the daemon is at least n releases behind, each check logs a WARN and (if
+// OnStale is set) fires a callback so an alert can be raised. n <= 0 disables
+// the check (the default).
+func (c *VersionChecker) SetStaleThreshold(n int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.staleThreshold = n
+}
+
+// OnStale sets the callback invoked when the staleness threshold is met or
+// exceeded. Called on every check while the daemon remains stale, so callers
+// that want deduplication/cooldown should implement it in fn.
+func (c *VersionChecker) OnStale(fn func(info *VersionInfo)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.onStale = fn
 }
 
 // Start begins periodic version checking in the background
@@ -129,8 +155,21 @@ func (c *VersionChecker) check(ctx context.Context) {
 	c.mu.Lock()
 	c.latestInfo = info
 	c.lastCheck = time.Now()
-	callback := c.onUpdate
 	c.mu.Unlock()
+
+	c.evaluate(info)
+}
+
+// evaluate fires the OnUpdate/OnStale callbacks for a freshly fetched
+// VersionInfo. Split out from check() so the callback-decision logic (which
+// doesn't touch the network) can be unit-tested directly with a synthetic
+// VersionInfo, instead of only indirectly via a live GitHub API call.
+func (c *VersionChecker) evaluate(info *VersionInfo) {
+	c.mu.RLock()
+	callback := c.onUpdate
+	staleThreshold := c.staleThreshold
+	staleCallback := c.onStale
+	c.mu.RUnlock()
 
 	if info.UpdateAvail && callback != nil {
 		slog.Info("update available",
@@ -138,6 +177,22 @@ func (c *VersionChecker) check(ctx context.Context) {
 			slog.String("latest", info.Latest),
 		)
 		callback(info)
+	}
+
+	// GH-3790: fail loud instead of letting staleness go unnoticed the way
+	// it did for 7+ hours across 8 releases — self-upgrade previously had no
+	// automatic trigger at all, so nothing ever surfaced how far behind the
+	// daemon had drifted.
+	if staleThreshold > 0 && info.ReleasesBehind >= staleThreshold {
+		slog.Warn("daemon is running a stale release — self-upgrade may not be firing",
+			slog.String("current", info.Current),
+			slog.String("latest", info.Latest),
+			slog.Int("releases_behind", info.ReleasesBehind),
+			slog.Int("stale_threshold", staleThreshold),
+		)
+		if staleCallback != nil {
+			staleCallback(info)
+		}
 	}
 }
 

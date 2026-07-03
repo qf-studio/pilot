@@ -822,6 +822,21 @@
         "incident": "2026-07-03: daemon hot-upgraded to v2.201.2 at 12:50:23+02:00, then sat 7+ hours through v2.202.0-v2.207.0 with zero upgrade attempts (not failures \u2014 total silence) until a manual restart at 20:01.",
         "file": ".agent/knowledge/memories/pitfalls/pitfall_self_upgrade_requires_manual_keypress.md",
         "origin_task": "GH-3790-1"
+      },
+      "mem-045": {
+        "type": "decision",
+        "summary": "GH-3790 fix: OnUpdate now auto-enqueues the hot upgrade (config-gated via upgrade.auto_hot_upgrade, keypress kept as manual override); new VersionChecker staleness check logs WARN + fires alerts.Event once upgrade.stale_release_threshold releases behind, plus a pilot doctor counterpart (checkSelfUpgradeStaleness). Also added the missing default service_unhealthy alert rule so config-error/staleness alerts actually dispatch out of the box.",
+        "concepts": [
+          "hot-upgrade",
+          "release",
+          "self-upgrade",
+          "alerts"
+        ],
+        "confidence": 0.9,
+        "severity": "high",
+        "created": "2026-07-04",
+        "file": ".agent/knowledge/memories/decisions/decision_self_upgrade_auto_trigger_and_staleness_check.md",
+        "origin_task": "GH-3790-3"
       }
     }
   },
@@ -1120,6 +1135,21 @@
       "from": "mem-043",
       "to": "worktree",
       "type": "describes"
+    },
+    {
+      "from": "mem-045",
+      "to": "mem-044",
+      "type": "resolves"
+    },
+    {
+      "from": "mem-045",
+      "to": "hot-upgrade",
+      "type": "about"
+    },
+    {
+      "from": "mem-045",
+      "to": "self-upgrade",
+      "type": "about"
     }
   ]
 }

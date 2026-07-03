@@ -2829,11 +2829,52 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 		fmt.Println("\n🖥️  Starting TUI dashboard...")
 
 		// Start background version checker for hot reload (GH-369)
+		upgradeCfg := cfg.Upgrade
+		if upgradeCfg == nil {
+			upgradeCfg = &config.UpgradeConfig{AutoHotUpgrade: true, StaleReleaseThreshold: 3}
+		}
 		versionChecker := upgrade.NewVersionChecker(version, upgrade.DefaultCheckInterval)
 		versionChecker.OnUpdate(func(info *upgrade.VersionInfo) {
 			program.Send(dashboard.NotifyUpdateAvailable(info.Current, info.Latest, info.ReleaseNotes)())
 			program.Send(dashboard.AddLog(fmt.Sprintf("⬆️ Update available: %s → %s", info.Current, info.Latest))())
+
+			// GH-3790 root cause: this callback used to only log/notify —
+			// PerformHotUpgrade never ran unless a human pressed 'u' in the
+			// TUI, so the daemon silently sat on stale releases whenever
+			// nobody was watching. Auto-enqueue the same request the
+			// keypress sends, unless disabled via config.
+			if upgradeCfg.AutoHotUpgrade {
+				select {
+				case upgradeRequestCh <- struct{}{}:
+				default:
+					// an upgrade is already queued/running
+				}
+			}
 		})
+		if upgradeCfg.StaleReleaseThreshold > 0 {
+			versionChecker.SetStaleThreshold(upgradeCfg.StaleReleaseThreshold)
+			versionChecker.OnStale(func(info *upgrade.VersionInfo) {
+				program.Send(dashboard.AddLog(fmt.Sprintf(
+					"⚠️ %d releases behind (running %s, latest %s) — check ~/.pilot/logs/daemon.log",
+					info.ReleasesBehind, info.Current, info.Latest))())
+				if alertsEngine != nil {
+					alertsEngine.ProcessEvent(alerts.Event{
+						Type:      alerts.EventTypeConfigError,
+						TaskID:    "self-upgrade",
+						TaskTitle: "Self-upgrade staleness check",
+						Error: fmt.Sprintf("daemon is %d releases behind (running %s, latest %s)",
+							info.ReleasesBehind, info.Current, info.Latest),
+						Metadata: map[string]string{
+							"check":           "self_upgrade_stale",
+							"current_version": info.Current,
+							"latest_version":  info.Latest,
+							"releases_behind": fmt.Sprintf("%d", info.ReleasesBehind),
+						},
+						Timestamp: time.Now(),
+					})
+				}
+			})
+		}
 		versionChecker.Start(ctx)
 		defer versionChecker.Stop()
 

@@ -69,6 +69,70 @@ func TestParseVersion(t *testing.T) {
 	}
 }
 
+func TestReleasesBehind(t *testing.T) {
+	tests := []struct {
+		name     string
+		releases []Release
+		current  string
+		want     int
+	}{
+		{
+			name:     "empty list",
+			releases: nil,
+			current:  "2.201.2",
+			want:     0,
+		},
+		{
+			name: "several releases behind (GH-3790 shape)",
+			releases: []Release{
+				{TagName: "v2.207.1"},
+				{TagName: "v2.206.1"},
+				{TagName: "v2.206.0"},
+				{TagName: "v2.205.0"},
+				{TagName: "v2.201.2"},
+			},
+			current: "2.201.2",
+			want:    4,
+		},
+		{
+			name: "up to date",
+			releases: []Release{
+				{TagName: "v2.201.2"},
+			},
+			current: "2.201.2",
+			want:    0,
+		},
+		{
+			name: "drafts and prereleases excluded",
+			releases: []Release{
+				{TagName: "v2.202.0", Draft: true},
+				{TagName: "v2.201.3", Prerelease: true},
+				{TagName: "v2.201.2"},
+			},
+			current: "2.201.2",
+			want:    0,
+		},
+		{
+			name: "v prefix on current is normalized",
+			releases: []Release{
+				{TagName: "v2.202.0"},
+				{TagName: "v2.201.2"},
+			},
+			current: "v2.201.2",
+			want:    1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ReleasesBehind(tt.releases, tt.current)
+			if got != tt.want {
+				t.Errorf("ReleasesBehind() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestVersionInfo_UpdateAvailable(t *testing.T) {
 	tests := []struct {
 		name    string

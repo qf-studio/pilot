@@ -30,7 +30,7 @@ Examples:
 			}
 
 			// Run health checks
-			report := health.RunChecks(cfg)
+			report := health.RunChecks(cfg, version)
 
 			// Header
 			fmt.Println()

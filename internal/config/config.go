@@ -57,6 +57,21 @@ type Config struct {
 	TeamID         string                  `yaml:"team_id"` // Optional team ID for scoping execution
 	Team           *TeamConfig             `yaml:"team"`
 	Bot            *BotConfig              `yaml:"bot"`
+	Upgrade        *UpgradeConfig          `yaml:"upgrade"`
+}
+
+// UpgradeConfig controls self-upgrade behavior (GH-3790). Self-upgrade
+// previously only ran when a human pressed 'u' in the TUI dashboard — the
+// background checker kept detecting releases forever but nothing ever
+// enqueued the upgrade, so the daemon silently drifted for 8+ releases.
+type UpgradeConfig struct {
+	// AutoHotUpgrade enqueues a hot upgrade automatically as soon as the
+	// background checker detects a new release, instead of relying solely on
+	// the TUI keypress. Defaults to true.
+	AutoHotUpgrade bool `yaml:"auto_hot_upgrade"`
+	// StaleReleaseThreshold is how many releases behind triggers a WARN log
+	// + alert that self-upgrade may not be firing. 0 disables the check.
+	StaleReleaseThreshold int `yaml:"stale_release_threshold"`
 }
 
 // TeamConfig holds settings for team-based project access control (GH-635).
@@ -423,6 +438,10 @@ func DefaultConfig() *Config {
 		Quality:  quality.DefaultConfig(),
 		Tunnel:   tunnel.DefaultConfig(),
 		Webhooks: webhooks.DefaultConfig(),
+		Upgrade: &UpgradeConfig{
+			AutoHotUpgrade:        true,
+			StaleReleaseThreshold: 3,
+		},
 	}
 }
 
@@ -486,6 +505,16 @@ func defaultAlertRules() []AlertRuleConfig {
 			Channels:    []string{},
 			Cooldown:    4 * time.Hour,
 			Description: "Alert when budget limit is exceeded",
+		},
+		{
+			Name:        "service_unhealthy",
+			Type:        "service_unhealthy",
+			Enabled:     true,
+			Condition:   AlertConditionConfig{},
+			Severity:    "warning",
+			Channels:    []string{},
+			Cooldown:    1 * time.Hour,
+			Description: "Alert on daemon health degradations (dead credentials, stale self-upgrade, etc.)",
 		},
 	}
 }

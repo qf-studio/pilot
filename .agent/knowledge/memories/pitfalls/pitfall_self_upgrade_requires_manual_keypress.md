@@ -57,3 +57,12 @@ wait already in `HotUpgrader`), gated by config rather than a keypress — plus
 a fail-loud ">N releases behind" doctor/alert check per the GH-3790 issue
 body, since silent staleness is the actual incident, not just the missing
 trigger.
+
+**Resolved (GH-3790-3):** see
+[[decision_self_upgrade_auto_trigger_and_staleness_check]] (mem-045).
+`OnUpdate` now auto-enqueues the hot upgrade (config-gated via
+`upgrade.auto_hot_upgrade`, keypress kept as a manual override), and
+`VersionChecker` fails loud past `upgrade.stale_release_threshold` releases
+behind (WARN log + alert + `pilot doctor` check). Still open: the
+checker+hot-upgrader subsystem remains dashboard-mode-only — non-dashboard
+polling mode still has no self-upgrade path at all, automatic or manual.

@@ -166,7 +166,7 @@ func TestRunChecks_TelegramSlackLive_EndToEnd(t *testing.T) {
 		},
 	}
 
-	report := RunChecks(cfg)
+	report := RunChecks(cfg, "")
 
 	tgLive := findConfigCheck(report.Config, "telegram.token.live")
 	if tgLive == nil || tgLive.Status != StatusError {

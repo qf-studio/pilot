@@ -587,7 +587,7 @@ func TestCheckFeatures_AlertsDisabled(t *testing.T) {
 
 func TestRunChecks_SetsFlags(t *testing.T) {
 	cfg := &config.Config{}
-	report := RunChecks(cfg)
+	report := RunChecks(cfg, "")
 
 	if report == nil {
 		t.Fatal("RunChecks returned nil")
@@ -610,7 +610,7 @@ func TestRunChecks_HasErrorsFlagSet(t *testing.T) {
 			},
 		},
 	}
-	report := RunChecks(cfg)
+	report := RunChecks(cfg, "")
 
 	// Config should have an error for missing telegram token
 	hasConfigError := false
@@ -634,7 +634,7 @@ func TestRunChecks_ProjectCount(t *testing.T) {
 			{Name: "b", Path: "/tmp"},
 		},
 	}
-	report := RunChecks(cfg)
+	report := RunChecks(cfg, "")
 
 	if report.Projects != 2 {
 		t.Errorf("Projects = %d, want 2", report.Projects)
@@ -1132,6 +1132,80 @@ func TestCheckBrewTapHealth_JobFetchFails(t *testing.T) {
 	check := checkBrewTapHealth(get)
 	if check.Status != StatusWarning {
 		t.Errorf("status = %v, want StatusWarning when jobs fetch fails", check.Status)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// checkSelfUpgradeStaleness (GH-3790)
+// ---------------------------------------------------------------------------
+
+func TestCheckSelfUpgradeStaleness_ThresholdDisabled(t *testing.T) {
+	get := func(_ string) (*http.Response, error) {
+		t.Fatal("should not make a network call when threshold <= 0")
+		return nil, nil
+	}
+	check := checkSelfUpgradeStaleness(get, "2.201.2", 0)
+	if check.Status != StatusOK {
+		t.Errorf("status = %v, want StatusOK", check.Status)
+	}
+}
+
+func TestCheckSelfUpgradeStaleness_NetworkError(t *testing.T) {
+	get := func(_ string) (*http.Response, error) { return nil, io.ErrUnexpectedEOF }
+	check := checkSelfUpgradeStaleness(get, "2.201.2", 3)
+	if check.Status != StatusWarning {
+		t.Errorf("status = %v, want StatusWarning", check.Status)
+	}
+}
+
+func TestCheckSelfUpgradeStaleness_UpToDate(t *testing.T) {
+	body := `[{"tag_name":"v2.201.2","draft":false,"prerelease":false}]`
+	get := makeBrewTapGetter([]struct {
+		code int
+		body string
+	}{{200, body}})
+	check := checkSelfUpgradeStaleness(get, "2.201.2", 3)
+	if check.Status != StatusOK {
+		t.Errorf("status = %v, want StatusOK", check.Status)
+	}
+}
+
+func TestCheckSelfUpgradeStaleness_BehindThreshold(t *testing.T) {
+	body := `[
+		{"tag_name":"v2.207.1","draft":false,"prerelease":false},
+		{"tag_name":"v2.206.1","draft":false,"prerelease":false},
+		{"tag_name":"v2.206.0","draft":false,"prerelease":false},
+		{"tag_name":"v2.205.0","draft":false,"prerelease":false},
+		{"tag_name":"v2.201.2","draft":false,"prerelease":false}
+	]`
+	get := makeBrewTapGetter([]struct {
+		code int
+		body string
+	}{{200, body}})
+	check := checkSelfUpgradeStaleness(get, "2.201.2", 3)
+	if check.Status != StatusWarning {
+		t.Errorf("status = %v, want StatusWarning", check.Status)
+	}
+	if check.Fix == "" {
+		t.Error("expected a Fix hint")
+	}
+	if !strings.Contains(check.Message, "4 releases behind") {
+		t.Errorf("message = %q, want mention of release count", check.Message)
+	}
+}
+
+func TestCheckSelfUpgradeStaleness_BelowThreshold(t *testing.T) {
+	body := `[
+		{"tag_name":"v2.202.0","draft":false,"prerelease":false},
+		{"tag_name":"v2.201.2","draft":false,"prerelease":false}
+	]`
+	get := makeBrewTapGetter([]struct {
+		code int
+		body string
+	}{{200, body}})
+	check := checkSelfUpgradeStaleness(get, "2.201.2", 3)
+	if check.Status != StatusOK {
+		t.Errorf("status = %v, want StatusOK (1 release behind < threshold 3)", check.Status)
 	}
 }
 
