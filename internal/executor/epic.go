@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1597,6 +1598,159 @@ func evaluateEmptyBranchPRGuard(decomposed bool, childTerminalStates []string, r
 	}
 }
 
+// defaultChildOutcomeReconcilePollInterval / defaultChildOutcomeReconcileTimeout
+// bound reconcileChildOutcome's poll loop. GH-3786.
+const (
+	defaultChildOutcomeReconcilePollInterval = 3 * time.Second
+	defaultChildOutcomeReconcileTimeout      = 5 * time.Minute
+)
+
+// childExecutionNonTerminalStatuses are executions.status values that mean a
+// child's own tracked run has not finished yet.
+var childExecutionNonTerminalStatuses = map[string]bool{
+	"queued":  true,
+	"pending": true,
+	"running": true,
+}
+
+// reconcileChildOutcome re-checks a sub-issue's own execution row before
+// letting a synchronous exec signal (err or result.Success=false) fail the
+// epic. GH-3786 (TASK-382 D3): GH-3760 failed on "sub-issue 3769 failed:
+// unknown: exit status 1" while GH-3769's own execution row was still
+// "running" — it went on to reach "completed" and ship PR #3778
+// independently. The synchronous return from executing a sub-issue is not
+// proof the child is actually done: it can race a concurrently-tracked run
+// of the same issue (e.g. picked up separately by the normal dispatch
+// queue). Only a terminal status on the child's tracked execution row is
+// proof.
+//
+// When no failure signal is present, or no log store is wired to check
+// against, the original (result, err) pass through unchanged. Otherwise this
+// polls GetExecutionStatusByTaskID for taskID (scoped to projectPath) until
+// it reports a terminal status, the context is cancelled, or
+// childOutcomeReconcileTimeout elapses — whichever comes first, so this can
+// never block the epic indefinitely. On terminal success ("completed" /
+// "no_op") it synthesizes a passing ExecutionResult from the tracked row so
+// the caller's normal success/no-op handling applies; on terminal failure it
+// enriches the returned error with the tracked row's real error message
+// instead of the uninformative "unknown: exit status 1" backend
+// classification.
+func (r *Runner) reconcileChildOutcome(ctx context.Context, taskID, projectPath string, result *ExecutionResult, execErr error) (*ExecutionResult, error) {
+	hasFailureSignal := execErr != nil || (result != nil && !result.Success)
+	if !hasFailureSignal {
+		return result, execErr
+	}
+	if r.logStore == nil {
+		return result, execErr
+	}
+
+	// First lookup outside the poll loop: if the child has no tracked
+	// execution row at all (the common case for a genuine, non-racing
+	// failure — inline sub-issue execution doesn't itself write an
+	// executions row), there is nothing to wait for. Only enter the bounded
+	// poll when a row actually exists and is still in flight, so a plain
+	// single-run failure fails immediately instead of paying the full poll
+	// timeout on every epic error.
+	status, err := r.logStore.GetExecutionStatusByTaskID(taskID, projectPath)
+	if err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			r.log.Warn("reconcileChildOutcome: execution status lookup failed",
+				"task_id", taskID, "project_path", projectPath, "error", err)
+		}
+		return result, execErr
+	}
+	if !childExecutionNonTerminalStatuses[status] {
+		return r.resolveChildTerminalOutcome(taskID, status, result, execErr)
+	}
+
+	pollInterval := r.childOutcomeReconcilePollInterval
+	if pollInterval <= 0 {
+		pollInterval = defaultChildOutcomeReconcilePollInterval
+	}
+	timeout := r.childOutcomeReconcileTimeout
+	if timeout <= 0 {
+		timeout = defaultChildOutcomeReconcileTimeout
+	}
+
+	deadline := time.Now().Add(timeout)
+	ticker := time.NewTicker(pollInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return result, execErr
+		case <-ticker.C:
+		}
+
+		status, err := r.logStore.GetExecutionStatusByTaskID(taskID, projectPath)
+		if err == nil && !childExecutionNonTerminalStatuses[status] {
+			return r.resolveChildTerminalOutcome(taskID, status, result, execErr)
+		}
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			r.log.Warn("reconcileChildOutcome: execution status lookup failed",
+				"task_id", taskID, "project_path", projectPath, "error", err)
+		}
+		if time.Now().After(deadline) {
+			r.log.Warn("reconcileChildOutcome: gave up waiting for terminal child execution state",
+				"task_id", taskID, "project_path", projectPath, "timeout", timeout)
+			return result, execErr
+		}
+	}
+}
+
+// resolveChildTerminalOutcome turns a terminal execution-row status for
+// taskID into the (result, error) pair reconcileChildOutcome should return.
+// "completed" / "no_op" become a synthetic success/no-op ExecutionResult so
+// the normal caller-side handling (PR registration, merge wait, no-op
+// continue) applies unchanged; any other terminal status is a genuine
+// failure, reported with the tracked row's real Error message when the
+// original signal lacked one.
+func (r *Runner) resolveChildTerminalOutcome(taskID, status string, result *ExecutionResult, execErr error) (*ExecutionResult, error) {
+	row, rowErr := r.logStore.GetLatestExecutionByTaskID(taskID)
+	if rowErr != nil {
+		row = nil
+	}
+
+	switch status {
+	case "completed":
+		synth := &ExecutionResult{TaskID: taskID, Success: true}
+		if row != nil {
+			synth.PRUrl = row.PRUrl
+			synth.CommitSHA = row.CommitSHA
+		}
+		r.log.Info("reconcileChildOutcome: child execution row reached terminal success after a synchronous failure signal; treating as succeeded",
+			"task_id", taskID, "status", status)
+		return synth, nil
+	case "no_op":
+		synth := &ExecutionResult{TaskID: taskID, Success: false, Outcome: "no_op"}
+		if row != nil && row.Error != "" {
+			synth.Error = row.Error
+		}
+		r.log.Info("reconcileChildOutcome: child execution row reached terminal no_op after a synchronous failure signal; treating as no-op",
+			"task_id", taskID, "status", status)
+		return synth, nil
+	default:
+		msg := ""
+		if row != nil && strings.TrimSpace(row.Error) != "" {
+			msg = row.Error
+		} else if execErr != nil {
+			msg = execErr.Error()
+		} else if result != nil {
+			msg = result.Error
+		}
+		if msg == "" {
+			msg = fmt.Sprintf("child execution ended with status %q", status)
+		}
+		if result == nil {
+			result = &ExecutionResult{TaskID: taskID}
+		}
+		result.Success = false
+		result.Error = msg
+		return result, fmt.Errorf("child execution status=%s: %s", status, msg)
+	}
+}
+
 // ExecuteSubIssues executes created sub-issues sequentially and tracks progress on the parent.
 // Each sub-issue is executed as a separate task, and the parent issue is updated with progress.
 // Returns an error if any sub-issue fails; completed sub-issues remain done.
@@ -1734,6 +1888,13 @@ func (r *Runner) executeSubIssuesTracked(ctx context.Context, parent *Task, issu
 			// subTask.ProjectPath points to the real repo, not the parent's worktree.
 			result, err = r.executeWithOptions(ctx, subTask, true)
 		}
+
+		// GH-3786: a synchronous err/Success=false here is not proof the child
+		// is actually done — it can race a separately-tracked run of the same
+		// sub-issue. Re-check the child's own execution row before trusting
+		// this signal as terminal.
+		result, err = r.reconcileChildOutcome(ctx, taskID, subTaskRepoPath, result, err)
+
 		if err != nil {
 			failMsg := fmt.Sprintf("❌ Failed on %d/%d: %s - Error: %v",
 				i+1, total, issue.Subtask.Title, err)
