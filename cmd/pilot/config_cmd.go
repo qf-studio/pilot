@@ -1,17 +1,20 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
 	"github.com/qf-studio/pilot/internal/config"
-	"github.com/qf-studio/pilot/internal/replay"
+	"github.com/qf-studio/pilot/internal/memory"
 )
 
 func newConfigCmd() *cobra.Command {
@@ -321,36 +324,46 @@ Examples:
 	return cmd
 }
 
+// logDisplayLimit is the number of execution_logs lines shown for `pilot logs <task-id>`.
+// verboseLogDisplayLimit raises the cap when --verbose is passed.
+const (
+	logDisplayLimit        = 100
+	verboseLogDisplayLimit = 500
+)
+
+// showTaskLogs prints logs for a specific task, sourced from the memory store (executions +
+// execution_logs tables) rather than replay recordings, so it also covers tasks that are
+// still running or finished recently but haven't produced a finalized recording (GH-3724).
 func showTaskLogs(taskID string, cfg *config.Config, verbose, jsonOut bool) error {
-	// Try to find recording by task ID
-	recordingsPath := replay.DefaultRecordingsPath()
-
-	// List all recordings and find matching task
-	recordings, err := replay.ListRecordings(recordingsPath, &replay.RecordingFilter{Limit: 100})
+	store, err := memory.NewStore(cfg.Memory.Path)
 	if err != nil {
-		return fmt.Errorf("failed to list recordings: %w", err)
+		return fmt.Errorf("failed to open memory store: %w", err)
 	}
+	defer func() { _ = store.Close() }()
 
-	var matchingRec *replay.RecordingSummary
-	for _, rec := range recordings {
-		if rec.TaskID == taskID || rec.ID == taskID || strings.Contains(rec.TaskID, taskID) {
-			matchingRec = rec
-			break
+	exec, err := store.GetLatestExecutionByTaskID(taskID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("no logs found for task: %s", taskID)
 		}
+		return fmt.Errorf("failed to look up task: %w", err)
 	}
 
-	if matchingRec == nil {
-		return fmt.Errorf("no logs found for task: %s", taskID)
+	limit := logDisplayLimit
+	if verbose {
+		limit = verboseLogDisplayLimit
 	}
-
-	// Load full recording
-	recording, err := replay.LoadRecording(recordingsPath, matchingRec.ID)
+	logs, err := store.GetLogsByExecutionID(exec.TaskID, limit)
 	if err != nil {
-		return fmt.Errorf("failed to load recording: %w", err)
+		return fmt.Errorf("failed to load logs: %w", err)
 	}
 
 	if jsonOut {
-		data, err := json.MarshalIndent(recording, "", "  ")
+		out := struct {
+			Execution *memory.Execution  `json:"execution"`
+			Logs      []*memory.LogEntry `json:"logs"`
+		}{exec, logs}
+		data, err := json.MarshalIndent(out, "", "  ")
 		if err != nil {
 			return fmt.Errorf("failed to marshal: %w", err)
 		}
@@ -360,66 +373,73 @@ func showTaskLogs(taskID string, cfg *config.Config, verbose, jsonOut bool) erro
 
 	// Display task info
 	statusIcon := "+"
-	switch recording.Status {
+	switch exec.Status {
 	case "failed":
 		statusIcon = "x"
-	case "cancelled":
+	case "cancelled", "no_op":
 		statusIcon = "!"
 	}
 
-	fmt.Printf("Task: %s [%s]\n", recording.TaskID, statusIcon)
-	fmt.Printf("Status: %s\n", recording.Status)
-	fmt.Printf("Duration: %s\n", recording.Duration)
-	fmt.Printf("Started: %s\n", recording.StartTime.Format("2006-01-02 15:04:05"))
+	fmt.Printf("Task: %s [%s]\n", exec.TaskID, statusIcon)
+	fmt.Printf("Status: %s\n", exec.Status)
+	fmt.Printf("Duration: %s\n", time.Duration(exec.DurationMs)*time.Millisecond)
+	fmt.Printf("Started: %s\n", exec.CreatedAt.Format("2006-01-02 15:04:05"))
 	fmt.Println()
 
-	if recording.Metadata != nil {
-		if recording.Metadata.Branch != "" {
-			fmt.Printf("Branch: %s\n", recording.Metadata.Branch)
+	if exec.TaskBranch != "" || exec.CommitSHA != "" || exec.PRUrl != "" {
+		if exec.TaskBranch != "" {
+			fmt.Printf("Branch: %s\n", exec.TaskBranch)
 		}
-		if recording.Metadata.CommitSHA != "" {
-			fmt.Printf("Commit: %s\n", recording.Metadata.CommitSHA)
+		if exec.CommitSHA != "" {
+			fmt.Printf("Commit: %s\n", exec.CommitSHA)
 		}
-		if recording.Metadata.PRUrl != "" {
-			fmt.Printf("PR: %s\n", recording.Metadata.PRUrl)
+		if exec.PRUrl != "" {
+			fmt.Printf("PR: %s\n", exec.PRUrl)
 		}
 		fmt.Println()
 	}
 
-	if verbose {
-		// Load and show events
-		events, err := replay.LoadStreamEvents(recording)
-		if err != nil {
-			return fmt.Errorf("failed to load events: %w", err)
-		}
+	if len(logs) == 0 {
+		fmt.Println("No log entries recorded for this task.")
+		return nil
+	}
 
-		fmt.Printf("Events (%d):\n", len(events))
-		fmt.Println(strings.Repeat("-", 50))
+	fmt.Printf("Log entries (%d):\n", len(logs))
+	fmt.Println(strings.Repeat("-", 50))
 
-		for i, event := range events {
-			formatted := replay.FormatEvent(event, true)
-			fmt.Printf("[%d] %s\n", i+1, formatted)
-		}
+	for _, entry := range logs {
+		fmt.Printf("[%s] %-5s %s: %s\n",
+			entry.Timestamp.Format("15:04:05"),
+			strings.ToUpper(entry.Level),
+			entry.Component,
+			entry.Message)
 	}
 
 	return nil
 }
 
+// showRecentLogs prints the most recently created tasks, sourced from the memory store
+// (executions table) so it reflects live/in-progress executions, not just finalized
+// replay recordings (GH-3724).
 func showRecentLogs(cfg *config.Config, limit int, jsonOut bool) error {
-	recordingsPath := replay.DefaultRecordingsPath()
-
-	recordings, err := replay.ListRecordings(recordingsPath, &replay.RecordingFilter{Limit: limit})
+	store, err := memory.NewStore(cfg.Memory.Path)
 	if err != nil {
-		return fmt.Errorf("failed to list recordings: %w", err)
+		return fmt.Errorf("failed to open memory store: %w", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	executions, err := store.GetRecentExecutions(limit, "")
+	if err != nil {
+		return fmt.Errorf("failed to load recent executions: %w", err)
 	}
 
-	if len(recordings) == 0 {
+	if len(executions) == 0 {
 		fmt.Println("No task logs found.")
 		return nil
 	}
 
 	if jsonOut {
-		data, err := json.MarshalIndent(recordings, "", "  ")
+		data, err := json.MarshalIndent(executions, "", "  ")
 		if err != nil {
 			return fmt.Errorf("failed to marshal: %w", err)
 		}
@@ -427,23 +447,23 @@ func showRecentLogs(cfg *config.Config, limit int, jsonOut bool) error {
 		return nil
 	}
 
-	fmt.Printf("Recent Tasks (%d):\n", len(recordings))
+	fmt.Printf("Recent Tasks (%d):\n", len(executions))
 	fmt.Println()
 
-	for _, rec := range recordings {
+	for _, exec := range executions {
 		statusIcon := "+"
-		switch rec.Status {
+		switch exec.Status {
 		case "failed":
 			statusIcon = "x"
-		case "cancelled":
+		case "cancelled", "no_op":
 			statusIcon = "!"
 		}
 
 		fmt.Printf("  [%s] %-20s %8s  %s\n",
 			statusIcon,
-			rec.TaskID,
-			rec.Duration.Round(1),
-			rec.StartTime.Format("Jan 02 15:04"))
+			exec.TaskID,
+			(time.Duration(exec.DurationMs) * time.Millisecond).Round(time.Second),
+			exec.CreatedAt.Format("Jan 02 15:04"))
 	}
 
 	fmt.Println()

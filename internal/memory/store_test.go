@@ -103,6 +103,102 @@ func TestGetRecentExecutions(t *testing.T) {
 	}
 }
 
+func TestGetLatestExecutionByTaskID(t *testing.T) {
+	tmpDir, _ := os.MkdirTemp("", "pilot-test-*")
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	store, _ := NewStore(tmpDir)
+	defer func() { _ = store.Close() }()
+
+	// Two executions of the same task: an older completed run and a newer running one,
+	// mirroring a retried/re-dispatched task (GH-3724: "pilot logs GH-<n>" must surface
+	// the latest attempt, not miss it).
+	older := &Execution{ID: "exec-old", TaskID: "GH-3714", ProjectPath: "/path", Status: "failed"}
+	if err := store.SaveExecution(older); err != nil {
+		t.Fatalf("SaveExecution(older) failed: %v", err)
+	}
+	newer := &Execution{ID: "exec-new", TaskID: "GH-3714", ProjectPath: "/path", Status: "running"}
+	if err := store.SaveExecution(newer); err != nil {
+		t.Fatalf("SaveExecution(newer) failed: %v", err)
+	}
+
+	got, err := store.GetLatestExecutionByTaskID("GH-3714")
+	if err != nil {
+		t.Fatalf("GetLatestExecutionByTaskID failed: %v", err)
+	}
+	if got.ID != "exec-new" {
+		t.Errorf("Expected latest execution 'exec-new', got '%s'", got.ID)
+	}
+
+	// Partial match, mirroring the previous recordings-based lookup behavior.
+	gotPartial, err := store.GetLatestExecutionByTaskID("3714")
+	if err != nil {
+		t.Fatalf("GetLatestExecutionByTaskID (partial) failed: %v", err)
+	}
+	if gotPartial.ID != "exec-new" {
+		t.Errorf("Expected partial match to resolve to 'exec-new', got '%s'", gotPartial.ID)
+	}
+
+	if _, err := store.GetLatestExecutionByTaskID("GH-9999"); !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("Expected sql.ErrNoRows for unknown task, got %v", err)
+	}
+}
+
+func TestGetLogsByExecutionID(t *testing.T) {
+	tmpDir, _ := os.MkdirTemp("", "pilot-test-*")
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	store, _ := NewStore(tmpDir)
+	defer func() { _ = store.Close() }()
+
+	base := time.Now()
+	messages := []string{"starting", "planning", "implementing", "done"}
+	for i, msg := range messages {
+		entry := &LogEntry{
+			ExecutionID: "GH-3714",
+			Timestamp:   base.Add(time.Duration(i) * time.Second),
+			Level:       "info",
+			Message:     msg,
+			Component:   "executor",
+		}
+		if err := store.SaveLogEntry(entry); err != nil {
+			t.Fatalf("SaveLogEntry failed: %v", err)
+		}
+	}
+	// A log line for a different task must not leak into the result.
+	if err := store.SaveLogEntry(&LogEntry{ExecutionID: "GH-9999", Timestamp: base, Level: "info", Message: "other task", Component: "executor"}); err != nil {
+		t.Fatalf("SaveLogEntry (other task) failed: %v", err)
+	}
+
+	logs, err := store.GetLogsByExecutionID("GH-3714", 100)
+	if err != nil {
+		t.Fatalf("GetLogsByExecutionID failed: %v", err)
+	}
+
+	if len(logs) != len(messages) {
+		t.Fatalf("Expected %d log entries, got %d", len(messages), len(logs))
+	}
+
+	// Entries must come back in chronological order.
+	for i, entry := range logs {
+		if entry.Message != messages[i] {
+			t.Errorf("Log entry %d: expected message %q, got %q", i, messages[i], entry.Message)
+		}
+	}
+
+	// limit keeps the most recent entries, in chronological order.
+	limited, err := store.GetLogsByExecutionID("GH-3714", 2)
+	if err != nil {
+		t.Fatalf("GetLogsByExecutionID (limited) failed: %v", err)
+	}
+	if len(limited) != 2 {
+		t.Fatalf("Expected 2 log entries, got %d", len(limited))
+	}
+	if limited[0].Message != "implementing" || limited[1].Message != "done" {
+		t.Errorf("Expected the 2 most recent entries in order, got %q, %q", limited[0].Message, limited[1].Message)
+	}
+}
+
 func TestPatternCRUD(t *testing.T) {
 	tmpDir, _ := os.MkdirTemp("", "pilot-test-*")
 	defer func() { _ = os.RemoveAll(tmpDir) }()
