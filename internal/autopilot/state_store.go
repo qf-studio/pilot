@@ -94,6 +94,10 @@ func (s *StateStore) migrate() error {
 		// TASK-298: Add repo column to adapter_processed for cross-repo dedup (TASK-288 Step 2).
 		// Repo defaults to '' for tracker-style adapters (linear, jira, asana, etc.).
 		`ALTER TABLE adapter_processed ADD COLUMN repo TEXT NOT NULL DEFAULT ''`,
+		// GH-3715: Persist the auto-rebase cycle counter so the cap on successful
+		// rebases (conflict -> rebase-success -> CI -> conflict oscillation)
+		// survives daemon restarts.
+		`ALTER TABLE autopilot_pr_state ADD COLUMN rebase_attempts INTEGER NOT NULL DEFAULT 0`,
 	}
 
 	for _, m := range migrations {
@@ -183,8 +187,8 @@ func (s *StateStore) SavePRState(pr *PRState) error {
 			merge_attempts, error, created_at, updated_at,
 			release_version, release_bump_type, merge_notification_posted,
 			approval_request_id, approval_decision, approval_requested_at,
-			post_merge_sha, post_merge_ci_started_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?, ?, ?)
+			post_merge_sha, post_merge_ci_started_at, rebase_attempts
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(pr_number) DO UPDATE SET
 			pr_url = excluded.pr_url,
 			issue_number = excluded.issue_number,
@@ -204,7 +208,8 @@ func (s *StateStore) SavePRState(pr *PRState) error {
 			approval_decision = excluded.approval_decision,
 			approval_requested_at = excluded.approval_requested_at,
 			post_merge_sha = excluded.post_merge_sha,
-			post_merge_ci_started_at = excluded.post_merge_ci_started_at
+			post_merge_ci_started_at = excluded.post_merge_ci_started_at,
+			rebase_attempts = excluded.rebase_attempts
 	`,
 		pr.PRNumber, pr.PRURL, pr.IssueNumber, pr.BranchName, pr.HeadSHA,
 		string(pr.Stage), string(pr.CIStatus),
@@ -212,7 +217,7 @@ func (s *StateStore) SavePRState(pr *PRState) error {
 		pr.MergeAttempts, pr.Error, nullTime(pr.CreatedAt),
 		pr.ReleaseVersion, string(pr.ReleaseBumpType), pr.MergeNotificationPosted,
 		pr.ApprovalRequestID, pr.ApprovalDecision, nullTime(pr.ApprovalRequestedAt),
-		pr.PostMergeSHA, nullTime(pr.PostMergeCIStartedAt),
+		pr.PostMergeSHA, nullTime(pr.PostMergeCIStartedAt), pr.RebaseAttempts,
 	)
 	return err
 }
@@ -226,7 +231,7 @@ func (s *StateStore) GetPRState(prNumber int) (*PRState, error) {
 			merge_attempts, error, created_at,
 			release_version, release_bump_type, merge_notification_posted,
 			approval_request_id, approval_decision, approval_requested_at,
-			post_merge_sha, post_merge_ci_started_at
+			post_merge_sha, post_merge_ci_started_at, rebase_attempts
 		FROM autopilot_pr_state WHERE pr_number = ?
 	`, prNumber)
 
@@ -248,7 +253,7 @@ func (s *StateStore) LoadAllPRStates() ([]*PRState, error) {
 			merge_attempts, error, created_at,
 			release_version, release_bump_type, merge_notification_posted,
 			approval_request_id, approval_decision, approval_requested_at,
-			post_merge_sha, post_merge_ci_started_at
+			post_merge_sha, post_merge_ci_started_at, rebase_attempts
 		FROM autopilot_pr_state
 	`)
 	if err != nil {
@@ -268,7 +273,7 @@ func (s *StateStore) LoadAllPRStates() ([]*PRState, error) {
 			&pr.MergeAttempts, &pr.Error, &createdAt,
 			&pr.ReleaseVersion, &relBumpType, &pr.MergeNotificationPosted,
 			&pr.ApprovalRequestID, &pr.ApprovalDecision, &approvalRequestedAt,
-			&pr.PostMergeSHA, &postMergeCIStartedAt,
+			&pr.PostMergeSHA, &postMergeCIStartedAt, &pr.RebaseAttempts,
 		); err != nil {
 			return nil, err
 		}
@@ -516,7 +521,7 @@ func scanPRState(row *sql.Row) (*PRState, error) {
 		&pr.MergeAttempts, &pr.Error, &createdAt,
 		&pr.ReleaseVersion, &relBumpType, &pr.MergeNotificationPosted,
 		&pr.ApprovalRequestID, &pr.ApprovalDecision, &approvalRequestedAt,
-		&pr.PostMergeSHA, &postMergeCIStartedAt,
+		&pr.PostMergeSHA, &postMergeCIStartedAt, &pr.RebaseAttempts,
 	)
 	if err != nil {
 		return nil, err

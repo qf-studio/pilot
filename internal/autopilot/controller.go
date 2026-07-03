@@ -1467,6 +1467,7 @@ func (c *Controller) handleMerging(ctx context.Context, prState *PRState) error 
 
 	c.log.Info("PR merged successfully", "pr", prState.PRNumber)
 	prState.Stage = StageMerged
+	prState.RebaseAttempts = 0 // GH-3715: reset rebase-oscillation counter on a clean merge
 	c.recordMergeSuccess(prState)
 
 	// GH-1015: Add pilot-done label after successful merge (not at PR creation)
@@ -2266,7 +2267,37 @@ func (c *Controller) handleMergeConflict(ctx context.Context, prState *PRState) 
 	// Try GitHub auto-update first (merge-from-base, not true rebase)
 	err := c.ghClient.UpdatePullRequestBranch(ctx, c.owner, c.repo, prState.PRNumber)
 	if err == nil {
-		c.log.Info("auto-rebased conflicting PR", "pr", prState.PRNumber)
+		prState.RebaseAttempts++
+
+		// GH-3715: A successful rebase returns the PR to StageWaitingCI without
+		// consuming MergeAttempts or any other retry budget, so a PR can cycle
+		// conflict -> rebase-success -> CI -> conflict indefinitely. Cap the
+		// number of successful auto-rebases per PR and escalate instead of
+		// rebasing again once the cap is reached.
+		if prState.RebaseAttempts >= c.config.MaxRebaseAttempts {
+			errMsg := fmt.Sprintf("auto-rebase oscillation: %d successful rebases without a clean merge — manual intervention required",
+				prState.RebaseAttempts)
+			c.log.Error("handleMergeConflict: rebase attempt cap reached — escalating to StageFailed",
+				"pr", prState.PRNumber,
+				"attempts", prState.RebaseAttempts,
+				"max", c.config.MaxRebaseAttempts,
+			)
+			if prState.IssueNumber > 0 {
+				comment := fmt.Sprintf(
+					"⚠️ **Rebase escalation**: PR #%d has been auto-rebased %d times but keeps hitting merge conflicts.\n\nManual intervention is required — no further automatic rebases will be made.",
+					prState.PRNumber, prState.RebaseAttempts)
+				if _, cerr := c.ghClient.AddPRComment(ctx, c.owner, c.repo, prState.PRNumber, comment); cerr != nil {
+					c.log.Warn("failed to post rebase escalation comment", "pr", prState.PRNumber, "error", cerr)
+				}
+			}
+			prState.Stage = StageFailed
+			prState.Error = errMsg
+			c.metrics.RecordPRFailed()
+			c.metrics.RecordIssueProcessed("failed")
+			return nil
+		}
+
+		c.log.Info("auto-rebased conflicting PR", "pr", prState.PRNumber, "attempt", prState.RebaseAttempts, "max", c.config.MaxRebaseAttempts)
 		prState.Stage = StageWaitingCI // rebase triggers new CI
 		prState.HeadSHA = ""           // force refresh on next tick
 		return nil
