@@ -1116,6 +1116,21 @@ func (c *Client) GetAuthenticatedUser(ctx context.Context) (*User, error) {
 	return &user, nil
 }
 
+// Verify confirms the client's token is valid by calling GetAuthenticatedUser.
+// tokenSource names where the token was resolved from (e.g. "config",
+// "env GITHUB_TOKEN", "gh CLI") and is included in the returned error so a
+// dead token can be diagnosed without re-deriving the resolution chain
+// (GH-3718). Pass "" when the source is unknown.
+func (c *Client) Verify(ctx context.Context, tokenSource string) error {
+	if _, err := c.GetAuthenticatedUser(ctx); err != nil {
+		if tokenSource != "" {
+			return fmt.Errorf("github token invalid (source: %s): %w", tokenSource, err)
+		}
+		return fmt.Errorf("github token invalid: %w", err)
+	}
+	return nil
+}
+
 // SearchMergedPRsForIssue checks if any merged PRs exist that reference the given
 // issue number in their title (e.g. "GH-123" pattern). Uses the GitHub Search API.
 // Returns true if at least one merged PR is found.

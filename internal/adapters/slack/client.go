@@ -43,6 +43,64 @@ func NewClientWithBaseURL(botToken, baseURL string) *Client {
 	}
 }
 
+// AuthTestResponse represents the response from Slack's auth.test endpoint.
+type AuthTestResponse struct {
+	OK     bool   `json:"ok"`
+	URL    string `json:"url,omitempty"`
+	Team   string `json:"team,omitempty"`
+	User   string `json:"user,omitempty"`
+	TeamID string `json:"team_id,omitempty"`
+	UserID string `json:"user_id,omitempty"`
+	BotID  string `json:"bot_id,omitempty"`
+	Error  string `json:"error,omitempty"`
+}
+
+// AuthTest calls Slack's auth.test endpoint to confirm the bot token is
+// valid, returning the authenticated bot identity.
+func (c *Client) AuthTest(ctx context.Context) (*AuthTestResponse, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/auth.test", nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+c.botToken)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to call auth.test: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	var result AuthTestResponse
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	if resp.StatusCode == http.StatusUnauthorized {
+		return nil, fmt.Errorf("slack API error (401): %s", result.Error)
+	}
+	if !result.OK {
+		return nil, fmt.Errorf("slack API error: %s", result.Error)
+	}
+
+	return &result, nil
+}
+
+// Verify confirms the bot token is valid by calling auth.test. This is the
+// probe path only — it replaces the intentional onboarding stub in
+// cmd/pilot/onboard_notify.go's validateSlackConn with a real API call, but
+// does not otherwise change onboarding behavior.
+func (c *Client) Verify(ctx context.Context) error {
+	if _, err := c.AuthTest(ctx); err != nil {
+		return fmt.Errorf("slack token invalid: %w", err)
+	}
+	return nil
+}
+
 // Message represents a Slack message
 type Message struct {
 	Channel     string       `json:"channel"`
