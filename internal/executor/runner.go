@@ -576,6 +576,12 @@ type Runner struct {
 	// guardrail logs a one-shot WARN and (without PILOT_ALLOW_UNMANAGED_REPO=1)
 	// refuses to create sub-issues — safe default for newly-wired call paths.
 	repoAllowlist RepoAllowlist
+	// GH-3786: bounds reconcileChildOutcome's poll loop that re-checks a sub-issue's
+	// own execution row before letting a synchronous exec failure fail the epic.
+	// Zero uses the package defaults (defaultChildOutcomeReconcilePollInterval /
+	// defaultChildOutcomeReconcileTimeout); tests shrink these for fast runs.
+	childOutcomeReconcilePollInterval time.Duration
+	childOutcomeReconcileTimeout      time.Duration
 }
 
 // SetRepoAllowlist injects the allowlist used by the sub-issue creation
