@@ -40,7 +40,6 @@ import (
 	"github.com/qf-studio/pilot/internal/logging"
 	"github.com/qf-studio/pilot/internal/memory"
 	"github.com/qf-studio/pilot/internal/pilot"
-	"github.com/qf-studio/pilot/internal/quality"
 	"github.com/qf-studio/pilot/internal/teams"
 	"github.com/qf-studio/pilot/internal/tunnel"
 	"github.com/qf-studio/pilot/internal/upgrade"
@@ -383,18 +382,9 @@ Examples:
 				// TASK-286 / GH-3027: refuse sub-issue creation on unmanaged repos.
 				gwRunner.SetRepoAllowlist(newConfigRepoAllowlist(cfg))
 
-				// Set up quality gates on runner if configured
-				if cfg.Quality != nil && cfg.Quality.Enabled {
-					gwRunner.SetQualityCheckerFactory(func(taskID, taskProjectPath string) executor.QualityChecker {
-						return &qualityCheckerWrapper{
-							executor: quality.NewExecutor(&quality.ExecutorConfig{
-								Config:      cfg.Quality,
-								ProjectPath: taskProjectPath,
-								TaskID:      taskID,
-							}),
-						}
-					})
-				}
+				// Set up quality gates on runner (GH-3716: resolved per-project,
+				// falling back to the global config, then auto-detection).
+				gwRunner.SetQualityCheckerFactory(newProjectQualityCheckerFactory(cfg))
 
 				// Set up team project access checker if configured (GH-635)
 				if gwTeamCleanup := wireProjectAccessChecker(gwRunner, cfg); gwTeamCleanup != nil {
@@ -1012,19 +1002,11 @@ Examples:
 				return fmt.Errorf("failed to create Pilot: %w", err)
 			}
 
-			// Set up quality gates if configured (GH-207) - for orchestrator/webhook mode
-			if cfg.Quality != nil && cfg.Quality.Enabled {
-				p.SetQualityCheckerFactory(func(taskID, taskProjectPath string) executor.QualityChecker {
-					return &qualityCheckerWrapper{
-						executor: quality.NewExecutor(&quality.ExecutorConfig{
-							Config:      cfg.Quality,
-							ProjectPath: taskProjectPath,
-							TaskID:      taskID,
-						}),
-					}
-				})
-				logging.WithComponent("start").Info("quality gates enabled for webhook mode")
-			}
+			// Set up quality gates (GH-207) - for orchestrator/webhook mode.
+			// GH-3716: resolved per-project, falling back to the global
+			// config, then auto-detection.
+			p.SetQualityCheckerFactory(newProjectQualityCheckerFactory(cfg))
+			logging.WithComponent("start").Info("quality gates enabled for webhook mode")
 
 			// GH-1585: Wire autopilot provider to gateway so /api/v1/autopilot returns live PR data
 			if gwAutopilotController != nil {
@@ -1420,19 +1402,10 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 	// TASK-286 / GH-3027: refuse sub-issue creation on unmanaged repos.
 	runner.SetRepoAllowlist(newConfigRepoAllowlist(cfg))
 
-	// Set up quality gates if configured (GH-207)
-	if cfg.Quality != nil && cfg.Quality.Enabled {
-		runner.SetQualityCheckerFactory(func(taskID, taskProjectPath string) executor.QualityChecker {
-			return &qualityCheckerWrapper{
-				executor: quality.NewExecutor(&quality.ExecutorConfig{
-					Config:      cfg.Quality,
-					ProjectPath: taskProjectPath,
-					TaskID:      taskID,
-				}),
-			}
-		})
-		logging.WithComponent("start").Info("quality gates enabled for polling mode")
-	}
+	// Set up quality gates (GH-207). GH-3716: resolved per-project, falling
+	// back to the global config, then auto-detection.
+	runner.SetQualityCheckerFactory(newProjectQualityCheckerFactory(cfg))
+	logging.WithComponent("start").Info("quality gates enabled for polling mode")
 
 	// Set up team project access checker if configured (GH-635)
 	if teamCleanup := wireProjectAccessChecker(runner, cfg); teamCleanup != nil {

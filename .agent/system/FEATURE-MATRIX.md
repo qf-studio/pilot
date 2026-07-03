@@ -1,6 +1,6 @@
 # Pilot Feature Matrix
 
-**Last Updated:** 2026-07-03 (v2.151.0)
+**Last Updated:** 2026-06-26 (v2.151.0)
 
 ## Legend
 
@@ -196,6 +196,8 @@
 | Lint gates | ✅ | quality | - | `quality.gates[].type=lint` | Run lint commands |
 | Build gates | ✅ | quality | - | `quality.gates[].type=build` | Compile check |
 | Retry on failure | ✅ | quality | - | `quality.max_retries` | Auto-retry with feedback |
+| Per-project quality gates | ✅ | config, quality | - | `projects[].quality` | Project overrides win over global `quality.*`, then auto-detect (v2.201.4, GH-3716) |
+| pnpm/yarn/bun auto-detection | ✅ | quality | - | - | Lockfile-based PM detection for auto-detected build/test gates (v2.201.4, GH-3716) |
 
 ## Memory & Learning
 
@@ -306,7 +308,6 @@
 | Agent doc size check | ✅ | health | `pilot doctor` | - | Warns >500 lines, errors >1000 lines per .agent/*.md (GH-2462) |
 | OpenCode backend | ✅ | executor | `--backend opencode` | `executor.backend` | HTTP/SSE alternative to Claude Code |
 | OpenAI-compatible direct backend | ✅ | executor | `type: openai-api` | `executor.openai` | Direct /v1/chat/completions for OpenAI, OpenRouter, Groq, Synthetic, vLLM, Ollama (v2.105.0, GH-2382) |
-| Ping health check | ✅ | gateway | - | - | `/ping` → `pong`, no auth, no DB (v2.200.2, GH-3705) |
 | K8s health probes | ✅ | gateway | - | - | `/ready` and `/live` endpoints for Kubernetes (v0.37.0) |
 | Prometheus metrics | ✅ | gateway | - | - | `/metrics` endpoint in Prometheus text format (v0.37.0) |
 | External-merge metrics | ✅ | autopilot | - | - | Record PRsMerged/IssuesProcessed/PRTimeToMerge for externally-merged PRs via scanner (v2.147.0, GH-2981) |
@@ -458,7 +459,7 @@
 | Input Adapters | 35 | 0 | 0 | 0 |
 | Output/Notifications | 18 | 0 | 0 | 0 |
 | Alerts & Monitoring | 11 | 0 | 0 | 0 |
-| Quality Gates | 5 | 0 | 0 | 0 |
+| Quality Gates | 7 | 0 | 0 | 0 |
 | Memory & Learning | 23 | 0 | 0 | 0 |
 | Dashboard | 24 | 0 | 0 | 0 |
 | Replay & Debug | 6 | 0 | 0 | 0 |

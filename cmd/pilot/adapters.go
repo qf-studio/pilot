@@ -235,6 +235,30 @@ type qualityCheckerWrapper struct {
 	executor *quality.Executor
 }
 
+// newProjectQualityCheckerFactory builds a per-task quality checker factory
+// that resolves the effective quality gate config per project (GH-3716):
+// the registered project's own `quality:` block takes precedence over the
+// global `Config.Quality`, which in turn takes precedence over an
+// auto-detected minimal build/test gate. This lets one Pilot deployment mix
+// stacks (e.g. Go/Makefile + pnpm/Node) without a global config tuned for
+// one stack forcing the wrong commands onto another.
+func newProjectQualityCheckerFactory(cfg *config.Config) func(taskID, taskProjectPath string) executor.QualityChecker {
+	return func(taskID, taskProjectPath string) executor.QualityChecker {
+		var projectQuality *quality.Config
+		if proj := cfg.FindProjectByPath(taskProjectPath); proj != nil {
+			projectQuality = proj.Quality
+		}
+		resolved := quality.ResolveConfig(projectQuality, cfg.Quality, taskProjectPath)
+		return &qualityCheckerWrapper{
+			executor: quality.NewExecutor(&quality.ExecutorConfig{
+				Config:      resolved,
+				ProjectPath: taskProjectPath,
+				TaskID:      taskID,
+			}),
+		}
+	}
+}
+
 // Check implements executor.QualityChecker by delegating to quality.Executor
 // and converting the result type
 func (w *qualityCheckerWrapper) Check(ctx context.Context) (*executor.QualityOutcome, error) {
