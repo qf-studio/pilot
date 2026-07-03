@@ -54,6 +54,43 @@ func IsPermanentFailure(errStr string) bool {
 	return false
 }
 
+// gitPushRetryAttempts / gitPushRetryDelay and prCreateRetryAttempts /
+// prCreateRetryDelay bound the retry loops around the child push/PR-create
+// step (GH-3785). Prior behavior gave up on the first transient failure,
+// leaving committed work reachable only via a bare sha in the parent's
+// failure message. A short bounded retry absorbs transient network/API
+// blips without materially slowing down a genuine, persistent failure.
+const (
+	gitPushRetryAttempts  = 3
+	gitPushRetryDelay     = 300 * time.Millisecond
+	prCreateRetryAttempts = 3
+	prCreateRetryDelay    = 300 * time.Millisecond
+)
+
+// formatGitStepFailureWithRecovery builds the result.Error string for a
+// push or PR-create step that exhausted its retries while committed work
+// still sits in the worktree. It pins the current HEAD under a
+// refs/pilot-recovery/<task-id> ref (GitOperations.CreateRecoveryRef) so
+// cleanup can never garbage-collect the commits, then names the failing
+// step, the attempt count, and the raw stderr (already embedded in stepErr
+// via GitOperations' "%w: %s" wrapping) alongside recovery instructions —
+// branch name, sha, and the pinned ref — so the parent failure message and
+// issue comment are actionable instead of a bare sha. GH-3785.
+func formatGitStepFailureWithRecovery(ctx context.Context, git *GitOperations, step string, attempts int, stepErr error, taskID, branch, sha string) string {
+	recoveryRef, refErr := git.CreateRecoveryRef(ctx, taskID, "HEAD")
+	shortSHA := sha
+	if len(shortSHA) > 7 {
+		shortSHA = shortSHA[:7]
+	}
+	recovery := fmt.Sprintf("branch=%s sha=%s", branch, shortSHA)
+	if refErr == nil && recoveryRef != "" {
+		recovery += fmt.Sprintf(" recovery_ref=%s", recoveryRef)
+	} else if refErr != nil {
+		recovery += fmt.Sprintf(" (recovery ref also failed: %v)", refErr)
+	}
+	return fmt.Sprintf("%s failed after %d attempt(s): %v — recovery: %s", step, attempts, stepErr, recovery)
+}
+
 // Non-failure terminal-outcome signatures. The dispatcher classifies an execution
 // by the deterministic fragments the runner (or its subprocess) writes to
 // result.Error, so the dashboard's "failed" count reflects genuine task failures
@@ -3531,21 +3568,40 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 					}
 				}
 			}
-			// Push branch
-			if err := git.Push(ctx, task.Branch); err != nil {
+			// Push branch — retry transient failures before declaring the work
+			// stranded (GH-3785: a single failed push previously produced a
+			// silent "committed work but no PR" report with no detail).
+			var pushErr error
+			for attempt := 1; attempt <= gitPushRetryAttempts; attempt++ {
+				pushErr = git.Push(ctx, task.Branch)
+				if pushErr == nil {
+					break
+				}
 				// GH-1389: Worktree push may fail with chdir error even if data was already pushed.
 				// Check if branch exists on remote before declaring failure.
 				if git.RemoteBranchExists(ctx, task.Branch) {
 					log.Warn("Push reported error but branch exists on remote, continuing",
-						slog.Any("error", err),
+						slog.Any("error", pushErr),
 						slog.String("branch", task.Branch),
 					)
-				} else {
-					result.Success = false
-					result.Error = fmt.Sprintf("push failed: %v", err)
-					r.reportProgress(task.ID, "PR Failed", 100, result.Error)
-					return result, nil
+					pushErr = nil
+					break
 				}
+				if attempt < gitPushRetryAttempts {
+					log.Warn("Push failed, retrying",
+						slog.String("task_id", task.ID),
+						slog.Int("attempt", attempt),
+						slog.Int("max_attempts", gitPushRetryAttempts),
+						slog.Any("error", pushErr),
+					)
+					time.Sleep(gitPushRetryDelay)
+				}
+			}
+			if pushErr != nil {
+				result.Success = false
+				result.Error = formatGitStepFailureWithRecovery(ctx, git, "push", gitPushRetryAttempts, pushErr, task.ID, task.Branch, result.CommitSHA)
+				r.reportProgress(task.ID, "PR Failed", 100, result.Error)
+				return result, nil
 			}
 
 			// GH-457: Use actual pushed HEAD as CommitSHA source of truth.
@@ -3649,11 +3705,28 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 					closeKeyword = fmt.Sprintf("\n\nCloses #%s", task.SourceIssueID)
 				}
 				prBody := fmt.Sprintf("## Summary\n\nAutomated MR created by Pilot for task %s.%s\n\n## Changes\n\n%s", task.ID, closeKeyword, task.Description)
+				// Retry MR creation before giving up (GH-3785): the branch is
+				// already pushed at this point, so a transient API failure here
+				// must not strand delivered commits behind a bare error.
 				var createErr error
-				prURL, createErr = r.prCreator.CreatePR(ctx, task.Branch, baseBranch, prTitle, prBody)
+				for attempt := 1; attempt <= prCreateRetryAttempts; attempt++ {
+					prURL, createErr = r.prCreator.CreatePR(ctx, task.Branch, baseBranch, prTitle, prBody)
+					if createErr == nil {
+						break
+					}
+					if attempt < prCreateRetryAttempts {
+						log.Warn("MR creation failed, retrying",
+							slog.String("task_id", task.ID),
+							slog.Int("attempt", attempt),
+							slog.Int("max_attempts", prCreateRetryAttempts),
+							slog.Any("error", createErr),
+						)
+						time.Sleep(prCreateRetryDelay)
+					}
+				}
 				if createErr != nil {
 					result.Success = false
-					result.Error = fmt.Sprintf("MR creation failed: %v", createErr)
+					result.Error = formatGitStepFailureWithRecovery(ctx, git, "mr-create", prCreateRetryAttempts, createErr, task.ID, task.Branch, result.CommitSHA)
 					r.reportProgress(task.ID, "MR Failed", 100, result.Error)
 					return result, nil
 				}
@@ -3661,11 +3734,27 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 				// GitHub: use gh CLI with auto-close keyword
 				issueNum := strings.TrimPrefix(task.ID, "GH-")
 				prBody := fmt.Sprintf("## Summary\n\nAutomated PR created by Pilot for task %s.\n\nCloses #%s\n\n## Changes\n\n%s", task.ID, issueNum, task.Description)
+				// Retry PR creation before giving up (GH-3785): same rationale as
+				// the MR-creator branch above — the branch is already pushed.
 				var createErr error
-				prURL, createErr = git.CreatePR(ctx, prTitle, prBody, baseBranch)
+				for attempt := 1; attempt <= prCreateRetryAttempts; attempt++ {
+					prURL, createErr = git.CreatePR(ctx, prTitle, prBody, baseBranch)
+					if createErr == nil {
+						break
+					}
+					if attempt < prCreateRetryAttempts {
+						log.Warn("PR creation failed, retrying",
+							slog.String("task_id", task.ID),
+							slog.Int("attempt", attempt),
+							slog.Int("max_attempts", prCreateRetryAttempts),
+							slog.Any("error", createErr),
+						)
+						time.Sleep(prCreateRetryDelay)
+					}
+				}
 				if createErr != nil {
 					result.Success = false
-					result.Error = fmt.Sprintf("PR creation failed: %v", createErr)
+					result.Error = formatGitStepFailureWithRecovery(ctx, git, "pr-create", prCreateRetryAttempts, createErr, task.ID, task.Branch, result.CommitSHA)
 					r.reportProgress(task.ID, "PR Failed", 100, result.Error)
 					return result, nil
 				}

@@ -1936,16 +1936,33 @@ func (r *Runner) executeSubIssuesTracked(ctx context.Context, parent *Task, issu
 		// instead of the work vanishing behind a false "completed" record.
 		if result.PRUrl == "" && result.CommitSHA != "" {
 			shortSHA := result.CommitSHA[:min(7, len(result.CommitSHA))]
-			warnMsg := fmt.Sprintf("⚠️ %d/%d produced commits (%s) but no PR — work not delivered; leaving issue open for retry: %s",
-				i+1, total, shortSHA, issue.Subtask.Title)
+
+			// GH-3785: this branch only fires when the child reported success
+			// with no push/PR error at all (an anomaly the push/PR retry path
+			// above should now prevent in the common case) — pin the commit
+			// under a recovery ref from the shared repo so the recovery
+			// instructions below are backed by a ref that survives worktree
+			// cleanup, not just a bare sha.
+			recoveryGit := NewGitOperations(subTaskRepoPath)
+			recoveryRef, refErr := recoveryGit.CreateRecoveryRef(ctx, taskID, "refs/heads/"+subTask.Branch)
+			recovery := fmt.Sprintf("branch=%s sha=%s", subTask.Branch, shortSHA)
+			if refErr == nil && recoveryRef != "" {
+				recovery += fmt.Sprintf(" recovery_ref=%s", recoveryRef)
+			} else if refErr != nil {
+				recovery += fmt.Sprintf(" (recovery ref also failed: %v)", refErr)
+			}
+
+			warnMsg := fmt.Sprintf("⚠️ %d/%d produced commits (%s) but no PR — work not delivered; leaving issue open for retry: %s — recovery: %s",
+				i+1, total, shortSHA, issue.Subtask.Title, recovery)
 			_ = r.UpdateIssueProgress(ctx, projectPath, parent.ID, warnMsg)
 			r.log.Error("sub-issue committed work but produced no PR — refusing to discard",
 				"parent_id", parent.ID,
 				"sub_issue", issueRef,
 				"commit_sha", shortSHA,
 				"branch", subTask.Branch,
+				"recovery_ref", recoveryRef,
 			)
-			return childStates, fmt.Errorf("sub-issue %s committed work (sha %s) but produced no PR — work would be lost, halting epic", issueRef, shortSHA)
+			return childStates, fmt.Errorf("sub-issue %s committed work (sha %s) but produced no PR — work would be lost, halting epic — recovery: %s", issueRef, shortSHA, recovery)
 		}
 
 		// Register sub-issue PR with autopilot controller (GH-596)
