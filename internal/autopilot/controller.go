@@ -239,7 +239,15 @@ func NewController(cfg *Config, ghClient *github.Client, approvalMgr *approval.M
 
 	// Initialize releaser from resolved release config (env-scoped wins over global).
 	// Mirrors resolvedRelease() so construction matches runtime decision path.
-	if relCfg := resolveRelease(cfg); relCfg != nil && relCfg.Enabled {
+	relCfg := resolveRelease(cfg)
+	relSource := "none"
+	if env := cfg.ResolvedEnv(); env != nil && env.Release != nil {
+		relSource = "env:" + cfg.EnvironmentName()
+	} else if cfg.Release != nil {
+		relSource = "global"
+	}
+	c.log.Info("resolved release policy", "enabled", relCfg != nil && relCfg.Enabled, "source", relSource)
+	if relCfg != nil && relCfg.Enabled {
 		c.releaser = NewReleaser(ghClient, owner, repo, relCfg)
 	}
 
@@ -1975,7 +1983,7 @@ func (c *Controller) tagCoveringCommit(ctx context.Context, owner, repo, sha str
 // handleReleasing creates a release after successful merge and CI.
 func (c *Controller) handleReleasing(ctx context.Context, prState *PRState) error {
 	if c.releaser == nil {
-		c.log.Debug("releaser not configured, skipping release", "pr", prState.PRNumber)
+		c.log.Warn("releaser not configured, skipping release", "pr", prState.PRNumber)
 		c.removePR(prState.PRNumber)
 		return nil
 	}
@@ -3153,7 +3161,7 @@ func (c *Controller) getBotLogin(ctx context.Context) string {
 
 	user, err := c.ghClient.GetAuthenticatedUser(ctx)
 	if err != nil {
-		c.log.Debug("could not fetch authenticated user login for bot-guard", "error", err)
+		c.log.Warn("could not fetch authenticated user login, GH-3417 recovery-PR human-guard disabled", "error", err)
 		return ""
 	}
 	c.mu.Lock()

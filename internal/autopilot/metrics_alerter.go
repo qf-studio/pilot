@@ -109,7 +109,7 @@ func NewMetricsAlerter(controller *Controller, engine *alerts.Engine) *MetricsAl
 // Run starts the metrics alerter loop.
 func (ma *MetricsAlerter) Run(ctx context.Context) {
 	if ma.engine == nil {
-		ma.log.Debug("alerts engine not configured, metrics alerter disabled")
+		ma.log.Warn("alerts engine not configured, metrics alerter disabled")
 		return
 	}
 
