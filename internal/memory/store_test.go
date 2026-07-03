@@ -2064,6 +2064,65 @@ func TestSelfHealExecutionAfterMerge_EmptyProjectPath(t *testing.T) {
 	}
 }
 
+// TestGetExecutionStatusByTaskID_ExactMatchScopedToProject verifies the lookup
+// matches task_id exactly (no substring fallback) and stays scoped to project_path,
+// so a no_op verdict for one repo's "GH-6" can't be borrowed by another repo's
+// same-numbered issue. GH-3780.
+func TestGetExecutionStatusByTaskID_ExactMatchScopedToProject(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	_ = store.SaveExecution(&Execution{ID: "e1", TaskID: "GH-6", ProjectPath: "/proj/a", Status: "no_op"})
+	_ = store.SaveExecution(&Execution{ID: "e2", TaskID: "GH-6", ProjectPath: "/proj/b", Status: "failed"})
+	// A task ID that would falsely substring-match "GH-6" (e.g. GetLatestExecutionByTaskID's
+	// "%GH-6%" fallback) must not be returned instead of the exact match.
+	_ = store.SaveExecution(&Execution{ID: "e3", TaskID: "GH-60", ProjectPath: "/proj/a", Status: "completed"})
+
+	status, err := store.GetExecutionStatusByTaskID("GH-6", "/proj/a")
+	if err != nil {
+		t.Fatalf("GetExecutionStatusByTaskID: %v", err)
+	}
+	if status != "no_op" {
+		t.Errorf("status = %q, want %q", status, "no_op")
+	}
+
+	status, err = store.GetExecutionStatusByTaskID("GH-6", "/proj/b")
+	if err != nil {
+		t.Fatalf("GetExecutionStatusByTaskID: %v", err)
+	}
+	if status != "failed" {
+		t.Errorf("status = %q, want %q", status, "failed")
+	}
+
+	if _, err := store.GetExecutionStatusByTaskID("GH-6", "/proj/c"); !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("expected sql.ErrNoRows for unmatched project, got %v", err)
+	}
+}
+
+// TestGetExecutionStatusByTaskID_EmptyProjectPath verifies that an empty
+// projectPath falls back to task_id-only matching, mirroring
+// SelfHealExecutionAfterMerge's legacy single-repo behavior. GH-3780.
+func TestGetExecutionStatusByTaskID_EmptyProjectPath(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	_ = store.SaveExecution(&Execution{ID: "e1", TaskID: "GH-7", ProjectPath: "/proj/a", Status: "no_op"})
+
+	status, err := store.GetExecutionStatusByTaskID("GH-7", "")
+	if err != nil {
+		t.Fatalf("GetExecutionStatusByTaskID: %v", err)
+	}
+	if status != "no_op" {
+		t.Errorf("status = %q, want %q", status, "no_op")
+	}
+}
+
 // TestRecentCompletedTelemetryStats verifies the zero-token telemetry gap
 // query: rows are filtered to completed runs with a real commit, and rows
 // without commit_sha (e.g. epic orchestrators) are excluded so they don't

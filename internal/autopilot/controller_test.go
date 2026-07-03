@@ -4002,6 +4002,10 @@ type mockEvalStore struct {
 	saved        []*memory.EvalTask
 	selfHealed   []selfHealCall
 	updateStatus []updateStatusCall
+	// execStatusByTaskID configures GetExecutionStatusByTaskID responses keyed by
+	// task ID (e.g. "GH-11"). Missing keys return sql.ErrNoRows, matching a real
+	// store's behavior when no execution row exists for that task.
+	execStatusByTaskID map[string]string
 }
 
 type selfHealCall struct {
@@ -4024,6 +4028,14 @@ func (m *mockEvalStore) SaveEvalTask(task *memory.EvalTask) error {
 func (m *mockEvalStore) UpdateExecutionStatusByTaskID(taskID, projectPath, status string) error {
 	m.updateStatus = append(m.updateStatus, updateStatusCall{TaskID: taskID, ProjectPath: projectPath, Status: status})
 	return nil
+}
+
+func (m *mockEvalStore) GetExecutionStatusByTaskID(taskID, projectPath string) (string, error) {
+	status, ok := m.execStatusByTaskID[taskID]
+	if !ok {
+		return "", sql.ErrNoRows
+	}
+	return status, nil
 }
 
 func (m *mockEvalStore) SelfHealExecutionAfterMerge(taskID, projectPath, prURL string) error {
@@ -4382,8 +4394,10 @@ func TestMaybeCloseParentIssue(t *testing.T) {
 		openSubIssues    int // used by text-search fallback
 		getIssueErr      bool
 		searchErr        bool
-		nativeTotal      int      // totalCount returned by GraphQL native sub-issues
-		nativeOpenStates []string // states of natively linked sub-issues
+		nativeTotal      int               // totalCount returned by GraphQL native sub-issues
+		nativeOpenStates []string          // states of natively linked sub-issues
+		nativeNumbers    []int             // issue numbers matching nativeOpenStates by index; defaults to index+1 if unset
+		execStatuses     map[string]string // GH-3780: mockEvalStore.GetExecutionStatusByTaskID responses keyed by task ID (e.g. "GH-1")
 		wantClosed       bool
 		wantLabeled      bool
 		wantCommented    bool
@@ -4464,6 +4478,37 @@ func TestMaybeCloseParentIssue(t *testing.T) {
 			wantLabeled:      false,
 			wantCommented:    false,
 		},
+		{
+			// GH-3780: child mix {completed, no_op, no_op}. The "completed" sibling
+			// already merged its PR and closed on GitHub, so only the two no_op
+			// children remain OPEN. Neither ever produces a PR/merge, but the ledger
+			// verifies both are genuine no_ops — the parent should still auto-close.
+			name:             "native links with no_op siblings only - closes parent",
+			issueNumber:      10,
+			issueBody:        "Fix the bug\n\nParent: GH-5\n",
+			nativeTotal:      3,
+			nativeOpenStates: []string{"CLOSED", "OPEN", "OPEN"},
+			nativeNumbers:    []int{1, 2, 3},
+			execStatuses:     map[string]string{"GH-2": "no_op", "GH-3": "no_op"},
+			wantClosed:       true,
+			wantLabeled:      true,
+			wantCommented:    true,
+		},
+		{
+			// GH-3780: one open sibling is a genuine no_op, but another is still
+			// failed/queued — that one still blocks the close since its work isn't
+			// actually done.
+			name:             "native links with no_op plus failed sibling - blocks close",
+			issueNumber:      10,
+			issueBody:        "Fix the bug\n\nParent: GH-5\n",
+			nativeTotal:      2,
+			nativeOpenStates: []string{"OPEN", "OPEN"},
+			nativeNumbers:    []int{2, 3},
+			execStatuses:     map[string]string{"GH-2": "no_op", "GH-3": "failed"},
+			wantClosed:       false,
+			wantLabeled:      false,
+			wantCommented:    false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -4501,10 +4546,16 @@ func TestMaybeCloseParentIssue(t *testing.T) {
 					}
 
 				case r.URL.Path == "/graphql" && r.Method == http.MethodPost:
-					// Serve native sub-issues GraphQL response in node(id:) format used by GetOpenSubIssueCount.
-					nodes := make([]map[string]string, len(tt.nativeOpenStates))
+					// Serve native sub-issues GraphQL response in node(id:) format used by
+					// GetOpenSubIssueNumbers/GetOpenSubIssueCount. nativeNumbers defaults to
+					// index+1 per-entry when the test case doesn't set it explicitly.
+					nodes := make([]map[string]interface{}, len(tt.nativeOpenStates))
 					for i, s := range tt.nativeOpenStates {
-						nodes[i] = map[string]string{"state": s}
+						num := i + 1
+						if i < len(tt.nativeNumbers) {
+							num = tt.nativeNumbers[i]
+						}
+						nodes[i] = map[string]interface{}{"state": s, "number": num}
 					}
 					resp := map[string]interface{}{
 						"data": map[string]interface{}{
@@ -4558,6 +4609,9 @@ func TestMaybeCloseParentIssue(t *testing.T) {
 			ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
 			cfg := DefaultConfig()
 			c := NewController(cfg, ghClient, nil, "owner", "repo")
+			if tt.execStatuses != nil {
+				c.SetEvalStore(&mockEvalStore{execStatusByTaskID: tt.execStatuses})
+			}
 
 			prState := &PRState{
 				PRNumber:    42,

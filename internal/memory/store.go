@@ -1231,6 +1231,22 @@ func (s *Store) SelfHealExecutionAfterMerge(taskID, projectPath, prURL string) e
 	})
 }
 
+// GetExecutionStatusByTaskID returns the status of the most recent execution row
+// exactly matching taskID (scoped to projectPath, mirroring SelfHealExecutionAfterMerge:
+// empty projectPath drops the scope for legacy single-repo callers) — no substring
+// fallback, unlike GetLatestExecutionByTaskID, so a no_op verdict can't be borrowed
+// from an unrelated task or repo. Returns sql.ErrNoRows when no row matches. GH-3780.
+func (s *Store) GetExecutionStatusByTaskID(taskID, projectPath string) (string, error) {
+	var status string
+	err := s.db.QueryRow(`
+		SELECT status FROM executions
+		WHERE task_id = ? AND (? = '' OR project_path = ?)
+		ORDER BY created_at DESC, rowid DESC
+		LIMIT 1
+	`, taskID, projectPath, projectPath).Scan(&status)
+	return status, err
+}
+
 // UpdateExecutionResult updates the result fields of an execution record.
 // Called when task execution completes successfully with PR/commit info.
 func (s *Store) UpdateExecutionResult(id string, prURL, commitSHA string, durationMs int64) error {
