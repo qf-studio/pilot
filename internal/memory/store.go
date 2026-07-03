@@ -571,26 +571,25 @@ func unmarshalLabels(s string) []string {
 	return labels
 }
 
-// GetExecution retrieves an execution by its unique ID.
-// Returns sql.ErrNoRows if the execution is not found.
-func (s *Store) GetExecution(id string) (*Execution, error) {
-	row := s.db.QueryRow(`
-		SELECT id, task_id, project_path, status, output, error, duration_ms, pr_url, commit_sha, created_at, completed_at,
-			COALESCE(tokens_input, 0), COALESCE(tokens_output, 0), COALESCE(tokens_total, 0),
-			COALESCE(tokens_cache_read, 0), COALESCE(tokens_cache_write, 0),
-			COALESCE(estimated_cost_usd, 0), COALESCE(files_changed, 0), COALESCE(lines_added, 0),
-			COALESCE(lines_removed, 0), COALESCE(model_name, ''),
-			COALESCE(task_title, ''), COALESCE(task_description, ''), COALESCE(task_branch, ''),
-			COALESCE(task_base_branch, ''), COALESCE(task_create_pr, 0), COALESCE(task_verbose, 0),
-			COALESCE(task_source_adapter, ''), COALESCE(task_source_issue_id, ''),
-			COALESCE(task_labels, ''),
-			COALESCE(approval_request_id, ''), COALESCE(approval_decision, ''),
-			approval_decision_at,
-			COALESCE(approval_decision_by, ''),
-			COALESCE(effort_level, ''), COALESCE(complexity_level, '')
-		FROM executions WHERE id = ?
-	`, id)
+// executionDetailColumns is the full column set for a single Execution row,
+// shared by GetExecution and GetLatestExecutionByTaskID.
+const executionDetailColumns = `
+	id, task_id, project_path, status, output, error, duration_ms, pr_url, commit_sha, created_at, completed_at,
+	COALESCE(tokens_input, 0), COALESCE(tokens_output, 0), COALESCE(tokens_total, 0),
+	COALESCE(tokens_cache_read, 0), COALESCE(tokens_cache_write, 0),
+	COALESCE(estimated_cost_usd, 0), COALESCE(files_changed, 0), COALESCE(lines_added, 0),
+	COALESCE(lines_removed, 0), COALESCE(model_name, ''),
+	COALESCE(task_title, ''), COALESCE(task_description, ''), COALESCE(task_branch, ''),
+	COALESCE(task_base_branch, ''), COALESCE(task_create_pr, 0), COALESCE(task_verbose, 0),
+	COALESCE(task_source_adapter, ''), COALESCE(task_source_issue_id, ''),
+	COALESCE(task_labels, ''),
+	COALESCE(approval_request_id, ''), COALESCE(approval_decision, ''),
+	approval_decision_at,
+	COALESCE(approval_decision_by, ''),
+	COALESCE(effort_level, ''), COALESCE(complexity_level, '')`
 
+// scanExecutionDetail scans a row selected via executionDetailColumns into an Execution.
+func scanExecutionDetail(row *sql.Row) (*Execution, error) {
 	var exec Execution
 	var completedAt sql.NullTime
 	var approvalDecisionAt sql.NullTime
@@ -615,6 +614,27 @@ func (s *Store) GetExecution(id string) (*Execution, error) {
 	}
 
 	return &exec, nil
+}
+
+// GetExecution retrieves an execution by its unique ID.
+// Returns sql.ErrNoRows if the execution is not found.
+func (s *Store) GetExecution(id string) (*Execution, error) {
+	row := s.db.QueryRow(`SELECT `+executionDetailColumns+` FROM executions WHERE id = ?`, id)
+	return scanExecutionDetail(row)
+}
+
+// GetLatestExecutionByTaskID returns the most recent execution for a task, matched by
+// exact task_id first and falling back to a substring match (e.g. "GH-15" matching
+// "GH-15"). Returns sql.ErrNoRows if no execution matches.
+func (s *Store) GetLatestExecutionByTaskID(taskID string) (*Execution, error) {
+	row := s.db.QueryRow(`
+		SELECT `+executionDetailColumns+`
+		FROM executions
+		WHERE task_id = ? OR task_id LIKE ?
+		ORDER BY (task_id = ?) DESC, created_at DESC, rowid DESC
+		LIMIT 1
+	`, taskID, "%"+taskID+"%", taskID)
+	return scanExecutionDetail(row)
 }
 
 // HasCompletedExecution checks whether a genuine completed execution exists for the given task
@@ -2191,6 +2211,42 @@ func (s *Store) GetRecentLogs(limit int) ([]*LogEntry, error) {
 		entries = append(entries, &e)
 	}
 	return entries, rows.Err()
+}
+
+// GetLogsByExecutionID returns log entries for a specific task ID (execution_logs.execution_id
+// stores the task ID, e.g. "GH-3714", not the execution row's UUID), in chronological order.
+// At most limit entries are returned, keeping the most recent ones if the task has more.
+func (s *Store) GetLogsByExecutionID(executionID string, limit int) ([]*LogEntry, error) {
+	rows, err := s.db.Query(`
+		SELECT id, COALESCE(execution_id, ''), timestamp, level, message, COALESCE(component, 'executor')
+		FROM execution_logs
+		WHERE execution_id = ?
+		ORDER BY timestamp DESC
+		LIMIT ?
+	`, executionID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var entries []*LogEntry
+	for rows.Next() {
+		var e LogEntry
+		if err := rows.Scan(&e.ID, &e.ExecutionID, &e.Timestamp, &e.Level, &e.Message, &e.Component); err != nil {
+			return nil, err
+		}
+		entries = append(entries, &e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// Reverse to chronological (oldest first) order for readable tail output.
+	for i, j := 0, len(entries)-1; i < j; i, j = i+1, j-1 {
+		entries[i], entries[j] = entries[j], entries[i]
+	}
+
+	return entries, nil
 }
 
 // GetLastBriefSent returns the most recent brief record for a given channel.

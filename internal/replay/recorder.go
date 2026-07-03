@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -583,6 +584,14 @@ func ListRecordings(basePath string, filter *RecordingFilter) ([]*RecordingSumma
 			EventCount:  recording.EventCount,
 		})
 	}
+
+	// os.ReadDir returns entries in lexicographic filename order, which for
+	// "TG-<unix-ms>" directory names is chronological ascending — the oldest
+	// recordings first. Sort newest-first before applying the limit so callers
+	// asking for "recent" recordings actually get the most recent ones (GH-3724).
+	sort.Slice(summaries, func(i, j int) bool {
+		return summaries[i].StartTime.After(summaries[j].StartTime)
+	})
 
 	// Apply limit
 	if filter != nil && filter.Limit > 0 && len(summaries) > filter.Limit {

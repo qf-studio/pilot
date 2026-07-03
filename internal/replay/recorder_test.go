@@ -1,6 +1,7 @@
 package replay
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -159,6 +160,75 @@ func TestListRecordings(t *testing.T) {
 
 	if len(recordings) != 2 {
 		t.Errorf("Expected 2 recordings with limit, got %d", len(recordings))
+	}
+}
+
+// TestListRecordingsSortsNewestFirstBeforeLimit is a regression test for GH-3724:
+// os.ReadDir returns "TG-<unix-ms>" directories in lexicographic order, which is
+// chronological ascending (oldest first). Applying filter.Limit without sorting first
+// used to keep the OLDEST N recordings instead of the newest N.
+func TestListRecordingsSortsNewestFirstBeforeLimit(t *testing.T) {
+	tests := []struct {
+		name          string
+		numRecordings int
+		limit         int
+	}{
+		{name: "limit smaller than total", numRecordings: 5, limit: 2},
+		{name: "limit equal to total", numRecordings: 3, limit: 3},
+		{name: "no limit", numRecordings: 4, limit: 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+
+			var taskIDs []string
+			for i := 0; i < tt.numRecordings; i++ {
+				taskID := fmt.Sprintf("TASK-%d", i)
+				recorder, err := NewRecorder(taskID, "/test/project", tmpDir)
+				if err != nil {
+					t.Fatalf("Failed to create recorder %d: %v", i, err)
+				}
+				_ = recorder.Finish("completed")
+				taskIDs = append(taskIDs, taskID)
+				time.Sleep(10 * time.Millisecond) // ensure ascending StartTime + directory name order
+			}
+
+			recordings, err := ListRecordings(tmpDir, &RecordingFilter{Limit: tt.limit})
+			if err != nil {
+				t.Fatalf("Failed to list recordings: %v", err)
+			}
+
+			wantCount := tt.limit
+			if wantCount <= 0 || wantCount > tt.numRecordings {
+				wantCount = tt.numRecordings
+			}
+			if len(recordings) != wantCount {
+				t.Fatalf("Expected %d recordings, got %d", wantCount, len(recordings))
+			}
+
+			// Results must be sorted newest-first.
+			for i := 1; i < len(recordings); i++ {
+				if recordings[i-1].StartTime.Before(recordings[i].StartTime) {
+					t.Errorf("Recordings not sorted newest-first: %v before %v",
+						recordings[i-1].StartTime, recordings[i].StartTime)
+				}
+			}
+
+			// Results must be the NEWEST tasks, not the oldest.
+			wantNewest := taskIDs[len(taskIDs)-wantCount:]
+			gotTaskIDs := make([]string, len(recordings))
+			gotByTaskID := make(map[string]bool, len(recordings))
+			for i, rec := range recordings {
+				gotTaskIDs[i] = rec.TaskID
+				gotByTaskID[rec.TaskID] = true
+			}
+			for _, want := range wantNewest {
+				if !gotByTaskID[want] {
+					t.Errorf("Expected newest task %s in result, got %v", want, gotTaskIDs)
+				}
+			}
+		})
 	}
 }
 
