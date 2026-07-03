@@ -1,9 +1,12 @@
 package config
 
 import (
+	"bytes"
+	"log"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -428,6 +431,111 @@ gateway:
 		_, err := Load(configPath)
 		if err == nil {
 			t.Error("Load should fail for unreadable file")
+		}
+	})
+}
+
+// TestLoad_EnvVarPreScan covers GH-3755: unset/empty env var references in
+// sensitive config keys (token/key/secret/password) must fail loudly instead
+// of silently expanding to "", while non-sensitive keys only warn.
+func TestLoad_EnvVarPreScan(t *testing.T) {
+	t.Run("SensitiveKeyUnsetEnvVar_ReturnsError", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		configPath := filepath.Join(tmpDir, "config.yaml")
+
+		configContent := `
+version: "1.0"
+adapters:
+  github:
+    enabled: true
+    token: "${UNSET_VAR}"
+`
+		if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+			t.Fatalf("Failed to write test config: %v", err)
+		}
+
+		_, err := Load(configPath)
+		if err == nil {
+			t.Fatal("Load should return an error when a sensitive key references an unset env var")
+		}
+		if !strings.Contains(err.Error(), "UNSET_VAR") {
+			t.Errorf("error = %q, want it to mention UNSET_VAR", err.Error())
+		}
+	})
+
+	t.Run("NonSensitiveKeyUnsetEnvVar_WarnsAndLoads", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		configPath := filepath.Join(tmpDir, "config.yaml")
+
+		configContent := `
+version: "1.0"
+adapters:
+  github:
+    enabled: true
+    pilot_label: "${UNSET_LABEL_VAR}"
+`
+		if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+			t.Fatalf("Failed to write test config: %v", err)
+		}
+
+		var logBuf bytes.Buffer
+		originalOutput := log.Writer()
+		log.SetOutput(&logBuf)
+		defer log.SetOutput(originalOutput)
+
+		config, err := Load(configPath)
+		if err != nil {
+			t.Fatalf("Load should succeed for a non-sensitive key with an unset env var, got error: %v", err)
+		}
+		if config.Adapters.GitHub.PilotLabel != "" {
+			t.Errorf("PilotLabel = %q, want empty (unset var expands to empty)", config.Adapters.GitHub.PilotLabel)
+		}
+		if !strings.Contains(logBuf.String(), "UNSET_LABEL_VAR") {
+			t.Errorf("expected a warning log mentioning UNSET_LABEL_VAR, got: %q", logBuf.String())
+		}
+	})
+
+	t.Run("RealConfigStillLoads", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		configPath := filepath.Join(tmpDir, "config.yaml")
+
+		t.Setenv("REGRESSION_TEST_LINEAR_TOKEN", "real-token-value")
+
+		configContent := `
+version: "2.0"
+gateway:
+  host: "0.0.0.0"
+  port: 8080
+adapters:
+  linear:
+    enabled: true
+    api_key: "${REGRESSION_TEST_LINEAR_TOKEN}"
+orchestrator:
+  model: "claude-opus"
+  max_concurrent: 4
+projects:
+  - name: "test-project"
+    path: "/path/to/project"
+    navigator: true
+    default_branch: "develop"
+default_project: "test-project"
+`
+		if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+			t.Fatalf("Failed to write test config: %v", err)
+		}
+
+		config, err := Load(configPath)
+		if err != nil {
+			t.Fatalf("Load failed for regression config: %v", err)
+		}
+		if config.Adapters.Linear.APIKey != "real-token-value" {
+			t.Errorf("Linear.APIKey = %q, want %q", config.Adapters.Linear.APIKey, "real-token-value")
+		}
+		if config.Version != "2.0" {
+			t.Errorf("Version = %q, want %q", config.Version, "2.0")
+		}
+		if config.Projects[0].Name != "test-project" {
+			t.Errorf("Projects[0].Name = %q, want %q", config.Projects[0].Name, "test-project")
 		}
 	})
 }
