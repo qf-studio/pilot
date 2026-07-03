@@ -246,8 +246,15 @@ type progressState struct {
 // It contains all the information needed to execute a development task
 // using Claude Code, including project context, branching options, and PR creation settings.
 type Task struct {
-	// ID is the unique identifier for this task (e.g., "TASK-123").
+	// ID is the unique identifier for this task (e.g., "TASK-123"). This is a
+	// human-assigned label, not the DB primary key — it stays a separate log
+	// field (e.g. for WS live-tail filters) even where ExecutionID is available.
 	ID string
+	// ExecutionID is the UUID of the memory.Execution row the dispatcher created
+	// for this run (GH-3764). Set by the dispatcher before Execute is called so
+	// that log/diagnostic/learning writes join against executions.id instead of
+	// the human-readable task ID, which is not unique across retries/decompositions.
+	ExecutionID string
 	// Title is the human-readable title of the task.
 	Title string
 	// Description contains the full task description and requirements.
