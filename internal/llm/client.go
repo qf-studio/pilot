@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -13,6 +14,11 @@ import (
 )
 
 const defaultAPIURL = "https://api.anthropic.com/v1/messages"
+
+// maxErrorBodyBytes caps how much of a non-200 response body we read into an
+// error message, so a misbehaving API doesn't force us to buffer an unbounded
+// payload.
+const maxErrorBodyBytes = 4096
 
 // maxTokens caps the response length for bot replies (chat, grounded Q&A, issue
 // drafts). The Anthropic Messages API REQUIRES max_tokens — omitting it returns
@@ -81,7 +87,8 @@ func (c *Client) Answer(ctx context.Context, model, system string, history []int
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("llm: API returned status %d", resp.StatusCode)
+		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
+		return "", fmt.Errorf("llm: API returned status %d: %s", resp.StatusCode, strings.TrimSpace(string(errBody)))
 	}
 
 	var apiResp struct {

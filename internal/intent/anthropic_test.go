@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -173,6 +174,50 @@ func TestAnthropicClientClassify(t *testing.T) {
 				if intent != tt.expectedIntent {
 					t.Errorf("intent = %v, want %v", intent, tt.expectedIntent)
 				}
+			}
+		})
+	}
+}
+
+func TestAnthropicClientClassify_Non200IncludesBody(t *testing.T) {
+	tests := []struct {
+		name       string
+		statusCode int
+		body       string
+		wantSubstr string
+	}{
+		{
+			name:       "400 invalid request error",
+			statusCode: http.StatusBadRequest,
+			body:       `{"type":"error","error":{"type":"invalid_request_error","message":"max_tokens: Field required"}}`,
+			wantSubstr: "max_tokens: Field required",
+		},
+		{
+			name:       "401 authentication error",
+			statusCode: http.StatusUnauthorized,
+			body:       `{"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}`,
+			wantSubstr: "invalid x-api-key",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tt.statusCode)
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer server.Close()
+
+			client := NewAnthropicClient("test-api-key")
+			client.SetAPIURL(server.URL)
+
+			ctx := context.Background()
+			_, err := client.Classify(ctx, nil, "hello")
+			if err == nil {
+				t.Fatal("expected error on non-200 response")
+			}
+			if !strings.Contains(err.Error(), tt.wantSubstr) {
+				t.Errorf("error = %q, want substring %q", err.Error(), tt.wantSubstr)
 			}
 		})
 	}
