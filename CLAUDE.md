@@ -267,6 +267,11 @@ Documentation in `.agent/`:
 5. Review PR: `gh pr view <n>`
 6. Merge when ready: `gh pr merge <n>`
 
+**Onboarding a new repo / first issues on a fresh project:** follow
+`.agent/sops/onboarding/new-project-issue-authoring.md` (scaffold-first,
+H2 section headers, `#N` dependency refs, per-project config checklist) —
+skipping it is how first runs on new projects fail.
+
 ## Current Status
 
 See `docs/lib/version.ts` for the current release and `.agent/DEVELOPMENT-README.md` § "Current State" for recent feature history.
