@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -105,8 +106,23 @@ func (d *Dispatcher) SetDecomposer(decomposer *TaskDecomposer) {
 func (d *Dispatcher) Start(ctx context.Context) error {
 	d.log.Info("Starting dispatcher")
 
-	// Initial recovery pass on startup.
-	d.recoverStaleTasks()
+	// Recover stale RUNNING tasks first, before queue adoption below creates
+	// any workers — hasLiveWorker must reflect "nothing alive yet" for this
+	// pass, exactly as before GH-3732 (crashed-worker recovery is unchanged
+	// and out of scope for this fix).
+	d.recoverStaleRunningTasks()
+
+	// GH-3732: re-adopt projects that still have queued rows in SQLite. Only
+	// the in-memory workers map was lost on restart — recreating a worker per
+	// project lets Signal() drain the existing FIFO queue instead of the
+	// stale-queued reap below wrongly failing tasks that are simply waiting
+	// their turn (GH-3714/3715/3716 incident).
+	d.adoptQueuedProjects()
+
+	// Recover queued tasks that still have no worker after adoption — genuine
+	// orphans only (e.g. a duplicate of an already-completed task, or a
+	// project removed from config).
+	d.recoverStaleQueuedTasks()
 
 	// GH-2428: warn when the last batch of completed runs has no token
 	// telemetry. A persistent gap means the backend's usage events aren't
@@ -118,6 +134,22 @@ func (d *Dispatcher) Start(ctx context.Context) error {
 	go d.runStaleRecoveryLoop(ctx)
 
 	return nil
+}
+
+// adoptQueuedProjects recreates a worker for every project that still has
+// queued (or pending) executions in SQLite. Called once at Start, before the
+// stale-queued reap runs, so tasks left behind by a daemon restart resume
+// FIFO processing instead of being misclassified as orphans. GH-3732.
+func (d *Dispatcher) adoptQueuedProjects() {
+	projectPaths, err := d.store.GetQueuedProjectPaths()
+	if err != nil {
+		d.log.Warn("Failed to fetch queued project paths for restart adoption", slog.Any("error", err))
+		return
+	}
+	for _, path := range projectPaths {
+		d.log.Info("Re-adopting queued tasks after restart", slog.String("project", path))
+		d.ensureWorker(path)
+	}
 }
 
 // checkTelemetryGap inspects recent completed executions and logs a warning
@@ -194,10 +226,21 @@ func (d *Dispatcher) Stop() {
 
 // recoverStaleTasks marks orphaned running and queued tasks as failed.
 // Re-queuing without a worker just recreates the orphan, so we fail them.
+// Used by the periodic recovery loop, where both halves can safely run
+// back-to-back since queue adoption already happened at Start.
 func (d *Dispatcher) recoverStaleTasks() int {
+	resetCount := d.recoverStaleRunningTasks()
+	resetCount += d.recoverStaleQueuedTasks()
+	d.log.Info("stale recovery complete, reset N tasks", slog.Int("count", resetCount))
+	return resetCount
+}
+
+// recoverStaleRunningTasks marks orphaned running tasks (crashed workers) as
+// failed. Split out from recoverStaleTasks so Dispatcher.Start can run it
+// before queue adoption creates any workers. GH-3732.
+func (d *Dispatcher) recoverStaleRunningTasks() int {
 	var resetCount int
 
-	// Recover stale running tasks (crashed workers).
 	staleRunning, err := d.store.GetStaleRunningExecutions(d.config.StaleRunningThreshold)
 	if err != nil {
 		d.log.Warn("Failed to fetch stale running executions", slog.Any("error", err))
@@ -242,12 +285,19 @@ func (d *Dispatcher) recoverStaleTasks() int {
 		}
 	}
 
-	// Recover stale queued tasks (stuck in queue with no worker).
-	// GH-2331: Don't mark queued tasks stale when a live worker exists for the
-	// project — they're just waiting their turn. Pilot runs tasks serially per
-	// project; when one task takes 8+ minutes (common for epic/Navigator work),
-	// its siblings exceed the 5-minute threshold purely by waiting, and get
-	// killed mid-queue. Only orphans (no worker alive) should be reaped.
+	return resetCount
+}
+
+// recoverStaleQueuedTasks marks orphaned queued tasks as failed: either a
+// duplicate row for a task that already completed, or a queued task whose
+// project has no live worker even after Dispatcher.Start's adoption pass
+// (e.g. the project was removed from config). GH-2331: a live worker means
+// the task is simply waiting its turn — Pilot runs tasks serially per
+// project, and a sibling taking 8+ minutes (common for epic/Navigator work)
+// would otherwise exceed the 5-minute threshold and get killed mid-queue.
+func (d *Dispatcher) recoverStaleQueuedTasks() int {
+	var resetCount int
+
 	staleQueued, err := d.store.GetStaleQueuedExecutions(d.config.StaleQueuedThreshold)
 	if err != nil {
 		d.log.Warn("Failed to fetch stale queued executions", slog.Any("error", err))
@@ -280,19 +330,22 @@ func (d *Dispatcher) recoverStaleTasks() int {
 			continue
 		}
 
-		d.log.Warn("Marking stale queued task as failed",
+		d.log.Warn("Marking orphaned queued task as failed",
 			slog.String("execution_id", exec.ID),
 			slog.String("task_id", exec.TaskID),
 			slog.Time("created_at", exec.CreatedAt),
 		)
-		if err := d.store.UpdateExecutionStatus(exec.ID, "failed", "stale queued task recovered (no worker picked up)"); err != nil {
+		// GH-3732: reworded from "recovered" — restart adoption already gives
+		// every project with queued rows a worker, so reaching here means the
+		// project genuinely has none (e.g. removed from config), not that a
+		// normal restart failed to reconnect it.
+		if err := d.store.UpdateExecutionStatus(exec.ID, "failed", "queued task orphaned by restart; project no longer configured"); err != nil {
 			d.log.Error("Failed to mark stale queued task", slog.String("id", exec.ID), slog.Any("error", err))
 		} else {
 			resetCount++
 		}
 	}
 
-	d.log.Info("stale recovery complete, reset N tasks", slog.Int("count", resetCount))
 	return resetCount
 }
 
@@ -416,11 +469,24 @@ func (d *Dispatcher) queueSingleTask(ctx context.Context, task *Task) (string, e
 		return "", fmt.Errorf("failed to save execution: %w", err)
 	}
 
-	d.log.Info("Task queued",
-		slog.String("execution_id", execID),
-		slog.String("task_id", task.ID),
-		slog.String("project", task.ProjectPath),
-	)
+	// GH-3732: surface per-project serialization instead of leaving a queued
+	// task invisible until its turn comes up — log what it's waiting behind.
+	if blockedBy, position, busy := d.queueBlockInfo(task.ProjectPath); busy {
+		d.log.Info(fmt.Sprintf("task queued behind %s (position %d in %s queue)",
+			blockedBy, position, filepath.Base(task.ProjectPath)),
+			slog.String("execution_id", execID),
+			slog.String("task_id", task.ID),
+			slog.String("blocked_by", blockedBy),
+			slog.Int("position", position),
+			slog.String("project", task.ProjectPath),
+		)
+	} else {
+		d.log.Info("Task queued",
+			slog.String("execution_id", execID),
+			slog.String("task_id", task.ID),
+			slog.String("project", task.ProjectPath),
+		)
+	}
 
 	// Emit progress callback for task queued
 	d.runner.EmitProgress(task.ID, "Queued", 0, fmt.Sprintf("Task queued (exec: %s)", execID[:8]))
@@ -429,6 +495,25 @@ func (d *Dispatcher) queueSingleTask(ctx context.Context, task *Task) (string, e
 	d.ensureWorker(task.ProjectPath)
 
 	return execID, nil
+}
+
+// queueBlockInfo reports whether the project's worker is currently busy
+// processing another task and, if so, which task is blocking and what
+// position (1-indexed, tail of the FIFO queue) the newly-saved row holds.
+// GH-3732.
+func (d *Dispatcher) queueBlockInfo(projectPath string) (blockedBy string, position int, busy bool) {
+	d.mu.RLock()
+	worker, exists := d.workers[projectPath]
+	d.mu.RUnlock()
+	if !exists {
+		return "", 0, false
+	}
+
+	status := worker.Status()
+	if !status.IsProcessing {
+		return "", 0, false
+	}
+	return status.CurrentTaskID, status.QueuedCount, true
 }
 
 // ensureWorker creates a worker for the project if it doesn't exist and starts it.

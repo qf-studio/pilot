@@ -218,9 +218,35 @@ func formatQueueSummary(running, queued []*memory.Execution) string {
 			sb.WriteString("\n")
 		}
 		sb.WriteString(fmt.Sprintf("📋 Queued: %d\n", len(queued)))
+
+		// GH-3732: surface per-project serialization — a queued task is blocked
+		// by whichever task is running for its project, or (if none is running
+		// yet) by the queued task immediately ahead of it in the same project.
+		runningByProject := make(map[string]string, len(running))
+		for _, r := range running {
+			runningByProject[r.ProjectPath] = r.TaskID
+		}
+		positionInProject := make(map[string]int, len(queued))
+		blockedByProject := make(map[string]string, len(queued))
+
 		for i, exec := range queued {
 			age := time.Since(exec.CreatedAt).Round(time.Minute)
-			sb.WriteString(fmt.Sprintf("%d. %s — %s (%s ago)\n", i+1, exec.TaskID, filepath.Base(exec.ProjectPath), age))
+			positionInProject[exec.ProjectPath]++
+			position := positionInProject[exec.ProjectPath]
+
+			blockedBy := blockedByProject[exec.ProjectPath]
+			if blockedBy == "" {
+				blockedBy = runningByProject[exec.ProjectPath]
+			}
+
+			if blockedBy != "" {
+				sb.WriteString(fmt.Sprintf("%d. %s — %s (%s ago) ⏳ behind %s (position %d)\n",
+					i+1, exec.TaskID, filepath.Base(exec.ProjectPath), age, blockedBy, position))
+			} else {
+				sb.WriteString(fmt.Sprintf("%d. %s — %s (%s ago)\n", i+1, exec.TaskID, filepath.Base(exec.ProjectPath), age))
+			}
+
+			blockedByProject[exec.ProjectPath] = exec.TaskID
 		}
 	}
 
