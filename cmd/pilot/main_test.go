@@ -1039,3 +1039,28 @@ func TestCountGitHubRepos(t *testing.T) {
 		})
 	}
 }
+
+// TestResolveExecutionMode verifies GH-3717: config mode "auto" and empty
+// both map to ExecutionModeAuto (parallel dispatch + scope-overlap guard),
+// matching the poller's own default and config.DefaultExecutionConfig(),
+// instead of being silently clobbered to sequential.
+func TestResolveExecutionMode(t *testing.T) {
+	tests := []struct {
+		modeStr string
+		want    github.ExecutionMode
+	}{
+		{"sequential", github.ExecutionModeSequential},
+		{"parallel", github.ExecutionModeParallel},
+		{"auto", github.ExecutionModeAuto},
+		{"", github.ExecutionModeAuto},
+		{"unrecognized", github.ExecutionModeSequential},
+	}
+	for _, tt := range tests {
+		t.Run(tt.modeStr, func(t *testing.T) {
+			got := resolveExecutionMode(tt.modeStr)
+			if got != tt.want {
+				t.Errorf("resolveExecutionMode(%q) = %q, want %q", tt.modeStr, got, tt.want)
+			}
+		})
+	}
+}

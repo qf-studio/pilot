@@ -57,6 +57,24 @@ var (
 
 var quietMode bool
 
+// resolveExecutionMode maps the orchestrator.execution.mode config string to a
+// github.ExecutionMode. Empty and "auto" both resolve to ExecutionModeAuto
+// (parallel dispatch with scope-overlap guard), matching the poller's own
+// default (poller.go:374) and config.DefaultExecutionConfig(). Any other
+// unrecognized value falls back to ExecutionModeSequential.
+func resolveExecutionMode(mode string) github.ExecutionMode {
+	switch mode {
+	case "sequential":
+		return github.ExecutionModeSequential
+	case "parallel":
+		return github.ExecutionModeParallel
+	case "auto", "":
+		return github.ExecutionModeAuto
+	default:
+		return github.ExecutionModeSequential
+	}
+}
+
 func main() {
 	rootCmd := &cobra.Command{
 		Use:   "pilot",
@@ -745,9 +763,7 @@ Examples:
 
 					if cfg.Orchestrator != nil && cfg.Orchestrator.Execution != nil {
 						execCfg := cfg.Orchestrator.Execution
-						if execCfg.Mode == "parallel" {
-							execMode = github.ExecutionModeParallel
-						}
+						execMode = resolveExecutionMode(execCfg.Mode)
 						waitForMerge = execCfg.WaitForMerge
 						if execCfg.PollInterval > 0 {
 							pollInterval = execCfg.PollInterval
@@ -2168,9 +2184,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 
 			if cfg.Orchestrator != nil && cfg.Orchestrator.Execution != nil {
 				execCfg := cfg.Orchestrator.Execution
-				if execCfg.Mode == "parallel" {
-					execMode = github.ExecutionModeParallel
-				}
+				execMode = resolveExecutionMode(execCfg.Mode)
 				waitForMerge = execCfg.WaitForMerge
 				if execCfg.PollInterval > 0 {
 					pollInterval = execCfg.PollInterval
@@ -2180,10 +2194,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 				}
 			}
 
-			modeStr := "sequential"
-			if execMode == github.ExecutionModeParallel {
-				modeStr = "parallel"
-			}
+			modeStr := string(execMode)
 
 			// Helper to create poller for a repo with its project path
 			createPollerForRepo := func(repoFullName, projPath string) (*github.Poller, error) {
@@ -2317,7 +2328,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 					)
 				} else {
 					pollerOpts = append(pollerOpts,
-						github.WithExecutionMode(github.ExecutionModeParallel),
+						github.WithExecutionMode(execMode),
 						github.WithScheduler(rateLimitScheduler),
 						github.WithMaxConcurrent(cfg.Orchestrator.MaxConcurrent),
 						github.WithOnIssueWithResult(func(issueCtx context.Context, issue *github.Issue) (*github.IssueResult, error) {
