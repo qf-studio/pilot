@@ -47,7 +47,7 @@ func TestFinalizeEpicBranchPR_PushFailIsFailure(t *testing.T) {
 	result := &ExecutionResult{TaskID: "GH-1", Success: true, IsEpic: true}
 	task := &Task{ID: "GH-1", Title: "feat: add f", Description: "d", Branch: "feature", BaseBranch: "main", CreatePR: true}
 
-	r.finalizeEpicBranchPR(context.Background(), task, NewGitOperations(dir), result)
+	r.finalizeEpicBranchPR(context.Background(), task, NewGitOperations(dir), result, nil)
 
 	if result.Success {
 		t.Error("expected Success=false when epic push fails with no remote")
@@ -71,7 +71,7 @@ func TestFinalizeEpicBranchPR_NoCommitsIsCleanSuccess(t *testing.T) {
 	result := &ExecutionResult{TaskID: "GH-2", Success: true, IsEpic: true}
 	task := &Task{ID: "GH-2", Title: "epic", Description: "d", Branch: "main", BaseBranch: "main", CreatePR: true}
 
-	r.finalizeEpicBranchPR(context.Background(), task, NewGitOperations(dir), result)
+	r.finalizeEpicBranchPR(context.Background(), task, NewGitOperations(dir), result, nil)
 
 	if !result.Success {
 		t.Errorf("expected Success=true for empty parent branch, error=%q", result.Error)
