@@ -80,6 +80,14 @@ var (
 		"stale queued task recovered",
 		"context canceled",
 		"context cancelled",
+		// GH-3764: a stale queued epic attempt that fires after the parent already
+		// closed correctly refuses via ErrParentDone (epic.go:602) — wrapped as
+		// "failed to create sub-issues: parent task is already done; refusing to
+		// create sub-issues" (runner.go ExecuteSubIssues path). IsParentDoneSkip
+		// (epic.go:610) already documents this as a benign skip; this signature is
+		// what actually makes TerminalStatus honor that instead of reporting "failed"
+		// for duplicate work.
+		ErrParentDone.Error(),
 	}
 	// stalled: an incomplete run — watchdog stall or per-task budget cap.
 	stalledErrorSignatures = []string{
@@ -312,6 +320,19 @@ type Task struct {
 	// State is the current issue state in the source adapter (GH-2867).
 	// Examples: "open", "closed", "merged"
 	State string
+}
+
+// LogExecutionID returns the ID that runner-side writes (execution_logs.execution_id,
+// pattern_feedback.execution_id) should join against the executions table with.
+// It prefers ExecutionID (the dispatcher-assigned UUID); tasks that never got a
+// dedicated executions row — decomposed subtasks and epic sub-issues built directly
+// via &Task{} (decompose.go, epic.go), or local/bench runs outside the dispatcher —
+// fall back to the human-readable ID so logging still works, just without a join. GH-3764.
+func (t *Task) LogExecutionID() string {
+	if t.ExecutionID != "" {
+		return t.ExecutionID
+	}
+	return t.ID
 }
 
 // QualityGateResult represents the result of a single quality gate check.
@@ -1109,10 +1130,12 @@ func (r *Runner) saveLogEntry(executionID, level, message string) {
 	}
 	if err := r.logStore.SaveLogEntry(&memory.LogEntry{
 		ExecutionID: executionID,
-		Timestamp:   time.Now(),
-		Level:       level,
-		Message:     message,
-		Component:   "executor",
+		// GH-3764: executions rows use SQLite CURRENT_TIMESTAMP (UTC); local wall-clock
+		// here would misalign execution_logs.timestamp by the host's UTC offset.
+		Timestamp: time.Now().UTC(),
+		Level:     level,
+		Message:   message,
+		Component: "executor",
 	}); err != nil {
 		r.log.Warn("Failed to save log entry",
 			slog.String("execution_id", executionID),
@@ -1401,7 +1424,7 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 	}
 
 	// GH-1599: Log task started milestone
-	r.saveLogEntry(task.ID, "info", "Task started: "+task.Title)
+	r.saveLogEntry(task.LogExecutionID(), "info", "Task started: "+task.Title)
 
 	// GH-386: Validate source repo matches project path to prevent cross-project execution
 	if task.SourceRepo != "" && task.ProjectPath != "" {
@@ -1898,7 +1921,7 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 			}
 		} else {
 			r.reportProgress(task.ID, "Branching", 8, fmt.Sprintf("Created branch %s", task.Branch))
-			r.saveLogEntry(task.ID, "info", "Branch created: "+task.Branch)
+			r.saveLogEntry(task.LogExecutionID(), "info", "Branch created: "+task.Branch)
 		}
 	}
 
@@ -1914,7 +1937,7 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 	var researchResult *ResearchResult
 	if r.parallelRunner != nil && complexity.ShouldRunResearch() {
 		r.reportProgress(task.ID, "Research", 10, "Running parallel research...")
-		r.saveLogEntry(task.ID, "info", "Exploring codebase...")
+		r.saveLogEntry(task.LogExecutionID(), "info", "Exploring codebase...")
 		var researchErr error
 		researchResult, researchErr = r.parallelRunner.ExecuteResearchPhase(ctx, task)
 		if researchErr != nil {
@@ -2075,7 +2098,7 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 	}()
 
 	// GH-1599: Log implementation phase
-	r.saveLogEntry(task.ID, "info", "Implementing changes...")
+	r.saveLogEntry(task.LogExecutionID(), "info", "Implementing changes...")
 
 	// TASK-308: Stall detection — track last event time and spawn a watchdog.
 	var (
@@ -2517,13 +2540,13 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 		}
 
 		// GH-1599: Log task failed milestone
-		r.saveLogEntry(task.ID, "error", "Task failed: "+result.Error)
+		r.saveLogEntry(task.LogExecutionID(), "error", "Task failed: "+result.Error)
 
 		// GH-2328: persist stderr + final assistant message + error type so
 		// "unknown: exit status 1" is actually diagnosable. Without this,
 		// failures look identical regardless of whether Claude refused, hit a
 		// rate limit, was OOM-killed, or crashed silently.
-		r.persistBackendDiagnostics(task.ID, backendResult)
+		r.persistBackendDiagnostics(task.LogExecutionID(), backendResult)
 
 		// Finish recording with failed status
 		if recorder != nil {
@@ -2659,10 +2682,10 @@ retrySucceeded:
 			slog.Duration("duration", duration),
 		)
 		r.reportProgress(task.ID, "Failed", 100, result.Error)
-		r.saveLogEntry(task.ID, "error", "Task failed: "+result.Error)
+		r.saveLogEntry(task.LogExecutionID(), "error", "Task failed: "+result.Error)
 
 		// GH-2328: persist stderr + final assistant message + error type.
-		r.persistBackendDiagnostics(task.ID, backendResult)
+		r.persistBackendDiagnostics(task.LogExecutionID(), backendResult)
 
 		// Emit task failed event
 		r.emitAlertEvent(AlertEvent{
@@ -2839,7 +2862,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 							slog.String("reason", declinedReason),
 						)
 						r.reportProgress(task.ID, "Declined", 100, "Task declined: "+declinedReason)
-						r.persistBackendDiagnostics(task.ID, backendResult)
+						r.persistBackendDiagnostics(task.LogExecutionID(), backendResult)
 
 						if recorder != nil {
 							recorder.SetModel(result.ModelName)
@@ -2872,7 +2895,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 					r.reportProgress(task.ID, "Failed", 100, result.Error)
 
 					// GH-2328: persist no_changes classification + refusal text.
-					r.persistBackendDiagnostics(task.ID, backendResult)
+					r.persistBackendDiagnostics(task.LogExecutionID(), backendResult)
 
 					// Emit task failed event
 					r.emitAlertEvent(AlertEvent{
@@ -2975,7 +2998,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 
 			for retryAttempt := 0; retryAttempt <= maxAutoRetries; retryAttempt++ {
 				r.reportProgress(task.ID, "Quality Gates", 91, "Running quality checks...")
-				r.saveLogEntry(task.ID, "info", "Running tests...")
+				r.saveLogEntry(task.LogExecutionID(), "info", "Running tests...")
 
 				checker := r.qualityCheckerFactory(task.ID, executionPath)
 				outcome, qErr := checker.Check(ctx)
@@ -3306,7 +3329,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 		var selfReviewErr error
 
 		if runSelfReview {
-			r.saveLogEntry(task.ID, "info", "Running self-review...")
+			r.saveLogEntry(task.LogExecutionID(), "info", "Running self-review...")
 			wg.Add(1)
 			logging.SafeGo("executor-runner", func() {
 				defer wg.Done()
@@ -3619,7 +3642,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 			result.PRUrl = prURL
 			log.Info("Pull request created", slog.String("pr_url", prURL))
 			r.reportProgress(task.ID, "Completed", 100, fmt.Sprintf("PR created: %s", prURL))
-			r.saveLogEntry(task.ID, "info", "PR created: "+prURL)
+			r.saveLogEntry(task.LogExecutionID(), "info", "PR created: "+prURL)
 
 			// Update recording with PR info
 			if recorder != nil {
@@ -3630,7 +3653,7 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 		}
 
 		// GH-1599: Log task completed milestone
-		r.saveLogEntry(task.ID, "info", "Task completed successfully")
+		r.saveLogEntry(task.LogExecutionID(), "info", "Task completed successfully")
 
 		// Emit task completed event
 		r.emitAlertEvent(AlertEvent{
@@ -3811,7 +3834,11 @@ func (r *Runner) recordLearning(ctx context.Context, task *Task, result *Executi
 		}
 	}
 	exec := &memory.Execution{
-		ID:           task.ID,
+		// GH-3764: ID must be the dispatcher-assigned execution UUID, not task.ID —
+		// LearningLoop.RecordExecution feeds this into pattern_feedback.execution_id
+		// (internal/memory/feedback.go:80), which has an FK to executions(id). task.ID
+		// (e.g. "GH-3714") never matches that PK, so the FK could never resolve.
+		ID:           task.LogExecutionID(),
 		TaskID:       task.ID,
 		ProjectPath:  task.ProjectPath,
 		Status:       statusStr,
@@ -3825,6 +3852,14 @@ func (r *Runner) recordLearning(ctx context.Context, task *Task, result *Executi
 		FilesChanged: result.FilesChanged,
 		ModelName:    result.ModelName,
 	}
+	// GH-3764 investigation: this call always passes appliedPatterns=nil, so
+	// RecordExecution's pattern_feedback insert loop (feedback.go:77) never runs today —
+	// the FK path described above is dormant, not actually exercised. When callers start
+	// passing real pattern IDs, RecordPatternFeedback (store.go:1605) runs inside a
+	// transaction and returns the FK error to learnErr below rather than swallowing it;
+	// PRAGMA foreign_keys=ON (store.go:47) makes SQLite enforce it, and it surfaces here
+	// as a Warn log, not silently. This exec.ID fix is what makes that FK resolvable once
+	// pattern application is wired to pass appliedPatterns.
 	if learnErr := r.learningLoop.RecordExecution(ctx, exec, nil); learnErr != nil {
 		r.log.Warn("Failed to record execution for learning", slog.Any("error", learnErr))
 	}

@@ -2669,6 +2669,36 @@ func TestTask_MemberID_Field(t *testing.T) {
 	}
 }
 
+// TestTask_LogExecutionID verifies the join-ID precedence: the dispatcher-assigned
+// execution UUID when present, falling back to the human-readable task ID for tasks
+// that never got a dedicated executions row (decomposed subtasks, epic sub-issues,
+// local/bench runs). GH-3764.
+func TestTask_LogExecutionID(t *testing.T) {
+	tests := []struct {
+		name string
+		task *Task
+		want string
+	}{
+		{
+			"prefers ExecutionID when set",
+			&Task{ID: "GH-3714", ExecutionID: "11111111-2222-3333-4444-555555555555"},
+			"11111111-2222-3333-4444-555555555555",
+		},
+		{
+			"falls back to ID when ExecutionID is empty",
+			&Task{ID: "GH-3714"},
+			"GH-3714",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.task.LogExecutionID(); got != tt.want {
+				t.Errorf("LogExecutionID() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 // =============================================================================
 // CancelAll Tests (GH-883)
 // =============================================================================
@@ -2919,6 +2949,39 @@ func TestRunner_saveLogEntry_WritesEntry(t *testing.T) {
 	// Verify first entry (oldest, at end of list)
 	if logs[6].Message != "Task started: Add feature X" {
 		t.Errorf("oldest log message = %q, want %q", logs[6].Message, "Task started: Add feature X")
+	}
+}
+
+// TestRunner_saveLogEntry_UTCTimestamp verifies saveLogEntry binds a UTC timestamp,
+// not local wall-clock. executions.created_at is SQLite CURRENT_TIMESTAMP (UTC); a
+// local-zone execution_logs.timestamp would misalign the two tables' clocks by the
+// host's UTC offset when joined. GH-3764.
+func TestRunner_saveLogEntry_UTCTimestamp(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := memory.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	runner := NewRunner()
+	runner.SetLogStore(store)
+
+	runner.saveLogEntry("exec-utc", "info", "utc check")
+
+	logs, err := store.GetRecentLogs(1)
+	if err != nil {
+		t.Fatalf("failed to get recent logs: %v", err)
+	}
+	if len(logs) != 1 {
+		t.Fatalf("expected 1 log entry, got %d", len(logs))
+	}
+
+	if _, offset := logs[0].Timestamp.Zone(); offset != 0 {
+		t.Errorf("saved timestamp offset = %ds, want 0 (UTC)", offset)
+	}
+	if delta := time.Since(logs[0].Timestamp.UTC()); delta < 0 || delta > 10*time.Second {
+		t.Errorf("saved timestamp %v not within 10s of now", logs[0].Timestamp)
 	}
 }
 
