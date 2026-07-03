@@ -470,42 +470,43 @@ type SubIssueLinker interface {
 // progress tracking, PR creation, and execution recording. Runner is safe for
 // concurrent use and tracks all running tasks for cancellation support.
 type Runner struct {
-	backend               Backend // AI execution backend
-	config                *BackendConfig
-	onProgress            ProgressCallback
-	progressCallbacks     map[string]ProgressCallback // Named callbacks for multi-listener support
-	progressMu            sync.RWMutex                // Protects progressCallbacks
-	tokenCallbacks        map[string]TokenCallback    // Named callbacks for token usage updates
-	tokenMu               sync.RWMutex                // Protects tokenCallbacks
-	mu                    sync.Mutex
-	running               map[string]*exec.Cmd
-	log                   *slog.Logger
-	recordingsPath        string                                                          // Path to recordings directory (empty = default)
-	enableRecording       bool                                                            // Whether to record executions
-	alertProcessor        AlertEventProcessor                                             // Optional alert processor for event emission
-	webhooks              *webhooks.Manager                                               // Optional webhook manager for event delivery
-	qualityCheckerFactory QualityCheckerFactory                                           // Optional factory for creating quality checkers
-	modelRouter           *ModelRouter                                                    // Model and timeout routing based on complexity
-	parallelRunner        *ParallelRunner                                                 // Optional parallel research runner (GH-217)
-	decomposer            *TaskDecomposer                                                 // Optional task decomposer for complex tasks (GH-218)
-	subtaskParser         *SubtaskParser                                                  // Haiku-based subtask parser; nil falls back to regex (GH-501)
-	suppressProgressLogs  bool                                                            // Suppress slog output for progress (use when visual display is active)
-	tokenLimitCheck       TokenLimitCallback                                              // Optional per-task token/duration limit check (GH-539)
-	onSubIssuePRCreated   SubIssuePRCallback                                              // Optional callback when a sub-issue PR is created (GH-596)
-	subIssueMergeWait     SubIssueMergeWaitFn                                             // Optional fn to block between sub-issues until PR is merged (GH-2178)
-	subIssuePollerSkip    SubIssuePollerSkipFn                                            // GH-3240: marks sub-issues in poller so they aren't re-dispatched
-	intentJudge           *IntentJudge                                                    // Optional intent judge for diff-vs-ticket alignment (GH-624)
-	teamChecker           TeamChecker                                                     // Optional team RBAC checker (GH-633)
-	executeFunc           func(ctx context.Context, task *Task) (*ExecutionResult, error) // Internal override for testing
-	skipPreflightChecks   bool                                                            // Skip preflight checks (for testing with mock backends)
-	retrier               *Retrier                                                        // Optional smart retry handler (GH-920)
-	signalParser          *SignalParser                                                   // Structured signal parser v2 for progress extraction (GH-960)
-	knowledge             *memory.KnowledgeStore                                          // Optional knowledge store for experiential memories (GH-994)
-	profileManager        *memory.ProfileManager                                          // Optional profile manager for user preferences (GH-994)
-	driftDetector         *DriftDetector                                                  // Optional drift detector for collaboration drift (GH-997)
-	monitor               *Monitor                                                        // Optional monitor for state transitions (queued→running)
-	taskProgress          map[string]int                                                  // Per-task progress high-water mark (monotonic enforcement)
-	taskProgressMu        sync.RWMutex                                                    // Protects taskProgress
+	backend                Backend // AI execution backend
+	config                 *BackendConfig
+	onProgress             ProgressCallback
+	progressCallbacks      map[string]ProgressCallback // Named callbacks for multi-listener support
+	progressMu             sync.RWMutex                // Protects progressCallbacks
+	tokenCallbacks         map[string]TokenCallback    // Named callbacks for token usage updates
+	tokenMu                sync.RWMutex                // Protects tokenCallbacks
+	mu                     sync.Mutex
+	running                map[string]*exec.Cmd
+	log                    *slog.Logger
+	recordingsPath         string                                                          // Path to recordings directory (empty = default)
+	enableRecording        bool                                                            // Whether to record executions
+	alertProcessor         AlertEventProcessor                                             // Optional alert processor for event emission
+	alertProcessorWarnOnce sync.Once                                                       // GH-3734: log the first dropped alert event only, not every one
+	webhooks               *webhooks.Manager                                               // Optional webhook manager for event delivery
+	qualityCheckerFactory  QualityCheckerFactory                                           // Optional factory for creating quality checkers
+	modelRouter            *ModelRouter                                                    // Model and timeout routing based on complexity
+	parallelRunner         *ParallelRunner                                                 // Optional parallel research runner (GH-217)
+	decomposer             *TaskDecomposer                                                 // Optional task decomposer for complex tasks (GH-218)
+	subtaskParser          *SubtaskParser                                                  // Haiku-based subtask parser; nil falls back to regex (GH-501)
+	suppressProgressLogs   bool                                                            // Suppress slog output for progress (use when visual display is active)
+	tokenLimitCheck        TokenLimitCallback                                              // Optional per-task token/duration limit check (GH-539)
+	onSubIssuePRCreated    SubIssuePRCallback                                              // Optional callback when a sub-issue PR is created (GH-596)
+	subIssueMergeWait      SubIssueMergeWaitFn                                             // Optional fn to block between sub-issues until PR is merged (GH-2178)
+	subIssuePollerSkip     SubIssuePollerSkipFn                                            // GH-3240: marks sub-issues in poller so they aren't re-dispatched
+	intentJudge            *IntentJudge                                                    // Optional intent judge for diff-vs-ticket alignment (GH-624)
+	teamChecker            TeamChecker                                                     // Optional team RBAC checker (GH-633)
+	executeFunc            func(ctx context.Context, task *Task) (*ExecutionResult, error) // Internal override for testing
+	skipPreflightChecks    bool                                                            // Skip preflight checks (for testing with mock backends)
+	retrier                *Retrier                                                        // Optional smart retry handler (GH-920)
+	signalParser           *SignalParser                                                   // Structured signal parser v2 for progress extraction (GH-960)
+	knowledge              *memory.KnowledgeStore                                          // Optional knowledge store for experiential memories (GH-994)
+	profileManager         *memory.ProfileManager                                          // Optional profile manager for user preferences (GH-994)
+	driftDetector          *DriftDetector                                                  // Optional drift detector for collaboration drift (GH-997)
+	monitor                *Monitor                                                        // Optional monitor for state transitions (queued→running)
+	taskProgress           map[string]int                                                  // Per-task progress high-water mark (monotonic enforcement)
+	taskProgressMu         sync.RWMutex                                                    // Protects taskProgress
 	// GH-1077: AGENTS.md caching
 	agentsContent     string       // Cached AGENTS.md content, loaded once per Runner
 	agentsProjectPath string       // Project path for agents cache (invalidate on change)
@@ -4804,6 +4805,10 @@ func estimateCostWithCache(input, output, cacheCreation, cacheRead int64, model 
 // emitAlertEvent sends an event to the alert processor if configured
 func (r *Runner) emitAlertEvent(event AlertEvent) {
 	if r.alertProcessor == nil {
+		r.alertProcessorWarnOnce.Do(func() {
+			r.log.Warn("Alert processor not configured, dropping alert event(s)",
+				slog.String("event_type", string(event.Type)))
+		})
 		return
 	}
 	r.alertProcessor.ProcessEvent(event)
