@@ -271,6 +271,16 @@ func (c *Client) GetUpdates(ctx context.Context, offset int64, timeout int) ([]*
 	return result.Result, nil
 }
 
+// Verify confirms the bot token is valid by making a lightweight getUpdates
+// call (offset=0, timeout=0 for an immediate, non-blocking response) —
+// mirrors the onboarding probe in cmd/pilot/onboard_notify.go.
+func (c *Client) Verify(ctx context.Context) error {
+	if _, err := c.GetUpdates(ctx, 0, 0); err != nil {
+		return fmt.Errorf("telegram token invalid: %w", err)
+	}
+	return nil
+}
+
 // SendMessage sends a message to a chat
 func (c *Client) SendMessage(ctx context.Context, chatID, text, parseMode string) (*SendMessageResponse, error) {
 	req := SendMessageRequest{
