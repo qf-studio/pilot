@@ -613,7 +613,7 @@ Examples:
 					ctx := context.Background()
 					gwAlertsEngine = alerts.NewEngine(alertsCfg, alerts.WithDispatcher(alertsDispatcher), alerts.WithAlertMetrics(alertsMetrics))
 					if alertErr := gwAlertsEngine.Start(ctx); alertErr != nil {
-						logging.WithComponent("start").Warn("failed to start alerts engine for gateway polling", slog.Any("error", alertErr))
+						logging.WithComponent("start").Error("alert engine failed to start — downstream alerters will be silently disabled; check alerts config", slog.Any("error", alertErr))
 						gwAlertsEngine = nil
 					}
 				}
@@ -2048,7 +2048,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 
 		alertsEngine = alerts.NewEngine(alertsCfg, alerts.WithDispatcher(alertsDispatcher), alerts.WithAlertMetrics(alertsMetrics))
 		if err := alertsEngine.Start(ctx); err != nil {
-			logging.WithComponent("start").Warn("failed to start alerts engine", slog.Any("error", err))
+			logging.WithComponent("start").Error("alert engine failed to start — downstream alerters will be silently disabled; check alerts config", slog.Any("error", err))
 			alertsEngine = nil
 		} else {
 			logging.WithComponent("start").Info("alerts engine started",
