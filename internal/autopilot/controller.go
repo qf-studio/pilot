@@ -221,11 +221,12 @@ type Controller struct {
 	// Populated lazily by getBotLogin; protected by mu. GH-3417.
 	cachedBotLogin string
 
-	// rateLimitedUntil holds off processAllPRs/reconcileOrphanPRs/ScanRecentlyMergedPRs
-	// after a GitHub primary-rate-limit response, instead of re-hitting the API on every
-	// PR on every tick until quota resets. Protected by mu. GH-3784: a sustained rate-limit
-	// window with no backoff left green, approved PRs unmerged for over an hour because
-	// every tick burned through the exhausted quota re-fetching every tracked PR.
+	// rateLimitedUntil holds off processAllPRs, reconcileOrphanPRs, and
+	// ScanRecentlyMergedPRs after a GitHub primary-rate-limit response,
+	// instead of re-hitting the API on every tick until quota resets.
+	// Protected by mu. GH-3784: a sustained rate-limit window with no backoff
+	// left green, approved PRs unmerged for over an hour because every tick
+	// burned through the exhausted quota re-fetching every tracked PR.
 	rateLimitedUntil time.Time
 }
 
@@ -2811,6 +2812,14 @@ func (c *Controller) reconcileOrphanPRs(ctx context.Context) {
 // autopilot (e.g. via `gh pr merge` or the GitHub UI).
 // Called on startup and periodically from the Run loop.
 func (c *Controller) ScanRecentlyMergedPRs(ctx context.Context) error {
+	// GH-3784: honor the same rate-limit cooldown as processAllPRs/reconcileOrphanPRs.
+	// This scan's own cadence (5+ min) is already gentle, but a cooldown opened by
+	// one of the hot loops can still span into this tick — skip rather than add
+	// another failing call on top of an active outage.
+	if c.rateLimitCooldownActive() {
+		return nil
+	}
+
 	// Run the scan unconditionally — it covers self-heal + merge metrics even when
 	// neither auto-release nor board sync is enabled (e.g. a plain GH-issue-source
 	// deployment). Internal gates below handle release-trigger and board-writeback
@@ -2832,6 +2841,13 @@ func (c *Controller) ScanRecentlyMergedPRs(ctx context.Context) error {
 	// List closed PRs
 	prs, err := c.ghClient.ListPullRequests(ctx, c.owner, c.repo, "closed")
 	if err != nil {
+		var rlErr *github.RateLimitError
+		if errors.As(err, &rlErr) {
+			wait := c.enterRateLimitCooldown(rlErr.RetryAfter)
+			c.log.Warn("ScanRecentlyMergedPRs: GitHub rate limit hit, pausing until cooldown elapses",
+				"cooldown", wait, "error", err)
+			return nil
+		}
 		return fmt.Errorf("failed to list closed PRs: %w", err)
 	}
 
