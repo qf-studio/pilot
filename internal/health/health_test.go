@@ -1,6 +1,7 @@
 package health
 
 import (
+	"errors"
 	"io"
 	"net/http"
 	"os"
@@ -1131,6 +1132,114 @@ func TestCheckBrewTapHealth_JobFetchFails(t *testing.T) {
 	check := checkBrewTapHealth(get)
 	if check.Status != StatusWarning {
 		t.Errorf("status = %v, want StatusWarning when jobs fetch fails", check.Status)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// checkGitHubTokenLive (GH-3718)
+// ---------------------------------------------------------------------------
+
+func TestCheckGitHubTokenLive_DeadToken(t *testing.T) {
+	cfg := &config.Config{
+		Adapters: &config.AdaptersConfig{
+			GitHub: &github.Config{Enabled: true, Token: "dead-token"},
+		},
+	}
+	check := func(string) (int, error) { return http.StatusUnauthorized, nil }
+
+	got := checkGitHubTokenLive(cfg, check)
+	if got == nil {
+		t.Fatal("expected a check result, got nil")
+	}
+	if got.Status != StatusError {
+		t.Errorf("status = %v, want StatusError", got.Status)
+	}
+	if !strings.Contains(got.Message, "401") {
+		t.Errorf("message = %q, want mention of 401", got.Message)
+	}
+	if !strings.Contains(got.Message, "config") {
+		t.Errorf("message = %q, want token source named", got.Message)
+	}
+}
+
+func TestCheckGitHubTokenLive_ValidToken(t *testing.T) {
+	cfg := &config.Config{
+		Adapters: &config.AdaptersConfig{
+			GitHub: &github.Config{Enabled: true, Token: "good-token"},
+		},
+	}
+	check := func(string) (int, error) { return http.StatusOK, nil }
+
+	got := checkGitHubTokenLive(cfg, check)
+	if got == nil {
+		t.Fatal("expected a check result, got nil")
+	}
+	if got.Status != StatusOK {
+		t.Errorf("status = %v, want StatusOK", got.Status)
+	}
+}
+
+func TestCheckGitHubTokenLive_NetworkError(t *testing.T) {
+	cfg := &config.Config{
+		Adapters: &config.AdaptersConfig{
+			GitHub: &github.Config{Enabled: true, Token: "some-token"},
+		},
+	}
+	check := func(string) (int, error) { return 0, io.ErrUnexpectedEOF }
+
+	got := checkGitHubTokenLive(cfg, check)
+	if got == nil {
+		t.Fatal("expected a check result, got nil")
+	}
+	if got.Status != StatusWarning {
+		t.Errorf("status = %v, want StatusWarning for a network error (not evidence the token is dead)", got.Status)
+	}
+}
+
+func TestCheckGitHubTokenLive_SkipsWhenDisabled(t *testing.T) {
+	cfg := &config.Config{
+		Adapters: &config.AdaptersConfig{
+			GitHub: &github.Config{Enabled: false, Token: "some-token"},
+		},
+	}
+	called := false
+	check := func(string) (int, error) { called = true; return http.StatusOK, nil }
+
+	got := checkGitHubTokenLive(cfg, check)
+	if got != nil {
+		t.Errorf("expected nil check when GitHub disabled, got %+v", got)
+	}
+	if called {
+		t.Error("expected live check to be skipped when GitHub disabled")
+	}
+}
+
+func TestCheckGitHubTokenLive_SkipsWhenNoToken(t *testing.T) {
+	origEnv, hadEnv := os.LookupEnv("GITHUB_TOKEN")
+	_ = os.Unsetenv("GITHUB_TOKEN")
+	origExec := ghAuthTokenExec
+	ghAuthTokenExec = func() (string, error) { return "", errors.New("not authenticated") }
+	t.Cleanup(func() {
+		if hadEnv {
+			_ = os.Setenv("GITHUB_TOKEN", origEnv)
+		}
+		ghAuthTokenExec = origExec
+	})
+
+	cfg := &config.Config{
+		Adapters: &config.AdaptersConfig{
+			GitHub: &github.Config{Enabled: true},
+		},
+	}
+	called := false
+	check := func(string) (int, error) { called = true; return http.StatusOK, nil }
+
+	got := checkGitHubTokenLive(cfg, check)
+	if got != nil {
+		t.Errorf("expected nil check when no token resolves, got %+v", got)
+	}
+	if called {
+		t.Error("expected live check to be skipped when no token resolves")
 	}
 }
 

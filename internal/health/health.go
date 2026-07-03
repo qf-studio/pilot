@@ -134,6 +134,100 @@ var brewTapHTTPGet httpGetter = func(url string) (*http.Response, error) {
 	return client.Do(req)
 }
 
+// githubAuthChecker performs an authenticated GitHub API call to validate a
+// token, returning its HTTP status code (or an error for network failures).
+// Injectable for testability; overridden in tests. GH-3718.
+type githubAuthChecker func(token string) (int, error)
+
+// githubAuthCheck is the default githubAuthChecker: a real GET /user call.
+var githubAuthCheck githubAuthChecker = func(token string) (int, error) {
+	req, err := http.NewRequest(http.MethodGet, "https://api.github.com/user", nil)
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close() //nolint:errcheck
+	return resp.StatusCode, nil
+}
+
+// ghAuthTokenExec runs `gh auth token` and returns the trimmed token.
+// Injectable so tests aren't at the mercy of the host's real gh CLI auth state.
+var ghAuthTokenExec = func() (string, error) {
+	out, err := exec.Command("gh", "auth", "token").Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// resolveGitHubTokenForDoctor mirrors cmd/pilot's resolveGitHubToken precedence
+// (config -> GITHUB_TOKEN env -> `gh auth token` CLI) without importing cmd/pilot,
+// which would create an import cycle. Returns ("", "") when nothing resolves.
+func resolveGitHubTokenForDoctor(cfg *config.Config) (token, source string) {
+	if cfg.Adapters != nil && cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.Token != "" {
+		return cfg.Adapters.GitHub.Token, "config"
+	}
+	if tok := os.Getenv("GITHUB_TOKEN"); tok != "" {
+		return tok, "env GITHUB_TOKEN"
+	}
+	if tok, err := ghAuthTokenExec(); err == nil && tok != "" {
+		return tok, "gh CLI"
+	}
+	return "", ""
+}
+
+// checkGitHubTokenLive makes one authenticated API call to confirm the
+// resolved GitHub token actually works, producing a clear pass/fail line
+// distinct from the presence-only "github"/"github.token" checks above.
+// Returns nil when GitHub isn't enabled or no token could be resolved — those
+// cases are already covered by the presence check. GH-3718.
+func checkGitHubTokenLive(cfg *config.Config, check githubAuthChecker) *ConfigCheck {
+	if cfg.Adapters == nil || cfg.Adapters.GitHub == nil || !cfg.Adapters.GitHub.Enabled {
+		return nil
+	}
+	token, source := resolveGitHubTokenForDoctor(cfg)
+	if token == "" {
+		return nil
+	}
+
+	status, err := check(token)
+	if err != nil {
+		return &ConfigCheck{
+			Name:    "github.token.live",
+			Status:  StatusWarning,
+			Message: fmt.Sprintf("could not verify token (%s source): %v", source, err),
+			Fix:     "Check network connectivity to api.github.com",
+		}
+	}
+	if status == http.StatusUnauthorized {
+		return &ConfigCheck{
+			Name:    "github.token.live",
+			Status:  StatusError,
+			Message: fmt.Sprintf("token invalid or expired (401, source: %s)", source),
+			Fix:     "Rotate adapters.github.token / GITHUB_TOKEN, or run: gh auth login",
+		}
+	}
+	if status < 200 || status >= 300 {
+		return &ConfigCheck{
+			Name:    "github.token.live",
+			Status:  StatusWarning,
+			Message: fmt.Sprintf("unexpected API response (%d, source: %s)", status, source),
+			Fix:     "Check GitHub API status",
+		}
+	}
+	return &ConfigCheck{
+		Name:    "github.token.live",
+		Status:  StatusOK,
+		Message: fmt.Sprintf("valid (source: %s)", source),
+	}
+}
+
 // checkBrewTapHealth checks whether the last release.yml run failed at a
 // homebrew step, which indicates that HOMEBREW_TAP_GITHUB_TOKEN has expired.
 // Uses unauthenticated GitHub API calls (public repo, 60 req/hour limit).
@@ -231,6 +325,9 @@ func RunChecks(cfg *config.Config) *HealthReport {
 		configChecks = append(configChecks, checkAgentDocSize(filepath.Join(cwd, ".agent"))...)
 	}
 	configChecks = append(configChecks, checkBrewTapHealth(brewTapHTTPGet))
+	if liveCheck := checkGitHubTokenLive(cfg, githubAuthCheck); liveCheck != nil {
+		configChecks = append(configChecks, *liveCheck)
+	}
 
 	report := &HealthReport{
 		Dependencies: checkDependenciesWithBackend(backendType),

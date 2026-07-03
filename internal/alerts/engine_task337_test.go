@@ -152,7 +152,7 @@ func TestProcessEvents_HungChannelDoesNotBlockEventLoop(t *testing.T) {
 }
 
 func TestIsHighPriorityEvent(t *testing.T) {
-	high := []EventType{EventTypeEscalation, EventTypeOOMKilled, EventTypeBudgetExceeded, EventTypeSecurityEvent}
+	high := []EventType{EventTypeEscalation, EventTypeOOMKilled, EventTypeBudgetExceeded, EventTypeSecurityEvent, EventTypeConfigError}
 	for _, et := range high {
 		if !isHighPriorityEvent(et) {
 			t.Errorf("%s should be high priority", et)

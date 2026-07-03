@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -1028,6 +1029,88 @@ func TestEngine_SecurityEvent(t *testing.T) {
 				t.Errorf("expected alert type %s, got %s", tt.alertType, alerts[0].Type)
 			}
 		})
+	}
+}
+
+// TestEngine_ConfigError verifies a dead-credential event (GH-3718, e.g. a
+// GitHub token that fails validation at startup) fires an
+// AlertTypeServiceUnhealthy rule with the diagnostic message from event.Error.
+func TestEngine_ConfigError(t *testing.T) {
+	config := &AlertConfig{
+		Enabled: true,
+		Channels: []ChannelConfig{
+			{Name: "test-channel", Type: "webhook", Enabled: true},
+		},
+		Rules: []AlertRule{
+			{
+				Name:     "config-error",
+				Type:     AlertTypeServiceUnhealthy,
+				Enabled:  true,
+				Severity: SeverityWarning,
+				Channels: []string{"test-channel"},
+				Cooldown: 0,
+			},
+		},
+	}
+
+	mockCh := newMockChannel("test-channel", "webhook")
+	dispatcher := NewDispatcher(config)
+	dispatcher.RegisterChannel(mockCh)
+
+	engine := NewEngine(config, WithDispatcher(dispatcher))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	_ = engine.Start(ctx)
+
+	engine.ProcessEvent(Event{
+		Type:      EventTypeConfigError,
+		Error:     "GitHub token (source: env (GITHUB_TOKEN)) is invalid or expired — 401 from GitHub API",
+		Timestamp: time.Now(),
+	})
+
+	waitForAlerts(t, mockCh, 1, 2*time.Second)
+	alerts := mockCh.getAlerts()
+	if len(alerts) != 1 {
+		t.Fatalf("expected 1 alert, got %d", len(alerts))
+	}
+	if alerts[0].Type != AlertTypeServiceUnhealthy {
+		t.Errorf("expected alert type %s, got %s", AlertTypeServiceUnhealthy, alerts[0].Type)
+	}
+	if !strings.Contains(alerts[0].Message, "401") {
+		t.Errorf("expected alert message to mention 401, got %q", alerts[0].Message)
+	}
+}
+
+// TestEngine_ConfigError_NoMatchingRule confirms no alert fires when the
+// config has no AlertTypeServiceUnhealthy rule — the event is silently
+// dropped, matching handleSecurityEvent's existing behavior for unmatched rules.
+func TestEngine_ConfigError_NoMatchingRule(t *testing.T) {
+	config := &AlertConfig{
+		Enabled:  true,
+		Channels: []ChannelConfig{{Name: "test-channel", Type: "webhook", Enabled: true}},
+		Rules:    []AlertRule{},
+	}
+
+	mockCh := newMockChannel("test-channel", "webhook")
+	dispatcher := NewDispatcher(config)
+	dispatcher.RegisterChannel(mockCh)
+
+	engine := NewEngine(config, WithDispatcher(dispatcher))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	_ = engine.Start(ctx)
+
+	engine.ProcessEvent(Event{
+		Type:      EventTypeConfigError,
+		Error:     "token invalid",
+		Timestamp: time.Now(),
+	})
+	engine.flushForTest()
+
+	if got := len(mockCh.getAlerts()); got != 0 {
+		t.Errorf("expected 0 alerts with no matching rule, got %d", got)
 	}
 }
 
