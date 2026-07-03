@@ -1390,6 +1390,40 @@ func TestGroupByOverlappingScope(t *testing.T) {
 			wantGroups:     2,
 			wantMaxGroupSz: 2,
 		},
+		{
+			// GH-3714: root-level files (package.json) share no directory,
+			// so plain directory extraction would miss this collision.
+			name: "two bodies both naming package.json group together",
+			issues: []*Issue{
+				{Number: 1, Body: "Add a package.json with the base dependencies", CreatedAt: now.Add(-2 * time.Hour)},
+				{Number: 2, Body: "Update package.json to add the lint script", CreatedAt: now.Add(-1 * time.Hour)},
+			},
+			wantGroups:     1,
+			wantMaxGroupSz: 2,
+		},
+		{
+			name: "bodies naming disjoint subdirs still run parallel",
+			issues: []*Issue{
+				{Number: 1, Body: "Modify internal/gateway/server.go", CreatedAt: now.Add(-2 * time.Hour)},
+				{Number: 2, Body: "Update internal/executor/runner.go", CreatedAt: now.Add(-1 * time.Hour)},
+			},
+			wantGroups:     2,
+			wantMaxGroupSz: 1,
+		},
+		{
+			// GH-3714: a scaffold/bootstrap issue naming 2+ root config files
+			// (package.json + tsconfig.json) is globally overlapping — it
+			// serializes with every other candidate, even ones referencing
+			// unrelated subdirectories.
+			name: "scaffold-flavored body groups with all candidates",
+			issues: []*Issue{
+				{Number: 1, Body: "Bootstrap the project: add package.json and tsconfig.json", CreatedAt: now.Add(-3 * time.Hour)},
+				{Number: 2, Body: "Modify internal/gateway/server.go", CreatedAt: now.Add(-2 * time.Hour)},
+				{Number: 3, Body: "Update internal/executor/runner.go", CreatedAt: now.Add(-1 * time.Hour)},
+			},
+			wantGroups:     1,
+			wantMaxGroupSz: 3,
+		},
 	}
 
 	for _, tt := range tests {
