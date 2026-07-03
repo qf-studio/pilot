@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/qf-studio/pilot/internal/intent"
@@ -133,6 +134,56 @@ func TestAnswer_Non200(t *testing.T) {
 	_, err := c.Answer(context.Background(), "claude-haiku-4-5-20251001", "sys", nil, "hi")
 	if err == nil {
 		t.Fatal("expected error on non-200 response")
+	}
+}
+
+func TestAnswer_Non200IncludesBody(t *testing.T) {
+	tests := []struct {
+		name       string
+		statusCode int
+		body       interface{}
+		wantSubstr string
+	}{
+		{
+			name:       "400 invalid request error",
+			statusCode: http.StatusBadRequest,
+			body: map[string]interface{}{
+				"type": "error",
+				"error": map[string]string{
+					"type":    "invalid_request_error",
+					"message": "max_tokens: Field required",
+				},
+			},
+			wantSubstr: "max_tokens: Field required",
+		},
+		{
+			name:       "401 authentication error",
+			statusCode: http.StatusUnauthorized,
+			body: map[string]interface{}{
+				"type": "error",
+				"error": map[string]string{
+					"type":    "authentication_error",
+					"message": "invalid x-api-key",
+				},
+			},
+			wantSubstr: "invalid x-api-key",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := makeServer(t, tt.statusCode, tt.body)
+			defer srv.Close()
+
+			c := newTestClient(srv.URL)
+			_, err := c.Answer(context.Background(), "claude-haiku-4-5-20251001", "sys", nil, "hi")
+			if err == nil {
+				t.Fatal("expected error on non-200 response")
+			}
+			if !strings.Contains(err.Error(), tt.wantSubstr) {
+				t.Errorf("error = %q, want substring %q", err.Error(), tt.wantSubstr)
+			}
+		})
 	}
 }
 

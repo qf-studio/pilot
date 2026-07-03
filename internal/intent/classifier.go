@@ -5,9 +5,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"strings"
 	"time"
 )
+
+// maxErrorBodyBytes caps how much of a non-200 response body we read into an
+// error message, so a misbehaving API doesn't force us to buffer an unbounded
+// payload.
+const maxErrorBodyBytes = 4096
 
 // ConversationMessage represents a message in the conversation
 type ConversationMessage struct {
@@ -136,7 +143,8 @@ Respond with JSON only: {"intent": "...", "confidence": 0.0-1.0}`
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("API returned status %d", resp.StatusCode)
+		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
+		return "", fmt.Errorf("API returned status %d: %s", resp.StatusCode, strings.TrimSpace(string(errBody)))
 	}
 
 	// Parse response
