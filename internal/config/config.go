@@ -226,6 +226,11 @@ type ProjectConfig struct {
 	TeamReviewers []string             `yaml:"team_reviewers,omitempty"`
 	GitHub        *ProjectGitHubConfig `yaml:"github,omitempty"`
 	Linear        *ProjectLinearConfig `yaml:"linear,omitempty"`
+	// Quality overrides the global quality gate config for this project
+	// (GH-3716). Takes precedence over the top-level Config.Quality — lets a
+	// pnpm/yarn/bun or other non-Go project define its own build/test/lint
+	// gates instead of inheriting commands tuned for a different stack.
+	Quality *quality.Config `yaml:"quality,omitempty"`
 }
 
 // ResolveBaseBranch returns the branch that Pilot should branch from and

@@ -5,6 +5,7 @@ package quality
 import (
 	"bufio"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -260,6 +261,50 @@ func MinimalBuildGate() *Config {
 	}
 }
 
+// ResolveConfig determines the effective quality gate config for a project
+// using the precedence: per-project config, then the global config, then an
+// auto-detected minimal build/test gate (GH-3716). This lets a single Pilot
+// deployment mix stacks (e.g. Go/Makefile + pnpm/Node) without a global
+// config tuned for one stack forcing the wrong commands onto another.
+func ResolveConfig(projectQuality, globalQuality *Config, projectPath string) *Config {
+	if projectQuality != nil && projectQuality.Enabled {
+		return projectQuality
+	}
+	if globalQuality != nil && globalQuality.Enabled {
+		return globalQuality
+	}
+	return AutoDetectConfig(projectPath)
+}
+
+// AutoDetectConfig synthesizes a minimal quality gate config by detecting
+// the project's build and test commands (GH-363). Returns a disabled Config
+// if no build command can be detected, so callers can run Check() against
+// the result unconditionally without special-casing "no gates".
+func AutoDetectConfig(projectPath string) *Config {
+	buildCmd := DetectBuildCommand(projectPath)
+	if buildCmd == "" {
+		return &Config{Enabled: false}
+	}
+
+	cfg := MinimalBuildGate()
+	cfg.Gates[0].Command = buildCmd
+
+	if testCmd := DetectTestCommand(projectPath); testCmd != "" {
+		cfg.Gates = append(cfg.Gates, &Gate{
+			Name:        "test",
+			Type:        GateTest,
+			Command:     testCmd,
+			Required:    true,
+			Timeout:     5 * time.Minute,
+			MaxRetries:  1,
+			RetryDelay:  3 * time.Second,
+			FailureHint: "Fix failing tests in the changed files",
+		})
+	}
+
+	return cfg
+}
+
 // DetectBuildCommand returns appropriate build command for the project.
 // Checks for common project indicators and returns the build command.
 // Returns empty string if project type cannot be detected.
@@ -270,10 +315,11 @@ func DetectBuildCommand(projectPath string) string {
 	}
 	// Check for Node.js project with TypeScript
 	if fileExists(filepath.Join(projectPath, "package.json")) {
+		pm := detectPackageManager(projectPath)
 		if fileExists(filepath.Join(projectPath, "tsconfig.json")) {
-			return "npm run build || npx tsc --noEmit"
+			return fmt.Sprintf("%s run build || npx tsc --noEmit", pm)
 		}
-		return "npm run build --if-present"
+		return fmt.Sprintf("%s run build --if-present", pm)
 	}
 	// Check for Rust project
 	if fileExists(filepath.Join(projectPath, "Cargo.toml")) {
@@ -311,7 +357,7 @@ func DetectTestCommand(projectPath string) string {
 		return "pytest -v 2>&1"
 	}
 	if fileExists(filepath.Join(projectPath, "package.json")) {
-		return "npm test"
+		return fmt.Sprintf("%s test", detectPackageManager(projectPath))
 	}
 	if fileExists(filepath.Join(projectPath, "Cargo.toml")) {
 		return "cargo test"
@@ -320,6 +366,22 @@ func DetectTestCommand(projectPath string) string {
 		return "go test ./..."
 	}
 	return ""
+}
+
+// detectPackageManager returns the Node.js package manager indicated by the
+// project's lockfile — pnpm-lock.yaml, yarn.lock, bun.lockb/bun.lock — or
+// "npm" if none of those are present (GH-3716).
+func detectPackageManager(projectPath string) string {
+	switch {
+	case fileExists(filepath.Join(projectPath, "pnpm-lock.yaml")):
+		return "pnpm"
+	case fileExists(filepath.Join(projectPath, "yarn.lock")):
+		return "yarn"
+	case fileExists(filepath.Join(projectPath, "bun.lockb")), fileExists(filepath.Join(projectPath, "bun.lock")):
+		return "bun"
+	default:
+		return "npm"
+	}
 }
 
 // hasMakefileTarget reports whether the Makefile at path declares the given

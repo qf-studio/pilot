@@ -414,6 +414,33 @@ memory:
     max_patterns: 5           # Max patterns injected per task
     include_anti: true        # Include anti-patterns in prompts
 
+# Quality gates (GH-207) - run after implementation, before a PR is created.
+# Applies to every project unless a project defines its own `quality:` block
+# below (GH-3716). If neither is set, Pilot auto-detects a minimal build/test
+# gate per project (Go/Makefile/npm/pnpm/yarn/bun) so unconfigured projects
+# never inherit commands tuned for a different stack.
+quality:
+  enabled: true
+  gates:
+    - name: build
+      type: build
+      command: "make build"
+      required: true
+      timeout: 5m
+    - name: test
+      type: test
+      command: "make test"
+      required: true
+      timeout: 10m
+    - name: lint
+      type: lint
+      command: "make lint"
+      required: false          # Warn only by default
+      timeout: 2m
+  on_failure:
+    action: retry              # retry, fail, or warn
+    max_retries: 2
+
 # Project configurations
 projects:
   # Example project
@@ -435,6 +462,24 @@ projects:
     # Precedence: project-level linear.project_id > workspace-level > default_project
     # linear:
     #   project_id: "proj-abc123"   # Linear project UUID
+    # Per-project quality gates (GH-3716) - overrides the top-level `quality:`
+    # block above for this project only. Useful when a deployment's global
+    # gates (e.g. Go/Makefile) don't fit a project on a different stack
+    # (e.g. a pnpm workspace). Resolution order: project quality > global
+    # quality > auto-detected build/test gate.
+    # quality:
+    #   enabled: true
+    #   gates:
+    #     - name: build
+    #       type: build
+    #       command: "pnpm run build"
+    #       required: true
+    #       timeout: 5m
+    #     - name: test
+    #       type: test
+    #       command: "pnpm test"
+    #       required: true
+    #       timeout: 10m
 
 # Autopilot settings
 autopilot:

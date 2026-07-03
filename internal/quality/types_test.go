@@ -310,6 +310,41 @@ func TestDetectBuildCommand(t *testing.T) {
 			expectedCmd: "npm run build --if-present",
 		},
 		{
+			name:        "pnpm project without typescript",
+			setupFiles:  []string{"package.json", "pnpm-lock.yaml"},
+			expectedCmd: "pnpm run build --if-present",
+		},
+		{
+			name:        "yarn project without typescript",
+			setupFiles:  []string{"package.json", "yarn.lock"},
+			expectedCmd: "yarn run build --if-present",
+		},
+		{
+			name:        "bun project without typescript (bun.lockb)",
+			setupFiles:  []string{"package.json", "bun.lockb"},
+			expectedCmd: "bun run build --if-present",
+		},
+		{
+			name:        "bun project without typescript (bun.lock)",
+			setupFiles:  []string{"package.json", "bun.lock"},
+			expectedCmd: "bun run build --if-present",
+		},
+		{
+			name:        "pnpm project with typescript",
+			setupFiles:  []string{"package.json", "tsconfig.json", "pnpm-lock.yaml"},
+			expectedCmd: "pnpm run build || npx tsc --noEmit",
+		},
+		{
+			name:        "yarn project with typescript",
+			setupFiles:  []string{"package.json", "tsconfig.json", "yarn.lock"},
+			expectedCmd: "yarn run build || npx tsc --noEmit",
+		},
+		{
+			name:        "bun project with typescript",
+			setupFiles:  []string{"package.json", "tsconfig.json", "bun.lockb"},
+			expectedCmd: "bun run build || npx tsc --noEmit",
+		},
+		{
 			name:        "rust project",
 			setupFiles:  []string{"Cargo.toml"},
 			expectedCmd: "cargo check",
@@ -394,6 +429,26 @@ func TestDetectTestCommand(t *testing.T) {
 			expectedCmd: "npm test",
 		},
 		{
+			name:        "pnpm test",
+			files:       map[string]string{"package.json": "{}", "pnpm-lock.yaml": ""},
+			expectedCmd: "pnpm test",
+		},
+		{
+			name:        "yarn test",
+			files:       map[string]string{"package.json": "{}", "yarn.lock": ""},
+			expectedCmd: "yarn test",
+		},
+		{
+			name:        "bun test (bun.lockb)",
+			files:       map[string]string{"package.json": "{}", "bun.lockb": ""},
+			expectedCmd: "bun test",
+		},
+		{
+			name:        "bun test (bun.lock)",
+			files:       map[string]string{"package.json": "{}", "bun.lock": ""},
+			expectedCmd: "bun test",
+		},
+		{
 			name:        "cargo test",
 			files:       map[string]string{"Cargo.toml": ""},
 			expectedCmd: "cargo test",
@@ -448,4 +503,158 @@ func TestDetectBuildCommand_Priority(t *testing.T) {
 	if got != "go build ./..." {
 		t.Errorf("expected Go build command to take priority, got %q", got)
 	}
+}
+
+func TestResolveConfig(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "quality-resolve-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	goProjectDir := filepath.Join(tmpDir, "go-project")
+	if err := os.MkdirAll(goProjectDir, 0755); err != nil {
+		t.Fatalf("failed to create test dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(goProjectDir, "go.mod"), []byte("module x\n"), 0644); err != nil {
+		t.Fatalf("failed to write go.mod: %v", err)
+	}
+
+	emptyDir := filepath.Join(tmpDir, "empty")
+	if err := os.MkdirAll(emptyDir, 0755); err != nil {
+		t.Fatalf("failed to create test dir: %v", err)
+	}
+
+	projectQuality := &Config{
+		Enabled: true,
+		Gates:   []*Gate{{Name: "build", Type: GateBuild, Command: "pnpm run build", Required: true}},
+	}
+	globalQuality := &Config{
+		Enabled: true,
+		Gates:   []*Gate{{Name: "build", Type: GateBuild, Command: "make build", Required: true}},
+	}
+	disabledGlobal := &Config{Enabled: false}
+
+	tests := []struct {
+		name           string
+		projectQuality *Config
+		globalQuality  *Config
+		projectPath    string
+		wantConfig     *Config // exact pointer identity expected, or nil to check auto-detect
+		wantAutoDetect bool
+		wantEnabled    bool
+	}{
+		{
+			name:           "project config takes precedence over global",
+			projectQuality: projectQuality,
+			globalQuality:  globalQuality,
+			projectPath:    goProjectDir,
+			wantConfig:     projectQuality,
+		},
+		{
+			name:           "falls back to global when project has no override",
+			projectQuality: nil,
+			globalQuality:  globalQuality,
+			projectPath:    goProjectDir,
+			wantConfig:     globalQuality,
+		},
+		{
+			name:           "falls back to global when project quality disabled",
+			projectQuality: &Config{Enabled: false},
+			globalQuality:  globalQuality,
+			projectPath:    goProjectDir,
+			wantConfig:     globalQuality,
+		},
+		{
+			name:           "auto-detects when neither project nor global configured",
+			projectQuality: nil,
+			globalQuality:  nil,
+			projectPath:    goProjectDir,
+			wantAutoDetect: true,
+			wantEnabled:    true,
+		},
+		{
+			name:           "auto-detects when global present but disabled",
+			projectQuality: nil,
+			globalQuality:  disabledGlobal,
+			projectPath:    goProjectDir,
+			wantAutoDetect: true,
+			wantEnabled:    true,
+		},
+		{
+			name:           "auto-detect yields disabled config when nothing detectable",
+			projectQuality: nil,
+			globalQuality:  nil,
+			projectPath:    emptyDir,
+			wantAutoDetect: true,
+			wantEnabled:    false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ResolveConfig(tt.projectQuality, tt.globalQuality, tt.projectPath)
+			if got == nil {
+				t.Fatal("ResolveConfig() returned nil, want a non-nil Config")
+			}
+			if tt.wantConfig != nil {
+				if got != tt.wantConfig {
+					t.Errorf("ResolveConfig() = %p, want %p (exact config)", got, tt.wantConfig)
+				}
+				return
+			}
+			if tt.wantAutoDetect {
+				if got.Enabled != tt.wantEnabled {
+					t.Errorf("ResolveConfig() auto-detected Enabled = %v, want %v", got.Enabled, tt.wantEnabled)
+				}
+			}
+		})
+	}
+}
+
+func TestAutoDetectConfig(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "quality-autodetect-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	t.Run("go project with tests", func(t *testing.T) {
+		dir := filepath.Join(tmpDir, "go-project")
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatalf("failed to create test dir: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module x\n"), 0644); err != nil {
+			t.Fatalf("failed to write go.mod: %v", err)
+		}
+
+		cfg := AutoDetectConfig(dir)
+		if !cfg.Enabled {
+			t.Fatal("expected auto-detected config to be enabled")
+		}
+		if len(cfg.Gates) != 2 {
+			t.Fatalf("expected build + test gates, got %d gates", len(cfg.Gates))
+		}
+		if cfg.Gates[0].Command != "go build ./..." {
+			t.Errorf("build command = %q, want %q", cfg.Gates[0].Command, "go build ./...")
+		}
+		if cfg.Gates[1].Command != "go test ./..." {
+			t.Errorf("test command = %q, want %q", cfg.Gates[1].Command, "go test ./...")
+		}
+	})
+
+	t.Run("undetectable project", func(t *testing.T) {
+		dir := filepath.Join(tmpDir, "unknown-project")
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatalf("failed to create test dir: %v", err)
+		}
+
+		cfg := AutoDetectConfig(dir)
+		if cfg.Enabled {
+			t.Error("expected disabled config when no build command is detectable")
+		}
+		if len(cfg.Gates) != 0 {
+			t.Errorf("expected no gates, got %d", len(cfg.Gates))
+		}
+	})
 }

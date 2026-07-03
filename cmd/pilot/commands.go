@@ -31,7 +31,6 @@ import (
 	"github.com/qf-studio/pilot/internal/logging"
 	"github.com/qf-studio/pilot/internal/memory"
 	"github.com/qf-studio/pilot/internal/pilot"
-	"github.com/qf-studio/pilot/internal/quality"
 	"github.com/qf-studio/pilot/internal/replay"
 	"github.com/qf-studio/pilot/internal/upgrade"
 )
@@ -595,19 +594,10 @@ Examples:
 				}
 			}
 
-			// Quality gates (GH-207)
-			if cfg.Quality != nil && cfg.Quality.Enabled {
-				runner.SetQualityCheckerFactory(func(taskID, projectPath string) executor.QualityChecker {
-					return &qualityCheckerWrapper{
-						executor: quality.NewExecutor(&quality.ExecutorConfig{
-							Config:      cfg.Quality,
-							ProjectPath: projectPath,
-							TaskID:      taskID,
-						}),
-					}
-				})
-				fmt.Println("   Quality:   ✓ gates enabled")
-			}
+			// Quality gates (GH-207). GH-3716: resolved per-project, falling
+			// back to the global config, then auto-detection.
+			runner.SetQualityCheckerFactory(newProjectQualityCheckerFactory(cfg))
+			fmt.Println("   Quality:   ✓ gates enabled")
 
 			// Decomposer status (GH-218) - wired via NewRunnerWithConfig
 			if cfg.Executor != nil && cfg.Executor.Decompose != nil && cfg.Executor.Decompose.Enabled {

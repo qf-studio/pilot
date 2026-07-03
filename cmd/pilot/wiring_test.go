@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"os"
 	"testing"
 	"time"
 
@@ -15,6 +17,7 @@ import (
 	"github.com/qf-studio/pilot/internal/alerts"
 	"github.com/qf-studio/pilot/internal/approval"
 	"github.com/qf-studio/pilot/internal/config"
+	"github.com/qf-studio/pilot/internal/quality"
 	"github.com/qf-studio/pilot/internal/testutil"
 )
 
@@ -499,6 +502,114 @@ func TestQualityCheckerWrapper_NilResultFields(t *testing.T) {
 	// quality.Executor to executor.QualityChecker. If the interface changes,
 	// this file won't compile.
 	_ = &qualityCheckerWrapper{}
+}
+
+// =============================================================================
+// GH-3716: newProjectQualityCheckerFactory resolution precedence
+// =============================================================================
+
+func TestNewProjectQualityCheckerFactory_ProjectOverrideWinsOverGlobal(t *testing.T) {
+	projectPath := t.TempDir()
+
+	cfg := &config.Config{
+		Quality: &quality.Config{
+			Enabled: true,
+			Gates:   []*quality.Gate{{Name: "build", Type: quality.GateBuild, Command: "false", Required: true}},
+		},
+		Projects: []*config.ProjectConfig{
+			{
+				Name: "override-project",
+				Path: projectPath,
+				Quality: &quality.Config{
+					Enabled: true,
+					Gates:   []*quality.Gate{{Name: "build", Type: quality.GateBuild, Command: "true", Required: true}},
+				},
+			},
+		},
+	}
+
+	factory := newProjectQualityCheckerFactory(cfg)
+	checker := factory("task-1", projectPath)
+
+	outcome, err := checker.Check(context.Background())
+	if err != nil {
+		t.Fatalf("Check() error = %v", err)
+	}
+	if !outcome.Passed {
+		t.Error("expected project-level quality override (command: true) to pass, indicating it took precedence over the failing global config")
+	}
+}
+
+func TestNewProjectQualityCheckerFactory_FallsBackToGlobal(t *testing.T) {
+	projectPath := t.TempDir()
+
+	cfg := &config.Config{
+		Quality: &quality.Config{
+			Enabled: true,
+			Gates:   []*quality.Gate{{Name: "build", Type: quality.GateBuild, Command: "true", Required: true}},
+		},
+		Projects: []*config.ProjectConfig{
+			{Name: "no-override", Path: projectPath}, // no Quality set
+		},
+	}
+
+	factory := newProjectQualityCheckerFactory(cfg)
+	checker := factory("task-1", projectPath)
+
+	outcome, err := checker.Check(context.Background())
+	if err != nil {
+		t.Fatalf("Check() error = %v", err)
+	}
+	if !outcome.Passed {
+		t.Error("expected global quality config to apply when project has no override")
+	}
+}
+
+func TestNewProjectQualityCheckerFactory_AutoDetectsWhenUnconfigured(t *testing.T) {
+	projectPath := t.TempDir()
+
+	// No global Quality, no matching project entry — should synthesize a
+	// minimal config via quality.AutoDetectConfig rather than reuse a
+	// mismatched global config or panic on a nil config.
+	cfg := &config.Config{}
+
+	factory := newProjectQualityCheckerFactory(cfg)
+	checker := factory("task-1", projectPath)
+
+	outcome, err := checker.Check(context.Background())
+	if err != nil {
+		t.Fatalf("Check() error = %v", err)
+	}
+	// Empty tmp dir has no detectable build command, so AutoDetectConfig
+	// yields a disabled config, which Check() short-circuits as passed.
+	if !outcome.Passed {
+		t.Error("expected auto-detect on an unrecognized project to short-circuit as passed rather than fail or panic")
+	}
+}
+
+func TestNewProjectQualityCheckerFactory_AutoDetectsGoProject(t *testing.T) {
+	projectPath := t.TempDir()
+	if err := os.WriteFile(projectPath+"/go.mod", []byte("module autodetecttest\n\ngo 1.21\n"), 0644); err != nil {
+		t.Fatalf("failed to write go.mod: %v", err)
+	}
+
+	cfg := &config.Config{}
+
+	factory := newProjectQualityCheckerFactory(cfg)
+	checker := factory("task-1", projectPath)
+
+	// Sanity check the resolution picked the Go build command rather than
+	// silently disabling gates, without actually invoking `go build`.
+	resolved := quality.ResolveConfig(nil, cfg.Quality, projectPath)
+	if !resolved.Enabled {
+		t.Fatal("expected auto-detect to enable gates for a Go project")
+	}
+	if resolved.Gates[0].Command != "go build ./..." {
+		t.Errorf("auto-detected build command = %q, want %q", resolved.Gates[0].Command, "go build ./...")
+	}
+	if checker == nil {
+		t.Fatal("expected a non-nil checker")
+	}
 }
 
 // =============================================================================

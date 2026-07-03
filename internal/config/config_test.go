@@ -1142,6 +1142,63 @@ projects:
 	}
 }
 
+func TestProjectConfigQualityYAML(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+	content := `
+version: "1.0"
+quality:
+  enabled: true
+  gates:
+    - name: build
+      type: build
+      command: "make build"
+      required: true
+projects:
+  - name: "with-quality"
+    path: "/with-quality"
+    quality:
+      enabled: true
+      gates:
+        - name: build
+          type: build
+          command: "pnpm run build"
+          required: true
+  - name: "without-quality"
+    path: "/without-quality"
+`
+	if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	withQuality := cfg.GetProject("/with-quality")
+	if withQuality == nil {
+		t.Fatal("project 'with-quality' not found")
+	}
+	if withQuality.Quality == nil || !withQuality.Quality.Enabled {
+		t.Fatal("expected project-level quality config to be set and enabled")
+	}
+	if len(withQuality.Quality.Gates) != 1 || withQuality.Quality.Gates[0].Command != "pnpm run build" {
+		t.Errorf("project quality gates = %+v, want single pnpm build gate", withQuality.Quality.Gates)
+	}
+
+	withoutQuality := cfg.GetProject("/without-quality")
+	if withoutQuality == nil {
+		t.Fatal("project 'without-quality' not found")
+	}
+	if withoutQuality.Quality != nil {
+		t.Errorf("expected project 'without-quality' to have nil Quality, got %+v", withoutQuality.Quality)
+	}
+
+	if cfg.Quality == nil || !cfg.Quality.Enabled {
+		t.Fatal("expected global quality config to remain set and enabled")
+	}
+}
+
 // Helper function to check if a string contains a substring
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||
