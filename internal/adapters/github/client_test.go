@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -3293,6 +3294,103 @@ func TestLinkSubIssue(t *testing.T) {
 				if !strings.Contains(err.Error(), tt.errContains) {
 					t.Errorf("error = %q, want containing %q", err.Error(), tt.errContains)
 				}
+			}
+		})
+	}
+}
+
+func TestGetOpenSubIssueNumbers(t *testing.T) {
+	tests := []struct {
+		name            string
+		restResponse    string
+		restStatus      int
+		graphqlResponse string
+		graphqlStatus   int
+		wantNumbers     []int
+		wantNativeLinks bool
+		wantErr         bool
+		errContains     string
+	}{
+		{
+			name:            "some open sub-issues",
+			restResponse:    `{"node_id":"I_parent123","number":50}`,
+			restStatus:      http.StatusOK,
+			graphqlResponse: `{"data":{"node":{"subIssues":{"totalCount":3,"nodes":[{"number":1,"state":"OPEN"},{"number":2,"state":"CLOSED"},{"number":3,"state":"OPEN"}]}}}}`,
+			graphqlStatus:   http.StatusOK,
+			wantNumbers:     []int{1, 3},
+			wantNativeLinks: true,
+		},
+		{
+			name:            "all closed",
+			restResponse:    `{"node_id":"I_parent123","number":50}`,
+			restStatus:      http.StatusOK,
+			graphqlResponse: `{"data":{"node":{"subIssues":{"totalCount":2,"nodes":[{"number":1,"state":"CLOSED"},{"number":2,"state":"CLOSED"}]}}}}`,
+			graphqlStatus:   http.StatusOK,
+			wantNumbers:     nil,
+			wantNativeLinks: true,
+		},
+		{
+			name:            "no native links",
+			restResponse:    `{"node_id":"I_parent123","number":50}`,
+			restStatus:      http.StatusOK,
+			graphqlResponse: `{"data":{"node":{"subIssues":{"totalCount":0,"nodes":[]}}}}`,
+			graphqlStatus:   http.StatusOK,
+			wantNumbers:     nil,
+			wantNativeLinks: false,
+		},
+		{
+			name:         "parent REST error",
+			restResponse: `{"message":"Not Found"}`,
+			restStatus:   http.StatusNotFound,
+			wantErr:      true,
+			errContains:  "resolve parent node ID",
+		},
+		{
+			name:            "graphql error",
+			restResponse:    `{"node_id":"I_parent123","number":50}`,
+			restStatus:      http.StatusOK,
+			graphqlResponse: `{"data":null,"errors":[{"message":"something broke"}]}`,
+			graphqlStatus:   http.StatusOK,
+			wantErr:         true,
+			errContains:     "query sub-issues",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.URL.Path == "/repos/owner/repo/issues/50" && r.Method == http.MethodGet:
+					w.WriteHeader(tt.restStatus)
+					_, _ = w.Write([]byte(tt.restResponse))
+				case r.URL.Path == "/graphql" && r.Method == http.MethodPost:
+					w.WriteHeader(tt.graphqlStatus)
+					_, _ = w.Write([]byte(tt.graphqlResponse))
+				default:
+					t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer server.Close()
+
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			numbers, hasNative, err := client.GetOpenSubIssueNumbers(context.Background(), "owner", "repo", 50)
+
+			if (err != nil) != tt.wantErr {
+				t.Errorf("GetOpenSubIssueNumbers() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if tt.wantErr && tt.errContains != "" {
+				if !strings.Contains(err.Error(), tt.errContains) {
+					t.Errorf("error = %q, want containing %q", err.Error(), tt.errContains)
+				}
+				return
+			}
+			if !reflect.DeepEqual(numbers, tt.wantNumbers) {
+				t.Errorf("GetOpenSubIssueNumbers() numbers = %v, want %v", numbers, tt.wantNumbers)
+			}
+			if hasNative != tt.wantNativeLinks {
+				t.Errorf("GetOpenSubIssueNumbers() hasNativeLinks = %v, want %v", hasNative, tt.wantNativeLinks)
 			}
 		})
 	}

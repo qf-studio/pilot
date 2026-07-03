@@ -1257,6 +1257,62 @@ func (c *Client) LinkSubIssue(ctx context.Context, owner, repo string, parentNum
 	return c.ExecuteGraphQL(ctx, mutation, variables, nil)
 }
 
+// GetOpenSubIssueNumbers queries native GitHub sub-issues for a parent issue and returns:
+//   - numbers: issue numbers of sub-issues in OPEN state
+//   - hasNativeLinks: true when the parent has at least one native sub-issue link (totalCount > 0)
+//   - error: any API or parsing error
+//
+// GH-3780: callers use the individual numbers to cross-check each open child against the
+// local execution ledger (e.g. no_op reclassification) instead of trusting GitHub's
+// open/closed state alone — GetOpenSubIssueCount only exposes the aggregate count.
+func (c *Client) GetOpenSubIssueNumbers(ctx context.Context, owner, repo string, parentNum int) (numbers []int, hasNativeLinks bool, err error) {
+	parentID, err := c.GetIssueNodeID(ctx, owner, repo, parentNum)
+	if err != nil {
+		return nil, false, fmt.Errorf("resolve parent node ID: %w", err)
+	}
+
+	const query = `query($issueID: ID!) {
+		node(id: $issueID) {
+			... on Issue {
+				subIssues(first: 100) {
+					totalCount
+					nodes {
+						number
+						state
+					}
+				}
+			}
+		}
+	}`
+
+	var result struct {
+		Node struct {
+			SubIssues struct {
+				TotalCount int `json:"totalCount"`
+				Nodes      []struct {
+					Number int    `json:"number"`
+					State  string `json:"state"`
+				} `json:"nodes"`
+			} `json:"subIssues"`
+		} `json:"node"`
+	}
+
+	if err := c.ExecuteGraphQL(ctx, query, map[string]interface{}{"issueID": parentID}, &result); err != nil {
+		return nil, false, fmt.Errorf("query sub-issues for %s/%s#%d: %w", owner, repo, parentNum, err)
+	}
+
+	if result.Node.SubIssues.TotalCount == 0 {
+		return nil, false, nil
+	}
+
+	for _, n := range result.Node.SubIssues.Nodes {
+		if n.State == "OPEN" {
+			numbers = append(numbers, n.Number)
+		}
+	}
+	return numbers, true, nil
+}
+
 // GetOpenSubIssueCount queries native GitHub sub-issues for a parent issue and returns:
 //   - count: number of sub-issues in OPEN state
 //   - hasNativeLinks: true when the parent has at least one native sub-issue link (totalCount > 0)

@@ -105,6 +105,11 @@ type EvalStore interface {
 	// stamps the PR URL after a successful merge. projectPath scopes the update
 	// to prevent cross-repo clobbering. GH-2402.
 	SelfHealExecutionAfterMerge(taskID, projectPath, prURL string) error
+	// GetExecutionStatusByTaskID returns the status of the most recent execution
+	// row exactly matching taskID and projectPath (no substring fallback) — used
+	// to verify a child sub-issue's ledger status before treating it as complete
+	// for parent-close purposes. GH-3780.
+	GetExecutionStatusByTaskID(taskID, projectPath string) (string, error)
 }
 
 // ControllerOption is a functional option for Controller configuration.
@@ -1719,7 +1724,7 @@ func (c *Controller) maybeCloseParentIssue(ctx context.Context, prState *PRState
 // by the text search before the caller may close the parent. The max of both
 // tiers is returned.
 func (c *Controller) openSubIssueCount(ctx context.Context, parentNum int) (int, error) {
-	nativeCount, hasNativeLinks, err := c.ghClient.GetOpenSubIssueCount(ctx, c.owner, c.repo, parentNum)
+	numbers, hasNativeLinks, err := c.ghClient.GetOpenSubIssueNumbers(ctx, c.owner, c.repo, parentNum)
 	if err != nil || !hasNativeLinks {
 		if err != nil {
 			c.log.Warn("openSubIssueCount: native sub-issue count failed, falling back to search", slog.Int("parent", parentNum), slog.Any("error", err))
@@ -1729,11 +1734,12 @@ func (c *Controller) openSubIssueCount(ctx context.Context, parentNum int) (int,
 		return c.ghClient.SearchOpenSubIssues(ctx, c.owner, c.repo, parentNum)
 	}
 
+	nativeCount := c.blockingChildCount(numbers)
 	if nativeCount > 0 {
 		return nativeCount, nil
 	}
 
-	// Native says 0 — cross-check text search to catch unlinked open siblings.
+	// Native says 0 blocking — cross-check text search to catch unlinked open siblings.
 	textCount, err := c.ghClient.SearchOpenSubIssues(ctx, c.owner, c.repo, parentNum)
 	if err != nil {
 		return 0, fmt.Errorf("native count is 0 but confirmation search failed: %w", err)
@@ -1743,6 +1749,38 @@ func (c *Controller) openSubIssueCount(ctx context.Context, parentNum int) (int,
 			slog.Int("parent", parentNum), slog.Int("text_open", textCount))
 	}
 	return textCount, nil
+}
+
+// blockingChildCount returns how many of the given open native sub-issue numbers
+// still block the parent from closing. GH-3780: an open GitHub sub-issue normally
+// blocks, but a decomposed child whose execution ledger classifies it "no_op" (no
+// commits, no PR — so it never produced a merge to close its own issue) has
+// genuinely finished its work. Any other status (queued, running, failed, or no
+// ledger row at all) still blocks, matching the pre-GH-3780 behavior.
+func (c *Controller) blockingChildCount(numbers []int) int {
+	blocking := 0
+	for _, num := range numbers {
+		if !c.isChildNoOp(num) {
+			blocking++
+		}
+	}
+	return blocking
+}
+
+// isChildNoOp reports whether the sub-issue's most recent ledger execution is a
+// verified no_op, via the exact task_id+project_path join (GetExecutionStatusByTaskID)
+// rather than the fuzzy substring match GetLatestExecutionByTaskID uses — a wrong-repo
+// or wrong-issue match could otherwise let an unrelated no_op row wrongly close this
+// parent. Fails closed (false) when the eval store isn't wired or the lookup errors.
+func (c *Controller) isChildNoOp(issueNum int) bool {
+	if c.evalStore == nil {
+		return false
+	}
+	status, err := c.evalStore.GetExecutionStatusByTaskID(fmt.Sprintf("GH-%d", issueNum), c.projectPath)
+	if err != nil {
+		return false
+	}
+	return status == "no_op"
 }
 
 // closeParentNow adds pilot-done, removes stale labels, posts a summary comment,
