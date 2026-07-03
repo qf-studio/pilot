@@ -1,10 +1,13 @@
 package executor
 
 import (
+	"bytes"
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -523,7 +526,9 @@ func TestRecoverStaleTasks_QueuedAndRunning(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 
-	// Insert a stale running task and a stale queued task.
+	// Insert a stale running task and a stale queued task for the same
+	// project — mirrors the GH-3714/3715/3716 restart incident: a crashed
+	// worker leaves a "running" orphan while its FIFO siblings sit "queued".
 	executions := []*memory.Execution{
 		{ID: "exec-stale-run", TaskID: "TASK-RUN", ProjectPath: "/project", Status: "running"},
 		{ID: "exec-stale-q", TaskID: "TASK-Q", ProjectPath: "/project", Status: "queued"},
@@ -549,19 +554,35 @@ func TestRecoverStaleTasks_QueuedAndRunning(t *testing.T) {
 	}
 	defer dispatcher.Stop()
 
-	// Both stale tasks should be failed.
-	for _, id := range []string{"exec-stale-run", "exec-stale-q"} {
-		exec, err := store.GetExecution(id)
-		if err != nil {
-			t.Fatalf("failed to get execution %s: %v", id, err)
-		}
-		if exec.Status != "failed" {
-			t.Errorf("expected %s to be 'failed', got '%s'", id, exec.Status)
-		}
+	// The orphaned RUNNING task (crashed worker) is still reaped — unaffected
+	// by GH-3732, since recoverStaleRunningTasks runs before queue adoption
+	// creates any workers.
+	exec, err := store.GetExecution("exec-stale-run")
+	if err != nil {
+		t.Fatalf("failed to get execution: %v", err)
+	}
+	if exec.Status != "failed" {
+		t.Errorf("expected exec-stale-run to be 'failed', got '%s'", exec.Status)
+	}
+
+	// GH-3732: the queued sibling must NOT be reaped as an orphan — its
+	// project gets re-adopted at Start, so a real worker should pick it up
+	// instead of the stale-queued reap wrongly failing it.
+	exec, err = store.GetExecution("exec-stale-q")
+	if err != nil {
+		t.Fatalf("failed to get execution: %v", err)
+	}
+	if exec.Status == "failed" && exec.Error == "queued task orphaned by restart; project no longer configured" {
+		t.Errorf("expected exec-stale-q to be adopted, not reaped as an orphan (error=%q)", exec.Error)
+	}
+
+	status := dispatcher.GetWorkerStatus()
+	if _, ok := status["/project"]; !ok {
+		t.Errorf("expected a re-adopted worker for /project, got workers: %v", status)
 	}
 
 	// Completed task should be untouched.
-	exec, err := store.GetExecution("exec-ok")
+	exec, err = store.GetExecution("exec-ok")
 	if err != nil {
 		t.Fatalf("failed to get execution: %v", err)
 	}
@@ -650,7 +671,7 @@ func TestRecoverStaleTasks_RespectsThresholds(t *testing.T) {
 		}
 	}
 
-	// Use very long thresholds so nothing is stale.
+	// Use very long thresholds so nothing is "stale" by age.
 	config := &DispatcherConfig{
 		StaleRunningThreshold: 24 * time.Hour,
 		StaleQueuedThreshold:  24 * time.Hour,
@@ -664,21 +685,21 @@ func TestRecoverStaleTasks_RespectsThresholds(t *testing.T) {
 	}
 	defer dispatcher.Stop()
 
-	// Nothing should have been marked failed.
-	for _, tc := range []struct {
-		id     string
-		expect string
-	}{
-		{"exec-fresh-run", "running"},
-		{"exec-fresh-q", "queued"},
-	} {
-		exec, err := store.GetExecution(tc.id)
-		if err != nil {
-			t.Fatalf("failed to get execution %s: %v", tc.id, err)
-		}
-		if exec.Status != tc.expect {
-			t.Errorf("expected %s to remain '%s', got '%s'", tc.id, tc.expect, exec.Status)
-		}
+	// The running task's threshold is respected — it isn't old enough to be
+	// considered a crash orphan, so it's left untouched.
+	exec, err := store.GetExecution("exec-fresh-run")
+	if err != nil {
+		t.Fatalf("failed to get execution: %v", err)
+	}
+	if exec.Status != "running" {
+		t.Errorf("expected exec-fresh-run to remain 'running', got '%s'", exec.Status)
+	}
+
+	// GH-3732: restart adoption is NOT threshold-gated — every project with a
+	// queued row gets a worker at Start regardless of how fresh the row is.
+	status := dispatcher.GetWorkerStatus()
+	if _, ok := status["/project"]; !ok {
+		t.Errorf("expected exec-fresh-q's project to be adopted with a worker regardless of threshold, got workers: %v", status)
 	}
 }
 
@@ -802,15 +823,27 @@ func TestRecoverStaleTasks_MarksFailedWhenNoCompleted(t *testing.T) {
 	}
 	defer dispatcher.Stop()
 
-	// Both should be marked failed (no completed execution exists).
-	for _, id := range []string{"exec-only-run", "exec-only-q"} {
-		exec, err := store.GetExecution(id)
-		if err != nil {
-			t.Fatalf("failed to get execution %s: %v", id, err)
-		}
-		if exec.Status != "failed" {
-			t.Errorf("expected %s to be 'failed', got '%s'", id, exec.Status)
-		}
+	// The running orphan has no worker (recoverStaleRunningTasks runs before
+	// adoption) and no completed sibling, so it's genuinely reaped.
+	exec, err := store.GetExecution("exec-only-run")
+	if err != nil {
+		t.Fatalf("failed to get execution: %v", err)
+	}
+	if exec.Status != "failed" {
+		t.Errorf("expected exec-only-run to be 'failed', got '%s'", exec.Status)
+	}
+
+	// GH-3732: the queued task's project gets re-adopted at Start, so it must
+	// NOT be reaped via the stale-queued orphan path — it may still end up
+	// "failed" if the real worker attempts (and fails) execution against a
+	// nonexistent project path, but that's a distinct, legitimate outcome
+	// from the orphan-reap message.
+	exec, err = store.GetExecution("exec-only-q")
+	if err != nil {
+		t.Fatalf("failed to get execution: %v", err)
+	}
+	if exec.Status == "failed" && exec.Error == "queued task orphaned by restart; project no longer configured" {
+		t.Errorf("expected exec-only-q to be adopted, not reaped as an orphan (error=%q)", exec.Error)
 	}
 }
 
@@ -994,6 +1027,230 @@ func TestWaitForExecution_ClassifiedOutcomesAreTerminal(t *testing.T) {
 			}
 			if exec.Status != status {
 				t.Errorf("WaitForExecution(%s) returned status %q", status, exec.Status)
+			}
+		})
+	}
+}
+
+// GH-3732: restart adoption. A fresh Dispatcher (empty in-memory workers map)
+// must recreate a worker for every project that still has queued rows in
+// SQLite, so a daemon restart resumes FIFO processing instead of stranding
+// tasks that look idle from the outside.
+func TestDispatcher_AdoptQueuedProjectsOnRestart(t *testing.T) {
+	tests := []struct {
+		name     string
+		projects []string
+	}{
+		{name: "single project", projects: []string{"/project-adopt-a"}},
+		{name: "multiple projects", projects: []string{"/project-adopt-b", "/project-adopt-c", "/project-adopt-d"}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store, cleanup := setupTestStore(t)
+			defer cleanup()
+
+			// Simulate tasks left queued from before a restart: rows exist in
+			// SQLite, but this is a fresh Dispatcher with an empty workers map.
+			for i, proj := range tc.projects {
+				exec := &memory.Execution{
+					ID:          fmt.Sprintf("exec-adopt-%s-%d", tc.name, i),
+					TaskID:      fmt.Sprintf("TASK-ADOPT-%s-%d", tc.name, i),
+					ProjectPath: proj,
+					Status:      "queued",
+				}
+				if err := store.SaveExecution(exec); err != nil {
+					t.Fatalf("failed to save execution: %v", err)
+				}
+			}
+
+			runner := NewRunner()
+			dispatcher := NewDispatcher(store, runner, nil)
+
+			if len(dispatcher.GetWorkerStatus()) != 0 {
+				t.Fatalf("expected empty workers map before Start")
+			}
+
+			if err := dispatcher.Start(context.Background()); err != nil {
+				t.Fatalf("failed to start dispatcher: %v", err)
+			}
+			defer dispatcher.Stop()
+
+			// Give the adoption + worker goroutines time to spin up.
+			time.Sleep(150 * time.Millisecond)
+
+			status := dispatcher.GetWorkerStatus()
+			for _, proj := range tc.projects {
+				if _, ok := status[proj]; !ok {
+					t.Errorf("expected re-adopted worker for %s, got workers: %v", proj, status)
+				}
+			}
+		})
+	}
+}
+
+// TestStore_GetQueuedProjectPaths verifies the distinct-project query backing
+// restart adoption: only queued/pending rows count, duplicates collapse, and
+// completed/running rows are excluded. GH-3732.
+func TestStore_GetQueuedProjectPaths(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	executions := []*memory.Execution{
+		{ID: "exec-gp-1", TaskID: "TASK-GP-1", ProjectPath: "/project-gp-a", Status: "queued"},
+		{ID: "exec-gp-2", TaskID: "TASK-GP-2", ProjectPath: "/project-gp-a", Status: "queued"}, // duplicate project
+		{ID: "exec-gp-3", TaskID: "TASK-GP-3", ProjectPath: "/project-gp-b", Status: "pending"},
+		{ID: "exec-gp-4", TaskID: "TASK-GP-4", ProjectPath: "/project-gp-c", Status: "completed"}, // not queued
+		{ID: "exec-gp-5", TaskID: "TASK-GP-5", ProjectPath: "/project-gp-d", Status: "running"},   // not queued
+	}
+	for _, exec := range executions {
+		if err := store.SaveExecution(exec); err != nil {
+			t.Fatalf("failed to save execution: %v", err)
+		}
+	}
+
+	paths, err := store.GetQueuedProjectPaths()
+	if err != nil {
+		t.Fatalf("GetQueuedProjectPaths error: %v", err)
+	}
+
+	got := make(map[string]bool, len(paths))
+	for _, p := range paths {
+		got[p] = true
+	}
+
+	for _, want := range []string{"/project-gp-a", "/project-gp-b"} {
+		if !got[want] {
+			t.Errorf("expected %s in queued project paths, got %v", want, paths)
+		}
+	}
+	for _, notWant := range []string{"/project-gp-c", "/project-gp-d"} {
+		if got[notWant] {
+			t.Errorf("did not expect %s in queued project paths, got %v", notWant, paths)
+		}
+	}
+	if len(paths) != 2 {
+		t.Errorf("expected 2 distinct queued project paths (dedup), got %d: %v", len(paths), paths)
+	}
+}
+
+// GH-3732: queueing a task behind a busy worker must log the blocking task ID
+// and the new task's FIFO position, instead of leaving it invisible until its
+// turn comes up (the GH-3725 incident: queued 70+ minutes with no signal why).
+func TestDispatcher_QueueSingleTask_BlockLogging(t *testing.T) {
+	tests := []struct {
+		name          string
+		busy          bool
+		blockedTaskID string
+	}{
+		{name: "idle_project_no_block", busy: false},
+		{name: "busy_project_logs_blocker_and_position", busy: true, blockedTaskID: "GH-1000"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store, cleanup := setupTestStore(t)
+			defer cleanup()
+			runner := NewRunner()
+			dispatcher := NewDispatcher(store, runner, nil)
+
+			projectPath := "/project-block-" + tc.name
+			if tc.busy {
+				// Manually register a "busy" worker without starting its Run()
+				// goroutine, so the busy-check is deterministic instead of
+				// racing a real worker.
+				worker := NewProjectWorker(projectPath, store, runner, dispatcher.log)
+				worker.processing.Store(true)
+				worker.currentTaskID.Store(tc.blockedTaskID)
+				dispatcher.mu.Lock()
+				dispatcher.workers[projectPath] = worker
+				dispatcher.mu.Unlock()
+			}
+
+			var buf bytes.Buffer
+			dispatcher.log = slog.New(slog.NewTextHandler(&buf, nil))
+
+			task := &Task{ID: "GH-NEW", ProjectPath: projectPath}
+			if _, err := dispatcher.queueSingleTask(context.Background(), task); err != nil {
+				t.Fatalf("queueSingleTask error: %v", err)
+			}
+
+			logOutput := buf.String()
+			if !tc.busy {
+				if strings.Contains(logOutput, "blocked_by") {
+					t.Errorf("expected no blocked_by annotation for idle project, got: %s", logOutput)
+				}
+				return
+			}
+
+			if !strings.Contains(logOutput, "blocked_by="+tc.blockedTaskID) {
+				t.Errorf("expected blocked_by=%s in log, got: %s", tc.blockedTaskID, logOutput)
+			}
+			if !strings.Contains(logOutput, "position=1") {
+				t.Errorf("expected position=1 in log, got: %s", logOutput)
+			}
+			if !strings.Contains(logOutput, tc.blockedTaskID) {
+				t.Errorf("expected log message to name the blocking task %s, got: %s", tc.blockedTaskID, logOutput)
+			}
+		})
+	}
+}
+
+// TestRecoverStaleQueuedTasks_MessageAccuracy verifies the reworded orphan
+// message only fires for genuine orphans (no live worker), and that a
+// project with a live worker is left untouched. GH-3732.
+func TestRecoverStaleQueuedTasks_MessageAccuracy(t *testing.T) {
+	tests := []struct {
+		name          string
+		injectWorker  bool
+		wantStatus    string
+		wantErrSubstr string
+	}{
+		{
+			name:          "genuine orphan gets reworded message",
+			injectWorker:  false,
+			wantStatus:    "failed",
+			wantErrSubstr: "queued task orphaned by restart; project no longer configured",
+		},
+		{
+			name:         "live worker protects queued row from reap",
+			injectWorker: true,
+			wantStatus:   "queued",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store, cleanup := setupTestStore(t)
+			defer cleanup()
+
+			exec := &memory.Execution{ID: "exec-msg", TaskID: "TASK-MSG", ProjectPath: "/project-msg", Status: "queued"}
+			if err := store.SaveExecution(exec); err != nil {
+				t.Fatalf("failed to save execution: %v", err)
+			}
+
+			config := &DispatcherConfig{StaleQueuedThreshold: 0}
+			dispatcher := NewDispatcher(store, NewRunner(), config)
+
+			if tc.injectWorker {
+				dispatcher.mu.Lock()
+				dispatcher.workers["/project-msg"] = &ProjectWorker{projectPath: "/project-msg"}
+				dispatcher.mu.Unlock()
+			}
+
+			// Call the queued-reap directly (no Start(), no adoption) to
+			// exercise the message logic in isolation.
+			dispatcher.recoverStaleQueuedTasks()
+
+			got, err := store.GetExecution("exec-msg")
+			if err != nil {
+				t.Fatalf("failed to get execution: %v", err)
+			}
+			if got.Status != tc.wantStatus {
+				t.Errorf("expected status %q, got %q", tc.wantStatus, got.Status)
+			}
+			if tc.wantErrSubstr != "" && got.Error != tc.wantErrSubstr {
+				t.Errorf("expected error %q, got %q", tc.wantErrSubstr, got.Error)
 			}
 		})
 	}

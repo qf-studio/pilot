@@ -1340,6 +1340,32 @@ func (s *Store) GetStaleQueuedExecutions(staleDuration time.Duration) ([]*Execut
 	return executions, rows.Err()
 }
 
+// GetQueuedProjectPaths returns the distinct project paths that currently
+// have at least one queued or pending execution. Used by the dispatcher at
+// startup to re-adopt tasks left behind when the in-memory workers map is
+// lost on restart — the rows themselves survive in SQLite. GH-3732.
+func (s *Store) GetQueuedProjectPaths() ([]string, error) {
+	rows, err := s.db.Query(`
+		SELECT DISTINCT project_path
+		FROM executions
+		WHERE status = 'queued' OR status = 'pending'
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var paths []string
+	for rows.Next() {
+		var path string
+		if err := rows.Scan(&path); err != nil {
+			return nil, err
+		}
+		paths = append(paths, path)
+	}
+	return paths, rows.Err()
+}
+
 // DeleteExecution removes an execution row by ID. Used to clean up orphan rows
 // when the same task already has a completed execution.
 func (s *Store) DeleteExecution(id string) error {

@@ -2,7 +2,9 @@ package comms
 
 import (
 	"context"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/qf-studio/pilot/internal/memory"
 )
@@ -525,6 +527,104 @@ func TestCommandHandler_ProjectAlias(t *testing.T) {
 	if !containsString(messenger.messages[0], "Active") {
 		t.Error("/project should show active project")
 	}
+}
+
+// TestFormatQueueSummary_BlockAnnotations covers GH-3732: queued entries must
+// show what they're waiting behind — the running task for their project, or
+// (chained) the queued task immediately ahead of them in the same project —
+// while an idle project's first queued entry stays a bare line.
+func TestFormatQueueSummary_BlockAnnotations(t *testing.T) {
+	now := time.Now()
+
+	tests := []struct {
+		name       string
+		running    []*memory.Execution
+		queued     []*memory.Execution
+		wantText   string              // exact expected output (unchanged/empty cases)
+		wantLines  map[string][]string // substring -> other substrings that must co-occur on its line
+		unwantChar map[string]string   // substring -> character that must NOT be on its line
+	}{
+		{
+			name:     "empty queue unchanged",
+			running:  nil,
+			queued:   nil,
+			wantText: "📋 Queue is empty",
+		},
+		{
+			name: "single project busy queue chains behind predecessor",
+			running: []*memory.Execution{
+				{TaskID: "GH-1", ProjectPath: "/p1", CreatedAt: now},
+			},
+			queued: []*memory.Execution{
+				{TaskID: "GH-2", ProjectPath: "/p1", CreatedAt: now},
+				{TaskID: "GH-3", ProjectPath: "/p1", CreatedAt: now},
+			},
+			wantLines: map[string][]string{
+				"GH-2": {"behind GH-1", "position 1"},
+				"GH-3": {"behind GH-2", "position 2"},
+			},
+		},
+		{
+			name: "multi-project mix only annotates entries with a live blocker",
+			running: []*memory.Execution{
+				{TaskID: "GH-10", ProjectPath: "/p1", CreatedAt: now},
+			},
+			queued: []*memory.Execution{
+				{TaskID: "GH-11", ProjectPath: "/p1", CreatedAt: now},
+				{TaskID: "GH-20", ProjectPath: "/p2", CreatedAt: now},
+			},
+			wantLines: map[string][]string{
+				"GH-11": {"behind GH-10", "position 1"},
+			},
+			unwantChar: map[string]string{
+				"GH-20": "⏳", // idle project (no running/queued predecessor) — bare line
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := formatQueueSummary(tc.running, tc.queued)
+
+			if tc.wantText != "" {
+				if got != tc.wantText {
+					t.Errorf("expected output %q, got %q", tc.wantText, got)
+				}
+				return
+			}
+
+			lines := strings.Split(got, "\n")
+			for marker, mustContain := range tc.wantLines {
+				line := findLineContaining(lines, marker)
+				if line == "" {
+					t.Fatalf("expected a line containing %q, got:\n%s", marker, got)
+				}
+				for _, want := range mustContain {
+					if !strings.Contains(line, want) {
+						t.Errorf("expected line %q to contain %q", line, want)
+					}
+				}
+			}
+			for marker, mustNotChar := range tc.unwantChar {
+				line := findLineContaining(lines, marker)
+				if line == "" {
+					t.Fatalf("expected a line containing %q, got:\n%s", marker, got)
+				}
+				if strings.Contains(line, mustNotChar) {
+					t.Errorf("expected line %q to NOT contain %q", line, mustNotChar)
+				}
+			}
+		})
+	}
+}
+
+func findLineContaining(lines []string, substr string) string {
+	for _, line := range lines {
+		if strings.Contains(line, substr) {
+			return line
+		}
+	}
+	return ""
 }
 
 // Helper functions
