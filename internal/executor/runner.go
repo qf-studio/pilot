@@ -54,6 +54,65 @@ func IsPermanentFailure(errStr string) bool {
 	return false
 }
 
+// reapErrorSignatures are substrings written by the dispatcher's stale-task
+// recovery (dispatcher.go recoverStaleRunningTasks / recoverStaleQueuedTasks)
+// when a daemon restart orphans a running or queued execution row. These
+// describe operational noise from the restart itself, not a genuine
+// execution failure — the underlying task may already be shipped, or simply
+// waiting for its next dispatch attempt. GH-3787.
+var reapErrorSignatures = []string{
+	"stale running task recovered",
+	"stale queued task recovered",
+	"queued task orphaned by restart",
+}
+
+// preflightFailureSignature marks an error produced by
+// RunPreflightChecksCustom (preflight.go). GH-3787.
+const preflightFailureSignature = "preflight check"
+
+// PreflightBootGrace bounds how long after process start a preflight
+// failure is treated as startup noise instead of a persistent problem.
+// GH-3787: a check like claude_available can transiently fail immediately
+// after a daemon restart/upgrade while its own environment (PATH, auth)
+// is still settling.
+const PreflightBootGrace = 2 * time.Minute
+
+// processStartTime marks when this process began, used by IsInfraNoise to
+// gate preflight failures to the PreflightBootGrace window. GH-3787.
+var processStartTime = time.Now()
+
+// IsInfraNoise reports whether an execution error represents operational
+// noise — a dispatcher restart-reap row, rate limiting, an infra/plumbing
+// failure, or a preflight check that failed within the startup grace window
+// — rather than a genuine execution failure. GH-3787: callers that track a
+// bounded failed-retry budget (poller pilot-failed-retry-N labels) must not
+// consume that budget for these outcomes, or a daemon restart can exhaust
+// retries on work that already shipped.
+func IsInfraNoise(errStr string) bool {
+	return isInfraNoiseAt(errStr, time.Since(processStartTime))
+}
+
+// isInfraNoiseAt is the time-injectable core of IsInfraNoise so tests don't
+// depend on real elapsed wall-clock time.
+func isInfraNoiseAt(errStr string, sinceProcessStart time.Duration) bool {
+	if errStr == "" {
+		return false
+	}
+	if containsAny(errStr, reapErrorSignatures) {
+		return true
+	}
+	if containsAny(errStr, rateLimitedSignatures) {
+		return true
+	}
+	if containsAny(errStr, infraErrorSignatures) {
+		return true
+	}
+	if sinceProcessStart < PreflightBootGrace && containsAny(errStr, []string{preflightFailureSignature}) {
+		return true
+	}
+	return false
+}
+
 // gitPushRetryAttempts / gitPushRetryDelay and prCreateRetryAttempts /
 // prCreateRetryDelay bound the retry loops around the child push/PR-create
 // step (GH-3785). Prior behavior gave up on the first transient failure,

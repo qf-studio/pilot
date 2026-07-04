@@ -401,6 +401,18 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 		boardStatuses := cfg.Adapters.GitHub.ProjectBoard.GetStatuses()
 
 		if execErr != nil {
+			// GH-3787: restart-reap / rate-limit / infra / startup-preflight noise is
+			// not a genuine execution failure. Skip labeling entirely — no pilot-failed,
+			// no retry-counter escalation — so the poller silently re-picks the issue
+			// on its next cycle without burning failed-retry budget on work that may
+			// already be shipped.
+			if executor.IsInfraNoise(execErr.Error()) {
+				slog.Info("execution failure classified as infra noise — skipping pilot-failed label, will retry quietly",
+					slog.Int("issue", issue.Number),
+					slog.String("error", execErr.Error()),
+				)
+				return issueResult, nil
+			}
 			// GH-2402: Classify deterministic failures (e.g. non-conventional title)
 			// as pilot-blocked instead of pilot-failed so the poller stops retrying.
 			failureLabel := github.LabelFailed
@@ -544,6 +556,13 @@ func handleGitHubIssueWithResult(ctx context.Context, cfg *config.Config, client
 				}
 				// issueResult.Success stays false (no new deliverable this run), but no
 				// failure/blocked label is applied — the open PR is the deliverable.
+			} else if hr.Result.Error != "" && executor.IsInfraNoise(hr.Result.Error) {
+				// GH-3787: same infra-noise skip as the execErr branch above — no
+				// label, no comment, quiet re-dispatch next cycle.
+				slog.Info("execution result classified as infra noise — skipping pilot-failed label, will retry quietly",
+					slog.Int("issue", issue.Number),
+					slog.String("error", hr.Result.Error),
+				)
 			} else {
 				// result exists but Success is false - mark as failed
 				// GH-2402: Use pilot-blocked for deterministic failures so we don't retry.
