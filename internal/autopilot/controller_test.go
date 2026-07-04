@@ -6359,9 +6359,21 @@ func TestController_TwoPRQueue_StalledApprovalDoesNotBlockOther(t *testing.T) {
 
 // mockApprovalPersister records calls to SetApprovalRequestID and SetApprovalDecision
 // so tests can verify that the controller wires through to the memory store.
+// It also backs GH-3847's execution-event audit trail: execByTask lets a test
+// seed which task IDs resolve to which execution rows, and executionEvents
+// records every InsertExecutionEvent call for assertion.
 type mockApprovalPersister struct {
 	requestIDCalls []struct{ taskID, requestID string }
 	decisionCalls  []struct{ requestID, decision, by string }
+
+	execByTask      map[string]string
+	executionEvents []recordedExecutionEvent
+}
+
+type recordedExecutionEvent struct {
+	executionID string
+	stage       memory.Stage
+	detail      string
 }
 
 func (m *mockApprovalPersister) SetApprovalRequestID(_ context.Context, taskID, requestID string) error {
@@ -6371,6 +6383,19 @@ func (m *mockApprovalPersister) SetApprovalRequestID(_ context.Context, taskID, 
 
 func (m *mockApprovalPersister) SetApprovalDecision(_ context.Context, requestID, decision, by string) error {
 	m.decisionCalls = append(m.decisionCalls, struct{ requestID, decision, by string }{requestID, decision, by})
+	return nil
+}
+
+func (m *mockApprovalPersister) GetLatestExecutionByTaskID(taskID string) (*memory.Execution, error) {
+	id, ok := m.execByTask[taskID]
+	if !ok {
+		return nil, sql.ErrNoRows
+	}
+	return &memory.Execution{ID: id, TaskID: taskID}, nil
+}
+
+func (m *mockApprovalPersister) InsertExecutionEvent(executionID string, stage memory.Stage, detail string) error {
+	m.executionEvents = append(m.executionEvents, recordedExecutionEvent{executionID, stage, detail})
 	return nil
 }
 
@@ -6430,6 +6455,14 @@ func (m *errApprovalPersister) SetApprovalRequestID(_ context.Context, _, _ stri
 
 func (m *errApprovalPersister) SetApprovalDecision(_ context.Context, _, _, _ string) error {
 	return m.decisionErr
+}
+
+func (m *errApprovalPersister) GetLatestExecutionByTaskID(_ string) (*memory.Execution, error) {
+	return nil, sql.ErrNoRows
+}
+
+func (m *errApprovalPersister) InsertExecutionEvent(_ string, _ memory.Stage, _ string) error {
+	return nil
 }
 
 // TestController_ApprovalPersistMiss_RequestID verifies that a sql.ErrNoRows from

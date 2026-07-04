@@ -405,6 +405,7 @@
 | Board sync owner guard | ✅ | adapters/github | - | - | Guard owner extraction in board sync construction (v2.30.0, PR #1871) |
 | Board sync tests | ✅ | adapters/github | - | - | ProjectBoardSync and ExecuteGraphQL unit tests (v2.30.0, PR #1865) |
 | CI context wiring | ✅ | autopilot | - | - | Wire proper CI context from autopilot controller (v2.52.0, PR #1981) |
+| PR stage execution-event audit trail | ✅ | autopilot | - | - | `Controller` writes `execution_events` rows (ci_passed/ci_failed/awaiting_approval/merged/released/failed) via `memory.Store.InsertExecutionEvent`; survives PR-state-row cleanup after merge since it keys off `executions.id` (GH-3847) |
 
 ## Epic Management
 
