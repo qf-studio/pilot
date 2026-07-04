@@ -1,0 +1,13 @@
+Execution 1/2: exec-2 (status: completed)
+------------------------------------------------------------
+  2026-07-04 10:10:00 UTC  queued                         retry
+  2026-07-04 10:10:05 UTC  running            +5s
+  2026-07-04 10:12:00 UTC  commit             +1m55s      abc123
+  2026-07-04 10:12:30 UTC  pr_created         +30s        PR #99
+  2026-07-04 10:15:00 UTC  merged             +2m30s
+
+Execution 2/2: exec-1 (status: failed)
+------------------------------------------------------------
+  2026-07-04 10:00:00 UTC  queued                         picked up from queue
+  2026-07-04 10:00:05 UTC  running            +5s
+  2026-07-04 10:02:00 UTC  failed             +1m55s      build failed

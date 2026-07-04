@@ -270,6 +270,7 @@
 | Interactive replay | ✅ | replay | `pilot replay play` | - | TUI viewer |
 | Analyze recording | ✅ | replay | `pilot replay analyze` | - | Token/phase breakdown |
 | Export recording | ✅ | replay | `pilot replay export` | - | HTML/JSON/Markdown |
+| Execution stage trace | ✅ | cmd/pilot | `pilot trace <task-id>` | - | Renders `execution_events` timeline per execution (newest first, UTC timestamps + inter-stage durations); consumes TASK-379 C3 data layer (GH-3848) |
 
 ## Reports & Briefs
 
