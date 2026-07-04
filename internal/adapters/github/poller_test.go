@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/qf-studio/pilot/internal/adapters/skipreason"
 	"github.com/qf-studio/pilot/internal/testutil"
 )
 
@@ -1247,6 +1249,229 @@ func TestPoller_FindOldestUnprocessedIssue_AllDepsOpen(t *testing.T) {
 	// Should return nil when all issues have open dependencies
 	if issue != nil {
 		t.Errorf("issue should be nil when all have open dependencies, got #%d", issue.Number)
+	}
+}
+
+// GH-3789: multiple blockers where only some have closed — the issue must stay
+// gated until every referenced dependency is closed.
+func TestPoller_HasPendingDependencies_MultipleBlockers(t *testing.T) {
+	tests := []struct {
+		name        string
+		issueBody   string
+		depStates   map[int]string
+		wantPending bool
+	}{
+		{
+			name:        "one open one closed",
+			issueBody:   "Depends on: #100\nBlocked by: #101",
+			depStates:   map[int]string{100: "closed", 101: "open"},
+			wantPending: true,
+		},
+		{
+			name:        "all closed",
+			issueBody:   "Depends on: #100\nBlocked by: #101",
+			depStates:   map[int]string{100: "closed", 101: "closed"},
+			wantPending: false,
+		},
+		{
+			name:        "all open",
+			issueBody:   "Depends on: #100\nBlocked by: #101",
+			depStates:   map[int]string{100: "open", 101: "open"},
+			wantPending: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				for num, state := range tt.depStates {
+					if r.URL.Path == fmt.Sprintf("/repos/owner/repo/issues/%d", num) {
+						_ = json.NewEncoder(w).Encode(&Issue{Number: num, State: state})
+						return
+					}
+				}
+				w.WriteHeader(http.StatusNotFound)
+			}))
+			defer server.Close()
+
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second)
+
+			issue := &Issue{Number: 1, Body: tt.issueBody}
+			got := poller.hasPendingDependencies(context.Background(), issue)
+
+			if got != tt.wantPending {
+				t.Errorf("hasPendingDependencies() = %v, want %v", got, tt.wantPending)
+			}
+		})
+	}
+}
+
+// GH-3789: a blocker missing entirely from the body (no dependency reference)
+// must never gate dispatch.
+func TestPoller_HasPendingDependencies_MissingBlocker(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second)
+
+	issue := &Issue{Number: 1, Body: "No dependency references here."}
+	got := poller.hasPendingDependencies(context.Background(), issue)
+
+	if got {
+		t.Error("hasPendingDependencies() = true, want false when no blocker is referenced")
+	}
+}
+
+// mockPollerMetrics implements skipreason.PollerMetricsRecorder for assertions
+// on skip-reason visibility (GH-3789 acceptance: skip reason recorded and
+// visible in poller metrics).
+type mockPollerMetrics struct {
+	mu         sync.Mutex
+	skipped    []string
+	dispatched int
+}
+
+func (m *mockPollerMetrics) RecordPollerSkipped(repo, reason string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.skipped = append(m.skipped, reason)
+}
+
+func (m *mockPollerMetrics) RecordPollerDispatched(repo string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.dispatched++
+}
+
+func (m *mockPollerMetrics) RecordPollerDeferredScopeOverlap(repo string) {}
+
+func (m *mockPollerMetrics) skipCount(reason string) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	count := 0
+	for _, r := range m.skipped {
+		if r == reason {
+			count++
+		}
+	}
+	return count
+}
+
+// GH-3789: sequential mode's candidate-selection skip must be visible in
+// poller metrics — previously only the parallel/auto path recorded it.
+func TestPoller_FindOldestUnprocessedIssue_RecordsPendingDependencySkipMetric(t *testing.T) {
+	now := time.Now()
+	issues := []*Issue{
+		{Number: 1, Title: "Blocked", Body: "Blocked by: #100", Labels: []Label{{Name: "pilot"}}, CreatedAt: now.Add(-1 * time.Hour)},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/repos/owner/repo/issues":
+			_ = json.NewEncoder(w).Encode(issues)
+		case "/repos/owner/repo/issues/100":
+			_ = json.NewEncoder(w).Encode(&Issue{Number: 100, State: "open"})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	metrics := &mockPollerMetrics{}
+	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second,
+		WithPollerMetrics(metrics),
+	)
+
+	issue, err := poller.findOldestUnprocessedIssue(context.Background())
+	if err != nil {
+		t.Fatalf("findOldestUnprocessedIssue() error = %v", err)
+	}
+	if issue != nil {
+		t.Errorf("issue should be nil (blocked), got #%d", issue.Number)
+	}
+
+	if got := metrics.skipCount(skipreason.ReasonPendingDependency); got != 1 {
+		t.Errorf("pending_dependency skip count = %d, want 1", got)
+	}
+}
+
+// GH-3789: a blocker that reopens after Phase 1 candidate selection but
+// before Phase 3 dispatch (e.g. while waiting for a free semaphore slot)
+// must still gate the issue — the poll-time check alone is not enough.
+func TestPoller_CheckForNewIssues_SkipsDispatchWhenDependencyReopensBeforeDispatch(t *testing.T) {
+	now := time.Now()
+	issues := []*Issue{
+		{Number: 1, Title: "Gated task", Body: "Blocked by: #100", Labels: []Label{{Name: "pilot"}}, CreatedAt: now.Add(-1 * time.Hour)},
+	}
+
+	var depHits int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/repos/owner/repo/issues":
+			_ = json.NewEncoder(w).Encode(issues)
+		case "/repos/owner/repo/issues/100":
+			hit := atomic.AddInt32(&depHits, 1)
+			state := "closed"
+			if hit > 1 {
+				// The blocker reopened between candidate selection and dispatch.
+				state = "open"
+			}
+			_ = json.NewEncoder(w).Encode(&Issue{Number: 100, State: state})
+		case "/repos/owner/repo/issues/1":
+			_ = json.NewEncoder(w).Encode(issues[0])
+		case "/search/issues":
+			_, _ = w.Write([]byte(`{"total_count": 0}`))
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	metrics := &mockPollerMetrics{}
+
+	var dispatched []int
+	var mu sync.Mutex
+
+	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second,
+		WithPollerMetrics(metrics),
+		WithOnIssue(func(ctx context.Context, issue *Issue) error {
+			mu.Lock()
+			dispatched = append(dispatched, issue.Number)
+			mu.Unlock()
+			return nil
+		}),
+	)
+
+	poller.checkForNewIssues(context.Background())
+	poller.WaitForActive()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(dispatched) != 0 {
+		t.Errorf("dispatched %v, want none — dependency reopened before dispatch", dispatched)
+	}
+
+	if got := metrics.skipCount(skipreason.ReasonPendingDependency); got != 1 {
+		t.Errorf("pending_dependency skip count = %d, want 1", got)
+	}
+
+	// Issue should not be permanently marked processed — it must be retried
+	// once the blocker closes again.
+	poller.mu.RLock()
+	_, processed := poller.processed[1]
+	poller.mu.RUnlock()
+	if processed {
+		t.Error("issue should not be marked processed after dispatch-time dependency skip")
 	}
 }
 

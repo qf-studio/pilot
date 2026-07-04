@@ -656,6 +656,18 @@ func (p *Poller) startSequential(ctx context.Context) {
 			}
 		}
 
+		// GH-3789: Re-check dependency state immediately before dispatch. The
+		// pre-flight judge call above (and, on a busy poller, the gap since
+		// findOldestUnprocessedIssue selected this candidate) leaves a window
+		// where a blocker could have reopened after passing the initial gate.
+		if p.hasPendingDependencies(ctx, issue) {
+			p.logger.Info("Skipping dispatch — dependency reopened since candidate selection",
+				slog.Int("number", issue.Number),
+			)
+			p.recordSkip(skipreason.ReasonPendingDependency)
+			continue
+		}
+
 		// Board sync: move card to in-progress on confirmed dispatch (GH-3252).
 		p.syncBoardStatusInProgress(ctx, issue)
 
@@ -1016,6 +1028,7 @@ func (p *Poller) findOldestUnprocessedIssue(ctx context.Context) (*Issue, error)
 			slog.Int("number", candidate.Number),
 			slog.String("title", candidate.Title),
 		)
+		p.recordSkip(skipreason.ReasonPendingDependency)
 	}
 
 	// All candidates have pending dependencies
@@ -1428,6 +1441,19 @@ func (p *Poller) checkForNewIssues(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case p.semaphore <- struct{}{}:
+		}
+
+		// GH-3789: Re-check dependency state now that a worker slot is free — a
+		// blocker could have reopened while this issue waited behind other
+		// in-flight dispatches since Phase 1 candidate selection.
+		if p.hasPendingDependencies(ctx, issue) {
+			p.logger.Info("Skipping dispatch — dependency reopened while queued for a worker slot",
+				slog.Int("number", issue.Number),
+			)
+			<-p.semaphore // release slot we acquired without using it
+			p.unmarkProcessed(issue.Number)
+			p.recordSkip(skipreason.ReasonPendingDependency)
+			continue
 		}
 
 		p.recordDispatched()
