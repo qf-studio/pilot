@@ -122,6 +122,17 @@ func (d *Dispatcher) Start(ctx context.Context) error {
 	// Recover queued tasks that still have no worker after adoption — genuine
 	// orphans only (e.g. a duplicate of an already-completed task, or a
 	// project removed from config).
+	//
+	// GH-3788: re-verified this ordering is race-free. adoptQueuedProjects
+	// above calls ensureWorker() synchronously per project, and ensureWorker
+	// inserts into the workers map under the same lock it holds for the rest
+	// of the call — so every project with a queued row already has a live
+	// worker by the time this line runs, regardless of goroutine scheduling.
+	// The "no worker picked up" reap reported in the GH-3788 incident used
+	// wording that predates this file's #3732 fix, i.e. it was produced by a
+	// stale binary (see D7, TASK-382), not a live ordering gap here. See
+	// TestDispatcher_BootWithQueuedRows_FIFODrainNoStaleReap for regression
+	// coverage of N queued rows across multiple projects at boot.
 	d.recoverStaleQueuedTasks()
 
 	// GH-2428: warn when the last batch of completed runs has no token
