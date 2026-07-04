@@ -68,6 +68,7 @@ type HealthReport struct {
 	Dependencies []Check
 	Config       []ConfigCheck
 	Features     []FeatureStatus
+	Subsystems   []SubsystemCheck
 	Projects     int
 	HasErrors    bool
 	HasWarnings  bool
@@ -491,6 +492,7 @@ func RunChecks(cfg *config.Config, currentVersion string) *HealthReport {
 		Dependencies: checkDependenciesWithBackend(backendType),
 		Config:       configChecks,
 		Features:     checkFeatures(cfg),
+		Subsystems:   CheckDisabledSubsystems(cfg),
 		Projects:     len(cfg.Projects),
 	}
 

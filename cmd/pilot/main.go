@@ -873,6 +873,10 @@ Examples:
 
 					var pollerOpts []github.PollerOption
 					pollerOpts = append(pollerOpts, github.WithExecutionMode(execMode))
+					pollerOpts = append(pollerOpts, github.WithTokenSource(string(tokenSource)))
+					if gwAlertsEngine != nil {
+						pollerOpts = append(pollerOpts, github.WithAlertProcessor(alerts.NewEngineAdapter(gwAlertsEngine)))
+					}
 
 					// Wire autopilot OnPRCreated callback if controller initialized
 					if gwAutopilotController != nil {
@@ -2343,6 +2347,10 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 				}
 
 				var pollerOpts []github.PollerOption
+				pollerOpts = append(pollerOpts, github.WithTokenSource(string(tokenSource)))
+				if alertsEngine != nil {
+					pollerOpts = append(pollerOpts, github.WithAlertProcessor(alerts.NewEngineAdapter(alertsEngine)))
+				}
 
 				// Wire autopilot callback to the correct controller for this repo
 				controller := autopilotControllers[repoFullName]
