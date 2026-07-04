@@ -121,19 +121,22 @@ func (s *StateStore) migrate() error {
 		return fmt.Errorf("adapter_processed primary key migration failed: %w", err)
 	}
 
-	// GH-3819: Purge orphaned empty-repo rows for repo-scoped adapters. These
-	// can only have been written before the repo column existed (or by the
-	// GH-3819 collision bug clobbering a row down to its zero value); a
-	// repo-scoped poller always calls Mark/IsProcessed/Load with a non-empty
-	// "owner/repo" key, so such rows can never be matched again and would
-	// otherwise sit as permanent dead weight.
-	if err := s.pruneOrphanedEmptyRepoRows(); err != nil {
-		return fmt.Errorf("adapter_processed empty-repo cleanup failed: %w", err)
-	}
-
 	// TASK-298: Consolidate 7 legacy per-adapter tables into adapter_processed.
+	// Must run before the empty-repo prune below: these legacy tables predate
+	// the repo column and are always consolidated with repo='', so pruning
+	// first would miss the very rows this step creates until a second restart.
 	if err := s.migrateLegacyProcessedTables(); err != nil {
 		return fmt.Errorf("legacy processed tables migration failed: %w", err)
+	}
+
+	// GH-3819: Purge orphaned empty-repo rows for repo-scoped adapters. These
+	// can only have been written before the repo column existed, by the
+	// GH-3819 collision bug clobbering a row down to its zero value, or by
+	// the legacy-table consolidation above; a repo-scoped poller always calls
+	// Mark/IsProcessed/Load with a non-empty "owner/repo" key, so such rows
+	// can never be matched again and would otherwise sit as dead weight.
+	if err := s.pruneOrphanedEmptyRepoRows(); err != nil {
+		return fmt.Errorf("adapter_processed empty-repo cleanup failed: %w", err)
 	}
 
 	return nil
