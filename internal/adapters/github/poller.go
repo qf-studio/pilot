@@ -656,6 +656,20 @@ func (p *Poller) startSequential(ctx context.Context) {
 			}
 		}
 
+		// GH-3789: Re-check dependency state right before dispatch. The
+		// candidate was found dependency-free at the top of this loop, but
+		// the pre-flight judge call above (an LLM round trip) opens a real
+		// window in which a "Blocked by: #N" issue could reopen. Without
+		// this recheck the gate at findOldestUnprocessedIssue is decorative
+		// for sequential mode.
+		if p.hasPendingDependencies(ctx, issue) {
+			p.logger.Info("Blocker reopened before dispatch, skipping",
+				slog.Int("number", issue.Number),
+			)
+			p.recordSkip(skipreason.ReasonPendingDependency)
+			continue
+		}
+
 		// Board sync: move card to in-progress on confirmed dispatch (GH-3252).
 		p.syncBoardStatusInProgress(ctx, issue)
 
@@ -1016,6 +1030,7 @@ func (p *Poller) findOldestUnprocessedIssue(ctx context.Context) (*Issue, error)
 			slog.Int("number", candidate.Number),
 			slog.String("title", candidate.Title),
 		)
+		p.recordSkip(skipreason.ReasonPendingDependency)
 	}
 
 	// All candidates have pending dependencies
@@ -1400,6 +1415,21 @@ func (p *Poller) checkForNewIssues(ctx context.Context) {
 				slog.Int("number", issue.Number),
 				slog.Any("error", ferr),
 			)
+		}
+
+		// GH-3789: Re-check dependency state right before dispatch. The
+		// candidate cleared hasPendingDependencies during Phase 1, but
+		// Phase 3 can be reached an arbitrary amount of time later (waiting
+		// on the semaphore for a free max_concurrent slot, or on the fresh
+		// label GET above), long enough for a "Blocked by: #N" issue to
+		// reopen. Without this recheck the poll-time gate is decorative for
+		// any task that sits queued behind a full worker pool.
+		if p.hasPendingDependencies(ctx, issue) {
+			p.logger.Info("Blocker reopened before dispatch, skipping",
+				slog.Int("number", issue.Number),
+			)
+			p.recordSkip(skipreason.ReasonPendingDependency)
+			continue
 		}
 
 		// GH-2802: Pre-flight judge — evaluate issue quality before burning a worker slot.
