@@ -4,14 +4,16 @@
 
 **V8 E2E proof (workflow_dispatch run 28713784142 — SUCCESS):** canary filed sandbox issue #1 → daemon executed → opened PR #2 with the correct `0.0.1`→`0.0.2` diff → merge detected → issue closed. Full poll→spec→execute→PR chain proven unattended; canary plumbing (idempotency/detect/close/alert-skip) all green. The **merge hop was manual** this run (see open gap).
 
-**Two bugs the first run surfaced (canary earned its keep):**
-- Poll step `gh pr list --jq --arg` invalid → false-alarms every run → fix ✅ **#3866 merged** (proven working this run).
-- Thin issue body → daemon spec-completeness gate `pilot-spec-incomplete`+`pilot-blocked` (needs an H2 header) → fix 🚀 **dispatched #3869**.
+**Two bugs the first run surfaced (canary earned its keep) — both fixed on main:**
+- Poll step `gh pr list --jq --arg` invalid → false-alarms every run → ✅ **#3866 merged** (proven working this run).
+- Thin issue body → daemon spec-completeness gate `pilot-spec-incomplete`+`pilot-blocked` (needs an H2 header) → ✅ **#3869 merged** (workflow body now carries `## Context`/`## Acceptance`/`## Implementation`).
 
-**Open gaps / pending:**
-- ⚠️ **Auto-merge not proven unattended**: sandbox has no CI, so autopilot `handleCIPassed` never fires; PR #2 was merged manually. Durable fix = add a minimal `pull_request` CI (`build && test`) to the sandbox so autopilot auto-merges. Until fixed, scheduled cron runs stall at PR-opened and false-alarm.
-- ⚠️ Scheduled cron (`0 */6 * * *`) will false-alarm until **both** #3869 merges **and** the auto-merge gap is closed.
-- 🔑 Rotate exposed `CANARY_GH_TOKEN` (pasted in plaintext during setup).
+**Cron STOPPED:** workflow `pilot-canary.yml` is `disabled_manually` (`gh workflow disable`) to prevent false-alarms while the auto-merge question below is unresolved. Re-enable with `gh workflow enable` once decided, then a manual `workflow_dispatch` to re-validate.
+
+**Open — design decision (do NOT build naively):**
+- **Auto-merge not proven unattended**: sandbox has no CI, so autopilot `handleCIPassed` never fires; PR #2 was merged manually this run. The obvious fix (add minimal `pull_request` CI to the sandbox so autopilot auto-merges) is one option, **but merge automation is project-specific** — real users have many different pipeline/gate/approval shapes, so a generic "canary auto-merges" path risks encoding assumptions that don't generalize. Decision deferred: think through whether the canary should (a) rely on each project's own auto-merge config, (b) get a dedicated minimal-CI sandbox, or (c) assert only up to PR-opened rather than merged. Owner: interactive (design), not a Pilot dispatch.
+
+**On the user:** 🔑 rotate exposed `CANARY_GH_TOKEN` (pasted in plaintext during setup).
 **Created**: 2026-07-03
 **Assignee**: Pilot (phased dispatch)
 
