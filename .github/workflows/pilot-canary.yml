@@ -108,8 +108,8 @@ jobs:
                 --repo "$SANDBOX_REPO" \
                 --state all \
                 --json number,headRefName,body \
-                --jq --arg n "$ISSUE_NUMBER" \
-                  '[.[] | select(.headRefName == ("pilot/GH-" + $n) or (.body // "" | test("#" + $n)))][0].number // empty')
+                | jq -r --arg n "$ISSUE_NUMBER" \
+                  '[.[] | select(.headRefName == ("pilot/GH-" + $n) or ((.body // "") | test("#" + $n)))][0].number // empty')
 
               if [ -n "$PR_NUMBER" ]; then
                 STAGE="PR-opened"
