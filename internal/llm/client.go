@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/qf-studio/pilot/internal/intent"
+	"github.com/qf-studio/pilot/internal/llm/anthropic"
 )
 
 const defaultAPIURL = "https://api.anthropic.com/v1/messages"
@@ -48,26 +49,25 @@ func NewClient(apiKey string) *Client {
 // of all content blocks in the response.
 func (c *Client) Answer(ctx context.Context, model, system string, history []intent.ConversationMessage, user string) (string, error) {
 	// Build messages array from history + new user message.
-	messages := make([]map[string]string, 0, len(history)+1)
+	messages := make([]anthropic.Message, 0, len(history)+1)
 	for _, msg := range history {
-		messages = append(messages, map[string]string{
-			"role":    msg.Role,
-			"content": msg.Content,
+		messages = append(messages, anthropic.Message{
+			Role:    msg.Role,
+			Content: msg.Content,
 		})
 	}
-	messages = append(messages, map[string]string{
-		"role":    "user",
-		"content": user,
+	messages = append(messages, anthropic.Message{
+		Role:    "user",
+		Content: user,
 	})
 
-	body := map[string]interface{}{
-		"model":      model,
-		"max_tokens": maxTokens,
-		"system":     system,
-		"messages":   messages,
+	apiReq, err := anthropic.NewRequest(model, maxTokens, messages)
+	if err != nil {
+		return "", fmt.Errorf("llm: build request: %w", err)
 	}
+	apiReq.WithSystem(system)
 
-	jsonBody, err := json.Marshal(body)
+	jsonBody, err := json.Marshal(apiReq)
 	if err != nil {
 		return "", fmt.Errorf("llm: marshal request: %w", err)
 	}
