@@ -1,6 +1,17 @@
 # TASK-379: Runtime Self-Verification — Verifiable Preflight, Fail-Loud Policy, Execution Ledger, Synthetic Canary
 
-**Status**: 🚧 V1+V2+V3+V5 ✅ shipped · V4/V6/V7 🚀 dispatched 2026-07-04 (#3839/#3840/#3841) · V8 ✅ shipped 2026-07-04 (#3862 → PR #3864 merged; sandbox repo + config + `CANARY_GH_TOKEN` secret wired). ⚠️ Poll-step bug (`gh pr list --jq --arg` invalid → always false-alarms) → fix dispatched #3866. Pending: first `workflow_dispatch` E2E proof; rotate exposed `CANARY_GH_TOKEN`.
+**Status**: ✅ **ALL 8 WAVES SHIPPED** (V1–V8), 2026-07-04. V1–V3+V5 ✅ · V4/V6/V7 ✅ (#3839/#3840/#3841; V6 children #3844–#3849 all merged) · V8 ✅ (#3862→PR #3864; sandbox `qf-studio/pilot-canary-sandbox` + `projects:` config + `CANARY_GH_TOKEN` secret).
+
+**V8 E2E proof (workflow_dispatch run 28713784142 — SUCCESS):** canary filed sandbox issue #1 → daemon executed → opened PR #2 with the correct `0.0.1`→`0.0.2` diff → merge detected → issue closed. Full poll→spec→execute→PR chain proven unattended; canary plumbing (idempotency/detect/close/alert-skip) all green. The **merge hop was manual** this run (see open gap).
+
+**Two bugs the first run surfaced (canary earned its keep):**
+- Poll step `gh pr list --jq --arg` invalid → false-alarms every run → fix ✅ **#3866 merged** (proven working this run).
+- Thin issue body → daemon spec-completeness gate `pilot-spec-incomplete`+`pilot-blocked` (needs an H2 header) → fix 🚀 **dispatched #3869**.
+
+**Open gaps / pending:**
+- ⚠️ **Auto-merge not proven unattended**: sandbox has no CI, so autopilot `handleCIPassed` never fires; PR #2 was merged manually. Durable fix = add a minimal `pull_request` CI (`build && test`) to the sandbox so autopilot auto-merges. Until fixed, scheduled cron runs stall at PR-opened and false-alarm.
+- ⚠️ Scheduled cron (`0 */6 * * *`) will false-alarm until **both** #3869 merges **and** the auto-merge gap is closed.
+- 🔑 Rotate exposed `CANARY_GH_TOKEN` (pasted in plaintext during setup).
 **Created**: 2026-07-03
 **Assignee**: Pilot (phased dispatch)
 
