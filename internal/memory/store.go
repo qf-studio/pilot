@@ -338,6 +338,17 @@ func (s *Store) migrate() error {
 		`ALTER TABLE executions ADD COLUMN tokens_cache_write INTEGER DEFAULT 0`,
 		// GH-3536: project scoping for eval tasks
 		`ALTER TABLE eval_tasks ADD COLUMN project_path TEXT DEFAULT ''`,
+		// GH-3844 (TASK-379 C3): stage-transition ledger, durable across autopilot's
+		// practice of deleting successful PR state rows.
+		`CREATE TABLE IF NOT EXISTS execution_events (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			execution_id TEXT NOT NULL,
+			stage TEXT NOT NULL,
+			occurred_at DATETIME NOT NULL,
+			detail TEXT DEFAULT '',
+			FOREIGN KEY (execution_id) REFERENCES executions(id) ON DELETE CASCADE
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_execution_events_execution_id ON execution_events(execution_id)`,
 	}
 
 	for _, migration := range migrations {
@@ -588,8 +599,14 @@ const executionDetailColumns = `
 	COALESCE(approval_decision_by, ''),
 	COALESCE(effort_level, ''), COALESCE(complexity_level, '')`
 
+// rowScanner abstracts *sql.Row and *sql.Rows so scanExecutionDetail serves both
+// a single QueryRow result and a Query loop (used by ListExecutionsForTask).
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
 // scanExecutionDetail scans a row selected via executionDetailColumns into an Execution.
-func scanExecutionDetail(row *sql.Row) (*Execution, error) {
+func scanExecutionDetail(row rowScanner) (*Execution, error) {
 	var exec Execution
 	var completedAt sql.NullTime
 	var approvalDecisionAt sql.NullTime
@@ -635,6 +652,107 @@ func (s *Store) GetLatestExecutionByTaskID(taskID string) (*Execution, error) {
 		LIMIT 1
 	`, taskID, "%"+taskID+"%", taskID)
 	return scanExecutionDetail(row)
+}
+
+// ListExecutionsForTask returns every execution recorded for taskID (exact match),
+// newest first. Unlike GetLatestExecutionByTaskID (single row, exact-or-substring
+// match), this returns the full history so the CLI can render a per-execution
+// stage timeline across retries (TASK-379 C4).
+func (s *Store) ListExecutionsForTask(taskID string) ([]*Execution, error) {
+	rows, err := s.db.Query(`
+		SELECT `+executionDetailColumns+`
+		FROM executions
+		WHERE task_id = ?
+		ORDER BY created_at DESC, rowid DESC
+	`, taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var executions []*Execution
+	for rows.Next() {
+		exec, err := scanExecutionDetail(rows)
+		if err != nil {
+			return nil, err
+		}
+		executions = append(executions, exec)
+	}
+	return executions, rows.Err()
+}
+
+// Stage identifies a discrete milestone in an execution's lifecycle. Stage events
+// accumulate in execution_events to build an append-only timeline for `pilot trace`
+// (TASK-379 C3/C4) — unlike executions.status, a single mutable field, this
+// timeline survives autopilot's practice of deleting successful PR state rows.
+// Values match the enum in GH-3840.
+type Stage string
+
+const (
+	StageQueued           Stage = "queued"
+	StageSpecValidated    Stage = "spec_validated"
+	StageRunning          Stage = "running"
+	StageCommit           Stage = "commit"
+	StagePRCreated        Stage = "pr_created"
+	StageCIPassed         Stage = "ci_passed"
+	StageCIFailed         Stage = "ci_failed"
+	StageAwaitingApproval Stage = "awaiting_approval"
+	StageMerged           Stage = "merged"
+	StageReleased         Stage = "released"
+	StageFailed           Stage = "failed"
+	StageNoOp             Stage = "no_op"
+	StageSkipped          Stage = "skipped"
+	StageStalled          Stage = "stalled"
+)
+
+// Event represents a single stage-transition record for an execution.
+type Event struct {
+	ID          int64
+	ExecutionID string
+	Stage       Stage
+	OccurredAt  time.Time
+	Detail      string
+}
+
+// InsertExecutionEvent records a stage transition for executionID. occurred_at is
+// always the write-time UTC clock, not a caller-supplied value, so the ledger
+// can't be back-dated or skewed by local timezone (TASK-379 C2/C3).
+func (s *Store) InsertExecutionEvent(executionID string, stage Stage, detail string) error {
+	return s.withRetry("InsertExecutionEvent", func() error {
+		_, err := s.db.Exec(`
+			INSERT INTO execution_events (execution_id, stage, occurred_at, detail)
+			VALUES (?, ?, ?, ?)
+		`, executionID, string(stage), time.Now().UTC(), detail)
+		return err
+	})
+}
+
+// ListExecutionEvents returns the stage timeline for executionID in chronological
+// (occurred_at ASC) order. Returns an empty slice, not an error, for an unknown
+// execution ID.
+func (s *Store) ListExecutionEvents(executionID string) ([]*Event, error) {
+	rows, err := s.db.Query(`
+		SELECT id, execution_id, stage, occurred_at, COALESCE(detail, '')
+		FROM execution_events
+		WHERE execution_id = ?
+		ORDER BY occurred_at ASC, id ASC
+	`, executionID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	var events []*Event
+	for rows.Next() {
+		var e Event
+		var stage string
+		if err := rows.Scan(&e.ID, &e.ExecutionID, &stage, &e.OccurredAt, &e.Detail); err != nil {
+			return nil, err
+		}
+		e.Stage = Stage(stage)
+		events = append(events, &e)
+	}
+	return events, rows.Err()
 }
 
 // HasCompletedExecution checks whether a genuine completed execution exists for the given task
