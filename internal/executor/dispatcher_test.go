@@ -1304,3 +1304,86 @@ func TestBuildTaskFromExecution_ThreadsExecutionUUID(t *testing.T) {
 		t.Errorf("expected labels [pilot], got %v", task.Labels)
 	}
 }
+
+// TestDispatcher_BootWithQueuedRows_FIFODrainNoStaleReap simulates the
+// GH-3788 incident: a daemon restart finds N queued rows, already older
+// than StaleQueuedThreshold (as any row left over from real downtime would
+// be), spread across multiple projects. Start()'s adoption pass must give
+// every one of those projects a worker before recoverStaleQueuedTasks runs,
+// so none of them are reaped as "queued task orphaned by restart" — they
+// should instead drain FIFO through the real worker.
+func TestDispatcher_BootWithQueuedRows_FIFODrainNoStaleReap(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	// Two rows on one project (to exercise FIFO ordering) plus one row each
+	// on two more projects — mirrors the four queued tasks (GH-3759/3764/
+	// 3765/3726) reaped in the incident.
+	executions := []*memory.Execution{
+		{ID: "exec-boot-1", TaskID: "GH-BOOT-1", ProjectPath: "/project-boot-a", Status: "queued"},
+		{ID: "exec-boot-2", TaskID: "GH-BOOT-2", ProjectPath: "/project-boot-a", Status: "queued"},
+		{ID: "exec-boot-3", TaskID: "GH-BOOT-3", ProjectPath: "/project-boot-b", Status: "queued"},
+		{ID: "exec-boot-4", TaskID: "GH-BOOT-4", ProjectPath: "/project-boot-c", Status: "queued"},
+	}
+	for _, exec := range executions {
+		if err := store.SaveExecution(exec); err != nil {
+			t.Fatalf("failed to save execution: %v", err)
+		}
+	}
+
+	// Zero threshold: every row above is immediately "stale" by age, exactly
+	// like rows that sat queued through real daemon downtime.
+	config := &DispatcherConfig{
+		StaleQueuedThreshold:  0,
+		StaleRunningThreshold: 0,
+		StaleRecoveryInterval: time.Hour, // won't tick during this test
+	}
+	dispatcher := NewDispatcher(store, NewRunner(), config)
+
+	if err := dispatcher.Start(context.Background()); err != nil {
+		t.Fatalf("failed to start dispatcher: %v", err)
+	}
+	defer dispatcher.Stop()
+
+	// Every project with a queued row must have been adopted at Start.
+	status := dispatcher.GetWorkerStatus()
+	for _, proj := range []string{"/project-boot-a", "/project-boot-b", "/project-boot-c"} {
+		if _, ok := status[proj]; !ok {
+			t.Errorf("expected %s to be adopted with a worker, got workers: %v", proj, status)
+		}
+	}
+
+	// Give the adopted workers time to drain the queue (their preflight
+	// checks fail fast since these project paths don't exist on disk).
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		allDone := true
+		for _, exec := range executions {
+			got, err := store.GetExecution(exec.ID)
+			if err != nil {
+				t.Fatalf("failed to get execution: %v", err)
+			}
+			if got.Status == "queued" {
+				allDone = false
+				break
+			}
+		}
+		if allDone {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	for _, exec := range executions {
+		got, err := store.GetExecution(exec.ID)
+		if err != nil {
+			t.Fatalf("failed to get execution: %v", err)
+		}
+		if got.Status == "queued" {
+			t.Errorf("expected %s to be drained by its adopted worker, still queued", exec.ID)
+		}
+		if got.Error == "queued task orphaned by restart; project no longer configured" {
+			t.Errorf("expected %s to be adopted and drained, but stale-queued reap fired instead (error=%q)", exec.ID, got.Error)
+		}
+	}
+}
