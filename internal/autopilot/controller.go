@@ -110,6 +110,10 @@ type EvalStore interface {
 	// to verify a child sub-issue's ledger status before treating it as complete
 	// for parent-close purposes. GH-3780.
 	GetExecutionStatusByTaskID(taskID, projectPath string) (string, error)
+	// ReclassifyCompletionAsFailed demotes a genuine completed execution row to
+	// "failed" with reason, so a PR closed without merging can never leave a
+	// "completed" row behind that HasCompletedExecution keeps trusting. GH-3818.
+	ReclassifyCompletionAsFailed(taskID, projectPath, reason string) error
 }
 
 // ControllerOption is a functional option for Controller configuration.
@@ -3352,6 +3356,19 @@ func (c *Controller) notifyExternalClose(ctx context.Context, prState *PRState) 
 	reason := prState.Error
 	if reason == "" {
 		reason = "closed without merging (no reason recorded)"
+	}
+
+	// GH-3818/D10: reclassify any "completed" execution row for this issue to
+	// "failed" now that we know its PR was discarded — otherwise HasCompletedExecution
+	// keeps trusting the stale row and the poller re-marks the issue pilot-done on
+	// every subsequent poll even though nothing shipped. A later merge heals this
+	// back to "completed" via SelfHealExecutionAfterMerge.
+	if c.evalStore != nil && prState.IssueNumber > 0 {
+		taskID := fmt.Sprintf("GH-%d", prState.IssueNumber)
+		if err := c.evalStore.ReclassifyCompletionAsFailed(taskID, c.projectPath, reason); err != nil {
+			c.log.Warn("failed to reclassify completed execution after PR close",
+				"task_id", taskID, "pr", prState.PRNumber, "error", err)
+		}
 	}
 
 	prComment := fmt.Sprintf("This PR was closed without merging: %s", reason)
