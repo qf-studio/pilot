@@ -1,6 +1,6 @@
 # TASK-379: Runtime Self-Verification — Verifiable Preflight, Fail-Loud Policy, Execution Ledger, Synthetic Canary
 
-**Status**: 🚧 V1+V2+V3+V5 ✅ shipped · V4/V6/V7 🚀 dispatched 2026-07-04 (#3839/#3840/#3841) · V8 🚀 dispatched 2026-07-04 (#3862) — sandbox repo + config ✅ done
+**Status**: 🚧 V1+V2+V3+V5 ✅ shipped · V4/V6/V7 🚀 dispatched 2026-07-04 (#3839/#3840/#3841) · V8 ✅ shipped 2026-07-04 (#3862 → PR #3864 merged; sandbox repo + config + `CANARY_GH_TOKEN` secret wired). ⚠️ Poll-step bug (`gh pr list --jq --arg` invalid → always false-alarms) → fix dispatched #3866. Pending: first `workflow_dispatch` E2E proof; rotate exposed `CANARY_GH_TOKEN`.
 **Created**: 2026-07-03
 **Assignee**: Pilot (phased dispatch)
 
