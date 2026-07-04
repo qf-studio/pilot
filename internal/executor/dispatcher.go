@@ -117,12 +117,33 @@ func (d *Dispatcher) Start(ctx context.Context) error {
 	// project lets Signal() drain the existing FIFO queue instead of the
 	// stale-queued reap below wrongly failing tasks that are simply waiting
 	// their turn (GH-3714/3715/3716 incident).
-	d.adoptQueuedProjects()
+	//
+	// GH-3788: adoptQueuedProjects reports whether it could actually read the
+	// queued project paths. adoptQueuedProjects calls ensureWorker()
+	// synchronously per project, and ensureWorker inserts into the workers
+	// map under the same lock it holds for the rest of the call — so on
+	// success, every project with a queued row already has a live worker by
+	// the time recoverStaleQueuedTasks runs, regardless of goroutine
+	// scheduling. But if the SQLite query itself fails (e.g. the store isn't
+	// ready yet at boot), adoption silently adopts zero projects and the
+	// stale-queued reap below would then treat every queued row as an orphan
+	// — reproducing the exact "no worker picked up" mass-reap this issue
+	// tracks. Skip this boot's reap pass in that case; the periodic loop
+	// still catches genuine orphans on the next tick.
+	adopted := d.adoptQueuedProjects()
 
 	// Recover queued tasks that still have no worker after adoption — genuine
 	// orphans only (e.g. a duplicate of an already-completed task, or a
-	// project removed from config).
-	d.recoverStaleQueuedTasks()
+	// project removed from config). See
+	// TestDispatcher_BootWithQueuedRows_FIFODrainNoStaleReap for regression
+	// coverage of N queued rows across multiple projects at boot, and
+	// TestDispatcher_AdoptQueuedProjects_ReportsFailureWithoutAdopting for the
+	// failed-adoption guard above.
+	if adopted {
+		d.recoverStaleQueuedTasks()
+	} else {
+		d.log.Warn("Skipping boot-time stale-queued reap — queue adoption failed, cannot tell adopted projects from orphans; genuine orphans will still be caught by the periodic stale-recovery loop")
+	}
 
 	// GH-2428: warn when the last batch of completed runs has no token
 	// telemetry. A persistent gap means the backend's usage events aren't
@@ -140,16 +161,21 @@ func (d *Dispatcher) Start(ctx context.Context) error {
 // queued (or pending) executions in SQLite. Called once at Start, before the
 // stale-queued reap runs, so tasks left behind by a daemon restart resume
 // FIFO processing instead of being misclassified as orphans. GH-3732.
-func (d *Dispatcher) adoptQueuedProjects() {
+//
+// Returns false if the queued-project-paths query itself failed, meaning the
+// caller cannot trust that every queued project got a worker — the caller
+// must not run the stale-queued reap in that case (GH-3788).
+func (d *Dispatcher) adoptQueuedProjects() bool {
 	projectPaths, err := d.store.GetQueuedProjectPaths()
 	if err != nil {
 		d.log.Warn("Failed to fetch queued project paths for restart adoption", slog.Any("error", err))
-		return
+		return false
 	}
 	for _, path := range projectPaths {
 		d.log.Info("Re-adopting queued tasks after restart", slog.String("project", path))
 		d.ensureWorker(path)
 	}
+	return true
 }
 
 // checkTelemetryGap inspects recent completed executions and logs a warning
