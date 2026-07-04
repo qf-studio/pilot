@@ -65,13 +65,23 @@ jobs:
           TIMESTAMP=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
           TITLE="chore(version): bump patch for canary run $TIMESTAMP"
           BODY=$(cat <<EOF
-          Synthetic canary run (TASK-379 V8). This issue exists to prove the
-          deployed Pilot daemon still ships code end-to-end.
+          ## Context
 
-          Increment the PATCH component of the \`Version\` constant in
-          \`version.go\` by exactly one (e.g. \`0.0.1\` -> \`0.0.2\`). Keep the
-          change to that single line so \`version_test.go\` (semver guard)
-          stays green. Do not touch any other file.
+          Synthetic canary run (TASK-379 V8). This issue exists to prove the
+          deployed Pilot daemon still ships code end-to-end (poll -> spec ->
+          execute -> PR -> merge).
+
+          ## Acceptance
+
+          - [ ] Increment the PATCH component of the \`Version\` constant in
+                \`version.go\` by exactly one (e.g. \`0.0.1\` -> \`0.0.2\`).
+          - [ ] Change only that single line so \`version_test.go\` (semver
+                guard) stays green.
+          - [ ] Do not touch any other file.
+
+          ## Implementation
+
+          Edit the \`const Version\` line in \`version.go\`. Nothing else.
           EOF
           )
 
