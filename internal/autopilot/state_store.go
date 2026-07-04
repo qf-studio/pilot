@@ -75,12 +75,16 @@ func (s *StateStore) migrate() error {
 		)`,
 		// GH-1838: Generic adapter_processed table — replaces 7 per-adapter tables.
 		// Source and repo form the namespace; repo is '' for tracker-style adapters.
+		// GH-3819: repo is part of the PRIMARY KEY from the start on fresh installs.
+		// (Older DBs had repo added later via ALTER TABLE, which cannot extend a
+		// PRIMARY KEY — see migrateAdapterProcessedPrimaryKey below.)
 		`CREATE TABLE IF NOT EXISTS adapter_processed (
 			adapter TEXT NOT NULL,
+			repo TEXT NOT NULL DEFAULT '',
 			issue_id TEXT NOT NULL,
 			processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 			result TEXT DEFAULT '',
-			PRIMARY KEY (adapter, issue_id)
+			PRIMARY KEY (adapter, repo, issue_id)
 		)`,
 		// GH-2685: Async approval state — persisted so crash-recovery can resume
 		// the non-blocking tick handler without re-submitting the request.
@@ -110,12 +114,131 @@ func (s *StateStore) migrate() error {
 		}
 	}
 
+	// GH-3819: Rebuild adapter_processed with repo in the PRIMARY KEY if an
+	// older DB still has the pre-GH-1838-fixup schema. Must run before the
+	// legacy-table migration below so legacy rows land in the corrected table.
+	if err := s.migrateAdapterProcessedPrimaryKey(); err != nil {
+		return fmt.Errorf("adapter_processed primary key migration failed: %w", err)
+	}
+
 	// TASK-298: Consolidate 7 legacy per-adapter tables into adapter_processed.
+	// Must run before the empty-repo prune below: these legacy tables predate
+	// the repo column and are always consolidated with repo='', so pruning
+	// first would miss the very rows this step creates until a second restart.
 	if err := s.migrateLegacyProcessedTables(); err != nil {
 		return fmt.Errorf("legacy processed tables migration failed: %w", err)
 	}
 
+	// GH-3819: Purge orphaned empty-repo rows for repo-scoped adapters. These
+	// can only have been written before the repo column existed, by the
+	// GH-3819 collision bug clobbering a row down to its zero value, or by
+	// the legacy-table consolidation above; a repo-scoped poller always calls
+	// Mark/IsProcessed/Load with a non-empty "owner/repo" key, so such rows
+	// can never be matched again and would otherwise sit as dead weight.
+	if err := s.pruneOrphanedEmptyRepoRows(); err != nil {
+		return fmt.Errorf("adapter_processed empty-repo cleanup failed: %w", err)
+	}
+
 	return nil
+}
+
+// migrateAdapterProcessedPrimaryKey rebuilds adapter_processed so repo is part
+// of the PRIMARY KEY. The original table (GH-1838) keyed on (adapter, issue_id)
+// only; repo was bolted on afterward via ALTER TABLE ADD COLUMN, which SQLite
+// cannot use to extend a PRIMARY KEY. As a result, two different repos
+// processing the same issue_id (e.g. issue #5 in two separate projects) shared
+// one row: Mark()'s ON CONFLICT upsert silently overwrote that row's repo
+// column with whichever repo processed the colliding ID most recently,
+// corrupting cross-project dedup state (GH-3819).
+//
+// No-op if repo is already part of the primary key (fresh install, or already
+// migrated).
+func (s *StateStore) migrateAdapterProcessedPrimaryKey() error {
+	rows, err := s.db.Query(`PRAGMA table_info(adapter_processed)`)
+	if err != nil {
+		return fmt.Errorf("inspect adapter_processed schema: %w", err)
+	}
+	repoInPK := false
+	for rows.Next() {
+		var cid, notNull, pk int
+		var name, ctype string
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notNull, &dflt, &pk); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("scan adapter_processed schema: %w", err)
+		}
+		if name == "repo" && pk > 0 {
+			repoInPK = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("iterate adapter_processed schema: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close adapter_processed schema query: %w", err)
+	}
+	if repoInPK {
+		return nil
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.Exec(`
+		CREATE TABLE adapter_processed_gh3819 (
+			adapter TEXT NOT NULL,
+			repo TEXT NOT NULL DEFAULT '',
+			issue_id TEXT NOT NULL,
+			processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			result TEXT DEFAULT '',
+			PRIMARY KEY (adapter, repo, issue_id)
+		)
+	`); err != nil {
+		return fmt.Errorf("create adapter_processed_gh3819: %w", err)
+	}
+	if _, err := tx.Exec(`
+		INSERT OR IGNORE INTO adapter_processed_gh3819 (adapter, repo, issue_id, processed_at, result)
+		SELECT adapter, repo, issue_id, processed_at, result FROM adapter_processed
+	`); err != nil {
+		return fmt.Errorf("copy adapter_processed rows: %w", err)
+	}
+	if _, err := tx.Exec(`DROP TABLE adapter_processed`); err != nil {
+		return fmt.Errorf("drop old adapter_processed: %w", err)
+	}
+	if _, err := tx.Exec(`ALTER TABLE adapter_processed_gh3819 RENAME TO adapter_processed`); err != nil {
+		return fmt.Errorf("rename adapter_processed_gh3819: %w", err)
+	}
+	return tx.Commit()
+}
+
+// repoScopedAdapters lists adapter names whose pollers always dedup within a
+// specific repo (as opposed to tracker-style adapters — linear, jira, asana,
+// plane — which pass repo="" by design, see Mark's doc comment).
+var repoScopedAdapters = []string{"github", "gitlab", "azuredevops"}
+
+// pruneOrphanedEmptyRepoRows deletes adapter_processed rows for repo-scoped
+// adapters that have an empty repo. Such rows cannot correspond to any real
+// lookup (repoKey() is never empty for these adapters) and are either
+// pre-TASK-298 leftovers from before the repo column existed, or residue from
+// the GH-3819 collision bug. Safe to run on every startup: idempotent, and
+// never touches tracker-style adapters, which legitimately use repo="".
+func (s *StateStore) pruneOrphanedEmptyRepoRows() error {
+	placeholders := make([]string, len(repoScopedAdapters))
+	args := make([]interface{}, len(repoScopedAdapters))
+	for i, a := range repoScopedAdapters {
+		placeholders[i] = "?"
+		args[i] = a
+	}
+	query := fmt.Sprintf(
+		`DELETE FROM adapter_processed WHERE repo = '' AND adapter IN (%s)`,
+		strings.Join(placeholders, ", "),
+	)
+	_, err := s.db.Exec(query, args...)
+	return err
 }
 
 // migrateLegacyProcessedTables copies rows from the 7 legacy per-adapter tables
@@ -314,8 +437,7 @@ func (s *StateStore) Mark(source, repo, issueID string) error {
 	_, err := s.db.Exec(`
 		INSERT INTO adapter_processed (adapter, repo, issue_id, processed_at, result)
 		VALUES (?, ?, ?, CURRENT_TIMESTAMP, '')
-		ON CONFLICT(adapter, issue_id) DO UPDATE SET
-			repo = excluded.repo,
+		ON CONFLICT(adapter, repo, issue_id) DO UPDATE SET
 			processed_at = CURRENT_TIMESTAMP
 	`, source, repo, issueID)
 	return err

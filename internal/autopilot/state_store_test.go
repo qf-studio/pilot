@@ -2,6 +2,7 @@ package autopilot
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,8 @@ import (
 
 	"github.com/qf-studio/pilot/internal/adapters/github"
 	"github.com/qf-studio/pilot/internal/testutil"
+
+	_ "modernc.org/sqlite"
 )
 
 func newTestStateStore(t *testing.T) *StateStore {
@@ -812,6 +815,219 @@ func TestStateStore_GenericAdapterProcessed_Upsert(t *testing.T) {
 	}
 	if len(all) != 1 {
 		t.Errorf("expected 1 entry after upsert, got %d", len(all))
+	}
+}
+
+// TestStateStore_GenericAdapterProcessed_CrossRepoIssueIDCollision guards
+// against GH-3819: adapter_processed's primary key must include repo, or two
+// repos processing the same issue_id silently overwrite each other's row.
+func TestStateStore_GenericAdapterProcessed_CrossRepoIssueIDCollision(t *testing.T) {
+	store := newTestStateStore(t)
+
+	if err := store.Mark("github", "org/repo-a", "5"); err != nil {
+		t.Fatalf("Mark(repo-a) failed: %v", err)
+	}
+	if err := store.Mark("github", "org/repo-b", "5"); err != nil {
+		t.Fatalf("Mark(repo-b) failed: %v", err)
+	}
+
+	okA, err := store.IsProcessed("github", "org/repo-a", "5")
+	if err != nil {
+		t.Fatalf("IsProcessed(repo-a) failed: %v", err)
+	}
+	if !okA {
+		t.Error("issue 5 in repo-a should still be marked processed after repo-b marks its own issue 5")
+	}
+
+	okB, err := store.IsProcessed("github", "org/repo-b", "5")
+	if err != nil {
+		t.Fatalf("IsProcessed(repo-b) failed: %v", err)
+	}
+	if !okB {
+		t.Error("issue 5 in repo-b should be marked processed")
+	}
+
+	repoAIssues, err := store.Load("github", "org/repo-a")
+	if err != nil {
+		t.Fatalf("Load(repo-a) failed: %v", err)
+	}
+	if len(repoAIssues) != 1 {
+		t.Errorf("expected 1 processed issue for repo-a, got %d", len(repoAIssues))
+	}
+
+	repoBIssues, err := store.Load("github", "org/repo-b")
+	if err != nil {
+		t.Fatalf("Load(repo-b) failed: %v", err)
+	}
+	if len(repoBIssues) != 1 {
+		t.Errorf("expected 1 processed issue for repo-b, got %d", len(repoBIssues))
+	}
+}
+
+// TestStateStore_MigrateAdapterProcessedPrimaryKey verifies that a DB with the
+// pre-GH-3819 schema (PRIMARY KEY (adapter, issue_id), repo not part of the
+// key) is rebuilt so repo joins the primary key, and existing rows survive
+// the rebuild.
+func TestStateStore_MigrateAdapterProcessedPrimaryKey(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+
+	// Seed the old (pre-fix) schema directly, bypassing NewStateStore's migrate().
+	if _, err := db.Exec(`
+		CREATE TABLE adapter_processed (
+			adapter TEXT NOT NULL,
+			issue_id TEXT NOT NULL,
+			processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			result TEXT DEFAULT '',
+			PRIMARY KEY (adapter, issue_id)
+		)
+	`); err != nil {
+		t.Fatalf("failed to seed legacy schema: %v", err)
+	}
+	if _, err := db.Exec(`ALTER TABLE adapter_processed ADD COLUMN repo TEXT NOT NULL DEFAULT ''`); err != nil {
+		t.Fatalf("failed to add legacy repo column: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO adapter_processed (adapter, repo, issue_id, processed_at, result)
+		VALUES ('github', 'org/repo-a', '5', CURRENT_TIMESTAMP, '')
+	`); err != nil {
+		t.Fatalf("failed to seed legacy row: %v", err)
+	}
+
+	store, err := NewStateStore(db)
+	if err != nil {
+		t.Fatalf("NewStateStore (running migrations) failed: %v", err)
+	}
+
+	// Pre-existing row must survive the rebuild.
+	ok, err := store.IsProcessed("github", "org/repo-a", "5")
+	if err != nil {
+		t.Fatalf("IsProcessed failed: %v", err)
+	}
+	if !ok {
+		t.Error("pre-existing row for org/repo-a issue 5 should survive the primary-key migration")
+	}
+
+	// Post-migration, colliding issue IDs across repos must not overwrite each other.
+	if err := store.Mark("github", "org/repo-b", "5"); err != nil {
+		t.Fatalf("Mark(repo-b) failed: %v", err)
+	}
+	ok, err = store.IsProcessed("github", "org/repo-a", "5")
+	if err != nil {
+		t.Fatalf("IsProcessed failed: %v", err)
+	}
+	if !ok {
+		t.Error("org/repo-a issue 5 should remain processed after org/repo-b marks its own issue 5")
+	}
+}
+
+// TestStateStore_PruneOrphanedEmptyRepoRows verifies GH-3819 cleanup: rows for
+// repo-scoped adapters (github/gitlab/azuredevops) with an empty repo are
+// dead weight (repoKey() is never empty for these adapters) and get purged,
+// while tracker-style adapters (linear/jira/asana/plane), which legitimately
+// use repo="", are left untouched.
+func TestStateStore_PruneOrphanedEmptyRepoRows(t *testing.T) {
+	store := newTestStateStore(t)
+
+	// Seed an orphaned empty-repo row directly, bypassing Mark() (which a
+	// correctly-behaving repo-scoped poller would never call with repo="").
+	if _, err := store.db.Exec(
+		`INSERT INTO adapter_processed (adapter, repo, issue_id, processed_at, result)
+		 VALUES ('github', '', '5', CURRENT_TIMESTAMP, '')`,
+	); err != nil {
+		t.Fatalf("seed orphaned row: %v", err)
+	}
+
+	// Legitimate rows that must survive: a real repo-scoped row, and the
+	// tracker-style repo="" rows.
+	if err := store.Mark("github", "org/repo-a", "5"); err != nil {
+		t.Fatalf("Mark(github, org/repo-a) failed: %v", err)
+	}
+	if err := store.Mark("jira", "", "PROJ-1"); err != nil {
+		t.Fatalf("Mark(jira) failed: %v", err)
+	}
+
+	if err := store.pruneOrphanedEmptyRepoRows(); err != nil {
+		t.Fatalf("pruneOrphanedEmptyRepoRows failed: %v", err)
+	}
+
+	ok, err := store.IsProcessed("github", "", "5")
+	if err != nil {
+		t.Fatalf("IsProcessed(github, empty repo) failed: %v", err)
+	}
+	if ok {
+		t.Error("orphaned empty-repo github row should have been pruned")
+	}
+
+	ok, err = store.IsProcessed("github", "org/repo-a", "5")
+	if err != nil {
+		t.Fatalf("IsProcessed(github, org/repo-a) failed: %v", err)
+	}
+	if !ok {
+		t.Error("legitimate github row should survive pruning")
+	}
+
+	ok, err = store.IsProcessed("jira", "", "PROJ-1")
+	if err != nil {
+		t.Fatalf("IsProcessed(jira) failed: %v", err)
+	}
+	if !ok {
+		t.Error("tracker-style jira row (repo=\"\" by design) should survive pruning")
+	}
+}
+
+// TestStateStore_LegacyMigrationRowsPrunedSamePass verifies GH-3819 subtask 5:
+// a legacy per-adapter table (pre-TASK-298, pre-repo-column) for a repo-scoped
+// adapter is consolidated into adapter_processed with repo='' by
+// migrateLegacyProcessedTables, and that dead-weight row must be purged in the
+// SAME migrate() pass by pruneOrphanedEmptyRepoRows — not left to linger until
+// a second restart. This pins the migration step ordering in migrate().
+func TestStateStore_LegacyMigrationRowsPrunedSamePass(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+
+	// Seed the pre-TASK-298 legacy github table directly, bypassing migrate().
+	if _, err := db.Exec(`
+		CREATE TABLE autopilot_processed (
+			issue_number INTEGER PRIMARY KEY,
+			processed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			result TEXT DEFAULT ''
+		)
+	`); err != nil {
+		t.Fatalf("failed to seed legacy autopilot_processed: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO autopilot_processed (issue_number) VALUES (5)`); err != nil {
+		t.Fatalf("failed to seed legacy row: %v", err)
+	}
+
+	store, err := NewStateStore(db)
+	if err != nil {
+		t.Fatalf("NewStateStore (running migrations) failed: %v", err)
+	}
+
+	// The legacy table must be dropped and its row consolidated, then
+	// immediately pruned as dead weight — a repo-scoped adapter can never
+	// look this row up again since real lookups always pass a non-empty repo.
+	var exists int
+	if err := store.db.QueryRow(
+		`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='autopilot_processed'`,
+	).Scan(&exists); err != nil {
+		t.Fatalf("check legacy table: %v", err)
+	}
+	if exists != 0 {
+		t.Error("legacy autopilot_processed table should have been dropped")
+	}
+
+	ok, err := store.IsProcessed("github", "", "5")
+	if err != nil {
+		t.Fatalf("IsProcessed(github, \"\") failed: %v", err)
+	}
+	if ok {
+		t.Error("orphaned empty-repo row from legacy migration should be pruned within the same migrate() pass, not left for a second restart")
 	}
 }
 
