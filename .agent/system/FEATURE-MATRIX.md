@@ -237,7 +237,7 @@
 | Queue metrics card | ✅ | dashboard | - | - | Current queue depth, succeeded/failed (v0.21.2) |
 | Autopilot panel | ✅ | dashboard | - | - | Live PR lifecycle status |
 | Task history | ✅ | dashboard | - | - | Recent 5 completed tasks |
-| Execution stage strip | ✅ | dashboard | - | - | Per-stage glyph strip on HISTORY cards (e.g. `✓✓✓✗ running`), fed from `execution_events`, cached at hydrate/refresh time not per render (GH-3849, v2.208.0) |
+| Execution stage strip | ✅ | dashboard | - | - | Pipeline-progress fraction on HISTORY cards (e.g. `4/7 ✗ ci_failed`), fed from `execution_events` via a fixed 7-rung ladder position (not raw event count, so retries don't inflate it), cached at hydrate/refresh time not per render (GH-3849, v2.208.0; fraction format TASK-383, v2.213.4) |
 | Hot upgrade key | ✅ | dashboard | `u` key | - | In-place upgrade from dashboard |
 | SQLite persistence | ✅ | dashboard | - | - | Metrics survive restarts (v0.21.2) |
 | Queue state panel | ✅ | dashboard | - | - | 5-state: done/running/queued/pending/failed with shimmer (v0.63.0) |

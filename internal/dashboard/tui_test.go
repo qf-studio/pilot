@@ -767,14 +767,14 @@ func TestRenderHistory_StageStrip(t *testing.T) {
 
 	plain := stripANSI(output)
 
-	if !strings.Contains(plain, "✓✓✓✓✓✓ merged") {
-		t.Errorf("happy path stage strip not found in output:\n%s", plain)
+	if !strings.Contains(plain, "6/7 merged") {
+		t.Errorf("happy path stage fraction not found in output:\n%s", plain)
 	}
-	if !strings.Contains(plain, "✓✓✓ running") {
-		t.Errorf("in-progress stage strip not found in output:\n%s", plain)
+	if !strings.Contains(plain, "2/7 running") {
+		t.Errorf("in-progress stage fraction not found in output:\n%s", plain)
 	}
-	if !strings.Contains(plain, "✓✓✓✗ running") {
-		t.Errorf("failed-at-stage-N stage strip not found in output:\n%s", plain)
+	if !strings.Contains(plain, "2/7 ✗ running") {
+		t.Errorf("failed-at-stage-N stage fraction not found in output:\n%s", plain)
 	}
 }
 

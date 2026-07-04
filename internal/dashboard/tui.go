@@ -360,10 +360,11 @@ type CompletedTask struct {
 	// PeakRSSMB is the peak subprocess RSS in MiB from the RSS sampler. GH-3028.
 	// Zero when the sampler had no data (pre-3028 executions, non-Linux/darwin).
 	PeakRSSMB int
-	// StageStrip is a compact per-stage glyph strip (e.g. "✓✓✓✗ running") built
-	// from the execution's execution_events timeline (GH-3849). Empty when the
-	// task wasn't hydrated from the store (e.g. AddCompletedTask callers), in
-	// which case the card falls back to the plain status icon.
+	// StageStrip is a pipeline-progress fraction (e.g. "4/7 ✗ ci_failed") built
+	// from the execution's execution_events timeline (GH-3849; fraction format
+	// TASK-383). Empty when the task wasn't hydrated from the store (e.g.
+	// AddCompletedTask callers), in which case the card falls back to the
+	// plain status icon.
 	StageStrip string
 }
 
@@ -2596,8 +2597,9 @@ func (m Model) renderHistory() string {
 // Layout: "  + GH-156  Title...                                    2m ago"
 // indent(2) + strip(variable) + space(1) + id(7) + space(2) + title + space(2) + timeAgo(8) = iw
 // When PeakRSSMB > 0 (GH-3028), an RSS indicator ("4.2G") is appended after the time.
-// GH-3849: the leading glyph column shows the cached StageStrip (e.g. "✓✓✓✗ running")
-// when the task was hydrated from the store; falls back to the plain status icon
+// GH-3849: the leading column shows the cached StageStrip pipeline-progress
+// fraction (e.g. "4/7 ✗ ci_failed") when the task was hydrated from the
+// store; falls back to the plain status icon
 // otherwise (e.g. live completions added via AddCompletedTask).
 func renderStandaloneLine(task CompletedTask, iw int) string {
 	icon, style := statusIconStyle(task.Status)
