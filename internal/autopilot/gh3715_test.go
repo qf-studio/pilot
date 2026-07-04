@@ -31,7 +31,7 @@ func TestController_HandleMergeConflict_RebaseAttemptCapEscalates(t *testing.T) 
 	mergeable := false
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.URL.Path == "/repos/owner/repo/pulls/77/merge" && r.Method == http.MethodPost:
+		case r.URL.Path == "/repos/owner/repo/pulls/77/merge" && r.Method == http.MethodPut:
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			_, _ = w.Write([]byte(`{"message":"Pull Request is not mergeable"}`))
 
@@ -119,7 +119,7 @@ func TestController_HandleMergeConflict_BelowRebaseCapStaysWaitingCI(t *testing.
 	mergeable := false
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.URL.Path == "/repos/owner/repo/pulls/78/merge" && r.Method == http.MethodPost:
+		case r.URL.Path == "/repos/owner/repo/pulls/78/merge" && r.Method == http.MethodPut:
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			_, _ = w.Write([]byte(`{"message":"Pull Request is not mergeable"}`))
 

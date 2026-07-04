@@ -788,9 +788,15 @@ func TestCIMonitor_GetCIStatus(t *testing.T) {
 			wantStatus: CIPending, // Running maps to pending in aggregate
 		},
 		{
+			// GH-3873: GetCIStatus's sole production caller (verifyCIBeforeMerge) only
+			// runs after CI already resolved once for this SHA, so it skips the
+			// no-CI discovery grace entirely (skipGrace=true) and falls straight
+			// through to the commit-status fallback. The mock server here answers
+			// every path with the same TotalCount:0 body, so that fallback also
+			// reports no statuses configured → CISuccess, not CIPending.
 			name:       "no checks",
 			checkRuns:  []github.CheckRun{},
-			wantStatus: CIPending,
+			wantStatus: CISuccess,
 		},
 	}
 
@@ -1051,6 +1057,74 @@ func TestCIMonitor_AutoDiscovery_GracePeriodExpired(t *testing.T) {
 	}
 	if status != CISuccess {
 		t.Errorf("CheckCI() after grace period status = %s, want %s", status, CISuccess)
+	}
+}
+
+// TestCIMonitor_GetCIStatus_DoesNotRestartGraceAfterResolved is the regression
+// test for GH-3873: once a no-CI SHA has resolved to CISuccess via CheckCI
+// (grace expired, discoveryStart entry evicted per TASK-357 B6b),
+// verifyCIBeforeMerge's GetCIStatus call for the SAME SHA must return
+// CISuccess immediately — not restart the grace period and return CIPending.
+func TestCIMonitor_GetCIStatus_DoesNotRestartGraceAfterResolved(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/owner/repo/commits/abc1234/check-runs":
+			resp := github.CheckRunsResponse{TotalCount: 0, CheckRuns: []github.CheckRun{}}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(resp)
+		case "/repos/owner/repo/commits/abc1234/status":
+			// No commit statuses → genuine no-CI repo
+			resp := github.CombinedStatus{State: github.StatusPending, TotalCount: 0, Statuses: []github.CommitStatus{}}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(resp)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.CIPollInterval = 10 * time.Millisecond
+	cfg.CIWaitTimeout = 1 * time.Second
+	cfg.RequiredChecks = nil
+	cfg.CIChecks = &CIChecksConfig{
+		Mode:                 "auto",
+		DiscoveryGracePeriod: 20 * time.Millisecond, // Very short grace period
+	}
+
+	monitor := NewCIMonitor(ghClient, "owner", "repo", cfg)
+
+	// First call (mirrors handleWaitingCI) starts the grace period.
+	status, _ := monitor.CheckCI(context.Background(), "abc1234")
+	if status != CIPending {
+		t.Fatalf("First CheckCI() status = %s, want %s", status, CIPending)
+	}
+
+	// Wait for grace period to expire.
+	time.Sleep(30 * time.Millisecond)
+
+	// Second CheckCI (still mirrors handleWaitingCI's periodic poll) resolves
+	// the SHA to CISuccess and evicts discoveryStart[sha] (TASK-357 B6b).
+	status, err := monitor.CheckCI(context.Background(), "abc1234")
+	if err != nil {
+		t.Fatalf("CheckCI() error = %v", err)
+	}
+	if status != CISuccess {
+		t.Fatalf("CheckCI() after grace period status = %s, want %s", status, CISuccess)
+	}
+
+	// This mirrors verifyCIBeforeMerge's pre-merge re-verification. Before the
+	// GH-3873 fix, discoveryStart[sha] was gone, so this call would treat the
+	// SHA as first-seen, restart the grace period, and return CIPending here —
+	// causing "CI checks still pending" merge failures on the very first
+	// handleMerging attempt.
+	status, err = monitor.GetCIStatus(context.Background(), "abc1234")
+	if err != nil {
+		t.Fatalf("GetCIStatus() error = %v", err)
+	}
+	if status != CISuccess {
+		t.Errorf("GetCIStatus() after CheckCI resolved = %s, want %s (grace period must not restart)", status, CISuccess)
 	}
 }
 

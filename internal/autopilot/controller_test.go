@@ -1006,6 +1006,121 @@ func TestController_MergeAttemptIncrement(t *testing.T) {
 	}
 }
 
+// TestController_FirstMergeAttemptSucceedsOnNoCIRepo is the integration
+// regression test for GH-3873: a PR on a repo with no CI checks configured
+// must merge on the FIRST handleMerging attempt, not fail with
+// "CI checks still pending" while the discovery grace period restarts.
+//
+// Root cause: handleWaitingCI's CheckCI and verifyCIBeforeMerge's GetCIStatus
+// share the same CIMonitor.discoveryStart map. Once CheckCI resolves the SHA
+// to CISuccess (grace expired, entry evicted per TASK-357 B6b),
+// verifyCIBeforeMerge must NOT see a missing entry and restart the grace —
+// that previously forced 2-3+ failed merge attempts (or a permanent
+// StageFailed under fast poll cadence) before self-healing.
+func TestController_FirstMergeAttemptSucceedsOnNoCIRepo(t *testing.T) {
+	mergeCallCount := 0
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/owner/repo/commits/abc1234/check-runs":
+			// No CI checks configured on this repo.
+			resp := github.CheckRunsResponse{TotalCount: 0, CheckRuns: []github.CheckRun{}}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(resp)
+		case "/repos/owner/repo/commits/abc1234/status":
+			// No commit statuses either → genuine no-CI repo.
+			resp := github.CombinedStatus{State: github.StatusPending, TotalCount: 0, Statuses: []github.CommitStatus{}}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(resp)
+		case "/repos/owner/repo/pulls/42/files":
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode([]github.PRFile{})
+		case "/repos/owner/repo/pulls/42/merge":
+			mergeCallCount++
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.Environment = EnvDev
+	cfg.AutoReview = false
+	cfg.RequiredChecks = nil
+	cfg.CIChecks = &CIChecksConfig{
+		Mode:                 "auto",
+		DiscoveryGracePeriod: 20 * time.Millisecond, // Very short grace period
+	}
+
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+
+	ghPR := &github.PullRequest{
+		Number: 42,
+		Head:   github.PRRef{SHA: "abc1234"},
+		Base:   github.PRRef{Ref: "main"},
+	}
+
+	c.mu.Lock()
+	c.activePRs[42] = &PRState{
+		PRNumber: 42,
+		HeadSHA:  "abc1234",
+		Stage:    StageWaitingCI,
+	}
+	c.mu.Unlock()
+
+	ctx := context.Background()
+
+	// First handleWaitingCI tick: no checks found yet, starts the discovery grace.
+	if err := c.ProcessPR(ctx, 42, ghPR); err != nil {
+		t.Fatalf("first ProcessPR (waiting_ci) error = %v", err)
+	}
+	pr, _ := c.GetPRState(42)
+	if pr.Stage != StageWaitingCI {
+		t.Fatalf("stage after first tick = %s, want %s", pr.Stage, StageWaitingCI)
+	}
+
+	// Wait for the grace period to expire.
+	time.Sleep(30 * time.Millisecond)
+
+	// Second handleWaitingCI tick: grace expired, commit-status fallback resolves
+	// CISuccess (TotalCount==0) → transitions to StageCIPassed. This evicts the
+	// discoveryStart[sha] entry (TASK-357 B6b).
+	if err := c.ProcessPR(ctx, 42, ghPR); err != nil {
+		t.Fatalf("second ProcessPR (waiting_ci->ci_passed) error = %v", err)
+	}
+	pr, _ = c.GetPRState(42)
+	if pr.Stage != StageCIPassed {
+		t.Fatalf("stage after grace expiry = %s, want %s", pr.Stage, StageCIPassed)
+	}
+
+	// handleCIPassed: no escalation, no approval required in dev → StageMerging.
+	if err := c.ProcessPR(ctx, 42, ghPR); err != nil {
+		t.Fatalf("third ProcessPR (ci_passed->merging) error = %v", err)
+	}
+	pr, _ = c.GetPRState(42)
+	if pr.Stage != StageMerging {
+		t.Fatalf("stage after ci_passed = %s, want %s", pr.Stage, StageMerging)
+	}
+
+	// handleMerging: verifyCIBeforeMerge's GetCIStatus must return CISuccess
+	// immediately (no discovery-grace restart) so the FIRST merge attempt succeeds.
+	if err := c.ProcessPR(ctx, 42, ghPR); err != nil {
+		t.Fatalf("first handleMerging attempt should succeed, got error: %v", err)
+	}
+	pr, _ = c.GetPRState(42)
+	if pr.Stage != StageMerged {
+		t.Errorf("stage after merge attempt = %s, want %s", pr.Stage, StageMerged)
+	}
+	if pr.MergeAttempts != 1 {
+		t.Errorf("MergeAttempts = %d, want 1 (merge must succeed on first attempt)", pr.MergeAttempts)
+	}
+	if mergeCallCount != 1 {
+		t.Errorf("merge endpoint called %d times, want 1", mergeCallCount)
+	}
+}
+
 func TestController_ScanExistingPRs(t *testing.T) {
 	tests := []struct {
 		name          string
