@@ -3,7 +3,9 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"strings"
@@ -11,9 +13,67 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 
 	"github.com/qf-studio/pilot/internal/upgrade"
 )
+
+// confirmPromptTimeout bounds how long the upgrade confirmation prompt waits
+// for input before giving up, so an unattended/non-interactive invocation
+// can't hang forever.
+const confirmPromptTimeout = 60 * time.Second
+
+// errPromptTimeout and errPromptCancelled distinguish why the confirmation
+// prompt did not receive a "yes" so the caller can report a precise message.
+var (
+	errPromptTimeout   = errors.New("timeout")
+	errPromptCancelled = errors.New("cancelled")
+)
+
+// confirmUpgrade prompts the user to confirm the upgrade. It fails fast if
+// stdin is not a TTY (e.g. `pilot upgrade </dev/null`, or piped/scripted
+// invocations), rather than blocking on a read nobody will ever answer.
+func confirmUpgrade(ctx context.Context) (bool, error) {
+	if !term.IsTerminal(int(os.Stdin.Fd())) {
+		return false, fmt.Errorf("non-interactive stdin — use --yes")
+	}
+	return readConfirmation(ctx, os.Stdin, confirmPromptTimeout)
+}
+
+// readConfirmation races a "y/N" line read against ctx cancellation (e.g.
+// SIGTERM) and timeout, so an attended TTY session that never answers, or a
+// process whose signal handler cancels ctx, terminates promptly instead of
+// hanging forever on a blocking bufio read.
+func readConfirmation(ctx context.Context, in io.Reader, timeout time.Duration) (bool, error) {
+	fmt.Print("Proceed with upgrade? [y/N]: ")
+
+	lineCh := make(chan string, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		reader := bufio.NewReader(in)
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			errCh <- err
+			return
+		}
+		lineCh <- line
+	}()
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	select {
+	case line := <-lineCh:
+		input := strings.TrimSpace(line)
+		return input == "y" || input == "Y", nil
+	case err := <-errCh:
+		return false, fmt.Errorf("input error: %w", err)
+	case <-ctx.Done():
+		return false, errPromptCancelled
+	case <-timer.C:
+		return false, errPromptTimeout
+	}
+}
 
 func newUpgradeCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -147,12 +207,14 @@ func runUpgradeRun(cmd *cobra.Command, args []string, force, skipConfirm bool) e
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Handle Ctrl+C
+	// Handle Ctrl+C / SIGTERM. Cancelling ctx here only helps if every
+	// blocking operation downstream (confirmUpgrade, CheckVersion,
+	// PerformUpgrade) actually selects on ctx.Done() — a bare signal
+	// handler without a context-aware read just swallows the signal.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-sigCh
-		fmt.Println("\n⚠️  Upgrade cancelled")
 		cancel()
 	}()
 
@@ -192,15 +254,21 @@ func runUpgradeRun(cmd *cobra.Command, args []string, force, skipConfirm bool) e
 
 	// Confirm unless -y flag
 	if !skipConfirm {
-		fmt.Print("Proceed with upgrade? [y/N]: ")
-		reader := bufio.NewReader(os.Stdin)
-		input, err := reader.ReadString('\n')
+		confirmed, err := confirmUpgrade(ctx)
 		if err != nil {
-			fmt.Println("\nUpgrade cancelled (input error).")
-			return nil
+			switch {
+			case errors.Is(err, errPromptTimeout):
+				fmt.Println("\n⚠️  Upgrade cancelled (timeout).")
+				return fmt.Errorf("upgrade cancelled: %w", err)
+			case errors.Is(err, errPromptCancelled):
+				fmt.Println("\n⚠️  Upgrade cancelled.")
+				return fmt.Errorf("upgrade cancelled: %w", err)
+			default:
+				fmt.Printf("\nUpgrade cancelled (%v).\n", err)
+				return fmt.Errorf("upgrade cancelled: %w", err)
+			}
 		}
-		input = strings.TrimSpace(input)
-		if input != "y" && input != "Y" {
+		if !confirmed {
 			fmt.Println("Upgrade cancelled.")
 			return nil
 		}
