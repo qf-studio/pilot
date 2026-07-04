@@ -550,6 +550,17 @@ type PRState struct {
 	// names the actual trigger (GH-3569). In-memory only; lost on restart, which
 	// degrades to the env-based fallback wording.
 	EscalationReason string
+	// TerminalLabel overrides the default pilot-retry-ready label that
+	// notifyExternalClose applies once it observes this PR closed on GitHub.
+	// Set by a close path that already determined the issue must NOT be
+	// auto-retried under its own number — either because the failure is
+	// terminal (iteration/size-guard cap reached) or because a dependent
+	// follow-up issue was already created to continue the work, and re-queuing
+	// the original would cause a duplicate dispatch. Empty means "use the
+	// default retry-ready flow" (GH-3806). In-memory only; lost on restart —
+	// safe because a restart re-enters the handler that sets it before the PR
+	// can reach notifyExternalClose again.
+	TerminalLabel string
 }
 
 // snapshot returns a detached, field-by-field copy of the PRState with a fresh
@@ -589,6 +600,7 @@ func (ps *PRState) snapshot() *PRState {
 		ReleasingAttempts:       ps.ReleasingAttempts,
 		ReleasingFirstAt:        ps.ReleasingFirstAt,
 		EscalationReason:        ps.EscalationReason,
+		TerminalLabel:           ps.TerminalLabel,
 	}
 	// DiscoveredChecks is a slice — copy the backing array so consumers can't
 	// mutate the live PR's slice through the snapshot.
