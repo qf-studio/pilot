@@ -923,6 +923,61 @@ func TestStateStore_MigrateAdapterProcessedPrimaryKey(t *testing.T) {
 	}
 }
 
+// TestStateStore_PruneOrphanedEmptyRepoRows verifies GH-3819 cleanup: rows for
+// repo-scoped adapters (github/gitlab/azuredevops) with an empty repo are
+// dead weight (repoKey() is never empty for these adapters) and get purged,
+// while tracker-style adapters (linear/jira/asana/plane), which legitimately
+// use repo="", are left untouched.
+func TestStateStore_PruneOrphanedEmptyRepoRows(t *testing.T) {
+	store := newTestStateStore(t)
+
+	// Seed an orphaned empty-repo row directly, bypassing Mark() (which a
+	// correctly-behaving repo-scoped poller would never call with repo="").
+	if _, err := store.db.Exec(
+		`INSERT INTO adapter_processed (adapter, repo, issue_id, processed_at, result)
+		 VALUES ('github', '', '5', CURRENT_TIMESTAMP, '')`,
+	); err != nil {
+		t.Fatalf("seed orphaned row: %v", err)
+	}
+
+	// Legitimate rows that must survive: a real repo-scoped row, and the
+	// tracker-style repo="" rows.
+	if err := store.Mark("github", "org/repo-a", "5"); err != nil {
+		t.Fatalf("Mark(github, org/repo-a) failed: %v", err)
+	}
+	if err := store.Mark("jira", "", "PROJ-1"); err != nil {
+		t.Fatalf("Mark(jira) failed: %v", err)
+	}
+
+	if err := store.pruneOrphanedEmptyRepoRows(); err != nil {
+		t.Fatalf("pruneOrphanedEmptyRepoRows failed: %v", err)
+	}
+
+	ok, err := store.IsProcessed("github", "", "5")
+	if err != nil {
+		t.Fatalf("IsProcessed(github, empty repo) failed: %v", err)
+	}
+	if ok {
+		t.Error("orphaned empty-repo github row should have been pruned")
+	}
+
+	ok, err = store.IsProcessed("github", "org/repo-a", "5")
+	if err != nil {
+		t.Fatalf("IsProcessed(github, org/repo-a) failed: %v", err)
+	}
+	if !ok {
+		t.Error("legitimate github row should survive pruning")
+	}
+
+	ok, err = store.IsProcessed("jira", "", "PROJ-1")
+	if err != nil {
+		t.Fatalf("IsProcessed(jira) failed: %v", err)
+	}
+	if !ok {
+		t.Error("tracker-style jira row (repo=\"\" by design) should survive pruning")
+	}
+}
+
 func TestStateStore_MigrateLegacyProcessedTables(t *testing.T) {
 	// Migration test: seed adapter_processed directly (legacy tables are dropped on migrate).
 	store := newTestStateStore(t)

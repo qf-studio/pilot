@@ -121,6 +121,16 @@ func (s *StateStore) migrate() error {
 		return fmt.Errorf("adapter_processed primary key migration failed: %w", err)
 	}
 
+	// GH-3819: Purge orphaned empty-repo rows for repo-scoped adapters. These
+	// can only have been written before the repo column existed (or by the
+	// GH-3819 collision bug clobbering a row down to its zero value); a
+	// repo-scoped poller always calls Mark/IsProcessed/Load with a non-empty
+	// "owner/repo" key, so such rows can never be matched again and would
+	// otherwise sit as permanent dead weight.
+	if err := s.pruneOrphanedEmptyRepoRows(); err != nil {
+		return fmt.Errorf("adapter_processed empty-repo cleanup failed: %w", err)
+	}
+
 	// TASK-298: Consolidate 7 legacy per-adapter tables into adapter_processed.
 	if err := s.migrateLegacyProcessedTables(); err != nil {
 		return fmt.Errorf("legacy processed tables migration failed: %w", err)
@@ -200,6 +210,32 @@ func (s *StateStore) migrateAdapterProcessedPrimaryKey() error {
 		return fmt.Errorf("rename adapter_processed_gh3819: %w", err)
 	}
 	return tx.Commit()
+}
+
+// repoScopedAdapters lists adapter names whose pollers always dedup within a
+// specific repo (as opposed to tracker-style adapters — linear, jira, asana,
+// plane — which pass repo="" by design, see Mark's doc comment).
+var repoScopedAdapters = []string{"github", "gitlab", "azuredevops"}
+
+// pruneOrphanedEmptyRepoRows deletes adapter_processed rows for repo-scoped
+// adapters that have an empty repo. Such rows cannot correspond to any real
+// lookup (repoKey() is never empty for these adapters) and are either
+// pre-TASK-298 leftovers from before the repo column existed, or residue from
+// the GH-3819 collision bug. Safe to run on every startup: idempotent, and
+// never touches tracker-style adapters, which legitimately use repo="".
+func (s *StateStore) pruneOrphanedEmptyRepoRows() error {
+	placeholders := make([]string, len(repoScopedAdapters))
+	args := make([]interface{}, len(repoScopedAdapters))
+	for i, a := range repoScopedAdapters {
+		placeholders[i] = "?"
+		args[i] = a
+	}
+	query := fmt.Sprintf(
+		`DELETE FROM adapter_processed WHERE repo = '' AND adapter IN (%s)`,
+		strings.Join(placeholders, ", "),
+	)
+	_, err := s.db.Exec(query, args...)
+	return err
 }
 
 // migrateLegacyProcessedTables copies rows from the 7 legacy per-adapter tables
