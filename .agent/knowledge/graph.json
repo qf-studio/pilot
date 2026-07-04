@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "updated": "2026-07-04",
+  "updated": "2026-07-03",
   "nodes": {
     "concepts": {
       "pilot-architecture": {
@@ -806,6 +806,37 @@
         "incident": "2026-07-03: GH-3764 child sub-issue completed 6 commits but push/PR step failed silently; no remote branch existed; commits survived only in shared local object store, salvaged manually into PR #3773 (TASK-382 defect D2).",
         "file": ".agent/knowledge/memories/pitfalls/bug_child_push_pr_silent_stranding.md",
         "origin_task": "GH-3785"
+      },
+      "mem-044": {
+        "type": "pitfall",
+        "summary": "GH-3790/D7: self-upgrade only fires on a TUI \"u\" keypress (internal/dashboard/tui.go:1017 is the sole writer to upgradeRequestCh; main.go:2833 OnUpdate only logs+notifies, never enqueues). VersionChecker keeps detecting releases every 5min forever, but PerformHotUpgrade never runs unless a human is watching the dashboard and presses u. Confirmed via daemon.log: restarts cluster around active terminal sessions (2026-06-26, and 2026-07-03 up to 12:50:23), then a clean 7h silent gap (12:50-20:01) with zero restart attempts/errors while v2.201.3-v2.207.0 shipped, ending only at a manual daemon restart. Outside --dashboard mode the whole checker+hot-upgrade subsystem is never constructed at all.",
+        "concepts": [
+          "hot-upgrade",
+          "release",
+          "autopilot",
+          "self-upgrade"
+        ],
+        "confidence": 0.95,
+        "severity": "high",
+        "created": "2026-07-04",
+        "incident": "2026-07-03: daemon hot-upgraded to v2.201.2 at 12:50:23+02:00, then sat 7+ hours through v2.202.0-v2.207.0 with zero upgrade attempts (not failures \u2014 total silence) until a manual restart at 20:01.",
+        "file": ".agent/knowledge/memories/pitfalls/pitfall_self_upgrade_requires_manual_keypress.md",
+        "origin_task": "GH-3790-1"
+      },
+      "mem-045": {
+        "type": "decision",
+        "summary": "GH-3790 fix: OnUpdate now auto-enqueues the hot upgrade (config-gated via upgrade.auto_hot_upgrade, keypress kept as manual override); new VersionChecker staleness check logs WARN + fires alerts.Event once upgrade.stale_release_threshold releases behind, plus a pilot doctor counterpart (checkSelfUpgradeStaleness). Also added the missing default service_unhealthy alert rule so config-error/staleness alerts actually dispatch out of the box.",
+        "concepts": [
+          "hot-upgrade",
+          "release",
+          "self-upgrade",
+          "alerts"
+        ],
+        "confidence": 0.9,
+        "severity": "high",
+        "created": "2026-07-04",
+        "file": ".agent/knowledge/memories/decisions/decision_self_upgrade_auto_trigger_and_staleness_check.md",
+        "origin_task": "GH-3790-3"
       }
     }
   },
@@ -943,6 +974,11 @@
     {
       "from": "mem-025",
       "to": "mem-024",
+      "type": "relates_to"
+    },
+    {
+      "from": "mem-040",
+      "to": "mem-044",
       "type": "relates_to"
     },
     {
@@ -1099,6 +1135,21 @@
       "from": "mem-043",
       "to": "worktree",
       "type": "describes"
+    },
+    {
+      "from": "mem-045",
+      "to": "mem-044",
+      "type": "resolves"
+    },
+    {
+      "from": "mem-045",
+      "to": "hot-upgrade",
+      "type": "about"
+    },
+    {
+      "from": "mem-045",
+      "to": "self-upgrade",
+      "type": "about"
     }
   ]
 }

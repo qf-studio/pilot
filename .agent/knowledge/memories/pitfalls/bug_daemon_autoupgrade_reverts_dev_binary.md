@@ -44,3 +44,14 @@ one. Cross-check `version` + size, don't trust `lstart` alone.
 A dev-binary `cp` is fine for a 30-second smoke test, but expect it to be reverted within
 ~20min by the next hot-upgrade. Relates to [[learn_restart_vs_rebuild_stale_binary]] (mem-025)
 and [[learning_pilot_release_and_binary_path]] (mem-020) — same binary-path family.
+
+**Update (GH-3790-2, 2026-07-04):** the ~20min revert window observed here is not the
+hot-upgrade running continuously/unattended — [[pitfall_self_upgrade_requires_manual_keypress]]
+(mem-044) later traced the trigger to a single manual TUI `'u'` keypress
+(`internal/dashboard/tui.go:1017`); nothing else ever writes to `upgradeRequestCh`. The
+2026-06-26 12:32→12:52 revert happened during an actively-attended dashboard session (the
+same session mem-044 cites when explaining why restarts cluster around attended terminals) —
+someone pressed `'u'` after the dev binary was installed, pulling the latest release over it.
+Don't read this pitfall as "the daemon silently re-upgrades on a timer" — it re-upgrades only
+when a human triggers it, which happens to make dev-binary testing during active sessions
+just as fragile as staying stale during unattended ones (mem-044).

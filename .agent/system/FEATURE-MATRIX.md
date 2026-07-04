@@ -438,7 +438,8 @@
 |---------|--------|---------|-------------|------------|-------|
 | Version check | ✅ | upgrade | `pilot version` | - | Shows current |
 | Auto-upgrade | ✅ | upgrade | `pilot upgrade` | - | Downloads latest |
-| Hot upgrade | ✅ | upgrade | `u` key in dashboard | - | Graceful drain + restart, no orphaned tasks (v0.18.0, v0.63.0) |
+| Hot upgrade | ✅ | upgrade | `u` key in dashboard (manual) or automatic | `upgrade.auto_hot_upgrade` | Graceful drain + restart, no orphaned tasks (v0.18.0, v0.63.0); auto-enqueues on detection by default, keypress still works as manual override (GH-3790) |
+| Self-upgrade staleness check | ✅ | upgrade, health | `pilot doctor` | `upgrade.stale_release_threshold` | Warns (log + alert) when the daemon is N+ releases behind — catches the failure mode where self-upgrade silently stops firing (GH-3790) |
 | Config init | ✅ | config | `pilot init` | - | Creates default |
 | Setup wizard | ✅ | main | `pilot setup` | - | Interactive config |
 | Project add wizard | ✅ | cli | `pilot project add` (no flags) | - | gh CLI auth, repo picker, token seeding; `--no-wizard` for CI (GH-3017, v2.187.1) |

@@ -51,7 +51,7 @@ func StartupBanner(version, gateway string) {
 
 // StartupWithHealth prints startup banner with health status
 func StartupWithHealth(version string, cfg *config.Config) {
-	report := health.RunChecks(cfg)
+	report := health.RunChecks(cfg, version)
 
 	// Header
 	fmt.Println()
@@ -99,7 +99,7 @@ func StartupWithHealth(version string, cfg *config.Config) {
 
 // StartupTelegram prints telegram-specific startup with health
 func StartupTelegram(version, project, chatID string, cfg *config.Config) {
-	report := health.RunChecks(cfg)
+	report := health.RunChecks(cfg, version)
 
 	// ASCII logo
 	fmt.Print(Logo)
@@ -204,7 +204,7 @@ func StartupTelegram(version, project, chatID string, cfg *config.Config) {
 
 // StartupServer prints server-specific startup with health
 func StartupServer(version, gateway string, cfg *config.Config) {
-	report := health.RunChecks(cfg)
+	report := health.RunChecks(cfg, version)
 
 	// Header
 	fmt.Print(Logo)

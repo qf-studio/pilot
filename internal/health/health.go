@@ -24,6 +24,7 @@ import (
 	"github.com/qf-studio/pilot/internal/adapters/telegram"
 	"github.com/qf-studio/pilot/internal/config"
 	"github.com/qf-studio/pilot/internal/health/verify"
+	"github.com/qf-studio/pilot/internal/upgrade"
 )
 
 // Status represents feature or dependency status
@@ -399,8 +400,65 @@ func checkBrewTapHealth(get httpGetter) ConfigCheck {
 	return ConfigCheck{Name: checkName, Status: StatusOK, Message: "last release failed (not at brew step)"}
 }
 
-// RunChecks performs all health checks based on config
-func RunChecks(cfg *config.Config) *HealthReport {
+// defaultStaleReleaseThreshold mirrors config.UpgradeConfig's default so
+// doctor still warns when cfg.Upgrade is unset (e.g. loaded via
+// config.DefaultConfig() paths that predate the field).
+const defaultStaleReleaseThreshold = 3
+
+// checkSelfUpgradeStaleness compares the running version against GitHub
+// releases and warns when the daemon has fallen threshold-or-more releases
+// behind (GH-3790: self-upgrade previously had no automatic trigger, so a
+// daemon could silently run 8+ releases stale with nothing surfacing it).
+// This is the doctor/one-shot counterpart to the periodic runtime check in
+// upgrade.VersionChecker — same threshold and comparison, different cadence.
+func checkSelfUpgradeStaleness(get httpGetter, currentVersion string, threshold int) ConfigCheck {
+	const checkName = "self-upgrade.staleness"
+
+	if threshold <= 0 {
+		return ConfigCheck{Name: checkName, Status: StatusOK, Message: "check disabled"}
+	}
+
+	url := fmt.Sprintf("https://api.github.com/repos/%s/releases?per_page=%d", upgrade.GitHubRepo, releasesCheckLimit)
+	resp, err := get(url)
+	if err != nil {
+		return ConfigCheck{Name: checkName, Status: StatusWarning, Message: "could not reach GitHub API"}
+	}
+	defer resp.Body.Close() //nolint:errcheck
+
+	if resp.StatusCode != http.StatusOK {
+		return ConfigCheck{
+			Name:    checkName,
+			Status:  StatusWarning,
+			Message: fmt.Sprintf("GitHub API returned %d", resp.StatusCode),
+		}
+	}
+
+	var releases []upgrade.Release
+	if err := json.NewDecoder(resp.Body).Decode(&releases); err != nil {
+		return ConfigCheck{Name: checkName, Status: StatusWarning, Message: "could not parse releases"}
+	}
+
+	behind := upgrade.ReleasesBehind(releases, currentVersion)
+	if behind >= threshold {
+		return ConfigCheck{
+			Name:    checkName,
+			Status:  StatusWarning,
+			Message: fmt.Sprintf("%d releases behind (running %s)", behind, currentVersion),
+			Fix:     "Check ~/.pilot/logs/daemon.log for hot-upgrade errors, or restart the daemon manually",
+		}
+	}
+
+	return ConfigCheck{Name: checkName, Status: StatusOK, Message: fmt.Sprintf("up to date (%d behind)", behind)}
+}
+
+// releasesCheckLimit mirrors upgrade.releasesFetchLimit — kept as a separate
+// constant since it belongs to a different package's public API surface.
+const releasesCheckLimit = 30
+
+// RunChecks performs all health checks based on config. currentVersion is
+// compared against GitHub releases for the self-upgrade staleness check
+// (GH-3790); pass "" to skip it.
+func RunChecks(cfg *config.Config, currentVersion string) *HealthReport {
 	// Determine active backend type from config
 	backendType := "claude-code" // default
 	if cfg.Executor != nil && cfg.Executor.Type != "" {
@@ -420,6 +478,13 @@ func RunChecks(cfg *config.Config) *HealthReport {
 	}
 	if liveCheck := checkSlackTokenLive(cfg, newSlackVerifier); liveCheck != nil {
 		configChecks = append(configChecks, *liveCheck)
+	}
+	if currentVersion != "" {
+		threshold := defaultStaleReleaseThreshold
+		if cfg.Upgrade != nil {
+			threshold = cfg.Upgrade.StaleReleaseThreshold
+		}
+		configChecks = append(configChecks, checkSelfUpgradeStaleness(brewTapHTTPGet, currentVersion, threshold))
 	}
 
 	report := &HealthReport{

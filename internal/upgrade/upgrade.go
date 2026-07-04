@@ -57,6 +57,10 @@ type VersionInfo struct {
 	LatestRelease *Release
 	UpdateAvail   bool
 	ReleaseNotes  string
+	// ReleasesBehind counts stable (non-draft, non-prerelease) releases newer
+	// than Current, up to releasesFetchLimit. Used by the staleness check
+	// (GH-3790) to fail loud when self-upgrade has silently stopped firing.
+	ReleasesBehind int
 }
 
 // Upgrader handles version checking and self-update
@@ -119,23 +123,48 @@ func isHomebrewPath(path string) bool {
 
 // CheckVersion checks if a newer version is available
 func (u *Upgrader) CheckVersion(ctx context.Context) (*VersionInfo, error) {
-	release, err := u.fetchLatestRelease(ctx)
+	releases, err := u.fetchReleases(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch latest release: %w", err)
+	}
+
+	release := firstStableRelease(releases)
+	if release == nil {
+		return nil, fmt.Errorf("no releases found")
 	}
 
 	latest := strings.TrimPrefix(release.TagName, "v")
 	current := strings.TrimPrefix(u.currentVersion, "v")
 
 	info := &VersionInfo{
-		Current:       u.currentVersion,
-		Latest:        release.TagName,
-		LatestRelease: release,
-		UpdateAvail:   compareVersions(current, latest) < 0,
-		ReleaseNotes:  release.Body,
+		Current:        u.currentVersion,
+		Latest:         release.TagName,
+		LatestRelease:  release,
+		UpdateAvail:    compareVersions(current, latest) < 0,
+		ReleaseNotes:   release.Body,
+		ReleasesBehind: ReleasesBehind(releases, u.currentVersion),
 	}
 
 	return info, nil
+}
+
+// ReleasesBehind counts how many releases in the list are stable
+// (non-draft, non-prerelease) and newer than currentVersion. Exported so
+// callers outside this package (e.g. internal/health's doctor check) can
+// reuse the same comparison instead of re-deriving it (GH-3790).
+func ReleasesBehind(releases []Release, currentVersion string) int {
+	current := strings.TrimPrefix(currentVersion, "v")
+	count := 0
+	for i := range releases {
+		if releases[i].Draft || releases[i].Prerelease {
+			continue
+		}
+		tag := strings.TrimPrefix(releases[i].TagName, "v")
+		if compareVersions(current, tag) < 0 {
+			count++
+		}
+	}
+	return count
 }
 
 // Upgrade downloads and installs the latest version
@@ -224,11 +253,17 @@ func (u *Upgrader) BinaryPath() string {
 	return u.binaryPath
 }
 
-// fetchLatestRelease fetches the latest release from GitHub
+// releasesFetchLimit bounds how many releases are pulled per check. Needs to
+// comfortably exceed how many releases can ship between checks — GH-3790 saw
+// 8 releases pass silently in one 7h11m gap — so staleness counting doesn't
+// undercount once it starts falling behind.
+const releasesFetchLimit = 30
+
+// fetchReleases fetches the most recent releases from GitHub.
 // Uses /releases endpoint instead of /releases/latest to avoid GitHub API caching
 // which can return stale data for several minutes after a new release is created.
-func (u *Upgrader) fetchLatestRelease(ctx context.Context) (*Release, error) {
-	url := fmt.Sprintf("https://api.github.com/repos/%s/releases?per_page=10", GitHubRepo)
+func (u *Upgrader) fetchReleases(ctx context.Context) ([]Release, error) {
+	url := fmt.Sprintf("https://api.github.com/repos/%s/releases?per_page=%d", GitHubRepo, releasesFetchLimit)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
@@ -254,19 +289,22 @@ func (u *Upgrader) fetchLatestRelease(ctx context.Context) (*Release, error) {
 		return nil, fmt.Errorf("failed to parse releases: %w", err)
 	}
 
-	// Find first non-draft, non-prerelease release
+	return releases, nil
+}
+
+// firstStableRelease returns the first non-draft, non-prerelease release, or
+// falls back to the first release if all are drafts/prereleases. Returns nil
+// for an empty list.
+func firstStableRelease(releases []Release) *Release {
 	for i := range releases {
 		if !releases[i].Draft && !releases[i].Prerelease {
-			return &releases[i], nil
+			return &releases[i]
 		}
 	}
-
 	if len(releases) == 0 {
-		return nil, fmt.Errorf("no releases found")
+		return nil
 	}
-
-	// Fallback to first release if all are drafts/prereleases
-	return &releases[0], nil
+	return &releases[0]
 }
 
 // findAsset finds the appropriate release asset for the current platform
