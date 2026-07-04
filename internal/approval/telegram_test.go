@@ -939,6 +939,7 @@ type mockPendingStore struct {
 	insertErr error
 	deleteErr error
 	loadErr   error
+	pruneErr  error
 }
 
 func newMockPendingStore() *mockPendingStore {
@@ -978,6 +979,22 @@ func (s *mockPendingStore) LoadPendingApprovals() ([]*memory.PendingApproval, er
 		out = append(out, &cp)
 	}
 	return out, nil
+}
+
+func (s *mockPendingStore) PrunePendingApprovals(cutoff time.Time) (int64, error) {
+	if s.pruneErr != nil {
+		return 0, s.pruneErr
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var deleted int64
+	for id, r := range s.rows {
+		if r.ExpiresAt.Before(cutoff) {
+			delete(s.rows, id)
+			deleted++
+		}
+	}
+	return deleted, nil
 }
 
 func (s *mockPendingStore) get(id string) *memory.PendingApproval {
@@ -1259,4 +1276,171 @@ func findSubstring(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+// --- PruneExpired tests (GH-3825) ---
+
+func TestTelegramHandler_PruneExpired_EditsMessageAndRemoves(t *testing.T) {
+	client := &mockTelegramClient{}
+	store := newMockPendingStore()
+	handler := NewTelegramHandler(client, "chat123").WithStore(store)
+
+	req := &Request{
+		ID: "exp-1", TaskID: "T-1", Stage: StagePreMerge,
+		Title: "Test", ExpiresAt: time.Now().Add(-time.Minute),
+	}
+	if _, err := handler.SendApprovalRequest(context.Background(), req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	n, err := handler.PruneExpired(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("expected 1 pruned, got %d", n)
+	}
+
+	handler.mu.RLock()
+	_, stillPending := handler.pending["exp-1"]
+	handler.mu.RUnlock()
+	if stillPending {
+		t.Error("expected expired request to be removed from pending map")
+	}
+
+	edited := client.getEditedMessages()
+	if len(edited) != 1 {
+		t.Fatalf("expected 1 edited message, got %d", len(edited))
+	}
+	if !containsString(edited[0].Text, "expired") && !containsString(edited[0].Text, "EXPIRED") {
+		t.Errorf("expected edited message to mention expiry, got: %s", edited[0].Text)
+	}
+
+	if store.get("exp-1") != nil {
+		t.Error("expected persisted row to be deleted")
+	}
+}
+
+func TestTelegramHandler_PruneExpired_LeavesNonExpired(t *testing.T) {
+	client := &mockTelegramClient{}
+	store := newMockPendingStore()
+	handler := NewTelegramHandler(client, "chat123").WithStore(store)
+
+	expired := &Request{ID: "exp-2", TaskID: "T-2", Stage: StagePreMerge, Title: "Old", ExpiresAt: time.Now().Add(-time.Minute)}
+	live := &Request{ID: "live-2", TaskID: "T-3", Stage: StagePreMerge, Title: "Fresh", ExpiresAt: time.Now().Add(time.Hour)}
+	if _, err := handler.SendApprovalRequest(context.Background(), expired); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := handler.SendApprovalRequest(context.Background(), live); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	n, err := handler.PruneExpired(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("expected 1 pruned, got %d", n)
+	}
+
+	handler.mu.RLock()
+	_, expiredPending := handler.pending["exp-2"]
+	_, livePending := handler.pending["live-2"]
+	handler.mu.RUnlock()
+	if expiredPending {
+		t.Error("expected expired request to be pruned")
+	}
+	if !livePending {
+		t.Error("expected non-expired request to remain pending")
+	}
+	if store.get("live-2") == nil {
+		t.Error("expected non-expired row to remain persisted")
+	}
+}
+
+func TestTelegramHandler_PruneExpired_RehydratedWithoutMessageID(t *testing.T) {
+	client := &mockTelegramClient{}
+	store := newMockPendingStore()
+	// Insert with a short-lived future expiry so Rehydrate accepts it, then
+	// let it lapse before pruning — this simulates a request rehydrated after
+	// a restart, which has no known MessageID (never persisted).
+	_ = store.InsertPendingApproval(&memory.PendingApproval{
+		ID: "rehy-prune", TaskID: "T-R", Stage: "pre_merge",
+		Title: "Rehydrated", CreatedAt: time.Now(), ExpiresAt: time.Now().Add(20 * time.Millisecond),
+	})
+
+	handler := NewTelegramHandler(client, "chat123").WithStore(store)
+	if err := handler.Rehydrate(context.Background()); err != nil {
+		t.Fatalf("rehydrate error: %v", err)
+	}
+
+	time.Sleep(30 * time.Millisecond)
+
+	n, err := handler.PruneExpired(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("expected 1 pruned, got %d", n)
+	}
+
+	// No MessageID was ever known for this rehydrated request, so no edit
+	// should have been attempted — but it must still be removed.
+	if len(client.getEditedMessages()) != 0 {
+		t.Errorf("expected no message edit for rehydrated request without a MessageID, got %d", len(client.getEditedMessages()))
+	}
+	handler.mu.RLock()
+	_, stillPending := handler.pending["rehy-prune"]
+	handler.mu.RUnlock()
+	if stillPending {
+		t.Error("expected rehydrated expired request to be removed from pending map")
+	}
+	if store.get("rehy-prune") != nil {
+		t.Error("expected persisted row to be deleted")
+	}
+}
+
+func TestTelegramHandler_PruneExpired_NoStore(t *testing.T) {
+	client := &mockTelegramClient{}
+	handler := NewTelegramHandler(client, "chat123")
+
+	req := &Request{ID: "exp-3", TaskID: "T-4", Stage: StagePreMerge, Title: "Test", ExpiresAt: time.Now().Add(-time.Minute)}
+	if _, err := handler.SendApprovalRequest(context.Background(), req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	n, err := handler.PruneExpired(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error without a store: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("expected 1 pruned, got %d", n)
+	}
+	if len(client.getEditedMessages()) != 1 {
+		t.Errorf("expected message to still be edited without a store, got %d edits", len(client.getEditedMessages()))
+	}
+}
+
+func TestTelegramHandler_PruneExpired_SweepsOrphanedStoreRows(t *testing.T) {
+	client := &mockTelegramClient{}
+	store := newMockPendingStore()
+	handler := NewTelegramHandler(client, "chat123").WithStore(store)
+
+	// A row with no in-memory pending counterpart — e.g. left behind by a
+	// process that crashed before Rehydrate ran.
+	_ = store.InsertPendingApproval(&memory.PendingApproval{
+		ID: "orphan-1", TaskID: "T-5", Stage: "pre_merge",
+		Title: "Orphan", CreatedAt: time.Now().Add(-2 * time.Hour), ExpiresAt: time.Now().Add(-time.Hour),
+	})
+
+	n, err := handler.PruneExpired(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("expected 0 in-memory prunes (orphan was never in pending), got %d", n)
+	}
+	if store.get("orphan-1") != nil {
+		t.Error("expected orphaned expired row to be swept from the store")
+	}
 }
