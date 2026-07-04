@@ -19,10 +19,16 @@ import (
 )
 
 // approvalPersister is the subset of memory.Store used for approval persistence
-// in the executions table.
+// and execution-event audit-trail writes in the executions / execution_events
+// tables. GH-3847: PR stage transitions are recorded here so the audit trail
+// survives autopilot's own PR-state-row cleanup after merge (state_store.go
+// deletes the row; execution_events is keyed off executions.id, not the PR
+// state row, so it is unaffected).
 type approvalPersister interface {
 	SetApprovalRequestID(ctx context.Context, taskID, requestID string) error
 	SetApprovalDecision(ctx context.Context, requestID, decision, by string) error
+	GetLatestExecutionByTaskID(taskID string) (*memory.Execution, error)
+	InsertExecutionEvent(executionID string, stage memory.Stage, detail string) error
 }
 
 // projectBoardSyncer abstracts GitHub Projects V2 board status updates.
@@ -413,6 +419,62 @@ func (c *Controller) persistRemovePR(prNumber int) {
 	}
 }
 
+// executionEventStageFor maps a PRStage to the memory.Stage recorded in the
+// execution-events audit trail. Only the subset of PRStages that mark a
+// durable milestone (as opposed to an in-progress poll state like
+// StageWaitingCI) has an entry; ok is false for everything else, so callers
+// skip the write instead of logging noise for every poll cycle.
+func executionEventStageFor(prStage PRStage) (memory.Stage, bool) {
+	switch prStage {
+	case StageCIPassed:
+		return memory.StageCIPassed, true
+	case StageCIFailed:
+		return memory.StageCIFailed, true
+	case StageAwaitApproval:
+		return memory.StageAwaitingApproval, true
+	case StageMerged:
+		return memory.StageMerged, true
+	case StageFailed:
+		return memory.StageFailed, true
+	default:
+		return "", false
+	}
+}
+
+// recordExecutionEvent writes a best-effort audit-trail entry for prState's
+// current stage to the execution_events table (GH-3847). It resolves the
+// execution row via the same "GH-<issue>" task ID used for approval
+// persistence, so it survives autopilot's own PR-state-row cleanup — the
+// event is keyed off executions.id, not the PR state row that gets deleted
+// after a successful merge.
+//
+// Failures (no memory store wired, no matching execution row, insert error)
+// are logged and swallowed: the audit trail is a diagnostic aid, not load-
+// bearing for the state machine, so a lookup miss must never fail the PR's
+// processing cycle.
+func (c *Controller) recordExecutionEvent(prState *PRState, stage memory.Stage, detail string) {
+	if c.memoryStore == nil {
+		return
+	}
+
+	taskID := fmt.Sprintf("GH-%d", prState.IssueNumber)
+	if prState.IssueNumber == 0 {
+		taskID = fmt.Sprintf("PR-%d", prState.PRNumber)
+	}
+
+	exec, err := c.memoryStore.GetLatestExecutionByTaskID(taskID)
+	if err != nil {
+		c.log.Warn("execution audit trail: no execution row for task, skipping event",
+			"pr", prState.PRNumber, "task_id", taskID, "stage", stage, "error", err)
+		return
+	}
+
+	if err := c.memoryStore.InsertExecutionEvent(exec.ID, stage, detail); err != nil {
+		c.log.Warn("execution audit trail: failed to insert execution event",
+			"pr", prState.PRNumber, "execution_id", exec.ID, "stage", stage, "error", err)
+	}
+}
+
 // persistPRFailures saves per-PR failure state to the store if available.
 func (c *Controller) persistPRFailures(prNumber int, state *prFailureState) {
 	if c.stateStore == nil {
@@ -685,6 +747,13 @@ func (c *Controller) ProcessPR(ctx context.Context, prNumber int, ghPR *github.P
 		c.lastProgressAt = time.Now()
 		c.deadlockAlertSent = false
 		c.mu.Unlock()
+
+		// GH-3847: record durable-milestone transitions to the execution-events
+		// audit trail. Best-effort — see recordExecutionEvent.
+		if eventStage, ok := executionEventStageFor(prState.Stage); ok {
+			detail := fmt.Sprintf("pr #%d: %s -> %s", prNumber, previousStage, prState.Stage)
+			c.recordExecutionEvent(prState, eventStage, detail)
+		}
 	}
 
 	if err != nil {
@@ -2239,6 +2308,13 @@ func (c *Controller) handleReleasing(ctx context.Context, prState *PRState) erro
 			}
 		}
 	}
+
+	// GH-3847: unlike ci_passed/ci_failed/awaiting_approval/merged/failed, a
+	// successful release never changes prState.Stage (it stays StageReleasing
+	// until removePR below), so it can't be caught by ProcessPR's stage-diff
+	// hook — record it explicitly here instead.
+	c.recordExecutionEvent(prState, memory.StageReleased,
+		fmt.Sprintf("pr #%d: released %s (tag %s)", prState.PRNumber, prState.ReleaseVersion, tagName))
 
 	c.removePR(prState.PRNumber)
 	return nil
