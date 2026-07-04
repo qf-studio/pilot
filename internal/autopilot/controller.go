@@ -876,7 +876,7 @@ func (c *Controller) handleCIPassed(ctx context.Context, prState *PRState) error
 		if issueErr != nil {
 			c.log.Warn("handleCIPassed: GetIssue failed, skipping scope-drift gate (fail-open)",
 				"pr", prState.PRNumber, "issue", prState.IssueNumber, "error", issueErr)
-		} else if reason := ScopeDriftReason(prState.PRTitle, issue.Title); reason != "" {
+		} else if reason := ScopeDriftReason(c.log, prState.PRTitle, issue.Title); reason != "" {
 			escalateReason = reason
 		}
 	}

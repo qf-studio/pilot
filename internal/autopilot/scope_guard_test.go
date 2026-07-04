@@ -1,6 +1,7 @@
 package autopilot
 
 import (
+	"log/slog"
 	"strings"
 	"testing"
 
@@ -19,6 +20,12 @@ func TestExtractTypeScope(t *testing.T) {
 		{"feat(auth)!: breaking change", "feat", "auth"},
 		{"random title", "", ""},
 		{"", "", ""},
+		// GH-3827: worker PRs are titled with a leading issue-ref tag.
+		{"GH-3785: fix(executor): retry backoff", "fix", "executor"},
+		{"GH-3785: feat(auth): add OAuth", "feat", "auth"},
+		{"gh-3785: fix(executor): case-insensitive tag", "fix", "executor"},
+		{"JIRA-123: chore: bump deps", "", ""}, // missing scope, still no match
+		{"GH-3785:fix(executor): no space after colon", "fix", "executor"},
 	}
 	for _, tc := range cases {
 		gotType, gotS := extractTypeScope(tc.title)
@@ -61,10 +68,34 @@ func TestScopeDriftReason(t *testing.T) {
 			prTitle:    "raw title",
 			issueTitle: "feat(auth): X",
 		},
+		// GH-3827: worker PRs are titled "GH-NNNN: type(scope): ..." — the gate
+		// must strip the issue-ref tag rather than abstain on every such PR.
+		{
+			name:         "GH-NNNN prefix on PR title — type mismatch still escalates",
+			prTitle:      "GH-3785: feat(auth): add OAuth provider integration",
+			issueTitle:   "fix(executor): cherry-pick atomic binary replacement",
+			wantContains: "type",
+		},
+		{
+			name:         "GH-NNNN prefix on PR title — scope mismatch still escalates",
+			prTitle:      "GH-3785: fix(memory): X",
+			issueTitle:   "fix(executor): Y",
+			wantContains: "scope",
+		},
+		{
+			name:       "GH-NNNN prefix on PR title — matching type/scope, no drift",
+			prTitle:    "GH-3785: fix(executor): retry backoff tweak",
+			issueTitle: "fix(executor): retry backoff bug",
+		},
+		{
+			name:       "GH-NNNN prefix on both titles — matching, no drift",
+			prTitle:    "GH-3796: fix(executor): retry backoff tweak",
+			issueTitle: "GH-3785: fix(executor): retry backoff bug",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := ScopeDriftReason(tc.prTitle, tc.issueTitle)
+			got := ScopeDriftReason(nil, tc.prTitle, tc.issueTitle)
 			if tc.wantContains == "" && got != "" {
 				t.Errorf("expected no drift, got %q", got)
 			}
@@ -72,6 +103,26 @@ func TestScopeDriftReason(t *testing.T) {
 				t.Errorf("want reason containing %q, got %q", tc.wantContains, got)
 			}
 		})
+	}
+}
+
+// TestScopeDriftReason_AbstainLogsReason verifies GH-3827: a genuinely
+// unparseable title (no conventional-commit shape at all) must be logged at
+// INFO instead of abstaining silently.
+func TestScopeDriftReason_AbstainLogsReason(t *testing.T) {
+	var buf strings.Builder
+	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	got := ScopeDriftReason(logger, "raw title with no conventional shape", "also raw")
+	if got != "" {
+		t.Fatalf("expected abstain (empty reason), got %q", got)
+	}
+	logged := buf.String()
+	if !strings.Contains(logged, "abstained") {
+		t.Errorf("expected abstention to be logged at INFO, got log output: %q", logged)
+	}
+	if !strings.Contains(logged, "level=INFO") {
+		t.Errorf("expected log level INFO, got: %q", logged)
 	}
 }
 
