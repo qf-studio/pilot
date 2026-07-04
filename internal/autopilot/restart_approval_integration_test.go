@@ -17,10 +17,8 @@ import (
 // drive TelegramHandler through a simulated daemon restart without depending on
 // package approval's unexported test mocks.
 type fakeRestartTelegramClient struct {
-	mu          sync.Mutex
-	nextID      int64
-	answeredCbs []string
-	editedTexts []string
+	mu     sync.Mutex
+	nextID int64
 }
 
 func (f *fakeRestartTelegramClient) SendMessageWithKeyboard(_ context.Context, _, _, _ string, _ [][]approval.InlineKeyboardButton) (*approval.MessageResponse, error) {
@@ -30,17 +28,11 @@ func (f *fakeRestartTelegramClient) SendMessageWithKeyboard(_ context.Context, _
 	return &approval.MessageResponse{Result: &approval.MessageResult{MessageID: f.nextID}}, nil
 }
 
-func (f *fakeRestartTelegramClient) EditMessage(_ context.Context, _ string, _ int64, text, _ string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.editedTexts = append(f.editedTexts, text)
+func (f *fakeRestartTelegramClient) EditMessage(_ context.Context, _ string, _ int64, _, _ string) error {
 	return nil
 }
 
-func (f *fakeRestartTelegramClient) AnswerCallback(_ context.Context, _, text string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.answeredCbs = append(f.answeredCbs, text)
+func (f *fakeRestartTelegramClient) AnswerCallback(_ context.Context, _, _ string) error {
 	return nil
 }
 
