@@ -837,6 +837,19 @@
         "created": "2026-07-04",
         "file": ".agent/knowledge/memories/decisions/decision_self_upgrade_auto_trigger_and_staleness_check.md",
         "origin_task": "GH-3790-3"
+      },
+      "mem-046": {
+        "type": "pitfall",
+        "summary": "Autopilot's direct PR-close call sites (handleCIFailed iteration-limit/size-guard/main, handleReviewRequested iteration-limit/main) never posted a PR/issue comment or corrected issue labels \u2014 the only convergence point that could have was notifyExternalClose, whose pilot-done skip-guard (GH-2340) returned with zero comments when the issue already had pilot-done from an earlier, unrelated PR. Result: PR #3802 (fix for #3789) closed CI-red with zero explanation and #3789 kept pilot-done, making discarded work look shipped (TASK-382 D9). Fix (GH-3806): notifyExternalClose now always posts a PR comment (AddPRComment hits /issues/{prNumber}/comments, not /pulls/.../comments) + issue comment from prState.Error on every branch including both skip guards; close sites set prState.Error (specific reason) and new in-memory PRState.TerminalLabel (forces pilot-failed instead of pilot-retry-ready when terminal or superseded by a follow-up issue) instead of commenting inline.",
+        "concepts": [
+          "autopilot"
+        ],
+        "confidence": 0.9,
+        "severity": "high",
+        "created": "2026-07-04",
+        "incident": "TASK-382 D9, observed 2026-07-04 00:30 UTC: PR #3802 closed CI-red silently, issue #3789 retained pilot-done.",
+        "file": ".agent/knowledge/memories/pitfalls/bug_autopilot_silent_pr_close_notifyexternalclose_convergence.md",
+        "origin_task": "GH-3806"
       }
     }
   },

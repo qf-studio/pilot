@@ -966,8 +966,17 @@ func (c *Controller) handleCIFailed(ctx context.Context, prState *PRState) error
 				}
 			}
 
+			// GH-3806: name the reason and terminal outcome so notifyExternalClose
+			// (which fires on the next poll once it sees this PR closed) can post a
+			// PR/issue comment and correct the issue's labels instead of silently
+			// leaving a stale pilot-in-progress/pilot-done on discarded work.
+			reason := fmt.Sprintf("CI fix iteration limit reached (%d/%d): stopping cascade to prevent infinite loop", iteration, c.config.MaxCIFixIterations)
+			if len(failedChecks) > 0 {
+				reason = fmt.Sprintf("%s (failing checks: %s)", reason, strings.Join(failedChecks, ", "))
+			}
 			prState.Stage = StageFailed
-			prState.Error = fmt.Sprintf("CI fix iteration limit reached (%d/%d): stopping cascade to prevent infinite loop", iteration, c.config.MaxCIFixIterations)
+			prState.Error = reason
+			prState.TerminalLabel = github.LabelFailed
 			c.metrics.RecordPRFailed()
 			c.metrics.RecordIssueProcessed("failed")
 			return nil
@@ -1000,8 +1009,10 @@ func (c *Controller) handleCIFailed(ctx context.Context, prState *PRState) error
 						c.log.Warn("board sync on exec failure (size guard) failed", "pr", prState.PRNumber, "error", err)
 					}
 				}
+				// GH-3806: see the matching comment on the iteration-limit branch above.
 				prState.Stage = StageFailed
 				prState.Error = fmt.Sprintf("CI fix size guard: PR has %d additions, over limit %d (likely cascade contamination — escalate to human)", netAdditions, c.config.MaxCIFixPRSize)
+				prState.TerminalLabel = github.LabelFailed
 				c.metrics.RecordPRFailed()
 				c.metrics.RecordIssueProcessed("failed")
 				return nil
@@ -1053,7 +1064,18 @@ func (c *Controller) handleCIFailed(ctx context.Context, prState *PRState) error
 		}
 	}
 
+	// GH-3806: name the reason (and the follow-up issue that now owns this work)
+	// so notifyExternalClose can post the audit-trail comments and mark this
+	// issue pilot-failed instead of leaving it stranded on a stale label — the
+	// fix issue created above carries the retry forward, so this issue must not
+	// also be re-queued (that would double-dispatch the same failure).
+	reason := "CI checks failed"
+	if len(failedChecks) > 0 {
+		reason = fmt.Sprintf("CI checks failed (%s)", strings.Join(failedChecks, ", "))
+	}
 	prState.Stage = StageFailed
+	prState.Error = fmt.Sprintf("%s; fix issue #%d created to continue this work", reason, issueNum)
+	prState.TerminalLabel = github.LabelFailed
 	c.metrics.RecordPRFailed()
 	return nil
 }
@@ -1099,8 +1121,10 @@ func (c *Controller) handleReviewRequested(ctx context.Context, prState *PRState
 				c.log.Warn("failed to close PR", "pr", prState.PRNumber, "error", err)
 			}
 
+			// GH-3806: see the matching comment on handleCIFailed's iteration-limit branch.
 			prState.Stage = StageFailed
 			prState.Error = fmt.Sprintf("review feedback iteration limit reached (%d/%d)", iteration, c.config.ReviewFeedback.MaxIterations)
+			prState.TerminalLabel = github.LabelFailed
 			c.metrics.RecordPRFailed()
 			c.metrics.RecordIssueProcessed("failed")
 			return nil
@@ -1161,7 +1185,12 @@ func (c *Controller) handleReviewRequested(ctx context.Context, prState *PRState
 		}
 	}
 
+	// GH-3806: the revision issue created above now owns the retry, so this
+	// issue must be marked pilot-failed rather than re-queued (see the matching
+	// comment on handleCIFailed's main CI-fail branch).
 	prState.Stage = StageFailed
+	prState.Error = fmt.Sprintf("changes requested by reviewer; revision issue #%d created to continue this work", issueNum)
+	prState.TerminalLabel = github.LabelFailed
 	c.metrics.RecordPRFailed()
 	return nil
 }
@@ -3304,14 +3333,40 @@ func (c *Controller) getBotLogin(ctx context.Context) string {
 	return user.Login
 }
 
-// notifyExternalClose sends notification when a PR is closed externally without merge.
-// GH-1015: Marks the issue as pilot-retry-ready so it can be re-picked by the poller.
+// notifyExternalClose runs once autopilot observes a PR closed without a merge —
+// whether a human closed it, or autopilot closed it itself a poll cycle earlier
+// (handleCIFailed/handleReviewRequested/handleMergeConflict set prState.Error and
+// return; this is the next place execution reaches once the close is visible on
+// GitHub). Every non-merge close converges here, which makes it the single place
+// to guarantee GH-3806's audit trail: a PR comment naming the reason (plus a CI
+// run link when a SHA is known) and a matching issue comment, even along the
+// branches that intentionally skip label changes below.
+//
+// GH-1015: Marks the issue as pilot-retry-ready so it can be re-picked by the
+// poller — unless prState.TerminalLabel says the failure is terminal or already
+// continues under a different issue number, in which case that label is used
+// instead so the issue is never silently re-queued.
 func (c *Controller) notifyExternalClose(ctx context.Context, prState *PRState) {
 	c.log.Info("PR closed externally without merge", "pr", prState.PRNumber, "issue", prState.IssueNumber)
+
+	reason := prState.Error
+	if reason == "" {
+		reason = "closed without merging (no reason recorded)"
+	}
+
+	prComment := fmt.Sprintf("This PR was closed without merging: %s", reason)
+	if prState.HeadSHA != "" {
+		prComment += fmt.Sprintf("\n\nCI run: https://github.com/%s/%s/commit/%s/checks", c.owner, c.repo, prState.HeadSHA)
+	}
+	if _, err := c.ghClient.AddPRComment(ctx, c.owner, c.repo, prState.PRNumber, prComment); err != nil {
+		c.log.Warn("failed to comment on closed PR", "pr", prState.PRNumber, "error", err)
+	}
 
 	// GH-1015: Add pilot-retry-ready label so the issue can be retried
 	// Remove pilot-in-progress to allow the poller to re-pick it
 	if prState.IssueNumber > 0 {
+		issueComment := fmt.Sprintf("PR #%d was closed without merging: %s", prState.PRNumber, reason)
+
 		// GH-2340: Skip pilot-retry-ready when the issue already carries
 		// pilot-done. This happens when Pilot itself closed a duplicate PR
 		// (e.g. via handleMergeConflict) after the original PR was already
@@ -3322,6 +3377,13 @@ func (c *Controller) notifyExternalClose(ctx context.Context, prState *PRState) 
 			c.log.Warn("failed to fetch issue for label check", "issue", prState.IssueNumber, "error", err)
 		} else if github.HasLabel(issue, github.LabelDone) {
 			c.log.Info("skipping pilot-retry-ready: issue already pilot-done", "issue", prState.IssueNumber, "pr", prState.PRNumber)
+			// GH-3806: pilot-done here means an earlier PR for this issue already
+			// shipped — the label is intentionally left untouched, but this PR's
+			// discarded work must not vanish silently just because of that.
+			issueComment += "\n\nThe issue is already marked pilot-done from an earlier PR, so its labels were left unchanged. This closed PR represents separate, discarded work."
+			if _, cerr := c.ghClient.AddComment(ctx, c.owner, c.repo, prState.IssueNumber, issueComment); cerr != nil {
+				c.log.Warn("failed to comment on issue after PR close", "issue", prState.IssueNumber, "error", cerr)
+			}
 			c.maybeCloseParentIssue(ctx, prState)
 			return
 		}
@@ -3340,6 +3402,10 @@ func (c *Controller) notifyExternalClose(ctx context.Context, prState *PRState) 
 							"issue", prState.IssueNumber,
 							"recovery_pr", pr.HTMLURL,
 							"author", pr.User.Login)
+						issueComment += fmt.Sprintf("\n\nA human recovery PR (%s) is already open for this issue, so it was left as-is instead of being re-queued.", pr.HTMLURL)
+						if _, cerr := c.ghClient.AddComment(ctx, c.owner, c.repo, prState.IssueNumber, issueComment); cerr != nil {
+							c.log.Warn("failed to comment on issue after PR close", "issue", prState.IssueNumber, "error", cerr)
+						}
 						c.maybeCloseParentIssue(ctx, prState)
 						return
 					}
@@ -3347,17 +3413,37 @@ func (c *Controller) notifyExternalClose(ctx context.Context, prState *PRState) 
 			}
 		}
 
-		if err := c.ghClient.AddLabels(ctx, c.owner, c.repo, prState.IssueNumber, []string{github.LabelRetryReady}); err != nil {
-			c.log.Warn("failed to add pilot-retry-ready label", "issue", prState.IssueNumber, "error", err)
+		// GH-3806: a close path that already knows the failure is terminal, or
+		// that a dependent follow-up issue now owns the retry, sets TerminalLabel
+		// so this issue is marked pilot-failed instead of silently re-queued
+		// (which would either retry a cascade that already hit its cap, or
+		// double-dispatch work a follow-up issue is already doing).
+		issueLabel := github.LabelRetryReady
+		nextSteps := "The issue has been marked pilot-retry-ready and will be retried automatically."
+		if prState.TerminalLabel != "" {
+			issueLabel = prState.TerminalLabel
+			nextSteps = "This issue will not be retried automatically under its own number — see the reason above for what happens next."
+		}
+
+		if err := c.ghClient.AddLabels(ctx, c.owner, c.repo, prState.IssueNumber, []string{issueLabel}); err != nil {
+			c.log.Warn("failed to set issue label on PR close", "issue", prState.IssueNumber, "label", issueLabel, "error", err)
 		}
 		if err := c.ghClient.RemoveLabel(ctx, c.owner, c.repo, prState.IssueNumber, github.LabelInProgress); err != nil {
 			c.log.Warn("failed to remove pilot-in-progress label", "issue", prState.IssueNumber, "error", err)
 		}
-		// Remove stale pilot-failed label (GH-1302 gap)
-		if err := c.ghClient.RemoveLabel(ctx, c.owner, c.repo, prState.IssueNumber, github.LabelFailed); err != nil {
-			c.log.Debug("failed to remove pilot-failed (may not exist)", "issue", prState.IssueNumber, "error", err)
+		if issueLabel != github.LabelFailed {
+			// Remove stale pilot-failed label (GH-1302 gap) — only when we're not
+			// the ones setting it above.
+			if err := c.ghClient.RemoveLabel(ctx, c.owner, c.repo, prState.IssueNumber, github.LabelFailed); err != nil {
+				c.log.Debug("failed to remove pilot-failed (may not exist)", "issue", prState.IssueNumber, "error", err)
+			}
 		}
-		c.log.Info("marked issue as pilot-retry-ready (PR closed without merge)", "issue", prState.IssueNumber, "pr", prState.PRNumber)
+		c.log.Info("corrected issue label on PR close", "issue", prState.IssueNumber, "pr", prState.PRNumber, "label", issueLabel)
+
+		issueComment += "\n\n" + nextSteps
+		if _, cerr := c.ghClient.AddComment(ctx, c.owner, c.repo, prState.IssueNumber, issueComment); cerr != nil {
+			c.log.Warn("failed to comment on issue after PR close", "issue", prState.IssueNumber, "error", cerr)
+		}
 	}
 
 	// GH-2198: Close parent epic when all sub-issues are done (even if this one

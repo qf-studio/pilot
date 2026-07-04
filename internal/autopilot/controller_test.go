@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -2904,6 +2905,153 @@ func TestController_CIFixCascadeLimit(t *testing.T) {
 	if !strings.Contains(pr.Error, "CI fix iteration limit reached") {
 		t.Errorf("error should mention iteration limit, got: %s", pr.Error)
 	}
+	if !strings.Contains(pr.Error, "build") {
+		t.Errorf("error should name the failing check, got: %s", pr.Error)
+	}
+	if pr.TerminalLabel != github.LabelFailed {
+		t.Errorf("TerminalLabel = %q, want %q (iteration-limit close must not be silently re-queued)", pr.TerminalLabel, github.LabelFailed)
+	}
+}
+
+// GH-3806: Simulates the full CI-failure close path end to end — handleCIFailed
+// closes the PR after the iteration limit is hit, and on the next poll
+// notifyExternalClose observes the closed PR and must post a PR comment naming
+// the reason and failing check, correct the issue's labels (pilot-failed, not
+// pilot-retry-ready — a stale pilot-done/pilot-in-progress must not survive),
+// and post a matching issue comment. No step in this chain may be silent.
+func TestController_CIFailedClose_PostsCommentsAndCorrectsLabels(t *testing.T) {
+	var prCommentBody, issueCommentBody string
+	var prCommentPosted, issueCommentPosted, failedLabelAdded, inProgressRemoved bool
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/repos/owner/repo/commits/abc1234/check-runs":
+			resp := github.CheckRunsResponse{
+				TotalCount: 1,
+				CheckRuns: []github.CheckRun{
+					{Name: "unit-tests", Status: "completed", Conclusion: "failure"},
+				},
+			}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(resp)
+		case r.URL.Path == "/repos/owner/repo/issues/10" && r.Method == http.MethodGet:
+			resp := github.Issue{
+				Number: 10,
+				State:  "open",
+				Body:   "Fix CI failure\n\n<!-- autopilot-meta branch:pilot/GH-5 pr:99 iteration:3 -->\n",
+				Labels: []github.Label{{Name: github.LabelInProgress}},
+			}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(resp)
+		case r.URL.Path == "/repos/owner/repo/pulls/42" && r.Method == http.MethodPatch:
+			w.WriteHeader(http.StatusOK)
+		case r.URL.Path == "/repos/owner/repo/pulls/42" && r.Method == http.MethodGet:
+			resp := github.PullRequest{
+				Number:  42,
+				State:   "closed",
+				HTMLURL: "https://github.com/owner/repo/pull/42",
+				Head:    github.PRRef{Ref: "pilot/GH-10", SHA: "abc1234"},
+			}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(resp)
+		// PRs use the issues comments API (AddPRComment posts to /issues/{prNumber}/comments).
+		case r.URL.Path == "/repos/owner/repo/issues/42/comments" && r.Method == http.MethodPost:
+			prCommentPosted = true
+			body, _ := io.ReadAll(r.Body)
+			prCommentBody = string(body)
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]int{"id": 1})
+		case r.URL.Path == "/repos/owner/repo/issues/10/comments" && r.Method == http.MethodPost:
+			issueCommentPosted = true
+			body, _ := io.ReadAll(r.Body)
+			issueCommentBody = string(body)
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]int{"id": 2})
+		case r.URL.Path == "/repos/owner/repo/issues/10/labels" && r.Method == http.MethodPost:
+			var body struct {
+				Labels []string `json:"labels"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			for _, l := range body.Labels {
+				if l == github.LabelFailed {
+					failedLabelAdded = true
+				}
+				if l == github.LabelRetryReady {
+					t.Error("pilot-retry-ready must not be added for a terminal iteration-limit close")
+				}
+			}
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("[]"))
+		case r.URL.Path == "/repos/owner/repo/issues/10/labels/"+github.LabelInProgress && r.Method == http.MethodDelete:
+			inProgressRemoved = true
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	cfg.Environment = EnvStage
+	cfg.CIPollInterval = 10 * time.Millisecond
+	cfg.CIWaitTimeout = 1 * time.Second
+	cfg.MaxCIFixIterations = 3
+
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc1234", "pilot/GH-10", "")
+
+	ctx := context.Background()
+	if err := c.ProcessPR(ctx, 42, nil); err != nil { // PR created -> waiting CI
+		t.Fatalf("stage 1 error: %v", err)
+	}
+	if err := c.ProcessPR(ctx, 42, nil); err != nil { // waiting CI -> CI failed
+		t.Fatalf("stage 2 error: %v", err)
+	}
+	if err := c.ProcessPR(ctx, 42, nil); err != nil { // CI failed -> closed (iteration limit)
+		t.Fatalf("stage 3 error: %v", err)
+	}
+
+	pr, _ := c.GetPRState(42)
+	if pr.Stage != StageFailed {
+		t.Fatalf("Stage = %s, want %s", pr.Stage, StageFailed)
+	}
+
+	// Next poll: the poller observes the PR is now closed on GitHub and runs
+	// notifyExternalClose — this is where GH-3806's audit trail is written.
+	prState, _ := c.GetPRState(42)
+	ghPR, err := ghClient.GetPullRequest(ctx, "owner", "repo", 42)
+	if err != nil {
+		t.Fatalf("GetPullRequest: %v", err)
+	}
+	prState.mu.Lock()
+	resolved := c.checkExternalMergeOrClose(ctx, prState, ghPR)
+	prState.mu.Unlock()
+	if !resolved {
+		t.Fatal("checkExternalMergeOrClose should report the PR as resolved (closed)")
+	}
+
+	if !prCommentPosted {
+		t.Fatal("expected a PR comment explaining why the PR was closed")
+	}
+	if !strings.Contains(prCommentBody, "unit-tests") {
+		t.Errorf("PR comment should name the failing check, got: %s", prCommentBody)
+	}
+	if !strings.Contains(prCommentBody, "abc1234") {
+		t.Errorf("PR comment should link to the CI run for the head SHA, got: %s", prCommentBody)
+	}
+	if !issueCommentPosted {
+		t.Fatal("expected an issue comment explaining why the linked PR was closed")
+	}
+	if !strings.Contains(issueCommentBody, "42") {
+		t.Errorf("issue comment should reference the closed PR number, got: %s", issueCommentBody)
+	}
+	if !failedLabelAdded {
+		t.Error("issue should be labeled pilot-failed, not left to be silently re-queued")
+	}
+	if !inProgressRemoved {
+		t.Error("pilot-in-progress should be removed from the issue on close")
+	}
 }
 
 // GH-1566: Test that CI fix proceeds when under the iteration limit.
@@ -5123,6 +5271,65 @@ func TestNotifyExternalClose_SkipsRetryReadyWhenDone(t *testing.T) {
 				t.Errorf("pilot-retry-ready added = %v, want %v", retryReadyAdded, tt.wantRetryAdded)
 			}
 		})
+	}
+}
+
+// GH-3806 (TASK-382 D9): reproduces the exact defect — a PR closed after CI
+// failure for an issue that already carries pilot-done (e.g. a duplicate PR,
+// or a later PR against an issue an earlier PR already shipped). Before this
+// fix, notifyExternalClose's pilot-done guard returned immediately with zero
+// comments anywhere, so the discarded PR's failure was invisible and the
+// issue's pilot-done label wrongly implied its later attempt also shipped.
+func TestNotifyExternalClose_PostsCommentsEvenWhenIssueAlreadyDone(t *testing.T) {
+	var prCommentPosted, issueCommentPosted bool
+	var issueCommentBody string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/repos/owner/repo/issues/10" && r.Method == http.MethodGet:
+			issue := github.Issue{Number: 10, State: "closed", Labels: []github.Label{{Name: github.LabelDone}}}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(issue)
+		// PRs use the issues comments API (AddPRComment posts to /issues/{prNumber}/comments).
+		case r.URL.Path == "/repos/owner/repo/issues/42/comments" && r.Method == http.MethodPost:
+			prCommentPosted = true
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]int{"id": 1})
+		case r.URL.Path == "/repos/owner/repo/issues/10/comments" && r.Method == http.MethodPost:
+			issueCommentPosted = true
+			body, _ := io.ReadAll(r.Body)
+			issueCommentBody = string(body)
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]int{"id": 2})
+		case r.URL.Path == "/repos/owner/repo/issues/10/labels" && r.Method == http.MethodPost:
+			t.Error("labels must not be touched when the issue is already pilot-done")
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	cfg := DefaultConfig()
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+
+	prState := &PRState{
+		PRNumber:    42,
+		IssueNumber: 10,
+		HeadSHA:     "deadbee",
+		Error:       "CI checks failed (unit-tests); fix issue #200 created to continue this work",
+	}
+	c.notifyExternalClose(context.Background(), prState)
+
+	if !prCommentPosted {
+		t.Error("expected a PR comment naming the close reason even though the issue is already pilot-done")
+	}
+	if !issueCommentPosted {
+		t.Fatal("expected an issue comment even though pilot-done skips label correction — a discarded PR must never be silent")
+	}
+	if !strings.Contains(issueCommentBody, "42") || !strings.Contains(issueCommentBody, "unit-tests") {
+		t.Errorf("issue comment should reference the closed PR and the failure reason, got: %s", issueCommentBody)
 	}
 }
 
