@@ -493,6 +493,62 @@ func TestTelegramHandler_HandleCallback_ExpiredRequest(t *testing.T) {
 	}
 }
 
+func TestTelegramHandler_HandleCallback_ExpiredButStillPending(t *testing.T) {
+	client := &mockTelegramClient{}
+	handler := NewTelegramHandler(client, "chat123")
+
+	req := &Request{
+		ID:        "req-expired-race",
+		TaskID:    "TASK-01",
+		Stage:     StagePreExecution,
+		Title:     "Test task",
+		ExpiresAt: time.Now().Add(-time.Minute), // already past its deadline
+	}
+
+	respCh, err := handler.SendApprovalRequest(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// A button tap races the periodic PruneExpired sweep: the request is
+	// still in the pending map, but its ExpiresAt has already elapsed.
+	handled := handler.HandleCallback(context.Background(), "cb123", "approve:req-expired-race", "user123", "testuser")
+	if !handled {
+		t.Error("expected callback to be handled")
+	}
+
+	// Must NOT fake an approval — the deadline already passed.
+	cbs := client.getAnsweredCallbacks()
+	if len(cbs) != 1 {
+		t.Fatalf("expected 1 answered callback, got %d", len(cbs))
+	}
+	if !containsString(cbs[0].Text, "expired") {
+		t.Errorf("expected expired message, got: %s", cbs[0].Text)
+	}
+
+	// Message should be edited to show expiry, not approval.
+	edited := client.getEditedMessages()
+	if len(edited) != 1 {
+		t.Fatalf("expected 1 edited message, got %d", len(edited))
+	}
+	if !containsString(edited[0].Text, "EXPIRED") {
+		t.Errorf("expected EXPIRED in message, got: %s", edited[0].Text)
+	}
+
+	// Response channel should resolve to timeout, not approved.
+	select {
+	case resp := <-respCh:
+		if resp == nil {
+			t.Fatal("expected response, got nil")
+		}
+		if resp.Decision != DecisionTimeout {
+			t.Errorf("expected timeout, got %s", resp.Decision)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for response")
+	}
+}
+
 func TestTelegramHandler_HandleCallback_EditError(t *testing.T) {
 	client := &mockTelegramClient{
 		editError: errors.New("edit failed"),
@@ -809,9 +865,10 @@ func TestTelegramHandler_HandleCallbackWithZeroMessageID(t *testing.T) {
 	handler.mu.Lock()
 	handler.pending["req-zero-cb"] = &telegramPending{
 		Request: &Request{
-			ID:     "req-zero-cb",
-			TaskID: "TASK-01",
-			Title:  "Test",
+			ID:        "req-zero-cb",
+			TaskID:    "TASK-01",
+			Title:     "Test",
+			ExpiresAt: time.Now().Add(1 * time.Hour),
 		},
 		MessageID:  0,
 		ResponseCh: respCh,
@@ -939,6 +996,7 @@ type mockPendingStore struct {
 	insertErr error
 	deleteErr error
 	loadErr   error
+	pruneErr  error
 }
 
 func newMockPendingStore() *mockPendingStore {
@@ -978,6 +1036,22 @@ func (s *mockPendingStore) LoadPendingApprovals() ([]*memory.PendingApproval, er
 		out = append(out, &cp)
 	}
 	return out, nil
+}
+
+func (s *mockPendingStore) PrunePendingApprovals(cutoff time.Time) (int64, error) {
+	if s.pruneErr != nil {
+		return 0, s.pruneErr
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var deleted int64
+	for id, r := range s.rows {
+		if r.ExpiresAt.Before(cutoff) {
+			delete(s.rows, id)
+			deleted++
+		}
+	}
+	return deleted, nil
 }
 
 func (s *mockPendingStore) get(id string) *memory.PendingApproval {
@@ -1137,6 +1211,115 @@ func TestTelegramHandler_Rehydrate_CallbackWorksAfterRehydrate(t *testing.T) {
 	}
 }
 
+// mockDecisionRecorder is a test double for DecisionRecorder.
+type mockDecisionRecorder struct {
+	mu    sync.Mutex
+	calls []struct {
+		requestID string
+		decision  Decision
+		by        string
+	}
+	err error
+}
+
+func (r *mockDecisionRecorder) RecordDecision(_ context.Context, requestID string, decision Decision, by string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, struct {
+		requestID string
+		decision  Decision
+		by        string
+	}{requestID, decision, by})
+	return r.err
+}
+
+func (r *mockDecisionRecorder) getCalls() []struct {
+	requestID string
+	decision  Decision
+	by        string
+} {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]struct {
+		requestID string
+		decision  Decision
+		by        string
+	}, len(r.calls))
+	copy(out, r.calls)
+	return out
+}
+
+func TestTelegramHandler_HandleCallback_RecordsDecisionViaRecorder(t *testing.T) {
+	client := &mockTelegramClient{}
+	recorder := &mockDecisionRecorder{}
+	handler := NewTelegramHandler(client, "chat123").WithDecisionRecorder(recorder)
+
+	req := &Request{ID: "req-1", TaskID: "T-1", Stage: StagePreMerge, Title: "Test", ExpiresAt: time.Now().Add(time.Hour)}
+	if _, err := handler.SendApprovalRequest(context.Background(), req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	handler.HandleCallback(context.Background(), "cb-1", "approve:req-1", "u1", "tester")
+
+	calls := recorder.getCalls()
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 RecordDecision call, got %d", len(calls))
+	}
+	if calls[0].requestID != "req-1" || calls[0].decision != DecisionApproved || calls[0].by != "tester" {
+		t.Errorf("unexpected recorded decision: %+v", calls[0])
+	}
+}
+
+// TestTelegramHandler_Rehydrate_CallbackRecordsDecisionDirectly is the GH-3825
+// regression test: after a restart, Rehydrate reconstructs the pending entry
+// with a fresh ResponseCh that no goroutine is reading (the original waiter
+// died with the old process). Without a DecisionRecorder, the decision made
+// by a button tap would only be sent into that unread channel and lost. With
+// the recorder wired, HandleCallback must persist the decision directly.
+func TestTelegramHandler_Rehydrate_CallbackRecordsDecisionDirectly(t *testing.T) {
+	client := &mockTelegramClient{}
+	store := newMockPendingStore()
+	recorder := &mockDecisionRecorder{}
+	_ = store.InsertPendingApproval(&memory.PendingApproval{
+		ID: "rehy-rec", TaskID: "T-R2", Stage: "pre_merge",
+		Title: "Rehydrated", CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour),
+	})
+
+	handler := NewTelegramHandler(client, "chat123").WithStore(store).WithDecisionRecorder(recorder)
+	if err := handler.Rehydrate(context.Background()); err != nil {
+		t.Fatalf("rehydrate error: %v", err)
+	}
+
+	handled := handler.HandleCallback(context.Background(), "cb-r2", "reject:rehy-rec", "u2", "reviewer")
+	if !handled {
+		t.Fatal("expected callback to be handled")
+	}
+
+	calls := recorder.getCalls()
+	if len(calls) != 1 {
+		t.Fatalf("expected decision to be recorded directly after rehydrate, got %d calls", len(calls))
+	}
+	if calls[0].requestID != "rehy-rec" || calls[0].decision != DecisionRejected || calls[0].by != "reviewer" {
+		t.Errorf("unexpected recorded decision: %+v", calls[0])
+	}
+}
+
+func TestTelegramHandler_HandleCallback_RecorderErrorIsNonFatal(t *testing.T) {
+	client := &mockTelegramClient{}
+	recorder := &mockDecisionRecorder{err: errors.New("db down")}
+	handler := NewTelegramHandler(client, "chat123").WithDecisionRecorder(recorder)
+
+	req := &Request{ID: "req-2", TaskID: "T-2", Stage: StagePreMerge, Title: "Test", ExpiresAt: time.Now().Add(time.Hour)}
+	if _, err := handler.SendApprovalRequest(context.Background(), req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	handled := handler.HandleCallback(context.Background(), "cb-2", "approve:req-2", "u1", "tester")
+	if !handled {
+		t.Error("expected callback to still be handled when recorder fails")
+	}
+}
+
 // containsString is a helper to check if a string contains a substring
 func containsString(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||
@@ -1150,4 +1333,171 @@ func findSubstring(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+// --- PruneExpired tests (GH-3825) ---
+
+func TestTelegramHandler_PruneExpired_EditsMessageAndRemoves(t *testing.T) {
+	client := &mockTelegramClient{}
+	store := newMockPendingStore()
+	handler := NewTelegramHandler(client, "chat123").WithStore(store)
+
+	req := &Request{
+		ID: "exp-1", TaskID: "T-1", Stage: StagePreMerge,
+		Title: "Test", ExpiresAt: time.Now().Add(-time.Minute),
+	}
+	if _, err := handler.SendApprovalRequest(context.Background(), req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	n, err := handler.PruneExpired(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("expected 1 pruned, got %d", n)
+	}
+
+	handler.mu.RLock()
+	_, stillPending := handler.pending["exp-1"]
+	handler.mu.RUnlock()
+	if stillPending {
+		t.Error("expected expired request to be removed from pending map")
+	}
+
+	edited := client.getEditedMessages()
+	if len(edited) != 1 {
+		t.Fatalf("expected 1 edited message, got %d", len(edited))
+	}
+	if !containsString(edited[0].Text, "expired") && !containsString(edited[0].Text, "EXPIRED") {
+		t.Errorf("expected edited message to mention expiry, got: %s", edited[0].Text)
+	}
+
+	if store.get("exp-1") != nil {
+		t.Error("expected persisted row to be deleted")
+	}
+}
+
+func TestTelegramHandler_PruneExpired_LeavesNonExpired(t *testing.T) {
+	client := &mockTelegramClient{}
+	store := newMockPendingStore()
+	handler := NewTelegramHandler(client, "chat123").WithStore(store)
+
+	expired := &Request{ID: "exp-2", TaskID: "T-2", Stage: StagePreMerge, Title: "Old", ExpiresAt: time.Now().Add(-time.Minute)}
+	live := &Request{ID: "live-2", TaskID: "T-3", Stage: StagePreMerge, Title: "Fresh", ExpiresAt: time.Now().Add(time.Hour)}
+	if _, err := handler.SendApprovalRequest(context.Background(), expired); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := handler.SendApprovalRequest(context.Background(), live); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	n, err := handler.PruneExpired(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("expected 1 pruned, got %d", n)
+	}
+
+	handler.mu.RLock()
+	_, expiredPending := handler.pending["exp-2"]
+	_, livePending := handler.pending["live-2"]
+	handler.mu.RUnlock()
+	if expiredPending {
+		t.Error("expected expired request to be pruned")
+	}
+	if !livePending {
+		t.Error("expected non-expired request to remain pending")
+	}
+	if store.get("live-2") == nil {
+		t.Error("expected non-expired row to remain persisted")
+	}
+}
+
+func TestTelegramHandler_PruneExpired_RehydratedWithoutMessageID(t *testing.T) {
+	client := &mockTelegramClient{}
+	store := newMockPendingStore()
+	// Insert with a short-lived future expiry so Rehydrate accepts it, then
+	// let it lapse before pruning — this simulates a request rehydrated after
+	// a restart, which has no known MessageID (never persisted).
+	_ = store.InsertPendingApproval(&memory.PendingApproval{
+		ID: "rehy-prune", TaskID: "T-R", Stage: "pre_merge",
+		Title: "Rehydrated", CreatedAt: time.Now(), ExpiresAt: time.Now().Add(20 * time.Millisecond),
+	})
+
+	handler := NewTelegramHandler(client, "chat123").WithStore(store)
+	if err := handler.Rehydrate(context.Background()); err != nil {
+		t.Fatalf("rehydrate error: %v", err)
+	}
+
+	time.Sleep(30 * time.Millisecond)
+
+	n, err := handler.PruneExpired(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("expected 1 pruned, got %d", n)
+	}
+
+	// No MessageID was ever known for this rehydrated request, so no edit
+	// should have been attempted — but it must still be removed.
+	if len(client.getEditedMessages()) != 0 {
+		t.Errorf("expected no message edit for rehydrated request without a MessageID, got %d", len(client.getEditedMessages()))
+	}
+	handler.mu.RLock()
+	_, stillPending := handler.pending["rehy-prune"]
+	handler.mu.RUnlock()
+	if stillPending {
+		t.Error("expected rehydrated expired request to be removed from pending map")
+	}
+	if store.get("rehy-prune") != nil {
+		t.Error("expected persisted row to be deleted")
+	}
+}
+
+func TestTelegramHandler_PruneExpired_NoStore(t *testing.T) {
+	client := &mockTelegramClient{}
+	handler := NewTelegramHandler(client, "chat123")
+
+	req := &Request{ID: "exp-3", TaskID: "T-4", Stage: StagePreMerge, Title: "Test", ExpiresAt: time.Now().Add(-time.Minute)}
+	if _, err := handler.SendApprovalRequest(context.Background(), req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	n, err := handler.PruneExpired(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error without a store: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("expected 1 pruned, got %d", n)
+	}
+	if len(client.getEditedMessages()) != 1 {
+		t.Errorf("expected message to still be edited without a store, got %d edits", len(client.getEditedMessages()))
+	}
+}
+
+func TestTelegramHandler_PruneExpired_SweepsOrphanedStoreRows(t *testing.T) {
+	client := &mockTelegramClient{}
+	store := newMockPendingStore()
+	handler := NewTelegramHandler(client, "chat123").WithStore(store)
+
+	// A row with no in-memory pending counterpart — e.g. left behind by a
+	// process that crashed before Rehydrate ran.
+	_ = store.InsertPendingApproval(&memory.PendingApproval{
+		ID: "orphan-1", TaskID: "T-5", Stage: "pre_merge",
+		Title: "Orphan", CreatedAt: time.Now().Add(-2 * time.Hour), ExpiresAt: time.Now().Add(-time.Hour),
+	})
+
+	n, err := handler.PruneExpired(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("expected 0 in-memory prunes (orphan was never in pending), got %d", n)
+	}
+	if store.get("orphan-1") != nil {
+		t.Error("expected orphaned expired row to be swept from the store")
+	}
 }

@@ -18,6 +18,7 @@ type PendingApprovalStore interface {
 	InsertPendingApproval(*memory.PendingApproval) error
 	DeletePendingApproval(id string) error
 	LoadPendingApprovals() ([]*memory.PendingApproval, error)
+	PrunePendingApprovals(cutoff time.Time) (int64, error)
 }
 
 // TelegramClient defines the interface for Telegram operations
@@ -46,12 +47,13 @@ type MessageResult struct {
 
 // TelegramHandler handles approval requests via Telegram
 type TelegramHandler struct {
-	client  TelegramClient
-	chatID  string
-	pending map[string]*telegramPending // requestID -> pending state
-	mu      sync.RWMutex
-	log     *slog.Logger
-	store   PendingApprovalStore // optional; enables restart persistence
+	client   TelegramClient
+	chatID   string
+	pending  map[string]*telegramPending // requestID -> pending state
+	mu       sync.RWMutex
+	log      *slog.Logger
+	store    PendingApprovalStore // optional; enables restart persistence
+	recorder DecisionRecorder     // optional; persists decisions directly (restart-safe)
 }
 
 // telegramPending tracks a pending Telegram approval request
@@ -81,6 +83,17 @@ func (h *TelegramHandler) Name() string {
 // Returns h to allow builder-style chaining after NewTelegramHandler.
 func (h *TelegramHandler) WithStore(store PendingApprovalStore) *TelegramHandler {
 	h.store = store
+	return h
+}
+
+// WithDecisionRecorder attaches a DecisionRecorder so HandleCallback persists
+// decisions directly to the PRState/executions store rather than relying
+// solely on a live goroutine reading pending.ResponseCh. This is what makes a
+// button tap on a Rehydrate-restored request actually reach the pipeline —
+// after a restart there is no waiter goroutine left to consume the channel.
+// Returns h to allow builder-style chaining.
+func (h *TelegramHandler) WithDecisionRecorder(recorder DecisionRecorder) *TelegramHandler {
+	h.recorder = recorder
 	return h
 }
 
@@ -135,6 +148,65 @@ func (h *TelegramHandler) Rehydrate(ctx context.Context) error {
 		h.log.Info("rehydrated pending approvals", slog.Int("count", rehydrated))
 	}
 	return nil
+}
+
+// PruneExpired scans the in-memory pending set for requests whose ExpiresAt
+// has passed, edits their Telegram message to show they expired, removes
+// them from the pending map, and deletes their persisted row. It also sweeps
+// the store directly via PrunePendingApproval for rows with no in-memory
+// counterpart (e.g. left behind by a process that crashed before Rehydrate
+// ran). Returns the number of in-memory requests pruned.
+//
+// A request rehydrated after a daemon restart has no waiter goroutine
+// enforcing its own timeout — Manager's async dispatch loop only watches
+// requests it created in the current process. Without this sweep, a
+// rehydrated request that expires just sits in h.pending forever instead of
+// resolving to "expired" (GH-3825).
+func (h *TelegramHandler) PruneExpired(ctx context.Context) (int, error) {
+	now := time.Now()
+
+	h.mu.Lock()
+	var expired []*telegramPending
+	for id, p := range h.pending {
+		if p.Request.ExpiresAt.Before(now) {
+			expired = append(expired, p)
+			delete(h.pending, id)
+		}
+	}
+	h.mu.Unlock()
+
+	for _, p := range expired {
+		if h.store != nil {
+			if err := h.store.DeletePendingApproval(p.Request.ID); err != nil {
+				h.log.Warn("failed to delete expired persisted approval",
+					slog.String("request_id", p.Request.ID), slog.Any("error", err))
+			}
+		}
+		if p.MessageID != 0 {
+			text := h.formatExpiredMessage(p.Request)
+			if err := h.client.EditMessage(ctx, p.ChatID, p.MessageID, text, ""); err != nil {
+				h.log.Warn("failed to edit expired message",
+					slog.String("request_id", p.Request.ID), slog.Any("error", err))
+			}
+		}
+		select {
+		case p.ResponseCh <- &Response{RequestID: p.Request.ID, Decision: DecisionTimeout, RespondedAt: now}:
+		default:
+		}
+		close(p.ResponseCh)
+	}
+
+	if h.store != nil {
+		if _, err := h.store.PrunePendingApprovals(now); err != nil {
+			return len(expired), fmt.Errorf("prune expired: sweep store: %w", err)
+		}
+	}
+
+	if len(expired) > 0 {
+		h.log.Info("pruned expired pending approvals", slog.Int("count", len(expired)))
+	}
+
+	return len(expired), nil
 }
 
 // SendApprovalRequest sends an approval request via Telegram
@@ -269,6 +341,38 @@ func (h *TelegramHandler) HandleCallback(ctx context.Context, callbackID, data, 
 		}
 	}
 
+	// A tap can race the periodic PruneExpired sweep: the request is still in
+	// h.pending but its deadline has already passed. Treat it the same as the
+	// not-found case instead of recording a real decision — otherwise the user
+	// sees "Approved!"/"Rejected" for a request the system has already decided
+	// to time out (GH-3825).
+	if pending.Request.ExpiresAt.Before(time.Now()) {
+		_ = h.client.AnswerCallback(ctx, callbackID, "Request expired or already processed")
+		if pending.MessageID != 0 {
+			text := h.formatExpiredMessage(pending.Request)
+			if err := h.client.EditMessage(ctx, pending.ChatID, pending.MessageID, text, ""); err != nil {
+				h.log.Warn("Failed to edit expired message", slog.Any("error", err))
+			}
+		}
+		select {
+		case pending.ResponseCh <- &Response{RequestID: requestID, Decision: DecisionTimeout, RespondedAt: time.Now()}:
+		default:
+		}
+		close(pending.ResponseCh)
+		h.log.Info("Approval callback arrived after expiry", slog.String("request_id", requestID))
+		return true
+	}
+
+	// Persist the decision directly so it reaches the pipeline even when
+	// nothing is left waiting on pending.ResponseCh — the common case after a
+	// daemon restart, where Rehydrate reconstructs this entry with a fresh
+	// channel but no goroutine to read it (GH-3825).
+	if h.recorder != nil {
+		if err := h.recorder.RecordDecision(ctx, requestID, decision, username); err != nil {
+			h.log.Warn("failed to record approval decision", slog.String("request_id", requestID), slog.Any("error", err))
+		}
+	}
+
 	// Answer callback
 	var answerText string
 	if decision == DecisionApproved {
@@ -399,6 +503,11 @@ func (h *TelegramHandler) formatResponseMessage(req *Request, decision Decision,
 // formatCancelledMessage formats the message when request is cancelled
 func (h *TelegramHandler) formatCancelledMessage(req *Request) string {
 	return fmt.Sprintf("⏹ CANCELLED\n\nTask: %s\n%s\n\nApproval request was cancelled.", req.TaskID, req.Title)
+}
+
+// formatExpiredMessage formats the message when a request expires unanswered.
+func (h *TelegramHandler) formatExpiredMessage(req *Request) string {
+	return fmt.Sprintf("⏱ EXPIRED\n\nTask: %s\n%s\n\nApproval request expired — no action taken.", req.TaskID, req.Title)
 }
 
 // truncateForTelegram truncates text to fit Telegram message limits

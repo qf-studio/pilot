@@ -575,6 +575,10 @@ Examples:
 					(cfg.Adapters.Telegram.Approval == nil || cfg.Adapters.Telegram.Approval.Enabled) {
 					tgClient := telegram.NewClient(cfg.Adapters.Telegram.BotToken)
 					gwTgApprovalHandler = approval.NewTelegramHandler(&telegramApprovalAdapter{client: tgClient}, cfg.Adapters.Telegram.ChatID)
+					// GH-3825: persist decisions directly to PRState via the manager so a
+					// button tap on a Rehydrate-restored request isn't lost when no
+					// waiter goroutine survived the restart.
+					gwTgApprovalHandler.WithDecisionRecorder(approvalMgr)
 					if gwStore != nil {
 						gwTgApprovalHandler.WithStore(gwStore)
 						if rErr := gwTgApprovalHandler.Rehydrate(context.Background()); rErr != nil {
@@ -582,6 +586,10 @@ Examples:
 						}
 					}
 					approvalMgr.RegisterHandler(gwTgApprovalHandler)
+					// GH-3825: prune requests that expired while the daemon was
+					// down (or with no in-process waiter) instead of leaving them
+					// pending forever.
+					startApprovalExpirySweep(context.Background(), gwTgApprovalHandler)
 				}
 
 				// Register Slack approval handler if enabled
@@ -1475,6 +1483,35 @@ func setupDashboardLogging(cfg *config.Config) {
 	}
 }
 
+// approvalExpirySweepInterval is how often startApprovalExpirySweep checks
+// for pending Telegram approvals past their expires_at.
+const approvalExpirySweepInterval = 1 * time.Minute
+
+// startApprovalExpirySweep runs a background loop that prunes pending Telegram
+// approvals whose expires_at has passed, editing their message to show they
+// expired. A request rehydrated after a restart (see TelegramHandler.Rehydrate)
+// has no waiter goroutine enforcing its own timeout, so without this sweep it
+// would sit in the pending set forever instead of resolving (GH-3825).
+func startApprovalExpirySweep(ctx context.Context, handler *approval.TelegramHandler) {
+	if handler == nil {
+		return
+	}
+	logging.SafeGo("approval-expiry-sweep", func() {
+		ticker := time.NewTicker(approvalExpirySweepInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if _, err := handler.PruneExpired(ctx); err != nil {
+					logging.WithComponent("approval").Warn("expired approval sweep failed", slog.Any("error", err))
+				}
+			}
+		}
+	})
+}
+
 // runPollingMode runs lightweight polling-only mode.
 // When noGateway is false, the HTTP gateway starts in the background so the
 // desktop app (and any other client hitting /health) can reach the daemon.
@@ -1543,6 +1580,10 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 		(cfg.Adapters.Telegram.Approval == nil || cfg.Adapters.Telegram.Approval.Enabled) {
 		tgApprovalClient := telegram.NewClient(cfg.Adapters.Telegram.BotToken)
 		tgApprovalHandlerImpl = approval.NewTelegramHandler(&telegramApprovalAdapter{client: tgApprovalClient}, cfg.Adapters.Telegram.ChatID)
+		// GH-3825: persist decisions directly to PRState via the manager so a
+		// button tap on a Rehydrate-restored request isn't lost when no waiter
+		// goroutine survived the restart.
+		tgApprovalHandlerImpl.WithDecisionRecorder(approvalMgr)
 		approvalMgr.RegisterHandler(tgApprovalHandlerImpl)
 		tgApprovalHandler = tgApprovalHandlerImpl
 		logging.WithComponent("start").Info("registered Telegram approval handler")
@@ -1687,6 +1728,9 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 			logging.WithComponent("approval").Warn("telegram approval rehydrate failed", slog.Any("error", rErr))
 		}
 	}
+	// GH-3825: prune requests that expired while the daemon was down (or with
+	// no in-process waiter) instead of leaving them pending forever.
+	startApprovalExpirySweep(ctx, tgApprovalHandlerImpl)
 
 	// GH-726: Initialize autopilot state store for crash recovery
 	var autopilotStateStore *autopilot.StateStore

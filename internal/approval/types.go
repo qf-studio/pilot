@@ -61,6 +61,16 @@ type PRStateWriter interface {
 	SetApprovalDecision(ctx context.Context, requestID string, decision string, by string) error
 }
 
+// DecisionRecorder persists an approval decision straight to the PRState/
+// executions store, bypassing the in-process ResponseCh. *Manager satisfies
+// this via RecordDecision. Callback-driven handlers (e.g. Telegram button
+// taps) should call it directly so a decision made after a daemon restart —
+// when no goroutine is left waiting on that channel — is not silently lost
+// (GH-3825).
+type DecisionRecorder interface {
+	RecordDecision(ctx context.Context, requestID string, decision Decision, by string) error
+}
+
 // Handler is the interface for approval channel handlers
 // Each channel (Telegram, Slack, etc.) implements this interface
 type Handler interface {
