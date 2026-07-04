@@ -46,12 +46,13 @@ type MessageResult struct {
 
 // TelegramHandler handles approval requests via Telegram
 type TelegramHandler struct {
-	client  TelegramClient
-	chatID  string
-	pending map[string]*telegramPending // requestID -> pending state
-	mu      sync.RWMutex
-	log     *slog.Logger
-	store   PendingApprovalStore // optional; enables restart persistence
+	client   TelegramClient
+	chatID   string
+	pending  map[string]*telegramPending // requestID -> pending state
+	mu       sync.RWMutex
+	log      *slog.Logger
+	store    PendingApprovalStore // optional; enables restart persistence
+	recorder DecisionRecorder     // optional; persists decisions directly (restart-safe)
 }
 
 // telegramPending tracks a pending Telegram approval request
@@ -81,6 +82,17 @@ func (h *TelegramHandler) Name() string {
 // Returns h to allow builder-style chaining after NewTelegramHandler.
 func (h *TelegramHandler) WithStore(store PendingApprovalStore) *TelegramHandler {
 	h.store = store
+	return h
+}
+
+// WithDecisionRecorder attaches a DecisionRecorder so HandleCallback persists
+// decisions directly to the PRState/executions store rather than relying
+// solely on a live goroutine reading pending.ResponseCh. This is what makes a
+// button tap on a Rehydrate-restored request actually reach the pipeline —
+// after a restart there is no waiter goroutine left to consume the channel.
+// Returns h to allow builder-style chaining.
+func (h *TelegramHandler) WithDecisionRecorder(recorder DecisionRecorder) *TelegramHandler {
+	h.recorder = recorder
 	return h
 }
 
@@ -266,6 +278,16 @@ func (h *TelegramHandler) HandleCallback(ctx context.Context, callbackID, data, 
 	if h.store != nil {
 		if err := h.store.DeletePendingApproval(requestID); err != nil {
 			h.log.Warn("failed to delete persisted approval on callback", slog.String("request_id", requestID), slog.Any("error", err))
+		}
+	}
+
+	// Persist the decision directly so it reaches the pipeline even when
+	// nothing is left waiting on pending.ResponseCh — the common case after a
+	// daemon restart, where Rehydrate reconstructs this entry with a fresh
+	// channel but no goroutine to read it (GH-3825).
+	if h.recorder != nil {
+		if err := h.recorder.RecordDecision(ctx, requestID, decision, username); err != nil {
+			h.log.Warn("failed to record approval decision", slog.String("request_id", requestID), slog.Any("error", err))
 		}
 	}
 

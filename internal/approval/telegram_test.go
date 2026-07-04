@@ -1137,6 +1137,115 @@ func TestTelegramHandler_Rehydrate_CallbackWorksAfterRehydrate(t *testing.T) {
 	}
 }
 
+// mockDecisionRecorder is a test double for DecisionRecorder.
+type mockDecisionRecorder struct {
+	mu    sync.Mutex
+	calls []struct {
+		requestID string
+		decision  Decision
+		by        string
+	}
+	err error
+}
+
+func (r *mockDecisionRecorder) RecordDecision(_ context.Context, requestID string, decision Decision, by string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, struct {
+		requestID string
+		decision  Decision
+		by        string
+	}{requestID, decision, by})
+	return r.err
+}
+
+func (r *mockDecisionRecorder) getCalls() []struct {
+	requestID string
+	decision  Decision
+	by        string
+} {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]struct {
+		requestID string
+		decision  Decision
+		by        string
+	}, len(r.calls))
+	copy(out, r.calls)
+	return out
+}
+
+func TestTelegramHandler_HandleCallback_RecordsDecisionViaRecorder(t *testing.T) {
+	client := &mockTelegramClient{}
+	recorder := &mockDecisionRecorder{}
+	handler := NewTelegramHandler(client, "chat123").WithDecisionRecorder(recorder)
+
+	req := &Request{ID: "req-1", TaskID: "T-1", Stage: StagePreMerge, Title: "Test", ExpiresAt: time.Now().Add(time.Hour)}
+	if _, err := handler.SendApprovalRequest(context.Background(), req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	handler.HandleCallback(context.Background(), "cb-1", "approve:req-1", "u1", "tester")
+
+	calls := recorder.getCalls()
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 RecordDecision call, got %d", len(calls))
+	}
+	if calls[0].requestID != "req-1" || calls[0].decision != DecisionApproved || calls[0].by != "tester" {
+		t.Errorf("unexpected recorded decision: %+v", calls[0])
+	}
+}
+
+// TestTelegramHandler_Rehydrate_CallbackRecordsDecisionDirectly is the GH-3825
+// regression test: after a restart, Rehydrate reconstructs the pending entry
+// with a fresh ResponseCh that no goroutine is reading (the original waiter
+// died with the old process). Without a DecisionRecorder, the decision made
+// by a button tap would only be sent into that unread channel and lost. With
+// the recorder wired, HandleCallback must persist the decision directly.
+func TestTelegramHandler_Rehydrate_CallbackRecordsDecisionDirectly(t *testing.T) {
+	client := &mockTelegramClient{}
+	store := newMockPendingStore()
+	recorder := &mockDecisionRecorder{}
+	_ = store.InsertPendingApproval(&memory.PendingApproval{
+		ID: "rehy-rec", TaskID: "T-R2", Stage: "pre_merge",
+		Title: "Rehydrated", CreatedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour),
+	})
+
+	handler := NewTelegramHandler(client, "chat123").WithStore(store).WithDecisionRecorder(recorder)
+	if err := handler.Rehydrate(context.Background()); err != nil {
+		t.Fatalf("rehydrate error: %v", err)
+	}
+
+	handled := handler.HandleCallback(context.Background(), "cb-r2", "reject:rehy-rec", "u2", "reviewer")
+	if !handled {
+		t.Fatal("expected callback to be handled")
+	}
+
+	calls := recorder.getCalls()
+	if len(calls) != 1 {
+		t.Fatalf("expected decision to be recorded directly after rehydrate, got %d calls", len(calls))
+	}
+	if calls[0].requestID != "rehy-rec" || calls[0].decision != DecisionRejected || calls[0].by != "reviewer" {
+		t.Errorf("unexpected recorded decision: %+v", calls[0])
+	}
+}
+
+func TestTelegramHandler_HandleCallback_RecorderErrorIsNonFatal(t *testing.T) {
+	client := &mockTelegramClient{}
+	recorder := &mockDecisionRecorder{err: errors.New("db down")}
+	handler := NewTelegramHandler(client, "chat123").WithDecisionRecorder(recorder)
+
+	req := &Request{ID: "req-2", TaskID: "T-2", Stage: StagePreMerge, Title: "Test", ExpiresAt: time.Now().Add(time.Hour)}
+	if _, err := handler.SendApprovalRequest(context.Background(), req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	handled := handler.HandleCallback(context.Background(), "cb-2", "approve:req-2", "u1", "tester")
+	if !handled {
+		t.Error("expected callback to still be handled when recorder fails")
+	}
+}
+
 // containsString is a helper to check if a string contains a substring
 func containsString(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||

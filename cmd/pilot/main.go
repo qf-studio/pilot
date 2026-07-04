@@ -575,6 +575,10 @@ Examples:
 					(cfg.Adapters.Telegram.Approval == nil || cfg.Adapters.Telegram.Approval.Enabled) {
 					tgClient := telegram.NewClient(cfg.Adapters.Telegram.BotToken)
 					gwTgApprovalHandler = approval.NewTelegramHandler(&telegramApprovalAdapter{client: tgClient}, cfg.Adapters.Telegram.ChatID)
+					// GH-3825: persist decisions directly to PRState via the manager so a
+					// button tap on a Rehydrate-restored request isn't lost when no
+					// waiter goroutine survived the restart.
+					gwTgApprovalHandler.WithDecisionRecorder(approvalMgr)
 					if gwStore != nil {
 						gwTgApprovalHandler.WithStore(gwStore)
 						if rErr := gwTgApprovalHandler.Rehydrate(context.Background()); rErr != nil {
@@ -1543,6 +1547,10 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 		(cfg.Adapters.Telegram.Approval == nil || cfg.Adapters.Telegram.Approval.Enabled) {
 		tgApprovalClient := telegram.NewClient(cfg.Adapters.Telegram.BotToken)
 		tgApprovalHandlerImpl = approval.NewTelegramHandler(&telegramApprovalAdapter{client: tgApprovalClient}, cfg.Adapters.Telegram.ChatID)
+		// GH-3825: persist decisions directly to PRState via the manager so a
+		// button tap on a Rehydrate-restored request isn't lost when no waiter
+		// goroutine survived the restart.
+		tgApprovalHandlerImpl.WithDecisionRecorder(approvalMgr)
 		approvalMgr.RegisterHandler(tgApprovalHandlerImpl)
 		tgApprovalHandler = tgApprovalHandlerImpl
 		logging.WithComponent("start").Info("registered Telegram approval handler")
