@@ -107,7 +107,7 @@ func (m *CIMonitor) WaitForCI(ctx context.Context, sha string) (CIStatus, error)
 				return CIPending, fmt.Errorf("CI timeout after %v", m.waitTimeout)
 			}
 
-			status, err := m.checkStatus(ctx, sha)
+			status, err := m.checkStatus(ctx, sha, false)
 			if err != nil {
 				m.log.Warn("CI status check failed", "error", err)
 				continue
@@ -123,7 +123,10 @@ func (m *CIMonitor) WaitForCI(ctx context.Context, sha string) (CIStatus, error)
 }
 
 // checkStatus gets current CI status for a SHA.
-func (m *CIMonitor) checkStatus(ctx context.Context, sha string) (CIStatus, error) {
+// skipGrace, when true, bypasses the no-CI discovery grace period entirely
+// (see checkAutoDiscoveredRuns) for callers that already know CI resolved
+// once for this SHA earlier in the PR lifecycle.
+func (m *CIMonitor) checkStatus(ctx context.Context, sha string, skipGrace bool) (CIStatus, error) {
 	// Get check runs (GitHub Actions)
 	checkRuns, err := m.ghClient.ListCheckRuns(ctx, m.owner, m.repo, sha)
 	if err != nil {
@@ -154,7 +157,7 @@ func (m *CIMonitor) checkStatus(ctx context.Context, sha string) (CIStatus, erro
 
 	// Auto mode: use discovered checks with exclusions and grace period
 	if m.ciChecks != nil && m.ciChecks.Mode == "auto" {
-		return m.checkAutoDiscoveredRuns(ctx, sha, checkRuns)
+		return m.checkAutoDiscoveredRuns(ctx, sha, checkRuns, skipGrace)
 	}
 
 	// Manual mode: If no required checks configured, check all runs
@@ -213,7 +216,12 @@ func (m *CIMonitor) checkAllRuns(checkRuns *github.CheckRunsResponse) CIStatus {
 // checkAutoDiscoveredRuns checks CI status in auto mode with exclusion filtering.
 // It waits during the grace period if no checks are found yet, then falls back
 // to the commit-status API before treating a SHA as having no CI configured.
-func (m *CIMonitor) checkAutoDiscoveredRuns(ctx context.Context, sha string, checkRuns *github.CheckRunsResponse) (CIStatus, error) {
+// skipGrace bypasses the discoveryStart wait/eviction entirely and goes straight
+// to the commit-status fallback — for callers (verifyCIBeforeMerge, via
+// GetCIStatus) that only run after this SHA already resolved to CISuccess once
+// earlier in the PR lifecycle, so re-discovering "no CI" from scratch would
+// incorrectly restart the grace period (GH-3873).
+func (m *CIMonitor) checkAutoDiscoveredRuns(ctx context.Context, sha string, checkRuns *github.CheckRunsResponse, skipGrace bool) (CIStatus, error) {
 	// Filter checks by exclusion patterns
 	var filteredRuns []github.CheckRun
 	for _, run := range checkRuns.CheckRuns {
@@ -224,42 +232,44 @@ func (m *CIMonitor) checkAutoDiscoveredRuns(ctx context.Context, sha string, che
 
 	// Handle grace period for check discovery
 	if len(filteredRuns) == 0 {
-		m.mu.Lock()
-		startTime, exists := m.discoveryStart[sha]
-		if !exists {
-			// First check: start the grace period
-			m.discoveryStart[sha] = time.Now()
+		if !skipGrace {
+			m.mu.Lock()
+			startTime, exists := m.discoveryStart[sha]
+			if !exists {
+				// First check: start the grace period
+				m.discoveryStart[sha] = time.Now()
+				m.mu.Unlock()
+				m.log.Debug("no CI checks found, starting grace period",
+					"sha", ShortSHA(sha),
+					"grace_period", m.ciChecks.DiscoveryGracePeriod,
+				)
+				return CIPending, nil
+			}
 			m.mu.Unlock()
-			m.log.Debug("no CI checks found, starting grace period",
-				"sha", ShortSHA(sha),
-				"grace_period", m.ciChecks.DiscoveryGracePeriod,
-			)
-			return CIPending, nil
+
+			// Check if grace period has expired
+			elapsed := time.Since(startTime)
+			if elapsed < m.ciChecks.DiscoveryGracePeriod {
+				m.log.Debug("waiting for CI checks during grace period",
+					"sha", ShortSHA(sha),
+					"elapsed", elapsed,
+					"remaining", m.ciChecks.DiscoveryGracePeriod-elapsed,
+				)
+				return CIPending, nil
+			}
+
+			// TASK-357 (B6b): the grace period is over and this is a terminal decision for
+			// the SHA — evict its discoveryStart entry so it does not leak for the daemon
+			// lifetime. Previously only the "checks found" path below deleted it, so every
+			// no-CI SHA (and every superseded intermediate commit) leaked an entry.
+			m.mu.Lock()
+			delete(m.discoveryStart, sha)
+			m.mu.Unlock()
 		}
-		m.mu.Unlock()
 
-		// Check if grace period has expired
-		elapsed := time.Since(startTime)
-		if elapsed < m.ciChecks.DiscoveryGracePeriod {
-			m.log.Debug("waiting for CI checks during grace period",
-				"sha", ShortSHA(sha),
-				"elapsed", elapsed,
-				"remaining", m.ciChecks.DiscoveryGracePeriod-elapsed,
-			)
-			return CIPending, nil
-		}
-
-		// TASK-357 (B6b): the grace period is over and this is a terminal decision for
-		// the SHA — evict its discoveryStart entry so it does not leak for the daemon
-		// lifetime. Previously only the "checks found" path below deleted it, so every
-		// no-CI SHA (and every superseded intermediate commit) leaked an entry.
-		m.mu.Lock()
-		delete(m.discoveryStart, sha)
-		m.mu.Unlock()
-
-		// Grace period expired with no check runs — query commit-status API before
-		// concluding that no CI is configured. Providers like CircleCI, Jenkins,
-		// Travis, and Buildkite report exclusively via the statuses API.
+		// Grace period expired (or skipped) with no check runs — query commit-status
+		// API before concluding that no CI is configured. Providers like CircleCI,
+		// Jenkins, Travis, and Buildkite report exclusively via the statuses API.
 		combined, err := m.ghClient.GetCombinedStatus(ctx, m.owner, m.repo, sha)
 		if err != nil {
 			m.log.Warn("grace period expired; combined-status lookup failed, treating as no CI",
@@ -397,7 +407,7 @@ func (m *CIMonitor) mapCheckStatus(status, conclusion string) CIStatus {
 // This is the non-blocking alternative to WaitForCI.
 // Returns CIPending/CIRunning if checks are still running.
 func (m *CIMonitor) CheckCI(ctx context.Context, sha string) (CIStatus, error) {
-	status, err := m.checkStatus(ctx, sha)
+	status, err := m.checkStatus(ctx, sha, false)
 	if err != nil {
 		m.log.Debug("CheckCI: status check failed",
 			"sha", ShortSHA(sha),
@@ -416,9 +426,13 @@ func (m *CIMonitor) CheckCI(ctx context.Context, sha string) (CIStatus, error) {
 
 // GetCIStatus returns the current overall CI status for a SHA.
 // This is useful for point-in-time status checks without waiting.
+// Its sole production caller (verifyCIBeforeMerge) only runs after the PR
+// state machine already reached StageCIPassed, proving CI resolved CISuccess
+// once on this SHA — so it skips the no-CI discovery grace period rather than
+// restarting it (GH-3873).
 // Deprecated: Use CheckCI instead for clarity.
 func (m *CIMonitor) GetCIStatus(ctx context.Context, sha string) (CIStatus, error) {
-	return m.checkStatus(ctx, sha)
+	return m.checkStatus(ctx, sha, true)
 }
 
 // GetFailedChecks returns names of failed checks for a SHA.

@@ -315,7 +315,7 @@ func TestController_HandleMerging_MergeAttemptCapEscalates(t *testing.T) {
 	mergeable := true
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.URL.Path == "/repos/owner/repo/pulls/88/merge" && r.Method == http.MethodPost:
+		case r.URL.Path == "/repos/owner/repo/pulls/88/merge" && r.Method == http.MethodPut:
 			// Simulate a persistent non-conflict merge failure (e.g. branch-protection).
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			_, _ = w.Write([]byte(`{"message":"405 Method Not Allowed"}`))
@@ -394,7 +394,7 @@ func TestController_HandleMerging_BelowCapReturnsRetryableError(t *testing.T) {
 	mergeable := true
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.URL.Path == "/repos/owner/repo/pulls/66/merge" && r.Method == http.MethodPost:
+		case r.URL.Path == "/repos/owner/repo/pulls/66/merge" && r.Method == http.MethodPut:
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			_, _ = w.Write([]byte(`{"message":"405 Method Not Allowed"}`))
 
