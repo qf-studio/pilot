@@ -1387,3 +1387,38 @@ func TestDispatcher_BootWithQueuedRows_FIFODrainNoStaleReap(t *testing.T) {
 		}
 	}
 }
+
+// TestDispatcher_AdoptQueuedProjects_ReportsFailureWithoutAdopting covers the
+// other way GH-3788's mass-reap can happen: adoptQueuedProjects can't tell
+// "no queued projects" apart from "failed to ask the store" unless it
+// reports its own success/failure to the caller. Start() relies on that
+// signal to skip the boot-time stale-queued reap when adoption couldn't run
+// — otherwise every queued row would look orphaned since no project got
+// adopted, reproducing the exact "no worker picked up" mass-reap this issue
+// tracks. This test pins the signal itself: on a store error, adoption must
+// report false and must not claim any workers.
+func TestDispatcher_AdoptQueuedProjects_ReportsFailureWithoutAdopting(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	exec := &memory.Execution{ID: "exec-adopt-fail", TaskID: "GH-ADOPTFAIL", ProjectPath: "/project-adopt-fail", Status: "queued"}
+	if err := store.SaveExecution(exec); err != nil {
+		t.Fatalf("failed to save execution: %v", err)
+	}
+
+	// Close the underlying DB so GetQueuedProjectPaths fails, simulating a
+	// store that isn't ready yet at boot.
+	if err := store.Close(); err != nil {
+		t.Fatalf("failed to close store: %v", err)
+	}
+
+	config := DefaultDispatcherConfig()
+	dispatcher := NewDispatcher(store, NewRunner(), config)
+
+	if ok := dispatcher.adoptQueuedProjects(); ok {
+		t.Error("expected adoptQueuedProjects to report failure when the store query errors")
+	}
+	if status := dispatcher.GetWorkerStatus(); len(status) != 0 {
+		t.Errorf("expected no workers adopted when the store query fails, got: %v", status)
+	}
+}
