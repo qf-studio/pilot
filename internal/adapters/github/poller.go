@@ -656,6 +656,19 @@ func (p *Poller) startSequential(ctx context.Context) {
 			}
 		}
 
+		// GH-3789: Re-check "Blocked by: #N" right before dispatch. The
+		// pre-flight judge call above can take long enough for a blocker
+		// that was closed when findOldestUnprocessedIssue selected this
+		// issue to have reopened by now — re-verify rather than trust the
+		// poll-time snapshot (D6/TASK-382).
+		if p.hasPendingDependencies(ctx, issue) {
+			p.logger.Info("Skipping dispatch — blocker reopened since candidate selection",
+				slog.Int("number", issue.Number),
+			)
+			p.recordSkip(skipreason.ReasonPendingDependency)
+			continue
+		}
+
 		// Board sync: move card to in-progress on confirmed dispatch (GH-3252).
 		p.syncBoardStatusInProgress(ctx, issue)
 
@@ -1016,6 +1029,7 @@ func (p *Poller) findOldestUnprocessedIssue(ctx context.Context) (*Issue, error)
 			slog.Int("number", candidate.Number),
 			slog.String("title", candidate.Title),
 		)
+		p.recordSkip(skipreason.ReasonPendingDependency)
 	}
 
 	// All candidates have pending dependencies
@@ -1400,6 +1414,20 @@ func (p *Poller) checkForNewIssues(ctx context.Context) {
 				slog.Int("number", issue.Number),
 				slog.Any("error", ferr),
 			)
+		}
+
+		// GH-3789: Re-check "Blocked by: #N" right before dispatch. Phase 1's
+		// candidate selection and Phase 2's scope-overlap grouping both make
+		// further API calls per candidate, so a blocker that was closed during
+		// Phase 1 selection could have reopened by the time this issue actually
+		// reaches dispatch. Re-verifying here (not just at poll time) closes the
+		// gap that let a gated task run against an open blocker (D6/TASK-382).
+		if p.hasPendingDependencies(ctx, issue) {
+			p.logger.Info("Skipping dispatch — blocker reopened since candidate selection",
+				slog.Int("number", issue.Number),
+			)
+			p.recordSkip(skipreason.ReasonPendingDependency)
+			continue
 		}
 
 		// GH-2802: Pre-flight judge — evaluate issue quality before burning a worker slot.

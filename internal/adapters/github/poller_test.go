@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/qf-studio/pilot/internal/adapters/skipreason"
 	"github.com/qf-studio/pilot/internal/testutil"
 )
 
@@ -1247,6 +1249,237 @@ func TestPoller_FindOldestUnprocessedIssue_AllDepsOpen(t *testing.T) {
 	// Should return nil when all issues have open dependencies
 	if issue != nil {
 		t.Errorf("issue should be nil when all have open dependencies, got #%d", issue.Number)
+	}
+}
+
+// GH-3789 (D6): hasPendingDependencies must gate on the CURRENT state of every
+// referenced blocker, not just the first one, and must fail safe (treat as
+// pending) when a blocker can't be resolved at all (deleted/missing issue).
+func TestPoller_HasPendingDependencies_MultipleBlockers(t *testing.T) {
+	tests := []struct {
+		name      string
+		issueBody string
+		states    map[int]string // depNum -> "open"/"closed"; absent = 404 (missing)
+		want      bool
+	}{
+		{
+			name:      "all blockers closed",
+			issueBody: "Blocked by: #100\nBlocked by: #200",
+			states:    map[int]string{100: "closed", 200: "closed"},
+			want:      false,
+		},
+		{
+			name:      "one of two blockers still open",
+			issueBody: "Blocked by: #100\nBlocked by: #200",
+			states:    map[int]string{100: "closed", 200: "open"},
+			want:      true,
+		},
+		{
+			name:      "first blocker open, second closed",
+			issueBody: "Blocked by: #100\nBlocked by: #200",
+			states:    map[int]string{100: "open", 200: "closed"},
+			want:      true,
+		},
+		{
+			name:      "one blocker references a missing issue",
+			issueBody: "Blocked by: #100\nBlocked by: #999",
+			states:    map[int]string{100: "closed"}, // #999 not found -> 404
+			want:      true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+				last := parts[len(parts)-1]
+				var num int
+				_, _ = fmt.Sscanf(last, "%d", &num)
+
+				state, ok := tt.states[num]
+				if !ok {
+					w.WriteHeader(http.StatusNotFound)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(&Issue{Number: num, State: state})
+			}))
+			defer server.Close()
+
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second)
+
+			issue := &Issue{Number: 1, Body: tt.issueBody}
+			got := poller.hasPendingDependencies(context.Background(), issue)
+
+			if got != tt.want {
+				t.Errorf("hasPendingDependencies() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// GH-3789 (D6): the sequential poll loop must record a skip metric when it
+// passes over a candidate with an open blocker — previously only the
+// parallel/auto path (checkForNewIssues) recorded skipreason.ReasonPendingDependency,
+// so sequential-mode gating was invisible in pilot_poller_skipped_total.
+func TestPoller_FindOldestUnprocessedIssue_RecordsSkipMetric(t *testing.T) {
+	now := time.Now()
+	issues := []*Issue{
+		{Number: 1, Title: "Gated", Body: "Blocked by: #100", Labels: []Label{{Name: "pilot"}}, CreatedAt: now.Add(-1 * time.Hour)},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/repos/owner/repo/issues":
+			_ = json.NewEncoder(w).Encode(issues)
+		case "/repos/owner/repo/issues/100":
+			_ = json.NewEncoder(w).Encode(&Issue{Number: 100, State: "open"})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	m := newFakePollerMetrics()
+	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second,
+		WithPollerMetrics(m),
+	)
+
+	issue, err := poller.findOldestUnprocessedIssue(context.Background())
+	if err != nil {
+		t.Fatalf("findOldestUnprocessedIssue() error = %v", err)
+	}
+	if issue != nil {
+		t.Errorf("issue should be nil (only candidate has an open blocker), got #%d", issue.Number)
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if got := m.skipped[skipreason.ReasonPendingDependency]; got != 1 {
+		t.Errorf("skipped[pending_dependency] = %d, want 1", got)
+	}
+}
+
+// GH-3789 (D6): a blocker closed at candidate-selection time (Phase 1) but
+// reopened before dispatch (Phase 3) must NOT let the gated issue through —
+// this is the exact "gate is decorative" gap the incident exposed. Simulate
+// reopening by flipping the dependency's reported state between the two
+// hasPendingDependencies calls the parallel/auto dispatch path makes.
+func TestPoller_CheckForNewIssues_SkipsWhenBlockerReopensBeforeDispatch(t *testing.T) {
+	pilot := Label{Name: "pilot"}
+	issues := []*Issue{
+		{Number: 1, Title: "Gated", Body: "Blocked by: #100", Labels: []Label{pilot}, CreatedAt: time.Now()},
+	}
+
+	var depCalls int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/repos/owner/repo/issues":
+			_ = json.NewEncoder(w).Encode(issues)
+		case "/repos/owner/repo/issues/1":
+			// Fresh-label refresh at dispatch time; labels unchanged.
+			_ = json.NewEncoder(w).Encode(issues[0])
+		case "/repos/owner/repo/issues/100":
+			n := atomic.AddInt32(&depCalls, 1)
+			state := "closed"
+			if n >= 2 {
+				// Reopened between Phase 1 candidate selection and Phase 3 dispatch.
+				state = "open"
+			}
+			_ = json.NewEncoder(w).Encode(&Issue{Number: 100, State: state})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	m := newFakePollerMetrics()
+
+	var dispatched int32
+	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second,
+		WithOnIssue(func(ctx context.Context, issue *Issue) error {
+			atomic.AddInt32(&dispatched, 1)
+			return nil
+		}),
+		WithPollerMetrics(m),
+	)
+
+	poller.checkForNewIssues(context.Background())
+	poller.WaitForActive()
+
+	if got := atomic.LoadInt32(&dispatched); got != 0 {
+		t.Errorf("dispatched = %d, want 0 (blocker reopened before dispatch)", got)
+	}
+	if got := atomic.LoadInt32(&depCalls); got < 2 {
+		t.Fatalf("expected dependency state to be checked at both poll and dispatch time, got %d calls", got)
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if got := m.skipped[skipreason.ReasonPendingDependency]; got != 1 {
+		t.Errorf("skipped[pending_dependency] = %d, want 1", got)
+	}
+}
+
+// GH-3789 (D6): mirror the above for sequential mode — a blocker that reopens
+// between findOldestUnprocessedIssue's selection and startSequential's
+// dispatch must abort the dispatch instead of trusting the poll-time snapshot.
+func TestPoller_StartSequential_SkipsWhenBlockerReopensBeforeDispatch(t *testing.T) {
+	issues := []*Issue{
+		{Number: 1, Title: "Gated", Body: "Blocked by: #100", Labels: []Label{{Name: "pilot"}}, CreatedAt: time.Now()},
+	}
+
+	var depCalls int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/repos/owner/repo/issues":
+			_ = json.NewEncoder(w).Encode(issues)
+		case "/repos/owner/repo/issues/100":
+			n := atomic.AddInt32(&depCalls, 1)
+			state := "closed"
+			if n >= 2 {
+				state = "open"
+			}
+			_ = json.NewEncoder(w).Encode(&Issue{Number: 100, State: state})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	m := newFakePollerMetrics()
+
+	var dispatched int32
+	poller, _ := NewPoller(client, "owner/repo", "pilot", 10*time.Millisecond,
+		WithExecutionMode(ExecutionModeSequential),
+		WithSequentialConfig(false, 10*time.Millisecond, 100*time.Millisecond),
+		WithPollerMetrics(m),
+		WithOnIssueWithResult(func(ctx context.Context, issue *Issue) (*IssueResult, error) {
+			atomic.AddInt32(&dispatched, 1)
+			return &IssueResult{Success: true}, nil
+		}),
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+
+	poller.Start(ctx)
+
+	if got := atomic.LoadInt32(&dispatched); got != 0 {
+		t.Errorf("dispatched = %d, want 0 (blocker reopened before dispatch)", got)
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if got := m.skipped[skipreason.ReasonPendingDependency]; got < 1 {
+		t.Errorf("skipped[pending_dependency] = %d, want >= 1", got)
 	}
 }
 
