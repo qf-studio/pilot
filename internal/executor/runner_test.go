@@ -3462,6 +3462,40 @@ func TestIsPermanentFailure(t *testing.T) {
 	}
 }
 
+// TestIsInfraNoise verifies that restart-reap rows, rate limiting, infra
+// plumbing failures, and boot-window preflight failures are classified as
+// operational noise — not genuine execution failures — so callers that cap
+// a failed-retry budget (poller pilot-failed-retry-N labels) don't burn it
+// on a daemon restart. GH-3787.
+func TestIsInfraNoise(t *testing.T) {
+	tests := []struct {
+		name              string
+		err               string
+		sinceProcessStart time.Duration
+		want              bool
+	}{
+		{"empty string", "", time.Hour, false},
+		{"stale running task reap", "stale running task recovered (orphaned worker)", time.Hour, true},
+		{"stale queued task reap", "stale queued task recovered (no worker picked up)", time.Hour, true},
+		{"queued task orphaned by restart", "queued task orphaned by restart; project no longer configured", time.Hour, true},
+		{"rate limited", "hit your limit for the day", time.Hour, true},
+		{"oom killed", "oom_killed: signal: killed", time.Hour, true},
+		{"push failed infra", "push failed after 3 attempt(s): connection reset", time.Hour, true},
+		{"preflight failure within boot grace", "pre-flight check failed: preflight check \"claude_available\" failed: exec: \"claude\": not found", 30 * time.Second, true},
+		{"preflight failure after boot grace", "pre-flight check failed: preflight check \"claude_available\" failed: exec: \"claude\": not found", 10 * time.Minute, false},
+		{"genuine execution failure", "quality gate failed: 3 lint errors", time.Hour, false},
+		{"genuine planning failure", "unknown: exit status 1", time.Hour, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isInfraNoiseAt(tt.err, tt.sinceProcessStart); got != tt.want {
+				t.Errorf("isInfraNoiseAt(%q, %v) = %v, want %v", tt.err, tt.sinceProcessStart, got, tt.want)
+			}
+		})
+	}
+}
+
 // TestRunnerFallbackModelName verifies that the telemetry fallback model name
 // reflects the configured backend, not a hardcoded default. GH-2428.
 func TestRunnerFallbackModelName(t *testing.T) {

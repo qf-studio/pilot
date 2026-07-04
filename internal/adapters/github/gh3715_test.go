@@ -215,6 +215,80 @@ func TestPoller_FailedRetryLabel_SurvivesPollerReconstruction(t *testing.T) {
 	}
 }
 
+// GH-3787: when the retry budget is about to escalate to
+// pilot-failed-retry-exhausted, but the deliverable already shipped (merged
+// PR found via search), the issue must be closed as done instead of parked
+// as permanently failed. Regression for the incident where GH-3759's PR
+// merged while restart noise burned the last retry slot.
+func TestPoller_FailedRetryLabel_ShippedClosesAsDoneInsteadOfExhausted(t *testing.T) {
+	now := time.Now()
+	issues := []*Issue{
+		{Number: 42, State: "open", Title: "Stuck issue", Labels: []Label{{Name: "pilot"}, {Name: LabelFailed}, {Name: LabelFailedRetry2}}, CreatedAt: now.Add(-1 * time.Hour)},
+		{Number: 43, State: "open", Title: "Available", Labels: []Label{{Name: "pilot"}}, CreatedAt: now},
+	}
+
+	var addedLabels atomic.Value
+	addedLabels.Store([]string(nil))
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/issues/42/labels"):
+			var body struct {
+				Labels []string `json:"labels"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			prev, _ := addedLabels.Load().([]string)
+			addedLabels.Store(append(prev, body.Labels...))
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`[]`))
+			return
+		case r.Method == http.MethodDelete:
+			w.WriteHeader(http.StatusOK)
+			return
+		case r.URL.Path == "/search/issues":
+			// A merged PR referencing #42 already exists — the deliverable shipped.
+			// #43 has no merged work, so its search query must report zero.
+			if strings.Contains(r.URL.RawQuery, "GH-42") {
+				_, _ = w.Write([]byte(`{"total_count": 1}`))
+			} else {
+				_, _ = w.Write([]byte(`{"total_count": 0}`))
+			}
+			return
+		}
+		_ = json.NewEncoder(w).Encode(issues)
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second, WithRetryGracePeriod(0))
+
+	issue, err := poller.findOldestUnprocessedIssue(context.Background())
+	if err != nil {
+		t.Fatalf("findOldestUnprocessedIssue() error = %v", err)
+	}
+	if issue == nil || issue.Number != 43 {
+		t.Errorf("expected #43, got %v", issue)
+	}
+
+	added, _ := addedLabels.Load().([]string)
+	var foundDone, foundExhausted bool
+	for _, l := range added {
+		if l == LabelDone {
+			foundDone = true
+		}
+		if l == LabelFailedRetryExhausted {
+			foundExhausted = true
+		}
+	}
+	if !foundDone {
+		t.Errorf("expected pilot-done to be added to shipped issue #42, got labels=%v", added)
+	}
+	if foundExhausted {
+		t.Errorf("expected pilot-failed-retry-exhausted NOT to be added to a shipped issue, got labels=%v", added)
+	}
+}
+
 // FailedRetryStateLabels exposes the canonical list for cleanup on merge.
 func TestFailedRetryStateLabels_OrderingAndCompleteness(t *testing.T) {
 	want := []string{LabelFailedRetry1, LabelFailedRetry2, LabelFailedRetryExhausted}

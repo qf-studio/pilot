@@ -1876,6 +1876,15 @@ func (p *Poller) shouldRetryFailedIssue(ctx context.Context, issue *Issue) bool 
 		return false
 	}
 
+	// GH-3787: check shipped-ness BEFORE any retry-counter accounting,
+	// including the escalate-to-exhausted path below. A restart-noise streak
+	// (stale-task reap + preflight blip) can burn through the retry budget
+	// on an issue whose deliverable already merged — hasMergedWork closes it
+	// as done instead of letting it get parked as pilot-failed-retry-exhausted.
+	if p.hasMergedWork(ctx, issue) {
+		return false
+	}
+
 	// Determine the next retry-counter label based on current state.
 	var currentRetryLabel, nextRetryLabel string
 	switch {
@@ -1907,11 +1916,6 @@ func (p *Poller) shouldRetryFailedIssue(ctx context.Context, issue *Issue) bool 
 		p.logger.Warn("Issue exhausted failed-retry budget — escalated to pilot-failed-retry-exhausted",
 			slog.Int("number", issue.Number),
 		)
-		return false
-	}
-
-	// Check if merged work already exists before retrying
-	if p.hasMergedWork(ctx, issue) {
 		return false
 	}
 
