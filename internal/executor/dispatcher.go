@@ -761,6 +761,9 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 			continue
 		}
 
+		// GH-3846: record queued->running transition to the execution-events audit trail.
+		w.recordExecutionEvent(exec.ID, memory.StageRunning, fmt.Sprintf("worker started task %s", exec.TaskID))
+
 		// Emit progress callback for task started
 		w.runner.EmitProgress(exec.TaskID, "Running", 2, fmt.Sprintf("Worker started: %s", truncateForLog(exec.TaskTitle, 40)))
 
@@ -784,6 +787,8 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 			if err := w.store.UpdateExecutionStatus(exec.ID, "failed", execErr.Error()); err != nil {
 				w.log.Error("Failed to update status to failed", slog.Any("error", err))
 			}
+			// GH-3846: record terminal-failure transition to the execution-events audit trail.
+			w.recordExecutionEvent(exec.ID, memory.StageFailed, truncateForLog(execErr.Error(), 200))
 			// Emit progress callback for task failed
 			w.runner.EmitProgress(exec.TaskID, "Failed", 100, fmt.Sprintf("Execution error: %s", truncateForLog(execErr.Error(), 60)))
 		} else if !result.Success {
@@ -801,6 +806,12 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 				w.log.Error("Failed to update execution status",
 					slog.String("status", status), slog.Any("error", err))
 			}
+			// GH-3846: record no_op/skipped transitions to the execution-events audit
+			// trail. Stalled is instrumented at its detection site in runner.go instead;
+			// declined/rate_limited/infra have no execution_events Stage equivalent yet.
+			if stage, ok := dispatchTerminalStage(status); ok {
+				w.recordExecutionEvent(exec.ID, stage, fmt.Sprintf("%s: %s", status, truncateForLog(result.Error, 200)))
+			}
 			// Emit progress callback with a phase that matches the classified outcome.
 			w.runner.EmitProgress(exec.TaskID, terminalPhaseLabel(status), 100,
 				fmt.Sprintf("%s: %s", status, truncateForLog(result.Error, 60)))
@@ -815,6 +826,10 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 			// between those two could leave a 'completed' row with an empty pr_url.
 			if err := w.store.MarkExecutionCompleted(exec.ID, result.PRUrl, result.CommitSHA, duration.Milliseconds()); err != nil {
 				w.log.Error("Failed to mark execution completed", slog.Any("error", err))
+			}
+			// GH-3846: record terminal-success transition to the execution-events audit trail.
+			if stage, ok := dispatchSuccessStage(result.PRUrl); ok {
+				w.recordExecutionEvent(exec.ID, stage, fmt.Sprintf("completed with PR: %s", result.PRUrl))
 			}
 			// Emit progress callback for task completed
 			msg := fmt.Sprintf("Completed in %s", duration.Round(time.Second))
@@ -867,6 +882,52 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 		}
 
 		w.currentTaskID.Store("")
+	}
+}
+
+// recordExecutionEvent writes a best-effort stage-transition record to the
+// execution_events audit trail (GH-3846). Mirrors the worker's other store
+// writes here: a nil store or insert failure is logged and swallowed, never
+// fails the worker loop — the audit trail is a diagnostic aid, not load-bearing.
+func (w *ProjectWorker) recordExecutionEvent(executionID string, stage memory.Stage, detail string) {
+	if w.store == nil {
+		return
+	}
+	if err := w.store.InsertExecutionEvent(executionID, stage, detail); err != nil {
+		w.log.Warn("Failed to record execution event",
+			slog.String("execution_id", executionID),
+			slog.String("stage", string(stage)),
+			slog.Any("error", err))
+	}
+}
+
+// dispatchSuccessStage reports the execution_events Stage (and whether to
+// write one) for the dispatcher's terminal-success site. The Stage enum
+// (GH-3840) has no generic "completed" value, so a PR is the only durable
+// milestone this site can map to today — runner.go already emits pr_created
+// at creation time; this dispatcher-level entry marks the run as a whole
+// finishing. Direct-commit tasks with no PR have no matching Stage yet, so
+// they're intentionally left uninstrumented here (GH-3846).
+func dispatchSuccessStage(prURL string) (memory.Stage, bool) {
+	if prURL == "" {
+		return "", false
+	}
+	return memory.StagePRCreated, true
+}
+
+// dispatchTerminalStage maps a dispatcher-classified terminal status (see
+// TerminalStatus) to its execution_events Stage, for the subset that mark a
+// durable milestone. Stalled is instrumented at its detection site in
+// runner.go instead (GH-3846); declined/rate_limited/infra have no Stage
+// enum equivalent yet, so they're skipped rather than mismapped.
+func dispatchTerminalStage(status string) (memory.Stage, bool) {
+	switch status {
+	case "no_op":
+		return memory.StageNoOp, true
+	case "skipped":
+		return memory.StageSkipped, true
+	default:
+		return "", false
 	}
 }
 

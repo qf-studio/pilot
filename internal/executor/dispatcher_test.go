@@ -1422,3 +1422,221 @@ func TestDispatcher_AdoptQueuedProjects_ReportsFailureWithoutAdopting(t *testing
 		t.Errorf("expected no workers adopted when the store query fails, got: %v", status)
 	}
 }
+
+// TestDispatchSuccessStage covers the dispatcher's terminal-success mapping:
+// a PR produces a pr_created event, a PR-less completion (direct-commit mode)
+// has no matching Stage yet and is intentionally left uninstrumented (GH-3846).
+func TestDispatchSuccessStage(t *testing.T) {
+	tests := []struct {
+		name      string
+		prURL     string
+		wantStage memory.Stage
+		wantOK    bool
+	}{
+		{"pr url present", "https://github.com/test/repo/pull/1", memory.StagePRCreated, true},
+		{"no pr url", "", "", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stage, ok := dispatchSuccessStage(tt.prURL)
+			if ok != tt.wantOK {
+				t.Errorf("dispatchSuccessStage(%q) ok = %v, want %v", tt.prURL, ok, tt.wantOK)
+			}
+			if stage != tt.wantStage {
+				t.Errorf("dispatchSuccessStage(%q) stage = %q, want %q", tt.prURL, stage, tt.wantStage)
+			}
+		})
+	}
+}
+
+// TestDispatchTerminalStage covers the classified-status → execution_events
+// Stage mapping used at the dispatcher's no_op/skipped instrumentation site
+// (GH-3846). Stalled is instrumented at its detection site in runner.go
+// instead, and declined/rate_limited/infra have no Stage enum equivalent yet
+// — all three must report ok=false rather than a made-up mapping.
+func TestDispatchTerminalStage(t *testing.T) {
+	tests := []struct {
+		status    string
+		wantStage memory.Stage
+		wantOK    bool
+	}{
+		{"no_op", memory.StageNoOp, true},
+		{"skipped", memory.StageSkipped, true},
+		{"stalled", "", false},
+		{"declined", "", false},
+		{"rate_limited", "", false},
+		{"infra", "", false},
+		{"failed", "", false},
+		{"completed", "", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.status, func(t *testing.T) {
+			stage, ok := dispatchTerminalStage(tt.status)
+			if ok != tt.wantOK {
+				t.Errorf("dispatchTerminalStage(%q) ok = %v, want %v", tt.status, ok, tt.wantOK)
+			}
+			if stage != tt.wantStage {
+				t.Errorf("dispatchTerminalStage(%q) stage = %q, want %q", tt.status, stage, tt.wantStage)
+			}
+		})
+	}
+}
+
+// TestProjectWorker_recordExecutionEvent_NilStore verifies recordExecutionEvent
+// is a no-op when the worker's store is nil, mirroring the Runner-side guard
+// (GH-3846).
+func TestProjectWorker_recordExecutionEvent_NilStore(t *testing.T) {
+	w := &ProjectWorker{log: slog.New(slog.NewTextHandler(os.Stdout, nil))}
+	// Should not panic with nil store
+	w.recordExecutionEvent("exec-1", memory.StageRunning, "test detail")
+}
+
+// syntheticDispatchBackend is a minimal Backend that always succeeds, used to
+// drive a full dispatcher→worker→runner pass without real git/Claude Code
+// tooling (GH-3846).
+type syntheticDispatchBackend struct{}
+
+func (syntheticDispatchBackend) Name() string      { return "synthetic" }
+func (syntheticDispatchBackend) IsAvailable() bool { return true }
+func (syntheticDispatchBackend) Execute(_ context.Context, _ ExecuteOptions) (*BackendResult, error) {
+	return &BackendResult{Success: true, Output: "synthetic success"}, nil
+}
+
+// waitForTerminalStatus polls until the execution leaves "queued"/"running",
+// mirroring the polling pattern in TestDispatcher_BootWithQueuedRows_FIFODrainNoStaleReap.
+func waitForTerminalStatus(t *testing.T, store *memory.Store, execID string, timeout time.Duration) *memory.Execution {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		exec, err := store.GetExecution(execID)
+		if err != nil {
+			t.Fatalf("failed to get execution: %v", err)
+		}
+		if exec.Status != "queued" && exec.Status != "running" {
+			return exec
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("execution %s did not reach a terminal status within %v (last status: %s)", execID, timeout, exec.Status)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// TestDispatcher_SyntheticDispatch_SuccessEventSequence drives a full
+// synthetic dispatch (queue → worker pickup → runner execution → completion)
+// through the real dispatcher and runner, and asserts the execution_events
+// timeline records the expected cross-file sequence: dispatcher's
+// queued→running transition and runner's spec-validated milestone. This task
+// has no PR (CreatePR: false), so the dispatcher's terminal-success write is
+// a no-op by design (see the recordExecutionEvent call site in processQueue)
+// — TestRunner_recordExecutionEvent_WritesEvent covers the pr_created write
+// directly. GH-3846.
+func TestDispatcher_SyntheticDispatch_SuccessEventSequence(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	runner := NewRunnerWithBackend(syntheticDispatchBackend{})
+	runner.skipPreflightChecks = true
+	runner.SetLogStore(store)
+	runner.SetRecordingEnabled(false)
+
+	dispatcher := NewDispatcher(store, runner, nil)
+	if err := dispatcher.Start(context.Background()); err != nil {
+		t.Fatalf("failed to start dispatcher: %v", err)
+	}
+	defer dispatcher.Stop()
+
+	task := &Task{
+		ID:          "GH-SYNTH-OK",
+		Title:       "Synthetic dispatch success",
+		Description: "GH-3846 synthetic dispatch coverage",
+		ProjectPath: t.TempDir(),
+	}
+
+	execID, err := dispatcher.QueueTask(context.Background(), task)
+	if err != nil {
+		t.Fatalf("failed to queue task: %v", err)
+	}
+
+	exec := waitForTerminalStatus(t, store, execID, 10*time.Second)
+	if exec.Status != "completed" {
+		t.Fatalf("expected status completed, got %q (error: %s)", exec.Status, exec.Error)
+	}
+
+	events, err := store.ListExecutionEvents(execID)
+	if err != nil {
+		t.Fatalf("ListExecutionEvents failed: %v", err)
+	}
+
+	wantStages := []memory.Stage{memory.StageRunning, memory.StageSpecValidated}
+	if len(events) != len(wantStages) {
+		var gotStages []memory.Stage
+		for _, e := range events {
+			gotStages = append(gotStages, e.Stage)
+		}
+		t.Fatalf("got %d events %v, want %d %v", len(events), gotStages, len(wantStages), wantStages)
+	}
+	for i, want := range wantStages {
+		if events[i].Stage != want {
+			t.Errorf("event[%d].Stage = %q, want %q", i, events[i].Stage, want)
+		}
+	}
+}
+
+// TestDispatcher_SyntheticDispatch_FailureEventSequence drives a synthetic
+// dispatch that fails preflight checks (real Runner, nonexistent project
+// path — same fast-fail mechanism TestDispatcher_BootWithQueuedRows_
+// FIFODrainNoStaleReap relies on) and asserts the execution_events timeline
+// records dispatcher's queued→running transition, runner's spec-validated
+// milestone, and dispatcher's terminal-failure transition (GH-3846).
+func TestDispatcher_SyntheticDispatch_FailureEventSequence(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	runner := NewRunner()
+	runner.SetLogStore(store)
+
+	dispatcher := NewDispatcher(store, runner, nil)
+	if err := dispatcher.Start(context.Background()); err != nil {
+		t.Fatalf("failed to start dispatcher: %v", err)
+	}
+	defer dispatcher.Stop()
+
+	task := &Task{
+		ID:          "GH-SYNTH-FAIL",
+		Title:       "Synthetic dispatch failure",
+		Description: "GH-3846 synthetic dispatch coverage",
+		ProjectPath: "/nonexistent/synthetic-dispatch-path",
+	}
+
+	execID, err := dispatcher.QueueTask(context.Background(), task)
+	if err != nil {
+		t.Fatalf("failed to queue task: %v", err)
+	}
+
+	exec := waitForTerminalStatus(t, store, execID, 10*time.Second)
+	if exec.Status != "failed" {
+		t.Fatalf("expected status failed, got %q", exec.Status)
+	}
+
+	events, err := store.ListExecutionEvents(execID)
+	if err != nil {
+		t.Fatalf("ListExecutionEvents failed: %v", err)
+	}
+
+	wantStages := []memory.Stage{memory.StageRunning, memory.StageSpecValidated, memory.StageFailed}
+	if len(events) != len(wantStages) {
+		var gotStages []memory.Stage
+		for _, e := range events {
+			gotStages = append(gotStages, e.Stage)
+		}
+		t.Fatalf("got %d events %v, want %d %v", len(events), gotStages, len(wantStages), wantStages)
+	}
+	for i, want := range wantStages {
+		if events[i].Stage != want {
+			t.Errorf("event[%d].Stage = %q, want %q", i, events[i].Stage, want)
+		}
+	}
+}

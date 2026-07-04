@@ -3015,6 +3015,88 @@ func TestRunner_saveLogEntry_ErrorLevel(t *testing.T) {
 	}
 }
 
+// TestRunner_recordExecutionEvent_NilStore verifies recordExecutionEvent is a
+// no-op when logStore is nil (GH-3846) — mirrors saveLogEntry's fire-and-forget
+// contract so a Runner without a wired store never panics on a milestone write.
+func TestRunner_recordExecutionEvent_NilStore(t *testing.T) {
+	runner := NewRunner()
+	// Should not panic with nil store
+	runner.recordExecutionEvent("exec-1", memory.StageSpecValidated, "test detail")
+}
+
+// TestRunner_recordExecutionEvent_UnknownExecution verifies recordExecutionEvent
+// swallows the store's error (FK violation: no matching executions row) instead
+// of panicking, and does not leave a dangling event behind. GH-3846.
+func TestRunner_recordExecutionEvent_UnknownExecution(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := memory.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	runner := NewRunner()
+	runner.SetLogStore(store)
+
+	// Should not panic even though "exec-ghost" was never saved via SaveExecution.
+	runner.recordExecutionEvent("exec-ghost", memory.StageCommit, "commit created: abc1234")
+
+	events, err := store.ListExecutionEvents("exec-ghost")
+	if err != nil {
+		t.Fatalf("ListExecutionEvents failed: %v", err)
+	}
+	if len(events) != 0 {
+		t.Errorf("expected 0 events for an execution row that was never saved, got %d", len(events))
+	}
+}
+
+// TestRunner_recordExecutionEvent_WritesEvent verifies recordExecutionEvent
+// writes to execution_events and the timeline can be read back in order,
+// covering the spec_validated/commit/pr_created/stalled milestones runner.go
+// emits (GH-3846).
+func TestRunner_recordExecutionEvent_WritesEvent(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := memory.NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	if err := store.SaveExecution(&memory.Execution{
+		ID:          "exec-runner-42",
+		TaskID:      "GH-42",
+		ProjectPath: "/project",
+		Status:      "running",
+	}); err != nil {
+		t.Fatalf("SaveExecution failed: %v", err)
+	}
+
+	runner := NewRunner()
+	runner.SetLogStore(store)
+
+	runner.recordExecutionEvent("exec-runner-42", memory.StageSpecValidated, "task spec validated")
+	runner.recordExecutionEvent("exec-runner-42", memory.StageCommit, "commit created: abc1234")
+	runner.recordExecutionEvent("exec-runner-42", memory.StagePRCreated, "pr created: https://github.com/test/repo/pull/42")
+
+	events, err := store.ListExecutionEvents("exec-runner-42")
+	if err != nil {
+		t.Fatalf("ListExecutionEvents failed: %v", err)
+	}
+
+	wantStages := []memory.Stage{memory.StageSpecValidated, memory.StageCommit, memory.StagePRCreated}
+	if len(events) != len(wantStages) {
+		t.Fatalf("got %d events, want %d", len(events), len(wantStages))
+	}
+	for i, want := range wantStages {
+		if events[i].Stage != want {
+			t.Errorf("event[%d].Stage = %q, want %q", i, events[i].Stage, want)
+		}
+		if events[i].ExecutionID != "exec-runner-42" {
+			t.Errorf("event[%d].ExecutionID = %q, want exec-runner-42", i, events[i].ExecutionID)
+		}
+	}
+}
+
 // --- GH-1955: Self-review pattern extraction ---
 
 // mockSelfReviewBackend implements Backend for self-review tests.
