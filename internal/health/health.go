@@ -725,6 +725,38 @@ func checkIssueSourceAdapter(cfg *config.Config) ConfigCheck {
 	}
 }
 
+// TelegramApprovalStranding returns a non-empty warning when Telegram is
+// configured as an approval channel (it will send approve/reject requests)
+// but has no inbound polling running to receive the button tap that answers
+// them (GH-3826). Decisions in this configuration can only resolve via the
+// approval stage's timeout/default_action, never via the approver's actual
+// choice. Returns "" when there's no stranding risk.
+func TelegramApprovalStranding(cfg *config.Config) string {
+	if cfg == nil || cfg.Adapters == nil || cfg.Adapters.Telegram == nil {
+		return ""
+	}
+	tg := cfg.Adapters.Telegram
+	if !tg.Enabled || tg.BotToken == "" || tg.Polling {
+		return ""
+	}
+	if tg.Approval != nil && !tg.Approval.Enabled {
+		return ""
+	}
+
+	ac := cfg.Approval
+	if ac == nil || !ac.Enabled {
+		return ""
+	}
+	stageEnabled := (ac.PreMerge != nil && ac.PreMerge.Enabled) ||
+		(ac.PreExecution != nil && ac.PreExecution.Enabled) ||
+		(ac.PostFailure != nil && ac.PostFailure.Enabled)
+	if !stageEnabled {
+		return ""
+	}
+
+	return "approval channel telegram is send-only in this configuration — approvals will strand"
+}
+
 // checkConfig validates configuration
 func checkConfig(cfg *config.Config) []ConfigCheck {
 	checks := []ConfigCheck{}
@@ -905,6 +937,19 @@ func checkConfig(cfg *config.Config) []ConfigCheck {
 				break // one diagnostic per run is enough
 			}
 		}
+	}
+
+	// GH-3826: Telegram is registered as an approval channel (sends approve/reject
+	// requests) but has no inbound polling running to receive the button tap —
+	// approvals can only resolve via the stage timeout/default_action, not the
+	// approver's decision.
+	if msg := TelegramApprovalStranding(cfg); msg != "" {
+		checks = append(checks, ConfigCheck{
+			Name:    "telegram-approval-stranding",
+			Status:  StatusError,
+			Message: msg + " (adapters.telegram.polling=false — no inbound path for approve/reject taps)",
+			Fix:     "Set adapters.telegram.polling: true (or start with --telegram) so button taps can be received, or remove Telegram as an approval channel",
+		})
 	}
 
 	// Check daily brief schedule

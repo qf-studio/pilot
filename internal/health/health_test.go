@@ -1335,3 +1335,101 @@ func TestCheckConfig_ApprovalMisconfig_NotReported_WhenNoEnvRequiresApproval(t *
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// GH-3826: Telegram approval-stranding checks
+// ---------------------------------------------------------------------------
+
+func telegramStrandingConfig() *config.Config {
+	cfg := config.DefaultConfig()
+	cfg.Adapters.Telegram = &telegram.Config{
+		Enabled:  true,
+		BotToken: "test-bot-token",
+		Polling:  false,
+	}
+	approvalCfg := approval.DefaultConfig()
+	approvalCfg.Enabled = true
+	approvalCfg.PreMerge = &approval.StageConfig{Enabled: true}
+	cfg.Approval = approvalCfg
+	return cfg
+}
+
+func TestTelegramApprovalStranding_Detected(t *testing.T) {
+	cfg := telegramStrandingConfig()
+
+	msg := TelegramApprovalStranding(cfg)
+	if msg == "" {
+		t.Fatal("expected stranding warning when telegram is enabled, polling is off, and pre_merge approval is enabled")
+	}
+	if !strings.Contains(msg, "telegram") {
+		t.Errorf("expected message to mention telegram, got: %s", msg)
+	}
+}
+
+func TestTelegramApprovalStranding_NotReported_WhenPollingEnabled(t *testing.T) {
+	cfg := telegramStrandingConfig()
+	cfg.Adapters.Telegram.Polling = true
+
+	if msg := TelegramApprovalStranding(cfg); msg != "" {
+		t.Errorf("expected no stranding warning when polling is enabled, got: %s", msg)
+	}
+}
+
+func TestTelegramApprovalStranding_NotReported_WhenTelegramDisabled(t *testing.T) {
+	cfg := telegramStrandingConfig()
+	cfg.Adapters.Telegram.Enabled = false
+
+	if msg := TelegramApprovalStranding(cfg); msg != "" {
+		t.Errorf("expected no stranding warning when telegram is disabled, got: %s", msg)
+	}
+}
+
+func TestTelegramApprovalStranding_NotReported_WhenTelegramApprovalChannelDisabled(t *testing.T) {
+	cfg := telegramStrandingConfig()
+	cfg.Adapters.Telegram.Approval = &telegram.ApprovalConfig{Enabled: false}
+
+	if msg := TelegramApprovalStranding(cfg); msg != "" {
+		t.Errorf("expected no stranding warning when telegram approval channel is disabled, got: %s", msg)
+	}
+}
+
+func TestTelegramApprovalStranding_NotReported_WhenNoApprovalStageEnabled(t *testing.T) {
+	cfg := telegramStrandingConfig()
+	cfg.Approval.PreMerge.Enabled = false
+
+	if msg := TelegramApprovalStranding(cfg); msg != "" {
+		t.Errorf("expected no stranding warning when no approval stage is enabled, got: %s", msg)
+	}
+}
+
+func TestTelegramApprovalStranding_NotReported_WhenNoBotToken(t *testing.T) {
+	cfg := telegramStrandingConfig()
+	cfg.Adapters.Telegram.BotToken = ""
+
+	if msg := TelegramApprovalStranding(cfg); msg != "" {
+		t.Errorf("expected no stranding warning when bot token is missing, got: %s", msg)
+	}
+}
+
+func TestCheckConfig_TelegramApprovalStranding_Detected(t *testing.T) {
+	cfg := telegramStrandingConfig()
+
+	checks := checkConfig(cfg)
+	found := findConfigCheck(checks, "telegram-approval-stranding")
+	if found == nil {
+		t.Fatal("expected 'telegram-approval-stranding' check to appear in ConfigChecks")
+	}
+	if found.Status != StatusError {
+		t.Errorf("telegram-approval-stranding status = %v, want StatusError", found.Status)
+	}
+}
+
+func TestCheckConfig_TelegramApprovalStranding_NotReported_WhenPollingEnabled(t *testing.T) {
+	cfg := telegramStrandingConfig()
+	cfg.Adapters.Telegram.Polling = true
+
+	checks := checkConfig(cfg)
+	if found := findConfigCheck(checks, "telegram-approval-stranding"); found != nil {
+		t.Errorf("unexpected telegram-approval-stranding check when polling is enabled: %+v", found)
+	}
+}

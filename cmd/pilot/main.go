@@ -37,6 +37,7 @@ import (
 	"github.com/qf-studio/pilot/internal/dashboard"
 	"github.com/qf-studio/pilot/internal/executor"
 	"github.com/qf-studio/pilot/internal/gateway"
+	"github.com/qf-studio/pilot/internal/health"
 	"github.com/qf-studio/pilot/internal/health/verify"
 	"github.com/qf-studio/pilot/internal/logging"
 	"github.com/qf-studio/pilot/internal/memory"
@@ -278,6 +279,16 @@ Examples:
 
 			// Apply flag overrides to config
 			applyInputOverrides(cfg, cmd, enableTelegram, enableGithub, enableLinear, enableSlack, enableTunnel, enablePlane, enableDiscord)
+
+			// GH-3826: warn loudly when Telegram will send approval requests
+			// but has no inbound polling to receive the approve/reject tap —
+			// otherwise decisions silently strand until the approval stage
+			// times out.
+			if msg := health.TelegramApprovalStranding(cfg); msg != "" {
+				logging.WithComponent("start").Error(msg,
+					slog.Bool("telegram_polling", cfg.Adapters.Telegram.Polling))
+				fmt.Fprintf(os.Stderr, "⚠️  %s — run 'pilot doctor' for details, or set adapters.telegram.polling: true / start with --telegram\n", msg)
+			}
 
 			// Apply team ID override if flag provided
 			if teamID != "" {
