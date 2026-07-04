@@ -225,6 +225,7 @@
 | PR review comments API | ✅ | adapters/github | - | - | GetPullRequestComments for line-level review feedback (v2.25.0, PR #1825) |
 | CI log pattern learning | ✅ | autopilot | - | - | Wire CI log learning into autopilot feedback loop (v2.50.0, PR #1977) |
 | Staticcheck S1011 fix | ✅ | memory | - | - | Replace loop with append for staticcheck compliance (v2.46.1, PR #1971) |
+| Execution stage ledger (data layer) | ✅ | memory | - | - | `execution_events` table + Stage enum, `InsertExecutionEvent`/`ListExecutionEvents`/`ListExecutionsForTask`; no consumers wired yet (TASK-379 C3, GH-3844, v2.208.0) |
 
 ## Dashboard
 
