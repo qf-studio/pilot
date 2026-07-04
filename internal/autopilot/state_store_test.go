@@ -2,6 +2,7 @@ package autopilot
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,8 @@ import (
 
 	"github.com/qf-studio/pilot/internal/adapters/github"
 	"github.com/qf-studio/pilot/internal/testutil"
+
+	_ "modernc.org/sqlite"
 )
 
 func newTestStateStore(t *testing.T) *StateStore {
@@ -812,6 +815,111 @@ func TestStateStore_GenericAdapterProcessed_Upsert(t *testing.T) {
 	}
 	if len(all) != 1 {
 		t.Errorf("expected 1 entry after upsert, got %d", len(all))
+	}
+}
+
+// TestStateStore_GenericAdapterProcessed_CrossRepoIssueIDCollision guards
+// against GH-3819: adapter_processed's primary key must include repo, or two
+// repos processing the same issue_id silently overwrite each other's row.
+func TestStateStore_GenericAdapterProcessed_CrossRepoIssueIDCollision(t *testing.T) {
+	store := newTestStateStore(t)
+
+	if err := store.Mark("github", "org/repo-a", "5"); err != nil {
+		t.Fatalf("Mark(repo-a) failed: %v", err)
+	}
+	if err := store.Mark("github", "org/repo-b", "5"); err != nil {
+		t.Fatalf("Mark(repo-b) failed: %v", err)
+	}
+
+	okA, err := store.IsProcessed("github", "org/repo-a", "5")
+	if err != nil {
+		t.Fatalf("IsProcessed(repo-a) failed: %v", err)
+	}
+	if !okA {
+		t.Error("issue 5 in repo-a should still be marked processed after repo-b marks its own issue 5")
+	}
+
+	okB, err := store.IsProcessed("github", "org/repo-b", "5")
+	if err != nil {
+		t.Fatalf("IsProcessed(repo-b) failed: %v", err)
+	}
+	if !okB {
+		t.Error("issue 5 in repo-b should be marked processed")
+	}
+
+	repoAIssues, err := store.Load("github", "org/repo-a")
+	if err != nil {
+		t.Fatalf("Load(repo-a) failed: %v", err)
+	}
+	if len(repoAIssues) != 1 {
+		t.Errorf("expected 1 processed issue for repo-a, got %d", len(repoAIssues))
+	}
+
+	repoBIssues, err := store.Load("github", "org/repo-b")
+	if err != nil {
+		t.Fatalf("Load(repo-b) failed: %v", err)
+	}
+	if len(repoBIssues) != 1 {
+		t.Errorf("expected 1 processed issue for repo-b, got %d", len(repoBIssues))
+	}
+}
+
+// TestStateStore_MigrateAdapterProcessedPrimaryKey verifies that a DB with the
+// pre-GH-3819 schema (PRIMARY KEY (adapter, issue_id), repo not part of the
+// key) is rebuilt so repo joins the primary key, and existing rows survive
+// the rebuild.
+func TestStateStore_MigrateAdapterProcessedPrimaryKey(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+
+	// Seed the old (pre-fix) schema directly, bypassing NewStateStore's migrate().
+	if _, err := db.Exec(`
+		CREATE TABLE adapter_processed (
+			adapter TEXT NOT NULL,
+			issue_id TEXT NOT NULL,
+			processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			result TEXT DEFAULT '',
+			PRIMARY KEY (adapter, issue_id)
+		)
+	`); err != nil {
+		t.Fatalf("failed to seed legacy schema: %v", err)
+	}
+	if _, err := db.Exec(`ALTER TABLE adapter_processed ADD COLUMN repo TEXT NOT NULL DEFAULT ''`); err != nil {
+		t.Fatalf("failed to add legacy repo column: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO adapter_processed (adapter, repo, issue_id, processed_at, result)
+		VALUES ('github', 'org/repo-a', '5', CURRENT_TIMESTAMP, '')
+	`); err != nil {
+		t.Fatalf("failed to seed legacy row: %v", err)
+	}
+
+	store, err := NewStateStore(db)
+	if err != nil {
+		t.Fatalf("NewStateStore (running migrations) failed: %v", err)
+	}
+
+	// Pre-existing row must survive the rebuild.
+	ok, err := store.IsProcessed("github", "org/repo-a", "5")
+	if err != nil {
+		t.Fatalf("IsProcessed failed: %v", err)
+	}
+	if !ok {
+		t.Error("pre-existing row for org/repo-a issue 5 should survive the primary-key migration")
+	}
+
+	// Post-migration, colliding issue IDs across repos must not overwrite each other.
+	if err := store.Mark("github", "org/repo-b", "5"); err != nil {
+		t.Fatalf("Mark(repo-b) failed: %v", err)
+	}
+	ok, err = store.IsProcessed("github", "org/repo-a", "5")
+	if err != nil {
+		t.Fatalf("IsProcessed failed: %v", err)
+	}
+	if !ok {
+		t.Error("org/repo-a issue 5 should remain processed after org/repo-b marks its own issue 5")
 	}
 }
 
