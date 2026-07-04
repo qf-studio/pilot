@@ -73,8 +73,10 @@ jobs:
 
           ## Acceptance
 
-          - [ ] Increment the PATCH component of the \`Version\` constant in
-                \`version.go\` by exactly one (e.g. \`0.0.1\` -> \`0.0.2\`).
+          - [ ] Read the current PATCH component of the \`Version\` constant in
+                \`version.go\` and increment it by exactly one (current+1). Do
+                not assume a starting value -- derive the target from what is
+                in the file.
           - [ ] Change only that single line so \`version_test.go\` (semver
                 guard) stays green.
           - [ ] Do not touch any other file.
