@@ -2252,6 +2252,152 @@ func TestInvalidateCompletion(t *testing.T) {
 	}
 }
 
+// TestReclassifyCompletionAsFailed covers GH-3818/D10: a PR closed without
+// merging must demote the "completed" execution row so HasCompletedExecution
+// stops trusting it (re-pick), while a genuinely merged PR's row is left
+// untouched so idempotency still holds.
+func TestReclassifyCompletionAsFailed(t *testing.T) {
+	tests := []struct {
+		name            string
+		row             Execution
+		taskID          string
+		projectPath     string
+		reason          string
+		wantStillDone   bool // HasCompletedExecution result after reclassify
+		wantStatusAfter string
+	}{
+		{
+			name: "completed with PR closed unmerged - reclassified to failed (re-pick allowed)",
+			row: Execution{
+				ID: "exec-closed-unmerged", TaskID: "GH-3789", ProjectPath: "/project",
+				Status: "completed", PRUrl: "https://github.com/o/r/pull/3802",
+			},
+			taskID:          "GH-3789",
+			projectPath:     "/project",
+			reason:          "CI checks failed; PR closed without merge",
+			wantStillDone:   false,
+			wantStatusAfter: "failed",
+		},
+		{
+			name: "different task ID - untouched",
+			row: Execution{
+				ID: "exec-other-task", TaskID: "GH-999", ProjectPath: "/project",
+				Status: "completed", PRUrl: "https://github.com/o/r/pull/1",
+			},
+			taskID:          "GH-3789", // reclassify call targets a different task
+			projectPath:     "/project",
+			reason:          "closed without merge",
+			wantStillDone:   true, // GH-999's own row is unaffected; check with its own ID below
+			wantStatusAfter: "completed",
+		},
+		{
+			name: "different project path - untouched (cross-repo isolation)",
+			row: Execution{
+				ID: "exec-other-project", TaskID: "GH-3789", ProjectPath: "/other-project",
+				Status: "completed", PRUrl: "https://github.com/o/r/pull/2",
+			},
+			taskID:          "GH-3789",
+			projectPath:     "/project", // reclassify call scoped to a different project
+			reason:          "closed without merge",
+			wantStillDone:   true,
+			wantStatusAfter: "completed",
+		},
+		{
+			name: "orphan-recovered row (error set) - not a genuine completion, untouched",
+			row: Execution{
+				ID: "exec-orphan", TaskID: "GH-3789", ProjectPath: "/project",
+				Status: "completed", Error: "stale running task recovered", PRUrl: "https://github.com/o/r/pull/3",
+			},
+			taskID:          "GH-3789",
+			projectPath:     "/project",
+			reason:          "closed without merge",
+			wantStillDone:   false, // HasCompletedExecution already excludes error!='' rows
+			wantStatusAfter: "completed",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			store, err := NewStore(tmpDir)
+			if err != nil {
+				t.Fatalf("NewStore: %v", err)
+			}
+			defer func() { _ = store.Close() }()
+
+			if err := store.SaveExecution(&tt.row); err != nil {
+				t.Fatalf("SaveExecution: %v", err)
+			}
+
+			if err := store.ReclassifyCompletionAsFailed(tt.taskID, tt.projectPath, tt.reason); err != nil {
+				t.Fatalf("ReclassifyCompletionAsFailed: %v", err)
+			}
+
+			completed, err := store.HasCompletedExecution(tt.row.TaskID, tt.row.ProjectPath)
+			if err != nil {
+				t.Fatalf("HasCompletedExecution: %v", err)
+			}
+			if completed != tt.wantStillDone {
+				t.Errorf("HasCompletedExecution(%s, %s) = %v, want %v", tt.row.TaskID, tt.row.ProjectPath, completed, tt.wantStillDone)
+			}
+
+			got, err := store.GetExecution(tt.row.ID)
+			if err != nil {
+				t.Fatalf("GetExecution: %v", err)
+			}
+			if got.Status != tt.wantStatusAfter {
+				t.Errorf("status after reclassify = %q, want %q", got.Status, tt.wantStatusAfter)
+			}
+		})
+	}
+}
+
+// TestReclassifyCompletionAsFailed_HealsBackOnMerge verifies the round trip: a
+// row demoted by ReclassifyCompletionAsFailed (PR closed unmerged) is later
+// healed back to "completed" by SelfHealExecutionAfterMerge when a follow-up
+// PR for the same issue actually merges — this is the "not a one-way trip"
+// guarantee the reclassify doc comment promises. Acceptance: completed
+// execution + merged PR must still be skipped as idempotent.
+func TestReclassifyCompletionAsFailed_HealsBackOnMerge(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, err := NewStore(tmpDir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	taskID := "GH-3789"
+	projectPath := "/project"
+
+	if err := store.SaveExecution(&Execution{
+		ID: "exec-1", TaskID: taskID, ProjectPath: projectPath,
+		Status: "completed", PRUrl: "https://github.com/o/r/pull/3802",
+	}); err != nil {
+		t.Fatalf("SaveExecution: %v", err)
+	}
+
+	// PR #3802 closes unmerged (CI failure) — poller must re-pick the issue.
+	if err := store.ReclassifyCompletionAsFailed(taskID, projectPath, "CI checks failed"); err != nil {
+		t.Fatalf("ReclassifyCompletionAsFailed: %v", err)
+	}
+	if completed, _ := store.HasCompletedExecution(taskID, projectPath); completed {
+		t.Fatal("expected re-pick (HasCompletedExecution=false) after unmerged close")
+	}
+
+	// A follow-up PR (#3810) for the same issue merges — self-heal must restore
+	// "completed" so idempotency resumes.
+	if err := store.SelfHealExecutionAfterMerge(taskID, projectPath, "https://github.com/o/r/pull/3810"); err != nil {
+		t.Fatalf("SelfHealExecutionAfterMerge: %v", err)
+	}
+	completed, err := store.HasCompletedExecution(taskID, projectPath)
+	if err != nil {
+		t.Fatalf("HasCompletedExecution: %v", err)
+	}
+	if !completed {
+		t.Error("expected idempotency restored (HasCompletedExecution=true) after merge")
+	}
+}
+
 func TestGetLifetimeTokens_ExcludesZeroTokenRows(t *testing.T) {
 	tmpDir := t.TempDir()
 	store, err := NewStore(tmpDir)

@@ -4150,6 +4150,7 @@ type mockEvalStore struct {
 	saved        []*memory.EvalTask
 	selfHealed   []selfHealCall
 	updateStatus []updateStatusCall
+	reclassified []reclassifyCall
 	// execStatusByTaskID configures GetExecutionStatusByTaskID responses keyed by
 	// task ID (e.g. "GH-11"). Missing keys return sql.ErrNoRows, matching a real
 	// store's behavior when no execution row exists for that task.
@@ -4166,6 +4167,13 @@ type updateStatusCall struct {
 	TaskID      string
 	ProjectPath string
 	Status      string
+}
+
+// reclassifyCall records one ReclassifyCompletionAsFailed invocation. GH-3818.
+type reclassifyCall struct {
+	TaskID      string
+	ProjectPath string
+	Reason      string
 }
 
 func (m *mockEvalStore) SaveEvalTask(task *memory.EvalTask) error {
@@ -4188,6 +4196,12 @@ func (m *mockEvalStore) GetExecutionStatusByTaskID(taskID, projectPath string) (
 
 func (m *mockEvalStore) SelfHealExecutionAfterMerge(taskID, projectPath, prURL string) error {
 	m.selfHealed = append(m.selfHealed, selfHealCall{TaskID: taskID, ProjectPath: projectPath, PRURL: prURL})
+	return nil
+}
+
+// ReclassifyCompletionAsFailed records the call for assertions. GH-3818.
+func (m *mockEvalStore) ReclassifyCompletionAsFailed(taskID, projectPath, reason string) error {
+	m.reclassified = append(m.reclassified, reclassifyCall{TaskID: taskID, ProjectPath: projectPath, Reason: reason})
 	return nil
 }
 
@@ -5202,6 +5216,97 @@ func TestNotifyExternalClose_MaybeCloseParent(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestNotifyExternalClose_ReclassifiesCompletedExecution covers GH-3818/D10:
+// notifyExternalClose is the single place every non-merge PR close converges
+// on, so it must reclassify the issue's completed execution row to "failed"
+// there — otherwise HasCompletedExecution keeps trusting a "completed" row
+// whose PR was actually discarded, and the poller re-marks the issue
+// pilot-done on every subsequent poll (the exact #3789/#3802 incident).
+func TestNotifyExternalClose_ReclassifiesCompletedExecution(t *testing.T) {
+	tests := []struct {
+		name           string
+		issueNumber    int
+		prError        string
+		wantReclassify bool
+		wantTaskID     string
+		wantReason     string
+	}{
+		{
+			name:           "issue closed unmerged with recorded reason - reclassified",
+			issueNumber:    3789,
+			prError:        "CI checks failed (build); fix issue #3803 created to continue this work",
+			wantReclassify: true,
+			wantTaskID:     "GH-3789",
+			wantReason:     "CI checks failed (build); fix issue #3803 created to continue this work",
+		},
+		{
+			name:           "issue closed unmerged with no recorded reason - default reason used",
+			issueNumber:    3790,
+			prError:        "",
+			wantReclassify: true,
+			wantTaskID:     "GH-3790",
+			wantReason:     "closed without merging (no reason recorded)",
+		},
+		{
+			name:           "PR has no linked issue - nothing to reclassify",
+			issueNumber:    0,
+			prError:        "CI checks failed",
+			wantReclassify: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte("[]"))
+			}))
+			defer server.Close()
+
+			ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			cfg := DefaultConfig()
+			c := NewController(cfg, ghClient, nil, "owner", "repo")
+			evalMock := &mockEvalStore{}
+			c.SetEvalStore(evalMock)
+
+			prState := &PRState{PRNumber: 42, IssueNumber: tt.issueNumber, Error: tt.prError}
+			c.notifyExternalClose(context.Background(), prState)
+
+			if tt.wantReclassify {
+				if len(evalMock.reclassified) != 1 {
+					t.Fatalf("reclassify calls = %d, want 1: %+v", len(evalMock.reclassified), evalMock.reclassified)
+				}
+				got := evalMock.reclassified[0]
+				if got.TaskID != tt.wantTaskID {
+					t.Errorf("TaskID = %q, want %q", got.TaskID, tt.wantTaskID)
+				}
+				if got.Reason != tt.wantReason {
+					t.Errorf("Reason = %q, want %q", got.Reason, tt.wantReason)
+				}
+			} else if len(evalMock.reclassified) != 0 {
+				t.Errorf("expected no reclassify calls, got %+v", evalMock.reclassified)
+			}
+		})
+	}
+}
+
+// TestNotifyExternalClose_ReclassifyNotCalledWithoutEvalStore verifies the nil
+// guard: when no eval store is configured, notifyExternalClose must not panic
+// and simply skips the reclassify step. GH-3818.
+func TestNotifyExternalClose_ReclassifyNotCalledWithoutEvalStore(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("[]"))
+	}))
+	defer server.Close()
+
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	c := NewController(DefaultConfig(), ghClient, nil, "owner", "repo")
+
+	prState := &PRState{PRNumber: 42, IssueNumber: 3789, Error: "CI checks failed"}
+	c.notifyExternalClose(context.Background(), prState) // must not panic
 }
 
 // GH-2340: notifyExternalClose must not stamp pilot-retry-ready on issues

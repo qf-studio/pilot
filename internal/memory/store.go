@@ -679,6 +679,34 @@ func (s *Store) InvalidateCompletion(taskID, projectPath string) error {
 	return nil
 }
 
+// ReclassifyCompletionAsFailed demotes genuine completed execution records (the
+// same rows HasCompletedExecution would count: status='completed', no error, at
+// least one deliverable) to status='failed' with reason recorded in the error
+// column. GH-3818/D10: called by autopilot the moment it observes a PR closed
+// without merging, so a "completed" row can never outlive the PR it was built
+// on — without this, HasCompletedExecution keeps trusting the stale row forever
+// and the poller re-marks the issue pilot-done on every subsequent poll even
+// though the deliverable was discarded.
+//
+// projectPath follows SelfHealExecutionAfterMerge's scoping convention: empty
+// drops the scope and matches by task_id alone (legacy single-repo callers).
+// A later merge (human recovery PR, retried issue) heals the row back to
+// "completed" via SelfHealExecutionAfterMerge, so this is not a one-way trip.
+func (s *Store) ReclassifyCompletionAsFailed(taskID, projectPath, reason string) error {
+	return s.withRetry("ReclassifyCompletionAsFailed", func() error {
+		_, err := s.db.Exec(`
+			UPDATE executions
+			SET status = 'failed',
+				error = ?,
+				completed_at = CURRENT_TIMESTAMP
+			WHERE task_id = ? AND (? = '' OR project_path = ?) AND status = 'completed'
+				AND (error IS NULL OR error = '')
+				AND (commit_sha != '' OR pr_url != '')
+		`, reason, taskID, projectPath, projectPath)
+		return err
+	})
+}
+
 // SetApprovalDecision records an approval decision on the execution linked to requestID.
 // It sets approval_decision, approval_decision_at, and approval_decision_by on the row
 // whose approval_request_id matches. Returns sql.ErrNoRows if no matching row is found.
@@ -1218,11 +1246,17 @@ func (s *Store) UpdateExecutionStatusByTaskID(taskID, projectPath, status string
 // dropped and rows match by task_id alone (legacy single-repo behavior); this also
 // guards against a caller passing the wrong discriminator silently healing nothing.
 // TASK-352.
+//
+// GH-3818: also clears the error column. Without this, a row healed from
+// "failed" (which always carries a non-empty error — every writer of that
+// status passes a message) stayed invisible to HasCompletedExecution, which
+// excludes rows with a non-empty error even once status flips back to "completed".
 func (s *Store) SelfHealExecutionAfterMerge(taskID, projectPath, prURL string) error {
 	return s.withRetry("SelfHealExecutionAfterMerge", func() error {
 		_, err := s.db.Exec(`
 			UPDATE executions
 			SET status = 'completed',
+				error = '',
 				completed_at = CURRENT_TIMESTAMP,
 				pr_url = CASE WHEN ? <> '' THEN ? ELSE pr_url END
 			WHERE task_id = ? AND status IN ('failed', 'no_op', 'stalled', 'rate_limited', 'infra', 'skipped') AND (? = '' OR project_path = ?)
