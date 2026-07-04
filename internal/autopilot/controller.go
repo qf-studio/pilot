@@ -489,8 +489,28 @@ func (c *Controller) SetOnIssueDone(fn func(issueNumber int)) {
 }
 
 // OnPRCreated registers a new PR for autopilot processing.
+//
+// GH-3828: the orphan-reconciler (60s sweep) and the normal poller callback
+// path both race to register the same PR — the reconciler's tracked-check and
+// its OnPRCreated call are two separate lock acquisitions, so a callback can
+// land in between and register the PR first. Without a check here, the
+// second caller would silently overwrite the first's *PRState (discarding any
+// progress already made — CI wait state, escalation reason, a submitted
+// approval request) and restart the whole pipeline, producing duplicate
+// approval requests and duplicate "PR merged" comments. Registration must
+// therefore be idempotent at the source of truth (the activePRs map, under
+// c.mu), not just at each caller's pre-check.
 func (c *Controller) OnPRCreated(prNumber int, prURL string, issueNumber int, headSHA string, branchName string, issueNodeID string) {
 	c.mu.Lock()
+	if _, exists := c.activePRs[prNumber]; exists {
+		c.mu.Unlock()
+		c.log.Debug("PR already registered, skipping duplicate registration",
+			"pr", prNumber,
+			"issue", issueNumber,
+		)
+		c.metrics.RecordDuplicateRegistrationSkipped()
+		return
+	}
 	prState := &PRState{
 		PRNumber:        prNumber,
 		PRURL:           prURL,

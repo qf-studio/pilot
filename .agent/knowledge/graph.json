@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "updated": "2026-07-03",
+  "updated": "2026-07-04",
   "nodes": {
     "concepts": {
       "pilot-architecture": {
@@ -850,6 +850,17 @@
         "incident": "TASK-382 D9, observed 2026-07-04 00:30 UTC: PR #3802 closed CI-red silently, issue #3789 retained pilot-done.",
         "file": ".agent/knowledge/memories/pitfalls/bug_autopilot_silent_pr_close_notifyexternalclose_convergence.md",
         "origin_task": "GH-3806"
+      },
+      "mem-047": {
+        "type": "pitfall",
+        "summary": "OnPRCreated check-then-act race let orphan-reconciler double-register a PR, resetting PRState and duplicating approval requests + merge comments (GH-3828)",
+        "concepts": [
+          "autopilot"
+        ],
+        "confidence": 0.95,
+        "created": "2026-07-04",
+        "file": ".agent/knowledge/memories/pitfalls/bug_onprcreated_reconciler_double_register.md",
+        "origin_task": "GH-3828"
       }
     }
   },
@@ -987,11 +998,6 @@
     {
       "from": "mem-025",
       "to": "mem-024",
-      "type": "relates_to"
-    },
-    {
-      "from": "mem-040",
-      "to": "mem-044",
       "type": "relates_to"
     },
     {
@@ -1140,6 +1146,11 @@
       "type": "implements"
     },
     {
+      "from": "mem-040",
+      "to": "mem-044",
+      "type": "relates_to"
+    },
+    {
       "from": "mem-043",
       "to": "epic-decomposition",
       "type": "describes"
@@ -1163,6 +1174,11 @@
       "from": "mem-045",
       "to": "self-upgrade",
       "type": "about"
+    },
+    {
+      "from": "autopilot",
+      "to": "mem-047",
+      "type": "has_pitfall"
     }
   ]
 }

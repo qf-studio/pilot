@@ -57,6 +57,14 @@ type Metrics struct {
 	// Sustained spikes indicate OnPRCreated is missing fires.
 	OrphanPRsRegistered map[string]int64 // trigger → count
 
+	// Duplicate registration skips (GH-3828): OnPRCreated fired twice for the
+	// same PR (e.g. orphan-reconciler and the normal poller callback racing).
+	// OnPRCreated has no visibility into which caller arrived first, so this
+	// is a single counter rather than a per-trigger breakdown. Sustained
+	// counts indicate the two paths are racing often, though each occurrence
+	// is already handled safely (no-op, not a bug).
+	DuplicateRegistrationsSkipped int64
+
 	// Gauges (point-in-time values)
 	ActivePRsByStage map[PRStage]int
 	QueueDepth       int // issues with `pilot` label, no `pilot-in-progress`
@@ -77,10 +85,10 @@ type Metrics struct {
 // NewMetrics creates a new Metrics instance.
 func NewMetrics() *Metrics {
 	return &Metrics{
-		IssuesProcessed:       make(map[string]int64),
-		APIErrors:             make(map[string]int64),
-		LabelCleanups:         make(map[string]int64),
-		ApprovalPersistMisses: make(map[string]int64),
+		IssuesProcessed:            make(map[string]int64),
+		APIErrors:                  make(map[string]int64),
+		LabelCleanups:              make(map[string]int64),
+		ApprovalPersistMisses:      make(map[string]int64),
 		TokensConsumed:             make(map[tokenKey]int64),
 		ExecutionCostUSD:           make(map[string]float64),
 		ExecutionsByResult:         make(map[execKey]int64),
@@ -89,11 +97,11 @@ func NewMetrics() *Metrics {
 		PollerDeferredScopeOverlap: make(map[string]int64),
 		OrphanPRsRegistered:        make(map[string]int64),
 		ActivePRsByStage:           make(map[PRStage]int),
-		PRTimeToMerge:         make([]time.Duration, 0, 100),
-		CIWaitDurations:       make([]time.Duration, 0, 100),
-		ExecutionDurations:    make([]time.Duration, 0, 100),
-		apiErrorTimes:         make([]time.Time, 0, 100),
-		maxSamples:            1000,
+		PRTimeToMerge:              make([]time.Duration, 0, 100),
+		CIWaitDurations:            make([]time.Duration, 0, 100),
+		ExecutionDurations:         make([]time.Duration, 0, 100),
+		apiErrorTimes:              make([]time.Time, 0, 100),
+		maxSamples:                 1000,
 	}
 }
 
@@ -133,6 +141,14 @@ func (m *Metrics) RecordOrphanPRRegistered(trigger string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.OrphanPRsRegistered[trigger]++
+}
+
+// RecordDuplicateRegistrationSkipped increments the counter for a second
+// OnPRCreated call landing on an already-tracked PR.
+func (m *Metrics) RecordDuplicateRegistrationSkipped() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.DuplicateRegistrationsSkipped++
 }
 
 // RecordPRMerged increments the merged PR counter.
@@ -279,30 +295,31 @@ func (m *Metrics) Snapshot() MetricsSnapshot {
 	defer m.mu.RUnlock()
 
 	snap := MetricsSnapshot{
-		IssuesProcessed:       copyStringIntMap(m.IssuesProcessed),
-		PRsMerged:             m.PRsMerged,
-		PRsFailed:             m.PRsFailed,
-		PRsConflicting:        m.PRsConflicting,
-		CircuitBreakerTrips:   m.CircuitBreakerTrips,
-		APIErrors:             copyStringIntMap(m.APIErrors),
-		LabelCleanups:         copyStringIntMap(m.LabelCleanups),
-		ApprovalPersistMisses: copyStringIntMap(m.ApprovalPersistMisses),
-		TokensConsumed:             copyTokenKeyMap(m.TokensConsumed),
-		ExecutionCostUSD:           copyStringFloatMap(m.ExecutionCostUSD),
-		ExecutionsByResult:         copyExecKeyMap(m.ExecutionsByResult),
-		PollerSkipped:              copyPollerSkipKeyMap(m.PollerSkipped),
-		PollerDispatched:           copyStringIntMap(m.PollerDispatched),
-		PollerDeferredScopeOverlap: copyStringIntMap(m.PollerDeferredScopeOverlap),
-		OrphanPRsRegistered:        copyStringIntMap(m.OrphanPRsRegistered),
-		ActivePRsByStage:           copyStageIntMap(m.ActivePRsByStage),
-		QueueDepth:            m.QueueDepth,
-		FailedQueueDepth:      m.FailedQueueDepth,
-		TotalActivePRs:        sumStageMap(m.ActivePRsByStage),
-		AvgPRTimeToMerge:      avgDuration(m.PRTimeToMerge),
-		AvgCIWaitDuration:     avgDuration(m.CIWaitDurations),
-		AvgExecutionDuration:  avgDuration(m.ExecutionDurations),
-		APIErrorRate:          m.apiErrorRate(),
-		SnapshotAt:            time.Now(),
+		IssuesProcessed:               copyStringIntMap(m.IssuesProcessed),
+		PRsMerged:                     m.PRsMerged,
+		PRsFailed:                     m.PRsFailed,
+		PRsConflicting:                m.PRsConflicting,
+		CircuitBreakerTrips:           m.CircuitBreakerTrips,
+		APIErrors:                     copyStringIntMap(m.APIErrors),
+		LabelCleanups:                 copyStringIntMap(m.LabelCleanups),
+		ApprovalPersistMisses:         copyStringIntMap(m.ApprovalPersistMisses),
+		TokensConsumed:                copyTokenKeyMap(m.TokensConsumed),
+		ExecutionCostUSD:              copyStringFloatMap(m.ExecutionCostUSD),
+		ExecutionsByResult:            copyExecKeyMap(m.ExecutionsByResult),
+		PollerSkipped:                 copyPollerSkipKeyMap(m.PollerSkipped),
+		PollerDispatched:              copyStringIntMap(m.PollerDispatched),
+		PollerDeferredScopeOverlap:    copyStringIntMap(m.PollerDeferredScopeOverlap),
+		OrphanPRsRegistered:           copyStringIntMap(m.OrphanPRsRegistered),
+		DuplicateRegistrationsSkipped: m.DuplicateRegistrationsSkipped,
+		ActivePRsByStage:              copyStageIntMap(m.ActivePRsByStage),
+		QueueDepth:                    m.QueueDepth,
+		FailedQueueDepth:              m.FailedQueueDepth,
+		TotalActivePRs:                sumStageMap(m.ActivePRsByStage),
+		AvgPRTimeToMerge:              avgDuration(m.PRTimeToMerge),
+		AvgCIWaitDuration:             avgDuration(m.CIWaitDurations),
+		AvgExecutionDuration:          avgDuration(m.ExecutionDurations),
+		APIErrorRate:                  m.apiErrorRate(),
+		SnapshotAt:                    time.Now(),
 	}
 
 	// Calculate success rate
@@ -352,6 +369,9 @@ type MetricsSnapshot struct {
 
 	// Orphan PR registration (TASK-302)
 	OrphanPRsRegistered map[string]int64 // trigger → count
+
+	// Duplicate registration skips (GH-3828)
+	DuplicateRegistrationsSkipped int64
 
 	// Gauges
 	ActivePRsByStage map[PRStage]int
