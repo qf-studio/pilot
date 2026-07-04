@@ -1246,6 +1246,23 @@ func (r *Runner) saveLogEntry(executionID, level, message string) {
 	}
 }
 
+// recordExecutionEvent writes a best-effort stage-transition record to the
+// execution_events audit trail (GH-3846). Mirrors saveLogEntry's fire-and-
+// forget semantics: a missing store or insert failure is logged and
+// swallowed, never fails the execution.
+func (r *Runner) recordExecutionEvent(executionID string, stage memory.Stage, detail string) {
+	if r.logStore == nil {
+		return
+	}
+	if err := r.logStore.InsertExecutionEvent(executionID, stage, detail); err != nil {
+		r.log.Warn("Failed to record execution event",
+			slog.String("execution_id", executionID),
+			slog.String("stage", string(stage)),
+			slog.Any("error", err),
+		)
+	}
+}
+
 // Diagnostic truncation caps used by persistBackendDiagnostics. Exposed as
 // constants so tests can assert the ceiling and project-side tooling can
 // depend on a fixed upper bound. GH-2328.
@@ -1556,6 +1573,10 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 			}, fmt.Errorf("cross-project execution blocked: %w", err)
 		}
 	}
+
+	// GH-3846: task spec passed its pre-execution validation gates above — record
+	// the milestone to the execution-events audit trail.
+	r.recordExecutionEvent(task.LogExecutionID(), memory.StageSpecValidated, "task spec validated")
 
 	// GH-634: Enforce team permissions before execution
 	if r.teamChecker != nil && task.MemberID != "" {
@@ -2399,6 +2420,8 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 				slog.Duration("duration", duration),
 			)
 			r.reportProgress(task.ID, "Stalled", 100, result.Error)
+			// GH-3846: record stall detection to the execution-events audit trail.
+			r.recordExecutionEvent(task.LogExecutionID(), memory.StageStalled, result.Error)
 			if r.monitor != nil {
 				r.monitor.Stall(task.ID, result.Error)
 			}
@@ -2705,6 +2728,8 @@ retrySucceeded:
 	// Extract commit SHA from state (parsed from Claude Code output)
 	if len(state.commitSHAs) > 0 {
 		result.CommitSHA = state.commitSHAs[len(state.commitSHAs)-1] // Use last commit
+		// GH-3846: record the commit milestone to the execution-events audit trail.
+		r.recordExecutionEvent(task.LogExecutionID(), memory.StageCommit, "commit created: "+result.CommitSHA)
 	}
 
 	// GH-3569/GH-3570 incident (TASK-320/TASK-355 root cause): harvest the SHA
@@ -3823,6 +3848,8 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 			log.Info("Pull request created", slog.String("pr_url", prURL))
 			r.reportProgress(task.ID, "Completed", 100, fmt.Sprintf("PR created: %s", prURL))
 			r.saveLogEntry(task.LogExecutionID(), "info", "PR created: "+prURL)
+			// GH-3846: record the PR-created milestone to the execution-events audit trail.
+			r.recordExecutionEvent(task.LogExecutionID(), memory.StagePRCreated, "pr created: "+prURL)
 
 			// Update recording with PR info
 			if recorder != nil {
