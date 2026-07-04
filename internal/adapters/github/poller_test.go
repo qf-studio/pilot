@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1247,6 +1248,80 @@ func TestPoller_FindOldestUnprocessedIssue_AllDepsOpen(t *testing.T) {
 	// Should return nil when all issues have open dependencies
 	if issue != nil {
 		t.Errorf("issue should be nil when all have open dependencies, got #%d", issue.Number)
+	}
+}
+
+// GH-3789 (D6): table-driven coverage for multiple "Blocked by" / "Depends on"
+// references on a single issue — any one open blocker must hold the gate,
+// and a bare "#N" mention that isn't dependency syntax must not.
+func TestPoller_HasPendingDependencies_MultipleBlockers(t *testing.T) {
+	tests := []struct {
+		name      string
+		issueBody string
+		states    map[int]string // dependency issue number -> state
+		want      bool
+	}{
+		{
+			name:      "two blockers, both closed",
+			issueBody: "Blocked by: #100\nBlocked by: #101",
+			states:    map[int]string{100: "closed", 101: "closed"},
+			want:      false,
+		},
+		{
+			name:      "two blockers, one still open",
+			issueBody: "Blocked by: #100\nBlocked by: #101",
+			states:    map[int]string{100: "closed", 101: "open"},
+			want:      true,
+		},
+		{
+			name:      "two blockers, both open",
+			issueBody: "Blocked by: #100\nBlocked by: #101",
+			states:    map[int]string{100: "open", 101: "open"},
+			want:      true,
+		},
+		{
+			name:      "mixed dependency verbs, one open",
+			issueBody: "Depends on: #100\nRequires: #101",
+			states:    map[int]string{100: "closed", 101: "open"},
+			want:      true,
+		},
+		{
+			name:      "bare issue mention is not a dependency",
+			issueBody: "See #100 for context",
+			states:    map[int]string{100: "open"},
+			want:      false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+				num, err := strconv.Atoi(parts[len(parts)-1])
+				if err != nil {
+					w.WriteHeader(http.StatusNotFound)
+					return
+				}
+				state, ok := tt.states[num]
+				if !ok {
+					w.WriteHeader(http.StatusNotFound)
+					return
+				}
+				_ = json.NewEncoder(w).Encode(&Issue{Number: num, State: state})
+			}))
+			defer server.Close()
+
+			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+			poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second)
+
+			issue := &Issue{Number: 1, Body: tt.issueBody}
+			got := poller.hasPendingDependencies(context.Background(), issue)
+
+			if got != tt.want {
+				t.Errorf("hasPendingDependencies() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
 
