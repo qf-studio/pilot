@@ -341,6 +341,28 @@ func (h *TelegramHandler) HandleCallback(ctx context.Context, callbackID, data, 
 		}
 	}
 
+	// A tap can race the periodic PruneExpired sweep: the request is still in
+	// h.pending but its deadline has already passed. Treat it the same as the
+	// not-found case instead of recording a real decision — otherwise the user
+	// sees "Approved!"/"Rejected" for a request the system has already decided
+	// to time out (GH-3825).
+	if pending.Request.ExpiresAt.Before(time.Now()) {
+		_ = h.client.AnswerCallback(ctx, callbackID, "Request expired or already processed")
+		if pending.MessageID != 0 {
+			text := h.formatExpiredMessage(pending.Request)
+			if err := h.client.EditMessage(ctx, pending.ChatID, pending.MessageID, text, ""); err != nil {
+				h.log.Warn("Failed to edit expired message", slog.Any("error", err))
+			}
+		}
+		select {
+		case pending.ResponseCh <- &Response{RequestID: requestID, Decision: DecisionTimeout, RespondedAt: time.Now()}:
+		default:
+		}
+		close(pending.ResponseCh)
+		h.log.Info("Approval callback arrived after expiry", slog.String("request_id", requestID))
+		return true
+	}
+
 	// Persist the decision directly so it reaches the pipeline even when
 	// nothing is left waiting on pending.ResponseCh — the common case after a
 	// daemon restart, where Rehydrate reconstructs this entry with a fresh

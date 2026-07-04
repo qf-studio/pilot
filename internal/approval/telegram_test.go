@@ -493,6 +493,62 @@ func TestTelegramHandler_HandleCallback_ExpiredRequest(t *testing.T) {
 	}
 }
 
+func TestTelegramHandler_HandleCallback_ExpiredButStillPending(t *testing.T) {
+	client := &mockTelegramClient{}
+	handler := NewTelegramHandler(client, "chat123")
+
+	req := &Request{
+		ID:        "req-expired-race",
+		TaskID:    "TASK-01",
+		Stage:     StagePreExecution,
+		Title:     "Test task",
+		ExpiresAt: time.Now().Add(-time.Minute), // already past its deadline
+	}
+
+	respCh, err := handler.SendApprovalRequest(context.Background(), req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// A button tap races the periodic PruneExpired sweep: the request is
+	// still in the pending map, but its ExpiresAt has already elapsed.
+	handled := handler.HandleCallback(context.Background(), "cb123", "approve:req-expired-race", "user123", "testuser")
+	if !handled {
+		t.Error("expected callback to be handled")
+	}
+
+	// Must NOT fake an approval — the deadline already passed.
+	cbs := client.getAnsweredCallbacks()
+	if len(cbs) != 1 {
+		t.Fatalf("expected 1 answered callback, got %d", len(cbs))
+	}
+	if !containsString(cbs[0].Text, "expired") {
+		t.Errorf("expected expired message, got: %s", cbs[0].Text)
+	}
+
+	// Message should be edited to show expiry, not approval.
+	edited := client.getEditedMessages()
+	if len(edited) != 1 {
+		t.Fatalf("expected 1 edited message, got %d", len(edited))
+	}
+	if !containsString(edited[0].Text, "EXPIRED") {
+		t.Errorf("expected EXPIRED in message, got: %s", edited[0].Text)
+	}
+
+	// Response channel should resolve to timeout, not approved.
+	select {
+	case resp := <-respCh:
+		if resp == nil {
+			t.Fatal("expected response, got nil")
+		}
+		if resp.Decision != DecisionTimeout {
+			t.Errorf("expected timeout, got %s", resp.Decision)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for response")
+	}
+}
+
 func TestTelegramHandler_HandleCallback_EditError(t *testing.T) {
 	client := &mockTelegramClient{
 		editError: errors.New("edit failed"),
@@ -809,9 +865,10 @@ func TestTelegramHandler_HandleCallbackWithZeroMessageID(t *testing.T) {
 	handler.mu.Lock()
 	handler.pending["req-zero-cb"] = &telegramPending{
 		Request: &Request{
-			ID:     "req-zero-cb",
-			TaskID: "TASK-01",
-			Title:  "Test",
+			ID:        "req-zero-cb",
+			TaskID:    "TASK-01",
+			Title:     "Test",
+			ExpiresAt: time.Now().Add(1 * time.Hour),
 		},
 		MessageID:  0,
 		ResponseCh: respCh,
