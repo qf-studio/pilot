@@ -360,6 +360,11 @@ type CompletedTask struct {
 	// PeakRSSMB is the peak subprocess RSS in MiB from the RSS sampler. GH-3028.
 	// Zero when the sampler had no data (pre-3028 executions, non-Linux/darwin).
 	PeakRSSMB int
+	// StageStrip is a compact per-stage glyph strip (e.g. "✓✓✓✗ running") built
+	// from the execution's execution_events timeline (GH-3849). Empty when the
+	// task wasn't hydrated from the store (e.g. AddCompletedTask callers), in
+	// which case the card falls back to the plain status icon.
+	StageStrip string
 }
 
 // UpdateInfo contains information about an available update
@@ -629,6 +634,13 @@ func (m *Model) hydrateFromStore() {
 		if exec.CompletedAt != nil {
 			completedAt = *exec.CompletedAt
 		}
+		// GH-3849: fetch the stage timeline once here (hydrate runs once per
+		// process start, not per render frame) and cache the derived strip on
+		// the CompletedTask so View() never hits the store.
+		events, err := m.store.ListExecutionEvents(exec.ID)
+		if err != nil {
+			slog.Warn("failed to load execution events", slog.Any("error", err), slog.String("execution_id", exec.ID))
+		}
 		m.completedTasks = append(m.completedTasks, CompletedTask{
 			ID:          exec.TaskID,
 			Title:       exec.TaskTitle,
@@ -636,6 +648,7 @@ func (m *Model) hydrateFromStore() {
 			Duration:    fmt.Sprintf("%dms", exec.DurationMs),
 			CompletedAt: completedAt,
 			PeakRSSMB:   exec.PeakRSSMB,
+			StageStrip:  buildStageStrip(events, status == "failed"),
 		})
 	}
 
@@ -878,6 +891,12 @@ func storeRefreshCmd(store *memory.Store, projectPath string) tea.Cmd {
 			if exec.CompletedAt != nil {
 				completedAt = *exec.CompletedAt
 			}
+			// GH-3849: fetched once per periodic refresh (every 5th tick), not
+			// per render frame — View() reads the cached CompletedTask.StageStrip.
+			events, err := store.ListExecutionEvents(exec.ID)
+			if err != nil {
+				slog.Warn("store refresh: failed to load execution events", slog.Any("error", err), slog.String("execution_id", exec.ID))
+			}
 			msg.completedTasks = append(msg.completedTasks, CompletedTask{
 				ID:          exec.TaskID,
 				Title:       exec.TaskTitle,
@@ -885,6 +904,7 @@ func storeRefreshCmd(store *memory.Store, projectPath string) tea.Cmd {
 				Duration:    fmt.Sprintf("%dms", exec.DurationMs),
 				CompletedAt: completedAt,
 				PeakRSSMB:   exec.PeakRSSMB,
+				StageStrip:  buildStageStrip(events, status == "failed"),
 			})
 		}
 
@@ -2574,10 +2594,20 @@ func (m Model) renderHistory() string {
 
 // renderStandaloneLine renders a standalone (non-epic) task line.
 // Layout: "  + GH-156  Title...                                    2m ago"
-// indent(2) + icon(1) + space(1) + id(7) + space(2) + title + space(2) + timeAgo(8) = iw
+// indent(2) + strip(variable) + space(1) + id(7) + space(2) + title + space(2) + timeAgo(8) = iw
 // When PeakRSSMB > 0 (GH-3028), an RSS indicator ("4.2G") is appended after the time.
+// GH-3849: the leading glyph column shows the cached StageStrip (e.g. "✓✓✓✗ running")
+// when the task was hydrated from the store; falls back to the plain status icon
+// otherwise (e.g. live completions added via AddCompletedTask).
 func renderStandaloneLine(task CompletedTask, iw int) string {
 	icon, style := statusIconStyle(task.Status)
+	stripText := task.StageStrip
+	if stripText == "" {
+		stripText = icon
+	}
+	strip := style.Render(stripText)
+	stripWidth := lipgloss.Width(strip)
+
 	timeAgoStr := formatTimeAgo(task.CompletedAt)
 
 	var rssStr string
@@ -2585,15 +2615,15 @@ func renderStandaloneLine(task CompletedTask, iw int) string {
 		rssStr = fmt.Sprintf(" %s", formatRSSMB(task.PeakRSSMB))
 	}
 
-	// Reserve space: indent(2)+icon(1)+sp(1)+id(7)+sp(2)+sp(2)+time(8)+rss = 23+len(rssStr)
-	titleWidth := iw - 23 - len(rssStr)
+	// Reserve space: indent(2)+strip+sp(1)+id(7)+sp(2)+sp(2)+time(8)+rss
+	titleWidth := iw - 2 - stripWidth - 1 - 7 - 2 - 2 - 8 - len(rssStr)
 	if titleWidth < 10 {
 		titleWidth = 10
 	}
 	titleStr := padOrTruncate(task.Title, titleWidth)
 
 	return fmt.Sprintf("  %s %-7s  %s  %8s%s",
-		style.Render(icon),
+		strip,
 		task.ID,
 		titleStr,
 		dimStyle.Render(timeAgoStr),
