@@ -713,6 +713,71 @@ func TestRenderHistory_StandaloneTask(t *testing.T) {
 	}
 }
 
+// TestRenderHistory_StageStrip verifies the compact per-stage glyph strip
+// (GH-3849) renders in place of the plain status icon for happy path,
+// in-progress, and failed-at-stage-N executions, and that the fixed card
+// width invariant still holds regardless of strip length.
+func TestRenderHistory_StageStrip(t *testing.T) {
+	m := NewModel("test")
+	m.completedTasks = []CompletedTask{
+		{
+			ID:          "GH-200",
+			Title:       "Happy path task",
+			Status:      "success",
+			Duration:    "3m",
+			CompletedAt: time.Now().Add(-3 * time.Minute),
+			StageStrip: buildStageStrip([]*memory.Event{
+				evt(memory.StageQueued),
+				evt(memory.StageSpecValidated),
+				evt(memory.StageRunning),
+				evt(memory.StageCommit),
+				evt(memory.StagePRCreated),
+				evt(memory.StageMerged),
+			}, false),
+		},
+		{
+			ID:          "GH-201",
+			Title:       "In progress task",
+			Status:      "success",
+			Duration:    "1m",
+			CompletedAt: time.Now().Add(-1 * time.Minute),
+			StageStrip: buildStageStrip([]*memory.Event{
+				evt(memory.StageQueued),
+				evt(memory.StageSpecValidated),
+				evt(memory.StageRunning),
+			}, false),
+		},
+		{
+			ID:          "GH-202",
+			Title:       "Failed at stage N task",
+			Status:      "failed",
+			Duration:    "45s",
+			CompletedAt: time.Now().Add(-10 * time.Minute),
+			StageStrip: buildStageStrip([]*memory.Event{
+				evt(memory.StageQueued),
+				evt(memory.StageSpecValidated),
+				evt(memory.StageRunning),
+				evt(memory.StageFailed),
+			}, true),
+		},
+	}
+
+	output := m.renderHistory()
+	assertPanelLineWidths(t, output)
+
+	plain := stripANSI(output)
+
+	if !strings.Contains(plain, "✓✓✓✓✓✓ merged") {
+		t.Errorf("happy path stage strip not found in output:\n%s", plain)
+	}
+	if !strings.Contains(plain, "✓✓✓ running") {
+		t.Errorf("in-progress stage strip not found in output:\n%s", plain)
+	}
+	if !strings.Contains(plain, "✓✓✓✗ running") {
+		t.Errorf("failed-at-stage-N stage strip not found in output:\n%s", plain)
+	}
+}
+
 func TestRenderHistory_ActiveEpicWithMixedStates(t *testing.T) {
 	now := time.Now()
 	m := NewModel("test")
