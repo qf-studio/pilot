@@ -2,6 +2,7 @@ package github
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"regexp"
@@ -17,6 +18,11 @@ import (
 	"github.com/qf-studio/pilot/internal/logging"
 	"github.com/qf-studio/pilot/internal/text"
 )
+
+// defaultAuthFailureThreshold is the number of consecutive auth-classified
+// fetch errors (401, or non-rate-limited 403) required before the poller
+// escalates to an ERROR log + alert (GH-3839).
+const defaultAuthFailureThreshold = 3
 
 // ExecutionMode determines how issues are processed
 type ExecutionMode string
@@ -184,6 +190,17 @@ type Poller struct {
 	// nil or empty inProgressStatus disables the write-back, keeping label-mode identical.
 	boardSync        *ProjectBoardSync
 	inProgressStatus string
+
+	// GH-3839: consecutive auth-failure escalation. Auth errors (401, or
+	// non-rate-limited 403) on candidate fetches increment this counter; a
+	// successful fetch resets it to zero. At authFailureThreshold consecutive
+	// failures, an ERROR log names tokenSource and an alert fires through
+	// alertProcessor (if configured). Rate-limited 403s stay on the existing
+	// backoff path (#3798) and never touch this counter.
+	consecutiveAuthFailures atomic.Int32
+	authFailureThreshold    int
+	tokenSource             string
+	alertProcessor          executor.AlertEventProcessor
 }
 
 // PollerOption configures a Poller
@@ -355,6 +372,39 @@ func WithBoardSync(bs *ProjectBoardSync, inProgressStatus string) PollerOption {
 	}
 }
 
+// WithAlertProcessor sets the alert processor used to escalate consecutive
+// GitHub auth failures (GH-3839). The interface is the same narrow,
+// import-cycle-free shape executor.Runner already uses (ProcessEvent(AlertEvent));
+// callers typically pass alerts.NewEngineAdapter(engine). Pass nil (default)
+// to disable alerting — escalation still logs at ERROR either way.
+func WithAlertProcessor(ap executor.AlertEventProcessor) PollerOption {
+	return func(p *Poller) {
+		p.alertProcessor = ap
+	}
+}
+
+// WithTokenSource names where the poller's GitHub token was resolved from
+// (e.g. "config", "env GITHUB_TOKEN", "gh CLI"), included in auth-failure
+// escalation logs/alerts so a dead token can be diagnosed without
+// re-deriving the resolution chain (GH-3839, mirrors Client.Verify's
+// tokenSource parameter from GH-3718).
+func WithTokenSource(source string) PollerOption {
+	return func(p *Poller) {
+		p.tokenSource = source
+	}
+}
+
+// WithAuthFailureThreshold sets the number of consecutive auth failures
+// required before escalating to an ERROR log + alert (GH-3839). Default: 3.
+func WithAuthFailureThreshold(n int) PollerOption {
+	return func(p *Poller) {
+		if n < 1 {
+			n = 1
+		}
+		p.authFailureThreshold = n
+	}
+}
+
 // NewPoller creates a new GitHub issue poller
 func NewPoller(client *Client, repo string, label string, interval time.Duration, opts ...PollerOption) (*Poller, error) {
 	parts := strings.Split(repo, "/")
@@ -381,6 +431,7 @@ func NewPoller(client *Client, repo string, label string, interval time.Duration
 		maxFailedRetries:     3, // GH-2176: default max retries for pilot-failed issues
 		retryReadyCount:      make(map[int]int),
 		maxRetryReadyRetries: 3, // GH-2276: default max retries for pilot-retry-ready issues
+		authFailureThreshold: defaultAuthFailureThreshold,
 	}
 
 	for _, opt := range opts {
@@ -452,9 +503,14 @@ func (p *Poller) recoverOrphanedIssues(ctx context.Context) {
 		State:  StateOpen,
 	})
 	if err != nil {
-		p.logger.Warn("Failed to check for orphaned issues", slog.Any("error", err))
+		if isAuthFetchError(err) {
+			p.recordAuthFailure(err)
+		} else {
+			p.logger.Warn("Failed to check for orphaned issues", slog.Any("error", err))
+		}
 		return
 	}
+	p.resetAuthFailures()
 
 	if len(issues) == 0 {
 		return
@@ -1136,6 +1192,74 @@ func groupByOverlappingScope(candidates []*Issue) [][]*Issue {
 	return result
 }
 
+// isAuthFetchError classifies a candidate-fetch error as an authentication
+// failure — 401 (AuthError), or a 403 that doRequest did NOT classify as
+// rate-limited (RateLimitError) — as opposed to a transient/network error.
+// Rate-limited 403s are excluded so they stay on the existing backoff path
+// (#3798) rather than tripping the auth-failure counter (GH-3839).
+func isAuthFetchError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var authErr *AuthError
+	if errors.As(err, &authErr) {
+		return true
+	}
+	var rlErr *RateLimitError
+	if errors.As(err, &rlErr) {
+		return false
+	}
+	// A non-rate-limited 403 reaches doRequest's generic fallback path
+	// (client.go) as a plain "API error (status 403): ..." string rather
+	// than a typed error, since only the rate-limited case gets RateLimitError.
+	return strings.Contains(err.Error(), "status 403")
+}
+
+// recordAuthFailure increments the consecutive-auth-failure counter for a
+// classified auth error and escalates once authFailureThreshold is reached:
+// an ERROR log naming the token source, plus an alert via alertProcessor (if
+// configured). Below threshold it logs at Warn so an isolated failure
+// doesn't page anyone (GH-3839).
+func (p *Poller) recordAuthFailure(err error) {
+	n := p.consecutiveAuthFailures.Add(1)
+	threshold := p.authFailureThreshold
+	if threshold <= 0 {
+		threshold = defaultAuthFailureThreshold
+	}
+
+	if int(n) < threshold {
+		p.logger.Warn("github fetch auth error",
+			slog.Int("consecutive_auth_failures", int(n)),
+			slog.Any("error", err))
+		return
+	}
+
+	p.logger.Error("github token appears invalid — consecutive auth failures reached threshold",
+		slog.Int("consecutive_auth_failures", int(n)),
+		slog.String("token_source", p.tokenSource),
+		slog.Any("error", err))
+
+	if p.alertProcessor != nil {
+		p.alertProcessor.ProcessEvent(executor.AlertEvent{
+			Type: executor.AlertEventTypeConfigError,
+			Error: fmt.Sprintf("GitHub token invalid (source: %s) — %d consecutive auth failures",
+				p.tokenSource, n),
+			Metadata: map[string]string{
+				"reason":               "github_auth_failure",
+				"token_source":         p.tokenSource,
+				"consecutive_failures": strconv.Itoa(int(n)),
+			},
+			Timestamp: time.Now(),
+		})
+	}
+}
+
+// resetAuthFailures clears the consecutive-auth-failure streak after a
+// successful candidate fetch (GH-3839).
+func (p *Poller) resetAuthFailures() {
+	p.consecutiveAuthFailures.Store(0)
+}
+
 // repoKey returns "owner/repo" for use as the Prometheus `repo` label.
 func (p *Poller) repoKey() string { return p.owner + "/" + p.repo }
 
@@ -1193,9 +1317,14 @@ func (p *Poller) syncBoardStatusInProgress(ctx context.Context, issue *Issue) {
 func (p *Poller) checkForNewIssues(ctx context.Context) {
 	issues, err := p.fetchCandidates(ctx)
 	if err != nil {
-		p.logger.Warn("Failed to fetch issues", slog.Any("error", err))
+		if isAuthFetchError(err) {
+			p.recordAuthFailure(err)
+		} else {
+			p.logger.Warn("Failed to fetch issues", slog.Any("error", err))
+		}
 		return
 	}
+	p.resetAuthFailures()
 
 	// Phase 1: Collect candidates eligible for dispatch
 	var candidates []*Issue

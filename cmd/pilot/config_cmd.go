@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"time"
 
@@ -36,10 +37,16 @@ func newConfigCmd() *cobra.Command {
 
 func newConfigShowCmd() *cobra.Command {
 	var outputJSON bool
+	var reveal bool
 
 	cmd := &cobra.Command{
 		Use:   "show",
 		Short: "Show current configuration",
+		Long: `Show current configuration.
+
+Values whose key looks like a token, key, secret, or password are masked by
+default (first 4 + last 4 characters shown). Pass --reveal to print the raw,
+unredacted values.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			configPath := cfgFile
 			if configPath == "" {
@@ -56,6 +63,11 @@ func newConfigShowCmd() *cobra.Command {
 				if err != nil {
 					return fmt.Errorf("failed to marshal config: %w", err)
 				}
+				if !reveal {
+					if data, err = redactSecretsJSON(data); err != nil {
+						return fmt.Errorf("failed to redact config: %w", err)
+					}
+				}
 				fmt.Println(string(data))
 				return nil
 			}
@@ -65,6 +77,11 @@ func newConfigShowCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("failed to marshal config: %w", err)
 			}
+			if !reveal {
+				if data, err = redactSecretsYAML(data); err != nil {
+					return fmt.Errorf("failed to redact config: %w", err)
+				}
+			}
 			fmt.Print(string(data))
 
 			return nil
@@ -72,8 +89,68 @@ func newConfigShowCmd() *cobra.Command {
 	}
 
 	cmd.Flags().BoolVar(&outputJSON, "json", false, "Output as JSON")
+	cmd.Flags().BoolVar(&reveal, "reveal", false, "Show raw, unredacted secret values")
 
 	return cmd
+}
+
+// secretKeyPattern matches config keys likely to hold sensitive values
+// (tokens, API keys, secrets, passwords) so `pilot config show` can redact
+// them by default (GH-3839).
+var secretKeyPattern = regexp.MustCompile(`(?i)(token|key|secret|password)`)
+
+// maskSecret shows only the first 4 and last 4 characters of a secret value
+// (e.g. "ghp_...cdef"). Values too short to mask meaningfully (<=8 chars)
+// are fully masked so no useful substring leaks.
+func maskSecret(s string) string {
+	if len(s) <= 8 {
+		return "****"
+	}
+	return s[:4] + "..." + s[len(s)-4:]
+}
+
+// redactSecretValue walks a generically-decoded config tree (nested maps and
+// slices from a YAML/JSON round-trip) and masks any string value whose key
+// matches secretKeyPattern. Operating on the generic tree rather than the
+// typed *config.Config struct means every current and future secret-shaped
+// field is covered without needing a matching struct tag or field list.
+func redactSecretValue(v interface{}) interface{} {
+	switch val := v.(type) {
+	case map[string]interface{}:
+		for k, sub := range val {
+			if s, ok := sub.(string); ok && s != "" && secretKeyPattern.MatchString(k) {
+				val[k] = maskSecret(s)
+			} else {
+				val[k] = redactSecretValue(sub)
+			}
+		}
+		return val
+	case []interface{}:
+		for i, sub := range val {
+			val[i] = redactSecretValue(sub)
+		}
+		return val
+	default:
+		return v
+	}
+}
+
+// redactSecretsYAML re-serializes YAML-encoded config with secret values masked.
+func redactSecretsYAML(data []byte) ([]byte, error) {
+	var generic interface{}
+	if err := yaml.Unmarshal(data, &generic); err != nil {
+		return nil, err
+	}
+	return yaml.Marshal(redactSecretValue(generic))
+}
+
+// redactSecretsJSON re-serializes JSON-encoded config with secret values masked.
+func redactSecretsJSON(data []byte) ([]byte, error) {
+	var generic interface{}
+	if err := json.Unmarshal(data, &generic); err != nil {
+		return nil, err
+	}
+	return json.MarshalIndent(redactSecretValue(generic), "", "  ")
 }
 
 func newConfigEditCmd() *cobra.Command {

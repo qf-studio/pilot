@@ -75,6 +75,19 @@ Examples:
 			}
 			fmt.Println()
 
+			// Silently disabled subsystems (GH-3839): configured-but-inert or
+			// wired-off subsystems that don't show up as errors/warnings above
+			// but silently no-op in production.
+			fmt.Println("Silently Disabled Subsystems:")
+			for _, s := range report.Subsystems {
+				yn := "N"
+				if s.Wired {
+					yn = "Y"
+				}
+				fmt.Printf("  [%s] %-32s %s\n", yn, s.Name, s.Reason)
+			}
+			fmt.Println()
+
 			// Summary and recommendations
 			errors, warnings := report.Summary()
 			if errors > 0 || warnings > 0 {

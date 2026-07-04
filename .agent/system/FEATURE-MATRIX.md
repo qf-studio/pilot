@@ -1,6 +1,6 @@
 # Pilot Feature Matrix
 
-**Last Updated:** 2026-07-04 (v2.151.0)
+**Last Updated:** 2026-07-03 (v2.151.0)
 
 ## Legend
 
@@ -402,7 +402,6 @@
 | Board sync owner guard | ✅ | adapters/github | - | - | Guard owner extraction in board sync construction (v2.30.0, PR #1871) |
 | Board sync tests | ✅ | adapters/github | - | - | ProjectBoardSync and ExecuteGraphQL unit tests (v2.30.0, PR #1865) |
 | CI context wiring | ✅ | autopilot | - | - | Wire proper CI context from autopilot controller (v2.52.0, PR #1981) |
-| Rate-limit-aware PR loop backoff | ✅ | autopilot | - | - | processAllPRs + orphan-PR reconciler enter a bounded cooldown on GitHub 403 rate-limit instead of re-hitting the API every tick; poller logs Warn (not Info) when a created PR has no autopilot callback wired (v2.207.3, GH-3784) |
 
 ## Epic Management
 
@@ -438,8 +437,7 @@
 |---------|--------|---------|-------------|------------|-------|
 | Version check | ✅ | upgrade | `pilot version` | - | Shows current |
 | Auto-upgrade | ✅ | upgrade | `pilot upgrade` | - | Downloads latest |
-| Hot upgrade | ✅ | upgrade | `u` key in dashboard (manual) or automatic | `upgrade.auto_hot_upgrade` | Graceful drain + restart, no orphaned tasks (v0.18.0, v0.63.0); auto-enqueues on detection by default, keypress still works as manual override (GH-3790) |
-| Self-upgrade staleness check | ✅ | upgrade, health | `pilot doctor` | `upgrade.stale_release_threshold` | Warns (log + alert) when the daemon is N+ releases behind — catches the failure mode where self-upgrade silently stops firing (GH-3790) |
+| Hot upgrade | ✅ | upgrade | `u` key in dashboard | - | Graceful drain + restart, no orphaned tasks (v0.18.0, v0.63.0) |
 | Config init | ✅ | config | `pilot init` | - | Creates default |
 | Setup wizard | ✅ | main | `pilot setup` | - | Interactive config |
 | Project add wizard | ✅ | cli | `pilot project add` (no flags) | - | gh CLI auth, repo picker, token seeding; `--no-wizard` for CI (GH-3017, v2.187.1) |
@@ -589,3 +587,4 @@ quality:
 | Ghost-SHA guard | v2.151.x | executor | Fail-closed when commit_sha already on base branch (TASK-300 / GH-3099) |
 | Merge→done race window closed | v2.163.0 | autopilot + adapters/github | `Controller.SetOnIssueDone` fires `MarkProcessed` on all pollers at PR-merge, preventing phantom re-dispatch during label propagation lag (TASK-321 PR-4 / GH-3271) |
 | Decomposed-child base-branch pinning | v2.184.x | executor | Resolve `BaseBranch` from main-repo git context before worktree creation; decomposed children never PR against a sibling branch (GH-3540) |
+| GitHub-poller auth-failure escalation | v2.207.x | adapters/github + health | Consecutive 401/non-ratelimit-403 fetch errors escalate to ERROR log + alert at threshold (`WithAlertProcessor`/`WithTokenSource`); `pilot doctor` disabled-subsystems panel; `pilot config show` secret redaction + `--reveal` (TASK-379 V4 / GH-3839) |
