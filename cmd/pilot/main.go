@@ -201,6 +201,7 @@ func main() {
 		newCompletionCmd(),
 		newConfigCmd(),
 		newLogsCmd(),
+		newTraceCmd(),
 		newWebhooksCmd(),
 		newUpgradeCmd(),
 		newReleaseCmd(),
