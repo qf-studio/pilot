@@ -120,7 +120,7 @@ Disable via config: `executor.navigator.auto_init: false`
 
 ## Current State
 
-**Current Version:** v2.208.0 | full status in `.agent/system/FEATURE-MATRIX.md`
+**Current Version:** v2.209.0 | full status in `.agent/system/FEATURE-MATRIX.md`
 
 **Recent (June 27–30 2026):** **Conversational-bot docs site page · M7 advanced to the SDK gate (studio-sdk v0.25.0, Phase 4a closed out, studio-sdk#71 spec'd) — SHIPPED.** (Earlier June 16–25 detail below.)
 - **Nav + docs site + M7 SDK gate (June 27–30):** Conversational bot module now **documented on the docs/ Nextra site** — new `features/conversational-bot.mdx` + config/Slack/model-routing/index cross-links (PR [#3709](https://github.com/qf-studio/pilot/pull/3709)). Filed `auto_label_pilot` no-op cleanup ([#3710](https://github.com/qf-studio/pilot/issues/3710), `pilot`-labeled — field is never read; `pilot` label hardcoded at `issue_intake.go:53-62`). **M7 github cutover advanced to the SDK gate:** `studio-sdk` bumped **v0.24.0→v0.25.0** + Phase 4a closed out (PR [#3711](https://github.com/qf-studio/pilot/pull/3711)); re-verified file-by-file that v0.25.0 still lacks the github board layer / 5 client methods / poller-option surface — gate moved to **v0.26.0**, spec'd as [studio-sdk#71](https://github.com/qf-studio/studio-sdk/issues/71). Next: implement #71 upstream, then Pilot 4b–4d. Marker `2026-06-30_m7-sdk-gate-and-bot-docs-shipped.md`.
