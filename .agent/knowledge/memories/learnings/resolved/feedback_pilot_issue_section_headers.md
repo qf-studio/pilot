@@ -1,3 +1,5 @@
+> **RESOLVED/SUPERSEDED (2026-07-05):** Superseded by learnings/learning_pilot_issue_spec_guard_headers.md (spec_validator.go regex + recovery)
+
 ---
 name: Pilot intake requires specific section headers
 description: Pilot's intake judge auto-applies pilot-blocked + pilot-spec-incomplete unless the issue body contains one of a fixed set of H2 headers

@@ -1,3 +1,5 @@
+> **RESOLVED/SUPERSEDED (2026-07-05):** STALE: pilot-bench/bench-status.py no longer exists; bench dormant
+
 ---
 name: Show bench card via SOP script
 description: When asked to "check" or "show results", always run bench-status.py — never build inline cards

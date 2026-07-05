@@ -1,3 +1,5 @@
+> **RESOLVED/SUPERSEDED (2026-07-05):** Fixed in agent.py; --ae patterns replaced in bench SOPs; hardened #3199
+
 ---
 name: Harbor agent.env serializes secrets into trial output
 description: Anything in Harbor's AgentConfig.env (--ae flag or _build_env() return) is written verbatim into config.json/result.json and ends up in published submissions

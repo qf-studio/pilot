@@ -1,3 +1,5 @@
+> **RESOLVED/SUPERSEDED (2026-07-05):** STALE: tied to glm-leaderboard-v2 resume; bench dormant since 2026-05-27
+
 ---
 name: Bench run env var discipline
 description: orchestrator.py _generate_pilot_config reads ANTHROPIC_BASE_URL at runtime; a stray shell value silently swaps GLM→Anthropic and breaks runs

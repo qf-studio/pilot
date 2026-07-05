@@ -184,6 +184,28 @@
       },
       "stress-tests": {
         "label": "stress tests"
+      },
+      "studio-sdk": {
+        "label": "studio sdk"
+      },
+      "M7-cutover": {
+        "label": "M7 cutover"
+      },
+      "workflow-discipline": {
+        "label": "Workflow Discipline",
+        "description": "Session-level operating rules: verify state before designing/reporting, cost discipline, no-apologies verify-first culture"
+      },
+      "bench": {
+        "label": "Pilot Bench",
+        "description": "Terminal-Bench evaluation harness (pilot-bench, AWS warm-pool EC2); dormant since 2026-05-27. Docs: .agent/system/bench/"
+      },
+      "docs-site-infra": {
+        "label": "Docs Site Infra",
+        "description": "Nextra docs site production deployment: Docker compose behind shared Traefik"
+      },
+      "product-positioning": {
+        "label": "Product Positioning",
+        "description": "Pilot is a Claude Code orchestration layer (infrastructure play), not a CC replacement"
       }
     },
     "tasks": {
@@ -281,6 +303,19 @@
         "label": "GH-3789 Blocked-by gating via in-memory candidate resolution (no per-blocker API call)",
         "priority": "P0",
         "status": "completed"
+      },
+      "TASK-385": {
+        "concepts": [
+          "studio-sdk",
+          "M7-cutover",
+          "github-adapter",
+          "poller"
+        ],
+        "created": "2026-07-05",
+        "file": ".agent/tasks/TASK-385-studio-sdk-v0260-github-surface.md",
+        "label": "studio-sdk v0.26.0 github poll/board/PR surface (studio-sdk#71) \u2014 unblocks M7 4b-4d",
+        "priority": "P1",
+        "status": "in-progress"
       }
     },
     "memories": {
@@ -453,7 +488,8 @@
           "testing"
         ],
         "confidence": 0.9,
-        "created": "2026-05-28"
+        "created": "2026-05-28",
+        "file": ".agent/knowledge/memories/pitfalls/bug_smoke_test_wrong_cli_contract.md"
       },
       "mem-016": {
         "type": "pitfall",
@@ -485,7 +521,8 @@
           "anthropic-aup"
         ],
         "confidence": 0.95,
-        "created": "2026-05-30"
+        "created": "2026-05-30",
+        "file": ".agent/knowledge/memories/learnings/learning_audit_safeguard_bypass.md"
       },
       "mem-019": {
         "type": "learning",
@@ -496,7 +533,8 @@
           "dashboard"
         ],
         "confidence": 0.95,
-        "created": "2026-06-01"
+        "created": "2026-06-01",
+        "file": ".agent/knowledge/memories/learnings/learning_selfheal_projectpath_discriminator.md"
       },
       "mem-020": {
         "type": "learning",
@@ -507,7 +545,8 @@
           "homebrew"
         ],
         "confidence": 0.95,
-        "created": "2026-06-01"
+        "created": "2026-06-01",
+        "file": ".agent/knowledge/memories/learnings/learning_pilot_release_and_binary_path.md"
       },
       "mem-021": {
         "type": "learning",
@@ -518,7 +557,8 @@
           "ci"
         ],
         "confidence": 0.95,
-        "created": "2026-06-01"
+        "created": "2026-06-01",
+        "file": ".agent/knowledge/memories/learnings/learning_paginated_client_breaks_fixedlist_mocks.md"
       },
       "mem-022": {
         "type": "decision",
@@ -900,6 +940,429 @@
         "summary": "Never add a new GitHub API endpoint call inside the poller poll/dispatch cycle: stress/ fakes only serve the issues-LIST route, so any other route (per-blocker GetIssue etc.) deadlocks the 600s stress gate via retry backoff. Resolve state in-memory from the per-cycle fetchCandidates slice. Cost 4 failed PRs on GH-3789; fixed that way in TASK-384/PR #3883.",
         "type": "pitfall",
         "file": ".agent/knowledge/memories/pitfalls/pitfall_poller_api_calls_deadlock_stress_suite.md"
+      },
+      "mem-049": {
+        "type": "pattern",
+        "summary": "Broken approval channel deadlocks its own fix PR; escape via external gh pr merge",
+        "file": ".agent/knowledge/memories/patterns/pattern_approval_chat_id_bootstrap.md",
+        "concepts": [
+          "autopilot",
+          "hot-upgrade"
+        ],
+        "confidence": 0.9,
+        "created": "2026-05-20",
+        "indexed": "2026-07-05",
+        "origin": "2026-07-05 graph reconciliation (auto-memory migration backfill)"
+      },
+      "mem-050": {
+        "type": "pattern",
+        "summary": "autopilot_pr_state rows are deleted on success; absence is not a wiring bug \u2014 executions table is the history",
+        "file": ".agent/knowledge/memories/patterns/pattern_autopilot_pr_state_ephemeral.md",
+        "concepts": [
+          "autopilot"
+        ],
+        "confidence": 0.9,
+        "created": "2026-05-20",
+        "indexed": "2026-07-05",
+        "origin": "2026-07-05 graph reconciliation (auto-memory migration backfill)"
+      },
+      "mem-051": {
+        "type": "pattern",
+        "summary": "Sub-issues must propagate parent labels via filterPropagatableLabels or cascades re-decompose",
+        "file": ".agent/knowledge/memories/patterns/pattern_decomposer_label_evaporation.md",
+        "concepts": [
+          "epic-decomposition",
+          "executor"
+        ],
+        "confidence": 0.9,
+        "created": "2026-05-26",
+        "indexed": "2026-07-05",
+        "origin": "2026-07-05 graph reconciliation (auto-memory migration backfill)"
+      },
+      "mem-052": {
+        "type": "pattern",
+        "summary": "Reuse MetricsQuery.Projects IN-clause idiom for executions-table project scoping",
+        "file": ".agent/knowledge/memories/patterns/pattern_executions_project_filter.md",
+        "concepts": [
+          "dashboard-project-scoping"
+        ],
+        "confidence": 0.9,
+        "created": "2026-05-21",
+        "indexed": "2026-07-05",
+        "origin": "2026-07-05 graph reconciliation (auto-memory migration backfill)"
+      },
+      "mem-053": {
+        "type": "pattern",
+        "summary": "Hot-upgrading a persistence fix wipes in-memory state once; expect one bootstrap incident",
+        "file": ".agent/knowledge/memories/patterns/pattern_hot_upgrade_bootstrap.md",
+        "concepts": [
+          "hot-upgrade",
+          "autopilot"
+        ],
+        "confidence": 0.9,
+        "created": "2026-05-20",
+        "indexed": "2026-07-05",
+        "origin": "2026-07-05 graph reconciliation (auto-memory migration backfill)"
+      },
+      "mem-054": {
+        "type": "pattern",
+        "summary": "Place metric recorders above action-dedup skip gates in scanner/reconciler loops",
+        "file": ".agent/knowledge/memories/patterns/pattern_observability_before_gates.md",
+        "concepts": [
+          "autopilot"
+        ],
+        "confidence": 0.9,
+        "created": "2026-05-20",
+        "indexed": "2026-07-05",
+        "origin": "2026-07-05 graph reconciliation (auto-memory migration backfill)"
+      },
+      "mem-055": {
+        "type": "pattern",
+        "summary": "Executor wrapper boilerplate and forced-commit directive break research-only issues",
+        "file": ".agent/knowledge/memories/patterns/pattern_pilot_exec_unsuited_for_research.md",
+        "concepts": [
+          "executor",
+          "intent-routing",
+          "claude-code-integration"
+        ],
+        "confidence": 0.9,
+        "created": "2026-05-20",
+        "indexed": "2026-07-05",
+        "origin": "2026-07-05 graph reconciliation (auto-memory migration backfill)"
+      },
+      "mem-056": {
+        "type": "pattern",
+        "summary": "Closed-label-set gauges must emit zeros every scrape or lookback creates ghost readings",
+        "file": ".agent/knowledge/memories/patterns/pattern_prometheus_disappearing_series.md",
+        "concepts": [
+          "gateway",
+          "autopilot"
+        ],
+        "confidence": 0.9,
+        "created": "2026-05-20",
+        "indexed": "2026-07-05",
+        "origin": "2026-07-05 graph reconciliation (auto-memory migration backfill)"
+      },
+      "mem-057": {
+        "type": "pattern",
+        "summary": "Squash-merged PRs can show mergedAt=null; verify via git log, not gh API",
+        "file": ".agent/knowledge/memories/patterns/pattern_squash_merge_mergedat_null.md",
+        "concepts": [
+          "git-operations",
+          "github-adapter"
+        ],
+        "confidence": 0.9,
+        "created": "2026-05-20",
+        "indexed": "2026-07-05",
+        "origin": "2026-07-05 graph reconciliation (auto-memory migration backfill)"
+      },
+      "mem-058": {
+        "type": "pitfall",
+        "summary": "Reconciler re-decomposed closed parents; LLM hallucinated plausible sub-issues; gate every dispatch/decompose entry point on parent state",
+        "file": ".agent/knowledge/memories/pitfalls/bug_closed_parent_redispatch.md",
+        "concepts": [
+          "autopilot",
+          "epic-decomposition",
+          "executor",
+          "poller"
+        ],
+        "confidence": 0.9,
+        "created": "2026-05-20",
+        "indexed": "2026-07-05",
+        "origin": "2026-07-05 graph reconciliation (auto-memory migration backfill)"
+      },
+      "mem-059": {
+        "type": "pitfall",
+        "summary": "Parallel epic sub-issues add same types to one file; clean merges, broken build; file-level overlap detection still unbuilt",
+        "file": ".agent/knowledge/memories/pitfalls/bug_duplicate_type_block_merge.md",
+        "concepts": [
+          "epic-decomposition",
+          "autopilot",
+          "git-operations"
+        ],
+        "confidence": 0.9,
+        "created": "2026-05-20",
+        "indexed": "2026-07-05",
+        "origin": "2026-07-05 graph reconciliation (auto-memory migration backfill)"
+      },
+      "mem-060": {
+        "type": "pitfall",
+        "summary": "Stale completed executions row silently blocks re-dispatch forever; SQL DELETE is the escape",
+        "file": ".agent/knowledge/memories/pitfalls/bug_ghost_close_db_lockout.md",
+        "concepts": [
+          "poller",
+          "github-adapter",
+          "executor"
+        ],
+        "confidence": 0.9,
+        "created": "2026-05-20",
+        "indexed": "2026-07-05",
+        "origin": "2026-07-05 graph reconciliation (auto-memory migration backfill)"
+      },
+      "mem-061": {
+        "type": "pitfall",
+        "summary": "GoReleaser cancels silently; GITHUB_TOKEN never fires chained workflows; only feat/fix/refactor bump version",
+        "file": ".agent/knowledge/memories/pitfalls/bug_goreleaser_cancellation.md",
+        "concepts": [
+          "release",
+          "autopilot"
+        ],
+        "confidence": 0.9,
+        "created": "2026-05-20",
+        "indexed": "2026-07-05",
+        "origin": "2026-07-05 graph reconciliation (auto-memory migration backfill)"
+      },
+      "mem-062": {
+        "type": "pitfall",
+        "summary": "handleMergeConflict only closes PR; \"re-filed\" issues are poller re-dispatch plus fresh decomposition",
+        "file": ".agent/knowledge/memories/pitfalls/bug_handleconflict_no_refile.md",
+        "concepts": [
+          "autopilot",
+          "poller",
+          "epic-decomposition"
+        ],
+        "confidence": 0.9,
+        "created": "2026-05-26",
+        "indexed": "2026-07-05",
+        "origin": "2026-07-05 graph reconciliation (auto-memory migration backfill)"
+      },
+      "mem-063": {
+        "type": "pitfall",
+        "summary": "Hand-merging pilot/ PRs while daemon runs makes reconciler cut spurious ancestor releases",
+        "file": ".agent/knowledge/memories/pitfalls/bug_manual_merge_spurious_release.md",
+        "concepts": [
+          "autopilot",
+          "release",
+          "git-operations"
+        ],
+        "confidence": 0.9,
+        "created": "2026-06-11",
+        "indexed": "2026-07-05",
+        "origin": "2026-07-05 graph reconciliation (auto-memory migration backfill)"
+      },
+      "mem-064": {
+        "type": "pitfall",
+        "summary": "Binary built from since-deleted tag embeds phantom version, permanently blocking pilot upgrade; cut N+1 instead of re-cutting",
+        "file": ".agent/knowledge/memories/pitfalls/bug_phantom_version_blocks_upgrade.md",
+        "concepts": [
+          "release",
+          "hot-upgrade"
+        ],
+        "confidence": 0.9,
+        "created": "2026-06-11",
+        "indexed": "2026-07-05",
+        "origin": "2026-07-05 graph reconciliation (auto-memory migration backfill)"
+      },
+      "mem-065": {
+        "type": "pitfall",
+        "summary": "Canonical catalog: five variants of Pilot marking issues done without shipped code; detection and recovery recipes",
+        "file": ".agent/knowledge/memories/pitfalls/bug_pilot_ghost_closes.md",
+        "concepts": [
+          "executor",
+          "autopilot",
+          "epic-decomposition",
+          "github-adapter"
+        ],
+        "confidence": 0.9,
+        "created": "2026-05-26",
+        "indexed": "2026-07-05",
+        "origin": "2026-07-05 graph reconciliation (auto-memory migration backfill)"
+      },
+      "mem-066": {
+        "type": "pitfall",
+        "summary": "Approval button taps silently dropped \u2014 send path worked, inbound dispatch never wired; partial-wiring class recurs",
+        "file": ".agent/knowledge/memories/pitfalls/bug_telegram_approval_callback_unwired.md",
+        "concepts": [
+          "autopilot",
+          "conversational-bot"
+        ],
+        "confidence": 0.9,
+        "created": "2026-05-20",
+        "indexed": "2026-07-05",
+        "origin": "2026-07-05 graph reconciliation (auto-memory migration backfill)"
+      },
+      "mem-067": {
+        "type": "pitfall",
+        "summary": "Multi-provider Traefik needs @docker-qualified middleware refs; bare names 404 the whole host",
+        "file": ".agent/knowledge/memories/pitfalls/pitfall_traefik_middleware_provider_qualifier.md",
+        "concepts": [
+          "docs-site-infra"
+        ],
+        "confidence": 0.9,
+        "created": "2026-06-03",
+        "indexed": "2026-07-05",
+        "origin": "2026-07-05 graph reconciliation (auto-memory migration backfill)"
+      },
+      "mem-068": {
+        "type": "pitfall",
+        "summary": "Run pwd/branch/status and read output before any destructive op in shared main repo",
+        "file": ".agent/knowledge/memories/pitfalls/pitfall_verify_branch_before_destructive_ops.md",
+        "concepts": [
+          "git-operations",
+          "worktree",
+          "terminal-workflow"
+        ],
+        "confidence": 0.9,
+        "created": "2026-05-27",
+        "indexed": "2026-07-05",
+        "origin": "2026-07-05 graph reconciliation (auto-memory migration backfill)"
+      },
+      "mem-069": {
+        "type": "learning",
+        "summary": "Verify remote file state via gh api before authoring Pilot issues \u2014 stale local clone causes redundant issues",
+        "file": ".agent/knowledge/memories/learnings/feedback_check_remote_state.md",
+        "concepts": [
+          "workflow-discipline",
+          "git-operations"
+        ],
+        "confidence": 0.9,
+        "created": "2026-05-20",
+        "indexed": "2026-07-05",
+        "origin": "2026-07-05 graph reconciliation (auto-memory migration backfill)"
+      },
+      "mem-070": {
+        "type": "learning",
+        "summary": "Run a check once before designing recurring monitors/automation around it",
+        "file": ".agent/knowledge/memories/learnings/feedback_check_state_before_designing.md",
+        "concepts": [
+          "workflow-discipline"
+        ],
+        "confidence": 0.9,
+        "created": "2026-05-27",
+        "indexed": "2026-07-05",
+        "origin": "2026-07-05 graph reconciliation (auto-memory migration backfill)"
+      },
+      "mem-071": {
+        "type": "learning",
+        "summary": "Never launch bench runs or costly tests without explicit user instruction",
+        "file": ".agent/knowledge/memories/learnings/feedback_dont_run_tests_without_asking.md",
+        "concepts": [
+          "workflow-discipline",
+          "bench"
+        ],
+        "confidence": 0.9,
+        "created": "2026-05-20",
+        "indexed": "2026-07-05",
+        "origin": "2026-07-05 graph reconciliation (auto-memory migration backfill)"
+      },
+      "mem-072": {
+        "type": "learning",
+        "summary": "Org-level setting blocks Actions PR creation; GITHUB_TOKEN pushes do not chain workflows \u2014 diagnosis recipe",
+        "file": ".agent/knowledge/memories/learnings/feedback_gh_actions_pr_create_perm.md",
+        "concepts": [
+          "release",
+          "git-operations"
+        ],
+        "confidence": 0.9,
+        "created": "2026-05-20",
+        "indexed": "2026-07-05",
+        "origin": "2026-07-05 graph reconciliation (auto-memory migration backfill)"
+      },
+      "mem-073": {
+        "type": "learning",
+        "summary": "GitHub rate-limit system reminder is heuristic; verify with gh api rate_limit before reacting",
+        "file": ".agent/knowledge/memories/learnings/feedback_gh_ratelimit_false_alarm.md",
+        "concepts": [
+          "workflow-discipline",
+          "git-operations"
+        ],
+        "confidence": 0.9,
+        "created": "2026-05-20",
+        "indexed": "2026-07-05",
+        "origin": "2026-07-05 graph reconciliation (auto-memory migration backfill)"
+      },
+      "mem-074": {
+        "type": "learning",
+        "summary": "Stale pilot-stop-gate/bash-guard errors mean Claude Code cached hooks; restart CC, not Pilot",
+        "file": ".agent/knowledge/memories/learnings/feedback_hooks_session_order.md",
+        "concepts": [
+          "claude-code-integration",
+          "executor"
+        ],
+        "confidence": 0.9,
+        "created": "2026-05-20",
+        "indexed": "2026-07-05",
+        "origin": "2026-07-05 graph reconciliation (auto-memory migration backfill)"
+      },
+      "mem-075": {
+        "type": "learning",
+        "summary": "No apology language; verify build/tests after every change; never leave project broken",
+        "file": ".agent/knowledge/memories/learnings/feedback_no_apologies_just_working_project.md",
+        "concepts": [
+          "workflow-discipline"
+        ],
+        "confidence": 0.9,
+        "created": "2026-05-27",
+        "indexed": "2026-07-05",
+        "origin": "2026-07-05 graph reconciliation (auto-memory migration backfill)"
+      },
+      "mem-076": {
+        "type": "learning",
+        "summary": "Stop hook requires StructuredOutput call with branch, commit, files, summary \u2014 binds every pilot-executor session",
+        "file": ".agent/knowledge/memories/learnings/feedback_structured_output_hook.md",
+        "concepts": [
+          "executor",
+          "claude-code-integration"
+        ],
+        "confidence": 0.9,
+        "created": "2026-05-20",
+        "indexed": "2026-07-05",
+        "origin": "2026-07-05 graph reconciliation (auto-memory migration backfill)"
+      },
+      "mem-077": {
+        "type": "learning",
+        "summary": "LLM primitives must spawn claude subprocess, never call api.anthropic.com directly (subscription value prop)",
+        "file": ".agent/knowledge/memories/learnings/feedback_subprocess_not_api.md",
+        "concepts": [
+          "executor",
+          "claude-code-integration",
+          "anthropic-api",
+          "intent-routing"
+        ],
+        "confidence": 0.9,
+        "created": "2026-05-26",
+        "indexed": "2026-07-05",
+        "origin": "2026-07-05 graph reconciliation (auto-memory migration backfill)"
+      },
+      "mem-078": {
+        "type": "learning",
+        "summary": "internal/briefs generator tests flake; rerun, do not chase on unrelated PRs; phantom CI-fix cascade risk",
+        "file": ".agent/knowledge/memories/learnings/learning_flaky_briefs_generator_test.md",
+        "concepts": [
+          "autopilot",
+          "workflow-discipline"
+        ],
+        "confidence": 0.9,
+        "created": "2026-06-01",
+        "indexed": "2026-07-05",
+        "origin": "2026-07-05 graph reconciliation (auto-memory migration backfill)"
+      },
+      "mem-079": {
+        "type": "learning",
+        "summary": "ValidateSpec two-strike gate: 100 chars plus recognized H2 header required; recovery steps and bypass label",
+        "file": ".agent/knowledge/memories/learnings/learning_pilot_issue_spec_guard_headers.md",
+        "concepts": [
+          "github-adapter",
+          "poller",
+          "workflow-discipline"
+        ],
+        "confidence": 0.9,
+        "created": "2026-05-31",
+        "indexed": "2026-07-05",
+        "origin": "2026-07-05 graph reconciliation (auto-memory migration backfill)"
+      },
+      "mem-080": {
+        "type": "decision",
+        "summary": "Pilot is a Claude Code orchestration layer, not a replacement \u2014 infrastructure play for the Anthropic ecosystem",
+        "file": ".agent/knowledge/memories/decisions/strategy_pilot_positioning.md",
+        "concepts": [
+          "product-positioning",
+          "claude-code-integration"
+        ],
+        "confidence": 0.9,
+        "created": "2026-05-20",
+        "indexed": "2026-07-05",
+        "origin": "2026-07-05 graph reconciliation (auto-memory migration backfill)"
       }
     }
   },
@@ -1263,6 +1726,381 @@
       "from": "TASK-384",
       "to": "mem-048",
       "type": "learned"
+    },
+    {
+      "from": "TASK-385",
+      "to": "studio-sdk",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-385",
+      "to": "M7-cutover",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-385",
+      "to": "github-adapter",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-385",
+      "to": "poller",
+      "type": "implements"
+    },
+    {
+      "from": "mem-049",
+      "to": "autopilot",
+      "type": "describes"
+    },
+    {
+      "from": "mem-049",
+      "to": "hot-upgrade",
+      "type": "describes"
+    },
+    {
+      "from": "mem-050",
+      "to": "autopilot",
+      "type": "describes"
+    },
+    {
+      "from": "mem-051",
+      "to": "epic-decomposition",
+      "type": "describes"
+    },
+    {
+      "from": "mem-051",
+      "to": "executor",
+      "type": "describes"
+    },
+    {
+      "from": "mem-052",
+      "to": "dashboard-project-scoping",
+      "type": "describes"
+    },
+    {
+      "from": "mem-053",
+      "to": "hot-upgrade",
+      "type": "describes"
+    },
+    {
+      "from": "mem-053",
+      "to": "autopilot",
+      "type": "describes"
+    },
+    {
+      "from": "mem-054",
+      "to": "autopilot",
+      "type": "describes"
+    },
+    {
+      "from": "mem-055",
+      "to": "executor",
+      "type": "describes"
+    },
+    {
+      "from": "mem-055",
+      "to": "intent-routing",
+      "type": "describes"
+    },
+    {
+      "from": "mem-055",
+      "to": "claude-code-integration",
+      "type": "describes"
+    },
+    {
+      "from": "mem-056",
+      "to": "gateway",
+      "type": "describes"
+    },
+    {
+      "from": "mem-056",
+      "to": "autopilot",
+      "type": "describes"
+    },
+    {
+      "from": "mem-057",
+      "to": "git-operations",
+      "type": "describes"
+    },
+    {
+      "from": "mem-057",
+      "to": "github-adapter",
+      "type": "describes"
+    },
+    {
+      "from": "mem-058",
+      "to": "autopilot",
+      "type": "describes"
+    },
+    {
+      "from": "mem-058",
+      "to": "epic-decomposition",
+      "type": "describes"
+    },
+    {
+      "from": "mem-058",
+      "to": "executor",
+      "type": "describes"
+    },
+    {
+      "from": "mem-058",
+      "to": "poller",
+      "type": "describes"
+    },
+    {
+      "from": "mem-059",
+      "to": "epic-decomposition",
+      "type": "describes"
+    },
+    {
+      "from": "mem-059",
+      "to": "autopilot",
+      "type": "describes"
+    },
+    {
+      "from": "mem-059",
+      "to": "git-operations",
+      "type": "describes"
+    },
+    {
+      "from": "mem-060",
+      "to": "poller",
+      "type": "describes"
+    },
+    {
+      "from": "mem-060",
+      "to": "github-adapter",
+      "type": "describes"
+    },
+    {
+      "from": "mem-060",
+      "to": "executor",
+      "type": "describes"
+    },
+    {
+      "from": "mem-061",
+      "to": "release",
+      "type": "describes"
+    },
+    {
+      "from": "mem-061",
+      "to": "autopilot",
+      "type": "describes"
+    },
+    {
+      "from": "mem-062",
+      "to": "autopilot",
+      "type": "describes"
+    },
+    {
+      "from": "mem-062",
+      "to": "poller",
+      "type": "describes"
+    },
+    {
+      "from": "mem-062",
+      "to": "epic-decomposition",
+      "type": "describes"
+    },
+    {
+      "from": "mem-063",
+      "to": "autopilot",
+      "type": "describes"
+    },
+    {
+      "from": "mem-063",
+      "to": "release",
+      "type": "describes"
+    },
+    {
+      "from": "mem-063",
+      "to": "git-operations",
+      "type": "describes"
+    },
+    {
+      "from": "mem-064",
+      "to": "release",
+      "type": "describes"
+    },
+    {
+      "from": "mem-064",
+      "to": "hot-upgrade",
+      "type": "describes"
+    },
+    {
+      "from": "mem-065",
+      "to": "executor",
+      "type": "describes"
+    },
+    {
+      "from": "mem-065",
+      "to": "autopilot",
+      "type": "describes"
+    },
+    {
+      "from": "mem-065",
+      "to": "epic-decomposition",
+      "type": "describes"
+    },
+    {
+      "from": "mem-065",
+      "to": "github-adapter",
+      "type": "describes"
+    },
+    {
+      "from": "mem-066",
+      "to": "autopilot",
+      "type": "describes"
+    },
+    {
+      "from": "mem-066",
+      "to": "conversational-bot",
+      "type": "describes"
+    },
+    {
+      "from": "mem-067",
+      "to": "docs-site-infra",
+      "type": "describes"
+    },
+    {
+      "from": "mem-068",
+      "to": "git-operations",
+      "type": "describes"
+    },
+    {
+      "from": "mem-068",
+      "to": "worktree",
+      "type": "describes"
+    },
+    {
+      "from": "mem-068",
+      "to": "terminal-workflow",
+      "type": "describes"
+    },
+    {
+      "from": "mem-069",
+      "to": "workflow-discipline",
+      "type": "describes"
+    },
+    {
+      "from": "mem-069",
+      "to": "git-operations",
+      "type": "describes"
+    },
+    {
+      "from": "mem-070",
+      "to": "workflow-discipline",
+      "type": "describes"
+    },
+    {
+      "from": "mem-071",
+      "to": "workflow-discipline",
+      "type": "describes"
+    },
+    {
+      "from": "mem-071",
+      "to": "bench",
+      "type": "describes"
+    },
+    {
+      "from": "mem-072",
+      "to": "release",
+      "type": "describes"
+    },
+    {
+      "from": "mem-072",
+      "to": "git-operations",
+      "type": "describes"
+    },
+    {
+      "from": "mem-073",
+      "to": "workflow-discipline",
+      "type": "describes"
+    },
+    {
+      "from": "mem-073",
+      "to": "git-operations",
+      "type": "describes"
+    },
+    {
+      "from": "mem-074",
+      "to": "claude-code-integration",
+      "type": "describes"
+    },
+    {
+      "from": "mem-074",
+      "to": "executor",
+      "type": "describes"
+    },
+    {
+      "from": "mem-075",
+      "to": "workflow-discipline",
+      "type": "describes"
+    },
+    {
+      "from": "mem-076",
+      "to": "executor",
+      "type": "describes"
+    },
+    {
+      "from": "mem-076",
+      "to": "claude-code-integration",
+      "type": "describes"
+    },
+    {
+      "from": "mem-077",
+      "to": "executor",
+      "type": "describes"
+    },
+    {
+      "from": "mem-077",
+      "to": "claude-code-integration",
+      "type": "describes"
+    },
+    {
+      "from": "mem-077",
+      "to": "anthropic-api",
+      "type": "describes"
+    },
+    {
+      "from": "mem-077",
+      "to": "intent-routing",
+      "type": "describes"
+    },
+    {
+      "from": "mem-078",
+      "to": "autopilot",
+      "type": "describes"
+    },
+    {
+      "from": "mem-078",
+      "to": "workflow-discipline",
+      "type": "describes"
+    },
+    {
+      "from": "mem-079",
+      "to": "github-adapter",
+      "type": "describes"
+    },
+    {
+      "from": "mem-079",
+      "to": "poller",
+      "type": "describes"
+    },
+    {
+      "from": "mem-079",
+      "to": "workflow-discipline",
+      "type": "describes"
+    },
+    {
+      "from": "mem-080",
+      "to": "product-positioning",
+      "type": "describes"
+    },
+    {
+      "from": "mem-080",
+      "to": "claude-code-integration",
+      "type": "describes"
     }
   ]
 }

@@ -1,3 +1,5 @@
+> **RESOLVED/SUPERSEDED (2026-07-05):** Codified in CLAUDE.md Navigator+Pilot pipeline
+
 ---
 name: Always use /nav-task to create Pilot issues
 description: When creating GitHub issues for Pilot to execute, route through the nav-task skill first — it produces an implementation plan doc that becomes the issue body. Do not file issues directly via gh issue create.

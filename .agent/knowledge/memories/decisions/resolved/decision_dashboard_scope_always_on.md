@@ -1,3 +1,5 @@
+> **RESOLVED/SUPERSEDED (2026-07-05):** Reversed by GH-3534 (be830129): --dashboard-scope=project|all flag shipped; TASK-285 eval migration also done
+
 ---
 name: dashboard project scope is always-on when -p is set
 description: No --dashboard-scope flag; gateway HTTP inherits daemon scope (no ?project= param); in-memory callback drift accepted as eventual consistency.

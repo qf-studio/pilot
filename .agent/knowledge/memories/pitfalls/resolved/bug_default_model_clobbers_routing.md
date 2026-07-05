@@ -1,3 +1,5 @@
+> **RESOLVED/SUPERSEDED (2026-07-05):** Fixed GH-2450: model_routing wins (runner.go:993) + fail-loud routing
+
 ---
 name: default_model clobbers model_routing for CC backend
 description: model_routing config is silently ignored for claude-code backend when default_model is set; --model flag never passed, CC falls back to its own (Opus) default
