@@ -206,6 +206,26 @@
       "product-positioning": {
         "label": "Product Positioning",
         "description": "Pilot is a Claude Code orchestration layer (infrastructure play), not a CC replacement"
+      },
+      "testing": {
+        "label": "Testing",
+        "description": "Test-suite pitfalls and discipline: fixed-list mocks vs pagination, flakes, unbounded busy-waits, live-fire side effects"
+      },
+      "memory": {
+        "label": "Memory Store",
+        "description": "SQLite persistence (internal/memory): executions, briefs, metrics, execution_events ledger"
+      },
+      "dashboard": {
+        "label": "Dashboard",
+        "description": "TUI (bubbletea) + HTTP dashboard panels; related: dashboard-project-scoping"
+      },
+      "verification": {
+        "label": "Verification",
+        "description": "Verify artifacts not status claims; runtime self-verification domain (TASK-379)"
+      },
+      "alerts": {
+        "label": "Alerts",
+        "description": "Alert engine + multi-channel dispatch (internal/alerts)"
       }
     },
     "tasks": {
@@ -316,6 +336,14 @@
         "label": "studio-sdk v0.26.0 github poll/board/PR surface (studio-sdk#71) \u2014 unblocks M7 4b-4d",
         "priority": "P1",
         "status": "in-progress"
+      },
+      "TASK-321": {
+        "title": "Phantom no-op redispatch durable fix",
+        "status": "completed",
+        "concepts": [
+          "autopilot",
+          "executor"
+        ]
       }
     },
     "memories": {
@@ -483,8 +511,6 @@
         "summary": "Self-test command must match the binary's real CLI contract: the pre-exec smoke test ran 'pilot --version' (a flag pilot doesn't register -> exit 1) instead of the 'version' subcommand, blocking every hot upgrade. Arg-agnostic test fakes hid it. File: bug_smoke_test_wrong_cli_contract.md (GH-3222/#3223).",
         "concepts": [
           "hot-upgrade",
-          "smoke-test",
-          "cli-contract",
           "testing"
         ],
         "confidence": 0.9,
@@ -495,9 +521,7 @@
         "type": "pitfall",
         "summary": "macOS codesign error swallowed in upgrade.go PrepareForExecution (`_ =`), producing an unsigned binary Gatekeeper refuses to syscall.Exec -> silent hot-upgrade failure. File: bug_hot_upgrade_silent_codesign.md (TASK-303).",
         "concepts": [
-          "hot-upgrade",
-          "codesign",
-          "macos"
+          "hot-upgrade"
         ],
         "confidence": 0.9,
         "created": "2026-05-26"
@@ -516,9 +540,8 @@
         "type": "learning",
         "summary": "AUP/cyber-safeguard kills security-audit model output mid-run, but Workflow tool persists findings to /tmp/claude-501/.../<wfId>.output \u2014 recover via jq, never re-summarize via the model. File: learning_audit_safeguard_bypass.md (TASK-322).",
         "concepts": [
-          "workflow-tool",
-          "security-audit",
-          "anthropic-aup"
+          "claude-code-integration",
+          "workflow-discipline"
         ],
         "confidence": 0.95,
         "created": "2026-05-30",
@@ -541,8 +564,7 @@
         "summary": "Releasing Pilot: autopilot auto-cuts releases only on pilot/GH-* merges, so a manual fix/* PR sits on main unreleased. Manual release = push a v* tag (release.yml GoReleaser \u2192 Homebrew); do NOT also `make release`. Daemon runs ~/.local/bin/pilot (not make-install ~/go/bin, not brew) \u2014 update via `pilot upgrade`. Version string lags the commit; check `go version -m <bin> | grep vcs.revision`. File: learning_pilot_release_and_binary_path.md.",
         "concepts": [
           "release",
-          "autopilot",
-          "homebrew"
+          "autopilot"
         ],
         "confidence": 0.95,
         "created": "2026-06-01",
@@ -553,8 +575,7 @@
         "summary": "Making a client method paginate (per_page+page until short page) silently breaks fixed-list httptest mocks that return the full list per request \u2014 they loop to maxPages (N\u00d7pages items) and starve callers, hanging tests to the 600s package timeout. C6/#3369 did this to the stress mocks. Fix: mocks return [] for page>=2, and ALWAYS bound test busy-waits with a deadline. A 600s 'FAIL <pkg>' with no '--- FAIL: Test' = a hang, not an assertion. File: learning_paginated_client_breaks_fixedlist_mocks.md (TASK-353).",
         "concepts": [
           "github-adapter",
-          "testing",
-          "ci"
+          "testing"
         ],
         "confidence": 0.95,
         "created": "2026-06-01",
@@ -564,9 +585,7 @@
         "type": "decision",
         "summary": "Release pipeline is tag-only \u2014 goreleaser (release.yml) is the SOLE publisher. As of #3377 (after v2.166.6) `make release` only pushes the version tag; it no longer does a local `gh release create`, which had 422-collided with goreleaser and made it skip the Homebrew formula publish (bit v2.149.4 and v2.166.6). Never publish assets before goreleaser. File: decision_release_pipeline_tag_only.md.",
         "concepts": [
-          "release",
-          "homebrew",
-          "build"
+          "release"
         ],
         "confidence": 0.95,
         "created": "2026-06-01",
@@ -638,9 +657,8 @@
         "type": "learning",
         "summary": "When grep for an alleged write API in internal/ returns zero, the root cause is external (config/another bot/GitHub workflow) \u2014 don't draft a Pilot fix",
         "concepts": [
-          "task-investigation",
-          "github-adapter",
-          "board-source"
+          "workflow-discipline",
+          "github-adapter"
         ],
         "confidence": 0.9,
         "created": "2026-06-09",
@@ -652,8 +670,8 @@
         "summary": "For ad-hoc gh CLI writes to qf-studio (project board edits, etc.) use Pilot's PAT from ~/.pilot/config.yaml via GH_TOKEN env \u2014 OAuth refresh is silently blocked by SAML SSO",
         "concepts": [
           "github-adapter",
-          "auth",
-          "operational"
+          "doctor",
+          "workflow-discipline"
         ],
         "confidence": 0.95,
         "created": "2026-06-09",
@@ -665,10 +683,7 @@
         "summary": "maybeCloseParentIssue trusted native sub-issue open-count alone; partial LinkSubIssue coverage makes count hit 0 while unlinked siblings are open \u2014 parent closes pilot-done with no PR-merge verification (GH-3513). Fixed PR #3527: native 0 must be confirmed by text search.",
         "concepts": [
           "autopilot",
-          "decomposition",
-          "pilot-done",
-          "premature-close",
-          "sub-issues"
+          "epic-decomposition"
         ],
         "confidence": 0.9,
         "created": "2026-06-10",
@@ -681,9 +696,8 @@
         "concepts": [
           "autopilot",
           "poller",
-          "pilot-superseded",
-          "label-trust",
-          "sub-issues"
+          "workflow-discipline",
+          "epic-decomposition"
         ],
         "confidence": 0.9,
         "created": "2026-06-10",
@@ -694,11 +708,8 @@
         "type": "pitfall",
         "summary": "inherited-spec:true children fetch the parent issue as their spec and re-implement the FULL feature \u2014 N redundant colliding PRs per epic (GH-3513). Fixed PR #3527 with a scope fence in subIssueBody(); sibling-branch PR base routing still unfixed.",
         "concepts": [
-          "decomposition",
-          "inherited-spec",
-          "executor",
-          "prompt-scope",
-          "epic"
+          "epic-decomposition",
+          "executor"
         ],
         "confidence": 0.85,
         "created": "2026-06-10",
@@ -710,9 +721,9 @@
         "summary": "Pilot done-states are claims, not evidence: GH-3513 read pilot-done with 0% of the feature on main; v2.181.0 tagged off a sibling branch (diverged from main). Verify the artifact: grep main for the expected signature, check pr.baseRefName, compare main...tag.",
         "concepts": [
           "verification",
-          "pilot-done",
-          "phantom-release",
-          "operational"
+          "autopilot",
+          "release",
+          "workflow-discipline"
         ],
         "confidence": 0.9,
         "created": "2026-06-10",
@@ -724,10 +735,7 @@
         "summary": "Subprocess without cmd.Dir: getPostExecutionSummary ran git in the daemon's CWD and reported the wrong repo's HEAD as the commit SHA \u2014 ghost guard then killed real worker commits (TASK-320 false no-ops) or recorded wrong-repo completed SHAs (TASK-355). One bug, both incident families. Fix v2.186.2: worktree git harvest first, summary pinned to executionPath. Lesson: every executor exec.Command must set cmd.Dir; never ask an LLM for what git answers deterministically.",
         "concepts": [
           "executor",
-          "commit-harvest",
-          "ghost-sha-guard",
-          "no-op-classification",
-          "subprocess-cwd"
+          "git-operations"
         ],
         "confidence": 0.95,
         "created": "2026-06-11",
@@ -740,9 +748,8 @@
         "concepts": [
           "executor",
           "testing",
-          "decomposition",
-          "attribution",
-          "gh-cli"
+          "epic-decomposition",
+          "git-operations"
         ],
         "confidence": 0.95,
         "created": "2026-06-11",
@@ -753,9 +760,8 @@
         "type": "pitfall",
         "summary": "studio-sdk chat bridge splits /-commands into core.MessageEvent{Action:\"command\",Command,Args,Text:\"\"} UPSTREAM. Pilot's two mapping sites (slack/handler.go HandleMessage + shared sdkshim.MessageEventToIncomingMessage) handled only Action==\"callback\" and copied the empty ev.Text -> /help reached comms as empty text -> handleTask. Live '@Pilot /help creates a task' 2026-06-25. TASK-372 fixed the wrong layer (comms dispatch) and merged GREEN because its tests fed comms already-/-prefixed text and never crossed the adapter->comms seam; pre-existing TestHandler_HandleMessage_CommandAction asserted only Platform/IsCallback, never Text. Real fix PR #3661: handle Action==\"command\" at both boundary sites (reconstruct Command+Args into Text) + assert the reconstructed Text + end-to-end /help->help. Live path is the studio-sdk NewChatBridge, NOT native processEvent (dead code for the daemon).",
         "concepts": [
-          "comms-intent-dispatch",
-          "sdk-chat-bridge",
-          "slack-adapter",
+          "intent-routing",
+          "conversational-bot",
           "testing",
           "verification"
         ],
@@ -785,7 +791,7 @@
         "type": "pattern",
         "summary": "Bot module dual-path: fast conversational path (~1-2s, direct LLM via Responder) vs executor path (~15-30s, Claude Code worktree). Intents: greeting/chat/question/issue-intake \u2192 Responder; task/research/planning \u2192 executor. Fallback guarantee: Responder nil (bot disabled) \u2192 identical-to-before executor path. Rate limit via AllowMessage() before all dispatch. Voice seam: VoiceText merged into text when Text empty. Test-at-the-seam lesson: tests must cross adapter\u2192comms boundary (ref mem-036).",
         "concepts": [
-          "comms-intent-dispatch",
+          "intent-routing",
           "executor",
           "testing"
         ],
@@ -799,7 +805,6 @@
         "summary": "Bot's direct LLM client (internal/llm/client.go) omitted required max_tokens and sent non-standard output_config{effort:low}, so every Anthropic Messages call 400'd ('max_tokens: Field required') and the bot replied 'Sorry, I couldn't process that.' Shipped GREEN because TestAnswer_RequestShape asserted output_config present and never checked max_tokens \u2014 the test encoded the bug. Diagnose request-shape bugs with curl (real key): code's request \u2192 400, +max_tokens/-output_config \u2192 200, in 2 calls. Fixed v2.200.1 (#3700): add max_tokens(2048), drop output_config, tests assert both. Lesson (again, see mem-036): assert the REQUIRED fields, not the optional ones.",
         "concepts": [
           "anthropic-api",
-          "llm-integration",
           "testing",
           "verification"
         ],
@@ -862,8 +867,8 @@
         "concepts": [
           "epic-decomposition",
           "git-operations",
-          "worktree-isolation",
-          "error-recovery"
+          "worktree",
+          "autopilot"
         ],
         "confidence": 0.9,
         "severity": "high",
@@ -878,8 +883,7 @@
         "concepts": [
           "hot-upgrade",
           "release",
-          "autopilot",
-          "self-upgrade"
+          "autopilot"
         ],
         "confidence": 0.95,
         "severity": "high",
@@ -894,7 +898,6 @@
         "concepts": [
           "hot-upgrade",
           "release",
-          "self-upgrade",
           "alerts"
         ],
         "confidence": 0.9,
@@ -1674,7 +1677,7 @@
     },
     {
       "from": "mem-045",
-      "to": "self-upgrade",
+      "to": "hot-upgrade",
       "type": "about"
     },
     {
