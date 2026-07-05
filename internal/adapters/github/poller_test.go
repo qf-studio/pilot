@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/qf-studio/pilot/internal/adapters/skipreason"
 	"github.com/qf-studio/pilot/internal/testutil"
 )
 
@@ -1065,51 +1066,45 @@ func TestParseDependencies(t *testing.T) {
 	}
 }
 
+// TestPoller_HasPendingDependencies covers the GH-3789 in-memory gate:
+// hasPendingDependencies resolves Blocked-by/Depends-on references against
+// the already-fetched candidate slice (fetchCandidates' result), never a
+// per-blocker API call. A blocker present in that slice is open and
+// blocking; absent (closed, unlabeled, or nonexistent) is not — fail-open.
 func TestPoller_HasPendingDependencies(t *testing.T) {
 	tests := []struct {
 		name      string
 		issueBody string
-		depState  string // "open" or "closed"
+		fetched   []*Issue
 		want      bool
 	}{
 		{
 			name:      "no dependencies",
 			issueBody: "Regular issue body",
-			depState:  "",
+			fetched:   nil,
 			want:      false,
 		},
 		{
-			name:      "dependency is open",
+			name:      "dependency present in fetched candidates (open)",
 			issueBody: "Depends on: #100",
-			depState:  "open",
+			fetched:   []*Issue{{Number: 100}},
 			want:      true,
 		},
 		{
-			name:      "dependency is closed",
+			name:      "dependency absent from fetched candidates (closed/unlabeled/nonexistent)",
 			issueBody: "Depends on: #100",
-			depState:  "closed",
+			fetched:   nil,
 			want:      false,
 		},
 	}
 
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, "http://example.invalid")
+	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second)
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.Header().Set("Content-Type", "application/json")
-				if r.URL.Path == "/repos/owner/repo/issues/100" {
-					issue := &Issue{Number: 100, State: tt.depState}
-					_ = json.NewEncoder(w).Encode(issue)
-				} else {
-					w.WriteHeader(http.StatusNotFound)
-				}
-			}))
-			defer server.Close()
-
-			client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
-			poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second)
-
 			issue := &Issue{Number: 1, Body: tt.issueBody}
-			got := poller.hasPendingDependencies(context.Background(), issue)
+			got := poller.hasPendingDependencies(issue, tt.fetched)
 
 			if got != tt.want {
 				t.Errorf("hasPendingDependencies() = %v, want %v", got, tt.want)
@@ -1118,43 +1113,32 @@ func TestPoller_HasPendingDependencies(t *testing.T) {
 	}
 }
 
-func TestPoller_HasPendingDependencies_APIError(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-	}))
-	defer server.Close()
-
-	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
-	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second)
-
-	issue := &Issue{Number: 1, Body: "Depends on: #100"}
-	got := poller.hasPendingDependencies(context.Background(), issue)
-
-	// Should return true (has pending) when API fails - be safe and don't execute
-	if !got {
-		t.Error("hasPendingDependencies() should return true on API error")
-	}
-}
-
+// TestPoller_FindOldestUnprocessedIssue_SkipsPendingDependencies is the D6
+// reproduction (GH-3789/GH-3759): issue #1's blocker #100 is open and
+// present in the SAME fetched candidate list (list-based fixture, no
+// per-issue httptest route) — #1 must be skipped and #2 dispatched instead,
+// with no p.client.GetIssue call in the gating path.
 func TestPoller_FindOldestUnprocessedIssue_SkipsPendingDependencies(t *testing.T) {
 	now := time.Now()
 	issues := []*Issue{
 		{Number: 1, Title: "Oldest with dep", Body: "Depends on: #100", Labels: []Label{{Name: "pilot"}}, CreatedAt: now.Add(-2 * time.Hour)},
 		{Number: 2, Title: "Second no dep", Labels: []Label{{Name: "pilot"}}, CreatedAt: now.Add(-1 * time.Hour)},
+		// #100 is the open blocker — present in the same open+pilot-labeled
+		// fetch (simulated here as still in-progress so it isn't itself
+		// selected as the oldest dispatchable candidate).
+		{Number: 100, Title: "Blocker still open", Labels: []Label{{Name: "pilot"}, {Name: LabelInProgress}}, CreatedAt: now},
 	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-
-		switch r.URL.Path {
-		case "/repos/owner/repo/issues":
+		if r.URL.Path == "/repos/owner/repo/issues" {
 			_ = json.NewEncoder(w).Encode(issues)
-		case "/repos/owner/repo/issues/100":
-			// Dependency is still open
-			_ = json.NewEncoder(w).Encode(&Issue{Number: 100, State: "open"})
-		default:
-			w.WriteHeader(http.StatusNotFound)
+			return
 		}
+		if r.URL.Path == "/repos/owner/repo/issues/100" || r.URL.Path == "/repos/owner/repo/issues/101" {
+			t.Errorf("unexpected per-blocker API call to %s — gate must resolve in-memory (GH-3789)", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusNotFound)
 	}))
 	defer server.Close()
 
@@ -1169,12 +1153,15 @@ func TestPoller_FindOldestUnprocessedIssue_SkipsPendingDependencies(t *testing.T
 	if issue == nil {
 		t.Fatal("issue should not be nil")
 	}
-	// Should skip #1 (has open dependency) and return #2
+	// Should skip #1 (blocker present in fetched candidates) and return #2
 	if issue.Number != 2 {
-		t.Errorf("found issue #%d, want #2 (skips issue with open dependency)", issue.Number)
+		t.Errorf("found issue #%d, want #2 (skips issue with blocker present in fetched candidates)", issue.Number)
 	}
 }
 
+// TestPoller_FindOldestUnprocessedIssue_PicksClosedDependency: blocker #100
+// is absent from the fetched candidate list (closed/unlabeled/nonexistent —
+// indistinguishable under the in-memory gate), so #1 proceeds (fail-open).
 func TestPoller_FindOldestUnprocessedIssue_PicksClosedDependency(t *testing.T) {
 	now := time.Now()
 	issues := []*Issue{
@@ -1184,16 +1171,11 @@ func TestPoller_FindOldestUnprocessedIssue_PicksClosedDependency(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-
-		switch r.URL.Path {
-		case "/repos/owner/repo/issues":
+		if r.URL.Path == "/repos/owner/repo/issues" {
 			_ = json.NewEncoder(w).Encode(issues)
-		case "/repos/owner/repo/issues/100":
-			// Dependency is closed
-			_ = json.NewEncoder(w).Encode(&Issue{Number: 100, State: "closed"})
-		default:
-			w.WriteHeader(http.StatusNotFound)
+			return
 		}
+		w.WriteHeader(http.StatusNotFound)
 	}))
 	defer server.Close()
 
@@ -1208,31 +1190,31 @@ func TestPoller_FindOldestUnprocessedIssue_PicksClosedDependency(t *testing.T) {
 	if issue == nil {
 		t.Fatal("issue should not be nil")
 	}
-	// Should pick #1 because dependency is closed
+	// Should pick #1 because dependency #100 is absent from the fetched candidates
 	if issue.Number != 1 {
-		t.Errorf("found issue #%d, want #1 (dependency is closed)", issue.Number)
+		t.Errorf("found issue #%d, want #1 (dependency absent from fetch)", issue.Number)
 	}
 }
 
+// TestPoller_FindOldestUnprocessedIssue_AllDepsOpen: both blockers (#100,
+// #101) are present in the fetched candidate list, so neither #1 nor #2
+// can be dispatched this cycle.
 func TestPoller_FindOldestUnprocessedIssue_AllDepsOpen(t *testing.T) {
 	now := time.Now()
 	issues := []*Issue{
 		{Number: 1, Title: "Has dep", Body: "Depends on: #100", Labels: []Label{{Name: "pilot"}}, CreatedAt: now.Add(-2 * time.Hour)},
 		{Number: 2, Title: "Also has dep", Body: "Blocked by: #101", Labels: []Label{{Name: "pilot"}}, CreatedAt: now.Add(-1 * time.Hour)},
+		{Number: 100, Title: "Blocker 1", Labels: []Label{{Name: "pilot"}, {Name: LabelInProgress}}, CreatedAt: now},
+		{Number: 101, Title: "Blocker 2", Labels: []Label{{Name: "pilot"}, {Name: LabelInProgress}}, CreatedAt: now},
 	}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-
-		switch r.URL.Path {
-		case "/repos/owner/repo/issues":
+		if r.URL.Path == "/repos/owner/repo/issues" {
 			_ = json.NewEncoder(w).Encode(issues)
-		case "/repos/owner/repo/issues/100", "/repos/owner/repo/issues/101":
-			// Both dependencies are open
-			_ = json.NewEncoder(w).Encode(&Issue{Number: 100, State: "open"})
-		default:
-			w.WriteHeader(http.StatusNotFound)
+			return
 		}
+		w.WriteHeader(http.StatusNotFound)
 	}))
 	defer server.Close()
 
@@ -1244,9 +1226,50 @@ func TestPoller_FindOldestUnprocessedIssue_AllDepsOpen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("findOldestUnprocessedIssue() error = %v", err)
 	}
-	// Should return nil when all issues have open dependencies
+	// Should return nil when all issues have blockers present in the fetch
 	if issue != nil {
-		t.Errorf("issue should be nil when all have open dependencies, got #%d", issue.Number)
+		t.Errorf("issue should be nil when all have pending dependencies, got #%d", issue.Number)
+	}
+}
+
+// TestPoller_FindOldestUnprocessedIssue_RecordsPendingDependencySkip closes
+// the sequential-mode metrics gap noted in #3835: prior to GH-3789 the
+// sequential path (findOldestUnprocessedIssue) skipped pending-dependency
+// candidates without ever calling recordSkip, unlike the parallel path.
+func TestPoller_FindOldestUnprocessedIssue_RecordsPendingDependencySkip(t *testing.T) {
+	now := time.Now()
+	issues := []*Issue{
+		{Number: 1, Title: "Oldest with dep", Body: "Depends on: #100", Labels: []Label{{Name: "pilot"}}, CreatedAt: now.Add(-2 * time.Hour)},
+		{Number: 2, Title: "Second no dep", Labels: []Label{{Name: "pilot"}}, CreatedAt: now.Add(-1 * time.Hour)},
+		{Number: 100, Title: "Blocker still open", Labels: []Label{{Name: "pilot"}, {Name: LabelInProgress}}, CreatedAt: now},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/repos/owner/repo/issues" {
+			_ = json.NewEncoder(w).Encode(issues)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	m := newFakePollerMetrics()
+	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second, WithPollerMetrics(m))
+
+	issue, err := poller.findOldestUnprocessedIssue(context.Background())
+	if err != nil {
+		t.Fatalf("findOldestUnprocessedIssue() error = %v", err)
+	}
+	if issue == nil || issue.Number != 2 {
+		t.Fatalf("findOldestUnprocessedIssue() = %v, want #2", issue)
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.skipped[skipreason.ReasonPendingDependency] != 1 {
+		t.Errorf("skipped[%q] = %d, want 1", skipreason.ReasonPendingDependency, m.skipped[skipreason.ReasonPendingDependency])
 	}
 }
 

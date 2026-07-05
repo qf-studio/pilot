@@ -194,6 +194,73 @@ func TestPoller_ScopeOverlapDeferral_IncrementsMetric(t *testing.T) {
 	}
 }
 
+// TestPoller_PendingDependencySkip_ParallelMode is the D6 reproduction
+// (GH-3789/GH-3759) for parallel/auto mode: issue #1's "Blocked by: #100"
+// blocker is open and present in the SAME fetched candidate list, so #1 must
+// be skipped with skipreason.ReasonPendingDependency recorded, while #2
+// (no dependency) dispatches normally.
+func TestPoller_PendingDependencySkip_ParallelMode(t *testing.T) {
+	pilot := Label{Name: "pilot"}
+	now := time.Now()
+	issues := []*Issue{
+		{Number: 1, Title: "blocked", Body: "Blocked by: #100", Labels: []Label{pilot}, CreatedAt: now.Add(-1 * time.Hour)},
+		{Number: 2, Title: "clear", Labels: []Label{pilot}, CreatedAt: now},
+		// Open blocker — present in the fetch (kept off the dispatch path via in-progress).
+		{Number: 100, Title: "blocker", Labels: []Label{pilot, {Name: LabelInProgress}}, CreatedAt: now.Add(-2 * time.Hour)},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+		lastSegment := ""
+		if len(parts) > 0 {
+			lastSegment = parts[len(parts)-1]
+		}
+		isSingleGet := len(lastSegment) > 0 && lastSegment[0] >= '0' && lastSegment[0] <= '9'
+		if isSingleGet {
+			if lastSegment == "100" {
+				t.Errorf("unexpected per-blocker API call to %s — gate must resolve in-memory (GH-3789)", r.URL.Path)
+			}
+			// Fresh-label refresh for the dispatched candidate (#2).
+			_ = json.NewEncoder(w).Encode(issues[1])
+			return
+		}
+		_ = json.NewEncoder(w).Encode(issues)
+	}))
+	defer server.Close()
+
+	client := NewClientWithBaseURL(testutil.FakeGitHubToken, server.URL)
+	m := newFakePollerMetrics()
+
+	var dispatched []int
+	var mu sync.Mutex
+	poller, _ := NewPoller(client, "owner/repo", "pilot", 30*time.Second,
+		WithOnIssue(func(ctx context.Context, issue *Issue) error {
+			mu.Lock()
+			dispatched = append(dispatched, issue.Number)
+			mu.Unlock()
+			return nil
+		}),
+		WithPollerMetrics(m),
+	)
+
+	poller.checkForNewIssues(context.Background())
+	poller.WaitForActive()
+
+	mu.Lock()
+	got := dispatched
+	mu.Unlock()
+	if len(got) != 1 || got[0] != 2 {
+		t.Errorf("dispatched = %v, want [2] (blocked #1 skipped, #100 held in-progress)", got)
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.skipped[skipreason.ReasonPendingDependency] != 1 {
+		t.Errorf("skipped[%q] = %d, want 1", skipreason.ReasonPendingDependency, m.skipped[skipreason.ReasonPendingDependency])
+	}
+}
+
 func TestPoller_NoMetrics_NoPanic(t *testing.T) {
 	pilot := Label{Name: "pilot"}
 	issues := []*Issue{

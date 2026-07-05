@@ -1065,13 +1065,14 @@ func (p *Poller) findOldestUnprocessedIssue(ctx context.Context) (*Issue, error)
 
 	// Find the oldest issue without pending dependencies
 	for _, candidate := range candidates {
-		if !p.hasPendingDependencies(ctx, candidate) {
+		if !p.hasPendingDependencies(candidate, issues) {
 			return candidate, nil
 		}
 		p.logger.Info("Skipping issue with pending dependencies",
 			slog.Int("number", candidate.Number),
 			slog.String("title", candidate.Title),
 		)
+		p.recordSkip(skipreason.ReasonPendingDependency)
 	}
 
 	// All candidates have pending dependencies
@@ -1456,7 +1457,7 @@ func (p *Poller) checkForNewIssues(ctx context.Context) {
 		}
 
 		// Skip issues with pending dependencies
-		if p.hasPendingDependencies(ctx, issue) {
+		if p.hasPendingDependencies(issue, issues) {
 			p.logger.Debug("Skipping issue with pending dependencies in parallel mode",
 				slog.Int("number", issue.Number),
 			)
@@ -2340,9 +2341,34 @@ func (p *Poller) skipSupersededByParent(ctx context.Context, issue *Issue) bool 
 	return true
 }
 
-// hasPendingDependencies checks if any of the issue's dependencies are still open.
-// Returns true if the issue has open dependencies and should be skipped.
-func (p *Poller) hasPendingDependencies(ctx context.Context, issue *Issue) bool {
+// fetchedIssueNumbers builds a set of issue numbers from the candidate list
+// returned by fetchCandidates for the current poll cycle.
+func fetchedIssueNumbers(fetched []*Issue) map[int]struct{} {
+	set := make(map[int]struct{}, len(fetched))
+	for _, iss := range fetched {
+		set[iss.Number] = struct{}{}
+	}
+	return set
+}
+
+// hasPendingDependencies reports whether any of issue's Blocked-by/Depends-on
+// references resolve to an open blocker, checked against fetched — the same
+// candidate slice fetchCandidates already retrieved this poll cycle (the full
+// open, pilot-labeled issue set) — instead of a per-blocker p.client.GetIssue
+// call (GH-3789). The old per-blocker lookup deadlocked the stress/ suite
+// across four attempts (PRs #3802/#3822/#3824/#3835): its fake GitHub servers
+// only serve the issues-list route, so any per-blocker GET burned the full
+// retry/backoff timeout. Resolving in-memory against the existing fetch adds
+// zero new API calls and is stress-safe by construction.
+//
+// A blocker present in fetched is open and blocking. A blocker absent
+// (closed, unlabeled, or nonexistent) is treated as not-blocking — a
+// deliberate fail-open change from the old fail-closed-on-API-error
+// behavior: fetched is the full open+pilot-labeled set, so absence
+// overwhelmingly means the blocker already shipped or was never applicable,
+// and fail-closed would permanently wedge issues behind a blocker that will
+// never reappear in that fetch.
+func (p *Poller) hasPendingDependencies(issue *Issue, fetched []*Issue) bool {
 	// Sanitize before parsing so an attacker cannot smuggle fake dependency
 	// references (e.g. an invisible "#1337" that would block execution).
 	deps := ParseDependencies(text.SanitizeUntrustedString(issue.Body))
@@ -2350,22 +2376,10 @@ func (p *Poller) hasPendingDependencies(ctx context.Context, issue *Issue) bool 
 		return false
 	}
 
+	open := fetchedIssueNumbers(fetched)
 	for _, depNum := range deps {
-		depIssue, err := p.client.GetIssue(ctx, p.owner, p.repo, depNum)
-		if err != nil {
-			// If we can't fetch the dependency, log and assume it's still pending
-			// to be safe (don't execute if we can't verify)
-			p.logger.Warn("Failed to fetch dependency issue",
-				slog.Int("issue", issue.Number),
-				slog.Int("dependency", depNum),
-				slog.Any("error", err),
-			)
-			return true
-		}
-
-		// Check if dependency is still open
-		if depIssue.State == "open" {
-			p.logger.Debug("Issue has open dependency, skipping",
+		if _, present := open[depNum]; present {
+			p.logger.Debug("Issue has open dependency in fetched candidates, skipping",
 				slog.Int("issue", issue.Number),
 				slog.Int("dependency", depNum),
 			)
