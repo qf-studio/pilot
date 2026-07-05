@@ -1,3 +1,5 @@
+> **RESOLVED/SUPERSEDED (2026-07-05):** Fixed GH-2717/TASK-35 v2.128.4; handlePostMergeCI now non-blocking (controller.go:1979)
+
 ---
 name: 3-PR-burst auto-release starvation
 description: When multiple PRs merge within ~1min of each other, only the first auto-releases; subsequent ones are silently skipped. Root cause is blocking handlePostMergeCI starving the sequential processAllPRs tick loop.

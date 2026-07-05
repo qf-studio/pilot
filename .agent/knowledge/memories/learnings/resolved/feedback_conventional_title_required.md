@@ -1,3 +1,5 @@
+> **RESOLVED/SUPERSEDED (2026-07-05):** Codified in sops/onboarding/new-project-issue-authoring.md + CLAUDE.md commit format; gate in issue_intake.go
+
 ---
 name: Conventional-commit titles required for Pilot issues
 description: All Pilot issues must have conventional-commit titles (type(scope): description) or autopilot will reject PR creation

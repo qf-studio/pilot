@@ -1,3 +1,5 @@
+> **RESOLVED/SUPERSEDED (2026-07-05):** Fixed TASK-337 alert-loop-decouple-suppress-dupes; progress emission wired
+
 ---
 name: task_stuck alert spam (Slack flood)
 description: task_stuck alerts spam Slack because progress events are never emitted, per-rule cooldown rotates through stuck tasks, and orphans are never cleaned up

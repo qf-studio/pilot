@@ -1,3 +1,5 @@
+> **RESOLVED/SUPERSEDED (2026-07-05):** TASK-284 shipped dashboard scoping (tui.go populates Projects)
+
 ---
 name: TUI dashboard aggregates leak across projects
 description: -p flag scopes execution + git graph only; metrics cards, sparklines, recent executions, in-flight tasks all query/refresh globally.

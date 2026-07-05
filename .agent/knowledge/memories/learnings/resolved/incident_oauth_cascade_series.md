@@ -1,3 +1,5 @@
+> **RESOLVED/SUPERSEDED (2026-07-05):** Codified in sops/integrations/prompt-leak-fix-checklist.md + cascade-detection-forensics.md + pitfalls/bug_closed_parent_redispatch.md
+
 ---
 name: OAuth cascade incident series (2026-05-03 / 5-04 / 5-08)
 description: Three related incidents producing the same OAuth-titled spurious sub-issues. #1 (5/3) decomposer template bug; #2 (5/4) executor prompt copy; #3 (5/8) closed-parent re-dispatch — different mechanism, same symptom (LLM hallucination from sparse parent input, not a prompt leak). Hardened cumulatively via #2562 prompt fix, #2592 invariant test, #2594 escalation gates, and TASK-50 / PR #2872 closed-parent gate.

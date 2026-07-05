@@ -1,3 +1,5 @@
+> **RESOLVED/SUPERSEDED (2026-07-05):** Generalized by learnings/learn_verify_artifact_not_status.md + pitfalls/bug_false_supersession_label_trust.md
+
 ---
 name: Trust PR merge state, not Pilot labels
 description: When reporting on task outcomes, always cross-check actual PR merge state — Pilot labels frequently lie

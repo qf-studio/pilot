@@ -1,3 +1,5 @@
+> **RESOLVED/SUPERSEDED (2026-07-05):** Codified in sops/benchmark-integrity-audit.md (H1-H3); prompt fix merged #2392
+
 ---
 name: Harbor compliance — no oracle access ever
 description: NEVER give bench agent access to test files before or during execution. Harbor flagged us once, cannot happen again.

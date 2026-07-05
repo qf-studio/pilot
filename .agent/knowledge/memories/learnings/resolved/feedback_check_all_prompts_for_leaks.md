@@ -1,3 +1,5 @@
+> **RESOLVED/SUPERSEDED (2026-07-05):** Codified in sops/integrations/prompt-leak-fix-checklist.md + invariant test (#2592)
+
 ---
 name: Check ALL prompts for leaks, not just the one that surfaced
 description: When fixing a prompt-leak bug, the cascade #2 lesson is that fixing one site (the planner) is not enough — the same example/template often lives in multiple embedded prompts (executor, decomposer, parsers).

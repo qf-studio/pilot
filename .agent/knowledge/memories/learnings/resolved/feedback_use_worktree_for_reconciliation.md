@@ -1,3 +1,5 @@
+> **RESOLVED/SUPERSEDED (2026-07-05):** Codified in CLAUDE.md Git & Worktree Discipline + sops/git/reconcile-scattered-uncommitted-work.md
+
 ---
 name: use-worktree-for-multi-branch-work
 description: For reconciliation, branch splits, or any multi-branch work in the Pilot repo, create a fresh git worktree under .claude/worktrees/ — don't operate on a checked-out feature branch in the main repo

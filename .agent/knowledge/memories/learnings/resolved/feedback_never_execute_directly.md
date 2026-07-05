@@ -1,3 +1,5 @@
+> **RESOLVED/SUPERSEDED (2026-07-05):** Codified in CLAUDE.md ("Who is reading this file?" + pipeline rules)
+
 ---
 name: Never execute code directly in Navigator planning session
 description: In interactive Navigator planning sessions, code changes go through Pilot. Does NOT apply to Pilot-executor sessions spawned on the pilot repo itself.

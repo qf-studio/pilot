@@ -1,3 +1,5 @@
+> **RESOLVED/SUPERSEDED (2026-07-05):** Codified in .agent/system/aws-sandbox-infra.md + sops/daytona-bench-operations.md; bench dormant
+
 ---
 name: AWS only — never use Modal for bench runs
 description: Terminal Bench runs MUST use AWS infrastructure (warm pool EC2), never Modal. User has AWS infra specifically for this.

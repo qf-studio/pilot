@@ -1,3 +1,5 @@
+> **RESOLVED/SUPERSEDED (2026-07-05):** Superseded by TASK-379 runtime self-verification: fail-loud degraded paths, execution ledger, pilot trace
+
 ---
 name: GitHub poller stops polling silently after some trigger
 description: Pilot daemon alive with GitHub adapter enabled but polling stops producing execution events — 3+ hour gaps observed 2026-04-17

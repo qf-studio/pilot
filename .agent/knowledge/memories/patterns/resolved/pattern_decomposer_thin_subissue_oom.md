@@ -1,3 +1,5 @@
+> **RESOLVED/SUPERSEDED (2026-07-05):** TASK-361: children now fetch parent spec; see pitfalls/bug_inherited_spec_full_reimplement.md
+
 ---
 name: Decomposer thin-subissue OOM cascade
 description: Pilot decomposer creates sub-issues with ~1 paragraph of inlined context; thin-spec executions can run 90+min and OOM-kill instead of failing fast
