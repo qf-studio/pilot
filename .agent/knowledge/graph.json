@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "updated": "2026-07-04",
+  "updated": "2026-07-05",
   "nodes": {
     "concepts": {
       "pilot-architecture": {
@@ -172,6 +172,18 @@
       "canary": {
         "label": "canary",
         "description": "Scheduled synthetic end-to-end pipeline check against a sandbox repo"
+      },
+      "github-adapter": {
+        "label": "github adapter"
+      },
+      "poller": {
+        "label": "poller"
+      },
+      "blocked-by-gating": {
+        "label": "blocked by gating"
+      },
+      "stress-tests": {
+        "label": "stress tests"
       }
     },
     "tasks": {
@@ -256,6 +268,19 @@
           "canary",
           "anthropic-api"
         ]
+      },
+      "TASK-384": {
+        "concepts": [
+          "github-adapter",
+          "poller",
+          "blocked-by-gating",
+          "stress-tests"
+        ],
+        "created": "2026-07-05",
+        "file": ".agent/tasks/archive/TASK-384-gh3789-blockedby-inmemory-poll-gate.md",
+        "label": "GH-3789 Blocked-by gating via in-memory candidate resolution (no per-blocker API call)",
+        "priority": "P0",
+        "status": "completed"
       }
     },
     "memories": {
@@ -861,6 +886,20 @@
         "created": "2026-07-04",
         "file": ".agent/knowledge/memories/pitfalls/bug_onprcreated_reconciler_double_register.md",
         "origin_task": "GH-3828"
+      },
+      "mem-048": {
+        "concepts": [
+          "github-adapter",
+          "poller",
+          "stress-tests",
+          "blocked-by-gating"
+        ],
+        "confidence": 0.95,
+        "created": "2026-07-05",
+        "severity": "high",
+        "summary": "Never add a new GitHub API endpoint call inside the poller poll/dispatch cycle: stress/ fakes only serve the issues-LIST route, so any other route (per-blocker GetIssue etc.) deadlocks the 600s stress gate via retry backoff. Resolve state in-memory from the per-cycle fetchCandidates slice. Cost 4 failed PRs on GH-3789; fixed that way in TASK-384/PR #3883.",
+        "type": "pitfall",
+        "file": ".agent/knowledge/memories/pitfalls/pitfall_poller_api_calls_deadlock_stress_suite.md"
       }
     }
   },
@@ -1179,6 +1218,51 @@
       "from": "autopilot",
       "to": "mem-047",
       "type": "has_pitfall"
+    },
+    {
+      "from": "TASK-384",
+      "to": "github-adapter",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-384",
+      "to": "poller",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-384",
+      "to": "blocked-by-gating",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-384",
+      "to": "stress-tests",
+      "type": "implements"
+    },
+    {
+      "from": "github-adapter",
+      "to": "mem-048",
+      "type": "has_pitfall"
+    },
+    {
+      "from": "poller",
+      "to": "mem-048",
+      "type": "has_pitfall"
+    },
+    {
+      "from": "stress-tests",
+      "to": "mem-048",
+      "type": "has_pitfall"
+    },
+    {
+      "from": "blocked-by-gating",
+      "to": "mem-048",
+      "type": "has_pitfall"
+    },
+    {
+      "from": "TASK-384",
+      "to": "mem-048",
+      "type": "learned"
     }
   ]
 }
