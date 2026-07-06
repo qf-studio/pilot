@@ -47,7 +47,7 @@ export default async function RootLayout({
               logo={
                 <span style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
                   <img src="/logo.svg" alt="Pilot" height={24} width={108} style={{ height: 24, width: 'auto', alignSelf: 'center' }} />
-                  <span style={{ fontSize: '0.5em', color: '#6b7280', fontWeight: 400 }}>v2.214.1</span>
+                  <span style={{ fontSize: '0.5em', color: '#6b7280', fontWeight: 400 }}>v2.215.0</span>
                 </span>
               }
               projectLink="https://github.com/qf-studio/pilot"
