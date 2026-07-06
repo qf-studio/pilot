@@ -1,8 +1,8 @@
 ---
-status: phase-4b-shipped
+status: phase-4d-in-progress
 priority: P3
 created: 2026-06-22
-sdk_version: v0.27.0
+sdk_version: v0.28.1
 execution: manual
 github_issue: 3423
 labels: [m7, sdk, github, adapter, human-led]
@@ -10,7 +10,12 @@ labels: [m7, sdk, github, adapter, human-led]
 
 # TASK-368: M7 Phase 4 — GitHub adapter → studio-sdk cutover (MANUAL)
 
-**Status**: ✅ Phase **4b SHIPPED 2026-07-06** (PR [#3890](https://github.com/qf-studio/pilot/pull/3890), studio-sdk pinned **v0.27.0**). SDK gate lifted by TASK-385 (studio-sdk#71 → SDK PRs #74/#75/#76, released v0.27.0). `githubPollerRegistration()` is live in `adapterPollerRegistrations()` behind `use_sdk_poller`: full `PollerDeps` (TaskChecker / ExecutionChecker+ProjectPath / PreFlightJudge via `sdkPreFlightJudge` / ExecutionSaver / IssueMetricsRecorder / `sdkRateLimitScheduler` seam with host-side classification) + board source/sync mapped from `ProjectBoard` config; rate-limit retry callback re-enters the SDK handler path via the SDK client. Mutual exclusion: SDK owns the DEFAULT repo when flagged (gateway + standalone blocks skip it); `projects:` repos stay in-tree. 4b limitation: execution mode auto only. **Live trial pending: flip `use_sdk_poller: true` in `~/.pilot/config.yaml` + daemon restart; watch for "GitHub SDK polling enabled (M7 4b)".** 4c largely subsumed by v0.27.0 (SDK board layer shipped; in-tree `project_source.go`/`project_board.go` retire with 4d). **Next: 4d** — projects-loop migration, autopilot client interface seam, gh-CLI→SDK PR-create, delete `internal/adapters/github`. (4a history: shipped dormant 2026-06-30 vs v0.25.0, adversarially reviewed, verdict SHIP.)
+**Status**: 🚀 Phases **4b + 4d.1 + 4d.3 + 4d.4 SHIPPED 2026-07-06**, studio-sdk pinned **v0.28.1**. Remaining: 4d.2 (projects-loop → SDK poller), 4d.5 (webhook repoint), 4d.6 (cleanup + delete-vs-residual decision — gitlab precedent kept a ~4.7K-LOC residual; decide, don't assume).
+- **4b** (PR [#3890](https://github.com/qf-studio/pilot/pull/3890), v0.27.0): `githubPollerRegistration()` live behind `use_sdk_poller` — full `PollerDeps` hooks + `sdkRateLimitScheduler` seam + config-driven board wiring; SDK owns the DEFAULT repo when flagged (mutual exclusion in gateway + standalone blocks); `projects:` stay in-tree; auto mode only. **Live trial: flag set in `~/.pilot/config.yaml` 2026-07-06, daemon restart pending (user); needs binary ≥ the #3890 release.**
+- **4d.1** (PR [#3894](https://github.com/qf-studio/pilot/pull/3894), v0.28.0→v0.28.1): autopilot fully on the SDK client — concrete-type swap (no 35-method interface; httptest suites transfer), `internal/ghissue` package (CreatePilotIssue/allowlist), `apGHClient` at all 3 controller construction sites, release CLI swapped. Forced two upstream releases: **v0.28.0** (typed `RateLimitError`/`AuthError` + retry fast-paths, `GetOpenSubIssueNumbers`, `LabelPilot`/failed-retry labels, `ParseParentIssueNumber`) and **v0.28.1** (stale bounded `GetTagForSHA` → exhaustive pagination; caught by `TestHandleReleasing_ExhaustiveTagDrain` — see `pitfalls/pitfall_sdk_ports_go_stale_vs_intree.md`).
+- **4d.3** (PR [#3895](https://github.com/qf-studio/pilot/pull/3895)): spec-guard on the SDK path — `ghissue.ValidateSpec` (marker byte-identical to legacy; rule changes must land in BOTH copies until 4d.6) + `applySpecGuardSDK` two-strike gate wired into `handleGithubIssueEventSDK`. Closed the documented enforcement gap before the live trial.
+- **4d.4** (PR [#3896](https://github.com/qf-studio/pilot/pull/3896)): SDK PR-create — `sdkshim.GitHubPRCreator` (executor.PRCreator, 'already exists' URL recovery) + runner `RegisterPRCreator` per-repo registry keyed `adapter:owner/repo` (startup-registered; deliberately NOT the per-event `SetPRCreator` shared slot — cross-adapter/repo race-free); gh CLI remains the fallback.
+- 4c subsumed by v0.27.0 (SDK board layer; in-tree `project_source.go`/`project_board.go` retire with 4d.6). (4a history: dormant scaffolding 2026-06-30 vs v0.25.0.)
 **Assignee**: Manual (human-led per #3423 — daemon must NOT claim this)
 **Tracking issue**: https://github.com/qf-studio/pilot/issues/3423
 **Template**: GitLab cutover — commit `07467a9d` / GH-3456 / PR #3459
