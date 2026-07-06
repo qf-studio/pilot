@@ -141,6 +141,14 @@ func (c *Controller) reconcileEpicParents(ctx context.Context) {
 		return
 	}
 
+	// GH-3939: mirror recoverStaleParentIssues' cap-hit log — this sweep repeats
+	// every poll cycle (not just once at startup), so a repo that consistently
+	// sits at the cap would otherwise silently and indefinitely skip the overflow
+	// candidates with no operator-visible signal.
+	if len(candidates) == maxEpicReconcile {
+		c.log.Info("reconcileEpicParents: hit limit, some candidates may be skipped", slog.Int("limit", maxEpicReconcile))
+	}
+
 	for _, parentNum := range candidates {
 		c.reconcileEpicParent(ctx, parentNum)
 	}
