@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/qf-studio/pilot/internal/adapters/github"
 	"github.com/qf-studio/pilot/internal/memory"
 	"github.com/qf-studio/pilot/internal/testutil"
+	github "github.com/qf-studio/studio-sdk/sdk/integrations/github"
 )
 
 // TestController_ExecutionEvents_PRLifecycle drives ProcessPR through a full

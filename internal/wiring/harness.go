@@ -9,13 +9,13 @@ import (
 	"testing"
 
 	"github.com/qf-studio/pilot/e2e/mocks"
-	"github.com/qf-studio/pilot/internal/adapters/github"
 	"github.com/qf-studio/pilot/internal/approval"
 	"github.com/qf-studio/pilot/internal/autopilot"
 	"github.com/qf-studio/pilot/internal/config"
 	"github.com/qf-studio/pilot/internal/executor"
 	"github.com/qf-studio/pilot/internal/memory"
 	"github.com/qf-studio/pilot/internal/teams"
+	github "github.com/qf-studio/studio-sdk/sdk/integrations/github"
 )
 
 // Harness holds all components wired together for a single test scenario.

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/qf-studio/pilot/internal/adapters/github"
+	github "github.com/qf-studio/studio-sdk/sdk/integrations/github"
 )
 
 func TestExtractTypeScope(t *testing.T) {

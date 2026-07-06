@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/qf-studio/pilot/internal/adapters/github"
 	"github.com/qf-studio/pilot/internal/testutil"
+	github "github.com/qf-studio/studio-sdk/sdk/integrations/github"
 )
 
 // TestController_MergeConflict_IssueNotGhostClosed verifies that when autopilot
@@ -18,11 +18,11 @@ import (
 // GH-3139 / TASK-301.
 func TestController_MergeConflict_IssueNotGhostClosed(t *testing.T) {
 	var (
-		pilotDoneAdded   bool
-		pilotLabelAdded  bool
-		pilotDoneRemoved bool
-		issueClosed      bool
-		prClosed         bool
+		pilotDoneAdded    bool
+		pilotLabelAdded   bool
+		pilotDoneRemoved  bool
+		issueClosed       bool
+		prClosed          bool
 		inProgressRemoved bool
 	)
 
@@ -95,15 +95,15 @@ func TestController_MergeConflict_IssueNotGhostClosed(t *testing.T) {
 	c := NewController(cfg, ghClient, nil, "owner", "repo")
 	c.mu.Lock()
 	c.activePRs[55] = &PRState{
-		PRNumber:    55,
-		PRURL:       "https://github.com/owner/repo/pull/55",
-		IssueNumber: 20,
-		BranchName:  "pilot/GH-20",
-		HeadSHA:     "sha55",
-		Stage:       StageWaitingCI,
-		CIStatus:    CIPending,
+		PRNumber:        55,
+		PRURL:           "https://github.com/owner/repo/pull/55",
+		IssueNumber:     20,
+		BranchName:      "pilot/GH-20",
+		HeadSHA:         "sha55",
+		Stage:           StageWaitingCI,
+		CIStatus:        CIPending,
 		CIWaitStartedAt: time.Now(),
-		CreatedAt:   time.Now(),
+		CreatedAt:       time.Now(),
 	}
 	c.mu.Unlock()
 
@@ -141,9 +141,9 @@ func TestController_MergeConflict_IssueNotGhostClosed(t *testing.T) {
 // GH-3139 / TASK-301: this is the only path that should close the issue.
 func TestController_HandleMerging_ClosesIssueWithPilotDone(t *testing.T) {
 	var (
-		pilotDoneAdded  bool
-		issueClosed     bool
-		inProgRemoved   bool
+		pilotDoneAdded bool
+		issueClosed    bool
+		inProgRemoved  bool
 	)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -7,8 +7,8 @@ import (
 	"log/slog"
 	"strings"
 
-	"github.com/qf-studio/pilot/internal/adapters/github"
 	"github.com/qf-studio/pilot/internal/approval"
+	github "github.com/qf-studio/studio-sdk/sdk/integrations/github"
 )
 
 // ErrApprovalNotConfigured is returned when an environment requires pre-merge

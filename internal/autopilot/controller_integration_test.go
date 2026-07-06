@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/qf-studio/pilot/internal/adapters/github"
+	github "github.com/qf-studio/studio-sdk/sdk/integrations/github"
 )
 
 // integrationMockNotifier captures notifications for verification

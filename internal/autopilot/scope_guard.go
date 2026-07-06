@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"regexp"
 
-	"github.com/qf-studio/pilot/internal/adapters/github"
+	github "github.com/qf-studio/studio-sdk/sdk/integrations/github"
 )
 
 // Born from OAuth cascade #2 (2026-05-04). Two structural rails to ensure that
