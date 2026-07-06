@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/qf-studio/pilot/internal/autopilot"
 	"github.com/qf-studio/pilot/internal/budget"
 	"github.com/qf-studio/pilot/internal/executor"
 	"github.com/qf-studio/pilot/internal/gateway"
@@ -472,6 +473,165 @@ func TestConfig_Validate_BudgetBounds(t *testing.T) {
 			} else {
 				if err != nil {
 					t.Errorf("unexpected error: %v", err)
+				}
+			}
+		})
+	}
+}
+
+// GH-3930: Validate release.publish enum at the global, per-environment, and
+// per-project overlay levels.
+func TestConfig_Validate_ReleasePublish(t *testing.T) {
+	tests := []struct {
+		name      string
+		buildCfg  func() *Config
+		wantErr   bool
+		errSubstr string
+	}{
+		{
+			name: "valid empty publish at all levels",
+			buildCfg: func() *Config {
+				cfg := baseValidConfig()
+				cfg.Orchestrator = &OrchestratorConfig{
+					MaxConcurrent: 1,
+					Autopilot: &autopilot.Config{
+						Release: &autopilot.ReleaseConfig{Publish: ""},
+						Environments: map[string]*autopilot.EnvironmentConfig{
+							"prod": {Release: &autopilot.ReleaseConfig{Publish: ""}},
+						},
+					},
+				}
+				cfg.Projects[0].Release = &autopilot.ProjectReleaseConfig{Publish: ""}
+				return cfg
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid workflow publish at global level",
+			buildCfg: func() *Config {
+				cfg := baseValidConfig()
+				cfg.Orchestrator = &OrchestratorConfig{
+					MaxConcurrent: 1,
+					Autopilot: &autopilot.Config{
+						Release: &autopilot.ReleaseConfig{Publish: "workflow"},
+					},
+				}
+				return cfg
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid api publish at global level",
+			buildCfg: func() *Config {
+				cfg := baseValidConfig()
+				cfg.Orchestrator = &OrchestratorConfig{
+					MaxConcurrent: 1,
+					Autopilot: &autopilot.Config{
+						Release: &autopilot.ReleaseConfig{Publish: "api"},
+					},
+				}
+				return cfg
+			},
+			wantErr: false,
+		},
+		{
+			name: "valid tag_only publish at global level",
+			buildCfg: func() *Config {
+				cfg := baseValidConfig()
+				cfg.Orchestrator = &OrchestratorConfig{
+					MaxConcurrent: 1,
+					Autopilot: &autopilot.Config{
+						Release: &autopilot.ReleaseConfig{Publish: "tag_only"},
+					},
+				}
+				return cfg
+			},
+			wantErr: false,
+		},
+		{
+			name: "invalid publish at global level",
+			buildCfg: func() *Config {
+				cfg := baseValidConfig()
+				cfg.Orchestrator = &OrchestratorConfig{
+					MaxConcurrent: 1,
+					Autopilot: &autopilot.Config{
+						Release: &autopilot.ReleaseConfig{Publish: "bogus"},
+					},
+				}
+				return cfg
+			},
+			wantErr:   true,
+			errSubstr: `orchestrator.autopilot.release.publish must be "workflow", "api", or "tag_only"`,
+		},
+		{
+			name: "invalid publish at environment level",
+			buildCfg: func() *Config {
+				cfg := baseValidConfig()
+				cfg.Orchestrator = &OrchestratorConfig{
+					MaxConcurrent: 1,
+					Autopilot: &autopilot.Config{
+						Environments: map[string]*autopilot.EnvironmentConfig{
+							"prod": {Release: &autopilot.ReleaseConfig{Publish: "bogus"}},
+						},
+					},
+				}
+				return cfg
+			},
+			wantErr:   true,
+			errSubstr: `orchestrator.autopilot.environments[prod].release.publish must be "workflow", "api", or "tag_only"`,
+		},
+		{
+			name: "invalid publish at project overlay level",
+			buildCfg: func() *Config {
+				cfg := baseValidConfig()
+				cfg.Projects[0].Release = &autopilot.ProjectReleaseConfig{Publish: "bogus"}
+				return cfg
+			},
+			wantErr:   true,
+			errSubstr: `projects[0].release.publish must be "workflow", "api", or "tag_only"`,
+		},
+		{
+			name: "project overlay sets only publish, inherits enabled from global",
+			buildCfg: func() *Config {
+				cfg := baseValidConfig()
+				cfg.Orchestrator = &OrchestratorConfig{
+					MaxConcurrent: 1,
+					Autopilot: &autopilot.Config{
+						Release: &autopilot.ReleaseConfig{Enabled: true, Publish: "workflow"},
+					},
+				}
+				// Only Publish is set on the overlay — Enabled is left nil so
+				// it inherits the global Enabled: true above (GH-3930).
+				cfg.Projects[0].Release = &autopilot.ProjectReleaseConfig{Publish: "api"}
+				return cfg
+			},
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := tt.buildCfg()
+
+			err := cfg.Validate()
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("expected error containing %q, got nil", tt.errSubstr)
+				} else if !strings.Contains(err.Error(), tt.errSubstr) {
+					t.Errorf("expected error containing %q, got %q", tt.errSubstr, err.Error())
+				}
+			} else {
+				if err != nil {
+					t.Errorf("unexpected error: %v", err)
+				}
+			}
+
+			if tt.name == "project overlay sets only publish, inherits enabled from global" {
+				if cfg.Projects[0].Release.Enabled != nil {
+					t.Errorf("expected overlay Enabled to remain nil (inherit), got %v", cfg.Projects[0].Release.Enabled)
+				}
+				if !cfg.Orchestrator.Autopilot.Release.Enabled {
+					t.Errorf("expected global Enabled to remain true")
 				}
 			}
 		})

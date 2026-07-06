@@ -365,6 +365,25 @@ type ReleaseConfig struct {
 	RequireCI bool `yaml:"require_ci"`
 	// GenerateSummary enables LLM-generated release summary prepended to GoReleaser changelog.
 	GenerateSummary bool `yaml:"generate_summary"`
+	// Publish selects how releases are published: "workflow" (default — GoReleaser
+	// via CI creates the GitHub Release), "api" (Pilot calls the GitHub Releases
+	// API directly), or "tag_only" (push the tag, publish nothing). Empty
+	// behaves like "workflow". See internal/config Config.Validate for the
+	// enum check (GH-3930).
+	Publish string `yaml:"publish,omitempty"`
+}
+
+// ProjectReleaseConfig overlays release settings for a single project on top
+// of the global and per-environment ReleaseConfig blocks. Unset fields
+// inherit the base value — e.g. a project may override Publish while leaving
+// Enabled nil to inherit the global setting. See internal/config
+// ProjectConfig.Release (GH-3930); overlay resolution (Apply/PublishMode) and
+// controller wiring land in GH-3929/GH-3931.
+type ProjectReleaseConfig struct {
+	// Enabled overrides ReleaseConfig.Enabled for this project. Nil inherits.
+	Enabled *bool `yaml:"enabled,omitempty"`
+	// Publish overrides ReleaseConfig.Publish for this project. Empty inherits.
+	Publish string `yaml:"publish,omitempty"`
 }
 
 // DefaultReleaseConfig returns sensible defaults for release configuration.

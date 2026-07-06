@@ -247,6 +247,11 @@ type ProjectConfig struct {
 	// pnpm/yarn/bun or other non-Go project define its own build/test/lint
 	// gates instead of inheriting commands tuned for a different stack.
 	Quality *quality.Config `yaml:"quality,omitempty"`
+	// Release overlays the global/environment release publish mode for this
+	// project (GH-3930). Unset fields inherit from
+	// Config.Orchestrator.Autopilot's global and per-environment release
+	// blocks.
+	Release *autopilot.ProjectReleaseConfig `yaml:"release,omitempty"`
 }
 
 // ResolveBaseBranch returns the branch that Pilot should branch from and
@@ -693,6 +698,16 @@ var validEffortLevels = map[string]bool{
 	"":       true, // Empty uses default
 }
 
+// validReleasePublishValues are the accepted values for release.publish,
+// checked at the global, per-environment, and per-project overlay levels
+// (GH-3930).
+var validReleasePublishValues = map[string]bool{
+	"workflow": true,
+	"api":      true,
+	"tag_only": true,
+	"":         true, // Empty inherits the default (workflow)
+}
+
 // Validate checks the configuration for errors and returns an error if invalid.
 // It validates required fields, port ranges, authentication settings, and routing config.
 func (c *Config) Validate() error {
@@ -749,6 +764,34 @@ func (c *Config) Validate() error {
 			if !validModes[c.Orchestrator.Execution.Mode] {
 				return fmt.Errorf("orchestrator.execution.mode must be 'sequential', 'parallel', or 'auto', got %q", c.Orchestrator.Execution.Mode)
 			}
+		}
+
+		// GH-3930: Validate release.publish enum on the global release block
+		// and on every per-environment release block.
+		if c.Orchestrator.Autopilot != nil {
+			if release := c.Orchestrator.Autopilot.Release; release != nil {
+				if !validReleasePublishValues[release.Publish] {
+					return fmt.Errorf("orchestrator.autopilot.release.publish must be \"workflow\", \"api\", or \"tag_only\", got %q", release.Publish)
+				}
+			}
+			for envName, env := range c.Orchestrator.Autopilot.Environments {
+				if env == nil || env.Release == nil {
+					continue
+				}
+				if !validReleasePublishValues[env.Release.Publish] {
+					return fmt.Errorf("orchestrator.autopilot.environments[%s].release.publish must be \"workflow\", \"api\", or \"tag_only\", got %q", envName, env.Release.Publish)
+				}
+			}
+		}
+	}
+
+	// GH-3930: Validate release.publish enum on each project's release overlay.
+	for i, p := range c.Projects {
+		if p == nil || p.Release == nil {
+			continue
+		}
+		if !validReleasePublishValues[p.Release.Publish] {
+			return fmt.Errorf("projects[%d].release.publish must be \"workflow\", \"api\", or \"tag_only\", got %q", i, p.Release.Publish)
 		}
 	}
 
