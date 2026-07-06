@@ -196,6 +196,11 @@ func githubPollerRegistration() PollerRegistration {
 					return handleGithubIssueEventSDK(issueCtx, deps.Cfg, ev, deps.ProjectPath, deps.Dispatcher, deps.Runner, deps.Monitor, deps.Program, deps.AlertsEngine, deps.Enforcer)
 				}),
 				ProjectPath: deps.ProjectPath,
+				// GH-3921: tag every poller-originated log line with the same
+				// component verifySDKGithubToken uses, so incidents like the
+				// 2026-07-06 untagged "Failed to fetch issues" no longer reach
+				// the daemon log without a component field.
+				Logger: log,
 			}
 
 			if deps.AutopilotStateStore != nil {
