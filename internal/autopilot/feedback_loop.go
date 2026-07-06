@@ -6,9 +6,10 @@ import (
 	"log/slog"
 	"strings"
 
-	"github.com/qf-studio/pilot/internal/adapters/github"
+	"github.com/qf-studio/pilot/internal/ghissue"
 	"github.com/qf-studio/pilot/internal/memory"
 	"github.com/qf-studio/pilot/internal/text"
+	github "github.com/qf-studio/studio-sdk/sdk/integrations/github"
 )
 
 // FeedbackLoop creates issues when CI fails or bugs are detected.
@@ -100,7 +101,7 @@ func (f *FeedbackLoop) CreateFailureIssue(ctx context.Context, prState *PRState,
 	// AllowAllIssueRepos: FeedbackLoop's owner/repo are set from explicit config at
 	// construction, so they're already constrained to a configured project. The
 	// explicit sentinel encodes that intent (vs a nil-means-skip default). TASK-286 / GH-3027 / TASK-347.
-	issue, err := github.CreatePilotIssue(ctx, f.ghClient, github.AllowAllIssueRepos(), f.owner, f.repo, title, body, f.issueLabels)
+	issue, err := ghissue.CreatePilotIssue(ctx, f.ghClient, ghissue.AllowAllIssueRepos(), f.owner, f.repo, title, body, f.issueLabels)
 	if err != nil {
 		return 0, fmt.Errorf("failed to create issue: %w", err)
 	}
@@ -269,7 +270,7 @@ func (f *FeedbackLoop) CreateReviewIssue(ctx context.Context, prState *PRState, 
 
 	// AllowAllIssueRepos: owner/repo set from explicit config at construction; explicit
 	// sentinel encodes intent vs a nil-means-skip default (TASK-286 / GH-3027 / TASK-347).
-	issue, err := github.CreatePilotIssue(ctx, f.ghClient, github.AllowAllIssueRepos(), f.owner, f.repo, title, body, f.issueLabels)
+	issue, err := ghissue.CreatePilotIssue(ctx, f.ghClient, ghissue.AllowAllIssueRepos(), f.owner, f.repo, title, body, f.issueLabels)
 	if err != nil {
 		return 0, fmt.Errorf("failed to create review issue: %w", err)
 	}

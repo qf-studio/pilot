@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/qf-studio/pilot/internal/adapters/github"
 	"github.com/qf-studio/pilot/internal/approval"
 	"github.com/qf-studio/pilot/internal/testutil"
+	github "github.com/qf-studio/studio-sdk/sdk/integrations/github"
 )
 
 // legalPRStages is the set of every defined PRStage. The concurrent-driver test
@@ -90,8 +90,8 @@ func TestController_PRStateRace_Concurrent(t *testing.T) {
 	cfg.Environment = EnvProd // prod → approval path is reachable
 	cfg.AutoReview = false
 	cfg.CIPollInterval = time.Millisecond
-	cfg.CIWaitTimeout = time.Hour    // don't time out CI mid-test
-	cfg.MaxFailures = 1 << 30        // keep the per-PR circuit breaker from tripping
+	cfg.CIWaitTimeout = time.Hour // don't time out CI mid-test
+	cfg.MaxFailures = 1 << 30     // keep the per-PR circuit breaker from tripping
 	cfg.ReviewFeedback = &ReviewFeedbackConfig{Enabled: true, MaxIterations: 1 << 30}
 
 	mgr := approval.NewManager(&approval.Config{

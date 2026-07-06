@@ -33,6 +33,7 @@ import (
 	"github.com/qf-studio/pilot/internal/pilot"
 	"github.com/qf-studio/pilot/internal/replay"
 	"github.com/qf-studio/pilot/internal/upgrade"
+	githubSDK "github.com/qf-studio/studio-sdk/sdk/integrations/github"
 )
 
 func newStopCmd() *cobra.Command {
@@ -2497,7 +2498,7 @@ Examples:
 				return err
 			}
 
-			ghClient := github.NewClient(ghToken)
+			ghClient := githubSDK.NewClient(ghToken)
 
 			// Create releaser with default config
 			releaseCfg := autopilot.DefaultReleaseConfig()
@@ -2542,7 +2543,7 @@ Examples:
 					baseRef = latestRelease.TagName
 				}
 
-				var commits []*github.Commit
+				var commits []*githubSDK.Commit
 				if baseRef != "" {
 					commits, err = ghClient.CompareCommits(ctx, owner, repo, baseRef, "HEAD")
 					if err != nil {
@@ -2571,7 +2572,7 @@ Examples:
 
 			fmt.Printf("Creating release %s...\n", versionStr)
 
-			input := &github.ReleaseInput{
+			input := &githubSDK.ReleaseInput{
 				TagName:         versionStr,
 				TargetCommitish: "main",
 				Name:            versionStr,

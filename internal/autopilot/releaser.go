@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/qf-studio/pilot/internal/adapters/github"
+	github "github.com/qf-studio/studio-sdk/sdk/integrations/github"
 )
 
 // Releaser handles automatic release creation after PR merge.

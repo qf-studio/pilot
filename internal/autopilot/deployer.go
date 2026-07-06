@@ -12,7 +12,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/qf-studio/pilot/internal/adapters/github"
+	github "github.com/qf-studio/studio-sdk/sdk/integrations/github"
 )
 
 // Deployer executes post-merge deployment actions based on PostMergeConfig.

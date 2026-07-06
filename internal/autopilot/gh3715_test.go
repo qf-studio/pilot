@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/qf-studio/pilot/internal/adapters/github"
 	"github.com/qf-studio/pilot/internal/testutil"
+	github "github.com/qf-studio/studio-sdk/sdk/integrations/github"
 )
 
 // GH-3715: a successful auto-rebase (handleMergeConflict's UpdatePullRequestBranch

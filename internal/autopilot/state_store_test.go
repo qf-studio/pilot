@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/qf-studio/pilot/internal/adapters/github"
 	"github.com/qf-studio/pilot/internal/testutil"
+	github "github.com/qf-studio/studio-sdk/sdk/integrations/github"
 
 	_ "modernc.org/sqlite"
 )
@@ -980,7 +980,7 @@ func TestStateStore_PruneOrphanedEmptyRepoRows(t *testing.T) {
 
 // TestStateStore_LegacyMigrationRowsPrunedSamePass verifies GH-3819 subtask 5:
 // a legacy per-adapter table (pre-TASK-298, pre-repo-column) for a repo-scoped
-// adapter is consolidated into adapter_processed with repo='' by
+// adapter is consolidated into adapter_processed with repo=” by
 // migrateLegacyProcessedTables, and that dead-weight row must be purged in the
 // SAME migrate() pass by pruneOrphanedEmptyRepoRows — not left to linger until
 // a second restart. This pins the migration step ordering in migrate().

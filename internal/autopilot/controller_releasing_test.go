@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/qf-studio/pilot/internal/adapters/github"
 	"github.com/qf-studio/pilot/internal/testutil"
+	github "github.com/qf-studio/studio-sdk/sdk/integrations/github"
 )
 
 func TestIsDuplicateTagError(t *testing.T) {
@@ -133,7 +133,7 @@ func TestHandleReleasing_DuplicateTagTreatedAsReleased(t *testing.T) {
 		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/branches/"):
 			// Reachability guard: return a branch so CompareStatus is called.
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
-				"name": "main",
+				"name":   "main",
 				"commit": map[string]string{"sha": "mainsha101"},
 			})
 		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/compare/"):
@@ -229,7 +229,7 @@ func TestHandleReleasing_AncestorTagDedup(t *testing.T) {
 				case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/branches/"):
 					// Reachability guard: return a fixed main branch SHA.
 					_ = json.NewEncoder(w).Encode(map[string]interface{}{
-						"name": "main",
+						"name":   "main",
 						"commit": map[string]string{"sha": mainBranchSHA},
 					})
 				case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/compare/"):

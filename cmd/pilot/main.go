@@ -46,6 +46,7 @@ import (
 	"github.com/qf-studio/pilot/internal/tunnel"
 	"github.com/qf-studio/pilot/internal/upgrade"
 	sdkCore "github.com/qf-studio/studio-sdk/sdk/core"
+	githubSDK "github.com/qf-studio/studio-sdk/sdk/integrations/github"
 	sdkSlack "github.com/qf-studio/studio-sdk/sdk/integrations/slack"
 	sdkTelegram "github.com/qf-studio/studio-sdk/sdk/integrations/telegram"
 )
@@ -627,10 +628,14 @@ Examples:
 								approvalMgr.RegisterHandler(ghApprovalHandler)
 							}
 
+							// M7 4d.1: autopilot consumes the studio-sdk client; the in-tree
+							// ghClient stays for the legacy poller/webhook until later phases.
+							apGHClient := githubSDK.NewClient(ghToken)
+
 							// GH-1870: Board sync option for gateway autopilot controller.
 							var gwBoardOpts []autopilot.ControllerOption
 							if cfg.Adapters.GitHub.ProjectBoard != nil && cfg.Adapters.GitHub.ProjectBoard.Enabled {
-								bs := github.NewProjectBoardSync(ghClient, cfg.Adapters.GitHub.ProjectBoard, parts[0])
+								bs := githubSDK.NewProjectBoardSync(apGHClient, toSDKProjectBoardConfig(cfg.Adapters.GitHub.ProjectBoard), parts[0])
 								statuses := cfg.Adapters.GitHub.ProjectBoard.GetStatuses()
 								gwBoardOpts = append(gwBoardOpts, autopilot.WithProjectBoardSync(bs, statuses.Done, statuses.Failed, statuses.Review, statuses.InProgress))
 							}
@@ -639,7 +644,7 @@ Examples:
 							gwBoardOpts = append(gwBoardOpts, autopilot.WithProjectPath(projectPath))
 							gwAutopilotController = autopilot.NewController(
 								cfg.Orchestrator.Autopilot,
-								ghClient,
+								apGHClient,
 								approvalMgr,
 								parts[0],
 								parts[1],
@@ -1630,6 +1635,9 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 		}
 		if ghToken != "" {
 			ghClient := github.NewClient(ghToken)
+			// M7 4d.1: autopilot consumes the studio-sdk client; ghClient (in-tree)
+			// stays for the approval handler and legacy paths until later phases.
+			apGHClient := githubSDK.NewClient(ghToken)
 
 			// GH-1870: Build board sync option for autopilot controllers.
 			var autopilotBoardOpts []autopilot.ControllerOption
@@ -1638,7 +1646,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 				if parts := strings.SplitN(cfg.Adapters.GitHub.Repo, "/", 2); len(parts) == 2 {
 					owner = parts[0]
 				}
-				bs := github.NewProjectBoardSync(ghClient, cfg.Adapters.GitHub.ProjectBoard, owner)
+				bs := githubSDK.NewProjectBoardSync(apGHClient, toSDKProjectBoardConfig(cfg.Adapters.GitHub.ProjectBoard), owner)
 				statuses := cfg.Adapters.GitHub.ProjectBoard.GetStatuses()
 				autopilotBoardOpts = append(autopilotBoardOpts, autopilot.WithProjectBoardSync(bs, statuses.Done, statuses.Failed, statuses.Review, statuses.InProgress))
 			}
@@ -1666,7 +1674,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 					ctrlOpts := append(append([]autopilot.ControllerOption{}, autopilotBoardOpts...), autopilot.WithProjectPath(projectPath))
 					controller := autopilot.NewController(
 						cfg.Orchestrator.Autopilot,
-						ghClient,
+						apGHClient,
 						approvalMgr,
 						parts[0],
 						parts[1],
@@ -1691,7 +1699,7 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 				ctrlOpts := append(append([]autopilot.ControllerOption{}, autopilotBoardOpts...), autopilot.WithProjectPath(proj.Path))
 				controller := autopilot.NewController(
 					cfg.Orchestrator.Autopilot,
-					ghClient,
+					apGHClient,
 					approvalMgr,
 					proj.GitHub.Owner,
 					proj.GitHub.Repo,
