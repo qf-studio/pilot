@@ -406,6 +406,7 @@
 | Board sync tests | ✅ | adapters/github | - | - | ProjectBoardSync and ExecuteGraphQL unit tests (v2.30.0, PR #1865) |
 | CI context wiring | ✅ | autopilot | - | - | Wire proper CI context from autopilot controller (v2.52.0, PR #1981) |
 | PR stage execution-event audit trail | ✅ | autopilot | - | - | `Controller` writes `execution_events` rows (ci_passed/ci_failed/awaiting_approval/merged/released/failed) via `memory.Store.InsertExecutionEvent`; survives PR-state-row cleanup after merge since it keys off `executions.id` (GH-3847) |
+| Poll-cycle epic-parent auto-close | ✅ | autopilot | - | - | `reconcileEpicParents` sweeps open decomposed parents every poll tick, verifying each closed child shipped a merged PR (not just "closed") before closing the parent with a summary comment naming the merged PRs; a closed-without-merge child vetoes the close with an explicit logged reason (GH-3939) |
 
 ## Epic Management
 
