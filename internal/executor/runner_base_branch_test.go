@@ -75,11 +75,11 @@ func TestDecomposedChildBaseBranch_NonEmpty(t *testing.T) {
 // will resolve it at execution time (GH-3540).
 func TestCreateSubtasks_BaseBranchPropagation(t *testing.T) {
 	tests := []struct {
-		name            string
+		name             string
 		parentBaseBranch string
 	}{
-		{"explicit main",  "main"},
-		{"explicit dev",   "dev"},
+		{"explicit main", "main"},
+		{"explicit dev", "dev"},
 		{"empty inherited", ""},
 	}
 

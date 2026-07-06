@@ -8,7 +8,7 @@ import (
 
 // IsTaskShipped reports whether an execution row represents real shipped work.
 // PRUrl is the primary signal — it proves a PR was opened against the remote, but only
-// when the row has no error (mirrors the HasCompletedExecution SQL which excludes error!=''
+// when the row has no error (mirrors the HasCompletedExecution SQL which excludes error!=”
 // rows unconditionally, preventing the two sites from diverging on the {pr_url, error} case).
 // CommitSHA alone is accepted for backwards-compat (direct-commit workflows) but
 // logs a warning because it can be a parent SHA if the ghost-SHA guard was bypassed.

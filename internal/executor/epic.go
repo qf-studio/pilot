@@ -391,14 +391,14 @@ func consolidateEpicPlan(originalDesc string, subtasks []PlannedSubtask) string 
 // would cause merge conflicts because each sub-issue branches from main independently.
 //
 // Detection strategy:
-// 1. Extract file paths from subtask titles and descriptions — they define the
-//    actual work scope. Paths cited only in the parent description are context
-//    (e.g. code being defended against) and must not flip the verdict (GH-3597:
-//    #3582 cited grouping.go as context while all work was in internal/executor/,
-//    which bypassed this guard and caused a 4-way split of a single-PR task).
-// 2. Compute unique parent directories
-// 3. If only 1 directory → single-package scope. If subtasks cite no paths,
-//    fall back to the parent description, then to the title heuristic.
+//  1. Extract file paths from subtask titles and descriptions — they define the
+//     actual work scope. Paths cited only in the parent description are context
+//     (e.g. code being defended against) and must not flip the verdict (GH-3597:
+//     #3582 cited grouping.go as context while all work was in internal/executor/,
+//     which bypassed this guard and caused a 4-way split of a single-PR task).
+//  2. Compute unique parent directories
+//  3. If only 1 directory → single-package scope. If subtasks cite no paths,
+//     fall back to the parent description, then to the title heuristic.
 //
 // GH-1265: This prevents the "serial conflict cascade" bug where N sub-issues
 // all touching cmd/pilot/ create N branches from main, each redeclaring shared types.

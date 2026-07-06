@@ -1236,10 +1236,11 @@ func handleGithubIssueEventSDK(ctx context.Context, cfg *config.Config, ev sdkco
 		Priority:      sdkshim.PriorityFromSDK(ev.Priority),
 		BaseBranch:    resolveProjectBaseBranch(cfg, projectPath), // GH-2290
 	}
-
-	// NOTE: no runner.SetPRCreator here — the studio-sdk GitHub client does not implement
-	// executor.PRCreator, and the runner gates the PRCreator branch on SourceAdapter != "github".
-	// GitHub PRs continue to be created via the gh CLI, unchanged.
+	if resolveErr == nil && repoOwner != "" && repoName != "" {
+		// M7 4d.4: lets the runner select the startup-registered SDK PR creator
+		// ("github:owner/repo"); tasks without it keep the gh-CLI path.
+		task.SourceRepo = repoOwner + "/" + repoName
+	}
 
 	deps := HandlerDeps{
 		Cfg:          cfg,
