@@ -2887,6 +2887,11 @@ func (c *Controller) startReconciler(ctx context.Context) {
 			return
 		case <-ticker.C:
 			c.reconcileOrphanPRs(ctx)
+			// GH-3939: poll-cycle check for decomposed epic-parents whose
+			// children are all closed and merged. Runs on this 60s cadence
+			// rather than the (sometimes 10s) main CI ticker to stay well
+			// under the GitHub Search API's rate limit.
+			c.pollCloseEpicParents(ctx)
 		}
 	}
 }
