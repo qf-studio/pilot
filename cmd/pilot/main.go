@@ -232,12 +232,12 @@ func newStartCmd() *cobra.Command {
 		enablePlane    bool
 		enableDiscord  bool
 		// Mode flags
-		noGateway    bool   // Lightweight mode: polling only, no HTTP gateway
-		sequential   bool   // Sequential execution mode (one issue at a time)
-		envFlag      string // Environment name: dev, stage, prod, or custom configured name
-		enableTunnel bool   // Enable public tunnel (Cloudflare/ngrok)
-		teamID       string // Optional team ID for scoping execution
-		teamMember   string // Member email for project access scoping
+		noGateway      bool   // Lightweight mode: polling only, no HTTP gateway
+		sequential     bool   // Sequential execution mode (one issue at a time)
+		envFlag        string // Environment name: dev, stage, prod, or custom configured name
+		enableTunnel   bool   // Enable public tunnel (Cloudflare/ngrok)
+		teamID         string // Optional team ID for scoping execution
+		teamMember     string // Member email for project access scoping
 		logFormat      string // Log output format: text or json (GH-847)
 		dashboardScope string // Dashboard metrics scope: "project" (default) or "all" (GH-3534)
 	)
@@ -837,7 +837,10 @@ Examples:
 
 			// Enable GitHub polling in gateway mode only if --github flag was explicitly passed (GH-350, GH-351)
 			// GH-392: Now actually processes issues instead of no-op
+			// M7 4b: when use_sdk_poller is on, the SDK registration (poller_github.go)
+			// owns the default repo — skip the in-tree poller to avoid double-polling.
 			if githubFlagSet && hasGithubPolling && cfg.Adapters.GitHub != nil && cfg.Adapters.GitHub.Enabled &&
+				!cfg.Adapters.GitHub.UseSDKPoller &&
 				cfg.Adapters.GitHub.Polling != nil && cfg.Adapters.GitHub.Polling.Enabled {
 
 				token, tokenSource := resolveGitHubToken(cfg)
@@ -2478,8 +2481,17 @@ func runPollingMode(cmd *cobra.Command, cfg *config.Config, projectPath string, 
 				return github.NewPoller(client, repoFullName, label, interval, pollerOpts...)
 			}
 
-			// Create poller for default repo (adapters.github.repo)
-			if cfg.Adapters.GitHub.Repo != "" {
+			// Create poller for default repo (adapters.github.repo).
+			// M7 4b: when use_sdk_poller is on, the SDK registration (poller_github.go)
+			// owns the default repo — mark it polled so the projects loop skips it,
+			// but do not start the in-tree poller for it. `projects:` repos stay
+			// in-tree until Phase 4d.
+			if cfg.Adapters.GitHub.Repo != "" && cfg.Adapters.GitHub.UseSDKPoller {
+				polledRepos[cfg.Adapters.GitHub.Repo] = true
+				if !dashboardMode {
+					fmt.Printf("🐙 GitHub polling (SDK, M7 4b): %s (every %s)\n", cfg.Adapters.GitHub.Repo, interval)
+				}
+			} else if cfg.Adapters.GitHub.Repo != "" {
 				polledRepos[cfg.Adapters.GitHub.Repo] = true
 				poller, err := createPollerForRepo(cfg.Adapters.GitHub.Repo, projectPath)
 				if err != nil {

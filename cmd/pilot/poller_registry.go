@@ -41,7 +41,9 @@ type PollerRegistration struct {
 }
 
 // adapterPollerRegistrations returns the standard set of adapter poller registrations.
-// GitHub poller is NOT included — it has unique multi-repo, rate-limit, and execution mode complexity.
+// The github registration (M7 4b) is gated on adapters.github.use_sdk_poller and covers
+// the DEFAULT repo only; the in-tree GitHub poller still handles multi-repo `projects:`
+// entries (and everything, when the flag is off) until Phase 4d.
 func adapterPollerRegistrations() []PollerRegistration {
 	return []PollerRegistration{
 		linearPollerRegistration(),
@@ -51,6 +53,7 @@ func adapterPollerRegistrations() []PollerRegistration {
 		planePollerRegistration(),
 		discordPollerRegistration(),
 		gitlabPollerRegistration(),
+		githubPollerRegistration(),
 	}
 }
 

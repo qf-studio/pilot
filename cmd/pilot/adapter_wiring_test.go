@@ -15,8 +15,8 @@ import (
 // channels) are explicitly excluded.
 func TestAdapterPollerRegistrations_CoverAllAdapterTypes(t *testing.T) {
 	// Adapters that intentionally have no PollerRegistration.
+	// GitHub gained one in M7 4b (flag-gated on use_sdk_poller; default repo only).
 	excluded := map[string]bool{
-		"GitHub":   true, // multi-repo, rate-limit, execution mode — separate startup path
 		"GitLab":   true, // webhook-based, no poller
 		"Slack":    true, // notification channel + socket mode, not a task source poller
 		"Telegram": true, // bot adapter, not a task source poller

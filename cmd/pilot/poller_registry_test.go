@@ -50,11 +50,11 @@ func TestStartAdapterPollers_OnlyStartsEnabled(t *testing.T) {
 
 func TestAdapterPollerRegistrations_ReturnsAllFive(t *testing.T) {
 	regs := adapterPollerRegistrations()
-	if len(regs) != 7 {
-		t.Fatalf("expected 7 registrations, got %d", len(regs))
+	if len(regs) != 8 {
+		t.Fatalf("expected 8 registrations, got %d", len(regs))
 	}
 
-	expected := []string{"linear", "jira", "asana", "azuredevops", "plane", "discord", "gitlab"}
+	expected := []string{"linear", "jira", "asana", "azuredevops", "plane", "discord", "gitlab", "github"}
 	for i, name := range expected {
 		if regs[i].Name != name {
 			t.Errorf("registration[%d]: expected name %q, got %q", i, name, regs[i].Name)

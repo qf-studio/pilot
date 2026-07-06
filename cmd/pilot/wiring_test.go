@@ -682,6 +682,7 @@ func TestPollerEnabled_MultipleAdaptersSimultaneously(t *testing.T) {
 		"asana":       false,
 		"azuredevops": false,
 		"plane":       false,
+		"github":      false, // no GitHub config in cfg → SDK registration stays off
 	}
 
 	for _, reg := range regs {
