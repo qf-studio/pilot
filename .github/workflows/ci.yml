@@ -19,6 +19,18 @@ jobs:
       - name: Check for realistic secret patterns in tests
         run: ./scripts/check-secret-patterns.sh
 
+  graph-check:
+    name: Knowledge Graph Drift Gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check knowledge-graph drift
+        run: python3 scripts/check-graph.py
+
+      - name: Run checker tests
+        run: python3 -m unittest discover -s scripts -p "*_test.py"
+
   test:
     runs-on: ubuntu-latest
     steps:
