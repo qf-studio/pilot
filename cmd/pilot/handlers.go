@@ -21,7 +21,9 @@ import (
 	"github.com/qf-studio/pilot/internal/budget"
 	"github.com/qf-studio/pilot/internal/config"
 	"github.com/qf-studio/pilot/internal/executor"
+	"github.com/qf-studio/pilot/internal/ghissue"
 	"github.com/qf-studio/pilot/internal/logging"
+	githubSDK "github.com/qf-studio/studio-sdk/sdk/integrations/github"
 )
 
 // syncBoardStatus updates a GitHub Projects V2 board column for an issue.
@@ -1181,8 +1183,8 @@ func handleAzureDevOpsIssueWithResult(ctx context.Context, cfg *config.Config, e
 //
 // ev.SequenceID is already "GH-42" (prefixed by the SDK adapter) — used verbatim as the task ID to
 // avoid the GH-GH-42 double-prefix the legacy handler's fmt.Sprintf("GH-%d", ...) would create.
-// This minimal path does NOT carry board sync, spec-guard, or sub-issue handling — those remain
-// exclusively in the legacy in-tree handler until later M7 phases.
+// Board sync is handled at the SDK-poller level (config-driven); the spec-guard gate runs below
+// (M7 4d.3). Sub-issue handling remains exclusive to the legacy in-tree handler until later phases.
 func handleGithubIssueEventSDK(ctx context.Context, cfg *config.Config, ev sdkcore.IssueEvent, projectPath string, dispatcher *executor.Dispatcher, runner *executor.Runner, monitor *executor.Monitor, program *tea.Program, alertsEngine *alerts.Engine, enforcer *budget.Enforcer) (*sdkcore.IssueResult, error) {
 	taskID := ev.SequenceID // "GH-42"; already prefixed by the SDK adapter — do NOT re-prefix
 	title := ev.Title
@@ -1191,11 +1193,35 @@ func handleGithubIssueEventSDK(ctx context.Context, cfg *config.Config, ev sdkco
 	branchName := fmt.Sprintf("pilot/%s", taskID)
 
 	// ResolveRepoForEvent is tolerated like the other SDK handlers; ErrRepoNotResolved is non-fatal here.
-	if _, _, _, err := sdkshim.ResolveRepoForEvent(cfg, "github", ev); err != nil && err.Error() != sdkshim.ErrRepoNotResolved.Error() {
+	_, repoOwner, repoName, resolveErr := sdkshim.ResolveRepoForEvent(cfg, "github", ev)
+	if resolveErr != nil && resolveErr.Error() != sdkshim.ErrRepoNotResolved.Error() {
 		logging.WithComponent("github").Warn("Unexpected repo resolution error",
 			slog.String("task_id", taskID),
-			slog.Any("error", err),
+			slog.Any("error", resolveErr),
 		)
+	}
+
+	// M7 4d.3: pre-dispatch spec quality gate on the SDK path (GH-2619 parity —
+	// previously exclusive to the legacy in-tree handler). The issue is
+	// reconstructed from the event; labels ride along so the
+	// pilot-skip-spec-check opt-out works.
+	if resolveErr == nil && repoOwner != "" && repoName != "" {
+		if ghToken, _ := resolveGitHubToken(cfg); ghToken != "" {
+			specClient := githubSDK.NewClient(ghToken)
+			issueNum, _ := strconv.Atoi(ev.IssueID)
+			specLabels := make([]githubSDK.Label, 0, len(ev.Labels))
+			for _, l := range ev.Labels {
+				specLabels = append(specLabels, githubSDK.Label{Name: l})
+			}
+			specIssue := &githubSDK.Issue{Number: issueNum, Title: title, Body: ev.Body, Labels: specLabels}
+			parentResolver := func(parentNum int) (*githubSDK.Issue, error) {
+				return specClient.GetIssue(ctx, repoOwner, repoName, parentNum)
+			}
+			if specResult := ghissue.ValidateSpec(specIssue, parentResolver); !specResult.Valid && specResult.SkipReason == "" {
+				applySpecGuardSDK(ctx, specClient, repoOwner, repoName, specIssue, specResult.FailureReasons)
+				return &sdkcore.IssueResult{Success: false, Skipped: true, SkipReason: "spec_incomplete"}, nil
+			}
+		}
 	}
 
 	task := &executor.Task{
