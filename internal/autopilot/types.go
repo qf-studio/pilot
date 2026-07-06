@@ -373,17 +373,84 @@ type ReleaseConfig struct {
 	Publish string `yaml:"publish,omitempty"`
 }
 
+// Publish mode values for ReleaseConfig.Publish / PublishMode(). See
+// internal/config.validReleasePublishValues for the enum check.
+const (
+	// PublishModeWorkflow leaves publishing to a tag-triggered CI workflow
+	// (e.g. GoReleaser). This is the default and preserves historical behavior.
+	PublishModeWorkflow = "workflow"
+	// PublishModeAPI has Pilot publish the GitHub Release itself via the
+	// GitHub Releases API immediately after tagging.
+	PublishModeAPI = "api"
+	// PublishModeTagOnly pushes the tag and intentionally publishes nothing.
+	PublishModeTagOnly = "tag_only"
+)
+
+// PublishMode returns the effective publish mode, normalizing an empty/unset
+// Publish to "workflow" (the historical GoReleaser-via-CI behavior). Safe to
+// call on a nil receiver.
+func (r *ReleaseConfig) PublishMode() string {
+	if r == nil || r.Publish == "" {
+		return PublishModeWorkflow
+	}
+	return r.Publish
+}
+
 // ProjectReleaseConfig overlays release settings for a single project on top
 // of the global and per-environment ReleaseConfig blocks. Unset fields
 // inherit the base value — e.g. a project may override Publish while leaving
-// Enabled nil to inherit the global setting. See internal/config
-// ProjectConfig.Release (GH-3930); overlay resolution (Apply/PublishMode) and
-// controller wiring land in GH-3929/GH-3931.
+// Enabled nil to inherit the global setting. Trigger, VersionStrategy, and
+// RequireCI are intentionally NOT overlaid here — they stay env/global-only,
+// since per-project overrides of when/how to release (as opposed to what to
+// publish) are out of scope for GH-3929. See internal/config
+// ProjectConfig.Release (GH-3930); controller wiring lands in GH-3931.
 type ProjectReleaseConfig struct {
 	// Enabled overrides ReleaseConfig.Enabled for this project. Nil inherits.
 	Enabled *bool `yaml:"enabled,omitempty"`
 	// Publish overrides ReleaseConfig.Publish for this project. Empty inherits.
 	Publish string `yaml:"publish,omitempty"`
+	// TagPrefix overrides ReleaseConfig.TagPrefix for this project. Empty inherits.
+	TagPrefix string `yaml:"tag_prefix,omitempty"`
+	// GenerateChangelog overrides ReleaseConfig.GenerateChangelog. Nil inherits.
+	GenerateChangelog *bool `yaml:"generate_changelog,omitempty"`
+	// NotifyOnRelease overrides ReleaseConfig.NotifyOnRelease. Nil inherits.
+	NotifyOnRelease *bool `yaml:"notify_on_release,omitempty"`
+}
+
+// Apply resolves this overlay against base, returning a new *ReleaseConfig
+// with only the overlay's set fields overridden — base itself is never
+// mutated. A nil receiver is a no-op (returns base unchanged). When base is
+// nil, Apply only synthesizes a config if the overlay itself turns releasing
+// on (Enabled == true), starting from DefaultReleaseConfig(); otherwise it
+// returns nil, since an overlay with no base has nothing to overlay onto.
+func (o *ProjectReleaseConfig) Apply(base *ReleaseConfig) *ReleaseConfig {
+	if o == nil {
+		return base
+	}
+	if base == nil {
+		if o.Enabled == nil || !*o.Enabled {
+			return nil
+		}
+		base = DefaultReleaseConfig()
+	}
+
+	result := *base
+	if o.Enabled != nil {
+		result.Enabled = *o.Enabled
+	}
+	if o.Publish != "" {
+		result.Publish = o.Publish
+	}
+	if o.TagPrefix != "" {
+		result.TagPrefix = o.TagPrefix
+	}
+	if o.GenerateChangelog != nil {
+		result.GenerateChangelog = *o.GenerateChangelog
+	}
+	if o.NotifyOnRelease != nil {
+		result.NotifyOnRelease = *o.NotifyOnRelease
+	}
+	return &result
 }
 
 // DefaultReleaseConfig returns sensible defaults for release configuration.

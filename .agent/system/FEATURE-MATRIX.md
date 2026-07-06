@@ -406,7 +406,7 @@
 | Board sync tests | ✅ | adapters/github | - | - | ProjectBoardSync and ExecuteGraphQL unit tests (v2.30.0, PR #1865) |
 | CI context wiring | ✅ | autopilot | - | - | Wire proper CI context from autopilot controller (v2.52.0, PR #1981) |
 | PR stage execution-event audit trail | ✅ | autopilot | - | - | `Controller` writes `execution_events` rows (ci_passed/ci_failed/awaiting_approval/merged/released/failed) via `memory.Store.InsertExecutionEvent`; survives PR-state-row cleanup after merge since it keys off `executions.id` (GH-3847) |
-| Poll-cycle epic-parent auto-close | ✅ | autopilot | - | - | `reconcileEpicParents` sweeps open decomposed parents every poll tick, verifying each closed child shipped a merged PR (not just "closed") before closing the parent with a summary comment naming the merged PRs; a closed-without-merge child vetoes the close with an explicit logged reason (GH-3939) |
+| Release publish mode | ✅ | autopilot | - | `release.publish`, `projects[].release` | `ReleaseConfig.Publish` (`workflow`\|`api`\|`tag_only`) + per-project overlay (`ProjectReleaseConfig.Apply`, project > env > global); `api` mode has Pilot call `CreateReleaseForRepo` directly instead of assuming a tag-triggered CI workflow publishes the release; idempotent against transient CreateRelease failures (v2.223.0, GH-3926/GH-3929) |
 
 ## Epic Management
 
@@ -421,7 +421,6 @@
 | Conventional sub-issue titles | ✅ | executor | - | - | CC-format enforced on subtask titles: re-prompt → Approach B fallback → creation guard (GH-2494) |
 | Sub-issue dedup guard | ✅ | executor | - | - | CreateSubIssues skips if open children referencing parent already exist (GH-2494) |
 | createPilotIssue chokepoint | ✅ | adapters/github, autopilot | - | - | All Pilot-internal issue creation validated through CreatePilotIssue CC gate (GH-2494) |
-| Epic-parent lifecycle instrumentation | ✅ | executor | `pilot trace <task-id>` | - | Epic-parent path emits `claude_started`/`decomposed`/terminal (`completed`/`no_op`/`failed`) execution_events past `spec_validated`; children's real token/file/cost metrics roll up onto the parent's own row (previously zero even on long runs); zero-tokens+zero-files+no-commit/PR completions reclassify to `no_op`; decomposition posts an honest "decomposed into N children: #a, #b, #c" comment sourced from the actual created sub-issues (GH-3938, v2.222.0) |
 
 ## Test Coverage
 

@@ -322,6 +322,26 @@ func (r *Releaser) GetCurrentVersionForRepo(ctx context.Context, owner, repo str
 	return versions[0], nil
 }
 
+// CreateReleaseForRepo publishes a GitHub Release for tagName in the specified
+// repository. When body is empty, GitHub is asked to auto-generate release
+// notes instead of leaving the release body blank. Used by handleReleasing
+// when the resolved release config's Publish mode is "api" (GH-3929) —
+// unlike CreateTagForRepo, this makes Pilot the one that turns a git tag into
+// a published GitHub Release, rather than relying on a tag-triggered CI
+// workflow (e.g. GoReleaser) to do it.
+func (r *Releaser) CreateReleaseForRepo(ctx context.Context, owner, repo, tagName, body string) (*github.Release, error) {
+	release, err := r.ghClient.CreateRelease(ctx, owner, repo, &github.ReleaseInput{
+		TagName:       tagName,
+		Name:          tagName,
+		Body:          body,
+		GenerateNotes: body == "",
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create release %s: %w", tagName, err)
+	}
+	return release, nil
+}
+
 // ShouldRelease determines if a release should be created based on config and bump type.
 func (r *Releaser) ShouldRelease(bumpType BumpType) bool {
 	if !r.config.Enabled {

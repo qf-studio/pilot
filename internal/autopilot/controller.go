@@ -158,10 +158,10 @@ func WithProjectPath(path string) ControllerOption {
 }
 
 // WithReleaseOverride wires a per-project release config overlay (GH-3930)
-// for this controller's repo. Nil is a no-op. Overlay resolution against the
-// global/env ReleaseConfig (Apply/resolvedRelease) and consumption in
-// handleReleasing land in GH-3929; this option only stores the overlay so
-// call sites can wire it ahead of that work (GH-3931).
+// for this controller's repo. Nil is a no-op. NewController applies the
+// overlay against the resolved global/env ReleaseConfig (ProjectReleaseConfig.Apply)
+// before constructing the releaser, and handleReleasing dispatches on the
+// resulting PublishMode() (GH-3929).
 func WithReleaseOverride(o *ProjectReleaseConfig) ControllerOption {
 	return func(c *Controller) {
 		c.projectRelease = o
@@ -234,9 +234,15 @@ type Controller struct {
 	projectPath string
 
 	// projectRelease is the per-project release config overlay (GH-3930),
-	// wired via WithReleaseOverride. Nil = no project-level override. Overlay
-	// resolution and handleReleasing consumption land in GH-3929.
+	// wired via WithReleaseOverride. Nil = no project-level override.
 	projectRelease *ProjectReleaseConfig
+
+	// resolvedReleaseCfg is the release config actually in effect for this
+	// controller: resolveRelease(c.config) with projectRelease applied on top,
+	// computed once in NewController. resolvedRelease() prefers this over
+	// recomputing resolveRelease(c.config) so runtime decisions (handleReleasing)
+	// see the same overlaid config that Releaser was constructed with. GH-3929.
+	resolvedReleaseCfg *ReleaseConfig
 
 	// GH-3271: called after a PR merges and pilot-done is applied so pollers
 	// can immediately re-mark the issue as processed, closing the merge→done
@@ -271,12 +277,25 @@ func NewController(cfg *Config, ghClient *github.Client, approvalMgr *approval.M
 		log:            slog.Default().With("component", "autopilot"),
 	}
 
+	// Apply options before constructing anything derived from them (e.g. the
+	// releaser below needs c.projectRelease from WithReleaseOverride to
+	// resolve the overlay at construction time, matching the runtime decision
+	// path in resolvedRelease()). GH-3929: verified none of the existing
+	// options (WithProjectBoardSync/WithMemoryStore/WithProjectPath/
+	// WithReleaseOverride) read derived controller state — they only set
+	// plain fields, so moving this loop earlier is safe.
+	for _, opt := range opts {
+		opt(c)
+	}
+
 	c.ciMonitor = NewCIMonitor(ghClient, owner, repo, cfg)
 	c.autoMerger = NewAutoMerger(ghClient, approvalMgr, c.ciMonitor, owner, repo, cfg)
 	c.feedbackLoop = NewFeedbackLoop(ghClient, owner, repo, cfg)
 
-	// Initialize releaser from resolved release config (env-scoped wins over global).
-	// Mirrors resolvedRelease() so construction matches runtime decision path.
+	// Initialize releaser from resolved release config (env-scoped wins over global),
+	// then overlay any per-project override (GH-3929) — e.g. a project block that
+	// only sets `publish: api` must inherit Enabled/TagPrefix/etc. from env/global
+	// rather than reconstructing a zero-value config.
 	relCfg := resolveRelease(cfg)
 	relSource := "none"
 	if env := cfg.ResolvedEnv(); env != nil && env.Release != nil {
@@ -284,7 +303,18 @@ func NewController(cfg *Config, ghClient *github.Client, approvalMgr *approval.M
 	} else if cfg.Release != nil {
 		relSource = "global"
 	}
-	c.log.Info("resolved release policy", "enabled", relCfg != nil && relCfg.Enabled, "source", relSource)
+	overlaySource := "none"
+	if c.projectRelease != nil {
+		relCfg = c.projectRelease.Apply(relCfg)
+		overlaySource = "project"
+	}
+	c.resolvedReleaseCfg = relCfg
+	c.log.Info("resolved release policy",
+		"enabled", relCfg != nil && relCfg.Enabled,
+		"source", relSource,
+		"publish", relCfg.PublishMode(),
+		"overlay", overlaySource,
+	)
 	if relCfg != nil && relCfg.Enabled {
 		c.releaser = NewReleaser(ghClient, owner, repo, relCfg)
 	}
@@ -292,10 +322,6 @@ func NewController(cfg *Config, ghClient *github.Client, approvalMgr *approval.M
 	// Initialize deployer if post-merge config exists
 	if env := cfg.ResolvedEnv(); env.PostMerge != nil && env.PostMerge.Action != "" && env.PostMerge.Action != "none" {
 		c.deployer = NewDeployer(ghClient, owner, repo, env.PostMerge)
-	}
-
-	for _, opt := range opts {
-		opt(c)
 	}
 
 	return c
@@ -2155,9 +2181,14 @@ func resolveRelease(cfg *Config) *ReleaseConfig {
 	return cfg.Release
 }
 
-// resolvedRelease returns the effective release config, preferring per-environment
-// config over global. Returns nil if neither is set.
+// resolvedRelease returns the effective release config: the resolved+overlaid
+// config computed once in NewController when available, else falling back to
+// resolveRelease(c.config) directly (e.g. in tests that build a Controller
+// literal without going through NewController). Returns nil if none is set.
 func (c *Controller) resolvedRelease() *ReleaseConfig {
+	if c.resolvedReleaseCfg != nil {
+		return c.resolvedReleaseCfg
+	}
 	return resolveRelease(c.config)
 }
 
@@ -2260,6 +2291,16 @@ func (c *Controller) handleReleasing(ctx context.Context, prState *PRState) erro
 			fmt.Errorf("failed to check published release for PR #%d: %w", prState.PRNumber, err))
 	}
 	if exactTag != "" {
+		// GH-3929 idempotence: in "api" publish mode, a tag existing does not
+		// guarantee the GitHub Release was published — a prior pass may have
+		// created the tag then failed to publish (transient CreateRelease
+		// error). Check before draining so that failure isn't lost forever;
+		// the retry cap in checkReleasingRetryOrEscalate still bounds this.
+		if rel := c.resolvedRelease(); rel.PublishMode() == PublishModeAPI {
+			if pubErr := c.ensureAPIReleasePublished(ctx, owner, repo, exactTag); pubErr != nil {
+				return c.checkReleasingRetryOrEscalate(ctx, prState, pubErr)
+			}
+		}
 		c.log.Info("commit already tagged (exact match in full tag history) — treating as released",
 			"pr", prState.PRNumber,
 			"sha", ShortSHA(prState.HeadSHA),
@@ -2322,6 +2363,14 @@ func (c *Controller) handleReleasing(ctx context.Context, prState *PRState) erro
 		// Treat it as success so the PR drains from activePRs instead of
 		// looping forever on a tag it can never re-create. (TASK-316)
 		if isDuplicateTagError(err) {
+			// GH-3929 idempotence: same reasoning as the exactTag drain above —
+			// the tag exists, but in "api" mode we don't yet know whether a
+			// prior pass's CreateRelease call ever succeeded.
+			if rel := c.resolvedRelease(); rel.PublishMode() == PublishModeAPI {
+				if pubErr := c.ensureAPIReleasePublished(ctx, owner, repo, tagName); pubErr != nil {
+					return c.checkReleasingRetryOrEscalate(ctx, prState, pubErr)
+				}
+			}
 			c.log.Info("tag already exists at HEAD SHA — treating as released",
 				"pr", prState.PRNumber,
 				"sha", ShortSHA(prState.HeadSHA),
@@ -2334,16 +2383,58 @@ func (c *Controller) handleReleasing(ctx context.Context, prState *PRState) erro
 	}
 
 	releaseURL := fmt.Sprintf("https://github.com/%s/%s/releases/tag/%s", owner, repo, tagName)
-	c.log.Info("tag created (GoReleaser will create release)",
-		"pr", prState.PRNumber,
-		"version", prState.ReleaseVersion,
-		"tag", tagName,
-	)
+
+	// GH-3929: dispatch what happens to a freshly created tag on the resolved
+	// publish mode. "workflow" (default) preserves the historical behavior of
+	// leaving publishing to a tag-triggered CI workflow (e.g. GoReleaser);
+	// "api" makes Pilot publish the GitHub Release itself; "tag_only"
+	// intentionally stops at the tag.
+	switch rel.PublishMode() {
+	case PublishModeAPI:
+		body := ""
+		if rel.GenerateChangelog {
+			body = GenerateChangelog(commits, prState.PRNumber)
+		}
+		if _, err := c.releaser.CreateReleaseForRepo(ctx, owner, repo, tagName, body); err != nil {
+			if isDuplicateReleaseError(err) {
+				c.log.Info("release already exists for tag — treating as released",
+					"pr", prState.PRNumber, "tag", tagName)
+			} else {
+				// The tag is already created at this point — do NOT re-attempt
+				// CreateTagForRepo on retry. The next handleReleasing pass sees
+				// this exact tag via GetTagForSHA and recovers through the
+				// exactTag drain's ensureAPIReleasePublished idempotence check.
+				return c.checkReleasingRetryOrEscalate(ctx, prState,
+					fmt.Errorf("failed to publish release for tag %s: %w", tagName, err))
+			}
+		}
+		c.log.Info("tag created — published GitHub Release via API",
+			"pr", prState.PRNumber,
+			"version", prState.ReleaseVersion,
+			"tag", tagName,
+			"url", releaseURL,
+		)
+	case PublishModeTagOnly:
+		c.log.Info("tag created (tag_only mode — no GitHub Release will be published)",
+			"pr", prState.PRNumber,
+			"version", prState.ReleaseVersion,
+			"tag", tagName,
+		)
+	default: // PublishModeWorkflow
+		c.log.Info("tag created — waiting for release workflow to publish GitHub Release",
+			"pr", prState.PRNumber,
+			"version", prState.ReleaseVersion,
+			"tag", tagName,
+		)
+	}
 
 	// Enrich release with LLM-generated summary (best-effort, non-blocking).
-	// Runs in a goroutine because it polls for GoReleaser to publish the release
-	// (up to 5 min) and we don't want to block the notification or PR cleanup.
-	if c.releaseSummary != nil && rel.GenerateSummary {
+	// Runs in a goroutine because in "workflow" mode it polls for the CI
+	// workflow to publish the release (up to 5 min); in "api" mode the release
+	// already exists so GetReleaseByTag succeeds immediately. Skipped entirely
+	// in "tag_only" mode — no release will ever appear, so polling would just
+	// burn 5 minutes before warning.
+	if rel.PublishMode() != PublishModeTagOnly && c.releaseSummary != nil && rel.GenerateSummary {
 		logging.SafeGo("autopilot-controller", func() {
 			enrichCtx, cancel := context.WithTimeout(context.Background(), releasePollTimeout+releaseSummaryTimeout)
 			defer cancel()
@@ -2383,6 +2474,44 @@ func isDuplicateTagError(err error) bool {
 		return false
 	}
 	return strings.Contains(strings.ToLower(err.Error()), "already exists")
+}
+
+// isDuplicateReleaseError reports whether err indicates the GitHub Release
+// already exists. Unlike isDuplicateTagError (git ref creation, which returns
+// the free-text "Reference already exists"), the Releases API returns HTTP
+// 422 with a structured error whose "code" field is "already_exists" — so this
+// checks for the underscored form to avoid false-matching unrelated 422s
+// (e.g. validation failures on tag_name/target_commitish). GH-3929.
+func isDuplicateReleaseError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "already_exists")
+}
+
+// ensureAPIReleasePublished checks whether tagName already has a published
+// GitHub Release and, if not, creates one. Called from the two release-drain
+// paths (exactTag already-tagged, duplicate-tag-create) when the resolved
+// publish mode is "api" — a tag existing does not by itself mean a prior
+// handleReleasing pass's CreateReleaseForRepo call ever succeeded, so without
+// this check a transient publish failure after a successful tag would drain
+// the PR and permanently lose the release. GH-3929. Uses GenerateNotes
+// (empty body) rather than the PR changelog: these are recovery paths reached
+// before PR commits are fetched in the main flow, and re-fetching them here
+// solely to backfill a changelog body isn't worth the extra API call.
+func (c *Controller) ensureAPIReleasePublished(ctx context.Context, owner, repo, tagName string) error {
+	release, err := c.ghClient.GetReleaseByTag(ctx, owner, repo, tagName)
+	if err != nil {
+		return fmt.Errorf("failed to check existing release for tag %s: %w", tagName, err)
+	}
+	if release != nil {
+		return nil
+	}
+	if _, err := c.releaser.CreateReleaseForRepo(ctx, owner, repo, tagName, ""); err != nil && !isDuplicateReleaseError(err) {
+		return fmt.Errorf("failed to publish release for existing tag %s: %w", tagName, err)
+	}
+	c.log.Info("published GitHub Release for existing tag (idempotent recovery)", "tag", tagName)
+	return nil
 }
 
 // checkReleasingRetryOrEscalate returns nil (transitioning prState to StageFailed) when
