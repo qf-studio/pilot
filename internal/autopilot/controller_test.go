@@ -106,6 +106,72 @@ func TestNewController_ReleaserInit(t *testing.T) {
 	}
 }
 
+// TestResolvedRelease_Precedence verifies GH-3926's three-level precedence for
+// the effective release config: project overlay > per-environment config >
+// global config, wired via WithReleaseOverride and resolved once in
+// NewController (resolvedRelease()/resolvedReleaseCfg).
+func TestResolvedRelease_Precedence(t *testing.T) {
+	ghClient := github.NewClient(testutil.FakeGitHubToken)
+
+	t.Run("global only", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.Release = &ReleaseConfig{Enabled: true, Trigger: "on_merge", Publish: "workflow"}
+		c := NewController(cfg, ghClient, nil, "owner", "repo")
+		rel := c.resolvedRelease()
+		if rel == nil || rel.PublishMode() != "workflow" {
+			t.Fatalf("resolvedRelease() = %+v, want publish=workflow from global", rel)
+		}
+	})
+
+	t.Run("env overrides global", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.Release = &ReleaseConfig{Enabled: true, Trigger: "on_merge", Publish: "workflow"}
+		cfg.activeEnvName = "test"
+		cfg.activeEnvConfig = &EnvironmentConfig{
+			Release: &ReleaseConfig{Enabled: true, Trigger: "on_merge", Publish: "tag_only"},
+		}
+		c := NewController(cfg, ghClient, nil, "owner", "repo")
+		rel := c.resolvedRelease()
+		if rel == nil || rel.PublishMode() != "tag_only" {
+			t.Fatalf("resolvedRelease() = %+v, want publish=tag_only from env (overriding global)", rel)
+		}
+	})
+
+	t.Run("project overlay wins over env and global", func(t *testing.T) {
+		cfg := DefaultConfig()
+		cfg.Release = &ReleaseConfig{Enabled: true, Trigger: "on_merge", Publish: "workflow"}
+		cfg.activeEnvName = "test"
+		cfg.activeEnvConfig = &EnvironmentConfig{
+			Release: &ReleaseConfig{Enabled: true, Trigger: "on_merge", Publish: "tag_only"},
+		}
+		overlay := &ProjectReleaseConfig{Publish: "api"}
+		c := NewController(cfg, ghClient, nil, "owner", "repo", WithReleaseOverride(overlay))
+		rel := c.resolvedRelease()
+		if rel == nil || rel.PublishMode() != "api" {
+			t.Fatalf("resolvedRelease() = %+v, want publish=api from project overlay (overriding env+global)", rel)
+		}
+		if !rel.Enabled {
+			t.Error("Enabled should still be inherited as true from env config")
+		}
+	})
+
+	t.Run("project overlay alone enables release with no base config", func(t *testing.T) {
+		cfg := DefaultConfig()
+		overlay := &ProjectReleaseConfig{Enabled: boolPtr(true), Publish: "api"}
+		c := NewController(cfg, ghClient, nil, "owner", "repo", WithReleaseOverride(overlay))
+		rel := c.resolvedRelease()
+		if rel == nil {
+			t.Fatal("resolvedRelease() = nil, want a config derived from DefaultReleaseConfig via the overlay")
+		}
+		if rel.PublishMode() != "api" {
+			t.Errorf("PublishMode() = %q, want %q", rel.PublishMode(), "api")
+		}
+		if c.releaser == nil {
+			t.Error("releaser should be initialized when the project overlay alone enables release")
+		}
+	})
+}
+
 func TestController_OnPRCreated(t *testing.T) {
 	ghClient := github.NewClient(testutil.FakeGitHubToken)
 	cfg := DefaultConfig()

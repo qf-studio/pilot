@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -71,6 +72,296 @@ func newReleasingController(t *testing.T, serverURL string) *Controller {
 		t.Fatal("releaser not initialized — check ReleaseConfig wiring")
 	}
 	return c
+}
+
+// newReleasingControllerWithPublish is like newReleasingController but lets the
+// test choose the release publish mode (GH-3926).
+func newReleasingControllerWithPublish(t *testing.T, serverURL, publish string) *Controller {
+	t.Helper()
+	ghClient := github.NewClientWithBaseURL(testutil.FakeGitHubToken, serverURL)
+	cfg := DefaultConfig()
+	cfg.Environment = EnvStage
+	cfg.Release = &ReleaseConfig{
+		Enabled:           true,
+		Trigger:           "on_merge",
+		TagPrefix:         "v",
+		NotifyOnRelease:   false,
+		GenerateSummary:   false,
+		GenerateChangelog: true,
+		Publish:           publish,
+	}
+	c := NewController(cfg, ghClient, nil, "owner", "repo")
+	if c.releaser == nil {
+		t.Fatal("releaser not initialized — check ReleaseConfig wiring")
+	}
+	return c
+}
+
+// publishModeTestServer serves the full happy path through tag creation (no
+// covering tags, a reachable SHA, and a feat commit to trigger a version
+// bump), delegating any request whose path contains "/releases" (other than
+// GET .../releases/latest, served here so every mode gets a base version) to
+// onReleases — so each publish-mode test only has to describe the release
+// side without duplicating the tag/version/commit plumbing.
+func publishModeTestServer(onReleases http.HandlerFunc) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/tags"):
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`[]`))
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/releases/latest"):
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(github.Release{TagName: "v1.0.0"})
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/pulls/") && strings.HasSuffix(r.URL.Path, "/commits"):
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode([]*github.Commit{makeCommit("feat: add a thing")})
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/branches/"):
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"name":   "main",
+				"commit": map[string]string{"sha": "publishmodemainsha"},
+			})
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/compare/"):
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]string{"status": "ahead"})
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/git/refs"):
+			w.WriteHeader(http.StatusCreated)
+		case strings.Contains(r.URL.Path, "/releases"):
+			onReleases(w, r)
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+}
+
+// TestHandleReleasing_PublishModes verifies GH-3926's per-mode behavior at the
+// point a tag has just been created: "api" publishes a GitHub Release via the
+// API exactly once (tag_name + generated changelog body); "workflow" and
+// "tag_only" never call POST /releases. All three modes drain the PR.
+func TestHandleReleasing_PublishModes(t *testing.T) {
+	tests := []struct {
+		name        string
+		publish     string
+		wantPublish bool
+	}{
+		{name: "workflow leaves publishing to the repo's CI", publish: "workflow", wantPublish: false},
+		{name: "tag_only publishes nothing", publish: "tag_only", wantPublish: false},
+		{name: "api publishes the GitHub Release itself", publish: "api", wantPublish: true},
+	}
+
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var (
+				releasePosts int
+				gotTagName   string
+				gotBody      string
+			)
+			server := publishModeTestServer(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/releases/tags/"):
+					w.WriteHeader(http.StatusNotFound)
+					_, _ = w.Write([]byte(`{"message":"Not Found"}`))
+				case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/releases"):
+					releasePosts++
+					var input github.ReleaseInput
+					raw, _ := io.ReadAll(r.Body)
+					_ = json.Unmarshal(raw, &input)
+					gotTagName = input.TagName
+					gotBody = input.Body
+					w.WriteHeader(http.StatusCreated)
+					_ = json.NewEncoder(w).Encode(github.Release{
+						TagName: input.TagName,
+						HTMLURL: "https://github.com/owner/repo/releases/tag/" + input.TagName,
+					})
+				default:
+					w.WriteHeader(http.StatusOK)
+				}
+			})
+			defer server.Close()
+
+			c := newReleasingControllerWithPublish(t, server.URL, tt.publish)
+			prNumber := 600 + i
+			prState := &PRState{PRNumber: prNumber, HeadSHA: fmt.Sprintf("sha%d", prNumber), Stage: StageReleasing}
+			c.mu.Lock()
+			c.activePRs[prNumber] = prState
+			c.mu.Unlock()
+
+			if err := c.handleReleasing(context.Background(), prState); err != nil {
+				t.Fatalf("handleReleasing returned error: %v", err)
+			}
+
+			if (releasePosts > 0) != tt.wantPublish {
+				t.Errorf("POST /releases called %d times, want called=%v", releasePosts, tt.wantPublish)
+			}
+			if tt.wantPublish {
+				if releasePosts != 1 {
+					t.Errorf("POST /releases called %d times, want exactly 1", releasePosts)
+				}
+				if gotTagName != prState.ReleaseVersion {
+					t.Errorf("release tag_name = %q, want %q", gotTagName, prState.ReleaseVersion)
+				}
+				if gotBody == "" {
+					t.Error("release body should carry the generated changelog")
+				}
+			}
+			c.mu.RLock()
+			_, tracked := c.activePRs[prNumber]
+			c.mu.RUnlock()
+			if tracked {
+				t.Error("PR must drain from activePRs in every publish mode")
+			}
+		})
+	}
+}
+
+// TestHandleReleasing_APIModeRetryAfterCreateReleaseFailure pins the
+// idempotence fix (GH-3926): a transient CreateRelease failure right after a
+// successful tag push must not permanently lose the release. Pass 1 tags
+// successfully but the release POST 500s (retryable, PR stays tracked). Pass
+// 2 finds the tag already exists (drain path) and — because no release exists
+// yet for it — publishes the release there instead of silently draining.
+func TestHandleReleasing_APIModeRetryAfterCreateReleaseFailure(t *testing.T) {
+	const headSHA = "sha700retry"
+	var (
+		releasePosts   int
+		tagCreated     bool
+		createdTagName string
+	)
+	pass := 1
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/tags"):
+			w.WriteHeader(http.StatusOK)
+			if pass == 1 || createdTagName == "" {
+				_, _ = w.Write([]byte(`[]`))
+				return
+			}
+			// Pass 2: the tag created in pass 1 now exists at HeadSHA.
+			_ = json.NewEncoder(w).Encode([]github.Tag{tagAt(createdTagName, headSHA)})
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/releases/latest"):
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(github.Release{TagName: "v1.0.0"})
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/pulls/") && strings.HasSuffix(r.URL.Path, "/commits"):
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode([]*github.Commit{makeCommit("feat: add a thing")})
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/branches/"):
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"name":   "main",
+				"commit": map[string]string{"sha": "retrymainsha"},
+			})
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/compare/"):
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]string{"status": "ahead"})
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/git/refs"):
+			tagCreated = true
+			w.WriteHeader(http.StatusCreated)
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/releases/tags/"):
+			// No release ever exists yet in this test — that's the point.
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"message":"Not Found"}`))
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/releases"):
+			releasePosts++
+			var input github.ReleaseInput
+			raw, _ := io.ReadAll(r.Body)
+			_ = json.Unmarshal(raw, &input)
+			createdTagName = input.TagName
+			if pass == 1 {
+				w.WriteHeader(http.StatusInternalServerError)
+				_, _ = w.Write([]byte(`{"message":"server error"}`))
+				return
+			}
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(github.Release{
+				TagName: input.TagName,
+				HTMLURL: "https://github.com/owner/repo/releases/tag/" + input.TagName,
+			})
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	c := newReleasingControllerWithPublish(t, server.URL, "api")
+	prState := &PRState{PRNumber: 700, HeadSHA: headSHA, Stage: StageReleasing}
+	c.mu.Lock()
+	c.activePRs[700] = prState
+	c.mu.Unlock()
+
+	// Pass 1: tag creation succeeds, release publish fails transiently.
+	err := c.handleReleasing(context.Background(), prState)
+	if err == nil {
+		t.Fatal("pass 1: expected a retryable error after CreateRelease failure, got nil")
+	}
+	if !tagCreated {
+		t.Fatal("pass 1: tag should have been created")
+	}
+	if createdTagName == "" {
+		t.Fatal("pass 1: CreateRelease should have been attempted for the new tag")
+	}
+	c.mu.RLock()
+	_, tracked := c.activePRs[700]
+	c.mu.RUnlock()
+	if !tracked {
+		t.Error("pass 1: PR must remain tracked for retry after a release-publish failure")
+	}
+
+	// Pass 2: the tag now exists — handleReleasing must reach the drain path's
+	// idempotence check (ensureReleasePublished) and successfully publish the
+	// release instead of silently draining with no release ever created.
+	pass = 2
+	tagCreated = false
+	err = c.handleReleasing(context.Background(), prState)
+	if err != nil {
+		t.Fatalf("pass 2: expected nil (drained), got error: %v", err)
+	}
+	if tagCreated {
+		t.Error("pass 2: CreateGitTag must NOT be called again — the tag already exists")
+	}
+	if releasePosts != 2 {
+		t.Errorf("POST /releases called %d times across both passes, want 2 (pass 1 failed, pass 2 succeeded)", releasePosts)
+	}
+	c.mu.RLock()
+	_, tracked = c.activePRs[700]
+	c.mu.RUnlock()
+	if tracked {
+		t.Error("pass 2: PR must drain from activePRs once the release is published")
+	}
+}
+
+// TestHandleReleasing_APIModeDuplicateRelease verifies that a 422
+// "already_exists" response from POST /releases is treated as success: the
+// release already exists (e.g. a racing retry created it first), so the PR
+// drains instead of looping on an error it can never recover from.
+func TestHandleReleasing_APIModeDuplicateRelease(t *testing.T) {
+	server := publishModeTestServer(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/releases/tags/"):
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"message":"Not Found"}`))
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/releases"):
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			_, _ = w.Write([]byte(`{"message":"Validation Failed","errors":[{"resource":"Release","code":"already_exists","field":"tag_name"}]}`))
+		default:
+			w.WriteHeader(http.StatusOK)
+		}
+	})
+	defer server.Close()
+
+	c := newReleasingControllerWithPublish(t, server.URL, "api")
+	prState := &PRState{PRNumber: 800, HeadSHA: "sha800duplicate", Stage: StageReleasing}
+	c.mu.Lock()
+	c.activePRs[800] = prState
+	c.mu.Unlock()
+
+	err := c.handleReleasing(context.Background(), prState)
+	if err != nil {
+		t.Fatalf("422 already_exists must be treated as released, got error: %v", err)
+	}
+	c.mu.RLock()
+	_, tracked := c.activePRs[800]
+	c.mu.RUnlock()
+	if tracked {
+		t.Error("PR must drain once the release is confirmed to already exist")
+	}
 }
 
 // TestHandleReleasing_GetTagForSHAError verifies that a tag-lookup failure makes

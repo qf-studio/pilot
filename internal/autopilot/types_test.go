@@ -5,6 +5,112 @@ import (
 	"time"
 )
 
+func TestProjectReleaseConfig_Apply(t *testing.T) {
+	t.Run("nil overlay returns base unchanged", func(t *testing.T) {
+		base := &ReleaseConfig{Enabled: true, Publish: "workflow", TagPrefix: "v"}
+		var p *ProjectReleaseConfig
+		got := p.Apply(base)
+		if got != base {
+			t.Errorf("Apply(base) with nil overlay = %+v, want the same base pointer %+v", got, base)
+		}
+	})
+
+	t.Run("nil base with overlay not enabling release returns nil", func(t *testing.T) {
+		p := &ProjectReleaseConfig{Publish: "api"}
+		if got := p.Apply(nil); got != nil {
+			t.Errorf("Apply(nil) = %+v, want nil (overlay does not enable release)", got)
+		}
+	})
+
+	t.Run("nil base with enabled overlay starts from DefaultReleaseConfig", func(t *testing.T) {
+		p := &ProjectReleaseConfig{Enabled: boolPtr(true), Publish: "api"}
+		got := p.Apply(nil)
+		if got == nil {
+			t.Fatal("Apply(nil) = nil, want a config derived from DefaultReleaseConfig")
+		}
+		want := DefaultReleaseConfig()
+		if !got.Enabled {
+			t.Error("Enabled = false, want true")
+		}
+		if got.Publish != "api" {
+			t.Errorf("Publish = %q, want %q", got.Publish, "api")
+		}
+		if got.TagPrefix != want.TagPrefix {
+			t.Errorf("TagPrefix = %q, want default %q (uninvolved field must inherit)", got.TagPrefix, want.TagPrefix)
+		}
+	})
+
+	t.Run("publish-only overlay inherits everything else", func(t *testing.T) {
+		base := &ReleaseConfig{
+			Enabled:           true,
+			Trigger:           "on_merge",
+			VersionStrategy:   "conventional_commits",
+			TagPrefix:         "v",
+			GenerateChangelog: true,
+			NotifyOnRelease:   true,
+			RequireCI:         true,
+			Publish:           "workflow",
+		}
+		p := &ProjectReleaseConfig{Publish: "api"}
+		got := p.Apply(base)
+		if got.Publish != "api" {
+			t.Errorf("Publish = %q, want %q", got.Publish, "api")
+		}
+		if !got.Enabled {
+			t.Error("Enabled must be inherited as true from base")
+		}
+		if got.TagPrefix != "v" {
+			t.Errorf("TagPrefix = %q, want inherited %q", got.TagPrefix, "v")
+		}
+		if !got.RequireCI {
+			t.Error("RequireCI must be inherited from base (not overlayable)")
+		}
+		// Base must not be mutated.
+		if base.Publish != "workflow" {
+			t.Errorf("base.Publish mutated to %q, want unchanged %q", base.Publish, "workflow")
+		}
+	})
+
+	t.Run("enabled override false disables an otherwise-enabled base", func(t *testing.T) {
+		base := &ReleaseConfig{Enabled: true, Publish: "workflow"}
+		p := &ProjectReleaseConfig{Enabled: boolPtr(false)}
+		got := p.Apply(base)
+		if got.Enabled {
+			t.Error("Enabled = true, want false (overlay explicitly disables)")
+		}
+	})
+
+	t.Run("tag_prefix override", func(t *testing.T) {
+		base := &ReleaseConfig{Enabled: true, TagPrefix: "v"}
+		p := &ProjectReleaseConfig{TagPrefix: "release-"}
+		got := p.Apply(base)
+		if got.TagPrefix != "release-" {
+			t.Errorf("TagPrefix = %q, want %q", got.TagPrefix, "release-")
+		}
+	})
+}
+
+func TestReleaseConfig_PublishMode(t *testing.T) {
+	tests := []struct {
+		name string
+		rel  *ReleaseConfig
+		want string
+	}{
+		{name: "nil receiver defaults to workflow", rel: nil, want: ReleasePublishWorkflow},
+		{name: "empty publish defaults to workflow", rel: &ReleaseConfig{Publish: ""}, want: ReleasePublishWorkflow},
+		{name: "explicit workflow", rel: &ReleaseConfig{Publish: "workflow"}, want: "workflow"},
+		{name: "api", rel: &ReleaseConfig{Publish: "api"}, want: "api"},
+		{name: "tag_only", rel: &ReleaseConfig{Publish: "tag_only"}, want: "tag_only"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.rel.PublishMode(); got != tt.want {
+				t.Errorf("PublishMode() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestResolvedEnv_LegacyDev(t *testing.T) {
 	cfg := &Config{Environment: EnvDev}
 	env := cfg.ResolvedEnv()
