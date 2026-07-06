@@ -157,6 +157,17 @@ func WithProjectPath(path string) ControllerOption {
 	}
 }
 
+// WithReleaseOverride wires a per-project release config overlay (GH-3930)
+// for this controller's repo. Nil is a no-op. Overlay resolution against the
+// global/env ReleaseConfig (Apply/resolvedRelease) and consumption in
+// handleReleasing land in GH-3929; this option only stores the overlay so
+// call sites can wire it ahead of that work (GH-3931).
+func WithReleaseOverride(o *ProjectReleaseConfig) ControllerOption {
+	return func(c *Controller) {
+		c.projectRelease = o
+	}
+}
+
 // Controller orchestrates the autopilot loop for PR processing.
 // It manages the state machine: PR created → CI check → merge → post-merge CI → feedback loop.
 type Controller struct {
@@ -221,6 +232,11 @@ type Controller struct {
 	// executions.project_path. Used to scope self-heal to this project's rows.
 	// Empty = match by task_id only (single-repo / tests). TASK-352.
 	projectPath string
+
+	// projectRelease is the per-project release config overlay (GH-3930),
+	// wired via WithReleaseOverride. Nil = no project-level override. Overlay
+	// resolution and handleReleasing consumption land in GH-3929.
+	projectRelease *ProjectReleaseConfig
 
 	// GH-3271: called after a PR merges and pilot-done is applied so pollers
 	// can immediately re-mark the issue as processed, closing the merge→done
