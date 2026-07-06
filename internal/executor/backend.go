@@ -287,6 +287,10 @@ type BackendConfig struct {
 	// conflicting/stale/out-of-scope issues are declined without burning a worker slot.
 	PreFlightJudge *PreFlightJudgeConfig `yaml:"pre_flight_judge,omitempty"`
 
+	// MemoryInjection contains knowledge-graph memory recall settings for
+	// executor prompts (TASK-387).
+	MemoryInjection *MemoryInjectionConfig `yaml:"memory_injection,omitempty"`
+
 	// Navigator contains Navigator auto-init settings
 	Navigator *NavigatorConfig `yaml:"navigator,omitempty"`
 
@@ -604,6 +608,38 @@ type PreFlightJudgeConfig struct {
 	APIKey string `yaml:"api_key,omitempty"`
 }
 
+// MemoryInjectionConfig controls whether relevant knowledge-graph memories
+// (pitfalls, patterns, decisions, learnings) are appended to executor
+// prompts. Recall is pure local computation over .agent/knowledge/graph.json
+// (see internal/memory/graphrecall) — fail-open on a missing or malformed
+// graph, so injection never blocks execution. Skipped for LocalMode tasks
+// (GH-2103) and when the project has no .agent/ directory. TASK-387.
+//
+// Example YAML configuration:
+//
+//	executor:
+//	  memory_injection:
+//	    enabled: true
+//	    max_memories: 5
+type MemoryInjectionConfig struct {
+	// Enabled controls whether the "Known pitfalls from project memory"
+	// block is appended to the prompt. Default: true.
+	Enabled bool `yaml:"enabled"`
+
+	// MaxMemories caps how many ranked memories are included in the
+	// injected block (also capped at ~1500 chars total, whichever is
+	// smaller). Default: 5.
+	MaxMemories int `yaml:"max_memories"`
+}
+
+// DefaultMemoryInjectionConfig returns default memory injection configuration.
+func DefaultMemoryInjectionConfig() *MemoryInjectionConfig {
+	return &MemoryInjectionConfig{
+		Enabled:     true,
+		MaxMemories: 5,
+	}
+}
+
 // ClaudeCodeConfig contains Claude Code backend configuration.
 type ClaudeCodeConfig struct {
 	// Command is the path to the claude CLI (default: "claude")
@@ -765,6 +801,7 @@ func DefaultBackendConfig() *BackendConfig {
 		IntentJudge:      DefaultIntentJudgeConfig(),
 		Navigator:        DefaultNavigatorConfig(),
 		Hooks:            DefaultHooksConfig(),
+		MemoryInjection:  DefaultMemoryInjectionConfig(),
 		Planning:         DefaultPlanningConfig(),
 		Retry:            DefaultRetryConfig(),
 		Stagnation:       DefaultStagnationConfig(),

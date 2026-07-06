@@ -1862,3 +1862,90 @@ func TestSave_TightensExistingLoosePerms(t *testing.T) {
 		t.Errorf("config file mode after rewrite = %o, want 0600", got)
 	}
 }
+
+// TestLoadMemoryInjectionConfig covers TASK-387's config plumbing:
+// executor.memory_injection defaults to Enabled=true/MaxMemories=5 when
+// omitted, and explicit YAML values override those defaults.
+func TestLoadMemoryInjectionConfig(t *testing.T) {
+	t.Run("defaults when section omitted", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		configPath := filepath.Join(tmpDir, "config.yaml")
+
+		if err := os.WriteFile(configPath, []byte(`version: "1.0"`), 0644); err != nil {
+			t.Fatalf("Failed to write test config: %v", err)
+		}
+
+		cfg, err := Load(configPath)
+		if err != nil {
+			t.Fatalf("Load failed: %v", err)
+		}
+
+		if cfg.Executor == nil || cfg.Executor.MemoryInjection == nil {
+			t.Fatal("Executor.MemoryInjection should not be nil")
+		}
+		if !cfg.Executor.MemoryInjection.Enabled {
+			t.Error("MemoryInjection.Enabled should default to true")
+		}
+		if cfg.Executor.MemoryInjection.MaxMemories != 5 {
+			t.Errorf("MemoryInjection.MaxMemories = %d, want 5", cfg.Executor.MemoryInjection.MaxMemories)
+		}
+	})
+
+	t.Run("explicit values override defaults", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		configPath := filepath.Join(tmpDir, "config.yaml")
+
+		configContent := `
+version: "1.0"
+executor:
+  memory_injection:
+    enabled: false
+    max_memories: 3
+`
+		if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+			t.Fatalf("Failed to write test config: %v", err)
+		}
+
+		cfg, err := Load(configPath)
+		if err != nil {
+			t.Fatalf("Load failed: %v", err)
+		}
+
+		if cfg.Executor == nil || cfg.Executor.MemoryInjection == nil {
+			t.Fatal("Executor.MemoryInjection should not be nil")
+		}
+		if cfg.Executor.MemoryInjection.Enabled {
+			t.Error("MemoryInjection.Enabled should be false")
+		}
+		if cfg.Executor.MemoryInjection.MaxMemories != 3 {
+			t.Errorf("MemoryInjection.MaxMemories = %d, want 3", cfg.Executor.MemoryInjection.MaxMemories)
+		}
+	})
+
+	t.Run("partial override keeps other default", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		configPath := filepath.Join(tmpDir, "config.yaml")
+
+		configContent := `
+version: "1.0"
+executor:
+  memory_injection:
+    enabled: false
+`
+		if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+			t.Fatalf("Failed to write test config: %v", err)
+		}
+
+		cfg, err := Load(configPath)
+		if err != nil {
+			t.Fatalf("Load failed: %v", err)
+		}
+
+		if cfg.Executor.MemoryInjection.Enabled {
+			t.Error("MemoryInjection.Enabled should be false")
+		}
+		if cfg.Executor.MemoryInjection.MaxMemories != 5 {
+			t.Errorf("MemoryInjection.MaxMemories = %d, want default 5 to survive partial override", cfg.Executor.MemoryInjection.MaxMemories)
+		}
+	})
+}

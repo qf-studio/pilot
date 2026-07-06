@@ -348,6 +348,16 @@ executor:
   #   max_rss_mb: 4096            # virtual address space cap in MiB (Linux only)
   #   sample_interval_sec: 10     # how often to poll RSS
 
+  # Knowledge-graph memory injection (TASK-387) - append relevant past
+  # pitfalls/patterns/decisions/learnings from .agent/knowledge/graph.json
+  # to executor prompts. Recall is local computation only (no LLM call) and
+  # fails open: a missing or malformed graph yields no injection, never an
+  # error. Skipped entirely for LocalMode tasks (GH-2103) and projects
+  # without a .agent/ directory.
+  # memory_injection:
+  #   enabled: true        # Master switch; false disables the block entirely
+  #   max_memories: 5       # Cap on ranked memories included (also capped at ~1500 chars total)
+
   # Stagnation detection (GH-925) - detect and recover from stuck tasks
   # stagnation:
   #   enabled: true
