@@ -12,6 +12,7 @@ import (
 	sdkcore "github.com/qf-studio/studio-sdk/sdk/core"
 	githubSDK "github.com/qf-studio/studio-sdk/sdk/integrations/github"
 
+	"github.com/qf-studio/pilot/internal/adapters/sdkshim"
 	"github.com/qf-studio/pilot/internal/config"
 	"github.com/qf-studio/pilot/internal/executor"
 	"github.com/qf-studio/pilot/internal/logging"
@@ -240,6 +241,13 @@ func githubPollerRegistration() PollerRegistration {
 				logging.WithComponent("start").Warn("Failed to start rate limit scheduler (SDK path)", slog.Any("error", schErr))
 			}
 			pollerDeps.RateLimitScheduler = sdkRateLimitScheduler{scheduler: rateLimitScheduler}
+
+			// M7 4d.4: PRs for SDK-managed repos go through the SDK client instead
+			// of the gh CLI. Startup-time registration keyed by repo — the runner
+			// falls back to gh CLI for any github task without a registered creator.
+			if deps.Runner != nil {
+				deps.Runner.RegisterPRCreator("github:"+ghCfg.Repo, sdkshim.NewGitHubPRCreator(sdkClient, repoOwner, repoName))
+			}
 
 			githubPoller := githubSDK.New(sdkCfg).NewPoller(pollerDeps)
 

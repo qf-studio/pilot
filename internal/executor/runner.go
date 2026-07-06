@@ -640,6 +640,11 @@ type Runner struct {
 	// GH-1471: SubIssueCreator for non-GitHub adapters
 	subIssueCreator SubIssueCreator // Optional creator for sub-issues in external trackers
 	prCreator       PRCreator       // Optional creator for MRs/PRs in external forges
+	// prCreators holds startup-registered per-repo PR creators keyed by
+	// "adapter:owner/repo" (M7 4d.4). Guarded separately from prCreator,
+	// which legacy handlers still mutate per-event.
+	prCreators   map[string]PRCreator
+	prCreatorsMu sync.RWMutex
 	// GH-2211: SubIssueLinker for native GitHub sub-issue API linking
 	subIssueLinker SubIssueLinker // Optional linker for native GitHub parent→child wiring
 	// GH-1599: Execution log store for milestone entries
@@ -1090,6 +1095,27 @@ func (r *Runner) SetSubIssueCreator(creator SubIssueCreator) {
 // SetPRCreator sets the creator for pull/merge requests in external forges.
 func (r *Runner) SetPRCreator(creator PRCreator) {
 	r.prCreator = creator
+}
+
+// RegisterPRCreator registers a PR creator under an explicit key
+// ("adapter:owner/repo"), looked up per-task via SourceAdapter+SourceRepo.
+// Unlike SetPRCreator (a single shared slot mutated per-event by handlers),
+// registrations happen once at startup, so concurrent tasks from different
+// adapters or repos can never observe another repo's creator (M7 4d.4).
+func (r *Runner) RegisterPRCreator(key string, creator PRCreator) {
+	r.prCreatorsMu.Lock()
+	defer r.prCreatorsMu.Unlock()
+	if r.prCreators == nil {
+		r.prCreators = make(map[string]PRCreator)
+	}
+	r.prCreators[key] = creator
+}
+
+// prCreatorFor returns the registered creator for key, or nil.
+func (r *Runner) prCreatorFor(key string) PRCreator {
+	r.prCreatorsMu.RLock()
+	defer r.prCreatorsMu.RUnlock()
+	return r.prCreators[key]
 }
 
 // SetSubIssueLinker sets the linker for native GitHub sub-issue linking (GH-2211).
@@ -3781,7 +3807,39 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 
 			// Route PR/MR creation through adapter-specific creator when available
 			var prURL string
-			if r.prCreator != nil && task.SourceAdapter != "" && task.SourceAdapter != "github" {
+			// M7 4d.4: SDK-managed github repos register a per-repo creator at
+			// startup; everything else keeps its existing path (shared prCreator
+			// slot for non-github adapters, gh CLI for github).
+			ghSDKCreator := PRCreator(nil)
+			if task.SourceAdapter == "github" && task.SourceRepo != "" {
+				ghSDKCreator = r.prCreatorFor("github:" + task.SourceRepo)
+			}
+			if ghSDKCreator != nil {
+				issueNum := strings.TrimPrefix(task.ID, "GH-")
+				prBody := fmt.Sprintf("## Summary\n\nAutomated PR created by Pilot for task %s.\n\nCloses #%s\n\n## Changes\n\n%s", task.ID, issueNum, task.Description)
+				var createErr error
+				for attempt := 1; attempt <= prCreateRetryAttempts; attempt++ {
+					prURL, createErr = ghSDKCreator.CreatePR(ctx, task.Branch, baseBranch, prTitle, prBody)
+					if createErr == nil {
+						break
+					}
+					if attempt < prCreateRetryAttempts {
+						log.Warn("PR creation failed (SDK), retrying",
+							slog.String("task_id", task.ID),
+							slog.Int("attempt", attempt),
+							slog.Int("max_attempts", prCreateRetryAttempts),
+							slog.Any("error", createErr),
+						)
+						time.Sleep(prCreateRetryDelay)
+					}
+				}
+				if createErr != nil {
+					result.Success = false
+					result.Error = formatGitStepFailureWithRecovery(ctx, git, "pr-create", prCreateRetryAttempts, createErr, task.ID, task.Branch, result.CommitSHA)
+					r.reportProgress(task.ID, "PR Failed", 100, result.Error)
+					return result, nil
+				}
+			} else if r.prCreator != nil && task.SourceAdapter != "" && task.SourceAdapter != "github" {
 				// Non-GitHub adapter: use PRCreator (e.g., GitLab MR API)
 				// Include "Closes #N" keyword so GitLab auto-closes the source issue on merge
 				closeKeyword := ""
