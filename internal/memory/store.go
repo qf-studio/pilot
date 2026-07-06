@@ -689,8 +689,18 @@ func (s *Store) ListExecutionsForTask(taskID string) ([]*Execution, error) {
 type Stage string
 
 const (
-	StageQueued           Stage = "queued"
-	StageSpecValidated    Stage = "spec_validated"
+	StageQueued        Stage = "queued"
+	StageSpecValidated Stage = "spec_validated"
+	// StageClaudeStarted marks the moment Claude is actually invoked (planning
+	// or implementation). Closes the fail-silent gap where a trace dead-ended
+	// at spec_validated with no evidence Claude ever ran (GH-3938).
+	StageClaudeStarted Stage = "claude_started"
+	// StageImplementationStarted marks a non-epic task moving from "Claude
+	// invoked" into the implementation phase (GH-3938).
+	StageImplementationStarted Stage = "implementation_started"
+	// StageDecomposed marks an epic parent splitting into child issues; the
+	// event detail carries the child issue list (GH-3938).
+	StageDecomposed       Stage = "decomposed"
 	StageRunning          Stage = "running"
 	StageCommit           Stage = "commit"
 	StagePRCreated        Stage = "pr_created"
@@ -699,10 +709,14 @@ const (
 	StageAwaitingApproval Stage = "awaiting_approval"
 	StageMerged           Stage = "merged"
 	StageReleased         Stage = "released"
-	StageFailed           Stage = "failed"
-	StageNoOp             Stage = "no_op"
-	StageSkipped          Stage = "skipped"
-	StageStalled          Stage = "stalled"
+	// StageCompleted is the generic terminal-success milestone (GH-3938):
+	// unlike StagePRCreated/StageCommit it fires regardless of whether the run
+	// produced a PR, so `pilot trace` always has a terminal event on success.
+	StageCompleted Stage = "completed"
+	StageFailed    Stage = "failed"
+	StageNoOp      Stage = "no_op"
+	StageSkipped   Stage = "skipped"
+	StageStalled   Stage = "stalled"
 )
 
 // Event represents a single stage-transition record for an execution.

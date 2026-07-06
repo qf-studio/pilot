@@ -818,6 +818,15 @@ func buildExecutionComment(result *executor.ExecutionResult, branchName string) 
 			result.FilesChanged, result.LinesAdded, result.LinesRemoved))
 	}
 
+	// GH-3938: a decomposed epic parent that shipped no PR of its own is not
+	// "no changes were made" — its children carried the work. Report the
+	// actual dispatched child issues instead of leaving the reader to infer
+	// nothing happened from an otherwise-sparse table.
+	if result.IsEpic && result.PRUrl == "" && len(result.ChildIssues) > 0 {
+		sb.WriteString(fmt.Sprintf("| Decomposed | %d children: %s |\n",
+			len(result.ChildIssues), formatChildIssueRefs(result.ChildIssues)))
+	}
+
 	// Branch
 	if branchName != "" {
 		sb.WriteString(fmt.Sprintf("| Branch | `%s` |\n", branchName))
@@ -834,6 +843,25 @@ func buildExecutionComment(result *executor.ExecutionResult, branchName string) 
 	}
 
 	return sb.String()
+}
+
+// formatChildIssueRefs renders an epic's actual dispatched child issues as a
+// comma-separated list for the completion comment (GH-3938): "#101, #102" for
+// GitHub issues (Number > 0), the adapter identifier for non-GitHub trackers,
+// falling back to the issue URL when neither is set.
+func formatChildIssueRefs(children []executor.CreatedIssue) string {
+	refs := make([]string, 0, len(children))
+	for _, c := range children {
+		switch {
+		case c.Number > 0:
+			refs = append(refs, fmt.Sprintf("#%d", c.Number))
+		case c.Identifier != "":
+			refs = append(refs, c.Identifier)
+		default:
+			refs = append(refs, c.URL)
+		}
+	}
+	return strings.Join(refs, ", ")
 }
 
 // buildFailureComment formats a comment for failed executions.

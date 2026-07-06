@@ -961,6 +961,31 @@ func allChildrenDone(issues []CreatedIssue) bool {
 	return true
 }
 
+// childIssueRef formats a single CreatedIssue for a human-readable summary:
+// "#123" for GitHub issues (Number > 0), the raw Identifier for other adapters
+// (e.g. Linear/Jira), falling back to the issue URL when neither is set.
+func childIssueRef(issue CreatedIssue) string {
+	if issue.Number > 0 {
+		return fmt.Sprintf("#%d", issue.Number)
+	}
+	if issue.Identifier != "" {
+		return issue.Identifier
+	}
+	return issue.URL
+}
+
+// decomposedEventDetail builds the execution_events detail string for the
+// StageDecomposed milestone (GH-3938): "decomposed into N children: #a, #b, #c".
+// Sourced from the actual dispatched/recovered child issues, not the planned
+// subtask count, so the trace reflects what really got created.
+func decomposedEventDetail(issues []CreatedIssue) string {
+	refs := make([]string, 0, len(issues))
+	for _, iss := range issues {
+		refs = append(refs, childIssueRef(iss))
+	}
+	return fmt.Sprintf("decomposed into %d children: %s", len(issues), strings.Join(refs, ", "))
+}
+
 // issueNumberRegex extracts the issue number from a GitHub issue URL.
 // Matches patterns like: https://github.com/owner/repo/issues/123
 var issueNumberRegex = regexp.MustCompile(`/issues/(\d+)`)
@@ -1759,8 +1784,58 @@ func (r *Runner) resolveChildTerminalOutcome(taskID, status string, result *Exec
 // as their ProjectPath so they can create their own branches from the real repo.
 // executionPath is still used for gh CLI commands (issue comments) that need worktree context.
 func (r *Runner) ExecuteSubIssues(ctx context.Context, parent *Task, issues []CreatedIssue, executionPath string, repoPath string) error {
-	_, err := r.executeSubIssuesTracked(ctx, parent, issues, executionPath, repoPath)
+	_, _, err := r.executeSubIssuesTracked(ctx, parent, issues, executionPath, repoPath)
 	return err
+}
+
+// epicChildMetrics aggregates token/cost/diff metrics across executed child
+// sub-issues (GH-3938). Each child runs as its own executeWithOptions call and
+// carries real Claude usage in its own *ExecutionResult, but that result was
+// previously discarded once its terminal status string was recorded — leaving
+// the epic-parent's own execution row persisted with tokens_output=0 even
+// after a run that took tens of minutes across its children.
+type epicChildMetrics struct {
+	TokensInput              int64
+	TokensOutput             int64
+	CacheCreationInputTokens int64
+	CacheReadInputTokens     int64
+	EstimatedCostUSD         float64
+	FilesChanged             int
+	LinesAdded               int
+	LinesRemoved             int
+}
+
+// add folds a single child's ExecutionResult into the aggregate. Safe to call
+// with a nil result (no-op).
+func (m *epicChildMetrics) add(result *ExecutionResult) {
+	if m == nil || result == nil {
+		return
+	}
+	m.TokensInput += result.TokensInput
+	m.TokensOutput += result.TokensOutput
+	m.CacheCreationInputTokens += result.CacheCreationInputTokens
+	m.CacheReadInputTokens += result.CacheReadInputTokens
+	m.EstimatedCostUSD += result.EstimatedCostUSD
+	m.FilesChanged += result.FilesChanged
+	m.LinesAdded += result.LinesAdded
+	m.LinesRemoved += result.LinesRemoved
+}
+
+// applyTo copies the aggregate onto the epic-parent's own ExecutionResult.
+// Safe to call with a nil receiver or target.
+func (m *epicChildMetrics) applyTo(result *ExecutionResult) {
+	if m == nil || result == nil {
+		return
+	}
+	result.TokensInput += m.TokensInput
+	result.TokensOutput += m.TokensOutput
+	result.TokensTotal = result.TokensInput + result.TokensOutput
+	result.CacheCreationInputTokens += m.CacheCreationInputTokens
+	result.CacheReadInputTokens += m.CacheReadInputTokens
+	result.EstimatedCostUSD += m.EstimatedCostUSD
+	result.FilesChanged += m.FilesChanged
+	result.LinesAdded += m.LinesAdded
+	result.LinesRemoved += m.LinesRemoved
 }
 
 // executeSubIssuesTracked is ExecuteSubIssues plus each child's terminal state
@@ -1773,9 +1848,10 @@ func (r *Runner) ExecuteSubIssues(ctx context.Context, parent *Task, issues []Cr
 // mirrors the TASK-320 B2 tolerance already applied to the in-process decomposer
 // (runner_decompose.go isNoOpResult). Any other child failure still aborts the
 // whole epic, unchanged from ExecuteSubIssues' prior behavior.
-func (r *Runner) executeSubIssuesTracked(ctx context.Context, parent *Task, issues []CreatedIssue, executionPath string, repoPath string) ([]string, error) {
+func (r *Runner) executeSubIssuesTracked(ctx context.Context, parent *Task, issues []CreatedIssue, executionPath string, repoPath string) ([]string, *epicChildMetrics, error) {
+	metrics := &epicChildMetrics{}
 	if len(issues) == 0 {
-		return nil, fmt.Errorf("no sub-issues to execute")
+		return nil, metrics, fmt.Errorf("no sub-issues to execute")
 	}
 
 	var childStates []string
@@ -1811,7 +1887,7 @@ func (r *Runner) executeSubIssuesTracked(ctx context.Context, parent *Task, issu
 		// Check context cancellation
 		select {
 		case <-ctx.Done():
-			return childStates, fmt.Errorf("execution cancelled: %w", ctx.Err())
+			return childStates, metrics, fmt.Errorf("execution cancelled: %w", ctx.Err())
 		default:
 		}
 
@@ -1899,8 +1975,13 @@ func (r *Runner) executeSubIssuesTracked(ctx context.Context, parent *Task, issu
 			failMsg := fmt.Sprintf("❌ Failed on %d/%d: %s - Error: %v",
 				i+1, total, issue.Subtask.Title, err)
 			_ = r.UpdateIssueProgress(ctx, projectPath, parent.ID, failMsg)
-			return childStates, fmt.Errorf("sub-issue %s failed: %w", issueRef, err)
+			return childStates, metrics, fmt.Errorf("sub-issue %s failed: %w", issueRef, err)
 		}
+
+		// GH-3938: fold this child's real token/cost/diff usage into the epic
+		// aggregate regardless of success/no-op — Claude ran and consumed tokens
+		// either way, and the parent's own execution row should reflect that.
+		metrics.add(result)
 
 		if !result.Success {
 			// GH-3779: a genuine no-op child (isNoOpResult — same classification the
@@ -1922,7 +2003,7 @@ func (r *Runner) executeSubIssuesTracked(ctx context.Context, parent *Task, issu
 			failMsg := fmt.Sprintf("❌ Failed on %d/%d: %s - %s",
 				i+1, total, issue.Subtask.Title, result.Error)
 			_ = r.UpdateIssueProgress(ctx, projectPath, parent.ID, failMsg)
-			return childStates, fmt.Errorf("sub-issue %s failed: %s", issueRef, result.Error)
+			return childStates, metrics, fmt.Errorf("sub-issue %s failed: %s", issueRef, result.Error)
 		}
 
 		childStates = append(childStates, TerminalStatus(result))
@@ -1962,7 +2043,7 @@ func (r *Runner) executeSubIssuesTracked(ctx context.Context, parent *Task, issu
 				"branch", subTask.Branch,
 				"recovery_ref", recoveryRef,
 			)
-			return childStates, fmt.Errorf("sub-issue %s committed work (sha %s) but produced no PR — work would be lost, halting epic — recovery: %s", issueRef, shortSHA, recovery)
+			return childStates, metrics, fmt.Errorf("sub-issue %s committed work (sha %s) but produced no PR — work would be lost, halting epic — recovery: %s", issueRef, shortSHA, recovery)
 		}
 
 		// Register sub-issue PR with autopilot controller (GH-596)
@@ -1997,7 +2078,7 @@ func (r *Runner) executeSubIssuesTracked(ctx context.Context, parent *Task, issu
 				if err := r.subIssueMergeWait(ctx, prNum); err != nil {
 					failMsg := fmt.Sprintf("❌ Merge wait failed for %s (PR #%d): %v", issueRef, prNum, err)
 					_ = r.UpdateIssueProgress(ctx, projectPath, parent.ID, failMsg)
-					return childStates, fmt.Errorf("merge wait failed for sub-issue %s (PR #%d): %w", issueRef, prNum, err)
+					return childStates, metrics, fmt.Errorf("merge wait failed for sub-issue %s (PR #%d): %w", issueRef, prNum, err)
 				}
 
 				// Sync local main branch so the next sub-issue branches from the merged state.
@@ -2043,5 +2124,5 @@ func (r *Runner) executeSubIssuesTracked(ctx context.Context, parent *Task, issu
 		"total_completed", total,
 	)
 
-	return childStates, nil
+	return childStates, metrics, nil
 }

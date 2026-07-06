@@ -1424,8 +1424,9 @@ func TestDispatcher_AdoptQueuedProjects_ReportsFailureWithoutAdopting(t *testing
 }
 
 // TestDispatchSuccessStage covers the dispatcher's terminal-success mapping:
-// a PR produces a pr_created event, a PR-less completion (direct-commit mode)
-// has no matching Stage yet and is intentionally left uninstrumented (GH-3846).
+// GH-3938 — every successful run gets a generic StageCompleted terminal event,
+// with or without a PR, so `pilot trace` never dead-ends at spec_validated
+// for epic parents or direct-commit tasks.
 func TestDispatchSuccessStage(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -1433,8 +1434,8 @@ func TestDispatchSuccessStage(t *testing.T) {
 		wantStage memory.Stage
 		wantOK    bool
 	}{
-		{"pr url present", "https://github.com/test/repo/pull/1", memory.StagePRCreated, true},
-		{"no pr url", "", "", false},
+		{"pr url present", "https://github.com/test/repo/pull/1", memory.StageCompleted, true},
+		{"no pr url", "", memory.StageCompleted, true},
 	}
 
 	for _, tt := range tests {
@@ -1527,12 +1528,13 @@ func waitForTerminalStatus(t *testing.T, store *memory.Store, execID string, tim
 // TestDispatcher_SyntheticDispatch_SuccessEventSequence drives a full
 // synthetic dispatch (queue → worker pickup → runner execution → completion)
 // through the real dispatcher and runner, and asserts the execution_events
-// timeline records the expected cross-file sequence: dispatcher's
-// queued→running transition and runner's spec-validated milestone. This task
-// has no PR (CreatePR: false), so the dispatcher's terminal-success write is
-// a no-op by design (see the recordExecutionEvent call site in processQueue)
-// — TestRunner_recordExecutionEvent_WritesEvent covers the pr_created write
-// directly. GH-3846.
+// timeline records the full cross-file lifecycle: dispatcher's queued→running
+// transition, runner's spec-validated/claude-started/implementation-started
+// milestones, and the dispatcher's generic terminal-success event. This task
+// has no PR (CreatePR: false); GH-3938 made the terminal-success write fire
+// unconditionally (StageCompleted) instead of only when a PR exists, so
+// `pilot trace` never dead-ends at spec_validated for PR-less runs (e.g. epic
+// parents). GH-3846/GH-3938.
 func TestDispatcher_SyntheticDispatch_SuccessEventSequence(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
@@ -1570,7 +1572,13 @@ func TestDispatcher_SyntheticDispatch_SuccessEventSequence(t *testing.T) {
 		t.Fatalf("ListExecutionEvents failed: %v", err)
 	}
 
-	wantStages := []memory.Stage{memory.StageRunning, memory.StageSpecValidated}
+	wantStages := []memory.Stage{
+		memory.StageRunning,
+		memory.StageSpecValidated,
+		memory.StageClaudeStarted,
+		memory.StageImplementationStarted,
+		memory.StageCompleted,
+	}
 	if len(events) != len(wantStages) {
 		var gotStages []memory.Stage
 		for _, e := range events {

@@ -261,6 +261,41 @@ func TerminalStatus(result *ExecutionResult) string {
 	return "failed"
 }
 
+// isZeroArtifactResult reports whether result claims success but shows no
+// observable evidence of real work: no tokens consumed, no files changed, and
+// no commit or PR anywhere. A result meeting all four conditions cannot have
+// done anything — GH-3938.
+func isZeroArtifactResult(result *ExecutionResult) bool {
+	if result == nil || !result.Success {
+		return false
+	}
+	return result.TokensInput == 0 && result.TokensOutput == 0 &&
+		result.FilesChanged == 0 && result.CommitSHA == "" && result.PRUrl == ""
+}
+
+// applyZeroArtifactNoOpGuard reclassifies a "completed with zero tokens, zero
+// files, and no commit/PR" result as a genuine no_op instead of a silent
+// false-positive completion — following the GH-3224 ghost-SHA guard shape
+// (bug_pilot_ghost_closes.md, "epic-parent false-positive" pattern, TASK-296):
+// a result can look successful (Success=true, no error) while having produced
+// nothing a human or the tracker could verify. context is a short human-
+// readable description of what ran, used in the resulting Error message.
+// No-op when result already claims something other than success. GH-3938.
+func applyZeroArtifactNoOpGuard(result *ExecutionResult, context string) {
+	if !isZeroArtifactResult(result) {
+		return
+	}
+	result.Success = false
+	result.Outcome = "no_op"
+	// "no new commit produced" matches noOpErrorSignatures (runner.go) and
+	// noOpErrorMarker (cmd/pilot/handlers.go) so every existing no-op
+	// classification path (TerminalStatus, IsPermanentFailure, the
+	// already-merged/open-children re-dispatch guards) recognizes this the
+	// same way it recognizes the ghost-SHA no-op, even if Outcome is ever
+	// dropped on a round-trip.
+	result.Error = fmt.Sprintf("no new commit produced — %s completed with zero tokens, zero files changed, and no commit/PR", context)
+}
+
 // StreamEvent represents a Claude Code stream-json event
 type StreamEvent struct {
 	Type          string          `json:"type"`
@@ -509,6 +544,12 @@ type ExecutionResult struct {
 	IsEpic bool
 	// EpicPlan contains the planning result for epic tasks (GH-405)
 	EpicPlan *EpicPlan
+	// ChildIssues holds the actual child issues dispatched during epic
+	// decomposition (GH-3938), sourced from the real CreateSubIssues/recovery
+	// result rather than the planned subtask count — used to build an honest
+	// "decomposed into N children: #a, #b, #c" summary instead of a generic
+	// "no changes were made" comment on a decomposed parent.
+	ChildIssues []CreatedIssue
 	// IntentWarning contains the reason if the intent judge flagged a mismatch.
 	// When set, the PR was created despite intent misalignment (after retry failed).
 	IntentWarning string
@@ -1791,6 +1832,11 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 		)
 		r.reportProgress(task.ID, "Planning", 10, "Running epic planning...")
 
+		// GH-3938: record that Claude is actually being invoked (planning mode)
+		// before the fallible planFn call, so a trace never dead-ends at
+		// spec_validated even when planning itself fails below.
+		r.recordExecutionEvent(task.LogExecutionID(), memory.StageClaudeStarted, "invoking planning model")
+
 		planFn := r.planEpicFn
 		if planFn == nil {
 			planFn = r.PlanEpic
@@ -1875,13 +1921,14 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 							)
 							r.reportProgress(task.ID, "Complete", 100, "All sub-issues already completed")
 							return &ExecutionResult{
-								TaskID:    task.ID,
-								Success:   true,
-								Output:    fmt.Sprintf("Epic already completed: %d sub-issues recovered", len(recovered)),
-								Duration:  time.Since(start),
-								IsEpic:    true,
-								EpicPlan:  plan,
-								ModelName: r.fallbackModelName(),
+								TaskID:      task.ID,
+								Success:     true,
+								Output:      fmt.Sprintf("Epic already completed: %d sub-issues recovered", len(recovered)),
+								Duration:    time.Since(start),
+								IsEpic:      true,
+								EpicPlan:    plan,
+								ChildIssues: recovered,
+								ModelName:   r.fallbackModelName(),
 							}, nil
 						}
 						// Filter to open children only and continue execution.
@@ -1908,6 +1955,12 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 					}
 				}
 
+				// GH-3938: record the decomposition milestone with the actual dispatched
+				// child issue list (not just the planned subtask count), so the eventual
+				// parent comment can report an honest "decomposed into N children: ..."
+				// summary instead of a misleading "no changes were made".
+				r.recordExecutionEvent(task.LogExecutionID(), memory.StageDecomposed, decomposedEventDetail(issues))
+
 				r.reportProgress(task.ID, "Executing", 50, fmt.Sprintf("Executing %d sub-issues sequentially...", len(issues)))
 
 				// GH-412: Execute sub-issues sequentially
@@ -1916,7 +1969,11 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 				// GH-3779: also collect each child's terminal state so the PR-finalize
 				// guard below can tell a genuine no-op epic (all children no-op'd) from
 				// one whose deliverables shipped entirely via child sub-issue PRs.
-				childStates, err := r.executeSubIssuesTracked(ctx, task, issues, executionPath, task.ProjectPath)
+				// GH-3938: also collect aggregated child token/cost/diff metrics so the
+				// epic-parent's own execution row reflects real Claude usage instead of
+				// persisting as tokens_output=0 for a run that may have taken tens of
+				// minutes across its children.
+				childStates, childMetrics, err := r.executeSubIssuesTracked(ctx, task, issues, executionPath, task.ProjectPath)
 				if err != nil {
 					return &ExecutionResult{
 						TaskID:   task.ID,
@@ -1933,14 +1990,16 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 				// GH-2428: Set ModelName so the saved row distinguishes "epic
 				// orchestrator (no backend call)" from "telemetry-missing".
 				epicResult := &ExecutionResult{
-					TaskID:    task.ID,
-					Success:   true,
-					Output:    fmt.Sprintf("Epic completed: %d sub-issues executed", len(issues)),
-					Duration:  time.Since(start),
-					IsEpic:    true,
-					EpicPlan:  plan,
-					ModelName: r.fallbackModelName(),
+					TaskID:      task.ID,
+					Success:     true,
+					Output:      fmt.Sprintf("Epic completed: %d sub-issues executed", len(issues)),
+					Duration:    time.Since(start),
+					IsEpic:      true,
+					EpicPlan:    plan,
+					ChildIssues: issues,
+					ModelName:   r.fallbackModelName(),
 				}
+				childMetrics.applyTo(epicResult)
 
 				if task.CreatePR && task.Branch != "" {
 					// TASK-359 Layer 1: route epic finalization through the same error
@@ -1953,6 +2012,14 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 				} else {
 					r.reportProgress(task.ID, "Complete", 100, "Epic completed successfully")
 				}
+
+				// GH-3938: zero-artifact no-op guard. An epic exists to get real work
+				// done via its children (or its own branch) — a "successful" epic that
+				// consumed no tokens, changed no files, and produced no commit/PR
+				// anywhere did no real work, following the GH-3224 ghost-SHA guard shape
+				// (bug_pilot_ghost_closes.md): classify as no_op instead of completed.
+				applyZeroArtifactNoOpGuard(epicResult, fmt.Sprintf("epic %s across %d sub-issue(s)", task.ID, len(issues)))
+
 				return epicResult, nil
 			}
 		} // else: plan succeeded
@@ -2270,6 +2337,14 @@ func (r *Runner) executeWithOptions(ctx context.Context, task *Task, allowWorktr
 
 	// GH-1599: Log implementation phase
 	r.saveLogEntry(task.LogExecutionID(), "info", "Implementing changes...")
+
+	// GH-3938: record that Claude is about to be invoked for direct
+	// implementation (as opposed to epic planning, which records the same
+	// Stage at its own call site), followed immediately by the
+	// implementation-phase milestone — closes the fail-silent gap where a
+	// trace dead-ended at spec_validated with no evidence Claude ever ran.
+	r.recordExecutionEvent(task.LogExecutionID(), memory.StageClaudeStarted, fmt.Sprintf("invoking backend: %s", r.backend.Name()))
+	r.recordExecutionEvent(task.LogExecutionID(), memory.StageImplementationStarted, "implementing changes")
 
 	// TASK-308: Stall detection — track last event time and spawn a watchdog.
 	var (
@@ -4053,6 +4128,18 @@ Only use DECLINED if implementation is truly impossible or undefined. Do not dec
 				log.Debug("Stored task completion memory", slog.String("task_id", task.ID))
 			}
 		}
+	}
+
+	// GH-3938: zero-artifact no-op guard for direct-commit runs. The CreatePR
+	// retry path above (the "no commits" guard, ~runner.go:2920) already
+	// catches the common CreatePR-branch case; this is a defense-in-depth net
+	// for task.DirectCommit workflows and any other path that reaches here
+	// still claiming success with literally no observable output. Scoped to
+	// tasks that actually expected a deliverable (CreatePR or DirectCommit) so
+	// legitimate no-code-required runs (Q&A, LocalMode, planning-only) are not
+	// misclassified.
+	if task.CreatePR || task.DirectCommit {
+		applyZeroArtifactNoOpGuard(result, fmt.Sprintf("task %s", task.ID))
 	}
 
 	// GH-1813: Record execution outcome for pattern learning (self-improvement)

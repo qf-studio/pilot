@@ -41,6 +41,55 @@ func TestBuildExecutionComment_FullResult(t *testing.T) {
 	}
 }
 
+// TestBuildExecutionComment_DecomposedEpicChildren covers GH-3938 acceptance
+// (c): a decomposed epic parent that shipped no PR of its own must report an
+// honest "decomposed into N children: #a, #b, #c" summary sourced from the
+// actual child-dispatch results (ChildIssues), replacing the misleading
+// "⚠ no changes were made" impression a bare table would otherwise leave.
+func TestBuildExecutionComment_DecomposedEpicChildren(t *testing.T) {
+	result := &executor.ExecutionResult{
+		Success:  true,
+		Duration: 37 * time.Minute,
+		IsEpic:   true,
+		ChildIssues: []executor.CreatedIssue{
+			{Number: 101},
+			{Number: 102},
+			{Identifier: "APP-9"},
+		},
+	}
+	comment := buildExecutionComment(result, "pilot/GH-999")
+
+	if !strings.Contains(comment, "| Decomposed | 3 children: #101, #102, APP-9 |") {
+		t.Errorf("comment missing decomposed children summary\nGot:\n%s", comment)
+	}
+	if strings.Contains(comment, "no changes were made") {
+		t.Error("decomposed epic parent comment should not claim no changes were made")
+	}
+}
+
+// TestBuildExecutionComment_EpicWithOwnPR_NoDecomposedRow verifies that an
+// epic result which DID ship its own PR (task.CreatePR path) shows the normal
+// PR row instead of the decomposed-children summary — the two are mutually
+// exclusive completion shapes.
+func TestBuildExecutionComment_EpicWithOwnPR_NoDecomposedRow(t *testing.T) {
+	result := &executor.ExecutionResult{
+		Success: true,
+		IsEpic:  true,
+		PRUrl:   "https://github.com/org/repo/pull/789",
+		ChildIssues: []executor.CreatedIssue{
+			{Number: 55},
+		},
+	}
+	comment := buildExecutionComment(result, "pilot/GH-1000")
+
+	if strings.Contains(comment, "| Decomposed |") {
+		t.Errorf("expected no Decomposed row when the epic shipped its own PR\nGot:\n%s", comment)
+	}
+	if !strings.Contains(comment, "pull/789") {
+		t.Error("expected PR row to be present")
+	}
+}
+
 func TestBuildExecutionComment_MinimalResult(t *testing.T) {
 	result := &executor.ExecutionResult{
 		Success:  true,

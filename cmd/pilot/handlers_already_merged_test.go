@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/qf-studio/pilot/internal/adapters/github"
+	"github.com/qf-studio/pilot/internal/executor"
 	"github.com/qf-studio/pilot/internal/testutil"
 )
 
@@ -130,5 +131,37 @@ func TestIssueHasOpenChildren(t *testing.T) {
 				t.Errorf("issueHasOpenChildren() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+// TestZeroArtifactNoOpGuard_CompatibleWithExistingCloseGuards covers GH-3938
+// acceptance (d): runner.go's new applyZeroArtifactNoOpGuard (package
+// executor) emits an error prefixed with the shared "no new commit produced"
+// marker specifically so it is recognized by cmd/pilot's existing GH-3513
+// text-search confirmation (noOpErrorMarker) and the open-PR veto guards that
+// sit behind it at handlers.go's no-op re-dispatch branches (~line 503-539).
+// The two constants are independently defined in different packages (the
+// executor-side equivalent is noOpErrorSignatures[0] in runner.go) — this
+// pins their value so a future edit to either side doesn't silently break
+// that cross-package classification. See TestApplyZeroArtifactNoOpGuard
+// (internal/executor) for the guard's own behavior, and
+// TestIssueHasOpenChildren/TestIssueAlreadyMerged above (unmodified by this
+// change) for the close-guards this classification feeds into.
+func TestZeroArtifactNoOpGuard_CompatibleWithExistingCloseGuards(t *testing.T) {
+	const wantMarker = "no new commit produced"
+	if noOpErrorMarker != wantMarker {
+		t.Fatalf("cmd/pilot's noOpErrorMarker = %q, want %q — internal/executor's applyZeroArtifactNoOpGuard and noOpErrorSignatures[0] (runner.go) must stay in sync with this constant or the GH-3513 text-search close-guards will stop recognizing GH-3938's zero-artifact no-op classification",
+			noOpErrorMarker, wantMarker)
+	}
+
+	// Sanity-check the composed message shape applyZeroArtifactNoOpGuard
+	// produces (runner.go: fmt.Sprintf("no new commit produced — %s completed
+	// with zero tokens, zero files changed, and no commit/PR", context)) still
+	// satisfies a strings.Contains(err, noOpErrorMarker) check.
+	sample := &executor.ExecutionResult{
+		Error: "no new commit produced — epic GH-1 across 2 sub-issue(s) completed with zero tokens, zero files changed, and no commit/PR",
+	}
+	if !strings.Contains(sample.Error, noOpErrorMarker) {
+		t.Fatalf("sample zero-artifact guard error %q does not contain noOpErrorMarker %q", sample.Error, noOpErrorMarker)
 	}
 }

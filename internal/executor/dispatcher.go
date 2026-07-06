@@ -827,9 +827,13 @@ func (w *ProjectWorker) processQueue(ctx context.Context) {
 			if err := w.store.MarkExecutionCompleted(exec.ID, result.PRUrl, result.CommitSHA, duration.Milliseconds()); err != nil {
 				w.log.Error("Failed to mark execution completed", slog.Any("error", err))
 			}
-			// GH-3846: record terminal-success transition to the execution-events audit trail.
+			// GH-3846/GH-3938: record terminal-success transition to the execution-events
+			// audit trail. Fires unconditionally so a run with no PR (epic parents,
+			// direct-commit tasks) still gets a terminal marker instead of the trace
+			// dead-ending after spec_validated.
 			if stage, ok := dispatchSuccessStage(result.PRUrl); ok {
-				w.recordExecutionEvent(exec.ID, stage, fmt.Sprintf("completed with PR: %s", result.PRUrl))
+				detail := fmt.Sprintf("completed: pr=%s commit=%s", result.PRUrl, result.CommitSHA)
+				w.recordExecutionEvent(exec.ID, stage, detail)
 			}
 			// Emit progress callback for task completed
 			msg := fmt.Sprintf("Completed in %s", duration.Round(time.Second))
@@ -901,18 +905,15 @@ func (w *ProjectWorker) recordExecutionEvent(executionID string, stage memory.St
 	}
 }
 
-// dispatchSuccessStage reports the execution_events Stage (and whether to
-// write one) for the dispatcher's terminal-success site. The Stage enum
-// (GH-3840) has no generic "completed" value, so a PR is the only durable
-// milestone this site can map to today — runner.go already emits pr_created
-// at creation time; this dispatcher-level entry marks the run as a whole
-// finishing. Direct-commit tasks with no PR have no matching Stage yet, so
-// they're intentionally left uninstrumented here (GH-3846).
-func dispatchSuccessStage(prURL string) (memory.Stage, bool) {
-	if prURL == "" {
-		return "", false
-	}
-	return memory.StagePRCreated, true
+// dispatchSuccessStage reports the execution_events Stage for the dispatcher's
+// terminal-success site. GH-3938: fires unconditionally via the generic
+// StageCompleted milestone — runner.go already emits pr_created/commit at
+// their own creation-time milestones, but a run with no PR (epic parents,
+// direct-commit tasks) previously left no terminal event at all, so
+// `pilot trace` dead-ended at spec_validated. prURL is accepted for call-site
+// stability but no longer changes the outcome.
+func dispatchSuccessStage(_ string) (memory.Stage, bool) {
+	return memory.StageCompleted, true
 }
 
 // dispatchTerminalStage maps a dispatcher-classified terminal status (see
