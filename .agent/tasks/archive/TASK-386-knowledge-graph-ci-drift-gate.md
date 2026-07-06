@@ -1,6 +1,6 @@
 # feat(ci): knowledge-graph drift gate — fail CI on disk-vs-graph divergence (TASK-386)
 
-**Status**: 🚀 Dispatched to Pilot
+**Status**: ✅ Shipped 2026-07-06 (via epic decomposition)
 **Created**: 2026-07-06
 **Assignee**: Pilot
 
@@ -151,3 +151,6 @@ why concept drift is WARN, not FAIL.
 ---
 
 **Last Updated**: 2026-07-06
+
+---
+**Shipped**: child GH-3901 → PRs #3904/#3906 (v2.216.0). Artifacts verified on main: `scripts/check-graph.py`, `make check-graph`, `graph-check` CI job. Parent #3898 closed manually (epic-close defect → #3924).

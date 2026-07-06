@@ -1,6 +1,6 @@
 # feat(executor): inject relevant knowledge-graph memories into task prompts (TASK-387)
 
-**Status**: 🚀 Dispatched to Pilot
+**Status**: ✅ Shipped 2026-07-06 (via epic decomposition)
 **Created**: 2026-07-06
 **Assignee**: Pilot
 
@@ -157,3 +157,6 @@ is why TASK-386 ships alongside.
 ---
 
 **Last Updated**: 2026-07-06
+
+---
+**Shipped**: children GH-3907/3908/3909 → PRs #3911/#3912/#3915 (v2.217.0–v2.220.0). Artifacts verified on main: `internal/memory/graphrecall`, TASK-387 injection in `prompt_builder.go` (char-capped), `memory_injection` config. Parent #3899 closed manually (epic-close defect → #3924).
