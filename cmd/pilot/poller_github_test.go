@@ -1,9 +1,13 @@
 package main
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	sdkcore "github.com/qf-studio/studio-sdk/sdk/core"
 	githubSDK "github.com/qf-studio/studio-sdk/sdk/integrations/github"
@@ -180,4 +184,104 @@ func githubFuncBody(t *testing.T, file, funcSignature string) string {
 		return rest[:end]
 	}
 	return rest
+}
+
+// TestVerifySDKGithubToken_DeadTokenDisablesPoller confirms a 401 from the
+// GitHub API disables the SDK poller (returns false) and fires a
+// config_error alert naming the token source (GH-3917 acceptance: no
+// resolvable/valid token means no "polling enabled" line).
+func TestVerifySDKGithubToken_DeadTokenDisablesPoller(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"message":"Bad credentials"}`))
+	}))
+	defer srv.Close()
+
+	client := githubSDK.NewClientWithBaseURL("dead-token", srv.URL)
+	engine, ch := newTestAlertsEngine(t)
+
+	if ok := verifySDKGithubToken(context.Background(), client, githubTokenSourceEnv, engine); ok {
+		t.Error("verifySDKGithubToken() = true, want false for a 401 (poller must be disabled)")
+	}
+
+	deadline := time.After(2 * time.Second)
+	for ch.count() == 0 {
+		select {
+		case <-deadline:
+			t.Fatal("expected an alert to be fired for a dead SDK poller token")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+}
+
+// TestVerifySDKGithubToken_ValidTokenEnablesPoller confirms a healthy token
+// lets the poller proceed (the caller only logs "polling enabled" after this
+// returns true) and fires no alert.
+func TestVerifySDKGithubToken_ValidTokenEnablesPoller(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"login":"pilot-bot"}`))
+	}))
+	defer srv.Close()
+
+	client := githubSDK.NewClientWithBaseURL("good-token", srv.URL)
+	engine, ch := newTestAlertsEngine(t)
+
+	if ok := verifySDKGithubToken(context.Background(), client, githubTokenSourceConfig, engine); !ok {
+		t.Error("verifySDKGithubToken() = false, want true for a valid token")
+	}
+	engine.WaitForDispatch()
+	if got := ch.count(); got != 0 {
+		t.Errorf("expected no alerts for a valid token, got %d", got)
+	}
+}
+
+// TestVerifySDKGithubToken_NetworkErrorDoesNotDisablePoller confirms a
+// transient failure (unreachable API, not a 401) doesn't disable the
+// poller — only a confirmed dead/invalid token should.
+func TestVerifySDKGithubToken_NetworkErrorDoesNotDisablePoller(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	unreachableURL := srv.URL
+	srv.Close() // closed immediately: connections to this URL now fail
+
+	client := githubSDK.NewClientWithBaseURL("some-token", unreachableURL)
+	if ok := verifySDKGithubToken(context.Background(), client, githubTokenSourceEnv, nil); !ok {
+		t.Error("verifySDKGithubToken() = false, want true for a network error (not evidence the token is dead)")
+	}
+}
+
+// TestGithubPollerCreateAndStart_NoTokenDisablesPoller confirms CreateAndStart
+// returns immediately (poller disabled) when the resolution chain
+// (config -> GITHUB_TOKEN env -> gh CLI) yields nothing — the M7 4b defect
+// (GH-3917) was that the SDK poller used ghCfg.Token verbatim and started
+// (and logged "polling enabled") even when empty.
+func TestGithubPollerCreateAndStart_NoTokenDisablesPoller(t *testing.T) {
+	resetGitHubTokenTestState(t)
+	ghRunner = fakeGhRunner(t, false, "", "", nil)
+
+	reg := githubPollerRegistration()
+	deps := &PollerDeps{
+		Cfg: &config.Config{
+			Adapters: &config.AdaptersConfig{
+				GitHub: &github.Config{
+					Enabled:      true,
+					UseSDKPoller: true,
+					Repo:         "o/r",
+					Polling:      &github.PollingConfig{Enabled: true},
+				},
+			},
+		},
+	}
+
+	done := make(chan struct{})
+	go func() {
+		reg.CreateAndStart(context.Background(), deps)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("CreateAndStart should return immediately when no token resolves (poller disabled)")
+	}
 }

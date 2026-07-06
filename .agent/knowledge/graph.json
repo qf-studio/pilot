@@ -375,6 +375,23 @@
           "deployment",
           "database"
         ]
+      },
+      "TASK-368": {
+        "path": "/private/var/folders/_8/nnsxrdhn46x08pb886hrggv00000gn/T/pilot-worktree-GH-3917-1783339382148946000/.agent/tasks/TASK-368-m7-github-cutover-phase4.md",
+        "title": "M7 Phase 4 \u2014 GitHub adapter \u2192 studio-sdk cutover (MANUAL)",
+        "status": "unknown",
+        "concepts": [
+          "knowledge",
+          "frontend",
+          "context",
+          "deployment",
+          "database",
+          "api",
+          "markers",
+          "authentication",
+          "testing",
+          "workflow"
+        ]
       }
     },
     "memories": {
@@ -2315,6 +2332,11 @@
       "from": "TASK-387",
       "to": "testing",
       "type": "implements"
+    },
+    {
+      "from": "TASK-368",
+      "to": "testing",
+      "type": "implements"
     }
   ],
   "concept_index": {
@@ -2343,44 +2365,56 @@
     ],
     "knowledge": [
       "TASK-386",
-      "TASK-387"
+      "TASK-387",
+      "TASK-368"
     ],
     "deployment": [
       "TASK-386",
-      "TASK-387"
+      "TASK-387",
+      "TASK-368"
     ],
     "authentication": [
-      "TASK-386"
+      "TASK-386",
+      "TASK-368"
     ],
     "testing": [
       "TASK-386",
-      "TASK-387"
+      "TASK-387",
+      "TASK-368"
     ],
     "api": [
       "TASK-386",
-      "TASK-387"
+      "TASK-387",
+      "TASK-368"
     ],
     "context": [
       "TASK-386",
-      "TASK-387"
+      "TASK-387",
+      "TASK-368"
     ],
     "markers": [
-      "TASK-387"
+      "TASK-387",
+      "TASK-368"
     ],
     "database": [
-      "TASK-387"
+      "TASK-387",
+      "TASK-368"
     ],
     "workflow": [
-      "TASK-387"
+      "TASK-387",
+      "TASK-368"
     ],
     "simplification": [
       "TASK-387"
+    ],
+    "frontend": [
+      "TASK-368"
     ]
   },
-  "last_updated": "2026-07-06T09:55:29.169568+00:00",
+  "last_updated": "2026-07-06T12:16:33.258633+00:00",
   "stats": {
-    "total_nodes": 134,
-    "total_edges": 166,
+    "total_nodes": 135,
+    "total_edges": 167,
     "memory_count": 86
   }
 }

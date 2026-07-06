@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os/exec"
@@ -13,10 +14,57 @@ import (
 	githubSDK "github.com/qf-studio/studio-sdk/sdk/integrations/github"
 
 	"github.com/qf-studio/pilot/internal/adapters/sdkshim"
+	"github.com/qf-studio/pilot/internal/alerts"
 	"github.com/qf-studio/pilot/internal/config"
 	"github.com/qf-studio/pilot/internal/executor"
 	"github.com/qf-studio/pilot/internal/logging"
 )
+
+// sdkPollerVerifyTimeout bounds the one-off authenticated call made before
+// the SDK poller starts (GH-3917), matching preflightVerifyTimeout's budget
+// for the equivalent in-tree adapter checks (adapter_preflight.go).
+const sdkPollerVerifyTimeout = 8 * time.Second
+
+// verifySDKGithubToken makes one authenticated call to confirm the SDK
+// poller's resolved token actually works, fail-loud (GH-3917): live incident
+// 2026-07-06 had the SDK poller sending empty credentials on every 30s poll
+// for ~16 minutes while startup still logged "polling enabled". Mirrors
+// validateGitHubToken's in-tree pattern (main.go) — a confirmed 401
+// (AuthError) disables the poller (returns false); network errors, rate
+// limits, etc. are not evidence the token itself is dead, so the poller
+// still starts.
+func verifySDKGithubToken(ctx context.Context, client *githubSDK.Client, tokenSource githubTokenSource, alertsEngine *alerts.Engine) bool {
+	log := logging.WithComponent("github-sdk-poller")
+
+	vctx, cancel := context.WithTimeout(ctx, sdkPollerVerifyTimeout)
+	defer cancel()
+
+	if _, err := client.GetAuthenticatedUser(vctx); err != nil {
+		var authErr *githubSDK.AuthError
+		if errors.As(err, &authErr) {
+			log.Error("GitHub SDK poller disabled: token rejected by API (401)",
+				slog.String("token_source", string(tokenSource)),
+				slog.String("fix", "rotate the token at its source and restart pilot"),
+			)
+			if alertsEngine != nil {
+				alertsEngine.ProcessEvent(alerts.Event{
+					Type:      alerts.EventTypeConfigError,
+					Error:     fmt.Sprintf("GitHub SDK poller token (source: %s) is invalid or expired — 401 from GitHub API", tokenSource),
+					Timestamp: time.Now(),
+				})
+			}
+			return false
+		}
+		log.Warn("could not verify GitHub SDK poller token validity at startup — proceeding anyway",
+			slog.String("token_source", string(tokenSource)),
+			slog.String("error", err.Error()),
+		)
+		return true
+	}
+
+	log.Info("GitHub SDK poller token validated", slog.String("token_source", string(tokenSource)))
+	return true
+}
 
 // sdkPreFlightJudge adapts *executor.IntentJudge to sdkcore.PreFlightJudger.
 // Sibling of preFlightJudgeShim (main.go), which returns the in-tree
@@ -85,6 +133,22 @@ func githubPollerRegistration() PollerRegistration {
 		},
 		CreateAndStart: func(ctx context.Context, deps *PollerDeps) {
 			ghCfg := deps.Cfg.Adapters.GitHub
+			log := logging.WithComponent("github-sdk-poller")
+
+			// GH-3917: resolve the token via the same chain every in-tree
+			// GitHub path uses (config -> GITHUB_TOKEN env -> `gh auth token`
+			// CLI) instead of trusting ghCfg.Token verbatim. With token: ""
+			// in config (the common setup, since the resolver exists
+			// precisely so config can omit it), the SDK poller previously
+			// sent empty credentials on every poll while startup still
+			// logged "polling enabled".
+			token, tokenSource := resolveGitHubToken(deps.Cfg)
+			if token == "" {
+				log.Error("GitHub SDK poller disabled: no token resolved",
+					slog.String("resolution_chain", "adapters.github.token config -> GITHUB_TOKEN env -> gh auth token CLI"),
+				)
+				return
+			}
 
 			// Determine interval.
 			interval := 30 * time.Second
@@ -99,7 +163,7 @@ func githubPollerRegistration() PollerRegistration {
 			}
 			sdkCfg := &githubSDK.Config{
 				Enabled:       ghCfg.Enabled,
-				Token:         ghCfg.Token,
+				Token:         token,
 				WebhookSecret: ghCfg.WebhookSecret,
 				Repo:          ghCfg.Repo,
 				TriggerLabel:  pilotLabel,
@@ -168,7 +232,7 @@ func githubPollerRegistration() PollerRegistration {
 					claudeCmd = "claude"
 				}
 				if _, err := exec.LookPath(claudeCmd); err != nil {
-					logging.WithComponent("github").Warn("Pre-flight judge disabled: claude binary not found",
+					log.Warn("Pre-flight judge disabled: claude binary not found",
 						slog.String("command", claudeCmd))
 				} else {
 					pollerDeps.PreFlightJudge = sdkPreFlightJudge{judge: executor.NewIntentJudge(claudeCmd)}
@@ -184,12 +248,18 @@ func githubPollerRegistration() PollerRegistration {
 			// affects queue ordering and the event is already past candidate selection.
 			repoParts := strings.SplitN(ghCfg.Repo, "/", 2)
 			if len(repoParts) != 2 {
-				logging.WithComponent("github").Error("GitHub SDK poller disabled: invalid repo format",
+				log.Error("GitHub SDK poller disabled: invalid repo format",
 					slog.String("repo", ghCfg.Repo))
 				return
 			}
 			repoOwner, repoName := repoParts[0], repoParts[1]
-			sdkClient := githubSDK.NewClient(ghCfg.Token)
+			sdkClient := githubSDK.NewClient(token)
+
+			// GH-3917: fail loud on a dead/invalid token instead of letting every
+			// poll silently 401.
+			if !verifySDKGithubToken(ctx, sdkClient, tokenSource, deps.AlertsEngine) {
+				return
+			}
 
 			rateLimitScheduler := executor.NewScheduler(executor.DefaultSchedulerConfig(), nil)
 			rateLimitScheduler.SetRetryCallback(func(retryCtx context.Context, pendingTask *executor.PendingTask) error {
@@ -251,14 +321,15 @@ func githubPollerRegistration() PollerRegistration {
 
 			githubPoller := githubSDK.New(sdkCfg).NewPoller(pollerDeps)
 
-			logging.WithComponent("start").Info("GitHub SDK polling enabled (M7 4b)",
+			log.Info("GitHub SDK polling enabled (M7 4b)",
 				slog.String("repo", ghCfg.Repo),
 				slog.String("label", pilotLabel),
+				slog.String("token_source", string(tokenSource)),
 				slog.Duration("interval", interval),
 			)
 			go func() {
 				if err := githubPoller.Start(ctx); err != nil {
-					logging.WithComponent("github").Error("GitHub SDK poller failed",
+					log.Error("GitHub SDK poller failed",
 						slog.Any("error", err),
 					)
 				}
