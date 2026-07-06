@@ -275,11 +275,11 @@ func TestStateStore_RebaseAttempts_SurvivesRestart(t *testing.T) {
 		CreatedAt:      time.Now().Truncate(time.Second),
 	}
 
-	if err := store.SavePRState(pr); err != nil {
+	if err := store.SavePRState("owner/repo", pr); err != nil {
 		t.Fatalf("SavePRState failed: %v", err)
 	}
 
-	loaded, err := store.GetPRState(55)
+	loaded, err := store.GetPRState("owner/repo", 55)
 	if err != nil {
 		t.Fatalf("GetPRState failed: %v", err)
 	}
@@ -290,7 +290,7 @@ func TestStateStore_RebaseAttempts_SurvivesRestart(t *testing.T) {
 		t.Errorf("GetPRState: RebaseAttempts = %d, want 2", loaded.RebaseAttempts)
 	}
 
-	all, err := store.LoadAllPRStates()
+	all, err := store.LoadAllPRStates("owner/repo")
 	if err != nil {
 		t.Fatalf("LoadAllPRStates failed: %v", err)
 	}

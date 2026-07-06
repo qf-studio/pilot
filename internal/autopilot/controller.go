@@ -365,6 +365,14 @@ func (c *Controller) SetStateStore(store *StateStore) {
 	c.stateStore = store
 }
 
+// repoKey returns this controller's "owner/repo" identity, used to scope
+// every StateStore read/write so a pr_number collision with another repo
+// sharing the same SQLite DB can never be restored or acted on by this
+// controller (GH-3903).
+func (c *Controller) repoKey() string {
+	return c.owner + "/" + c.repo
+}
+
 // SetLearningLoop sets the learning loop for capturing PR review feedback.
 // When set, handleMerged will fetch reviews after merge and extract patterns.
 func (c *Controller) SetLearningLoop(loop *memory.LearningLoop) {
@@ -404,7 +412,7 @@ func (c *Controller) persistPRState(prState *PRState) {
 	if c.stateStore == nil {
 		return
 	}
-	if err := c.stateStore.SavePRState(prState); err != nil {
+	if err := c.stateStore.SavePRState(c.repoKey(), prState); err != nil {
 		c.log.Warn("failed to persist PR state", "pr", prState.PRNumber, "error", err)
 	}
 }
@@ -414,7 +422,7 @@ func (c *Controller) persistRemovePR(prNumber int) {
 	if c.stateStore == nil {
 		return
 	}
-	if err := c.stateStore.RemovePRState(prNumber); err != nil {
+	if err := c.stateStore.RemovePRState(c.repoKey(), prNumber); err != nil {
 		c.log.Warn("failed to remove persisted PR state", "pr", prNumber, "error", err)
 	}
 }
@@ -480,7 +488,7 @@ func (c *Controller) persistPRFailures(prNumber int, state *prFailureState) {
 	if c.stateStore == nil {
 		return
 	}
-	if err := c.stateStore.SavePRFailures(prNumber, state.FailureCount, state.LastFailureTime); err != nil {
+	if err := c.stateStore.SavePRFailures(c.repoKey(), prNumber, state.FailureCount, state.LastFailureTime); err != nil {
 		c.log.Warn("failed to persist PR failure state", "pr", prNumber, "error", err)
 	}
 }
@@ -490,7 +498,7 @@ func (c *Controller) removePRFailures(prNumber int) {
 	if c.stateStore == nil {
 		return
 	}
-	if err := c.stateStore.RemovePRFailures(prNumber); err != nil {
+	if err := c.stateStore.RemovePRFailures(c.repoKey(), prNumber); err != nil {
 		c.log.Warn("failed to remove PR failure state", "pr", prNumber, "error", err)
 	}
 }
@@ -504,7 +512,7 @@ func (c *Controller) RestoreState() (int, error) {
 	}
 
 	// Restore PR states
-	states, err := c.stateStore.LoadAllPRStates()
+	states, err := c.stateStore.LoadAllPRStates(c.repoKey())
 	if err != nil {
 		return 0, fmt.Errorf("failed to load PR states: %w", err)
 	}
@@ -520,7 +528,7 @@ func (c *Controller) RestoreState() (int, error) {
 	c.mu.Unlock()
 
 	// Restore per-PR failures
-	prFailures, err := c.stateStore.LoadAllPRFailures()
+	prFailures, err := c.stateStore.LoadAllPRFailures(c.repoKey())
 	if err != nil {
 		c.log.Warn("failed to load per-PR failure states", "error", err)
 	} else {
@@ -1125,7 +1133,7 @@ func (c *Controller) handleCIFailed(ctx context.Context, prState *PRState) error
 	// GH-1964/GH-1979: Learn from CI failure patterns (self-improvement).
 	// Guard: skip learning when CI logs are empty/whitespace (nothing to extract).
 	if c.learningLoop != nil && strings.TrimSpace(ciLogs) != "" {
-		projectPath := c.owner + "/" + c.repo
+		projectPath := c.repoKey()
 		if learnErr := c.learningLoop.LearnFromCIFailure(ctx, projectPath, ciLogs, failedChecks); learnErr != nil {
 			c.log.Warn("Failed to learn from CI failure", slog.Any("error", learnErr))
 		}
@@ -1251,7 +1259,7 @@ func (c *Controller) handleReviewRequested(ctx context.Context, prState *PRState
 			})
 		}
 		if len(reviewData) > 0 {
-			projectPath := c.owner + "/" + c.repo
+			projectPath := c.repoKey()
 			if learnErr := c.learningLoop.LearnFromReview(ctx, projectPath, reviewData, prState.PRURL); learnErr != nil {
 				c.log.Warn("Failed to learn from review feedback", slog.Any("error", learnErr))
 			}
@@ -1415,7 +1423,7 @@ func (c *Controller) submitAsyncApprovalRequest(ctx context.Context, prState *PR
 	// Stage intentionally stays at StageAwaitApproval.
 
 	if c.stateStore != nil {
-		if serr := c.stateStore.SavePRState(prState); serr != nil {
+		if serr := c.stateStore.SavePRState(c.repoKey(), prState); serr != nil {
 			c.log.Warn("failed to persist approval request state", "pr", prState.PRNumber, "error", serr)
 		}
 	}
@@ -1488,7 +1496,7 @@ func (c *Controller) SetApprovalDecision(ctx context.Context, requestID string, 
 		}
 		pr.ApprovalDecision = decision
 		if c.stateStore != nil {
-			_ = c.stateStore.SavePRState(pr)
+			_ = c.stateStore.SavePRState(c.repoKey(), pr)
 		}
 		prNumber := pr.PRNumber
 		issueNumber := pr.IssueNumber
@@ -2044,7 +2052,7 @@ func (c *Controller) handlePostMergeCI(ctx context.Context, prState *PRState) er
 		// GH-1964/GH-1979: Learn from post-merge CI failure patterns (self-improvement).
 		// Guard: skip learning when CI logs are empty/whitespace (nothing to extract).
 		if c.learningLoop != nil && strings.TrimSpace(ciLogs) != "" {
-			projectPath := c.owner + "/" + c.repo
+			projectPath := c.repoKey()
 			if learnErr := c.learningLoop.LearnFromCIFailure(ctx, projectPath, ciLogs, failedChecks); learnErr != nil {
 				c.log.Warn("Failed to learn from post-merge CI failure", slog.Any("error", learnErr))
 			}
@@ -3062,7 +3070,7 @@ func (c *Controller) ScanRecentlyMergedPRs(ctx context.Context) error {
 		// releasingStaleThreshold) are intentionally NOT skipped so a genuinely
 		// wedged release can be re-driven.
 		if c.stateStore != nil {
-			if age, found, err := c.stateStore.PersistedReleasingAge(pr.Number); err != nil {
+			if age, found, err := c.stateStore.PersistedReleasingAge(c.repoKey(), pr.Number); err != nil {
 				c.log.Warn("failed to check persisted releasing state, will track to be safe",
 					"pr", pr.Number,
 					"error", err,
@@ -3295,9 +3303,24 @@ func (c *Controller) processAllPRs(ctx context.Context) {
 						"pr", pr.PRNumber, "cooldown", wait, "error", err)
 					return
 				}
+				if isNotFoundError(err) {
+					pr.mu.Lock()
+					pr.NotFoundCount++
+					notFoundCount := pr.NotFoundCount
+					pr.mu.Unlock()
+					if notFoundCount >= notFoundEvictionThreshold {
+						c.evictNotFoundPR(pr.PRNumber)
+						continue
+					}
+					c.log.Warn("failed to fetch PR", "pr", pr.PRNumber, "error", err, "not_found_count", notFoundCount)
+					continue
+				}
 				c.log.Warn("failed to fetch PR", "pr", pr.PRNumber, "error", err)
 				continue
 			}
+			pr.mu.Lock()
+			pr.NotFoundCount = 0
+			pr.mu.Unlock()
 
 			// TASK-324: hold pr.mu around the external-merge/close check and the
 			// polling-mode changes-requested read-modify-write + persist. Release it
@@ -3332,6 +3355,51 @@ func (c *Controller) processAllPRs(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// isNotFoundError reports whether err represents a GitHub API 404 response.
+// studio-sdk's github client wraps non-2xx responses as a plain
+// fmt.Errorf("API error (status %d): ...", code, msg) with no typed error to
+// check via errors.As, so the status-code substring is the only signal available.
+func isNotFoundError(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "status 404")
+}
+
+// notFoundEvictionThreshold bounds how many consecutive 404s fetching a
+// tracked PR are tolerated before the row is evicted. Guards against a stale
+// or foreign PR-state row (e.g. GH-3903: rows written before repo scoping
+// existed, or any future collision) driving an infinite "failed to fetch PR"
+// retry loop.
+const notFoundEvictionThreshold = 5
+
+// evictNotFoundPR drops a PR that has 404'd repeatedly from in-memory
+// tracking and the persisted state store. Unlike removePR, it deliberately
+// does NOT attempt remote branch cleanup: a repeated 404 means this
+// controller has no verified relationship to the PR, so touching c.owner/
+// c.repo's remote state based on nothing but a matching number would repeat
+// the exact wrong-repo mutation this eviction exists to prevent (GH-3903).
+func (c *Controller) evictNotFoundPR(prNumber int) {
+	c.mu.Lock()
+	prState, ok := c.activePRs[prNumber]
+	var headSHA string
+	if ok {
+		headSHA = prState.HeadSHA
+		delete(c.activePRs, prNumber)
+	}
+	delete(c.prFailures, prNumber)
+	delete(c.recordedMerges, prNumber)
+	c.mu.Unlock()
+
+	// GH-862: mirror removePR's discovery-state cleanup so an evicted PR
+	// doesn't leak an entry in ciMonitor's discovery map forever.
+	if headSHA != "" {
+		c.ciMonitor.ClearDiscovery(headSHA)
+	}
+
+	c.persistRemovePR(prNumber)
+	c.removePRFailures(prNumber)
+	c.log.Warn("evicted PR after repeated 404s fetching it — stale or foreign state-store row",
+		"pr", prNumber, "repo", c.repoKey(), "threshold", notFoundEvictionThreshold)
 }
 
 // checkExternalMergeOrClose checks if a PR was merged or closed externally (by human).

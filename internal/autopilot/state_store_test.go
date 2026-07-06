@@ -45,12 +45,12 @@ func TestStateStore_SaveAndLoadPRState(t *testing.T) {
 	}
 
 	// Save
-	if err := store.SavePRState(pr); err != nil {
+	if err := store.SavePRState("owner/repo", pr); err != nil {
 		t.Fatalf("SavePRState failed: %v", err)
 	}
 
 	// Load single
-	loaded, err := store.GetPRState(42)
+	loaded, err := store.GetPRState("owner/repo", 42)
 	if err != nil {
 		t.Fatalf("GetPRState failed: %v", err)
 	}
@@ -97,12 +97,12 @@ func TestStateStore_LoadAllPRStates(t *testing.T) {
 			CIStatus:   CIPending,
 			CreatedAt:  time.Now(),
 		}
-		if err := store.SavePRState(pr); err != nil {
+		if err := store.SavePRState("owner/repo", pr); err != nil {
 			t.Fatalf("SavePRState(%d) failed: %v", num, err)
 		}
 	}
 
-	states, err := store.LoadAllPRStates()
+	states, err := store.LoadAllPRStates("owner/repo")
 	if err != nil {
 		t.Fatalf("LoadAllPRStates failed: %v", err)
 	}
@@ -123,7 +123,7 @@ func TestStateStore_UpdatePRState(t *testing.T) {
 		CreatedAt:  time.Now(),
 	}
 
-	if err := store.SavePRState(pr); err != nil {
+	if err := store.SavePRState("owner/repo", pr); err != nil {
 		t.Fatalf("initial SavePRState failed: %v", err)
 	}
 
@@ -131,11 +131,11 @@ func TestStateStore_UpdatePRState(t *testing.T) {
 	pr.Stage = StageWaitingCI
 	pr.CIStatus = CIRunning
 	pr.CIWaitStartedAt = time.Now()
-	if err := store.SavePRState(pr); err != nil {
+	if err := store.SavePRState("owner/repo", pr); err != nil {
 		t.Fatalf("update SavePRState failed: %v", err)
 	}
 
-	loaded, err := store.GetPRState(42)
+	loaded, err := store.GetPRState("owner/repo", 42)
 	if err != nil {
 		t.Fatalf("GetPRState failed: %v", err)
 	}
@@ -159,15 +159,15 @@ func TestStateStore_RemovePRState(t *testing.T) {
 		CreatedAt:  time.Now(),
 	}
 
-	if err := store.SavePRState(pr); err != nil {
+	if err := store.SavePRState("owner/repo", pr); err != nil {
 		t.Fatalf("SavePRState failed: %v", err)
 	}
 
-	if err := store.RemovePRState(42); err != nil {
+	if err := store.RemovePRState("owner/repo", 42); err != nil {
 		t.Fatalf("RemovePRState failed: %v", err)
 	}
 
-	loaded, err := store.GetPRState(42)
+	loaded, err := store.GetPRState("owner/repo", 42)
 	if err != nil {
 		t.Fatalf("GetPRState failed: %v", err)
 	}
@@ -319,15 +319,15 @@ func TestStateStore_PurgeTerminalPRStates(t *testing.T) {
 		CreatedAt:  time.Now(),
 	}
 
-	if err := store.SavePRState(failedPR); err != nil {
+	if err := store.SavePRState("owner/repo", failedPR); err != nil {
 		t.Fatalf("SavePRState(failed) failed: %v", err)
 	}
-	if err := store.SavePRState(activePR); err != nil {
+	if err := store.SavePRState("owner/repo", activePR); err != nil {
 		t.Fatalf("SavePRState(active) failed: %v", err)
 	}
 
 	// Purge terminal states older than 0 (immediate)
-	purged, err := store.PurgeTerminalPRStates(0)
+	purged, err := store.PurgeTerminalPRStates("owner/repo", 0)
 	if err != nil {
 		t.Fatalf("PurgeTerminalPRStates failed: %v", err)
 	}
@@ -336,7 +336,7 @@ func TestStateStore_PurgeTerminalPRStates(t *testing.T) {
 	}
 
 	// Active PR should still exist
-	states, _ := store.LoadAllPRStates()
+	states, _ := store.LoadAllPRStates("owner/repo")
 	if len(states) != 1 {
 		t.Fatalf("got %d states, want 1", len(states))
 	}
@@ -363,7 +363,7 @@ func TestStateStore_PurgeTerminalPRStates_Releasing(t *testing.T) {
 		CreatedAt:  time.Now(),
 	}
 	for _, pr := range []*PRState{freshReleasing, staleReleasing} {
-		if err := store.SavePRState(pr); err != nil {
+		if err := store.SavePRState("owner/repo", pr); err != nil {
 			t.Fatalf("SavePRState(%d): %v", pr.PRNumber, err)
 		}
 	}
@@ -376,7 +376,7 @@ func TestStateStore_PurgeTerminalPRStates_Releasing(t *testing.T) {
 
 	// A large olderThan keeps any 'failed' row out of scope, so the only eligible
 	// row is the stale 'releasing' one (reaped on its own 30-min threshold).
-	purged, err := store.PurgeTerminalPRStates(24 * time.Hour)
+	purged, err := store.PurgeTerminalPRStates("owner/repo", 24*time.Hour)
 	if err != nil {
 		t.Fatalf("PurgeTerminalPRStates: %v", err)
 	}
@@ -384,7 +384,7 @@ func TestStateStore_PurgeTerminalPRStates_Releasing(t *testing.T) {
 		t.Errorf("purged = %d, want 1 (only the stale releasing row)", purged)
 	}
 
-	states, _ := store.LoadAllPRStates()
+	states, _ := store.LoadAllPRStates("owner/repo")
 	if len(states) != 1 || states[0].PRNumber != 1 {
 		t.Errorf("remaining states = %+v, want only the fresh releasing PR 1", states)
 	}
@@ -396,23 +396,23 @@ func TestStateStore_PersistedReleasingAge(t *testing.T) {
 	store := newTestStateStore(t)
 
 	// (a) no row → not found.
-	if _, found, err := store.PersistedReleasingAge(99); err != nil || found {
+	if _, found, err := store.PersistedReleasingAge("owner/repo", 99); err != nil || found {
 		t.Errorf("missing row: got found=%v err=%v, want found=false err=nil", found, err)
 	}
 
 	// (b) non-releasing stage → not found.
-	if err := store.SavePRState(&PRState{PRNumber: 10, BranchName: "pilot/GH-10", Stage: StageWaitingCI, CreatedAt: time.Now()}); err != nil {
+	if err := store.SavePRState("owner/repo", &PRState{PRNumber: 10, BranchName: "pilot/GH-10", Stage: StageWaitingCI, CreatedAt: time.Now()}); err != nil {
 		t.Fatalf("SavePRState(waiting): %v", err)
 	}
-	if _, found, err := store.PersistedReleasingAge(10); err != nil || found {
+	if _, found, err := store.PersistedReleasingAge("owner/repo", 10); err != nil || found {
 		t.Errorf("non-releasing row: got found=%v err=%v, want found=false", found, err)
 	}
 
 	// (c) fresh releasing row → found, age below threshold.
-	if err := store.SavePRState(&PRState{PRNumber: 20, BranchName: "pilot/GH-20", Stage: StageReleasing, CreatedAt: time.Now()}); err != nil {
+	if err := store.SavePRState("owner/repo", &PRState{PRNumber: 20, BranchName: "pilot/GH-20", Stage: StageReleasing, CreatedAt: time.Now()}); err != nil {
 		t.Fatalf("SavePRState(releasing): %v", err)
 	}
-	age, found, err := store.PersistedReleasingAge(20)
+	age, found, err := store.PersistedReleasingAge("owner/repo", 20)
 	if err != nil || !found {
 		t.Fatalf("fresh releasing: got found=%v err=%v, want found=true", found, err)
 	}
@@ -426,7 +426,7 @@ func TestStateStore_PersistedReleasingAge(t *testing.T) {
 	); err != nil {
 		t.Fatalf("backdate: %v", err)
 	}
-	age, found, err = store.PersistedReleasingAge(20)
+	age, found, err = store.PersistedReleasingAge("owner/repo", 20)
 	if err != nil || !found {
 		t.Fatalf("stale releasing: got found=%v err=%v, want found=true", found, err)
 	}
@@ -471,7 +471,7 @@ func TestController_RestoreState(t *testing.T) {
 	}
 
 	for _, pr := range []*PRState{pr1, pr2, pr3} {
-		if err := store.SavePRState(pr); err != nil {
+		if err := store.SavePRState("owner/repo", pr); err != nil {
 			t.Fatalf("SavePRState(%d) failed: %v", pr.PRNumber, err)
 		}
 	}
@@ -535,7 +535,7 @@ func TestController_OnPRCreated_PersistsToStore(t *testing.T) {
 	c.OnPRCreated(42, "https://github.com/owner/repo/pull/42", 10, "abc123", "pilot/GH-10", "")
 
 	// Verify persisted to store
-	loaded, err := store.GetPRState(42)
+	loaded, err := store.GetPRState("owner/repo", 42)
 	if err != nil {
 		t.Fatalf("GetPRState failed: %v", err)
 	}
@@ -560,7 +560,7 @@ func TestController_RemovePR_RemovesFromStore(t *testing.T) {
 	c.removePR(42)
 
 	// Verify removed from store
-	loaded, err := store.GetPRState(42)
+	loaded, err := store.GetPRState("owner/repo", 42)
 	if err != nil {
 		t.Fatalf("GetPRState failed: %v", err)
 	}
@@ -595,7 +595,7 @@ func TestController_ProcessPR_PersistsTransition(t *testing.T) {
 	}
 
 	// Verify state persisted with new stage
-	loaded, err := store.GetPRState(42)
+	loaded, err := store.GetPRState("owner/repo", 42)
 	if err != nil {
 		t.Fatalf("GetPRState failed: %v", err)
 	}
@@ -622,12 +622,12 @@ func TestStateStore_PRFailures(t *testing.T) {
 
 	// Save failure state
 	failureTime := time.Now().Truncate(time.Second)
-	if err := store.SavePRFailures(42, 3, failureTime); err != nil {
+	if err := store.SavePRFailures("owner/repo", 42, 3, failureTime); err != nil {
 		t.Fatalf("SavePRFailures failed: %v", err)
 	}
 
 	// Load and verify
-	failures, err := store.LoadAllPRFailures()
+	failures, err := store.LoadAllPRFailures("owner/repo")
 	if err != nil {
 		t.Fatalf("LoadAllPRFailures failed: %v", err)
 	}
@@ -642,19 +642,19 @@ func TestStateStore_PRFailures(t *testing.T) {
 	}
 
 	// Update failure state
-	if err := store.SavePRFailures(42, 5, time.Now()); err != nil {
+	if err := store.SavePRFailures("owner/repo", 42, 5, time.Now()); err != nil {
 		t.Fatalf("SavePRFailures update failed: %v", err)
 	}
-	failures, _ = store.LoadAllPRFailures()
+	failures, _ = store.LoadAllPRFailures("owner/repo")
 	if failures[42].FailureCount != 5 {
 		t.Errorf("FailureCount after update = %d, want 5", failures[42].FailureCount)
 	}
 
 	// Remove failure state
-	if err := store.RemovePRFailures(42); err != nil {
+	if err := store.RemovePRFailures("owner/repo", 42); err != nil {
 		t.Fatalf("RemovePRFailures failed: %v", err)
 	}
-	failures, _ = store.LoadAllPRFailures()
+	failures, _ = store.LoadAllPRFailures("owner/repo")
 	if len(failures) != 0 {
 		t.Errorf("got %d failures after remove, want 0", len(failures))
 	}
@@ -673,10 +673,10 @@ func TestController_RestoreState_LoadsPRFailures(t *testing.T) {
 		CIStatus:   CIRunning,
 		CreatedAt:  time.Now(),
 	}
-	if err := store.SavePRState(pr); err != nil {
+	if err := store.SavePRState("owner/repo", pr); err != nil {
 		t.Fatalf("SavePRState failed: %v", err)
 	}
-	if err := store.SavePRFailures(42, 2, time.Now()); err != nil {
+	if err := store.SavePRFailures("owner/repo", 42, 2, time.Now()); err != nil {
 		t.Fatalf("SavePRFailures failed: %v", err)
 	}
 
@@ -712,7 +712,7 @@ func TestController_RemovePR_RemovesFailures(t *testing.T) {
 	c.persistPRFailures(42, c.prFailures[42])
 
 	// Verify failure state persisted
-	failures, _ := store.LoadAllPRFailures()
+	failures, _ := store.LoadAllPRFailures("owner/repo")
 	if len(failures) != 1 {
 		t.Fatalf("expected 1 failure record, got %d", len(failures))
 	}
@@ -721,7 +721,7 @@ func TestController_RemovePR_RemovesFailures(t *testing.T) {
 	c.removePR(42)
 
 	// Verify failure state also removed
-	failures, _ = store.LoadAllPRFailures()
+	failures, _ = store.LoadAllPRFailures("owner/repo")
 	if len(failures) != 0 {
 		t.Errorf("expected 0 failure records after removePR, got %d", len(failures))
 	}

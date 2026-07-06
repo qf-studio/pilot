@@ -681,7 +681,7 @@ func TestController_ScanRecentlyMergedPRs_SkipsPersistedReleasing(t *testing.T) 
 
 	t.Run("fresh persisted releasing row is skipped", func(t *testing.T) {
 		c, store := newScanController(t)
-		if err := store.SavePRState(&PRState{PRNumber: 77, BranchName: "pilot/GH-770", Stage: StageReleasing, CreatedAt: time.Now()}); err != nil {
+		if err := store.SavePRState("owner/repo", &PRState{PRNumber: 77, BranchName: "pilot/GH-770", Stage: StageReleasing, CreatedAt: time.Now()}); err != nil {
 			t.Fatalf("SavePRState: %v", err)
 		}
 		if err := c.ScanRecentlyMergedPRs(context.Background()); err != nil {
@@ -694,7 +694,7 @@ func TestController_ScanRecentlyMergedPRs_SkipsPersistedReleasing(t *testing.T) 
 
 	t.Run("stale persisted releasing row is re-driven", func(t *testing.T) {
 		c, store := newScanController(t)
-		if err := store.SavePRState(&PRState{PRNumber: 77, BranchName: "pilot/GH-770", Stage: StageReleasing, CreatedAt: time.Now()}); err != nil {
+		if err := store.SavePRState("owner/repo", &PRState{PRNumber: 77, BranchName: "pilot/GH-770", Stage: StageReleasing, CreatedAt: time.Now()}); err != nil {
 			t.Fatalf("SavePRState: %v", err)
 		}
 		if _, err := store.db.Exec(
@@ -6017,11 +6017,11 @@ func TestController_handleMerging_CommentFlagPersists(t *testing.T) {
 		CreatedAt:               time.Now().Add(-5 * time.Minute).Truncate(time.Second),
 		MergeNotificationPosted: true,
 	}
-	if err := store.SavePRState(pr); err != nil {
+	if err := store.SavePRState("owner/repo", pr); err != nil {
 		t.Fatalf("SavePRState failed: %v", err)
 	}
 
-	loaded, err := store.GetPRState(42)
+	loaded, err := store.GetPRState("owner/repo", 42)
 	if err != nil {
 		t.Fatalf("GetPRState failed: %v", err)
 	}
@@ -6029,7 +6029,7 @@ func TestController_handleMerging_CommentFlagPersists(t *testing.T) {
 		t.Fatalf("MergeNotificationPosted did not persist: got %+v", loaded)
 	}
 
-	all, err := store.LoadAllPRStates()
+	all, err := store.LoadAllPRStates("owner/repo")
 	if err != nil {
 		t.Fatalf("LoadAllPRStates failed: %v", err)
 	}
