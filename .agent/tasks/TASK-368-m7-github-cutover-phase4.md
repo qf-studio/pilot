@@ -1,8 +1,8 @@
 ---
-status: phase-4a-complete
+status: phase-4b-shipped
 priority: P3
 created: 2026-06-22
-sdk_version: v0.25.0
+sdk_version: v0.27.0
 execution: manual
 github_issue: 3423
 labels: [m7, sdk, github, adapter, human-led]
@@ -10,7 +10,7 @@ labels: [m7, sdk, github, adapter, human-led]
 
 # TASK-368: M7 Phase 4 — GitHub adapter → studio-sdk cutover (MANUAL)
 
-**Status**: ✅ Phase 4a COMPLETE — artifacts verified present + correct; full test suite green (43 pkgs, 0 fail) and SDK-consuming packages green under `-race`, against **studio-sdk v0.25.0** (`go.mod` bumped from v0.24.0, 2026-06-30). Verdict `poll-path-only`; full retirement (4b–4d) **re-confirmed blocked at v0.25.0** — the github surface gap is unchanged from v0.24.0 (see Verdict). Adversarially reviewed (verdict SHIP, 5 nits fixed). Phases 4b–4d remain SDK-gated → now on **v0.26.0+**.
+**Status**: ✅ Phase **4b SHIPPED 2026-07-06** (PR [#3890](https://github.com/qf-studio/pilot/pull/3890), studio-sdk pinned **v0.27.0**). SDK gate lifted by TASK-385 (studio-sdk#71 → SDK PRs #74/#75/#76, released v0.27.0). `githubPollerRegistration()` is live in `adapterPollerRegistrations()` behind `use_sdk_poller`: full `PollerDeps` (TaskChecker / ExecutionChecker+ProjectPath / PreFlightJudge via `sdkPreFlightJudge` / ExecutionSaver / IssueMetricsRecorder / `sdkRateLimitScheduler` seam with host-side classification) + board source/sync mapped from `ProjectBoard` config; rate-limit retry callback re-enters the SDK handler path via the SDK client. Mutual exclusion: SDK owns the DEFAULT repo when flagged (gateway + standalone blocks skip it); `projects:` repos stay in-tree. 4b limitation: execution mode auto only. **Live trial pending: flip `use_sdk_poller: true` in `~/.pilot/config.yaml` + daemon restart; watch for "GitHub SDK polling enabled (M7 4b)".** 4c largely subsumed by v0.27.0 (SDK board layer shipped; in-tree `project_source.go`/`project_board.go` retire with 4d). **Next: 4d** — projects-loop migration, autopilot client interface seam, gh-CLI→SDK PR-create, delete `internal/adapters/github`. (4a history: shipped dormant 2026-06-30 vs v0.25.0, adversarially reviewed, verdict SHIP.)
 **Assignee**: Manual (human-led per #3423 — daemon must NOT claim this)
 **Tracking issue**: https://github.com/qf-studio/pilot/issues/3423
 **Template**: GitLab cutover — commit `07467a9d` / GH-3456 / PR #3459
