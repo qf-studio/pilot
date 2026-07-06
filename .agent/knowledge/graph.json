@@ -524,7 +524,8 @@
           "hot-upgrade"
         ],
         "confidence": 0.9,
-        "created": "2026-05-26"
+        "created": "2026-05-26",
+        "file": ".agent/knowledge/memories/pitfalls/bug_hot_upgrade_silent_codesign.md"
       },
       "mem-017": {
         "type": "pitfall",
@@ -534,7 +535,8 @@
           "dashboard"
         ],
         "confidence": 0.9,
-        "created": "2026-05-26"
+        "created": "2026-05-26",
+        "file": ".agent/knowledge/memories/pitfalls/bug_hot_upgrade_restarting_ui_trap.md"
       },
       "mem-018": {
         "type": "learning",
@@ -1366,6 +1368,75 @@
         "created": "2026-05-20",
         "indexed": "2026-07-05",
         "origin": "2026-07-05 graph reconciliation (auto-memory migration backfill)"
+      },
+      "mem-081": {
+        "type": "pitfall",
+        "summary": "Event-driven-only PR discovery (OnPRCreated) left PRs invisible to autopilot until restart; superseded by reconcileOrphanPRs. Incident: PR #3107.",
+        "file": ".agent/knowledge/memories/pitfalls/resolved/bug_autopilot_pr_discovery_orphans.md",
+        "concepts": [
+          "autopilot",
+          "poller",
+          "github-adapter"
+        ],
+        "confidence": 0.85,
+        "created": "2026-05-26",
+        "indexed": "2026-07-06",
+        "origin": "salvaged from backup/local-main-2026-05-27",
+        "resolved": true
+      },
+      "mem-082": {
+        "type": "pitfall",
+        "summary": "Autopilot can be silently disabled at startup when a gate check fails without a log line \u2014 operators unaware execution is off",
+        "file": ".agent/knowledge/memories/pitfalls/pitfall_silent_autopilot_gate_disable.md",
+        "concepts": [
+          "autopilot",
+          "doctor",
+          "verification"
+        ],
+        "confidence": 0.85,
+        "created": "2026-05-26",
+        "indexed": "2026-07-06",
+        "origin": "salvaged from backup/local-main-2026-05-27"
+      },
+      "mem-083": {
+        "type": "pitfall",
+        "summary": "Ephemeral /tmp/pilot-worktree-* paths fail strict repo-allowlist equality checks; resolve via git rev-parse --git-common-dir before comparing",
+        "file": ".agent/knowledge/memories/pitfalls/pitfall_worktree_path_repo_allowlist.md",
+        "concepts": [
+          "worktree",
+          "executor",
+          "git-operations"
+        ],
+        "confidence": 0.85,
+        "created": "2026-05-26",
+        "indexed": "2026-07-06",
+        "origin": "salvaged from backup/local-main-2026-05-27"
+      },
+      "mem-084": {
+        "type": "pitfall",
+        "summary": "allChildrenDone() returned true for empty child set \u2014 vacuous truth tripped epic-complete exit with zero work done; require >=1 child",
+        "file": ".agent/knowledge/memories/pitfalls/pitfall_allchildrendone_vacuous_truth.md",
+        "concepts": [
+          "epic-decomposition",
+          "executor"
+        ],
+        "confidence": 0.85,
+        "created": "2026-05-26",
+        "indexed": "2026-07-06",
+        "origin": "salvaged from backup/local-main-2026-05-27"
+      },
+      "mem-085": {
+        "type": "pitfall",
+        "summary": "Epic-parent results legitimately have empty CommitSHA/PRUrl (children carry them); guard with IsEpic before empty-value failure heuristic",
+        "file": ".agent/knowledge/memories/pitfalls/pitfall_isepic_guard_empty_result_fields.md",
+        "concepts": [
+          "epic-decomposition",
+          "executor"
+        ],
+        "confidence": 0.85,
+        "created": "2026-05-26",
+        "indexed": "2026-07-06",
+        "origin": "salvaged from backup/local-main-2026-05-27"
       }
     }
   },
@@ -2103,6 +2174,71 @@
     {
       "from": "mem-080",
       "to": "claude-code-integration",
+      "type": "describes"
+    },
+    {
+      "from": "mem-081",
+      "to": "autopilot",
+      "type": "describes"
+    },
+    {
+      "from": "mem-081",
+      "to": "poller",
+      "type": "describes"
+    },
+    {
+      "from": "mem-081",
+      "to": "github-adapter",
+      "type": "describes"
+    },
+    {
+      "from": "mem-082",
+      "to": "autopilot",
+      "type": "describes"
+    },
+    {
+      "from": "mem-082",
+      "to": "doctor",
+      "type": "describes"
+    },
+    {
+      "from": "mem-082",
+      "to": "verification",
+      "type": "describes"
+    },
+    {
+      "from": "mem-083",
+      "to": "worktree",
+      "type": "describes"
+    },
+    {
+      "from": "mem-083",
+      "to": "executor",
+      "type": "describes"
+    },
+    {
+      "from": "mem-083",
+      "to": "git-operations",
+      "type": "describes"
+    },
+    {
+      "from": "mem-084",
+      "to": "epic-decomposition",
+      "type": "describes"
+    },
+    {
+      "from": "mem-084",
+      "to": "executor",
+      "type": "describes"
+    },
+    {
+      "from": "mem-085",
+      "to": "epic-decomposition",
+      "type": "describes"
+    },
+    {
+      "from": "mem-085",
+      "to": "executor",
       "type": "describes"
     }
   ]
