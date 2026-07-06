@@ -344,6 +344,37 @@
           "autopilot",
           "executor"
         ]
+      },
+      "TASK-386": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-386-knowledge-graph-ci-drift-gate.md",
+        "title": "Task 386 Knowledge Graph Ci Drift Gate",
+        "status": "unknown",
+        "concepts": [
+          "context",
+          "api",
+          "deployment",
+          "skills",
+          "authentication",
+          "knowledge",
+          "testing"
+        ]
+      },
+      "TASK-387": {
+        "path": "/Users/aleks.petrov/Projects/startups/pilot/.agent/tasks/TASK-387-executor-memory-injection.md",
+        "title": "Task 387 Executor Memory Injection",
+        "status": "unknown",
+        "concepts": [
+          "simplification",
+          "workflow",
+          "knowledge",
+          "testing",
+          "context",
+          "skills",
+          "api",
+          "markers",
+          "deployment",
+          "database"
+        ]
       }
     },
     "memories": {
@@ -2274,6 +2305,82 @@
       "from": "autopilot",
       "to": "mem-086",
       "type": "has_pitfall"
+    },
+    {
+      "from": "TASK-386",
+      "to": "testing",
+      "type": "implements"
+    },
+    {
+      "from": "TASK-387",
+      "to": "testing",
+      "type": "implements"
     }
-  ]
+  ],
+  "concept_index": {
+    "memory": [
+      "TASK-386",
+      "TASK-387"
+    ],
+    "verification": [
+      "TASK-386"
+    ],
+    "workflow-discipline": [
+      "TASK-386"
+    ],
+    "executor": [
+      "TASK-387"
+    ],
+    "claude-code-integration": [
+      "TASK-387"
+    ],
+    "intent-routing": [
+      "TASK-387"
+    ],
+    "skills": [
+      "TASK-386",
+      "TASK-387"
+    ],
+    "knowledge": [
+      "TASK-386",
+      "TASK-387"
+    ],
+    "deployment": [
+      "TASK-386",
+      "TASK-387"
+    ],
+    "authentication": [
+      "TASK-386"
+    ],
+    "testing": [
+      "TASK-386",
+      "TASK-387"
+    ],
+    "api": [
+      "TASK-386",
+      "TASK-387"
+    ],
+    "context": [
+      "TASK-386",
+      "TASK-387"
+    ],
+    "markers": [
+      "TASK-387"
+    ],
+    "database": [
+      "TASK-387"
+    ],
+    "workflow": [
+      "TASK-387"
+    ],
+    "simplification": [
+      "TASK-387"
+    ]
+  },
+  "last_updated": "2026-07-06T09:55:29.169568+00:00",
+  "stats": {
+    "total_nodes": 134,
+    "total_edges": 166,
+    "memory_count": 86
+  }
 }
