@@ -15,8 +15,8 @@ import (
 )
 
 // TestGithubPollerRegistration_Fields verifies the SDK-based registration has the correct
-// name and that its Enabled predicate gates on the experimental use_sdk_poller flag — which
-// is OFF by default, keeping the SDK poller dormant in Phase 4a.
+// name and that its Enabled predicate gates on the use_sdk_poller flag (OFF by default —
+// the in-tree poller stays the live path unless a config opts in; M7 4b).
 func TestGithubPollerRegistration_Fields(t *testing.T) {
 	reg := githubPollerRegistration()
 
@@ -37,35 +37,42 @@ func TestGithubPollerRegistration_Fields(t *testing.T) {
 		{
 			name: "github disabled",
 			cfg: &config.Config{Adapters: &config.AdaptersConfig{
-				GitHub: &github.Config{Enabled: false, UseSDKPoller: true, Polling: &github.PollingConfig{Enabled: true}},
+				GitHub: &github.Config{Enabled: false, UseSDKPoller: true, Repo: "o/r", Polling: &github.PollingConfig{Enabled: true}},
 			}},
 			want: false,
 		},
 		{
-			name: "use_sdk_poller off (default) — dormant even when polling enabled",
+			name: "use_sdk_poller off (default) — in-tree poller stays the live path",
 			cfg: &config.Config{Adapters: &config.AdaptersConfig{
-				GitHub: &github.Config{Enabled: true, UseSDKPoller: false, Polling: &github.PollingConfig{Enabled: true}},
+				GitHub: &github.Config{Enabled: true, UseSDKPoller: false, Repo: "o/r", Polling: &github.PollingConfig{Enabled: true}},
 			}},
 			want: false,
 		},
 		{
 			name: "polling disabled",
 			cfg: &config.Config{Adapters: &config.AdaptersConfig{
-				GitHub: &github.Config{Enabled: true, UseSDKPoller: true, Polling: &github.PollingConfig{Enabled: false}},
+				GitHub: &github.Config{Enabled: true, UseSDKPoller: true, Repo: "o/r", Polling: &github.PollingConfig{Enabled: false}},
 			}},
 			want: false,
 		},
 		{
 			name: "nil polling config",
 			cfg: &config.Config{Adapters: &config.AdaptersConfig{
-				GitHub: &github.Config{Enabled: true, UseSDKPoller: true},
+				GitHub: &github.Config{Enabled: true, UseSDKPoller: true, Repo: "o/r"},
+			}},
+			want: false,
+		},
+		{
+			name: "no default repo — SDK path covers the default repo only (4b)",
+			cfg: &config.Config{Adapters: &config.AdaptersConfig{
+				GitHub: &github.Config{Enabled: true, UseSDKPoller: true, Polling: &github.PollingConfig{Enabled: true}},
 			}},
 			want: false,
 		},
 		{
 			name: "all enabled incl. use_sdk_poller",
 			cfg: &config.Config{Adapters: &config.AdaptersConfig{
-				GitHub: &github.Config{Enabled: true, UseSDKPoller: true, Polling: &github.PollingConfig{Enabled: true}},
+				GitHub: &github.Config{Enabled: true, UseSDKPoller: true, Repo: "o/r", Polling: &github.PollingConfig{Enabled: true}},
 			}},
 			want: true,
 		},
@@ -81,15 +88,16 @@ func TestGithubPollerRegistration_Fields(t *testing.T) {
 	}
 }
 
-// TestGithubPollerNotRegistered verifies the Phase-4a dormancy invariant: the GitHub SDK
-// registration must NOT be wired into adapterPollerRegistrations(), so the live daemon never
-// starts it this phase. The in-tree GitHub poller remains the live path.
-func TestGithubPollerNotRegistered(t *testing.T) {
+// TestGithubPollerRegistered verifies the M7-4b invariant: the GitHub SDK registration IS
+// wired into adapterPollerRegistrations() (flag-gated via its Enabled predicate), so daemons
+// with use_sdk_poller=true start the SDK poller for the default repo.
+func TestGithubPollerRegistered(t *testing.T) {
 	for _, reg := range adapterPollerRegistrations() {
 		if reg.Name == "github" {
-			t.Error("github must NOT be in adapterPollerRegistrations() in Phase 4a — the SDK poller is dormant")
+			return
 		}
 	}
+	t.Error("github must be in adapterPollerRegistrations() as of M7 4b (flag-gated by use_sdk_poller)")
 }
 
 // TestGithubSDKClientDoesNotImplementPRCreator documents the github behavior delta: unlike the
