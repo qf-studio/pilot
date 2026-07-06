@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "updated": "2026-07-05",
+  "updated": "2026-07-06",
   "nodes": {
     "concepts": {
       "pilot-architecture": {
@@ -332,10 +332,10 @@
           "poller"
         ],
         "created": "2026-07-05",
-        "file": ".agent/tasks/TASK-385-studio-sdk-v0260-github-surface.md",
+        "file": ".agent/tasks/archive/TASK-385-studio-sdk-v0260-github-surface.md",
         "label": "studio-sdk v0.26.0 github poll/board/PR surface (studio-sdk#71) \u2014 unblocks M7 4b-4d",
         "priority": "P1",
-        "status": "in-progress"
+        "status": "completed"
       },
       "TASK-321": {
         "title": "Phantom no-op redispatch durable fix",
