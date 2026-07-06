@@ -517,6 +517,12 @@ type PRState struct {
 	DiscoveredChecks []string
 	// ConsecutiveAPIFailures counts consecutive CI check API failures.
 	ConsecutiveAPIFailures int
+	// NotFoundCount tracks consecutive 404s fetching this PR from c.owner/c.repo
+	// in processAllPRs. In-memory only (not persisted): a foreign or stale row
+	// should evict quickly regardless of restart cadence, and a restart resets
+	// the counter anyway, giving a freshly-restored row a few more tries before
+	// eviction (GH-3903 404-eviction guard).
+	NotFoundCount int
 	// EnvironmentName is the user-friendly environment label (e.g. "staging").
 	EnvironmentName string
 	// PRTitle is the title of the pull request.
@@ -587,6 +593,7 @@ func (ps *PRState) snapshot() *PRState {
 		ReleaseVersion:          ps.ReleaseVersion,
 		ReleaseBumpType:         ps.ReleaseBumpType,
 		ConsecutiveAPIFailures:  ps.ConsecutiveAPIFailures,
+		NotFoundCount:           ps.NotFoundCount,
 		EnvironmentName:         ps.EnvironmentName,
 		PRTitle:                 ps.PRTitle,
 		TargetBranch:            ps.TargetBranch,

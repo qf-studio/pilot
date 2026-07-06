@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -102,6 +103,11 @@ func (s *StateStore) migrate() error {
 		// rebases (conflict -> rebase-success -> CI -> conflict oscillation)
 		// survives daemon restarts.
 		`ALTER TABLE autopilot_pr_state ADD COLUMN rebase_attempts INTEGER NOT NULL DEFAULT 0`,
+		// GH-3903: Add repo ahead of the primary-key rebuild in
+		// migratePRStateRepoScoping below — pr_number alone is not unique when
+		// multiple project-scoped controllers share one SQLite DB.
+		`ALTER TABLE autopilot_pr_state ADD COLUMN repo TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE autopilot_pr_failures ADD COLUMN repo TEXT NOT NULL DEFAULT ''`,
 	}
 
 	for _, m := range migrations {
@@ -137,6 +143,13 @@ func (s *StateStore) migrate() error {
 	// can never be matched again and would otherwise sit as dead weight.
 	if err := s.pruneOrphanedEmptyRepoRows(); err != nil {
 		return fmt.Errorf("adapter_processed empty-repo cleanup failed: %w", err)
+	}
+
+	// GH-3903: rebuild autopilot_pr_state/autopilot_pr_failures so repo joins
+	// the primary key, fixing cross-repo pr_number collisions between
+	// project-scoped controllers sharing one SQLite DB.
+	if err := s.migratePRStateRepoScoping(); err != nil {
+		return fmt.Errorf("autopilot_pr_state repo-scoping migration failed: %w", err)
 	}
 
 	return nil
@@ -212,6 +225,203 @@ func (s *StateStore) migrateAdapterProcessedPrimaryKey() error {
 	if _, err := tx.Exec(`ALTER TABLE adapter_processed_gh3819 RENAME TO adapter_processed`); err != nil {
 		return fmt.Errorf("rename adapter_processed_gh3819: %w", err)
 	}
+	return tx.Commit()
+}
+
+// prURLRepoRe extracts "owner/repo" from a GitHub PR URL of the form
+// "https://github.com/{owner}/{repo}/pull/{n}".
+var prURLRepoRe = regexp.MustCompile(`^https://github\.com/([^/]+)/([^/]+)/pull/\d+$`)
+
+// repoFromPRURL extracts "owner/repo" from a GitHub PR URL, or "" if prURL
+// doesn't match the expected shape (empty/malformed legacy row).
+func repoFromPRURL(prURL string) string {
+	m := prURLRepoRe.FindStringSubmatch(prURL)
+	if m == nil {
+		return ""
+	}
+	return m[1] + "/" + m[2]
+}
+
+// tableHasColumnInPK reports whether column is part of table's PRIMARY KEY,
+// per PRAGMA table_info. Used to make a PK-rebuild migration idempotent: skip
+// it on every startup after the first successful run (or on a fresh install
+// where the table is already created with the column in its key).
+func (s *StateStore) tableHasColumnInPK(table, column string) (bool, error) {
+	rows, err := s.db.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var cid, notNull, pk int
+		var name, ctype string
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notNull, &dflt, &pk); err != nil {
+			return false, err
+		}
+		if name == column && pk > 0 {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
+}
+
+// migratePRStateRepoScoping rebuilds autopilot_pr_state and
+// autopilot_pr_failures so repo is part of the primary key, fixing GH-3903:
+// with pr_number alone as the key, every project-scoped controller sharing
+// one SQLite DB restores and processes every other controller's rows too — a
+// PR closed in one repo could apply labels, close issues, and delete branches
+// in a completely unrelated repo that merely happens to have a PR with the
+// same number.
+//
+// repo is backfilled for existing autopilot_pr_state rows by parsing pr_url.
+// autopilot_pr_failures has no URL of its own; its rows are matched to their
+// PR's resolved repo via pr_number, and dropped if no match is found — these
+// are ephemeral retry counters, safe to lose (a real failure recurs and
+// re-persists on the very next tick).
+//
+// No-op if repo is already part of the primary key (fresh install, or a
+// prior run already migrated this DB).
+func (s *StateStore) migratePRStateRepoScoping() error {
+	already, err := s.tableHasColumnInPK("autopilot_pr_state", "repo")
+	if err != nil {
+		return fmt.Errorf("inspect autopilot_pr_state schema: %w", err)
+	}
+	if already {
+		return nil
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// Backfill repo for pr_state rows that don't have one yet, parsed from pr_url.
+	rows, err := tx.Query(`SELECT pr_number, pr_url FROM autopilot_pr_state WHERE repo = ''`)
+	if err != nil {
+		return fmt.Errorf("query autopilot_pr_state for backfill: %w", err)
+	}
+	type prRepoPair struct {
+		prNumber int
+		repo     string
+	}
+	var backfill []prRepoPair
+	for rows.Next() {
+		var prNumber int
+		var prURL string
+		if err := rows.Scan(&prNumber, &prURL); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("scan autopilot_pr_state row: %w", err)
+		}
+		if repo := repoFromPRURL(prURL); repo != "" {
+			backfill = append(backfill, prRepoPair{prNumber, repo})
+		}
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("iterate autopilot_pr_state rows: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close autopilot_pr_state rows: %w", err)
+	}
+	for _, pair := range backfill {
+		if _, err := tx.Exec(
+			`UPDATE autopilot_pr_state SET repo = ? WHERE pr_number = ? AND repo = ''`,
+			pair.repo, pair.prNumber,
+		); err != nil {
+			return fmt.Errorf("backfill repo for pr %d: %w", pair.prNumber, err)
+		}
+	}
+
+	// Rebuild autopilot_pr_state with repo in the primary key.
+	if _, err := tx.Exec(`
+		CREATE TABLE autopilot_pr_state_gh3903 (
+			pr_number INTEGER NOT NULL,
+			repo TEXT NOT NULL DEFAULT '',
+			pr_url TEXT NOT NULL,
+			issue_number INTEGER DEFAULT 0,
+			branch_name TEXT NOT NULL DEFAULT '',
+			head_sha TEXT DEFAULT '',
+			stage TEXT NOT NULL,
+			ci_status TEXT NOT NULL DEFAULT 'pending',
+			last_checked DATETIME,
+			ci_wait_started_at DATETIME,
+			merge_attempts INTEGER DEFAULT 0,
+			error TEXT DEFAULT '',
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			release_version TEXT DEFAULT '',
+			release_bump_type TEXT DEFAULT '',
+			merge_notification_posted INTEGER NOT NULL DEFAULT 0,
+			approval_request_id TEXT NOT NULL DEFAULT '',
+			approval_decision TEXT NOT NULL DEFAULT '',
+			approval_requested_at DATETIME,
+			post_merge_sha TEXT NOT NULL DEFAULT '',
+			post_merge_ci_started_at DATETIME,
+			rebase_attempts INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY (repo, pr_number)
+		)
+	`); err != nil {
+		return fmt.Errorf("create autopilot_pr_state_gh3903: %w", err)
+	}
+	if _, err := tx.Exec(`
+		INSERT INTO autopilot_pr_state_gh3903 (
+			pr_number, repo, pr_url, issue_number, branch_name, head_sha,
+			stage, ci_status, last_checked, ci_wait_started_at,
+			merge_attempts, error, created_at, updated_at,
+			release_version, release_bump_type, merge_notification_posted,
+			approval_request_id, approval_decision, approval_requested_at,
+			post_merge_sha, post_merge_ci_started_at, rebase_attempts
+		)
+		SELECT
+			pr_number, repo, pr_url, issue_number, branch_name, head_sha,
+			stage, ci_status, last_checked, ci_wait_started_at,
+			merge_attempts, error, created_at, updated_at,
+			release_version, release_bump_type, merge_notification_posted,
+			approval_request_id, approval_decision, approval_requested_at,
+			post_merge_sha, post_merge_ci_started_at, rebase_attempts
+		FROM autopilot_pr_state
+	`); err != nil {
+		return fmt.Errorf("copy autopilot_pr_state rows: %w", err)
+	}
+	if _, err := tx.Exec(`DROP TABLE autopilot_pr_state`); err != nil {
+		return fmt.Errorf("drop old autopilot_pr_state: %w", err)
+	}
+	if _, err := tx.Exec(`ALTER TABLE autopilot_pr_state_gh3903 RENAME TO autopilot_pr_state`); err != nil {
+		return fmt.Errorf("rename autopilot_pr_state_gh3903: %w", err)
+	}
+
+	// Rebuild autopilot_pr_failures, matching each row to its PR's resolved
+	// repo via pr_number (against the now-scoped autopilot_pr_state above).
+	// Rows that cannot be matched to any repo are dropped.
+	if _, err := tx.Exec(`
+		CREATE TABLE autopilot_pr_failures_gh3903 (
+			pr_number INTEGER NOT NULL,
+			repo TEXT NOT NULL DEFAULT '',
+			failure_count INTEGER NOT NULL DEFAULT 0,
+			last_failure_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			PRIMARY KEY (repo, pr_number)
+		)
+	`); err != nil {
+		return fmt.Errorf("create autopilot_pr_failures_gh3903: %w", err)
+	}
+	if _, err := tx.Exec(`
+		INSERT OR IGNORE INTO autopilot_pr_failures_gh3903 (pr_number, repo, failure_count, last_failure_time)
+		SELECT f.pr_number, s.repo, f.failure_count, f.last_failure_time
+		FROM autopilot_pr_failures f
+		JOIN autopilot_pr_state s ON s.pr_number = f.pr_number
+		WHERE s.repo != ''
+	`); err != nil {
+		return fmt.Errorf("copy autopilot_pr_failures rows: %w", err)
+	}
+	if _, err := tx.Exec(`DROP TABLE autopilot_pr_failures`); err != nil {
+		return fmt.Errorf("drop old autopilot_pr_failures: %w", err)
+	}
+	if _, err := tx.Exec(`ALTER TABLE autopilot_pr_failures_gh3903 RENAME TO autopilot_pr_failures`); err != nil {
+		return fmt.Errorf("rename autopilot_pr_failures_gh3903: %w", err)
+	}
+
 	return tx.Commit()
 }
 
@@ -301,18 +511,21 @@ func (s *StateStore) migrateLegacyProcessedTables() error {
 	return tx.Commit()
 }
 
-// SavePRState persists a PR state to the database (upsert).
-func (s *StateStore) SavePRState(pr *PRState) error {
+// SavePRState persists a PR state to the database (upsert), scoped to repo
+// ("owner/repo"). GH-3903: repo is part of the primary key alongside
+// pr_number so project-scoped controllers sharing one SQLite DB cannot
+// collide on the same PR number from different repos.
+func (s *StateStore) SavePRState(repo string, pr *PRState) error {
 	_, err := s.db.Exec(`
 		INSERT INTO autopilot_pr_state (
-			pr_number, pr_url, issue_number, branch_name, head_sha,
+			pr_number, repo, pr_url, issue_number, branch_name, head_sha,
 			stage, ci_status, last_checked, ci_wait_started_at,
 			merge_attempts, error, created_at, updated_at,
 			release_version, release_bump_type, merge_notification_posted,
 			approval_request_id, approval_decision, approval_requested_at,
 			post_merge_sha, post_merge_ci_started_at, rebase_attempts
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(pr_number) DO UPDATE SET
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(repo, pr_number) DO UPDATE SET
 			pr_url = excluded.pr_url,
 			issue_number = excluded.issue_number,
 			branch_name = excluded.branch_name,
@@ -334,7 +547,7 @@ func (s *StateStore) SavePRState(pr *PRState) error {
 			post_merge_ci_started_at = excluded.post_merge_ci_started_at,
 			rebase_attempts = excluded.rebase_attempts
 	`,
-		pr.PRNumber, pr.PRURL, pr.IssueNumber, pr.BranchName, pr.HeadSHA,
+		pr.PRNumber, repo, pr.PRURL, pr.IssueNumber, pr.BranchName, pr.HeadSHA,
 		string(pr.Stage), string(pr.CIStatus),
 		nullTime(pr.LastChecked), nullTime(pr.CIWaitStartedAt),
 		pr.MergeAttempts, pr.Error, nullTime(pr.CreatedAt),
@@ -345,9 +558,9 @@ func (s *StateStore) SavePRState(pr *PRState) error {
 	return err
 }
 
-// GetPRState retrieves a single PR state by number.
+// GetPRState retrieves a single PR state by repo and number.
 // Returns nil, nil if not found.
-func (s *StateStore) GetPRState(prNumber int) (*PRState, error) {
+func (s *StateStore) GetPRState(repo string, prNumber int) (*PRState, error) {
 	row := s.db.QueryRow(`
 		SELECT pr_number, pr_url, issue_number, branch_name, head_sha,
 			stage, ci_status, last_checked, ci_wait_started_at,
@@ -355,8 +568,8 @@ func (s *StateStore) GetPRState(prNumber int) (*PRState, error) {
 			release_version, release_bump_type, merge_notification_posted,
 			approval_request_id, approval_decision, approval_requested_at,
 			post_merge_sha, post_merge_ci_started_at, rebase_attempts
-		FROM autopilot_pr_state WHERE pr_number = ?
-	`, prNumber)
+		FROM autopilot_pr_state WHERE repo = ? AND pr_number = ?
+	`, repo, prNumber)
 
 	pr, err := scanPRState(row)
 	if err == sql.ErrNoRows {
@@ -368,8 +581,9 @@ func (s *StateStore) GetPRState(prNumber int) (*PRState, error) {
 	return pr, nil
 }
 
-// LoadAllPRStates retrieves all persisted PR states.
-func (s *StateStore) LoadAllPRStates() ([]*PRState, error) {
+// LoadAllPRStates retrieves all persisted PR states for the given repo.
+// GH-3903: scoped so one controller can never restore another repo's rows.
+func (s *StateStore) LoadAllPRStates(repo string) ([]*PRState, error) {
 	rows, err := s.db.Query(`
 		SELECT pr_number, pr_url, issue_number, branch_name, head_sha,
 			stage, ci_status, last_checked, ci_wait_started_at,
@@ -377,8 +591,8 @@ func (s *StateStore) LoadAllPRStates() ([]*PRState, error) {
 			release_version, release_bump_type, merge_notification_posted,
 			approval_request_id, approval_decision, approval_requested_at,
 			post_merge_sha, post_merge_ci_started_at, rebase_attempts
-		FROM autopilot_pr_state
-	`)
+		FROM autopilot_pr_state WHERE repo = ?
+	`, repo)
 	if err != nil {
 		return nil, err
 	}
@@ -424,9 +638,9 @@ func (s *StateStore) LoadAllPRStates() ([]*PRState, error) {
 	return states, nil
 }
 
-// RemovePRState deletes a PR state record.
-func (s *StateStore) RemovePRState(prNumber int) error {
-	_, err := s.db.Exec(`DELETE FROM autopilot_pr_state WHERE pr_number = ?`, prNumber)
+// RemovePRState deletes a PR state record, scoped to repo.
+func (s *StateStore) RemovePRState(repo string, prNumber int) error {
+	_, err := s.db.Exec(`DELETE FROM autopilot_pr_state WHERE repo = ? AND pr_number = ?`, repo, prNumber)
 	return err
 }
 
@@ -525,30 +739,30 @@ func (s *StateStore) GetMetadata(key string) (string, error) {
 	return value, err
 }
 
-// SavePRFailures persists the per-PR failure state.
-func (s *StateStore) SavePRFailures(prNumber, failureCount int, lastFailureTime time.Time) error {
+// SavePRFailures persists the per-PR failure state, scoped to repo.
+func (s *StateStore) SavePRFailures(repo string, prNumber, failureCount int, lastFailureTime time.Time) error {
 	_, err := s.db.Exec(`
-		INSERT INTO autopilot_pr_failures (pr_number, failure_count, last_failure_time)
-		VALUES (?, ?, ?)
-		ON CONFLICT(pr_number) DO UPDATE SET
+		INSERT INTO autopilot_pr_failures (pr_number, repo, failure_count, last_failure_time)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(repo, pr_number) DO UPDATE SET
 			failure_count = excluded.failure_count,
 			last_failure_time = excluded.last_failure_time
-	`, prNumber, failureCount, lastFailureTime)
+	`, prNumber, repo, failureCount, lastFailureTime)
 	return err
 }
 
-// RemovePRFailures removes per-PR failure state.
-func (s *StateStore) RemovePRFailures(prNumber int) error {
-	_, err := s.db.Exec(`DELETE FROM autopilot_pr_failures WHERE pr_number = ?`, prNumber)
+// RemovePRFailures removes per-PR failure state, scoped to repo.
+func (s *StateStore) RemovePRFailures(repo string, prNumber int) error {
+	_, err := s.db.Exec(`DELETE FROM autopilot_pr_failures WHERE repo = ? AND pr_number = ?`, repo, prNumber)
 	return err
 }
 
-// LoadAllPRFailures loads all per-PR failure states.
-func (s *StateStore) LoadAllPRFailures() (map[int]*prFailureState, error) {
+// LoadAllPRFailures loads all per-PR failure states for the given repo.
+func (s *StateStore) LoadAllPRFailures(repo string) (map[int]*prFailureState, error) {
 	rows, err := s.db.Query(`
 		SELECT pr_number, failure_count, last_failure_time
-		FROM autopilot_pr_failures
-	`)
+		FROM autopilot_pr_failures WHERE repo = ?
+	`, repo)
 	if err != nil {
 		return nil, err
 	}
@@ -578,22 +792,27 @@ func (s *StateStore) LoadAllPRFailures() (map[int]*prFailureState, error) {
 // gate (B3, PersistedReleasingAge) so both agree on what "stale" means.
 const releasingStaleThreshold = 30 * time.Minute
 
-// PurgeTerminalPRStates removes housekeeping-eligible PR state rows: terminal
-// 'failed' rows older than olderThan, plus 'releasing' rows untouched for longer
-// than releasingStaleThreshold. A 'releasing' row is not strictly terminal, but
-// one stuck past the threshold is a wedged release (B4/TASK-309) — purging it is a
-// safety net so the row cannot live forever and suppress re-discovery by
-// ScanRecentlyMergedPRs. Active PRs (fresh rows, other stages) are never purged.
-func (s *StateStore) PurgeTerminalPRStates(olderThan time.Duration) (int64, error) {
+// PurgeTerminalPRStates removes housekeeping-eligible PR state rows for the
+// given repo: terminal 'failed' rows older than olderThan, plus 'releasing'
+// rows untouched for longer than releasingStaleThreshold. A 'releasing' row
+// is not strictly terminal, but one stuck past the threshold is a wedged
+// release (B4/TASK-309) — purging it is a safety net so the row cannot live
+// forever and suppress re-discovery by ScanRecentlyMergedPRs. Active PRs
+// (fresh rows, other stages) are never purged. GH-3903: scoped by repo so a
+// housekeeping purge from one controller can never delete another repo's
+// terminal rows.
+func (s *StateStore) PurgeTerminalPRStates(repo string, olderThan time.Duration) (int64, error) {
 	// updated_at is written as CURRENT_TIMESTAMP (SQLite UTC), so the cutoffs must
 	// be evaluated against SQLite's own UTC clock — binding a Go (local) time.Time
 	// here mis-compares by the host's tz offset. <= keeps the olderThan=0 degenerate
 	// case ("purge all terminal rows now") reaping same-second rows.
 	result, err := s.db.Exec(`
 		DELETE FROM autopilot_pr_state
-		WHERE (stage = 'failed'    AND updated_at <= datetime('now', ?))
-		   OR (stage = 'releasing' AND updated_at <= datetime('now', ?))
+		WHERE repo = ?
+		  AND ((stage = 'failed'    AND updated_at <= datetime('now', ?))
+		   OR  (stage = 'releasing' AND updated_at <= datetime('now', ?)))
 	`,
+		repo,
 		fmt.Sprintf("-%d seconds", int64(olderThan.Seconds())),
 		fmt.Sprintf("-%d seconds", int64(releasingStaleThreshold.Seconds())),
 	)
@@ -604,16 +823,18 @@ func (s *StateStore) PurgeTerminalPRStates(olderThan time.Duration) (int64, erro
 }
 
 // PersistedReleasingAge reports the age (time since last update) of a persisted PR
-// row at stage='releasing'. found is false when no row exists for prNumber or the
-// row is in a different stage. The scanner uses this (B3/TASK-309) to skip
-// re-registering a release that is already in flight in the state store but absent
-// from the in-memory activePRs map (e.g. after a daemon restart), without relying
-// on the in-memory map alone. Returning the age (rather than a bool) lets the
-// caller ignore genuinely wedged rows so they can be re-driven.
-func (s *StateStore) PersistedReleasingAge(prNumber int) (age time.Duration, found bool, err error) {
+// row at stage='releasing', scoped to repo. found is false when no row exists for
+// repo/prNumber or the row is in a different stage. The scanner uses this
+// (B3/TASK-309) to skip re-registering a release that is already in flight in the
+// state store but absent from the in-memory activePRs map (e.g. after a daemon
+// restart), without relying on the in-memory map alone. Returning the age (rather
+// than a bool) lets the caller ignore genuinely wedged rows so they can be
+// re-driven. GH-3903: scoped by repo so one controller can never read another
+// repo's colliding pr_number and wrongly skip (or fail to skip) a release.
+func (s *StateStore) PersistedReleasingAge(repo string, prNumber int) (age time.Duration, found bool, err error) {
 	var stage string
 	var updatedAt sql.NullTime
-	row := s.db.QueryRow(`SELECT stage, updated_at FROM autopilot_pr_state WHERE pr_number = ?`, prNumber)
+	row := s.db.QueryRow(`SELECT stage, updated_at FROM autopilot_pr_state WHERE repo = ? AND pr_number = ?`, repo, prNumber)
 	if scanErr := row.Scan(&stage, &updatedAt); scanErr != nil {
 		if errors.Is(scanErr, sql.ErrNoRows) {
 			return 0, false, nil
