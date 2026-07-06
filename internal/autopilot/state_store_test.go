@@ -1031,6 +1031,177 @@ func TestStateStore_LegacyMigrationRowsPrunedSamePass(t *testing.T) {
 	}
 }
 
+// --- GH-3903: repo-scoped autopilot_pr_state / autopilot_pr_failures ---
+
+// TestStateStore_MigratePRStateAndFailuresRepoColumn verifies the pre-GH-3903
+// schema (pr_number as the sole PRIMARY KEY, no repo column) upgrades cleanly:
+// repo is backfilled on autopilot_pr_state by parsing pr_url, and
+// autopilot_pr_failures rows are joined against it, dropping any row whose
+// repo cannot be resolved (no matching pr_state row, or an unparseable
+// pr_url).
+func TestStateStore_MigratePRStateAndFailuresRepoColumn(t *testing.T) {
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+
+	// Seed the pre-GH-3903 autopilot_pr_state schema directly, bypassing
+	// NewStateStore's migrate().
+	if _, err := db.Exec(`
+		CREATE TABLE autopilot_pr_state (
+			pr_number INTEGER PRIMARY KEY,
+			pr_url TEXT NOT NULL,
+			issue_number INTEGER DEFAULT 0,
+			branch_name TEXT NOT NULL DEFAULT '',
+			head_sha TEXT DEFAULT '',
+			stage TEXT NOT NULL,
+			ci_status TEXT NOT NULL DEFAULT 'pending',
+			last_checked DATETIME,
+			ci_wait_started_at DATETIME,
+			merge_attempts INTEGER DEFAULT 0,
+			error TEXT DEFAULT '',
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			release_version TEXT DEFAULT '',
+			release_bump_type TEXT DEFAULT ''
+		)
+	`); err != nil {
+		t.Fatalf("failed to seed legacy autopilot_pr_state schema: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO autopilot_pr_state (pr_number, pr_url, stage, ci_status)
+		VALUES (74, 'https://github.com/qf-studio/studio-sdk/pull/74', 'waiting_ci', 'pending')
+	`); err != nil {
+		t.Fatalf("failed to seed row with resolvable pr_url: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO autopilot_pr_state (pr_number, pr_url, stage, ci_status)
+		VALUES (999, 'not-a-github-url', 'waiting_ci', 'pending')
+	`); err != nil {
+		t.Fatalf("failed to seed row with malformed pr_url: %v", err)
+	}
+
+	// Seed the pre-GH-3903 autopilot_pr_failures schema directly.
+	if _, err := db.Exec(`
+		CREATE TABLE autopilot_pr_failures (
+			pr_number INTEGER PRIMARY KEY,
+			failure_count INTEGER NOT NULL DEFAULT 0,
+			last_failure_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)
+	`); err != nil {
+		t.Fatalf("failed to seed legacy autopilot_pr_failures schema: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO autopilot_pr_failures (pr_number, failure_count) VALUES (74, 3)
+	`); err != nil {
+		t.Fatalf("failed to seed resolvable failure row: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO autopilot_pr_failures (pr_number, failure_count) VALUES (999, 1)
+	`); err != nil {
+		t.Fatalf("failed to seed failure row with unresolvable repo: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO autopilot_pr_failures (pr_number, failure_count) VALUES (12345, 2)
+	`); err != nil {
+		t.Fatalf("failed to seed orphaned failure row: %v", err)
+	}
+
+	store, err := NewStateStore(db)
+	if err != nil {
+		t.Fatalf("NewStateStore (running migrations) failed: %v", err)
+	}
+
+	// Pre-existing pr_state rows must survive the rebuild with data intact.
+	pr, err := store.GetPRState(74)
+	if err != nil {
+		t.Fatalf("GetPRState(74) failed: %v", err)
+	}
+	if pr == nil || pr.PRURL != "https://github.com/qf-studio/studio-sdk/pull/74" {
+		t.Fatalf("pr_number 74 did not survive migration intact: %+v", pr)
+	}
+
+	var repo74, repo999 string
+	if err := store.db.QueryRow(`SELECT repo FROM autopilot_pr_state WHERE pr_number = 74`).Scan(&repo74); err != nil {
+		t.Fatalf("query repo for pr 74: %v", err)
+	}
+	if repo74 != "qf-studio/studio-sdk" {
+		t.Errorf("repo for pr 74 = %q, want %q", repo74, "qf-studio/studio-sdk")
+	}
+	if err := store.db.QueryRow(`SELECT repo FROM autopilot_pr_state WHERE pr_number = 999`).Scan(&repo999); err != nil {
+		t.Fatalf("query repo for pr 999: %v", err)
+	}
+	if repo999 != "" {
+		t.Errorf("repo for pr 999 (malformed pr_url) = %q, want empty", repo999)
+	}
+
+	// Only the failure row whose repo could be resolved should survive.
+	failures, err := store.LoadAllPRFailures()
+	if err != nil {
+		t.Fatalf("LoadAllPRFailures failed: %v", err)
+	}
+	if len(failures) != 1 {
+		t.Fatalf("expected 1 surviving failure row, got %d: %+v", len(failures), failures)
+	}
+	f74, ok := failures[74]
+	if !ok {
+		t.Fatal("expected failure row for pr_number 74 to survive")
+	}
+	if f74.FailureCount != 3 {
+		t.Errorf("FailureCount for pr 74 = %d, want 3", f74.FailureCount)
+	}
+	if _, ok := failures[999]; ok {
+		t.Error("failure row for pr_number 999 (unresolvable repo) should have been dropped")
+	}
+	if _, ok := failures[12345]; ok {
+		t.Error("orphaned failure row for pr_number 12345 (no matching pr_state row) should have been dropped")
+	}
+
+	var failureRepo string
+	if err := store.db.QueryRow(`SELECT repo FROM autopilot_pr_failures WHERE pr_number = 74`).Scan(&failureRepo); err != nil {
+		t.Fatalf("query repo for failure row 74: %v", err)
+	}
+	if failureRepo != "qf-studio/studio-sdk" {
+		t.Errorf("repo for failure row 74 = %q, want %q", failureRepo, "qf-studio/studio-sdk")
+	}
+
+	// Idempotent: running again on an already-migrated DB is a no-op.
+	if err := store.migratePRStateRepoColumn(); err != nil {
+		t.Fatalf("second migratePRStateRepoColumn: %v", err)
+	}
+	if err := store.migratePRFailuresRepoColumn(); err != nil {
+		t.Fatalf("second migratePRFailuresRepoColumn: %v", err)
+	}
+}
+
+// TestStateStore_PRStateRepoCollision verifies the post-migration uniqueness
+// constraint is (repo, pr_number): the same pr_number in two different repos
+// must coexist as distinct rows.
+func TestStateStore_PRStateRepoCollision(t *testing.T) {
+	store := newTestStateStore(t)
+
+	if _, err := store.db.Exec(`
+		INSERT INTO autopilot_pr_state (pr_number, pr_url, stage, ci_status, repo)
+		VALUES (5, 'https://github.com/org/repo-a/pull/5', 'waiting_ci', 'pending', 'org/repo-a')
+	`); err != nil {
+		t.Fatalf("insert pr 5 for org/repo-a failed: %v", err)
+	}
+	if _, err := store.db.Exec(`
+		INSERT INTO autopilot_pr_state (pr_number, pr_url, stage, ci_status, repo)
+		VALUES (5, 'https://github.com/org/repo-b/pull/5', 'waiting_ci', 'pending', 'org/repo-b')
+	`); err != nil {
+		t.Fatalf("expected colliding pr_number in a different repo to be allowed: %v", err)
+	}
+
+	var count int
+	if err := store.db.QueryRow(`SELECT COUNT(*) FROM autopilot_pr_state WHERE pr_number = 5`).Scan(&count); err != nil {
+		t.Fatalf("count pr_number=5 rows: %v", err)
+	}
+	if count != 2 {
+		t.Errorf("expected 2 rows for colliding pr_number 5 across repos, got %d", count)
+	}
+}
+
 func TestStateStore_MigrateLegacyProcessedTables(t *testing.T) {
 	// Migration test: seed adapter_processed directly (legacy tables are dropped on migrate).
 	store := newTestStateStore(t)

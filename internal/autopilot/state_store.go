@@ -114,6 +114,17 @@ func (s *StateStore) migrate() error {
 		}
 	}
 
+	// GH-3903: Rebuild autopilot_pr_state / autopilot_pr_failures with repo in
+	// the PRIMARY KEY so cross-repo PR-number collisions can't clobber each
+	// other's state. pr_state must migrate first: the failures backfill joins
+	// against its (now repo-populated) rows to resolve each failure row's repo.
+	if err := s.migratePRStateRepoColumn(); err != nil {
+		return fmt.Errorf("autopilot_pr_state repo column migration failed: %w", err)
+	}
+	if err := s.migratePRFailuresRepoColumn(); err != nil {
+		return fmt.Errorf("autopilot_pr_failures repo column migration failed: %w", err)
+	}
+
 	// GH-3819: Rebuild adapter_processed with repo in the PRIMARY KEY if an
 	// older DB still has the pre-GH-1838-fixup schema. Must run before the
 	// legacy-table migration below so legacy rows land in the corrected table.
@@ -215,6 +226,228 @@ func (s *StateStore) migrateAdapterProcessedPrimaryKey() error {
 	return tx.Commit()
 }
 
+// parsePRRepoFromURL returns "owner/repo" parsed out of a PR URL, or "" if the
+// URL doesn't match the expected GitHub shape. Reuses PRState.RepoOwnerAndName
+// (types.go) so migration backfill and runtime parsing agree on one rule.
+func parsePRRepoFromURL(prURL string) string {
+	owner, repo := (&PRState{PRURL: prURL}).RepoOwnerAndName("", "")
+	if owner == "" || repo == "" {
+		return ""
+	}
+	return owner + "/" + repo
+}
+
+// columnInPrimaryKey reports whether the given column is part of table's
+// PRIMARY KEY. table must be a fixed, code-controlled identifier (interpolated
+// directly into PRAGMA, which does not accept bound parameters).
+func (s *StateStore) columnInPrimaryKey(table, column string) (bool, error) {
+	rows, err := s.db.Query(fmt.Sprintf(`PRAGMA table_info(%s)`, table))
+	if err != nil {
+		return false, fmt.Errorf("inspect %s schema: %w", table, err)
+	}
+	found := false
+	for rows.Next() {
+		var cid, notNull, pk int
+		var name, ctype string
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notNull, &dflt, &pk); err != nil {
+			_ = rows.Close()
+			return false, fmt.Errorf("scan %s schema: %w", table, err)
+		}
+		if name == column && pk > 0 {
+			found = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return false, fmt.Errorf("iterate %s schema: %w", table, err)
+	}
+	if err := rows.Close(); err != nil {
+		return false, fmt.Errorf("close %s schema query: %w", table, err)
+	}
+	return found, nil
+}
+
+// migratePRStateRepoColumn rebuilds autopilot_pr_state so repo is part of the
+// PRIMARY KEY (GH-3903). The original table keyed on pr_number alone, so any
+// two repos with a controller tracking the same PR number silently shared one
+// row. repo is backfilled by parsing each row's pr_url; rows whose pr_url
+// doesn't match the expected GitHub shape keep repo='' (the column default).
+//
+// No-op if repo is already part of the primary key (fresh install, or already
+// migrated).
+func (s *StateStore) migratePRStateRepoColumn() error {
+	hasRepo, err := s.columnInPrimaryKey("autopilot_pr_state", "repo")
+	if err != nil {
+		return err
+	}
+	if hasRepo {
+		return nil
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.Exec(`
+		CREATE TABLE autopilot_pr_state_gh3903 (
+			pr_number INTEGER NOT NULL,
+			pr_url TEXT NOT NULL,
+			issue_number INTEGER DEFAULT 0,
+			branch_name TEXT NOT NULL DEFAULT '',
+			head_sha TEXT DEFAULT '',
+			stage TEXT NOT NULL,
+			ci_status TEXT NOT NULL DEFAULT 'pending',
+			last_checked DATETIME,
+			ci_wait_started_at DATETIME,
+			merge_attempts INTEGER DEFAULT 0,
+			error TEXT DEFAULT '',
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			release_version TEXT DEFAULT '',
+			release_bump_type TEXT DEFAULT '',
+			merge_notification_posted INTEGER NOT NULL DEFAULT 0,
+			approval_request_id TEXT NOT NULL DEFAULT '',
+			approval_decision TEXT NOT NULL DEFAULT '',
+			approval_requested_at DATETIME,
+			post_merge_sha TEXT NOT NULL DEFAULT '',
+			post_merge_ci_started_at DATETIME,
+			rebase_attempts INTEGER NOT NULL DEFAULT 0,
+			repo TEXT NOT NULL DEFAULT '',
+			PRIMARY KEY (repo, pr_number)
+		)
+	`); err != nil {
+		return fmt.Errorf("create autopilot_pr_state_gh3903: %w", err)
+	}
+
+	if _, err := tx.Exec(`
+		INSERT INTO autopilot_pr_state_gh3903 (
+			pr_number, pr_url, issue_number, branch_name, head_sha,
+			stage, ci_status, last_checked, ci_wait_started_at,
+			merge_attempts, error, created_at, updated_at,
+			release_version, release_bump_type, merge_notification_posted,
+			approval_request_id, approval_decision, approval_requested_at,
+			post_merge_sha, post_merge_ci_started_at, rebase_attempts
+		)
+		SELECT
+			pr_number, pr_url, issue_number, branch_name, head_sha,
+			stage, ci_status, last_checked, ci_wait_started_at,
+			merge_attempts, error, created_at, updated_at,
+			release_version, release_bump_type, merge_notification_posted,
+			approval_request_id, approval_decision, approval_requested_at,
+			post_merge_sha, post_merge_ci_started_at, rebase_attempts
+		FROM autopilot_pr_state
+	`); err != nil {
+		return fmt.Errorf("copy autopilot_pr_state rows: %w", err)
+	}
+
+	rows, err := tx.Query(`SELECT pr_number, pr_url FROM autopilot_pr_state_gh3903`)
+	if err != nil {
+		return fmt.Errorf("query rows for repo backfill: %w", err)
+	}
+	type prRow struct {
+		prNumber int
+		prURL    string
+	}
+	var toBackfill []prRow
+	for rows.Next() {
+		var r prRow
+		if err := rows.Scan(&r.prNumber, &r.prURL); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("scan row for repo backfill: %w", err)
+		}
+		toBackfill = append(toBackfill, r)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("iterate rows for repo backfill: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close repo backfill query: %w", err)
+	}
+
+	for _, r := range toBackfill {
+		repo := parsePRRepoFromURL(r.prURL)
+		if repo == "" {
+			continue
+		}
+		// pr_number was the sole PRIMARY KEY pre-migration, so it is still
+		// unique among the rows just copied above.
+		if _, err := tx.Exec(
+			`UPDATE autopilot_pr_state_gh3903 SET repo = ? WHERE pr_number = ?`,
+			repo, r.prNumber,
+		); err != nil {
+			return fmt.Errorf("backfill repo for pr_number %d: %w", r.prNumber, err)
+		}
+	}
+
+	if _, err := tx.Exec(`DROP TABLE autopilot_pr_state`); err != nil {
+		return fmt.Errorf("drop old autopilot_pr_state: %w", err)
+	}
+	if _, err := tx.Exec(`ALTER TABLE autopilot_pr_state_gh3903 RENAME TO autopilot_pr_state`); err != nil {
+		return fmt.Errorf("rename autopilot_pr_state_gh3903: %w", err)
+	}
+	return tx.Commit()
+}
+
+// migratePRFailuresRepoColumn rebuilds autopilot_pr_failures so repo is part
+// of the PRIMARY KEY (GH-3903), matching migratePRStateRepoColumn. Failure
+// rows carry no pr_url of their own, so repo is resolved by joining against
+// the (already repo-backfilled) autopilot_pr_state on pr_number; rows whose
+// pr_number has no match there, or whose match's repo is unresolved, are
+// dropped rather than kept with repo='' — they are ephemeral retry counters,
+// and repo='' would risk colliding with a different repo's PR of that number.
+//
+// Must run after migratePRStateRepoColumn. No-op if repo is already part of
+// the primary key (fresh install, or already migrated).
+func (s *StateStore) migratePRFailuresRepoColumn() error {
+	hasRepo, err := s.columnInPrimaryKey("autopilot_pr_failures", "repo")
+	if err != nil {
+		return err
+	}
+	if hasRepo {
+		return nil
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.Exec(`
+		CREATE TABLE autopilot_pr_failures_gh3903 (
+			pr_number INTEGER NOT NULL,
+			failure_count INTEGER NOT NULL DEFAULT 0,
+			last_failure_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			repo TEXT NOT NULL DEFAULT '',
+			PRIMARY KEY (repo, pr_number)
+		)
+	`); err != nil {
+		return fmt.Errorf("create autopilot_pr_failures_gh3903: %w", err)
+	}
+
+	if _, err := tx.Exec(`
+		INSERT INTO autopilot_pr_failures_gh3903 (pr_number, failure_count, last_failure_time, repo)
+		SELECT f.pr_number, f.failure_count, f.last_failure_time, s.repo
+		FROM autopilot_pr_failures f
+		JOIN autopilot_pr_state s ON s.pr_number = f.pr_number
+		WHERE s.repo != ''
+	`); err != nil {
+		return fmt.Errorf("copy autopilot_pr_failures rows: %w", err)
+	}
+
+	if _, err := tx.Exec(`DROP TABLE autopilot_pr_failures`); err != nil {
+		return fmt.Errorf("drop old autopilot_pr_failures: %w", err)
+	}
+	if _, err := tx.Exec(`ALTER TABLE autopilot_pr_failures_gh3903 RENAME TO autopilot_pr_failures`); err != nil {
+		return fmt.Errorf("rename autopilot_pr_failures_gh3903: %w", err)
+	}
+	return tx.Commit()
+}
+
 // repoScopedAdapters lists adapter names whose pollers always dedup within a
 // specific repo (as opposed to tracker-style adapters — linear, jira, asana,
 // plane — which pass repo="" by design, see Mark's doc comment).
@@ -312,7 +545,7 @@ func (s *StateStore) SavePRState(pr *PRState) error {
 			approval_request_id, approval_decision, approval_requested_at,
 			post_merge_sha, post_merge_ci_started_at, rebase_attempts
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(pr_number) DO UPDATE SET
+		ON CONFLICT(repo, pr_number) DO UPDATE SET
 			pr_url = excluded.pr_url,
 			issue_number = excluded.issue_number,
 			branch_name = excluded.branch_name,
@@ -530,7 +763,7 @@ func (s *StateStore) SavePRFailures(prNumber, failureCount int, lastFailureTime 
 	_, err := s.db.Exec(`
 		INSERT INTO autopilot_pr_failures (pr_number, failure_count, last_failure_time)
 		VALUES (?, ?, ?)
-		ON CONFLICT(pr_number) DO UPDATE SET
+		ON CONFLICT(repo, pr_number) DO UPDATE SET
 			failure_count = excluded.failure_count,
 			last_failure_time = excluded.last_failure_time
 	`, prNumber, failureCount, lastFailureTime)
