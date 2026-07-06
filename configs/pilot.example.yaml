@@ -493,6 +493,24 @@ projects:
     #       required: true
     #       timeout: 10m
 
+  # Per-project release overlay (GH-3926) - overrides autopilot.release above
+  # for this project only. Overlay semantics: only the fields set here are
+  # applied (project > env > global); anything left unset inherits from the
+  # resolved env/global release config, so `enabled` is NOT silently turned
+  # off by an overlay that only sets `publish`. Example: a project with no
+  # tag-triggered release workflow of its own, so Pilot publishes the GitHub
+  # Release directly via the API.
+  # - name: "studio-sdk"
+  #   path: "/path/to/studio-sdk"
+  #   github:
+  #     owner: "qf-studio"
+  #     repo: "studio-sdk"
+  #   release:
+  #     publish: api    # only set publish: api on repos with NO tag-triggered release
+  #                     # workflow - pre-creating the release makes GoReleaser's asset
+  #                     # upload 422-collide and silently skips downstream publish steps
+  #                     # (Homebrew tap). Repos with GoReleaser must stay workflow.
+
 # Autopilot settings
 autopilot:
   enabled: false
@@ -504,6 +522,30 @@ autopilot:
   ci_wait_timeout: 30m
   ci_poll_interval: 30s
   approval_source: "telegram"   # telegram, slack, or github-review
+
+  # Automatic release creation on PR merge (GH-3926).
+  release:
+    enabled: false
+    trigger: on_merge                  # "on_merge" (default) or "manual"
+    version_strategy: conventional_commits
+    tag_prefix: "v"
+    generate_changelog: true
+    notify_on_release: true
+    require_ci: true
+    generate_summary: true
+    # Who actually publishes the GitHub Release once the tag is created:
+    #   workflow  (default when empty) - Pilot only creates the tag; the repo's
+    #             own tag-triggered CI (e.g. GoReleaser) publishes the release.
+    #             Preserves existing behavior byte-for-byte.
+    #   api       - Pilot publishes the GitHub Release itself via the API
+    #             immediately after tagging. Only use this on repos with NO
+    #             tag-triggered release workflow of their own (see the
+    #             per-project `release.publish: api` example under `projects:`
+    #             for the full warning on why this must not be combined with
+    #             GoReleaser).
+    #   tag_only  - the tag is created and nothing publishes a release; use
+    #             for repos with an intentionally manual release process.
+    publish: workflow
 
   # Define named environment configurations
   # Each environment can have different branch, approval, and CI settings
