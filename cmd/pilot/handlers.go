@@ -864,6 +864,28 @@ func formatChildIssueRefs(children []executor.CreatedIssue) string {
 	return strings.Join(refs, ", ")
 }
 
+// buildGitlabSuccessNote formats the GitLab issue-note counterpart to
+// buildExecutionComment (GH-3938): a decomposed epic parent with no MR of its
+// own shipped work via its children, not "nothing happened".
+func buildGitlabSuccessNote(result *executor.ExecutionResult, branchName string) string {
+	var parts []string
+	parts = append(parts, "✅ Pilot execution completed successfully!")
+	parts = append(parts, "")
+	if result.PRUrl != "" {
+		parts = append(parts, fmt.Sprintf("Merge Request: %s", result.PRUrl))
+	}
+	if result.CommitSHA != "" {
+		parts = append(parts, fmt.Sprintf("Commit: %s", result.CommitSHA[:min(8, len(result.CommitSHA))]))
+	}
+	if result.IsEpic && result.PRUrl == "" && len(result.ChildIssues) > 0 {
+		parts = append(parts, fmt.Sprintf("Decomposed: %d children: %s",
+			len(result.ChildIssues), formatChildIssueRefs(result.ChildIssues)))
+	}
+	parts = append(parts, fmt.Sprintf("Branch: %s", branchName))
+	parts = append(parts, fmt.Sprintf("Duration: %s", result.Duration))
+	return strings.Join(parts, "\n")
+}
+
 // buildFailureComment formats a comment for failed executions.
 func buildFailureComment(result *executor.ExecutionResult) string {
 	var sb strings.Builder
@@ -1110,18 +1132,7 @@ func handleGitlabIssueWithResult(ctx context.Context, cfg *config.Config, client
 			}
 			issueResult.Success = false
 		} else {
-			var parts []string
-			parts = append(parts, "✅ Pilot execution completed successfully!")
-			parts = append(parts, "")
-			if hr.Result.PRUrl != "" {
-				parts = append(parts, fmt.Sprintf("Merge Request: %s", hr.Result.PRUrl))
-			}
-			if hr.Result.CommitSHA != "" {
-				parts = append(parts, fmt.Sprintf("Commit: %s", hr.Result.CommitSHA[:min(8, len(hr.Result.CommitSHA))]))
-			}
-			parts = append(parts, fmt.Sprintf("Branch: %s", branchName))
-			parts = append(parts, fmt.Sprintf("Duration: %s", hr.Result.Duration))
-			note := strings.Join(parts, "\n")
+			note := buildGitlabSuccessNote(hr.Result, branchName)
 			if _, err := client.AddIssueNote(ctx, issueIID, note); err != nil {
 				logging.WithComponent("gitlab").Warn("Failed to add success note",
 					slog.String("task_id", taskID),

@@ -124,6 +124,76 @@ func TestBuildExecutionComment_WithIntentWarning(t *testing.T) {
 	}
 }
 
+// TestBuildGitlabSuccessNote covers the GitLab counterpart of GH-3938
+// acceptance (c): parity with buildExecutionComment so a decomposed epic
+// parent reports its actual children instead of implying nothing happened,
+// while a non-epic or own-PR result is unaffected.
+func TestBuildGitlabSuccessNote(t *testing.T) {
+	tests := []struct {
+		name        string
+		result      *executor.ExecutionResult
+		branch      string
+		wantContain []string
+		wantAbsent  []string
+	}{
+		{
+			name: "decomposed epic with no PR of its own reports children",
+			result: &executor.ExecutionResult{
+				Success:  true,
+				Duration: 37 * time.Minute,
+				IsEpic:   true,
+				ChildIssues: []executor.CreatedIssue{
+					{Number: 101},
+					{Identifier: "APP-9"},
+				},
+			},
+			branch:      "pilot/GL-42",
+			wantContain: []string{"Decomposed: 2 children: #101, APP-9", "Branch: pilot/GL-42"},
+			wantAbsent:  []string{"Merge Request:"},
+		},
+		{
+			name: "epic that shipped its own MR shows no decomposed row",
+			result: &executor.ExecutionResult{
+				Success: true,
+				IsEpic:  true,
+				PRUrl:   "https://gitlab.com/org/repo/-/merge_requests/7",
+				ChildIssues: []executor.CreatedIssue{
+					{Number: 55},
+				},
+			},
+			branch:      "pilot/GL-43",
+			wantContain: []string{"Merge Request: https://gitlab.com/org/repo/-/merge_requests/7"},
+			wantAbsent:  []string{"Decomposed:"},
+		},
+		{
+			name: "non-epic success with commit and no children",
+			result: &executor.ExecutionResult{
+				Success:   true,
+				CommitSHA: "abcdef1234567890",
+			},
+			branch:      "pilot/GL-44",
+			wantContain: []string{"Commit: abcdef12", "Branch: pilot/GL-44"},
+			wantAbsent:  []string{"Decomposed:"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			note := buildGitlabSuccessNote(tt.result, tt.branch)
+			for _, want := range tt.wantContain {
+				if !strings.Contains(note, want) {
+					t.Errorf("note missing %q\nGot:\n%s", want, note)
+				}
+			}
+			for _, absent := range tt.wantAbsent {
+				if strings.Contains(note, absent) {
+					t.Errorf("note should not contain %q\nGot:\n%s", absent, note)
+				}
+			}
+		})
+	}
+}
+
 func TestBuildFailureComment(t *testing.T) {
 	result := &executor.ExecutionResult{
 		Error:            "build failed: undefined method foo",
