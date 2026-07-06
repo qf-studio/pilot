@@ -689,20 +689,29 @@ func (s *Store) ListExecutionsForTask(taskID string) ([]*Execution, error) {
 type Stage string
 
 const (
-	StageQueued           Stage = "queued"
-	StageSpecValidated    Stage = "spec_validated"
-	StageRunning          Stage = "running"
-	StageCommit           Stage = "commit"
-	StagePRCreated        Stage = "pr_created"
-	StageCIPassed         Stage = "ci_passed"
-	StageCIFailed         Stage = "ci_failed"
-	StageAwaitingApproval Stage = "awaiting_approval"
-	StageMerged           Stage = "merged"
-	StageReleased         Stage = "released"
-	StageFailed           Stage = "failed"
-	StageNoOp             Stage = "no_op"
-	StageSkipped          Stage = "skipped"
-	StageStalled          Stage = "stalled"
+	StageQueued        Stage = "queued"
+	StageSpecValidated Stage = "spec_validated"
+	StageRunning       Stage = "running"
+	StageClaudeStarted Stage = "claude_started"
+	StageDecomposed    Stage = "decomposed"
+	// StageImplementationStarted marks a direct (non-epic) task handing off to
+	// Claude for real implementation work. GH-3938 wires claude_started/
+	// decomposed/completed on the epic-parent path only; this value is
+	// reserved for a future direct-path instrumentation pass so the enum
+	// matches the full lifecycle described in GH-3840 up front.
+	StageImplementationStarted Stage = "implementation_started"
+	StageCommit                Stage = "commit"
+	StagePRCreated             Stage = "pr_created"
+	StageCIPassed              Stage = "ci_passed"
+	StageCIFailed              Stage = "ci_failed"
+	StageAwaitingApproval      Stage = "awaiting_approval"
+	StageMerged                Stage = "merged"
+	StageReleased              Stage = "released"
+	StageCompleted             Stage = "completed"
+	StageFailed                Stage = "failed"
+	StageNoOp                  Stage = "no_op"
+	StageSkipped               Stage = "skipped"
+	StageStalled               Stage = "stalled"
 )
 
 // Event represents a single stage-transition record for an execution.
