@@ -84,6 +84,29 @@ func TestDefaultBackendConfig(t *testing.T) {
 	if config.OpenCode.ServerURL != "http://127.0.0.1:4096" {
 		t.Errorf("OpenCode.ServerURL = %q, want http://127.0.0.1:4096", config.OpenCode.ServerURL)
 	}
+	if config.MemoryInjection == nil {
+		t.Fatal("MemoryInjection config should not be nil")
+	}
+	if !config.MemoryInjection.Enabled {
+		t.Error("MemoryInjection.Enabled should default to true")
+	}
+	if config.MemoryInjection.MaxMemories != 5 {
+		t.Errorf("MemoryInjection.MaxMemories = %d, want 5", config.MemoryInjection.MaxMemories)
+	}
+}
+
+func TestDefaultMemoryInjectionConfig(t *testing.T) {
+	config := DefaultMemoryInjectionConfig()
+
+	if config == nil {
+		t.Fatal("DefaultMemoryInjectionConfig returned nil")
+	}
+	if !config.Enabled {
+		t.Error("Enabled should default to true")
+	}
+	if config.MaxMemories != 5 {
+		t.Errorf("MaxMemories = %d, want 5", config.MaxMemories)
+	}
 }
 
 func TestBackendConfigTypes(t *testing.T) {
